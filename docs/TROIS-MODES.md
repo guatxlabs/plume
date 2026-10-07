@@ -334,7 +334,8 @@ plan et n'exécute qu'avec `--apply`, parce qu'il touche un cluster partagé.
 
 Créer un compte, promouvoir un administrateur, réinitialiser le mot de passe d'un **autre** compte,
 frapper un jeton (agent, HEC, source de données, client) ou une clé de livraison (source push), poser
-ou reconfigurer un fournisseur d'identité, et — en mode multi-tenant — poser un droit de tenant ou le
+ou reconfigurer un fournisseur d'identité, ouvrir un engagement (mode Engagement, toutes boîtes : greybox
+et whitebox frappent un compte, blackbox suspend l'auto-ban sur son scope), et — en mode multi-tenant — poser un droit de tenant ou le
 premier administrateur d'un tenant exigent, **en plus du droit**, le secret des gestes dans l'en-tête
 `x-plume-secret-des-gestes`. C'est vrai pour tout administrateur, quel que soit son mode
 d'authentification (session locale, SSO d'en-têtes, fédération, Basic). **Sans secret posé, ces

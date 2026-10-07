@@ -1,8 +1,6 @@
 {
  "admin_users.js": [
   "Copier l'extrait",
-  "Copier la commande prête à coller",
-  "Copier le jeton — il ne sera plus jamais affiché",
   "DELETE",
   "hôte invalide (alphanumérique, . _ - ; ≤ 253 car.)",
   "nom invalide (alphanumérique, . _ - uniquement)",
@@ -196,7 +194,6 @@
   "AbortError",
   "Arrêter ce panneau",
   "Content-Type",
-  "Copier le lien de partage de cet instantané",
   "DELETE",
   "Donne un nom, ou choisis un dashboard existant.",
   "IntersectionObserver",
@@ -568,7 +565,6 @@
   "Alertes ouvertes",
   "Attention",
   "CPU cumulé",
-  "Copier le chemin de ce document",
   "Critique",
   "DELETE",
   "File spool",

@@ -24,6 +24,9 @@ corps de son handler (le symbole nommé dans `.route(...)`), et une route est se
   ÉLÈVE UN DROIT       — le handler lit un `role` dans le corps de la requête, ou insère un jeton
                           (`INSERT INTO token`) : identité, crédence d'accès. L'insertion d'un jeton est
                           suivie À TRAVERS LES APPELS (`ecrivains_de_jeton`), pas sur un niveau seulement.
+  ABAISSE UNE PROTECTION — le handler RETIRE un facteur d'accès du compte : supprime sa ligne `user_mfa` ou y
+                          pose `enabled=0` dans le SET (`RETIRE_UN_FACTEUR`). Suivi À TRAVERS LES APPELS,
+                          comme le jeton (`retireurs_de_facteur`). Voir « LA DÉSACTIVATION DU SECOND FACTEUR ».
   ARME UNE RÉPONSE     — les deux déclarations d'armement de `rbac.rs` (`/api/mode` en mutation ;
                           suffixe `/enabled` sur règles/parseurs/playbooks, et tout `/enabled` mutant),
                           un handler qui touche le ban natif (`netban`), ou un handler que le démon
@@ -162,6 +165,23 @@ trois routes qui frappent un jeton (`/api/tokens`, `/api/connectors/push-source`
 `/api/connectors/{id}/delivery-key`), et remonte hors des routes jusqu'au point d'entrée du binaire (la
 sous-commande `token` de la ligne de commande écrit un jeton), sans effet sur le classement.
 
+LA DÉSACTIVATION DU SECOND FACTEUR N'ÉTAIT VUE PAR AUCUNE FAMILLE (`P10.31-c`, 2026-10-07)
+----------------------------------------------------------------------------------------
+`POST /api/mfa/disable` retire le second facteur du compte appelant : sa session ne tient plus que par le mot
+de passe. Mesuré sur l'arbre d'avant : la route n'était NI sensible, NI angle mort, NI asymétrie — elle n'était
+pas dans la sortie du tout. Son handler ne supprime rien par DELETE HTTP, ne lit pas de `role`, n'écrit pas de
+jeton, et n'inscrit le changement qu'au REGISTRE (`ledger_append`), que la famille DÉCLARE ne lit pas
+(`AUDIT_CHANGEMENT`). La console la confirme (`disableMfa`, `confirmWithConsequence`), mais rien ne l'exigeait :
+retirer cette confirmation laissait la garde verte. La famille « abaisse » se lit dans le HANDLER, pas dans une
+liste de routes : `DELETE FROM user_mfa`, ou `UPDATE user_mfa SET … enabled=0` (la valeur posée dans le SET,
+jamais une condition du WHERE — l'activation, `mfa_verify`, porte `AND enabled=0` dans son WHERE et n'abaisse
+rien), suivi par fermeture sur les appels nommés. Relevé le 2026-10-07 : elle reconnaît `POST /api/mfa/disable`
+(neuve) et `DELETE /api/users/{id}` (déjà sensible par son verbe) ; la route témoin `ROUTE_TEMOIN_FACTEUR` doit
+la porter, sans quoi la garde refuse de conclure. CE QU'ELLE NE TIENT PAS : un facteur retiré par une autre
+table (le mot de passe, une fédération) n'est pas reconnu ; aucun n'existe aujourd'hui. La route n'est pas
+auditée au sens de `AUDIT_CHANGEMENT` : elle ne peut entrer ni dans les angles morts ni dans
+`ASYMETRIES_ADMISES`, et son seul appelant confirme dans sa propre portée.
+
 LES TROIS PLANCHERS SE RE-MESURENT EN UNE EXÉCUTION
 ---------------------------------------------------
 `PLAFOND_ABANDONS` porte un nombre relevé sur l'arbre, `CONFIRMEES_PAR_APPELANT_ADMISES` des noms. Quand la
@@ -186,6 +206,9 @@ ROUTE_TEMOIN = ("POST", "/api/users/{id}")
 # seulement reprise par les surfaces (voir « LA FAMILLE … ÉTAIT MORTE » dans l'en-tête).
 ROUTE_TEMOIN_JETON = ("POST", "/api/tokens")
 FAMILLE_JETON = "élève (jeton)"
+# `P10.31-c` — la route qui retire le second facteur : elle doit être reconnue par la famille « abaisse » elle-même.
+ROUTE_TEMOIN_FACTEUR = ("POST", "/api/mfa/disable")
+FAMILLE_FACTEUR = "abaisse (retire un facteur d'accès)"
 # CLIQUET DU SECOND SENS (`P11.13-b`) : routes que le démon AUDITE, que la console ATTEINT, et dont tous les
 # appelants ne confirment pas. 12 mesurées le 2026-08-24 ; ce nombre ne se relève pas sans raison écrite ici —
 # une route auditée appelée sans confirmation de plus est exactement le défaut que la garde doit attraper.
@@ -294,6 +317,9 @@ LITTERAUX = re.compile(r'"(/[^"]*)"')
 # porteur d'accès inséré. Lire un `role` ne suffit pas : un field filter lit un rôle pour délimiter sa portée.
 ECRIT_IDENTITE = re.compile(r'INSERT\s+(?:OR\s+REPLACE\s+)?INTO\s+(?:user\b|\\?"?grant\\?"?\b)|UPDATE\s+user\s+SET\s+role', re.I)
 INSERT_TOKEN = re.compile(r'INSERT\s+(?:OR\s+REPLACE\s+)?INTO\s+token\b', re.I)
+# `P10.31-c` — RETRAIT D'UN FACTEUR D'ACCÈS : la ligne du second facteur supprimée, ou `enabled=0` posé dans le SET.
+# Le `(?!WHERE)` borne la recherche au SET : `AND enabled=0` d'un WHERE (l'activation) n'est pas un retrait.
+RETIRE_UN_FACTEUR = re.compile(r'DELETE\s+FROM\s+user_mfa\b|UPDATE\s+user_mfa\s+SET\s+(?:(?!\bWHERE\b)[^;"])*?\benabled\s*=\s*0\b', re.I)
 AUDIT_SEV = re.compile(r'audit_(?:config|source)_change\([^;]*?,\s*(\d)\s*,', re.S)
 # LE DÉMON DÉCLARE LUI-MÊME QU'IL S'AGIT D'UN CHANGEMENT en l'inscrivant à son journal. `audit_bulk_read`
 # n'en est pas : c'est une LECTURE tracée, elle ne change rien et ne dit rien de la sensibilité d'une mutation.
@@ -388,19 +414,31 @@ def corps_etendu(handler, handlers):
     return propre + "".join(handlers.get(n, "") for n in appelees if n in handlers)
 
 
+def fermeture_des_appels(handlers, graines):
+    """Les fonctions de `graines` et toutes celles qui en appellent une par un appel NOMMÉ, à toute profondeur. Un
+    appel de méthode (`x.nom(`) n'est pas un appel à la fonction `nom`."""
+    atteintes = set(graines)
+    while atteintes:
+        appel = re.compile(r'(?<![.\w])(?:' + "|".join(map(re.escape, sorted(atteintes))) + r')\s*\(')
+        neufs = {n for n, corps in handlers.items() if n not in atteintes and appel.search(corps)}
+        if not neufs:
+            break
+        atteintes |= neufs
+    return atteintes
+
+
+def retireurs_de_facteur(handlers):
+    """`P10.31-c` — les fonctions qui retirent un facteur d'accès (`RETIRE_UN_FACTEUR`), directement ou par un appel
+    nommé à l'une d'elles. Même fermeture, même limite (résolution par le NOM) que `ecrivains_de_jeton`."""
+    return fermeture_des_appels(handlers, {n for n, corps in handlers.items() if RETIRE_UN_FACTEUR.search(corps)})
+
+
 def ecrivains_de_jeton(handlers):
     """`P10.26-g` — les fonctions qui écrivent une ligne `token`, directement (`INSERT INTO token`) ou par un appel
     NOMMÉ à l'une d'elles, à toute profondeur (fermeture). Un appel de méthode (`x.nom(`) n'est pas un appel à la
     fonction `nom` : sans cette exclusion, `next.run(req)` d'un intergiciel ferait de lui un écrivain dès qu'une
     fonction `run` en est une."""
-    ecrivains = {n for n, corps in handlers.items() if INSERT_TOKEN.search(corps)}
-    while ecrivains:
-        appel = re.compile(r'(?<![.\w])(?:' + "|".join(map(re.escape, sorted(ecrivains))) + r')\s*\(')
-        neufs = {n for n, corps in handlers.items() if n not in ecrivains and appel.search(corps)}
-        if not neufs:
-            break
-        ecrivains |= neufs
-    return ecrivains
+    return fermeture_des_appels(handlers, {n for n, corps in handlers.items() if INSERT_TOKEN.search(corps)})
 
 
 def dans_le_perimetre(path, readonly):
@@ -412,6 +450,7 @@ def classer(routes, handlers, readonly, armement):
     """Rend {(verbe, path): (familles, handler, fichier)} pour les routes sensibles, + erreurs."""
     sensibles, erreurs = {}, []
     ecrivains = ecrivains_de_jeton(handlers)
+    retireurs = retireurs_de_facteur(handlers)
     for verbe, path, handler, fichier in routes:
         if not dans_le_perimetre(path, readonly):
             continue
@@ -433,6 +472,9 @@ def classer(routes, handlers, readonly, armement):
             familles.append("élève (identité / rôle / grant)")
         if INSERT_TOKEN.search(corps) or handler in ecrivains:
             familles.append(FAMILLE_JETON)
+        # ABAISSE (`P10.31-c`)
+        if handler in retireurs:
+            familles.append(FAMILLE_FACTEUR)
         # ARME
         if armement["mode"] and path == armement["mode"]:
             familles.append("arme (mode)")
@@ -933,6 +975,47 @@ def valider_instrument():
         errs.append(f"témoin de l'ÉCRITURE D'UN JETON en échec : obtenu {obtenu_j} (erreurs {derr_j + cerr_j}) — une route qui "
                     "frappe un jeton par une fonction qui en appelle une autre doit porter la famille ; un appel de méthode "
                     "homonyme et une insertion dans une autre table ne le doivent pas.")
+    # `P10.31-c` — LE RETRAIT D'UN FACTEUR EST SUIVI À TRAVERS LES APPELS, ET SEULEMENT LUI. Positifs : la ligne
+    # `user_mfa` supprimée DEUX niveaux sous la route (la forme de `mfa_disable` -> `desactiver_le_second_facteur`), et
+    # `enabled=0` posé dans le SET. Négatifs : l'ACTIVATION, dont le WHERE porte `AND enabled=0` (la forme de
+    # `mfa_verify`, que le premier jet de la famille accusait) ; un appel de MÉTHODE homonyme ; une table au nom voisin ;
+    # une simple lecture du second facteur.
+    rust_facteurs = [("f.rs",
+                      'fn r() { Router::new()\n'
+                      '  .route("/api/facteur/retirer", post(facteur_retirer))\n'
+                      '  .route("/api/facteur/eteindre", post(facteur_eteindre))\n'
+                      '  .route("/api/facteur/activer", post(facteur_activer))\n'
+                      '  .route("/api/facteur/relais", post(facteur_relais))\n'
+                      '  .route("/api/facteur/journal", post(facteur_journal))\n'
+                      '  .route("/api/facteur/lire", post(facteur_lire)) }\n'
+                      'fn oter_la_ligne(conn: &Connection) { conn.execute("DELETE FROM user_mfa WHERE user=?1", params![u]); }\n'
+                      'fn retirer_par(conn: &Connection) { oter_la_ligne(conn) }\n'
+                      'pub(crate) async fn facteur_retirer() -> Response { retirer_par(&conn); ok() }\n'
+                      'pub(crate) async fn facteur_eteindre() -> Response { conn.execute("UPDATE user_mfa SET recovery=?1, enabled = 0 WHERE user=?2", params![r, u]); ok() }\n'
+                      'pub(crate) async fn facteur_activer() -> Response { conn.execute("UPDATE user_mfa SET enabled=1, recovery=?1 WHERE user=?2 AND enabled=0", params![r, u]); ok() }\n'
+                      'pub(crate) async fn facteur_relais() -> Response { suivant.retirer_par(req); ok() }\n'
+                      'pub(crate) async fn facteur_journal() -> Response { conn.execute("DELETE FROM user_mfa_journal WHERE user=?1", params![u]); ok() }\n'
+                      'pub(crate) async fn facteur_lire() -> Response { conn.query_row("SELECT enabled FROM user_mfa WHERE user=?1", params![u], |r| r.get(0)); ok() }\n')]
+    routes_f, handlers_f, readonly_f, armement_f, derr_f = deriver_routes(rust_facteurs)
+    sensibles_f, cerr_f = classer(routes_f, handlers_f, readonly_f, armement_f)
+    obtenu_f = {cle: familles for cle, (familles, _h, _f) in sensibles_f.items()}
+    attendu_f = {("POST", "/api/facteur/retirer"): [FAMILLE_FACTEUR], ("POST", "/api/facteur/eteindre"): [FAMILLE_FACTEUR]}
+    if derr_f or cerr_f or obtenu_f != attendu_f:
+        errs.append(f"témoin du RETRAIT D'UN FACTEUR en échec : obtenu {obtenu_f} (erreurs {derr_f + cerr_f}) — une route qui "
+                    "supprime la ligne `user_mfa` par une fonction qui en appelle une autre, ou qui pose `enabled=0` dans son SET, "
+                    "doit porter la famille ; l'activation (`enabled=0` dans le WHERE), un appel de méthode homonyme, une table "
+                    "au nom voisin et une lecture ne le doivent pas.")
+    # Et le verdict, dans les deux sens : la même route appelée SANS confirmation rougit, AVEC elle passe.
+    for js_f, doit_rougir in [("async function oter() { await apiSend('/facteur/retirer', 'POST', { code }); }\n", True),
+                              ("async function oter() { if (!await confirmWithConsequence('x', 'y')) return; "
+                               "await apiSend('/facteur/retirer', 'POST', { code }); }\n", False)]:
+        def_f, couv_f, _sans_f = verdict(sensibles_f, appelants_web([("f.js", js_f)], ["confirmModal", "confirmWithConsequence"]))
+        rouge = ("POST", "/api/facteur/retirer") in {(d[0], d[1]) for d in def_f}
+        vert = ("POST", "/api/facteur/retirer") in couv_f
+        if (rouge, vert) != (doit_rougir, not doit_rougir):
+            errs.append(f"témoin de VERDICT du retrait d'un facteur en échec (appel {'non ' if doit_rougir else ''}confirmé) : "
+                        f"défaut={rouge}, couverte={vert} — retirer le second facteur sans confirmation doit rougir, et "
+                        "seulement sans elle.")
     # TÉMOINS DE LA SYNTAXE DE GABARIT (`P7.19-d`) — la seule chose qui empêche l'appariement de rester
     # sur une syntaxe que le routeur ne produit plus. Positif ET négatif : sans le négatif, reconnaître
     # les deux formes passerait pour correct, et personne ne saurait laquelle la table écrit.
@@ -1120,6 +1203,11 @@ def main():
         print(f"::error::la route témoin {ROUTE_TEMOIN_JETON} (frappe d'un jeton) n'est plus reconnue par la famille "
               f"« {FAMILLE_JETON} » : l'écriture de la table `token` n'est plus suivie jusqu'à elle, et une route qui frappe "
               "une crédence ne serait plus sensible que par ce que les surfaces font déjà. La garde refuse de conclure.")
+        return 2
+    if FAMILLE_FACTEUR not in sensibles.get(ROUTE_TEMOIN_FACTEUR, ([], None, None))[0]:
+        print(f"::error::la route témoin {ROUTE_TEMOIN_FACTEUR} (retrait du second facteur) n'est plus reconnue par la "
+              f"famille « {FAMILLE_FACTEUR} » : le retrait de la ligne `user_mfa` n'est plus suivi jusqu'à elle, et la console "
+              "pourrait ôter sa confirmation sans qu'aucune garde le voie (`P10.31-c`). La garde refuse de conclure.")
         return 2
 
     with open(os.path.join(WEB, "core.js"), encoding="utf-8") as fh:

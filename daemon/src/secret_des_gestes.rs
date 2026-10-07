@@ -44,15 +44,15 @@ pub(crate) const LONGUEUR_MINIMALE_DU_SECRET_DES_GESTES: usize = 16;
 
 pub(crate) const TEXTE_SECRET_DES_GESTES_NON_CONFIGURE: &str = "GESTE REFUSÉ, LE SECRET DES GESTES N'EST PAS \
      CONFIGURÉ : créer ou promouvoir un administrateur, réinitialiser le mot de passe d'un autre compte, frapper un \
-     jeton ou une clé de livraison, poser un fournisseur d'identité ou un droit exigent, en plus du droit, un secret \
-     dédié que ce démon ne connaît pas encore. Pour le poser : engendrez son empreinte avec `plume-daemon \
+     jeton ou une clé de livraison, poser un fournisseur d'identité ou un droit, ouvrir un engagement exigent, en plus du \
+     droit, un secret dédié que ce démon ne connaît pas encore. Pour le poser : engendrez son empreinte avec `plume-daemon \
      secret-des-gestes --generer > <fichier>` (le secret s'affiche une seule fois sur la sortie d'erreur), rendez ce \
      fichier lisible par le démon seul, puis pointez-le par `PLUME_GESTURE_SECRET_FILE` et redémarrez (hôte, Docker : \
      secret monté en fichier ; k3s : Secret monté en fichier) — voir docs/TROIS-MODES.md §3.11. Rien n'est écrit.";
 
 pub(crate) const TEXTE_SECRET_DES_GESTES_ABSENT: &str = "SECRET DES GESTES EXIGÉ : ce geste pose un accès qui \
-     survit à la session (compte administrateur, mot de passe d'un autre compte, jeton, fournisseur d'identité, droit), \
-     et une session seule ne prouve pas qu'elle est tenue par qui a le droit de le poser. Présentez le secret des \
+     survit à la session (compte administrateur, mot de passe d'un autre compte, jeton, fournisseur d'identité, droit, \
+     engagement), et une session seule ne prouve pas qu'elle est tenue par qui a le droit de le poser. Présentez le secret des \
      gestes dans l'en-tête `x-plume-secret-des-gestes`. Rien n'est écrit, aucun échec n'est compté.";
 
 pub(crate) const TEXTE_SECRET_DES_GESTES_FAUX: &str = "SECRET DES GESTES REFUSÉ : le secret présenté n'est pas \

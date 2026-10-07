@@ -16,16 +16,88 @@ use super::{Cursor, Event, NativeRecord, SourceReader, Wire};
 use crate::config::JournaldCfg;
 use serde_json::Value;
 
+/// MINIMISATION DE CE QU'ON EXPÉDIE (`P10.31-a`, même liste que `JRNL_FIELDS` de
+/// `collectors/journal.sh`, posée par `P5.5-b`).
+///
+/// `journalctl -o json` rend TOUT ce que journald a stocké, dont `_CMDLINE` : l'ARGV COMPLÈTE du
+/// processus émetteur — pour `_COMM=sudo`, la ligne de commande sudo, secrets compris. Le daemon
+/// (`ingest_journal_lines`) ne lit que ces sept champs plus `__CURSOR` et `__REALTIME_TIMESTAMP`,
+/// que journald émet TOUJOURS (champs d'adresse, non supprimables) ; `journald_to_event` et
+/// `json_cursor` ne lisent rien d'autre. Tout le reste partait sur le réseau et dans le spool pour
+/// rien.
+pub(crate) const JRNL_FIELDS: &str = "MESSAGE,PRIORITY,_COMM,_PID,_UID,_SYSTEMD_UNIT,_HOSTNAME";
+
+/// Aveu du repli : `--output-fields` date de systemd v236 ; plus vieux, `journalctl` SORT EN ERREUR
+/// sans rien écrire. On SONDE donc le support, et l'absence de support DÉGRADE vers la forme complète
+/// EN LE DISANT (stderr de l'agent, donc son journal de service) — jamais en silence.
+pub(crate) const AVEU_SANS_OUTPUT_FIELDS: &str =
+    "journalctl sans --output-fields (systemd < 236) -> expedition NON minimisee (_CMDLINE inclus)";
+
 pub struct JournaldReader {
     cfg: JournaldCfg,
     host: String,
     /// Curseur INTERNE (dernier `__CURSOR` consommé), avance à chaque batch. `None` -> repli `--since`.
     cursor: Option<String>,
+    /// Support de `--output-fields` : `None` = pas encore sondé (on restreint par défaut),
+    /// `Some(true)` = acquis pour la vie du processus, `Some(false)` = dernière sonde refusée ->
+    /// forme complète, AVOUÉE à l'entrée dans cet état, et RE-SONDÉE au lot suivant.
+    output_fields: Option<bool>,
+    /// Programme lancé (sonde ET lot). `journalctl` en service ; un témoin y met un exécutable
+    /// fabriqué pour exercer la sonde sans dépendre du systemd de la machine.
+    programme: String,
+    /// Où part l'aveu du repli. stderr en service (donc le journal de service de l'agent) ; un
+    /// témoin y branche un enregistreur pour prouver que l'aveu est ÉMIS, pas seulement écrit.
+    avouer: fn(&str),
+}
+
+fn avouer_sur_stderr(aveu: &str) {
+    eprintln!("{aveu}");
 }
 
 impl JournaldReader {
     pub fn new(cfg: JournaldCfg, host: String) -> Self {
-        Self { cfg, host, cursor: None }
+        Self {
+            cfg,
+            host,
+            cursor: None,
+            output_fields: None,
+            programme: "journalctl".to_string(),
+            avouer: avouer_sur_stderr,
+        }
+    }
+
+    /// Sonde `--output-fields` (même sonde que `journal.sh` : 0 si supportée, échec si option
+    /// inconnue). Un `journalctl` introuvable ne tranche RIEN (on re-sondera) : c'est le lancement
+    /// du lot qui avouera la dépendance absente, pas un faux « systemd trop vieux ».
+    ///
+    /// SEUL LE SUPPORT EST ACQUIS. Un refus est re-sondé au lot suivant, comme `journal.sh` re-sonde
+    /// à chaque passage : un échec passager ne coupe pas la minimisation jusqu'au redémarrage. L'aveu
+    /// n'est émis qu'à l'ENTRÉE dans le repli (pas à chaque lot), et il porte le statut et la
+    /// première ligne d'erreur de la sonde : « systemd < 236 » est la cause probable, pas la seule.
+    #[cfg(target_os = "linux")]
+    fn sonder_output_fields(&mut self) {
+        use std::process::{Command, Stdio};
+        if self.output_fields == Some(true) {
+            return;
+        }
+        let sortie = Command::new(&self.programme)
+            .args(["-o", "json", &format!("--output-fields={JRNL_FIELDS}"), "-n0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        if let Ok(sortie) = sortie {
+            let deja_en_repli = self.output_fields == Some(false);
+            self.output_fields = Some(sortie.status.success());
+            if !sortie.status.success() && !deja_en_repli {
+                let erreur = String::from_utf8_lossy(&sortie.stderr);
+                let erreur = erreur.lines().next().unwrap_or("").trim();
+                (self.avouer)(&format!(
+                    "[journald:{}] {AVEU_SANS_OUTPUT_FIELDS} ; sonde : {} ; {erreur}",
+                    self.cfg.id, sortie.status
+                ));
+            }
+        }
     }
 
     /// Construit la ligne de commande journalctl pour la position courante (testable sans exécuter).
@@ -35,6 +107,10 @@ impl JournaldReader {
             "json".to_string(),
             "--no-pager".to_string(),
         ];
+        // Restriction aux champs lus, sauf repli AVOUÉ (cf. `sonder_output_fields`).
+        if self.output_fields != Some(false) {
+            a.push(format!("--output-fields={JRNL_FIELDS}"));
+        }
         match &self.cursor {
             Some(c) => a.push(format!("--after-cursor={c}")),
             None => a.push(format!("--since=-{}", self.cfg.since)),
@@ -90,7 +166,8 @@ impl SourceReader for JournaldReader {
             if max == 0 {
                 return Releve::rien_a_faire();
             }
-            let mut child = match Command::new("journalctl")
+            self.sonder_output_fields();
+            let mut child = match Command::new(&self.programme)
                 .args(self.args())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -238,6 +315,14 @@ pub fn journald_to_event(line: &str, host: &str) -> Option<Event> {
         dedup,
     })
 }
+
+#[cfg(test)]
+#[path = "linux_minimisation_journald_tests.rs"]
+mod minimisation_journald_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "linux_sonde_output_fields_tests.rs"]
+mod sonde_output_fields_tests;
 
 #[cfg(test)]
 mod tests {

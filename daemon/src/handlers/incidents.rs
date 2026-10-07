@@ -968,10 +968,31 @@ fn runbook_admin_json(conn: &Connection, rb_id: i64) -> Option<Value> {
     ).ok()
 }
 
+/// `P10.20-b` — LE PLAFOND NON LU N'EST PAS UN PLAFOND À ZÉRO. Le compte des runbooks custom qui juge
+/// `RUNBOOK_MAX_CUSTOM` retombait à `0` par `.unwrap_or(0)` : une lecture ratée (verrou, colonne qu'une
+/// connexion ne voit pas, lecture refusée) EFFAÇAIT le plafond anti-abus, et l'écriture suivait. La lecture
+/// ratée refuse désormais le geste, avec cette cause en tête du refus (`runbook_create` et
+/// `runbook_clone_handler` la reconnaissent et rendent 503, jamais le 400 d'une saisie).
+pub(crate) const CAUSE_QUOTA_DE_RUNBOOKS_NON_LU: &str = "RUNBOOK NON ÉCRIT : le nombre de runbooks custom n'a pas \
+     pu être lu, donc le plafond anti-abus (200 runbooks custom) ne peut pas être jugé — un plafond non lu n'est pas \
+     un plafond à zéro : rien n'est écrit. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+
+/// Le compte qui juge `RUNBOOK_MAX_CUSTOM`, ou le refus nommé (`CAUSE_QUOTA_DE_RUNBOOKS_NON_LU` + cause du moteur).
+fn compter_les_runbooks_custom(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT COUNT(*) FROM runbook WHERE managed=0", [], |r| r.get(0))
+        .map_err(|e| format!("{CAUSE_QUOTA_DE_RUNBOOKS_NON_LU} ({e})"))
+}
+
+/// Le statut d'un refus des cœurs `create_custom_runbook` / `clone_runbook` : 503 pour le plafond non lu (la
+/// base n'a pas répondu — réessayer), 400 pour tout le reste (saisie, quota atteint, source introuvable).
+fn refus_d_ecriture_de_runbook(e: String) -> Response {
+    if e.starts_with(CAUSE_QUOTA_DE_RUNBOOKS_NON_LU) { err_json(StatusCode::SERVICE_UNAVAILABLE, e) } else { bad_req(e) }
+}
+
 /// CŒUR testable — CRÉE un runbook CUSTOM (managed=0, active=1). `key` générée (préfixe custom-), steps validées
 /// par l'appelant. Écrit runbook + steps ; renvoie l'id. Borne le NOMBRE de customs (DoS). Pas d'AppState.
 pub(crate) fn create_custom_runbook(conn: &Connection, name: &str, mkind: &str, mkey: &str, desc: &str, steps: &[NewStep], active: bool) -> Result<i64, String> {
-    let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM runbook WHERE managed=0", [], |r| r.get(0)).unwrap_or(0);
+    let cnt: i64 = compter_les_runbooks_custom(conn)?;
     if cnt >= RUNBOOK_MAX_CUSTOM { return Err(format!("quota de runbooks custom atteint (max {RUNBOOK_MAX_CUSTOM})")); }
     let key = unique_custom_key(conn, name);
     conn.execute(
@@ -1012,7 +1033,7 @@ pub(crate) fn clone_runbook(conn: &Connection, src_id: i64, new_name: Option<&st
     let (sname, mkind, mkey, desc): (String, String, String, String) = conn
         .query_row("SELECT name,match_kind,match_key,description FROM runbook WHERE id=?1", params![src_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map_err(|_| "runbook source introuvable".to_string())?;
-    let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM runbook WHERE managed=0", [], |r| r.get(0)).unwrap_or(0);
+    let cnt: i64 = compter_les_runbooks_custom(conn)?;
     if cnt >= RUNBOOK_MAX_CUSTOM { return Err(format!("quota de runbooks custom atteint (max {RUNBOOK_MAX_CUSTOM})")); }
     let name = new_name.map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string()).unwrap_or_else(|| format!("{sname} (copie)"));
     let name = if name.len() > RUNBOOK_MAX_NAME { name.chars().take(RUNBOOK_MAX_NAME).collect() } else { name };
@@ -1168,7 +1189,7 @@ pub(crate) async fn runbook_create(State(st): State<AppState>, Extension(au): Ex
         Ok(id) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("création du runbook '{name}'"), CAUSE_RUNBOOK_NON_CREE, || {
             Json(json!({ "id": id })).into_response()
         }),
-        Err(e) => { drop(tx); bad_req(e) } // Drop -> ROLLBACK
+        Err(e) => { drop(tx); refus_d_ecriture_de_runbook(e) } // Drop -> ROLLBACK
     }
 }
 
@@ -1268,6 +1289,6 @@ pub(crate) async fn runbook_clone_handler(State(st): State<AppState>, Extension(
         Ok(new_id) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("clonage du runbook #{id}"), CAUSE_RUNBOOK_NON_CLONE, || {
             Json(json!({ "id": new_id })).into_response()
         }),
-        Err(e) => { drop(tx); bad_req(e) } // Drop -> ROLLBACK
+        Err(e) => { drop(tx); refus_d_ecriture_de_runbook(e) } // Drop -> ROLLBACK
     }
 }

@@ -840,7 +840,7 @@ env:
   # `P10.24-m`, `P10.28-h`, `P10.29-i`, `P10.20-u` (2026-09-29) : +10 — le fichier
   # `secret_des_gestes_demonstration_freinee_et_pose_de_l_administrateur.rs` (`sdg_` six, `dfb_` un, `pla_` un,
   # `rnc_` deux). Aucun derrière un `cfg(feature)` -> le MÊME +10 sur `EXPECTED_COLD_TESTS` (2213 -> 2223), mesuré.
-  EXPECTED_TESTS: "2005"
+  EXPECTED_TESTS: "2023"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1313,7 +1313,7 @@ jobs:
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
           # `P10.24-m` et voisines (2026-09-29) : +10, les MÊMES que sur `EXPECTED_TESTS` — écart INCHANGÉ.
-          EXPECTED_COLD_TESTS: "2260"
+          EXPECTED_COLD_TESTS: "2278"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -2858,9 +2858,13 @@ jobs:
   #      no core checkout needed).
   #   2) gitleaks   — secret scan of the tree + history. An ephemeral config (written
   #      below, NOT committed) extends the default ruleset and ALLOWLISTS the two
-  #      documented unit-test PEM fixtures (daemon/src/idp.rs OIDC test key,
-  #      daemon/src/tests/saml.rs SAML test key/cert — non-secret by design) so the scan
-  #      flags REAL leaks without false-positiving on the test keys.
+  #      documented unit-test PEM fixtures (the OIDC test key `TEST_RSA_PEM` of
+  #      daemon/src/idp/mod.rs by its exact LINE, daemon/src/tests/saml.rs SAML test
+  #      key/cert by path — non-secret by design) so the scan flags REAL leaks without
+  #      false-positiving on the test keys; a witness step proves the config still reports
+  #      a key planted in EACH real module of daemon/src/idp/ (judged by file:line) and admits
+  #      nothing but the exact test PEM (the allowlist rule is checked to BE the escaped line
+  #      of mod.rs and the only key rule, so no wildcard anywhere in the body survives).
   # ---------------------------------------------------------------------------
   security:
     name: security (cargo-audit + gitleaks)
@@ -3048,13 +3052,26 @@ jobs:
             #    The exact LITERAL and the exact VARIABLE REFERENCE are allowlisted, never the files: a real
             #    password written elsewhere in either file is still scanned.
             '''"password": "motdepasse12345"''',
-            '''password: MOT_DE_PASSE109\b'''
+            '''password: MOT_DE_PASSE109\b''',
+            # 9. `daemon/src/idp/mod.rs` — the OIDC unit-test RSA key `TEST_RSA_PEM` (generated offline, compiled only
+            #    under `#[cfg(test)]`, signs test tokens). `P10.31-d` (2026-10-07): it used to be admitted by the PATH
+            #    `daemon/src/idp/.*\.rs`, which took the five PRODUCTION modules of the IdP (OIDC, LDAP, TOTP, SAML)
+            #    out of the scan with it — a real key or token written there would never have been reported. The
+            #    whole line is now pinned, anchored at both ends, byte for byte: another key under the same name,
+            #    a second key appended to that line, or any secret elsewhere in `idp/` still trips the scan. The
+            #    step `Secret scan witness` below PROVES those cases on every run. If the test key is ever
+            #    regenerated, ADD a second line pinned the same way for the new key and KEEP this one: the history
+            #    scan rereads the old key at commit `ad116cc1` forever, so replacing this line would turn it red
+            #    for good (measured: without rule 9, 1 finding, `daemon/src/idp/mod.rs` line 41 at `ad116cc1`).
+            #    The armour lines are written `-{5}` (five dashes) so that this very line of ci.yml is not itself
+            #    a PEM-shaped match for the `private-key` rule — measured: written literally, it was.
+            '''^\s*const TEST_RSA_PEM: &str = "-{5}BEGIN PRIVATE KEY-{5}\\nMIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQC8WhQXOyDBHGA0\\n/AclkrwY7wE8j9/6m3wp3wedUwxmShTHI/dLAEWUIpLYo4qRLXPNiY1cgATDlIqD\\nb6KS/wxyOjSp0rD\+uLRB7shDRDmgPus44kh9A6jiscxcxqjTLh\+GtI0a6EoTi5jE\\nTqbAnMSoayA7DY9OQi2tCwmPrx3HkX4CT\+Dwx4lZsqOjQOnzXVSUn7W48Rz19HCp\\n8DRS0MBm2leAtsy7V6nY/fOxKiIN/NXABzu2ytlsMIstM1kzyBBd5J0g/vm6zsm8\\n8VR51BBH0KbFnuxwdUaYWD7i/LE325F1f6copxz0WXMdhDUn1gV0AC1mcRQijAJz\\nqe6psjP/AgMBAAECgf8P7\+HcFVphslNpYhtqP\+NPtKdiALn/VVH2i5odd8yQqZtB\\nwoMdyR3Hd2eB3Kc7204/lfR9BFgIAvDONocLCh5JrQ59YJyp2CiiQkOfK2ScFeAb\\nqeChmpDEW6oUQBXPEvLaA439euxFiY5v9Q5xVpBmEtv1wBtTsUXRSd/b8dAjxCu9\\ntDO3hhrPxipbSTGHe89HdAbGCMeqZeQQ\+ypCUvuu/lFi\+HbLbDfbAgJkdr4zCNER\\nbOQZqfbbW9NYqjFHZclK23CFwMTwPTzOm0Mh8D/BmxeH7kRSr962SRTXYJTrEyr7\\n7SFKkBAfxYb7Q23y2uqxQPWJQyTjrb05MXHHwy0CgYEA5mYVokFFAENEnf7MEbGc\\nhioO5QcGGRfwsI0vGrIyg6zWqWI4p5uO9v2NvY0k\+zzRNlMU1zLnfcURbqoSU4AG\\nn6gSMYLEBhyXUomEr3kc5WJogKF/oqWDGjWEbbhd0zX3vro/wo4mRWueiKQfozbe\\nJaGVe3ke0CJOb4Gg/KmIlKsCgYEA0Uft6IJVLgK0Dydp9bMssZPfXDc0V6n4N6uD\\n2HTnPZalToMpLc73P60djj2wcSK3iaCabe8g7Wuk3am/WRh7GB1Y7JBTtwbD9\+Si\\n6gpaNfAUvKMv\+TZtgphFAczxjVB66wFtb6lhZZ\+nNXIlMXXlcy3\+uuQIdnAhjyWK\\nG0wP1f0CgYBAvvVbaH4sibrRr5XHbyMubMlMwUGMcbbY1oQjO2qIqFyWsxx6tXNi\\no3RejTiURc4BNy3HH\+3/4Q56C98kifjSixe5xCa0FPrNXgnkieN97r6xTzEgEuUZ\\ny2pQrxvmy\+a4OXzLfsjwf0LI4V5mrneVGah5T1tCYDGskkAcYMQaCwKBgBuoStug\\nZctn1g3uooUzAaQSK8GPFh7Duqb4xrrTcD/macA/ezCvmmNS6IYExw2cje7lR6Nh\\np9NYl3gn177ZimL8deUFidq1TS60i4csiRF5wfPQCSYBOGW649vCDuYjDauDC8hm\\n9RUuDTX1\+M5Zi1I2cOSYADpOxVCaoG7NFYatAoGBAMFrsV23xD7Ec4UWrRmkMySI\\nE/PZNHY\+t32FmLNvSVCr7vZyjXLZe1Dwer7IJDCqX4HwsTplo8s1SXuvi\+WkYY/5\\naS0x5Z1a8vsPovQjVuxmNbVv75Wa0rMUAS3qg2YDL4rI6nBvfzveVGlsCYY6I\+KV\\nCqORZTvxlptOc0ptlLjI\\n-{5}END PRIVATE KEY-{5}\\n";\s*$'''
           ]
-          # PATH-scoped allowlist — TEST FILES ONLY (never a production path). Each holds documented, offline-generated
-          # fixtures: the OIDC/SAML unit-test PEM keys live under `daemon/src/idp/` (a directory module) and in
-          # `daemon/src/tests/saml.rs`; the remaining two carry test placeholders.
+          # PATH-scoped allowlist — TEST FILES ONLY (never a production path). `daemon/src/tests/saml.rs` holds the
+          # offline-generated SAML test key/cert; the remaining two carry test placeholders. `daemon/src/idp/` is NOT
+          # here any more (`P10.31-d`): that directory holds five PRODUCTION modules (oidc, ldap, totp, saml, mod) and
+          # the path entry hid them all for a single test PEM — admitted above by its exact VALUE instead.
           paths = [
-            '''daemon/src/idp/.*\.rs''',
             '''daemon/src/tests/saml\.rs''',
             '''daemon/src/tests/detection\.rs''',
             '''daemon/src/tests/engagement\.rs''',
@@ -3081,6 +3098,92 @@ jobs:
           echo "${GL_SHA}  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
           /tmp/gitleaks detect --source . --config "$GITHUB_WORKSPACE/.gitleaks-ci.toml" --no-banner --redact --exit-code 1
+
+      # P10.31-d — TÉMOIN de la configuration ci-dessus, joué à chaque exécution. Le scan d'historique
+      # ne prouve que l'ABSENCE de constat : il passerait aussi au vert si la configuration taisait un
+      # répertoire entier — c'est exactement ce qu'a fait le chemin `daemon/src/idp/.*\.rs` jusqu'au
+      # 2026-10-07 (cinq modules de PRODUCTION hors du scan pour un seul PEM de test). Ce pas recopie,
+      # dans un répertoire jetable et hors git, CHAQUE module réel `daemon/src/idp/**/*.rs` (énumérés
+      # récursivement depuis le dépôt : un module ajouté demain, sous-dossier compris, est couvert sans
+      # retoucher ce pas), sous son VRAI chemin,
+      # y ajoute des clés, et EXIGE l'ensemble exact des constats, jugé par `fichier:ligne` :
+      #   1. dans CHAQUE module, une clé RSA FRAÎCHE (générée ici, jamais écrite dans le dépôt) en
+      #      dernière ligne → SIGNALÉE : un chemin admis qui viserait un module réel (`mod\.rs`,
+      #      `[a-z]+\.rs`, le dossier entier) fait disparaître son constat et rougit le pas ;
+      #   2. la ligne EXACTE de `TEST_RSA_PEM`, à sa place dans `mod.rs` → ADMISE (aucun constat sur
+      #      sa ligne : sans quoi la règle 9 a dérivé du fichier, et le scan d'historique le dira aussi) ;
+      #   et, ajoutées en fin de `mod.rs`, chacune sur sa ligne :
+      #   3. la même déclaration `TEST_RSA_PEM` portant la clé fraîche → SIGNALÉE (c'est la VALEUR qui
+      #      est admise, pas le nom) ;
+      #   4. la ligne exacte SUIVIE, sur la même ligne, de la clé fraîche → SIGNALÉE, et
+      #   5. la clé fraîche PRÉCÉDANT la ligne exacte → SIGNALÉE : la règle 9 est ancrée aux deux bouts ;
+      #   6. la ligne exacte dont UN caractère base64 est altéré en TÊTE du corps, et
+      #   7. la même, altérée en FIN du corps → SIGNALÉES.
+      # Les cas 6 et 7 ne sondent que DEUX positions : un joker au MILIEU du corps leur échappe (mesuré
+      # par la vérification : quatre règles 9 jokerisées restaient vertes, l'une admettait une vraie clé
+      # RSA valide). Ce qui épingle le corps ENTIER est le contrôle STRUCTUREL joué avant les clés : la
+      # règle 9 doit être, octet pour octet, la ligne de mod.rs échappée, et la seule règle de clé.
+      # Les clés fraîches ne sont jamais un secret : elles meurent avec le runner.
+      - name: Secret scan witness (a key planted in each real idp/ module is reported, only the exact test PEM is admitted)
+        id: gitleaks_temoin
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          GL="${GITLEAKS_BIN:-/tmp/gitleaks}"
+          CONF="${GITLEAKS_CONF:-$GITHUB_WORKSPACE/.gitleaks-ci.toml}"
+          C="$(mktemp -d)"; trap 'rm -rf "$C"' EXIT
+          A="$C/arbre/daemon/src/idp"; mkdir -p "$A"
+          MODULES="$(cd daemon/src/idp && find . -type f -name '*.rs' | sed 's|^\./||' | LC_ALL=C sort)"
+          if printf '%s\n' "$MODULES" | grep -q '[[:space:]]'; then echo "::error::un module de idp/ porte un blanc dans son chemin"; exit 1; fi
+          printf '%s\n' "$MODULES" | grep -qx 'mod.rs' || { echo "::error::daemon/src/idp/mod.rs introuvable"; exit 1; }
+          for m in $MODULES; do mkdir -p "$A/$(dirname "$m")"; cp "daemon/src/idp/$m" "$A/$m"; done
+          LIGNE="$(grep -E 'const TEST_RSA_PEM: &str = "-{5}BEGIN PRIVATE KEY-{5}' daemon/src/idp/mod.rs)"
+          [ "$(printf '%s\n' "$LIGNE" | wc -l)" = 1 ] || { echo "::error::TEST_RSA_PEM introuvable ou en double dans daemon/src/idp/mod.rs"; exit 1; }
+          NUE="${LIGNE#"${LIGNE%%[! ]*}"}"
+          # Contrôle STRUCTUREL : la règle 9 doit ÊTRE la ligne de mod.rs échappée (métacaractères
+          # précédés de `\`, armures écrites `-{5}`), ancrée `^\s*…\s*$`, et la SEULE règle de la
+          # configuration à parler d'une clé (`PRIVATE KEY`, `TEST_RSA_PEM`, en-tête DER `MII`). Un
+          # joker n'importe où dans le corps (`.`, `[^"]*`) admettrait une vraie clé partageant assez
+          # de caractères du PEM de test : aucun jeu fini de clés posées ne l'exclut, l'égalité si.
+          python3 - "$CONF" "$NUE" <<'PY'
+          import re, sys
+          conf, nue = open(sys.argv[1]).read(), sys.argv[2]
+          esc = re.sub(r'([\\.^$*+?()\[\]{}|])', r'\\\1', nue).replace('-----', '-{5}')
+          attendue = "'''^\\s*" + esc + "\\s*$'''"
+          regles = [l.strip().rstrip(',') for l in conf.splitlines() if l.strip().startswith("'''")]
+          cles = [r for r in regles if 'PRIVATE KEY' in r or 'TEST_RSA_PEM' in r or 'MII' in r]
+          if cles != [attendue]:
+              print("::error::la règle qui admet TEST_RSA_PEM n'est pas la ligne exacte de daemon/src/idp/mod.rs"
+                    " échappée (%d règle(s) de clé) : la régénérer depuis mod.rs" % len(cles))
+              sys.exit(1)
+          PY
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$C/fraiche.pem" 2>/dev/null
+          PEM="$(awk '{printf "%s\\n", $0}' "$C/fraiche.pem")"
+          # Altère UN caractère du corps base64 : en tête (5e caractère) ou en fin (dernier avant END).
+          alterer() { LIGNE="$LIGNE" python3 -c '
+          import os, sys
+          l = os.environ["LIGNE"]; d = "PRIVATE KEY-----\\n"; f = "\\n-----END"
+          i = l.index(d) + len(d) + 4 if sys.argv[1] == "tete" else l.index(f) - 1
+          print(l[:i] + ("B" if l[i] == "A" else "A") + l[i + 1:])' "$1"; }
+          ATTENDU=""
+          poser() { [ -z "$(tail -c1 "$A/$1")" ] || echo >> "$A/$1"
+            printf '%s\n' "$2" >> "$A/$1"; ATTENDU="$ATTENDU $1:$(wc -l < "$A/$1")"; }
+          for m in $MODULES; do poser "$m" "const CLE_DE_PRODUCTION: &str = \"$PEM\";"; done
+          poser mod.rs "    const TEST_RSA_PEM: &str = \"$PEM\";"
+          poser mod.rs "$LIGNE const SECONDE: &str = \"$PEM\";"
+          poser mod.rs "const PREMIERE: &str = \"$PEM\"; $NUE"
+          poser mod.rs "$(alterer tete)"
+          poser mod.rs "$(alterer fin)"
+          rc=0
+          ( cd "$C/arbre" && "$GL" detect --no-git --source . --config "$CONF" --no-banner --redact \
+              --exit-code 1 --report-format json --report-path "$C/rapport.json" ) >/dev/null 2>&1 || rc=$?
+          [ "$rc" = 1 ] || { echo "::error::le scan témoin rend $rc, attendu 1 (des clés ont été posées)"; exit 1; }
+          TROUVES="$(python3 -c 'import json,sys; print(" ".join(sorted({"%s:%d" % (x["File"].split("daemon/src/idp/", 1)[-1], x["StartLine"]) for x in json.load(open(sys.argv[1]))})))' "$C/rapport.json")"
+          ATTENDU="$(printf '%s\n' $ATTENDU | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
+          echo "constats : $TROUVES"
+          [ "$TROUVES" = "$ATTENDU" ] || {
+            echo "::error::constats attendus : $ATTENDU (une clé fraîche par module réel de idp/, cinq variantes en fin de mod.rs, la ligne exacte de TEST_RSA_PEM admise)"; exit 1; }
 
       # `deny.toml` existait depuis longtemps mais AUCUN job ne l'exécutait : une configuration
       # que personne ne lance n'est pas une garde, c'est de la décoration. Mesuré avant l'ajout —
@@ -3114,9 +3217,11 @@ jobs:
           set -u
           echo "cargo-audit : ${{ steps.cargo_audit.outcome }}"
           echo "gitleaks    : ${{ steps.gitleaks.outcome }}"
+          echo "témoin      : ${{ steps.gitleaks_temoin.outcome }}"
           rc=0
           [ "${{ steps.cargo_audit.outcome }}" = success ] || { echo "::error::cargo audit a échoué (avis de dépendance ou version retirée)."; rc=1; }
           [ "${{ steps.gitleaks.outcome }}" = success ] || { echo "::error::le scan de secrets a échoué."; rc=1; }
+          [ "${{ steps.gitleaks_temoin.outcome }}" = success ] || { echo "::error::le témoin du scan de secrets a échoué (la configuration tait un secret posé, ou n'admet plus le PEM de test exact)."; rc=1; }
           exit $rc
 
       - name: Licences, bans et sources des dépendances (cargo-deny, TOUS les crates découverts)

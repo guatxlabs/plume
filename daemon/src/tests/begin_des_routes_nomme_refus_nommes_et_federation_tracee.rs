@@ -831,7 +831,7 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
         let (statut, corps) = bdrn_corps(token_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "name": "ag-bdrn", "kind": "agent", "host": "h-bdrn" }))).await).await;
         assert_eq!(statut, 200, "fixture : jeton frappé : {corps}");
         let idp = bdrn_creer("le fournisseur", idp_provider_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(json!({ "name": "bdrn-idp", "kind": "oidc", "enabled": true, "config": oidc.clone() }))).await).await;
-        let (statut, corps) = bdrn_corps(engagement_create(State(st.clone()), Extension(adm.clone()), Json(engagement.clone())).await).await;
+        let (statut, corps) = bdrn_corps(engagement_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(engagement.clone())).await).await;
         assert_eq!(statut, 200, "fixture : engagement créé : {corps}");
         let eid = corps["id"].as_str().expect("identifiant d'engagement").to_string();
         let masque = bdrn_creer("le masque", field_filter_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "name": "bdrn-masque", "field": "src_user", "action": "hash" }))).await).await;
@@ -858,7 +858,7 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
         jouer!("modification de fournisseur", fournisseur, idp_provider_update(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Path(idp), Json(json!({ "enabled": false }))));
         jouer!("suppression de fournisseur", fournisseur, idp_provider_delete(State(st.clone()), Extension(adm.clone()), Path(idp)));
         jouer!("désactivation du second facteur", CAUSE_MFA_NON_DESACTIVEE_TRANSACTION_NON_OUVERTE, mfa_disable(State(st.clone()), pair, Extension(adm.clone()), Json(json!({ "code": "000000" }))));
-        jouer!("création d'engagement", CAUSE_ENGAGEMENT_NON_CREE_TRANSACTION_NON_OUVERTE, engagement_create(State(st.clone()), Extension(adm.clone()), Json(engagement)));
+        jouer!("création d'engagement", CAUSE_ENGAGEMENT_NON_CREE_TRANSACTION_NON_OUVERTE, engagement_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(adm.clone()), Json(engagement)));
         jouer!("clôture d'engagement", CAUSE_ENGAGEMENT_NON_CLOS_TRANSACTION_NON_OUVERTE, engagement_end(State(st.clone()), Extension(adm.clone()), Path(eid)));
         jouer!("bascule du mode", CAUSE_MODE_INCHANGE_TRANSACTION_NON_OUVERTE, mode_set(State(st.clone()), Extension(adm.clone()), Json(json!({ "mode": "active" }))));
         let masques = CAUSE_MASQUE_DE_CHAMP_INCHANGE_TRANSACTION_NON_OUVERTE;

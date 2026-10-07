@@ -131,7 +131,32 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
     })
 }
 
-pub(crate) async fn dash_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Json<Value> {
+/// `P10.20-w` (rang quatre) — UNE CRÉATION DONT LA LIGNE N'A PAS ÉTÉ ÉCRITE NE SERT AUCUN IDENTIFIANT.
+/// Les six créations de ce rang (tableau de bord, panneau, vue, panneau de bibliothèque, liste de
+/// lecture, instantané) avalaient leur `INSERT` puis servaient `last_insert_rowid()` : sur une écriture
+/// refusée, c'était l'identifiant de la DERNIÈRE ligne insérée sur la connexion d'écriture — un maillon
+/// du registre, un événement, l'objet d'un autre compte —, servi en deux cents, et la console le
+/// reposait ensuite sur chaque geste visant « son » objet. Le contrat de ces routes change avec, et
+/// c'est assumé : un 503 nommé là où un 200 servait un identifiant emprunté.
+pub(crate) const CAUSE_OBJET_NON_CREE: &str =
+    "OBJET NON CRÉÉ : la ligne n'a pas pu être écrite, donc cet objet n'existe pas et AUCUN identifiant \
+     n'est rendu — celui qui était servi ici était celui de la dernière ligne insérée sur la connexion, \
+     une TOUTE AUTRE ligne que la console aurait ensuite visée. Rien n'a été fait. Réessayez.";
+
+/// Le refus commun du rang quatre. Seule la PHRASE voyage : chaque site garde son `INSERT` écrit en
+/// place et lit l'identifiant au pied de son insertion, sous le bras `Ok(1)` (le fabricant partagé
+/// « écriture comptée puis identifiant », qui ferait voyager le SQL comme une donnée, reste refusé).
+pub(crate) fn refus_d_un_objet_non_cree(objet: &str, cause: impl std::fmt::Display) -> Response {
+    err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_OBJET_NON_CREE} Objet : {objet} ({cause})."))
+}
+
+/// La cause d'une écriture qui a « réussi » sans poser exactement UNE ligne (un déclencheur qui
+/// ignore l'insertion) : l'identifiant de la connexion n'est alors PAS celui de l'objet.
+pub(crate) fn lignes_ecrites_au_lieu_d_une(n: usize) -> String {
+    format!("{n} ligne(s) écrite(s) au lieu d'une")
+}
+
+pub(crate) async fn dash_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Sans titre").to_string();
     let vis = match b.get("visibility").and_then(|v| v.as_str()) {
         Some("shared") => "shared",
@@ -139,11 +164,14 @@ pub(crate) async fn dash_create(State(st): State<AppState>, Extension(au): Exten
     };
     let view_id = b.get("view_id").and_then(|v| v.as_i64());
     crate::req_conn!(st, au, conn);
-    let _ = conn.execute(
+    match conn.execute(
         "INSERT INTO dashboard(name,created,owner,visibility,view_id) VALUES(?1,?2,?3,?4,?5)",
         params![name, now(), au.name, vis, view_id],
-    );
-    Json(json!({ "id": conn.last_insert_rowid() }))
+    ) {
+        Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
+        Ok(n) => refus_d_un_objet_non_cree("tableau de bord", lignes_ecrites_au_lieu_d_une(n)),
+        Err(e) => refus_d_un_objet_non_cree("tableau de bord", e),
+    }
 }
 
 pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
@@ -340,12 +368,15 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
     if !def.permise_pour(&au.role) {
         return (StatusCode::FORBIDDEN, "SQL brut réservé à l'administrateur (utilisez GXQL)").into_response();
     }
-    let _ = conn.execute(
+    match conn.execute(
         "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,window_s,visibility,query_private,cols,height,drill,library_panel_id,position) \
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,(SELECT COALESCE(MAX(position),-1)+1 FROM panel WHERE dashboard_id=?1))",
         params![did, title, query, is_soql, viz, window_s, visibility, query_private, cols, height, drill, library_panel_id],
-    );
-    Json(json!({ "id": conn.last_insert_rowid() })).into_response()
+    ) {
+        Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
+        Ok(n) => refus_d_un_objet_non_cree("panneau", lignes_ecrites_au_lieu_d_une(n)),
+        Err(e) => refus_d_un_objet_non_cree("panneau", e),
+    }
 }
 
 pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
@@ -1122,12 +1153,15 @@ pub(crate) async fn views_list(State(st): State<AppState>, Extension(au): Extens
     }
 }
 
-pub(crate) async fn view_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Json<Value> {
+pub(crate) async fn view_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Vue").to_string();
     let vis = if b.get("visibility").and_then(|v| v.as_str()) == Some("shared") { "shared" } else { "private" };
     crate::req_conn!(st, au, conn);
-    let _ = conn.execute("INSERT INTO view(name,owner,visibility) VALUES(?1,?2,?3)", params![name, au.name, vis]);
-    Json(json!({ "id": conn.last_insert_rowid() }))
+    match conn.execute("INSERT INTO view(name,owner,visibility) VALUES(?1,?2,?3)", params![name, au.name, vis]) {
+        Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
+        Ok(n) => refus_d_un_objet_non_cree("vue", lignes_ecrites_au_lieu_d_une(n)),
+        Err(e) => refus_d_un_objet_non_cree("vue", e),
+    }
 }
 
 pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {

@@ -777,7 +777,21 @@ pub(crate) async fn engagement_get(State(st): State<AppState>, Extension(au): Ex
 /// OBLIGATOIRE (capé) + reason OBLIGATOIRE. Déclare status='active' (ou 'scheduled' si window_start futur) +
 /// les grants d'INTENT par box. Superadmin cross-tenant : l'écriture cross-tenant exige déjà X-Plume-Breakglass
 /// (auth_guard/resolve_tenant_access) -> hérité. Le SOC alerte sur l'event plume-engagement sev=4.
-pub(crate) async fn engagement_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
+///
+/// `P10.31-b` — OUVRIR UN ENGAGEMENT EST UN GESTE QUI POSE UN ACCÈS PERSISTANT : le DROIT (administrateur) ET le secret
+/// des gestes de `P10.24-m`, dans les trois modes, sans IdP, refus nommé si le secret n'est pas configuré. DÉCISION
+/// ÉCRITE pour TOUTES les boîtes, blackbox comprise : greybox et whitebox frappent un compte `eng-cred-*` (whitebox au
+/// rôle administrateur), et blackbox, sans compte, SUSPEND l'auto-ban sur le scope jusqu'à la fin de la fenêtre — une
+/// session volée qui ouvre un blackbox sur sa propre adresse s'exempte du blocage, et l'exemption survit à la
+/// révocation de la session. Jugé après la validation du corps (un corps irrecevable n'engage aucun essai) et avant
+/// la frappe des crédences comme avant `req_conn!` : rien n'est haché, frappé ni écrit sans le secret. La CLÔTURE
+/// (`engagement_end`) n'est pas gardée : elle retire un accès, elle n'en pose aucun.
+pub(crate) async fn engagement_create(
+    State(st): State<AppState>,
+    secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
+    Extension(au): Extension<AuthUser>,
+    Json(b): Json<Value>,
+) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     // FIX (asymétrie /active) : symétrique avec engagements_active — hors mode engagement, l'endpoint est
     // INERTE (invariant ligne 170). Sans ce garde, un admin créait un engagement status='active' qui ne
@@ -837,6 +851,16 @@ pub(crate) async fn engagement_create(State(st): State<AppState>, Extension(au):
     // mode 1 (mint dans platform_user) est un follow-up documenté, DIFFÉRÉ (risque outpost-deadlock Authentik).
     if st.tenants.control.is_some() && grant_kinds.contains(&"scoped_cred") {
         return err_json(StatusCode::CONFLICT, "provisioning de credential scopé indisponible en mode multi-tenant (PLUME_MULTI_TENANT=1) : l'auth résout le control-plane (platform_user), pas la base du tenant — le credential ne pourrait jamais s'authentifier. Box blackbox uniquement en mode 1 (aucun credential minté), ou adaptateur IdP externe (différé).");
+    }
+
+    // `P10.31-b` — le secret des gestes, avant toute frappe de crédence (voir l'en-tête de la fonction).
+    if let Err(refus) = crate::secret_des_gestes::exiger_le_secret_des_gestes(
+        &st,
+        &secret_des_gestes,
+        &au.name,
+        &format!("ouverture de l'engagement {box_kind} '{name}' (scope : {} réseau(x))", scope.len()),
+    ) {
+        return refus;
     }
 
     // PROVISIONING DAEMON-INTERNE (mint ON ISSUE) — atteint UNIQUEMENT en mode engagement (garde ci-dessus) :

@@ -202,6 +202,11 @@ pub(crate) async fn object_create(State(st): State<AppState>, Extension(au): Ext
     dm_commit(&conn, outcome, |id| json!({ "id": id }))
 }
 
+/// `P10.20-b` — servie quand la sonde d'enfants d'un objet de modèle n'a pas pu être lue.
+pub(crate) const CAUSE_ENFANTS_DE_L_OBJET_NON_LUS: &str = "OBJET DE MODÈLE NON SUPPRIMÉ : la base n'a pas dit si \
+     l'objet a des enfants, donc la garde qui protège la hiérarchie ne peut pas être jugée — une sonde non lue n'est \
+     pas « aucun enfant » : rien n'est supprimé. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+
 pub(crate) async fn object_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
@@ -209,7 +214,12 @@ pub(crate) async fn object_delete(State(st): State<AppState>, Extension(au): Ext
         Ok(n) => n, Err(_) => return not_found("objet introuvable"),
     };
     // Refus si l'objet a des enfants (évite d'orpheliner une hiérarchie ; l'éditeur supprime feuille-à-racine).
-    let has_children: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM data_model_object WHERE parent_id=?1)", params![id], |r| r.get::<_,i64>(0)).map(|n| n != 0).unwrap_or(false);
+    // `P10.20-b` — une lecture ratée de la sonde d'enfants n'est pas « aucun enfant » : avant, `.unwrap_or(false)`
+    // laissait la suppression passer la garde qui protège la hiérarchie. Elle refuse désormais, en 503 nommé.
+    let has_children: bool = match conn.query_row("SELECT EXISTS(SELECT 1 FROM data_model_object WHERE parent_id=?1)", params![id], |r| r.get::<_,i64>(0)) {
+        Ok(n) => n != 0,
+        Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ENFANTS_DE_L_OBJET_NON_LUS} ({e})")),
+    };
     if has_children { return bad_req("objet parent d'autres objets : supprimez d'abord les enfants"); }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &format!("suppression de l'objet de modèle #{id}"), CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;

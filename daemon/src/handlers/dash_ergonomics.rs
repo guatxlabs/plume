@@ -109,12 +109,16 @@ pub(crate) async fn library_panel_create(State(st): State<AppState>, Extension(a
         return forbidden("SQL brut réservé à l'administrateur (utilisez GXQL)");
     }
     crate::req_conn!(st, au, conn);
-    let _ = conn.execute(
+    match conn.execute(
         "INSERT INTO library_panel(name,title,query,is_soql,viz,drill,owner,visibility,created,updated) \
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
         params![name, title, query, is_soql, viz, drill, au.name, visibility, now()],
-    );
-    Json(json!({ "id": conn.last_insert_rowid() })).into_response()
+    ) {
+        // `P10.20-w` (rang quatre) — l'identifiant n'est servi que sur UNE ligne écrite.
+        Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
+        Ok(n) => crate::handlers::dashboards::refus_d_un_objet_non_cree("panneau de bibliothèque", crate::handlers::dashboards::lignes_ecrites_au_lieu_d_une(n)),
+        Err(e) => crate::handlers::dashboards::refus_d_un_objet_non_cree("panneau de bibliothèque", e),
+    }
 }
 
 pub(crate) async fn library_panel_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
@@ -218,11 +222,15 @@ pub(crate) async fn playlist_create(State(st): State<AppState>, Extension(au): E
     let items = playlist_items_json(&b).unwrap_or_else(|| "[]".into());
     let visibility = vis_of(&b);
     crate::req_conn!(st, au, conn);
-    let _ = conn.execute(
+    match conn.execute(
         "INSERT INTO playlist(name,interval_s,items,owner,visibility,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?6)",
         params![name, interval_s, items, au.name, visibility, now()],
-    );
-    Json(json!({ "id": conn.last_insert_rowid() })).into_response()
+    ) {
+        // `P10.20-w` (rang quatre) — l'identifiant n'est servi que sur UNE ligne écrite.
+        Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
+        Ok(n) => crate::handlers::dashboards::refus_d_un_objet_non_cree("liste de lecture", crate::handlers::dashboards::lignes_ecrites_au_lieu_d_une(n)),
+        Err(e) => crate::handlers::dashboards::refus_d_un_objet_non_cree("liste de lecture", e),
+    }
 }
 
 pub(crate) async fn playlist_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
@@ -420,12 +428,17 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
     };
     {
         crate::req_conn!(st, au, conn);
-        let _ = conn.execute(
+        // `P10.20-w` (rang quatre) — NI identifiant NI jeton sur une ligne non écrite : le jeton servi
+        // était un lien de partage qui ne menait à RIEN, présenté comme valide.
+        match conn.execute(
             "INSERT INTO dashboard_snapshot(dashboard_id,name,token,data,created,created_by,role_at_capture) \
              VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![dashboard_id, snap_name, token, payload, now(), au.name, au.role],
-        );
-        Json(json!({ "id": conn.last_insert_rowid(), "token": token })).into_response()
+        ) {
+            Ok(1) => Json(json!({ "id": conn.last_insert_rowid(), "token": token })).into_response(),
+            Ok(n) => crate::handlers::dashboards::refus_d_un_objet_non_cree("instantané", crate::handlers::dashboards::lignes_ecrites_au_lieu_d_une(n)),
+            Err(e) => crate::handlers::dashboards::refus_d_un_objet_non_cree("instantané", e),
+        }
     }
 }
 

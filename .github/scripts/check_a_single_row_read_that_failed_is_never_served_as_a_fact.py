@@ -304,9 +304,9 @@ DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
     # `last_count`/`last_error` relus APRÈS le poll, dont le `0` entre dans la ligne d'AUDIT
     # (`config.connector.poll … count=0`). Une trace d'audit qui affirme zéro événement collecté.
     ("daemon/src/handlers/connectors/mod.rs", "connector_poll"): ("ok", "unwrap_or"),
-    # `has_children` retombe à `false` sur une lecture ratée, et la SUPPRESSION de l'objet de modèle
-    # passe alors la garde qui existait pour protéger ses enfants. Une destruction sur un fait inventé.
-    ("daemon/src/handlers/datamodels.rs", "object_delete"): ("map.unwrap_or",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (B7) : `datamodels.rs::object_delete` — `has_children` retombait à
+    # `false` sur une lecture ratée et la SUPPRESSION passait la garde qui protège la hiérarchie. La sonde
+    # est désormais un `match` dont le bras `Err` rend 503 nommé (`CAUSE_ENFANTS_DE_L_OBJET_NON_LUS`).
     # DEUX sites. `ok` sur la définition de la destination (fail-closed) ; `unwrap_or((watermark, 0,
     # None))` sur l'état relu après l'envoi, servi dans le corps ET dans l'audit de gouvernance
     # `P11.13-c` — le filigrane et le compte y sont affirmés sans avoir été relus.
@@ -324,18 +324,19 @@ DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
     # incident (progression existante) » — une progression réelle est alors ÉCRASÉE par une seconde
     # attache. GESTE : `.optional()?` et refuser, le geste étant idempotent-refusant par ailleurs.
     ("daemon/src/handlers/incidents.rs", "attach_runbook"): ("is_err", "unwrap_or"),
-    # Le compte de runbooks custom retombe à zéro : le PLAFOND anti-DoS (`RUNBOOK_MAX_CUSTOM`) cesse
-    # d'exister, et l'écriture suit.
-    ("daemon/src/handlers/incidents.rs", "clone_runbook"): ("unwrap_or",),
-    ("daemon/src/handlers/incidents.rs", "create_custom_runbook"): ("unwrap_or",),
+    # DEUX ENTRÉES RETIRÉES PAR `P10.20-b` (B7) : `incidents.rs::clone_runbook` et `create_custom_runbook`
+    # — le compte de runbooks custom retombait à zéro et le PLAFOND anti-DoS (`RUNBOOK_MAX_CUSTOM`)
+    # cessait d'exister. Le compte passe par `compter_les_runbooks_custom` (`map_err` + `?`) : la lecture
+    # ratée rend `CAUSE_QUOTA_DE_RUNBOOKS_NON_LU`, servie en 503 par les deux routes (signature des cœurs
+    # inchangée, `Result<i64, String>`).
     # Le MODE global retombe sur `"observe"` et part dans le corps de la liste, à côté d'une liste qui
     # sait déjà avouer. La console affiche « ce playbook PROPOSE » alors que le démon peut être en
     # `active` et EXÉCUTER : la conséquence servie est l'inverse de la conséquence réelle.
     ("daemon/src/handlers/playbooks.rs", "playbooks_list"): ("unwrap_or_else",),
-    # Le compte par propriétaire retombe à zéro : le plafond per-user des requêtes sauvegardées
-    # s'efface. Le doc-commentaire du module décrit déjà ce plafond comme le point où un trou de liste
-    # se referme — ici c'est le plafond lui-même qui disparaît.
-    ("daemon/src/handlers/saved_queries.rs", "count_for_owner"): ("unwrap_or",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (B7) : `saved_queries.rs::count_for_owner` — le compte par
+    # propriétaire retombait à zéro et le plafond per-user s'effaçait. Il rend `rusqlite::Result<i64>` ;
+    # `create` le convertit en `SqErr::CapUnread`, servi en 503 nommé
+    # (`CAUSE_PLAFOND_DE_REQUETES_SAUVEGARDEES_NON_LU`).
 }
 
 # --- CLASSE 4 : RANG TROIS — INTERNE. Le repli ne sert aucun corps et n'écrit rien : il fait sauter

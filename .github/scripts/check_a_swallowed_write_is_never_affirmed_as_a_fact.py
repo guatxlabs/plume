@@ -313,8 +313,11 @@ FAITS_QUI_AFFIRMENT = (
 # RE-DÉRIVÉS le 2026-09-25 (`P10.29-a`) : le lot retire les trois sites du bandeau (`system.rs::bulletin_set` ×2,
 # `bulletin_clear`), donc aussi un fichier (`system.rs` n'en portait pas d'autre). Relevé de ce jour-là sur l'arbre :
 # 20 sites sur 7 fichiers ; même règle des deux tiers, arrondie en dessous : 20 -> 13, 7 -> 4.
-PLANCHER_SITES = 13
-PLANCHER_FICHIERS = 4
+# RE-DÉRIVÉS le 2026-10-07 (`P10.20-w`, rang quatre) : le lot retire les six sites de `dashboards.rs` et
+# `dash_ergonomics.rs`, donc aussi ces deux fichiers. Relevé de ce jour-là sur l'arbre : 14 sites sur 5 fichiers ; même
+# règle des deux tiers, arrondie en dessous : 14 -> 9, 5 -> 3.
+PLANCHER_SITES = 9
+PLANCHER_FICHIERS = 3
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — SIX CLASSES, JUGÉES DANS LES DEUX SENS
@@ -389,13 +392,13 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
 # --- CLASSE 4 : L'IDENTIFIANT EST SERVI, SANS REGISTRE. Rien n'entre dans la trace, mais la console
 # reçoit l'identifiant d'une AUTRE ligne et le repose ensuite sur chaque geste qui vise cet objet.
 SITES_IDENTIFIANT_SERVI_SANS_REGISTRE = {
-    ("daemon/src/handlers/dash_ergonomics.rs", "library_panel_create"):
-        ("let _ -> last_insert_rowid",),
-    ("daemon/src/handlers/dash_ergonomics.rs", "playlist_create"): ("let _ -> last_insert_rowid",),
-    ("daemon/src/handlers/dash_ergonomics.rs", "snapshot_create"): ("let _ -> last_insert_rowid",),
-    ("daemon/src/handlers/dashboards.rs", "dash_create"): ("let _ -> last_insert_rowid",),
-    ("daemon/src/handlers/dashboards.rs", "panel_create"): ("let _ -> last_insert_rowid",),
-    ("daemon/src/handlers/dashboards.rs", "view_create"): ("let _ -> last_insert_rowid",),
+    # `P10.20-w` (rang quatre) — LES SIX SITES SONT RETIRÉS (2026-10-07) : `dash_create`, `panel_create`, `view_create`,
+    # `library_panel_create`, `playlist_create` et `snapshot_create` COMPTENT leur `INSERT` par un `match` et ne lisent
+    # l'identifiant que sous le bras `Ok(1)` ; toute autre issue rend un 503 nommé (`CAUSE_OBJET_NON_CREE`) sans
+    # identifiant — et, pour l'instantané, sans le jeton de partage qui ne menait à rien. Mesuré sur la forme d'avant
+    # (témoins `isc_`) : la table refusée en écriture, chaque route rendait 200 avec l'identifiant du dernier maillon de
+    # registre posé sur la connexion. `dash_create` et `view_create` rendent désormais `Response`. Le fabricant partagé
+    # « écriture comptée puis identifiant » reste REFUSÉ, rejugé ici : seule la phrase du refus est commune.
     # `P10.27-w` — LES DEUX SITES QUE `P10.20-t` NE COMPTAIT PAS SONT RETIRÉS (2026-09-25) : `report_create` et
     # `workflow_action_create` jugent leur `COMMIT` (`rendre_apres_validation`, 503 nommé) et servent l'identifiant lu
     # au pied de l'`INSERT`. CE QUI ÉTAIT IMPRÉCIS dans leur raison d'entrée (« un identifiant de transaction NON
@@ -1579,8 +1582,8 @@ def main():
           "où elle est écrite plutôt que d'attendre une campagne — une garde qui naît rouge ne se "
           "branche pas, et une garde qui ne se branche pas ne tient rien. Le vert dit UNE chose et une "
           "seule : AUCUNE CONJONCTION NEUVE n'est entrée depuis le 2026-09-19. Il ne dit pas que "
-          "l'arbre est sain — six de ces sites servent au client un identifiant "
-          "emprunté sur une écriture avalée. CHAQUE correction doit RETIRER son entrée de SITES_ADMIS, sous peine "
+          f"l'arbre est sain — {sum(len(f) for f in SITES_REGISTRE_APRES_ECRITURE_AVALEE.values())} de ces sites "
+          "laissent la trace non purgeable affirmer une écriture avalée. CHAQUE correction doit RETIRER son entrée de SITES_ADMIS, sous peine "
           "d'« exemption sans objet » : c'est ce qui fait descendre la liste au lieu de la laisser "
           "devenir un décor.")
     ce_qui_n_est_pas_tenu()

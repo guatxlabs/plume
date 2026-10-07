@@ -33,6 +33,8 @@ pub(crate) enum SqErr {
     NameTooLong,
     SoqlTooLong,
     CapReached,
+    /// `P10.20-b` — le compte du plafond n'a pas pu être lu : refus 503 nommé, jamais un plafond à zéro.
+    CapUnread,
     NotFound,
     Db,
 }
@@ -53,9 +55,18 @@ fn validate(name: &str, soql: &str) -> Result<(String, String), SqErr> {
     Ok((name.to_string(), soql.to_string()))
 }
 
+/// `P10.20-b` — servie quand le compte du plafond per-user n'a pas pu être lu.
+pub(crate) const CAUSE_PLAFOND_DE_REQUETES_SAUVEGARDEES_NON_LU: &str = "REQUÊTE NON SAUVEGARDÉE : le nombre de vos \
+     requêtes sauvegardées n'a pas pu être lu, donc le plafond (200 par utilisateur) ne peut pas être jugé — un \
+     plafond non lu n'est pas un plafond à zéro : rien n'est écrit. Réessayez ; si le refus persiste, la base est \
+     illisible ou verrouillée.";
+
 /// Nombre de requêtes de CE propriétaire (pour le plafond). Pure -> testable.
-fn count_for_owner(conn: &Connection, owner: &str) -> i64 {
-    conn.query_row("SELECT COUNT(*) FROM saved_query WHERE owner=?1", params![owner], |r| r.get(0)).unwrap_or(0)
+///
+/// `P10.20-b` — elle rend le `Result` : avant, `.unwrap_or(0)` faisait d'une lecture ratée un compte NUL, et
+/// le plafond per-user cessait d'exister au moment même où l'écriture suivait.
+fn count_for_owner(conn: &Connection, owner: &str) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM saved_query WHERE owner=?1", params![owner], |r| r.get(0))
 }
 
 /// Liste OWNER-SCOPED : toutes les requêtes de `owner`, jamais d'autrui. Pure -> testable.
@@ -88,7 +99,7 @@ fn list_for_owner(conn: &Connection, owner: &str) -> rusqlite::Result<Vec<Value>
 /// Création OWNER-SCOPED (plafond appliqué). `owner` posé par le serveur. Pure (hors horloge) -> testable.
 fn create(conn: &Connection, owner: &str, name: &str, soql: &str, ts: i64) -> Result<i64, SqErr> {
     let (name, soql) = validate(name, soql)?;
-    if count_for_owner(conn, owner) >= SAVED_QUERY_MAX_PER_USER {
+    if count_for_owner(conn, owner).map_err(|_| SqErr::CapUnread)? >= SAVED_QUERY_MAX_PER_USER {
         return Err(SqErr::CapReached);
     }
     conn.execute(
@@ -134,6 +145,7 @@ fn sq_err_resp(e: SqErr) -> Response {
         SqErr::NameTooLong => bad_req("nom trop long (max 200 caractères)"),
         SqErr::SoqlTooLong => err_json(StatusCode::PAYLOAD_TOO_LARGE, "requête trop volumineuse (max 16 KiB)"),
         SqErr::CapReached => err_json(StatusCode::CONFLICT, "limite de requêtes sauvegardées atteinte (max 200)"),
+        SqErr::CapUnread => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PLAFOND_DE_REQUETES_SAUVEGARDEES_NON_LU),
         SqErr::NotFound => not_found("requête sauvegardée introuvable"),
         SqErr::Db => err_json(StatusCode::INTERNAL_SERVER_ERROR, "enregistrement échoué"),
     }
@@ -255,9 +267,9 @@ mod tests {
         for i in 0..SAVED_QUERY_MAX_PER_USER {
             create(&conn, "alice", &format!("q{i}"), "search *", 1).unwrap();
         }
-        assert_eq!(count_for_owner(&conn, "alice"), SAVED_QUERY_MAX_PER_USER);
+        assert_eq!(count_for_owner(&conn, "alice").unwrap(), SAVED_QUERY_MAX_PER_USER);
         assert_eq!(create(&conn, "alice", "one too many", "search *", 1), Err(SqErr::CapReached));
-        assert_eq!(count_for_owner(&conn, "alice"), SAVED_QUERY_MAX_PER_USER);
+        assert_eq!(count_for_owner(&conn, "alice").unwrap(), SAVED_QUERY_MAX_PER_USER);
         // le plafond est PAR utilisateur : bob peut toujours créer la sienne.
         assert!(create(&conn, "bob", "bob-q", "search *", 1).is_ok());
     }
@@ -271,7 +283,7 @@ mod tests {
         assert_eq!(create(&conn, "alice", "big", &"x".repeat(SAVED_QUERY_SOQL_MAX + 1), 1), Err(SqErr::SoqlTooLong));
         // DRAFT : soql VIDE autorisé (on sauve un brouillon, jamais compilé au save).
         assert!(create(&conn, "alice", "draft", "", 1).is_ok());
-        assert_eq!(count_for_owner(&conn, "alice"), 1); // seul le draft valide a été persisté
+        assert_eq!(count_for_owner(&conn, "alice").unwrap(), 1); // seul le draft valide a été persisté
     }
 
     // MODE 0 : table VIDE tant qu'aucune écriture -> liste vide, aucune ligne SEED par la migration (parité).

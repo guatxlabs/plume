@@ -259,7 +259,7 @@ mod commit_juge_identite_masques_et_auteur_des_cles_de_livraison {
         let chemin = st.db_path.as_str().to_string();
         let creer = |st: AppState| async move {
             let corps = json!({ "box": "greybox", "scope": ["198.51.100.0/24"], "reason": "cjgi", "window_end": now() + 3600 });
-            cjgi_corps(engagement_create(State(st), Extension(cjgi_adm()), Json(corps)).await).await
+            cjgi_corps(engagement_create(State(st), crate::secret_des_gestes::presente_de_test(), Extension(cjgi_adm()), Json(corps)).await).await
         };
 
         // CRÉATION

@@ -491,7 +491,7 @@
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         let admin = eng_admin_au();
         let body = json!({ "box": "greybox", "scope": ["198.51.100.0/24"], "reason": "pentest", "window_end": now() + 3600 });
-        let (code, v) = eng_resp_json(engagement_create(State(st.clone()), Extension(admin.clone()), Json(body)).await).await;
+        let (code, v) = eng_resp_json(engagement_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(admin.clone()), Json(body)).await).await;
         assert_eq!(code, StatusCode::OK, "création greybox OK");
         let id = v["id"].as_str().unwrap().to_string();
         let creds = v["credentials"].as_array().unwrap();
@@ -539,7 +539,7 @@
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         let admin = eng_admin_au();
         let body = json!({ "box": "whitebox", "scope": ["198.51.100.0/24"], "reason": "audit interne", "window_end": now() + 3600 });
-        let (code, v) = eng_resp_json(engagement_create(State(st.clone()), Extension(admin.clone()), Json(body)).await).await;
+        let (code, v) = eng_resp_json(engagement_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(admin.clone()), Json(body)).await).await;
         assert_eq!(code, StatusCode::OK);
         let id = v["id"].as_str().unwrap().to_string();
         let creds = v["credentials"].as_array().unwrap();
@@ -644,7 +644,7 @@
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         let admin = eng_admin_au();
         let body = json!({ "box": "greybox", "scope": ["198.51.100.0/24"], "reason": "x", "window_end": now() + 3600 });
-        let r = engagement_create(State(st.clone()), Extension(admin.clone()), Json(body)).await;
+        let r = engagement_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(admin.clone()), Json(body)).await;
         assert_eq!(r.status(), StatusCode::CONFLICT, "mode off : create 409 (inerte)");
         {
             let conn = st.db.lock();
@@ -668,7 +668,7 @@
         let st = sso_test_state("plume-admin", "plume-editor", "admins");
         let rules_before: i64 = { let c = st.db.lock(); c.query_row("SELECT COUNT(*) FROM rule", [], |r| r.get(0)).unwrap() };
         let body = json!({ "box": "whitebox", "scope": ["198.51.100.0/24"], "reason": "audit", "window_end": now() + 3600 });
-        let r = engagement_create(State(st.clone()), Extension(eng_admin_au()), Json(body)).await;
+        let r = engagement_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(eng_admin_au()), Json(body)).await;
         assert_eq!(r.status(), StatusCode::OK);
         let c = st.db.lock();
         let alerts: i64 = c.query_row("SELECT COUNT(*) FROM alert", [], |r| r.get(0)).unwrap();
@@ -721,7 +721,7 @@
         // greybox (scoped_cred seul) ET whitebox (scoped_cred + config_read) sont tous deux refusés.
         for box_kind in ["greybox", "whitebox"] {
             let body = json!({ "box": box_kind, "scope": ["198.51.100.0/24"], "reason": "pentest", "window_end": now() + 3600 });
-            let (code, v) = eng_resp_json(engagement_create(State(st.clone()), Extension(admin.clone()), Json(body)).await).await;
+            let (code, v) = eng_resp_json(engagement_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(admin.clone()), Json(body)).await).await;
             assert_eq!(code, StatusCode::CONFLICT, "{box_kind} : provisioning scoped_cred REFUSÉ en mode 1");
             assert!(v.get("credentials").is_none(), "aucun secret rendu ({box_kind})");
             assert!(v["error"].as_str().unwrap_or("").contains("multi-tenant"), "erreur explicite multi-tenant");

@@ -229,6 +229,8 @@ import json
 import os
 import re
 import sys
+import subprocess
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_every_help_trigger_has_a_section import (  # noqa: E402  (source unique de vérité)
@@ -788,20 +790,6 @@ def _propriete(attribut: str) -> str:
 # (`web/cases.js` 4, `web/dashboards.js` 3, `web/runbooks.js` 1) — toutes posées par
 # `Object.assign(document.createElement(…), { textContent: … })`, toutes invisibles à un plafond de zéro.
 # C'est EXACTEMENT le défaut de `P11.8-c` : un module affichait du français non traduit en tenant zéro.
-# CE QUI RESTE ÉNUMÉRÉ, ET POURQUOI : ces clés ne nomment AUCUNE propriété du document ; ce sont des
-# conventions d'appel des fabriques de `web/core.js`. Chacune est écrite avec le CHEMIN, LU DANS LA FABRIQUE,
-# par lequel sa valeur atteint un nœud texte entier — pas au motif que son nom sonne comme un libellé :
-#   `emptyText`  -> `muted(opts.emptyText || …)` (`pagedList`), et `muted(t)` rend
-#                   `Object.assign(div, { className: 'muted', textContent: t })` : le nœud vaut ce texte SEUL.
-#   `message`    -> `modal()` : `<p class="modal-msg">${esc(opts.message)}</p>` — nœud entier.
-#   `cancelText` -> `modal()` : `<button class="m-cancel">${esc(opts.cancelText || 'Annuler')}</button>`.
-#   `okText`     -> `modal()` : le bouton jumeau du précédent. `hint`, `text` : champs des fabriques de saisie.
-# LA LISTE ÉCRITE A DIVERGÉ UNE DEUXIÈME FOIS, ET SUR LA MÊME LIGNE DE `core.js` QUE LA PREMIÈRE. Le
-# 2026-08-26, `textContent` manquait ici et huit chaînes françaises s'affichaient dans l'autre langue.
-# Le 2026-08-29 : `okText` y était, `cancelText` — son jumeau, écrit dans le MÊME `html +=` de `modal()` —
-# n'y était pas, ni `message`, ni `emptyText`, qui pesait à lui seul le PREMIER poste de l'aveu (22
-# occurrences, clé d'objet la plus portante de `web/`). Une liste tenue à la main diverge de la fabrique
-# qu'elle est censée décrire : c'est mesuré deux fois, à trois jours d'écart.
 # LA DÉRIVATION PAR SUIVI DE FLUX — l'étape que l'ancienne rédaction annonçait ici comme « l'étape
 # suivante » — EST RÉFUTÉE COMME ROUTE, ET C'EST MESURÉ (`P11.8-c`, 2026-08-29). Trois variantes jouées sur
 # `web/` : (R1) une lecture de propriété `X.k` posée EXACTEMENT là où un littéral serait un puits, en
@@ -815,13 +803,125 @@ def _propriete(attribut: str) -> str:
 # `{ name: 'admin' }` deviendrait une chaîne affichée, exigerait une clé, et cette clé serait MORTE.
 # Ce qui trancherait vraiment est de suivre le flux depuis le SITE D'APPEL jusqu'au paramètre de la
 # fabrique ; ce n'est pas fait, et ce n'est plus annoncé comme prochain pas sans son coût.
-# UNE CLÉ ÉCARTÉE, ET LA MESURE QUI L'ÉCARTE : `consequence` (`<p class="modal-consequence">`) a été
-# essayée et RETIRÉE. Ses neuf littéraux de `web/` sont tous des concaténations — donc zéro chaîne révélée —
-# et, par la règle du ternaire (qui cherche un puits dans la TÊTE de l'expression, pas dans la clé
-# immédiate), elle faisait entrer `summary: cond ? 'défaut' : …` de `web/runbooks.js` : un FAUX trou, sur
-# un texte que `producer_ui.js` pose dans un `<code class="rulecond">` — c'est-à-dire dans la balise même
-# que `TAGS_HORS_POPULATION` met hors population. Un gain nul contre une clé morte : la clé n'entre pas.
-CLES_APPLICATIVES = ("okText", "cancelText", "hint", "text", "message", "emptyText")
+# `consequence` — L'ÉCART DU 2026-08-29 NE TIENT PLUS, RE-MESURÉ LE 2026-10-07. Elle avait été écartée parce
+# que, par la règle du ternaire, elle faisait entrer `summary: cond ? 'défaut' : …` de `web/runbooks.js`
+# comme un FAUX trou. Rejoué sur l'arbre du jour avec la clé ajoutée : « défaut » reste hors-regard, AUCUN
+# trou, AUCUN hors-regard ne bouge ; seule la colonne « dynamiques » gagne 12 fragments sur 7 modules
+# (connectors, destinations, detection_admin +2, idp, index_policies +2, processors +2, runbooks +3) — les
+# conséquences de `web/` sont toutes des concaténations, comme le disait déjà la mesure d'alors. Elle entre
+# donc, non par décision, mais parce que `modal()` la lit et que la dérivation la trouve.
+# LES CLÉS DE FABRIQUE NE SONT PLUS ÉNUMÉRÉES NON PLUS : ELLES SONT LUES DANS LA FABRIQUE (`P11.8-c`,
+# 2026-10-07). L'ancienne rédaction de ce paragraphe disait « ce qui reste énuméré » et donnait, pour
+# `hint` et `text`, « champs des fabriques de saisie » : C'ÉTAIT FAUX pour les deux, et c'est mesuré ce jour.
+# `web/core.js` ne lit NI `opts.hint` NI `opts.text` ; `hint` est la convention du SEUL `web/soql_complete.js`
+# (`h.textContent = it.hint`), et `text` n'était la clé d'AUCUN objet de `web/` — une entrée MORTE, dont le
+# retrait ne déplace pas un octet de la sortie. Inversement `consequence`, que `modal()` pose en nœud entier
+# (`<p class="modal-consequence">${esc(opts.consequence)}</p>`), manquait.
+# C'est la TROISIÈME divergence d'une liste tenue à la main avec la fabrique qu'elle décrit : `textContent`
+# manquait le 2026-08-26, `cancelText`, `message` et `emptyText` le 2026-08-29 (sur la même ligne de `modal()`).
+# CE QUI EST DÉCLARÉ, ET C'EST TOUT : la FABRIQUE (module, nom de son paramètre d'options), jamais ses clés.
+# Les clés sont DÉRIVÉES à chaque exécution par `cles_lues_par_un_puits` : une lecture `<param>.<clé>` est une
+# convention d'affichage quand sa valeur ENTIÈRE (repli `|| '…'` admis) remplit un puits que la garde connaît
+# déjà — un nœud texte entier d'un gabarit (`>${esc(opts.k)}<`), l'argument d'un appel-puits
+# (`muted(opts.k)`), une affectation de propriété affichée (`el.textContent = it.k`), ou la valeur d'une clé
+# qui NOMME une telle propriété. Une valeur qui n'est qu'une PARTIE du nœud (`${esc(opts.k)} suite`), une
+# sous-propriété (`opts.k.nom`), un appel (`opts.k(x)`) ou une lecture sans puits (`const s = opts.storeKey`)
+# n'en font pas une : chaque motif exige, juste après la lecture (et son repli), le BORD du puits — `)}<`,
+# `)`/`,`, `;` ou fin de ligne, `,`/`}` — si bien qu'un `.`, un `(` ou du texte collé l'en exclut. Chacun des
+# cinq motifs a un positif et un négatif dans `FABRIQUE_TEMOIN`. Une convention NEUVE ajoutée à `core.js` est
+# donc trouvée sans qu'une ligne d'ici bouge À DEUX CONDITIONS : qu'elle se lise sur le paramètre DÉCLARÉ
+# (`opts`), et sous l'une de ces cinq formes. Un autre nom de paramètre, une déstructuration
+# (`const { k } = opts`), un repli `??` ou un repli non littéral ne sont PAS vus (balayage de tous les
+# paramètres de `core.js` le 2026-10-07 : aucun cas sur l'arbre — `d.nom` est interne, `j.avertissement` est
+# une réponse du serveur). Une fabrique déclarée illisible, ou qui ne rend plus AUCUNE clé, fait REFUSER de
+# conclure (déclaration périmée) — jugé par un témoin sur modules fabriqués dans `valider_instrument`, et
+# le refus de `main` lui-même par un sous-processus (voir `ENV_TEMOIN_FABRIQUE_ABSENTE`).
+# LA LIMITE, ÉCRITE AVEC SA RAISON : une fabrique PROPRE À UN AUTRE MODULE n'est trouvée que si elle est
+# déclarée ici. La découvrir seule exigerait de reconnaître le paramètre d'options d'une fonction quelconque,
+# c'est-à-dire le suivi de flux réfuté au paragraphe suivant. `web/soql_complete.js` est déclaré parce que la
+# mesure du 2026-10-07 le nomme : le retirer fait sortir deux libellés du regard (11 -> 9) et rougir le relevé.
+# CETTE MESURE ÉTAIT INCOMPLÈTE, et la vérification du même jour l'a montré : `web/copie_et_selection.js`
+# remplit le même critère (`boutonDeCopie(valeur, opts)`, `b.title = opts.titre || '…'`). Déclaré, il rend
+# `titre` et fait entrer 54 chaînes au regard (3528 -> 3582, toutes déjà au lexique : AUCUN trou neuf) —
+# dont les 50 infobulles `titre:` des vignettes de `web/freshness.js` — et sortir 4 libellés du hors-regard
+# (admin_users.js 2, dashboards.js 1, system.js 1 ; relevé redescendu). Il n'existe AUCUN inventaire des
+# fabriques : la liste ci-dessous est celle que deux relectures ont trouvée, pas une liste prouvée complète.
+# CE QUE CETTE FABRIQUE REND ET QUE LA DÉRIVATION NE VOIT PAS (vérification B8w-1) : sa SECONDE convention,
+# `libelle`, passe par une variable locale (`const mot = opts.libelle || 'Copier'`) puis par
+# `createTextNode(' ' + texte)` — un nœud entier après rognage, mais aucune des cinq formes, qui exigent le
+# puits JUSTE après la lecture. C'est la limite « valeur relayée par une variable » ci-dessus, et le
+# balayage des paramètres, fait sur `core.js` seul, ne l'avait pas trouvée ici. Sur l'arbre du 2026-10-07 son
+# seul appelant (`web/admin_users.js` : `libelle: 'Copier l\'extrait'`) reste HORS-REGARD — et AU LEXIQUE
+# (`--hors-regard admin_users.js`) : aucun trou caché aujourd'hui, mais un libellé neuf passé là ne serait pas jugé.
+FABRIQUES_DE_LA_CONSOLE = (
+    ("core.js", "opts"),           # modal(), confirmModal(), confirmWithConsequence(), pagedList()
+    ("soql_complete.js", "it"),    # l'élément d'autocomplétion : `lab.textContent = it.label`, `… = it.hint`
+    ("copie_et_selection.js", "opts"),  # boutonDeCopie() : `b.title = opts.titre || '…'`
+)
+PROPRIETES_AFFICHEES = frozenset(SINKS_AFFECTATION) | {_propriete(a) for a in ATTRS_HTML}
+_REPLI_LITTERAL = r"(?:\s*\|\|\s*(?:'[^'\\\n]*'|\"[^\"\\\n]*\"))?"
+
+
+def cles_lues_par_un_puits(src: str, param: str) -> set[str]:
+    """Les clés `<param>.<clé>` dont la valeur ENTIÈRE atteint un puits d'affichage dans `src` (texte JS brut,
+    dépouillé ici de ses commentaires). Lecture de la FABRIQUE, pas des sites d'appel (`P11.8-c`)."""
+    code = sans_commentaires_js(src)
+    lu = re.escape(param) + r"\.([A-Za-z_$][\w$]*)" + _REPLI_LITTERAL
+    motifs = (
+        r">\$\{\s*esc\(\s*" + lu + r"\s*\)\s*\}\s*<",                                   # nœud entier d'un gabarit
+        r">\$\{\s*" + lu + r"\s*\}\s*<",
+        r"\b(?:%s)\(\s*" % "|".join(SINKS_APPEL) + lu + r"\s*[),]",                       # appel-puits
+        r"\.(?:%s)\s*=\s*" % "|".join(SINKS_AFFECTATION) + lu + r"\s*(?:[;,)}\n]|$)",     # affectation affichée
+        r"[{,]\s*(?:%s)\s*:\s*" % "|".join(sorted(PROPRIETES_AFFICHEES)) + lu + r"\s*[,}]",  # clé-propriété
+    )
+    return {m.group(1) for motif in motifs for m in re.finditer(motif, code)}
+
+
+def deriver_les_cles_de_fabrique(web: str = WEB, fabriques: tuple[tuple[str, str], ...] = FABRIQUES_DE_LA_CONSOLE
+                                 ) -> tuple[tuple[str, ...], dict[str, set[str]], list[str]]:
+    """(clés de fabrique hors propriétés déjà lues, clés par fabrique, erreurs). Une fabrique illisible ou qui
+    ne rend aucune clé est une ERREUR : la garde refuse alors de conclure au lieu de regarder moins.
+    `web`/`fabriques` ne varient que pour le témoin de `valider_instrument`."""
+    par_fabrique: dict[str, set[str]] = {}
+    erreurs: list[str] = []
+    for module, param in fabriques:
+        try:
+            with open(os.path.join(web, module), encoding="utf-8") as fh:
+                cles = cles_lues_par_un_puits(fh.read(), param)
+        except OSError as e:
+            erreurs.append(f"fabrique déclarée `{module}` illisible ({e}) : ses clés ne sont pas dérivables.")
+            continue
+        if not cles:
+            erreurs.append(f"fabrique déclarée `{module}` (paramètre `{param}`) : AUCUNE clé lue par un puits — "
+                           f"la déclaration est périmée, ou la règle de lecture ne voit plus rien.")
+        par_fabrique[module] = cles
+    toutes = set().union(*par_fabrique.values()) if par_fabrique else set()
+    return tuple(sorted(toutes - PROPRIETES_AFFICHEES)), par_fabrique, erreurs
+
+
+CLES_APPLICATIVES, CLES_PAR_FABRIQUE, ERREURS_DE_FABRIQUE = deriver_les_cles_de_fabrique()
+# LE REFUS DE `main` SUR UNE FABRIQUE NON DÉRIVABLE EST JUGÉ EN JOUANT `main` (vérification B8w-1 du
+# 2026-10-07 : retirer l'appel de `verdict_sur_les_fabriques` dans `main` laissait la sortie identique à
+# l'octet, et une fabrique périmée y accusait 4 « libellés HORS-REGARD NEUFS » au lieu de refuser). Un
+# témoin interne ne voit pas un site d'appel retiré : `valider_instrument` relance donc le script dans un
+# sous-processus où cette variable ajoute la VRAIE erreur d'une fabrique déclarée absente, et exige rc=2.
+# La variable ne peut QUE faire refuser : franchie la porte des fabriques, l'enfant rend 3, jamais 0.
+ENV_TEMOIN_FABRIQUE_ABSENTE = "LEXIQUE_TEMOIN_FABRIQUE_ABSENTE"
+if os.environ.get(ENV_TEMOIN_FABRIQUE_ABSENTE) == "1":
+    ERREURS_DE_FABRIQUE = ERREURS_DE_FABRIQUE + deriver_les_cles_de_fabrique(
+        WEB, (("fabrique-absente-du-temoin.js", "opts"),))[2]
+
+
+def verdict_sur_les_fabriques(erreurs: list[str], imprimer: bool = False) -> int:
+    """2 (refus de conclure) dès qu'une fabrique déclarée n'est pas dérivable, 0 sinon. `main` s'y range ; le
+    témoin de `valider_instrument` le juge sur des erreurs fabriquées, si bien qu'un refus retiré ici rougit."""
+    if not erreurs:
+        return 0
+    if imprimer:
+        for e in erreurs:
+            print(f"::error::{e}")
+        print("\nLes clés de fabrique ne sont pas dérivables : la garde refuse de conclure (`P11.8-c`).")
+    return 2
 SINKS_CLE = tuple(sorted(set(SINKS_AFFECTATION) | {_propriete(a) for a in ATTRS_HTML} | set(CLES_APPLICATIVES)))
 # Le texte d'un échantillon de code (`<code>`, `<kbd>`, `<pre>`, `<samp>`) est montré tel quel dans les deux
 # langues : hors population, comme le contenu d'un `<script>`.
@@ -1085,6 +1185,17 @@ RE_HTML = re.compile(r"<[a-zA-Z][^<>]*>|</[a-zA-Z]+>")
 # ne suit donc QU'UN saut, DANS le même module, et keyé sur DEUX ancres exactes : le nom `confirmWithConsequence`
 # et l'IDENTIFIANT précis reçu en 2e argument. Une affectation `const <id> = …` n'est un puits de conséquence
 # que si `<id>` est LITTÉRALEMENT un nom passé en 2e argument à `confirmWithConsequence(` dans ce fichier.
+# LA LIMITE DU SAUT UNIQUE, MESURÉE AVANT D'ÊTRE ÉCRITE (`P11.8-c`, reste C, 2026-10-07). Une conséquence
+# rendue par une FONCTION (`consequenceDuPoll(c)`) ou une MÉTHODE (`consequence.trim()`) n'est pas suivie.
+# Relevé des 32 seconds arguments de `confirmWithConsequence(` sous `web/` : 13 littéraux (lus), 4 identifiants
+# affectés sur place (lus par le saut unique), 1 paramètre (`core.js`), 2 expressions, et 12 appels ou méthodes
+# — dont TROIS seulement passent par une fonction ou une méthode qui ASSEMBLE la phrase :
+# `web/connectors.js` `consequenceDuPoll`, `web/destinations.js` `consequenceDuFlush`, `web/retention.js`
+# `consequence.trim()` (les autres sont des `motDu…(…)` déjà bilingues, ou des concaténations sur place).
+# Les trois corps sont des CONCATÉNATIONS ou des gabarits interpolés : les suivre ne révélerait AUCUNE chaîne
+# entière, seulement des fragments dont la clé serait morte. La limite reste donc écrite, non levée : son coût
+# (un second saut, inter-fonctions) ne rapporte rien sur l'arbre du jour ; une fonction qui rendrait un
+# littéral ENTIER serait le premier cas qui le justifie.
 RE_IDENT_NU = re.compile(r"^[A-Za-z_$][\w$]*$")
 RE_AFFECT_LOCALE = re.compile(r"^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=(?!=)")
 
@@ -1885,6 +1996,33 @@ const varSansLien = cond ? 'Non capture sans lien' : 'z9';
 z1.innerHTML = '<span class="mtl">' + (cond ? 'Noeud entre balises' : 'z') + '</span>';
 z2.textContent = (cond ? 'Fragment colle a droite' : 'z') + ' suite du texte';
 """
+# LE TÉMOIN DE LA DÉRIVATION DES CLÉS DE FABRIQUE (`P11.8-c`, 2026-10-07). Les cinq premières lectures sont
+# des conventions qu'aucune ligne de ce fichier ne nomme, une par motif : nœud entier d'un gabarit échappé
+# (avec repli), nœud entier d'un gabarit NU, argument d'un appel-puits, affectation affichée, valeur d'une clé
+# qui nomme une propriété affichée. Les négatifs : valeur qui n'est qu'une PARTIE du nœud (échappé ou nu),
+# sous-propriété (en affectation comme en clé-propriété), appel, lecture sans puits, classe CSS dans une
+# balise, lecture d'un AUTRE paramètre, et un commentaire. Chaque motif a donc un positif qui ne passe QUE par
+# lui, et son bord un négatif qui ne tient QUE par lui (vérification du 2026-10-07 : sans eux, retirer le motif
+# nu ou le motif clé-propriété ne changeait pas un octet de la sortie).
+FABRIQUE_TEMOIN = r"""
+function fabriqueTemoin(opts = {}, autre = {}) {
+  let html = '';
+  html += `<p class="t">${esc(opts.legendeTemoin || 'repli')}</p>`;
+  html += `<i>${opts.bruteTemoin}</i>`;
+  html += `<i>${opts.morceauBrutTemoin} suite</i>`;
+  host.appendChild(el('span', { className: 'x', textContent: opts.proprieteTemoin }));
+  host.appendChild(el('span', { textContent: opts.sousProprieteTemoin.nom }));
+  host.appendChild(muted(opts.videTemoin));
+  el.textContent = opts.etiquetteTemoin;
+  html += `<b class="${opts.classeTemoin ? 'a' : ''}">${esc(opts.morceauTemoin)} suite</b>`;
+  el.textContent = opts.objetTemoin.nom;
+  host.appendChild(muted(opts.formatTemoin(x)));
+  const k = opts.rangementTemoin;
+  host.appendChild(muted(autre.etrangereTemoin));
+  // host.appendChild(muted(opts.commentaireTemoin));
+}
+"""
+CLES_FABRIQUE_TEMOIN = {"legendeTemoin", "bruteTemoin", "videTemoin", "etiquetteTemoin", "proprieteTemoin"}
 # Un module qui porte le registre : sa définition est la seule surface exempte, ce qui l'entoure est jugé.
 CORPUS_TEMOIN_REGISTRE = """export const HELP = {
   alpha: { fr: { title: 'Titre du registre <b>riche</b>', body: `Corps {fr}` }, en: { title: 'Registry title', body: `Body {en}` } },
@@ -2059,6 +2197,38 @@ def valider_instrument() -> list[str]:
                     f"{classes[0]}, ternaire imbriqué {classes[1]}. Aucun texte affiché ne diffère entre les deux "
                     f"corpus : la garde lit la mise en forme du code, pas ce qui atteint l'écran, et son cliquet "
                     f"devient un piège pour qui remanie.")
+    # LES CLÉS DE FABRIQUE SE DÉRIVENT, ET LA DÉRIVATION SE VALIDE DANS LES DEUX SENS (`P11.8-c`, 2026-10-07).
+    # Trois conventions NEUVES, qu'aucune liste ne nomme, doivent être trouvées ; cinq lectures qui ne
+    # remplissent pas un puits ENTIER, et une lecture d'un AUTRE paramètre, ne doivent pas l'être.
+    derivees = cles_lues_par_un_puits(FABRIQUE_TEMOIN, "opts")
+    if derivees != CLES_FABRIQUE_TEMOIN:
+        errs.append(f"témoin de FABRIQUE : clés dérivées {sorted(derivees)} au lieu de {sorted(CLES_FABRIQUE_TEMOIN)} — "
+                    f"manquantes {sorted(CLES_FABRIQUE_TEMOIN - derivees)} (une convention neuve de `core.js` passerait "
+                    f"sans être lue), en trop {sorted(derivees - CLES_FABRIQUE_TEMOIN)} (une donnée deviendrait un libellé, "
+                    f"clé morte).")
+    if set(CLES_APPLICATIVES) != set().union(*CLES_PAR_FABRIQUE.values()) - PROPRIETES_AFFICHEES:
+        errs.append(f"les clés de fabrique en vigueur {sorted(CLES_APPLICATIVES)} ne sont plus celles que les fabriques "
+                    f"déclarées rendent ({ {m: sorted(c) for m, c in CLES_PAR_FABRIQUE.items()} }) : une liste tenue à la "
+                    f"main a remplacé la dérivation, et elle divergera de `core.js` comme les trois précédentes.")
+    # UNE DÉCLARATION PÉRIMÉE FAIT REFUSER DE CONCLURE, ET C'EST JUGÉ SUR DES MODULES FABRIQUÉS (vérification du
+    # 2026-10-07 : sans ce témoin, avaler l'`OSError`, taire « aucune clé » ou retirer le refus laissait tout
+    # vert ; une déclaration périmée aurait alors accusé des « libellés neufs » au lieu de refuser).
+    with tempfile.TemporaryDirectory(prefix="lexique-fabrique-") as web_temoin:
+        for nom, corps in (("vide.js", "function f(opts) { const k = opts.rangement; }\n"),
+                           ("pleine.js", FABRIQUE_TEMOIN)):
+            with open(os.path.join(web_temoin, nom), "w", encoding="utf-8") as fh:
+                fh.write(corps)
+        _c, par_temoin, erreurs_temoin = deriver_les_cles_de_fabrique(
+            web_temoin, (("absente.js", "opts"), ("vide.js", "opts"), ("pleine.js", "opts")))
+    illisible = [e for e in erreurs_temoin if "`absente.js`" in e and "illisible" in e]
+    sans_cle = [e for e in erreurs_temoin if "`vide.js`" in e and "AUCUNE" in e]
+    if len(erreurs_temoin) != 2 or not illisible or not sans_cle or par_temoin.get("pleine.js") != CLES_FABRIQUE_TEMOIN:
+        errs.append(f"témoin de FABRIQUE PÉRIMÉE : attendu une erreur « illisible » pour un module absent, une « AUCUNE "
+                    f"clé » pour un module sans convention, et rien pour le module plein ; obtenu {erreurs_temoin} "
+                    f"(clés du plein : {sorted(par_temoin.get('pleine.js', set()))}).")
+    if verdict_sur_les_fabriques(erreurs_temoin) != 2 or verdict_sur_les_fabriques([]) != 0:
+        errs.append("témoin de FABRIQUE PÉRIMÉE : `verdict_sur_les_fabriques` ne refuse plus de conclure sur une fabrique "
+                    "non dérivable (ou refuse sans raison) — la garde regarderait moins sans le dire.")
     st, dy, pc, _hr = extraire_module(CORPUS_TEMOIN)
     sst = {s.strip() for s in st}
     if {x.strip() for x in pc} != {"Bilingual", "Bilingue", "English only", "English rich", "Paire française <nom>", "English pair <name>"}:
@@ -2142,6 +2312,14 @@ def valider_instrument() -> list[str]:
         errs.append(f"témoin : {len(j_perdu)} aveu(x) de désynchronisation au lieu de 1 sur `if (x) /\"/.test(y);` — "
                     f"le détecteur de perte de synchronisation est mort, ou la règle du `/` a changé sans son témoin. "
                     f"Un lecteur qui ne sait plus dire qu'il a sauté une région rend un compte faux EN SILENCE.")
+    if os.environ.get(ENV_TEMOIN_FABRIQUE_ABSENTE) != "1":
+        enfant = subprocess.run([sys.executable, os.path.abspath(__file__)], capture_output=True, text=True,
+                                env={**os.environ, ENV_TEMOIN_FABRIQUE_ABSENTE: "1"}, timeout=120)
+        if enfant.returncode != 2 or "fabrique-absente-du-temoin.js" not in enfant.stdout:
+            errs.append(f"témoin de FABRIQUE PÉRIMÉE JOUÉ PAR `main` : une fabrique déclarée absente rend rc="
+                        f"{enfant.returncode} au lieu de 2 (refus de conclure) — `main` ne se range plus à "
+                        f"`verdict_sur_les_fabriques`, et une déclaration périmée accuserait des libellés neufs. "
+                        f"Fin de sortie : {enfant.stdout[-300:]!r}")
     lex = cles_du_lexique('const I18N_EN = {\n  "Clé un": "Key one", "Clé deux": "Key two",\n  // c\n  "Clé trois": "Key three",\n  "Clé\\u00a0quatre": "Key four",\n};')
     if lex != {"Clé un", "Clé deux", "Clé trois", "Clé\xa0quatre"}:
         errs.append(f"témoin : lecture du lexique fausse : {sorted(lex)}")
@@ -2235,6 +2413,12 @@ def main(argv: list[str]) -> int:
             print(f"::error::{e}")
         print("\nL'instrument ne reconnaît pas son propre corpus : la garde refuse de conclure.")
         return 2
+
+    if verdict_sur_les_fabriques(ERREURS_DE_FABRIQUE, imprimer=True):
+        return 2
+    if os.environ.get(ENV_TEMOIN_FABRIQUE_ABSENTE) == "1":
+        print("::error::témoin : la porte des fabriques a laissé passer une fabrique déclarée absente.")
+        return 3
 
     aveux_du_registre: dict[str, list[str]] = {}
     registre = registre_d_aide(aveux_du_registre)
@@ -2354,6 +2538,10 @@ def main(argv: list[str]) -> int:
           f"({100.0 * aveugles_au_lexique / aveugles if aveugles else 0.0:.1f} %) sont DÉJÀ des clés du lexique : c'est le "
           f"dépôt lui-même qui atteste qu'ils sont affichés, et donc que le périmètre regardé est plus étroit que "
           f"l'affichage. `--hors-regard MODULE` les liste.")
+    fabriques = " ; ".join(f"{m} -> {', '.join(sorted(c))}" for m, c in CLES_PAR_FABRIQUE.items())
+    print(f"CLÉS DE FABRIQUE, DÉRIVÉES de la fabrique à chaque exécution (`P11.8-c`) : {fabriques}. Une convention neuve "
+          f"d'une fabrique DÉCLARÉE est lue sans retouche ; une fabrique propre à un autre module ne l'est que déclarée "
+          f"(`FABRIQUES_DE_LA_CONSOLE`), la découvrir seule serait le suivi de flux réfuté.")
     # LA RÉPARTITION EST RECALCULÉE, PAS RECOPIÉE (`P11.8-c`). Un aveu qui dit COMBIEN sans dire QUOI ne
     # désigne pas la prochaine forme à apprendre ; et une répartition figée dans un commentaire est datée
     # d'un jour. Les postes sortent du contexte de chaque littéral, à chaque exécution.

@@ -12469,7 +12469,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : la chaîne
   // est recomposée ici comme le compilateur la compose (même recomposition qu'aux témoins 93 à 95).
   const litteralRust96 = (src, nom) => {
-    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    const m = src.match(new RegExp('\\b' + nom + ': &str =\\s*"([\\s\\S]*?)";'));
     return m ? m[1].replace(/\\\r?\n\s*/g, "") : "";
   };
   const CAUSE_MFA96 = litteralRust96(srcIdp96, "CAUSE_MFA_NON_LUE");
@@ -12804,7 +12804,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // Un littéral Rust continué par `\` en fin de ligne perd le saut ET l'indentation qui suit : la chaîne
   // est recomposée ici comme le compilateur la compose (même recomposition qu'aux témoins 93 à 96).
   const litteralRust97 = (src, nom) => {
-    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    const m = src.match(new RegExp('\\b' + nom + ': &str =\\s*"([\\s\\S]*?)";'));
     return m ? m[1].replace(/\\\r?\n\s*/g, "") : "";
   };
   const instrument97 = (vrai, quoi) => exiger(vrai, `(97-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
@@ -13522,7 +13522,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // recomposé ici comme le compilateur le compose (même recomposition qu'aux témoins 93 à 97).
   const recomposer99 = (t) => String(t).replace(/\\\r?\n\s*/g, "");
   const litteralRust99 = (src, nom) => {
-    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    const m = src.match(new RegExp('\\b' + nom + ': &str =\\s*"([\\s\\S]*?)";'));
     return m ? recomposer99(m[1]) : "";
   };
 
@@ -13931,7 +13931,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // recomposé ici comme le compilateur le compose (même recomposition qu'aux témoins 93 à 99).
   const recomposer100 = (t) => String(t).replace(/\\\r?\n\s*/g, "");
   const litteralRust100 = (src, nom) => {
-    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    const m = src.match(new RegExp('\\b' + nom + ': &str =\\s*"([\\s\\S]*?)";'));
     return m ? recomposer100(m[1]) : "";
   };
 
@@ -14440,7 +14440,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // recomposé ici comme le compilateur le compose (même recomposition qu'aux témoins 93 à 100).
   const recomposer101 = (t) => String(t).replace(/\\\r?\n\s*/g, "");
   const litteralRust101 = (src, nom) => {
-    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    const m = src.match(new RegExp('\\b' + nom + ': &str =\\s*"([\\s\\S]*?)";'));
     return m ? recomposer101(m[1]) : "";
   };
 
@@ -15053,7 +15053,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     .map((f) => readFileSync(path.join(DOSSIER_DEMON102, f), "utf8")).join("\n");
   const recomposer102 = (t) => String(t).replace(/\\\r?\n\s*/g, "");
   const litteralRust102 = (src, nom) => {
-    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    const m = src.match(new RegExp('\\b' + nom + ': &str =\\s*"([\\s\\S]*?)";'));
     return m ? recomposer102(m[1]) : "";
   };
 
@@ -15659,7 +15659,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     .map((f) => readFileSync(path.join(DOSSIER_DEMON103, f), "utf8")).join("\n");
   const recomposer103 = (t) => String(t).replace(/\\\r?\n\s*/g, "");
   const litteralRust103 = (src, nom) => {
-    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    const m = src.match(new RegExp('\\b' + nom + ': &str =\\s*"([\\s\\S]*?)";'));
     return m ? recomposer103(m[1]) : "";
   };
 
@@ -16188,7 +16188,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const HANDLERS104 = readdirSync(DOSSIER_HANDLERS104).filter((f) => f.endsWith(".rs"))
     .map((f) => readFileSync(path.join(DOSSIER_HANDLERS104, f), "utf8")).join("\n");
   const litteral104 = (nom) => {
-    const m = HANDLERS104.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    const m = HANDLERS104.match(new RegExp('\\b' + nom + ': &str =\\s*"([\\s\\S]*?)";'));
     return m ? String(m[1]).replace(/\\\r?\n\s*/g, "") : "";
   };
   const CAUSE_ACQ104 = litteral104("CAUSE_ACQUITTEMENT_NON_ENREGISTRE");
@@ -16510,7 +16510,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   const AUTH105 = src105("auth.rs"), METRIQUES105 = src105("metrics.rs"), DOSSIERS105 = src105("handlers/cases.rs");
   const ACTIONS105 = src105("handlers/actions.rs"), LIENS105 = src105("handlers/caseops.rs");
   const litteral105 = (src, nom) => {
-    const m = src.match(new RegExp(nom + ': &str =\\s*"([\\s\\S]*?)";'));
+    const m = src.match(new RegExp('\\b' + nom + ': &str =\\s*"([\\s\\S]*?)";'));
     return m ? String(m[1]).replace(/\\\r?\n\s*/g, "") : "";
   };
   const CAUSE_DESTRUCTION105 = litteral105(TENANTS105, "CAUSE_DESTRUCTION_SANS_TRACE");

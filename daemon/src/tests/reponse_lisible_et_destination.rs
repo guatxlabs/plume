@@ -175,12 +175,53 @@
             v.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join("\n")
         }
 
+        /// Le tick est la fermeture `catch_unwind(` du module `server` qui ATTEINT `dispatch_notifications(` : soit
+        /// elle l'appelle elle-même (corps en ligne), soit elle DÉLÈGUE à une fonction du crate, connue de l'index sans
+        /// ambiguïté, dont le corps l'appelle (`P10.27-z` : le corps par tenant est devenu
+        /// `tick_de_detection_d_un_tenant`). Les deux formes sont lues ; UNE SEULE fermeture doit atteindre le
+        /// dispatch, sinon l'instrument ne sait plus lequel est le tick et le dit. La fermeture est bornée par
+        /// l'équilibre des parenthèses, jamais par un motif de fin (`}));`) qui, sur une fermeture d'une ligne,
+        /// courait jusqu'à la boucle des connecteurs.
         fn tick_des_alertes(sources: &[(PathBuf, String)]) -> String {
-            let server = &source_du_serveur(sources);
-            let fin = server.find("dispatch_notifications(").expect("module `server` : dispatch_notifications( absent du tick");
-            let debut = server[..fin].rfind("catch_unwind(").expect("module `server` : aucun catch_unwind avant dispatch_notifications");
-            let apres = server[fin..].find("}));").map(|i| fin + i).unwrap_or(server.len());
-            server[debut..apres].to_string()
+            let server = source_du_serveur(sources);
+            let index = indexer(sources);
+            let mut trouves: Vec<String> = Vec::new();
+            let mut depart = 0;
+            while let Some(i) = server[depart..].find("catch_unwind(") {
+                let debut = depart + i;
+                let ouvrante = debut + "catch_unwind".len();
+                let mut profondeur = 0i32;
+                let mut fin = server.len();
+                for (k, c) in server[ouvrante..].char_indices() {
+                    match c {
+                        '(' => profondeur += 1,
+                        ')' => { profondeur -= 1; if profondeur == 0 { fin = ouvrante + k + 1; break; } }
+                        _ => {}
+                    }
+                }
+                let fermeture = &server[debut..fin];
+                depart = fin;
+                if fermeture.contains("dispatch_notifications(") { trouves.push(fermeture.to_string()); continue; }
+                // Délégation : les appels `ident(` de la fermeture, suivis UN niveau dans l'index.
+                let mut appels = BTreeSet::new();
+                let octets = fermeture.as_bytes();
+                let mut j = 0;
+                while j < octets.len() {
+                    if octets[j].is_ascii_alphabetic() || octets[j] == b'_' {
+                        let d = j;
+                        while j < octets.len() && (octets[j].is_ascii_alphanumeric() || octets[j] == b'_') { j += 1; }
+                        if j < octets.len() && octets[j] == b'(' { appels.insert(fermeture[d..j].to_string()); }
+                    } else { j += 1; }
+                }
+                for a in appels {
+                    if a == "dispatch_notifications" { continue; }
+                    if let Some(corps) = corps_de_fonction(&index, &a) {
+                        if corps.contains("dispatch_notifications(") { trouves.push(corps.clone()); }
+                    }
+                }
+            }
+            assert_eq!(trouves.len(), 1, "instrument : {} fermeture(s) catch_unwind du module `server` atteignent dispatch_notifications( (une seule attendue) : {trouves:?}", trouves.len());
+            trouves.pop().unwrap()
         }
 
         /// Les boucles du tick des alertes : tout `absorber(<fn>(` du bloc.

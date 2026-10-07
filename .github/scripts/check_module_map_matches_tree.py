@@ -32,11 +32,42 @@ lui-même une revendication. Les bases d'essai d'un token sont le répertoire de
 section, puis les répertoires du périmètre APPARENTÉS à celle-ci (l'un contient l'autre) : sans cette
 borne, un chemin absent d'une caisse serait blanchi par un homonyme d'une autre caisse.
 
+DEUX PROSES RELUES, SANS DEVENIR DES ENTRÉES (`P7.18-a`, ajout du 2026-10-07)
+-----------------------------------------------------------------------------
+  (c) LA LISTE DES GESTIONNAIRES. La ligne `Large but flat (\\`handlers/\\`): \\`a\\`, \\`b\\`, …` (jusqu'à la
+      première ligne vide) DÉCLARE le répertoire qu'elle énumère ; il est résolu comme un titre de
+      section. Chaque nom doit être `nom` suivi de l'extension déclarée, ou `nom/`, dans l'arbre suivi
+      (un nom fantôme est nommé) ; et chaque module de premier niveau de ce répertoire (`mod`<ext> et
+      les noms exceptés du périmètre mis à part) doit être nommé dans la liste OU revendiqué par une
+      entrée de tableau. La liste ne revendique RIEN pour la jambe (b) : un nom en prose ne couvre pas
+      un module de premier niveau, il n'est jamais versé dans les chemins revendiqués.
+  (d) LA COLONNE « Where it lives » DES INVARIANTS. La ligne `Where it lives: … \\`daemon/src/\\` — except
+      \\`core/\\`, \\`guatx_core\\` …` DÉCLARE les bases de résolution et les préfixes d'une AUTRE caisse,
+      comme `Scope:` déclare ses exceptions — et VÉRIFIÉE : un préfixe excepté que l'arbre porte sous une
+      base rend la garde muette (sinon excepter `cold_store/` blanchirait le tier froid). Il en faut
+      EXACTEMENT une, comme de la liste (c) : une seconde serait ignorée en silence. Dans la colonne d'en-tête « Where it lives » du tableau
+      qui suit, chaque token est classé : préfixe excepté (sauté, avec ses symboles — l'arbre ne porte
+      pas cette caisse), chemin (contient `/` ou `{`, ou finit par une extension déclarée ; `x::s`
+      est le chemin `x` portant le symbole `s`), ou symbole nu. Un symbole nu est rattaché au chemin
+      cité le plus proche AVANT lui dans la même clause (`;`), sinon au plus proche APRÈS ; il doit y
+      apparaître (`git grep -F -w`, un des fichiers suffit pour des accolades). Sans rattachement
+      possible, il est refusé : un symbole sans fichier ne se vérifie pas. Un rattachement à toute la
+      cellule serait FAUX sur l'arbre réel : `soql_filter_field` vit dans la caisse partagée, pas dans
+      `field_filter.rs` cité plus loin dans la même cellule. Un chemin à accolades est absent dès qu'UN
+      membre manque ; un répertoire ne se reconnaît qu'à son `/` final (un chemin tronqué n'est pas un
+      préfixe accepté). Une ligne sans cellule « Where it lives » est nommée comme telle, une cellule qui
+      ne cite RIEN entre accents graves (vide, ou chemin écrit en clair) aussi, comme l'entrée sans chemin
+      de (a). Une ligne vide AU MILIEU du tableau (la ligne non vide qui suit reprend par `|`) est une
+      coupure nommée : la suite serait perdue en silence. Dans les AUTRES colonnes, les CHEMINS (même
+      classement, accolades comprises) sont relus aussi ; leurs symboles ne le sont pas.
+
 CE QUE LA GARDE NE LIT PAS — DIT FRANCHEMENT
 -------------------------------------------
-La prose (la liste des handlers « large but flat », les invariants de sécurité, la section du
-cœur partagé qui décrit une AUTRE caisse) et les cellules autres que la première ne sont pas des
-entrées : un chemin qui n'y existe plus n'est pas vu. Une ligne de tableau du périmètre dont la
+Le reste de la prose (la section du cœur partagé qui décrit une AUTRE caisse, les symboles des autres
+colonnes des invariants — `ColdAnswer::Truncated`, `mask_json_value` ne sont pas cherchés) et les cellules autres que la première ne sont pas des entrées : un chemin qui n'y
+existe plus n'est pas vu. Un symbole trouvé dans un COMMENTAIRE du fichier compte comme présent
+(`git grep` ne distingue pas le code du commentaire), et le compte annoncé en prose (« the three
+call sites ») n'est pas vérifié. Une ligne de tableau du périmètre dont la
 première cellule ne porte AUCUN token entre accents graves est refusée : une entrée en clair
 échapperait sinon à la relecture. La garde s'exclut elle-même : le plan cite ce script dans sa
 prose, et la prose n'est pas une entrée. Les deux jambes :
@@ -55,8 +86,14 @@ rien. Avant tout verdict, elle exécute un plan et un arbre de contrôle portant
 formes qu'elle DOIT résoudre (nom nu, accolades, motif, répertoire, nom relatif au répertoire de
 la cellule, titre de section), des citations qu'elle NE DOIT PAS compter (prose, seconde cellule,
 section hors périmètre), un chemin absent qu'elle DOIT nommer, un module sans entrée qu'elle DOIT
-nommer, et les exceptions qu'elle DOIT respecter. Puis un PLANCHER d'entrées et de fichiers sur
-l'arbre réel. Si `git ls-files` échoue, elle ne conclut pas (code 2, « instrument muet »).
+nommer, et les exceptions qu'elle DOIT respecter ; pour (c) et (d), un nom fantôme, un module ni
+listé ni revendiqué, un chemin absent, un symbole retiré, un symbole sous-chaîne d'un autre (`-w`),
+un symbole sans fichier, un symbole d'une caisse exceptée qu'elle NE DOIT PAS chercher, et une
+liste ou une déclaration absente qui la rend muette, une cellule sans lieu, une coupure du tableau,
+le chemin le PLUS PROCHE (avant puis après) comme porteur d'un symbole, un module-répertoire revendiqué
+par une entrée. Le JUGEMENT lui-même (`juger`, fonction pure) est témoigné : chaque relecture du corpus
+de contrôle doit devenir sa catégorie de verdict et le code 1, un plancher dépassé le code 2. Puis un PLANCHER d'entrées, de fichiers, de
+noms listés et de lignes d'invariants sur l'arbre réel. Si `git ls-files` échoue, elle ne conclut pas (code 2, « instrument muet »).
 
 Usage :  python3 .github/scripts/check_module_map_matches_tree.py [--mesure] [--plan CHEMIN]
 Sortie :  0 = plan et arbre concordent ; 1 = écart au-dessus d'un plafond ; 2 = instrument muet ou
@@ -85,6 +122,9 @@ PLAFOND_MODULES_SANS_ENTREE = 0
 # périmètre, 287 fichiers suivis sous les répertoires déclarés.
 MIN_ENTREES = 60
 MIN_FICHIERS = 200
+# Relevés le 2026-10-07 : 50 noms dans la liste des gestionnaires, 9 lignes d'invariants.
+MIN_NOMS_LISTES = 30
+MIN_LIGNES_INVARIANTS = 5
 
 TOKEN = re.compile(r"`([^`]+)`")
 SCOPE = re.compile(r"^Scope:\s*(.+?)\s*$")
@@ -94,6 +134,11 @@ TITRE = re.compile(r"^(#{2,3})\s+(.*)$")
 SEPARATEUR = re.compile(r"^\|?\s*:?-{3,}")
 CELLULE = re.compile(r"(?<!\\)\|")
 ACCOLADES = re.compile(r"\{([^{}]+)\}")
+# (c) La liste en prose d'un répertoire : `Large but flat (`handlers/`): `a`, `b`, …`.
+LISTE = re.compile(r"^Large but flat \(\s*`([^`]+/)`\s*\):(.*)$")
+# (d) La déclaration qui précède le tableau des invariants.
+OU_IL_VIT = re.compile(r"^Where it lives:\s*(.+?)\s*$")
+COLONNE_OU = "Where it lives"
 
 
 class InstrumentMuet(Exception):
@@ -292,6 +337,192 @@ def relire(texte: str, arbre: set[str]) -> dict:
             "modules_total": modules_total, "fichiers": fichiers}
 
 
+def modules_de(d: str, arbre: set[str], ext: str, exceptions: set[str]) -> set[str]:
+    """Les modules de premier niveau de `d` : `nom<ext>` (hors `mod<ext>`) ou `nom/`, hors exceptions."""
+    noms = set()
+    for p in arbre:
+        if not p.startswith(d):
+            continue
+        reste = p[len(d):]
+        nom = reste.split("/", 1)[0]
+        if "/" not in reste:
+            if not ext or not nom.endswith(ext) or nom == "mod" + ext:
+                continue
+            nom = nom[: -len(ext)]
+        if nom not in exceptions:
+            noms.add(nom)
+    return noms
+
+
+def relire_liste(texte: str, arbre: set[str], revendiques: set[str]) -> dict:
+    """(c) La liste en prose des gestionnaires, relue dans les deux sens. `revendiques` = les chemins des
+    ENTRÉES de tableau (jambe a) ; la liste n'y ajoute rien."""
+    dirs, exts, exceptions = lire_perimetre(texte)
+    lignes = texte.splitlines()
+    debuts = [(i, m) for i, m in ((i, LISTE.match(l)) for i, l in enumerate(lignes)) if m]
+    if len(debuts) != 1:
+        raise InstrumentMuet(f"{len(debuts)} ligne(s) `Large but flat (`dir/`):` dans le plan, il en faut "
+                             f"exactement une — la liste des gestionnaires n'est plus déclarée, rien ne la relit.")
+    i0, m = debuts[0]
+    jeton = m.group(1)
+    rep = None
+    for d in dirs:
+        candidat = jeton if jeton.startswith(d) else d + jeton
+        if est_repertoire(candidat, arbre):
+            rep = candidat
+            break
+    if rep is None:
+        raise InstrumentMuet(f"la liste déclare `{jeton}`, qui n'est sous aucun répertoire suivi du périmètre : "
+                             f"la liste ne désigne plus l'arbre.")
+    ext = ext_pour(rep, exts)
+    noms: list[tuple[int, str]] = [(i0 + 1, t) for t in TOKEN.findall(m.group(2))]
+    for j in range(i0 + 1, len(lignes)):
+        if not lignes[j].strip():
+            break
+        noms += [(j + 1, t) for t in TOKEN.findall(lignes[j])]
+    if not noms:
+        raise InstrumentMuet(f"la liste de `{rep}` ne porte aucun nom entre accents graves : rien à relire.")
+    fantomes = [(i, n) for i, n in noms
+                if not ((ext and rep + n + ext in arbre) or (n.endswith("/") and est_repertoire(rep + n, arbre))
+                        or ("/" not in n and "." not in n and est_repertoire(rep + n + "/", arbre)))]
+    listes = {n.strip("/") for _, n in noms}
+    non_listes = sorted(n for n in modules_de(rep, arbre, ext, exceptions)
+                        if n not in listes and rep + n + ext not in revendiques
+                        and not any(p.startswith(rep + n + "/") for p in revendiques))
+    return {"repertoire": rep, "noms": len(noms), "fantomes": fantomes, "non_listes": non_listes}
+
+
+def sous_plancher(rl: dict, ri: dict, min_noms: int = MIN_NOMS_LISTES,
+                  min_lignes: int = MIN_LIGNES_INVARIANTS) -> bool:
+    """La prose relue n'est plus reconnue : trop peu de noms listés OU trop peu de lignes d'invariants."""
+    return rl["noms"] < min_noms or ri["lignes"] < min_lignes
+
+
+def chercheur_git(symbole: str, chemins: list[str]) -> bool:
+    """Le symbole apparaît-il, en mot entier, dans un des fichiers SUIVIS ? Muet si git ne répond pas."""
+    try:
+        r = subprocess.run(["git", "grep", "-F", "-w", "-q", "-e", symbole, "--", *chemins], cwd=RACINE,
+                           capture_output=True)
+    except OSError as e:
+        raise InstrumentMuet(f"`git grep` ne répond pas ({e})")
+    if r.returncode not in (0, 1):
+        raise InstrumentMuet(f"`git grep` a échoué (code {r.returncode}) : {r.stderr.decode(errors='replace')}")
+    return r.returncode == 0
+
+
+def relire_invariants(texte: str, arbre: set[str], cherche) -> dict:
+    """(d) La colonne « Where it lives » : chemins présents, symboles présents dans le fichier rattaché."""
+    _, exts, _ = lire_perimetre(texte)
+    lignes = texte.splitlines()
+    decl = [(i, m) for i, m in ((i, OU_IL_VIT.match(l)) for i, l in enumerate(lignes)) if m]
+    if len(decl) != 1:
+        raise InstrumentMuet(f"{len(decl)} ligne(s) `Where it lives:` dans le plan, il en faut exactement une — "
+                             f"les bases et la caisse exceptée des invariants ne sont plus déclarées.")
+    i0, m = decl[0]
+    corps = m.group(1)
+    part_bases, part_exc = corps.split("except", 1) if "except" in corps else (corps, "")
+    bases = [t for t in TOKEN.findall(part_bases) if t.endswith("/")]
+    exceptes = TOKEN.findall(part_exc)
+    if not bases or any(not est_repertoire(b, arbre) for b in bases):
+        raise InstrumentMuet(f"`Where it lives:` doit déclarer au moins une base suivie terminée par `/` "
+                             f"(lues : {bases}).")
+    # Une exception affirme que l'arbre NE PORTE PAS cette caisse : vérifié, sinon déclarer `cold_store/`
+    # « autre caisse » blanchirait n'importe quel chemin cassé du tier froid.
+    portees = [e for e in exceptes for b in bases
+               if est_repertoire(b + e.rstrip("/") + "/", arbre) or any(b + e + x in arbre for x in exts.values())]
+    if portees:
+        raise InstrumentMuet(f"`Where it lives:` excepte {sorted(set(portees))} comme une autre caisse, mais l'arbre "
+                             f"suivi les porte sous {bases} : une exception ne couvre que ce que l'arbre n'a pas.")
+    entete = next((j for j in range(i0 + 1, len(lignes)) if lignes[j].lstrip().startswith("|")), None)
+    if entete is None:
+        raise InstrumentMuet("aucun tableau après `Where it lives:`.")
+    colonnes = [c.strip() for c in CELLULE.split(lignes[entete].strip().strip("|"))]
+    if COLONNE_OU not in colonnes:
+        raise InstrumentMuet(f"le tableau des invariants n'a plus de colonne « {COLONNE_OU} » : rien à relire.")
+    col = colonnes.index(COLONNE_OU)
+    exts_mod = tuple(sorted(set(exts.values())))
+
+    def trouver(forme: str):
+        """Le fichier suivi (ou répertoire terminé par `/`) que désigne `forme`, tel quel ou sous une base."""
+        return next((c for c in [forme, *(b + forme for b in bases)]
+                     if c in arbre or (c.endswith("/") and est_repertoire(c, arbre))), None)
+    r = {"lignes": 0, "chemins": 0, "symboles": 0, "sautes": 0, "absents": [], "symboles_absents": [],
+         "sans_fichier": [], "sans_cellule": [], "sans_lieu": [], "tableau_coupe": []}
+    for j in range(entete + 1, len(lignes)):
+        ligne = lignes[j].strip()
+        if not ligne.startswith("|"):
+            # Le tableau finit ici. Si la ligne non vide qui suit reprend par `|`, c'est une COUPURE (ligne vide
+            # au milieu) : la suite serait perdue en silence, chemins cassés compris.
+            suite = next((lignes[k].strip() for k in range(j, len(lignes)) if lignes[k].strip()), "")
+            if suite.startswith("|"):
+                r["tableau_coupe"].append(j + 1)
+            break
+        if SEPARATEUR.match(ligne):
+            continue
+        cellules = CELLULE.split(ligne.strip("|"))
+        if len(cellules) <= col:
+            r["sans_cellule"].append(j + 1)
+            continue
+        r["lignes"] += 1
+        if not TOKEN.findall(cellules[col]):
+            # Cellule vide ou écrite en clair : rien n'y est relu, un chemin cassé sans accents graves passerait.
+            r["sans_lieu"].append(j + 1)
+        for k_col, cellule in enumerate(cellules):
+            if k_col == col:
+                continue
+            for t in TOKEN.findall(cellule):
+                chemin = t.partition("::")[0]
+                if any(t.startswith(e) for e in exceptes) or not (
+                        "/" in chemin or "{" in chemin or chemin.endswith(exts_mod)):
+                    continue  # prose : seuls les CHEMINS des autres colonnes sont relus
+                r["chemins"] += 1
+                if any(trouver(forme) is None for forme in developper(chemin)):
+                    r["absents"].append((j + 1, chemin))
+        for clause in cellules[col].split(";"):
+            classes = []  # (genre, token, fichiers résolus) ; genre ∈ excepte / chemin / symbole
+            for t in TOKEN.findall(clause):
+                if any(t.startswith(e) for e in exceptes):
+                    classes.append(("excepte", t, []))
+                    continue
+                chemin, _, sym = t.partition("::")
+                if "/" in chemin or "{" in chemin or chemin.endswith(exts_mod):
+                    fichiers = []
+                    for forme in developper(chemin):
+                        trouve = trouver(forme)
+                        if trouve is None:
+                            fichiers = None
+                            break
+                        fichiers.append(trouve)
+                    r["chemins"] += 1
+                    if fichiers is None:
+                        r["absents"].append((j + 1, chemin))
+                        fichiers = []
+                    classes.append(("chemin", t, fichiers))
+                    if sym and fichiers:
+                        r["symboles"] += 1
+                        if not cherche(sym, fichiers):
+                            r["symboles_absents"].append((j + 1, sym, fichiers))
+                else:
+                    classes.append(("symbole", t, []))
+            for k, (genre, t, _) in enumerate(classes):
+                if genre != "symbole":
+                    continue
+                avant = [c for c in classes[:k] if c[0] != "symbole"]
+                apres = [c for c in classes[k + 1:] if c[0] != "symbole"]
+                porteur = avant[-1] if avant else (apres[0] if apres else None)
+                if porteur is None:
+                    r["sans_fichier"].append((j + 1, t))
+                elif porteur[0] == "excepte":
+                    r["sautes"] += 1
+                elif porteur[2]:
+                    r["symboles"] += 1
+                    if not cherche(t, porteur[2]):
+                        r["symboles_absents"].append((j + 1, t, porteur[2]))
+    if r["lignes"] == 0:
+        raise InstrumentMuet("le tableau des invariants n'a aucune ligne lue.")
+    return r
+
+
 def valider_instrument() -> list[str]:
     """TÉMOIN POSITIF ET TÉMOIN NÉGATIF sur un plan et un arbre de contrôle — avant tout verdict.
 
@@ -370,7 +601,198 @@ def valider_instrument() -> list[str]:
                     "doit rendre l'instrument muet — sinon la garde devine ce qu'est un module.")
     except InstrumentMuet:
         pass
+    errs += valider_proses(plan, arbre)
     return errs
+
+
+def valider_proses(plan: str, arbre: set[str]) -> list[str]:
+    """Témoins de (c) et (d), sur le plan de contrôle prolongé de deux blocs hors périmètre (titre sans
+    répertoire) : ils ne changent aucune entrée de (a)/(b), ce que le premier jeu de témoins tient."""
+    arbre = arbre | {"d/src/h/m.rs", "d/src/h/n/x.rs", "d/src/h/orphan.rs", "d/src/h/tests.rs",
+                     "d/src/h/notes.txt", "d/src/h/p/y.rs", "d/src/h/q/z.rs", "other/z.rs"}
+    contenus = {"d/src/a.rs": "pub struct Sym_A; // missing_symX\n",
+                "d/src/e.rs": "let r = sym.call();\n", "d/src/c/two.rs": "const TWO_ONLY: u8 = 1;\n",
+                "d/src/c/one.rs": "", "d/src/b/x.rs": "fn retired() {}\n"}
+
+    def cherche(sym: str, chemins: list[str]) -> bool:
+        motif = re.compile(r"(?<!\w)" + re.escape(sym) + r"(?!\w)")
+        return any(motif.search(contenus.get(c, "")) for c in chemins)
+
+    base = plan.splitlines()
+    n = len(base)
+    bloc = [
+        "## Witness — handlers list",
+        "Large but flat (`h/`): `m`, `ghost_handler`,",
+        "`n`, `n_dir/`, `orph`, `p/`.",
+        "",
+        "Prose after the blank line: `outside_list` is not read.",
+        "## Witness — invariants",
+        "Where it lives: paths resolve under `d/src/` — except `other/`, `other_core` (another crate).",
+        "| Invariant | Where it lives | How |", "|---|---|---|",
+        "| one | `other/z.rs::gone`/`absent_sym`; `a.rs` → `Sym_A` | `ghost3.rs` `nowhere_sym` |",
+        "| two | `other_core::x`; `sym.call()` guard in `e.rs` | … |",
+        "| three | `c/{one,two}.rs` (`TWO_ONLY`), `fantome2.rs` | … |",
+        "| four | `b/x.rs::retire`; `a.rs` `Sym_A` `missing_sym` | … |",
+        "| five | plain text, `orphan_sym` | … |",
+        "| six | `c/{one,ghost}.rs`; `c/tw` | `b/x.rs` holds it, with `c/{two,nope}.rs` |",
+        "| seven |",
+        "| eight | `c/two.rs`, `c/one.rs` → `TWO_ONLY`; `TWO_ONLY` in `c/one.rs`, `c/two.rs` | … |",
+        "| nine | c/crypt.rs written in clear | … |",
+        "",
+        "| cut | `c/gone.rs` |",
+        "",
+        "Text after the table.",
+    ]
+    texte = "\n".join(base + bloc)
+    errs = []
+    try:
+        r = relire(texte, arbre)
+        # `q/` est revendiqué par une ENTRÉE d'un module-répertoire (`d/src/h/q/z.rs`) : il n'a pas à être listé.
+        rl = relire_liste(texte, arbre, r["revendiques"] | {"d/src/h/q/z.rs"})
+        ri = relire_invariants(texte, arbre, cherche)
+    except InstrumentMuet as e:
+        return [f"témoin (c)/(d) en échec : le plan de contrôle n'est pas lu ({e})"]
+    if rl["repertoire"] != "d/src/h/" or rl["noms"] != 6:
+        errs.append(f"témoin (c) en échec : 6 noms attendus sous `d/src/h/`, lus {rl['noms']} sous "
+                    f"{rl['repertoire']} — la liste ne s'arrête plus à la ligne vide ou ne la suit plus.")
+    if rl["fantomes"] != [(n + 2, "ghost_handler"), (n + 3, "n_dir/"), (n + 3, "orph")]:
+        errs.append(f"témoin (c) en échec : fantômes attendus `ghost_handler`, `n_dir/`, `orph` (PRÉFIXE de `orphan.rs` : "
+                    f"le test est exact, `nom`+ext ou `nom/`), et `p/` accepté (forme répertoire), obtenus {rl['fantomes']}.")
+    if rl["non_listes"] != ["orphan"]:
+        errs.append(f"témoin (c) en échec : module ni listé ni revendiqué attendu [orphan], obtenu "
+                    f"{rl['non_listes']} — `k` est revendiqué par une entrée, `m`/`n` sont listés, `tests` est "
+                    "excepté, `mod.rs` est le répertoire, `notes.txt` n'a pas l'extension déclarée, `q/` est un "
+                    "module-répertoire revendiqué par une entrée sur un de ses fichiers.")
+    if any(p.startswith("d/src/h/m") or p.startswith("d/src/h/n") for p in r["revendiques"]):
+        errs.append("témoin (c) en échec : un nom de la liste en prose est devenu une ENTRÉE — la prose "
+                    "couvrirait la jambe (b).")
+    if ri["lignes"] != 8:
+        errs.append(f"témoin (d) en échec : 8 lignes d'invariants attendues, {ri['lignes']} lues.")
+    attendus = [(n + 10, "ghost3.rs"), (n + 12, "fantome2.rs"), (n + 15, "c/{two,nope}.rs"), (n + 15, "c/{one,ghost}.rs"),
+                (n + 15, "c/tw")]
+    if ri["absents"] != attendus:
+        errs.append(f"témoin (d) en échec : chemins absents attendus {attendus}, obtenus {ri['absents']} — `ghost3.rs` "
+                    "est dans une AUTRE colonne (ses chemins sont relus), `c/{one,ghost}.rs` comme `c/{two,nope}.rs` (autre "
+                    "colonne) n'ont qu'UN membre absent, "
+                    "`c/tw` n'est que le PRÉFIXE de `c/two.rs` ; la caisse exceptée (`other/z.rs`) n'est pas lue.")
+    if ri["sans_cellule"] != [n + 16]:
+        errs.append(f"témoin (d) en échec : ligne sans cellule « {COLONNE_OU} » attendue {n + 16}, obtenue "
+                    f"{ri['sans_cellule']} — elle serait sautée en silence ou confondue avec un symbole.")
+    vus = [(i, s) for i, s, _ in ri["symboles_absents"]]
+    attendus_sym = [(n + 13, "retire"), (n + 13, "missing_sym"), (n + 17, "TWO_ONLY", ["d/src/c/one.rs"]),
+                    (n + 17, "TWO_ONLY", ["d/src/c/one.rs"])]
+    if vus != [a[:2] for a in attendus_sym] or [x for x in ri["symboles_absents"] if x[0] == n + 17] != \
+            [a for a in attendus_sym if a[0] == n + 17]:
+        errs.append(f"témoin (d) en échec : symboles absents attendus `retire` (sous-chaîne de `retired`), "
+                    f"`missing_sym` (sous-chaîne de `missing_symX`) et deux fois `TWO_ONLY` cherché dans `c/one.rs` — le "
+                    f"chemin le plus PROCHE avant lui, puis après lui, jamais le plus éloigné (`c/two.rs`, qui le porte) ; "
+                    f"obtenus {ri['symboles_absents']}.")
+    if ri["sans_lieu"] != [n + 18] or ri["tableau_coupe"] != [n + 19]:
+        errs.append(f"témoin (d) en échec : cellule sans lieu attendue {n + 18} (écrite en clair), coupure du tableau "
+                    f"attendue {n + 19} (ligne vide puis `|`), obtenues {ri['sans_lieu']} et {ri['tableau_coupe']}.")
+    if ri["sans_fichier"] != [(n + 14, "orphan_sym")]:
+        errs.append(f"témoin (d) en échec : symbole sans fichier attendu `orphan_sym`, obtenus {ri['sans_fichier']}.")
+    if ri["sautes"] != 1 or ri["symboles"] != 8:
+        errs.append(f"témoin (d) en échec : 1 symbole de caisse exceptée sauté (`absent_sym`) et 8 cherchés "
+                    f"attendus, obtenus {ri['sautes']} et {ri['symboles']} — `absent_sym` ne doit pas être "
+                    "rattaché à `a.rs`, ni `sym.call()` à la caisse exceptée qui le précède dans la cellule.")
+    # Le JUGEMENT : chaque relecture devient sa catégorie de verdict, et le code suit (planchers à 1 pour le corpus
+    # de contrôle, puis un plancher dépassé de un rend 2 sans aucun verdict d'écart).
+    code, verdicts = juger(r, rl, ri, 1, 1, 1)
+    vus_cat = {}
+    for c, _ in verdicts:
+        vus_cat[c] = vus_cat.get(c, 0) + 1
+    attendus_cat = {"sans_chemin": 1, "chemin_absent": 2, "module_sans_entree": 3, "fantome": 3, "non_liste": 1,
+                    "invariant_absent": 5, "symbole_absent": 4, "sans_fichier": 1, "sans_cellule": 1, "sans_lieu": 1,
+                    "tableau_coupe": 1}
+    if code != 1 or vus_cat != attendus_cat:
+        errs.append(f"témoin du jugement en échec : code 1 et verdicts {attendus_cat} attendus, obtenus code {code} et "
+                    f"{vus_cat} — une relecture ne devient plus un verdict, le code de retour ne la suit plus.")
+    vide = {"sans_chemin": [], "absents": [], "modules_sans_entree": {}, "entrees": 1}
+    vide_l = {"repertoire": "d/", "noms": 1, "fantomes": [], "non_listes": []}
+    vide_i = {k: [] for k in ("absents", "symboles_absents", "sans_fichier", "sans_cellule", "sans_lieu",
+                              "tableau_coupe")} | {"lignes": 1}
+    jugements = [juger(vide, vide_l, vide_i, 1, 1, 1)[0], juger(vide, vide_l, vide_i, 2, 1, 1)[0],
+                 juger(vide, vide_l, vide_i, 1, 2, 1)[0], juger(vide, vide_l, vide_i, 1, 1, 2)[0],
+                 juger(r, rl, ri, 1, ri["lignes"] + 1, 1)[0]]
+    if jugements != [0, 2, 2, 2, 2]:
+        errs.append(f"témoin du jugement en échec : codes [0, 2, 2, 2, 2] attendus (concorde ; noms, lignes, entrées "
+                    f"sous plancher ; plancher dépassé malgré des écarts), obtenus {jugements}.")
+    variantes = [([l for l in bloc if l != bloc[1]], "un plan sans la liste"),
+                 ([l for l in bloc if l != bloc[6]], "un plan sans la déclaration `Where it lives:`"),
+                 (bloc[:2] + [bloc[1].replace("`m`", "`zz`")] + bloc[2:], "un plan à DEUX listes"),
+                 (bloc[:7] + [bloc[6]] + bloc[7:], "un plan à DEUX déclarations `Where it lives:`"),
+                 (bloc[:6] + [bloc[6].replace("`other_core`", "`other_core`, `c/`")] + bloc[7:],
+                  "une exception (`c/`) que l'arbre porte")]
+    if not (sous_plancher({"noms": MIN_NOMS_LISTES}, {"lignes": MIN_LIGNES_INVARIANTS - 1})
+            and sous_plancher({"noms": MIN_NOMS_LISTES - 1}, {"lignes": MIN_LIGNES_INVARIANTS})
+            and not sous_plancher({"noms": MIN_NOMS_LISTES}, {"lignes": MIN_LIGNES_INVARIANTS})):
+        errs.append("témoin des planchers en échec : un noms ou une ligne d'invariant sous son plancher doit être refusé, "
+                    "les deux à leur plancher acceptés.")
+    for variante, quoi in variantes:
+        try:
+            muet = "\n".join(base + variante)
+            r2 = relire(muet, arbre)
+            relire_liste(muet, arbre, r2["revendiques"])
+            relire_invariants(muet, arbre, cherche)
+            errs.append(f"témoin (c)/(d) en échec : {quoi} doit rendre l'instrument muet.")
+        except InstrumentMuet:
+            pass
+    return errs
+
+
+def juger(r: dict, rl: dict, ri: dict, min_noms: int = MIN_NOMS_LISTES, min_lignes: int = MIN_LIGNES_INVARIANTS,
+          min_entrees: int = MIN_ENTREES) -> tuple[int, list[tuple[str, str]]]:
+    """Les relectures deviennent un CODE (0 concorde, 1 écarts, 2 prose non reconnue) et des verdicts
+    (catégorie, message). Fonction PURE, jugée par le témoin : une boucle de verdict retirée ou un plancher
+    oublié rougit l'autotest au lieu de rendre 0 sur un défaut réel."""
+    if sous_plancher(rl, ri, min_noms, min_lignes):
+        return 2, [("plancher", f"file={PLAN}::{rl['noms']} noms listés (plancher {min_noms}), {ri['lignes']} lignes "
+                                f"d'invariants (plancher {min_lignes}) : la prose relue n'est plus reconnue.")]
+    if r["entrees"] < min_entrees:
+        return 2, [("plancher", f"file={PLAN}::{r['entrees']} entrées lues dans le périmètre, plancher {min_entrees} : "
+                                f"les témoins passent mais le plan réel n'est plus reconnu (reformatage, titres sans "
+                                f"répertoire).")]
+    verdicts: list[tuple[str, str]] = []
+    for i in r["sans_chemin"]:
+        verdicts.append(("sans_chemin", f"file={PLAN},line={i}::entrée sans chemin : la première cellule d'une ligne de tableau du "
+                        f"périmètre cite au moins un chemin entre accents graves, sinon rien ne la relit."))
+    if len(r["absents"]) > PLAFOND_CHEMINS_ABSENTS:
+        for i, t in r["absents"]:
+            verdicts.append(("chemin_absent", f"file={PLAN},line={i}::`{t}` n'existe pas dans l'arbre suivi (plafond "
+                            f"{PLAFOND_CHEMINS_ABSENTS}) : le plan nomme un chemin que le lecteur ne trouvera pas — "
+                            f"renommez l'entrée ou retirez-la."))
+    for d, manquants in r["modules_sans_entree"].items():
+        if len(manquants) > PLAFOND_MODULES_SANS_ENTREE:
+            for n in manquants:
+                verdicts.append(("module_sans_entree", f"file={PLAN}::module `{d}{n}` sans entrée (plafond {PLAFOND_MODULES_SANS_ENTREE}) : "
+                                f"ajoutez une ligne de tableau, lue depuis le fichier, dans une section dont le titre "
+                                f"nomme `{d}`."))
+    for i, n in rl["fantomes"]:
+        verdicts.append(("fantome", f"file={PLAN},line={i}::`{n}` est nommé dans la liste de `{rl['repertoire']}` mais n'y existe "
+                        f"pas dans l'arbre suivi : retirez-le ou renommez-le."))
+    for n in rl["non_listes"]:
+        verdicts.append(("non_liste", f"file={PLAN}::module `{rl['repertoire']}{n}` ni nommé dans la liste en prose ni revendiqué par "
+                        f"une entrée : ajoutez son nom à la liste, lu depuis le fichier."))
+    for i, t in ri["absents"]:
+        verdicts.append(("invariant_absent", f"file={PLAN},line={i}::invariant : `{t}` n'existe pas dans l'arbre suivi — l'invariant "
+                        f"désigne un lieu que le lecteur ne trouvera pas."))
+    for i, t, fichiers in ri["symboles_absents"]:
+        verdicts.append(("symbole_absent", f"file={PLAN},line={i}::invariant : le symbole `{t}` n'apparaît pas dans {', '.join(fichiers)} "
+                        f"(git grep -F -w) — retiré ou déplacé ; corrigez la cellule."))
+    for i, t in ri["sans_fichier"]:
+        verdicts.append(("sans_fichier", f"file={PLAN},line={i}::invariant : le symbole `{t}` n'est rattaché à aucun fichier cité "
+                        f"dans sa clause : il ne se vérifie pas."))
+    for i in ri["sans_cellule"]:
+        verdicts.append(("sans_cellule", f"file={PLAN},line={i}::invariant : la ligne n'a pas de cellule « {COLONNE_OU} » — un "
+                        f"invariant sans lieu ne se relit pas."))
+    for i in ri["sans_lieu"]:
+        verdicts.append(("sans_lieu", f"file={PLAN},line={i}::invariant : la cellule « {COLONNE_OU} » ne cite rien entre "
+                                      f"accents graves (vide ou écrite en clair) — rien n'y est relu."))
+    for i in ri["tableau_coupe"]:
+        verdicts.append(("tableau_coupe", f"file={PLAN},line={i}::invariant : ligne vide au milieu du tableau — les "
+                                          f"lignes qui suivent ne sont plus lues ; retirez la ligne vide."))
+    return (1 if verdicts else 0), verdicts
 
 
 def main(argv: list[str]) -> int:
@@ -407,9 +829,33 @@ def main(argv: list[str]) -> int:
         print(f"::error::{r['fichiers']} fichiers suivis sous {r['dirs']}, plancher {MIN_FICHIERS} : soit la "
               f"lecture de l'arbre est cassée, soit le périmètre ne désigne plus l'arbre.")
         return 2
-    if r["entrees"] < MIN_ENTREES:
-        print(f"::error file={PLAN}::{r['entrees']} entrées lues dans le périmètre, plancher {MIN_ENTREES} : "
-              f"les témoins passent mais le plan réel n'est plus reconnu (reformatage, titres sans répertoire).")
+    # Le chercheur RÉEL se valide sur ce script, dans les deux sens : le témoin du plan de contrôle juge un
+    # chercheur en mémoire, pas `git grep` ; sans ceci, perdre `-w` laisserait passer un symbole renommé
+    # dont l'ancien nom reste un préfixe (`retire` dans `retired`).
+    ici = os.path.relpath(os.path.abspath(__file__), RACINE)
+    try:
+        nom = chercheur_git.__name__  # son préfixe est construit, jamais écrit : il ne doit figurer nulle part ici
+        # Troisième sonde : le nom où `_` devient `.` — absent du script en texte littéral (`-F`), mais un motif
+        # régulier (sans `-F`) le trouverait dans le nom réel.
+        sonde = (chercheur_git(nom, [ici]), chercheur_git(nom[:-1], [ici]), chercheur_git(nom.replace("_", "."), [ici]))
+    except InstrumentMuet as e:
+        print(f"::error::{e} : instrument muet.")
+        return 2
+    if sonde != (True, False, False):
+        print(f"::error::`git grep -F -w` sur ce script rend {sonde} au lieu de (True, False, False) pour un nom présent, "
+              f"son préfixe et sa forme à points : le chercheur des invariants ne cherche plus en mot entier ou en "
+              f"texte littéral, aucun verdict.")
+        return 2
+    try:
+        rl = relire_liste(texte, arbre, r["revendiques"])
+        ri = relire_invariants(texte, arbre, chercheur_git)
+    except InstrumentMuet as e:
+        print(f"::error file={PLAN}::{e}")
+        return 2
+    code, verdicts = juger(r, rl, ri)
+    if code == 2:
+        for _, v in verdicts:
+            print(f"::error {v}")
         return 2
 
     print(f"périmètre {', '.join(r['dirs'])} (exceptés : {', '.join(sorted(r['exceptions'])) or '—'}) ; "
@@ -420,30 +866,22 @@ def main(argv: list[str]) -> int:
         print(f"  {d}: {len(manquants)} sans entrée" + (f" — {', '.join(manquants)}" if manquants else ""))
     for i, t in r["absents"]:
         print(f"  absent : ligne {i} `{t}`")
+    print(f"liste de {rl['repertoire']} : {rl['noms']} noms, {len(rl['fantomes'])} fantôme(s), "
+          f"{len(rl['non_listes'])} module(s) ni listé(s) ni revendiqué(s) ; invariants : {ri['lignes']} lignes, "
+          f"{ri['chemins']} chemins, {ri['symboles']} symboles cherchés, {ri['sautes']} sauté(s) (caisse exceptée), "
+          f"{len(ri['absents'])} chemin(s) absent(s), {len(ri['symboles_absents'])} symbole(s) absent(s), "
+          f"{len(ri['sans_fichier'])} symbole(s) sans fichier, {len(ri['sans_cellule'])} ligne(s) sans cellule, "
+          f"{len(ri['sans_lieu'])} cellule(s) sans lieu, {len(ri['tableau_coupe'])} coupure(s) du tableau.")
     if mesure:
         return 0
 
-    verdicts = []
-    for i in r["sans_chemin"]:
-        verdicts.append(f"file={PLAN},line={i}::entrée sans chemin : la première cellule d'une ligne de tableau du "
-                        f"périmètre cite au moins un chemin entre accents graves, sinon rien ne la relit.")
-    if len(r["absents"]) > PLAFOND_CHEMINS_ABSENTS:
-        for i, t in r["absents"]:
-            verdicts.append(f"file={PLAN},line={i}::`{t}` n'existe pas dans l'arbre suivi (plafond "
-                            f"{PLAFOND_CHEMINS_ABSENTS}) : le plan nomme un chemin que le lecteur ne trouvera pas — "
-                            f"renommez l'entrée ou retirez-la.")
-    for d, manquants in r["modules_sans_entree"].items():
-        if len(manquants) > PLAFOND_MODULES_SANS_ENTREE:
-            for n in manquants:
-                verdicts.append(f"file={PLAN}::module `{d}{n}` sans entrée (plafond {PLAFOND_MODULES_SANS_ENTREE}) : "
-                                f"ajoutez une ligne de tableau, lue depuis le fichier, dans une section dont le titre "
-                                f"nomme `{d}`.")
     if verdicts:
-        for v in verdicts:
+        for _, v in verdicts:
             print(f"::error {v}")
         print(f"\n{len(verdicts)} écart(s) entre le plan des modules et l'arbre suivi.")
         return 1
-    print("Le plan des modules et l'arbre suivi concordent, dans les deux sens.")
+    print("Le plan des modules et l'arbre suivi concordent, dans les deux sens ; la liste des gestionnaires et "
+          "la colonne « Where it lives » des invariants aussi.")
     return 0
 
 

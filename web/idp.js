@@ -214,18 +214,27 @@ let STATUT_MFA_NON_LU = false;
 // par le démon est collée dans un SECOND nœud. `hote` est `#mfa-status` à la charge, `#mfa-enroll` au
 // geste refusé — le même aveu, jamais deux rédactions.
 function avouerLeStatutMfaNonLu(hote, cause) {
-  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
   const dit = document.createElement('span');
   dit.textContent = 'Statut de double authentification NON LU : le démon a refusé et en nomme la cause —';
-  aveu.append(dit, ' « ' + String(cause || '').trim() + ' »');
-  hote.replaceChildren(aveu);
+  hote.replaceChildren(aveuDuStatutMfa(dit, cause));
 }
+// La FORME de l'aveu, une seule fois : le nœud `dit` arrive avec sa phrase déjà écrite AU PUITS par l'appelant
+// (jamais passée en chaîne, pour rester sous le regard de la garde du lexique) ; ceci ne fait que l'habiller et
+// coller la cause servie dans un second nœud.
+function aveuDuStatutMfa(dit, cause) {
+  const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0;font-size:12px';
+  aveu.append(dit, ' « ' + String(cause || '').trim() + ' »');
+  return aveu;
+}
+// `P10.23-n` — LE COMPTE N'A PAS ÉTÉ LU AU STATUT (`enrolable: null`, cause servie) : `mfa_enroll` refuserait
+// (`CompteNonLu`). Le drapeau est posé par la charge et LU par le geste d'enrôlement, comme `STATUT_MFA_NON_LU`.
+let COMPTE_MFA_NON_LU = false;
 
 export async function loadMfa() {
   const status = $('#mfa-status'); const actions = $('#mfa-actions'); const enroll = $('#mfa-enroll');
   if (!status || !actions) return;
   actions.replaceChildren(); if (enroll) { enroll.hidden = true; enroll.replaceChildren(); }
-  STATUT_MFA_NON_LU = false;
+  STATUT_MFA_NON_LU = false; COMPTE_MFA_NON_LU = false;
   let st;
   try { st = await api('/mfa/status'); }
   catch (e) {
@@ -247,6 +256,27 @@ export async function loadMfa() {
     }
     status.textContent = phraseDuRefusDUneLecture(e); return;   // `P10.29-g`
   }
+  // `P10.23-n` — UNE GRAINE QUE LA CONNEXION NE DEMANDE JAMAIS N'EST PAS PEINTE « ACTIVE ». Le démon dit, en champs
+  // additifs de `/api/mfa/status`, si ce compte peut enrôler (`enrolable`, `cause_non_enrolable` : la MÊME phrase
+  // que le refus de `mfa_enroll`) et si sa graine est INERTE (`graine_inerte` : compte sans mot de passe local,
+  // fédéré ou SSO par en-têtes, dont la connexion ne lit jamais `user_mfa`). Décision d'Hugo du 2026-09-29 : le
+  // DIRE, ne rien effacer — aucun bouton n'est offert ici (ni désactivation, ni enrôlement promis puis refusé).
+  if (st && st.graine_inerte === true) {
+    status.textContent = "Graine TOTP posée mais INERTE : ce compte n'a pas de mot de passe local (fédéré ou SSO), sa connexion ne demande jamais ce code. Son second facteur est celui de son fournisseur d'identité. La graine est laissée en place.";
+    return;
+  }
+  if (st && st.enrolable === false && !st.enabled) {
+    const dit = document.createElement('span');
+    dit.textContent = "Double authentification non disponible pour ce compte : le démon refuse l'enrôlement et en nomme la cause —";
+    status.replaceChildren(dit, ' « ' + String(st.cause_non_enrolable || '').trim() + ' »');
+    return;
+  }
+  // `P10.23-n` — LE COMPTE N'A PAS ÉTÉ LU AU STATUT : `enrolable`/`graine_inerte` valent `null` et le démon nomme la
+  // cause. La phrase nominale (« ACTIVE » ou « inactive ») ne repose que sur la ligne `user_mfa` : elle ne sait pas si
+  // cette graine est demandée à la connexion. La cause servie est COLLÉE sous elle, telle quelle, jamais tue ; et
+  // « Activer la MFA » reste offert mais INERTE et motivé (grammaire `P10.20-b`) : le démon refuserait l'enrôlement.
+  const compteNonLu = !!(st && st.enrolable === null && String(st.cause_non_enrolable || '').trim());
+  COMPTE_MFA_NON_LU = compteNonLu;
   if (st && st.enabled) {
     status.textContent = '✓ Double authentification ACTIVE sur ce compte.';
     const dis = mkBtn('Désactiver la MFA', () => disableMfa());
@@ -254,7 +284,16 @@ export async function loadMfa() {
   } else {
     status.textContent = 'Double authentification inactive. Active-la pour exiger un code TOTP à la connexion.';
     const start = mkBtn('Activer la MFA', () => startEnroll());
+    if (compteNonLu) {
+      start.setAttribute('aria-disabled', 'true');
+      start.title = "Le compte n'a PAS été lu au statut : le démon refuserait l'enrôlement, et ce bouton ne doit pas le promettre.";
+    }
     actions.replaceChildren(start);
+  }
+  if (compteNonLu) {
+    const dit = document.createElement('span');
+    dit.textContent = "Ce que cette phrase ne sait pas : le démon n'a pas lu le compte et en nomme la cause —";
+    status.append(aveuDuStatutMfa(dit, st.cause_non_enrolable));
   }
 }
 
@@ -264,6 +303,7 @@ async function startEnroll() {
   // l'inertie et sa raison ; seul ce point-ci peut EMPÊCHER l'appel, et la MÊME phrase est écrite aux deux
   // endroits. Le démon refuserait de toute façon (503 nommé) : ce qui se joue ici est de ne pas présenter
   // comme applicable un geste qui désarmerait un second facteur si la garde tombait.
+  if (COMPTE_MFA_NON_LU) { toast("Le compte n'a PAS été lu au statut : le démon refuserait l'enrôlement, et ce bouton ne doit pas le promettre.", 'bad', 9000); return; }
   if (STATUT_MFA_NON_LU) { toast("Le statut de double authentification de ce compte n'a PAS été lu : lancer un enrôlement ici reposerait une graine TOTP neuve avec le second facteur désarmé, par-dessus la MFA peut-être ACTIVE que cette lecture n'a pas pu rendre — le démon refuse déjà l'écriture, et ce bouton ne doit pas la promettre.", 'bad', 9000); return; }
   // `P10.23-b` (démon) — LE MOT DE PASSE DU COMPTE, DEMANDÉ AVANT TOUTE GRAINE, ET JAMAIS GARDÉ. `mfa_enroll`
   // (daemon/src/handlers/idp.rs) exige `{password}` : une session ouverte ne prouve pas que c'est le titulaire qui

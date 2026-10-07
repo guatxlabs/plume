@@ -98,7 +98,9 @@ pub(crate) static TICKS_AVEUGLES_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TICKS_AVEUGLES: std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 pub(crate) fn compter_un_tick_aveugle(balayage: &'static str, cause: &str) {
     TICKS_AVEUGLES_TOTAL.fetch_add(1, Ordering::Relaxed);
-    eprintln!("[plume] balayage de fond AVEUGLE ({balayage}) : liste de travail NON LUE, aucun geste ce tour-ci : {cause}");
+    // `P10.27-z` — la phrase vaut pour TOUTES les causes : une liste non lue comme une transaction orpheline sur l'écrivain
+    // (où la liste a pu être lue, mais rien n'est écrit) ; seul le geste de CE balayage est suspendu, pas ses voisins.
+    eprintln!("[plume] balayage de fond AVEUGLE ({balayage}) : aucun geste de ce balayage ce tour-ci : {cause}");
     if let Ok(mut m) = TICKS_AVEUGLES.lock() {
         consigner_avec_sa_derniere_cause(&mut m, balayage, cause.to_string());
     }

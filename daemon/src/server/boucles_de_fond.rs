@@ -289,36 +289,7 @@ fn spawn_rule_scheduler(tenants: TenantDbManager) {
                 // destinations/rapports). Un panic dans l'évaluation d'une règle d'UN tenant est capturé -> les
                 // autres tenants continuent ET le fil planificateur SURVIT (sans ce garde, un panic tuerait le
                 // thread infini -> détection stoppée SILENCIEUSEMENT). Happy path INCHANGÉ.
-                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut b = crate::bilan_de_tick::BilanDuPlanificateur::default();
-                    b.absorber(run_due_rules(handle, db_path));
-                    // #48/#53 : règles « avancées » (fenêtre de suppression / throttle-by-field / per-result),
-                    // EXCLUES de run_due_rules et traitées à part (comme run_risk_rules). INERTE mode 0 (0 ligne due).
-                    b.absorber(run_advanced_rules(handle, db_path));
-                    // #24 (RBA) : règles en MODE RISK (risk_score>0, exclues de run_due_rules) -> CONTRIBUENT du
-                    // risque par entité au lieu de lever une alerte scalaire. INERTE mode 0 (aucune règle risk).
-                    b.absorber(run_risk_rules(handle, db_path));
-                    // #37 (DÉTECTION AVANCÉE) : corrélation multi-événements stateful (finding-groups de séquence)
-                    // + baselining statistique UEBA (déviation z-score par entité). MÊMES garanties fail-closed que
-                    // run_due_rules (erreur/timeout ne fabrique JAMAIS un « tout clair »). INERTE mode 0 (tables
-                    // correlation/baseline vides -> 0 ligne due -> retour immédiat, tick byte-identique).
-                    b.absorber(run_correlations(handle, db_path));
-                    b.absorber(run_baselines(handle, db_path));
-                    b.absorber(run_playbooks(handle, db_path));
-                    b.absorber(check_heartbeats(handle));
-                    dispatch_notifications(handle);
-                    escalate_overdue_cases(handle); // #4a — escalade SLA des cases overdue (INERTE si aucun)
-                    sla_multilevel_tick(handle); // #39 — breach SLA MULTI-NIVEAU (ack/resolve). EARLY-RETURN si 0 politique (mode 0 : ZÉRO travail)
-                    // v75 (MODE ENGAGEMENT) : auto-expiry des engagements + recompilation de l'index scope actif
-                    // (tag d'ingest + guard auto-ban). SELF-GATED sur engagement_enabled() -> mode off = 0 travail
-                    // (pas de lock, pas de SELECT) = tick byte-identique.
-                    expire_due_engagements(handle);
-                    if engagement_enabled() {
-                        let c = handle.lock();
-                        engagement_scope_refresh(db_path, &c);
-                    }
-                    b
-                }));
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick_de_detection_d_un_tenant(handle, db_path)));
                 match res {
                     Ok(b) => bilan.absorber(b.bilan_de_tick()),
                     Err(_) => {
@@ -331,8 +302,59 @@ fn spawn_rule_scheduler(tenants: TenantDbManager) {
             // #51 DAY-2 OPS : marque le tick du scheduler de règles (santé « détection » = ce tick récent).
             SCHED_RULE_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             SCHED_RULE_LAST_TS.store(now(), std::sync::atomic::Ordering::Relaxed);
-            std::thread::sleep(Duration::from_secs(20));
+            // `P10.21-e` — la cadence déclarée une fois, lue aussi par le plancher de fenêtre des playbooks.
+            std::thread::sleep(Duration::from_secs(crate::handlers::playbooks::TOUR_DE_DETECTION_S));
         });
+}
+
+/// `P10.27-z` — LE CORPS DU TICK DE DÉTECTION POUR UN TENANT, extrait du planificateur pour être jugé seul.
+///
+/// LA SONDE EN TÊTE. Une transaction ORPHELINE sur l'écrivain (laissée ouverte par un geste qui a rendu la main) rend
+/// TOUT LE TICK aveugle, pas une seule famille : règles, règles avancées, risque, corrélations, lignes de base,
+/// playbooks, battements, notifications, escalades, SLA et engagements écrivent tous par cette connexion, donc DANS
+/// l'orpheline — visibles de l'écrivain seul, invisibles de toute autre connexion, perdus au redémarrage. Décision
+/// d'Hugo (2026-09-29) : le tick se déclare aveugle (bilan nommé + compteur des ticks aveugles), n'évalue et n'écrit
+/// rien, et n'annule pas la transaction. Les éléments dus le restent, évalués au premier tick sain.
+pub(crate) fn tick_de_detection_d_un_tenant(handle: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDuPlanificateur {
+    {
+        let c = handle.lock();
+        if crate::handlers::transaction_validee::signaler_une_transaction_ouverte_hors_de_tout_geste(&c, "tick de détection") {
+            let mut b = crate::bilan_de_tick::BilanDuPlanificateur::default();
+            b.absorber(crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline(
+                crate::bilan_de_tick::BOUCLE_REGLES,
+                "tick de détection (toutes les familles)",
+            ));
+            return b;
+        }
+    }
+    let mut b = crate::bilan_de_tick::BilanDuPlanificateur::default();
+    b.absorber(run_due_rules(handle, db_path));
+    // #48/#53 : règles « avancées » (fenêtre de suppression / throttle-by-field / per-result),
+    // EXCLUES de run_due_rules et traitées à part (comme run_risk_rules). INERTE mode 0 (0 ligne due).
+    b.absorber(run_advanced_rules(handle, db_path));
+    // #24 (RBA) : règles en MODE RISK (risk_score>0, exclues de run_due_rules) -> CONTRIBUENT du
+    // risque par entité au lieu de lever une alerte scalaire. INERTE mode 0 (aucune règle risk).
+    b.absorber(run_risk_rules(handle, db_path));
+    // #37 (DÉTECTION AVANCÉE) : corrélation multi-événements stateful (finding-groups de séquence)
+    // + baselining statistique UEBA (déviation z-score par entité). MÊMES garanties fail-closed que
+    // run_due_rules (erreur/timeout ne fabrique JAMAIS un « tout clair »). INERTE mode 0 (tables
+    // correlation/baseline vides -> 0 ligne due -> retour immédiat, tick byte-identique).
+    b.absorber(run_correlations(handle, db_path));
+    b.absorber(run_baselines(handle, db_path));
+    b.absorber(run_playbooks(handle, db_path));
+    b.absorber(check_heartbeats(handle));
+    dispatch_notifications(handle);
+    escalate_overdue_cases(handle); // #4a — escalade SLA des cases overdue (INERTE si aucun)
+    sla_multilevel_tick(handle); // #39 — breach SLA MULTI-NIVEAU (ack/resolve). EARLY-RETURN si 0 politique (mode 0 : ZÉRO travail)
+    // v75 (MODE ENGAGEMENT) : auto-expiry des engagements + recompilation de l'index scope actif
+    // (tag d'ingest + guard auto-ban). SELF-GATED sur engagement_enabled() -> mode off = 0 travail
+    // (pas de lock, pas de SELECT) = tick byte-identique.
+    expire_due_engagements(handle);
+    if engagement_enabled() {
+        let c = handle.lock();
+        engagement_scope_refresh(db_path, &c);
+    }
+    b
 }
 
 /// BAN NATIF PLUME (chantier ② Phase 1) — thread de maintenance du store live `net_ban`. Charge le cache au

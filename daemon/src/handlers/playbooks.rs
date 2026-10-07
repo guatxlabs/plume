@@ -28,6 +28,85 @@ pub(crate) fn action_consequence(kind: &str) -> String {
     }
 }
 
+/// `P10.21-e` — LA CADENCE DE L'ORDONNANCEUR DE DÉTECTION, déclarée UNE fois : la boucle de règles
+/// (`server/boucles_de_fond.rs`, `spawn_rule_scheduler`) dort ce nombre de secondes entre deux tours, et
+/// le plancher de fenêtre des playbooks la lit. Deux tours sont donc séparés d'AU MOINS cette durée,
+/// quel que soit l'`interval_s` d'un playbook : un intervalle plus court (zéro, négatif, ou entre un et
+/// dix-neuf) n'est jamais tenu plus souvent qu'à chaque tour.
+pub(crate) const TOUR_DE_DETECTION_S: u64 = 20;
+
+/// `P10.21-e` — LE PLANCHER DE LA FENÊTRE DE DÉDUPLICATION D'UN PLAYBOOK. La seule chose qui empêche un
+/// playbook dont la règle est encore vraie de poser une SECONDE riposte (et de ré-armer un ban) au
+/// passage suivant est la déduplication, qui ne regarde que les ripostes des `window_s` dernières
+/// secondes. Deux passages sont séparés d'au moins `interval_s`, et d'au moins un tour d'ordonnanceur :
+/// une fenêtre plus courte que cet écart minimal oublie la riposte précédente avant le passage suivant.
+/// Règle retenue : `window_s >= max(interval_s, TOUR_DE_DETECTION_S)`.
+///
+/// CE QUE CE PLANCHER NE TIENT PAS SEUL : il couvre l'écart MINIMAL entre deux passages, pas l'écart
+/// réel. Un playbook n'est resélectionné qu'au premier tour où `now - last_run >= interval_s` ; les
+/// tours se suivent à `TOUR_DE_DETECTION_S` PLUS la durée du travail du tour (le sommeil est placé
+/// après), donc l'écart réel peut dépasser `interval_s` d'à peu près la durée d'un tour entier — et
+/// aucune marge FIXE ne borne cette durée. C'est donc la déduplication elle-même qui couvre l'écart
+/// réel : `debut_de_la_deduplication_du_playbook` la fait remonter jusqu'au passage précédent.
+///
+/// POURQUOI LE PLANCHER RESTE : `window_s` est AUSSI la fenêtre de la requête de détection
+/// (`rule_sql`) et celle des hôtes d'un ban. Sous `interval_s`, les événements tombés entre deux
+/// passages ne sont vus par aucun passage. Au-dessus, suivre le levier élargit la recherche : le scan
+/// coûte plus et un seuil (`count > N`) porte sur une durée plus longue. Le refus le dit.
+///
+/// Fonction PURE, appelée par la création, la modification et l'import d'overlay, et lue par la liste
+/// pour SIGNALER les lignes déjà sous le plancher sans les modifier.
+/// Le refus est NOMMÉ : il cite `window_s`, `interval_s`, le plancher et le levier.
+pub(crate) fn juger_le_plancher_de_fenetre_du_playbook(window_s: i64, interval_s: i64) -> Result<(), String> {
+    let plancher = interval_s.max(TOUR_DE_DETECTION_S as i64);
+    if window_s >= plancher {
+        return Ok(());
+    }
+    let levier = if window_s >= TOUR_DE_DETECTION_S as i64 {
+        format!("portez window_s à au moins {plancher} s, ou ramenez interval_s à {window_s} s au plus")
+    } else {
+        format!(
+            "portez window_s à au moins {plancher} s (l'ordonnanceur passe toutes les {TOUR_DE_DETECTION_S} s : \
+             abaisser interval_s sous cette durée ne rapproche pas les passages)"
+        )
+    };
+    Err(format!(
+        "FENÊTRE DE DÉDUPLICATION SOUS LE PLANCHER : window_s = {window_s} s est plus court que l'écart minimal \
+         entre deux passages du playbook (interval_s = {interval_s} s, tour de l'ordonnanceur = {TOUR_DE_DETECTION_S} s, \
+         plancher = {plancher} s). window_s est aussi la fenêtre de la requête de détection : sous cet écart, les \
+         événements tombés entre deux passages ne seraient vus par aucun passage. L'allonger élargit d'autant la \
+         recherche (scan plus coûteux, un seuil de comptage porte sur une durée plus longue). Levier : {levier}."
+    ))
+}
+
+/// `P10.21-e` — LE DÉBUT DE LA FENÊTRE DE DÉDUPLICATION D'UN PASSAGE. La fenêtre nominale commence à
+/// `now_ts - window_s`. Si le passage PRÉCÉDENT de ce playbook (`last_run` lu AVANT la pose du nouveau
+/// marqueur — ses ripostes portent exactement cet horodatage) est plus ancien que ce début, la fenêtre
+/// remonte jusqu'à lui : la riposte qu'il a posée est toujours vue par le passage qui le suit, quel que
+/// soit le dépassement dû à la durée des tours. L'extension est BORNÉE : un passage précédent plus
+/// ancien que `now_ts - window_s - max(interval_s, TOUR_DE_DETECTION_S)` n'est pas « le passage d'avant »
+/// au sens de l'ordonnancement (démon arrêté, playbook coupé puis rallumé) — la fenêtre reste alors la
+/// nominale, pour qu'une riposte périmée ne retienne pas une riposte due.
+///
+/// LE PLANCHER EST AUSSI TENU ICI, À L'EXÉCUTION. La fenêtre nominale de déduplication est
+/// `max(window_s, interval_s, TOUR_DE_DETECTION_S)`, pas `window_s` seul : une ligne sous le plancher
+/// peut être ARMÉE sans qu'aucun geste juge sa fenêtre (fichier `config.d` coupé puis dérogation
+/// d'activation réappliquée au démarrage, ligne posée avant le plancher). La requête de détection
+/// garde `window_s` ; seule la mémoire des ripostes est planchée, pour qu'aucune voie d'armement ne
+/// fasse reposer une riposte au passage suivant.
+/// Arithmétique SATURÉE : le juge admet `window_s = interval_s = i64::MAX`, qui déborderait sinon.
+/// Fonction PURE, lue par `run_playbooks` (requête de déduplication).
+pub(crate) fn debut_de_la_deduplication_du_playbook(now_ts: i64, window_s: i64, interval_s: i64, passage_precedent: Option<i64>) -> i64 {
+    let ecart_minimal = interval_s.max(TOUR_DE_DETECTION_S as i64);
+    let fenetre = window_s.max(ecart_minimal);
+    let nominal = now_ts.saturating_sub(fenetre);
+    let borne = nominal.saturating_sub(ecart_minimal);
+    match passage_precedent {
+        Some(precedent) if precedent >= borne => nominal.min(precedent),
+        _ => nominal,
+    }
+}
+
 // `P10.25-g` — LES `COMMIT` DES PLAYBOOKS SONT JUGÉS : un refus rend l'une de ces causes en 503, la transaction fermée.
 /// `P10.25-g` — playbook non créé : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_PLAYBOOK_NON_CREE: &str = "PLAYBOOK NON CRÉÉ : la base n'a pas validé la transaction (COMMIT \
@@ -64,12 +143,17 @@ pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Ex
         .and_then(|mut stmt| {
             stmt.query_map([], |r| {
                 let action_kind = r.get::<_, String>(5)?;
+                let (interval_s, window_s) = (r.get::<_, i64>(6)?, r.get::<_, i64>(7)?);
+                // `P10.21-e` — une ligne déjà sous le plancher (posée avant lui) est SIGNALÉE, jamais
+                // modifiée : la cause est servie sur la ligne, la valeur enregistrée reste celle-là.
+                let sous_le_plancher = juger_le_plancher_de_fenetre_du_playbook(window_s, interval_s).err();
                 Ok(json!({
                     "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "enabled": r.get::<_, i64>(2)? != 0,
                     "query": r.get::<_, String>(3)?, "is_soql": r.get::<_, i64>(4)? != 0,
                     "consequence": action_consequence(&action_kind), "action_kind": action_kind,
-                    "interval_s": r.get::<_, i64>(6)?, "window_s": r.get::<_, i64>(7)?, "last_run": r.get::<_, Option<i64>>(8)?,
-                    "managed": r.get::<_, i64>(9)?
+                    "interval_s": interval_s, "window_s": window_s, "last_run": r.get::<_, Option<i64>>(8)?,
+                    "managed": r.get::<_, i64>(9)?,
+                    "fenetre_sous_le_plancher": sous_le_plancher.is_some(), "cause_fenetre_sous_le_plancher": sous_le_plancher
                 }))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -97,6 +181,10 @@ pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): E
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Playbook").to_string();
     let enabled = b.bool_field("enabled", true) as i64;
     let interval_s = b.i64_field("interval_s", 300);
+    // `P10.21-e` — la fenêtre de déduplication couvre l'écart minimal entre deux passages, avant écriture.
+    if let Err(cause) = juger_le_plancher_de_fenetre_du_playbook(window_s, interval_s) {
+        return err_json(StatusCode::BAD_REQUEST, cause);
+    }
     crate::req_conn!(st, au, conn);
     // #1c garde-fous #4/#6 : INSERT managed=2 (ad-hoc UI) + audit #1b, transaction fail-closed.
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "playbooks", "création d'un playbook", CAUSE_PLAYBOOK_NON_CREE_TRANSACTION_NON_OUVERTE) {
@@ -130,11 +218,11 @@ pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): E
 pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
     let cur = conn.query_row(
-        "SELECT is_soql,query,window_s,action_kind,managed,name FROM playbook WHERE id=?1",
+        "SELECT is_soql,query,window_s,action_kind,managed,name,interval_s,enabled FROM playbook WHERE id=?1",
         params![id],
-        |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, String>(5)?)),
+        |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, String>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)? != 0)),
     );
-    let (cur_soql, cur_query, cur_window, cur_kind, cur_managed, cur_name) = match cur {
+    let (cur_soql, cur_query, cur_window, cur_kind, cur_managed, cur_name, cur_interval, cur_enabled) = match cur {
         Ok(x) => x,
         Err(_) => return not_found("playbook introuvable"),
     };
@@ -146,6 +234,22 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
     let eff_kind = b.get("action_kind").and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or(cur_kind);
     if let Err((code, msg)) = validate_detection_content("playbook", eff_soql, &eff_query, &eff_kind, eff_window, &au.role) {
         return err_json(code, msg);
+    }
+    // `P10.21-e` — le plancher juge les valeurs EFFECTIVES (requête fusionnée avec la ligne), et seulement
+    // quand la requête CHANGE `window_s` ou `interval_s` : un playbook posé sous le plancher avant lui
+    // reste désactivable, renommable et modifiable sur ses autres champs — le refuser là empêcherait
+    // précisément de couper ce qu'il arme. « Change » et non « porte » : le formulaire de la console
+    // renvoie les deux champs à chaque enregistrement, inchangés le plus souvent.
+    // ARMER est jugé aussi : passer une ligne ÉTEINTE à `enabled:true` (case « Activée » du formulaire)
+    // sous le plancher est refusé, comme la bascule de la ligne (`playbook_set_enabled`). Même règle
+    // « change » : renvoyer `enabled:true` sur une ligne déjà armée n'arme rien ; la désactiver reste admis.
+    let eff_interval = b.get("interval_s").and_then(|x| x.as_i64()).unwrap_or(cur_interval);
+    let touche_la_cadence = eff_window != cur_window || eff_interval != cur_interval;
+    let arme = !cur_enabled && b.get("enabled").and_then(|x| x.as_bool()) == Some(true);
+    if touche_la_cadence || arme {
+        if let Err(cause) = juger_le_plancher_de_fenetre_du_playbook(eff_window, eff_interval) {
+            return err_json(StatusCode::BAD_REQUEST, cause);
+        }
     }
     // FIX HIGH-1b (bypass adopt-then-toggle) : modifier un playbook BASELINE (seed/builtin managed=0) = ADMIN
     // seul — sinon l'adoption managed=0->2 (plus bas) sert de tremplin à une désactivation editor + ferme le
@@ -319,17 +423,20 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     // base=admin (ex. "gov-armer") SANS deny arm_response -> auto-approuve (le #64 lui laisse ARMER) ; AVEC
     // deny arm_response ("gov-noarm") -> reste pending/dry (le deny subsiste ici aussi) ; base non-admin ->
     // jamais. Mode 0 / rôle de base -> byte-identique à `== "admin"` (builtin jamais custom-défini, jamais denied).
-    let due: Vec<(i64, String, String, bool, String, i64, bool)> = {
+    // `P10.21-e` — `interval_s` et le `last_run` d'AVANT ce passage sont lus ici, avant que le marqueur
+    // ne soit reposé : ils bornent le début de la déduplication (`debut_de_la_deduplication_du_playbook`).
+    type PlaybookDu = (i64, String, String, bool, String, i64, bool, i64, Option<i64>);
+    let due: Vec<PlaybookDu> = {
         let conn = db.lock();
-        let mut stmt = match conn.prepare("SELECT id,name,query,is_soql,action_kind,window_s,COALESCE(created_by_role,'admin') FROM playbook WHERE enabled=1 AND (last_run IS NULL OR ?1-last_run>=interval_s)") {
+        let mut stmt = match conn.prepare("SELECT id,name,query,is_soql,action_kind,window_s,COALESCE(created_by_role,'admin'),interval_s,last_run FROM playbook WHERE enabled=1 AND (last_run IS NULL OR ?1-last_run>=interval_s)") {
             Ok(s) => s,
             Err(e) => return crate::bilan_de_tick::tick_aveugle("playbooks", &e),
         };
-        let it = match stmt.query_map(params![now_ts], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, { let cbr = r.get::<_, String>(6)?; effective_base_role(&cbr) == "admin" && !role_perm_denied(&cbr, "arm_response") }))) {
+        let it = match stmt.query_map(params![now_ts], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, { let cbr = r.get::<_, String>(6)?; effective_base_role(&cbr) == "admin" && !role_perm_denied(&cbr, "arm_response") }, r.get::<_, i64>(7)?, r.get::<_, Option<i64>>(8)?))) {
             Ok(it) => it,
             Err(e) => return crate::bilan_de_tick::tick_aveugle("playbooks", &e),
         };
-        let mut v: Vec<(i64, String, String, bool, String, i64, bool)> = Vec::new();
+        let mut v: Vec<PlaybookDu> = Vec::new();
         for r in it {
             match r {
                 Ok(x) => v.push(x),
@@ -338,7 +445,8 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         }
         v
     };
-    for (id, name, query, is_soql, kind, window_s, admin_authored) in due {
+    for (id, name, query, is_soql, kind, window_s, admin_authored, interval_s, passage_precedent) in due {
+        let debut_dedup = debut_de_la_deduplication_du_playbook(now_ts, window_s, interval_s, passage_precedent);
         let sql = match rule_sql(&query, is_soql, window_s) {
             Ok(s) => s,
             Err(_) => {
@@ -365,8 +473,8 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         // dus. Avalé, il laissait ce playbook dû indéfiniment — donc réévalué à chaque tour, requête
         // de cibles comprise — pendant que le bilan du tick publiait « 0 abandon ». La seule chose
         // qui empêchait alors une SECONDE riposte et un SECOND armement était la déduplication, dont
-        // la fenêtre est la colonne `window_s` de CE playbook : rien ne l'oblige à couvrir l'écart
-        // entre deux tours. Le tour est donc refusé, la perte comptée, et la réévaluation gardée pour
+        // la fenêtre est la colonne `window_s` de CE playbook (`P10.21-e` : planchée à l'écriture, et
+        // remontée au passage précédent — qui, marqueur non écrit, reste l'ANCIEN). Le tour est donc refusé, la perte comptée, et la réévaluation gardée pour
         // le tour suivant — un état d'ordonnancement qu'on n'a pas su écrire n'arme rien.
         match marquer_le_passage_du_playbook(&conn, id, now_ts) {
             PassageDuPlaybook::Marque => {}
@@ -454,7 +562,7 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 // retentée au prochain tick — le même sort qu'un hôte illisible ci-dessus (`P4.1-s`).
                 let dup: i64 = match conn.query_row(
                     "SELECT COUNT(*) FROM action WHERE kind=?1 AND target=?2 AND IFNULL(host,'')=IFNULL(?3,'') AND ts>=?4",
-                    params![kind, target, host, now_ts - window_s],
+                    params![kind, target, host, debut_dedup],
                     |r| r.get(0),
                 ) {
                     Ok(n) => n,

@@ -58,6 +58,34 @@ pub(crate) fn tick_aveugle(famille: &str, e: &rusqlite::Error) -> BilanDeTick {
     Mesure::Illisible { cause: cause_sql(e), detail: format!("{famille} : liste des éléments dus illisible ({e})") }
 }
 
+/// `P10.27-z` — LA CAUSE NOMMÉE d'un tick aveugle parce que l'écrivain porte une transaction ORPHELINE (laissée
+/// ouverte par un geste qui a rendu la main, vue par `signaler_une_transaction_ouverte_hors_de_tout_geste`). Elle va
+/// au compteur EXISTANT des ticks aveugles (`metrics::compter_un_tick_aveugle`, servi sous `/metrics`
+/// `plume_scheduler_ticks_aveugles_total` et `scheduler.ticks_aveugles.<boucle>.derniere_cause`), pas dans un doublon.
+pub(crate) const CAUSE_TRANSACTION_ORPHELINE: &str = "transaction_orpheline_sur_l_ecrivain";
+
+/// `P10.27-z` — DÉCISION D'HUGO (2026-09-29) : UN TICK QUI TROUVE UNE TRANSACTION ORPHELINE SUR L'ÉCRIVAIN SE DÉCLARE
+/// AVEUGLE, SANS RIEN ANNULER. Ce qu'il aurait écrit (alertes, `last_run`, `last_fired`) serait parti DANS cette
+/// transaction : invisible de toute autre connexion, perdu au redémarrage ou à un `ROLLBACK`, et pourtant lu comme
+/// fait par l'écrivain lui-même. Il n'évalue donc rien, n'écrit rien, ne ferme pas la transaction (aucun `ROLLBACK` :
+/// annuler un état qu'aucun geste ne réclame plus n'est pas son rôle), le COMPTE sous la cause nommée, et rend un
+/// bilan illisible qui nomme la famille — les règles restent dues et seront évaluées au premier tick sain.
+///
+/// L'ÉTIQUETTE DU BILAN RESTE `source_illisible` : elle est publiée en étiquette Prometheus et bornée par l'ensemble
+/// FERMÉ `mesure_environnement::CAUSES` (contrôlé par `exposition_prom_lisible`). La source n'est pas lisible DE
+/// FAÇON COHÉRENTE — ce que l'écrivain lit et écrit vit dans une transaction qu'aucune autre connexion ne voit. La
+/// cause NOMMÉE est portée par le détail et par `scheduler.ticks_aveugles.<boucle>.derniere_cause`.
+pub(crate) fn tick_aveugle_par_transaction_orpheline(boucle: &'static str, famille: &str) -> BilanDeTick {
+    crate::metrics::compter_un_tick_aveugle(boucle, CAUSE_TRANSACTION_ORPHELINE);
+    Mesure::Illisible {
+        cause: CAUSE_SOURCE_ILLISIBLE,
+        detail: format!(
+            "{famille} : aveugle, l'écrivain porte une transaction orpheline ({CAUSE_TRANSACTION_ORPHELINE}) — rien \
+             n'est évalué ni écrit par {famille} ce tick, la transaction n'est pas annulée"
+        ),
+    }
+}
+
 /// LE BILAN D'UN TICK DU PLANIFICATEUR, toutes familles et tous tenants confondus. Additif : chaque
 /// famille y verse son bilan, et le résultat reste ILLISIBLE dès qu'une seule l'a été — la première
 /// cause est conservée, le détail accumule les familles aveugles.

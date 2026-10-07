@@ -23,7 +23,7 @@ pub(crate) use sauvegarde_planifiee::{premiere_attente_derivee, scheduled_backup
 mod travaux_sur_la_base; // TRAVAUX SUR LA BASE PRIMAIRE : vacuum, ANALYZE, index, FTS, pré-chauffage
 use travaux_sur_la_base::*; // les `spawn_*` que le lancement des travaux de fond appelle sans les qualifier
 pub(crate) use travaux_sur_la_base::spawn_autovacuum_loop;
-mod boucles_de_fond; // BOUCLES DE SERVICE : ingest, règles, connecteurs, destinations, rétention, rapports, rollups, panneaux
+pub(crate) mod boucles_de_fond; // BOUCLES DE SERVICE : ingest, règles, connecteurs, destinations, rétention, rapports, rollups, panneaux
 use boucles_de_fond::spawn_background_jobs;
 pub(crate) mod activation_de_la_demonstration; // `P10.28-j` : la démonstration publique ne s'active pas sur un nom déjà à quelqu'un
 

@@ -273,6 +273,17 @@ fn imputations_des_regles_qui_tirent(
 /// (`notified_value`), pas celle de l'ouverture : chaque notification repose la barre.
 pub(crate) const FACTEUR_DE_RENOTIFICATION: f64 = 2.0;
 
+/// `P10.27-z` — POINT D'INJECTION DES TÉMOINS (compilé en test seulement) : appelé entre l'évaluation et les écritures
+/// de `run_due_rules`, sur le fil appelant, pour y ouvrir une transaction orpheline et juger la sonde reprise.
+/// Le point vaut `sans_crochet` hors des témoins : un appel SANS alternative, aucune branche ne peut y abandonner quoi
+/// que ce soit (un `if let Some(f)` y était lu, à juste titre, comme une branche d'échec muette).
+#[cfg(test)]
+pub(crate) fn sans_crochet(_db: &Arc<Mutex<Connection>>) {}
+#[cfg(test)]
+thread_local! {
+    pub(crate) static AVANT_LES_ECRITURES_DU_TICK: std::cell::Cell<fn(&Arc<Mutex<Connection>>)> = const { std::cell::Cell::new(sans_crochet) };
+}
+
 pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnees = 0u32;
@@ -281,8 +292,11 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         let conn = db.lock();
         // `P10.27-g` — LA SONDE : ce tick tient le verrou de l'écrivain hors de tout geste, toutes les 20 s et pour chaque
         // tenant. Une transaction qu'il y trouve ouverte a été laissée par un geste qui a rendu la main ; elle est dite
-        // et comptée (la décision de la fermer n'est pas prise ici).
-        signaler_une_transaction_ouverte_hors_de_tout_geste(&conn, "tick de détection");
+        // et comptée. `P10.27-z` — et le tick se DÉCLARE AVEUGLE : ce qu'il écrirait partirait dans cette transaction,
+        // invisible de toute autre connexion ; il n'évalue ni n'écrit rien, et ne l'annule pas (décision d'Hugo).
+        if signaler_une_transaction_ouverte_hors_de_tout_geste(&conn, "tick de détection") {
+            return crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline(crate::bilan_de_tick::BOUCLE_REGLES, "règles");
+        }
         // #24 (RBA) : les règles en MODE RISK (risk_score>0) sont exclues ICI — elles ne lèvent PAS d'alerte
         // scalaire par tir ; elles CONTRIBUENT du risque via run_risk_rules (« instead of »). COALESCE défensif
         // (colonne ADDITIVE v80, défaut 0). MODE 0 : aucune règle risk -> risk_score=0 partout -> sélection
@@ -382,7 +396,14 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         .collect();
     let imputations = imputations_des_regles_qui_tirent(db_path, &due, &qui_tire, cc);
     // Phase 3 : ecritures groupees sous un seul verrou
+    #[cfg(test)]
+    AVANT_LES_ECRITURES_DU_TICK.with(|h| (h.get())(db));
     let conn = db.lock();
+    // `P10.27-z` — LA SONDE, REPRISE : l'évaluation (phase 2) a tourné hors du verrou, parfois des secondes ; un geste a
+    // pu y laisser une transaction orpheline. Écrire maintenant la remplirait — même déclaration que la phase 1.
+    if signaler_une_transaction_ouverte_hors_de_tout_geste(&conn, "tick de détection (écritures)") {
+        return crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline(crate::bilan_de_tick::BOUCLE_REGLES, "règles");
+    }
     for (id, name, op, threshold, severity, _window_s, query, mitre, verdict) in results {
         let val = match verdict {
             Ok(val) => val,
@@ -939,6 +960,20 @@ pub(crate) async fn playbook_set_enabled(State(st): State<AppState>, Extension(a
     if let Err(r) = require_admin(&au) { return r; }
     let enabled = match body_enabled(&b) { Ok(e) => e, Err(r) => return r };
     crate::req_conn!(st, au, conn);
+    // `P10.21-e` — ARMER une ligne sous le plancher de fenêtre est refusé (400 nommé, rien d'écrit) ; la
+    // couper reste admis. Ligne introuvable : `set_content_enabled_tx` rend son 404.
+    if enabled {
+        match conn.query_row("SELECT window_s, interval_s FROM playbook WHERE id=?1", params![id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))) {
+            Ok((window_s, interval_s)) => {
+                if let Err(cause) = crate::handlers::playbooks::juger_le_plancher_de_fenetre_du_playbook(window_s, interval_s) {
+                    return err_json(StatusCode::BAD_REQUEST, cause);
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            // La fenêtre n'a pas pu être lue : l'armement n'est pas jugé, il n'est donc pas fait.
+            Err(e) => return server_err(format!("playbook #{id} non activé : sa fenêtre n'a pas pu être lue pour juger le plancher ({e}) — rien n'est écrit")),
+        }
+    }
     match set_content_enabled_tx(&conn, "playbook", "playbook", id, enabled, &au.name) {
         Ok(body) => Json(body).into_response(),
         Err((code, msg)) => err_json(code, msg),

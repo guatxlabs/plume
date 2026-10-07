@@ -59,7 +59,7 @@ pub(crate) fn decouper_le_jeton(jeton: &str) -> Option<(&str, &str, i64)> {
 
 /// Forge un jeton de session signé : payload = `user|role|exp` (b64url), signé HMAC-SHA256.
 /// Format : `<b64url(payload)>.<hex(hmac)>`. exp = now + ttl. Stateless (vérifié par HMAC).
-/// L2 (RÉVOCATION) : l'`epoch` de session est MÉLANGÉ à la matière signée -> un bump d'epoch (logout)
+/// L2 (RÉVOCATION) : l'`epoch` de session est MÉLANGÉ à la matière signée -> un bump d'epoch (révocation globale)
 /// invalide TOUS les jetons antérieurs (leur signature recalculée avec le nouvel epoch
 /// ne correspond plus). L'epoch n'est PAS exposé dans le payload lisible : la vérif le re-injecte côté
 /// serveur (source de vérité = AppState.session_epoch), donc il n'est ni forgeable ni rejouable.
@@ -85,7 +85,7 @@ pub(crate) fn mint_session(secret: &[u8], user: &str, role: &str, ttl_s: i64, ep
 /// Some((user, role, époque du compte portée)). L2 : `epoch` = compteur de révocation LIVE ; un jeton signé avec un
 /// epoch antérieur échoue à la comparaison de signature -> None (révocation serveur). Le TTL est conservé (double
 /// borne). `P10.23-l` : cette fonction ne lit PAS la base — l'époque rendue est celle que le jeton porte, et c'est à
-/// l'appelant de la comparer à celle du compte (`live_role_si_l_epoque_du_compte_vaut`, `session_ouverte_par`).
+/// l'appelant de la comparer à celle du compte (`live_role_si_l_epoque_du_compte_vaut`, `compte_de_la_session_ouverte`).
 pub(crate) fn verify_session_du_compte(secret: &[u8], token: &str, epoch: i64) -> Option<(String, String, i64)> {
     let (p_b64, sig_hex, epoque_du_compte) = decouper_le_jeton(token)?;
     let expect = hmac_sha256(secret, format!("{p_b64}|{epoch}{}", suffixe_signe_de_l_epoque_du_compte(epoque_du_compte)).as_bytes());
@@ -162,18 +162,25 @@ fn compte_live(st: &AppState, user: &str) -> Option<CompteLive> {
     //    inchangée ; le Basic-auth (qui a réellement besoin du hash) n'est PAS touché non plus. Une panne de
     //    connexion du pool (rare) retombe sur lookup_basic_ident (writer) -> aucun refus de rôle à tort.
     //    `P10.23-l` : l'époque du compte est lue PAR LE MÊME ÉNONCÉ que le rôle sur le read pool (aucune requête
-    //    de plus par requête servie) ; les voies d'écrivain (eng-cred, pool indisponible) la relisent à part.
-    if !st.multi_tenant && !user.starts_with(ENG_CRED_PREFIX) {
-        match compte_via_read_pool(st, user) {
+    //    de plus par requête servie). `P10.24-d` : les voies d'écrivain (eng-cred, pool indisponible) jouent CE
+    //    MÊME ÉNONCÉ sur la connexion d'écriture, sous une seule prise du verrou (`compte_via_l_ecrivain`) : plus de
+    //    seconde requête pour l'époque, et la résolution d'une session ne lit plus `user.hash` sur aucune voie.
+    if !st.multi_tenant {
+        let lecture = if user.starts_with(ENG_CRED_PREFIX) {
+            compte_via_l_ecrivain(st, user)
+        } else {
+            match compte_via_read_pool(st, user) {
+                // pool indisponible : la connexion d'écriture, même énoncé, pour ne refuser personne à tort.
+                LectureDuCompte::NonLu => compte_via_l_ecrivain(st, user),
+                lu => lu,
+            }
+        };
+        match lecture {
             LectureDuCompte::Trouve { role, epoque } => return Some(CompteLive { role, epoque }),
             // absent de `user` -> repli admin-wizard / config statique (idem historique), à l'époque lue.
             LectureDuCompte::Absent { epoque } => epoque_lue_sans_ligne = Some(epoque),
-            LectureDuCompte::PoolIndisponible => {
-                // pool indisponible : on reproduit EXACTEMENT le chemin d'origine (writer) pour ne rien changer.
-                if let Some((_, role)) = lookup_basic_ident(st, user) {
-                    return Some(CompteLive { role, epoque: epoque_par_l_ecrivain() });
-                }
-            }
+            // rien n'a pu être lu, même par l'écrivain : le repli relit l'époque à part (et refusera si elle échoue).
+            LectureDuCompte::NonLu => {}
         }
     } else if let Some((_, role)) = lookup_basic_ident(st, user) {
         return Some(CompteLive { role, epoque: epoque_par_l_ecrivain() });
@@ -187,34 +194,57 @@ fn compte_live(st: &AppState, user: &str) -> Option<CompteLive> {
     Some(CompteLive { role: "admin".to_string(), epoque: epoque_lue_sans_ligne.unwrap_or_else(epoque_par_l_ecrivain) })
 }
 
-/// #23 F4 — résultat TRI-ÉTAT d'une résolution de rôle par le READ POOL : distingue « trouvé » de « absent »
-/// (compte disparu -> le cookie ne vaut plus rien) de « pool indisponible » (repli writer, jamais un refus à tort).
+/// #23 F4 — résultat TRI-ÉTAT d'une résolution de rôle : distingue « trouvé » de « absent » (compte disparu -> le
+/// cookie ne vaut plus rien) de « non lu » (pool indisponible ou énoncé en échec : repli, jamais un refus à tort).
 /// `P10.23-l` : « trouvé » et « absent » portent l'époque du compte, lue par le même énoncé.
 enum LectureDuCompte {
     Trouve { role: String, epoque: rusqlite::Result<i64> },
     Absent { epoque: rusqlite::Result<i64> },
-    PoolIndisponible,
+    NonLu,
+}
+
+/// `P10.23-l` / `P10.24-d` — L'ÉNONCÉ UNIQUE de la résolution d'une session : deux sous-requêtes scalaires rendent
+/// TOUJOURS une ligne, `(rôle ou NULL, époque ou NULL)`. Joué tel quel sur le read pool ET sur l'écrivain : aucune
+/// voie ne relit l'époque à part, aucune ne lit `user.hash` (colonne déniée sur le read pool ; `NOT NULL` au schéma,
+/// donc « une ligne dans `user` » vaut ici ce qu'elle valait par `lookup_basic_ident`).
+const ROLE_ET_EPOQUE_DU_COMPTE: &str = "SELECT (SELECT role FROM user WHERE name=?1), (SELECT value FROM meta WHERE key=?2)";
+
+fn lire_le_compte(conn: &Connection, user: &str) -> LectureDuCompte {
+    let lu = conn.query_row(ROLE_ET_EPOQUE_DU_COMPTE, params![user, cle_de_l_epoque_du_compte(user)], |r| {
+        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
+    });
+    match lu {
+        Ok((Some(role), valeur)) => LectureDuCompte::Trouve { role, epoque: interpreter_l_epoque_du_compte(valeur) },
+        Ok((None, valeur)) => LectureDuCompte::Absent { epoque: interpreter_l_epoque_du_compte(valeur) },
+        // erreur inattendue (verrou, corruption transitoire...) -> repli plutôt qu'un faux « absent ».
+        Err(_) => LectureDuCompte::NonLu,
+    }
 }
 
 /// #23 F4 — lit le rôle sur le READ POOL (mode 0). `role` n'est pas une colonne déniée par l'authorizer read-pool ;
 /// le SELECT est index-couvert et sert un snapshot WAL FRAIS (révocation live préservée). Aucune prise du mutex
-/// writer. `P10.23-l` — L'ÉPOQUE DU COMPTE DANS LE MÊME ÉNONCÉ : deux sous-requêtes scalaires rendent TOUJOURS une
-/// ligne, `(rôle ou NULL, époque ou NULL)` ; `meta.value` n'est pas dénié non plus. Coût : une sonde de plus dans
-/// l'index de clé primaire de `meta`, sur la même connexion et le même aller-retour.
+/// writer. `P10.23-l` — L'ÉPOQUE DU COMPTE DANS LE MÊME ÉNONCÉ (`ROLE_ET_EPOQUE_DU_COMPTE`) ; `meta.value` n'est pas
+/// dénié non plus. Coût : une sonde de plus dans l'index de clé primaire de `meta`, même aller-retour.
 fn compte_via_read_pool(st: &AppState, user: &str) -> LectureDuCompte {
-    read_with(st.db_path.as_str(), LectureDuCompte::PoolIndisponible, |conn| {
-        let lu = conn.query_row(
-            "SELECT (SELECT role FROM user WHERE name=?1), (SELECT value FROM meta WHERE key=?2)",
-            params![user, cle_de_l_epoque_du_compte(user)],
-            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
-        );
-        match lu {
-            Ok((Some(role), valeur)) => LectureDuCompte::Trouve { role, epoque: interpreter_l_epoque_du_compte(valeur) },
-            Ok((None, valeur)) => LectureDuCompte::Absent { epoque: interpreter_l_epoque_du_compte(valeur) },
-            // erreur inattendue (verrou, corruption transitoire...) -> repli writer plutôt qu'un faux « absent ».
-            Err(_) => LectureDuCompte::PoolIndisponible,
+    read_with(st.db_path.as_str(), LectureDuCompte::NonLu, |conn| lire_le_compte(conn, user))
+}
+
+/// `P10.24-d` — LA VOIE D'ÉCRIVAIN, GREFFÉE SUR LE MÊME ÉNONCÉ. Les comptes `eng-cred-*` (jamais servis par le pool :
+/// leur fenêtre d'engagement se juge sur l'écrivain) et le repli d'un pool indisponible lisaient le rôle par
+/// `lookup_basic_ident` (qui SELECTe aussi `hash`) puis l'époque par une SECONDE requête, sous une seconde prise du
+/// verrou. Ici : une prise du verrou, `ROLE_ET_EPOQUE_DU_COMPTE`, et pour un `eng-cred-*` la fenêtre jugée sur la
+/// même connexion — hors fenêtre, le compte vaut « absent » (ce que `lookup_basic_ident` rendait par `None`).
+fn compte_via_l_ecrivain(st: &AppState, user: &str) -> LectureDuCompte {
+    let c = st.db.lock();
+    match lire_le_compte(&c, user) {
+        LectureDuCompte::Trouve { epoque, .. }
+            if user.starts_with(ENG_CRED_PREFIX)
+                && !crate::handlers::engagement::engagement_cred_within_window(&c, user, now()) =>
+        {
+            LectureDuCompte::Absent { epoque }
         }
-    })
+        lu => lu,
+    }
 }
 
 // ─── `P10.23-l` — L'ÉPOQUE PROPRE À UN COMPTE ─────────────────────────────────────────────────────
@@ -308,13 +338,13 @@ pub(crate) fn frapper_la_session_du_compte(st: &AppState, user: &str, role: &str
 
 /// `P10.23-l` — un jeton de session vaut-il encore ? Signature à l'époque globale, non expiré, et (mode 0) l'époque
 /// de SON compte. C'est la garde anti-DoS de `logout_post` : un jeton révoqué pour son compte ne révoque plus tout le
-/// monde. L'existence du compte n'y est pas exigée (la garde d'avant ne l'exigeait pas).
-fn session_ouverte_par(st: &AppState, jeton: &str) -> bool {
+/// monde. L'existence du compte n'y est pas exigée (la garde d'avant ne l'exigeait pas). `P10.23-o` : rend le compte
+/// et le rôle PORTÉ par le jeton (la déconnexion révoque CE compte).
+fn compte_de_la_session_ouverte(st: &AppState, jeton: &str) -> Option<(String, String)> {
     let epoch = st.session_epoch.load(std::sync::atomic::Ordering::Relaxed);
-    let Some((user, _, epoque_du_jeton)) = verify_session_du_compte(st.session_secret.as_slice(), jeton, epoch) else {
-        return false;
-    };
-    st.multi_tenant || matches!(epoque_du_compte(&st.db.lock(), &user), Ok(epoque) if epoque == epoque_du_jeton)
+    let (user, role, epoque_du_jeton) = verify_session_du_compte(st.session_secret.as_slice(), jeton, epoch)?;
+    let ouverte = st.multi_tenant || matches!(epoque_du_compte(&st.db.lock(), &user), Ok(epoque) if epoque == epoque_du_jeton);
+    ouverte.then_some((user, role))
 }
 
 /// L2 — lit le compteur de révocation de session persistant (meta `session_epoch`, défaut 0). Chargé au
@@ -327,9 +357,10 @@ pub(crate) fn load_session_epoch(conn: &Connection) -> i64 {
 }
 
 /// L2 — INCRÉMENTE l'epoch de session (révocation serveur) : met à jour le compteur EN MÉMOIRE (effet
-/// IMMÉDIAT sur mint/verify) ET le persiste dans meta (survit au redémarrage). Appelé par /api/logout
-/// -> tous les jetons antérieurs, de TOUS les comptes, deviennent invalides. `P10.23-l` : un changement de
-/// mot de passe ne l'appelle plus — il avance l'époque du SEUL compte (`avancer_l_epoque_du_compte`).
+/// IMMÉDIAT sur mint/verify) ET le persiste dans meta (survit au redémarrage) -> tous les jetons antérieurs, de
+/// TOUS les comptes, deviennent invalides. Appelé par la déconnexion de portée `globale` (admin, tracée) et par
+/// toute déconnexion en mode 1. `P10.23-l` / `P10.23-o` : un changement de mot de passe et la déconnexion ordinaire
+/// ne l'appellent plus — ils avancent l'époque du SEUL compte (`avancer_l_epoque_du_compte`).
 pub(crate) fn bump_session_epoch(st: &AppState) {
     let e = st.session_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     let c = st.db.lock();
@@ -1088,26 +1119,66 @@ pub(crate) async fn login_post(
 }
 
 // POST /api/logout -> efface les cookies (Set-Cookie expiré) ET révoque côté SERVEUR (L2). Public (pas
-// besoin d'identité valide). L2 : incrémente l'epoch de session -> TOUS les cookies antérieurs (y compris
-// un cookie EXFILTRÉ, qui survivait jusqu'ici jusqu'au TTL) deviennent immédiatement invalides côté serveur.
-// GARDE ANTI-DoS (L2-fix) : le bump d'epoch (révocation GLOBALE) n'est déclenché QUE si l'appelant présente
-// un cookie de session ACTUELLEMENT VALIDE. Sans cette garde, un tiers NON authentifié pourrait marteler
-// /api/logout (route publique, budget per-IP standard 1200/10s) pour bumper l'epoch en boucle et déconnecter
-// EN PERMANENCE tous les utilisateurs (DoS d'authentification) + amplification d'écritures DB. Le but sécu
-// est préservé : un logout LÉGITIME (cookie valide) révoque bien les jetons antérieurs, y compris une COPIE
-// EXFILTRÉE du même cookie. L'effacement des cookies côté navigateur, lui, reste INCONDITIONNEL.
-// `P10.23-l` : « valide » inclut l'époque du compte — un cookie révoqué pour SON compte ne révoque pas tout le monde.
-pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    let cookie_hdr = headers.get(header::COOKIE).and_then(|h| h.to_str().ok()).unwrap_or("");
-    let has_valid_session = cookie_value(cookie_hdr, "plume_session").is_some_and(|tok| session_ouverte_par(&st, &tok));
-    if has_valid_session {
-        bump_session_epoch(&st);
+// besoin d'identité valide). L'effacement des cookies côté navigateur reste INCONDITIONNEL.
+//
+// `P10.23-o` — LA DÉCONNEXION RÉVOQUE LE SEUL COMPTE DU JETON (décision du 2026-09-29). Elle avançait l'époque
+// GLOBALE : chaque déconnexion invalidait les sessions ET les tickets MFA en attente de TOUS les comptes. Elle avance
+// désormais l'époque du compte du jeton (`avancer_l_epoque_du_compte`) : ses jetons antérieurs, y compris une COPIE
+// EXFILTRÉE du même cookie, et ses tickets MFA ne valent plus rien ; aucun autre compte n'est touché.
+//
+// LA RÉVOCATION GLOBALE RESTE UN GESTE, RÉSERVÉ À UN ADMIN, NOMMÉ ET TRACÉ. Même route, paramètre de portée
+// EXPLICITE dans l'en-tête `PORTEE_DE_LA_DECONNEXION` (`compte`, le défaut, ou `globale`) — un en-tête plutôt
+// qu'un paramètre d'URL : un formulaire d'un autre site ne sait pas le poser. `globale` exige une session dont le
+// rôle LIVE est `admin` (mode 0 : le rôle relu comme `resolve_identity` le relit, à l'époque du compte ; un admin
+// rétrogradé dont le jeton dit encore `admin` est refusé), sinon `403` nommé, rien n'est révoqué. Le maillon
+// `auth.deconnexion.globale` est écrit AVANT la révocation : non inscrit, rien n'est révoqué (`503` nommé).
+//
+// GARDE ANTI-DoS (L2-fix), CONSERVÉE : rien n'est avancé sans un cookie de session ACTUELLEMENT VALIDE (époque du
+// compte comprise) — un tiers non authentifié qui martèle la route publique ne révoque personne et n'écrit rien.
+//
+// MODE 1 : l'époque du compte n'y est ni frappée ni jugée (hors périmètre de `P10.23-l`) ; la révoquer ne révoquerait
+// rien. La portée `compte` y garde donc l'avancée globale d'avant — un reste écrit, pas un oubli.
+pub(crate) const PORTEE_DE_LA_DECONNEXION: &str = "x-plume-portee-de-deconnexion";
+
+/// `P10.23-o` — refus de la révocation globale : la session présentée n'est pas celle d'un admin (ou aucune).
+pub(crate) const CAUSE_DECONNEXION_GLOBALE_RESERVEE_A_UN_ADMIN: &str = "DÉCONNEXION GLOBALE RÉSERVÉE À UN \
+     ADMINISTRATEUR : révoquer les sessions de TOUS les comptes exige une session valide dont le rôle courant est \
+     `admin`. Rien n'est révoqué, aucun cookie n'est effacé. Une déconnexion sans en-tête de portée révoque le seul \
+     compte de la session.";
+
+/// `P10.23-o` — portée inconnue : ni `compte` ni `globale`.
+pub(crate) const CAUSE_PORTEE_DE_DECONNEXION_INCONNUE: &str = "PORTÉE DE DÉCONNEXION INCONNUE : l'en-tête \
+     `x-plume-portee-de-deconnexion` vaut `compte` (le défaut : le seul compte de la session) ou `globale` \
+     (administrateur : tous les comptes). Rien n'est révoqué, aucun cookie n'est effacé.";
+
+/// `P10.23-o` — la trace de la révocation globale n'a pas pu être écrite : le geste n'a pas lieu.
+pub(crate) const CAUSE_DECONNEXION_GLOBALE_NON_TRACEE: &str = "DÉCONNEXION GLOBALE NON TRACÉE, RIEN N'EST \
+     RÉVOQUÉ : le maillon `auth.deconnexion.globale` n'a pas pu être écrit au registre ; un geste qui révoque tous \
+     les comptes n'a pas lieu sans sa trace. Réessayez.";
+
+/// `P10.23-o` — la révocation du compte n'a pas pu être écrite : les cookies sont effacés, le serveur le dit.
+pub(crate) const CAUSE_REVOCATION_DU_COMPTE_NON_ECRITE: &str = "RÉVOCATION DU COMPTE NON ÉCRITE : les cookies \
+     de ce navigateur sont effacés, mais l'époque de révocation du compte n'a pas pu être avancée — une copie de ce \
+     cookie vaudrait encore jusqu'à son expiration. Reconnectez-vous puis déconnectez-vous à nouveau.";
+
+/// `P10.23-o` — le compte d'une session valide dont le rôle COURANT est `admin`. Mode 0 : rôle relu LIVE à l'époque
+/// du compte (comme `resolve_identity`), jamais celui figé dans le jeton. Mode 1 : rôle du jeton (le plancher que
+/// la résolution d'identité du mode 1 accorde au cookie).
+fn admin_de_la_session(st: &AppState, jeton: &str) -> Option<String> {
+    if st.multi_tenant {
+        return compte_de_la_session_ouverte(st, jeton).filter(|(_, role)| role == "admin").map(|(user, _)| user);
     }
+    let epoch = st.session_epoch.load(std::sync::atomic::Ordering::Relaxed);
+    let (user, _, epoque_du_jeton) = verify_session_du_compte(st.session_secret.as_slice(), jeton, epoch)?;
+    (live_role_si_l_epoque_du_compte_vaut(st, &user, epoque_du_jeton)? == "admin").then_some(user)
+}
+
+fn cookies_effaces(statut: StatusCode, corps: Value) -> Response {
     let secure = cookie_secure_suffix();
     let exp = "Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT";
     let c_sess = format!("plume_session=; HttpOnly; SameSite=Strict; Path=/; {exp}{secure}");
     let c_csrf = format!("plume_csrf=; SameSite=Strict; Path=/; {exp}{secure}");
-    let mut resp = (StatusCode::OK, Json(json!({ "ok": true }))).into_response();
+    let mut resp = (statut, Json(corps)).into_response();
     if let Ok(v) = c_sess.parse() {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
@@ -1115,6 +1186,48 @@ pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http:
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
     resp
+}
+
+pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http::HeaderMap) -> Response {
+    let cookie_hdr = headers.get(header::COOKIE).and_then(|h| h.to_str().ok()).unwrap_or("");
+    let jeton = cookie_value(cookie_hdr, "plume_session");
+    let portee = headers.get(PORTEE_DE_LA_DECONNEXION).map(|v| v.to_str().unwrap_or("").trim().to_ascii_lowercase());
+    match portee.as_deref() {
+        None | Some("compte") => {}
+        Some("globale") => {
+            let Some(admin) = jeton.as_deref().and_then(|tok| admin_de_la_session(&st, tok)) else {
+                return err_json(StatusCode::FORBIDDEN, CAUSE_DECONNEXION_GLOBALE_RESERVEE_A_UN_ADMIN);
+            };
+            let epoque_revoquee = st.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
+            let maillon = ledger_append(
+                &st.db.lock(),
+                "auth.deconnexion.globale",
+                &format!("sessions de TOUS les comptes révoquées par l'administrateur '{admin}' (époque globale {epoque_revoquee} révoquée)"),
+            );
+            if let Some(cause) = maillon.cause_de_non_inscription() {
+                eprintln!("[session] WARN déconnexion globale par '{admin}' NON tracée, rien n'est révoqué : {cause}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_TRACEE);
+            }
+            bump_session_epoch(&st);
+            return cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" }));
+        }
+        Some(_) => return err_json(StatusCode::BAD_REQUEST, CAUSE_PORTEE_DE_DECONNEXION_INCONNUE),
+    }
+    let Some((user, _)) = jeton.as_deref().and_then(|tok| compte_de_la_session_ouverte(&st, tok)) else {
+        return cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "aucune" }));
+    };
+    if st.multi_tenant {
+        bump_session_epoch(&st);
+        return cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" }));
+    }
+    let avancee = avancer_l_epoque_du_compte(&st.db.lock(), &user);
+    match avancee {
+        Ok(_) => cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "compte" })),
+        Err(cause) => {
+            eprintln!("[session] WARN déconnexion de '{user}' : époque du compte NON avancée : {cause}");
+            cookies_effaces(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": CAUSE_REVOCATION_DU_COMPTE_NON_ECRITE }))
+        }
+    }
 }
 
 // GET /api/me -> état d'auth pour le SPA : {user, role, auth_method, csrf_token}. csrf_token non vide

@@ -240,8 +240,9 @@
 
     #[tokio::test]
     async fn logout_bumps_epoch_only_with_valid_session_antidos() {
-        // L2-fix (ANTI-DoS) : /api/logout est PUBLIC ; le bump d'epoch (révocation GLOBALE de TOUTES les
-        // sessions) ne doit se produire QUE si l'appelant présente un cookie de session VALIDE. Sinon un tiers
+        // L2-fix (ANTI-DoS) : /api/logout est PUBLIC ; la révocation (depuis P10.23-o : l'époque du SEUL compte du
+        // jeton, l'époque globale étant réservée à un admin) ne doit se produire QUE si l'appelant présente un cookie
+        // de session VALIDE. Sinon un tiers
         // NON authentifié pourrait marteler /api/logout pour déconnecter en boucle tous les utilisateurs
         // (DoS d'auth). Le but sécu est préservé : un logout LÉGITIME (cookie valide) révoque bien les jetons.
         let st = tenant_test_state("plume-admin", "plume-editor", "admins", None); // mode 0
@@ -255,12 +256,15 @@
         bad.insert(header::COOKIE, "plume_session=not.a.valid.token".parse().unwrap());
         let _ = logout_post(State(st.clone()), bad).await;
         assert_eq!(st.session_epoch.load(std::sync::atomic::Ordering::Relaxed), e0, "cookie invalide -> AUCUN bump");
-        // (3) cookie VALIDE (frappé à l'epoch courant) -> bump (révocation légitime : le cookie exfiltré tombe).
+        assert_eq!(epoque_du_compte(&st.db.lock(), "alice").unwrap(), 0, "aucun cookie invalide n'avance l'époque d'alice");
+        // (3) cookie VALIDE (frappé à l'epoch courant) -> révocation légitime du SEUL compte (P10.23-o : l'époque
+        // d'alice avance, le cookie exfiltré tombe ; l'époque GLOBALE ne bouge plus).
         let tok = mint_session(st.session_secret.as_slice(), "alice", "admin", 3600, e0);
         let mut good = axum::http::HeaderMap::new();
         good.insert(header::COOKIE, format!("plume_session={tok}").parse().unwrap());
         let _ = logout_post(State(st.clone()), good).await;
-        assert_eq!(st.session_epoch.load(std::sync::atomic::Ordering::Relaxed), e0 + 1, "logout authentifié (cookie valide) -> révocation serveur (bump)");
+        assert_eq!(epoque_du_compte(&st.db.lock(), "alice").unwrap(), 1, "logout authentifié (cookie valide) -> révocation du compte");
+        assert_eq!(st.session_epoch.load(std::sync::atomic::Ordering::Relaxed), e0, "l'époque globale ne bouge pas");
     }
 
     #[test]

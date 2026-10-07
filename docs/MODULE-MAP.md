@@ -57,14 +57,21 @@ tripping a cross-module invariant.
 
 ### Handlers (HTTP surface) — `handlers/`
 Handler↔service↔store layering is clean. `handlers/mod.rs` is the module registry (each entry
-is annotated with its feature #). Large but flat: `query`, `search`, `soql_meta`, `cases`,
+is annotated with its feature #).
+
+Large but flat (`handlers/`): `query`, `search`, `soql_meta`, `cases`,
 `caseops`, `incidents`, `alerting`, `alerts`, `detection`, `detection_advanced`, `dashboards`,
 `dash_ergonomics`, `panneau_resolu`, `panneau_avoue`, `datamodels`, `governance`, `compliance`, `idp`,
 `field_filters`, `rba`, `threat_intel`, `tokens`, `engagement`, `freshness`, `fleet`, `system`,
 `destinations`, `notifiers`, `scheduled_reports`, `saved_queries`, `knowledge`, `playbooks`,
 `actions`, `workflow_actions`, `index_policies`, `prefs`, `users_lookups`, `admin_ui`, `overview`,
-`datasource`, `sources`, `processors`, `purge`, `ai`. (This list is prose: the guard does not
-re-read it, only the table rows below.)
+`datasource`, `sources`, `processors`, `purge`, `ai`, `hotes_declares`, `frein_du_second_facteur`,
+`transaction_validee`, `liste_bornee`, `portillon`, `mise_en_file_de_riposte`.
+
+(The list above is re-read by the guard, in both directions: every name must be a tracked
+`handlers/<name>.rs` or `handlers/<name>/`, and every first-level module of `handlers/` must be
+either named in it or claimed by a table row of this plan. It is still prose, not an entry: a name
+listed here does not count as a row for the module check.)
 
 | Group | Purpose | Ownable? |
 |-------|---------|----------|
@@ -301,6 +308,15 @@ what the browser fetches alongside.
 ---
 
 ## Security invariants — MUST NOT break {#security-invariants}
+
+Where it lives: paths resolve under `daemon/src/` — except `core/`, `guatx_core` (another crate).
+
+The line above is read by the same guard. In the "Where it lives" column, every cited path must
+exist in the tracked tree, and every symbol — `file::symbol`, or a bare `symbol` attached to the
+nearest file cited before it in the same `;`-separated clause (else the next one) — must appear in
+that file (`git grep -w`). Paths and symbols of the excepted prefixes belong to the shared crate,
+which this tree does not carry: they are skipped, not verified (and an excepted prefix the tree
+does carry is refused). In the other columns, cited paths must exist too; their symbols are prose.
 
 | Invariant | Where it lives | How it's guarded |
 |-----------|----------------|------------------|

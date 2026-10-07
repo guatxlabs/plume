@@ -375,7 +375,8 @@ mod second_facteur_preuve_du_premier_facteur_et_ticket_revoque {
     /// plus l'époque GLOBALE mais celle du SEUL compte — la fixture l'établit ainsi. LA MUTATION QUI LE FAIT ROUGIR
     /// DÉSORMAIS : retirer l'époque du compte du message signé par `mfa_ticket_sign` et vérifié par
     /// `mfa_ticket_verify`, ou retirer l'avancée de l'époque du compte de `password_post`. Celle de `P10.22-x`
-    /// (retirer `{epoch}`) reste tenue par le témoin (8), la déconnexion avançant toujours l'époque globale.
+    /// (retirer `{epoch}`) reste tenue par le témoin (8), par la révocation GLOBALE d'un administrateur (`P10.23-o` :
+    /// la déconnexion ordinaire n'avance plus que l'époque du compte).
     #[tokio::test]
     async fn sfpr_un_ticket_emis_avant_un_changement_de_mot_de_passe_ne_sert_plus() {
         let (st, _p, graine) = sfpr_etat_mfa_active("ticket-mot-de-passe", "adm");
@@ -412,14 +413,18 @@ mod second_facteur_preuve_du_premier_facteur_et_ticket_revoque {
     }
 
     // -------------------------------------------------------------------------------------
-    // (8) `P10.22-x` — UN TICKET ÉMIS AVANT UNE DÉCONNEXION (RÉVOCATION DES SESSIONS) NE SERT PLUS
+    // (8) `P10.22-x` — UN TICKET ÉMIS AVANT UNE RÉVOCATION GLOBALE DES SESSIONS NE SERT PLUS
     // -------------------------------------------------------------------------------------
 
-    /// CE QU'IL TIENT : un ticket de `adm` est émis ; une déconnexion portant une session valide révoque les
-    /// sessions (`logout_post`, l'époque avance) ; le ticket d'avant, code juste, rend `401` nommé sans session.
-    /// CONTRÔLE POSITIF : un ticket émis APRÈS la révocation ouvre la session.
+    /// CE QU'IL TIENT : un ticket de `adm` est émis ; un administrateur révoque les sessions de TOUS les comptes
+    /// (`logout_post`, portée `globale` sous session admin : l'époque GLOBALE avance, celle du compte `adm` non) ; le
+    /// ticket d'avant, code juste, rend `401` nommé sans session. CONTRÔLE POSITIF : un ticket émis APRÈS la
+    /// révocation ouvre la session.
     ///
-    /// LA MUTATION QUI LE FAIT ROUGIR : celle du témoin (7).
+    /// ADAPTÉ PAR `P10.23-o` : la déconnexion ORDINAIRE ne révoque plus que le compte du jeton. Ce témoin passe donc
+    /// par la portée `globale`, qui seule n'avance QUE l'époque globale — une déconnexion ordinaire d'`adm` avancerait
+    /// l'époque de son compte et masquerait l'absence de `{epoch}` dans le ticket. LA MUTATION QUI LE FAIT ROUGIR :
+    /// retirer `{epoch}` du message signé par `mfa_ticket_sign` et vérifié par `mfa_ticket_verify` (seul témoin).
     #[tokio::test]
     async fn sfpr_un_ticket_emis_avant_une_revocation_des_sessions_ne_sert_plus() {
         let (st, _p, graine) = sfpr_etat_mfa_active("ticket-revocation", "adm");
@@ -427,11 +432,13 @@ mod second_facteur_preuve_du_premier_facteur_et_ticket_revoque {
         let (_, _, ticket) = sfpr_connexion(&st, "adm", SFPR_MOT_DE_PASSE, ip).await;
         assert!(!ticket.is_empty(), "fixture : ticket");
         let epoque = sfpr_epoque(&st);
-        let jeton = mint_session(st.session_secret.as_slice(), "alice", "editor", st.session_ttl_s, epoque);
+        let jeton = frapper_la_session_du_compte(&st, "adm", "admin").expect("fixture : session admin");
         let mut en_tetes = axum::http::HeaderMap::new();
         en_tetes.insert(header::COOKIE, format!("plume_session={jeton}").parse().expect("en-tête"));
-        let _ = logout_post(State(st.clone()), en_tetes).await;
-        assert_eq!(sfpr_epoque(&st), epoque + 1, "fixture : la déconnexion révoque les sessions");
+        en_tetes.insert(PORTEE_DE_LA_DECONNEXION, "globale".parse().expect("en-tête"));
+        assert_eq!(logout_post(State(st.clone()), en_tetes).await.status().as_u16(), 200, "fixture : révocation globale");
+        assert_eq!(sfpr_epoque(&st), epoque + 1, "fixture : la révocation globale avance l'époque globale");
+        assert_eq!(epoque_du_compte(&st.db.lock(), "adm").expect("époque lue"), 0, "fixture : et pas l'époque du compte");
 
         let (statut, session, corps) = sfpr_second_facteur(&st, &ticket, &sfpr_code(&graine, now() / 30), ip).await;
         assert_eq!((statut, session), (401, false), "le ticket d'avant la révocation ne sert plus : {corps}");
@@ -440,6 +447,32 @@ mod second_facteur_preuve_du_premier_facteur_et_ticket_revoque {
         let (_, _, ticket) = sfpr_connexion(&st, "adm", SFPR_MOT_DE_PASSE, ip).await;
         let (statut, session, corps) = sfpr_second_facteur(&st, &ticket, &sfpr_code(&graine, now() / 30), ip).await;
         assert_eq!((statut, session), (200, true), "un ticket émis après la révocation sert : {corps}");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // (8 bis) `P10.23-o` — LA DÉCONNEXION ORDINAIRE D'UN AUTRE COMPTE NE RÉVOQUE PAS LE TICKET
+    // -------------------------------------------------------------------------------------
+
+    /// CE QU'IL TIENT : un ticket de `adm` est émis ; `alice` se déconnecte (session valide, aucune portée) : seule
+    /// l'époque d'`alice` avance ; le ticket d'`adm`, code juste, ouvre sa session (200, cookie).
+    ///
+    /// LA MUTATION QUI LE FAIT ROUGIR : la déconnexion ordinaire avance l'époque GLOBALE (la forme d'avant).
+    #[tokio::test]
+    async fn sfpr_la_deconnexion_d_un_autre_compte_laisse_le_ticket() {
+        let (st, _p, graine) = sfpr_etat_mfa_active("ticket-autre-compte", "adm");
+        let ip = "10.47.0.2";
+        let (_, _, ticket) = sfpr_connexion(&st, "adm", SFPR_MOT_DE_PASSE, ip).await;
+        assert!(!ticket.is_empty(), "fixture : ticket");
+        let epoque = sfpr_epoque(&st);
+        let jeton = frapper_la_session_du_compte(&st, "alice", "editor").expect("fixture : session d'alice");
+        let mut en_tetes = axum::http::HeaderMap::new();
+        en_tetes.insert(header::COOKIE, format!("plume_session={jeton}").parse().expect("en-tête"));
+        assert_eq!(logout_post(State(st.clone()), en_tetes).await.status().as_u16(), 200, "fixture : alice se déconnecte");
+        assert_eq!(epoque_du_compte(&st.db.lock(), "alice").expect("époque lue"), 1, "fixture : l'époque d'alice avance");
+        assert_eq!(sfpr_epoque(&st), epoque, "fixture : pas l'époque globale");
+
+        let (statut, session, corps) = sfpr_second_facteur(&st, &ticket, &sfpr_code(&graine, now() / 30), ip).await;
+        assert_eq!((statut, session), (200, true), "le ticket d'adm survit à la déconnexion d'alice : {corps}");
     }
 
     // -------------------------------------------------------------------------------------

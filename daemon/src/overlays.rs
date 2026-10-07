@@ -358,6 +358,16 @@ pub(crate) fn load_overlay_playbooks(conn: &Connection, dir: &std::path::Path) -
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let action_kind = v.get("action_kind").and_then(|x| x.as_str()).unwrap_or("ban_ip");
         let interval_s = v.get("interval_s").and_then(|x| x.as_i64()).unwrap_or(300);
+        // `P10.21-e` — même plancher de fenêtre que la création et la modification par l'API : un fichier
+        // ACTIF sous le plancher est ignoré (WARN, compté), jamais posé ni réimposé sur la ligne existante.
+        // Un fichier `enabled:false` passe : il n'arme rien, et l'ignorer laisserait allumée une ligne que
+        // ce fichier existe pour couper (l'API admet de même la désactivation d'une ligne sous le plancher).
+        let plancher = if enabled != 0 { crate::handlers::playbooks::juger_le_plancher_de_fenetre_du_playbook(window_s, interval_s) } else { Ok(()) };
+        if let Err(cause) = plancher {
+            eprintln!("[overlays] WARN playbook '{name}' ({}) : {cause} — ignoré", path.display());
+            ch.ignores += 1;
+            continue;
+        }
         // P11.5-d : la réimposition ne touche QUE ce qu'elle possède (cf. le bloc de doctrine plus haut).
         match plan_upsert(conn, "playbook", &name) {
             UpsertPlan::SkipUser => {

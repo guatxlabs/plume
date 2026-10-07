@@ -418,7 +418,8 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
 
     /// CE QU'IL TIENT : l'époque de `alice` corrompue dans `meta` (`abc`) — sa session d'époque zéro ne résout
     /// AUCUNE identité (une révocation illisible n'est pas une absence de révocation) ; sa connexion rend le `503`
-    /// NOMMÉ sans cookie ; son cookie présenté à la déconnexion ne révoque pas tout le monde ; son RÔLE reste servi à
+    /// NOMMÉ sans cookie ; son cookie présenté à la déconnexion n'est pas jugé ouvert (portée `aucune`) : rien n'est
+    /// avancé, ni l'époque globale ni la sienne (la valeur corrompue reste en place) ; son RÔLE reste servi à
     /// qui ne juge aucune session (`live_role_for`). La valeur réparée, la même session vaut.
     ///
     /// LA MUTATION QUI LE FAIT ROUGIR : lire une valeur illisible comme zéro (`interpreter_l_epoque_du_compte` rendant
@@ -442,8 +443,15 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
         let epoque = mdpa_epoque_globale(&st);
         let mut en_tetes = axum::http::HeaderMap::new();
         en_tetes.insert(header::COOKIE, format!("plume_session={session}").parse().expect("en-tête"));
-        let _ = logout_post(State(st.clone()), en_tetes).await;
+        let (statut, _, _, corps) = mdpa_corps(logout_post(State(st.clone()), en_tetes).await).await;
+        assert_eq!((statut, corps["portee"].clone()), (200, json!("aucune")), "un cookie non jugeable n'ouvre rien : {corps}");
         assert_eq!(mdpa_epoque_globale(&st), epoque, "un cookie non jugeable ne révoque pas tout le monde");
+        let brute: String = st
+            .db
+            .lock()
+            .query_row("SELECT value FROM meta WHERE key=?1", params![cle_de_l_epoque_du_compte("alice")], |r| r.get(0))
+            .expect("fixture : époque lue brute");
+        assert_eq!(brute, "abc", "l'époque illisible du compte n'est ni avancée ni réécrite");
         assert_eq!(live_role_for(&st, "alice").as_deref(), Some("editor"), "le rôle reste servi hors jugement de session");
 
         st.db
@@ -457,13 +465,14 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
     // (8) `P10.23-l` — UN COOKIE RÉVOQUÉ POUR SON COMPTE NE DÉCONNECTE PAS TOUT LE MONDE
     // -------------------------------------------------------------------------------------
 
-    /// CE QU'IL TIENT : la garde anti-DoS de `/api/logout` (seule une session VALIDE avance l'époque globale) juge
+    /// CE QU'IL TIENT : la garde anti-DoS de `/api/logout` (seule une session VALIDE avance une époque) juge
     /// aussi l'époque du compte : après la réinitialisation de `bob`, son cookie d'avant présenté à la déconnexion
-    /// n'avance PAS l'époque globale, et la session d'`alice` vaut toujours. CONTRÔLE POSITIF : le cookie COURANT de
-    /// `bob` l'avance (la déconnexion révoque toujours tout, `P10.23-o` reste ouverte).
+    /// n'avance PAS l'époque globale, ni celle de `bob` (reste 1, posée par la réinitialisation), et la session
+    /// d'`alice` vaut toujours. CONTRÔLE POSITIF : le cookie COURANT de `bob` avance l'époque de SON compte (2) — et,
+    /// depuis `P10.23-o`, plus l'époque globale.
     ///
-    /// LA MUTATION QUI LE FAIT ROUGIR : dans `session_ouverte_par`, ne plus comparer l'époque du compte (la garde
-    /// d'avant, signature seule) — le cookie révoqué de `bob` déconnecte tout le monde.
+    /// LA MUTATION QUI LE FAIT ROUGIR : dans `compte_de_la_session_ouverte`, ne plus comparer l'époque du compte (la garde
+    /// d'avant, signature seule) — le cookie révoqué de `bob` avance encore une époque.
     #[tokio::test]
     async fn mdpa_un_cookie_revoque_pour_son_compte_ne_deconnecte_pas_tout_le_monde() {
         let (st, _p) = mdpa_etat("deconnexion");
@@ -476,11 +485,15 @@ mod mot_de_passe_actuel_exige_et_revocation_par_compte {
             en_tetes.insert(header::COOKIE, format!("plume_session={jeton}").parse().expect("en-tête"));
             logout_post(State(st.clone()), en_tetes)
         };
+        assert_eq!(mdpa_epoque_du_compte(&st, "bob"), 1, "fixture : la réinitialisation avance l'époque de bob");
         let _ = deconnexion(ancien).await;
+        assert_eq!(mdpa_epoque_du_compte(&st, "bob"), 1, "le cookie révoqué de bob n'avance pas l'époque de son compte");
         assert_eq!(mdpa_epoque_globale(&st), epoque, "le cookie révoqué de bob n'avance pas l'époque globale");
         assert!(mdpa_identite(&st, &session_d_alice).is_some(), "la session d'alice vaut toujours");
 
         let _ = deconnexion(mdpa_session(&st, "bob", "editor")).await;
-        assert_eq!(mdpa_epoque_globale(&st), epoque + 1, "le cookie courant de bob déconnecte, comme avant");
+        assert_eq!(mdpa_epoque_du_compte(&st, "bob"), 2, "le cookie courant de bob révoque son compte");
+        assert_eq!(mdpa_epoque_globale(&st), epoque, "et plus tout le monde (P10.23-o)");
+        assert!(mdpa_identite(&st, &session_d_alice).is_some(), "la session d'alice vaut toujours");
     }
 }

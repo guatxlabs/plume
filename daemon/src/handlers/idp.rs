@@ -125,6 +125,12 @@ pub(crate) const CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL: &str = "ENRÔLEMENT R
      ne protégerait rien, et aucun mot de passe ne peut prouver que c'est son titulaire qui l'enrôle. Le second \
      facteur de ce compte est celui de son fournisseur d'identité. Rien n'est posé ni compté.";
 
+/// `P10.23-n` — au statut, la lecture qui dit si le compte a un mot de passe local a échoué : `enrolled`/`enabled`
+/// sont servis (la ligne `user_mfa` a été lue), `enrolable` et `graine_inerte` valent `null`.
+pub(crate) const CAUSE_COMPTE_NON_LU_AU_STATUT: &str = "COMPTE NON LU : on ne sait pas si ce compte a un mot de \
+     passe local, donc ni s'il peut enrôler un second facteur, ni si une graine posée sur lui est demandée à la \
+     connexion. Réessayez.";
+
 /// `P10.23-b` — la lecture qui dit si le compte a un mot de passe local a échoué.
 pub(crate) const CAUSE_COMPTE_NON_LU_A_L_ENROLEMENT: &str = "COMPTE NON LU, ENRÔLEMENT NI ACCEPTÉ NI REFUSÉ : \
      la lecture du compte a échoué, on ne sait donc pas s'il a un mot de passe local à prouver. Aucune graine \
@@ -226,7 +232,8 @@ fn attach_session_cookies(st: &AppState, resp: &mut Response, token: &str) {
 /// `P10.23-l` — CE « MÊME POINT » EST L'ÉPOQUE DU COMPTE (`session.rs`, `epoque_du_compte`), signée ici comme dans la
 /// session et portée par le ticket (`<b64>.<hex>.<k>` au-delà de zéro) : la réinitialisation par un administrateur
 /// et le changement du mot de passe administrateur l'avancent, et le ticket d'avant est refusé par `login_mfa_post`
-/// AVANT tout examen du code. L'époque globale reste signée : une déconnexion révoque toujours tous les tickets.
+/// AVANT tout examen du code. L'époque globale reste signée : la révocation GLOBALE d'un administrateur (`P10.23-o`,
+/// portée `globale` de la déconnexion) révoque tous les tickets ; une déconnexion ordinaire, ceux du seul compte.
 ///
 /// LE DOMAINE DU MESSAGE SIGNÉ EST SÉPARÉ DE CELUI DE LA SESSION. `mint_session` signe `<payload>|<époque>` ; signer
 /// ici la même forme ferait passer un ticket pour un cookie de session (utilisateur `mfa|<nom>`). Le préfixe
@@ -1013,7 +1020,34 @@ pub(crate) async fn mfa_status(State(st): State<AppState>, Extension(au): Extens
     let Ok(row) = row else {
         return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE);
     };
-    Json(json!({ "enrolled": row.is_some(), "enabled": row.map(|v| v != 0).unwrap_or(false) })).into_response()
+    // Le prédicat ci-dessous reprend `st.db` : le verrou de la lecture de `user_mfa` est rendu AVANT (le
+    // `parking_lot::Mutex` n'est pas réentrant).
+    drop(conn);
+    // `P10.23-n` — CE COMPTE PEUT-IL ENRÔLER, ET SA GRAINE SERT-ELLE ? Champs ADDITIFS : `enrolled`/`enabled` restent
+    // ce qu'ils étaient (la ligne, telle que lue). La SEULE lecture de `user_mfa` qui décide d'une connexion est celle
+    // de `login_post`, qui ne sert que les comptes à mot de passe local ; ni OIDC, ni SAML, ni LDAP, ni les en-têtes
+    // SSO ne la lisent. Un compte sans mot de passe local ne peut donc pas enrôler (`mfa_enroll` le refuse déjà sous
+    // `CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL`, la MÊME phrase est servie ici), et une graine posée sur lui (avant
+    // `P10.23-b`) est INERTE : jamais demandée. La console la peignait « ACTIVE ». Décision d'Hugo du 2026-09-29 :
+    // le DIRE, ne rien effacer — la graine reste en base, telle quelle.
+    // Le prédicat est celui de l'enrôlement (`le_compte_a_un_mot_de_passe_local`) : jamais deux règles. Lecture du
+    // compte ratée : `null` sur les deux champs et la cause nommée — ni « enrôlable », ni « inerte » ne sont affirmés.
+    let (enrolable, cause_non_enrolable, graine_inerte) = match le_compte_a_un_mot_de_passe_local(&st, &au.name) {
+        Ok(true) => (json!(true), Value::Null, json!(false)),
+        Ok(false) => (json!(false), json!(CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL), json!(row.is_some())),
+        Err(e) => {
+            eprintln!("[mfa] WARN compte '{}' NON lu au statut : {e}", au.name);
+            (Value::Null, json!(CAUSE_COMPTE_NON_LU_AU_STATUT), Value::Null)
+        }
+    };
+    Json(json!({
+        "enrolled": row.is_some(),
+        "enabled": row.map(|v| v != 0).unwrap_or(false),
+        "enrolable": enrolable,
+        "cause_non_enrolable": cause_non_enrolable,
+        "graine_inerte": graine_inerte,
+    }))
+    .into_response()
 }
 
 /// POST /api/mfa/enroll {password} — génère une graine TOTP (base32) + l'URI otpauth (show-once) ; enregistre en

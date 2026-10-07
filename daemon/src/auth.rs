@@ -1286,9 +1286,10 @@ pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<
     let mut sso_grant_map: Option<HashMap<String, String>> = None;
     let mut sso_superadmin = false;
     if let Some(tok) = session_tok.as_deref() {
-        // L2 : vérif HMAC LIÉE à l'epoch de session courant (révocation serveur : un cookie antérieur à un
-        // logout échoue ici). TTL conservé. `P10.23-l` : le jeton rend aussi l'époque de SON compte, jugée
-        // en mode 0 avec le rôle live (un cookie antérieur à un changement de mdp de ce compte échoue là).
+        // L2 : vérif HMAC LIÉE à l'epoch de session courant (révocation serveur : un cookie antérieur à une
+        // révocation GLOBALE échoue ici). TTL conservé. `P10.23-l` : le jeton rend aussi l'époque de SON compte, jugée
+        // en mode 0 avec le rôle live (un cookie antérieur à un changement de mdp de ce compte ou, `P10.23-o`, à sa
+        // déconnexion ordinaire échoue là).
         let epoch = st.session_epoch.load(std::sync::atomic::Ordering::Relaxed);
         if let Some((u, r, epoque_du_compte)) = verify_session_du_compte(st.session_secret.as_slice(), tok, epoch) {
             if st.multi_tenant {

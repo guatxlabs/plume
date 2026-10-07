@@ -12620,6 +12620,74 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(!/NON LU/.test(sainEnrolement96), `(96d) « NON LU » est peint sur un enrôlement ABOUTI : « ${sainEnrolement96} »`);
     await modIdp96.loadMfa(); await laisser96();   // repli du panneau : l'état du banc ne fuit pas vers la suite
 
+    // ══ (d bis) `P10.23-n` — UNE GRAINE QUE LA CONNEXION NE DEMANDE JAMAIS N'EST PAS PEINTE « ACTIVE » ═══
+    // Les phrases servies sont LUES dans le démon, jamais recopiées ; le démon doit encore servir les trois
+    // champs additifs, faute de quoi ce témoin refuse de conclure.
+    const CAUSE_SANS_MDP96 = litteralRust96(srcIdp96, "CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL");
+    const CAUSE_COMPTE_STATUT96 = litteralRust96(srcIdp96, "CAUSE_COMPTE_NON_LU_AU_STATUT");
+    instrument96(CAUSE_SANS_MDP96.includes("MOT DE PASSE LOCAL") && CAUSE_COMPTE_STATUT96.includes("COMPTE NON LU"),
+      "`CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL` ou `CAUSE_COMPTE_NON_LU_AU_STATUT` n'est plus lisible dans daemon/src/handlers/idp.rs");
+    instrument96(/"enrolable": enrolable,/.test(srcIdp96) && /"cause_non_enrolable": cause_non_enrolable,/.test(srcIdp96)
+      && /"graine_inerte": graine_inerte,/.test(srcIdp96),
+      "`mfa_status` ne sert plus `enrolable` / `cause_non_enrolable` / `graine_inerte` (daemon/src/handlers/idp.rs) : le corps fabriqué ci-dessous n'existe plus");
+    // (1) graine posée, ligne `enabled`, compte SANS mot de passe local : INERTE, ni « ACTIVE » ni geste.
+    reponsesServies96 = { "GET /api/mfa/status": { corps: { enrolled: true, enabled: true, enrolable: false, cause_non_enrolable: CAUSE_SANS_MDP96, graine_inerte: true } } };
+    await modIdp96.loadMfa(); await laisser96();
+    const inerte96 = nu96(statut96);
+    exiger(!/ACTIVE/.test(inerte96), `(96d-bis) une graine INERTE (compte sans mot de passe local) est peinte « ACTIVE » : « ${inerte96} »`);
+    exiger(/INERTE/.test(inerte96), `(96d-bis) la graine inerte n'est pas DITE inerte à l'écran : « ${inerte96} »`);
+    exiger(boutons96(actions96).length === 0, `(96d-bis) ${boutons96(actions96).length} geste(s) offerts sur une graine inerte : la décision du 2026-09-29 est de la DIRE, sans désactivation ni enrôlement promis`);
+    // (2) aucun second facteur, compte non enrôlable : la cause du démon, ni « inactive » ni « Activer ».
+    reponsesServies96 = { "GET /api/mfa/status": { corps: { enrolled: false, enabled: false, enrolable: false, cause_non_enrolable: CAUSE_SANS_MDP96, graine_inerte: false } } };
+    await modIdp96.loadMfa(); await laisser96();
+    const nonEnrolable96 = nu96(statut96);
+    exiger(nonEnrolable96.includes(CAUSE_SANS_MDP96), `(96d-bis) le compte non enrôlable ne dit pas la cause SERVIE par le démon : « ${nonEnrolable96} »`);
+    exiger(!/inactive/i.test(nonEnrolable96), `(96d-bis) « inactive. Active-la » est peint sur un compte qui ne PEUT PAS enrôler : « ${nonEnrolable96} »`);
+    exiger(boutons96(actions96).length === 0, `(96d-bis) « Activer la MFA » est offert sur un compte dont le démon refuse l'enrôlement`);
+    // (3) le compte n'a pas été lu au statut : la phrase nominale reste, la cause servie est collée sous elle.
+    reponsesServies96 = { "GET /api/mfa/status": { corps: { enrolled: true, enabled: true, enrolable: null, cause_non_enrolable: CAUSE_COMPTE_STATUT96, graine_inerte: null } } };
+    await modIdp96.loadMfa(); await laisser96();
+    const compteNonLu96 = nu96(statut96);
+    exiger(compteNonLu96.includes(CAUSE_COMPTE_STATUT96), `(96d-bis) le compte NON LU au statut : la cause servie n'est pas affichée, « ACTIVE » est peint comme établi : « ${compteNonLu96} »`);
+    // (4) CONTRÔLE POSITIF : compte à mot de passe local, graine armée — « ACTIVE » et le geste de désactivation.
+    reponsesServies96 = { "GET /api/mfa/status": { corps: { enrolled: true, enabled: true, enrolable: true, cause_non_enrolable: null, graine_inerte: false } } };
+    await modIdp96.loadMfa(); await laisser96();
+    const arme96 = nu96(statut96);
+    exiger(/ACTIVE/.test(arme96) && !/INERTE/.test(arme96) && !arme96.includes(CAUSE_COMPTE_STATUT96),
+      `(96d-bis) le chemin nominal ne peint pas « ACTIVE » sans aveu — les verdicts ci-dessus ne porteraient sur rien : « ${arme96} »`);
+    exiger(boutons96(actions96).length === 1, `(96d-bis) une MFA armée n'offre pas son geste de désactivation : ${boutons96(actions96).length} geste(s)`);
+    // Aucun faux aveu sur le chemin nominal : ni la phrase « compte non lu », ni aucun nœud `.bad` — la cause n'y
+    // est jamais servie, juger son seul texte ne verrait pas un aveu peint à vide (« « null » »).
+    const aveuxBad96 = (h) => cueillir96(h, (e) => !!(e.classList && e.classList.contains("bad")), []);
+    exiger(!/pas lu le compte/.test(arme96) && !/« null »/.test(arme96) && aveuxBad96(statut96).length === 0,
+      `(96d-bis) un aveu « compte non lu » est peint sur un statut LU (MFA armée) : « ${arme96} »`);
+    // (4 bis) CONTRÔLE POSITIF, MFA inactive sur un compte enrôlable : ni aveu, ni geste inerte.
+    reponsesServies96 = { "GET /api/mfa/status": { corps: { enrolled: false, enabled: false, enrolable: true, cause_non_enrolable: null, graine_inerte: false } } };
+    await modIdp96.loadMfa(); await laisser96();
+    const inactifLu96 = nu96(statut96);
+    exiger(/inactive/.test(inactifLu96) && !/pas lu le compte/.test(inactifLu96) && aveuxBad96(statut96).length === 0,
+      `(96d-bis) un aveu « compte non lu » est peint sur un statut LU (MFA inactive) : « ${inactifLu96} »`);
+    exiger(boutons96(actions96).length === 1 && boutons96(actions96)[0].getAttribute("aria-disabled") === null,
+      "(96d-bis) « Activer la MFA » est inerte (ou absent) sur un compte LU et enrôlable");
+    // (5) compte NON LU au statut, aucune MFA : « Activer la MFA » reste offert mais INERTE et motivé, et son clic ne
+    // part pas au démon (`mfa_enroll` refuserait `CompteNonLu`) — grammaire `P10.20-b`.
+    reponsesServies96 = { "GET /api/mfa/status": { corps: { enrolled: false, enabled: false, enrolable: null, cause_non_enrolable: CAUSE_COMPTE_STATUT96, graine_inerte: null } } };
+    await modIdp96.loadMfa(); await laisser96();
+    const inactifNonLu96 = nu96(statut96);
+    exiger(inactifNonLu96.includes(CAUSE_COMPTE_STATUT96) && aveuxBad96(statut96).length === 1,
+      `(96d-bis) le compte NON LU sans MFA : la cause servie n'est pas avouée sous « inactive » : « ${inactifNonLu96} »`);
+    const gesteNonLu96 = boutons96(actions96)[0];
+    exiger(!!gesteNonLu96 && gesteNonLu96.getAttribute("aria-disabled") === "true" && /PAS été lu au statut/.test(gesteNonLu96.title || ""),
+      "(96d-bis) « Activer la MFA » est offert comme applicable sur un compte NON LU au statut : le démon refuserait l'enrôlement");
+    const appelsAvantNonLu96 = appels96.length;
+    // Le clic n'est PAS attendu : un geste qui partirait ouvrirait la modale du mot de passe et ne rendrait jamais la main.
+    const ditNonLu96 = gesteNonLu96 ? await ditAuGeste96(async () => { gesteNonLu96.onclick(); await laisser96(); }) : [];
+    exiger(!appels96.slice(appelsAvantNonLu96).some((a) => a === "POST /api/mfa/enroll"),
+      "(96d-bis) le clic sur « Activer la MFA » d'un compte NON LU part au démon");
+    exiger(ditNonLu96.length === 1 && /PAS été lu au statut/.test(ditNonLu96[0]), `(96d-bis) le clic refusé ne dit pas son refus : ${JSON.stringify(ditNonLu96)}`);
+    reponsesServies96 = { "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } } };
+    await modIdp96.loadMfa(); await laisser96();
+
     // ══ (e) LES PRÉFÉRENCES NON LUES : LA PERSONNE L'APPREND, ET LE MIROIR NE PART PAS AU DÉMON ═════
     const appelsAvantPrefs96 = appels96.length;
     reponsesServies96 = { "GET /api/prefs": { statut: 503, corps: { error: CAUSE_PREFS96, id: "plume-e1-2" } } };

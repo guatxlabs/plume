@@ -106,10 +106,12 @@ pub(crate) struct AppState {
     pub(crate) session_secret: Arc<Vec<u8>>,
     pub(crate) session_ttl_s: i64,
     // L2 (RÉVOCATION DE SESSION) — EPOCH GLOBAL de session mélangé au HMAC des jetons (mint/verify_session).
-    // Chargé de meta (`session_epoch`) au boot, persisté. INCRÉMENTÉ par /api/logout ET par un changement de
-    // mot de passe -> TOUS les cookies antérieurs (y compris un cookie EXFILTRÉ) échouent à la vérif HMAC =
-    // révocation SERVEUR effective (pas seulement l'effacement navigateur). Le TTL existant est conservé
-    // (double borne : temps + epoch). Mode 0/1 identiques (mécanisme d'auth cookie global, pas per-tenant).
+    // Chargé de meta (`session_epoch`) au boot, persisté. INCRÉMENTÉ par la SEULE révocation globale : la
+    // déconnexion de portée `globale`, réservée à un admin et tracée (`P10.23-o`), et toute déconnexion en mode 1
+    // -> TOUS les cookies antérieurs, de TOUS les comptes, échouent à la vérif HMAC. Un changement ou une
+    // réinitialisation de mot de passe et la déconnexion ordinaire (mode 0) n'y touchent PAS : ils avancent
+    // l'époque du SEUL compte (`session_epoch:<nom>`, `avancer_l_epoque_du_compte`, `P10.23-l`). Le TTL existant
+    // est conservé (double borne : temps + epoch).
     pub(crate) session_epoch: Arc<std::sync::atomic::AtomicI64>,
     // L1 (GARDE DISQUE/CARDINALITÉ À L'INGEST — anti disk-pressure, rejeu de l'incident) — seuils via cfg
     // (env/conf), posés TRÈS au-dessus d'un batch légitime : on ne coupe QU'un flux pathologique / un disque

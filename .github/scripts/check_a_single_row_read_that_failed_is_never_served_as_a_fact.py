@@ -250,11 +250,14 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # RE-DÉRIVÉS le 2026-10-07 (`P10.20-b`, `case_create`) : relevé de l'arbre ce jour-là, après le correctif — 65 sites
 # sur 25 fichiers (`case_create` perd son site ; `cases.rs` garde `case_apply_update` et `case_set_archived`, aucun
 # fichier ne sort). Même règle : 65 -> 44 (69 % = 44,85), 25 -> 16 (65 % = 16,25).
+# RE-DÉRIVÉS le 2026-10-08 (`P10.20-b`, rang trois : `rollup_risk`) : relevé de l'arbre ce jour-là, après le correctif —
+# 62 sites sur 24 fichiers (`rollup_risk` perd ses trois sondes, `rba.rs` sort du relevé). Même règle : 62 -> 42
+# (69 % = 42,78), 24 -> 15 (65 % = 15,6).
 # Le relevé dont les planchers sont dérivés, cité par le message de refus (une seule source, jamais recopiée).
-RELEVE_SITES = 65
-RELEVE_FICHIERS = 25
-PLANCHER_SITES = 44
-PLANCHER_FICHIERS = 16
+RELEVE_SITES = 62
+RELEVE_FICHIERS = 24
+PLANCHER_SITES = 42
+PLANCHER_FICHIERS = 15
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -384,9 +387,6 @@ DEFAUTS_RANG_3_INTERNE = {
     # que ce jumeau de `playbooks_list` est au rang trois quand l'autre est au rang deux — celui-ci ne
     # sert rien, il s'abstient.
     ("daemon/src/handlers/playbooks.rs", "run_playbooks"): ("unwrap_or_else",),
-    # TROIS sondes d'existence du rollup de risque retombent à `false` : le tour de rollup est sauté,
-    # et aucune alerte de risque n'est levée. Rien n'est servi ; la détection, elle, n'a pas eu lieu.
-    ("daemon/src/handlers/rba.rs", "rollup_risk"): ("unwrap_or", "unwrap_or", "unwrap_or"),
     # `.ok()?` sur la ligne du dossier : la projection ENTIÈRE (tactique dominante, recommandation,
     # catalogue) disparaît du corps de dossier. RÉSERVE ÉCRITE : son unique appelant de production
     # (`incidents.rs:608`) n'a PAS été relu pour ce lot, donc le rang trois est le plus prudent des
@@ -1065,7 +1065,7 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-07 du relevé de ce jour-là : "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-08 du relevé de ce jour-là : "
               f"{RELEVE_SITES} sites sur {RELEVE_FICHIERS} fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "

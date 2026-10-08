@@ -52,9 +52,15 @@ Elle éprouve les capteurs du dépôt, pas ceux de l'hôte (famille de `P10.22-i
 l'hôte n'est pas connue du dépôt. Elle ne joue que les awk présents (gawk, mawk) : l'image
 d'intégration n'a pas mawk 20200120, d'où la partie 1 (`P10.23-k`). Elle tient l'ÉCHAPPEMENT, pas la
 LECTURE : `web.sh` et `minio.sh` lisent un texte JSON sans le décoder — une valeur y est stockée
-encodée (`\\\\` pour un antislash, `\\u003c` pour `<`) et coupée à son premier guillemet échappé.
-Les valeurs de `dataaccess.sh` que `auditd` écrit en hexadécimal (espace, guillemet, non-ASCII) n'y
-sont pas décodées non plus. Un octet nul n'est pas éprouvé.
+encodée (`\\\\` pour un antislash, `\\u003c` pour `<`) et coupée à son premier guillemet échappé
+(`P10.23-x`). Les noms que `auditd` écrit en hexadécimal (espace, guillemet, contrôle, non-ASCII), eux,
+SONT décodés par `dataaccess.sh` (`P10.23-z`) : son banc les écrit comme `auditd` et rejoue en plus
+`collectors/dataaccess-hex.corpus` (octet nul, contrôles 0x09/0x1B/0x1F, DEL, octet non UTF-8, bornes
+de l'UTF-8 strict — surlongs E0/F0, substitut ED, F4 au-delà de 8F, tête F5, octet de suite invalide, plus
+petits et plus grands points de chaque longueur —, longueur impaire, valeur entre guillemets) ; il exige le
+chemin DÉCODÉ dans `path`, `comm` ET le `message`. L'hypothèse du décodage — une valeur NUE et hexadécimale est un
+encodage du noyau — n'est pas éprouvable ici : un journal écrit par un autre que le noyau peut la démentir.
+Un octet nul n'est éprouvé que par ce corpus, pas dans les autres capteurs.
 Sortie : 0 tenu · 1 défaut · 2 rien n'a été mesuré (lib ou capteur absent, commande absente, aucun
 awk, juge ou lecture de forme non discriminants).
 """
@@ -87,8 +93,8 @@ VALEURS = [
     ("antislash puis guillemet", "x\\\"y"),
     ("guillemet seul", "x\"y"),
 ]
-# Contrôles : la fonction les rend en espace (JSON interdit un contrôle brut ; auditd joint ses clés
-# multiples par \x1d). \x7f (DEL) est permis par JSON et passe tel quel.
+# Contrôles : la fonction les rend en espace (JSON interdit un contrôle brut ; 0x1D sépare les champs
+# du format ENRICHED d'auditd, le noyau joint les clés multiples par 0x01). \x7f (DEL) est permis par JSON et passe tel quel.
 VALEURS_DE_CONTROLE = [("SOH en tête", "\x01debut"), ("tabulation", "a\tb"), ("retour chariot", "cr\rfin"),
                        ("séparateur de groupe d'auditd", "cle1\x1dcle2"), ("DEL", "del\x7f")]
 CONTROLE = re.compile(r"[\x01-\x1f]")
@@ -290,22 +296,59 @@ def banc_dataacl(bac, env):
     return attendus
 
 
-# auditd écrit un champ entre guillemets tant qu'il ne porte ni guillemet, ni espace, ni contrôle, ni
-# octet hors ASCII (sinon en hexadécimal) : l'antislash y passe BRUT.
+# auditd écrit un champ entre guillemets tant qu'il ne porte ni guillemet, ni octet hors de `!`..`~`
+# (espace, contrôle, non-ASCII) ; sinon en hexadécimal majuscule, SANS guillemets (`audit_log_untrustedstring`
+# du noyau). L'antislash passe donc BRUT entre guillemets ; une valeur à guillemet passe en hexadécimal, et le
+# capteur doit rendre le texte DÉCODÉ (`P10.23-z`).
+CORPUS_HEX_DATAACCESS = os.path.join(CAPTEURS, "dataaccess-hex.corpus")
+
+
+def comme_auditd(v):
+    if any(c == '"' or not "!" <= c <= "~" for c in v):
+        return v.encode("utf-8").hex().upper()
+    return f'"{v}"'
+
+
+def cas_du_corpus_hex():
+    """(cas, jeton name, jeton comm, path attendu, comm attendu) de `dataaccess-hex.corpus`."""
+    cas = []
+    with open(CORPUS_HEX_DATAACCESS, encoding="utf-8") as fh:
+        for n, ligne in enumerate(fh, 1):
+            ligne = ligne.rstrip("\n")
+            if not ligne or ligne.startswith("#"):
+                continue
+            champs = ligne.split("\t")
+            if len(champs) != 5:
+                refus(f"collectors/dataaccess-hex.corpus:{n} : {len(champs)} colonne(s) au lieu de cinq")
+            cas.append((champs[0], champs[1], champs[2], json.loads(champs[3]), json.loads(champs[4])))
+    return cas
+
+
+def nom_du_compte(auid):
+    """Ce que `uname()` du capteur rend : `getent passwd`, sinon le numéro."""
+    if shutil.which("getent") is None:
+        return auid
+    r = subprocess.run(["getent", "passwd", auid], capture_output=True, text=True, timeout=10)
+    return r.stdout.split("\n", 1)[0].split(":", 1)[0] or auid
+
+
 def banc_dataaccess(bac, env):
     lignes, attendus = [], []
-    for i, (_, v) in enumerate(VALEURS):
-        if '"' in v or " " in v:
-            continue
-        comm = v[:15]
+    compte = nom_du_compte("1000")
+    entrees = [(comme_auditd("/srv/donnees/" + v), comme_auditd(v[:15]), "/srv/donnees/" + v, v[:15])
+               for _, v in VALEURS]
+    entrees += [(nom, comm, chemin, comm_voulu) for _, nom, comm, chemin, comm_voulu in cas_du_corpus_hex()]
+    for i, (nom, comm, chemin, comm_voulu) in enumerate(entrees):
         eid = "audit(1758650000.%03d:%d)" % (100 + i, 4000 + i)
         lignes.append(f"type=SYSCALL msg={eid}: arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=7ffc0000 "
                       f"a2=0 a3=0 items=1 ppid=1 pid={200 + i} auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 "
-                      f'fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=1 comm="{comm}" exe="/usr/bin/cat" '
+                      f'fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=1 comm={comm} exe="/usr/bin/cat" '
                       f'subj=unconfined key="plume_data"')
-        lignes.append(f'type=PATH msg={eid}: item=0 name="/srv/donnees/{v}" inode={10 + i} dev=fd:00 mode=0100644 '
+        lignes.append(f"type=PATH msg={eid}: item=0 name={nom} inode={10 + i} dev=fd:00 mode=0100644 "
                       f"ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0")
-        attendus.append({"path": "/srv/donnees/" + v, "comm": comm})
+        # Le message est jugé aussi : il porte le nom DÉCODÉ, échappé une seule fois (P10.23-z).
+        attendus.append({"path": chemin, "comm": comm_voulu,
+                         "message": f"dataaccess: {compte} read {chemin} (key=plume_data, via {comm_voulu})"})
     _ecrire(os.path.join(bac, "audit.log"), "\n".join(lignes) + "\n")
     env.update(PLUME_AUDIT_LOG=os.path.join(bac, "audit.log"))
     return attendus
@@ -358,7 +401,8 @@ BANCS = {
     "web.sh": (banc_web, lambda ev: True, {"ua": _champ("ua"), "path": _champ("path")}),
     "minio.sh": (banc_minio, lambda ev: _champ("kind")(ev) == "user", {"subject": _champ("subject")}),
     "dataacl.sh": (banc_dataacl, lambda ev: "/arbre/" in (_champ("path")(ev) or ""), {"path": _champ("path")}),
-    "dataaccess.sh": (banc_dataaccess, lambda ev: True, {"path": _champ("path"), "comm": _champ("comm")}),
+    "dataaccess.sh": (banc_dataaccess, lambda ev: True, {"path": _champ("path"), "comm": _champ("comm"),
+                                                           "message": lambda ev: ev.get("message")}),
     "kube-rbac.sh": (banc_kube_rbac, lambda ev: str(_champ("binding")(ev)).startswith("lien-"),
                      {"subject": _champ("subject")}),
     "mail.sh": (banc_mail, lambda ev: True, {"message": lambda ev: ev.get("message")}),
@@ -448,10 +492,20 @@ def main():
     for capteur in BANCS:
         if capteur not in fichiers:
             refus(f"`collectors/{capteur}` introuvable")
+    if not os.path.exists(CORPUS_HEX_DATAACCESS):
+        refus("`collectors/dataaccess-hex.corpus` introuvable (banc de `dataaccess.sh`, `P10.23-z`)")
     manques = [nom for nom, vrai in PIEGES_EXIGES.items() if not any(vrai(v) for _, v in VALEURS)]
     if manques:
         refus("table des valeurs sous son plancher : " + " ; ".join(manques))
     fautes, appelants = lire_la_forme(fichiers)
+    # P10.23-z : le décodage du nom (boucle octet par octet de jhex()) vient APRÈS le filtre auid et le
+    # plafond de 600 ; sinon chaque PATH écarté le paie (3000 noms hex de 3,9 Ko : 4,5 s -> 14,5 s sous mawk).
+    da = fichiers.get("dataaccess.sh", "")
+    p_auid, p_plafond = da.find('if(au==""||'), da.find("if(n>=600)next")
+    p_decode = da.find('jval(fraw($0,"name"))')
+    if min(p_auid, p_plafond, p_decode) < 0 or not p_auid < p_plafond < p_decode:
+        fautes.append("collectors/dataaccess.sh décode le nom (`jval(fraw($0,\"name\"))`) avant le filtre auid "
+                      "ou le plafond de 600 : chaque PATH écarté paie la boucle de jhex()")
     for nom in sorted(appelants - set(BANCS)):
         fautes.append(f"collectors/{nom} échappe par `jesc` mais n'est pas joué par cette garde — ajouter son banc")
     for nom in sorted(set(BANCS) - appelants):

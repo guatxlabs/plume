@@ -94,6 +94,13 @@ pub(crate) const CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE: &str =
      membre — un retrait demandé n'a PAS eu lieu, l'accès de ce membre est TOUJOURS EN PLACE. La demande \
      est atomique : AUCUNE de ses opérations n'est appliquée, et la demande entière peut être rejouée \
      telle quelle. Rien n'est attesté.";
+// `P10.21-v` — la lecture des porteurs du rôle (le `replace` qui retire les absents) n'est pas une écriture : sa
+// cause est la sienne, la conséquence est la même (rien d'appliqué, les accès en place).
+pub(crate) const CAUSE_SCIM_PORTEURS_DU_ROLE_ILLISIBLES: &str =
+    "PORTEURS DU RÔLE ILLISIBLES : la base du plan de contrôle n'a pas pu lire les membres actuels du rôle — \
+     le remplacement n'a PAS eu lieu, les accès de ses membres sont TOUJOURS EN PLACE. La demande est \
+     atomique : AUCUNE de ses opérations n'est appliquée, et la demande entière peut être rejouée telle \
+     quelle. Rien n'est attesté.";
 pub(crate) const CAUSE_SCIM_UTILISATEUR_ILLISIBLE: &str =
     "UTILISATEUR ILLISIBLE : la base du plan de contrôle n'a pas pu lire l'utilisateur visé — ni sa \
      présence ni son absence n'est affirmée, et rien n'est modifié. La même demande peut être rejouée \
@@ -516,8 +523,214 @@ pub(crate) async fn scim_groups_list(State(st): State<AppState>, Extension(_ctx)
         .into_response()
 }
 
-/// PATCH /scim/v2/Groups/{role} — ajoute/retire des membres (grant du rôle dans le tenant du token). Le rôle
-/// (displayName) DOIT être valide (valid_grant_role) -> jamais super-admin, jamais un rôle indéfini.
+// `P10.21-v` — LES OPÉRATIONS D'UN PATCH DE GROUPE SONT JUGÉES AVANT D'ÊTRE JOUÉES (RFC 7644 §3.5.2).
+// MESURÉ sur la forme d'avant (témoins `pgoj_`, par mutation) : une `op` hors `add`/`remove`/`replace` tombait
+// dans un bras `_ => {}` et la demande rendait `200` ; un membre absent de `platform_user` était SAUTÉ en `200` ;
+// `replace` était un `add` (les membres absents de l'ensemble servi GARDAIENT leur droit) ; et `path` n'était
+// jamais lu, si bien que le retrait au format RFC — `path: members[value eq "<id>"]`, sans `value`, la forme
+// qu'émettent les fournisseurs d'identité usuels — retirait ZÉRO membre en `200` : l'accès restait en place
+// pendant que l'IdP le croyait retiré.
+//
+// LES FORMES ADMISES (toute autre est un `400` SCIM nommé, la demande entière refusée, rien d'appliqué) :
+//  * `op` : `add`, `remove`, `replace`, sans égard à la casse (`Add`, `Remove`, `Replace` d'Azure AD) ;
+//  * `path` absent, `value` liste `[{value:id}]` (la forme d'avant, gardée) ou objet `{members:[…]}`
+//    (RFC 7644 §3.5.2.1) — ses autres attributs (`displayName`, `externalId`, `id`) n'ont pas de sens pour un
+//    groupe qui EST un rôle : ignorés, comme avant ;
+//  * `path` = `members` avec `value` liste ; `remove` sans `value` = retirer TOUS les membres du rôle (RFC
+//    §3.5.2.2), joué comme un `replace` par l'ensemble vide, donc sous l'anti-verrouillage ;
+//  * `path` = `members[value eq "id"]` pour `remove` et `add` (pas pour `replace` : un membre n'a pas
+//    d'attribut que ce dépôt sache remplacer) ;
+//  * `path` = `displayName` ou `externalId` : accepté, ignoré (renommage par l'IdP).
+// Refus : `op` inconnue -> `invalidSyntax` ; `path` inconnu -> `invalidPath` ; filtre illisible ->
+// `invalidFilter` ; `value` mal formée -> `invalidValue` ; `remove` sans `path` ni `value`, ou membre qui n'est
+// pas une identité connue -> `noTarget`.
+
+/// Le geste d'une opération de groupe, JUGÉ : la liste des membres visés, ou rien (attribut ignoré).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GesteDeGroupeScim {
+    Ajouter(Vec<String>),
+    Retirer(Vec<String>),
+    /// L'ensemble servi DEVIENT les membres du rôle dans le tenant : les absents perdent ce droit.
+    Remplacer(Vec<String>),
+    /// Un attribut de groupe sans effet sur les droits (`displayName`, `externalId`) : rien n'est écrit.
+    Aucun,
+}
+
+/// Un `400` SCIM 2.0 avec son `scimType` (RFC 7644 §3.12) : la demande est refusée ENTIÈRE.
+fn scim_refuser_la_demande(scim_type: &str, detail: &str) -> Response {
+    let detail = format!("{detail} ; la demande est atomique, aucune de ses opérations n'est appliquée");
+    (
+        StatusCode::BAD_REQUEST,
+        [(header::CONTENT_TYPE, "application/scim+json")],
+        json!({ "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"], "scimType": scim_type, "detail": detail, "status": "400" }).to_string(),
+    )
+        .into_response()
+}
+
+/// `members[value eq "id"]` -> `Some(id)` ; toute autre forme de filtre -> `None`. Mots-clés sans égard à la casse.
+fn scim_membre_du_filtre(path: &str) -> Option<String> {
+    let (tete, reste) = path.split_once('[')?;
+    if !tete.trim().eq_ignore_ascii_case("members") {
+        return None;
+    }
+    let interieur = reste.strip_suffix(']')?.trim();
+    let (attribut, reste) = interieur.split_once(char::is_whitespace)?;
+    let (operateur, valeur) = reste.trim_start().split_once(char::is_whitespace)?;
+    if !attribut.eq_ignore_ascii_case("value") || !operateur.eq_ignore_ascii_case("eq") {
+        return None;
+    }
+    let id = valeur.trim().strip_prefix('"')?.strip_suffix('"')?;
+    (!id.is_empty() && !id.contains('"')).then(|| id.to_string())
+}
+
+/// Les membres d'une liste `[{value:id}, …]` ; un élément sans `value` texte refuse la demande.
+fn scim_membres_de_la_liste(n: usize, liste: &[Value]) -> Result<Vec<String>, Response> {
+    liste
+        .iter()
+        .map(|m| {
+            m.get("value").and_then(|x| x.as_str()).map(String::from).ok_or_else(|| {
+                scim_refuser_la_demande("invalidValue", &format!("opération n°{n} : un membre sans `value` texte"))
+            })
+        })
+        .collect()
+}
+
+/// `P10.21-v` — un `path` qualifié par l'URN du schéma Group (RFC 7644 §3.10, `urn:…:Group:members`) vaut son
+/// attribut nu ; sans égard à la casse (RFC 7643 §2.1).
+fn scim_path_sans_urn_de_groupe(path: &str) -> &str {
+    const URN_DU_GROUPE: &str = "urn:ietf:params:scim:schemas:core:2.0:Group:";
+    match path.get(..URN_DU_GROUPE.len()) {
+        Some(tete) if tete.eq_ignore_ascii_case(URN_DU_GROUPE) => &path[URN_DU_GROUPE.len()..],
+        _ => path,
+    }
+}
+
+/// `P10.21-v` — JUGE toutes les opérations AVANT qu'aucune ne soit jouée (aucune lecture de la base).
+fn scim_juger_les_operations_de_groupe(ops: &[Value]) -> Result<Vec<GesteDeGroupeScim>, Response> {
+    let mut gestes = Vec::with_capacity(ops.len());
+    for (i, op) in ops.iter().enumerate() {
+        let n = i + 1;
+        let action = op.get("op").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+        if !matches!(action.as_str(), "add" | "remove" | "replace") {
+            return Err(scim_refuser_la_demande(
+                "invalidSyntax",
+                &format!("opération n°{n} : `op` inconnue — seules add, remove et replace sont admises (RFC 7644 §3.5.2)"),
+            ));
+        }
+        let path = match op.get("path") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(p)) => Some(scim_path_sans_urn_de_groupe(p.trim()).to_string()),
+            Some(_) => return Err(scim_refuser_la_demande("invalidPath", &format!("opération n°{n} : `path` n'est pas un texte"))),
+        };
+        let value = op.get("value").filter(|v| !v.is_null());
+        let membres_servis = |v: Option<&Value>| -> Result<Option<Vec<String>>, Response> {
+            match v {
+                None => Ok(None),
+                Some(Value::Array(liste)) => scim_membres_de_la_liste(n, liste).map(Some),
+                Some(_) => Err(scim_refuser_la_demande("invalidValue", &format!("opération n°{n} : `value` des membres n'est pas une liste"))),
+            }
+        };
+        let selon = |membres: Vec<String>| match action.as_str() {
+            "add" => GesteDeGroupeScim::Ajouter(membres),
+            "remove" => GesteDeGroupeScim::Retirer(membres),
+            _ => GesteDeGroupeScim::Remplacer(membres),
+        };
+        let geste = match path.as_deref() {
+            None => match value {
+                Some(Value::Array(_)) => selon(membres_servis(value)?.unwrap_or_default()),
+                Some(Value::Object(attributs)) => match membres_servis(attributs.get("members").filter(|v| !v.is_null()))? {
+                    Some(membres) => selon(membres),
+                    None if action == "remove" => {
+                        return Err(scim_refuser_la_demande("noTarget", &format!("opération n°{n} : `remove` sans `path` ni membres")))
+                    }
+                    None => GesteDeGroupeScim::Aucun,
+                },
+                None if action == "remove" => {
+                    return Err(scim_refuser_la_demande("noTarget", &format!("opération n°{n} : `remove` sans `path` ni `value`")))
+                }
+                _ => return Err(scim_refuser_la_demande("invalidValue", &format!("opération n°{n} : `value` absente ou mal formée"))),
+            },
+            Some(p) if p.eq_ignore_ascii_case("members") => match membres_servis(value)? {
+                Some(membres) => selon(membres),
+                None if action == "remove" => GesteDeGroupeScim::Remplacer(Vec::new()),
+                None => return Err(scim_refuser_la_demande("invalidValue", &format!("opération n°{n} : `value` requise"))),
+            },
+            Some(p) if p.eq_ignore_ascii_case("displayName") || p.eq_ignore_ascii_case("externalId") => GesteDeGroupeScim::Aucun,
+            Some(p) if p.contains('[') => match (scim_membre_du_filtre(p), action.as_str()) {
+                (Some(id), "add" | "remove") => selon(vec![id]),
+                (Some(_), _) => {
+                    return Err(scim_refuser_la_demande("invalidPath", &format!("opération n°{n} : `replace` sur un membre filtré n'est pas admis")))
+                }
+                (None, _) => {
+                    return Err(scim_refuser_la_demande(
+                        "invalidFilter",
+                        &format!("opération n°{n} : seul le filtre `members[value eq \"id\"]` est admis"),
+                    ))
+                }
+            },
+            Some(_) => return Err(scim_refuser_la_demande("invalidPath", &format!("opération n°{n} : `path` inconnu pour un groupe"))),
+        };
+        gestes.push(geste);
+    }
+    Ok(gestes)
+}
+
+/// Ajoute `uid` au rôle (écrase son rôle dans le tenant) ; `Ok(true)` si la ligne est écrite.
+fn scim_ajouter_au_role(conn: &Connection, tenant: &str, uid: &str, role: &str) -> Result<bool, Response> {
+    // `P10.21-r` — L'AJOUT ÉCRASE LE RÔLE (un seul droit par membre et par tenant). MESURÉ le 2026-09-25 sur la
+    // forme d'avant (témoins `mpra_`) : `add` du SEUL administrateur au groupe `viewer` rendait 200 et laissait le
+    // tenant sans administrateur — aucune garde.
+    match le_geste_retirerait_le_dernier_administrateur(conn, tenant, uid, Some(role)) {
+        Ok(false) => {}
+        Ok(true) => {
+            return Err(scim_err(
+                StatusCode::CONFLICT,
+                "dernier administrateur du tenant — ajout qui le rétrograderait refusé (anti-lockout) ; la \
+                 demande est atomique, aucune de ses opérations n'est appliquée",
+            ))
+        }
+        Err(e) => return Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_DERNIER_ADMINISTRATEUR_NON_ETABLI, &e.to_string())),
+    }
+    match EcritureDuPlanDeControle::from(conn.execute(
+        "INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3) ON CONFLICT(user_id,tenant_id) DO UPDATE SET role=excluded.role",
+        params![uid, tenant, role],
+    )) {
+        EcritureDuPlanDeControle::Ecrite => Ok(true),
+        EcritureDuPlanDeControle::AucuneLigne => Ok(false),
+        EcritureDuPlanDeControle::Refusee(cause) => Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE, &cause)),
+    }
+}
+
+/// Retire à `uid` le rôle `role` dans le tenant ; `Ok(true)` si une ligne est retirée.
+fn scim_retirer_du_role(conn: &Connection, tenant: &str, uid: &str, role: &str) -> Result<bool, Response> {
+    // ANTI-LOCKOUT (HIGH #59, #64) : ne JAMAIS retirer le DERNIER grant à AUTORITÉ ADMIN EFFECTIVE d'un tenant via
+    // SCIM (littéral `admin` OU rôle composable base=admin), compté sur le MÊME `conn` déjà tenu (pas de re-lock).
+    // `P10.21-o` — une lecture ratée REFUSE (503) au lieu d'ouvrir la garde, et l'un comme l'autre refus défont les
+    // opérations précédentes de la demande.
+    if effective_base_role(role) == "admin" {
+        match scim_retrait_du_role_viderait_le_dernier_admin(conn, tenant, uid, role) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(scim_err(
+                    StatusCode::CONFLICT,
+                    "dernier administrateur du tenant — retrait de membre refusé (anti-lockout) ; la demande est \
+                     atomique, aucune de ses opérations n'est appliquée",
+                ))
+            }
+            Err(e) => return Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_DERNIER_ADMINISTRATEUR_NON_ETABLI, &e.to_string())),
+        }
+    }
+    // Un membre qui ne portait pas ce rôle n'est pas un échec (aucune ligne) : l'état demandé est atteint, rien
+    // n'est compté. Un refus de la base, lui, laisse l'accès en place.
+    match EcritureDuPlanDeControle::from(conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2 AND role=?3", params![uid, tenant, role])) {
+        EcritureDuPlanDeControle::Ecrite => Ok(true),
+        EcritureDuPlanDeControle::AucuneLigne => Ok(false),
+        EcritureDuPlanDeControle::Refusee(cause) => Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE, &cause)),
+    }
+}
+
+/// PATCH /scim/v2/Groups/{role} — ajoute/retire/remplace des membres (grant du rôle dans le tenant du token). Le
+/// rôle (displayName) DOIT être valide (valid_grant_role) -> jamais super-admin, jamais un rôle indéfini.
 pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx): Extension<ScimCtx>, Path(role): Path<String>, Json(b): Json<Value>) -> Response {
     let Some(cp) = st.tenants.control.as_ref() else {
         return scim_err(StatusCode::NOT_FOUND, "SCIM indisponible");
@@ -525,7 +738,17 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
     if !valid_grant_role(&role) {
         return scim_err(StatusCode::BAD_REQUEST, "rôle (displayName) invalide ou indéfini");
     }
-    let ops = b.get("Operations").and_then(|o| o.as_array()).cloned().unwrap_or_default();
+    // `P10.21-v` — un corps sans liste `Operations` (absente, objet, ou nom en autre casse : les noms SCIM sont
+    // insensibles à la casse, RFC 7643 §2.1) rendait `200` sans rien appliquer : la nommer, ou refuser.
+    let ops = match b.as_object().and_then(|o| o.iter().find(|(k, _)| k.eq_ignore_ascii_case("Operations"))).map(|(_, v)| v) {
+        Some(Value::Array(ops)) => ops.clone(),
+        _ => return scim_refuser_la_demande("invalidSyntax", "`Operations` absente ou qui n'est pas une liste (RFC 7644 §3.5.2)"),
+    };
+    // `P10.21-v` — toute la demande est jugée avant qu'aucune opération ne touche la base.
+    let gestes = match scim_juger_les_operations_de_groupe(&ops) {
+        Ok(gestes) => gestes,
+        Err(refus) => return refus,
+    };
     // `P10.21-o` — LA DEMANDE EST ATOMIQUE (RFC 7644 §3.5.2). Chaque opération était écrite en autocommit :
     // un refus à la N-ième opération — anti-lockout `409`, écriture ou lecture refusée `503` — laissait
     // appliquées les N-1 précédentes, pendant que la réponse disait « refusé » et que rien n'était attesté
@@ -539,90 +762,51 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
         let conn = cp.conn.lock();
         jouer_le_geste_garde(&conn, "scim", "opérations de groupe SCIM", |conn| -> Result<(i64, i64), Response> {
             let (mut added, mut removed) = (0i64, 0i64);
-            for op in &ops {
-                let action = op.get("op").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
-                // members : soit op.value = [{value:id}], soit path=members.
-                let members: Vec<String> = op
-                    .get("value")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|m| m.get("value").and_then(|x| x.as_str()).map(String::from)).collect())
-                    .unwrap_or_default();
-                for uid in members {
-                    // le user doit exister (identité plateforme) — jamais de grant fantôme. `P10.21-l` — une lecture
-                    // RATÉE n'est pas une absence : sautée, elle laissait en place le membre qu'un `remove` retirait.
+            for (i, geste) in gestes.iter().enumerate() {
+                let membres = match geste {
+                    GesteDeGroupeScim::Ajouter(m) | GesteDeGroupeScim::Retirer(m) | GesteDeGroupeScim::Remplacer(m) => m,
+                    GesteDeGroupeScim::Aucun => continue,
+                };
+                // le user doit exister (identité plateforme) — jamais de grant fantôme. `P10.21-l` — une lecture RATÉE
+                // n'est pas une absence (503). `P10.21-v` — une absence n'est plus SAUTÉE en silence : `noTarget`.
+                for uid in membres {
                     match conn.query_row("SELECT 1 FROM platform_user WHERE id=?1", params![uid], |r| r.get::<_, i64>(0)) {
                         Ok(_) => {}
-                        Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                        Err(rusqlite::Error::QueryReturnedNoRows) => {
+                            return Err(scim_refuser_la_demande(
+                                "noTarget",
+                                &format!("opération n°{} : un membre visé n'est pas une identité connue", i + 1),
+                            ))
+                        }
                         Err(e) => return Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string())),
                     }
-                    // `P10.21-l` — chaque écriture est COMPTÉE : un membre n'entre dans `added`/`removed` (donc au
-                    // journal de contrôle) que si sa ligne est écrite ; un refus rend le 503 avant toute trace.
-                    match action.as_str() {
-                        "add" | "replace" => {
-                            // `P10.21-r` — L'AJOUT ÉCRASE LE RÔLE (un seul droit par membre et par tenant). MESURÉ le
-                            // 2026-09-25 sur la forme d'avant (témoins `mpra_`) : `add` du SEUL administrateur au
-                            // groupe `viewer` rendait 200 et laissait le tenant sans administrateur — aucune garde.
-                            match le_geste_retirerait_le_dernier_administrateur(conn, &ctx.tenant, &uid, Some(&role)) {
-                                Ok(false) => {}
-                                Ok(true) => {
-                                    return Err(scim_err(
-                                        StatusCode::CONFLICT,
-                                        "dernier administrateur du tenant — ajout qui le rétrograderait refusé (anti-lockout) ; la \
-                                         demande est atomique, aucune de ses opérations n'est appliquée",
-                                    ))
-                                }
-                                Err(e) => {
-                                    return Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_DERNIER_ADMINISTRATEUR_NON_ETABLI, &e.to_string()))
-                                }
-                            }
-                            match EcritureDuPlanDeControle::from(conn.execute(
-                                "INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3) ON CONFLICT(user_id,tenant_id) DO UPDATE SET role=excluded.role",
-                                params![uid, ctx.tenant, role],
-                            )) {
-                                EcritureDuPlanDeControle::Ecrite => added += 1,
-                                EcritureDuPlanDeControle::AucuneLigne => {}
-                                EcritureDuPlanDeControle::Refusee(cause) => {
-                                    return Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE, &cause))
-                                }
-                            }
+                }
+                // `P10.21-l` — chaque écriture est COMPTÉE : un membre n'entre dans `added`/`removed` (donc au journal
+                // de contrôle) que si sa ligne est écrite ; un refus rend le 503 avant toute trace.
+                match geste {
+                    GesteDeGroupeScim::Ajouter(m) | GesteDeGroupeScim::Remplacer(m) => {
+                        for uid in m {
+                            added += i64::from(scim_ajouter_au_role(conn, &ctx.tenant, uid, &role)?);
                         }
-                        "remove" => {
-                            // ANTI-LOCKOUT (HIGH #59, #64) : ne JAMAIS retirer le DERNIER grant à AUTORITÉ ADMIN EFFECTIVE
-                            // d'un tenant via SCIM. Le grant retiré porte `role` (path) ; s'il a une base effective admin
-                            // (littéral `admin` OU rôle composable base=admin -> sinon retirer le dernier `gov-admin`
-                            // orphelinerait le tenant = lockout DoS), on compte les grants effective-admin du tenant (résolu
-                            // en Rust — SQL ne connaît pas effective_base_role) et on bloque si le retrait le ferait tomber
-                            // à 0. Compté sur le MÊME `conn` déjà tenu (helper `..._conn` -> pas de re-lock/deadlock).
-                            // `P10.21-o` — une lecture ratée REFUSE (503) au lieu d'ouvrir la garde, et l'un comme
-                            // l'autre refus défont les opérations précédentes de la demande.
-                            if effective_base_role(&role) == "admin" {
-                                match scim_retrait_du_role_viderait_le_dernier_admin(conn, &ctx.tenant, &uid, &role) {
-                                    Ok(false) => {}
-                                    Ok(true) => {
-                                        return Err(scim_err(
-                                            StatusCode::CONFLICT,
-                                            "dernier administrateur du tenant — retrait de membre refusé (anti-lockout) ; la demande est \
-                                             atomique, aucune de ses opérations n'est appliquée",
-                                        ))
-                                    }
-                                    Err(e) => {
-                                        return Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_DERNIER_ADMINISTRATEUR_NON_ETABLI, &e.to_string()))
-                                    }
-                                }
-                            }
-                            // Un membre qui ne portait pas ce rôle n'est pas un échec (aucune ligne) : l'état demandé
-                            // est atteint, rien n'est compté. Un refus de la base, lui, laisse l'accès en place.
-                            match EcritureDuPlanDeControle::from(
-                                conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2 AND role=?3", params![uid, ctx.tenant, role]),
-                            ) {
-                                EcritureDuPlanDeControle::Ecrite => removed += 1,
-                                EcritureDuPlanDeControle::AucuneLigne => {}
-                                EcritureDuPlanDeControle::Refusee(cause) => {
-                                    return Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE, &cause))
-                                }
-                            }
+                    }
+                    GesteDeGroupeScim::Retirer(m) => {
+                        for uid in m {
+                            removed += i64::from(scim_retirer_du_role(conn, &ctx.tenant, uid, &role)?);
                         }
-                        _ => {}
+                    }
+                    GesteDeGroupeScim::Aucun => {}
+                }
+                // `P10.21-v` — REMPLACER retire les absents de l'ensemble servi, APRÈS les ajouts : l'anti-verrouillage
+                // compte donc les administrateurs de l'état final (remplacer A par B garde un administrateur).
+                if let GesteDeGroupeScim::Remplacer(servis) = geste {
+                    let porteurs: Vec<String> = (|| -> rusqlite::Result<Vec<String>> {
+                        let mut s = conn.prepare("SELECT user_id FROM \"grant\" WHERE tenant_id=?1 AND role=?2")?;
+                        let lus = s.query_map(params![ctx.tenant, role], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+                        Ok(lus)
+                    })()
+                    .map_err(|e| scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_PORTEURS_DU_ROLE_ILLISIBLES, &e.to_string()))?;
+                    for uid in porteurs.iter().filter(|p| !servis.contains(p)) {
+                        removed += i64::from(scim_retirer_du_role(conn, &ctx.tenant, uid, &role)?);
                     }
                 }
             }

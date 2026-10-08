@@ -314,8 +314,8 @@ pub(crate) fn engagement_cred_within_window(conn: &Connection, username: &str, n
 
 /// RÉVOCATION du credential minté : SUPPRIME les comptes plume scopés (engagement_grant.ref) des grants
 /// scoped_cred ENCORE 'issued' d'un engagement. À appeler DANS la transaction de révocation AVANT de passer
-/// les grants en 'revoked' (le sous-SELECT filtre status='issued'). Après suppression, lookup_basic_ident
-/// renvoie None -> l'auth du credential échoue IMMÉDIATEMENT (les eng-creds ne sont jamais mis en cache).
+/// les grants en 'revoked' (le sous-SELECT filtre status='issued'). Après suppression, lookup_basic_ident_lu
+/// renvoie `Absent` -> l'auth du credential échoue IMMÉDIATEMENT (les eng-creds ne sont jamais mis en cache).
 /// Idempotent / no-op quand aucun compte ne matche (grants sans ref, box blackbox, tests unitaires du sweep).
 pub(crate) fn revoke_engagement_creds(conn: &Connection, engagement_id: &str) -> rusqlite::Result<()> {
     conn.execute(
@@ -847,7 +847,7 @@ pub(crate) async fn engagement_create(
     // INCOMPATIBILITÉ multi-tenant : l'adaptateur plume-local minte le compte scopé dans la
     // base du TENANT courant (req_db -> INSERT INTO user). MAIS dès qu'un control-plane est présent
     // (PLUME_MULTI_TENANT=1 fonctionnel), l'auth Basic/cookie résout les identités depuis platform_user
-    // (control-plane), JAMAIS depuis la table `user` du tenant (lookup_basic_ident early-return) -> le
+    // (control-plane), JAMAIS depuis la table `user` du tenant (lookup_basic_ident_lu early-return) -> le
     // credential serait MORT (401 systématique) et le hard-expiry (ligne 4533) inatteignable. On REFUSE donc
     // AVANT tout mint, plutôt que de renvoyer un secret inutilisable + un grant 'issued' TROMPEUR. blackbox
     // (aucun scoped_cred : exemption/scope seuls) reste créable en mode 1. Le provisioning IdP-externe pour le

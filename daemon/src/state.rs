@@ -1,7 +1,7 @@
 //! Épine dorsale du contexte de requête (multi-tenant) : `AppState` (hub Clone), `AuthUser`, le
 //! control-plane (`ControlPlane` + migration/clés/`init_control_plane`/`resolve_tenant_key`), le registre
 //! de bases par tenant (`TenantDbManager`), la résolution d'identité (`TokenIdent`/`token_lookup`/
-//! `lookup_basic_ident`), le routage DB par requête (`req_db`/`req_db_path`/`for_each_active_tenant`),
+//! `lookup_basic_ident_lu`), le routage DB par requête (`req_db`/`req_db_path`/`for_each_active_tenant`),
 //! les marqueurs slug/spool + cibles d'ingest et `resolve_user_tenant`. Extrait de main.rs (refactor
 //! split #25 — byte-identique).
 use crate::*;
@@ -752,40 +752,55 @@ pub(crate) fn pubsub_token_lookup(st: &AppState, tok: &str) -> Option<PubsubIden
     push_token_connector(st, tok, "gcp_pubsub").map(|connector_id| PubsubIdent { tenant: "default".into(), connector_id })
 }
 
+/// `P10.20-b` — LECTURE TRI-ÉTAT du compte Basic : la ligne trouvée, l'absence ÉTABLIE (le moteur a répondu
+/// « aucune ligne »), ou rien de lu. Seule l'absence établie autorise le repli sur l'admin de l'assistant ou le
+/// compte de configuration : une lecture ratée de la table n'est pas un nom absent (sinon l'ancien secret de
+/// configuration d'un compte dont le mot de passe a changé en table rouvre la porte, avec le rôle admin).
+pub(crate) enum LectureDuCompteBasic {
+    Trouve { hash: String, role: String },
+    Absent,
+    NonLu(String),
+}
+
 /// ACCESSEUR IDENTITÉ Basic (R7) : (hash, rôle) d'un compte par nom. Mode 0 : table `user` de la base
 /// UNIQUE, INCHANGÉ (SELECT hash, role FROM user WHERE name=?). Mode 1 : `platform_user` du control-plane
 /// -> les hash d'auth ont quitté la base tenant (un tenant-admin en SQL brut ne peut plus forger
 /// d'identité). Le rôle PER-TENANT (via `grant`) est résolu dans auth_guard (#2a-2b) ; ici on renvoie un
-/// rôle plancher (is_superadmin -> admin, sinon viewer). hash NULL (SSO-only) -> None (repli SSO/admin).
-pub(crate) fn lookup_basic_ident(st: &AppState, name: &str) -> Option<(String, String)> {
+/// rôle plancher (is_superadmin -> admin, sinon viewer). hash NULL (SSO-only) -> absent (repli SSO/admin).
+/// `P10.20-b` : une lecture qui échoue autrement que par « aucune ligne » rend `NonLu`, jamais `Absent`.
+pub(crate) fn lookup_basic_ident_lu(st: &AppState, name: &str) -> LectureDuCompteBasic {
     if let Some(cp) = st.tenants.control.as_ref() {
         let conn = cp.conn.lock();
-        return conn
-            .query_row(
-                "SELECT hash, is_superadmin FROM platform_user WHERE name=?1",
-                params![name],
-                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)),
-            )
-            .ok()
-            .and_then(|(hash, sa)| {
-                hash.map(|h| (h, if sa != 0 { "admin".to_string() } else { "viewer".to_string() }))
-            });
+        return match conn.query_row(
+            "SELECT hash, is_superadmin FROM platform_user WHERE name=?1",
+            params![name],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)),
+        ) {
+            Ok((Some(hash), sa)) => {
+                LectureDuCompteBasic::Trouve { hash, role: if sa != 0 { "admin".to_string() } else { "viewer".to_string() } }
+            }
+            Ok((None, _)) | Err(rusqlite::Error::QueryReturnedNoRows) => LectureDuCompteBasic::Absent,
+            Err(e) => LectureDuCompteBasic::NonLu(e.to_string()),
+        };
     }
     let c = st.db.lock();
-    let ident = c.query_row("SELECT hash, role FROM user WHERE name=?1", params![name], |r| {
+    let lu = c.query_row("SELECT hash, role FROM user WHERE name=?1", params![name], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })
-    .ok();
-    // HARD-EXPIRY (MODE ENGAGEMENT) — un credential minté (`eng-cred-*`) ne s'authentifie QUE dans la fenêtre
-    // [window_start, window_end) d'un engagement dont le grant scoped_cred est ENCORE 'issued'. Double-garde
-    // HORLOGE-MURALE indépendante du sweep (comme l'enforcer) : même révocation périodique en retard, la
-    // fenêtre BORNE l'auth. GATE = préfixe réservé -> requête SAUTÉE pour un compte normal => byte-identique
-    // hors engagement. Grant 'revoked' (fin/expiry) OU compte supprimé -> None. NB : les eng-creds ne sont
-    // JAMAIS mis en cache d'auth (cf. authenticate) -> révocation/expiry effective SANS latence de cache.
-    if ident.is_some() && name.starts_with(ENG_CRED_PREFIX) && !engagement_cred_within_window(&c, name, now()) {
-        return None;
+    });
+    match lu {
+        // HARD-EXPIRY (MODE ENGAGEMENT) — un credential minté (`eng-cred-*`) ne s'authentifie QUE dans la fenêtre
+        // [window_start, window_end) d'un engagement dont le grant scoped_cred est ENCORE 'issued'. Double-garde
+        // HORLOGE-MURALE indépendante du sweep (comme l'enforcer) : même révocation périodique en retard, la
+        // fenêtre BORNE l'auth. GATE = préfixe réservé -> requête SAUTÉE pour un compte normal => byte-identique
+        // hors engagement. Grant 'revoked' (fin/expiry) OU compte supprimé -> absent. NB : les eng-creds ne sont
+        // JAMAIS mis en cache d'auth (cf. authenticate) -> révocation/expiry effective SANS latence de cache.
+        Ok(_) if name.starts_with(ENG_CRED_PREFIX) && !engagement_cred_within_window(&c, name, now()) => {
+            LectureDuCompteBasic::Absent
+        }
+        Ok((hash, role)) => LectureDuCompteBasic::Trouve { hash, role },
+        Err(rusqlite::Error::QueryReturnedNoRows) => LectureDuCompteBasic::Absent,
+        Err(e) => LectureDuCompteBasic::NonLu(e.to_string()),
     }
-    ident
 }
 
 /// BASE CUL-DE-SAC — le repli d'un tenant INDISPONIBLE, en mode 1 uniquement.

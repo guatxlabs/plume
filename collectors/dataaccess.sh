@@ -52,7 +52,36 @@ umask 027
 tmp=$(mktemp "$SPOOL/.da.XXXXXX")
 newwm=$(awk -v host="$host" -v now="$ts" -v out="$tmp" -v last="$last" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
 # jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
-function fv(line,name,   re,v){ re=name "=\"[^\"]*\"|" name "=[^ ]+"; if(match(line,re)){ v=substr(line,RSTART,RLENGTH); sub(/^[^=]*=/,"",v); gsub(/"/,"",v); return v } return "" }
+function fraw(line,name,   re,v){ re=name "=\"[^\"]*\"|" name "=[^ ]+"; if(match(line,re)){ v=substr(line,RSTART,RLENGTH); sub(/^[^=]*=/,"",v); return v } return "" }
+function fv(line,name,   v){ v=fraw(line,name); gsub(/"/,"",v); return v }
+# P10.23-z — auditd ecrit EN HEXADECIMAL, SANS guillemets, un nom (name=, comm=) qui porte un espace, un
+# guillemet, un controle ou un octet hors ASCII : `name=2F6574632F612062` pour « /etc/a b ». Publie tel quel,
+# ce chemin echappait a toute regle ou panneau ecrit sur le texte (evasion triviale : un espace dans le nom).
+# jval() rend le FRAGMENT JSON d une valeur brute de fraw() : entre guillemets -> jesc() comme avant ; nue, de
+# longueur paire et toute en [0-9A-F] -> decodee par jhex(). HYPOTHESE : le noyau met entre guillemets tout nom
+# qu il n encode pas, donc une valeur NUE et hexadecimale est un encodage ; une autre valeur nue (`(null)`, longueur
+# impaire) passe par jesc() inchangee.
+# jhex() decode sans strtonum (absent de mawk) par la table HX, et n emet QUE de l ASCII : UTF-8 valide -> \uXXXX
+# (paire de substitution au-dela de U+FFFF), octet non UTF-8 -> \ufffd, controle C0 et octet NUL -> espace (la
+# regle de jesc), guillemet et antislash echappes. Aucun octet brut : l enveloppe reste du JSON/UTF-8 valide
+# sous gawk (locale UTF-8 ou non) comme sous mawk.
+function jval(v){ if(v ~ /^([0-9A-F][0-9A-F])+$/) return jhex(v); gsub(/"/,"",v); return jesc(v) }
+function jhex(h,   n,i,k,b,c,d,o,need,cp,lo,hi,ok){
+  n=0; for(i=1;i<length(h);i+=2) b[++n]=HX[substr(h,i,1)]*16+HX[substr(h,i+1,1)]
+  o=""; i=1
+  while(i<=n){ c=b[i]
+    if(c<32){ o=o " "; i++; continue }
+    if(c<128){ if(c==34) o=o "\\\""; else if(c==92) o=o "\\\\"; else o=o sprintf("%c",c); i++; continue }
+    need=0
+    if(c>=194&&c<=223){ need=1; cp=c-192; lo=128; hi=191 }
+    else if(c>=224&&c<=239){ need=2; cp=c-224; lo=(c==224)?160:128; hi=(c==237)?159:191 }
+    else if(c>=240&&c<=244){ need=3; cp=c-240; lo=(c==240)?144:128; hi=(c==244)?143:191 }
+    ok=(need>0 && i+need<=n)
+    for(k=1;ok&&k<=need;k++){ d=b[i+k]; if(d<((k==1)?lo:128)||d>((k==1)?hi:191)) ok=0; else cp=cp*64+d-128 }
+    if(!ok){ o=o "\\ufffd"; i++; continue }
+    if(cp>65535){ cp-=65536; o=o sprintf("\\u%04x\\u%04x",55296+int(cp/1024),56320+cp%1024) } else o=o sprintf("\\u%04x",cp)
+    i+=need+1 }
+  return o }
 function eid(line,   v){ if(match(line,/:[0-9]+\)/)){ return substr(line,RSTART+1,RLENGTH-2) } return "" }
 function eep(line,   v){ if(match(line,/audit\([0-9]+/)){ return substr(line,RSTART+6,RLENGTH-6) } return "" }
 function uname(a,   u,cmd){ if(a in UC) return UC[a]; u=a; cmd="getent passwd " a " 2>/dev/null | cut -d: -f1"; cmd|getline u; close(cmd); if(u=="")u=a; UC[a]=u; return u }
@@ -60,10 +89,11 @@ function act_of(sc,nt){ if(nt=="CREATE")return "modify"; if(nt=="DELETE")return 
   if(sc==90||sc==268)return "modify"; if(sc==92||sc==260||sc==94)return "modify";   # chmod/chown -> modify
   if(sc==82||sc==264||sc==316)return "modify"; if(sc==87||sc==263)return "delete";  # rename/unlink
   if(sc==257||sc==2)return "read"; if(sc==1)return "modify"; return "modify" }      # open->read, write->modify (CIM)
-BEGIN{ n=0; buf=""; maxep=last+0 }
+BEGIN{ n=0; buf=""; maxep=last+0; for(i=1;i<=16;i++) HX[substr("0123456789ABCDEF",i,1)]=i-1 }
 /type=SYSCALL/ {
   id=eid($0); if(id=="")next
-  SC[id]=1; SCs[id]=fv($0,"syscall"); SCa[id]=fv($0,"auid"); SCc[id]=fv($0,"comm"); SCk[id]=fv($0,"key"); sub(/[\001-\037].*/,"",SCk[id]); SCe[id]=eep($0)   # cle = 1re seulement (auditd joint par \x1d)
+  SC[id]=1; SCs[id]=fv($0,"syscall"); SCa[id]=fv($0,"auid"); SCc[id]=jval(fraw($0,"comm"));   # fragment JSON (jval : P10.23-z)
+  SCk[id]=fv($0,"key"); sub(/[\001-\037].*/,"",SCk[id]); SCe[id]=eep($0)   # cle = 1re seulement (le noyau joint les cles par 0x01, AUDIT_KEY_SEPARATOR)
   if(SCe[id]+0>maxep)maxep=SCe[id]+0
   next
 }
@@ -73,10 +103,12 @@ BEGIN{ n=0; buf=""; maxep=last+0 }
   name=fv($0,"name"); if(name==""||name=="(null)")next   # auditd rend name=(null) quand le champ name est absent du record PATH -> path non identifiable : skip sans poser DONE (une PATH ulterieure reelle peut encore servir le meme event)
   DONE[id]=1
   au=SCa[id]; if(au==""||au=="4294967295"||au=="-1")next
+  if(n>=600)next   # plafond AVANT le decodage : un PATH ecarte ne paie pas la boucle octet par octet de jhex()
+  jname=jval(fraw($0,"name"))   # fragment JSON, nom hexadecimal decode (P10.23-z)
   usr=uname(au); sc=SCs[id]+0; key=SCk[id]; act=act_of(sc,nt); sev=(key=="plume_creds")?3:2
-  m="dataaccess: " usr " " act " " name " (key=" key ", via " SCc[id] ")"
-  if(n>=600)next
-  ev="{\"ts\":" now ",\"source\":\"dataaccess\",\"category\":\"data\",\"severity\":" sev ",\"message\":\"" jesc(m) "\",\"dedup\":\"da-" SCe[id] "-" id "\",\"fields\":{\"user\":\"" jesc(usr) "\",\"auid\":\"" au "\",\"action\":\"" act "\",\"path\":\"" jesc(name) "\",\"key\":\"" key "\",\"comm\":\"" jesc(SCc[id]) "\"}}"
+  # message en fragments : jesc() agit caractere par caractere, donc jesc(a) jesc(b) = jesc(a b) octet pour octet.
+  m=jesc("dataaccess: " usr " " act " ") jname jesc(" (key=" key ", via ") SCc[id] jesc(")")
+  ev="{\"ts\":" now ",\"source\":\"dataaccess\",\"category\":\"data\",\"severity\":" sev ",\"message\":\"" m "\",\"dedup\":\"da-" SCe[id] "-" id "\",\"fields\":{\"user\":\"" jesc(usr) "\",\"auid\":\"" au "\",\"action\":\"" act "\",\"path\":\"" jname "\",\"key\":\"" key "\",\"comm\":\"" SCc[id] "\"}}"
   if(n>0)buf=buf","; buf=buf ev; n++
   next
 }

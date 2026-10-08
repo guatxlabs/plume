@@ -263,8 +263,10 @@ pub(crate) fn case_create_row(conn: &Connection, author: &str, title: &str, sev:
 /// d'avant) si le case n'existe pas. couvre assign / close / reopen / priorisation. #4a.
 /// `P10.20-w` (rang trois) — les quatre écritures que le registre atteste (assignation, statut, verdict posé ou
 /// effacé) sont COMPTÉES avant leur chronologie et leur ligne de registre ; refusée -> `NonEcrite`, rien n'est tracé
-/// pour ce champ ni pour ceux qui le suivent. Les écritures SANS registre ni chronologie (titre, sévérité,
-/// propriétaire, résumé, `updated`) restent avalées : aucun fait ne les affirme ici (reste écrit, `P10.20-b`).
+/// pour ce champ ni pour ceux qui le suivent. `P10.20-w` (reste) — les écritures SANS registre ni chronologie (titre,
+/// sévérité, propriétaire, résumé, `updated`) sont COMPTÉES de même. CONTRAT CHANGÉ, ASSUMÉ : un champ libre refusé
+/// rendait 204 (la route annonçait écrit un champ que la base n'avait pas pris) ; il rend `NonEcrite("<champ>: …")`,
+/// soit un 503 nommé. Les champs libres précèdent les attestés : leur refus sort avant toute autre écriture.
 /// `P10.20-w` (reste) — LA PRIORITÉ EST COMPTÉE AVANT SA CHRONOLOGIE : l'élément « priorité -> P… » était posé après
 /// un `UPDATE` avalé, donc la chronologie racontait un changement que la base n'avait pas pris. Et LE RECALCUL DE
 /// L'ÉCHÉANCE (`sla_due`, puis le ré-armement d'`escalated`) est compté : il était avalé pendant que la route rendait
@@ -285,6 +287,9 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     // `P10.20-w` (reste) — le statut EN BASE et la priorité ÉCRITE, que lit le rattrapage de l'échéance.
     let mut statut_en_base: String = cur_status.clone();
     let mut priorite_ecrite = false;
+    // `P10.20-w` (reste) — le statut a-t-il été ÉCRIT par cette demande : le rattrapage multi-niveau rejoue alors la
+    // reprise du chrono (`sla_on_status_change`), comme la sortie nominale.
+    let mut statut_ecrit = false;
     // `P10.20-w` — une écriture attestée est comptée : une ligne, ou on sort AVANT la trace. Forme `rattrape` (statut,
     // verdict) : une priorité déjà écrite voit son échéance recalculée AVANT la sortie, au lieu de garder celle de
     // l'ancienne priorité.
@@ -303,24 +308,27 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
                 Err(e) => {
                     let mut cause = format!("{}: {e}", $champ);
                     if priorite_ecrite {
-                        cause.push_str(&rattraper_l_echeance(conn, id, cur_priority, &statut_en_base, t));
+                        cause.push_str(&rattraper_l_echeance(conn, id, cur_priority, &statut_en_base, statut_ecrit, t));
                     }
                     return IssueDuDossierModifie::NonEcrite(cause);
                 }
             }
         };
     }
+    // `P10.20-w` (reste) — LES CHAMPS LIBRES SONT COMPTÉS : avalés, un titre, une sévérité, un propriétaire ou un
+    // résumé refusé par la base était annoncé écrit (204). Ils précèdent toute écriture attestée : un refus ici sort
+    // AVANT qu'aucun autre champ, chronologie ou registre ne soit écrit.
     if let Some(v) = b.get("title").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE incident SET title=?1 WHERE id=?2", params![v.trim(), id]);
+        ecriture_comptee!("title", conn.execute("UPDATE incident SET title=?1 WHERE id=?2", params![v.trim(), id]));
     }
     if let Some(v) = b.get("severity").and_then(|v| v.as_i64()) {
-        let _ = conn.execute("UPDATE incident SET severity=?1 WHERE id=?2", params![v, id]);
+        ecriture_comptee!("severity", conn.execute("UPDATE incident SET severity=?1 WHERE id=?2", params![v, id]));
     }
     if let Some(v) = b.get("owner").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE incident SET owner=?1 WHERE id=?2", params![v, id]);
+        ecriture_comptee!("owner", conn.execute("UPDATE incident SET owner=?1 WHERE id=?2", params![v, id]));
     }
     if let Some(v) = b.get("summary").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE incident SET summary=?1 WHERE id=?2", params![v, id]);
+        ecriture_comptee!("summary", conn.execute("UPDATE incident SET summary=?1 WHERE id=?2", params![v, id]));
     }
     // ASSIGNATION dédiée (owner reste le créateur). Chaîne vide -> désassignation.
     if let Some(v) = b.get("assignee") {
@@ -346,6 +354,7 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
             let closed = if matches!(s, "closed" | "resolved") { Some(t) } else { None };
             ecriture_comptee!("status", conn.execute("UPDATE incident SET status=?1, closed_ts=?2 WHERE id=?3", params![s, closed, id]), rattrape);
             statut_en_base = s.to_string();
+            statut_ecrit = true;
             case_add_item(conn, id, t, "status", author, &format!("statut -> {s}"), None);
             ledger_append(conn, "case.status", &format!("#{id} -> {s} by {author}"));
         }
@@ -377,9 +386,22 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     // priorité n'a pas changé (même résultat) ; ré-arme escalated si l'échéance repart dans le futur.
     let effective_status = new_status.map(|s| s.to_string()).unwrap_or(cur_status);
     if !matches!(effective_status.as_str(), "resolved" | "closed" | "contained") {
-        ecriture_comptee!("sla_due", conn.execute("UPDATE incident SET sla_due = ts + ?1 WHERE id=?2", params![sla_target_s(cur_priority), id]));
+        // `P10.20-w` (reste) — un recalcul refusé APRÈS une priorité écrite n'empêche plus les échéances multi-niveau
+        // de suivre cette priorité : la cause dit si elles l'ont fait.
+        let politique = |cause: String| -> IssueDuDossierModifie {
+            let mut cause = cause;
+            if priorite_ecrite {
+                cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, statut_ecrit.then_some((statut_en_base.as_str(), t))));
+            }
+            IssueDuDossierModifie::NonEcrite(cause)
+        };
+        match conn.execute("UPDATE incident SET sla_due = ts + ?1 WHERE id=?2", params![sla_target_s(cur_priority), id]) {
+            Ok(0) => return IssueDuDossierModifie::DossierAbsent,
+            Ok(_) => {}
+            Err(e) => return politique(format!("sla_due: {e}")),
+        }
         if let Err(e) = conn.execute("UPDATE incident SET escalated=0 WHERE id=?1 AND sla_due > ?2", params![id, t]) {
-            return IssueDuDossierModifie::NonEcrite(format!("escalated: {e}"));
+            return politique(format!("escalated: {e}"));
         }
     }
     // #39 SLA MULTI-NIVEAU (INERTE si `sla_policy_id` NULL -> mode 0 byte-identique) : pause/reprise du chrono
@@ -390,7 +412,9 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     if b.get("priority").and_then(parse_priority).is_some() {
         sla_apply_policy(conn, id);
     }
-    let _ = conn.execute("UPDATE incident SET updated=?1 WHERE id=?2", params![t, id]);
+    // `P10.20-w` (reste) — l'horodatage de mise à jour est compté comme les champs libres : tout ce qui le précède est
+    // écrit, et la cause le dit (« les champs qui le précèdent ont pu être écrits »).
+    ecriture_comptee!("updated", conn.execute("UPDATE incident SET updated=?1 WHERE id=?2", params![t, id]));
     IssueDuDossierModifie::Ecrite
 }
 
@@ -399,19 +423,58 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
 /// écrit, statut refusé, `sla_due` resté à ts + cible(P3)). Même calcul que le recalcul de `case_apply_update`, sur
 /// le statut EN BASE ; un dossier terminal n'est pas recalculé. Rend le complément de la cause : ce qui a été
 /// rattrapé, ou ce qui ne l'a pas été — jamais avalé.
-fn rattraper_l_echeance(conn: &Connection, id: i64, priorite: i64, statut_en_base: &str, t: i64) -> String {
+/// `P10.20-w` (reste) — les échéances MULTI-NIVEAU (`ack_due`/`resolve_due`) sont rattrapées aussi : `sla_apply_policy`
+/// n'était appelé qu'en sortie nominale, et un dossier passé en P1 gardait l'`ack_due`/`resolve_due` de sa priorité
+/// d'avant après un statut ou un verdict refusé.
+fn rattraper_l_echeance(conn: &Connection, id: i64, priorite: i64, statut_en_base: &str, statut_ecrit: bool, t: i64) -> String {
     if matches!(statut_en_base, "resolved" | "closed" | "contained") {
+        // `P10.20-w` (reprise, second tour) — un statut TERMINAL écrit par la demande en sortant de `waiting` : la
+        // reprise du chrono est rejouée comme en sortie nominale (sinon le dossier clos gardait `sla_paused_since`).
+        // Rien n'est recalculé sur un dossier terminal : la cause ne gagne aucun mot.
+        if statut_ecrit {
+            sla_on_status_change(conn, id, statut_en_base, t);
+        }
         return String::new();
     }
+    let multi_niveau = rattraper_les_echeances_multi_niveau(conn, id, priorite, statut_ecrit.then_some((statut_en_base, t)));
     match conn.execute("UPDATE incident SET sla_due = ts + ?1 WHERE id=?2", params![sla_target_s(priorite), id]) {
-        Ok(0) => return " ; ÉCHÉANCE NON RECALCULÉE sur la priorité écrite (sla_due: aucune ligne écrite)".to_string(),
+        Ok(0) => return format!(" ; ÉCHÉANCE NON RECALCULÉE sur la priorité écrite (sla_due: aucune ligne écrite){multi_niveau}"),
         Ok(_) => {}
-        Err(e) => return format!(" ; ÉCHÉANCE NON RECALCULÉE sur la priorité écrite (sla_due: {e})"),
+        Err(e) => return format!(" ; ÉCHÉANCE NON RECALCULÉE sur la priorité écrite (sla_due: {e}){multi_niveau}"),
     }
     if let Err(e) = conn.execute("UPDATE incident SET escalated=0 WHERE id=?1 AND sla_due > ?2", params![id, t]) {
-        return format!(" ; échéance recalculée sur la priorité écrite, ESCALADE NON RÉ-ARMÉE (escalated: {e})");
+        return format!(" ; échéance recalculée sur la priorité écrite, ESCALADE NON RÉ-ARMÉE (escalated: {e}){multi_niveau}");
     }
-    " ; échéance recalculée sur la priorité écrite".to_string()
+    format!(" ; échéance recalculée sur la priorité écrite{multi_niveau}")
+}
+
+/// `P10.20-w` (reste) — rejoue `sla_apply_policy` sur la priorité ÉCRITE (inerte sans politique pour elle, ou sur un
+/// dossier terminal en base) et RELIT le résultat : `sla_apply_policy` avale ses écritures, donc ce qui est dit ici
+/// vient de la base (politique posée et `resolve_due` = ts + cible + pause), jamais de l'appel.
+/// `P10.20-w` (reprise) — `statut_ecrit` (statut écrit par la demande, instant) : la REPRISE DU CHRONO est rejouée
+/// d'abord (`sla_on_status_change`, même ordre que la sortie nominale). Sans elle, un dossier sorti de `waiting` gardait
+/// son chrono en pause et un `resolve_due` sans la pause (mesuré : 600 au lieu de 1600). Relu : un statut écrit hors
+/// `waiting` doit laisser `sla_paused_since` NULL.
+fn rattraper_les_echeances_multi_niveau(conn: &Connection, id: i64, priorite: i64, statut_ecrit: Option<(&str, i64)>) -> String {
+    if let Some((statut, t)) = statut_ecrit {
+        sla_on_status_change(conn, id, statut, t);
+    }
+    let Some((pid, _ack_s, res_s)) = sla_policy_for(conn, priorite) else { return String::new() };
+    sla_apply_policy(conn, id);
+    let relu: Result<(Option<i64>, Option<i64>, i64, i64, String, Option<i64>), _> = conn.query_row(
+        "SELECT sla_policy_id, resolve_due, ts, COALESCE(sla_pause_accum,0), status, sla_paused_since FROM incident WHERE id=?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+    );
+    let reprise_due = |statut: &str, en_pause: Option<i64>| statut_ecrit.is_none() || statut == "waiting" || en_pause.is_none();
+    match relu {
+        Ok((_, _, _, _, statut, _)) if matches!(statut.as_str(), "resolved" | "closed" | "contained") => String::new(),
+        Ok((Some(p), Some(due), ts, pause, statut, en_pause)) if p == pid && due == ts + res_s + pause && reprise_due(&statut, en_pause) => {
+            ", échéances multi-niveau recalculées sur la priorité écrite".to_string()
+        }
+        Ok(_) => " ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (ack_due/resolve_due/pause)".to_string(),
+        Err(e) => format!(" ; ÉCHÉANCES MULTI-NIVEAU NON RELUES après le rattrapage ({e})"),
+    }
 }
 
 /// `P10.20-w` (rang trois) — CE QUE REND UNE MODIFICATION DE DOSSIER ATTESTÉE AU REGISTRE (`case_apply_update`,

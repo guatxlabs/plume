@@ -464,10 +464,24 @@ pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) 
         let did = match plan_upsert(conn, "dashboard", &name) {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN dashboard '{name}' : un dashboard UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE dashboard SET managed=1 WHERE id=?1", params![id]); id }
-            UpsertPlan::Insert => {
-                let _ = conn.execute("INSERT INTO dashboard(name,created,managed) VALUES(?1,?2,1)", params![name, now()]);
-                conn.last_insert_rowid()
-            }
+            // `P10.20-w` (rang six) — AVANT : l'INSERT du tableau était avalé et `last_insert_rowid()` lu quand même ; sur
+            // un INSERT refusé, c'était l'identifiant de la DERNIÈRE ligne insérée sur la connexion (un autre objet), et le
+            // `DELETE … managed=1` ci-dessous vidait les panneaux managés d'un AUTRE tableau, puis y rattachait ceux du
+            // fichier. DÉSORMAIS l'identifiant n'est lu que sous `Ok(1)` ; sinon le tableau est ignoré, avoué, et aucun
+            // panneau n'est touché.
+            UpsertPlan::Insert => match conn.execute("INSERT INTO dashboard(name,created,managed) VALUES(?1,?2,1)", params![name, now()]) {
+                Ok(1) => conn.last_insert_rowid(),
+                Ok(n) => {
+                    eprintln!("[oac] WARN dashboard '{name}' : l'insertion a écrit {n} ligne(s) au lieu d'une — overlay ignoré, aucun panneau touché");
+                    ch.ignores += 1;
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("[oac] WARN dashboard '{name}' : insertion refusée ({e}) — overlay ignoré, aucun panneau touché, retenté au prochain chargement");
+                    ch.ignores += 1;
+                    continue;
+                }
+            },
         };
         // Synchronise les panneaux managed=1 de CE dashboard sur le fichier (remplace intégralement).
         let _ = conn.execute("DELETE FROM panel WHERE dashboard_id=?1 AND managed=1", params![did]);

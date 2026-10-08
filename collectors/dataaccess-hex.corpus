@@ -1,0 +1,66 @@
+# =================================================================================================
+# LES NOMS QU'AUDITD ÉCRIT EN HEXADÉCIMAL — `P10.23-z` (SÉCURITÉ)
+#
+# Joué par `.github/scripts/check_a_sensor_escapes_a_backslash_under_every_awk.py` (banc de
+# `dataaccess.sh`), qui exécute le capteur LIVRÉ sous chaque awk présent (gawk, mawk) sur une ligne
+# SYSCALL et une ligne PATH fabriquées par cas — jamais une copie de son décodage.
+#
+# CE QUE CE CORPUS TIENT
+#   auditd écrit SANS guillemets, en hexadécimal majuscule, un nom (`name=` d'un PATH, `comm=` d'un
+#   SYSCALL) qui porte un espace, un guillemet, un contrôle ou un octet hors ASCII. Le capteur d'avant
+#   publiait `path` = `2F6574632F706C756D65…` : un fichier de /etc, /data ou des identifiants nommé avec
+#   un espace échappait à toute règle ou panneau écrit sur le chemin. ATTENDU, et tenu ici : la valeur
+#   NUE, de longueur paire et toute en [0-9A-F] est décodée ; l'UTF-8 valide ressort tel quel, un octet
+#   hors UTF-8 STRICT (surlong, substitut ED A0..BF, au-delà de U+10FFFF, tête C0/C1/F5..FF, suite
+#   invalide) devient U+FFFD, un octet à la fois ; un contrôle C0 et l'octet nul un espace (la règle de
+#   `jesc`), DEL passe ; une valeur entre guillemets, de longueur impaire ou en minuscules ressort
+#   INCHANGÉE. Le banc juge `path`, `comm` ET le `message` (qui porte le nom décodé, échappé une fois).
+#
+# NE TIENT PAS : seuls name= et comm= sont décodés ; `key=` est lu entre guillemets. Une règle à
+#   plusieurs clés, que le noyau joint par 0x01 (AUDIT_KEY_SEPARATOR ; 0x1D est le séparateur
+#   du format ENRICHED d'auditd) et écrit en hexadécimal, échapperait à la passe 1 —
+#   les règles livrées (systemd/plume-audit.rules) n'ont qu'une clé chacune.
+#
+# FORMAT : `cas <TAB> name <TAB> comm <TAB> path attendu <TAB> comm attendu`. `#` en colonne zéro =
+# commentaire, ligne vide ignorée.
+#   name, comm : le jeton EXACT qu'auditd écrit après `name=` / `comm=` (guillemets compris s'il y en a).
+#   attendus   : chaînes JSON (`"…"`, échappements `\uXXXX`), comparées à la valeur DÉCODÉE de l'événement.
+# =================================================================================================
+nom-avec-espace-hex	2F6574632F706C756D65207365637265742E636F6E66	"cat"	"/etc/plume secret.conf"	"cat"
+nom-non-ascii-hex	2F7372762F646F6E6EC3A965732F636CC3A92E70656D	"cat"	"/srv/donn\u00e9es/cl\u00e9.pem"	"cat"
+nom-avec-guillemet-hex	2F6574632F782279	"cat"	"/etc/x\"y"	"cat"
+nom-avec-antislash-et-espace-hex	2F6574632F615C2062	"cat"	"/etc/a\\ b"	"cat"
+nom-a-quatre-octets-hex	2F646174612FF09F98802E6B6579	"cat"	"/data/\ud83d\ude00.key"	"cat"
+comm-hex	"/srv/donnees/ordinaire.txt"	6D6F6E2070726F67	"/srv/donnees/ordinaire.txt"	"mon prog"
+comm-non-ascii-hex	"/srv/donnees/ordinaire.txt"	636166C3A9	"/srv/donnees/ordinaire.txt"	"caf\u00e9"
+nom-avec-octet-nul-hex	2F6574632F610062	"cat"	"/etc/a b"	"cat"
+nom-avec-tabulation-hex	2F6574632F610962	"cat"	"/etc/a b"	"cat"
+nom-avec-octet-non-utf8-hex	2F6574632FFF61	"cat"	"/etc/\ufffda"	"cat"
+nom-utf8-surlong-hex	2F6574632FC0AF62	"cat"	"/etc/\ufffd\ufffdb"	"cat"
+nom-utf8-tronque-hex	2F6574632FE282	"cat"	"/etc/\ufffd\ufffd"	"cat"
+nom-hex-longueur-impaire-laisse	2F6574632F6	"cat"	"2F6574632F6"	"cat"
+nom-hex-entre-guillemets-inchange	"2F6574632F61"	"cat"	"2F6574632F61"	"cat"
+nom-entre-guillemets-inchange	"/etc/shadow"	"cat"	"/etc/shadow"	"cat"
+nom-nu-minuscule-laisse	2f657463	"cat"	"2f657463"	"cat"
+# Bornes de l'UTF-8 strict (P10.23-z, reprise) : chaque cas tient UNE borne du décodeur de jhex().
+nom-utf8-surlong-e0-hex	2F746D702FE080AF6574632F736861646F77	"cat"	"/tmp/���etc/shadow"	"cat"
+nom-utf8-surlong-f0-hex	2F746D702FF08080AF6574632F736861646F77	"cat"	"/tmp/����etc/shadow"	"cat"
+nom-utf8-substitut-ed-hex	2F746D702FEDA08061	"cat"	"/tmp/���a"	"cat"
+nom-utf8-au-dela-de-f48f-hex	2F746D702FF490808061	"cat"	"/tmp/����a"	"cat"
+nom-utf8-tete-f5-hex	2F746D702FF580808061	"cat"	"/tmp/����a"	"cat"
+nom-utf8-suite-invalide-hex	2F746D702FC341E28241C3C0	"cat"	"/tmp/�A��A��"	"cat"
+nom-utf8-bornes-valides-hex	2F746D702FC280DFBFE0A080ED9FBFEFBFBFF0908080F48FBFBF	"cat"	"/tmp/\u0080߿ࠀ퟿￿𐀀􏿿"	"cat"
+# Contrôles aux bornes : ESC et 0x1F deviennent un espace (sinon l'enveloppe entière est illisible), DEL passe.
+nom-avec-echap-hex	2F746D702F611B62	"cat"	"/tmp/a b"	"cat"
+nom-avec-controle-1f-hex	2F746D702F611F62	"cat"	"/tmp/a b"	"cat"
+nom-avec-del-hex	2F746D702F617F62	"cat"	"/tmp/a\u007fb"	"cat"
+# Bornes par défaut des têtes E1..EF et F1..F3 (lo 128, hi 191) et borne haute 191 des octets de suite k>=2.
+nom-utf8-e2-suite-basse-hex	2F746D702FE24180	"cat"	"/tmp/\ufffdA\ufffd"	"cat"
+nom-utf8-f1-suite-basse-hex	2F746D702FF1418080	"cat"	"/tmp/\ufffdA\ufffd\ufffd"	"cat"
+nom-utf8-e2-suite-haute-hex	2F746D702FE2C080	"cat"	"/tmp/\ufffd\ufffd\ufffd"	"cat"
+nom-utf8-f1-suite-haute-hex	2F746D702FF1C08080	"cat"	"/tmp/\ufffd\ufffd\ufffd\ufffd"	"cat"
+nom-utf8-f0-troisieme-suite-haute-hex	2F746D702FF09F98FF	"cat"	"/tmp/\ufffd\ufffd\ufffd\ufffd"	"cat"
+nom-utf8-e1-avale-un-slash-hex	2F746D702FE140AF6574632F736861646F77	"cat"	"/tmp/\ufffd@\ufffdetc/shadow"	"cat"
+# Un comm ENTRE GUILLEMETS fait de chiffres hexadécimaux ressort inchangé (le noyau écrit comm="2048").
+comm-hex-entre-guillemets-inchange	"/srv/donnees/ordinaire.txt"	"2048"	"/srv/donnees/ordinaire.txt"	"2048"
+comm-hex-majuscule-entre-guillemets-inchange	"/srv/donnees/ordinaire.txt"	"CAFE"	"/srv/donnees/ordinaire.txt"	"CAFE"

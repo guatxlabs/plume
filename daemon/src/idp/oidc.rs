@@ -295,7 +295,7 @@ pub(crate) fn oidc_role_mode0(st: &AppState, groups: &str, require_group_match: 
 pub(crate) const IDP_HASH_SENTINEL: &str = "!external-idp";
 
 /// PROVISIONING JIT (mode 0) d'un compte fédéré dans la table `user`, pour que la ré-résolution LIVE du
-/// rôle par cookie (`live_role_for`/`lookup_basic_ident`) fonctionne sur les requêtes suivantes.
+/// rôle par cookie (`live_role_for`/`lookup_basic_ident_lu`) fonctionne sur les requêtes suivantes.
 ///  - RÉSERVATION ADMIN BOOTSTRAP : `reserved_static_admin` = le compte admin de CONFIG (PLUME_USER +
 ///    PLUME_PASS_HASH) — il n'est JAMAIS dans la table `user` (repli de `authenticate()`), donc la garde de
 ///    collision ci-dessous ne le voit pas. Sans cette réservation, un login fédéré nommé "admin" créerait

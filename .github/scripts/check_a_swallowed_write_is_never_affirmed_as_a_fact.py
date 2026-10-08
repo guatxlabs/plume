@@ -327,8 +327,26 @@ FAITS_QUI_AFFIRMENT = (
 # RE-DÉRIVÉS le 2026-10-07 (`P10.20-w`, rang trois, dernier site) : le lot retire `step_advance`, donc aussi un fichier
 # (`incidents.rs` n'en portait pas d'autre). Relevé de ce jour-là sur l'arbre : 3 sites sur 2 fichiers (`overlays_oac.rs`,
 # `seeds.rs` ×2) ; même règle des deux tiers, arrondie en dessous : 3 -> 2, 2 -> 1.
-PLANCHER_SITES = 2
-PLANCHER_FICHIERS = 1
+# RE-DÉRIVÉS le 2026-10-08 (`P10.20-w`, rang six) : le lot retire les trois derniers sites (`seed_ti_alert_rules` et
+# `seed_risk_rules` dans `seeds.rs`, `load_overlay_dashboards` dans `overlays_oac.rs`), donc aussi les deux fichiers.
+# Relevé de ce jour-là sur l'arbre : 0 site sur 0 fichier ; même règle des deux tiers, arrondie en dessous : 0 -> 0,
+# 0 -> 0. Un plancher au-dessus de la population ferait REFUSER DE CONCLURE la garde sur un arbre sain, donc ils
+# tombent à zéro. CE QUE ZÉRO NE TIENT PLUS, écrit : ces deux planchers ne séparent plus une découverte devenue
+# AVEUGLE d'un arbre sans site. Ce qui la sépare : `PLANCHER_FICHIERS_LUS` ci-dessous (un corpus vide ou amputé est
+# refusé, quelle que soit la population) et les épreuves fabriquées de `valider_instrument` (un lecteur qui ne
+# reconnaît plus la forme est refusé). Ce que rien ne sépare : un lecteur qui lit tous les fichiers et manque une
+# forme NEUVE qu'aucune épreuve ne porte.
+PLANCHER_SITES = 0
+PLANCHER_FICHIERS = 0
+# LE PLANCHER QUI TIENT ENCORE, posé le 2026-10-08 (`P10.20-w`, rang six, correction) : sur les FICHIERS LUS, comme
+# les gardes sœurs (`check_no_operational_figure_is_published.py`, `MIN_FICHIERS`). Les deux planchers ci-dessus
+# comptent des SITES et des fichiers QUI EN PORTENT ; à zéro, une découverte qui ne lit RIEN (`daemon/src` déplacé,
+# élagage qui avale tout, extension changée) rendait « 0 conjonction(s) sur 0 fichier(s) » en VERT — mesuré par le
+# vérificateur, `DEMON` pointé sur un répertoire absent : rc=0. Celui-ci compte ce que le lecteur a OUVERT, quelle
+# que soit la population. Relevé de ce jour-là sur l'arbre : 178 fichiers `.rs` lus (`tests/` et `tests.rs`
+# élagués) ; même règle des deux tiers, arrondie en dessous : 65 % de 178 = 115,7 -> 115. Il ne monte jamais ; il se
+# re-dérive, daté ici, si un lot retire du corpus assez de fichiers pour le franchir.
+PLANCHER_FICHIERS_LUS = 115
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — SIX CLASSES, JUGÉES DANS LES DEUX SENS
@@ -447,7 +465,11 @@ SITES_DEGRADES_MAIS_FAIL_CLOSED = {}
 # incohérent EN SILENCE (un dashboard rattaché à l'identifiant d'une vue voisine), et deux marqueurs
 # de semis précèdent un audit de configuration.
 SITES_AMORCAGE = {
-    ("daemon/src/overlays_oac.rs", "load_overlay_dashboards"): ("let _ -> last_insert_rowid",),
+    # `P10.20-w` (rang six, 2026-10-08) — `overlays_oac.rs::load_overlay_dashboards` RETIRÉ : l'INSERT du tableau passe
+    # par un `match` qui exige `Ok(1)` avant de lire `last_insert_rowid()` ; sinon le tableau est ignoré, avoué
+    # (`ignores` + sortie d'erreur), et aucun panneau n'est touché. MESURÉ AVANT : l'INSERT refusé faisait emprunter
+    # l'identifiant de la dernière ligne insérée sur la connexion, et le `DELETE … managed=1` vidait les panneaux
+    # managés d'un AUTRE tableau, puis y rattachait ceux du fichier.
     # `P10.21-t` — LES SIX SITES DE `seed_demo` SONT RETIRÉS ENSEMBLE : le semis de démonstration s'écrit dans
     # UNE transaction (`semer_la_demonstration`), drapeau `seeded_demo` compris, chaque écriture PROPAGÉE (`?`),
     # et l'identifiant d'un dossier n'est lu qu'après l'`INSERT` réussi de CE dossier ; un refus annule tout et
@@ -467,10 +489,11 @@ SITES_AMORCAGE = {
     # d'un fait. `seed_runbooks` — sort par la seule règle de lecture : son drapeau est un marqueur d'observabilité
     # qui ne garde rien (chaque gabarit s'insère ou non par sa clé). Ce qu'elle garde de vrai, et que cette garde ne
     # voit pas : une étape refusée laisse le gabarit SANS étapes, pour toujours (mesuré : quinze sur quinze).
-    # LES DEUX MARQUEURS DE SEMIS que `P10.20-w` nomme : l'INSERT du marqueur est avalé et l'audit de
-    # configuration suit. Un semis rejoué deux fois écrirait deux audits pour une seule pose.
-    ("daemon/src/seeds.rs", "seed_ti_alert_rules"): ("let _ -> audit_config_change",),
-    ("daemon/src/seeds.rs", "seed_risk_rules"): ("let _ -> audit_config_change",),
+    # LES DEUX MARQUEURS DE SEMIS que `P10.20-w` nomme (`seed_ti_alert_rules`, `seed_risk_rules`) — RETIRÉS le
+    # 2026-10-08 (rang six) : ils passent par `semer_sous_son_drapeau` (une transaction, chaque INSERT propagé, le
+    # drapeau en DERNIER), et l'audit n'est écrit qu'après le COMMIT, avec le compte de lignes réellement écrites.
+    # MESURÉ AVANT : une règle refusée laissait le drapeau posé (semis partiel jamais retenté) et l'audit attestait
+    # le compte des seules règles passées ; toutes refusées, il attestait « 0 règle(s) » sous un drapeau définitif.
 }
 
 CLASSES = (
@@ -800,12 +823,14 @@ def fichiers_du_corpus(racine=None):
 
 
 def decouvrir():
-    sites, journal, aveux_du_lecteur = [], [], {}
+    """Rend aussi le nombre de fichiers LUS : c'est lui que juge `PLANCHER_FICHIERS_LUS`, pas la population."""
+    sites, journal, aveux_du_lecteur, lus = [], [], {}, 0
     for chemin in fichiers_du_corpus():
         with open(chemin, encoding="utf-8", errors="replace") as fh:
             texte = fh.read()
+        lus += 1
         sites += analyser(os.path.relpath(chemin, RACINE), texte, journal, aveux_du_lecteur)
-    return sites, journal, aveux_du_lecteur
+    return sites, journal, aveux_du_lecteur, lus
 
 
 # ================================================================================================
@@ -1545,7 +1570,15 @@ def main():
         ce_qui_n_est_pas_tenu()
         return 2
 
-    sites, journal, aveux_du_lecteur = decouvrir()
+    sites, journal, aveux_du_lecteur, lus = decouvrir()
+    # LE CORPUS D'ABORD : sous ce plancher, la lecture est cassée, et aucune population — zéro comprise — n'est un fait.
+    if lus < PLANCHER_FICHIERS_LUS:
+        print(f"::error::{lus} fichier(s) `.rs` LU(S) sous daemon/src, plancher {PLANCHER_FICHIERS_LUS} (dérivé le "
+              "2026-10-08 du relevé de ce jour-là : 178 fichiers lus, règle des deux tiers). Le CORPUS est vide ou "
+              "amputé (répertoire déplacé, élagage, extension) : « 0 conjonction » n'y serait pas un arbre sain mais "
+              "une lecture aveugle. La garde REFUSE DE CONCLURE.")
+        ce_qui_n_est_pas_tenu()
+        return 2
     # L'AVEU DU LECTEUR PASSE AVANT CELUI DE LA GARDE (`P10.20-d`) : une région avalée par le lecteur
     # est la cause AMONT, et la nommer évite d'accuser une parenthèse qu'il a lui-même déplacée.
     if aveux_du_lecteur and refuser_sur_aveu(ETIQUETTE, aveux_du_lecteur, "Rust"):
@@ -1562,8 +1595,8 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (dérivés le 2026-09-19 du relevé de ce jour-là sur "
-              "l'arbre : 43 sites sur 13 fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés à chaque lot qui ferme des sites, dernière date "
+              "écrite au-dessus de leur définition, règle des deux tiers). La DÉCOUVERTE est cassée, ou "
               "un lot a fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé "
               "du jour — dans le second cas, ils descendent, avec leur date écrite dans le fichier. La "
               "garde REFUSE DE CONCLURE plutôt que de rendre vert en étant aveugle.")

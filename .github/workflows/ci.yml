@@ -840,7 +840,7 @@ env:
   # `P10.24-m`, `P10.28-h`, `P10.29-i`, `P10.20-u` (2026-09-29) : +10 — le fichier
   # `secret_des_gestes_demonstration_freinee_et_pose_de_l_administrateur.rs` (`sdg_` six, `dfb_` un, `pla_` un,
   # `rnc_` deux). Aucun derrière un `cfg(feature)` -> le MÊME +10 sur `EXPECTED_COLD_TESTS` (2213 -> 2223), mesuré.
-  EXPECTED_TESTS: "2141"
+  EXPECTED_TESTS: "2212"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1313,7 +1313,7 @@ jobs:
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
           # `P10.24-m` et voisines (2026-09-29) : +10, les MÊMES que sur `EXPECTED_TESTS` — écart INCHANGÉ.
-          EXPECTED_COLD_TESTS: "2396"
+          EXPECTED_COLD_TESTS: "2467"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -2857,7 +2857,8 @@ jobs:
   #      daemon/Cargo.lock only (the patched path dep guatx-core is skipped — no build,
   #      no core checkout needed).
   #   2) gitleaks   — secret scan of the tree + history. An ephemeral config (written
-  #      below, NOT committed) extends the default ruleset and ALLOWLISTS the two
+  #      below, NOT committed) extends the default RULES of the pinned release — without their
+  #      global path allowlist (`P10.31-o`) — and ALLOWLISTS the two
   #      documented unit-test PEM fixtures (the OIDC test key `TEST_RSA_PEM` of
   #      daemon/src/idp/mod.rs by its exact LINE, daemon/src/tests/saml.rs SAML test
   #      key/cert by path — non-secret by design) so the scan flags REAL leaks without
@@ -2890,7 +2891,8 @@ jobs:
       # `P10.31-n` — le témoin du scan joue `gitleaks:allow` et `.gitleaksignore` SUR L'ENVELOPPE
       # `$RUNNER_TEMP/gitleaks-detect.sh` ; il ne voit pas un scan principal qui l'éviterait (mesuré : un pas
       # principal remis en appel direct du binaire laissait tout vert). Cette garde exige qu'un SEUL lancement
-      # de gitleaks existe dans les flux — l'`exec` de l'enveloppe — et que le pas `id: gitleaks` l'appelle.
+      # de gitleaks existe dans les flux — l'`exec` de l'enveloppe — et que le pas `id: gitleaks` l'appelle ;
+      # `P10.31-o` : et que l'enveloppe force le texte (`* diff` dans `info/attributes`).
       - name: Tout scan gitleaks passe par l'enveloppe unique (gitleaks:allow et .gitleaksignore neutralisés)
         run: python3 .github/scripts/check_every_gitleaks_scan_takes_the_single_call.py
 
@@ -2973,15 +2975,43 @@ jobs:
         working-directory: daemon
         run: cargo audit --deny warnings
 
-      # Ephemeral gitleaks config (runner-only, never committed) — extends defaults +
+      # Ephemeral gitleaks config (runner-only, never committed) — extends the default RULES +
       # allowlists the documented unit-test PEM fixtures so they cannot false-positive.
       - name: Write gitleaks config (allowlist documented test PEM fixtures + env-ref/placeholder paths + schema-rebrand SQL)
         if: always()
         run: |
-          cat > "$GITHUB_WORKSPACE/.gitleaks-ci.toml" <<'EOF'
-          title = "plume CI gitleaks config"
-          [extend]
-          useDefault = true
+          set -euo pipefail
+          # `P10.31-o` — les RÈGLES par défaut, SANS la liste blanche globale du binaire. `useDefault = true`
+          # importait aussi la table `[allowlist]` du fichier par défaut, que gitleaks AJOUTE à la nôtre sans
+          # moyen de la retirer : ses `paths` admettent `node_modules/`, `.svg`, `.pdf`, `.png`, `go.sum`,
+          # `vendor/modules.txt`, les verrous `package-lock.json`/`yarn.lock`… (mesuré en 8.24.3 : une vraie
+          # clé committée sous chacun de ces chemins, scan vert). Le fichier par défaut de la version
+          # ÉPINGLÉE (la même que le binaire du scan, plus bas ; le témoin vérifie qu'il y est embarqué octet
+          # pour octet) est téléchargé, épinglé par sha256, et privé de cette seule table : il ne garde que
+          # `title` et ses 208 `[[rules]]` (leurs listes blanches PAR RÈGLE restent, voir le témoin). La seule
+          # liste blanche globale est alors la nôtre, ci-dessous, EXPLICITE. Mesuré le 2026-10-07 sur
+          # l'historique complet du dépôt (671 commits) : aucun constat de plus, texte forcé compris.
+          # Monter gitleaks = changer GL_VER et les DEUX sha256 (binaire, règles) ensemble.
+          GL_VER=8.24.3
+          REGLES_SHA=8f393899dbdc67e4eae580909e496acab9cf3a75aacfb6fac56b6eb16bb9e051
+          curl -sSfL -o "${RUNNER_TEMP:?}/gitleaks-defaut.toml" "https://raw.githubusercontent.com/gitleaks/gitleaks/v${GL_VER}/config/gitleaks.toml"
+          echo "${REGLES_SHA}  $RUNNER_TEMP/gitleaks-defaut.toml" | sha256sum -c -
+          python3 - "$RUNNER_TEMP/gitleaks-defaut.toml" "$RUNNER_TEMP/gitleaks-regles-par-defaut.toml" <<'PY'
+          import sys, tomllib
+          src, dst = sys.argv[1:3]
+          t = open(src, encoding="utf-8").read()
+          debut, fin = t.index("\n[allowlist]\n"), t.index("\n[[rules]]\n")
+          assert debut < fin, "la table [allowlist] globale n'est plus en tête du fichier par défaut"
+          sortie = t[:debut] + "\n" + t[fin:]
+          avant, apres = tomllib.loads(t), tomllib.loads(sortie)
+          assert set(apres) == {"title", "rules"}, "forme du fichier de règles : %s" % sorted(apres)
+          assert apres["rules"] == avant["rules"], "les règles ont changé en retirant la liste blanche"
+          open(dst, "w", encoding="utf-8").write(sortie)
+          print("règles par défaut : %d, liste blanche globale retirée (%d chemins)" % (len(apres["rules"]), len(avant["allowlist"]["paths"])))
+          PY
+          printf '%s\n' 'title = "plume CI gitleaks config"' '[extend]' "path = \"$RUNNER_TEMP/gitleaks-regles-par-defaut.toml\"" \
+            > "$GITHUB_WORKSPACE/.gitleaks-ci.toml"
+          cat >> "$GITHUB_WORKSPACE/.gitleaks-ci.toml" <<'EOF'
           [allowlist]
           description = "Documented unit-test PEM fixtures, shell env-var references, documented test placeholders and the schema-rebrand SQL — non-secret by design."
           # LINE-scoped allowlist. Production source files are NEVER excluded wholesale: a real secret introduced
@@ -3096,12 +3126,21 @@ jobs:
           ]
           EOF
           # `P10.31-n` — L'UNIQUE appel de `gitleaks detect` du job (scan principal, scan témoin, contre-scan) :
-          # deux voies NOMMÉES taisent un constat hors de la configuration ci-dessus, et le témoin ne lit qu'elle
-          # (l'inventaire n'est pas complet : voir la limite (8) du témoin, attribut `-diff`).
+          # trois voies NOMMÉES taisent un constat hors de la configuration ci-dessus, et le témoin ne lit qu'elle
+          # (l'inventaire n'est pas complet : voir la limite (10) du témoin, résolution d'un commit de fusion) :
           #   - un commentaire `gitleaks:allow` sur la ligne d'un secret : `--ignore-gitleaks-allow` le neutralise ;
           #   - un fichier `.gitleaksignore` (empreintes `commit:fichier:règle:ligne`) : gitleaks le lit à la RACINE
           #     de la source MÊME quand `--gitleaks-ignore-path` désigne un dossier vide (mesuré en 8.24.3 : une
-          #     clé committée avec son empreinte reste tue) — il est donc REFUSÉ, où qu'il soit dans l'arbre.
+          #     clé committée avec son empreinte reste tue) — il est donc REFUSÉ, où qu'il soit dans l'arbre ;
+          #   - `P10.31-o` : un attribut `-diff` (ou la macro `binary`) dans un `.gitattributes`, racine ou
+          #     sous-dossier, même committé APRÈS la clé, fait rendre « Binary files differ » à `git log -p` et
+          #     gitleaks saute le contenu (mesuré en 8.24.3 : clé committée dans un `.rs`, scan vert). L'enveloppe
+          #     écrit `* diff` dans `info/attributes` du dépôt scanné, que git fait primer sur TOUT
+          #     `.gitattributes` : chaque fichier est lu comme du texte (mesuré : la même clé est signalée).
+          #     `* diff` doit rester la DERNIÈRE ligne du fichier (git fait primer la dernière ligne qui
+          #     correspond) : une exception ajoutée après (`*.pem -diff`) rouvrirait la voie. Le témoin l'exige.
+          #     Un répertoire hors git (`--no-git`) n'a pas d'`info/attributes` : rien n'y est écrit, et l'enveloppe
+          #     le dit ; toute AUTRE erreur de `git rev-parse` refuse (code 4) au lieu de scanner sans texte forcé.
           cat > "${RUNNER_TEMP:?}/gitleaks-detect.sh" <<'EOF'
           #!/usr/bin/env bash
           # gitleaks-detect.sh <répertoire source> [options de gitleaks detect…]
@@ -3110,6 +3149,18 @@ jobs:
           ign="$(find "$src" -name .gitleaksignore -not -path '*/.git/*' -print -quit)"
           if [ -n "$ign" ]; then
             echo "::error::$ign présent : un .gitleaksignore tait des constats hors de la configuration jugée ; il est refusé (P10.31-n)"; exit 3; fi
+          # Hors git (« not a git repository ») : rien à forcer, et l'enveloppe le DIT. Toute autre erreur de git
+          # refuse (code 4) : le texte ne serait pas forcé, et le scan d'historique pourrait se taire.
+          if ! dep="$(LC_ALL=C git -C "$src" rev-parse --git-dir 2>&1)"; then
+            case "$dep" in
+              *"not a git repository"*) echo "gitleaks-detect : $src est hors git, aucun info/attributes à forcer" >&2 ;;
+              *) echo "::error::git rev-parse en échec dans $src (texte non forcé) : $dep"; exit 4 ;;
+            esac
+          else
+            att="$(git -C "$src" rev-parse --path-format=absolute --git-path info/attributes)" \
+              || { echo "::error::git rev-parse --git-path info/attributes en échec dans $src : texte non forcé"; exit 4; }
+            mkdir -p "$(dirname "$att")"; printf '* diff\n' >> "$att"
+          fi
           cd "$src"
           exec "${GITLEAKS_BIN:-/tmp/gitleaks}" detect --source . --ignore-gitleaks-allow "$@"
           EOF
@@ -3178,15 +3229,28 @@ jobs:
       # CONTRE-SCAN : l'historique est rescanné avec les seules règles de clé (chemins inchangés) et ne
       # doit rendre aucun constat `private-key` : une clé committée que taisait une règle « pas de clé »
       # (un nom tiers comme `CLE_TIERCE`, un fragment propre à une clé) y réapparaît. TÉMOIN DU TÉMOIN :
-      # vingt configurations ou dépôts hostiles, fabriqués ici depuis la vraie, doivent être refusés (lecture
+      # trente-cinq configurations ou dépôts hostiles, fabriqués ici depuis la vraie, doivent être refusés (lecture
       # ligne à ligne, sonde perdue, classe ignorée ou POSIX, joker seul, règle non compilable, forme
-      # ouverte, chemin d'extension de clé, chemin non ancré, fragment d'en-tête d'une autre longueur,
-      # contre-scan qui garderait toutes les règles, clé manquante imprimée en clair, valeur d'une autre
-      # référence ou d'un autre fichier, dans un dépôt d'histoire jetable ; clé committée sur une ligne
-      # `gitleaks:allow`, clé committée avec un `.gitleaksignore` qui porte son empreinte).
-      # VOIES DE SILENCE HORS DU TOML (`P10.31-n`) : tous les scans du job (principal, témoin, contre-scan)
-      # passent par l'appel unique `$RUNNER_TEMP/gitleaks-detect.sh`, qui pose `--ignore-gitleaks-allow` et
-      # REFUSE (code 3) un `.gitleaksignore` présent dans l'arbre scanné.
+      # ouverte, chemin d'extension de clé, chemin non ancré, chemin privé de sa SEULE ancre de tête ou de
+      # fin, fragment d'en-tête d'une autre longueur, retour à `useDefault`, fichier de règles étendu qui
+      # porte une liste blanche, fichier de règles qui n'est pas le défaut embarqué ENTIER (règle `private-key`
+      # retouchée d'un octet, règle `stripe` retouchée à longueur égale, dernière règle coupée, une règle ajoutée, liste blanche globale gardée), appel
+      # dont le `git rev-parse` échoue dans un dépôt (refus, code 4), contre-scan qui garderait toutes les règles, clé manquante imprimée en
+      # clair, valeur d'une autre référence ou d'un autre fichier, dans un dépôt d'histoire jetable ; clé
+      # committée sur une ligne `gitleaks:allow`, clé committée avec un `.gitleaksignore` qui porte son
+      # empreinte, clé committée dont le fichier est marqué `-diff` APRÈS coup par un `.gitattributes`
+      # racine, puis de sous-dossier, puis par la macro `binary` ; dans ces trois dépôts, après l'appel,
+      # `info/attributes` doit valoir exactement `* diff` ; clé committée sous `node_modules/` et en `.svg`,
+      # que le contre-scan avec la configuration RÉDUITE doit rendre (deux constats exactement) et que le
+      # scan avec la vraie doit signaler dans l'historique git).
+      # VOIES DE SILENCE HORS DU TOML (`P10.31-n`, `P10.31-o`) : tous les scans du job (principal, témoin,
+      # contre-scan) passent par l'appel unique `$RUNNER_TEMP/gitleaks-detect.sh`, qui pose
+      # `--ignore-gitleaks-allow`, REFUSE (code 3) un `.gitleaksignore` présent dans l'arbre scanné et force
+      # le texte (`* diff` dans `info/attributes`). LISTE BLANCHE PAR DÉFAUT (`P10.31-o`) : la configuration
+      # étend le fichier de RÈGLES par défaut privé de sa liste blanche globale ; le contrôle structurel
+      # exige ce fichier sans aucune table hors `title` et `[[rules]]`, et vérifie qu'il est le fichier par
+      # défaut EMBARQUÉ dans le binaire (moins cette table) ; une clé posée sous `node_modules/`, en `.svg`,
+      # en `.pdf`, en `go.sum` et en `vendor/modules.txt` doit être signalée.
       # CE QUI NE TIENT PAS : (1) le contre-scan ne juge que la règle `private-key` (un autre secret tu
       # par une règle 1 à 8 n'est jugé par personne, c'est leur rôle) et seulement une clé DÉJÀ committée.
       # (2) Une règle limitée à un fragment propre à une famille de clé ABSENTE des seize sondes (DSA,
@@ -3205,15 +3269,22 @@ jobs:
       # lancé par une variable ou une construction dynamique lui échappe. (7) Le refus de `.gitleaksignore` ne vaut que pour
       # l'arbre extrait (gitleaks ne lit ce fichier que là ; un `.gitleaksignore` d'un commit ancien, absent
       # de l'arbre, ne tait rien). `--gitleaks-ignore-path` vers un dossier vide ne suffit PAS : gitleaks
-      # 8.24.3 lit aussi celui de la racine de la source (mesuré : la clé reste tue). (8) UNE TROISIÈME VOIE
-      # HORS DU TOML RESTE OUVERTE : un attribut `-diff` dans un `.gitattributes` (racine ou sous-dossier, même
-      # posé APRÈS le commit de la clé) fait rendre « Binary files differ » à `git log -p`, et gitleaks saute le
-      # contenu (mesuré par la vérification : clé dans `daemon/src/cle_verif.rs`, scan par l'enveloppe = 0,
-      # `check_no_stray_nul.py` = 0 car il ne lit que l'attribut `text` ; la macro `binary`, elle, est prise).
-      # Ni l'enveloppe ni le témoin ne la ferment.
-      # (9) UNE QUATRIÈME VOIE RESTE OUVERTE : la liste blanche globale par défaut de gitleaks (`useDefault`,
-      # exigé par le contrôle structurel) tait une vraie clé committée sous des chemins de dépendances ou de
-      # documents (`node_modules/`, `.pdf`, `.svg`, `go.sum`, `vendor/modules.txt` ; mesuré par la vérification).
+      # 8.24.3 lit aussi celui de la racine de la source (mesuré : la clé reste tue). (8) `P10.31-o` : les
+      # listes blanches PAR RÈGLE du fichier par défaut restent (`generic-api-key` sous `.bb`, `.bbappend`,
+      # `.bbclass`, `.inc` pour trois formes de ligne ; `github-app-token` et `github-pat` sous
+      # `@octokit/auth-token/README.md`), ainsi que les listes blanches par EXPRESSION de sept règles
+      # (`aws-access-token`, `curl-auth-user`, `gcp-api-key`, `generic-api-key`, `kubernetes-secret-yaml`,
+      # `nuget-config-password`, `vault-service-token`) ; aucune ne touche `private-key`. (9) Le texte forcé ne vaut que pour
+      # l'attribut `diff` de git, sur la version épinglée ; l'enveloppe laisse sa ligne `* diff` dans le
+      # `info/attributes` du dépôt scanné. Le périmètre mesuré est celui de 8.24.3 : une montée change la
+      # liste des règles, et ce témoin rejoue alors toutes les voies. Le témoin juge le fichier `info/attributes`
+      # HORS de l'environnement de l'enveloppe : une variable d'environnement posée par
+      # elle (configuration git injectée) lui échappe. (10) UNE VOIE HORS DU TOML RESTE OUVERTE ET N'EST PAS
+      # FERMÉE ICI : une clé ajoutée dans la RÉSOLUTION d'un commit de fusion n'est pas lue, car `git log -p`
+      # (que gitleaks lance) n'affiche pas le diff d'une fusion (mesuré par la vérification : dépôt jetable,
+      # fusion `--no-commit` puis clé ajoutée dans `fusion.rs`, présente dans l'arbre de HEAD ; enveloppe =
+      # code 0, aucun constat, « 3 commits scanned » sur 4 ; l'historique façon CI compte 8 fusions sur 777
+      # commits). Ni l'enveloppe ni le témoin ne la ferment ; elle attend sa propre clé.
       # Les clés fraîches ne sont jamais un secret : elles meurent avec le runner.
       - name: Secret scan witness (a key planted in each real idp/ module is reported, only the exact test PEM is admitted)
         id: gitleaks_temoin
@@ -3298,13 +3369,26 @@ jobs:
                   conf = tomllib.load(f)
           except Exception as e:
               refuser("la configuration gitleaks ne s'analyse pas en TOML (%s)" % e)
-          # Forme FERMÉE : ce témoin ne juge que [extend] useDefault et [allowlist] description,
+          # Forme FERMÉE : ce témoin ne juge que [extend] path et [allowlist] description,
           # regexTarget, regexes, paths. Toute autre table ou clé (`[[allowlists]]`, `[[rules]]`,
           # `stopwords`, `commits`, `extend.disabledRules`…) pourrait taire une clé hors de sa vue.
           al = conf.get("allowlist")
           hors = sorted(set(conf) - {"title", "extend", "allowlist"})
-          if conf.get("extend") != {"useDefault": True}:
+          # `P10.31-o` : `[extend]` ne nomme QUE le fichier de règles par défaut privé de sa liste blanche
+          # globale (`useDefault = true` la réimporterait), et ce fichier n'a d'autre table que `title` et
+          # `[[rules]]` : une `[allowlist]`, des `[[allowlists]]` ou un `[extend]` y tairaient une clé hors de la
+          # vue de ce témoin. Que ses règles soient celles du binaire est jugé à part, une fois.
+          ext = conf.get("extend")
+          etendu = ext.get("path") if isinstance(ext, dict) and set(ext) == {"path"} else None
+          if not isinstance(etendu, str) or not os.path.isabs(etendu) or '"' in etendu or "\\" in etendu:
               hors.append("extend")
+          else:
+              try:
+                  with open(etendu, "rb") as f:
+                      regles_defaut = tomllib.load(f)
+              except Exception as e:
+                  refuser("le fichier de règles étendu %s ne se lit pas en TOML (%s)" % (etendu, e))
+              hors += ["fichier de règles étendu : " + k for k in sorted(set(regles_defaut) - {"title", "rules"})]
           if not isinstance(al, dict):
               refuser("la configuration gitleaks n'a pas de table [allowlist]")
           hors += ["allowlist." + k for k in sorted(set(al) - {"description", "regexTarget", "regexes", "paths"})]
@@ -3401,11 +3485,68 @@ jobs:
               # Configuration RÉDUITE pour le contre-scan : mêmes chemins, seules les règles de clé.
               lit = lambda s: "'''%s'''" % s if "'''" not in s and "\n" not in s else refuser("règle non recopiable : %r" % s[:60])
               with open(reduite, "w") as f:
-                  f.write("[extend]\nuseDefault = true\n[allowlist]\nregexTarget = \"line\"\nregexes = [\n")
+                  f.write("[extend]\npath = \"%s\"\n[allowlist]\nregexTarget = \"line\"\nregexes = [\n" % etendu)
                   f.write("".join("  %s,\n" % lit(r) for r in cles) + "]\npaths = [\n")
                   f.write("".join("  %s,\n" % lit(p) for p in chemins) + "]\n")
           PY
           python3 "$C/structure.py" "$CONF" "$NUE" "$K" "$C/reduite.toml"
+          # `P10.31-o` : le fichier de règles étendu est le fichier par défaut EMBARQUÉ dans le binaire du scan,
+          # octet pour octet, moins sa seule table `[allowlist]` globale. Un fichier de règles téléchargé d'une
+          # autre version que le binaire, ou retouché (une règle `private-key` affaiblie, une liste blanche par
+          # règle ajoutée), rougit ici.
+          REGLES="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["extend"]["path"])' "$CONF")"
+          # Le fichier embarqué est lu ENTIER : sa fin n'est pas cherchée dans le binaire (une recherche de la
+          # queue admettait un fichier COUPÉ, mesuré par la vérification : 151 règles sur 208, une clé Stripe
+          # committée passait), elle est donnée par l'en-tête de chaîne Go (adresse, longueur) de la variable
+          # embarquée, que le binaire porte dans une section inscriptible (mesuré en 8.24.3 : un seul, en
+          # `.data`, longueur 93795 = le fichier téléchargé). Le fichier étendu doit valoir EXACTEMENT ce
+          # fichier privé de sa table `[allowlist]` globale, par la même découpe que le pas de configuration.
+          cat > "$C/embarque.py" <<'PY'
+          import struct, sys
+          r = open(sys.argv[1], "rb").read(); b = open(sys.argv[2], "rb").read()
+          def refuser(pourquoi):
+              print("::error::le fichier de règles étendu n'est pas le fichier par défaut embarqué ENTIER dans le binaire,"
+                    " privé de sa liste blanche globale : " + pourquoi)
+              sys.exit(1)
+          REGLE = b"\n[[rules]]\n"
+          i = r.find(REGLE)
+          if i <= 0 or b.count(r[:i]) != 1:
+              refuser("son en-tête (avant la première règle) n'est pas UNE fois dans le binaire")
+          k = b.find(r[:i])
+          if b[:6] != b"\x7fELF\x02\x01":
+              refuser("le binaire n'est pas un ELF 64 bits petit-boutiste")
+          shoff = struct.unpack_from("<Q", b, 0x28)[0]; pas, nombre = struct.unpack_from("<HH", b, 0x3A)
+          # (nom, type, drapeaux, adresse, décalage, taille) ; type 8 = sans octets dans le fichier, drapeau 1 = inscriptible.
+          sections = [struct.unpack_from("<IIQQQQ", b, shoff + n * pas) for n in range(nombre)]
+          porteuse = [s for s in sections if s[1] != 8 and s[3] and s[4] <= k < s[4] + s[5]]
+          if len(porteuse) != 1:
+              refuser("l'en-tête n'est dans aucune section chargée du binaire")
+          s = porteuse[0]; adresse, reste = s[3] + k - s[4], s[4] + s[5] - k
+          longueurs = set()
+          for d in sections:
+              if d[1] == 8 or not d[2] & 1:
+                  continue
+              p = d[4]
+              while 0 <= (p := b.find(struct.pack("<Q", adresse), p, d[4] + d[5] - 16)):
+                  n = struct.unpack_from("<Q", b, p + 8)[0]
+                  if 0 < n <= reste:
+                      longueurs.add(n)
+                  p += 1
+          if len(longueurs) != 1:
+              refuser("%d en-tête(s) de chaîne désignent ce début, il en faut un (la fin du fichier embarqué en dépend)" % len(longueurs))
+          E = b[k:k + longueurs.pop()]
+          debut, fin = E.find(b"\n[allowlist]\n"), E.find(REGLE)
+          if not 0 <= debut < fin:
+              refuser("le fichier embarqué n'a pas de table [allowlist] globale avant ses règles")
+          attendu = E[:debut] + b"\n" + E[fin:]
+          if len(sys.argv) > 3:
+              open(sys.argv[3], "wb").write(E)
+          if r != attendu:
+              refuser("%d octets et %d règle(s), attendu %d octets et %d règle(s)" % (len(r), r.count(REGLE), len(attendu), attendu.count(REGLE)))
+          print("règles étendues : le fichier par défaut embarqué ENTIER (%d octets, %d règles), privé de sa liste blanche globale (%d octets retirés)"
+                % (len(E), attendu.count(REGLE), len(E) - len(attendu)))
+          PY
+          python3 "$C/embarque.py" "$REGLES" "${GITLEAKS_BIN:-/tmp/gitleaks}"
           PEM="$(awk '{printf "%s\\n", $0}' "$C/fraiche.pem")"
           # Altère UN caractère du corps base64 : en tête (5e caractère) ou en fin (dernier avant END).
           alterer() { LIGNE="$LIGNE" python3 -c '
@@ -3441,9 +3582,13 @@ jobs:
           VOISINS="daemon/src/tests/saml.rs.pem daemon/src/tests/engagement.rs.bak autre/daemon/src/tests/saml.rs"
           for v in $VOISINS daemon/src/tests/saml.rs; do mkdir -p "$C/arbre/$(dirname "$v")"; cp "$C/fraiche.pem" "$C/arbre/$v"; done
           for v in $VOISINS; do ATTENDU="$ATTENDU $v:1"; done
+          # `P10.31-o` : une clé fraîche sous des chemins que la liste blanche globale PAR DÉFAUT admettait
+          # (dépendances, documents, images, verrous Go) → SIGNALÉE : seule la liste explicite ci-dessus vaut.
+          DEFAUT_ADMIS="node_modules/paquet/index.js docs/schema.svg docs/guide.pdf go.sum vendor/modules.txt"
+          for v in $DEFAUT_ADMIS; do mkdir -p "$C/arbre/$(dirname "$v")"; cp "$C/fraiche.pem" "$C/arbre/$v"; ATTENDU="$ATTENDU $v:1"; done
           NMOD="$(printf '%s\n' $MODULES | grep -c .)"
-          [ "$(printf '%s\n' $ATTENDU | grep -c .)" = $((NMOD + 6 + (NFORMATS - 1) + 2 * NFORMATS + 3)) ] \
-            || { echo "::error::le témoin n'a pas posé toutes ses clés (une par module, six variantes, chaque format en ligne et en fichier, trois chemins voisins)"; exit 1; }
+          [ "$(printf '%s\n' $ATTENDU | grep -c .)" = $((NMOD + 6 + (NFORMATS - 1) + 2 * NFORMATS + 3 + 5)) ] \
+            || { echo "::error::le témoin n'a pas posé toutes ses clés (une par module, six variantes, chaque format en ligne et en fichier, trois chemins voisins, cinq chemins de la liste blanche par défaut)"; exit 1; }
           rc=0
           bash "$GLD" "$C/arbre" --no-git --config "$CONF" --no-banner --redact \
               --exit-code 1 --report-format json --report-path "$C/rapport.json" >/dev/null 2>&1 || rc=$?
@@ -3455,7 +3600,7 @@ jobs:
           ATTENDU="$(printf '%s\n' $ATTENDU | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
           echo "constats : $TROUVES"
           [ "$TROUVES" = "$ATTENDU" ] || {
-            echo "::error::constats attendus : $ATTENDU (une clé fraîche par module réel de idp/, six variantes dont gitleaks:allow, trois chemins voisins d un chemin admis, et quinze clés d autres formats en fin de mod.rs, chaque format en fichier .pem et .key multilignes sous deploy/, la ligne exacte de TEST_RSA_PEM admise)"; exit 1; }
+            echo "::error::constats attendus : $ATTENDU (une clé fraîche par module réel de idp/, six variantes dont gitleaks:allow, trois chemins voisins d un chemin admis, cinq chemins de l ancienne liste blanche par défaut, et quinze clés d autres formats en fin de mod.rs, chaque format en fichier .pem et .key multilignes sous deploy/, la ligne exacte de TEST_RSA_PEM admise)"; exit 1; }
           # CONTRE-SCAN (`P10.31-g`) : l'historique complet rescanné avec la configuration RÉDUITE (mêmes
           # chemins, seules les règles de clé). Aucun constat `private-key` n'y est admis : une clé réelle
           # committée que seule une règle « pas de clé » taisait (un nom comme `CLE_TIERCE`, un fragment
@@ -3472,9 +3617,15 @@ jobs:
           # configurations HOSTILES fabriquées ici depuis la vraie ; chacune doit être refusée. Sans eux,
           # un retour à la lecture ligne à ligne, une sonde perdue ou un contre-scan qui garderait toutes
           # les règles laisseraient ce pas vert. Les règles hostiles ne sont pas des secrets.
-          python3 - "$CONF" "$C/hostiles" "$K/rsa1024-pkcs1.pem" <<'PY'
+          python3 - "$CONF" "$C/hostiles" "$K/rsa1024-pkcs1.pem" "$REGLES" <<'PY'
           import base64, os, sys
           t = open(sys.argv[1]).read(); d = sys.argv[2]; os.makedirs(d)
+          # `P10.31-o` : un fichier de règles étendu qui porte une liste blanche globale (celle par défaut, ici
+          # réduite à `node_modules/`).
+          regles_liste = os.path.join(d, "regles-avec-liste.toml")
+          open(regles_liste, "w").write(open(sys.argv[4]).read() + "\n[allowlist]\npaths = ['''(?:^|/)node_modules(?:/.*)?$''']\n")
+          ligne_path = 'path = "%s"\n' % sys.argv[4]
+          assert t.count(ligne_path) == 1, "la ligne `path = ` du fichier de règles n'est pas unique"
           # Fragment d'en-tête RSA-1024 pris avec un AUTRE octet de longueur que la clé de sonde : aucune sonde
           # simple ne le porte, seules les variantes d'octet le voient.
           der = bytearray(base64.b64decode("".join(l for l in open(sys.argv[3]).read().splitlines() if not l.startswith("-"))))
@@ -3498,10 +3649,17 @@ jobs:
               "posix_multiligne": t.replace(tete, tete + "  '''-{5}\\n[[:alnum:]+/]{40}''',\n"),
               "joker_seul": t.replace(tete, tete + "  '''zqzqzqzq.''',\n"),
               "non_compilable": t.replace(tete, tete + "  '''\\Qzqzqzqzq\\E''',\n"),
-              "regle_par_defaut_coupee": t.replace("useDefault = true\n", "useDefault = true\ndisabledRules = [\"private-key\"]\n"),
+              "regle_par_defaut_coupee": t.replace("[extend]\n", "[extend]\ndisabledRules = [\"private-key\"]\n"),
+              # `P10.31-o` : retour à `useDefault` (réimporte la liste blanche globale), et fichier de règles
+              # étendu qui en porte une.
+              "liste_par_defaut": t.replace(ligne_path, "useDefault = true\n"),
+              "regles_avec_liste_blanche": t.replace(ligne_path, 'path = "%s"\n' % regles_liste),
               "chemin_de_cle": t.replace("paths = [\n", "paths = [\n  '''\\.(key|pem)$''',\n"),
               # `P10.31-n` : la forme d'avant, non ancrée, admettait `saml.rs.pem` et `autre/…/saml.rs`.
               "chemin_non_ancre": t.replace("'''^daemon/src/tests/saml\\.rs$'''", "'''daemon/src/tests/saml\\.rs'''"),
+              # `P10.31-o` : une SEULE ancre manquante (tête, puis fin) suffit à admettre un chemin voisin.
+              "chemin_sans_debut": t.replace("'''^daemon/src/tests/saml\\.rs$'''", "'''daemon/src/tests/saml\\.rs$'''"),
+              "chemin_sans_fin": t.replace("'''^daemon/src/tests/saml\\.rs$'''", "'''^daemon/src/tests/saml\\.rs'''"),
               "fragment_autre_longueur": t.replace(tete, tete + "  '''%s''',\n" % fragment),
           }
           for n, v in variantes.items():
@@ -3509,9 +3667,40 @@ jobs:
               open(os.path.join(d, n + ".toml"), "w").write(v)
           PY
           for v in joker_sur_la_ligne_regexes pkcs1_entre_guillemets classe_positive classe_positive_seule pkcs8_rsa4096 ec_sec1 openssh \
-                   posix_multiligne joker_seul non_compilable regle_par_defaut_coupee chemin_de_cle fragment_autre_longueur chemin_non_ancre; do
+                   posix_multiligne joker_seul non_compilable regle_par_defaut_coupee chemin_de_cle fragment_autre_longueur chemin_non_ancre \
+                   chemin_sans_debut chemin_sans_fin liste_par_defaut regles_avec_liste_blanche; do
             if python3 "$C/structure.py" "$C/hostiles/$v.toml" "$NUE" "$K" >/dev/null 2>&1; then
               echo "::error::témoin du témoin : la configuration hostile « $v » passe le contrôle structurel"; exit 1; fi
+          done
+          # `P10.31-o` : le fichier de règles étendu, retouché d'UN octet dans la règle `private-key` (son
+          # expression exige un mot de plus après la clé), doit être refusé par le contrôle « défaut embarqué ».
+          python3 - "$REGLES" "$C/hostiles/regles_retouchees.toml" <<'PY'
+          import sys
+          r = open(sys.argv[1], "rb").read()
+          v = r.replace(b"[\\s\\S-]{64,}?KEY(?: BLOCK)?-----'''", b"[\\s\\S-]{64,}?KEY(?: BLOCK)?-----X'''", 1)
+          assert v != r, "la règle private-key du fichier étendu est introuvable"
+          open(sys.argv[2], "wb").write(v)
+          PY
+          if python3 "$C/embarque.py" "$C/hostiles/regles_retouchees.toml" "${GITLEAKS_BIN:-/tmp/gitleaks}" >/dev/null 2>&1; then
+            echo "::error::témoin du témoin : un fichier de règles retouché passe pour le fichier par défaut embarqué"; exit 1; fi
+          # `P10.31-o` : le fichier embarqué est exigé ENTIER et SEUL. Quatre fichiers hostiles, chacun refusé par
+          # un seul sens de l'égalité : COUPÉ de sa dernière règle (une recherche de la queue l'admettait),
+          # PROLONGÉ d'une règle, RETOUCHÉ À LONGUEUR ÉGALE (règle `stripe` : `live` devient `lixe`, un jeton
+          # `sk_live_` committé n'était plus signalé ; une comparaison des seules longueurs l'admettait), et COMPLET (liste blanche globale gardée, écrite par le contrôle embarque.py que ce pas écrit à la volée sous $C, hors du dépôt).
+          python3 "$C/embarque.py" "$REGLES" "${GITLEAKS_BIN:-/tmp/gitleaks}" "$C/hostiles/regles_completes.toml" >/dev/null
+          python3 - "$REGLES" "$C/hostiles" <<'PY'
+          import os, sys
+          r = open(sys.argv[1], "rb").read(); n = r.rindex(b"\n[[rules]]\n")
+          assert r.count(b"\n[[rules]]\n") > 1, "le fichier de règles étendu n'a pas deux règles"
+          open(os.path.join(sys.argv[2], "regles_tronquees.toml"), "wb").write(r[:n] + b"\n")
+          open(os.path.join(sys.argv[2], "regles_prolongees.toml"), "wb").write(r + r[n:])
+          v = r.replace(b"test|live|prod", b"test|lixe|prod", 1)
+          assert v != r and len(v) == len(r), "la règle stripe du fichier étendu est introuvable"
+          open(os.path.join(sys.argv[2], "regles_meme_longueur.toml"), "wb").write(v)
+          PY
+          for v in regles_tronquees regles_prolongees regles_meme_longueur regles_completes; do
+            if python3 "$C/embarque.py" "$C/hostiles/$v.toml" "${GITLEAKS_BIN:-/tmp/gitleaks}" >/dev/null 2>&1; then
+              echo "::error::témoin du témoin : le fichier de règles hostile « $v » passe pour le fichier par défaut embarqué entier"; exit 1; fi
           done
           # Le nom tiers échappe par construction au contrôle structurel ; c'est le contre-scan qui le juge,
           # sur un dépôt jetable où une clé fraîche est committée sous ce nom.
@@ -3523,6 +3712,23 @@ jobs:
           git -C "$G" add tiers.rs && git -C "$G" -c user.name=temoin -c user.email=temoin@invalid commit -qm temoin
           if contre "$G" "$C/reduite-tiers.toml" "$C/contre-tiers.json" >/dev/null; then
             echo "::error::témoin du témoin : le contre-scan n'a pas vu la clé committée sous un nom tiers admis"; exit 1; fi
+          # `P10.31-o` : la configuration RÉDUITE du contre-scan doit étendre le même fichier de règles que la
+          # vraie (un retour à `useDefault` dans la seule réduite réimporterait la liste blanche globale et
+          # tairait au contre-scan une clé sous `node_modules/` ou en `.svg`). Une clé fraîche est committée
+          # sous ces deux chemins dans un dépôt jetable : le contre-scan avec la VRAIE réduite doit rendre
+          # exactement ces deux constats, et le scan avec la vraie configuration doit la signaler dans cet
+          # HISTORIQUE git (le dépôt `--no-git` ci-dessus ne juge que l'arbre).
+          L="$C/depot-liste-defaut"; mkdir -p "$L/node_modules/p" "$L/docs"; git -C "$L" init -q
+          printf 'const k = "%s";\n' "$PEM" > "$L/node_modules/p/index.js"
+          printf '<svg><desc>%s</desc></svg>\n' "$PEM" > "$L/docs/s.svg"
+          git -C "$L" add node_modules/p/index.js docs/s.svg && git -C "$L" -c user.name=temoin -c user.email=temoin@invalid commit -qm temoin
+          if contre "$L" "$C/reduite.toml" "$C/contre-liste.json" >/dev/null; then
+            echo "::error::témoin du témoin : le contre-scan (configuration réduite) ne voit pas une clé committée sous node_modules/ ni en .svg"; exit 1; fi
+          VUS="$(python3 -c 'import json,sys; print(" ".join(sorted(x["File"] for x in json.load(open(sys.argv[1])) if x["RuleID"] == "private-key")))' "$C/contre-liste.json")"
+          [ "$VUS" = "docs/s.svg node_modules/p/index.js" ] \
+            || { echo "::error::témoin du témoin : le contre-scan (configuration réduite) rend « $VUS », attendu « docs/s.svg node_modules/p/index.js »"; exit 1; }
+          rc=0; bash "$GLD" "$L" --config "$CONF" --no-banner --redact --exit-code 1 >/dev/null 2>&1 || rc=$?
+          [ "$rc" = 1 ] || { echo "::error::témoin du témoin : une clé committée sous node_modules/ et en .svg n'est pas signalée dans l'historique (code $rc, attendu 1)"; exit 1; }
           # Une règle épinglée manquante n'est jamais imprimée en clair : la configuration privée de la
           # règle 9 doit être refusée sans qu'un fragment du corps de la clé ne paraisse dans la sortie.
           grep -v 'TEST_RSA_PEM' "$CONF" > "$C/hostiles/regle9_retiree.toml"
@@ -3541,12 +3747,12 @@ jobs:
           gh() { git -C "$H" -c user.name=temoin -c user.email=temoin@invalid "$@"; }
           printf '%s\n' "$LIGNE" > "$H/daemon/src/idp/mod.rs"; gh add daemon/src/idp/mod.rs; gh commit -qm courante
           AUTRE="pub const TEST_RSA_PEM: &str = \"$PEM\";"
-          AUTRE="$AUTRE" NUE="$NUE" python3 - "$C/hostiles" <<'PY'
+          AUTRE="$AUTRE" NUE="$NUE" REGLES="$REGLES" python3 - "$C/hostiles" <<'PY'
           import os, re, sys
           def epingle(l):
               return "^\\s*" + re.sub(r'([\\.^$*+?()\[\]{}|])', r'\\\1', l).replace("-" * 5, "-{5}") + "\\s*$"
           def conf(regles):
-              return ("[extend]\nuseDefault = true\n[allowlist]\nregexTarget = \"line\"\nregexes = [\n"
+              return ("[extend]\npath = \"%s\"\n[allowlist]\nregexTarget = \"line\"\nregexes = [\n" % os.environ["REGLES"]
                       + "".join("  '''%s''',\n" % r for r in regles) + "]\npaths = []\n")
           open(os.path.join(sys.argv[1], "histoire_courante.toml"), "w").write(conf([epingle(os.environ["NUE"])]))
           open(os.path.join(sys.argv[1], "autre_fichier.toml"), "w").write(conf([epingle(os.environ["NUE"]), epingle(os.environ["AUTRE"])]))
@@ -3579,7 +3785,41 @@ jobs:
           git -C "$I" add .gitleaksignore && git -C "$I" -c user.name=temoin -c user.email=temoin@invalid commit -qm ignore
           rc=0; bash "$GLD" "$I" --config "$CONF" --no-banner --redact --exit-code 1 >/dev/null 2>&1 || rc=$?
           [ "$rc" = 3 ] || { echo "::error::témoin du témoin : un .gitleaksignore présent n'est pas refusé (code $rc, attendu 3)"; exit 1; }
-          echo "témoin du témoin : 20 configurations ou dépôts hostiles refusés, aucune clé imprimée"
+          # `P10.31-o` : un `git rev-parse` qui ÉCHOUE dans un dépôt (git simulé, en tête du PATH de l'appel
+          # seul, qui échoue sur l'une des deux résolutions) n'est pas « hors git » : l'appel doit refuser
+          # (code 4), pas scanner sans texte forcé.
+          mkdir -p "$C/git-en-echec"; VRAI_GIT="$(command -v git)"
+          printf '#!/usr/bin/env bash\ncase " $* " in *" $ECHEC "*) echo "fatal: echec simule" >&2; exit 128 ;; esac\nexec "$VRAI_GIT" "$@"\n' \
+            > "$C/git-en-echec/git"; chmod +x "$C/git-en-echec/git"
+          for echec in --git-dir --git-path; do
+            rc=0; PATH="$C/git-en-echec:$PATH" VRAI_GIT="$VRAI_GIT" ECHEC="$echec" \
+              bash "$GLD" "$P" --config "$CONF" --no-banner --redact --exit-code 1 >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 4 ] || { echo "::error::témoin du témoin : un git rev-parse $echec en échec n'est pas refusé par l'appel (code $rc, attendu 4)"; exit 1; }
+          done
+          # `P10.31-o` — la troisième voie hors de la configuration : une clé fraîche committée, puis son fichier
+          # marqué `-diff` (ou `binary`) par un `.gitattributes` committé APRÈS elle, à la racine puis dans son
+          # sous-dossier → l'appel unique doit la SIGNALER (code 1) : il force le texte. Chaque dépôt vérifie
+          # d'abord que git voit bien le fichier comme binaire (sans quoi le cas ne prouverait rien).
+          for cas in "racine||*.rs -diff" "sous-dossier|src/sub/|cle.rs -diff" "macro-binary|src/sub/|cle.rs binary"; do
+            IFS='|' read -r nom ou attr <<< "$cas"
+            Dd="$C/depot-diff-$nom"; mkdir -p "$Dd/src/sub"; git -C "$Dd" init -q
+            gd() { git -C "$Dd" -c user.name=temoin -c user.email=temoin@invalid "$@"; }
+            printf 'const CLE: &str = "%s";\n' "$PEM" > "$Dd/src/sub/cle.rs"
+            gd add src/sub/cle.rs; gd commit -qm cle
+            printf '%s\n' "$attr" > "$Dd/${ou}.gitattributes"; gd add "${ou}.gitattributes"; gd commit -qm attributs
+            [ "$(gd log -p | grep -c '^Binary files')" = 1 ] \
+              || { echo "::error::témoin du témoin : « $attr » ($nom) ne rend pas le fichier binaire aux yeux de git"; exit 1; }
+            rc=0; bash "$GLD" "$Dd" --config "$CONF" --no-banner --redact --exit-code 1 >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 1 ] || { echo "::error::témoin du témoin : une clé committée dont le fichier est marqué « $attr » ($nom) n'est pas signalée (code $rc, attendu 1)"; exit 1; }
+            # La clé ci-dessus n'est posée qu'en `.rs` : une exception ajoutée APRÈS `* diff` (`*.pem -diff`)
+            # resterait verte. L'appel doit donc laisser `* diff` comme SEULE ligne du fichier d'attributs (le
+            # dépôt neuf n'en avait pas). Ce fichier prime sur tout `.gitattributes` et `*` y vaut pour tout
+            # chemin à toute profondeur : un `git check-attr` après ce contrôle exact ne pourrait pas rougir seul.
+            at="$(git -C "$Dd" rev-parse --path-format=absolute --git-path info/attributes)"
+            [ "$(cat "$at" 2>/dev/null)" = "* diff" ] \
+              || { echo "::error::témoin du témoin : après l'appel ($nom), info/attributes ne vaut pas exactement « * diff »"; exit 1; }
+          done
+          echo "témoin du témoin : 35 configurations ou dépôts hostiles refusés, aucune clé imprimée"
 
       # `deny.toml` existait depuis longtemps mais AUCUN job ne l'exécutait : une configuration
       # que personne ne lance n'est pas une garde, c'est de la décoration. Mesuré avant l'ajout —

@@ -19,6 +19,10 @@ ajouté ailleurs serait la même brèche) :
       admis avant elle) — et c'est l'`exec` de l'enveloppe,
       qui porte `--ignore-gitleaks-allow` ;
   (2) l'enveloppe refuse un `.gitleaksignore` (sa ligne `find … -name .gitleaksignore` existe) ;
+  (2b) `P10.31-o` : l'enveloppe force le texte — elle résout `--git-path info/attributes` du dépôt
+      scanné et y ajoute `* diff`, que git fait primer sur tout `.gitattributes` (sans quoi un
+      attribut `-diff` ou la macro `binary`, même committés après la clé, font sauter le fichier
+      au scan d'historique : mesuré en 8.24.3) ;
   (3) le pas principal (`id: gitleaks`) appelle l'enveloppe.
 Les lignes de commentaire (`#` en tête) ne comptent pas : la prose peut nommer la forme interdite.
 
@@ -26,7 +30,9 @@ CE QUI NE TIENT PAS : la lecture est TEXTUELLE. Un binaire appelé par une varia
 (`G=/tmp/gitleaks; $G detect`), une construction dynamique, un drapeau global à valeur séparée
 (`gitleaks --config c dir`) ou une image de conteneur au nom inhabituel échappent au motif (1) ;
 dans le pas principal, le contrôle (3) les refuse quand même (il exige l'enveloppe), ailleurs seule
-la relecture les voit.
+la relecture les voit. Le contrôle (2b) est textuel lui aussi : il exige les deux lignes dans les flux,
+pas qu'elles soient dans l'enveloppe ni exécutées ; c'est le témoin du scan qui le prouve (dépôts
+jetables marqués `-diff`, joués sur l'enveloppe).
 
 Usage : python3 .github/scripts/check_every_gitleaks_scan_takes_the_single_call.py [FLUX.yml …]
 Sortie : 0 = tenu ; 1 = propriété violée ; 2 = instrument invalide ou flux illisible (aucun verdict).
@@ -47,6 +53,7 @@ FLUX = os.path.join(RACINE, ".github", "workflows")
 APPEL = re.compile(
     r"""(?:gitleaks(?::[^\s"']+)?|GITLEAKS_BIN[^}\s]*\})["']?(?:\s+--?[\w-]+(?:=\S+)?)*\s+(detect|git|dir|directory|file|protect|stdin)\b"""
 )
+TEXTE_FORCE = re.compile(r"""printf\s+(['"])\*\s+diff\\n\1\s*>>""")
 ENVELOPPE = re.compile(r"""\$\{?RUNNER_TEMP[^/]*/gitleaks-detect\.sh""")
 
 
@@ -98,6 +105,14 @@ def juger(textes: dict[str, str]) -> list[str]:
         for _, l in lignes_de_commande(t)
     ):
         defauts.append("l'enveloppe ne cherche plus de `.gitleaksignore` à refuser")
+    commandes = [l for t in textes.values() for _, l in lignes_de_commande(t)]
+    if not any(re.search(r"--git-path\s+info/attributes\b", l) for l in commandes) or not any(
+        TEXTE_FORCE.search(l) for l in commandes
+    ):
+        defauts.append(
+            "l'enveloppe ne force plus le texte (`* diff` ajouté à `--git-path info/attributes`) : "
+            "un attribut `-diff` tairait le fichier au scan d'historique (P10.31-o)"
+        )
     principaux = [(f, pas_principal(t)) for f, t in textes.items()]
     principaux = [(f, b) for f, b in principaux if b is not None]
     if not principaux:
@@ -111,6 +126,8 @@ def juger(textes: dict[str, str]) -> list[str]:
 ENV_OK = (
     "      - name: config\n        run: |\n"
     "          ign=\"$(find \"$src\" -name .gitleaksignore -print -quit)\"\n"
+    "          if att=\"$(git -C \"$src\" rev-parse --path-format=absolute --git-path info/attributes)\"; then\n"
+    "            printf '* diff\\n' >> \"$att\"; fi\n"
     "          exec \"${GITLEAKS_BIN:-/tmp/gitleaks}\" detect --source . --ignore-gitleaks-allow \"$@\"\n"
 )
 PRINCIPAL_OK = (
@@ -140,6 +157,10 @@ def valider_linstrument() -> list[str]:
         "enveloppe sans --ignore-gitleaks-allow": ENV_OK.replace(" --ignore-gitleaks-allow", "") + PRINCIPAL_OK,
         "enveloppe sans refus de .gitleaksignore": ENV_OK.replace("-name .gitleaksignore", "-name x") + PRINCIPAL_OK,
         "pas principal absent": ENV_OK,
+        # `P10.31-o` : seul le contrôle (2b) refuse ceux-là.
+        "enveloppe sans texte forcé": ENV_OK.replace("            printf '* diff\\n' >> \"$att\"; fi\n", "            fi\n") + PRINCIPAL_OK,
+        "texte forcé désarmé": ENV_OK.replace("printf '* diff", "printf '* -diff") + PRINCIPAL_OK,
+        "texte forcé hors de info/attributes": ENV_OK.replace("--git-path info/attributes", "--git-dir") + PRINCIPAL_OK,
         # Seul le contrôle (3) refuse ceux-ci : le motif (1) ne voit pas un binaire lancé par une variable.
         "scan principal par une variable": ENV_OK + PRINCIPAL_OK.replace(
             'bash "$RUNNER_TEMP/gitleaks-detect.sh" . --config c.toml',
@@ -182,7 +203,7 @@ def main(argv: list[str]) -> int:
         print(f"\n{len(defauts)} défaut(s) : tout scan gitleaks passe par l'enveloppe unique (P10.31-n).")
         return 1
     print(f"{len(textes)} flux lus : un seul lancement de gitleaks (l'enveloppe, --ignore-gitleaks-allow, "
-          "refus de .gitleaksignore), pris par le scan principal.")
+          "refus de .gitleaksignore, texte forcé), pris par le scan principal.")
     return 0
 
 

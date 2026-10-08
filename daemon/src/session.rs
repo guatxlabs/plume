@@ -153,14 +153,15 @@ fn compte_live(st: &AppState, user: &str) -> Option<CompteLive> {
     // 1) compte applicatif (table `user`) — fait autorité, comme dans authenticate().
     //    #23 F4 — la session cookie est DÉJÀ prouvée par HMAC : ce chemin n'a besoin QUE du RÔLE, jamais du
     //    hash. On le lit donc `SELECT role FROM user WHERE name=?` via le READ POOL (WAL, hors mutex WRITER),
-    //    au lieu de lookup_basic_ident (qui SELECTe `hash` et prend le writer -> chaque requête UI cookie se
+    //    au lieu de lookup_basic_ident_lu (qui SELECTe `hash` et prend le writer -> chaque requête UI cookie se
     //    sérialisait contre l'ingest). `role` n'est PAS une colonne DÉNIÉE par l'authorizer read-pool (seuls
     //    user.hash/token.token_hash le sont) et reste servie FRAÎCHE (snapshot WAL committé) -> la révocation/
     //    rétrogradation LIVE est préservée à l'identique (rôle relu à CHAQUE requête, juste sur une autre
     //    connexion). N'AFFECTE QUE le mode 0 hors eng-cred : les eng-creds (fenêtre horaire d'engagement,
-    //    JAMAIS mis en cache) RESTENT sur lookup_basic_ident (writer) -> leur sémantique de fenêtre est
+    //    JAMAIS mis en cache) RESTENT sur l'écrivain (`compte_via_l_ecrivain`) -> leur sémantique de fenêtre est
     //    inchangée ; le Basic-auth (qui a réellement besoin du hash) n'est PAS touché non plus. Une panne de
-    //    connexion du pool (rare) retombe sur lookup_basic_ident (writer) -> aucun refus de rôle à tort.
+    //    connexion du pool (rare) retombe sur l'écrivain (`compte_via_l_ecrivain`) ; `P10.20-b` : si l'écrivain ne lit
+    //    pas non plus, REFUS (jamais le repli admin sur une lecture ratée).
     //    `P10.23-l` : l'époque du compte est lue PAR LE MÊME ÉNONCÉ que le rôle sur le read pool (aucune requête
     //    de plus par requête servie). `P10.24-d` : les voies d'écrivain (eng-cred, pool indisponible) jouent CE
     //    MÊME ÉNONCÉ sur la connexion d'écriture, sous une seule prise du verrou (`compte_via_l_ecrivain`) : plus de
@@ -179,11 +180,24 @@ fn compte_live(st: &AppState, user: &str) -> Option<CompteLive> {
             LectureDuCompte::Trouve { role, epoque } => return Some(CompteLive { role, epoque }),
             // absent de `user` -> repli admin-wizard / config statique (idem historique), à l'époque lue.
             LectureDuCompte::Absent { epoque } => epoque_lue_sans_ligne = Some(epoque),
-            // rien n'a pu être lu, même par l'écrivain : le repli relit l'époque à part (et refusera si elle échoue).
-            LectureDuCompte::NonLu => {}
+            // `P10.20-b` — rien n'a pu être lu, même par l'écrivain : le compte est peut-être en table, avec un autre
+            // rôle. REFUS, jamais le repli admin de l'assistant ou de configuration sur une lecture ratée.
+            LectureDuCompte::NonLu => {
+                eprintln!("[session] WARN compte '{user}' NON lu (read pool et écrivain), identité refusée");
+                return None;
+            }
         }
-    } else if let Some((_, role)) = lookup_basic_ident(st, user) {
-        return Some(CompteLive { role, epoque: epoque_par_l_ecrivain() });
+    } else {
+        match crate::state::lookup_basic_ident_lu(st, user) {
+            crate::state::LectureDuCompteBasic::Trouve { role, .. } => {
+                return Some(CompteLive { role, epoque: epoque_par_l_ecrivain() })
+            }
+            crate::state::LectureDuCompteBasic::Absent => {}
+            crate::state::LectureDuCompteBasic::NonLu(cause) => {
+                eprintln!("[session] WARN compte '{user}' NON lu au plan de contrôle, identité refusée : {cause}");
+                return None;
+            }
+        }
     }
     // 2) admin défini par le wizard (meta) -> admin ; 3) compte config statique (bootstrap) -> admin.
     let admin_de_l_assistant = st.admin.lock().as_ref().is_some_and(|(au, _)| au == user);
@@ -195,7 +209,8 @@ fn compte_live(st: &AppState, user: &str) -> Option<CompteLive> {
 }
 
 /// #23 F4 — résultat TRI-ÉTAT d'une résolution de rôle : distingue « trouvé » de « absent » (compte disparu -> le
-/// cookie ne vaut plus rien) de « non lu » (pool indisponible ou énoncé en échec : repli, jamais un refus à tort).
+/// cookie ne vaut plus rien) de « non lu » (pool indisponible ou énoncé en échec). `P10.20-b` : un « non lu » du read
+/// pool se rejoue sur l'écrivain ; un « non lu » de l'écrivain REFUSE l'identité (aucun repli admin).
 /// `P10.23-l` : « trouvé » et « absent » portent l'époque du compte, lue par le même énoncé.
 enum LectureDuCompte {
     Trouve { role: String, epoque: rusqlite::Result<i64> },
@@ -206,7 +221,7 @@ enum LectureDuCompte {
 /// `P10.23-l` / `P10.24-d` — L'ÉNONCÉ UNIQUE de la résolution d'une session : deux sous-requêtes scalaires rendent
 /// TOUJOURS une ligne, `(rôle ou NULL, époque ou NULL)`. Joué tel quel sur le read pool ET sur l'écrivain : aucune
 /// voie ne relit l'époque à part, aucune ne lit `user.hash` (colonne déniée sur le read pool ; `NOT NULL` au schéma,
-/// donc « une ligne dans `user` » vaut ici ce qu'elle valait par `lookup_basic_ident`).
+/// donc « une ligne dans `user` » vaut ici ce qu'elle vaut par `lookup_basic_ident_lu`).
 const ROLE_ET_EPOQUE_DU_COMPTE: &str = "SELECT (SELECT role FROM user WHERE name=?1), (SELECT value FROM meta WHERE key=?2)";
 
 fn lire_le_compte(conn: &Connection, user: &str) -> LectureDuCompte {
@@ -231,9 +246,9 @@ fn compte_via_read_pool(st: &AppState, user: &str) -> LectureDuCompte {
 
 /// `P10.24-d` — LA VOIE D'ÉCRIVAIN, GREFFÉE SUR LE MÊME ÉNONCÉ. Les comptes `eng-cred-*` (jamais servis par le pool :
 /// leur fenêtre d'engagement se juge sur l'écrivain) et le repli d'un pool indisponible lisaient le rôle par
-/// `lookup_basic_ident` (qui SELECTe aussi `hash`) puis l'époque par une SECONDE requête, sous une seconde prise du
+/// `lookup_basic_ident` (aujourd'hui `lookup_basic_ident_lu`, qui SELECTe aussi `hash`) puis l'époque par une SECONDE requête, sous une seconde prise du
 /// verrou. Ici : une prise du verrou, `ROLE_ET_EPOQUE_DU_COMPTE`, et pour un `eng-cred-*` la fenêtre jugée sur la
-/// même connexion — hors fenêtre, le compte vaut « absent » (ce que `lookup_basic_ident` rendait par `None`).
+/// même connexion — hors fenêtre, le compte vaut « absent » (ce que `lookup_basic_ident_lu` rend par `Absent`).
 fn compte_via_l_ecrivain(st: &AppState, user: &str) -> LectureDuCompte {
     let c = st.db.lock();
     match lire_le_compte(&c, user) {

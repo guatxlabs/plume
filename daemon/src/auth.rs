@@ -1887,22 +1887,32 @@ pub(crate) fn authenticate(st: &AppState, authz: &str) -> Option<(String, String
         .and_then(|s| s.split_once(':').map(|(u, p)| (u.to_string(), p.to_string())))?;
     // 1) compte applicatif — R7 (#2a-2a) : accesseur mode-aware. Mode 0 = table `user` de la base unique
     // (INCHANGÉ) ; mode 1 = `platform_user` du control-plane (les hash d'auth ne sont plus dans la base tenant).
-    let from_table: Option<(String, String)> = lookup_basic_ident(st, &u);
-    let ident = if let Some((hash, role)) = from_table {
+    // `P10.20-b` : lecture TRI-ÉTAT — seule l'absence ÉTABLIE ouvre le repli ; une lecture ratée REFUSE (rien en cache).
+    let ident = match crate::state::lookup_basic_ident_lu(st, &u) {
         // un nom présent dans la table fait autorité : pas de repli sur l'admin/config
-        if verify_pw(&p, &hash) { Some((u.clone(), role)) } else { None }
-    } else {
-        let admin = st.admin.lock().clone();
-        if let Some((au, ah)) = admin {
-            if u == au && verify_pw(&p, &ah) { Some((u.clone(), "admin".to_string())) } else { None }
-        } else if !st.pass_hash.is_empty() && u == *st.user && verify_pw(&p, st.pass_hash.as_str()) {
-            Some((u.clone(), "admin".to_string()))
-        } else {
-            None // setup mode : pas de credential par défaut ; voir auth_guard + token d'installation
+        crate::state::LectureDuCompteBasic::Trouve { hash, role } => {
+            if verify_pw(&p, &hash) { Some((u.clone(), role)) } else { None }
+        }
+        // la table n'a pas pu être lue : le nom y est peut-être, avec un autre secret — rien ne se conclut.
+        // L'aveu ne porte PAS le nom : il vient du client, non authentifié (injection de lignes, mot de passe saisi
+        // à la place du nom). La cause suffit : c'est la table qui ne se lit pas, pas ce compte-là.
+        crate::state::LectureDuCompteBasic::NonLu(cause) => {
+            eprintln!("[auth] WARN compte Basic NON lu, authentification refusée (aucun repli admin/config) : {cause}");
+            return None;
+        }
+        crate::state::LectureDuCompteBasic::Absent => {
+            let admin = st.admin.lock().clone();
+            if let Some((au, ah)) = admin {
+                if u == au && verify_pw(&p, &ah) { Some((u.clone(), "admin".to_string())) } else { None }
+            } else if !st.pass_hash.is_empty() && u == *st.user && verify_pw(&p, st.pass_hash.as_str()) {
+                Some((u.clone(), "admin".to_string()))
+            } else {
+                None // setup mode : pas de credential par défaut ; voir auth_guard + token d'installation
+            }
         }
     };
     if let Some((name, role)) = &ident {
-        // MODE ENGAGEMENT : un credential minté (`eng-cred-*`) n'est JAMAIS mis en cache -> lookup_basic_ident
+        // MODE ENGAGEMENT : un credential minté (`eng-cred-*`) n'est JAMAIS mis en cache -> lookup_basic_ident_lu
         // le RE-RÉSOUT à chaque requête (hard-expiry de la fenêtre re-vérifiée + suppression du compte prise en
         // compte sans délai). Sinon le cache TTL 300 s bypasserait l'expiry/la révocation. Coût argon2 par
         // requête acceptable (credential borné à un pentest). Comptes normaux : caching INCHANGÉ (byte-identique).

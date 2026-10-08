@@ -253,15 +253,32 @@ fn register_attack_tactic(conn: &Connection) {
 /// indécodables, donc des entités dont le risque n'a PAS été jugé ce tick. Mode 0 : `Lue(0)`.
 pub(crate) fn rollup_risk(conn: &Connection) -> crate::bilan_de_tick::BilanDeTick {
     register_attack_tactic(conn);   // #3 : SQL scalar attack_tactic(technique)->tactique (idempotent, cheap)
-    let has_events: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM risk_event)", [], |r| r.get(0)).unwrap_or(false);
-    let has_rollup: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM risk_rollup)", [], |r| r.get(0)).unwrap_or(false);
+    // `P10.20-b` (rang trois) — LES TROIS SONDES SONT LUES, ET UNE SONDE RATÉE N'EST PAS UN « NON ». `EXISTS` rend
+    // TOUJOURS une ligne : un `Err` ici n'est jamais « aucune donnée », c'est une table qui n'a pas répondu. La forme
+    // d'avant (`unwrap_or(false)`) servait alors le fast-path `Lue(0)` — un tick vert sans risque jugé — ou, sonde
+    // `risk_event` seule ratée, laissait la reconstruction vider le rollup puis RÉSOUDRE les alertes ouvertes.
+    // Chaque sonde est un `query_row` EN CLAIR (pas de closure intermédiaire qui rendrait un `Result` à l'appelant) :
+    // la garde lecture-unique voit ainsi la forme d'avant (`.unwrap_or(false)`) si elle revient sur l'un des trois sites.
+    let has_events: bool = match conn.query_row("SELECT EXISTS(SELECT 1 FROM risk_event)", [], |r| r.get(0)) {
+        Ok(b) => b,
+        Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque (sonde risk_event)", &e),
+    };
+    let has_rollup: bool = match conn.query_row("SELECT EXISTS(SELECT 1 FROM risk_rollup)", [], |r| r.get(0)) {
+        Ok(b) => b,
+        Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque (sonde risk_rollup)", &e),
+    };
     if !has_events && !has_rollup {
         // Aucune donnée de risque : ne reste que le cas-limite d'une alerte risk ouverte à résoudre.
-        let has_alert: bool = conn
-            .query_row("SELECT EXISTS(SELECT 1 FROM alert WHERE dedup LIKE 'risk-%' AND status IN ('new','ack'))", [], |r| r.get(0))
-            .unwrap_or(false);
+        let has_alert: bool = match conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM alert WHERE dedup LIKE 'risk-%' AND status IN ('new','ack'))",
+            [],
+            |r| r.get(0),
+        ) {
+            Ok(b) => b,
+            Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque (sonde des alertes ouvertes)", &e),
+        };
         if !has_alert {
-            return crate::mesure_environnement::Mesure::Lue(0); // mode 0 : NO-OP strict, et c'est un VRAI zéro
+            return crate::mesure_environnement::Mesure::Lue(0); // mode 0 : NO-OP strict, et c'est un VRAI zéro (trois sondes LUES)
         }
     }
     let conf = load_config();
@@ -275,22 +292,43 @@ pub(crate) fn rollup_risk(conn: &Connection) -> crate::bilan_de_tick::BilanDeTic
     // lui-même (jamais un sous-comptage vs. la fondation). `tactics` reste la liste des TECHNIQUES (jointure
     // couverture /api/coverage/detections sur `mitre` + first_mitre de l'alerte inchangés). score_hot/
     // contrib_hot = vélocité.
-    let _ = conn.execute("DELETE FROM risk_rollup", []);
-    let _ = conn.execute(
-        &format!(
-            "INSERT INTO risk_rollup(entity_type,entity,env_id,score,contrib,distinct_tactics,tactics,score_hot,contrib_hot,max_severity,first_ts,last_ts,updated) \
-             SELECT entity_type, entity, COALESCE(env_id,'prod'), \
-                    SUM(risk_score), COUNT(*), \
-                    COUNT(DISTINCT NULLIF(attack_tactic(mitre),'')), \
-                    COALESCE(GROUP_CONCAT(DISTINCT NULLIF(mitre,'')),''), \
-                    SUM(CASE WHEN ts >= {hot_from} THEN risk_score ELSE 0 END), \
-                    SUM(CASE WHEN ts >= {hot_from} THEN 1 ELSE 0 END), \
-                    MAX(severity), MIN(ts), MAX(ts), {n} \
-             FROM risk_event WHERE ts >= {from} \
-             GROUP BY entity_type, entity, COALESCE(env_id,'prod')"
-        ),
-        [],
-    );
+    // `P10.20-b` (rang trois) — LA RECONSTRUCTION EST UNE SEULE ÉCRITURE, JUGÉE. La forme d'avant avalait le `DELETE` et
+    // l'`INSERT` (`let _`) : un `DELETE` passé suivi d'un `INSERT` refusé laissait `risk_rollup` VIDE, aucune entité ne
+    // franchissait de seuil, et la boucle de résolution FERMAIT toutes les alertes de risque ouvertes sous un bilan
+    // `Lue(0)` vert — une panne d'écriture résolvait de vraies alertes. Ici les deux écritures vivent dans un SAVEPOINT :
+    // il ouvre une transaction sur un écrivain libre, et sur un écrivain qui en porte déjà une (étrangère) il n'annule
+    // QUE ses propres écritures (`ROLLBACK TO` + `RELEASE`, jamais un `ROLLBACK` de la transaction d'un autre :
+    // décision d'Hugo `P10.27-z`). Un refus rend le tick AVEUGLE et nommé, le rollup d'avant est CONSERVÉ, et
+    // `risk_incidents_eval` n'est PAS joué : aucune alerte ouverte n'est résolue sur un rollup qu'on n'a pas su écrire.
+    const PT: &str = "rollup_risk_reconstruction";
+    if let Err(e) = conn.execute_batch(&format!("SAVEPOINT {PT}")) {
+        return crate::bilan_de_tick::tick_aveugle("incidents de risque (reconstruction du rollup non ouverte)", &e);
+    }
+    let reconstruire = || -> rusqlite::Result<()> {
+        conn.execute("DELETE FROM risk_rollup", [])?;
+        conn.execute(
+            &format!(
+                "INSERT INTO risk_rollup(entity_type,entity,env_id,score,contrib,distinct_tactics,tactics,score_hot,contrib_hot,max_severity,first_ts,last_ts,updated) \
+                 SELECT entity_type, entity, COALESCE(env_id,'prod'), \
+                        SUM(risk_score), COUNT(*), \
+                        COUNT(DISTINCT NULLIF(attack_tactic(mitre),'')), \
+                        COALESCE(GROUP_CONCAT(DISTINCT NULLIF(mitre,'')),''), \
+                        SUM(CASE WHEN ts >= {hot_from} THEN risk_score ELSE 0 END), \
+                        SUM(CASE WHEN ts >= {hot_from} THEN 1 ELSE 0 END), \
+                        MAX(severity), MIN(ts), MAX(ts), {n} \
+                 FROM risk_event WHERE ts >= {from} \
+                 GROUP BY entity_type, entity, COALESCE(env_id,'prod')"
+            ),
+            [],
+        )?;
+        Ok(())
+    };
+    let ecrit = reconstruire().and_then(|()| conn.execute_batch(&format!("RELEASE {PT}")));
+    if let Err(e) = ecrit {
+        // Annule les SEULES écritures de ce savepoint et le ferme ; un refus ici n'est pas une information de plus.
+        let _ = conn.execute_batch(&format!("ROLLBACK TO {PT}; RELEASE {PT}"));
+        return crate::bilan_de_tick::tick_aveugle("incidents de risque (reconstruction du rollup refusée, rollup d'avant conservé)", &e);
+    }
     risk_incidents_eval(conn, &conf, n)
 }
 

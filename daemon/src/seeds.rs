@@ -224,9 +224,13 @@ pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i6
 /// la même transaction ; la moindre écriture refusée annule tout (le `Drop` de `Txn`), le dit sur la sortie d'erreur,
 /// et le semis est retenté au démarrage suivant. Hors chemin de requête (amorçage) : un aveu sur la sortie d'erreur,
 /// comme `semer_la_demonstration`, pas un compteur.
-fn semer_sous_son_drapeau(conn: &Connection, drapeau: &str, semis: impl FnOnce(&Connection) -> rusqlite::Result<()>) {
+///
+/// `P10.20-w` (rang six) — REND `true` SEULEMENT si le semis vient d'être écrit ET validé (COMMIT réussi) à cet appel :
+/// c'est ce qui permet à un semis audité (`seed_ti_alert_rules`, `seed_risk_rules`) de n'attester qu'un semis VALIDÉ.
+/// `false` : déjà semé (drapeau présent), ou refusé (rien conservé, aveu déjà écrit).
+fn semer_sous_son_drapeau(conn: &Connection, drapeau: &str, semis: impl FnOnce(&Connection) -> rusqlite::Result<()>) -> bool {
     if conn.query_row("SELECT value FROM meta WHERE key=?1", params![drapeau], |r| r.get::<_, String>(0)).is_ok() {
-        return;
+        return false;
     }
     let txn = match Txn::begin(conn) {
         Ok(txn) => txn,
@@ -234,18 +238,28 @@ fn semer_sous_son_drapeau(conn: &Connection, drapeau: &str, semis: impl FnOnce(&
             // `P10.27-h` — ce `BEGIN` refusé garde sa phrase, et il est compté comme tout `BEGIN` refusé sur l'écrivain.
             crate::comptes_de_transaction::compter_un_begin_refuse(conn, "seed", &e);
             eprintln!("[seed] `{drapeau}` NON semé : transaction refusée ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
-            return;
+            return false;
         }
     };
     let ecrit = semis(conn)
-        .and_then(|()| conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,'1')", params![drapeau]).map(|_| ()))
+        .and_then(|()| conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,'1')", params![drapeau]).and_then(une_ligne_ecrite))
         .and_then(|()| txn.commit());
     if let Err(e) = ecrit {
         eprintln!(
             "[seed] `{drapeau}` NON semé : une écriture a été refusée ({e}) — RIEN n'est conservé (ni tableau, ni panneau, ni \
              drapeau), le semis sera retenté au prochain démarrage"
         );
+        return false;
     }
+    true
+}
+
+/// `P10.20-w` (rang six, correction) — une écriture de semis qui rend `Ok(0)` (un déclencheur `RAISE(IGNORE)`, un
+/// `INSERT OR IGNORE` muet) n'a RIEN écrit : elle est traitée comme un refus, et la transaction du semis est annulée.
+/// Sans elle, un semis de règles était validé PARTIEL, drapeau posé et jamais retenté, ou un drapeau ignoré laissait le
+/// semis se rejouer — et s'auditer — à chaque démarrage.
+fn une_ligne_ecrite(ecrites: usize) -> rusqlite::Result<()> {
+    if ecrites == 1 { Ok(()) } else { Err(rusqlite::Error::StatementChangedRows(ecrites)) }
 }
 
 /// PROLOGUE COMMUN des seeds de dashboard PARTAGÉS (l'idiome méta-flag ->
@@ -1180,31 +1194,42 @@ pub(crate) const TI_ALERT_RULES: [(&str, &str, i64, &str, f64, i64, i64, i64, &s
      1, ">", 0.0, 3, 60, 300, ""),
 ];
 pub(crate) fn seed_ti_alert_rules(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_ti_alert_rules'", [], |r| r.get::<_, String>(0)).is_ok() {
+    // `P10.20-w` (rang six) — AVANT : le drapeau `seeded_ti_alert_rules` était posé EN PREMIER (écriture avalée), chaque
+    // règle comptée par `is_ok()`, puis l'audit attestait « {n} règle(s) seedée(s) » : une règle refusée laissait un
+    // semis PARTIEL jamais retenté (drapeau posé) et un audit qui l'affirmait. DÉSORMAIS : `semer_sous_son_drapeau`
+    // (une transaction, chaque INSERT propagé, le drapeau en DERNIER), et l'audit SEULEMENT après le COMMIT, avec le
+    // compte de lignes RÉELLEMENT écrites.
+    let mut n = 0i64;
+    let seme = semer_sous_son_drapeau(conn, "seeded_ti_alert_rules", |conn| {
+        for (name, q, is_soql, op, th, sev, intv, win, mitre) in TI_ALERT_RULES {
+            // managed=0 (défaut builtin/seed) -> éditable/réversible en UI. DARK-BY-DEFAULT (Wave 3,
+            // git-durability) : enabled=0 -> tant qu'AUCUN feed IOC n'est ingéré, `ti_match` n'est jamais
+            // écrit -> la règle est GHOST (ne peut pas tirer). Une règle activée-mais-dark suggère une
+            // couverture threat-intel qui n'existe pas ; un admin l'ACTIVE via le toggle une fois un
+            // producteur/feed IOC câblé. (Wave 1 avait row-flippé la LIVE DB ; une DB FRAÎCHE re-seedait
+            // enabled+dark sans ce fix.)
+            let ecrites = conn.execute(
+                "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0)",
+                params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            )?;
+            une_ligne_ecrite(ecrites)?;
+            n += 1;
+        }
+        Ok(())
+    });
+    if !seme {
         return;
     }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_ti_alert_rules','1')", []);
-    let mut n = 0i64;
-    for (name, q, is_soql, op, th, sev, intv, win, mitre) in TI_ALERT_RULES {
-        // managed=0 (défaut builtin/seed) -> éditable/réversible en UI. DARK-BY-DEFAULT (Wave 3,
-        // git-durability) : enabled=0 -> tant qu'AUCUN feed IOC n'est ingéré, `ti_match` n'est jamais
-        // écrit -> la règle est GHOST (ne peut pas tirer). Une règle activée-mais-dark suggère une
-        // couverture threat-intel qui n'existe pas ; un admin l'ACTIVE via le toggle une fois un
-        // producteur/feed IOC câblé. (Wave 1 avait row-flippé la LIVE DB ; une DB FRAÎCHE re-seedait
-        // enabled+dark sans ce fix.)
-        if conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
-        ).is_ok() { n += 1; }
-    }
-    // AUDIT (traçabilité de l'activation) — best-effort, hors transaction du boot (le seed n'est pas gated).
-    let _ = audit_config_change(
+    // AUDIT (traçabilité de l'activation) — APRÈS le COMMIT, hors transaction du semis : il n'atteste qu'un semis validé.
+    if let Err(e) = audit_config_change(
         conn, "config.seed.ti_alert",
         &format!("{n} règle(s) d'alerte threat-intel seedée(s) DÉSACTIVÉES (dark-by-default)"),
         2,
         &format!("seed threat-intel : {n} règle(s) d'alerte MANAGÉE(S) sur match IOC confiance≥80, seedées DÉSACTIVÉES (dark-by-default : inertes tant qu'aucun IOC chargé ; un admin les active via le toggle une fois un feed câblé)"),
         &json!({ "seeded": n, "kind": "ti_alert_rules" }).to_string(),
-    );
+    ) {
+        eprintln!("[seed] `seeded_ti_alert_rules` semé ({n} règle(s)) mais son AUDIT a été refusé ({e}) — le semis n'est pas tracé au registre");
+    }
 }
 
 /// ACTIVATION RBA (#24) — règles de détection MANAGÉES en MODE RISK (risk_score>0). Flag DÉDIÉ
@@ -1231,26 +1256,34 @@ pub(crate) const RISK_STARTER_RULES: [(&str, &str, i64, i64, i64, i64, &str, &st
      1, 3600, 3, 20, "host", "host", 300, "T1046"),
 ];
 pub(crate) fn seed_risk_rules(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_risk_rules'", [], |r| r.get::<_, String>(0)).is_ok() {
+    // `P10.20-w` (rang six) — même défaut et même forme que `seed_ti_alert_rules` : semis entier sous son drapeau posé
+    // en dernier, audit après le COMMIT avec le compte réel.
+    let mut n = 0i64;
+    let seme = semer_sous_son_drapeau(conn, "seeded_risk_rules", |conn| {
+        for (name, q, is_soql, win, sev, risk_score, etype, efield, intv, mitre) in RISK_STARTER_RULES {
+            // enabled=1 + risk_score>0 -> MODE RISK (run_risk_rules), managed=0 (éditable/réversible en UI).
+            let ecrites = conn.execute(
+                "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled,risk_score,risk_entity_type,risk_entity_field) \
+                 VALUES(?1,?2,?3,'>',0.0,?4,?5,?6,?7,1,?8,?9,?10)",
+                params![name, q, is_soql, sev, intv, win, mitre, risk_score, etype, efield],
+            )?;
+            une_ligne_ecrite(ecrites)?;
+            n += 1;
+        }
+        Ok(())
+    });
+    if !seme {
         return;
     }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_risk_rules','1')", []);
-    let mut n = 0i64;
-    for (name, q, is_soql, win, sev, risk_score, etype, efield, intv, mitre) in RISK_STARTER_RULES {
-        // enabled=1 + risk_score>0 -> MODE RISK (run_risk_rules), managed=0 (éditable/réversible en UI).
-        if conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,enabled,risk_score,risk_entity_type,risk_entity_field) \
-             VALUES(?1,?2,?3,'>',0.0,?4,?5,?6,?7,1,?8,?9,?10)",
-            params![name, q, is_soql, sev, intv, win, mitre, risk_score, etype, efield],
-        ).is_ok() { n += 1; }
-    }
-    let _ = audit_config_change(
+    if let Err(e) = audit_config_change(
         conn, "config.seed.risk_rules",
         &format!("{n} règle(s) RBA (mode risque) activée(s) (seed managé)"),
         2,
         &format!("activation RBA : {n} règle(s) MANAGÉE(S) en mode risque (brute-force par IP, recon par hôte) ; composition ti->risk ON (PLUME_RISK_TI_SCORE=20)"),
         &json!({ "seeded": n, "kind": "risk_rules" }).to_string(),
-    );
+    ) {
+        eprintln!("[seed] `seeded_risk_rules` semé ({n} règle(s)) mais son AUDIT a été refusé ({e}) — le semis n'est pas tracé au registre");
+    }
 }
 
 /// Playbook d'exemple (flag dédié). Sûr : en mode 'observe' (défaut) il ne fait que PROPOSER (pending+dry-run).

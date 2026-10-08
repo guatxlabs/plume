@@ -130,8 +130,13 @@ pub(crate) fn tick_aveugle_de(balayage: &str) -> Option<(u64, String)> {
 pub(crate) static EVENEMENTS_D_ACCES_NON_ECRITS_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static EVENEMENTS_D_ACCES_NON_ECRITS: std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// `P10.21-n` — L'HORODATAGE (unix s) DE LA DERNIÈRE PERTE, posé par `compter_un_evenement_d_acces_non_ecrit`
+/// seulement (0 = aucune). C'est ce qui BORNE l'aveu sur le voyant de détection : sans lui, un incident
+/// unique le jaunirait jusqu'au redémarrage (voir `FENETRE_D_AVEU_DES_PERTES_D_ACCES_S`).
+pub(crate) static EVENEMENTS_D_ACCES_DERNIERE_PERTE_TS: AtomicI64 = AtomicI64::new(0);
 pub(crate) fn compter_un_evenement_d_acces_non_ecrit(genre: &'static str, cause: &str) {
     EVENEMENTS_D_ACCES_NON_ECRITS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    EVENEMENTS_D_ACCES_DERNIERE_PERTE_TS.store(now(), Ordering::Relaxed);
     eprintln!("[plume] événement d'accès '{genre}' NON écrit : la détection ne le verra pas : {cause}");
     if let Ok(mut m) = EVENEMENTS_D_ACCES_NON_ECRITS.lock() {
         let e = m.entry(genre.to_string()).or_insert((0, String::new()));
@@ -156,8 +161,12 @@ pub(crate) fn evenement_d_acces_non_ecrit_de(genre: &str) -> Option<(u64, String
 pub(crate) static ACCES_OPERATEUR_NON_TRACES_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ACCES_OPERATEUR_NON_TRACES: std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// `P10.21-n` — l'horodatage (unix s) de la dernière trace opérateur perdue (0 = aucune) : même borne
+/// d'aveu que `EVENEMENTS_D_ACCES_DERNIERE_PERTE_TS`.
+pub(crate) static ACCES_OPERATEUR_DERNIERE_PERTE_TS: AtomicI64 = AtomicI64::new(0);
 pub(crate) fn compter_un_acces_operateur_non_trace(trace: &'static str, cause: &str) {
     ACCES_OPERATEUR_NON_TRACES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    ACCES_OPERATEUR_DERNIERE_PERTE_TS.store(now(), Ordering::Relaxed);
     // `P10.21-p` — l'accès passe si l'AUTRE trace est écrite ; si aucune ne l'est, le garde le refuse.
     eprintln!("[plume] accès opérateur cross-tenant SANS sa trace '{trace}' (l'accès n'est servi que si l'autre trace est écrite) : {cause}");
     if let Ok(mut m) = ACCES_OPERATEUR_NON_TRACES.lock() {
@@ -326,7 +335,14 @@ pub(crate) fn health_score(state: &str) -> f64 {
 /// JSON {component, state, detail, ...}. Lecture SEULE, sur PETITES tables (rollup/alert/destination) +
 /// atomics + statvfs : jamais un scan de `event`. Appelé par /metrics, /api/system/health et le diag-bundle.
 pub(crate) fn component_health(conn: &Connection, spool: &str, db_path: &str, disk_warn_pct: u8) -> Vec<Value> {
-    component_health_avec(conn, spool, db_path, disk_warn_pct, FraicheurDesTicks::du_processus())
+    component_health_avec_pertes(
+        conn,
+        spool,
+        db_path,
+        disk_warn_pct,
+        FraicheurDesTicks::du_processus(),
+        &PertesDAcces::du_processus(),
+    )
 }
 
 /// LA FRAÎCHEUR DES DEUX BOUCLES DE FOND, TELLE QU'ELLE ENTRE DANS LA SURFACE D'ÉTAT.
@@ -366,13 +382,168 @@ impl FraicheurDesTicks {
     }
 }
 
-/// LE CORPS DE `component_health`, avec la fraîcheur des ticks EN ENTRÉE plutôt qu'en ambiant.
+/// `P10.21-n` — CE QUE LE PROCESSUS A PERDU D'ÉVÉNEMENTS D'ACCÈS, TEL QUE CELA ENTRE DANS LA SURFACE D'ÉTAT.
+///
+/// Les échecs d'authentification, verrouillages et refus d'autorisation sont écrits par le démon
+/// DANS `event` : c'est la matière de la détection de force brute. Quand la base refuse l'écriture,
+/// `compter_un_evenement_d_acces_non_ecrit` le compte — mais ce compte ne vivait que dans `/metrics`
+/// et `/api/system/metrics` : le voyant « détection » restait VERT pendant qu'elle était aveugle à ses
+/// propres attaques. Même figure pour la trace d'un accès opérateur cross-tenant (`P10.21-g`).
+///
+/// POURQUOI UN INSTANTANÉ INJECTÉ (leçon `P11.24-e`, voir `FraicheurDesTicks`) : ces compteurs sont des
+/// grandeurs de PROCESSUS, partagées par tous les témoins du binaire de test. La surface d'état ne les
+/// lit donc pas elle-même ; un seul site les dérive du processus (`du_processus`), un témoin injecte
+/// le sien.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PertesDAcces {
+    /// Événements d'accès non écrits, par genre : (compte depuis le démarrage, dernière cause du moteur).
+    pub(crate) evenements: std::collections::BTreeMap<String, (u64, String)>,
+    /// Le TOTAL atomique des événements perdus (`EVENEMENTS_D_ACCES_NON_ECRITS_TOTAL`), celui que sert
+    /// `/metrics`. Il fait foi quand il dépasse la somme de la ventilation : une table dont le verrou a
+    /// été empoisonné cesse d'être tenue par le compteur, le total non — l'écart s'avoue « non ventilé ».
+    pub(crate) total_evenements: u64,
+    /// Horodatage unix de la dernière perte d'événement d'accès (0 = aucune).
+    pub(crate) derniere_perte_evenement: i64,
+    /// Traces d'accès opérateur cross-tenant non écrites, par trace : (compte, dernière cause).
+    pub(crate) traces_operateur: std::collections::BTreeMap<String, (u64, String)>,
+    /// Le TOTAL atomique des traces perdues (`ACCES_OPERATEUR_NON_TRACES_TOTAL`) — même rôle que
+    /// `total_evenements`.
+    pub(crate) total_traces: u64,
+    /// Horodatage unix de la dernière trace opérateur perdue (0 = aucune).
+    pub(crate) derniere_perte_trace: i64,
+}
+
+/// `P10.21-n` — LA DURÉE DE L'AVEU : vingt-quatre heures après la DERNIÈRE perte. Un cumul depuis le
+/// démarrage jaunirait le voyant jusqu'au redémarrage pour un incident unique (un voyant toujours
+/// jaune ne se regarde plus) ; une fenêtre plus courte qu'une journée échapperait à une relecture
+/// quotidienne. Passé ce délai sans nouvelle perte, le voyant revient à ce que le reste dit, et le
+/// compte cumulé reste servi par `/metrics` (`plume_ingest_evenements_d_acces_non_ecrits_total`,
+/// `plume_acces_operateur_non_traces_total`) et `/api/system/metrics`.
+pub(crate) const FENETRE_D_AVEU_DES_PERTES_D_ACCES_S: i64 = 86_400;
+
+impl PertesDAcces {
+    /// AUCUNE PERTE — ce que reçoit `component_health_avec`, dont les appelants (des témoins) jugent
+    /// autre chose et ne doivent pas hériter de l'ambiant.
+    pub(crate) fn aucune() -> Self {
+        Self::default()
+    }
+
+    /// UNE TABLE DE PERTES, LUE MÊME SI SON VERROU EST EMPOISONNÉ : une table rendue VIDE ferait taire
+    /// le voyant alors que le processus a compté des pertes ; on en reprend le contenu.
+    pub(crate) fn table(
+        m: &std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>>,
+    ) -> std::collections::BTreeMap<String, (u64, String)> {
+        m.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// CE QUE LE PROCESSUS A COMPTÉ — le SEUL site qui lit ces compteurs pour la surface d'état.
+    pub(crate) fn du_processus() -> Self {
+        Self {
+            evenements: Self::table(&EVENEMENTS_D_ACCES_NON_ECRITS),
+            total_evenements: EVENEMENTS_D_ACCES_NON_ECRITS_TOTAL.load(Ordering::Relaxed),
+            derniere_perte_evenement: EVENEMENTS_D_ACCES_DERNIERE_PERTE_TS.load(Ordering::Relaxed),
+            traces_operateur: Self::table(&ACCES_OPERATEUR_NON_TRACES),
+            total_traces: ACCES_OPERATEUR_NON_TRACES_TOTAL.load(Ordering::Relaxed),
+            derniere_perte_trace: ACCES_OPERATEUR_DERNIERE_PERTE_TS.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Une ventilation « genre : n (dernière cause : …) » et son total, `None` si rien n'est à avouer
+/// (aucune perte, ou dernière perte hors de la fenêtre d'aveu). Le total est le plus grand de la somme
+/// ventilée et du total atomique ; l'écart, s'il existe, s'avoue « non ventilé(s) ».
+fn ventilation_a_avouer(
+    pertes: &std::collections::BTreeMap<String, (u64, String)>,
+    total_atomique: u64,
+    derniere: i64,
+    now_ts: i64,
+) -> Option<(u64, String, i64)> {
+    let ventile: u64 = pertes.values().map(|(n, _)| *n).sum();
+    let total = ventile.max(total_atomique);
+    if total == 0 || derniere <= 0 {
+        return None;
+    }
+    let age = (now_ts - derniere).max(0);
+    if age >= FENETRE_D_AVEU_DES_PERTES_D_ACCES_S {
+        return None;
+    }
+    let parts: Vec<String> = pertes
+        .iter()
+        .filter(|(_, (n, _))| *n > 0)
+        .map(|(g, (n, c))| format!("{g} : {n} (dernière cause du moteur : {c})"))
+        .collect();
+    let mut parts = parts;
+    if total > ventile {
+        parts.push(format!("non ventilé(s) : {}", total - ventile));
+    }
+    Some((total, parts.join(", "), age))
+}
+
+/// `P10.21-n` — LA PORTÉE DU COMPTE, DITE DANS LA PHRASE : les compteurs de pertes sont ceux du
+/// PROCESSUS, alors que `component_health` décrit la base du tenant courant. En mode multi-tenant
+/// (`PLUME_MULTI_TENANT`, désactivé en prod), une perte dans une autre base que celle-ci jaunit aussi
+/// ce voyant ; la phrase ne prétend donc pas que la perte touche CE tenant.
+pub(crate) const PORTEE_DES_PERTES_D_ACCES: &str =
+    "[compte du processus, toutes bases de tenant confondues, pas seulement celle-ci]";
+
+/// `P10.21-n` — CE QUE LA SURFACE DE DÉTECTION DIT DES PERTES D'ACCÈS. L'état ne peut que DESCENDRE
+/// (vert ou inactif -> jaune, jamais rouge par ce seul fait, jamais une remontée), et la phrase
+/// S'AJOUTE au détail existant. Aucune perte dans la fenêtre : (état, détail) rendus TELS QUELS.
+///
+/// POURQUOI LA DÉTECTION ET PAS L'INGEST : la conséquence d'un événement d'accès non écrit est que
+/// la détection de force brute et de reconnaissance ne le verra pas ; le voyant d'ingest, lui, parle
+/// de la collecte externe (fraîcheur, file, quarantaine), qui reste vraie. Pas ROUGE : les règles
+/// tournent, elles sont aveugles à UNE famille d'événements.
+pub(crate) fn etat_de_surface_pertes_d_acces(
+    etat: &'static str,
+    detail: String,
+    pertes: &PertesDAcces,
+    now_ts: i64,
+) -> (&'static str, String) {
+    let mut etat = etat;
+    let mut detail = detail;
+    let portee = PORTEE_DES_PERTES_D_ACCES;
+    if let Some((n, ventilation, age)) = ventilation_a_avouer(&pertes.evenements, pertes.total_evenements, pertes.derniere_perte_evenement, now_ts) {
+        etat = pire_des_deux(etat, "yellow");
+        detail = format!(
+            "{detail} ; {n} événement(s) d'accès auto-ingéré(s) NON ÉCRIT(S) depuis le démarrage ({ventilation}) \
+             {portee} — la détection ne verra pas ces événements (force brute, reconnaissance) ; dernière perte il y \
+             a {age}s, aveu tenu {}h après la dernière perte",
+            FENETRE_D_AVEU_DES_PERTES_D_ACCES_S / 3600
+        );
+    }
+    if let Some((n, ventilation, age)) = ventilation_a_avouer(&pertes.traces_operateur, pertes.total_traces, pertes.derniere_perte_trace, now_ts) {
+        etat = pire_des_deux(etat, "yellow");
+        detail = format!(
+            "{detail} ; {n} trace(s) d'accès opérateur cross-tenant NON ÉCRITE(S) depuis le démarrage \
+             ({ventilation}) {portee} — la preuve de ces accès manque au journal de contrôle ou au tenant visité ; \
+             dernière perte il y a {age}s, aveu tenu {}h après la dernière perte",
+            FENETRE_D_AVEU_DES_PERTES_D_ACCES_S / 3600
+        );
+    }
+    (etat, detail)
+}
+
+/// LE CORPS DE `component_health`, avec la fraîcheur des ticks EN ENTRÉE plutôt qu'en ambiant, et
+/// AUCUNE perte d'accès (`P10.21-n` : les témoins qui l'appellent jugent autre chose).
 pub(crate) fn component_health_avec(
     conn: &Connection,
     spool: &str,
     db_path: &str,
     disk_warn_pct: u8,
     fraicheur: FraicheurDesTicks,
+) -> Vec<Value> {
+    component_health_avec_pertes(conn, spool, db_path, disk_warn_pct, fraicheur, &PertesDAcces::aucune())
+}
+
+/// LE CORPS DE `component_health`, fraîcheur des ticks ET pertes d'accès EN ENTRÉE.
+pub(crate) fn component_health_avec_pertes(
+    conn: &Connection,
+    spool: &str,
+    db_path: &str,
+    disk_warn_pct: u8,
+    fraicheur: FraicheurDesTicks,
+    pertes_d_acces: &PertesDAcces,
 ) -> Vec<Value> {
     let now_ts = now();
     let mut out = Vec::new();
@@ -487,6 +658,9 @@ pub(crate) fn component_health_avec(
     let (dstate, ddetail) = crate::bilan_de_tick::etat_de_surface_jeu_conserve(
         dstate, ddetail, "le cache d'indicateurs (threat-intel)", cache_indicateurs.as_ref(),
     );
+    // `P10.21-n` — ET LA DÉTECTION VOIT-ELLE LES ÉVÉNEMENTS D'ACCÈS ? Une perte dans la fenêtre d'aveu
+    // jaunit le voyant (jamais rouge, jamais une remontée) et la phrase nomme genre, compte et cause.
+    let (dstate, ddetail) = etat_de_surface_pertes_d_acces(dstate, ddetail, pertes_d_acces, now_ts);
     let n_rules: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE enabled=1", [], |r| r.get(0)).unwrap_or(0);
     let mut detection = serde_json::Map::new();
     detection.insert("component".into(), json!(crate::bilan_de_tick::COMPOSANT_DETECTION));

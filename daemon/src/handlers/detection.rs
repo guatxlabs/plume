@@ -1326,11 +1326,12 @@ pub(crate) const CAUSE_REPARSE_INCOMPLET: &str = "REPARSE INCOMPLET : le parcour
 /// `P10.26-s` — LE REPARSE N'ÉCRIT QUE DANS SA TRANSACTION. Mesuré le 2026-09-24 sur la forme d'avant (transaction
 /// d'un autre geste laissée pendante sur l'écrivain) : le `BEGIN` ignoré laissait les `UPDATE` entrer dans la transaction
 /// étrangère, le `COMMIT` la VALIDAIT, et la route rendait 200 `updated: 1`. Un `BEGIN` ou un `COMMIT` refusé rend
-/// désormais ce 503, et aucun event n'a été modifié : le reparse se relance tel quel (il n'écrase jamais un champ déjà
-/// présent, le relancer n'enrichit que ce qui manque encore).
+/// désormais ce 503 — et, depuis `P10.27-i`, un `UPDATE event` refusé aussi (la transaction est annulée avant la
+/// suite) ; aucun event n'a été modifié : le reparse se relance tel quel (il n'écrase jamais un champ déjà présent, le
+/// relancer n'enrichit que ce qui manque encore).
 pub(crate) const CAUSE_REPARSE_NON_APPLIQUE: &str = "REPARSE NON APPLIQUÉ : la base n'a pas pris la transaction du \
-     reparse (BEGIN ou COMMIT refusé : verrou tenu, transaction d'un autre geste pendante, base en lecture seule ou \
-     pleine) — AUCUN event n'a été modifié. Relancez le reparse ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+     reparse (BEGIN ou COMMIT refusé, ou mise à jour d'un event refusée : verrou tenu, transaction d'un autre geste \
+     pendante, base en lecture seule ou pleine, déclencheur qui refuse) — AUCUN event n'a été modifié. Relancez le reparse ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 /// Réapplique les parsers ACTIFS aux events DÉJÀ stockés (rétroactif). RÉSERVÉ ADMIN.
 /// `dry_run:true` = compte seulement (validation UI avant d'écrire) ; `source`/`days` = portée
 /// (défaut : toutes sources, 30 j). Mono-connexion : on COLLECTE d'abord (curseur lecture ouvert),
@@ -1349,7 +1350,7 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
     const CAP: usize = 50000;
     let db = req_db(&st, &au);
     let db_path = req_db_path(&st, &au); // MT-KEY : parseurs de CE db_path pour le reparse
-    // `P10.26-s` — `Err` = la transaction du reparse n'a pas été prise (BEGIN ou COMMIT refusé) : rien n'est écrit.
+    // `P10.26-s` — `Err` = la transaction du reparse n'a pas été prise (BEGIN, COMMIT ou un UPDATE refusé) : rien n'est écrit.
     let out = tokio::task::spawn_blocking(move || -> rusqlite::Result<(i64, i64, i64, String, Option<String>)> {
         let conn = db.lock();
         // H2 (#18 P1 TIER FROID) : quand le tier cold est ON, une donnée agée est IMMUABLE (columnarisée).
@@ -1412,13 +1413,34 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
         let cause_scan = fin.cause().map(|c| format!("{CAUSE_REPARSE_INCOMPLET}{c}"));
         if dry { return Ok((scanned, would, 0, String::new(), cause_scan)); }
         ouvrir_sa_transaction(&conn, "reparse", "reparse rétroactif des events")?;
+        // `P10.27-i` — chaque `UPDATE` est jugé et compté : `updated` = EVENTS dont au moins une colonne a réellement
+        // changé (un event à deux colonnes promues compte une fois ; un event purgé entre le parcours et l'écriture n'est
+        // pas compté). Chaque `UPDATE` est JUGÉ AVANT que le suivant ne s'exécute : un refus qui fait annuler la transaction
+        // par le moteur lui-même (`RAISE(ROLLBACK)`, disque plein…) laisserait sinon les `UPDATE` suivants du même event
+        // tourner HORS transaction, validés d'office. Un `UPDATE` refusé annule tout le reparse : 503
+        // `CAUSE_REPARSE_NON_APPLIQUE`, aucun event modifié.
+        let mut mis_a_jour = 0i64;
         for (id, f, s, d) in &changes {
-            if let Some(f) = f { let _ = conn.execute("UPDATE event SET fields=?1 WHERE id=?2", params![f, id]); }
-            if let Some(s) = s { let _ = conn.execute("UPDATE event SET src_ip=?1 WHERE id=?2 AND (src_ip IS NULL OR src_ip='')", params![s, id]); }
-            if let Some(d) = d { let _ = conn.execute("UPDATE event SET dst_ip=?1 WHERE id=?2 AND (dst_ip IS NULL OR dst_ip='')", params![d, id]); }
+            let mut lignes = 0usize;
+            let mut juger = |ecriture: rusqlite::Result<usize>| -> rusqlite::Result<()> {
+                match ecriture {
+                    Ok(k) => { lignes += k; Ok(()) }
+                    Err(refus) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        if !conn.is_autocommit() {
+                            eprintln!("[reparse] ERREUR transaction toujours ouverte après un ROLLBACK — l'écrivain est bloqué");
+                        }
+                        Err(refus)
+                    }
+                }
+            };
+            if let Some(f) = f { juger(conn.execute("UPDATE event SET fields=?1 WHERE id=?2", params![f, id]))?; }
+            if let Some(s) = s { juger(conn.execute("UPDATE event SET src_ip=?1 WHERE id=?2 AND (src_ip IS NULL OR src_ip='')", params![s, id]))?; }
+            if let Some(d) = d { juger(conn.execute("UPDATE event SET dst_ip=?1 WHERE id=?2 AND (dst_ip IS NULL OR dst_ip='')", params![d, id]))?; }
+            if lignes > 0 { mis_a_jour += 1; }
         }
         valider_la_transaction(&conn)?;
-        Ok((scanned, would, changes.len() as i64, String::new(), cause_scan))
+        Ok((scanned, would, mis_a_jour, String::new(), cause_scan))
     }).await;
     let out = match out {
         Ok(Ok(t)) => t,

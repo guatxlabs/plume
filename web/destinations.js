@@ -129,6 +129,9 @@ const MOTS_DES_AVIS_DE_L_ENVOI = {
   non_relu: { fr: 'état de l\'envoi NON RELU : {cause}', en: 'delivery state NOT RE-READ: {cause}' },
   verdict_non_servi: { fr: 'le démon n\'a servi aucun verdict d\'envoi', en: 'the daemon served no delivery verdict' },
 };
+// `P10.31-p` — l'aveu de tête d'une cause servie (« ÉTAT NON RELU : … ») est retiré : l'avis porte celui de la console,
+// dans la langue de l'écran ; même règle que l'aperçu de rétention (web/retention.js).
+const L_AVEU_EN_TETE_DE_LA_CAUSE_SERVIE = /^\p{Lu}[\p{Lu}'’ ]* NON (?:RE)?LUE?S? ?: */u;
 // flush : POST /api/destinations/{id}/flush -> {ok,forwarded,watermark,last_error} (jamais la réponse du sink).
 export async function flushDestination(d) {
   if (!await confirmWithConsequence('Forwarder maintenant « ' + (d.name || d.id) + ' » ?', consequenceDuFlush(d))) return;
@@ -147,7 +150,10 @@ export async function flushDestination(d) {
   // Même décision que la rétention et les playbooks : seul un `ok` BOOLÉEN est un verdict ; tout autre valeur (null sans
   // aveu, champ absent) se dit NON RELU, et la console nomme alors sa propre cause.
   if (j.ok !== true && j.ok !== false) {
-    const cause = (j.etat_non_relu != null ? String(j.etat_non_relu).trim() : faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.verdict_non_servi))
+    // `P10.31-p` — l'aveu de tête de la cause servie (« ÉTAT NON RELU : … », destinations.rs) est retiré : « état de
+    // l'envoi NON RELU : ÉTAT NON RELU : … » répétait le préfixe, et la cause rendue seule perdait l'aveu anglais.
+    const servie = j.etat_non_relu != null ? String(j.etat_non_relu).trim() : '';
+    const cause = (servie ? (servie.replace(L_AVEU_EN_TETE_DE_LA_CAUSE_SERVIE, '') || servie) : faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.verdict_non_servi))
       + (j.last_error ? ' — ' + String(j.last_error) : '');
     toast(faceDansLaLangue(MOTS_DES_AVIS_DE_L_ENVOI.non_relu, { cause }), 'info');
   }

@@ -127,9 +127,19 @@ function retPreview(k, inp, note) {
 // cause sous `deleted_non_lu` (`retention_preview`, daemon/src/handlers/admin_ui.rs). Ce texte écrivait alors
 // « supprimera null … » — dans l'aperçu ET dans la confirmation de baisse (`saveRetention`), lue juste avant une purge
 // irréversible. Le compte absent se dit NON LU avec la cause servie, telle quelle ; le chemin nominal est inchangé.
+// `P10.31-p` — UN SEUL PRÉFIXE PAR AVEU. La cause que le démon sert sous `deleted_non_lu` s'ouvre déjà sur son aveu
+// (`CAUSE_APERCU_DE_RETENTION_NON_LU`, admin_ui.rs : « APERÇU NON LU : … ») ; la préfixer encore rendait « aperçu NON
+// LU : APERÇU NON LU : … ». L'aveu de tête de la cause servie est RETIRÉ et l'aveu de la console, dans la langue de
+// l'écran, l'encadre seul : « aperçu NON LU : la base … » / « preview NOT READ: la base … » — rendre la cause servie
+// telle quelle laissait sous `LANG='en'` un avis tout en français (famille `P10.29-f`). Une cause servie sans aveu de
+// tête, et la cause de repli que la console nomme, sont encadrées sans rien retirer. Même règle dans
+// detection_admin.js et destinations.js (mode des playbooks, état d'un envoi manuel).
+const L_AVEU_EN_TETE_DE_LA_CAUSE_SERVIE = /^\p{Lu}[\p{Lu}'’ ]* NON (?:RE)?LUE?S? ?: */u;
 function retPreviewText(p) {
   if (p.deleted === null || p.deleted === undefined) {
-    const cause = p.deleted_non_lu ? String(p.deleted_non_lu).trim() : faceDansLaLangue({ fr: 'le démon n\'a servi aucun compte', en: 'the daemon served no count' });
+    const servie = p.deleted_non_lu ? String(p.deleted_non_lu).trim() : '';
+    const cause = servie ? (servie.replace(L_AVEU_EN_TETE_DE_LA_CAUSE_SERVIE, '') || servie)   // `P10.31-p`
+      : faceDansLaLangue({ fr: 'le démon n\'a servi aucun compte', en: 'the daemon served no count' });
     return faceDansLaLangue({ fr: 'aperçu NON LU : {cause}', en: 'preview NOT READ: {cause}' }, { cause });
   }
   const kind = DELETED_KIND_LABEL[p.deleted_kind] || p.deleted_kind || 'entrées';

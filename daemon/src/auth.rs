@@ -1294,9 +1294,12 @@ pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<
         if let Some((u, r, epoque_du_compte)) = verify_session_du_compte(st.session_secret.as_slice(), tok, epoch) {
             if st.multi_tenant {
                 // MODE 1 : le rôle du cookie n'est qu'un PLANCHER ; le rôle PER-TENANT est relu LIVE via les
-                // grants (resolve_tenant_access) -> comportement inchangé (déjà mitigé).
-                ident = Some((u, r));
-                auth_method = "cookie";
+                // grants (resolve_tenant_access) -> comportement inchangé (déjà mitigé). `P10.31-i` : l'époque du
+                // compte y est jugée (sa déconnexion ordinaire le révoque, lui seul) ; non lue -> pas d'ident.
+                if l_epoque_du_compte_vaut(st, &u, epoque_du_compte) {
+                    ident = Some((u, r));
+                    auth_method = "cookie";
+                }
             } else if let Some(live) = live_role_si_l_epoque_du_compte_vaut(st, &u, epoque_du_compte) {
                 // MODE 0 (L2) : NE PAS faire confiance au rôle FIGÉ dans le cookie -> le RE-RÉSOUDRE LIVE. Un
                 // rôle changé (editor->viewer) prend effet immédiatement ; un compte supprimé -> pas d'ident.

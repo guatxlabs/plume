@@ -263,8 +263,17 @@ pub(crate) fn case_create_row(conn: &Connection, author: &str, title: &str, sev:
 /// d'avant) si le case n'existe pas. couvre assign / close / reopen / priorisation. #4a.
 /// `P10.20-w` (rang trois) — les quatre écritures que le registre atteste (assignation, statut, verdict posé ou
 /// effacé) sont COMPTÉES avant leur chronologie et leur ligne de registre ; refusée -> `NonEcrite`, rien n'est tracé
-/// pour ce champ ni pour ceux qui le suivent. Les écritures SANS registre (titre, sévérité, propriétaire, résumé,
-/// priorité, échéance, `updated`) restent avalées : aucun fait ne les affirme ici (reste écrit, `P10.20-b`).
+/// pour ce champ ni pour ceux qui le suivent. Les écritures SANS registre ni chronologie (titre, sévérité,
+/// propriétaire, résumé, `updated`) restent avalées : aucun fait ne les affirme ici (reste écrit, `P10.20-b`).
+/// `P10.20-w` (reste) — LA PRIORITÉ EST COMPTÉE AVANT SA CHRONOLOGIE : l'élément « priorité -> P… » était posé après
+/// un `UPDATE` avalé, donc la chronologie racontait un changement que la base n'avait pas pris. Et LE RECALCUL DE
+/// L'ÉCHÉANCE (`sla_due`, puis le ré-armement d'`escalated`) est compté : il était avalé pendant que la route rendait
+/// 204, donc un dossier passé en P1 gardait l'échéance de sa priorité d'avant sans que personne le sache. CONTRAT
+/// CHANGÉ, ASSUMÉ : un recalcul refusé rend `NonEcrite("sla_due: …")` (ou `"escalated: …"`), soit un 503 nommé, là
+/// où c'était un 204 — les champs attestés qui le précèdent dans la demande ont pu être écrits, et la phrase le dit.
+/// L'`UPDATE` d'`escalated` porte une condition (`sla_due > maintenant`) : zéro ligne y est un fait (échéance déjà
+/// passée), jamais une absence ; seul le refus compte. Une priorité ÉCRITE suivie d'un statut ou d'un verdict refusé
+/// n'est plus laissée sur l'échéance de l'ancienne priorité : `rattraper_l_echeance` la recalcule avant la sortie.
 pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Value) -> IssueDuDossierModifie {
     let cur: Option<(i64, String)> = conn
         .query_row("SELECT priority, status FROM incident WHERE id=?1", params![id], |r| {
@@ -272,7 +281,13 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
         })
         .ok();
     let Some((mut cur_priority, cur_status)) = cur else { return IssueDuDossierModifie::DossierAbsent; };
-    // `P10.20-w` — une écriture attestée est comptée : une ligne, ou on sort AVANT la trace.
+    let t = now();
+    // `P10.20-w` (reste) — le statut EN BASE et la priorité ÉCRITE, que lit le rattrapage de l'échéance.
+    let mut statut_en_base: String = cur_status.clone();
+    let mut priorite_ecrite = false;
+    // `P10.20-w` — une écriture attestée est comptée : une ligne, ou on sort AVANT la trace. Forme `rattrape` (statut,
+    // verdict) : une priorité déjà écrite voit son échéance recalculée AVANT la sortie, au lieu de garder celle de
+    // l'ancienne priorité.
     macro_rules! ecriture_comptee {
         ($champ:literal, $res:expr) => {
             match $res {
@@ -281,8 +296,20 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
                 Err(e) => return IssueDuDossierModifie::NonEcrite(format!("{}: {e}", $champ)),
             }
         };
+        ($champ:literal, $res:expr, rattrape) => {
+            match $res {
+                Ok(0) => return IssueDuDossierModifie::DossierAbsent,
+                Ok(_) => {}
+                Err(e) => {
+                    let mut cause = format!("{}: {e}", $champ);
+                    if priorite_ecrite {
+                        cause.push_str(&rattraper_l_echeance(conn, id, cur_priority, &statut_en_base, t));
+                    }
+                    return IssueDuDossierModifie::NonEcrite(cause);
+                }
+            }
+        };
     }
-    let t = now();
     if let Some(v) = b.get("title").and_then(|v| v.as_str()) {
         let _ = conn.execute("UPDATE incident SET title=?1 WHERE id=?2", params![v.trim(), id]);
     }
@@ -307,7 +334,8 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     // PRIORITÉ 1..4 (entier ou libellé) -> item 'priority' ; recalcul sla_due plus bas.
     if let Some(pr) = b.get("priority").and_then(parse_priority) {
         cur_priority = pr;
-        let _ = conn.execute("UPDATE incident SET priority=?1 WHERE id=?2", params![pr, id]);
+        ecriture_comptee!("priority", conn.execute("UPDATE incident SET priority=?1 WHERE id=?2", params![pr, id]));
+        priorite_ecrite = true;
         case_add_item(conn, id, t, "priority", author, &format!("priorité -> P{pr} ({})", priority_label(pr)), None);
     }
     // STATUT canonique (+ alias legacy). closed/resolved -> closed_ts=t ; reopen (non terminal) -> closed_ts=NULL.
@@ -316,7 +344,8 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
         if let Some(s) = norm_case_status(v) {
             new_status = Some(s);
             let closed = if matches!(s, "closed" | "resolved") { Some(t) } else { None };
-            ecriture_comptee!("status", conn.execute("UPDATE incident SET status=?1, closed_ts=?2 WHERE id=?3", params![s, closed, id]));
+            ecriture_comptee!("status", conn.execute("UPDATE incident SET status=?1, closed_ts=?2 WHERE id=?3", params![s, closed, id]), rattrape);
+            statut_en_base = s.to_string();
             case_add_item(conn, id, t, "status", author, &format!("statut -> {s}"), None);
             ledger_append(conn, "case.status", &format!("#{id} -> {s} by {author}"));
         }
@@ -331,14 +360,14 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
             ecriture_comptee!("disposition", conn.execute(
                 "UPDATE incident SET disposition=NULL, disposition_ts=NULL, disposition_by=NULL WHERE id=?1",
                 params![id],
-            ));
+            ), rattrape);
             case_add_item(conn, id, t, "disposition", author, "verdict effacé", None);
             ledger_append(conn, "case.disposition", &format!("#{id} -> (aucun) by {author}"));
         } else if disposition_valid(d) {
             ecriture_comptee!("disposition", conn.execute(
                 "UPDATE incident SET disposition=?1, disposition_ts=?2, disposition_by=?3 WHERE id=?4",
                 params![d, t, author, id],
-            ));
+            ), rattrape);
             case_add_item(conn, id, t, "disposition", author, &format!("verdict -> {d}"), None);
             ledger_append(conn, "case.disposition", &format!("#{id} -> {d} by {author}"));
         }
@@ -348,8 +377,10 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     // priorité n'a pas changé (même résultat) ; ré-arme escalated si l'échéance repart dans le futur.
     let effective_status = new_status.map(|s| s.to_string()).unwrap_or(cur_status);
     if !matches!(effective_status.as_str(), "resolved" | "closed" | "contained") {
-        let _ = conn.execute("UPDATE incident SET sla_due = ts + ?1 WHERE id=?2", params![sla_target_s(cur_priority), id]);
-        let _ = conn.execute("UPDATE incident SET escalated=0 WHERE id=?1 AND sla_due > ?2", params![id, t]);
+        ecriture_comptee!("sla_due", conn.execute("UPDATE incident SET sla_due = ts + ?1 WHERE id=?2", params![sla_target_s(cur_priority), id]));
+        if let Err(e) = conn.execute("UPDATE incident SET escalated=0 WHERE id=?1 AND sla_due > ?2", params![id, t]) {
+            return IssueDuDossierModifie::NonEcrite(format!("escalated: {e}"));
+        }
     }
     // #39 SLA MULTI-NIVEAU (INERTE si `sla_policy_id` NULL -> mode 0 byte-identique) : pause/reprise du chrono
     // sur transition de statut (entrée/sortie 'waiting') ; recalcul des échéances si la priorité a changé.
@@ -361,6 +392,26 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     }
     let _ = conn.execute("UPDATE incident SET updated=?1 WHERE id=?2", params![t, id]);
     IssueDuDossierModifie::Ecrite
+}
+
+/// `P10.20-w` (reste) — RATTRAPAGE DE L'ÉCHÉANCE après une priorité écrite puis un statut ou un verdict refusé :
+/// la sortie se faisait AVANT le recalcul, et le dossier gardait l'échéance de son ANCIENNE priorité (mesuré : P3 -> P1
+/// écrit, statut refusé, `sla_due` resté à ts + cible(P3)). Même calcul que le recalcul de `case_apply_update`, sur
+/// le statut EN BASE ; un dossier terminal n'est pas recalculé. Rend le complément de la cause : ce qui a été
+/// rattrapé, ou ce qui ne l'a pas été — jamais avalé.
+fn rattraper_l_echeance(conn: &Connection, id: i64, priorite: i64, statut_en_base: &str, t: i64) -> String {
+    if matches!(statut_en_base, "resolved" | "closed" | "contained") {
+        return String::new();
+    }
+    match conn.execute("UPDATE incident SET sla_due = ts + ?1 WHERE id=?2", params![sla_target_s(priorite), id]) {
+        Ok(0) => return " ; ÉCHÉANCE NON RECALCULÉE sur la priorité écrite (sla_due: aucune ligne écrite)".to_string(),
+        Ok(_) => {}
+        Err(e) => return format!(" ; ÉCHÉANCE NON RECALCULÉE sur la priorité écrite (sla_due: {e})"),
+    }
+    if let Err(e) = conn.execute("UPDATE incident SET escalated=0 WHERE id=?1 AND sla_due > ?2", params![id, t]) {
+        return format!(" ; échéance recalculée sur la priorité écrite, ESCALADE NON RÉ-ARMÉE (escalated: {e})");
+    }
+    " ; échéance recalculée sur la priorité écrite".to_string()
 }
 
 /// `P10.20-w` (rang trois) — CE QUE REND UNE MODIFICATION DE DOSSIER ATTESTÉE AU REGISTRE (`case_apply_update`,
@@ -382,6 +433,10 @@ pub(crate) enum IssueDuDossierModifie {
 
 /// `P10.20-w` — une écriture attestée de la mise à jour n'a pas été prise : 503 nommé.
 pub(crate) const CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE: &str = "MISE À JOUR DU DOSSIER NON ÉCRITE : la base a refusé l'écriture du champ nommé entre parenthèses — il n'est PAS modifié, et ni la chronologie ni le registre n'en portent rien, pas plus que des champs attestés qui le suivent. Les champs qui le précèdent dans la demande ont pu être écrits : relisez le dossier avant de réessayer.";
+/// `P10.20-w` (reste) — la mise à jour s'est arrêtée sur un dossier établi : son état courant n'a pas été lu, ou une
+/// écriture n'a touché aucune ligne ; des champs précédents ont pu être écrits (le refus « dossier non lu, rien n'est
+/// écrit » le niait).
+pub(crate) const CAUSE_MISE_A_JOUR_DU_DOSSIER_INTERROMPUE: &str = "MISE À JOUR DU DOSSIER INTERROMPUE : l'état courant du dossier n'a pas pu être lu, ou une écriture n'a touché aucune ligne. Les champs qui précèdent dans la demande ont pu être écrits, avec leur chronologie et leur ligne de registre : relisez le dossier avant de réessayer.";
 /// `P10.20-w` — l'`UPDATE` de l'archivage n'a pas été écrit : 503 nommé, le dossier n'est pas archivé.
 pub(crate) const CAUSE_ARCHIVAGE_NON_ECRIT: &str = "ARCHIVAGE NON ÉCRIT : la base n'a pas pris l'écriture, donc le dossier n'est PAS archivé — ni la chronologie ni le registre n'en portent rien. Rien n'a été fait. Réessayez.";
 /// `P10.20-w` — l'`UPDATE` du désarchivage n'a pas été écrit : 503 nommé, le dossier reste archivé.
@@ -749,6 +804,12 @@ pub(crate) const CAUSE_DOSSIER_NON_OUVERT: &str =
      n'en porte AUCUNE trace, aucune échéance n'est posée, et aucun identifiant n'est rendu — celui \
      qui était servi ici pouvait désigner une TOUTE AUTRE ligne. Rien n'a été fait. Réessayez.";
 
+/// `P10.20-b` — l'échéance du dossier qui vient d'être créé n'a pas pu être relue : le dossier existe, son échéance
+/// n'est pas servie (`sla_due: null` ne veut PAS dire « sans échéance » sous cet aveu).
+pub(crate) const CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE: &str = "ÉCHÉANCE NON RELUE : le dossier est créé (son \
+     identifiant est servi), mais la base n'a pas rendu son échéance SLA à la relecture — `sla_due` vaut null parce \
+     qu'il n'a PAS été lu, pas parce que le dossier n'en a pas. Rouvrez le dossier pour la lire.";
+
 /// POST /api/cases — crée un case first-class (status='new', priorité, sla_due). Mutating (editor/admin). #4a.
 ///
 /// `P10.20-w` — LE CONTRAT DE CETTE ROUTE CHANGE, ET C'EST ASSUMÉ : elle rendait un 200 portant un
@@ -767,8 +828,17 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
             return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIER_NON_OUVERT} ({cause})"))
         }
     };
-    let sla_due: Option<i64> = conn.query_row("SELECT sla_due FROM incident WHERE id=?1", params![id], |r| r.get(0)).unwrap_or(None);
-    Json(json!({ "id": id, "status": "new", "priority": priority, "priority_label": priority_label(priority), "sla_due": sla_due })).into_response()
+    // `P10.20-b` — L'ÉCHÉANCE EST RELUE, OU LE CORPS DIT QU'ELLE NE L'A PAS ÉTÉ. `.unwrap_or(None)` servait
+    // `sla_due: null` sur une relecture ratée — « ce dossier n'a pas d'échéance » là où la ligne n'avait pas été
+    // relue. Le dossier EST créé (la ligne est écrite, l'identifiant est le sien) : il reste servi avec son id ; seule
+    // l'échéance est avouée non lue (`sla_due_non_lu`, la forme d'`etat_non_relu`). Ligne relue : corps d'avant.
+    let relue = conn.query_row("SELECT sla_due FROM incident WHERE id=?1", params![id], |r| r.get::<_, Option<i64>>(0));
+    let mut corps = json!({ "id": id, "status": "new", "priority": priority, "priority_label": priority_label(priority), "sla_due": null });
+    match relue {
+        Ok(sla_due) => corps["sla_due"] = json!(sla_due),
+        Err(e) => corps["sla_due_non_lu"] = json!(format!("{CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE} ({e})")),
+    }
+    Json(corps).into_response()
 }
 
 /// GET /api/cases/{id} — métadonnées + timeline (refs résolues) + overdue calculé. Lecture (viewer OK). #4a.
@@ -820,9 +890,9 @@ pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Exten
     }
     match case_apply_update(&conn, id, &au.name, &b) {
         IssueDuDossierModifie::Ecrite => StatusCode::NO_CONTENT.into_response(),
-        // Le dossier vient d'être établi sous ce même verrou : l'absence ne peut plus venir que de la lecture de son
-        // état courant, qui n'a pas eu lieu.
-        IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"lecture de l'état courant du dossier"),
+        // Le dossier vient d'être établi sous ce même verrou : l'absence ne vient que de la lecture de son état courant
+        // OU d'une écriture qui n'a touché aucune ligne APRÈS d'autres écritures — « rien n'est écrit » y serait faux.
+        IssueDuDossierModifie::DossierAbsent => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MISE_A_JOUR_DU_DOSSIER_INTERROMPUE),
         // `P10.20-w` — une écriture attestée refusée : 503 nommé (c'était un 204 sur un champ non écrit).
         IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE} ({cause})")),
     }

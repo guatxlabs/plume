@@ -634,21 +634,53 @@ pub(crate) fn case_steps_json(conn: &Connection, id: i64) -> Value {
     corps
 }
 
+/// `P10.20-w` (rang trois, dernier site) — ISSUE DE L'AVANCEMENT D'UNE ÉTAPE. `step_advance` rendait `true` après un
+/// `UPDATE case_step` AVALÉ (`let _ =`) : la chronologie (`step`), le MTTA (`first_response_ts`, figé par
+/// `case_add_item`) et le registre non purgeable (`case.step`) attestaient une étape faite ou ignorée que la base avait
+/// pu refuser, et la route rendait 204. L'écriture est désormais COMPTÉE avant tout fait.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum IssueDeLEtape {
+    /// L'`UPDATE` a posé sa ligne : chronologie, MTTA et registre la portent (la sortie d'avant, `true`).
+    Ecrite,
+    /// Statut invalide, étape absente ou d'un autre dossier (anti-IDOR, la lecture du titre rend `NoRows`), ou
+    /// `UPDATE` qui n'a modifié aucune ligne (`Ok(0)`) : la sortie d'AVANT (`false`), rien n'est écrit ni tracé.
+    EtapeAbsente,
+    /// La lecture du titre de l'étape a ÉCHOUÉ (autre que `NoRows`) : la base n'a pas dit si l'étape existe — ce
+    /// n'est pas une absence. La cause du moteur est portée ; rien n'est écrit ni tracé.
+    NonRelue(String),
+    /// La base n'a PAS pris l'écriture : la cause du moteur est portée, et rien — ni chronologie, ni MTTA, ni
+    /// registre, ni 204 — ne dit que l'étape a avancé.
+    NonEcrite(String),
+}
+
+/// `P10.20-w` — l'`UPDATE` de l'étape n'a pas été écrit : 503 nommé, distinct de la lecture ratée.
+pub(crate) const CAUSE_ETAPE_NON_ECRITE: &str = "ÉTAPE NON ÉCRITE : la base n'a pas pris l'écriture, donc l'étape garde \
+     son statut — ni la chronologie ni le registre n'en portent rien, et le délai de première réponse n'est pas figé. \
+     Rien n'a été fait. Réessayez.";
+
 /// AVANCE une step (done/skipped/pending) d'un incident + trace timeline 'step' + ledger. Anti-IDOR : la step
-/// DOIT appartenir au case (incident_id=?1). false si absente/non-appartenante ou statut invalide.
-pub(crate) fn step_advance(conn: &Connection, id: i64, step_id: i64, status: &str, actor: &str, note: Option<&str>) -> bool {
-    let Some(st) = norm_step_status(status) else { return false; };
+/// DOIT appartenir au case (incident_id=?1). `EtapeAbsente` si statut invalide, étape absente/non-appartenante
+/// (`NoRows`) ou `UPDATE` sans ligne modifiée (`Ok(0)`) ; `NonRelue` si la lecture du titre échoue autrement ;
+/// `NonEcrite` si la base refuse l'écriture. Dans ces trois cas rien n'est tracé.
+pub(crate) fn step_advance(conn: &Connection, id: i64, step_id: i64, status: &str, actor: &str, note: Option<&str>) -> IssueDeLEtape {
+    let Some(st) = norm_step_status(status) else { return IssueDeLEtape::EtapeAbsente; };
     // step_id ICI = case_step.id (progression), borné au case.
     let title: String = match conn.query_row("SELECT title FROM case_step WHERE id=?1 AND incident_id=?2", params![step_id, id], |r| r.get(0)) {
         Ok(t) => t,
-        Err(_) => return false,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return IssueDeLEtape::EtapeAbsente,
+        Err(e) => return IssueDeLEtape::NonRelue(e.to_string()),
     };
     let t = now();
     let note_s = note.map(str::trim).filter(|s| !s.is_empty());
-    let _ = conn.execute(
+    match conn.execute(
         "UPDATE case_step SET status=?1, actor=?2, ts=?3, note=?4 WHERE id=?5 AND incident_id=?6",
         params![st, actor, t, note_s, step_id, id],
-    );
+    ) {
+        Ok(0) => return IssueDeLEtape::EtapeAbsente, // aucune ligne modifiée : absence
+        Ok(_) => {}
+        Err(e) => return IssueDeLEtape::NonEcrite(e.to_string()),
+    }
     let body = match st {
         "done" => format!("étape « {title} » marquée FAITE"),
         "skipped" => format!("étape « {title} » IGNORÉE{}", note_s.map(|n| format!(" — {n}")).unwrap_or_default()),
@@ -656,7 +688,7 @@ pub(crate) fn step_advance(conn: &Connection, id: i64, step_id: i64, status: &st
     };
     case_add_item(conn, id, t, "step", actor, &body, None);
     ledger_append(conn, "case.step", &format!("#{id} step={step_id} -> {st} by {actor}"));
-    true
+    IssueDeLEtape::Ecrite
 }
 
 /// RÉSOUT le gabarit GXQL d'une step 'search' pour une valeur concrète (défaut = cible pré-remplie), EXACTEMENT
@@ -796,9 +828,17 @@ pub(crate) const CAUSE_ETAPE_ABSENTE_DE_CE_DOSSIER: &str = "ÉTAPE ABSENTE DE CE
 pub(crate) const CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT: &str = "ÉTAPE NON LUE, GESTE NON FAIT : la base n'a pas pu dire si \
      cette étape appartient à ce dossier (lecture refusée ou table illisible) — ce n'est PAS « étape absente ». Rien \
      n'a été écrit. Réessayez.";
+/// `P10.20-w` — l'étape a été lue dans ce dossier, puis l'`UPDATE` n'a modifié aucune ligne (ou la relecture du titre
+/// rend `NoRows`) : rien n'est écrit ni tracé, et la cause n'est ni « absente » ni « non lue ». Une relecture en
+/// ERREUR est servie à part (`IssueDeLEtape::NonRelue` → `CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT` avec la cause).
+pub(crate) const CAUSE_ETAPE_NON_RETROUVEE_AU_GESTE: &str = "ÉTAPE NON RETROUVÉE AU GESTE : l'étape a été lue dans ce \
+     dossier, mais le geste ne l'a plus retrouvée (l'écriture n'a modifié aucune ligne) — ni la chronologie ni le registre \
+     n'en portent rien. Rien n'a été fait. Réessayez.";
 
 /// POST /api/cases/{id}/steps/{step_id} — `P10.29-b` : 400 statut invalide, 404 dossier ou étape absents (nommés,
-/// distincts), 503 lecture refusée ; ils rendaient tous 404 nu. Le 204 est inchangé.
+/// distincts), 503 lecture refusée ; ils rendaient tous 404 nu. Le 204 est inchangé. `P10.20-w` ajoute trois 503
+/// nommés au geste : `CAUSE_ETAPE_NON_ECRITE (cause)` (écriture refusée), `CAUSE_ETAPE_NON_RETROUVEE_AU_GESTE`
+/// (aucune ligne modifiée) et `CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT (cause)` (relecture du titre en erreur).
 pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, step_id)): Path<(i64, i64)>, Json(b): Json<Value>) -> Response {
     let status = b.str_field("status");
     let note = b.get("note").and_then(|v| v.as_str());
@@ -814,10 +854,14 @@ pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Ext
             Err(rusqlite::Error::QueryReturnedNoRows) => return not_found(CAUSE_ETAPE_ABSENTE_DE_CE_DOSSIER),
             Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT} ({e})")),
         }
-        if step_advance(&conn, id, step_id, status, &au.name, note) {
-            StatusCode::NO_CONTENT.into_response()
-        } else {
-            err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT} (relecture de l'étape)"))
+        // `P10.20-w` — causes SÉPARÉES : l'étape non retrouvée au geste et l'écriture refusée (deux 503 nommés).
+        match step_advance(&conn, id, step_id, status, &au.name, note) {
+            IssueDeLEtape::Ecrite => StatusCode::NO_CONTENT.into_response(),
+            // L'étape vient d'être lue dans CE dossier : une absence ici est une relecture ratée ou un `UPDATE` qui n'a
+            // modifié aucune ligne — jamais « étape absente », jamais « non lue » (elle l'a été).
+            IssueDeLEtape::EtapeAbsente => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ETAPE_NON_RETROUVEE_AU_GESTE),
+            IssueDeLEtape::NonRelue(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT} ({cause})")),
+            IssueDeLEtape::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ETAPE_NON_ECRITE} ({cause})")),
         }
     })
 }

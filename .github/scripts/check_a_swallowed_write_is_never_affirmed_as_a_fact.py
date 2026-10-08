@@ -324,8 +324,11 @@ FAITS_QUI_AFFIRMENT = (
 # `case_apply_update` et `case_set_archived` (cases.rs), soit sept sites, et donc deux fichiers (`caseops.rs` et
 # `cases.rs` n'en portaient pas d'autre). Relevé de ce jour-là sur l'arbre : 4 sites sur 3 fichiers (`incidents.rs`,
 # `overlays_oac.rs`, `seeds.rs`) ; même règle des deux tiers, arrondie en dessous : 4 -> 2, 3 -> 2.
+# RE-DÉRIVÉS le 2026-10-07 (`P10.20-w`, rang trois, dernier site) : le lot retire `step_advance`, donc aussi un fichier
+# (`incidents.rs` n'en portait pas d'autre). Relevé de ce jour-là sur l'arbre : 3 sites sur 2 fichiers (`overlays_oac.rs`,
+# `seeds.rs` ×2) ; même règle des deux tiers, arrondie en dessous : 3 -> 2, 2 -> 1.
 PLANCHER_SITES = 2
-PLANCHER_FICHIERS = 2
+PLANCHER_FICHIERS = 1
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — SIX CLASSES, JUGÉES DANS LES DEUX SENS
@@ -365,8 +368,8 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     # rendait 204 avec `case.merge`/`case.unmerge` au registre) ; l'escalade écrit le marqueur `escalated` AVANT
     # l'envoi (`AND escalated=0`) ; un marqueur refusé notifie QUAND MÊME (en avouant l'escalade non enregistrée, renvoyé
     # au tour suivant) mais ne trace rien, et est compté une fois par tour au balayage `escalate_overdue_marqueur`
-    # (mesuré sur la forme d'avant, témoins `fec_` : une notification et un `case.sla_escalate` par tick). RESTENT admis ici : `sla_multilevel_tick`, `case_apply_update`,
-    # `case_set_archived`, `step_advance`.
+    # (mesuré sur la forme d'avant, témoins `fec_` : une notification et un `case.sla_escalate` par tick). RESTAIENT admis à cette date : `sla_multilevel_tick`,
+    # `case_apply_update`, `case_set_archived`, `step_advance` (tous retirés depuis, voir les paragraphes suivants).
     # `P10.20-w` (rang trois, suite) — `sla_multilevel_tick` (caseops.rs), `case_apply_update` et `case_set_archived`
     # (cases.rs) SONT RETIRÉS : chaque écriture attestée est comptée par un `match` AVANT chronologie et registre.
     # La mise à jour et l'archivage rendent `IssueDuDossierModifie::{Ecrite, DossierAbsent, NonEcrite}` et la route un
@@ -376,7 +379,7 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     # MÊME en l'avouant, ne trace rien, et est compté une fois par tour au balayage `sla_multilevel_marqueur` (mesuré
     # sur la forme d'avant, témoins `dec_` : un envoi ET un `case.sla_ack_breach` par tick). Les autres écritures
     # avalées de `case_apply_update` (titre, sévérité, propriétaire, résumé, priorité, échéance, `updated`) vivent
-    # dans des blocs sans registre : hors population, reste écrit. RESTE admis ici : `step_advance`.
+    # dans des blocs sans registre : hors population, reste écrit. RESTAIT admis à cette date : `step_advance` (retiré depuis, voir plus bas).
     # `P10.21-s` — LES DEUX SITES D'`idp.rs` SONT RETIRÉS, parce que les deux écritures sont COMPTÉES avant
     # le fait. `login_mfa_post` : la consommation du pas TOTP passe par `consommer_le_pas_totp`, un
     # compare-et-pose (`last_step < ?`) qui rend `ConsommationDuFacteur` ; une écriture refusée rend un 503
@@ -392,7 +395,10 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     # trois sites de la fonction sortent ensemble). CE QUI ÉTAIT IMPRÉCIS : le registre `case.incident` ne
     # nomme QUE le palier (`#id tier=2 by …`) ; c'est l'élément de CHRONOLOGIE qui nommait le type et le pilote
     # — et il le faisait sur un type refusé (« type intrusion » en chronologie, `incident_type` NULL en base).
-    ("daemon/src/handlers/incidents.rs", "step_advance"): ("let _ -> ledger_append",),
+    # `P10.20-w` (rang trois, dernier site, 2026-10-07) — `step_advance` (incidents.rs) EST RETIRÉ : l'`UPDATE case_step`
+    # est compté par un `match` AVANT chronologie, MTTA et registre ; la fonction rend `IssueDeLEtape::{Ecrite,
+    # EtapeAbsente, NonEcrite}` et la route un 503 nommé (`CAUSE_ETAPE_NON_ECRITE`) sur l'écriture refusée — elle rendait
+    # 204 avec `case.step` au registre (témoins `eta_`). Le rang trois est vide.
     # `P10.29-a` — LES TROIS SITES DU BANDEAU (`bulletin_set` ×2, `bulletin_clear`) SONT RETIRÉS (2026-09-25) : la
     # publication et l'effacement s'écrivent dans une transaction ouverte par la forme commune, l'écriture est COMPTÉE
     # (l'`UPSERT` doit poser une ligne), la trace suit dans la même transaction et le succès n'est rendu qu'après le

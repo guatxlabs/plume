@@ -693,20 +693,79 @@ def leviers_lus(racine: str, suivis: list[str]) -> tuple[set[str], list[str]]:
     return out, non_resolues
 
 
-def leviers_du_budget_memoire(racine: str, suivis: list[str]) -> tuple[str, list[str]]:
-    """(E) Le module qui décide le budget mémoire, et TOUS les leviers qu'il lit.
+IMPORT_DE_FEUILLE = re.compile(r"\buse\s+crate::([a-z_][a-z0-9_]*)::")
+IMPORT_GROUPE = re.compile(r"\buse\s+crate::\{")
+TETE_DE_CHEMIN = re.compile(r"\s*([a-z_][a-z0-9_]*)\s*::")
 
-    Une clé non résolue ici rend l'instrument MUET : le verdict de cet inventaire est à tolérance
-    ZÉRO, et un zéro rendu sur une lecture incomplète serait exactement le défaut poursuivi.
+
+def _membres_du_groupe(code: str, ouvrante: int) -> list[str]:
+    """Les membres de PREMIER NIVEAU du groupe `{…}` ouvert à `ouvrante` (virgules à profondeur 1)."""
+    membres, prof, debut = [], 0, ouvrante + 1
+    for i in range(ouvrante, len(code)):
+        c = code[i]
+        if c == "{":
+            prof += 1
+        elif c == "}":
+            prof -= 1
+            if prof == 0:
+                membres.append(code[debut:i])
+                return membres
+        elif c == "," and prof == 1:
+            membres.append(code[debut:i])
+            debut = i + 1
+    return membres
+
+
+def feuilles_importees(texte: str) -> set[str]:
+    """Les modules `crate::<m>` dont un fichier Rust importe un CHEMIN, HORS `#[cfg(test)]` et hors commentaire.
+
+    Deux écritures, équivalentes pour Rust : `use crate::m::…;` et la forme GROUPÉE `use crate::{m::…, …};`
+    (celle que rend `rustfmt` sous `imports_granularity=Crate`). Ne pas suivre la seconde laissait la garde
+    VERTE et aveugle après un simple reformatage. `use crate::*;` et un membre nu (`use crate::{f}`) ne
+    désignent pas un module par un chemin ; un import de suite ne dit rien de ce que lit la production.
+
+    CE QUE CE N'EST PAS : un tri entre feuilles et modules partagés. Tout module dont un chemin est importé
+    en production est suivi, où que soit l'import (y compris dans un corps de fonction). Un module partagé
+    lu en plus ne peut qu'ÉLARGIR l'inventaire, donc il ne peut faire rougir qu'à tort, jamais taire.
     """
-    module = porteur_unique(
-        racine, suivis, "daemon/src/", BUDGET_MEMOIRE,
-        "module qui décide le budget mémoire (`P10.1-c`)",
-        exclure=lambda c: not est_source_rust_de_production(c),
-    )
-    with open(os.path.join(racine, module), encoding="utf-8", errors="replace") as fh:
-        texte = fh.read()
-    leviers, non_resolues = leviers_dun_texte_rust(texte, constantes_texte([texte]))
+    com, cha = _zones(texte, ".rs")
+    code = _code(texte, com, cha)
+    hors_portee = _spans_attribut(code, "#[cfg(test)]")
+    out = {m.group(1) for m in IMPORT_DE_FEUILLE.finditer(code) if not _dans(hors_portee, m.start())}
+    for g in IMPORT_GROUPE.finditer(code):
+        if _dans(hors_portee, g.start()):
+            continue
+        for membre in _membres_du_groupe(code, g.end() - 1):
+            tete = TETE_DE_CHEMIN.match(membre)
+            if tete:
+                out.add(tete.group(1))
+    return out
+
+
+def leviers_dun_module_et_de_ses_imports(module: str, suivis: list[str], lire) -> tuple[str, list[str]]:
+    """Les leviers lus par `module` ET par les modules dont il importe un chemin (`P7.18-a`).
+
+    `lire(chemin) -> str` est INJECTÉ : la fusion s'éprouve sur un corpus fabriqué par `valider_instrument`,
+    pas seulement sur l'arbre. Un module importé dont le fichier n'est pas suivi, ou une clé non résolue,
+    rend l'instrument MUET : le verdict qui en dépend est à tolérance ZÉRO.
+    """
+    texte = lire(module)
+    textes = {module: texte}
+    for feuille in sorted(feuilles_importees(texte)):
+        candidats = [c for c in (f"daemon/src/{feuille}.rs", f"daemon/src/{feuille}/mod.rs") if c in suivis]
+        if len(candidats) != 1:
+            raise InstrumentMuet(
+                f"leviers du budget mémoire : `{module}` importe `crate::{feuille}`, dont le fichier "
+                f"n'est pas trouvé ({candidats or 'aucun'}) — l'inventaire serait PARTIEL.")
+        textes[candidats[0]] = lire(candidats[0])
+    consts = constantes_texte(textes.values())
+    leviers: set[str] = set()
+    non_resolues: list[str] = []
+    for t in textes.values():
+        vus, inconnus = leviers_dun_texte_rust(t, consts)
+        leviers |= vus
+        non_resolues += inconnus
+    module = " + ".join(textes)
     if non_resolues:
         raise InstrumentMuet(
             f"leviers du budget mémoire : {len(non_resolues)} clé(s) de `{module}` ne se résolvent "
@@ -714,6 +773,27 @@ def leviers_du_budget_memoire(racine: str, suivis: list[str]) -> tuple[str, list
             f"d'exécution, ou sa constante vit désormais dans un AUTRE fichier — dans les deux cas "
             f"l'inventaire est PARTIEL, et un plafond ZÉRO rendu dessus serait faux.")
     return module, sorted(leviers)
+
+
+def leviers_du_budget_memoire(racine: str, suivis: list[str]) -> tuple[str, list[str]]:
+    """(E) Le module qui décide le budget mémoire, et TOUS les leviers qu'il lit.
+
+    `P7.18-a` : le budget peut DÉLÉGUER une lecture à un autre module (le quota de déversement est sorti
+    de ce module le 2026-10-08, avec son levier). Les modules dont il importe un chemin en production sont
+    donc lus avec lui — dérivés de ses `use crate::…`, jamais d'un nom en dur. Sans cela, un déplacement
+    faisait sortir le levier de l'inventaire à tolérance zéro, en restant vert.
+    """
+    module = porteur_unique(
+        racine, suivis, "daemon/src/", BUDGET_MEMOIRE,
+        "module qui décide le budget mémoire (`P10.1-c`)",
+        exclure=lambda c: not est_source_rust_de_production(c),
+    )
+
+    def lire(chemin: str) -> str:
+        with open(os.path.join(racine, chemin), encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+
+    return leviers_dun_module_et_de_ses_imports(module, suivis, lire)
 
 
 def leviers_cites(racine: str, suivis: list[str]) -> set[str]:
@@ -893,6 +973,38 @@ def valider_instrument() -> list[str]:
                     f"y figurer : un attribut ne lit rien. Et `String>` NON PLUS : le corpus porte la "
                     f"DÉCLARATION `fn cfg(m: &HashMap<String, String>, key: &str, …)`, dont l'en-tête "
                     f"n'est pas une lecture — c'est le plancher de 3 mesuré le 2026-08-28.")
+    feuilles = feuilles_importees(
+        "use crate::*;\nuse crate::feuille_a::{x, y};\npub(crate) use crate::feuille_b::Z;\n"
+        "use crate::{feuille_c::{p, q}, item_nu, feuille_d::R};\n"
+        "// use crate::en_commentaire::w;\n#[cfg(test)]\nmod tests { use crate::de_suite::v; use crate::{de_suite_g::v}; }\n")
+    if feuilles != {"feuille_a", "feuille_b", "feuille_c", "feuille_d"}:
+        errs.append(f"témoin (feuilles du budget) en échec : {sorted(feuilles)} — les `use crate::<m>::` de "
+                    f"production (toutes visibilités) ET la forme groupée `use crate::{{m::…}}` doivent être "
+                    f"suivis ; ni le glob, ni un membre nu, ni un commentaire, ni une suite (`P7.18-a` : un "
+                    f"levier déplacé dans une feuille sortirait sinon de l'inventaire).")
+    # LA FUSION, SUR UN CORPUS FABRIQUÉ DE DEUX FICHIERS : le levier qui ne vit QUE dans la feuille importée
+    # doit sortir avec ceux du module (`P7.18-a`). Lire la feuille sans la fusionner, ou ne pas la lire,
+    # rendait l'inventaire à tolérance zéro plus court d'un levier en restant vert (mesuré 6 -> 5).
+    corpus = {
+        "daemon/src/budget.rs": 'use crate::feuille::f;\nfn b() { let _ = cfg(&c, "PLUME_DU_MODULE", "1"); }\n',
+        "daemon/src/feuille.rs": 'pub fn f() { let _ = cfg(&c, CLE_DE_FEUILLE, "0"); }\nconst CLE_DE_FEUILLE: &str = "PLUME_DE_LA_FEUILLE";\n',
+    }
+    try:
+        _, fusion = leviers_dun_module_et_de_ses_imports("daemon/src/budget.rs", list(corpus), corpus.__getitem__)
+    except InstrumentMuet as e:
+        fusion = [f"muet : {e}"]
+    if fusion != ["PLUME_DE_LA_FEUILLE", "PLUME_DU_MODULE"]:
+        errs.append(f"témoin (fusion des leviers du budget) en échec : {fusion} — le levier lu par la FEUILLE "
+                    f"importée doit être compté avec ceux du module (`P7.18-a`).")
+    fantome = dict(corpus)
+    fantome["daemon/src/budget.rs"] = "use crate::module_fantome::X;\n" + corpus["daemon/src/budget.rs"]
+    try:
+        leviers_dun_module_et_de_ses_imports("daemon/src/budget.rs", list(corpus), fantome.__getitem__)
+        errs.append("témoin (feuille introuvable) en échec : un `use crate::module_fantome::` dont le fichier "
+                    "n'est pas suivi a rendu un inventaire — il doit rendre l'instrument MUET, un inventaire "
+                    "partiel à tolérance zéro étant exactement le faux vert poursuivi.")
+    except InstrumentMuet:
+        pass
     if LEVIER_SHELL.findall('a="${PLUME_DELTA:-1}"; b=$PLUME_EPSILON') != ["PLUME_DELTA", "PLUME_EPSILON"]:
         errs.append("témoin (leviers shell) en échec : les deux formes d'expansion ne sont plus vues.")
 

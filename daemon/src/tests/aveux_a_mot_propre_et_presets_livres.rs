@@ -27,6 +27,8 @@
         &["RENAME", "MASK"],
         &["cloudflare-audit", "field_map", "httppull_map_record"],
         &["PLUME_ENDPOINT_NORMALIZE", "ingest/endpoint.rs"],
+        &["PLUME_SYSLOG_SOURCE", "collector-syslog"],
+        &["line_to_event", "d_file_name", "avouer_indisponibilite"],
     ];
 
     #[tokio::test]

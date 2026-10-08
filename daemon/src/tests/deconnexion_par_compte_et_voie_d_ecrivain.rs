@@ -9,9 +9,9 @@
 //    (qui SELECTe `user.hash`) puis l'époque par une SECONDE requête : `user.hash` refusé sur l'écrivain, la session
 //    valide d'un compte `eng-cred-*` ne résolvait plus aucune identité.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : en mode multi-tenant, l'époque du compte n'est ni frappée ni jugée, l'admin
-// y est jugé sur le rôle du jeton, et toute déconnexion d'une session valide y avance l'époque globale SANS trace
-// (tenus : l'avancée globale et le refus de la portée globale à un non-admin, témoins (8)) ; la révocation globale
+// CE QUE CES TÉMOINS NE TIENNENT PAS : en mode multi-tenant, l'admin y est jugé sur le rôle du jeton (plancher), à
+// l'époque de son compte depuis `P10.31-i` (tenus : la déconnexion par compte et le refus de la portée globale à un
+// non-admin, témoins (8) ; le reste du mode 1 dans `deconnexion_du_mode_un_par_compte.rs`) ; la révocation globale
 // par un admin SSO ou Basic (sans `plume_session`, il reçoit le `403`) et l'interface (aucun écran ne pose l'en-tête
 // de portée) ; le budget par adresse du `rate_limit` (non traversé par un appel direct). L'échec de persistance de
 // l'époque globale : tenu par `epoque_globale_lue_et_persistee.rs` (`P10.20-b`). Le nombre de lectures de `meta.value` sur l'écrivain
@@ -418,7 +418,7 @@ mod deconnexion_par_compte_et_voie_d_ecrivain {
     }
 
     // -------------------------------------------------------------------------------------
-    // (8) `P10.23-o` — MODE MULTI-TENANT : LA DÉCONNEXION RÉVOQUE (ÉPOQUE GLOBALE), LA PORTÉE GLOBALE RESTE ADMIN
+    // (8) `P10.23-o` / `P10.31-i` — MODE MULTI-TENANT : LA DÉCONNEXION RÉVOQUE LE COMPTE, LA PORTÉE GLOBALE RESTE ADMIN
     // -------------------------------------------------------------------------------------
 
     fn dpc_mode_1(st: &AppState) -> AppState {
@@ -427,11 +427,12 @@ mod deconnexion_par_compte_et_voie_d_ecrivain {
         st1
     }
 
-    /// CE QU'IL TIENT : en mode 1 (où l'époque du compte n'est jamais jugée), la déconnexion d'une session valide de
-    /// `bob` avance l'époque GLOBALE — la seule révocation qui y vaille : la copie du cookie ne vérifie plus.
+    /// CE QU'IL TIENT — CONTRAT CHANGÉ PAR `P10.31-i` (il tenait l'avancée de l'époque GLOBALE, sans trace ni réserve
+    /// admin) : en mode 1, la déconnexion d'une session valide de `bob` avance l'époque de SON compte, pas la globale ;
+    /// la copie du cookie ne résout plus d'identité en mode 1.
     ///
-    /// LA MUTATION QUI LE FAIT ROUGIR : mutant « mode1_sans_globale » (le mode 1 avance l'époque du compte, qui n'y
-    /// est jamais jugée — la copie du cookie vaut encore).
+    /// LA MUTATION QUI LE FAIT ROUGIR : mutant « F2_deconnexion_mode1_globale » (la forme d'avant : le mode 1 avance
+    /// l'époque globale).
     #[tokio::test]
     async fn dpc_mode_1_la_deconnexion_revoque_la_copie_du_cookie() {
         let (st, _p) = dpc_etat("mode-1-compte");
@@ -440,11 +441,10 @@ mod deconnexion_par_compte_et_voie_d_ecrivain {
         let jeton = mint_session_du_compte(st1.session_secret.as_slice(), "bob", "editor", 3600, e0, 0);
         let (statut, efface, corps) = dpc_deconnexion(&st1, Some(&jeton), None).await;
         assert_eq!((statut, efface), (200, true), "{corps}");
-        assert_eq!(dpc_epoque_globale(&st1), e0 + 1, "mode 1 : la copie du cookie tombe");
-        assert!(
-            verify_session_du_compte(st1.session_secret.as_slice(), &jeton, dpc_epoque_globale(&st1)).is_none(),
-            "mode 1 : la copie du cookie ne vérifie plus"
-        );
+        assert_eq!(corps["portee"], json!("compte"), "{corps}");
+        assert_eq!(dpc_epoque_globale(&st1), e0, "mode 1 : l'époque globale ne bouge pas");
+        assert_eq!(dpc_epoque_du_compte(&st1, "bob"), 1, "mode 1 : l'époque de bob avance");
+        assert_eq!(dpc_identite(&st1, &jeton), None, "mode 1 : la copie du cookie ne résout plus");
     }
 
     /// CE QU'IL TIENT : en mode 1, la portée `globale` demandée avec un jeton `editor` est refusée (`403`), rien

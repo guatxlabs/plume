@@ -317,34 +317,49 @@ pub(crate) const CAUSE_EPOQUE_DU_COMPTE_NON_LUE: &str = "RÉVOCATION DU COMPTE N
      être lue. Un jeton frappé sans elle serait refusé à la requête suivante : aucune session ni ticket n'est \
      émis, aucun échec n'est compté. Réessayez.";
 
-/// `P10.23-l` — frappe le jeton de session de `user` à l'époque globale ET à l'époque de son compte, lue ici. Mode 1 :
-/// époque de compte zéro sans lecture (la résolution d'identité du mode 1 ne la juge pas — hors périmètre). `Err` :
-/// la réponse de refus (503 nommé), à rendre telle quelle.
+/// `P10.23-l` — frappe le jeton de session de `user` à l'époque globale ET à l'époque de son compte, lue ici. `Err` :
+/// la réponse de refus (503 nommé), à rendre telle quelle. `P10.31-i` : le mode 1 aussi (il frappait l'époque zéro
+/// sans lecture, et ne la jugeait pas) — l'époque du compte y est lue dans la même `meta` que l'époque globale.
 pub(crate) fn frapper_la_session_du_compte(st: &AppState, user: &str, role: &str) -> Result<String, Response> {
-    let epoque_du_compte = if st.multi_tenant {
-        0
-    } else {
-        match epoque_du_compte(&st.db.lock(), user) {
-            Ok(epoque) => epoque,
-            Err(cause) => {
-                eprintln!("[session] WARN époque du compte '{user}' NON lue, aucune session frappée : {cause}");
-                return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_EPOQUE_DU_COMPTE_NON_LUE));
-            }
+    let epoque_du_compte = match epoque_du_compte(&st.db.lock(), user) {
+        Ok(epoque) => epoque,
+        Err(cause) => {
+            eprintln!("[session] WARN époque du compte '{user}' NON lue, aucune session frappée : {cause}");
+            return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_EPOQUE_DU_COMPTE_NON_LUE));
         }
     };
     let epoch = st.session_epoch.load(std::sync::atomic::Ordering::Relaxed);
     Ok(mint_session_du_compte(st.session_secret.as_slice(), user, role, st.session_ttl_s, epoch, epoque_du_compte))
 }
 
-/// `P10.23-l` — un jeton de session vaut-il encore ? Signature à l'époque globale, non expiré, et (mode 0) l'époque
-/// de SON compte. C'est la garde anti-DoS de `logout_post` : un jeton révoqué pour son compte ne révoque plus tout le
-/// monde. L'existence du compte n'y est pas exigée (la garde d'avant ne l'exigeait pas). `P10.23-o` : rend le compte
+/// `P10.23-l` — un jeton de session vaut-il encore ? Signature à l'époque globale, non expiré, et l'époque de SON
+/// compte (`P10.31-i` : aussi en mode 1). C'est la garde anti-DoS de `logout_post` : un jeton révoqué pour son compte
+/// ne révoque plus tout le monde. L'existence du compte n'y est pas exigée (la garde d'avant ne l'exigeait pas). `P10.23-o` : rend le compte
 /// et le rôle PORTÉ par le jeton (la déconnexion révoque CE compte).
 fn compte_de_la_session_ouverte(st: &AppState, jeton: &str) -> Option<(String, String)> {
     let epoch = st.session_epoch.load(std::sync::atomic::Ordering::Relaxed);
     let (user, role, epoque_du_jeton) = verify_session_du_compte(st.session_secret.as_slice(), jeton, epoch)?;
-    let ouverte = st.multi_tenant || matches!(epoque_du_compte(&st.db.lock(), &user), Ok(epoque) if epoque == epoque_du_jeton);
+    let ouverte = matches!(epoque_du_compte(&st.db.lock(), &user), Ok(epoque) if epoque == epoque_du_jeton);
     ouverte.then_some((user, role))
+}
+
+/// `P10.31-i` — MODE 1 : l'époque du compte `user` est-elle celle que porte le jeton ? Le jugement que la résolution
+/// d'identité du mode 1 (`auth::resolve_identity_ou_refus`) ne faisait pas : le rôle du cookie y reste un plancher relu
+/// par les grants, seule l'époque est jugée ici — une déconnexion ordinaire révoque CE compte comme en mode 0. Une
+/// époque NON LUE refuse (une révocation qu'on n'a pas pu relire n'est pas absente). Lue par le READ POOL, hors du
+/// verrou écrivain, comme le mode 0 (#23 F4 : une requête de console ne fait pas la queue derrière l'ingest) ; pool
+/// indisponible OU lecture du pool en échec -> la connexion d'écriture, pour ne refuser personne à tort (le mode 0
+/// fait de même : `lire_le_compte` rend `NonLu`, relu par l'écrivain). Seule une époque que l'écrivain non plus ne
+/// lit pas (valeur illisible, base en échec) refuse.
+pub(crate) fn l_epoque_du_compte_vaut(st: &AppState, user: &str, epoque_du_jeton: i64) -> bool {
+    let par_le_pool = read_with(st.db_path.as_str(), None, |conn| epoque_du_compte(conn, user).ok());
+    match par_le_pool.map_or_else(|| epoque_du_compte(&st.db.lock(), user), Ok) {
+        Ok(epoque) => epoque == epoque_du_jeton,
+        Err(cause) => {
+            eprintln!("[session] WARN époque du compte '{user}' NON lue, session refusée : {cause}");
+            false
+        }
+    }
 }
 
 /// L2 — lit le compteur de révocation de session persistant (meta `session_epoch`) AU DÉMARRAGE. Chargé dans
@@ -405,7 +420,8 @@ fn persister_l_epoque_de_session(conn: &Connection, epoque: i64) -> Result<(), S
 
 /// L2 — INCRÉMENTE l'epoch de session (révocation serveur) : la PERSISTE dans meta (survit au redémarrage) PUIS met à
 /// jour le compteur EN MÉMOIRE (effet immédiat sur mint/verify) -> tous les jetons antérieurs, de TOUS les comptes,
-/// deviennent invalides. Appelé par toute déconnexion en mode 1 ; la portée `globale` (admin) passe par
+/// deviennent invalides. `P10.31-i` : plus aucun chemin servi ne l'appelle (la déconnexion du mode 1 l'appelait, sans
+/// trace ni réserve admin) — elle reste la primitive jugée par les témoins ; la portée `globale` (admin) passe par
 /// `revoquer_l_epoque_globale_tracee`, qui persiste ET trace dans une même transaction. `P10.23-l` / `P10.23-o` : un
 /// changement de mot de passe et la déconnexion ordinaire ne l'appellent plus — ils avancent l'époque du SEUL compte
 /// (`avancer_l_epoque_du_compte`).
@@ -414,6 +430,7 @@ fn persister_l_epoque_de_session(conn: &Connection, epoque: i64) -> Result<(), S
 /// une écriture refusée laissait une révocation qui ne survivait pas au redémarrage, servie comme faite. Désormais
 /// l'écriture est comptée AVANT, sous le verrou de la base (les révocations sont sérialisées) ; refusée, l'époque
 /// mémoire ne bouge pas et l'appelant reçoit la cause.
+#[cfg(test)]
 pub(crate) fn bump_session_epoch(st: &AppState) -> Result<i64, String> {
     let c = st.db.lock();
     let suivante = st.session_epoch.load(std::sync::atomic::Ordering::SeqCst) + 1;
@@ -1227,8 +1244,9 @@ pub(crate) async fn login_post(
 // GARDE ANTI-DoS (L2-fix), CONSERVÉE : rien n'est avancé sans un cookie de session ACTUELLEMENT VALIDE (époque du
 // compte comprise) — un tiers non authentifié qui martèle la route publique ne révoque personne et n'écrit rien.
 //
-// MODE 1 : l'époque du compte n'y est ni frappée ni jugée (hors périmètre de `P10.23-l`) ; la révoquer ne révoquerait
-// rien. La portée `compte` y garde donc l'avancée globale d'avant — un reste écrit, pas un oubli.
+// MODE 1 (`P10.31-i`) : l'époque du compte y est frappée et jugée comme en mode 0 (`frapper_la_session_du_compte`,
+// `l_epoque_du_compte_vaut`) ; la portée `compte` y révoque donc le SEUL compte du jeton. L'avancée globale sans trace
+// ni réserve admin qu'elle faisait (n'importe quel `viewer` déconnectait tous les comptes) est retirée.
 pub(crate) const PORTEE_DE_LA_DECONNEXION: &str = "x-plume-portee-de-deconnexion";
 
 /// `P10.23-o` — refus de la révocation globale : la session présentée n'est pas celle d'un admin (ou aucune).
@@ -1252,11 +1270,6 @@ pub(crate) const CAUSE_DECONNEXION_GLOBALE_NON_PERSISTEE: &str = "DÉCONNEXION G
      RÉVOQUÉ : l'époque de révocation des sessions n'a pas pu être écrite dans la base ; une révocation qui ne \
      survivrait pas au redémarrage n'a pas lieu, et rien n'est inscrit au registre. Réessayez.";
 
-/// `P10.20-b` — mode 1 : l'époque globale n'a pas pu être persistée ; les cookies de ce navigateur sont effacés.
-pub(crate) const CAUSE_REVOCATION_GLOBALE_NON_PERSISTEE: &str = "RÉVOCATION NON PERSISTÉE : les cookies de ce \
-     navigateur sont effacés, mais l'époque de révocation des sessions n'a pas pu être écrite — une copie de ce cookie \
-     vaudrait encore jusqu'à son expiration. Reconnectez-vous puis déconnectez-vous à nouveau.";
-
 /// `P10.23-o` — la révocation du compte n'a pas pu être écrite : les cookies sont effacés, le serveur le dit.
 pub(crate) const CAUSE_REVOCATION_DU_COMPTE_NON_ECRITE: &str = "RÉVOCATION DU COMPTE NON ÉCRITE : les cookies \
      de ce navigateur sont effacés, mais l'époque de révocation du compte n'a pas pu être avancée — une copie de ce \
@@ -1264,7 +1277,7 @@ pub(crate) const CAUSE_REVOCATION_DU_COMPTE_NON_ECRITE: &str = "RÉVOCATION DU C
 
 /// `P10.23-o` — le compte d'une session valide dont le rôle COURANT est `admin`. Mode 0 : rôle relu LIVE à l'époque
 /// du compte (comme `resolve_identity`), jamais celui figé dans le jeton. Mode 1 : rôle du jeton (le plancher que
-/// la résolution d'identité du mode 1 accorde au cookie).
+/// la résolution d'identité du mode 1 accorde au cookie), à l'époque de son compte (`P10.31-i`).
 fn admin_de_la_session(st: &AppState, jeton: &str) -> Option<String> {
     if st.multi_tenant {
         return compte_de_la_session_ouverte(st, jeton).filter(|(_, role)| role == "admin").map(|(user, _)| user);
@@ -1316,15 +1329,6 @@ pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http:
     let Some((user, _)) = jeton.as_deref().and_then(|tok| compte_de_la_session_ouverte(&st, tok)) else {
         return cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "aucune" }));
     };
-    if st.multi_tenant {
-        return match bump_session_epoch(&st) {
-            Ok(_) => cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" })),
-            Err(cause) => {
-                eprintln!("[session] WARN déconnexion de '{user}' (mode 1) : époque globale NON persistée, rien n'est révoqué : {cause}");
-                cookies_effaces(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": CAUSE_REVOCATION_GLOBALE_NON_PERSISTEE }))
-            }
-        };
-    }
     let avancee = avancer_l_epoque_du_compte(&st.db.lock(), &user);
     match avancee {
         Ok(_) => cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "compte" })),

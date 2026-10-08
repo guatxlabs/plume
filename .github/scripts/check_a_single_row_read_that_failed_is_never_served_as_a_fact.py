@@ -247,7 +247,13 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # RE-DÉRIVÉS le 2026-10-07 (`P10.20-b`, lot E5) : relevé de l'arbre ce jour-là, après le lot — 67 sites sur 25
 # fichiers (`attach_runbook` perd ses deux sites, `connector_poll` un ; aucun fichier ne sort). Même règle :
 # 67 -> 46 (69 % = 46,2), 25 -> 16 (65 % = 16,25).
-PLANCHER_SITES = 46
+# RE-DÉRIVÉS le 2026-10-07 (`P10.20-b`, `case_create`) : relevé de l'arbre ce jour-là, après le correctif — 65 sites
+# sur 25 fichiers (`case_create` perd son site ; `cases.rs` garde `case_apply_update` et `case_set_archived`, aucun
+# fichier ne sort). Même règle : 65 -> 44 (69 % = 44,85), 25 -> 16 (65 % = 16,25).
+# Le relevé dont les planchers sont dérivés, cité par le message de refus (une seule source, jamais recopiée).
+RELEVE_SITES = 65
+RELEVE_FICHIERS = 25
+PLANCHER_SITES = 44
 PLANCHER_FICHIERS = 16
 
 # ================================================================================================
@@ -301,9 +307,11 @@ DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
     # aucune closure intermédiaire), rendu en `Result` (chaîne NUE) : une lecture
     # ratée sert `deleted`/`oldest` à `null` et `deleted_non_lu` (`CAUSE_APERCU_DE_RETENTION_NON_LU` + la
     # famille) ; une table vide rend toujours `0`. Le site PROPAGE désormais vers un `match`.
-    # L'échéance SLA du dossier qui vient d'être créé retombe à `None` et part dans le corps de
-    # création : « ce dossier n'a pas d'échéance » est servi là où la ligne n'a pas été relue.
-    ("daemon/src/handlers/cases.rs", "case_create"): ("unwrap_or",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (2026-10-07) : `cases.rs::case_create` — l'échéance SLA du dossier qui
+    # vient d'être créé retombait à `None` par `.unwrap_or(None)` et partait dans le corps de création :
+    # « ce dossier n'a pas d'échéance » était servi là où la ligne n'avait pas été relue. La relecture est un
+    # `Result` lié puis `match` : relecture ratée = `sla_due: null` + `sla_due_non_lu`
+    # (`CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE`), le dossier créé reste servi avec son identifiant.
     # ENTRÉE DÉPLACÉE AU RANG QUATRE PAR `P10.20-b` (2026-10-07, lot E5) : `connectors/mod.rs::connector_poll`.
     # Son site de rang deux — `unwrap_or((0, None))` sur `last_count`/`last_error` relus après le poll, dont le
     # `0` partait dans le corps (`ok: true, count: 0`) ET dans la ligne d'AUDIT (`count=0`) — est un `Result`
@@ -1058,7 +1066,7 @@ def main():
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
               f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-07 du relevé de ce jour-là : "
-              "67 sites sur 25 fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
+              f"{RELEVE_SITES} sites sur {RELEVE_FICHIERS} fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "
               "REFUSE DE CONCLURE plutôt que de rendre vert en étant aveugle.")

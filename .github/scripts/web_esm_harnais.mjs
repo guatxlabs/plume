@@ -5734,6 +5734,21 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   console.log(`[graphe-refuse] les ${MODES.length} représentations du dispatcher sont partagées PAR LE SONDAGE, pas par une liste : ${coercantes.length} ramènent leur ORDONNÉE à un nombre (${coercantes.join(", ")}), ${libres.length} non (${libres.join(", ")}), et ${abscissantes.length} placent leurs lignes selon l'ABSCISSE et la ramènent à un nombre (${abscissantes.join(", ")}) — la faute que la clé attribuait à « line » est celle-là, et une porte posée sur la seule ordonnée l'aurait fermée par accident : sous une ordonnée NUMÉRIQUE et une abscisse textuelle, « line » empilait ses trois points sur une abscisse unique, ce qui est reproduit ici PAR LA CONVERSION D'AVANT, remontée à la main depuis que la figure elle-même a cessé de le faire. Les autres modes, dont la jauge (qui lit sa colonne 0 comme une ÉCHELLE et non comme une position), ne sont PAS refusés sur la même donnée : une abscisse textuelle y est une catégorie légitime. Sans la porte, ce que ces figures rendent a CHANGÉ le 2026-09-01 (\`P11.20-y\`) et ce témoin le dit au lieu d'imprimer l'ancienne phrase : les trois signatures fabriquées — barres à 0 % de large, points empilés sur une abscisse unique, jauge « 0 / 1 » — n'existent plus, parce que la lecture a été corrigée LÀ OÙ ELLE SE FAIT et pas seulement là où elle est jugée ; elles sont reconstituées À LA MAIN ici, sans quoi le positif serait vrai par vacuité. Ce qui reste vrai du chemin nu, et qui est tout ce que la porte ajoute : un GRAPHE est rendu, aucun refus ne prend sa place, et rien n'y dit que le graphe serait FAUX — camembert qui annonce une absence sur trois lignes et grille de chaleur vide compris. Avec la porte, chacune est REFUSÉE et le refus nomme la colonne, le compte et un exemple, dans les deux langues ; une colonne SANS AUCUNE valeur reçoit une phrase différente, qui ne compte pas « 0 sur 0 » ; la barre de réglage reste au-dessus du refus, donc il y a une issue ; la jauge n'affirme plus « 0 / 1 » sur zéro ligne ; et aucun module ne nomme le dispatcher NU. NON-RÉGRESSION : sur un résultat dont les DEUX fentes sont valides, les ${MODES.length} modes rendent un balisage BYTE-IDENTIQUE à celui d'avant la porte, et le comparateur qui l'établit voit bouger exactement les ${coercantes.length} modes qui coercent dès qu'on lui donne du texte. CE QUE CE TÉMOIN NE TIENT PAS : l'encre réellement peinte (section 0 — la largeur nulle est lue sur le style EN LIGNE) et les panneaux semés par le démon, dont les requêtes vivent hors de web/.`);
 }
 
+// `P10.31-q` — CE QUE (47b) COMPTE : LES ÉCRITURES DU GESTE, PAS CELLES DU MAGASIN DE PRÉFÉRENCES.
+// (47b) exigeait qu'AUCUNE écriture ne parte entre le clic et l'annulation, en comptant TOUT le journal. Or le magasin
+// de préférences (web/prefs.js, `schedulePut`) programme un envoi DIFFÉRÉ de 800 ms réels, armé par les témoins
+// d'avant (les favoris de dashboards) : sur une machine chargée, vingt tours de `setTimeout(0)` débordent ces 800 ms
+// et le `PUT /api/prefs` tombe dans la fenêtre. REPRODUIT le 2026-10-07 : une attente de 900 ms posée après
+// l'annulation suffit, SANS rien armer, à faire rougir (47b) avec `["PUT /api/prefs {…favDash…}","PUT /api/prefs
+// {…}"]`. La propriété n'a jamais été « rien ne part pendant ce temps » mais « LE GESTE n'émet rien » : on retire du
+// journal les seules écritures du magasin de préférences, et TOUTE autre — à commencer par `POST /api/views/7` —
+// compte. Aucun délai n'est élargi ; (47b) arme lui-même cet envoi et attend son arrivée (le cas concurrent est joué
+// à chaque passage, défaire ce filtre rougit sans charge) ; (136) juge le filtre dans les deux sens.
+function ligneDEcriture47(u, o) { return ((o && o.method) || "GET") + " " + String(u) + " " + ((o && o.body) || ""); }
+function ecrituresDuGesteHorsPreferences(journal, depuis) {
+  return journal.slice(depuis).filter((e) => !/^PUT \/api\/prefs(?:[?\s]|$)/.test(e));
+}
+
 // ---------------------------------------------------------------------------------------------
 // 47. LE GESTE QUI CHANGE QUI PEUT LIRE UNE VUE DEMANDE, ET NOMME CE QUI VA SE PASSER (`P11.13-b`).
 //     CE QUE LA GARDE DE ROUTES NE POUVAIT PAS DIRE. `check_sensitive_routes_are_confirmed.py` déclarait
@@ -5758,6 +5773,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
 {
   const url42 = (f) => pathToFileURL(path.join(WEB, f)).href;
   const modDash = await import(url42("dashboards.js"));
+  const prefs47 = await import(url42("prefs.js"));
   const { S } = await import(url42("state.js"));
 
   const tic = () => new Promise((r) => setTimeout(r, 0));
@@ -5775,7 +5791,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes42, sel) ? hotes42[sel] : new Element("div"));
   globalThis.fetch = async (u, o) => {
     const url = String(u), methode = (o && o.method) || "GET";
-    if (methode !== "GET") { ecritures.push(methode + " " + url + " " + ((o && o.body) || "")); return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) }; }
+    if (methode !== "GET") { ecritures.push(ligneDEcriture47(url, o)); return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) }; }
     if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify(etatVue) };
     return { ok: true, status: 200, text: async () => JSON.stringify({}) };
   };
@@ -5794,6 +5810,13 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(!boutonPartage.hidden, "(47a) instrument : le bouton de partage est masqué pour le propriétaire admin de la vue — le chemin n'est pas atteignable, rien de ce qui suit ne se mesure");
 
     // (b) REFUSÉE : une fenêtre est posée, elle NOMME la conséquence, et rien ne part.
+    // `P10.31-q` — LE CAS CONCURRENT EST JOUÉ ICI, À CHAQUE PASSAGE, ET PAS LAISSÉ À LA CHARGE DE LA MACHINE : un envoi
+    // différé du magasin de préférences est armé par le vrai `prefSet` avant le clic, et on ATTEND son arrivée dans le
+    // journal après l'annulation (un événement, pas un délai). Le compte de toutes les écritures rougit alors à coup
+    // sûr ; seul le compte des écritures DU GESTE reste juste.
+    const MARQUE47 = "temoin47b-" + process.pid;
+    const preferenceArrivee47 = () => ecritures.some((e) => /^PUT \/api\/prefs/.test(e) && e.includes(MARQUE47));
+    prefs47.prefSet(MARQUE47, "1");
     const avantRefus = ecritures.length;
     boutonPartage.dispatchEvent({ type: "click" });
     await laisserTourner();
@@ -5807,8 +5830,10 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     exiger(!!annuler, "(47b) instrument : la fenêtre n'offre pas de sortie — le sens NÉGATIF ne peut pas être joué");
     if (annuler) annuler.onclick();
     await laisserTourner();
-    exiger(ecritures.length === avantRefus,
-      `(47b) une confirmation REFUSÉE laisse tout de même partir l'écriture (${JSON.stringify(ecritures.slice(avantRefus))}) : la fenêtre est un décor, pas une porte`);
+    for (let i = 0; i < 200 && !preferenceArrivee47(); i++) await new Promise((r) => setTimeout(r, 50));
+    exiger(preferenceArrivee47(), `(47b-instrument) le PUT différé des préférences n'est jamais arrivé après l'annulation — le cas concurrent n'est pas joué, (47b) REFUSE DE CONCLURE : ${JSON.stringify(ecritures.slice(avantRefus)).slice(0, 300)}`);
+    exiger(ecrituresDuGesteHorsPreferences(ecritures, avantRefus).length === 0,
+      `(47b) une confirmation REFUSÉE laisse tout de même partir l'écriture (${JSON.stringify(ecrituresDuGesteHorsPreferences(ecritures, avantRefus))}) : la fenêtre est un décor, pas une porte`);
 
     // (c) VALIDÉE : l'écriture part, avec la visibilité demandée.
     const nEcrituresAvantPartage = ecritures.length;
@@ -27341,6 +27366,14 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
           if (!texte.includes(LIGNE_NON_LUE134)) ecarts134.push(`${L.nom}/playbooks ${quoi} : la LIGNE du playbook ne dit pas son mode non lu « ${LIGNE_NON_LUE134} » : « ${texte.slice(0, 400)} »`);
         }
         if (quoi === "non lu" && !texte.includes(CAUSE_MODE134)) ecarts134.push(`${L.nom}/playbooks non lu : la cause SERVIE n'est pas collée telle quelle : « ${texte.slice(0, 300)} »`);
+        // `P10.31-p` — L'EN-TÊTE LUI-MÊME, AU CARACTÈRE PRÈS : une cause servie SANS aveu de tête garde le cadre de la
+        // console. « NON LU » dans le panneau ne suffit pas (la LIGNE le dit déjà) : sans ce verdict, un en-tête réduit à
+        // la cause seule passait vert (mesuré par le vérificateur indépendant de la vague F, mutant « P4 »).
+        if (quoi === "non lu") {
+          const ENTETE_ATTENDU134 = en ? "Automatic response mode NOT READ — “" + CAUSE_MODE134 + "”" : "Mode des réponses automatiques NON LU — « " + CAUSE_MODE134 + " »";
+          const entetes = cueillir134(liste, (e) => e.className === "bad").map(nu134).filter((t) => t.includes(CAUSE_MODE134));
+          if (entetes.length !== 1 || entetes[0] !== ENTETE_ATTENDU134) ecarts134.push(`${L.nom}/playbooks non lu : l'en-tête du mode n'est pas « ${ENTETE_ATTENDU134} » : ${JSON.stringify(entetes).slice(0, 300)}`);
+        }
         if (quoi === "absent" && !texte.includes(en ? "the daemon did not serve the global mode" : "le démon n'a pas servi le mode global")) ecarts134.push(`${L.nom}/playbooks absent : la cause nommée par la console n'est pas dite : « ${texte.slice(0, 300)} »`);
         if (quoi === "inconnu") {
           if (!texte.includes(en ? "the daemon served an unknown mode: turbo-134" : "le démon a servi un mode inconnu : turbo-134")) ecarts134.push(`${L.nom}/playbooks inconnu : la cause ne nomme pas la valeur servie : « ${texte.slice(0, 300)} »`);
@@ -27382,6 +27415,210 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvant134) console.log(`(134) EN ÉCHEC — ${echecs.length - echecsAvant134} écart(s), dits ci-dessus`);
   else console.log("(134) OK — `P10.31-m` : l'aperçu de rétention, sa confirmation de baisse, la conséquence d'un playbook et l'avis d'un envoi manuel disent « non lu » avec la cause servie quand le démon sert un null sous aveu, dans les deux langues ; un zéro établi reste un compte ; un compte absent du corps ou un null sans cause se disent non lus avec la cause de repli nommée par la console ; la LIGNE de chaque playbook dit son mode non lu ; un mode absent du corps se dit non lu et un mode servi inconnu nomme sa valeur ; un envoi sans verdict booléen se dit non relu même sans aveu ; le chemin nominal rend le texte d'avant.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (135) `P10.31-p` — UN AVEU, UN SEUL PRÉFIXE : LES TROIS ÉCRANS DE (134) RENDUS AVEC LES CAUSES QUE LE DÉMON SERT VRAIMENT.
+// MESURÉ sur af310b3 avant ce lot : (134) sert des causes FABRIQUÉES (« CAUSE-134 … ») et ne voit donc pas que les
+// vraies s'ouvrent déjà sur leur aveu — la console rendait « aperçu NON LU : APERÇU NON LU : … », « Mode des réponses
+// automatiques NON LU — « MODE NON LU : … » » et « état de l'envoi NON RELU : ÉTAT NON RELU : … ».
+// L'INSTRUMENT : les causes sont LUES dans l'arbre du démon (constantes `CAUSE_*` de admin_ui.rs, playbooks.rs,
+// destinations.rs), jamais recopiées ; une constante introuvable, ou qui cesse de s'ouvrir sur son aveu, fait
+// REFUSER DE CONCLURE ce témoin au lieu de le laisser vert sur une propriété devenue vide.
+// CE QUE CE TÉMOIN EXIGE, dans les deux langues, AU CARACTÈRE PRÈS : le cadre de la console DANS LA LANGUE DE L'ÉCRAN
+// (« aperçu NON LU : » / « preview NOT READ: », etc.), suivi du CORPS de la cause servie — la cause privée de son aveu de
+// tête, découpé ici par la longueur de l'ouverture attendue, pas par le motif de la console — ; un seul aveu ;
+// `last_error` servi reste dit après la cause. Rendre la cause servie seule, aveu français compris, rougit sous `en`.
+// CE QUE CE TÉMOIN NE TIENT PAS : le CORPS de la cause reste français sous `LANG='en'` (le démon ne sert qu'une langue) ;
+// le chemin nominal et les causes fabriquées sans aveu restent jugés par (134).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant135 = echecs.length;
+  const lire135 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  // Une constante Rust `&str` sur plusieurs lignes : `\` + fin de ligne + blancs de tête disparaissent à la compilation.
+  const constante135 = (rel, nom) => {
+    const m = lire135(rel).match(new RegExp("pub\\(crate\\) const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";"));
+    return m ? m[1].replace(/\\\r?\n\s*/g, "").replace(/\\"/g, "\"") : null;
+  };
+  const CAUSES135 = {
+    apercu: constante135("handlers/admin_ui.rs", "CAUSE_APERCU_DE_RETENTION_NON_LU"),
+    mode: constante135("handlers/playbooks.rs", "CAUSE_MODE_DES_PLAYBOOKS_NON_LU"),
+    envoi: constante135("handlers/destinations.rs", "CAUSE_ETAT_DE_L_ENVOI_MANUEL_NON_RELU"),
+    supprimee: constante135("handlers/destinations.rs", "CAUSE_DESTINATION_SUPPRIMEE_PENDANT_L_ENVOI"),
+  };
+  const OUVERTURES135 = { apercu: "APERÇU NON LU :", mode: "MODE NON LU :", envoi: "ÉTAT NON RELU :", supprimee: "ÉTAT NON RELU :" };
+  const instrument135 = Object.entries(CAUSES135).every(([k, c]) => typeof c === "string" && c.length > 40 && c.startsWith(OUVERTURES135[k]) && !c.includes("\\"));
+  exiger(instrument135, `(135-instrument) une cause du démon est introuvable ou ne s'ouvre plus sur son aveu — ce témoin REFUSE DE CONCLURE : ${JSON.stringify(CAUSES135).slice(0, 400)}`);
+  const occurrences135 = (texte, motif) => texte.split(motif).length - 1;
+  const aveux135 = (texte) => (texte.match(/NON (?:RE)?LUE?S?|NOT (?:RE-)?READ/g) || []).length;
+  // Le corps d'une cause : ce qui suit son ouverture, coupé par la LONGUEUR de l'ouverture attendue.
+  const corps135 = (k) => CAUSES135[k].slice(OUVERTURES135[k].length).trim();
+  const url135 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const charger135 = async (adresse) => ({ ret: await import(adresse("retention.js")), det: await import(adresse("detection_admin.js")), dest: await import(adresse("destinations.js")), etat: await import(adresse("state.js")) });
+  const FR135 = { nom: "fr", ...(await charger135(url135)) };
+  const langueOrigine135 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const EN135 = { nom: "en", ...(await charger135((f) => adresseSousLaLangue(f))) };
+  if (langueOrigine135 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine135);
+  const tic135 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser135 = async (n = 30) => { for (let i = 0; i < n; i++) await tic135(); };
+  const nu135 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir135 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir135(c, pred, acc)); return acc; };
+  const qs135 = (sel) => document.querySelector(sel);
+  const fetchOrigine135 = globalThis.fetch;
+  let servis135 = {};
+  const reponse135 = (statut, texte) => ({ ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte), clone: () => reponse135(statut, texte) });
+  globalThis.fetch = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    const r = servis135[k];
+    if (!r) return reponse135(404, JSON.stringify({ error: "(135) route non servie : " + k }));
+    return reponse135(r.statut || 200, JSON.stringify(r.corps));
+  };
+  const fenetre135 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const formulaire135 = () => { const ov = fenetre135(); return ov && ov.children[0] ? ov.children[0].children[0] || null : null; };
+  const fermerLesFenetres135 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  const ecarts135 = [];
+  const etatsOrigine135 = [FR135, EN135].map((L) => ({ S: L.etat.S, admin: L.etat.S.isAdmin, auth: L.etat.S.AUTH }));
+  try {
+    for (const o of etatsOrigine135) { o.S.isAdmin = true; o.S.AUTH = { user: "hugo", role: "admin" }; }
+    if (instrument135) for (const L of [FR135, EN135]) {
+      const en = L.nom === "en";
+      // ── RÉTENTION : l'aperçu du champ, puis la confirmation de baisse ──────────────────────────────────────
+      const cause = CAUSES135.apercu;
+      const enLangue = (en ? "preview NOT READ: " : "aperçu NON LU : ") + corps135("apercu");
+      servis135 = {
+        "GET /api/retention": { corps: { retention_days: 30, snapshot_days: 30, alert_days: 90, metric_days: 30, metric_raw_hours: 48, bounds: {}, provenance: {} } },
+        "GET /api/ledger": { corps: { entries: [], ok: true } },
+        "GET /api/retention/preview": { corps: { ok: true, key: "retention_days", unit: "days", current: 30, new: 7, destructive: true, deleted: null, deleted_kind: "events", oldest: null, approx: false, deleted_non_lu: cause } },
+      };
+      await L.ret.loadRetention(); await laisser135();
+      const champ = cueillir135(qs135("#retention-fields"), (e) => e.tagName === "INPUT" && e.getAttribute && e.getAttribute("data-key") === "retention_days")[0];
+      const note = champ ? cueillir135(champ.parentNode, (e) => e.dataset && e.dataset.note === "retention_days")[0] : null;
+      if (!champ || !note) ecarts135.push(`${L.nom}/rétention : le champ ou sa note n'est pas peint — le verdict ne porterait sur rien`);
+      else {
+        champ.value = "7"; champ.dispatchEvent(new Evenement("input", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 400)); await laisser135();
+        const texteNote = nu135(note);
+        const enregistre = L.ret.enregistrerLaRetention({ preventDefault() {} });
+        await laisser135();
+        const form = formulaire135(), texteConfirmation = form ? nu135(form) : "";
+        const annuler = form ? form.querySelector(".m-cancel") : null;
+        if (annuler && typeof annuler.onclick === "function") annuler.onclick();
+        await enregistre; await laisser135(); fermerLesFenetres135();
+        if (texteNote !== enLangue) ecarts135.push(`${L.nom}/rétention : l'aperçu n'est pas « ${enLangue.slice(0, 120)}… » (cadre de la langue + corps de la cause servie, un seul aveu) : « ${texteNote.slice(0, 200)} »`);
+        if (!texteConfirmation.includes("(" + enLangue + ")") || occurrences135(texteConfirmation, OUVERTURES135.apercu) !== 0 || aveux135(texteConfirmation) !== aveux135(corps135("apercu")) + 1)
+          ecarts135.push(`${L.nom}/rétention : la confirmation de baisse ne rend pas la cause servie sous UN SEUL aveu : « ${texteConfirmation.slice(0, 300)} »`);
+      }
+      // ── PLAYBOOKS : l'en-tête du mode non lu ───────────────────────────────────────────────────────────────
+      try { globalThis.localStorage.removeItem("soc_pb_collapsed"); } catch { /* le stockage peut refuser */ }
+      const PB135 = { id: 1, name: "pb-135", query: "search source=ufw | stats count by src_ip", is_soql: 1, action_kind: "ban_ip", interval_s: 300, window_s: 3600, enabled: 1, managed: 2, consequence: "-> bannit l'adresse (135)" };
+      servis135 = { "GET /api/playbooks": { corps: { playbooks: [PB135], mode: null, ban_duration_s: 3600, mode_non_lu: CAUSES135.mode } } };
+      const liste = qs135("#pb-list"); if (liste) liste.replaceChildren();
+      await L.det.loadPlaybooks(); await laisser135();
+      const textePb = nu135(liste);
+      const enTete = cueillir135(liste, (e) => e.className === "bad" && nu135(e).includes(corps135("mode")));
+      const enTeteAttendu = en ? "Automatic response mode NOT READ — “" + corps135("mode") + "”" : "Mode des réponses automatiques NON LU — « " + corps135("mode") + " »";
+      if (!textePb.includes("pb-135")) ecarts135.push(`${L.nom}/playbooks : la ligne n'est pas peinte — le verdict ne porterait sur rien : « ${textePb.slice(0, 200)} »`);
+      else if (enTete.length !== 1 || nu135(enTete[0]) !== enTeteAttendu || occurrences135(textePb, OUVERTURES135.mode) !== 0)
+        ecarts135.push(`${L.nom}/playbooks : l'en-tête du mode non lu n'est pas le cadre de la langue suivi du corps de la cause servie, un seul aveu : ${JSON.stringify(enTete.map(nu135)).slice(0, 400)}`);
+      // ── ENVOI MANUEL : les deux causes « ÉTAT NON RELU », avec et sans `last_error` ─────────────────────────
+      const DEST135 = { id: 9, name: "syslog-135", type: "syslog", endpoint: "tcp://collecteur.example:514", enabled: true, interval_s: 30, batch_max: 500, filter: {}, has_auth: false, watermark: 1, last_count: 0 };
+      for (const [quoi, k, erreur] of [["non relu", "envoi", null], ["supprimée pendant l'envoi", "supprimee", null], ["non relu avec erreur", "envoi", "erreur servie (135)"]]) {
+        const c = CAUSES135[k];
+        servis135 = { "POST /api/destinations/9/flush": { corps: { ok: null, forwarded: null, watermark: null, last_error: erreur, etat_non_relu: c } }, "GET /api/destinations": { corps: [] } };
+        const hote = qs135("#toasts"); if (hote) hote.replaceChildren();
+        const envoi = L.dest.flushDestination(DEST135);
+        await laisser135();
+        const form = formulaire135();
+        if (form && typeof form.onsubmit === "function") await Promise.resolve(form.onsubmit({ preventDefault() {} }));
+        await envoi; await laisser135(); fermerLesFenetres135();
+        const avis = (qs135("#toasts") ? qs135("#toasts").children : []).map((t) => nu135(t));
+        const attendu = (en ? "delivery state NOT RE-READ: " : "état de l'envoi NON RELU : ") + corps135(k) + (erreur ? " — " + erreur : "");
+        if (!avis.includes(attendu) || avis.some((a) => aveux135(a) !== aveux135(corps135(k)) + 1 || a.includes(OUVERTURES135[k])))
+          ecarts135.push(`${L.nom}/envoi ${quoi} : l'avis ne rend pas la cause servie sous UN SEUL aveu${erreur ? ", suivie de l'erreur servie" : ""} : ${JSON.stringify(avis).slice(0, 400)}`);
+      }
+    }
+    exiger(ecarts135.length === 0, `(135) \`P10.31-p\` — UN AVEU SERVI REÇOIT UN SECOND PRÉFIXE, OU PERD LE CADRE DE LA LANGUE : ${JSON.stringify(ecarts135)}`);
+  } finally {
+    globalThis.fetch = fetchOrigine135; fermerLesFenetres135();
+    for (const o of etatsOrigine135) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; }
+  }
+  if (echecs.length !== echecsAvant135) console.log(`(135) EN ÉCHEC — ${echecs.length - echecsAvant135} écart(s), dits ci-dessus`);
+  else console.log("(135) OK — `P10.31-p` : avec les causes LUES dans le démon, l'aperçu de rétention, sa confirmation de baisse, l'en-tête du mode des playbooks et l'avis d'un envoi manuel (deux causes, avec et sans erreur servie) rendent le corps de la cause servie sous le seul aveu de la console, dans la langue de l'écran (deux langues).");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (136) `P10.31-q` — (47b) JUGE LE GESTE, PAS LE MAGASIN DE PRÉFÉRENCES : LES DEUX SENS, SUR LE VRAI CHEMIN.
+// Le geste de partage de (47) est rejoué, et un envoi DIFFÉRÉ de préférences est armé avant le clic par le vrai
+// `prefSet` (web/prefs.js) ; après l'annulation, on ATTEND L'ÉVÉNEMENT — l'arrivée de ce `PUT /api/prefs` dans le
+// journal — au lieu d'un délai. (a) L'INSTRUMENT : le PUT différé est bien tombé dans la fenêtre du refus (sinon ce
+// témoin REFUSE DE CONCLURE). (b) Ce PUT concurrent ne compte pas comme une écriture du geste. (c) Un `POST
+// /api/views/7` qui partirait après l'annulation compte TOUJOURS, PUT concurrent présent ou non.
+// CE QUE CE TÉMOIN NE TIENT PAS : il ne charge pas la machine ; il force le seul envoi différé que la console
+// programme en dehors des gestes (le magasin de préférences) — un autre minuteur du même genre n'est pas couvert.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant136 = echecs.length;
+  const url136 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modDash136 = await import(url136("dashboards.js"));
+  const prefs136 = await import(url136("prefs.js"));
+  const { S: S136 } = await import(url136("state.js"));
+  const tic136 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser136 = async (n = 20) => { for (let i = 0; i < n; i++) await tic136(); };
+  const fenetre136 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const cueillir136 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir136(c, pred, acc)); return acc; };
+  const parClasse136 = (racine, cl) => cueillir136(racine, (e) => e.classList && e.classList.contains(cl), [])[0] || null;
+  const etatVue136 = { views: [{ id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 }], me: "hugo", role: "admin" };
+  const ecritures136 = [];
+  const bouton136 = new Element("button"), selecteur136 = new Element("select");
+  const hotes136 = { "#view-share": bouton136, "#view": selecteur136 };
+  const qsOrigine136 = document.querySelector, fetchOrigine136 = globalThis.fetch;
+  const etatOrigine136 = { role: S136.viewsRole, me: S136.viewsMe, liste: S136.viewList };
+  document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes136, sel) ? hotes136[sel] : new Element("div"));
+  globalThis.fetch = async (u, o) => {
+    const url = String(u), methode = (o && o.method) || "GET";
+    if (methode !== "GET") { ecritures136.push(ligneDEcriture47(url, o)); return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) }; }
+    if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify(etatVue136) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({}) };
+  };
+  const MARQUE136 = "temoin136-" + process.pid;
+  const preferenceArrivee136 = () => ecritures136.some((e) => /^PUT \/api\/prefs/.test(e) && e.includes(MARQUE136));
+  try {
+    modDash136.initDashboards();
+    await laisser136();
+    selecteur136.value = "7";
+    selecteur136.dispatchEvent({ type: "change" });
+    await laisser136();
+    exiger(!bouton136.hidden, "(136-instrument) le bouton de partage est masqué : le geste de (47) n'est pas rejoué, ce témoin REFUSE DE CONCLURE");
+    prefs136.prefSet(MARQUE136, "1");             // arme le vrai envoi différé du magasin de préférences
+    const avantRefus136 = ecritures136.length;
+    bouton136.dispatchEvent({ type: "click" });
+    await laisser136();
+    const ov = fenetre136();
+    const annuler = ov ? parClasse136(ov, "m-cancel") : null;
+    exiger(!!annuler, "(136-instrument) la fenêtre de confirmation n'offre pas d'annulation : le sens du refus ne peut pas être joué");
+    if (annuler) annuler.onclick();
+    // ATTENTE DE L'ÉVÉNEMENT, PAS D'UN DÉLAI : la borne n'est qu'un garde-fou, son dépassement refuse de conclure.
+    for (let i = 0; i < 200 && !preferenceArrivee136(); i++) await new Promise((r) => setTimeout(r, 50));
+    const tranche136 = ecritures136.slice(avantRefus136);
+    exiger(preferenceArrivee136(), `(136a-instrument) le PUT différé des préférences n'est jamais arrivé dans la fenêtre du refus — le cas concurrent n'est pas joué, ce témoin REFUSE DE CONCLURE : ${JSON.stringify(tranche136).slice(0, 300)}`);
+    const comptees = ecrituresDuGesteHorsPreferences(ecritures136, avantRefus136);
+    exiger(comptees.length === 0, `(136b) un PUT de préférences concurrent est compté comme une écriture du geste annulé — (47b) rougirait sur une machine lente : ${JSON.stringify(comptees).slice(0, 300)}`);
+    // (c) le sens négatif : une écriture DU GESTE après l'annulation, à côté du PUT concurrent.
+    await fetch("/api/views/7", { method: "POST", body: JSON.stringify({ visibility: "shared" }) });
+    const fuite = ecrituresDuGesteHorsPreferences(ecritures136, avantRefus136);
+    exiger(fuite.length === 1 && /^POST \/api\/views\/7 /.test(fuite[0]), `(136c) un POST /api/views/7 parti après l'annulation n'est PAS compté — (47b) ne verrait plus une fenêtre qui n'est qu'un décor : ${JSON.stringify(fuite).slice(0, 300)}`);
+    exiger(ecrituresDuGesteHorsPreferences([ligneDEcriture47("/api/views/7", { method: "POST", body: "{}" })], 0).length === 1
+      && ecrituresDuGesteHorsPreferences([ligneDEcriture47("/api/prefs", { method: "PUT", body: "{}" })], 0).length === 0
+      && ecrituresDuGesteHorsPreferences([ligneDEcriture47("/api/prefs-autre", { method: "PUT", body: "{}" })], 0).length === 1,
+      "(136c) le filtre ne retire plus EXACTEMENT les envois du magasin de préférences");
+  } finally {
+    document.querySelector = qsOrigine136; globalThis.fetch = fetchOrigine136;
+    S136.viewsRole = etatOrigine136.role; S136.viewsMe = etatOrigine136.me; S136.viewList = etatOrigine136.liste;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  if (echecs.length !== echecsAvant136) console.log(`(136) EN ÉCHEC — ${echecs.length - echecsAvant136} écart(s), dits ci-dessus`);
+  else console.log("(136) OK — `P10.31-q` : le geste de partage annulé, rejoué avec un vrai envoi différé de préférences tombé dans sa fenêtre (attendu comme un événement, pas comme un délai), n'est jugé que sur ses propres écritures : le PUT concurrent ne compte pas, un POST /api/views/7 compte toujours.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

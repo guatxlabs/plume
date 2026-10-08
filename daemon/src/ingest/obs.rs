@@ -16,6 +16,30 @@ pub(crate) const CAUSE_LOT_D_INGESTION_NON_ECRIT: &str = "LOT NON ÉCRIT : la ba
      lot (BEGIN ou COMMIT refusé : verrou tenu, transaction d'un autre geste pendante, base en lecture seule ou pleine) \
      — AUCUNE ligne de ce lot n'est écrite. Réémettez-le tel quel.";
 
+/// `P10.27-i` — LA LIGNE REFUSÉE DANS UNE TRANSACTION PRISE. `metrics_prom` et `metrics_write` jetaient le
+/// résultat de chaque `insert_metric` (`let _ =`), puis validaient : un `INSERT` refusé (contrainte, déclencheur,
+/// base pleine) rendait 200 `ingested: n` (n = séries LUES, pas écrites) ou 204 — et ce 204 fait avancer le WAL de
+/// l'émetteur, qui jette sa copie : perte définitive et muette. CHOIX : le lot ENTIER est refusé (transaction
+/// annulée, 503), pas un lot partiel avoué — même pente que `CAUSE_LOT_D_INGESTION_NON_ECRIT` et que le lot Loki
+/// (`LotNonEcrit::Annule`) : le protocole remote_write n'a aucun moyen de dire « ces lignes-là seulement », et un
+/// émetteur qui réémet sur 5xx (Prometheus, Alloy) réécrit le lot UNE fois. CONTRAT NOUVEAU : un refus qui PERSISTE
+/// (déclencheur, contrainte posée par l'exploitant) fait réémettre l'émetteur jusqu'à ce que la cause soit levée —
+/// son WAL retient le lot au lieu de le perdre. Un `Ok(0)` (seul un déclencheur `RAISE(IGNORE)` le rend : l'`INSERT`
+/// n'a ni `OR IGNORE` ni clé d'unicité) est un écart VOULU par la base : pas un refus, mais pas compté écrit.
+pub(crate) const CAUSE_LIGNE_DU_LOT_REFUSEE: &str = "LOT NON ÉCRIT : la base a refusé une ligne de ce lot (contrainte, \
+     déclencheur, base pleine ou en lecture seule) — sa transaction est ANNULÉE, AUCUNE ligne de ce lot n'est écrite. \
+     Réémettez-le tel quel ; un refus qui persiste tient à la base, pas au lot.";
+
+/// `P10.27-i` — annule la transaction du lot dont une ligne est refusée, le dit au journal, rend le 503 nommé.
+fn annuler_le_lot_a_la_ligne_refusee(conn: &Connection, geste: &str, refus: &rusqlite::Error) -> Response {
+    let _ = conn.execute_batch("ROLLBACK");
+    if !conn.is_autocommit() {
+        eprintln!("[ingest] ERREUR {geste} : transaction toujours ouverte après un ROLLBACK — l'écrivain est bloqué");
+    }
+    eprintln!("[ingest] WARN {geste} : une ligne refusée par la base ({refus}) — lot ANNULÉ, rien n'est écrit");
+    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LIGNE_DU_LOT_REFUSEE)
+}
+
 // ---------- OBS-1 : ingestion métriques au format d'exposition Prometheus ----------
 // Parse les labels `k="v",k2="v2"` (guillemets respectés, déséchappement) -> JSON.
 fn prom_labels_json(inner: &str) -> String {
@@ -84,17 +108,19 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
     // -> écrasé par l'hôte du jeton (mesuré usurpable avant : 200 + métrique stockée sous l'hôte usurpé) ;
     // relais (Basic / jeton non lié) -> inchangé, la collecte multi-hôtes reste intacte.
     let hote = HoteIngere::resoudre(&au, q.get("host").map(|s| s.as_str()));
-    let n = series.len();
     with_write(&st, &au, |conn| {
     // `P10.26-s` — sa transaction ou rien (cf. `CAUSE_LOT_D_INGESTION_NON_ECRIT`).
     if ouvrir_sa_transaction(conn, "ingest", "lot de métriques Prometheus").is_err() {
         return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LOT_D_INGESTION_NON_ECRIT);
     }
-    {
-        for (name, labels, value) in &series {
-            // Passe par le DTO d'ingestion (host = `HoteIngere`) : le point d'écriture n'accepte plus
-            // une chaîne d'hôte brute. `insert_metric` prépare-en-cache le MÊME SQL que la boucle d'avant.
-            let _ = store().insert_metric(conn, &metric_ingeree(ts, name, labels, *value, &hote));
+    // `P10.27-i` — chaque ligne est COMPTÉE ; une ligne refusée refuse le lot (cf. `CAUSE_LIGNE_DU_LOT_REFUSEE`).
+    let mut ecrites = 0usize;
+    for (name, labels, value) in &series {
+        // Passe par le DTO d'ingestion (host = `HoteIngere`) : le point d'écriture n'accepte plus
+        // une chaîne d'hôte brute. `insert_metric` prépare-en-cache le MÊME SQL que la boucle d'avant.
+        match store().insert_metric(conn, &metric_ingeree(ts, name, labels, *value, &hote)) {
+            Ok(k) => ecrites += k,
+            Err(refus) => return annuler_le_lot_a_la_ligne_refusee(conn, "lot de métriques Prometheus", &refus),
         }
     }
     if let Err(refus) = valider_la_transaction(conn) {
@@ -103,7 +129,7 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
     // `S31` (temps 1) — `ingested` est VRAI (les lignes sont insérées et la transaction est validée) et
     // ne suffit pas : sous `synchronous=NORMAL`, un COMMIT n'attend aucune barrière d'écriture. `durable`
     // porte la seule chose que cet accusé ne couvre pas ; le bandeau de `ingest/mod.rs` porte le régime.
-    Json(json!({ "ingested": n, "durable": false })).into_response()
+    Json(json!({ "ingested": ecrites, "durable": false })).into_response()
     })
 }
 
@@ -218,7 +244,11 @@ pub(crate) async fn metrics_write(State(st): State<AppState>, Extension(au): Ext
     for (ts, name, labels, host, value) in &rows {
         // Le host des labels est le DÉCLARÉ ; la résolution tranche (jeton lié -> écrasé, relais -> gardé).
         let hote = HoteIngere::resoudre(&au, host.as_deref());
-        let _ = store().insert_metric(conn, &metric_ingeree(*ts, name.as_ref(), labels.as_ref(), *value, &hote));
+        // `P10.27-i` — le 204 n'est rendu que si aucune ligne n'est refusée (cf. `CAUSE_LIGNE_DU_LOT_REFUSEE`).
+        match store().insert_metric(conn, &metric_ingeree(*ts, name.as_ref(), labels.as_ref(), *value, &hote)) {
+            Ok(_) => {}
+            Err(refus) => return annuler_le_lot_a_la_ligne_refusee(conn, "lot remote_write", &refus),
+        }
     }
     if let Err(refus) = valider_la_transaction(conn) {
         return refuser_le_geste_non_valide("ingest", "lot remote_write", &refus, CAUSE_LOT_D_INGESTION_NON_ECRIT);

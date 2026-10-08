@@ -7,13 +7,14 @@
 //    ou une lecture ratée rendait l'époque 0 au démarrage — les cookies émis avant une révocation globale revalaient.
 //  * `bump_session_epoch` avançait l'époque MÉMOIRE puis jetait l'écriture (`let _ = c.execute(..)`) : `meta` rendue non
 //    inscriptible, la déconnexion globale d'un admin rendait 200, traçait « révoquées » au registre, et la révocation
-//    tombait au redémarrage. Même chose pour toute déconnexion en mode 1.
+//    tombait au redémarrage. Même chose pour toute déconnexion en mode 1 (qui, depuis `P10.31-i`, n'avance plus que
+//    l'époque du compte).
 //
 // Le refus de démarrer (`exit 78` de `load_session_epoch`) est tenu en RÉ-EXÉCUTANT ce binaire de test (forme de
 // `migrate.rs`, `reference_build_writes_nothing_to_stderr`) : le code de sortie et le message d'un PROCESSUS.
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : l'appel de `load_session_epoch` par `main` (le démon n'est pas lancé) ; l'époque
-// PAR COMPTE (`P10.24-d`) ; la trace d'une déconnexion de mode 1 (aucune, antérieur, `P10.31-i`).
+// PAR COMPTE (`P10.24-d`).
 // =====================================================================================
 mod epoque_globale_lue_et_persistee {
     use super::*;
@@ -173,15 +174,19 @@ mod epoque_globale_lue_et_persistee {
         assert!(st.db.lock().is_autocommit(), "aucune transaction laissée ouverte");
     }
 
-    /// CE QU'IL TIENT : mode 1, `meta` non inscriptible -> la déconnexion d'une session valide rend `503` +
-    /// `CAUSE_REVOCATION_GLOBALE_NON_PERSISTEE`, efface les cookies de ce navigateur, n'avance ni l'époque mémoire ni la
-    /// persistée ; `bump_session_epoch` rend la cause. Contrôle positif : déclencheurs retirés, 200 et l'époque avance
-    /// en mémoire ET sur disque (le sens de `bump_session_epoch_persists_and_increments`).
+    /// CE QU'IL TIENT : `meta.session_epoch` non inscriptible -> `bump_session_epoch` rend la cause et n'avance ni
+    /// l'époque mémoire ni la persistée. Contrôle positif : déclencheurs retirés, l'époque avance en mémoire ET sur
+    /// disque (le sens de `bump_session_epoch_persists_and_increments`). `P10.31-i` — CONTRAT CHANGÉ : ce témoin
+    /// tenait aussi le `503` de la déconnexion du mode 1 (`CAUSE_REVOCATION_GLOBALE_NON_PERSISTEE`, retirée) ; la
+    /// déconnexion du mode 1 n'avance plus l'époque globale — elle rend ici `200`, portée `compte`, l'époque globale
+    /// intacte (la déconnexion par compte du mode 1 est tenue par `deconnexion_du_mode_un_par_compte.rs`). Le volet
+    /// `bump_session_epoch` porte sur une aide de TEST (`#[cfg(test)]`, aucun chemin servi ne l'appelle) : seule
+    /// `persister_l_epoque_de_session`, qu'elle partage avec la révocation globale servie, y est éprouvée.
     ///
-    /// LA MUTATION QUI LE FAIT ROUGIR : `VERIF_MUT=egp_mode1_avale` (l'échec de persistance du mode 1 est ignoré, la
-    /// réponse est le 200 d'avant).
+    /// LA MUTATION QUI LE FAIT ROUGIR : mutant « F2_deconnexion_mode1_globale » (la déconnexion du mode 1 avance encore
+    /// l'époque globale : `503`).
     #[tokio::test]
-    async fn egp_mode_1_revocation_non_persistee_rend_503() {
+    async fn egp_mode_1_deconnexion_ordinaire_rend_200_sans_ecrire_l_epoque_globale() {
         let (st, _p) = egp_etat("mode-1");
         let mut st1 = st.clone();
         st1.multi_tenant = true;
@@ -189,16 +194,14 @@ mod epoque_globale_lue_et_persistee {
         let jeton = mint_session_du_compte(st1.session_secret.as_slice(), "bob", "editor", 3600, e0, 0);
         egp_meta_non_inscriptible(&st1, "ABORT");
         let (statut, efface, corps) = egp_deconnexion(&st1, &jeton, None).await;
-        assert_eq!((statut, efface), (503, true), "{corps}");
-        assert_eq!(corps["error"], json!(CAUSE_REVOCATION_GLOBALE_NON_PERSISTEE), "{corps}");
+        assert_eq!((statut, efface, corps["portee"].clone()), (200, true, json!("compte")), "{corps}");
         assert_eq!(st1.session_epoch.load(Ordering::SeqCst), e0, "époque mémoire inchangée");
         assert_eq!(egp_persistee(&st1), e0, "époque persistée inchangée");
         assert!(bump_session_epoch(&st1).is_err(), "bump_session_epoch rend la cause");
         assert_eq!(st1.session_epoch.load(Ordering::SeqCst), e0, "et n'avance pas la mémoire");
 
         st1.db.lock().execute_batch("DROP TRIGGER egp_refus_upd; DROP TRIGGER egp_refus_ins;").expect("fixture");
-        let (statut, efface, corps) = egp_deconnexion(&st1, &jeton, None).await;
-        assert_eq!((statut, efface), (200, true), "contrôle positif : {corps}");
+        bump_session_epoch(&st1).expect("contrôle positif : l'époque persiste");
         assert_eq!((st1.session_epoch.load(Ordering::SeqCst), egp_persistee(&st1)), (e0 + 1, e0 + 1));
     }
 

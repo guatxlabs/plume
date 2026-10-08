@@ -238,12 +238,12 @@
         let rb = pick_runbook_id(&conn, Some("initial-access"), None).expect("lecture faite").expect("un runbook correspond");
         attach_runbook(&conn, id, rb, "bob", &PrefillTargets::default()).unwrap();
         let first_step: i64 = conn.query_row("SELECT id FROM case_step WHERE incident_id=?1 ORDER BY ordinal LIMIT 1", params![id], |r| r.get(0)).unwrap();
-        assert!(step_advance(&conn, id, first_step, "done", "bob", None));
+        assert_eq!(step_advance(&conn, id, first_step, "done", "bob", None), IssueDeLEtape::Ecrite);
         let (status, actor): (String, String) = conn.query_row("SELECT status,COALESCE(actor,'') FROM case_step WHERE id=?1", params![first_step], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((status.as_str(), actor.as_str()), ("done", "bob"));
         // skip avec note.
         let second: i64 = conn.query_row("SELECT id FROM case_step WHERE incident_id=?1 ORDER BY ordinal LIMIT 1 OFFSET 1", params![id], |r| r.get(0)).unwrap();
-        assert!(step_advance(&conn, id, second, "skipped", "bob", Some("hors périmètre")));
+        assert_eq!(step_advance(&conn, id, second, "skipped", "bob", Some("hors périmètre")), IssueDeLEtape::Ecrite);
         let note: Option<String> = conn.query_row("SELECT note FROM case_step WHERE id=?1", params![second], |r| r.get(0)).unwrap();
         assert_eq!(note.as_deref(), Some("hors périmètre"));
         // progression.
@@ -260,9 +260,9 @@
         assert!(fr1.is_some(), "first_response_ts figé (MTTA)");
         // anti-IDOR : la step d'un AUTRE case ne peut être avancée via cet id.
         let other = dossier_seme(&conn, "a", "autre", 2, "", None, 3);
-        assert!(!step_advance(&conn, other, first_step, "done", "eve", None), "step d'un autre case refusée");
+        assert_eq!(step_advance(&conn, other, first_step, "done", "eve", None), IssueDeLEtape::EtapeAbsente, "step d'un autre case refusée");
         // statut invalide refusé.
-        assert!(!step_advance(&conn, id, first_step, "bogus", "bob", None));
+        assert_eq!(step_advance(&conn, id, first_step, "bogus", "bob", None), IssueDeLEtape::EtapeAbsente);
     }
 
     /// RUN SEARCH : la résolution substitue la cible, recompile (FERMÉ) et renvoie le GXQL ; valeur interdite

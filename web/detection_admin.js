@@ -1560,6 +1560,9 @@ function labelActionKindOptions(banDurationS) {
   const sel = $('#pb-kind'); if (!sel || !sel.options) return;
   [...sel.options].forEach(o => { o.textContent = actionKindOptionLabel(o.value, banDurationS); });
 }
+// `P10.31-p` — l'aveu de tête d'une cause servie (« MODE NON LU : … ») est retiré : l'en-tête porte celui de la console,
+// dans la langue de l'écran ; même règle que l'aperçu de rétention (web/retention.js).
+const L_AVEU_EN_TETE_DE_LA_CAUSE_SERVIE = /^\p{Lu}[\p{Lu}'’ ]* NON (?:RE)?LUE?S? ?: */u;
 async function loadPlaybooks() {
   const wrap = $('#pb-list'); if (!wrap) return;
   const d = await fetchInto(wrap, '/playbooks'); if (!d) return;   // P11.14-a : la cause est écrite dans le panneau
@@ -1597,7 +1600,10 @@ async function loadPlaybooks() {
   const note = takePendingNote('playbooks'); if (note) wrap.appendChild(note); // P11.1-e
   if (!mode) {
     const aveuDuMode = document.createElement('div'); aveuDuMode.className = 'bad'; aveuDuMode.style.cssText = 'margin:0 0 6px;font-size:12px';
-    aveuDuMode.textContent = faceDansLaLangue({ fr: 'Mode des réponses automatiques NON LU — « {cause} »', en: 'Automatic response mode NOT READ — “{cause}”' }, { cause: causeDuModeNonLu });
+    // `P10.31-p` — un seul aveu, celui de la console dans la langue de l'écran : l'aveu de tête de la cause servie
+    // (« MODE NON LU : … », playbooks.rs) est retiré, le reste de la cause est rendu tel quel.
+    const corpsDeLaCause = (d.mode_non_lu && causeDuModeNonLu.replace(L_AVEU_EN_TETE_DE_LA_CAUSE_SERVIE, '')) || causeDuModeNonLu;
+    aveuDuMode.textContent = faceDansLaLangue({ fr: 'Mode des réponses automatiques NON LU — « {cause} »', en: 'Automatic response mode NOT READ — “{cause}”' }, { cause: corpsDeLaCause });
     wrap.appendChild(aveuDuMode);
   }
   if (!playbooks.length) { wrap.appendChild(muted('aucun playbook')); return; }

@@ -840,7 +840,7 @@ env:
   # `P10.24-m`, `P10.28-h`, `P10.29-i`, `P10.20-u` (2026-09-29) : +10 — le fichier
   # `secret_des_gestes_demonstration_freinee_et_pose_de_l_administrateur.rs` (`sdg_` six, `dfb_` un, `pla_` un,
   # `rnc_` deux). Aucun derrière un `cfg(feature)` -> le MÊME +10 sur `EXPECTED_COLD_TESTS` (2213 -> 2223), mesuré.
-  EXPECTED_TESTS: "2212"
+  EXPECTED_TESTS: "2267"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1313,7 +1313,7 @@ jobs:
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
           # `P10.24-m` et voisines (2026-09-29) : +10, les MÊMES que sur `EXPECTED_TESTS` — écart INCHANGÉ.
-          EXPECTED_COLD_TESTS: "2467"
+          EXPECTED_COLD_TESTS: "2522"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -2892,7 +2892,9 @@ jobs:
       # `$RUNNER_TEMP/gitleaks-detect.sh` ; il ne voit pas un scan principal qui l'éviterait (mesuré : un pas
       # principal remis en appel direct du binaire laissait tout vert). Cette garde exige qu'un SEUL lancement
       # de gitleaks existe dans les flux — l'`exec` de l'enveloppe — et que le pas `id: gitleaks` l'appelle ;
-      # `P10.31-o` : et que l'enveloppe force le texte (`* diff` dans `info/attributes`).
+      # `P10.31-o` : et que l'enveloppe force le texte (`* diff` dans `info/attributes`). `P10.31-r` : elle
+      # JOUE aussi le corps de l'enveloppe, extrait des flux, contre un faux binaire qui journalise ses
+      # arguments (un seul lancement, options exigées, fusions lues) ; sans corps trouvé, elle refuse de conclure.
       - name: Tout scan gitleaks passe par l'enveloppe unique (gitleaks:allow et .gitleaksignore neutralisés)
         run: python3 .github/scripts/check_every_gitleaks_scan_takes_the_single_call.py
 
@@ -3126,8 +3128,8 @@ jobs:
           ]
           EOF
           # `P10.31-n` — L'UNIQUE appel de `gitleaks detect` du job (scan principal, scan témoin, contre-scan) :
-          # trois voies NOMMÉES taisent un constat hors de la configuration ci-dessus, et le témoin ne lit qu'elle
-          # (l'inventaire n'est pas complet : voir la limite (10) du témoin, résolution d'un commit de fusion) :
+          # quatre voies NOMMÉES taisent un constat hors de la configuration ci-dessus, et le témoin ne lit qu'elle
+          # (l'inventaire n'est pas prouvé complet : voir la limite (10) du témoin) :
           #   - un commentaire `gitleaks:allow` sur la ligne d'un secret : `--ignore-gitleaks-allow` le neutralise ;
           #   - un fichier `.gitleaksignore` (empreintes `commit:fichier:règle:ligne`) : gitleaks le lit à la RACINE
           #     de la source MÊME quand `--gitleaks-ignore-path` désigne un dossier vide (mesuré en 8.24.3 : une
@@ -3141,11 +3143,22 @@ jobs:
           #     correspond) : une exception ajoutée après (`*.pem -diff`) rouvrirait la voie. Le témoin l'exige.
           #     Un répertoire hors git (`--no-git`) n'a pas d'`info/attributes` : rien n'y est écrit, et l'enveloppe
           #     le dit ; toute AUTRE erreur de `git rev-parse` refuse (code 4) au lieu de scanner sans texte forcé.
+          #   - `P10.31-r` : une clé ajoutée dans la RÉSOLUTION d'un commit de fusion (`git merge --no-commit`, puis
+          #     un fichier ajouté) : gitleaks lance `git log -p -U0 --full-history --all`, qui n'affiche aucun diff
+          #     de fusion (mesuré en 8.24.3, git 2.47 : la clé, présente dans l'arbre de HEAD, n'est pas signalée).
+          #     L'enveloppe passe `--log-opts="--full-history --all --diff-merges=separate"` : les options par
+          #     défaut REPRISES (`--log-opts` les REMPLACE : `--log-opts=-m` seul perdait `--all`, une clé sur une
+          #     branche hors de HEAD n'était plus lue — mesuré) et le diff de chaque fusion contre CHACUN de ses
+          #     parents (`--diff-merges=separate`, explicite : `-m` suit `log.diffMerges` ; `--cc` reste muet,
+          #     mesuré). Un appelant qui passe lui-même `--log-opts` est REFUSÉ (code 5) : il remplacerait ces
+          #     options sans le dire. Sans effet sous `--no-git` (gitleaks l'ignore, un répertoire n'a pas de fusion).
           cat > "${RUNNER_TEMP:?}/gitleaks-detect.sh" <<'EOF'
           #!/usr/bin/env bash
           # gitleaks-detect.sh <répertoire source> [options de gitleaks detect…]
           set -euo pipefail
           src="$1"; shift
+          for a in "$@"; do case "$a" in --log-opts|--log-opts=*)
+            echo "::error::$a passé à l'appel unique : il remplacerait les options d'historique qui lisent les fusions ; refusé (P10.31-r)"; exit 5 ;; esac; done
           ign="$(find "$src" -name .gitleaksignore -not -path '*/.git/*' -print -quit)"
           if [ -n "$ign" ]; then
             echo "::error::$ign présent : un .gitleaksignore tait des constats hors de la configuration jugée ; il est refusé (P10.31-n)"; exit 3; fi
@@ -3162,7 +3175,7 @@ jobs:
             mkdir -p "$(dirname "$att")"; printf '* diff\n' >> "$att"
           fi
           cd "$src"
-          exec "${GITLEAKS_BIN:-/tmp/gitleaks}" detect --source . --ignore-gitleaks-allow "$@"
+          exec "${GITLEAKS_BIN:-/tmp/gitleaks}" detect --source . --ignore-gitleaks-allow --log-opts="--full-history --all --diff-merges=separate" "$@"
           EOF
 
       # Pinned gitleaks BINARY (v8.24.3) — no repo token, no license required, and behaves
@@ -3229,7 +3242,7 @@ jobs:
       # CONTRE-SCAN : l'historique est rescanné avec les seules règles de clé (chemins inchangés) et ne
       # doit rendre aucun constat `private-key` : une clé committée que taisait une règle « pas de clé »
       # (un nom tiers comme `CLE_TIERCE`, un fragment propre à une clé) y réapparaît. TÉMOIN DU TÉMOIN :
-      # trente-cinq configurations ou dépôts hostiles, fabriqués ici depuis la vraie, doivent être refusés (lecture
+      # quarante configurations ou dépôts hostiles, fabriqués ici depuis la vraie, doivent être refusés (lecture
       # ligne à ligne, sonde perdue, classe ignorée ou POSIX, joker seul, règle non compilable, forme
       # ouverte, chemin d'extension de clé, chemin non ancré, chemin privé de sa SEULE ancre de tête ou de
       # fin, fragment d'en-tête d'une autre longueur, retour à `useDefault`, fichier de règles étendu qui
@@ -3242,7 +3255,11 @@ jobs:
       # racine, puis de sous-dossier, puis par la macro `binary` ; dans ces trois dépôts, après l'appel,
       # `info/attributes` doit valoir exactement `* diff` ; clé committée sous `node_modules/` et en `.svg`,
       # que le contre-scan avec la configuration RÉDUITE doit rendre (deux constats exactement) et que le
-      # scan avec la vraie doit signaler dans l'historique git).
+      # scan avec la vraie doit signaler dans l'historique git ; `P10.31-r` : clé ajoutée dans la résolution
+      # d'une fusion et clé d'une branche hors de HEAD, signalées toutes deux par `fichier@commit`, puis
+      # contre-épreuves sur deux copies de l'appel — sans l'option d'historique, la clé de la fusion est tue ;
+      # avec `--log-opts=-m` seul, celle de la branche isolée l'est — et appel qui passe `--log-opts`,
+      # joint ou séparé (refus, code 5)).
       # VOIES DE SILENCE HORS DU TOML (`P10.31-n`, `P10.31-o`) : tous les scans du job (principal, témoin,
       # contre-scan) passent par l'appel unique `$RUNNER_TEMP/gitleaks-detect.sh`, qui pose
       # `--ignore-gitleaks-allow`, REFUSE (code 3) un `.gitleaksignore` présent dans l'arbre scanné et force
@@ -3265,8 +3282,11 @@ jobs:
       # clé dans l'historique pour le rougir). (6) `P10.31-n` : le témoin prouve l'enveloppe, pas que le
       # scan principal la prenne ; c'est la garde du pas « Tout scan gitleaks passe par l'enveloppe
       # unique » qui l'exige (son nom de fichier n'est cité qu'au pas qui l'exécute : la garde de câblage
-      # compte toute mention), par une lecture TEXTUELLE : un binaire
-      # lancé par une variable ou une construction dynamique lui échappe. (7) Le refus de `.gitleaksignore` ne vaut que pour
+      # compte toute mention) ; `P10.31-r` : elle extrait le corps de l'enveloppe des flux et le JOUE contre
+      # un faux binaire qui journalise ses arguments (un seul lancement, `--ignore-gitleaks-allow`, l'option
+      # d'historique exacte, texte forcé, refus des codes 3 et 5). Un lancement par une variable HORS de
+      # l'enveloppe et hors du pas principal (un autre pas, un autre flux) n'est vu que par sa lecture
+      # TEXTUELLE, qui ne reconnaît pas un binaire nommé par une variable. (7) Le refus de `.gitleaksignore` ne vaut que pour
       # l'arbre extrait (gitleaks ne lit ce fichier que là ; un `.gitleaksignore` d'un commit ancien, absent
       # de l'arbre, ne tait rien). `--gitleaks-ignore-path` vers un dossier vide ne suffit PAS : gitleaks
       # 8.24.3 lit aussi celui de la racine de la source (mesuré : la clé reste tue). (8) `P10.31-o` : les
@@ -3279,12 +3299,13 @@ jobs:
       # `info/attributes` du dépôt scanné. Le périmètre mesuré est celui de 8.24.3 : une montée change la
       # liste des règles, et ce témoin rejoue alors toutes les voies. Le témoin juge le fichier `info/attributes`
       # HORS de l'environnement de l'enveloppe : une variable d'environnement posée par
-      # elle (configuration git injectée) lui échappe. (10) UNE VOIE HORS DU TOML RESTE OUVERTE ET N'EST PAS
-      # FERMÉE ICI : une clé ajoutée dans la RÉSOLUTION d'un commit de fusion n'est pas lue, car `git log -p`
-      # (que gitleaks lance) n'affiche pas le diff d'une fusion (mesuré par la vérification : dépôt jetable,
-      # fusion `--no-commit` puis clé ajoutée dans `fusion.rs`, présente dans l'arbre de HEAD ; enveloppe =
-      # code 0, aucun constat, « 3 commits scanned » sur 4 ; l'historique façon CI compte 8 fusions sur 777
-      # commits). Ni l'enveloppe ni le témoin ne la ferment ; elle attend sa propre clé.
+      # elle (configuration git injectée) lui échappe. (10) `P10.31-r` : les fusions sont lues par
+      # `--diff-merges=separate` (diff contre CHAQUE parent), mesuré sur la seule forme du témoin (fusion
+      # sans conflit, fichier ajouté à la résolution) avec git 2.47 et gitleaks 8.24.3 ; une clé de fusion
+      # est rapportée une fois par parent qui ne la porte pas (doublons attendus). La ligne publiée ne
+      # compte aucune fusion au 2026-10-08 (`git rev-list --merges` : 0 sur 724) ; seuls les commits de
+      # fusion synthétiques des demandes de tirage (`refs/pull/*/merge`) en portent. Les quatre voies
+      # nommées sont celles qu'on a mesurées, pas un inventaire prouvé complet.
       # Les clés fraîches ne sont jamais un secret : elles meurent avec le runner.
       - name: Secret scan witness (a key planted in each real idp/ module is reported, only the exact test PEM is admitted)
         id: gitleaks_temoin
@@ -3819,7 +3840,53 @@ jobs:
             [ "$(cat "$at" 2>/dev/null)" = "* diff" ] \
               || { echo "::error::témoin du témoin : après l'appel ($nom), info/attributes ne vaut pas exactement « * diff »"; exit 1; }
           done
-          echo "témoin du témoin : 35 configurations ou dépôts hostiles refusés, aucune clé imprimée"
+          # `P10.31-r` — la quatrième voie : une clé fraîche ajoutée dans la RÉSOLUTION d'un commit de fusion
+          # (`merge --no-commit`, puis un fichier ajouté avant le commit), et une autre committée sur une branche
+          # qui n'est PAS dans l'histoire de HEAD. Le dépôt vérifie d'abord que `git log -p --all` (ce que
+          # gitleaks lance sans option) ne montre PAS la clé de la fusion, sans quoi le cas ne prouverait rien.
+          # L'appel unique doit signaler EXACTEMENT les deux, jugés par `fichier@commit`.
+          F="$C/depot-fusion"; mkdir -p "$F"; git -C "$F" init -q
+          gf() { git -C "$F" -c user.name=temoin -c user.email=temoin@invalid "$@"; }
+          echo base > "$F/a.rs"; gf add a.rs; gf commit -qm base
+          gf checkout -qb cote; echo cote > "$F/c.rs"; gf add c.rs; gf commit -qm cote
+          gf checkout -q -; echo principal > "$F/b.rs"; gf add b.rs; gf commit -qm principal
+          gf merge -q --no-ff --no-commit cote >/dev/null
+          printf 'const CLE_FUSION: &str = "%s";\n' "$PEM" > "$F/fusion.rs"; gf add fusion.rs; gf commit -qm fusion
+          FUSION="$(gf rev-parse HEAD)"
+          gf checkout -qb isolee; printf 'const CLE_ISOLEE: &str = "%s";\n' "$PEM" > "$F/isolee.rs"
+          gf add isolee.rs; gf commit -qm isolee; ISOLEE="$(gf rev-parse HEAD)"; gf checkout -q -
+          [ "$(gf rev-list --count --merges HEAD)" = 1 ] && [ "$(gf rev-parse HEAD)" = "$FUSION" ] \
+            && [ "$(gf log -p --full-history --all -- fusion.rs | grep -c 'PRIVATE KEY')" = 0 ] \
+            || { echo "::error::témoin du témoin : le dépôt de fusion ne cache pas la clé à git log -p (le cas ne prouverait rien)"; exit 1; }
+          fusion_vus() { rc=0; rm -f "$C/fusion.json"; bash "$1" "$F" --config "$CONF" --no-banner --redact --exit-code 1 \
+              --report-format json --report-path "$C/fusion.json" >/dev/null 2>&1 || rc=$?
+            VUS="$(python3 -c 'import json,sys; print(" ".join(sorted({"%s@%s" % (x["File"], x["Commit"]) for x in json.load(open(sys.argv[1])) if x["RuleID"] == "private-key"})))' "$C/fusion.json")" \
+              || VUS="(aucun rapport)"; }
+          fusion_vus "$GLD"
+          [ "$rc" = 1 ] && [ "$VUS" = "fusion.rs@$FUSION isolee.rs@$ISOLEE" ] \
+            || { echo "::error::témoin du témoin : dépôt de fusion, code $rc et constats « $VUS », attendu 1 et « fusion.rs@$FUSION isolee.rs@$ISOLEE »"; exit 1; }
+          # CONTRE-ÉPREUVES, sur des copies de l'appel unique écrites ici (hors des flux) : sans l'option, la clé de
+          # la fusion est TUE (le dépôt exerce bien la voie) ; avec `--log-opts=-m` seul, c'est la clé de la branche
+          # isolée qui l'est (`--all` perdu).
+          python3 - "$GLD" "$C" <<'PY'
+          import os, sys
+          t = open(sys.argv[1]).read(); o = ' --log-opts="--full-history --all --diff-merges=separate"'
+          assert t.count(o) == 1, "l'option d'historique de l'appel unique est introuvable"
+          open(os.path.join(sys.argv[2], "appel-sans-fusions.sh"), "w").write(t.replace(o, ""))
+          open(os.path.join(sys.argv[2], "appel-m-seul.sh"), "w").write(t.replace(o, " --log-opts=-m"))
+          PY
+          fusion_vus "$C/appel-sans-fusions.sh"
+          [ "$rc" = 1 ] && [ "$VUS" = "isolee.rs@$ISOLEE" ] \
+            || { echo "::error::témoin du témoin : sans l'option d'historique, code $rc et constats « $VUS », attendu 1 et la seule branche isolée (contre-épreuve)"; exit 1; }
+          fusion_vus "$C/appel-m-seul.sh"
+          [ "$rc" = 1 ] && [ "$VUS" = "fusion.rs@$FUSION" ] \
+            || { echo "::error::témoin du témoin : avec --log-opts=-m seul, code $rc et constats « $VUS », attendu 1 et la seule fusion (contre-épreuve)"; exit 1; }
+          # Un appelant qui passe `--log-opts` (joint ou séparé) est refusé (code 5), pas laissé remplacer l'option.
+          for lo in --log-opts=--first-parent "--log-opts --first-parent"; do
+            rc=0; bash "$GLD" "$F" --config "$CONF" --no-banner --redact --exit-code 1 $lo >/dev/null 2>&1 || rc=$?
+            [ "$rc" = 5 ] || { echo "::error::témoin du témoin : un appel avec « $lo » n'est pas refusé (code $rc, attendu 5)"; exit 1; }
+          done
+          echo "témoin du témoin : 40 configurations ou dépôts hostiles refusés, aucune clé imprimée"
 
       # `deny.toml` existait depuis longtemps mais AUCUN job ne l'exécutait : une configuration
       # que personne ne lance n'est pas une garde, c'est de la décoration. Mesuré avant l'ajout —

@@ -232,7 +232,9 @@ pub(crate) enum DossierOuvert {
 /// pas de ligne de timeline, pas de ligne de registre, pas d'échéance SLA, aucun numéro rendu.
 /// `conn` est tenue par l'appelant pendant tout le geste — c'est ce qui fait de `last_insert_rowid()`
 /// l'identifiant de la ligne qu'on vient d'écrire et d'aucune autre.
-pub(crate) fn case_create_row(conn: &Connection, author: &str, title: &str, sev: i64, summary: &str, assignee: Option<&str>, priority: i64) -> DossierOuvert {
+/// `P10.20-w` (reste) — rend AUSSI ce qu'a fait la pose des échéances multi-niveau (`IssueDuChronoSla`) : elle était
+/// avalée, et `case_create` servait le dossier sans dire qu'une politique active n'avait PAS été appliquée.
+pub(crate) fn case_create_row_et_echeances(conn: &Connection, author: &str, title: &str, sev: i64, summary: &str, assignee: Option<&str>, priority: i64) -> (DossierOuvert, IssueDuChronoSla) {
     let t = now();
     let pr = priority.clamp(1, 4);
     let sla_due = t + sla_target_s(pr);
@@ -244,15 +246,22 @@ pub(crate) fn case_create_row(conn: &Connection, author: &str, title: &str, sev:
         Ok(1) => conn.last_insert_rowid(),
         // Un `INSERT` sans clause de conflit écrit une ligne ou échoue ; la branche existe pour que le
         // jour où l'énoncé en gagne une, le silence ne soit pas le comportement par défaut.
-        Ok(n) => return DossierOuvert::NonOuvert(format!("{n} ligne(s) écrite(s) au lieu d'une")),
-        Err(e) => return DossierOuvert::NonOuvert(e.to_string()),
+        Ok(n) => return (DossierOuvert::NonOuvert(format!("{n} ligne(s) écrite(s) au lieu d'une")), IssueDuChronoSla::RienAFaire),
+        Err(e) => return (DossierOuvert::NonOuvert(e.to_string()), IssueDuChronoSla::RienAFaire),
     };
     case_add_item(conn, id, t, "created", author, "Incident créé", None);
     ledger_append(conn, "case.create", &format!("#{id} '{title}' by {author}"));
     // #39 — pose les échéances SLA MULTI-NIVEAU (ack_due/resolve_due) si une politique gouverne cette priorité.
     // INERTE si `sla_policy` VIDE (mode 0 : sla_apply_policy retourne sans écrire -> SLA legacy sla_due inchangé).
-    sla_apply_policy(conn, id);
-    DossierOuvert::Ouvert(id)
+    let echeances = sla_apply_policy(conn, id);
+    (DossierOuvert::Ouvert(id), echeances)
+}
+
+/// Semis des témoins : le dossier seul. L'issue des échéances multi-niveau n'y est pas lue — les témoins qui la jugent
+/// appellent `case_create_row_et_echeances` ou la route ; hors tests, seul `case_create` ouvre un dossier.
+#[cfg(test)]
+pub(crate) fn case_create_row(conn: &Connection, author: &str, title: &str, sev: i64, summary: &str, assignee: Option<&str>, priority: i64) -> DossierOuvert {
+    case_create_row_et_echeances(conn, author, title, sev, summary, assignee, priority).0
 }
 
 /// Applique un patch de case (title/severity/owner/summary/priority/assignee/status). Chaque changement
@@ -406,11 +415,25 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     }
     // #39 SLA MULTI-NIVEAU (INERTE si `sla_policy_id` NULL -> mode 0 byte-identique) : pause/reprise du chrono
     // sur transition de statut (entrée/sortie 'waiting') ; recalcul des échéances si la priorité a changé.
+    // `P10.20-w` (reste) — ces deux écritures sont COMPTÉES : refusées, elles rendaient 204 sur un chrono resté en pause
+    // ou une échéance de l'ancienne priorité. Refus -> `NonEcrite("sla…: cause")` (503 nommé), `updated` non écrit.
+    // `P10.20-w` (reste) — une pause ou une reprise refusée APRÈS une priorité écrite sortait avant `sla_apply_policy` :
+    // le dossier passé en P1 gardait la politique et les `ack_due`/`resolve_due` de son ancienne priorité, et la cause
+    // n'en disait rien (avant le comptage, la politique était appliquée dans tous les cas). Les échéances suivent la
+    // priorité écrite avant la sortie, sans rejouer la pause/reprise refusée, et la cause dit ce qu'elles ont fait.
     if new_status.is_some() {
-        sla_on_status_change(conn, id, &effective_status, t);
+        if let IssueDuChronoSla::Refuse(cause) = sla_on_status_change(conn, id, &effective_status, t) {
+            let mut cause = cause;
+            if priorite_ecrite {
+                cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, None));
+            }
+            return IssueDuDossierModifie::NonEcrite(cause);
+        }
     }
     if b.get("priority").and_then(parse_priority).is_some() {
-        sla_apply_policy(conn, id);
+        if let IssueDuChronoSla::Refuse(cause) = sla_apply_policy(conn, id) {
+            return IssueDuDossierModifie::NonEcrite(cause);
+        }
     }
     // `P10.20-w` (reste) — l'horodatage de mise à jour est compté comme les champs libres : tout ce qui le précède est
     // écrit, et la cause le dit (« les champs qui le précèdent ont pu être écrits »).
@@ -431,8 +454,11 @@ fn rattraper_l_echeance(conn: &Connection, id: i64, priorite: i64, statut_en_bas
         // `P10.20-w` (reprise, second tour) — un statut TERMINAL écrit par la demande en sortant de `waiting` : la
         // reprise du chrono est rejouée comme en sortie nominale (sinon le dossier clos gardait `sla_paused_since`).
         // Rien n'est recalculé sur un dossier terminal : la cause ne gagne aucun mot.
+        // `P10.20-w` (reste) — la reprise est COMPTÉE : refusée, la cause le dit (le dossier clos reste en pause).
         if statut_ecrit {
-            sla_on_status_change(conn, id, statut_en_base, t);
+            if let IssueDuChronoSla::Refuse(cause) = sla_on_status_change(conn, id, statut_en_base, t) {
+                return format!(" ; REPRISE DU CHRONO SLA NON ÉCRITE ({cause})");
+            }
         }
         return String::new();
     }
@@ -449,31 +475,50 @@ fn rattraper_l_echeance(conn: &Connection, id: i64, priorite: i64, statut_en_bas
 }
 
 /// `P10.20-w` (reste) — rejoue `sla_apply_policy` sur la priorité ÉCRITE (inerte sans politique pour elle, ou sur un
-/// dossier terminal en base) et RELIT le résultat : `sla_apply_policy` avale ses écritures, donc ce qui est dit ici
-/// vient de la base (politique posée et `resolve_due` = ts + cible + pause), jamais de l'appel.
+/// dossier terminal en base) et RELIT le résultat : ce qui est dit ici vient de la base (politique posée et
+/// `resolve_due` = ts + cible + pause), et — depuis que `sla_apply_policy` compte ses écritures — d'abord de l'appel.
 /// `P10.20-w` (reprise) — `statut_ecrit` (statut écrit par la demande, instant) : la REPRISE DU CHRONO est rejouée
 /// d'abord (`sla_on_status_change`, même ordre que la sortie nominale). Sans elle, un dossier sorti de `waiting` gardait
 /// son chrono en pause et un `resolve_due` sans la pause (mesuré : 600 au lieu de 1600). Relu : un statut écrit hors
 /// `waiting` doit laisser `sla_paused_since` NULL.
+/// `P10.20-w` (reste) — la VALEUR DE RETOUR des deux écritures du chrono est lue d'abord : un refus est dit avec sa
+/// cause (« NON RECALCULÉES »), même quand la relecture aurait trouvé la base conforme ; la relecture reste le juge de
+/// tout le reste (et d'une relecture impossible).
 fn rattraper_les_echeances_multi_niveau(conn: &Connection, id: i64, priorite: i64, statut_ecrit: Option<(&str, i64)>) -> String {
-    if let Some((statut, t)) = statut_ecrit {
-        sla_on_status_change(conn, id, statut, t);
-    }
-    let Some((pid, _ack_s, res_s)) = sla_policy_for(conn, priorite) else { return String::new() };
-    sla_apply_policy(conn, id);
+    let reprise = match statut_ecrit {
+        Some((statut, t)) => sla_on_status_change(conn, id, statut, t),
+        None => IssueDuChronoSla::RienAFaire,
+    };
+    let Some((pid, _ack_s, res_s)) = sla_policy_for(conn, priorite) else {
+        return match reprise {
+            IssueDuChronoSla::Refuse(cause) => format!(" ; REPRISE DU CHRONO SLA NON ÉCRITE ({cause})"),
+            _ => String::new(),
+        };
+    };
+    let application = sla_apply_policy(conn, id);
+    let refus: Vec<String> = [reprise, application]
+        .into_iter()
+        .filter_map(|i| match i { IssueDuChronoSla::Refuse(c) => Some(c), _ => None })
+        .collect();
     let relu: Result<(Option<i64>, Option<i64>, i64, i64, String, Option<i64>), _> = conn.query_row(
         "SELECT sla_policy_id, resolve_due, ts, COALESCE(sla_pause_accum,0), status, sla_paused_since FROM incident WHERE id=?1",
         params![id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
     );
     let reprise_due = |statut: &str, en_pause: Option<i64>| statut_ecrit.is_none() || statut == "waiting" || en_pause.is_none();
+    let relu = match relu {
+        Err(e) => return format!(" ; ÉCHÉANCES MULTI-NIVEAU NON RELUES après le rattrapage ({e})"),
+        Ok(v) => v,
+    };
+    if !refus.is_empty() {
+        return format!(" ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite ({})", refus.join(" ; "));
+    }
     match relu {
-        Ok((_, _, _, _, statut, _)) if matches!(statut.as_str(), "resolved" | "closed" | "contained") => String::new(),
-        Ok((Some(p), Some(due), ts, pause, statut, en_pause)) if p == pid && due == ts + res_s + pause && reprise_due(&statut, en_pause) => {
+        (_, _, _, _, statut, _) if matches!(statut.as_str(), "resolved" | "closed" | "contained") => String::new(),
+        (Some(p), Some(due), ts, pause, statut, en_pause) if p == pid && due == ts + res_s + pause && reprise_due(&statut, en_pause) => {
             ", échéances multi-niveau recalculées sur la priorité écrite".to_string()
         }
-        Ok(_) => " ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (ack_due/resolve_due/pause)".to_string(),
-        Err(e) => format!(" ; ÉCHÉANCES MULTI-NIVEAU NON RELUES après le rattrapage ({e})"),
+        _ => " ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (ack_due/resolve_due/pause)".to_string(),
     }
 }
 
@@ -873,6 +918,12 @@ pub(crate) const CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE: &str = "ÉCHÉANCE NO
      identifiant est servi), mais la base n'a pas rendu son échéance SLA à la relecture — `sla_due` vaut null parce \
      qu'il n'a PAS été lu, pas parce que le dossier n'en a pas. Rouvrez le dossier pour la lire.";
 
+/// `P10.20-w` (reste) — la politique SLA active de la priorité n'a pas été appliquée au dossier créé.
+pub(crate) const CAUSE_ECHEANCES_MULTI_NIVEAU_NON_POSEES: &str = "ÉCHÉANCES MULTI-NIVEAU NON POSÉES : le dossier est créé \
+     (son identifiant est servi), mais la base a refusé l'écriture des échéances d'acquittement et de résolution de la \
+     politique SLA active — `ack_due`/`resolve_due` ne sont PAS posés, le dossier n'est pas gouverné par la politique. \
+     Modifiez sa priorité ou réenregistrez la politique pour les reposer.";
+
 /// POST /api/cases — crée un case first-class (status='new', priorité, sla_due). Mutating (editor/admin). #4a.
 ///
 /// `P10.20-w` — LE CONTRAT DE CETTE ROUTE CHANGE, ET C'EST ASSUMÉ : elle rendait un 200 portant un
@@ -885,7 +936,8 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
     let assignee = b.get("assignee").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty());
     let priority = b.get("priority").and_then(parse_priority).unwrap_or(3);
     crate::req_conn!(st, au, conn);
-    let id = match case_create_row(&conn, &au.name, &title, sev, summary, assignee, priority) {
+    let (ouverture, echeances) = case_create_row_et_echeances(&conn, &au.name, &title, sev, summary, assignee, priority);
+    let id = match ouverture {
         DossierOuvert::Ouvert(id) => id,
         DossierOuvert::NonOuvert(cause) => {
             return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIER_NON_OUVERT} ({cause})"))
@@ -900,6 +952,10 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
     match relue {
         Ok(sla_due) => corps["sla_due"] = json!(sla_due),
         Err(e) => corps["sla_due_non_lu"] = json!(format!("{CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE} ({e})")),
+    }
+    // `P10.20-w` (reste) — échéances multi-niveau refusées : le dossier est servi (il existe), l'aveu est porté.
+    if let IssueDuChronoSla::Refuse(cause) = echeances {
+        corps["echeances_multi_niveau_non_posees"] = json!(format!("{CAUSE_ECHEANCES_MULTI_NIVEAU_NON_POSEES} ({cause})"));
     }
     Json(corps).into_response()
 }

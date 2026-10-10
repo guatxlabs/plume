@@ -328,6 +328,11 @@ const MOTS_DU_SECOND_FACTEUR = {
   code_non_en_cause: {
     fr: "Connexion REFUSÉE, et ton code n'est PAS en cause : le démon n'a ouvert aucune session. Le même code peut être soumis de nouveau tant qu'il est valable. Le démon en nomme la cause —",
     en: 'Sign-in REFUSED, and your code is NOT at fault: the daemon opened no session. The same code can be submitted again while it is valid. The daemon names the cause —' },
+  // `P10.20-b` (rang quatre, démon) — `login_mfa_post` n'a pas lu la ligne `user_mfa` du compte : cinq cent trois
+  // `CAUSE_MFA_NON_LUE`, servi AVANT le frein — le code n'est pas examiné, aucun échec compté, le ticket reste valable.
+  statut_mfa_non_lu: {
+    fr: "Ton code n'est ni accepté ni refusé : le démon n'a pas pu lire le second facteur de ce compte, il n'a donc pas examiné le code — aucune session n'est ouverte, aucun échec n'est compté. Le même code peut être soumis de nouveau tant qu'il est valable. Le démon en nomme la cause —",
+    en: 'Your code is neither accepted nor refused: the daemon could not read the second factor of this account, so it did not examine the code — no session is open, no failure is counted. The same code can be submitted again while it is valid. The daemon names the cause —' },
   second_facteur_refuse: {
     fr: "Connexion REFUSÉE au second facteur : le démon n'a ouvert aucune session. Il a répondu —",
     en: 'Sign-in REFUSED at the second factor: the daemon opened no session. It answered —' },
@@ -345,6 +350,7 @@ function cleDuRefusDuSecondFacteur(res) {
   if (res.status === 503 && nature === 'code_juste_non_consomme') return 'code_non_en_cause';
   if (res.status === 503 && nature === 'codes_de_secours_illisibles') return 'codes_de_secours_illisibles';
   if (res.status === 503 && nature === 'essai_non_compte') return 'essai_non_compte';   // `P10.22-y` (démon) : l'étape reste ouverte
+  if (res.status === 503 && nature === 'statut_mfa_non_lu') return 'statut_mfa_non_lu';   // `P10.20-b` (démon) : l'étape reste ouverte
   if (res.cause) return 'second_facteur_refuse';
   return '';
 }

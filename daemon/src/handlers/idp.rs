@@ -33,9 +33,13 @@ use rusqlite::OptionalExtension;
 // FAIT, et la lecture NON FAITE refuse — 503 nommé sur les trois routes, refus de connexion sur la
 // décision. Un refus se réessaie ; un second facteur contourné ne se rattrape pas.
 //
-// LES TROIS AUTRES LECTURES DE `user_mfa` (`mfa_verify`, `mfa_disable`, `login_mfa_post`) sont
-// laissées telles quelles À DESSEIN : leur repli REFUSE déjà (400, 404, 401) — elles n'inventent
-// aucun fait, seulement une cause inexacte. C'est le rang quatre de `P10.20-b`, pas celui-ci.
+// LES TROIS AUTRES LECTURES DE `user_mfa` (`mfa_verify`, `mfa_disable`, `login_mfa_post`) — le rang
+// quatre de `P10.20-b` — refusaient déjà (400, 404, 401) mais sous une cause FAUSSE : « aucun
+// enrôlement », « aucune MFA enrôlée », « aucune MFA active » sur une lecture qui n'avait pas eu lieu
+// (un 401/404 se lit révocation ou absence ; un 503 se rejoue). Elles rendent désormais
+// `Result<Option<_>>` comme les trois premières : l'absence ÉTABLIE garde la sortie d'avant, la
+// lecture NON FAITE rend un 503 nommé — sans frein consommé à la connexion, transaction annulée et
+// essai rendu à la désactivation (`CAUSE_MFA_NON_DESACTIVEE_LECTURE_NON_FAITE`).
 pub(crate) const CAUSE_MFA_NON_LUE: &str = "STATUT DE DOUBLE AUTHENTIFICATION NON LU : la lecture de \
      `user_mfa` a échoué. Ce n'est PAS « aucun second facteur sur ce compte » — un compte peut porter \
      une MFA ACTIVE que cette lecture n'a pas vue. Toute décision qui en dépend est REFUSÉE ; \
@@ -63,6 +67,15 @@ pub(crate) const CAUSE_CODE_DE_SECOURS_NON_CONSOMME: &str = "CODE DE SECOURS NON
 pub(crate) const CAUSE_MFA_NON_DESACTIVEE: &str = "DOUBLE AUTHENTIFICATION TOUJOURS ACTIVE : la base \
      n'a pas pris la suppression du second facteur. Le compte exige TOUJOURS un code à la connexion, et \
      le registre n'atteste aucune désactivation. Réessayez.";
+
+/// `P10.20-b` (rang quatre) — la ligne `user_mfa` NON RELUE dans la transaction de la désactivation : ce n'est pas
+/// « aucune MFA enrôlée » (le 404 d'avant), c'est une lecture qui n'a pas eu lieu. Deux ouvertures que la console lit au
+/// caractère près : l'en-tête du statut non lu (`statut_mfa_non_lu`, la face « ni faite ni refusée » du panneau MFA) et
+/// l'effacement que la base n'a pas pris, transaction annulée (famille « RIEN N'A CHANGÉ », `ecriture_non_prise`).
+pub(crate) const CAUSE_MFA_NON_DESACTIVEE_LECTURE_NON_FAITE: &str = "STATUT DE DOUBLE AUTHENTIFICATION NON LU : la base \
+     n'a pas pris l'effacement du second facteur, faute d'avoir relu sa ligne `user_mfa`, et la transaction est annulée. Ce \
+     n'est PAS « aucune MFA enrôlée » — le second facteur de ce compte, s'il existe, est TOUJOURS là : rien n'est écrit, le \
+     code présenté n'a été ni examiné ni consommé, et le registre n'atteste aucune désactivation. Réessayez.";
 
 /// `P10.28-d` — le `BEGIN` de la désactivation du second facteur refusé : rien n'est écrit, le code n'est pas consommé.
 pub(crate) const CAUSE_MFA_NON_DESACTIVEE_TRANSACTION_NON_OUVERTE: &str = "DOUBLE AUTHENTIFICATION TOUJOURS ACTIVE : la \
@@ -1152,9 +1165,19 @@ pub(crate) async fn mfa_verify(
         return deny_multitenant();
     }
     let code = b.trimmed("code");
-    let row: Option<(String, i64, i64)> = {
+    // `P10.20-b` (rang quatre) — `.optional()` SÉPARE l'absence ÉTABLIE (aucun enrôlement : le 400 d'avant, inchangé) de
+    // la lecture NON FAITE, qui rend un 503 nommé : rien n'est examiné, rien n'est compté au frein, rien n'est écrit.
+    let row: rusqlite::Result<Option<(String, i64, i64)>> = {
         let conn = st.db.lock();
-        conn.query_row("SELECT secret,enabled,last_step FROM user_mfa WHERE user=?1", params![au.name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
+        conn.query_row("SELECT secret,enabled,last_step FROM user_mfa WHERE user=?1", params![au.name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()
+    };
+    let row = match row {
+        Ok(row) => row,
+        Err(e) => {
+            eprintln!("[mfa] WARN second facteur de '{}' NON lu à l'activation : {e}", au.name);
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE);
+        }
     };
     let Some((secret, enabled, last_step)) = row.filter(|(s, _, _)| !s.is_empty()) else {
         return bad_req("aucun enrôlement en cours (appelez /api/mfa/enroll d'abord)");
@@ -1295,11 +1318,22 @@ pub(crate) async fn mfa_disable(
         rendre(&conn);
         return refus;
     }
-    // Lue sous le MÊME verrou et dans la MÊME transaction que la consommation et la suppression. Son repli
-    // (`.ok()` -> 404) est le rang quatre de `P10.20-b`, laissé tel quel ici (voir l'en-tête du module).
-    let row: Option<(String, i64, String)> = conn
+    // Lue sous le MÊME verrou et dans la MÊME transaction que la consommation et la suppression.
+    // `P10.20-b` (rang quatre) — l'absence ÉTABLIE reste le 404 d'avant ; la lecture NON FAITE n'est plus « aucune MFA
+    // enrôlée » : la transaction est ANNULÉE avant toute écriture, l'essai réservé est RENDU (aucun code examiné), et le
+    // 503 dit que le second facteur est TOUJOURS là.
+    let row: Option<(String, i64, String)> = match conn
         .query_row("SELECT secret,enabled,recovery FROM user_mfa WHERE user=?1", params![au.name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .ok();
+        .optional()
+    {
+        Ok(row) => row,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            eprintln!("[mfa] WARN second facteur de '{}' NON relu dans la transaction de désactivation : {e}", au.name);
+            rendre(&conn);
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE_LECTURE_NON_FAITE);
+        }
+    };
     match desactiver_le_second_facteur(&conn, &au.name, &code, row, essai.is_some()) {
         Ok(()) => {
             if let Err(e) = conn.execute_batch("COMMIT") {
@@ -1548,9 +1582,19 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
     }
     // Rôle re-résolu LIVE (le ticket n'est qu'un plancher : un changement de rôle entre les 2 facteurs est pris en compte).
     let live_role = live_role_for(&st, &user).unwrap_or(role);
-    let row: Option<(String, i64)> = {
+    // `P10.20-b` (rang quatre) — l'absence ÉTABLIE reste le 401 d'avant ; la lecture NON FAITE rend un 503 nommé, AVANT
+    // le frein du compte : aucun essai réservé, aucun échec compté, aucun code examiné (le porteur réessaie).
+    let row: rusqlite::Result<Option<(String, i64)>> = {
         let conn = st.db.lock();
-        conn.query_row("SELECT secret,last_step FROM user_mfa WHERE user=?1 AND enabled=1", params![user], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+        conn.query_row("SELECT secret,last_step FROM user_mfa WHERE user=?1 AND enabled=1", params![user], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+    };
+    let row = match row {
+        Ok(row) => row,
+        Err(e) => {
+            eprintln!("[mfa] WARN second facteur de '{user}' NON lu à la connexion : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE);
+        }
     };
     let Some((secret, last_step)) = row else {
         return err_json(StatusCode::UNAUTHORIZED, "aucune MFA active pour ce compte");

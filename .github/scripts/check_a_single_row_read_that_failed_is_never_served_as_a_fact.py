@@ -253,10 +253,13 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # RE-DÉRIVÉS le 2026-10-08 (`P10.20-b`, rang trois : `rollup_risk`) : relevé de l'arbre ce jour-là, après le correctif —
 # 62 sites sur 24 fichiers (`rollup_risk` perd ses trois sondes, `rba.rs` sort du relevé). Même règle : 62 -> 42
 # (69 % = 42,78), 24 -> 15 (65 % = 15,6).
+# RE-DÉRIVÉS le 2026-10-08 (`P10.20-b`, rang quatre : les trois lectures MFA de `idp.rs`) : relevé de l'arbre ce
+# jour-là, après le correctif — 59 sites sur 24 fichiers (`mfa_verify`, `mfa_disable`, `login_mfa_post` perdent chacun
+# leur site ; `idp.rs` reste dans le relevé). Même règle : 59 -> 40 (69 % = 40,71), 24 -> 15 (65 % = 15,6).
 # Le relevé dont les planchers sont dérivés, cité par le message de refus (une seule source, jamais recopiée).
-RELEVE_SITES = 62
+RELEVE_SITES = 59
 RELEVE_FICHIERS = 24
-PLANCHER_SITES = 42
+PLANCHER_SITES = 40
 PLANCHER_FICHIERS = 15
 
 # ================================================================================================
@@ -458,14 +461,15 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     ("daemon/src/handlers/governance.rs", "legal_hold_create"): ("is_ok",),
     ("daemon/src/handlers/idp.rs", "idp_provider_delete"): ("ok",),
     ("daemon/src/handlers/idp.rs", "idp_provider_update"): ("is_err",),
-    # Les quatre lectures d'identité : provider LDAP/OIDC non lu -> « aucun provider activé » (la
-    # connexion échoue), secret MFA non lu -> « aucune MFA enrôlée » / « aucune MFA active pour ce
-    # compte » (le second facteur refuse). Tous REFUSENT ; aucun n'avoue pourquoi.
+    # Les lectures d'identité : provider LDAP/OIDC non lu -> « aucun provider activé » (la connexion
+    # échoue). Elles REFUSENT ; aucune n'avoue pourquoi.
+    # TROIS ENTRÉES RETIRÉES PAR `P10.20-b` (2026-10-08, rang quatre, volet MFA de `P10.30-d`) :
+    # `login_mfa_post`, `mfa_disable`, `mfa_verify` — le secret MFA non lu rendait « aucune MFA active
+    # pour ce compte » (401), « aucune MFA enrôlée » (404), « aucun enrôlement en cours » (400). Elles
+    # lisent désormais par `.optional()` et rendent un 503 nommé sur la lecture non faite (témoins :
+    # `daemon/src/tests/mfa_lectures_de_rang_quatre_avouees.rs`).
     ("daemon/src/handlers/idp.rs", "ldap_login_post"): ("ok.map",),
     ("daemon/src/handlers/idp.rs", "load_provider"): ("ok.map",),
-    ("daemon/src/handlers/idp.rs", "login_mfa_post"): ("ok",),
-    ("daemon/src/handlers/idp.rs", "mfa_disable"): ("ok",),
-    ("daemon/src/handlers/idp.rs", "mfa_verify"): ("ok",),
     ("daemon/src/handlers/incidents.rs", "incident_apply_tier"): ("is_err",),
     # RECLASSÉ PAR LA CLÉ ELLE-MÊME : le classement du matin le rangeait au rang deux (« le runbook
     # DISPARAÎT de la vue d'authoring ») ; la relecture de son unique consommateur a montré un 404

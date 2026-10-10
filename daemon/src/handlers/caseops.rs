@@ -58,7 +58,11 @@ pub(crate) fn sla_policy_for(conn: &Connection, priority: i64) -> Option<(i64, i
 /// acquitté : first_response_ts NULL), `resolve_due`, à partir du `ts` IMMUABLE + cibles + cumul de pause.
 /// INERTE si aucune politique pour la priorité courante (mode 0 : dues restent NULL -> SLA legacy). Ne touche
 /// JAMAIS un case terminal (resolved/closed). Idempotent. Appelée à la création et sur changement de priorité.
-pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) {
+/// `P10.20-w` (reste) — L'ÉCRITURE EST COMPTÉE ET RENDUE (`IssueDuChronoSla`) : les deux `UPDATE` étaient avalés et
+/// la fonction rendait `()`, donc la création, la mise à jour et le recalcul de l'upsert ne savaient pas si l'échéance
+/// avait été posée — le recalcul comptait « recalculé » un dossier dont la base avait refusé l'échéance. Les LECTURES
+/// (`.ok()`, ici et dans `sla_policy_for`) gardent leur forme : rien à faire, comme avant (garde single-row, rang trois).
+pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) -> IssueDuChronoSla {
     let row: Option<(i64, i64, String, i64, Option<i64>)> = conn
         .query_row(
             "SELECT ts, priority, status, COALESCE(sla_pause_accum,0), first_response_ts FROM incident WHERE id=?1",
@@ -66,25 +70,55 @@ pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .ok();
-    let Some((ts, priority, status, pause_accum, first_resp)) = row else { return };
+    let Some((ts, priority, status, pause_accum, first_resp)) = row else { return IssueDuChronoSla::RienAFaire };
     if matches!(status.as_str(), "resolved" | "closed" | "contained") {
-        return; // terminal : le chrono est arrêté, on ne recompute pas.
+        return IssueDuChronoSla::RienAFaire; // terminal : le chrono est arrêté, on ne recompute pas.
     }
-    let Some((pid, ack_s, res_s)) = sla_policy_for(conn, priority) else { return }; // pas de politique -> legacy
+    let Some((pid, ack_s, res_s)) = sla_policy_for(conn, priority) else { return IssueDuChronoSla::RienAFaire }; // pas de politique -> legacy
     let resolve_due = ts + res_s + pause_accum;
     // ack_due n'est (re)posé que tant que le case n'est PAS acquitté (first_response_ts NULL) : après ack, le
     // chrono d'acquittement est arrêté et son échéance figée.
     if first_resp.is_none() {
         let ack_due = ts + ack_s + pause_accum;
-        let _ = conn.execute(
-            "UPDATE incident SET sla_policy_id=?1, ack_due=?2, resolve_due=?3 WHERE id=?4",
-            params![pid, ack_due, resolve_due, id],
-        );
+        ecriture_du_chrono(
+            "sla_policy_id/ack_due/resolve_due",
+            conn.execute(
+                "UPDATE incident SET sla_policy_id=?1, ack_due=?2, resolve_due=?3 WHERE id=?4",
+                params![pid, ack_due, resolve_due, id],
+            ),
+        )
     } else {
-        let _ = conn.execute(
-            "UPDATE incident SET sla_policy_id=?1, resolve_due=?2 WHERE id=?3",
-            params![pid, resolve_due, id],
-        );
+        ecriture_du_chrono(
+            "sla_policy_id/resolve_due",
+            conn.execute(
+                "UPDATE incident SET sla_policy_id=?1, resolve_due=?2 WHERE id=?3",
+                params![pid, resolve_due, id],
+            ),
+        )
+    }
+}
+
+/// `P10.20-w` (reste) — CE QU'A FAIT UNE ÉCRITURE DU CHRONO SLA MULTI-NIVEAU (`sla_apply_policy`,
+/// `sla_on_status_change`). Le `()` d'avant ne distinguait pas « écrit » de « refusé par la base » : un appelant
+/// qui disait « échéance posée » ou comptait « recalculé » le disait sur une écriture peut-être non faite.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum IssueDuChronoSla {
+    /// L'`UPDATE` a posé exactement une ligne.
+    Ecrit,
+    /// Rien à écrire : pas de politique, dossier terminal ou non gouverné, état déjà visé (ou ligne non lue —
+    /// lecture `.ok()` conservée, hors de cette clé).
+    RienAFaire,
+    /// La base n'a PAS pris l'écriture (erreur, ou autre chose qu'une ligne) : `colonnes: cause`.
+    Refuse(String),
+}
+
+/// Compte une écriture du chrono : une ligne, ou le refus nommé par ses colonnes.
+fn ecriture_du_chrono(colonnes: &str, res: rusqlite::Result<usize>) -> IssueDuChronoSla {
+    match res {
+        Ok(1) => IssueDuChronoSla::Ecrit,
+        Ok(n) => IssueDuChronoSla::Refuse(format!("{colonnes}: {n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => IssueDuChronoSla::Refuse(format!("{colonnes}: {e}")),
     }
 }
 
@@ -94,7 +128,8 @@ pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) {
 ///   - sortie de 'waiting' vers un statut ACTIF : cumule (t - paused_since) dans `sla_pause_accum` et DÉCALE
 ///     ack_due/resolve_due d'autant (le temps « en attente » ne consomme pas le SLA), efface paused_since.
 /// Le breach reste calculé depuis (ts immuable + cumul) — un analyste ne peut PAS reculer `ts` pour tricher.
-pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str, t: i64) {
+/// `P10.20-w` (reste) — les deux écritures (pause, reprise) sont COMPTÉES et rendues (`IssueDuChronoSla`).
+pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str, t: i64) -> IssueDuChronoSla {
     let row: Option<(Option<i64>, Option<i64>)> = conn
         .query_row(
             "SELECT sla_policy_id, sla_paused_since FROM incident WHERE id=?1",
@@ -102,26 +137,32 @@ pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str,
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok();
-    let Some((policy_id, paused_since)) = row else { return };
+    let Some((policy_id, paused_since)) = row else { return IssueDuChronoSla::RienAFaire };
     if policy_id.is_none() {
-        return; // pas de politique multi-niveau -> aucune comptabilité de pause (legacy inchangé)
+        return IssueDuChronoSla::RienAFaire; // pas de politique multi-niveau -> aucune comptabilité de pause (legacy inchangé)
     }
     match (paused_since, new_status == "waiting") {
         (None, true) => {
             // le chrono passe EN PAUSE.
-            let _ = conn.execute("UPDATE incident SET sla_paused_since=?1 WHERE id=?2", params![t, id]);
+            ecriture_du_chrono(
+                "sla_paused_since",
+                conn.execute("UPDATE incident SET sla_paused_since=?1 WHERE id=?2", params![t, id]),
+            )
         }
         (Some(since), false) => {
             // REPRISE : cumule la durée de pause + décale les échéances d'autant.
             let delta = (t - since).max(0);
-            let _ = conn.execute(
-                "UPDATE incident SET sla_pause_accum = COALESCE(sla_pause_accum,0)+?1, sla_paused_since=NULL, \
-                 ack_due = CASE WHEN ack_due IS NULL THEN NULL ELSE ack_due+?1 END, \
-                 resolve_due = CASE WHEN resolve_due IS NULL THEN NULL ELSE resolve_due+?1 END WHERE id=?2",
-                params![delta, id],
-            );
+            ecriture_du_chrono(
+                "sla_pause_accum/ack_due/resolve_due",
+                conn.execute(
+                    "UPDATE incident SET sla_pause_accum = COALESCE(sla_pause_accum,0)+?1, sla_paused_since=NULL, \
+                     ack_due = CASE WHEN ack_due IS NULL THEN NULL ELSE ack_due+?1 END, \
+                     resolve_due = CASE WHEN resolve_due IS NULL THEN NULL ELSE resolve_due+?1 END WHERE id=?2",
+                    params![delta, id],
+                ),
+            )
         }
-        _ => {} // déjà dans l'état visé -> no-op
+        _ => IssueDuChronoSla::RienAFaire, // déjà dans l'état visé -> no-op
     }
 }
 
@@ -1144,17 +1185,35 @@ pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64,
         }
     };
     let depasse = ids.len() as i64 > plafond;
+    // `P10.20-w` (reste) — `recalcules` = échéances ÉCRITES. Il comptait chaque appel, échéance refusée par la base
+    // comprise ; un refus est désormais nommé dans `manque` (dossier par dossier, borné), et n'est jamais compté.
     let mut recalcules = 0i64;
+    let mut refuses: Vec<String> = Vec::new();
+    let mut nb_refuses = 0usize;
     for cid in ids.into_iter().take(plafond.max(0) as usize) {
-        sla_apply_policy(conn, cid);
-        recalcules += 1;
+        match sla_apply_policy(conn, cid) {
+            IssueDuChronoSla::Ecrit => recalcules += 1,
+            IssueDuChronoSla::RienAFaire => {}
+            IssueDuChronoSla::Refuse(cause) => {
+                nb_refuses += 1;
+                if refuses.len() < 5 {
+                    refuses.push(format!("#{cid} ({cause})"));
+                }
+            }
+        }
     }
-    RecalculDesEcheances {
-        recalcules,
-        manque: depasse.then(|| {
-            format!("plafond de {plafond} case(s) atteint — les cases de priorité {priority} au-delà gardent leur ANCIENNE échéance")
-        }),
+    let mut manques: Vec<String> = Vec::new();
+    if nb_refuses > 0 {
+        manques.push(format!(
+            "{nb_refuses} échéance(s) REFUSÉE(S) par la base — ces cases gardent leur ANCIENNE échéance : {}{}",
+            refuses.join(", "),
+            if nb_refuses > refuses.len() { ", …" } else { "" }
+        ));
     }
+    if depasse {
+        manques.push(format!("plafond de {plafond} case(s) atteint — les cases de priorité {priority} au-delà gardent leur ANCIENNE échéance"));
+    }
+    RecalculDesEcheances { recalcules, manque: (!manques.is_empty()).then(|| manques.join(" ; ")) }
 }
 
 /// LA RÉPONSE DE L'UPSERT, ET SON SILENCE. Le chemin NOMINAL — politique écrite, toutes les échéances

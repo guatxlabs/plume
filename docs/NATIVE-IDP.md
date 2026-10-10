@@ -116,6 +116,115 @@ sont **jamais** lus.
   {ticket, code}` valide le TOTP (fenêtre de dérive ±1 pas, temps constant) **ou** un code de secours à
   **usage unique**, puis pose la session. `user_mfa` vide → flux de login **byte-identique**.
 
+Les sous-sections suivantes décrivent les refus et les freins de ce flux. Les contrôles y sont nommés, entre
+accents graves, par la constante ou la fonction qui les porte ; les causes sont servies telles quelles dans le
+champ `error` de la réponse. Le témoin `documentation_du_second_facteur` vérifie trois choses, et seulement
+celles-là : chaque contrôle qu'il exige a sa phrase, qui cite le symbole défini qui le porte ; tout nom composé
+(qui contient un souligné) cité ici figure dans une ligne de code de `daemon/src` hors tests, une ligne de
+commentaire ne comptant pas ; le 409 de réactivation, la remise à zéro et l'arbitrage du frein ont leur phrase
+dans leur sous-section, et le 409 est servi par `mfa_verify` avant tout essai compté. Il ne lit pas le sens des
+phrases : un statut faux à côté d'un symbole juste passe, la relecture le tient.
+
+### 4.1 Enrôlement : le mot de passe du compte est exigé
+
+- `POST /api/mfa/enroll {password}` exige le mot de passe du compte, jugé **avant** toute graine par
+  `prouver_le_premier_facteur` (`session.rs`), avec la **même** résolution que `POST /api/login` et au **même**
+  verrou (compte, adresse) : la route n'offre aucun essai de plus que la connexion. Une session seule ne suffit
+  pas — elle permettrait à qui l'a volée d'enfermer le titulaire derrière une graine qu'il ne détient pas.
+  - champ absent ou vide → **403** `CAUSE_MOT_DE_PASSE_EXIGE_POUR_ENROLER` (rien examiné, rien compté) ;
+  - mot de passe faux → **403** `CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT` (échec compté par
+    `auth_record_failure`, ligne au registre) ;
+  - verrou (compte, adresse) posé → **429** `CAUSE_MOT_DE_PASSE_VERROUILLE_A_L_ENROLEMENT` + `Retry-After`,
+    le mot de passe n'est pas examiné ;
+  - compte non lu → **503** `CAUSE_COMPTE_NON_LU_A_L_ENROLEMENT`.
+- **Comptes sans mot de passe local** — compte fédéré OIDC, SAML ou LDAP (hachage `IDP_HASH_SENTINEL`), ou
+  identité SSO par en-têtes — → **403** `CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL`, décidé par
+  `le_compte_a_un_mot_de_passe_local`. Le second facteur de plume n'est demandé qu'à la connexion par mot de
+  passe local, que ces comptes n'empruntent pas : leur second facteur est celui de leur fournisseur
+  d'identité. Leur connexion n'est pas modifiée ; seul l'enrôlement est refusé.
+- Une MFA **déjà active** n'est jamais écrasée : **409** « MFA déjà active (désactivez-la d'abord) ». L'écriture
+  de l'enrôlement rejuge la condition (`WHERE user_mfa.enabled=0`) : une activation survenue pendant la preuve
+  du mot de passe rend aussi 409. Écriture refusée → **503** `CAUSE_ENROLEMENT_NON_ECRIT`, aucune graine
+  posée ni montrée.
+
+### 4.2 Activation : le 409 de réactivation
+
+- `POST /api/mfa/verify` sur une MFA **déjà active** → **409** « MFA déjà active (désactivez-la d'abord) »,
+  **avant** tout examen du code et avant tout essai compté (`mfa_verify`) : la réponse est la même que le code
+  soit juste ou faux, aucun code de secours neuf n'est servi. Sans ce refus, la route serait un oracle du TOTP
+  pour une session volée.
+- L'activation est un compare-et-pose sur l'enrôlement lu (`enabled=0 AND secret=<graine lue>`) : une autre
+  requête l'a activé, remplacé ou supprimé entre-temps → **409** `CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION`,
+  rien n'est activé ; écriture refusée → **503** `CAUSE_MFA_NON_ACTIVEE`, aucun code de secours servi.
+- Un code dont le pas est déjà consommé → **401** (anti-rejeu).
+
+### 4.3 Frein du second facteur, par compte
+
+- **Clé** : le compte — jamais l'adresse, jamais le ticket. Les trois routes qui jugent un code
+  (`login_mfa_post`, `mfa_verify`, `mfa_disable` sur une MFA active) le traversent.
+- **L'essai est compté avant d'être examiné** : `reserver_un_essai` (`handlers/frein_du_second_facteur.rs`)
+  écrit l'échec possible, dans sa propre transaction validée, **avant** que le code soit jugé. Compte freiné →
+  **429** `CAUSE_SECOND_FACTEUR_FREINE` + `Retry-After`, le code n'est pas examiné (un code juste est refusé
+  comme un faux). Écriture du frein refusée → **503** `CAUSE_ESSAI_DU_SECOND_FACTEUR_NON_COMPTE`, le code
+  n'est ni accepté ni refusé.
+- **Seuil et délai** : les réglages du verrou de connexion, `lock_threshold`, `lock_base_s`, `lock_max_s`,
+  posés par `PLUME_AUTH_LOCK_THRESHOLD` (défaut 10), `PLUME_AUTH_LOCK_BASE_S` (délai de base, défaut 30 s) et
+  `PLUME_AUTH_LOCK_MAX_S` (plafond, défaut 900 s) ; les deux délais valent au moins 1 s. Au seuil, le délai vaut `lock_base_s` × 2^(échecs au-delà du seuil), plafonné à `lock_max_s`. Seuil
+  0 : frein coupé, rien n'est lu ni écrit.
+- **Oubli** : un jour sans échec efface les échecs consécutifs (`MEMOIRE_DES_ECHECS_S`).
+- **Remise à zéro** (`remettre_a_zero`) : un code juste **accepté** remet le compte à zéro ; une connexion par
+  mot de passe, jamais. Une exception, qui n'examine aucun code : `mfa_disable` sur un enrôlement **en attente**
+  (jamais activé) supprime la graine et remet aussi le compte à zéro — les échecs comptés par `mfa_verify` contre
+  cette graine sont effacés avec elle. Ce n'est pas une porte : la graine visée n'existe plus, son titulaire la
+  connaissait (l'enrôlement la montre), et un nouvel enrôlement exige le mot de passe.
+- **Refus qui ne juge pas le code** (pas non consommé, enrôlement changé, écriture refusée) : l'essai réservé
+  est rendu (`rendre_l_essai`). Un retour refusé laisse un échec de trop — le sens qui freine.
+- **Durable** : l'état vit dans la table `setting`, portée `frein.second_facteur`
+  (`PORTEE_DU_FREIN_DU_SECOND_FACTEUR`), clé = le nom du compte, aucune migration de schéma. Un redémarrage ou
+  une autre réplique ne rouvre pas la fenêtre. La ligne est retirée dans la transaction qui supprime le compte
+  (`oublier_dans_la_transaction`). Aucune route de réglages ne sert une portée autre que `global` ; le SQL brut,
+réservé aux administrateurs, peut lire la ligne (son autorisateur refuse des colonnes de secrets, pas la table
+`setting`) : elle ne porte que des compteurs et des instants (`consecutifs`, `freine_jusqu_a`, `dernier`), aucun
+code ni graine.
+- **Vu du SIEM** (`tracer_l_echec`, source `plume-auth`) : à l'activation et à la désactivation, un code faux
+  émet `failure` de sévérité 3 (la connexion émet déjà le sien par `auth_record_failure`) ; sur les trois
+  routes, l'échec qui pose le frein émet `lockout` de sévérité 4. Les champs portent `facteur: "second"` et
+  la route, jamais le code présenté, la graine ni le ticket.
+- **Arbitrage** : le frein n'est atteignable qu'avec un ticket signé (donc le mot de passe) ou une session du
+  compte ; des tickets forgés ou des mots de passe faux ne freinent personne. Celui qui tient le mot de passe
+  peut geler l'étape du code au titulaire, au plus `lock_max_s` à la fois : prix assumé, l'alternative étant
+  de le laisser deviner le second facteur ; la parade est celle d'une compromission du mot de passe (le
+  changer). Le premier facteur n'est pas freiné par ce compteur : le titulaire obtient toujours son ticket. Un
+  frein par ticket est écarté : le ticket se réémet à volonté avec le mot de passe.
+
+### 4.4 Consommation du facteur
+
+- Un pas TOTP n'est accepté que **consommé** : `consommer_le_pas_totp` est un compare-et-pose en base
+  (`last_step < pas`). Un pas déjà consommé — rejeu séquentiel ou concurrent — → **401** « code MFA invalide »,
+  échec compté. La base n'a pas pris l'écriture → **503** `CAUSE_PAS_TOTP_NON_CONSOMME` : aucune session, le
+  code n'est pas brûlé, l'essai est rendu.
+- Même règle pour un code de secours, retiré de la liste avant toute session : retrait refusé → **503**
+  `CAUSE_CODE_DE_SECOURS_NON_CONSOMME`, le code reste utilisable.
+- La désactivation juge le pas par la **même** `consommer_le_pas_totp`, dans la transaction qui supprime la
+  ligne : un code déjà utilisé à la connexion ne désactive pas la MFA (401).
+
+### 4.5 Ticket MFA et révocation
+
+- Le ticket (`mfa_challenge_response`, signé par `mfa_ticket_sign`) sert **cinq minutes**. Il est signé avec
+  l'époque de session globale **et** l'époque du compte (`epoque_du_compte`, `session.rs`), dans un domaine
+  (`mfa-ticket|`) distinct de celui des cookies de session. Époque du compte non lue → **503**
+  `CAUSE_EPOQUE_DU_COMPTE_NON_LUE`, aucun ticket émis.
+- `login_mfa_post` refuse en **401** `CAUSE_TICKET_MFA_INVALIDE_EXPIRE_OU_REVOQUE`, **avant** tout examen du
+  code et sans rien compter, un ticket invalide, expiré, ou **révoqué** : l'époque globale a avancé
+  (déconnexion de portée `globale`), ou celle du compte a avancé (`avancer_l_epoque_du_compte` : déconnexion du
+  compte, changement de son mot de passe, réinitialisation par un administrateur), ou n'a pas pu être relue.
+  Toutes ces causes partagent la même phrase, à dessein : la distinguer renseignerait le porteur d'un vieux
+  ticket sur ce qui s'est passé depuis.
+- À époques inchangées, un ticket reste rejouable pendant ses cinq minutes : chaque rejeu doit présenter un code
+  frais, borné par le pas consommé et par le frein du compte.
+- La session posée est frappée à l'époque du compte que le ticket a prouvée (`mint_session_du_compte`) : une
+  révocation survenue depuis la rend caduque dès la requête suivante.
+
 ## 5. SAML 2.0 SP (implémenté — **feature `saml`**, SP-initiated, POST binding)
 
 `kind = 'saml'` est accepté par le CRUD des fournisseurs, et le login SAML est **implémenté derrière la

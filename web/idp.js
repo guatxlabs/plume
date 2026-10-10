@@ -423,6 +423,8 @@ const MOTS_DE_LA_DESACTIVATION_MFA = {
     fr: "Désactivation NON ENREGISTRÉE, et ton code n'est PAS en cause : la double authentification reste ACTIVE — le compte exige toujours un code à la connexion. Le geste peut être rejoué. Le démon en nomme la cause —",
     en: 'Deactivation NOT RECORDED, and your code is NOT at fault: two-factor authentication stays ACTIVE — the account still requires a code at sign-in. The gesture can be replayed. The daemon names the cause —' },
   // `P10.22-y` (démon) — `mfa_disable` lit le statut du second facteur avant de compter l'essai ; une lecture ratée refuse.
+  // `P10.20-b` (rang quatre, démon) — la relecture de `user_mfa` DANS la transaction, ratée, s'ouvre sur le même en-tête
+  // (`CAUSE_MFA_NON_DESACTIVEE_LECTURE_NON_FAITE`) : transaction annulée, essai rendu, code non examiné — même face.
   statut_non_lu_a_la_desactivation: {
     fr: "Désactivation ni faite ni refusée, et ton code n'est PAS en cause : le statut de la double authentification n'a pas pu être lu, le code n'a pas été examiné et rien n'est modifié — réessaie. Le démon en nomme la cause —",
     en: 'Deactivation neither done nor refused, and your code is NOT at fault: the two-factor status could not be read, the code was not examined and nothing is changed — try again. The daemon names the cause —' },
@@ -578,6 +580,11 @@ const MOTS_DE_L_ACTIVATION_MFA = {
   activation_non_ecrite: {
     fr: "Activation NON ENREGISTRÉE, et ton code n'est PAS en cause : le compte reste SANS second facteur et aucun code de secours n'est servi. Le geste peut être rejoué. Le démon en nomme la cause —",
     en: 'Activation NOT RECORDED, and your code is NOT at fault: the account stays WITHOUT a second factor and no recovery code is served. The gesture can be replayed. The daemon names the cause —' },
+  // `P10.20-b` (rang quatre, démon) — `mfa_verify` n'a pas lu la ligne `user_mfa` : cinq cent trois `CAUSE_MFA_NON_LUE`,
+  // AVANT le frein — le code n'est pas examiné, rien compté ni écrit ; l'enrôlement reste valable, le geste se rejoue.
+  statut_non_lu_a_l_activation: {
+    fr: "Activation ni faite ni refusée, et ton code n'est PAS en cause : le statut de la double authentification n'a pas pu être lu, le code n'a pas été examiné, aucun échec n'est compté et rien n'est modifié — l'enrôlement reste valable, réessaie. Le démon en nomme la cause —",
+    en: 'Activation neither done nor refused, and your code is NOT at fault: the two-factor status could not be read, the code was not examined, no failure is counted and nothing is changed — the enrolment stays valid, try again. The daemon names the cause —' },
   activation_refusee: {
     fr: "Activation REFUSÉE : le démon ne l'a pas confirmée. Il a répondu —",
     en: 'Activation REFUSED: the daemon did not confirm it. It answered —' },
@@ -592,6 +599,7 @@ function cleDuRefusDActivation(e) {
   if (statut === 409) return nature === 'enrolement_change' ? 'enrolement_change' : 'deja_active';
   if (statut === 503 && nature === 'mfa_non_activee') return 'activation_non_ecrite';
   if (statut === 503 && nature === 'essai_non_compte') return 'essai_non_compte';   // `P10.22-y` (démon) : face commune
+  if (statut === 503 && nature === 'statut_mfa_non_lu') return 'statut_non_lu_a_l_activation';   // `P10.20-b` (démon)
   if (statut === 429 && nature === 'second_facteur_freine') return 'second_facteur_freine';
   return 'activation_refusee';
 }

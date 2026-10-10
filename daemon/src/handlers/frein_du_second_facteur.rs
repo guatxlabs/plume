@@ -25,7 +25,8 @@
 //! refuse un compte freiné, et ÉCRIT l'échec possible — dans sa propre transaction, validée — AVANT que le code soit
 //! jugé. Une écriture refusée rend un 503 nommé SANS examen : compter après coup aurait laissé, sur une base qui ne
 //! prend plus l'écriture du frein, un oracle 401/200 sans borne. Ensuite : code faux -> l'échec RESTE (et l'appelant
-//! le trace) ; code juste accepté -> `remettre_a_zero` ; refus nommé qui ne juge pas le code (liste illisible, pas
+//! le trace) ; code juste accepté -> `remettre_a_zero` (aussi le retrait d'un enrôlement EN ATTENTE par `mfa_disable`,
+//! qui n'examine aucun code : la graine contre laquelle les échecs ont été comptés disparaît avec eux) ; refus nommé qui ne juge pas le code (liste illisible, pas
 //! non consommé, enrôlement changé, écriture refusée) -> `rendre_l_essai`, qui retire l'échec réservé. Un `rendre`
 //! ou une remise à zéro refusés laissent un échec DE TROP — le sens qui freine, jamais celui qui ouvre — et le disent.
 //!

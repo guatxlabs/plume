@@ -69,6 +69,7 @@ mod ventilation_serie; // LA MÊME MESURE, DANS LE TEMPS : tick lent -> table `m
 mod limite_corps; // LE PLAFOND DE TAILLE D'UN CORPS INGERE : la limite qui MORD comptait des octets et ne le disait pas -> un seul auteur pour ce plafond ET pour son message
 mod limite_cgroup; // LA LIMITE DE GROUPE DE CONTRÔLE QUI TUE, LUE ET JAMAIS SUPPOSÉE : trois verdicts exclusifs (octets / aucune / illisible), module feuille de `sqlite_plafond`
 mod quota_deversement; // LE QUOTA DU DÉVERSEMENT : ce qui est écrit en clair hors de la base chiffrée est BORNÉ (mesuré sur les descripteurs détenus), ou le refus est DIT — module feuille de `sqlite_plafond`
+mod tri_des_connexions; // CE QU'UNE CONNEXION FAIT DE SES TRIS (`S26`) : le verdict `Tri` lu sur le moteur (`compile_options` + réglage local), le désaccord avec le mode et le refus de démarrer — module feuille de `sqlite_plafond`
 mod sqlite_plafond; // LE PLAFOND MÉMOIRE D'UNE LECTURE : sous `temp_store` en mémoire, SQLite n'a AUCUN chemin de code pour déverser un tri -> un seul auteur pour ce budget
 mod wal_empreinte; // P10.16-a : L'EMPREINTE DU JOURNAL D'ÉCRITURE — la CRÊTE n'est pas bornable (elle dépend des lecteurs qui refusent le checkpoint), le RÉSIDU l'est, et c'est lui qu'on porte au budget
 mod query_timing; // LE DÉCOUPAGE DU TEMPS D'UNE REQUÊTE : l'attente d'un permit n'est fabricable QUE par l'acquisition

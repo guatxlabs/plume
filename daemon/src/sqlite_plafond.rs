@@ -150,6 +150,13 @@ pub(crate) use crate::quota_deversement::{
 };
 #[cfg(test)]
 pub(crate) use crate::quota_deversement::{octets_ouverts_sous, poser_la_surveillance_du_quota, LEVIER_QUOTA_DEVERSEMENT};
+// Le verdict de tri (`S26`) vit dans le module feuille `tri_des_connexions` (`P7.18-a`). Ses symboles sont
+// RÉ-EXPORTÉS ici : tous les chemins `crate::sqlite_plafond::…` restent valides.
+pub(crate) use crate::tri_des_connexions::{
+    constat_de_tri, desaccord_pour, lire_tri, refus_de_demarrage_pour, tri_de_la_connexion_qui_sert, tri_dune_connexion_nue, Tri,
+};
+#[cfg(test)]
+pub(crate) use crate::tri_des_connexions::{tri_en_memoire, tri_pour};
 
 /// Budget RAM total concédé à SQLite (Mio). Le défaut REPRODUIT EXACTEMENT le dimensionnement d'avant —
 /// `1088 = 17 × 64` — pour qu'AUCUN écart de comportement ne soit livré avec la dérivation, et donc que
@@ -736,155 +743,6 @@ fn controle_positif(dir: &std::path::Path) -> Result<(), String> {
 //      connexions qui servent » — et sur une sonde nue, sous déversement, la réponse était toujours
 //      fausse.
 
-/// CE QU'UNE CONNEXION FAIT DE SES TRIS. Trois cas EXCLUSIFS, d'où un type et des `match` EXHAUSTIFS :
-/// « je ne sais pas » ne doit jamais pouvoir se déguiser en « tout va bien ».
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Tri {
-    /// Le trieur n'a AUCUN chemin de déversement : rien d'un événement ne peut toucher le disque.
-    EnMemoire { compile: i64, local: i64 },
-    /// Le trieur PEUT déverser : des valeurs d'événement partiraient en clair hors de SQLCipher.
-    SurDisque { compile: i64, local: i64 },
-    /// Le réglage ne se LIT pas. On ne prétend rien — et l'appelant refuse.
-    Illisible(String),
-}
-
-/// MIROIR EXACT de `sqlite3TempInMemory` (`sqlite3.c` 3.39.4, l. 178609-178624) : la TABLE que SQLite
-/// documente lui-même, pas une intuition. PURE, donc exerçable sur toutes les combinaisons — y compris
-/// celles qu'aucune construction ne produit aujourd'hui, qui sont précisément le sujet.
-pub(crate) fn tri_en_memoire(compile: i64, local: i64) -> bool {
-    match compile {
-        1 => local == 2,  // défaut de SQLite : seul un `temp_store=MEMORY` EXPLICITE sauve le silence
-        2 => local != 1,  // ce que porte la construction SQLCipher livrée
-        3 => true,        // « jamais de fichier temporaire », compilé en dur
-        _ => false,       // 0 ou hors bornes : SQLite rend 0 — FICHIER, quel que soit le réglage local
-    }
-}
-
-/// LA DÉRIVATION, séparée de la LECTURE pour être exerçable sans moteur sous la main.
-pub(crate) fn tri_pour(compile: Option<i64>, local: Option<i64>) -> Tri {
-    match (compile, local) {
-        (Some(c), Some(l)) if tri_en_memoire(c, l) => Tri::EnMemoire { compile: c, local: l },
-        (Some(c), Some(l)) => Tri::SurDisque { compile: c, local: l },
-        (None, _) => Tri::Illisible("`PRAGMA compile_options` ne nomme aucun TEMP_STORE".into()),
-        (Some(_), None) => Tri::Illisible("`PRAGMA temp_store` ne se relit pas".into()),
-    }
-}
-
-/// LA VALEUR COMPILÉE, LUE DANS LE MOTEUR. C'est la seule chose qui réponde à « que fait une connexion
-/// qui ne dit rien » : `PRAGMA temp_store` rendrait 0, qui ne distingue pas les deux mondes.
-fn temp_store_compile(conn: &Connection) -> Option<i64> {
-    let mut st = conn.prepare("PRAGMA compile_options").ok()?;
-    let mut lignes = st.query([]).ok()?;
-    while let Ok(Some(r)) = lignes.next() {
-        if let Ok(o) = r.get::<_, String>(0) {
-            if let Some(v) = o.trim().strip_prefix("TEMP_STORE=") {
-                return v.trim().parse().ok();
-            }
-        }
-    }
-    None
-}
-
-/// CE QUE CETTE CONNEXION-CI fera de ses tris, LU sur elle.
-pub(crate) fn lire_tri(conn: &Connection) -> Tri {
-    tri_pour(
-        temp_store_compile(conn),
-        conn.query_row("PRAGMA temp_store", [], |r| r.get::<_, i64>(0)).ok(),
-    )
-}
-
-/// CE QUE FAIT UNE CONNEXION QUI NE DIT RIEN — la mesure dont dépend toute la garantie.
-///
-/// `open_in_memory` est DÉLIBÉRÉ et ne restreint pas la portée : `sqlite3TempInMemory` ne regarde que
-/// la valeur compilée (une constante du PROCESSUS) et le réglage local de la connexion. Le fichier
-/// n'entre pas dans la décision, et sonder un fichier créerait une base pour poser une question de
-/// configuration.
-///
-/// INSTRUMENT VALIDÉ : une sonde dont le réglage local n'est pas 0 n'est PAS nue — elle ne mesure alors
-/// pas le silence, et un instrument qui ne peut pas voir son sujet doit le DIRE, pas rendre vert.
-pub(crate) fn tri_dune_connexion_nue() -> Tri {
-    match Connection::open_in_memory() {
-        Ok(c) => match lire_tri(&c) {
-            Tri::EnMemoire { local, .. } | Tri::SurDisque { local, .. } if local != 0 => {
-                Tri::Illisible(format!("la sonde n'est pas NUE (temp_store local={local})"))
-            }
-            verdict => verdict,
-        },
-        Err(e) => Tri::Illisible(format!("connexion de sonde impossible : {e}")),
-    }
-}
-
-/// CE QUE LA CONNEXION QUI SERT FERA DE SES TRIS — la mesure que la bannière publie (`S38`).
-///
-/// Lue sur la connexion que la porte a ARMÉE, donc celle dont `PRAGMA temp_store` vaut ce que `armer`
-/// a posé : 1 sous déversement, 2 au défaut — et 0 si l'armement n'a PAS eu lieu, auquel cas c'est la
-/// contradiction qui se dit (sous déversement : « demandé mais le tri reste en mémoire »), pas un
-/// « tout va bien ». Une sonde nue (`tri_dune_connexion_nue`) ne peut PAS répondre à cette question :
-/// personne n'y pose `temp_store=FILE`, donc sous déversement elle contredisait le mode à chaque
-/// démarrage, et une garde qui alerte toujours ne prouve rien.
-///
-/// Rendue sous la forme de `S32` parce que la bannière doit pouvoir dire « NON MESURÉ » : un appelant
-/// qui n'a pas encore de connexion armée sous la main passe `Mesure::Illisible` avec sa cause, jamais
-/// la lecture d'une autre connexion.
-pub(crate) fn tri_de_la_connexion_qui_sert(conn: &Connection) -> crate::mesure_environnement::Mesure<Tri> {
-    crate::mesure_environnement::Mesure::Lue(lire_tri(conn))
-}
-
-/// CE QUE LA LECTURE CONTREDIT. PURE, donc exerçable dans les DEUX sens sans toucher à l'environnement.
-/// `None` = la lecture CONFIRME ce que le mode promet ; une garde qui alerterait toujours ne prouverait
-/// rien.
-pub(crate) fn desaccord_pour(tri: &Tri, deversement: bool) -> Option<String> {
-    match (tri, deversement) {
-        (Tri::EnMemoire { .. }, false) | (Tri::SurDisque { .. }, true) => None,
-        (Tri::SurDisque { compile, local }, false) => Some(format!(
-            "LE TRI DÉVERSE ALORS QUE RIEN NE L'A DEMANDÉ (LU : temp_store local={local}, \
-             TEMP_STORE={compile} dans compile_options) : des VALEURS D'ÉVÉNEMENT partent EN CLAIR hors \
-             de la base SQLCipher, qui ne chiffre PAS les fichiers temporaires de SQLite. \
-             PLUME_SQLITE_DEVERSEMENT vaut 0 : cet échange n'a pas été pris."
-        )),
-        (Tri::EnMemoire { compile, local }, true) => Some(format!(
-            "LE DÉVERSEMENT A ÉTÉ DEMANDÉ MAIS LE TRI RESTE EN MÉMOIRE (LU : temp_store local={local}, \
-             TEMP_STORE={compile} dans compile_options) : la borne mémoire attendue du trieur n'existe \
-             pas, un tri trop large ÉCHOUERA au plafond au lieu de déverser."
-        )),
-        (Tri::Illisible(e), _) => Some(format!(
-            "CE QUE LE MOTEUR FAIT DE SES TRIS N'EST PAS LISIBLE ({e}) : impossible de dire si des \
-             valeurs d'événement peuvent partir en clair hors de la base chiffrée."
-        )),
-    }
-}
-
-/// LE CONSTAT, EN CHIFFRES LUS — ce que la bannière publie quand la mesure confirme le mode.
-pub(crate) fn constat_de_tri(tri: &Tri) -> String {
-    match tri {
-        Tri::EnMemoire { compile, local } => format!(
-            "un tri reste en MÉMOIRE (temp_store local={local}, TEMP_STORE={compile} dans compile_options)"
-        ),
-        Tri::SurDisque { compile, local } => format!(
-            "un tri DÉVERSE sur le disque (temp_store local={local}, TEMP_STORE={compile} dans compile_options)"
-        ),
-        Tri::Illisible(e) => format!("réglage NON LISIBLE ({e})"),
-    }
-}
-
-/// LE REFUS DE DÉMARRER. UNE SEULE des deux directions arrête le processus, et la dissymétrie se dit :
-/// un déversement demandé et non obtenu coûte une requête qui échoue, un déversement obtenu sans avoir
-/// été demandé coûte la confidentialité — et une fuite ne se rattrape pas.
-/// PUR (prend le verdict déjà lu) → les deux sens se testent sans toucher à l'environnement.
-pub(crate) fn refus_de_demarrage_pour(tri: &Tri, deversement: bool) -> Option<String> {
-    if deversement {
-        return None;
-    }
-    desaccord_pour(tri, deversement).map(|quoi| {
-        format!(
-            "REFUS DE DÉMARRER — {quoi} Reconstruire la liaison SQLite avec SQLITE_TEMP_STORE=2 (le \
-             moteur trie alors en mémoire même pour une connexion muette), ou poser \
-             PLUME_SQLITE_DEVERSEMENT=1 pour prendre cet échange EXPLICITEMENT — et placer alors \
-             SQLITE_TMPDIR sur un support chiffré."
-        )
-    })
-}
-
 /// LA GARDE DE DÉMARRAGE, appelée UNE FOIS en tête de `main` — avant tout branchement de sous-commande,
 /// pour la même raison que `deversement_init` : un appel par sous-commande serait une ÉNUMÉRATION, et
 /// c'est ce genre de liste qui a déjà lâché dans ce dépôt. La propriété mesurée est celle du PROCESSUS
@@ -934,7 +792,7 @@ fn armer_avec(conn: &Connection, pragmas: &str, deversement: bool) -> Tri {
 }
 
 #[cfg(test)]
-mod plafond_tests {
+pub(crate) mod plafond_tests {
     use super::*;
     use crate::limite_cgroup::{limite_cgroup_depuis, valeur_limite};
     // Le scanner de SOURCES est celui de `db_open` (LA PORTE) : même besoin, même dérivation des
@@ -1037,36 +895,91 @@ mod plafond_tests {
     /// n'attrape pas un site qui n'en pose AUCUN — c'est l'objet du test suivant.
     #[test]
     fn le_budget_memoire_sqlite_na_quun_seul_auteur() {
-        const MOTIFS: [&str; 4] = ["temp_store", "cache_size", "soft_heap_limit", "hard_heap_limit"];
         let racine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut fichiers = Vec::new();
         rs_files(&racine, &mut fichiers);
         assert!(fichiers.len() > 20, "précondition : le scanner a trouvé les sources ({})", fichiers.len());
         let marques = fichiers_de_test(&fichiers);
-        let moi = racine.join("sqlite_plafond.rs");
-        let (mut ici, mut violations) = (0usize, Vec::new());
-        for f in &fichiers {
-            if est_test(f, &marques) {
-                continue;
-            }
-            let src = std::fs::read_to_string(f).unwrap();
-            for (n, l) in texte_de_production(f, &src) {
-                if !MOTIFS.iter().any(|m| l.contains(m)) {
-                    continue;
-                }
-                if *f == moi {
-                    ici += 1;
-                } else {
-                    violations.push(format!("{}:{n}: {}", f.display(), l.trim()));
-                }
-            }
-        }
+        let textes: Vec<(PathBuf, String)> = fichiers
+            .iter()
+            .filter(|f| !est_test(f, &marques))
+            .map(|f| (f.clone(), std::fs::read_to_string(f).unwrap()))
+            .collect();
+        let (ici, violations) = juger_le_budget(&racine, &textes);
         assert!(ici >= 2, "précondition : ce module décide VRAIMENT du budget ({ici} occurrences) — sinon le test passerait en ne prouvant rien");
         assert!(
             violations.is_empty(),
             "le budget mémoire SQLite se décide dans sqlite_plafond.rs et NULLE PART ailleurs. \
              Sites hors module :\n{violations:#?}"
         );
+    }
+
+    /// Les motifs du budget : qui les nomme hors de l'auteur est suspect.
+    pub(crate) const MOTIFS_DU_BUDGET: [&str; 4] = ["temp_store", "cache_size", "soft_heap_limit", "hard_heap_limit"];
+
+    /// LE MODULE FEUILLE QUI RELIT CE QUE L'AUTEUR A POSÉ (`tri_des_connexions`, `P7.18-a`). Nommé
+    /// EXACTEMENT, jamais par un motif : renommé, il sort de l'exception et ses lignes tombent en violation.
+    pub(crate) const FEUILLE_QUI_RELIT: &str = "tri_des_connexions.rs";
+
+    /// Voies d'écriture d'un PRAGMA par l'API ou par une requête : interdites PARTOUT dans la feuille.
+    pub(crate) const VOIES_D_ECRITURE: [&str; 3] = ["pragma_update", ".pragma(", "execute"];
+
+    /// LES ÉCRITURES DE LA FEUILLE, jugées sur le TEXTE ENTIER et non ligne à ligne (un appel replié par
+    /// rustfmt sur plusieurs lignes porte `pragma_update(` sur une ligne et `"temp_store"` sur une
+    /// autre). Rend les numéros de ligne en violation : toute ligne qui nomme l'un des trois autres
+    /// motifs ou une voie d'écriture (`VOIES_D_ECRITURE`), et toute ligne où une occurrence de
+    /// `temp_store` — CHACUNE, pas la première — est suivie (blancs ET fins de ligne sautés) d'un `=`
+    /// ou d'un `(` (`PRAGMA temp_store(1)` écrit aussi). L'exception porte sur la LECTURE, pas sur le
+    /// fichier.
+    pub(crate) fn ecritures_de_la_feuille(lignes: &[(usize, String)]) -> Vec<usize> {
+        let mut en_violation = std::collections::BTreeSet::new();
+        let mut texte = String::new();
+        let mut debut_de_ligne = Vec::new();
+        for (n, l) in lignes {
+            if MOTIFS_DU_BUDGET[1..].iter().chain(VOIES_D_ECRITURE.iter()).any(|m| l.contains(m)) {
+                en_violation.insert(*n);
+            }
+            debut_de_ligne.push((texte.len(), *n));
+            texte.push_str(l);
+            texte.push('\n');
+        }
+        for (i, m) in texte.match_indices("temp_store") {
+            if texte[i + m.len()..].trim_start().starts_with(['=', '(']) {
+                let k = debut_de_ligne.partition_point(|(d, _)| *d <= i) - 1;
+                en_violation.insert(debut_de_ligne[k].1);
+            }
+        }
+        en_violation.into_iter().collect()
+    }
+
+    /// LE JUGEMENT, séparé de la lecture du disque pour être exerçable sur un texte HOSTILE. Rend le
+    /// nombre de lignes de l'AUTEUR (`sqlite_plafond.rs` seul — la feuille ne compte jamais : elle ne
+    /// décide de rien) et les sites en violation. `textes` = fichiers de PRODUCTION et leur source.
+    pub(crate) fn juger_le_budget(racine: &std::path::Path, textes: &[(PathBuf, String)]) -> (usize, Vec<String>) {
+        let auteur = racine.join("sqlite_plafond.rs");
+        let feuille = racine.join(FEUILLE_QUI_RELIT);
+        let (mut ici, mut violations) = (0usize, Vec::new());
+        for (f, src) in textes {
+            let lignes = texte_de_production(f, src);
+            if *f == feuille {
+                for n in ecritures_de_la_feuille(&lignes) {
+                    let l = &lignes.iter().find(|(m, _)| *m == n).expect("ligne rendue par la feuille").1;
+                    violations.push(format!("{}:{n}: {}", f.display(), l.trim()));
+                }
+                continue;
+            }
+            for (n, l) in lignes {
+                if !MOTIFS_DU_BUDGET.iter().any(|m| l.contains(m)) {
+                    continue;
+                }
+                if *f == auteur {
+                    ici += 1;
+                } else {
+                    violations.push(format!("{}:{n}: {}", f.display(), l.trim()));
+                }
+            }
+        }
+        (ici, violations)
     }
 
     /// Le contrôle positif du répertoire temporaire REFUSE ce qui n'est pas inscriptible — sinon il ne

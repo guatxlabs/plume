@@ -17831,9 +17831,9 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const natureDe108 = modNoyau108.natureDuRefusDuSecondFacteur;
   // `P10.22-y` (démon) — `mfa_disable` lit le statut du second facteur AVANT de compter l'essai : le statut non lu y est servi.
   const ATTENDUES108 = {
-    connexion: ["code_juste_non_consomme", "codes_de_secours_illisibles"],
+    connexion: ["code_juste_non_consomme", "codes_de_secours_illisibles", "statut_mfa_non_lu"],   // `P10.20-b` (rang quatre) : `login_mfa_post` sert le statut non lu
     desactivation: ["mfa_non_desactivee", "codes_de_secours_illisibles", "statut_mfa_non_lu"],
-    activation: ["mfa_non_activee"],
+    activation: ["mfa_non_activee", "statut_mfa_non_lu"],   // `P10.20-b` (rang quatre) : `mfa_verify` aussi
   };
   const nonReconnues108 = [];
   for (const [route, r] of Object.entries(POPULATION108)) {
@@ -17855,6 +17855,14 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const cleStatut108 = modIdp108.cleDuRefusDeDesactivation(Object.assign(new Error(statutNonLu108), { statutDuRefus: 503, causeDuDemon: statutNonLu108 }));
     const cleEnrolement108 = enrolementNonEcrit108 ? modIdp108.cleDuRefusDEnrolement(Object.assign(new Error(enrolementNonEcrit108), { statutDuRefus: 503, causeDuDemon: enrolementNonEcrit108 })) : "enrolement_non_ecrit";
     if (cleStatut108 !== "statut_non_lu_a_la_desactivation" || cleEnrolement108 !== "enrolement_non_ecrit") nonReconnues108.push(`statut non lu à la désactivation -> « ${cleStatut108} », enrôlement non écrit -> « ${cleEnrolement108} »`);
+    // `P10.20-b` (rang quatre) — le statut non lu servi à la connexion et à l'activation a SA clé d'écran, jamais le refus
+    // générique ; et la relecture ratée DANS la transaction de la désactivation tombe sous la même clé que le statut non lu.
+    const cleStatutActivation108 = modIdp108.cleDuRefusDActivation(Object.assign(new Error(statutNonLu108), { statutDuRefus: 503, causeDuDemon: statutNonLu108 }));
+    const cleStatutConnexion108 = modConnexion108.cleDuRefusDuSecondFacteur({ status: 503, cause: statutNonLu108 });
+    const relectureDesactivation108 = texteDe108("CAUSE_MFA_NON_DESACTIVEE_LECTURE_NON_FAITE");
+    const cleRelecture108 = relectureDesactivation108 ? modIdp108.cleDuRefusDeDesactivation(Object.assign(new Error(relectureDesactivation108), { statutDuRefus: 503, causeDuDemon: relectureDesactivation108 })) : "statut_non_lu_a_la_desactivation";
+    if (cleStatutActivation108 !== "statut_non_lu_a_l_activation" || cleStatutConnexion108 !== "statut_mfa_non_lu" || cleRelecture108 !== "statut_non_lu_a_la_desactivation")
+      nonReconnues108.push(`statut non lu à l'activation -> « ${cleStatutActivation108} », à la connexion -> « ${cleStatutConnexion108} », relecture ratée de la désactivation -> « ${cleRelecture108} »`);
   }
   exiger(nonReconnues108.length === 0,
     `(108a2) UNE CAUSE QUE LE DÉMON SERT N'EST PAS RECONNUE PAR LA CONSOLE, ou sous une autre nature que celle que son écran attend : ${JSON.stringify(nonReconnues108)}`);
@@ -18197,6 +18205,19 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const v8108 = await verifier108(modIdpEn108, { statut: 503, corps: { error: CAUSE_NON_ACTIVEE108, id: "plume-e9-12" } });
     exiger(!!v8108.aveu && nu108(v8108.aveu.children[0]) === modIdpEn108.motDeLActivationMfa("activation_non_ecrite") && /NOT at fault/.test(nu108(v8108.aveu.children[0])),
       `(108e2) SOUS \`LANG='en'\`, l'activation non enregistrée n'est pas dite en anglais : « ${nu108(enrolement108).slice(0, 200)} »`);
+    // `P10.20-b` (rang quatre) — LE STATUT NON LU À L'ACTIVATION, PAR LE GESTE RÉEL : le cinq cent trois `CAUSE_MFA_NON_LUE`
+    // de `mfa_verify` peint SA face dans la carte (l'enrôlement reste valable, le geste se rejoue), dans les deux
+    // langues. Sans l'entrée de la table, la face retombait sur le point commun, qui ne la connaît pas : le clic JETAIT
+    // et ne peignait rien.
+    const CAUSE_STATUT_NON_LU108 = texteDe108("CAUSE_MFA_NON_LUE");
+    instrument108(CAUSE_STATUT_NON_LU108.length > 60, "`CAUSE_MFA_NON_LUE` n'est plus lisible dans daemon/src/handlers/idp.rs");
+    for (const [mod, langue, sens] of [[modIdp108, "fr", /PAS en cause/], [modIdpEn108, "en", /NOT at fault/]]) {
+      const v = await verifier108(mod, { statut: 503, corps: { error: CAUSE_STATUT_NON_LU108, id: "plume-e9-13" } });
+      exiger(!v.jete && !!v.aveu && v.aveu.getAttribute("data-refus-d-activation") === "statut_non_lu_a_l_activation"
+        && nu108(v.aveu) === phraseActivation108(mod, "statut_non_lu_a_l_activation", CAUSE_STATUT_NON_LU108) && sens.test(nu108(v.aveu.children[0]))
+        && v.aveu.parentNode === v.puits && !!document.querySelector("#mfa-code") && !v.avis.some((t) => /code invalide|MFA activée/.test(t)),
+        `(108e2) [${langue}] LE STATUT NON LU À L'ACTIVATION NE PEINT PAS SA FACE dans la carte (le geste jette : ${v.jete && v.jete.message}) : « ${nu108(enrolement108).slice(0, 300)} » ${JSON.stringify(v.avis)}`);
+    }
     const tableActivation108 = [refus108(401, "c"), refus108(409, "MFA déjà active (désactivez-la d'abord)"), refus108(409, CAUSE_ENROLEMENT108), refus108(503, CAUSE_NON_ACTIVEE108),
       refus108(503, CAUSE_DESACTIVATION108), refus108(429, CAUSE_FREIN108), refus108(400, "aucun enrôlement en cours"), new Error("réseau")].map((e) => modIdp108.cleDuRefusDActivation(e)).join(",");
     exiger(tableActivation108 === "code_refuse,deja_active,enrolement_change,activation_non_ecrite,activation_refusee,second_facteur_freine,activation_refusee,activation_refusee",
@@ -18241,7 +18262,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
         `(108f2) un code vide part au démon, ou le manque n'est pas dit : « ${nu108(erreurConnexion108)} »`);
       // (f3) CINQ CENT TROIS : LE CODE EST JUSTE ET NON CONSOMMÉ, OU NI ACCEPTÉ NI REFUSÉ (LISTE ILLISIBLE) —
       //      CHAQUE CAUSE SERVIE PAR LA ROUTE, LUE DANS LE DÉMON : SA PHRASE N'ACCUSE PAS, ET LE CODE RESTE.
-      const FACE_DU_503108 = { code_juste_non_consomme: "code_non_en_cause", codes_de_secours_illisibles: "codes_de_secours_illisibles" };
+      const FACE_DU_503108 = { code_juste_non_consomme: "code_non_en_cause", codes_de_secours_illisibles: "codes_de_secours_illisibles", statut_mfa_non_lu: "statut_mfa_non_lu" };
+      let statutNonLuJoue108 = false;
       for (const [nom, cause] of textesDuSecondFacteur108) {
         const cle = FACE_DU_503108[modNoyau108.natureDuRefusDuSecondFacteur(cause)] || "(cause inconnue de la console)";
         champDuCode108.value = "123456";
@@ -18255,7 +18277,17 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
           `(108f3) LE CINQ CENT TROIS \`${nom}\` N'EST PAS PEINT PAR SA CAUSE ENTIÈRE, sous une phrase qui n'accuse pas le code : « ${nu108(erreurConnexion108).slice(0, 400)} »`);
         exiger(etapeDuCode108() && champDuCode108.value === "123456" && rechargements108 === rechargementsAvant108,
           `(108f3) après \`${nom}\`, l'écran quitte l'étape du code ou efface un code que le démon dit JUSTE et non brûlé : il faudrait retaper le mot de passe pour un code valable`);
+        // `P10.20-b` (rang quatre) : le statut MFA NON LU se dit par son sens POSITIF — le code n'est ni accepté ni
+        // refusé, aucun échec n'est compté. Une phrase qui accuse le code ou annonce un échec compté doit rougir.
+        if (cle === "statut_mfa_non_lu") {
+          const texteNonLu108 = nu108(erreurConnexion108.children[0]);
+          statutNonLuJoue108 = true;
+          exiger(/ni accepté ni refusé/.test(texteNonLu108) && /aucun échec n'est compté/.test(texteNonLu108) && !/INVALIDE|un échec est compté/.test(texteNonLu108),
+            `(108f3) LE CINQ CENT TROIS \`${nom}\` (STATUT MFA NON LU) NE DIT PAS QUE LE CODE N'EST NI ACCEPTÉ NI REFUSÉ ET QU'AUCUN ÉCHEC N'EST COMPTÉ : « ${texteNonLu108.slice(0, 400)} »`);
+        }
       }
+      exiger(statutNonLuJoue108,
+        "(108f3) AUCUNE CAUSE SERVIE PAR `login_mfa_post` N'EST LUE COMME `statut_mfa_non_lu` : la face du statut non lu à la connexion n'est jamais peinte");
       // Le dernier cinq cent trois joué est relu : il faut celui du code JUSTE pour la comparaison qui suit.
       const causeJuste108 = (textesDuSecondFacteur108.find(([, t]) => modNoyau108.natureDuRefusDuSecondFacteur(t) === "code_juste_non_consomme") || [])[1] || "";
       champDuCode108.value = "123456";
@@ -18318,6 +18350,15 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       await soumettreConnexion108();
       exiger(nu108(erreurConnexion108.children[0]) === modConnexionEn108.motDuSecondFacteur("code_non_en_cause") && /NOT at fault/.test(nu108(erreurConnexion108)) && etapeDuCode108(),
         `(108f9) SOUS \`LANG='en'\`, le refus du second facteur n'est pas dit en anglais : « ${nu108(erreurConnexion108).slice(0, 300)} »`);
+      // (f9b) LA FACE ANGLAISE DU STATUT MFA NON LU (`P10.20-b`, rang quatre) : peinte, et par son sens positif.
+      const causeNonLue108 = (textesDuSecondFacteur108.find(([, t]) => modNoyau108.natureDuRefusDuSecondFacteur(t) === "statut_mfa_non_lu") || [])[1] || "";
+      exiger(causeNonLue108 !== "", "(108f9b) aucune cause de `login_mfa_post` n'est lue comme `statut_mfa_non_lu` : la face anglaise ne peut être peinte");
+      champDuCode108.value = "123456";
+      servis108["POST /api/login/mfa"] = { statut: 503, corps: { error: causeNonLue108 || "x", id: "plume-e9-9b" } };
+      await soumettreConnexion108();
+      const texteNonLuEn108 = nu108(erreurConnexion108.children[0]);
+      exiger(texteNonLuEn108 === modConnexionEn108.motDuSecondFacteur("statut_mfa_non_lu") && /neither accepted nor refused/.test(texteNonLuEn108) && /no failure is counted/.test(texteNonLuEn108) && etapeDuCode108() && champDuCode108.value === "123456",
+        `(108f9b) SOUS \`LANG='en'\`, LE STATUT MFA NON LU NE DIT PAS QUE LE CODE N'EST « neither accepted nor refused » ET QUE « no failure is counted » : « ${texteNonLuEn108.slice(0, 300)} »`);
       const tableConnexion108 = [{ status: 401, cause: "c" }, { status: 401 }, { status: 503, cause: causeJuste108 }, { status: 503, cause: CAUSE_ILLISIBLES108 }, { status: 503, cause: "c" }, { status: 503, msg: "<html>" },
         { status: 429, cause: CAUSE_FREIN108 }, { status: 429, cause: "trop d'échecs — réessayez plus tard" }, { status: 400, cause: "c" }, { status: 0, msg: "réseau" }]
         .map((r) => modConnexion108.cleDuRefusDuSecondFacteur(r)).join(",");

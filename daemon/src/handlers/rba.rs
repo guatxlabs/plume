@@ -245,6 +245,17 @@ fn register_attack_tactic(conn: &Connection) {
 // ACCUMULATION + DÉCLENCHEMENT — rollup_risk (piggyback rollup_events / retention_run).
 // ============================================================================================
 
+/// `P10.31-s` — LA PHRASE JUSTE D'UNE ÉCRITURE REFUSÉE PAR LA RECONSTRUCTION DE `risk_rollup`. `tick_aveugle` dit « liste
+/// des éléments dus illisible » : vrai pour une LECTURE ratée, faux pour un `SAVEPOINT`, un `DELETE`, un `INSERT` ou un
+/// `RELEASE` refusés. La phrase est construite ICI ; l'étiquette `cause` reste `cause_sql(e)`, donc dans l'ensemble
+/// fermé `mesure_environnement::CAUSES` (aucune étiquette Prometheus neuve).
+fn tick_ecriture_du_rollup_refusee(sujet: &str, e: &rusqlite::Error) -> crate::bilan_de_tick::BilanDeTick {
+    crate::mesure_environnement::Mesure::Illisible {
+        cause: crate::bilan_de_tick::cause_sql(e),
+        detail: format!("{sujet} : écriture refusée, aucune alerte de risque évaluée ce tick ({e})"),
+    }
+}
+
 /// MATÉRIALISE `risk_rollup` (agrégat par entité sur la fenêtre) puis évalue les incidents de risque.
 /// RECONSTRUCTION à blanc depuis `risk_event` (petite table) : gère le DECAY (fenêtre glissante) sans purge.
 /// FAST PATH mode 0 : ni risk_event, ni risk_rollup, ni alerte risk ouverte -> retour immédiat (1 point-read).
@@ -302,7 +313,7 @@ pub(crate) fn rollup_risk(conn: &Connection) -> crate::bilan_de_tick::BilanDeTic
     // `risk_incidents_eval` n'est PAS joué : aucune alerte ouverte n'est résolue sur un rollup qu'on n'a pas su écrire.
     const PT: &str = "rollup_risk_reconstruction";
     if let Err(e) = conn.execute_batch(&format!("SAVEPOINT {PT}")) {
-        return crate::bilan_de_tick::tick_aveugle("incidents de risque (reconstruction du rollup non ouverte)", &e);
+        return tick_ecriture_du_rollup_refusee("incidents de risque (reconstruction du rollup non ouverte)", &e);
     }
     let reconstruire = || -> rusqlite::Result<()> {
         conn.execute("DELETE FROM risk_rollup", [])?;
@@ -327,7 +338,10 @@ pub(crate) fn rollup_risk(conn: &Connection) -> crate::bilan_de_tick::BilanDeTic
     if let Err(e) = ecrit {
         // Annule les SEULES écritures de ce savepoint et le ferme ; un refus ici n'est pas une information de plus.
         let _ = conn.execute_batch(&format!("ROLLBACK TO {PT}; RELEASE {PT}"));
-        return crate::bilan_de_tick::tick_aveugle("incidents de risque (reconstruction du rollup refusée, rollup d'avant conservé)", &e);
+        return tick_ecriture_du_rollup_refusee(
+            "incidents de risque (reconstruction du rollup refusée, rollup d'avant conservé)",
+            &e,
+        );
     }
     risk_incidents_eval(conn, &conf, n)
 }
@@ -348,6 +362,16 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
     let tactics_thr = risk_tactics_threshold(conf);
     let vel_thr = risk_velocity_threshold(conf);
     let mut abandonnees = 0u32;
+    // `P10.31-s` — UNE ENTITÉ NON JUGÉE N'EST PAS UNE ENTITÉ RETOMBÉE. La forme d'avant décodait la ligne d'un bloc :
+    // une colonne indécodable (un `risk_score` réel somme un `score` réel) comptait l'entité abandonnée, mais son
+    // entité n'entrait pas dans `crossing`, et la boucle de résolution RÉSOLVAIT son alerte ouverte (`dedup=NULL`)
+    // sous un bilan `Lue(1)`. La CLÉ (`entity_type`, `entity`) est donc lue À PART : une ligne dont seule la mesure
+    // est indécodable range sa clé dans `non_jugees`, exclue de la résolution ; une ligne dont même la clé est
+    // illisible ne dit pas QUELLE alerte elle protège, et la résolution entière est SUSPENDUE ce tick (aveu nommé).
+    let mut non_jugees: HashSet<String> = HashSet::new();
+    // (motif, erreur) : la clé d'une ligne indécodable, OU le balayage lui-même interrompu (erreur de pas) — deux causes,
+    // deux phrases, une même conséquence (on ne sait pas quelles entités n'ont pas été lues).
+    let mut cle_illisible: Option<(&'static str, rusqlite::Error)> = None;
     let rows: Vec<(String, String, i64, i64, i64, i64, String, i64)> = {
         let mut st = match conn.prepare(
             "SELECT entity_type,entity,score,contrib,distinct_tactics,score_hot,tactics,max_severity FROM risk_rollup",
@@ -355,11 +379,13 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
             Ok(s) => s,
             Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque", &e),
         };
+        type Mesures = (i64, i64, i64, i64, String, i64);
         let it = match st.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, String>(6)?, r.get::<_, i64>(7)?,
-            ))
+            let cle = (|| -> rusqlite::Result<(String, String)> { Ok((r.get(0)?, r.get(1)?)) })();
+            let mesures = (|| -> rusqlite::Result<Mesures> {
+                Ok((r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+            })();
+            Ok((cle, mesures))
         }) {
             Ok(x) => x,
             Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque", &e),
@@ -367,11 +393,44 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
         let mut lues = Vec::new();
         for r in it {
             match r {
-                Ok(x) => lues.push(x),
-                Err(_) => abandonnees += 1, // une entité dont le risque n'est PAS jugé ce tick, comptée
+                Ok((Ok((etype, entity)), Ok((score, contrib, dt, score_hot, tactics, max_sev)))) => {
+                    lues.push((etype, entity, score, contrib, dt, score_hot, tactics, max_sev))
+                }
+                Ok((Ok((etype, entity)), Err(_))) => {
+                    abandonnees += 1; // une entité dont le risque n'est PAS jugé ce tick, comptée…
+                    non_jugees.insert(format!("risk-{etype}-{entity}")); // …et dont l'alerte ouverte est GARDÉE
+                }
+                Ok((Err(e), _)) => {
+                    abandonnees += 1;
+                    if cle_illisible.is_none() {
+                        cle_illisible = Some(("clé d'entité indécodable dans risk_rollup", e));
+                    }
+                }
+                Err(e) => {
+                    // ERREUR DE PAS : le balayage s'arrête ici, les lignes suivantes ne sont JAMAIS lues ; leurs entités
+                    // ne sont ni dans `crossing` ni dans `non_jugees`, la résolution doit donc être suspendue.
+                    abandonnees += 1;
+                    if cle_illisible.is_none() {
+                        cle_illisible = Some(("lecture de risk_rollup interrompue en cours de balayage", e));
+                    }
+                }
             }
         }
         lues
+    };
+    // `P10.31-s` — LES ÉCRITURES DE L'ÉVALUATION SONT JUGÉES. Avant, les trois (`INSERT OR IGNORE`, rafraîchissement,
+    // résolution) étaient avalées : une alerte non levée, non rafraîchie ou non résolue passait sous un bilan vert. Un
+    // `INSERT OR IGNORE` à zéro ligne est une alerte DÉJÀ ouverte (dédup), pas un refus ; seul un `Err` en est un. Un
+    // refus n'interrompt pas les autres entités : il est compté, et le bilan l'avoue avec sa propre phrase.
+    let mut refusees = 0u32;
+    let mut premier_refus: Option<(&'static str, rusqlite::Error)> = None;
+    let mut juger = |quoi: &'static str, r: rusqlite::Result<usize>| {
+        if let Err(e) = r {
+            refusees += 1;
+            if premier_refus.is_none() {
+                premier_refus = Some((quoi, e));
+            }
+        }
     };
     let mut crossing: HashSet<String> = HashSet::new();
     for (etype, entity, score, contrib, dt, score_hot, tactics, max_sev) in &rows {
@@ -397,45 +456,77 @@ fn risk_incidents_eval(conn: &Connection, conf: &HashMap<String, String>, n: i64
         let first_mitre = tactics.split(',').next().unwrap_or("").to_string();
         let rule_tag = format!("risk.{etype}.{entity}");
         // no-op si une alerte ouverte porte déjà la clé (INSERT OR IGNORE sur dedup UNIQUE) -> pas de renotif.
-        let _ = conn.execute(
+        let leve = conn.execute(
             "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![n, rule_tag, sev, title, detail, dedup, first_mitre, crate::fondement::Fondement::Regle.mot()],
         );
+        juger("levée", leve);
         // rafraîchit l'affichage (ts/score/sévérité montent) SANS toucher `notified` -> pas de renotif.
-        let _ = conn.execute(
+        let rafraichi = conn.execute(
             "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, severity=?3, detail=?4 WHERE dedup=?5 AND status IN ('new','ack')",
             params![n, title, sev, detail, dedup],
         );
+        juger("rafraîchissement", rafraichi);
     }
     // Résolution : toute alerte risk OUVERTE dont l'entité ne franchit plus aucun seuil -> resolved + dedup
     // libéré (ré-arme un futur épisode). Miroir de la branche « retour sous le seuil » de run_due_rules.
-    let open: Vec<String> = {
-        let mut st = match conn.prepare("SELECT dedup FROM alert WHERE dedup LIKE 'risk-%' AND status IN ('new','ack')") {
-            Ok(s) => s,
-            Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque (résolution)", &e),
+    // `P10.31-s` — sauf une entité NON JUGÉE ce tick (ligne indécodable) ; et rien du tout si une clé est illisible.
+    if cle_illisible.is_none() {
+        let open: Vec<String> = {
+            let mut st = match conn.prepare("SELECT dedup FROM alert WHERE dedup LIKE 'risk-%' AND status IN ('new','ack')") {
+                Ok(s) => s,
+                Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque (résolution)", &e),
+            };
+            let it = match st.query_map([], |r| r.get::<_, String>(0)) {
+                Ok(x) => x,
+                Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque (résolution)", &e),
+            };
+            let mut lues = Vec::new();
+            for r in it {
+                match r {
+                    Ok(x) => lues.push(x),
+                    Err(_) => abandonnees += 1, // une alerte ouverte dont la résolution n'a pas été jugée, comptée
+                }
+            }
+            lues
         };
-        let it = match st.query_map([], |r| r.get::<_, String>(0)) {
-            Ok(x) => x,
-            Err(e) => return crate::bilan_de_tick::tick_aveugle("incidents de risque (résolution)", &e),
-        };
-        let mut lues = Vec::new();
-        for r in it {
-            match r {
-                Ok(x) => lues.push(x),
-                Err(_) => abandonnees += 1, // une alerte ouverte dont la résolution n'a pas été jugée, comptée
+        for d in open {
+            if !crossing.contains(&d) && !non_jugees.contains(&d) {
+                let resolu = conn.execute(
+                    "UPDATE alert SET status='resolved', dedup=NULL WHERE dedup=?1 AND status IN ('new','ack')",
+                    params![d],
+                );
+                juger("résolution", resolu);
             }
         }
-        lues
-    };
-    for d in open {
-        if !crossing.contains(&d) {
-            let _ = conn.execute(
-                "UPDATE alert SET status='resolved', dedup=NULL WHERE dedup=?1 AND status IN ('new','ack')",
-                params![d],
-            );
-        }
     }
-    crate::mesure_environnement::Mesure::Lue(abandonnees)
+    // L'AVEU, PAR ORDRE DE GRAVITÉ (témoin : `rnj_refus_et_cle_illisible_le_refus_d_abord`). Une écriture refusée d'abord (une alerte que le moteur a décidée n'est pas en
+    // base), puis la résolution suspendue ; la phrase est construite ICI, pas par `tick_aveugle` dont le texte parle
+    // d'une liste illisible.
+    // Chaque aveu est une VALEUR (cause, phrase) présente seulement si sa perte a eu lieu : aucune branche
+    // ici ne sépare un succès d'un échec, l'absence d'aveu EST l'absence de perte (`refusees == 0`, clé lue).
+    let aveu_refus = premier_refus.as_ref().map(|(quoi, e)| {
+        (
+            crate::bilan_de_tick::cause_sql(e),
+            format!(
+                "incidents de risque : écriture refusée ({refusees} écriture(s) d'alerte de risque refusée(s) ; \
+                 première refusée : {quoi}, {e})"
+            ),
+        )
+    });
+    let aveu_cle = cle_illisible.as_ref().map(|(motif, e)| {
+        (
+            crate::bilan_de_tick::cause_sql(e),
+            format!(
+                "incidents de risque : {motif}, résolution des alertes de risque ouvertes SUSPENDUE ce tick ({e})"
+            ),
+        )
+    });
+    let (causes, aveux): (Vec<&'static str>, Vec<String>) = aveu_refus.into_iter().chain(aveu_cle).unzip();
+    match causes.first() {
+        Some(&cause) => crate::mesure_environnement::Mesure::Illisible { cause, detail: aveux.join(" ; ") },
+        None => crate::mesure_environnement::Mesure::Lue(abandonnees),
+    }
 }
 
 // ============================================================================================

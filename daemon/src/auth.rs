@@ -979,6 +979,20 @@ pub(crate) const CAUSE_JETON_D_AGENT_NON_LU: &str = "JETON D'AGENT NON VÉRIFIÉ
      jetons — ce n'est PAS « jeton inconnu » ni « jeton révoqué », sa validité n'est ni affirmée ni niée. Rien n'est \
      ingéré ni servi ; la même requête peut être rejouée telle quelle.";
 
+/// `P10.20-b` — la table des jetons de LECTURE n'a pas pu être lue (seams Bearer datasource `#52` et client-read `#39`).
+pub(crate) const CAUSE_JETON_DE_LECTURE_NON_LU: &str = "JETON DE LECTURE NON VÉRIFIÉ : la base n'a pas pu lire la table \
+     des jetons — ce n'est PAS « jeton inconnu » ni « jeton révoqué », sa validité n'est ni affirmée ni niée. Rien n'est \
+     servi, ni sous ce jeton ni sous une autre identité ; la même requête peut être rejouée telle quelle.";
+
+/// `P10.20-b` — la porte par laquelle un jeton de LECTURE NON LU a été présenté (journal du démon et témoins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PorteDuJetonDeLecture {
+    /// `Authorization: Bearer <jeton>` sur `datasource_bearer_path` (jeton `kind='datasource'`).
+    Datasource,
+    /// `Authorization: Bearer <jeton>` sur `client_bearer_path` (jeton `kind='client'`).
+    Client,
+}
+
 /// `P10.20-b` — la porte par laquelle un jeton d'agent NON LU a été présenté (elle fixe la forme du corps refusé).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PorteDuJetonDAgent {
@@ -989,12 +1003,14 @@ pub(crate) enum PorteDuJetonDAgent {
 }
 
 /// `P10.20-b` — POURQUOI LA RÉSOLUTION D'IDENTITÉ S'ARRÊTE SANS IDENTITÉ ET SANS REPLI : un nom que l'annuaire ne
-/// prend pas (`P10.25-d`), ou un jeton d'agent dont la lecture n'a pas eu lieu.
+/// prend pas (`P10.25-d`), ou un jeton d'agent ou de lecture dont la lecture n'a pas eu lieu.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RefusDIdentite {
     Annuaire(RefusDeLAnnuaire),
     /// La cause du moteur : au journal du démon seulement, jamais dans le corps.
     JetonDAgentNonLu { porte: PorteDuJetonDAgent, cause: String },
+    /// Jeton datasource ou client-read non lu. La cause du moteur : au journal du démon seulement, jamais dans le corps.
+    JetonDeLectureNonLu { porte: PorteDuJetonDeLecture, cause: String },
 }
 
 impl From<RefusDeLAnnuaire> for RefusDIdentite {
@@ -1020,6 +1036,10 @@ impl RefusDIdentite {
                     )
                         .into_response(),
                 }
+            }
+            Self::JetonDeLectureNonLu { porte, cause } => {
+                eprintln!("[auth] WARN jeton de lecture NON lu (porte {porte:?}), requête refusée sans identité : {cause}");
+                err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_JETON_DE_LECTURE_NON_LU)
             }
         }
     }
@@ -1320,7 +1340,8 @@ pub(crate) fn resolve_identity(st: &AppState, req: &Request) -> IdentiteResolue 
 /// PORTEUR d'un éventuel token agent (Bearer). Zéro changement de logique vs l'inline d'origine.
 /// `P10.25-d` — `Err` : l'annuaire présente, en mode 0, un nom qu'il ne prend pas ; la résolution S'ARRÊTE là (aucune
 /// méthode suivante — jeton, démonstration — ne sert la requête à sa place).
-/// `P10.20-b` — `Err` aussi : un jeton d'agent (Bearer ou HEC) dont la lecture n'a pas eu lieu ; même arrêt.
+/// `P10.20-b` — `Err` aussi : un jeton d'agent (Bearer ou HEC), datasource ou client-read dont la lecture n'a pas eu
+/// lieu ; même arrêt.
 pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<IdentiteResolue, RefusDIdentite> {
     let path = req.uri().path();
     let authz = req.headers().get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
@@ -1464,10 +1485,18 @@ pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<
     // PAS avec le Bearer agent (allowlists de chemins DISJOINTES). Mode 1 : lookup renvoie None -> Basic/SSO.
     if ident.is_none() && datasource_bearer_path(path) {
         if let Some(tok) = authz.strip_prefix("Bearer ") {
-            if let Some(ds) = datasource_token_lookup(st, tok.trim()) {
-                bearer_tenant = Some(ds.tenant.clone());
-                ident = Some((ds.name, ds.role));
-                auth_method = "datasource";
+            // `P10.20-b` — lecture TRI-ÉTAT : une table illisible arrête la résolution (503 nommé), jamais « inconnu » ni
+            // repli sur la démonstration publique.
+            match crate::state::datasource_token_lookup_lu(st, tok.trim()) {
+                crate::state::LectureDuJetonDeLecture::Trouve(ds) => {
+                    bearer_tenant = Some(ds.tenant.clone());
+                    ident = Some((ds.name, ds.role));
+                    auth_method = "datasource";
+                }
+                crate::state::LectureDuJetonDeLecture::NonLu(cause) => {
+                    return Err(RefusDIdentite::JetonDeLectureNonLu { porte: PorteDuJetonDeLecture::Datasource, cause });
+                }
+                crate::state::LectureDuJetonDeLecture::Absent => {}
             }
         }
     }
@@ -1478,10 +1507,17 @@ pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<
     // lookup renvoie None -> repli Basic/SSO.
     if ident.is_none() && client_bearer_path(path) {
         if let Some(tok) = authz.strip_prefix("Bearer ") {
-            if let Some(ci) = client_token_lookup(st, tok.trim()) {
-                bearer_tenant = Some(ci.tenant.clone());
-                ident = Some((ci.name, ci.role));
-                auth_method = "client";
+            // `P10.20-b` — même lecture TRI-ÉTAT que le jeton datasource.
+            match crate::state::client_token_lookup_lu(st, tok.trim()) {
+                crate::state::LectureDuJetonDeLecture::Trouve(ci) => {
+                    bearer_tenant = Some(ci.tenant.clone());
+                    ident = Some((ci.name, ci.role));
+                    auth_method = "client";
+                }
+                crate::state::LectureDuJetonDeLecture::NonLu(cause) => {
+                    return Err(RefusDIdentite::JetonDeLectureNonLu { porte: PorteDuJetonDeLecture::Client, cause });
+                }
+                crate::state::LectureDuJetonDeLecture::Absent => {}
             }
         }
     }

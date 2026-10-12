@@ -840,7 +840,7 @@ env:
   # `P10.24-m`, `P10.28-h`, `P10.29-i`, `P10.20-u` (2026-09-29) : +10 — le fichier
   # `secret_des_gestes_demonstration_freinee_et_pose_de_l_administrateur.rs` (`sdg_` six, `dfb_` un, `pla_` un,
   # `rnc_` deux). Aucun derrière un `cfg(feature)` -> le MÊME +10 sur `EXPECTED_COLD_TESTS` (2213 -> 2223), mesuré.
-  EXPECTED_TESTS: "2328"
+  EXPECTED_TESTS: "2348"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1313,7 +1313,7 @@ jobs:
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
           # `P10.24-m` et voisines (2026-09-29) : +10, les MÊMES que sur `EXPECTED_TESTS` — écart INCHANGÉ.
-          EXPECTED_COLD_TESTS: "2583"
+          EXPECTED_COLD_TESTS: "2603"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -2895,8 +2895,17 @@ jobs:
       # `P10.31-o` : et que l'enveloppe force le texte (`* diff` dans `info/attributes`). `P10.31-r` : elle
       # JOUE aussi le corps de l'enveloppe, extrait des flux, contre un faux binaire qui journalise ses
       # arguments (un seul lancement, options exigées, fusions lues) ; sans corps trouvé, elle refuse de conclure.
+      # `P10.31-t` : elle juge aussi le pas principal (un `|| true` après l'appel ou un binaire posé en préfixe
+      # la laissaient verte) — appel nu en dernière commande, pas JOUÉ avec l'enveloppe réelle (code du binaire
+      # rendu, empreinte vérifiée avant tout lancement), ligne de verdict exigée, aucune variable `GITLEAKS_*`
+      # posée dans les flux. Le pas jugé et joué doit être celui que YAML lit (un pas et son verdict réindentés EN
+      # TEXTE dans le `run: |` de porteurs qui sortent 0 la laissaient verte) : sans PyYAML, elle refuse de conclure.
+      # `yaml` vient du paquet de la distribution (signé par apt), jamais de pip.
       - name: Tout scan gitleaks passe par l'enveloppe unique (gitleaks:allow et .gitleaksignore neutralisés)
-        run: python3 .github/scripts/check_every_gitleaks_scan_takes_the_single_call.py
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null || sudo apt-get install -y python3-yaml
+          python3 .github/scripts/check_every_gitleaks_scan_takes_the_single_call.py
 
       - name: Setup Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)

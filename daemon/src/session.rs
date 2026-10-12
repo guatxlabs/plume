@@ -769,8 +769,31 @@ pub(crate) async fn setup_post(
             format!("admin défini : {user} — token d'installation NON effacé ({p})")
         }
     };
-    ledger_append(&st.db.lock(), "setup", &detail);
-    (StatusCode::OK, Json(json!({ "ok": true, "setup_token_file_removed": residu.is_none() }))).into_response()
+    // `P10.31-u` — L'INSTALLATION A EU LIEU ; SI SA TRACE MANQUE, LA RÉPONSE LE DIT À CÔTÉ DU SUCCÈS. Annuler serait
+    // faux (l'administrateur est écrit et le jeton effacé : un rejeu tomberait sur « déjà configuré ») ; se taire
+    // laisserait la pose du premier administrateur hors de la trace non purgeable.
+    let maillon = ledger_append(&st.db.lock(), "setup", &detail);
+    let corps = avouer_le_maillon_manquant(json!({ "ok": true, "setup_token_file_removed": residu.is_none() }), &maillon, CAUSE_GESTE_SANS_TRACE);
+    (StatusCode::OK, Json(corps)).into_response()
+}
+
+/// `P10.31-u` — CE QU'UN REFUS AVOUE, SOUS LA CLÉ COMMUNE, QUAND SA TRACE MANQUE. Les deux refus d'identité qui
+/// s'inscrivent au registre (mot de passe actuel refusé, secret des gestes faux) annoncent la trace dans leur phrase
+/// nominale (« inscrit au registre ») : quand le maillon n'est pas entré, ils servent une AUTRE phrase, qui ne
+/// l'affirme pas (`CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE_SANS_TRACE`, `TEXTE_SECRET_DES_GESTES_FAUX_SANS_TRACE`), et cet
+/// aveu à côté. Le geste refusé n'a rien écrit : il n'y a rien à annuler, et le refaire ne comble pas le trou.
+pub(crate) const CAUSE_REFUS_SANS_TRACE: &str = "TRACE DU REFUS MANQUANTE : cette tentative refusée N'A PAS été \
+     inscrite au registre tamper-evident — elle restera sans preuve d'audit. Le refus, lui, tient : rien n'est écrit. \
+     Signalez-le et faites vérifier le journal d'intégrité.";
+
+/// `P10.31-u` — LE CORPS D'UNE RÉPONSE, ET L'AVEU DE SON MAILLON QUAND IL N'EST PAS ENTRÉ. Chemin nominal : le corps
+/// tel quel, octet pour octet. Maillon non inscrit : le corps garde tous ses champs et gagne `registre_sans_maillon`,
+/// l'aveu suivi de la cause du moteur — jamais le détail du maillon, qui peut nommer un compte.
+pub(crate) fn avouer_le_maillon_manquant(mut corps: Value, maillon: &MaillonDeRegistre, aveu: &str) -> Value {
+    if let Some(cause) = maillon.cause_de_non_inscription() {
+        corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{aveu} ({cause})"));
+    }
+    corps
 }
 
 /// Efface le `setup-token.txt` voisin de la base et DIT si le fichier a réellement disparu. Le token y est
@@ -891,6 +914,21 @@ pub(crate) const CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE: &str = "MOT DE PASSE ACTUEL R
      le mot de passe présenté n'est pas celui de ce compte. L'échec est compté au MÊME verrou que la connexion \
      (compte, adresse) et inscrit au registre ; rien n'est écrit.";
 
+/// `P10.31-u` — le même refus quand le registre n'a pas pris sa ligne : la phrase nominale affirme « inscrit au
+/// registre », celle-ci dit le contraire. Servie par `refus_du_mot_de_passe_actuel_sans_trace`, avec l'aveu commun.
+pub(crate) const CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE_SANS_TRACE: &str = "MOT DE PASSE ACTUEL REFUSÉ, MOT DE PASSE NON \
+     CHANGÉ : le mot de passe présenté n'est pas celui de ce compte. L'échec est compté au MÊME verrou que la connexion \
+     (compte, adresse), mais il N'A PAS été inscrit au registre : le registre tamper-evident n'a pas pris la ligne \
+     (voir `registre_sans_maillon`) ; rien n'est écrit.";
+
+/// `P10.31-u` — LE REFUS DU MOT DE PASSE ACTUEL DONT LE MAILLON N'EST PAS ENTRÉ : 403, la phrase qui n'affirme pas la
+/// trace, et l'aveu commun avec la cause du moteur. Le chemin nominal reste `err_json` dans
+/// `juger_le_mot_de_passe_actuel`, octet pour octet.
+fn refus_du_mot_de_passe_actuel_sans_trace(maillon: &MaillonDeRegistre) -> Response {
+    let corps = avouer_le_maillon_manquant(json!({ "error": CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE_SANS_TRACE }), maillon, CAUSE_REFUS_SANS_TRACE);
+    (StatusCode::FORBIDDEN, Json(corps)).into_response()
+}
+
 /// `P10.23-m` — le verrou (compte, adresse) de la connexion est posé : le mot de passe actuel n'est pas examiné.
 pub(crate) const CAUSE_MOT_DE_PASSE_ACTUEL_VERROUILLE: &str = "TROP D'ÉCHECS DU MOT DE PASSE SUR CE COMPTE \
      DEPUIS CETTE ADRESSE : le verrou est celui de la connexion (en-tête Retry-After) ; le mot de passe actuel \
@@ -971,7 +1009,12 @@ pub(crate) fn juger_le_mot_de_passe_actuel(
         PreuveDuPremierFacteur::Prouvee => Ok(()),
         PreuveDuPremierFacteur::Absente => Err(err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_ACTUEL_EXIGE)),
         PreuveDuPremierFacteur::Refusee => {
-            ledger_append(&st.db.lock(), "password", trace_du_refus);
+            // `P10.31-u` — la phrase nominale annonce « inscrit au registre » : elle n'est servie que si le maillon est
+            // entré ; sinon, la phrase qui ne l'affirme pas, et l'aveu.
+            let maillon = ledger_append(&st.db.lock(), "password", trace_du_refus);
+            if maillon.cause_de_non_inscription().is_some() {
+                return Err(refus_du_mot_de_passe_actuel_sans_trace(&maillon));
+            }
             Err(err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_ACTUEL_REFUSE))
         }
         PreuveDuPremierFacteur::Verrouillee(attente) => Err((
@@ -1135,8 +1178,11 @@ pub(crate) async fn password_post(
             eprintln!("[password] changement du mot de passe de l'administrateur de l'assistant '{user}' REFUSÉ, rien n'est écrit : {}", refus.cause());
             return refus.refus(CAUSE_MOT_DE_PASSE_NON_CHANGE_TRANSACTION_NON_OUVERTE, CAUSE_MOT_DE_PASSE_NON_CHANGE_ECRITURE_REFUSEE);
         }
-        ledger_append(&st.db.lock(), "password", &format!("mot de passe de l'administrateur de l'assistant '{user}' changé par son titulaire"));
-        return (StatusCode::OK, Json(json!({ "ok": true, "user": user }))).into_response();
+        // `P10.31-u` — le mot de passe est changé et les sessions du compte révoquées ; une trace manquante est avouée
+        // à côté du succès, jamais par une annulation (un rejeu exigerait l'ancien mot de passe, qui ne vaut plus).
+        let maillon = ledger_append(&st.db.lock(), "password", &format!("mot de passe de l'administrateur de l'assistant '{user}' changé par son titulaire"));
+        let corps = avouer_le_maillon_manquant(json!({ "ok": true, "user": user }), &maillon, CAUSE_GESTE_SANS_TRACE);
+        return (StatusCode::OK, Json(corps)).into_response();
     };
     // `P10.24-b` — LA FENÊTRE entre la preuve (verrou relâché) et l'écriture : un témoin y fait réinitialiser ce mot de
     // passe par un administrateur ; l'écriture, qui exige le haché jugé, ne l'écrase pas.

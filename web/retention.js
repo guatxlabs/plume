@@ -283,6 +283,10 @@ function puitsDeLaRetention() {
   const ligne = $('#retention-result'), actions = ligne ? ligne.parentNode : null;
   return actions && actions.parentNode ? puitsDuRefusDUnGeste(actions.parentNode, 'retention', actions) : null;
 }
+// `P11.8-c` (reste C) — LA CONSÉQUENCE D'UN ENREGISTREMENT, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT : « PURGE
+// IRRÉVERSIBLE au prochain cycle horaire — … » était un gabarit français interpolé, jamais un nœud entier, donc absent du
+// lexique — l'analyste anglophone lisait en français la seule phrase qui annonce une destruction sans retour. Chaque face
+// porte l'irréversibilité dans sa langue ; `{liste}` reçoit les changements, tels que le panneau les nomme.
 async function enregistrerLaRetention(e) {
   if (e && typeof e.preventDefault === 'function') e.preventDefault();
   if (!S.RET_STATE) return;
@@ -303,11 +307,13 @@ async function enregistrerLaRetention(e) {
   const previews = await Promise.all(decreases.map(k =>
     api(`/retention/preview?key=${encodeURIComponent(k)}&value=${body[k]}`).catch(() => null)));
   const fmtChange = k => { const ua = unitAbbr((S.RET_STATE.bounds[k] || {}).unit); return `${RET_LABEL[k]} ${S.RET_STATE.values[k]}${ua} → ${body[k]}${ua}`; };
-  const baisses = decreases.map((k, i) => `${fmtChange(k)} (${previews[i] ? retPreviewText(previews[i]) : 'purge de données anciennes'})`);
+  const baisses = decreases.map((k, i) => `${fmtChange(k)} (${previews[i] ? retPreviewText(previews[i]) : faceDansLaLangue({ fr: 'purge de données anciennes', en: 'purge of old data' })})`);
   const hausses = Object.keys(body).filter(k => !decreases.includes(k)).map(fmtChange);
-  const consequence = (baisses.length ? `PURGE IRRÉVERSIBLE au prochain cycle horaire — ${baisses.join(' ; ')}. ` : '')
-    + (hausses.length ? `Conservation allongée, aucune purge — ${hausses.join(' ; ')} : plus d'espace disque et une base plus grande.` : '');
-  if (!await confirmWithConsequence('Enregistrer la rétention', consequence.trim(), { danger: baisses.length > 0, okText: baisses.length ? 'Réduire (destructif)' : 'Enregistrer' })) return;
+  const consequence = [
+    baisses.length ? faceDansLaLangue({ fr: 'PURGE IRRÉVERSIBLE au prochain cycle horaire — {liste}.', en: 'IRREVERSIBLE PURGE at the next hourly cycle — {liste}.' }, { liste: baisses.join(' ; ') }) : '',
+    hausses.length ? faceDansLaLangue({ fr: 'Conservation allongée, aucune purge — {liste} : plus d\'espace disque et une base plus grande.', en: 'Longer retention, no purge — {liste}: more disk space and a larger database.' }, { liste: hausses.join(' ; ') }) : '',
+  ].filter(Boolean).join(' ');
+  if (!await confirmWithConsequence('Enregistrer la rétention', consequence, { danger: baisses.length > 0, okText: baisses.length ? 'Réduire (destructif)' : 'Enregistrer' })) return;
   res.textContent = '...';
   const puits = puitsDeLaRetention(); effacerLeRefusDUnGeste(puits);
   let j;

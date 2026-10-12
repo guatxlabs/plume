@@ -59,6 +59,14 @@ pub(crate) const TEXTE_SECRET_DES_GESTES_FAUX: &str = "SECRET DES GESTES REFUSÉ
      celui que ce démon attend. L'échec est compté au même frein que les échecs de connexion (429 au-delà du seuil) \
      et inscrit au registre sous votre nom ; rien n'est écrit.";
 
+/// `P10.31-u` — le même refus quand le registre n'a pas pris sa ligne : la phrase nominale affirme « inscrit au
+/// registre sous votre nom », celle-ci dit le contraire. Même clé stable (`secret_des_gestes_faux`) : pour la console,
+/// c'est toujours un secret faux à ressaisir.
+pub(crate) const TEXTE_SECRET_DES_GESTES_FAUX_SANS_TRACE: &str = "SECRET DES GESTES REFUSÉ : le secret présenté \
+     n'est pas celui que ce démon attend. L'échec est compté au même frein que les échecs de connexion (429 au-delà du \
+     seuil), mais il N'A PAS été inscrit au registre : le registre tamper-evident n'a pas pris la ligne (voir \
+     `registre_sans_maillon`) ; rien n'est écrit.";
+
 pub(crate) const TEXTE_SECRET_DES_GESTES_VERROUILLE: &str = "TROP D'ÉCHECS DU SECRET DES GESTES DEPUIS CETTE \
      ADRESSE POUR CE COMPTE : le frein est celui de la connexion (en-tête Retry-After) ; le secret n'est pas examiné \
      et rien n'est écrit.";
@@ -134,9 +142,14 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for SecretDesGestesPrese
     }
 }
 
-/// Le refus nommé du contrat : 403, `error` (la phrase) et `cause` (la clé stable).
+/// Le corps du refus nommé du contrat : `error` (la phrase) et `cause` (la clé stable). Le seul endroit qui le fixe.
+fn corps_du_refus_du_secret_des_gestes(cause: &'static str, texte: String) -> Value {
+    json!({ "error": texte, "cause": cause })
+}
+
+/// Le refus nommé du contrat : 403 et son corps.
 fn refus_du_secret_des_gestes(cause: &'static str, texte: String) -> Response {
-    (StatusCode::FORBIDDEN, Json(json!({ "error": texte, "cause": cause }))).into_response()
+    (StatusCode::FORBIDDEN, Json(corps_du_refus_du_secret_des_gestes(cause, texte))).into_response()
 }
 
 /// La clé du frein : le couple (auteur, adresse). Les chevrons sont hors du jeu de caractères d'un nom de compte : ce
@@ -187,8 +200,18 @@ pub(crate) fn exiger_le_secret_des_gestes(
         if presente.ip.is_empty() { "une adresse inconnue" } else { presente.ip.as_str() }
     );
     eprintln!("[secret-des-gestes] WARN {trace}");
-    let _ = ledger_append(&st.db.lock(), "secret_des_gestes", &trace);
-    Err(refus_du_secret_des_gestes(CAUSE_SECRET_DES_GESTES_FAUX, TEXTE_SECRET_DES_GESTES_FAUX.into()))
+    // `P10.31-u` — le texte nominal annonce « inscrit au registre sous votre nom » : il n'est servi que si le maillon
+    // est entré ; sinon, le texte qui ne l'affirme pas (même statut, même clé stable), et l'aveu commun.
+    let maillon = ledger_append(&st.db.lock(), "secret_des_gestes", &trace);
+    if maillon.cause_de_non_inscription().is_none() {
+        return Err(refus_du_secret_des_gestes(CAUSE_SECRET_DES_GESTES_FAUX, TEXTE_SECRET_DES_GESTES_FAUX.into()));
+    }
+    let corps = crate::session::avouer_le_maillon_manquant(
+        corps_du_refus_du_secret_des_gestes(CAUSE_SECRET_DES_GESTES_FAUX, TEXTE_SECRET_DES_GESTES_FAUX_SANS_TRACE.into()),
+        &maillon,
+        crate::session::CAUSE_REFUS_SANS_TRACE,
+    );
+    Err((StatusCode::FORBIDDEN, Json(corps)).into_response())
 }
 
 /// L'empreinte argon2id (format PHC) d'un secret, par le hachage des mots de passe du démon (`hash_pw`).

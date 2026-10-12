@@ -4,6 +4,7 @@
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, valider_la_transaction};
+use rusqlite::OptionalExtension;
 
 // ---------- comptes utilisateurs (réservé admin via auth_guard) ----------
 pub(crate) async fn users_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
@@ -221,6 +222,32 @@ pub(crate) const CAUSE_COMPTE_NON_MODIFIE_TRANSACTION_NON_OUVERTE: &str = "COMPT
      l'écrivain) — RIEN n'est écrit : ni son rôle ni son mot de passe n'ont changé, et ses sessions ne sont pas \
      révoquées. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
+/// `P10.20-b` (rang quatre) — le compte visé par une suppression n'a pas pu être lu (la forme d'avant : 404 « compte
+/// introuvable »).
+pub(crate) const CAUSE_COMPTE_NON_SUPPRIME_CIBLE_NON_LUE: &str = "COMPTE NON SUPPRIMÉ, COMPTE NON LU : la base n'a pas \
+     pu lire le compte visé (lecture refusée ou table illisible) — on ne sait pas s'il existe, et rien n'est supprimé : \
+     le compte, ses objets, ses jetons et ses sessions sont intacts, rien n'est attesté. Réessayez ; si le refus \
+     persiste, la base est illisible ou verrouillée.";
+/// `P10.20-b` (rang quatre) — les administrateurs n'ont pas pu être comptés avant la suppression d'un administrateur
+/// (la forme d'avant affirmait « dernier administrateur »).
+pub(crate) const CAUSE_COMPTE_NON_SUPPRIME_ADMINISTRATEURS_NON_COMPTES: &str = "COMPTE NON SUPPRIMÉ, ADMINISTRATEURS \
+     NON COMPTÉS : la base n'a pas pu compter les administrateurs (lecture refusée ou table illisible), et un \
+     administrateur ne se supprime pas sans savoir s'il est le dernier. Ce refus ne dit PAS qu'il l'est. Rien n'est \
+     supprimé ni attesté. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+/// `P10.20-b` (rang quatre) — le compte visé par une modification n'a pas pu être lu (la forme d'avant : 404 « compte
+/// introuvable »).
+pub(crate) const CAUSE_COMPTE_NON_MODIFIE_CIBLE_NON_LUE: &str = "COMPTE NON MODIFIÉ, COMPTE NON LU : la base n'a pas \
+     pu lire le compte visé (lecture refusée ou table illisible) — on ne sait pas s'il existe, et rien n'est changé : \
+     ni son rôle ni son mot de passe, ses sessions ne sont pas révoquées, aucun essai de mot de passe n'est engagé, \
+     rien n'est attesté. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+/// `P10.20-b` (rang quatre) — les administrateurs n'ont pas pu être comptés avant la rétrogradation d'un administrateur
+/// (la forme d'avant affirmait « dernier administrateur »).
+pub(crate) const CAUSE_COMPTE_NON_MODIFIE_ADMINISTRATEURS_NON_COMPTES: &str = "COMPTE NON MODIFIÉ, ADMINISTRATEURS \
+     NON COMPTÉS : la base n'a pas pu compter les administrateurs (lecture refusée ou table illisible), et un \
+     administrateur ne se rétrograde pas sans savoir s'il est le dernier. Ce refus ne dit PAS qu'il l'est. Ni son rôle \
+     ni son mot de passe ne changent, aucun essai de mot de passe n'est engagé, rien n'est attesté. Réessayez ; si le \
+     refus persiste, la base est illisible ou verrouillée.";
+
 /// `P10.24-x` — le `COMMIT` d'un chargement ou d'une suppression de table d'enrichissement refusé.
 pub(crate) const CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE: &str = "TABLE D'ENRICHISSEMENT INCHANGÉE : la base n'a pas \
      validé la transaction (COMMIT refusé) et l'a annulée — le contenu d'avant est intact et aucune trace n'est écrite. \
@@ -417,9 +444,18 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
     // multi-tenant, seulement pour le tenant `default` (un homonyme dans un autre tenant n'est pas cette crédence).
     let base_de_l_assistant = Arc::ptr_eq(&req_db(&st, &au), &st.db);
     crate::req_conn!(st, au, conn);
-    let target: Option<(String, String)> = conn
+    // `P10.20-b` (rang quatre) — la cible NON LUE n'est pas un compte « introuvable » (la forme d'avant, `.ok()`, le
+    // disait) : absence établie = le 404 d'avant, lecture ratée = 503 nommé, l'erreur du moteur au journal seulement.
+    let lu = conn
         .query_row("SELECT name,role FROM user WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .ok();
+        .optional();
+    let target: Option<(String, String)> = match lu {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[comptes] WARN suppression du compte {id} refusée : le compte visé n'a pas pu être lu ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_SUPPRIME_CIBLE_NON_LUE);
+        }
+    };
     let Some((tname, trole)) = target else {
         return (StatusCode::NOT_FOUND, "compte introuvable").into_response();
     };
@@ -447,7 +483,16 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
         return err_json(StatusCode::BAD_REQUEST, CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE);
     }
     if trole == "admin" {
-        let admins: i64 = conn.query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get(0)).unwrap_or(0);
+        // `P10.20-b` (rang quatre) — « dernier administrateur » ne s'affirme que sur un compte LU : la forme d'avant
+        // (`.unwrap_or(0)`) le servait sur une lecture qui n'avait pas eu lieu. Lecture ratée = 503 nommé, rien d'écrit.
+        let compte = conn.query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get::<_, i64>(0));
+        let admins: i64 = match compte {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("[comptes] WARN suppression du compte '{tname}' refusée : les administrateurs n'ont pas pu être comptés ({e})");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_SUPPRIME_ADMINISTRATEURS_NON_COMPTES);
+            }
+        };
         if admins <= 1 {
             return (StatusCode::BAD_REQUEST, "dernier administrateur — suppression refusée").into_response();
         }
@@ -561,9 +606,18 @@ pub(crate) async fn user_update(
     // celle que la preuve relit (`prouver_le_premier_facteur` la verrouille à son tour).
     let (tname, trole, role_change) = {
         crate::req_conn!(st, au, conn);
-        let target: Option<(String, String)> = conn
+        // `P10.20-b` (rang quatre) — la cible NON LUE n'est pas un compte « introuvable » : absence établie = le 404
+        // d'avant, lecture ratée = 503 nommé, avant toute preuve ou écriture.
+        let lu = conn
             .query_row("SELECT name,role FROM user WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
-            .ok();
+            .optional();
+        let target: Option<(String, String)> = match lu {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("[comptes] WARN modification du compte {id} refusée : le compte visé n'a pas pu être lu ({e})");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_MODIFIE_CIBLE_NON_LUE);
+            }
+        };
         let Some((tname, trole)) = target else { return (StatusCode::NOT_FOUND, "compte introuvable").into_response(); };
         // VALIDATION AVANT toute écriture (rôle valide, anti-lockout, longueur mdp) — inchangé, mais hors transaction.
         let role_change: Option<&str> = if let Some(nr) = new_role {
@@ -578,8 +632,17 @@ pub(crate) async fn user_update(
             // anti-lockout : ne pas rétrograder le DERNIER admin. `P10.21-r` — lecture ANTICIPÉE (avant la preuve du
             // mot de passe : un corps refusé n'engage aucun essai) ; elle ne fait plus foi : le verrou est relâché
             // ensuite, et c'est la relecture DANS la transaction de l'écriture qui décide (plus bas).
+            // `P10.20-b` (rang quatre) — la lecture anticipée ratée n'affirme plus « dernier administrateur » (la forme
+            // d'avant, `.unwrap_or(0)`, le servait) : 503 nommé, aucun essai du mot de passe engagé, rien d'écrit.
             if trole == "admin" && role != "admin" {
-                let admins: i64 = conn.query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get(0)).unwrap_or(0);
+                let compte = conn.query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get::<_, i64>(0));
+                let admins: i64 = match compte {
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("[comptes] WARN rétrogradation du compte '{tname}' refusée : les administrateurs n'ont pas pu être comptés ({e})");
+                        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_MODIFIE_ADMINISTRATEURS_NON_COMPTES);
+                    }
+                };
                 if admins <= 1 { return (StatusCode::BAD_REQUEST, "dernier administrateur — rétrogradation refusée").into_response(); }
             }
             Some(role)

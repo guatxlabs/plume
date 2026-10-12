@@ -109,15 +109,26 @@ function destinationRow(d) {
 // destination — jamais un texte générique — et elle borne ce qu'un REFUS obtient : refuser n'envoie rien
 // maintenant, mais n'arrête pas le forward périodique d'une destination active, qui enverra le même lot au
 // prochain tick. Promettre l'inverse serait promettre une protection que ce bouton n'a pas.
+//
+// `P11.8-c` (reste C) — LES DEUX FACES, ÉCRITES EN ENTIER. MESURÉ AVANT CE LOT : la phrase était une concaténation de
+// fragments français (« quittent plume MAINTENANT vers … , bruts et non masqués »), aucun nœud entier, donc aucun au
+// lexique : l'analyste anglophone lisait EN FRANÇAIS la seule mise en garde d'un envoi hors de plume. Deux gabarits (avec
+// et sans filtre) plutôt qu'un morceau de phrase interpolé, pour que chaque face reste une phrase de sa langue.
 function consequenceDuFlush(d) {
   const f = d.filter || {};
   const sel = [f.category && 'cat=' + f.category, f.source && 'src=' + f.source,
     f.env_id && 'env=' + f.env_id, f.min_severity && 'sev>=' + f.min_severity].filter(Boolean).join(' ');
-  const cible = d.endpoint || DEST_TYPES[d.type] || d.type || '(endpoint vide)';
-  return 'jusqu\'à ' + (d.batch_max || 500) + ' event(s) ' + (sel ? 'retenus par le filtre (' + sel + ')' : 'de TOUT le flux')
-    + ' quittent plume MAINTENANT vers ' + cible + ', bruts et non masqués (feed machine). Ce qui est parti ne se '
-    + 'rappelle pas ; en cas de succès le watermark avance et ce lot ne sera plus jamais renvoyé. Refuser '
-    + 'n\'envoie rien maintenant et n\'arrête PAS le forward périodique de cette destination active.';
+  const cible = d.endpoint || DEST_TYPES[d.type] || d.type || faceDansLaLangue({ fr: '(endpoint vide)', en: '(empty endpoint)' });
+  const valeurs = { n: d.batch_max || 500, filtre: sel, cible };
+  return sel
+    ? faceDansLaLangue({
+      fr: 'jusqu\'à {n} event(s) retenus par le filtre ({filtre}) quittent plume MAINTENANT vers {cible}, bruts et non masqués (feed machine). Ce qui est parti ne se rappelle pas ; en cas de succès le watermark avance et ce lot ne sera plus jamais renvoyé. Refuser n\'envoie rien maintenant et n\'arrête PAS le forward périodique de cette destination active.',
+      en: 'up to {n} event(s) selected by the filter ({filtre}) leave plume NOW for {cible}, raw and unmasked (machine feed). What has left cannot be recalled; on success the watermark advances and this batch will never be sent again. Refusing sends nothing now and does NOT stop the periodic forward of this active destination.',
+    }, valeurs)
+    : faceDansLaLangue({
+      fr: 'jusqu\'à {n} event(s) de TOUT le flux quittent plume MAINTENANT vers {cible}, bruts et non masqués (feed machine). Ce qui est parti ne se rappelle pas ; en cas de succès le watermark avance et ce lot ne sera plus jamais renvoyé. Refuser n\'envoie rien maintenant et n\'arrête PAS le forward périodique de cette destination active.',
+      en: 'up to {n} event(s) from the WHOLE stream leave plume NOW for {cible}, raw and unmasked (machine feed). What has left cannot be recalled; on success the watermark advances and this batch will never be sent again. Refusing sends nothing now and does NOT stop the periodic forward of this active destination.',
+    }, valeurs);
 }
 
 // `P10.28-t` — LES AVIS DE L'ENVOI MANUEL, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT (témoin 119t) : « forward OK : N

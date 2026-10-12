@@ -261,9 +261,13 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # `sla_on_status_change` perdent chacun leur site ; `caseops.rs` reste dans le relevé par `case_unmerge`). Même règle :
 # 56 -> 38 (69 % = 38,64), 24 -> 15 (65 % = 15,6).
 # Le relevé dont les planchers sont dérivés, cité par le message de refus (une seule source, jamais recopiée).
-RELEVE_SITES = 56
+# RE-DÉRIVÉS le 2026-10-12 (`P10.20-b`, rang quatre : `engagement_end`, `user_delete`, `user_update`) : relevé de l'arbre
+# ce jour-là, après le correctif — 51 sites sur 24 fichiers (`engagement_end` perd un site, `user_delete` et
+# `user_update` deux chacun ; aucun fichier ne sort : `engagement.rs` garde `engagement_cred_within_window`,
+# `users_lookups.rs` garde `lookup_delete`). Même règle : 51 -> 35 (69 % = 35,19), 24 -> 15 (65 % = 15,6).
+RELEVE_SITES = 51
 RELEVE_FICHIERS = 24
-PLANCHER_SITES = 38
+PLANCHER_SITES = 35
 PLANCHER_FICHIERS = 15
 
 # ================================================================================================
@@ -457,7 +461,10 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # DEHORS. Le doc-commentaire de la fonction écrit déjà que refuser est la bonne réponse pour le
     # cas ambigu ; ce qu'il ne distingue pas, c'est l'ambiguïté et la lecture ratée.
     ("daemon/src/handlers/engagement.rs", "engagement_cred_within_window"): ("map.unwrap_or",),
-    ("daemon/src/handlers/engagement.rs", "engagement_end"): ("is_ok",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, 2026-10-12) : `engagement.rs::engagement_end` — `is_ok` sur
+    # l'engagement à clore : une lecture ratée rendait 404 « introuvable ou déjà clos » alors que l'exemption restait
+    # posée. Lu en `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503
+    # `CAUSE_ENGAGEMENT_NON_CLOS_ETAT_NON_LU`, rien d'écrit (témoins : `cloture_et_comptes_lectures_avouees.rs`).
     # `is_ok` sur un nom déjà pris : la lecture ratée fait sauter le 409 explicite, et l'INSERT tombe
     # sur la contrainte `UNIQUE` de la colonne (vérifié dans `migrate.rs`) — « échec de transaction
     # opaque », exactement ce que le commentaire du site dit vouloir éviter. Fail-closed par la BASE,
@@ -494,12 +501,12 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     ("daemon/src/handlers/scheduled_reports.rs", "report_run_now"): ("is_err",),
     ("daemon/src/handlers/tokens.rs", "token_delete"): ("unwrap_or",),
     ("daemon/src/handlers/users_lookups.rs", "lookup_delete"): ("is_err",),
-    # DEUX sites chacun. `ok` sur la cible -> 404. `unwrap_or(0)` sur le COMPTE D'ADMINISTRATEURS :
-    # zéro est `<= 1`, donc la garde « dernier administrateur — suppression refusée » se DÉCLENCHE.
-    # Fail-closed, et c'est le bon côté ; la phrase servie, elle, affirme un fait sur le parc des
-    # comptes qui n'a pas été lu.
-    ("daemon/src/handlers/users_lookups.rs", "user_delete"): ("ok", "unwrap_or"),
-    ("daemon/src/handlers/users_lookups.rs", "user_update"): ("ok", "unwrap_or"),
+    # DEUX ENTRÉES RETIRÉES PAR `P10.20-b` (rang quatre, 2026-10-12) : `users_lookups.rs::user_delete` et
+    # `user_update`, deux sites chacun — `ok` sur la cible (404 « compte introuvable ») et `unwrap_or(0)` sur le
+    # COMPTE D'ADMINISTRATEURS (zéro `<= 1` : « dernier administrateur » affirmé sur une lecture qui n'avait pas eu
+    # lieu). La cible est lue en `.optional()`, le compte est un `Result` scruté : absence établie et compte LU
+    # gardent la sortie d'avant, lecture ratée = 503 nommé (`CAUSE_COMPTE_NON_SUPPRIME_CIBLE_NON_LUE`,
+    # `…_ADMINISTRATEURS_NON_COMPTES`, et leurs pendants `CAUSE_COMPTE_NON_MODIFIE_…`), rien d'écrit.
 }
 
 CLASSES = (

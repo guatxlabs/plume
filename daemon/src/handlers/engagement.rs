@@ -6,6 +6,7 @@
 use crate::*;
 use crate::comptes_de_transaction::{compter_un_begin_refuse, compter_un_geste_de_fond_non_valide};
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, valider_la_transaction};
+use rusqlite::OptionalExtension;
 
 // =====================================================================================
 // MODE ENGAGEMENT AUTORISÉ (v75) — pentest natif black/grey/whitebox, SANS reconfigurer le SOC, SANS angle
@@ -1021,9 +1022,20 @@ pub(crate) async fn engagement_end(State(st): State<AppState>, Extension(au): Ex
     }
     let now_i = now();
     crate::req_conn!(st, au, conn);
-    let exists = conn.query_row("SELECT 1 FROM engagement WHERE id=?1 AND status IN ('active','scheduled')", params![id], |_| Ok(())).is_ok();
-    if !exists {
-        return not_found("engagement introuvable ou déjà clos");
+    // `P10.20-b` (rang quatre) — une lecture NON FAITE n'est pas un engagement « déjà clos ». La forme d'avant
+    // (`.is_ok()`) rendait 404 « introuvable ou déjà clos » sur une table hors d'atteinte : l'administrateur lisait
+    // l'engagement terminé alors que son exemption d'auto-ban restait posée et ses crédences authentifiaient.
+    // Absence établie = le 404 d'avant ; lecture ratée = 503 nommé, l'erreur du moteur au journal seulement.
+    let lu = conn
+        .query_row("SELECT 1 FROM engagement WHERE id=?1 AND status IN ('active','scheduled')", params![id], |_| Ok(()))
+        .optional();
+    match lu {
+        Ok(Some(())) => {}
+        Ok(None) => return not_found("engagement introuvable ou déjà clos"),
+        Err(e) => {
+            eprintln!("[engagement] WARN clôture de l'engagement '{id}' refusée : son état n'a pas pu être lu ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENGAGEMENT_NON_CLOS_ETAT_NON_LU);
+        }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "engagement", &format!("clôture de l'engagement '{id}'"), CAUSE_ENGAGEMENT_NON_CLOS_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -1140,6 +1152,12 @@ pub(crate) const CAUSE_ENGAGEMENT_NON_CLOS_TRANSACTION_NON_OUVERTE: &str = "ENGA
      l'écrivain) — RIEN n'est écrit : l'engagement court toujours : son exemption d'auto-ban reste posée et ses \
      crédences authentifient jusqu'à la fin de sa fenêtre. Réessayez ; s'il est refusé encore, l'écrivain est occupé \
      ou bloqué.";
+
+/// `P10.20-b` (rang quatre) — l'état de l'engagement à clore n'a pas pu être lu (la forme d'avant le disait « déjà clos »).
+pub(crate) const CAUSE_ENGAGEMENT_NON_CLOS_ETAT_NON_LU: &str = "ENGAGEMENT NON CLOS, ÉTAT NON LU : la base n'a pas pu \
+     lire l'état de cet engagement (lecture refusée ou table illisible) — on ne sait pas s'il court encore, et il n'est \
+     PAS clos : s'il court, son exemption d'auto-ban reste posée et ses crédences authentifient jusqu'à la fin de sa \
+     fenêtre. Rien n'est écrit ni attesté. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
 
 /// `P10.25-e` — le `COMMIT` d'une bascule du mode de réponse refusé.
 pub(crate) const CAUSE_MODE_INCHANGE_COMMIT_REFUSE: &str = "MODE INCHANGÉ : la base n'a pas validé la transaction \

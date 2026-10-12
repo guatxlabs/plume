@@ -321,11 +321,16 @@ async function testConnector(c) {
 // critère-là — le démon inscrit un changement — qui rend une route sensible. `connector_test`, lui,
 // n'exécute AUCUN `execute` : dry-run, une page, rien d'ingéré, rien d'audité, curseur immobile. Lui poser
 // une confirmation apprendrait à cliquer sans lire, et userait celle-ci.
+//
+// `P11.8-c` (reste C) — LA CONSÉQUENCE DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT : la phrase était assemblée par
+// concaténation de fragments français, aucun n'étant un nœud entier, donc aucun au lexique — l'analyste anglophone lisait
+// ce geste qui écrit dans la base en français. Les deux faces sont écrites en entier, les valeurs posées en paramètres.
 function consequenceDuPoll(c) {
-  return 'les alertes disponibles chez ' + (CONNECTOR_TYPES[c.type] || c.type || 'la source externe')
-    + ' sont tirées MAINTENANT et ingérées dans plume (env ' + (c.env_id || 'prod') + ', détection comprise) ; '
-    + 'en cas de succès le curseur avance et ce lot ne sera plus jamais retiré par ce connecteur. Refuser ne '
-    + 'tire rien et ne change rien à l\'état du connecteur — ni sa collecte périodique, ni son curseur.';
+  const source = CONNECTOR_TYPES[c.type] || c.type || faceDansLaLangue({ fr: 'la source externe', en: 'the external source' });
+  return faceDansLaLangue({
+    fr: 'les alertes disponibles chez {source} sont tirées MAINTENANT et ingérées dans plume (env {env}, détection comprise) ; en cas de succès le curseur avance et ce lot ne sera plus jamais retiré par ce connecteur. Refuser ne tire rien et ne change rien à l\'état du connecteur — ni sa collecte périodique, ni son curseur.',
+    en: 'the alerts available at {source} are pulled NOW and ingested into plume (env {env}, detection included); on success the cursor advances and this batch will never be pulled again by this connector. Refusing pulls nothing and changes nothing in the connector\'s state — neither its periodic collection nor its cursor.',
+  }, { source, env: c.env_id || 'prod' });
 }
 
 // `P10.27-d` / `P10.28-o` — son refus s'écrit dans le puits des connecteurs par la forme partagée (mesuré avant ce lot :

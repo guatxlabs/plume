@@ -721,11 +721,12 @@ pub(crate) fn seed_egress_rules(conn: &Connection) {
 }
 
 /// Règles d'exemple — flag dédié `seeded_rules` (arrivent même si le dashboard a déjà été seedé).
+///
+/// `P10.28-l` — AVANT : le drapeau `seeded_rules` était posé EN PREMIER (écriture avalée), puis chaque INSERT avalé
+/// (`let _`) : une règle refusée (dont « Pic d'échecs d'authentification », taguée T1110) laissait le drapeau posé et la
+/// règle jamais resemée. DÉSORMAIS : `semer_sous_son_drapeau` (une transaction, chaque INSERT propagé, `Ok(0)` = refus,
+/// le drapeau en DERNIER) ; refusé, rien n'est conservé et le semis est rejoué entier au démarrage suivant.
 pub(crate) fn seed_example_rules(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_rules'", [], |r| r.get::<_, String>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_rules','1')", []);
     // Dernière colonne = tag MITRE ATT&CK (purple) : technique que la règle DÉTECTE. Sert de clé de
     // jointure avec les techniques tirées par Forge (red) -> /api/coverage/detections (detected/missed).
     // '' = règle opérationnelle non mappée (ex CPU) -> exclue de la couverture (filtre mitre<>'').
@@ -745,12 +746,16 @@ pub(crate) fn seed_example_rules(conn: &Connection) {
         ("Pic d'échecs d'authentification (1h)", "search category=auth action=failure | stats count", 1, ">", 100.0, 3, 300, 3600, "T1110"),
         ("CPU > 90% (10 min)", "SELECT value FROM metric WHERE name='cpu_pct' AND ts>=__FROM__ ORDER BY ts DESC LIMIT 1", 0, ">", 90.0, 2, 300, 600, ""),
     ];
-    for (name, q, is_soql, op, th, sev, intv, win, mitre) in rules {
-        let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![name, q, is_soql, op, th, sev, intv, win, mitre],
-        );
-    }
+    semer_sous_son_drapeau(conn, "seeded_rules", |conn| {
+        for (name, q, is_soql, op, th, sev, intv, win, mitre) in rules {
+            let ecrites = conn.execute(
+                "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,mitre) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![name, q, is_soql, op, th, sev, intv, win, mitre],
+            );
+            une_ligne_ecrite(ecrites?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Règles purple ATT&CK — flag DÉDIÉ `seeded_purple_rules` (PAS `seeded_rules`) : ainsi elles
@@ -1370,33 +1375,38 @@ pub(crate) fn seed_obs_rules(conn: &Connection) {
 
 /// §A — règles readiness StatefulSets (remplacent les alertes AM mailserver/vault/sts). Dépendent des
 /// métriques `kube_sts_*` de kube-state.sh. OFF par défaut (tester puis activer). cf PROM-AM-DECOMMISSION.
+///
+/// `P10.28-l` — AVANT : drapeau `seeded_sts_rules` posé EN PREMIER (écriture avalée), INSERT avalés (`let _`) : une règle
+/// refusée laissait le drapeau posé et la règle jamais resemée. DÉSORMAIS : `semer_sous_son_drapeau`, chaque INSERT
+/// propagé (`Ok(0)` = refus), drapeau en DERNIER ; la lecture de `PLUME_WATCH_STS` reste DANS le semis.
 pub(crate) fn seed_sts_rules(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_sts_rules'", [], |r| r.get::<_, String>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_sts_rules','1')", []);
-    // GÉNÉRIQUE (toute infra) : au moins 1 StatefulSet pas prêt (ready<desired) depuis la fenêtre.
-    let _ = conn.execute(
-        "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) \
-         VALUES('k8s: StatefulSet pas prêt','metric kube_sts_notready | stats max(value)',1,'>',0.0,3,120,600,0)",
-        [],
-    );
-    // PAR APP critique : INFRA-EN-CONFIG via PLUME_WATCH_STS="ns/nom …" (même variable que kube-state.sh,
-    // qui émet kube_sts_ready_<nom>). 0 réplique prête = app down/absente -> alerte sév 4. Défaut = apps
-    // GuatX (exemple/compat) ; produit générique : définir la liste de SON infra (ou vide = aucune).
-    // Plume CANONICAL (PLUME_-only) : PLUME_WATCH_STS uniquement (contrat partagé kube-state.sh :
-    // le script émet kube_sts_ready_<nom> sur la base de CETTE variable côté shell ; rename shell = CHUNK 2).
-    let watch = std::env::var("PLUME_WATCH_STS").unwrap_or_default();   // défaut VIDE (générique) ; défini par déploiement (deployment.yaml env / k8s.conf)
-    for w in watch.split_whitespace() {
-        let name = w.rsplit('/').next().unwrap_or(w);
-        if name.is_empty() { continue; }
-        let san: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
-        let q = format!("metric kube_sts_ready_{san} | stats min(value)");
-        let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) VALUES(?1,?2,1,'<',1.0,4,120,300,0)",
-            params![format!("{name} indisponible (statefulset)"), q],
+    semer_sous_son_drapeau(conn, "seeded_sts_rules", |conn| {
+        // GÉNÉRIQUE (toute infra) : au moins 1 StatefulSet pas prêt (ready<desired) depuis la fenêtre.
+        let ecrites = conn.execute(
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) \
+             VALUES('k8s: StatefulSet pas prêt','metric kube_sts_notready | stats max(value)',1,'>',0.0,3,120,600,0)",
+            [],
         );
-    }
+        une_ligne_ecrite(ecrites?)?;
+        // PAR APP critique : INFRA-EN-CONFIG via PLUME_WATCH_STS="ns/nom …" (même variable que kube-state.sh,
+        // qui émet kube_sts_ready_<nom>). 0 réplique prête = app down/absente -> alerte sév 4. Défaut = apps
+        // GuatX (exemple/compat) ; produit générique : définir la liste de SON infra (ou vide = aucune).
+        // Plume CANONICAL (PLUME_-only) : PLUME_WATCH_STS uniquement (contrat partagé kube-state.sh :
+        // le script émet kube_sts_ready_<nom> sur la base de CETTE variable côté shell ; rename shell = CHUNK 2).
+        let watch = std::env::var("PLUME_WATCH_STS").unwrap_or_default();   // défaut VIDE (générique) ; défini par déploiement (deployment.yaml env / k8s.conf)
+        for w in watch.split_whitespace() {
+            let name = w.rsplit('/').next().unwrap_or(w);
+            if name.is_empty() { continue; }
+            let san: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+            let q = format!("metric kube_sts_ready_{san} | stats min(value)");
+            let ecrites = conn.execute(
+                "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) VALUES(?1,?2,1,'<',1.0,4,120,300,0)",
+                params![format!("{name} indisponible (statefulset)"), q],
+            );
+            une_ligne_ecrite(ecrites?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Canal de notification ntfy déclaré par ENV (GitOps/Vault-friendly, rebuild-safe) :
@@ -1446,11 +1456,12 @@ pub(crate) fn seed_slab_rule(conn: &Connection) {
     );
 }
 
+/// Règles k8s « filet de sécurité » (pod, deployment, nœud, stockage, certificat, Velero, disque) — OFF par défaut.
+///
+/// `P10.28-l` — AVANT : drapeau `seeded_k8s_rules` posé EN PREMIER (écriture avalée), sept INSERT avalés (`let _`) : une
+/// règle refusée laissait le drapeau posé et la règle jamais resemée. DÉSORMAIS : `semer_sous_son_drapeau`, chaque
+/// INSERT propagé (`Ok(0)` = refus), drapeau en DERNIER ; refusé, rien n'est conservé, rejoué au démarrage suivant.
 pub(crate) fn seed_k8s_rules(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_k8s_rules'", [], |r| r.get::<_, String>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_k8s_rules','1')", []);
     let last = |name: &str| format!("SELECT value FROM metric WHERE name='{name}' AND ts>=__FROM__ ORDER BY ts DESC LIMIT 1");
     // (name, query, is_soql, op, threshold, severity, interval_s, window_s)
     let rules: [(&str, String, i64, &str, f64, i64, i64, i64); 7] = [
@@ -1462,12 +1473,16 @@ pub(crate) fn seed_k8s_rules(conn: &Connection) {
         ("k8s: backup Velero en échec", last("velero_failed"), 0, ">", 0.0, 3, 600, 86400),
         ("hôte: disque / > 90%", last("disk_root_pct"), 0, ">", 90.0, 3, 300, 600),
     ];
-    for (name, q, is_soql, op, th, sev, intv, win) in rules {
-        let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,0)",
-            params![name, q, is_soql, op, th, sev, intv, win],
-        );
-    }
+    semer_sous_son_drapeau(conn, "seeded_k8s_rules", |conn| {
+        for (name, q, is_soql, op, th, sev, intv, win) in rules {
+            let ecrites = conn.execute(
+                "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,0)",
+                params![name, q, is_soql, op, th, sev, intv, win],
+            );
+            une_ligne_ecrite(ecrites?)?;
+        }
+        Ok(())
+    });
 }
 
 /// #3 INCIDENTS Phase 1 — SEED des runbooks MANAGÉS (managed=1), gabarits de réponse guidée keyés sur la

@@ -684,46 +684,92 @@ pub(crate) struct DatasourceIdent {
     pub(crate) role: String,
 }
 
+/// `P10.20-b` — LECTURE TRI-ÉTAT d'un jeton de LECTURE (datasource `#52`, client-read `#39`) : le jeton trouvé, l'absence
+/// ÉTABLIE (le moteur a répondu « aucune ligne », mauvais `kind`, jeton vide, ou mode 1 où aucun jeton de lecture
+/// n'existe par construction), ou rien de lu. Seule l'absence établie vaut « jeton inconnu » : une table `token`
+/// illisible n'est pas un jeton révoqué — le garde la refuse en 503 nommé, sans identité, sans `last_used` écrit,
+/// sans repli sur la démonstration publique ni sur une autre méthode.
+pub(crate) enum LectureDuJetonDeLecture {
+    Trouve(DatasourceIdent),
+    Absent,
+    /// La cause du moteur : pour le journal du démon seulement, jamais pour un corps de réponse.
+    NonLu(String),
+}
+
+impl LectureDuJetonDeLecture {
+    /// La projection d'avant : seul le jeton trouvé sert une identité. Témoins seulement : le chemin servi lit les
+    /// trois issues.
+    #[cfg(test)]
+    fn identite(self) -> Option<DatasourceIdent> {
+        match self {
+            Self::Trouve(ident) => Some(ident),
+            Self::Absent | Self::NonLu(_) => None,
+        }
+    }
+}
+
 /// ACCESSEUR IDENTITÉ token DATASOURCE (#52). MODE 0 UNIQUEMENT (comme le provisioning UI de jetons) : lit la
 /// table `token` de la base unique, EXIGE `kind='datasource'`, mappe vers le rôle de LECTURE stocké (colonne
 /// `role`, défaut viewer) BORNÉ à viewer|editor (jamais admin/agent -> read-scoped, pas de SQL brut). Met à
 /// jour last_used. Mode 1 (control-plane présent) -> None (l'auth datasource passe alors par Basic/SSO).
 /// Fail-closed : token inconnu / mauvais kind -> None.
+/// `P10.20-b` — PROJECTION de `datasource_token_lookup_lu` : `None` confond l'absence et la lecture NON FAITE. Le garde
+/// d'authentification lit `datasource_token_lookup_lu`, qui les distingue ; la projection ne sert plus qu'aux témoins.
+#[cfg(test)]
 pub(crate) fn datasource_token_lookup(st: &AppState, tok: &str) -> Option<DatasourceIdent> {
+    datasource_token_lookup_lu(st, tok).identite()
+}
+
+/// `P10.20-b` — `datasource_token_lookup` en lecture TRI-ÉTAT (même requête, même filtre `kind`, même borne de rôle,
+/// même `last_used` sur le seul jeton trouvé). Voir `LectureDuJetonDeLecture`.
+pub(crate) fn datasource_token_lookup_lu(st: &AppState, tok: &str) -> LectureDuJetonDeLecture {
     if tok.is_empty() || st.tenants.control.is_some() {
-        return None; // mode 1 : pas de token datasource dans le control-plane -> repli Basic/SSO
+        return LectureDuJetonDeLecture::Absent; // mode 1 : pas de token datasource dans le control-plane -> repli Basic/SSO
     }
     let h = sha256_hex(tok.as_bytes());
     let conn = st.db.lock();
-    let row = conn
-        .query_row(
-            "SELECT name, COALESCE(role,'viewer') FROM token WHERE token_hash=?1 AND kind='datasource'",
-            params![h],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .ok()?;
-    let (name, role_raw) = row;
+    let lu = conn.query_row(
+        "SELECT name, COALESCE(role,'viewer') FROM token WHERE token_hash=?1 AND kind='datasource'",
+        params![h],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    );
+    let (name, role_raw) = match lu {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return LectureDuJetonDeLecture::Absent,
+        Err(e) => return LectureDuJetonDeLecture::NonLu(e.to_string()),
+    };
     // read-scoped : borne DURE à viewer|editor (toute autre valeur -> viewer, le plancher).
     let role = if role_raw == "editor" { "editor" } else { "viewer" }.to_string();
     let _ = conn.execute("UPDATE token SET last_used=?1 WHERE token_hash=?2", params![now(), h]);
-    Some(DatasourceIdent { name, tenant: "default".into(), env: "prod".into(), role })
+    LectureDuJetonDeLecture::Trouve(DatasourceIdent { name, tenant: "default".into(), env: "prod".into(), role })
 }
 
 /// ACCESSEUR IDENTITÉ jeton CLIENT-READ (#39). MODE 0 UNIQUEMENT (comme datasource) : lit la table `token`,
 /// EXIGE `kind='client'`, mappe vers le rôle read-only STRICT `client` (rank 0 -> masqué par toute règle
 /// field-filter, cf. role_rank). Met à jour last_used. Mode 1 (control-plane présent) -> None (repli Basic/SSO).
 /// Fail-closed : jeton inconnu / mauvais kind -> None. Read-scoped par construction (host jamais lié).
+/// `P10.20-b` — PROJECTION de `client_token_lookup_lu` (même aveu que `datasource_token_lookup`, témoins seulement).
+#[cfg(test)]
 pub(crate) fn client_token_lookup(st: &AppState, tok: &str) -> Option<DatasourceIdent> {
+    client_token_lookup_lu(st, tok).identite()
+}
+
+/// `P10.20-b` — `client_token_lookup` en lecture TRI-ÉTAT (même requête, même filtre `kind`, même `last_used` sur le
+/// seul jeton trouvé). Voir `LectureDuJetonDeLecture`.
+pub(crate) fn client_token_lookup_lu(st: &AppState, tok: &str) -> LectureDuJetonDeLecture {
     if tok.is_empty() || st.tenants.control.is_some() {
-        return None;
+        return LectureDuJetonDeLecture::Absent;
     }
     let h = sha256_hex(tok.as_bytes());
     let conn = st.db.lock();
-    let name: String = conn
-        .query_row("SELECT name FROM token WHERE token_hash=?1 AND kind='client'", params![h], |r| r.get(0))
-        .ok()?;
+    let lu = conn.query_row("SELECT name FROM token WHERE token_hash=?1 AND kind='client'", params![h], |r| r.get::<_, String>(0));
+    let name = match lu {
+        Ok(name) => name,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return LectureDuJetonDeLecture::Absent,
+        Err(e) => return LectureDuJetonDeLecture::NonLu(e.to_string()),
+    };
     let _ = conn.execute("UPDATE token SET last_used=?1 WHERE token_hash=?2", params![now(), h]);
-    Some(DatasourceIdent { name, tenant: "default".into(), env: "prod".into(), role: "client".into() })
+    LectureDuJetonDeLecture::Trouve(DatasourceIdent { name, tenant: "default".into(), env: "prod".into(), role: "client".into() })
 }
 
 /// Identité résolue d'une clé de livraison AWS Firehose (P-HEC) : le tenant PORTEUR + le connecteur push LIÉ

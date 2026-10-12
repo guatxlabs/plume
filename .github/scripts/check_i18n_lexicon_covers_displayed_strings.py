@@ -954,9 +954,13 @@ SENTINELLE = "\x00"
 # `saute_regex` et `RE_AVANT_REGEX` viennent du LECTEUR PARTAGÉ (voir l'import en tête de module).
 
 
-def _lire_gabarit(src: str, i: int, journal: list[tuple[str, int]] | None = None) -> tuple[str, int]:
+def _lire_gabarit(src: str, i: int, journal: list[tuple[str, int]] | None = None,
+                  internes: list[tuple[str | None, str]] | None = None) -> tuple[str, int]:
     """Lit un gabarit `` `...` `` à partir du backtick ouvrant ; rend (texte avec SENTINELLE pour
-    chaque `${…}`, index après le backtick fermant)."""
+    chaque `${…}`, index après le backtick fermant). `internes` (`P11.8-c`, reste C), si fourni, reçoit ce que
+    les `${…}` contiennent et que le texte rendu perd : `(littéral, code de l'expression avant lui)` pour chaque
+    littéral imbriqué, et `(None, code de l'expression entière)` à la fin de chaque `${…}`. Sans lui, rien ne
+    change : la mesure ordinaire ne voit toujours pas l'intérieur d'une interpolation."""
     assert src[i] == "`"
     depart = i
     i += 1
@@ -983,11 +987,15 @@ def _lire_gabarit(src: str, i: int, journal: list[tuple[str, int]] | None = None
             while i < n and depth:
                 ch = src[i]
                 if ch in "'\"":
-                    _, i = _lire_chaine(src, i, journal)
+                    interne, i = _lire_chaine(src, i, journal)
+                    if internes is not None:
+                        internes.append((interne, "".join(expr)))
                     expr.append('""')
                     continue
                 if ch == "`":
-                    _, i = _lire_gabarit(src, i, journal)
+                    interne, i = _lire_gabarit(src, i, journal, internes)
+                    if internes is not None:
+                        internes.append((interne, "".join(expr)))
                     expr.append('""')
                     continue
                 if ch == "/" and RE_AVANT_REGEX.search("".join(expr[-40:])):
@@ -1000,6 +1008,8 @@ def _lire_gabarit(src: str, i: int, journal: list[tuple[str, int]] | None = None
                     depth -= 1
                 expr.append(ch)
                 i += 1
+            if internes is not None:
+                internes.append((None, "".join(expr)))
             out.append(SENTINELLE)
             continue
         out.append(c)
@@ -1043,7 +1053,8 @@ def _lire_chaine(src: str, i: int, journal: list[tuple[str, int]] | None = None)
     return "".join(out), i
 
 
-def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[tuple]:
+def chaines_js(src: str, journal: list[tuple[str, int]] | None = None,
+               interpoles: dict[int, list[tuple[str | None, str]]] | None = None) -> list[tuple]:
     """Rend [(texte, code_avant, code_apres, bloc_en, contexte)] pour chaque littéral de chaîne/gabarit.
     `code_avant` = le code (sans commentaires ni chaînes) depuis le dernier `;` ou retour à la ligne
     significatif ; `code_apres` = les quelques caractères de code qui suivent ; `contexte` = le triplet
@@ -1052,6 +1063,7 @@ def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[t
     n = len(src)
     i = 0
     code: list[str] = []  # code accumulé sans commentaires ni littéraux (les littéraux deviennent `""`)
+    internes_par_segment: dict[int, list[tuple[str | None, str]]] = {}  # `interpoles` demandé : contenu des `${…}`
     trouves: list[tuple[str, int]] = []  # (texte, position dans `code`)
     while i < n:
         c = src[i]
@@ -1069,7 +1081,10 @@ def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[t
             code.append('""')
             continue
         if c == "`":
-            s, i = _lire_gabarit(src, i, journal)
+            internes: list[tuple[str | None, str]] | None = [] if interpoles is not None else None
+            s, i = _lire_gabarit(src, i, journal, internes)
+            if internes:
+                internes_par_segment[len(code)] = internes
             trouves.append((s, len(code)))
             code.append('""')
             continue
@@ -1088,6 +1103,8 @@ def chaines_js(src: str, journal: list[tuple[str, int]] | None = None) -> list[t
         offsets.append(pos)
         pos += len(seg)
     litteraux = {offsets[idx]: s for s, idx in trouves}
+    if interpoles is not None:  # `P11.8-c` (reste C) : position du gabarit dans le code réduit -> contenu de ses `${…}`
+        interpoles.update({offsets[idx]: v for idx, v in internes_par_segment.items()})
     out = []
     for s, idx in trouves:
         p = offsets[idx]
@@ -1185,17 +1202,40 @@ RE_HTML = re.compile(r"<[a-zA-Z][^<>]*>|</[a-zA-Z]+>")
 # ne suit donc QU'UN saut, DANS le même module, et keyé sur DEUX ancres exactes : le nom `confirmWithConsequence`
 # et l'IDENTIFIANT précis reçu en 2e argument. Une affectation `const <id> = …` n'est un puits de conséquence
 # que si `<id>` est LITTÉRALEMENT un nom passé en 2e argument à `confirmWithConsequence(` dans ce fichier.
-# LA LIMITE DU SAUT UNIQUE, MESURÉE AVANT D'ÊTRE ÉCRITE (`P11.8-c`, reste C, 2026-10-07). Une conséquence
-# rendue par une FONCTION (`consequenceDuPoll(c)`) ou une MÉTHODE (`consequence.trim()`) n'est pas suivie.
-# Relevé des 32 seconds arguments de `confirmWithConsequence(` sous `web/` : 13 littéraux (lus), 4 identifiants
-# affectés sur place (lus par le saut unique), 1 paramètre (`core.js`), 2 expressions, et 12 appels ou méthodes
-# — dont TROIS seulement passent par une fonction ou une méthode qui ASSEMBLE la phrase :
-# `web/connectors.js` `consequenceDuPoll`, `web/destinations.js` `consequenceDuFlush`, `web/retention.js`
-# `consequence.trim()` (les autres sont des `motDu…(…)` déjà bilingues, ou des concaténations sur place).
-# Les trois corps sont des CONCATÉNATIONS ou des gabarits interpolés : les suivre ne révélerait AUCUNE chaîne
-# entière, seulement des fragments dont la clé serait morte. La limite reste donc écrite, non levée : son coût
-# (un second saut, inter-fonctions) ne rapporte rien sur l'arbre du jour ; une fonction qui rendrait un
-# littéral ENTIER serait le premier cas qui le justifie.
+# LA LIMITE DU SAUT UNIQUE, MESURÉE AVANT D'ÊTRE ÉCRITE (`P11.8-c`, reste C, 2026-10-07), PUIS RECTIFIÉE (2026-10-12).
+# Une conséquence rendue par une FONCTION (`consequenceDuPoll(c)`) ou une MÉTHODE n'est pas suivie par le saut unique.
+# Relevé du 2026-10-07 : 32 seconds arguments de `confirmWithConsequence(` sous `web/`, dont TROIS passaient par une
+# fonction ou une méthode qui ASSEMBLAIT la phrase (`web/connectors.js` `consequenceDuPoll`, `web/destinations.js`
+# `consequenceDuFlush`, `web/retention.js` `consequence.trim()`). L'ancien texte concluait « les suivre ne révélerait
+# que des fragments, clé morte » — VRAI de l'instrument, FAUX du produit : `grep` sur `web/i18n.js` rendait 0 pour
+# chacune des trois phrases, qui s'affichaient donc EN FRANÇAIS sous l'interface anglaise (dont « quittent plume
+# MAINTENANT … bruts et non masqués » et « PURGE IRRÉVERSIBLE »). Le remède n'était pas une clé de fragment mais la voie
+# déjà prise par le dépôt : les trois deviennent des FACES `{ fr, en }` écrites en entier (`faceDansLaLangue`), valeurs
+# posées en paramètres — bilingues par construction, donc hors du besoin de suivi. CE QUI TIENT DÉSORMAIS LA FACE
+# MANQUANTE : `faces_orphelines` (plus bas) — une valeur littérale sous `fr:` dont l'objet n'a pas de clé `en:` (ou
+# l'inverse) n'est PAS bilingue, quoi qu'en dise la forme, et la garde rougit en la nommant ; `consequences_hors_faces`
+# juge tout littéral-libellé hors face écrit dans la fonction ou la variable passée en 2e argument (un `return '…'`
+# français entier compris), dans les variables locales qu'elle lit jusqu'à deux sauts, et dans les `${…}` de leurs
+# gabarits. CE QUI RESTE NON TENU : aucun suivi INTER-FONCTIONS général — une fonction APPELÉE depuis la source, une
+# variable à trois sauts ou plus, un import, une méthode d'objet, un paramètre (`core.js`) ne sont pas suivis ; et
+# hors du code d'une conséquence, un littéral imbriqué dans un `${…}` reste invisible à la mesure ordinaire. Deux trous
+# SILENCIEUX de plus (seconde vérification, 2026-10-12, sondés) : une conséquence rendue par une FUNCTION EXPRESSION
+# (`const f = function (c) {…}`) n'est pas suivie, et rien ne l'avoue ; et le choix par `LANG` n'est pas ancré au
+# littéral qu'il choisit : un littéral écrit APRÈS un `LANG === 'en' ? … : …` est exclu, y compris une phrase française
+# concaténée après le choix. Ceux qui le PRÉCÈDENT restent jugés (le contexte est le code ÉCRIT AVANT le littéral).
+# Le trou vaut dans un `${…}` (contexte = l'expression avant le littéral) ET au premier niveau du code d'une
+# conséquence (contexte = l'instruction depuis le dernier `;`, `RE_CHOIX_PAR_LANG.search(avant)` dans
+# `consequences_hors_faces`) : `(LANG === 'en' ? 'a' : 'b') + ' phrase française'` passe en silence (sondé).
+# Trois trous SILENCIEUX de plus (quatrième vérification, 2026-10-12, sondés S1/S2, S18, S16) : seule la DÉFINITION
+# `const|let|var <nom> = …` d'une variable est lue — une conséquence COMPLÉTÉE après coup (`x += '…'`, ou `x = '…'`
+# sous un `let x;` nu) n'est pas jugée ; un 2e argument `await f(c)` n'est ni un identifiant nu ni un appel reconnu,
+# il n'est pas suivi ; et la fonction source est la PREMIÈRE `function <nom>(` du module, SANS portée (contrairement
+# aux variables) : une homonyme imbriquée dans une autre fonction, écrite avant, masque celle que l'appel désigne.
+# Cinquième vérification (2026-10-12) : la flèche source n'accepte plus de préfixe `async` — branche sans témoin, et
+# MORTE pour le produit : `confirmWithConsequence` fait `String(consequence)` (`web/core.js`), une flèche async appelée
+# en 2e argument afficherait `[object Promise]`, pas une phrase ; elle n'est donc pas suivie (comme `await f(c)`, S18).
+# Une fonction LOCALE appelée depuis la source (`const f = () => '…'; const x = f() + c;`) n'est pas suivie non plus :
+# `RE_IDENT_REFERENCE` écarte délibérément un identifiant suivi de `(` (témoin `consequenceTemoinAppelLocal`).
 RE_IDENT_NU = re.compile(r"^[A-Za-z_$][\w$]*$")
 RE_AFFECT_LOCALE = re.compile(r"^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=(?!=)")
 
@@ -1234,6 +1274,237 @@ def identifiants_de_consequence(texte_code: str) -> frozenset[str]:
         if arg2 is not None and RE_IDENT_NU.match(arg2.strip()):
             ids.add(arg2.strip())
     return frozenset(ids)
+
+
+RE_CLE_D_ENTREE = re.compile(r"^\s*([A-Za-z_$][\w$]*)\s*(?::|$)")
+
+
+def _cles_de_l_objet_englobant(code: str, p: int, litteraux: dict[int, str]) -> set[str] | None:
+    """Les clés de PREMIER NIVEAU de l'objet littéral `{…}` qui contient la position `p` du code réduit (une clé
+    entre guillemets est lue par son texte, `litteraux` en donne la valeur). `None` si `p` n'est pas dans un objet."""
+    profondeur, j = 0, p - 1
+    while j >= 0:
+        c = code[j]
+        if c in FERMANTES:
+            profondeur += 1
+        elif c in OUVRANTES:
+            if profondeur == 0:
+                break
+            profondeur -= 1
+        j -= 1
+    if j < 0 or code[j] != "{":
+        return None
+    cles, profondeur, debut, k = set(), 0, j + 1, j + 1
+    while k < len(code):
+        c = code[k]
+        if c in OUVRANTES:
+            profondeur += 1
+        elif c in FERMANTES and profondeur > 0:
+            profondeur -= 1
+        elif profondeur == 0 and c in ",}":
+            entree = code[debut:k]
+            blanc = len(entree) - len(entree.lstrip())
+            if entree.lstrip().startswith('""') and re.match(r'""\s*:', entree.lstrip()):
+                cles.add(litteraux.get(debut + blanc, ""))
+            else:
+                m = RE_CLE_D_ENTREE.match(entree)
+                if m:
+                    cles.add(m.group(1))
+            if c == "}":
+                return cles
+            debut = k + 1
+        k += 1
+    return cles
+
+
+def faces_orphelines(src: str) -> list[tuple[str, str]]:
+    """`P11.8-c` (reste C) — les valeurs littérales posées sous une clé `fr:` (ou `en:`) dont l'objet N'A PAS la
+    clé jumelle : `[(texte, face manquante)]`. `extraire_module` tient une telle valeur pour bilingue PAR
+    CONSTRUCTION sur la seule foi de sa clé ; sans sa jumelle, `faceDansLaLangue` rend `undefined` dans l'autre
+    langue, et rien ne le voyait. Seules les valeurs qui ont la forme d'un libellé (`_candidat`) sont jugées."""
+    out = []
+    for s, avant, _apres, _bloc_en, (code, p, litteraux) in chaines_js(src):
+        m = RE_CLE_FR_EN.search(avant.rstrip())
+        if not m or not _candidat(s.replace(SENTINELLE, "")):
+            continue
+        jumelle = "en" if m.group(1) == "fr" else "fr"
+        cles = _cles_de_l_objet_englobant(code, p, litteraux)
+        if cles is not None and jumelle not in cles:
+            out.append((s, jumelle))
+    return out
+
+
+RE_APPEL_DE_FONCTION_NUE = re.compile(r"^([A-Za-z_$][\w$]*)\s*\(")
+RE_IDENT_TRIM = re.compile(r"^([A-Za-z_$][\w$]*)(?:\s*\.\s*trim\s*\(\s*\))?$")
+
+
+def _fin_d_instruction(code: str, i: int) -> int:
+    """Position du `;` (ou de la fermante orpheline) qui termine l'instruction commencée en `i`, au premier niveau."""
+    profondeur = 0
+    while i < len(code):
+        c = code[i]
+        if c in OUVRANTES:
+            profondeur += 1
+        elif c in FERMANTES:
+            if profondeur == 0:
+                return i
+            profondeur -= 1
+        elif c == ";" and profondeur == 0:
+            return i
+        i += 1
+    return i
+
+
+def _fermante(code: str, i: int) -> int:
+    """Position de la fermante qui répond à l'ouvrante `code[i]` (code réduit : aucune ne se cache dans un littéral)."""
+    profondeur = 0
+    for j in range(i, len(code)):
+        if code[j] in OUVRANTES:
+            profondeur += 1
+        elif code[j] in FERMANTES:
+            profondeur -= 1
+            if profondeur == 0:
+                return j
+    return len(code)
+
+
+# `P11.8-c` (reste C) — PROFONDEUR DU SUIVI DE VARIABLES. Mesuré par la vérification du lot (2026-10-12) : la
+# conséquence de `web/retention.js` passe par DEUX variables (`baisses`, puis `consequence`), et un repli français
+# remis dans la première passait en silence. Le suivi remonte donc les variables locales jusqu'à DEUX sauts depuis le
+# 2e argument ; au-delà rien n'est suivi (borne écrite, jugée par les DEUX côtés : `consequenceTemoinDeuxSauts` doit
+# être accusé à exactement deux sauts, `consequenceTemoinTropLoin` ne doit pas l'être à trois).
+PROFONDEUR_DU_SUIVI_DE_VARIABLES = 2
+RE_IDENT_REFERENCE = re.compile(r"(?<![\w$.])([A-Za-z_$][\w$]*)\b(?!\s*\()")
+
+
+def _bloc_englobant(code: str, p: int) -> int | None:
+    """Position de l'accolade `{` non refermée la plus proche avant `p` ; `None` au premier niveau du module."""
+    profondeur, j = 0, p - 1
+    while j >= 0:
+        if code[j] == "}":
+            profondeur += 1
+        elif code[j] == "{":
+            if profondeur == 0:
+                return j
+            profondeur -= 1
+        j -= 1
+    return None
+
+
+def _definition_de_variable(code: str, nom: str, avant: int) -> re.Match | None:
+    """La DERNIÈRE `const|let|var <nom> =` écrite avant la position `avant` ET VISIBLE d'elle : posée dans un bloc
+    `{…}` qui contient encore `avant`. Deux fonctions d'un même module nomment souvent pareil leurs variables (`en`,
+    `consequence`) : sans la portée, le suivi lisait la variable d'une AUTRE fonction. Une constante du PREMIER
+    NIVEAU du module (une table de libellés comme `CONNECTOR_TYPES`) n'est pas une variable locale : pas suivie."""
+    dernier = None
+    for d in re.finditer(r"\b(?:const|let|var)\s+%s\s*=(?!=)" % re.escape(nom), code):
+        if d.start() >= avant:
+            break
+        b = _bloc_englobant(code, d.start())
+        if b is not None and _fermante(code, b) > avant:
+            dernier = d
+    return dernier
+
+
+def _references_de_variables(code: str, debut: int, fin: int) -> list[tuple[str, int]]:
+    """Les identifiants LUS entre `debut` et `fin` : ni suivis de `(` (un appel n'est pas suivi), ni précédés de `.`
+    (une propriété), ni CLÉ d'objet (`{ en: …`, `, fr: …`) — une clé n'est pas une lecture de variable."""
+    out = []
+    for x in RE_IDENT_REFERENCE.finditer(code, debut, fin):
+        avant, apres = code[:x.start()].rstrip()[-1:], code[x.end():].lstrip()[:1]
+        if apres == ":" and avant in ("{", ","):
+            continue
+        out.append((x.group(1), x.start()))
+    return out
+
+
+def sources_de_consequence(code: str, interpoles: dict[int, list[tuple[str | None, str]]] | None = None
+                           ) -> list[tuple[str, int, int]]:
+    """`P11.8-c` (reste C) — LE SECOND SAUT, BORNÉ. Pour chaque 2e argument de `confirmWithConsequence(` qui est un
+    APPEL d'une fonction de ce module (`consequenceDuPoll(c)`) ou un identifiant suivi ou non de `.trim()`, l'étendue
+    du code qui ASSEMBLE la conséquence : le corps de `function <nom>(`, ou de `const <nom> = (…) =>`, ou
+    l'instruction `const|let|var <nom> = …`. Puis, depuis chaque étendue, les VARIABLES LOCALES qu'elle lit (un
+    identifiant non suivi de `(`, y compris dans les `${…}` d'un gabarit, `interpoles`), jusqu'à
+    `PROFONDEUR_DU_SUIVI_DE_VARIABLES` sauts. `[(nom, début, fin)]` dans le code réduit. Rien d'autre n'est suivi :
+    ni un import, ni une méthode d'objet, ni un paramètre (`core.js`), ni une fonction appelée depuis une étendue —
+    pas de suivi inter-fonctions général."""
+    interpoles = interpoles or {}
+    out, vus = [], set()
+    a_suivre: list[tuple[str, int, int, int]] = []  # (nom, début, fin, profondeur)
+    for m in re.finditer(r"\bconfirmWithConsequence\s*\(", code):
+        arg2 = _second_argument(code, m.end())
+        if arg2 is None:
+            continue
+        arg2 = arg2.strip()
+        appel, ident = RE_APPEL_DE_FONCTION_NUE.match(arg2), RE_IDENT_TRIM.match(arg2)
+        nom = (appel or ident).group(1) if (appel or ident) else None
+        if not nom:
+            continue
+        n = re.escape(nom)
+        if appel:
+            d = re.search(r"\bfunction\s+%s\s*\(" % n, code) or re.search(
+                r"\b(?:const|let|var)\s+%s\s*=\s*(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>" % n, code)
+            if not d:
+                continue
+            k = d.end()
+            if code[k - 2:k] != "=>":  # sauter les paramètres : la `)` qui ferme la liste, puis l'accolade du corps
+                k = _fin_d_instruction(code, k) + 1
+            while k < len(code) and code[k] in " \t\n":
+                k += 1
+            if code[k:k + 1] == "{":
+                a_suivre.append((nom, k, _fermante(code, k), 0))   # la `}` qui ferme le corps
+            else:  # corps d'expression d'une flèche
+                a_suivre.append((nom, k, _fin_d_instruction(code, k), 0))
+        else:
+            d = _definition_de_variable(code, nom, m.start())
+            if d:
+                a_suivre.append((nom, d.end(), _fin_d_instruction(code, d.end()), 0))
+    while a_suivre:
+        nom, debut, fin, profondeur = a_suivre.pop(0)
+        if (nom, debut) in vus:
+            continue
+        vus.add((nom, debut))
+        out.append((nom, debut, fin))
+        if profondeur >= PROFONDEUR_DU_SUIVI_DE_VARIABLES:
+            continue
+        lus = _references_de_variables(code, debut, fin)
+        for p, internes in interpoles.items():
+            if debut <= p < fin:  # une lecture dans un `${…}` est datée par la position du gabarit
+                lus += [(nm, p) for t, e in internes if t is None for nm, _ in _references_de_variables(e, 0, len(e))]
+        for lu, ou in lus:
+            if lu == nom:
+                continue
+            d = _definition_de_variable(code, lu, ou)
+            if d:
+                a_suivre.append((lu, d.end(), _fin_d_instruction(code, d.end()), profondeur + 1))
+    return out
+
+
+def consequences_hors_faces(src: str, cles: set[str]) -> list[tuple[str, str]]:
+    """`[(nom de la source, texte)]` : un littéral qui a la forme d'un libellé, écrit DANS le code qui assemble une
+    conséquence (`sources_de_consequence`), qui n'est ni une face `fr:`/`en:`, ni choisi par `LANG`, ni une clé du
+    lexique. C'est la forme qu'avaient `consequenceDuPoll`, `consequenceDuFlush` et la conséquence de rétention :
+    des fragments français concaténés, aucun nœud entier, donc rendus en français sous l'interface anglaise. Les
+    littéraux IMBRIQUÉS dans les `${…}` d'un gabarit sont jugés aussi (le repli de `baisses`, `web/retention.js`) :
+    la mesure ordinaire ne les voit pas, ce second regard si."""
+    interpoles: dict[int, list[tuple[str | None, str]]] = {}
+    chaines = chaines_js(src, None, interpoles)
+    if not chaines:
+        return []
+    code = chaines[0][4][0]
+    etendues = sources_de_consequence(code, interpoles)
+    out = []
+    for s, avant, _apres, bloc_en, (_c, p, _l) in chaines:
+        nom = next((n for n, d, f in etendues if d <= p < f), None)
+        if nom is None or bloc_en:
+            continue
+        juges = [] if (RE_CLE_FR_EN.search(avant.rstrip()) or RE_CHOIX_PAR_LANG.search(avant)) else [s]
+        juges += [t for t, e in interpoles.get(p, ())
+                  if t is not None and not (RE_CLE_FR_EN.search(e.rstrip()) or RE_CHOIX_PAR_LANG.search(e))]
+        for t in juges:
+            if _candidat(t.replace(SENTINELLE, "")) and t.strip() not in cles:
+                out.append((nom, t))
+    return out
 
 
 def _est_puits(avant: str, attribut: str = "", conseq_ids: frozenset[str] = frozenset()) -> bool:
@@ -2153,6 +2424,189 @@ CORPUS_NOEUD_A_CHEVAL = (
 NOEUD_TEMOIN = "fin de phrase coupee en deux"
 
 
+# `P11.8-c` (reste C) — corpus de la face sans jumelle (`faces_orphelines`). Les deux objets MIXTES (une clé nue, sa
+# jumelle entre guillemets) sont les seuls qui exercent la lecture des clés entre guillemets : une paire TOUT entre
+# guillemets n'est jamais jugée (`RE_CLE_FR_EN` ne lit que la clé nue), son négatif serait vrai quoi qu'il arrive
+# (vérification du lot, 2026-10-12). APRES_APPEL, APRES_TABLEAU et JUMELLE_DANS_UN_APPEL placent la face APRÈS un
+# groupe refermé du même objet : ils tiennent la profondeur en REMONTANT vers l'objet englobant. La profondeur à la
+# RELECTURE des clés est tenue par les deux derniers (seconde vérification, 2026-10-12 : ne plus compter les ouvrantes,
+# ou ne plus décompter les fermantes, ne rougissait que par l'arbre réel) : RELUE porte sa jumelle `en:` APRÈS une autre
+# clé d'un objet IMBRIQUÉ — lue comme une clé de premier niveau si les ouvrantes ne comptent plus, et la face `fr:`
+# passerait ; APRES_GROUPE porte sa jumelle APRÈS un groupe refermé — perdue si les fermantes ne décomptent plus.
+# EN_ABREGEE est un NÉGATIF (quatrième vérification, 2026-10-12) : la clé ABRÉGÉE `en` (sans `:`) est une jumelle ; sans
+# la branche `(?::|$)` de `RE_CLE_D_ENTREE` qui la lit (mutant C7), la face `fr:` serait accusée à tort.
+CORPUS_FACES_ORPHELINES = r"""
+const SEULE = { fr: 'Face témoin sans jumelle' };
+const IMBRIQUEE = { fr: 'Face témoin imbriquée', x: { en: 'Nested twin' } };
+const PAIRE = { fr: 'Face témoin appariée', en: 'Paired witness face' };
+const MIXTE = { fr: 'Face témoin mixte', 'en': 'Mixed witness face' };
+const MIXTE_INVERSE = { 'fr': 'Face témoin mixte inverse', en: 'Reverse mixed witness face' };
+const VIDE = { fr: '' };
+const MOTS = { a: { en: 'English face without twin' }, b: { fr: 'Face témoin seconde', en: 'Second witness face' } };
+const APRES_APPEL = { n: f(x), fr: 'Face témoin après un appel' };
+const APRES_TABLEAU = { l: [1, 2], fr: 'Face témoin après un tableau' };
+const JUMELLE_DANS_UN_APPEL = { g: g({ en: 'Twin inside a call' }), fr: 'Face témoin dont la jumelle est dans un appel' };
+const RELUE = { fr: 'Face témoin relue en profondeur', y: { a: 1, en: 'Nested twin after a key' } };
+const APRES_GROUPE = { x: { a: 1 }, en: 'Twin after a closed group', fr: 'Face témoin après un groupe refermé' };
+const EN_ABREGEE = { fr: 'Face témoin à jumelle abrégée', en };
+"""
+CORPUS_CONSEQUENCES_HORS_FACES = r"""
+function consequenceTemoinFragments(c) {
+  const x = 1;
+  return 'les données de ' + c.nom + ' partent MAINTENANT sans retour';
+}
+const consequenceTemoinFleche = (c) => 'phrase témoin rendue par une flèche ' + c;
+function consequenceTemoinFaces(c) { return faceDansLaLangue({ fr: 'Face témoin française entière', en: 'Whole English witness face' }, { c }); }
+function consequenceTemoinBlocEn(c) {
+  if (LANG === 'en') { return 'English witness consequence for ' + c; }
+  return faceDansLaLangue({ fr: 'Conséquence témoin en face', en: 'Witness consequence face' }, { c });
+}
+function horsConsequenceTemoin() { return 'phrase témoin jamais passée en conséquence'; }
+const TABLE_TEMOIN = { a: 'Libellé témoin de table du module' };
+function autreFonctionTemoin() { const baseHorsPortee = 'phrase témoin hors de portée'; return baseHorsPortee; }
+async function geste(c) {
+  const consequenceTemoin = `purge témoin définitive de ${c}`;
+  await confirmWithConsequence('Titre', consequenceTemoinFragments(c));
+  await confirmWithConsequence('Titre', consequenceTemoinFleche(c));
+  await confirmWithConsequence('Titre', consequenceTemoinFaces(c));
+  await confirmWithConsequence('Titre', consequenceTemoinBlocEn(c));
+  await confirmWithConsequence('Titre', consequenceTemoin.trim());
+  horsConsequenceTemoin();
+}
+async function chaine(c) {
+  const baseTemoin = 'les données témoin partent MAINTENANT sans retour';
+  const consequenceTemoinChaine = baseTemoin + ' ; ' + c;
+  await confirmWithConsequence('Titre', consequenceTemoinChaine);
+  const repliTemoinEnFace = c.map(x => `${x} (${x.y ? x.z : faceDansLaLangue({ fr: 'repli témoin en face', en: 'witness fallback face' })})`);
+  const repliTemoinNu = c.map(x => `${x} (${x.y ? x.z : 'repli témoin dans une interpolation'})`);
+  const consequenceTemoinGabarit = [repliTemoinEnFace.join(' ; '), repliTemoinNu.join(' ; ')].join(' ');
+  await confirmWithConsequence('Titre', consequenceTemoinGabarit);
+  const loinTemoin3 = 'phrase témoin trop loin du second argument';
+  const loinTemoin2 = loinTemoin3 + c;
+  const loinTemoin1 = loinTemoin2 + c;
+  const consequenceTemoinTropLoin = loinTemoin1 + c;
+  await confirmWithConsequence('Titre', consequenceTemoinTropLoin);
+  const deuxSautsTemoin2 = 'phrase témoin à exactement deux sauts du second argument';
+  const deuxSautsTemoin1 = deuxSautsTemoin2 + c;
+  const consequenceTemoinDeuxSauts = deuxSautsTemoin1 + c;
+  await confirmWithConsequence('Titre', consequenceTemoinDeuxSauts);
+  const lueTemoin = 'phrase témoin lue dans une interpolation';
+  const consequenceTemoinLue = `${lueTemoin} !`;
+  await confirmWithConsequence('Titre', consequenceTemoinLue);
+  const consequenceTemoinImbrique = `${c ? `phrase témoin dans un gabarit imbriqué ${c}` : ''}`;
+  await confirmWithConsequence('Titre', consequenceTemoinImbrique);
+  const consequenceTemoinMasquee = faceDansLaLangue({ fr: 'face témoin extérieure masquée', en: 'outer shadowed witness face' });
+  if (c) {
+    const consequenceTemoinMasquee = 'phrase témoin intérieure qui masque la face';
+    await confirmWithConsequence('Titre', consequenceTemoinMasquee);
+  }
+  const cleTemoin = 'phrase témoin lue seulement comme clé';
+  const consequenceTemoinPortee = baseHorsPortee + TABLE_TEMOIN[c] + JSON.stringify({ cleTemoin: c });
+  await confirmWithConsequence('Titre', consequenceTemoinPortee);
+}
+async function apresUnBloc(c) {
+  if (c) { c.n += 1; }
+  const consequenceTemoinApresBloc = 'phrase témoin définie après un bloc refermé';
+  await confirmWithConsequence('Titre', consequenceTemoinApresBloc);
+}
+async function premiereHomonyme(c) {
+  const consequenceTemoinHomonyme = 'phrase témoin de la première fonction homonyme';
+  await confirmWithConsequence('Titre', consequenceTemoinHomonyme);
+}
+function secondeHomonyme(c) {
+  const consequenceTemoinHomonyme = faceDansLaLangue({ fr: 'face témoin de la seconde homonyme', en: 'second homonym witness face' });
+  return consequenceTemoinHomonyme;
+}
+async function fondEtChoix(c) {
+  const consequenceTemoinDeuxGabarits = `${c ? `${c.d ? 'phrase témoin au fond de deux gabarits' : ''}` : ''}`;
+  await confirmWithConsequence('Titre', consequenceTemoinDeuxGabarits);
+  const fondTemoin = 'phrase témoin lue au fond de deux gabarits';
+  const consequenceTemoinFondLu = `${c ? `${c.d ? fondTemoin : ''}` : ''}`;
+  await confirmWithConsequence('Titre', consequenceTemoinFondLu);
+  const consequenceTemoinChoixInterpole = `${LANG === 'en' ? 'English witness choice in an interpolation' : 'choix témoin par la langue dans une interpolation'}`;
+  await confirmWithConsequence('Titre', consequenceTemoinChoixInterpole);
+  const consequenceTemoinChoixNu = LANG === 'en' ? 'English top-level witness choice' : 'choix témoin par la langue au premier niveau';
+  await confirmWithConsequence('Titre', consequenceTemoinChoixNu);
+}
+let consequenceTemoinFlecheNue = c => 'phrase témoin rendue par une flèche à paramètre nu ' + c;
+var consequenceTemoinFlecheVar = (c) => 'phrase témoin rendue par une flèche déclarée par var ' + c;
+async function formesTemoin(c) {
+  await confirmWithConsequence('Titre', consequenceTemoinFlecheNue(c));
+  await confirmWithConsequence('Titre', consequenceTemoinFlecheVar(c));
+  let consequenceTemoinLet = 'phrase témoin déclarée par let';
+  await confirmWithConsequence('Titre', consequenceTemoinLet);
+  var consequenceTemoinVar = 'phrase témoin déclarée par var';
+  await confirmWithConsequence('Titre', consequenceTemoinVar);
+  const proprieteTemoin = 'phrase témoin homonyme de la propriété lue';
+  const consequenceTemoinPropriete = c.proprieteTemoin;
+  await confirmWithConsequence('Titre', consequenceTemoinPropriete);
+  const fabriqueTemoin = () => 'phrase témoin rendue par une flèche locale appelée';
+  const consequenceTemoinAppelLocal = fabriqueTemoin() + c;
+  await confirmWithConsequence('Titre', consequenceTemoinAppelLocal);
+  const cleTemoinApresVirgule = 'phrase témoin lue seulement comme clé après une virgule';
+  const consequenceTemoinCleVirgule = JSON.stringify({ a: c, cleTemoinApresVirgule: c });
+  await confirmWithConsequence('Titre', consequenceTemoinCleVirgule);
+}
+"""
+ATTENDUS_CONSEQUENCES_HORS_FACES = [("consequenceTemoinFragments", "les données de "),
+                                    ("consequenceTemoinFragments", " partent MAINTENANT sans retour"),
+                                    ("consequenceTemoinFleche", "phrase témoin rendue par une flèche "),
+                                    ("consequenceTemoin", "purge témoin définitive de \x00"),
+                                    ("baseTemoin", "les données témoin partent MAINTENANT sans retour"),
+                                    ("repliTemoinNu", "repli témoin dans une interpolation"),
+                                    # seconde vérification (2026-10-12) : borne atteinte EXACTEMENT (deux sauts), variable
+                                    # lue dans un `${…}`, gabarit imbriqué dans un `${…}`, DERNIÈRE définition visible.
+                                    ("deuxSautsTemoin2", "phrase témoin à exactement deux sauts du second argument"),
+                                    ("lueTemoin", "phrase témoin lue dans une interpolation"),
+                                    ("consequenceTemoinImbrique", "phrase témoin dans un gabarit imbriqué \x00"),
+                                    ("consequenceTemoinMasquee", "phrase témoin intérieure qui masque la face"),
+                                    # troisième vérification (2026-10-12) : la PORTÉE de `_definition_de_variable` jugée
+                                    # par ses deux bornes. Une définition écrite APRÈS un bloc refermé reste visible
+                                    # (`_bloc_englobant` compte les `}` en remontant — sans ce comptage, la `{` du
+                                    # `if` refermé passe pour le bloc englobant, et le repli de `web/retention.js`
+                                    # rouvrait en silence) ; une définition de MÊME nom écrite APRÈS l'appel, dans une
+                                    # autre fonction, ne masque pas celle qui précède l'appel (le `break` sur `avant`).
+                                    ("consequenceTemoinApresBloc", "phrase témoin définie après un bloc refermé"),
+                                    ("consequenceTemoinHomonyme", "phrase témoin de la première fonction homonyme"),
+                                    # quatrième vérification (2026-10-12) : un `${…}` dans un gabarit LUI-MÊME dans un
+                                    # `${…}` — l'appel récursif de `_lire_gabarit` doit recevoir `internes` (sans lui,
+                                    # mutant A3, le littéral et la variable lue au fond passaient, corpus vert).
+                                    # `consequenceTemoinChoixInterpole` et `consequenceTemoinChoixNu` sont les NÉGATIFS
+                                    # du choix par `LANG` (dans un `${…}`, puis au premier niveau) : aucune entrée.
+                                    ("consequenceTemoinDeuxGabarits", "phrase témoin au fond de deux gabarits"),
+                                    ("fondTemoin", "phrase témoin lue au fond de deux gabarits"),
+                                    # cinquième vérification (2026-10-12) : chaque ALTERNATIVE des deux regex de
+                                    # déclaration a son témoin — flèche à paramètre NU (`c => …`, mutant J20) et
+                                    # déclarée par `let`, flèche déclarée par `var`, variables `let` et `var`. NÉGATIFS
+                                    # de `formesTemoin` (aucune entrée) : une PROPRIÉTÉ homonyme d'une variable locale
+                                    # (`c.proprieteTemoin`, l'exclusion du `.`), une flèche locale APPELÉE (l'exclusion
+                                    # du `(`, frontière assumée), une clé d'objet après une VIRGULE.
+                                    ("consequenceTemoinFlecheNue", "phrase témoin rendue par une flèche à paramètre nu "),
+                                    ("consequenceTemoinFlecheVar", "phrase témoin rendue par une flèche déclarée par var "),
+                                    ("consequenceTemoinLet", "phrase témoin déclarée par let"),
+                                    ("consequenceTemoinVar", "phrase témoin déclarée par var")]
+# L'exclusion par le LEXIQUE (`t.strip() not in cles`) jugée par le même corpus : une clé posée au lexique, ici la
+# phrase de la flèche SANS son espace final (le `.strip()` est donc exigé aussi), retire cette entrée et elle seule.
+CLE_TEMOIN_DU_LEXIQUE = "phrase témoin rendue par une flèche"
+ATTENDUS_FACES_ORPHELINES = [("Face témoin sans jumelle", "en"), ("Face témoin imbriquée", "en"),
+                             ("Nested twin", "fr"), ("English face without twin", "fr"),
+                             ("Face témoin après un appel", "en"), ("Face témoin après un tableau", "en"),
+                             ("Twin inside a call", "fr"), ("Face témoin dont la jumelle est dans un appel", "en"),
+                             ("Face témoin relue en profondeur", "en"), ("Nested twin after a key", "fr")]
+# `P11.8-c` (reste C) — LE BRANCHEMENT DES DEUX RÈGLES EST JUGÉ EN JOUANT `main` (vérification du lot, 2026-10-12 :
+# retirer leur appel dans `mesurer`, ou leur boucle de régressions dans `main`, laissait la garde verte — les témoins
+# ci-dessus ne jugent que les fonctions, c'est le défaut B8w-1). Sous cette variable, `mesurer` lit EN PLUS un module
+# fabriqué (les deux corpus) ; `valider_instrument` relance le script ainsi et exige rc=1 ET les deux régressions
+# nommées sur ce module. La variable ne peut QU'ajouter des erreurs : elle ne touche à aucun module réel.
+ENV_TEMOIN_FACES_ET_CONSEQUENCES = "LEXIQUE_TEMOIN_FACES_ET_CONSEQUENCES"
+MODULE_TEMOIN_FACES_ET_CONSEQUENCES = "temoin-faces-et-consequences.js"
+CORPUS_TEMOIN_JOUE_PAR_MAIN = CORPUS_FACES_ORPHELINES + CORPUS_CONSEQUENCES_HORS_FACES
+REGRESSIONS_ATTENDUES_DU_TEMOIN_JOUE = (
+    f"{MODULE_TEMOIN_FACES_ET_CONSEQUENCES} : face « Face témoin sans jumelle »",
+    f"{MODULE_TEMOIN_FACES_ET_CONSEQUENCES} : la conséquence assemblée par `consequenceTemoinFragments`",
+)
+
+
 def valider_instrument() -> list[str]:
     errs = []
     # `P11.8-i` — L'ÉNUMÉRATION DES NŒUDS SE VALIDE DANS LES DEUX SENS, SUR DES ENTRÉES FABRIQUÉES.
@@ -2312,7 +2766,7 @@ def valider_instrument() -> list[str]:
         errs.append(f"témoin : {len(j_perdu)} aveu(x) de désynchronisation au lieu de 1 sur `if (x) /\"/.test(y);` — "
                     f"le détecteur de perte de synchronisation est mort, ou la règle du `/` a changé sans son témoin. "
                     f"Un lecteur qui ne sait plus dire qu'il a sauté une région rend un compte faux EN SILENCE.")
-    if os.environ.get(ENV_TEMOIN_FABRIQUE_ABSENTE) != "1":
+    if os.environ.get(ENV_TEMOIN_FABRIQUE_ABSENTE) != "1" and os.environ.get(ENV_TEMOIN_FACES_ET_CONSEQUENCES) != "1":
         enfant = subprocess.run([sys.executable, os.path.abspath(__file__)], capture_output=True, text=True,
                                 env={**os.environ, ENV_TEMOIN_FABRIQUE_ABSENTE: "1"}, timeout=120)
         if enfant.returncode != 2 or "fabrique-absente-du-temoin.js" not in enfant.stdout:
@@ -2320,6 +2774,42 @@ def valider_instrument() -> list[str]:
                         f"{enfant.returncode} au lieu de 2 (refus de conclure) — `main` ne se range plus à "
                         f"`verdict_sur_les_fabriques`, et une déclaration périmée accuserait des libellés neufs. "
                         f"Fin de sortie : {enfant.stdout[-300:]!r}")
+    # `P11.8-c` (reste C) — LA FACE SANS JUMELLE, JUGÉE DANS LES DEUX SENS. Positifs : une face `fr:` seule, une face
+    # `fr:` dont la jumelle `en:` est dans un objet IMBRIQUÉ ou dans un APPEL (pas le même objet), et une face posée
+    # après un appel ou un tableau refermés. Négatifs : la paire complète, les deux paires MIXTES (jumelle entre
+    # guillemets), et une valeur vide seule (`fr: ''`, pas un libellé).
+    orph = faces_orphelines(CORPUS_FACES_ORPHELINES)
+    if sorted(orph) != sorted(ATTENDUS_FACES_ORPHELINES):
+        errs.append(f"témoin de FACE SANS JUMELLE : {sorted(orph)} au lieu de {sorted(ATTENDUS_FACES_ORPHELINES)} — "
+                    f"une face `fr:` sans `en:` serait comptée bilingue et rendue `undefined` sous l'autre langue "
+                    f"sans que la garde rougisse, ou la garde accuserait une paire complète.")
+    # `P11.8-c` (reste C) — LE SECOND SAUT BORNÉ, DANS LES DEUX SENS. Positifs : fragments français dans une fonction,
+    # une flèche et une variable `.trim()` passées en conséquence, une phrase passée par DEUX variables, un repli
+    # français imbriqué dans le `${…}` d'un gabarit. Négatifs : la même conséquence en faces `{ fr, en }` (y compris
+    # dans un `${…}`), une phrase anglaise sous `if (LANG === 'en') {`, une fonction française JAMAIS passée en
+    # conséquence (le suivi n'est pas général), une phrase à TROIS sauts du 2e argument (la borne), une variable
+    # homonyme d'une AUTRE fonction (la portée), une table du premier niveau du module, et une CLÉ d'objet homonyme
+    # d'une variable (une clé n'est pas une lecture).
+    chf = consequences_hors_faces(CORPUS_CONSEQUENCES_HORS_FACES, set())
+    if sorted(chf) != sorted(ATTENDUS_CONSEQUENCES_HORS_FACES):
+        errs.append(f"témoin de CONSÉQUENCE HORS FACES : {sorted(chf)} au lieu de {sorted(ATTENDUS_CONSEQUENCES_HORS_FACES)} — "
+                    f"une conséquence assemblée en fragments français par une fonction passerait en silence (c'est "
+                    f"ce que `consequenceDuPoll` faisait), ou la garde accuserait des faces bilingues.")
+    chf_lex = consequences_hors_faces(CORPUS_CONSEQUENCES_HORS_FACES, {CLE_TEMOIN_DU_LEXIQUE})
+    att_lex = [a for a in ATTENDUS_CONSEQUENCES_HORS_FACES if a[1].strip() != CLE_TEMOIN_DU_LEXIQUE]
+    if sorted(chf_lex) != sorted(att_lex) or len(att_lex) != len(ATTENDUS_CONSEQUENCES_HORS_FACES) - 1:
+        errs.append(f"témoin de CONSÉQUENCE HORS FACES sous le lexique {{{CLE_TEMOIN_DU_LEXIQUE!r}}} : {sorted(chf_lex)} au "
+                    f"lieu de {sorted(att_lex)} — l'exclusion d'un littéral déjà clé du lexique est coupée (la garde "
+                    f"accuserait une phrase traduite) ou ne taille plus le littéral.")
+    if os.environ.get(ENV_TEMOIN_FACES_ET_CONSEQUENCES) != "1" and os.environ.get(ENV_TEMOIN_FABRIQUE_ABSENTE) != "1":
+        enfant = subprocess.run([sys.executable, os.path.abspath(__file__)], capture_output=True, text=True,
+                                env={**os.environ, ENV_TEMOIN_FACES_ET_CONSEQUENCES: "1"}, timeout=120)
+        absentes = [r for r in REGRESSIONS_ATTENDUES_DU_TEMOIN_JOUE if r not in enfant.stdout]
+        if enfant.returncode != 1 or absentes:
+            errs.append(f"témoin des FACES ET CONSÉQUENCES JOUÉ PAR `main` : le module fabriqué rend rc="
+                        f"{enfant.returncode} (attendu 1), régression(s) absente(s) {absentes} — l'appel de "
+                        f"`faces_orphelines`/`consequences_hors_faces` dans `mesurer`, ou leur boucle dans `main`, "
+                        f"est coupé : les deux règles ne jugent plus l'arbre. Fin de sortie : {enfant.stdout[-300:]!r}")
     lex = cles_du_lexique('const I18N_EN = {\n  "Clé un": "Key one", "Clé deux": "Key two",\n  // c\n  "Clé trois": "Key three",\n  "Clé\\u00a0quatre": "Key four",\n};')
     if lex != {"Clé un", "Clé deux", "Clé trois", "Clé\xa0quatre"}:
         errs.append(f"témoin : lecture du lexique fausse : {sorted(lex)}")
@@ -2336,12 +2826,18 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
         cles = cles_du_lexique(fh.read())
     resultats: dict[str, dict] = {}
     desynchronisations: dict[str, list[str]] = {}
-    for f in sorted(os.listdir(WEB)):
-        chemin = os.path.join(WEB, f)
-        if f == "sw.js" or not (f.endswith(".js") or f == "index.html"):
-            continue
-        with open(chemin, encoding="utf-8") as fh:
-            src = fh.read()
+    entrees: list[tuple[str, str | None]] = [(f, None) for f in sorted(os.listdir(WEB))]
+    if os.environ.get(ENV_TEMOIN_FACES_ET_CONSEQUENCES) == "1":
+        entrees.append((MODULE_TEMOIN_FACES_ET_CONSEQUENCES, CORPUS_TEMOIN_JOUE_PAR_MAIN))
+    for f, fabrique in entrees:
+        if fabrique is not None:
+            src = fabrique
+        else:
+            chemin = os.path.join(WEB, f)
+            if f == "sw.js" or not (f.endswith(".js") or f == "index.html"):
+                continue
+            with open(chemin, encoding="utf-8") as fh:
+                src = fh.read()
         journal: list[tuple[str, int]] = []
         lu = src
         a_cheval: list[str] = []
@@ -2360,8 +2856,12 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
             st, dy, pc, hr = extraire_module(lu, journal)
         else:
             st, dy, pc, hr = extraire_module(src, journal)
+        orphelines_de_face: list[tuple[str, str]] = []
+        conseq_hors_faces: list[tuple[str, str]] = []
         if f not in ("index.html", "i18n.js"):
             a_cheval, illisibles = noeuds_a_cheval(lu, cles)
+            orphelines_de_face = faces_orphelines(lu)
+            conseq_hors_faces = consequences_hors_faces(lu, cles)
         if journal:
             desynchronisations[f] = [f"ligne {lu.count(chr(10), 0, o) + 1} : {motif}" for motif, o in journal]
         if f == "i18n.js":
@@ -2390,6 +2890,10 @@ def mesurer(registre: tuple[str, str] | None) -> tuple[dict[str, dict], set[str]
             # seconde ne compte que les fragments sur lesquels l'analyseur refuse de conclure.
             "a_cheval": sorted(set(a_cheval)),
             "illisibles": illisibles,
+            # `P11.8-c` (reste C) — une face `fr:`/`en:` sans sa jumelle : comptée bilingue, rendue `undefined`.
+            "faces_orphelines": orphelines_de_face,
+            # `P11.8-c` (reste C) — un fragment français écrit dans la fonction/variable qui assemble une conséquence.
+            "consequences_hors_faces": conseq_hors_faces,
             "taux": (100.0 * len(couvertes) / total) if total else 100.0,
         }
     return resultats, cles, desynchronisations
@@ -2437,6 +2941,8 @@ def main(argv: list[str]) -> int:
         return 2
     releve_hr = releve_hr or {}
     plafonds_hr = {**{m: len(v) for m, v in releve_hr.items()}, registre[0]: 0}
+    if os.environ.get(ENV_TEMOIN_FACES_ET_CONSEQUENCES) == "1":  # le module fabriqué est jugé au plafond zéro
+        plafonds[MODULE_TEMOIN_FACES_ET_CONSEQUENCES] = plafonds_hr[MODULE_TEMOIN_FACES_ET_CONSEQUENCES] = 0
     resultats, cles, desynchronisations = mesurer(registre)
     if desynchronisations:
         for m, aveux in sorted(desynchronisations.items()):
@@ -2787,6 +3293,21 @@ def main(argv: list[str]) -> int:
               "(le nœud redevient un littéral entier, et la mesure ordinaire le réclame), ou inscrire le nœud "
               "tel quel au lexique. Inscrire une MOITIÉ produirait une entrée morte. `--noeuds` les liste."
         )
+    # `P11.8-c` (reste C) — UNE FACE SANS SA JUMELLE N'EST PAS BILINGUE. Plafond zéro, sans relevé : la paire se complète.
+    for m, r in resultats.items():
+        for texte, manquante in r["faces_orphelines"]:
+            regressions.append(
+                f"{m} : face « {texte[:90]} » posée sous `{'fr' if manquante == 'en' else 'en'}:` SANS sa jumelle "
+                f"`{manquante}:` dans le même objet — la garde la comptait bilingue par construction, et "
+                f"`faceDansLaLangue` rend `undefined` dans l'autre langue. Écrivez la face `{manquante}:` à côté."
+            )
+        for source, texte in r["consequences_hors_faces"]:
+            regressions.append(
+                f"{m} : la conséquence assemblée par `{source}` écrit « {texte.strip()[:90]} » hors de toute face "
+                f"`{{ fr, en }}` et hors du lexique — un fragment n'est jamais un nœud entier, `i18nWalk` ne le traduit "
+                f"pas, et le geste se lit en français sous l'interface anglaise. Écrivez la conséquence en faces "
+                f"entières (`faceDansLaLangue`), valeurs en paramètres, comme `consequenceDuPoll` (web/connectors.js)."
+            )
     if len(orphelines) > PLAFOND_ORPHELINES:
         regressions.append(
             f"lexique : {len(orphelines)} ORPHELINE(S) PROUVÉE(S), plafond {PLAFOND_ORPHELINES} — "

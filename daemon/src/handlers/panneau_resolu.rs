@@ -338,19 +338,28 @@ impl ElementMoinsVisible {
         )
     }
 
-    fn premier(conn: &Connection, sql_compte: &str, sql_premier: &str, id: i64, genre: &'static str) -> Option<Self> {
-        let retenus: i64 = conn.query_row(sql_compte, params![id], |r| r.get(0)).unwrap_or(0);
+    /// `P10.20-b` (rang trois, 2026-10-12) — « RIEN NE RETIENT » EST UNE LECTURE FAITE, PAS UNE LECTURE
+    /// RATÉE. Les deux lectures étaient absorbées : le COMPTE par `unwrap_or(0)` (zéro -> `None`) et la
+    /// LIGNE du premier élément par `.ok()`. Les trois gestes de partage (`dash_update`, `panel_update`,
+    /// `view_update`) font de `None` « aucun élément ne retient » et ÉCRIVENT `shared` : une lecture
+    /// ratée ouvrait la porte de `P11.20-m`. Désormais : `Ok(None)` = compte LU et nul (comportement
+    /// d'avant) ; `Ok(Some)` = l'élément nommé par le 409 ; `Err(..)` = lecture non faite, l'appelant
+    /// refuse par `refus_d_elements_retenant_non_lus` AVANT toute écriture. Un compte non nul suivi
+    /// d'une ligne absente (élément retiré entre les deux énoncés) est aussi un `Err` : l'élément ne
+    /// peut pas être nommé, et le refus réessayable est la seule issue qui ne publie pas sur un doute.
+    fn premier(conn: &Connection, sql_compte: &str, sql_premier: &str, id: i64, genre: &'static str) -> rusqlite::Result<Option<Self>> {
+        let retenus: i64 = conn.query_row(sql_compte, params![id], |r| r.get(0))?;
         if retenus == 0 {
-            return None;
+            return Ok(None);
         }
         conn.query_row(sql_premier, params![id], |r| {
             Ok(Self { genre, id: r.get(0)?, nom: r.get(1)?, proprietaire: r.get(2)?, retenus })
         })
-        .ok()
+        .map(Some)
     }
 
     /// Une VUE porte des tableaux de bord (`dashboard.view_id`) : le premier non commun retient.
-    pub(crate) fn d_une_vue(conn: &Connection, view_id: i64) -> Option<Self> {
+    pub(crate) fn d_une_vue(conn: &Connection, view_id: i64) -> rusqlite::Result<Option<Self>> {
         Self::premier(
             conn,
             "SELECT COUNT(*) FROM dashboard WHERE view_id=?1 AND COALESCE(visibility,'shared')<>'shared'",
@@ -362,29 +371,31 @@ impl ElementMoinsVisible {
 
     /// Un TABLEAU DE BORD porte des panneaux : un panneau non commun retient ; sinon, une définition
     /// de bibliothèque non commune qu'un de ses panneaux exécute retient (elle est à son propriétaire).
-    pub(crate) fn d_un_tableau_de_bord(conn: &Connection, dash_id: i64) -> Option<Self> {
-        Self::premier(
+    pub(crate) fn d_un_tableau_de_bord(conn: &Connection, dash_id: i64) -> rusqlite::Result<Option<Self>> {
+        // Un panneau non lu n'est pas un panneau absent : `?` rend l'échec AVANT de passer aux
+        // définitions de bibliothèque, qui ne sont consultées que sur un compte de panneaux LU et nul.
+        if let Some(panneau) = Self::premier(
             conn,
             "SELECT COUNT(*) FROM panel WHERE dashboard_id=?1 AND COALESCE(visibility,'shared')<>'shared'",
             "SELECT id,title,'' FROM panel WHERE dashboard_id=?1 AND COALESCE(visibility,'shared')<>'shared' ORDER BY id LIMIT 1",
             dash_id,
             "le panneau",
+        )? {
+            return Ok(Some(panneau));
+        }
+        Self::premier(
+            conn,
+            "SELECT COUNT(*) FROM panel p JOIN library_panel lp ON lp.id=p.library_panel_id \
+             WHERE p.dashboard_id=?1 AND COALESCE(lp.visibility,'shared')<>'shared'",
+            "SELECT lp.id,lp.name,COALESCE(lp.owner,'') FROM panel p JOIN library_panel lp ON lp.id=p.library_panel_id \
+             WHERE p.dashboard_id=?1 AND COALESCE(lp.visibility,'shared')<>'shared' ORDER BY p.id LIMIT 1",
+            dash_id,
+            "la définition de bibliothèque",
         )
-        .or_else(|| {
-            Self::premier(
-                conn,
-                "SELECT COUNT(*) FROM panel p JOIN library_panel lp ON lp.id=p.library_panel_id \
-                 WHERE p.dashboard_id=?1 AND COALESCE(lp.visibility,'shared')<>'shared'",
-                "SELECT lp.id,lp.name,COALESCE(lp.owner,'') FROM panel p JOIN library_panel lp ON lp.id=p.library_panel_id \
-                 WHERE p.dashboard_id=?1 AND COALESCE(lp.visibility,'shared')<>'shared' ORDER BY p.id LIMIT 1",
-                dash_id,
-                "la définition de bibliothèque",
-            )
-        })
     }
 
     /// Un PANNEAU peut exécuter une définition de bibliothèque : non commune, elle retient.
-    pub(crate) fn d_un_panneau(conn: &Connection, panel_id: i64) -> Option<Self> {
+    pub(crate) fn d_un_panneau(conn: &Connection, panel_id: i64) -> rusqlite::Result<Option<Self>> {
         Self::premier(
             conn,
             "SELECT COUNT(*) FROM panel p JOIN library_panel lp ON lp.id=p.library_panel_id \
@@ -425,6 +436,21 @@ pub(crate) const CAUSE_VISIBILITE_NON_LUE: &str =
 /// (`dash_update`, `panel_update`, `view_update`) : un site qui refuse autrement refuserait autre chose.
 pub(crate) fn refus_de_visibilite_non_lue() -> Response {
     err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_VISIBILITE_NON_LUE)
+}
+
+/// `P10.20-b` (rang trois, 2026-10-12) — LES ÉLÉMENTS QUI RETIENDRAIENT LE PARTAGE N'ONT PAS PU ÊTRE
+/// LUS. Cause DISTINCTE de [`CAUSE_VISIBILITE_NON_LUE`] : la visibilité courante, elle, a été lue et
+/// le geste EST un partage ; c'est la porte de `P11.20-m` qui n'a pas pu juger. Avant, cette lecture
+/// ratée valait « aucun élément ne retient » et l'écriture qui publie suivait. 503 pour la même raison
+/// que sa voisine : ni un droit qui manque, ni une absence établie, ni un élément à nommer.
+pub(crate) const CAUSE_ELEMENTS_RETENANT_NON_LUS: &str =
+    "ÉLÉMENTS RETENANT LE PARTAGE NON LUS : la porte qui refuse de publier un contenant portant un \
+     élément moins visible n'a pas pu juger, donc rien n'a été écrit. Ce n'est PAS « aucun élément ne \
+     le retient ». Réessayez.";
+
+/// Le refus de `CAUSE_ELEMENTS_RETENANT_NON_LUS`, écrit UNE fois pour les trois gestes de partage.
+pub(crate) fn refus_d_elements_retenant_non_lus() -> Response {
+    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ELEMENTS_RETENANT_NON_LUS)
 }
 
 /// La réponse du refus : 409 (l'état de l'objet contredit le geste) et la phrase en clair, que la

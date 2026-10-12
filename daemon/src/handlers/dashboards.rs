@@ -199,8 +199,12 @@ pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Exten
     // `P11.20-m` — LE GESTE DE PARTAGE EST JUGÉ AVANT TOUTE ÉCRITURE : refusé avec la raison tant
     // qu'un élément du tableau de bord est moins visible ; rien du corps n'est appliqué sur un refus.
     if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
-        if let Some(element) = panneau_resolu::ElementMoinsVisible::d_un_tableau_de_bord(&conn, id) {
-            return panneau_resolu::refus_de_partage(&element, "le tableau de bord");
+        // `P10.20-b` — les éléments qui retiendraient le partage NON LUS ne valent pas « rien ne
+        // retient » : 503 nommé, avant toute écriture.
+        match panneau_resolu::ElementMoinsVisible::d_un_tableau_de_bord(&conn, id) {
+            Ok(None) => {}
+            Ok(Some(element)) => return panneau_resolu::refus_de_partage(&element, "le tableau de bord"),
+            Err(_) => return panneau_resolu::refus_d_elements_retenant_non_lus(),
         }
     }
     if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
@@ -419,8 +423,12 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     // `P11.20-m` — le geste de partage d'un panneau est jugé AVANT toute écriture : la définition de
     // bibliothèque privée qu'il exécute le retient, et le refus la nomme avec son propriétaire.
     if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
-        if let Some(element) = panneau_resolu::ElementMoinsVisible::d_un_panneau(&conn, id) {
-            return panneau_resolu::refus_de_partage(&element, "le panneau");
+        // `P10.20-b` — les éléments qui retiendraient le partage NON LUS ne valent pas « rien ne
+        // retient » : 503 nommé, avant toute écriture.
+        match panneau_resolu::ElementMoinsVisible::d_un_panneau(&conn, id) {
+            Ok(None) => {}
+            Ok(Some(element)) => return panneau_resolu::refus_de_partage(&element, "le panneau"),
+            Err(_) => return panneau_resolu::refus_d_elements_retenant_non_lus(),
         }
     }
     // LIBRARY PANELS (#54) : (dé)référencer une définition réutilisable. UNIQUE lecture du champ —
@@ -1207,8 +1215,12 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
     // `P11.20-m` — le geste de partage d'une vue est jugé AVANT toute écriture : un tableau de bord
     // privé rangé dans la vue le retient, et le refus le nomme.
     if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
-        if let Some(element) = panneau_resolu::ElementMoinsVisible::d_une_vue(&conn, id) {
-            return panneau_resolu::refus_de_partage(&element, "la vue");
+        // `P10.20-b` — les éléments qui retiendraient le partage NON LUS ne valent pas « rien ne
+        // retient » : 503 nommé, avant toute écriture.
+        match panneau_resolu::ElementMoinsVisible::d_une_vue(&conn, id) {
+            Ok(None) => {}
+            Ok(Some(element)) => return panneau_resolu::refus_de_partage(&element, "la vue"),
+            Err(_) => return panneau_resolu::refus_d_elements_retenant_non_lus(),
         }
     }
     if let Some(name) = b.get("name").and_then(|v| v.as_str()) {

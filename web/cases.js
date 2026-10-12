@@ -1016,6 +1016,49 @@ async function openCase(id) {
   showCaseDetail(id);
 }
 
+// `P10.31-v` (volet console) — LE DOSSIER CRÉÉ DONT LES ÉCHÉANCES MULTI-NIVEAU NE SONT PAS POSÉES, OU PAS LUES.
+// CE QUE LE DÉMON SERT. `case_create` (daemon/src/handlers/cases.rs) rend son deux cents AVEC l'identifiant — le dossier
+// existe — et, quand la politique SLA de sa priorité n'a pas été appliquée, l'UNE de ces deux clés, valeur = la cause
+// nommée : `echeances_multi_niveau_non_posees` (écriture refusée) ou `echeances_multi_niveau_non_lues` (politique ou
+// ligne non lue : « aucune échéance » n'y veut PAS dire « aucune politique »). La console ne lisait que `j.id` : le
+// dossier s'ouvrait comme un dossier gouverné. Les noms des clés sont écrits ICI seulement ; la phrase dit que le dossier
+// EST créé — le recréer ferait un doublon — puis la cause servie, dans un second nœud, au puits des gestes des dossiers.
+// CE QUE CET AVEU NE COUVRE PAS : la suppression d'une politique (aucun écran de politiques SLA dans `web/`), et le
+// refus « CHRONO SLA NON LU » d'une mise à jour, qui est un refus et passe par `peindreLeRefusDUnGeste` (cause citée).
+const CLES_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE = ['echeances_multi_niveau_non_posees', 'echeances_multi_niveau_non_lues'];
+const MOTS_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE = {
+  echeances_multi_niveau_non_posees: {
+    fr: "Dossier #{id} CRÉÉ — ne le recréez pas —, mais ses échéances d'acquittement et de résolution ne sont PAS posées : la politique SLA de sa priorité ne le gouverne pas. Modifier sa priorité ou réenregistrer la politique les repose. Le démon en nomme la cause —",
+    en: 'Case #{id} CREATED — do not create it again —, but its acknowledgement and resolution deadlines are NOT set: the SLA policy of its priority does not govern it. Changing its priority or saving the policy again sets them. The daemon names the cause —' },
+  echeances_multi_niveau_non_lues: {
+    fr: "Dossier #{id} CRÉÉ — ne le recréez pas —, mais la politique SLA de sa priorité n'a PAS été lue : on ne sait pas si une politique le gouverne, et l'absence d'échéance ne veut PAS dire « aucune politique ». Modifier sa priorité ou réenregistrer la politique les repose. Le démon en nomme la cause —",
+    en: 'Case #{id} CREATED — do not create it again —, but the SLA policy of its priority was NOT read: whether a policy governs it is unknown, and the absence of a deadline does NOT mean "no policy". Changing its priority or saving the policy again sets them. The daemon names the cause —' },
+};
+// Les aveux portés par un corps de succès de création : `[{ cle, mot, cause }]`, vide sur le chemin nominal.
+function aveuxDesEcheancesDuDossierCree(j) {
+  if (!j || typeof j !== 'object') return [];
+  return CLES_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE.filter(cle => j[cle] !== undefined && j[cle] !== null)
+    .map(cle => ({ cle, mot: faceDansLaLangue(MOTS_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE[cle], { id: j.id }), cause: String(j[cle]).trim() }));
+}
+// Pose les aveux au puits des dossiers (deux nœuds : la phrase, puis la cause) ; sans puits, à l'avis en une chaîne.
+function avouerLesEcheancesDuDossierCree(j) {
+  // Un dossier créé est un geste neuf : ce que le puits disait d'un geste précédent (dont l'aveu d'un AUTRE dossier) s'efface.
+  const puits = puitsDesDossiers(); effacerLeRefusDUnGeste(puits);
+  const aveux = aveuxDesEcheancesDuDossierCree(j);
+  if (!aveux.length) return 0;
+  if (!puits) { for (const a of aveux) toast(a.cause ? a.mot + ' « ' + a.cause + ' »' : a.mot, 'bad', 9000); return aveux.length; }
+  puits.replaceChildren(...aveux.map(a => {
+    const ligne = document.createElement('div');
+    const dit = document.createElement('span'); dit.textContent = a.mot;
+    ligne.append(dit);
+    if (a.cause) ligne.append(document.createTextNode(' « ' + a.cause + ' »'));
+    ligne.dataset.echeancesDuDossierCree = a.cle;
+    return ligne;
+  }));
+  puits.hidden = false;
+  return aveux.length;
+}
+
 async function createCase() {
   const r = await modal({ title: 'Nouveau case', okText: 'Créer', fields: [
     { name: 'title', label: 'Titre', required: true, placeholder: 'ex: Bruteforce SSH 203.0.113.7' },
@@ -1033,7 +1076,7 @@ async function createCase() {
   try { j = await apiSend('/cases', 'POST', body); }
   catch (e) { toast(phraseDuRefusDeDossier('ouvrir', e), 'bad', 9000); return; }
   await loadCases();
-  if (j && j.id) showCaseDetail(j.id);
+  if (j && j.id) { showCaseDetail(j.id); avouerLesEcheancesDuDossierCree(j); }   // `P10.31-v` — créé, mais échéances non posées/lues
   else toast(motDuRefusDeDossier('dossier_sans_identifiant'), 'bad', 9000);
 }
 
@@ -1077,6 +1120,7 @@ async function addToCase(kind, body, ref) {
     catch (e) { toast(phraseDuRefusDeDossier('ouvrir', e), 'bad', 9000); return; }
     if (!(j && j.id)) { toast(motDuRefusDeDossier('dossier_sans_identifiant'), 'bad', 9000); return; }
     id = j.id;
+    avouerLesEcheancesDuDossierCree(j);   // `P10.31-v` — le dossier neuf existe ; ses échéances, peut-être pas
   }
   const payload = { kind, body }; if (ref) payload.ref = ref;
   // `P10.21-j` — LE RATTACHEMENT REFUSÉ SE DIT, ET RIEN NE S'OUVRE. Le rejet sortait du geste sans un mot :
@@ -1623,4 +1667,4 @@ async function prepareResponse(c, s) {
 export { cleDuRefusDIncident, motDuRefusDIncident, incidentDeclare, incidentDemote, attachRunbook };
 // `P10.23-q` — les phrases des refus d'incident et de rattachement, jouées par le témoin 121 sur une réponse hors du démon.
 export { phraseDuRefusDIncident, phraseDuRattachementRefuse };
-export { OUVERTURE_DU_DOSSIER_NON_OUVERT, OUVERTURE_DU_LIEN_NON_POSE, OUVERTURE_DU_LIEN_NON_RETIRE, cleDuRattachementRefuse, cleDuRefusDeDossier, motDuRefusDeDossier, phraseDuRefusDeDossier, addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, motDuGenreDeLien, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };
+export { CLES_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE, aveuxDesEcheancesDuDossierCree, OUVERTURE_DU_DOSSIER_NON_OUVERT, OUVERTURE_DU_LIEN_NON_POSE, OUVERTURE_DU_LIEN_NON_RETIRE, cleDuRattachementRefuse, cleDuRefusDeDossier, motDuRefusDeDossier, phraseDuRefusDeDossier, addToCase, canEditCases, caseBtn, caseItemEl, caseRow, createCase, linkCasePrompt, loadCaseOpsSummary, loadCases, motDeLaRiposteMiseEnFile, motDeLaTraceManquante, motDuGenreDeLien, openCase, prepareResponse, renderCaseDetail, renderCaseLinks, renderWizardPanel };

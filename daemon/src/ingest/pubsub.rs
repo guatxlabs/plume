@@ -184,10 +184,18 @@ pub(crate) async fn pubsub_ingest_post(
     //    parse JSON, base64, spool). Le corps, borné par `limite_corps` (défaut 8 Mio), a déjà été bufferisé (borné par
     //    DefaultBodyLimit + rate_limit en amont) mais AUCUN parse/décompression/écriture n'a lieu avant ce point.
     //    Absente/mauvaise -> 401 IMMÉDIAT (Pub/Sub rejoue : l'opérateur corrige le token de l'abonnement).
+    //    `P10.20-b` : table des jetons illisible -> 503 nommé (TRANSITOIRE, Pub/Sub rejoue), jamais le 401 d'une clé
+    //    inconnue, sans connecteur ni repli.
     let key = pubsub_query_token(query.as_deref());
-    let ident = match pubsub_token_lookup(&st, &key) {
-        Some(i) => i,
-        None => return err_json(StatusCode::UNAUTHORIZED, "invalid or missing ?token= delivery token"),
+    let ident = match pubsub_token_lookup_lu(&st, &key) {
+        LectureDeLaCleDeLivraison::Trouve(i) => i,
+        LectureDeLaCleDeLivraison::NonLu(cause) => {
+            eprintln!("[ingest] WARN clé de livraison Pub/Sub NON lue, livraison refusée sans connecteur : {cause}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CLE_DE_LIVRAISON_NON_LUE);
+        }
+        LectureDeLaCleDeLivraison::Absent => {
+            return err_json(StatusCode::UNAUTHORIZED, "invalid or missing ?token= delivery token")
+        }
     };
     // 2) GARDE DISQUE : 503 en pré-saturation -> TRANSITOIRE, Pub/Sub rejoue (guérissable).
     if ingest_disk_guard(&st).is_some() {

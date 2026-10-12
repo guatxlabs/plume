@@ -1355,22 +1355,27 @@ fn semer_infra_et_logs(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 // OBS-6 : alertes métriques/logs d'exemple (DÉSACTIVÉES — à activer après branchement des données).
+///
+/// `P10.28-l` — AVANT : drapeau `seeded_obs_rules` posé EN PREMIER (écriture avalée), trois INSERT avalés (`let _`) :
+/// une règle refusée laissait le drapeau posé et la règle jamais resemée, un refus à la N-ième règle laissait les N-1
+/// premières seules. DÉSORMAIS : `semer_sous_son_drapeau`, chaque INSERT propagé (`Ok(0)` = refus), drapeau en
+/// DERNIER ; refusé, rien n'est conservé, rejoué au démarrage suivant.
 pub(crate) fn seed_obs_rules(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_obs_rules'", [], |r| r.get::<_, String>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_obs_rules','1')", []);
     let rules: [(&str, &str, &str, f64, i64, i64, i64); 3] = [
         ("hôte: charge CPU élevée (load1)", "metric load1 | stats max(value)", ">", 8.0, 2, 120, 300),
         ("hôte: mémoire élevée (%)", "metric mem_pct | stats max(value)", ">", 90.0, 3, 120, 300),
         ("logs: pic d'erreurs (sév>=3)", "search severity>=3 | stats count", ">", 20.0, 2, 120, 300),
     ];
-    for (name, q, op, th, sev, intv, win) in rules {
-        let _ = conn.execute(
-            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) VALUES(?1,?2,1,?3,?4,?5,?6,?7,0)",
-            params![name, q, op, th, sev, intv, win],
-        );
-    }
+    semer_sous_son_drapeau(conn, "seeded_obs_rules", |conn| {
+        for (name, q, op, th, sev, intv, win) in rules {
+            let ecrites = conn.execute(
+                "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) VALUES(?1,?2,1,?3,?4,?5,?6,?7,0)",
+                params![name, q, op, th, sev, intv, win],
+            );
+            une_ligne_ecrite(ecrites?)?;
+        }
+        Ok(())
+    });
 }
 
 /// §A — règles readiness StatefulSets (remplacent les alertes AM mailserver/vault/sts). Dépendent des
@@ -1443,17 +1448,20 @@ pub(crate) fn seed_env_notifier(conn: &Connection, conf: &HashMap<String, String
 /// Règle « fuite slab noyau » : SUnreclaim (mem_slab_mb de resources.sh) anormalement haut = mémoire
 /// tenue par le noyau (kmalloc/skbuff...) que mem_pct ne voit pas ; un reboot la rend. OFF par défaut.
 /// Garde dédiée pour apparaître même dans une DB déjà seedée.
+///
+/// `P10.28-l` — AVANT : drapeau `seeded_slab_rule` posé EN PREMIER (écriture avalée), INSERT avalé (`let _`) : la règle
+/// refusée laissait le drapeau posé et n'était jamais resemée. DÉSORMAIS : `semer_sous_son_drapeau`, INSERT propagé
+/// (`Ok(0)` = refus), drapeau en DERNIER ; refusé, rien n'est conservé, rejoué au démarrage suivant.
 pub(crate) fn seed_slab_rule(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_slab_rule'", [], |r| r.get::<_, String>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_slab_rule','1')", []);
-    // normal ~500-1500 Mo ; > 2500 Mo = fuite probable (à surveiller / planifier un reboot).
-    let _ = conn.execute(
-        "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) \
-         VALUES('noyau: fuite slab (SUnreclaim > 2.5 Go)', 'metric mem_slab_mb | stats max(value)', 1, '>', 2500.0, 3, 600, 1800, 0)",
-        [],
-    );
+    semer_sous_son_drapeau(conn, "seeded_slab_rule", |conn| {
+        // normal ~500-1500 Mo ; > 2500 Mo = fuite probable (à surveiller / planifier un reboot).
+        let ecrites = conn.execute(
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) \
+             VALUES('noyau: fuite slab (SUnreclaim > 2.5 Go)', 'metric mem_slab_mb | stats max(value)', 1, '>', 2500.0, 3, 600, 1800, 0)",
+            [],
+        );
+        une_ligne_ecrite(ecrites?)
+    });
 }
 
 /// Règles k8s « filet de sécurité » (pod, deployment, nœud, stockage, certificat, Velero, disque) — OFF par défaut.

@@ -16,7 +16,8 @@
 // passent par un trigger sur UPDATE, comme `chrono_sla_ecritures_comptees`.
 //
 // CE QU'ILS NE TIENNENT PAS : les marqueurs `ack_breached`/`resolve_breached` ne sont pas remis à zéro à l'effacement
-// (à dessein, écrit dans la doc) ; `sla_policy_delete` n'efface toujours pas les échéances de ses dossiers ; la console
+// (à dessein, écrit dans la doc) ; la suppression d'une politique (`sla_policy_delete`, `P10.31-v`, témoins
+// `politique_sla_supprimee_degouverne_ses_dossiers`) ; la console
 // (web/cases.js) ne lit ni `echeances_multi_niveau_non_lues` ni le 503 `CHRONO SLA NON LU` ; une politique écrite
 // pendant qu'un dossier est en pause ne reprend que la pause portée (limite d'avant).
 // Mutants (VERIF_MUT, retirés avant le commit) nommés sur chaque témoin.

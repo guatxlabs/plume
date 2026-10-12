@@ -788,41 +788,103 @@ pub(crate) struct PubsubIdent {
     pub(crate) connector_id: i64,
 }
 
+/// `P10.20-b` — LECTURE TRI-ÉTAT d'une clé de livraison PUSH (Firehose, Pub/Sub) : la clé trouvée et LIÉE, l'absence
+/// ÉTABLIE (le moteur a répondu « aucune ligne », mauvais `kind`, clé vide, ligne lue sans connecteur lié, ou mode 1
+/// où aucune clé push n'existe par construction), ou rien de lu. Seule l'absence établie vaut « clé inconnue ou
+/// révoquée » (403 Firehose, 401 Pub/Sub) : une table `token` illisible n'est pas une clé révoquée — le récepteur la
+/// refuse en 503 nommé (`CAUSE_CLE_DE_LIVRAISON_NON_LUE`, le flux rejoue), sans connecteur, sans `last_used` écrit,
+/// sans repli sur une autre méthode d'authentification.
+pub(crate) enum LectureDeLaCleDeLivraison<T> {
+    Trouve(T),
+    Absent,
+    /// La cause du moteur : pour le journal du démon seulement, jamais pour un corps de réponse.
+    NonLu(String),
+}
+
+impl<T> LectureDeLaCleDeLivraison<T> {
+    fn vers<U>(self, f: impl FnOnce(T) -> U) -> LectureDeLaCleDeLivraison<U> {
+        match self {
+            Self::Trouve(t) => LectureDeLaCleDeLivraison::Trouve(f(t)),
+            Self::Absent => LectureDeLaCleDeLivraison::Absent,
+            Self::NonLu(cause) => LectureDeLaCleDeLivraison::NonLu(cause),
+        }
+    }
+
+    /// La projection d'avant : seule la clé trouvée sert une identité. Témoins seulement : les deux récepteurs lisent
+    /// les trois issues.
+    #[cfg(test)]
+    fn identite(self) -> Option<T> {
+        match self {
+            Self::Trouve(t) => Some(t),
+            Self::Absent | Self::NonLu(_) => None,
+        }
+    }
+}
+
+/// `P10.20-b` — corps d'un refus de livraison push dont la clé n'a pas pu être lue (Firehose `errorMessage`, Pub/Sub
+/// `error`). Constant : ni la clé, ni son empreinte, ni la cause du moteur (celle-ci va au journal du démon).
+pub(crate) const CAUSE_CLE_DE_LIVRAISON_NON_LUE: &str = "CLÉ DE LIVRAISON NON VÉRIFIÉE : la base n'a pas pu lire la table \
+     des jetons — ce n'est PAS « clé inconnue » ni « clé révoquée », sa validité n'est ni affirmée ni niée. Rien n'est \
+     ingéré ; la même livraison peut être rejouée telle quelle.";
+
 /// PRIMITIVE PARTAGÉE (P-HEC) de résolution d'une clé de livraison PUSH -> son `connector_id` lié, pour un `kind`
 /// donné ('firehose' | 'gcp_pubsub'). MODE 0 UNIQUEMENT (les clés sont mintées par `/api/connectors/push-source`,
 /// mono-tenant). RÉUTILISE la primitive de vérification EXISTANTE : `sha256_hex(clé)` puis SELECT CONSTANT-TIME
 /// sur la colonne INDEXÉE `token_hash` (jamais le clair ; la comparaison porte sur le HASH, aucune fuite de timing
 /// sur le secret). EXIGE le `kind` demandé (ISOLATION DE KIND : une clé n'authentifie QUE son propre endpoint, et
 /// JAMAIS le seam agent/HEC/datasource — cf. le filtre NOT IN de token_lookup) + un `connector_id` LIÉ non nul.
-/// Met à jour last_used. Mode 1 (control-plane présent) -> None. Fail-closed : clé inconnue / mauvais kind /
-/// binding absent -> None. Utilisée par `firehose_token_lookup` ET `pubsub_token_lookup` (zéro duplication crypto).
-fn push_token_connector(st: &AppState, tok: &str, kind: &str) -> Option<i64> {
+/// Met à jour last_used sur la seule clé trouvée. Mode 1 (control-plane présent) -> `Absent`. Fail-closed : clé
+/// inconnue / mauvais kind / binding absent -> `Absent` ; `P10.20-b` : lecture ratée -> `NonLu`, jamais `Absent`.
+/// Utilisée par `firehose_token_lookup_lu` ET `pubsub_token_lookup_lu` (zéro duplication crypto).
+fn push_token_connector_lu(st: &AppState, tok: &str, kind: &str) -> LectureDeLaCleDeLivraison<i64> {
     if tok.is_empty() || st.tenants.control.is_some() {
-        return None; // mode 1 : pas de clé push hors control-plane -> pas d'auth push (cf. push-source mono-tenant)
+        // mode 1 : pas de clé push hors control-plane -> pas d'auth push (cf. push-source mono-tenant)
+        return LectureDeLaCleDeLivraison::Absent;
     }
     let h = sha256_hex(tok.as_bytes());
     let conn = st.db.lock();
-    let cid: Option<i64> = conn
-        .query_row(
-            "SELECT connector_id FROM token WHERE token_hash=?1 AND kind=?2",
-            params![h, kind],
-            |r| r.get::<_, Option<i64>>(0),
-        )
-        .ok()?;
-    let connector_id = cid?; // binding manquant (colonne NULL) -> fail-closed (jamais de push non lié)
+    let lu = conn.query_row(
+        "SELECT connector_id FROM token WHERE token_hash=?1 AND kind=?2",
+        params![h, kind],
+        |r| r.get::<_, Option<i64>>(0),
+    );
+    let cid = match lu {
+        Ok(cid) => cid,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return LectureDeLaCleDeLivraison::Absent,
+        Err(e) => return LectureDeLaCleDeLivraison::NonLu(e.to_string()),
+    };
+    // binding manquant (colonne NULL, LUE) -> fail-closed, absence établie (jamais de push non lié)
+    let Some(connector_id) = cid else {
+        return LectureDeLaCleDeLivraison::Absent;
+    };
     let _ = conn.execute("UPDATE token SET last_used=?1 WHERE token_hash=?2", params![now(), h]);
-    Some(connector_id)
+    LectureDeLaCleDeLivraison::Trouve(connector_id)
 }
 
-/// ACCESSEUR IDENTITÉ clé de livraison FIREHOSE (P-HEC). EXIGE `kind='firehose'`. Cf. `push_token_connector`.
+/// ACCESSEUR IDENTITÉ clé de livraison FIREHOSE (P-HEC). EXIGE `kind='firehose'`. Cf. `push_token_connector_lu`.
+/// `P10.20-b` — PROJECTION de `firehose_token_lookup_lu` : `None` confond l'absence et la lecture NON FAITE. Le
+/// récepteur lit `firehose_token_lookup_lu` ; la projection ne sert plus qu'aux témoins.
+#[cfg(test)]
 pub(crate) fn firehose_token_lookup(st: &AppState, tok: &str) -> Option<FirehoseIdent> {
-    push_token_connector(st, tok, "firehose").map(|connector_id| FirehoseIdent { tenant: "default".into(), connector_id })
+    firehose_token_lookup_lu(st, tok).identite()
+}
+
+/// `P10.20-b` — `firehose_token_lookup` en lecture TRI-ÉTAT. Voir `LectureDeLaCleDeLivraison`.
+pub(crate) fn firehose_token_lookup_lu(st: &AppState, tok: &str) -> LectureDeLaCleDeLivraison<FirehoseIdent> {
+    push_token_connector_lu(st, tok, "firehose").vers(|connector_id| FirehoseIdent { tenant: "default".into(), connector_id })
 }
 
 /// ACCESSEUR IDENTITÉ clé de livraison GCP Pub/Sub (P-HEC). EXIGE `kind='gcp_pubsub'` (ISOLATION SYMÉTRIQUE :
-/// une clé Firehose NE s'authentifie PAS ici, ni une clé pubsub sur Firehose). Cf. `push_token_connector`.
+/// une clé Firehose NE s'authentifie PAS ici, ni une clé pubsub sur Firehose). Cf. `push_token_connector_lu`.
+/// `P10.20-b` — PROJECTION de `pubsub_token_lookup_lu` (même aveu que `firehose_token_lookup`, témoins seulement).
+#[cfg(test)]
 pub(crate) fn pubsub_token_lookup(st: &AppState, tok: &str) -> Option<PubsubIdent> {
-    push_token_connector(st, tok, "gcp_pubsub").map(|connector_id| PubsubIdent { tenant: "default".into(), connector_id })
+    pubsub_token_lookup_lu(st, tok).identite()
+}
+
+/// `P10.20-b` — `pubsub_token_lookup` en lecture TRI-ÉTAT. Voir `LectureDeLaCleDeLivraison`.
+pub(crate) fn pubsub_token_lookup_lu(st: &AppState, tok: &str) -> LectureDeLaCleDeLivraison<PubsubIdent> {
+    push_token_connector_lu(st, tok, "gcp_pubsub").vers(|connector_id| PubsubIdent { tenant: "default".into(), connector_id })
 }
 
 /// `P10.20-b` — LECTURE TRI-ÉTAT du compte Basic : la ligne trouvée, l'absence ÉTABLIE (le moteur a répondu

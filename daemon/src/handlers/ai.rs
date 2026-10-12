@@ -657,25 +657,35 @@ pub(crate) async fn ai_nl2soql(State(st): State<AppState>, Extension(au): Extens
         Ok(o) => {
             // LEDGER : purpose, provider, tokens, version de politique, HASH du prompt rédigé. JAMAIS la
             // matière du prompt, JAMAIS la clé, JAMAIS le GXQL/SQL généré (le hash suffit à l'audit).
-            {
-                let conn = st.db.lock();
-                let detail = ai_call_ledger_detail(
-                    pid, &api_shape, crate::ai::provider_is_cloud(&endpoint, requires_cloud),
-                    o.prompt_tokens, o.completion_tokens, policy.version, &prompt_sha, o.valid, o.retried, &au.name,
-                );
-                ledger_append(&conn, "ai.call", &detail);
-            }
-            Json(json!({
-                "soql": o.soql,
-                "sql": o.sql,
-                "valid": o.valid,
-                "error": o.error,
-                "retried": o.retried,
-                "prompt_tokens": o.prompt_tokens,
-                "completion_tokens": o.completion_tokens,
-            }))
-            .into_response()
+            let conn = st.db.lock();
+            let detail = ai_call_ledger_detail(
+                pid, &api_shape, crate::ai::provider_is_cloud(&endpoint, requires_cloud),
+                o.prompt_tokens, o.completion_tokens, policy.version, &prompt_sha, o.valid, o.retried, &au.name,
+            );
+            ai_nl2soql_reponse_de_succes(&conn, &detail, &o)
         }
         Err(e) => ai_worker_err(e),
     }
+}
+
+/// `P10.31-u` — LE BRAS DE SUCCÈS DE `ai_nl2soql` : inscrit `ai.call` au registre et sert l'issue. L'appel au
+/// fournisseur A DÉJÀ EU LIEU (la question rédigée est sortie du processus) : refuser maintenant ne le rattrape
+/// pas. Le maillon était jeté (appel nu de `ledger_append`) : une sortie de données vers un fournisseur d'IA
+/// pouvait manquer au registre tamper-evident pendant que la réponse se taisait. Maillon non inscrit : le corps
+/// garde tous ses champs et gagne `registre_sans_maillon` (`CAUSE_GESTE_SANS_TRACE` suivie de la cause du
+/// moteur, jamais le détail). Chemin nominal : le corps d'avant, octet pour octet. Extrait du handler pour être
+/// éprouvé sans réseau : en test, l'égress vers un faux fournisseur sur la boucle locale est refusé par la garde
+/// SSRF (never-egress), et l'échappatoire `PLUME_SSRF_ALLOW` est figée au premier usage.
+pub(crate) fn ai_nl2soql_reponse_de_succes(conn: &Connection, detail: &str, o: &guatx_core::ai::Nl2SoqlOutcome) -> Response {
+    let maillon = ledger_append(conn, "ai.call", detail);
+    let corps = json!({
+        "soql": o.soql,
+        "sql": o.sql,
+        "valid": o.valid,
+        "error": o.error,
+        "retried": o.retried,
+        "prompt_tokens": o.prompt_tokens,
+        "completion_tokens": o.completion_tokens,
+    });
+    Json(avouer_le_maillon_manquant(corps, &maillon, CAUSE_GESTE_SANS_TRACE)).into_response()
 }

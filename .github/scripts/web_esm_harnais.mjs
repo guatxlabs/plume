@@ -23527,7 +23527,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       "freshness.js › MOTS_DES_SONDES_NON_LUES", "viz.js › MOTS_DU_REFUS_LOCAL_DE_LA_REQUETE",
       // `P10.30-m` — les tables que le témoin 122 a posées : le compte du formulaire de mot de passe, son changement, les
       // intégrations non lues, la requête interrompue (annulation et budget reconnus à la phrase exacte du démon).
-      "app.js › MOTS_DU_CHANGEMENT_DE_MOT_DE_PASSE", "freshness.js › MOTS_DES_INTEGRATIONS_NON_LUES", "login.js › MOTS_DU_COMPTE_DU_MOT_DE_PASSE", "viz.js › MOTS_DE_LA_REQUETE_INTERROMPUE"];
+      "app.js › MOTS_DU_CHANGEMENT_DE_MOT_DE_PASSE", "freshness.js › MOTS_DES_INTEGRATIONS_NON_LUES", "login.js › MOTS_DU_COMPTE_DU_MOT_DE_PASSE", "viz.js › MOTS_DE_LA_REQUETE_INTERROMPUE",
+      // `P10.31-v` — la table que le témoin 137 pose : le dossier créé dont les échéances multi-niveau ne sont pas posées, ou pas lues.
+      "cases.js › MOTS_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -27660,6 +27662,199 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvant136) console.log(`(136) EN ÉCHEC — ${echecs.length - echecsAvant136} écart(s), dits ci-dessus`);
   else console.log("(136) OK — `P10.31-q` : le geste de partage annulé, rejoué avec un vrai envoi différé de préférences tombé dans sa fenêtre (attendu comme un événement, pas comme un délai), n'est jugé que sur ses propres écritures : le PUT concurrent ne compte pas, un POST /api/views/7 compte toujours.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (137) `P10.31-v` (volet console) — LE DOSSIER CRÉÉ DIT QUE SES ÉCHÉANCES MULTI-NIVEAU NE SONT PAS POSÉES, OU PAS LUES ;
+//       LE « CHRONO SLA NON LU » D'UNE MISE À JOUR EST DÉJÀ PEINT AVEC SA CAUSE.
+//
+// CE QUE LE DÉMON SERT (LU ICI, daemon/src/handlers/cases.rs). `case_create` rend son deux cents avec l'identifiant et,
+// quand la politique SLA de la priorité n'est pas appliquée, `echeances_multi_niveau_non_posees` ou
+// `echeances_multi_niveau_non_lues`, valeur `<cause> (<détail>)`. `case_update` refuse en cinq cent trois
+// `CAUSE_CHRONO_SLA_NON_LU (<détail>)`.
+//
+// CE QUE LA CONSOLE EN FAISAIT AVANT CE LOT, MESURÉ : la création ne lisait que `j.id` (aucune ligne de `web/` ne nommait
+// ces clés) — le dossier s'ouvrait comme un dossier gouverné, sans un mot. CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ : « la console ne
+// lit pas le 503 CHRONO SLA NON LU » — `caseUpdate` le passe à `peindreLeRefusDUnGeste` (web/core.js), qui le peint au puits
+// des dossiers en `refus_nomme`, la phrase de la console puis la cause servie entière ; ce témoin le FIGE (e), rien n'est ajouté.
+//
+// JUGÉ, DANS LES DEUX LANGUES (instance française et instance `?plume-lang=en` des modules réels) : (0) l'ensemble des
+// clés lues par la console = l'ensemble servi par le démon, dans les deux sens ; (a)(b) chaque clé : le dossier s'ouvre
+// (identifiant toujours utilisé), l'aveu est posé au puits à DEUX nœuds (phrase, puis « cause »), sans avis ni marque de
+// refus, la phrase porte le numéro, dit CRÉÉ/CREATED, et diffère d'une clé à l'autre et d'une langue à l'autre ; (c) le
+// chemin nominal : aucun aveu, aucun avis ; (d) « ajouter à un nouveau dossier » avoue aussi ET rattache quand même ;
+// (e) le cinq cent trois nommé d'une mise à jour.
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; la cause servie reste française sous les deux langues ;
+// aucun écran de politiques SLA n'existe (rien à peindre pour la suppression d'une politique) ; le volet démon de la clé est
+// ailleurs ; `registre_sans_maillon` sur la mise en service, le mot de passe et le secret des gestes reste sans face console.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant137 = echecs.length;
+  const url137 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const importer137 = async (adresse) => ({ dossiers: await import(adresse("cases.js")), noyau: await import(adresse("core.js")), etat: await import(adresse("state.js")) });
+  const FR137 = { nom: "fr", ...(await importer137(url137)) };
+  const langueOrigine137 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const EN137 = { nom: "en", ...(await importer137((f) => adresseSousLaLangue(f))) };
+  if (langueOrigine137 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine137);
+  FR137.S = FR137.etat.S; EN137.S = EN137.etat.S;
+  const instrument137 = (vrai, quoi) => exiger(vrai, `(137-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic137 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser137 = async (n = 30) => { for (let i = 0; i < n; i++) await tic137(); };
+  const nu137 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const serre137 = (t) => String(t).replace(/\s+/g, " ").trim();
+  const cueillir137 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir137(c, pred, acc)); return acc; };
+  const ACCENTS137 = /[éèêàçùôâîÉÈÊÀ]/;
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ─────────────────────────────────
+  let CAS_RS137 = ""; try { CAS_RS137 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "cases.rs"), "utf8"); } catch (e) { CAS_RS137 = ""; }
+  const constante137 = (nom) => { const m = CAS_RS137.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const C137 = { echeances_multi_niveau_non_posees: constante137("CAUSE_ECHEANCES_MULTI_NIVEAU_NON_POSEES"), echeances_multi_niveau_non_lues: constante137("CAUSE_ECHEANCES_MULTI_NIVEAU_NON_LUES") };
+  const CHRONO137 = constante137("CAUSE_CHRONO_SLA_NON_LU");
+  instrument137(C137.echeances_multi_niveau_non_posees.startsWith("ÉCHÉANCES MULTI-NIVEAU NON POSÉES :") && C137.echeances_multi_niveau_non_lues.startsWith("ÉCHÉANCES MULTI-NIVEAU NON LUES :") && CHRONO137.startsWith("CHRONO SLA NON LU :"),
+    "les trois causes (`CAUSE_ECHEANCES_MULTI_NIVEAU_NON_POSEES`, `…_NON_LUES`, `CAUSE_CHRONO_SLA_NON_LU`) ne sont plus lisibles dans handlers/cases.rs");
+  const SERVIES137 = [...CAS_RS137.matchAll(/corps\["(echeances_multi_niveau_[a-z_]+)"\] = json!\(format!\("\{(CAUSE_[A-Z_]+)\} \(\{cause\}\)"\)\);/g)].map((m) => [m[1], m[2]]);
+  instrument137(SERVIES137.length === 2 && SERVIES137.every(([cle, c]) => c === "CAUSE_" + cle.toUpperCase()),
+    `\`case_create\` ne sert plus les deux aveux d'échéances dans le moule \`<cause> (<détail>)\` : ${JSON.stringify(SERVIES137)}`);
+  instrument137(/IssueDuDossierModifie::ChronoSlaNonLu\(cause\) => err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_CHRONO_SLA_NON_LU\} \(\{cause\}\)"\)\)/.test(CAS_RS137),
+    "`case_update` ne sert plus le cinq cent trois nommé `CAUSE_CHRONO_SLA_NON_LU`");
+  instrument137(FR137.noyau.LANG !== "en" && EN137.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+  const LUES137 = FR137.dossiers.CLES_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE;
+  const servies137 = SERVIES137.map(([cle]) => cle).sort();
+  exiger(Array.isArray(LUES137) && JSON.stringify([...LUES137].sort()) === JSON.stringify(servies137),
+    `(137-0) les clés lues par la console (${JSON.stringify(LUES137)}) ne sont pas EXACTEMENT celles que \`case_create\` sert (${JSON.stringify(servies137)}) : un aveu servi tomberait, ou un nom lu n'existe plus`);
+
+  // ── LE SIMULACRE ─────────────────────────────────────────────────────────────────────────────
+  const fetchOrigine137 = globalThis.fetch, minuterieOrigine137 = globalThis.setTimeout;
+  const etatOrigine137 = [FR137.S, EN137.S].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH, cas: S.caseSelectedId }));
+  let servis137 = {};
+  const appels137 = [];
+  globalThis.fetch = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    appels137.push(k);
+    const r = servis137[k];
+    const texte = !r ? "{}" : typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    const statut = (r && r.statut) || 200;
+    return { ok: statut < 400, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine137(fn, ms >= 100 ? 0 : ms));
+  const fenetre137 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const valider137 = async (champs = {}) => {
+    for (let i = 0; i < 3; i++) {
+      await laisser137();
+      const ov = fenetre137();
+      const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+      if (!form || typeof form.onsubmit !== "function") return;
+      for (const el of cueillir137(form, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") !== null)) {
+        const n = el.getAttribute("data-n");
+        if (Object.prototype.hasOwnProperty.call(champs, n)) el.value = champs[n];
+        else if (!el.value && el.tagName === "SELECT") { const opt = cueillir137(el, (o) => o.tagName === "OPTION")[0]; if (opt) el.value = opt.value !== undefined && opt.value !== "" ? opt.value : opt.getAttribute("value"); }
+        else if (!el.value && el.getAttribute("value") !== null) el.value = el.getAttribute("value");
+      }
+      await Promise.resolve(form.onsubmit({ preventDefault() {} }));
+    }
+  };
+  const avis137 = () => { const h = document.querySelector("#toasts"); return h ? [...h.children] : []; };
+  const detail137 = () => document.querySelector("#case-detail");
+  const puits137 = () => { const d = detail137(); const p = d ? d.parentNode : null; return p ? p.children.find((n) => typeof n.getAttribute === "function" && n.getAttribute("data-puits-du-refus-d-un-geste") === "dossiers") || null : null; };
+  const geste137 = async (lancer, champs) => {
+    const avant = new Set(avis137()); const depuis = appels137.length;
+    let rejet = "";
+    const p = Promise.resolve().then(lancer).catch((e) => { rejet = String((e && e.message) || e); });
+    await valider137(champs); await p; await laisser137(40);
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    const pu = puits137();
+    return { appels: appels137.slice(depuis), avis: avis137().filter((t) => !avant.has(t)).map((t) => nu137(t)), rejet, puits: pu,
+      montre: !!pu && pu.hidden === false, lignes: pu ? [...pu.children] : [], marque: pu && pu.getAttribute("data-refus-d-un-geste") };
+  };
+  const LECTURES137 = { "GET /api/cases": { corps: { cases: [{ id: 4, title: "cas-137", status: "triage" }], total: 1 } } };
+  const CAS137 = { id: 4, title: "cas-137", status: "triage", priority: 3, severity: 2, ts: 1, updated: 1, owner: "hugo", assignee: "", summary: "", items: [] };
+
+  try {
+    instrument137(!!detail137() && !!detail137().parentNode, "`#case-detail` (index.html) est absent ou détaché : le puits des dossiers n'a pas d'hôte");
+    for (const L of [FR137, EN137]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+    const faces137 = {};
+    for (const L of [FR137, EN137]) {
+      // ══ (a)(b) CHAQUE CLÉ SERVIE ══════════════════════════════════════════════════════════════
+      for (const [cle] of SERVIES137) {
+        const id = cle.endsWith("posees") ? 901 : 902;
+        const cause = C137[cle] + " (disk I/O error)";
+        servis137 = { ...LECTURES137, "POST /api/cases": { corps: { id, status: "new", priority: 3, priority_label: "P3", sla_due: null, [cle]: cause } }, ["GET /api/cases/" + id]: { corps: { ...CAS137, id } } };
+        L.S.caseSelectedId = null;
+        const g = await geste137(() => L.dossiers.createCase(), { title: "Force brute SSH 137" });
+        const ligne = g.lignes[0];
+        const phrase = ligne && ligne.children[0] ? nu137(ligne.children[0]) : "";
+        faces137[L.nom + "/" + cle] = phrase;
+        exiger(g.appels.includes("POST /api/cases") && g.appels.includes("GET /api/cases/" + id) && L.S.caseSelectedId === id,
+          `(137${cle.endsWith("posees") ? "a" : "b"}) ${L.nom}/${cle} : le dossier créé n'est plus ouvert par son identifiant — ${JSON.stringify(g.appels)} / sélection ${L.S.caseSelectedId}`);
+        exiger(g.montre && g.lignes.length === 1 && ligne && ligne.children.length === 1 && nu137(ligne) === serre137(phrase + " « " + cause + " »"),
+          `(137${cle.endsWith("posees") ? "a" : "b"}) ${L.nom}/${cle} : l'aveu n'est pas posé au puits des dossiers à DEUX nœuds (phrase, puis « cause servie ») — montré=${g.montre}, ${g.lignes.length} ligne(s) : « ${nu137(g.puits).slice(0, 200)} »`);
+        exiger(!g.marque && g.avis.length === 0 && !g.rejet,
+          `(137${cle.endsWith("posees") ? "a" : "b"}) ${L.nom}/${cle} : un dossier créé est peint comme un REFUS (marque « ${g.marque} »), ou un avis / un rejet part : ${JSON.stringify(g.avis)} ${g.rejet}`);
+        const enTete = L === EN137 ? /^Case #\d+ CREATED/ : /^Dossier #\d+ CRÉÉ/;
+        exiger(enTete.test(phrase) && phrase.includes("#" + id) && phrase.endsWith("—") && !(L === EN137 && ACCENTS137.test(phrase)),
+          `(137${cle.endsWith("posees") ? "a" : "b"}) ${L.nom}/${cle} : la phrase ne dit pas, dans la langue de l'écran, que CE dossier est créé, ou reste française : « ${phrase} »`);
+        // La marque de la ligne nomme la clé avouée : les contrôles négatifs (137c) reposent sur elle.
+        exiger(!!ligne && ligne.getAttribute("data-echeances-du-dossier-cree") === cle,
+          `(137${cle.endsWith("posees") ? "a" : "b"}) ${L.nom}/${cle} : la ligne de l'aveu ne porte plus sa marque data-echeances-du-dossier-cree = « ${cle} » (lu « ${ligne && ligne.getAttribute("data-echeances-du-dossier-cree")} ») : les contrôles négatifs deviendraient vacants`);
+      }
+      // ══ (f) SANS PUITS (`#case-detail` détaché) : l'aveu part à l'avis, phrase PUIS cause, en une chaîne ════
+      {
+        const hote = detail137(), parent = hote.parentNode, suivant = parent.children[parent.children.indexOf(hote) + 1] || null;
+        const causeF = C137.echeances_multi_niveau_non_lues + " (disk I/O error)";
+        servis137 = { ...LECTURES137, "POST /api/cases": { corps: { id: 905, status: "new", priority: 3, echeances_multi_niveau_non_lues: causeF } }, "GET /api/cases/905": { corps: { ...CAS137, id: 905 } } };
+        hote.remove();
+        let f;
+        try { f = await geste137(() => L.dossiers.createCase(), { title: "Sans puits 137" }); }
+        finally { parent.insertBefore(hote, suivant); }
+        const motF = L === EN137 ? /^Case #905 CREATED/ : /^Dossier #905 CRÉÉ/;
+        exiger(f.appels.includes("POST /api/cases") && f.avis.length === 1 && motF.test(f.avis[0]) && f.avis[0].endsWith("« " + serre137(causeF) + " »") && !f.rejet,
+          `(137f) ${L.nom} : sans puits des dossiers, l'aveu des échéances non lues ne part plus à l'avis (phrase qui nomme le dossier créé, puis la cause) : avis ${JSON.stringify(f.avis)} rejet « ${f.rejet} »`);
+      }
+      // ══ (c) LE CHEMIN NOMINAL ═════════════════════════════════════════════════════════════════
+      servis137 = { ...LECTURES137, "POST /api/cases": { corps: { id: 903, status: "new", priority: 3, sla_due: 1 } }, "GET /api/cases/903": { corps: { ...CAS137, id: 903 } } };
+      const n = await geste137(() => L.dossiers.createCase(), { title: "Nominal 137" });
+      exiger(n.appels.includes("GET /api/cases/903") && L.S.caseSelectedId === 903 && n.avis.length === 0 && !n.rejet,
+        `(137c-négatif) ${L.nom} : un dossier créé sans aveu n'est plus ouvert, ou un avis part : ${JSON.stringify(n.appels)} ${JSON.stringify(n.avis)}`);
+      exiger(!(n.montre && n.lignes.length) || n.lignes.every((l) => !l.getAttribute || l.getAttribute("data-echeances-du-dossier-cree") === null),
+        `(137c-négatif) ${L.nom} : un aveu d'échéances apparaît sur un corps qui n'en porte aucun : « ${nu137(n.puits).slice(0, 160)} »`);
+      // ══ (d) « AJOUTER À UN NOUVEAU DOSSIER » ══════════════════════════════════════════════════
+      const causeD = C137.echeances_multi_niveau_non_posees + " (database is locked)";
+      servis137 = { "GET /api/cases": { corps: { cases: [], total: 0 } }, "POST /api/cases": { corps: { id: 904, status: "new", priority: 3, echeances_multi_niveau_non_posees: causeD } },
+        "POST /api/cases/904/items": { statut: 200, corps: { id: 1 } }, "GET /api/cases/904": { corps: { ...CAS137, id: 904 } } };
+      const d = await geste137(() => L.dossiers.addToCase("alert", "Force brute SSH", "alert:5"), { cid: "new" });
+      exiger(d.appels.includes("POST /api/cases/904/items") && d.montre && d.lignes.length === 1 && nu137(d.lignes[0]).endsWith("« " + serre137(causeD) + " »") && nu137(d.lignes[0]).includes("#904"),
+        `(137d) ${L.nom} : « ajouter à un nouveau dossier » n'avoue pas les échéances non posées, ou ne rattache plus l'élément : ${JSON.stringify(d.appels)} « ${nu137(d.puits).slice(0, 200)} »`);
+      // ══ (e) LE CINQ CENT TROIS NOMMÉ D'UNE MISE À JOUR — DÉJÀ PEINT, FIGÉ ═════════════════════
+      const causeE = CHRONO137 + " (database is locked)";
+      servis137 = { ...LECTURES137, "GET /api/cases/4": { corps: CAS137 }, "POST /api/cases/4": { statut: 503, corps: { error: causeE, id: "plume-e7-0" } } };
+      L.S.caseSelectedId = 4;
+      const h = detail137(); h.replaceChildren(); L.dossiers.renderCaseDetail(h, CAS137); await laisser137(20);
+      const valeur137 = (o) => String(o.value !== undefined && o.value !== "" ? o.value : (o.getAttribute && o.getAttribute("value")) || "");
+      const sel = cueillir137(h, (e) => e.tagName === "SELECT" && cueillir137(e, (o) => o.tagName === "OPTION" && valeur137(o) === "4").length > 0 && !cueillir137(e, (o) => o.tagName === "OPTION" && valeur137(o) === "true_positive").length)[0];
+      instrument137(!!sel && typeof sel.onchange === "function", "le sélecteur de priorité du détail est absent : la mise à jour ne peut pas être jouée");
+      if (sel) {
+        const e = await geste137(async () => { sel.value = "1"; await sel.onchange(); });
+        const attendu = serre137(L.noyau.motDuRefusDUnGeste("refus_nomme") + " « " + causeE + " »");
+        exiger(e.appels.includes("POST /api/cases/4") && e.marque === "refus_nomme" && e.montre && nu137(e.puits) === attendu && e.avis.length === 0 && !e.rejet,
+          `(137e) ${L.nom} : le cinq cent trois « CHRONO SLA NON LU » d'une mise à jour n'est plus peint au puits avec la phrase de la console PUIS la cause servie : marque « ${e.marque} » « ${nu137(e.puits).slice(0, 200)} » avis ${JSON.stringify(e.avis)}`);
+      }
+    }
+    // LES FACES : distinctes d'une clé à l'autre (jugées SANS le numéro du dossier : les deux clés sont jouées sur deux
+    // identifiants, qui suffiraient à rendre distinctes deux phrases fusionnées), et d'une langue à l'autre.
+    const sansNumero137 = (t) => String(t || "").replace(/#\d+/g, "#N");
+    for (const lg of ["fr", "en"]) exiger(sansNumero137(faces137[lg + "/echeances_multi_niveau_non_posees"]) !== sansNumero137(faces137[lg + "/echeances_multi_niveau_non_lues"]),
+      `(137-faces) ${lg} : « non posées » et « non lues » ont la même phrase — « on ne sait pas » se lirait « refusé »`);
+    for (const [cle] of SERVIES137) exiger(faces137["fr/" + cle] !== faces137["en/" + cle], `(137-faces) ${cle} : la face anglaise est la face française`);
+  } finally {
+    globalThis.fetch = fetchOrigine137; globalThis.setTimeout = minuterieOrigine137;
+    for (const o of etatOrigine137) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; o.S.caseSelectedId = o.cas; }
+    const pu = puits137(); if (pu) pu.remove();
+    const d = detail137(); if (d) d.replaceChildren();
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  if (echecs.length !== echecsAvant137) console.log(`(137) EN ÉCHEC — ${echecs.length - echecsAvant137} écart(s), dits ci-dessus`);
+  else console.log("(137) OK — `P10.31-v` (console) : un dossier créé dont le démon avoue les échéances multi-niveau NON POSÉES ou NON LUES s'ouvre par son identifiant ET le dit au puits des dossiers, à deux nœuds (phrase qui nomme le dossier créé, puis la cause servie), sans avis ni marque de refus, dans les deux langues, deux phrases distinctes ; le chemin nominal n'en porte aucun ; « ajouter à un nouveau dossier » avoue et rattache ; sans puits, l'aveu part à l'avis ; les clés lues sont exactement celles que le démon sert. Le cinq cent trois « CHRONO SLA NON LU » d'une mise à jour était DÉJÀ peint en refus nommé avec sa cause : figé, rien d'ajouté.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

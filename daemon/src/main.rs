@@ -71,6 +71,7 @@ mod limite_cgroup; // LA LIMITE DE GROUPE DE CONTRÔLE QUI TUE, LUE ET JAMAIS SU
 mod quota_deversement; // LE QUOTA DU DÉVERSEMENT : ce qui est écrit en clair hors de la base chiffrée est BORNÉ (mesuré sur les descripteurs détenus), ou le refus est DIT — module feuille de `sqlite_plafond`
 mod tri_des_connexions; // CE QU'UNE CONNEXION FAIT DE SES TRIS (`S26`) : le verdict `Tri` lu sur le moteur (`compile_options` + réglage local), le désaccord avec le mode et le refus de démarrer — module feuille de `sqlite_plafond`
 mod repertoire_de_deversement; // LE RÉPERTOIRE DE DÉVERSEMENT DES TRIS : choisi (`SQLITE_TMPDIR` explicite, sinon `sqltmp` à côté de la base en 0700), contrôlé par une sonde d'écriture, résidus en clair MESURÉS — module feuille de `sqlite_plafond`
+mod couverture_du_plafond; // LA COUVERTURE DU PLAFOND : le budget SQLite confronté à la limite du cgroup, quatre verdicts exclusifs (protégé / dépassé / sans limite / illisible) et la phrase `[couverture=…]` de la bannière — module feuille de `sqlite_plafond`
 mod sqlite_plafond; // LE PLAFOND MÉMOIRE D'UNE LECTURE : sous `temp_store` en mémoire, SQLite n'a AUCUN chemin de code pour déverser un tri -> un seul auteur pour ce budget
 mod wal_empreinte; // P10.16-a : L'EMPREINTE DU JOURNAL D'ÉCRITURE — la CRÊTE n'est pas bornable (elle dépend des lecteurs qui refusent le checkpoint), le RÉSIDU l'est, et c'est lui qu'on porte au budget
 mod query_timing; // LE DÉCOUPAGE DU TEMPS D'UNE REQUÊTE : l'attente d'un permit n'est fabricable QUE par l'acquisition

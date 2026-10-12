@@ -104,14 +104,21 @@ pub(crate) async fn firehose_ingest_post(
     //    parse JSON, décodage base64, spool). LOW#1 (précision) : l'extracteur `Bytes` d'axum a DÉJÀ bufferisé le
     //    corps (borné par `limite_corps`, défaut 8 Mio, + rate_limit en amont) avant cette vérification in-handler ; ce
     //    qui est GARDÉ derrière l'auth n'est pas la lecture du corps mais son TRAITEMENT coûteux. Clé absente/
-    //    mauvaise/hors mode 0 -> 403 IMMÉDIAT, avant tout parse/décompression/spool.
+    //    mauvaise/hors mode 0 -> 403 IMMÉDIAT, avant tout parse/décompression/spool. `P10.20-b` : table des jetons
+    //    illisible -> 503 nommé (le stream rejoue), jamais le 403 d'une clé inconnue, sans connecteur ni repli.
     let key = headers.get("x-amz-firehose-access-key").and_then(|v| v.to_str().ok()).unwrap_or("");
-    let ident = match firehose_token_lookup(&st, key) {
-        Some(i) => i,
-        None => return firehose_err(StatusCode::FORBIDDEN, "", "invalid or missing X-Amz-Firehose-Access-Key"),
-    };
     // request-id d'écho : header standard Firehose (sinon relu du corps après parse).
     let hdr_request_id = headers.get("x-amz-firehose-request-id").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let ident = match firehose_token_lookup_lu(&st, key) {
+        LectureDeLaCleDeLivraison::Trouve(i) => i,
+        LectureDeLaCleDeLivraison::NonLu(cause) => {
+            eprintln!("[ingest] WARN clé de livraison Firehose NON lue, livraison refusée sans connecteur : {cause}");
+            return firehose_err(StatusCode::SERVICE_UNAVAILABLE, &hdr_request_id, CAUSE_CLE_DE_LIVRAISON_NON_LUE);
+        }
+        LectureDeLaCleDeLivraison::Absent => {
+            return firehose_err(StatusCode::FORBIDDEN, "", "invalid or missing X-Amz-Firehose-Access-Key")
+        }
+    };
     // 2) GARDE DISQUE : 503 en pré-saturation (le stream rejoue) — avant toute allocation de corps.
     if ingest_disk_guard(&st).is_some() {
         return firehose_err(StatusCode::SERVICE_UNAVAILABLE, &hdr_request_id, "server busy (disk pressure)");

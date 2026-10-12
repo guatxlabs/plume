@@ -81,7 +81,7 @@ pub(crate) fn sla_policy_for(conn: &Connection, priority: i64) -> rusqlite::Resu
 /// sous l'ancienne priorité reste un fait, le registre le porte) ; une pause en cours (`sla_paused_since`) est
 /// conservée, et `sla_on_status_change` la reprend à la sortie de `waiting` même sans politique portée (sinon le
 /// chrono resterait en pause pour toujours si une politique revenait) ; la SUPPRESSION d'une politique
-/// (`sla_policy_delete`) n'efface toujours pas les échéances de ses dossiers (rien n'y rappelle cette fonction).
+/// (`sla_policy_delete`) applique la même règle à ses dossiers par son propre `UPDATE` (`P10.31-v`).
 pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) -> IssueDuChronoSla {
     let lu: rusqlite::Result<Option<(i64, i64, String, i64, Option<i64>)>> = conn
         .query_row(
@@ -1369,25 +1369,82 @@ pub(crate) const CAUSE_POLITIQUE_NON_SUPPRIMEE: &str =
      TOUJOURS les échéances de sa priorité et le registre n'en porte aucune suppression. Ce n'est PAS \
      « aucune politique ne porte cet identifiant » : rien n'a été fait. Réessayez.";
 
+/// `P10.31-v` — les dossiers gouvernés par la politique n'ont PAS pu être rendus au régime legacy : 503 nommé, la
+/// politique est CONSERVÉE (suppression annulée dans la même transaction), rien n'est inscrit au registre.
+pub(crate) const CAUSE_DOSSIERS_NON_DEGOUVERNES: &str =
+    "POLITIQUE SLA NON SUPPRIMÉE : la base n'a pas pris l'effacement des échéances (politique, acquittement, \
+     résolution) des dossiers qu'elle gouverne. Supprimer la politique sans cet effacement laisserait ces dossiers \
+     jugés en dépassement sur les échéances d'une politique disparue : la suppression est ANNULÉE, la politique \
+     GOUVERNE TOUJOURS, le registre n'en porte rien. Réessayez.";
+
 /// DELETE /api/sla-policies/{id} — supprime une politique. ADMIN-ONLY (config gouvernante) : re-check handler.
 ///
 /// `P10.20-w` — le chemin nominal est INCHANGÉ (204 sur suppression, 404 nu sur absence) ; l'écriture
 /// RATÉE, qui sortait en 404 — « cette politique n'existe pas » sur une politique bien vivante —, est
 /// nommée par un 503.
+///
+/// `P10.31-v` (volet démon) — SUPPRIMER UNE POLITIQUE DÉGOUVERNE SES DOSSIERS, DANS LA MÊME TRANSACTION. Avant, seul
+/// `DELETE FROM sla_policy` était écrit : `sla_policy_id`, `ack_due` et `resolve_due` posés par `sla_apply_policy`
+/// survivaient, et `sla_multilevel_tick_par` — qui lit les échéances d'`incident` sans joindre `sla_policy` — marquait et
+/// NOTIFIAIT ces dossiers en dépassement dès qu'une AUTRE politique restait active. Même règle que pour une priorité
+/// sans politique (`sla_apply_policy`, `P10.20-w`) : les trois colonnes reviennent à NULL, le dossier retombe sur le
+/// régime legacy. Suppression et effacement sont jugés ensemble (`jouer_le_geste_garde`) : effacement refusé ->
+/// 503 `CAUSE_DOSSIERS_NON_DEGOUVERNES`, politique conservée, rien au registre ; `BEGIN`/`COMMIT` refusés -> 503
+/// `CAUSE_POLITIQUE_NON_SUPPRIMEE`. Le registre (inscrit DANS la transaction) dit le nombre de dossiers dégouvernés
+/// quand il y en a ; son maillon manquant est avoué sous `CLE_REGISTRE_SANS_MAILLON` (200 + corps : le geste a eu
+/// lieu, le refaire ne comblerait pas la trace). Sans dossier gouverné et maillon inscrit : 204 et détail d'avant.
+/// LIMITES ÉCRITES : `sla_due` legacy n'est PAS touché — il est entretenu indépendamment de toute politique
+/// (`ts + sla_target_s(priority)` à la création et à chaque recalcul de `case_apply_update`), donc il est déjà celui du
+/// régime de retour (témoin qui le relit) ; les marqueurs `ack_breached`/`resolve_breached` ne sont PAS remis à zéro
+/// (un dépassement passé sous la politique reste un fait, son registre le porte — même limite que `sla_apply_policy`) ;
+/// les dossiers TERMINAUX gouvernés perdent aussi leurs échéances (la politique qui les définissait n'existe plus) ;
+/// une pause en cours (`sla_paused_since`) est conservée, `sla_on_status_change` la reprend sans politique portée.
+/// HORS DE CE GESTE : une politique MODIFIÉE ou DÉSACTIVÉE (`sla_policy_upsert`) ; la console.
 pub(crate) async fn sla_policy_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     if !au.is_admin() {
         return StatusCode::FORBIDDEN.into_response();
     }
     with_write(&st, &au, |conn| {
-        match conn.execute("DELETE FROM sla_policy WHERE id=?1", params![id]) {
-            Ok(0) => return StatusCode::NOT_FOUND.into_response(),
-            Ok(_) => {}
-            Err(e) => {
-                return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_POLITIQUE_NON_SUPPRIMEE} ({e})"))
+        let issue = jouer_le_geste_garde(conn, "caseops", &format!("suppression de la politique SLA #{id}"), |conn| {
+            match conn.execute("DELETE FROM sla_policy WHERE id=?1", params![id]) {
+                Ok(0) => return Err(StatusCode::NOT_FOUND.into_response()),
+                Ok(_) => {}
+                Err(e) => {
+                    return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_POLITIQUE_NON_SUPPRIMEE} ({e})")))
+                }
+            }
+            let degouvernes = match conn.execute(
+                "UPDATE incident SET sla_policy_id=NULL, ack_due=NULL, resolve_due=NULL WHERE sla_policy_id=?1",
+                params![id],
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIERS_NON_DEGOUVERNES} ({e})")))
+                }
+            };
+            let mut detail = format!("#{id} by {}", au.name);
+            if degouvernes > 0 {
+                detail.push_str(&format!(
+                    " ; {degouvernes} dossier(s) dégouverné(s) : sla_policy_id, ack_due et resolve_due effacés (régime legacy)"
+                ));
+            }
+            Ok((degouvernes, ledger_append(conn, "sla_policy.delete", &detail)))
+        });
+        match issue {
+            Issue::Valide((degouvernes, maillon)) => match maillon.cause_de_non_inscription() {
+                None => StatusCode::NO_CONTENT.into_response(),
+                Some(cause) => {
+                    let mut corps = json!({ "degouvernes": degouvernes });
+                    corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+                    Json(corps).into_response()
+                }
+            },
+            Issue::Refuse(reponse) => reponse,
+            Issue::NonOuvert(e) | Issue::NonValide(e) => {
+                err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_POLITIQUE_NON_SUPPRIMEE} ({e})"))
             }
         }
-        ledger_append(conn, "sla_policy.delete", &format!("#{id} by {}", au.name));
-        StatusCode::NO_CONTENT.into_response()
     })
 }
 

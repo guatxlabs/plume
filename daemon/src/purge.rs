@@ -766,8 +766,7 @@ fn purge_sample(
 /// NE touche pas ; refuser ici ferait dépendre la capacité de purger d'une table qu'on ne purge pas. Ce qui
 /// est interdit, c'est de rendre un ZÉRO pour une lecture non faite : la famille est servie `NonLue(cause)`.
 ///
-/// RESTES NOMMÉS, NON TOUCHÉS (même fichier, hors de ce site) : `meta_i64` (`.ok()` sur `query_row`, couverture
-/// des rollups lue comme ABSENTE sur une lecture ratée) ; les itérateurs aplatis par `.flatten()` de
+/// RESTES NOMMÉS, NON TOUCHÉS (même fichier, hors de ce site) : les itérateurs aplatis par `.flatten()` de
 /// `cited_by_case` (`holds_covering` en est sorti sous `P10.31-l` : une ligne de rétention non lue REFUSE),
 /// `purge_plan` (ventilation par source) et `purge_sample`.
 fn purge_uncovered(conn: &Connection, w: PurgeWindow) -> PurgeUncovered {
@@ -1011,10 +1010,47 @@ fn purge_rollup_band(w: PurgeWindow) -> (i64, i64) {
     (b0, b1)
 }
 
-fn meta_i64(conn: &Connection, key: &str) -> Option<i64> {
+/// Lecture TRI-ÉTAT d'une clé de couverture dans `meta` (`P10.20-b`) : `Ok(Some(v))` = publiée, `Ok(None)` = ABSENCE
+/// ÉTABLIE (aucune ligne), `Err` = lecture NON FAITE. L'ancien `meta_i64` (`.ok()` sur `query_row`) confondait les
+/// deux derniers : une lecture ratée valait « aucune couverture publiée », donc les buckets de la bande étaient
+/// SUPPRIMÉS sans être ré-agrégés, alors que la couverture publiée en base continuait d'affirmer qu'ils étaient
+/// une image d'`event` — la route servait ensuite des buckets VIDES pour des lignes qui survivent.
+///
+/// `rollup_coverage.rs` n'est pas touché : son `of` rend `unproven` sur lecture ratée, défaut voulu pour la ROUTE
+/// (décliner et lire le brut). Pour une purge qui DÉTRUIT, ce défaut n'est pas sûr : la lecture se fait donc ici.
+fn couverture_publiee_lue(conn: &Connection, key: &str) -> Result<Option<String>, PurgeRefusal> {
+    use rusqlite::OptionalExtension;
     conn.query_row("SELECT value FROM meta WHERE key=?1", params![key], |r| r.get::<_, String>(0))
-        .ok()
-        .and_then(|s| s.parse().ok())
+        .optional()
+        .map_err(|e| {
+            PurgeRefusal::Db(format!(
+                "couverture des rollups NON LUE (`meta`, clé `{key}`) : {e} — purge annulée, rien n'est détruit"
+            ))
+        })
+}
+
+/// Borne d'identifiant de la couverture d'`event_rollup` (`META_ROLLUP_COV_ID`) : même lecture qu'avant pour une
+/// valeur lue — mal formée = aucune affirmation exploitable, comme `RollupCoverage::of`.
+fn borne_couverture_rollup(raw: &str) -> Option<i64> {
+    raw.parse().ok()
+}
+
+/// Borne d'identifiant de la couverture d'`event_dim_rollup` (`META_DIM_ROLLUP_COV`,
+/// `"<from>|<below>|<hot_from>|<at_id>"`). MIROIR de `DimRollupCoverage::of` (qui ne rend pas sa lecture d'une
+/// valeur déjà lue, et que ce site ne touche pas) : quatre champs entiers, sinon rien d'établi. L'accord des deux
+/// lectures est jugé par des témoins de comportement, pas garanti par construction : la valeur nominale, les formes
+/// que `of` refuse (cinq champs, trois, un champ non entier à chaque rang, vide) et le champ retenu (`at_id`, relu
+/// par une ligne retardataire `id > at_id` qui ne doit pas être agrégée) — voir
+/// `tests/purge_couverture_des_rollups_non_lue_refuse.rs`. Une forme hors de cet ensemble n'est pas jugée.
+fn borne_couverture_dim(raw: &str) -> Option<i64> {
+    let p: Vec<&str> = raw.split('|').collect();
+    if p.len() != 4 {
+        return None;
+    }
+    match (p[0].parse::<i64>(), p[1].parse::<i64>(), p[2].parse::<i64>(), p[3].parse::<i64>()) {
+        (Ok(_), Ok(_), Ok(_), Ok(at_id)) => Some(at_id),
+        _ => None,
+    }
 }
 
 /// Re-agrège `event_rollup` et `event_dim_rollup` sur la bande `[b0, b1)` DEPUIS LES LIGNES SURVIVANTES.
@@ -1025,9 +1061,16 @@ fn meta_i64(conn: &Connection, key: &str) -> Option<i64> {
 /// borne que la couverture affirme. Couverture ABSENTE -> aucune affirmation n'est faite sur ces buckets (la
 /// route décline et lit le brut) -> on se contente de supprimer, le tick reconstruira.
 ///
+/// LES DEUX COUVERTURES SONT LUES AVANT TOUT `DELETE` (`P10.20-b`), en tri-état : une lecture NON FAITE refuse
+/// (`PurgeRefusal::Db`) -> l'appelant ROLLBACK la purge entière, buckets, lignes et registre compris. Seule une
+/// ABSENCE ÉTABLIE (ou une valeur mal formée, comme avant) mène à « supprimer sans ré-agréger ».
+///
 /// Renvoie `true` si les buckets ont été RÉ-AGRÉGÉS, `false` s'ils ont seulement été SUPPRIMÉS (aucune
 /// couverture publiée -> rien n'était affirmé sur eux). Le reçu rend cette distinction telle quelle.
 fn purge_rebuild_rollups(conn: &Connection, b0: i64, b1: i64) -> Result<bool, PurgeRefusal> {
+    let cov_rollup = couverture_publiee_lue(conn, META_ROLLUP_COV_ID)?.as_deref().and_then(borne_couverture_rollup);
+    let cov_dim = couverture_publiee_lue(conn, META_DIM_ROLLUP_COV)?.as_deref().and_then(borne_couverture_dim);
+
     let conf = load_config();
     let min_sev: i64 = cfg(&conf, "PLUME_ROLLUP_SRCIP_MIN_SEV", "3").parse().unwrap_or(3);
     let topn = rollup_srcip_topn(&conf);
@@ -1036,7 +1079,7 @@ fn purge_rebuild_rollups(conn: &Connection, b0: i64, b1: i64) -> Result<bool, Pu
     let mut reaggregated = false;
     conn.execute("DELETE FROM event_rollup WHERE bucket >= ?1 AND bucket < ?2", params![b0, b1])
         .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
-    if let Some(cov) = meta_i64(conn, META_ROLLUP_COV_ID) {
+    if let Some(cov) = cov_rollup {
         let cond = format!("ts >= {b0} AND ts < {b1} AND id <= {cov}");
         conn.execute(&rollup_insert_sql_into("event_rollup", &cond, min_sev, topn), [])
             .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
@@ -1045,7 +1088,7 @@ fn purge_rebuild_rollups(conn: &Connection, b0: i64, b1: i64) -> Result<bool, Pu
 
     conn.execute("DELETE FROM event_dim_rollup WHERE bucket >= ?1 AND bucket < ?2", params![b0, b1])
         .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
-    if let Some(at_id) = DimRollupCoverage::of(conn).late_floor_id() {
+    if let Some(at_id) = cov_dim {
         let cond = format!("ts >= {b0} AND ts < {b1} AND id <= {at_id}");
         for (source, dims) in dim_rollup_specs().iter() {
             for dim in dims.iter() {

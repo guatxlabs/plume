@@ -92,21 +92,45 @@ pub(crate) fn ip_in_active_engagement(ip: &str, db_path: &str) -> bool {
 /// l'exploitant doit relire ce qui ne protège plus après chaque mise à jour. Borné (le mémo est vidé
 /// et l'événement dit, plutôt que de croître sans fin ou de devenir SILENCIEUX).
 static REFUS_DE_SCOPE_ANNONCES: std::sync::OnceLock<parking_lot::RwLock<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
-const REFUS_DE_SCOPE_MEMO_CAP: usize = 1024;
-fn annoncer_refus_de_scope_une_fois(conn: &Connection, detail: &str) {
-    let memo = REFUS_DE_SCOPE_ANNONCES.get_or_init(|| parking_lot::RwLock::new(std::collections::HashSet::new()));
+pub(crate) const REFUS_DE_SCOPE_MEMO_CAP: usize = 1024;
+/// La ligne de registre qui dit que le mémo a été vidé (les refus déjà annoncés le seront à nouveau).
+pub(crate) const LIGNE_MEMO_DES_REFUS_DE_SCOPE_PLEIN: &str =
+    "mémo des refus de scope PLEIN — vidé ; les refus déjà annoncés le seront à nouveau";
+pub(crate) fn memo_des_refus_de_scope_annonces() -> &'static parking_lot::RwLock<std::collections::HashSet<String>> {
+    REFUS_DE_SCOPE_ANNONCES.get_or_init(|| parking_lot::RwLock::new(std::collections::HashSet::new()))
+}
+/// `P10.31-u` — UN REFUS N'EST « ANNONCÉ » QUE SI SON MAILLON EST AU REGISTRE. Le mémo prenait le détail
+/// AVANT l'écriture et jetait l'issue de `ledger_append` : un maillon refusé (registre hors d'atteinte)
+/// laissait le refus marqué annoncé pour toute la vie du processus — le seul signal « une protection de
+/// pentest a été retirée » était perdu jusqu'au redémarrage, sans retentative. Désormais l'entrée prise
+/// au mémo n'est qu'une RÉSERVATION (deux rafraîchissements concurrents n'écrivent pas deux fois) : si le
+/// maillon n'entre pas, elle est RETIRÉE, et le tour suivant (tick 20 s) retente. La perte est avouée une
+/// fois par tour, par la primitive, sur la sortie d'erreur (genre seul). MÊME RÈGLE pour la ligne « mémo
+/// plein » : le mémo n'est vidé que si cette ligne est entrée — sinon les refus déjà annoncés seraient
+/// ré-annoncés sans que le registre dise pourquoi ; le vidage est retenté au prochain refus neuf.
+pub(crate) fn annoncer_refus_de_scope_une_fois(conn: &Connection, detail: &str) {
+    let memo = memo_des_refus_de_scope_annonces();
     {
         let lu = memo.read();
         if lu.contains(detail) { return; }
     }
-    let mut ecr = memo.write();
-    if !ecr.insert(detail.to_string()) { return; }
-    if ecr.len() > REFUS_DE_SCOPE_MEMO_CAP {
-        ecr.clear();
-        ledger_append(conn, "engagement.scope.refus", "mémo des refus de scope PLEIN — vidé ; les refus déjà annoncés le seront à nouveau");
+    let plein = {
+        let mut ecr = memo.write();
+        if !ecr.insert(detail.to_string()) { return; }
+        ecr.len() > REFUS_DE_SCOPE_MEMO_CAP
+    };
+    if plein {
+        let maillon = ledger_append(conn, "engagement.scope.refus", LIGNE_MEMO_DES_REFUS_DE_SCOPE_PLEIN);
+        if maillon.cause_de_non_inscription().is_none() {
+            let mut ecr = memo.write();
+            ecr.clear();
+            ecr.insert(detail.to_string());
+        }
     }
-    drop(ecr);
-    ledger_append(conn, "engagement.scope.refus", detail);
+    let maillon = ledger_append(conn, "engagement.scope.refus", detail);
+    if maillon.cause_de_non_inscription().is_some() {
+        memo.write().remove(detail);
+    }
 }
 
 /// Charge les engagements ACTIFS non expirés d'une base -> liste compilée (matchers CIDR). Scope JSON invalide /

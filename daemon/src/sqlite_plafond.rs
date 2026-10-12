@@ -140,7 +140,12 @@
 //!   - `mmap_size` est conservé TEL QUEL (256 Mio). Son effet réel sous SQLCipher n'a pas été mesuré : il
 //!     n'est ni revendiqué ni modifié ici.
 use crate::*;
-use crate::limite_cgroup::{limite_cgroup, LimiteCgroup};
+use crate::limite_cgroup::limite_cgroup;
+#[cfg(test)]
+use crate::limite_cgroup::LimiteCgroup;
+// La couverture du plafond (le budget confronté à la limite du cgroup, quatre verdicts) vit dans le module
+// feuille `couverture_du_plafond` (`P7.18-a`) ; `Plafond`, qui grave `hard_heap_limit`, reste ici.
+use crate::couverture_du_plafond::couverture_pour;
 // Le quota du déversement (`P10.1-b`) vit dans le module feuille `quota_deversement` (`P7.18-a`). Ses
 // symboles publics sont RÉ-EXPORTÉS ici : tous les chemins `crate::sqlite_plafond::…` restent valides.
 use crate::quota_deversement::armer_le_quota;
@@ -306,96 +311,6 @@ impl Plafond {
 /// décide, et le `OnceLock` de `pragmas_memoire` ne fige plus la seule branche qu'un test peut voir.
 fn plafond_pour(actif: bool, octets: i64) -> Plafond {
     if actif { Plafond::Applique(octets) } else { Plafond::Aucun }
-}
-
-/// UN PLAFOND NE PROTÈGE QUE S'IL EST SOUS CE QUI NOUS TUE. Un budget de 1088 Mio dans un conteneur limité
-/// à 1 Gio est une protection IMAGINAIRE : l'OOM-killer arrive avant l'allocateur. La bannière ne peut donc
-/// pas se contenter d'annoncer le budget — elle doit le CONFRONTER à la limite réelle, ou dire lequel des
-/// deux empêchements l'en prive. QUATRE cas EXCLUSIFS, `match` exhaustif : c'est la seule façon que « je
-/// ne sais pas » ne se déguise ni en « tout va bien », ni en « il n'y a pas de limite ».
-///
-/// CE QUI SE PASSE QUAND LA LECTURE ÉCHOUE — décision, et sa raison. NI refus de démarrage, NI défaut
-/// prudent : FONCTIONNEMENT DÉGRADÉ ANNONCÉ.
-///   * REFUSER DE DÉMARRER serait faux au regard des modes de déploiement revendiqués. Un service système
-///     natif sans `MemoryMax=` n'a légitimement AUCUNE limite ; faire d'une lecture impossible une panne
-///     transformerait des installations correctes en incidents.
-///   * UN DÉFAUT PRUDENT (supposer une limite basse) INVENTERAIT un nombre. Il ferait refuser des requêtes
-///     qui tiennent, et surtout il PRÉTENDRAIT une mesure : c'est exactement la faute que ce bloc ferme.
-///   * CE QUI RESTE TENU SANS CETTE LECTURE, et c'est pourquoi le dégradé est acceptable : le plafond dur
-///     de SQLite ne dépend PAS d'elle — il est posé, et une requête qui le franchit refuse, lecture du
-///     cgroup ou pas. Ce que la lecture apporte est la CONFRONTATION : savoir si ce plafond est SOUS ce
-///     qui tue. Sans elle, la protection interne survit ; c'est sa VÉRIFICATION qui manque, et c'est
-///     exactement cela qui est annoncé — ni plus, ni moins.
-enum Couverture {
-    /// Le budget tient sous la limite mesurée : le refus arrive AVANT l'OOM-killer.
-    Protege { limite: i64 },
-    /// La limite existe et le budget ne tient pas dessous. Le processus mourra avant de refuser.
-    Depasse { limite: i64 },
-    /// L'interface a été LUE : il n'y a AUCUNE limite de cgroup. Rien d'extérieur ne borne le processus.
-    SansLimite,
-    /// La lecture a échoué ou n'a pas été comprise. On ne prétend RIEN, et on dit ce qui a été tenté.
-    Illisible(String),
-}
-
-/// PURE : la confrontation, séparée de la LECTURE, donc exerçable dans les quatre états sans cgroup sous
-/// la main. `limite` vient de `limite_cgroup`.
-fn couverture_pour(budget: i64, limite: LimiteCgroup) -> Couverture {
-    match limite {
-        LimiteCgroup::Octets(l) if budget < l => Couverture::Protege { limite: l },
-        LimiteCgroup::Octets(l) => Couverture::Depasse { limite: l },
-        LimiteCgroup::Aucune => Couverture::SansLimite,
-        LimiteCgroup::Illisible(pourquoi) => Couverture::Illisible(pourquoi),
-    }
-}
-
-impl Couverture {
-    /// LE MOT DE VERDICT — stable, sans espace, un par cas : c'est LUI le signal. La bascule d'une
-    /// protection annoncée à une protection absente change ce mot dans la ligne `[plafond]` du démarrage,
-    /// donc une supervision qui l'observe la VOIT ; une phrase en prose, elle, se relit à l'œil et ne se
-    /// surveille pas. Ces quatre valeurs sont un contrat : les renommer casse ce qui les observe.
-    fn verdict(&self) -> &'static str {
-        match self {
-            Couverture::Protege { .. } => "protege",
-            Couverture::Depasse { .. } => "depasse",
-            Couverture::SansLimite => "sans-limite",
-            Couverture::Illisible(_) => "illisible",
-        }
-    }
-
-    /// Le plafond protège-t-il RÉELLEMENT de ce qui tue ? Un seul des quatre verdicts le permet. DÉRIVÉ,
-    /// jamais énuméré une seconde fois : c'est ce prédicat qui décide du mot d'alerte de la phrase, donc
-    /// un cas ajouté demain est bruyant par défaut au lieu d'être silencieusement rangé du bon côté.
-    fn protege(&self) -> bool {
-        matches!(self, Couverture::Protege { .. })
-    }
-
-    fn phrase(&self) -> String {
-        let alerte = if self.protege() { "" } else { "AVERTISSEMENT " };
-        let verdict = self.verdict();
-        let corps = match self {
-            Couverture::Protege { limite } => {
-                format!("sous la limite mémoire du cgroup ({} Mio)", limite / 1048576)
-            }
-            Couverture::Depasse { limite } => format!(
-                "la limite mémoire du cgroup est {} Mio : LE PLAFOND NE PROTÈGE PAS — l'OOM-killer \
-                 arrivera avant le refus. Baisser PLUME_SQLITE_BUDGET_MB sous cette limite.",
-                limite / 1048576
-            ),
-            Couverture::SansLimite =>
-                "AUCUNE limite mémoire de cgroup n'est posée — l'interface a été LUE, et elle ne borne \
-                 rien. Ce n'est PAS une panne de mesure : le plafond ci-dessus borne SQLite, mais RIEN \
-                 n'arrête le processus avant la RAM de l'hôte, et le budget de 2 Gio du produit n'est \
-                 alors qu'une intention. Le poser : MemoryMax= (unité systemd), --memory (conteneur), \
-                 limits.memory (orchestrateur)."
-                    .to_string(),
-            Couverture::Illisible(pourquoi) => format!(
-                "limite mémoire du cgroup NON LISIBLE ({pourquoi}) : impossible de dire si ce budget \
-                 protège de l'OOM-killer. Ce n'est PAS « il n'y a pas de limite », c'est « il n'y a pas \
-                 de mesure » — le plafond SQLite reste appliqué, sa couverture n'est pas vérifiée."
-            ),
-        };
-        format!(", {alerte}[couverture={verdict}] {corps}")
-    }
 }
 
 /// DÉFAUT = APPLIQUÉ. C'est l'inverse de `PLUME_SQLITE_DEVERSEMENT` et pour une raison qui se dit : le

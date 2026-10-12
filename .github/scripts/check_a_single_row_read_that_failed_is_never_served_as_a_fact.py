@@ -265,9 +265,12 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # ce jour-là, après le correctif — 51 sites sur 24 fichiers (`engagement_end` perd un site, `user_delete` et
 # `user_update` deux chacun ; aucun fichier ne sort : `engagement.rs` garde `engagement_cred_within_window`,
 # `users_lookups.rs` garde `lookup_delete`). Même règle : 51 -> 35 (69 % = 35,19), 24 -> 15 (65 % = 15,6).
-RELEVE_SITES = 51
+# RE-DÉRIVÉS le 2026-10-12 (`P10.20-b`, rang trois : `panneau_resolu::premier`) : relevé de l'arbre ce jour-là, après
+# le correctif — 49 sites sur 24 fichiers (`premier` perd ses deux sites ; `panneau_resolu.rs` reste dans le relevé par
+# `courante`). Même règle : 49 -> 33 (69 % = 33,81), 24 -> 15 (65 % = 15,6).
+RELEVE_SITES = 49
 RELEVE_FICHIERS = 24
-PLANCHER_SITES = 35
+PLANCHER_SITES = 33
 PLANCHER_FICHIERS = 15
 
 # ================================================================================================
@@ -390,11 +393,11 @@ DEFAUTS_RANG_3_INTERNE = {
     # L'override ADMIN d'affichage retombe sur la variable d'environnement : le réglage posé par
     # l'opérateur est silencieusement remplacé par celui du déploiement.
     ("daemon/src/handlers/dashboards.rs", "excl_display_csv"): ("ok.map.unwrap_or_else",),
-    # DEUX sites dans `premier` : le compte de retenus retombe à zéro et la ligne elle-même devient
-    # `None` — « rien ne retient », donc le partage passe. Rang TROIS et non UN parce que la doc de
-    # `P11.20-m` établit que ce refus-là ne ferme aucune fuite (règle PRODUIT) ; si cette doc change,
-    # cette entrée monte au rang un.
-    ("daemon/src/handlers/panneau_resolu.rs", "premier"): ("ok", "unwrap_or"),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (rang trois, 2026-10-12) : `panneau_resolu.rs::premier`, deux sites — le
+    # compte de retenus par `unwrap_or(0)` et la ligne du premier élément par `ok`, « rien ne retient » sur une
+    # lecture ratée, donc le partage passait. `premier` rend `Result<Option<_>>` (les deux lectures propagées) ;
+    # `dash_update`, `panel_update` et `view_update` refusent par un 503 nommé
+    # (`CAUSE_ELEMENTS_RETENANT_NON_LUS`) avant toute écriture. `panneau_resolu.rs` reste au relevé par `courante`.
     # Le mode retombe sur `"observe"` : aucune action n'est exécutée. Fail-SAFE, et c'est pour cela
     # que ce jumeau de `playbooks_list` est au rang trois quand l'autre est au rang deux — celui-ci ne
     # sert rien, il s'abstient.

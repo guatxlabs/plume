@@ -98,7 +98,7 @@ Rien n'est énuméré : ni les noms de tests, ni les noms de fichiers, ni les cl
 
 CÔTÉ TEST vs CÔTÉ PRODUCTION — LA FRONTIÈRE EST DÉRIVÉE, PAS DÉCRÉTÉE
 ---------------------------------------------------------------------
-Le code de PRODUCTION mute lui aussi l'environnement (`sqlite_plafond.rs` pose `SQLITE_TMPDIR` en
+Le code de PRODUCTION mute lui aussi l'environnement (`repertoire_de_deversement.rs` pose `SQLITE_TMPDIR` en
 ouvrant la base) : c'est le comportement du produit, pas le levier d'un test, et l'exiger sous verrou
 sérialiserait toute la suite pour rien. La frontière est donc lue dans les sources : est « côté test »
 tout fichier atteint par un `mod` déclaré `#[cfg(test)]` (et les fichiers qu'il `include!`), plus tout

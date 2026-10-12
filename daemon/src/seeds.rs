@@ -377,15 +377,17 @@ pub(crate) fn seed_security_dashboard(conn: &Connection) {
 /// est déjà posé). OFF par défaut. La métrique `velero_failed` vient de kube-state.sh (statut des
 /// backups.velero.io) -> un backup Failed/PartiallyFailed alerte (angle mort DR : un backup qui casse).
 pub(crate) fn seed_velero_rule(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_velero_rule'", [], |r| r.get::<_, String>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_velero_rule','1')", []);
-    let _ = conn.execute(
-        "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) \
-         VALUES('Backup Velero en échec', 'metric velero_failed | stats max(value)', 1, '>', 0.0, 3, 600, 3600, 0)",
-        [],
-    );
+    // `P10.28-l` — AVANT : le drapeau `seeded_velero_rule` était posé EN PREMIER (écriture avalée), puis l'INSERT de la
+    // règle avalé (`let _`) : une règle refusée laissait le drapeau posé et l'angle mort DR jamais resemé. DÉSORMAIS :
+    // `semer_sous_son_drapeau` (une transaction, l'INSERT propagé, `Ok(0)` = refus, le drapeau en DERNIER).
+    semer_sous_son_drapeau(conn, "seeded_velero_rule", |conn| {
+        let ecrites = conn.execute(
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) \
+             VALUES('Backup Velero en échec', 'metric velero_failed | stats max(value)', 1, '>', 0.0, 3, 600, 3600, 0)",
+            [],
+        );
+        une_ligne_ecrite(ecrites?)
+    });
 }
 
 /// Règle par défaut : alerte sur détection antivirus (ClamAV via amavis -> events
@@ -1287,15 +1289,16 @@ pub(crate) fn seed_risk_rules(conn: &Connection) {
 
 /// Playbook d'exemple (flag dédié). Sûr : en mode 'observe' (défaut) il ne fait que PROPOSER (pending+dry-run).
 pub(crate) fn seed_example_playbooks(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_playbooks'", [], |r| r.get::<_, String>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_playbooks','1')", []);
-    let _ = conn.execute(
-        "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s) \
-         VALUES('SSH bruteforce -> ban IP (démo, OFF : laisser CrowdSec/fail2ban gérer)', 0, 'search source=sshd-session severity>=3 | stats count by src_ip | where count > 10', 1, 'ban_ip', 300, 3600)",
-        [],
-    );
+    // `P10.28-l` — AVANT : drapeau `seeded_playbooks` posé EN PREMIER (écriture avalée), INSERT du playbook avalé (`let _`) : un playbook
+    // refusé n'était JAMAIS resemé. DÉSORMAIS : `semer_sous_son_drapeau` (l'INSERT propagé, `Ok(0)` = refus, drapeau en DERNIER).
+    semer_sous_son_drapeau(conn, "seeded_playbooks", |conn| {
+        let ecrites = conn.execute(
+            "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s) \
+             VALUES('SSH bruteforce -> ban IP (démo, OFF : laisser CrowdSec/fail2ban gérer)', 0, 'search source=sshd-session severity>=3 | stats count by src_ip | where count > 10', 1, 'ban_ip', 300, 3600)",
+            [],
+        );
+        une_ligne_ecrite(ecrites?)
+    });
 }
 
 /// Playbook CVE-2024-6387 (regreSSHion) — remplace le scénario CrowdSec ssh-cve quand on retire
@@ -1304,16 +1307,16 @@ pub(crate) fn seed_example_playbooks(conn: &Connection) {
 /// NB enforcement multi-hôte : l'action se crée sur le central ; l'exécuter SUR le VPS nécessite
 /// le responder agent-side (à venir) — pour l'instant détection + action en attente (l'analyste valide).
 pub(crate) fn seed_ssh_cve_playbook(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_ssh_cve'", [], |r| r.get::<_, String>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_ssh_cve','1')", []);
-    let _ = conn.execute(
-        "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s) \
-         VALUES('SSH CVE-2024-6387 (regreSSHion) -> ban IP (OFF ; remplace le scénario CrowdSec ssh-cve)', \
-                0, 'search source=~sshd \"Timeout before authentication\" | stats count by src_ip | where count > 5', 1, 'ban_ip', 300, 3600)",
-        [],
-    );
+    // `P10.28-l` — même défaut et même forme que `seed_example_playbooks` (drapeau `seeded_ssh_cve`).
+    semer_sous_son_drapeau(conn, "seeded_ssh_cve", |conn| {
+        let ecrites = conn.execute(
+            "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s) \
+             VALUES('SSH CVE-2024-6387 (regreSSHion) -> ban IP (OFF ; remplace le scénario CrowdSec ssh-cve)', \
+                    0, 'search source=~sshd \"Timeout before authentication\" | stats count by src_ip | where count > 5', 1, 'ban_ip', 300, 3600)",
+            [],
+        );
+        une_ligne_ecrite(ecrites?)
+    });
 }
 
 /// Règles filet-de-sécurité k8s/hôte — TOUTES seedées DÉSACTIVÉES (activer quand la métrique existe,

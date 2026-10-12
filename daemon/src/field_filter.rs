@@ -31,6 +31,7 @@ pub(crate) const STRUCTURAL_DENY: &[&str] = &["id", "ts", "env_id", "dedup", "or
 
 /// Une règle compilée (résolue de la table). `field` = nom CANONIQUE utilisé à la compilation GXQL (clé de
 /// masque), déjà normalisé (`fields.k` -> `k`). `role` = seuil (cf. `role_threshold`). `tenant`/`env` = ''=tous.
+#[derive(Clone)]
 pub(crate) struct CompiledFilter {
     pub field: String,
     pub action: MaskAction,
@@ -120,57 +121,252 @@ fn role_threshold(rule_role: &str, action: MaskAction) -> u8 {
     }
 }
 
-/// (Re)charge le registre des field-filters de CE db_path depuis la table `field_filter`. Idempotent, appelé
-/// au bind (comme processors_reload) et après chaque écriture CRUD. VIDE -> mode 0. FAIL-SAFE : table absente
-/// (base pré-v86) -> registre vide. Alimente AUSSI le set de colonnes réelles DENY (authorizer) et le sel.
-pub(crate) fn field_filters_reload(conn: &Connection, db_path: &str) {
-    let mut out: Vec<CompiledFilter> = Vec::new();
-    let mut deny_cols: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if let Ok(mut st) = conn.prepare(
-        "SELECT field,action,role,tenant,env,ord,id FROM field_filter WHERE enabled=1 ORDER BY ord, id",
+/// Lectures ratées du registre de masquage (préparation, parcours, ligne sans nom de champ, sel ABSENT ou
+/// vide, sel illisible) depuis le démarrage. LIMITE ÉCRITE : lisible ici et dit sur stderr, PAS servi par `/metrics`
+/// (metrics.rs hors du périmètre de ce changement, `P10.20-b`).
+pub(crate) static FIELD_FILTERS_LECTURE_RATEE_TOTAL: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+// Même compte, PAR db_path : le total est un atomique du processus, que tout rechargement raté d'une autre
+// base incrémente aussi — sous `cargo test` (un processus, plusieurs fils) un « après > avant » sur le total
+// peut passer vert sans que CETTE base ait compté son échec. Le compte par base, lui, n'est touché que par
+// les rechargements de cette base.
+static FIELD_FILTERS_LECTURE_RATEE_PAR_BASE: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, u64>>> =
+    std::sync::OnceLock::new();
+
+/// Compte UNE lecture ratée du registre de `db_path` : le total du processus ET le compte de cette base,
+/// toujours ensemble (un seul geste par site d'échec).
+fn compter_lecture_ratee(db_path: &str) {
+    FIELD_FILTERS_LECTURE_RATEE_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    *FIELD_FILTERS_LECTURE_RATEE_PAR_BASE
+        .get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
+        .write()
+        .entry(db_path.to_string())
+        .or_insert(0) += 1;
+}
+
+/// Lectures ratées du registre de masquage de `db_path` depuis le démarrage (même limite que le total : pas
+/// servi par `/metrics`).
+pub(crate) fn field_filters_lectures_ratees_de(db_path: &str) -> u64 {
+    FIELD_FILTERS_LECTURE_RATEE_PAR_BASE
+        .get()
+        .and_then(|m| m.read().get(db_path).copied())
+        .unwrap_or(0)
+}
+
+/// Rang de préséance « le plus spécifique gagne » : spécificité croissante, puis `ord`, puis `id` ; à
+/// l'application le DERNIER écrase dans la map. UN SEUL comparateur pour les deux tris de
+/// `field_filters_reload` (lecture réussie, registre uni sur lecture ratée) : le rang d'une règle ne dépend
+/// pas du chemin qui l'a publiée. `ord` vaut 0 par défaut, donc c'est `id` qui départage le cas courant.
+fn ordre_de_preseance(a: &CompiledFilter, b: &CompiledFilter) -> std::cmp::Ordering {
+    a.specificity.cmp(&b.specificity).then(a.ord.cmp(&b.ord)).then(a.id.cmp(&b.id))
+}
+
+/// Lecture de la table `field_filter` : les règles décodées ET les échecs, jamais confondus. Un échec
+/// n'est pas « aucune règle » : c'est l'appelant qui décide de ne RIEN remplacer.
+struct FieldFilterTableRead {
+    rules: Vec<CompiledFilter>,
+    deny_cols: std::collections::HashSet<String>,
+    echecs: Vec<String>,
+}
+
+/// Texte d'une cellule, `None` si elle n'est pas du texte UTF-8 (type inattendu : base éditée à la main).
+fn cell_text(r: &rusqlite::Row<'_>, i: usize) -> Option<String> {
+    match r.get_ref(i) {
+        Ok(rusqlite::types::ValueRef::Text(t)) => std::str::from_utf8(t).ok().map(str::to_string),
+        _ => None,
+    }
+}
+
+/// Décode une ligne en FERMÉ : une cellule de type inattendu ne fait jamais perdre la règle, elle la
+/// rend PLUS large — action -> DENY, rôle -> `admin` (seuil le plus haut : masque aussi l'admin),
+/// tenant/env -> '' (tous), ord/id -> fin de liste. Seul un NOM DE CHAMP illisible est un échec : on ne
+/// sait pas quoi masquer. RESTE AVOUÉ (`P10.20-b`) : « plus large » vaut pour la PORTÉE, pas pour la
+/// PRÉSÉANCE. Le rôle replié en `admin` ajoute +1 de spécificité et `ord` replié en fin de liste passe en
+/// dernier : sur un champ couvert par deux règles, la règle corrompue l'emporte même si son action est plus
+/// faible (MaskPartial servi au lieu de Mask). Jamais en clair, et un DENY reste tenu par la passe 2
+/// d'`effective_masks`.
+fn decode_field_filter_row(r: &rusqlite::Row<'_>, ecarts: &mut Vec<String>) -> Result<CompiledFilter, String> {
+    let field = cell_text(r, 0).ok_or_else(|| "nom de champ illisible (cellule non textuelle)".to_string())?;
+    let int_or_last = |i: usize, nom: &str, ecarts: &mut Vec<String>| match r.get_ref(i) {
+        Ok(rusqlite::types::ValueRef::Integer(n)) => n,
+        _ => {
+            ecarts.push(format!("{nom} illisible -> fin de liste"));
+            i64::MAX
+        }
+    };
+    let ord = int_or_last(5, "ord", ecarts);
+    let id = int_or_last(6, "id", ecarts);
+    let action = match cell_text(r, 1) {
+        Some(s) => parse_action(&s),
+        None => {
+            ecarts.push(format!("action illisible (règle {id}) -> deny"));
+            MaskAction::Deny
+        }
+    };
+    let role = cell_text(r, 2).unwrap_or_else(|| {
+        ecarts.push(format!("rôle illisible (règle {id}) -> admin"));
+        "admin".to_string()
+    });
+    let tenant = cell_text(r, 3).unwrap_or_else(|| {
+        ecarts.push(format!("tenant illisible (règle {id}) -> tous"));
+        String::new()
+    });
+    let env = cell_text(r, 4).unwrap_or_else(|| {
+        ecarts.push(format!("env illisible (règle {id}) -> tous"));
+        String::new()
+    });
+    let field = normalize_field(&field);
+    let specificity = (!env.is_empty()) as u8 + (!tenant.is_empty()) as u8 + (!role.is_empty()) as u8;
+    Ok(CompiledFilter { field, action, role, tenant, env, specificity, ord, id })
+}
+
+fn read_field_filter_table(conn: &Connection) -> FieldFilterTableRead {
+    let mut lu = FieldFilterTableRead {
+        rules: Vec::new(),
+        deny_cols: std::collections::HashSet::new(),
+        echecs: Vec::new(),
+    };
+    let mut st = match conn.prepare(
+        "SELECT field,action,role,tenant,env,ord,id,enabled FROM field_filter ORDER BY ord, id",
     ) {
-        if let Ok(rows) = st.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, i64>(6)?,
-            ))
-        }) {
-            for (field, action_s, role, tenant, env, ord, id) in rows.flatten() {
-                let field = normalize_field(&field);
-                if field.is_empty() {
-                    continue;
+        Ok(st) => st,
+        Err(e) => {
+            lu.echecs.push(format!("préparation : {e}"));
+            return lu;
+        }
+    };
+    let mut rows = match st.query([]) {
+        Ok(rows) => rows,
+        Err(e) => {
+            lu.echecs.push(format!("lecture : {e}"));
+            return lu;
+        }
+    };
+    loop {
+        match rows.next() {
+            Ok(Some(r)) => {
+                // `enabled` lu ICI, pas par `WHERE enabled=1` : une cellule de type inattendu (base éditée à
+                // la main) sortait la règle du registre sans échec ni écart — un DENY désarmé en silence.
+                // Seul l'entier 0 éteint la règle ; tout le reste la laisse ACTIVE (fermé), dit sur stderr.
+                match r.get_ref(7) {
+                    Ok(rusqlite::types::ValueRef::Integer(0)) => continue,
+                    Ok(rusqlite::types::ValueRef::Integer(1)) => {}
+                    autre => eprintln!("[field_filter] ligne décodée en fermé : enabled illisible ({autre:?}) -> active"),
                 }
-                let action = parse_action(&action_s);
-                // DENY sur une colonne RÉELLE -> authorizer (déni all-roles, admin compris, même SQL brut).
-                if action == MaskAction::Deny && PHYSICAL_EVENT_COLS.contains(&field.as_str()) {
-                    deny_cols.insert(field.clone());
+                let mut ecarts = Vec::new();
+                match decode_field_filter_row(r, &mut ecarts) {
+                    Ok(rule) => {
+                        for e in &ecarts {
+                            eprintln!("[field_filter] ligne décodée en fermé : {e}");
+                        }
+                        if rule.field.is_empty() {
+                            continue;
+                        }
+                        // DENY sur une colonne RÉELLE -> authorizer (déni all-roles, admin compris, même SQL brut).
+                        if rule.action == MaskAction::Deny && PHYSICAL_EVENT_COLS.contains(&rule.field.as_str()) {
+                            lu.deny_cols.insert(rule.field.clone());
+                        }
+                        lu.rules.push(rule);
+                    }
+                    Err(e) => lu.echecs.push(format!("ligne : {e}")),
                 }
-                let specificity =
-                    (!env.is_empty()) as u8 + (!tenant.is_empty()) as u8 + (!role.is_empty()) as u8;
-                out.push(CompiledFilter { field, action, role, tenant, env, specificity, ord, id });
+            }
+            Ok(None) => break,
+            Err(e) => {
+                lu.echecs.push(format!("parcours : {e}"));
+                break;
             }
         }
     }
-    // most-specific-wins : tri croissant de spécificité (puis ord, id) -> à l'application, le plus spécifique
-    // (dernier) écrase dans la map.
-    out.sort_by(|a, b| a.specificity.cmp(&b.specificity).then(a.ord.cmp(&b.ord)).then(a.id.cmp(&b.id)));
-    // sel de HASH (immuable, posé par migrate_v86). Absent (base pré-v86) -> "".
-    let salt: String = conn
-        .query_row("SELECT value FROM meta WHERE key='field_mask_salt'", [], |r| r.get(0))
-        .unwrap_or_default();
-    { let mut w = filters_cell().write();
-        w.insert(db_path.to_string(), Arc::new(out));
+    lu
+}
+
+/// Sel de HASH de `meta.field_mask_salt`. `Ok(None)` = ABSENT (ou vide) ; `Err` = lecture ratée. Ni l'un
+/// ni l'autre n'est jamais remplacé par "" : un hash non salé de `"\0"+valeur` est attaquable au
+/// dictionnaire, alors que le contrat de `fmask_hash` est « non réversible sans le sel ».
+pub(crate) fn read_field_mask_salt(conn: &Connection) -> Result<Option<String>, String> {
+    match conn.query_row("SELECT value FROM meta WHERE key='field_mask_salt'", [], |r| r.get::<_, String>(0)) {
+        Ok(s) if s.is_empty() => Ok(None),
+        Ok(s) => Ok(Some(s)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
-    { let mut w = field_deny_cols_cell().write();
-        w.insert(db_path.to_string(), deny_cols);
+}
+
+/// (Re)charge le registre des field-filters de CE db_path depuis la table `field_filter`. Idempotent, appelé
+/// au bind (comme processors_reload), par l'hydratation d'une base tenant et après chaque écriture CRUD.
+/// Alimente AUSSI le set de colonnes réelles DENY (authorizer) et le sel.
+///
+/// UNE LECTURE RATÉE NE DÉSARME PAS UNE RÈGLE QU'ELLE N'A PAS RELUE (`P10.20-b`, famille `P10.20-l` hors
+/// `handlers/`). Préparation, parcours ou ligne sans nom de champ lisible -> le registre publié est l'UNION
+/// PAR IDENTIFIANT du registre EN PLACE et de ce qui a pu être décodé : une règle RELUE (même `id`) prend sa
+/// version décodée, c'est la base qui fait foi pour elle (une modification par la route PUT est armée telle
+/// quelle, un resserrement comme un relâchement) ; une règle en place NON relue (la ligne illisible, ou une
+/// règle supprimée depuis) garde sa version en place ; une règle posée depuis est armée tout de suite. Les
+/// colonnes DENY de l'authorizer sont dérivées de ce registre uni. Aucun doublon : rechargement raté après
+/// rechargement raté, le registre garde la même taille. L'échec est dit sur stderr et compté. Prix assumé :
+/// tant que la lecture rate, une règle SUPPRIMÉE ou ÉTEINTE (`enabled=0`) reste armée. Un registre JAMAIS chargé reçoit ce qui a pu
+/// être décodé. Une lecture RÉUSSIE de
+/// zéro ligne remplace, elle : c'est le registre vide POSÉ par l'exploitant, légitime. Table absente =
+/// lecture ratée : les deux premiers chargements (bind, `PreparedWriter::open`) passent par la porte de
+/// schéma, donc une base servie est au moins en v86 — une table absente y est une anomalie, pas une base
+/// « pré-v86 ».
+///
+/// Le sel n'est posé que s'il est LU et non vide ; absent ou illisible, le sel déjà en cache est gardé, et
+/// sans sel le HASH échoue FERMÉ (`***` côté Rust, erreur côté SQL) — jamais "".
+pub(crate) fn field_filters_reload(conn: &Connection, db_path: &str) {
+    let lu = read_field_filter_table(conn);
+    let FieldFilterTableRead { rules: mut out, deny_cols, echecs } = lu;
+    let lecture_ratee = !echecs.is_empty();
+    let en_place = filters_cell().read().get(db_path).cloned();
+    let suite = if en_place.is_some() {
+        "règles en place non relues GARDÉES"
+    } else {
+        "aucun registre en place : seules les règles décodées sont publiées"
+    };
+    for e in &echecs {
+        compter_lecture_ratee(db_path);
+        eprintln!("[field_filter] lecture ratée du registre de masquage de {db_path} : {e} — {suite}");
     }
-    { let mut w = salt_cell().write();
-        w.insert(db_path.to_string(), salt);
+    // most-specific-wins : `ordre_de_preseance` (spécificité, puis ord, puis id) -> à l'application, le plus
+    // spécifique (dernier) écrase dans la map.
+    out.sort_by(ordre_de_preseance);
+    let publie: Option<(Vec<CompiledFilter>, std::collections::HashSet<String>)> = match (lecture_ratee, en_place) {
+        (false, _) | (true, None) => Some((out, deny_cols)),
+        (true, Some(regles_en_place)) => {
+            // UNION PAR IDENTIFIANT : la version en place d'une règle RELUE est retirée, la décodée fait foi.
+            let relus: std::collections::HashSet<i64> = out.iter().map(|r| r.id).collect();
+            let mut union: Vec<CompiledFilter> = regles_en_place
+                .iter()
+                .filter(|r| !relus.contains(&r.id))
+                .cloned()
+                .collect();
+            union.extend(out);
+            union.sort_by(ordre_de_preseance);
+            let deny_union: std::collections::HashSet<String> = union
+                .iter()
+                .filter(|r| r.action == MaskAction::Deny && PHYSICAL_EVENT_COLS.contains(&r.field.as_str()))
+                .map(|r| r.field.clone())
+                .collect();
+            Some((union, deny_union))
+        }
+    };
+    if let Some((regles, deny)) = publie {
+        filters_cell().write().insert(db_path.to_string(), Arc::new(regles));
+        field_deny_cols_cell().write().insert(db_path.to_string(), deny);
+    }
+    match read_field_mask_salt(conn) {
+        Ok(Some(salt)) => {
+            salt_cell().write().insert(db_path.to_string(), salt);
+        }
+        Ok(None) => {
+            compter_lecture_ratee(db_path);
+            eprintln!("[field_filter] sel de hachage ABSENT ou vide dans {db_path} (meta.field_mask_salt) — sel en cache conservé, sinon HASH refusé (fermé)");
+        }
+        Err(e) => {
+            compter_lecture_ratee(db_path);
+            eprintln!("[field_filter] sel de hachage ILLISIBLE dans {db_path} : {e} — sel en cache conservé, sinon HASH refusé (fermé)");
+        }
     }
 }
 
@@ -287,9 +483,21 @@ pub(crate) fn search_mask_guard(term: &str, masks: &FieldMaskSet, fts_fields: bo
     Ok(())
 }
 
-/// Sel de HASH caché pour ce db_path (masquage Rust des surfaces non-GXQL). "" si inconnu.
-fn salt_for(db_path: &str) -> String {
-    salt_cell().read().get(db_path).cloned().unwrap_or_default()
+/// Sel de HASH caché pour ce db_path (masquage Rust des surfaces non-GXQL). `None` si inconnu (absent ou
+/// illisible au reload) : JAMAIS "" (`P10.20-b`), cf. `mask_json_value_closed`.
+fn salt_for(db_path: &str) -> Option<String> {
+    salt_cell().read().get(db_path).cloned()
+}
+
+/// `mask_json_value` avec un sel peut-être INCONNU : sans sel, un HASH échoue FERMÉ (`***`, NULL reste
+/// NULL) au lieu de hacher sans sel ; les autres actions n'utilisent pas le sel.
+pub(crate) fn mask_json_value_closed(action: MaskAction, salt: Option<&str>, v: &Value) -> Value {
+    match (action, salt) {
+        (_, Some(salt)) => mask_json_value(action, salt, v),
+        (MaskAction::Hash, None) if v.is_null() => Value::Null,
+        (MaskAction::Hash, None) => Value::String("***".into()),
+        (_, None) => mask_json_value(action, "", v), // action sans sel : Mask/MaskPartial/Redact/Deny
+    }
 }
 
 /// Hachage DÉTERMINISTE salé partagé par le SQL (`plume_fmask_hash`) et le masquage Rust. SHA-256(sel||valeur)
@@ -334,7 +542,7 @@ pub(crate) fn mask_json_value(action: MaskAction, salt: &str, v: &Value) -> Valu
 /// cas = `event.message`). Renvoie la valeur INCHANGÉE si le champ n'est pas masqué pour l'appelant.
 pub(crate) fn mask_field_value(db_path: &str, masks: &FieldMaskSet, field: &str, v: &Value) -> Value {
     match masks.get(field) {
-        Some(action) => mask_json_value(action, &salt_for(db_path), v),
+        Some(action) => mask_json_value_closed(action, salt_for(db_path).as_deref(), v),
         None => v.clone(),
     }
 }
@@ -365,7 +573,7 @@ pub(crate) fn mask_query_result(db_path: &str, masks: &FieldMaskSet, v: &mut Val
             if let Some(arr) = row.as_array_mut() {
                 for &(i, action) in &plan {
                     if let Some(cell) = arr.get_mut(i) {
-                        *cell = mask_json_value(action, &salt, cell);
+                        *cell = mask_json_value_closed(action, salt.as_deref(), cell);
                     }
                 }
             }
@@ -384,7 +592,7 @@ pub(crate) fn mask_named_row(db_path: &str, masks: &FieldMaskSet, obj: &mut serd
     let mut touched = false;
     for (k, v) in obj.iter_mut() {
         if let Some(action) = masks.get(k) {
-            *v = mask_json_value(action, &salt, v);
+            *v = mask_json_value_closed(action, salt.as_deref(), v);
             touched = true;
         }
     }

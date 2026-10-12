@@ -256,10 +256,14 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # RE-DÉRIVÉS le 2026-10-08 (`P10.20-b`, rang quatre : les trois lectures MFA de `idp.rs`) : relevé de l'arbre ce
 # jour-là, après le correctif — 59 sites sur 24 fichiers (`mfa_verify`, `mfa_disable`, `login_mfa_post` perdent chacun
 # leur site ; `idp.rs` reste dans le relevé). Même règle : 59 -> 40 (69 % = 40,71), 24 -> 15 (65 % = 15,6).
+# RE-DÉRIVÉS le 2026-10-12 (`P10.20-b`, rang trois : les trois lectures du chrono SLA de `caseops.rs`) : relevé de
+# l'arbre ce jour-là, après le correctif — 56 sites sur 24 fichiers (`sla_policy_for`, `sla_apply_policy`,
+# `sla_on_status_change` perdent chacun leur site ; `caseops.rs` reste dans le relevé par `case_unmerge`). Même règle :
+# 56 -> 38 (69 % = 38,64), 24 -> 15 (65 % = 15,6).
 # Le relevé dont les planchers sont dérivés, cité par le message de refus (une seule source, jamais recopiée).
-RELEVE_SITES = 59
+RELEVE_SITES = 56
 RELEVE_FICHIERS = 24
-PLANCHER_SITES = 40
+PLANCHER_SITES = 38
 PLANCHER_FICHIERS = 15
 
 # ================================================================================================
@@ -365,14 +369,15 @@ DEFAUTS_RANG_3_INTERNE = {
     # Le throttle d'alerte n'est pas lu -> l'alerte TIRE. Le sens est BRUYANT (jamais un silence),
     # c'est ce qui le tient au rang trois plutôt qu'au rang deux.
     ("daemon/src/handlers/alerting.rs", "run_advanced_rules"): ("ok",),
-    # Les trois lectures du chrono SLA : politique non lue -> repli muet sur le régime legacy ;
-    # échéances non recalculées ; chrono ni mis en pause ni repris. Aucun corps servi ; le temps, lui,
-    # avance. (La quatrième, `EXISTS(sla_policy)` du tour multi-niveaux, a quitté l'ensemble au
-    # 2026-10-07 : elle PROPAGE désormais, lue par `match` dans `sla_multilevel_tick_par`, et son
-    # échec est compté au balayage `sla_multilevel_politique` — `P10.20-w`.)
-    ("daemon/src/handlers/caseops.rs", "sla_policy_for"): ("ok",),
-    ("daemon/src/handlers/caseops.rs", "sla_apply_policy"): ("ok",),
-    ("daemon/src/handlers/caseops.rs", "sla_on_status_change"): ("ok",),
+    # TROIS ENTRÉES RETIRÉES PAR `P10.20-b` (rang trois, 2026-10-12) : les lectures du chrono SLA —
+    # `caseops.rs::sla_policy_for`, `sla_apply_policy`, `sla_on_status_change` (`ok`). Politique non
+    # lue = repli muet sur le régime legacy ; ligne non lue = « rien à faire » (échéances non
+    # recalculées, chrono ni mis en pause ni repris). Elles sont lues en `.optional()` : absence
+    # établie = sortie d'avant, lecture ratée = `IssueDuChronoSla::NonLu`, rien d'écrit, avouée par
+    # chaque appelant (503 `CAUSE_CHRONO_SLA_NON_LU`, `echeances_multi_niveau_non_lues`, `manque` du
+    # recalcul, « NON LUE » au rattrapage). (La quatrième, `EXISTS(sla_policy)` du tour multi-niveaux,
+    # avait quitté l'ensemble au 2026-10-07 : elle PROPAGE, comptée au balayage
+    # `sla_multilevel_politique` — `P10.20-w`.)
     # Coût de panneau recalculé, TTL de cache global, cache de panneau manqué : replis bénins, dits
     # bénins, et gardés dans l'ensemble pour que leur forme ne change pas en silence.
     ("daemon/src/handlers/dashboards.rs", "read_panel_cost"): ("ok",),
@@ -1069,7 +1074,7 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-08 du relevé de ce jour-là : "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-12 du relevé de ce jour-là : "
               f"{RELEVE_SITES} sites sur {RELEVE_FICHIERS} fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "

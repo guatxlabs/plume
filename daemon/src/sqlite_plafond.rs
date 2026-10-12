@@ -133,7 +133,7 @@
 //!     (`unixOpen` : `if( isDelete ) osUnlink(zName)`), donc il n'a aucun nom dans l'arborescence et
 //!     disparaît à la fermeture, y compris si le processus meurt. Ce qui N'EST PAS fait : les octets
 //!     touchent le périphérique. Qui active ce drapeau doit poser `SQLITE_TMPDIR` sur un support chiffré
-//!     (cf. `repertoire_temporaire_init`) — décision d'exploitation, écrite dans la doc de déploiement.
+//!     (cf. `repertoire_de_deversement::repertoire_temporaire_init`) — décision d'exploitation, écrite dans la doc de déploiement.
 //!   - AUCUN QUOTA ne borne la TAILLE du déversement quand il est activé : un tri sur une très grande
 //!     fenêtre écrit l'ordre de grandeur des données triées. C'est du disque, pas de la RAM, c'est mesuré
 //!     au banc, et rien ici n'empêche de remplir le volume.
@@ -143,7 +143,7 @@ use crate::*;
 use crate::limite_cgroup::{limite_cgroup, LimiteCgroup};
 // Le quota du déversement (`P10.1-b`) vit dans le module feuille `quota_deversement` (`P7.18-a`). Ses
 // symboles publics sont RÉ-EXPORTÉS ici : tous les chemins `crate::sqlite_plafond::…` restent valides.
-use crate::quota_deversement::{armer_le_quota, figer_le_quota, quota_deversement_octets, SONDE_QUOTA};
+use crate::quota_deversement::armer_le_quota;
 pub(crate) use crate::quota_deversement::{
     controle_positif_de_la_mesure, oublier_refus_de_quota, phrase_du_quota, quota_pour, refus_de_quota_de_deversement,
     QuotaDeversement,
@@ -157,6 +157,12 @@ pub(crate) use crate::tri_des_connexions::{
 };
 #[cfg(test)]
 pub(crate) use crate::tri_des_connexions::{tri_en_memoire, tri_pour};
+// Le répertoire de déversement (préparation, résidus, contrôle positif) vit dans le module feuille
+// `repertoire_de_deversement` (`P7.18-a`). Ses symboles sont RÉ-EXPORTÉS ici : tous les chemins
+// `crate::sqlite_plafond::…` restent valides.
+pub(crate) use crate::repertoire_de_deversement::{deversement_init, residus_de_deversement};
+#[cfg(test)]
+pub(crate) use crate::repertoire_de_deversement::controle_positif;
 
 /// Budget RAM total concédé à SQLite (Mio). Le défaut REPRODUIT EXACTEMENT le dimensionnement d'avant —
 /// `1088 = 17 × 64` — pour qu'AUCUN écart de comportement ne soit livré avec la dérivation, et donc que
@@ -174,12 +180,6 @@ const CONNEXIONS_HORS_POOL: i64 = 2;
 /// requête re-déchiffre depuis le disque (SQLCipher). Le trieur, lui, a de toute façon son propre plancher
 /// dans SQLite : `mnPmaSize = 250 × page_size`, soit ~1 Mio en pages de 4 Kio.
 const CACHE_MIN_KO: i64 = 2048;
-
-/// Sous-répertoire des temporaires SQLite, créé À CÔTÉ de la base : le déversement suit la donnée (même
-/// volume, même dimensionnement, même surveillance de capacité) au lieu d'atterrir dans un `/tmp` hérité
-/// — qui est un tmpfs sur la plupart des hôtes systemd, c'est-à-dire de la RAM comptée au MÊME cgroup :
-/// le plafond y serait une ILLUSION.
-const SOUS_REPERTOIRE_TEMP: &str = "sqltmp";
 
 /// La formule, isolée pour être EXERCÉE (cf. tests) : sans ça, « le budget est dérivé » resterait une
 /// affirmation de commentaire.
@@ -240,7 +240,7 @@ fn porteurs_pour(interactif: i64, refresh: i64) -> i64 {
 /// `SQLITE_TMPDIR` sur un support chiffré. La vraie sortie n'est ni l'un ni l'autre : c'est une
 /// agrégation NATIVE à état borné, où plume décide lui-même combien de mémoire, quand déverser, et
 /// sous quelle forme (cf. roadmap P10.3).
-fn deversement_actif() -> bool {
+pub(crate) fn deversement_actif() -> bool {
     let conf = load_config();
     matches!(
         cfg(&conf, "PLUME_SQLITE_DEVERSEMENT", "0").trim().to_ascii_lowercase().as_str(),
@@ -615,94 +615,6 @@ pub(crate) fn constat_de_residus(residus: &crate::mesure_environnement::Mesure<V
              ne dit qu'aucun clair n'y subsiste."
         ),
     }
-}
-
-/// Prépare le déversement SI et SEULEMENT SI il est demandé. Au défaut, on ne crée même pas le répertoire :
-/// un `sqltmp` présent sur le volume laisserait croire que des tris y passent.
-pub(crate) fn deversement_init(db_path: &str) -> Deversement {
-    if !deversement_actif() {
-        return Deversement::Desactive;
-    }
-    match repertoire_temporaire_init(db_path) {
-        Ok(d) => {
-            let residus = residus_de_deversement(&d);
-            // LE QUOTA EST RÉSOLU ICI ET NULLE PART AILLEURS (`P10.1-b`), au même endroit que le mode :
-            // son contrôle positif exige le répertoire, et le figer ici garantit que TOUTE connexion
-            // armée ensuite le tiendra sans avoir à re-jouer une écriture disque.
-            let quota = quota_pour(quota_deversement_octets(), controle_positif_de_la_mesure(&d));
-            figer_le_quota(&d, &quota);
-            Deversement::Vers(d, residus, quota)
-        }
-        Err(e) => Deversement::Indisponible(e),
-    }
-}
-
-/// LA MESURE DE L'ALLÉGATION D'HÔTE « SQLite délie son temporaire aussitôt ouvert » (`S29`) : les noms qui
-/// subsistent dans le répertoire de déversement, hors la sonde d'écriture qui est à nous. Si l'allégation
-/// tient, cette liste est VIDE à chaque démarrage ; un nom est la preuve qu'elle a lâché au moins une fois.
-/// Paramétrée sur le répertoire, donc exerçable sans toucher à l'environnement du processus.
-pub(crate) fn residus_de_deversement(dir: &std::path::Path) -> crate::mesure_environnement::Mesure<Vec<String>> {
-    // LES DEUX SONDES DU PRODUIT SONT IGNORÉES PAR LE MÊME NOM QUE CELUI QUI LES ÉCRIT. Celle du
-    // quota (`P10.1-b`) ne porte que des octets nuls et elle est déliée aussitôt ouverte ; la compter
-    // comme un résidu EN CLAIR serait une fausse alerte de confidentialité — le mot `residus-en-clair`
-    // est un contrat de supervision, et seul `=0` y est calme.
-    crate::mesure_environnement::entrees_nommees_depuis(dir, &[SONDE_ECRITURE, SONDE_QUOTA])
-}
-
-/// Le répertoire où SQLite déversera. PRIVÉ : on passe par `deversement_init`, sinon un appelant peut
-/// préparer un déversement que le mode n'autorise pas. DOIT être appelé AVANT le premier appel SQLite du processus :
-/// `sqlite3_os_init()` lit `getenv("SQLITE_TMPDIR")` UNE SEULE FOIS, à l'initialisation de SQLite. D'où
-/// l'appel unique en tête de `main`, avant tout branchement de sous-commande — un appel par sous-commande
-/// serait une ÉNUMÉRATION, et c'est précisément ce genre de liste qui a déjà lâché dans ce dépôt.
-///
-/// SONDE VALIDÉE PAR CONTRÔLE POSITIF : on n'AFFIRME pas que le répertoire est utilisable, on y ÉCRIT un
-/// octet et on le RELIT. Un répertoire créé mais non inscriptible (montage RO, quota, SELinux) rendrait un
-/// plafond qui ne déverse pas — c'est-à-dire des requêtes qui ÉCHOUENT au lieu de ralentir.
-///
-/// Un `SQLITE_TMPDIR` posé EXPLICITEMENT par l'exploitant est RESPECTÉ (et seulement contrôlé) : c'est le
-/// levier par lequel un déploiement place le déversement sur un support chiffré. On ne remplace que le
-/// SILENCE — et le silence, chez le moteur vendoré (`unixTempFileDir`, lu dans `sqlite3.c`), vaut dans
-/// l'ordre `TMPDIR`, puis `/var/tmp`, `/usr/tmp`, `/tmp`, puis le répertoire courant : un répertoire
-/// PARTAGÉ dans tous les cas, et pas forcément `/tmp`.
-fn repertoire_temporaire_init(db_path: &str) -> Result<std::path::PathBuf, String> {
-    if let Ok(explicite) = std::env::var("SQLITE_TMPDIR") {
-        if !explicite.trim().is_empty() {
-            let dir = std::path::PathBuf::from(explicite);
-            controle_positif(&dir)?;
-            return Ok(dir);
-        }
-    }
-    let base = std::path::Path::new(db_path)
-        .parent()
-        .ok_or_else(|| format!("chemin de base sans répertoire parent : {db_path}"))?;
-    let dir = base.join(SOUS_REPERTOIRE_TEMP);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("création {} : {e}", dir.display()))?;
-    // 0700 : les temporaires portent des valeurs d'événement EN CLAIR. SQLite les délie aussitôt, mais le
-    // mode du RÉPERTOIRE est ce qui ferme la fenêtre entre `open` et `unlink`.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
-    controle_positif(&dir)?;
-    std::env::set_var("SQLITE_TMPDIR", &dir);
-    Ok(dir)
-}
-
-/// Écrit un octet puis le relit. Une sonde qu'on n'a pas vue RÉUSSIR ne prouve rien de son sujet.
-/// Le nom de la sonde d'écriture : UN SEUL auteur, parce que la mesure des résidus doit l'ignorer par le
-/// même nom que le contrôle l'écrit.
-const SONDE_ECRITURE: &str = ".sonde-ecriture";
-
-fn controle_positif(dir: &std::path::Path) -> Result<(), String> {
-    let sonde = dir.join(SONDE_ECRITURE);
-    std::fs::write(&sonde, b"1").map_err(|e| format!("écriture impossible dans {} : {e}", dir.display()))?;
-    let relu = std::fs::read(&sonde).map_err(|e| format!("relecture impossible dans {} : {e}", dir.display()))?;
-    let _ = std::fs::remove_file(&sonde);
-    if relu != b"1" {
-        return Err(format!("contrôle positif échoué dans {} (relecture divergente)", dir.display()));
-    }
-    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════

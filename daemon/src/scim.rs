@@ -94,6 +94,14 @@ pub(crate) const CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE: &str =
      membre — un retrait demandé n'a PAS eu lieu, l'accès de ce membre est TOUJOURS EN PLACE. La demande \
      est atomique : AUCUNE de ses opérations n'est appliquée, et la demande entière peut être rejouée \
      telle quelle. Rien n'est attesté.";
+// `P10.29-j` — le `BEGIN` de la demande refusé : il était fondu avec la validation refusée sous la cause précédente, qui
+// dit « n'a pas pris l'ajout ou le retrait d'un membre » alors qu'aucune opération n'a été tentée. Sa propre cause, comme
+// les `*_TRANSACTION_NON_OUVERTE` des routes ; la conséquence pour l'IdP est la même (rien d'appliqué, rejouer).
+pub(crate) const CAUSE_SCIM_OPERATION_DE_GROUPE_TRANSACTION_NON_OUVERTE: &str =
+    "OPÉRATION DE GROUPE NON PRISE : la base du plan de contrôle n'a pas pris la transaction de la demande \
+     (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante) — AUCUNE opération n'a été tentée, \
+     un retrait demandé n'a PAS eu lieu, l'accès de ce membre est TOUJOURS EN PLACE. La demande entière peut \
+     être rejouée telle quelle. Rien n'est attesté.";
 // `P10.21-v` — la lecture des porteurs du rôle (le `replace` qui retire les absents) n'est pas une écriture : sa
 // cause est la sienne, la conséquence est la même (rien d'appliqué, les accès en place).
 pub(crate) const CAUSE_SCIM_PORTEURS_DU_ROLE_ILLISIBLES: &str =
@@ -817,7 +825,11 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
     let (added, removed) = match issue {
         Issue::Valide(compte) => compte,
         Issue::Refuse(refus) => return refus,
-        Issue::NonOuvert(e) | Issue::NonValide(e) => {
+        // `P10.29-j` — le `BEGIN` refusé (déjà dit et compté par `jouer_le_geste_garde`) a sa propre cause.
+        Issue::NonOuvert(e) => {
+            return scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_OPERATION_DE_GROUPE_TRANSACTION_NON_OUVERTE, &e.to_string())
+        }
+        Issue::NonValide(e) => {
             return scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE, &e.to_string())
         }
     };

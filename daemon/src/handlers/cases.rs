@@ -421,18 +421,33 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     // le dossier passé en P1 gardait la politique et les `ack_due`/`resolve_due` de son ancienne priorité, et la cause
     // n'en disait rien (avant le comptage, la politique était appliquée dans tous les cas). Les échéances suivent la
     // priorité écrite avant la sortie, sans rejouer la pause/reprise refusée, et la cause dit ce qu'elles ont fait.
+    // `P10.20-b` (rang trois) — une LECTURE du chrono ratée (`NonLu`) sortait en `RienAFaire` et la route rendait 204 :
+    // pause ou reprise sautée, ou échéances de l'ancienne priorité gardées, sans un mot. Elle sort désormais comme un
+    // refus, au même endroit (`updated` non écrit), sous sa propre forme : `ChronoSlaNonLu` (503 nommé « non lu »).
     if new_status.is_some() {
-        if let IssueDuChronoSla::Refuse(cause) = sla_on_status_change(conn, id, &effective_status, t) {
-            let mut cause = cause;
-            if priorite_ecrite {
-                cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, None));
+        match sla_on_status_change(conn, id, &effective_status, t) {
+            IssueDuChronoSla::Refuse(cause) => {
+                let mut cause = cause;
+                if priorite_ecrite {
+                    cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, None));
+                }
+                return IssueDuDossierModifie::NonEcrite(cause);
             }
-            return IssueDuDossierModifie::NonEcrite(cause);
+            IssueDuChronoSla::NonLu(cause) => {
+                let mut cause = cause;
+                if priorite_ecrite {
+                    cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, None));
+                }
+                return IssueDuDossierModifie::ChronoSlaNonLu(cause);
+            }
+            IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => {}
         }
     }
     if b.get("priority").and_then(parse_priority).is_some() {
-        if let IssueDuChronoSla::Refuse(cause) = sla_apply_policy(conn, id) {
-            return IssueDuDossierModifie::NonEcrite(cause);
+        match sla_apply_policy(conn, id) {
+            IssueDuChronoSla::Refuse(cause) => return IssueDuDossierModifie::NonEcrite(cause),
+            IssueDuChronoSla::NonLu(cause) => return IssueDuDossierModifie::ChronoSlaNonLu(cause),
+            IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => {}
         }
     }
     // `P10.20-w` (reste) — l'horodatage de mise à jour est compté comme les champs libres : tout ce qui le précède est
@@ -456,8 +471,11 @@ fn rattraper_l_echeance(conn: &Connection, id: i64, priorite: i64, statut_en_bas
         // Rien n'est recalculé sur un dossier terminal : la cause ne gagne aucun mot.
         // `P10.20-w` (reste) — la reprise est COMPTÉE : refusée, la cause le dit (le dossier clos reste en pause).
         if statut_ecrit {
-            if let IssueDuChronoSla::Refuse(cause) = sla_on_status_change(conn, id, statut_en_base, t) {
-                return format!(" ; REPRISE DU CHRONO SLA NON ÉCRITE ({cause})");
+            match sla_on_status_change(conn, id, statut_en_base, t) {
+                IssueDuChronoSla::Refuse(cause) => return format!(" ; REPRISE DU CHRONO SLA NON ÉCRITE ({cause})"),
+                // `P10.20-b` (rang trois) — chrono non lu : la reprise n'a pas été tentée, et la cause le dit.
+                IssueDuChronoSla::NonLu(cause) => return format!(" ; REPRISE DU CHRONO SLA NON LUE ({cause})"),
+                IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => {}
             }
         }
         return String::new();
@@ -489,16 +507,39 @@ fn rattraper_les_echeances_multi_niveau(conn: &Connection, id: i64, priorite: i6
         Some((statut, t)) => sla_on_status_change(conn, id, statut, t),
         None => IssueDuChronoSla::RienAFaire,
     };
-    let Some((pid, _ack_s, res_s)) = sla_policy_for(conn, priorite) else {
-        return match reprise {
-            IssueDuChronoSla::Refuse(cause) => format!(" ; REPRISE DU CHRONO SLA NON ÉCRITE ({cause})"),
-            _ => String::new(),
+    let dire_la_reprise = |reprise: &IssueDuChronoSla| match reprise {
+        IssueDuChronoSla::Refuse(cause) => format!(" ; REPRISE DU CHRONO SLA NON ÉCRITE ({cause})"),
+        IssueDuChronoSla::NonLu(cause) => format!(" ; REPRISE DU CHRONO SLA NON LUE ({cause})"),
+        _ => String::new(),
+    };
+    // `P10.20-b` (rang trois) — la politique de la priorité écrite est LUE ou la cause le dit : le `None` d'une table
+    // illisible se lisait « aucune politique », et le rattrapage se taisait sur des échéances de l'ancienne priorité.
+    let politique = match sla_policy_for(conn, priorite) {
+        Ok(v) => v,
+        Err(e) => {
+            return format!("{} ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES : politique de la priorité écrite NON LUE ({e})", dire_la_reprise(&reprise));
+        }
+    };
+    let Some((pid, _ack_s, res_s)) = politique else {
+        // `P10.20-w` (reste) — aucune politique pour la priorité écrite : `sla_apply_policy` efface celle de l'ancienne
+        // priorité (inerte sur un dossier legacy : mode 0, la cause ne gagne aucun mot).
+        let effacement = match sla_apply_policy(conn, id) {
+            IssueDuChronoSla::Ecrit => ", politique de l'ancienne priorité effacée (aucune politique active pour la priorité écrite)".to_string(),
+            IssueDuChronoSla::Refuse(cause) => format!(" ; POLITIQUE DE L'ANCIENNE PRIORITÉ NON EFFACÉE ({cause})"),
+            IssueDuChronoSla::NonLu(cause) => format!(" ; ÉCHÉANCES MULTI-NIVEAU NON LUES ({cause})"),
+            IssueDuChronoSla::RienAFaire => String::new(),
         };
+        // L'effacement est dit d'abord : la phrase de la reprise reste en fin de cause, comme avant.
+        return format!("{effacement}{}", dire_la_reprise(&reprise));
     };
     let application = sla_apply_policy(conn, id);
     let refus: Vec<String> = [reprise, application]
         .into_iter()
-        .filter_map(|i| match i { IssueDuChronoSla::Refuse(c) => Some(c), _ => None })
+        .filter_map(|i| match i {
+            IssueDuChronoSla::Refuse(c) => Some(c),
+            IssueDuChronoSla::NonLu(c) => Some(format!("NON LU — {c}")),
+            _ => None,
+        })
         .collect();
     let relu: Result<(Option<i64>, Option<i64>, i64, i64, String, Option<i64>), _> = conn.query_row(
         "SELECT sla_policy_id, resolve_due, ts, COALESCE(sla_pause_accum,0), status, sla_paused_since FROM incident WHERE id=?1",
@@ -537,7 +578,16 @@ pub(crate) enum IssueDuDossierModifie {
     /// La base n'a PAS pris une écriture attestée : la cause est portée (`champ: cause` pour la mise à jour), et rien
     /// — ni chronologie, ni registre, ni 204 — ne dit que CE geste a eu lieu.
     NonEcrite(String),
+    /// `P10.20-b` (rang trois) — une LECTURE qui gouverne le chrono SLA multi-niveau (ligne du dossier, politique de sa
+    /// priorité) a échoué : pause, reprise ou échéances ne sont PAS posées. Seule `case_apply_update` le rend.
+    ChronoSlaNonLu(String),
 }
+
+/// `P10.20-b` (rang trois) — le chrono SLA multi-niveau n'a pas pu être LU pendant la mise à jour : 503 nommé.
+pub(crate) const CAUSE_CHRONO_SLA_NON_LU: &str = "CHRONO SLA NON LU : la mise à jour s'est arrêtée parce que la base n'a pas rendu \
+     le chrono du dossier ou la politique SLA de sa priorité (cause entre parenthèses) — la pause, la reprise ou les échéances \
+     multi-niveau ne sont PAS posées, et l'horodatage de mise à jour n'est pas écrit. Les champs qui précèdent dans la \
+     demande ont pu être écrits, avec leur chronologie et leur ligne de registre : relisez le dossier avant de réessayer.";
 
 /// `P10.20-w` — une écriture attestée de la mise à jour n'a pas été prise : 503 nommé.
 pub(crate) const CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE: &str = "MISE À JOUR DU DOSSIER NON ÉCRITE : la base a refusé l'écriture du champ nommé entre parenthèses — il n'est PAS modifié, et ni la chronologie ni le registre n'en portent rien, pas plus que des champs attestés qui le suivent. Les champs qui le précèdent dans la demande ont pu être écrits : relisez le dossier avant de réessayer.";
@@ -924,6 +974,13 @@ pub(crate) const CAUSE_ECHEANCES_MULTI_NIVEAU_NON_POSEES: &str = "ÉCHÉANCES MU
      politique SLA active — `ack_due`/`resolve_due` ne sont PAS posés, le dossier n'est pas gouverné par la politique. \
      Modifiez sa priorité ou réenregistrez la politique pour les reposer.";
 
+/// `P10.20-b` (rang trois) — la politique SLA de la priorité (ou la ligne du dossier créé) n'a pas pu être LUE.
+pub(crate) const CAUSE_ECHEANCES_MULTI_NIVEAU_NON_LUES: &str = "ÉCHÉANCES MULTI-NIVEAU NON LUES : le dossier est créé (son \
+     identifiant est servi), mais la base n'a pas rendu la politique SLA de sa priorité ou la ligne du dossier (cause entre \
+     parenthèses) — on ne sait PAS si une politique \
+     le gouverne : `ack_due`/`resolve_due` ne sont pas posés, ce qui ne veut PAS dire « aucune politique ». Modifiez sa \
+     priorité ou réenregistrez la politique pour les reposer.";
+
 /// POST /api/cases — crée un case first-class (status='new', priorité, sla_due). Mutating (editor/admin). #4a.
 ///
 /// `P10.20-w` — LE CONTRAT DE CETTE ROUTE CHANGE, ET C'EST ASSUMÉ : elle rendait un 200 portant un
@@ -954,8 +1011,15 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
         Err(e) => corps["sla_due_non_lu"] = json!(format!("{CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE} ({e})")),
     }
     // `P10.20-w` (reste) — échéances multi-niveau refusées : le dossier est servi (il existe), l'aveu est porté.
-    if let IssueDuChronoSla::Refuse(cause) = echeances {
-        corps["echeances_multi_niveau_non_posees"] = json!(format!("{CAUSE_ECHEANCES_MULTI_NIVEAU_NON_POSEES} ({cause})"));
+    match echeances {
+        IssueDuChronoSla::Refuse(cause) => {
+            corps["echeances_multi_niveau_non_posees"] = json!(format!("{CAUSE_ECHEANCES_MULTI_NIVEAU_NON_POSEES} ({cause})"));
+        }
+        // `P10.20-b` (rang trois) — politique (ou ligne) non lue : servi comme « aucune politique » d'avant, sans un mot.
+        IssueDuChronoSla::NonLu(cause) => {
+            corps["echeances_multi_niveau_non_lues"] = json!(format!("{CAUSE_ECHEANCES_MULTI_NIVEAU_NON_LUES} ({cause})"));
+        }
+        IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => {}
     }
     Json(corps).into_response()
 }
@@ -1014,6 +1078,8 @@ pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Exten
         IssueDuDossierModifie::DossierAbsent => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MISE_A_JOUR_DU_DOSSIER_INTERROMPUE),
         // `P10.20-w` — une écriture attestée refusée : 503 nommé (c'était un 204 sur un champ non écrit).
         IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE} ({cause})")),
+        // `P10.20-b` (rang trois) — chrono SLA non lu : 503 nommé (c'était un 204 sur un chrono non tenu).
+        IssueDuDossierModifie::ChronoSlaNonLu(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_CHRONO_SLA_NON_LU} ({cause})")),
     }
     })
 }
@@ -1137,6 +1203,8 @@ pub(crate) async fn case_archive(State(st): State<AppState>, Extension(au): Exte
         IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"relecture du dossier"),
         // `P10.20-w` — écriture refusée : 503 nommé (c'était un 204 avec la ligne de registre).
         IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ARCHIVAGE_NON_ECRIT} ({cause})")),
+        // `case_set_archived` ne lit pas le chrono : bras exhaustif, servi comme sa cause le dit.
+        IssueDuDossierModifie::ChronoSlaNonLu(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_CHRONO_SLA_NON_LU} ({cause})")),
     }
     })
 }
@@ -1157,6 +1225,8 @@ pub(crate) async fn case_unarchive(State(st): State<AppState>, Extension(au): Ex
         IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"relecture du dossier"),
         // `P10.20-w` — écriture refusée : 503 nommé (c'était un 204 avec la ligne de registre).
         IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DESARCHIVAGE_NON_ECRIT} ({cause})")),
+        // `case_set_archived` ne lit pas le chrono : bras exhaustif, servi comme sa cause le dit.
+        IssueDuDossierModifie::ChronoSlaNonLu(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_CHRONO_SLA_NON_LU} ({cause})")),
     }
     })
 }

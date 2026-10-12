@@ -586,9 +586,31 @@ pub(crate) struct TokenIdent {
 /// lit le control-plane (`token(hash -> tenant_id, env_id, host)`) car token->tenant DOIT précéder
 /// l'ouverture d'une base tenant (poule/œuf ; un token ne peut vivre dans la base tenant). Fail-closed :
 /// token inconnu -> None (jamais de repli cross-tenant).
+/// `P10.20-b` — PROJECTION hors du chemin servi (`valid_token`, témoins) : `None` pour l'absence ÉTABLIE comme pour la
+/// lecture NON FAITE. Le garde d'authentification lit `token_lookup_lu`, qui les distingue.
 pub(crate) fn token_lookup(st: &AppState, tok: &str) -> Option<TokenIdent> {
+    match token_lookup_lu(st, tok) {
+        LectureDuJetonDAgent::Trouve(ti) => Some(ti),
+        LectureDuJetonDAgent::Absent | LectureDuJetonDAgent::NonLu(_) => None,
+    }
+}
+
+/// `P10.20-b` — LECTURE TRI-ÉTAT du jeton d'agent (seams Bearer agent et HEC) : le jeton trouvé, l'absence ÉTABLIE
+/// (le moteur a répondu « aucune ligne », ou jeton vide), ou rien de lu. Seule l'absence établie vaut « jeton
+/// inconnu » (401) : une table `token` illisible n'est pas un jeton révoqué — le garde la refuse en 503 nommé, sans
+/// identité, sans `last_used` écrit, sans repli sur une autre méthode.
+pub(crate) enum LectureDuJetonDAgent {
+    Trouve(TokenIdent),
+    Absent,
+    /// La cause du moteur : pour le journal du démon seulement, jamais pour un corps de réponse.
+    NonLu(String),
+}
+
+/// `P10.20-b` — `token_lookup` en lecture TRI-ÉTAT (mêmes requêtes, même filtre `kind`, même `last_used` sur le seul
+/// jeton trouvé). Voir `LectureDuJetonDAgent`.
+pub(crate) fn token_lookup_lu(st: &AppState, tok: &str) -> LectureDuJetonDAgent {
     if tok.is_empty() {
-        return None;
+        return LectureDuJetonDAgent::Absent;
     }
     let h = sha256_hex(tok.as_bytes());
     if let Some(cp) = st.tenants.control.as_ref() {
@@ -599,18 +621,20 @@ pub(crate) fn token_lookup(st: &AppState, tok: &str) -> Option<TokenIdent> {
         // datasource dans cette table. Le vecteur de kind-confusion est donc STRICTEMENT mode 0 (base unique
         // avec colonne `kind`), fermé par le filtre de la branche mode 0 ci-dessous.
         let conn = cp.conn.lock();
-        let (tenant, env, host) = conn
-            .query_row(
-                "SELECT tenant_id, env_id, host FROM token WHERE hash=?1",
-                params![h],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)),
-            )
-            .ok()?;
-        return Some(TokenIdent {
-            tenant,
-            env: env.unwrap_or_else(|| "prod".into()),
-            host: host.unwrap_or_default(),
-        });
+        let lu = conn.query_row(
+            "SELECT tenant_id, env_id, host FROM token WHERE hash=?1",
+            params![h],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)),
+        );
+        return match lu {
+            Ok((tenant, env, host)) => LectureDuJetonDAgent::Trouve(TokenIdent {
+                tenant,
+                env: env.unwrap_or_else(|| "prod".into()),
+                host: host.unwrap_or_default(),
+            }),
+            Err(rusqlite::Error::QueryReturnedNoRows) => LectureDuJetonDAgent::Absent,
+            Err(e) => LectureDuJetonDAgent::NonLu(e.to_string()),
+        };
     }
     // mode 0 : base unique, INCHANGÉ (host + UPDATE last_used) SAUF le filtre kind ci-dessous.
     // #52 KIND-CONFUSION FIX (CRITICAL) : un token `kind='datasource'` (read-scoped, remis à une Grafana
@@ -635,15 +659,18 @@ pub(crate) fn token_lookup(st: &AppState, tok: &str) -> Option<TokenIdent> {
     // /api/ingest ou /services/collector. Seul `pubsub_token_lookup` (kind='gcp_pubsub' requis) l'authentifie,
     // BORNÉ à /api/ingest/pubsub. Isolation SYMÉTRIQUE : une clé Firehose ne s'authentifie pas sur pubsub et
     // vice-versa (chaque endpoint EXIGE son propre kind), et NI l'une NI l'autre sur le seam agent/HEC/datasource.
-    let host: Option<Option<String>> = conn
-        .query_row("SELECT host FROM token WHERE token_hash=?1 AND (kind IS NULL OR kind NOT IN ('datasource','client','firehose','gcp_pubsub'))", params![h], |r| r.get::<_, Option<String>>(0))
-        .ok();
+    let host = conn.query_row(
+        "SELECT host FROM token WHERE token_hash=?1 AND (kind IS NULL OR kind NOT IN ('datasource','client','firehose','gcp_pubsub'))",
+        params![h],
+        |r| r.get::<_, Option<String>>(0),
+    );
     match host {
-        Some(h_opt) => {
+        Ok(h_opt) => {
             let _ = conn.execute("UPDATE token SET last_used=?1 WHERE token_hash=?2", params![now(), h]);
-            Some(TokenIdent { tenant: "default".into(), env: "prod".into(), host: h_opt.unwrap_or_default() })
+            LectureDuJetonDAgent::Trouve(TokenIdent { tenant: "default".into(), env: "prod".into(), host: h_opt.unwrap_or_default() })
         }
-        None => None,
+        Err(rusqlite::Error::QueryReturnedNoRows) => LectureDuJetonDAgent::Absent,
+        Err(e) => LectureDuJetonDAgent::NonLu(e.to_string()),
     }
 }
 

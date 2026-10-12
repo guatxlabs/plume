@@ -38,43 +38,80 @@
 //!   target/host), tout GXQL/search, tout `action_kind`, notes/commentaires internes, identité analyste/assignee,
 //!   cross-tenant. La timeline client garde son allowlist de kinds INCHANGÉE (jamais 'incident'/'runbook'/'step').
 use crate::*;
+use rusqlite::OptionalExtension;
 
 // ================================================================================================
 // MULTI-LEVEL SLA — politiques configurables (ack + resolve par priorité). VIDE = SLA legacy #4a.
 // ================================================================================================
 
-/// Politique SLA ACTIVE pour une priorité (1..4) : (policy_id, ack_target_s, resolve_target_s). None si la
+/// Politique SLA ACTIVE pour une priorité (1..4) : (policy_id, ack_target_s, resolve_target_s). `Ok(None)` si la
 /// table est vide ou aucune politique activée pour ce tier -> l'appelant retombe sur le SLA legacy (sla_due).
-pub(crate) fn sla_policy_for(conn: &Connection, priority: i64) -> Option<(i64, i64, i64)> {
+/// `P10.20-b` (rang trois) — UNE LECTURE RATÉE N'EST PAS « AUCUNE POLITIQUE » : le `.ok()` d'avant rendait `None` sur
+/// une table illisible, et chaque appelant retombait EN SILENCE sur le régime legacy (échéances non posées, ou celles
+/// de l'ancienne priorité gardées). L'absence ÉTABLIE (`QueryReturnedNoRows`) reste `Ok(None)` ; l'échec remonte.
+pub(crate) fn sla_policy_for(conn: &Connection, priority: i64) -> rusqlite::Result<Option<(i64, i64, i64)>> {
     conn.query_row(
         "SELECT id, ack_target_s, resolve_target_s FROM sla_policy WHERE priority=?1 AND enabled=1",
         params![priority],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
     )
-    .ok()
+    .optional()
 }
 
 /// (Ré)applique la politique SLA multi-niveau à un case : pose `sla_policy_id`, `ack_due` (si PAS encore
 /// acquitté : first_response_ts NULL), `resolve_due`, à partir du `ts` IMMUABLE + cibles + cumul de pause.
-/// INERTE si aucune politique pour la priorité courante (mode 0 : dues restent NULL -> SLA legacy). Ne touche
-/// JAMAIS un case terminal (resolved/closed). Idempotent. Appelée à la création et sur changement de priorité.
+/// INERTE si aucune politique pour la priorité courante ET aucune politique portée (mode 0 : dues restent NULL ->
+/// SLA legacy). Ne touche JAMAIS un case terminal (resolved/closed). Idempotent. Appelée à la création, sur
+/// changement de priorité et au recalcul de l'upsert.
 /// `P10.20-w` (reste) — L'ÉCRITURE EST COMPTÉE ET RENDUE (`IssueDuChronoSla`) : les deux `UPDATE` étaient avalés et
 /// la fonction rendait `()`, donc la création, la mise à jour et le recalcul de l'upsert ne savaient pas si l'échéance
-/// avait été posée — le recalcul comptait « recalculé » un dossier dont la base avait refusé l'échéance. Les LECTURES
-/// (`.ok()`, ici et dans `sla_policy_for`) gardent leur forme : rien à faire, comme avant (garde single-row, rang trois).
+/// avait été posée — le recalcul comptait « recalculé » un dossier dont la base avait refusé l'échéance.
+/// `P10.20-b` (rang trois) — LES DEUX LECTURES SONT JUGÉES : la ligne du dossier et la politique de sa priorité
+/// étaient lues par `.ok()`, et une lecture ratée rendait `RienAFaire` — « rien à poser » sur un chrono qu'on n'avait
+/// pas lu. L'absence établie (dossier disparu, aucune politique) garde la sortie d'avant ; l'échec rend `NonLu`, et
+/// RIEN n'est écrit.
+/// `P10.20-w` (reste) — UNE PRIORITÉ SANS POLITIQUE N'HÉRITE PLUS DE CELLE D'AVANT : la sortie `RienAFaire` laissait
+/// `sla_policy_id`, `ack_due` et `resolve_due` de l'ANCIENNE priorité, servis par la fiche comme ceux de la priorité
+/// courante et toujours jugés par le tour multi-niveau (dès qu'une autre politique est active). Le dossier retombe
+/// désormais sur le régime legacy, comme s'il avait été créé à cette priorité : les trois colonnes reviennent à NULL
+/// (`sla_due` legacy, recalculé par `case_apply_update`, gouverne seul). L'`UPDATE` est conditionné à une politique
+/// PORTÉE : zéro ligne y est un fait (dossier déjà legacy -> `RienAFaire`, mode 0 octet pour octet). Même règle au
+/// recalcul de l'upsert d'une politique DÉSACTIVÉE : ses dossiers cessent d'être gouvernés (comptés recalculés).
+/// LIMITES ÉCRITES : les marqueurs `ack_breached`/`resolve_breached` ne sont pas remis à zéro (un dépassement passé
+/// sous l'ancienne priorité reste un fait, le registre le porte) ; une pause en cours (`sla_paused_since`) est
+/// conservée, et `sla_on_status_change` la reprend à la sortie de `waiting` même sans politique portée (sinon le
+/// chrono resterait en pause pour toujours si une politique revenait) ; la SUPPRESSION d'une politique
+/// (`sla_policy_delete`) n'efface toujours pas les échéances de ses dossiers (rien n'y rappelle cette fonction).
 pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) -> IssueDuChronoSla {
-    let row: Option<(i64, i64, String, i64, Option<i64>)> = conn
+    let lu: rusqlite::Result<Option<(i64, i64, String, i64, Option<i64>)>> = conn
         .query_row(
             "SELECT ts, priority, status, COALESCE(sla_pause_accum,0), first_response_ts FROM incident WHERE id=?1",
             params![id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
-        .ok();
+        .optional();
+    let row = match lu {
+        Ok(v) => v,
+        Err(e) => return IssueDuChronoSla::NonLu(format!("ligne du dossier: {e}")),
+    };
     let Some((ts, priority, status, pause_accum, first_resp)) = row else { return IssueDuChronoSla::RienAFaire };
     if matches!(status.as_str(), "resolved" | "closed" | "contained") {
         return IssueDuChronoSla::RienAFaire; // terminal : le chrono est arrêté, on ne recompute pas.
     }
-    let Some((pid, ack_s, res_s)) = sla_policy_for(conn, priority) else { return IssueDuChronoSla::RienAFaire }; // pas de politique -> legacy
+    let politique = match sla_policy_for(conn, priority) {
+        Ok(v) => v,
+        Err(e) => return IssueDuChronoSla::NonLu(format!("politique de la priorité {priority}: {e}")),
+    };
+    let Some((pid, ack_s, res_s)) = politique else {
+        // pas de politique -> legacy : efface celle d'une ancienne priorité, s'il en porte une.
+        return match conn.execute(
+            "UPDATE incident SET sla_policy_id=NULL, ack_due=NULL, resolve_due=NULL WHERE id=?1 AND sla_policy_id IS NOT NULL",
+            params![id],
+        ) {
+            Ok(0) => IssueDuChronoSla::RienAFaire,
+            res => ecriture_du_chrono("sla_policy_id/ack_due/resolve_due (effacement)", res),
+        };
+    };
     let resolve_due = ts + res_s + pause_accum;
     // ack_due n'est (re)posé que tant que le case n'est PAS acquitté (first_response_ts NULL) : après ack, le
     // chrono d'acquittement est arrêté et son échéance figée.
@@ -106,11 +143,14 @@ pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) -> IssueDuChronoSla {
 pub(crate) enum IssueDuChronoSla {
     /// L'`UPDATE` a posé exactement une ligne.
     Ecrit,
-    /// Rien à écrire : pas de politique, dossier terminal ou non gouverné, état déjà visé (ou ligne non lue —
-    /// lecture `.ok()` conservée, hors de cette clé).
+    /// Rien à écrire : absence ÉTABLIE (dossier disparu, pas de politique et aucune portée), dossier terminal ou non
+    /// gouverné, état déjà visé.
     RienAFaire,
     /// La base n'a PAS pris l'écriture (erreur, ou autre chose qu'une ligne) : `colonnes: cause`.
     Refuse(String),
+    /// `P10.20-b` (rang trois) — une LECTURE qui gouverne le chrono (ligne du dossier, politique de sa priorité) a
+    /// échoué : rien n'est écrit, et ce n'est PAS « rien à faire » — `quoi: cause`.
+    NonLu(String),
 }
 
 /// Compte une écriture du chrono : une ligne, ou le refus nommé par ses colonnes.
@@ -129,16 +169,27 @@ fn ecriture_du_chrono(colonnes: &str, res: rusqlite::Result<usize>) -> IssueDuCh
 ///     ack_due/resolve_due d'autant (le temps « en attente » ne consomme pas le SLA), efface paused_since.
 /// Le breach reste calculé depuis (ts immuable + cumul) — un analyste ne peut PAS reculer `ts` pour tricher.
 /// `P10.20-w` (reste) — les deux écritures (pause, reprise) sont COMPTÉES et rendues (`IssueDuChronoSla`).
+/// `P10.20-b` (rang trois) — LA LECTURE EST JUGÉE : `.ok()` rendait `RienAFaire` sur une ligne non lue, et la pause ou la
+/// reprise était sautée en silence (chrono qui court pendant l'attente, ou resté en pause sur un dossier actif).
+/// Dossier absent = `RienAFaire` d'avant ; lecture ratée = `NonLu`, rien n'est écrit.
+/// `P10.20-w` (reste) — une pause EN COURS se reprend même sans politique portée : `sla_apply_policy` efface désormais
+/// la politique d'une ancienne priorité sans toucher la pause, et un dossier sorti de `waiting` sans reprise garderait
+/// `sla_paused_since` — le tour multi-niveau le sauterait pour toujours si une politique revenait. Mode 0 inchangé :
+/// sans politique, `sla_paused_since` n'est jamais posé.
 pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str, t: i64) -> IssueDuChronoSla {
-    let row: Option<(Option<i64>, Option<i64>)> = conn
+    let lu: rusqlite::Result<Option<(Option<i64>, Option<i64>)>> = conn
         .query_row(
             "SELECT sla_policy_id, sla_paused_since FROM incident WHERE id=?1",
             params![id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok();
+        .optional();
+    let row = match lu {
+        Ok(v) => v,
+        Err(e) => return IssueDuChronoSla::NonLu(format!("chrono du dossier: {e}")),
+    };
     let Some((policy_id, paused_since)) = row else { return IssueDuChronoSla::RienAFaire };
-    if policy_id.is_none() {
+    if policy_id.is_none() && paused_since.is_none() {
         return IssueDuChronoSla::RienAFaire; // pas de politique multi-niveau -> aucune comptabilité de pause (legacy inchangé)
     }
     match (paused_since, new_status == "waiting") {
@@ -1190,6 +1241,8 @@ pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64,
     let mut recalcules = 0i64;
     let mut refuses: Vec<String> = Vec::new();
     let mut nb_refuses = 0usize;
+    let mut non_lus: Vec<String> = Vec::new();
+    let mut nb_non_lus = 0usize;
     for cid in ids.into_iter().take(plafond.max(0) as usize) {
         match sla_apply_policy(conn, cid) {
             IssueDuChronoSla::Ecrit => recalcules += 1,
@@ -1200,6 +1253,14 @@ pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64,
                     refuses.push(format!("#{cid} ({cause})"));
                 }
             }
+            // `P10.20-b` (rang trois) — une lecture ratée (dossier ou politique) n'est plus un « rien à faire » muet :
+            // le dossier n'est pas recalculé, jamais compté, et il est nommé.
+            IssueDuChronoSla::NonLu(cause) => {
+                nb_non_lus += 1;
+                if non_lus.len() < 5 {
+                    non_lus.push(format!("#{cid} ({cause})"));
+                }
+            }
         }
     }
     let mut manques: Vec<String> = Vec::new();
@@ -1208,6 +1269,13 @@ pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64,
             "{nb_refuses} échéance(s) REFUSÉE(S) par la base — ces cases gardent leur ANCIENNE échéance : {}{}",
             refuses.join(", "),
             if nb_refuses > refuses.len() { ", …" } else { "" }
+        ));
+    }
+    if nb_non_lus > 0 {
+        manques.push(format!(
+            "{nb_non_lus} échéance(s) NON RECALCULÉE(S) faute de LECTURE (dossier ou politique non lu) — ces cases gardent leur ANCIENNE échéance : {}{}",
+            non_lus.join(", "),
+            if nb_non_lus > non_lus.len() { ", …" } else { "" }
         ));
     }
     if depasse {

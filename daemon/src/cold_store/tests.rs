@@ -4280,8 +4280,8 @@ fn p3_hash_masking_over_cold_matches_hot() {
     let conf = conf_union(HOT_WIN);
     // SEL de masque RÉEL posé sur main.meta (migrate_v86 le pose immuable en prod) -> la connexion d'union le
     // lit sur `main` (= hot) via install_fmask_udf ; le HASH cold devient byte-identique au HASH hot pour la
-    // même entrée. (Sans ce sel, install_fmask_udf tomberait sur un sel vide par défaut — ici on prouve
-    // que le sel de main.meta est BIEN celui utilisé.)
+    // même entrée. (Sans ce sel, install_fmask_udf REFUSE le HASH — `P10.20-b` — ici on prouve que le sel
+    // de main.meta est BIEN celui utilisé.)
     //
     // `P10.13-a` — LA TABLE N'EST PLUS CRÉÉE ICI : `mkdb` la pose, comme la chaîne de migrations la pose sur
     // TOUS les déploiements. Ce test la créait lui-même parce que la fixture ne l'avait pas ; garder ce

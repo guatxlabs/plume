@@ -148,9 +148,19 @@ pub(crate) fn install_query_udfs(conn: &Connection) {
 /// (inoffensif si jamais appelée -> mode 0 byte-identique).
 pub(crate) fn install_fmask_udf(conn: &Connection) {
     use rusqlite::functions::FunctionFlags;
-    let fmask_salt: String = conn
-        .query_row("SELECT value FROM meta WHERE key='field_mask_salt'", [], |r| r.get(0))
-        .unwrap_or_default();
+    // `P10.20-b` : un sel ABSENT ou ILLISIBLE n'est jamais "" — la fonction rend alors une ERREUR (la requête
+    // HASH échoue fermé) au lieu d'un hash non salé de "\0"+valeur, attaquable au dictionnaire.
+    let fmask_salt: Option<String> = match crate::read_field_mask_salt(conn) {
+        Ok(Some(salt)) => Some(salt),
+        Ok(None) => {
+            eprintln!("[field_filter] sel de hachage ABSENT (meta.field_mask_salt) sur cette connexion — plume_fmask_hash refusera");
+            None
+        }
+        Err(e) => {
+            eprintln!("[field_filter] sel de hachage ILLISIBLE sur cette connexion : {e} — plume_fmask_hash refusera");
+            None
+        }
+    };
     let _ = conn.create_scalar_function(
         "plume_fmask_hash",
         1,
@@ -163,7 +173,12 @@ pub(crate) fn install_fmask_udf(conn: &Connection) {
                 rusqlite::types::ValueRef::Real(f) => f.to_string(),
                 rusqlite::types::ValueRef::Blob(b) => format!("<blob {} o>", b.len()),
             };
-            Ok(Some(crate::fmask_hash(&fmask_salt, &s)))
+            match &fmask_salt {
+                Some(salt) => Ok(Some(crate::fmask_hash(salt, &s))),
+                None => Err(rusqlite::Error::UserFunctionError(
+                    "sel de hachage (meta.field_mask_salt) absent ou illisible : HASH refusé".into(),
+                )),
+            }
         },
     );
 }

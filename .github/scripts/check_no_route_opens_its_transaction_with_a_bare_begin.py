@@ -135,10 +135,11 @@ SITES_DE_ROUTE_TOLERES = {
     # `P10.21-r` — `scim_group_patch` EST RETIRÉ (2026-09-25) : il ouvre sa transaction par la forme commune d'un geste
     # gardé (`transaction_validee::jouer_le_geste_garde`, qui passe par `ouvrir_sa_transaction` et dit au journal les deux
     # causes d'un `BEGIN` refusé) ; son refus reste le 503 au format d'erreur SCIM (`scim_refuser_a_rejouer`).
-    # `attach_runbook` (aide de `POST /api/cases/{id}/runbook`) : refus rendu en 503 par son appelant
-    # (`RefusDAttache::EtapesNonEcrites`), sans la phrase d'une transaction non prise. Depuis le lot R4 (`P10.27-h`), son
-    # `BEGIN` refusé est dit au journal avec sa cause et compté (`transaction_validee::dire_la_transaction_non_ouverte`) :
-    # c'est une moitié de `P10.29-j` ; l'autre — la forme commune et sa phrase dans la réponse — reste à prendre.
+    # `attach_runbook` (aide de `POST /api/cases/{id}/runbook`) : refus typé rendu en 503 par son appelant. Depuis
+    # `P10.27-h`, son `BEGIN` refusé est dit au journal avec sa cause et compté (`dire_la_transaction_non_ouverte`) ;
+    # depuis `P10.29-j`, la réponse porte sa propre cause (`RefusDAttache::TransactionNonOuverte`,
+    # `CAUSE_RUNBOOK_NON_ATTACHE_TRANSACTION_NON_OUVERTE`). Reste nu au sens de cette garde : `Txn::begin` et non
+    # `ouvrir_le_garde_du_geste`, qui rend une `Response` que l'aide ne peut pas porter.
     ("daemon/src/handlers/incidents.rs", "attach_runbook"): ("Txn::begin",),
     # `P10.29-i` — `poser_l_administrateur` EST RETIRÉ (2026-09-29) : il ouvre par la forme commune d'un geste gardé
     # (`transaction_validee::jouer_le_geste_garde`), et ses deux appelants rendent son refus typé en 503 nommé.

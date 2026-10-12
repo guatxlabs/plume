@@ -974,6 +974,57 @@ pub(crate) const CAUSE_ANNUAIRE_NOM_NON_VERIFIE: &str = "IDENTITÉ DE L'ANNUAIRE
      dire si ce nom est celui d'un compte local à mot de passe (lecture refusée ou table illisible), et le démon ne \
      sert pas une identité de l'annuaire sur un nom qu'il n'a pas pu vérifier. Réessayez ; rien n'est servi.";
 
+/// `P10.20-b` — la table des jetons d'agent n'a pas pu être lue (seams Bearer agent et HEC).
+pub(crate) const CAUSE_JETON_D_AGENT_NON_LU: &str = "JETON D'AGENT NON VÉRIFIÉ : la base n'a pas pu lire la table des \
+     jetons — ce n'est PAS « jeton inconnu » ni « jeton révoqué », sa validité n'est ni affirmée ni niée. Rien n'est \
+     ingéré ni servi ; la même requête peut être rejouée telle quelle.";
+
+/// `P10.20-b` — la porte par laquelle un jeton d'agent NON LU a été présenté (elle fixe la forme du corps refusé).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PorteDuJetonDAgent {
+    /// `Authorization: Bearer <jeton>` sur `agent_bearer_path`.
+    Bearer,
+    /// `Authorization: Splunk <jeton>` ou `?token=` sur `hec_collector_path` : corps à la forme HEC.
+    Hec,
+}
+
+/// `P10.20-b` — POURQUOI LA RÉSOLUTION D'IDENTITÉ S'ARRÊTE SANS IDENTITÉ ET SANS REPLI : un nom que l'annuaire ne
+/// prend pas (`P10.25-d`), ou un jeton d'agent dont la lecture n'a pas eu lieu.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RefusDIdentite {
+    Annuaire(RefusDeLAnnuaire),
+    /// La cause du moteur : au journal du démon seulement, jamais dans le corps.
+    JetonDAgentNonLu { porte: PorteDuJetonDAgent, cause: String },
+}
+
+impl From<RefusDeLAnnuaire> for RefusDIdentite {
+    fn from(refus: RefusDeLAnnuaire) -> Self {
+        Self::Annuaire(refus)
+    }
+}
+
+impl RefusDIdentite {
+    /// La réponse nommée. Jeton non lu : `503` (cause constante), la cause du moteur sur la sortie d'erreur du démon
+    /// avec la seule porte — ni jeton, ni empreinte. Rien n'est tracé au registre : aucune identité n'a été établie.
+    pub(crate) fn servir(&self, st: &AppState, ip: &str) -> Response {
+        match self {
+            Self::Annuaire(refus) => refus.servir(st, ip),
+            Self::JetonDAgentNonLu { porte, cause } => {
+                eprintln!("[auth] WARN jeton d'agent NON lu (porte {porte:?}), requête refusée sans identité : {cause}");
+                match porte {
+                    PorteDuJetonDAgent::Bearer => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_JETON_D_AGENT_NON_LU),
+                    // HEC : code 9 = « Server is busy » du protocole HEC, le seul qui dise au relais de rejouer.
+                    PorteDuJetonDAgent::Hec => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({ "text": CAUSE_JETON_D_AGENT_NON_LU, "code": 9 })),
+                    )
+                        .into_response(),
+                }
+            }
+        }
+    }
+}
+
 /// `P10.25-d` — fenêtre de la trace d'un refus de l'annuaire, par (base, nom, cause) : même ordre que la fenêtre
 /// de l'inventaire des accès (`ACCES_OBSERVE_DEBOUNCE_S`).
 pub(crate) const REFUS_DE_L_ANNUAIRE_FENETRE_S: i64 = 300;
@@ -1269,7 +1320,8 @@ pub(crate) fn resolve_identity(st: &AppState, req: &Request) -> IdentiteResolue 
 /// PORTEUR d'un éventuel token agent (Bearer). Zéro changement de logique vs l'inline d'origine.
 /// `P10.25-d` — `Err` : l'annuaire présente, en mode 0, un nom qu'il ne prend pas ; la résolution S'ARRÊTE là (aucune
 /// méthode suivante — jeton, démonstration — ne sert la requête à sa place).
-pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<IdentiteResolue, RefusDeLAnnuaire> {
+/// `P10.20-b` — `Err` aussi : un jeton d'agent (Bearer ou HEC) dont la lecture n'a pas eu lieu ; même arrêt.
+pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<IdentiteResolue, RefusDIdentite> {
     let path = req.uri().path();
     let authz = req.headers().get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
     // ORDRE D'AUTH (ADDITIF) : cookie de session OU Basic OU SSO OU Bearer.
@@ -1367,14 +1419,21 @@ pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<
     // /api/engagements/active) — rôle restreint, pas d'accès UI/admin. Allowlist = `agent_bearer_path` (défaut fermé).
     if ident.is_none() && agent_bearer_path(path) {
         if let Some(tok) = authz.strip_prefix("Bearer ") {
-            if let Some(ti) = token_lookup(st, tok.trim()) {
-                // rôle 'agent' (restreint) ; name = l'hôte LIÉ au token (vide si non lié)
-                // -> le responder scope les actions à cet hôte (anti-IDOR cross-agent).
-                // #2a-2b : on RETIENT le tenant du token (résolu control-plane en mode 1) -> l'ingest de cet
-                // agent sera routé vers SA base (R8), jamais une base tierce.
-                bearer_tenant = Some(ti.tenant.clone());
-                ident = Some((ti.host, "agent".to_string()));
-                auth_method = "bearer";
+            // `P10.20-b` — lecture TRI-ÉTAT : une table illisible arrête la résolution (503 nommé), jamais « inconnu ».
+            match crate::state::token_lookup_lu(st, tok.trim()) {
+                crate::state::LectureDuJetonDAgent::Trouve(ti) => {
+                    // rôle 'agent' (restreint) ; name = l'hôte LIÉ au token (vide si non lié)
+                    // -> le responder scope les actions à cet hôte (anti-IDOR cross-agent).
+                    // #2a-2b : on RETIENT le tenant du token (résolu control-plane en mode 1) -> l'ingest de cet
+                    // agent sera routé vers SA base (R8), jamais une base tierce.
+                    bearer_tenant = Some(ti.tenant.clone());
+                    ident = Some((ti.host, "agent".to_string()));
+                    auth_method = "bearer";
+                }
+                crate::state::LectureDuJetonDAgent::NonLu(cause) => {
+                    return Err(RefusDIdentite::JetonDAgentNonLu { porte: PorteDuJetonDAgent::Bearer, cause });
+                }
+                crate::state::LectureDuJetonDAgent::Absent => {}
             }
         }
     }
@@ -1385,10 +1444,16 @@ pub(crate) fn resolve_identity_ou_refus(st: &AppState, req: &Request) -> Result<
     // disjointes). Mode 0 : path non-HEC -> branche sautée -> résolution d'identité byte-identique.
     if ident.is_none() && hec_collector_path(path) {
         if let Some(tok) = hec_token(&authz, req.uri().query()) {
-            if let Some(ti) = token_lookup(st, &tok) {
-                bearer_tenant = Some(ti.tenant.clone());
-                ident = Some((ti.host, "agent".to_string()));
-                auth_method = "hec";
+            match crate::state::token_lookup_lu(st, &tok) {
+                crate::state::LectureDuJetonDAgent::Trouve(ti) => {
+                    bearer_tenant = Some(ti.tenant.clone());
+                    ident = Some((ti.host, "agent".to_string()));
+                    auth_method = "hec";
+                }
+                crate::state::LectureDuJetonDAgent::NonLu(cause) => {
+                    return Err(RefusDIdentite::JetonDAgentNonLu { porte: PorteDuJetonDAgent::Hec, cause });
+                }
+                crate::state::LectureDuJetonDAgent::Absent => {}
             }
         }
     }
@@ -1738,7 +1803,8 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     }
     // IDENTITÉ (cookie de session / Basic / SSO trusted-header / Bearer agent / démo) — extrait byte-identique.
     // `P10.25-d` — un nom que l'annuaire ne prend pas est refusé ci-dessous, APRÈS la comptabilité anti-brute-force.
-    let (ident, auth_method, sso_grant_map, sso_superadmin, bearer_tenant, refus_de_l_annuaire) = match resolve_identity_ou_refus(&st, &req) {
+    // `P10.20-b` — de même un jeton d'agent dont la lecture n'a pas eu lieu (503 nommé).
+    let (ident, auth_method, sso_grant_map, sso_superadmin, bearer_tenant, refus_d_identite) = match resolve_identity_ou_refus(&st, &req) {
         Ok((ident, methode, grants, superadmin, tenant_du_jeton)) => (ident, methode, grants, superadmin, tenant_du_jeton, None),
         Err(refus) => (None, "", None, false, None, Some(refus)),
     };
@@ -1761,7 +1827,7 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
                 "trop d'échecs d'authentification — réessayez plus tard").into_response();
         }
     }
-    if let Some(refus) = refus_de_l_annuaire {
+    if let Some(refus) = refus_d_identite {
         return refus.servir(&st, &src_ip);
     }
     let Some((name, role_floor)) = ident else {

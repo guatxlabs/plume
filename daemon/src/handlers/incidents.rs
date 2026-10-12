@@ -59,6 +59,15 @@ pub(crate) const CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES: &str = "RUNBOOK NON ATTACH
      dossier n'a pas de progression, ni la chronologie ni le registre n'en portent trace, et un nouvel \
      essai reste possible. Cause : ";
 
+/// `P10.29-j` — LE `BEGIN` DE L'ATTACHE REFUSÉ. Il servait `CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES` suivie de l'erreur du
+/// moteur (« la base n'a pas pris l'écriture de toutes ses étapes… Cause : transaction refusée (cannot start a transaction
+/// within a transaction) ») : aucune étape n'avait été tentée, et le corps portait le texte du moteur. Sa propre cause,
+/// comme `CAUSE_ELEMENT_DE_DOSSIER_NON_AJOUTE_TRANSACTION_NON_OUVERTE` ; l'erreur va au journal (`dire_la_transaction_non_ouverte`).
+pub(crate) const CAUSE_RUNBOOK_NON_ATTACHE_TRANSACTION_NON_OUVERTE: &str = "RUNBOOK NON ATTACHÉ : la base n'a pas pris \
+     la transaction de l'attache (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) — \
+     RIEN n'est lu ni écrit, ni étape, ni chronologie, ni registre. Réessayez ; s'il est refusé encore, l'écrivain est \
+     occupé ou bloqué.";
+
 /// `P10.20-b` (rang deux) — L'EXISTENCE DU DOSSIER N'A PAS ÉTÉ LUE. Elle se lisait `.is_err()` : une lecture
 /// refusée rendait « incident introuvable » (400) pour un dossier vivant. Rien n'est écrit, l'appelant réessaie.
 pub(crate) const CAUSE_DOSSIER_NON_LU_POUR_L_ATTACHE: &str = "RUNBOOK NON ATTACHÉ : la base n'a pas rendu \
@@ -70,6 +79,17 @@ pub(crate) const CAUSE_DOSSIER_NON_LU_POUR_L_ATTACHE: &str = "RUNBOOK NON ATTACH
 pub(crate) const CAUSE_PROGRESSION_NON_LUE_POUR_L_ATTACHE: &str = "RUNBOOK NON ATTACHÉ : la base n'a pas rendu la \
      progression existante du dossier — attacher sans l'avoir lue pourrait DOUBLER des étapes déjà suivies. Rien \
      n'est écrit, ni étape, ni chronologie, ni registre ; réessayez.";
+/// `P10.22-q` — LA LIGNE DU RUNBOOK N'A PAS ÉTÉ LUE. Elle se lisait `.map_err(|_| "runbook introuvable")` : une lecture
+/// refusée (ou une ligne illisible) rendait « runbook introuvable » (400) pour une procédure qui existe. L'absence
+/// ÉTABLIE garde ce refus ; la lecture non faite est celui-ci (503), l'erreur du moteur au journal du démon seulement.
+pub(crate) const CAUSE_RUNBOOK_NON_LU_POUR_L_ATTACHE: &str = "RUNBOOK NON ATTACHÉ : la base n'a pas rendu le runbook \
+     demandé — ce n'est PAS « runbook introuvable ». Rien n'est écrit, ni étape, ni chronologie, ni registre ; réessayez.";
+/// `P10.22-q` — LES ÉTAPES DU RUNBOOK N'ONT PAS ÉTÉ LUES. Le refus existait (`P10.7-f`) mais servait un 400 de client
+/// (`format!("étapes du runbook NON LUES : {e}")`) avec l'erreur du moteur dans le corps : c'est une cause serveur, 503,
+/// et l'erreur du moteur va au journal du démon seulement.
+pub(crate) const CAUSE_ETAPES_DU_RUNBOOK_NON_LUES_POUR_L_ATTACHE: &str = "RUNBOOK NON ATTACHÉ : étapes du runbook NON LUES \
+     — la base ne les a pas rendues en entier, et un runbook amputé ne s'attache pas. Rien n'est écrit, ni étape, ni \
+     chronologie, ni registre ; réessayez.";
 
 // ---------------------------------------------------------------------------------------------------------
 // CŒUR TESTABLE (fonctions pures sur &Connection, sans AppState).
@@ -438,15 +458,19 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
 #[derive(Debug)]
 pub(crate) enum RefusDAttache {
     /// Refus sur ce qui a été LU (dossier ou runbook introuvable, progression existante, runbook inactif ou sans
-    /// étape, étapes non lues) : rien n'est écrit — le `400` d'avant, inchangé.
+    /// étape) : rien n'est écrit — le `400` d'avant, inchangé. (`P10.22-q` : les étapes non lues n'y sont plus.)
     Refuse(String),
     /// La base n'a pas pris l'écriture d'une étape (ou la transaction) : tout est annulé, AUCUNE étape n'est
     /// posée, rien n'est attesté, et l'attache reste possible.
     EtapesNonEcrites(String),
     /// `P10.20-b` (rang deux) — une lecture qui JUGE l'attache (existence du dossier, progression existante) n'a
     /// pas eu lieu : rien n'est écrit. Porte la cause constante (`CAUSE_DOSSIER_NON_LU_POUR_L_ATTACHE`,
-    /// `CAUSE_PROGRESSION_NON_LUE_POUR_L_ATTACHE`) ; l'erreur du moteur va au journal du démon. `503` côté route.
+    /// `CAUSE_PROGRESSION_NON_LUE_POUR_L_ATTACHE`, et `P10.22-q` : `CAUSE_RUNBOOK_NON_LU_POUR_L_ATTACHE`,
+    /// `CAUSE_ETAPES_DU_RUNBOOK_NON_LUES_POUR_L_ATTACHE`) ; l'erreur du moteur va au journal du démon. `503` côté route.
     NonLu(&'static str),
+    /// `P10.29-j` — le `BEGIN` de l'attache refusé : aucune étape n'a été tentée. Porte
+    /// `CAUSE_RUNBOOK_NON_ATTACHE_TRANSACTION_NON_OUVERTE` ; le refus est dit et compté au journal. `503` côté route.
+    TransactionNonOuverte,
 }
 
 impl From<&str> for RefusDAttache {
@@ -467,6 +491,7 @@ impl std::fmt::Display for RefusDAttache {
             RefusDAttache::Refuse(raison) => f.write_str(raison),
             RefusDAttache::EtapesNonEcrites(cause) => write!(f, "{CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES}{cause}"),
             RefusDAttache::NonLu(cause) => f.write_str(cause),
+            RefusDAttache::TransactionNonOuverte => f.write_str(CAUSE_RUNBOOK_NON_ATTACHE_TRANSACTION_NON_OUVERTE),
         }
     }
 }
@@ -514,9 +539,16 @@ pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author
     if already > 0 {
         return Err("un runbook est déjà attaché à cet incident (progression existante)".into());
     }
-    let (rb_name, rb_active): (String, i64) = conn
-        .query_row("SELECT name,active FROM runbook WHERE id=?1", params![runbook_id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|_| "runbook introuvable".to_string())?;
+    // `P10.22-q` — trois issues : l'absence ÉTABLIE garde le refus d'avant, la lecture non faite est un refus NOMMÉ.
+    let (rb_name, rb_active): (String, i64) =
+        match conn.query_row("SELECT name,active FROM runbook WHERE id=?1", params![runbook_id], |r| Ok((r.get(0)?, r.get(1)?))) {
+            Ok(ligne) => ligne,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Err("runbook introuvable".into()),
+            Err(e) => {
+                eprintln!("[runbooks] runbook #{runbook_id} NON LU, attache au dossier #{id} refusée : {e}");
+                return Err(RefusDAttache::NonLu(CAUSE_RUNBOOK_NON_LU_POUR_L_ATTACHE));
+            }
+        };
     if rb_active == 0 {
         return Err("runbook inactif".into());
     }
@@ -525,16 +557,21 @@ pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author
         .and_then(|mut s| s.query_map(params![runbook_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?.collect::<rusqlite::Result<Vec<_>>>())
         // `P10.7-f` (lot 106) — les étapes se lisent EN BLOC : une liste tronquée par une ligne en erreur
         // attacherait un runbook AMPUTÉ en l'annonçant complet. La lecture ratée est un refus nommé.
-        .map_err(|e| format!("étapes du runbook NON LUES : {e}"))?;
+        // `P10.22-q` — cause serveur (503), l'erreur du moteur au journal seulement (elle partait dans un 400).
+        .map_err(|e| {
+            eprintln!("[runbooks] étapes du runbook #{runbook_id} NON LUES, attache au dossier #{id} refusée : {e}");
+            RefusDAttache::NonLu(CAUSE_ETAPES_DU_RUNBOOK_NON_LUES_POUR_L_ATTACHE)
+        })?;
     if steps.is_empty() {
         return Err("runbook sans étape".into());
     }
     let host = targets.host.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    // `P10.27-h` — le `BEGIN` refusé est dit avec sa cause et compté ; aucune étape n'est écrite. La forme commune d'une
-    // route (`ouvrir_le_garde_du_geste`) n'est pas prise : le refus reste typé (`RefusDAttache`) — reste de `P10.29-j`.
+    // `P10.27-h` — le `BEGIN` refusé est dit avec sa cause et compté ; aucune étape n'est écrite. `P10.29-j` — et il a sa
+    // propre cause dans la réponse (`TransactionNonOuverte`), sans l'erreur du moteur. Le refus reste typé (`RefusDAttache`)
+    // plutôt que `ouvrir_le_garde_du_geste`, qui rend une `Response` que cette aide (refus typé) ne peut pas porter.
     let txn = Txn::begin(conn).map_err(|e| {
         crate::handlers::transaction_validee::dire_la_transaction_non_ouverte(conn, "runbooks", "attache d'un runbook", &e);
-        RefusDAttache::EtapesNonEcrites(format!("transaction refusée ({e})"))
+        RefusDAttache::TransactionNonOuverte
     })?;
     let mut n = 0i64;
     for (step_id, ordinal, phase, title, guidance, step_kind, soql, act) in &steps {
@@ -807,7 +844,8 @@ pub(crate) async fn case_runbook_attach(State(st): State<AppState>, Extension(au
         // `P10.21-t` — une étape non écrite n'est pas une demande invalide : `503`, et rien n'est posé.
         // `P10.20-b` — une lecture qui JUGE l'attache (dossier, progression) n'a pas eu lieu : ni une demande invalide,
         // ni une absence. Même bras : rien n'est posé non plus, et la face « aucune étape n'est posée » vaut pour les deux.
-        Err(refus @ (RefusDAttache::EtapesNonEcrites(_) | RefusDAttache::NonLu(_))) => err_json(StatusCode::SERVICE_UNAVAILABLE, refus.to_string()),
+        // `P10.29-j` — le `BEGIN` refusé : même bras, sa propre cause.
+        Err(refus @ (RefusDAttache::EtapesNonEcrites(_) | RefusDAttache::NonLu(_) | RefusDAttache::TransactionNonOuverte)) => err_json(StatusCode::SERVICE_UNAVAILABLE, refus.to_string()),
     }
 }
 

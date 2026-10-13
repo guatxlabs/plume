@@ -18584,10 +18584,13 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     403: [...new Set([...causesDe109(enrolement109, "FORBIDDEN"), ...causesSansTrace109])], 503: causesDe109(enrolement109, "SERVICE_UNAVAILABLE"),
     429: [...new Set([...enrolement109.matchAll(/"error": (CAUSE_\w+)/g)].map((m) => m[1]))],
   };
-  instrument109(/b\.str_field\("password"\)/.test(enrolement109) && CAUSES_D_ENROLEMENT109[403].length >= 3 && CAUSES_D_ENROLEMENT109[503].length >= 2 && CAUSES_D_ENROLEMENT109[429].length === 1
+  // `P10.31-u` (reste) — LE PLANCHER SUIT LES QUATRE QUATRE CENT TROIS SERVIS : trois par `err_json` dans `mfa_enroll`, plus
+  // la phrase sans trace. Resté à « au moins trois » sur l'union, il laissait disparaître la phrase NOMINALE du mot de
+  // passe refusé (la phrase sans trace comblait le compte) sans que rien ne rougisse ici.
+  instrument109(/b\.str_field\("password"\)/.test(enrolement109) && causesDe109(enrolement109, "FORBIDDEN").length >= 3 && CAUSES_D_ENROLEMENT109[403].length >= 4 && CAUSES_D_ENROLEMENT109[503].length >= 2 && CAUSES_D_ENROLEMENT109[429].length === 1
     && /StatusCode::TOO_MANY_REQUESTS/.test(enrolement109) && /header::RETRY_AFTER/.test(enrolement109) && /err_json\(StatusCode::CONFLICT, "MFA déjà active/.test(enrolement109)
     && Object.values(CAUSES_D_ENROLEMENT109).flat().every((n) => !!constante109(IDP109, n)),
-    `\`mfa_enroll\` ne lit plus \`{password}\`, ou ne sert plus ses refus nommés (trois quatre cent trois, deux cinq cent trois, un quatre cent vingt-neuf avec délai, un quatre cent neuf) : ${JSON.stringify(CAUSES_D_ENROLEMENT109)}`);
+    `\`mfa_enroll\` ne lit plus \`{password}\`, ou ne sert plus ses refus nommés (trois quatre cent trois par \`err_json\` et la phrase sans trace, deux cinq cent trois, un quatre cent vingt-neuf avec délai, un quatre cent neuf) : ${JSON.stringify(CAUSES_D_ENROLEMENT109)}`);
   const CAUSE_TICKET109 = constante109(IDP109, (connexionMfa109.match(/err_json\(StatusCode::UNAUTHORIZED, (CAUSE_\w+)\)/) || [])[1] || "");
   instrument109(!!CAUSE_TICKET109 && /TICKET/.test(CAUSE_TICKET109) && /err_json\(StatusCode::UNAUTHORIZED, "code MFA invalide"\)/.test(connexionMfa109),
     "`login_mfa_post` ne refuse plus le ticket en quatre cent un NOMMÉ, distinct du code refusé : l'écran ne pourrait pas séparer les deux");
@@ -23592,7 +23595,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       "cases.js › MOTS_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE",
       // `P10.31-u` — les tables que les témoins 138 et 108 posent : l'installation, le changement de mot de passe, l'appel IA,
       // et l'activation et la désactivation de la MFA, faits sans trace d'audit.
-      "ai.js › MOTS_DE_L_APPEL_IA_SANS_TRACE", "app.js › MOTS_DU_COMPTE_SANS_TRACE", "idp.js › MOTS_DE_LA_MFA_SANS_TRACE"];
+      "ai.js › MOTS_DE_L_APPEL_IA_SANS_TRACE", "app.js › MOTS_DU_COMPTE_SANS_TRACE", "idp.js › MOTS_DE_LA_MFA_SANS_TRACE",
+      // `P10.31-z` — la table que le témoin 139 pose : le jeton d'installation resté en clair, chemin servi ou non.
+      "app.js › MOTS_DU_JETON_D_INSTALLATION_NON_EFFACE"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -27948,8 +27953,14 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 // l'autre pour chaque geste ; la face anglaise ne porte aucun accent.
 // CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; la cause servie reste française sous les deux langues ;
 // les refus d'identité sans trace (mot de passe actuel, secret des gestes : quatre cent trois portant la clé) ne sont pas
-// rejugés ici — leur phrase servie dit déjà qu'ils ne sont pas inscrits, et la forme partagée la peint ; la ligne de
-// succès de l'installation reste un littéral français traduit par le lexique (hors de ce lot).
+// jugés ici, et la console ne les dit PAS tous — (1) secret des gestes FAUX : `avecLeSecretDesGestes` (web/core.js)
+// intercepte `secret_des_gestes_faux` et rouvre la fenêtre avec sa propre phrase (« ressaisis-le »), muette sur la trace ;
+// la phrase servie, qui dit « N'A PAS été inscrit », n'est peinte que si la personne annule — si elle ressaisit le bon
+// secret, personne n'apprend que la tentative refusée est hors registre ; (2) mot de passe actuel refusé sans trace : la
+// phrase servie renvoie à `registre_sans_maillon`, qu'aucune voie de la console n'affiche sur un refus. Restes de `P10.31-u`.
+// (d) éprouve par APPEL DIRECT un repli DÉFENSIF : en production, `puitsDuFormulaireDuCompte` ne rend null que sans
+// `#setup-form`, auquel seul le gestionnaire est attaché — aucun geste réel n'y passe. La ligne de succès de
+// l'installation reste un littéral français traduit par le lexique (hors de ce lot).
 // ---------------------------------------------------------------------------------------------
 {
   const echecsAvant138 = echecs.length;
@@ -28068,7 +28079,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
         exiger(!!sans.succes && avec.succes === sans.succes && (geste !== "mot_de_passe" || avec.succes.includes("alice-servi-138")),
           `(138c) ${L.nom}/${geste} : l'aveu MASQUE ou change le succès — avec la clé « ${avec.succes} », sans « ${sans.succes} »`);
       }
-      // ══ (d) SANS PUITS : l'aveu part à l'avis, phrase PUIS cause, en une chaîne ══════════════════════
+      // ══ (d) SANS PUITS (repli défensif, appel direct) : l'aveu part à l'avis, phrase PUIS cause, en une chaîne ═════
       {
         const avant = new Set(noeudsDAvis138());
         const avouer = typeof L.app.avouerLeCompteSansTrace === "function" ? L.app.avouerLeCompteSansTrace : () => "(fabrique absente)";
@@ -28113,6 +28124,171 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvant138) console.log(`(138) EN ÉCHEC — ${echecs.length - echecsAvant138} écart(s), dits ci-dessus`);
   else console.log("(138) OK — `P10.31-u` (console) : l'installation et le changement de mot de passe dont le démon avoue la trace manquante le disent au puits du formulaire, à deux nœuds (phrase du geste, puis la cause servie), sans marque de refus ni avis, la ligne de succès inchangée ; un corps sans la clé n'en porte aucun et le geste suivant efface l'aveu ; sans puits, l'aveu part à l'avis ; l'appel IA garde sa proposition et avoue à l'avis, même sans proposition ; trois phrases distinctes dans chaque langue, deux langues distinctes pour chaque geste ; la clé et les trois sites sont lus dans l'arbre du démon.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (139) `P10.31-z` (console) — L'INSTALLATION DONT LE JETON RESTE EN CLAIR SUR LE DISQUE LE DIT, AVEC LE FICHIER À EFFACER.
+//
+// CE QUE LE DÉMON SERT (RELU ICI, PAS RECOPIÉ) : `setup_post` (daemon/src/session.rs) sert
+// `setup_token_file_removed: residu.is_none()` et, SEULEMENT quand le fichier a survécu, le chemin sous la clé
+// `CLE_DU_CHEMIN_DU_JETON_NON_EFFACE` (même fichier). `/api/password` ne porte aucun des deux.
+//
+// CE QUE LA CONSOLE EN FAISAIT AVANT CE LOT, MESURÉ (80ad700a) : `enregistrerLesReglagesDuCompte` (web/app.js) écrivait
+// « enregistré - reconnecte-toi avec les nouveaux identifiants » sans lire le champ (`grep -rn setup_token_file_removed
+// web/` : zéro) ; et le démon ne servait pas le chemin, que le journal seul nommait.
+//
+// JUGÉ, DANS LES DEUX LANGUES (instances française et `?plume-lang=en` des modules réels) : (0) la clé du chemin lue par
+// la console est celle que le démon pose, et `setup_post` la pose sous `Some` ; (a) `false` + chemin → aveu au puits
+// `reglages_du_compte`, une ligne marquée, phrase PUIS « chemin », la ligne de succès INCHANGÉE (celle du corps `true`),
+// sans marque de refus ni avis ; (a2) `false` sans chemin → la phrase renvoie au journal du démon, ne nomme aucun
+// fichier, distincte de (a) ; (b) `true` → puits caché, aucune ligne ; (c) champ absent — `/api/password` et une
+// installation sans le champ — → rien ; (d) les deux aveux ensemble (trace manquante ET jeton) → deux lignes, trace puis
+// jeton ; (e) sans puits (repli défensif, appel direct) → un avis en une chaîne ; (faces) fr ≠ en pour chaque forme, la
+// face anglaise sans accent.
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; le chemin est rendu tel que servi (aucune vérification
+// qu'il désigne bien le fichier : c'est le témoin Rust `jeton_d_installation_non_efface_chemin_servi.rs` qui le tient) ;
+// le repli (e) n'est atteint par aucun geste réel.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant139 = echecs.length;
+  const FICHIERS139 = { noyau: "core.js", etat: "state.js", app: "app.js" };
+  const importer139 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS139)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr139 = await importer139((f) => pathToFileURL(path.join(WEB, f)).href);
+  const langueOrigine139 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn139 = await importer139((f) => adresseSousLaLangue(f));
+  if (langueOrigine139 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine139);
+  const FR139 = { nom: "fr", ...modsFr139, S: modsFr139.etat.S }, EN139 = { nom: "en", ...modsEn139, S: modsEn139.etat.S };
+  const instrument139 = (vrai, quoi) => exiger(vrai, `(139-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic139 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser139 = async (n = 30) => { for (let i = 0; i < n; i++) await tic139(); };
+  const nu139 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const serre139 = (t) => String(t).replace(/\s+/g, " ").trim();
+  const ACCENTS139 = /[éèêàçùôâîÉÈÊÀ]/;
+  const qs139 = (sel) => document.querySelector(sel);
+  const lireLeDemon139 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const constante139 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str =\\s*\"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const corpsDeFonction139 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+
+  // ══ (0) CE QUE LE DÉMON SERT, RELU DANS SON ARBRE ════════════════════════════════════════════════
+  const SESSION139 = lireLeDemon139("session.rs"), LEDGER139 = lireLeDemon139("ledger.rs");
+  const CLE_CHEMIN139 = constante139(SESSION139, "CLE_DU_CHEMIN_DU_JETON_NON_EFFACE");
+  const CLE_TRACE139 = constante139(LEDGER139, "CLE_REGISTRE_SANS_MAILLON"), CAUSE_TRACE139 = constante139(LEDGER139, "CAUSE_GESTE_SANS_TRACE");
+  const installation139 = corpsDeFonction139(SESSION139, "pub(crate) async fn setup_post(");
+  instrument139(!!CLE_CHEMIN139 && /"setup_token_file_removed": residu\.is_none\(\)/.test(installation139)
+    && /if let Some\(chemin\) = &residu \{[\s\S]{0,200}?corps\[CLE_DU_CHEMIN_DU_JETON_NON_EFFACE\] = json!\(chemin\);/.test(installation139),
+    "`setup_post` (daemon/src/session.rs) ne sert plus `setup_token_file_removed`, ou ne pose plus le chemin du jeton non effacé sous `CLE_DU_CHEMIN_DU_JETON_NON_EFFACE` quand le fichier survit");
+  instrument139(!!CLE_TRACE139 && CAUSE_TRACE139.startsWith("TRACE MANQUANTE"), "`CLE_REGISTRE_SANS_MAILLON` ou `CAUSE_GESTE_SANS_TRACE` n'est plus lisible dans daemon/src/ledger.rs");
+  for (const L of [FR139, EN139])
+    instrument139(L.app.CLE_DU_CHEMIN_DU_JETON_NON_EFFACE === CLE_CHEMIN139 && typeof L.app.avouerLeJetonDInstallationNonEfface === "function" && typeof L.app.enregistrerLesReglagesDuCompte === "function",
+      `${L.nom} : web/app.js ne lit pas la clé que le démon sert (« ${L.app.CLE_DU_CHEMIN_DU_JETON_NON_EFFACE} » contre « ${CLE_CHEMIN139} »), ou n'exporte plus ses gestes`);
+  instrument139(FR139.noyau.LANG !== "en" && EN139.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+  const noeudsDAvis139 = () => { const h = qs139("#toasts"); return h ? [...h.children] : []; };
+  exiger(noeudsDAvis139().length === 0, `(139-0) des avis laissés par un témoin précédent traînent dans #toasts : ${JSON.stringify(noeudsDAvis139().map((t) => nu139(t).slice(0, 80)))}`);
+
+  const fetchOrigine139 = globalThis.fetch, minuterieOrigine139 = globalThis.setTimeout;
+  const etatOrigine139 = [FR139, EN139].map((L) => ({ S: L.S, auth: L.S.AUTH }));
+  const form139 = qs139("#setup-form"), actuel139 = qs139("#set-pw-current"), nouveau139 = qs139("#set-pw"), resultat139 = qs139("#set-result");
+  const jeton139 = qs139("#set-token"), utilisateur139 = qs139("#set-user");
+  instrument139(!!form139 && !!actuel139 && !!nouveau139 && !!resultat139 && !!jeton139 && !!utilisateur139, "le formulaire des réglages du compte (index.html) n'est pas monté");
+  let servis139 = {};
+  const appels139 = [];
+  globalThis.fetch = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    appels139.push(k);
+    const r = servis139[k];
+    const texte = !r ? "{}" : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine139(fn, ms >= 100 ? 0 : ms));
+  const fenetre139 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop() || null;
+  const fermerLesFenetres139 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  const accepterLaFenetre139 = async () => {
+    await laisser139();
+    const ov = fenetre139(), f = ov && ov.children[0] ? ov.children[0].children[0] || null : null;
+    if (f && typeof f.onsubmit === "function") await Promise.resolve(f.onsubmit({ preventDefault() {} }));
+    await laisser139();
+  };
+  const puits139 = () => (form139 ? form139.children.find((n) => typeof n.getAttribute === "function" && n.getAttribute("data-puits-du-refus-d-un-geste") === "reglages_du_compte") || null : null);
+  const gesteDuCompte139 = async (L, configure, corps) => {
+    servis139 = { "GET /api/setup-status": { corps: { configured: configure } }, [configure ? "POST /api/password" : "POST /api/setup"]: { corps } };
+    nouveau139.value = "nouveau-mot-de-passe-139"; actuel139.value = configure ? "ancien-mot-de-passe-139" : ""; jeton139.value = "jeton-139"; utilisateur139.value = "admin-139";
+    resultat139.textContent = "";
+    const avant = new Set(noeudsDAvis139()), depuis = appels139.length;
+    const g = L.app.enregistrerLesReglagesDuCompte({ preventDefault() {} });
+    if (configure) await accepterLaFenetre139();
+    await g; await laisser139(10); fermerLesFenetres139();
+    const pu = puits139();
+    const lignes = pu ? [...pu.children] : [];
+    return { appels: appels139.slice(depuis), succes: nu139(resultat139), puits: pu, montre: !!pu && pu.hidden === false, lignes,
+      jetons: lignes.filter((n) => n.getAttribute && n.getAttribute("data-jeton-d-installation-non-efface") === "1"),
+      marque: pu && pu.getAttribute("data-refus-d-un-geste"), avis: noeudsDAvis139().filter((t) => !avant.has(t)).map((t) => nu139(t)) };
+  };
+
+  const CHEMIN139 = "/var/lib/plume/db/setup-token.txt-139";
+  const faces139 = {};
+  try {
+    for (const L of [FR139, EN139]) {
+      L.S.AUTH = { user: "alice-139", role: "admin", auth_method: "cookie" };
+      const enTete = L === EN139 ? /^Setup token NOT ERASED/ : /^Jeton d'installation NON EFFACÉ/;
+      const accentsInterdits = (t) => L === EN139 && ACCENTS139.test(t);
+      // (b) d'abord : la ligne de succès de référence, corps `true`.
+      const vrai = await gesteDuCompte139(L, false, { ok: true, setup_token_file_removed: true });
+      exiger(vrai.appels.includes("POST /api/setup") && !!vrai.succes && !vrai.montre && vrai.lignes.length === 0 && vrai.avis.length === 0,
+        `(139b) ${L.nom} : un corps \`setup_token_file_removed: true\` porte un aveu, ou l'installation n'a pas de ligne de succès : montré=${vrai.montre} « ${nu139(vrai.puits).slice(0, 160)} » succès « ${vrai.succes} » avis ${JSON.stringify(vrai.avis)}`);
+      // (a) `false` + chemin.
+      const avec = await gesteDuCompte139(L, false, { ok: true, setup_token_file_removed: false, [CLE_CHEMIN139]: CHEMIN139 });
+      const ligne = avec.jetons[0];
+      const phrase = ligne && ligne.children[0] ? nu139(ligne.children[0]) : "";
+      faces139[L.nom + "/avec_chemin"] = phrase;
+      exiger(avec.appels.includes("POST /api/setup") && avec.montre && avec.lignes.length === 1 && avec.jetons.length === 1 && ligne.children.length === 1 && nu139(ligne) === serre139(phrase + " « " + CHEMIN139 + " »"),
+        `(139a) ${L.nom} : le jeton d'installation NON effacé n'est pas avoué au puits du formulaire, phrase PUIS « chemin servi » — montré=${avec.montre}, ${avec.lignes.length} ligne(s) : « ${nu139(avec.puits).slice(0, 240)} »`);
+      exiger(enTete.test(phrase) && phrase.endsWith("—") && !accentsInterdits(phrase),
+        `(139a) ${L.nom} : la phrase ne dit pas, dans la langue de l'écran, que le jeton reste en clair : « ${phrase} »`);
+      exiger(!avec.marque && avec.avis.length === 0 && avec.succes === vrai.succes,
+        `(139a) ${L.nom} : l'aveu est peint comme un REFUS (marque « ${avec.marque} »), part à l'avis ${JSON.stringify(avec.avis)}, ou MASQUE le succès — « ${avec.succes} » contre « ${vrai.succes} »`);
+      // (a2) `false` sans chemin : renvoi au journal, aucun fichier nommé.
+      const sansChemin = await gesteDuCompte139(L, false, { ok: true, setup_token_file_removed: false });
+      const ligne2 = sansChemin.jetons[0];
+      const phrase2 = ligne2 && ligne2.children[0] ? nu139(ligne2.children[0]) : "";
+      faces139[L.nom + "/sans_chemin"] = phrase2;
+      exiger(sansChemin.montre && sansChemin.lignes.length === 1 && sansChemin.jetons.length === 1 && nu139(ligne2) === phrase2 && enTete.test(phrase2) && phrase2.includes("[setup] ATTENTION") && !phrase2.endsWith("—") && !phrase2.includes(CHEMIN139) && phrase2 !== phrase && !accentsInterdits(phrase2) && sansChemin.succes === vrai.succes,
+        `(139a2) ${L.nom} : sans chemin servi, l'aveu ne renvoie pas au journal du démon, prétend nommer un fichier, ou masque le succès : « ${nu139(sansChemin.puits).slice(0, 240)} » succès « ${sansChemin.succes} »`);
+      // (c) champ absent : le changement de mot de passe, et une installation sans le champ.
+      for (const [quoi, configure, corps] of [["/api/password", true, { ok: true, user: "alice-servi-139" }], ["installation sans le champ", false, { ok: true }]]) {
+        const absent = await gesteDuCompte139(L, configure, corps);
+        exiger(!absent.montre && absent.lignes.length === 0 && absent.avis.length === 0 && !!absent.succes,
+          `(139c) ${L.nom} : ${quoi} — un corps SANS \`setup_token_file_removed\` porte un aveu de jeton : « ${nu139(absent.puits).slice(0, 160)} » avis ${JSON.stringify(absent.avis)}`);
+      }
+      // (d) les deux aveux ensemble : trace manquante PUIS jeton.
+      const cause = CAUSE_TRACE139 + " (disk I/O error)";
+      const deux = await gesteDuCompte139(L, false, { ok: true, setup_token_file_removed: false, [CLE_CHEMIN139]: CHEMIN139, [CLE_TRACE139]: cause });
+      exiger(deux.montre && deux.lignes.length === 2 && deux.lignes[0].getAttribute("data-trace-manquante") === "1" && deux.jetons.length === 1 && deux.lignes[1] === deux.jetons[0]
+        && nu139(deux.jetons[0]) === nu139(ligne) && nu139(deux.lignes[0]).endsWith("« " + serre139(cause) + " »") && deux.succes === vrai.succes && deux.avis.length === 0,
+        `(139d) ${L.nom} : la trace manquante et le jeton non effacé ne se lisent pas ENSEMBLE (deux lignes, trace puis jeton, succès inchangé) : ${deux.lignes.length} ligne(s) « ${nu139(deux.puits).slice(0, 300)} »`);
+      // (e) sans puits : repli défensif, un avis en une chaîne.
+      {
+        const avant = new Set(noeudsDAvis139());
+        const rendu = L.app.avouerLeJetonDInstallationNonEfface(null, { ok: true, setup_token_file_removed: false, [CLE_CHEMIN139]: CHEMIN139 });
+        const nul = L.app.avouerLeJetonDInstallationNonEfface(null, { ok: true, setup_token_file_removed: true });
+        const avis = noeudsDAvis139().filter((t) => !avant.has(t)).map((t) => nu139(t));
+        exiger(rendu === "avec_chemin" && nul === "" && avis.length === 1 && avis[0] === serre139(phrase + " « " + CHEMIN139 + " »"),
+          `(139e) ${L.nom} : sans puits, l'aveu ne part pas à l'avis en une chaîne, ou un corps \`true\` en émet un : « ${rendu} » / « ${nul} », avis ${JSON.stringify(avis)}`);
+        const h = qs139("#toasts"); if (h) h.replaceChildren();
+      }
+    }
+    for (const forme of ["avec_chemin", "sans_chemin"])
+      exiger(!!faces139["fr/" + forme] && !!faces139["en/" + forme] && faces139["fr/" + forme] !== faces139["en/" + forme], `(139-faces) ${forme} : la face anglaise est la face française — ou l'une manque`);
+  } finally {
+    globalThis.fetch = fetchOrigine139; globalThis.setTimeout = minuterieOrigine139;
+    for (const o of etatOrigine139) o.S.AUTH = o.auth;
+    const pu = puits139(); if (pu) pu.remove();
+    if (nouveau139) nouveau139.value = ""; if (actuel139) actuel139.value = ""; if (jeton139) jeton139.value = ""; if (utilisateur139) utilisateur139.value = ""; if (resultat139) resultat139.textContent = "";
+    const avis = qs139("#toasts"); if (avis) avis.replaceChildren();
+    fermerLesFenetres139();
+  }
+  if (echecs.length !== echecsAvant139) console.log(`(139) EN ÉCHEC — ${echecs.length - echecsAvant139} écart(s), dits ci-dessus`);
+  else console.log("(139) OK — `P10.31-z` (console) : une installation dont le démon n'a pas pu effacer le jeton le dit au puits du formulaire, phrase puis chemin servi, la ligne de succès inchangée ; sans chemin servi, la phrase renvoie au journal du démon ; `true` et un champ absent (changement de mot de passe compris) n'en portent aucun ; l'aveu de trace manquante et celui du jeton se lisent ensemble ; deux langues distinctes, l'anglaise sans accent ; la clé du chemin et sa pose sont lues dans l'arbre du démon.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

@@ -272,9 +272,14 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # après le correctif, MESURÉ par cette garde — 48 sites sur 23 fichiers (`engagement_cred_within_window` perd son site
 # et c'était le dernier d'`engagement.rs`, qui SORT du relevé). Même règle : 48 -> 33 (69 % = 33,12), 23 -> 14
 # (65 % = 14,95).
-RELEVE_SITES = 48
-RELEVE_FICHIERS = 23
-PLANCHER_SITES = 33
+# RE-DÉRIVÉS le 2026-10-13 (`P10.20-b`, rang quatre : les gestes de retrait d'accès `token_delete`,
+# `idp_provider_update`, `idp_provider_delete`) : relevé de l'arbre ce jour-là, après le correctif, MESURÉ par cette
+# garde — 45 sites sur 22 fichiers (chacun perd son site ; `token_delete` était le dernier de `tokens.rs`, qui SORT du
+# relevé ; `idp.rs` reste par `load_provider` et `ldap_login_post`). Même règle : 45 -> 31 (69 % = 31,05), 22 -> 14
+# (65 % = 14,3).
+RELEVE_SITES = 45
+RELEVE_FICHIERS = 22
+PLANCHER_SITES = 31
 PLANCHER_FICHIERS = 14
 
 # ================================================================================================
@@ -480,8 +485,11 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # pas par le code.
     ("daemon/src/handlers/governance.rs", "ledger_sink_create"): ("is_ok",),
     ("daemon/src/handlers/governance.rs", "legal_hold_create"): ("is_ok",),
-    ("daemon/src/handlers/idp.rs", "idp_provider_delete"): ("ok",),
-    ("daemon/src/handlers/idp.rs", "idp_provider_update"): ("is_err",),
+    # DEUX ENTRÉES RETIRÉES PAR `P10.20-b` (rang quatre, 2026-10-13) : `idp.rs::idp_provider_delete` (`ok`) et
+    # `idp_provider_update` (`is_err`) — une lecture ratée du fournisseur rendait 404 « provider introuvable », y compris
+    # sur la DÉSACTIVATION d'urgence ouverte sans le secret des gestes, alors qu'il authentifiait encore. Lus en
+    # `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503 `CAUSE_FOURNISSEUR_D_IDENTITE_NON_MODIFIE_NON_LU`
+    # ou `…_NON_SUPPRIME_NON_LU`, rien d'écrit (témoins : `gestes_de_retrait_d_acces_lectures_avouees.rs`).
     # Les lectures d'identité : provider LDAP/OIDC non lu -> « aucun provider activé » (la connexion
     # échoue). Elles REFUSENT ; aucune n'avoue pourquoi.
     # TROIS ENTRÉES RETIRÉES PAR `P10.20-b` (2026-10-08, rang quatre, volet MFA de `P10.30-d`) :
@@ -508,7 +516,10 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     ("daemon/src/handlers/playbooks.rs", "playbook_test"): ("ok",),
     ("daemon/src/handlers/scheduled_reports.rs", "report_create"): ("is_err", "is_err"),
     ("daemon/src/handlers/scheduled_reports.rs", "report_run_now"): ("is_err",),
-    ("daemon/src/handlers/tokens.rs", "token_delete"): ("unwrap_or",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, 2026-10-13) : `tokens.rs::token_delete` — `COUNT(*) … unwrap_or(0)` :
+    # un `COUNT(*)` rend toujours une ligne, ce zéro ne venait que d'une lecture ratée et partait en 404 « jeton
+    # introuvable ». Le compte est un `Result` scruté : lu à zéro = le 404 d'avant, lecture ratée = 503
+    # `CAUSE_JETON_NON_REVOQUE_JETONS_NON_COMPTES`, rien d'écrit (témoins : `gestes_de_retrait_d_acces_lectures_avouees.rs`).
     ("daemon/src/handlers/users_lookups.rs", "lookup_delete"): ("is_err",),
     # DEUX ENTRÉES RETIRÉES PAR `P10.20-b` (rang quatre, 2026-10-12) : `users_lookups.rs::user_delete` et
     # `user_update`, deux sites chacun — `ok` sur la cible (404 « compte introuvable ») et `unwrap_or(0)` sur le

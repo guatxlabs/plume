@@ -779,9 +779,20 @@ pub(crate) async fn setup_post(
     // faux (l'administrateur est écrit et le jeton effacé : un rejeu tomberait sur « déjà configuré ») ; se taire
     // laisserait la pose du premier administrateur hors de la trace non purgeable.
     let maillon = ledger_append(&st.db.lock(), "setup", &detail);
-    let corps = avouer_le_maillon_manquant(json!({ "ok": true, "setup_token_file_removed": residu.is_none() }), &maillon, CAUSE_GESTE_SANS_TRACE);
+    let mut corps = avouer_le_maillon_manquant(json!({ "ok": true, "setup_token_file_removed": residu.is_none() }), &maillon, CAUSE_GESTE_SANS_TRACE);
+    // `P10.31-z` — LE CHEMIN DU SECRET RESTÉ EN CLAIR VA À LA PERSONNE QUI DOIT L'EFFACER. Le journal et le registre le
+    // nommaient ; la réponse ne portait que `false`, et la console ne pouvait pas dire QUEL fichier effacer. Servi
+    // seulement quand le fichier a survécu : le chemin nominal reste octet pour octet. La personne qui reçoit ce corps
+    // vient de présenter le jeton d'installation, et le refus d'un mauvais jeton nomme déjà l'emplacement par défaut.
+    if let Some(chemin) = &residu {
+        corps[CLE_DU_CHEMIN_DU_JETON_NON_EFFACE] = json!(chemin);
+    }
     (StatusCode::OK, Json(corps)).into_response()
 }
+
+/// `P10.31-z` — la clé du corps de `/api/setup` qui porte le chemin du fichier de jeton NON effacé. Absente quand
+/// l'effacement a réussi ; lue par la console (`web/app.js`) et par le témoin 139 du harnais, qui la relit ici.
+pub(crate) const CLE_DU_CHEMIN_DU_JETON_NON_EFFACE: &str = "setup_token_file_left_at";
 
 /// `P10.31-u` — CE QU'UN REFUS AVOUE, SOUS LA CLÉ COMMUNE, QUAND SA TRACE MANQUE. Les deux refus d'identité qui
 /// s'inscrivent au registre (mot de passe actuel refusé, secret des gestes faux) annoncent la trace dans leur phrase

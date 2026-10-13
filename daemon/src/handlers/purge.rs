@@ -59,14 +59,35 @@ fn scope_from_body(b: &Value) -> Result<PurgeScope, String> {
     purge_scope_from_args(&sel, &as_bound("since"), &as_bound("until"), now())
 }
 
-fn purge_refusal_response(e: PurgeRefusal) -> Response {
-    // Un REFUS n'est pas une erreur serveur : c'est une décision. 409 CONFLICT porte « l'état du système
-    // s'y oppose » (hold actif, tier froid, case citant, jeton caduc) ; 400 les entrées manquantes.
-    let code = match &e {
+/// STATUT HTTP d'un refus de purge. Un REFUS n'est pas une erreur serveur : c'est une décision. 409 CONFLICT
+/// porte « l'état LU du système s'y oppose » (hold actif, tier froid, case citant, index désynchronisé, jeton
+/// caduc, inscription et suppression qui divergent) ; 400 les entrées manquantes.
+///
+/// CHOIX ÉCRIT (`P10.31-x`) — UNE LECTURE NON FAITE A UNE SEULE NATURE, 500, quelle que soit la forme de la
+/// lecture qu'elle frappe. Une même cause (l'interruption par le quota, un verrou, un catalogue illisible)
+/// sortait en 500 `db` sur un `query_row` (COUNT, bornes, présence d'une table) et en 409 `plan_row_unread`
+/// sur une ligne d'itérateur (ventilation, échantillon, ids cités), et en 409 `legal_hold_undetermined` /
+/// `legal_hold_unread` sur la table ou une ligne de rétention légale : l'appelant lisait une DÉCISION là où
+/// rien n'avait été décidé, seulement pas lu. Ces trois codes rejoignent donc `db` sous 500 ; leurs codes
+/// machine restent distincts parce qu'ils nomment le SITE (et, pour la rétention légale, qu'une preuve est
+/// peut-être retenue), pas la nature. Le refus reste fail-closed et rien n'est supprimé, comme avant. 500 et
+/// non 503 : c'est le contrat déjà servi pour `db`, que la CLI et les intégrations lisent.
+pub(crate) fn statut_du_refus_de_purge(e: &PurgeRefusal) -> StatusCode {
+    match e {
         PurgeRefusal::ReasonRequired => StatusCode::BAD_REQUEST,
-        PurgeRefusal::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        PurgeRefusal::Db(_)
+        | PurgeRefusal::PlanRowUnread { .. }
+        | PurgeRefusal::LegalHoldUndetermined
+        | PurgeRefusal::LegalHoldUnread(_) => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::CONFLICT,
-    };
+    }
+}
+
+/// La RÉPONSE servie par les deux routes pour un refus : le statut est celui de `statut_du_refus_de_purge`
+/// (seul juge de la nature), le corps nomme le code machine. `pub(crate)` pour qu'un témoin juge ce que la
+/// route SERT, pas seulement la table des statuts (`P10.31-x`).
+pub(crate) fn purge_refusal_response(e: PurgeRefusal) -> Response {
+    let code = statut_du_refus_de_purge(&e);
     (
         code,
         Json(json!({ "ok": false, "refusal": purge_refusal_code(&e), "message": e.to_string() })),

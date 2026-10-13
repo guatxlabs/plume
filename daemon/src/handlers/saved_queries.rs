@@ -170,8 +170,10 @@ pub(crate) async fn saved_query_create(State(st): State<AppState>, Extension(au)
     crate::req_conn!(st, au, conn);
     match create(&conn, &au.name, name, soql, now()) {
         Ok(id) => {
-            ledger_append(&conn, "saved_query.create", &format!("#{id} '{}' by {}", name.trim(), au.name));
-            Json(json!({ "ok": true, "id": id })).into_response()
+            // `P10.31-u` — la requête EST créée : un maillon manquant s'avoue à côté du succès, jamais d'annulation,
+            // et `id` reste dans le corps (la console le repose sur PUT/DELETE).
+            let maillon = ledger_append(&conn, "saved_query.create", &format!("#{id} '{}' by {}", name.trim(), au.name));
+            Json(avouer_le_maillon_manquant(json!({ "ok": true, "id": id }), &maillon, CAUSE_GESTE_SANS_TRACE)).into_response()
         }
         Err(e) => sq_err_resp(e),
     }
@@ -184,8 +186,8 @@ pub(crate) async fn saved_query_update(State(st): State<AppState>, Extension(au)
     crate::req_conn!(st, au, conn);
     match update(&conn, &au.name, id, name, soql, now()) {
         Ok(()) => {
-            ledger_append(&conn, "saved_query.update", &format!("#{id} '{}' by {}", name.trim(), au.name));
-            Json(json!({ "ok": true })).into_response()
+            let maillon = ledger_append(&conn, "saved_query.update", &format!("#{id} '{}' by {}", name.trim(), au.name));
+            Json(avouer_le_maillon_manquant(json!({ "ok": true }), &maillon, CAUSE_GESTE_SANS_TRACE)).into_response()
         }
         Err(e) => sq_err_resp(e),
     }
@@ -196,8 +198,8 @@ pub(crate) async fn saved_query_delete(State(st): State<AppState>, Extension(au)
     crate::req_conn!(st, au, conn);
     match delete(&conn, &au.name, id) {
         Ok(()) => {
-            ledger_append(&conn, "saved_query.delete", &format!("#{id} by {}", au.name));
-            Json(json!({ "ok": true })).into_response()
+            let maillon = ledger_append(&conn, "saved_query.delete", &format!("#{id} by {}", au.name));
+            Json(avouer_le_maillon_manquant(json!({ "ok": true }), &maillon, CAUSE_GESTE_SANS_TRACE)).into_response()
         }
         Err(e) => sq_err_resp(e),
     }

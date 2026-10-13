@@ -449,7 +449,9 @@ const MOTS_DU_COMPTE_SANS_TRACE = {
     fr: "Mot de passe CHANGÉ, mais SANS TRACE D'AUDIT : le nouveau mot de passe est en place — le changer encore ne comblerait pas le trou. Ce qui manque est la ligne du registre tamper-evident qui atteste ce changement. Le démon en nomme la cause —",
     en: 'Password CHANGED, but WITHOUT AUDIT TRACE: the new password is in place — changing it again would not fill the gap. What is missing is the tamper-evident ledger line attesting it. The daemon names the cause —' },
 };
-// Nommé et exporté pour le harnais (témoin 138).
+// Nommé et exporté pour le harnais (témoin 138). Le repli « sans puits » est DÉFENSIF : `puitsDuFormulaireDuCompte` ne
+// rend null que sans `#setup-form`, et `enregistrerLesReglagesDuCompte` n'est attaché qu'à ce formulaire — aucun geste
+// réel n'y passe. Il reste pour qu'un appelant futur sans puits ne fasse pas taire l'aveu (témoin 138d, appel direct).
 function avouerLeCompteSansTrace(puits, geste, servi) {
   const cause = causeDeLaTraceManquante(servi);
   if (!cause) return '';
@@ -458,6 +460,45 @@ function avouerLeCompteSansTrace(puits, geste, servi) {
   puits.replaceChildren(aveuDUneTraceManquante(mot, cause, 'span'));
   puits.hidden = false;
   return geste;
+}
+// `P10.31-z` — L'INSTALLATION EST FAITE, MAIS LE JETON D'INSTALLATION RESTE EN CLAIR SUR LE DISQUE : ON LE DIT, AVEC LE
+// FICHIER À EFFACER. CE QUE LE DÉMON SERT (daemon/src/session.rs, `setup_post`) : après la pose de l'administrateur, il
+// écrase le fichier du jeton puis relit le disque ; s'il survit, la réponse porte `setup_token_file_removed: false` ET
+// le chemin sous `setup_token_file_left_at` (clé absente quand l'effacement a réussi, et sur `/api/password`, qui ne
+// touche pas ce fichier). AVANT CE LOT, la console écrivait « enregistré » sans lire ni l'un ni l'autre : un secret qui
+// vaut le compte administrateur restait lisible sur le disque, et la personne qui pouvait l'effacer n'en savait rien.
+// Seul `false` avoue (champ absent ou `true` : rien) ; le succès reste écrit dans sa ligne ; l'aveu va au puits du
+// formulaire APRÈS celui de la trace manquante (`avouerLeCompteSansTrace` remplace le contenu du puits, celui-ci
+// s'ajoute) : les deux se lisent ensemble. Chemin non servi (démon antérieur) : la phrase renvoie au journal du démon,
+// sans prétendre nommer le fichier. Les deux faces côte à côte : aucune langue ne part sans l'autre.
+const CLE_DU_JETON_D_INSTALLATION_EFFACE = 'setup_token_file_removed';
+const CLE_DU_CHEMIN_DU_JETON_NON_EFFACE = 'setup_token_file_left_at';
+const MOTS_DU_JETON_D_INSTALLATION_NON_EFFACE = {
+  avec_chemin: {
+    fr: "Jeton d'installation NON EFFACÉ : le démon n'a pas pu effacer le fichier qui le porte EN CLAIR sur le disque. L'installation est faite, mais ce secret reste lisible par qui lit ce disque. Efface ce fichier à la main —",
+    en: 'Setup token NOT ERASED: the daemon could not erase the file that holds it IN CLEAR on disk. Setup is done, but this secret stays readable by anyone who can read that disk. Erase this file by hand —' },
+  sans_chemin: {
+    fr: "Jeton d'installation NON EFFACÉ : le démon n'a pas pu effacer le fichier qui le porte EN CLAIR sur le disque. L'installation est faite, mais ce secret reste lisible par qui lit ce disque. Le démon n'a pas servi le chemin : son journal le nomme (ligne « [setup] ATTENTION »). Efface ce fichier à la main.",
+    en: 'Setup token NOT ERASED: the daemon could not erase the file that holds it IN CLEAR on disk. Setup is done, but this secret stays readable by anyone who can read that disk. The daemon did not serve the path: its log names it (line "[setup] ATTENTION"). Erase that file by hand.' },
+};
+// Nommé et exporté pour le harnais (témoin 139). Rend 'avec_chemin', 'sans_chemin', ou '' (rien à avouer). Le repli
+// « sans puits » est défensif, comme celui d'`avouerLeCompteSansTrace`.
+function avouerLeJetonDInstallationNonEfface(puits, servi) {
+  if (!servi || servi[CLE_DU_JETON_D_INSTALLATION_EFFACE] !== false) return '';
+  const cheminServi = servi[CLE_DU_CHEMIN_DU_JETON_NON_EFFACE];
+  const chemin = typeof cheminServi === 'string' ? cheminServi.trim() : '';
+  const forme = chemin ? 'avec_chemin' : 'sans_chemin';
+  const mot = faceDansLaLangue(MOTS_DU_JETON_D_INSTALLATION_NON_EFFACE[forme]);
+  if (!puits) { toast(chemin ? mot + ' « ' + chemin + ' »' : mot, 'bad', 15000); return forme; }
+  const aveu = document.createElement('div'); aveu.className = 'bad';
+  const dit = document.createElement('span');
+  dit.textContent = mot;
+  aveu.append(dit);
+  if (chemin) aveu.append(' « ' + chemin + ' »');
+  aveu.dataset.jetonDInstallationNonEfface = '1';   // marque de POSE, pas de style
+  puits.append(aveu);
+  puits.hidden = false;
+  return forme;
 }
 // Nommé et exporté pour le harnais (témoin 119) : les deux instances du module écoutent le même formulaire.
 async function enregistrerLesReglagesDuCompte(e) {
@@ -486,6 +527,7 @@ async function enregistrerLesReglagesDuCompte(e) {
   res.textContent = !configured ? 'enregistré - reconnecte-toi avec les nouveaux identifiants'
     : faceDansLaLangue(MOTS_DU_CHANGEMENT_DE_MOT_DE_PASSE[quiChange ? 'change' : 'change_sans_nom'], { qui: quiChange });
   avouerLeCompteSansTrace(puits, configured ? 'mot_de_passe' : 'installation', servi);   // `P10.31-u`
+  avouerLeJetonDInstallationNonEfface(puits, servi);   // `P10.31-z` — APRÈS : l'aveu précédent remplace le puits
   $('#set-pw').value = ''; if (champActuel) champActuel.value = ''; loadSettings();
 }
 if ($('#setup-form')) $('#setup-form').addEventListener('submit', enregistrerLesReglagesDuCompte);
@@ -1097,6 +1139,6 @@ initAuthGate();   // écran de connexion, déconnexion, état d'auth : câblage 
 /* ==== exports consumed by seam modules (auto-managed) ==== */
 // `P10.25-w` — `envelopperLeTransport` part pour le témoin 114 du harnais ESM, qui la pose sur son simulacre.
 // `P10.27-b` — le geste du formulaire d'un connecteur, joué par le harnais sous chaque instance de langue (témoin 116).
-export { ROLE_LABEL, SPACES, avouerLeCompteSansTrace, currentTab, currentViewName, enregistrerLeConnecteurDuFormulaire, enregistrerLesReglagesDuCompte, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
+export { CLE_DU_CHEMIN_DU_JETON_NON_EFFACE, ROLE_LABEL, SPACES, avouerLeCompteSansTrace, avouerLeJetonDInstallationNonEfface, currentTab, currentViewName, enregistrerLeConnecteurDuFormulaire, enregistrerLesReglagesDuCompte, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
 // `P10.29-g` — `exploreExport` part pour le témoin 120 (deux instances du module écoutent le même bouton).
 export { exploreExport };

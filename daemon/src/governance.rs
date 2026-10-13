@@ -66,10 +66,59 @@ pub(crate) fn legal_hold_not_held_global(tscol: &str) -> String {
     )
 }
 
-/// True si la table `name` existe dans le schéma courant (distingue « pré-v96 » de « erreur d'accès »).
+/// PRÉSENCE D'UNE TABLE EN TROIS ISSUES (`P10.31-x`) : `Ok(true)` présente, `Ok(false)` ABSENCE ÉTABLIE
+/// (le catalogue a été lu et ne la porte pas — base pré-migration), `Err` lecture NON FAITE (interruption par
+/// le quota, verrou, catalogue illisible).
+///
+/// L'ancienne forme (`table_present`, `.is_ok()` d'un `query_row` sur `SELECT 1`) confondait les deux
+/// dernières : sa doc annonçait distinguer « pré-v96 » d'« erreur d'accès », elle rendait `false` pour les
+/// deux. Mesuré sur la purge : une interruption de la lecture de `incident_item` valait « table absente », le
+/// contrôle de citation était SAUTÉ et la confirmation détruisait un event cité par un dossier. Un
+/// `COUNT(*)` rend toujours une ligne : zéro est une absence lue, une erreur n'est que l'erreur.
+pub(crate) fn presence_de_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    // Instrument de témoin (cfg(test)) : il pose SEULEMENT le rappel de progression qui fait interrompre la
+    // requête par le moteur (SQLITE_INTERRUPT) ; c'est la requête de PRODUCTION ci-dessous qui s'exécute et
+    // dont la lecture ratée est jugée — aucune copie de la requête n'est portée par l'instrument.
+    #[cfg(test)]
+    let panne = temoin_de_presence::panne_armee(name);
+    #[cfg(test)]
+    if panne {
+        conn.progress_handler(1, Some(|| true));
+    }
+    let lu = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1", params![name], |r| {
+        r.get::<_, i64>(0)
+    });
+    #[cfg(test)]
+    if panne {
+        conn.progress_handler(0, None::<fn() -> bool>);
+    }
+    lu.map(|n| n > 0)
+}
+
+/// Forme booléenne réservée aux TESTS (une erreur y fait échouer le test en la nommant) : aucun appelant de
+/// production ne peut plus lire une présence de table sans traiter la lecture ratée.
+#[cfg(test)]
 pub(crate) fn table_present(conn: &Connection, name: &str) -> bool {
-    conn.query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1", params![name], |_| Ok(()))
-        .is_ok()
+    presence_de_table(conn, name).expect("lecture du catalogue `sqlite_master`")
+}
+
+/// Instrument de témoin (`P10.31-x`) : arme une panne PERSISTANTE de la lecture de présence d'UNE table, sur le
+/// fil courant. Hors `cfg(test)`, ce module n'existe pas.
+#[cfg(test)]
+pub(crate) mod temoin_de_presence {
+    use std::cell::RefCell;
+    thread_local! {
+        static PANNE: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+    pub(crate) fn armer(name: &str) {
+        PANNE.with(|p| *p.borrow_mut() = Some(name.to_string()));
+    }
+    pub(crate) fn desarmer() {
+        PANNE.with(|p| *p.borrow_mut() = None);
+    }
+    pub(crate) fn panne_armee(name: &str) -> bool {
+        PANNE.with(|p| p.borrow().as_deref() == Some(name))
+    }
 }
 
 /// Décision d'enforcement legal-hold pour `retention_run` (FAIL-CLOSED). Cf. HoldEnforce.

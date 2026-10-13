@@ -447,6 +447,20 @@ pub(crate) const CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE: 
      : celui qui était actif l'est toujours et authentifie encore, et aucune trace n'est écrite. Réessayez ; s'il \
      est refusé encore, l'écrivain est occupé ou bloqué.";
 
+/// `P10.20-b` (rang quatre) — le fournisseur visé par une modification (désactivation d'urgence comprise) n'a pas pu
+/// être lu (la forme d'avant : 404 « provider introuvable »).
+pub(crate) const CAUSE_FOURNISSEUR_D_IDENTITE_NON_MODIFIE_NON_LU: &str = "FOURNISSEUR D'IDENTITÉ NON MODIFIÉ, \
+     FOURNISSEUR NON LU : la base n'a pas pu lire le fournisseur visé (lecture refusée ou table illisible) — on ne sait \
+     pas s'il existe, et rien n'est changé : s'il est actif, il l'est toujours et authentifie encore (une désactivation \
+     demandée N'A PAS eu lieu), et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est illisible \
+     ou verrouillée.";
+/// `P10.20-b` (rang quatre) — le fournisseur visé par une suppression n'a pas pu être lu (la forme d'avant : 404
+/// « provider introuvable »).
+pub(crate) const CAUSE_FOURNISSEUR_D_IDENTITE_NON_SUPPRIME_NON_LU: &str = "FOURNISSEUR D'IDENTITÉ NON SUPPRIMÉ, \
+     FOURNISSEUR NON LU : la base n'a pas pu lire le fournisseur visé (lecture refusée ou table illisible) — on ne sait \
+     pas s'il existe, et rien n'est supprimé : s'il est actif, il l'est toujours et authentifie encore, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+
 /// `P10.25-e` — LE `COMMIT` D'UN GESTE SUR UN FOURNISSEUR D'IDENTITÉ EST JUGÉ. Mesuré le 2026-09-24 sur la forme d'avant
 /// (`COMMIT` refusé par un autorisateur) : création 200 et un identifiant, désactivation 200, suppression 204 — et
 /// rien d'écrit au redémarrage : le fournisseur désactivé ou supprimé l'était pour ce processus, par la transaction
@@ -478,8 +492,16 @@ pub(crate) async fn idp_provider_update(
         }
     }
     let conn = st.db.lock();
-    if conn.query_row("SELECT 1 FROM idp_provider WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return not_found("provider introuvable");
+    // `P10.20-b` (rang quatre) — le fournisseur NON LU n'est pas « introuvable » (la forme d'avant, `.is_err()`, le
+    // disait, y compris sur la DÉSACTIVATION d'urgence) : absence établie = le 404 d'avant, lecture ratée = 503 nommé,
+    // la cause du moteur au journal seulement, rien d'écrit — le fournisseur actif l'est toujours.
+    match conn.query_row("SELECT 1 FROM idp_provider WHERE id=?1", params![id], |_| Ok(())).optional() {
+        Ok(Some(())) => {}
+        Ok(None) => return not_found("provider introuvable"),
+        Err(e) => {
+            eprintln!("[idp] WARN modification du fournisseur d'identité #{id} refusée : le fournisseur n'a pas pu être lu ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FOURNISSEUR_D_IDENTITE_NON_MODIFIE_NON_LU);
+        }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "idp", &format!("modification du fournisseur d'identité #{id}"), CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -535,7 +557,15 @@ pub(crate) async fn idp_provider_delete(State(st): State<AppState>, Extension(au
         return deny_multitenant();
     }
     let conn = st.db.lock();
-    let name: Option<String> = conn.query_row("SELECT name FROM idp_provider WHERE id=?1", params![id], |r| r.get(0)).ok();
+    // `P10.20-b` (rang quatre) — même partage que la modification : absence établie = le 404 d'avant (la forme d'avant,
+    // `.ok()`, rendait aussi ce 404 sur une lecture ratée), lecture ratée = 503 nommé, rien de supprimé ni d'attesté.
+    let name: Option<String> = match conn.query_row("SELECT name FROM idp_provider WHERE id=?1", params![id], |r| r.get(0)).optional() {
+        Ok(lu) => lu,
+        Err(e) => {
+            eprintln!("[idp] WARN suppression du fournisseur d'identité #{id} refusée : le fournisseur n'a pas pu être lu ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FOURNISSEUR_D_IDENTITE_NON_SUPPRIME_NON_LU);
+        }
+    };
     let Some(name) = name else { return not_found("provider introuvable") };
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "idp", &format!("suppression du fournisseur d'identité '{name}'"), CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;

@@ -346,7 +346,16 @@ pub(crate) async fn token_delete(State(st): State<AppState>, Extension(au): Exte
         return bad_req("nom de jeton invalide");
     }
     let conn = st.db.lock();
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM token WHERE name=?1", params![name], |r| r.get(0)).unwrap_or(0);
+    // `P10.20-b` (rang quatre) — un `COUNT(*)` rend TOUJOURS une ligne : la forme d'avant (`.unwrap_or(0)`) ne pouvait
+    // valoir zéro que sur une lecture RATÉE, et la disait « jeton introuvable » alors que le jeton authentifiait encore.
+    // Compte lu à zéro = le 404 d'avant ; lecture ratée = 503 nommé, la cause du moteur au journal seulement, rien d'écrit.
+    let n: i64 = match conn.query_row("SELECT COUNT(*) FROM token WHERE name=?1", params![name], |r| r.get(0)) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[jetons] WARN révocation du jeton '{name}' refusée : les jetons de ce nom n'ont pas pu être comptés ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_JETON_NON_REVOQUE_JETONS_NON_COMPTES);
+        }
+    };
     if n == 0 {
         return not_found("jeton introuvable");
     }
@@ -387,6 +396,12 @@ pub(crate) const CAUSE_JETON_NON_FRAPPE_TRANSACTION_NON_OUVERTE: &str = "JETON N
      — RIEN n'est écrit : ni le jeton ni sa trace d'audit ne sont écrits, et aucun secret n'est montré. Réessayez ; \
      s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
+/// `P10.20-b` (rang quatre) — les jetons du nom visé par une révocation n'ont pas pu être comptés (la forme d'avant :
+/// 404 « jeton introuvable »).
+pub(crate) const CAUSE_JETON_NON_REVOQUE_JETONS_NON_COMPTES: &str = "JETON NON RÉVOQUÉ, JETONS NON LUS : la base n'a \
+     pas pu compter les jetons de ce nom (lecture refusée ou table illisible) — on ne sait pas s'il en existe, et rien \
+     n'est révoqué : un jeton de ce nom authentifie toujours son porteur, et aucune révocation n'est attestée. \
+     Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
 /// `P10.25-e` — le `COMMIT` de la révocation d'un jeton refusé.
 pub(crate) const CAUSE_JETON_NON_REVOQUE_COMMIT_REFUSE: &str = "JETON NON RÉVOQUÉ : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — le jeton authentifie toujours son porteur, et aucune révocation n'est \

@@ -38,6 +38,10 @@
 //! inconnue, champ hors allowlist) est SKIPPÉE au reload (WARN + compteur d'erreurs) -> elle n'entre jamais
 //! dans le pipeline chaud ; l'event est indexé INCHANGÉ. À l'évaluation, toute condition inattendue ->
 //! « pas de match » (jamais un drop). On ne perd JAMAIS un event à cause d'une mauvaise règle.
+//! Cette phrase ne vaut que des règles qui ne COMPILENT pas. Une ligne NON LUE (préparation, parcours ou
+//! cellule indécodable) faisait, elle, disparaître sa règle en silence — un MASK de redaction PII
+//! désarmé, la suite stockée en clair (`P10.20-b`) : elle ne remplace plus le registre en place, voir
+//! `processors_reload`.
 //!
 //! NON-SILENCE : chaque règle porte des compteurs atomiques (matched/dropped/masked/routed/sampled_out),
 //! persistants À TRAVERS les reloads (clé (db_path,id)), surfacés en UI (philosophie garde-disque 503 :
@@ -203,6 +207,9 @@ pub(crate) struct CompiledRule {
     pub value: String,
     pub action: RuleAction,
     pub counters: Arc<RuleCounters>,
+    /// Rang `ord` lu au rechargement (0 hors rechargement, ex. validation CRUD). Ne sert qu'à TRIER un
+    /// registre UNI après une lecture ratée (`processors_reload`) : le chemin nominal garde l'ordre du SQL.
+    pub ord: i64,
 }
 
 impl CompiledRule {
@@ -243,12 +250,17 @@ pub(crate) fn processors_cell() -> &'static parking_lot::RwLock<HashMap<String, 
     PROCESSORS.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
 }
 
-/// Magasin STABLE de compteurs (survit aux reloads). Clé = (db_path, rule_id). `reload_errors` compte les
-/// règles skippées faute de compilation (visible en UI : « N règles invalides ignorées »).
+/// Magasin STABLE de compteurs (survit aux reloads). Clé = (db_path, rule_id). Par `db_path`, au dernier
+/// rechargement : `reload_errors` compte les règles skippées faute de compilation (visible en UI : « N
+/// règles invalides ignorées ») ; `reload_read_failures` compte les échecs de LECTURE de la table
+/// (préparation, parcours, ligne indécodable — `P10.20-b`), à part : pendant un tel échec la règle non
+/// relue reste ARMÉE, elle n'est pas « ignorée ». LIMITE ÉCRITE : servi par `processors_counters_json`,
+/// pas encore affiché par la console (`web/processors.js`).
 #[derive(Default)]
 pub(crate) struct ProcCounterStore {
     pub rules: HashMap<(String, i64), Arc<RuleCounters>>,
     pub reload_errors: HashMap<String, u64>,
+    pub reload_read_failures: HashMap<String, u64>,
 }
 pub(crate) static PROC_COUNTERS: std::sync::OnceLock<parking_lot::RwLock<ProcCounterStore>> =
     std::sync::OnceLock::new();
@@ -346,47 +358,189 @@ pub(crate) fn compile_rule(
         value: match_value.to_string(),
         action,
         counters: rule_counters_for(db_path, id),
+        ord: 0,
     })
 }
 
-/// Recharge le registre de `db_path` depuis la table `ingest_rule` (ordonné par `ord`,`id`). Une règle
-/// qui ne compile plus est SKIPPÉE (WARN + `reload_errors`) — JAMAIS fatal. Miroir de `dparsers_reload`.
-pub(crate) fn processors_reload(conn: &Connection, db_path: &str) {
-    let mut out: Vec<CompiledRule> = Vec::new();
-    let mut errs: u64 = 0;
-    if let Ok(mut st) = conn.prepare(
-        "SELECT id,match_field,match_op,match_value,action,action_arg FROM ingest_rule WHERE enabled=1 ORDER BY ord, id",
+/// Ce qu'une lecture de la table `ingest_rule` a pu décoder ET compiler (dans l'ordre du SQL), les
+/// identifiants RELUS (ligne décodée, qu'elle compile ou non : la base fait foi pour eux), les identifiants
+/// LUS SANS ÊTRE DÉCODÉS (ligne indécodable d'identifiant lisible), le nombre de règles qui ne compilent
+/// pas, les échecs de LECTURE (préparation, parcours, ligne indécodable) et si le parcours est COMPLET.
+struct IngestRuleTableRead {
+    rules: Vec<CompiledRule>,
+    relus: std::collections::HashSet<i64>,
+    lus_non_decodes: std::collections::HashSet<i64>,
+    erreurs_de_compilation: u64,
+    echecs: Vec<String>,
+    /// Le parcours est allé jusqu'au bout (`Ok(None)`) sans plafond atteint et toute ligne indécodable a
+    /// livré son identifiant : l'ensemble des règles actives présentes en base est alors CONNU.
+    parcours_complet: bool,
+}
+
+/// Rang `ord` d'une ligne, lu SANS pouvoir échouer : une cellule de type inattendu ne doit pas faire
+/// sortir du registre une règle que l'ancien code chargeait. Il ne sert qu'à TRIER un registre uni, le
+/// chemin nominal garde l'ordre rendu par le SQL. Le repli n'est PAS l'ordre de SQLite : un `ord` réel
+/// (posé par SQL direct, l'API écrit un entier) est tronqué, donc `1` et `1.5` se départagent par `id`
+/// et non par leur valeur ; texte et blob passent en dernier. `NULL` est inatteignable (`ord INTEGER NOT
+/// NULL`, schéma v83) : la branche ne sert qu'à ne pas faire échouer la lecture d'un schéma altéré.
+fn ord_de_la_ligne(r: &rusqlite::Row<'_>) -> i64 {
+    match r.get_ref(6) {
+        Ok(rusqlite::types::ValueRef::Integer(i)) => i,
+        Ok(rusqlite::types::ValueRef::Real(f)) => f as i64,
+        Ok(rusqlite::types::ValueRef::Null) => i64::MIN,
+        _ => i64::MAX,
+    }
+}
+
+fn read_ingest_rule_table(conn: &Connection, db_path: &str) -> IngestRuleTableRead {
+    let mut lu = IngestRuleTableRead {
+        rules: Vec::new(),
+        relus: std::collections::HashSet::new(),
+        lus_non_decodes: std::collections::HashSet::new(),
+        erreurs_de_compilation: 0,
+        echecs: Vec::new(),
+        parcours_complet: false,
+    };
+    let mut st = match conn.prepare(
+        "SELECT id,match_field,match_op,match_value,action,action_arg,ord FROM ingest_rule WHERE enabled=1 ORDER BY ord, id",
     ) {
-        if let Ok(rows) = st.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-            ))
-        }) {
-            for (id, mf, mo, mv, act, arg) in rows.flatten() {
-                if out.len() >= PROC_RULE_MAX_TOTAL {
+        Ok(st) => st,
+        Err(e) => {
+            lu.echecs.push(format!("préparation : {e}"));
+            return lu;
+        }
+    };
+    let mut rows = match st.query([]) {
+        Ok(rows) => rows,
+        Err(e) => {
+            lu.echecs.push(format!("lecture : {e}"));
+            return lu;
+        }
+    };
+    let mut identifiant_illisible = false;
+    loop {
+        match rows.next() {
+            Ok(Some(r)) => {
+                if lu.rules.len() >= PROC_RULE_MAX_TOTAL {
                     eprintln!("[processor] WARN plafond de {PROC_RULE_MAX_TOTAL} règles atteint — règles supplémentaires IGNORÉES");
                     break;
                 }
-                match compile_rule(db_path, id, &mf, &mo, &mv, &act, &arg) {
-                    Ok(c) => out.push(c),
+                let decode = || -> rusqlite::Result<(i64, String, String, String, String, String)> {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                };
+                let (id, mf, mo, mv, act, arg) = match decode() {
+                    Ok(t) => t,
                     Err(e) => {
-                        errs += 1;
+                        let qui = match r.get::<_, i64>(0) {
+                            Ok(id) => {
+                                lu.lus_non_decodes.insert(id);
+                                format!("règle #{id}")
+                            }
+                            Err(_) => {
+                                identifiant_illisible = true;
+                                "règle d'identifiant illisible".to_string()
+                            }
+                        };
+                        lu.echecs.push(format!("ligne ({qui}) : {e}"));
+                        continue;
+                    }
+                };
+                lu.relus.insert(id);
+                match compile_rule(db_path, id, &mf, &mo, &mv, &act, &arg) {
+                    Ok(mut c) => {
+                        c.ord = ord_de_la_ligne(r);
+                        lu.rules.push(c);
+                    }
+                    Err(e) => {
+                        lu.erreurs_de_compilation += 1;
                         eprintln!("[processor] WARN règle #{id} ignorée (fail-safe, event indexé inchangé): {e}");
                     }
                 }
             }
+            Ok(None) => {
+                lu.parcours_complet = !identifiant_illisible;
+                break;
+            }
+            Err(e) => {
+                lu.echecs.push(format!("parcours : {e}"));
+                break;
+            }
         }
     }
-    { let mut w = processors_cell().write();
-        w.insert(db_path.to_string(), out);
+    lu
+}
+
+/// Recharge le registre de `db_path` depuis la table `ingest_rule` (ordonné par `ord`,`id`). Une règle
+/// qui ne compile plus est SKIPPÉE (WARN + `reload_errors`) — JAMAIS fatal. Miroir de `dparsers_reload`.
+///
+/// UNE LECTURE RATÉE NE DÉSARME PAS UNE RÈGLE QU'ELLE N'A PAS RELUE (`P10.20-b`, sur le précédent de
+/// `field_filters_reload`). Avant, `if let Ok(..)` sur la préparation et le parcours puis `rows.flatten()`
+/// : une table illisible publiait un registre VIDE, une ligne indécodable (cellule blob dans une colonne
+/// TEXT) faisait disparaître SA règle — un MASK de redaction PII désarmé sans un mot, et ce qui était
+/// ingéré ensuite était stocké EN CLAIR, irréversiblement ; aucun compte ne bougeait. Désormais, sur
+/// préparation, parcours ou ligne indécodable, le registre publié est l'UNION PAR IDENTIFIANT du registre
+/// EN PLACE et de ce qui a été décodé : une règle RELUE (même `id`) prend sa version décodée (la base fait
+/// foi pour elle, y compris si elle ne compile plus : skippée comme au chemin nominal) ; une règle posée
+/// depuis est armée tout de suite. Ce qui est gardé du registre en place dépend de ce que la lecture sait :
+/// - parcours COMPLET (seules des lignes indécodables d'identifiant lisible ont raté) : l'ensemble des
+///   règles actives est connu, on ne garde que les règles en place dont l'identifiant a été LU SANS ÊTRE
+///   DÉCODÉ — une règle supprimée ou éteinte (`enabled=0`) depuis ne reste pas armée ;
+/// - parcours INCOMPLET (préparation ou pas du moteur ratés, plafond atteint, identifiant illisible) :
+///   on garde toute règle en place non relue. Prix assumé : tant que la lecture rate ainsi, une règle
+///   supprimée ou éteinte reste armée.
+///
+/// Le registre uni est trié par (`ord`, `id`) — l'ordre d'évaluation que le SQL aurait rendu — et borné
+/// au même plafond. Rechargement raté après rechargement raté, aucun doublon. Chaque échec est dit sur
+/// stderr avec la cause du moteur (hors du verrou du registre) et COMPTÉ, un par échec, dans
+/// `reload_read_failures` — À PART de `reload_errors`, qui ne compte que les règles qui ne compilent pas
+/// (précédent `field_filter.rs`, `compter_lecture_ratee`). Un registre JAMAIS chargé reçoit ce qui a pu
+/// être décodé. Une lecture RÉUSSIE de zéro ligne remplace : c'est le registre vide POSÉ par l'exploitant
+/// (mode 0). Table absente = lecture ratée : les deux premiers chargements (bind, `PreparedWriter::open`)
+/// passent par la porte de schéma, donc une base servie est au moins en v86 et `ingest_rule` (v83) y
+/// existe — son absence est une anomalie, pas une base ancienne. Chemin nominal (aucun échec) : registre
+/// remplacé comme avant.
+pub(crate) fn processors_reload(conn: &Connection, db_path: &str) {
+    let IngestRuleTableRead { rules: out, relus, lus_non_decodes, erreurs_de_compilation, echecs, parcours_complet } =
+        read_ingest_rule_table(conn, db_path);
+    let mut w = processors_cell().write();
+    let avait_un_registre = w.contains_key(db_path);
+    let mut plafond_du_registre_uni = false;
+    let publie = match (echecs.is_empty(), w.get(db_path)) {
+        (true, _) | (false, None) => out,
+        (false, Some(en_place)) => {
+            let garder = |r: &&CompiledRule| {
+                if parcours_complet {
+                    lus_non_decodes.contains(&r.id)
+                } else {
+                    !relus.contains(&r.id)
+                }
+            };
+            let mut union: Vec<CompiledRule> = en_place.iter().filter(garder).cloned().collect();
+            union.extend(out);
+            union.sort_by_key(|r| (r.ord, r.id));
+            if union.len() > PROC_RULE_MAX_TOTAL {
+                plafond_du_registre_uni = true;
+                union.truncate(PROC_RULE_MAX_TOTAL);
+            }
+            union
+        }
+    };
+    w.insert(db_path.to_string(), publie);
+    drop(w);
+    let suite = match (avait_un_registre, parcours_complet) {
+        (false, _) => "aucun registre en place : seules les règles décodées sont publiées",
+        (true, true) => "parcours complet : seules les règles en place non décodées sont GARDÉES",
+        (true, false) => "parcours incomplet : règles en place non relues GARDÉES",
+    };
+    for e in &echecs {
+        eprintln!("[processor] lecture ratée du registre d'ingestion de {db_path} : {e} — {suite}");
+    }
+    if plafond_du_registre_uni {
+        eprintln!("[processor] WARN plafond de {PROC_RULE_MAX_TOTAL} règles atteint dans le registre uni de {db_path} — règles supplémentaires IGNORÉES");
     }
     { let mut w = proc_counters_cell().write();
-        w.reload_errors.insert(db_path.to_string(), errs);
+        w.reload_errors.insert(db_path.to_string(), erreurs_de_compilation);
+        w.reload_read_failures.insert(db_path.to_string(), echecs.len() as u64);
     }
 }
 
@@ -549,5 +703,6 @@ pub(crate) fn processors_counters_json(db_path: &str) -> Value {
         "per_rule": per_rule,
         "totals": { "dropped": td, "masked": tm, "routed": tr, "sampled_out": ts, "renamed": tn, "not_indexed": td + ts },
         "reload_errors": g.reload_errors.get(db_path).copied().unwrap_or(0),
+        "reload_read_failures": g.reload_read_failures.get(db_path).copied().unwrap_or(0),
     })
 }

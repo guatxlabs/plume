@@ -35,7 +35,8 @@
 //  - INTERRUPTION à chaque instruction de la VM, une par passage, sur une base SANS citation : aucune ne rend
 //    un plan différent du plan nominal (soit le plan nominal, soit un refus) ; tout `plan_row_unread` dit
 //    « interrupted » ;
-//  - INTERRUPTION à chaque instruction sur une base AVEC une citation : aucun `cited_by_case` ne sert une liste
+//  - INTERRUPTION à chaque instruction sur une base AVEC une citation : aucun plan rendu (depuis `P10.31-x`),
+//    aucun `cited_by_case` ne sert une liste
 //    d'exemples tronquée (l'id cité y est toujours), au moins un passage frappe la lecture des ids et refuse
 //    `plan_row_unread` en nommant `cited_by_case` et « interrupted ».
 // MUTATIONS (jouées sous VERIF_MUT, retirées du source) : `L2_FLATTEN_SOURCES` rougit le témoin de la
@@ -45,16 +46,14 @@
 // refus, site gardé) et `L2_PAS_CITES` (erreur au pas avalée dans `cited_by_case`, liste partielle rendue,
 // refus gardé sur les autres erreurs) rougissent. Le témoin nominal reste vert sous toutes.
 // CE QUE CE LOT NE TIENT PAS :
-//  - `table_exists_purge` (`table_present`) et `fts_delete_trigger_ok` rendent encore « absente » /
-//    « désynchronisé » sur une lecture ratée du catalogue : une interruption sur `table_present("incident_item")`
-//    SAUTE le contrôle de citation et rend un plan (le balayage AVEC citation le tolère à condition qu'il soit
-//    le plan nominal, et l'affiche sous `--no-capture`) ; même chose pour le tier froid — hors de ces trois
-//    sites, non touché ; `purge_apply` et son BEGIN (`P10.29-h`) ;
-//  - une même cause, l'interruption par le quota, sort en 500 `db` quand elle frappe un `query_row` (COUNT,
-//    bornes, citations comptées) et en 409 `plan_row_unread` quand elle frappe la ventilation, l'échantillon ou
-//    la liste des ids cités (`handlers/purge.rs`, bras `_ => CONFLICT`). Impact borné : la console n'appelle pas
-//    `/api/purge` (aucune occurrence dans `web/`), la CLI affiche le texte du refus (ou le JSON
-//    `{refusal,message}`) et sort en code 3 sans traitement propre à un code.
+//  - (levé depuis par `P10.31-x`) `table_exists_purge` et `fts_delete_trigger_ok` rendaient « absente » /
+//    « désynchronisé » sur une lecture ratée du catalogue : une interruption de la présence de `incident_item`
+//    sautait le contrôle de citation et rendait un plan. La tolérance que ce balayage AVEC citation lui
+//    accordait (plan nominal accepté) est retirée : tout plan rendu y est désormais un échec ;
+//  - (levé depuis par `P10.31-x`) une même cause, l'interruption par le quota, sortait en 500 `db` sur un
+//    `query_row` et en 409 `plan_row_unread` sur une ligne d'itérateur : `statut_du_refus_de_purge` range
+//    toute lecture non faite en 500. Les codes machine restent distincts ;
+//  - `purge_apply` et son BEGIN (`P10.29-h`).
 // =====================================================================================
 
 fn pli_ins(c: &Connection, ts: i64, source: &str, msg: &str) -> i64 {
@@ -296,15 +295,15 @@ fn pli_aucune_interruption_ne_rend_un_plan_partiel() {
 }
 
 /// INTERRUPTION sur une base AVEC une citation — la voie de `cited_by_case` que le balayage précédent
-/// n'atteint pas (sans citation, `total == 0` et la liste des ids n'est jamais lue). Aucun passage ne sert un
+/// n'atteint pas (sans citation, `total == 0` et la liste des ids n'est jamais lue). Aucun passage ne rend de
+/// plan (`P10.31-x` : la présence de `incident_item` non lue refuse), aucun ne sert un
 /// refus `cited_by_case` dont la liste d'exemples perd l'id cité ; au moins un passage interrompt la lecture
 /// des ids et refuse `plan_row_unread` en le disant.
 #[test]
 fn pli_aucune_interruption_ne_tronque_la_liste_des_cites() {
     let (c, ids) = pli_base();
-    // Plan de référence AVANT la citation : l'empreinte ne dépend pas des citations.
-    let reference = purge_plan(&c, pli_scope()).expect("plan nominal");
-    let ref_sample: Vec<i64> = reference.sample().iter().map(|r| r.id).collect();
+    // Précondition : AVANT la citation, la base se purge.
+    purge_plan(&c, pli_scope()).expect("plan nominal");
     c.execute("INSERT INTO incident(ts,updated,title) VALUES(1000,1000,'enquête')", []).unwrap();
     let inc = c.last_insert_rowid();
     c.execute(
@@ -331,23 +330,16 @@ fn pli_aucune_interruption_ne_tronque_la_liste_des_cites() {
     let total = compte.load(Ordering::Relaxed);
     assert!(total > 100, "précondition : la simulation exécute des instructions ({total})");
 
-    let (mut cites_refuses, mut cites_complets, mut controle_saute, mut autres) = (0u64, 0u64, 0u64, 0u64);
+    let (mut cites_refuses, mut cites_complets, mut autres) = (0u64, 0u64, 0u64);
     for cible in 1..=total {
         let n = AtomicU64::new(0);
         c.progress_handler(1, Some(move || n.fetch_add(1, Ordering::Relaxed) + 1 == cible));
         match purge_plan(&c, pli_scope()) {
-            Ok(p) => {
-                // Reste NOMMÉ (en-tête) : `table_present` interrompu saute le contrôle de citation. Toléré ici
-                // seulement si le plan rendu est le plan nominal — ce témoin juge la liste des ids, pas ce reste.
-                let sample: Vec<i64> = p.sample().iter().map(|r| r.id).collect();
-                assert!(
-                    p.digest() == reference.digest()
-                        && p.per_source() == reference.per_source()
-                        && sample == ref_sample,
-                    "interruption à l'instruction {cible}/{total} : plan PARTIEL rendu comme complet"
-                );
-                controle_saute += 1;
-            }
+            Ok(p) => panic!(
+                "interruption à l'instruction {cible}/{total} : plan de {} ligne(s) rendu malgré la citation — \
+                 contrôle de citation SAUTÉ (`P10.31-x`)",
+                p.rows()
+            ),
             Err(e) => {
                 let m = e.to_string();
                 match purge_refusal_code(&e) {
@@ -376,12 +368,11 @@ fn pli_aucune_interruption_ne_tronque_la_liste_des_cites() {
     c.progress_handler(0, None::<fn() -> bool>);
     println!(
         "balayage avec citation : {total} passages — liste des cités interrompue et refusée {cites_refuses}, \
-         `cited_by_case` complet {cites_complets}, contrôle de citation sauté (reste `table_present`) \
-         {controle_saute}, autres refus {autres}"
+         `cited_by_case` complet {cites_complets}, autres refus {autres}"
     );
     assert!(
         cites_refuses > 0,
         "précondition : au moins une interruption a frappé la lecture des ids cités et l'a refusée (passages : \
-         {cites_complets} complets, {controle_saute} sautés, {autres} autres)"
+         {cites_complets} complets, {autres} autres)"
     );
 }

@@ -566,23 +566,38 @@ impl PurgePlan {
     }
 }
 
-fn table_exists_purge(conn: &Connection, name: &str) -> bool {
-    table_present(conn, name)
+/// PRÉSENCE D'UNE TABLE, lue en trois issues (`P10.31-x`). `Ok(false)` n'est rendu que pour une ABSENCE LUE
+/// dans le catalogue ; une lecture NON FAITE refuse la simulation (et donc la confirmation, qui re-simule, et
+/// l'exécution, qui relit les citations dans sa transaction) par `PurgeRefusal::Db` — jamais « table absente »,
+/// qui faisait sauter le refus que cette table porte (citations, rétention légale, tier froid, index plein-texte).
+fn table_exists_purge(conn: &Connection, name: &str) -> Result<bool, PurgeRefusal> {
+    presence_de_table(conn, name).map_err(|e| {
+        PurgeRefusal::Db(format!(
+            "présence de la table `{name}` NON LUE (catalogue `sqlite_master`) : {e} — fail-closed, le refus que \
+             cette table porte ne peut pas être jugé, aucune ligne supprimée"
+        ))
+    })
 }
 
-/// L'index plein-texte est-il cohérent ? `event_fts` absent -> rien à désynchroniser. Présent -> le trigger
+/// L'index plein-texte est-il cohérent ? `event_fts` ABSENT (lu) -> rien à désynchroniser. Présent -> le trigger
 /// `event_ad` (AFTER DELETE ON event) DOIT exister, sinon un DELETE laisse des postings et le message purgé
-/// reste cherchable. Erreur de lecture du schéma -> traité comme désynchronisé (fail-closed).
-fn fts_delete_trigger_ok(conn: &Connection) -> bool {
-    if !table_exists_purge(conn, "event_fts") {
-        return true;
+/// reste cherchable (`Ok(false)` -> `FtsDesync`). `P10.31-x` : les deux lectures du catalogue sont en trois
+/// issues — une lecture non faite n'est ni « index absent » (qui SAUTAIT le refus : fail-open) ni
+/// « désynchronisé » (cause fausse) : elle refuse par `PurgeRefusal::Db` en nommant la lecture.
+fn fts_delete_trigger_ok(conn: &Connection) -> Result<bool, PurgeRefusal> {
+    if !table_exists_purge(conn, "event_fts")? {
+        return Ok(true);
     }
-    conn.query_row(
-        "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='event_ad'",
-        [],
-        |_| Ok(()),
-    )
-    .is_ok()
+    conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='event_ad'", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .map(|n| n > 0)
+    .map_err(|e| {
+        PurgeRefusal::Db(format!(
+            "présence du trigger `event_ad` NON LUE (catalogue `sqlite_master`) : {e} — fail-closed, la \
+             synchronisation de l'index plein-texte ne peut pas être jugée, aucune ligne supprimée"
+        ))
+    })
 }
 
 /// Legal-holds ACTIFS qui RECOUVRENT le périmètre. CONSERVATEUR par construction :
@@ -591,7 +606,7 @@ fn fts_delete_trigger_ok(conn: &Connection) -> bool {
 ///  - purge SANS sélecteur `source` -> tout hold source-scopé peut recouvrir une ligne du périmètre -> il compte.
 /// C'est le sens « refuser plutôt que deviner » : on ne purge pas « tout sauf ce qui est tenu ».
 fn holds_covering(conn: &Connection, scope: &PurgeScope) -> Result<Vec<String>, PurgeRefusal> {
-    if !table_exists_purge(conn, "legal_hold") {
+    if !table_exists_purge(conn, "legal_hold")? {
         return Ok(Vec::new());
     }
     let src = scope.source_value().to_string();
@@ -622,7 +637,7 @@ fn holds_covering(conn: &Connection, scope: &PurgeScope) -> Result<Vec<String>, 
 /// par un binaire qui, lui, a la feature. Table absente -> aucun tier froid n'a jamais tourné sur cette base.
 /// Table présente mais illisible -> REFUS (fail-closed).
 fn cold_overlap(conn: &Connection, w: PurgeWindow) -> Result<(), PurgeRefusal> {
-    if !table_exists_purge(conn, "cold_seal") {
+    if !table_exists_purge(conn, "cold_seal")? {
         return Ok(());
     }
     let got: Result<(i64, i64), _> = conn.query_row(
@@ -645,7 +660,7 @@ fn cited_by_case(
     pred: &str,
     binds: &[SqlValue],
 ) -> Result<Option<(Vec<i64>, i64)>, PurgeRefusal> {
-    if !table_exists_purge(conn, "incident_item") {
+    if !table_exists_purge(conn, "incident_item")? {
         return Ok(None);
     }
     let sql = format!(
@@ -699,7 +714,7 @@ pub(crate) fn purge_plan(conn: &Connection, scope: PurgeScope) -> Result<PurgePl
     cold_overlap(conn, scope.window)?;
 
     // (3) INDEX PLEIN-TEXTE — refus si un DELETE laisserait des postings cherchables.
-    if !fts_delete_trigger_ok(conn) {
+    if !fts_delete_trigger_ok(conn)? {
         return Err(PurgeRefusal::FtsDesync);
     }
 
@@ -1003,6 +1018,15 @@ fn purge_delete_rows(
     // n'aboutit donc pas à une purge partielle silencieuse, mais à un refus qui laisse la base intacte.
     let guard = hold_guard(conn)?;
     let (pred, binds) = scope_predicate(&c.scope, &guard);
+
+    // CHAÎNE DE PREUVE RELUE DANS LA TRANSACTION (`P10.31-x`, défense en profondeur). Le jeton ne couvre pas les
+    // citations (l'empreinte ne porte que le périmètre et ses comptes) : une citation posée entre la simulation
+    // et le `BEGIN IMMEDIATE`, ou une simulation dont le contrôle aurait été sauté, ne doit pas aboutir à un
+    // DELETE. Même jointure, même prédicat que `purge_plan` ; la présence de `incident_item` y est lue en trois
+    // issues. Refus -> l'appelant ROLLBACK, inscription au registre comprise.
+    if let Some((ids, total)) = cited_by_case(conn, &pred, &binds)? {
+        return Err(PurgeRefusal::CitedByCase { ids, total });
+    }
 
     let del_sql = format!("DELETE FROM event WHERE {pred}");
     let deleted = conn

@@ -249,14 +249,20 @@ fn compte_via_read_pool(st: &AppState, user: &str) -> LectureDuCompte {
 /// `lookup_basic_ident` (aujourd'hui `lookup_basic_ident_lu`, qui SELECTe aussi `hash`) puis l'époque par une SECONDE requête, sous une seconde prise du
 /// verrou. Ici : une prise du verrou, `ROLE_ET_EPOQUE_DU_COMPTE`, et pour un `eng-cred-*` la fenêtre jugée sur la
 /// même connexion — hors fenêtre, le compte vaut « absent » (ce que `lookup_basic_ident_lu` rend par `Absent`).
+/// `P10.20-b` : une fenêtre NON LUE vaut « non lu » (refus d'identité dans `compte_live`), jamais « absent » — qui
+/// ouvrirait le repli sur l'admin de l'assistant ou de configuration.
 fn compte_via_l_ecrivain(st: &AppState, user: &str) -> LectureDuCompte {
     let c = st.db.lock();
     match lire_le_compte(&c, user) {
-        LectureDuCompte::Trouve { epoque, .. }
-            if user.starts_with(ENG_CRED_PREFIX)
-                && !crate::handlers::engagement::engagement_cred_within_window(&c, user, now()) =>
-        {
-            LectureDuCompte::Absent { epoque }
+        LectureDuCompte::Trouve { role, epoque } if user.starts_with(ENG_CRED_PREFIX) => {
+            match crate::handlers::engagement::engagement_cred_within_window(&c, user, now()) {
+                Ok(true) => LectureDuCompte::Trouve { role, epoque },
+                Ok(false) => LectureDuCompte::Absent { epoque },
+                Err(e) => {
+                    eprintln!("[session] WARN fenêtre d'engagement du credential '{user}' NON lue : {e}");
+                    LectureDuCompte::NonLu
+                }
+            }
         }
         lu => lu,
     }

@@ -16211,8 +16211,11 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const surfacesQuiLisentLaTrace103 = CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && /=\s*causeDeLaTraceManquante\(/.test(src)).map(([f]) => f).sort();
     // `P10.21-h` (lot 105) : la surface du PLAN DE CONTRÔLE rejoint l'ensemble — `multitenant.js`, qui lit la
     // même clé sur un autre journal, pour ses gestes ET pour le provisionnement dont le formulaire vit dans `app.js`.
-    exiger(surfacesQuiLisentLaTrace103.join(",") === "cases.js,detection_admin.js,multitenant.js,viz.js",
-      `(103e) l'ensemble des surfaces qui LISENT l'aveu de trace manquante n'est plus celui des trois surfaces de mise en file et de celle du plan de contrôle : ${JSON.stringify(surfacesQuiLisentLaTrace103)}`);
+    // `P10.31-u` (volet console, témoin 138) : l'installation et le changement de mot de passe (`app.js`) et l'appel IA
+    // (`ai.js`) lisent la même clé sur leurs corps de succès ; le panneau MFA (`idp.js`) la lit sur les succès de l'activation
+    // et de la désactivation (témoin 108).
+    exiger(surfacesQuiLisentLaTrace103.join(",") === "ai.js,app.js,cases.js,detection_admin.js,idp.js,multitenant.js,viz.js",
+      `(103e) l'ensemble des surfaces qui LISENT l'aveu de trace manquante n'est plus celui des trois surfaces de mise en file, de celle du plan de contrôle, du formulaire du compte, de l'assistant IA et du panneau MFA : ${JSON.stringify(surfacesQuiLisentLaTrace103)}`);
   } finally {
     globalThis.fetch = fetchOrigine103;
     globalThis.setTimeout = minuterieOrigine103;
@@ -17767,8 +17770,16 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     "un refus du CODE n'est plus un quatre cent un, ou la MFA déjà active n'est plus un quatre cent neuf : le partage lu par la console ne serait plus celui du démon");
   instrument108(/"mfa_required": true, "ticket": ticket/.test(IDP108) && /Ok\(true\) => return mfa_challenge_response\(/.test(SESSION108),
     "`login_post` ne rend plus `{mfa_required, ticket}` sans session : l'étape du code jugée ci-dessous ne s'ouvrirait sur aucun corps servi");
-  instrument108(/Json\(json!\(\{ "ok": true \}\)\)/.test(desactivation108) && /Json\(json!\(\{ "ok": true, "recovery_codes": clear \}\)\)/.test(verification108),
-    "`mfa_disable` ne sert plus `{ok:true}`, ou `mfa_verify` `{ok, recovery_codes}` : le succès reconnu par la console ne serait plus celui du démon");
+  // `P10.31-u` — LE SUCCÈS PORTE L'AVEU DE SA TRACE MANQUANTE : les deux corps passent par `avouer_le_maillon_manquant`
+  // (`CAUSE_GESTE_SANS_TRACE`), lu par le panneau et joué en (e) et (e2) ci-dessous ; même forme que le témoin 138.
+  instrument108(/Json\(avouer_le_maillon_manquant\(json!\(\{ "ok": true \}\), &maillon, CAUSE_GESTE_SANS_TRACE\)\)/.test(desactivation108)
+    && /Json\(avouer_le_maillon_manquant\(json!\(\{ "ok": true, "recovery_codes": clear \}\), &maillon, CAUSE_GESTE_SANS_TRACE\)\)/.test(verification108),
+    "`mfa_disable` ne sert plus `{ok:true}`, ou `mfa_verify` `{ok, recovery_codes}`, avec l'aveu de trace manquante : le succès reconnu par la console ne serait plus celui du démon");
+  const LEDGER108 = (() => { try { return readFileSync(path.join(RACINE, "daemon", "src", "ledger.rs"), "utf8"); } catch (e) { return ""; } })();
+  const constanteLarge108 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str =\\s*\"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const CLE_MAILLON108 = constanteLarge108(LEDGER108, "CLE_REGISTRE_SANS_MAILLON"), CAUSE_MAILLON108 = constanteLarge108(LEDGER108, "CAUSE_GESTE_SANS_TRACE");
+  instrument108(!!CLE_MAILLON108 && CAUSE_MAILLON108.startsWith("TRACE MANQUANTE") && modNoyau108.CLE_DU_REGISTRE_SANS_MAILLON === CLE_MAILLON108,
+    `la clé ou la cause de trace manquante n'est plus lisible dans daemon/src/ledger.rs, ou le point commun lit une autre clé (« ${modNoyau108.CLE_DU_REGISTRE_SANS_MAILLON} » contre « ${CLE_MAILLON108} »)`);
   const textesDuSecondFacteur108 = POPULATION108.connexion.c503.map((n) => [n, texteDe108(n)]);
   const CAUSE_DESACTIVATION108 = texteDe108("CAUSE_MFA_NON_DESACTIVEE");
   const CAUSE_ILLISIBLES108 = texteDe108("CAUSE_CODES_DE_SECOURS_ILLISIBLES");
@@ -18082,6 +18093,9 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const enrolement108 = document.querySelector("#mfa-enroll"), statutMfa108 = document.querySelector("#mfa-status");
     instrument108(!!enrolement108 && !!statutMfa108, "les hôtes du bloc MFA d'`index.html` (#mfa-status, #mfa-enroll) ne sont pas montés");
     const aveuDeDesactivation108 = () => { const a = enrolement108.children[0]; return a && a.getAttribute && a.getAttribute("data-refus-de-desactivation") ? a : null; };
+    // `P10.31-u` — l'aveu d'un geste FAIT dont la trace manque : posé au panneau par `aveuDUneTraceManquante` (core.js).
+    const traceManquante108 = () => [...enrolement108.children].find((n) => n && n.getAttribute && n.getAttribute("data-trace-manquante") === "1") || null;
+    const facesSansTrace108 = {};
     const desactiver108 = async (mod) => { enrolement108.hidden = true; enrolement108.replaceChildren(); return jouer108(() => mod.disableMfa(), [{}, { code: "123456" }]); };
     servis108["GET /api/mfa/status"] = { corps: { enrolled: true, enabled: true } };
     servis108["POST /api/mfa/disable"] = { statut: 401, corps: { error: "code MFA requis pour désactiver" } };
@@ -18130,8 +18144,31 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       "(108e) sur une désactivation non confirmée, le statut n'est pas RELU : la phrase renvoie à un statut que personne n'a rafraîchi");
     servis108["POST /api/mfa/disable"] = { statut: 200, corps: { ok: true } };
     const e5108 = await desactiver108(modIdp108);
-    exiger(e5108.some((a) => a.texte === "MFA désactivée" && /\bok\b/.test(a.genre)) && !aveuDeDesactivation108(),
-      `(108e-négatif) une désactivation RÉUSSIE n'est plus annoncée, ou porte un aveu : ${JSON.stringify(e5108)}`);
+    exiger(e5108.some((a) => a.texte === "MFA désactivée" && /\bok\b/.test(a.genre)) && !aveuDeDesactivation108() && !traceManquante108(),
+      `(108e-négatif) une désactivation RÉUSSIE n'est plus annoncée, ou porte un aveu (de refus ou de trace manquante) : ${JSON.stringify(e5108)} « ${nu108(enrolement108).slice(0, 200)} »`);
+    // `P10.31-u` — LA DÉSACTIVATION FAITE DONT LA TRACE MANQUE : le succès reste annoncé, le statut est relu, l'aveu est posé
+    // au puits du panneau à DEUX nœuds (phrase du geste, puis « cause servie »), sans marque de refus, dans les deux langues.
+    const CAUSE_SERVIE108 = CAUSE_MAILLON108 + " (disk I/O error)";
+    for (const [mod, langue, enTete] of [[modIdp108, "fr", /^Double authentification DÉSACTIVÉE, mais SANS TRACE D'AUDIT/], [modIdpEn108, "en", /^Two-factor authentication DISABLED, but WITHOUT AUDIT TRACE/]]) {
+      servis108["POST /api/mfa/disable"] = { statut: 200, corps: { ok: true, [CLE_MAILLON108]: CAUSE_SERVIE108 } };
+      const appelsAvant = appels108.length;
+      const e = await desactiver108(mod);
+      const t = traceManquante108(), phrase = t && t.children[0] ? nu108(t.children[0]) : "";
+      facesSansTrace108[langue + "/desactivation"] = phrase;
+      exiger(e.some((a) => /\bok\b/.test(a.genre)) && !e.some((a) => /\bbad\b/.test(a.genre)) && !aveuDeDesactivation108() && !!t && t.getAttribute("data-mfa-sans-trace") === "desactivation"
+        && t.children.length === 1 && enTete.test(phrase) && phrase.endsWith("—") && nu108(t) === (phrase + " « " + CAUSE_SERVIE108 + " »").replace(/\s+/g, " ") && !enrolement108.hidden
+        && appels108.slice(appelsAvant).includes("GET /api/mfa/status") && !(langue === "en" && /[éèêàçùôâîÉÈÊÀ]/.test(phrase)),
+        `(108e) [${langue}] LA DÉSACTIVATION FAITE SANS TRACE D'AUDIT SE TAIT, ou se dit comme un refus, ou sans relire le statut : ${JSON.stringify(e)} « ${nu108(enrolement108).slice(0, 300)} »`);
+    }
+    // SANS PUITS, l'aveu part à l'avis en une chaîne ; un corps sans la clé n'en émet aucun.
+    {
+      const avant = avis108().length;
+      const rendu = modIdp108.avouerLaMfaSansTrace(null, "desactivation", { ok: true, [CLE_MAILLON108]: CAUSE_SERVIE108 });
+      const nul = modIdp108.avouerLaMfaSansTrace(null, "desactivation", { ok: true });
+      const nouveaux = avis108().slice(avant).map((n) => ({ texte: String(n.textContent).replace(/\s+/g, " ").trim(), genre: n.className }));
+      exiger(rendu === "desactivation" && nul === "" && nouveaux.length === 1 && /\bbad\b/.test(nouveaux[0].genre) && nouveaux[0].texte === (facesSansTrace108["fr/desactivation"] + " « " + CAUSE_SERVIE108 + " »").replace(/\s+/g, " "),
+        `(108e) sans puits, l'aveu de trace manquante ne part pas à l'avis en une chaîne (phrase, puis cause), ou un corps sans la clé en émet un : « ${rendu} » / « ${nul} » ${JSON.stringify(nouveaux)}`);
+    }
     servis108["POST /api/mfa/disable"] = { statut: 503, corps: { error: CAUSE_DESACTIVATION108, id: "plume-e9-7" } };
     await desactiver108(modIdpEn108);
     exiger(!!aveuDeDesactivation108() && nu108(aveuDeDesactivation108().children[0]) === modIdpEn108.motDeLaDesactivationMfa("desactivation_non_ecrite") && /NOT at fault/.test(nu108(aveuDeDesactivation108().children[0])),
@@ -18200,8 +18237,23 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     exiger(!v6108.jete && !!v6108.aveu && v6108.aveu.getAttribute("data-refus-d-activation") === "activation_non_etablie" && !v6108.avis.some((t) => /MFA activée/.test(t)) && !/Codes de secours/.test(nu108(enrolement108)),
       `(108e2) SUR UN DEUX CENTS À CORPS VIDE, « MFA activée » EST ANNONCÉ — avec une boîte de codes de secours VIDE, ou le geste JETTE (${v6108.jete && v6108.jete.message}) : ${JSON.stringify(v6108.avis)} « ${nu108(enrolement108).slice(0, 200)} »`);
     const v7108 = await verifier108(modIdp108, { statut: 200, corps: { ok: true, recovery_codes: ["aaaa-1111", "bbbb-2222"] } });
-    exiger(!v7108.aveu && v7108.avis.includes("MFA activée") && nu108(enrolement108).includes("aaaa-1111"),
-      `(108e2-négatif) une activation RÉUSSIE n'est plus annoncée, ou ses codes de secours ne sont pas montrés : ${JSON.stringify(v7108.avis)} « ${nu108(enrolement108).slice(0, 200)} »`);
+    exiger(!v7108.aveu && v7108.avis.includes("MFA activée") && nu108(enrolement108).includes("aaaa-1111") && !traceManquante108(),
+      `(108e2-négatif) une activation RÉUSSIE n'est plus annoncée, ou ses codes de secours ne sont pas montrés, ou elle porte un aveu de trace manquante : ${JSON.stringify(v7108.avis)} « ${nu108(enrolement108).slice(0, 200)} »`);
+    // `P10.31-u` — L'ACTIVATION FAITE DONT LA TRACE MANQUE : succès annoncé, codes de secours MONTRÉS (ils ne seront servis
+    // nulle part ailleurs), et l'aveu SOUS eux, à deux nœuds, sans marque de refus, dans les deux langues.
+    for (const [mod, langue, enTete] of [[modIdp108, "fr", /^Double authentification ACTIVÉE, mais SANS TRACE D'AUDIT/], [modIdpEn108, "en", /^Two-factor authentication ENABLED, but WITHOUT AUDIT TRACE/]]) {
+      const v = await verifier108(mod, { statut: 200, corps: { ok: true, recovery_codes: ["cccc-3333", "dddd-4444"], [CLE_MAILLON108]: CAUSE_SERVIE108 } });
+      const t = traceManquante108(), phrase = t && t.children[0] ? nu108(t.children[0]) : "";
+      facesSansTrace108[langue + "/activation"] = phrase;
+      exiger(!v.jete && !v.aveu && v.avis.length >= 1 && !!t && t.getAttribute("data-mfa-sans-trace") === "activation" && t.children.length === 1 && enTete.test(phrase) && phrase.endsWith("—")
+        && nu108(t) === (phrase + " « " + CAUSE_SERVIE108 + " »").replace(/\s+/g, " ") && nu108(enrolement108).includes("cccc-3333") && enrolement108.children.indexOf(t) === enrolement108.children.length - 1
+        && !enrolement108.hidden && !(langue === "en" && /[éèêàçùôâîÉÈÊÀ]/.test(phrase)),
+        `(108e2) [${langue}] L'ACTIVATION FAITE SANS TRACE D'AUDIT SE TAIT, ou perd ses codes de secours, ou se dit comme un refus (jet : ${v.jete && v.jete.message}) : ${JSON.stringify(v.avis)} « ${nu108(enrolement108).slice(0, 300)} »`);
+    }
+    for (const lg of ["fr", "en"]) exiger(!!facesSansTrace108[lg + "/activation"] && facesSansTrace108[lg + "/activation"] !== facesSansTrace108[lg + "/desactivation"],
+      `(108-faces) ${lg} : l'activation et la désactivation sans trace ont la même phrase — ou l'une manque`);
+    for (const g of ["activation", "desactivation"]) exiger(!!facesSansTrace108["fr/" + g] && facesSansTrace108["fr/" + g] !== facesSansTrace108["en/" + g],
+      `(108-faces) ${g} : la face anglaise de l'aveu de trace manquante est la face française — ou l'une manque`);
     const v8108 = await verifier108(modIdpEn108, { statut: 503, corps: { error: CAUSE_NON_ACTIVEE108, id: "plume-e9-12" } });
     exiger(!!v8108.aveu && nu108(v8108.aveu.children[0]) === modIdpEn108.motDeLActivationMfa("activation_non_ecrite") && /NOT at fault/.test(nu108(v8108.aveu.children[0])),
       `(108e2) SOUS \`LANG='en'\`, l'activation non enregistrée n'est pas dite en anglais : « ${nu108(enrolement108).slice(0, 200)} »`);
@@ -18520,8 +18572,16 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const enrolement109 = corpsDeFonction109(IDP109, "pub(crate) async fn mfa_enroll(");
   const constante109 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
   const causesDe109 = (corps, statut) => [...new Set([...corps.matchAll(new RegExp("err_json\\(StatusCode::" + statut + ", (CAUSE_\\w+)\\)", "g"))].map((m) => m[1]))];
+  // `P10.31-u` (démon) — le refus du mot de passe dont le maillon n'est pas entré sert une AUTRE phrase, hors d'`err_json`
+  // (son corps porte la clé de trace manquante, qu'`err_json` ne sait pas poser) : elle est relevée dans le gestionnaire
+  // qui la sert, appelé depuis `mfa_enroll`, et jugée comme les autres quatre cent trois — le panneau la range sous
+  // `mot_de_passe_refuse` par son ouverture, et rien d'autre ne tenait cette correspondance.
+  const refusSansTrace109 = /return refus_d_enrolement_sans_trace\(&maillon\);/.test(enrolement109) ? corpsDeFonction109(IDP109, "fn refus_d_enrolement_sans_trace(") : "";
+  const causesSansTrace109 = [...new Set([...refusSansTrace109.matchAll(/StatusCode::FORBIDDEN, Json\(avouer_le_maillon_manquant\(json!\(\{ "error": (CAUSE_\w+) \}\)/g)].map((m) => m[1]))];
+  instrument109(causesSansTrace109.length === 1,
+    `\`mfa_enroll\` n'appelle plus \`refus_d_enrolement_sans_trace\`, ou ce gestionnaire ne sert plus un quatre cent trois nommé portant l'aveu : ${JSON.stringify(causesSansTrace109)}`);
   const CAUSES_D_ENROLEMENT109 = {
-    403: causesDe109(enrolement109, "FORBIDDEN"), 503: causesDe109(enrolement109, "SERVICE_UNAVAILABLE"),
+    403: [...new Set([...causesDe109(enrolement109, "FORBIDDEN"), ...causesSansTrace109])], 503: causesDe109(enrolement109, "SERVICE_UNAVAILABLE"),
     429: [...new Set([...enrolement109.matchAll(/"error": (CAUSE_\w+)/g)].map((m) => m[1]))],
   };
   instrument109(/b\.str_field\("password"\)/.test(enrolement109) && CAUSES_D_ENROLEMENT109[403].length >= 3 && CAUSES_D_ENROLEMENT109[503].length >= 2 && CAUSES_D_ENROLEMENT109[429].length === 1
@@ -23529,7 +23589,10 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // intégrations non lues, la requête interrompue (annulation et budget reconnus à la phrase exacte du démon).
       "app.js › MOTS_DU_CHANGEMENT_DE_MOT_DE_PASSE", "freshness.js › MOTS_DES_INTEGRATIONS_NON_LUES", "login.js › MOTS_DU_COMPTE_DU_MOT_DE_PASSE", "viz.js › MOTS_DE_LA_REQUETE_INTERROMPUE",
       // `P10.31-v` — la table que le témoin 137 pose : le dossier créé dont les échéances multi-niveau ne sont pas posées, ou pas lues.
-      "cases.js › MOTS_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE"];
+      "cases.js › MOTS_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE",
+      // `P10.31-u` — les tables que les témoins 138 et 108 posent : l'installation, le changement de mot de passe, l'appel IA,
+      // et l'activation et la désactivation de la MFA, faits sans trace d'audit.
+      "ai.js › MOTS_DE_L_APPEL_IA_SANS_TRACE", "app.js › MOTS_DU_COMPTE_SANS_TRACE", "idp.js › MOTS_DE_LA_MFA_SANS_TRACE"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -27683,10 +27746,12 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 // (identifiant toujours utilisé), l'aveu est posé au puits à DEUX nœuds (phrase, puis « cause »), sans avis ni marque de
 // refus, la phrase porte le numéro, dit CRÉÉ/CREATED, et diffère d'une clé à l'autre et d'une langue à l'autre ; (c) le
 // chemin nominal : aucun aveu, aucun avis ; (d) « ajouter à un nouveau dossier » avoue aussi ET rattache quand même ;
-// (e) le cinq cent trois nommé d'une mise à jour.
+// (e) le cinq cent trois nommé d'une mise à jour ; (f) sans puits des dossiers (`#case-detail` détaché), l'aveu part à
+// l'avis, phrase qui nomme le dossier créé PUIS cause, en une chaîne.
 // CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; la cause servie reste française sous les deux langues ;
 // aucun écran de politiques SLA n'existe (rien à peindre pour la suppression d'une politique) ; le volet démon de la clé est
-// ailleurs ; `registre_sans_maillon` sur la mise en service, le mot de passe et le secret des gestes reste sans face console.
+// ailleurs ; `registre_sans_maillon` sur la mise en service et le mot de passe est lu au témoin 138, sur les refus d'identité
+// (mot de passe actuel, secret des gestes) il reste sans face propre.
 // ---------------------------------------------------------------------------------------------
 {
   const echecsAvant137 = echecs.length;
@@ -27851,10 +27916,203 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     for (const o of etatOrigine137) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; o.S.caseSelectedId = o.cas; }
     const pu = puits137(); if (pu) pu.remove();
     const d = detail137(); if (d) d.replaceChildren();
+    const avis = document.querySelector("#toasts"); if (avis) avis.replaceChildren();   // l'aveu sans puits de (f) part à l'avis
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
   if (echecs.length !== echecsAvant137) console.log(`(137) EN ÉCHEC — ${echecs.length - echecsAvant137} écart(s), dits ci-dessus`);
   else console.log("(137) OK — `P10.31-v` (console) : un dossier créé dont le démon avoue les échéances multi-niveau NON POSÉES ou NON LUES s'ouvre par son identifiant ET le dit au puits des dossiers, à deux nœuds (phrase qui nomme le dossier créé, puis la cause servie), sans avis ni marque de refus, dans les deux langues, deux phrases distinctes ; le chemin nominal n'en porte aucun ; « ajouter à un nouveau dossier » avoue et rattache ; sans puits, l'aveu part à l'avis ; les clés lues sont exactement celles que le démon sert. Le cinq cent trois « CHRONO SLA NON LU » d'une mise à jour était DÉJÀ peint en refus nommé avec sa cause : figé, rien d'ajouté.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (138) `P10.31-u` (volet console) — L'INSTALLATION, LE CHANGEMENT DE MOT DE PASSE ET L'APPEL IA DONT LA TRACE MANQUE
+//       LE DISENT À LA PERSONNE, PAS SEULEMENT AU DÉMON.
+//
+// CE QUE LE DÉMON SERT (RELU ICI, PAS RECOPIÉ) : `setup` et `password_post` (daemon/src/session.rs) et
+// `ai_nl2soql_reponse_de_succes` (daemon/src/handlers/ai.rs) passent leur corps de succès à `avouer_le_maillon_manquant`
+// avec `CAUSE_GESTE_SANS_TRACE` : maillon non inscrit, le corps garde ses champs et gagne la clé commune
+// (`CLE_REGISTRE_SANS_MAILLON`, daemon/src/ledger.rs), valeur `<cause> (<détail du moteur>)`.
+//
+// CE QUE LA CONSOLE EN FAISAIT AVANT CE LOT, MESURÉ (miroir de 2e4fe6eb) : `enregistrerLesReglagesDuCompte` (web/app.js)
+// lisait `servi.user` du changement de mot de passe et jetait le corps de l'installation ; `initAiAssist` (web/ai.js) ne
+// lisait que `soql`, `valid` et `error`. Aucune des trois ne lisait la clé : le premier administrateur posé hors de la
+// trace non purgeable, et une question partie chez un fournisseur d'IA sans ligne au registre, se taisaient.
+//
+// JUGÉ, DANS LES DEUX LANGUES (instance française et instance `?plume-lang=en` des modules réels) : (0) la clé que le
+// point commun lit est celle que le démon sert, les trois sites servent l'aveu, et aucun avis ne traîne d'un témoin
+// précédent ; (a) installation et (b) mot de passe : corps AVEC la clé → la ligne de succès est INCHANGÉE (celle du corps
+// sans clé : le geste a eu lieu), l'aveu est posé au puits `reglages_du_compte` à DEUX nœuds (phrase du geste, puis
+// « cause servie »), sans marque de refus ni avis ; (c) corps SANS la clé → puits vide et caché (et le geste suivant
+// efface l'aveu du précédent) ; (d) sans puits, l'aveu part à l'avis en une chaîne ; (e) appel IA : la proposition reste
+// écrite dans la barre, l'aveu part à l'avis (classe `bad`), phrase PUIS cause — même sans proposition — ; sans la clé,
+// aucun avis ; (faces) les phrases des trois gestes diffèrent l'une de l'autre dans chaque langue, et d'une langue à
+// l'autre pour chaque geste ; la face anglaise ne porte aucun accent.
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; la cause servie reste française sous les deux langues ;
+// les refus d'identité sans trace (mot de passe actuel, secret des gestes : quatre cent trois portant la clé) ne sont pas
+// rejugés ici — leur phrase servie dit déjà qu'ils ne sont pas inscrits, et la forme partagée la peint ; la ligne de
+// succès de l'installation reste un littéral français traduit par le lexique (hors de ce lot).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant138 = echecs.length;
+  const FICHIERS138 = { noyau: "core.js", etat: "state.js", app: "app.js", ia: "ai.js" };
+  const importer138 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS138)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr138 = await importer138((f) => pathToFileURL(path.join(WEB, f)).href);
+  const langueOrigine138 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn138 = await importer138((f) => adresseSousLaLangue(f));
+  if (langueOrigine138 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine138);
+  const FR138 = { nom: "fr", ...modsFr138, S: modsFr138.etat.S }, EN138 = { nom: "en", ...modsEn138, S: modsEn138.etat.S };
+  const instrument138 = (vrai, quoi) => exiger(vrai, `(138-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic138 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser138 = async (n = 30) => { for (let i = 0; i < n; i++) await tic138(); };
+  const nu138 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const serre138 = (t) => String(t).replace(/\s+/g, " ").trim();
+  const ACCENTS138 = /[éèêàçùôâîÉÈÊÀ]/;
+  const qs138 = (sel) => document.querySelector(sel);
+  const lireLeDemon138 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const constante138 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str =\\s*\"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const corpsDeFonction138 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT, LU DANS SON ARBRE ─────────────────────────────────
+  const LEDGER138 = lireLeDemon138("ledger.rs"), SESSION138 = lireLeDemon138("session.rs"), IA138 = lireLeDemon138("handlers/ai.rs");
+  const CLE138 = constante138(LEDGER138, "CLE_REGISTRE_SANS_MAILLON"), CAUSE138 = constante138(LEDGER138, "CAUSE_GESTE_SANS_TRACE");
+  instrument138(!!CLE138 && CAUSE138.startsWith("TRACE MANQUANTE"), "`CLE_REGISTRE_SANS_MAILLON` ou `CAUSE_GESTE_SANS_TRACE` n'est plus lisible dans daemon/src/ledger.rs");
+  instrument138(FR138.noyau.CLE_DU_REGISTRE_SANS_MAILLON === CLE138, `le point commun ne lit plus la clé que le démon sert : « ${FR138.noyau.CLE_DU_REGISTRE_SANS_MAILLON} » contre « ${CLE138} »`);
+  const SITES138 = {
+    installation: [corpsDeFonction138(SESSION138, "pub(crate) async fn setup_post("), /avouer_le_maillon_manquant\(json!\(\{ "ok": true, "setup_token_file_removed": residu\.is_none\(\) \}\), &maillon, CAUSE_GESTE_SANS_TRACE\)/],
+    mot_de_passe: [corpsDeFonction138(SESSION138, "pub(crate) async fn password_post("), /avouer_le_maillon_manquant\(json!\(\{ "ok": true, "user": user \}\), &maillon, CAUSE_GESTE_SANS_TRACE\)/],
+    appel_ia: [corpsDeFonction138(IA138, "pub(crate) fn ai_nl2soql_reponse_de_succes("), /Json\(avouer_le_maillon_manquant\(corps, &maillon, CAUSE_GESTE_SANS_TRACE\)\)/],
+  };
+  for (const [site, [corps, motif]] of Object.entries(SITES138))
+    instrument138(motif.test(corps), `le site « ${site} » ne sert plus l'aveu de trace manquante à côté de son succès (daemon/src)`);
+  instrument138(FR138.noyau.LANG !== "en" && EN138.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+  const noeudsDAvis138 = () => { const h = qs138("#toasts"); return h ? [...h.children] : []; };
+  // Le témoin précédent (137) joue un aveu SANS PUITS qui part à l'avis : son `finally` doit vider l'hôte des avis.
+  exiger(noeudsDAvis138().length === 0, `(138-0) des avis laissés par un témoin précédent traînent dans #toasts : ${JSON.stringify(noeudsDAvis138().map((t) => nu138(t).slice(0, 80)))}`);
+
+  // ── LE SIMULACRE ─────────────────────────────────────────────────────────────────────────────
+  const fetchOrigine138 = globalThis.fetch, minuterieOrigine138 = globalThis.setTimeout;
+  const etatOrigine138 = [FR138, EN138].map((L) => ({ S: L.S, auth: L.S.AUTH }));
+  const form138 = qs138("#setup-form"), actuel138 = qs138("#set-pw-current"), nouveau138 = qs138("#set-pw"), resultat138 = qs138("#set-result");
+  const jeton138 = qs138("#set-token"), utilisateur138 = qs138("#set-user");
+  const boite138 = qs138("#aiassist"), question138 = qs138("#ainl"), bouton138 = qs138("#airun"), statut138 = qs138("#aistat"), barre138 = qs138("#sql");
+  instrument138(!!form138 && !!actuel138 && !!nouveau138 && !!resultat138 && !!jeton138 && !!utilisateur138, "le formulaire des réglages du compte (index.html) n'est pas monté");
+  instrument138(!!boite138 && !!question138 && !!bouton138 && !!statut138 && !!barre138, "la barre de l'assistant IA (index.html) n'est pas montée");
+  const origineIa138 = { affichage: boite138 && boite138.style.display, barre: barre138 && barre138.value, clic: bouton138 && bouton138.onclick, touche: question138 && question138.onkeydown };
+  let servis138 = {};
+  const appels138 = [];
+  globalThis.fetch = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    appels138.push(k);
+    const r = servis138[k];
+    const texte = !r ? "{}" : typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    const statut = (r && r.statut) || 200;
+    return { ok: statut < 400, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine138(fn, ms >= 100 ? 0 : ms));
+  const fenetre138 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop() || null;
+  const fermerLesFenetres138 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  const accepterLaFenetre138 = async () => {
+    await laisser138();
+    const ov = fenetre138(), f = ov && ov.children[0] ? ov.children[0].children[0] || null : null;
+    if (f && typeof f.onsubmit === "function") await Promise.resolve(f.onsubmit({ preventDefault() {} }));
+    await laisser138();
+  };
+  const puits138 = () => (form138 ? form138.children.find((n) => typeof n.getAttribute === "function" && n.getAttribute("data-puits-du-refus-d-un-geste") === "reglages_du_compte") || null : null);
+  // Un geste du formulaire : installation (non configuré) ou changement (configuré, confirmation acceptée).
+  const gesteDuCompte138 = async (L, configure, corps) => {
+    servis138 = { "GET /api/setup-status": { corps: { configured: configure } }, [configure ? "POST /api/password" : "POST /api/setup"]: { corps } };
+    nouveau138.value = "nouveau-mot-de-passe-138"; actuel138.value = configure ? "ancien-mot-de-passe-138" : ""; jeton138.value = "jeton-138"; utilisateur138.value = "admin-138";
+    resultat138.textContent = "";
+    const avant = new Set(noeudsDAvis138()), depuis = appels138.length;
+    const g = L.app.enregistrerLesReglagesDuCompte({ preventDefault() {} });
+    if (configure) await accepterLaFenetre138();
+    await g; await laisser138(10); fermerLesFenetres138();
+    const pu = puits138();
+    return { appels: appels138.slice(depuis), succes: nu138(resultat138), puits: pu, montre: !!pu && pu.hidden === false, lignes: pu ? [...pu.children] : [],
+      marque: pu && pu.getAttribute("data-refus-d-un-geste"), avis: noeudsDAvis138().filter((t) => !avant.has(t)).map((t) => nu138(t)) };
+  };
+  const gesteIa138 = async (L, corps) => {
+    servis138 = { "GET /api/ai/status": { corps: { enabled: true } }, "POST /api/ai/nl2soql": { corps } };
+    barre138.value = ""; statut138.textContent = "";
+    await L.ia.initAiAssist();
+    question138.value = "connexions SSH refusées 138";
+    const avant = new Set(noeudsDAvis138()), depuis = appels138.length;
+    await Promise.resolve(bouton138.onclick()); await laisser138(10);
+    const nouveaux = noeudsDAvis138().filter((t) => !avant.has(t));
+    return { appels: appels138.slice(depuis), barre: barre138.value, statut: nu138(statut138), avis: nouveaux.map((t) => nu138(t)), classes: nouveaux.map((t) => t.className) };
+  };
+
+  const faces138 = {};
+  try {
+    for (const L of [FR138, EN138]) {
+      L.S.AUTH = { user: "alice-138", role: "admin", auth_method: "cookie" };
+      const cause = CAUSE138 + " (disk I/O error)";
+      // ══ (a)(b)(c) LES DEUX GESTES DU FORMULAIRE, AVEC PUIS SANS LA CLÉ ══════════════════════════════
+      for (const [geste, configure, corpsNominal, route] of [["installation", false, { ok: true, setup_token_file_removed: true }, "POST /api/setup"], ["mot_de_passe", true, { ok: true, user: "alice-servi-138" }, "POST /api/password"]]) {
+        const lettre = geste === "installation" ? "a" : "b";
+        const avec = await gesteDuCompte138(L, configure, { ...corpsNominal, [CLE138]: cause });
+        const ligne = avec.lignes[0];
+        const phrase = ligne && ligne.children[0] ? nu138(ligne.children[0]) : "";
+        faces138[L.nom + "/" + geste] = phrase;
+        exiger(avec.appels.includes(route) && avec.montre && avec.lignes.length === 1 && !!ligne && ligne.getAttribute("data-trace-manquante") === "1" && ligne.children.length === 1 && nu138(ligne) === serre138(phrase + " « " + cause + " »"),
+          `(138${lettre}) ${L.nom}/${geste} : l'aveu de trace manquante n'est pas posé au puits du formulaire à DEUX nœuds (phrase, puis « cause servie ») — ${JSON.stringify(avec.appels)} montré=${avec.montre}, ${avec.lignes.length} ligne(s) : « ${nu138(avec.puits).slice(0, 200)} »`);
+        exiger(!avec.marque && avec.avis.length === 0,
+          `(138${lettre}) ${L.nom}/${geste} : un geste FAIT est peint comme un REFUS (marque « ${avec.marque} »), ou un avis part à côté du puits : ${JSON.stringify(avec.avis)}`);
+        const enTete = geste === "installation" ? (L === EN138 ? /^Setup DONE, but WITHOUT AUDIT TRACE/ : /^Installation FAITE, mais SANS TRACE D'AUDIT/) : (L === EN138 ? /^Password CHANGED, but WITHOUT AUDIT TRACE/ : /^Mot de passe CHANGÉ, mais SANS TRACE D'AUDIT/);
+        exiger(enTete.test(phrase) && phrase.endsWith("—") && !(L === EN138 && ACCENTS138.test(phrase)),
+          `(138${lettre}) ${L.nom}/${geste} : la phrase ne dit pas, dans la langue de l'écran, que CE geste a eu lieu sans trace : « ${phrase} »`);
+        // (c) le corps SANS la clé, joué APRÈS : le geste suivant efface l'aveu, et la ligne de succès est la même.
+        const sans = await gesteDuCompte138(L, configure, corpsNominal);
+        exiger(sans.appels.includes(route) && !sans.montre && sans.lignes.length === 0 && sans.avis.length === 0,
+          `(138c) ${L.nom}/${geste} : un corps SANS la clé porte un aveu, ou l'aveu du geste précédent n'est pas effacé : montré=${sans.montre} « ${nu138(sans.puits).slice(0, 160)} » avis ${JSON.stringify(sans.avis)}`);
+        exiger(!!sans.succes && avec.succes === sans.succes && (geste !== "mot_de_passe" || avec.succes.includes("alice-servi-138")),
+          `(138c) ${L.nom}/${geste} : l'aveu MASQUE ou change le succès — avec la clé « ${avec.succes} », sans « ${sans.succes} »`);
+      }
+      // ══ (d) SANS PUITS : l'aveu part à l'avis, phrase PUIS cause, en une chaîne ══════════════════════
+      {
+        const avant = new Set(noeudsDAvis138());
+        const avouer = typeof L.app.avouerLeCompteSansTrace === "function" ? L.app.avouerLeCompteSansTrace : () => "(fabrique absente)";
+        const rendu = avouer(null, "mot_de_passe", { ok: true, [CLE138]: cause });
+        const nul = avouer(null, "mot_de_passe", { ok: true });
+        const avis = noeudsDAvis138().filter((t) => !avant.has(t)).map((t) => nu138(t));
+        exiger(rendu === "mot_de_passe" && nul === "" && avis.length === 1 && avis[0] === serre138(faces138[L.nom + "/mot_de_passe"] + " « " + cause + " »"),
+          `(138d) ${L.nom} : sans puits, l'aveu ne part pas à l'avis en une chaîne (phrase du geste, puis cause), ou un corps sans la clé en émet un : rendu « ${rendu} » / « ${nul} », avis ${JSON.stringify(avis)}`);
+      }
+      // ══ (e) L'APPEL IA ═══════════════════════════════════════════════════════════════════════════
+      {
+        const reponse = { soql: "source=auth action=fail", sql: "SELECT 1", valid: true, error: null, retried: false, prompt_tokens: 3, completion_tokens: 4 };
+        const avec = await gesteIa138(L, { ...reponse, [CLE138]: cause });
+        const phrase = avec.avis.length === 1 && avec.avis[0].endsWith(" « " + serre138(cause) + " »") ? avec.avis[0].slice(0, -(" « " + serre138(cause) + " »").length) : "";
+        faces138[L.nom + "/appel_ia"] = phrase;
+        const enTete = L === EN138 ? /^AI call DONE, but WITHOUT AUDIT TRACE/ : /^Appel IA FAIT, mais SANS TRACE D'AUDIT/;
+        exiger(avec.appels.includes("POST /api/ai/nl2soql") && avec.barre === reponse.soql && avec.avis.length === 1 && avec.classes[0].split(" ").includes("bad") && enTete.test(phrase) && phrase.endsWith("—") && !(L === EN138 && ACCENTS138.test(phrase)),
+          `(138e) ${L.nom} : l'appel IA dont la trace manque ne le dit pas à l'avis (phrase du geste, puis cause, classe bad), ou la proposition n'est plus écrite dans la barre : barre « ${avec.barre} » avis ${JSON.stringify(avec.avis)} ${JSON.stringify(avec.classes)}`);
+        const vide = await gesteIa138(L, { ...reponse, soql: "", [CLE138]: cause });
+        exiger(vide.avis.length === 1 && vide.avis[0] === avec.avis[0],
+          `(138e) ${L.nom} : sans proposition, l'appel IA FAIT dont la trace manque se tait : ${JSON.stringify(vide.avis)}`);
+        const sans = await gesteIa138(L, reponse);
+        exiger(sans.appels.includes("POST /api/ai/nl2soql") && sans.barre === reponse.soql && sans.avis.length === 0 && sans.statut === avec.statut,
+          `(138e-négatif) ${L.nom} : un appel IA sans la clé émet un avis, ou l'aveu change l'état de la barre : avis ${JSON.stringify(sans.avis)} statut « ${sans.statut} » / « ${avec.statut} »`);
+      }
+    }
+    // LES FACES : trois gestes, trois phrases dans chaque langue ; pour chaque geste, deux langues, deux phrases.
+    const GESTES138 = ["installation", "mot_de_passe", "appel_ia"];
+    for (const lg of ["fr", "en"]) for (const g1 of GESTES138) for (const g2 of GESTES138)
+      if (g1 < g2) exiger(!!faces138[lg + "/" + g1] && faces138[lg + "/" + g1] !== faces138[lg + "/" + g2], `(138-faces) ${lg} : « ${g1} » et « ${g2} » ont la même phrase — ou l'une manque`);
+    for (const g of GESTES138) exiger(!!faces138["fr/" + g] && faces138["fr/" + g] !== faces138["en/" + g], `(138-faces) ${g} : la face anglaise est la face française — ou l'une manque`);
+  } finally {
+    globalThis.fetch = fetchOrigine138; globalThis.setTimeout = minuterieOrigine138;
+    for (const o of etatOrigine138) o.S.AUTH = o.auth;
+    const pu = puits138(); if (pu) pu.remove();
+    if (nouveau138) nouveau138.value = ""; if (actuel138) actuel138.value = ""; if (jeton138) jeton138.value = ""; if (utilisateur138) utilisateur138.value = ""; if (resultat138) resultat138.textContent = "";
+    if (boite138) boite138.style.display = origineIa138.affichage; if (barre138) barre138.value = origineIa138.barre;
+    if (bouton138) bouton138.onclick = origineIa138.clic; if (question138) { question138.onkeydown = origineIa138.touche; question138.value = ""; }
+    if (statut138) statut138.textContent = "";
+    const avis = qs138("#toasts"); if (avis) avis.replaceChildren();
+    fermerLesFenetres138();
+  }
+  if (echecs.length !== echecsAvant138) console.log(`(138) EN ÉCHEC — ${echecs.length - echecsAvant138} écart(s), dits ci-dessus`);
+  else console.log("(138) OK — `P10.31-u` (console) : l'installation et le changement de mot de passe dont le démon avoue la trace manquante le disent au puits du formulaire, à deux nœuds (phrase du geste, puis la cause servie), sans marque de refus ni avis, la ligne de succès inchangée ; un corps sans la clé n'en porte aucun et le geste suivant efface l'aveu ; sans puits, l'aveu part à l'avis ; l'appel IA garde sa proposition et avoue à l'avis, même sans proposition ; trois phrases distinctes dans chaque langue, deux langues distinctes pour chaque geste ; la clé et les trois sites sont lus dans l'arbre du démon.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

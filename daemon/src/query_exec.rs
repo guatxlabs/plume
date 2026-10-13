@@ -441,20 +441,59 @@ impl Drop for BudgetGuard {
     }
 }
 
+// `P10.31-w` — UNE INTERRUPTION UNIQUE PEUT ÊTRE PERDUE : LA GARDE LA RÉITÈRE JUSQU'À LA FIN.
+// SQLite REMET À ZÉRO le drapeau d'interruption quand aucune instruction de la connexion n'est
+// active, à DEUX endroits : au début de la préparation (`sqlite3RunParser`) et au premier pas
+// (`sqlite3VdbeExec` via `sqlite3Step`, « prevents a call to sqlite3_interrupt from interrupting a
+// statement that has not yet started »), lus dans `sqlcipher/sqlite3.c` de `libsqlite3-sys` 0.28
+// (SQLite 3.39.4). Une échéance qui tombe AVANT le premier pas (préparation lente ou retenue,
+// autorisateur, fil déprogrammé sous charge) était donc EFFACÉE, et la requête folle courait jusqu'au
+// bout sans budget. Une fois l'échéance passée, la garde ne rend plus la main : elle réitère
+// `interrupt()` tous les `REITERATION_DE_L_INTERRUPTION` jusqu'au signal de fin. Le PREMIER
+// `interrupt()` tombe toujours À l'échéance (aucun délai élargi, aucun budget changé) ; la
+// réitération ne fait que rendre l'échéance IMPOSSIBLE À EFFACER. Elle s'arrête sous le même verrou
+// que le signal de fin, donc rien n'est interrompu après que la connexion a quitté la portée.
+pub(crate) const REITERATION_DE_L_INTERRUPTION: Duration = Duration::from_millis(10);
+
+// Instrument de TEST seulement : un témoin posé sur le fil appelant est emporté par la garde armée
+// sur ce fil, qui y compte chaque `interrupt()` émis. Il permet à un témoin d'attendre que l'échéance
+// soit PASSÉE (déterministe) au lieu de parier sur une durée. Absent du binaire livré.
+#[cfg(test)]
+thread_local! {
+    static TEMOIN_DES_INTERRUPTIONS: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicUsize>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn temoin_des_interruptions_de_ce_fil(temoin: Option<Arc<std::sync::atomic::AtomicUsize>>) {
+    TEMOIN_DES_INTERRUPTIONS.with(|t| *t.borrow_mut() = temoin);
+}
+
 /// Arme la garde : au-delà de `budget_ms` sans fin de requête, `interrupt()` est appelé sur la
-/// connexion dont vient `interrupt`. `budget_ms` est plancherisé à 1 ms (un budget nul serait une
-/// interruption immédiate, pas une absence de garde).
+/// connexion dont vient `interrupt`, puis RÉITÉRÉ jusqu'à la fin de requête (`P10.31-w`).
+/// `budget_ms` est plancherisé à 1 ms (un budget nul serait une interruption immédiate, pas une
+/// absence de garde).
 pub(crate) fn budget_guard(interrupt: rusqlite::InterruptHandle, budget_ms: u64) -> BudgetGuard {
     let gate = Arc::new(BudgetGate { done: parking_lot::Mutex::new(false), woke: parking_lot::Condvar::new() });
     let g = gate.clone();
     let budget = Duration::from_millis(budget_ms.max(1));
+    #[cfg(test)]
+    let temoin = TEMOIN_DES_INTERRUPTIONS.with(|t| t.borrow().clone());
     let thread = std::thread::spawn(move || {
         let mut done = g.done.lock();
         // `wait_while_for` re-teste la condition après chaque réveil -> immunise contre les réveils
         // spurieux (une condvar peut réveiller sans notification).
         let r = g.woke.wait_while_for(&mut done, |d| !*d, budget);
-        if r.timed_out() && !*done {
+        if !r.timed_out() || *done {
+            return;
+        }
+        // Échéance passée : interrompre, puis réinterrompre tant que la requête n'a pas signalé sa fin.
+        while !*done {
             interrupt.interrupt();
+            #[cfg(test)]
+            if let Some(t) = &temoin {
+                t.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            g.woke.wait_while_for(&mut done, |d| !*d, REITERATION_DE_L_INTERRUPTION);
         }
     });
     BudgetGuard { gate, thread: Some(thread) }

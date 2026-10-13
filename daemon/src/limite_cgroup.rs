@@ -2,8 +2,9 @@
 //!
 //! Module FEUILLE extrait de `sqlite_plafond` par déplacement pur (`P7.18-a`) : il ne dépend que de la
 //! bibliothèque standard et ne sait rien du plafond qu'on lui confronte. Il rend trois verdicts
-//! exclusifs (`LimiteCgroup`) ; la CONFRONTATION au budget de SQLite (`Couverture`) reste dans
-//! `sqlite_plafond`, qui est son seul consommateur. Les chemins réels (`/sys/fs/cgroup`,
+//! exclusifs (`LimiteCgroup`) ; la CONFRONTATION au budget de SQLite (`Couverture`) vit dans la feuille
+//! `couverture_du_plafond`, seule à consommer le type, et `sqlite_plafond` appelle `limite_cgroup()`
+//! pour `rapport()`. Les chemins réels (`/sys/fs/cgroup`,
 //! `/proc/self/cgroup`) ne sont nommés qu'ici, dans `limite_cgroup()` ; tout le reste travaille sur une
 //! racine passée en paramètre, et les tests qui l'exercent vivent dans `sqlite_plafond::plafond_tests`.
 

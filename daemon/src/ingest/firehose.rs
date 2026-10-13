@@ -6,7 +6,7 @@
 //! mintée par plume à la création de la source push, LIÉE à un connecteur push (-> son `field_map`/`env_id`).
 //!
 //! RÉUTILISATION MAXIMALE (aucune nouvelle primitive crypto / d'ingest / de mapping) :
-//!   - AUTH : `firehose_token_lookup` = `sha256_hex(clé)` + SELECT sur la colonne INDEXÉE `token_hash`
+//!   - AUTH : `firehose_token_lookup_lu` = `sha256_hex(clé)` + SELECT sur la colonne INDEXÉE `token_hash`
 //!     (state.rs) — la MÊME primitive que le HEC/agent (jamais le clair ; la comparaison porte sur le hash).
 //!   - MAPPING CIM : `httppull_map_record` (sous-ensemble JSONPath SÛR, injection-safe) + `httppull_records`
 //!     (aplatissement d'enveloppe) — le field_map des presets `aws-cloudtrail`/`aws-guardduty` est TRANSPORT-
@@ -20,7 +20,7 @@
 //! s'AUTO-AUTHENTIFIE ICI (clé -> tenant + connecteur). Une clé absente/mauvaise -> 403 IMMÉDIAT, AVANT tout
 //! parse/décompression/spool. Autorité INGEST-ONLY par construction : le handler n'écrit qu'un fichier spool
 //! events — aucune autre capacité (jamais UI/admin/agent-responder). Mode 0 byte-identique (route neuve, INERTE
-//! tant qu'aucune source push n'existe : firehose_token_lookup -> None).
+//! tant qu'aucune source push n'existe : firehose_token_lookup_lu -> Absent).
 use crate::*;
 
 /// Plafond DUR d'enregistrements Firehose par requête (un batch Firehose légitime en porte quelques milliers ;
@@ -64,6 +64,30 @@ fn firehose_ok(request_id: &str) -> Response {
 /// `errorMessage` ne contient JAMAIS de secret (statut/motif générique seul).
 fn firehose_err(http: StatusCode, request_id: &str, msg: &str) -> Response {
     (http, Json(json!({ "requestId": request_id, "timestamp": now_ms(), "errorMessage": msg }))).into_response()
+}
+
+/// `P10.20-b` — corps d'un refus de livraison push dont le CONNECTEUR LIÉ n'a pas pu être lu (Firehose
+/// `errorMessage`, Pub/Sub `error`). Constant : ni la clé, ni l'identifiant du connecteur, ni la cause du moteur
+/// (celle-ci va au journal du démon, seule).
+pub(crate) const CAUSE_CONNECTEUR_LIE_NON_LU: &str = "CONNECTEUR LIÉ NON LU : la base n'a pas pu lire la table \
+     `connector` — ce n'est PAS « source push supprimée » ni « clé non liée », le lien n'est ni affirmé ni nié. Rien \
+     n'est ingéré ; la même livraison peut être rejouée telle quelle.";
+
+/// `P10.20-b` — lecture du connecteur push LIÉ à une clé de livraison, en TROIS issues : `Ok(Some((type,
+/// config_json, env_id)))` lu ; `Ok(None)` absence ÉTABLIE (connecteur supprimé) ; `Err` lecture NON faite (table
+/// illisible, valeur d'un type inattendu). Partagée par les deux récepteurs push (Firehose, Pub/Sub) : avant, un
+/// `Err(_)` unique servait la lecture ratée comme le binding cassé (403 « not bound to a live push source »).
+pub(crate) fn connecteur_push_lie_lu(
+    conn: &rusqlite::Connection,
+    connector_id: i64,
+) -> rusqlite::Result<Option<(String, String, String)>> {
+    use rusqlite::OptionalExtension as _;
+    conn.query_row(
+        "SELECT type,config_json,env_id FROM connector WHERE id=?1",
+        params![connector_id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+    )
+    .optional()
 }
 
 /// Décode le champ `data` (base64) d'UN record Firehose -> liste d'enregistrements CIM-mappables. Le blob décodé
@@ -159,17 +183,17 @@ pub(crate) async fn firehose_ingest_post(
     }
     // 6) charge le connecteur push LIÉ (field_map + env_id + type) depuis la base du tenant (mode 0 = st.db).
     //    RE-VÉRIFIE type='aws_firehose' : une clé ne peut être honorée que si son binding pointe une source push
-    //    VIVANTE (connecteur supprimé / mauvais type -> 403, jamais un mapping arbitraire).
+    //    VIVANTE (connecteur supprimé / mauvais type -> 403, jamais un mapping arbitraire). `P10.20-b` : lecture
+    //    du connecteur ratée -> 503 nommé (le stream rejoue), jamais le 403 d'un binding cassé ; cause du moteur au
+    //    journal seul, aucun repli.
     let handle = st.tenants.handle_for(&ident.tenant).unwrap_or_else(|| st.db.clone());
-    let (ctype, cfg_json, env_id): (String, String, String) = {
-        let conn = handle.lock();
-        match conn.query_row(
-            "SELECT type,config_json,env_id FROM connector WHERE id=?1",
-            params![ident.connector_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-        ) {
-            Ok(x) => x,
-            Err(_) => return firehose_err(StatusCode::FORBIDDEN, &request_id, "delivery key not bound to a live push source"),
+    let lu = connecteur_push_lie_lu(&handle.lock(), ident.connector_id);
+    let (ctype, cfg_json, env_id): (String, String, String) = match lu {
+        Ok(Some(x)) => x,
+        Ok(None) => return firehose_err(StatusCode::FORBIDDEN, &request_id, "delivery key not bound to a live push source"),
+        Err(cause) => {
+            eprintln!("[ingest] WARN connecteur lié d'une clé Firehose NON lu, livraison refusée : {cause}");
+            return firehose_err(StatusCode::SERVICE_UNAVAILABLE, &request_id, CAUSE_CONNECTEUR_LIE_NON_LU);
         }
     };
     if ctype != "aws_firehose" {

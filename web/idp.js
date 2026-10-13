@@ -3,7 +3,7 @@
 // change côté auth. Anti-XSS : tout texte via textContent/esc ; le secret (client_secret / bind pw) est un
 // champ password, JAMAIS réaffiché, ré-envoyé UNIQUEMENT s'il est re-saisi (omis = conservé côté serveur).
 // La vraie garde reste SERVEUR (/api/idp/* admin-only ; /api/mfa/* borné à au.name).
-import { $, LANG, api, apiSend, avecLeSecretDesGestes, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture, toast, withBusy, faceDansLaLangue, cadreDUneReponseQuiNeVientPasDuDemon, sujetDUneReponseSansCorpsDeSucces } from './core.js';
+import { $, LANG, api, apiSend, avecLeSecretDesGestes, unDeuxCentsSansCorpsLisible, confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, fmtTs, modal, motDuRefusDuSecondFacteur, muted, natureDuRefusDuSecondFacteur, peindreLeRefusDUnGeste, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture, toast, withBusy, faceDansLaLangue, cadreDUneReponseQuiNeVientPasDuDemon, sujetDUneReponseSansCorpsDeSucces, causeDeLaTraceManquante, aveuDUneTraceManquante } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -374,6 +374,7 @@ async function startEnroll() {
     if (!(r && r.ok === true && Array.isArray(r.recovery_codes))) { await avouerLeRefusDActivation('activation_non_etablie', '', 0, resultat, horsDuDemonDeLActivation); return; }
     toast('MFA activée', 'ok');
     showRecovery(enroll, r.recovery_codes);
+    avouerLaMfaSansTrace(enroll, 'activation', r);   // `P10.31-u` : sous les codes, qui restent montrés
   });
   // Le bouton « Vérifier & activer » est enveloppé dans .rf-actions (comme openIdpForm) -> stylé.
   const actions = document.createElement('div'); actions.className = 'rf-actions'; actions.appendChild(btn);
@@ -638,6 +639,35 @@ async function avouerUneReponseHorsDuDemon(marquer, cadre) {
   hote.replaceChildren(aveu);
 }
 
+// `P10.31-u` (volet console) — L'ACTIVATION ET LA DÉSACTIVATION ONT EU LIEU, LEUR TRACE MANQUE : LE PANNEAU LE DIT.
+// CE QUE LE DÉMON SERT (daemon/src/handlers/idp.rs) : `mfa_verify` et `mfa_disable` écrivent leur geste PUIS leur ligne
+// au registre tamper-evident ; quand le maillon n'entre pas, le geste n'est PAS annulé : la route répond son succès
+// (`{ok, recovery_codes}`, `{ok}`) et pose à côté la clé commune, lue par `causeDeLaTraceManquante` (core.js) — ce module
+// n'en écrit pas le nom. AVANT CE CORRECTIF la console ne lisait que `ok` et `recovery_codes` : un second facteur posé ou
+// retiré hors de la trace non purgeable était dit au démon, jamais à la personne. LA PHRASE EST CELLE DU GESTE (« Riposte
+// EN FILE » serait faux) ; le succès reste annoncé (avis « ok »), les codes de secours restent montrés, et l'aveu va au
+// puits du panneau (`#mfa-enroll`), à deux nœuds (phrase, puis « cause servie »), sans marque de refus. Sans puits,
+// l'aveu part à l'avis en une chaîne. Les deux faces côte à côte : aucune langue ne part sans l'autre.
+const MOTS_DE_LA_MFA_SANS_TRACE = {
+  activation: {
+    fr: "Double authentification ACTIVÉE, mais SANS TRACE D'AUDIT : le second facteur est en place et les codes de secours ci-dessus sont valables — réactiver serait refusé (« déjà active ») et ne comblerait pas le trou. Ce qui manque est la ligne du registre tamper-evident qui atteste cette activation. Le démon en nomme la cause —",
+    en: 'Two-factor authentication ENABLED, but WITHOUT AUDIT TRACE: the second factor is in place and the recovery codes above are valid — enabling again would be refused ("already active") and would not fill the gap. What is missing is the tamper-evident ledger line attesting this activation. The daemon names the cause —' },
+  desactivation: {
+    fr: "Double authentification DÉSACTIVÉE, mais SANS TRACE D'AUDIT : ce compte se connecte de nouveau avec le seul mot de passe — la réactiver ne comblerait pas le trou. Ce qui manque est la ligne du registre tamper-evident qui atteste cette désactivation. Le démon en nomme la cause —",
+    en: 'Two-factor authentication DISABLED, but WITHOUT AUDIT TRACE: this account signs in again with the password alone — enabling it again would not fill the gap. What is missing is the tamper-evident ledger line attesting this deactivation. The daemon names the cause —' },
+};
+function avouerLaMfaSansTrace(hote, geste, servi) {
+  const cause = causeDeLaTraceManquante(servi);
+  if (!cause) return '';
+  const mot = faceDansLaLangue(MOTS_DE_LA_MFA_SANS_TRACE[geste]);
+  if (!hote) { toast(mot + ' « ' + cause + ' »', 'bad', 9000); return geste; }
+  const aveu = aveuDUneTraceManquante(mot, cause, 'div');
+  aveu.dataset.mfaSansTrace = geste;   // marque de POSE (harnais, témoin 108) : aucune règle CSS ne la vise
+  if (geste === 'activation') hote.append(aveu); else hote.replaceChildren(aveu);
+  hote.hidden = false;
+  return geste;
+}
+
 async function disableMfa() {
   // P11.5-b : désactiver la MFA ABAISSE une protection du compte -> confirmation partagée qui nomme la
   // conséquence, puis saisie du code dans la modale partagée (plus de prompt() natif).
@@ -656,6 +686,10 @@ async function disableMfa() {
     }
     j = null; horsDuDemon = e;
   }
+  if (j && j.ok === true && causeDeLaTraceManquante(j)) {
+    // `P10.31-u` — la relecture du statut vide le puits : l'aveu est posé ENSUITE.
+    toast('MFA désactivée', 'ok'); await loadMfa(); avouerLaMfaSansTrace($('#mfa-enroll'), 'desactivation', j); return;
+  }
   if (j && j.ok === true) { toast('MFA désactivée', 'ok'); loadMfa(); return; }
   // Un deux cents qui ne porte pas le succès de la route : le statut est RELU d'abord — la relecture vide
   // le puits —, l'aveu est posé ensuite.
@@ -671,6 +705,7 @@ async function disableMfa() {
 // se mesurent en JOUANT les gestes, modales comprises, et les discriminants se jugent dans les deux sens sur
 // les statuts et les causes que le démon sert. Aucun usage applicatif hors de ce module.
 // `P10.23-b` — `cleDuRefusDEnrolement` et `motDeLEnrolementMfa` partent pour le témoin 109, au même titre.
+// `P10.31-u` — `avouerLaMfaSansTrace` part pour le témoin 108 (repli sans puits, joué hors du geste).
 // `P10.26-q` — le formulaire d'un fournisseur (création et modification) part pour le témoin 115, qui le joue sous
 // chaque instance de langue : « + Fournisseur » ne l'ouvre que par l'instance qui l'a câblé la première.
-export { startEnroll, disableMfa, cleDuRefusDeDesactivation, motDeLaDesactivationMfa, cleDuRefusDActivation, motDeLActivationMfa, cleDuRefusDEnrolement, motDeLEnrolementMfa, openIdpForm as ouvrirLeFormulaireDuFournisseur };
+export { startEnroll, disableMfa, avouerLaMfaSansTrace, cleDuRefusDeDesactivation, motDeLaDesactivationMfa, cleDuRefusDActivation, motDeLActivationMfa, cleDuRefusDEnrolement, motDeLEnrolementMfa, openIdpForm as ouvrirLeFormulaireDuFournisseur };

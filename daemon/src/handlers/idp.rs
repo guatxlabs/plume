@@ -126,6 +126,20 @@ pub(crate) const CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT: &str = "MOT DE PASSE 
      (compte, adresse) et inscrit au registre ; aucune graine n'est posée et l'enrôlement en attente éventuel \
      est intact.";
 
+/// `P10.31-u` — le même refus quand le registre n'a pas pris sa ligne : la phrase nominale affirme « inscrit au
+/// registre », celle-ci dit le contraire. Servie par `refus_d_enrolement_sans_trace`, avec l'aveu commun.
+pub(crate) const CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT_SANS_TRACE: &str = "MOT DE PASSE REFUSÉ, AUCUNE GRAINE \
+     ENRÔLÉE : le mot de passe présenté n'est pas celui du compte. L'échec est compté au MÊME verrou que la connexion \
+     (compte, adresse), mais il N'A PAS été inscrit au registre : le registre tamper-evident n'a pas pris la ligne \
+     (voir `registre_sans_maillon`) ; aucune graine n'est posée et l'enrôlement en attente éventuel est intact.";
+
+/// `P10.31-u` — LE REFUS D'ENRÔLEMENT DONT LE MAILLON N'EST PAS ENTRÉ : 403, la phrase qui n'affirme pas la trace, et
+/// l'aveu commun (`CAUSE_REFUS_SANS_TRACE`) avec la cause du moteur. Le refus tient : rien n'est posé, rien à annuler.
+/// Le chemin nominal reste `err_json` dans `mfa_enroll`, octet pour octet.
+fn refus_d_enrolement_sans_trace(maillon: &MaillonDeRegistre) -> Response {
+    (StatusCode::FORBIDDEN, Json(avouer_le_maillon_manquant(json!({ "error": CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT_SANS_TRACE }), maillon, CAUSE_REFUS_SANS_TRACE))).into_response()
+}
+
 /// `P10.23-b` — le verrou (compte, adresse) de la connexion est posé : le mot de passe n'est pas examiné.
 pub(crate) const CAUSE_MOT_DE_PASSE_VERROUILLE_A_L_ENROLEMENT: &str = "TROP D'ÉCHECS DU MOT DE PASSE SUR CE \
      COMPTE DEPUIS CETTE ADRESSE : le verrou est celui de la connexion (en-tête Retry-After) ; le mot de passe \
@@ -1096,7 +1110,12 @@ pub(crate) async fn mfa_enroll(
         PreuveDuPremierFacteur::Prouvee => {}
         PreuveDuPremierFacteur::Absente => return err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_EXIGE_POUR_ENROLER),
         PreuveDuPremierFacteur::Refusee => {
-            ledger_append(&st.db.lock(), "mfa", &format!("enrôlement MFA refusé pour '{}' : mot de passe re-saisi refusé", au.name));
+            // `P10.31-u` — la phrase nominale AFFIRME « inscrit au registre » : elle n'est servie que si le maillon est
+            // entré. Sinon le même 403, une phrase qui dit le trou, et l'aveu à côté.
+            let maillon = ledger_append(&st.db.lock(), "mfa", &format!("enrôlement MFA refusé pour '{}' : mot de passe re-saisi refusé", au.name));
+            if maillon.cause_de_non_inscription().is_some() {
+                return refus_d_enrolement_sans_trace(&maillon);
+            }
             return err_json(StatusCode::FORBIDDEN, CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT);
         }
         PreuveDuPremierFacteur::Verrouillee(attente) => {
@@ -1212,7 +1231,7 @@ pub(crate) async fn mfa_verify(
         frein::rendre_l_essai(&st, &st.db.lock(), &au.name, essai);
         return server_err("entropie noyau indisponible");
     };
-    {
+    let maillon = {
         let conn = st.db.lock();
         // `P10.22-l` — L'ACTIVATION EST UN COMPARE-ET-POSE SUR L'ENRÔLEMENT QUI A ÉTÉ LU. La lecture et
         // l'écriture sont sous deux verrous distincts ; l'écriture ne rejugeait rien (`WHERE user=?`). Mesuré
@@ -1248,11 +1267,14 @@ pub(crate) async fn mfa_verify(
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_ACTIVEE);
             }
         }
-        ledger_append(&conn, "mfa", &format!("MFA TOTP activée pour '{}'", au.name));
+        let maillon = ledger_append(&conn, "mfa", &format!("MFA TOTP activée pour '{}'", au.name));
         frein::remettre_a_zero(&conn, &au.name);
-    }
+        maillon
+    };
     // SHOW-ONCE : les codes de secours CLAIRS ne sont renvoyés QU'ICI (seuls leurs SHA-256 sont persistés).
-    Json(json!({ "ok": true, "recovery_codes": clear })).into_response()
+    // `P10.31-u` — L'ACTIVATION A EU LIEU (la ligne est écrite) : elle n'est pas annulée si sa trace manque, la réponse
+    // l'avoue à côté du succès. Les codes clairs restent dans le corps : ils ne seront servis nulle part ailleurs.
+    Json(avouer_le_maillon_manquant(json!({ "ok": true, "recovery_codes": clear }), &maillon, CAUSE_GESTE_SANS_TRACE)).into_response()
 }
 
 /// `P10.22-y` — la MFA est devenue active entre la lecture qui décide de compter l'essai et la transaction qui juge.
@@ -1342,10 +1364,11 @@ pub(crate) async fn mfa_disable(
                 rendre(&conn);
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE);
             }
-            ledger_append(&conn, "mfa", &format!("MFA TOTP désactivée pour '{}'", au.name));
+            // `P10.31-u` — LA DÉSACTIVATION EST VALIDÉE : sans trace, elle n'est pas annulée, la réponse l'avoue.
+            let maillon = ledger_append(&conn, "mfa", &format!("MFA TOTP désactivée pour '{}'", au.name));
             frein::remettre_a_zero(&conn, &au.name);
             drop(conn);
-            Json(json!({ "ok": true })).into_response()
+            Json(avouer_le_maillon_manquant(json!({ "ok": true }), &maillon, CAUSE_GESTE_SANS_TRACE)).into_response()
         }
         Err(refus) => {
             let _ = conn.execute_batch("ROLLBACK");

@@ -76,7 +76,9 @@ pub(crate) fn sla_policy_for(conn: &Connection, priority: i64) -> rusqlite::Resu
 /// désormais sur le régime legacy, comme s'il avait été créé à cette priorité : les trois colonnes reviennent à NULL
 /// (`sla_due` legacy, recalculé par `case_apply_update`, gouverne seul). L'`UPDATE` est conditionné à une politique
 /// PORTÉE : zéro ligne y est un fait (dossier déjà legacy -> `RienAFaire`, mode 0 octet pour octet). Même règle au
-/// recalcul de l'upsert d'une politique DÉSACTIVÉE : ses dossiers cessent d'être gouvernés (comptés recalculés).
+/// recalcul de l'upsert d'une politique DÉSACTIVÉE : il passe APRÈS l'effacement transactionnel des dossiers de cette
+/// politique (`sla_policy_upsert`, `P10.31-v`), donc il ne rend au régime legacy — et ne compte recalculés — que les
+/// dossiers ACTIFS de la priorité qui portaient un `sla_policy_id` pendant ou étranger.
 /// LIMITES ÉCRITES : les marqueurs `ack_breached`/`resolve_breached` ne sont pas remis à zéro (un dépassement passé
 /// sous l'ancienne priorité reste un fait, le registre le porte) ; une pause en cours (`sla_paused_since`) est
 /// conservée, et `sla_on_status_change` la reprend à la sortie de `waiting` même sans politique portée (sinon le
@@ -1197,6 +1199,17 @@ pub(crate) fn sla_recalcule_la_priorite(conn: &Connection, priority: i64) -> Rec
     sla_recalcule_la_priorite_bornee(conn, priority, SLA_RECOMPUTE_CAP)
 }
 
+/// `P10.31-v` — LE RECALCUL D'UNE PRIORITÉ DONT LA POLITIQUE VIENT D'ÊTRE DÉSACTIVÉE (`sla_policy_upsert`, `enabled=0`) :
+/// ne relit que les dossiers ACTIFS qui portent encore un `sla_policy_id`. Sans politique active pour la priorité,
+/// `sla_apply_policy` rend `RienAFaire` sur un dossier à `sla_policy_id` NULL (son `UPDATE` est conditionné à une
+/// politique portée) : les exclure ne change ni une écriture ni un compte. Ce qu'il change, c'est le PLAFOND : les
+/// dossiers de la politique désactivée, déjà effacés dans la transaction, entraient dans la liste et faisaient dire
+/// « les cases … au-delà gardent leur ANCIENNE échéance » d'une politique qui gouvernait plus de `SLA_RECOMPUTE_CAP`
+/// dossiers, alors qu'aucun n'en gardait. L'aveu du plafond ne compte plus que des dossiers réellement à rendre au legacy.
+pub(crate) fn sla_recalcule_la_priorite_desactivee(conn: &Connection, priority: i64) -> RecalculDesEcheances {
+    sla_recalcule_la_priorite_bornee_selon(conn, priority, SLA_RECOMPUTE_CAP, true)
+}
+
 /// LE RECALCUL, ET SON AVEU. Fonction PURE sur `&Connection` (aucun `AppState`) -> les TROIS façons de ne
 /// pas tout faire sont jouables en test, ce qui n'était pas le cas tant qu'elles vivaient dans le handler :
 ///   · la liste ne se LIT pas (table absente, base illisible, verrou) -> ZÉRO échéance recalculée ;
@@ -1207,6 +1220,12 @@ pub(crate) fn sla_recalcule_la_priorite(conn: &Connection, priority: i64) -> Rec
 /// Le `plafond` est un paramètre pour que le témoin joue la borne sur trois lignes au lieu de cinq mille :
 /// la propriété testée est « la borne mord et le dit », pas la valeur 5000.
 pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64, plafond: i64) -> RecalculDesEcheances {
+    sla_recalcule_la_priorite_bornee_selon(conn, priority, plafond, false)
+}
+
+/// Corps commun : `gouvernes_seulement` restreint la liste aux dossiers qui portent un `sla_policy_id`
+/// (`sla_recalcule_la_priorite_desactivee`) ; faux, la requête est celle d'avant, octet pour octet.
+fn sla_recalcule_la_priorite_bornee_selon(conn: &Connection, priority: i64, plafond: i64, gouvernes_seulement: bool) -> RecalculDesEcheances {
     // `P10.7-f` (rang 3) — LE PARCOURS EST SOLDÉ EN BLOC. Il s'écrivait
     // `.map(|x| x.flatten().collect())`, DEUX niveaux sous le `with_write` de l'appelant : l'aveu
     // ci-dessous ne couvrait que l'échec de la PRÉPARATION ou de l'EXÉCUTION, et une ligne dont le
@@ -1214,11 +1233,15 @@ pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64,
     // échéance pendant que la route rendait `204` = « tout recalculé » — le mensonge exact que
     // `RecalculDesEcheances` existe pour rendre impossible. Un dossier qu'on n'a pas su LIRE ne se
     // distingue pas d'un dossier qui n'existe pas : on ne recalcule donc RIEN, et on le dit.
+    let requete = if gouvernes_seulement {
+        "SELECT id FROM incident WHERE priority=?1 AND merged_into IS NULL \
+           AND status NOT IN ('resolved','closed','contained') AND sla_policy_id IS NOT NULL ORDER BY id LIMIT ?2"
+    } else {
+        "SELECT id FROM incident WHERE priority=?1 AND merged_into IS NULL \
+           AND status NOT IN ('resolved','closed','contained') ORDER BY id LIMIT ?2"
+    };
     let lecture: rusqlite::Result<Vec<i64>> = conn
-        .prepare(
-            "SELECT id FROM incident WHERE priority=?1 AND merged_into IS NULL \
-               AND status NOT IN ('resolved','closed','contained') ORDER BY id LIMIT ?2",
-        )
+        .prepare(requete)
         .and_then(|mut s| {
             s.query_map(params![priority, plafond.max(0) + 1], |r| r.get(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()
@@ -1325,12 +1348,51 @@ pub(crate) fn reponse_de_l_upsert_sla(ecriture: Result<(), String>, recalcul: &R
     }
 }
 
+/// `P10.31-u` / `P10.31-v` — LA RÉPONSE DE L'UPSERT QUAND LA POLITIQUE EST ÉCRITE : `reponse_de_l_upsert_sla` si le
+/// maillon `sla_policy.upsert` est inscrit (204 muet ou 200 + `reason`, contrat INCHANGÉ) ; sinon `200` + corps
+/// `{recomputed, degouvernes, registre_sans_maillon[, reason]}`, patron de `sla_policy_delete` : le geste A EU LIEU
+/// (politique écrite, dossiers dégouvernés), le refaire ne comblerait pas la trace — jamais un 204 muet sur une
+/// politique que le registre ne porte pas.
+pub(crate) fn reponse_de_l_upsert_sla_tracee(recalcul: &RecalculDesEcheances, degouvernes: usize, maillon: &MaillonDeRegistre) -> Response {
+    let Some(cause) = maillon.cause_de_non_inscription() else {
+        return reponse_de_l_upsert_sla(Ok(()), recalcul);
+    };
+    let mut corps = json!({ "recomputed": recalcul.recalcules, "degouvernes": degouvernes });
+    if let Some(raison) = &recalcul.manque {
+        corps["reason"] = json!(raison);
+    }
+    corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+    (StatusCode::OK, Json(corps)).into_response()
+}
+
 /// POST /api/sla-policies {name,priority,ack_target_s,resolve_target_s,enabled?} — upsert par priorité. editor+.
 /// Ledgerisé. Recompute les dues des cases ACTIFS de cette priorité (borné). priority hors 1..4 -> 400.
 ///
 /// `204` = politique posée ET toutes les échéances recalculées. `200` + corps = politique posée, recalcul
-/// INCOMPLET (cf. `reponse_de_l_upsert_sla`). `500` = rien n'a été posé.
+/// INCOMPLET (cf. `reponse_de_l_upsert_sla`) ou maillon de registre manquant (`reponse_de_l_upsert_sla_tracee`).
+/// `500` = rien n'a été posé.
+///
+/// `P10.31-v` (reste) — DÉSACTIVER UNE POLITIQUE DÉGOUVERNE TOUS SES DOSSIERS, DANS LA MÊME TRANSACTION. Le recalcul ne
+/// parcourt que les dossiers ACTIFS non fusionnés de la priorité : un dossier TERMINAL ou FUSIONNÉ gardait
+/// `sla_policy_id`, `ack_due` et `resolve_due` d'une politique désactivée, et une fois rouvert (le changement de statut
+/// ne rejoue pas `sla_apply_policy`) ou défusionné (`case_unmerge` non plus), le tour le marquait et le NOTIFIAIT en
+/// dépassement dès qu'une autre politique restait active. Même règle que `sla_policy_delete` : `enabled=0` efface les
+/// trois colonnes de chaque dossier gouverné par CETTE politique, quel que soit son état. Le recalcul est REJOUÉ après
+/// la transaction, désactivation comprise : sans politique active pour la priorité, `sla_apply_policy` rend au régime
+/// legacy les dossiers ACTIFS qui portent encore un `sla_policy_id` pendant ou étranger (forme d'avant ce lot, que
+/// l'effacement borné à CETTE politique ne couvre pas) ; ceux-là sont comptés dans `recomputed`, pas dans `degouvernes`
+/// ni au registre ; ce recalcul de désactivation ne relit que les actifs à `sla_policy_id` non NULL
+/// (`sla_recalcule_la_priorite_desactivee`), et son aveu de plafond ne vise donc jamais un dossier déjà effacé.
+/// Écriture de la politique, effacement et maillon sont jugés ensemble (`jouer_le_geste_garde`) : un effacement refusé
+/// annule la désactivation, un `BEGIN` ou un `COMMIT` refusé aussi (500, rien posé).
+/// LIMITES ÉCRITES : marqueurs `ack_breached`/`resolve_breached` conservés et pause en cours conservée (mêmes limites
+/// que `sla_apply_policy` et `sla_policy_delete`) ; RÉACTIVER la politique ne regouverne que les dossiers ACTIFS (le
+/// recalcul), pas les terminaux ni les fusionnés.
+/// `P10.31-u` — LE MAILLON EST CONSOMMÉ : son détail dit `enabled=0|1` (une désactivation n'est plus indiscernable
+/// d'une modification au registre) et le nombre de dossiers dégouvernés ; manquant, il est avoué
+/// (`reponse_de_l_upsert_sla_tracee`).
 pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     let priority = b.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
     if !(1..=4).contains(&priority) {
         return StatusCode::BAD_REQUEST.into_response();
@@ -1344,21 +1406,50 @@ pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au):
     }
     with_write(&st, &au, |conn| {
         let t = now();
-        match conn.execute(
-            "INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled,created,created_by,updated) \
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?6) \
-             ON CONFLICT(priority) DO UPDATE SET name=?1,ack_target_s=?3,resolve_target_s=?4,enabled=?5,updated=?6",
-            params![name, priority, ack_s, res_s, enabled, t, au.name],
-        ) {
+        let issue = jouer_le_geste_garde(conn, "caseops", &format!("écriture de la politique SLA P{priority}"), |conn| {
             // Le journal d'INTÉGRITÉ ne consigne que ce qui a EU LIEU : une écriture qui a échoué n'y
             // entre pas. L'ancien `let _ =` la ledgerisait quand même — le journal aurait porté une
             // politique que la base ne portait pas.
-            Err(e) => reponse_de_l_upsert_sla(Err(e.to_string()), &RecalculDesEcheances::default()),
-            Ok(_) => {
-                ledger_append(&conn, "sla_policy.upsert", &format!("P{priority} ack={ack_s}s resolve={res_s}s by {}", au.name));
-                let recalcul = sla_recalcule_la_priorite(&conn, priority);
-                reponse_de_l_upsert_sla(Ok(()), &recalcul)
+            conn.execute(
+                "INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled,created,created_by,updated) \
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?6) \
+                 ON CONFLICT(priority) DO UPDATE SET name=?1,ack_target_s=?3,resolve_target_s=?4,enabled=?5,updated=?6",
+                params![name, priority, ack_s, res_s, enabled, t, au.name],
+            )
+            .map_err(|e| e.to_string())?;
+            let degouvernes = if enabled == 0 {
+                conn.execute(
+                    "UPDATE incident SET sla_policy_id=NULL, ack_due=NULL, resolve_due=NULL \
+                     WHERE sla_policy_id=(SELECT id FROM sla_policy WHERE priority=?1)",
+                    params![priority],
+                )
+                .map_err(|e| format!("effacement des échéances des dossiers de la politique désactivée refusé ({e})"))?
+            } else {
+                0
+            };
+            let mut detail = format!("P{priority} ack={ack_s}s resolve={res_s}s enabled={enabled} by {}", au.name);
+            if degouvernes > 0 {
+                detail.push_str(&format!(
+                    " ; {degouvernes} dossier(s) dégouverné(s) : sla_policy_id, ack_due et resolve_due effacés (régime legacy)"
+                ));
             }
+            Ok::<_, String>((degouvernes, ledger_append(conn, "sla_policy.upsert", &detail)))
+        });
+        match issue {
+            Issue::Valide((degouvernes, maillon)) => {
+                // Rejoué AUSSI à la désactivation : l'effacement ci-dessus ne vise que `sla_policy_id` = CETTE politique ;
+                // un dossier ACTIF de la priorité qui porte un identifiant pendant (politique supprimée avant `P10.31-v`,
+                // aucune clé étrangère) ou étranger n'est rendu au régime legacy que par `sla_apply_policy`. À la
+                // désactivation, seuls ceux-là sont relus : les dossiers déjà effacés ne comptent plus dans le plafond.
+                let recalcul = if enabled == 0 {
+                    sla_recalcule_la_priorite_desactivee(conn, priority)
+                } else {
+                    sla_recalcule_la_priorite(conn, priority)
+                };
+                reponse_de_l_upsert_sla_tracee(&recalcul, degouvernes, &maillon)
+            }
+            Issue::Refuse(e) => reponse_de_l_upsert_sla(Err(e), &RecalculDesEcheances::default()),
+            Issue::NonOuvert(e) | Issue::NonValide(e) => reponse_de_l_upsert_sla(Err(e.to_string()), &RecalculDesEcheances::default()),
         }
     })
 }

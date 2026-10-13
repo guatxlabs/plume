@@ -929,9 +929,13 @@ pub(crate) fn lookup_basic_ident_lu(st: &AppState, name: &str) -> LectureDuCompt
         // fenêtre BORNE l'auth. GATE = préfixe réservé -> requête SAUTÉE pour un compte normal => byte-identique
         // hors engagement. Grant 'revoked' (fin/expiry) OU compte supprimé -> absent. NB : les eng-creds ne sont
         // JAMAIS mis en cache d'auth (cf. authenticate) -> révocation/expiry effective SANS latence de cache.
-        Ok(_) if name.starts_with(ENG_CRED_PREFIX) && !engagement_cred_within_window(&c, name, now()) => {
-            LectureDuCompteBasic::Absent
-        }
+        // `P10.20-b` : une fenêtre NON LUE rend `NonLu`, jamais `Absent` — l'absence ouvrirait le repli sur l'admin de
+        // l'assistant ou de configuration. La cause ne porte pas le nom (il vient du client, non authentifié).
+        Ok((hash, role)) if name.starts_with(ENG_CRED_PREFIX) => match engagement_cred_within_window(&c, name, now()) {
+            Ok(true) => LectureDuCompteBasic::Trouve { hash, role },
+            Ok(false) => LectureDuCompteBasic::Absent,
+            Err(e) => LectureDuCompteBasic::NonLu(format!("fenêtre d'engagement d'un credential non lue : {e}")),
+        },
         Ok((hash, role)) => LectureDuCompteBasic::Trouve { hash, role },
         Err(rusqlite::Error::QueryReturnedNoRows) => LectureDuCompteBasic::Absent,
         Err(e) => LectureDuCompteBasic::NonLu(e.to_string()),

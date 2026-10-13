@@ -268,10 +268,14 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # RE-DÉRIVÉS le 2026-10-12 (`P10.20-b`, rang trois : `panneau_resolu::premier`) : relevé de l'arbre ce jour-là, après
 # le correctif — 49 sites sur 24 fichiers (`premier` perd ses deux sites ; `panneau_resolu.rs` reste dans le relevé par
 # `courante`). Même règle : 49 -> 33 (69 % = 33,81), 24 -> 15 (65 % = 15,6).
-RELEVE_SITES = 49
-RELEVE_FICHIERS = 24
+# RE-DÉRIVÉS le 2026-10-13 (`P10.20-b`, rang quatre : `engagement_cred_within_window`) : relevé de l'arbre ce jour-là,
+# après le correctif, MESURÉ par cette garde — 48 sites sur 23 fichiers (`engagement_cred_within_window` perd son site
+# et c'était le dernier d'`engagement.rs`, qui SORT du relevé). Même règle : 48 -> 33 (69 % = 33,12), 23 -> 14
+# (65 % = 14,95).
+RELEVE_SITES = 48
+RELEVE_FICHIERS = 23
 PLANCHER_SITES = 33
-PLANCHER_FICHIERS = 15
+PLANCHER_FICHIERS = 14
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -460,10 +464,12 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     ("daemon/src/handlers/destinations.rs", "destination_flush"): ("ok",),
     ("daemon/src/handlers/detection.rs", "rule_test"): ("ok",),
     ("daemon/src/handlers/detection_advanced.rs", "correlation_test"): ("ok",),
-    # `.map(..).unwrap_or(false)` : un permis de pentest dont la fenêtre n'a pas pu être lue est
-    # DEHORS. Le doc-commentaire de la fonction écrit déjà que refuser est la bonne réponse pour le
-    # cas ambigu ; ce qu'il ne distingue pas, c'est l'ambiguïté et la lecture ratée.
-    ("daemon/src/handlers/engagement.rs", "engagement_cred_within_window"): ("map.unwrap_or",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, 2026-10-13) : `engagement.rs::engagement_cred_within_window` —
+    # `.map(..).unwrap_or(false)` : une fenêtre non lue valait « hors fenêtre », que les deux appelants rendaient
+    # « compte absent », l'absence qui ouvre le repli admin de l'assistant ou de configuration. Lu en
+    # `.optional()?` : `Ok(false)` = aucune liaison, liaison multiple (refus d'ambiguïté `P7.19-i` inchangé) ou
+    # fenêtre close ; `Err` = `NonLu` dans `lookup_basic_ident_lu` et dans `compte_via_l_ecrivain`, refus sans repli
+    # (témoins : `fenetre_de_credential_d_engagement_non_lue.rs`).
     # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, 2026-10-12) : `engagement.rs::engagement_end` — `is_ok` sur
     # l'engagement à clore : une lecture ratée rendait 404 « introuvable ou déjà clos » alors que l'exemption restait
     # posée. Lu en `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503
@@ -1084,7 +1090,7 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-12 du relevé de ce jour-là : "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-13 du relevé de ce jour-là : "
               f"{RELEVE_SITES} sites sur {RELEVE_FICHIERS} fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "

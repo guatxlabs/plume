@@ -134,9 +134,11 @@
 //!     disparaît à la fermeture, y compris si le processus meurt. Ce qui N'EST PAS fait : les octets
 //!     touchent le périphérique. Qui active ce drapeau doit poser `SQLITE_TMPDIR` sur un support chiffré
 //!     (cf. `repertoire_de_deversement::repertoire_temporaire_init`) — décision d'exploitation, écrite dans la doc de déploiement.
-//!   - AUCUN QUOTA ne borne la TAILLE du déversement quand il est activé : un tri sur une très grande
-//!     fenêtre écrit l'ordre de grandeur des données triées. C'est du disque, pas de la RAM, c'est mesuré
-//!     au banc, et rien ici n'empêche de remplir le volume.
+//!   - La TAILLE du déversement, quand il est activé, est bornée par un QUOTA (`P10.1-b`, feuille
+//!     `quota_deversement` : 1024 Mio par défaut, `PLUME_SQLITE_DEVERSEMENT_QUOTA_MO`, `0` le retire et la
+//!     bannière le dit) : un tri sur une très grande fenêtre écrit l'ordre de grandeur des données triées,
+//!     c'est du disque, pas de la RAM. Ce module ne l'empêche pas de remplir le volume : c'est le quota,
+//!     quand il est armé (contrôle positif abouti) — sinon la bannière le dit.
 //!   - `mmap_size` est conservé TEL QUEL (256 Mio). Son effet réel sous SQLCipher n'a pas été mesuré : il
 //!     n'est ni revendiqué ni modifié ici.
 use crate::*;
@@ -149,10 +151,13 @@ use crate::couverture_du_plafond::couverture_pour;
 // Le quota du déversement (`P10.1-b`) vit dans le module feuille `quota_deversement` (`P7.18-a`). Ses
 // symboles publics sont RÉ-EXPORTÉS ici : tous les chemins `crate::sqlite_plafond::…` restent valides.
 use crate::quota_deversement::armer_le_quota;
-pub(crate) use crate::quota_deversement::{
-    controle_positif_de_la_mesure, oublier_refus_de_quota, phrase_du_quota, quota_pour, refus_de_quota_de_deversement,
-    QuotaDeversement,
-};
+pub(crate) use crate::quota_deversement::{oublier_refus_de_quota, phrase_du_quota, refus_de_quota_de_deversement, QuotaDeversement};
+// Lus par la façade dans les seuls tests (la production les prend à la source) : sous `cfg(test)` pour que le
+// binaire compile sans import inutilisé.
+// Une ligne par `use` : le scanner `texte_de_production` saute un item `#[cfg(test)]` multi-ligne jusqu'au
+// prochain `}` en colonne 0, et un `};` le lui ferait manquer.
+#[cfg(test)]
+pub(crate) use crate::quota_deversement::{controle_positif_de_la_mesure, quota_pour};
 #[cfg(test)]
 pub(crate) use crate::quota_deversement::{octets_ouverts_sous, poser_la_surveillance_du_quota, LEVIER_QUOTA_DEVERSEMENT};
 // Le verdict de tri (`S26`) vit dans le module feuille `tri_des_connexions` (`P7.18-a`). Ses symboles sont
@@ -165,9 +170,9 @@ pub(crate) use crate::tri_des_connexions::{tri_en_memoire, tri_pour};
 // Le répertoire de déversement (préparation, résidus, contrôle positif) vit dans le module feuille
 // `repertoire_de_deversement` (`P7.18-a`). Ses symboles sont RÉ-EXPORTÉS ici : tous les chemins
 // `crate::sqlite_plafond::…` restent valides.
-pub(crate) use crate::repertoire_de_deversement::{deversement_init, residus_de_deversement};
+pub(crate) use crate::repertoire_de_deversement::deversement_init;
 #[cfg(test)]
-pub(crate) use crate::repertoire_de_deversement::controle_positif;
+pub(crate) use crate::repertoire_de_deversement::{controle_positif, residus_de_deversement};
 
 /// Budget RAM total concédé à SQLite (Mio). Le défaut REPRODUIT EXACTEMENT le dimensionnement d'avant —
 /// `1088 = 17 × 64` — pour qu'AUCUN écart de comportement ne soit livré avec la dérivation, et donc que

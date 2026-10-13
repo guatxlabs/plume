@@ -317,24 +317,33 @@ pub(crate) fn engagement_rand_hex(nbytes: usize) -> Option<String> {
 ///
 /// CE QUI EST RETENU MAINTENANT : la fenêtre du grant `scoped_cred` `issued` de cette `ref` À
 /// CONDITION QU'IL SOIT SEUL (`HAVING COUNT(*) = 1`, test POSITIF : l'unicité doit être CONSTATÉE).
-/// Multiple -> ZÉRO ligne -> `unwrap_or(false)` -> la porte REFUSE. L'énoncé rend au plus une ligne
+/// Multiple -> ZÉRO ligne -> `Ok(None)` -> `Ok(false)` -> la porte REFUSE. L'énoncé rend au plus une ligne
 /// par construction : ni `LIMIT`, ni `ORDER BY`, donc plus d'ordre à choisir.
 ///
 /// CE REFUS N'ENFERME PERSONNE. Une `ref` de `scoped_cred` est `eng-cred-<12 octets CSPRNG>` (96
 /// bits) et `user.name` est UNIQUE, donc deux liaisons `issued` sur la même `ref` ne sont pas un
 /// état légitime que le produit sait produire : c'est une base trafiquée ou corrompue. Refuser y est
 /// la bonne réponse — et c'est exactement le cas que l'ancienne lecture traitait au hasard.
-pub(crate) fn engagement_cred_within_window(conn: &Connection, username: &str, now_i: i64) -> bool {
-    conn.query_row(
-        "SELECT e.window_start, e.window_end FROM engagement_grant g \
-           JOIN engagement e ON e.id = g.engagement_id \
-          WHERE g.ref = ?1 AND g.kind = 'scoped_cred' AND g.status = 'issued' \
-          GROUP BY g.ref HAVING COUNT(*) = 1",
-        params![username],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
-    )
-    .map(|(ws, we)| now_i >= ws && now_i < we)
-    .unwrap_or(false)
+///
+/// `P10.20-b` — UNE FENÊTRE NON LUE N'EST PAS UNE FENÊTRE CLOSE. La lecture finissait par
+/// `.map(..).unwrap_or(false)` : une erreur du moteur (table illisible, `window_start` qui ne se lit pas en
+/// entier) valait « hors fenêtre », et les deux appelants en faisaient un compte ABSENT — l'absence établie qui
+/// ouvre le repli sur l'administrateur de l'assistant ou de configuration. La lecture rend maintenant trois
+/// issues : `Ok(true)` (liaison unique, fenêtre ouverte), `Ok(false)` (aucune liaison, liaison multiple ou
+/// fenêtre close : le refus d'ambiguïté ci-dessus est INCHANGÉ), `Err` (rien de lu). Chaque appelant traduit
+/// `Err` en « non lu », qui refuse l'identité sans aucun repli (`lookup_basic_ident_lu`, `compte_via_l_ecrivain`).
+pub(crate) fn engagement_cred_within_window(conn: &Connection, username: &str, now_i: i64) -> rusqlite::Result<bool> {
+    let fenetre = conn
+        .query_row(
+            "SELECT e.window_start, e.window_end FROM engagement_grant g \
+               JOIN engagement e ON e.id = g.engagement_id \
+              WHERE g.ref = ?1 AND g.kind = 'scoped_cred' AND g.status = 'issued' \
+              GROUP BY g.ref HAVING COUNT(*) = 1",
+            params![username],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    Ok(fenetre.is_some_and(|(ws, we)| now_i >= ws && now_i < we))
 }
 
 /// RÉVOCATION du credential minté : SUPPRIME les comptes plume scopés (engagement_grant.ref) des grants

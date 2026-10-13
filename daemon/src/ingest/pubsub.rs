@@ -9,8 +9,8 @@
 //! plume à la création de la source push, LIÉE à un connecteur push -> son `field_map`/`env_id`).
 //!
 //! RÉUTILISATION MAXIMALE (aucune nouvelle primitive crypto / d'ingest / de mapping) :
-//!   - AUTH : `pubsub_token_lookup` = `sha256_hex(clé)` + SELECT sur la colonne INDEXÉE `token_hash`
-//!     (state.rs, kind='gcp_pubsub') — la MÊME primitive partagée (`push_token_connector`) que Firehose ; la
+//!   - AUTH : `pubsub_token_lookup_lu` = `sha256_hex(clé)` + SELECT sur la colonne INDEXÉE `token_hash`
+//!     (state.rs, kind='gcp_pubsub') — la MÊME primitive partagée (`push_token_connector_lu`) que Firehose ; la
 //!     comparaison porte sur le HASH (jamais le clair) -> pas de fuite de timing sur le secret.
 //!   - DÉCODAGE / MAPPING CIM : `firehose_decode_record_data` (base64 -> objet unique / array / ND-JSON /
 //!     enveloppe via `records_path`) puis `httppull_map_record` — RÉUTILISÉS TELS QUELS (le field_map du preset
@@ -233,17 +233,17 @@ pub(crate) async fn pubsub_ingest_post(
     };
     // 6) charge le connecteur push LIÉ (field_map + env_id + type) depuis la base du tenant (mode 0 = st.db).
     //    RE-VÉRIFIE type='gcp_pubsub' : une clé ne peut être honorée que si son binding pointe une source push
-    //    VIVANTE de CE type. Connecteur supprimé / mauvais type -> 403 (binding cassé, fail-closed).
+    //    VIVANTE de CE type. Connecteur supprimé / mauvais type -> 403 (binding cassé, fail-closed). `P10.20-b` :
+    //    lecture du connecteur ratée -> 503 nommé (TRANSITOIRE, Pub/Sub rejoue), jamais le 403 d'un binding cassé ;
+    //    cause du moteur au journal seul, aucun repli. Lecture partagée : `connecteur_push_lie_lu` (firehose.rs).
     let handle = st.tenants.handle_for(&ident.tenant).unwrap_or_else(|| st.db.clone());
-    let (ctype, cfg_json, env_id): (String, String, String) = {
-        let conn = handle.lock();
-        match conn.query_row(
-            "SELECT type,config_json,env_id FROM connector WHERE id=?1",
-            params![ident.connector_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-        ) {
-            Ok(x) => x,
-            Err(_) => return err_json(StatusCode::FORBIDDEN, "delivery token not bound to a live push source"),
+    let lu = connecteur_push_lie_lu(&handle.lock(), ident.connector_id);
+    let (ctype, cfg_json, env_id): (String, String, String) = match lu {
+        Ok(Some(x)) => x,
+        Ok(None) => return err_json(StatusCode::FORBIDDEN, "delivery token not bound to a live push source"),
+        Err(cause) => {
+            eprintln!("[ingest] WARN connecteur lié d'une clé Pub/Sub NON lu, livraison refusée : {cause}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CONNECTEUR_LIE_NON_LU);
         }
     };
     if ctype != "gcp_pubsub" {

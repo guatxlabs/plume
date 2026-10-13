@@ -314,6 +314,13 @@ pub(crate) enum PurgeRefusal {
     ReasonRequired,
     /// Divergence entre ce qui a été INSCRIT et ce qui a été SUPPRIMÉ -> transaction annulée en entier.
     CountMismatch { declared: i64, deleted: i64 },
+    /// `P10.20-b` — une ligne d'une lecture de la SIMULATION n'a pas pu être lue (ventilation par source,
+    /// échantillon, identifiants cités par un case) : valeur qui ne se décode pas, erreur au pas, interruption.
+    /// Sans ce refus, la ligne était sautée par `.flatten()` : la ventilation — qui entre dans le JETON, dans
+    /// `ConfirmedPurge` et dans l'inscription au registre — décrivait moins que ce que `rows` compte et que le
+    /// DELETE détruit. FAIL-CLOSED : aucun plan partiel, aucun jeton. `site` nomme la lecture, `cause` porte
+    /// l'erreur du moteur.
+    PlanRowUnread { site: &'static str, cause: String },
     /// Erreur base (verrou, schéma, I/O). Aucune ligne supprimée.
     Db(String),
 }
@@ -374,6 +381,12 @@ impl std::fmt::Display for PurgeRefusal {
                 "REFUS — INCOHÉRENCE registre/base : {declared} ligne(s) inscrite(s), {deleted} supprimée(s). \
                  Transaction ANNULÉE en entier (le registre ne peut pas affirmer autre chose que la réalité)."
             ),
+            PurgeRefusal::PlanRowUnread { site, cause } => write!(
+                f,
+                "REFUS — SIMULATION NON LUE : une ligne de {site} n'a pas pu être lue ({cause}). Fail-closed : \
+                 aucun plan partiel, aucun jeton — un plan qui sauterait cette ligne décrirait moins que ce que \
+                 la purge détruirait. Aucune ligne supprimée."
+            ),
             PurgeRefusal::Db(e) => write!(f, "REFUS — base : {e} (aucune ligne supprimée)"),
         }
     }
@@ -391,6 +404,7 @@ pub(crate) fn purge_refusal_code(r: &PurgeRefusal) -> &'static str {
         PurgeRefusal::StaleToken { .. } => "stale_token",
         PurgeRefusal::ReasonRequired => "reason_required",
         PurgeRefusal::CountMismatch { .. } => "count_mismatch",
+        PurgeRefusal::PlanRowUnread { .. } => "plan_row_unread",
         PurgeRefusal::Db(_) => "db",
     }
 }
@@ -651,11 +665,15 @@ fn cited_by_case(
           WHERE incident_item.ref LIKE 'event:%' AND {pred} ORDER BY event.id LIMIT 10"
     );
     let mut st = conn.prepare(&sql_ids).map_err(|e| PurgeRefusal::Db(e.to_string()))?;
-    let ids: Vec<i64> = st
+    // `P10.20-b` — collectée en `Result`, jamais aplatie : un identifiant non lu ne disparaît pas de la liste
+    // servie comme « les events cités ». Le refus reste un refus ; il dit qu'il n'a pas pu nommer.
+    let lignes = st
         .query_map(rusqlite::params_from_iter(binds.iter()), |r| r.get::<_, i64>(0))
-        .map_err(|e| PurgeRefusal::Db(e.to_string()))?
-        .flatten()
-        .collect();
+        .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
+    let ids: Vec<i64> = lignes.collect::<Result<Vec<i64>, _>>().map_err(|e| PurgeRefusal::PlanRowUnread {
+        site: "la liste des events cités par un case (`cited_by_case`)",
+        cause: format!("{e} ; {total} event(s) du périmètre sont cités"),
+    })?;
     Ok(Some((ids, total)))
 }
 
@@ -707,13 +725,19 @@ pub(crate) fn purge_plan(conn: &Connection, scope: PurgeScope) -> Result<PurgePl
     let per_src_sql =
         format!("SELECT event.source, COUNT(*) FROM event WHERE {pred} GROUP BY event.source ORDER BY event.source");
     let mut st = conn.prepare(&per_src_sql).map_err(|e| PurgeRefusal::Db(e.to_string()))?;
-    let per_source: Vec<(String, i64)> = st
+    //     `P10.20-b` — collectée en `Result` : elle entre dans le JETON, dans `ConfirmedPurge` et dans
+    //     l'inscription au registre. Une source sautée ferait confirmer, puis inscrire, une ventilation qui ne
+    //     somme plus à `rows` — le plan, le jeton et la trace décriraient moins que ce que le DELETE détruit.
+    let lignes = st
         .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })
-        .map_err(|e| PurgeRefusal::Db(e.to_string()))?
-        .flatten()
-        .collect();
+        .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
+    let per_source: Vec<(String, i64)> =
+        lignes.collect::<Result<Vec<(String, i64)>, _>>().map_err(|e| PurgeRefusal::PlanRowUnread {
+            site: "la ventilation par source (`purge_plan`)",
+            cause: e.to_string(),
+        })?;
     drop(st);
 
     // (7) ÉCHANTILLON — les plus VIEILLES et les plus RÉCENTES lignes du périmètre. Prouver « j'ai vu » ne
@@ -744,7 +768,7 @@ fn purge_sample(
            FROM event WHERE {pred} ORDER BY event.ts {dir}, event.id {dir} LIMIT {PURGE_SAMPLE_EACH_SIDE}"
     );
     let mut st = conn.prepare(&sql).map_err(|e| PurgeRefusal::Db(e.to_string()))?;
-    let out = st
+    let lignes = st
         .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
             let msg: String = r.get(4)?;
             Ok(PurgeSampleRow {
@@ -755,9 +779,13 @@ fn purge_sample(
                 message: msg.chars().take(PURGE_SAMPLE_MSG_MAX).collect(),
             })
         })
-        .map_err(|e| PurgeRefusal::Db(e.to_string()))?
-        .flatten()
-        .collect();
+        .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
+    // `P10.20-b` — collecté en `Result` : un échantillon qui saute une extrémité ne prouve plus « j'ai vu ».
+    let out: Vec<PurgeSampleRow> =
+        lignes.collect::<Result<Vec<PurgeSampleRow>, _>>().map_err(|e| PurgeRefusal::PlanRowUnread {
+            site: "l'échantillon (`purge_sample`)",
+            cause: e.to_string(),
+        })?;
     Ok(out)
 }
 
@@ -766,9 +794,8 @@ fn purge_sample(
 /// NE touche pas ; refuser ici ferait dépendre la capacité de purger d'une table qu'on ne purge pas. Ce qui
 /// est interdit, c'est de rendre un ZÉRO pour une lecture non faite : la famille est servie `NonLue(cause)`.
 ///
-/// RESTES NOMMÉS, NON TOUCHÉS (même fichier, hors de ce site) : les itérateurs aplatis par `.flatten()` de
-/// `cited_by_case` (`holds_covering` en est sorti sous `P10.31-l` : une ligne de rétention non lue REFUSE),
-/// `purge_plan` (ventilation par source) et `purge_sample`.
+/// Les itérateurs de lignes de ce module ne sont plus aplatis : `holds_covering` (`P10.31-l`), `cited_by_case`,
+/// la ventilation par source de `purge_plan` et `purge_sample` (`P10.20-b`) refusent sur une ligne non lue.
 fn purge_uncovered(conn: &Connection, w: PurgeWindow) -> PurgeUncovered {
     let lire = |famille: &str, sql: &str, fenetre: bool| -> MesureNonCouverte {
         let lu = if fenetre {

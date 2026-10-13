@@ -260,7 +260,9 @@ mod file_de_riposte_bornee_tests {
         // même raison : le marqueur de dépassement retire le dossier du tour suivant.
         ("caseops.rs", "sla_multilevel_tick_par", "boucle de fond des échéances : le tour suivant reprend \
           les dossiers non traités"),
-        ("caseops.rs", "sla_recalcule_la_priorite_bornee", "recalcul de fond, borné par tour"),
+        // `P10.31-v` (2026-10-13) — l'énoncé a été déplacé dans `sla_recalcule_la_priorite_bornee_selon` pour servir
+        // aussi le recalcul de désactivation (filtre `sla_policy_id IS NOT NULL`) ; même énoncé, même raison.
+        ("caseops.rs", "sla_recalcule_la_priorite_bornee_selon", "recalcul de fond, borné par tour"),
         // `P10.20-w` (rang trois, 2026-10-07) — le corps (et son `LIMIT 20`) a été déplacé dans
         // `escalate_overdue_cases_par` pour injecter l'envoyeur ; `escalate_overdue_cases` n'en est plus
         // que l'enveloppe de production. Même énoncé, même raison : le marqueur `escalated=1` retire le

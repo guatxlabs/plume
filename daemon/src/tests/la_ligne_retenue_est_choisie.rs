@@ -234,11 +234,11 @@ mod la_ligne_retenue_est_choisie {
         engagement("eng-ouvert", maintenant - 10, maintenant + 10);
         grant("eng-ouvert");
         assert!(
-            engagement_cred_within_window(&conn, &cred, maintenant),
+            engagement_cred_within_window(&conn, &cred, maintenant).expect("fenêtre LUE (P10.20-b : `Err` = non lu)"),
             "liaison UNIQUE, fenêtre ouverte -> la porte laisse passer (contrôle positif)"
         );
         assert!(
-            !engagement_cred_within_window(&conn, &cred, maintenant + 1000),
+            !engagement_cred_within_window(&conn, &cred, maintenant + 1000).expect("fenêtre LUE (P10.20-b : `Err` = non lu)"),
             "liaison UNIQUE, fenêtre dépassée -> la porte refuse (contrôle négatif)"
         );
 
@@ -255,7 +255,7 @@ mod la_ligne_retenue_est_choisie {
             .unwrap();
         assert_eq!(combien, 2, "l'ensemble fabriqué DOIT être multiple");
         assert!(
-            !engagement_cred_within_window(&conn, &cred, maintenant),
+            !engagement_cred_within_window(&conn, &cred, maintenant).expect("fenêtre LUE (P10.20-b : `Err` = non lu)"),
             "deux liaisons `issued` sur la même ref -> la porte REFUSE (fail-closed), au lieu de tirer \
              une fenêtre au sort"
         );
@@ -266,7 +266,7 @@ mod la_ligne_retenue_est_choisie {
         grant("eng-clos");
         grant("eng-ouvert");
         assert!(
-            !engagement_cred_within_window(&conn, &cred, maintenant),
+            !engagement_cred_within_window(&conn, &cred, maintenant).expect("fenêtre LUE (P10.20-b : `Err` = non lu)"),
             "ordre d'insertion inverse : le refus est INVARIANT"
         );
 
@@ -274,7 +274,7 @@ mod la_ligne_retenue_est_choisie {
         //     produit fait réellement), la porte laisse de nouveau passer.
         conn.execute("UPDATE engagement_grant SET status='revoked' WHERE engagement_id='eng-clos'", []).unwrap();
         assert!(
-            engagement_cred_within_window(&conn, &cred, maintenant),
+            engagement_cred_within_window(&conn, &cred, maintenant).expect("fenêtre LUE (P10.20-b : `Err` = non lu)"),
             "l'ensemble redevenu singleton, la porte laisse passer : le refus portait sur l'AMBIGUÏTÉ, \
              pas sur le credential"
         );

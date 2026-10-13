@@ -3,7 +3,8 @@ import {
   setSocTZ,
   socIsAdmin, formMsg,
   confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, faceDansLaLangue,
-  avecLeSecretDesGestes, phraseDuRefusDUneLecture, refusDUneLectureServie
+  avecLeSecretDesGestes, phraseDuRefusDUneLecture, refusDUneLectureServie,
+  aveuDUneTraceManquante, causeDeLaTraceManquante
 } from './core.js';
 import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
 import { installI18nObserver } from './i18n_observer.js';
@@ -431,6 +432,33 @@ function puitsDuFormulaireDuCompte() {
   const f = $('#setup-form'), actions = f ? f.querySelector('.rf-actions') : null;
   return f ? puitsDuRefusDUnGeste(f, 'reglages_du_compte', actions) : null;
 }
+// `P10.31-u` (volet console) — L'INSTALLATION ET LE CHANGEMENT DE MOT DE PASSE ONT EU LIEU, LEUR TRACE MANQUE : ON LE DIT.
+// CE QUE LE DÉMON SERT (daemon/src/session.rs) : `setup` et `password_post` posent leur geste PUIS leur ligne au registre
+// tamper-evident ; quand le maillon n'entre pas, ils répondent QUAND MÊME leur succès (`{ok, …}` : le geste a eu lieu, le
+// rejouer tomberait sur « déjà configuré » ou exigerait l'ancien mot de passe, qui ne vaut plus) et posent à côté la clé
+// commune, lue par `causeDeLaTraceManquante` (core.js) — ce module n'en écrit pas le nom. AVANT CE LOT, la console lisait
+// `servi.user` et jamais la clé : le premier administrateur posé hors de la trace non purgeable était dit au démon, jamais
+// à la personne. LA PHRASE EST CELLE DU GESTE (« Riposte EN FILE » serait faux, précédent web/multitenant.js) ; le succès
+// reste écrit dans sa ligne, l'aveu va au puits du formulaire, à deux nœuds (phrase, puis « cause servie »), sans marque
+// de refus. Les deux faces côte à côte : aucune langue ne part sans l'autre.
+const MOTS_DU_COMPTE_SANS_TRACE = {
+  installation: {
+    fr: "Installation FAITE, mais SANS TRACE D'AUDIT : le premier administrateur est posé — rejouer l'installation serait refusé (« déjà configuré ») et ne comblerait pas le trou. Ce qui manque est la ligne du registre tamper-evident qui atteste cette pose. Le démon en nomme la cause —",
+    en: 'Setup DONE, but WITHOUT AUDIT TRACE: the first administrator is set — replaying the setup would be refused ("already configured") and would not fill the gap. What is missing is the tamper-evident ledger line attesting it. The daemon names the cause —' },
+  mot_de_passe: {
+    fr: "Mot de passe CHANGÉ, mais SANS TRACE D'AUDIT : le nouveau mot de passe est en place — le changer encore ne comblerait pas le trou. Ce qui manque est la ligne du registre tamper-evident qui atteste ce changement. Le démon en nomme la cause —",
+    en: 'Password CHANGED, but WITHOUT AUDIT TRACE: the new password is in place — changing it again would not fill the gap. What is missing is the tamper-evident ledger line attesting it. The daemon names the cause —' },
+};
+// Nommé et exporté pour le harnais (témoin 138).
+function avouerLeCompteSansTrace(puits, geste, servi) {
+  const cause = causeDeLaTraceManquante(servi);
+  if (!cause) return '';
+  const mot = faceDansLaLangue(MOTS_DU_COMPTE_SANS_TRACE[geste]);
+  if (!puits) { toast(mot + ' « ' + cause + ' »', 'bad', 9000); return geste; }
+  puits.replaceChildren(aveuDUneTraceManquante(mot, cause, 'span'));
+  puits.hidden = false;
+  return geste;
+}
 // Nommé et exporté pour le harnais (témoin 119) : les deux instances du module écoutent le même formulaire.
 async function enregistrerLesReglagesDuCompte(e) {
   e.preventDefault();
@@ -449,7 +477,7 @@ async function enregistrerLesReglagesDuCompte(e) {
   let servi = null;
   try {
     if (configured) servi = await apiSend('/password', 'POST', { current: actuel, new: pw });
-    else await apiSend('/setup', 'POST', { token: $('#set-token').value.trim(), user: ($('#set-user').value.trim() || 'admin'), password: pw });
+    else servi = await apiSend('/setup', 'POST', { token: $('#set-token').value.trim(), user: ($('#set-user').value.trim() || 'admin'), password: pw });
   } catch (err) {
     if (champActuel) champActuel.value = '';
     res.textContent = ''; peindreLeRefusDUnGeste(puits, err); return;
@@ -457,6 +485,7 @@ async function enregistrerLesReglagesDuCompte(e) {
   const quiChange = servi && typeof servi.user === 'string' && servi.user.trim() ? servi.user.trim() : '';
   res.textContent = !configured ? 'enregistré - reconnecte-toi avec les nouveaux identifiants'
     : faceDansLaLangue(MOTS_DU_CHANGEMENT_DE_MOT_DE_PASSE[quiChange ? 'change' : 'change_sans_nom'], { qui: quiChange });
+  avouerLeCompteSansTrace(puits, configured ? 'mot_de_passe' : 'installation', servi);   // `P10.31-u`
   $('#set-pw').value = ''; if (champActuel) champActuel.value = ''; loadSettings();
 }
 if ($('#setup-form')) $('#setup-form').addEventListener('submit', enregistrerLesReglagesDuCompte);
@@ -1068,6 +1097,6 @@ initAuthGate();   // écran de connexion, déconnexion, état d'auth : câblage 
 /* ==== exports consumed by seam modules (auto-managed) ==== */
 // `P10.25-w` — `envelopperLeTransport` part pour le témoin 114 du harnais ESM, qui la pose sur son simulacre.
 // `P10.27-b` — le geste du formulaire d'un connecteur, joué par le harnais sous chaque instance de langue (témoin 116).
-export { ROLE_LABEL, SPACES, currentTab, currentViewName, enregistrerLeConnecteurDuFormulaire, enregistrerLesReglagesDuCompte, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
+export { ROLE_LABEL, SPACES, avouerLeCompteSansTrace, currentTab, currentViewName, enregistrerLeConnecteurDuFormulaire, enregistrerLesReglagesDuCompte, envelopperLeTransport, fetchMe, loadActions, loadDashboard, loadUsers, refresh, refreshCurrentView, refreshPanels, renderNav, route, setAlertMitreFilter, setAlertSourceFilter, setAuthUI, updateQRangeBtn, updateRangeBtn };
 // `P10.29-g` — `exploreExport` part pour le témoin 120 (deux instances du module écoutent le même bouton).
 export { exploreExport };

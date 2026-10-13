@@ -127,8 +127,13 @@ mod couverture_du_plafond_hors_budget_tests {
         let (facade, feuille) = (lire(FACADE), lire(FEUILLE));
         let v = juger_la_frontiere(&facade, Some(&feuille));
         assert!(v.is_empty(), "{v:#?}");
+        // L'état d'avant jugé avec la VRAIE feuille : une feuille vide (`Some("")`) faisait refuser par la
+        // seule feuille, quelle que soit la façade — le contrôle passait sans rien prouver (`P7.18-a`).
         let recollee = format!("{facade}\n{feuille}");
-        assert!(!juger_la_frontiere(&recollee, Some("")).is_empty(), "l'état d'avant (la couverture dans la façade) doit être refusé");
+        assert!(
+            !juger_la_frontiere(&recollee, Some(&feuille)).is_empty(),
+            "l'état d'avant (la couverture dans la façade) doit être refusé"
+        );
         let plafond_sorti = format!("{feuille}\nenum Plafond {{\n}}\n");
         assert!(!juger_la_frontiere(&facade, Some(&plafond_sorti)).is_empty(), "`Plafond` dans la feuille doit être refusé");
     }
@@ -183,3 +188,6 @@ mod couverture_du_plafond_hors_budget_tests {
         assert_eq!(r.matches("[couverture=").count(), 1, "{r}");
     }
 }
+
+// Témoin des ré-exports de la façade réservés aux tests (`P7.18-a`), fichier propre.
+include!("reexports_du_plafond_hors_production.rs");

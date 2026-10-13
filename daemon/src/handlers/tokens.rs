@@ -147,7 +147,7 @@ pub(crate) fn inserer_jeton_frappe_par(
 /// Une clé de livraison n'a qu'une voie de frappe, la console, et donc toujours un compte : l'auteur n'est pas une
 /// `Option`. Sa portée n'est pas un hôte (colonne `host` NULL) mais son CONNECTEUR (`connector_id`), et son genre
 /// (`firehose`, `gcp_pubsub`) la borne à son seul récepteur. Au regard de `DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME`
-/// c'est un jeton d'INGESTION : elle n'ouvre aucune lecture (`push_token_connector` ne rend qu'un connecteur, le
+/// c'est un jeton d'INGESTION : elle n'ouvre aucune lecture (`push_token_connector_lu` ne rend qu'un connecteur, le
 /// récepteur n'écrit que dans le spool), elle est révoquée avec son auteur si elle n'a jamais servi, conservée et
 /// nommée si un flux du nuage la porte.
 pub(crate) fn inserer_cle_de_livraison_frappee_par(
@@ -424,7 +424,7 @@ pub(crate) const CAUSE_JETON_NON_REVOQUE_TRANSACTION_NON_OUVERTE: &str = "JETON 
 //    attente de cet hôte), pas la lecture des données. Le jeton est marqué (`created_by_deleted_at`) et NOMMÉ
 //    dans la réponse et à l'audit, avec le geste : le révoquer et en refrapper un pour le capteur.
 //  * `P10.25-q` — LA CLÉ DE LIVRAISON D'UNE SOURCE PUSH est un jeton d'INGESTION, et suit les deux règles
-//    précédentes : elle ne rend à son porteur qu'un connecteur où écrire (`push_token_connector`), jamais une
+//    précédentes : elle ne rend à son porteur qu'un connecteur où écrire (`push_token_connector_lu`), jamais une
 //    lecture. Jamais servie, elle part avec son auteur (le connecteur reste, sans clé) ; servie, un flux du nuage la
 //    porte et elle est conservée, nommée — son geste est de RENOUVELER la clé de la source push
 //    (`POST /api/connectors/{id}/delivery-key`, `P10.26-g`), puis de reporter la nouvelle clé dans le flux. La forme

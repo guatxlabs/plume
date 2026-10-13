@@ -317,12 +317,12 @@ fn ingest_routes_brut() -> Router<AppState> {
         // P-HEC — récepteur PUSH AWS Kinesis Firehose (CloudTrail/GuardDuty). Auth = clé de livraison
         // `X-Amz-Firehose-Access-Key` vérifiée DANS le handler (EXEMPTÉ d'auth_guard, comme /collector/health) ->
         // tenant + connecteur push lié, ingest-only. Body-cap `limite_corps` + rate_limit (layers) s'appliquent quand même.
-        // INERTE tant qu'aucune source push n'existe (firehose_token_lookup -> None -> 403) -> mode 0 byte-identique.
+        // INERTE tant qu'aucune source push n'existe (firehose_token_lookup_lu -> Absent -> 403) -> mode 0 byte-identique.
         .route("/api/ingest/firehose", post(firehose_ingest_post))
         // P-HEC — récepteur PUSH GCP Pub/Sub (Cloud Audit Logs). Auth = clé de livraison en query `?token=`
         // vérifiée DANS le handler (EXEMPTÉ d'auth_guard, EXACT match) -> tenant + connecteur push lié, ingest-only.
         // Body-cap `limite_corps` + rate_limit (layers) s'appliquent. INERTE tant qu'aucune source push gcp_pubsub n'existe
-        // (pubsub_token_lookup -> None -> 401) -> mode 0 byte-identique. Ack Pub/Sub : 2xx=ACK, poison=204 ack-drop.
+        // (pubsub_token_lookup_lu -> Absent -> 401) -> mode 0 byte-identique. Ack Pub/Sub : 2xx=ACK, poison=204 ack-drop.
         .route("/api/ingest/pubsub", post(pubsub_ingest_post))
         // HEC (#16) — endpoint WIRE-COMPATIBLE Splunk HTTP Event Collector (bring-your-own-forwarder).
         // /collector[/event] = ingest (auth token HEC `Splunk <tok>`/`?token=`, ingest-only, cf. auth_guard) ;

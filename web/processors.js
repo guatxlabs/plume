@@ -1,7 +1,7 @@
 // processors.js — #40 Processeur d'ingest (edge/ingest pipeline), admin-only.
 // Un ADMIN définit des règles ORDONNÉES qui filtrent/masquent/routent/échantillonnent un event AVANT son
 // indexation (levier de rétention #1 : « décider ce qu'on n'ingère PAS »). API admin-only :
-//   GET /api/processors            -> { rules:[…], counters:{ per_rule, totals, reload_errors } }
+//   GET /api/processors            -> { rules:[…], counters:{ per_rule, totals, reload_errors, reload_read_failures } }
 //   POST /api/processors           -> create ; POST /api/processors/{id} -> update ; DELETE …/{id}
 //   POST /api/processors/test      -> dry-run { event } -> { verdict, result }
 // NON-SILENCE : on affiche les compteurs dropped/masked/routed/sampled_out (la donnée non-indexée est
@@ -16,6 +16,32 @@ const OPS = ['eq', 'ne', 'contains', 'regex', 'any'];
 const ACTIONS = ['drop', 'mask', 'route', 'sample', 'rename']; // `P4.12-b` : rename = champ vendeur -> colonne d'entité
 
 function num(v) { return typeof v === 'number' ? v : 0; }
+
+// `P10.20-b` (console) — UN REGISTRE D'INGESTION NON RELU SE DIT À L'ÉCRAN DES RÈGLES. Sur une lecture ratée de la table
+// (préparation, parcours, ligne indécodable), `processors_reload` (daemon/src/processors.rs) compte l'échec sous
+// `reload_read_failures`, servi par `processors_counters_json` — À PART de `reload_errors`, qui ne compte que les règles
+// qui ne compilent pas. Ce qu'il PUBLIE alors n'est pas « le registre précédent » : une règle en place non relue reste
+// armée dans sa version précédente ; une règle illisible qui n'était PAS déjà chargée (registre jamais chargé — démarrage,
+// ouverture d'un tenant —, ou règle nouvelle) n'est PAS armée (`(true, _) | (false, None) => out`). L'avis dit les deux.
+// MESURÉ AVANT (b96a8c7b) : la console ne lisait que `reload_errors` (`grep -rn reload_read_failures web/` : zéro).
+// L'avis se peint DANS LES DEUX BRANCHES : la liste nominale ET la branche « règles NON LUES » (`data.error`) — une ligne
+// indécodable ou une table absente fait échouer la liste du démon (mêmes colonnes décodées) en même temps que le
+// rechargement, c'est même le cas courant. La clé est celle que le démon pose (le témoin 140 du harnais la relit dans son
+// arbre) ; un champ absent ou nul ne rend rien.
+export const CLE_DES_LECTURES_RATEES_DU_REGISTRE = 'reload_read_failures';
+const MOTS_DU_REGISTRE_NON_RELU = {
+  fr: "⚠ Lecture du registre d'ingestion ratée ({n} échec(s) au dernier rechargement) : les règles réellement appliquées peuvent différer de celles de la table — une règle non relue reste appliquée dans sa version précédente si elle était déjà chargée, et n'est PAS appliquée sinon (registre jamais chargé, règle nouvelle).",
+  en: '⚠ Ingestion registry read failed ({n} failure(s) at the last reload): the rules actually applied may differ from the ones in the table - a rule that was not read back stays applied in its previous version if it was already loaded, and is NOT applied otherwise (registry never loaded, new rule).',
+};
+export function avisDuRegistreNonRelu(counters) {
+  const n = counters ? counters[CLE_DES_LECTURES_RATEES_DU_REGISTRE] : undefined;
+  if (!(num(n) > 0)) return null;
+  const w = document.createElement('div'); w.className = 'muted';
+  w.style.color = 'var(--bad, #c33)';
+  w.setAttribute('data-registre-non-relu', '1');
+  w.textContent = faceDansLaLangue(MOTS_DU_REGISTRE_NON_RELU, { n });
+  return w;
+}
 // `P10.27-d` / `P10.27-e` — LE PUITS DES GESTES SUR LES RÈGLES D'INGESTION, juste avant la liste : bascule, retrait,
 // création. Hors de ce que `loadProcessors` repeint, il survit au rechargement ; la forme est celle du point commun
 // (`peindreLeRefusDUnGeste`, core.js). MESURÉ AVANT CE LOT (témoin 118) : « Bascule refusée : 503 {… », « échec : 503
@@ -48,6 +74,8 @@ export async function loadProcessors() {
     const frag = document.createDocumentFragment();
     frag.appendChild(totalsBar(data.counters || { per_rule: {}, totals: {}, reload_errors: 0 }));
     frag.appendChild(aveu);
+    const nonReluSansListe = avisDuRegistreNonRelu(data.counters);   // `P10.20-b` : la liste illisible n'éteint pas l'avis du rechargement
+    if (nonReluSansListe) frag.appendChild(nonReluSansListe);
     wrap.replaceChildren(frag);
     const neuf = $('#processor-new');
     if (neuf) { neuf.setAttribute('aria-disabled', 'true'); neuf.title = "Les règles d'ingestion n'ont PAS été lues : en ajouter une ici, c'est peut-être doubler une règle qui jette ou masque déjà et que cette lecture n'a pas pu rendre — et l'ordre de la chaîne décide de ce qui est indexé."; }
@@ -65,10 +93,12 @@ export async function loadProcessors() {
   frag.appendChild(totalsBar(counters));
   if (num(counters.reload_errors) > 0) {
     const w = document.createElement('div'); w.className = 'muted';
-    w.style.color = 'var(--bad, #c33)';
+    w.style.color = 'var(--bad, #c33)'; w.setAttribute('data-regles-invalides', '1');
     w.textContent = faceDansLaLangue({ fr: '⚠ {n} règle(s) invalide(s) ignorée(s) (fail-safe : les events concernés sont indexés inchangés). Corrige-les ci-dessous.', en: '⚠ {n} invalid rule(s) ignored (fail-safe: the events concerned are indexed unchanged). Fix them below.' }, { n: counters.reload_errors });   // `P10.29-c`
     frag.appendChild(w);
   }
+  const nonRelu = avisDuRegistreNonRelu(counters);   // `P10.20-b` : à côté de l'avis des règles invalides, jamais à sa place
+  if (nonRelu) frag.appendChild(nonRelu);
   const listBox = document.createElement('div');
   if (!rules.length) {
     listBox.appendChild(muted("aucune règle — l'ingest est byte-identique (tout event est indexé). Clique « + Règle » pour filtrer/masquer/router/échantillonner une source bruyante."));

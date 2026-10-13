@@ -566,7 +566,19 @@ pub(crate) fn rollup_events(conn: &Connection) {
         conn.query_row("SELECT value FROM meta WHERE key=?1", params![k], |r| r.get::<_, String>(0))
             .ok().and_then(|s| s.parse().ok())
     };
-    let wm: i64 = meta_i64(META_ROLLUP_WM).unwrap_or(0);
+    // `P10.20-b` — le watermark en TROIS issues. Seul un watermark LU permet de chercher la bande sale SOUS lui. Absent
+    // (base neuve, migration v33/v64 qui l'efface) ou NON LU (lecture ratée, valeur non entière) : on ne peut rien
+    // affirmer sous lui -> RECONSTRUCTION bornée au plancher d'`event`, comme une couverture absente. Avant, ce cas valait
+    // 0 : la bande sale `ts < 0` était vide, le rattrapage partait de 0 SANS plancher, et `DELETE FROM event_rollup WHERE
+    // bucket >= 0 AND bucket < recent` effaçait l'histoire que SEUL le rollup garde (buckets sous `MIN(event.ts)`).
+    let (wm, wm_lu): (i64, bool) = match lire_un_watermark(conn, META_ROLLUP_WM) {
+        LectureDeWatermark::Lu(w) => (w, true),
+        LectureDeWatermark::Absent => (0, false),
+        LectureDeWatermark::NonLu(e) => {
+            eprintln!("[rollup] WARN watermark d'event_rollup NON lu ({e}) — rollup reconstruit depuis le plus vieil event, histoire sous ce plancher conservée, watermark réécrit");
+            (0, false)
+        }
+    };
     let (min_sev, topn) = {
         let conf = load_config();
         (cfg(&conf, "PLUME_ROLLUP_SRCIP_MIN_SEV", "3").parse().unwrap_or(3), rollup_srcip_topn(&conf))
@@ -581,19 +593,45 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // jusqu'à son bucket -> elle finit agrégée. `NOT INDEXED` force la porte rowid (sinon le planificateur
     // choisit `idx_event_ts` et rebalaie tout l'historique sous `wm`).
     let cov: Option<i64> = meta_i64(META_ROLLUP_COV_ID);
+    // `P10.20-b` — la bande sale LUE ou NON LUE. Un `MIN` rend toujours une ligne : `None` dit « aucune ligne
+    // arrivée sous le watermark » ; une ERREUR ne dit rien de tel. Avant, `.ok().flatten()` confondait les deux et la
+    // couverture était publiée sur des lignes tardives jamais réparées (la route servait ce rollup comme EXACT).
+    let mut bande_sale_lue = true;
     let dirty_lo: Option<i64> = match cov {
+        // WATERMARK ABSENT OU NON LU (`P10.20-b`, ci-dessus) : même issue qu'une couverture absente.
+        _ if !wm_lu => Some(0),
         // COUVERTURE ABSENTE = base d'avant ce correctif, tick jamais passé, ou publication interrompue :
         // on ne peut rien affirmer sous `wm` -> on RECONSTRUIT, une fois. C'est ce qui répare une base dont
         // le rollup a été laissé en arrière (le cas mesuré).
         None => Some(0),
-        Some(c) => conn
-            .query_row("SELECT MIN(ts) FROM event NOT INDEXED WHERE id>?1 AND ts<?2", params![c, wm], |r| r.get::<_, Option<i64>>(0))
-            .ok().flatten(),
+        Some(c) => match conn.query_row(
+            "SELECT MIN(ts) FROM event NOT INDEXED WHERE id>?1 AND ts<?2",
+            params![c, wm],
+            |r| r.get::<_, Option<i64>>(0),
+        ) {
+            Ok(lu) => lu,
+            Err(e) => {
+                bande_sale_lue = false;
+                eprintln!("[rollup] WARN bande sale d'event_rollup NON lue ({e}) — couverture non publiée, la route sert le brut, repris au prochain passage");
+                None
+            }
+        },
     };
     // Le rollup ne peut témoigner que de ce qu'`event` porte ENCORE : on ne redescend JAMAIS sous le plus
     // vieux `ts` d'`event`. Les buckets plus anciens sont l'histoire que SEUL le rollup garde (lignes agées
     // en Parquet, ou purge non-symétrique de la rétention) — les recomposer depuis `event` les effacerait.
-    let event_floor = conn.query_row("SELECT MIN(ts) FROM event", [], |r| r.get::<_, Option<i64>>(0)).ok().flatten();
+    // `P10.20-b` — le plancher LU ou NON LU. Non lu, il vaut « `event` vide » (on ne descend nulle part, rien n'est
+    // effacé) MAIS, si une reconstruction était demandée, la couverture n'est pas publiée : elle n'a pas eu lieu. Avant, `.ok().flatten()`
+    // publiait la couverture sur des heures définitives jamais agrégées.
+    let mut plancher_lu = true;
+    let event_floor = match conn.query_row("SELECT MIN(ts) FROM event", [], |r| r.get::<_, Option<i64>>(0)) {
+        Ok(f) => f,
+        Err(e) => {
+            plancher_lu = false;
+            eprintln!("[rollup] WARN plancher d'event NON lu ({e}) — une reconstruction demandée est sautée et la couverture non publiée (la route sert le brut), reprise au prochain passage");
+            None
+        }
+    };
     let agg_from = match (dirty_lo, event_floor) {
         (Some(d), Some(f)) => ((d / 3600) * 3600).min(wm).max((f / 3600) * 3600),
         (Some(_), None) => recent, // `event` vide : rien à agréger, rien à réparer
@@ -627,9 +665,12 @@ pub(crate) fn rollup_events(conn: &Connection) {
     let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_WM, recent.to_string()]);
     // PUBLICATION DE LA COUVERTURE — jamais avant, jamais seule. Si l'agrégation a échoué (base occupée,
     // interruption, disque), on N'ANNONCE RIEN : la clé reste absente, la route décline, le brut sert.
-    // FAIL-CLOSED : une couverture qu'on n'a pas prouvée ne s'écrit pas.
+    // FAIL-CLOSED : une couverture qu'on n'a pas prouvée ne s'écrit pas. Une bande sale NON LUE (`P10.20-b`) n'est pas
+    // prouvée : les lignes tardives sous le watermark n'ont pas été réparées. Un plancher NON LU non plus quand une
+    // reconstruction était demandée (`dirty_lo`) : elle a été sautée. Sans rien de sale, le rattrapage `[wm, recent)` ne
+    // dépend pas du plancher et la couverture reste publiée comme avant.
     let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]);
-    if aggregated {
+    if aggregated && bande_sale_lue && (plancher_lu || dirty_lo.is_none()) {
         let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_COV_ID, new_cov.to_string()]);
     }
 
@@ -743,8 +784,20 @@ pub(crate) fn rollup_hosts(conn: &Connection) {
     let n = now();
     let cur = (n / 3600) * 3600;
     let recent = (cur - 3600).max(0);   // fenêtre chaude = heure courante + précédente
-    let wm: i64 = conn.query_row("SELECT value FROM meta WHERE key='host_rollup_wm'", [], |r| r.get::<_, String>(0))
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    // `P10.20-b` — le watermark en TROIS issues. Absent (`QueryReturnedNoRows`) = premier pli depuis 0, comme avant.
+    // NON LU (lecture ratée, valeur non entière) = le pli définitif ET le rattrapage sont SAUTÉS, watermark et plancher
+    // inchangés, dit et compté : avant, ce cas valait 0 et rejouait le pli ADDITIF [0, recent) — `sig_total` de chaque
+    // hôte DOUBLÉ, sans retour, puis le watermark réécrit par-dessus. La fenêtre chaude, elle, est servie.
+    let wm: i64 = match lire_le_watermark_de_flotte(conn) {
+        LectureDeWatermark::Absent => 0,
+        LectureDeWatermark::Lu(wm) => wm,
+        LectureDeWatermark::NonLu(e) => {
+            compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_PLI_DEFINITIF, ETAPE_WATERMARK_NON_LU, &e);
+            eprintln!("[rollup] WARN watermark de l'inventaire de flotte NON lu ({e}) — pli définitif et rattrapage SAUTÉS, watermark inchangé ; repris dès qu'il se relit — une valeur durablement corrompue (meta.host_rollup_wm non entier) laisse le pli sauté à CHAQUE passage, compté, jusqu'à sa réparation");
+            rollup_hosts_fenetre_chaude(conn, recent, n);
+            return;
+        }
+    };
     // FENÊTRE DÉFINITIVE [wm, recent) : heures figées jamais encore comptées -> sig_total += count (1x). Bornée
     // par idx_event_ts / idx_metric_ts / idx_snapshot_ts (range-scan indexé — plus de full-scan+déchiffrement de
     // metric/snapshot chaque tick). Le fold ET l'avance du watermark sont désormais ATOMIQUES : BEGIN IMMEDIATE +
@@ -789,8 +842,19 @@ pub(crate) fn rollup_hosts(conn: &Connection) {
     // first_ts/last_ts) -> IDEMPOTENT, aucun double sur un hôte déjà présent même si [floor,new_wm) recouvre des
     // heures déjà définitives. Puis on REMONTE le floor à new_wm (il ré-avance avec le watermark ; un ingest
     // tardif le rabaissera). Sans donnée tardive (floor absent -> new_wm, ou floor==new_wm) : NO-OP, AUCUN scan.
-    let floor: i64 = conn.query_row("SELECT value FROM meta WHERE key='host_rollup_backfill_floor'", [], |r| r.get::<_, String>(0))
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(new_wm);
+    // `P10.32-a` — le plancher en TROIS issues. Absent = aucune arrivée tardive notée -> `new_wm`, NO-OP comme avant.
+    // NON LU (lecture ratée, valeur non entière) = le rattrapage est SAUTÉ, plancher inchangé (une lecture ratée
+    // passagère est reprise au passage suivant), mais DIT et COMPTÉ : avant, `.ok().and_then(parse).unwrap_or(new_wm)`
+    // valait « rien à rattraper » sans rien dire, et une valeur durablement illisible n'était jamais rattrapée en silence.
+    let floor: i64 = match lire_un_watermark(conn, "host_rollup_backfill_floor") {
+        LectureDeWatermark::Absent => new_wm,
+        LectureDeWatermark::Lu(f) => f,
+        LectureDeWatermark::NonLu(e) => {
+            compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_RATTRAPAGE, ETAPE_PLANCHER_NON_LU, &e);
+            eprintln!("[rollup] WARN plancher de rattrapage de l'inventaire de flotte NON lu ({e}) — rattrapage SAUTÉ, plancher inchangé ; repris dès qu'il se relit — une valeur durablement corrompue (meta.host_rollup_backfill_floor non entier) laisse le rattrapage sauté à CHAQUE passage, compté, jusqu'à sa réparation");
+            new_wm
+        }
+    };
     // `P10.26-s` — même règle que le pli définitif : sa transaction ou rien, le plancher reste noté et le tick suivant
     // reprend le rattrapage. `P10.26-d` — et un rattrapage non pris est compté de même.
     if floor < new_wm {
@@ -808,11 +872,46 @@ pub(crate) fn rollup_hosts(conn: &Connection) {
             }
         }
     }
-    // FENÊTRE CHAUDE [recent, now] : ré-agrégée à CHAQUE tick. On remet sig_hot=0 sur TOUTE la table (petite) puis
-    // sig_hot = count de la fenêtre chaude -> aucun double comptage (le count définitif est déjà dans sig_total).
-    // last_ts/first_ts idem via MAX/MIN (idempotents). Le read renvoie sig_total + sig_hot.
+    rollup_hosts_fenetre_chaude(conn, recent, n);
+}
+
+/// FENÊTRE CHAUDE [recent, now] : ré-agrégée à CHAQUE tick. On remet sig_hot=0 sur TOUTE la table (petite) puis
+/// sig_hot = count de la fenêtre chaude -> aucun double comptage (le count définitif est déjà dans sig_total).
+/// last_ts/first_ts idem via MAX/MIN (idempotents). Le read renvoie sig_total + sig_hot.
+fn rollup_hosts_fenetre_chaude(conn: &Connection, recent: i64, n: i64) {
     let _ = conn.execute("UPDATE host_rollup SET sig_hot = 0", []);
     let _ = conn.execute(&host_rollup_upsert_sql(&format!("ts >= {recent}"), HostFold::Hot, n), []);
+}
+
+/// `P10.20-b` — l'étape comptée d'un pli définitif sauté faute de watermark lisible.
+const ETAPE_WATERMARK_NON_LU: &str = "watermark non lu";
+
+/// `P10.32-a` — l'étape comptée d'un rattrapage de flotte sauté faute de plancher lisible.
+const ETAPE_PLANCHER_NON_LU: &str = "plancher de rattrapage non lu";
+
+/// `P10.20-b` — un watermark de `meta` LU, ABSENT (aucune ligne : base neuve, premier passage, ou watermark effacé par
+/// une migration) ou NON LU (lecture ratée, ou valeur non entière : le moteur ou la donnée ne permettent pas de dire où
+/// le job s'est arrêté). Sert `host_rollup_wm` (`rollup_hosts`, `note_host_backfill_floor`), `event_rollup_wm`
+/// (`rollup_events`) et, `P10.32-a`, le plancher `host_rollup_backfill_floor` (`rollup_hosts`).
+enum LectureDeWatermark {
+    Absent,
+    Lu(i64),
+    NonLu(rusqlite::Error),
+}
+
+fn lire_le_watermark_de_flotte(conn: &Connection) -> LectureDeWatermark {
+    lire_un_watermark(conn, "host_rollup_wm")
+}
+
+fn lire_un_watermark(conn: &Connection, cle: &str) -> LectureDeWatermark {
+    match conn.query_row("SELECT value FROM meta WHERE key=?1", params![cle], |r| r.get::<_, String>(0)) {
+        Err(rusqlite::Error::QueryReturnedNoRows) => LectureDeWatermark::Absent,
+        Err(e) => LectureDeWatermark::NonLu(e),
+        Ok(s) => match s.parse::<i64>() {
+            Ok(wm) => LectureDeWatermark::Lu(wm),
+            Err(e) => LectureDeWatermark::NonLu(rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))),
+        },
+    }
 }
 
 /// Le journal des deux plis de `rollup_hosts`, et la première moitié de la clé de leurs refus comptés (`P10.26-d`).
@@ -886,10 +985,17 @@ fn host_rollup_upsert_sql(cond: &str, mode: HostFold, n: i64) -> String {
 /// invisible). Point-read meta indexé (PK) + upsert conditionnel MONOTONE DÉCROISSANT ; N'écrit RIEN quand la
 /// donnée est courante (ts >= wm, cas nominal) -> ZÉRO surcoût ingest en régime normal, AUCUNE ligne
 /// event/metric/snapshot touchée (data-plane byte-identique). rollup_hosts rattrapera [floor, wm) une fois.
+/// `P10.20-b` — un watermark NON LU ne fait plus perdre le plancher : il est noté quand même (écriture monotone
+/// décroissante, rattrapage idempotent en mode Backfill). Avant, ce cas valait 0, `min_ts < 0` était faux et l'arrivée
+/// tardive n'était jamais foldée. Rien n'est dit ici (chemin d'ingest, par lot) : le tick de `rollup_hosts` dit et
+/// compte le watermark non lu, et ne rattrape qu'une fois le watermark relu.
 pub(crate) fn note_host_backfill_floor(conn: &Connection, min_ts: i64) {
-    let wm: i64 = conn.query_row("SELECT value FROM meta WHERE key='host_rollup_wm'", [], |r| r.get::<_, String>(0))
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-    if min_ts < wm {
+    let tardive = match lire_le_watermark_de_flotte(conn) {
+        LectureDeWatermark::Absent => min_ts < 0,
+        LectureDeWatermark::Lu(wm) => min_ts < wm,
+        LectureDeWatermark::NonLu(_) => true,
+    };
+    if tardive {
         let _ = conn.execute(
             "INSERT INTO meta(key,value) VALUES('host_rollup_backfill_floor', ?1) \
              ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE CAST(meta.value AS INTEGER) > CAST(excluded.value AS INTEGER)",

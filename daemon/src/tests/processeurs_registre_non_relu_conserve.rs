@@ -23,7 +23,13 @@
 // règle invalide ; (9) registre uni borné à `PROC_RULE_MAX_TOTAL` ; (10) parcours COMPLET : une règle
 // supprimée et une règle éteinte depuis ne restent pas armées, la non décodée si ; (11) `ord` réel
 // (SQL direct) : la règle est armée au chargement NOMINAL, rien compté ; (12) registre uni : `1.5` est
-// tronqué, départagé de `1` par `id` ; (13) registre uni : `ord` texte et blob passent en dernier.
+// tronqué, départagé de `1` par `id` ; (13) registre uni : `ord` texte et blob passent en dernier ;
+// (14) `enabled` blob (`x'01'`), texte non convertible (`'1abc'`) ou réel (`1.5`) sur une règle MASK en
+// place : la règle reste armée, un event est masqué, rien n'est compté comme lecture ratée ; (15) chemin
+// nominal : l'entier 0 éteint, l'entier 1 arme, une ligne éteinte indécodable n'est pas un échec ;
+// (16) parcours arrêté au plafond (256 règles décodées, une de plus en base) avec une ligne indécodable :
+// tenu pour INCOMPLET, la règle en place supprimée reste armée — alors que le même registre sans plafond
+// atteint (parcours complet) la désarme.
 //
 // MUTANTS JOUÉS (variable d'environnement de mutation, retirés du source avant le commit). Première
 // passe : `M4_ANCIEN` (corps d'origine verbatim) -> (1) (2) (4) (5) rouges ; `M4_FLATTEN` -> (1) (4) (5) ;
@@ -37,14 +43,19 @@
 // `W13_ORD_DANS_DECODE` (lecture faillible de `ord` dans le décodage) -> (11) (13) ; `W11_ORD_REEL_MAX`
 // (`ord` réel en dernier) -> (12) ; `W12_ORD_AUTRE_MIN` (texte et blob en premier) -> (13) ;
 // `M4T1_GARDE_TOUT` (union qui garde tout le registre en place, relu ou non) -> (1), sur le dernier
-// rechargement seulement (le deuxième, registre en place sans règle relue, reste vert).
+// rechargement seulement (le deuxième, registre en place sans règle relue, reste vert). Quatrième passe
+// (`enabled` lu dans la boucle, plafond) : `N7_WHERE_ENABLED` (retour au filtre `WHERE enabled=1`) ->
+// (14) ; `N7_INATTENDU_ETEINT` (type inattendu = éteint) -> (14) ; `N7_ENABLED_APRES_DECODAGE` (`enabled`
+// jugé après le décodage) -> (15) ; `N7_PLAFOND_COMPLET` (plafond tenu pour parcours complet) -> (16).
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : un registre JAMAIS chargé dont la table est illisible reste vide
-// (rien à conserver) ; un parcours arrêté au plafond est tenu pour INCOMPLET (choix prudent, sans
-// témoin qui le distingue de l'autre choix) ; la branche « identifiant illisible » est inatteignable
-// (`id INTEGER PRIMARY KEY`) ; une cellule `enabled` de type inattendu sort toujours la règle par
-// `WHERE enabled=1` ; la console n'affiche pas encore `reload_read_failures` (`web/processors.js`, hors
-// périmètre) ; les messages de stderr ne sont pas témoignés.
+// (rien à conserver ; le remède — refuser de démarrer ou d'ingérer — est hors de `processors.rs`) ; la
+// branche « identifiant illisible » est inatteignable (`id INTEGER PRIMARY KEY`) ; une règle LUE éteinte
+// (`enabled=0`) n'est pas tenue pour relue : sur un parcours incomplet, elle reste armée si elle l'était
+// (précédent `field_filter.rs`, prix assumé) ; une cellule `enabled` de type inattendu n'est comptée nulle
+// part (dite sur stderr seulement, la règle restant active) ; l'affichage de
+// `reload_read_failures` par la console (`web/processors.js`) est jugé par le témoin 140 du harnais
+// console, pas ici ; les messages de stderr ne sont pas témoignés.
 // =====================================================================================
 mod processeurs_registre_non_relu_conserve {
     use super::*;
@@ -377,5 +388,89 @@ mod processeurs_registre_non_relu_conserve {
         processors_reload(&conn, dbp);
         assert_eq!(lectures_ratees(dbp), 1, "contrôle : lecture ratée");
         assert_eq!(ids_du_registre(dbp), Some(vec![ru, rn, rt, rl]), "registre uni : ord texte et blob en dernier");
+    }
+
+    /// (14) `enabled` de type inattendu sur une règle MASK en place : blob, texte non convertible, réel. Le
+    /// filtre `WHERE enabled=1` la sortait du registre sans un mot ; elle reste armée, rien n'est compté.
+    #[test]
+    fn n7_enabled_de_type_inattendu_la_regle_mask_reste_armee() {
+        for (k, (cellule, nature)) in [("x'01'", "blob"), ("'1abc'", "text"), ("1.5", "real")].into_iter().enumerate() {
+            let conn = test_db();
+            let dbp = format!("n7-enabled-inattendu-{k}");
+            let dbp = dbp.as_str();
+            let id = poser(&conn, 0, "source", "eq", "pii", "mask", "message");
+            processors_reload(&conn, dbp);
+            assert_eq!(message_stocke(&conn, dbp, &format!("e{k}a")), "[redacted]", "contrôle : MASK armé ({cellule})");
+            conn.execute(&format!("UPDATE ingest_rule SET enabled={cellule} WHERE id=?1"), [id]).unwrap();
+            let t: String = conn.query_row("SELECT typeof(enabled) FROM ingest_rule WHERE id=?1", [id], |r| r.get(0)).unwrap();
+            assert_eq!(t, nature, "contrôle : enabled={cellule} est bien stocké en {nature}");
+            processors_reload(&conn, dbp);
+            assert_eq!(ids_du_registre(dbp), Some(vec![id]), "enabled={cellule} : la règle reste au registre");
+            assert_eq!(message_stocke(&conn, dbp, &format!("e{k}b")), "[redacted]", "enabled={cellule} : l'event est masqué");
+            assert_eq!(lectures_ratees(dbp), 0, "enabled={cellule} : ligne décodée, aucune lecture ratée");
+            assert_eq!(erreurs(dbp), 0, "enabled={cellule} : aucune règle invalide");
+            // Registre JAMAIS chargé : la règle est armée dès le premier chargement.
+            let neuf = format!("{dbp}-neuf");
+            processors_reload(&conn, &neuf);
+            assert_eq!(ids_du_registre(&neuf), Some(vec![id]), "enabled={cellule} : armée au premier chargement");
+        }
+    }
+
+    /// (15) Chemin nominal : l'entier 0 éteint, l'entier 1 arme ; une ligne ÉTEINTE dont une cellule est
+    /// indécodable n'est pas une lecture ratée (le SQL l'écartait avant, elle ne doit rien compter).
+    #[test]
+    fn n7_enabled_entier_zero_eteint_un_arme_ligne_eteinte_non_comptee() {
+        let conn = test_db();
+        let dbp = "n7-enabled-entier";
+        let a = poser(&conn, 2, "source", "eq", "pii", "mask", "message");
+        let b = poser(&conn, 0, "source", "eq", "pii", "drop", "");
+        let c = poser(&conn, 1, "source", "eq", "pii", "route", "z");
+        let d = poser(&conn, 3, "source", "eq", "app", "route", "y");
+        conn.execute("UPDATE ingest_rule SET enabled=0 WHERE id IN (?1,?2)", [b, c]).unwrap();
+        conn.execute("UPDATE ingest_rule SET match_value=x'ff' WHERE id=?1", [c]).unwrap();
+        let t: String = conn.query_row("SELECT typeof(enabled) FROM ingest_rule WHERE id=?1", [b], |r| r.get(0)).unwrap();
+        assert_eq!(t, "integer", "contrôle : enabled=0 entier");
+        processors_reload(&conn, dbp);
+        assert_eq!(ids_du_registre(dbp), Some(vec![a, d]), "seules les règles d'enabled=1 sont armées, ordre (ord, id)");
+        assert_eq!(lectures_ratees(dbp), 0, "la ligne éteinte indécodable n'est pas une lecture ratée");
+        assert_eq!(erreurs(dbp), 0, "aucune règle invalide");
+        assert_eq!(message_stocke(&conn, dbp, "n15"), "[redacted]", "le DROP éteint ne jette pas, le MASK masque");
+    }
+
+    fn poser_regles_de_remplissage(conn: &Connection, n: usize) {
+        for i in 0..n {
+            poser(conn, 10 + i as i64, "source", "eq", &format!("r{i}"), "route", "e");
+        }
+    }
+
+    /// (16) Un parcours arrêté au PLAFOND est INCOMPLET : les lignes au-delà ne sont pas lues. Registre en
+    /// place x (MASK, supprimée depuis) et y (ROUTE, devenue indécodable) ; en base, 257 règles décodables
+    /// après elles. La lecture rate (y) et s'arrête au plafond : x est gardée. Contrôle : le même registre
+    /// avec 200 règles seulement (parcours complet) désarme x.
+    #[test]
+    fn n7_parcours_arrete_au_plafond_tenu_pour_incomplet() {
+        for (dbp, remplissage, x_gardee) in [("n7-plafond-atteint", PROC_RULE_MAX_TOTAL + 1, true), ("n7-plafond-non-atteint", 200, false)] {
+            let conn = test_db();
+            let x = poser(&conn, 0, "source", "eq", "pii", "mask", "message");
+            let y = poser(&conn, 1, "source", "eq", "pii", "route", "z");
+            processors_reload(&conn, dbp);
+            assert_eq!(ids_du_registre(dbp), Some(vec![x, y]), "{dbp} : contrôle");
+            conn.execute("DELETE FROM ingest_rule WHERE id=?1", [x]).unwrap();
+            conn.execute("UPDATE ingest_rule SET match_value=x'ff' WHERE id=?1", [y]).unwrap();
+            poser_regles_de_remplissage(&conn, remplissage);
+            processors_reload(&conn, dbp);
+            assert_eq!(lectures_ratees(dbp), 1, "{dbp} : contrôle : une ligne indécodable");
+            assert_eq!(erreurs(dbp), 0, "{dbp} : contrôle : aucune règle invalide");
+            let ids = ids_du_registre(dbp).unwrap();
+            if x_gardee {
+                assert_eq!(ids.len(), PROC_RULE_MAX_TOTAL, "{dbp} : registre uni borné au plafond");
+                assert_eq!(&ids[..2], &[x, y], "{dbp} : parcours incomplet, x non relue gardée, y non décodée gardée");
+                assert_eq!(message_stocke(&conn, dbp, "p16"), "[redacted]", "{dbp} : le MASK x tient");
+            } else {
+                assert_eq!(ids.len(), 201, "{dbp} : y + 200 règles");
+                assert_eq!(ids[0], y, "{dbp} : parcours complet, x supprimée désarmée, y non décodée gardée");
+                assert!(!ids.contains(&x), "{dbp} : x supprimée désarmée");
+            }
+        }
     }
 }

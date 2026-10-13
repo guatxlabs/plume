@@ -21,10 +21,40 @@ use crate::*;
 
 /// La surface HTTP de purge est-elle ARMÉE ? Défaut : NON.
 pub(crate) fn purge_api_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(armee) = porte_de_purge_de_temoin::lue() {
+        return armee;
+    }
     matches!(
         cfg(&load_config(), "PLUME_PURGE_API", "").trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+/// Point d'injection de TÉMOIN (`P10.32-b`) : force l'état de la porte sur le FIL COURANT, sans poser
+/// `PLUME_PURGE_API` dans l'environnement du processus (qui ferait courir `purge_http_surface_is_closed_by_default`
+/// et tout fil voisin). Hors `cfg(test)`, ce module n'existe pas : la porte de production ne lit que la
+/// configuration, fermée par défaut. Un `#[tokio::test]` (exécuteur mono-fil) joue la route sur ce même fil.
+#[cfg(test)]
+pub(crate) mod porte_de_purge_de_temoin {
+    use std::cell::Cell;
+    thread_local! {
+        static FORCEE: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+    /// Garde : la porte reprend la lecture de la configuration quand elle tombe, panique comprise.
+    pub(crate) struct Ouverte(());
+    impl Drop for Ouverte {
+        fn drop(&mut self) {
+            FORCEE.with(|f| f.set(None));
+        }
+    }
+    pub(crate) fn ouvrir() -> Ouverte {
+        FORCEE.with(|f| f.set(Some(true)));
+        Ouverte(())
+    }
+    pub(crate) fn lue() -> Option<bool> {
+        FORCEE.with(|f| f.get())
+    }
 }
 
 /// Réponse commune aux deux routes quand la surface n'est pas armée. 403 (et pas 404) : l'opérateur doit

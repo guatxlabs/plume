@@ -20,11 +20,150 @@ use crate::*;
 use guatx_core::soql::{KnowledgeSet, Schema};
 
 // Registre ACTIF par db_path (comme FIELD_FILTERS). VIDE/absent -> mode 0 (aucun KO).
-static KNOWLEDGE: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, Arc<KnowledgeSet>>>> =
+static KNOWLEDGE: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, Arc<RegistreDeSavoir>>>> =
     std::sync::OnceLock::new();
-fn knowledge_cell() -> &'static parking_lot::RwLock<HashMap<String, Arc<KnowledgeSet>>> {
+fn knowledge_cell() -> &'static parking_lot::RwLock<HashMap<String, Arc<RegistreDeSavoir>>> {
     KNOWLEDGE.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
 }
+
+/// Ce qui est publié pour un db_path : le jeu compilé ET les lignes brutes dont il est fait. Les lignes
+/// sont gardées parce que le `KnowledgeSet` du cœur ne rend pas ses alias, types, tags ni macros
+/// énumérables : sans elles, une table dont la lecture rate ne pourrait pas garder SA part du jeu en place
+/// pendant que les autres tables, lues, font foi (`P10.20-b`, `knowledge_reload`).
+struct RegistreDeSavoir {
+    jeu: KnowledgeSet,
+    lignes: LignesDeSavoir,
+}
+
+/// Les lignes décodées des six tables, chacune dans l'ordre de son SQL.
+#[derive(Clone, Default)]
+struct LignesDeSavoir {
+    alias: Vec<(String, String)>,
+    calc: Vec<(String, String)>,
+    eventtype: Vec<(String, String)>,
+    tag: Vec<(String, String, String)>,
+    macros: Vec<(String, String, String)>,
+    auto_lookup: Vec<(String, String, String)>,
+}
+
+impl LignesDeSavoir {
+    /// Construit le jeu dans l'ordre d'avant : alias, calculs, types, tags, macros, auto-lookups, chaque
+    /// table dans l'ordre de ses lignes. Le cœur revalide chaque identifiant (fail-closed : une ligne
+    /// hostile est ignorée, comme avant).
+    fn construire(&self) -> KnowledgeSet {
+        let mut ks = KnowledgeSet::new();
+        for (c, s) in &self.alias {
+            ks.add_alias(c.clone(), s.clone());
+        }
+        for (n, e) in &self.calc {
+            ks.add_calc(n.clone(), e.clone());
+        }
+        for (n, f) in &self.eventtype {
+            ks.add_eventtype(n.clone(), f.clone());
+        }
+        for (l, f, v) in &self.tag {
+            ks.add_tag(l.clone(), f.clone(), v.clone());
+        }
+        for (n, p, b) in &self.macros {
+            let params: Vec<String> = p.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            ks.add_macro(n.clone(), params, b.clone());
+        }
+        for (n, k, o) in &self.auto_lookup {
+            let out: Vec<String> = o.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            ks.add_auto_lookup(n.clone(), k.clone(), out);
+        }
+        ks
+    }
+}
+
+/// Lectures ratées du registre de savoir PAR db_path depuis le démarrage (une par échec : préparation,
+/// pas du moteur, ligne indécodable). En production, l'AVEU est la ligne de stderr qui accompagne chaque
+/// échec : le compte n'est servi ni par `/metrics`, ni par une route, ni par la console (`P10.20-b`, reste
+/// assumé) ; seuls les témoins le relisent (`knowledge_lectures_ratees_de`, `cfg(test)`).
+static KNOWLEDGE_LECTURES_RATEES: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, u64>>> =
+    std::sync::OnceLock::new();
+
+fn compter_une_lecture_de_savoir_ratee(db_path: &str) {
+    *KNOWLEDGE_LECTURES_RATEES
+        .get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
+        .write()
+        .entry(db_path.to_string())
+        .or_insert(0) += 1;
+}
+
+/// Lectures ratées du registre de savoir de `db_path` depuis le démarrage (cf. `KNOWLEDGE_LECTURES_RATEES`).
+/// `cfg(test)` : aucun appelant hors des témoins — le binaire ne la porte pas (la forme de
+/// `control_ledger_verify_export`), plutôt qu'une fonction morte qui avertirait au build de release.
+#[cfg(test)]
+pub(crate) fn knowledge_lectures_ratees_de(db_path: &str) -> u64 {
+    KNOWLEDGE_LECTURES_RATEES
+        .get()
+        .and_then(|m| m.read().get(db_path).copied())
+        .unwrap_or(0)
+}
+
+/// Ce qu'une table a rendu : ses lignes décodées et, s'il y en a, ses échecs (avec la cause du moteur).
+struct LectureDeTable<T> {
+    lignes: Vec<T>,
+    echecs: Vec<String>,
+}
+
+/// Lit une table du registre SANS rien avaler : préparation, pas du moteur et ligne indécodable sont
+/// chacun un échec nommé ; un pas raté arrête le parcours (la suite n'est pas lue, elle n'est pas « vide »).
+fn lire_une_table_de_savoir<T>(
+    conn: &Connection,
+    sql: &str,
+    decoder: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> LectureDeTable<T> {
+    let mut lu = LectureDeTable { lignes: Vec::new(), echecs: Vec::new() };
+    let mut st = match conn.prepare(sql) {
+        Ok(st) => st,
+        Err(e) => {
+            lu.echecs.push(format!("préparation : {e}"));
+            return lu;
+        }
+    };
+    let mut rows = match st.query([]) {
+        Ok(rows) => rows,
+        Err(e) => {
+            lu.echecs.push(format!("parcours : {e}"));
+            return lu;
+        }
+    };
+    loop {
+        match rows.next() {
+            Ok(Some(r)) => match decoder(r) {
+                Ok(t) => lu.lignes.push(t),
+                Err(e) => lu.echecs.push(format!("ligne : {e}")),
+            },
+            Ok(None) => break,
+            Err(e) => {
+                lu.echecs.push(format!("parcours : {e}"));
+                break;
+            }
+        }
+    }
+    lu
+}
+
+/// Ce qui est publié pour UNE table : lue sans échec -> ses lignes (zéro ligne comprise : c'est le vide
+/// posé par l'exploitant) ; échec et part en place -> la part EN PLACE, entière ; échec et rien en place
+/// -> ce qui a été décodé. Les échecs sont versés, nommés par table, dans `echecs`.
+fn retenir_une_table<T: Clone>(
+    table: &'static str,
+    lu: LectureDeTable<T>,
+    en_place: Option<&Vec<T>>,
+    echecs: &mut Vec<(&'static str, String)>,
+) -> Vec<T> {
+    let LectureDeTable { lignes, echecs: ratees } = lu;
+    let retenu = match (ratees.is_empty(), en_place) {
+        (true, _) | (false, None) => lignes,
+        (false, Some(p)) => p.clone(),
+    };
+    echecs.extend(ratees.into_iter().map(|e| (table, e)));
+    retenu
+}
+
 // db_path de COMPILATION (le tenant primaire, mode 0). Posé par `knowledge_reload` au bind/CRUD ; lu par
 // `active_knowledge` sur le chemin d'émission GXQL (qui n'a pas de db_path — l'émission est db-agnostique).
 static KNOWLEDGE_DB: std::sync::OnceLock<parking_lot::RwLock<String>> = std::sync::OnceLock::new();
@@ -106,67 +245,70 @@ pub(crate) fn validate_auto_lookup(name: &str, key_field: &str, out_cols: &[Stri
     guatx_core::soql::to_sql("search", 0, 0, &Schema::events().with_knowledge(ko)).map(|_| ())
 }
 
-/// (Re)charge le registre KO de CE db_path depuis les 4 tables `knowledge_*` (enabled=1), en un `KnowledgeSet`
-/// injecté à la compilation. Idempotent, appelé au bind (comme `field_filters_reload`) et après chaque écriture
-/// CRUD. VIDE -> mode 0. FAIL-SAFE : table absente (base pré-v94) -> registre vide. NE POSE PAS le db_path de
+/// (Re)charge le registre KO de CE db_path depuis les six tables (`knowledge_alias`/`knowledge_calc`/
+/// `knowledge_eventtype`/`knowledge_tag`, v94 ; `macro_def`/`auto_lookup`, v97 ; `enabled=1`), en un
+/// `KnowledgeSet` injecté à la compilation. Idempotent, appelé au bind (comme `field_filters_reload`), par
+/// l'hydratation d'une base tenant et après chaque écriture CRUD. VIDE -> mode 0. NE POSE PAS le db_path de
 /// compilation : l'activation (chemin d'émission db-agnostique) est SÉPARÉE (`knowledge_activate`) pour que le
 /// simple chargement du cache (tests unitaires, DB non-primaire) ne CONTAMINE pas la compilation globale.
+///
+/// UNE LECTURE RATÉE NE RETIRE PAS UN OBJET QU'ELLE N'A PAS RELU (`P10.20-b`, sur le précédent de
+/// `processors_reload`). Avant, chaque table était lue sous `if let Ok(..)` (préparation, parcours) puis
+/// `rows.flatten()`, et le jeu lu REMPLAÇAIT le jeu en place : une table illisible retirait tous ses objets,
+/// une ligne indécodable (cellule blob dans une colonne TEXT) retirait le sien — alias ou macros non résolus,
+/// types et tags qui ne compilent plus, calculs et auto-lookups absents —, sans un mot ni un compte.
+/// Désormais le jugement est PAR TABLE (le `KnowledgeSet` est indexé par nom, pas par identifiant : pas
+/// d'union ligne à ligne) : une table lue sans échec fait foi, zéro ligne comprise (le vide posé par
+/// l'exploitant, mode 0) ; une table dont la préparation, un pas du moteur ou une ligne a raté garde SA
+/// part du jeu en place, entière, et ce qu'elle a décodé n'est pas publié ; s'il n'y avait rien en place
+/// (registre jamais chargé), ce qui a été décodé est publié. Prix assumé, borné à la table en échec : tant
+/// qu'elle rate, un objet supprimé ou éteint dans CETTE table reste appliqué, un objet posé depuis dans
+/// cette table ne l'est pas encore. Chaque échec est dit sur stderr avec la table et la cause du moteur
+/// (hors du verrou du registre) et compté, un par échec, dans `knowledge_lectures_ratees_de(db_path)`.
+///
+/// Table absente = lecture ratée : les chargements du bind et de `PreparedWriter::open` passent par la
+/// porte de schéma (`prepare_schema` : chaîne de migrations jusqu'à `CODE_SCHEMA_MAX`, puis `schema_gaps`
+/// qui refuse une table déclarée absente), donc les six tables existent sur une base servie — leur absence
+/// y est une anomalie, pas une base ancienne. Chemin nominal (aucun échec) : jeu remplacé comme avant,
+/// construit dans le même ordre.
 pub(crate) fn knowledge_reload(conn: &Connection, db_path: &str) {
-    let mut ks = KnowledgeSet::new();
+    let deux = |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?));
+    let trois = |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?));
     // 1) ALIAS canonical -> source
-    if let Ok(mut st) = conn.prepare("SELECT canonical, source FROM knowledge_alias WHERE enabled=1 ORDER BY id") {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-            for (c, s) in rows.flatten() {
-                ks.add_alias(c, s); // le cœur revalide l'ident (fail-closed : une paire hostile est ignorée)
-            }
-        }
-    }
+    let alias = lire_une_table_de_savoir(conn, "SELECT canonical, source FROM knowledge_alias WHERE enabled=1 ORDER BY id", deux);
     // 2) CHAMPS CALCULÉS name = expr (ordre : ord puis id -> un calc peut réutiliser un précédent)
-    if let Ok(mut st) = conn.prepare("SELECT name, expr FROM knowledge_calc WHERE enabled=1 ORDER BY ord, id") {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-            for (n, e) in rows.flatten() {
-                ks.add_calc(n, e);
-            }
-        }
-    }
+    let calc = lire_une_table_de_savoir(conn, "SELECT name, expr FROM knowledge_calc WHERE enabled=1 ORDER BY ord, id", deux);
     // 3) EVENT TYPES name -> filter
-    if let Ok(mut st) = conn.prepare("SELECT name, filter FROM knowledge_eventtype WHERE enabled=1 ORDER BY id") {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-            for (n, f) in rows.flatten() {
-                ks.add_eventtype(n, f);
-            }
-        }
-    }
+    let eventtype = lire_une_table_de_savoir(conn, "SELECT name, filter FROM knowledge_eventtype WHERE enabled=1 ORDER BY id", deux);
     // 4) TAGS label -> (field, value)*
-    if let Ok(mut st) = conn.prepare("SELECT label, field, value FROM knowledge_tag WHERE enabled=1 ORDER BY id") {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
-            for (l, f, v) in rows.flatten() {
-                ks.add_tag(l, f, v);
-            }
-        }
-    }
-    // 5) MACROS (#60) name(params) -> body. FAIL-SAFE : table absente (base pré-v97) -> ignoré. Le cœur
-    // revalide nom/params (add_macro fail-closed : une macro malformée n'est pas installée).
-    if let Ok(mut st) = conn.prepare("SELECT name, params, body FROM macro_def WHERE enabled=1 ORDER BY id") {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
-            for (n, p, b) in rows.flatten() {
-                let params: Vec<String> = p.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                ks.add_macro(n, params, b);
-            }
-        }
-    }
-    // 6) AUTO-LOOKUPS (#60) name + key_field + out_cols. FAIL-SAFE : table absente -> ignoré. Le cœur
-    // revalide les idents (add_auto_lookup fail-closed).
-    if let Ok(mut st) = conn.prepare("SELECT name, key_field, out_cols FROM auto_lookup WHERE enabled=1 ORDER BY id") {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))) {
-            for (n, k, o) in rows.flatten() {
-                let out: Vec<String> = o.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                ks.add_auto_lookup(n, k, out);
-            }
-        }
-    }
-    { let mut w = knowledge_cell().write();
-        w.insert(db_path.to_string(), Arc::new(ks));
+    let tag = lire_une_table_de_savoir(conn, "SELECT label, field, value FROM knowledge_tag WHERE enabled=1 ORDER BY id", trois);
+    // 5) MACROS (#60) name(params) -> body (le cœur revalide nom/params : add_macro fail-closed).
+    let macros = lire_une_table_de_savoir(conn, "SELECT name, params, body FROM macro_def WHERE enabled=1 ORDER BY id", trois);
+    // 6) AUTO-LOOKUPS (#60) name + key_field + out_cols (add_auto_lookup fail-closed).
+    let auto_lookup = lire_une_table_de_savoir(conn, "SELECT name, key_field, out_cols FROM auto_lookup WHERE enabled=1 ORDER BY id", trois);
+    let mut echecs: Vec<(&'static str, String)> = Vec::new();
+    let mut w = knowledge_cell().write();
+    let en_place = w.get(db_path).cloned();
+    let p = en_place.as_deref().map(|r| &r.lignes);
+    let lignes = LignesDeSavoir {
+        alias: retenir_une_table("knowledge_alias", alias, p.map(|l| &l.alias), &mut echecs),
+        calc: retenir_une_table("knowledge_calc", calc, p.map(|l| &l.calc), &mut echecs),
+        eventtype: retenir_une_table("knowledge_eventtype", eventtype, p.map(|l| &l.eventtype), &mut echecs),
+        tag: retenir_une_table("knowledge_tag", tag, p.map(|l| &l.tag), &mut echecs),
+        macros: retenir_une_table("macro_def", macros, p.map(|l| &l.macros), &mut echecs),
+        auto_lookup: retenir_une_table("auto_lookup", auto_lookup, p.map(|l| &l.auto_lookup), &mut echecs),
+    };
+    let jeu = lignes.construire();
+    w.insert(db_path.to_string(), Arc::new(RegistreDeSavoir { jeu, lignes }));
+    drop(w);
+    let suite = if en_place.is_some() {
+        "la part en place de cette table est GARDÉE"
+    } else {
+        "aucun registre en place : seul ce qui a été décodé est publié"
+    };
+    for (table, e) in &echecs {
+        compter_une_lecture_de_savoir_ratee(db_path);
+        eprintln!("[knowledge] lecture ratée de `{table}` (registre de savoir de {db_path}) : {e} — {suite}");
     }
 }
 
@@ -185,7 +327,7 @@ pub(crate) fn effective_knowledge(db_path: &str) -> KnowledgeSet {
     knowledge_cell()
         .read()
         .get(db_path)
-        .map(|a| (**a).clone())
+        .map(|a| a.jeu.clone())
         .unwrap_or_default()
 }
 

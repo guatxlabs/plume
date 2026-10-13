@@ -23597,7 +23597,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // et l'activation et la désactivation de la MFA, faits sans trace d'audit.
       "ai.js › MOTS_DE_L_APPEL_IA_SANS_TRACE", "app.js › MOTS_DU_COMPTE_SANS_TRACE", "idp.js › MOTS_DE_LA_MFA_SANS_TRACE",
       // `P10.31-z` — la table que le témoin 139 pose : le jeton d'installation resté en clair, chemin servi ou non.
-      "app.js › MOTS_DU_JETON_D_INSTALLATION_NON_EFFACE"];
+      "app.js › MOTS_DU_JETON_D_INSTALLATION_NON_EFFACE",
+      // `P10.20-b` — la table que le témoin 140 pose : le registre d'ingestion non relu, gardé en place.
+      "processors.js › MOTS_DU_REGISTRE_NON_RELU"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -28289,6 +28291,161 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvant139) console.log(`(139) EN ÉCHEC — ${echecs.length - echecsAvant139} écart(s), dits ci-dessus`);
   else console.log("(139) OK — `P10.31-z` (console) : une installation dont le démon n'a pas pu effacer le jeton le dit au puits du formulaire, phrase puis chemin servi, la ligne de succès inchangée ; sans chemin servi, la phrase renvoie au journal du démon ; `true` et un champ absent (changement de mot de passe compris) n'en portent aucun ; l'aveu de trace manquante et celui du jeton se lisent ensemble ; deux langues distinctes, l'anglaise sans accent ; la clé du chemin et sa pose sont lues dans l'arbre du démon.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (140) `P10.20-b` (console) — UN REGISTRE D'INGESTION NON RELU SE LIT À L'ÉCRAN DES RÈGLES, LISTE LUE OU NON.
+//
+// CE QUE LE DÉMON SERT (RELU ICI, PAS RECOPIÉ) : `processors_reload` (daemon/src/processors.rs) compte les échecs de
+// LECTURE du registre dans un champ du magasin de compteurs (`w.<champ>.insert(db_path…, echecs.len() as u64)`), à part
+// de celui des règles qui ne compilent pas (`w.<champ>.insert(db_path…, erreurs_de_compilation)`) ; `processors_counters_json`
+// sert chacun sous une clé (`"<clé>": g.<champ>.get(db_path)`). Les deux clés sont DÉRIVÉES de ces trois sites. Ce qu'il
+// PUBLIE sur un échec est relu aussi : registre jamais chargé → seules les règles décodées (`(false, None) => out`), la
+// règle illisible n'est PAS armée ; registre en place → les règles en place non relues sont gardées (`en_place…filter`).
+// La phrase de l'avis doit dire ces DEUX issues — la première version disait « le registre PRÉCÉDENT est conservé »,
+// faux au démarrage comme à l'ouverture d'un tenant.
+//
+// CE QUE LA CONSOLE EN FAISAIT AVANT CE LOT, MESURÉ (b96a8c7b) : `loadProcessors` (web/processors.js) ne lisait que
+// `counters.reload_errors` ; `grep -rn reload_read_failures web/` : zéro. Un registre périmé (règle supprimée ou éteinte
+// encore armée, règle corrompue conservée) se lisait « rien d'anormal ».
+//
+// JUGÉ, DANS LES DEUX LANGUES (instances française et `?plume-lang=en` des modules réels) : (0) la clé lue par la console
+// est celle que le démon sert pour les lectures ratées, distincte de celle des règles invalides ; (a) valeur 1 (la valeur
+// typique : une ligne corrompue) puis 3 → UN avis qui porte le nombre, dit que la lecture a échoué, que les règles
+// appliquées peuvent différer de la table, qu'une règle non relue déjà chargée reste appliquée et qu'une règle non chargée
+// ne l'est PAS — la règle servie reste rendue ; (b) 0 → aucun avis, écran identique à (c) ; (c) champ absent (forme du
+// fixture PROC118) → aucun avis ; (d) avec des règles invalides → les DEUX avis, invalides puis non relu, chacun son
+// nombre ; (f) règles invalides SEULES (`reload_errors: 2`, lectures ratées à 0 puis absentes) → l'avis des règles
+// invalides seul, AUCUN avis de registre non relu — une console qui replierait un compteur sur l'autre crierait « lecture
+// ratée » dès qu'une règle ne compile pas ; (e) branche « règles NON LUES » (`data.error`, corps `{rules: [], error, counters}`
+// que le démon sert quand la liste échoue — ligne indécodable, table absente : le cas COURANT d'un rechargement raté, la
+// liste décodant les mêmes colonnes) → l'aveu de la liste PUIS l'avis, valeur 1 ; champ absent → l'aveu seul ; (faces)
+// fr ≠ en, l'anglaise sans accent.
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; aucune vérification que le démon compte juste (témoin Rust
+// `processeurs_registre_non_relu_conserve.rs`) ; l'avis ne nomme pas QUELLE règle diverge (le démon ne le sert pas).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant140 = echecs.length;
+  const FICHIERS140 = { noyau: "core.js", etat: "state.js", processeurs: "processors.js" };
+  const importer140 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS140)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr140 = await importer140((f) => pathToFileURL(path.join(WEB, f)).href);
+  const langueOrigine140 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn140 = await importer140((f) => adresseSousLaLangue(f));
+  if (langueOrigine140 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine140);
+  const FR140 = { nom: "fr", ...modsFr140, S: modsFr140.etat.S }, EN140 = { nom: "en", ...modsEn140, S: modsEn140.etat.S };
+  const instrument140 = (vrai, quoi) => exiger(vrai, `(140-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic140 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser140 = async (n = 20) => { for (let i = 0; i < n; i++) await tic140(); };
+  const nu140 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const ACCENTS140 = /[éèêàçùôâîÉÈÊÀ]/;
+  const cueillir140 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir140(c, pred, acc)); return acc; };
+  const lireLeDemon140 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const corpsDeFonction140 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+
+  // ══ (0) CE QUE LE DÉMON SERT, RELU DANS SON ARBRE ════════════════════════════════════════════════
+  const PROC140 = lireLeDemon140("processors.rs");
+  const recharge140 = corpsDeFonction140(PROC140, "pub(crate) fn processors_reload(");
+  const compteurs140 = corpsDeFonction140(PROC140, "pub(crate) fn processors_counters_json(");
+  const champ140 = (motif) => { const m = recharge140.match(motif); return m ? m[1] : ""; };
+  const CHAMP_LECTURES140 = champ140(/\bw\.(\w+)\.insert\(db_path\.to_string\(\), echecs\.len\(\) as u64\)/);
+  const CHAMP_INVALIDES140 = champ140(/\bw\.(\w+)\.insert\(db_path\.to_string\(\), erreurs_de_compilation\)/);
+  const cleServie140 = (champ) => { if (!champ) return ""; const m = compteurs140.match(new RegExp("\"([a-z_]+)\": g\\." + champ + "\\.get\\(db_path\\)")); return m ? m[1] : ""; };
+  const CLE140 = cleServie140(CHAMP_LECTURES140), CLE_INVALIDES140 = cleServie140(CHAMP_INVALIDES140);
+  instrument140(/\(false, None\) => out\b/.test(recharge140) && /\ben_place\.iter\(\)\.filter\(garder\)/.test(recharge140),
+    "`processors_reload` (daemon/src/processors.rs) ne publie plus « règles décodées seules » pour un registre jamais chargé ni « règles en place non relues gardées » sinon : la phrase de l'avis (deux issues) est à rejuger");
+  instrument140(!!CLE140 && !!CLE_INVALIDES140 && CLE140 !== CLE_INVALIDES140,
+    `\`processors_reload\` / \`processors_counters_json\` (daemon/src/processors.rs) ne comptent plus les lectures ratées à part des règles invalides, ou ne les servent plus : « ${CLE140} » / « ${CLE_INVALIDES140} »`);
+  for (const L of [FR140, EN140])
+    instrument140(L.processeurs.CLE_DES_LECTURES_RATEES_DU_REGISTRE === CLE140 && typeof L.processeurs.loadProcessors === "function",
+      `${L.nom} : web/processors.js ne lit pas la clé que le démon sert pour les lectures ratées du registre (« ${L.processeurs.CLE_DES_LECTURES_RATEES_DU_REGISTRE} » contre « ${CLE140} »)`);
+  instrument140(FR140.noyau.LANG !== "en" && EN140.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+  const liste140 = document.querySelector("#processor-list");
+  instrument140(!!liste140, "#processor-list (index.html) n'est pas monté");
+
+  const fetchOrigine140 = globalThis.fetch;
+  const etatOrigine140 = [FR140, EN140].map((L) => ({ S: L.S, admin: L.S.isAdmin, auth: L.S.AUTH }));
+  let compteursServis140 = {}, erreurServie140 = null;
+  globalThis.fetch = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    const corps = k === "GET /api/processors" && erreurServie140 !== null
+      ? { rules: [], error: erreurServie140, counters: compteursServis140 }
+      : k === "GET /api/processors"
+      ? { rules: [{ id: 7, name: "regle-servie-140", ord: 0, match_field: "category", match_op: "eq", match_value: "debug", action: "mask", action_arg: "message", enabled: true, managed: 0 }], counters: compteursServis140 }
+      : {};
+    const texte = JSON.stringify(corps);
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  const rendre140 = async (L, compteurs, erreur = null) => {
+    compteursServis140 = { per_rule: {}, totals: {}, ...compteurs }; erreurServie140 = erreur;
+    liste140.replaceChildren();
+    await L.processeurs.loadProcessors(); await laisser140();
+    const nonRelus = cueillir140(liste140, (n) => n.getAttribute && n.getAttribute("data-registre-non-relu") === "1");
+    const invalides = cueillir140(liste140, (n) => n.getAttribute && n.getAttribute("data-regles-invalides") === "1");
+    return { texte: nu140(liste140), nonRelus, invalides, regle: nu140(liste140).includes("regle-servie-140") };
+  };
+
+  const faces140 = {};
+  try {
+    for (const L of [FR140, EN140]) {
+      L.S.isAdmin = true; L.S.AUTH = { user: "alice-140", role: "admin", auth_method: "cookie" };
+      const enTete = L === EN140 ? /^⚠ Ingestion registry read failed/ : /^⚠ Lecture du registre d'ingestion ratée/;
+      const differe = L === EN140 ? /the rules actually applied may differ from the ones in the table/ : /les règles réellement appliquées peuvent différer de celles de la table/;
+      const garde = L === EN140 ? /a rule that was not read back stays applied in its previous version if it was already loaded/ : /une règle non relue reste appliquée dans sa version précédente si elle était déjà chargée/;
+      const nonArmee = L === EN140 ? /is NOT applied otherwise \(registry never loaded, new rule\)/ : /n'est PAS appliquée sinon \(registre jamais chargé, règle nouvelle\)/;
+      const precedent = { test: (t) => garde.test(t) && nonArmee.test(t) };
+      const nonLues = /Règles d'ingestion NON LUES/;
+      const invalide = L === EN140 ? /invalid rule\(s\) ignored/ : /règle\(s\) invalide\(s\) ignorée\(s\)/;
+      // (c) champ absent, puis (b) zéro : aucun avis, écrans identiques.
+      const absent = await rendre140(L, { reload_errors: 0 });
+      exiger(absent.regle && absent.nonRelus.length === 0 && !enTete.test(absent.texte) && !absent.texte.includes("⚠"),
+        `(140c) ${L.nom} : un corps SANS \`${CLE140}\` porte un avis de registre non relu, ou la règle servie n'est plus rendue : « ${absent.texte.slice(0, 300)} »`);
+      const zero = await rendre140(L, { reload_errors: 0, [CLE140]: 0 });
+      exiger(zero.regle && zero.nonRelus.length === 0 && zero.texte === absent.texte,
+        `(140b) ${L.nom} : \`${CLE140}: 0\` change l'écran nominal (avis de registre non relu, ou autre texte) : « ${zero.texte.slice(0, 300)} » contre « ${absent.texte.slice(0, 300)} »`);
+      // (a1) valeur 1, la valeur typique (une ligne corrompue) : un avis, le nombre — le bord `> 0` est jugé.
+      const un = await rendre140(L, { reload_errors: 0, [CLE140]: 1 });
+      const phraseUn = un.nonRelus.length === 1 ? nu140(un.nonRelus[0]) : "";
+      exiger(un.regle && un.nonRelus.length === 1 && enTete.test(phraseUn) && /\b1\b/.test(phraseUn) && precedent.test(phraseUn) && differe.test(phraseUn),
+        `(140a1) ${L.nom} : \`${CLE140}: 1\` (une ligne corrompue) ne rend pas UN avis qui dit la lecture ratée, son nombre et les deux issues : ${un.nonRelus.length} avis, « ${un.texte.slice(0, 400)} »`);
+      // (a) valeur > 0 : un avis, le nombre, la conséquence ; la règle servie reste rendue.
+      const trois = await rendre140(L, { reload_errors: 0, [CLE140]: 3 });
+      const phrase = trois.nonRelus.length === 1 ? nu140(trois.nonRelus[0]) : "";
+      faces140[L.nom] = phrase.replace("3", "{n}");
+      exiger(trois.regle && trois.nonRelus.length === 1 && trois.invalides.length === 0 && enTete.test(phrase) && /\b3\b/.test(phrase) && precedent.test(phrase) && differe.test(phrase) && !invalide.test(trois.texte),
+        `(140a) ${L.nom} : \`${CLE140}: 3\` ne rend pas UN avis qui dit la lecture ratée, son nombre, les règles appliquées qui peuvent différer, la règle non relue gardée si déjà chargée ET non appliquée sinon — ou la liste n'est plus rendue : ${trois.nonRelus.length} avis, « ${trois.texte.slice(0, 400)} »`);
+      exiger(!(L === EN140 && ACCENTS140.test(phrase)), `(140a) en : la face anglaise porte un accent : « ${phrase} »`);
+      // (d) avec des règles invalides : les deux avis, invalides puis non relu.
+      const deux = await rendre140(L, { reload_errors: 2, [CLE140]: 4 });
+      const ordre = deux.invalides.length === 1 && deux.nonRelus.length === 1 && deux.invalides[0].parentNode === deux.nonRelus[0].parentNode
+        ? (() => { const f = deux.invalides[0].parentNode.children; return f.indexOf(deux.invalides[0]) < f.indexOf(deux.nonRelus[0]); })() : false;
+      exiger(deux.regle && ordre && invalide.test(nu140(deux.invalides[0])) && /\b2\b/.test(nu140(deux.invalides[0])) && nu140(deux.nonRelus[0]) === phrase.replace("3", "4"),
+        `(140d) ${L.nom} : règles invalides ET registre non relu ne se lisent pas ENSEMBLE (invalides puis non relu, chacun son nombre) : ${deux.invalides.length} / ${deux.nonRelus.length} avis, « ${deux.texte.slice(0, 500)} »`);
+      // (f) règles invalides SEULES : les deux compteurs restent deux causes — aucun avis de registre non relu.
+      const enTeteLibre = L === EN140 ? "Ingestion registry read failed" : "Lecture du registre d'ingestion ratée";
+      for (const [quoi, compteurs] of [[`${CLE140}: 0`, { reload_errors: 2, [CLE140]: 0 }], [`sans ${CLE140}`, { reload_errors: 2 }]]) {
+        const seules = await rendre140(L, compteurs);
+        exiger(seules.regle && seules.invalides.length === 1 && /\b2\b/.test(nu140(seules.invalides[0])) && invalide.test(nu140(seules.invalides[0])) && seules.nonRelus.length === 0 && !seules.texte.includes(enTeteLibre),
+          `(140f) ${L.nom} : \`reload_errors: 2\`, ${quoi} (règles invalides SEULES) ne rend pas l'avis des règles invalides seul — un avis de registre non relu y est, ou l'avis des invalides manque : ${seules.invalides.length} / ${seules.nonRelus.length} avis, « ${seules.texte.slice(0, 500)} »`);
+      }
+      // (e) branche « règles NON LUES » : la liste a échoué (même décodage que le rechargement) — l'avis s'y lit aussi.
+      const sansListe = await rendre140(L, { reload_errors: 0, [CLE140]: 1 }, "ligne illisible : Invalid column type Integer at index: 5");
+      const posAveu = sansListe.texte.search(nonLues), posAvis = sansListe.texte.indexOf(enTeteLibre);
+      exiger(nonLues.test(sansListe.texte) && !sansListe.regle && sansListe.nonRelus.length === 1 && nu140(sansListe.nonRelus[0]) === phraseUn && posAveu >= 0 && posAvis > posAveu,
+        `(140e) ${L.nom} : corps \`{rules: [], error, counters: {${CLE140}: 1}}\` (liste illisible, le cas courant d'un rechargement raté) ne porte pas l'aveu de la liste PUIS l'avis du registre non relu : ${sansListe.nonRelus.length} avis, aveu à ${posAveu}, avis à ${posAvis}, « ${sansListe.texte.slice(0, 500)} »`);
+      const sansListeNiChamp = await rendre140(L, { reload_errors: 0 }, "no such table: ingest_rule");
+      exiger(nonLues.test(sansListeNiChamp.texte) && sansListeNiChamp.nonRelus.length === 0,
+        `(140e) ${L.nom} : liste illisible SANS \`${CLE140}\` porte un avis de registre non relu, ou perd l'aveu de la liste : « ${sansListeNiChamp.texte.slice(0, 400)} »`);
+    }
+    exiger(!!faces140.fr && !!faces140.en && faces140.fr !== faces140.en, `(140-faces) la face anglaise est la face française — ou l'une manque : ${JSON.stringify(faces140)}`);
+  } finally {
+    globalThis.fetch = fetchOrigine140; erreurServie140 = null;
+    { const neuf140 = document.querySelector("#processor-new"); if (neuf140) { neuf140.removeAttribute("aria-disabled"); neuf140.removeAttribute("title"); } }   // (e) l'a marqué inerte
+    for (const o of etatOrigine140) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; }
+    if (liste140) liste140.replaceChildren();
+  }
+  if (echecs.length !== echecsAvant140) console.log(`(140) EN ÉCHEC — ${echecs.length - echecsAvant140} écart(s), dits ci-dessus`);
+  else console.log("(140) OK — `P10.20-b` (console) : un registre d'ingestion dont la relecture a échoué se lit à l'écran des règles — lecture ratée, nombre (1 compris), règles appliquées qui peuvent différer de la table, règle non relue gardée si déjà chargée et non appliquée sinon (les deux issues relues dans le démon) — la liste servie toujours rendue, et l'avis porté aussi quand la liste elle-même est illisible, après son aveu ; zéro et champ absent laissent l'écran nominal inchangé ; avec des règles invalides, les deux avis se lisent ; des règles invalides seules ne rendent aucun avis de registre non relu ; deux langues distinctes, l'anglaise sans accent ; la clé est dérivée de l'arbre du démon, distincte de celle des règles invalides.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

@@ -992,6 +992,17 @@ pub(crate) struct PurgeReceipt {
     pub(crate) panel_cache_cleared: i64,
 }
 
+/// Contrôles (2) et (3) de `purge_plan` — tier froid puis index plein-texte —, rejoués à l'identique dans la
+/// transaction d'exécution (`P10.32-b`). Une lecture non faite (présence de `cold_seal` ou d'`event_fts`, index
+/// `cold_seal`, trigger `event_ad`) refuse par `PurgeRefusal::Db` en nommant la lecture, comme au plan.
+fn relire_tier_froid_et_index(conn: &Connection, w: PurgeWindow) -> Result<(), PurgeRefusal> {
+    cold_overlap(conn, w)?;
+    if !fts_delete_trigger_ok(conn)? {
+        return Err(PurgeRefusal::FtsDesync);
+    }
+    Ok(())
+}
+
 /// SUPPRESSION DES LIGNES + réconciliation des artefacts DÉRIVÉS, dans la transaction de l'appelant.
 ///
 /// Le paramètre `proof` n'est pas décoratif : son champ `rows_declared` est LU pour vérifier que la base a
@@ -1000,7 +1011,7 @@ pub(crate) struct PurgeReceipt {
 ///
 /// ARTEFACTS DÉRIVÉS traités ICI, dans la MÊME transaction (une purge qui laisserait des agrégats gonflés
 /// des lignes détruites serait une purge qui ment) :
-///  - `event_fts` : maintenu par le trigger `event_ad` (l'absence du trigger est un REFUS en amont) ;
+///  - `event_fts` : maintenu par le trigger `event_ad` (son absence est un REFUS, au plan et relue ci-dessous) ;
 ///  - `event_rollup` / `event_dim_rollup` : les buckets recouvrant la fenêtre sont SUPPRIMÉS puis
 ///    RE-AGRÉGÉS depuis les lignes SURVIVANTES, avec la MÊME borne d'identifiant que la couverture publiée
 ///    (sans cette borne, les lignes `id > couverture` seraient comptées deux fois : une fois dans le rollup
@@ -1018,6 +1029,14 @@ fn purge_delete_rows(
     // n'aboutit donc pas à une purge partielle silencieuse, mais à un refus qui laisse la base intacte.
     let guard = hold_guard(conn)?;
     let (pred, binds) = scope_predicate(&c.scope, &guard);
+
+    // TIER FROID ET INDEX PLEIN-TEXTE RELUS DANS LA TRANSACTION (`P10.32-b`), AVANT le DELETE : mêmes contrôles,
+    // mêmes refus que la simulation. Le jeton ne les couvre pas (l'empreinte ne porte que le périmètre et ses
+    // comptes) : un sceau `cold_seal` posé ou le trigger `event_ad` retiré entre la simulation et le
+    // `BEGIN IMMEDIATE` laissait la confirmation passer, et le DELETE détruisait le chaud pendant que les Parquet
+    // scellés restaient lisibles, ou laissait les postings plein-texte du message purgé. Refus -> l'appelant
+    // ROLLBACK, inscription au registre comprise.
+    relire_tier_froid_et_index(conn, c.scope.window)?;
 
     // CHAÎNE DE PREUVE RELUE DANS LA TRANSACTION (`P10.31-x`, défense en profondeur). Le jeton ne couvre pas les
     // citations (l'empreinte ne porte que le périmètre et ses comptes) : une citation posée entre la simulation

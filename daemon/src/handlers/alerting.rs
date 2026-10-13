@@ -18,6 +18,7 @@
 //!    ed25519 hash-chaîné + event plume-config alertable). Un silence NE PEUT PAS être permanent (TTL max).
 use crate::*;
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
+use rusqlite::OptionalExtension;
 use std::collections::BTreeSet;
 
 // ======================================================================================
@@ -588,6 +589,35 @@ pub(crate) const CAUSE_SILENCE_NON_LEVE_TRANSACTION_NON_OUVERTE: &str = "SILENCE
      RIEN n'est écrit : il ÉTOUFFE TOUJOURS les alertes qu'il vise jusqu'à son échéance, et aucune trace n'est \
      écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
+// `P10.20-b` (rang quatre) — LA CIBLE NON LUE D'UN GESTE SUR UNE ROUTE OU UN SILENCE N'EST PAS « INTROUVABLE ». La
+// forme d'avant lisait l'existence par `query_row(..).is_err()` (ou un `let Ok(..) = .. else`) : toute erreur du
+// moteur valait 404. Absence ÉTABLIE = le 404 d'avant ; lecture ratée = 503 nommé ci-dessous, la cause du moteur au
+// journal seulement, rien d'écrit, la transaction du geste pas encore ouverte.
+/// `P10.20-b` — la politique visée par une modification n'a pas pu être lue (la forme d'avant : 404 « politique
+/// introuvable »).
+pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE_NON_LUE: &str = "POLITIQUE DE NOTIFICATION INCHANGÉE, \
+     POLITIQUE NON LUE : la base n'a pas pu lire la route visée (lecture refusée ou table illisible) — on ne sait pas \
+     si elle existe, et rien n'est écrit : si elle existe, elle garde ses critères et ses canaux d'avant, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+/// `P10.20-b` — la politique visée par une suppression n'a pas pu être lue (la forme d'avant : 404 « politique
+/// introuvable »).
+pub(crate) const CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE_NON_LUE: &str = "POLITIQUE DE NOTIFICATION NON \
+     SUPPRIMÉE, POLITIQUE NON LUE : la base n'a pas pu lire la route visée (lecture refusée ou table illisible) — on \
+     ne sait pas si elle existe, et rien n'est supprimé : si elle existe, elle est toujours là et route toujours les \
+     alertes, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+/// `P10.20-b` — le silence visé par une modification n'a pas pu être lu (la forme d'avant : 404 « silence
+/// introuvable »).
+pub(crate) const CAUSE_SILENCE_INCHANGE_NON_LU: &str = "SILENCE INCHANGÉ, SILENCE NON LU : la base n'a pas pu lire \
+     le silence visé (lecture refusée ou table illisible) — on ne sait pas s'il existe, et rien n'est écrit : s'il \
+     existe, il garde ses critères, son échéance et sa raison d'avant, et aucune trace n'est écrite. Réessayez ; si \
+     le refus persiste, la base est illisible ou verrouillée.";
+/// `P10.20-b` — le silence visé par une levée n'a pas pu être lu (la forme d'avant : 404 « silence introuvable »,
+/// qu'un administrateur qui lève un silence en urgence lisait comme « déjà levé »).
+pub(crate) const CAUSE_SILENCE_NON_LEVE_NON_LU: &str = "SILENCE NON LEVÉ, SILENCE NON LU : la base n'a pas pu lire \
+     le silence visé (lecture refusée ou table illisible) — on ne sait pas s'il existe, et rien n'est supprimé : s'il \
+     existe, il ÉTOUFFE TOUJOURS les alertes qu'il vise jusqu'à son échéance, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+
 pub(crate) async fn policy_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let (matchers, csv, cont, enabled) = match policy_body(&b) {
         Ok(x) => x,
@@ -625,8 +655,14 @@ pub(crate) async fn policy_update(State(st): State<AppState>, Extension(au): Ext
         Err(e) => return bad_req(e),
     };
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM notification_policy WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return not_found("politique introuvable");
+    // `P10.20-b` (rang quatre) — absence ÉTABLIE = le 404 d'avant ; lecture ratée = 503 nommé, rien d'écrit.
+    match conn.query_row("SELECT 1 FROM notification_policy WHERE id=?1", params![id], |_| Ok(())).optional() {
+        Ok(Some(())) => {}
+        Ok(None) => return not_found("politique introuvable"),
+        Err(e) => {
+            eprintln!("[alerting] WARN modification de la politique de notification #{id} refusée : la politique n'a pas pu être lue ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE_NON_LUE);
+        }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "alerting", &format!("modification de la politique de notification #{id}"), CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -654,8 +690,14 @@ pub(crate) async fn policy_update(State(st): State<AppState>, Extension(au): Ext
 
 pub(crate) async fn policy_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM notification_policy WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return not_found("politique introuvable");
+    // `P10.20-b` (rang quatre) — absence ÉTABLIE = le 404 d'avant ; lecture ratée = 503 nommé, rien de supprimé.
+    match conn.query_row("SELECT 1 FROM notification_policy WHERE id=?1", params![id], |_| Ok(())).optional() {
+        Ok(Some(())) => {}
+        Ok(None) => return not_found("politique introuvable"),
+        Err(e) => {
+            eprintln!("[alerting] WARN suppression de la politique de notification #{id} refusée : la politique n'a pas pu être lue ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE_NON_LUE);
+        }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "alerting", &format!("suppression de la politique de notification #{id}"), CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -770,12 +812,22 @@ pub(crate) async fn silence_create(State(st): State<AppState>, Extension(au): Ex
 /// fail-closed : rien n'est persisté si l'audit échoue) — MÊME mécanisme que create/delete.
 pub(crate) async fn silence_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
-    let Ok((old_matchers, old_expires, old_reason)) = conn.query_row(
-        "SELECT matchers, expires_at, COALESCE(reason,'') FROM silence WHERE id=?1",
-        params![id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
-    ) else {
-        return not_found("silence introuvable");
+    // `P10.20-b` (rang quatre) — la forme d'avant (`let Ok(..) = .. else`) rendait 404 sur toute erreur du moteur, et
+    // la garde single-row ne la voyait pas : absence ÉTABLIE = le 404 d'avant ; lecture ratée = 503 nommé, rien d'écrit.
+    let lu = conn
+        .query_row(
+            "SELECT matchers, expires_at, COALESCE(reason,'') FROM silence WHERE id=?1",
+            params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
+        )
+        .optional();
+    let (old_matchers, old_expires, old_reason) = match lu {
+        Ok(Some(t)) => t,
+        Ok(None) => return not_found("silence introuvable"),
+        Err(e) => {
+            eprintln!("[alerting] WARN modification du silence #{id} refusée : le silence n'a pas pu être lu ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_SILENCE_INCHANGE_NON_LU);
+        }
     };
     // Validation COMPLÈTE avant toute écriture : un corps invalide ne modifie rien.
     let matchers_json = match b.get("matchers") {
@@ -831,8 +883,15 @@ pub(crate) async fn silence_update(State(st): State<AppState>, Extension(au): Ex
 
 pub(crate) async fn silence_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM silence WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return not_found("silence introuvable");
+    // `P10.20-b` (rang quatre) — absence ÉTABLIE = le 404 d'avant ; lecture ratée = 503 nommé : le silence n'est PAS
+    // dit absent (donc déjà levé) alors qu'il étouffe peut-être encore.
+    match conn.query_row("SELECT 1 FROM silence WHERE id=?1", params![id], |_| Ok(())).optional() {
+        Ok(Some(())) => {}
+        Ok(None) => return not_found("silence introuvable"),
+        Err(e) => {
+            eprintln!("[alerting] WARN levée du silence #{id} refusée : le silence n'a pas pu être lu ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_SILENCE_NON_LEVE_NON_LU);
+        }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "alerting", &format!("levée du silence #{id}"), CAUSE_SILENCE_NON_LEVE_TRANSACTION_NON_OUVERTE) {
         return refus;

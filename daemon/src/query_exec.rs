@@ -413,9 +413,16 @@ pub(crate) fn with_write<T>(st: &AppState, au: &AuthUser, f: impl FnOnce(&Connec
 //     relire le drapeau : elle pouvait interrompre une connexion déjà rendue au pool).
 // =====================================================================================
 
-/// Rendez-vous entre une lecture et sa garde de budget : `done` sous verrou + condvar de réveil.
+/// État partagé entre une lecture et sa garde : `fini` (la requête a rendu la main, posé par le `Drop`)
+/// et `annulee` (`P10.31-y` : `/api/cancel` a frappé cette requête, posé par `ReveilDeLaGarde`).
+struct EtatDeLaGarde {
+    fini: bool,
+    annulee: bool,
+}
+
+/// Rendez-vous entre une lecture et sa garde de budget : état sous verrou + condvar de réveil.
 struct BudgetGate {
-    done: parking_lot::Mutex<bool>,
+    etat: parking_lot::Mutex<EtatDeLaGarde>,
     woke: parking_lot::Condvar,
 }
 
@@ -431,13 +438,39 @@ pub(crate) struct BudgetGuard {
 impl Drop for BudgetGuard {
     fn drop(&mut self) {
         {
-            let mut done = self.gate.done.lock();
-            *done = true;
+            let mut etat = self.gate.etat.lock();
+            etat.fini = true;
             self.gate.woke.notify_all(); // réveil IMMÉDIAT : plus d'arrondi au tick de sondage
         }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+impl BudgetGuard {
+    /// La prise que le registre d'annulation garde sur CETTE garde (`P10.31-y`).
+    pub(crate) fn reveil(&self) -> ReveilDeLaGarde {
+        ReveilDeLaGarde(self.gate.clone())
+    }
+}
+
+// `P10.31-y` — L'ANNULATION SUBIT LA MÊME PERTE QUE LE BUDGET : ELLE PASSE PAR LA MÊME GARDE.
+// `/api/cancel` appelait `interrupt()` UNE fois. Tombée pendant la préparation ou avant le premier pas,
+// cette interruption est effacée par SQLite exactement comme l'échéance de `P10.31-w`, et la requête
+// annulée courait jusqu'à son budget (5 s, 60 s en interactif). Le registre garde désormais un RÉVEIL
+// de la garde de la requête : l'annulation pose `annulee` sous le verrou de la garde et la réveille, et
+// la garde entre dans la MÊME boucle de réitération que pour une échéance — jusqu'au signal de fin,
+// sous le même verrou, donc rien n'interrompt la connexion après sa sortie de portée. Aucun budget ne
+// change : sans annulation, la garde attend son échéance comme avant.
+#[derive(Clone)]
+pub(crate) struct ReveilDeLaGarde(Arc<BudgetGate>);
+impl ReveilDeLaGarde {
+    /// Fait réitérer la garde dès maintenant, jusqu'à la fin de la requête. Sous le verrou de la garde :
+    /// une garde qui vient de tester sa condition ne peut pas manquer le réveil.
+    pub(crate) fn annuler(&self) {
+        let mut etat = self.0.etat.lock();
+        etat.annulee = true;
+        self.0.woke.notify_all();
     }
 }
 
@@ -468,32 +501,85 @@ pub(crate) fn temoin_des_interruptions_de_ce_fil(temoin: Option<Arc<std::sync::a
     TEMOIN_DES_INTERRUPTIONS.with(|t| *t.borrow_mut() = temoin);
 }
 
-/// Arme la garde : au-delà de `budget_ms` sans fin de requête, `interrupt()` est appelé sur la
-/// connexion dont vient `interrupt`, puis RÉITÉRÉ jusqu'à la fin de requête (`P10.31-w`).
-/// `budget_ms` est plancherisé à 1 ms (un budget nul serait une interruption immédiate, pas une
-/// absence de garde).
-pub(crate) fn budget_guard(interrupt: rusqlite::InterruptHandle, budget_ms: u64) -> BudgetGuard {
-    let gate = Arc::new(BudgetGate { done: parking_lot::Mutex::new(false), woke: parking_lot::Condvar::new() });
-    let g = gate.clone();
-    let budget = Duration::from_millis(budget_ms.max(1));
+// Instrument de TEST seulement (`P10.31-y`) : HORODATE, sur le fil de la garde, chaque `interrupt()`
+// émis, au moment même où il est émis. Le témoin juge l'INTERVALLE entre deux interruptions successives,
+// c'est-à-dire la période RÉELLE de la boucle, tout compris : ni la constante, ni l'argument d'une attente
+// particulière, ni une attente isolée — tout ce que la boucle ferait entre deux interruptions y entre.
+#[cfg(test)]
+thread_local! {
+    static TEMOIN_DE_LA_PERIODE: std::cell::RefCell<Option<Arc<parking_lot::Mutex<Vec<Instant>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn temoin_de_la_periode_de_ce_fil(temoin: Option<Arc<parking_lot::Mutex<Vec<Instant>>>>) {
+    TEMOIN_DE_LA_PERIODE.with(|t| *t.borrow_mut() = temoin);
+}
+
+/// La SEULE prise de la garde sur la connexion : une poignée d'interruption et, dans les tests seulement,
+/// les instruments qui comptent et horodatent chaque interruption (`P10.31-y`). `interrompre` émet
+/// l'interruption PUIS la note, dans la même fonction : une interruption notée est une interruption
+/// émise par cette poignée. Ce n'est pas ce qui tient la période — une note posée sans émission reste
+/// écrivable ici — : le témoin `la_periode_est_jugee_sur_les_interruptions_recues` juge l'EFFET (chaque
+/// `SQLITE_INTERRUPT` rendu par le moteur), qu'aucune note ne fabrique.
+struct Interrupteur {
+    poignee: rusqlite::InterruptHandle,
     #[cfg(test)]
-    let temoin = TEMOIN_DES_INTERRUPTIONS.with(|t| t.borrow().clone());
-    let thread = std::thread::spawn(move || {
-        let mut done = g.done.lock();
-        // `wait_while_for` re-teste la condition après chaque réveil -> immunise contre les réveils
-        // spurieux (une condvar peut réveiller sans notification).
-        let r = g.woke.wait_while_for(&mut done, |d| !*d, budget);
-        if !r.timed_out() || *done {
-            return;
-        }
-        // Échéance passée : interrompre, puis réinterrompre tant que la requête n'a pas signalé sa fin.
-        while !*done {
-            interrupt.interrupt();
+    compte: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    #[cfg(test)]
+    periode: Option<Arc<parking_lot::Mutex<Vec<Instant>>>>,
+}
+impl Interrupteur {
+    /// Emporte les instruments posés sur le fil APPELANT (celui qui arme la garde).
+    fn du_fil_appelant(poignee: rusqlite::InterruptHandle) -> Self {
+        Interrupteur {
+            poignee,
             #[cfg(test)]
-            if let Some(t) = &temoin {
+            compte: TEMOIN_DES_INTERRUPTIONS.with(|t| t.borrow().clone()),
+            #[cfg(test)]
+            periode: TEMOIN_DE_LA_PERIODE.with(|t| t.borrow().clone()),
+        }
+    }
+    fn interrompre(&self) {
+        self.poignee.interrupt();
+        #[cfg(test)]
+        {
+            if let Some(p) = &self.periode {
+                p.lock().push(Instant::now());
+            }
+            if let Some(t) = &self.compte {
                 t.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
-            g.woke.wait_while_for(&mut done, |d| !*d, REITERATION_DE_L_INTERRUPTION);
+        }
+    }
+}
+
+/// Arme la garde : au-delà de `budget_ms` sans fin de requête, ou dès une annulation reçue par
+/// `ReveilDeLaGarde::annuler` (`P10.31-y`), `interrupt()` est appelé sur la connexion dont vient
+/// `interrupt`, puis RÉITÉRÉ jusqu'à la fin de requête (`P10.31-w`). `budget_ms` est plancherisé à
+/// 1 ms (un budget nul serait une interruption immédiate, pas une absence de garde).
+pub(crate) fn budget_guard(interrupt: rusqlite::InterruptHandle, budget_ms: u64) -> BudgetGuard {
+    let gate = Arc::new(BudgetGate {
+        etat: parking_lot::Mutex::new(EtatDeLaGarde { fini: false, annulee: false }),
+        woke: parking_lot::Condvar::new(),
+    });
+    let g = gate.clone();
+    let budget = Duration::from_millis(budget_ms.max(1));
+    let interrupteur = Interrupteur::du_fil_appelant(interrupt);
+    let thread = std::thread::spawn(move || {
+        let mut etat = g.etat.lock();
+        // `wait_while_for` re-teste la condition après chaque réveil -> immunise contre les réveils
+        // spurieux (une condvar peut réveiller sans notification). Elle sort à l'échéance, à la fin
+        // de requête, ou à l'annulation.
+        g.woke.wait_while_for(&mut etat, |e| !e.fini && !e.annulee, budget);
+        if etat.fini {
+            return;
+        }
+        // Échéance passée ou annulation reçue : interrompre, puis réinterrompre tant que la requête
+        // n'a pas signalé sa fin.
+        while !etat.fini {
+            interrupteur.interrompre();
+            let periode = REITERATION_DE_L_INTERRUPTION;
+            g.woke.wait_while_for(&mut etat, |e| !e.fini, periode);
         }
     });
     BudgetGuard { gate, thread: Some(thread) }
@@ -714,6 +800,42 @@ pub(crate) struct CancelEntry {
     slot: u64,
     pub(crate) interrupt: rusqlite::InterruptHandle,
     pub(crate) cancelled: Arc<std::sync::atomic::AtomicBool>,
+    /// `P10.31-y` — le réveil de la garde de la requête : l'annulation la fait réitérer jusqu'à la fin.
+    /// `None` seulement pour une entrée posée sans garde (aucun chemin de lecture ne le fait).
+    reveil: Option<ReveilDeLaGarde>,
+}
+impl CancelEntry {
+    /// LE GESTE DE `/api/cancel`, en un seul endroit (`P10.31-y`). Le drapeau d'abord (c'est lui qui
+    /// classe l'interruption « annulée » et non « budget »), puis le réveil de la garde, qui réitère
+    /// `interrupt()` jusqu'à la fin de la requête — une interruption UNIQUE tombée pendant la
+    /// préparation ou avant le premier pas est effacée par SQLite —, puis une interruption immédiate.
+    pub(crate) fn annuler(&self) {
+        self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(r) = &self.reveil {
+            r.annuler();
+        }
+        self.interrupt.interrupt();
+    }
+}
+/// Ce que le registre retient d'une requête pour pouvoir l'annuler : son drapeau `cancelled` et, pour
+/// une requête sous garde, le réveil de cette garde (`P10.31-y`).
+pub(crate) struct DrapeauDAnnulation {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    reveil: Option<ReveilDeLaGarde>,
+}
+impl DrapeauDAnnulation {
+    pub(crate) fn avec_reveil(cancelled: Arc<std::sync::atomic::AtomicBool>, reveil: ReveilDeLaGarde) -> Self {
+        DrapeauDAnnulation { cancelled, reveil: Some(reveil) }
+    }
+}
+// TESTS seulement : une entrée SANS réveil n'interrompt qu'une fois, c'est-à-dire le défaut d'avant
+// `P10.31-y`. Hors des tests, la seule façon de bâtir l'entrée est `avec_reveil` : un appelant de
+// production qui passerait un drapeau nu ne compile pas.
+#[cfg(test)]
+impl From<Arc<std::sync::atomic::AtomicBool>> for DrapeauDAnnulation {
+    fn from(cancelled: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        DrapeauDAnnulation { cancelled, reveil: None }
+    }
 }
 // MT-KEY: par (db_path, qid) — R5. Le qid est fourni par le CLIENT : deux bases (tenants) peuvent émettre
 // le MÊME qid ; les clé par (db_path, qid) empêche que l'annulation d'une requête sur la base A interrompe
@@ -743,13 +865,72 @@ impl Drop for CancelGuard {
         }
     }
 }
-pub(crate) fn cancel_register(db_path: &str, qid: &str, interrupt: rusqlite::InterruptHandle, cancelled: Arc<std::sync::atomic::AtomicBool>) -> CancelGuard {
+pub(crate) fn cancel_register(db_path: &str, qid: &str, interrupt: rusqlite::InterruptHandle, annulation: impl Into<DrapeauDAnnulation>) -> CancelGuard {
+    let DrapeauDAnnulation { cancelled, reveil } = annulation.into();
     let slot = CANCEL_SLOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reg = QUERY_CANCEL.get_or_init(|| Mutex::new(HashMap::new()));
     { let mut map = reg.lock();
-        map.entry((db_path.to_string(), qid.to_string())).or_default().push(CancelEntry { slot, interrupt, cancelled });
+        map.entry((db_path.to_string(), qid.to_string())).or_default().push(CancelEntry { slot, interrupt, cancelled, reveil });
     }
     CancelGuard { db_path: db_path.to_string(), qid: qid.to_string(), slot }
+}
+
+/// `/api/cancel` : annule TOUTES les requêtes en vol de (db_path, qid) — la page et le COUNT de
+/// pagination — et rend leur nombre. Sous le verrou du registre : une entrée dont le `CancelGuard` est
+/// déjà tombé n'est plus visible, donc rien n'est annulé après la sortie de portée de la requête.
+pub(crate) fn annuler_les_requetes(db_path: &str, qid: &str) -> u32 {
+    let mut n = 0u32;
+    if let Some(reg) = QUERY_CANCEL.get() {
+        let map = reg.lock();
+        if let Some(vec) = map.get(&(db_path.to_string(), qid.to_string())) {
+            for e in vec {
+                e.annuler();
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// `P10.31-y` — LA CAUSE D'UN ÉCHEC D'EXÉCUTION, la même aux trois sites (préparation, `stmt.query`,
+/// pas). Une interruption n'était classée qu'au PAS : tombée pendant l'analyse, elle sortait avec le
+/// texte brut du moteur (« interrupted »). Ordre conservé : le quota de déversement (seul à laisser une
+/// note), puis l'annulation client, sinon le budget. Reconnue par son CODE et non par son texte : une
+/// erreur de préparation recopie les identifiants de la requête, et une colonne nommée `interrupted`
+/// ne doit pas devenir un dépassement de budget. Rend toujours `Err` (forme `Result` pour que chaque site
+/// sorte par `return`, et que les phrases restent lisibles telles quelles par le harnais console).
+#[allow(clippy::needless_return)]
+fn classer_l_echec<T>(e: &rusqlite::Error, cancelled: &std::sync::atomic::AtomicBool, budget: u64) -> Result<T, String> {
+    let interruption =
+        matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::OperationInterrupted);
+    if !interruption {
+        // Le franchissement du budget MÉMOIRE tombe ici (`SQLITE_NOMEM`) : refus d'exploitant, sinon
+        // le texte du moteur tel quel.
+        return Err(sqlite_plafond::message_erreur(e));
+    }
+    // P10.1-b — TROIS CAUSES RENDENT LE MÊME CODE. Le franchissement du quota de déversement arrête
+    // l'instruction par le rappel de progression, donc par une interruption ; il est reconnu D'ABORD
+    // parce qu'il est le seul à laisser une note disant CE QUI a été mesuré. Sans lui, un volume qu'on
+    // vient d'empêcher de se remplir serait rendu à l'analyste comme « budget dépassé ».
+    if let Some(refus) = sqlite_plafond::refus_de_quota_de_deversement() {
+        return Err(refus);
+    }
+    // interrupt() peut venir de /api/cancel (utilisateur) OU de la garde (budget).
+    if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("requête annulée par l'utilisateur".into());
+    }
+    return Err(format!("requête interrompue (budget {} s dépassé)", budget / 1000));
+}
+
+// Instrument de TEST seulement (`P10.31-y`) : un point d'arrêt juste avant la préparation, sur le fil
+// appelant. Il place une annulation ou une échéance AVANT la préparation de façon déterministe.
+#[cfg(test)]
+thread_local! {
+    static AVANT_LA_PREPARATION: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn avant_la_preparation_de_ce_fil(f: Option<Box<dyn FnMut()>>) {
+    AVANT_LA_PREPARATION.with(|h| *h.borrow_mut() = f);
 }
 
 pub(crate) fn run_query(db_path: &str, sql: &str) -> Result<Value, String> {
@@ -775,20 +956,24 @@ pub(crate) fn run_query_ex(db_path: &str, sql: &str, budget_ms: u64, qid: Option
 /// `cancel_key` = clé (db_path) du registre d'annulation. La connexion N'EST PAS rendue au pool ici
 /// (l'appelant en gère le cycle de vie : le pool HOT via `run_query_ex`, la connexion cold via son Drop).
 pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget_ms: u64, qid: Option<&str>) -> Result<Value, String> {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
     let db_path = cancel_key;
 
-    // ANNULATION SERVEUR : enregistre un handle sous `qid` si fourni (RAII, retiré au Drop). `cancelled`
-    // distingue un interrupt() venu de /api/cancel d'un interrupt() venu du watchdog (budget).
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let _cancel_guard = qid.map(|q| cancel_register(db_path, q, conn.get_interrupt_handle(), cancelled.clone()));
-
     // budget temps : la GARDE DE BUDGET interrompt la requête après `budget_ms` (anti-requête-folle).
-    // SEUIL par requête (CHANGEMENT 1) ; mécanisme d'interruption inchangé. Le `Drop` de la garde
-    // (fin de fonction, AVANT `_cancel_guard` qui est déclaré plus haut) signale la fin et joint le
-    // fil : même ordonnancement que l'ancien `done.store(true)` + `watchdog.join()`, sans le sondage.
+    // SEUIL par requête (CHANGEMENT 1) ; mécanisme d'interruption inchangé.
     let budget = budget_ms.max(1);
-    let _budget_guard = budget_guard(conn.get_interrupt_handle(), budget);
+    let budget_guard_de_la_requete = budget_guard(conn.get_interrupt_handle(), budget);
+
+    // ANNULATION SERVEUR : enregistre un handle sous `qid` si fourni (RAII, retiré au Drop). `cancelled`
+    // distingue un interrupt() venu de /api/cancel d'un interrupt() venu de la garde (budget). `P10.31-y` :
+    // l'entrée porte le RÉVEIL de la garde, qui réitère l'interruption d'annulation jusqu'à la fin. Déclarée
+    // APRÈS la garde, elle tombe AVANT elle : l'entrée quitte le registre (plus aucune annulation ne peut
+    // atteindre cette connexion), PUIS la garde est signalée et jointe (plus aucune interruption).
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel_guard = qid.map(|q| {
+        let annulation = DrapeauDAnnulation::avec_reveil(cancelled.clone(), budget_guard_de_la_requete.reveil());
+        cancel_register(db_path, q, conn.get_interrupt_handle(), annulation)
+    });
 
     // P10.1-b — LA NOTE DE QUOTA DE DÉVERSEMENT EST REMISE À ZÉRO AVANT D'EXÉCUTER. Elle est posée par
     // le rappel de progression, sur CE fil ; une note qu'une requête précédente n'aurait pas consommée
@@ -802,7 +987,17 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
         // QUELLE, sauf `SQLITE_NOMEM` — le seul code que le franchissement du budget mémoire peut
         // produire — qui devient un refus d'exploitant (ce qui s'est passé, ce qui n'a PAS été rendu, quoi
         // faire). Sans ça l'analyste lit « out of memory » et n'a aucune action.
-        let mut stmt = conn.prepare(sql).map_err(|e| sqlite_plafond::message_erreur(&e))?;
+        #[cfg(test)]
+        AVANT_LA_PREPARATION.with(|h| {
+            if let Some(f) = h.borrow_mut().as_mut() {
+                f()
+            }
+        });
+        // `P10.31-y` — une interruption pendant l'analyse est CLASSÉE (annulation, quota ou budget).
+        let mut stmt = match conn.prepare(sql) {
+            Ok(stmt) => stmt,
+            Err(e) => return classer_l_echec(&e, &cancelled, budget),
+        };
         if !stmt.readonly() {
             return Err("seules les requêtes en lecture (SELECT/WITH) sont autorisées".into());
         }
@@ -813,7 +1008,11 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
         let max_rows: usize = std::env::var("PLUME_QUERY_MAX").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0 && n <= 100_000).unwrap_or(5000);
         let mut out: Vec<Value> = Vec::new();
         let mut truncated = false;
-        let mut rows = stmt.query([]).map_err(|e| sqlite_plafond::message_erreur(&e))?;
+        // `stmt.query` ne fait que LIER (rusqlite 0.31 : aucun pas) ; classé quand même, par uniformité.
+        let mut rows = match stmt.query([]) {
+            Ok(rows) => rows,
+            Err(e) => return classer_l_echec(&e, &cancelled, budget),
+        };
         loop {
             match rows.next() {
                 Ok(Some(row)) => {
@@ -835,29 +1034,11 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
                     out.push(Value::Array(r));
                 }
                 Ok(None) => break,
-                Err(e) => {
-                    let msg = e.to_string();
-                    if msg.contains("interrupted") {
-                        // P10.1-b — TROIS CAUSES RENDENT LE MÊME CODE. Le franchissement du quota de
-                        // déversement arrête l'instruction par le rappel de progression, donc par une
-                        // interruption ; il est reconnu D'ABORD parce qu'il est le seul à laisser une
-                        // note disant CE QUI a été mesuré. Sans lui, un volume qu'on vient d'empêcher
-                        // de se remplir serait rendu à l'analyste comme « budget dépassé ».
-                        if let Some(refus) = sqlite_plafond::refus_de_quota_de_deversement() {
-                            return Err(refus);
-                        }
-                        // interrupt() peut venir de /api/cancel (utilisateur) OU du watchdog (budget).
-                        if cancelled.load(Ordering::Relaxed) {
-                            return Err("requête annulée par l'utilisateur".into());
-                        }
-                        return Err(format!("requête interrompue (budget {} s dépassé)", budget / 1000));
-                    }
-                    // Le franchissement du budget MÉMOIRE tombe ici : c'est `rows.next()` qui porte le
-                    // `SQLITE_NOMEM` d'un trieur/btree éphémère qui n'a plus le droit d'allouer. On sort en
-                    // ERREUR — `out` est ABANDONNÉ, jamais rendu : un agrégat interrompu serait un chiffre
-                    // faux présenté comme un total.
-                    return Err(sqlite_plafond::message_erreur(&e));
-                }
+                // Le franchissement du budget MÉMOIRE tombe ici : c'est `rows.next()` qui porte le
+                // `SQLITE_NOMEM` d'un trieur/btree éphémère qui n'a plus le droit d'allouer. On sort en
+                // ERREUR — `out` est ABANDONNÉ, jamais rendu : un agrégat interrompu serait un chiffre
+                // faux présenté comme un total. Interruption : quota, annulation ou budget.
+                Err(e) => return classer_l_echec(&e, &cancelled, budget),
             }
         }
         let row_count = out.len();
@@ -879,7 +1060,7 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
     })();
 
     result
-    // Droppés ICI, dans l'ordre inverse de déclaration : d'abord `_budget_guard` (signal + join de la
-    // garde -> l'interruption ne peut plus tomber sur cette connexion), puis `_cancel_guard` (entrée
-    // retirée du registre, même en erreur/timeout).
+    // Droppés ICI, dans l'ordre inverse de déclaration : d'abord `_cancel_guard` (entrée retirée du
+    // registre, même en erreur/timeout : plus aucune annulation ne vise cette connexion), puis la garde
+    // (signal + join -> l'interruption ne peut plus tomber sur cette connexion).
 }

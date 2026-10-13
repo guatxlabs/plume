@@ -422,18 +422,8 @@
         let conn_a = read_conn_get(&pa_path).unwrap();
         let flag_a = Arc::new(AtomicBool::new(false));
         let _cg = cancel_register(&pa_path, "shared-qid", conn_a.get_interrupt_handle(), flag_a.clone());
-        // réplique EXACTE de la clé du handler `cancel` : (req_db_path(&st,&au), qid).
-        let cancel_as = |path: &str| -> u32 {
-            let mut n = 0u32;
-            if let Some(reg) = QUERY_CANCEL.get() {
-                { let map = reg.lock();
-                    if let Some(vec) = map.get(&(path.to_string(), "shared-qid".to_string())) {
-                        for e in vec { e.cancelled.store(true, Ordering::Relaxed); e.interrupt.interrupt(); n += 1; }
-                    }
-                }
-            }
-            n
-        };
+        // le geste même du handler `cancel` (`P10.31-y`) : `annuler_les_requetes(req_db_path(&st,&au), qid)`.
+        let cancel_as = |path: &str| -> u32 { annuler_les_requetes(path, "shared-qid") };
         assert_eq!(cancel_as(&req_db_path(&st, &au_b)), 0, "cancel « as B » n'annule AUCUNE requête de A (qid namespacé par tenant)");
         assert!(!flag_a.load(Ordering::Relaxed), "la requête de A n'est pas annulée par un cancel de B");
         assert_eq!(cancel_as(&req_db_path(&st, &au_a)), 1, "cancel « as A » annule bien la requête de A");

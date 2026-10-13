@@ -1744,7 +1744,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
 }
 
 /// CHANGEMENT 2 — annulation serveur (bouton STOP). Body `{"qid":"..."}` : pose le drapeau `cancelled`
-/// puis appelle `.interrupt()` sur TOUTES les requêtes en vol de ce qid (page + count de pagination) ->
+/// puis fait interrompre jusqu'à leur fin (`P10.31-y`) TOUTES les requêtes en vol de ce qid (page + count de pagination) ->
 /// la requête en cours s'arrête et renvoie « annulé par l'utilisateur » (pas un 500). Idempotent (qid
 /// inconnu/déjà fini -> cancelled:0). Même garde d'auth que /api/query (viewer) via readonly_post.
 pub(crate) async fn cancel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
@@ -1753,19 +1753,10 @@ pub(crate) async fn cancel(State(st): State<AppState>, Extension(au): Extension<
         return bad_req("qid requis");
     }
     // MT-KEY : n'annule QUE les requêtes en vol de CE db_path portant ce qid (jamais celles d'une autre base).
-    let key = (req_db_path(&st, &au), qid.clone());
-    let mut n = 0u32;
-    if let Some(reg) = QUERY_CANCEL.get() {
-        { let map = reg.lock();
-            if let Some(vec) = map.get(&key) {
-                for e in vec {
-                    e.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
-                    e.interrupt.interrupt();
-                    n += 1;
-                }
-            }
-        }
-    }
+    // P10.31-y : `annuler_les_requetes` pose le drapeau ET réveille la garde de chaque requête, qui
+    // réitère l'interruption jusqu'à la fin (une interruption unique tombée avant le premier pas est
+    // effacée par SQLite).
+    let n = annuler_les_requetes(&req_db_path(&st, &au), &qid);
     Json(json!({ "cancelled": n, "qid": qid })).into_response()
 }
 

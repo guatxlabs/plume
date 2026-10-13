@@ -161,9 +161,13 @@ mod garde_de_budget_reiteree {
         assert_eq!(Duration::as_millis(&crate::query_exec::REITERATION_DE_L_INTERRUPTION), 10);
     }
 
-    /// La distinction annulation client / budget reste juste : une annulation (registre `QUERY_CANCEL`,
-    /// réplique du geste de /api/cancel) pendant le parcours, sous un budget non atteint, se dit
-    /// « annulée par l'utilisateur », et la garde n'a rien émis.
+    /// La distinction annulation client / budget reste juste : une annulation (registre `QUERY_CANCEL`)
+    /// pendant le parcours, sous un budget non atteint, se dit « annulée par l'utilisateur », et la garde
+    /// n'a rien émis. Ce n'est PAS le geste de /api/cancel : depuis `P10.31-y`, la route passe par
+    /// `annuler_les_requetes`, qui réveille AUSSI la garde (elle réitère alors, et `n` ne vaudrait plus 0).
+    /// Ici seuls le drapeau et une interruption unique sont posés, à dessein : le témoin juge le CLASSEMENT
+    /// (drapeau lu, pas le budget), et `n == 0` dit seulement que l'échéance n'est pas passée. Le geste
+    /// réel de la route est témoigné dans `annulation_reiteree.rs`.
     #[test]
     fn l_annulation_client_reste_distincte_du_budget() {
         let c = Connection::open_in_memory().unwrap();

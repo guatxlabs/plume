@@ -254,8 +254,8 @@ pub(crate) fn processors_cell() -> &'static parking_lot::RwLock<HashMap<String, 
 /// rechargement : `reload_errors` compte les règles skippées faute de compilation (visible en UI : « N
 /// règles invalides ignorées ») ; `reload_read_failures` compte les échecs de LECTURE de la table
 /// (préparation, parcours, ligne indécodable — `P10.20-b`), à part : pendant un tel échec la règle non
-/// relue reste ARMÉE, elle n'est pas « ignorée ». LIMITE ÉCRITE : servi par `processors_counters_json`,
-/// pas encore affiché par la console (`web/processors.js`).
+/// relue reste ARMÉE, elle n'est pas « ignorée ». Servi par `processors_counters_json`, affiché par la
+/// console (`web/processors.js`, liste lue ou non ; témoin 140 du harnais console).
 #[derive(Default)]
 pub(crate) struct ProcCounterStore {
     pub rules: HashMap<(String, i64), Arc<RuleCounters>>,
@@ -392,6 +392,32 @@ fn ord_de_la_ligne(r: &rusqlite::Row<'_>) -> i64 {
     }
 }
 
+/// `enabled` d'une ligne (colonne 7), lu DANS LA BOUCLE et non par `WHERE enabled=1` : une cellule de type
+/// inattendu (blob ou texte non convertible, que l'affinité `INTEGER` du schéma v83 n'interdit pas, posé
+/// par SQL direct ou corruption) n'égalait pas 1 et sortait la règle du registre sans échec ni compte — un
+/// MASK de redaction désarmé en silence. Précédent : `field_filter.rs`. Seul l'entier 0 éteint ; l'entier 1
+/// arme ; tout le reste laisse la règle ACTIVE (fermé) et le dit sur stderr, par la NATURE de la cellule
+/// seulement, jamais sa valeur.
+fn regle_active(r: &rusqlite::Row<'_>) -> bool {
+    use rusqlite::types::ValueRef;
+    let nature = match r.get_ref(7) {
+        Ok(ValueRef::Integer(0)) => return false,
+        Ok(ValueRef::Integer(1)) => return true,
+        Ok(ValueRef::Integer(_)) => "entier autre que 0 ou 1",
+        Ok(ValueRef::Real(_)) => "réel",
+        Ok(ValueRef::Text(_)) => "texte",
+        Ok(ValueRef::Blob(_)) => "blob",
+        Ok(ValueRef::Null) => "NULL",
+        Err(_) => "illisible",
+    };
+    let qui = match r.get::<_, i64>(0) {
+        Ok(id) => format!("règle #{id}"),
+        Err(_) => "règle d'identifiant illisible".to_string(),
+    };
+    eprintln!("[processor] {qui} : enabled ni 0 ni 1 ({nature}) -> règle gardée ACTIVE");
+    true
+}
+
 fn read_ingest_rule_table(conn: &Connection, db_path: &str) -> IngestRuleTableRead {
     let mut lu = IngestRuleTableRead {
         rules: Vec::new(),
@@ -401,8 +427,10 @@ fn read_ingest_rule_table(conn: &Connection, db_path: &str) -> IngestRuleTableRe
         echecs: Vec::new(),
         parcours_complet: false,
     };
+    // Toutes les lignes, ÉTEINTES comprises : `enabled` est jugé par `regle_active`, pas par le SQL. Même
+    // ordre (`ord`, `id`, `id` unique) : au chemin nominal, mêmes règles dans le même ordre.
     let mut st = match conn.prepare(
-        "SELECT id,match_field,match_op,match_value,action,action_arg,ord FROM ingest_rule WHERE enabled=1 ORDER BY ord, id",
+        "SELECT id,match_field,match_op,match_value,action,action_arg,ord,enabled FROM ingest_rule ORDER BY ord, id",
     ) {
         Ok(st) => st,
         Err(e) => {
@@ -421,8 +449,14 @@ fn read_ingest_rule_table(conn: &Connection, db_path: &str) -> IngestRuleTableRe
     loop {
         match rows.next() {
             Ok(Some(r)) => {
+                // `enabled` AVANT le plafond et le décodage : une ligne éteinte n'est ni comptée au plafond,
+                // ni un échec si elle est indécodable — comme quand le SQL l'écartait.
+                if !regle_active(r) {
+                    continue;
+                }
                 if lu.rules.len() >= PROC_RULE_MAX_TOTAL {
                     eprintln!("[processor] WARN plafond de {PROC_RULE_MAX_TOTAL} règles atteint — règles supplémentaires IGNORÉES");
+                    // Les lignes au-delà ne sont pas lues : le parcours reste INCOMPLET.
                     break;
                 }
                 let decode = || -> rusqlite::Result<(i64, String, String, String, String, String)> {
@@ -498,7 +532,8 @@ fn read_ingest_rule_table(conn: &Connection, db_path: &str) -> IngestRuleTableRe
 /// (mode 0). Table absente = lecture ratée : les deux premiers chargements (bind, `PreparedWriter::open`)
 /// passent par la porte de schéma, donc une base servie est au moins en v86 et `ingest_rule` (v83) y
 /// existe — son absence est une anomalie, pas une base ancienne. Chemin nominal (aucun échec) : registre
-/// remplacé comme avant.
+/// remplacé comme avant. `enabled` est jugé ligne par ligne (`regle_active`) : seul l'entier 0 éteint une
+/// règle, une cellule de type inattendu la laisse ACTIVE.
 pub(crate) fn processors_reload(conn: &Connection, db_path: &str) {
     let IngestRuleTableRead { rules: out, relus, lus_non_decodes, erreurs_de_compilation, echecs, parcours_complet } =
         read_ingest_rule_table(conn, db_path);

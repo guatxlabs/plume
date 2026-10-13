@@ -277,9 +277,13 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # garde — 45 sites sur 22 fichiers (chacun perd son site ; `token_delete` était le dernier de `tokens.rs`, qui SORT du
 # relevé ; `idp.rs` reste par `load_provider` et `ldap_login_post`). Même règle : 45 -> 31 (69 % = 31,05), 22 -> 14
 # (65 % = 14,3).
-RELEVE_SITES = 45
+# RE-DÉRIVÉS le 2026-10-13 (`P10.20-b`, rang quatre : `policy_update`, `policy_delete`, `silence_delete`) : relevé de
+# l'arbre ce jour-là, après le correctif, MESURÉ par cette garde — 42 sites sur 22 fichiers (chacun perd son site ;
+# aucun fichier ne sort : `alerting.rs` garde `run_advanced_rules`). Même règle : 42 -> 28 (69 % = 28,98), 22 -> 14
+# (65 % = 14,3).
+RELEVE_SITES = 42
 RELEVE_FICHIERS = 22
-PLANCHER_SITES = 31
+PLANCHER_SITES = 28
 PLANCHER_FICHIERS = 14
 
 # ================================================================================================
@@ -426,9 +430,13 @@ DEFAUTS_RANG_3_INTERNE = {
 DEFAUTS_RANG_4_FAIL_CLOSED = {
     ("daemon/src/handlers/ai.rs", "ai_provider_delete"): ("ok",),
     ("daemon/src/handlers/ai.rs", "ai_provider_update"): ("ok",),
-    ("daemon/src/handlers/alerting.rs", "policy_delete"): ("is_err",),
-    ("daemon/src/handlers/alerting.rs", "policy_update"): ("is_err",),
-    ("daemon/src/handlers/alerting.rs", "silence_delete"): ("is_err",),
+    # TROIS ENTRÉES RETIRÉES PAR `P10.20-b` (rang quatre, 2026-10-13) : `alerting.rs::policy_update`,
+    # `policy_delete`, `silence_delete` (`is_err`) — une lecture ratée de la route ou du silence visé rendait
+    # 404 « introuvable », et l'administrateur qui levait un silence en urgence le lisait déjà levé. Elles sont lues
+    # en `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503 nommé
+    # (`CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE_NON_LUE`, `…_NON_SUPPRIMEE_NON_LUE`, `CAUSE_SILENCE_NON_LEVE_NON_LU`),
+    # rien d'écrit. Leur voisin `silence_update` (`let Ok(..) = .. else`, forme que cette garde ne voit pas) est
+    # rallié par le même geste (`CAUSE_SILENCE_INCHANGE_NON_LU`). `alerting.rs` reste au relevé par `run_advanced_rules`.
     # `P10.29-b` — TROIS ENTRÉES RETIRÉES (2026-09-25), PARCE QUE LES QUATRE SITES SONT CORRIGÉS : `case_link_add` et
     # `case_item_add` (`is_err`) et les deux lectures de `case_merge` (`ok`, désormais `juger_la_fusion`) séparent
     # l'absence ÉTABLIE (`QueryReturnedNoRows`, 404 nommé) de la lecture refusée (503 nommé). MESURÉ sur la forme

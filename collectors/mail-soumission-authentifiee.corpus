@@ -1,0 +1,19 @@
+# =================================================================================================
+# L'ENVOI AUTHENTIFIÉ RÉUSSI QUE `collectors/mail.sh` DOIT CLASSER — `P10.32-f`
+#
+# Le capteur n'émettait que les ÉCHECS SASL de smtpd : un compte volé qui s'authentifie puis envoie
+# ne laissait rien. smtpd écrit, quand un client AUTHENTIFIÉ ouvre un message (`smtpd.c`) :
+#   `<file>: client=<nom>[<adresse>][:<port>], sasl_method=<mécanisme>, sasl_username=<nom>[, sasl_sender=<…>]`
+# Événement `auth`/`success`, service `postfix` (celui des échecs SASL), utilisateur = le nom que le
+# serveur SASL a ACCEPTÉ, `method` = le mécanisme. Lu sous l'étiquette de smtpd et en tête du message
+# seulement. Aucune de ces lignes n'apparaît dans le journal relevé (provenance `gabarit`).
+# Format et provenances : `collectors/mail-opendkim.corpus`.
+# =================================================================================================
+auth/success	1	service=postfix;user=alice@example.test;src_ip=192.0.2.50;method=PLAIN	gabarit	2026-10-14T05:00:01.100000+02:00 mx1 postfix/submission/smtpd[3500201]: 5A2B3C4D5E1: client=unknown[192.0.2.50], sasl_method=PLAIN, sasl_username=alice@example.test
+auth/success	1	service=postfix;user=bob@example.test;src_ip=2001:db8::51;method=LOGIN	gabarit	2026-10-14T05:00:02.100000+02:00 mx1 postfix/submissions/smtpd[3500202]: 5A2B3C4D5E2: client=host.example.org[2001:db8::51], sasl_method=LOGIN, sasl_username=bob@example.test
+auth/success	1	service=postfix;user=carol@example.test;src_ip=192.0.2.52;method=PLAIN	gabarit	2026-10-14T05:00:03.100000+02:00 mx1 postfix/submission/smtpd[3500203]: 5A2B3C4D5E3: client=unknown[192.0.2.52]:51234, sasl_method=PLAIN, sasl_username=carol@example.test, sasl_sender=carol.alias@example.test
+auth/success	1	service=postfix;user=dave@example.test;src_ip=192.0.2.53;method=PLAIN	gabarit	2026-10-14T05:00:04.100000+02:00 mx1 postfix/smtpd[3500204]: 5A2B3C4D5E4: client=mx.example.org[192.0.2.53], sasl_method=PLAIN, sasl_username=dave@example.test, orig_queue_id=5A2B3C4D5E0, orig_client=unknown[192.0.2.99]
+# --- pas un envoi authentifié : rien ------------------------------------------------------------
+aucun	-	-	gabarit	2026-10-14T05:01:01.100000+02:00 mx1 postfix/smtpd[3500205]: 5A2B3C4D5E5: client=mta1.relay.example.org[198.51.100.31]
+aucun	-	-	fabriquee	2026-10-14T05:01:02.100000+02:00 mx1 postfix/submission/smtpd[3500206]: warning: non-SMTP command from unknown[192.0.2.54]: GET /X: client=unknown[192.0.2.9], sasl_method=PLAIN, sasl_username=ceo@example.test HTTP/1.1
+aucun	-	-	fabriquee	2026-10-14T05:01:03.100000+02:00 mx1 dovecot: imap-login: Disconnected: X: client=unknown[192.0.2.9], sasl_method=PLAIN, sasl_username=ceo@example.test, rip=192.0.2.55

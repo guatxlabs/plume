@@ -388,7 +388,9 @@ def banc_mail(bac, env):
         lignes.append(ligne)
         attendus.append({"message": ligne})
     _ecrire(os.path.join(bac, "mail.log"), "\n".join(lignes) + "\n")
-    env.update(PLUME_MAIL_SRC="file", PLUME_MAIL_LOG=os.path.join(bac, "mail.log"), PLUME_MAIL_MAX="1000")
+    # P10.32-f — le journal ClamAV de l'hôte n'est pas ce banc : sa lecture est coupée.
+    env.update(PLUME_MAIL_SRC="file", PLUME_MAIL_LOG=os.path.join(bac, "mail.log"), PLUME_MAIL_MAX="1000",
+               PLUME_MAIL_CLAMAV_LOG="", PLUME_MAIL_FRESHCLAM_LOG="")
     return attendus
 
 

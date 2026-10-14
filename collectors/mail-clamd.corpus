@@ -1,0 +1,36 @@
+# =================================================================================================
+# LE JOURNAL DE CLAMD QUE `collectors/mail.sh` DOIT CLASSER — `P10.32-f`
+#
+# POURQUOI CE FICHIER EXISTE. Le capteur ne lisait que le verdict d'AMAVIS ; le journal propre de clamd
+# (`/var/log/mail/clamav.log` dans docker-mailserver, `/var/log/clamav/clamav.log` sur un hôte Debian)
+# n'était lu par rien : un rechargement de base raté, un auto-contrôle en échec, une base trop vieille
+# laissaient un antivirus aveugle sans un mot.
+# LA FORME DE LA LIGNE (`LogTime yes`) : `<Jour> <Mois> <jj> <hh:mm:ss> <aaaa> -> <message>`, le jour
+# du mois complété par une ESPACE sous dix. L'heure est MURALE, sans décalage : le témoin attend
+# `heure murale − décalage`, le décalage étant celui de la dernière ligne de mail.log du passage.
+# CE QUI EST CLASSÉ : `<chemin>: <signature> FOUND` (malware/infected, sévérité 4, `virus`) ;
+# `ERROR: …` et `LibClamAV Error: …` (av_error ; `selfcheck_failed` s'il s'agit de l'auto-contrôle,
+# `reload_failed` d'un rechargement, `error` sinon) ; `<chemin>: <raison> ERROR` (av_error/scan_error :
+# un fichier NON examiné) ; `… virus database is older than …` (update/database_stale) ;
+# `Database correctly reloaded (…)` (update/reloaded, sévérité 1 : la preuve que l'antivirus vit).
+# Format et provenances : `collectors/mail-opendkim.corpus`. Les formes d'échec n'apparaissent pas
+# dans le journal relevé (aucun échec sur la période) : provenance `fabriquee`, sur la forme de
+# préfixe que clamd écrit (`logg("!…")` -> `ERROR: `).
+# =================================================================================================
+aucun	-	-	mesuree-dms	Sun Oct 11 06:28:24 2026 -> SIGHUP caught: re-opening log file.
+aucun	-	-	mesuree-dms	Sun Oct 11 12:00:08 2026 -> Reading databases from /var/lib/clamav
+update/reloaded	1	service=clamd	mesuree-dms	Sun Oct 11 12:00:23 2026 -> Database correctly reloaded (3628164 signatures)
+aucun	-	-	mesuree-dms	Sun Oct 11 12:00:23 2026 -> Activating the newly loaded database...
+update/reloaded	1	service=clamd	mesuree-dms	Tue Oct 13 12:00:24 2026 -> Database correctly reloaded (3628167 signatures)
+malware/infected	4	service=clamd;virus=Eicar-Test-Signature	enonce	Wed Oct 14 09:15:02 2026 -> /var/lib/amavis/tmp/amavis-20261014T091502-01234-abcd/parts/p002: Eicar-Test-Signature FOUND
+malware/infected	4	service=clamd;virus=Win.Test.EICAR_HDB-1	fabriquee	Wed Oct 14 09:15:03 2026 -> /srv/uploads/a: Fake FOUND.txt: Win.Test.EICAR_HDB-1 FOUND
+av_error/error	3	service=clamd	enonce	Wed Oct 14 09:20:01 2026 -> ERROR: Can't open/parse the config file /etc/clamav/clamd.conf
+av_error/selfcheck_failed	3	service=clamd	enonce	Wed Oct 14 09:20:02 2026 -> ERROR: SelfCheck: Database status check failed
+av_error/reload_failed	3	service=clamd	enonce	Wed Oct 14 09:20:03 2026 -> ERROR: reload_th: Database load failed: Malformed database
+av_error/error	3	service=clamd	fabriquee	Wed Oct 14 09:20:04 2026 -> LibClamAV Error: cli_loaddbdir(): No supported database files found in /var/lib/clamav
+av_error/scan_error	3	service=clamd	fabriquee	Wed Oct 14 09:20:05 2026 -> /var/lib/amavis/tmp/amavis-20261014T092005-01235-abce/parts/p003: Can't open file or directory ERROR
+update/database_stale	3	service=clamd	enonce	Sun Oct  4 06:28:24 2026 -> LibClamAV Warning: ***  The virus database is older than 7 days!  ***
+# --- rien : succès d'auto-contrôle, avertissements de configuration, ligne sans horodatage ------
+aucun	-	-	fabriquee	Wed Oct 14 09:30:01 2026 -> SelfCheck: Database status OK.
+aucun	-	-	fabriquee	Wed Oct 14 09:30:02 2026 -> WARNING: Ignoring deprecated option ScanOnAccess
+aucun	-	-	fabriquee	/srv/uploads/b: Eicar-Test-Signature FOUND

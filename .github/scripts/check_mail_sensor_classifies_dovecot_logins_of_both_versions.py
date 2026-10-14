@@ -637,8 +637,10 @@ EXIGENCES_CLIENT = [
     ("P10.22-v : un `user=<…>` écrit par le client", lambda e: _client(e, "user=<")),
     ("P10.22-v : un texte du client dans une pré-salutation postscreen",
      lambda e: _client(e, "PREGREET") and e["famille"] == "postscreen"),
-    ("P10.22-v : l'échec SASL du relais SORTANT, jamais compté",
-     lambda e: e["famille"] == "smtp" and "SASL authentication failed" in e["ligne"] and e["verdict"] == "aucun"),
+    # P10.22-v — l'échec SASL du relais SORTANT, jamais compté comme un échec d'authentification : depuis
+    # P10.32-f, le capteur émet le courrier sortant, et cette exigence est tenue par le corpus et le témoin
+    # du sortant (`collectors/mail-sortant-postfix-smtp.corpus`,
+    # `check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py`), qui exigent la même ligne.
 ] + [
     # P10.23-f et P10.23-g — chaque forme bloquante de postscreen, lue en tête de son message (deux noms
     # pour la liste de refus) ; chaque forme non bloquante, qui n'est rien.
@@ -1233,6 +1235,8 @@ def lancer(chemin_awk, entrees, epargnee=None):
             PATH=rep["bin"] + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
             PLUME_LIB=LIB, PLUME_SPOOL=rep["spool"], PLUME_STATE=rep["state"],
             PLUME_MAIL_SRC="file", PLUME_MAIL_LOG=journal, PLUME_MAIL_MAX=str(len(entrees) + 10),
+            # P10.32-f — le journal ClamAV de l'hôte n'est pas ce corpus : sa lecture est coupée.
+            PLUME_MAIL_CLAMAV_LOG="", PLUME_MAIL_FRESHCLAM_LOG="",
             LC_ALL="C.UTF-8",
         )
         if epargnee:

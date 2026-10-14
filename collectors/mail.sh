@@ -1,59 +1,101 @@
 #!/bin/sh
 # plume-source: mail
-# plume-emits: fields=action,collector,filters,note,rcpt,score,sender,service,size,truncated,type,user,verdict,virus
+# plume-emits: fields=action,collector,domain,dsn,filters,method,note,nrcpt,rcpt,rcpt_domain,relay,score,sender,service,size,truncated,type,user,verdict,virus
 # Capteur Plume (PLUGIN, OPT-IN) : logs MAILSERVER -> events source=mail.
 # docker-mailserver logge dans un FICHIER du pod (/var/log/mail/mail.log), PAS dans journald hote
 # -> invisible des autres capteurs (d'ou "je ne vois pas les logs mail dans le SOC"). Ce capteur le
-# lit (k3s exec, ou fichier en natif/container) et emet les events SECURITE : connexions reussies,
+# lit (k3s exec, docker exec, ou fichier en natif) et emet les events SECURITE : connexions reussies,
 # echecs d'auth, rejets, postscreen, + verdicts ANTIVIRUS ClamAV/amavis (virus detecte, piece
 # jointe bannie, panne du scanner). Champs PARSES (qui=src_ip/user, quand=ts, ou=service,
 # comment=action) -> groupables en GXQL ( | stats count by action / by src_ip / by user ).
-# Mode-aware : PLUME_MAIL_SRC=k3s|file. OPT-IN (non actif par defaut). Lecture seule, aucune action.
+# Mode-aware : PLUME_MAIL_SRC=k3s|docker|file. OPT-IN (non actif par defaut). Lecture seule, aucune action.
+#
+# P10.32-f — LA SURFACE QUE LE CAPTEUR NE LISAIT PAS, constatee sur un journal docker-mailserver reel :
+# seuls dovecot, smtpd, postscreen et amavis etaient lus. Rien n'etait emis pour les
+# verdicts d'authentification de l'EXPEDITEUR (opendkim, opendmarc, policyd-spf), le courrier SORTANT
+# (`postfix/smtp`), la file (`postfix/qmgr`), l'envoi AUTHENTIFIE REUSSI (`client=…, sasl_method=…`),
+# ni le journal propre de ClamAV (clamd, freshclam) : une usurpation, un compte vole qui envoie, une
+# base antivirale perimee etaient invisibles. Ces familles sont lues ici, sous leur etiquette et en
+# tete de leur message, comme les quatre autres (corpus `collectors/mail-*.corpus`, temoin
+# `.github/scripts/check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py`).
+# Categories, toutes du CIM : `mail` (verdicts DKIM/DMARC/SPF, sortant, file), `auth` (envoi
+# authentifie reussi), `malware`/`av_error`/`update` (journal ClamAV). La SEVERITE distingue l'echec
+# du succes : 1 pour un succes ou une absence de verdict, 2 pour un echec temporaire ou un report, 3
+# pour un echec (signature fausse, DMARC/SPF `fail`, rebond sortant), 4 pour un virus trouve.
+# CONFIDENTIALITE DU SORTANT : seul le DOMAINE du destinataire est un champ, et le message emis est
+# la ligne dont chaque partie locale d'adresse est remplacee par `*` (`masquer_adresses`).
 #
 # Horodatage : le log est en ISO avec offset (+02:00) ; l'epoch UTC = mktime(heure) - offset, avec
 # TZ=UTC pour que mktime interprete l'heure en UTC quel que soit le fuseau de l'hote.
+# Le journal ClamAV (`LogTime yes`) porte une heure MURALE sans decalage (`Wed Oct 14 00:00:02 2026 ->`) :
+# son decalage est PLUME_MAIL_CLAMAV_UTC_OFFSET, sinon celui de la derniere ligne de mail.log lue au meme
+# passage (meme conteneur, meme fuseau), sinon +00:00. Son filigrane est `<heure murale> <lignes deja vues
+# a cette seconde>` : l'heure n'a que la seconde, et sept lignes de freshclam partagent la meme.
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
-MAILSRC="${PLUME_MAIL_SRC:-k3s}"                       # k3s (kubectl exec) | file (chemin local)
+MAILSRC="${PLUME_MAIL_SRC:-k3s}"                       # k3s (kubectl exec) | docker (docker exec) | file (chemin local)
 MAIL_NS="${PLUME_MAIL_NS:-mail}"
 MAIL_SEL="${PLUME_MAIL_SELECTOR:-app=mailserver}"
-MAIL_CONTAINER="${PLUME_MAIL_CONTAINER:-mailserver}"
+MAIL_CONTAINER="${PLUME_MAIL_CONTAINER:-mailserver}"   # conteneur du pod (k3s) ou nom du conteneur (docker)
 MAIL_LOG="${PLUME_MAIL_LOG:-/var/log/mail/mail.log}"
 MAX="${PLUME_MAIL_MAX:-3000}"                          # lignes lues par passage (garde-fou)
 SKIPIP="${PLUME_MAIL_SKIP_IP:-}"                        # IP à ignorer (ex node/self : probes internes bruyantes)
 WM="$STATE_DIR/mail.watermark"                       # dernier epoch traite (incremental)
 last=$(cat "$WM" 2>/dev/null || echo 0)
+# P10.32-f — LE JOURNAL CLAMAV, une source par demon. Defaut par mode : docker-mailserver (k3s, docker)
+# l'ecrit sous /var/log/mail/, un hote natif Debian/Ubuntu sous /var/log/clamav/. Une variable posee VIDE
+# coupe la lecture ; un fichier ABSENT au chemin par defaut est un hote sans ClamAV (dit dans l'enveloppe
+# de config, pas avoue) ; un chemin POSE que la lecture ne rend pas est avoue (`plume_lecture_partielle`).
+case "$MAILSRC" in file) _clam_rep=/var/log/clamav ;; *) _clam_rep=/var/log/mail ;; esac
+CLAMD_LOG="${PLUME_MAIL_CLAMAV_LOG-$_clam_rep/clamav.log}"
+FRESHCLAM_LOG="${PLUME_MAIL_FRESHCLAM_LOG-$_clam_rep/freshclam.log}"
+CLAMD_POSE="${PLUME_MAIL_CLAMAV_LOG+1}"
+FRESHCLAM_POSE="${PLUME_MAIL_FRESHCLAM_LOG+1}"
+CLAM_DECALAGE="${PLUME_MAIL_CLAMAV_UTC_OFFSET:-}"      # ex. +02:00 ; vide = celui de mail.log
 
-read_log() {
+# lire_journal <chemin> — les MAX dernieres lignes d'un journal du serveur mail, dans le mode choisi.
+# Code 3 : le fichier n'existe pas (dit par la source elle-meme, `[ -e ]` joue LA OU le journal vit) ;
+# tout autre echec : source injoignable ou illisible. Le code de la commande distante est celui que
+# `kubectl exec` et `docker exec` rendent.
+_LIRE_JOURNAL='[ -e "$1" ] || exit 3; tail -n "$2" "$1"'
+_pod=""
+if [ "$MAILSRC" = k3s ]; then
+  KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
+  if command -v "${KC%% *}" >/dev/null 2>&1; then
+    _pod=$($KC -n "$MAIL_NS" get pod -l "$MAIL_SEL" -o name 2>/dev/null | head -1) || _pod=""
+  fi
+fi
+lire_journal() {
   case "$MAILSRC" in
     k3s)
-      KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
-      command -v "${KC%% *}" >/dev/null 2>&1 || return 1
-      pod=$($KC -n "$MAIL_NS" get pod -l "$MAIL_SEL" -o name 2>/dev/null | head -1)
-      [ -n "$pod" ] || return 1
-      $KC -n "$MAIL_NS" exec "$pod" -c "$MAIL_CONTAINER" -- tail -n "$MAX" "$MAIL_LOG" 2>/dev/null
+      [ -n "$_pod" ] || return 1
+      $KC -n "$MAIL_NS" exec "$_pod" -c "$MAIL_CONTAINER" -- sh -c "$_LIRE_JOURNAL" lire "$1" "$MAX" 2>/dev/null
+      ;;
+    docker)
+      command -v docker >/dev/null 2>&1 || return 1
+      docker exec "$MAIL_CONTAINER" sh -c "$_LIRE_JOURNAL" lire "$1" "$MAX" 2>/dev/null
       ;;
     file)
-      [ -r "$MAIL_LOG" ] || return 1
-      tail -n "$MAX" "$MAIL_LOG" 2>/dev/null
+      sh -c "$_LIRE_JOURNAL" lire "$1" "$MAX" 2>/dev/null
       ;;
     *) return 1 ;;
   esac
 }
 
+
 # S36 — meme distinction, dite avec le mot de la famille (cf. `web.sh`) : le routage etait deja le
 # bon, la primitive y ajoute le rejet des marqueurs en attente.
-raw=$(read_log) || plume_lecture_echouee mail source_illisible "source de log mail illisible (PLUME_MAIL_SRC=$MAILSRC) : ni fichier lisible, ni pod joignable"
-[ -n "$raw" ] || plume_exit_nodata
+raw=$(lire_journal "$MAIL_LOG") || plume_lecture_echouee mail source_illisible "source de log mail illisible (PLUME_MAIL_SRC=$MAILSRC) : ni fichier lisible, ni conteneur joignable"
 
 now=$(date +%s)
 umask 027
-tmp=$(mktemp "$SPOOL/.mail.XXXXXX")
+# LE PROGRAMME, ÉCRIT UNE FOIS ET JOUÉ SUR TROIS FLUX (P10.32-f) : `flux=mail` (mail.log, filigrane epoch),
+# `flux=clamd` et `flux=freshclam` (journal ClamAV, filigrane `<heure murale> <lignes vues à cette seconde>`).
 # LC_ALL=C : l’empreinte (P10.24-h) lit des OCTETS ; gawk en locale UTF-8 lirait des caractères. Les motifs
 # du programme sont en ASCII, et mawk (awk par défaut de Debian et d’Ubuntu) lit déjà des octets.
-sortie=$(printf '%s\n' "$raw" | LC_ALL=C TZ=UTC awk -v last="$last" -v host="$host" -v now="$now" -v out="$tmp" -v skipip="$SKIPIP" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
-# jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
+PROGRAMME_MAIL='
+# jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme à chaque appel (`"$_PLUME_AWK_ECHAPPEMENT_JSON""$PROGRAMME_MAIL"`).
 # P10.22-s — UNE ADRESSE, ET RIEN D’AUTRE. IPv4 pointée ou IPv6 (témoin :
 # collectors/mail-adresses-et-texte-du-client.corpus), validée ENTIÈRE : une valeur qui n’en est pas une
 # rend "" et la ligne n’est pas émise, plutôt qu’un préfixe (`rip=2001:db8::5` rendait `2001`). La forme
@@ -207,6 +249,138 @@ function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
     if (match(avant, /, mail_id: [A-Za-z0-9_-]+(, b: [A-Za-z0-9_-]+)?$/)) { mid = substr(avant, RSTART + 11, RLENGTH - 11); sub(/,.*/, "", mid) }
   }
 }
+# P10.32-f — CONFIDENTIALITÉ DU SORTANT : chaque PARTIE LOCALE d’adresse de la ligne est remplacée par `*`
+# (`to=<*@example.org>`, et la même adresse recopiée par le serveur distant dans sa réponse). La forme
+# entre guillemets d’abord (`"a b"@d`), puis tout ce qui n’est ni espace ni délimiteur d’adresse.
+# CE QUI N’EST PAS MASQUÉ, DIT : un `@` sans partie locale devant lui, et le domaine, qui est le champ.
+function masquer_adresses(s){
+  gsub(/"[^"]*"@/, "*@", s)
+  gsub(/[^ <>(),;:"@[]+@/, "*@", s)
+  return s
+}
+# P10.32-f — LE COURRIER SORTANT, `postfix/smtp[pid]:` (le client SMTP de Postfix sous son nom par défaut ;
+# `postfix/smtp-amavis/smtp` et `postfix/lmtp` sont des SAUTS INTERNES, d’autres étiquettes). Gabarit de
+# `log_adhoc.c` : `<file>: to=<…>, [orig_to=<…>, ]relay=<hôte>[<adresse>]:<port>|none, [conn_use=<n>, ]
+# delay=…, delays=a/b/c/d, dsn=x.y.z, status=<sent|deferred|bounced> (<texte>)`. Ce que le CLIENT écrit :
+# l’adresse du destinataire (partie locale entre guillemets admise) ; ce que le SERVEUR DISTANT écrit : le
+# texte entre parenthèses. La suite `relay=… status=… (` n’est lue que si elle n’y figure qu’UNE fois —
+# copiée par l’un ou l’autre, elle ne peut que se TAIRE : l’événement part alors en `ambiguous`, sans champ,
+# plutôt que sous un statut choisi par le texte. Un relais en boucle locale (`127.x`, `::1`) est un filtre
+# de contenu posé sous le nom par défaut : un saut interne, rien.
+function lire_sortant(m,   n, s, avant, a, rl, ds, st, rd, sev){
+  n = occurrences(m, SUITE_SORTANT)
+  if (n == 0) return
+  message_emis = masquer_adresses($0)
+  if (n > 1) { emit("mail","ambiguous",2,"","","smtp",""); return }
+  match(m, SUITE_SORTANT); avant = substr(m, 1, RSTART - 1); s = substr(m, RSTART, RLENGTH)
+  match(s, /relay=[^ ,]+/); rl = substr(s, RSTART + 6, RLENGTH - 6)
+  if (rl ~ /\[(127[.][0-9.]+|::1)\]/) return
+  match(s, /dsn=[0-9.]+/); ds = substr(s, RSTART + 4, RLENGTH - 4)
+  match(s, /status=[a-z]+/); st = substr(s, RSTART + 7, RLENGTH - 7)
+  rd = ""
+  if (avant ~ /^[0-9A-Za-z]+: to=<[^<>]*>(, orig_to=<[^<>]*>)?$/) {
+    a = avant; sub(/^[^<]*</, "", a); sub(/>.*/, "", a)
+    if (index(a, "@") > 0) { sub(/^.*@/, "", a); if (a ~ /^[A-Za-z0-9_.-]+$/) rd = tolower(a) }
+  }
+  sev = (st == "sent") ? 1 : (st == "deferred") ? 2 : 3
+  emit("mail",st,sev,"","","smtp",",\"rcpt_domain\":\"" rd "\",\"relay\":\"" jesc(rl) "\",\"dsn\":\"" ds "\"")
+}
+# P10.32-f — LE JOURNAL DE CLAMAV (`LogTime yes`) : `<Jour> <Mois> <jj> <hh:mm:ss> <aaaa> -> <message>`,
+# jour du mois complété par une ESPACE sous dix (`ctime`). L’heure est MURALE, sans décalage : `mur` (lue
+# sous TZ=UTC) sert au filigrane, `mur - decal` à l’horodatage. Le filigrane est le couple
+# `<mur> <vues>` : une ligne d’une seconde antérieure est déjà vue ; à la seconde du filigrane, les `vues`
+# premières le sont ; toute autre est neuve. Un passage qui coupe au plafond ne compte que ce qu’il a lu.
+# CE QUE CE FILIGRANE NE TIENT PAS, DIT : le retour d’heure d’hiver (l’heure murale rejoue une heure :
+# ses lignes sont tenues pour vues), et une fenêtre `tail` qui ne contiendrait plus toutes les lignes de
+# la seconde du filigrane.
+function ligne_clamav(   d, mur, m, cat, act, sev, vir){
+  if (n >= 3000) return
+  if ($0 !~ /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ 0-3][0-9] [0-2][0-9]:[0-5][0-9]:[0-6][0-9] [0-9][0-9][0-9][0-9] -> /) return
+  d = substr($0, 21, 4) " " MOIS[substr($0, 5, 3)] " " (substr($0, 9, 2) + 0) " " substr($0, 12, 2) " " substr($0, 15, 2) " " substr($0, 18, 2)
+  mur = mktime(d); if (mur < 0) return
+  if (mur > maxmur) { maxmur = mur; vues_max = 0 }
+  if (mur == maxmur) vues_max++
+  if (mur < last) return
+  if (mur == last) { deja++; if (deja <= vues) return }
+  et = mur - decal
+  m = substr($0, 29); cat = ""; vir = ""
+  if (m ~ /virus database is older than/) { cat = "update"; act = "database_stale"; sev = 3 }
+  else if (flux == "clamd") {
+    if (match(m, /: [^ ]+ FOUND$/)) { cat = "malware"; act = "infected"; sev = 4; vir = substr(m, RSTART + 2, RLENGTH - 8) }
+    else if (m ~ /^(ERROR|LibClamAV Error): /) {
+      cat = "av_error"; sev = 3; act = "error"
+      if (m ~ /SelfCheck/) act = "selfcheck_failed"
+      else if (m ~ /[Rr]eload|[Dd]atabase load/) act = "reload_failed"
+    }
+    else if (m ~ /: .* ERROR$/) { cat = "av_error"; act = "scan_error"; sev = 3 }
+    else if (m ~ /^Database correctly reloaded \(/) { cat = "update"; act = "reloaded"; sev = 1 }
+  } else {
+    if (m ~ /^WARNING: Your ClamAV installation is OUTDATED/) { cat = "update"; act = "outdated"; sev = 2 }
+    else if (m ~ /^ERROR: /) { cat = "update"; act = "update_failed"; sev = 3 }
+    else if (m ~ /^[A-Za-z0-9_-]+[.]c[lv]d updated [(]version: /) { cat = "update"; act = "updated"; sev = 1 }
+  }
+  if (cat == "") return
+  emit(cat, act, sev, "", "", flux, (vir != "") ? (",\"virus\":\"" jesc(vir) "\"") : "")
+}
+# P10.32-f — OPENDKIM : les VERDICTS de vérification, `<file>: <verdict>`, et la signature posée sur un
+# message sortant. `not internal` et `not authenticated` sont des INFORMATIONS (le message n’est ni local ni
+# authentifié, donc vérifié plutôt que signé) : rien. `key retrieval failed` est un échec de la RÉSOLUTION de
+# clé (DNS), pas une signature fausse : sévérité 2, comme un report.
+function lire_opendkim(m,   d){
+  d = ""
+  if (match(m, /^[0-9A-Za-z]+: (key retrieval failed|DKIM-Signature field added) \(s=[^ ,()]*, d=[A-Za-z0-9_.-]*\)/)) {
+    d = substr(m, RSTART, RLENGTH - 1); sub(/^.*, d=/, "", d); d = tolower(d)
+  }
+  if (m ~ /^[0-9A-Za-z]+: DKIM verification successful$/) emit("mail","pass",1,"","","opendkim",",\"domain\":\"\"")
+  else if (m ~ /^[0-9A-Za-z]+: bad signature data$/) emit("mail","fail",3,"","","opendkim",",\"domain\":\"\"")
+  else if (m ~ /^[0-9A-Za-z]+: no signature data$/) emit("mail","none",1,"","","opendkim",",\"domain\":\"\"")
+  else if (m ~ /^[0-9A-Za-z]+: key retrieval failed \(/ && d != "") emit("mail","error",2,"","","opendkim",",\"domain\":\"" d "\"")
+  else if (m ~ /^[0-9A-Za-z]+: DKIM-Signature field added \(.*\)$/ && d != "") emit("mail","signed",1,"","","opendkim",",\"domain\":\"" d "\"")
+}
+# P10.32-f — OPENDMARC : `<file>: <domaine de From:> <résultat>`, le résultat en FIN de ligne et le domaine
+# sans espace, ou rien.
+function lire_opendmarc(m,   r, d){
+  if (m !~ /^[0-9A-Za-z]+: [A-Za-z0-9_.-]+ (pass|fail|none|bestguesspass|temperror|permerror)$/) return
+  r = m; sub(/^.* /, "", r); d = m; sub(/^[^ ]+ /, "", d); sub(/ .*$/, "", d)
+  emit("mail", r, (r == "fail") ? 3 : (r ~ /error$/) ? 2 : 1, "", "", "opendmarc", ",\"domain\":\"" tolower(d) "\"")
+}
+# P10.32-f — POLICYD-SPF : `: prepend Received-SPF: <Résultat> (<commentaire>) identity=<…>; client-ip=<a>;
+# helo=<…>; envelope-from=<…>; receiver=<…>`. Le résultat est la TÊTE du message. Le CLIENT écrit le HELO et
+# l’expéditeur : `client-ip=` n’est lu que derrière `identity=…; ` et s’il n’y figure qu’une fois,
+# l’expéditeur que si `; envelope-from=` n’y figure qu’une fois — copiés, ils se TAISENT. Du second, le
+# DOMAINE seul est un champ. Un refus de policyd-spf lui-même (`550 5.7.23 …`) n’est pas lu ici : smtpd
+# l’écrit en `NOQUEUE: reject:`, déjà émis.
+function lire_policyd_spf(m,   r, s, sip, d){
+  if (!match(m, /^: prepend Received-SPF: (Pass|Fail|Softfail|Neutral|None|Temperror|Permerror) /)) return
+  r = tolower(substr(m, 25, RLENGTH - 25))
+  sip = ""
+  if (occurrences(m, " identity=[a-z]+; client-ip=") == 1) {
+    match(m, / identity=[a-z]+; client-ip=[^; ]*;/); s = substr(m, RSTART, RLENGTH - 1); sub(/^.*client-ip=/, "", s); sip = adresse(s)
+  }
+  d = ""
+  if (occurrences(m, "; envelope-from=") == 1) {
+    s = substr(m, index(m, "; envelope-from=") + 16); sub(/[; ].*$/, "", s)
+    if (index(s, "@") > 0) sub(/^.*@/, "", s)
+    if (s ~ /^[A-Za-z0-9_.-]+$/) d = tolower(s)
+  }
+  emit("mail", r, (r == "fail") ? 3 : (r == "softfail" || r ~ /error$/) ? 2 : 1, sip, "", "policyd-spf", ",\"domain\":\"" d "\"")
+}
+# P10.32-f — LA FILE, `postfix/qmgr` : `<file>: from=<expéditeur>, size=<octets>, nrcpt=<n> (queue active)`
+# à l’entrée en file active, `<file>: from=<…>, status=expired, returned to sender` à l’expiration. La suite
+# est ANCRÉE en fin de ligne : l’expéditeur (écrit par le client) est tout ce qui la précède, et ne peut
+# pas la recopier.
+function lire_qmgr(m,   s, f, sz, nr){
+  if (match(m, /^[0-9A-Za-z]+: from=<.*>, size=[0-9]+, nrcpt=[0-9]+ \(queue active\)$/)) {
+    s = m; sub(/^[0-9A-Za-z]+: from=</, "", s)
+    match(s, />, size=[0-9]+, nrcpt=[0-9]+ \(queue active\)$/); f = substr(s, 1, RSTART - 1); s = substr(s, RSTART)
+    match(s, /size=[0-9]+/); sz = substr(s, RSTART + 5, RLENGTH - 5)
+    match(s, /nrcpt=[0-9]+/); nr = substr(s, RSTART + 6, RLENGTH - 6)
+    emit("mail","queued",1,"","","qmgr",",\"sender\":\"" jesc(f) "\",\"size\":\"" sz "\",\"nrcpt\":\"" nr "\"")
+  } else if (m ~ /^[0-9A-Za-z]+: from=<.*>, status=expired, returned to sender$/) {
+    f = m; sub(/^[0-9A-Za-z]+: from=</, "", f); sub(/>, status=expired, returned to sender$/, "", f)
+    emit("mail","expired",2,"","","qmgr",",\"sender\":\"" jesc(f) "\"")
+  }
+}
 function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   # malware/banned/av_error/mailflow = signaux amavis/clamav : emis MEME sans src_ip (le verdict
   # amavis ne porte pas toujours une IP relais) ; les autres exigent une src_ip (respect de skipip).
@@ -214,28 +388,41 @@ function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   # émise, mais elle est COMPTÉE, par catégorie, et le compte est avoué en fin de passage
   # (`plume_adresse_illisible`). L’adresse SKIP_IP, déclarée par l’enveloppe `collection-reducing`,
   # reste hors du compte.
-  if(cat!="malware" && cat!="banned" && cat!="av_error" && cat!="mailflow") {
+  # P10.32-f — `mail` (verdicts DKIM/DMARC/SPF, sortant, file) et `update` (journal ClamAV) n’ont pas de
+  # client à attribuer : émis sans adresse, comme amavis. Un verdict SPF porte l’adresse du client
+  # (`client-ip=`) : l’adresse SKIP_IP y est écartée comme ailleurs.
+  if(cat!="malware" && cat!="banned" && cat!="av_error" && cat!="mailflow" && cat!="mail" && cat!="update") {
     if (ip=="") { sans_adresse++; sans_adresse_par[cat]++; return }
     if (ip==skipip) return
-  }
+  } else if (cat=="mail" && ip!="" && ip==skipip) return
   # P10.24-h — la clé de repli était `mail-<seconde>-<adresse>-<action>` pour TOUT événement sans clé
   # propre (auth, postscreen, rejet, entrée amavis sans identifiant, panne) : deux échecs de la même
   # adresse dans la même seconde, même sur deux comptes, portaient la même clé, et l’ingestion
   # (`INSERT OR IGNORE`) écartait le second. L’empreinte de la ligne s’y ajoute.
   dd=(dk!="")?dk:("mail-" et "-" ip "-" act "-" empreinte($0))
-  ev="{\"ts\":" et ",\"source\":\"mail\",\"category\":\"" cat "\",\"severity\":" sev ",\"src_ip\":\"" ip "\",\"message\":\"" jesc($0) "\",\"dedup\":\"" dd "\",\"fields\":{\"action\":\"" act "\",\"user\":\"" jesc(usr) "\",\"service\":\"" svc "\",\"src_ip\":\"" ip "\"" extra "}}"
+  ev="{\"ts\":" et ",\"source\":\"mail\",\"category\":\"" cat "\",\"severity\":" sev ",\"src_ip\":\"" ip "\",\"message\":\"" jesc(message_emis != "" ? message_emis : $0) "\",\"dedup\":\"" dd "\",\"fields\":{\"action\":\"" act "\",\"user\":\"" jesc(usr) "\",\"service\":\"" svc "\",\"src_ip\":\"" ip "\"" extra "}}"
   if(n>0) buf=buf ","; buf=buf ev; n++
 }
 BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
   # `Hits: <score>, size: <taille>` : les deux champs qu’amavis écrit TOUJOURS, côte à côte, dans ses deux
   # gabarits ; score `-`, `-1.1`, `3` ou `2.1..5.3` (`macro_score`).
   SUITE_HITS_SIZE = ", Hits: (-|-?[0-9]+([.][0-9]+)?([.][.]-?[0-9]+([.][0-9]+)?)?), size: [0-9]+"
-  for (i = 1; i < 256; i++) OCTET[sprintf("%c", i)] = i }
+  for (i = 1; i < 256; i++) OCTET[sprintf("%c", i)] = i
+  # P10.32-f — la suite que `postfix/smtp` écrit après le destinataire (`lire_sortant`).
+  SUITE_SORTANT = ", relay=[^ ,]+, (conn_use=[0-9]+, )?delay=[0-9.]+, delays=[0-9.]+/[0-9.]+/[0-9.]+/[0-9.]+, dsn=[0-9][.][0-9]+[.][0-9]+, status=(sent|deferred|bounced) [(]"
+  split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", noms, " ")
+  for (i = 1; i <= 12; i++) MOIS[noms[i]] = i
+  # Journal ClamAV : filigrane `<mur> <vues>`, décalage `±hh:mm` (vide ou illisible : +00:00).
+  maxmur = last + 0; vues_max = 0; deja = 0; vues += 0; decal = 0
+  if (decalage ~ /^[+-][0-2][0-9]:[0-5][0-9]$/) decal = (substr(decalage, 1, 1) == "-" ? -1 : 1) * (substr(decalage, 2, 2) * 3600 + substr(decalage, 5, 2) * 60)
+  dernier_decalage = "" }
 {
+  message_emis = ""
+  if (flux != "mail") { ligne_clamav(); next }
   if (n>=3000) next                                             # garde-fou volume/passage
   if ($0 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T/) next
   d=substr($0,1,19); gsub(/[-T:]/," ",d); base=mktime(d); if(base<0) next
-  off=0; if (match($0,/[+-][0-9][0-9]:[0-9][0-9]/)) { o=substr($0,RSTART,RLENGTH); s=(substr(o,1,1)=="-")?-1:1; off=s*(substr(o,2,2)*3600+substr(o,5,2)*60) }
+  off=0; if (match($0,/[+-][0-9][0-9]:[0-9][0-9]/)) { o=substr($0,RSTART,RLENGTH); s=(substr(o,1,1)=="-")?-1:1; off=s*(substr(o,2,2)*3600+substr(o,5,2)*60); dernier_decalage=o }
   et=base-off
   if (et <= last) next
   if (et > maxts) maxts=et
@@ -249,6 +436,11 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
   psd=""; if (match($0,/^[^ ]+ [^ ]+ postfix(\/[A-Za-z0-9_.-]+)*\/smtpd\[[0-9]+\]: /)) psd=substr($0,RSTART+RLENGTH)
   pss=""; if (match($0,/^[^ ]+ [^ ]+ postfix(\/[A-Za-z0-9_.-]+)*\/postscreen\[[0-9]+\]: /)) pss=substr($0,RSTART+RLENGTH)
   amv=""; if (match($0,/^[^ ]+ [^ ]+ amavis\[[0-9]+\]: /)) amv=substr($0,RSTART+RLENGTH)
+  dkm=""; if (match($0,/^[^ ]+ [^ ]+ opendkim\[[0-9]+\]: /)) dkm=substr($0,RSTART+RLENGTH)
+  dmc=""; if (match($0,/^[^ ]+ [^ ]+ opendmarc\[[0-9]+\]: /)) dmc=substr($0,RSTART+RLENGTH)
+  spf=""; if (match($0,/^[^ ]+ [^ ]+ policyd-spf\[[0-9]+\]: /)) spf=substr($0,RSTART+RLENGTH)
+  smt=""; if (match($0,/^[^ ]+ [^ ]+ postfix\/smtp\[[0-9]+\]: /)) smt=substr($0,RSTART+RLENGTH)
+  qmg=""; if (match($0,/^[^ ]+ [^ ]+ postfix(\/[A-Za-z0-9_.-]+)*\/qmgr\[[0-9]+\]: /)) qmg=substr($0,RSTART+RLENGTH)
   msg=""; if (match($0,/^[^ ]+ [^ ]+ [^ ]+ /)) msg=substr($0,RSTART+RLENGTH)
   ip=""; if (dvc != "") ip=adresse(rip_de_dovecot(dvc)); else ip=adresse(crochet_du_client(msg))
   usr=""; if (dvc != "" && match(dvc,/user=<[^>]*>/)) usr=substr(dvc,RSTART+6,RLENGTH-7)
@@ -324,13 +516,41 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
     emit(mcat,mact,msev,aip,rcpt,"amavis",ext,(mid!=""?("mail-" mid "-" substr(vd,1,index(vd," ")-1) "-" substr(vd,index(vd," ")+1)):""))
   }
   else if (amv ~ /^\([^ ()]+\) \(!!?\)([^:]* av-scanner FAILED: |WARN: all primary virus scanners failed)/) emit("av_error","error",3,"","","clamav","")
+  # P10.32-f — L’ENVOI AUTHENTIFIÉ RÉUSSI, sous l’étiquette de smtpd et en tête de son message : smtpd écrit
+  # `<file>: client=<nom>[<adresse>], sasl_method=<mécanisme>, sasl_username=<nom>` (`smtpd.c`) quand un
+  # client AUTHENTIFIÉ ouvre un message — seule ligne de succès SASL de Postfix. Le nom est celui que le
+  # serveur SASL a ACCEPTÉ ; il court jusqu’à `, sasl_sender=` ou `, orig_` (champs que smtpd écrit après).
+  # Témoin : collectors/mail-soumission-authentifiee.corpus.
+  else if (match(psd, /^[0-9A-Za-z]+: client=[A-Za-z0-9._-]+\[[0-9A-Fa-f:.]+\](:[0-9]+)?, sasl_method=[A-Za-z0-9_-]+, sasl_username=/)) {
+    su = substr(psd, RSTART + RLENGTH); mth = psd; sub(/^[^,]*, sasl_method=/, "", mth); sub(/,.*$/, "", mth)
+    p = index(su, ", sasl_sender="); if (p > 0) su = substr(su, 1, p - 1)
+    p = index(su, ", orig_"); if (p > 0) su = substr(su, 1, p - 1)
+    emit("auth","success",1,ip,su,svc,",\"method\":\"" jesc(mth) "\"")
+  }
+  # P10.32-f — verdicts de l’EXPÉDITEUR (opendkim, opendmarc, policyd-spf), sortant et file, chacun sous
+  # SON étiquette (témoins : collectors/mail-opendkim.corpus, mail-opendmarc.corpus, mail-policyd-spf.corpus,
+  # mail-sortant-postfix-smtp.corpus, mail-file-qmgr.corpus).
+  else if (dkm != "") lire_opendkim(dkm)
+  else if (dmc != "") lire_opendmarc(dmc)
+  else if (spf != "") lire_policyd_spf(spf)
+  else if (smt != "") lire_sortant(smt)
+  else if (qmg != "") lire_qmgr(qmg)
 }
 END{
   if (n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}\n", now, host, buf > out
+  # Journal ClamAV : une ligne, le filigrane `<mur> <vues>`. Rien lu à la seconde du filigrane : il reste.
+  if (flux != "mail") { if (maxmur == last + 0 && vues_max < vues) vues_max = vues; print maxmur " " vues_max; exit }
   # Une ligne : le filigrane, puis le compte P10.23-i et sa ventilation (un mot, sans espace).
-  print maxts " " sans_adresse " auth=" (sans_adresse_par["auth"]+0) ",postscreen=" (sans_adresse_par["postscreen"]+0) ",reject=" (sans_adresse_par["reject"]+0)
-}')
-read -r newwm sans_adresse ventilation_sans_adresse <<EOF
+  # P10.32-f — en quatrième mot, le décalage de la dernière ligne lue : celui du journal ClamAV par défaut.
+  print maxts " " sans_adresse " auth=" (sans_adresse_par["auth"]+0) ",postscreen=" (sans_adresse_par["postscreen"]+0) ",reject=" (sans_adresse_par["reject"]+0) " " dernier_decalage
+}'
+# P10.32-f — UN JOURNAL VIDE N'ARRÊTE PLUS LE PASSAGE : le journal ClamAV se lit quand même. Le filigrane
+# de mail.log n'est mis en attente que sur une lecture qui a rendu des lignes (inchangé sinon).
+decalage_mail=""
+if [ -n "$raw" ]; then
+tmp=$(mktemp "$SPOOL/.mail.XXXXXX")
+sortie=$(printf '%s\n' "$raw" | LC_ALL=C TZ=UTC awk -v flux=mail -v last="$last" -v host="$host" -v now="$now" -v out="$tmp" -v skipip="$SKIPIP" "$_PLUME_AWK_ECHAPPEMENT_JSON""$PROGRAMME_MAIL")
+read -r newwm sans_adresse ventilation_sans_adresse decalage_mail <<EOF
 $sortie
 EOF
 
@@ -344,12 +564,43 @@ case "${sans_adresse:-}" in
   ''|*[!0-9]*|0) ;;
   *) plume_adresse_illisible mail "$sans_adresse" "Ventilation : $ventilation_sans_adresse. Lignes auth, postscreen et rejet seulement ; les verdicts amavis sont émis sans adresse à dessein, et l'adresse SKIP_IP est déclarée à part." ;;
 esac
+fi
+
+# P10.32-f — LE JOURNAL CLAMAV, un passage par démon (`clamd`, `freshclam`), chacun son filigrane
+# `<heure murale> <lignes vues à cette seconde>`. `etat_clamav` dit ce qui en a été lu, dans l'enveloppe
+# de config : `lu`, `absent` (chemin par défaut sans fichier), `coupe` (variable posée vide), `illisible`
+# (avoué par `plume_lecture_partielle`, filigrane non avancé).
+etat_clamav=""
+lire_clamav() {  # <flux> <chemin> <posé : 1 ou vide>
+  _cf=$1; _cp=$2; _cpose=$3; _cw="$STATE_DIR/mail-$1.watermark"
+  if [ -z "$_cp" ]; then etat_clamav="$etat_clamav $_cf=coupe"; return 0; fi
+  _crc=0; _craw=$(lire_journal "$_cp") || _crc=$?
+  if [ "$_crc" = 3 ] && [ -z "$_cpose" ]; then etat_clamav="$etat_clamav $_cf=absent"; return 0; fi
+  if [ "$_crc" != 0 ]; then
+    if [ "$_crc" = 3 ]; then _ccause=source_absente; else _ccause=source_illisible; fi
+    plume_lecture_partielle mail "$_ccause" "journal $_cf de ClamAV illisible (PLUME_MAIL_SRC=$MAILSRC) : son filigrane n'avance pas, le reste du passage est publie"
+    etat_clamav="$etat_clamav $_cf=illisible"; return 0
+  fi
+  etat_clamav="$etat_clamav $_cf=lu"
+  [ -n "$_craw" ] || return 0
+  _cmur=0; _cvues=0
+  # Le filigrane est écrit SANS fin de ligne : `read` rend alors 1 après avoir lu ; seul le contenu juge.
+  if [ -r "$_cw" ]; then read -r _cmur _cvues < "$_cw" || true; fi
+  case "${_cmur:-}" in ''|*[!0-9]*) _cmur=0; _cvues=0 ;; esac
+  case "${_cvues:-}" in ''|*[!0-9]*) _cvues=0 ;; esac
+  _ctmp=$(mktemp "$SPOOL/.mail-$_cf.XXXXXX")
+  _csortie=$(printf '%s\n' "$_craw" | LC_ALL=C TZ=UTC awk -v flux="$_cf" -v last="$_cmur" -v vues="$_cvues" -v decalage="${CLAM_DECALAGE:-${decalage_mail:-+00:00}}" -v host="$host" -v now="$now" -v out="$_ctmp" -v skipip="" "$_PLUME_AWK_ECHAPPEMENT_JSON""$PROGRAMME_MAIL")
+  state_stage "$_cw" "$_csortie"
+  if [ -s "$_ctmp" ]; then spool_publish_then_ack "$_ctmp" "mail-$_cf-$now.json"; else rm -f "$_ctmp"; fi
+}
+lire_clamav clamd "$CLAMD_LOG" "$CLAMD_POSE"
+lire_clamav freshclam "$FRESHCLAM_LOG" "$FRESHCLAM_POSE"
 
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=mail category=config) --------------
 # Surface PLUME_MAIL_SKIP_IP dans le panneau read-only « Suppressions & whitelists actives ». VISIBILITE
 # cote daemon, CONTROLE ici. Dedup par empreinte. collection-reducing (drop des events de l'IP skippee).
-cfg_fields=$(printf '{"type":"collection-reducing","collector":"mail","filters":{"skip_ip":"%s","max":"%s"},"note":"ignore les events mail de SKIP_IP (probes internes/self) — postscreen HANGUP deja exclu. collecte reduite"}' \
-  "$(json_escape "$SKIPIP")" "$(json_escape "$MAX")")
+cfg_fields=$(printf '{"type":"collection-reducing","collector":"mail","filters":{"skip_ip":"%s","max":"%s","clamav":"%s"},"note":"ignore les events mail de SKIP_IP (probes internes/self) — postscreen HANGUP deja exclu. collecte reduite"}' \
+  "$(json_escape "$SKIPIP")" "$(json_escape "$MAX")" "$(json_escape "${etat_clamav# }")")
 cfg_dd="cfg-mail-$(printf '%s' "$cfg_fields" | cksum | cut -d' ' -f1)"
 spool_write_then_ack "config-mail-$now.json" "$(printf '{"ts":%s,"host":"%s","kind":"events","events":[{"ts":%s,"source":"mail","category":"config","severity":0,"message":"config collecteur mail (filtres de collecte)","dedup":"%s","fields":%s}]}' \
   "$now" "$host" "$now" "$cfg_dd" "$cfg_fields")"

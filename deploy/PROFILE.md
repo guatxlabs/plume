@@ -46,6 +46,8 @@ Principe : *moteur générique + spécifique-infra en CONFIG, jamais en dur* ; c
 | `PLUME_CONNTRACK_SCOPE` | portées conntrack collectées (`external internal loopback`) | toutes |
 | `PLUME_LOCKDOWN_IFACE` / `PLUME_LOCKDOWN_PORTS` | contrôle docker-lan-lockdown (laptop wifi) | `wlan0` (n/a si absent) |
 | `PLUME_MAIL_F2B` / `PLUME_MAIL_SKIP_IP` | collecteur mail (docker-mailserver) | — |
+| `PLUME_MAIL_CLAMAV_LOG` / `PLUME_MAIL_FRESHCLAM_LOG` | journaux de clamd et de freshclam lus par le collecteur mail (P10.32-f), dans le même mode que `mail.log` (`PLUME_MAIL_SRC=k3s` : `kubectl exec`, `docker` : `docker exec`, `file` : fichier local). Posée **vide**, la lecture est coupée ; un fichier absent au chemin **par défaut** est dit `absent` dans l'enveloppe de config ; un chemin **posé** illisible est avoué | `/var/log/mail/clamav.log`, `/var/log/mail/freshclam.log` (k3s, docker) ; `/var/log/clamav/clamav.log`, `/var/log/clamav/freshclam.log` (file) |
+| `PLUME_MAIL_CLAMAV_UTC_OFFSET` | décalage UTC (`±hh:mm`) de l'heure murale du journal ClamAV, qui n'en porte pas | celui de la dernière ligne de `mail.log` du passage, sinon `+00:00` |
 
 ## 4. Daemon central
 | Variable | Rôle | Défaut |

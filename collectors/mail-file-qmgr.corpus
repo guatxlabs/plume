@@ -1,0 +1,17 @@
+# =================================================================================================
+# LA FILE POSTFIX QUE `collectors/mail.sh` DOIT CLASSER — `P10.32-f`
+#
+# `postfix/qmgr` écrit `<file>: from=<expéditeur>, size=<octets>, nrcpt=<n> (queue active)` quand un
+# message entre en file active, et `<file>: from=<…>, status=expired, returned to sender` quand il
+# expire. La suite est ANCRÉE en fin de ligne : l'expéditeur (écrit par le client) est tout ce qui la
+# précède, et une copie de la suite dans l'expéditeur ne la remplace pas. `removed` n'est rien.
+# Format et provenances : `collectors/mail-opendkim.corpus`.
+# =================================================================================================
+mail/queued	1	service=qmgr;sender=bounce+1@news.example.org;size=24961;nrcpt=1	mesuree-dms	2026-10-14T01:30:58.093563+02:00 mx1 postfix/qmgr[1405]: DE03226F782: from=<bounce+1@news.example.org>, size=24961, nrcpt=1 (queue active)
+mail/queued	1	service=qmgr;sender=root@mail.example.net;size=932;nrcpt=1	mesuree-dms	2026-10-14T05:07:43.728113+02:00 mx1 postfix/qmgr[1405]: 063E726F782: from=<root@mail.example.net>, size=932, nrcpt=1 (queue active)
+aucun	-	-	mesuree-dms	2026-10-14T01:31:02.102668+02:00 mx1 postfix/qmgr[1405]: DE03226F782: removed
+mail/queued	1	service=qmgr;sender=;size=3120;nrcpt=1	gabarit	2026-10-14T04:00:01.100000+02:00 mx1 postfix/qmgr[1405]: 4A2B3C4D5E1: from=<>, size=3120, nrcpt=1 (queue active)
+mail/queued	1	service=qmgr;sender=bulk@example.net;size=1048576;nrcpt=250	gabarit	2026-10-14T04:00:02.100000+02:00 mx1 postfix/qmgr[1405]: 4A2B3C4D5E2: from=<bulk@example.net>, size=1048576, nrcpt=250 (queue active)
+mail/expired	2	service=qmgr;sender=late@example.net	gabarit	2026-10-14T04:00:03.100000+02:00 mx1 postfix/qmgr[1405]: 4A2B3C4D5E3: from=<late@example.net>, status=expired, returned to sender
+mail/queued	1	service=qmgr;sender="x>, size=1, nrcpt=1 (queue active)"@example.org;size=777;nrcpt=3	fabriquee	2026-10-14T04:00:04.100000+02:00 mx1 postfix/qmgr[1405]: 4A2B3C4D5E4: from=<"x>, size=1, nrcpt=1 (queue active)"@example.org>, size=777, nrcpt=3 (queue active)
+aucun	-	-	fabriquee	2026-10-14T04:00:05.100000+02:00 mx1 postfix/submission/smtpd[3109]: warning: non-SMTP command from unknown[192.0.2.39]: GET /postfix/qmgr[1]: X: from=<a@example.org>, size=1, nrcpt=1 (queue active)

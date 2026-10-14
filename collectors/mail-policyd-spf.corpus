@@ -1,0 +1,25 @@
+# =================================================================================================
+# LES VERDICTS DE POLICYD-SPF QUE `collectors/mail.sh` DOIT CLASSER — `P10.32-f`
+#
+# policyd-spf écrit `: prepend Received-SPF: <Résultat> (<commentaire>) identity=<…>; client-ip=<a>;
+# helo=<…>; envelope-from=<…>; receiver=<…>`. Le résultat est la TÊTE du message ; `client-ip=` est
+# l'adresse du client que Postfix a passée à la politique (champ `src_ip`) ; de l'expéditeur, le
+# DOMAINE seul est un champ. Le CLIENT écrit le HELO et l'expéditeur : `client-ip=` n'est lu que
+# derrière ` identity=…; ` et s'il n'y figure qu'une fois, l'expéditeur que si `; envelope-from=` n'y
+# figure qu'une fois — recopiés, ils se TAISENT. Format et provenances : `collectors/mail-opendkim.corpus`.
+# =================================================================================================
+mail/pass	1	service=policyd-spf;src_ip=192.0.2.10;domain=bank.example	mesuree-dms	2026-10-12T12:43:05.120804+02:00 mx1 policyd-spf[3080557]: : prepend Received-SPF: Pass (mailfrom) identity=mailfrom; client-ip=192.0.2.10; helo=smtp06.bank.example; envelope-from=noreply@bank.example; receiver=example.net 
+mail/pass	1	service=policyd-spf;src_ip=198.51.100.31;domain=news.example.org	mesuree-dms	2026-10-14T01:30:48.296404+02:00 mx1 policyd-spf[3435257]: : prepend Received-SPF: Pass (mailfrom) identity=mailfrom; client-ip=198.51.100.31; helo=mta1.relay.example.org; envelope-from=bounce+1@news.example.org; receiver=example.net 
+mail/fail	3	service=policyd-spf;src_ip=203.0.113.40;domain=bank.example	enonce	2026-10-14T02:30:01.100000+02:00 mx1 policyd-spf[3500001]: : prepend Received-SPF: Fail (mailfrom) identity=mailfrom; client-ip=203.0.113.40; helo=mail.attacker.example; envelope-from=security@Bank.Example; receiver=example.net 
+mail/softfail	2	service=policyd-spf;src_ip=203.0.113.41;domain=example.org	enonce	2026-10-14T02:30:02.100000+02:00 mx1 policyd-spf[3500002]: : prepend Received-SPF: Softfail (mailfrom) identity=mailfrom; client-ip=203.0.113.41; helo=mx.example.org; envelope-from=a@example.org; receiver=example.net 
+mail/neutral	1	service=policyd-spf;src_ip=203.0.113.42;domain=example.com	enonce	2026-10-14T02:30:03.100000+02:00 mx1 policyd-spf[3500003]: : prepend Received-SPF: Neutral (mailfrom) identity=mailfrom; client-ip=203.0.113.42; helo=mx.example.com; envelope-from=b@example.com; receiver=example.net 
+mail/none	1	service=policyd-spf;src_ip=203.0.113.43;domain=example.test	enonce	2026-10-14T02:30:04.100000+02:00 mx1 policyd-spf[3500004]: : prepend Received-SPF: None (no SPF record) identity=mailfrom; client-ip=203.0.113.43; helo=mx.example.test; envelope-from=c@example.test; receiver=example.net 
+mail/temperror	2	service=policyd-spf;src_ip=2001:db8::44;domain=example.org	enonce	2026-10-14T02:30:05.100000+02:00 mx1 policyd-spf[3500005]: : prepend Received-SPF: Temperror (mailfrom) identity=mailfrom; client-ip=2001:db8::44; helo=mx6.example.org; envelope-from=d@example.org; receiver=example.net 
+mail/permerror	2	service=policyd-spf;src_ip=203.0.113.45;domain=example.net	enonce	2026-10-14T02:30:06.100000+02:00 mx1 policyd-spf[3500006]: : prepend Received-SPF: Permerror (mailfrom) identity=mailfrom; client-ip=203.0.113.45; helo=mx.example.net; envelope-from=e@example.net; receiver=example.net 
+mail/pass	1	service=policyd-spf;src_ip=203.0.113.46;domain=example.org	gabarit	2026-10-14T02:30:07.100000+02:00 mx1 policyd-spf[3500007]: : prepend Received-SPF: Pass (helo) identity=helo; client-ip=203.0.113.46; helo=mx.example.org; envelope-from=f@example.org; receiver=example.net 
+mail/pass	1	service=policyd-spf;src_ip=203.0.113.47;domain=	gabarit	2026-10-14T02:30:08.100000+02:00 mx1 policyd-spf[3500008]: : prepend Received-SPF: Pass (mailfrom) identity=mailfrom; client-ip=203.0.113.47; helo=mx.example.org; envelope-from=; receiver=example.net 
+# --- le texte du client : un HELO qui recopie un repère le TAIT, il ne le choisit jamais --------
+mail/fail	3	service=policyd-spf;src_ip=203.0.113.48;domain=	fabriquee	2026-10-14T02:31:01.100000+02:00 mx1 policyd-spf[3500009]: : prepend Received-SPF: Fail (mailfrom) identity=mailfrom; client-ip=203.0.113.48; helo=x; envelope-from=ok@example.org; receiver=y; envelope-from=g@bank.example; receiver=example.net 
+mail/fail	3	service=policyd-spf;src_ip=;domain=bank.example	fabriquee	2026-10-14T02:31:02.100000+02:00 mx1 policyd-spf[3500010]: : prepend Received-SPF: Fail (mailfrom) identity=mailfrom; client-ip=203.0.113.49; helo=x identity=mailfrom; client-ip=192.0.2.200;; envelope-from=h@bank.example; receiver=example.net 
+aucun	-	-	fabriquee	2026-10-14T02:31:03.100000+02:00 mx1 postfix/smtpd[3107]: warning: non-SMTP command from unknown[192.0.2.37]: GET /policyd-spf[1]: : prepend Received-SPF: Fail (x) HTTP/1.1
+aucun	-	-	fabriquee	2026-10-14T02:31:04.100000+02:00 mx1 policyd-spf[3500011]: : prepend Received-SPF: Fake (mailfrom) identity=mailfrom; client-ip=203.0.113.50; helo=x; envelope-from=i@example.org; receiver=example.net 

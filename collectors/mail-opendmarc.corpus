@@ -1,0 +1,20 @@
+# =================================================================================================
+# LES VERDICTS D'OPENDMARC QUE `collectors/mail.sh` DOIT CLASSER — `P10.32-f`
+#
+# opendmarc écrit `<file>: <domaine de From:> <résultat>`. Un `fail` est l'usurpation qu'aucun
+# événement ne montrait. Le résultat est lu en FIN de ligne, le domaine sans espace entre les deux, ou
+# rien. `temperror`, `permerror` et `bestguesspass` sont lus ; leur présence dans CETTE ligne n'a pas
+# été relevée (provenance `fabriquee`). Format et provenances : `collectors/mail-opendkim.corpus`.
+# =================================================================================================
+mail/pass	1	service=opendmarc;domain=bank.example	mesuree-dms	2026-10-12T12:43:17.943344+02:00 mx1 opendmarc[1252]: A26F226F7A2: bank.example pass
+mail/pass	1	service=opendmarc;domain=forge.example.com	mesuree-dms	2026-10-12T23:28:04.516695+02:00 mx1 opendmarc[1252]: D6CF9267B2E: forge.example.com pass
+mail/pass	1	service=opendmarc;domain=news.example.org	mesuree-dms	2026-10-14T01:30:58.048067+02:00 mx1 opendmarc[1252]: DE03226F782: news.example.org pass
+mail/fail	3	service=opendmarc;domain=bank.example	enonce	2026-10-14T02:20:01.100000+02:00 mx1 opendmarc[1252]: 2A2B3C4D5E6: Bank.Example fail
+mail/none	1	service=opendmarc;domain=example.org	enonce	2026-10-14T02:20:02.100000+02:00 mx1 opendmarc[1252]: 2A2B3C4D5E7: example.org none
+mail/bestguesspass	1	service=opendmarc;domain=example.net	fabriquee	2026-10-14T02:20:03.100000+02:00 mx1 opendmarc[1252]: 2A2B3C4D5E8: example.net bestguesspass
+mail/temperror	2	service=opendmarc;domain=example.com	fabriquee	2026-10-14T02:20:04.100000+02:00 mx1 opendmarc[1252]: 2A2B3C4D5E9: example.com temperror
+mail/permerror	2	service=opendmarc;domain=mail.example.com	fabriquee	2026-10-14T02:20:05.100000+02:00 mx1 opendmarc[1252]: 2A2B3C4D5EA: mail.example.com permerror
+# --- ancrage ----------------------------------------------------------------------------------
+aucun	-	-	fabriquee	2026-10-14T02:21:01.100000+02:00 mx1 opendmarc[1252]: 2A2B3C4D5EB: example.org pass extra words
+aucun	-	-	fabriquee	2026-10-14T02:21:02.100000+02:00 mx1 opendmarc[1252]: 2A2B3C4D5EC: example.org passed
+aucun	-	-	fabriquee	2026-10-14T02:21:03.100000+02:00 mx1 postfix/submission/smtpd[3106]: warning: non-SMTP command from unknown[192.0.2.36]: GET /opendmarc[1]: 2A: example.org fail

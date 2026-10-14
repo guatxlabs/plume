@@ -2197,6 +2197,16 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_mail_sensor_classifies_dovecot_logins_of_both_versions.py
 
+      # `P10.32-f` — le capteur mail lit aussi les verdicts de l'expéditeur (opendkim, opendmarc,
+      # policyd-spf), le courrier SORTANT (`postfix/smtp`, domaine du destinataire seul, parties locales
+      # masquées), la file (`postfix/qmgr`), l'envoi authentifié réussi et le journal de clamd/freshclam.
+      # JOUÉ dans un bac sous chaque awk présent, sur huit corpus ; filigrane ClamAV éprouvé sur trois
+      # passages, trois modes (file, docker, k3s simulés) et leurs chemins par défaut.
+      - name: Le capteur mail lit les verdicts de l'expéditeur, le sortant, la file et ClamAV (P10.32-f)
+        id: garde_75
+        continue-on-error: true
+        run: python3 .github/scripts/check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py
+
       # `P10.23-e` — L'échappement JSON des capteurs awk vit une fois (`lib.sh`) et tient sous chaque awk :
       # forme (idiome à quatre antislashs refusé, une seule définition de `jesc`), fonction livrée, et chaque
       # capteur appelant JOUÉ dans un bac sous gawk et mawk.
@@ -2723,6 +2733,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_72.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_transaction_boundary_is_never_swallowed.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_73.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_inserted_id_is_read_at_the_foot_of_its_insert.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_74.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_route_opens_its_transaction_with_a_bare_begin.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_75.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

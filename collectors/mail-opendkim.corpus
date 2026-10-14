@@ -1,0 +1,48 @@
+# =================================================================================================
+# LES VERDICTS D'OPENDKIM QUE `collectors/mail.sh` DOIT CLASSER — `P10.32-f`
+#
+# POURQUOI CE FICHIER EXISTE. Constaté sur un journal docker-mailserver réel : le capteur ne lisait
+# aucune ligne `opendkim[pid]:`. Une signature DKIM FAUSSE (usurpation d'un domaine signataire) ne
+# laissait aucun événement. Ce corpus porte les formes, et son témoin
+# (`.github/scripts/check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py`) exécute le
+# capteur LIVRÉ sur chaque ligne — jamais une copie de ses motifs.
+#
+# CE QUI EST UN VERDICT. `<file>: DKIM verification successful` (pass), `<file>: bad signature data`
+# (fail), `<file>: no signature data` (none : pas de signature à vérifier), `<file>: key retrieval
+# failed (s=…, d=…)` (error : la CLÉ n'a pas été résolue, échec temporaire, sévérité 2), et
+# `<file>: DKIM-Signature field added (s=…, d=…)` (signed : signature posée sur un message SORTANT).
+# CE QUI N'EN EST PAS UN : `not internal`, `not authenticated` (le message n'est ni local ni authentifié,
+# il est donc vérifié plutôt que signé), et la ligne de détail `s=… d=… a=… SSL`.
+#
+# FORMAT (commun aux corpus `mail-*.corpus` de P10.32-f) :
+#   `verdict <TAB> sévérité <TAB> champs <TAB> provenance <TAB> ligne`. `#` en colonne zéro = commentaire.
+#   verdict    : `<catégorie>/<action>` -> UN événement ; `aucun` -> AUCUN événement pour cette ligne
+#   sévérité   : la sévérité attendue (`-` pour `aucun`)
+#   champs     : `-`, ou `clé=valeur` séparés par `;` — TOUS les champs de l'événement hors `action`
+#                (`user` et `src_ip` valent `` s'ils ne sont pas écrits) ; le témoin exige l'égalité
+#   provenance : vocabulaire fermé, relu par le témoin :
+#     mesuree-dms     forme relevée sur un journal docker-mailserver réel, valeurs SUBSTITUÉES
+#     enonce          forme nommée par le constat de P10.32-f, NON relevée dans le journal
+#     gabarit         forme écrite sur le gabarit de journal du démon, NON relevée
+#     fabriquee       ligne construite pour éprouver une propriété (ancrage, texte du client)
+# Domaines de documentation (`example`, `example.org`…, `.test`) et adresses des plages RFC 5737 /
+# RFC 3849 seulement : le témoin refuse les autres.
+# =================================================================================================
+
+# --- mesurées ---------------------------------------------------------------------------------
+mail/signed	1	service=opendkim;domain=example.net	mesuree-dms	2026-10-13T11:06:56.488069+02:00 mx1 opendkim[1243]: 83D8A26F760: DKIM-Signature field added (s=mail, d=example.net)
+aucun	-	-	mesuree-dms	2026-10-14T01:30:57.939385+02:00 mx1 opendkim[1243]: DE03226F782: mta1.relay.example.org [198.51.100.31] not internal
+aucun	-	-	mesuree-dms	2026-10-14T01:30:57.939430+02:00 mx1 opendkim[1243]: DE03226F782: not authenticated
+mail/pass	1	service=opendkim;domain=	mesuree-dms	2026-10-14T01:30:57.994229+02:00 mx1 opendkim[1243]: DE03226F782: DKIM verification successful
+aucun	-	-	mesuree-dms	2026-10-14T01:30:57.995050+02:00 mx1 opendkim[1243]: DE03226F782: s=scph0323 d=news.example.org a=rsa-sha256 SSL 
+
+# --- nommées par le constat -------------------------------------------------------------------
+mail/fail	3	service=opendkim;domain=	enonce	2026-10-14T02:10:01.100000+02:00 mx1 opendkim[1243]: 1A2B3C4D5E6: bad signature data
+mail/none	1	service=opendkim;domain=	enonce	2026-10-14T02:10:02.100000+02:00 mx1 opendkim[1243]: 1A2B3C4D5E7: no signature data
+mail/error	2	service=opendkim;domain=example.org	enonce	2026-10-14T02:10:03.100000+02:00 mx1 opendkim[1243]: 1A2B3C4D5E8: key retrieval failed (s=sel1, d=example.org)
+mail/error	2	service=opendkim;domain=news.example.org	enonce	2026-10-14T02:10:04.100000+02:00 mx1 opendkim[1243]: 1A2B3C4D5E9: key retrieval failed (s=sel2, d=News.Example.org): 'sel2._domainkey.News.Example.org' query timed out
+
+# --- ancrage : un verdict n'est lu que sous l'étiquette d'opendkim, en tête et en entier ----------
+aucun	-	-	fabriquee	2026-10-14T02:11:01.100000+02:00 mx1 postfix/submission/smtpd[3105]: warning: non-SMTP command from unknown[192.0.2.35]: GET /opendkim[1]: 1A2B: bad signature data HTTP/1.1
+aucun	-	-	fabriquee	2026-10-14T02:11:02.100000+02:00 mx1 opendkim[1243]: 1A2B3C4D5EA: DKIM verification successful but not really
+aucun	-	-	fabriquee	2026-10-14T02:11:03.100000+02:00 mx1 opendkim[1243]: 1A2B3C4D5EB: mta.example.org [198.51.100.32] says bad signature data

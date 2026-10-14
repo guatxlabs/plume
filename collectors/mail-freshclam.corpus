@@ -1,0 +1,23 @@
+# =================================================================================================
+# LE JOURNAL DE FRESHCLAM QUE `collectors/mail.sh` DOIT CLASSER — `P10.32-f`
+#
+# freshclam met la base antivirale à jour. Ce qui est classé (`update`) : `WARNING: Your ClamAV
+# installation is OUTDATED!` (outdated, sévérité 2) ; `ERROR: …` (update_failed, sévérité 3) ;
+# `… virus database is older than …` (database_stale, 3) ; `<base>.cld|cvd updated (version: …`
+# (updated, sévérité 1). Les lignes d'information (début de mise à jour, base déjà à jour, version
+# recommandée, `DON'T PANIC`) ne sont rien. Même forme d'horodatage que clamd
+# (`collectors/mail-clamd.corpus`) ; sept lignes d'un même passage partagent la même SECONDE, d'où le
+# filigrane `<heure murale> <lignes vues à cette seconde>`.
+# Format et provenances : `collectors/mail-opendkim.corpus`.
+# =================================================================================================
+aucun	-	-	mesuree-dms	Wed Oct 14 00:00:02 2026 -> ClamAV update process started at Wed Oct 14 00:00:02 2026
+update/outdated	2	service=freshclam	mesuree-dms	Wed Oct 14 00:00:02 2026 -> WARNING: Your ClamAV installation is OUTDATED!
+aucun	-	-	mesuree-dms	Wed Oct 14 00:00:02 2026 -> WARNING: Local version: 1.4.3 Recommended version: 1.4.6
+aucun	-	-	mesuree-dms	Wed Oct 14 00:00:02 2026 -> DON'T PANIC! Read https://docs.clamav.net/manual/Installing.html
+aucun	-	-	mesuree-dms	Wed Oct 14 00:00:02 2026 -> daily.cld database is up-to-date (version: 28152, sigs: 355763, f-level: 90, builder: svc.clamav-publisher)
+aucun	-	-	mesuree-dms	Wed Oct 14 06:00:01 2026 -> --------------------------------------
+update/outdated	2	service=freshclam	mesuree-dms	Wed Oct 14 06:00:01 2026 -> WARNING: Your ClamAV installation is OUTDATED!
+update/updated	1	service=freshclam	fabriquee	Wed Oct 14 12:00:03 2026 -> daily.cld updated (version: 28153, sigs: 355801, f-level: 90, builder: svc.clamav-publisher)
+update/update_failed	3	service=freshclam	enonce	Wed Oct 14 18:00:04 2026 -> ERROR: Update failed for database: daily
+update/update_failed	3	service=freshclam	enonce	Wed Oct 14 18:00:05 2026 -> ERROR: Database update process failed: Connection failed (ECONNREFUSED)
+update/database_stale	3	service=freshclam	enonce	Wed Oct 14 18:00:06 2026 -> WARNING: The virus database is older than 7 days

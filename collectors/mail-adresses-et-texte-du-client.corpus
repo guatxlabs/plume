@@ -147,9 +147,9 @@ postscreen	-	192.0.2.83	client-postfix	2026-09-23T19:30:26.123456+02:00 mailserv
 rejet	-	192.0.2.65	client-postfix	2026-09-23T19:30:27.123456+02:00 mailserver postfix/smtpd[2024]: NOQUEUE: reject: RCPT from unknown[192.0.2.65]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<x dovecot: imap-login: Logged in: user=<ceo@example.test>, rip=198.51.100.10, lip=192.0.2.1>
 aucun	-	-	client-postfix	2026-09-23T19:30:28.123456+02:00 mailserver postfix/submission/smtpd[2025]: improper command pipelining after CONNECT from unknown[192.0.2.66]: x dovecot: imap-login: Login: user=<ceo@example.test>, rip=198.51.100.11, lip=192.0.2.1\r\n
 postscreen	-	192.0.2.82	client-postfix	2026-09-23T19:30:29.123456+02:00 mailserver postfix/postscreen[2026]: PREGREET 80 after 0.02 from [192.0.2.82]:40004: x dovecot: imap-login: Logged in: user=<ceo@example.test>, rip=198.51.100.12, lip=192.0.2.1\r\n
-# L'échec SASL de NOTRE client smtp auprès d'un relais : ni une attaque, ni une tentative venue de
-# l'adresse du relais.
-aucun	-	-	sources-postfix	2026-09-23T19:30:30.123456+02:00 mailserver postfix/smtp[2027]: 4ABCDEF123: to=<c@example.net>, relay=relay.example.net[198.51.100.20]:587, delay=1.2, delays=0.1/0/1/0, dsn=4.7.8, status=deferred (SASL authentication failed; server relay.example.net[198.51.100.20] said: 535 5.7.8 Error: authentication failed: authentication failure)
+# L'échec SASL de NOTRE client smtp auprès d'un relais (`postfix/smtp`) a quitté ce corpus avec P10.32-f :
+# le capteur lit désormais le courrier SORTANT, et la ligne y est jugée — différée, sans adresse source,
+# jamais un échec d'authentification (collectors/mail-sortant-postfix-smtp.corpus).
 
 # --- P10.23-f et P10.23-g : postscreen et rejets, lus en tête du message, sous leur étiquette ----
 # Les blocages de postscreen, un par forme (`postscreen.c`, `postscreen_early.c`, `postscreen_smtpd.c`).

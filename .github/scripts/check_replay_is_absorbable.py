@@ -25,7 +25,8 @@ CE QUE LE DÉCOMPTE PRÉCÉDENT AVAIT MANQUÉ, ET POURQUOI
 Le décompte annoncé (six absorbés, quatre par seau, sept sans clé) portait sur DIX-SEPT capteurs,
 parce qu'il avait hérité de la liste de `S30` — celle des capteurs dont l'ORDRE était fautif. Or la
 population qui REJOUE n'est pas celle-là : c'est celle des capteurs qui publient PUIS acquittent,
-soit les VINGT-DEUX qui appellent `spool_write_then_ack` / `spool_publish_then_ack`. Quatre capteurs
+soit les VINGT-TROIS qui appellent `spool_write_then_ack` / `spool_publish_then_ack` (vingt-deux
+avant que `crowdsec` ne mette son état d'acquisition en attente, `P10.32-g`). Quatre capteurs
 avaient déjà le bon ordre et rejouent tout autant (`web`, `mail`, `dataaccess`, `resources`). C'est
 la même faute qu'auparavant, d'un cran plus haut : une liste reprise au lieu d'une propriété
 redérivée. La partition mesurée sur l'arbre, elle, se lit dans le compte-rendu de cette garde.

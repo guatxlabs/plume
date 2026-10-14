@@ -176,7 +176,7 @@ state_write() {
 # tout. La question n'est donc pas « quel capteur a été converti » mais « qu'est-ce que l'événement
 # PORTE, et cette valeur est-elle la même quand on le republie ».
 # LA POPULATION EXACTE est celle des capteurs qui peuvent REJOUER — ceux qui publient puis
-# acquittent, soit les VINGT-DEUX qui appellent `spool_write_then_ack` / `spool_publish_then_ack`.
+# acquittent, soit les VINGT-TROIS qui appellent `spool_write_then_ack` / `spool_publish_then_ack`.
 # Le décompte annoncé la portait à dix-sept parce qu'il avait hérité de la liste `S30`, qui recensait
 # les capteurs dont l'ORDRE était fautif ; `web`, `mail` et `dataaccess` avaient déjà le bon ordre et
 # rejouent tout autant, `resources` aussi. C'est la même faute qu'avant, d'un cran plus haut : une
@@ -186,7 +186,9 @@ state_write() {
 #     `imgdrift` (`update-<image>-<digest>`), `vuln`, `clamav`, `yara` (`<règle|fichier|mtime>`),
 #     `cloudflare` (`cf-<rayName>`), plus les trois oubliés — `web` (`web-<StartUTC>` de la requête),
 #     `mail` (horodatage de la ligne de journal, IP, action) et `dataaccess` (identifiant de
-#     l'enregistrement auditd). Depuis `S34` s'y ajoutent les huit corrigés ci-dessous.
+#     l'enregistrement auditd). Depuis `S34` s'y ajoutent les huit corrigés ci-dessous, et depuis
+#     `P10.32-g` `crowdsec` (`crowdsec-<id>` de l'alerte LAPI), devenu rejoueur quand son état
+#     d'acquisition a été mis en attente puis acquitté après la publication.
 #   ABSORBÉ SEULEMENT DANS LE MÊME SEAU DE TEMPS — la clé porte un SEAU DE L'INSTANT DE COLLECTE, pas
 #     une identité : `ufw` (seau horaire), `portscan` (5 min), `origin-drop` (1 min), `kube-audit`
 #     (empreinte + 10 min). Ces quatre seaux sont une AGRÉGATION VOULUE (un même scanneur ne remplit
@@ -662,10 +664,14 @@ plume_lecture_echouee() {
 # plume_lecture_partielle <capteur> <cause> <détail> — même distinction, capteur PARTIELLEMENT
 # aveugle : il publie ce qu'il a et rend la main. Elle n'écrit ni ne jette rien — c'est l'appelant
 # qui, en s'abstenant de mettre le marqueur en attente, garantit que la tranche sera relue.
+# 4e ARGUMENT, OPTIONNEL : la matiere STABLE de la cle de dedoublonnage, transmise telle quelle en 6e
+# argument de `plume_report_availability` (voir sa raison plus haut). Un appelant dont le detail porte
+# une grandeur qui change d'un passage a l'autre la fournit ; absent, le comportement est celui d'avant
+# a l'octet pres (cle prise sur les champs).
 plume_lecture_partielle() {
   plume_report_availability "$1" unavailable missing-source \
     "LECTURE PARTIELLE ($(plume_cause_fermee "$2")) : le marqueur correspondant N'AVANCE PAS, la tranche sera relue au passage suivant. ${3:-}" \
-    2 2>/dev/null || true
+    2 "${4:-}" 2>/dev/null || true
 }
 
 # =================================================================================================

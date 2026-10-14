@@ -142,6 +142,8 @@ use guatx_core::cim::CIM_CORE_FIELDS;
 /// P5 (`ns` du sac de pod-logs.sh) et la clé `map.action` des overlays (que `dparsers_apply` écrit dans le
 /// sac comme `map.fields`) — `k8s-log` était servi sans `ns`, `nft` et `firewall` sans `action`. 6 couples
 /// (312), chacun tenu par un oracle qui relit le texte livré sans l'extracteur.
+/// `P10.32-g` : le battement de santé de crowdsec.sh porte ce que le moteur LIT (compteurs d'acquisition,
+/// leurs différences, le verdict de lecture) — 15 couples (327), écrits en clés littérales de `hfields`.
 ///
 /// La citation est un SUFFIXE de chemin qui doit désigner UN SEUL fichier de la
 /// surface balayée (`mod.rs`/`windows.rs`/`linux.rs` existent en double -> `fim/mod.rs`, `source/windows.rs`).
@@ -154,6 +156,21 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("access", "minio.sh"),
     ("accessKey", "minio-audit-relay.py"),
     ("acct", "auditd.sh"),
+    ("acq_counters_reset", "crowdsec.sh"),
+    ("acq_frozen_sources", "crowdsec.sh"),
+    ("acq_parsed", "crowdsec.sh"),
+    ("acq_parsed_delta", "crowdsec.sh"),
+    ("acq_pour", "crowdsec.sh"),
+    ("acq_pour_delta", "crowdsec.sh"),
+    ("acq_reads", "crowdsec.sh"),
+    ("acq_reads_delta", "crowdsec.sh"),
+    ("acq_sources", "crowdsec.sh"),
+    ("acq_unparsed", "crowdsec.sh"),
+    ("acq_unparsed_delta", "crowdsec.sh"),
+    ("acq_verdict", "crowdsec.sh"),
+    ("acq_whitelisted", "crowdsec.sh"),
+    ("acq_whitelisted_delta", "crowdsec.sh"),
+    ("acquisition", "crowdsec.sh"),
     ("action", "auditd.sh"),
     ("action", "bans.sh"),
     ("action", "cloudflare-firewall-events.json"),

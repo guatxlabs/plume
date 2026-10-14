@@ -2250,6 +2250,15 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_no_route_opens_its_transaction_with_a_bare_begin.py
 
+      # `P10.32-g` — LE CAPTEUR CROWDSEC DIT CE QUE LE MOTEUR LIT. Le capteur LIVRÉ est joué dans un bac contre
+      # un faux `cscli` (sain, figé, aucune source, illisible, redémarrage, rien depuis le démarrage, cscli
+      # ancien) : compteurs d'acquisition et différences exacts, refus de conclure par le canal livré et
+      # sévérité relevée quand rien n'est lu, état non avancé sur un refus, jamais une différence négative.
+      - name: Le capteur CrowdSec dit ce que le moteur lit (P10.32-g)
+        id: garde_76
+        continue-on-error: true
+        run: python3 .github/scripts/check_crowdsec_sensor_says_what_it_reads.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2734,6 +2743,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_73.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_inserted_id_is_read_at_the_foot_of_its_insert.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_74.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_route_opens_its_transaction_with_a_bare_begin.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_75.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_76.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_crowdsec_sensor_says_what_it_reads.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

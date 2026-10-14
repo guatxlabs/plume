@@ -8,7 +8,7 @@ tient contre la forme du code, ce volet déclare les CHAMPS ÉTENDUS qu'un capte
 
 L'AUTORITÉ DE DÉRIVATION — ET POURQUOI C'EST UN MIROIR, PAS UNE LISTE
 --------------------------------------------------------------------
-`daemon/src/collected.rs` porte `COLLECTED_EXTENDED_FIELDS: &[(&str, &str)]` — 312 couples
+`daemon/src/collected.rs` porte `COLLECTED_EXTENDED_FIELDS: &[(&str, &str)]` — 333 couples
 (champ, fichier_émetteur) mesurés sur l'arbre. AVANT le reste 2 de `P11.19-a`, la table ne portait
 qu'UNE citation par champ (168 puis 169), donc l'en-tête d'`auditd.sh` taisait `action`, `auid`, `comm`,
 `key`, `path` et `type`, qu'il émet — cette garde disait « miroir exact » d'une projection tronquée. La

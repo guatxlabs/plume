@@ -308,7 +308,9 @@ pub(crate) enum PurgeRefusal {
     /// L'index plein-texte `event_fts` existe mais son trigger de suppression (`event_ad`) est absent : un
     /// DELETE laisserait les postings — le message resterait CHERCHABLE. Refus (purge qui mentirait).
     FtsDesync,
-    /// Le jeton fourni n'est pas l'empreinte du plan re-simulé (rejeu, périmètre modifié, contenu changé).
+    /// Le jeton fourni n'est pas l'empreinte du plan re-simulé (rejeu, périmètre modifié, contenu changé), ou
+    /// n'est plus celle de l'ensemble relu dans la transaction d'exécution, sous le verrou d'écriture, juste avant
+    /// le DELETE (`P10.32-e` : même compte, autre ensemble — lignes neuves venues compenser des lignes tenues).
     StaleToken { expected: String, got: String },
     /// Raison d'opération absente : une destruction de preuves se motive, et la motivation entre au registre.
     ReasonRequired,
@@ -725,35 +727,16 @@ pub(crate) fn purge_plan(conn: &Connection, scope: PurgeScope) -> Result<PurgePl
         return Err(PurgeRefusal::CitedByCase { ids, total });
     }
 
-    // (5) CARDINALITÉ EXACTE + bornes. Un seul balayage, et c'est le MÊME prédicat que le DELETE.
-    let agg_sql = format!(
-        "SELECT COUNT(*), COALESCE(MIN(event.id),0), COALESCE(MAX(event.id),0), COALESCE(SUM(event.id),0), \
-                COALESCE(MIN(event.ts),0), COALESCE(MAX(event.ts),0) FROM event WHERE {pred}"
-    );
-    let (rows, id_lo, id_hi, id_sum, ts_lo, ts_hi): (i64, i64, i64, i64, i64, i64) = conn
-        .query_row(&agg_sql, rusqlite::params_from_iter(binds.iter()), |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
-        })
-        .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
-
-    // (6) VENTILATION PAR SOURCE — l'humain voit QUELLES sources il détruit, pas seulement combien.
-    let per_src_sql =
-        format!("SELECT event.source, COUNT(*) FROM event WHERE {pred} GROUP BY event.source ORDER BY event.source");
-    let mut st = conn.prepare(&per_src_sql).map_err(|e| PurgeRefusal::Db(e.to_string()))?;
-    //     `P10.20-b` — collectée en `Result` : elle entre dans le JETON, dans `ConfirmedPurge` et dans
-    //     l'inscription au registre. Une source sautée ferait confirmer, puis inscrire, une ventilation qui ne
-    //     somme plus à `rows` — le plan, le jeton et la trace décriraient moins que ce que le DELETE détruit.
-    let lignes = st
-        .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        })
-        .map_err(|e| PurgeRefusal::Db(e.to_string()))?;
-    let per_source: Vec<(String, i64)> =
-        lignes.collect::<Result<Vec<(String, i64)>, _>>().map_err(|e| PurgeRefusal::PlanRowUnread {
-            site: "la ventilation par source (`purge_plan`)",
-            cause: e.to_string(),
+    // (5) CARDINALITÉ EXACTE + bornes, (6) VENTILATION PAR SOURCE — `mesurer_le_perimetre`, MÊME prédicat que le
+    //     DELETE ; la transaction d'exécution relit la même mesure par la même fonction (`P10.32-e`).
+    let MesureDuPerimetre { rows, id_lo, id_hi, id_sum, ts_lo, ts_hi, per_source } =
+        mesurer_le_perimetre(conn, &pred, &binds).map_err(|e| match e {
+            LectureDuPerimetre::Agregat(e) | LectureDuPerimetre::Ventilation(e) => PurgeRefusal::Db(e.to_string()),
+            LectureDuPerimetre::LigneDeVentilation(e) => PurgeRefusal::PlanRowUnread {
+                site: "la ventilation par source (`purge_plan`)",
+                cause: e.to_string(),
+            },
         })?;
-    drop(st);
 
     // (7) ÉCHANTILLON — les plus VIEILLES et les plus RÉCENTES lignes du périmètre. Prouver « j'ai vu » ne
     //     marche pas sur un seul bout : les deux extrémités montrent si la fenêtre a débordé.
@@ -770,6 +753,76 @@ pub(crate) fn purge_plan(conn: &Connection, scope: PurgeScope) -> Result<PurgePl
 
     let digest = purge_digest(&scope, rows, id_lo, id_hi, id_sum, ts_lo, ts_hi, &per_source);
     Ok(PurgePlan { scope, rows, per_source, id_lo, id_hi, id_sum, ts_lo, ts_hi, sample, uncovered, digest })
+}
+
+/// CE QUE LA SIMULATION MESURE DU PÉRIMÈTRE et que l'empreinte (`purge_digest`) lie au périmètre canonique :
+/// cardinalité, bornes et somme des `id`, bornes de `ts`, ventilation par source. Portée par `ConfirmedPurge`
+/// (`P10.32-e`) pour que la transaction d'exécution juge l'ENSEMBLE qu'elle s'apprête à détruire, pas son seul compte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MesureDuPerimetre {
+    rows: i64,
+    id_lo: i64,
+    id_hi: i64,
+    id_sum: i64,
+    ts_lo: i64,
+    ts_hi: i64,
+    per_source: Vec<(String, i64)>,
+}
+
+/// Lecture de la mesure NON FAITE, par étape : chaque appelant la rend sous son refus (la simulation garde ses
+/// codes d'avant, `db` / `plan_row_unread` ; la transaction d'exécution refuse en `db` en nommant la relecture).
+enum LectureDuPerimetre {
+    /// Le balayage agrégé (compte, bornes, somme).
+    Agregat(rusqlite::Error),
+    /// La préparation ou l'ouverture de la ventilation par source.
+    Ventilation(rusqlite::Error),
+    /// Une ligne de la ventilation par source.
+    LigneDeVentilation(rusqlite::Error),
+}
+
+impl LectureDuPerimetre {
+    fn decrire(&self) -> String {
+        match self {
+            LectureDuPerimetre::Agregat(e) => format!("compte, bornes et somme des identifiants : {e}"),
+            LectureDuPerimetre::Ventilation(e) => format!("ventilation par source : {e}"),
+            LectureDuPerimetre::LigneDeVentilation(e) => format!("ligne de la ventilation par source : {e}"),
+        }
+    }
+}
+
+/// MESURE DU PÉRIMÈTRE sous le prédicat `pred` (celui du DELETE). Seule source de la mesure, pour la simulation
+/// ET pour la relecture de la transaction d'exécution (`P10.32-e`) : les deux ne peuvent pas diverger de calcul.
+fn mesurer_le_perimetre(
+    conn: &Connection,
+    pred: &str,
+    binds: &[SqlValue],
+) -> Result<MesureDuPerimetre, LectureDuPerimetre> {
+    // CARDINALITÉ EXACTE + bornes. Un seul balayage, et c'est le MÊME prédicat que le DELETE.
+    let agg_sql = format!(
+        "SELECT COUNT(*), COALESCE(MIN(event.id),0), COALESCE(MAX(event.id),0), COALESCE(SUM(event.id),0), \
+                COALESCE(MIN(event.ts),0), COALESCE(MAX(event.ts),0) FROM event WHERE {pred}"
+    );
+    let (rows, id_lo, id_hi, id_sum, ts_lo, ts_hi): (i64, i64, i64, i64, i64, i64) = conn
+        .query_row(&agg_sql, rusqlite::params_from_iter(binds.iter()), |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        })
+        .map_err(LectureDuPerimetre::Agregat)?;
+
+    // VENTILATION PAR SOURCE — l'humain voit QUELLES sources il détruit, pas seulement combien.
+    let per_src_sql =
+        format!("SELECT event.source, COUNT(*) FROM event WHERE {pred} GROUP BY event.source ORDER BY event.source");
+    let mut st = conn.prepare(&per_src_sql).map_err(LectureDuPerimetre::Ventilation)?;
+    // `P10.20-b` — collectée en `Result` : elle entre dans le JETON, dans `ConfirmedPurge` et dans
+    // l'inscription au registre. Une source sautée ferait confirmer, puis inscrire, une ventilation qui ne
+    // somme plus à `rows` — le plan, le jeton et la trace décriraient moins que ce que le DELETE détruit.
+    let lignes = st
+        .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })
+        .map_err(LectureDuPerimetre::Ventilation)?;
+    let per_source: Vec<(String, i64)> =
+        lignes.collect::<Result<Vec<(String, i64)>, _>>().map_err(LectureDuPerimetre::LigneDeVentilation)?;
+    Ok(MesureDuPerimetre { rows, id_lo, id_hi, id_sum, ts_lo, ts_hi, per_source })
 }
 
 fn purge_sample(
@@ -873,8 +926,9 @@ fn purge_digest(
 #[derive(Debug, Clone)]
 pub(crate) struct ConfirmedPurge {
     scope: PurgeScope,
-    rows: i64,
-    per_source: Vec<(String, i64)>,
+    /// La mesure CONFIRMÉE (celle dont `digest` est l'empreinte) : la transaction d'exécution la relit et la
+    /// compare avant le DELETE (`P10.32-e`). Aucun contenu de ligne : des comptes, des bornes, une somme.
+    mesure: MesureDuPerimetre,
     digest: String,
     actor: String,
     reason: String,
@@ -901,8 +955,15 @@ impl PurgePlan {
         }
         Ok(ConfirmedPurge {
             scope: self.scope,
-            rows: self.rows,
-            per_source: self.per_source,
+            mesure: MesureDuPerimetre {
+                rows: self.rows,
+                id_lo: self.id_lo,
+                id_hi: self.id_hi,
+                id_sum: self.id_sum,
+                ts_lo: self.ts_lo,
+                ts_hi: self.ts_hi,
+                per_source: self.per_source,
+            },
             digest: self.digest,
             actor: actor.trim().to_string(),
             reason: reason.chars().take(PURGE_REASON_MAX).collect(),
@@ -940,7 +1001,7 @@ fn purge_inscribe(conn: &Connection, c: &ConfirmedPurge) -> rusqlite::Result<Pur
         .map(|s| json!({ "kind": s.kind(), "value": s.value() }))
         .collect();
     let per_source: Vec<Value> =
-        c.per_source.iter().map(|(s, n)| json!({ "source": s, "rows": n })).collect();
+        c.mesure.per_source.iter().map(|(s, n)| json!({ "source": s, "rows": n })).collect();
     let detail = json!({
         "op": "purge",
         "kind": "event",
@@ -949,7 +1010,7 @@ fn purge_inscribe(conn: &Connection, c: &ConfirmedPurge) -> rusqlite::Result<Pur
             "selectors": selectors,
             "canonical": c.scope.canonical(),
         },
-        "rows": c.rows,
+        "rows": c.mesure.rows,
         "per_source": per_source,
         "digest": c.digest,
         "actor": c.actor,
@@ -963,14 +1024,14 @@ fn purge_inscribe(conn: &Connection, c: &ConfirmedPurge) -> rusqlite::Result<Pur
         4,
         &format!(
             "PURGE D'ÉVÉNEMENTS : {} ligne(s) détruite(s) par {} sur le périmètre [{}] — raison : {}",
-            c.rows,
+            c.mesure.rows,
             c.actor,
             c.scope.canonical(),
             c.reason
         ),
         &detail,
     )?;
-    Ok(PurgeInscribed { rows_declared: c.rows })
+    Ok(PurgeInscribed { rows_declared: c.mesure.rows })
 }
 
 // =====================================================================================
@@ -1045,6 +1106,31 @@ fn purge_delete_rows(
     // issues. Refus -> l'appelant ROLLBACK, inscription au registre comprise.
     if let Some((ids, total)) = cited_by_case(conn, &pred, &binds)? {
         return Err(PurgeRefusal::CitedByCase { ids, total });
+    }
+
+    // L'ENSEMBLE CONFIRMÉ RELU DANS LA TRANSACTION (`P10.32-e`), AVANT le DELETE et sous le verrou d'écriture :
+    // même prédicat, même mesure (`mesurer_le_perimetre`) que la simulation. Le contrôle de compte ci-dessous
+    // (`CountMismatch`) ne voyait pas une COMPENSATION : une rétention posée sur N lignes (exclues par `NOT held`)
+    // et N lignes neuves du périmètre validées dans la même fenêtre laissaient `deleted == rows_declared`, et le
+    // DELETE détruisait d'autres lignes que celles du plan pendant que le registre décrivait l'ensemble confirmé.
+    // Ici, mesure relue différente de la mesure confirmée À COMPTE ÉGAL -> refus `StaleToken` (la confirmation
+    // est caduque : l'empreinte du périmètre maintenant n'est plus le jeton), rien supprimé, ROLLBACK de
+    // l'appelant (registre compris). À compte DIFFÉRENT, le DELETE (même prédicat, même verrou) supprime ce compte
+    // relu et `CountMismatch` refuse avec le compte réellement supprimé : contrat servi depuis `P10.32-d`, gardé.
+    // Une relecture non faite refuse en `db` en la nommant : jamais « rien n'a bougé ».
+    let relue = mesurer_le_perimetre(conn, &pred, &binds).map_err(|e| {
+        PurgeRefusal::Db(format!(
+            "ensemble confirmé NON RELU dans la transaction d'exécution ({}) — fail-closed, l'ensemble que le \
+             DELETE détruirait ne peut pas être comparé à celui qui a été confirmé, aucune ligne supprimée",
+            e.decrire()
+        ))
+    })?;
+    if relue != c.mesure && relue.rows == proof.rows_declared {
+        let MesureDuPerimetre { rows, id_lo, id_hi, id_sum, ts_lo, ts_hi, per_source } = &relue;
+        return Err(PurgeRefusal::StaleToken {
+            expected: purge_digest(&c.scope, *rows, *id_lo, *id_hi, *id_sum, *ts_lo, *ts_hi, per_source),
+            got: c.digest.clone(),
+        });
     }
 
     let del_sql = format!("DELETE FROM event WHERE {pred}");

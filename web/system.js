@@ -258,6 +258,10 @@ const COMPOSANT_LBL = {
   // combien de lots ATTENDENT leur tour, celle-là combien en sont SORTIS sans jamais entrer en
   // base. Sans cette entrée, la tuile rendrait sa clé brute à un humain.
   quarantine_depth: LANG === 'en' ? 'ingest quarantine' : 'quarantaine d\u2019ingest',
+  // `P10.20-b` — LE NOMBRE DE RÈGLES ACTIVES DU COMPOSANT `detection`. Le démon ne sert son verdict que
+  // lorsqu'il n'a PAS lu `rule` (la clé `enabled_rules` est alors absente) : la pastille le dit, avec la
+  // cause, au lieu d'une clé brute ou d'un silence.
+  enabled_rules: LANG === 'en' ? 'active rules' : 'règles actives',
 };
 function verdictsDuComposant(c) {
   const out = [];
@@ -369,7 +373,11 @@ function rendreSysteme(wrap, m, h) {
   grid.append(
     mesureTile('CPU cumulé', p, 'cpu_seconds', v => v.toFixed(1) + ' s'),
     mesureTile('RSS mémoire', p, 'rss_bytes', fmtBytes),
-    tile('Ingest / h', String(ing.events_1h ?? 0), 'total ' + (ing.events_total ?? 0)),
+    // `P10.20-b` — LES DEUX COMPTES DE LA BASE PASSENT PAR LE LECTEUR DE VERDICT. `?? 0` peignait
+    // « Ingest / h 0 » et « Alertes ouvertes 0 » quand `event_rollup` ou `alert` n'avait pas répondu : le
+    // démon sert maintenant la clé ABSENTE plus `<clé>_verdict` / `_cause` / `_detail`, et la tuile dit
+    // « NON LISIBLE » avec la cause — jamais un zéro qu'on n'a pas lu.
+    mesureTile('Ingest / h', ing, 'events_1h', String, 'total ' + (ing.events_total ?? 0)),
     mesureTile('File spool', ing, 'queue_depth', String, 'fichiers en attente'),
     // `P4.1-v` — LES LOTS ÉCARTÉS SONT À L'ÉCRAN, PAS SEULEMENT DANS UN JOURNAL. Un lot que le
     // dépôt durable n'a pas su écrire quitte la file et n'y revient jamais seul : il est
@@ -384,7 +392,7 @@ function rendreSysteme(wrap, m, h) {
     mesureTile('Taille base', db, 'size_bytes', fmtBytes),
     // S33 — l'identité de l'hôte publie son VERDICT sans sa valeur : lue, ou pourquoi pas.
     mesureTile('Identité hôte', hote, 'identity', () => 'lue', 'décide des actions ciblées'),
-    tile('Alertes ouvertes', String(m.alerts_open ?? 0)),
+    mesureTile('Alertes ouvertes', m, 'alerts_open', String),
     tile('Requêtes HTTP', String((m.http && m.http.requests_total) ?? 0), 'dont 5xx : ' + ((m.http && m.http.responses_5xx_total) ?? 0)),
   );
   wrap.appendChild(grid);

@@ -28555,6 +28555,106 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   else console.log("(141) OK — `P10.20-b` (console) : un inventaire des accès dont la lecture a échoué se lit comme tel dans `#acces-list` — un avis à la place de « aucun accès observé », lu sur la clé que le démon pose (dérivée de son arbre, relue sur ses deux issues), les comptes lus toujours rendus ; un inventaire lu se rend comme avant, vide ou non ; comptes et inventaire non lus portent les deux aveux ; deux langues distinctes, l'anglaise sans accent.");
 }
 
+// (142) `P10.20-b` (console) — « INGEST / H » ET « ALERTES OUVERTES » NON LUS NE SE PEIGNENT PLUS « 0 ».
+//
+// CE QUE LE DÉMON SERT (RELU ICI, PAS RECOPIÉ) : `gather_json` (daemon/src/metrics.rs) lit `events_1h` (event_rollup) et
+// `alerts_open` (alert) par `compte_lu_ou_avoue` ; lu, la clé seule est posée (corps nominal inchangé) ; non lu, la clé
+// est ABSENTE et `poser_dans` écrit `<clé>_verdict` / `_cause` / `_detail`. Le composant `detection` fait de même pour
+// `enabled_rules` quand `rule` n'est pas lue. Les trois sites sont RELUS dans l'arbre du démon.
+//
+// CE QUE LA CONSOLE EN FAISAIT AVANT CE LOT, MESURÉ (d8239ceb) : `tile('Ingest / h', String(ing.events_1h ?? 0), …)` et
+// `tile('Alertes ouvertes', String(m.alerts_open ?? 0))` (web/system.js) — un compte non lu se lisait « 0 » ; la
+// pastille de `detection` rendait la clé brute `enabled_rules` (aucun libellé).
+//
+// JUGÉ, DANS LES DEUX LANGUES (instances française et `?plume-lang=en` de system.js, parcourues par `i18nWalk`) :
+// (a) les deux comptes non lus → deux tuiles « NON LISIBLE » / « NOT READABLE », classe d'état, cause nommée, jamais
+// « 0 » ; (b) lus → la valeur, VRAI zéro compris, aucun état d'erreur ; (c) un seul aveuglé à la fois → l'autre garde sa
+// valeur ; (d) `enabled_rules_verdict` servi → la pastille de `detection` le dit sous son libellé, avec sa cause ; lu →
+// rien ; (e) une cause hors de l'ensemble fermé, que `esc()` RÉÉCRIRAIT, est rendue TELLE QUELLE — si la cause fabriquée
+// cesse d'être réécrite par `esc()`, ce témoin refuse de conclure ; (faces) fr ≠ en.
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; la cause ensemble-fermé (« source illisible ») reste en
+// français sous `LANG=en`, comme pour toutes les tuiles (CAUSE_LBL n'a pas de face anglaise) ; la lecture juste du démon
+// est tenue par les témoins Rust `p7c_*` (daemon/src/tests/metriques_comptes_d_ingest_et_d_alertes_lus_ou_avoues.rs).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant142 = echecs.length;
+  const FICHIERS142 = { noyau: "core.js", lexique: "i18n.js", systeme: "system.js" };
+  const importer142 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS142)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr142 = await importer142((f) => pathToFileURL(path.join(WEB, f)).href);
+  const langueOrigine142 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn142 = await importer142((f) => adresseSousLaLangue(f));
+  if (langueOrigine142 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine142);
+  const FR142 = { nom: "fr", ...modsFr142, NON_LISIBLE: "NON LISIBLE", INGEST: "Ingest / h", ALERTES: "Alertes ouvertes", REGLES: "règles actives" };
+  const EN142 = { nom: "en", ...modsEn142, NON_LISIBLE: "NOT READABLE", INGEST: "Ingest / h", ALERTES: "Open alerts", REGLES: "active rules" };
+  const instrument142 = (vrai, quoi) => exiger(vrai, `(142-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu142 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+
+  // ══ (0) CE QUE LE DÉMON SERT, RELU DANS SON ARBRE ════════════════════════════════════════════════
+  const metriques142 = (() => { try { return readFileSync(path.join(RACINE, "daemon", "src", "metrics.rs"), "utf8"); } catch (e) { return ""; } })();
+  for (const cle of ["events_1h", "alerts_open", "enabled_rules"])
+    instrument142(new RegExp(`\\.poser_dans\\(&mut \\w+, "${cle}"\\)`).test(metriques142),
+      `daemon/src/metrics.rs ne pose plus l'aveu de \`${cle}\` par \`poser_dans\` : la forme servie que ce témoin fabrique n'est plus celle du démon`);
+  instrument142(!/FROM (event_rollup|alert)\b[^;]*\.unwrap_or\(0\)/.test(metriques142.replace(/\n\s*/g, " ")),
+    "daemon/src/metrics.rs relit `event_rollup` ou `alert` par `unwrap_or(0)` : le démon ne sert plus l'aveu que ce témoin rend");
+  instrument142(FR142.noyau.LANG !== "en" && EN142.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+  const CAUSE142 = "cause-142 <b>&\"brute\"";
+  instrument142(typeof FR142.noyau.esc === "function" && FR142.noyau.esc(CAUSE142) !== CAUSE142,
+    `la cause fabriquée « ${CAUSE142} » n'est plus réécrite par \`esc()\` : la jambe (e) ne distinguerait plus un rendu échappé d'un rendu tel quel`);
+
+  const illisible142 = (obj, cle, cause = "source_illisible") => ({ ...obj, [cle + "_verdict"]: "illisible", [cle + "_cause"]: cause, [cle + "_detail"]: `${cle} NON LU (fabriqué-142)` });
+  const base142 = (ingest, racine) => ({ ts: 1000, version: "x", schema_version: 1, uptime_s: 10, process: {}, search: {}, scheduler: {}, db: {}, host: {}, http: {}, ingest, ...racine });
+  const rendre142 = (L, m, comps = []) => {
+    const w = new Element("div");
+    L.systeme.rendreSysteme(w, m, { posture: "green", components: comps });
+    if (L === EN142) L.lexique.i18nWalk(w); else FR142.lexique.i18nWalk(w);
+    const grille = w.children.find((c) => c.classList.contains("sys-grid"));
+    const tuile = (label) => (grille ? grille.children : []).find((t) => t.children.some((c) => c.classList.contains("sys-tile-l") && c.textContent === label));
+    const valeur = (t) => (t ? t.children.find((c) => c.classList.contains("sys-tile-v")).textContent : undefined);
+    const comps142 = w.children.find((c) => c.classList.contains("sys-comps"));
+    return { tuile, valeur, composants: nu142(comps142) };
+  };
+  const faces142 = {};
+  for (const L of [FR142, EN142]) {
+    // (a) les deux comptes non lus.
+    const a = rendre142(L, base142(illisible142({ events_total: 5 }, "events_1h"), illisible142({}, "alerts_open")));
+    for (const label of [L.INGEST, L.ALERTES]) {
+      const t = a.tuile(label);
+      exiger(t && a.valeur(t) === L.NON_LISIBLE && t.classList.contains("sys-illisible") && nu142(t).includes("source illisible") && a.valeur(t) !== "0",
+        `(142a) ${L.nom} : « ${label} » non lu ne rend pas « ${L.NON_LISIBLE} » avec sa classe d'état et sa cause : « ${t ? nu142(t) : "tuile absente"} »`);
+    }
+    faces142[L.nom] = a.valeur(a.tuile(L.ALERTES));
+    // (b) les deux lus, vrai zéro compris.
+    const b = rendre142(L, base142({ events_total: 5, events_1h: 7 }, { alerts_open: 0 }));
+    exiger(b.valeur(b.tuile(L.INGEST)) === "7" && b.valeur(b.tuile(L.ALERTES)) === "0"
+      && ![L.INGEST, L.ALERTES].some((l) => { const t = b.tuile(l); return !t || t.classList.contains("sys-illisible") || nu142(t).includes(L.NON_LISIBLE); }),
+      `(142b) ${L.nom} : les deux comptes LUS (7 et un vrai 0) ne rendent pas leur valeur sans état d'erreur : « ${nu142(b.tuile(L.INGEST))} » / « ${nu142(b.tuile(L.ALERTES))} »`);
+    // (c) un seul aveuglé à la fois.
+    const c1 = rendre142(L, base142(illisible142({ events_total: 5 }, "events_1h"), { alerts_open: 3 }));
+    const c2 = rendre142(L, base142({ events_total: 5, events_1h: 7 }, illisible142({}, "alerts_open")));
+    exiger(c1.valeur(c1.tuile(L.INGEST)) === L.NON_LISIBLE && c1.valeur(c1.tuile(L.ALERTES)) === "3"
+      && c2.valeur(c2.tuile(L.INGEST)) === "7" && c2.valeur(c2.tuile(L.ALERTES)) === L.NON_LISIBLE,
+      `(142c) ${L.nom} : un compte aveuglé seul ne laisse pas l'autre à sa valeur : ingest « ${c1.valeur(c1.tuile(L.INGEST))} » / alertes « ${c1.valeur(c1.tuile(L.ALERTES))} » ; ingest « ${c2.valeur(c2.tuile(L.INGEST))} » / alertes « ${c2.valeur(c2.tuile(L.ALERTES))} »`);
+    // (d) la pastille de `detection` dit le nombre de règles non lu, sous son libellé ; lu, rien.
+    const detNonLu = illisible142({ component: "detection", state: "yellow", detail: "scheduler de règles actif" }, "enabled_rules");
+    const d1 = rendre142(L, base142({ events_1h: 7 }, { alerts_open: 3 }), [detNonLu]);
+    const d2 = rendre142(L, base142({ events_1h: 7 }, { alerts_open: 3 }), [{ component: "detection", state: "green", detail: "scheduler de règles actif", enabled_rules: 4 }]);
+    exiger(d1.composants.includes(`${L.REGLES} : NON LISIBLE (source illisible)`) && !d1.composants.includes("enabled_rules"),
+      `(142d) ${L.nom} : \`enabled_rules_verdict\` servi n'est pas dit sous « ${L.REGLES} » avec sa cause (ou la clé brute paraît) : « ${d1.composants.slice(0, 300)} »`);
+    exiger(!d2.composants.includes(L.REGLES) && !d2.composants.includes("NON LISIBLE"),
+      `(142d) ${L.nom} : un nombre de règles LU porte un aveu : « ${d2.composants.slice(0, 300)} »`);
+    // (e) une cause que `esc()` réécrirait est rendue telle quelle.
+    const e = rendre142(L, base142({ events_1h: 7 }, illisible142({}, "alerts_open", CAUSE142)));
+    const te = e.tuile(L.ALERTES);
+    exiger(te && nu142(te).includes(CAUSE142) && !/&(amp|lt|gt|quot);/.test(nu142(te)),
+      `(142e) ${L.nom} : la cause servie « ${CAUSE142} » n'est pas rendue TELLE QUELLE : « ${te ? nu142(te) : "tuile absente"} »`);
+  }
+  exiger(faces142.fr === "NON LISIBLE" && faces142.en === "NOT READABLE",
+    `(142-faces) les deux langues ne rendent pas chacune leur mot : ${JSON.stringify(faces142)}`);
+  if (echecs.length !== echecsAvant142) console.log(`(142) EN ÉCHEC — ${echecs.length - echecsAvant142} écart(s), dits ci-dessus`);
+  else console.log("(142) OK — `P10.20-b` (console) : « Ingest / h » et « Alertes ouvertes » passent par le lecteur de verdict — non lus, « NON LISIBLE » / « NOT READABLE » avec la cause, jamais « 0 » ; lus, la valeur, vrai zéro compris ; un compte aveuglé seul laisse l'autre à sa valeur ; la pastille de `detection` dit un nombre de règles non lu sous son libellé ; une cause que `esc()` réécrirait est rendue telle quelle ; les trois sites d'aveu sont relus dans daemon/src/metrics.rs.");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

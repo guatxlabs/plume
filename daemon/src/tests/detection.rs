@@ -3126,7 +3126,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         let a = translations.iter().find(|t| t.name == "Bulk A").unwrap();
         assert!(a.query.contains("dport"), "dernier doc du titre dupliqué gagne : {}", a.query);
         // apply : créées DÉSACTIVÉES.
-        let (plan, mskip) = sigma_bulk_classify(&conn, &translations);
+        let (plan, mskip) = sigma_bulk_classify(&conn, &translations).expect("classification lue");
         assert!(mskip.is_empty(), "aucune collision managed");
         assert_eq!(plan.len(), 2);
         sigma_bulk_apply(&conn, &plan, false).unwrap();
@@ -3134,14 +3134,14 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         assert_eq!(n, 2, "2 règles importées");
         assert_eq!(dis, 2, "toutes DÉSACTIVÉES à l'import (created-disabled)");
         // ré-import : UPDATE, aucun doublon.
-        let (plan2, _) = sigma_bulk_classify(&conn, &translations);
+        let (plan2, _) = sigma_bulk_classify(&conn, &translations).expect("classification lue");
         assert!(plan2.iter().all(|(_, target)| target.is_some()), "ré-import -> UPDATE (managed=2), aucun INSERT");
         sigma_bulk_apply(&conn, &plan2, false).unwrap();
         let n2: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE managed=2", [], |r| r.get(0)).unwrap();
         assert_eq!(n2, 2, "ré-import ne duplique pas (idempotent)");
         // enabled PRÉSERVÉ au ré-import : l'admin active Bulk B, un ré-import ne le désactive pas.
         conn.execute("UPDATE rule SET enabled=1 WHERE name='Bulk B'", []).unwrap();
-        let (plan3, _) = sigma_bulk_classify(&conn, &translations);
+        let (plan3, _) = sigma_bulk_classify(&conn, &translations).expect("classification lue");
         sigma_bulk_apply(&conn, &plan3, false).unwrap();
         let en: i64 = conn.query_row("SELECT enabled FROM rule WHERE name='Bulk B'", [], |r| r.get(0)).unwrap();
         assert_eq!(en, 1, "UPDATE ne désactive PAS une règle que l'admin a activée");
@@ -3171,7 +3171,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         let (tr1, e1) = sigma_bulk_translate(std::slice::from_ref(&v1));
         assert!(e1.is_empty() && tr1.len() == 1);
         assert_eq!(tr1[0].sigma_id.as_deref(), Some("11111111-2222-3333-4444-555555555555"), "sigma_id capturé depuis le doc");
-        let (p1, _) = sigma_bulk_classify(&conn, &tr1);
+        let (p1, _) = sigma_bulk_classify(&conn, &tr1).expect("classification lue");
         assert!(p1.iter().all(|(_, t)| t.is_none()), "1er import -> INSERT");
         sigma_bulk_apply(&conn, &p1, false).unwrap();
 
@@ -3180,7 +3180,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
             "logsource": {"category":"firewall"}, "detection": {"selection":{"action":"drop"}, "condition":"selection"},
             "tags": ["attack.t1046"] });
         let (tr2, _) = sigma_bulk_translate(std::slice::from_ref(&v2));
-        let (p2, _) = sigma_bulk_classify(&conn, &tr2);
+        let (p2, _) = sigma_bulk_classify(&conn, &tr2).expect("classification lue");
         assert!(p2.iter().all(|(_, t)| t.is_some()), "dérive de titre mais MÊME sigma_id -> UPDATE (pas d'INSERT)");
         sigma_bulk_apply(&conn, &p2, false).unwrap();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE managed=2", [], |r| r.get(0)).unwrap();
@@ -3205,9 +3205,9 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
             "detection": {"selection":{"action":"deny"}, "condition":"selection"} });
         let (trn, _) = sigma_bulk_translate(std::slice::from_ref(&noid));
         assert!(trn[0].sigma_id.is_none(), "aucun id -> sigma_id None (repli titre)");
-        let (pn1, _) = sigma_bulk_classify(&conn, &trn);
+        let (pn1, _) = sigma_bulk_classify(&conn, &trn).expect("classification lue");
         sigma_bulk_apply(&conn, &pn1, false).unwrap();
-        let (pn2, _) = sigma_bulk_classify(&conn, &trn); // ré-import du MÊME doc sans id
+        let (pn2, _) = sigma_bulk_classify(&conn, &trn).expect("classification lue"); // ré-import du MÊME doc sans id
         assert!(pn2.iter().all(|(_, t)| t.is_some()), "sans id : dédup par titre -> UPDATE au ré-import");
         sigma_bulk_apply(&conn, &pn2, false).unwrap();
         let nn: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE name='Sans Id'", [], |r| r.get(0)).unwrap();
@@ -3221,7 +3221,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
         let docs = sigma_yaml_to_docs("---\n---\n").unwrap();
         assert!(docs.is_empty(), "séparateurs vides -> aucun doc");
         let (translations, _) = sigma_bulk_translate(&docs);
-        let (plan, _) = sigma_bulk_classify(&conn, &translations);
+        let (plan, _) = sigma_bulk_classify(&conn, &translations).expect("classification lue");
         assert!(plan.is_empty(), "plan vide");
         sigma_bulk_apply(&conn, &plan, false).unwrap();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE managed=2", [], |r| r.get(0)).unwrap();
@@ -3240,7 +3240,7 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
             json!({ "title":"Overlay", "logsource":{"category":"firewall"}, "detection":{"selection":{"action":"deny"}, "condition":"selection"} }),
             json!({ "title":"Fresh", "logsource":{"category":"firewall"}, "detection":{"selection":{"action":"deny"}, "condition":"selection"} }),
         ]);
-        let (plan, skipped) = sigma_bulk_classify(&conn, &translations);
+        let (plan, skipped) = sigma_bulk_classify(&conn, &translations).expect("classification lue");
         assert_eq!(plan.len(), 1, "seul 'Fresh' entre dans le plan (insert)");
         assert_eq!(plan[0].0.name, "Fresh");
         assert!(plan[0].1.is_none(), "insert (pas update)");

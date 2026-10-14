@@ -663,26 +663,31 @@ pub(crate) fn component_health_avec_pertes(
     let (dstate, ddetail) = etat_de_surface_pertes_d_acces(dstate, ddetail, pertes_d_acces, now_ts);
     // `P10.20-b` — LE NOMBRE DE RÈGLES ACTIVES N'EST ÉCRIT QUE S'IL A ÉTÉ LU. `unwrap_or(0)` servait
     // `enabled_rules: 0` — « aucune règle active » — sur une lecture ratée de `rule`. Lu : la clé est
-    // posée à l'identique. Non lu : la clé est ABSENTE et `enabled_rules_cause` / `enabled_rules_detail`
-    // disent pourquoi (convention `S32`). Aucun `enabled_rules_verdict` : la console ne lit pas ce
-    // compte, et un verdict servi qu'elle ne lirait pas serait une promesse de plus (garde `S37`).
-    let n_rules: Result<i64, rusqlite::Error> =
-        conn.query_row("SELECT COUNT(*) FROM rule WHERE enabled=1", [], |r| r.get(0));
+    // posée à l'identique, et rien d'autre. Non lu : la clé est ABSENTE, `enabled_rules_verdict` /
+    // `_cause` / `_detail` disent pourquoi (convention `S32`) — la console les lit à côté de la pastille
+    // du composant (`COMPOSANT_LBL`, web/system.js) — et le composant passe au JAUNE, jamais au rouge :
+    // le planificateur peut très bien tourner, mais on ne sait plus avec combien de règles.
+    let n_rules = compte_lu_ou_avoue(
+        conn.query_row("SELECT COUNT(*) FROM rule WHERE enabled=1", [], |r| r.get(0)),
+        "nombre de règles actives",
+        "« zéro règle active »",
+    );
+    let (dstate, ddetail) = match n_rules.detail() {
+        Some(d) => (
+            pire_des_deux(dstate, "yellow"),
+            format!("{ddetail} — et le {d}."),
+        ),
+        _ => (dstate, ddetail),
+    };
     let mut detection = serde_json::Map::new();
     detection.insert("component".into(), json!(crate::bilan_de_tick::COMPOSANT_DETECTION));
     detection.insert("state".into(), json!(dstate));
     detection.insert("detail".into(), json!(ddetail));
     match &n_rules {
-        Ok(n) => {
+        mesure_environnement::Mesure::Lue(n) => {
             detection.insert("enabled_rules".into(), json!(n));
         }
-        Err(e) => {
-            detection.insert("enabled_rules_cause".into(), json!(mesure_environnement::CAUSE_SOURCE_ILLISIBLE));
-            detection.insert(
-                "enabled_rules_detail".into(),
-                json!(format!("nombre de règles actives NON LU ({e}) : ce n'est PAS « zéro règle active »")),
-            );
-        }
+        non_lu => non_lu.poser_dans(&mut detection, "enabled_rules"),
     }
     detection.insert("last_tick".into(), json!(rule_last));
     crate::bilan_de_tick::poser_bilan(&mut detection, "abandons_dernier_tick", bilan_detection.as_ref());
@@ -920,10 +925,22 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     }
     let (p50, p95, lat_n) = search_quantiles();
     // ingest « dernière heure » depuis event_rollup (pré-agrégé, ~ms) -> débit sans scanner `event`.
-    let events_1h: i64 = conn
-        .query_row("SELECT COALESCE(SUM(n),0) FROM event_rollup WHERE bucket>=?1", params![now_ts - 3600], |r| r.get(0))
-        .unwrap_or(0);
-    let alerts_open: i64 = conn.query_row("SELECT COUNT(*) FROM alert WHERE status='new'", [], |r| r.get(0)).unwrap_or(0);
+    // `P10.20-b` — LES DEUX COMPTES DE LA BASE NE SONT ÉCRITS QUE S'ILS ONT ÉTÉ LUS. `unwrap_or(0)`
+    // servait « Ingest / h 0 » et « Alertes ouvertes 0 » — les deux valeurs les plus calmes de l'écran —
+    // quand `event_rollup` ou `alert` ne répondait pas. Lu : la clé est posée à l'identique, et rien
+    // d'autre (le corps nominal ne change pas d'un octet). Non lu : la clé est ABSENTE et
+    // `<clé>_verdict` / `_cause` / `_detail` disent pourquoi (convention `S32`) ; `/metrics` saute la
+    // série de valeur et expose la jauge de lisibilité, comme ses voisines.
+    let events_1h = compte_lu_ou_avoue(
+        conn.query_row("SELECT COALESCE(SUM(n),0) FROM event_rollup WHERE bucket>=?1", params![now_ts - 3600], |r| r.get(0)),
+        "débit d'ingest de la dernière heure (event_rollup)",
+        "« aucun événement ingéré »",
+    );
+    let alerts_open = compte_lu_ou_avoue(
+        conn.query_row("SELECT COUNT(*) FROM alert WHERE status='new'", [], |r| r.get(0)),
+        "nombre d'alertes ouvertes (alert)",
+        "« aucune alerte ouverte »",
+    );
     let components = component_health(conn, spool, db_path, disk_warn_pct);
     let posture = worst_state(&components);
     // ACK-DROP Pub/Sub : la surface est DÉRIVÉE de `AckDrop::TOUTES`, jamais réécrite ici. Une raison ajoutée
@@ -940,7 +957,12 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
     let mut ingest = serde_json::Map::new();
     ingest.insert("events_total".into(), json!(INGEST_EVENTS_TOTAL.load(Ordering::Relaxed)));
     ingest.insert("files_total".into(), json!(INGEST_FILES_TOTAL.load(Ordering::Relaxed)));
-    ingest.insert("events_1h".into(), json!(events_1h));
+    match &events_1h {
+        mesure_environnement::Mesure::Lue(n) => {
+            ingest.insert("events_1h".into(), json!(n));
+        }
+        non_lu => non_lu.poser_dans(&mut ingest, "events_1h"),
+    }
     spool_queue_depth(spool).poser_dans(&mut ingest, "queue_depth");
     spool_quarantine_depth(spool).poser_dans(&mut ingest, "quarantine_depth");
     ingest.insert("push_zero_map_total".into(), json!(PUSH_ZERO_MAP_TOTAL.load(Ordering::Relaxed)));
@@ -1039,16 +1061,39 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
         "detection": detection,
         "db": db,
         "host": hote,
-        "alerts_open": alerts_open,
         "posture": posture,
         "components": components,
     });
+    // `P10.20-b` — `alerts_open` est posé à la racine HORS du littéral : un littéral oblige à produire
+    // une valeur dans tous les cas. La racine est une carte triée (serde_json sans `preserve_order`),
+    // donc l'ordre d'insertion ne change rien au corps nominal.
+    let mut racine_alertes = serde_json::Map::new();
+    match &alerts_open {
+        mesure_environnement::Mesure::Lue(n) => {
+            racine_alertes.insert("alerts_open".into(), json!(n));
+        }
+        non_lu => non_lu.poser_dans(&mut racine_alertes, "alerts_open"),
+    }
     // `P10.20-b` — `schema_version` vaut `null` quand rien n'a été lu, et l'aveu NOMMÉ dit laquelle des
     // trois causes. Rien n'est ajouté sur le chemin nominal : le corps y ressort byte-identique.
     if let Some(obj) = sortie.as_object_mut() {
+        obj.extend(racine_alertes);
         schema_version.poser_l_aveu(obj);
     }
     sortie
+}
+
+/// `P10.20-b` — UN COMPTE LU EN BASE, EN DEUX ISSUES ET SANS VALEUR PAR DÉFAUT : la valeur lue (zéro
+/// compris, et c'est alors un VRAI zéro), ou l'aveu nommé — cause `source_illisible`, détail qui dit ce
+/// qui n'a pas été lu, l'erreur du moteur, et la valeur calme qu'il ne faut PAS y lire.
+fn compte_lu_ou_avoue(lecture: Result<i64, rusqlite::Error>, quoi: &str, calme: &str) -> mesure_environnement::Mesure<i64> {
+    match lecture {
+        Ok(n) => mesure_environnement::Mesure::Lue(n),
+        Err(e) => mesure_environnement::Mesure::Illisible {
+            cause: mesure_environnement::CAUSE_SOURCE_ILLISIBLE,
+            detail: format!("{quoi} NON LU ({e}) : ce n'est PAS {calme}"),
+        },
+    }
 }
 
 fn prom_line(out: &mut String, name: &str, typ: &str, help: &str, value: String) {
@@ -1087,6 +1132,21 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
         let cause = j.pointer(ptr_cause).and_then(|v| v.as_str()).unwrap_or(mesure_environnement::CAUSE_SOURCE_ILLISIBLE);
         o.push_str(&mesure_environnement::exposition_prom_lisible(nom, quoi, mot, cause));
     };
+    // `P10.20-b` — LA LISIBILITÉ D'UN COMPTE DE LA BASE (`compte_lu_ou_avoue`). Son corps nominal ne porte
+    // QUE la valeur (byte-identique à avant) : la valeur présente sans verdict se lit donc « lu », le
+    // verdict servi l'emporte quand il existe, et RIEN des deux se lit « illisible » — jamais un vert
+    // déduit d'un silence.
+    let lisible_compte = |o: &mut String, nom: &str, quoi: &str, ptr_valeur: &str| {
+        let verdict = j.pointer(&format!("{ptr_valeur}_verdict")).and_then(|v| v.as_str());
+        let lu_sans_verdict = verdict.is_none() && j.pointer(ptr_valeur).is_some();
+        let mot = if lu_sans_verdict { mesure_environnement::VERDICT_LU } else { verdict.unwrap_or(mesure_environnement::VERDICT_ILLISIBLE) };
+        let cause = j.pointer(&format!("{ptr_valeur}_cause")).and_then(|v| v.as_str()).unwrap_or(if lu_sans_verdict {
+            mesure_environnement::CAUSE_AUCUNE
+        } else {
+            mesure_environnement::CAUSE_SOURCE_ILLISIBLE
+        });
+        o.push_str(&mesure_environnement::exposition_prom_lisible(nom, quoi, mot, cause));
+    };
     g(&mut o, "plume_process_cpu_seconds_total", "counter", "Temps CPU cumulé du process (s)", "/process/cpu_seconds");
     g(&mut o, "plume_process_resident_memory_bytes", "gauge", "RSS du process (octets)", "/process/rss_bytes");
     lisible(&mut o, "plume_process_mesure_lisible", "la mesure processeur/mémoire du processus", "/process/verdict", "/process/cause");
@@ -1096,6 +1156,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_ingest_events_total", "counter", "Events ingérés depuis le démarrage", "/ingest/events_total");
     g(&mut o, "plume_ingest_files_total", "counter", "Fichiers spool consommés", "/ingest/files_total");
     g(&mut o, "plume_ingest_events_1h", "gauge", "Events ingérés sur la dernière heure (rollup)", "/ingest/events_1h");
+    lisible_compte(&mut o, "plume_ingest_events_1h_lisible", "le débit d'ingest de la dernière heure (table event_rollup)", "/ingest/events_1h");
     g(&mut o, "plume_spool_queue_files", "gauge", "Fichiers en attente dans le spool", "/ingest/queue_depth");
     lisible(&mut o, "plume_spool_queue_lisible", "la profondeur de la file d'ingest", "/ingest/queue_depth_verdict", "/ingest/queue_depth_cause");
     g(&mut o, "plume_push_zero_map_total", "counter", "Batches push acceptés mais mappés à 0 event (misconfig source push)", "/ingest/push_zero_map_total");
@@ -1199,6 +1260,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     // Chaîne VIDE tant qu'aucun plan n'a été lu -> observatoire éteint = `/metrics` inchangé.
     o.push_str(&crate::index_usage::observatoire().exposition_prom());
     g(&mut o, "plume_alerts_open", "gauge", "Alertes ouvertes (status=new)", "/alerts_open");
+    lisible_compte(&mut o, "plume_alerts_open_lisible", "le nombre d'alertes ouvertes (table alert)", "/alerts_open");
     // BAN NATIF HTTP — la BORNE et son SATURATION. Lu depuis le store live en mémoire (aucune requête SQL :
     // un scrape ne doit rien coûter à la base). `store_tronque=1` dit que des bans posés en base ne sont PAS
     // enforcés faute de place : c'est l'alerte à câbler, une borne muette ne valant pas mieux qu'aucune borne.

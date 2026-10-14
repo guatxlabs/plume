@@ -1419,28 +1419,19 @@ fn main() {
             match sigma_translate(d) {
                 Ok(t) => {
                     if let Some(c) = &conn {
-                        // #31 (cohérence avec e46a2f7) : dédup par `sigma_id` (UUID stable) D'ABORD — capte une
-                        // DÉRIVE de titre (même règle, titre changé -> UPDATE, pas de doublon) — sinon par nom
-                        // (comportement historique). MÊME résolution que les chemins web/bulk (sigma_find_existing).
-                        let existing = sigma_find_existing(c, &t); // Option<(rowid, managed)>
-                        // ADDITIF : ne pas écraser un overlay git (managed=1) NI une détection
-                        // native (builtin/seed, managed=0). Seul managed=2 (ad-hoc) est mis à jour.
-                        if let SigmaDisp::SkipManaged(m) = sigma_import_disposition(existing.map(|(_, m)| m)) {
-                            let reason = if m == 1 { "existe comme overlay géré (managed=1) — non écrasé" }
-                                         else { "existe comme détection native (builtin/seed, managed=0) — NON écrasée par un import Sigma" };
-                            skipped.push(json!({ "title": t.name, "reason": reason, "source": origin }));
-                            continue;
-                        }
-                        match existing {
-                            // UPDATE ciblé par ROWID (résolu par sigma_id/nom) : rafraîchit la logique + `name`
-                            // (titre possiblement DÉRIVÉ) + `sigma_id` (back-fill), (ré)active la règle.
-                            Some((rowid, _)) => {
-                                c.execute("UPDATE rule SET name=?1, enabled=1, query=?2, is_soql=1, op=?3, threshold=?4, severity=?5, interval_s=?6, window_s=?7, mitre=?8, sigma_id=?9, managed=2 WHERE id=?10",
-                                    params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, t.sigma_id, rowid]).expect("update rule");
+                        // Résolution, protection et écriture : `sigma_cli_appliquer_une` (MÊME résolution que les
+                        // chemins web/bulk). `P10.20-b` : une lecture ratée sort en échec, sans paniquer.
+                        match sigma_cli_appliquer_une(c, &t) {
+                            Ok(SigmaCliIssue::Ecrite) => {}
+                            Ok(SigmaCliIssue::Protegee(m)) => {
+                                let reason = if m == 1 { "existe comme overlay géré (managed=1) — non écrasé" }
+                                             else { "existe comme détection native (builtin/seed, managed=0) — NON écrasée par un import Sigma" };
+                                skipped.push(json!({ "title": t.name, "reason": reason, "source": origin }));
+                                continue;
                             }
-                            None => {
-                                c.execute("INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,sigma_id,managed) VALUES(?1,1,?2,1,?3,?4,?5,?6,?7,?8,?9,2)",
-                                    params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, t.sigma_id]).expect("insert rule");
+                            Err(cause) => {
+                                eprintln!("[sigma] {origin} : {cause} — ARRÊT : cette règle et les suivantes NE sont PAS importées ; {} règle(s) déjà écrite(s) le restent.", imported.len());
+                                std::process::exit(1);
                             }
                         }
                     }

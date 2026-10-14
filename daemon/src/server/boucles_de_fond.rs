@@ -360,8 +360,9 @@ pub(crate) fn tick_de_detection_d_un_tenant(handle: &Arc<Mutex<Connection>>, db_
 /// BAN NATIF PLUME (chantier ② Phase 1) — thread de maintenance du store live `net_ban`. Charge le cache au
 /// boot puis, toutes les 15 s : purge les bans EXPIRÉS de la table + recharge le cache in-mémoire (source de
 /// vérité = la table ; capte les écritures du responder root séparé). Sur la base DEFAULT (l'enforcement HTTP
-/// est GLOBAL, avant la résolution tenant -> Phase 1 = mono-base ; per-tenant = Phase 2). Fail-safe : base
-/// illisible -> cache vidé (fail-open, aucune IP bloquée) au lieu d'un instantané figé.
+/// est GLOBAL, avant la résolution tenant -> Phase 1 = mono-base ; per-tenant = Phase 2). Fail-STATIC
+/// (`netban_reload`) : une lecture ratée garde le dernier bon instantané, une ligne illisible est jugée sur
+/// sa ligne (`P10.7-f`). Seul un préchauffage raté laisse le cache vide (fail-open au démarrage).
 fn spawn_netban_maintenance(db: Arc<Mutex<Connection>>) {
     std::thread::spawn(move || {
         {

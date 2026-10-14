@@ -683,13 +683,39 @@ pub(crate) fn sigma_doc_id(doc: &Value) -> Option<String> {
 /// Recherche la règle EXISTANTE correspondant à une traduction : par `sigma_id` (UUID stable) D'ABORD — capte
 /// une DÉRIVE de titre (même règle, titre changé) — sinon par nom (comportement historique quand aucun id, ou
 /// première population de la colonne `sigma_id` sur une règle jadis importée par titre). Renvoie `(rowid, managed)`.
-pub(crate) fn sigma_find_existing(conn: &Connection, t: &SigmaTranslation) -> Option<(i64, i64)> {
+///
+/// `P10.20-b` — TROIS ISSUES : `Ok(Some)` trouvée, `Ok(None)` ABSENCE ÉTABLIE (aucune ligne aux deux étages),
+/// `Err` LECTURE RATÉE. La forme d'avant (`if let Ok(..)` puis `.ok()`) rendait une lecture ratée comme une absence,
+/// donc la disposition `Insert` : `rule.name` n'a pas de contrainte d'unicité, l'INSERT passait, et l'import doublait
+/// une détection native (managed=0), un overlay géré (managed=1) ou une règle déjà importée. Une erreur du premier
+/// étage (par `sigma_id`) NE retombe PAS sur le nom : elle est rendue telle quelle.
+pub(crate) fn sigma_find_existing(conn: &Connection, t: &SigmaTranslation) -> rusqlite::Result<Option<(i64, i64)>> {
+    use rusqlite::OptionalExtension;
     if let Some(id) = &t.sigma_id {
-        if let Ok(r) = conn.query_row("SELECT id,managed FROM rule WHERE sigma_id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))) {
-            return Some(r);
+        let par_id = conn.query_row("SELECT id,managed FROM rule WHERE sigma_id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some(r) = par_id {
+            return Ok(Some(r));
         }
     }
-    conn.query_row("SELECT id,managed FROM rule WHERE name=?1", params![t.name], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+    conn.query_row("SELECT id,managed FROM rule WHERE name=?1", params![t.name], |r| Ok((r.get(0)?, r.get(1)?))).optional()
+}
+
+/// `P10.20-b` — une lecture de la règle existante RATÉE pendant la classification d'un import : la traduction en cause
+/// et l'erreur du moteur (pour le journal SEUL, jamais pour le corps rendu).
+#[derive(Debug)]
+pub(crate) struct SigmaExistantNonLu {
+    pub(crate) regle: String,
+    pub(crate) refus: rusqlite::Error,
+}
+
+/// `P10.20-b` — le refus d'un import dont la classification n'a pas pu lire une règle existante : la cause du moteur au
+/// journal, un 503 qui porte la cause NOMMÉE du geste. Rendu AVANT toute transaction : rien n'est écrit, rien n'est tracé.
+fn refuser_l_import_sigma_non_lu(geste: &str, non_lu: &SigmaExistantNonLu, cause: &'static str) -> Response {
+    eprintln!(
+        "[sigma] WARN {geste} NON fait : la règle existante pour « {} » n'a pas pu être lue ({}) — rien n'est écrit",
+        non_lu.regle, non_lu.refus
+    );
+    err_json(StatusCode::SERVICE_UNAVAILABLE, cause)
 }
 
 /// TRADUCTEUR — une règle Sigma (serde_json::Value) -> `SigmaTranslation`, ou Err(raison claire) si un
@@ -838,6 +864,41 @@ pub(crate) fn sigma_import_disposition(existing: Option<i64>) -> SigmaDisp {
     }
 }
 
+/// Ce que le CLI `sigma-import` a fait d'une traduction face à la base : écrite (insérée ou mise à jour en managed=2),
+/// ou protégée (détection native managed=0 / overlay géré managed=1, non écrasée).
+#[derive(Debug, PartialEq)]
+pub(crate) enum SigmaCliIssue { Ecrite, Protegee(i64) }
+
+/// Le pas du CLI `sigma-import` pour UNE traduction (déplacé de `main.rs`, écritures inchangées). `P10.20-b` : une
+/// lecture ratée de la règle existante rend `Err(message)` AVANT toute écriture — la forme d'avant la prenait pour une
+/// absence et INSÉRAIT un doublon ; l'appelant sort en échec sans paniquer.
+pub(crate) fn sigma_cli_appliquer_une(c: &Connection, t: &SigmaTranslation) -> Result<SigmaCliIssue, String> {
+    // #31 (cohérence avec e46a2f7) : dédup par `sigma_id` (UUID stable) D'ABORD — capte une
+    // DÉRIVE de titre (même règle, titre changé -> UPDATE, pas de doublon) — sinon par nom
+    // (comportement historique). MÊME résolution que les chemins web/bulk (sigma_find_existing).
+    let existing = sigma_find_existing(c, t).map_err(|refus| {
+        format!("règle existante pour « {} » NON LUE ({refus}) : impossible de savoir si une détection native, un overlay géré ou une règle déjà importée porte cet identifiant ou ce nom — rien n'est écrit pour elle", t.name)
+    })?; // Option<(rowid, managed)>
+    // ADDITIF : ne pas écraser un overlay git (managed=1) NI une détection
+    // native (builtin/seed, managed=0). Seul managed=2 (ad-hoc) est mis à jour.
+    if let SigmaDisp::SkipManaged(m) = sigma_import_disposition(existing.map(|(_, m)| m)) {
+        return Ok(SigmaCliIssue::Protegee(m));
+    }
+    match existing {
+        // UPDATE ciblé par ROWID (résolu par sigma_id/nom) : rafraîchit la logique + `name`
+        // (titre possiblement DÉRIVÉ) + `sigma_id` (back-fill), (ré)active la règle.
+        Some((rowid, _)) => {
+            c.execute("UPDATE rule SET name=?1, enabled=1, query=?2, is_soql=1, op=?3, threshold=?4, severity=?5, interval_s=?6, window_s=?7, mitre=?8, sigma_id=?9, managed=2 WHERE id=?10",
+                params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, t.sigma_id, rowid]).expect("update rule");
+        }
+        None => {
+            c.execute("INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,sigma_id,managed) VALUES(?1,1,?2,1,?3,?4,?5,?6,?7,?8,?9,2)",
+                params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, t.sigma_id]).expect("insert rule");
+        }
+    }
+    Ok(SigmaCliIssue::Ecrite)
+}
+
 // `P10.25-g` — LES `COMMIT` DES IMPORTS SIGMA SONT JUGÉS : la forme d'avant rendait 200 et la liste des règles « importées »
 // sur une transaction que la base n'avait pas prise, laissée ouverte sur l'écrivain. Un refus rend l'une de ces causes en 503.
 /// `P10.25-g` — import sigma non écrit : le `COMMIT` de ce geste refusé.
@@ -856,6 +917,17 @@ pub(crate) const CAUSE_IMPORT_SIGMA_EN_MASSE_NON_ECRIT: &str = "IMPORT SIGMA EN 
      validé la transaction (COMMIT refusé) et l'a annulée — aucune règle n'est créée ni mise à jour, la couverture \
      ATT&CK reste celle d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en \
      lecture seule, pleine ou verrouillée.";
+/// `P10.20-b` — import sigma non fait : la règle existante (par identifiant Sigma ou par nom) n'a pas pu être lue.
+pub(crate) const CAUSE_IMPORT_SIGMA_NON_LU: &str = "IMPORT SIGMA NON FAIT : la base n'a pas pu lire si une règle de \
+     même identifiant Sigma ou de même nom existe déjà (lecture refusée) — RIEN n'est écrit : aucune règle n'est \
+     créée ni mise à jour, une détection native ou un overlay géré du même nom n'est ni écrasé ni doublé, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+/// `P10.20-b` — import sigma en masse non fait : une règle existante (par identifiant Sigma ou par nom) n'a pas pu être lue.
+pub(crate) const CAUSE_IMPORT_SIGMA_EN_MASSE_NON_LU: &str = "IMPORT SIGMA EN MASSE NON FAIT : la base n'a pas pu \
+     lire si une règle de même identifiant Sigma ou de même nom existe déjà (lecture refusée) — RIEN n'est écrit : \
+     aucune règle n'est créée ni mise à jour, une détection native ou un overlay géré du même nom n'est ni écrasé ni \
+     doublé, la couverture ATT&CK reste celle d'avant, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la base est illisible ou verrouillée.";
 /// `P10.28-d` — le `BEGIN` de ce geste refusé (la forme d'avant rendait une réponse générique et taisait le journal).
 pub(crate) const CAUSE_IMPORT_SIGMA_EN_MASSE_NON_ECRIT_TRANSACTION_NON_OUVERTE: &str = "IMPORT SIGMA EN MASSE NON \
      ÉCRIT : la base n'a pas pris la transaction de l'import (BEGIN refusé : verrou tenu, ou transaction d'un autre \
@@ -908,7 +980,11 @@ pub(crate) async fn sigma_import(State(st): State<AppState>, Extension(au): Exte
     let mut plan: Vec<(&SigmaTranslation, Option<i64>)> = Vec::new(); // (traduction, rowid existant à MAJ | None=insert)
     for t in &translations {
         // Dédup par sigma_id (UUID stable) d'abord (dérive de titre), sinon par nom (comportement historique).
-        let existing = sigma_find_existing(&conn, t); // Option<(rowid, managed)>
+        // `P10.20-b` : une lecture ratée n'est pas une absence — refus nommé AVANT la transaction, rien d'écrit.
+        let existing = match sigma_find_existing(&conn, t) {
+            Ok(e) => e, // Option<(rowid, managed)>
+            Err(refus) => return refuser_l_import_sigma_non_lu("import Sigma", &SigmaExistantNonLu { regle: t.name.clone(), refus }, CAUSE_IMPORT_SIGMA_NON_LU),
+        };
         match sigma_import_disposition(existing.map(|(_, m)| m)) {
             SigmaDisp::SkipManaged(1) => skipped.push(json!({ "title": t.name, "reason": "existe déjà comme overlay géré (managed=1) — non écrasé (retirez-le côté git pour le remplacer)" })),
             // ADDITIF : une détection NATIVE (builtin/seed, managed=0) n'est JAMAIS écrasée par
@@ -1159,12 +1235,14 @@ pub(crate) fn delta_de_couverture_d_un_import(
 /// Classe des traductions face à la BASE -> (plan `(traduction, update?)`, skips de PROTECTION). Réutilise
 /// `sigma_import_disposition` : une détection NATIVE (managed=0) ou un OVERLAY git (managed=1) n'est JAMAIS
 /// écrasé ; seul un ad-hoc (managed=2) est mis à jour (ré-import de SA propre règle). Absente -> insert.
-pub(crate) fn sigma_bulk_classify<'a>(conn: &Connection, translations: &'a [SigmaTranslation]) -> (Vec<(&'a SigmaTranslation, Option<i64>)>, Vec<SigmaBulkSkip>) {
+/// `P10.20-b` : une lecture ratée de la règle existante rend `Err` — pas de plan partiel, l'appelant refuse le geste.
+#[allow(clippy::type_complexity)]
+pub(crate) fn sigma_bulk_classify<'a>(conn: &Connection, translations: &'a [SigmaTranslation]) -> Result<(Vec<(&'a SigmaTranslation, Option<i64>)>, Vec<SigmaBulkSkip>), SigmaExistantNonLu> {
     let mut plan: Vec<(&SigmaTranslation, Option<i64>)> = Vec::new();
     let mut skipped: Vec<SigmaBulkSkip> = Vec::new();
     for t in translations {
         // Résolution par sigma_id (UUID stable) d'abord (dérive de titre), sinon par nom (historique).
-        let existing = sigma_find_existing(conn, t); // Option<(rowid, managed)>
+        let existing = sigma_find_existing(conn, t).map_err(|refus| SigmaExistantNonLu { regle: t.name.clone(), refus })?; // Option<(rowid, managed)>
         match sigma_import_disposition(existing.map(|(_, m)| m)) {
             SigmaDisp::SkipManaged(1) => skipped.push(SigmaBulkSkip { reference: t.name.clone(), reason: "existe déjà comme overlay géré (managed=1) — non écrasé (retirez-le côté git pour le remplacer)".into(), is_error: false }),
             SigmaDisp::SkipManaged(_) => skipped.push(SigmaBulkSkip { reference: t.name.clone(), reason: "existe déjà comme détection native (builtin/seed, managed=0) — NON écrasée (protection des détections natives)".into(), is_error: false }),
@@ -1172,7 +1250,7 @@ pub(crate) fn sigma_bulk_classify<'a>(conn: &Connection, translations: &'a [Sigm
             SigmaDisp::Insert => plan.push((t, None)),
         }
     }
-    (plan, skipped)
+    Ok((plan, skipped))
 }
 
 /// Applique un PLAN d'import en masse. INSERT : crée la règle avec `enabled_flag` (0 = DÉSACTIVÉE par défaut,
@@ -1235,7 +1313,12 @@ pub(crate) async fn sigma_import_bulk(State(st): State<AppState>, Extension(au):
 
     crate::req_conn!(st, au, conn);
     // Classification managed (protège natif/overlay) : ajoute ses skips à ceux de traduction.
-    let (plan, managed_skips) = sigma_bulk_classify(&conn, &translations);
+    // `P10.20-b` : une lecture ratée d'une règle existante refuse le geste ENTIER (dry_run compris) AVANT la
+    // transaction — un plan partiel ou un « insert » fondé sur une absence non établie serait un mensonge.
+    let (plan, managed_skips) = match sigma_bulk_classify(&conn, &translations) {
+        Ok(classe) => classe,
+        Err(non_lu) => return refuser_l_import_sigma_non_lu("import Sigma en masse", &non_lu, CAUSE_IMPORT_SIGMA_EN_MASSE_NON_LU),
+    };
     skipped.extend(managed_skips);
     let errors = skipped.iter().filter(|s| s.is_error).count() as i64;
     let n_insert = plan.iter().filter(|(_, target)| target.is_none()).count() as i64;

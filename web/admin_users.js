@@ -397,7 +397,7 @@ async function loadUsers() {
   }
   S.isAdmin = true; route(); // ne PAS forcer hidden ici : laisser le routeur n'afficher #users que sous Reglages
   const { users, me } = d;
-  renderAcces(d.acces);   // P11.5-c : QUI A ACCÈS — l'inventaire des comptes VUS, à côté des comptes gérés ici
+  renderAcces(d);   // P11.5-c : QUI A ACCÈS — l'inventaire des comptes VUS, à côté des comptes gérés ici ; `P10.20-b` : ou son aveu
   list.replaceChildren();
   // `P10.7-f` — UNE LISTE DE COMPTES NON LUE N'EST PAS « ZÉRO COMPTE ». Le démon sert, en 200,
   // `{users: [], me, acces, error: <cause>}` quand la lecture de la table a échoué
@@ -405,7 +405,8 @@ async function loadUsers() {
   // ses clés sont vides. Le récapitulatif « 0 compte(s) · 0 admin · … » est un COMPTE, c'est-à-dire un
   // fait — le peindre sur une lecture jamais faite affirme, sur l'inventaire des accès, que personne
   // n'a de compte. La cause servie est écrite telle quelle, et rien d'autre n'est peint ici.
-  // `acces` ci-dessus, lui, est LU dans le même corps : c'est un constat, il reste rendu.
+  // `acces` ci-dessus vient d'une AUTRE lecture du même corps, qui peut avoir réussi ou non : `renderAcces` le rend
+  // s'il est lu, et peint son propre aveu (`acces_non_lu`, `P10.20-b`) s'il ne l'est pas — jamais « aucun accès ».
   if (d.error) {
     const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0 0 10px;font-size:12px';
     const dit = document.createElement('span');
@@ -509,10 +510,32 @@ async function loadUsers() {
 // chaque compte VU par le point de passage d'authentification, avec sa provenance, son rôle effectif,
 // l'origine de ce rôle et sa dernière vue. LECTURE SEULE par nature : on n'administre pas ici un compte
 // dont l'autorité vient d'ailleurs — la phrase le dit plutôt que de proposer un bouton qui échouerait.
-function renderAcces(acces) {
+// `P10.20-b` — UN INVENTAIRE NON LU N'EST PAS « AUCUN ACCÈS ». Le démon sert `acces: []` PLUS une clé nommée
+// (`CLE_ACCES_NON_LU`, daemon/src/acces_observe.rs) quand la lecture de l'inventaire a échoué — préparation, pas du
+// moteur ou ligne indécodable — et cette clé n'existe pas sur le chemin nominal. Avant, la liste vide peignait
+// « aucun accès observé pour le moment » : l'inventaire le plus RASSURANT possible, sur une lecture jamais faite.
+// L'avis prend la place de cette phrase, lu sur la CLÉ et non sur la longueur de la liste ; une liste lue, vide ou
+// non, se rend comme avant. La phrase du démon n'est pas recopiée : l'avis a ses deux faces, la cause est au journal.
+const CLE_DE_L_INVENTAIRE_DES_ACCES_NON_LU = 'acces_non_lu';
+const MOTS_DE_L_INVENTAIRE_DES_ACCES = {
+  non_lu: {
+    fr: "Accès NON LUS : l'inventaire des comptes qui ont accédé à cette console n'a pas pu être lu. La liste n'est pas vide, elle n'est pas établie — rien ici ne dit que personne n'a accédé. Le journal du démon porte la cause.",
+    en: 'Access NOT READ: the inventory of the accounts that reached this console could not be read. The list is not empty, it is not established: nothing here says that nobody has had access. The daemon log holds the cause.' },
+};
+const motDeLInventaireDesAcces = (cle) => faceDansLaLangue(MOTS_DE_L_INVENTAIRE_DES_ACCES[cle]);
+function renderAcces(d) {
   const host = $('#acces-list'); if (!host) return;
-  const arr = acces || [];
+  const corps = d || {};
+  const arr = corps.acces || [];
   host.replaceChildren();
+  if (corps[CLE_DE_L_INVENTAIRE_DES_ACCES_NON_LU]) {
+    const aveu = document.createElement('div'); aveu.className = 'bad'; aveu.style.cssText = 'margin:0 0 10px;font-size:12px';
+    aveu.setAttribute('role', 'alert');
+    aveu.dataset.inventaireDesAccesNonLu = '1';   // marque de POSE (harnais) : aucune règle CSS ne la vise
+    aveu.textContent = motDeLInventaireDesAcces('non_lu');
+    host.appendChild(aveu);
+    return;
+  }
   if (!arr.length) { host.appendChild(muted('aucun accès observé pour le moment')); return; }
   arr.forEach(a => {
     const row = document.createElement('div'); row.className = 'urow';
@@ -929,4 +952,4 @@ if ($('#token-new')) $('#token-new').onclick = newTokenFlow;
 // `P10.27-a` — les faces de la lecture des jetons refusée (témoin 116).
 // `P10.26-g` — la face d'une clé de livraison conservée dans le compte rendu, et le rendu du compte rendu lui-même, que le
 // témoin 125 joue sur des clés de livraison conservées.
-export { ROLE_LABEL, loadUsers, loadTokens, newTokenFlow, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte, motDeLaLectureDesComptes, motDeLaLectureDesJetons, motDeLaCleDeLivraisonConservee, noeudDuCompteRenduDeSuppression };
+export { ROLE_LABEL, CLE_DE_L_INVENTAIRE_DES_ACCES_NON_LU, motDeLInventaireDesAcces, loadUsers, loadTokens, newTokenFlow, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte, motDeLaLectureDesComptes, motDeLaLectureDesJetons, motDeLaCleDeLivraisonConservee, noeudDuCompteRenduDeSuppression };

@@ -77,9 +77,10 @@ impl LignesDeSavoir {
 }
 
 /// Lectures ratées du registre de savoir PAR db_path depuis le démarrage (une par échec : préparation,
-/// pas du moteur, ligne indécodable). En production, l'AVEU est la ligne de stderr qui accompagne chaque
-/// échec : le compte n'est servi ni par `/metrics`, ni par une route, ni par la console (`P10.20-b`, reste
-/// assumé) ; seuls les témoins le relisent (`knowledge_lectures_ratees_de`, `cfg(test)`).
+/// pas du moteur, ligne indécodable). Chaque échec est dit sur stderr (`ligne_de_lecture_de_savoir_ratee`)
+/// ET compté ici ; le compte est servi par `GET /api/knowledge` sous `CLE_LECTURES_DE_SAVOIR_RATEES`
+/// (`avouer_les_lectures_de_savoir_ratees`, `P10.20-b`), sur le précédent de `reload_read_failures` des
+/// processeurs. Ni `/metrics` ni la console ne le lisent.
 static KNOWLEDGE_LECTURES_RATEES: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, u64>>> =
     std::sync::OnceLock::new();
 
@@ -91,15 +92,39 @@ fn compter_une_lecture_de_savoir_ratee(db_path: &str) {
         .or_insert(0) += 1;
 }
 
-/// Lectures ratées du registre de savoir de `db_path` depuis le démarrage (cf. `KNOWLEDGE_LECTURES_RATEES`).
-/// `cfg(test)` : aucun appelant hors des témoins — le binaire ne la porte pas (la forme de
-/// `control_ledger_verify_export`), plutôt qu'une fonction morte qui avertirait au build de release.
-#[cfg(test)]
+/// Lectures ratées du registre de savoir de `db_path` depuis le démarrage (cf. `KNOWLEDGE_LECTURES_RATEES`) :
+/// le compte de CETTE base seule — une base (un tenant) ne voit pas les échecs d'une autre.
 pub(crate) fn knowledge_lectures_ratees_de(db_path: &str) -> u64 {
     KNOWLEDGE_LECTURES_RATEES
         .get()
         .and_then(|m| m.read().get(db_path).copied())
         .unwrap_or(0)
+}
+
+/// Clé du corps de `GET /api/knowledge` qui porte `knowledge_lectures_ratees_de(db_path)`. ABSENTE quand le
+/// compte est nul : le corps nominal reste octet pour octet celui d'avant (convention de `S32`).
+pub(crate) const CLE_LECTURES_DE_SAVOIR_RATEES: &str = "reload_read_failures";
+
+/// Pose dans `corps` le compte des lectures ratées du registre de savoir, s'il n'est pas nul. Ce compte dit
+/// que les objets APPLIQUÉS à la compilation peuvent différer des objets LISTÉS : tant qu'une table rate, sa
+/// part en place est gardée (`knowledge_reload`).
+pub(crate) fn avouer_les_lectures_de_savoir_ratees(mut corps: Value, lectures_ratees: u64) -> Value {
+    if lectures_ratees > 0 {
+        corps[CLE_LECTURES_DE_SAVOIR_RATEES] = json!(lectures_ratees);
+    }
+    corps
+}
+
+/// La ligne de stderr d'UN échec de lecture : la table, la base, la cause rendue par le moteur, et ce qui est
+/// publié à sa place. Aucune valeur de cellule : la cause du moteur nomme le type et la colonne, pas le
+/// contenu.
+pub(crate) fn ligne_de_lecture_de_savoir_ratee(table: &str, db_path: &str, cause: &str, part_en_place: bool) -> String {
+    let suite = if part_en_place {
+        "la part en place de cette table est GARDÉE"
+    } else {
+        "aucun registre en place : seul ce qui a été décodé est publié"
+    };
+    format!("[knowledge] lecture ratée de `{table}` (registre de savoir de {db_path}) : {cause} — {suite}")
 }
 
 /// Ce qu'une table a rendu : ses lignes décodées et, s'il y en a, ses échecs (avec la cause du moteur).
@@ -264,7 +289,8 @@ pub(crate) fn validate_auto_lookup(name: &str, key_field: &str, out_cols: &[Stri
 /// (registre jamais chargé), ce qui a été décodé est publié. Prix assumé, borné à la table en échec : tant
 /// qu'elle rate, un objet supprimé ou éteint dans CETTE table reste appliqué, un objet posé depuis dans
 /// cette table ne l'est pas encore. Chaque échec est dit sur stderr avec la table et la cause du moteur
-/// (hors du verrou du registre) et compté, un par échec, dans `knowledge_lectures_ratees_de(db_path)`.
+/// (hors du verrou du registre) et compté, un par échec, dans `knowledge_lectures_ratees_de(db_path)`,
+/// compte servi par `GET /api/knowledge` (`CLE_LECTURES_DE_SAVOIR_RATEES`, absente à zéro).
 ///
 /// Table absente = lecture ratée : les chargements du bind et de `PreparedWriter::open` passent par la
 /// porte de schéma (`prepare_schema` : chaîne de migrations jusqu'à `CODE_SCHEMA_MAX`, puis `schema_gaps`
@@ -272,6 +298,14 @@ pub(crate) fn validate_auto_lookup(name: &str, key_field: &str, out_cols: &[Stri
 /// y est une anomalie, pas une base ancienne. Chemin nominal (aucun échec) : jeu remplacé comme avant,
 /// construit dans le même ordre.
 pub(crate) fn knowledge_reload(conn: &Connection, db_path: &str) {
+    for ligne in recharger_le_savoir(conn, db_path) {
+        eprintln!("{ligne}");
+    }
+}
+
+/// Le corps de `knowledge_reload` : recharge, compte, et rend les lignes de stderr de ses échecs (une par
+/// échec, `ligne_de_lecture_de_savoir_ratee`) — rendues plutôt qu'écrites pour que les témoins les lisent.
+pub(crate) fn recharger_le_savoir(conn: &Connection, db_path: &str) -> Vec<String> {
     let deux = |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?));
     let trois = |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?));
     // 1) ALIAS canonical -> source
@@ -301,15 +335,13 @@ pub(crate) fn knowledge_reload(conn: &Connection, db_path: &str) {
     let jeu = lignes.construire();
     w.insert(db_path.to_string(), Arc::new(RegistreDeSavoir { jeu, lignes }));
     drop(w);
-    let suite = if en_place.is_some() {
-        "la part en place de cette table est GARDÉE"
-    } else {
-        "aucun registre en place : seul ce qui a été décodé est publié"
-    };
-    for (table, e) in &echecs {
-        compter_une_lecture_de_savoir_ratee(db_path);
-        eprintln!("[knowledge] lecture ratée de `{table}` (registre de savoir de {db_path}) : {e} — {suite}");
-    }
+    echecs
+        .iter()
+        .map(|(table, e)| {
+            compter_une_lecture_de_savoir_ratee(db_path);
+            ligne_de_lecture_de_savoir_ratee(table, db_path, e, en_place.is_some())
+        })
+        .collect()
 }
 
 /// ACTIVE le db_path de COMPILATION (mode 0 : tenant primaire) lu par `active_knowledge` sur le chemin

@@ -23599,7 +23599,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // `P10.31-z` — la table que le témoin 139 pose : le jeton d'installation resté en clair, chemin servi ou non.
       "app.js › MOTS_DU_JETON_D_INSTALLATION_NON_EFFACE",
       // `P10.20-b` — la table que le témoin 140 pose : le registre d'ingestion non relu, gardé en place.
-      "processors.js › MOTS_DU_REGISTRE_NON_RELU"];
+      "processors.js › MOTS_DU_REGISTRE_NON_RELU",
+      // `P10.20-b` — la table que le témoin 141 pose : l'inventaire des accès non lu, à la place de « aucun accès observé ».
+      "admin_users.js › MOTS_DE_L_INVENTAIRE_DES_ACCES"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -28446,6 +28448,111 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvant140) console.log(`(140) EN ÉCHEC — ${echecs.length - echecsAvant140} écart(s), dits ci-dessus`);
   else console.log("(140) OK — `P10.20-b` (console) : un registre d'ingestion dont la relecture a échoué se lit à l'écran des règles — lecture ratée, nombre (1 compris), règles appliquées qui peuvent différer de la table, règle non relue gardée si déjà chargée et non appliquée sinon (les deux issues relues dans le démon) — la liste servie toujours rendue, et l'avis porté aussi quand la liste elle-même est illisible, après son aveu ; zéro et champ absent laissent l'écran nominal inchangé ; avec des règles invalides, les deux avis se lisent ; des règles invalides seules ne rendent aucun avis de registre non relu ; deux langues distinctes, l'anglaise sans accent ; la clé est dérivée de l'arbre du démon, distincte de celle des règles invalides.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (141) `P10.20-b` (console) — UN INVENTAIRE DES ACCÈS NON LU N'EST PAS « AUCUN ACCÈS OBSERVÉ ».
+//
+// CE QUE LE DÉMON SERT (RELU ICI, PAS RECOPIÉ) : `corps_de_la_liste_des_comptes` (daemon/src/handlers/users_lookups.rs)
+// pose `acces: []` PLUS la clé `CLE_ACCES_NON_LU` (daemon/src/acces_observe.rs) quand `inventaire_des_acces` rend une
+// erreur — préparation, pas du moteur, ligne indécodable —, que les comptes soient lus ou non ; la clé n'existe pas sur
+// le chemin nominal. Le nom de la clé est DÉRIVÉ de la constante du démon, et sa pose est relue dans le corps.
+//
+// CE QUE LA CONSOLE EN FAISAIT AVANT CE LOT, MESURÉ (f54efa36) : `renderAcces` (web/admin_users.js) ne recevait que
+// `d.acces` et peignait « aucun accès observé pour le moment » sur toute liste vide — l'inventaire le plus rassurant sur
+// une lecture jamais faite ; le commentaire de `loadUsers` affirmait que `acces` « est LU dans le même corps ».
+//
+// JUGÉ, DANS LES DEUX LANGUES (instances française et `?plume-lang=en` des modules réels) : (0) la clé lue par la
+// console est celle que le démon pose ; (a) lecture ratée, comptes lus → UN avis dans `#acces-list`, à la place de la
+// phrase « aucun accès », les comptes rendus ; (b) nominal, inventaire lu non vide → la liste, aucun avis ; (c) inventaire
+// lu et vide, clé absente → la phrase « aucun accès », aucun avis ; (d) comptes ET inventaire non lus → l'aveu des comptes
+// ET l'avis ; (faces) fr ≠ en, l'anglaise sans accent.
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; aucune vérification que le démon lit juste (témoins
+// Rust `iao_*`, daemon/src/tests/comptes_qui_accedent.rs) ; une lecture de `/api/users` refusée en entier ne passe pas
+// par `renderAcces` et laisse `#acces-list` tel qu'il était (hors de ce lot).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant141 = echecs.length;
+  const FICHIERS141 = { noyau: "core.js", etat: "state.js", comptes: "admin_users.js" };
+  const importer141 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS141)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr141 = await importer141((f) => pathToFileURL(path.join(WEB, f)).href);
+  const langueOrigine141 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn141 = await importer141((f) => adresseSousLaLangue(f));
+  if (langueOrigine141 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine141);
+  const FR141 = { nom: "fr", ...modsFr141, S: modsFr141.etat.S }, EN141 = { nom: "en", ...modsEn141, S: modsEn141.etat.S };
+  const instrument141 = (vrai, quoi) => exiger(vrai, `(141-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic141 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser141 = async (n = 30) => { for (let i = 0; i < n; i++) await tic141(); };
+  const nu141 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const ACCENTS141 = /[éèêàçùôâîÉÈÊÀ]/;
+  const cueillir141 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir141(c, pred, acc)); return acc; };
+  const lireLeDemon141 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const corpsDeFonction141 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+
+  // ══ (0) CE QUE LE DÉMON SERT, RELU DANS SON ARBRE ════════════════════════════════════════════════
+  const CLE141 = ((lireLeDemon141("acces_observe.rs").match(/pub\(crate\) const CLE_ACCES_NON_LU: &str = "([a-z_]+)";/) || [])[1]) || "";
+  const corpsDesComptes141 = corpsDeFonction141(lireLeDemon141(path.join("handlers", "users_lookups.rs")), "pub(crate) fn corps_de_la_liste_des_comptes(");
+  instrument141(!!CLE141 && (corpsDesComptes141.match(/corps\[CLE_ACCES_NON_LU\] = json!\(CAUSE_INVENTAIRE_DES_ACCES_NON_LU\);/g) || []).length === 2
+    && /\(Ok\(locaux\), Ok\(acces\)\) => json!\(\{ "users": locaux, "me": me, "acces": acces \}\)/.test(corpsDesComptes141),
+    `\`CLE_ACCES_NON_LU\` (daemon/src/acces_observe.rs) n'est plus lisible, ou \`corps_de_la_liste_des_comptes\` (daemon/src/handlers/users_lookups.rs) ne la pose plus sur les DEUX issues où l'inventaire n'est pas lu, ou son chemin nominal a changé de forme : « ${CLE141} »`);
+  for (const L of [FR141, EN141])
+    instrument141(L.comptes.CLE_DE_L_INVENTAIRE_DES_ACCES_NON_LU === CLE141 && typeof L.comptes.loadUsers === "function" && typeof L.comptes.motDeLInventaireDesAcces === "function",
+      `${L.nom} : web/admin_users.js ne lit pas la clé que le démon pose pour un inventaire non lu (« ${L.comptes.CLE_DE_L_INVENTAIRE_DES_ACCES_NON_LU} » contre « ${CLE141} »)`);
+  instrument141(FR141.noyau.LANG !== "en" && EN141.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+
+  const fetchOrigine141 = globalThis.fetch, qsOrigine141 = document.querySelector;
+  const etatOrigine141 = [FR141, EN141].map((L) => ({ S: L.S, admin: L.S.isAdmin, auth: L.S.AUTH }));
+  const hotes141 = { "#users": new Element("section"), "#user-list": new Element("div"), "#acces-list": new Element("div") };
+  let corpsServi141 = {};
+  const AUCUN141 = "aucun accès observé pour le moment";
+  const ENTREE141 = { nom: "annuaire-141", provenance: "annuaire externe", role_effectif: "admin", origine_du_role: "groupes de l'annuaire", methode: "sso", premiere_vue: 1, derniere_vue: 2 };
+  const USERS141 = [{ id: 1, name: "hugo-141", role: "admin", created: 1 }];
+  const rendre141 = async (L, corps) => {
+    corpsServi141 = corps;
+    hotes141["#user-list"].replaceChildren(); hotes141["#acces-list"].replaceChildren();
+    await L.comptes.loadUsers(); await laisser141();
+    const acces = hotes141["#acces-list"];
+    return { texte: nu141(acces), avis: cueillir141(acces, (n) => n.getAttribute && n.getAttribute("data-inventaire-des-acces-non-lu") === "1"),
+      comptes: nu141(hotes141["#user-list"]) };
+  };
+  const faces141 = {};
+  try {
+    document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes141, sel) ? hotes141[sel] : qsOrigine141.call(document, sel));
+    globalThis.fetch = async (u, init) => {
+      const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+      const texte = JSON.stringify(k === "GET /api/users" ? corpsServi141 : {});
+      return { ok: true, status: 200, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+    };
+    for (const L of [FR141, EN141]) {
+      L.S.isAdmin = true; L.S.AUTH = { user: "hugo-141", role: "admin", auth_method: "cookie" };
+      const phrase = L.comptes.motDeLInventaireDesAcces("non_lu");
+      faces141[L.nom] = phrase;
+      // (a) lecture ratée, comptes lus : un avis À LA PLACE de « aucun accès », les comptes rendus.
+      const rate = await rendre141(L, { users: USERS141, me: "hugo-141", acces: [], [CLE141]: "INVENTAIRE DES ACCÈS NON LU : phrase du démon" });
+      exiger(rate.avis.length === 1 && nu141(rate.avis[0]) === phrase && !rate.texte.includes(AUCUN141) && rate.comptes.includes("hugo-141"),
+        `(141a) ${L.nom} : un inventaire NON LU (\`${CLE141}\` posé, \`acces: []\`) ne rend pas UN avis à la place de « aucun accès observé », ou les comptes lus ne sont plus rendus : ${rate.avis.length} avis, « ${rate.texte.slice(0, 300)} »`);
+      // (b) nominal : la liste lue, aucun avis.
+      const lu = await rendre141(L, { users: USERS141, me: "hugo-141", acces: [ENTREE141] });
+      exiger(lu.avis.length === 0 && lu.texte.includes("annuaire-141") && !lu.texte.includes(AUCUN141),
+        `(141b) ${L.nom} : un inventaire LU ne rend pas sa liste, ou porte un avis de lecture ratée : ${lu.avis.length} avis, « ${lu.texte.slice(0, 300)} »`);
+      // (c) lu et vide, clé absente : la phrase d'avant, aucun avis.
+      const vide = await rendre141(L, { users: USERS141, me: "hugo-141", acces: [] });
+      exiger(vide.avis.length === 0 && vide.texte === AUCUN141,
+        `(141c) ${L.nom} : un inventaire LU et VIDE (clé absente) ne rend pas « ${AUCUN141} » seul : ${vide.avis.length} avis, « ${vide.texte.slice(0, 300)} »`);
+      // (d) comptes ET inventaire non lus : l'aveu des comptes ET l'avis.
+      const aucun = await rendre141(L, { users: [], me: "hugo-141", acces: [], non_lus: ["users", "acces"], error: "liste NON LUE : cause-141", [CLE141]: "phrase du démon" });
+      exiger(aucun.avis.length === 1 && nu141(aucun.avis[0]) === phrase && aucun.comptes.includes("cause-141") && !aucun.texte.includes(AUCUN141),
+        `(141d) ${L.nom} : comptes ET inventaire non lus ne rendent pas l'aveu des comptes ET l'avis de l'inventaire : ${aucun.avis.length} avis, comptes « ${aucun.comptes.slice(0, 200)} », accès « ${aucun.texte.slice(0, 200)} »`);
+    }
+    exiger(!!faces141.fr && !!faces141.en && faces141.fr !== faces141.en && !ACCENTS141.test(faces141.en),
+      `(141-faces) la face anglaise est la face française, porte un accent, ou l'une manque : ${JSON.stringify(faces141)}`);
+  } finally {
+    globalThis.fetch = fetchOrigine141; document.querySelector = qsOrigine141;
+    for (const o of etatOrigine141) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; }
+  }
+  if (echecs.length !== echecsAvant141) console.log(`(141) EN ÉCHEC — ${echecs.length - echecsAvant141} écart(s), dits ci-dessus`);
+  else console.log("(141) OK — `P10.20-b` (console) : un inventaire des accès dont la lecture a échoué se lit comme tel dans `#acces-list` — un avis à la place de « aucun accès observé », lu sur la clé que le démon pose (dérivée de son arbre, relue sur ses deux issues), les comptes lus toujours rendus ; un inventaire lu se rend comme avant, vide ou non ; comptes et inventaire non lus portent les deux aveux ; deux langues distinctes, l'anglaise sans accent.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

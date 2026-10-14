@@ -31,12 +31,44 @@ pub(crate) async fn users_list(State(st): State<AppState>, Extension(au): Extens
     // `acces` est un CONSTAT, y compris pour des comptes que cette console ne peut pas administrer.
     // Aucun secret n'y figure — cf. `acces_observe`, la table n'en porte aucun.
     let acces = crate::acces_observe::inventaire_des_acces(&conn);
-    match lues {
-        Ok(locaux) => Json(json!({ "users": locaux, "me": au.name, "acces": acces })),
-        Err(_) => Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
-            json!({ "me": au.name, "acces": acces }),
-            "users",
-        )),
+    Json(corps_de_la_liste_des_comptes(&au.name, lues, acces))
+}
+
+/// LE CORPS DE `GET /api/users`, DEUX LECTURES ET QUATRE ISSUES (`P10.20-b`). Avant, l'inventaire des
+/// accès rendait une liste VIDE ou TRONQUÉE sur une lecture ratée, et ce corps la servait sous `acces`
+/// comme un constat — l'écran peignait alors « aucun accès observé », l'inventaire RASSURANT que la ligne
+/// `users` refuse juste au-dessus. Désormais :
+///   * les deux lues : `{users, me, acces}`, octet pour octet la forme d'avant ;
+///   * `users` lue, `acces` non : `acces: []` PLUS `acces_non_lu` (la phrase nommée), aucun `error` —
+///     les comptes gérables ici sont établis, l'inventaire ne l'est pas ;
+///   * `users` non lue, `acces` lue : `corps_de_liste_illisible`, inchangé ;
+///   * aucune des deux : `corps_de_listes_illisibles` NOMME les deux dans `non_lus`, et `acces_non_lu`
+///     est posé aussi — la console lit la même clé dans les deux cas.
+/// La cause du moteur va au journal, jamais dans le corps.
+pub(crate) fn corps_de_la_liste_des_comptes(
+    me: &str,
+    lues: rusqlite::Result<Vec<Value>>,
+    acces: Result<Vec<Value>, crate::acces_observe::InventaireNonLu>,
+) -> Value {
+    use crate::acces_observe::{CAUSE_INVENTAIRE_DES_ACCES_NON_LU, CLE_ACCES_NON_LU};
+    let acces = acces.map_err(|e| {
+        eprintln!("[users_list] inventaire des accès NON LU ({}) : {}", e.etape(), e.cause());
+    });
+    match (lues, acces) {
+        (Ok(locaux), Ok(acces)) => json!({ "users": locaux, "me": me, "acces": acces }),
+        (Ok(locaux), Err(())) => {
+            let mut corps = json!({ "users": locaux, "me": me, "acces": [] });
+            corps[CLE_ACCES_NON_LU] = json!(CAUSE_INVENTAIRE_DES_ACCES_NON_LU);
+            corps
+        }
+        (Err(_), Ok(acces)) => {
+            crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": me, "acces": acces }), "users")
+        }
+        (Err(_), Err(())) => {
+            let mut corps = json!({ "me": me });
+            corps[CLE_ACCES_NON_LU] = json!(CAUSE_INVENTAIRE_DES_ACCES_NON_LU);
+            crate::handlers::liste_bornee::corps_de_listes_illisibles(corps, &["users", "acces"])
+        }
     }
 }
 

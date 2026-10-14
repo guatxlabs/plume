@@ -611,12 +611,6 @@ fn l_inventaire_ne_porte_aucune_colonne_qui_designe_un_secret() {
     }
 }
 
-/// L'inventaire d'une base qui n'a PAS la table (binaire plus récent ouvrant une base non migrée, ou une
-/// migration à venir) rend une liste VIDE — jamais une erreur qui masquerait l'inventaire local. C'est la
-/// branche d'échec du chemin de lecture, et elle ne doit pas être muette pour l'appelant : elle doit être
-/// INOFFENSIVE.
-#[test]
-fn une_base_sans_la_table_rend_un_inventaire_vide_et_jamais_une_erreur() {
-    let conn = Connection::open_in_memory().unwrap();
-    assert!(inventaire_des_acces(&conn).is_empty(), "table absente -> liste vide, la console rend le reste");
-}
+// `P10.20-b` — les témoins de l'inventaire lu entièrement ou avoué vivent dans leur propre fichier, inclus ici
+// pour partager les aides de ce module (routeur, en-têtes SSO, `test_db`).
+include!("inventaire_des_acces_lu_ou_avoue.rs");

@@ -24,7 +24,16 @@
 // en reprend un autre posé AVANT lui en id mais APRÈS lui en ord), au chargement nominal et quand la table
 // des calculs rate et garde sa part en place ; (14) deux bases : A chargée, B jamais chargée dont les six
 // tables ratent — B ne reçoit aucun objet de A (la part gardée est celle de la base rechargée, lue sous sa
-// clé `db_path`), et le rechargement de B ne touche pas A.
+// clé `db_path`), et le rechargement de B ne touche pas A ; (15) le prix assumé, sur CHACUNE des six
+// tables : jeu en place, puis dans la table un objet neuf et valide posé, l'objet en place supprimé et
+// recréé avec une autre valeur, une ligne indécodable — le jeu publié est la part en place entière et
+// seule (l'objet neuf pas encore appliqué, la valeur recréée ne se mêle pas : deux paires d'un même tag,
+// deux calculs de même nom), puis la ligne retirée, l'un et l'autre entrent ; (16) la ligne de stderr,
+// rendue par `recharger_le_savoir` : elle nomme la table en échec et aucune autre, la base, la cause du
+// moteur (type, colonne), jamais la valeur de la cellule ; (17) `GET /api/knowledge` sert le compte de SA
+// base sous `CLE_LECTURES_DE_SAVOIR_RATEES`, absente à zéro (le corps nominal porte les six familles et
+// rien d'autre, même quand une autre base a raté), un de plus par échec, cumulé ; (18) la forme pure de
+// l'aveu.
 //
 // MUTANTS JOUÉS (variable d'environnement `VERIF_MUT`, retirés du source avant le commit) : `FLATTEN`
 // (ligne indécodable sautée sans échec, l'ancien `.flatten()`) -> (1)..(6) (9) ; `VIDE_SUR_ERR` (table en
@@ -40,19 +49,21 @@
 // `COMPTE_PAR_TABLE` (un compte par table en échec) -> (12) ; `ORDRE_CALC` (`construire` parcourt les
 // calculs à l'envers) -> (13) ; `ORDRE_SQL_ID` (calculs lus `ORDER BY id`) -> (13). Seconde correction :
 // `EN_PLACE_D_UNE_AUTRE_BASE` (part en place lue, à défaut de celle de `db_path`, dans le registre d'une
-// autre base) -> (14).
+// autre base) -> (14). Lot O6 (vague O) : `UNION_NOUVEAUX` (table en échec publiée avec sa part en place
+// PLUS ses lignes décodées) -> (15) sur les six tables ; `NOM_DE_TABLE_FAUX` (étiquette de la ligne
+// de stderr fausse) -> (16) ; `CAUSE_TUE` (cause du moteur omise de la ligne) -> (16) ; `CLE_A_ZERO` (clé
+// servie même à zéro) -> (17) (18) ; `AUTRE_DB_PATH` (compte lu sur toutes les bases, pas sur celle de la
+// requête) -> (17) et les témoins qui relisent le compte ; `ACCESSEUR_CFG_TEST` (l'accesseur laissé
+// `#[cfg(test)]`) -> le binaire ne compile plus (`cargo check` hors test : la route le lit).
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : le prix assumé n'a pas d'autre témoin que (10) — tant qu'une table
-// rate, un objet supprimé ou éteint dans CETTE table reste appliqué et un objet posé dans cette table
-// n'est pas encore appliqué (une route CRUD rend alors son succès sans que l'objet soit en vigueur) ; un
-// jeu JAMAIS chargé dont une table est illisible part sans cette table ; les lignes de stderr (table et
-// cause du moteur) ne sont pas témoignées, et il en part UNE par ligne indécodable à CHAQUE rechargement
-// (une table de mille lignes blob = mille lignes de stderr par rechargement, aucune agrégation) ; le
-// compteur n'est servi ni par `/metrics`, ni par une route, ni par la console, contrairement au précédent
-// `processors` (`reload_read_failures` dans son JSON de stats) : `knowledge_lectures_ratees_de` est
-// `cfg(test)`, l'aveu en production est stderr SEUL ; l'appel de la route CRUD (`handlers/knowledge.rs`,
-// hors périmètre) n'est pas rejoué, seul `knowledge_reload` l'est — elle rend son succès même quand la
-// table de l'objet posé rate et que l'objet n'est donc pas appliqué.
+// CE QUE CES TÉMOINS NE TIENNENT PAS : le prix assumé reste un prix — tant qu'une table rate, un objet
+// supprimé ou éteint dans CETTE table reste appliqué et un objet posé dans cette table n'est pas encore
+// appliqué (une route CRUD rend alors son succès sans que l'objet soit en vigueur ; l'appel de la route
+// n'est pas rejoué, seul `knowledge_reload` l'est) ; un jeu JAMAIS chargé dont une table est illisible
+// part sans cette table ; il part UNE ligne de stderr par ligne indécodable à CHAQUE rechargement (une
+// table de mille lignes blob = mille lignes par rechargement, aucune agrégation) ; le compte servi est
+// CUMULÉ depuis le démarrage (il ne dit pas si la table rate ENCORE, ni laquelle : stderr le dit), il
+// n'est servi ni par `/metrics` ni peint par la console (`web/knowledge.js` ne lit pas la clé).
 // =====================================================================================
 mod connaissances_registre_non_relu_conserve {
     use super::*;
@@ -402,5 +413,287 @@ mod connaissances_registre_non_relu_conserve {
             assert!(!applique(dbb, o), "B jamais chargée, `{}` en échec : elle ne reçoit pas l'objet de A", o.table);
             assert!(applique(dba, o), "le rechargement de B ne touche pas A : `{}` reste appliqué à A", o.table);
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // (15) à (18) — le prix assumé, la ligne de stderr et le compte servi (restes dits par la
+    // vérification de N8 : mutants `UNION_NOUVEAUX` et `NOM_DE_TABLE_FAUX` restés verts).
+    // ---------------------------------------------------------------------------------------------
+
+    /// Pour une table : un objet NEUF et valide posé après le chargement, la RECRÉATION de l'objet en
+    /// place (même nom, autre valeur, après suppression) et une ligne indécodable qui fait rater la table.
+    struct Melange {
+        table: &'static str,
+        neuf: &'static str,
+        requete_neuf: &'static str,
+        fragment_neuf: &'static str,
+        supprimer: &'static str,
+        recreer: &'static str,
+        requete_recree: &'static str,
+        fragment_recree: &'static str,
+        /// Le fragment que la valeur EN PLACE (avant suppression) donne à `requete_recree`.
+        fragment_en_place: &'static str,
+        ligne_indecodable: &'static str,
+    }
+
+    static MELANGES: [Melange; 6] = [
+        Melange {
+            table: "knowledge_alias",
+            neuf: "INSERT INTO knowledge_alias(canonical,source) VALUES('peer_ip','dst_ip')",
+            requete_neuf: "search peer_ip=5.6.7.8",
+            fragment_neuf: "\"dst_ip\" = '5.6.7.8'",
+            supprimer: "DELETE FROM knowledge_alias WHERE canonical='client_ip'",
+            recreer: "INSERT INTO knowledge_alias(canonical,source) VALUES('client_ip','dst_ip')",
+            requete_recree: "search client_ip=1.2.3.4",
+            fragment_recree: "\"dst_ip\" = '1.2.3.4'",
+            fragment_en_place: "\"src_ip\" = '1.2.3.4'",
+            ligne_indecodable: "INSERT INTO knowledge_alias(canonical,source) VALUES('bad_ip',x'ff')",
+        },
+        Melange {
+            table: "knowledge_calc",
+            neuf: "INSERT INTO knowledge_calc(name,expr) VALUES('sev_trim','trim(severity)')",
+            requete_neuf: "search | table sev_trim",
+            fragment_neuf: "trim(severity)",
+            supprimer: "DELETE FROM knowledge_calc WHERE name='sev_up'",
+            recreer: "INSERT INTO knowledge_calc(name,expr) VALUES('sev_up','lower(severity)')",
+            requete_recree: "search | table sev_up",
+            fragment_recree: "lower(severity)",
+            fragment_en_place: "upper(severity)",
+            ligne_indecodable: "INSERT INTO knowledge_calc(name,expr) VALUES('bad_calc',x'ff')",
+        },
+        Melange {
+            table: "knowledge_eventtype",
+            neuf: "INSERT INTO knowledge_eventtype(name,filter) VALUES('dns_x','source=dnsx')",
+            requete_neuf: "search eventtype=dns_x",
+            fragment_neuf: "\"source\" = 'dnsx'",
+            supprimer: "DELETE FROM knowledge_eventtype WHERE name='web_attack'",
+            recreer: "INSERT INTO knowledge_eventtype(name,filter) VALUES('web_attack','source=webz')",
+            requete_recree: "search eventtype=web_attack",
+            fragment_recree: "\"source\" = 'webz'",
+            fragment_en_place: "\"source\" = 'webx'",
+            ligne_indecodable: "INSERT INTO knowledge_eventtype(name,filter) VALUES('bad_et',x'ff')",
+        },
+        Melange {
+            table: "knowledge_tag",
+            neuf: "INSERT INTO knowledge_tag(label,field,value) VALUES('sox','category','audit')",
+            requete_neuf: "search tag=sox",
+            fragment_neuf: "\"category\" = 'audit'",
+            supprimer: "DELETE FROM knowledge_tag WHERE label='pci'",
+            recreer: "INSERT INTO knowledge_tag(label,field,value) VALUES('pci','category','card')",
+            requete_recree: "search tag=pci",
+            fragment_recree: "\"category\" = 'card'",
+            fragment_en_place: "\"category\" = 'payment'",
+            ligne_indecodable: "INSERT INTO knowledge_tag(label,field,value) VALUES('bad_tag','category',x'ff')",
+        },
+        Melange {
+            table: "macro_def",
+            neuf: "INSERT INTO macro_def(name,params,body) VALUES('m_dns','','source=dnsm')",
+            requete_neuf: "search `m_dns`",
+            fragment_neuf: "\"source\" = 'dnsm'",
+            supprimer: "DELETE FROM macro_def WHERE name='m_web'",
+            recreer: "INSERT INTO macro_def(name,params,body) VALUES('m_web','','source=webn')",
+            requete_recree: "search `m_web`",
+            fragment_recree: "\"source\" = 'webn'",
+            fragment_en_place: "\"source\" = 'webm'",
+            ligne_indecodable: "INSERT INTO macro_def(name,params,body) VALUES('m_bad','',x'ff')",
+        },
+        Melange {
+            table: "auto_lookup",
+            neuf: "INSERT INTO auto_lookup(name,key_field,out_cols) VALUES('asn','src_ip','asn_org')",
+            requete_neuf: "search",
+            fragment_neuf: "lk.name='asn'",
+            supprimer: "DELETE FROM auto_lookup WHERE name='geo'",
+            recreer: "INSERT INTO auto_lookup(name,key_field,out_cols) VALUES('geo','src_ip','city')",
+            requete_recree: "search",
+            fragment_recree: "city",
+            fragment_en_place: "country",
+            ligne_indecodable: "INSERT INTO auto_lookup(name,key_field,out_cols) VALUES('bad_lk','src_ip',x'ff')",
+        },
+    ];
+
+    fn applique_requete(dbp: &str, requete: &str, fragment: &str) -> bool {
+        compiler(effective_knowledge(dbp), requete).map(|sql| sql.contains(fragment)).unwrap_or(false)
+    }
+
+    /// (15) LE PRIX ASSUMÉ, TÉMOIGNÉ TABLE PAR TABLE. Jeu en place (les six objets) ; dans UNE table, un
+    /// objet neuf et valide est posé, l'objet en place est supprimé puis recréé avec une autre valeur, et
+    /// une ligne indécodable fait rater la table. Le jeu publié est la part EN PLACE, entière et seule :
+    /// le SQL des six requêtes est le même octet pour octet, l'objet neuf n'est pas encore appliqué, la
+    /// valeur recréée ne se mêle pas à l'ancienne (deux paires d'un même tag, deux calculs de même nom).
+    /// Contrôle positif : la ligne indécodable retirée, l'objet neuf et la valeur recréée entrent, l'ancienne
+    /// valeur sort — ils étaient valides, seule la table en échec les retenait.
+    fn part_en_place_seule(table: &str) {
+        let m = MELANGES.iter().find(|m| m.table == table).unwrap();
+        let o = objet(table);
+        let conn = test_db();
+        let dbp = format!("o6-melange-{table}");
+        poser_les_six(&conn);
+        knowledge_reload(&conn, &dbp);
+        assert!(applique(&dbp, o), "contrôle : l'objet de `{table}` est appliqué");
+        assert!(applique_requete(&dbp, m.requete_recree, m.fragment_en_place), "contrôle : la valeur en place de `{table}` est appliquée");
+        assert!(!applique_requete(&dbp, m.requete_neuf, m.fragment_neuf), "contrôle : l'objet neuf de `{table}` n'est pas encore là");
+        assert!(!applique_requete(&dbp, m.requete_recree, m.fragment_recree), "contrôle : la valeur recréée de `{table}` n'est pas encore là");
+        let avant = empreinte(&dbp);
+        conn.execute(m.neuf, []).unwrap();
+        conn.execute(m.supprimer, []).unwrap();
+        conn.execute(m.recreer, []).unwrap();
+        conn.execute(m.ligne_indecodable, []).unwrap();
+        let lignes = recharger_le_savoir(&conn, &dbp);
+        assert_eq!(lignes.len(), 1, "`{table}` : un échec, une ligne de stderr : {lignes:?}");
+        assert_eq!(knowledge_lectures_ratees_de(&dbp), 1, "`{table}` : l'échec est compté");
+        assert_eq!(empreinte(&dbp), avant, "`{table}` en échec : le jeu publié est la part en place, entière et seule");
+        assert!(
+            applique_requete(&dbp, m.requete_recree, m.fragment_en_place),
+            "`{table}` en échec : la valeur en place (supprimée depuis) reste appliquée — prix assumé"
+        );
+        assert!(
+            !applique_requete(&dbp, m.requete_neuf, m.fragment_neuf),
+            "`{table}` en échec : l'objet neuf et valide n'est PAS encore appliqué — ni union, ni mélange"
+        );
+        assert!(
+            !applique_requete(&dbp, m.requete_recree, m.fragment_recree),
+            "`{table}` en échec : la valeur recréée ne se mêle pas à la valeur en place"
+        );
+        conn.execute(&format!("DELETE FROM {table} WHERE typeof({})='blob'", o.colonne_texte), []).unwrap();
+        assert!(recharger_le_savoir(&conn, &dbp).is_empty(), "contrôle : la table relue sans échec");
+        assert_eq!(knowledge_lectures_ratees_de(&dbp), 1, "contrôle : rien de plus compté");
+        assert!(applique_requete(&dbp, m.requete_neuf, m.fragment_neuf), "contrôle positif `{table}` : l'objet neuf était valide");
+        assert!(applique_requete(&dbp, m.requete_recree, m.fragment_recree), "contrôle positif `{table}` : la valeur recréée était valide");
+        assert!(
+            !applique_requete(&dbp, m.requete_recree, m.fragment_en_place),
+            "contrôle positif `{table}` : l'ancienne valeur sort une fois la table relue"
+        );
+    }
+
+    #[test]
+    fn o6_knowledge_alias_en_echec_part_en_place_seule() {
+        part_en_place_seule("knowledge_alias");
+    }
+
+    #[test]
+    fn o6_knowledge_calc_en_echec_part_en_place_seule() {
+        part_en_place_seule("knowledge_calc");
+    }
+
+    #[test]
+    fn o6_knowledge_eventtype_en_echec_part_en_place_seule() {
+        part_en_place_seule("knowledge_eventtype");
+    }
+
+    #[test]
+    fn o6_knowledge_tag_en_echec_part_en_place_seule() {
+        part_en_place_seule("knowledge_tag");
+    }
+
+    #[test]
+    fn o6_macro_def_en_echec_part_en_place_seule() {
+        part_en_place_seule("macro_def");
+    }
+
+    #[test]
+    fn o6_auto_lookup_en_echec_part_en_place_seule() {
+        part_en_place_seule("auto_lookup");
+    }
+
+    /// (16) LA LIGNE DE STDERR, sans capturer stderr : `recharger_le_savoir` rend les lignes que
+    /// `knowledge_reload` écrit. Pour chaque table rendue illisible par une cellule blob dont les octets
+    /// portent un marqueur, la ligne nomme CETTE table et aucune autre, porte la base et la cause du moteur
+    /// (type et colonne), dit que la part en place est gardée, et ne porte pas la valeur de la cellule.
+    #[test]
+    fn o6_la_ligne_de_stderr_nomme_la_table_et_la_cause_sans_valeur_de_cellule() {
+        for o in &OBJETS {
+            let conn = test_db();
+            let dbp = format!("o6-ligne-{}", o.table);
+            poser_les_six(&conn);
+            assert!(recharger_le_savoir(&conn, &dbp).is_empty(), "contrôle : chargement nominal sans ligne");
+            conn.execute(&format!("UPDATE {} SET {}=CAST('valeur_secrete_o6' AS BLOB)", o.table, o.colonne_texte), []).unwrap();
+            let lignes = recharger_le_savoir(&conn, &dbp);
+            assert_eq!(lignes.len(), 1, "`{}` : une ligne par échec : {lignes:?}", o.table);
+            let l = &lignes[0];
+            assert!(l.contains(&format!("`{}`", o.table)), "la ligne nomme `{}` : {l}", o.table);
+            for autre in OBJETS.iter().filter(|a| a.table != o.table) {
+                assert!(!l.contains(&format!("`{}`", autre.table)), "la ligne de `{}` ne nomme pas `{}` : {l}", o.table, autre.table);
+            }
+            assert!(l.contains(&dbp), "la ligne nomme la base : {l}");
+            assert!(l.contains("Blob") && l.contains(o.colonne_texte), "la ligne porte la cause du moteur (type, colonne) : {l}");
+            assert!(l.contains("GARDÉE"), "jeu en place : la ligne dit que la part en place est gardée : {l}");
+            assert!(!l.contains("valeur_secrete_o6"), "aucune valeur de cellule dans la ligne : {l}");
+        }
+        let jamais = ligne_de_lecture_de_savoir_ratee("knowledge_tag", "o6-base", "cause du moteur", false);
+        assert!(
+            jamais.contains("`knowledge_tag`") && jamais.contains("o6-base") && jamais.contains("cause du moteur")
+                && jamais.contains("aucun registre en place"),
+            "fonction pure, registre jamais chargé : {jamais}"
+        );
+    }
+
+    /// (17) LE COMPTE EST SERVI PAR `GET /api/knowledge`, ABSENT À ZÉRO, LU SUR LA BASE DE LA REQUÊTE. Une
+    /// autre base a déjà raté (son compte n'est pas le nôtre) ; chargement nominal : le corps porte les six
+    /// familles et rien d'autre. Puis chaque échec monte le compte servi d'un (un rechargement à une
+    /// ligne indécodable, puis un second, puis un à deux lignes indécodables dans deux tables) ; le
+    /// compte est cumulé : un rechargement réussi ne le remet pas à zéro.
+    #[tokio::test]
+    async fn o6_le_compte_des_lectures_ratees_est_servi_par_la_liste_absent_a_zero() {
+        let autre = test_db();
+        let dba = "o6-compte-autre-base";
+        autre.execute("INSERT INTO knowledge_alias(canonical,source) VALUES('x_ip',x'ff')", []).unwrap();
+        knowledge_reload(&autre, dba);
+        assert_eq!(knowledge_lectures_ratees_de(dba), 1, "contrôle : une autre base a un échec compté");
+
+        let (st, _p) = sp_state("o6-compte");
+        let au = sp_au("adm", "admin");
+        let dbp = st.db_path.as_ref().clone();
+        let lire = |st: &AppState| {
+            let st = st.clone();
+            let au = au.clone();
+            async move { lsa_corps(knowledge_list(State(st), Extension(au)).await).await }
+        };
+        {
+            let conn = st.db.lock();
+            poser_les_six(&conn);
+            knowledge_reload(&conn, &dbp);
+        }
+        assert_eq!(knowledge_lectures_ratees_de(&dbp), 0, "contrôle : chargement nominal sans échec");
+        let (statut, nominal) = lire(&st).await;
+        assert_eq!(statut, 200);
+        let mut cles: Vec<&str> = nominal.as_object().unwrap().keys().map(String::as_str).collect();
+        cles.sort();
+        assert_eq!(
+            cles,
+            ["aliases", "auto_lookups", "calcs", "eventtypes", "macros", "tags"],
+            "chemin nominal : les six familles et rien d'autre (clé absente à zéro, l'échec d'une autre base n'est pas le nôtre) : {nominal}"
+        );
+        assert!(nominal.get(CLE_LECTURES_DE_SAVOIR_RATEES).is_none());
+
+        let recharger = |sql: &str| {
+            let conn = st.db.lock();
+            if !sql.is_empty() {
+                conn.execute_batch(sql).unwrap();
+            }
+            knowledge_reload(&conn, &dbp);
+        };
+        recharger("UPDATE knowledge_alias SET source=x'ff'");
+        let (_, un) = lire(&st).await;
+        assert_eq!(un[CLE_LECTURES_DE_SAVOIR_RATEES], json!(1), "un échec : compte servi 1 : {un}");
+        recharger("");
+        let (_, deux) = lire(&st).await;
+        assert_eq!(deux[CLE_LECTURES_DE_SAVOIR_RATEES], json!(2), "second rechargement raté : 2 : {deux}");
+        recharger("UPDATE knowledge_tag SET value=x'ff'");
+        let (_, quatre) = lire(&st).await;
+        assert_eq!(quatre[CLE_LECTURES_DE_SAVOIR_RATEES], json!(4), "deux échecs dans un rechargement : +2 : {quatre}");
+        recharger("DELETE FROM knowledge_alias WHERE typeof(source)='blob'; DELETE FROM knowledge_tag WHERE typeof(value)='blob';");
+        let (_, cumul) = lire(&st).await;
+        assert_eq!(cumul[CLE_LECTURES_DE_SAVOIR_RATEES], json!(4), "compte cumulé depuis le démarrage : {cumul}");
+        assert_eq!(knowledge_lectures_ratees_de(dba), 1, "l'autre base garde son compte");
+    }
+
+    /// (18) La forme pure : à zéro le corps est rendu tel quel, au-dessus la clé porte le nombre.
+    #[test]
+    fn o6_l_aveu_du_compte_est_absent_a_zero_et_porte_le_nombre_au_dessus() {
+        let corps = json!({ "aliases": [], "tags": [] });
+        assert_eq!(avouer_les_lectures_de_savoir_ratees(corps.clone(), 0), corps, "à zéro : corps inchangé octet pour octet");
+        let avoue = avouer_les_lectures_de_savoir_ratees(corps, 3);
+        assert_eq!(avoue[CLE_LECTURES_DE_SAVOIR_RATEES], json!(3));
+        assert_eq!(avoue.as_object().unwrap().len(), 3, "une seule clé ajoutée : {avoue}");
     }
 }

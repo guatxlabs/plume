@@ -95,7 +95,13 @@ pub(crate) async fn knowledge_list(State(st): State<AppState>, Extension(au): Ex
         }));
     let corps = json!({ "aliases": aliases, "calcs": calcs, "eventtypes": eventtypes, "tags": tags,
         "macros": macros, "auto_lookups": auto_lookups });
-    Json(crate::handlers::liste_bornee::corps_de_listes_illisibles(corps, &non_lus)).into_response()
+    // `P10.20-b` — les lectures ratées du REGISTRE APPLIQUÉ (`knowledge_reload`) de CETTE base, cumulées
+    // depuis le démarrage : tant qu'une table rate, sa part en place reste appliquée et ce qui y a été posé
+    // depuis ne l'est pas encore — la liste ci-dessus (la base) et les objets appliqués peuvent différer.
+    // Clé absente à zéro (corps nominal inchangé).
+    let ratees = crate::knowledge::knowledge_lectures_ratees_de(&req_db_path(&st, &au));
+    let corps = crate::handlers::liste_bornee::corps_de_listes_illisibles(corps, &non_lus);
+    Json(crate::knowledge::avouer_les_lectures_de_savoir_ratees(corps, ratees)).into_response()
 }
 
 // `P10.25-g` — LE `COMMIT` DES OBJETS DE SAVOIR EST JUGÉ, une fois, dans le squelette commun. MESURÉ sur la forme d'avant

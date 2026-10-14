@@ -15,18 +15,179 @@ pub(crate) static PARSERS: std::sync::OnceLock<parking_lot::RwLock<HashMap<Strin
 pub(crate) fn parsers_cell() -> &'static parking_lot::RwLock<HashMap<String, Vec<(String, regex::Regex)>>> {
     PARSERS.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
 }
+// LECTURE RATÉE (P10.20-b) : une lecture ratée du registre ne REMPLACE PAS le registre en place — les règles
+// de détection lisent les champs extraits, un registre vidé ÉTEINT la détection sans bruit. Une ligne dont
+// l'identifiant est lu mais une cellule non (motif stocké en blob…) garde la DERNIÈRE version compilée de CE
+// parseur (mémo par identifiant) ; une erreur qu'aucun identifiant n'attribue (préparation, pas de lecture)
+// GARDE le registre en place entier. Chaque échec de la requête, d'une ligne, de sa source ou de son
+// motif est dit au journal et compté sur SA base (`parseurs_lectures_ratees_de`) ; un nom ou une création
+// illisible n'est ni dit ni compté : la ligne perd seulement son identité (publiée si ses cellules se lisent,
+// jamais republiée au repli). Une lecture réussie de zéro ligne remplace (registre vide établi).
+// IDENTITÉ DE LA RÈGLE : l'identifiant seul ne la prouve pas — `id` est un INTEGER PRIMARY KEY sans
+// AUTOINCREMENT, SQLite redonne le rowid d'une ligne supprimée. Le repli ne republie la version gardée que si
+// le NOM et l'horodatage de CRÉATION relus sur la ligne égalent ceux mémorisés avec elle ; s'ils diffèrent ou
+// ne se lisent pas, l'identité n'est pas confirmée et RIEN n'est republié pour cette ligne (un parseur
+// supprimé ne revient jamais sous l'identifiant d'un autre). La source n'en fait pas partie : c'est un champ
+// éditable de la même règle, et une source illisible garde la dernière version. Le mémo ne tient que les
+// parseurs lus actifs au dernier rechargement publié : un parseur désactivé ou supprimé en sort.
+pub(crate) static PARSERS_PAR_ID: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, HashMap<i64, (IdentiteDeParseur, (String, regex::Regex))>>>> = std::sync::OnceLock::new();
 pub(crate) fn parsers_reload(conn: &Connection, db_path: &str) {
+    let lu = lire_registre_de_parseurs(conn, "SELECT id, source, pattern, name, created FROM parser WHERE enabled=1");
+    let memo_cell = PARSERS_PAR_ID.get_or_init(|| parking_lot::RwLock::new(HashMap::new()));
+    let precedent: HashMap<i64, (IdentiteDeParseur, (String, regex::Regex))> = memo_cell.read().get(db_path).cloned().unwrap_or_default();
+    let en_place = parsers_cell().read().contains_key(db_path);
+    dire_les_echecs("parser", db_path, &lu, en_place);
+    let non_attribuable = lu.non_attribuable;
     let mut out: Vec<(String, regex::Regex)> = Vec::new();
-    if let Ok(mut st) = conn.prepare("SELECT source, pattern FROM parser WHERE enabled=1") {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-            for (src, pat) in rows.flatten() {
+    let mut memo: HashMap<i64, (IdentiteDeParseur, (String, regex::Regex))> = HashMap::new();
+    for l in lu.lignes {
+        match (l.source, l.cellule) {
+            (Ok(src), Ok(pat)) => {
                 if pat.len() <= 1000 {
-                    if let Ok(re) = regex::RegexBuilder::new(&pat).size_limit(1 << 20).build() { out.push((src, re)); }
+                    if let Ok(re) = regex::RegexBuilder::new(&pat).size_limit(1 << 20).build() {
+                        if let Some(identite) = l.identite { memo.insert(l.id, (identite, (src.clone(), re.clone()))); }
+                        out.push((src, re));
+                    }
+                }
+            }
+            _ => {
+                if let Some(v) = version_gardee_de_la_meme_regle(&precedent, l.id, l.identite.as_ref()) {
+                    memo.insert(l.id, v.clone());
+                    out.push(v.1.clone());
                 }
             }
         }
     }
+    if non_attribuable && en_place { return; } // registre en place GARDÉ
     { let mut w = parsers_cell().write(); w.insert(db_path.to_string(), out); } // MT-KEY : registre de CE db_path
+    memo_cell.write().insert(db_path.to_string(), memo);
+}
+
+/// Identité d'une règle au-delà de son rowid réutilisable : `(name, created)` relus sur sa ligne.
+pub(crate) type IdentiteDeParseur = (String, i64);
+
+/// Une ligne de registre de parseurs : identifiant, source et motif/spec (chaque cellule lue ou non), et
+/// l'identité `(name, created)` si les deux cellules se lisent.
+struct LigneDeParseur {
+    id: i64,
+    source: rusqlite::Result<String>,
+    cellule: rusqlite::Result<String>,
+    identite: Option<IdentiteDeParseur>,
+}
+
+/// Version gardée de la MÊME règle pour l'identifiant `id` : présente au mémo ET d'identité relue égale à la
+/// sienne. Identité relue absente (nom ou création illisible) -> non confirmée -> aucune version.
+fn version_gardee_de_la_meme_regle<'a, T>(
+    precedent: &'a HashMap<i64, (IdentiteDeParseur, T)>,
+    id: i64,
+    identite_lue: Option<&IdentiteDeParseur>,
+) -> Option<&'a (IdentiteDeParseur, T)> {
+    let gardee = precedent.get(&id)?;
+    (identite_lue? == &gardee.0).then_some(gardee)
+}
+
+/// Lecture d'un registre de parseurs (`parser` ou `dparser`). `non_attribuable` : une erreur qu'aucun
+/// identifiant ne situe (préparation, exécution, pas de lecture) — le registre lu est alors INCOMPLET.
+struct RegistreDeParseursLu {
+    lignes: Vec<LigneDeParseur>,
+    echecs: Vec<String>,
+    non_attribuable: bool,
+}
+
+fn lire_registre_de_parseurs(conn: &Connection, sql: &str) -> RegistreDeParseursLu {
+    let mut lu = RegistreDeParseursLu { lignes: Vec::new(), echecs: Vec::new(), non_attribuable: false };
+    let mut st = match conn.prepare(sql) {
+        Ok(st) => st,
+        Err(e) => {
+            lu.echecs.push(format!("préparation ratée : {e}"));
+            lu.non_attribuable = true;
+            return lu;
+        }
+    };
+    let rows = match st.query_map([], |r| {
+        let identite = match (r.get::<_, String>(3), r.get::<_, i64>(4)) {
+            (Ok(nom), Ok(cree)) => Some((nom, cree)),
+            _ => None,
+        };
+        Ok(LigneDeParseur { id: r.get::<_, i64>(0)?, source: r.get::<_, String>(1), cellule: r.get::<_, String>(2), identite })
+    }) {
+        Ok(rows) => rows,
+        Err(e) => {
+            lu.echecs.push(format!("exécution ratée : {e}"));
+            lu.non_attribuable = true;
+            return lu;
+        }
+    };
+    for row in rows {
+        match row {
+            Ok(l) => {
+                let id = l.id;
+                if let Err(e) = &l.source { lu.echecs.push(format!("source illisible (id={id}) : {e}")); }
+                if let Err(e) = &l.cellule { lu.echecs.push(format!("cellule illisible (id={id}) : {e}")); }
+                lu.lignes.push(l);
+            }
+            Err(e) => {
+                lu.echecs.push(format!("ligne illisible : {e}"));
+                lu.non_attribuable = true;
+            }
+        }
+    }
+    lu
+}
+
+static PARSEURS_LECTURE_RATEE_PAR_BASE: std::sync::OnceLock<parking_lot::RwLock<HashMap<(&'static str, String), u64>>> = std::sync::OnceLock::new();
+
+/// Dit chaque échec de lecture au journal et le compte sur SA base et SON registre.
+fn dire_les_echecs(registre: &'static str, db_path: &str, lu: &RegistreDeParseursLu, en_place: bool) {
+    let suite = if lu.non_attribuable && en_place {
+        "registre en place GARDÉ"
+    } else if lu.non_attribuable {
+        "aucun registre en place : seuls les parseurs lus sont publiés"
+    } else {
+        "dernière version compilée de la même règle (id, nom, création) gardée s'il en a une"
+    };
+    for e in &lu.echecs {
+        *PARSEURS_LECTURE_RATEE_PAR_BASE
+            .get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
+            .write()
+            .entry((registre, db_path.to_string()))
+            .or_insert(0) += 1;
+        journaliser_l_echec(db_path, format!("[{registre}] lecture ratée du registre de parseurs de {db_path} : {e} — {suite}"));
+    }
+}
+
+/// Écrit la ligne d'échec au journal (stderr) — en production, sa seule trace. Sous `cfg(test)` seulement,
+/// la même ligne est aussi retenue par base pour que les témoins la lisent (`parseurs_journal_de`) ; le
+/// binaire de production n'y gagne rien : ni stockage, ni surface.
+fn journaliser_l_echec(db_path: &str, ligne: String) {
+    eprintln!("{ligne}");
+    #[cfg(test)]
+    PARSEURS_JOURNAL_DE_TEMOIN
+        .get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+        .lock()
+        .entry(db_path.to_string())
+        .or_default()
+        .push(ligne);
+    #[cfg(not(test))]
+    let _ = db_path;
+}
+#[cfg(test)]
+static PARSEURS_JOURNAL_DE_TEMOIN: std::sync::OnceLock<parking_lot::Mutex<HashMap<String, Vec<String>>>> = std::sync::OnceLock::new();
+/// Lignes de journal d'échec écrites pour `db_path` depuis le démarrage (témoins seulement).
+#[cfg(test)]
+pub(crate) fn parseurs_journal_de(db_path: &str) -> Vec<String> {
+    PARSEURS_JOURNAL_DE_TEMOIN.get().and_then(|m| m.lock().get(db_path).cloned()).unwrap_or_default()
+}
+
+/// Lectures ratées du registre `registre` (`"parser"` ou `"dparser"`) de `db_path` depuis le démarrage.
+/// LU PAR LES TÉMOINS SEULEMENT (aucune surface de production ne sert ce compte : ni `/metrics`, ni l'API) ;
+/// en production, la seule trace d'un échec est la ligne de journal de `dire_les_echecs` (`journaliser_l_echec`).
+#[cfg(test)]
+pub(crate) fn parseurs_lectures_ratees_de(registre: &str, db_path: &str) -> u64 {
+    PARSEURS_LECTURE_RATEE_PAR_BASE
+        .get()
+        .and_then(|m| m.read().iter().find(|((r, d), _)| *r == registre && d == db_path).map(|(_, n)| *n))
+        .unwrap_or(0)
 }
 pub(crate) fn parsers_apply(db_path: &str, source: &str, message: &str, existing: Option<String>) -> Option<String> {
     let guard = parsers_cell().read();
@@ -367,29 +528,49 @@ pub(crate) static DPARSERS: std::sync::OnceLock<parking_lot::RwLock<HashMap<Stri
 pub(crate) fn dparsers_cell() -> &'static parking_lot::RwLock<HashMap<String, Vec<CompiledDParser>>> {
     DPARSERS.get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
 }
+/// Dernière version compilée de chaque parseur déclaratif, par base puis par identifiant (voir `dparsers_reload`).
+pub(crate) static DPARSERS_PAR_ID: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, HashMap<i64, (IdentiteDeParseur, CompiledDParser)>>>> = std::sync::OnceLock::new();
 /// Recharge le registre déclaratif de `db_path` depuis la table `dparser` (specs JSON -> compilées). Une
 /// spec qui ne compile plus est SKIPPÉE (WARN) — jamais fatal. Miroir de `parsers_reload`.
 pub(crate) fn dparsers_reload(conn: &Connection, db_path: &str) {
+    // LECTURE RATÉE : même discipline que `parsers_reload` (voir son en-tête).
+    // IDENTITÉ DE LA RÈGLE : même parti que `parsers_reload` (id + nom + création relus, sinon rien republié).
+    let lu = lire_registre_de_parseurs(conn, "SELECT id, source, spec, name, created FROM dparser WHERE enabled=1");
+    let memo_cell = DPARSERS_PAR_ID.get_or_init(|| parking_lot::RwLock::new(HashMap::new()));
+    let precedent: HashMap<i64, (IdentiteDeParseur, CompiledDParser)> = memo_cell.read().get(db_path).cloned().unwrap_or_default();
     let mut out: Vec<CompiledDParser> = Vec::new();
-    if let Ok(mut st) = conn.prepare("SELECT source, spec FROM dparser WHERE enabled=1") {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-            for (src, spec) in rows.flatten() {
-                // PLAFOND AGRÉGÉ : borne le nombre de parseurs appliqués par event.
-                if out.len() >= DPARSER_MAX_TOTAL {
-                    eprintln!("[dparser] WARN plafond de {DPARSER_MAX_TOTAL} parseurs déclaratifs atteint — parseurs supplémentaires IGNORÉS (à partir de source={src}) ; réduire le nombre de parseurs config.d");
-                    break;
-                }
-                match serde_json::from_str::<Value>(&spec) {
-                    Ok(v) => match dparser_compile(&src, &v) {
-                        Ok(c) => out.push(c),
-                        Err(e) => eprintln!("[dparser] WARN spec (source={src}) ne compile pas: {e} — ignorée"),
-                    },
-                    Err(e) => eprintln!("[dparser] WARN spec JSON invalide (source={src}): {e} — ignorée"),
+    let mut memo: HashMap<i64, (IdentiteDeParseur, CompiledDParser)> = HashMap::new();
+    for l in lu.lignes.iter() {
+        // PLAFOND AGRÉGÉ : borne le nombre de parseurs appliqués par event.
+        if out.len() >= DPARSER_MAX_TOTAL {
+            let src = l.source.as_deref().unwrap_or("?");
+            eprintln!("[dparser] WARN plafond de {DPARSER_MAX_TOTAL} parseurs déclaratifs atteint — parseurs supplémentaires IGNORÉS (à partir de source={src}) ; réduire le nombre de parseurs config.d");
+            break;
+        }
+        match (&l.source, &l.cellule) {
+            (Ok(src), Ok(spec)) => match serde_json::from_str::<Value>(spec) {
+                Ok(v) => match dparser_compile(src, &v) {
+                    Ok(c) => {
+                        if let Some(identite) = &l.identite { memo.insert(l.id, (identite.clone(), c.clone())); }
+                        out.push(c);
+                    }
+                    Err(e) => eprintln!("[dparser] WARN spec (source={src}) ne compile pas: {e} — ignorée"),
+                },
+                Err(e) => eprintln!("[dparser] WARN spec JSON invalide (source={src}): {e} — ignorée"),
+            },
+            _ => {
+                if let Some(v) = version_gardee_de_la_meme_regle(&precedent, l.id, l.identite.as_ref()) {
+                    memo.insert(l.id, v.clone());
+                    out.push(v.1.clone());
                 }
             }
         }
     }
+    let en_place = dparsers_cell().read().contains_key(db_path);
+    dire_les_echecs("dparser", db_path, &lu, en_place);
+    if lu.non_attribuable && en_place { return; } // registre en place GARDÉ
     { let mut w = dparsers_cell().write(); w.insert(db_path.to_string(), out); }
+    memo_cell.write().insert(db_path.to_string(), memo);
 }
 
 /// Insère `k=v` dans le sac de captures, borné : cap atteint -> stop ; valeur vide/déjà présente -> SKIP

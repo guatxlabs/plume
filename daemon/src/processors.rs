@@ -256,12 +256,20 @@ pub(crate) fn processors_cell() -> &'static parking_lot::RwLock<HashMap<String, 
 /// (préparation, parcours, ligne indécodable — `P10.20-b`), à part : pendant un tel échec la règle non
 /// relue reste ARMÉE, elle n'est pas « ignorée ». Servi par `processors_counters_json`, affiché par la
 /// console (`web/processors.js`, liste lue ou non ; témoin 140 du harnais console).
+/// `reload_enabled_unexpected` compte, au dernier rechargement, les règles dont la cellule `enabled` n'est
+/// ni l'entier 0 ni l'entier 1 (`regle_active`) : gardées ARMÉES, donc ni « ignorées » ni « lecture ratée »,
+/// mais une anomalie de la base que l'API doit dire (`P10.20-b`). Seule une règle passée sous le plafond
+/// est comptée : la ligne qui le fait atteindre, jugée avant lui, n'est pas au registre et ne compte pas.
 #[derive(Default)]
 pub(crate) struct ProcCounterStore {
     pub rules: HashMap<(String, i64), Arc<RuleCounters>>,
     pub reload_errors: HashMap<String, u64>,
     pub reload_read_failures: HashMap<String, u64>,
+    pub reload_enabled_unexpected: HashMap<String, u64>,
 }
+/// Clé JSON de `reload_enabled_unexpected` dans `processors_counters_json` (une seule source pour le démon
+/// et ses témoins).
+pub(crate) const CLE_ENABLED_DE_TYPE_INATTENDU: &str = "reload_enabled_unexpected";
 pub(crate) static PROC_COUNTERS: std::sync::OnceLock<parking_lot::RwLock<ProcCounterStore>> =
     std::sync::OnceLock::new();
 pub(crate) fn proc_counters_cell() -> &'static parking_lot::RwLock<ProcCounterStore> {
@@ -371,6 +379,10 @@ struct IngestRuleTableRead {
     relus: std::collections::HashSet<i64>,
     lus_non_decodes: std::collections::HashSet<i64>,
     erreurs_de_compilation: u64,
+    /// Règles lues sous le plafond dont `enabled` n'est ni 0 ni 1 (gardées actives) : PAS un échec de
+    /// lecture — les verser dans `echecs` compterait une lecture ratée qui n'a pas eu lieu et ferait passer
+    /// le rechargement par l'union (parcours complet : seules les règles lues non décodées y sont gardées).
+    enabled_de_type_inattendu: u64,
     echecs: Vec<String>,
     /// Le parcours est allé jusqu'au bout (`Ok(None)`) sans plafond atteint et toute ligne indécodable a
     /// livré son identifiant : l'ensemble des règles actives présentes en base est alors CONNU.
@@ -396,9 +408,9 @@ fn ord_de_la_ligne(r: &rusqlite::Row<'_>) -> i64 {
 /// inattendu (blob ou texte non convertible, que l'affinité `INTEGER` du schéma v83 n'interdit pas, posé
 /// par SQL direct ou corruption) n'égalait pas 1 et sortait la règle du registre sans échec ni compte — un
 /// MASK de redaction désarmé en silence. Précédent : `field_filter.rs`. Seul l'entier 0 éteint ; l'entier 1
-/// arme ; tout le reste laisse la règle ACTIVE (fermé) et le dit sur stderr, par la NATURE de la cellule
-/// seulement, jamais sa valeur.
-fn regle_active(r: &rusqlite::Row<'_>) -> bool {
+/// arme ; tout le reste laisse la règle ACTIVE (fermé), le dit sur stderr, par la NATURE de la cellule
+/// seulement, jamais sa valeur, et incrémente `inattendus` (servi par `reload_enabled_unexpected`).
+fn regle_active(r: &rusqlite::Row<'_>, inattendus: &mut u64) -> bool {
     use rusqlite::types::ValueRef;
     let nature = match r.get_ref(7) {
         Ok(ValueRef::Integer(0)) => return false,
@@ -415,6 +427,7 @@ fn regle_active(r: &rusqlite::Row<'_>) -> bool {
         Err(_) => "règle d'identifiant illisible".to_string(),
     };
     eprintln!("[processor] {qui} : enabled ni 0 ni 1 ({nature}) -> règle gardée ACTIVE");
+    *inattendus += 1;
     true
 }
 
@@ -424,6 +437,7 @@ fn read_ingest_rule_table(conn: &Connection, db_path: &str) -> IngestRuleTableRe
         relus: std::collections::HashSet::new(),
         lus_non_decodes: std::collections::HashSet::new(),
         erreurs_de_compilation: 0,
+        enabled_de_type_inattendu: 0,
         echecs: Vec::new(),
         parcours_complet: false,
     };
@@ -451,7 +465,10 @@ fn read_ingest_rule_table(conn: &Connection, db_path: &str) -> IngestRuleTableRe
             Ok(Some(r)) => {
                 // `enabled` AVANT le plafond et le décodage : une ligne éteinte n'est ni comptée au plafond,
                 // ni un échec si elle est indécodable — comme quand le SQL l'écartait.
-                if !regle_active(r) {
+                // L'anomalie de type n'est ajoutée au compte qu'une fois le plafond passé : la ligne qui le
+                // fait atteindre n'est pas au registre et ne doit pas gonfler `reload_enabled_unexpected`.
+                let mut inattendu_de_la_ligne = 0u64;
+                if !regle_active(r, &mut inattendu_de_la_ligne) {
                     continue;
                 }
                 if lu.rules.len() >= PROC_RULE_MAX_TOTAL {
@@ -459,6 +476,7 @@ fn read_ingest_rule_table(conn: &Connection, db_path: &str) -> IngestRuleTableRe
                     // Les lignes au-delà ne sont pas lues : le parcours reste INCOMPLET.
                     break;
                 }
+                lu.enabled_de_type_inattendu += inattendu_de_la_ligne;
                 let decode = || -> rusqlite::Result<(i64, String, String, String, String, String)> {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
                 };
@@ -533,10 +551,18 @@ fn read_ingest_rule_table(conn: &Connection, db_path: &str) -> IngestRuleTableRe
 /// passent par la porte de schéma, donc une base servie est au moins en v86 et `ingest_rule` (v83) y
 /// existe — son absence est une anomalie, pas une base ancienne. Chemin nominal (aucun échec) : registre
 /// remplacé comme avant. `enabled` est jugé ligne par ligne (`regle_active`) : seul l'entier 0 éteint une
-/// règle, une cellule de type inattendu la laisse ACTIVE.
+/// règle, une cellule de type inattendu la laisse ACTIVE et est comptée dans `reload_enabled_unexpected`
+/// (un compte par rechargement, remplacé comme `reload_errors`, jamais versé dans `echecs`).
 pub(crate) fn processors_reload(conn: &Connection, db_path: &str) {
-    let IngestRuleTableRead { rules: out, relus, lus_non_decodes, erreurs_de_compilation, echecs, parcours_complet } =
-        read_ingest_rule_table(conn, db_path);
+    let IngestRuleTableRead {
+        rules: out,
+        relus,
+        lus_non_decodes,
+        erreurs_de_compilation,
+        enabled_de_type_inattendu,
+        echecs,
+        parcours_complet,
+    } = read_ingest_rule_table(conn, db_path);
     let mut w = processors_cell().write();
     let avait_un_registre = w.contains_key(db_path);
     let mut plafond_du_registre_uni = false;
@@ -576,6 +602,7 @@ pub(crate) fn processors_reload(conn: &Connection, db_path: &str) {
     { let mut w = proc_counters_cell().write();
         w.reload_errors.insert(db_path.to_string(), erreurs_de_compilation);
         w.reload_read_failures.insert(db_path.to_string(), echecs.len() as u64);
+        w.reload_enabled_unexpected.insert(db_path.to_string(), enabled_de_type_inattendu);
     }
 }
 
@@ -739,5 +766,6 @@ pub(crate) fn processors_counters_json(db_path: &str) -> Value {
         "totals": { "dropped": td, "masked": tm, "routed": tr, "sampled_out": ts, "renamed": tn, "not_indexed": td + ts },
         "reload_errors": g.reload_errors.get(db_path).copied().unwrap_or(0),
         "reload_read_failures": g.reload_read_failures.get(db_path).copied().unwrap_or(0),
+        CLE_ENABLED_DE_TYPE_INATTENDU: g.reload_enabled_unexpected.get(db_path).copied().unwrap_or(0),
     })
 }

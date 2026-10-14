@@ -661,12 +661,29 @@ pub(crate) fn component_health_avec_pertes(
     // `P10.21-n` — ET LA DÉTECTION VOIT-ELLE LES ÉVÉNEMENTS D'ACCÈS ? Une perte dans la fenêtre d'aveu
     // jaunit le voyant (jamais rouge, jamais une remontée) et la phrase nomme genre, compte et cause.
     let (dstate, ddetail) = etat_de_surface_pertes_d_acces(dstate, ddetail, pertes_d_acces, now_ts);
-    let n_rules: i64 = conn.query_row("SELECT COUNT(*) FROM rule WHERE enabled=1", [], |r| r.get(0)).unwrap_or(0);
+    // `P10.20-b` — LE NOMBRE DE RÈGLES ACTIVES N'EST ÉCRIT QUE S'IL A ÉTÉ LU. `unwrap_or(0)` servait
+    // `enabled_rules: 0` — « aucune règle active » — sur une lecture ratée de `rule`. Lu : la clé est
+    // posée à l'identique. Non lu : la clé est ABSENTE et `enabled_rules_cause` / `enabled_rules_detail`
+    // disent pourquoi (convention `S32`). Aucun `enabled_rules_verdict` : la console ne lit pas ce
+    // compte, et un verdict servi qu'elle ne lirait pas serait une promesse de plus (garde `S37`).
+    let n_rules: Result<i64, rusqlite::Error> =
+        conn.query_row("SELECT COUNT(*) FROM rule WHERE enabled=1", [], |r| r.get(0));
     let mut detection = serde_json::Map::new();
     detection.insert("component".into(), json!(crate::bilan_de_tick::COMPOSANT_DETECTION));
     detection.insert("state".into(), json!(dstate));
     detection.insert("detail".into(), json!(ddetail));
-    detection.insert("enabled_rules".into(), json!(n_rules));
+    match &n_rules {
+        Ok(n) => {
+            detection.insert("enabled_rules".into(), json!(n));
+        }
+        Err(e) => {
+            detection.insert("enabled_rules_cause".into(), json!(mesure_environnement::CAUSE_SOURCE_ILLISIBLE));
+            detection.insert(
+                "enabled_rules_detail".into(),
+                json!(format!("nombre de règles actives NON LU ({e}) : ce n'est PAS « zéro règle active »")),
+            );
+        }
+    }
     detection.insert("last_tick".into(), json!(rule_last));
     crate::bilan_de_tick::poser_bilan(&mut detection, "abandons_dernier_tick", bilan_detection.as_ref());
     // Convention `S32` : la valeur n'apparaît QUE si elle a été lue. Aucun rechargement encore
@@ -730,7 +747,8 @@ pub(crate) fn component_health_avec_pertes(
     out.push(Value::Object(store));
 
     // FORWARDER (#50 outputs/destinations) : table vide -> idle (mode 0). Une destination ACTIVE en erreur
-    // (last_error non vide) -> jaune. Sinon vert. Table absente (schéma < v92) -> idle.
+    // (last_error non vide) -> jaune. Sinon vert. Table absente au catalogue (schéma < v92) -> idle ;
+    // catalogue ou table NON LUS -> jaune (`P10.20-b`).
     let (fstate, fdetail) = destination_health(conn);
     // P4.1-r — une liste de destinations qu'on n'a pas pu lire n'était ni « en erreur » ni « OK » : rien.
     let bilan_forwarder = crate::bilan_de_tick::bilan_du_composant(crate::bilan_de_tick::COMPOSANT_FORWARDER);
@@ -788,21 +806,60 @@ fn tick_health(last_ts: i64, now_ts: i64, warn_s: i64, crit_s: i64, what: &str) 
     }
 }
 
-/// Santé du forwarder depuis la table `destination` (#50). Table absente/vide -> idle. Best-effort.
-fn destination_health(conn: &Connection) -> (&'static str, String) {
+/// Santé du forwarder depuis la table `destination` (#50). Table absente (constatée au catalogue) ou
+/// vide -> idle ; une destination active en erreur -> jaune ; sinon vert.
+///
+/// `P10.20-b` — TROIS ISSUES PAR LECTURE, ET LA TROISIÈME N'EST JAMAIS UN VERDICT. Une lecture ratée
+/// du compte rendait « idle, aucune destination configurée » (l'état calme d'une installation sans
+/// sortie) et une lecture ratée du nombre en erreur rendait « green, N destination(s) OK » alors que
+/// le composant pouvait porter des erreurs. L'absence de la table n'est plus DÉDUITE d'une erreur :
+/// elle est LUE au catalogue. Une lecture non faite est JAUNE, comme le pipeline d'ingest non lu, et
+/// la phrase dit ce qu'elle n'est pas. La cause du moteur entre dans le détail : elle ne porte aucune
+/// valeur de cellule.
+pub(crate) fn destination_health(conn: &Connection) -> (&'static str, String) {
+    fn non_lue(quoi: &str, e: &rusqlite::Error) -> (&'static str, String) {
+        (
+            "yellow",
+            format!(
+                "état des destinations NON LU ({quoi} : {e}) : ce n'est PAS « aucune destination \
+                 configurée » et ce n'est PAS « destination(s) OK » — ni le nombre de destinations ni \
+                 leurs erreurs ne sont établis ici."
+            ),
+        )
+    }
+    let presente: Result<bool, rusqlite::Error> = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='destination')",
+        [],
+        |r| r.get(0),
+    );
+    match presente {
+        Err(e) => return non_lue("présence de la table au catalogue", &e),
+        Ok(false) => return ("idle", "aucune destination configurée".to_string()),
+        Ok(true) => {}
+    }
     let total: i64 = match conn.query_row("SELECT COUNT(*) FROM destination", [], |r| r.get(0)) {
         Ok(n) => n,
-        Err(_) => return ("idle", "aucune destination configurée".to_string()),
+        Err(e) => return non_lue("nombre de destinations", &e),
     };
     if total == 0 {
         return ("idle", "aucune destination configurée".to_string());
     }
-    let errored: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM destination WHERE enabled=1 AND COALESCE(last_error,'')<>''",
-            [], |r| r.get(0),
-        )
-        .unwrap_or(0);
+    let errored: i64 = match conn.query_row(
+        "SELECT COUNT(*) FROM destination WHERE enabled=1 AND COALESCE(last_error,'')<>''",
+        [],
+        |r| r.get(0),
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            return (
+                "yellow",
+                format!(
+                    "{total} destination(s) configurée(s), mais le nombre de destinations EN ERREUR est \
+                     NON LU ({e}) : ce n'est PAS « destination(s) OK »."
+                ),
+            )
+        }
+    };
     if errored > 0 {
         ("yellow", format!("{errored}/{total} destination(s) en erreur"))
     } else {

@@ -22,17 +22,21 @@ plancher d'exigences nommées), puis exécute le capteur TEL QU'IL EST LIVRÉ, e
 chaque awk présent parmi `gawk` et `mawk`, et juge chaque ligne : exactement un événement, ou aucun ;
 catégorie, action, sévérité, horodatage, `src_ip`, champs (égalité stricte du sac), clé de repli
 recalculée depuis la seule ligne ; message égal à la ligne — ou, pour le sortant, à la ligne dont
-chaque partie locale d'adresse est masquée (recalculé ici, et aucune partie locale ne doit subsister) ;
-rien d'inventé.
+chaque partie locale d'adresse est masquée (recalculé ici, et aucune partie locale ne doit subsister :
+tout ce qui précède un `@` jusqu'à une espace, un `<` ou un autre `@` est `*`, guillemet échappé et
+délimiteur dans l'adresse compris) ; rien d'inventé.
 
 Puis, toujours sur le capteur livré :
   * le FILIGRANE de ClamAV (heure murale sans décalage, une seconde partagée par plusieurs lignes) :
-    trois passages sur un journal qui grandit ne rejouent aucune ligne et n'en sautent aucune ;
+    trois passages sur un journal qui grandit ne rejouent aucune ligne et n'en sautent aucune ; sur le
+    journal freshclam RELEVÉ, où des lignes non classées partagent la seconde d'un avertissement, le
+    passage suivant ne le réémet pas ;
   * le DÉCALAGE : celui de mail.log par défaut, `PLUME_MAIL_CLAMAV_UTC_OFFSET` quand il est posé ;
   * les TROIS MODES : en `file`, le chemin par défaut est `/var/log/clamav/…` ; en `docker` et `k3s`,
     `/var/log/mail/…`, lus par `docker exec` / `kubectl exec` (simulés, la commande lancée DANS le
-    conteneur est celle du capteur) ; un chemin par défaut absent est dit `absent` dans l'enveloppe de
-    config, SANS aveu ; un chemin POSÉ absent est AVOUÉ (freshclam comme clamd) ; une variable posée vide
+    conteneur est celle du capteur, et le conteneur est celui que `PLUME_MAIL_CONTAINER` nomme) ; un chemin par défaut absent est dit `absent` dans l'enveloppe de
+    config, SANS aveu ; un chemin POSÉ absent est AVOUÉ sous la cause `source_absente` (freshclam comme
+    clamd), un chemin posé qui existe sans se lire sous `source_illisible` ; une variable posée vide
     coupe la lecture ;
   * le filigrane encore : un journal remplacé par un plus ancien ne fait rien rejouer, un journal tourné
     dans la seconde du filigrane ne fait pas tenir pour vue la ligne suivante de cette seconde ;
@@ -41,7 +45,9 @@ Puis, toujours sur le capteur livré :
     posé illisible est avoué et remplacé par celui de mail.log ;
   * le VOLUME : `PLUME_MAIL_MAX` lit les DERNIÈRES lignes de chaque journal ; au-delà de 3000 événements par
     flux, le passage s'arrête et le suivant reprend sans perte ni rejeu ;
-  * la clé de repli du sortant est l'empreinte de la ligne MASQUÉE (la clé est requêtable).
+  * la clé de repli du sortant est l'empreinte de la ligne MASQUÉE (la clé est requêtable) ;
+  * l'étape `search` de la règle de catalogue `ex-mail-mass-outbound`, sur les événements émis : elle ne
+    retient du flux que l'entrée amavis, qui porte `sender` — ni la file, ni le sortant.
 
 CODES : 0 tout est tenu ; 1 un défaut mesuré ; 2 la garde refuse de conclure (instrument invalide,
 corpus hors forme, aucun awk) — rien n'a été mesuré.
@@ -49,7 +55,8 @@ corpus hors forme, aucun awk) — rien n'a été mesuré.
 CE QU'ELLE NE TIENT PAS, DIT
 ----------------------------
 Les formes `enonce`, `gabarit` et `fabriquee` ne sont pas relevées dans un journal réel : la garde tient
-la lecture de CES formes, pas leur existence. Elle ne tient ni le retour à l'heure d'hiver (une heure
+la lecture de CES formes, pas leur existence. De la règle `ex-mail-mass-outbound`, elle ne juge que
+l'étape `search` ; la compilation est tenue par le test de catalogue du démon, `stats` et `where` non. Elle ne tient ni le retour à l'heure d'hiver (une heure
 murale rejouée), ni une fenêtre `tail` qui couperait les lignes de la seconde du filigrane. Les autres
 familles du capteur sont tenues par `check_mail_sensor_classifies_dovecot_logins_of_both_versions.py`.
 """
@@ -114,7 +121,9 @@ MOIS = {m: i + 1 for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct 
 QUADRUPLET = re.compile(r"(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?![0-9.])")
 IPV6 = re.compile(r"(?<![0-9A-Za-z:])((?:[0-9A-Fa-f]{1,4}:){1,7}:?(?:[0-9A-Fa-f]{1,4})?)(?![0-9A-Za-z:])")
 AROBASE = re.compile(r"@\[?([A-Za-z0-9.-]+)")
-PARTIE_LOCALE_RESTANTE = re.compile(r"[^\s<>(),;:\"@\[*]@")
+# Ce qui précède un `@`, jusqu'à une espace, un `<`, un autre `@` ou le début : `*` après masquage, ou rien.
+# L'ancienne forme ne regardait que le caractère collé au `@` : `<jean:*@d>` la passait, le `jean:` restant.
+PARTIE_LOCALE_RESTANTE = re.compile(r"(?:^|[ <@])([^ <@]+)@")
 
 # Les exigences de plancher : chacune est une ligne qu'un capteur qui ne lit pas la famille, ou qui la
 # lit mal, classerait faux.
@@ -145,12 +154,25 @@ EXIGENCES = [
      _ex("mail-policyd-spf.corpus", "mail/fail", lambda e: e["ligne"].count("; envelope-from=") > 1 and not e["champs"].get("domain"))),
     ("policyd-spf : `client-ip=` recopié par le HELO, adresse TUE",
      _ex("mail-policyd-spf.corpus", "mail/fail", lambda e: e["ligne"].count("client-ip=") > 1 and not e["champs"].get("src_ip"))),
+    ("policyd-spf : `client-ip=` recopié par le HELO SANS ` identity=…; ` devant, l'adresse vraie LUE",
+     _ex("mail-policyd-spf.corpus", "mail/fail", lambda e: e["ligne"].count("client-ip=") > 1
+         and e["ligne"].count("; client-ip=") == 1 and e["champs"].get("src_ip"))),
+    ("policyd-spf : un `client-ip=` AVANT celui de ` identity=…; `, l'adresse lue est celle d'après",
+     _ex("mail-policyd-spf.corpus", "mail/fail", lambda e: e["ligne"].count("client-ip=") > 1
+         and e["ligne"].index("client-ip=") < e["ligne"].index(" identity=") and e["champs"].get("src_ip"))),
+    ("policyd-spf : `client-ip=` sans ` identity=…; ` devant lui, adresse TUE",
+     _ex("mail-policyd-spf.corpus", "mail/fail", lambda e: "client-ip=" in e["ligne"] and " identity=" not in e["ligne"]
+         and not e["champs"].get("src_ip"))),
     ("sortant : un envoi réussi", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/sent")),
     ("sortant : un rebond", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/bounced")),
     ("sortant : un report sans relais (`relay=none`)", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/deferred", lambda e: e["champs"].get("relay") == "none")),
     ("sortant (P10.22-v) : l'échec SASL de notre relais, différé et jamais un échec d'authentification",
      _ex("mail-sortant-postfix-smtp.corpus", "mailflow/deferred", lambda e: "SASL authentication failed" in e["ligne"] and not e["champs"].get("src_ip"))),
     ("sortant : une partie locale entre guillemets, masquée", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/sent", lambda e: 'to=<"' in e["ligne"])),
+    ("sortant : une partie locale à guillemet ÉCHAPPÉ, masquée entière",
+     _ex("mail-sortant-postfix-smtp.corpus", "mailflow/sent", lambda e: '\\"' in e["ligne"].split(", relay=")[0])),
+    ("sortant : une partie locale à délimiteur recopiée par le serveur distant, masquée entière",
+     _ex("mail-sortant-postfix-smtp.corpus", "mailflow/bounced", lambda e: "<jean:dupont@" in e["ligne"])),
     ("sortant : la suite recopiée par le destinataire, statut tu", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/ambiguous", lambda e: 'to=<"x, relay=' in e["ligne"])),
     ("sortant : la suite recopiée par le serveur distant, statut tu", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/ambiguous", lambda e: "said: 550 x, relay=" in e["ligne"])),
     ("sortant : `postfix/smtp-amavis/smtp` relevé, saut interne", lambda e: e["corpus"] == "mail-sortant-postfix-smtp.corpus" and e["verdict"] == "aucun" and e["etiquette"] == "postfix/smtp-amavis/smtp" and e["provenance"] == "mesuree-dms"),
@@ -174,6 +196,9 @@ EXIGENCES = [
     ("clamd : un jour du mois sous dix, complété par une espace", lambda e: e["flux"] == "clamd" and e["verdict"] != "aucun" and re.match(r"^\S+ \S+  \d ", e["ligne"])),
     ("clamd : une ligne sans horodatage n'est rien", lambda e: e["flux"] == "clamd" and e["verdict"] == "aucun" and not HORODATAGE_CLAMAV.match(e["ligne"])),
     ("freshclam : une installation périmée relevée", _ex("mail-freshclam.corpus", "update/outdated", lambda e: e["provenance"] == "mesuree-dms")),
+    ("freshclam : une ligne classée relevée qui partage sa seconde avec une ligne relevée NON classée, après elle",
+     lambda e: e["corpus"] == "mail-freshclam.corpus" and e["provenance"] == "mesuree-dms" and e["verdict"] != "aucun"
+     and e["_avant_a_la_meme_seconde_non_classee"]),
     ("freshclam : une mise à jour en échec", _ex("mail-freshclam.corpus", "update/update_failed")),
     ("freshclam : une base trop vieille", _ex("mail-freshclam.corpus", "update/database_stale")),
 ]
@@ -194,8 +219,16 @@ def empreinte(ligne):
 
 def masquer(ligne):
     """Le masquage du sortant (`masquer_adresses`), écrit ICI une seconde fois."""
-    ligne = re.sub(r'"[^"]*"@', "*@", ligne)
-    return re.sub(r'[^ <>(),;:"@\[]+@', "*@", ligne)
+    ligne = re.sub(r'"(?:[^"\\]|\\.)*"@', "*@", ligne)
+    return re.sub(r"[^ <@]+@", "*@", ligne)
+
+
+def partie_locale_restante(message):
+    """La première partie locale non masquée du message (autre chose que `*` devant un `@`), ou None."""
+    for m in PARTIE_LOCALE_RESTANTE.finditer(message):
+        if m.group(1) != "*":
+            return m.group(1)
+    return None
 
 
 def decalage_en_secondes(d):
@@ -319,6 +352,13 @@ def lire_corpus():
             fautes += f
             if e:
                 entrees.append(e)
+    # Une ligne ClamAV précédée, dans son corpus et sous la même provenance, d'une ligne NON classée de la
+    # même seconde : le cas que le filigrane doit compter juste (`suite_du_journal_releve`).
+    for i, e in enumerate(entrees):
+        mur = mur_clamav(e["ligne"]) if e["flux"] != "mail" else None
+        e["_avant_a_la_meme_seconde_non_classee"] = mur is not None and any(
+            p["corpus"] == e["corpus"] and p["provenance"] == e["provenance"] and p["verdict"] == "aucun"
+            and mur_clamav(p["ligne"]) == mur for p in entrees[:i])
     return entrees, fautes
 
 
@@ -362,7 +402,7 @@ def juger(entrees, evenements, decalage):
         if (ev.get("fields") or {}) != a["fields"]:
             fautes.append(f"{quoi} : champs {json.dumps(ev.get('fields'), ensure_ascii=False)} au lieu de "
                           f"{json.dumps(a['fields'], ensure_ascii=False)}")
-        if a["fields"].get("service") == "smtp" and PARTIE_LOCALE_RESTANTE.search(ev.get("message", "")):
+        if a["fields"].get("service") == "smtp" and partie_locale_restante(ev.get("message", "")):
             fautes.append(f"{quoi} : une partie locale d'adresse subsiste dans le message émis")
     for message, vus in par_message.items():
         fautes.append(f"{len(vus)} événement(s) pour un message absent des corpus : `{str(message)[:120]}`")
@@ -390,6 +430,15 @@ def epreuve_du_juge():
         return "le juge ne voit pas un événement manquant, ou inventé"
     if masquer('to=<"a b"@example.org> <c.d@example.org>') != "to=<*@example.org> <*@example.org>":
         return "le masquage écrit ici ne masque pas"
+    # Les deux formes que l'ancien motif laissait fuir à moitié : un délimiteur DANS la partie locale, un
+    # guillemet échappé dans la forme entre guillemets. Et l'ancien résultat est bien accusé.
+    for brut, masque in (('to=<jean:dupont@example.org>', 'to=<*@example.org>'),
+                         ('to=<"a \\"b c"@example.org>', 'to=<*@example.org>'),
+                         ('to=<jean[1]@example.org>', 'to=<*@example.org>')):
+        if masquer(brut) != masque or partie_locale_restante(masquer(brut)):
+            return f"le masquage écrit ici laisse fuir une partie locale : `{brut}` -> `{masquer(brut)}`"
+    if partie_locale_restante("to=<jean:*@example.org>") != "jean:*" or partie_locale_restante('to=<"*@example.org>') != '"*':
+        return "le juge ne voit pas une partie locale masquée à moitié"
     return None
 
 
@@ -506,10 +555,25 @@ SUITES_DU_FILIGRANE = {
 }
 
 
-def passage_du_filigrane(chemin_awk):
+# Et sur le journal freshclam RELEVÉ (lignes `mesuree-dms` du corpus) : à une même seconde, des lignes
+# classées et d'autres qui ne le sont pas (`DON'T PANIC!`, le séparateur). Le filigrane compte les lignes
+# VUES, classées ou non : n'en compter que les classées faisait réémettre l'avertissement OUTDATED au
+# passage suivant, les lignes non classées de la seconde occupant les places « déjà vues ».
+def suite_du_journal_releve(entrees):
+    journal = [e["ligne"] for e in entrees if e["corpus"] == "mail-freshclam.corpus" and e["provenance"] == "mesuree-dms"]
+    classees = [e["ligne"] for e in entrees if e["corpus"] == "mail-freshclam.corpus" and e["provenance"] == "mesuree-dms"
+                and e["verdict"] != "aucun"]
+    return (("1er passage", journal, classees),
+            ("2e passage, le même journal", journal, []),
+            ("3e passage, le même journal", journal, []))
+
+
+def passage_du_filigrane(chemin_awk, entrees):
     fautes = []
     mail = ["2026-10-15T01:00:00.000000+00:00 mx1 opendmarc[1]: 9A: example.org pass"]
-    for suite, etapes in SUITES_DU_FILIGRANE.items():
+    suites = dict(SUITES_DU_FILIGRANE, **{"journal freshclam relevé, lignes non classées à la même seconde":
+                                          suite_du_journal_releve(entrees)})
+    for suite, etapes in suites.items():
         with tempfile.TemporaryDirectory(prefix="garde-mail-filigrane-") as bac:
             rep = preparer(bac, chemin_awk)
             for etape, journal, attendus in etapes:
@@ -541,7 +605,7 @@ printf '%s\\n' "$*" >> "$BANC_TRACE"
 case "$*" in
   "-n $BANC_NS get pod -l $BANC_SEL -o name") echo pod/mail-0; exit 0 ;;
 esac
-[ "$1" = -n ] && [ "$2" = "$BANC_NS" ] && [ "$3" = exec ] && [ "$4" = pod/mail-0 ] && [ "$5" = -c ] || exit 1
+[ "$1" = -n ] && [ "$2" = "$BANC_NS" ] && [ "$3" = exec ] && [ "$4" = pod/mail-0 ] && [ "$5" = -c ] && [ "$6" = "$BANC_CONTENEUR" ] || exit 1
 shift 6; [ "$1" = -- ] && shift; exec "$@"
 """
 SIMULATEUR_SH = """#!/bin/sh
@@ -605,8 +669,9 @@ def passage_des_modes(chemin_awk, entrees):
             if not any(e.get("message") == clamd[0] for e in ev):
                 fautes.append("(docker, chemin posé) le journal clamd n'a pas été lu par `docker exec`")
             if not any("freshclam" in (a.get("message") or "") and (a.get("fields") or {}).get("collect_status") == "unavailable"
-                       for a in aveux):
-                fautes.append("(docker, chemin posé absent) l'absence d'un journal POSÉ n'est pas avouée")
+                       and "(source_absente)" in (a.get("message") or "") for a in aveux):
+                fautes.append("(docker, chemin posé absent) l'absence d'un journal POSÉ n'est pas avouée sous sa cause "
+                              f"`source_absente` : {[a.get('message') for a in aveux][:2]}")
             if (filtres or {}).get("clamav") != "clamd=lu freshclam=illisible":
                 fautes.append(f"(docker, chemins posés) enveloppe de config : clamav=`{(filtres or {}).get('clamav')}`")
         # Et l'inverse : clamd POSÉ absent, freshclam posé et lu — l'aveu nomme clamd.
@@ -618,12 +683,28 @@ def passage_des_modes(chemin_awk, entrees):
             fautes.append(f"(docker, clamd posé absent) {ko}")
         else:
             if not any("journal clamd " in (a.get("message") or "") and (a.get("fields") or {}).get("collect_status") == "unavailable"
-                       for a in aveux):
-                fautes.append("(docker, clamd posé absent) l'absence du journal clamd POSÉ n'est pas avouée")
+                       and "(source_absente)" in (a.get("message") or "") for a in aveux):
+                fautes.append("(docker, clamd posé absent) l'absence du journal clamd POSÉ n'est pas avouée sous sa cause "
+                              f"`source_absente` : {[a.get('message') for a in aveux][:2]}")
             if (filtres or {}).get("clamav") != "clamd=illisible freshclam=lu":
                 fautes.append(f"(docker, clamd posé absent) enveloppe de config : clamav=`{(filtres or {}).get('clamav')}`")
             if not any(e.get("message") == fc[0] for e in ev):
                 fautes.append("(docker, clamd posé absent) le journal freshclam n'a pas été lu")
+        # La CAUSE distingue les deux : un chemin posé qui EXISTE mais que la lecture ne rend pas (ici un
+        # répertoire) est `source_illisible`, pas `source_absente`.
+        repertoire = os.path.join(bac, "un-repertoire")
+        os.makedirs(repertoire, exist_ok=True)
+        ev, aveux, filtres, ko = jouer_capteur(rep, {"mail.log": mail, "freshclam.log": fc},
+                                               dict(commun, PLUME_MAIL_SRC="docker", PLUME_MAIL_CLAMAV_LOG=repertoire,
+                                                    PLUME_MAIL_FRESHCLAM_LOG=os.path.join(rep["journaux"], "freshclam.log")))
+        if ko:
+            fautes.append(f"(docker, clamd posé illisible) {ko}")
+        else:
+            causes = [a.get("message") for a in aveux if "journal clamd " in (a.get("message") or "")]
+            if len(causes) != 1 or "(source_illisible)" not in causes[0]:
+                fautes.append(f"(docker, clamd posé illisible) aveu attendu sous la cause `source_illisible` : {causes[:2]}")
+            if (filtres or {}).get("clamav") != "clamd=illisible freshclam=lu":
+                fautes.append(f"(docker, clamd posé illisible) enveloppe de config : clamav=`{(filtres or {}).get('clamav')}`")
         ev, aveux, filtres, ko = jouer_capteur(rep, {"mail.log": mail},
                                                dict(commun, PLUME_MAIL_CLAMAV_LOG="", PLUME_MAIL_FRESHCLAM_LOG=""))
         if ko:
@@ -738,6 +819,64 @@ def passage_des_plafonds(chemin_awk):
     return fautes
 
 
+# La règle de catalogue `ex-mail-mass-outbound` compte `sender` sur le flux `mailflow`. Le sortant (`smtp`,
+# sans `sender`) et la file (`qmgr`, qui revoit un message différé à chaque retour en file active) sont
+# aussi `mailflow` : la règle doit les écarter par son étape `search`. Cette étape est jugée ICI sur les
+# événements que le capteur LIVRÉ émet. CE QUI N'EST PAS JUGÉ ICI, DIT : la compilation de la requête (tenue
+# par `catalog_rules_all_compile_and_are_disabled_by_default`, daemon/src/tests/detection.rs) et ses étapes
+# `stats` et `where`, que le compilateur évalue.
+REGLE_DU_SORTANT_DE_MASSE = os.path.join(RACINE, "config.d", "rules", "catalog", "ex-mail-mass-outbound.json")
+LIGNE_AMAVIS_DU_FLUX = ("2026-10-14T04:00:01.123456+02:00 mx1 amavis[4101]: (04101-01) Passed CLEAN {RelayedOutbound}, "
+                        "[192.0.2.110]:40101 [192.0.2.110] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF101, "
+                        "Message-ID: <m101@example.net>, mail_id: AbCdEfGh0101, Hits: -1.1, size: 2345, "
+                        "queued_as: 4BCDEF3101, 120 ms")
+
+
+def etape_search_de_la_regle():
+    """Les termes `clé=valeur` de l'étape `search` de la règle et sa clé de groupe — ou un refus."""
+    try:
+        requete = json.load(open(REGLE_DU_SORTANT_DE_MASSE, encoding="utf-8"))["query"]
+    except (OSError, ValueError, KeyError) as e:
+        refus(f"règle `{os.path.relpath(REGLE_DU_SORTANT_DE_MASSE, RACINE)}` illisible ({e})")
+    etapes = [x.strip() for x in requete.split("|")]
+    mots = etapes[0].split()
+    groupe = re.fullmatch(r"stats count by (\w+)", etapes[1]) if len(etapes) > 1 else None
+    if not mots or mots[0] != "search" or not groupe or not all(re.fullmatch(r"[a-z_]+=[A-Za-z0-9_.-]+", t) for t in mots[1:]):
+        refus(f"requête de `ex-mail-mass-outbound` hors de la forme jugée ici (`search k=v … | stats count by <champ> …`) : `{requete}`")
+    return [tuple(t.split("=", 1)) for t in mots[1:]], groupe.group(1)
+
+
+def passage_de_la_regle(chemin_awk, entrees):
+    termes, groupe = etape_search_de_la_regle()
+    file = [e["ligne"] for e in entrees if e["corpus"] == "mail-file-qmgr.corpus" and e["verdict"] == "mailflow/queued"][:1]
+    sortant = [e["ligne"] for e in entrees if e["corpus"] == "mail-sortant-postfix-smtp.corpus" and e["verdict"] == "mailflow/sent"][:1]
+    if not file or not sortant:
+        return ["(règle ex-mail-mass-outbound) le corpus ne porte plus les lignes que ce cas rejoue"]
+    with tempfile.TemporaryDirectory(prefix="garde-mail-regle-") as bac:
+        rep = preparer(bac, chemin_awk)
+        ev, _, _, ko = jouer_capteur(rep, {"mail.log": [LIGNE_AMAVIS_DU_FLUX] + file + sortant, "clamav.log": []})
+    if ko:
+        return [f"(règle ex-mail-mass-outbound) {ko}"]
+
+    def valeur(e, cle):
+        return e.get(cle) if cle in e and cle != "fields" else (e.get("fields") or {}).get(cle)
+    flux = [e for e in ev if e.get("category") == "mailflow"]
+    services = sorted((e.get("fields") or {}).get("service") for e in flux)
+    if services != ["amavis", "qmgr", "smtp"]:
+        return [f"(règle ex-mail-mass-outbound) le capteur n'émet plus ces trois lignes en `mailflow` ({services}) : le cas ne juge rien"]
+    pris = [e for e in flux if all(str(valeur(e, k)) == v for k, v in termes)]
+    fautes = []
+    retenus = sorted((e.get("fields") or {}).get("service") for e in pris)
+    if retenus != ["amavis"]:
+        fautes.append(f"(règle ex-mail-mass-outbound) l'étape `search` ({' '.join(k + '=' + v for k, v in termes)}) retient "
+                      f"{retenus} au lieu de la seule entrée amavis"
+                      + (" : la file compterait chaque message une seconde fois" if "qmgr" in retenus else "")
+                      + (" : le sortant, sans `sender`, ferait un groupe vide" if "smtp" in retenus else ""))
+    if any(not valeur(e, groupe) for e in pris):
+        fautes.append(f"(règle ex-mail-mass-outbound) un événement retenu n'a pas de `{groupe}`, la clé de groupe")
+    return fautes
+
+
 def main():
     for f in (CAPTEUR, LIB):
         if not os.path.exists(f):
@@ -751,13 +890,15 @@ def main():
     manques = [nom for nom, test in EXIGENCES if not any(test(e) for e in entrees)]
     if manques:
         refus("corpus sous son plancher : " + " ; ".join(manques))
+    etape_search_de_la_regle()
     awks = implementations_awk()
     if not awks:
         refus(f"aucune implémentation d'awk parmi {AWK_EXERCES}")
     total = 0
     for nom, chemin in awks:
-        defauts = (passage_du_corpus(chemin, entrees) + passage_du_filigrane(chemin) + passage_des_modes(chemin, entrees)
-                   + passage_des_bords(chemin, entrees) + passage_des_plafonds(chemin))
+        defauts = (passage_du_corpus(chemin, entrees) + passage_du_filigrane(chemin, entrees) + passage_des_modes(chemin, entrees)
+                   + passage_des_bords(chemin, entrees) + passage_des_plafonds(chemin)
+                   + passage_de_la_regle(chemin, entrees))
         for f in defauts:
             print(f"::error file=collectors/mail.sh::{ETIQUETTE} ({nom}) : {f}")
         total += len(defauts)

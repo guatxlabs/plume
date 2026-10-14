@@ -40,7 +40,10 @@ MAIL_NS="${PLUME_MAIL_NS:-mail}"
 MAIL_SEL="${PLUME_MAIL_SELECTOR:-app=mailserver}"
 MAIL_CONTAINER="${PLUME_MAIL_CONTAINER:-mailserver}"   # conteneur du pod (k3s) ou nom du conteneur (docker)
 MAIL_LOG="${PLUME_MAIL_LOG:-/var/log/mail/mail.log}"
-MAX="${PLUME_MAIL_MAX:-3000}"                          # lignes lues par passage (garde-fou)
+# VOLUME, PAR FLUX ET NON AU TOTAL (P10.32-f) : `PLUME_MAIL_MAX` borne les lignes lues de CHAQUE journal, et
+# le programme n'émet pas plus de 3000 événements par flux et par passage. Les flux sont jusqu'à trois
+# (mail.log, clamd, freshclam) : un passage peut donc publier jusqu'à trois fois le plafond.
+MAX="${PLUME_MAIL_MAX:-3000}"                          # lignes lues par journal et par passage (garde-fou)
 SKIPIP="${PLUME_MAIL_SKIP_IP:-}"                        # IP à ignorer (ex node/self : probes internes bruyantes)
 WM="$STATE_DIR/mail.watermark"                       # dernier epoch traite (incremental)
 last=$(cat "$WM" 2>/dev/null || echo 0)
@@ -258,11 +261,18 @@ function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
 }
 # P10.32-f — CONFIDENTIALITÉ DU SORTANT : chaque PARTIE LOCALE d’adresse de la ligne est remplacée par `*`
 # (`to=<*@example.org>`, et la même adresse recopiée par le serveur distant dans sa réponse). La forme
-# entre guillemets d’abord (`"a b"@d`), puis tout ce qui n’est ni espace ni délimiteur d’adresse.
-# CE QUI N’EST PAS MASQUÉ, DIT : un `@` sans partie locale devant lui, et le domaine, qui est le champ.
+# entre guillemets d’abord, guillemet échappé compris (`"a b"@d`, `"a\"b"@d`), puis TOUT ce qui précède le
+# `@` jusqu’à une espace, un `<`, un autre `@` ou le début de la ligne. L’ancien motif s’arrêtait au
+# premier délimiteur d’adresse et laissait fuir un morceau : `<jean:dupont@d>` rendait `<jean:*@d>`,
+# `"a \"b c"@d` rendait `"a *@d`, `<jean[1]@d>` rendait `<jean[*@d>`.
+# CE QUI N’EST PAS MASQUÉ, DIT : un `@` sans partie locale devant lui, le domaine, qui est le champ, et ce
+# qui précède l’espace d’une forme entre guillemets NON REFERMÉE (`"a b@d` rend `"a *@d`) : Postfix
+# referme les siennes, seul un texte du serveur distant peut l’écrire ainsi.
+# CE QUE LE MASQUAGE MANGE EN TROP, DIT : la ponctuation collée devant une partie locale (`(a@d` rend
+# `*@d`), et le domaine d’une adresse collée à la suivante sans espace (`a@x,b@y` rend `*@*@y`).
 function masquer_adresses(s){
-  gsub(/"[^"]*"@/, "*@", s)
-  gsub(/[^ <>(),;:"@[]+@/, "*@", s)
+  gsub(/"([^"\\]|\\.)*"@/, "*@", s)
+  gsub(/[^ <@]+@/, "*@", s)
   return s
 }
 # P10.32-f — LE COURRIER SORTANT, `postfix/smtp[pid]:` (le client SMTP de Postfix sous son nom par défaut ;

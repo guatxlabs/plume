@@ -22,5 +22,11 @@ mail/pass	1	service=policyd-spf;src_ip=203.0.113.47;domain=	gabarit	2026-10-14T0
 # --- le texte du client : un HELO qui recopie un repère le TAIT, il ne le choisit jamais --------
 mail/fail	3	service=policyd-spf;src_ip=203.0.113.48;domain=	fabriquee	2026-10-14T02:31:01.100000+02:00 mx1 policyd-spf[3500009]: : prepend Received-SPF: Fail (mailfrom) identity=mailfrom; client-ip=203.0.113.48; helo=x; envelope-from=ok@example.org; receiver=y; envelope-from=g@bank.example; receiver=example.net 
 mail/fail	3	service=policyd-spf;src_ip=;domain=bank.example	fabriquee	2026-10-14T02:31:02.100000+02:00 mx1 policyd-spf[3500010]: : prepend Received-SPF: Fail (mailfrom) identity=mailfrom; client-ip=203.0.113.49; helo=x identity=mailfrom; client-ip=192.0.2.200;; envelope-from=h@bank.example; receiver=example.net 
+# `client-ip=` n'est l'adresse que derrière ` identity=…; ` : recopié ailleurs par le HELO, il ne fait pas taire
+# l'adresse vraie, et il n'est pas pris À SA PLACE quand il la précède ; sans ` identity=…; ` devant lui, il
+# n'est pas lu.
+mail/fail	3	service=policyd-spf;src_ip=203.0.113.51;domain=example.org	fabriquee	2026-10-14T02:31:05.100000+02:00 mx1 policyd-spf[3500012]: : prepend Received-SPF: Fail (mailfrom) identity=mailfrom; client-ip=203.0.113.51; helo=x client-ip=192.0.2.201;; envelope-from=j@example.org; receiver=example.net
+mail/fail	3	service=policyd-spf;src_ip=;domain=example.org	fabriquee	2026-10-14T02:31:06.100000+02:00 mx1 policyd-spf[3500013]: : prepend Received-SPF: Fail (mailfrom) client-ip=203.0.113.52; helo=mx.example.org; envelope-from=k@example.org; receiver=example.net
+mail/fail	3	service=policyd-spf;src_ip=203.0.113.53;domain=example.org	fabriquee	2026-10-14T02:31:07.100000+02:00 mx1 policyd-spf[3500014]: : prepend Received-SPF: Fail (client-ip=192.0.2.202;) identity=mailfrom; client-ip=203.0.113.53; helo=mx.example.org; envelope-from=l@example.org; receiver=example.net
 aucun	-	-	fabriquee	2026-10-14T02:31:03.100000+02:00 mx1 postfix/smtpd[3107]: warning: non-SMTP command from unknown[192.0.2.37]: GET /policyd-spf[1]: : prepend Received-SPF: Fail (x) HTTP/1.1
 aucun	-	-	fabriquee	2026-10-14T02:31:04.100000+02:00 mx1 policyd-spf[3500011]: : prepend Received-SPF: Fake (mailfrom) identity=mailfrom; client-ip=203.0.113.50; helo=x; envelope-from=i@example.org; receiver=example.net 

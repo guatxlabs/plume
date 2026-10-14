@@ -267,7 +267,9 @@ function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
 # `"a \"b c"@d` rendait `"a *@d`, `<jean[1]@d>` rendait `<jean[*@d>`.
 # CE QUI N’EST PAS MASQUÉ, DIT : un `@` sans partie locale devant lui, le domaine, qui est le champ, et ce
 # qui précède l’espace d’une forme entre guillemets NON REFERMÉE (`"a b@d` rend `"a *@d`) : Postfix
-# referme les siennes, seul un texte du serveur distant peut l’écrire ainsi.
+# referme les siennes, seul un texte du serveur distant peut l’écrire ainsi. De même, une partie locale à
+# espace recopiée SANS ses guillemets par le serveur distant : `<jean dupont@d>` rend `<jean *@d>`, et
+# `<a\ b@d>` rend `<a\ *@d>` — aucune borne lisible ne sépare alors la partie locale du texte qui la précède.
 # CE QUE LE MASQUAGE MANGE EN TROP, DIT : la ponctuation collée devant une partie locale (`(a@d` rend
 # `*@d`), et le domaine d’une adresse collée à la suivante sans espace (`a@x,b@y` rend `*@*@y`).
 function masquer_adresses(s){

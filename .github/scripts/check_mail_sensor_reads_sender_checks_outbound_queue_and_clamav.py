@@ -563,9 +563,15 @@ def suite_du_journal_releve(entrees):
     journal = [e["ligne"] for e in entrees if e["corpus"] == "mail-freshclam.corpus" and e["provenance"] == "mesuree-dms"]
     classees = [e["ligne"] for e in entrees if e["corpus"] == "mail-freshclam.corpus" and e["provenance"] == "mesuree-dms"
                 and e["verdict"] != "aucun"]
+    # Le journal GRANDIT dans la seconde du filigrane : une ligne non classée puis une classée. Les
+    # lignes déjà vues de cette seconde, classées ou non, sont comptées ; la classée neuve doit sortir.
+    seconde = journal[-1][:28]
+    neuves = [seconde + "DON'T PANIC! Read https://docs.clamav.net/manual/Installing.html",
+              seconde + "daily.cld updated (version: 1, sigs: 2, f-level: 90, builder: example)"]
     return (("1er passage", journal, classees),
             ("2e passage, le même journal", journal, []),
-            ("3e passage, le même journal", journal, []))
+            ("3e passage, le même journal", journal, []),
+            ("4e passage, le journal grandit dans la seconde du filigrane", journal + neuves, neuves[1:]))
 
 
 def passage_du_filigrane(chemin_awk, entrees):
@@ -910,7 +916,7 @@ def main():
     par_corpus = ", ".join(f"{sum(1 for e in entrees if e['corpus'] == c)} {c}" for c in CORPUS)
     print(f"{ETIQUETTE} : le capteur mail LIVRÉ classe les {len(entrees)} lignes ({par_corpus}) comme attendu — "
           f"{len(EXIGENCES)} exigences de plancher, catégorie, sévérité, champs, horodatage et clé jugés, sortant masqué, "
-          f"filigrane ClamAV sans rejeu ni saut sur trois passages, décalage posé et dérivé, trois modes et chemins "
+          f"filigrane ClamAV sans rejeu ni saut d'un passage à l'autre, décalage posé et dérivé, trois modes et chemins "
           f"par défaut, rien d'inventé. Awk exercés : {exerces}" + (f" ; NON EXERCÉS (absents) : {absents}." if absents else "."))
     sys.exit(0)
 

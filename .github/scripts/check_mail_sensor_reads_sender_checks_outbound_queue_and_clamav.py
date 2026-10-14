@@ -32,7 +32,16 @@ Puis, toujours sur le capteur livré :
   * les TROIS MODES : en `file`, le chemin par défaut est `/var/log/clamav/…` ; en `docker` et `k3s`,
     `/var/log/mail/…`, lus par `docker exec` / `kubectl exec` (simulés, la commande lancée DANS le
     conteneur est celle du capteur) ; un chemin par défaut absent est dit `absent` dans l'enveloppe de
-    config, SANS aveu ; un chemin POSÉ absent est AVOUÉ ; une variable posée vide coupe la lecture.
+    config, SANS aveu ; un chemin POSÉ absent est AVOUÉ (freshclam comme clamd) ; une variable posée vide
+    coupe la lecture ;
+  * le filigrane encore : un journal remplacé par un plus ancien ne fait rien rejouer, un journal tourné
+    dans la seconde du filigrane ne fait pas tenir pour vue la ligne suivante de cette seconde ;
+  * les BORDS : mail.log vide, le journal ClamAV est lu ; `PLUME_MAIL_SKIP_IP` écarte un verdict SPF de
+    cette adresse ; un envoi authentifié `unknown[unknown]` est compté et avoué, pas émis ; un décalage
+    posé illisible est avoué et remplacé par celui de mail.log ;
+  * le VOLUME : `PLUME_MAIL_MAX` lit les DERNIÈRES lignes de chaque journal ; au-delà de 3000 événements par
+    flux, le passage s'arrête et le suivant reprend sans perte ni rejeu ;
+  * la clé de repli du sortant est l'empreinte de la ligne MASQUÉE (la clé est requêtable).
 
 CODES : 0 tout est tenu ; 1 un défaut mesuré ; 2 la garde refuse de conclure (instrument invalide,
 corpus hors forme, aucun awk) — rien n'a été mesuré.
@@ -81,9 +90,10 @@ CLASSES = {
     ("policyd-spf", "pass"): ("mail", 1), ("policyd-spf", "none"): ("mail", 1), ("policyd-spf", "neutral"): ("mail", 1),
     ("policyd-spf", "softfail"): ("mail", 2), ("policyd-spf", "fail"): ("mail", 3),
     ("policyd-spf", "temperror"): ("mail", 2), ("policyd-spf", "permerror"): ("mail", 2),
-    ("smtp", "sent"): ("mail", 1), ("smtp", "deferred"): ("mail", 2), ("smtp", "bounced"): ("mail", 3),
-    ("smtp", "ambiguous"): ("mail", 2),
-    ("qmgr", "queued"): ("mail", 1), ("qmgr", "expired"): ("mail", 2),
+    # Le sortant et la file sont `mailflow` (docs/CIM.md : livraison, file, transport).
+    ("smtp", "sent"): ("mailflow", 1), ("smtp", "deferred"): ("mailflow", 2), ("smtp", "bounced"): ("mailflow", 3),
+    ("smtp", "ambiguous"): ("mailflow", 2),
+    ("qmgr", "queued"): ("mailflow", 1), ("qmgr", "expired"): ("mailflow", 2),
     ("postfix", "success"): ("auth", 1),
     ("clamd", "infected"): ("malware", 4), ("clamd", "error"): ("av_error", 3),
     ("clamd", "selfcheck_failed"): ("av_error", 3), ("clamd", "reload_failed"): ("av_error", 3),
@@ -117,36 +127,41 @@ EXIGENCES = [
     ("opendkim : une clé introuvable, son domaine lu", _ex("mail-opendkim.corpus", "mail/error", lambda e: e["champs"].get("domain"))),
     ("opendkim : `not internal` et `not authenticated` ne sont rien",
      lambda e: e["corpus"] == "mail-opendkim.corpus" and e["verdict"] == "aucun" and e["ligne"].endswith(": not authenticated")),
-    ("opendkim : un verdict écrit par un client sous une autre étiquette n'est rien",
-     lambda e: e["corpus"] == "mail-opendkim.corpus" and e["verdict"] == "aucun" and e["etiquette"] != "opendkim"),
+    # La ligne doit FINIR par le verdict : sans cela, l'ancre de fin (`data$`) la refuse déjà, et
+    # l'ancrage de l'étiquette n'est pas jugé.
+    ("opendkim : un verdict écrit par un client sous une autre étiquette, ENTIER, n'est rien",
+     lambda e: e["corpus"] == "mail-opendkim.corpus" and e["verdict"] == "aucun" and e["etiquette"] != "opendkim"
+     and e["ligne"].endswith(": bad signature data")),
     ("opendmarc : un `fail`", _ex("mail-opendmarc.corpus", "mail/fail")),
     ("opendmarc : un `pass` relevé", _ex("mail-opendmarc.corpus", "mail/pass", lambda e: e["provenance"] == "mesuree-dms")),
     ("opendmarc : un résultat suivi d'un texte n'est rien",
      lambda e: e["corpus"] == "mail-opendmarc.corpus" and e["verdict"] == "aucun" and e["etiquette"] == "opendmarc"),
     ("policyd-spf : un `Fail` à son adresse cliente", _ex("mail-policyd-spf.corpus", "mail/fail", lambda e: e["champs"].get("src_ip"))),
     ("policyd-spf : un `Softfail`", _ex("mail-policyd-spf.corpus", "mail/softfail")),
+    ("policyd-spf : une adresse mappée `::ffff:a.b.c.d`, rendue en IPv4 (`adresse`)",
+     _ex("mail-policyd-spf.corpus", "mail/fail", lambda e: "client-ip=::ffff:" in e["ligne"] and "." in e["champs"].get("src_ip", "") and ":" not in e["champs"].get("src_ip", ""))),
     ("policyd-spf : une adresse IPv6", _ex("mail-policyd-spf.corpus", "mail/temperror", lambda e: ":" in e["champs"].get("src_ip", ""))),
     ("policyd-spf : `envelope-from=` recopié par le HELO, domaine TU",
      _ex("mail-policyd-spf.corpus", "mail/fail", lambda e: e["ligne"].count("; envelope-from=") > 1 and not e["champs"].get("domain"))),
     ("policyd-spf : `client-ip=` recopié par le HELO, adresse TUE",
      _ex("mail-policyd-spf.corpus", "mail/fail", lambda e: e["ligne"].count("client-ip=") > 1 and not e["champs"].get("src_ip"))),
-    ("sortant : un envoi réussi", _ex("mail-sortant-postfix-smtp.corpus", "mail/sent")),
-    ("sortant : un rebond", _ex("mail-sortant-postfix-smtp.corpus", "mail/bounced")),
-    ("sortant : un report sans relais (`relay=none`)", _ex("mail-sortant-postfix-smtp.corpus", "mail/deferred", lambda e: e["champs"].get("relay") == "none")),
+    ("sortant : un envoi réussi", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/sent")),
+    ("sortant : un rebond", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/bounced")),
+    ("sortant : un report sans relais (`relay=none`)", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/deferred", lambda e: e["champs"].get("relay") == "none")),
     ("sortant (P10.22-v) : l'échec SASL de notre relais, différé et jamais un échec d'authentification",
-     _ex("mail-sortant-postfix-smtp.corpus", "mail/deferred", lambda e: "SASL authentication failed" in e["ligne"] and not e["champs"].get("src_ip"))),
-    ("sortant : une partie locale entre guillemets, masquée", _ex("mail-sortant-postfix-smtp.corpus", "mail/sent", lambda e: 'to=<"' in e["ligne"])),
-    ("sortant : la suite recopiée par le destinataire, statut tu", _ex("mail-sortant-postfix-smtp.corpus", "mail/ambiguous", lambda e: 'to=<"x, relay=' in e["ligne"])),
-    ("sortant : la suite recopiée par le serveur distant, statut tu", _ex("mail-sortant-postfix-smtp.corpus", "mail/ambiguous", lambda e: "said: 550 x, relay=" in e["ligne"])),
+     _ex("mail-sortant-postfix-smtp.corpus", "mailflow/deferred", lambda e: "SASL authentication failed" in e["ligne"] and not e["champs"].get("src_ip"))),
+    ("sortant : une partie locale entre guillemets, masquée", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/sent", lambda e: 'to=<"' in e["ligne"])),
+    ("sortant : la suite recopiée par le destinataire, statut tu", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/ambiguous", lambda e: 'to=<"x, relay=' in e["ligne"])),
+    ("sortant : la suite recopiée par le serveur distant, statut tu", _ex("mail-sortant-postfix-smtp.corpus", "mailflow/ambiguous", lambda e: "said: 550 x, relay=" in e["ligne"])),
     ("sortant : `postfix/smtp-amavis/smtp` relevé, saut interne", lambda e: e["corpus"] == "mail-sortant-postfix-smtp.corpus" and e["verdict"] == "aucun" and e["etiquette"] == "postfix/smtp-amavis/smtp" and e["provenance"] == "mesuree-dms"),
     ("sortant : `postfix/smtp-amavis/smtp` vers un relais EXTERNE, rien (l'étiquette, pas le relais)",
      lambda e: e["corpus"] == "mail-sortant-postfix-smtp.corpus" and e["verdict"] == "aucun" and e["etiquette"] == "postfix/smtp-amavis/smtp" and "127.0.0.1" not in e["ligne"]),
     ("sortant : `postfix/lmtp`, saut interne", lambda e: e["corpus"] == "mail-sortant-postfix-smtp.corpus" and e["verdict"] == "aucun" and e["etiquette"] == "postfix/lmtp"),
     ("sortant : `postfix/smtp` vers la boucle locale, rien (le relais, pas l'étiquette)",
      lambda e: e["corpus"] == "mail-sortant-postfix-smtp.corpus" and e["verdict"] == "aucun" and e["etiquette"] == "smtp" and "relay=127." in e["ligne"]),
-    ("file : une entrée en file relevée", _ex("mail-file-qmgr.corpus", "mail/queued", lambda e: e["provenance"] == "mesuree-dms")),
-    ("file : une expiration", _ex("mail-file-qmgr.corpus", "mail/expired")),
-    ("file : un expéditeur qui recopie la suite, lu en entier", _ex("mail-file-qmgr.corpus", "mail/queued", lambda e: "queue active)\"@" in e["ligne"])),
+    ("file : une entrée en file relevée", _ex("mail-file-qmgr.corpus", "mailflow/queued", lambda e: e["provenance"] == "mesuree-dms")),
+    ("file : une expiration", _ex("mail-file-qmgr.corpus", "mailflow/expired")),
+    ("file : un expéditeur qui recopie la suite, lu en entier", _ex("mail-file-qmgr.corpus", "mailflow/queued", lambda e: "queue active)\"@" in e["ligne"])),
     ("envoi authentifié : IPv4", _ex("mail-soumission-authentifiee.corpus", "auth/success", lambda e: "." in e["champs"].get("src_ip", ""))),
     ("envoi authentifié : IPv6", _ex("mail-soumission-authentifiee.corpus", "auth/success", lambda e: ":" in e["champs"].get("src_ip", ""))),
     ("envoi authentifié : `sasl_sender=` après le nom, hors du nom", _ex("mail-soumission-authentifiee.corpus", "auth/success", lambda e: ", sasl_sender=" in e["ligne"])),
@@ -317,8 +332,10 @@ def attendu(e, decalage):
     champs["action"] = action
     ts = epoch_mail(e["ligne"]) if e["flux"] == "mail" else mur_clamav(e["ligne"]) - decalage
     message = masquer(e["ligne"]) if champs.get("service") == "smtp" else e["ligne"]
+    # La clé porte l'empreinte du MESSAGE ÉMIS : celle de la ligne brute laisserait retrouver, par essais,
+    # une partie locale que le message masque (la clé est requêtable).
     return dict(category=cat, severity=int(e["sev"]), ts=ts, src_ip=champs["src_ip"], fields=champs,
-                message=message, dedup=f"mail-{ts}-{champs['src_ip']}-{action}-{empreinte(e['ligne'])}")
+                message=message, dedup=f"mail-{ts}-{champs['src_ip']}-{action}-{empreinte(message)}")
 
 
 def juger(entrees, evenements, decalage):
@@ -355,7 +372,7 @@ def juger(entrees, evenements, decalage):
 def epreuve_du_juge():
     """Le juge rougit sur des événements faux, et pas sur les bons — sinon la garde refuse de conclure."""
     ligne = "2026-10-14T03:00:01.100000+02:00 mx1 postfix/smtp[1]: 1A: to=<a@example.org>, relay=none, delay=1, delays=1/1/1/1, dsn=4.4.1, status=deferred (x)"
-    e = dict(corpus="épreuve", n=1, flux="mail", verdict="mail/deferred", sev="2", provenance="fabriquee", ligne=ligne,
+    e = dict(corpus="épreuve", n=1, flux="mail", verdict="mailflow/deferred", sev="2", provenance="fabriquee", ligne=ligne,
              champs={"service": "smtp", "rcpt_domain": "example.org", "relay": "none", "dsn": "4.4.1"})
     bon = dict(attendu(e, 0))
     bon["fields"] = dict(bon["fields"])
@@ -471,23 +488,43 @@ SEQUENCE = [_fc("01:00:00", "a1"), _fc("01:00:00", "a2"), _fc("01:00:00", "a3"),
 SUITE = [_fc("01:00:05", "b3"), _fc("01:00:05", "b4"), _fc("01:00:09", "c1")]
 
 
+# Deux suites de plus, chacune sur un filigrane vierge :
+#   * un journal remplacé par un PLUS ANCIEN (aucune ligne à la seconde du filigrane ni après) : le
+#     filigrane reste, et le journal d'origine revenu ne rejoue rien ;
+#   * un journal TOURNÉ dans la seconde du filigrane : la ligne qui y tombe est perdue (dit, non tenu),
+#     mais la suivante de cette seconde est lue — le filigrane prend le nombre de lignes LUES.
+SUITES_DU_FILIGRANE = {
+    "nominal": (("1er passage", SEQUENCE, SEQUENCE),
+                ("2e passage, journal grandi À LA MÊME SECONDE", SEQUENCE + SUITE, SUITE),
+                ("3e passage, rien de neuf", SEQUENCE + SUITE, [])),
+    "journal remplacé par un plus ancien": (("1er passage", SEQUENCE, SEQUENCE),
+                                            ("2e passage, seule une ligne ANTÉRIEURE", SEQUENCE[:1], []),
+                                            ("3e passage, le journal d'origine grandi", SEQUENCE + SUITE, SUITE)),
+    "journal tourné dans la seconde": (("1er passage", SEQUENCE, SEQUENCE),
+                                       ("2e passage, journal neuf d'une ligne à la même seconde", SUITE[:1], None),
+                                       ("3e passage, la ligne suivante de cette seconde", SUITE[:2], SUITE[1:2])),
+}
+
+
 def passage_du_filigrane(chemin_awk):
     fautes = []
     mail = ["2026-10-15T01:00:00.000000+00:00 mx1 opendmarc[1]: 9A: example.org pass"]
-    with tempfile.TemporaryDirectory(prefix="garde-mail-filigrane-") as bac:
-        rep = preparer(bac, chemin_awk)
-        for etape, journal, attendus in (("1er passage", SEQUENCE, SEQUENCE),
-                                         ("2e passage, journal grandi À LA MÊME SECONDE", SEQUENCE + SUITE, SUITE),
-                                         ("3e passage, rien de neuf", SEQUENCE + SUITE, [])):
-            ev, aveux, _, ko = jouer_capteur(rep, {"mail.log": mail, "clamav.log": [], "freshclam.log": journal})
-            if ko:
-                return [f"({etape}) {ko}"]
-            vus = sorted(e["message"] for e in ev if (e.get("fields") or {}).get("service") == "freshclam")
-            if vus != sorted(attendus):
-                rejoues = sorted(set(vus) - set(attendus))
-                sautes = sorted(set(attendus) - set(vus))
-                fautes.append(f"filigrane ClamAV ({etape}) : {len(rejoues)} ligne(s) REJOUÉE(S) {rejoues[:3]}, "
-                              f"{len(sautes)} ligne(s) SAUTÉE(S) {sautes[:3]}")
+    for suite, etapes in SUITES_DU_FILIGRANE.items():
+        with tempfile.TemporaryDirectory(prefix="garde-mail-filigrane-") as bac:
+            rep = preparer(bac, chemin_awk)
+            for etape, journal, attendus in etapes:
+                etape = f"{suite}, {etape}"
+                ev, aveux, _, ko = jouer_capteur(rep, {"mail.log": mail, "clamav.log": [], "freshclam.log": journal})
+                if ko:
+                    return [f"({etape}) {ko}"]
+                vus = sorted(e["message"] for e in ev if (e.get("fields") or {}).get("service") == "freshclam")
+                if attendus is None:   # perte dite, non jugée
+                    continue
+                if vus != sorted(attendus):
+                    rejoues = sorted(set(vus) - set(attendus))
+                    sautes = sorted(set(attendus) - set(vus))
+                    fautes.append(f"filigrane ClamAV ({etape}) : {len(rejoues)} ligne(s) REJOUÉE(S) {rejoues[:3]}, "
+                                  f"{len(sautes)} ligne(s) SAUTÉE(S) {sautes[:3]}")
     return fautes
 
 
@@ -572,12 +609,132 @@ def passage_des_modes(chemin_awk, entrees):
                 fautes.append("(docker, chemin posé absent) l'absence d'un journal POSÉ n'est pas avouée")
             if (filtres or {}).get("clamav") != "clamd=lu freshclam=illisible":
                 fautes.append(f"(docker, chemins posés) enveloppe de config : clamav=`{(filtres or {}).get('clamav')}`")
+        # Et l'inverse : clamd POSÉ absent, freshclam posé et lu — l'aveu nomme clamd.
+        fc = [e["ligne"] for e in entrees if e["flux"] == "freshclam" and e["verdict"] != "aucun"][:1]
+        ev, aveux, filtres, ko = jouer_capteur(rep, {"mail.log": mail, "freshclam.log": fc},
+                                               dict(commun, PLUME_MAIL_SRC="docker", PLUME_MAIL_CLAMAV_LOG=os.path.join(bac, "absent.log"),
+                                                    PLUME_MAIL_FRESHCLAM_LOG=os.path.join(rep["journaux"], "freshclam.log")))
+        if ko:
+            fautes.append(f"(docker, clamd posé absent) {ko}")
+        else:
+            if not any("journal clamd " in (a.get("message") or "") and (a.get("fields") or {}).get("collect_status") == "unavailable"
+                       for a in aveux):
+                fautes.append("(docker, clamd posé absent) l'absence du journal clamd POSÉ n'est pas avouée")
+            if (filtres or {}).get("clamav") != "clamd=illisible freshclam=lu":
+                fautes.append(f"(docker, clamd posé absent) enveloppe de config : clamav=`{(filtres or {}).get('clamav')}`")
+            if not any(e.get("message") == fc[0] for e in ev):
+                fautes.append("(docker, clamd posé absent) le journal freshclam n'a pas été lu")
         ev, aveux, filtres, ko = jouer_capteur(rep, {"mail.log": mail},
                                                dict(commun, PLUME_MAIL_CLAMAV_LOG="", PLUME_MAIL_FRESHCLAM_LOG=""))
         if ko:
             fautes.append(f"(variables vides) {ko}")
         elif aveux or (filtres or {}).get("clamav") != "clamd=coupe freshclam=coupe":
             fautes.append(f"(variables vides) lecture non coupée : clamav=`{(filtres or {}).get('clamav')}`, {len(aveux)} aveu(x)")
+    return fautes
+
+
+# Les cas de bord du passage : mail.log vide, SKIP_IP sur un verdict SPF, envoi authentifié d'un client
+# `unknown[unknown]`, décalage posé illisible.
+def passage_des_bords(chemin_awk, entrees):
+    fautes = []
+    clamd = [e for e in entrees if e["flux"] == "clamd" and e["verdict"] == "malware/infected"][:1]
+    spf_fail = [e for e in entrees if e["corpus"] == "mail-policyd-spf.corpus" and e["verdict"] == "mail/fail"
+                and e["champs"].get("src_ip") == "203.0.113.40"][:1]
+    spf_pass = [e for e in entrees if e["corpus"] == "mail-policyd-spf.corpus" and e["verdict"] == "mail/pass"
+                and e["champs"].get("src_ip") not in ("", "203.0.113.40")][:1]
+    if not clamd or not spf_fail or not spf_pass:
+        return ["(bords) le corpus ne porte plus les lignes que ces cas rejouent"]
+    inconnu = ("2026-10-14T05:00:04.100000+02:00 mx1 postfix/submission/smtpd[3500204]: 5A2B3C4D5E4: "
+               "client=unknown[unknown], sasl_method=PLAIN, sasl_username=dave@example.test")
+    with tempfile.TemporaryDirectory(prefix="garde-mail-bords-") as bac:
+        rep = preparer(bac, chemin_awk)
+
+        def neuf():
+            for d in os.listdir(rep["state"]):
+                os.remove(os.path.join(rep["state"], d))
+        # 1. mail.log VIDE : le journal ClamAV se lit quand même.
+        neuf()
+        ev, aveux, _, ko = jouer_capteur(rep, {"mail.log": [], "clamav.log": [clamd[0]["ligne"]]},
+                                         {"PLUME_MAIL_CLAMAV_UTC_OFFSET": "+02:00"})
+        if ko:
+            fautes.append(f"(mail.log vide) {ko}")
+        elif [e.get("ts") for e in ev if e.get("message") == clamd[0]["ligne"]] != [mur_clamav(clamd[0]["ligne"]) - 7200]:
+            fautes.append(f"(mail.log vide) le journal clamd n'a pas été lu, ou à la mauvaise heure : {len(ev)} événement(s)")
+        # 2. SKIP_IP écarte un verdict SPF de cette adresse, et celui d'une autre reste.
+        neuf()
+        ev, aveux, _, ko = jouer_capteur(rep, {"mail.log": [spf_fail[0]["ligne"], spf_pass[0]["ligne"]], "clamav.log": []},
+                                         {"PLUME_MAIL_SKIP_IP": "203.0.113.40"})
+        if ko:
+            fautes.append(f"(SKIP_IP) {ko}")
+        else:
+            msgs = [e.get("message") for e in ev]
+            if spf_fail[0]["ligne"] in msgs:
+                fautes.append("(SKIP_IP=203.0.113.40) le verdict SPF de l'adresse écartée est émis")
+            if spf_pass[0]["ligne"] not in msgs:
+                fautes.append("(SKIP_IP=203.0.113.40) le verdict SPF d'une AUTRE adresse n'est plus émis")
+        # 3. Envoi authentifié d'un client `unknown[unknown]` : non émis, COMPTÉ et avoué (`auth=1`).
+        neuf()
+        ev, aveux, _, ko = jouer_capteur(rep, {"mail.log": [inconnu], "clamav.log": []})
+        if ko:
+            fautes.append(f"(unknown[unknown]) {ko}")
+        else:
+            if ev:
+                fautes.append(f"(unknown[unknown]) {len(ev)} événement(s) émis sans adresse")
+            if not any((a.get("fields") or {}).get("collect_status") == "partial" and "auth=1," in (a.get("message") or "")
+                       for a in aveux):
+                fautes.append("(unknown[unknown]) l'envoi authentifié sans adresse n'est ni compté ni avoué (`auth=1`)")
+        # 4. Décalage posé ILLISIBLE : avoué, et c'est celui de mail.log qui s'applique.
+        neuf()
+        ligne_mail = "2026-10-14T03:00:00.000000+02:00 mx1 opendmarc[1]: 9B: example.org pass"
+        ev, aveux, _, ko = jouer_capteur(rep, {"mail.log": [ligne_mail], "clamav.log": [clamd[0]["ligne"]]},
+                                         {"PLUME_MAIL_CLAMAV_UTC_OFFSET": "Europe/Paris"})
+        if ko:
+            fautes.append(f"(décalage illisible) {ko}")
+        else:
+            if not any("PLUME_MAIL_CLAMAV_UTC_OFFSET" in (a.get("message") or "") for a in aveux):
+                fautes.append("(PLUME_MAIL_CLAMAV_UTC_OFFSET=Europe/Paris) le réglage illisible n'est pas avoué")
+            ts = [e.get("ts") for e in ev if e.get("message") == clamd[0]["ligne"]]
+            if ts != [mur_clamav(clamd[0]["ligne"]) - 7200]:
+                fautes.append(f"(PLUME_MAIL_CLAMAV_UTC_OFFSET=Europe/Paris) horodatage {ts} : le repli n'est pas le décalage de mail.log")
+    return fautes
+
+
+# Le VOLUME : `PLUME_MAIL_MAX` borne la lecture de chaque journal (les DERNIÈRES lignes), et le programme
+# n'émet pas plus de 3000 événements par flux et par passage — le surplus, non lu, l'est au passage suivant.
+def _dmarc(i):
+    t = datetime.datetime(2026, 10, 16, tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=i)
+    return t.strftime("%Y-%m-%dT%H:%M:%S.000000+00:00") + f" mx1 opendmarc[1]: Q{i}: example.org pass"
+
+
+def _found(i):
+    t = datetime.datetime(2026, 10, 16, tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=i)
+    return t.strftime("%a %b ") + f"{t.day:2d}" + t.strftime(" %H:%M:%S %Y") + f" -> /var/lib/amavis/tmp/p{i}: Eicar-Signature FOUND"
+
+
+def passage_des_plafonds(chemin_awk):
+    fautes = []
+    with tempfile.TemporaryDirectory(prefix="garde-mail-plafonds-") as bac:
+        rep = preparer(bac, chemin_awk)
+        mail9, clam9 = [_dmarc(i) for i in range(9)], [_found(i) for i in range(9)]
+        ev, _, _, ko = jouer_capteur(rep, {"mail.log": mail9, "clamav.log": clam9}, {"PLUME_MAIL_MAX": "4"})
+        if ko:
+            return [f"(PLUME_MAIL_MAX=4) {ko}"]
+        vus = {e.get("message") for e in ev}
+        for nom, lignes in (("mail.log", mail9), ("clamav.log", clam9)):
+            if {l for l in lignes if l in vus} != set(lignes[-4:]):
+                fautes.append(f"(PLUME_MAIL_MAX=4) {nom} : {sum(1 for l in lignes if l in vus)} ligne(s) lue(s) sur 9, "
+                              "au lieu des 4 DERNIÈRES")
+        for d in os.listdir(rep["state"]):
+            os.remove(os.path.join(rep["state"], d))
+        mailN, clamN = [_dmarc(i) for i in range(3200)], [_found(i) for i in range(3200)]
+        for etape, attendus in (("1er passage", 3000), ("2e passage", 200), ("3e passage", 0)):
+            ev, _, _, ko = jouer_capteur(rep, {"mail.log": mailN, "clamav.log": clamN}, {"PLUME_MAIL_MAX": "3500"})
+            if ko:
+                return fautes + [f"(3200 lignes, {etape}) {ko}"]
+            for nom, service in (("mail.log", "opendmarc"), ("clamav.log", "clamd")):
+                n = sum(1 for e in ev if (e.get("fields") or {}).get("service") == service)
+                if n != attendus:
+                    fautes.append(f"(3200 lignes, plafond de 3000 par flux, {etape}) {nom} : {n} événement(s) au lieu de {attendus}")
     return fautes
 
 
@@ -599,7 +756,8 @@ def main():
         refus(f"aucune implémentation d'awk parmi {AWK_EXERCES}")
     total = 0
     for nom, chemin in awks:
-        defauts = passage_du_corpus(chemin, entrees) + passage_du_filigrane(chemin) + passage_des_modes(chemin, entrees)
+        defauts = (passage_du_corpus(chemin, entrees) + passage_du_filigrane(chemin) + passage_des_modes(chemin, entrees)
+                   + passage_des_bords(chemin, entrees) + passage_des_plafonds(chemin))
         for f in defauts:
             print(f"::error file=collectors/mail.sh::{ETIQUETTE} ({nom}) : {f}")
         total += len(defauts)

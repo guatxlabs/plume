@@ -44,5 +44,6 @@ mail/error	2	service=opendkim;domain=news.example.org	enonce	2026-10-14T02:10:04
 
 # --- ancrage : un verdict n'est lu que sous l'étiquette d'opendkim, en tête et en entier ----------
 aucun	-	-	fabriquee	2026-10-14T02:11:01.100000+02:00 mx1 postfix/submission/smtpd[3105]: warning: non-SMTP command from unknown[192.0.2.35]: GET /opendkim[1]: 1A2B: bad signature data HTTP/1.1
+aucun	-	-	fabriquee	2026-10-14T02:11:01.200000+02:00 mx1 postfix/submission/smtpd[3105]: warning: non-SMTP command from unknown[192.0.2.36]: GET /opendkim[1]: 1A2C: bad signature data
 aucun	-	-	fabriquee	2026-10-14T02:11:02.100000+02:00 mx1 opendkim[1243]: 1A2B3C4D5EA: DKIM verification successful but not really
 aucun	-	-	fabriquee	2026-10-14T02:11:03.100000+02:00 mx1 opendkim[1243]: 1A2B3C4D5EB: mta.example.org [198.51.100.32] says bad signature data

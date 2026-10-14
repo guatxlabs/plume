@@ -18,8 +18,9 @@
 # base antivirale perimee etaient invisibles. Ces familles sont lues ici, sous leur etiquette et en
 # tete de leur message, comme les quatre autres (corpus `collectors/mail-*.corpus`, temoin
 # `.github/scripts/check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py`).
-# Categories, toutes du CIM : `mail` (verdicts DKIM/DMARC/SPF, sortant, file), `auth` (envoi
-# authentifie reussi), `malware`/`av_error`/`update` (journal ClamAV). La SEVERITE distingue l'echec
+# Categories, toutes du CIM : `mail` (verdicts DKIM/DMARC/SPF), `mailflow` (sortant, file : la
+# livraison, la file et le transport, docs/CIM.md), `auth` (envoi authentifie reussi),
+# `malware`/`av_error`/`update` (journal ClamAV). La SEVERITE distingue l'echec
 # du succes : 1 pour un succes ou une absence de verdict, 2 pour un echec temporaire ou un report, 3
 # pour un echec (signature fausse, DMARC/SPF `fail`, rebond sortant), 4 pour un virus trouve.
 # CONFIDENTIALITE DU SORTANT : seul le DOMAINE du destinataire est un champ, et le message emis est
@@ -53,6 +54,12 @@ FRESHCLAM_LOG="${PLUME_MAIL_FRESHCLAM_LOG-$_clam_rep/freshclam.log}"
 CLAMD_POSE="${PLUME_MAIL_CLAMAV_LOG+1}"
 FRESHCLAM_POSE="${PLUME_MAIL_FRESHCLAM_LOG+1}"
 CLAM_DECALAGE="${PLUME_MAIL_CLAMAV_UTC_OFFSET:-}"      # ex. +02:00 ; vide = celui de mail.log
+# Un decalage pose mais illisible (`Europe/Paris`) est avoue, et c'est le repli ordinaire qui s'applique.
+case "$CLAM_DECALAGE" in
+  ''|[+-][0-2][0-9]:[0-5][0-9]) ;;
+  *) plume_reglage_illisible mail PLUME_MAIL_CLAMAV_UTC_OFFSET "$CLAM_DECALAGE" "le decalage de mail.log (sinon +00:00)" "la forme +hh:mm ou -hh:mm"
+     CLAM_DECALAGE="" ;;
+esac
 
 # lire_journal <chemin> — les MAX dernieres lignes d'un journal du serveur mail, dans le mode choisi.
 # Code 3 : le fichier n'existe pas (dit par la source elle-meme, `[ -e ]` joue LA OU le journal vit) ;
@@ -271,7 +278,7 @@ function lire_sortant(m,   n, s, avant, a, rl, ds, st, rd, sev){
   n = occurrences(m, SUITE_SORTANT)
   if (n == 0) return
   message_emis = masquer_adresses($0)
-  if (n > 1) { emit("mail","ambiguous",2,"","","smtp",""); return }
+  if (n > 1) { emit("mailflow","ambiguous",2,"","","smtp",""); return }
   match(m, SUITE_SORTANT); avant = substr(m, 1, RSTART - 1); s = substr(m, RSTART, RLENGTH)
   match(s, /relay=[^ ,]+/); rl = substr(s, RSTART + 6, RLENGTH - 6)
   if (rl ~ /\[(127[.][0-9.]+|::1)\]/) return
@@ -283,13 +290,17 @@ function lire_sortant(m,   n, s, avant, a, rl, ds, st, rd, sev){
     if (index(a, "@") > 0) { sub(/^.*@/, "", a); if (a ~ /^[A-Za-z0-9_.-]+$/) rd = tolower(a) }
   }
   sev = (st == "sent") ? 1 : (st == "deferred") ? 2 : 3
-  emit("mail",st,sev,"","","smtp",",\"rcpt_domain\":\"" rd "\",\"relay\":\"" jesc(rl) "\",\"dsn\":\"" ds "\"")
+  emit("mailflow",st,sev,"","","smtp",",\"rcpt_domain\":\"" rd "\",\"relay\":\"" jesc(rl) "\",\"dsn\":\"" ds "\"")
 }
 # P10.32-f — LE JOURNAL DE CLAMAV (`LogTime yes`) : `<Jour> <Mois> <jj> <hh:mm:ss> <aaaa> -> <message>`,
 # jour du mois complété par une ESPACE sous dix (`ctime`). L’heure est MURALE, sans décalage : `mur` (lue
 # sous TZ=UTC) sert au filigrane, `mur - decal` à l’horodatage. Le filigrane est le couple
 # `<mur> <vues>` : une ligne d’une seconde antérieure est déjà vue ; à la seconde du filigrane, les `vues`
 # premières le sont ; toute autre est neuve. Un passage qui coupe au plafond ne compte que ce qu’il a lu.
+# UN MÊME VIRUS COMPTE DEUX FOIS, DIT : amavis le signale (service `amavis`, adresse relais) et clamd, qui
+# a fait l’analyse pour lui, aussi (service `clamd`, sans adresse) — deux événements `malware` de sévérité
+# 4. Aucun champ ne les relie (clamd ne connaît ni le mail_id ni le client) : un compte de virus compte des
+# verdicts, pas des messages.
 # CE QUE CE FILIGRANE NE TIENT PAS, DIT : le retour d’heure d’hiver (l’heure murale rejoue une heure :
 # ses lignes sont tenues pour vues), et une fenêtre `tail` qui ne contiendrait plus toutes les lignes de
 # la seconde du filigrane.
@@ -375,10 +386,10 @@ function lire_qmgr(m,   s, f, sz, nr){
     match(s, />, size=[0-9]+, nrcpt=[0-9]+ \(queue active\)$/); f = substr(s, 1, RSTART - 1); s = substr(s, RSTART)
     match(s, /size=[0-9]+/); sz = substr(s, RSTART + 5, RLENGTH - 5)
     match(s, /nrcpt=[0-9]+/); nr = substr(s, RSTART + 6, RLENGTH - 6)
-    emit("mail","queued",1,"","","qmgr",",\"sender\":\"" jesc(f) "\",\"size\":\"" sz "\",\"nrcpt\":\"" nr "\"")
+    emit("mailflow","queued",1,"","","qmgr",",\"sender\":\"" jesc(f) "\",\"size\":\"" sz "\",\"nrcpt\":\"" nr "\"")
   } else if (m ~ /^[0-9A-Za-z]+: from=<.*>, status=expired, returned to sender$/) {
     f = m; sub(/^[0-9A-Za-z]+: from=</, "", f); sub(/>, status=expired, returned to sender$/, "", f)
-    emit("mail","expired",2,"","","qmgr",",\"sender\":\"" jesc(f) "\"")
+    emit("mailflow","expired",2,"","","qmgr",",\"sender\":\"" jesc(f) "\"")
   }
 }
 function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
@@ -388,7 +399,7 @@ function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   # émise, mais elle est COMPTÉE, par catégorie, et le compte est avoué en fin de passage
   # (`plume_adresse_illisible`). L’adresse SKIP_IP, déclarée par l’enveloppe `collection-reducing`,
   # reste hors du compte.
-  # P10.32-f — `mail` (verdicts DKIM/DMARC/SPF, sortant, file) et `update` (journal ClamAV) n’ont pas de
+  # P10.32-f — `mail` (verdicts DKIM/DMARC/SPF), `mailflow` (sortant, file) et `update` (journal ClamAV) n’ont pas de
   # client à attribuer : émis sans adresse, comme amavis. Un verdict SPF porte l’adresse du client
   # (`client-ip=`) : l’adresse SKIP_IP y est écartée comme ailleurs.
   if(cat!="malware" && cat!="banned" && cat!="av_error" && cat!="mailflow" && cat!="mail" && cat!="update") {
@@ -399,7 +410,11 @@ function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   # propre (auth, postscreen, rejet, entrée amavis sans identifiant, panne) : deux échecs de la même
   # adresse dans la même seconde, même sur deux comptes, portaient la même clé, et l’ingestion
   # (`INSERT OR IGNORE`) écartait le second. L’empreinte de la ligne s’y ajoute.
-  dd=(dk!="")?dk:("mail-" et "-" ip "-" act "-" empreinte($0))
+  # P10.32-f — l’empreinte est celle du MESSAGE ÉMIS : pour le sortant, la ligne masquée. Prise sur la ligne
+  # brute, la clé (requêtable) laissait retrouver une partie locale masquée en essayant des candidats. CE QUE
+  # CELA COÛTE, DIT : deux lignes sortantes qui ne diffèrent QUE par la partie locale, à la microseconde près,
+  # portent la même clé et l’ingestion en écarte une.
+  dd=(dk!="")?dk:("mail-" et "-" ip "-" act "-" empreinte(message_emis != "" ? message_emis : $0))
   ev="{\"ts\":" et ",\"source\":\"mail\",\"category\":\"" cat "\",\"severity\":" sev ",\"src_ip\":\"" ip "\",\"message\":\"" jesc(message_emis != "" ? message_emis : $0) "\",\"dedup\":\"" dd "\",\"fields\":{\"action\":\"" act "\",\"user\":\"" jesc(usr) "\",\"service\":\"" svc "\",\"src_ip\":\"" ip "\"" extra "}}"
   if(n>0) buf=buf ","; buf=buf ev; n++
 }
@@ -513,6 +528,9 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
     # donne DEUX événements `mailflow` au même expéditeur, là où l’ingestion en écartait un. La règle de
     # catalogue `ex-mail-mass-outbound` (`stats count by sender`, désactivée par défaut) le compte deux fois :
     # elle compte des entrées, pas des messages (le mail_id n’est pas un champ de l’événement).
+    # P10.32-f — la file (`qmgr`) et le sortant (`smtp`) sont aussi `mailflow` : la règle se borne à
+    # `service=amavis`, sans quoi chaque message compterait deux fois et le sortant, sans `sender`, ferait un
+    # groupe vide de tous les envois.
     emit(mcat,mact,msev,aip,rcpt,"amavis",ext,(mid!=""?("mail-" mid "-" substr(vd,1,index(vd," ")-1) "-" substr(vd,index(vd," ")+1)):""))
   }
   else if (amv ~ /^\([^ ()]+\) \(!!?\)([^:]* av-scanner FAILED: |WARN: all primary virus scanners failed)/) emit("av_error","error",3,"","","clamav","")
@@ -520,8 +538,9 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
   # `<file>: client=<nom>[<adresse>], sasl_method=<mécanisme>, sasl_username=<nom>` (`smtpd.c`) quand un
   # client AUTHENTIFIÉ ouvre un message — seule ligne de succès SASL de Postfix. Le nom est celui que le
   # serveur SASL a ACCEPTÉ ; il court jusqu’à `, sasl_sender=` ou `, orig_` (champs que smtpd écrit après).
-  # Témoin : collectors/mail-soumission-authentifiee.corpus.
-  else if (match(psd, /^[0-9A-Za-z]+: client=[A-Za-z0-9._-]+\[[0-9A-Fa-f:.]+\](:[0-9]+)?, sasl_method=[A-Za-z0-9_-]+, sasl_username=/)) {
+  # Témoin : collectors/mail-soumission-authentifiee.corpus. Un client `unknown[unknown]` (P10.23-i) est
+  # lu : sans adresse valide, la ligne n’est pas émise mais COMPTÉE (`plume_adresse_illisible`, `auth=`).
+  else if (match(psd, /^[0-9A-Za-z]+: client=[A-Za-z0-9._-]+\[([0-9A-Fa-f:.]+|unknown)\](:[0-9]+)?, sasl_method=[A-Za-z0-9_-]+, sasl_username=/)) {
     su = substr(psd, RSTART + RLENGTH); mth = psd; sub(/^[^,]*, sasl_method=/, "", mth); sub(/,.*$/, "", mth)
     p = index(su, ", sasl_sender="); if (p > 0) su = substr(su, 1, p - 1)
     p = index(su, ", orig_"); if (p > 0) su = substr(su, 1, p - 1)
@@ -538,8 +557,11 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
 }
 END{
   if (n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}\n", now, host, buf > out
-  # Journal ClamAV : une ligne, le filigrane `<mur> <vues>`. Rien lu à la seconde du filigrane : il reste.
-  if (flux != "mail") { if (maxmur == last + 0 && vues_max < vues) vues_max = vues; print maxmur " " vues_max; exit }
+  # Journal ClamAV : une ligne, le filigrane `<mur> <vues>`. Aucune ligne lue à la seconde du filigrane ni
+  # après (journal remplacé par un plus ancien) : il reste tel quel, sans quoi `<mur> 0` rejouerait les lignes
+  # de cette seconde. Des lignes lues à cette seconde, mais moins que `vues` (journal tourné dans la seconde) :
+  # c’est leur nombre qui compte, pour que les suivantes ne soient pas tenues pour vues.
+  if (flux != "mail") { if (maxmur == last + 0 && vues_max == 0) vues_max = vues; print maxmur " " vues_max; exit }
   # Une ligne : le filigrane, puis le compte P10.23-i et sa ventilation (un mot, sans espace).
   # P10.32-f — en quatrième mot, le décalage de la dernière ligne lue : celui du journal ClamAV par défaut.
   print maxts " " sans_adresse " auth=" (sans_adresse_par["auth"]+0) ",postscreen=" (sans_adresse_par["postscreen"]+0) ",reject=" (sans_adresse_par["reject"]+0) " " dernier_decalage

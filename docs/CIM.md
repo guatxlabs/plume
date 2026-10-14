@@ -235,6 +235,13 @@ plus. Ce qui reste **exigible** :
 > l'outcome sous un autre nom (`operation` pour `vault-audit`, par exemple) reste hors de portée des
 > détections qui composent sur `action` — non mesuré ailleurs, donc non affirmé ailleurs.
 
+> **Écart déclaré, `mail` (`P10.32-f`).** Les verdicts d'authentification de l'EXPÉDITEUR que
+> `collectors/mail.sh` émet en `category=mail` (opendkim, opendmarc, policyd-spf) portent le résultat
+> de la vérification (`pass`, `fail`, `none`, `softfail`, `neutral`, `temperror`, `permerror` ; `signed` et
+> `error` pour opendkim), pas `allowed`/`blocked` : un tel verdict ne décide pas de la livraison, il ne se
+> ramène ni à l'un ni à l'autre. Une détection qui compose `category=mail action=blocked` ne les voit pas.
+> Le sortant (`postfix/smtp`) et la file (`postfix/qmgr`) sont émis en `mailflow` (livraison, file).
+
 > **Ce que l'absence coûtait, mesuré.** Les deux règles de brute-force livrées compilent
 > `category=auth action=failure`, et **aucun** des deux émetteurs Windows livrés ne posait `action`.
 > Trois échecs d'ouverture de session Windows (4625) réellement ingérés : `search category=auth |

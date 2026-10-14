@@ -53,14 +53,20 @@
 // toute la pile — un bloc ordinaire ou une fonction imbriquée DANS un tel contexte en hérite : groupe
 // `(`/`[` encore ouvert — argument de `spawn…(`, `drop(`, `std::mem::forget(`, d'un helper `detacher(` quel
 // que soit son nom, d'une macro `m!(`, élément de `[_] = [ … ]` —, bloc ou fermeture `async` hors corps de
-// fonction, macro à accolades `m! { … }`) et CONSOMMÉE : l'instruction, lue de son début (`;`, `{`, `}`
+// fonction, la liste de paramètres `|…|` d'une fermeture `async` sautée (ouvrant derrière `move` / `async`) — un `{…}` ou un `;` qu'elle contient,
+// `|S { a, .. }: S|`, `|_x: [u8; 2]|`, ne coupe pas la tête avant `async` —, macro à accolades `m! { … }`)
+// et CONSOMMÉE : l'instruction, lue de son début (`;`, `{`, `}`
 // précédent, retours à la ligne compris), attributs retirés, la tête du chemin (blancs autour de `::`
 // compris) exclue, est dans une liste FERMÉE — vide et suivie de `?`, `return`, `match` / `if` en tête
 // (seuls, après `return` ou après une affectation admise), ou une affectation `… =` hors comparaison dont
 // le lieu ne commence pas par `_` (`let _ =`, `let [mut | ref | ref mut] _nom =`, `let (_nom) =`, `_ =`,
-// `(_) =`, attribut ou bras de `match` devant sont des abandons). Tout autre préfixe est refusé : instruction
-// nue sans `?` (même derrière `#[allow(…)]` ou `#[cfg(…)]`), `&…`, comparaison, fermeture `async` sans
-// accolades.
+// `(_) =`, attribut ou bras de `match` devant sont des abandons) ; le lieu est celui de la DERNIÈRE
+// affectation, lu après le dernier `let`, `=>`, `return` ou `=` intermédiaire (`return _ =`, `let r = _ =`,
+// `x = _ =` sont des abandons ; `let _u = r =` lit l'issue dans `r`). Tout autre préfixe est refusé :
+// instruction nue sans `?` (même derrière `#[allow(…)]` ou `#[cfg(…)]`), `&…`, comparaison, et tout préfixe
+// qui nomme le mot `async` — fermeture `async` sans accolades dont le corps est l'instruction de l'appel
+// (`let f = async move || r = …publier(…).await;` compris ; un corps `if … else { … }` est un reste LÂCHE,
+// ci-dessous).
 // Un site est CONFORME si : (A) lie le `.tmp` par `let` (`let mut` compris ; un `.tmp` non lié, passé
 // tel quel à un helper, est refusé), aucune variante `spool::publier…(` n'y figure, CHAQUE appel
 // `spool::publier(` de la fonction est conforme (verdict par APPEL : une seconde publication détachée
@@ -136,10 +142,51 @@
 //     (`&st.ingest_fsync` ne compile pas pour un `bool`), exclusion de `ingest/spool.rs` (il ne rend
 //     aucun site). Mutant ÉQUIVALENT par redondance : retirer `sans_attributs` devant une affectation (le
 //     lieu est déjà lu après le dernier `let`) — il ne change que `match` / `if` / `return` / vide derrière
-//     un attribut, épinglés ;
-//   * le blanchisseur partagé reste la source des positions : seuls les préfixes de chaîne brute (`br`, `cr`)
-//     et les littéraux de caractère à échappement long (`'\x..'`, `'\u{…}'`) sont neutralisés avant lui ; un
-//     autre littéral qu'il apparierait mal (aucun connu) déplacerait la pile de `contexte_detache` ;
+//     un attribut, épinglés. Les formes forcées qui distinguent trois mutants de lecture — parenthèses de
+//     `sans_cfg_test` (`#[cfg(test)] static … = Lazy::new(|| { … });` dans un `spawn`), égalité stricte avec
+//     `return` (`return n == …`, `return _ = …`), branche `#![` de `sans_attributs` (`#![allow(…)]` puis
+//     `match`) —, les fermetures `async` à paramètres `{…}` / `;`, `'\''` collé et l'abandon derrière `return`
+//     ou un `=` chaîné sont épinglés par `spool_publier_formes_forcees` (fichier voisin), avec leurs voisines
+//     conformes : mot `async` borné (`async_r`), mot `return` borné à droite (`let return_code =`), lieu de la
+//     dernière affectation (`let _u = r =`) lu après le `=` intermédiaire le plus à droite (`x = y = _ =`
+//     refusé), et dans `ouverture_des_parametres` : `|` fermant jamais cherché au-delà d'un `;` (un `if c {`
+//     qui suit une fermeture `async` à corps nu) ni d'un `{` / `}` (un `else {` qui suit, dans un champ de
+//     structure, une fermeture `async move |a| a`), ni d'un `=>` (un bras qui rend une fermeture `async` à
+//     paramètre motif de structure), `)` / `]` comptés en remontant (`|_x: [u8; 2]| -> Result<(), E>`), ouvrant
+//     RETENU seulement précédé du mot `move` ou `async` — sans quoi le `|` d'un motif de bras (`K::A | K::B =>`,
+//     `K::C | K::D => {`) ou d'un « ou » (`if a | b {` puis `if c | d {`) était lu comme une liste de
+//     paramètres et un `async` d'un bras ou d'une condition précédents faisait refuser un `publier` conforme
+//     (faux refus RÉALISTE, sondes FP1 à FP7, épinglées acceptées par
+//     `les_bras_et_les_ou_qui_suivent_un_async_restent_acceptes`). Mutants ÉQUIVALENTS par redondance avec
+//     cette exigence, sans témoin distinctif : l'arrêt de l'ouvrant sur un `;` à profondeur nulle et sur un `{`
+//     non apparié (qu'il devienne transparent ou fasse baisser la profondeur) — un ouvrant qui suit `move` /
+//     `async` et dont la paire franchit un `;` ou sort d'un bloc enfermerait dans la liste un `;` à profondeur
+//     nulle ou un `}` sans ouvrant, ce qu'aucune liste de paramètres ne contient ; le `|` atteint d'abord est
+//     alors un fermant, précédé d'un motif, et n'est pas retenu (leurs anciens témoins, `if a | b {` après une
+//     fermeture `async` et `A | B =>` après un bloc, restent comme voisines acceptées). Mutant ÉQUIVALENT,
+//     sans témoin : l'arrêt du `|` fermant sur un `(` / `[` ouvrant (ce groupe encore ouvert pose déjà un
+//     cadre détachant dans `contexte_detache`, qui ne lit que `.is_some()` de la tête) ;
+//   * côté STRICT, sans forme réelle : le refus du mot `async` vaut pour tout préfixe qui le nomme ; la tête
+//     d'une accolade est lue jusqu'au `;`, `{` ou `}` précédent, donc un bras précédent qui nomme `async` sans
+//     accolade (`K::A => run(async || trace().await),` puis `K::C => { … }`) fait lire le bloc du bras suivant
+//     comme `async` (antérieur au saut des paramètres, qui ne l'aggrave plus) ; un `=`
+//     dans une annotation de type suivi d'un `_` (`let r: Box<dyn Iterator<Item = _>> = …`) est lu comme une
+//     affectation intermédiaire, donc comme un abandon ;
+//   * côté LÂCHE, sans forme réelle connue, épinglés ACCEPTÉS par `les_restes_laches_declares_sont_encore_acceptes`
+//     (fichier voisin) : une fermeture `async` dont le type de retour contient un `{` ou un `}` (bloc constant,
+//     `-> Foo<{ 1 }>`) n'est pas reconnue — l'arrêt du `|` fermant sur `{` / `}` coupe sa tête avant `async`,
+//     son corps n'est pas lu comme détaché, et un `publier` qu'elle attend puis qu'on détache
+//     (`tokio::spawn(f(0))`) passe (la voisine `-> Foo<1>` est refusée) ; un `=` dans l'annotation de type
+//     d'un lieu en `_` (`let _r: Box<dyn Iterator<Item = u8>> = …`) déplace le lieu après ce `=` (`u8>>`), et
+//     l'abandon passe — aucune annotation à `=` connue ne compile pour l'issue de `publier` ; une fermeture
+//     `async` sans accolades dont le corps est un `if c { … } else { …publier… }` (ou `else if d { … }`), détachée
+//     (`tokio::spawn(f())`) : l'instruction de l'appel commence au `{` du `else`, son préfixe se réduit à
+//     `match`, et le cadre `async` du `if c {` est déjà dépilé (antérieur au lot ; la voisine qui publie dans la
+//     branche `if` est refusée) ;
+//   * le blanchisseur partagé reste la source des positions : seuls les préfixes de chaîne brute (`br`, `cr`),
+//     les littéraux de caractère à échappement long (`'\x..'`, `'\u{…}'`) et l'apostrophe échappée `'\''`
+//     (qu'il lit `'\'`, laissant un `'` orphelin) sont neutralisés avant lui ; un autre littéral qu'il
+//     apparierait mal (aucun connu à ce jour) déplacerait la pile de `contexte_detache` ;
 //   * les trois sites `HORS_RECEPTION` ne sont pas jugés sur leur conformité : seule leur liste de gestes
 //     directs est épinglée — un `spool::publier(…, false)` ou un `.tmp` ajouté dans l'une d'elles passerait,
 //     et un site qui REMPLACE l'un d'eux sous le même nom dans le même fichier (l'original retiré, un seul
@@ -423,6 +470,54 @@ mod spool_toute_ecriture_passe_par_publier {
         trouver(s, mot).into_iter().filter(|&i| !s.get(i + n).map_or(false, |&c| est_ident(c))).collect()
     }
 
+    /// Le `|` qui OUVRE la liste de paramètres d'une fermeture dont la tête finit en `k` (avant son `{`) : le
+    /// `|` fermant est le premier à profondeur nulle en remontant (type de retour `-> T` traversé), sans
+    /// franchir `;`, `{`, `}` ni `=>` (la tête d'un bras de `match` : son motif `K::C | K::D` n'est pas une
+    /// liste de paramètres) ; l'ouvrant est le `|` précédent à profondeur nulle, groupes `(`, `[`, `{`
+    /// appariés, sans franchir un `;` à profondeur nulle (instruction précédente), et il n'est RETENU que
+    /// précédé du mot `move` ou `async` : seule la tête d'une fermeture `async` a besoin du saut, et un `|`
+    /// précédé d'autre chose est un « ou » (`if a | b {`, motif `K::A | K::B`) ou le fermant d'une autre
+    /// liste. Aucun : `None` (la tête est alors lue depuis `k`, comme sans saut).
+    fn ouverture_des_parametres(b: &[char], k: usize) -> Option<usize> {
+        let (mut prof, mut m) = (0i32, k);
+        let ferme = loop {
+            if m == 0 {
+                return None;
+            }
+            m -= 1;
+            match b[m] {
+                ')' | ']' => prof += 1,
+                '(' | '[' if prof == 0 => return None,
+                '(' | '[' => prof -= 1,
+                ';' | '{' | '}' if prof == 0 => return None,
+                '>' if prof == 0 && m > 0 && b[m - 1] == '=' => return None,
+                '|' if prof == 0 => break m,
+                _ => {}
+            }
+        };
+        let (mut prof, mut m) = (0i32, ferme);
+        while m > 0 {
+            m -= 1;
+            match b[m] {
+                ')' | ']' | '}' => prof += 1,
+                '(' | '[' | '{' if prof == 0 => return None,
+                '(' | '[' | '{' => prof -= 1,
+                ';' if prof == 0 => return None,
+                '|' if prof == 0 => {
+                    let mut d = m;
+                    while d > 0 && b[d - 1].is_whitespace() {
+                        d -= 1;
+                    }
+                    let debut = b[..d].iter().rposition(|&c| !est_ident(c)).map_or(0, |i| i + 1);
+                    let retenu = matches!(texte(b, debut, d).as_str(), "move" | "async");
+                    return retenu.then_some(m);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Contexte qui DÉTACHE ou ENROBE la position `p`, lu depuis le DÉBUT du fichier et sur TOUTE la pile, pas
     /// seulement sur le cadre le plus interne (un bloc ordinaire `if c { … }` ou `drop({ … })` posé dans un
     /// contexte détaché l'est aussi ; une fonction imbriquée dans un `spawn…(` est détachée aussi, son corps
@@ -446,7 +541,9 @@ mod spool_toute_ecriture_passe_par_publier {
                 while k > 0 && b[k - 1].is_whitespace() {
                     k -= 1;
                 }
-                let mut t = k;
+                // tête d'une fermeture : sa liste de paramètres `|…|` est sautée, un `{…}` ou un `;` qu'elle
+                // contient (`|S { a, .. }: S|`, `|_x: [u8; 2]|`) ne coupe pas la tête avant `async`
+                let mut t = ouverture_des_parametres(b, k).unwrap_or(k);
                 while t > 0 && !matches!(b[t - 1], ';' | '{' | '}') {
                     t -= 1;
                 }
@@ -471,12 +568,19 @@ mod spool_toute_ecriture_passe_par_publier {
     /// affectation `… =` dont le lieu, lu après le dernier `=>` (bras de `match`) puis après le dernier mot
     /// `let` (un attribut peut le précéder), commence par `_` une fois `(`, `[`, `mut`, `ref` sautés :
     /// `let _ =`, `let _issue =`, `let mut _issue =`, `let ref mut _issue =`, `let (_issue) =`, `let _r: T =`,
-    /// `_ =` et `(_) =` (affectation déstructurante, sans `let`), `0 => _ =`, `#[allow(…)] let _x =`.
+    /// `_ =` et `(_) =` (affectation déstructurante, sans `let`), `0 => _ =`, `#[allow(…)] let _x =`. Le lieu
+    /// est celui de la DERNIÈRE affectation : lu aussi après le dernier `return` et le dernier `=` (`return _ =`,
+    /// `let r = _ =`, `x = _ =` abandonnent ; `let _u = r =` lit l'issue dans `r`).
     fn issue_abandonnee(prefixe: &[char]) -> bool {
         let Some((&'=', lieu)) = prefixe.split_last() else { return false };
         let bras = trouver(lieu, "=>").last().map_or(0, |i| i + 2);
         let apres_let = mots(&lieu[bras..], "let").last().map_or(bras, |i| bras + i + 3);
-        let mut r: String = lieu[apres_let..].iter().collect::<String>().trim().to_string();
+        // le lieu est celui de la DERNIÈRE affectation : lu aussi après `return` et après un `=` intermédiaire
+        // (`return _ =`, `let r = _ =`, `x = _ =`) ; le `=` d'un `=>` reste en deçà du bras
+        let apres_return = mots(lieu, "return").last().map_or(0, |i| i + 6);
+        let apres_egal = lieu.iter().rposition(|&c| c == '=').map_or(0, |i| i + 1);
+        let debut = apres_let.max(apres_return).max(apres_egal);
+        let mut r: String = lieu[debut..].iter().collect::<String>().trim().to_string();
         loop {
             let avant = r.clone();
             r = r.trim_start_matches(|c: char| c == '(' || c == '[').trim_start().to_string();
@@ -534,6 +638,11 @@ mod spool_toute_ecriture_passe_par_publier {
         };
         if p.is_empty() {
             return propagee;
+        }
+        // fermeture `async` sans accolades (`let f = async move || r = …publier(…).await;`) : l'appel n'est
+        // attendu que si quelqu'un appelle la fermeture, et c'est elle qu'on détache (`tokio::spawn(f())`)
+        if !mots(&p.chars().collect::<Vec<char>>(), "async").is_empty() {
+            return false;
         }
         if p == "return" {
             return true;
@@ -693,6 +802,9 @@ mod spool_toute_ecriture_passe_par_publier {
                         let j = chiffres(i + 3, 2, &|x: char| x.is_ascii_hexdigit());
                         (j == i + 5 && c.get(j) == Some(&'\'')).then_some(j)
                     }
+                    // `'\''` : le blanchisseur partagé le lit `'\'` et laisse le dernier `'` orphelin, qui apparie
+                    // le littéral suivant de travers (`'\'',')'` libère le `)`)
+                    Some('\'') => (c.get(i + 3) == Some(&'\'')).then_some(i + 3),
                     Some('u') if c.get(i + 3) == Some(&'{') => {
                         let j = chiffres(i + 4, 8, &|x: char| x.is_ascii_hexdigit() || x == '_');
                         (j > i + 4 && c.get(j) == Some(&'}') && c.get(j + 1) == Some(&'\'')).then_some(j + 1)
@@ -1129,7 +1241,7 @@ mod spool_toute_ecriture_passe_par_publier {
     // ÉPREUVES DE L'INSTRUMENT, sur extraits FABRIQUÉS.
     // ---------------------------------------------------------------------------------------------
 
-    const NOMINAL: &str = r#"
+    pub(super) const NOMINAL: &str = r#"
 pub(crate) async fn recu_post(st: AppState, corps: Vec<u8>) -> Response {
     let n = 1;
     let tmp = format!("{}/.r-{}-{}.tmp", st.spool, now(), n);
@@ -1584,7 +1696,7 @@ pub(crate) async fn recu_post(st: AppState, corps: Vec<u8>) -> Response {
 
     /// Jugement d'un extrait : tous les verdicts non conformes, motifs joints (site de la fonction et
     /// `(hors fonction)` confondus).
-    fn refus(src: &str) -> String {
+    pub(super) fn refus(src: &str) -> String {
         analyser("ingest/fab.rs", src).into_iter().filter(|x| !x.conforme).map(|x| format!("[{}] {}", x.fonction, x.motif)).collect::<Vec<_>>().join(" | ")
     }
 

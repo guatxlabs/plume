@@ -88,6 +88,49 @@ pub(crate) fn sql_reimposition_rule() -> String {
     format!("UPDATE rule SET {}, managed=1 WHERE id=?{}", sets.join(", "), COLONNES_REIMPOSEES_RULE.len() + 1)
 }
 
+/// `P10.20-b` — le plan d'upsert d'un overlay de détection (`parser`, `dparser`, `playbook`), ou l'AVEU : une
+/// lecture de l'existant NON faite ignore le fichier (compté dans `ignores` par l'appelant, WARN avec la cause du moteur, aucune
+/// valeur de cellule) et n'écrit rien. Elle ne vaut pas « le nom n'existe pas » : l'INSERT qui suivait créait
+/// un DOUBLON (aucune de ces tables n'a d'UNIQUE(name)) — un playbook en double rejoue deux fois sa riposte.
+fn plan_de_l_overlay_ou_aveu(
+    conn: &Connection,
+    table: &str,
+    genre: &str,
+    name: &str,
+    path: &std::path::Path,
+) -> Option<UpsertPlan> {
+    match plan_upsert_lu(conn, table, name) {
+        Ok(plan) => Some(plan),
+        Err(e) => {
+            eprintln!("[overlays] WARN {genre} '{name}' ({}) : lecture de l'existant NON faite ({e}) — overlay IGNORÉ, rien écrit", path.display());
+            None
+        }
+    }
+}
+
+/// `P10.20-b` — un overlay n'est compté CHARGÉ que si son écriture a posé exactement une ligne (`Ok(1)`).
+/// Une écriture refusée par le moteur, ou sans effet (ligne disparue entre la lecture et l'UPDATE, trigger
+/// `RAISE(IGNORE)`), est ignorée et avouée (WARN avec la cause du moteur).
+fn compter_l_ecriture_de_l_overlay(
+    genre: &str,
+    name: &str,
+    path: &std::path::Path,
+    ecrit: rusqlite::Result<usize>,
+    ch: &mut crate::overlays_adossement::Chargement,
+) {
+    match ecrit {
+        Ok(1) => ch.charges += 1,
+        Ok(n) => {
+            eprintln!("[overlays] WARN {genre} '{name}' ({}) : écriture sans effet ({n} ligne posée) — overlay NON chargé", path.display());
+            ch.ignores += 1;
+        }
+        Err(e) => {
+            eprintln!("[overlays] WARN {genre} '{name}' ({}) : écriture refusée ({e}) — overlay NON chargé", path.display());
+            ch.ignores += 1;
+        }
+    }
+}
+
 /// Parsers d'overlay : MÊME validation que parser_create (motif non vide, ≤1000, regex qui compile),
 /// puis UPSERT keyé par name avec managed=1 (un overlay écrase un builtin du même nom : builtin=0).
 pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
@@ -129,26 +172,30 @@ pub(crate) fn load_overlay_parsers(conn: &Connection, dir: &std::path::Path) -> 
         }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         // P11.5-d : la réimposition ne touche QUE ce qu'elle possède (cf. le bloc de doctrine plus haut).
-        match plan_upsert(conn, "parser", &name) {
+        let Some(plan) = plan_de_l_overlay_ou_aveu(conn, "parser", "parser", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        let ecrit = match plan {
             UpsertPlan::SkipUser => {
                 eprintln!("[overlays] WARN parser '{name}' ({}) : un parseur ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉ (renommez l'un des deux)", path.display());
                 ch.ignores += 1;
                 continue;
             }
             UpsertPlan::Update(rid) => {
-                let _ = conn.execute(
+                conn.execute(
                     "UPDATE parser SET source=?1, pattern=?2, enabled=?3, builtin=0, managed=1 WHERE id=?4",
                     params![source, pattern, enabled, rid],
-                );
+                )
             }
             UpsertPlan::Insert => {
-                let _ = conn.execute(
+                conn.execute(
                     "INSERT INTO parser(name,source,pattern,enabled,builtin,managed,created) VALUES(?1,?2,?3,?4,0,1,?5)",
                     params![name, source, pattern, enabled, now()],
-                );
+                )
             }
-        }
-        ch.charges += 1;
+        };
+        compter_l_ecriture_de_l_overlay("parser", &name, &path, ecrit, &mut ch);
     }
     ch
 }
@@ -208,26 +255,30 @@ pub(crate) fn load_overlay_dparsers(conn: &Connection, dir: &std::path::Path) ->
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let spec = v.to_string();
         // P11.5-d : même scope de possession que les autres chargeurs (cf. le bloc de doctrine plus haut).
-        match plan_upsert(conn, "dparser", &name) {
+        let Some(plan) = plan_de_l_overlay_ou_aveu(conn, "dparser", "parseur déclaratif", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        let ecrit = match plan {
             UpsertPlan::SkipUser => {
                 eprintln!("[overlays] WARN parseur déclaratif '{name}' ({}) : une ligne ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉ (renommez l'un des deux)", path.display());
                 ch.ignores += 1;
                 continue;
             }
             UpsertPlan::Update(rid) => {
-                let _ = conn.execute(
+                conn.execute(
                     "UPDATE dparser SET source=?1, spec=?2, enabled=?3, builtin=0, managed=1 WHERE id=?4",
                     params![source, spec, enabled, rid],
-                );
+                )
             }
             UpsertPlan::Insert => {
-                let _ = conn.execute(
+                conn.execute(
                     "INSERT INTO dparser(name,source,spec,enabled,builtin,managed,created) VALUES(?1,?2,?3,?4,0,1,?5)",
                     params![name, source, spec, enabled, now()],
-                );
+                )
             }
-        }
-        ch.charges += 1;
+        };
+        compter_l_ecriture_de_l_overlay("parseur déclaratif", &name, &path, ecrit, &mut ch);
     }
     ch
 }
@@ -369,26 +420,30 @@ pub(crate) fn load_overlay_playbooks(conn: &Connection, dir: &std::path::Path) -
             continue;
         }
         // P11.5-d : la réimposition ne touche QUE ce qu'elle possède (cf. le bloc de doctrine plus haut).
-        match plan_upsert(conn, "playbook", &name) {
+        let Some(plan) = plan_de_l_overlay_ou_aveu(conn, "playbook", "playbook", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        let ecrit = match plan {
             UpsertPlan::SkipUser => {
                 eprintln!("[overlays] WARN playbook '{name}' ({}) : un playbook ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉ (renommez l'un des deux)", path.display());
                 ch.ignores += 1;
                 continue;
             }
             UpsertPlan::Update(rid) => {
-                let _ = conn.execute(
+                conn.execute(
                     "UPDATE playbook SET enabled=?1, query=?2, is_soql=?3, action_kind=?4, interval_s=?5, window_s=?6, managed=1 WHERE id=?7",
                     params![enabled, query, is_soql as i64, action_kind, interval_s, window_s, rid],
-                );
+                )
             }
             UpsertPlan::Insert => {
-                let _ = conn.execute(
+                conn.execute(
                     "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s,managed) VALUES(?1,?2,?3,?4,?5,?6,?7,1)",
                     params![name, enabled, query, is_soql as i64, action_kind, interval_s, window_s],
-                );
+                )
             }
-        }
-        ch.charges += 1;
+        };
+        compter_l_ecriture_de_l_overlay("playbook", &name, &path, ecrit, &mut ch);
     }
     ch
 }

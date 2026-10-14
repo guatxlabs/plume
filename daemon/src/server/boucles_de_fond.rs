@@ -357,18 +357,65 @@ pub(crate) fn tick_de_detection_d_un_tenant(handle: &Arc<Mutex<Connection>>, db_
     b
 }
 
+/// `P10.20-b` — essais du préchauffage du cache de bans réseau, une pause entre deux (celle que passe le site).
+/// Un essai qui charge applique les bans persistés sans attendre le tick ; si TOUS sont refusés, aucun ban
+/// n'est appliqué jusqu'au premier rechargement RÉUSSI du tick, qui peut ne pas être le premier. La cause de
+/// chaque refus va au journal par `netban_reload` (dédupliquée). Borné : un démarrage ne se bloque pas sur une
+/// base illisible.
+pub(crate) const NETBAN_PRECHAUFFAGE_ESSAIS: u32 = 5;
+
+/// Préchauffe le cache de bans réseau, REPRISE BORNÉE : jusqu'à `essais` chargements, `pause` appelée entre
+/// deux, le verrou de la base RELÂCHÉ pendant la pause (les écrivains — ingest, API — ne l'attendent pas).
+/// La pause est INJECTÉE : le démarrage y passe une attente, un témoin y vérifie que le verrou est libre. Rend le
+/// numéro de l'essai qui a chargé, `None` si tous ont été refusés — aucun ban n'est alors appliqué
+/// (fail-open, `net_ban_is_blocked`) jusqu'au premier tick réussi, et c'est DIT au journal. Ne refuse pas de
+/// démarrer : décision d'exploitant non écrite. `essais` nul compte pour un : un appelant qui passerait 0
+/// tenterait quand même un chargement au lieu de dire « refusé 0 fois » sans avoir lu la base.
+pub(crate) fn netban_prechauffer(db: &Mutex<Connection>, essais: u32, mut pause: impl FnMut()) -> Option<u32> {
+    let essais = essais.max(1);
+    for essai in 1..=essais {
+        // Le verrou ne vit que le temps du chargement : relâché AVANT la pause.
+        let charge = {
+            let c = db.lock();
+            netban_reload(&c)
+        };
+        if charge {
+            if essai > 1 {
+                eprintln!("[plume] netban : préchauffage du cache réussi à l'essai {essai}/{essais}");
+            }
+            return Some(essai);
+        }
+        if essai < essais {
+            pause();
+        }
+    }
+    eprintln!(
+        "[plume] netban : préchauffage du cache refusé {essais} fois ; aucun ban appliqué jusqu'au premier \
+         rechargement réussi (tick de 15 s)"
+    );
+    None
+}
+
+/// Préchauffage du démarrage : `NETBAN_PRECHAUFFAGE_ESSAIS` essais, `pause` entre deux (l'attente que passe
+/// `spawn_netban_maintenance`).
+pub(crate) fn netban_prechauffer_au_demarrage(db: &Mutex<Connection>, pause: impl FnMut()) -> Option<u32> {
+    netban_prechauffer(db, NETBAN_PRECHAUFFAGE_ESSAIS, pause)
+}
+
 /// BAN NATIF PLUME (chantier ② Phase 1) — thread de maintenance du store live `net_ban`. Charge le cache au
 /// boot puis, toutes les 15 s : purge les bans EXPIRÉS de la table + recharge le cache in-mémoire (source de
 /// vérité = la table ; capte les écritures du responder root séparé). Sur la base DEFAULT (l'enforcement HTTP
 /// est GLOBAL, avant la résolution tenant -> Phase 1 = mono-base ; per-tenant = Phase 2). Fail-STATIC
 /// (`netban_reload`) : une lecture ratée garde le dernier bon instantané, une ligne illisible est jugée sur
-/// sa ligne (`P10.7-f`). Seul un préchauffage raté laisse le cache vide (fail-open au démarrage).
+/// sa ligne (`P10.7-f`). Un préchauffage raté est REPRIS (`netban_prechauffer`, `P10.20-b`) : borné, dit au
+/// journal ; seul l'épuisement des essais laisse le cache non initialisé (fail-open) jusqu'au premier tick.
+///
+/// Le préchauffage du démarrage passe par `netban_prechauffer_au_demarrage`, que son témoin (`P10.20-b`) joue
+/// sans horloge, pause observée ; le même témoin lit que ce site l'appelle, seule instruction avant la boucle.
 fn spawn_netban_maintenance(db: Arc<Mutex<Connection>>) {
     std::thread::spawn(move || {
-        {
-            let c = db.lock();
-            netban_reload(&c); // warm-up : bans persistés effectifs dès le bind
-        }
+        // warm-up : bans persistés effectifs dès le bind
+        let _ = netban_prechauffer_au_demarrage(&db, || std::thread::sleep(Duration::from_secs(1)));
         loop {
             std::thread::sleep(Duration::from_secs(15));
             let c = db.lock();

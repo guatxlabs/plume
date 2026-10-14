@@ -28,7 +28,10 @@ CE QUI EST TENU (lu par PyYAML, chargeur sûr)
         puis `echo "; exit 0 #"` forment UNE chaîne et `exit 0` s'exécute), ni `$` hors de
         `${{ join(needs.*.result, ', ') }}` (toute autre expression — un titre de PR substitué par
         `${{ github.event.pull_request.title }}` — y est refusée), ni backquote ; chaque terme de la
-        condition lit `needs.*.result` (pas un seul travail) par `contains` (pas `startsWith`) ;
+        condition lit `needs.*.result` (pas un seul travail) par `contains` (pas `startsWith`), et le
+        champ `result` seul : `needs.*.outputs` est un tableau d'objets, `needs.*.conclusion` un champ
+        que `needs` n'a pas — `contains` n'y vaut jamais vrai, le pas ne s'exécute jamais et `CI` est
+        vert devant un rouge ;
         le pas n'a ni `shell:`, ni `env:`, ni
         `continue-on-error` (clés admises : `name`, `if`, `run`) ;
   (iv)  ni `ci-ok` ni aucun travail requis ne porte `continue-on-error` ou un `if:` de travail ;
@@ -60,7 +63,10 @@ passe ; un travail `name: CI` dans un `.yml`, un `.yaml`, un `.YML`, un travail 
 `name:` ou à `name:` nul, un `ci-ok` nommé `CI` dans un autre flux, un AUTRE travail du ci.yml jugé
 nommé `CI` (y compris quand le fichier jugé n'a pas l'extension `.yml`) sont refusés ; un flux sans
 `jobs` rend 2. Puis les MÊMES mutations sont rejouées sur le `ci.yml` RÉEL (s'il passe) et
-doivent toutes y être refusées. Un témoin qui ne rougit pas : la garde refuse de conclure (2).
+doivent toutes y être refusées. Le CODE DE SORTIE est éprouvé par `main` même, sur de vrais fichiers
+temporaires (`epreuve_code_de_sortie`) : un flux conforme rend 0, le même flux privé de `security`
+dans les `needs` rend 1, un flux à ancre rend 2, PyYAML rendu introuvable rend 2 — c'est ce code, et
+lui seul, que lit le pas de `ci.yml`. Un témoin qui ne rougit pas : la garde refuse de conclure (2).
 
 CE QUE LA GARDE NE TIENT PAS
 -----------------------------
@@ -95,7 +101,11 @@ CE QUE LA GARDE NE TIENT PAS
     `needs` qui cite un travail inexistant ou répété, d'un terme de condition répété, d'une backquote
     dans un `echo` (sous-shell : `exit 0` n'y sort pas du pas, mesuré `rc=1`), d'un nom à expression
     dont la tête ou la queue littérale n'exclut `CI` qu'une fois ses blancs comptés, d'un `name:` nul,
-    d'un flux `.YML`, d'un flux sans `jobs`. Que GitHub lise `name:` nul comme la clé, rogne les blancs
+    d'un flux `.YML`, d'un flux sans `jobs`, d'une valeur d'`env:` de flux qui commence par `()` APRÈS
+    des blancs (`.lstrip()` : mesuré sous bash 5.2.37 le 2026-10-14, ni `BASH_FUNC_exit%%` ni un nom
+    neutre n'importent ` () { builtin exit 0; }` précédé d'une espace ou d'une tabulation, `rc=1`, alors
+    que la même valeur sans blanc sous `BASH_FUNC_exit%%` rend `rc=0` ; un bash ancien ou corrigé
+    autrement n'est pas mesuré). Que GitHub lise `name:` nul comme la clé, rogne les blancs
     d'un nom, ou exécute un flux `.YML`, n'est PAS mesuré : ces refus peuvent être plus stricts que
     nécessaire, jamais plus laxistes.
   - Retirer une auto-épreuve (`epreuve`, `epreuve_lecture_des_flux`) ne rougit pas seul : il faut aussi
@@ -334,6 +344,8 @@ def mutations(ci):
         ("négation de la disjonction", m(cond(f"!({F} || {F} || {C} || {S} || {S})")), []),
         ("condition sur un seul travail", m(cond(" || ".join(f"contains(needs.{un}.result, '{x}')" for x in ("failure", "cancelled", "skipped")))), []),
         ("startsWith au lieu de contains", m(cond(" || ".join(f"startsWith(needs.*.result, '{x}')" for x in ("failure", "cancelled", "skipped")))), []),
+        ("condition sur needs.*.outputs au lieu de .result", m(cond(" || ".join(f"contains(needs.*.outputs, '{x}')" for x in ("failure", "cancelled", "skipped")))), []),
+        ("condition sur needs.*.conclusion au lieu de .result", m(cond(" || ".join(f"contains(needs.*.conclusion, '{x}')" for x in ("failure", "cancelled", "skipped")))), []),
         ("second travail CI dans un autre flux", ci, [("autre.yml", "faux", "CI")]),
         ("second travail ci en casse différente", ci, [("autre.yml", "faux", "ci")]),
         ("second travail CI entouré de blancs", ci, [("autre.yml", "faux", " CI ")]),
@@ -369,6 +381,7 @@ def mutations(ci):
         ("nom exit%% de flux, valeur neutre", m(env("exit%%")), []),
         ("nom exit() de flux, valeur neutre", m(env("exit()")), []),
         ("valeur () { de flux sous un nom neutre", m(env("exit", "() { builtin exit 0; }")), []),
+        ("valeur () { précédée d'un blanc (prudence)", m(env("exit", " () { builtin exit 0; }")), []),
         ("strategy sur l'agrégat", m(lambda d: d["jobs"][A].__setitem__("strategy", {"matrix": {"x": [1]}})), []),
     ]
 
@@ -441,7 +454,7 @@ def epreuves_instrument(yaml):
     autres = [("autre.yml", "agent", "agent (${{ matrix.os }})"), ("autre.yml", "verifier", "verifier"),
               ("autre.yml", "lot", "${{ matrix.os }} build"), ("autre.yml", "bot", "build ${{ matrix.os }}")]
     faute = epreuve(base, autres, yaml, "flux fabriqué")
-    return faute or epreuve_lecture_des_flux(yaml)
+    return faute or epreuve_lecture_des_flux(yaml) or epreuve_code_de_sortie()
 
 
 AUTRE_FLUX = """\
@@ -502,6 +515,44 @@ def epreuve_lecture_des_flux(yaml):
     return None
 
 
+def epreuve_code_de_sortie():
+    """Le code rendu par `main` (sans ses auto-épreuves) sur de VRAIS fichiers : rend la faute, ou None.
+
+    Le pas de `ci.yml` ne lit que ce code : un `return 1` devenu `return 0` imprimerait les violations
+    et passerait vert. Chaque essai est joué dans un répertoire temporaire à lui, sorties avalées."""
+    import contextlib
+    import io
+    fautif = FLUX_FABRIQUE.replace("needs: [test, security, lint]", "needs: [test, lint]", 1)
+    if fautif == FLUX_FABRIQUE:
+        return "code de sortie : le flux fabriqué n'a pas les `needs` attendus"
+    essais = [  # (nom, texte du ci.yml, PyYAML rendu introuvable, code attendu)
+        ("flux conforme", FLUX_FABRIQUE, False, 0),
+        ("security retiré des needs", fautif, False, 1),
+        ("flux à ancre (illisible)", FLUX_FABRIQUE + "x: &a 1\n", False, 2),
+        ("PyYAML introuvable", FLUX_FABRIQUE, True, 2),
+    ]
+    for nom, texte, sans_yaml, attendu in essais:
+        with tempfile.TemporaryDirectory(prefix="garde-ci-ok-rc-") as rep:
+            chemin = os.path.join(rep, "ci.yml")
+            with open(chemin, "w", encoding="utf-8") as fh:
+                fh.write(texte)
+            avant = sys.modules.get("yaml")
+            if sans_yaml:
+                sys.modules["yaml"] = None  # `import yaml` lève ImportError
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    rc = main(["garde", chemin], epreuves=False)
+            finally:
+                if sans_yaml:
+                    if avant is None:
+                        sys.modules.pop("yaml", None)
+                    else:
+                        sys.modules["yaml"] = avant
+        if rc != attendu:
+            return f"code de sortie : « {nom} » rend {rc!r}, attendu {attendu}"
+    return None
+
+
 def noms_des_autres_travaux(yaml, ci_chemin):
     """[(flux, clé, nom effectif)] de tous les travaux des flux du répertoire de `ci_chemin`, hors son `ci-ok`."""
     out = []
@@ -525,13 +576,14 @@ def noms_des_autres_travaux(yaml, ci_chemin):
     return out
 
 
-def main(argv):
+def main(argv, epreuves=True):
+    """`epreuves=False` : sans les auto-épreuves de l'instrument — réservé à `epreuve_code_de_sortie`."""
     try:
         import yaml
     except ImportError:
         print("::error::PyYAML absent : la garde REFUSE DE CONCLURE (paquet python3-yaml)", file=sys.stderr)
         return 2
-    faute = epreuves_instrument(yaml)
+    faute = epreuves_instrument(yaml) if epreuves else None
     if faute:
         print(f"::error::instrument INVALIDE, la garde REFUSE DE CONCLURE — {faute}", file=sys.stderr)
         return 2

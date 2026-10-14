@@ -140,7 +140,13 @@ pub(crate) enum UpsertPlan {
 
 /// Décide de l'action pour un objet overlay keyé par `name`. `table` est un littéral fixe de l'appelant
 /// (aucune injection). aucune ligne -> Insert ; managed 0/1 -> Update (l'overlay possède) ; managed 2 -> Skip.
-pub(crate) fn plan_upsert(conn: &Connection, table: &str, name: &str) -> UpsertPlan {
+///
+/// `P10.20-b` — la décision LUE, ou l'échec du moteur : `Ok(Insert)` seulement sur une absence ÉTABLIE
+/// (`QueryReturnedNoRows`). Toute autre erreur (lecture refusée, interruption, verrou, cache de schéma
+/// périmé, `managed` d'un type inattendu) est RENDUE : elle ne vaut pas « le nom n'existe pas », dont
+/// l'INSERT créerait un DOUBLON — `parser`, `dparser` et `playbook` n'ont aucun UNIQUE(name), et le doublon
+/// porterait `managed=1` à côté de la ligne que `SkipUser` devait protéger.
+pub(crate) fn plan_upsert_lu(conn: &Connection, table: &str, name: &str) -> rusqlite::Result<UpsertPlan> {
     match conn.query_row(
         &format!("SELECT id, managed FROM {table} WHERE name=?1"),
         params![name],
@@ -148,13 +154,22 @@ pub(crate) fn plan_upsert(conn: &Connection, table: &str, name: &str) -> UpsertP
     ) {
         Ok((id, managed)) => {
             if managed == 2 {
-                UpsertPlan::SkipUser
+                Ok(UpsertPlan::SkipUser)
             } else {
-                UpsertPlan::Update(id)
+                Ok(UpsertPlan::Update(id))
             }
         }
-        Err(_) => UpsertPlan::Insert,
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(UpsertPlan::Insert),
+        Err(e) => Err(e),
     }
+}
+
+/// Projection de `plan_upsert_lu` qui garde le comportement d'avant (lecture ratée = Insert) pour les
+/// appelants que `P10.20-b` n'a pas encore repris : les chargeurs d'objets OAC de ce fichier et les deux
+/// chargeurs de `rule` d'`overlays.rs`. Les chargeurs `parser`, `dparser` et `playbook` lisent
+/// `plan_upsert_lu` et ignorent le fichier sur une lecture ratée.
+pub(crate) fn plan_upsert(conn: &Connection, table: &str, name: &str) -> UpsertPlan {
+    plan_upsert_lu(conn, table, name).unwrap_or(UpsertPlan::Insert)
 }
 
 /// Nom d'overlay (champ `name` trimmé, non vide) ou None (WARN émis par l'appelant).

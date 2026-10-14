@@ -116,6 +116,10 @@ pub(crate) enum DeclarationDIncident {
     /// La base n'a pas pris l'écriture : RIEN n'est posé — ni palier, ni type, ni pilote — et rien n'est
     /// attesté. La cause du moteur est portée.
     NonEcrite(String),
+    /// `P10.31-u` — palier, type et pilote SONT écrits (et la chronologie posée), mais le registre tamper-evident
+    /// n'a pas pris le maillon `case.incident` : la déclaration a eu lieu SANS sa preuve d'audit. La cause est portée ;
+    /// la route l'avoue (`registre_sans_maillon`) au lieu de servir le `204` d'une déclaration attestée.
+    PoseeSansTrace(String),
 }
 
 /// ÉLÈVE (tier non-NULL) ou RÉTROGRADE (tier NULL) un case en incident + pose type/commander optionnels. Écrit
@@ -154,8 +158,11 @@ pub(crate) fn incident_apply_tier(conn: &Connection, id: i64, author: &str, tier
         None => "incident RÉTROGRADÉ (redevient case ordinaire)".to_string(),
     };
     case_add_item(conn, id, t, "incident", author, &body, None);
-    ledger_append(conn, "case.incident", &format!("#{id} tier={} by {author}", tier.map(|t| t.to_string()).unwrap_or_else(|| "none".into())));
-    DeclarationDIncident::Posee
+    // `P10.31-u` — LE MAILLON EST CONSOMMÉ : il était jeté (appel nu), et la déclaration se disait attestée sans trace.
+    match ledger_append(conn, "case.incident", &format!("#{id} tier={} by {author}", tier.map(|t| t.to_string()).unwrap_or_else(|| "none".into()))) {
+        MaillonDeRegistre::Inscrit => DeclarationDIncident::Posee,
+        MaillonDeRegistre::NonInscrit(cause) => DeclarationDIncident::PoseeSansTrace(cause),
+    }
 }
 
 /// #3 PHASE 3 — Part A : les cibles pré-remplies STRUCTURÉES de l'alerte dominante (au lieu du seul `host`
@@ -689,6 +696,9 @@ pub(crate) enum IssueDeLEtape {
     /// La base n'a PAS pris l'écriture : la cause du moteur est portée, et rien — ni chronologie, ni MTTA, ni
     /// registre, ni 204 — ne dit que l'étape a avancé.
     NonEcrite(String),
+    /// `P10.31-u` — l'étape EST écrite (et la chronologie posée), mais le registre tamper-evident n'a pas pris le
+    /// maillon `case.step` : l'avancement a eu lieu SANS sa preuve d'audit. La cause est portée ; la route l'avoue.
+    EcriteSansTrace(String),
 }
 
 /// `P10.20-w` — l'`UPDATE` de l'étape n'a pas été écrit : 503 nommé, distinct de la lecture ratée.
@@ -724,8 +734,11 @@ pub(crate) fn step_advance(conn: &Connection, id: i64, step_id: i64, status: &st
         _ => format!("étape « {title} » remise EN ATTENTE"),
     };
     case_add_item(conn, id, t, "step", actor, &body, None);
-    ledger_append(conn, "case.step", &format!("#{id} step={step_id} -> {st} by {actor}"));
-    IssueDeLEtape::Ecrite
+    // `P10.31-u` — LE MAILLON EST CONSOMMÉ (il était jeté par un appel nu).
+    match ledger_append(conn, "case.step", &format!("#{id} step={step_id} -> {st} by {actor}")) {
+        MaillonDeRegistre::Inscrit => IssueDeLEtape::Ecrite,
+        MaillonDeRegistre::NonInscrit(cause) => IssueDeLEtape::EcriteSansTrace(cause),
+    }
 }
 
 /// RÉSOUT le gabarit GXQL d'une step 'search' pour une valeur concrète (défaut = cible pré-remplie), EXACTEMENT
@@ -792,12 +805,23 @@ pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Exte
     }
     match incident_apply_tier(&conn, id, &au.name, tier, itype, commander) {
         DeclarationDIncident::Posee => StatusCode::NO_CONTENT.into_response(),
+        // `P10.31-u` — la déclaration a eu lieu, son maillon manque : 200 qui l'avoue, jamais un refus (rejouer
+        // poserait une seconde déclaration et ne comblerait pas le trou du registre). Contrat : 204 -> 200 sur ce seul cas.
+        DeclarationDIncident::PoseeSansTrace(cause) => geste_fait_sans_trace(&cause),
         DeclarationDIncident::DossierIntrouvable => not_found(crate::handlers::cases::CAUSE_DOSSIER_INTROUVABLE),
         DeclarationDIncident::NonEcrite(cause) => {
             err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE} ({cause})"))
         }
     }
     })
+}
+
+/// `P10.31-u` — CORPS D'UN GESTE FAIT DONT LE MAILLON MANQUE (déclaration d'incident, avancement d'étape) : `200`
+/// `{"ok":true,"registre_sans_maillon":"<CAUSE_GESTE_SANS_TRACE> (<cause>)"}`. Le nominal reste un `204` sans corps.
+fn geste_fait_sans_trace(cause: &str) -> Response {
+    let mut corps = json!({ "ok": true });
+    corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+    Json(corps).into_response()
 }
 
 /// GET /api/cases/{id}/runbooks — incident + runbook recommandé (tactique dominante) + disponibles. viewer+.
@@ -895,6 +919,8 @@ pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Ext
         // `P10.20-w` — causes SÉPARÉES : l'étape non retrouvée au geste et l'écriture refusée (deux 503 nommés).
         match step_advance(&conn, id, step_id, status, &au.name, note) {
             IssueDeLEtape::Ecrite => StatusCode::NO_CONTENT.into_response(),
+            // `P10.31-u` — l'étape est écrite, son maillon manque : 200 qui l'avoue (204 -> 200 sur ce seul cas).
+            IssueDeLEtape::EcriteSansTrace(cause) => geste_fait_sans_trace(&cause),
             // L'étape vient d'être lue dans CE dossier : une absence ici est une relecture ratée ou un `UPDATE` qui n'a
             // modifié aucune ligne — jamais « étape absente », jamais « non lue » (elle l'a été).
             IssueDeLEtape::EtapeAbsente => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ETAPE_NON_RETROUVEE_AU_GESTE),

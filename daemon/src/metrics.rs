@@ -1267,6 +1267,10 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     prom_line(&mut o, "plume_netban_entries", "gauge", "IP bloquées par le ban natif HTTP (store live)", netban_cache().read().len().to_string());
     prom_line(&mut o, "plume_netban_cap", "gauge", "Plafond du store live du ban natif (entrées)", NETBAN_CACHE_CAP.to_string());
     prom_line(&mut o, "plume_netban_store_tronque", "gauge", "1 si la base porte plus de bans que le store live n'en charge", u8::from(netban_store_tronque()).to_string());
+    // P10.20-b — ce que le chargement a dû JUGER, et ses refus : jusqu'ici au seul journal dédupliqué.
+    prom_line(&mut o, "plume_netban_lignes_ip_illisibles", "gauge", "Lignes net_ban sautées faute d'IP lisible en texte, au dernier chargement réussi (ne bloquent rien) ; 0 ne prouve pas qu'un chargement a eu lieu", netban_lignes_ip_illisibles().to_string());
+    prom_line(&mut o, "plume_netban_lignes_echeance_illisible", "gauge", "Lignes net_ban à échéance illisible tenues bloquées sans échéance, au dernier chargement réussi ; ne dit pas lesquelles ni si une levée est en cours", netban_lignes_echeance_illisible().to_string());
+    prom_line(&mut o, "plume_netban_chargements_refuses_total", "counter", "Chargements du store net_ban refusés depuis le démarrage (après un chargement réussi, le cache garde son dernier bon instantané ; avant, aucun ban n'est appliqué) ; n'indique pas depuis quand le cache est figé", netban_chargements_refuses().to_string());
     // santé par composant : jauge 1/0.5/0 (V/J/R) étiquetée par composant (constantes).
     o.push_str("# HELP plume_component_up Santé par composant (1=vert, 0.5=jaune, 0=rouge)\n# TYPE plume_component_up gauge\n");
     if let Some(cs) = j.get("components").and_then(|c| c.as_array()) {

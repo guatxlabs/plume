@@ -14,6 +14,7 @@ use crate::*;
 use crate::handlers::transaction_validee::{
     ouvrir_la_transaction_du_geste, refuser_le_geste_non_valide, valider_la_transaction,
 };
+use rusqlite::OptionalExtension;
 
 /// Nom de provider valide : alphanumérique + `. _ -`, non vide, <= 64 (miroir idp_name_ok).
 fn ai_name_ok(name: &str) -> bool {
@@ -254,6 +255,20 @@ pub(crate) const CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE: &str =
      pendante sur l'écrivain) — RIEN n'est écrit : le fournisseur n'est ni créé, ni modifié, ni supprimé : celui qui \
      était actif l'est toujours et reçoit toujours les questions posées à l'assistant, et aucune trace n'est écrite. \
      Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.20-b` (rang quatre) — le fournisseur d'IA visé par une modification (désactivation d'urgence comprise) n'a pas
+/// pu être lu (la forme d'avant, `.ok()` : 404 « provider introuvable » pour une ligne qui existe).
+pub(crate) const CAUSE_FOURNISSEUR_D_IA_NON_MODIFIE_NON_LU: &str = "FOURNISSEUR D'IA NON MODIFIÉ, FOURNISSEUR NON \
+     LU : la base n'a pas pu lire le fournisseur visé (lecture refusée ou table illisible) — on ne sait pas s'il \
+     existe, et rien n'est changé : s'il est actif, il l'est toujours et reçoit toujours les questions posées à \
+     l'assistant (une désactivation demandée N'A PAS eu lieu), et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la base est illisible ou verrouillée.";
+/// `P10.20-b` (rang quatre) — le fournisseur d'IA visé par une suppression n'a pas pu être lu (la forme d'avant,
+/// `.ok()` : 404 « provider introuvable »).
+pub(crate) const CAUSE_FOURNISSEUR_D_IA_NON_SUPPRIME_NON_LU: &str = "FOURNISSEUR D'IA NON SUPPRIMÉ, FOURNISSEUR NON \
+     LU : la base n'a pas pu lire le fournisseur visé (lecture refusée ou table illisible) — on ne sait pas s'il \
+     existe, et rien n'est supprimé : s'il est actif, il l'est toujours et reçoit toujours les questions posées à \
+     l'assistant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est illisible ou \
+     verrouillée.";
 
 // ================================ CRUD PROVIDERS (admin-only, mode 0) ================================
 
@@ -381,9 +396,20 @@ pub(crate) async fn ai_provider_update(State(st): State<AppState>, Extension(au)
         return ai_deny_multitenant();
     }
     let conn = st.db.lock();
-    let row: Option<(String, i64)> = conn
+    // `P10.20-b` (rang quatre) — le fournisseur NON LU n'est pas « introuvable » (la forme d'avant, `.ok()`, le disait,
+    // y compris sur la DÉSACTIVATION d'urgence d'un fournisseur qui reçoit les questions posées à l'assistant) :
+    // absence établie = le 404 d'avant, lecture ratée = 503 nommé AVANT toute transaction, la cause du moteur au journal
+    // seulement, rien d'écrit — le fournisseur actif l'est toujours.
+    let row: Option<(String, i64)> = match conn
         .query_row("SELECT endpoint, (config_json LIKE '%\"requires_cloud\":true%') FROM ai_provider WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .ok();
+        .optional()
+    {
+        Ok(lu) => lu,
+        Err(e) => {
+            eprintln!("[ia] WARN modification du fournisseur d'IA #{id} refusée : le fournisseur n'a pas pu être lu ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FOURNISSEUR_D_IA_NON_MODIFIE_NON_LU);
+        }
+    };
     let Some((cur_endpoint, cur_req_cloud)) = row else { return not_found("provider introuvable") };
     // Si on (ré)active OU on change l'endpoint, re-vérifier la garde cloud sur l'endpoint EFFECTIF.
     let new_endpoint = b.get("endpoint").and_then(|x| x.as_str()).map(|s| s.trim().to_string());
@@ -457,7 +483,15 @@ pub(crate) async fn ai_provider_delete(State(st): State<AppState>, Extension(au)
         return ai_deny_multitenant();
     }
     let conn = st.db.lock();
-    let name: Option<String> = conn.query_row("SELECT name FROM ai_provider WHERE id=?1", params![id], |r| r.get(0)).ok();
+    // `P10.20-b` (rang quatre) — même partage que la modification : absence établie = le 404 d'avant (la forme d'avant,
+    // `.ok()`, rendait aussi ce 404 sur une lecture ratée), lecture ratée = 503 nommé, rien de supprimé ni d'attesté.
+    let name: Option<String> = match conn.query_row("SELECT name FROM ai_provider WHERE id=?1", params![id], |r| r.get(0)).optional() {
+        Ok(lu) => lu,
+        Err(e) => {
+            eprintln!("[ia] WARN suppression du fournisseur d'IA #{id} refusée : le fournisseur n'a pas pu être lu ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FOURNISSEUR_D_IA_NON_SUPPRIME_NON_LU);
+        }
+    };
     let Some(name) = name else { return not_found("provider introuvable") };
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "ia", &format!("suppression du fournisseur d'IA '{name}'"), CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;

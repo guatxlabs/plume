@@ -202,8 +202,12 @@ pub(crate) fn ip_du_pair(extensions: &axum::http::Extensions) -> String {
 // ====================================================================================================
 // BAN NATIF PLUME (chantier ② — Phase 1) : IP RÉELLE derrière proxy + store live `net_ban` + guard HTTP.
 // Bloque TOUTES les routes du daemon pour l'IP réelle d'un attaquant (même CF-proxifié), réversible, TTL,
-// pilotable par l'API admin `/api/netban`. Mode-0-safe (set vide + config défaut = passthrough), fail-OPEN
-// (jamais de lock-out de l'opérateur sur un bug de store), kill-switch `PLUME_NETBAN_DISABLE=1`.
+// pilotable par l'API admin `/api/netban`. Mode-0-safe (set vide + config défaut = passthrough), kill-switch
+// `PLUME_NETBAN_DISABLE=1`. Sur un défaut de store, trois régimes (`P10.7-f`, `P10.20-b`) : lecture ratée =
+// FAIL-STATIC (le cache garde son dernier bon instantané, `plume_netban_chargements_refuses_total` compte) ;
+// échéance illisible = FAIL-CLOSED sur sa seule ligne (IP tenue bloquée, levable par la valve) ; cache JAMAIS
+// chargé (préchauffage raté, repris et borné) = fail-open jusqu'au premier chargement réussi. Le lock-out de
+// l'opérateur est évité par l'exemption de la valve `/api/netban`, pas par un fail-open du store.
 // ====================================================================================================
 
 /// TTL par défaut d'un `net_ban` POSÉ PAR UNE ACTION `ban_ip` (miroir de la durée CrowdSec `4h` de
@@ -376,13 +380,39 @@ pub(crate) fn netban_store_tronque() -> bool {
     NETBAN_TRONQUE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// `P10.20-b` — CE QUE LE CHARGEMENT A DÛ JUGER, HORS DU SEUL JOURNAL. Les deux comptes de lignes de
+/// `ChargementDuStore` n'allaient qu'à stderr (dédupliqué) : une adresse tenue bloquée sans échéance, ou une
+/// ligne sautée faute d'IP lisible, ne se voyait pas d'une supervision. Valeurs du DERNIER chargement
+/// RÉUSSI (un chargement sain les remet à 0 ; un refus les laisse telles quelles, comme l'instantané).
+/// Exposés par `/metrics` ; ni adresse ni valeur de cellule, des comptes.
+static NETBAN_IP_ILLISIBLES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static NETBAN_ECHEANCES_ILLISIBLES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Chargements REFUSÉS (préparation ou pas du moteur ratés) depuis le démarrage — après un chargement réussi,
+/// chaque refus laisse le cache sur son dernier bon instantané ; avant, aucun ban n'est appliqué. Un store FIGÉ
+/// ne se voyait qu'au journal. Compteur monotone.
+static NETBAN_CHARGEMENTS_REFUSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Un chargement a-t-il DÉJÀ réussi depuis le démarrage ? Sans lui, l'aveu d'un refus disait « le cache garde
+/// son dernier bon instantané » alors qu'au démarrage AUCUN instantané n'existe : aucun ban n'est appliqué.
+static NETBAN_DEJA_CHARGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn netban_lignes_ip_illisibles() -> usize {
+    NETBAN_IP_ILLISIBLES.load(std::sync::atomic::Ordering::Relaxed)
+}
+pub(crate) fn netban_lignes_echeance_illisible() -> usize {
+    NETBAN_ECHEANCES_ILLISIBLES.load(std::sync::atomic::Ordering::Relaxed)
+}
+pub(crate) fn netban_chargements_refuses() -> u64 {
+    NETBAN_CHARGEMENTS_REFUSES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Charge le store `net_ban` d'une base -> (map `ip -> Option<expires_ts>`, plafond atteint). PUR (prend
 /// `conn`, ne touche pas le cache global) -> testable. Agrège tous les env_id d'une même IP : un ban
 /// PERMANENT (expires NULL) l'emporte ; sinon on garde l'expiry MAX (bloque le plus longtemps). Une IP est
 /// bloquée si AU MOINS un ban actif la vise.
-/// TENTE de charger le store (None = ÉCHEC de LECTURE de la table : base verrouillée/corrompue/absente ; distinct
-/// d'une table VIDE = Some(map vide)). Sert le fail-STATIC de `netban_reload` : on ne
-/// remplace le cache que sur un chargement RÉUSSI -> une erreur DB transitoire au tick ne VIDE PAS les bans actifs.
+/// Vue `Option` du chargement, pour les témoins : None = chargement REFUSÉ (préparation ou pas du moteur
+/// ratés : base verrouillée/corrompue/absente), distinct d'une table VIDE = Some(map vide). Une CELLULE
+/// illisible n'est PAS un refus : elle est jugée sur sa ligne (`netban_charger_cap`). La production ne passe
+/// pas par cette forme : `netban_reload` lit le `Result` de `netban_charger_cap` et ne remplace le cache que
+/// sur un `Ok` -> une erreur DB transitoire au tick ne VIDE PAS les bans actifs.
 ///
 /// BORNÉ PAR CONSTRUCTION, des deux côtés : `LIMIT` borne les lignes LUES (une base gonflée par un autre
 /// écrivain ne fait pas travailler ce chargement sans fin) et l'arrêt à `NETBAN_CACHE_CAP` borne la map
@@ -399,7 +429,7 @@ fn netban_try_load(conn: &Connection) -> Option<(HashMap<String, Option<i64>>, b
 
 /// Cœur PUR du chargement, PLAFOND INJECTÉ -> la borne se teste sur quelques lignes au lieu d'en fabriquer
 /// cinquante mille (même patron que `real_client_ip_ctx`, dont la config est injectée). La production
-/// passe par `netban_reload` -> `netban_charger_cap`, avec `NETBAN_CACHE_CAP` ; cette forme `Option`
+/// passe par `netban_reload` -> `netban_reload_cap` -> `netban_charger_cap`, avec `NETBAN_CACHE_CAP` ; cette forme `Option`
 /// (None = lecture ratée) reste la vue des témoins.
 #[cfg(test)]
 pub(crate) fn netban_try_load_cap(conn: &Connection, cap: usize) -> Option<(HashMap<String, Option<i64>>, bool)> {
@@ -474,7 +504,7 @@ pub(crate) fn netban_charger_cap(conn: &Connection, cap: usize) -> Result<Charge
         // revenir en arrière sur ce lot suffit à revenir au comportement d'avant. La FUSION de deux
         // écritures de la même valeur est déjà écrite trois lignes plus bas (elle servait aux
         // `env_id` multiples) : permanent l'emporte, sinon l'expiration la plus lointaine.
-        let ip = crate::ledger::ssrf_norm_ip(&ip).map(|v| v.to_string()).unwrap_or(ip);
+        let ip = netban_cle_du_store(&ip);
         // Le plafond porte sur le NOMBRE D'ENTRÉES de la map, pas sur les lignes lues : une ligne qui
         // enrichit une IP déjà chargée (autre `env_id`) ne consomme rien et passe toujours.
         if map.len() >= cap && !map.contains_key(&ip) {
@@ -485,26 +515,36 @@ pub(crate) fn netban_charger_cap(conn: &Connection, cap: usize) -> Result<Charge
             Entry::Vacant(e) => {
                 e.insert(exp);
             }
-            Entry::Occupied(mut e) => {
-                let cur = e.get_mut();
-                match (*cur, exp) {
-                    (None, _) => {}                 // déjà permanent -> reste permanent
-                    (Some(_), None) => *cur = None, // nouvelle ligne permanente -> permanent
-                    (Some(a), Some(b)) => {
-                        if b > a {
-                            *cur = Some(b);
-                        }
-                    }
-                }
-            }
+            Entry::Occupied(mut e) => netban_fusionner_echeance(e.get_mut(), exp),
         }
     }
     Ok(ChargementDuStore { map, tronque, ip_illisibles, echeances_illisibles })
 }
 
+/// Clé du store pour une écriture `ip` : la VALEUR repliée (`P4.7-j`), l'écriture telle quelle si elle ne
+/// s'analyse pas. UNE seule définition pour le chargement et pour les corrections du cache par la pose et
+/// la levée (`P10.20-b`) : deux règles de clé divergentes rendraient une levée sans effet sur le cache.
+fn netban_cle_du_store(ip: &str) -> String {
+    crate::ledger::ssrf_norm_ip(ip).map(|v| v.to_string()).unwrap_or_else(|| ip.to_string())
+}
+
+/// Fusion de deux échéances d'une même valeur : permanent l'emporte, sinon l'échéance la plus lointaine.
+fn netban_fusionner_echeance(cur: &mut Option<i64>, exp: Option<i64>) {
+    match (*cur, exp) {
+        (None, _) => {}                 // déjà permanent -> reste permanent
+        (Some(_), None) => *cur = None, // nouvelle ligne permanente -> permanent
+        (Some(a), Some(b)) => {
+            if b > a {
+                *cur = Some(b);
+            }
+        }
+    }
+}
+
 /// Charge le store `net_ban` d'une base -> map `ip -> Option<expires_ts>`. PUR + test-facing (map VIDE sur échec).
-/// TEST-ONLY : la prod passe par `netban_try_load` (fail-static) ; ce wrapper `unwrap_or_default` ne sert qu'aux
-/// tests d'agrégation -> `#[cfg(test)]` (pas de warning never-used en release).
+/// TEST-ONLY : la prod passe par `netban_reload` -> `netban_reload_cap` -> `netban_charger_cap` (fail-static) ;
+/// ce wrapper `unwrap_or_default` ne sert qu'aux tests d'agrégation -> `#[cfg(test)]` (pas de warning
+/// never-used en release).
 #[cfg(test)]
 pub(crate) fn netban_load(conn: &Connection) -> HashMap<String, Option<i64>> {
     netban_try_load(conn).map(|(m, _)| m).unwrap_or_default()
@@ -514,15 +554,32 @@ pub(crate) fn netban_load(conn: &Connection) -> HashMap<String, Option<i64>> {
 /// maintenance. Ce commentaire a décrit l'INVERSE du code pendant un temps — « base illisible -> map VIDE ->
 /// fail-open » — alors que le corps est FAIL-STATIC depuis. Un invariant écrit qui ment sur un mécanisme de
 /// protection est aussi coûteux que le défaut lui-même : le lecteur cesse de vérifier.
-pub(crate) fn netban_reload(conn: &Connection) {
-    // FAIL-STATIC : on ne REMPLACE le cache que si le chargement a RÉUSSI. Une erreur
-    // de lecture transitoire (base verrouillée) -> `None` -> on GARDE le dernier bon instantané (les bans actifs
-    // ne sautent pas). Une table réellement VIDE -> `Some(map vide)` -> remplace normalement (unban légitime).
-    // `P10.7-f` — un pas raté garde l'instantané ; une ligne abîmée est jugée sur sa ligne et le reste charge.
-    let aveu = match netban_charger_cap(conn, NETBAN_CACHE_CAP) {
+///
+/// `P10.20-b` — REND `true` si le chargement a RÉUSSI (cache remplacé), `false` s'il a été REFUSÉ (cache
+/// inchangé, refus compté) : le préchauffage du démarrage s'en sert pour reprendre au lieu de laisser le
+/// cache non initialisé jusqu'au premier tick.
+pub(crate) fn netban_reload(conn: &Connection) -> bool {
+    netban_reload_cap(conn, NETBAN_CACHE_CAP)
+}
+
+/// Corps de `netban_reload`, PLAFOND INJECTÉ (même patron que `netban_charger_cap`) : la production n'y
+/// passe qu'avec `NETBAN_CACHE_CAP` ; un témoin y passe un petit plafond pour éprouver la RECOPIE de
+/// `tronque` vers `NETBAN_TRONQUE` sans fabriquer cinquante mille lignes.
+pub(crate) fn netban_reload_cap(conn: &Connection, cap: usize) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    // FAIL-STATIC : on ne REMPLACE le cache que si le chargement a RÉUSSI. Un pas ou une préparation ratés
+    // (base verrouillée, interruption) -> `Err` -> on GARDE le dernier bon instantané (les bans actifs ne
+    // sautent pas) et le refus est COMPTÉ. Une table réellement VIDE -> `Ok(map vide)` -> remplace
+    // normalement (unban légitime). `P10.7-f` — une ligne abîmée est jugée sur sa ligne et le reste charge.
+    let mut charge = false;
+    let aveu = match netban_charger_cap(conn, cap) {
         Ok(ch) => {
+            charge = true;
             *netban_cache().write() = ch.map;
-            NETBAN_TRONQUE.store(ch.tronque, std::sync::atomic::Ordering::Relaxed);
+            NETBAN_TRONQUE.store(ch.tronque, Relaxed);
+            NETBAN_IP_ILLISIBLES.store(ch.ip_illisibles, Relaxed);
+            NETBAN_ECHEANCES_ILLISIBLES.store(ch.echeances_illisibles, Relaxed);
+            NETBAN_DEJA_CHARGE.store(true, Relaxed);
             (ch.ip_illisibles + ch.echeances_illisibles > 0).then(|| {
                 format!(
                     "{} ligne(s) à IP illisible sautée(s), {} ligne(s) à échéance illisible tenue(s) bloquée(s) \
@@ -532,10 +589,21 @@ pub(crate) fn netban_reload(conn: &Connection) {
             })
         }
         Err(cause) => {
-            Some(format!("chargement du store refusé (lecture ratée : {cause}) ; le cache garde son dernier bon instantané"))
+            NETBAN_CHARGEMENTS_REFUSES.fetch_add(1, Relaxed);
+            // `P10.20-b` — DIRE CE QUI EST VRAI : avant tout chargement réussi, il n'y a pas d'instantané à
+            // garder, aucun ban n'est appliqué (fail-open, `net_ban_is_blocked`).
+            if NETBAN_DEJA_CHARGE.load(Relaxed) {
+                Some(format!("chargement du store refusé (lecture ratée : {cause}) ; le cache garde son dernier bon instantané"))
+            } else {
+                Some(format!(
+                    "chargement du store refusé (lecture ratée : {cause}) ; aucun instantané encore chargé : aucun ban \
+                     appliqué jusqu'au premier chargement réussi"
+                ))
+            }
         }
     };
     netban_journaliser_l_aveu(aveu);
+    charge
 }
 
 /// Dernier aveu écrit au journal par `netban_reload`. Le tick repasse toutes les 15 s : une cause qui
@@ -570,9 +638,10 @@ pub(crate) fn netban_snapshot_blocked(map: &HashMap<String, Option<i64>>, ip: &s
     }
 }
 
-/// L'IP est-elle actuellement bannie (cache global) ? O(1), lecture RwLock seule, ZÉRO DB. FAIL-OPEN : si le
-/// cache n'est PAS encore initialisé (boot avant 1er reload / store indispo), renvoie `false` (laisse passer) —
-/// on ne verrouille JAMAIS le trafic légitime sur un état de store manquant.
+/// L'IP est-elle actuellement bannie (cache global) ? O(1), lecture RwLock seule, ZÉRO DB. FAIL-OPEN tant que le
+/// cache n'a JAMAIS été chargé (démarrage avant le premier chargement réussi, préchauffage épuisé) : `false`,
+/// on laisse passer. Après un premier chargement réussi, un store indisponible est FAIL-STATIC : le verdict se
+/// rend sur le dernier bon instantané (`netban_reload`), pas sur un cache vidé.
 pub(crate) fn net_ban_is_blocked(ip: &str, now_ts: i64) -> bool {
     match NETBAN_CACHE.get() {
         Some(lock) => netban_snapshot_blocked(&lock.read(), ip, now_ts),
@@ -608,7 +677,8 @@ fn net_ban_exempt_path(p: &str) -> bool {
 /// distinction que la borne a coûté.
 #[must_use = "une pose de ban REFUSÉE (store plein) ou NON ÉCRITE doit être rapportée à l'appelant, jamais avalée"]
 pub(crate) enum PoseDeBan {
-    /// La ligne est ÉCRITE dans `net_ban` et le cache in-process a été rechargé.
+    /// La ligne est ÉCRITE dans `net_ban` et le cache in-process a été rechargé — ou, rechargement refusé,
+    /// la ligne écrite y a été armée (`P10.20-b`) : un ban `Arme` est enforcé.
     Arme,
     /// Le store live est PLEIN (`NETBAN_CACHE_CAP`) et l'adresse n'y est pas déjà : rien n'a été
     /// écrit. C'est une décision de la borne, pas une panne — elle a sa propre réponse.
@@ -646,7 +716,21 @@ pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, r
         params![ip, reason, now(), expires, by, env],
     ) {
         Ok(1) => {
-            netban_reload(conn);
+            if !netban_reload(conn) {
+                // `P10.20-b` — RECHARGEMENT REFUSÉ APRÈS UNE ÉCRITURE RÉUSSIE : le cache, fail-static, n'aurait
+                // pas porté la ligne écrite, et `Arme` aurait annoncé un ban non enforcé jusqu'au prochain
+                // chargement réussi. La ligne écrite est armée dans le cache, fusionnée avec la valeur que le
+                // cache tient déjà (permanent l'emporte, sinon l'échéance la plus lointaine) : une PROLONGATION
+                // est donc enforcée tout de suite. Ce n'est PAS « comme au chargement » quand l'upsert REMPLACE
+                // la ligne du même `env_id` : un ban RACCOURCI (permanent ramené à une échéance, échéance
+                // avancée) reste tenu à l'ancienne valeur, plus longue, par le cache tant que les chargements
+                // sont refusés. Sens fail-closed assumé : la levée (`netban_remove`) corrige le cache, et le
+                // prochain chargement réussi remplace l'instantané par la base. Le plafond a été jugé plus haut.
+                let mut c = netban_cache().write();
+                c.entry(netban_cle_du_store(ip))
+                    .and_modify(|cur| netban_fusionner_echeance(cur, expires))
+                    .or_insert(expires);
+            }
             PoseDeBan::Arme
         }
         Ok(n) => PoseDeBan::NonEcrit(format!("{n} ligne(s) écrite(s) au lieu d'une")),
@@ -674,7 +758,7 @@ pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, r
 /// poses d'AVANT ce lot canonicalisaient par `parse + to_string`, qui NE REPLIE PAS : le store peut
 /// donc porter `::ffff:203.0.113.7` là où la valeur est `203.0.113.7`. Une levée `WHERE ip=?1` sur
 /// la seule saisie laissait cette ligne EN PLACE — et depuis que la lecture du store replie
-/// (`netban_try_load_cap`), cette ligne BLOQUE. La levée énumère donc les écritures présentes et
+/// (`netban_charger_cap`), cette ligne BLOQUE. La levée énumère donc les écritures présentes et
 /// retire celles qui dénotent la MÊME VALEUR. Direction assumée : une soupape LÈVE PLUS, jamais
 /// moins. Le coût est une lecture de la colonne `ip` (table bornée par `NETBAN_CACHE_CAP` à la pose
 /// + purge des expirés au tick), sur un chemin RARE.
@@ -687,8 +771,24 @@ pub(crate) fn netban_remove(conn: &Connection, ip: &str) -> Result<usize, String
     let mut ecritures: Vec<String> = vec![saisie.to_string()];
     if let Some(v) = valeur {
         let mut stmt = conn.prepare("SELECT DISTINCT ip FROM net_ban").map_err(|e| e.to_string())?;
-        let lues = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-        for l in lues.flatten() {
+        // `P10.20-b` — LA LISTE SE LIT EN ENTIER OU LA LEVÉE EST REFUSÉE, AVANT TOUT `DELETE`. Un
+        // `.flatten()` avalait l'erreur de PAS du moteur, et rusqlite rend alors `Err` puis `None` : la
+        // liste s'arrêtait là, une écriture `::ffff:` de la même valeur restait en base et BLOQUAIT encore
+        // derrière une levée répondue ok. Une soupape qui lève MOINS sans le dire viole sa propre
+        // direction : le pas raté sort par `?` (l'appelant le rend déjà en 503), rien n'est retiré.
+        // DEUX CAUSES, DEUX TRAITEMENTS, comme au chargement (`netban_charger_cap`) : une CELLULE non texte
+        // (BLOB ; la colonne `ip` est TEXT, un nombre y est rangé en texte par l'affinité) est permanente —
+        // la refuser ici rendrait la valve inutilisable pour TOUTE adresse
+        // tant qu'elle existe — et ne peut ni dénoter une valeur ni être retirée par un `ip=?1` texte ; le
+        // chargement la saute déjà sans la bloquer. Elle est sautée ici aussi.
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut lues: Vec<String> = Vec::new();
+        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+            if let Ok(l) = r.get::<_, String>(0) {
+                lues.push(l);
+            }
+        }
+        for l in lues {
             if !ecritures.contains(&l) && crate::ledger::ssrf_norm_ip(&l) == Some(v) {
                 ecritures.push(l);
             }
@@ -698,7 +798,16 @@ pub(crate) fn netban_remove(conn: &Connection, ip: &str) -> Result<usize, String
     for e in &ecritures {
         n += conn.execute("DELETE FROM net_ban WHERE ip=?1", params![e]).map_err(|err| err.to_string())?;
     }
-    netban_reload(conn);
+    if !netban_reload(conn) {
+        // `P10.20-b` — RECHARGEMENT REFUSÉ APRÈS DES `DELETE` RÉUSSIS : la base ne porte plus aucune écriture
+        // texte de cette valeur, mais le cache, fail-static, la tenait bloquée — indéfiniment tant que le
+        // store refuse — derrière une levée répondue ok. Les clés levées sont retirées du cache (même règle
+        // de clé qu'au chargement) ; le reste de l'instantané est gardé.
+        let mut c = netban_cache().write();
+        for e in &ecritures {
+            c.remove(&netban_cle_du_store(e));
+        }
+    }
     Ok(n)
 }
 

@@ -1078,8 +1078,9 @@ pub(crate) async fn netban_delete(State(st): State<AppState>, Extension(au): Ext
     let mut retires = match netban_remove(&conn, &saisie) {
         Ok(n) => n,
         Err(e) => {
-            ledger_append(&conn, "netban.remove.echec", &format!("{saisie} NON levé by={} : {e}", au.name));
-            return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban IMPOSSIBLE (store indisponible) : {e} — RÉESSAYER ; le ban est TOUJOURS actif"));
+            let maillon = ledger_append(&conn, "netban.remove.echec", &format!("{saisie} NON levé by={} : {e}", au.name));
+            let trace = mention_d_echec_sans_trace(&maillon);
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban IMPOSSIBLE (store indisponible) : {e} — RÉESSAYER ; le ban est TOUJOURS actif{trace}"));
         }
     };
     if let Some(c) = canon.as_deref() {
@@ -1087,14 +1088,34 @@ pub(crate) async fn netban_delete(State(st): State<AppState>, Extension(au): Ext
             match netban_remove(&conn, c) {
                 Ok(n) => retires += n,
                 Err(e) => {
-                    ledger_append(&conn, "netban.remove.echec", &format!("{c} (canon de {saisie}) NON levé by={} : {e}", au.name));
-                    return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban PARTIELLE ({retires} retiré(s)) puis ÉCHEC sur la forme canonique : {e} — RÉESSAYER"));
+                    let maillon = ledger_append(&conn, "netban.remove.echec", &format!("{c} (canon de {saisie}) NON levé by={} : {e}", au.name));
+                    let trace = mention_d_echec_sans_trace(&maillon);
+                    return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban PARTIELLE ({retires} retiré(s)) puis ÉCHEC sur la forme canonique : {e} — RÉESSAYER{trace}"));
                 }
             }
         }
     }
-    ledger_append(&conn, "netban.remove", &format!("{saisie} canon={} retirés={retires} by={}", canon.as_deref().unwrap_or("(non analysable)"), au.name));
-    Json(json!({ "ok": true, "ip": saisie, "canon": canon, "retires": retires })).into_response()
+    // `P10.31-u` — LE MAILLON DE LA LEVÉE EST CONSOMMÉ (contrat de `netban_add`). La soupape de
+    // récupération répondait « fait » que la ligne `netban.remove` soit entrée ou non : une levée
+    // de ban pouvait manquer au registre tamper-evident sans que l'exploitant le sache (l'aveu ne
+    // vivait que sur la sortie d'erreur). Le ban EST levé : l'aveu voyage à côté du succès, jamais
+    // à sa place, et le corps nominal reste celui d'avant, clé pour clé.
+    let maillon = ledger_append(&conn, "netban.remove", &format!("{saisie} canon={} retirés={retires} by={}", canon.as_deref().unwrap_or("(non analysable)"), au.name));
+    let mut corps = json!({ "ok": true, "ip": saisie, "canon": canon, "retires": retires });
+    if let Some(cause) = maillon.cause_de_non_inscription() {
+        corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+    }
+    Json(corps).into_response()
+}
+
+/// `P10.31-u` — LA MENTION QU'UN REFUS DE LEVÉE AJOUTE QUAND SON PROPRE MAILLON (`netban.remove.echec`)
+/// N'EST PAS ENTRÉ. Distincte de la phrase du cinq cent trois, qu'elle suit sans la changer ; elle
+/// porte la cause du registre, jamais l'adresse visée. Vide sur le chemin nominal.
+fn mention_d_echec_sans_trace(maillon: &crate::ledger::MaillonDeRegistre) -> String {
+    match maillon.cause_de_non_inscription() {
+        None => String::new(),
+        Some(c) => format!(" ; cet échec n'est PAS au registre non plus ({c})"),
+    }
 }
 /// `P10.20-w` — l'annulation n'a PAS pu être écrite : 503 nommé, et la riposte reste VIVANTE.
 pub(crate) const CAUSE_ANNULATION_NON_ENREGISTREE: &str =

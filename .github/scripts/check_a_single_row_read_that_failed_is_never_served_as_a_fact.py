@@ -284,9 +284,13 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # RE-DÉRIVÉS le 2026-10-14 (`P10.20-b`, rang trois : `run_advanced_rules`) : relevé de l'arbre ce jour-là, après le
 # correctif, MESURÉ par cette garde — 41 sites sur 21 fichiers (`run_advanced_rules` perd son site et c'était le
 # dernier d'`alerting.rs`, qui SORT du relevé). Même règle : 41 -> 28 (69 % = 28,29), 21 -> 13 (65 % = 13,65).
-RELEVE_SITES = 41
-RELEVE_FICHIERS = 21
-PLANCHER_SITES = 28
+# RE-DÉRIVÉS le 2026-10-14 (`P10.20-b`, rang quatre : `ai_provider_update`, `ai_provider_delete`) : relevé de l'arbre ce
+# jour-là, après le correctif, MESURÉ par cette garde — 39 sites sur 20 fichiers (chacun perd son site, c'étaient les
+# deux derniers d'`ai.rs`, qui SORT du relevé ; le reclassement de `case_runbooks_json` ne change pas la population).
+# Même règle : 39 -> 26 (69 % = 26,91), 20 -> 13 (65 % = 13,0).
+RELEVE_SITES = 39
+RELEVE_FICHIERS = 20
+PLANCHER_SITES = 26
 PLANCHER_FICHIERS = 13
 
 # ================================================================================================
@@ -420,12 +424,9 @@ DEFAUTS_RANG_3_INTERNE = {
     # que ce jumeau de `playbooks_list` est au rang trois quand l'autre est au rang deux — celui-ci ne
     # sert rien, il s'abstient.
     ("daemon/src/handlers/playbooks.rs", "run_playbooks"): ("unwrap_or_else",),
-    # `.ok()?` sur la ligne du dossier : la projection ENTIÈRE (tactique dominante, recommandation,
-    # catalogue) disparaît du corps de dossier. RÉSERVE ÉCRITE : son unique appelant de production
-    # (`incidents.rs:608`) n'a PAS été relu pour ce lot, donc le rang trois est le plus prudent des
-    # deux lectures possibles ; si cet appelant sert un corps où la section manque en silence, cette
-    # entrée est un rang deux.
-    ("daemon/src/handlers/incidents.rs", "case_runbooks_json"): ("ok.?",),
+    # ENTRÉE DÉPLACÉE AU RANG QUATRE PAR `P10.20-b` (2026-10-14) : `incidents.rs::case_runbooks_json` (`ok.?`). Sa
+    # réserve écrite (« son unique appelant, `incidents.rs:608`, n'a PAS été relu ») est levée par la relecture : voir
+    # la classe 5.
 }
 
 # --- CLASSE 5 : RANG QUATRE — FAIL-CLOSED. Le repli REFUSE (404, 400, 401, 409, ou une contrainte
@@ -433,8 +434,12 @@ DEFAUTS_RANG_3_INTERNE = {
 # ligne qui existe, « aucune MFA enrôlée » pour une table qui n'a pas répondu — mais aucun fait n'est
 # inventé et aucune porte ne s'ouvre. C'est la classe la plus nombreuse, et la moins urgente.
 DEFAUTS_RANG_4_FAIL_CLOSED = {
-    ("daemon/src/handlers/ai.rs", "ai_provider_delete"): ("ok",),
-    ("daemon/src/handlers/ai.rs", "ai_provider_update"): ("ok",),
+    # DEUX ENTRÉES RETIRÉES PAR `P10.20-b` (rang quatre, 2026-10-14) : `ai.rs::ai_provider_update` et
+    # `ai_provider_delete` (`ok`) — une lecture ratée du fournisseur d'IA visé rendait 404 « provider introuvable »,
+    # y compris sur la DÉSACTIVATION d'urgence d'un fournisseur qui reçoit toujours les questions posées à l'assistant.
+    # Lus en `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503 `CAUSE_FOURNISSEUR_D_IA_NON_MODIFIE_NON_LU`
+    # ou `…_NON_SUPPRIME_NON_LU` avant toute transaction, rien d'écrit (témoins : `fournisseurs_d_ia_lectures_avouees.rs`,
+    # sous `--features ai`). C'étaient les deux derniers sites d'`ai.rs`, qui SORT du relevé.
     # TROIS ENTRÉES RETIRÉES PAR `P10.20-b` (rang quatre, 2026-10-13) : `alerting.rs::policy_update`,
     # `policy_delete`, `silence_delete` (`is_err`) — une lecture ratée de la route ou du silence visé rendait
     # 404 « introuvable », et l'administrateur qui levait un silence en urgence le lisait déjà levé. Elles sont lues
@@ -512,6 +517,14 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # `daemon/src/tests/mfa_lectures_de_rang_quatre_avouees.rs`).
     ("daemon/src/handlers/idp.rs", "ldap_login_post"): ("ok.map",),
     ("daemon/src/handlers/idp.rs", "load_provider"): ("ok.map",),
+    # VENUE DU RANG TROIS PAR `P10.20-b` (2026-10-14) : `.ok()?` sur la ligne du dossier, la projection entière rend
+    # `None`. Relu sur `c78be971` : l'unique appelant de production est `case_runbooks_get` (la citation
+    # `incidents.rs:608` de la réserve était périmée), qui ÉTABLIT d'abord l'existence du dossier
+    # (`etablir_le_dossier` : 404 nommé sur l'absence, 503 nommé sur une lecture refusée) puis sert ce `None` en 503
+    # nommé (`refus_du_dossier_non_lu`). Aucune section ne manque en silence, aucun fait n'est inventé : ce n'est pas
+    # un rang deux. Reste une cause approximative — un dossier supprimé entre les deux lectures se lit « non lu » —,
+    # d'où le rang quatre et non le retrait.
+    ("daemon/src/handlers/incidents.rs", "case_runbooks_json"): ("ok.?",),
     ("daemon/src/handlers/incidents.rs", "incident_apply_tier"): ("is_err",),
     # RECLASSÉ PAR LA CLÉ ELLE-MÊME : le classement du matin le rangeait au rang deux (« le runbook
     # DISPARAÎT de la vue d'authoring ») ; la relecture de son unique consommateur a montré un 404

@@ -1413,33 +1413,15 @@ fn main() {
                 }
             }
         };
-        let (mut imported, mut skipped): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
-        for (origin, d) in &docs {
-            let title = d.get("title").and_then(|v| v.as_str()).unwrap_or("(sans titre)").to_string();
-            match sigma_translate(d) {
-                Ok(t) => {
-                    if let Some(c) = &conn {
-                        // Résolution, protection et écriture : `sigma_cli_appliquer_une` (MÊME résolution que les
-                        // chemins web/bulk). `P10.20-b` : une lecture ratée sort en échec, sans paniquer.
-                        match sigma_cli_appliquer_une(c, &t) {
-                            Ok(SigmaCliIssue::Ecrite) => {}
-                            Ok(SigmaCliIssue::Protegee(m)) => {
-                                let reason = if m == 1 { "existe comme overlay géré (managed=1) — non écrasé" }
-                                             else { "existe comme détection native (builtin/seed, managed=0) — NON écrasée par un import Sigma" };
-                                skipped.push(json!({ "title": t.name, "reason": reason, "source": origin }));
-                                continue;
-                            }
-                            Err(cause) => {
-                                eprintln!("[sigma] {origin} : {cause} — ARRÊT : cette règle et les suivantes NE sont PAS importées ; {} règle(s) déjà écrite(s) le restent.", imported.len());
-                                std::process::exit(1);
-                            }
-                        }
-                    }
-                    imported.push(json!({ "name": t.name, "severity": t.severity, "mitre": t.mitre, "query": t.query, "warnings": t.warnings, "source": origin }));
-                }
-                Err(e) => skipped.push(json!({ "title": title, "reason": e, "source": origin })),
+        // Traduction, résolution, protection et écriture : `sigma_cli_importer` (sigma.rs). `P10.20-b` : une lecture
+        // ratée ou une écriture refusée rend l'ARRÊT — sa ligne sur stderr, sortie en 1, sans paniquer.
+        let SigmaCliRapport { imported, skipped } = match sigma_cli_importer(conn.as_deref(), &docs) {
+            Ok(rapport) => rapport,
+            Err(arret) => {
+                eprintln!("{}", arret.ligne());
+                std::process::exit(1);
             }
-        }
+        };
         let report = json!({
             "dry_run": dry,
             "imported": imported,

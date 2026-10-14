@@ -36,9 +36,10 @@
 //      Avec la somme gardée par (b), chacune des six composantes comparées a son témoin propre. L'ingestion (max+1)
 //      ne produit pas ces écritures, sauf celle qui déplace la borne haute des `id` ;
 //  (k) la simulation garde ses codes d'avant : sous le balayage d'interruptions de `purge_plan`, la ligne de la
-//      ventilation rend `plan_row_unread` sur autant de rangs que (e) en nomme, à un près, et le balayage agrégé `db`.
-// MUTATIONS (jouées sous variable de mutation, retirées du source) : `P3_SANS_RELECTURE` (comparaison retirée : a, b
-// rouges, les 86 autres témoins de purge et de rétention légale restent verts), `P3_HORS_TX` (mesure prise à l'entrée de `purge_apply`, avant le `BEGIN IMMEDIATE` : a, b rouges),
+//      ventilation rend `plan_row_unread` sur exactement un rang de moins que (e) n'en nomme (l'événement d'audit que
+//      `purge_inscribe` pose avant la relecture), et le balayage agrégé `db`.
+// MUTATIONS (jouées sous variable de mutation, retirées du source) : `P3_SANS_RELECTURE` (comparaison retirée : a, b,
+// f, g, h, i, j rouges — 7 des 94 témoins de purge et de rétention légale, les 87 autres verts, mesuré sur 55c7ecbb), `P3_HORS_TX` (mesure prise à l'entrée de `purge_apply`, avant le `BEGIN IMMEDIATE` : a, b rouges),
 // `P3_COMPTE_SEUL` (seul le compte comparé : a, b rouges), `P3_SANS_IDSUM` (somme des `id` omise : b rouge seul),
 // `P3_LECTURE_AVALEE` (relecture en erreur traitée comme « rien n'a bougé » : e rouge), `P3_SANS_GARDE_DE_COMPTE`
 // (refus `stale_token` même à compte différent : c rouge). Reprise après vérification : `M_SANS_VENT_CMP`,
@@ -422,10 +423,11 @@ fn pec_relecture_non_faite_refuse_en_la_nommant() {
     let _ = pec_frappes_de_la_relecture();
 }
 
-/// (k) SIMULATION, CODES D'AVANT : `purge_plan` lit la même mesure par `mesurer_le_perimetre`, sur la même base et
-/// sous le même prédicat que la relecture de (e) : chaque lecture y exécute le même programme. Le
-/// balayage d'interruptions de la simulation doit donc rendre `plan_row_unread` (site de la ventilation) sur
-/// autant de rangs, à un près, que (e) en a nommés « ligne de la ventilation », et `db` sur les rangs du balayage
+/// (k) SIMULATION, CODES D'AVANT : `purge_plan` lit la même mesure par `mesurer_le_perimetre`, sous le même
+/// prédicat que la relecture de (e), sur la même base moins l'événement d'audit que `purge_inscribe` pose avant la
+/// relecture : chaque lecture y exécute le même programme. Le balayage d'interruptions de la simulation doit donc
+/// rendre `plan_row_unread` (site de la ventilation) sur un rang de moins que (e) n'en a nommés « ligne de la
+/// ventilation », et `db` sur les rangs du balayage
 /// agrégé qui les précèdent immédiatement — un échec de l'agrégat rendu en `plan_row_unread` (ou une ligne de
 /// ventilation rendue en `db`) change ces comptes.
 #[test]
@@ -449,19 +451,22 @@ fn pec_simulation_garde_ses_codes_de_refus() {
         }
         codes.push((cible, purge_refusal_code(&e)));
     }
-    // Écart d'UN rang toléré : mesuré 163 rangs côté simulation pour 164 côté relecture (même instruction, même
-    // base) ; un agrégat compté avec la ventilation en ajouterait plus de cent, une ventilation rendue en `db` les
-    // retirerait tous.
+    // Décalage FIXE d'un rang : 163 rangs côté simulation pour 164 côté relecture. Même instruction, mais PAS la même
+    // base : la relecture tourne après `purge_inscribe`, dont l'événement d'audit (`origin='daemon'`)
+    // est un enregistrement de plus que le balayage de la ventilation parcourt sans le retenir. Mesuré : avec ce même
+    // événement posé avant la simulation (`Q8_DIAG_AUDIT`, joué puis retiré du source), les deux comptes s'égalent. Un agrégat compté avec la
+    // ventilation en ajouterait plus de cent, une ventilation rendue en `db` les retirerait tous.
     assert!(!rangs_ventilation.is_empty(), "simulation : la ligne de la ventilation est frappée : {codes:?}");
     let (premier, dernier) = (rangs_ventilation[0], rangs_ventilation[rangs_ventilation.len() - 1]);
     let voisins: Vec<&(u64, &str)> = codes
         .iter()
         .filter(|(rang, _)| (*rang + 2 >= premier && *rang <= premier) || (*rang >= dernier && *rang <= dernier + 2))
         .collect();
-    assert!(
-        rangs_ventilation.len().abs_diff(ventilation.len()) <= 1,
-        "simulation : `plan_row_unread` (ventilation) sur autant de rangs, à un près, que la ligne de ventilation de la \
-         relecture ({} contre {}) — rangs simulation {rangs_ventilation:?}, relecture agrégat {agregat:?}, relecture \
+    assert_eq!(
+        rangs_ventilation.len() + 1,
+        ventilation.len(),
+        "simulation : `plan_row_unread` (ventilation) sur un rang de moins que la ligne de ventilation de la relecture \
+         (l'événement d'audit de `purge_inscribe`) ({} contre {}) — rangs simulation {rangs_ventilation:?}, relecture agrégat {agregat:?}, relecture \
          ventilation {ventilation:?}, codes aux bords {voisins:?}",
         rangs_ventilation.len(),
         ventilation.len()

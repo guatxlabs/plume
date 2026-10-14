@@ -765,16 +765,142 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
             // `P4.7-k` — une levée qui n'a rien retiré SE DIT (le `#[must_use]` de la pose est
             // déplacé sur la levée : un ban qu'on croit levé est pire que pas de levée). REPRISE
             // 2026-08-29 : un ÉCHEC de la suppression ne se lit plus comme « rien à retirer ».
-            // `P10.20-v` — l'issue du maillon est RENDUE depuis ce lot ; cette levée-ci ne la
-            // consomme pas (la perte part sur la sortie d'erreur de la primitive). Classé, pas
-            // sous-entendu : la famille couverte par cette clé est la POSE, pas la levée.
-            match netban_remove(&conn, &canon) {
-                Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: action unban_ip)")),
-                Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: action unban_ip) : {e}")),
-            };
+            //
+            // `P10.31-u` — L'ISSUE DE LA LEVÉE EST CONSOMMÉE, COMME CELLE DE LA POSE. L'échec était
+            // inscrit au registre, puis la route rendait le deux cent quatre muet de la réussite :
+            // l'adresse restait bloquée et l'exploitant lisait « levé ». Il refuse désormais par un
+            // cinq cent trois nommé (contrat de `netban_delete`) et le statut reste `approved`. Une
+            // seconde approbation ne relève la levée que tant que la riposte n'est pas close : l'agent
+            // (`actions_pending`) et le responder local réclament les ripostes sans hôte et les closent
+            // (`done`), après quoi elle rend le deux cent quatre sans rien lever. La phrase ne promet
+            // donc que `DELETE /api/netban/{ip}`. Une levée FAITE dont le maillon n'est pas entré le
+            // dit à côté du succès (contrat de `netban_add`).
+            match lever_le_miroir_http(&conn, &canon, "auto: action unban_ip") {
+                LeveeDuMiroirHttp::Levee => {}
+                LeveeDuMiroirHttp::LeveeSansTrace(cause) => {
+                    let mut corps = json!({ "ok": true });
+                    corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+                    return Json(corps).into_response();
+                }
+                LeveeDuMiroirHttp::NonLevee { erreur, trace_manquante } => {
+                    let trace = match trace_manquante {
+                        None => String::new(),
+                        Some(c) => format!(" ; cet échec n'est PAS au registre non plus ({c})"),
+                    };
+                    return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LEVEE_NON_FAITE} ({erreur}){trace}"));
+                }
+            }
         }
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// `P10.31-u` — la ligne du blocage HTTP n'a PAS pu être retirée : 503, et l'adresse reste bloquée.
+/// Le seul geste promis est celui qui tient quel que soit le sort de la riposte : une nouvelle
+/// approbation ne rejoue plus rien une fois la riposte close par l'agent ou le responder.
+pub(crate) const CAUSE_LEVEE_NON_FAITE: &str =
+    "LEVÉE IMPOSSIBLE : la ligne du blocage HTTP n'a pas pu être retirée, donc le ban est TOUJOURS \
+     actif. La levée se fait directement par DELETE /api/netban/{ip} (approuver de nouveau la \
+     riposte ne la rejoue pas une fois la riposte exécutée).";
+
+/// `P10.31-u` — CE QU'UNE LEVÉE DU MIROIR HTTP REND À SES DEUX APPELANTS (`action_approve`, le
+/// responder). Un type nommé, comme `PoseDeBan` : l'appelant ne tire pas « levé » sans avoir écrit
+/// les deux autres cas.
+#[must_use = "une levée de ban ratée, ou dont la trace manque, doit être rapportée — jamais avalée"]
+#[derive(Debug)]
+pub(crate) enum LeveeDuMiroirHttp {
+    /// La suppression a eu lieu (zéro ligne comprise) et le registre porte `netban.remove`.
+    Levee,
+    /// La suppression a eu lieu, mais le registre n'a pas pris `netban.remove` — la cause est portée.
+    LeveeSansTrace(String),
+    /// La suppression n'a PAS eu lieu : le ban est toujours actif. `trace_manquante` porte la cause
+    /// quand `netban.remove.echec` n'est pas entré non plus.
+    NonLevee { erreur: String, trace_manquante: Option<String> },
+}
+
+/// `P10.31-u` — LA LEVÉE ET SON MAILLON, EN UN SEUL GESTE PARTAGÉ PAR LES DEUX APPELANTS. Le `detail`
+/// du registre est celui d'avant, mot pour mot ; `origine` le distingue.
+pub(crate) fn lever_le_miroir_http(conn: &Connection, canon: &str, origine: &str) -> LeveeDuMiroirHttp {
+    match netban_remove(conn, canon) {
+        Ok(retires) => {
+            let maillon = ledger_append(conn, "netban.remove", &format!("{canon} retirés={retires} ({origine})"));
+            match maillon.cause_de_non_inscription() {
+                None => LeveeDuMiroirHttp::Levee,
+                Some(cause) => LeveeDuMiroirHttp::LeveeSansTrace(cause.to_string()),
+            }
+        }
+        Err(erreur) => {
+            let maillon = ledger_append(conn, "netban.remove.echec", &format!("{canon} NON levé ({origine}) : {erreur}"));
+            let trace_manquante = maillon.cause_de_non_inscription().map(str::to_string);
+            LeveeDuMiroirHttp::NonLevee { erreur, trace_manquante }
+        }
+    }
+}
+
+/// `P10.31-u` — L'AVEU DU RESPONDER SUR SA LEVÉE. Il n'a ni réponse à servir ni bilan de tick : sa
+/// seule consommation possible est un avertissement sur la sortie d'erreur, comme pour `action.exec`.
+/// Il porte l'identifiant de l'action, jamais l'adresse visée. `None` sur le chemin nominal.
+pub(crate) fn aveu_du_responder_sur_la_levee(id: i64, issue: &LeveeDuMiroirHttp) -> Option<String> {
+    match issue {
+        LeveeDuMiroirHttp::Levee => None,
+        LeveeDuMiroirHttp::LeveeSansTrace(cause) => Some(format!(
+            "[responder] WARN action {id} : miroir HTTP levé, mais le registre n'a PAS pris la levée ({cause})"
+        )),
+        LeveeDuMiroirHttp::NonLevee { erreur, trace_manquante } => Some(format!(
+            "[responder] WARN action {id} : miroir HTTP NON levé, le ban HTTP est TOUJOURS actif ({erreur}){}",
+            match trace_manquante {
+                None => String::new(),
+                Some(c) => format!(" ; cet échec n'est PAS au registre non plus ({c})"),
+            }
+        )),
+    }
+}
+
+/// `P10.31-u` — LE MIROIR HTTP DU RESPONDER, APRÈS UNE RIPOSTE EXÉCUTÉE ET CLOSE. Déplacé de
+/// `respond_run` sans changement de comportement — le `continue` du saut franc devient un retour, et
+/// l'aveu de la levée est RENDU à l'appelant qui l'émet — pour être EXÉCUTÉ par un témoin : la garde
+/// englobante, la condition de pose et la branche de levée ne se relisent plus dans le source.
+/// `None` quand il n'y a rien à avouer.
+pub(crate) fn miroir_http_du_responder(conn: &Connection, id: i64, kind: &str, target: &str, status: &str, dry: bool) -> Option<String> {
+    // BAN NATIF PLUME (chantier ② Phase 1) : quand le RESPONDER local exécute réellement un ban_ip/unban_ip,
+    // synchronise AUSSI le store `net_ban` (blocage HTTP). Sur ce chemin (processus responder SÉPARÉ), le
+    // reload ne rafraîchit que le cache de CE processus ; le daemon LIVE, lui, re-lit la table au tick de
+    // maintenance (spawn_netban_maintenance) -> convergence. `action_approve`/`run_playbooks` couvrent déjà
+    // le blocage IMMÉDIAT in-process ; ceci est le filet pour un chemin qui atteindrait 'approved' hors d'eux.
+    if netban_from_actions_enabled() && status == "done" && !dry && (kind == "ban_ip" || kind == "unban_ip") {
+        // REPRISE 2026-08-29 — le `kind` est dans la CONDITION : un `kill_pid`/`stop_service`
+        // exécuté avec succès n'écrit plus une ligne `netban.forme` sur son PID ou son nom de
+        // service (cf. `action_approve`). Le signal des ripostes d'adresse perdues reste lisible.
+        // `P4.7-j` — même canonicaliseur unique qu'`action_approve` ; saut franc sur l'inanalysable.
+        let canon = match ssrf_norm_ip(target.trim()) { Some(i) => i.to_string(), None => {
+            ledger_append(conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP (responder, {kind}, action {id})"));
+            return None;
+        } };
+        if kind == "ban_ip" && !ip_is_protected(&canon) {
+            // REFUS SUR STORE PLEIN : tracé au ledger. L'enforcement RÉSEAU vient d'aboutir (`done`) —
+            // seul le miroir HTTP manque, et c'est précisément ce que l'exploitant doit pouvoir lire.
+            //
+            // `P10.20-v` — L'ÉCRITURE RATÉE A SON PROPRE GENRE, DONC ELLE SE FILTRE. Elle ne
+            // rejoue PAS l'action : l'enforcement réseau a abouti, et ce responder ne repasse
+            // pas sur une action close. Ce qui manque est le miroir HTTP, et c'est dit.
+            match netban_upsert(conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod") {
+                PoseDeBan::Arme => {}
+                PoseDeBan::RefuseParLePlafond => {
+                    ledger_append(conn, "netban.plafond", &format!("{canon} refusé : store live plein (responder, action {id})"));
+                }
+                PoseDeBan::NonEcrit(cause) => {
+                    ledger_append(conn, "netban.non-arme", &format!("{canon} NON armé (responder, action {id}) : {cause}"));
+                }
+            }
+        } else if kind == "unban_ip" {
+            // `P4.7-k` — le compte de la levée est DIT, jamais avalé (et son ÉCHEC aussi).
+            // `P10.31-u` — l'issue de la levée ET de son maillon est consommée : un échec ou une
+            // trace manquante sort en avertissement nommé (identifiant de l'action, pas l'adresse).
+            let issue = lever_le_miroir_http(conn, &canon, "auto: responder unban_ip");
+            return aveu_du_responder_sur_la_levee(id, &issue);
+        }
+    }
+    None
 }
 
 /// AUTO-INTÉGRATION action->net_ban OPT-IN (anti blast-radius). DÉFAUT **OFF** :
@@ -1568,45 +1694,10 @@ pub(crate) fn respond_run() {
         if let Some(cause) = maillon.cause_de_non_inscription() {
             eprintln!("[responder] WARN action {id} exécutée : le registre n'a PAS pris son verdict ({cause})");
         }
-        // BAN NATIF PLUME (chantier ② Phase 1) : quand le RESPONDER local exécute réellement un ban_ip/unban_ip,
-        // synchronise AUSSI le store `net_ban` (blocage HTTP). Sur ce chemin (processus responder SÉPARÉ), le
-        // reload ne rafraîchit que le cache de CE processus ; le daemon LIVE, lui, re-lit la table au tick de
-        // maintenance (spawn_netban_maintenance) -> convergence. `action_approve`/`run_playbooks` couvrent déjà
-        // le blocage IMMÉDIAT in-process ; ceci est le filet pour un chemin qui atteindrait 'approved' hors d'eux.
-        if netban_from_actions_enabled() && status == "done" && !dry && (kind == "ban_ip" || kind == "unban_ip") {
-            // REPRISE 2026-08-29 — le `kind` est dans la CONDITION : un `kill_pid`/`stop_service`
-            // exécuté avec succès n'écrit plus une ligne `netban.forme` sur son PID ou son nom de
-            // service (cf. `action_approve`). Le signal des ripostes d'adresse perdues reste lisible.
-            // `P4.7-j` — même canonicaliseur unique qu'`action_approve` ; saut franc sur l'inanalysable.
-            let canon = match ssrf_norm_ip(target.trim()) { Some(i) => i.to_string(), None => {
-                ledger_append(&conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP (responder, {kind}, action {id})"));
-                continue;
-            } };
-            if kind == "ban_ip" && !ip_is_protected(&canon) {
-                // REFUS SUR STORE PLEIN : tracé au ledger. L'enforcement RÉSEAU vient d'aboutir (`done`) —
-                // seul le miroir HTTP manque, et c'est précisément ce que l'exploitant doit pouvoir lire.
-                //
-                // `P10.20-v` — L'ÉCRITURE RATÉE A SON PROPRE GENRE, DONC ELLE SE FILTRE. Elle ne
-                // rejoue PAS l'action : l'enforcement réseau a abouti, et ce responder ne repasse
-                // pas sur une action close. Ce qui manque est le miroir HTTP, et c'est dit.
-                match netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod") {
-                    PoseDeBan::Arme => {}
-                    PoseDeBan::RefuseParLePlafond => {
-                        ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (responder, action {id})"));
-                    }
-                    PoseDeBan::NonEcrit(cause) => {
-                        ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (responder, action {id}) : {cause}"));
-                    }
-                }
-            } else if kind == "unban_ip" {
-                // `P4.7-k` — le compte de la levée est DIT, jamais avalé (et son ÉCHEC aussi).
-                // `P10.20-v` — même position qu'au site jumeau d'`action_approve` : l'issue du
-                // maillon est rendue, cette levée-ci ne la consomme pas, et c'est classé.
-                match netban_remove(&conn, &canon) {
-                    Ok(retires) => ledger_append(&conn, "netban.remove", &format!("{canon} retirés={retires} (auto: responder unban_ip)")),
-                    Err(e) => ledger_append(&conn, "netban.remove.echec", &format!("{canon} NON levé (auto: responder unban_ip) : {e}")),
-                };
-            }
+        // BAN NATIF PLUME (chantier ② Phase 1) : le miroir HTTP `net_ban` d'une riposte d'adresse
+        // exécutée, et l'aveu de sa levée (`miroir_http_du_responder`).
+        if let Some(aveu) = miroir_http_du_responder(&conn, id, &kind, &target, status, dry) {
+            eprintln!("{aveu}");
         }
     }
 }

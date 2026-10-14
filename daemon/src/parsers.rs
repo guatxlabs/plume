@@ -32,7 +32,7 @@ pub(crate) fn parsers_cell() -> &'static parking_lot::RwLock<HashMap<String, Vec
 // parseurs lus actifs au dernier rechargement publié : un parseur désactivé ou supprimé en sort.
 pub(crate) static PARSERS_PAR_ID: std::sync::OnceLock<parking_lot::RwLock<HashMap<String, HashMap<i64, (IdentiteDeParseur, (String, regex::Regex))>>>> = std::sync::OnceLock::new();
 pub(crate) fn parsers_reload(conn: &Connection, db_path: &str) {
-    let lu = lire_registre_de_parseurs(conn, "SELECT id, source, pattern, name, created FROM parser WHERE enabled=1");
+    let lu = lire_registre_de_parseurs(conn, "SELECT id, source, pattern, name, created, enabled FROM parser");
     let memo_cell = PARSERS_PAR_ID.get_or_init(|| parking_lot::RwLock::new(HashMap::new()));
     let precedent: HashMap<i64, (IdentiteDeParseur, (String, regex::Regex))> = memo_cell.read().get(db_path).cloned().unwrap_or_default();
     let en_place = parsers_cell().read().contains_key(db_path);
@@ -40,7 +40,12 @@ pub(crate) fn parsers_reload(conn: &Connection, db_path: &str) {
     let non_attribuable = lu.non_attribuable;
     let mut out: Vec<(String, regex::Regex)> = Vec::new();
     let mut memo: HashMap<i64, (IdentiteDeParseur, (String, regex::Regex))> = HashMap::new();
+    // `enabled` de type inattendu, avec ce que CE rechargement a fait du parseur (publié ou non) : dit et
+    // compté APRÈS la compilation, jamais « gardé ACTIF » pour un motif rejeté (P10.20-b).
+    let mut inattendus: Vec<EnabledInattendu> = Vec::new();
     for l in lu.lignes {
+        let avant = out.len();
+        let (id, enabled_inattendu) = (l.id, l.enabled_inattendu);
         match (l.source, l.cellule) {
             (Ok(src), Ok(pat)) => {
                 if pat.len() <= 1000 {
@@ -57,7 +62,9 @@ pub(crate) fn parsers_reload(conn: &Connection, db_path: &str) {
                 }
             }
         }
+        if let Some(nature) = enabled_inattendu { inattendus.push(EnabledInattendu { id, nature, publie: out.len() > avant }); }
     }
+    dire_les_enabled_inattendus("parser", db_path, &inattendus, non_attribuable && en_place);
     if non_attribuable && en_place { return; } // registre en place GARDÉ
     { let mut w = parsers_cell().write(); w.insert(db_path.to_string(), out); } // MT-KEY : registre de CE db_path
     memo_cell.write().insert(db_path.to_string(), memo);
@@ -73,6 +80,31 @@ struct LigneDeParseur {
     source: rusqlite::Result<String>,
     cellule: rusqlite::Result<String>,
     identite: Option<IdentiteDeParseur>,
+    /// Nature de la cellule `enabled` quand elle n'est ni l'entier 0 ni l'entier 1 (la ligne reste ACTIVE).
+    enabled_inattendu: Option<&'static str>,
+}
+
+/// `enabled` d'une ligne de registre (colonne 5), jugé DANS LA BOUCLE et non par `WHERE enabled=1` (P10.20-b) :
+/// une cellule de type inattendu (blob, texte non convertible, réel non entier — l'affinité `INTEGER` du schéma
+/// ne les interdit pas — ou NULL d'un schéma altéré) n'égalait pas 1 et sortait le parseur du registre sans
+/// échec, ni compte, ni journal : une lecture ratée prise pour une absence. Même parti que `regle_active`
+/// (processors.rs) : l'entier 0 éteint (`None`), l'entier 1 arme, toute autre valeur laisse le parseur ACTIF
+/// et rend la NATURE de la cellule — jamais sa valeur — pour qu'elle soit dite et comptée.
+fn enabled_de_parseur(r: &rusqlite::Row<'_>) -> Option<Option<&'static str>> {
+    use rusqlite::types::ValueRef;
+    match r.get_ref(5) {
+        Ok(ValueRef::Integer(0)) => None,
+        Ok(ValueRef::Integer(1)) => Some(None),
+        Ok(ValueRef::Integer(_)) => Some(Some("entier autre que 0 ou 1")),
+        Ok(ValueRef::Real(_)) => Some(Some("réel")),
+        Ok(ValueRef::Text(_)) => Some(Some("texte")),
+        Ok(ValueRef::Blob(_)) => Some(Some("blob")),
+        Ok(ValueRef::Null) => Some(Some("NULL")),
+        // INATTEIGNABLE en l'état : `get_ref` n'échoue que sur un index hors bornes, or les deux SELECT
+        // (`parsers_reload`, `dparsers_reload`) lisent six colonnes. Gardée pour qu'une requête future amputée
+        // laisse le parseur ACTIF et dit plutôt que de paniquer au rechargement ; aucun témoin ne peut l'atteindre.
+        Err(_) => Some(Some("illisible")),
+    }
 }
 
 /// Version gardée de la MÊME règle pour l'identifiant `id` : présente au mémo ET d'identité relue égale à la
@@ -105,11 +137,14 @@ fn lire_registre_de_parseurs(conn: &Connection, sql: &str) -> RegistreDeParseurs
         }
     };
     let rows = match st.query_map([], |r| {
+        // `enabled` AVANT tout le reste : une ligne éteinte n'est ni lue, ni un échec, ni comptée au plafond —
+        // comme quand le SQL l'écartait.
+        let Some(enabled_inattendu) = enabled_de_parseur(r) else { return Ok(None) };
         let identite = match (r.get::<_, String>(3), r.get::<_, i64>(4)) {
             (Ok(nom), Ok(cree)) => Some((nom, cree)),
             _ => None,
         };
-        Ok(LigneDeParseur { id: r.get::<_, i64>(0)?, source: r.get::<_, String>(1), cellule: r.get::<_, String>(2), identite })
+        Ok(Some(LigneDeParseur { id: r.get::<_, i64>(0)?, source: r.get::<_, String>(1), cellule: r.get::<_, String>(2), identite, enabled_inattendu }))
     }) {
         Ok(rows) => rows,
         Err(e) => {
@@ -120,7 +155,8 @@ fn lire_registre_de_parseurs(conn: &Connection, sql: &str) -> RegistreDeParseurs
     };
     for row in rows {
         match row {
-            Ok(l) => {
+            Ok(None) => {} // ligne éteinte (enabled = 0)
+            Ok(Some(l)) => {
                 let id = l.id;
                 if let Err(e) = &l.source { lu.echecs.push(format!("source illisible (id={id}) : {e}")); }
                 if let Err(e) = &l.cellule { lu.echecs.push(format!("cellule illisible (id={id}) : {e}")); }
@@ -154,6 +190,54 @@ fn dire_les_echecs(registre: &'static str, db_path: &str, lu: &RegistreDeParseur
             .or_insert(0) += 1;
         journaliser_l_echec(db_path, format!("[{registre}] lecture ratée du registre de parseurs de {db_path} : {e} — {suite}"));
     }
+}
+
+static PARSEURS_ENABLED_INATTENDU_PAR_BASE: std::sync::OnceLock<parking_lot::RwLock<HashMap<(&'static str, String), u64>>> = std::sync::OnceLock::new();
+
+/// Une ligne lue dont `enabled` n'est ni 0 ni 1, et si CE rechargement l'a mise au registre qu'il construit.
+struct EnabledInattendu {
+    id: i64,
+    nature: &'static str,
+    publie: bool,
+}
+
+/// Dit chaque `enabled` de type inattendu (identifiant et NATURE de la cellule, jamais sa valeur) au journal, avec
+/// ce que CE rechargement en a fait. Le compte décrit le registre EN VIGUEUR de SA base et de SON registre : le
+/// nombre de parseurs à `enabled` inattendu qui y sont appliqués. RÈGLE DU REGISTRE GARDÉ (`garde` : lecture
+/// non attribuable avec un registre en place, qui reste en vigueur) : rien n'est publié, le compte n'est PAS
+/// touché (il décrit toujours le registre gardé) et chaque ligne dit « registre en place GARDÉ » — jamais
+/// « gardé ACTIF », que ce rechargement n'applique pas. Sinon le compte = les PUBLIÉS (une table réparée
+/// retombe à 0) ; un parseur lu mais non publié (motif invalide ou trop long, spec rejetée, cellule illisible
+/// sans version gardée) est dit « non publié » et n'est pas compté.
+fn dire_les_enabled_inattendus(registre: &'static str, db_path: &str, inattendus: &[EnabledInattendu], garde: bool) {
+    if !garde {
+        let n = inattendus.iter().filter(|e| e.publie).count() as u64;
+        PARSEURS_ENABLED_INATTENDU_PAR_BASE
+            .get_or_init(|| parking_lot::RwLock::new(HashMap::new()))
+            .write()
+            .insert((registre, db_path.to_string()), n);
+    }
+    for EnabledInattendu { id, nature, publie } in inattendus {
+        let suite = if garde {
+            "registre en place GARDÉ : ce rechargement ne publie rien"
+        } else if *publie {
+            "parseur gardé ACTIF"
+        } else {
+            "parseur NON publié (motif ou spec rejeté, ou cellule illisible sans version gardée)"
+        };
+        journaliser_l_echec(db_path, format!("[{registre}] enabled ni 0 ni 1 dans le registre de parseurs de {db_path} : id={id} ({nature}) -> {suite}"));
+    }
+}
+
+/// Parseurs à `enabled` de type inattendu APPLIQUÉS par le registre en vigueur de `db_path` (`registre`). LU PAR
+/// LES TÉMOINS SEULEMENT (aucune surface de production ne sert ce compte) ; en production, la ligne de journal
+/// en témoigne.
+#[cfg(test)]
+pub(crate) fn parseurs_enabled_inattendus_de(registre: &str, db_path: &str) -> u64 {
+    PARSEURS_ENABLED_INATTENDU_PAR_BASE
+        .get()
+        .and_then(|m| m.read().iter().find(|((r, d), _)| *r == registre && d == db_path).map(|(_, n)| *n))
+        .unwrap_or(0)
 }
 
 /// Écrit la ligne d'échec au journal (stderr) — en production, sa seule trace. Sous `cfg(test)` seulement,
@@ -535,11 +619,15 @@ pub(crate) static DPARSERS_PAR_ID: std::sync::OnceLock<parking_lot::RwLock<HashM
 pub(crate) fn dparsers_reload(conn: &Connection, db_path: &str) {
     // LECTURE RATÉE : même discipline que `parsers_reload` (voir son en-tête).
     // IDENTITÉ DE LA RÈGLE : même parti que `parsers_reload` (id + nom + création relus, sinon rien republié).
-    let lu = lire_registre_de_parseurs(conn, "SELECT id, source, spec, name, created FROM dparser WHERE enabled=1");
+    let lu = lire_registre_de_parseurs(conn, "SELECT id, source, spec, name, created, enabled FROM dparser");
     let memo_cell = DPARSERS_PAR_ID.get_or_init(|| parking_lot::RwLock::new(HashMap::new()));
     let precedent: HashMap<i64, (IdentiteDeParseur, CompiledDParser)> = memo_cell.read().get(db_path).cloned().unwrap_or_default();
     let mut out: Vec<CompiledDParser> = Vec::new();
     let mut memo: HashMap<i64, (IdentiteDeParseur, CompiledDParser)> = HashMap::new();
+    // `enabled` de type inattendu, avec ce que CE rechargement a fait du parseur (publié ou non), comme dans
+    // `parsers_reload`. La ligne écartée par le plafond n'est ni dite ni comptée (la boucle s'arrête avant).
+    // Les lignes éteintes sont déjà écartées par la lecture.
+    let mut inattendus: Vec<EnabledInattendu> = Vec::new();
     for l in lu.lignes.iter() {
         // PLAFOND AGRÉGÉ : borne le nombre de parseurs appliqués par event.
         if out.len() >= DPARSER_MAX_TOTAL {
@@ -547,6 +635,7 @@ pub(crate) fn dparsers_reload(conn: &Connection, db_path: &str) {
             eprintln!("[dparser] WARN plafond de {DPARSER_MAX_TOTAL} parseurs déclaratifs atteint — parseurs supplémentaires IGNORÉS (à partir de source={src}) ; réduire le nombre de parseurs config.d");
             break;
         }
+        let avant = out.len();
         match (&l.source, &l.cellule) {
             (Ok(src), Ok(spec)) => match serde_json::from_str::<Value>(spec) {
                 Ok(v) => match dparser_compile(src, &v) {
@@ -565,9 +654,11 @@ pub(crate) fn dparsers_reload(conn: &Connection, db_path: &str) {
                 }
             }
         }
+        if let Some(nature) = l.enabled_inattendu { inattendus.push(EnabledInattendu { id: l.id, nature, publie: out.len() > avant }); }
     }
     let en_place = dparsers_cell().read().contains_key(db_path);
     dire_les_echecs("dparser", db_path, &lu, en_place);
+    dire_les_enabled_inattendus("dparser", db_path, &inattendus, lu.non_attribuable && en_place);
     if lu.non_attribuable && en_place { return; } // registre en place GARDÉ
     { let mut w = dparsers_cell().write(); w.insert(db_path.to_string(), out); }
     memo_cell.write().insert(db_path.to_string(), memo);

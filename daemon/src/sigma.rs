@@ -869,9 +869,10 @@ pub(crate) fn sigma_import_disposition(existing: Option<i64>) -> SigmaDisp {
 #[derive(Debug, PartialEq)]
 pub(crate) enum SigmaCliIssue { Ecrite, Protegee(i64) }
 
-/// Le pas du CLI `sigma-import` pour UNE traduction (déplacé de `main.rs`, écritures inchangées). `P10.20-b` : une
-/// lecture ratée de la règle existante rend `Err(message)` AVANT toute écriture — la forme d'avant la prenait pour une
-/// absence et INSÉRAIT un doublon ; l'appelant sort en échec sans paniquer.
+/// Le pas du CLI `sigma-import` pour UNE traduction (déplacé de `main.rs`). `P10.20-b` : une lecture ratée de la règle
+/// existante rend `Err(message)` AVANT toute écriture — la forme d'avant la prenait pour une absence et INSÉRAIT un
+/// doublon ; une écriture refusée par la base rend aussi `Err(message)` (la forme d'avant paniquait sur `.expect`, code
+/// 101, sans le message d'arrêt). L'appelant sort en échec sans paniquer.
 pub(crate) fn sigma_cli_appliquer_une(c: &Connection, t: &SigmaTranslation) -> Result<SigmaCliIssue, String> {
     // #31 (cohérence avec e46a2f7) : dédup par `sigma_id` (UUID stable) D'ABORD — capte une
     // DÉRIVE de titre (même règle, titre changé -> UPDATE, pas de doublon) — sinon par nom
@@ -888,15 +889,75 @@ pub(crate) fn sigma_cli_appliquer_une(c: &Connection, t: &SigmaTranslation) -> R
         // UPDATE ciblé par ROWID (résolu par sigma_id/nom) : rafraîchit la logique + `name`
         // (titre possiblement DÉRIVÉ) + `sigma_id` (back-fill), (ré)active la règle.
         Some((rowid, _)) => {
-            c.execute("UPDATE rule SET name=?1, enabled=1, query=?2, is_soql=1, op=?3, threshold=?4, severity=?5, interval_s=?6, window_s=?7, mitre=?8, sigma_id=?9, managed=2 WHERE id=?10",
-                params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, t.sigma_id, rowid]).expect("update rule");
+            let ecrite = c.execute("UPDATE rule SET name=?1, enabled=1, query=?2, is_soql=1, op=?3, threshold=?4, severity=?5, interval_s=?6, window_s=?7, mitre=?8, sigma_id=?9, managed=2 WHERE id=?10",
+                params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, t.sigma_id, rowid]);
+            ecrite.map_err(|refus| format!("règle « {} » NON ÉCRITE ({refus}) : la base a refusé la mise à jour de la règle déjà importée — elle garde sa logique d'avant", t.name))?;
         }
         None => {
-            c.execute("INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,sigma_id,managed) VALUES(?1,1,?2,1,?3,?4,?5,?6,?7,?8,?9,2)",
-                params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, t.sigma_id]).expect("insert rule");
+            let ecrite = c.execute("INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,sigma_id,managed) VALUES(?1,1,?2,1,?3,?4,?5,?6,?7,?8,?9,2)",
+                params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, t.sigma_id]);
+            ecrite.map_err(|refus| format!("règle « {} » NON ÉCRITE ({refus}) : la base a refusé l'insertion — elle n'est pas créée", t.name))?;
         }
     }
     Ok(SigmaCliIssue::Ecrite)
+}
+
+/// `P10.20-b` — l'ARRÊT du CLI `sigma-import` : la source et la cause de la règle qui a échoué (lecture ratée ou
+/// écriture refusée), et le nombre de règles déjà écrites AVANT elle. Le CLI n'ouvre pas de transaction : celles-là
+/// restent écrites, et la ligne le dit.
+#[derive(Debug, PartialEq)]
+pub(crate) struct SigmaCliArret {
+    pub(crate) origine: String,
+    pub(crate) cause: String,
+    pub(crate) deja_ecrites: usize,
+}
+
+impl SigmaCliArret {
+    /// La ligne que `main` écrit sur stderr avant de sortir en 1 (texte d'avant l'extraction, octet pour octet).
+    pub(crate) fn ligne(&self) -> String {
+        format!(
+            "[sigma] {} : {} — ARRÊT : cette règle et les suivantes NE sont PAS importées ; {} règle(s) déjà écrite(s) le restent.",
+            self.origine, self.cause, self.deja_ecrites
+        )
+    }
+}
+
+/// Le rapport du CLI `sigma-import` : règles importées (ou à importer en `--dry-run`) et ignorées avec leur raison.
+#[derive(Debug)]
+pub(crate) struct SigmaCliRapport {
+    pub(crate) imported: Vec<Value>,
+    pub(crate) skipped: Vec<Value>,
+}
+
+/// `P10.20-b` — le corps du bras `sigma-import` de `main` (déplacé, rapport et messages inchangés) : traduit chaque
+/// document, l'applique par `sigma_cli_appliquer_une` quand une base est ouverte (`None` = `--dry-run`), et rend le
+/// rapport — ou l'ARRÊT à la première règle dont la lecture ou l'écriture a échoué. Les suivantes ne sont pas jouées.
+pub(crate) fn sigma_cli_importer(conn: Option<&Connection>, docs: &[(String, Value)]) -> Result<SigmaCliRapport, SigmaCliArret> {
+    let (mut imported, mut skipped): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
+    for (origin, d) in docs {
+        let title = d.get("title").and_then(|v| v.as_str()).unwrap_or("(sans titre)").to_string();
+        match sigma_translate(d) {
+            Ok(t) => {
+                if let Some(c) = conn {
+                    match sigma_cli_appliquer_une(c, &t) {
+                        Ok(SigmaCliIssue::Ecrite) => {}
+                        Ok(SigmaCliIssue::Protegee(m)) => {
+                            let reason = if m == 1 { "existe comme overlay géré (managed=1) — non écrasé" }
+                                         else { "existe comme détection native (builtin/seed, managed=0) — NON écrasée par un import Sigma" };
+                            skipped.push(json!({ "title": t.name, "reason": reason, "source": origin }));
+                            continue;
+                        }
+                        Err(cause) => {
+                            return Err(SigmaCliArret { origine: origin.clone(), cause, deja_ecrites: imported.len() });
+                        }
+                    }
+                }
+                imported.push(json!({ "name": t.name, "severity": t.severity, "mitre": t.mitre, "query": t.query, "warnings": t.warnings, "source": origin }));
+            }
+            Err(e) => skipped.push(json!({ "title": title, "reason": e, "source": origin })),
+        }
+    }
+    Ok(SigmaCliRapport { imported, skipped })
 }
 
 // `P10.25-g` — LES `COMMIT` DES IMPORTS SIGMA SONT JUGÉS : la forme d'avant rendait 200 et la liste des règles « importées »

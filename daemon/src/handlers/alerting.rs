@@ -422,10 +422,31 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
             plan_fire_units("", false, &[], &[])
         };
         let conn = db.lock();
+        // `P10.20-b` (rang trois) — L'ALERTE D'ABORD, L'ÉTAT ENSUITE. Le throttle d'une unité n'est posé que si son
+        // alerte est entrée (`INSERT OR IGNORE` réussi : une ligne écrite, ou la dédup d'une alerte encore ouverte).
+        // Avant, il l'était sans condition : une alerte refusée par le moteur (verrou, disque, trigger) laissait un
+        // throttle qui mutait le tir suivant pendant `win` — l'alerte n'existait ni à ce tour ni au suivant. Une
+        // écriture refusée laisse le throttle absent, sa cause va au journal seul, et l'unité tire de nouveau au prochain
+        // intervalle de la règle. Le bilan du tick compte des RÈGLES (contrat ci-dessus) : une règle dont au moins une
+        // alerte a été refusée compte pour UN abandon, quel que soit le nombre de ses unités refusées. `last_fired`
+        // n'est pas écrit si aucune alerte de ce tour n'est entrée alors qu'une au moins a été refusée ; il l'est,
+        // comme avant, quand toutes les unités sont muettes (aucun refus) ou quand une alerte au moins est entrée.
+        let mut alertes_ecrites = 0u32;
+        let mut alertes_refusees = 0u32;
         for unit in units {
-            let last_fire: Option<i64> = conn
+            // Le throttle lu en TROIS issues : absence établie = aucun tir antérieur (comme avant) ; lecture ratée = tir
+            // quand même (sens BRUYANT conservé, la dédup le borne), dite au journal. Elle n'est PAS un abandon : l'unité
+            // est évaluée et tire, le bilan ne compte que ce qui n'a pas été évalué ou pas écrit.
+            let last_fire: Option<i64> = match conn
                 .query_row("SELECT last_fire FROM alert_throttle WHERE rule_id=?1 AND throttle_key=?2", params![id, unit.key], |r| r.get(0))
-                .ok();
+                .optional()
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[alerting] WARN règle avancée #{id} : le throttle d'une unité n'a pas pu être lu ({e}) — l'unité est évaluée comme jamais tirée");
+                    None
+                }
+            };
             if window_suppressed(last_fire, now_ts, win) {
                 continue; // muté par la fenêtre de suppression
             }
@@ -452,16 +473,26 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
                     _ => (None, None, None),
                 }
             };
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,src_ip,pid,host,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                 params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, a_src, a_pid, a_host, crate::fondement::Fondement::Regle.mot()],
-            );
+            ) {
+                alertes_refusees += 1;
+                eprintln!("[alerting] WARN règle avancée #{id} : l'alerte d'une unité n'a pas pu être écrite ({e}) — throttle non posé, l'unité tirera de nouveau au prochain intervalle");
+                continue;
+            }
+            alertes_ecrites += 1;
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO alert_throttle(rule_id,throttle_key,last_fire) VALUES(?1,?2,?3)",
                 params![id, unit.key, now_ts],
             );
         }
-        let _ = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]);
+        if alertes_refusees > 0 {
+            abandonnees += 1; // une règle, un abandon
+        }
+        if alertes_refusees == 0 || alertes_ecrites > 0 {
+            let _ = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]);
+        }
     }
     crate::mesure_environnement::Mesure::Lue(abandonnees)
 }

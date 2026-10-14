@@ -127,16 +127,18 @@ ainsi refusés. PyYAML absent : code 2. Le croisement ne lit que les clés `jobs
 écart de lecture entre PyYAML et le lecteur de GitHub sur ces clés (forme YAML que l'un accepte et l'autre lit
 autrement) lui échappe ; une forme que PyYAML refuse est refusée (`yaml_illisible`). Reste hors d'atteinte pour (d) :
 un nom échappé dans un `env:` de flux (`"GITLEAKS_\\x42IN": /bin/true`), dont le pouvoir est celui de `BASH_ENV` en
-`env:` de flux. L'agrégat `ci-ok` n'est lu
-par aucune garde : retirer `security` de ses `needs` rend le check requis insensible au verdict. L'énumération des
+`env:` de flux. L'agrégat `ci-ok` n'est pas lu ici : c'est `check_the_ci_aggregate_waits_for_every_other_job.py` qui
+exige que ses `needs` couvrent tous les autres travaux, dont `security`. L'énumération des
 grammaires ne voit que le VOISINAGE d'une retouche de chaque échantillon, sur l'alphabet ASCII imprimable et la
 tabulation : une expression élargie seulement pour des commandes à deux retouches ou plus, ou pour des caractères hors
 de cet alphabet, n'y diverge pas, et RIEN n'oblige à changer aussi les composants : l'expression élargie SEULE laisse
 la garde verte, et le flux hostile qu'elle admet passe (mesuré par la vérification : `$` admis devant `{` seulement dans
 la classe du message `echo`, ou `set -u|set -${X:+n}u` — un verdict qui rend 0 sur GitHub devant un scan en échec est
 alors admis, que la garde non retouchée refuse). Seuls les témoins posés à la main et la RELECTURE de la ligne de
-l'expression au diff voient un tel élargissement. L'exclusion de la barre inverse des messages n'a pas d'exploitation connue (le guillemet étant exclu, `\\"` ne
-ferme pas la chaîne) ; elle est tenue par l'énumération comme les autres. Cinq méta-contrôles
+l'expression au diff voient un tel élargissement. L'exclusion de la barre inverse des messages est NÉCESSAIRE, même le guillemet exclu :
+`\\"` ne ferme pas la chaîne, qui court jusqu'au guillemet de la ligne suivante (`echo "x\\"` puis `echo "; exit 0 #"`
+forment UNE chaîne suivie de `exit 0` : bash rend 0, mesuré sur la garde de l'agrégat `ci-ok`) ; elle est tenue par
+l'énumération comme les autres. Cinq méta-contrôles
 ne sont vus que par croisement : retirer l'exécution du verdict RÉEL ne rougit qu'avec un verdict qui passe la
 grammaire et échoue à l'exécution (`rc=0` inséré avant `exit $rc`) ; retirer l'auto-épreuve des verdicts hostiles,
 celle des pas hostiles, ou la comparaison de leurs ensembles de contrôles, ne rougit qu'avec un contrôle d'exécution

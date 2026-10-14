@@ -535,15 +535,29 @@ fn eval_baseline(
     out
 }
 
+/// `P10.20-b` — pas de reprise d'une ligne de base dont une alerte d'anomalie a été refusée : elle redevient due
+/// `min(REPRISE_LIGNE_DE_BASE_S, interval_s)` secondes plus tard, et non à chaque tour de détection (20 s, soit
+/// environ 180 requêtes par heure tant que le refus dure). 300 s laissent jusqu'à une dizaine de reprises avant
+/// la clôture du bucket suivant (3600 s par défaut) ; une ligne de base évaluée dans les 300 dernières secondes du
+/// bucket n'en a aucune, et l'anomalie du bucket raté est alors perdue (abandon compté au refus).
+pub(crate) const REPRISE_LIGNE_DE_BASE_S: i64 = 300;
+
 /// Évalue les baselines DUES (enabled + intervalle écoulé + bucket clos non encore traité). Persiste les
 /// observations du bucket, lève les anomalies (RBA si risk_score>0, sinon alerte discrète), élague les
 /// observations hors fenêtre. MODE 0 : `baseline` vide -> `due` vide -> retour immédiat.
 /// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des lignes de
 /// base dues n'a pas pu être lue, `Lue(n)` = lignes de base dues abandonnées ce tick (ligne indécodable,
-/// évaluation en échec, ou au-delà du plafond de traitement par tick — cette dernière est RE-TENTÉE au
-/// tick suivant mais n'en est pas moins non évaluée ici).
+/// évaluation en échec, au-delà du plafond de traitement par tick — cette dernière est RE-TENTÉE au
+/// tick suivant mais n'en est pas moins non évaluée ici —, ou alerte d'anomalie refusée par le moteur, `P10.20-b` :
+/// une par ligne de base quel que soit le nombre de ses alertes refusées, reprise au pas `REPRISE_LIGNE_DE_BASE_S`).
+/// Une alerte écartée par la dédup (`INSERT OR IGNORE` qui rend `Ok(0)`, déjà entrée à un passage antérieur) n'est
+/// PAS un refus : elle vaut entrée.
 pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
+    // Instrument de témoin (`P10.20-b`) : un témoin peut FIXER l'heure du tick sur son fil, pour que le bucket clos ne
+    // dépende pas de l'heure du lancement. Hors `cfg(test)`, ni cette ligne ni le module n'existent.
+    #[cfg(test)]
+    let now_ts = horloge_fixee_des_lignes_de_base::lue().unwrap_or(now_ts);
     let mut abandonnees = 0u32;
     // Phase 1 : collecte des baselines dues (sous lock — lecture rapide).
     struct Due {
@@ -628,10 +642,21 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         }
     }
     // Phase 3 : écritures groupées sous verrou.
+    //
+    // `P10.20-b` (famille du rang trois d'`alerting.rs`) — L'ANOMALIE D'ABORD, L'ÉTAT ENSUITE. Avant, l'INSERT de
+    // l'alerte d'anomalie était avalé puis `last_bucket` AVANÇAIT : une alerte refusée par le moteur (verrou, disque,
+    // trigger) faisait passer le bucket pour traité, et l'anomalie n'existait nulle part. Et ne pas avancer
+    // `last_bucket` ne suffit pas : `last_run` avancé, la ligne de base n'est due qu'après `interval_s` — par
+    // défaut égal à `bucket_s` (3600) —, et le bucket clos d'alors est le SUIVANT. Une ligne de base dont une
+    // alerte n'est pas entrée n'avance donc pas `last_bucket`, et son `last_run` est posé de sorte qu'elle redevienne
+    // due après le pas de reprise (`REPRISE_LIGNE_DE_BASE_S`, borné par `interval_s`) : elle est alors réévaluée sur
+    // le MÊME bucket clos (l'historique exclut ce bucket, le z-score est le même) et réémet l'anomalie ; la dédup par
+    // bucket borne l'émission, et une alerte qu'elle écarte (`Ok(0)` : entrée à un passage antérieur, cas d'un refus
+    // PARTIEL entre deux entités) vaut entrée — seul un `Err` est un refus. Ni à chaque tour (le refus durable relançait la requête toutes les 20 s), ni après
+    // `interval_s` entier (le bucket raté serait remplacé par le suivant). L'abandon est COMPTÉ dans `abandonnees`,
+    // la cause va au journal seul. Chemin nominal inchangé : mêmes lignes, même `last_run`, même `last_bucket`.
     let conn = db.lock();
-    for id in &due_ids_all {
-        let _ = conn.execute("UPDATE ueba_baseline SET last_run=?1 WHERE id=?2", params![now_ts, id]);
-    }
+    let mut a_reevaluer: Vec<i64> = Vec::new();
     for ev in evals {
         if !ev.ok {
             abandonnees += 1;
@@ -645,6 +670,7 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             );
         }
         // Anomalies.
+        let mut alerte_refusee = false;
         for hit in &ev.hits {
             let reason = format!("baseline « {} » : {:.1} (z={:.2})", ev.name, hit.value, hit.z);
             if ev.risk_score > 0 {
@@ -655,14 +681,31 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 let dedup = format!("baseline-{}-{}-{}", ev.id, hit.entity, ev.bucket);
                 let title = format!("Anomalie baseline : {} — {} ({})", ev.name, hit.entity, ev.entity_type);
                 let detail = format!("valeur {:.1} au bucket {} — déviation z={:.2} ≥ seuil {:.1}", hit.value, ev.bucket, hit.z, ev.z_threshold);
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                     params![now_ts, format!("baseline.{}", ev.id), ev.severity, title, detail, dedup, ev.mitre, crate::fondement::Fondement::Regle.mot()],
-                );
+                ) {
+                    alerte_refusee = true;
+                    eprintln!("[detection] WARN ligne de base #{} : une alerte d'anomalie n'a pas pu être écrite ({e}) — bucket {} non marqué traité, réévalué au pas de reprise (au plus {} s, borné par interval_s)", ev.id, ev.bucket, REPRISE_LIGNE_DE_BASE_S);
+                }
             }
+        }
+        if alerte_refusee {
+            abandonnees += 1;
+            a_reevaluer.push(ev.id);
+            continue; // N'avance pas last_bucket ; last_run reçoit le pas de reprise ci-dessous.
         }
         // Avance last_bucket + élague les observations hors fenêtre (borne la table).
         let _ = conn.execute("UPDATE ueba_baseline SET last_bucket=?1 WHERE id=?2", params![ev.bucket, ev.id]);
+    }
+    for id in due_ids_all.iter().filter(|id| !a_reevaluer.contains(id)) {
+        let _ = conn.execute("UPDATE ueba_baseline SET last_run=?1 WHERE id=?2", params![now_ts, id]);
+    }
+    for id in &a_reevaluer {
+        let _ = conn.execute(
+            "UPDATE ueba_baseline SET last_run = ?1 - MAX(interval_s - ?2, 0) WHERE id=?3",
+            params![now_ts, REPRISE_LIGNE_DE_BASE_S, id],
+        );
     }
     // Élagage global des observations hors fenêtre (une passe cheap, bornée) — après avancée des buckets.
     let _ = conn.execute(
@@ -1158,4 +1201,20 @@ pub(crate) async fn baseline_test(State(st): State<AppState>, Extension(au): Ext
         }))
         .into_response()
     }).await.unwrap_or_else(|_| server_err("exécution échouée"))
+}
+
+/// Instrument de témoin (`P10.20-b`) : l'heure du tick de `run_baselines`, FIXÉE sur le fil courant. Hors `cfg(test)`,
+/// ce module n'existe pas.
+#[cfg(test)]
+pub(crate) mod horloge_fixee_des_lignes_de_base {
+    use std::cell::Cell;
+    thread_local! {
+        static HEURE: Cell<Option<i64>> = const { Cell::new(None) };
+    }
+    pub(crate) fn fixer(t: Option<i64>) {
+        HEURE.with(|h| h.set(t));
+    }
+    pub(crate) fn lue() -> Option<i64> {
+        HEURE.with(|h| h.get())
+    }
 }

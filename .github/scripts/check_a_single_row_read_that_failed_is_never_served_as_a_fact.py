@@ -281,10 +281,13 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # l'arbre ce jour-là, après le correctif, MESURÉ par cette garde — 42 sites sur 22 fichiers (chacun perd son site ;
 # aucun fichier ne sort : `alerting.rs` garde `run_advanced_rules`). Même règle : 42 -> 28 (69 % = 28,98), 22 -> 14
 # (65 % = 14,3).
-RELEVE_SITES = 42
-RELEVE_FICHIERS = 22
+# RE-DÉRIVÉS le 2026-10-14 (`P10.20-b`, rang trois : `run_advanced_rules`) : relevé de l'arbre ce jour-là, après le
+# correctif, MESURÉ par cette garde — 41 sites sur 21 fichiers (`run_advanced_rules` perd son site et c'était le
+# dernier d'`alerting.rs`, qui SORT du relevé). Même règle : 41 -> 28 (69 % = 28,29), 21 -> 13 (65 % = 13,65).
+RELEVE_SITES = 41
+RELEVE_FICHIERS = 21
 PLANCHER_SITES = 28
-PLANCHER_FICHIERS = 14
+PLANCHER_FICHIERS = 13
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -386,9 +389,11 @@ DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT = {
 # --- CLASSE 4 : RANG TROIS — INTERNE. Le repli ne sert aucun corps et n'écrit rien : il fait sauter
 # un tour, recalculer, ou retomber sur un défaut. Jamais anodin, jamais un fait inventé non plus.
 DEFAUTS_RANG_3_INTERNE = {
-    # Le throttle d'alerte n'est pas lu -> l'alerte TIRE. Le sens est BRUYANT (jamais un silence),
-    # c'est ce qui le tient au rang trois plutôt qu'au rang deux.
-    ("daemon/src/handlers/alerting.rs", "run_advanced_rules"): ("ok",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (rang trois, 2026-10-14) : `alerting.rs::run_advanced_rules` (`ok`) — le
+    # throttle d'alerte non lu faisait TIRER sans un mot. Il est lu en `.optional()` : absence établie = aucun tir
+    # antérieur (comme avant), lecture ratée = tir quand même (sens bruyant conservé), PAS comptée comme abandon
+    # (l'unité est évaluée : `Lue(0)`), et dite sur stderr (ligne lue par un témoin en sous-processus). Même lot : le throttle n'est plus posé quand l'alerte n'a pas été écrite. C'était le
+    # dernier site d'`alerting.rs`, qui SORT du relevé.
     # TROIS ENTRÉES RETIRÉES PAR `P10.20-b` (rang trois, 2026-10-12) : les lectures du chrono SLA —
     # `caseops.rs::sla_policy_for`, `sla_apply_policy`, `sla_on_status_change` (`ok`). Politique non
     # lue = repli muet sur le régime legacy ; ligne non lue = « rien à faire » (échéances non
@@ -436,7 +441,7 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # en `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503 nommé
     # (`CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE_NON_LUE`, `…_NON_SUPPRIMEE_NON_LUE`, `CAUSE_SILENCE_NON_LEVE_NON_LU`),
     # rien d'écrit. Leur voisin `silence_update` (`let Ok(..) = .. else`, forme que cette garde ne voit pas) est
-    # rallié par le même geste (`CAUSE_SILENCE_INCHANGE_NON_LU`). `alerting.rs` reste au relevé par `run_advanced_rules`.
+    # rallié par le même geste (`CAUSE_SILENCE_INCHANGE_NON_LU`). `alerting.rs` restait au relevé par `run_advanced_rules` (sorti le 2026-10-14).
     # `P10.29-b` — TROIS ENTRÉES RETIRÉES (2026-09-25), PARCE QUE LES QUATRE SITES SONT CORRIGÉS : `case_link_add` et
     # `case_item_add` (`is_err`) et les deux lectures de `case_merge` (`ok`, désormais `juger_la_fusion`) séparent
     # l'absence ÉTABLIE (`QueryReturnedNoRows`, 404 nommé) de la lecture refusée (503 nommé). MESURÉ sur la forme
@@ -1109,7 +1114,7 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-13 du relevé de ce jour-là : "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-14 du relevé de ce jour-là : "
               f"{RELEVE_SITES} sites sur {RELEVE_FICHIERS} fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "

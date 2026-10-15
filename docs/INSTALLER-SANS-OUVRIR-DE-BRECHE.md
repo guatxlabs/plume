@@ -265,6 +265,9 @@ appelle et refuse tout écart ; `controls` et `custom`, qui exécutent les comma
 (`/etc/plume/controls.d/*.check`, `/etc/plume/custom.d`), gardent les quatre : un contrôle `kubectl`,
 `nft` ou `ss` doit pouvoir ouvrir son socket. La table outil → famille est lue dans le code des outils,
 pas mesurée sous systemd.
+Pour `yara`, `PrivateTmp=true` ou `PrivateTmp=disconnected`, et `DynamicUser=yes` (qui impose un `/tmp`
+privé quelle que soit la valeur de `PrivateTmp=`), lui retirent `/tmp` et `/var/tmp` : la CI le refuse
+dans les fichiers livrés (unité et drop-in), un drop-in que vous posez après l'installation lui échappe.
 
 La colonne **Preuve** donne la requête qui montre que la source remonte. ♥ marque un capteur qui émet un
 **battement** (`category=health`) à chaque passage, même quand la source est calme : son silence est

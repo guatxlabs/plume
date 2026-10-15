@@ -42,14 +42,18 @@ CE QUE CETTE GARDE VÉRIFIE — TROIS JAMBES, AUCUNE ÉNUMÉRATION
    NOMME le capteur aveuglé ; une unit qui voit le /tmp de l'hôte doit poser `TMPDIR` sous un
    `ReadWritePaths=` de L'UNIT ELLE-MÊME — jugé sans le drop-in, puisqu'un des deux chemins d'installation
    la pose sans lui (`ProtectSystem=strict` : un TMPDIR hors de ses chemins inscriptibles fait échouer
-   `mktemp`). Témoins : sur les vraies cibles de yara, `PrivateTmp=yes` masque, `no` non.
+   `mktemp`). `PrivateTmp=disconnected` masque comme `yes`, et `DynamicUser=yes` implique un /tmp privé
+   quelle que soit la valeur de `PrivateTmp=` (systemd.exec(5), cf. `IMPLICATIONS`). Témoins : sur les
+   vraies cibles de yara, `yes`, `disconnected` et `no`+`DynamicUser=yes` masquent /tmp et /var/tmp,
+   `no` et `no`+`DynamicUser=no` aucune.
 
 LA TABLE DE MASQUAGE EST MESURÉE, ET ELLE EST TOTALE
 -----------------------------------------------------
 Une directive de bac à sable ne peut pas entrer dans une unit sans DIRE ce qu'elle masque : toute
 directive dont le nom relève de la famille (`Protect…`, `Private…`, `…Paths`, `TemporaryFileSystem`,
 `Root…`) et qui n'est pas dans la table fait échouer la garde. Ce qui est dans la table est mesuré,
-pas supposé — cf. `MASQUAGE` ci-dessous, en particulier le fait, CONTRE-INTUITIF et vérifié le
+ou LU dans systemd.exec(5) quand la table le dit (`PrivateTmp=disconnected`, `DynamicUser=` — ce
+dernier hors famille par son nom, déclaré dans `IMPLICATIONS`), jamais supposé — cf. `MASQUAGE` ci-dessous, en particulier le fait, CONTRE-INTUITIF et vérifié le
 2026-08-20 sur systemd 261, que RIEN ne re-expose un chemin masqué par `ProtectHome=yes` (ni
 `ReadWritePaths=`, ni `ReadOnlyPaths=`, ni `BindReadOnlyPaths=`) alors que `ProtectHome=tmpfs`, lui,
 se laisse re-exposer par un `Bind…Paths=`.
@@ -79,6 +83,17 @@ import sys
 #   ProtectSystem=… .......... ne masque RIEN : rend l'arborescence en lecture seule.
 #   PrivateTmp=yes ........... REMPLACE /tmp et /var/tmp par un tmpfs neuf ; mesure antérieure du
 #       dépôt (2026-08-02) : ReadWritePaths= n'y peut rien (226/NAMESPACE). Re-exposable = False.
+#   PrivateTmp=disconnected .. (systemd ≥ 257) MASQUE AUSSI : systemd.exec(5), systemd 262, « the
+#       directories will be backed by a completely new tmpfs instance, meaning that the storage is
+#       fully disconnected from the host namespace ». LU dans la doc, PAS mesuré ici : rangé avec
+#       `yes`, re-exposable = False (une re-exposition crue sans mesure rendrait la garde aveugle).
+#       Seule exception documentée : `DefaultDependencies=no` sans `RequiresMountsFor=/var/` laisse
+#       le /var/tmp de l'hôte — non modélisée, la garde le compte masqué (bruyante, jamais aveugle).
+#   DynamicUser=yes .......... n'est PAS de la famille par son nom, mais IMPLIQUE un /tmp privé :
+#       systemd.exec(5), systemd 262 : « unless PrivateTmp= is manually set to "true",
+#       "disconnected" would be implied » ; avant 257 il impliquait `PrivateTmp=yes`. Dans les deux
+#       cas /tmp et /var/tmp sont masqués, QUELLE QUE SOIT la valeur de PrivateTmp= posée à côté
+#       (`false` n'y peut rien) : c'est ce que la garde retient, cf. IMPLICATIONS.
 HOME_PREFIXES = ("/home", "/root", "/run/user")
 MASQUAGE = {
     "ProtectHome": {
@@ -89,13 +104,19 @@ MASQUAGE = {
     },
     "ProtectSystem": {v: ((), False) for v in
                       ("yes", "true", "on", "1", "no", "false", "off", "0", "full", "strict")},
-    "PrivateTmp": {v: (("/tmp", "/var/tmp"), False) for v in ("yes", "true", "on", "1")}
-                  | {v: ((), False) for v in ("no", "false", "off", "0", "disconnected")},
+    "PrivateTmp": {v: (("/tmp", "/var/tmp"), False) for v in ("yes", "true", "on", "1", "disconnected")}
+                  | {v: ((), False) for v in ("no", "false", "off", "0")},
     "PrivateDevices": {v: (("/dev",), False) for v in ("yes", "true", "on", "1")}
                       | {v: ((), False) for v in ("no", "false", "off", "0")},
     # Ne touchent ni /home ni les chemins du FIM : /proc/sys, /sys, les cgroups en lecture seule.
     "ProtectKernelTunables": None, "ProtectKernelModules": None, "ProtectKernelLogs": None,
     "ProtectControlGroups": None, "ProtectClock": None, "ProtectHostname": None,
+}
+# Directives HORS de la famille (par leur nom) qui IMPLIQUENT un masquage : {directive: {valeur: (préfixes,
+# re-exposable)}}. Booléen systemd : une valeur absente de la table fait refuser de conclure.
+IMPLICATIONS = {
+    "DynamicUser": {v: (("/tmp", "/var/tmp"), False) for v in ("yes", "true", "on", "1")}
+                   | {v: ((), False) for v in ("no", "false", "off", "0")},
 }
 NEUTRES = {"ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs",
            "ProtectControlGroups", "ProtectClock", "ProtectHostname"}
@@ -164,6 +185,16 @@ def masques_de(eff: dict, errs: list, ou: str):
             elif cle in LISTES_REEXPOSANTES:
                 # `-` = optionnel, `+` = relatif à la racine : on ne garde que le chemin.
                 reexposes += [p.lstrip("-+!:").split(":")[0] for p in vals]
+            continue
+        if cle in IMPLICATIONS:
+            v = vals[-1].lower()
+            if v not in IMPLICATIONS[cle]:
+                errs.append(f"{ou}: `{cle}={vals[-1]}` — valeur non modélisée dans IMPLICATIONS : cette garde "
+                            f"refuse de conclure sur un /tmp qu'elle ne sait pas calculer.")
+                continue
+            prefixes, reexposable = IMPLICATIONS[cle][v]
+            masques += [(p, f"{cle}={vals[-1]} (implique un /tmp privé)", origine, reexposable)
+                        for p in prefixes]
             continue
         if not FAMILLE.match(cle):
             continue
@@ -408,19 +439,24 @@ def main() -> int:
                     f"soit l'extraction des chemins annoncés est cassée, soit la table MASQUAGE l'est. "
                     f"Cette garde refuse de rendre vert dans cet état.")
 
-    # Témoin de la jambe 3 : sur les VRAIES cibles de yara, `PrivateTmp=yes` DOIT en masquer, `no` aucune.
+    # Témoin de la jambe 3 : sur les VRAIES cibles de yara, `PrivateTmp=yes` et `=disconnected` DOIVENT en
+    # masquer /tmp ET /var/tmp, `no` aucune ; `DynamicUser=yes` les masque même à côté de `PrivateTmp=no`.
     for capteur in capteurs:
         cibles = cibles_de_scan(open(capteur, encoding="utf-8").read())
         if not any(sous(c, "/tmp") for c in cibles):
             continue
-        for valeur, doit_masquer in (("yes", True), ("no", False)):
-            mq, rx = masques_de(composer(lire_reglages(f"[Service]\nProtectHome=read-only\nPrivateTmp={valeur}\n"), {}),
+        for reglage, attendu in (("PrivateTmp=yes", {"/tmp", "/var/tmp"}),
+                                 ("PrivateTmp=disconnected", {"/tmp", "/var/tmp"}),
+                                 ("PrivateTmp=no", set()),
+                                 ("PrivateTmp=no\nDynamicUser=yes", {"/tmp", "/var/tmp"}),
+                                 ("PrivateTmp=no\nDynamicUser=no", set())):
+            mq, rx = masques_de(composer(lire_reglages(f"[Service]\nProtectHome=read-only\n{reglage}\n"), {}),
                                 [], "<témoin>")
-            masque = bool(injoignables(cibles, mq, rx))
-            temoins.append((capteur, f"PrivateTmp={valeur}", masque))
-            if masque is not doit_masquer:
-                errs.append(f"INSTRUMENT INVALIDE ({capteur}) : sous `PrivateTmp={valeur}` la garde conclut "
-                            f"« {'des cibles masquées' if masque else 'aucune cible masquée'} », attendu le contraire.")
+            vus = {c for c, *_ in injoignables(cibles, mq, rx)} & {"/tmp", "/var/tmp"}
+            temoins.append((capteur, reglage.replace("\n", " + "), bool(vus)))
+            if vus != attendu:
+                errs.append(f"INSTRUMENT INVALIDE ({capteur}) : sous `{reglage.replace(chr(10), ' + ')}` la garde "
+                            f"conclut masquées {sorted(vus) or 'aucune'}, attendu {sorted(attendu) or 'aucune'}.")
     if not any(str(t[1]).startswith("PrivateTmp=") for t in temoins):
         errs.append("INSTRUMENT INVALIDE : aucun capteur n'annonce /tmp parmi ses cibles de scan — le témoin "
                     "PrivateTmp ne s'est pas joué (yara.sh a-t-il perdu son PLUME_YARA_PATHS ?).")

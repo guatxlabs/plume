@@ -12,7 +12,7 @@ Des capteurs disaient faux sur eux-mêmes, dans les deux sens :
     « capteur mort » ;
   · `crowdsec.sh` rendait `acq_verdict=lit` quand la liste blanche des adresses privées absorbait toutes
     les lignes analysées (adresse cliente = relais d'un mandataire) : un faux calme ;
-  · `minio.sh` sortait en silence quand sa cible manquait ;
+  · `minio.sh` et `dataacl.sh` sortaient en silence quand leur cible manquait ;
   · `dataaccess.sh` se disait « actif » quand seules les règles d'audit de /etc étaient chargées.
 
 CE QUE LA GARDE FAIT — ELLE JOUE LES CAPTEURS LIVRÉS, JAMAIS UNE COPIE DE LEUR LOGIQUE
@@ -98,6 +98,11 @@ d'outils (les vrais, liés, plus des FAUX exécutables — `date` à heure fixe,
      prouvée dans le `.1`, et la lecture s'avoue en échec ; sans clé de données
      prouvée, le battement dit « couverture INCONNUE » en sévérité 1, jamais « actif », et sans aveu
      `unavailable` ; un `auditctl` lisible fait foi contre le journal.
+  G. dataacl, sous chaque awk : aucun chemin de `PLUME_ACL_PATHS` existant (absents, glob sans
+     correspondance) -> UN aveu `unavailable/missing-source` qui nomme la variable, aucune carte ; un chemin
+     présent à côté d'absents ->
+     carte inchangée (répertoires + fichier à risque), AUCUN aveu ; un chemin présent mais illisible (mode
+     000) -> aveu `missing-source` qui le nomme, lui seul, sans taire la carte des autres ni son entrée de tête.
 Partout : sortie 0, enveloppes de spool lisibles comme JSON, aucun fichier caché laissé dans le spool, et
 les champs de chaque battement déclarés dans l'en-tête `# plume-emits:` de son capteur.
 
@@ -153,10 +158,14 @@ CE QU'ELLE NE TIENT PAS
   dite non prouvée. Les CONFIG_CHANGE ont la forme relevée dans la documentation du noyau
   (`op=add_rule`/`op=remove_rule`, `res=`), pas sur un noyau joué ici ; une clé écrite en hexadécimal (plusieurs
   clés sur une règle) n'est pas lue, comme avant.
-· `dataacl.sh` sort toujours en silence quand aucun chemin de `PLUME_ACL_PATHS` n'existe. Le démon a déjà
-  ANNONCÉ `dataacl` au canal de couverture (`SOURCES_DU_CANAL_D_AVEU`, `daemon/src/collected.rs`, `P10.32-k`,
-  tolérance `CESP_AVEU_ANNONCEES`) : poser `plume_unavailable dataacl …` dans le capteur ne demande plus rien
-  au démon, et la tolérance se tait seule ce jour-là.
+· dataacl : des chemins ABSENTS à côté d'un chemin présent ne sont pas avoués (choix du capteur : la liste
+  par défaut vise plusieurs volumes d'un nœud k3s, tous ne sont pas sur chaque nœud) ; seule la TÊTE de
+  chaque chemin est sondée (`find -maxdepth 1`) : un sous-répertoire illisible plus bas reste muet. Le cas
+  « chemin illisible » n'est pas jouable sous root (un mode 000 ne ferme rien) : il est alors sauté et dit
+  sur la sortie. La variable NON posée n'est pas jouée : les défauts sont des chemins absolus de l'hôte
+  (`/etc/ssl/private` existe sur la plupart), la branche est la même que la variable posée. Les droits
+  réels de l'unité (`CAP_DAC_READ_SEARCH`, `ProtectHome`) ne sont pas joués. La tolérance
+  `CESP_AVEU_ANNONCEES` du démon devient inerte (le capteur nomme `dataacl`) mais ne se retire pas d'elle-même.
 
 Sortie : 0 tenu · 1 au moins un défaut · 2 l'instrument REFUSE DE CONCLURE.
 """
@@ -1621,6 +1630,79 @@ def banc_dataaccess_preuves_du_journal(awk, nom_awk):
             bac.nettoyer()
 
 
+# --- G. dataacl -----------------------------------------------------------------------------------
+def banc_dataacl(awk, nom_awk):
+    bac = Bac(awk)
+    illisible = None
+    try:
+        arbre = os.path.join(bac.racine, "joyaux")
+        os.makedirs(os.path.join(arbre, "sous"))
+        ecrire(os.path.join(arbre, "sous", "prive"), "x")
+        os.chmod(os.path.join(arbre, "sous", "prive"), 0o600)
+        ecrire(os.path.join(arbre, "ouvert"), "x")
+        os.chmod(os.path.join(arbre, "ouvert"), 0o666)
+        illisible = os.path.join(bac.racine, "ferme")
+        os.mkdir(illisible)
+        os.chmod(illisible, 0)
+        try:
+            os.listdir(illisible)
+            droits_tenus = False       # root : un mode 000 ne ferme rien, le cas illisible n'est pas jouable ici
+        except PermissionError:
+            droits_tenus = True
+        absent = os.path.join(bac.racine, "absent")
+        glob_vide = os.path.join(bac.racine, "*vault*")
+        attendu_arbre = {arbre: "d", os.path.join(arbre, "sous"): "d", os.path.join(arbre, "ouvert"): "f"}
+        cas = [  # (nom, PLUME_ACL_PATHS, raison de l'aveu « aucun chemin » ou None, illisibles avoués, chemins émis)
+            ("pose_aucun_chemin", f"{absent} {glob_vide}", "missing-source", (), {}),
+            ("un_present_un_absent", f"{absent} {arbre} {glob_vide}", None, (), attendu_arbre),
+        ]
+        if droits_tenus:
+            cas += [("present_et_illisible", f"{arbre} {illisible}", None, (illisible,), dict(attendu_arbre, **{illisible: "d"})),
+                    ("seul_illisible", f"{illisible} {absent}", None, (illisible,), {illisible: "d"})]
+        else:
+            print(f"{ETIQUETTE} : dataacl/{nom_awk} — droits non tenus (root ?) : cas « chemin illisible » non joué")
+        for nom, chemins, raison_vide, illisibles, emis in cas:
+            q = f"dataacl/{nom_awk}/{nom}"
+            res = bac.jouer("dataacl.sh", {"PLUME_ACL_PATHS": chemins})
+            evs = evenements(q, res, "dataacl.sh")
+            tous = aveux(evs, "dataacl")
+            vides = [e for e in tous if "aucun chemin de PLUME_ACL_PATHS" in ((e.get("fields") or {}).get("detail") or "")]
+            fermes = [e for e in tous if "illisibles" in ((e.get("fields") or {}).get("detail") or "")]
+            if len(tous) != len(vides) + len(fermes):
+                faute(q, f"aveu inattendu : {[e['fields'].get('detail') for e in tous]}")
+            if raison_vide:
+                if len(vides) != 1:
+                    faute(q, f"aucun chemin existant : {len(vides)} aveu(x) « aucun chemin », attendu 1 — {[e.get('message') for e in evs]}")
+                else:
+                    f = vides[0]["fields"]
+                    if f.get("collect_status") != "unavailable" or f.get("reason") != raison_vide:
+                        faute(q, f"aveu {f.get('collect_status')}/{f.get('reason')}, attendu unavailable/{raison_vide}")
+                    contient(q, f.get("detail"), "PLUME_ACL_PATHS", "Aucune permission n'est cartographiee")
+            elif vides:
+                faute(q, f"aveu « aucun chemin » alors qu'un chemin existe : {vides[0]['fields'].get('detail')!r}")
+            if illisibles:
+                if len(fermes) != 1:
+                    faute(q, f"chemin illisible : {len(fermes)} aveu(x), attendu 1")
+                else:
+                    f = fermes[0]["fields"]
+                    if f.get("reason") != "missing-source" or f.get("collect_status") != "unavailable":
+                        faute(q, f"aveu d'illisible {f.get('collect_status')}/{f.get('reason')}")
+                    for p in illisibles:
+                        contient(q, f.get("detail"), p)
+                    if arbre in (f.get("detail") or "").replace(illisible, ""):
+                        faute(q, f"un chemin lisible est dit illisible : {f.get('detail')!r}")
+            elif fermes:
+                faute(q, f"aveu d'illisible sans chemin illisible : {fermes[0]['fields'].get('detail')!r}")
+            obtenus = {(e.get("fields") or {}).get("path"): (e.get("fields") or {}).get("type")
+                       for e in evs if e.get("source") == "dataacl" and e.get("category") == "data"}
+            if obtenus != emis:
+                faute(q, f"carte émise {sorted(obtenus.items())}, attendu {sorted(emis.items())}")
+    finally:
+        if illisible and os.path.isdir(illisible):
+            os.chmod(illisible, stat.S_IRWXU)
+        bac.nettoyer()
+
+
 # --- L'instrument ---------------------------------------------------------------------------------
 def epreuve_de_l_instrument(awk):
     bac = Bac(awk, compter=True)
@@ -1646,7 +1728,7 @@ def epreuve_de_l_instrument(awk):
 
 
 def main():
-    for f in ("auditd.sh", "web.sh", "crowdsec.sh", "minio.sh", "dataaccess.sh", "lib.sh"):
+    for f in ("auditd.sh", "web.sh", "crowdsec.sh", "minio.sh", "dataaccess.sh", "dataacl.sh", "lib.sh"):
         if not os.path.isfile(os.path.join(CAPTEURS, f)):
             refus(f"`collectors/{f}` introuvable")
     for o in ("sh", "jq", "date", "find"):
@@ -1680,6 +1762,7 @@ def main():
     banc_minio(awks[0][1])
     for nom, p in awks:
         banc_dataaccess(p, nom)
+        banc_dataacl(p, nom)
     if fautes:
         for x in fautes:
             print(f"::error::{x}")

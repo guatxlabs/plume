@@ -18,9 +18,34 @@ tmp=$(mktemp "$SPOOL/.acl.XXXXXX")
 # find -printf : 1 passe, pas de stat par fichier. %p chemin %u owner %g group %m mode-octal %y type.
 # Les chemins DOIVENT précéder l'expression find -> on les met dans "$@" (pas via xargs, qui les
 # appendrait APRÈS -maxdepth/-printf et casserait find). shellcheck disable=SC2086 (glob voulu).
+#
+# P10.32-k — UNE CARTE VIDE PARCE QUE RIEN N'EST REGARDÉ SE DIT. Avant, aucun chemin existant -> sortie
+# muette : « aucune permission à signaler » et « je ne regarde rien » étaient le même silence. Désormais :
+#   · AUCUN chemin existant -> aveu `unavailable/missing-source` qui nomme la cause, la liste lue et la
+#     variable à poser (les défauts visent un nœud k3s : sur un hôte natif ou dans un conteneur, la variable
+#     non posée ne trouve souvent rien) ;
+#   · un chemin PRÉSENT mais que ce capteur ne peut pas parcourir (droits, `ProtectHome`, montage) -> aveu
+#     `missing-source` qui le nomme, SANS sortir : son entrée de tête reste cartographiée comme avant, son
+#     contenu ne l'est pas. La sonde est un vrai `find` (pas `test -r`, qui répond « oui » à root sans
+#     regarder les capacités) et ne voit que la TÊTE du chemin : un sous-répertoire illisible plus bas n'est
+#     pas avoué ;
+#   · des chemins ABSENTS à côté d'au moins un chemin présent ne sont PAS avoués : la liste par défaut couvre
+#     plusieurs volumes dont tous n'existent pas sur chaque nœud, l'avouer à chaque passage serait un bruit
+#     permanent. La collecte des chemins présents est inchangée.
 set --
-for p in $PATHS; do [ -e "$p" ] && set -- "$@" "$p"; done
-[ "$#" -gt 0 ] || { rm -f "$tmp"; plume_exit_nodata; }
+_acl_illisibles=""
+for p in $PATHS; do
+  [ -e "$p" ] || continue
+  set -- "$@" "$p"
+  find "$p" -maxdepth 1 -printf '%m\n' >/dev/null 2>&1 || _acl_illisibles="$_acl_illisibles $p"
+done
+if [ "$#" -eq 0 ]; then
+  rm -f "$tmp"
+  plume_unavailable dataacl missing-source "aucun chemin de PLUME_ACL_PATHS n'existe sur cet hote ($PATHS ; non posee, ce sont les defauts d'un noeud k3s). Aucune permission n'est cartographiee : une carte vide ne dit PAS que les droits sont sains. Poser PLUME_ACL_PATHS (chemins sensibles separes par des espaces, glob admis)."
+fi
+if [ -n "$_acl_illisibles" ]; then
+  plume_report_availability dataacl unavailable missing-source "chemin(s) de PLUME_ACL_PATHS presents mais illisibles par ce capteur (droits, ProtectHome, montage) :$_acl_illisibles. Seule leur entree de tete est cartographiee, pas leur contenu ; les autres chemins le sont." 2 2>/dev/null || true
+fi
 find "$@" -maxdepth "$DEPTH" \( -type f -o -type d \) -printf '%p\t%u\t%g\t%m\t%y\n' 2>/dev/null \
   | head -n "$MAX" \
   | awk -v ts="$ts" -v host="$host" -v out="$tmp" "$_PLUME_AWK_ECHAPPEMENT_JSON"'

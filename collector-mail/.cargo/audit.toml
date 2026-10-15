@@ -1,0 +1,9 @@
+# cargo-audit — avis admis pour collector-mail, chacun justifié, daté et avec sa condition de levée.
+[advisories]
+ignore = [
+  # fxhash 0.2 — RUSTSEC-2025-0057 (unmaintained, AUCUNE vulnérabilité connue). Transitif via
+  # scraper 0.20 -> selectors 0.25 (fonction de hachage interne du moteur de sélecteurs CSS ; aucune entrée
+  # réseau n'en choisit les clés de façon exploitable connue). Admis le 2026-10-15. LEVER quand scraper
+  # passe à une version de selectors qui ne dépend plus de fxhash (vérifier `cargo tree -i fxhash`).
+  "RUSTSEC-2025-0057",
+]

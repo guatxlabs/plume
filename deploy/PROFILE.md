@@ -14,7 +14,7 @@ Principe : *moteur générique + spécifique-infra en CONFIG, jamais en dur* ; c
 ## 1. Agent → central (forwarder)
 | Variable | Rôle | Défaut |
 |---|---|---|
-| `PLUME_CENTRAL` | URL du daemon central (`http://central:7000`) | — |
+| `PLUME_CENTRAL` | URL du daemon central (`https://central.example` ; `http://` n'est accepté par `ship.sh` que vers la boucle locale, ou avec `PLUME_SHIP_ALLOW_PLAINTEXT=1`) | — |
 | `PLUME_TOKEN` | token d'agent (lié à un hôte, minté par `plume-daemon token`) | — |
 | `PLUME_HOST_LABEL` | nom d'hôte affiché (multi-hôte) | hostname |
 | `PLUME_HOST_HEADER` | en-tête `Host:` à envoyer (si forward-auth/SNI) | — |

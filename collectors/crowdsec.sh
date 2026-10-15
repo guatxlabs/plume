@@ -90,9 +90,14 @@ else
     [ -z "$id" ] && continue
     n=$((n + 1)); [ "$n" -gt 200 ] && break
     m=$(json_escape "$(printf 'CrowdSec: %s (src %s)' "$scen" "$ip")")
+    # P10.32-i — `.source.value` et `.id` viennent de la LAPI, et le filtre `*.*|*:*` ne garde qu'un
+    # point ou deux-points : il ne prouve l'absence ni de guillemet ni d'antislash. Une valeur
+    # `x","severity":0,"category":"info","z":"` reecrivait severite et categorie (cle dupliquee, la
+    # derniere gagne). Les deux sont donc echappees la ou elles entrent dans le JSON.
     ipf=""
-    case "$ip" in *.*|*:*) ipf=",\"src_ip\":\"$ip\"" ;; esac
-    events="$events${events:+,}{\"ts\":$ts,\"source\":\"crowdsec\",\"category\":\"network\",\"severity\":3,\"message\":\"$m\",\"dedup\":\"crowdsec-$id\"$ipf,\"fields\":{\"action\":\"blocked\"}}"
+    case "$ip" in *.*|*:*) ipf=",\"src_ip\":\"$(json_escape "$ip")\"" ;; esac
+    idj=$(json_escape "$id")
+    events="$events${events:+,}{\"ts\":$ts,\"source\":\"crowdsec\",\"category\":\"network\",\"severity\":3,\"message\":\"$m\",\"dedup\":\"crowdsec-$idj\"$ipf,\"fields\":{\"action\":\"blocked\"}}"
   done < "$tmpf"
 fi
 rm -f "$tmpf"

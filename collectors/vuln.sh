@@ -77,7 +77,9 @@ while IFS="$TAB" read -r sev cve pkg inst fixed img; do
   ne=$((ne + 1)); [ "$ne" -gt "$MAXE" ] && break
   s=$(sevmap "$sev")
   m=$(json_escape "$(printf '%s dans %s %s (corrige: %s) image %s' "$cve" "$pkg" "$inst" "$fixed" "$img")")
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"vuln\",\"category\":\"vuln\",\"severity\":$s,\"message\":\"$m\",\"dedup\":\"vuln-$key\"}"
+  # P10.32-i — image, identifiant et paquet viennent du registre et du scanner : la cle est echappee.
+  d=$(json_escape "vuln-$key")
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"vuln\",\"category\":\"vuln\",\"severity\":$s,\"message\":\"$m\",\"dedup\":\"$d\"}"
 done < "$all"
 rm -f "$all"
 [ -z "$events" ] && plume_exit_nodata

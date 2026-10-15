@@ -16,7 +16,11 @@ nb=0   # nb de bans actifs EMIS ce run (fail2ban + crowdsec) -> {active_bans} du
 emit() { # $1=source $2=ip $3=label
   case "$2" in *.*|*:*) : ;; *) return ;; esac    # IPv4/IPv6 seulement
   m=$(json_escape "$(printf 'BAN actif %s (%s)' "$2" "$3" | cut -c1-200)")
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"$1\",\"category\":\"ban\",\"severity\":3,\"message\":\"$m\",\"src_ip\":\"$2\",\"dedup\":\"ban-$1-$2-$bucket\",\"fields\":{\"action\":\"ban\"}}"
+  # P10.32-i — la valeur vient du backend (sortie de fail2ban, decision CrowdSec) : le filtre ci-dessus
+  # ne garde qu'un point ou deux-points, il ne prouve pas l'absence de guillemet ni d'antislash. Elle
+  # est donc echappee la ou elle entre dans le JSON (adresse ET cle de dedoublonnage).
+  ipj=$(json_escape "$2")
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"$1\",\"category\":\"ban\",\"severity\":3,\"message\":\"$m\",\"src_ip\":\"$ipj\",\"dedup\":\"ban-$1-$ipj-$bucket\",\"fields\":{\"action\":\"ban\"}}"
   nb=$((nb + 1))
 }
 
@@ -41,9 +45,11 @@ emit() { # $1=source $2=ip $3=label
 # finit desarmee.
 # =================================================================================================
 _bans_ko=""     # backends PRESENTS dont une lecture a echoue ce passage
+_bans_presents=""   # backends PRESENTS ce passage (P10.32-i : aucun -> aveu, jamais « 0 ban »)
 
 # --- fail2ban (hôte) : chaque jail -> liste des IP bannies ---
 if command -v fail2ban-client >/dev/null 2>&1; then
+  _bans_presents="$_bans_presents fail2ban"
   _f2b_out=$(mktemp "$STATE/.bans.f2b.XXXXXX")
   if fail2ban-client status > "$_f2b_out" 2>/dev/null; then
     jails=$(grep -i "Jail list" "$_f2b_out" | sed 's/.*://' | tr ',' ' ')
@@ -75,6 +81,7 @@ if [ "${PLUME_MAIL_F2B:-0}" = "1" ]; then
     elif command -v kubectl >/dev/null 2>&1; then mpod=$(kubectl -n "$MNS" get pods --no-headers 2>/dev/null | awk '/mailserver/{print $1; exit}'); fi
   fi
   if [ -n "$mpod" ]; then
+    _bans_presents="$_bans_presents fail2ban-mail"
     mkx() { if command -v k3s >/dev/null 2>&1; then k3s kubectl -n "$MNS" exec "$mpod" -c "$MCT" -- "$@"; else kubectl -n "$MNS" exec "$mpod" -c "$MCT" -- "$@"; fi; }
     # Meme correction, meme raison : le pod mail est un backend PRESENT (on vient d'en trouver le pod).
     _mf2b=$(mktemp "$STATE/.bans.mf2b.XXXXXX")
@@ -109,6 +116,7 @@ elif command -v k3s >/dev/null 2>&1 && k3s kubectl -n "$NS" get deploy "$LAPI" >
 elif command -v kubectl >/dev/null 2>&1 && kubectl -n "$NS" get deploy "$LAPI" >/dev/null 2>&1; then cscli_cmd() { kubectl -n "$NS" exec "deploy/$LAPI" -- cscli "$@"; }
 else cscli_cmd() { return 1; }; CSCLI_PRESENT=0; fi
 if [ "$CSCLI_PRESENT" -eq 1 ] && command -v jq >/dev/null 2>&1; then
+  _bans_presents="$_bans_presents crowdsec"
   tmpf=$(mktemp)
   _cs_json=$(mktemp "$STATE/.bans.cs.XXXXXX")
   TAB=$(printf '\t')
@@ -135,6 +143,17 @@ fi
 # sous-total rassure exactement comme un zero. Quand une lecture a echoue, le battement part quand
 # meme — son silence leverait l'alerte MUET du capteur CONTINU, ce qui masquerait le vrai probleme —
 # mais SANS le champ, et en le disant. Meme forme que `portscan.sh` et `ufw.sh`.
+# P10.32-i — AUCUN BACKEND PRESENT N'EST PAS « 0 BAN ». Sans fail2ban ni cscli lisible, le battement
+# partait quand meme avec `active_bans: 0` : un capteur qui ne surveillait RIEN se disait vivant, et le
+# tableau de bord lisait « aucun ban » sur un hote ou rien ne bannit. Le capteur avoue alors son
+# incapacite par le canal ou `de-collector-unavailable` alerte, et ne publie AUCUN battement : un
+# compteur qui n'a rien compte ne doit pas paraitre. Des qu'un backend est present, rien ne change.
+if [ -z "$_bans_presents" ]; then
+  _bans_absent="ni fail2ban-client ni cscli (hote, PLUME_CSCLI, ou LAPI ${NS}/${LAPI} via k3s ou kubectl)"
+  [ "$CSCLI_PRESENT" -eq 1 ] && _bans_absent="ni fail2ban-client, et cscli est present mais jq absent : ses decisions ne sont pas lisibles"
+  [ "${PLUME_MAIL_F2B:-0}" = "1" ] && _bans_absent="$_bans_absent ; PLUME_MAIL_F2B=1 mais aucun pod mailserver trouve dans ${MNS}"
+  plume_unavailable fail2ban missing-dependency "aucun backend de bannissement lisible sur cet hote : $_bans_absent. Aucun ban ne peut etre vu, et « 0 ban actif » ne peut PAS en etre conclu."
+fi
 if [ -n "$_bans_ko" ]; then
   events="$events${events:+,}$(heartbeat fail2ban "bans santé: backend(s) NON LU(S) ce passage —$_bans_ko ; $nb ban(s) vu(s) par les backends lisibles, le total actif ne peut PAS en etre conclu" "{}")"
   plume_lecture_partielle fail2ban source_illisible "backend(s) de bannissement PRESENT(S) mais non lu(s) ce passage :$_bans_ko. Les bans actifs de ces backends ne sont PAS emis, et l'absence de vague de bannissements ne peut PAS en etre conclue."

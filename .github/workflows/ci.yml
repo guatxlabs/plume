@@ -2259,6 +2259,17 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_crowdsec_sensor_says_what_it_reads.py
 
+      # `P10.32-i` — COLLECTE SÛRE. Les capteurs LIVRÉS sont joués dans un bac sous chaque awk présent,
+      # contre des outils factices : un nom de fichier, d'image, de paquet ou une adresse hostile ne
+      # réécrit ni `severity` ni `category` et ne rend pas l'enveloppe illisible ; `bans.sh` sans backend
+      # avoue au lieu de battre « 0 ban » ; `ship.sh` refuse le clair vers un hôte distant (sauf opt-in),
+      # n'expédie ni ne supprime un lien symbolique, et n'évince rien hors du spool ; le relais d'audit
+      # MinIO refuse de démarrer sans jeton et compare à temps constant.
+      - name: Un capteur échappe son JSON et n'expédie ni n'écoute à découvert (P10.32-i)
+        id: garde_77
+        continue-on-error: true
+        run: python3 .github/scripts/check_a_collector_escapes_its_json_and_never_ships_or_listens_open.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2744,6 +2755,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_74.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_route_opens_its_transaction_with_a_bare_begin.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_75.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_76.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_crowdsec_sensor_says_what_it_reads.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_77.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_collector_escapes_its_json_and_never_ships_or_listens_open.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

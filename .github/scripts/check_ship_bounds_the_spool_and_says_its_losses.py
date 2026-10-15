@@ -43,7 +43,7 @@ def lancer(base, code, fichiers, plafond=None):
         t = time.time() - 1000 + i
         os.utime(p, (t, t))
     env = dict(os.environ, PATH=binz + os.pathsep + os.environ.get("PATH", ""), PLUME_SPOOL=spool,
-               PLUME_STATE=state, PLUME_CENTRAL="http://central.invalid", PLUME_TOKEN="t",
+               PLUME_STATE=state, PLUME_CENTRAL="https://central.invalid", PLUME_TOKEN="t",
                PLUME_LIB=os.path.abspath(LIB))
     if plafond is not None:
         env["PLUME_SPOOL_MAX_FILES"] = str(plafond)

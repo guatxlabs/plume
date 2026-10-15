@@ -141,13 +141,21 @@ while IFS="$TAB" read -r rule tags file; do
   state_marker_seen "$SEEN" "$key" && continue               # deja signale (meme rule/file/mtime) -> skip
   state_stage_append "$SEEN" "$key"
   ne=$((ne + 1))
-  sha=$(sha256sum "$file" 2>/dev/null | cut -d' ' -f1); [ -n "$sha" ] || sha="?"
+  # P10.32-i — l'empreinte se lit sur l'ENTREE STANDARD : `sha256sum <fichier>` prefixe sa ligne d'un
+  # antislash quand le nom en porte un (forme GNU d'echappement des noms), et ce `\e3b0…` partait tel
+  # quel dans le JSON — une sequence d'echappement invalide qui rendait l'enveloppe illisible. Toute
+  # valeur qui n'est pas une empreinte hexadecimale devient `?`.
+  sha=$(sha256sum 2>/dev/null < "$file" | cut -d' ' -f1)
+  case "$sha" in ""|*[!0-9a-f]*) sha="?" ;; esac
   rj=$(json_escape "$rule")
   fj=$(json_escape "$file")
   tj=$(json_escape "$tags")
   m=$(json_escape "$(printf 'YARA: regle %s sur %s' "$rule" "$file")")
+  # P10.32-i — `key` porte la regle ET le nom du fichier : la cle de dedoublonnage est echappee comme
+  # les champs (meme defaut que clamav : brute, un nom de fichier reecrivait severite et categorie).
+  dj=$(json_escape "yara-$key")
   fields="{\"rule\":\"$rj\",\"file\":\"$fj\",\"tags\":\"$tj\",\"sha256\":\"$sha\"}"
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"yara\",\"category\":\"malware\",\"severity\":4,\"message\":\"$m\",\"dedup\":\"yara-$key\",\"fields\":$fields}"
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"yara\",\"category\":\"malware\",\"severity\":4,\"message\":\"$m\",\"dedup\":\"$dj\",\"fields\":$fields}"
 done <<EOF
 $parsed
 EOF

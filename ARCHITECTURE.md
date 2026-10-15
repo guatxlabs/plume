@@ -516,7 +516,9 @@ Essentiels : `PLUME_ADDR`, `PLUME_HOST`, `PLUME_USER`/`PLUME_PASS_HASH`, `PLUME_
 - **Transport agent → central** : Bearer **token lié à l'hôte** + **mTLS** (chemin durci
   `ingest.example.com`). En interne (in-cluster), les agents peuvent pousser au ClusterIP
   `<svc>.<ns>.svc:7000` — à condition d'ouvrir explicitement leur pod dans la NetworkPolicy d'ingress
-  (par défaut elle ne laisse passer que l'ingress controller).
+  (par défaut elle ne laisse passer que l'ingress controller), et, ce ClusterIP étant joint en
+  `http://` hors boucle locale, de poser `PLUME_SHIP_ALLOW_PLAINTEXT=1` : sans lui `ship.sh` refuse
+  d'expédier en clair (code 2, spool conservé).
 
 ## 14. Exigences non-fonctionnelles (rappel)
 

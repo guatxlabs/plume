@@ -43,7 +43,9 @@ while IFS= read -r img; do
   [ "$prev" = "$dig" ] && continue                                 # inchange
   printf '%s\t%s\n' "$img" "$dig" >> "$upd"                        # remplacement MIS EN ATTENTE
   m=$(json_escape "$(printf 'MAJ dispo: nouveau build pour %s (digest change)' "$img")")
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"update\",\"category\":\"update\",\"severity\":1,\"message\":\"$m\",\"dedup\":\"update-$img-$dig\"}"
+  # P10.32-i — le nom d'image et le digest rendu par le registre entrent dans la cle : echappee.
+  d=$(json_escape "update-$img-$dig")
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"update\",\"category\":\"update\",\"severity\":1,\"message\":\"$m\",\"dedup\":\"$d\"}"
 done < "$imgs_f"
 rm -f "$imgs_f"
 
@@ -59,7 +61,12 @@ if [ -s "$upd" ]; then
   # contenait plus que les nouveautes, les digests deja connus etaient oublies, et la derive
   # suivante sur ces images-la repassait en silence pour une simple mise en reference.
   _reg_rc=0
-  grep -vF -f "$_keys" "$SEEN" > "$_led" 2>/dev/null || _reg_rc=$?
+  # P10.32-i — UN REGISTRE ABSENT EST UN REGISTRE VIDE, PAS UN REGISTRE ILLISIBLE. `grep` rend 2 sur un
+  # fichier inexistant : au premier passage d'un hote neuf, le registre n'etait donc jamais cree, l'aveu
+  # « illisible » repartait a chaque passage et aucune derive n'etait jamais signalee.
+  if [ -e "$SEEN" ]; then
+    grep -vF -f "$_keys" "$SEEN" > "$_led" 2>/dev/null || _reg_rc=$?
+  fi
   rm -f "$_keys"
   if [ "$_reg_rc" -le 1 ]; then
     cat "$upd" >> "$_led"

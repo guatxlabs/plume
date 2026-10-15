@@ -77,7 +77,12 @@ while IFS= read -r line; do
   file=${line%%: *}
   sig=${line#*: }; sig=${sig% FOUND}
   m=$(json_escape "$(printf 'malware: %s dans %s' "$sig" "$file")")
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"clamav\",\"category\":\"malware\",\"severity\":4,\"message\":\"$m\",\"dedup\":\"clamav-$file-$sig\"}"
+  # P10.32-i — la cle de dedoublonnage porte le NOM DU FICHIER, que l'auteur du fichier choisit : elle
+  # passe par `json_escape` comme le message. Brute, un nom qui fermait la chaine posait ses propres
+  # `severity`/`category` (la cle dupliquee gagne au central : une detection devenait `info` de
+  # severite nulle), et un nom fini par un antislash rendait l'enveloppe ENTIERE illisible.
+  d=$(json_escape "clamav-$file-$sig")
+  events="$events${events:+,}{\"ts\":$ts,\"source\":\"clamav\",\"category\":\"malware\",\"severity\":4,\"message\":\"$m\",\"dedup\":\"$d\"}"
 done < "$res"
 rm -f "$res"
 [ -z "$events" ] && plume_exit_nodata

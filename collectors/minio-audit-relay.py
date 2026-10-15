@@ -55,6 +55,7 @@
 # ----------------------------------------------------------------------------------------------------------
 #
 # OPT-IN, tourne en User=soc (non-root), bind sur cni0 uniquement. Aucune dependance hors stdlib.
+import hmac
 import json
 import os
 import socket
@@ -96,13 +97,35 @@ PUT_APIS = {
 }
 
 
-def expected_auth():
+# P10.32-i — LE RELAIS EST FERME SANS JETON. Un jeton vide, absent ou illisible ouvrait le relais a
+# quiconque joint le port (un simple avertissement au demarrage) : n'importe quel pod du bridge pouvait
+# deposer de faux evenements d'audit objet, ou noyer de vraies suppressions sous du bruit. Desormais le
+# relais REFUSE DE DEMARRER sans jeton (code 2, message), et une requete recue alors que le jeton est
+# devenu illisible en cours de route est refusee (503) : jamais d'ouverture par defaut. La comparaison
+# est a temps constant (`hmac.compare_digest`) : un `!=` laisse mesurer combien d'octets concordent.
+def lire_le_jeton():
+    """Rend (jeton, None) ou (None, raison) — un jeton vide n'est pas un jeton."""
     try:
-        with open(TOKEN_FILE, "r") as f:
+        # encodage FIXE : un jeton qui n est pas de l UTF-8 est illisible quelle que soit la locale.
+        with open(TOKEN_FILE, "r", encoding="utf-8") as f:
             tok = f.read().strip()
-        return ("Bearer " + tok) if tok else ""
-    except OSError:
-        return ""
+    except (OSError, UnicodeDecodeError) as e:
+        return None, f"illisible ({e.__class__.__name__})"
+    if not tok:
+        return None, "vide"
+    return tok, None
+
+
+def expected_auth():
+    tok, _ = lire_le_jeton()
+    return ("Bearer " + tok) if tok else ""
+
+
+def autorisation_acceptee(entete, attendu):
+    """Vrai si l'en-tete `Authorization` recu est l'attendu ; faux si l'attendu est vide."""
+    if not attendu:
+        return False
+    return hmac.compare_digest((entete or "").encode("utf-8", "replace"), attendu.encode("utf-8", "replace"))
 
 
 def to_epoch(s):
@@ -240,7 +263,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         exp = expected_auth()
-        if exp and self.headers.get("Authorization", "") != exp:
+        if not exp:
+            self._reply(503, b"no token configured\n")
+            return
+        if not autorisation_acceptee(self.headers.get("Authorization", ""), exp):
             self._reply(401, b"unauthorized\n")
             return
         try:
@@ -307,9 +333,13 @@ def write_config_report():
 
 
 def main():
+    _, raison = lire_le_jeton()
+    if raison:
+        sys.stderr.write("plume-minio-audit: REFUS DE DEMARRER : jeton %s (%s). Le relais ne s'ouvre jamais "
+                         "sans jeton : posez-le (le meme que l'auth_token de l'audit_webhook MinIO) puis "
+                         "relancez.\n" % (raison, TOKEN_FILE))
+        sys.exit(2)
     os.makedirs(SPOOL, exist_ok=True)
-    if not expected_auth():
-        sys.stderr.write("plume-minio-audit: WARNING aucun token (%s vide/absent) -> relais OUVERT.\n" % TOKEN_FILE)
     write_config_report()  # surface les filtres DROP_APIS au panneau Suppressions (read-only)
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     sys.stderr.write(f"plume-minio-audit: ecoute http://{BIND}:{PORT}/ buckets={sorted(BUCKETS) or 'ALL'} -> {SPOOL}\n")

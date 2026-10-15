@@ -301,8 +301,22 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
                 }
             }
         }
+        // `P10.20-w` — LE MARQUEUR EST COMPTÉ. Avant, `let _ =` : un marqueur refusé laissait l'alerte `notified=0`
+        // et les vingt alertes du lot repartaient à chaque tour, y compris par des canaux irréversibles. Au PREMIER
+        // refus (ou écriture sans effet), le tour s'ARRÊTE : les alertes suivantes attendent le tour suivant au lieu
+        // de repartir en boucle derrière une marque perdue, et le tour est compté sous `dispatch_marqueur` avec la
+        // cause du moteur. L'alerte en cours (envoyée, ou silencée) y repassera si elle existe encore.
         let conn = db.lock();
-        let _ = conn.execute("UPDATE alert SET notified=1, notified_value=current_value WHERE id=?1", params![id]); // `P4.12-h` : la barre de re-notification est reposée ici
+        let marque = conn.execute("UPDATE alert SET notified=1, notified_value=current_value WHERE id=?1", params![id]); // `P4.12-h` : la barre de re-notification est reposée ici
+        match marque {
+            Ok(1) => {}
+            autre => {
+                let cause = match autre { Err(e) => e.to_string(), Ok(n) => format!("{n} ligne(s) écrite(s) au lieu d'une") };
+                eprintln!("[plume] dispatch : alerte {id} traitée (envoyée ou silencée) mais marqueur `notified` NON ÉCRIT, tour arrêté avant les alertes suivantes, renvoyées au tour suivant (celle-ci aussi, si elle existe encore)");
+                crate::metrics::compter_un_tick_aveugle("dispatch_marqueur", &cause);
+                return;
+            }
+        }
     }
 }
 

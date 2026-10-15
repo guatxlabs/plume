@@ -131,8 +131,10 @@ pub(crate) const SOURCES_LIVREES: &[(&str, &str)] = &[
 
 /// `P11.19-a` (reste 2, moitié démon) — LES FICHIERS LIVRÉS DONT LES CHAMPS ÉTENDUS ARRIVENT SOUS UNE SOURCE :
 ///   * le fichier qui l'émet (`SOURCES_LIVREES`), s'il est dans la surface balayée par l'extracteur ;
-///   * `collectors/lib.sh`, si un capteur livré nomme littéralement cette source en premier argument d'une
-///     aide du canal d'aveu (`collected::SOURCES_DU_CANAL_D_AVEU`) ;
+///   * `collectors/lib.sh`, si la source figure au canal d'aveu (`collected::SOURCES_DU_CANAL_D_AVEU`) : un
+///     capteur livré la nomme littéralement en premier argument d'une aide du canal, ou elle y est ANNONCÉE
+///     avant son capteur (`P10.32-k`, `dataacl` — la liste dit alors ce que les fichiers peuvent écrire
+///     sous la source, pas ce qui a été vu) ;
 ///   * chaque overlay de parseur livré qui s'applique à cette source (`collected::SOURCE_DES_OVERLAYS`).
 /// `None` quand le fichier émetteur est HORS de la surface : l'autorité ne sait rien de ce qu'il écrit, et
 /// lui ajouter les seuls champs d'aveu ou d'overlay rendrait une liste partielle qui se lirait complète.
@@ -154,8 +156,8 @@ fn fichiers_de_champs_de_source(source: &str) -> Option<Vec<&'static str>> {
 /// un fichier de `fichiers_de_champs_de_source`). Aucune liste recopiée. Trois états, jamais confondus :
 ///   * liste non vide — les champs écrits sous la source par son fichier, le canal d'aveu et ses overlays ;
 ///   * liste VIDE — ce fichier est dans la surface balayée, la source ne passe par aucun canal d'aveu
-///     littéral ni aucun overlay, et rien de tout cela n'écrit de champ étendu (`dataacl` n'appelle aucune
-///     aide d'aveu : c'est mesuré, pas présumé) ;
+///     littéral ni aucun overlay, et rien de tout cela n'écrit de champ étendu (état possible ; le témoin
+///     d'inventaire exige qu'il soit ÉGAL à ce que ces fichiers écrivent, donc établi) ;
 ///   * `None` (servi `null`) — SOURCE NON COUVERTE PAR LA JOINTURE : déclarée par l'exploitant, par un
 ///     connecteur, observée sans déclarant, ou émise par un fichier hors surface (agent, démon, sondes,
 ///     collecteur Rust). Une liste vide n'y dit JAMAIS « inconnu ».

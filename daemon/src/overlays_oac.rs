@@ -165,11 +165,82 @@ pub(crate) fn plan_upsert_lu(conn: &Connection, table: &str, name: &str) -> rusq
 }
 
 /// Projection de `plan_upsert_lu` qui garde le comportement d'avant (lecture ratée = Insert) pour les
-/// appelants que `P10.20-b` n'a pas encore repris : les chargeurs d'objets OAC de ce fichier et les deux
-/// chargeurs de `rule` d'`overlays.rs`. Les chargeurs `parser`, `dparser` et `playbook` lisent
-/// `plan_upsert_lu` et ignorent le fichier sur une lecture ratée.
+/// appelants que `P10.20-b` n'a pas encore repris, dont cinq chargeurs d'objets OAC de ce fichier (`notifier`,
+/// `index_policy`, `library_panel`, `notification_policy`, `dashboard`) ; hors de ce fichier, la liste des
+/// appelants restants se lit par `grep -n 'plan_upsert(' daemon/src`. Ici, `destination` et `connector` lisent
+/// `plan_upsert_lu` et ignorent le fichier sur une lecture ratée ; `field_filter` (UNIQUE(name)) l'avoue et
+/// tente l'INSERT (`plan_oac_nom_unique_ou_aveu`).
 pub(crate) fn plan_upsert(conn: &Connection, table: &str, name: &str) -> UpsertPlan {
     plan_upsert_lu(conn, table, name).unwrap_or(UpsertPlan::Insert)
+}
+
+/// `P10.20-b` — le plan d'upsert d'un objet OAC SANS UNIQUE(name) (`destination`, `connector`), ou l'AVEU : une
+/// lecture de l'existant NON faite ignore le fichier (compté dans `ignores` par l'appelant, WARN avec la cause
+/// du moteur, jamais une valeur de cellule : le secret d'un connecteur reste hors du journal) et n'écrit rien.
+/// Elle ne vaut pas « le nom n'existe pas » : `destination` et `connector` n'ont aucun UNIQUE(name), l'INSERT
+/// qui suivait créait un DOUBLON (flux sortant doublé vers un puits externe, deux collectes portant le secret).
+/// Même forme que `plan_de_l_overlay_ou_aveu` d'`overlays.rs`, au préfixe `[oac]` ; l'unification des deux
+/// paires d'aides dans `overlays_adossement.rs` reste à faire.
+fn plan_oac_ou_aveu(
+    conn: &Connection,
+    table: &str,
+    genre: &str,
+    name: &str,
+    path: &std::path::Path,
+) -> Option<UpsertPlan> {
+    match plan_upsert_lu(conn, table, name) {
+        Ok(plan) => Some(plan),
+        Err(e) => {
+            eprintln!("[oac] WARN {genre} '{name}' ({}) : lecture de l'existant NON faite ({e}) — overlay IGNORÉ, rien écrit", path.display());
+            None
+        }
+    }
+}
+
+/// `P10.20-b` — le plan d'upsert d'un objet OAC dont la table porte UNIQUE(name) (`field_filter`,
+/// `migrate.rs`, `CREATE TABLE … field_filter`). Une lecture de l'existant NON faite est AVOUÉE (WARN avec la
+/// cause du moteur) puis rend `Insert` : ici, s'abstenir ferait sauter un masquage `mask`/`deny`/`hash` (le
+/// champ servi en clair jusqu'au rechargement suivant) sans rien gagner, car l'INSERT ne peut ni créer de
+/// doublon ni écraser une copie UI `managed=2` — le moteur le refuse, et `compter_l_ecriture_oac` compte ce
+/// refus ignoré et le dit. À ne PAS employer pour une table sans UNIQUE(name) (`plan_oac_ou_aveu`).
+fn plan_oac_nom_unique_ou_aveu(
+    conn: &Connection,
+    table: &str,
+    genre: &str,
+    name: &str,
+    path: &std::path::Path,
+) -> UpsertPlan {
+    match plan_upsert_lu(conn, table, name) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("[oac] WARN {genre} '{name}' ({}) : lecture de l'existant NON faite ({e}) — INSERT tenté, borné par UNIQUE(name)", path.display());
+            UpsertPlan::Insert
+        }
+    }
+}
+
+/// `P10.20-b` — un objet OAC n'est compté CHARGÉ que si son écriture a posé exactement une ligne (`Ok(1)`).
+/// Une écriture refusée par le moteur, ou sans effet (ligne disparue entre la lecture et l'UPDATE, trigger
+/// `RAISE(IGNORE)`), est ignorée et avouée (WARN avec la cause du moteur). Pour un `field_filter`, c'est ce
+/// qui empêche un masquage `mask`/`deny`/`hash` non posé d'être annoncé en place.
+fn compter_l_ecriture_oac(
+    genre: &str,
+    name: &str,
+    path: &std::path::Path,
+    ecrit: rusqlite::Result<usize>,
+    ch: &mut crate::overlays_adossement::Chargement,
+) {
+    match ecrit {
+        Ok(1) => ch.charges += 1,
+        Ok(n) => {
+            eprintln!("[oac] WARN {genre} '{name}' ({}) : écriture sans effet ({n} ligne posée) — overlay NON chargé", path.display());
+            ch.ignores += 1;
+        }
+        Err(e) => {
+            eprintln!("[oac] WARN {genre} '{name}' ({}) : écriture refusée ({e}) — overlay NON chargé", path.display());
+            ch.ignores += 1;
+        }
+    }
 }
 
 /// Nom d'overlay (champ `name` trimmé, non vide) ou None (WARN émis par l'appelant).
@@ -250,12 +321,16 @@ pub(crate) fn load_overlay_destinations(conn: &Connection, dir: &std::path::Path
         let batch_max = v.get("batch_max").and_then(|x| x.as_i64()).unwrap_or(500).clamp(1, 10000);
         let interval_s = v.get("interval_s").and_then(|x| x.as_i64()).unwrap_or(30).max(5);
         let (config_s, filter_s) = (config.to_string(), filter_v.to_string());
-        match plan_upsert(conn, "destination", &name) {
+        let Some(plan) = plan_oac_ou_aveu(conn, "destination", "destination", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        let ecrit = match plan {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN destination '{name}' : une destination UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
-            UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE destination SET type=?1, enabled=?2, endpoint=?3, config=?4, filter=?5, batch_max=?6, interval_s=?7, managed=1 WHERE id=?8", params![dtype, enabled, endpoint, config_s, filter_s, batch_max, interval_s, id]); }
-            UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO destination(type,name,enabled,endpoint,config,filter,batch_max,interval_s,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9)", params![dtype, name, enabled, endpoint, config_s, filter_s, batch_max, interval_s, now()]); }
-        }
-        ch.charges += 1;
+            UpsertPlan::Update(id) => conn.execute("UPDATE destination SET type=?1, enabled=?2, endpoint=?3, config=?4, filter=?5, batch_max=?6, interval_s=?7, managed=1 WHERE id=?8", params![dtype, enabled, endpoint, config_s, filter_s, batch_max, interval_s, id]),
+            UpsertPlan::Insert => conn.execute("INSERT INTO destination(type,name,enabled,endpoint,config,filter,batch_max,interval_s,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9)", params![dtype, name, enabled, endpoint, config_s, filter_s, batch_max, interval_s, now()]),
+        };
+        compter_l_ecriture_oac("destination", &name, &path, ecrit, &mut ch);
     }
     ch
 }
@@ -304,12 +379,16 @@ pub(crate) fn load_overlay_connectors(conn: &Connection, dir: &std::path::Path) 
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
         let interval_s = v.get("interval_s").and_then(|x| x.as_i64()).unwrap_or(300).max(60);
         let config_s = config.to_string();
-        match plan_upsert(conn, "connector", &name) {
+        let Some(plan) = plan_oac_ou_aveu(conn, "connector", "connecteur", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        let ecrit = match plan {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN connecteur '{name}' : un connecteur UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
-            UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE connector SET type=?1, enabled=?2, config_json=?3, secret=?4, interval_s=?5, env_id=?6, managed=1 WHERE id=?7", params![ctype, enabled, config_s, secret, interval_s, env_id, id]); }
-            UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO connector(type,name,enabled,config_json,secret,interval_s,env_id,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8)", params![ctype, name, enabled, config_s, secret, interval_s, env_id, now()]); }
-        }
-        ch.charges += 1;
+            UpsertPlan::Update(id) => conn.execute("UPDATE connector SET type=?1, enabled=?2, config_json=?3, secret=?4, interval_s=?5, env_id=?6, managed=1 WHERE id=?7", params![ctype, enabled, config_s, secret, interval_s, env_id, id]),
+            UpsertPlan::Insert => conn.execute("INSERT INTO connector(type,name,enabled,config_json,secret,interval_s,env_id,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8)", params![ctype, name, enabled, config_s, secret, interval_s, env_id, now()]),
+        };
+        compter_l_ecriture_oac("connecteur", &name, &path, ecrit, &mut ch);
     }
     ch
 }
@@ -359,12 +438,13 @@ pub(crate) fn load_overlay_field_filters(conn: &Connection, dir: &std::path::Pat
         if !env.is_empty() && !env_id_ok(&env) { eprintln!("[oac] WARN field-filter '{name}' : env '{env}' invalide — ignoré"); ch.ignores += 1; continue; }
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let ord = v.get("ord").and_then(|x| x.as_i64()).unwrap_or(0);
-        match plan_upsert(conn, "field_filter", &name) {
+        let plan = plan_oac_nom_unique_ou_aveu(conn, "field_filter", "field-filter", &name, &path);
+        let ecrit = match plan {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN field-filter '{name}' : un filtre UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
-            UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE field_filter SET field=?1, action=?2, role=?3, tenant=?4, env=?5, enabled=?6, ord=?7, managed=1, updated=?8 WHERE id=?9", params![field, action, role, tenant, env, enabled, ord, now(), id]); }
-            UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO field_filter(name,field,action,role,tenant,env,enabled,ord,managed,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?9)", params![name, field, action, role, tenant, env, enabled, ord, now()]); }
-        }
-        ch.charges += 1;
+            UpsertPlan::Update(id) => conn.execute("UPDATE field_filter SET field=?1, action=?2, role=?3, tenant=?4, env=?5, enabled=?6, ord=?7, managed=1, updated=?8 WHERE id=?9", params![field, action, role, tenant, env, enabled, ord, now(), id]),
+            UpsertPlan::Insert => conn.execute("INSERT INTO field_filter(name,field,action,role,tenant,env,enabled,ord,managed,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?9)", params![name, field, action, role, tenant, env, enabled, ord, now()]),
+        };
+        compter_l_ecriture_oac("field-filter", &name, &path, ecrit, &mut ch);
     }
     ch
 }

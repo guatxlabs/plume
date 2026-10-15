@@ -98,11 +98,10 @@ CE QU'ELLE NE TIENT PAS
   blanche est presque vide — sans effet sur les verdicts, qui jugent des parts hautes.
 · dataaccess : sur une installation qui garde le gabarit livré (`plume_etc` seule), l'aveu des clés de
   données part chaque heure ; c'est exact, aucun accès aux données n'y est observé.
-· `dataacl.sh` sort toujours en silence quand aucun chemin de `PLUME_ACL_PATHS` n'existe : un aveu le ferait
-  entrer dans le canal de couverture, dont le démon tient la liste des sources (`SOURCES_DU_CANAL_D_AVEU`,
-  `daemon/src/collected.rs`) — hors de ce changement. Joué : `plume_unavailable dataacl …` posé, le témoin
-  `le_canal_d_aveu_et_les_overlays_sont_des_miroirs_du_texte_livre` rougit (miroir de la table, et il exige
-  `dataacl` hors du canal). L'aveu demande ces deux lignes du démon dans le même changement.
+· `dataacl.sh` sort toujours en silence quand aucun chemin de `PLUME_ACL_PATHS` n'existe. Le démon a déjà
+  ANNONCÉ `dataacl` au canal de couverture (`SOURCES_DU_CANAL_D_AVEU`, `daemon/src/collected.rs`, `P10.32-k`,
+  tolérance `CESP_AVEU_ANNONCEES`) : poser `plume_unavailable dataacl …` dans le capteur ne demande plus rien
+  au démon, et la tolérance se tait seule ce jour-là.
 
 Sortie : 0 tenu · 1 au moins un défaut · 2 l'instrument REFUSE DE CONCLURE.
 """

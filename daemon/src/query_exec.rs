@@ -78,41 +78,35 @@ fn read_conn_open(db_path: &str) -> Result<Connection, String> {
     Ok(conn)
 }
 
-/// #18 P3 — UDF de requête PURES (regexp / re_cap) : temps LINÉAIRE (pas de ReDoS), cap de longueur, cache
-/// 1-motif. AUCUN état DB/salt/tenant -> installables sur N'IMPORTE quelle connexion de lecture (pool HOT ou
-/// connexion d'UNION cold). Enregistrement inoffensif si jamais appelées (mode 0 byte-identique).
+/// #18 P3 — UDF de requête PURES (regexp / re_cap) : temps LINÉAIRE (pas de ReDoS), motif BORNÉ et cache à
+/// plusieurs motifs servis par référence (`P10.32-q`, `regex_de_requete`). AUCUN état DB/salt/tenant ->
+/// installables sur N'IMPORTE quelle connexion de lecture (pool HOT ou connexion d'UNION cold). Enregistrement
+/// inoffensif si jamais appelées (mode 0 byte-identique).
 pub(crate) fn install_query_udfs(conn: &Connection) {
-    // REGEXP : moteur regex de Rust (temps LINEAIRE garanti -> pas de ReDoS) + cap de longueur + cache 1-motif.
+    // REGEXP : moteur regex de Rust (temps LINEAIRE garanti -> pas de ReDoS). Longueur, taille du programme et
+    // nombre de motifs gardés : `crate::regex_de_requete` (le MÊME constructeur que le tier froid).
     // Le watchdog 3 s de run_query est un garde-fou supplementaire (defense en profondeur).
+    use crate::regex_de_requete::{motif_admissible, CacheDeMotifs, MotifRefuse};
     use rusqlite::functions::FunctionFlags;
-    let cache: std::cell::RefCell<Option<(String, regex::Regex)>> = std::cell::RefCell::new(None);
+    let cache = std::cell::RefCell::new(CacheDeMotifs::new());
     let _ = conn.create_scalar_function(
         "regexp",
         2,
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         move |ctx| {
             let pat = ctx.get::<String>(0)?;
-            if pat.len() > 512 {
-                return Err(rusqlite::Error::UserFunctionError("motif regex trop long (max 512)".into()));
-            }
+            motif_admissible(&pat).map_err(MotifRefuse::en_erreur_udf)?;
             let hay = match ctx.get_raw(1) {
                 rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
                 _ => return Ok(false), // NULL / non-texte -> pas de correspondance
             };
             let mut c = cache.borrow_mut();
-            let re = match &*c {
-                Some((p, r)) if *p == pat => r.clone(),
-                _ => {
-                    let r = regex::Regex::new(&pat).map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-                    *c = Some((pat.clone(), r.clone()));
-                    r
-                }
-            };
-            Ok(re.is_match(&hay))
+            let re = c.motif(&pat).map_err(MotifRefuse::en_erreur_udf)?;
+            Ok(re.correspond(&hay))
         },
     );
     // re_cap(valeur, motif, groupe) -> texte du groupe nommé capturé (ou NULL). Sert à la commande | rex.
-    let cap_cache: std::cell::RefCell<Option<(String, regex::Regex)>> = std::cell::RefCell::new(None);
+    let cap_cache = std::cell::RefCell::new(CacheDeMotifs::new());
     let _ = conn.create_scalar_function(
         "re_cap",
         3,
@@ -123,20 +117,11 @@ pub(crate) fn install_query_udfs(conn: &Connection) {
                 _ => return Ok(None::<String>),
             };
             let pat = ctx.get::<String>(1)?;
-            if pat.len() > 512 {
-                return Err(rusqlite::Error::UserFunctionError("motif regex trop long (max 512)".into()));
-            }
+            motif_admissible(&pat).map_err(MotifRefuse::en_erreur_udf)?;
             let grp = ctx.get::<String>(2)?;
             let mut c = cap_cache.borrow_mut();
-            let re = match &*c {
-                Some((p, r)) if *p == pat => r.clone(),
-                _ => {
-                    let r = regex::Regex::new(&pat).map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-                    *c = Some((pat.clone(), r.clone()));
-                    r
-                }
-            };
-            Ok(re.captures(&hay).and_then(|caps| caps.name(&grp).map(|m| m.as_str().to_string())))
+            let re = c.motif(&pat).map_err(MotifRefuse::en_erreur_udf)?;
+            Ok(re.capture(&hay, &grp))
         },
     );
 }

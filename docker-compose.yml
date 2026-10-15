@@ -233,6 +233,11 @@ services:
       # PLUME_TLS_KEY=/etc/plume/tls/tls.key — la clé doit être lisible par l'utilisateur `soc` de l'image.
       PLUME_TLS_CERT: "${PLUME_TLS_CERT:-}"
       PLUME_TLS_KEY: "${PLUME_TLS_KEY:-}"
+      # --- TLS TERMINÉ EN AMONT — `P10.32-t` : MÊME RAISON, SANS CETTE LIGNE `.env` NE SERT À RIEN ---
+      # 1 = le mandataire placé devant sert le HTTPS au navigateur et parle au démon en clair : le
+      # cookie de session porte `Secure` et la réponse pose HSTS, comme avec le TLS natif. VIDE (défaut)
+      # = comportement d'avant. Actif sans TLS natif, un accès DIRECT en http au démon perd son cookie.
+      PLUME_TLS_TERMINATED_UPSTREAM: "${PLUME_TLS_TERMINATED_UPSTREAM:-}"
     # --- BUDGET RESSOURCES — `P4.14-a` : LE PLAFOND EST POSÉ ICI, PAS SEULEMENT ANNONCÉ ------------
     # Le démon DIT lui-même, au démarrage, si quelque chose d'extérieur le borne. Sans les lignes
     # ci-dessous il imprime « AVERTISSEMENT [couverture=sans-limite] … le budget de 2 Gio du produit

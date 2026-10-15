@@ -32,6 +32,50 @@ pub(crate) mod activation_de_la_demonstration; // `P10.28-j` : la démonstration
 /// Lu sur le chemin chaud (security_headers) sans relire la config -> atomic mis en cache au boot.
 pub(crate) static TLS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// `P10.32-t` — LE TLS EST TERMINÉ EN AMONT (Ingress k3s, Traefik, mandataire Docker, nginx hôte) : le démon parle
+/// HTTP en clair, le navigateur voit HTTPS. Posé au boot par `PLUME_TLS_TERMINATED_UPSTREAM=1` (« 1 » seul, toute
+/// autre valeur = off, défaut off). Ne pilote QUE l'attribut `Secure` des cookies et l'en-tête HSTS, jamais le listener
+/// (piloté par le `tls_on` local de `run`). Le démon croit le réglage sur parole : il ne lit aucun en-tête de mandataire.
+pub(crate) static TLS_TERMINATED_UPSTREAM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `P10.32-t` — LE SITE UNIQUE DE DÉCISION : le navigateur parle-t-il HTTPS ? Vrai si le démon sert lui-même le TLS
+/// OU si l'exploitant déclare un mandataire TLS en amont. PURE : `cookie_secure_suffix_pour` (attribut `Secure`) et
+/// `hsts_pour` (en-tête HSTS) le lisent tous deux — aucune seconde copie de la règle.
+pub(crate) fn https_percu_par_le_navigateur(tls_natif: bool, termine_en_amont: bool) -> bool {
+    tls_natif || termine_en_amont
+}
+
+/// `P10.32-t` — l'état posé au boot `(tls_natif, termine_en_amont)`, lu par les deux sites sur le chemin chaud.
+pub(crate) fn etat_tls_au_demarrage() -> (bool, bool) {
+    (
+        TLS_ON.load(std::sync::atomic::Ordering::Relaxed),
+        TLS_TERMINATED_UPSTREAM.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// `P10.32-t` — lecture du réglage `PLUME_TLS_TERMINATED_UPSTREAM` : « 1 » seul l'active ; absent, vide, « 0 »,
+/// « true », « yes »… = off. Même convention que `PLUME_HOST_STRICT`.
+pub(crate) fn tls_termine_en_amont_demande(conf: &std::collections::HashMap<String, String>) -> bool {
+    cfg(conf, "PLUME_TLS_TERMINATED_UPSTREAM", "0") == "1"
+}
+
+/// `P10.32-t` — valeur de l'en-tête HSTS rendu (None = en-tête absent). PURE : seule source de `security_headers`.
+pub(crate) fn hsts_pour(tls_natif: bool, termine_en_amont: bool) -> Option<&'static str> {
+    if https_percu_par_le_navigateur(tls_natif, termine_en_amont) {
+        Some("max-age=31536000; includeSubDomains")
+    } else {
+        None
+    }
+}
+
+/// `P10.32-t` — le démarrage RÉEL (`boot_config`, statiques comprises) rejoué par un témoin dans un sous-processus de
+/// test : la chaîne réglage -> statique -> sites se juge sur le routeur servi, sans ouvrir de base ni lier de port.
+/// Absent du binaire livré.
+#[cfg(test)]
+pub(crate) fn rejouer_le_demarrage_pour_un_temoin() {
+    let _ = boot_config();
+}
+
 /// `P4.13-a` (reprise) — LA POLITIQUE DE CONTENU, ET L'EMPREINTE DU SEUL SCRIPT EN LIGNE DU DOCUMENT.
 ///
 /// LE DÉFAUT MESURÉ. `index.html` porte, depuis toujours, un unique `<script>` EN LIGNE : le filet de
@@ -79,10 +123,12 @@ pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     set(h, "referrer-policy", "no-referrer");
     set(h, "permissions-policy", "geolocation=(), microphone=(), camera=()");
     set(h, "content-security-policy", CSP);
-    // HSTS UNIQUEMENT quand le TLS natif est actif (item 1). En HTTP (défaut k3s : TLS au proxy), NE PAS
-    // émettre HSTS sur le 80 d'origine -> on ne casse pas un déploiement HTTP. Émis ssi PLUME_TLS_CERT/KEY.
-    if TLS_ON.load(std::sync::atomic::Ordering::Relaxed) {
-        set(h, "strict-transport-security", "max-age=31536000; includeSubDomains");
+    // HSTS UNIQUEMENT quand le navigateur parle HTTPS (item 1, `P10.32-t`) : TLS natif (PLUME_TLS_CERT/KEY) ou
+    // mandataire TLS déclaré en amont (PLUME_TLS_TERMINATED_UPSTREAM=1). Sinon (défaut) aucun HSTS sur l'origine
+    // en clair -> on ne casse pas un déploiement HTTP. Même règle que l'attribut `Secure` (`hsts_pour`).
+    let (tls_natif, termine_en_amont) = etat_tls_au_demarrage();
+    if let Some(hsts) = hsts_pour(tls_natif, termine_en_amont) {
+        set(h, "strict-transport-security", hsts);
     }
     // Cache-Control par chemin (défense en profondeur, v118). Politique PURE & testable : cf. cache_control_for.
     if let Some(cc) = cache_control_for(&path) {
@@ -304,11 +350,17 @@ fn boot_config() -> BootConfig {
     let sso_header_groups = cfg(&conf, "PLUME_SSO_HEADER_GROUPS", "x-authentik-groups").to_ascii_lowercase();
     // DURCISSEMENT STANDALONE (item 1) — TLS natif CONFIG-GATED : HTTPS rustls ssi PLUME_TLS_CERT +
     // PLUME_TLS_KEY (chemins PEM) sont posés. Vides (DÉFAUT) -> HTTP en clair comme aujourd'hui : k3s
-    // derrière Traefik (TLS au proxy) reste INCHANGÉ. HSTS n'est émis QUE quand ce TLS est actif.
+    // derrière Traefik (TLS au proxy) reste INCHANGÉ. HSTS : TLS natif OU mandataire déclaré en amont (`hsts_pour`).
     let tls_cert = cfg(&conf, "PLUME_TLS_CERT", "");
     let tls_key = cfg(&conf, "PLUME_TLS_KEY", "");
     let tls_on = !tls_cert.trim().is_empty() && !tls_key.trim().is_empty();
     TLS_ON.store(tls_on, std::sync::atomic::Ordering::Relaxed);
+    // `P10.32-t` — mandataire TLS en amont déclaré : `Secure` et HSTS posés sans TLS natif. Le listener reste en clair.
+    let tls_termine_en_amont = tls_termine_en_amont_demande(&conf);
+    TLS_TERMINATED_UPSTREAM.store(tls_termine_en_amont, std::sync::atomic::Ordering::Relaxed);
+    if tls_termine_en_amont && !tls_on {
+        eprintln!("[tls] PLUME_TLS_TERMINATED_UPSTREAM=1 sans TLS natif : cookies Secure et HSTS posés sur la foi du mandataire TLS en amont — un accès direct en HTTP à l'origine perdra son cookie de session");
+    }
     // DURCISSEMENT STANDALONE (item 2) — anti-brute-force : lockout par (compte Basic, IP) à backoff
     // exponentiel + AUTO-INGEST SIEM. Défauts GÉNÉREUX/transparents (le légitime ne fait pas d'échecs).
     // PLUME_AUTH_LOCK_THRESHOLD=0 désactive le lockout (les échecs restent loggés). 10 / 30s / 900s.
@@ -885,7 +937,7 @@ pub(crate) async fn run() {
     // disposent de l'IP source (lockout + rate-limit per-IP). On NE fait PAS confiance à X-Forwarded-For.
     if tls_on {
         // TLS NATIF (item 1) : HTTPS rustls/ring via axum-server. Provider ring installé une fois
-        // (aws-lc-rs exigerait cmake/nasm absents). HSTS émis par security_headers (TLS_ON).
+        // (aws-lc-rs exigerait cmake/nasm absents). HSTS émis par security_headers (`hsts_pour`).
         let _ = rustls::crypto::ring::default_provider().install_default();
         let tls = match axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls_cert, &tls_key).await {
             Ok(c) => c,

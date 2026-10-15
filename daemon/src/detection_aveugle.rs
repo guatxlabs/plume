@@ -156,6 +156,11 @@ pub(crate) struct AbandonConsigne {
 ///
 /// `None` si la règle n'a pas pu être relue après l'écriture : rien n'est posé, et l'abandon reste
 /// compté par l'appelant (`P4.1-r`) — une alerte sur un compte qu'on n'a pas lu serait inventée.
+///
+/// `P10.20-b` (rang trois, famille Q3) — les écritures sont JUGÉES : un incrément du compte que le moteur
+/// refuse rend `None` (rien n'est posé sur un compte non écrit ; l'abandon reste compté par l'appelant), et
+/// `alerte_posee` ne vaut `true` que si l'alerte de cécité est écrite (`Ok(1)`) ou déjà ouverte sous sa clé
+/// (`Ok(0)`) — jamais sur un INSERT refusé. Chaque refus laisse une ligne de journal avec la cause du moteur.
 pub(crate) fn consigner_abandon(
     conn: &Connection,
     id: i64,
@@ -164,10 +169,13 @@ pub(crate) fn consigner_abandon(
     now_ts: i64,
     abandon: &AbandonDEvaluation,
 ) -> Option<AbandonConsigne> {
-    let _ = conn.execute(
+    if let Err(e) = conn.execute(
         "UPDATE rule SET last_run=?1, abandons_consecutifs=abandons_consecutifs+1 WHERE id=?2",
         params![now_ts, id],
-    );
+    ) {
+        eprintln!("[detection] WARN règle #{id} : le compte de ses abandons consécutifs n'a pas pu être écrit ({e}) — aucune alerte de cécité posée sur un compte non écrit");
+        return None;
+    }
     let (consecutifs, interval_s): (u32, i64) = conn
         .query_row("SELECT abandons_consecutifs, interval_s FROM rule WHERE id=?1", params![id], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
@@ -190,10 +198,13 @@ pub(crate) fn consigner_abandon(
     // L'IMPUTATION est l'inconnu NOMMÉ : cette alerte se rapporte à une RÈGLE, pas à un flux — lui
     // imputer une source ferait basculer la pastille d'une source qui n'a rien fait (cf. flotte muette).
     let sources = crate::imputation_encoder(&[crate::SOURCE_INDETERMINABLE.to_string()]);
-    let _ = conn.execute(
+    if let Err(e) = conn.execute(
         "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
         params![now_ts, format!("{FAMILLE_ALERTE}.{id}"), severity, titre, detail, dedup, sources, crate::fondement::Fondement::Capteur.mot()],
-    );
+    ) {
+        eprintln!("[detection] WARN règle #{id} : l'alerte de cécité n'a pas pu être écrite ({e}) — {consecutifs} abandons consécutifs comptés, elle sera reposée au prochain abandon");
+        return Some(AbandonConsigne { consecutifs, seuil, alerte_posee: false });
+    }
     let _ = conn.execute(
         "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, detail=?3 WHERE dedup=?4 AND status IN ('new','ack')",
         params![now_ts, titre, detail, dedup],
@@ -203,15 +214,28 @@ pub(crate) fn consigner_abandon(
 
 /// CONSIGNE UNE ÉVALUATION RÉUSSIE : `last_run` et `last_value` comme avant, le compte consécutif
 /// remis à zéro, et l'épisode de cécité RÉSOLU — la clé est libérée, un futur épisode se ré-arme.
-pub(crate) fn consigner_evaluation_reussie(conn: &Connection, id: i64, now_ts: i64, valeur: f64) {
-    let _ = conn.execute(
+///
+/// `P10.20-b` (rang trois, famille Q3) — rend `true` si les deux écritures sont passées, `false` si le moteur
+/// en a refusé une (compte non remis à zéro, ou alerte de cécité restée ouverte sur une règle saine) : les
+/// deux sont tentées, chaque refus laisse une ligne de journal avec la cause du moteur, et l'appelant compte.
+#[must_use]
+pub(crate) fn consigner_evaluation_reussie(conn: &Connection, id: i64, now_ts: i64, valeur: f64) -> bool {
+    let mut ecrit = true;
+    if let Err(e) = conn.execute(
         "UPDATE rule SET last_run=?1, last_value=?2, abandons_consecutifs=0 WHERE id=?3",
         params![now_ts, valeur, id],
-    );
-    let _ = conn.execute(
+    ) {
+        eprintln!("[detection] WARN règle #{id} : son évaluation réussie n'a pas pu être écrite ({e}) — compte d'abandons non remis à zéro");
+        ecrit = false;
+    }
+    if let Err(e) = conn.execute(
         "UPDATE alert SET status='resolved', dedup=NULL WHERE dedup=?1 AND status IN ('new','ack')",
         params![cle_dedup(id)],
-    );
+    ) {
+        eprintln!("[detection] WARN règle #{id} : son alerte de cécité n'a pas pu être résolue ({e}) — elle reste ouverte sur une règle évaluée");
+        ecrit = false;
+    }
+    ecrit
 }
 
 // ==================================================================================================

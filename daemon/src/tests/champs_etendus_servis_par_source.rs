@@ -8,7 +8,8 @@
     //   3. sur la VRAIE route, dans les DEUX sens : tout couple de l'autorité est servi sous une source ou
     //      nommé « sans source livrée » ; aucun champ servi ne sort de l'autorité ; chaque liste servie est
     //      ÉGALE à ce que l'extracteur trouve dans les fichiers qui écrivent sous la source (son fichier, le
-    //      canal d'aveu de `lib.sh` qu'elle nomme littéralement, ses overlays) ; `null` et `[]` ne se confondent pas ;
+    //      canal d'aveu de `lib.sh` quand elle y figure — nommée littéralement par un capteur, ou annoncée
+    //      avant lui, `P10.32-k` —, ses overlays) ; `null` et `[]` ne se confondent pas ;
     //   4. le canal d'aveu et les overlays sont des MIROIRS du texte livré, relus ici sans passer par la route ;
     //   5. l'enveloppe de spool (`\"kind\":\"events\"`) n'est pas prise pour un champ, et ce qui suit son
     //      ouverture sur la même ligne reste dérivé ;
@@ -161,8 +162,11 @@
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let aveu_lu = cesp_sources_du_canal_d_aveu(&root);
         let aveu_table: std::collections::BTreeSet<String> = crate::collected::SOURCES_DU_CANAL_D_AVEU.iter().map(|s| s.to_string()).collect();
-        assert_eq!(aveu_table, aveu_lu, "SOURCES_DU_CANAL_D_AVEU doit être le miroir des premiers arguments littéraux");
-        assert!(aveu_lu.contains("clamav") && aveu_lu.contains("fail2ban") && !aveu_lu.contains("dataacl"), "{aveu_lu:?}");
+        // `P10.32-k` : miroir des premiers arguments littéraux, plus les seules sources ANNONCÉES (`CESP_AVEU_ANNONCEES`,
+        // `canal_d_aveu_sources_annoncees.rs`) ; l'exception se tait seule quand le capteur nomme la source.
+        let ecarts = cesp_ecarts_du_canal_d_aveu(&aveu_table, &aveu_lu, CESP_AVEU_ANNONCEES);
+        assert!(ecarts.is_empty(), "SOURCES_DU_CANAL_D_AVEU doit être le miroir des premiers arguments littéraux ∪ annoncées : {ecarts:?}");
+        assert!(aveu_lu.contains("clamav") && aveu_lu.contains("fail2ban") && aveu_table.contains("dataacl"), "{aveu_lu:?}");
         let ov_table: std::collections::BTreeSet<(String, String)> =
             crate::collected::SOURCE_DES_OVERLAYS.iter().map(|(f, s)| (f.to_string(), s.to_string())).collect();
         assert_eq!(ov_table, cesp_overlays(&root), "SOURCE_DES_OVERLAYS doit être le miroir des overlays chargeables");
@@ -278,7 +282,7 @@
         let racine = v["champs_etendus_sans_source_livree"].as_object().expect("racine : champs sans source livrée");
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let derive = collected_extract_shipped(&root);
-        let aveu = cesp_sources_du_canal_d_aveu(&root);
+        let aveu = cesp_aveu_attendu(&cesp_sources_du_canal_d_aveu(&root), CESP_AVEU_ANNONCEES); // P10.32-k : lu ∪ annoncées
         let overlays = cesp_overlays(&root);
 
         // (0) LA CLÉ EST PRÉSENTE SUR CHAQUE ENTRÉE, liste ou `null` — jamais absente, jamais autre chose.

@@ -23,7 +23,8 @@ la liste d'autorisation valait `# ex: …` (le récepteur s'arrête) — et éco
 vide. La même faute de commentaire rendait `PLUME_RESPONDER_APPLY=1   # …` différent de `1`.
 k3s. (f) Ingress sans TLS et servi aussi en HTTP, pas de profil seccomp, jeton de compte de service
 monté sans usage, entrée réseau ouverte depuis tout namespace.
-Docker. (g) Aucun `cap_drop`, et PLUME_TLS_CERT/PLUME_TLS_KEY jamais transmis au conteneur.
+Docker. (g) Aucun `cap_drop`, et PLUME_TLS_CERT/PLUME_TLS_KEY jamais transmis au conteneur ;
+PLUME_TLS_TERMINATED_UPSTREAM pareil (`P10.32-t`), et absent du Deployment k3s derrière un Ingress HTTPS seul.
 
 CE QUE LA GARDE FAIT
 --------------------
@@ -73,7 +74,8 @@ leur absence est ainsi un scénario, pas un accident de l'exécuteur. Puis elle 
     hôtes = hôtes des règles), entrée Traefik `websecure` SEULE, seccomp RuntimeDefault,
     `automountServiceAccountToken: false` — adossé à l'absence de tout client de l'API Kubernetes
     dans `daemon/src` —, entrée réseau limitée à `kube-system` et au namespace ; `cap_drop: [ALL]`,
-    `no-new-privileges:true`, PLUME_TLS_CERT et PLUME_TLS_KEY transmis depuis `.env` ;
+    `no-new-privileges:true`, PLUME_TLS_CERT, PLUME_TLS_KEY et PLUME_TLS_TERMINATED_UPSTREAM transmis depuis
+    `.env` ; PLUME_TLS_TERMINATED_UPSTREAM=1 dans le Deployment k3s, dont l'Ingress ne sert que du HTTPS ;
   · la documentation suit — consigne affichée par bootstrap-agent.sh comprise (`sudo chmod 0600`, en
     en-tête ET au 1er passage sans secret) : aucun `chgrp soc`/`chmod 0640` prescrit sur plume.conf ou responder.conf,
     et la conf syslog de deploy/SYSLOG.md, lue selon systemd, est celle de l'installeur (127.0.0.1,
@@ -869,6 +871,12 @@ def juger_k3s(yaml):
         faute(f"deploy/k3s.yaml : entrées Traefik {entrees!r} — attendu `websecure` seule (sinon servi aussi en HTTP)")
     if str(ann.get("traefik.ingress.kubernetes.io/router.tls", "")).lower() != "true":
         faute("deploy/k3s.yaml : annotation traefik router.tls absente ou différente de \"true\"")
+    # `P10.32-t` — l'Ingress ne sert que du HTTPS et parle au pod en clair : sans le réglage, le démon
+    # pose ses cookies sans `Secure` et ne pose pas HSTS alors que le navigateur ne voit que du HTTPS.
+    env_plume = {e.get("name"): e.get("value") for c in pod.get("containers", []) for e in (c.get("env") or [])}
+    if str(env_plume.get("PLUME_TLS_TERMINATED_UPSTREAM")) != "1":
+        faute("deploy/k3s.yaml : Ingress HTTPS seul mais PLUME_TLS_TERMINATED_UPSTREAM != \"1\" "
+              f"({env_plume.get('PLUME_TLS_TERMINATED_UPSTREAM')!r}) — cookies sans Secure, pas de HSTS")
     np_ = par["NetworkPolicy"][0]["spec"]
     if "Ingress" not in (np_.get("policyTypes") or []):
         faute("deploy/k3s.yaml : la NetworkPolicy ne filtre pas l'entrée")
@@ -912,9 +920,13 @@ def juger_compose(yaml):
     env = s.get("environment") or {}
     if isinstance(env, list):
         env = dict(e.split("=", 1) if "=" in e else (e, None) for e in env)
-    for cle in ("PLUME_TLS_CERT", "PLUME_TLS_KEY"):
+    for cle in ("PLUME_TLS_CERT", "PLUME_TLS_KEY", "PLUME_TLS_TERMINATED_UPSTREAM"):
         if not re.fullmatch(r"\$\{" + cle + r"(:?-[^}]*)?\}", str(env.get(cle, ""))):
             faute(f"docker-compose.yml : {cle} n'est pas transmis depuis `.env` au conteneur ({env.get(cle)!r})")
+    # `P10.32-t` — VIDE par défaut, comme le `.env` copié depuis `.env.example` : un `:-1` poserait Secure et HSTS
+    # sur un déploiement qui ne l'a pas demandé (accès direct en http privé de son cookie).
+    if str(env.get("PLUME_TLS_TERMINATED_UPSTREAM", "")) != "${PLUME_TLS_TERMINATED_UPSTREAM:-}":
+        faute(f"docker-compose.yml : PLUME_TLS_TERMINATED_UPSTREAM n'est pas vide par défaut ({env.get('PLUME_TLS_TERMINATED_UPSTREAM')!r})")
 
 
 def juger_docs():

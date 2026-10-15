@@ -416,12 +416,18 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             }
         };
         // Évaluée : `last_run`/`last_value` comme avant, compte consécutif à zéro, épisode de cécité résolu.
-        crate::detection_aveugle::consigner_evaluation_reussie(&conn, id, now_ts, val);
+        // `P10.20-b` (rang trois, famille Q3) — une écriture d'état REFUSÉE par le moteur (compte non remis à zéro,
+        // alerte de cécité restée ouverte sur une règle saine) est COMPTÉE avec les abandons du tick : une règle, un
+        // abandon, quel que soit le nombre d'écritures refusées pour elle. Chaque branche (tir, non-tir) rend l'issue de
+        // `consigner_evaluation_reussie`, soldée UNE fois en fin de tour ; le refus de l'alerte de tir sort avant.
+        // `P10.32-x` — pour une règle qui TIRE, l'état de la règle n'avance qu'APRÈS l'alerte : `last_run`,
+        // `last_value`, le compte d'abandons, la résolution de cécité et `population_vue` ne sont écrits que si l'alerte
+        // est écrite ou déjà ouverte.
         // Clé dedup STABLE par règle (PAS de bucket /window) -> une seule alerte+notif par épisode,
         // calquée sur check_heartbeats : INSERT OR IGNORE (no-op si déjà ouverte) + résolution au retour normal.
         let dedup = format!("rule-{id}");
-        if cmp_op(val, &op, threshold) {
-            let _ = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]);
+        let tir = cmp_op(val, &op, threshold);
+        let ecriture_refusee = if tir {
             let title = format!("{name} : {val} {op} {threshold}");
             // S7 — L'IMPUTATION, calculée en phase 2 bis. `unwrap_or_else` NE pose PAS la chaîne vide :
             // vide voudrait dire « alerte d'avant la migration » et ferait retomber le lecteur sur le
@@ -429,18 +435,31 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             let sources = imputations.get(&id).cloned().unwrap_or_else(|| imputation_encoder(&[]));
             // `P4.12-g` — UNE POPULATION NEUVE SOUS CETTE RÈGLE EST DITE là où la règle se lit : les sources
             // imputées (déjà calculées, aucune requête de plus) HORS de la population de calibrage déclarée
-            // sont écrites sur la règle ; vide = aucune, ou aucune population déclarée.
+            // sont écrites sur la règle (après l'alerte, `P10.32-x`) ; vide = aucune, ou aucune population déclarée.
             let hors_population = crate::population_de_calibrage::sources_hors_population(
                 populations.get(&id).map(String::as_str).unwrap_or(""),
                 &crate::imputation::imputation_decoder(&sources),
             );
-            let _ = conn.execute("UPDATE rule SET population_vue=?1 WHERE id=?2", params![hors_population.join(","), id]);
             // l'alerte hérite du tag MITRE de la règle -> /api/coverage/detections joint sur `mitre`.
             // no-op si une alerte ouverte porte déjà la clé -> plus de renotif à chaque fenêtre.
-            let _ = conn.execute(
+            // `P10.20-b` (rang trois, famille Q3) — L'ALERTE D'ABORD, l'état de la règle ENSUITE : `Ok(1)` = écrite,
+            // `Ok(0)` = épisode déjà ouvert sous la clé (entrée légitime, pas un refus), `Err` = refusée par le moteur
+            // (disque plein, base en lecture seule, verrou, déclencheur) — détection perdue si on l'avale. Refusée :
+            // RIEN de la règle n'est écrit (`P10.32-x`) — ni `last_fired` (il affirmerait un tir que personne ne peut
+            // lire), ni `last_run`/`last_value`/compte d'abandons/résolution de cécité, ni `population_vue` ; la règle
+            // est comptée abandonnée, une ligne de journal dit la cause du moteur (ni valeur ni requête), et elle reste
+            // due : réévaluée dès le tick suivant, jusqu'à ce que son alerte entre.
+            if let Err(e) = conn.execute(
                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,sources,current_value,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, sources, val, crate::fondement::Fondement::Regle.mot()],
-            );
+            ) {
+                eprintln!("[detection] WARN règle #{id} : l'alerte de son tir n'a pas pu être écrite ({e}) — la règle est comptée abandonnée ; ni last_fired, ni last_run, ni son compte d'abandons ne sont posés : elle est due dès le tick suivant");
+                abandonnees += 1; // une règle, un abandon
+                continue;
+            }
+            let refusee = !crate::detection_aveugle::consigner_evaluation_reussie(&conn, id, now_ts, val);
+            let _ = conn.execute("UPDATE rule SET population_vue=?1 WHERE id=?2", params![hors_population.join(","), id]);
+            let _ = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]);
             // rafraîchit l'affichage (ts/valeur/sévérité — utile pour les gauges type CPU dont la valeur bouge).
             // `P4.12-h` : l'instant d'OUVERTURE est gardé (`opened_at` prend l'ancien `ts` une fois, puis
             // ne bouge plus — SQLite évalue les membres droits sur la ligne AVANT la mise à jour), et
@@ -454,12 +473,18 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                  WHERE dedup=?4 AND status IN ('new','ack')",
                 params![now_ts, title, severity, dedup, sources, val, FACTEUR_DE_RENOTIFICATION],
             );
+            refusee
         } else {
+            let refusee = !crate::detection_aveugle::consigner_evaluation_reussie(&conn, id, now_ts, val);
             // retour SOUS le seuil -> résout l'alerte ouverte et libère la clé (ré-arme un futur épisode)
             let _ = conn.execute(
                 "UPDATE alert SET status='resolved', dedup=NULL WHERE dedup=?1 AND status IN ('new','ack')",
                 params![dedup],
             );
+            refusee
+        };
+        if ecriture_refusee {
+            abandonnees += 1; // une règle, un abandon
         }
     }
     crate::mesure_environnement::Mesure::Lue(abandonnees)

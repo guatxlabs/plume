@@ -64,6 +64,7 @@ mod ingest;
 pub(crate) use ingest::*;
 mod query_exec;
 pub(crate) use query_exec::*;
+mod regex_de_requete; // P10.32-q : LE MOTIF REGEX D'UNE REQUÊTE — un constructeur borné (longueur, taille du programme, cache du DFA paresseux) commun au chaud et au froid, un cache à plusieurs motifs servis par référence
 mod db_ventilation; // OÙ PARTENT LES OCTETS : ventilation par objet, DÉRIVÉE du schéma (opt-in, dbstat parcourt tout)
 mod ventilation_serie; // LA MÊME MESURE, DANS LE TEMPS : tick lent -> table `metric` -> `metric_rollup` (90 j) -> SOQL `metric`. Un refus de publier reste un TROU, jamais un zéro
 mod limite_corps; // LE PLAFOND DE TAILLE D'UN CORPS INGERE : la limite qui MORD comptait des octets et ne le disait pas -> un seul auteur pour ce plafond ET pour son message

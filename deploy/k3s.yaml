@@ -84,6 +84,12 @@ spec:
             - { name: PLUME_ADDR, value: "0.0.0.0:7000" }
             - { name: PLUME_HOST, value: "soc.tondomaine.tld" }   # = Host de l'Ingress (sinon 421)
             - { name: PLUME_CONFIG, value: "/nonexistent" }
+            # `P10.32-t` — L'INGRESS CI-DESSOUS NE SERT QUE DU HTTPS (`websecure` seule) et parle au pod en
+            # clair : le démon doit le savoir pour poser `Secure` sur ses cookies et HSTS sur ses réponses.
+            # Un accès DIRECT en http au pod (port-forward) perd alors son cookie de session ; les sondes
+            # du kubelet et les agents (jeton, pas de cookie) n'en dépendent pas. Ingress servi aussi en
+            # HTTP : retirez cette ligne.
+            - { name: PLUME_TLS_TERMINATED_UPSTREAM, value: "1" }
             - { name: PLUME_USER,      valueFrom: { secretKeyRef: { name: soc-auth, key: PLUME_USER } } }
             - { name: PLUME_PASS_HASH, valueFrom: { secretKeyRef: { name: soc-auth, key: PLUME_PASS_HASH } } }
             # CHIFFREMENT AT-REST (`P9.6-a`) — TROIS PROVENANCES, DANS CET ORDRE DE PRÉCÉDENCE.

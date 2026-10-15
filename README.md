@@ -814,6 +814,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 | `PLUME_HOST_STRICT` | `1` = n'accepte plus le *loopback* d'office, seulement les FQDN de `PLUME_HOST` | `0` |
 | `PLUME_USER` / `PLUME_PASS_HASH` | compte admin ; le hash vient de `plume-daemon hashpw`. Hash vide → **mode SETUP** | `admin` / vide |
 | `PLUME_TRUSTED_PROXIES` | reverse proxies dont on accepte l'IP réelle | vide |
+| `PLUME_TLS_TERMINATED_UPSTREAM` | `1` = le reverse proxy sert le HTTPS et parle au démon en clair : cookie `Secure` et HSTS posés comme avec le TLS natif (un accès direct en http au démon perd alors son cookie). Posé à `1` dans `deploy/k3s.yaml`, dont l'Ingress ne sert que du HTTPS | vide |
 | `PLUME_SESSION_TTL_S` | durée d'une session web | `43200` |
 | `PLUME_MULTI_TENANT` | mode multi‑tenant (une base + une clé par tenant) | `0` |
 

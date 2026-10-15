@@ -510,15 +510,22 @@ fn build_pred(body: &str) -> Option<Pred> {
     })
 }
 
+/// `P10.32-q` — le motif d'une feuille REGEXP du froid, par le constructeur borné du chaud. `None` = FALLBACK.
+fn motif_du_froid(pat: &str) -> Option<regex::Regex> {
+    crate::regex_de_requete::compiler_motif(pat).ok()
+}
+
 /// UNE feuille `champ op valeur` -> `Pred`, mirroir EXACT de `table_conds`. `None` si non vectorisable.
 fn build_leaf(op: &str, fcol: &'static str, val: &str) -> Option<Pred> {
     // `=~` -> REGEXP (UDF `regexp` = crate `regex`, MÊME moteur -> parité). Regex invalide -> FALLBACK.
+    // `P10.32-q` : MÊME constructeur borné que l'UDF chaude (longueur, taille du programme) ; motif refusé ->
+    // FALLBACK, et c'est le chemin chaud qui dit le refus (« motif regex trop long », taille dépassée).
     if op == "=~" {
-        return regex::Regex::new(val).ok().map(|re| Pred::Regex { col: fcol, re });
+        return motif_du_froid(val).map(|re| Pred::Regex { col: fcol, re });
     }
     // `=`/`:`/`!=` avec valeur `~…` -> REGEXP sur le reste (parité `table_conds` ligne "val.starts_with('~')").
     if matches!(op, "=" | ":") && val.starts_with('~') {
-        return regex::Regex::new(&val[1..]).ok().map(|re| Pred::Regex { col: fcol, re });
+        return motif_du_froid(&val[1..]).map(|re| Pred::Regex { col: fcol, re });
     }
     // `=`/`:`/`!=` avec `*` -> glob LIKE (`*`->`%`) ; `!=` -> NOT LIKE (négation 3-valuée).
     if matches!(op, "=" | ":" | "!=") && val.contains('*') {
@@ -1980,3 +1987,7 @@ fn clone_pred(p: &Pred) -> Pred {
         Pred::Not(q) => Pred::Not(Box::new(clone_pred(q))),
     }
 }
+
+// `P10.32-q` — témoins du froid : la feuille REGEXP refuse ce que le chaud refuse (fichier de test neuf).
+#[cfg(test)]
+mod regex_du_froid_bornee;

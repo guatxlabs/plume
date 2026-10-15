@@ -351,7 +351,8 @@ fn transport_ok(status: u16) -> bool {
 /// rien transmis ce tick, son `last_error` le dit désormais aussi ; `Lue(n)` sinon, où `n` compte un
 /// événement du lot que la base n'a pas su décoder. Un tel événement ne part PAS et le lot est refusé
 /// (filigrane gelé, `last_error` nomme l'identifiant) : avant, `.flatten()` le sautait et le filigrane
-/// passait dessus — un événement JAMAIS transmis au SOC, sans aucune trace.
+/// passait dessus — un événement JAMAIS transmis au SOC, sans aucune trace. `P10.20-w` : `Lue(1)` compte AUSSI
+/// un lot transmis au puits dont le filigrane n'a pas été écrit (refus ou zéro ligne) — ce lot repartira.
 pub(crate) fn forward_one_destination<T>(
     db: &Arc<Mutex<Connection>>, id: i64, dtype: &str, endpoint: &str,
     config_json: &str, filter_json: &str, batch_max: i64, watermark: i64, now_ts: i64, transport: T,
@@ -453,11 +454,27 @@ where
         Ok(status) if transport_ok(status) => {
             // SUCCÈS -> avance le watermark au dernier id du lot (at-least-once : `id > watermark` exclut
             // désormais ce lot -> jamais de ré-envoi infini ; un crash avant ce COMMIT re-enverra le lot).
+            //
+            // `P10.20-w` — LE FILIGRANE EST COMPTÉ. Avant, `let _ =` : une écriture refusée (ou sans effet) laissait le
+            // filigrane en deçà, le MÊME lot repartait vers le puits externe à chaque tick, et la fonction rendait
+            // `Lue(0)` sans que `last_ok`/`last_error` n'en disent rien. Désormais : une ligne écrite, ou le lot de
+            // cette destination est compté abandonné (`Lue(1)`) et la cause du moteur est journalisée avec
+            // l'identifiant de la destination — jamais l'endpoint ni un événement.
             let conn = db.lock();
-            let _ = conn.execute(
+            let ecrit = conn.execute(
                 "UPDATE destination SET watermark=?1, last_run=?2, last_ok=?2, last_error=NULL, last_count=?3 WHERE id=?4",
                 params![max_id, now_ts, count, id],
             );
+            match ecrit {
+                Ok(1) => {}
+                autre => {
+                    let cause = match autre { Err(e) => e.to_string(), Ok(n) => format!("{n} ligne(s) écrite(s) au lieu d'une") };
+                    eprintln!(
+                        "[plume] destination {id} : lot transmis au puits mais filigrane NON ÉCRIT, le même lot repartira au prochain tick : {cause}"
+                    );
+                    return Mesure::Lue(1); // un lot transmis dont la marque manque : compté au bilan du planificateur
+                }
+            }
         }
         Ok(status) => {
             // Statut non-2xx : ÉCHEC. Watermark GELÉ (rejouable), last_error = statut seul (jamais le corps).

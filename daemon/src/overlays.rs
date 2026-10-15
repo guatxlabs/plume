@@ -88,7 +88,7 @@ pub(crate) fn sql_reimposition_rule() -> String {
     format!("UPDATE rule SET {}, managed=1 WHERE id=?{}", sets.join(", "), COLONNES_REIMPOSEES_RULE.len() + 1)
 }
 
-/// `P10.20-b` — le plan d'upsert d'un overlay de détection (`parser`, `dparser`, `playbook`), ou l'AVEU : une
+/// `P10.20-b` — le plan d'upsert d'un overlay de détection (`parser`, `dparser`, `playbook`, `rule` JSON et Sigma), ou l'AVEU : une
 /// lecture de l'existant NON faite ignore le fichier (compté dans `ignores` par l'appelant, WARN avec la cause du moteur, aucune
 /// valeur de cellule) et n'écrit rien. Elle ne vaut pas « le nom n'existe pas » : l'INSERT qui suivait créait
 /// un DOUBLON (aucune de ces tables n'a d'UNIQUE(name)) — un playbook en double rejoue deux fois sa riposte.
@@ -344,26 +344,32 @@ pub(crate) fn load_overlay_rules(conn: &Connection, dir: &std::path::Path) -> cr
         let interval_s = v.get("interval_s").and_then(|x| x.as_i64()).unwrap_or(300);
         // P11.5-d : la réimposition ne touche QUE ce qu'elle possède, et son `SET` est DÉRIVÉ de
         // `COLONNES_REIMPOSEES_RULE` — l'ordre des paramètres liés ci-dessous EST celui du tableau.
-        match plan_upsert(conn, "rule", &name) {
+        // P10.20-b : une lecture de l'existant NON faite ignore le fichier (aucun doublon `managed=1` à côté de la
+        // ligne possédée ou d'une copie `managed=2`) ; seule une écriture qui a posé sa ligne compte « chargée ».
+        let Some(plan) = plan_de_l_overlay_ou_aveu(conn, "rule", "règle", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        let ecrit = match plan {
             UpsertPlan::SkipUser => {
                 eprintln!("[overlays] WARN règle '{name}' ({}) : une règle ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉE (renommez l'une des deux)", path.display());
                 ch.ignores += 1;
                 continue;
             }
             UpsertPlan::Update(rid) => {
-                let _ = conn.execute(
+                conn.execute(
                     &sql_reimposition_rule(),
                     params![enabled, query, is_soql as i64, op, threshold, severity, interval_s, window_s, mitre, compliance, rid],
-                );
+                )
             }
             UpsertPlan::Insert => {
-                let _ = conn.execute(
+                conn.execute(
                     "INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,compliance,managed) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1)",
                     params![name, enabled, query, is_soql as i64, op, threshold, severity, interval_s, window_s, mitre, compliance],
-                );
+                )
             }
-        }
-        ch.charges += 1;
+        };
+        compter_l_ecriture_de_l_overlay("règle", &name, &path, ecrit, &mut ch);
     }
     ch
 }
@@ -484,26 +490,32 @@ pub(crate) fn load_overlay_sigma(conn: &Connection, dir: &std::path::Path) -> cr
                 Ok(t) => {
                     for w in &t.warnings { eprintln!("[sigma] NOTE règle '{}' : {w}", t.name); }
                     // P11.5-d : même scope de possession que les règles JSON (bloc de doctrine plus haut).
-                    match plan_upsert(conn, "rule", &t.name) {
+                    // P10.20-b : même contrat que les règles JSON — lecture ratée = document ignoré, rien écrit ;
+                    // une écriture refusée ou sans effet n'est pas comptée chargée (un document par règle).
+                    let Some(plan) = plan_de_l_overlay_ou_aveu(conn, "rule", "règle Sigma", &t.name, &path) else {
+                        ch.ignores += 1;
+                        continue;
+                    };
+                    let ecrit = match plan {
                         UpsertPlan::SkipUser => {
                             eprintln!("[overlays] WARN règle Sigma '{}' ({}) : une règle ad-hoc UI (managed=2) du même nom existe — overlay IGNORÉE (renommez l'une des deux)", t.name, path.display());
                             ch.ignores += 1;
                             continue;
                         }
                         UpsertPlan::Update(rid) => {
-                            let _ = conn.execute(
+                            conn.execute(
                                 "UPDATE rule SET enabled=1, query=?1, is_soql=1, op=?2, threshold=?3, severity=?4, interval_s=?5, window_s=?6, mitre=?7, managed=1 WHERE id=?8",
                                 params![t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, rid],
-                            );
+                            )
                         }
                         UpsertPlan::Insert => {
-                            let _ = conn.execute(
+                            conn.execute(
                                 "INSERT INTO rule(name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,mitre,managed) VALUES(?1,1,?2,1,?3,?4,?5,?6,?7,?8,1)",
                                 params![t.name, t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre],
-                            );
+                            )
                         }
-                    }
-                    ch.charges += 1;
+                    };
+                    compter_l_ecriture_de_l_overlay("règle Sigma", &t.name, &path, ecrit, &mut ch);
                 }
                 Err(e) => {
                     let who = if title.is_empty() { "(sans titre)".to_string() } else { title };

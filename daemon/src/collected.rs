@@ -535,10 +535,16 @@ pub(crate) fn couples_etendus() -> Vec<(&'static str, &'static str)> {
 /// `champs_etendus_servis_par_source.rs` contre le texte des capteurs ; pas une liste libre.
 /// Sans cette table, `clamav` était servi `[]` (« aucun champ établi ») alors que ses aveux portent
 /// `type`, `collector`, `collect_status`, `reason` et `detail`.
+/// `P10.32-k` — UNE SOURCE ANNONCÉE, `dataacl` : son capteur doit avouer quand sa cible manque, et ne
+/// nomme encore aucune aide d'aveu. Elle figure ici AVANT lui, et c'est la seule exception que le miroir
+/// tolère (`CESP_AVEU_ANNONCEES`, `canal_d_aveu_sources_annoncees.rs`) ; l'exception se tait seule le
+/// jour où `dataacl.sh` la nomme. PRIX DE CET ORDRE, dit : d'ici là, `GET /api/sources` sert pour
+/// `dataacl` les champs de `lib.sh` (`collector`, `collect_status`, `reason`, `detail`) que le capteur
+/// n'écrit pas encore — la liste dit ce que les fichiers peuvent écrire sous la source, pas ce qui a été vu.
 pub(crate) const FICHIER_DU_CANAL_D_AVEU: &str = "collectors/lib.sh";
 pub(crate) const SOURCES_DU_CANAL_D_AVEU: &[&str] = &[
     "auditd", "clamav", "cloudflare", "cloudflare-http", "conntrack", "containerd", "controls", "crowdsec",
-    "custom", "dataaccess", "fail2ban", "falco", "firewall", "integrity", "journal", "k8s", "k8s-log",
+    "custom", "dataaccess", "dataacl", "fail2ban", "falco", "firewall", "integrity", "journal", "k8s", "k8s-log",
     "kube-audit", "kube-rbac", "mail", "minio", "nft", "origin-drop", "portprobe", "portscan", "prom-scrape",
     "resources", "ship", "suricata", "ufw", "update", "vuln", "web", "yara",
 ];

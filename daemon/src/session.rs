@@ -511,10 +511,17 @@ pub(crate) fn cookie_value(header: &str, name: &str) -> Option<String> {
     header.split(';').map(|p| p.trim()).find_map(|p| p.strip_prefix(&prefix).map(|v| v.to_string()))
 }
 
-/// Attribut `Secure` des cookies UNIQUEMENT quand le TLS natif est actif (sinon le cookie ne serait
-/// jamais émis en HTTP — k3s derrière Traefik termine le TLS au proxy, l'origine est en clair).
+/// Attribut `Secure` des cookies UNIQUEMENT quand le navigateur parle HTTPS (sinon le cookie ne serait jamais
+/// renvoyé en HTTP) : TLS natif, ou mandataire TLS déclaré en amont (`P10.32-t`, PLUME_TLS_TERMINATED_UPSTREAM=1).
+/// Défaut : origine en clair, aucun `Secure`. Site UNIQUE de tous les cookies de session et d'IdP.
 pub(crate) fn cookie_secure_suffix() -> &'static str {
-    if TLS_ON.load(std::sync::atomic::Ordering::Relaxed) {
+    let (tls_natif, termine_en_amont) = crate::server::etat_tls_au_demarrage();
+    cookie_secure_suffix_pour(tls_natif, termine_en_amont)
+}
+
+/// `P10.32-t` — suffixe rendu, PUR : même règle que HSTS (`server::https_percu_par_le_navigateur`).
+pub(crate) fn cookie_secure_suffix_pour(tls_natif: bool, termine_en_amont: bool) -> &'static str {
+    if crate::server::https_percu_par_le_navigateur(tls_natif, termine_en_amont) {
         "; Secure"
     } else {
         ""

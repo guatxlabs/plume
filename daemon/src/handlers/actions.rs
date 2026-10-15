@@ -527,14 +527,43 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
             )
         }
     };
+    // `P10.21-n` (volet démon) — UNE ACTION N'EST REMISE QUE SI SA RÉCLAMATION EST ÉCRITE. Avant :
+    // `let _ = conn.execute(UPDATE … claimed_ts …)` puis la ligne partait dans le TSV quoi qu'il arrive.
+    // Une écriture refusée (base en lecture seule, verrou, déclencheur) remettait l'action SANS la
+    // réclamer : `claimed_ts` restait NULL, donc l'action était re-servie à CHAQUE tour (le filtre
+    // `claimed_ts IS NULL` ci-dessus) et restait prenable par le responder local
+    // (`ACTIONS_A_RECLAMER_ICI`) — la double exécution que `P4.7-f` ferme — et une action non assignée
+    // gardait `host` NULL, que `action_result` (`AND host=?5`) ne peut jamais clore : ban rejoué sans fin.
+    // Le geste : seul `Ok(1)` remet la ligne ; `Err` ou `Ok(0)` (ligne non touchée) la RETIENT ce
+    // tour-ci, avec une ligne de journal qui porte l'identifiant et la cause (jamais la cible). Si
+    // aucune des lignes lues n'a pu être réclamée, la route rend le 503 nommé, comme la file non lue.
     let mut body = String::new();
+    let mut reclamees = 0usize;
     for (id, kind, target, dry) in &rows {
+        let ligne = format!("{id}\t{kind}\t{target}\t{}\n", if *dry { 1 } else { 0 });
         // assigne l'action à l'hôte réclamant (no-op si déjà ciblée sur lui) -> action_result peut clôturer
-        let _ = conn.execute("UPDATE action SET claimed_ts=?2, host=?3 WHERE id=?1", params![id, now_ts, host]);
-        body.push_str(&format!("{id}\t{kind}\t{target}\t{}\n", if *dry { 1 } else { 0 }));
+        match conn.execute("UPDATE action SET claimed_ts=?2, host=?3 WHERE id=?1", params![id, now_ts, host]) {
+            Ok(1) => {
+                reclamees += 1;
+                body.push_str(&ligne);
+            }
+            Ok(n) => eprintln!("[actions] action {id} NON REMISE ce tour-ci : réclamation sans effet ({n} ligne touchée)"),
+            Err(e) => eprintln!("[actions] action {id} NON REMISE ce tour-ci : réclamation non écrite ({e})"),
+        }
+    }
+    if !rows.is_empty() && reclamees == 0 {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REMISE_D_ACTIONS_NON_RECLAMEE);
     }
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
+
+/// `P10.21-n` (volet démon) — des actions approuvées ont été LUES, mais aucune réclamation n'a pu être
+/// écrite : rien n'est remis, parce qu'une action remise sans être réclamée serait re-servie à chaque
+/// tour et prenable par le responder local. Ce n'est pas une file vide. Une seule ligne, qui ne commence
+/// pas par un chiffre : le filtre de l'agent ne peut en tirer aucune action.
+pub(crate) const CAUSE_REMISE_D_ACTIONS_NON_RECLAMEE: &str =
+    "file d'actions NON RÉCLAMÉE : des actions approuvées de cet hôte ont été lues, mais leur réclamation \
+     n'a pas pu être écrite. AUCUNE action n'est remise ce tour-ci — ce n'est pas une file vide ; réessayer.";
 
 /// Agent (token) : remonte le résultat d'une action appliquée chez lui -> clôt l'action + journalise.
 /// Idempotent (n'agit que sur une action encore 'approved'). status: done | failed | dryrun.

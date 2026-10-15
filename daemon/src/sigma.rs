@@ -151,12 +151,17 @@ pub(crate) fn sigma_in_safe(s: &str) -> bool {
     !s.trim().is_empty() && !s.chars().any(|c| matches!(c, ',' | '(' | ')' | '|' | '"'))
 }
 
-/// Assemble un token `field=~PATTERN` en bornant la longueur du motif à 512 (limite DURE de l'UDF
-/// `regexp`) : au-delà, l'UDF renverrait une ERREUR à l'ÉVAL -> `eval_value=0` -> règle MUETTE (angle
-/// mort SILENCIEUX). On préfère FLAGGER à la traduction (`Err`) qu'émettre une règle qui ne fire jamais.
+/// Assemble un token `field=~PATTERN` en bornant la longueur du motif à `LONGUEUR_MAX_DU_MOTIF` OCTETS
+/// (limite DURE de l'UDF `regexp`, `crate::regex_de_requete`) : au-delà, l'UDF renverrait une ERREUR à
+/// l'ÉVAL -> `eval_value=0` -> règle MUETTE (angle mort SILENCIEUX). On préfère FLAGGER à la traduction
+/// (`Err`) qu'émettre une règle qui ne fire jamais.
 pub(crate) fn sigma_regex_token(field: &str, pattern: &str) -> Result<String, String> {
-    if pattern.len() > 512 {
-        return Err(format!("champ '{field}' : motif regex généré trop long ({} > 512, limite UDF) — non supporté", pattern.len()));
+    use crate::regex_de_requete::LONGUEUR_MAX_DU_MOTIF;
+    if pattern.len() > LONGUEUR_MAX_DU_MOTIF {
+        return Err(format!(
+            "champ '{field}' : motif regex généré trop long ({} > {LONGUEUR_MAX_DU_MOTIF}, limite UDF) — non supporté",
+            pattern.len()
+        ));
     }
     Ok(format!("{field}=~{pattern}"))
 }
@@ -458,8 +463,13 @@ pub(crate) fn sigma_field_tokens(key: &str, val: &Value) -> Result<Vec<String>, 
             // Valider la COMPILATION pour le moteur regex de Rust DÈS L'IMPORT : un motif structurellement
             // embarquable mais invalide pour Rust (ex. quantificateur en tête `*foo`) échouerait à CHAQUE
             // éval de l'UDF `regexp` -> run_query Err -> eval_value=0 -> règle MUETTE (angle mort SILENCIEUX).
-            // On préfère FLAGGER (Err, flag+skip) qu'émettre une règle qui ne fire jamais.
-            regex::Regex::new(&pat).map_err(|e| format!("champ '{key}' : regex '|re' invalide pour le moteur Rust ({e}) — non importée"))?;
+            // On préfère FLAGGER (Err, flag+skip) qu'émettre une règle qui ne fire jamais. `P10.32-q` : le
+            // MÊME constructeur que l'UDF (`compiler_motif`, plafond du programme compris) — `Regex::new` aux
+            // limites de la bibliothèque admettait un motif court (`\w{100}`) que l'UDF refuse.
+            if let Err(crate::regex_de_requete::MotifRefuse::Invalide(e)) = crate::regex_de_requete::compiler_motif(&pat) {
+                return Err(format!("champ '{key}' : regex '|re' invalide pour le moteur Rust ({e}) — non importée"));
+            }
+            // Un refus de longueur est dit par `sigma_regex_token`, avec son message.
             toks.push(sigma_regex_token(&field, &pat)?);
         }
         if toks.len() > 1 && !has("all") {

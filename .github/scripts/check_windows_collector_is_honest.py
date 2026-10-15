@@ -50,12 +50,41 @@ pas dire dans quelle fonction se trouve une commande. Si `pwsh` est absent, ou s
 parse pas, cette garde ÉCHOUE au lieu de passer : un contrôle qui se tait quand il ne sait pas
 est exactement le défaut qu'on ferme ici. (`pwsh` est fourni par l'image `ubuntu-24.04` des
 runners GitHub ; en local : https://github.com/PowerShell/PowerShell/releases.)
+
+TROISIÈME PROPRIÉTÉ, JOUÉE ET NON LUE : LE CLAIR NE PART PAS VERS UN HÔTE DISTANT (P10.33-i)
+------------------------------------------------------------------------------------------
+Le collecteur envoyait `Authorization: Bearer <jeton>` et les événements à `$Central/api/ingest`
+sans regarder le schéma : `http://` vers un central distant partait en clair. La porte est celle des
+capteurs shell (`plume_verifier_le_transport`, collectors/lib.sh) : `https://` et `http://` vers la
+boucle locale (127.0.0.0/8, ::1, localhost) admis ; tout autre `http://` refusé en code 2 avant toute
+lecture, sauf `PLUME_SHIP_ALLOW_PLAINTEXT=1` (env ou plume.conf).
+Cette partie EXÉCUTE `collectors/windows/plume-collector.ps1` TEL QUEL sous `pwsh`, par un harnais
+qui ne remplace que ce qui n'existe pas hors Windows ou qui sortirait de la machine :
+  · `Invoke-RestMethod` est un CENTRAL SIMULÉ qui COMPTE chaque appel (URL, présence du jeton) ;
+    `PLUME_HARNAIS_CENTRAL_EN_PANNE=1` le fait lever, comme un central injoignable ;
+  · `Get-WinEvent` compte chaque lecture de journal et ne rend rien ;
+  · le lecteur `C:` est un répertoire temporaire : `plume.conf` et les filigranes y vivent vraiment.
+Chaque cas ADMIS exige au moins un appel au central, une lecture de journal et un filigrane écrit :
+c'est ce qui prouve que les faux sont branchés — sans cela, « 0 appel » dans un cas refusé ne
+prouverait rien.
+
+CE QUE LA PARTIE JOUÉE NE TIENT PAS
+· Seul `Invoke-RestMethod` est simulé. Un envoi par `Invoke-WebRequest`, `curl` ou une classe .NET
+  (`HttpClient`, `WebClient`) échapperait au compte : la garde REFUSE donc un collecteur qui appelle
+  une autre commande réseau qu'`Invoke-RestMethod` (liste fermée de commandes, pas des types .NET).
+· `pwsh` 7 sous Linux n'est pas Windows PowerShell 5.1 : l'analyse de `[System.Uri]` de .NET Framework
+  n'est pas jouée ici.
+· L'hôte jugé est l'hôte NORMALISÉ par `[System.Uri]` : `http://127.1`, `http://0x7f.1`,
+  `http://[0:0:0:0:0:0:0:1]` et `http://loopback` (réécrit `localhost` par .NET) sont admis ici et
+  refusés par la porte shell, plus stricte sur l'écriture. Tous visent la boucle locale.
 """
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Vocabulaire FERMÉ de `reason` — SOURCE UNIQUE, partagée avec la garde des capteurs shell. Le
@@ -327,6 +356,181 @@ def check(path: str, errs: list) -> int:
     return len(d["catches"])
 
 
+# =================================================================================================
+# P10.33-i — LA PORTE DU TRANSPORT, JOUÉE SUR LE COLLECTEUR TEL QUEL
+# =================================================================================================
+COLLECTOR = "collectors/windows/plume-collector.ps1"
+# Commandes réseau : le harnais ne compte que la première. Toute autre, présente dans le collecteur,
+# rendrait le compte d'appels AVEUGLE — la garde le refuse au lieu de compter faux.
+NET_CMD_COUNTED = "invoke-restmethod"
+NET_CMDS = {"invoke-restmethod", "irm", "invoke-webrequest", "iwr", "curl", "wget", "curl.exe",
+            "wget.exe", "start-bitstransfer", "send-mailmessage"}
+
+HARNAIS_PS1 = r"""
+param([Parameter(Mandatory)][string]$Collecteur, [Parameter(Mandatory)][string]$Racine)
+$ErrorActionPreference = 'Stop'
+# Le lecteur C: du collecteur (plume.conf, répertoire d'état) est un répertoire temporaire.
+New-PSDrive -Name C -PSProvider FileSystem -Root $Racine -Scope Global | Out-Null
+# CENTRAL SIMULÉ : compte chaque appel. Mêmes paramètres que l'appel du collecteur ; lève en panne.
+function global:Invoke-RestMethod {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][uri]$Uri, [string]$Method, [int]$TimeoutSec, [hashtable]$Headers,
+        [string]$ContentType, $Body)
+  $jeton = 'sans-jeton'
+  if ($Headers -and $Headers.ContainsKey('Authorization')) { $jeton = 'bearer' }
+  Add-Content -LiteralPath $env:PLUME_HARNAIS_JOURNAL -Value "APPEL $($Uri.AbsoluteUri) $jeton"
+  if ($env:PLUME_HARNAIS_CENTRAL_EN_PANNE -eq '1') {
+    throw [System.Net.Http.HttpRequestException]::new('central simule injoignable')
+  }
+}
+# JOURNAL WINDOWS SIMULÉ : compte chaque lecture, ne rend rien.
+function global:Get-WinEvent {
+  [CmdletBinding()]
+  param([hashtable]$FilterHashtable, [int]$MaxEvents)
+  Add-Content -LiteralPath $env:PLUME_HARNAIS_JOURNAL -Value "LECTURE $($FilterHashtable.LogName)"
+}
+$global:LASTEXITCODE = 0
+& $Collecteur
+exit $LASTEXITCODE
+"""
+
+# (nom, PLUME_CENTRAL en env (None = absent), env en plus, lignes de plume.conf, verdict attendu, texte exigé
+#  sur stderr, texte interdit sur stderr). Verdicts : 'refus' (code 2, 0 appel, 0 lecture, aucun état),
+# 'admis' (code 0, >= 1 appel au central annoncé, >= 1 lecture, filigranes écrits), 'panne' (code 1).
+CENTRAL_DISTANT = "http://central.example.org:8080"
+TRANSPORT_CASES = [
+    ("http distant", CENTRAL_DISTANT, {}, [], "refus", "PLUME_SHIP_ALLOW_PLAINTEXT=1", None),
+    ("http distant, opt-in a 0", CENTRAL_DISTANT, {"PLUME_SHIP_ALLOW_PLAINTEXT": "0"}, [], "refus",
+     "EN CLAIR", None),
+    ("sans schema, distant", "central.example.org:8080", {}, [], "refus", "EN CLAIR", None),
+    ("piege : 127.0.0.1 en prefixe d'un nom", "http://127.0.0.1.example.org:7000", {}, [], "refus",
+     "127.0.0.1.example.org", None),
+    ("piege : localhost en prefixe d'un nom", "http://localhost.example.org:7000", {}, [], "refus",
+     "localhost.example.org", None),
+    ("piege : 127.0.0.1 en identite", "http://127.0.0.1@example.org:7000", {}, [], "refus",
+     "'example.org'", None),
+    ("identite dans l'URL, jamais imprimee", "http://jeton:motdepasse-temoin@central.example.org", {},
+     [], "refus", "EN CLAIR", "motdepasse-temoin"),
+    # `::ffff:127.0.0.1` n'est pas `::1` : refusé, comme par la porte shell. C'est ce cas qui interdit
+    # `[System.Uri]::IsLoopback`, qui le dit en boucle locale.
+    ("IPv6 a IPv4 projete, hors ::1", "http://[::ffff:127.0.0.1]:7000", {}, [], "refus", "EN CLAIR", None),
+    ("autre schema, meme avec l'opt-in", "ftp://central.example.org", {"PLUME_SHIP_ALLOW_PLAINTEXT": "1"},
+     [], "refus", "non pris en charge", None),
+    ("http distant + opt-in (env)", CENTRAL_DISTANT, {"PLUME_SHIP_ALLOW_PLAINTEXT": "1"}, [], "admis",
+     "AVERTISSEMENT", None),
+    ("http distant + opt-in (plume.conf, central et jeton par l'env)", CENTRAL_DISTANT, {},
+     ["PLUME_SHIP_ALLOW_PLAINTEXT=1"], "admis", "AVERTISSEMENT", None),
+    ("http distant + opt-in, tout par plume.conf", None, {},
+     [f"PLUME_CENTRAL={CENTRAL_DISTANT}", "PLUME_TOKEN=jeton-temoin", "PLUME_SHIP_ALLOW_PLAINTEXT=1"],
+     "admis", "AVERTISSEMENT", None),
+    ("https distant", "https://central.example.org", {}, [], "admis", None, None),
+    ("http boucle 127.0.0.1", "http://127.0.0.1:7000", {}, [], "admis", None, None),
+    ("http boucle 127.0.0.0/8", "http://127.10.20.30:7000", {}, [], "admis", None, None),
+    ("http boucle localhost", "http://localhost:7000", {}, [], "admis", None, None),
+    ("http boucle [::1]", "http://[::1]:7000", {}, [], "admis", None, None),
+    ("central en panne (distinct d'un refus)", "https://central.example.org",
+     {"PLUME_HARNAIS_CENTRAL_EN_PANNE": "1"}, [], "panne", None, None),
+]
+
+
+def jouer_le_transport(errs: list) -> int:
+    """Joue chaque cas sur le collecteur tel quel ; rend le nombre de cas joués."""
+    pwsh = shutil.which("pwsh") or shutil.which("powershell")
+    if not pwsh:   # ast_of() a déjà refusé de conclure avant d'arriver ici
+        sys.exit(CODE_INSTRUMENT)
+    # Le compte d'appels n'a de sens que si le seul transport du collecteur est celui qu'on simule.
+    d = ast_of(COLLECTOR)
+    autres = sorted({c["name"] for c in d["commands"]
+                     if c["name"].lower() in NET_CMDS and c["name"].lower() != NET_CMD_COUNTED})
+    if autres:
+        errs.append(
+            f"{COLLECTOR}: commande(s) réseau {autres} hors du central simulé (`Invoke-RestMethod`) : "
+            f"le compte d'appels du harnais serait aveugle à cet envoi. Envoyez par "
+            f"`Invoke-RestMethod`, ou étendez le harnais AVANT d'ajouter un transport."
+        )
+        return 0
+    collecteur = str(Path(COLLECTOR).resolve())
+    joues = 0
+    with tempfile.TemporaryDirectory(prefix="plume-harnais-windows-") as base:
+        harnais = Path(base) / "harnais.ps1"
+        harnais.write_text(HARNAIS_PS1, encoding="utf-8")
+        for i, (nom, central, env_plus, conf, attendu, exige, interdit) in enumerate(TRANSPORT_CASES):
+            racine = Path(base) / f"cas{i}"
+            (racine / "ProgramData" / "plume").mkdir(parents=True)
+            journal = Path(base) / f"journal{i}.txt"
+            journal.write_text("", encoding="utf-8")
+            if conf:
+                (racine / "ProgramData" / "plume" / "plume.conf").write_text(
+                    "\n".join(conf) + "\n", encoding="utf-8")
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith("PLUME_") and k != "COMPUTERNAME"}
+            env.update({"COMPUTERNAME": "HARNAIS", "PLUME_HARNAIS_JOURNAL": str(journal)})
+            if central is not None:
+                env["PLUME_CENTRAL"] = central
+                env["PLUME_TOKEN"] = "jeton-temoin"
+            env.update(env_plus)
+            try:
+                p = subprocess.run(
+                    [pwsh, "-NoProfile", "-NonInteractive", "-File", str(harnais),
+                     "-Collecteur", collecteur, "-Racine", str(racine)],
+                    capture_output=True, text=True, env=env, cwd=base, timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                print(f"::error::cas « {nom} » : pwsh n'a pas rendu la main en 120 s — la garde "
+                      f"REFUSE DE CONCLURE.")
+                sys.exit(CODE_INSTRUMENT)
+            joues += 1
+            lignes = journal.read_text(encoding="utf-8").splitlines()
+            appels = [ln for ln in lignes if ln.startswith("APPEL ")]
+            lectures = [ln for ln in lignes if ln.startswith("LECTURE ")]
+            etat = racine / "ProgramData" / "plume" / "state"
+            filigranes = sorted(etat.glob("*.watermark")) if etat.is_dir() else []
+            vu = (f"code {p.returncode}, {len(appels)} appel(s) au central, {len(lectures)} lecture(s) "
+                  f"de journal, {len(filigranes)} filigrane(s), etat {'cree' if etat.exists() else 'absent'}"
+                  f" ; stderr : {p.stderr.strip()[:300]!r}")
+            defauts = []
+            if attendu == "refus":
+                if p.returncode != 2:
+                    defauts.append("code de sortie 2 attendu (refus de transport)")
+                if appels:
+                    defauts.append("AUCUN appel au central attendu — le jeton est parti en clair")
+                if lectures:
+                    defauts.append("AUCUNE lecture de journal attendue : le refus doit tomber avant la collecte")
+                if etat.exists():
+                    defauts.append("aucun répertoire d'état attendu : rien ne doit avancer")
+                if "REFUS" not in p.stderr:
+                    defauts.append("refus NOMMÉ attendu sur stderr")
+            elif attendu == "admis":
+                if p.returncode != 0:
+                    defauts.append("code 0 attendu (transport admis)")
+                central_vu = central or CENTRAL_DISTANT
+                if not appels:
+                    defauts.append("au moins un appel au central attendu (le central simulé est-il branché ?)")
+                elif any(not a.startswith(f"APPEL {central_vu.rstrip('/')}/api/ingest ") for a in appels):
+                    defauts.append(f"appels attendus vers {central_vu}/api/ingest seulement")
+                if any(not a.endswith(" bearer") for a in appels):
+                    defauts.append("chaque appel doit porter le jeton")
+                if not lectures:
+                    defauts.append("au moins une lecture de journal attendue (le faux Get-WinEvent est-il branché ?)")
+                if not filigranes:
+                    defauts.append("des filigranes commis attendus après un envoi acquitté")
+            else:   # panne
+                if p.returncode != 1:
+                    defauts.append("code 1 attendu (panne du central), DISTINCT du code 2 d'un refus")
+                if not appels:
+                    defauts.append("un appel (en échec) au central attendu")
+                if filigranes:
+                    defauts.append("aucun filigrane ne doit être commis quand le POST a échoué")
+            if exige and exige not in p.stderr:
+                defauts.append(f"stderr doit contenir {exige!r}")
+            if interdit and (interdit in p.stderr or interdit in p.stdout):
+                defauts.append(f"{interdit!r} imprimé : l'identité de l'URL ne doit jamais s'imprimer")
+            for df in defauts:
+                errs.append(f"{COLLECTOR}: transport, cas « {nom} » ({central or 'plume.conf'}) : {df}. VU : {vu}")
+            print(f"  transport · {nom:<62} {'OK' if not defauts else 'ROUGE'} · {vu[:110]}")
+    return joues
+
+
 def main() -> int:
     files = subprocess.run(
         ["git", "ls-files", "collectors/windows/*.ps1"], capture_output=True, text=True, check=True
@@ -335,6 +539,11 @@ def main() -> int:
     total_catches = 0
     for f in files:
         total_catches += check(f, errs)
+    joues = 0
+    if COLLECTOR in files:
+        joues = jouer_le_transport(errs)
+    else:
+        errs.append(f"{COLLECTOR} introuvable parmi les fichiers suivis : la porte du transport n'est pas jouée.")
     if len(files) < MIN_FILES:
         errs.append(
             f"seulement {len(files)} collecteur(s) PowerShell découvert(s), plancher {MIN_FILES} : la "
@@ -349,7 +558,8 @@ def main() -> int:
     print(
         f"{len(files)} collecteur(s) PowerShell, {total_catches} `catch` : toute erreur est classée "
         f"(incapacité / désactivé / rien de neuf) ou relevée, et aucun filigrane ne s'écrit avant un "
-        f"envoi acquitté."
+        f"envoi acquitté ; {joues} cas de transport joués sur le collecteur tel quel (http distant "
+        f"refusé en code 2 sans appel ni lecture, opt-in, https et boucle locale admis)."
     )
     return 0
 

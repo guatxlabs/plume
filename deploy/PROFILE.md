@@ -14,7 +14,7 @@ Principe : *moteur générique + spécifique-infra en CONFIG, jamais en dur* ; c
 ## 1. Agent → central (forwarder)
 | Variable | Rôle | Défaut |
 |---|---|---|
-| `PLUME_CENTRAL` | URL du daemon central (`https://central.example` ; `http://` n'est accepté par `ship.sh`, `respond.sh`, `prom-scrape.sh` et `engagement-adapter.sh` que vers la boucle locale, ou avec `PLUME_SHIP_ALLOW_PLAINTEXT=1` posé dans le fichier d'environnement de chaque unité) | — |
+| `PLUME_CENTRAL` | URL du daemon central (`https://central.example` ; `http://` n'est accepté par `ship.sh`, `respond.sh`, `prom-scrape.sh`, `engagement-adapter.sh` et le collecteur Windows que vers la boucle locale, ou avec `PLUME_SHIP_ALLOW_PLAINTEXT=1` posé dans le fichier d'environnement de chaque unité) | — |
 | `PLUME_TOKEN` | token d'agent (lié à un hôte, minté sur le central par `plume-daemon token`, démon démarré une fois avant ([`../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)) : forme par mode — `sudo env PLUME_CONFIG=/etc/plume/soc.conf …` en hôte natif, `exec` dans le conteneur du démon en Docker et k3s — dans [`../docs/TROIS-MODES.md` §3.5](../docs/TROIS-MODES.md#35-créer-un-jeton-dagent)) | — |
 | `PLUME_HOST_LABEL` | nom d'hôte affiché (multi-hôte) | hostname |
 | `PLUME_HOST_HEADER` | en-tête `Host:` à envoyer (si forward-auth/SNI) | — |

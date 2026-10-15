@@ -69,8 +69,9 @@
 
   Sûreté : lecture seule du système, aucun secret en clair dans le code, TLS
   vérifié par défaut (PLUME_TLS_INSECURE=1 pour un central en certificat auto-signé
-  de test uniquement). N'expédie que des métadonnées d'événements, jamais de contenu
-  de fichier.
+  de test uniquement), `http://` vers un central distant REFUSÉ en code 2 sauf
+  PLUME_SHIP_ALLOW_PLAINTEXT=1 (P10.33-i, cf. `Test-CentralTransport`). N'expédie que
+  des métadonnées d'événements, jamais de contenu de fichier.
 #>
 
 [CmdletBinding()]
@@ -94,18 +95,23 @@ param(
 # commande (n'importe laquelle), l'audit d'exécution le capturera. C'est une propriété de l'audit
 # Windows, pas de ce script — cf. collectors/windows/README.md.
 $Token = $env:PLUME_TOKEN
+$AllowPlaintext = $env:PLUME_SHIP_ALLOW_PLAINTEXT
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
 # --- Configuration : env > fichier plume.conf ------------------------------------------------
+# `PLUME_SHIP_ALLOW_PLAINTEXT` suit le MÊME chemin que `PLUME_CENTRAL` (env, sinon plume.conf) ; le
+# fichier est donc lu dès qu'UNE des trois manque, sinon un opt-in posé dans plume.conf serait ignoré
+# en silence sur un poste qui reçoit le central et le jeton par l'environnement.
 $ConfFile = 'C:\ProgramData\plume\plume.conf'
-if ((-not $Central -or -not $Token) -and (Test-Path $ConfFile)) {
+if ((-not $Central -or -not $Token -or -not $AllowPlaintext) -and (Test-Path $ConfFile)) {
   Get-Content $ConfFile | ForEach-Object {
     if ($_ -match '^\s*([A-Z_]+)\s*=\s*(.+?)\s*$') {
       switch ($Matches[1]) {
         'PLUME_CENTRAL' { if (-not $Central) { $Central = $Matches[2] } }
         'PLUME_TOKEN'   { if (-not $Token)   { $Token   = $Matches[2] } }
+        'PLUME_SHIP_ALLOW_PLAINTEXT' { if (-not $AllowPlaintext) { $AllowPlaintext = $Matches[2] } }
       }
     }
   }
@@ -113,6 +119,51 @@ if ((-not $Central -or -not $Token) -and (Test-Path $ConfFile)) {
 if (-not $Central) { throw 'PLUME_CENTRAL manquant (variable d''env ou C:\ProgramData\plume\plume.conf).' }
 if (-not $Token)   { throw 'PLUME_TOKEN manquant. Sur le central : plume-daemon token <nom> <HOTE> (le 2e argument LIE le jeton a cette machine ; sans lui il faut declarer --relais, et un relais laisse usurper n''importe quel hote). A poser dans C:\ProgramData\plume\plume.conf, JAMAIS en ligne de commande.' }
 $Central   = $Central.TrimEnd('/')
+
+# P10.33-i — LE CLAIR NE PART PAS VERS UN HÔTE DISTANT SANS QU'ON L'AIT CHOISI. Même porte que
+# `plume_verifier_le_transport` (collectors/lib.sh, P10.32-i / P10.33-a) : `http://` vers le central
+# envoie `Authorization: Bearer <jeton>` ET les événements EN CLAIR, qu'un tiers sur le chemin lit et
+# rejoue.
+#   · `https://`                                                  -> admis ;
+#   · `http://` (ou une adresse sans schéma, lue en `http://`) vers la boucle locale -> admis ;
+#   · tout autre `http://` -> REFUS nommé sur stderr, CODE 2 (une panne du central sort en 1 : le POST
+#     lève), AVANT toute lecture de journal, tout répertoire d'état et tout POST : rien n'est lu, rien
+#     n'avance, le run suivant après correction repart du dernier filigrane commis ;
+#   · sauf opt-in EXPLICITE `PLUME_SHIP_ALLOW_PLAINTEXT=1` (env ou plume.conf), avertissement à chaque run ;
+#   · tout autre schéma, ou une URL que `[System.Uri]` ne lit pas -> refus, opt-in ou non.
+# BOUCLE LOCALE = 127.0.0.0/8, ::1, localhost, jugés sur l'hôte que `[System.Uri]` en extrait — le MÊME
+# analyseur que celui d'`Invoke-RestMethod`, donc l'hôte jugé est celui qui sera appelé. Une
+# comparaison de CHAÎNE se ferait prendre par `127.0.0.1.example.org` (préfixe), `localhost.example.org`
+# ou `127.0.0.1@example.org` (identité devant l'hôte réel). `[System.Uri]::IsLoopback` n'est PAS pris :
+# il dit vrai pour `[::ffff:127.0.0.1]`, que la porte shell refuse.
+# Un refus et non un aveu au central : l'aveu partirait par ce même transport.
+function Test-CentralTransport {
+  param([string]$Url, [string]$Allow)
+  $texte = $Url
+  if ($texte -notmatch '://') { $texte = "http://$texte" }   # comme curl côté shell
+  $u = $null
+  if (-not [System.Uri]::TryCreate($texte, [System.UriKind]::Absolute, [ref]$u)) {
+    return 'REFUS : PLUME_CENTRAL illisible (https:// attendu).'
+  }
+  if ($u.Scheme -eq 'https') { return '' }
+  if ($u.Scheme -ne 'http') { return "REFUS : PLUME_CENTRAL — schema $($u.Scheme):// non pris en charge (https:// attendu)." }
+  $hote = $u.Host.ToLowerInvariant()
+  $boucle = ($u.HostNameType -eq [System.UriHostNameType]::IPv4 -and $hote.Split('.')[0] -eq '127') -or
+            ($u.HostNameType -eq [System.UriHostNameType]::IPv6 -and $hote -eq '[::1]') -or
+            ($u.HostNameType -eq [System.UriHostNameType]::Dns -and $hote -eq 'localhost')
+  if ($boucle) { return '' }
+  if ($Allow -eq '1') {
+    [Console]::Error.WriteLine("plume-collector: AVERTISSEMENT : envoi EN CLAIR vers $hote (PLUME_SHIP_ALLOW_PLAINTEXT=1) — jeton et evenements lisibles sur le reseau")
+    return ''
+  }
+  # Seul l'HÔTE s'imprime : une URL peut porter identifiant et mot de passe.
+  return "REFUS : PLUME_CENTRAL envoie EN CLAIR vers l'hote distant '$hote' (jeton et evenements lisibles sur le reseau). Utilisez https://, ou posez PLUME_SHIP_ALLOW_PLAINTEXT=1 (env ou C:\ProgramData\plume\plume.conf) pour l'accepter en connaissance de cause."
+}
+$refusTransport = Test-CentralTransport -Url $Central -Allow $AllowPlaintext
+if ($refusTransport) {
+  [Console]::Error.WriteLine("plume-collector: $refusTransport Rien n'est lu ni expedie, aucun filigrane n'avance.")
+  exit 2
+}
 $StateDir  = 'C:\ProgramData\plume\state'
 $HostName  = $env:COMPUTERNAME
 # HORODATAGE — NE PAS revenir à `Get-Date -UFormat %s`. Sur Windows PowerShell 5.1, `%s` rend l'heure

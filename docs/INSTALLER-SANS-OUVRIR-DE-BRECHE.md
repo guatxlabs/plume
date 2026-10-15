@@ -318,7 +318,7 @@ fichier dans `/var/lib/plume/spool/`), comme le fait le
 | `prom-scrape` | vos cibles `/metrics` | root, lit `/etc/plume/prom.conf` | séries → `metric` | une cible authentifiée par paramètre d'URL expose ce paramètre ; refuse le clair distant vers le central (§5) | `metric <une de vos séries> \| timechart avg(value)` |
 | `custom` | votre `CMD`, en root | root | une ligne de sortie = un événement | `/etc/plume/inputs.d` **doit** être `0700 root` : y écrire, c'est exécuter en root | `search source=<SOURCE> \| stats count` |
 | `respond`, `engagement-adapter`, `backup` | *(pas des capteurs : ils agissent ou sauvegardent)* | `respond` du central (`plume-daemon respond`) : root, capacités bornées à `CAP_NET_ADMIN CAP_KILL` ; `respond` d'agent (`respond.sh`) et `engagement-adapter` : root ; `backup` : `soc` | résultats d'actions | le responder d'agent agit en root sans borne : dry-run par défaut ; `respond.sh` et `engagement-adapter` refusent le clair distant vers le central (§5) | — |
-| `windows/` | journaux Windows, pare-feu, Defender | tâche planifiée | voir [`../collectors/windows/README.md`](../collectors/windows/README.md) | — | `search source=windows-security \| stats count` |
+| `windows/` | journaux Windows, pare-feu, Defender | tâche planifiée | voir [`../collectors/windows/README.md`](../collectors/windows/README.md) | refuse le clair distant vers le central (code 2, rien lu ni expédié) sauf `PLUME_SHIP_ALLOW_PLAINTEXT=1`, qui laisse le jeton lisible sur le réseau (§5) | `search source=windows-security \| stats count` |
 
 **Un capteur qui ne peut pas collecter le dit**, au lieu de se taire : un événement `category=config`,
 `collect_status=unavailable` et une `reason` (`missing-dependency`, `missing-source`, `missing-config`,
@@ -342,7 +342,7 @@ search category=config reason=collection-capped | table ts, host, source, detail
 ## 5. Le transport
 
 - **Les scripts qui parlent au central refusent le clair vers un hôte distant** : `ship.sh`,
-  `respond.sh`, `prom-scrape.sh` et `engagement-adapter.sh`. `PLUME_CENTRAL` en `http://` (ou sans
+  `respond.sh`, `prom-scrape.sh`, `engagement-adapter.sh` et le collecteur Windows. `PLUME_CENTRAL` en `http://` (ou sans
   schéma) vers autre chose que la boucle locale (`127.0.0.0/8`, `::1`, `localhost`) est **refusé**,
   code 2, avant tout appel au central : `ship.sh` n'expédie ni n'évince rien (le spool reste),
   `respond.sh` ne récupère ni n'exécute aucune action, `prom-scrape.sh` ne scrape aucune cible,
@@ -353,8 +353,9 @@ search category=config reason=collection-capped | table ts, host, source, detail
   root par `respond.sh`, des exemptions posées par `engagement-adapter.sh`). Ne le posez que sur un lien
   déjà chiffré (tunnel) ou un réseau dont vous répondez, et **dans le fichier d'environnement de chaque
   unité** : chacune lit le sien (`plume.conf` pour `ship`, `responder.conf`, `prom.conf`,
-  `engagement-adapter.conf`). Le collecteur Windows (`plume-collector.ps1`) ne refuse pas encore le
-  clair.
+  `engagement-adapter.conf`). Le collecteur Windows (`plume-collector.ps1`) applique la même porte,
+  code 2 avant toute lecture de journal ; son opt-in se pose dans son environnement ou dans
+  `C:\ProgramData\plume\plume.conf`.
 - **TLS côté agent** : `PLUME_TLS_CACERT` pour un central à autorité privée ; `PLUME_TLS_CERT` et
   `PLUME_TLS_KEY` pour un certificat client, si le mandataire du central l'exige. Le démon, lui, ne
   vérifie aucun certificat client : un mTLS obligatoire se pose sur le mandataire. Même nom de variable,

@@ -94,10 +94,9 @@ CE QU'ELLE NE TIENT PAS
 · Les CIBLES `/metrics` de `prom-scrape.sh` ne sont pas soumises à la porte : aucun jeton ne leur part
   (jugé), mais une cible déclarée en `http://` est lue en clair — un tiers sur le chemin peut lire ou
   FALSIFIER la mesure entrante. Choix assumé (un exporteur se sert en `http://`), non jugé ici.
-· Le collecteur Windows (`collectors/windows/plume-collector.ps1`) PORTE LE MÊME DÉFAUT, NON CORRIGÉ :
-  il envoie `Authorization: Bearer` à `$Central/api/ingest` sans contrôler le schéma (seul un
-  `TrimEnd('/')`), donc accepte `http://` distant. Reste ouvert sous la clé `P10.33-i`, non joué ici
-  (pas de `pwsh` sur les machines de la garde).
+· Le collecteur Windows (`collectors/windows/plume-collector.ps1`) porte la même porte (`P10.33-i`),
+  écrite en PowerShell : elle n'est pas jouée ici mais par `check_windows_collector_is_honest.py`,
+  qui exécute le collecteur sous `pwsh` sur son propre corpus d'URL.
 · Les autres capteurs qui posent `src_ip` brut le tirent d'un motif borné (`SRC=[0-9A-Fa-f.:]*` de
   ufw, portscan, origin-drop ; `[0-9.]*` d'auditd ; adresses de conntrack) : non joués ici.
 · `crowdsec.sh` n'est joué que pour ses alertes : santé, hub et acquisition ne le sont pas ici.

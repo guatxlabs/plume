@@ -88,7 +88,26 @@ Puis renseignez soit des variables d'environnement, soit `C:\ProgramData\plume\p
 PLUME_CENTRAL=https://soc.central:7000
 PLUME_TOKEN=<le-jeton>
 # PLUME_TLS_INSECURE=1   # UNIQUEMENT pour un central en certificat auto-signé de test
+# PLUME_SHIP_ALLOW_PLAINTEXT=1   # http:// vers un central DISTANT — jeton lisible sur le réseau, voir ci-dessous
 ```
+
+> ### Le clair vers un central distant est refusé
+> `PLUME_CENTRAL` en `http://` (ou sans schéma) vers autre chose que la boucle locale (`127.0.0.0/8`,
+> `::1`, `localhost`) est **refusé** : message `REFUS` sur la sortie d'erreur, **code de sortie 2**
+> (visible dans `LastTaskResult` de la tâche planifiée ; une panne du central sort en 1), et cela
+> **avant** toute lecture de journal et tout envoi — rien n'est lu, rien n'est expédié, aucun filigrane
+> n'avance : une fois l'adresse corrigée, le run suivant reprend là où le dernier envoi acquitté s'est
+> arrêté (dans la limite de `-MaxAgeMinutes` au premier run). `https://` et `http://` vers la boucle
+> locale ne changent pas. L'hôte est lu par `[System.Uri]`, l'analyseur même d'`Invoke-RestMethod` :
+> `http://127.0.0.1.example.org`, `http://localhost.example.org` ou `http://127.0.0.1@example.org` visent
+> un hôte distant et sont refusés. Tout autre schéma est refusé, opt-in ou non.
+>
+> `PLUME_SHIP_ALLOW_PLAINTEXT=1` (variable d'environnement ou `plume.conf`, même lecture que
+> `PLUME_CENTRAL`) accepte le clair, avec un avertissement à chaque run. **Le risque est entier** :
+> le jeton `Authorization: Bearer` et chaque événement (comptes, lignes de commande, adresses) passent
+> lisibles sur le réseau ; quiconque écoute le chemin peut rejouer le jeton et injecter des événements
+> sous le nom de ce poste. Ne le posez que sur un lien déjà chiffré (tunnel) ou un réseau dont vous
+> répondez. C'est la même porte, et la même variable, que `ship.sh` côté Linux.
 
 > ### ⚠️ Le jeton ne passe JAMAIS en ligne de commande — et le paramètre a été retiré
 > Le script acceptait `-Token` en paramètre, avec cette consigne de ne pas s'en servir. Une consigne

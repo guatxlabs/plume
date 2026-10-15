@@ -125,24 +125,35 @@ $Central   = $Central.TrimEnd('/')
 # envoie `Authorization: Bearer <jeton>` ET les événements EN CLAIR, qu'un tiers sur le chemin lit et
 # rejoue.
 #   · `https://`                                                  -> admis ;
-#   · `http://` (ou une adresse sans schéma, lue en `http://`) vers la boucle locale -> admis ;
+#   · `http://` vers la boucle locale -> admis ;
 #   · tout autre `http://` -> REFUS nommé sur stderr, CODE 2 (une panne du central sort en 1 : le POST
 #     lève), AVANT toute lecture de journal, tout répertoire d'état et tout POST : rien n'est lu, rien
 #     n'avance, le run suivant après correction repart du dernier filigrane commis ;
 #   · sauf opt-in EXPLICITE `PLUME_SHIP_ALLOW_PLAINTEXT=1` (env ou plume.conf), avertissement à chaque run ;
-#   · tout autre schéma, ou une URL que `[System.Uri]` ne lit pas -> refus, opt-in ou non.
-# BOUCLE LOCALE = 127.0.0.0/8, ::1, localhost, jugés sur l'hôte que `[System.Uri]` en extrait — le MÊME
-# analyseur que celui d'`Invoke-RestMethod`, donc l'hôte jugé est celui qui sera appelé. Une
+#   · une adresse qui ne commence pas par `schéma://` (sans schéma, `http:\\hote`, `1http://hote`),
+#     tout autre schéma, ou une URL que `[System.Uri]` ne lit pas en absolu -> refus, opt-in ou non.
+# POURQUOI EXIGER `schéma://` AVANT `[System.Uri]` : `Invoke-RestMethod` lit son `-Uri` en
+# RelativeOrAbsolute, pas en Absolute comme cette porte. Une adresse sans `schéma://` est donc lue
+# AUTREMENT par les deux : MESURÉ sous pwsh 7.6.3 (.NET 10, proxy témoin), `1http://hote` part en clair
+# vers `http://1http//hote`, `http:\\hote` vers `http://hote`, `localhost:7000` est pris pour le schéma
+# `localhost`. Avec `schéma://` en tête, l'hôte que `[System.Uri]` extrait en absolu est celui
+# qu'`Invoke-RestMethod` appelle (aucune adresse admise n'a atteint un hôte distant sur la même sonde) ;
+# sans, on refuse plutôt que de deviner. Ce n'est PAS « le même analyseur » : c'est le même pour cette
+# seule forme, et la porte n'admet que celle-là.
+# BOUCLE LOCALE = 127.0.0.0/8, ::1, localhost, jugés sur l'hôte que `[System.Uri]` en extrait. Une
 # comparaison de CHAÎNE se ferait prendre par `127.0.0.1.example.org` (préfixe), `localhost.example.org`
 # ou `127.0.0.1@example.org` (identité devant l'hôte réel). `[System.Uri]::IsLoopback` n'est PAS pris :
 # il dit vrai pour `[::ffff:127.0.0.1]`, que la porte shell refuse.
 # Un refus et non un aveu au central : l'aveu partirait par ce même transport.
 function Test-CentralTransport {
   param([string]$Url, [string]$Allow)
-  $texte = $Url
-  if ($texte -notmatch '://') { $texte = "http://$texte" }   # comme curl côté shell
+  # Syntaxe tenue par Windows PowerShell 5.1 (la tâche planifiée lance `powershell -File`) : ni `??`,
+  # ni `?.`, ni ternaire, ni `&&`, ni méthode .NET Core seule.
+  if ($Url -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://') {
+    return 'REFUS : PLUME_CENTRAL ne commence pas par un schema suivi de :// (https:// attendu) : Invoke-RestMethod la lirait autrement que cette porte.'
+  }
   $u = $null
-  if (-not [System.Uri]::TryCreate($texte, [System.UriKind]::Absolute, [ref]$u)) {
+  if (-not [System.Uri]::TryCreate($Url, [System.UriKind]::Absolute, [ref]$u)) {
     return 'REFUS : PLUME_CENTRAL illisible (https:// attendu).'
   }
   if ($u.Scheme -eq 'https') { return '' }

@@ -92,15 +92,20 @@ PLUME_TOKEN=<le-jeton>
 ```
 
 > ### Le clair vers un central distant est refusé
-> `PLUME_CENTRAL` en `http://` (ou sans schéma) vers autre chose que la boucle locale (`127.0.0.0/8`,
+> `PLUME_CENTRAL` en `http://` vers autre chose que la boucle locale (`127.0.0.0/8`,
 > `::1`, `localhost`) est **refusé** : message `REFUS` sur la sortie d'erreur, **code de sortie 2**
 > (visible dans `LastTaskResult` de la tâche planifiée ; une panne du central sort en 1), et cela
 > **avant** toute lecture de journal et tout envoi — rien n'est lu, rien n'est expédié, aucun filigrane
 > n'avance : une fois l'adresse corrigée, le run suivant reprend là où le dernier envoi acquitté s'est
 > arrêté (dans la limite de `-MaxAgeMinutes` au premier run). `https://` et `http://` vers la boucle
-> locale ne changent pas. L'hôte est lu par `[System.Uri]`, l'analyseur même d'`Invoke-RestMethod` :
-> `http://127.0.0.1.example.org`, `http://localhost.example.org` ou `http://127.0.0.1@example.org` visent
-> un hôte distant et sont refusés. Tout autre schéma est refusé, opt-in ou non.
+> locale ne changent pas. L'adresse doit commencer par `schéma://` : sans cela (`central.example.org:7000`,
+> `127.0.0.1:7000`, `http:\\central.example.org`, `1http://central.example.org`) elle est refusée, opt-in ou non, car
+> `Invoke-RestMethod` la lit en relatif, autrement que la porte (mesuré : `http:\\central.example.org` et
+> `1http://central.example.org` partaient en clair vers un hôte distant). Avec `schéma://` en tête, l'hôte est celui
+> que `[System.Uri]` extrait, qui est celui qu'`Invoke-RestMethod` appelle (mesuré sous PowerShell 7 ;
+> Windows PowerShell 5.1 n'est pas joué) : `http://127.0.0.1.example.org`, `http://localhost.example.org`
+> ou `http://127.0.0.1@example.org` visent un hôte distant et sont refusés. Tout autre schéma est refusé,
+> opt-in ou non.
 >
 > `PLUME_SHIP_ALLOW_PLAINTEXT=1` (variable d'environnement ou `plume.conf`, même lecture que
 > `PLUME_CENTRAL`) accepte le clair, avec un avertissement à chaque run. **Le risque est entier** :

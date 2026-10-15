@@ -354,8 +354,9 @@ search category=config reason=collection-capped | table ts, host, source, detail
   déjà chiffré (tunnel) ou un réseau dont vous répondez, et **dans le fichier d'environnement de chaque
   unité** : chacune lit le sien (`plume.conf` pour `ship`, `responder.conf`, `prom.conf`,
   `engagement-adapter.conf`). Le collecteur Windows (`plume-collector.ps1`) applique la même porte,
-  code 2 avant toute lecture de journal ; son opt-in se pose dans son environnement ou dans
-  `C:\ProgramData\plume\plume.conf`.
+  code 2 avant toute lecture de journal, et refuse en plus toute adresse qui ne commence pas par
+  `schéma://`, boucle locale comprise (`Invoke-RestMethod` la lirait autrement) ; son opt-in se pose
+  dans son environnement ou dans `C:\ProgramData\plume\plume.conf`.
 - **TLS côté agent** : `PLUME_TLS_CACERT` pour un central à autorité privée ; `PLUME_TLS_CERT` et
   `PLUME_TLS_KEY` pour un certificat client, si le mandataire du central l'exige. Le démon, lui, ne
   vérifie aucun certificat client : un mTLS obligatoire se pose sur le mandataire. Même nom de variable,

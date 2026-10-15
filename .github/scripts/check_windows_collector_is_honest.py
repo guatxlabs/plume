@@ -57,7 +57,9 @@ Le collecteur envoyait `Authorization: Bearer <jeton>` et les événements à `$
 sans regarder le schéma : `http://` vers un central distant partait en clair. La porte est celle des
 capteurs shell (`plume_verifier_le_transport`, collectors/lib.sh) : `https://` et `http://` vers la
 boucle locale (127.0.0.0/8, ::1, localhost) admis ; tout autre `http://` refusé en code 2 avant toute
-lecture, sauf `PLUME_SHIP_ALLOW_PLAINTEXT=1` (env ou plume.conf).
+lecture, sauf `PLUME_SHIP_ALLOW_PLAINTEXT=1` (env ou plume.conf). Une adresse qui ne commence pas par
+`schéma://` est refusée, opt-in ou non : `Invoke-RestMethod` la lirait en relatif, autrement que la
+porte (`1http://hote` et `http:\\\\hote` partaient en clair vers un hôte distant, mesuré au proxy témoin).
 Cette partie EXÉCUTE `collectors/windows/plume-collector.ps1` TEL QUEL sous `pwsh`, par un harnais
 qui ne remplace que ce qui n'existe pas hors Windows ou qui sortirait de la machine :
   · `Invoke-RestMethod` est un CENTRAL SIMULÉ qui COMPTE chaque appel (URL, présence du jeton) ;
@@ -72,8 +74,15 @@ CE QUE LA PARTIE JOUÉE NE TIENT PAS
 · Seul `Invoke-RestMethod` est simulé. Un envoi par `Invoke-WebRequest`, `curl` ou une classe .NET
   (`HttpClient`, `WebClient`) échapperait au compte : la garde REFUSE donc un collecteur qui appelle
   une autre commande réseau qu'`Invoke-RestMethod` (liste fermée de commandes, pas des types .NET).
-· `pwsh` 7 sous Linux n'est pas Windows PowerShell 5.1 : l'analyse de `[System.Uri]` de .NET Framework
-  n'est pas jouée ici.
+· WINDOWS POWERSHELL 5.1 N'EST EXÉCUTÉ NULLE PART. La tâche planifiée lance `powershell -File`
+  (collectors/windows/README.md), c'est-à-dire 5.1 sur .NET Framework ; cette garde joue `pwsh` 7 sous
+  Linux (.NET 10). Ni la syntaxe de la porte sous 5.1 (tenue par RELECTURE seulement : ni `??`, ni `?.`,
+  ni ternaire, ni `&&`, ni méthode .NET Core seule), ni l'analyse de `[System.Uri]` de .NET Framework, ni
+  la façon dont `Invoke-RestMethod` 5.1 lit une URL ne sont jouées ici.
+· `http://evil.localhost` est refusé (nom DNS autre que `localhost`) alors que .NET 10 le RÉSOUT en
+  boucle locale (sonde 2026-10-15 : `::1,127.0.0.1`, RFC 6761) : sévérité de trop, pas une fuite.
+· Une adresse sans schéma vers la boucle locale (`127.0.0.1:7000`) est REFUSÉE ici, alors que la porte
+  shell la lit en `http://` comme curl : `Invoke-RestMethod` ne la lit pas ainsi.
 · L'hôte jugé est l'hôte NORMALISÉ par `[System.Uri]` : `http://127.1`, `http://0x7f.1`,
   `http://[0:0:0:0:0:0:0:1]` et `http://loopback` (réécrit `localhost` par .NET) sont admis ici et
   refusés par la porte shell, plus stricte sur l'écriture. Tous visent la boucle locale.
@@ -395,14 +404,31 @@ exit $LASTEXITCODE
 """
 
 # (nom, PLUME_CENTRAL en env (None = absent), env en plus, lignes de plume.conf, verdict attendu, texte exigé
-#  sur stderr, texte interdit sur stderr). Verdicts : 'refus' (code 2, 0 appel, 0 lecture, aucun état),
+#  sur stderr, motifs regex interdits sur stdout et stderr). Verdicts : 'refus' (code 2, 0 appel, 0 lecture, aucun état),
 # 'admis' (code 0, >= 1 appel au central annoncé, >= 1 lecture, filigranes écrits), 'panne' (code 1).
 CENTRAL_DISTANT = "http://central.example.org:8080"
+SANS_SCHEMA = "schema suivi de ://"
+# Motifs (regex) interdits sur stdout et stderr : l'identifiant `jeton` et le mot de passe de l'URL.
+# « jeton » est aussi un mot des messages (« jeton et evenements lisibles ») : seule cette phrase est admise.
+IDENTITE_IMPRIMEE = (r"motdepasse-temoin", r"jeton(?! et evenements lisibles)")
 TRANSPORT_CASES = [
     ("http distant", CENTRAL_DISTANT, {}, [], "refus", "PLUME_SHIP_ALLOW_PLAINTEXT=1", None),
     ("http distant, opt-in a 0", CENTRAL_DISTANT, {"PLUME_SHIP_ALLOW_PLAINTEXT": "0"}, [], "refus",
      "EN CLAIR", None),
-    ("sans schema, distant", "central.example.org:8080", {}, [], "refus", "EN CLAIR", None),
+    ("sans schema, distant", "central.example.org:8080", {}, [], "refus", SANS_SCHEMA, None),
+    # `Invoke-RestMethod` lit ces trois-là en RELATIF : `http:\\hote` partait vers `http://hote`,
+    # `1http://hote` vers `http://1http//hote` (mesuré au proxy témoin). Refusés AVANT `[System.Uri]`.
+    ("sans schema, boucle locale", "127.0.0.1:7000", {}, [], "refus", SANS_SCHEMA, None),
+    ("http:\\\\ (barres inverses), distant", "http:\\\\central.example.org", {}, [], "refus", SANS_SCHEMA,
+     None),
+    ("1http:// (schema illisible), meme avec l'opt-in", "1http://central.example.org",
+     {"PLUME_SHIP_ALLOW_PLAINTEXT": "1"}, [], "refus", SANS_SCHEMA, None),
+    # Commence par `http://` mais `[System.Uri]` ne la lit pas en absolu : branche « illisible ».
+    ("illisible en absolu (http:///hote)", "http:///central.example.org", {}, [], "refus", "illisible",
+     None),
+    ("http distant par IPv4 (RFC 5737)", "http://192.0.2.10:7000", {}, [], "refus", "'192.0.2.10'", None),
+    # Un nom qui FINIT par `localhost` n'est pas `localhost` (comparaison exacte, pas un suffixe).
+    ("nom finissant par localhost", "http://notlocalhost:7000", {}, [], "refus", "'notlocalhost'", None),
     ("piege : 127.0.0.1 en prefixe d'un nom", "http://127.0.0.1.example.org:7000", {}, [], "refus",
      "127.0.0.1.example.org", None),
     ("piege : localhost en prefixe d'un nom", "http://localhost.example.org:7000", {}, [], "refus",
@@ -410,7 +436,9 @@ TRANSPORT_CASES = [
     ("piege : 127.0.0.1 en identite", "http://127.0.0.1@example.org:7000", {}, [], "refus",
      "'example.org'", None),
     ("identite dans l'URL, jamais imprimee", "http://jeton:motdepasse-temoin@central.example.org", {},
-     [], "refus", "EN CLAIR", "motdepasse-temoin"),
+     [], "refus", "EN CLAIR", IDENTITE_IMPRIMEE),
+    ("opt-in + identite dans l'URL, jamais imprimee", "http://jeton:motdepasse-temoin@central.example.org",
+     {"PLUME_SHIP_ALLOW_PLAINTEXT": "1"}, [], "admis", "AVERTISSEMENT", IDENTITE_IMPRIMEE),
     # `::ffff:127.0.0.1` n'est pas `::1` : refusé, comme par la porte shell. C'est ce cas qui interdit
     # `[System.Uri]::IsLoopback`, qui le dit en boucle locale.
     ("IPv6 a IPv4 projete, hors ::1", "http://[::ffff:127.0.0.1]:7000", {}, [], "refus", "EN CLAIR", None),
@@ -523,8 +551,9 @@ def jouer_le_transport(errs: list) -> int:
                     defauts.append("aucun filigrane ne doit être commis quand le POST a échoué")
             if exige and exige not in p.stderr:
                 defauts.append(f"stderr doit contenir {exige!r}")
-            if interdit and (interdit in p.stderr or interdit in p.stdout):
-                defauts.append(f"{interdit!r} imprimé : l'identité de l'URL ne doit jamais s'imprimer")
+            for motif in interdit or ():
+                if re.search(motif, p.stderr) or re.search(motif, p.stdout):
+                    defauts.append(f"motif {motif!r} imprimé : l'identité de l'URL ne doit jamais s'imprimer")
             for df in defauts:
                 errs.append(f"{COLLECTOR}: transport, cas « {nom} » ({central or 'plume.conf'}) : {df}. VU : {vu}")
             print(f"  transport · {nom:<62} {'OK' if not defauts else 'ROUGE'} · {vu[:110]}")

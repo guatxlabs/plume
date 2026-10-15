@@ -52,7 +52,31 @@ d'outils (les vrais, liés, plus des FAUX exécutables — `date` à heure fixe,
      d'une seconde postérieure au filigrane sont dites reportées et publiées au passage suivant, celles de la
      même seconde dites perdues et avouées (`collection-capped`) ; une ligne FILTRÉE qui suit le plafond ne
      fait pas avancer le filigrane au-delà d'une ligne coupée (publiée au passage suivant, aucune perte dite).
-     La borne `PLUME_WEB_MAX` atteinte est dite.
+     La borne `PLUME_WEB_MAX` atteinte est dite. `P10.33-e` — elle ne fait plus perdre en silence : en mode file
+     (offset d'octets), un flot de sondages filtrés qui noie cinq requêtes réelles sous la borne 3 les laisse
+     TOUTES publiées sur les passages suivants, sans aveu ; l'offset tient lieu de filigrane : une seconde
+     coupée en deux par la borne (cinq requêtes à la seconde 5, borne 3) est publiée en entier, une requête
+     longue au StartUTC antérieur au filigrane aussi, rien n'est dit « déjà vu » ; au premier passage, le début
+     du journal non lu est dit, sans « rien n'est sauté » ; borne atteinte pile : dite telle ; une dernière ligne
+     en cours d'écriture n'est lue qu'une fois complète ; l'offset s'arrête devant la première ligne coupée par
+     le plafond : en mode file, les lignes coupées sont toutes relues et publiées, aucune n'est dite perdue (en
+     k3s, la sémantique de `P10.32-k` est gardée) ; rotation par renommage ou `copytruncate` : le reste est lu
+     dans `.1`, sans aveu ; `logrotate create` (journal neuf vide pendant la lecture de `.1`) : pas d'aveu ;
+     rotation au milieu d'une écriture : la ligne incomplète de `.1` est lue, puis le journal neuf ; journal
+     remplacé par un autre plus long que l'offset (empreinte de la première ligne) : lu depuis 0, rotation
+     avouée ; même première ligne mais plus court que l'offset, `.1` introuvable ou journal tronqué : rotation
+     avouée (`missing-source`) ; deux rotations entre deux passages (le `.1` n'est plus le journal lu), ou un
+     `.1` de même première ligne mais plus court que l'offset : perte avouée, rien du `.1` publié. En k3s (faux
+     `kubectl` FIDÈLE : `--tail` par pod, pods bout à bout, et 10 lignes par pod sous `-l` sans `--tail`, comme
+     le vrai) : les lignes plus anciennes de la fenêtre sont comptées par un second appel à `--tail` explicite
+     (10 × la borne), de fenêtre `--since` plus large, borné à l'horodatage runtime le PLUS RÉCENT des lignes
+     lues (deux pods : la dernière ligne n'est pas la plus récente ; deux lignes arrivées entre les deux appels,
+     dont une à la fraction tronquée par RFC3339Nano, ne comptent pas) et avouées (`collection-capped`, nombre
+     exact : 80 sur 100 à la borne 20 ; les requêtes sous le filigrane n'en sont pas) ; un comptage qui atteint
+     son propre `--tail` dit « au moins N » ; un comptage en échec, qui voit moins de requêtes que la lecture
+     (journal du pod tourné entre les deux appels) ou des horodatages hors `Z` avoue « nombre inconnu » ; sous la
+     borne, ni second appel (appels du faux `kubectl` comptés) ni aveu ; des lignes hors journal d'accès dans la
+     fenêtre (y compris une qui porte `StartUTC` sans `DownstreamStatus`) ne faussent pas le compte.
   C. crowdsec : `tout_en_liste_blanche` (refus, cause `forme_inconnue`, cause probable nommée, état non
      avancé), au premier passage et sur l'intervalle ; `surtout_liste_blanche` au seuil (sévérité 2, état
      avancé, pas d'aveu) ; seuil réglable par `PLUME_CROWDSEC_WHITELIST_SHARE_MAX`, illisible -> repli dit ;
@@ -63,8 +87,17 @@ d'outils (les vrais, liés, plus des FAUX exécutables — `date` à heure fixe,
   E. minio : API qui échoue -> `unreachable` ; aucun pod en marche -> `subsystem-absent`.
   F. dataaccess : seules les clés /etc chargées -> battement PARTIEL et aveu (clé de dédoublonnage stable,
      texte qui ne promet aucune relecture) ; `plume_data` OU `plume_creds` chargée -> actif, sans aveu ; une
-     clé au nom voisin (`plume_data_archive`) ne compte pas ; `auditctl` absent ou en échec -> clés
-     INCONNUES, sans aveu.
+     clé au nom voisin (`plume_data_archive`) ne compte pas. `auditctl` absent ou en échec — toujours, sous
+     l'unité livrée qui n'a pas CAP_AUDIT_CONTROL (`P10.33-b`) — : les clés sont PROUVÉES par le journal
+     (SYSCALL `key=`, CONFIG_CHANGE `op=add_rule … res=1`, y compris suivi des champs enrichis, y compris
+     dans le journal tourné `.1`), une preuve est annulée par un `remove_rule` réussi postérieur (pas par un
+     retrait refusé, ni un ajout refusé ne prouve), une clé voisine ne prouve rien ; un DAEMON_START efface les
+     preuves qui le précèdent (redémarrage sans rechargement de `plume_data`, accès d'avant le redémarrage,
+     sous le préfixe `node=`, DAEMON_START dans le journal courant après une preuve du `.1`), une clé rechargée
+     après lui est prouvée ; un journal courant illisible (un répertoire à sa place) n'en laisse aucune, même
+     prouvée dans le `.1`, et la lecture s'avoue en échec ; sans clé de données
+     prouvée, le battement dit « couverture INCONNUE » en sévérité 1, jamais « actif », et sans aveu
+     `unavailable` ; un `auditctl` lisible fait foi contre le journal.
 Partout : sortie 0, enveloppes de spool lisibles comme JSON, aucun fichier caché laissé dans le spool, et
 les champs de chaque battement déclarés dans l'en-tête `# plume-emits:` de son capteur.
 
@@ -89,15 +122,37 @@ CE QU'ELLE NE TIENT PAS
   — mutation jouée, restée verte. Un outil par événement, la forme de l'ancien `json_escape`, l'est.
 · web : un site sans AUCUNE requête pendant un intervalle de sonde se lit muet — c'est le prix d'un journal
   figé qui ne bat pas, le même que celui d'auditd. Les lignes coupées au plafond dans la seconde du filigrane
-  restent PERDUES : elles sont comptées et avouées, pas rattrapées. Les lignes sorties de la fenêtre
-  `PLUME_WEB_MAX` avant d'être lues (flot, filtré ou non, plus long que la borne entre deux passages) sont
-  perdues SANS compte : seul le battement dit la borne atteinte.
+  restent PERDUES en k3s : elles sont comptées et avouées, pas rattrapées ; en mode file, l'offset les relit.
+  Mode file : au premier passage (ou état de lecture illisible), `tail -n PLUME_WEB_MAX` ne lit pas le début du
+  journal — c'est dit dans le battement, pas compté en lignes. Après une rotation perdue (journal relu depuis 0
+  sans filigrane), des requêtes déjà publiées peuvent l'être à nouveau : le dédoublonnage `web-<StartUTC>` du
+  magasin SQLite (`INSERT OR IGNORE`) les écarte, la garde ne le joue pas. Sous un flot DURABLEMENT
+  plus rapide que la borne, l'offset prend du retard sans rien sauter, jusqu'à la rotation — le reste est
+  alors lu dans `.1` s'il est là et non compressé, sinon la perte est avouée sans nombre (« peut-être nul » :
+  un journal tourné compressé sans `delaycompress` l'avoue à chaque rotation, même lu jusqu'au bout).
+  Le journal est reconnu à l'empreinte de sa première ligne : deux journaux dont la première ligne est
+  identique octet pour octet seraient confondus. Mode k3s : la perte n'est pas évitée, elle est comptée ; le
+  second appel relit jusqu'à 10 × la borne lignes par pod (coût en octets transférés par l'API, pas en mémoire)
+  quand la borne est atteinte, et au-delà ne donne qu'un minimum ; seul le `.1` est cherché après une rotation
+  (pas `.2`) ;
+  le comptage suppose que les pods rendent `--timestamps` au format RFC3339 UTC (`Z`), sinon « nombre
+  inconnu » ; plusieurs pods : la borne `--tail` est par pod, le compte est global. Aucun banc ne joue une
+  vraie rotation logrotate ni un vrai `kubectl logs`.
 · crowdsec : les verdicts de liste blanche jugent les TOTAUX ; une source entièrement en liste blanche parmi
   d'autres qui détectent laisse `lit` (son détail par source le montre). La forme de comptage se déduit de
   `reads` ; un relevé où des lignes lues ne sont pas encore analysées peut la faire mal lire quand la liste
   blanche est presque vide — sans effet sur les verdicts, qui jugent des parts hautes.
 · dataaccess : sur une installation qui garde le gabarit livré (`plume_etc` seule), l'aveu des clés de
-  données part chaque heure ; c'est exact, aucun accès aux données n'y est observé.
+  données part chaque heure ; c'est exact, aucun accès aux données n'y est observé. Sous l'unité livrée
+  (`auditctl` refusé), une clé de données CHARGÉE dont ni le chargement ni un accès ne reste dans
+  `audit.log`/`audit.log.1` (rotation sous un flot d'execve) se lit « couverture INCONNUE » jusqu'au premier
+  accès : l'erreur part du côté de l'aveu. De même après une RELANCE d'auditd sans redémarrage (le DAEMON_START
+  efface les preuves alors que le noyau garde ses règles) ; et une règle chargée AVANT le démarrage d'auditd dont
+  le CONFIG_CHANGE serait écrit avant le DAEMON_START serait dite non prouvée — l'ordre réel n'est pas joué sur un
+  noyau ici. Une clé portée par plusieurs règles dont une seule est retirée est
+  dite non prouvée. Les CONFIG_CHANGE ont la forme relevée dans la documentation du noyau
+  (`op=add_rule`/`op=remove_rule`, `res=`), pas sur un noyau joué ici ; une clé écrite en hexadécimal (plusieurs
+  clés sur une règle) n'est pas lue, comme avant.
 · `dataacl.sh` sort toujours en silence quand aucun chemin de `PLUME_ACL_PATHS` n'existe. Le démon a déjà
   ANNONCÉ `dataacl` au canal de couverture (`SOURCES_DU_CANAL_D_AVEU`, `daemon/src/collected.rs`, `P10.32-k`,
   tolérance `CESP_AVEU_ANNONCEES`) : poser `plume_unavailable dataacl …` dans le capteur ne demande plus rien
@@ -213,6 +268,9 @@ class Bac:
         self.vider_spool()
         if os.path.exists(self.compte):
             os.remove(self.compte)
+        appels = os.path.join(self.faux, "appels-kubectl")     # le faux `kubectl` compte ses appels PAR passage
+        if os.path.exists(appels):
+            os.remove(appels)
         env = {"PATH": self.bin, "PLUME_SPOOL": os.path.join(self.racine, "spool"),
                "PLUME_STATE": os.path.join(self.racine, "etat"), "PLUME_LIB": LIB,
                "TMPDIR": os.path.join(self.racine, "tmp"), "LC_ALL": "C.UTF-8", "HOME": self.racine,
@@ -680,14 +738,23 @@ def banc_web(awk, nom_awk):
         evs = evenements(q + "/filtre_seul", res, "web.sh")
         hb = un_battement(q + "/filtre_seul", evs, "web")
         if hb:
-            contient(q + "/filtre_seul", hb.get("message"), "5 ligne(s) lue(s)", "0 gardée(s)", "1 filtrée(s)",
-                     "3 déjà vue(s)")
+            # P10.33-e — lecture par offset : seule la ligne neuve est lue.
+            contient(q + "/filtre_seul", hb.get("message"), "santé : 1 ligne(s) lue(s)", "0 gardée(s)", "1 filtrée(s)",
+                     ", 0 déjà vue(s)")
         # la ligne filtrée a fait avancer le filigrane : le même journal, figé, ne bat plus.
         res = bac.jouer("web.sh", env)
         if battements(evenements(q + "/fige_apres_filtre", res, "web.sh"), "web"):
             faute(q + "/fige_apres_filtre", "battement émis sur un journal figé dont la dernière ligne était filtrée")
-        # source vide : ni battement ni aveu.
+        # journal TRONQUÉ sur place sans journal tourné retrouvé : ni battement, mais la rotation est avouée (P10.33-e).
         ecrire(log, "")
+        res = bac.jouer("web.sh", env)
+        evs = evenements(q + "/tronque", res, "web.sh")
+        if battements(evs, "web"):
+            faute(q + "/tronque", "battement émis sur un journal vide")
+        av = aveux(evs, "web", "unavailable", "missing-source")
+        if len(av) != 1 or "ROTATION" not in ((av[0].get("fields") or {}).get("detail") or ""):
+            faute(q + "/tronque", "journal tronqué sans journal tourné : la rotation n'est pas avouée")
+        # source vide, jamais lue : ni battement ni aveu.
         res = bac.jouer("web.sh", env)
         evs = evenements(q + "/vide", res, "web.sh")
         if battements(evs, "web") or aveux(evs, "web"):
@@ -710,42 +777,64 @@ def banc_web(awk, nom_awk):
     finally:
         bac.nettoyer()
 
-    # PLAFOND de 9000 requêtes publiées : 9000 gardées, 2 coupées dans la MÊME seconde (perdues, avouées),
-    # 1 coupée dans une seconde postérieure (reportée, publiée au passage suivant).
-    q = f"web/{nom_awk}/plafond"
-    bac = Bac(awk)
-    try:
-        log = os.path.join(bac.racine, "access.log")
-        lignes = [ligne_web(i, f"/p{i}", seconde=10, fraction=i) for i in range(9002)]
-        lignes.append(ligne_web(9002, "/plus_tard", seconde=11, fraction=1))
-        ecrire(log, "".join(lignes))
-        env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
-        res = bac.jouer("web.sh", env)
-        evs = evenements(q + "/1", res, "web.sh")
-        n = len([e for e in evs if e.get("category") == "web"])
-        if n != 9000:
-            faute(q + "/1", f"{n} requête(s) publiées, attendu 9000")
-        hb = un_battement(q + "/1", evs, "web")
-        if hb:
-            contient(q + "/1", hb.get("message"), "9003 ligne(s) lue(s)", "9000 gardée(s)",
-                     "1 reportée(s) au passage suivant et 2 perdue(s)")
-        av = aveux(evs, "web", "unavailable", "collection-capped")
-        if len(av) != 1:
-            faute(q + "/1", f"{len(av)} aveu(x) `collection-capped`, attendu 1 — la perte serait dite « reportée »")
-        else:
-            contient(q + "/1", (av[0].get("fields") or {}).get("detail"), "2 ligne(s)")
-        res = bac.jouer("web.sh", env)
-        evs = evenements(q + "/2", res, "web.sh")
-        pub = [e for e in evs if e.get("category") == "web"]
-        if len(pub) != 1 or "/plus_tard" not in pub[0].get("message", ""):
-            faute(q + "/2", f"la ligne reportée n'est pas publiée au passage suivant : {[e.get('message') for e in pub]}")
-        hb = un_battement(q + "/2", evs, "web")
-        if hb:
-            contient(q + "/2", hb.get("message"), "1 gardée(s)", "9002 déjà vue(s)", "0 reportée(s) au passage suivant et 0 perdue(s)")
-        if aveux(evs, "web", "unavailable", "collection-capped"):
-            faute(q + "/2", "aveu de perte émis sous le plafond")
-    finally:
-        bac.nettoyer()
+    # PLAFOND de 9000 requêtes publiées : 9000 gardées, 2 coupées dans la MÊME seconde, 1 coupée dans une seconde
+    # postérieure. En k3s (filigrane horaire) : les 2 de la même seconde sont perdues et avouées, la postérieure est
+    # reportée. En mode file (P10.33-e) : l'offset s'arrête devant la première ligne coupée, les TROIS sont relues
+    # et publiées au passage suivant, rien n'est perdu ni avoué.
+    for mode in ("k3s", "file"):
+        q = f"web/{nom_awk}/plafond/{mode}"
+        bac = Bac(awk)
+        try:
+            log = os.path.join(bac.racine, "access.log")
+            lignes = [ligne_web(i, f"/p{i}", seconde=10, fraction=i) for i in range(9002)]
+            lignes.append(ligne_web(9002, "/plus_tard", seconde=11, fraction=1))
+            if mode == "file":
+                ecrire(log, "".join(lignes))
+                env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+            else:
+                bac.outil("kubectl", FAUX_KUBECTL)
+                ecrire(os.path.join(bac.faux, "k3s.log"),
+                       "".join("2026-09-23T19:40:%02d.%09dZ %s" % (10 if i < 9002 else 11, i + 1, l) for i, l in enumerate(lignes)))
+                env = {"PLUME_WEB_SRC": "k3s"}
+            res = bac.jouer("web.sh", env)
+            evs = evenements(q + "/1", res, "web.sh")
+            n = len([e for e in evs if e.get("category") == "web"])
+            if n != 9000:
+                faute(q + "/1", f"{n} requête(s) publiées, attendu 9000")
+            hb = un_battement(q + "/1", evs, "web")
+            av = aveux(evs, "web", "unavailable", "collection-capped")
+            if mode == "k3s":
+                if hb:
+                    contient(q + "/1", hb.get("message"), "9003 ligne(s) lue(s)", "9000 gardée(s)",
+                             "1 reportée(s) au passage suivant et 2 perdue(s)")
+                if len(av) != 1:
+                    faute(q + "/1", f"{len(av)} aveu(x) `collection-capped`, attendu 1 — la perte serait dite « reportée »")
+                else:
+                    contient(q + "/1", (av[0].get("fields") or {}).get("detail"), "2 ligne(s)")
+            else:
+                if hb:
+                    contient(q + "/1", hb.get("message"), "9003 ligne(s) lue(s)", "9000 gardée(s)",
+                             "3 reportée(s) au passage suivant et 0 perdue(s)")
+                if av:
+                    faute(q + "/1", "perte avouée en mode file : l'offset relit pourtant toutes les lignes coupées")
+            res = bac.jouer("web.sh", env)
+            evs = evenements(q + "/2", res, "web.sh")
+            pub = publiees(evs)
+            attendu = ["/plus_tard"] if mode == "k3s" else ["/p9000", "/p9001", "/plus_tard"]
+            if pub != attendu:
+                faute(q + "/2", f"publiées au passage suivant : {pub}, attendu {attendu}")
+            hb = un_battement(q + "/2", evs, "web")
+            if hb:
+                if mode == "k3s":
+                    contient(q + "/2", hb.get("message"), ", 1 gardée(s)", "9002 déjà vue(s)",
+                             "0 reportée(s) au passage suivant et 0 perdue(s)")
+                else:
+                    contient(q + "/2", hb.get("message"), "santé : 3 ligne(s) lue(s)", ", 3 gardée(s)", ", 0 déjà vue(s)",
+                             "0 reportée(s) au passage suivant et 0 perdue(s)")
+            if aveux(evs, "web", "unavailable", "collection-capped"):
+                faute(q + "/2", "aveu de perte émis sous le plafond")
+        finally:
+            bac.nettoyer()
 
     # PLAFOND PUIS LIGNE FILTRÉE : 9000 gardées à la seconde 10, `/plus_tard` coupée à la seconde 11, puis
     # `/sante/ping` FILTRÉE à la seconde 12. La ligne filtrée ne doit pas pousser le filigrane au-delà de la
@@ -785,10 +874,429 @@ def banc_web(awk, nom_awk):
         res = bac.jouer("web.sh", {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log, "PLUME_WEB_MAX": "3"})
         hb = un_battement(q, evenements(q, res, "web.sh"), "web")
         if hb:
-            contient(q, hb.get("message"), "3 ligne(s) lue(s)", "borne de lecture PLUME_WEB_MAX=3 atteinte")
+            contient(q, hb.get("message"), "3 ligne(s) lue(s)", "borne de lecture PLUME_WEB_MAX=3 atteinte",
+                     "premier passage", "ne sont pas lus")
+            # P10.33-e — au premier passage, `tail -n MAX` saute le début du journal : le battement ne dit pas le contraire.
+            if "rien n'est sauté" in (hb.get("message") or ""):
+                faute(q, f"premier passage dit « rien n'est sauté » alors que le début du journal n'est pas lu : {hb.get('message')!r}")
+    finally:
+        bac.nettoyer()
+    banc_web_borne_de_lecture(awk, nom_awk)
+
+
+# P10.33-e — LA BORNE DE LECTURE NE FAIT PLUS PERDRE EN SILENCE. Mode file : offset d'octets, rien n'est sauté, une
+# rotation reprend le journal tourné ; mode k3s : les lignes sorties de la fenêtre `--tail` sont comptées et avouées.
+def publiees(evs):
+    return [e.get("fields", {}).get("path") for e in evs if e.get("category") == "web"]
+
+
+def ligne_k3s(i, chemin, statut=200, fraction="123456789", seconde=None):
+    sec = i if seconde is None else seconde
+    return "2026-09-23T19:40:%02d.%sZ %s" % (sec, fraction, ligne_web(i, chemin, statut, seconde=sec))
+
+
+# Faux `kubectl logs`, FIDÈLE au vrai sur ce que le capteur en attend : un journal par pod (`k3s.log`, ou
+# `pod-*.log`), mis BOUT À BOUT dans l'ordre des pods ; `--tail=N` rend les N dernières lignes DE CHAQUE pod, et
+# SANS `--tail`, un sélecteur `-l` en rend 10 par pod (`kubectl logs --help` : « --tail=-1 … Defaults to -1 with
+# no selector, showing all log lines otherwise 10, if a selector is provided »), `--tail=-1` toutes. Le premier
+# appel d'un passage voit le journal tel qu'écrit ; un appel suivant (le comptage) voit en plus `<pod>.apres`
+# (lignes arrivées entre deux appels), ou `<pod>.comptage` À LA PLACE du journal (journal du pod tourné par le
+# kubelet entre les deux appels), et échoue si `comptage-en-echec` existe. L'horodatage runtime n'est rendu que
+# sous `--timestamps`, comme le vrai.
+FAUX_KUBECTL = r"""#!/bin/sh
+echo "$*" >> "$FAUX/appels-kubectl"
+napp=$(wc -l < "$FAUX/appels-kubectl")
+hdt=0; case " $* " in *" --timestamps "*) hdt=1 ;; esac
+sortie() { if [ "$hdt" = 1 ]; then cat; else sed 's/^[^{]*//'; fi; }
+n=""; for a in "$@"; do case "$a" in --tail=*) n=${a#--tail=} ;; esac; done
+if [ -z "$n" ]; then case " $* " in *" -l "*) n=10 ;; *) n=-1 ;; esac; fi
+if [ "$napp" -gt 1 ] && [ -f "$FAUX/comptage-en-echec" ]; then exit 1; fi
+pod() {
+  _src=$1; [ "$napp" -gt 1 ] && [ -f "${1%.log}.comptage" ] && _src=${1%.log}.comptage
+  cat "$_src"; if [ "$napp" -gt 1 ] && [ -f "${1%.log}.apres" ]; then cat "${1%.log}.apres"; fi
+}
+for p in "$FAUX"/k3s.log "$FAUX"/pod-*.log; do
+  [ -f "$p" ] || continue
+  if [ "$n" = -1 ]; then pod "$p"; else pod "$p" | tail -n "$n"; fi
+done | sortie
+"""
+
+
+def banc_web_borne_de_lecture(awk, nom_awk):
+    def passages(bac, env, k, quoi):
+        vus = []
+        for j in range(k):
+            res = bac.jouer("web.sh", env)
+            evs = evenements(f"{quoi}/{j + 1}", res, "web.sh")
+            vus.append((publiees(evs), evs))
+        return vus
+
+    # FLOT : un passage voit 2 lignes, puis 5 requêtes réelles noyées dans 6 sondages filtrés arrivent avant le
+    # suivant, borne 3. Ancienne lecture `tail -n 3` : seules les 3 dernières lignes lues, le reste perdu sans compte.
+    q = f"web/{nom_awk}/flot_fichier"
+    bac = Bac(awk)
+    try:
+        log = os.path.join(bac.racine, "access.log")
+        env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log, "PLUME_WEB_MAX": "3", "PLUME_WEB_SKIP_PATH": "/sante"}
+        ecrire(log, ligne_web(1, "/r1") + ligne_web(2, "/r2"))
+        bac.jouer("web.sh", env)
+        flot, i = [], 3
+        for k in range(5):
+            flot.append(ligne_web(i, f"/r{i}")); i += 1
+            if k < 3:
+                flot.append(ligne_web(i, "/sante/a")); i += 1
+                flot.append(ligne_web(i, "/sante/b")); i += 1
+        with open(log, "a") as fh:
+            fh.write("".join(flot))
+        attendu = [f"/r{n}" for n in range(3, i) if any(f'"/r{n}"' in l for l in flot)]
+        vus = passages(bac, env, 6, q)
+        tout = [p for pub, _ in vus for p in pub]
+        if sorted(tout) != sorted(attendu):
+            faute(q, f"requêtes publiées sur six passages : {tout}, attendu {attendu} — des lignes ont été sautées")
+        hb = un_battement(q + "/1", vus[0][1], "web")
+        if hb:
+            contient(q + "/1", hb.get("message"), "santé : 3 ligne(s) lue(s)", "borne de lecture PLUME_WEB_MAX=3 atteinte",
+                     "restent à lire, repris au passage suivant", "rien n'est sauté")
+        for _, evs in vus:
+            if aveux(evs, "web"):
+                faute(q, "aveu émis alors que rien n'est perdu")
     finally:
         bac.nettoyer()
 
+    # ÉCRITURE EN COURS : une dernière ligne sans fin de ligne n'est ni lue ni passée par l'offset.
+    q = f"web/{nom_awk}/ligne_incomplete"
+    bac = Bac(awk)
+    try:
+        log = os.path.join(bac.racine, "access.log")
+        entiere = ligne_web(2, "/partielle")
+        ecrire(log, ligne_web(1, "/r1") + entiere[:-40])
+        env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+        (p1, _), = passages(bac, env, 1, q + "/a")
+        with open(log, "a") as fh:
+            fh.write(entiere[-40:])
+        (p2, _), = passages(bac, env, 1, q + "/b")
+        if p1 != ["/r1"] or p2 != ["/partielle"]:
+            faute(q, f"ligne en cours d'écriture : publiées {p1} puis {p2}, attendu ['/r1'] puis ['/partielle']")
+    finally:
+        bac.nettoyer()
+
+    # ROTATIONS : renommage (le reste est lu dans `.1`), copytruncate (idem, `.1` est une copie), journal remplacé
+    # par un autre plus long que l'offset (empreinte différente : lu depuis 0), et `.1` introuvable (perte avouée).
+    for forme in ("renomme", "copytruncate", "remplace", "introuvable"):
+        q = f"web/{nom_awk}/rotation_{forme}"
+        bac = Bac(awk)
+        try:
+            log = os.path.join(bac.racine, "access.log")
+            env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+            ecrire(log, ligne_web(1, "/r1") + ligne_web(2, "/r2"))
+            bac.jouer("web.sh", env)
+            if forme in ("renomme", "copytruncate", "introuvable"):
+                with open(log, "a") as fh:
+                    fh.write(ligne_web(3, "/r3"))
+                if forme == "renomme":
+                    os.rename(log, log + ".1")
+                elif forme == "copytruncate":
+                    shutil.copyfile(log, log + ".1")
+                else:
+                    os.remove(log)
+                ecrire(log, ligne_web(4, "/r4"))
+                attendu = ["/r4"] if forme == "introuvable" else ["/r3", "/r4"]
+            else:
+                ecrire(log, "".join(ligne_web(i, f"/n{i}") for i in range(3, 7)))
+                attendu = ["/n3", "/n4", "/n5", "/n6"]
+            vus = passages(bac, env, 3, q)
+            tout = [p for pub, _ in vus for p in pub]
+            if tout != attendu:
+                faute(q, f"publiées après rotation : {tout}, attendu {attendu}")
+            rot = [e for _, evs in vus for e in aveux(evs, "web", "unavailable", "missing-source")
+                   if "ROTATION" in ((e.get("fields") or {}).get("detail") or "")]
+            if forme in ("renomme", "copytruncate") and rot:
+                faute(q, "rotation avouée perdue alors que le journal tourné a été lu")
+            if forme in ("introuvable", "remplace") and len(rot) != 1:
+                faute(q, f"{len(rot)} aveu(x) de rotation, attendu 1 : le reste du journal précédent n'a pas été lu")
+        finally:
+            bac.nettoyer()
+
+    # k3s : `kubectl logs --tail` ne rend que les dernières lignes ; les plus anciennes de la fenêtre sont COMPTÉES
+    # (second appel, à `--tail` explicite, borné à l'horodatage runtime le plus récent des lignes lues) et avouées.
+    for cas in ("compte", "comptage_en_echec", "sous_la_borne"):
+        q = f"web/{nom_awk}/flot_k3s/{cas}"
+        bac = Bac(awk)
+        try:
+            bac.outil("kubectl", FAUX_KUBECTL)
+            n = 3 if cas == "sous_la_borne" else 10
+            # fraction tronquée par RFC3339Nano sur la dernière ligne lue ; les deux lignes arrivées APRÈS la première
+            # lecture (même seconde, fraction plus grande une fois complétée à 9 chiffres) ne doivent pas être comptées.
+            lignes = [ligne_k3s(i, f"/k{i}") for i in range(1, n)] + [ligne_k3s(n, f"/k{n}", fraction="5")]
+            ecrire(os.path.join(bac.faux, "k3s.log"), "".join(lignes))
+            ecrire(os.path.join(bac.faux, "k3s.apres"),
+                   ligne_k3s(n + 1, "/apres1", fraction="50001", seconde=n) + ligne_k3s(n + 2, "/apres2", fraction="6", seconde=n))
+            if cas == "comptage_en_echec":
+                ecrire(os.path.join(bac.faux, "comptage-en-echec"), "")
+            res = bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": "4"})
+            evs = evenements(q, res, "web.sh")
+            pub = publiees(evs)
+            av = aveux(evs, "web", "unavailable", "collection-capped")
+            hb = un_battement(q, evs, "web")
+            try:
+                with open(os.path.join(bac.faux, "appels-kubectl")) as fh:
+                    appels = [l for l in fh.read().splitlines() if " logs " in f" {l} "]
+            except OSError:
+                appels = []
+            if len(appels) != (1 if cas == "sous_la_borne" else 2):
+                faute(q, f"{len(appels)} appel(s) `kubectl logs`, attendu {1 if cas == 'sous_la_borne' else 2} : {appels}")
+            elif cas == "compte":
+                # le comptage couvre AU MOINS la fenêtre lue : sa fenêtre `--since` est plus large que celle de la lecture.
+                fen = [re.search(r"--since=([0-9]+)s", a) for a in appels]
+                if not all(fen) or int(fen[1].group(1)) <= int(fen[0].group(1)):
+                    faute(q, f"fenêtre du comptage pas plus large que celle de la lecture : {appels}")
+            if cas == "sous_la_borne":
+                if pub != ["/k1", "/k2", "/k3"] or av:
+                    faute(q, f"sous la borne : publiées {pub}, {len(av)} aveu(x)")
+                continue
+            if pub != ["/k7", "/k8", "/k9", "/k10"]:
+                faute(q, f"publiées {pub}, attendu les quatre dernières")
+            attendu = ": 6 ligne(s) écartée(s)" if cas == "compte" else ": nombre inconnu écartée(s)"
+            if len(av) != 1:
+                faute(q, f"{len(av)} aveu(x) `collection-capped`, attendu 1 — les lignes sautées seraient muettes")
+            else:
+                contient(q, (av[0].get("fields") or {}).get("detail"), attendu, "PLUME_WEB_MAX=4")
+            if hb:
+                contient(q, hb.get("message"), "borne de lecture PLUME_WEB_MAX=4 atteinte",
+                         "atteinte : 6 ligne(s) plus ancienne(s)" if cas == "compte" else "atteinte : nombre inconnu de ligne(s) plus ancienne(s)")
+        finally:
+            bac.nettoyer()
+
+
+    # LIGNES HORS JOURNAL D'ACCÈS dans la fenêtre `--tail` (démarrage du pod) : elles ne sont pas des requêtes lues ;
+    # le compte des sautées soustrait les requêtes NEUVES lues, pas les lignes lues.
+    q = f"web/{nom_awk}/flot_k3s/hors_journal"
+    bac = Bac(awk)
+    try:
+        bac.outil("kubectl", FAUX_KUBECTL)
+        lignes = [ligne_k3s(i, f"/k{i}") for i in range(1, 11)]
+        lignes.insert(9, '2026-09-23T19:40:10.100000000Z time="x" level=info msg="Configuration loaded"\n')
+        lignes.insert(9, '2026-09-23T19:40:09.900000000Z time="x" level=info msg="Starting provider"\n')
+        # porte un StartUTC mais pas de DownstreamStatus : la lecture ne la tient pas pour une requête, le comptage non plus.
+        lignes.insert(0, '2026-09-23T19:40:00.500000000Z {"StartUTC":"2026-09-23T19:40:00.5Z","level":"info"}\n')
+        ecrire(os.path.join(bac.faux, "k3s.log"), "".join(lignes))
+        evs = evenements(q, bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": "4"}), "web.sh")
+        if publiees(evs) != ["/k9", "/k10"]:
+            faute(q, f"publiées {publiees(evs)}, attendu ['/k9', '/k10']")
+        av = aveux(evs, "web", "unavailable", "collection-capped")
+        if len(av) != 1:
+            faute(q, f"{len(av)} aveu(x) `collection-capped`, attendu 1")
+        else:
+            contient(q, (av[0].get("fields") or {}).get("detail"), ": 8 ligne(s) écartée(s)")
+    finally:
+        bac.nettoyer()
+
+    # k3s, CE QUE LE COMPTAGE NE DOIT PAS TAIRE (P10.33-e) :
+    #  · cent_lignes — 100 requêtes, borne 20 : 80 sautées. Un comptage sans `--tail` reçoit 10 lignes par pod d'un
+    #    vrai `kubectl logs -l` et disait « 0 ligne sautée » ;
+    #  · comptage_borne — 60 requêtes, borne 4 : le comptage, borné à 40 lignes par pod, n'en voit que 40 ; le nombre
+    #    est un MINIMUM, dit « au moins 36 », jamais un compte exact ;
+    #  · pod_tourne — le journal du pod tourne entre les deux appels : le comptage voit moins de requêtes que la
+    #    lecture n'en a lu ; « nombre inconnu », jamais un 0 silencieux ;
+    #  · deux_pods — `kubectl` met les pods BOUT À BOUT : la dernière ligne lue est celle du dernier pod, pas la plus
+    #    récente ; la borne du comptage est le MAX des horodatages lus (6 sautées du premier pod) ;
+    #  · apres_filigrane — au second passage, les requêtes déjà vues (sous le filigrane) ne sont pas des sautées ;
+    #  · non_z / non_z_deja_vues — horodatages runtime hors `Z` : « nombre inconnu », que des requêtes neuves aient
+    #    été lues ou non.
+    for cas in ("cent_lignes", "comptage_borne", "pod_tourne", "deux_pods", "apres_filigrane", "non_z", "non_z_deja_vues"):
+        q = f"web/{nom_awk}/flot_k3s/{cas}"
+        bac = Bac(awk)
+        try:
+            bac.outil("kubectl", FAUX_KUBECTL)
+            k3s = os.path.join(bac.faux, "k3s.log")
+            maxi, attendu = "4", None
+            if cas == "cent_lignes":
+                ecrire(k3s, "".join(ligne_k3s(i, f"/c{i}", seconde=10, fraction="%09d" % (i + 1)) for i in range(100)))
+                maxi, attendu = "20", "80"
+            elif cas == "comptage_borne":
+                ecrire(k3s, "".join(ligne_k3s(i, f"/c{i}", seconde=10, fraction="%09d" % (i + 1)) for i in range(60)))
+                attendu = "au moins 36"
+            elif cas == "pod_tourne":
+                lignes = [ligne_k3s(i, f"/k{i}") for i in range(1, 11)]
+                ecrire(k3s, "".join(lignes))
+                ecrire(os.path.join(bac.faux, "k3s.comptage"), "".join(lignes[-2:]))
+            elif cas == "deux_pods":
+                os.remove(k3s) if os.path.exists(k3s) else None
+                ecrire(os.path.join(bac.faux, "pod-a.log"), "".join(ligne_k3s(i, f"/a{i}") for i in range(10, 20)))
+                ecrire(os.path.join(bac.faux, "pod-b.log"), "".join(ligne_k3s(i, f"/b{i}") for i in range(1, 4)))
+                attendu = "6"
+            elif cas == "apres_filigrane":
+                ecrire(k3s, "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 4)))
+                bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": "10"})
+                ecrire(k3s, "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 14)))
+                attendu = "6"
+            else:
+                ecrire(k3s, "".join(ligne_k3s(i, f"/t{i}").replace(".123456789Z ", ".123456789+00:00 ", 1)
+                                    for i in range(1, 11)))
+                if cas == "non_z_deja_vues":
+                    bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": "20"})
+            evs = evenements(q, bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": maxi}), "web.sh")
+            av = aveux(evs, "web", "unavailable", "collection-capped")
+            if len(av) != 1:
+                faute(q, f"{len(av)} aveu(x) `collection-capped`, attendu 1 — des lignes sautées seraient muettes")
+                continue
+            detail = (av[0].get("fields") or {}).get("detail") or ""
+            if attendu is None or attendu.startswith("au moins"):
+                contient(q, detail, ": nombre inconnu écartée(s)")
+                dit = f"atteinte : {attendu or 'nombre inconnu de'} ligne(s) plus ancienne(s)"
+                contient(q, detail, dit.replace("atteinte", "(kubectl logs --tail)"))
+                if attendu:
+                    contient(q, detail, "comptage borné à 40 lignes par pod")
+            else:
+                contient(q, detail, f": {attendu} ligne(s) écartée(s)")
+                dit = f"atteinte : {attendu} ligne(s) plus ancienne(s)"
+            hb = battements(evs, "web")
+            if hb:
+                contient(q, hb[0].get("message"), dit)
+        finally:
+            bac.nettoyer()
+
+    # SECONDE COUPÉE PAR LA BORNE (mode file) : cinq requêtes à la seconde 5, une à la seconde 6, borne 3. Le filigrane
+    # horaire appliqué par-dessus l'offset disait « déjà vues » la fin de la seconde 5 et la perdait sans aveu. Et une
+    # requête LONGUE, écrite par Traefik à sa fin avec un StartUTC antérieur au filigrane, n'est pas « déjà vue ».
+    for cas in ("seconde_coupee", "requete_longue"):
+        q = f"web/{nom_awk}/{cas}"
+        bac = Bac(awk)
+        try:
+            log = os.path.join(bac.racine, "access.log")
+            env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log, "PLUME_WEB_MAX": "3"}
+            ecrire(log, ligne_web(1, "/r1", seconde=1 if cas == "seconde_coupee" else 30))
+            bac.jouer("web.sh", env)
+            if cas == "seconde_coupee":
+                ajout = [ligne_web(10 + k, f"/s5{c}", seconde=5, fraction=k + 1) for k, c in enumerate("abcde")]
+                ajout.append(ligne_web(20, "/s6", seconde=6))
+            else:
+                ajout = [ligne_web(2, "/longue", seconde=12)]
+            with open(log, "a") as fh:
+                fh.write("".join(ajout))
+            attendu = ["/s5a", "/s5b", "/s5c", "/s5d", "/s5e", "/s6"] if cas == "seconde_coupee" else ["/longue"]
+            vus = passages(bac, env, 3, q)
+            tout = [p for pub, _ in vus for p in pub]
+            if tout != attendu:
+                faute(q, f"publiées sur trois passages : {tout}, attendu {attendu} — des lignes jamais lues dites déjà vues")
+            for j, (_, evs) in enumerate(vus):
+                hb = battements(evs, "web")
+                if hb and ", 0 déjà vue(s)" not in (hb[0].get("message") or ""):
+                    faute(f"{q}/{j + 1}", f"lignes lues après l'offset dites déjà vues : {hb[0].get('message')!r}")
+                if aveux(evs, "web"):
+                    faute(f"{q}/{j + 1}", "aveu émis alors que rien n'est perdu")
+        finally:
+            bac.nettoyer()
+
+    # BORNE ATTEINTE PILE : le battement ne dit pas « au moins 0 octet(s) restent à lire ».
+    q = f"web/{nom_awk}/borne_pile"
+    bac = Bac(awk)
+    try:
+        log = os.path.join(bac.racine, "access.log")
+        env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log, "PLUME_WEB_MAX": "3"}
+        ecrire(log, ligne_web(1, "/r1"))
+        bac.jouer("web.sh", env)
+        with open(log, "a") as fh:
+            fh.write("".join(ligne_web(i, f"/r{i}") for i in (2, 3, 4)))
+        (pub, evs), = passages(bac, env, 1, q)
+        hb = un_battement(q, evs, "web")
+        if hb:
+            contient(q, hb.get("message"), "PLUME_WEB_MAX=3 atteinte pile", "rien n'est sauté")
+            if "au moins 0 octet" in (hb.get("message") or ""):
+                faute(q, f"borne atteinte pile dite « au moins 0 octet(s) restent » : {hb.get('message')!r}")
+    finally:
+        bac.nettoyer()
+
+    # ROTATIONS DE BORD (P10.33-e) :
+    #  · creation — `logrotate create` : le journal tourné est lu jusqu'au bout pendant que le neuf est VIDE ; quand le
+    #    neuf se remplit, ce n'est pas une rotation perdue (rien n'y avait été lu) ;
+    #  · pendant_ecriture — rotation au milieu d'une écriture : la dernière ligne du journal TOURNÉ, sans fin de
+    #    ligne, est lue (personne ne l'achèvera), sans quoi l'offset resterait sur `.1` et le neuf ne serait plus lu ;
+    #  · plus_court — même première ligne, fichier plus court que l'offset (tronqué puis réécrit) : rotation, lu
+    #    depuis 0, perte avouée ; le prendre pour le même journal ne lirait plus rien.
+    for forme in ("creation", "pendant_ecriture", "plus_court"):
+        q = f"web/{nom_awk}/rotation_{forme}"
+        bac = Bac(awk)
+        try:
+            log = os.path.join(bac.racine, "access.log")
+            env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+            if forme == "plus_court":
+                ecrire(log, ligne_web(1, "/r1") + ligne_web(2, "/r2") + ligne_web(3, "/r3"))
+            else:
+                ecrire(log, ligne_web(1, "/r1"))
+            bac.jouer("web.sh", env)
+            vus = []
+            if forme == "creation":
+                with open(log, "a") as fh:
+                    fh.write(ligne_web(2, "/r2"))
+                os.rename(log, log + ".1")
+                ecrire(log, "")
+                vus += passages(bac, env, 1, q + "/a")
+                with open(log, "a") as fh:
+                    fh.write(ligne_web(3, "/r3"))
+                vus += passages(bac, env, 2, q + "/b")
+                attendu, n_rot = [["/r2"], ["/r3"], []], 0
+            elif forme == "pendant_ecriture":
+                with open(log, "a") as fh:
+                    fh.write(ligne_web(2, "/r2") + ligne_web(3, "/coupee")[:-40])
+                os.rename(log, log + ".1")
+                ecrire(log, ligne_web(4, "/r4"))
+                vus += passages(bac, env, 3, q)
+                attendu, n_rot = [["/r2", "/coupee"], ["/r4"], []], 0
+            else:
+                ecrire(log, ligne_web(1, "/r1") + ligne_web(4, "/r4"))
+                vus += passages(bac, env, 2, q)
+                attendu, n_rot = None, 1
+            pubs = [pub for pub, _ in vus]
+            rot = [e for _, evs in vus for e in aveux(evs, "web", "unavailable", "missing-source")
+                   if "ROTATION" in ((e.get("fields") or {}).get("detail") or "")]
+            if attendu is not None and pubs != attendu:
+                faute(q, f"publiées par passage : {pubs}, attendu {attendu}")
+            if attendu is None and ("/r4" not in pubs[0] or pubs[1]):
+                faute(q, f"publiées par passage : {pubs}, attendu `/r4` au premier (relu depuis 0), rien au second")
+            if len(rot) != n_rot:
+                faute(q, f"{len(rot)} aveu(x) de rotation, attendu {n_rot}")
+        finally:
+            bac.nettoyer()
+
+    # ROTATIONS DONT LE `.1` N'EST PAS LE JOURNAL LU (P10.33-e) :
+    #  · double — deux rotations entre deux passages : le journal lu est devenu `.2`, `.1` est un journal postérieur ;
+    #    le lire depuis l'offset de l'autre publierait le milieu d'un journal et tairait la perte ;
+    #  · tourne_plus_court — `.1` a la même première ligne mais est plus court que l'offset : ce n'est pas le journal
+    #    lu ; le prendre pour lui ne lirait rien et tairait la perte.
+    for forme in ("double", "tourne_plus_court"):
+        q = f"web/{nom_awk}/rotation_{forme}"
+        bac = Bac(awk)
+        try:
+            log = os.path.join(bac.racine, "access.log")
+            env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+            if forme == "double":
+                ecrire(log, ligne_web(1, "/a1") + ligne_web(2, "/a2"))
+                bac.jouer("web.sh", env)
+                os.rename(log, log + ".2")
+                ecrire(log + ".1", "".join(ligne_web(i, f"/b{i}") for i in range(3, 8)))
+                ecrire(log, ligne_web(8, "/c8"))
+                attendu = [["/c8"], []]
+            else:
+                ecrire(log, ligne_web(1, "/r1") + ligne_web(2, "/r2") + ligne_web(3, "/r3"))
+                bac.jouer("web.sh", env)
+                os.remove(log)
+                ecrire(log + ".1", ligne_web(1, "/r1"))
+                ecrire(log, ligne_web(4, "/n4"))
+                attendu = [["/n4"], []]
+            vus = []
+            for j in range(2):
+                evs = evenements(f"{q}/{j + 1}", bac.jouer("web.sh", env), "web.sh")
+                vus.append((publiees(evs), evs))
+            pubs = [pub for pub, _ in vus]
+            rot = [e for _, evs in vus for e in aveux(evs, "web", "unavailable", "missing-source")
+                   if "ROTATION" in ((e.get("fields") or {}).get("detail") or "")]
+            if pubs != attendu:
+                faute(q, f"publiées par passage : {pubs}, attendu {attendu}")
+            if len(rot) != 1 or not aveux(vus[0][1], "web", "unavailable", "missing-source"):
+                faute(q, f"{len(rot)} aveu(x) de rotation, attendu 1 au premier passage : la perte serait tue")
+        finally:
+            bac.nettoyer()
 
 # --- C. crowdsec ----------------------------------------------------------------------------------
 FAUX_CSCLI = r"""#!/bin/sh
@@ -954,7 +1462,7 @@ def banc_minio(awk):
         bac.nettoyer()
 
 
-def banc_dataaccess(awk):
+def banc_dataaccess(awk, nom_awk="awk"):
     bac = Bac(awk)
     try:
         log = os.path.join(bac.racine, "audit.log")
@@ -970,8 +1478,8 @@ def banc_dataaccess(awk):
                ("dataaccess/cle_voisine", "-a always,exit -F dir=/etc -F perm=wa -F key=plume_etc\n-w /srv/vieux -p wa -k plume_data_archive\n",
                 False, 1, ("PARTIEL", "chargées : plume_etc"), True),
                ("dataaccess/aucune", "", False, 1, ("PARTIEL", "chargées : aucune"), True),
-               ("dataaccess/auditctl_en_echec", None, True, 0, ("INCONNUES",), False),
-               ("dataaccess/auditctl_absent", None, False, 0, ("INCONNUES",), False))
+               ("dataaccess/auditctl_en_echec", None, True, 1, ("couverture INCONNUE", "prouvées : aucune"), False),
+               ("dataaccess/auditctl_absent", None, False, 1, ("couverture INCONNUE", "prouvées : aucune"), False))
         cles = []
         for q, regles, ko, sev, morceaux, aveu in cas:
             bac.retirer("auditctl")
@@ -982,6 +1490,8 @@ def banc_dataaccess(awk):
             hb = un_battement(q, evs, "dataaccess")
             if hb:
                 contient(q, hb.get("message"), *morceaux)
+                if sev == 1 and "actif" in (hb.get("message") or ""):
+                    faute(q, f"battement dit « actif » sans clé de données sue : {hb.get('message')!r}")
                 if hb.get("severity") != sev:
                     faute(q, f"sévérité du battement {hb.get('severity')}, attendu {sev}")
                 if (hb.get("fields") or {}).get("alive") != 1:
@@ -1002,6 +1512,113 @@ def banc_dataaccess(awk):
             faute("dataaccess/cle", f"clé de dédoublonnage de l'aveu instable d'un cas à l'autre : {cles}")
     finally:
         bac.nettoyer()
+    banc_dataaccess_preuves_du_journal(awk, nom_awk)
+
+
+# P10.33-b — sous l'unité livrée, `auditctl -l` est refusé (CAP_AUDIT_CONTROL non accordée) : les clés sont
+# PROUVÉES par le journal (SYSCALL `key=`, CONFIG_CHANGE `op=add_rule … res=1`, annulée par un `remove_rule`
+# postérieur), sinon le battement avoue une couverture INCONNUE (sévérité 1, jamais « actif »).
+def da_syscall(serie, cle, epoque=1758659000):
+    return (f'type=SYSCALL msg=audit({epoque}.100:{serie}): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c '
+            f'items=1 ppid=1 pid=2 auid=1000 uid=1000 gid=1000 euid=1000 tty=pts0 ses=3 comm="cat" exe="/usr/bin/cat" '
+            f'key="{cle}"\n')
+
+
+def da_config(serie, op, cle, res=1, enrichi=False):
+    queue = '\x1dAUID="unset"' if enrichi else ""
+    return (f'type=CONFIG_CHANGE msg=audit(1758650000.001:{serie}): auid=4294967295 ses=4294967295 subj=unconfined '
+            f'op={op} key="{cle}" list=4 res={res}{queue}\n')
+
+
+def da_demarrage(serie, noeud=""):
+    return (f'{noeud}type=DAEMON_START msg=audit(1758655000.000:{serie}): op=start ver=3.1.2 format=enriched '
+            f'kernel=6.8.0 auid=4294967295 pid=789 uid=0 ses=4294967295 subj=unconfined res=success'
+            '\x1dAUID="unset" UID="root"\n')
+
+
+def banc_dataaccess_preuves_du_journal(awk, nom_awk):
+    LISTE_ETC = "-a always,exit -F dir=/etc -F perm=wa -F auid>=1000 -F auid!=-1 -F key=plume_etc\n"
+    # (nom, auditctl : "echec" | "absent" | règles listées, journal courant, journal .1, sévérité, morceaux, absents)
+    cas = (("vide", "echec", "", None, 1, ("couverture INCONNUE", "prouvées : aucune"), ()),
+           ("syscall_donnees", "echec", da_syscall(501, "plume_data"), None, 0,
+            ("actif", "prouvées par le journal : plume_data", "non prouvées : plume_creds plume_etc"), ("INCONNUE",)),
+           ("syscall_donnees_sans_auditctl", "absent", da_syscall(502, "plume_data"), None, 0,
+            ("actif", "prouvées par le journal : plume_data"), ("INCONNUE",)),
+           ("ajout_creds_enrichi", "echec", da_config(11, "add_rule", "plume_creds", enrichi=True), None, 0,
+            ("actif", "prouvées par le journal : plume_creds"), ("INCONNUE",)),
+           ("ajout_refuse", "echec", da_config(12, "add_rule", "plume_data", res=0), None, 1,
+            ("couverture INCONNUE", "prouvées : aucune"), ()),
+           ("retiree_apres_acces", "echec", da_syscall(503, "plume_data") + da_config(13, "remove_rule", "plume_data"),
+            None, 1, ("couverture INCONNUE", "prouvées : aucune"), ()),
+           ("retrait_refuse", "echec", da_syscall(504, "plume_data") + da_config(14, "remove_rule", "plume_data", res=0),
+            None, 0, ("actif", "prouvées par le journal : plume_data"), ("INCONNUE",)),
+           ("rechargee", "echec", da_config(15, "add_rule", "plume_data") + da_config(16, "remove_rule", "plume_data")
+            + da_config(17, "add_rule", "plume_data"), None, 0, ("actif", "prouvées par le journal : plume_data"), ()),
+           ("etc_seule", "echec", da_syscall(505, "plume_etc"), None, 1, ("couverture INCONNUE", "prouvées : plume_etc"), ()),
+           ("cle_voisine", "echec", da_syscall(506, "plume_data_archive"), None, 1,
+            ("couverture INCONNUE", "prouvées : aucune"), ()),
+           ("preuve_dans_le_journal_tourne", "echec", "", da_config(18, "add_rule", "plume_creds"), 0,
+            ("actif", "prouvées par le journal : plume_creds"), ("INCONNUE",)),
+           # P10.33-b — un DAEMON_START (auditd démarre : redémarrage, ou relance) efface les preuves qui le précèdent :
+           # une règle chargée au boot précédent et non rechargée (augenrules arrêté à la première règle en échec)
+           # ne doit pas se lire « actif ».
+           ("redemarrage_sans_rechargement", "echec",
+            da_config(21, "add_rule", "plume_data") + da_config(22, "add_rule", "plume_etc")
+            + 'type=DAEMON_END msg=audit(1758654000.000:23): op=terminate auid=0 pid=1 subj=unconfined res=success\n'
+            + da_demarrage(24) + da_config(25, "add_rule", "plume_etc"), None, 1,
+            ("couverture INCONNUE", "prouvées : plume_etc"), ()),
+           ("acces_avant_redemarrage", "echec", da_syscall(508, "plume_data") + da_demarrage(26), None, 1,
+            ("couverture INCONNUE", "prouvées : aucune"), ()),
+           ("redemarrage_sous_prefixe_noeud", "echec", "node=hote " + da_syscall(509, "plume_creds")
+            + da_demarrage(27, noeud="node=hote "), None, 1, ("couverture INCONNUE", "prouvées : aucune"), ()),
+           ("redemarrage_apres_le_tourne", "echec", da_demarrage(28), da_config(29, "add_rule", "plume_creds"), 1,
+            ("couverture INCONNUE", "prouvées : aucune"), ()),
+           ("rechargee_apres_redemarrage", "echec",
+            da_syscall(510, "plume_creds") + da_demarrage(30) + da_config(31, "add_rule", "plume_data"), None, 0,
+            ("actif", "prouvées par le journal : plume_data", "non prouvées : plume_creds plume_etc"), ("INCONNUE",)),
+           # journal COURANT illisible (un répertoire à sa place) : `grep` échoue ; ce qu'il a lu du `.1` n'est pas une
+           # preuve, la lecture est avouée en échec et la couverture dite INCONNUE.
+           ("journal_courant_illisible", "echec", None, da_syscall(511, "plume_data"), 1,
+            ("couverture INCONNUE", "prouvées : aucune"), ()),
+           # auditctl lisible fait foi : le journal ne le contredit pas.
+           ("auditctl_fait_foi", LISTE_ETC, da_syscall(507, "plume_data"), None, 1,
+            ("PARTIEL", "chargées : plume_etc"), ("prouvées par le journal",)))
+    for nom, auditctl, courant, tourne, sev, morceaux, absents in cas:
+        q = f"dataaccess/{nom_awk}/journal/{nom}"
+        bac = Bac(awk)
+        try:
+            log = os.path.join(bac.racine, "audit.log")
+            if courant is None:
+                os.mkdir(log)
+            else:
+                ecrire(log, courant)
+            if tourne is not None:
+                ecrire(log + ".1", tourne)
+            if auditctl == "echec":
+                bac.outil("auditctl", "#!/bin/sh\necho 'Error sending rule list data request (Operation not permitted)' >&2\nexit 1\n")
+            elif auditctl != "absent":
+                bac.outil("auditctl", "#!/bin/sh\ncat <<'X'\n" + auditctl + "X\n")
+            res = bac.jouer("dataaccess.sh", {"PLUME_AUDIT_LOG": log})
+            evs = evenements(q, res, "dataaccess.sh")
+            hb = un_battement(q, evs, "dataaccess")
+            if hb:
+                msg = hb.get("message") or ""
+                contient(q, msg, *morceaux)
+                for m in absents:
+                    if m in msg:
+                        faute(q, f"{m!r} présent dans {msg!r}")
+                if sev == 1 and "actif" in msg:
+                    faute(q, f"battement dit « actif » sans clé de données prouvée : {msg!r}")
+                if hb.get("severity") != sev:
+                    faute(q, f"sévérité du battement {hb.get('severity')}, attendu {sev}")
+            if courant is None:
+                if not [a for a in aveux(evs, "dataaccess", "unavailable", "missing-source")
+                        if "source_illisible" in ((a.get("fields") or {}).get("detail") or "")]:
+                    faute(q, "journal courant illisible : la lecture en échec n'est pas avouée")
+            elif nom != "auditctl_fait_foi" and aveux(evs, "dataaccess", "unavailable"):
+                faute(q, "aveu `unavailable` émis alors que rien n'est constaté : l'alerte horaire tomberait sur un hôte calme")
+        finally:
+            bac.nettoyer()
 
 
 # --- L'instrument ---------------------------------------------------------------------------------
@@ -1061,7 +1678,8 @@ def main():
         banc_web(p, nom)
     banc_crowdsec(awks[0][1])
     banc_minio(awks[0][1])
-    banc_dataaccess(awks[0][1])
+    for nom, p in awks:
+        banc_dataaccess(p, nom)
     if fautes:
         for x in fautes:
             print(f"::error::{x}")

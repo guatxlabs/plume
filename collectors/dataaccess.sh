@@ -28,23 +28,82 @@ last=$(cat "$WM" 2>/dev/null || echo 0)
 # P10.32-k — « ACTIF » NE SUFFIT PAS : LE BATTEMENT DIT QUELLES CLÉS D'AUDIT SONT CHARGÉES. Le gabarit livré
 # (`systemd/plume-audit.rules`) n'arme que `plume_etc` ; `plume_data` et `plume_creds` sont à compléter avec
 # les chemins de l'installation. Sans elles, ce capteur ne voit que /etc et se disait pourtant « actif ». Les
-# clés chargées sont lues dans `auditctl -l` (watch `-k <clé>` ou règle `key=<clé>`) ; si la lecture échoue,
-# elles sont dites INCONNUES, pas absentes. Quand aucune clé de données n'est chargée, c'est avoué par le
+# clés chargées sont lues dans `auditctl -l` (watch `-k <clé>` ou règle `key=<clé>`) ; si la lecture échoue —
+# toujours, sous l'unité livrée —, elles sont PROUVÉES par le journal (P10.33-b, ci-dessous) ou dites non prouvées, jamais
+# absentes. Quand aucune clé de données n'est chargée, c'est avoué par le
 # canal de couverture (`plume_report_availability`, donc `de-collector-unavailable`), une fois par heure.
 # PAS `plume_lecture_partielle` : son texte fixe dit que le marqueur N'AVANCE PAS et que la tranche sera
 # relue — ici la lecture du journal est entière et le filigrane avance normalement ; ce qui manque est une
 # règle du noyau, et rien ne sera relu. LE PRIX, DIT : sur une installation qui garde le gabarit livré tel
 # quel, cet aveu part à chaque heure — c'est exact, ce capteur n'y voit aucun accès aux données.
+# P10.33-b — SOUS L'UNITÉ LIVRÉE, `auditctl -l` EST TOUJOURS REFUSÉ, ET C'EST VOULU. Lister les règles
+# (AUDIT_LIST_RULES) exige CAP_AUDIT_CONTROL dans le noyau (`audit_netlink_ok`, kernel/audit.c : même groupe
+# que AUDIT_ADD_RULE/AUDIT_DEL_RULE) ; `systemd/plume-dataaccess.service` ne borne qu'à CAP_AUDIT_READ et
+# CAP_DAC_READ_SEARCH. On NE donne PAS CAP_AUDIT_CONTROL : c'est le droit de RÉÉCRIRE la politique d'audit
+# (et de la couper), trop large pour un capteur en lecture seule. Le battement disait alors « actif » à
+# chaque passage sans rien savoir des clés.
+# LA SOURCE DE VÉRITÉ LISIBLE SANS CE DROIT EST LE JOURNAL LUI-MÊME, et elle ne prouve que dans un sens :
+#   · un enregistrement SYSCALL portant `key="plume_x"` prouve que la clé était chargée quand il a été écrit ;
+#   · un CONFIG_CHANGE `op=add_rule key="plume_x" … res=1` (écrit par le noyau au chargement d'une règle, au
+#     démarrage par augenrules) le prouve aussi, même si aucun accès n'a encore eu lieu ;
+#   · un CONFIG_CHANGE `op=remove_rule key="plume_x" … res=1` POSTÉRIEUR à la dernière preuve la retire : la clé
+#     n'est plus prouvée (une clé portée par plusieurs règles dont une seule est retirée est alors dite non
+#     prouvée — l'erreur part du côté de l'aveu, jamais du côté de « actif ») ;
+#   · un DAEMON_START (auditd démarre : au boot, ou relancé) EFFACE toutes les preuves qui le précèdent. Une règle
+#     du noyau ne survit pas à un redémarrage, et augenrules s'arrête à la première règle en échec
+#     (`systemd/plume-audit-rules-load.sh`) : une preuve du boot précédent dirait « actif » pour une clé qui
+#     n'a pas été rechargée. Une relance d'auditd sans redémarrage, qui garde les règles du noyau, efface aussi
+#     les preuves : la clé est dite non prouvée jusqu'au prochain chargement ou accès — l'erreur part du côté
+#     de l'aveu ;
+#   · une clé ABSENTE du journal n'est pas prouvée absente (règle chargée sur un répertoire calme, ou preuve
+#     sortie avec la rotation) : elle est dite NON PROUVÉE, jamais absente.
+# CE QUI N'EST PAS UNE SOURCE : `/etc/audit/audit.rules` dit ce qui DEVRAIT être chargé, pas ce qui l'est —
+# `auditctl -R`, qu'appelle augenrules, s'arrête à la première règle en erreur sans `-c` (une règle en double
+# d'un autre fichier suffit) ; le présenter comme chargé serait le faux « actif » sous un autre nom.
+# QUAND AUCUNE CLÉ DE DONNÉES N'EST PROUVÉE, LE BATTEMENT L'AVOUE : sévérité 1 et « couverture INCONNUE », pas
+# « actif ». Pas d'aveu par le canal de couverture : celui-ci dit une incapacité CONSTATÉE (`unavailable`) et
+# fait alerter `de-collector-unavailable` ; ici rien n'est constaté, et l'alerte horaire tomberait sur chaque
+# installation dont les répertoires de données sont calmes.
 da_regles=""; da_cles_lues=0
 if command -v auditctl >/dev/null 2>&1 && da_regles=$(auditctl -l 2>/dev/null); then da_cles_lues=1; fi
+
+ids=$(mktemp); rec=$(mktemp); syscalls=$(mktemp)
+trap 'rm -f "$ids" "$rec" "$syscalls"' EXIT
+# Pass 1 (lecture) : les SYSCALL porteurs d'une clé de données ET les CONFIG_CHANGE de ces clés, dans l'ordre
+# du journal (rotated .1 puis courant). Lu ICI, avant le battement, parce que ce sont aussi les preuves des clés.
+# S36 — LE VERDICT DU TUBE ETAIT CELUI DE `sort`, qui reussit sur une entree vide : des journaux
+# d'audit devenus illisibles rendaient une liste vide, indiscernable de « aucun acces nouveau ».
+# `grep` distingue les deux — 1 = aucune correspondance (cas normal), >=2 = erreur de lecture — a
+# condition de lire SON code de retour, donc de le sortir du tube. L'échec est avoué APRÈS le battement.
+_ga_rc=0
+# shellcheck disable=SC2086  ($LOGS = liste de chemins a eclater ; expansion voulue)
+grep -h -E 'type=(SYSCALL|CONFIG_CHANGE).*key="(plume_data|plume_etc|plume_creds)"|(^| )type=DAEMON_START ' $LOGS > "$syscalls" 2>/dev/null || _ga_rc=$?
+if [ "$da_cles_lues" -eq 1 ]; then
+  da_lignes=$da_regles; da_motif='(-k |key=)'
+else
+  [ "$_ga_rc" -le 1 ] || : > "$syscalls"
+  da_lignes=$(awk '
+    /(^| )type=DAEMON_START / { split("", P); next }   # aussi sous le préfixe node= (name_format)
+    { if (!match($0, /key="[^"]*"/)) next; k = substr($0, RSTART + 5, RLENGTH - 6) }
+    /type=CONFIG_CHANGE/ { if ($0 !~ / res=1([^0-9]|$)/) next
+                           if ($0 ~ / op=remove_rule /) { P[k] = 0; next }
+                           if ($0 !~ / op=add_rule /) next }
+    { P[k] = 1 }
+    END { for (k in P) if (P[k]) print "key=" k }' "$syscalls")
+  da_motif='key='
+fi
 da_chargees=""; da_absentes=""
 for _k in plume_data plume_creds plume_etc; do
-  if printf '%s\n' "$da_regles" | grep -qE "(-k |key=)$_k( |\$)"; then da_chargees="$da_chargees $_k"; else da_absentes="$da_absentes $_k"; fi
+  if printf '%s\n' "$da_lignes" | grep -qE "${da_motif}$_k( |\$)"; then da_chargees="$da_chargees $_k"; else da_absentes="$da_absentes $_k"; fi
 done
 da_chargees=${da_chargees# }; da_absentes=${da_absentes# }
 da_sev=0
 if [ "$da_cles_lues" -eq 0 ]; then
-  da_msg="dataaccess santé: collecteur actif — clés d'audit chargées INCONNUES (auditctl absent ou refusé)"
+  case " $da_chargees " in
+    *" plume_data "*|*" plume_creds "*) da_msg="dataaccess santé: collecteur actif — auditctl absent ou refusé ; clés d'audit prouvées par le journal : ${da_chargees}${da_absentes:+ ; non prouvées : $da_absentes (leur absence du journal ne prouve rien)}" ;;
+    *) da_sev=1
+       da_msg="dataaccess santé: collecteur à couverture INCONNUE — auditctl absent ou refusé, et aucune clé de données (plume_data, plume_creds) prouvée par le journal (prouvées : ${da_chargees:-aucune}) ; leur absence du journal ne prouve rien, rien ne dit qu'un accès aux données serait observé" ;;
+  esac
 else
   case " $da_chargees " in
     *" plume_data "*|*" plume_creds "*) da_msg="dataaccess santé: collecteur actif — clés d'audit chargées : ${da_chargees}${da_absentes:+ ; absentes : $da_absentes}" ;;
@@ -60,19 +119,11 @@ if [ "$da_cles_lues" -eq 1 ] && [ "$da_sev" -eq 1 ]; then
     2 "dataaccess cles de donnees absentes" 2>/dev/null || true
 fi
 
-ids=$(mktemp); rec=$(mktemp); syscalls=$(mktemp)
-trap 'rm -f "$ids" "$rec" "$syscalls"' EXIT
-
-# Pass 1 : event-ids (token "audit(EPOCH.ms:SERIAL)") des SYSCALL data NOUVEAUX (epoch > watermark).
-# S36 — LE VERDICT DU TUBE ETAIT CELUI DE `sort`, qui reussit sur une entree vide : des journaux
-# d'audit devenus illisibles rendaient une liste vide, indiscernable de « aucun acces nouveau ».
-# `grep` distingue les deux — 1 = aucune correspondance (cas normal), >=2 = erreur de lecture — a
-# condition de lire SON code de retour, donc de le sortir du tube.
-_ga_rc=0
-# shellcheck disable=SC2086  ($LOGS = liste de chemins a eclater ; expansion voulue)
-grep -h -E 'type=SYSCALL.*key="(plume_data|plume_etc|plume_creds)"' $LOGS > "$syscalls" 2>/dev/null || _ga_rc=$?
 [ "$_ga_rc" -le 1 ] || plume_lecture_echouee dataaccess source_illisible "journaux d'audit illisibles ($LOGS) : aucun acces aux donnees n'a pu etre relu, le filigrane n'avance pas"
+# event-ids (token "audit(EPOCH.ms:SERIAL)") des SYSCALL data NOUVEAUX (epoch > watermark) ; les CONFIG_CHANGE
+# lus pour les preuves de cles n'en sont pas.
 awk -v last="$last" '
+!/type=SYSCALL/ { next }
 { if(!match($0,/audit\([0-9]+\.[0-9]+:[0-9]+\)/)) next; idt=substr($0,RSTART,RLENGTH);
   ep=idt; sub(/audit\(/,"",ep); sub(/\..*/,"",ep); if(ep+0<=last) next; print idt }' "$syscalls" | sort -u > "$ids"
 [ -s "$ids" ] || plume_exit_nodata

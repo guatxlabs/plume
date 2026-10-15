@@ -46,23 +46,42 @@ Cela pose `/usr/local/lib/plume/collectors/plume-collector-syslog`, l'unit
 `plume-collector-syslog.service` et un `/etc/plume/syslog.conf` par defaut.
 
 ### 2. Config `/etc/plume/syslog.conf`
+Chaque commentaire sur **sa propre ligne** : systemd (`EnvironmentFile=`) garde un commentaire de fin
+de ligne **dans la valeur** (`PLUME_SYSLOG_ALLOW=   # ex` vaut `# ex`, que le recepteur refuse : il
+s'arrete au demarrage). Une variable **vide ne desactive pas** un transport : le recepteur retombe
+alors sur son propre defaut, `0.0.0.0:514` (`env_or`, `collector-syslog/src/main.rs`). La conf posee
+par `bootstrap-agent.sh` n'ecoute donc que la boucle locale :
 ```sh
 PLUME_SPOOL=/var/lib/plume/spool
-PLUME_SYSLOG_PARSER=fortigate     # fortigate | auto (sniff par message) | generic
+# analyseur : fortigate | auto (sniff par message) | generic
+PLUME_SYSLOG_PARSER=fortigate
 PLUME_SYSLOG_SOURCE=fortigate
-PLUME_SYSLOG_UDP=0.0.0.0:514      # vider ("") = desactiver l'UDP
-PLUME_SYSLOG_TCP=0.0.0.0:514      # vider ("") = desactiver le TCP
-PLUME_SYSLOG_ALLOW=              # allowlist source-IP (CIDR/IP virgule). VIDE = tout accepte (WARN au boot)
-PLUME_SYSLOG_BATCH_MAX=500        # events/enveloppe (<= PLUME_INGEST_MAX_EVENTS du daemon)
-PLUME_SYSLOG_FLUSH_MS=2000        # cadence de flush spool (borne la latence + le nb de fichiers)
-# PLUME_SYSLOG_TZ=+0100           # tz par defaut si le device n'emet PAS de champ tz (sinon UTC)
-# PLUME_SYSLOG_MAX_FRAME=65536    # cap dur trame TCP / datagramme UDP (anti-DoS)
-# PLUME_SYSLOG_MAX_CONNS=128      # connexions TCP concurrentes max (global)
-# PLUME_SYSLOG_MAX_CONNS_PER_IP=16  # connexions TCP concurrentes max PAR IP (anti-slowloris)
-# PLUME_SYSLOG_TCP_IDLE=60        # timeout inactivite TCP (s) ; TCP_MAXLIFE=3600 = vie max d'une connexion
-# PLUME_SYSLOG_SPOOL_MAX_BYTES=536870912  # budget disque du spool : au-dela -> shed (backpressure)
-# PLUME_SYSLOG_QUEUE_MAX=20000    # cap du tampon memoire (au-dela -> drop compte : evite l'OOM)
+# boucle locale par defaut ; 0.0.0.0:514 SEULEMENT apres la liste ET le pare-feu (section 3)
+PLUME_SYSLOG_UDP=127.0.0.1:514
+PLUME_SYSLOG_TCP=127.0.0.1:514
+# liste d'autorisation source-IP (CIDR/IP separes par des virgules). VIDE = tout accepte (WARN au boot)
+PLUME_SYSLOG_ALLOW=
+# events par enveloppe (<= PLUME_INGEST_MAX_EVENTS du daemon)
+PLUME_SYSLOG_BATCH_MAX=500
+# cadence de flush du spool (borne la latence et le nombre de fichiers)
+PLUME_SYSLOG_FLUSH_MS=2000
+# tz par defaut si le device n'emet PAS de champ tz (sinon UTC)
+# PLUME_SYSLOG_TZ=+0100
+# cap dur trame TCP / datagramme UDP (anti-DoS)
+# PLUME_SYSLOG_MAX_FRAME=65536
+# connexions TCP concurrentes max (global), puis PAR IP (anti-slowloris)
+# PLUME_SYSLOG_MAX_CONNS=128
+# PLUME_SYSLOG_MAX_CONNS_PER_IP=16
+# timeout d'inactivite TCP (s) ; TCP_MAXLIFE=3600 = vie max d'une connexion
+# PLUME_SYSLOG_TCP_IDLE=60
+# budget disque du spool : au-dela -> shed (backpressure)
+# PLUME_SYSLOG_SPOOL_MAX_BYTES=536870912
+# cap du tampon memoire (au-dela -> drop compte : evite l'OOM)
+# PLUME_SYSLOG_QUEUE_MAX=20000
 ```
+Une conf **deja posee** est conservee telle quelle a la relance de `bootstrap-agent.sh`, qui NOMME
+toutefois chaque cle dont la valeur porte un commentaire, et une ecoute hors boucle locale avec une
+liste vide.
 
 ### 3. Durcir la source (OBLIGATOIRE — syslog n'est PAS authentifie)
 

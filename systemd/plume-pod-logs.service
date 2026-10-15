@@ -5,10 +5,16 @@ Description=plume collector — logs pods k8s filtrés (sécurité) -> events
 Type=oneshot
 Environment=PLUME_SPOOL=/var/lib/plume/spool
 Environment=PLUME_STATE=/var/lib/plume/state
-# Debruitage : excluez les pods qui ont deja un collecteur DEDIE (p.ex. mail=mail.sh, moteurs de ban=bans.sh,
-# argocd=kube-*) -> pas de double ingestion ; et ne shippe que sev>=3 (denied/unauthorized/fatal/panic).
-Environment=PLUME_POD_LOG_SKIP=mailserver|crowdsec|fail2ban|argocd
-Environment=PLUME_POD_LOG_MIN_SEV=1
+# P10.32-j — AUCUNE VALEUR PROPRE A UNE INSTALLATION ICI : l'unite reprend les defauts du script
+# (PLUME_POD_LOG_SKIP vide, PLUME_POD_LOG_MIN_SEV=3, le « sev>=3 » que la sonde annonce). Elle forcait
+# une liste de pods d'un parc particulier et un seuil de 1 que ni le script ni la sonde ne disent.
+# Debruitage : excluez les pods qui ont deja un collecteur DEDIE (p.ex. un serveur mail suivi par
+# mail.sh, un moteur de ban suivi par bans.sh) -> pas de double ingestion. Se pose dans un drop-in
+# LOCAL, jamais ici (un `git pull` l'ecraserait) :
+#   sudo systemctl edit plume-pod-logs.service
+#     [Service]
+#     Environment=PLUME_POD_LOG_SKIP=app-a|app-b
+#     Environment=PLUME_POD_LOG_MIN_SEV=3
 ExecStart=/usr/local/lib/plume/collectors/pod-logs.sh
 
 NoNewPrivileges=true

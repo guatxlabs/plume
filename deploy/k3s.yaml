@@ -8,7 +8,10 @@
 #   2) plume-daemon hashpw 'tonmdp'   -> mets le hash dans le Secret ci-dessous
 #   3) remplace `soc.tondomaine.tld` (PLUME_HOST **et** l'Ingress — ils DOIVENT correspondre :
 #      PLUME_HOST est la garde anti-DNS-rebinding, un écart renvoie 421)
-#   4) kubectl apply -f deploy/k3s.yaml
+#   4) le certificat TLS de l'Ingress, dans le Secret `soc-tls` du namespace `soc` (cf. l'Ingress) :
+#        kubectl -n soc create secret tls soc-tls --cert=<fichier.crt> --key=<fichier.key>
+#      (ou un Certificate cert-manager dont `secretName` vaut soc-tls)
+#   5) kubectl apply -f deploy/k3s.yaml
 #
 # Les hôtes/agents poussent leur télémétrie vers le Service via POST /api/ingest (bootstrap-agent.sh).
 apiVersion: v1
@@ -61,7 +64,18 @@ spec:
   template:
     metadata: { labels: { app: soc } }
     spec:
-      securityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001 }
+      # `P10.32-j` — LE POD NE PARLE PAS À L'API DU CLUSTER : le démon n'a aucun client Kubernetes (les
+      # capteurs k8s, `kube-state.sh` et `pod-logs.sh`, tournent sur l'HÔTE). Le jeton du compte de
+      # service n'est donc pas monté : une faille du démon ne le trouverait pas dans le conteneur.
+      automountServiceAccountToken: false
+      # Profil seccomp du moteur de conteneurs (`RuntimeDefault`) : sans lui, le pod tourne `Unconfined`
+      # sous les réglages par défaut de Kubernetes. Le démon systemd a son équivalent
+      # (`SystemCallFilter=@system-service`).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: soc
           image: soc:latest
@@ -182,19 +196,27 @@ spec:
 ---
 # Ingress — route Host=soc.tondomaine.tld -> svc soc:7000. Testé avec Traefik (l'ingress controller
 # par défaut de k3s) ; `ingressClassName` est à adapter pour nginx/HAProxy/autre.
-# TLS : décommente le bloc `tls:` et fournis le Secret de certificat (cert-manager, ou
-# `kubectl create secret tls soc-tls --cert=… --key=…`). SANS TLS, le mot de passe admin et les
-# cookies de session transitent EN CLAIR — n'expose jamais cet Ingress sur Internet sans certificat.
+# `P10.32-j` — TLS ACTIF PAR DÉFAUT, ET SEULEMENT TLS. Le bloc `tls:` était commenté et l'Ingress servi
+# AUSSI sur l'entrée HTTP : le mot de passe admin et les cookies de session y transitaient en clair.
+# Il est désormais posé, et les deux annotations Traefik restreignent la route à l'entrée `websecure`
+# (443) : l'entrée `web` (80) ne la sert plus. Le certificat vient du Secret `soc-tls` du namespace
+# `soc` — `kubectl -n soc create secret tls soc-tls --cert=… --key=…`, ou un Certificate cert-manager
+# dont `secretName` vaut `soc-tls`. TANT QU'IL MANQUE, Traefik présente son certificat AUTO-SIGNÉ par
+# défaut (le navigateur avertit) : c'est un rappel, pas un repli en clair. Un autre contrôleur
+# d'Ingress ignore ces annotations : sa propre redirection HTTP -> HTTPS est alors à poser.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: soc
   namespace: soc
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
   ingressClassName: traefik
-  # tls:
-  #   - hosts: [ "soc.tondomaine.tld" ]
-  #     secretName: soc-tls
+  tls:
+    - hosts: [ "soc.tondomaine.tld" ]   # = rules[].host = PLUME_HOST
+      secretName: soc-tls
   rules:
     - host: soc.tondomaine.tld          # DOIT être identique à PLUME_HOST (garde anti-rebinding)
       http:
@@ -231,12 +253,18 @@ spec:
   podSelector: { matchLabels: { app: soc } }
   policyTypes: [Ingress, Egress]
   ingress:
-    # L'UI/API via l'ingress controller, et les agents qui poussent sur /api/ingest.
-    # `namespaceSelector: {}` = depuis N'IMPORTE QUEL namespace du cluster, port 7000 seulement.
-    # Resserrez-le sur le namespace de votre ingress controller (kube-system pour Traefik/k3s) dès
-    # que vos agents poussent via l'Ingress plutôt qu'en direct sur le Service.
+    # `P10.32-j` — L'ENTRÉE VIENT DU CONTRÔLEUR D'INGRESS ET DU NAMESPACE, PAS DE TOUT LE CLUSTER.
+    # Avant : `namespaceSelector: {}`, donc N'IMPORTE QUEL pod de N'IMPORTE QUEL namespace atteignait
+    # le port 7000 en contournant l'Ingress (et son TLS). Désormais : (1) le namespace `kube-system`,
+    # où k3s installe Traefik ; (2) les pods du namespace `soc` lui-même. Les agents poussent par
+    # l'Ingress (`PLUME_CENTRAL=https://soc.tondomaine.tld`, bootstrap-agent.sh), donc par (1).
+    # Un AUTRE contrôleur d'Ingress (nginx, HAProxy…) vit dans SON namespace : remplacez `kube-system`
+    # par le sien (`kubectl get pods -A | grep -i ingress`). Un pod d'un autre namespace qui doit
+    # pousser en direct sur le Service s'ajoute par une entrée NOMMÉE, jamais par `{}`.
     - from:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+        - podSelector: {}
       ports:
         - { protocol: TCP, port: 7000 }
   egress:

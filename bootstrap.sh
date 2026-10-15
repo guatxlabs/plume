@@ -45,6 +45,33 @@ install -d -o soc  -g soc  -m 2750 /var/lib/plume/backups
 install -d -m0755 /usr/local/lib/plume/collectors
 install -d -m0755 /usr/local/share/plume/web
 
+# `P10.32-j` — LA BIBLIOTHÈQUE COMMUNE ET LE DURCISSEMENT COMMUN, AVANT TOUT CAPTEUR.
+# Chaque capteur charge `${PLUME_LIB:-$(dirname "$0")/lib.sh}` : sans ce fichier à côté de lui, il
+# meurt à sa première ligne utile. Seul `bootstrap-agent.sh` le posait ; une installation centrale
+# faite par ce script SEUL livrait donc des capteurs qui échouaient TOUS. Le drop-in est celui que
+# `bootstrap-agent.sh` pose (`install_collector`) : même bac à sable (filtre d'appels système
+# @system-service, Protect*) sur le central et sur l'agent, À UNE LIGNE PRÈS, ICI RETIRÉE :
+# `RestrictAddressFamilies=` est une LISTE que systemd UNIT à celle de l'unité (en-tête du drop-in).
+# Posée telle quelle, elle donnait des familles NON déclarées à dix des douze capteurs ci-dessous, qui
+# tournaient jusqu'ici avec leur seule liste : AF_INET et AF_INET6 à sept sans usage du réseau
+# (journal, resources, integrity, auditd, backup, falco, pod-logs), AF_NETLINK à neuf (les mêmes moins
+# integrity, plus crowdsec, kube-state, prom-scrape). Sans cette ligne, chaque unité garde EXACTEMENT ses familles —
+# les douze ci-dessous en déclarent toutes. Sur l'agent, `install_collector` pose le fichier ENTIER :
+# cette union y est antérieure à ce lot, et la resserrer exige de mesurer chaque capteur sous systemd.
+# `ReadWritePaths=` s'unit aussi : il ajoute spool et state, voulus (en-tête du drop-in).
+# `plume-respond` n'est PAS un capteur (c'est `plume-daemon respond`, qui agit) : il garde son unité.
+# La garde `check_an_installation_is_hardened_in_every_mode.py` JOUE ce script et refuse un capteur
+# installé avant `lib.sh`, une unité de capteur activée sans ce drop-in, ou une famille d'adresses
+# qu'une unité du central reçoit sans la déclarer.
+install -m0644 "$SRC/collectors/lib.sh" /usr/local/lib/plume/collectors/lib.sh
+DROPIN_CENTRAL=$(mktemp)
+sed '/^RestrictAddressFamilies=/d' "$SRC/systemd/plume-collector-common.conf" > "$DROPIN_CENTRAL"
+for c in firewall journal controls resources integrity auditd backup falco crowdsec kube-state pod-logs prom-scrape; do
+  install -d -m0755 "/etc/systemd/system/plume-$c.service.d"
+  install -m0644 "$DROPIN_CENTRAL" "/etc/systemd/system/plume-$c.service.d/50-plume-hardening.conf"
+done
+rm -f "$DROPIN_CENTRAL"
+
 # capteurs + timers
 install -m0755 "$SRC/collectors/firewall.sh"       /usr/local/lib/plume/collectors/firewall.sh
 install -m0755 "$SRC/collectors/journal.sh"        /usr/local/lib/plume/collectors/journal.sh
@@ -200,12 +227,20 @@ fi
 # n'est JAMAIS droppé = angle-mort #8 fermé).
 # CAVEAT DURABILITE : les watch svc_exec figent des realpaths ; les binaires versionnés (ruby3.3/
 # tclsh8.6) exigent un re-resolve (readlink -f) sur upgrade majeur (cf. en-tête de plume-audit.rules).
-if command -v augenrules >/dev/null 2>&1; then
+# `P10.32-j` — AUDITD EST ABSENT d'une installation de base d'Ubuntu Server. Les règles ne se posent
+# que s'il est là (les DEUX outils : `augenrules` charge, `auditctl` dit ce qui tourne). Le timer, LUI,
+# reste activé dans les deux cas, et c'est délibéré : sans auditd, `auditd.sh` émet à chaque passage
+# l'aveu `unavailable`/`missing-source` (« auditd non installe… ») que le SOC affiche. Éteindre le
+# timer remplacerait cet aveu NOMMÉ par un simple silence de la sonde « audit ». Ce que l'installeur
+# doit en plus, c'est le DIRE ici, avec le geste qui arme le capteur.
+if command -v augenrules >/dev/null 2>&1 && command -v auditctl >/dev/null 2>&1; then
   install -m0640 -o root -g root "$SRC/systemd/plume-audit.rules" /etc/audit/rules.d/plume.rules
   augenrules --load >/dev/null 2>&1 || true
   echo ">> règles auditd chargées dans /etc/audit/rules.d/plume.rules (svc_exec: $(auditctl -l 2>/dev/null | grep -c 'key=svc_exec'))"
 else
-  echo ">> auditd absent (augenrules introuvable) — installe auditd puis relance, sinon auditd.sh reste inerte (dataaccess/svc_exec vides)."
+  echo ">> auditd ABSENT (augenrules ou auditctl introuvable) : règles NON chargées. Le capteur auditd (dataaccess,"
+  echo "   svc_exec) ne collecte RIEN ; il le dit au SOC à chaque passage (source absente). L'armer :"
+  echo "   sudo apt install auditd  puis relancer ce script (idempotent)."
 fi
 
 # activation

@@ -12,7 +12,9 @@ Type=simple
 Environment=PLUME_SPOOL=/var/lib/plume/spool
 # Config (parser/source/binds/batch) : cf. /etc/plume/syslog.conf (voir deploy/SYSLOG.md)
 #   PLUME_SYSLOG_PARSER=fortigate|auto|generic   PLUME_SYSLOG_SOURCE=fortigate
-#   PLUME_SYSLOG_UDP=0.0.0.0:514   PLUME_SYSLOG_TCP=0.0.0.0:514  (vider une variable = desactiver ce transport)
+#   PLUME_SYSLOG_UDP=127.0.0.1:514   PLUME_SYSLOG_TCP=127.0.0.1:514  (P10.32-j : ce que bootstrap-agent.sh ecrit ;
+#   l'ouvrir = PLUME_SYSLOG_ALLOW + pare-feu PUIS 0.0.0.0:514. NON POSEE OU VIDE, une variable retombe sur
+#   le defaut du binaire, 0.0.0.0:514 : vider ne desactive PAS un transport)
 #   PLUME_SYSLOG_BATCH_MAX=500  PLUME_SYSLOG_FLUSH_MS=2000  PLUME_SYSLOG_MAX_FRAME=65536  PLUME_SYSLOG_MAX_CONNS=128
 # DURCISSEMENT (syslog = non authentifie) : PLUME_SYSLOG_ALLOW=<cidr,...> (allowlist source-IP ; vide = tout)
 #   + PLUME_SYSLOG_MAX_CONNS_PER_IP=16  PLUME_SYSLOG_TCP_IDLE=60  PLUME_SYSLOG_TCP_MAXLIFE=3600  (anti-slowloris)

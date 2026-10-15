@@ -14,8 +14,10 @@ alors plus rien — sans erreur, sans avertissement, sans une ligne de moins dan
 MESURÉ le 2026-08-20 (systemd 261, sonde différentielle à une seule variable, le capteur exécuté TEL
 QUEL) : la baseline FIM perd EXACTEMENT une famille sous `ProtectHome=yes` — 86 lignes au lieu de
 87, zéro entrée `authkeys` au lieu de 1, tout le reste identique. Les deux installeurs ne disaient
-même pas la même chose : `bootstrap.sh` (central) pose l'unit SANS le drop-in, `bootstrap-agent.sh`
-AVEC — le même capteur était couvert d'un côté, aveugle de l'autre.
+même pas la même chose : `bootstrap.sh` (central) posait alors l'unit SANS le drop-in,
+`bootstrap-agent.sh` AVEC — le même capteur était couvert d'un côté, aveugle de l'autre. Depuis
+`P10.32-j`, le central le pose aussi, sans sa ligne `RestrictAddressFamilies=` : les scalaires sont
+les mêmes des deux côtés.
 
 CE QUE CETTE GARDE VÉRIFIE — DEUX JAMBES, AUCUNE ÉNUMÉRATION
 ------------------------------------------------------------

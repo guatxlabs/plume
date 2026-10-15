@@ -224,6 +224,15 @@ services:
       # ICI n'atteint jamais le démon, et rien ne le dit : la bannière ne dénonce les `PLUME_COLD_*`
       # sans effet que sur un binaire bâti SANS la feature, ce que cette image n'est pas.
       PLUME_COLD_TIER: "${PLUME_COLD_TIER:-0}"
+      # --- TLS NATIF — `P10.32-j` : CES DEUX LIGNES FONT ARRIVER LA VARIABLE, SANS ELLES `.env` NE SERT À RIEN ---
+      # Ce service ÉNUMÈRE ses variables (`P4.1-p`) : une PLUME_TLS_CERT posée dans `.env` n'atteignait
+      # jamais le conteneur, et le démon servait en clair sans un mot. VIDES (défaut) -> HTTP, comme
+      # avant : l'écoute reste `127.0.0.1:7000` et le TLS revient au mandataire placé devant. Posées,
+      # ce sont des chemins DANS le conteneur : montez le répertoire du certificat en lecture seule
+      # (ligne `volumes:` commentée plus bas), p. ex. PLUME_TLS_CERT=/etc/plume/tls/tls.crt et
+      # PLUME_TLS_KEY=/etc/plume/tls/tls.key — la clé doit être lisible par l'utilisateur `soc` de l'image.
+      PLUME_TLS_CERT: "${PLUME_TLS_CERT:-}"
+      PLUME_TLS_KEY: "${PLUME_TLS_KEY:-}"
     # --- BUDGET RESSOURCES — `P4.14-a` : LE PLAFOND EST POSÉ ICI, PAS SEULEMENT ANNONCÉ ------------
     # Le démon DIT lui-même, au démarrage, si quelque chose d'extérieur le borne. Sans les lignes
     # ci-dessous il imprime « AVERTISSEMENT [couverture=sans-limite] … le budget de 2 Gio du produit
@@ -286,6 +295,8 @@ services:
     # les transposer ici ferait diverger les modes au lieu de les aligner.
     volumes:
       - soc-data:/data
+      # TLS natif (`P10.32-j`) — avec PLUME_TLS_CERT / PLUME_TLS_KEY ci-dessus :
+      # - ./tls:/etc/plume/tls:ro
     # secrets: [ secret-des-gestes ]   # P10.24-m — avec PLUME_GESTURE_SECRET_FILE ci-dessus
     restart: unless-stopped
     read_only: true
@@ -305,6 +316,10 @@ services:
       - /tmp:size=${PLUME_TMP_SIZE:-64m}
     security_opt:
       - no-new-privileges:true
+    # `P10.32-j` — AUCUNE CAPACITÉ. Le démon tourne sous `soc` (USER du Dockerfile), écoute 7000 (> 1024)
+    # et n'a besoin d'aucun privilège : c'est ce que k3s.yaml pose déjà (`capabilities: { drop: [ALL] }`).
+    cap_drop:
+      - ALL
 volumes:
   soc-data:
 # P10.24-m — l'EMPREINTE du secret des gestes (jamais le secret), montée en /run/secrets/secret-des-gestes.

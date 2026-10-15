@@ -2270,6 +2270,21 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_a_collector_escapes_its_json_and_never_ships_or_listens_open.py
 
+      # `P10.32-j` — UNE INSTALLATION EST FONCTIONNELLE ET DURCIE DANS LES TROIS MODES. Les deux installeurs LIVRÉS
+      # sont JOUÉS dans un bac (racines réacheminées, outils root factices qui journalisent) : tout capteur trouve
+      # `lib.sh` installé avant lui, toute unité de capteur a le drop-in commun avant le premier daemon-reload et,
+      # sur le central, aucune famille d'adresses qu'elle ne déclare ; sans augenrules OU sans auditctl, aucune
+      # règle et l'installeur le dit (le timer reste : il porte l'aveu « source absente ») ; `plume.conf` et
+      # `responder.conf` 0600 dès leur création, sans lecteur `soc` ; confs lues SELON systemd (aucun commentaire
+      # dans une valeur ; une conf existante gardée mais ses clés fautives nommées), syslog sur 127.0.0.1.
+      # `deploy/k3s.yaml` et `docker-compose.yml` jugés par PyYAML : TLS `websecure` seul, seccomp, jeton de compte
+      # de service non monté, entrée kube-system + namespace ; `cap_drop: [ALL]`, PLUME_TLS_* transmis. README et
+      # deploy/SYSLOG.md suivent.
+      - name: Une installation est fonctionnelle et durcie dans les trois modes (P10.32-j)
+        id: garde_78
+        continue-on-error: true
+        run: python3 .github/scripts/check_an_installation_is_hardened_in_every_mode.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2756,6 +2771,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_75.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_76.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_crowdsec_sensor_says_what_it_reads.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_77.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_collector_escapes_its_json_and_never_ships_or_listens_open.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_78.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_installation_is_hardened_in_every_mode.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

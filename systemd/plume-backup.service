@@ -6,6 +6,11 @@ Type=oneshot
 User=soc
 Group=soc
 EnvironmentFile=/etc/plume/soc.conf
+# P10.32-j — `plume-daemon backup` lit sa conf à PLUME_CONFIG, dont le défaut est /etc/plume/plume.conf :
+# la conf de l'AGENT (jeton compris). Sur une machine à la fois centrale et agent, cette unité, qui tourne
+# sous `soc`, était donc le seul lecteur `soc` de ce fichier — par accident. Elle lit désormais la sienne,
+# comme plume-daemon.service, et plume.conf peut être réservé à root (0600, bootstrap-agent.sh).
+Environment=PLUME_CONFIG=/etc/plume/soc.conf
 Environment=PLUME_BACKUP_DIR=/var/lib/plume/backups
 ExecStart=/usr/local/lib/plume/collectors/backup.sh
 

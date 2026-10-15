@@ -260,7 +260,7 @@ sudo /usr/local/bin/plume-daemon token agent-$(hostname) $(hostname)   # on the 
 umask 077
 printf 'PLUME_CENTRAL=%s\nPLUME_TOKEN=%s\n' 'https://central:7000' '<token>' \
   | sudo tee /etc/plume/plume.conf >/dev/null
-sudo chgrp soc /etc/plume/plume.conf && sudo chmod 0640 /etc/plume/plume.conf
+sudo chmod 0600 /etc/plume/plume.conf   # root seul : aucun processus `soc` ne lit ce jeton (P10.32-j)
 sudo bash bootstrap-agent.sh          # conf déjà présente -> conservée telle quelle
 ```
 

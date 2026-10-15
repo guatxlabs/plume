@@ -12,9 +12,18 @@
 #     umask 077
 #     printf 'PLUME_CENTRAL=%s\nPLUME_TOKEN=%s\n' 'https://soc.central:7000' '<jeton>' \
 #       | sudo tee /etc/plume/plume.conf >/dev/null
-#     sudo chgrp soc /etc/plume/plume.conf && sudo chmod 0640 /etc/plume/plume.conf
+#     sudo chmod 0600 /etc/plume/plume.conf
 #     sudo bash bootstrap-agent.sh      # conf déjà présente -> conservée telle quelle
 # (basic PLUME_USER/PLUME_PASS : même règle, même fichier.)
+# `P10.32-j` — LE JETON EST LISIBLE PAR ROOT SEUL (0600 root:root), dans `plume.conf` comme dans
+# `responder.conf` (module PLUME_WITH_RESPONDER, qui y recopie le même PLUME_TOKEN). Les deux étaient
+# 0640 root:soc, alors qu'AUCUN processus lancé sous `soc` ne les lit : les unités qui les citent les
+# chargent par `EnvironmentFile=`, que systemd lit EN ROOT avant de changer d'utilisateur
+# (plume-respond-agent tourne d'ailleurs en root) ; le démon, lui, lit `soc.conf` (`PLUME_CONFIG` de
+# plume-daemon.service). Le groupe `soc` exécute en revanche les récepteurs réseau (syslog, relais
+# MinIO) : le lui ouvrir, c'était offrir le jeton à leur première faille. Chaque fichier est CRÉÉ sous
+# `umask 077` — jamais plus ouvert que 0600, même avant le chmod, même si ce chmod échoue — et une conf
+# DÉJÀ posée est resserrée au même mode à chaque passage.
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
@@ -53,10 +62,72 @@ install_collector() {
   fi
 }
 
+# --- P10.32-j — UNE CONF DEJA POSEE EST CONSERVEE TELLE QUELLE, MAIS PAS EN SILENCE ---------------------
+# Ce script ne reecrit jamais une conf d'exploitant. Or les versions precedentes engendraient des
+# commentaires EN FIN DE VALEUR, que systemd (EnvironmentFile=) garde DANS la valeur : une conf posee
+# par elles reste fausse apres mise a jour (`PLUME_RESPONDER_APPLY=1   # ...` n'est pas 1 : le passage
+# en reel reste un dry-run ; `PLUME_SYSLOG_ALLOW=   # ex: ...` arrete le recepteur au demarrage). On ne
+# la corrige pas a la place de l'exploitant — retirer un commentaire peut faire passer un responder en
+# reel — mais on NOMME chaque cle fautive (jamais sa valeur : elle peut etre un secret).
+# lire_conf_systemd <fichier> : une ligne `cle<TAB>valeur` par affectation, lue COMME systemd la lit
+# (ligne de commentaire = premier caractere non blanc `#` ou `;` ; valeur = ce qui suit `=`, blancs de
+# bord et guillemets de bord retires ; un `#` en milieu de ligne N'EST PAS un commentaire). Pur bash.
+lire_conf_systemd() {
+  local l t k v
+  while IFS= read -r l || [ -n "$l" ]; do
+    t="${l#"${l%%[![:space:]]*}"}"
+    case "$t" in ''|'#'*|';'*) continue ;; *=*) ;; *) continue ;; esac
+    k="${t%%=*}"; k="${k%"${k##*[![:space:]]}"}"
+    v="${t#*=}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+    if [ "${#v}" -ge 2 ]; then
+      case "$v" in \"*\"|\'*\') v="${v:1:${#v}-2}" ;; esac
+    fi
+    printf '%s\t%s\n' "$k" "$v"
+  done < "$1"
+}
+signaler_conf_conservee() {
+  local k v n=0
+  while IFS=$'\t' read -r k v; do
+    case "$v" in '#'*|*[[:space:]]'#'*)
+      echo "!! COMMENTAIRE DANS UNE VALEUR : $1 : $k (systemd garde un commentaire de fin de ligne DANS la valeur)"
+      n=$((n+1)) ;;
+    esac
+  done < <(lire_conf_systemd "$1")
+  if [ "$n" -gt 0 ]; then
+    echo "!!   $1 est conservee telle quelle : mettez chaque commentaire sur SA ligne, puis relancez le service."
+  fi
+  return 0
+}
+# signaler_syslog_ouvert <fichier> : le recepteur prend 0.0.0.0:514 pour une adresse absente OU vide
+# (collector-syslog, env_or) ; une ecoute hors boucle locale avec une liste d'autorisation vide
+# accepte toute source sur un :514 authentifie par rien.
+signaler_syslog_ouvert() {
+  local k v udp=0.0.0.0:514 tcp=0.0.0.0:514 allow="" a ouverts=""
+  while IFS=$'\t' read -r k v; do
+    case "$k" in
+      PLUME_SYSLOG_UDP) udp="${v:-0.0.0.0:514}" ;;
+      PLUME_SYSLOG_TCP) tcp="${v:-0.0.0.0:514}" ;;
+      PLUME_SYSLOG_ALLOW) allow="$v" ;;
+    esac
+  done < <(lire_conf_systemd "$1")
+  [ -z "$allow" ] || return 0
+  for a in "$udp" "$tcp"; do
+    case "$a" in 127.*|'[::1]:'*|localhost:*) ;; *) ouverts="$ouverts $a" ;; esac
+  done
+  if [ -n "$ouverts" ]; then
+    echo "!! SYSLOG OUVERT SANS LISTE : $1 ecoute${ouverts} avec PLUME_SYSLOG_ALLOW vide : toute source est acceptee."
+    echo "!!   Posez PLUME_SYSLOG_ALLOW=<CIDR> ET un pare-feu en refus par defaut, ou revenez a 127.0.0.1:514."
+  fi
+  return 0
+}
+
 # Config : 1er install -> exige PLUME_CENTRAL (+ PLUME_TOKEN ou USER/PASS) et l'ecrit. Re-run -> conf
 # existante CONSERVEE (maj des collecteurs SANS repasser les secrets) -> 'git pull && sudo bash ...' est sur.
 if [ -f /etc/plume/plume.conf ]; then
   echo ">> /etc/plume/plume.conf present -> conserve (re-run : mise a jour des collecteurs)."
+  # P10.32-j : contenu conserve, mode resserre (jeton lisible par root seul, cf. en-tete).
+  chown root:root /etc/plume/plume.conf && chmod 0600 /etc/plume/plume.conf
+  signaler_conf_conservee /etc/plume/plume.conf
   # shellcheck disable=SC1091
   . /etc/plume/plume.conf
 else
@@ -67,10 +138,10 @@ else
     echo "!! dans le journal sudo, que ce meme agent expedie au SOC) :"
     echo "!!   umask 077"
     echo "!!   printf 'PLUME_CENTRAL=%s\\nPLUME_TOKEN=%s\\n' 'https://soc.central:7000' '<jeton>' | sudo tee /etc/plume/plume.conf >/dev/null"
-    echo "!!   sudo chgrp soc /etc/plume/plume.conf && sudo chmod 0640 /etc/plume/plume.conf"
+    echo "!!   sudo chmod 0600 /etc/plume/plume.conf"
     echo "!! puis relance ce script."; exit 1
   fi
-  umask 027
+  umask 077
   {
     echo "PLUME_CENTRAL=$PLUME_CENTRAL"
     [ -n "${PLUME_TOKEN:-}" ] && echo "PLUME_TOKEN=$PLUME_TOKEN"
@@ -84,7 +155,7 @@ else
     # PAS de commentaire en fin de ligne de valeur (systemd EnvironmentFile ne les retire pas).
     echo "PLUME_MAIL_F2B=${PLUME_MAIL_F2B:-0}"
   } > /etc/plume/plume.conf
-  chgrp soc /etc/plume/plume.conf && chmod 0640 /etc/plume/plume.conf
+  chown root:root /etc/plume/plume.conf && chmod 0600 /etc/plume/plume.conf
 fi
 echo ">> Agent SOC depuis $SRC -> central $PLUME_CENTRAL"
 
@@ -160,28 +231,43 @@ if [ "${PLUME_WITH_SYSLOG:-0}" = "1" ]; then
     if [ ! -f /etc/plume/syslog.conf ]; then
       umask 027
       {
+        # P10.32-j — DEUX DEFAUTS, ET LE PREMIER RENDAIT CE FICHIER INUTILISABLE. (1) Les commentaires
+        # etaient en FIN de ligne de valeur ; systemd ne les retire pas (mesure : `X=a   # c` arrive
+        # `a   # c`), donc PLUME_SYSLOG_ALLOW valait `# ex: ...`, que le recepteur refuse (arret au
+        # demarrage), et l'adresse d'ecoute portait son commentaire. Chaque commentaire a sa ligne.
+        # (2) L'ecoute etait 0.0.0.0 avec une liste d'autorisation vide : une fois le (1) corrige,
+        # :514 — authentifie par RIEN — aurait accepte toute source. Defaut : la boucle locale.
         echo "# collector-syslog : recepteur syslog (FortiGate + appareils reseau generiques)."
-        echo "#   Pointe ton FortiGate/switch/routeur vers CE host, port 514 (UDP ET/OU TCP)."
-        echo "#   TCP recommande pour les feeds volumineux (pas de troncature UDP au MTU). Puis :"
-        echo "#     sudo systemctl enable --now plume-collector-syslog.service"
+        echo "# Ecrire chaque commentaire sur SA ligne : systemd garde un commentaire de fin de ligne DANS la valeur."
+        echo "# PAR DEFAUT, CE RECEPTEUR N'ECOUTE QUE LA BOUCLE LOCALE (127.0.0.1) : aucun appareil distant n'y"
+        echo "# arrive. POUR L'OUVRIR A VOS APPAREILS, LES TROIS GESTES ENSEMBLE (syslog n'est authentifie par rien) :"
+        echo "#  1) liste d'autorisation applicative PLUME_SYSLOG_ALLOW (CIDR/IP separes par des virgules), p. ex. 203.0.113.10/32 ;"
+        echo "#     vide = TOUTE source acceptee, donc ne jamais ouvrir l'ecoute avec une liste vide ;"
+        echo "#  2) pare-feu hote en refus par defaut vers ces seules sources, p. ex."
+        echo "#     sudo ufw allow from 203.0.113.10 to any port 514  puis  sudo ufw deny 514 ;"
+        echo "#  3) seulement alors, ecoute sur toutes les interfaces : PLUME_SYSLOG_UDP=0.0.0.0:514 et/ou PLUME_SYSLOG_TCP=0.0.0.0:514"
+        echo "#     (TCP recommande pour les flux volumineux : pas de troncature UDP au MTU)."
+        echo "# Une variable VIDE ne desactive PAS un transport : le recepteur retombe alors sur son propre defaut, 0.0.0.0:514."
+        echo "# Puis :  sudo systemctl enable --now plume-collector-syslog.service"
         echo "PLUME_SPOOL=/var/lib/plume/spool"
-        echo "PLUME_SYSLOG_PARSER=${PLUME_SYSLOG_PARSER:-fortigate}   # fortigate | auto | generic"
+        echo "# analyseur : fortigate | auto | generic"
+        echo "PLUME_SYSLOG_PARSER=${PLUME_SYSLOG_PARSER:-fortigate}"
         echo "PLUME_SYSLOG_SOURCE=${PLUME_SYSLOG_SOURCE:-fortigate}"
-        echo "PLUME_SYSLOG_UDP=${PLUME_SYSLOG_UDP:-0.0.0.0:514}       # vider = desactiver l'UDP"
-        echo "PLUME_SYSLOG_TCP=${PLUME_SYSLOG_TCP:-0.0.0.0:514}       # vider = desactiver le TCP"
-        echo "# DURCISSEMENT (syslog = NON authentifie) : restreins :514 a tes appareils. 2 couches :"
-        echo "#  1) allowlist applicative (CIDR/IP separes par virgule) — vide = TOUT accepte (deconseille) :"
-        echo "PLUME_SYSLOG_ALLOW=${PLUME_SYSLOG_ALLOW:-}          # ex: 203.0.113.10/32,10.0.0.0/8"
-        echo "#  2) pare-feu hote (default-deny) — a poser MANUELLEMENT vers le/les CIDR FortiGate, ex :"
-        echo "#     sudo ufw allow from <CIDR-FortiGate> to any port 514   # (puis 'ufw deny 514' hors liste)"
-        echo "# PLUME_SYSLOG_TZ=+0100          # tz du device si ses logs n'ont PAS de champ tz (sinon UTC)"
+        echo "PLUME_SYSLOG_UDP=${PLUME_SYSLOG_UDP:-127.0.0.1:514}"
+        echo "PLUME_SYSLOG_TCP=${PLUME_SYSLOG_TCP:-127.0.0.1:514}"
+        echo "PLUME_SYSLOG_ALLOW=${PLUME_SYSLOG_ALLOW:-}"
+        echo "# fuseau du device si ses lignes n'ont PAS de champ tz (sinon UTC), p. ex. PLUME_SYSLOG_TZ=+0100"
+        echo "# PLUME_SYSLOG_TZ="
         echo "PLUME_SYSLOG_BATCH_MAX=${PLUME_SYSLOG_BATCH_MAX:-500}"
         echo "PLUME_SYSLOG_FLUSH_MS=${PLUME_SYSLOG_FLUSH_MS:-2000}"
       } > /etc/plume/syslog.conf
       chgrp soc /etc/plume/syslog.conf && chmod 0640 /etc/plume/syslog.conf
+    else
+      signaler_conf_conservee /etc/plume/syslog.conf
+      signaler_syslog_ouvert /etc/plume/syslog.conf
     fi
     echo ">> collector-syslog installe (OPT-IN, NON active). Edite /etc/plume/syslog.conf puis: systemctl enable --now plume-collector-syslog.service"
-    echo "   SECURITE : :514 est NON authentifie. AVANT d'activer, restreins la source — PLUME_SYSLOG_ALLOW=<CIDR> ET une regle pare-feu (ufw/nft) default-deny vers le :514 (cf. deploy/SYSLOG.md, section Durcissement)."
+    echo "   SECURITE : :514 est NON authentifie. Il n'ecoute que 127.0.0.1 par defaut ; pour l'ouvrir, PLUME_SYSLOG_ALLOW=<CIDR> ET une regle pare-feu (ufw/nft) en refus par defaut, PUIS PLUME_SYSLOG_UDP/TCP=0.0.0.0:514 (cf. /etc/plume/syslog.conf)."
   else
     echo "!! collector-syslog non installe (binaire absent + cargo indisponible) -> build sur une machine Rust, copie collector-syslog/target/release/plume-collector-syslog"
   fi
@@ -194,7 +280,7 @@ if [ "${PLUME_WITH_RESPONDER:-0}" = "1" ]; then
   install -m0644 "$SRC/systemd/plume-respond-agent.service" /etc/systemd/system/
   install -m0644 "$SRC/systemd/plume-respond-agent.timer"   /etc/systemd/system/
   if [ ! -f /etc/plume/responder.conf ]; then
-    umask 027
+    umask 077
     {
       echo "# responder agent. Enforcement delegue a CrowdSec (cscli) > fail2ban > nft."
       echo "# !! PLUME_TOKEN doit etre un token LIE A CET HOTE (anti-IDOR). Sur le central :"
@@ -209,8 +295,12 @@ if [ "${PLUME_WITH_RESPONDER:-0}" = "1" ]; then
       [ -z "${PLUME_TOKEN:-}" ] && [ -n "${PLUME_PASS:-}" ] && echo "PLUME_PASS=$PLUME_PASS"
       echo "PLUME_HOST_LABEL=${PLUME_HOST_LABEL:-$(hostname)}"
       echo "PLUME_RESPONDER=1"
-      echo "PLUME_RESPONDER_APPLY=0          # 0 = dry-run (remonte ce qui SERAIT fait). Mettre 1 pour appliquer."
-      echo "PLUME_BAN_BACKEND=auto           # auto|crowdsec|fail2ban|nft"
+      # P10.32-j — commentaires sur LEUR ligne : systemd garde un commentaire de fin de ligne DANS la
+      # valeur, et `1   # ...` n'est pas `1` (le passage en reel restait un dry-run, sans un mot).
+      echo "# 0 = dry-run (remonte ce qui SERAIT fait). Mettre 1 pour appliquer."
+      echo "PLUME_RESPONDER_APPLY=0"
+      echo "# auto | crowdsec | fail2ban | nft"
+      echo "PLUME_BAN_BACKEND=auto"
       echo "PLUME_BAN_DURATION=4h"
       echo "PLUME_FAIL2BAN_JAIL=sshd"
       # mTLS : si le central exige un cert client (ex soc-ingest.example.com), memes certs que l'ingest.
@@ -229,7 +319,11 @@ if [ "${PLUME_WITH_RESPONDER:-0}" = "1" ]; then
       # absent, donc un agent déjà installé garde son chemin — et sa liste — inchangés.
       echo "PLUME_RESPONDER_ALLOW=/etc/plume/responder-ban-exempt.allow"
     } > /etc/plume/responder.conf
-    chgrp soc /etc/plume/responder.conf && chmod 0640 /etc/plume/responder.conf
+    chown root:root /etc/plume/responder.conf && chmod 0600 /etc/plume/responder.conf
+  else
+    # P10.32-j : contenu conserve, mode resserre (meme PLUME_TOKEN que plume.conf, cf. en-tete).
+    chown root:root /etc/plume/responder.conf && chmod 0600 /etc/plume/responder.conf
+    signaler_conf_conservee /etc/plume/responder.conf
   fi
   # P4.7-a — LA LISTE D EPARGNE A SON PROPRE FICHIER, ET LE CHEMIN QUI SERT EST CELUI DE LA CONF.
   # On sème le fichier que `responder.conf` DESIGNE, jamais un nom en dur : sur un agent déjà

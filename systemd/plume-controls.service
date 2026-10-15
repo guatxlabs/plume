@@ -14,7 +14,9 @@ PrivateTmp=true
 ReadWritePaths=/var/lib/plume/spool
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+# Familles d'adresses = ce que le script appelle (P10.33-d, dérivé par check_an_installation_is_hardened_in_every_mode.py) :
+# systemctl (D-Bus, AF_UNIX) et sysctl (/proc/sys) : aucun socket réseau ni netlink.
+RestrictAddressFamilies=AF_UNIX
 LockPersonality=true
 MemoryMax=64M
 CPUQuota=20%

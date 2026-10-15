@@ -9,8 +9,8 @@ capteurs qui échouaient tous. (b) Il ne posait pas le drop-in `plume-collector-
 `bootstrap-agent.sh` pose. (c) Sans auditd, il ne disait pas pourquoi le capteur ne collecte rien (les règles, elles, étaient
 déjà conditionnées à `augenrules`, et le capteur avoue au SOC sa source absente) ; elles exigent
 désormais `augenrules` ET `auditctl`. Posé tel quel, le drop-in commun aurait aussi donné AF_INET et
-AF_INET6 à sept capteurs du central sans usage du réseau : le central le pose sans sa ligne
-`RestrictAddressFamilies=`.
+AF_INET6 à sept capteurs du central sans usage du réseau : le central le posait sans sa ligne
+`RestrictAddressFamilies=` — ligne retirée du drop-in lui-même depuis `P10.33-d` (ci-dessous).
 (d) `/etc/plume/plume.conf` (le jeton de l'agent) était 0640 root:soc alors qu'aucun processus lancé
 sous `soc` ne le lit — et `responder.conf`, qui recopie le même jeton, aussi. Une conf déjà posée était
 gardée en silence, commentaires de fin de valeur compris. README.md prescrivait encore `chgrp soc` sur
@@ -39,10 +39,20 @@ leur absence est ainsi un scénario, pas un accident de l'exécuteur. Puis elle 
     dans le même répertoire, pour CHAQUE installeur et chaque scénario (central, agent avec tous les
     capteurs en supplément, agent avec tous les modules optionnels) ;
   · chaque unité de capteur (ExecStart sous /usr/local/lib/plume/collectors/) posée par le central
-    ou par `install_collector` a son drop-in, identique à `systemd/plume-collector-common.conf`,
+    ou par `install_collector` a son drop-in, `systemd/plume-collector-common.conf` octet pour octet,
     posé avant le premier `systemctl daemon-reload` ;
-  · sur le central, aucune unité de capteur ne reçoit du drop-in une famille d'adresses qu'elle ne
-    déclare pas, et chacune déclare la sienne (sur l'agent, l'union est antérieure : NON jugée) ;
+  · `P10.33-d` — sur le central ET sur l'agent, aucune unité de capteur ne reçoit du drop-in une
+    famille d'adresses qu'elle ne déclare pas, chacune déclare la sienne, et le drop-in n'en porte
+    AUCUNE (une liste de drop-in s'UNIT : sur l'agent, il donnait AF_UNIX AF_NETLINK AF_INET AF_INET6 à
+    tous). Et la famille de chaque unité livrée est DÉRIVÉE de ce que son ExecStart appelle — le script,
+    les fonctions qu'il définit, celles de `lib.sh` (`kctl`), la seule branche d'un mode d'argument
+    (`revert-expired`) — par une table outil → famille (`FAMILLES_DES_OUTILS` : curl, kubectl, cscli,
+    skopeo, trivy → AF_INET/AF_INET6 ; nft, auditctl, ss, ip → AF_NETLINK ; iptables, ufw → les deux ;
+    docker, crictl, systemctl → AF_UNIX) : une famille MANQUANTE (le script l'ouvre, `socket()`
+    échouerait) et une famille EN TROP (rien ne l'ouvre) sont des fautes, sauf excès admis et motivé
+    (`custom` : commandes de l'exploitant). L'instrument est éprouvé : un appel direct, par variable,
+    par fonction est vu ; un message, un `command -v`, un commentaire, un chemin, l'argument d'un
+    `plume_unavailable` ne le sont pas ;
   · sans `augenrules`, sans `auditctl`, ou sans les deux : aucune règle posée, l'installeur le dit, et
     `plume-auditd.timer` reste ACTIVÉ — c'est lui qui porte au SOC l'aveu `missing-source` du
     capteur ; avec les deux : règles posées (le témoin positif de la même mesure) ;
@@ -93,8 +103,9 @@ leur absence est ainsi un scénario, pas un accident de l'exécuteur. Puis elle 
     les règles qui la suivent. Le central, joué avec ces faux : nominal, doublon tiers (dit, tout chargé,
     code 0) et fichier tiers fautif avant plume (code 3, avoué en fin de course). La doc dit le geste de
     vérification (`-k` ET `key=`) et quoi faire d'un doublon ; rien ne fait compter `key=plume_` seul.
-CE QU'ELLE NE TIENT PAS : l'union des familles d'adresses sur l'AGENT (une trentaine d'unités, à
-mesurer capteur par capteur sous systemd avant de la resserrer).
+CE QU'ELLE NE TIENT PAS : la table outil → famille est lue du CODE des outils, pas MESURÉE sous
+systemd (aucune unité n'a été jouée avec sa nouvelle liste) ; un outil qui ouvrirait une famille
+inattendue (un `getaddrinfo` qui sonde les interfaces par netlink) n'est vu que par cette table.
 Ses propres instruments sont éprouvés à chaque exécution : le lecteur systemd sur des lignes connues,
 le juge d'ordre sur un journal où `lib.sh` arrive trop tard, le réacheminement sur l'absence de toute
 racine non réacheminée.
@@ -500,19 +511,13 @@ def juger_dropins(bac, nom, commun):
             faute(f"{nom} : l'unité de capteur `{n}` est posée SANS le drop-in de durcissement commun")
             continue
         if lire(d) != commun:
-            faute(f"{nom} : le drop-in de `{n}` n'est pas celui attendu (systemd/plume-collector-common.conf"
-                  f"{', sans RestrictAddressFamilies=' if commun != COMMUN_ENTIER[0] else ''})")
+            faute(f"{nom} : le drop-in de `{n}` n'est pas celui attendu (systemd/plume-collector-common.conf, "
+                  f"octet pour octet, sur le central comme sur l'agent)")
         if rang.get(d, 10 ** 9) > reload:
             faute(f"{nom} : le drop-in de `{n}` est posé APRÈS le premier daemon-reload")
     if unites == 0:
         faute(f"{nom} : aucune unité de capteur vue — le juge du drop-in ne mesure rien")
 
-
-COMMUN_ENTIER = [None]
-
-
-def sans_familles(commun):
-    return "".join(l for l in commun.splitlines(keepends=True) if not l.startswith("RestrictAddressFamilies="))
 
 
 def familles(texte):
@@ -525,8 +530,10 @@ def familles(texte):
     return out
 
 
-def juger_familles_central(bac, nom):
-    """Central : aucune unité de capteur ne reçoit du drop-in une famille qu'elle ne déclare pas."""
+def juger_familles_installees(bac, nom):
+    """Central ET agent (`P10.33-d`) : le drop-in commun ne donne AUCUNE famille d'adresses, et chaque unité
+    de capteur qui le reçoit déclare la sienne. `RestrictAddressFamilies=` est une LISTE : posée dans le
+    drop-in, elle s'UNIRAIT à celle de chaque unité et donnerait à toutes la même union."""
     sysd = bac.r("/etc/systemd/system")
     vues = 0
     for n in sorted(os.listdir(sysd)):
@@ -537,14 +544,279 @@ def juger_familles_central(bac, nom):
         unite = lire(os.path.join(sysd, n))
         propres = familles(unite)
         if not re.search(r"^RestrictAddressFamilies=", unite, re.M):
-            faute(f"{nom} : `{n}` ne déclare aucune RestrictAddressFamilies= : sans la ligne du drop-in, "
-                  f"elle n'aurait AUCUNE restriction de familles d'adresses")
+            faute(f"{nom} : `{n}` ne déclare aucune RestrictAddressFamilies= : elle tournerait SANS restriction "
+                  f"de familles d'adresses (le drop-in commun n'en pose aucune)")
             continue
         ajout = familles(lire(d)) - propres
         if ajout:
-            faute(f"{nom} : le drop-in donne à `{n}` des familles qu'elle ne déclare pas : {sorted(ajout)}")
+            faute(f"{nom} : le drop-in donne à `{n}` des familles qu'elle ne déclare pas : {sorted(ajout)} "
+                  f"(une LISTE de drop-in s'UNIT à celle de l'unité)")
     if vues == 0:
         faute(f"{nom} : aucune unité à drop-in vue — le juge des familles ne mesure rien")
+
+
+# --------------------------------------------------------------------------------------------------
+# `P10.33-d` — LA FAMILLE D'ADRESSES D'UNE UNITÉ EST DÉRIVÉE DE CE QUE SON SCRIPT APPELLE.
+#
+# `RestrictAddressFamilies=` fait échouer `socket()` (EAFNOSUPPORT) pour toute famille non nommée. Une
+# famille MANQUANTE tue donc l'appel qui en a besoin — souvent en silence, l'erreur étant avalée par un
+# `2>/dev/null || true` (cas mesuré dans le dépôt : `auditd.sh` lit `auditctl -l`, qui ouvre un socket
+# AF_NETLINK ; l'unité ne déclarait qu'AF_UNIX, le capteur publiait « 0 règle chargée » sur le central).
+# Une famille EN TROP est une surface que rien n'emploie. La garde dérive donc, pour chaque unité, les
+# familles que son ExecStart appelle RÉELLEMENT — le script et les fonctions de `lib.sh` qu'il invoque —
+# et exige l'ÉGALITÉ avec ce que l'unité déclare. Le tableau ci-dessous dit, outil par outil, la famille
+# que son socket ouvre (source : le code de l'outil, pas une mesure sous systemd — cf. « ne tient pas »).
+# AF_UNIX est le plancher de toute unité : résolution des comptes par NSS (systemd-userdb, nscd),
+# journald, D-Bus.
+# --------------------------------------------------------------------------------------------------
+F_UNIX = frozenset({"AF_UNIX"})
+F_NETLINK = frozenset({"AF_NETLINK"})
+F_INET = frozenset({"AF_INET", "AF_INET6"})
+FAMILLES_DES_OUTILS = {
+    # client HTTP/TCP vers le central, une API ou un registre
+    "curl": F_INET, "wget": F_INET, "kubectl": F_INET, "skopeo": F_INET, "trivy": F_INET, "mc": F_INET,
+    "cscli": F_INET,                      # LAPI CrowdSec en HTTP (127.0.0.1:8080 par défaut)
+    "clamdscan": F_UNIX | F_INET,         # clamd par LocalSocket OU par TCPSocket (clamd.conf)
+    # noyau par netlink
+    "nft": F_NETLINK, "auditctl": F_NETLINK, "conntrack": F_NETLINK,
+    "ss": F_NETLINK,                      # sock_diag
+    "ip": F_NETLINK,                      # rtnetlink
+    # iptables : nf_tables par netlink, OU (backend legacy) socket brut AF_INET/AF_INET6
+    "iptables": F_NETLINK | F_INET, "ip6tables": F_NETLINK | F_INET,
+    "iptables-save": F_NETLINK | F_INET, "ip6tables-save": F_NETLINK | F_INET,
+    "ufw": F_NETLINK | F_INET,            # appelle iptables/ip6tables
+    # sockets locaux
+    "docker": F_UNIX, "crictl": F_UNIX, "ctr": F_UNIX, "systemctl": F_UNIX, "fail2ban-client": F_UNIX,
+    "journalctl": F_UNIX, "getent": F_UNIX,
+}
+# `getent hosts <ip>` est une résolution DNS (module NSS `dns` : UDP vers le résolveur) : réseau.
+GETENT_DNS = re.compile(r"(?<![\w/.$-])getent\s+a?hosts\b")
+# `ip` et `ss` sont aussi des noms de variables (`$ip`, `for ip in`) : on n'y compte que l'APPEL.
+APPEL_SPECIAL = {"ip": r"(?=\s+(?:-[46a-z]+\s+)*(?:link|addr|address|route|neigh|rule|netns|monitor|-br|-j)\b)",
+                 "ss": r"(?=\s+-)"}
+# Python embarqué ou exécuté : une bibliothèque réseau ouvre AF_INET/AF_INET6.
+PYTHON_RESEAU = re.compile(r"^\s*(?:import|from)\s+(?:socket|socketserver|http|urllib|requests|ssl)\b", re.M)
+# ExecStart qui n'est pas un script du dépôt : binaire bâti (démon, collector-*) — son code n'est pas un
+# texte que cette garde sait lire. Ses familles restent celles que l'unité DÉCLARE, déclaration exigée.
+BINAIRES_HORS_DERIVATION = {"plume-daemon", "plume-collector-mail", "plume-collector-syslog"}
+# Familles déclarées au-delà de la dérivation, ADMISES avec leur raison — et seulement celles-là.
+EXCES_ADMIS = {
+    # `custom.sh` exécute des commandes posées par l'EXPLOITANT (/etc/plume/custom.d) : ce qu'elles appellent
+    # n'est pas dans le dépôt, on ne le dérive pas.
+    "plume-custom.service": F_UNIX | F_NETLINK | F_INET,
+}
+
+
+def code_shell(texte):
+    """Le code exécutable d'un script, lu en FLUX (une chaîne entre apostrophes peut couvrir plusieurs
+    lignes : un programme awk) : commentaires retirés, chaînes retirées SAUF celles qui sont une valeur
+    d'affectation (`KC="k3s kubectl"`, `SCAN="clamdscan …"`) ou qui portent une substitution `$(…)`. Un
+    message (`plume_unavailable … "kubectl absent"`) ne compte donc pas comme un appel. Les sauts de ligne
+    sont conservés : un numéro de ligne du code est celui du fichier."""
+    out, i, n = [], 0, len(texte)
+    while i < n:
+        c = texte[i]
+        if c == "\\" and i + 1 < n:
+            out.append(texte[i:i + 2])
+            i += 2
+            continue
+        if c in "'\"":
+            j = i + 1
+            while j < n and texte[j] != c:
+                j += 2 if (c == '"' and texte[j] == "\\") else 1
+            corps = texte[i + 1:j]
+            garder = (i > 0 and texte[i - 1] == "=") or (c == '"' and "$(" in corps)
+            out.append(" " + corps + " " if garder else " " + "\n" * corps.count("\n") + " ")
+            i = j + 1
+            continue
+        if c == "#" and (i == 0 or texte[i - 1] in " \t\n;"):
+            j = texte.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def appelle(code, nom):
+    """Première ligne (1-based) où `nom` est APPELÉ dans `code`, ou 0 — jamais `command -v nom`, jamais un
+    chemin ni un nom composé (`docker-lan`, `first_ctr`, `/var/lib/docker`, `$ip`)."""
+    motif = re.compile(r"(?<![\w/.$:-])(?<!-v )" + re.escape(nom) + r"(?![\w/.:=-])" + APPEL_SPECIAL.get(nom, ""))
+    for k, ligne in enumerate(code.splitlines(), 1):
+        for m in motif.finditer(ligne):
+            # Le mot est-il l'ARGUMENT d'une commande qui n'exécute rien (`plume_unavailable conntrack …`,
+            # `heartbeat ufw …`, `echo nft`) ? On isole la commande courante (après le dernier séparateur).
+            segment = re.split(r"[;|&(`{]|\$\(|\b(?:then|do|else|elif)\b", ligne[:m.start()])[-1]
+            if re.match(r"\s*(?:plume_\w+|heartbeat|emit_event|spool_\w+|state_\w+|echo|printf|log)\s", segment):
+                continue
+            return k
+    return 0
+
+
+def fonctions_du_code(code):
+    """{nom: corps} des fonctions shell définies dans `code` (deux définitions du même nom — un enrobage
+    choisi selon l'hôte, `cscli_cmd` — sont réunies : l'une ou l'autre peut tourner)."""
+    out = {}
+    lignes = code.splitlines()
+    for k, l in enumerate(lignes):
+        m = re.match(r"^(\s*)(?:function\s+)?([A-Za-z_][\w]*)\s*\(\)\s*\{(.*)$", l)
+        if not m:
+            continue
+        if "}" in m.group(3):
+            corps = m.group(3)[:m.group(3).rindex("}")]
+        else:
+            fin = re.compile(r"^" + re.escape(m.group(1)) + r"\}")
+            corps_l = []
+            for l2 in lignes[k + 1:]:
+                if fin.match(l2):
+                    break
+                corps_l.append(l2)
+            corps = "\n".join(corps_l)
+        out[m.group(2)] = out.get(m.group(2), "") + "\n" + corps
+    return out
+
+
+def familles_du_fragment(fragment, fonctions, lib):
+    """(familles, preuves) de ce que `fragment` appelle : outils, fonctions du script (transitivement) et
+    fonctions de lib.sh. AF_UNIX est le plancher."""
+    fam, preuves = set(F_UNIX), []
+    vues, a_voir = set(), [("", fragment)]
+    while a_voir:
+        ou, code = a_voir.pop()
+        for outil, ff in FAMILLES_DES_OUTILS.items():
+            k = appelle(code, outil)
+            if k:
+                fam |= ff
+                preuves.append(f"{outil} ({ou or 'l.' + str(k)}) → {' '.join(sorted(ff))}")
+        if GETENT_DNS.search(code):
+            fam |= F_INET
+            preuves.append(f"getent hosts ({ou or 'script'}) → AF_INET AF_INET6")
+        for f, ff in lib.items():
+            if appelle(code, f):
+                fam |= ff
+                preuves.append(f"{f} (lib.sh) → {' '.join(sorted(ff))}")
+        for f, corps in fonctions.items():
+            if f not in vues and appelle(code, f):
+                vues.add(f)
+                a_voir.append((f + "()", corps))
+    return frozenset(fam), sorted(set(preuves))
+
+
+def fonctions_de_lib(texte):
+    """{fonction de lib.sh: familles de son corps}. Un capteur qui l'appelle hérite de ces familles."""
+    out = {}
+    fonctions = fonctions_du_code(code_shell(texte))
+    for nom, corps in fonctions.items():
+        fam, _ = familles_du_fragment(corps, fonctions, {})
+        if fam - F_UNIX:
+            out[nom] = fam
+    return out
+
+
+def familles_derivees(chemin_script, lib, argument=None):
+    """(familles, preuves) que l'ExecStart appelle. Avec un argument de mode (`revert-expired`) que le script
+    traite dans une branche `if [ "${1:-}" = "<mode>" ]; then … fi`, seule cette branche (et ce qu'elle
+    appelle) est retenue : c'est elle qui tourne sous l'unité."""
+    texte = lire(chemin_script)
+    if chemin_script.endswith(".py"):
+        if PYTHON_RESEAU.search(texte):
+            return F_UNIX | F_INET, ["python réseau → AF_INET AF_INET6"]
+        return F_UNIX, []
+    code = code_shell(texte)
+    fragment = code
+    if argument:
+        m = re.search(r'^if \[ "\$\{1:-\}" = "?' + re.escape(argument) + r'"? \]; then\n(.*?)^fi\b', texte, re.M | re.S)
+        if not m:
+            return None, [f"aucune branche `if [ \"${{1:-}}\" = \"{argument}\" ]` dans {chemin_script}"]
+        debut = texte.count("\n", 0, m.start(1))
+        fragment = "\n".join(code.splitlines()[debut:debut + m.group(1).count("\n")])
+    fam, preuves = familles_du_fragment(fragment, fonctions_du_code(code), lib)
+    if PYTHON_RESEAU.search(fragment if argument else texte):
+        fam |= F_INET
+        preuves.append("python réseau embarqué → AF_INET AF_INET6")
+    return frozenset(fam), preuves
+
+
+def execstart_de_l_unite(texte):
+    """(script du dépôt ou None, argument de mode ou None, binaire ou None) de l'ExecStart d'une unité."""
+    m = re.search(r"^ExecStart=(.*)$", texte, re.M)
+    if not m:
+        return None, None, None
+    mots = m.group(1).split()
+    for k, mot in enumerate(mots):
+        base = os.path.basename(mot)
+        if mot.startswith(DOSSIER_CAPTEURS + "/") and os.path.isfile(os.path.join(RACINE_DEPOT, "collectors", base)):
+            arg = mots[k + 1] if len(mots) > k + 1 and not mots[k + 1].startswith("-") else None
+            return os.path.join(RACINE_DEPOT, "collectors", base), arg, None
+    return None, None, (os.path.basename(mots[0]) if mots else None)
+
+
+def juger_familles_derivees():
+    """Chaque unité livrée déclare SA RestrictAddressFamilies=, ÉGALE à ce que son ExecStart appelle."""
+    lib = fonctions_de_lib(lire(os.path.join(RACINE_DEPOT, "collectors/lib.sh")))
+    if "kctl" not in lib or not F_INET <= lib["kctl"]:
+        refuser("la dérivation des familles ne voit plus `kctl` (lib.sh) appeler kubectl : l'instrument est cassé")
+        return
+    eprouver_derivation(lib)
+    unites = sorted(f for f in os.listdir(os.path.join(RACINE_DEPOT, "systemd")) if f.endswith(".service"))
+    jugees = reseau = 0
+    for n in unites:
+        texte = lire(os.path.join(RACINE_DEPOT, "systemd", n))
+        if not re.search(r"^RestrictAddressFamilies=", texte, re.M):
+            faute(f"systemd/{n} : aucune RestrictAddressFamilies= — chaque unité déclare la sienne (le drop-in "
+                  f"commun n'en pose plus, `P10.33-d`)")
+            continue
+        declarees = familles(texte)
+        script, argument, binaire = execstart_de_l_unite(texte)
+        if script is None:
+            if binaire in BINAIRES_HORS_DERIVATION:
+                continue
+            if binaire not in FAMILLES_DES_OUTILS:
+                refuser(f"systemd/{n} : ExecStart `{binaire}` n'est ni un script de collectors/, ni un outil de "
+                        f"FAMILLES_DES_OUTILS, ni un binaire déclaré : la famille ne peut pas être dérivée")
+                continue
+            requises, preuves = F_UNIX | FAMILLES_DES_OUTILS[binaire], [f"ExecStart {binaire}"]
+        else:
+            requises, preuves = familles_derivees(script, lib, argument)
+            if requises is None:
+                refuser(f"systemd/{n} : {preuves[0]} — le mode de l'ExecStart n'est pas dérivable")
+                continue
+        jugees += 1
+        reseau += bool(F_INET & requises)
+        manque = requises - declarees
+        if manque:
+            faute(f"systemd/{n} : il MANQUE {sorted(manque)} — son ExecStart les ouvre ({'; '.join(preuves)}) ; "
+                  f"sans elles `socket()` échoue (EAFNOSUPPORT) et la collecte meurt")
+        trop = declarees - requises - EXCES_ADMIS.get(n, frozenset())
+        if trop:
+            faute(f"systemd/{n} : familles déclarées que rien n'appelle : {sorted(trop)} (appels vus : "
+                  f"{'; '.join(preuves) or 'aucun outil à socket'}) — retirez-les, ou dites pourquoi dans EXCES_ADMIS")
+    if jugees < 30 or reseau < 10:
+        refuser(f"dérivation des familles : {jugees} unité(s) jugée(s) dont {reseau} réseau — trop peu, la "
+                f"découverte est cassée")
+
+
+def eprouver_derivation(lib):
+    """Témoins de l'instrument : un appel réel est vu (directement, par une variable, par une fonction du
+    script ou de lib.sh) ; un message, un `command -v`, un commentaire, un chemin, une variable ne le sont pas."""
+    cas = [
+        ('out=$(curl -sS "$U")\n', F_UNIX | F_INET),
+        ('KC="k3s kubectl"\n$KC get pods\n', F_UNIX | F_INET),
+        ('kctl get ns\n', F_UNIX | F_INET),
+        ('_ar=$(auditctl -l 2>/dev/null || true)\n', F_UNIX | F_NETLINK),
+        ('chk iptables -C INPUT -j DROP\n', F_UNIX | F_NETLINK | F_INET),
+        ('h=$(getent hosts "$1")\n', F_UNIX | F_INET),
+        ('f() {\n  cscli decisions list\n}\nf\n', F_UNIX | F_INET),
+        ('command -v kubectl >/dev/null || plume_unavailable x y "kubectl absent"\n', F_UNIX),
+        ('command -v ss >/dev/null || plume_unavailable conntrack missing-dependency "ss absent"\n', F_UNIX),
+        ("# curl https://example.org\nP=/var/lib/docker\nfirst_ctr=0\nfor ip in $L; do echo \"$ip\"; done\n"
+         "awk '\n  { if ($1 ~ /curl|wget/) print }\n' f\n", F_UNIX),
+    ]
+    for src, attendu in cas:
+        code = code_shell(src)
+        obtenu, _ = familles_du_fragment(code, fonctions_du_code(code), lib)
+        if obtenu != attendu:
+            refuser(f"dérivation des familles : {src!r} rend {sorted(obtenu)}, attendu {sorted(attendu)}")
 
 
 def lecteurs_soc_de_plume_conf():
@@ -632,8 +904,8 @@ def scenario_central(commun, env_files):
             gestes = bac.gestes()
             for f in juger_lib_avant_capteurs(gestes, bac.racine, lambda d: lire(d) if os.path.isfile(d) else None, nom):
                 faute(f)
-            juger_dropins(bac, nom, sans_familles(commun))
-            juger_familles_central(bac, nom)
+            juger_dropins(bac, nom, commun)
+            juger_familles_installees(bac, nom)
             regles = os.path.isfile(bac.r("/etc/audit/rules.d/plume.rules"))
             active = any(g[0] == "systemctl" and re.match(r"enable\b", g[1]) and "plume-auditd.timer" in g[1]
                          for g in gestes)
@@ -962,6 +1234,7 @@ def scenario_agent(commun, env_files):
             for f in juger_lib_avant_capteurs(gestes, bac.racine, lambda d: lire(d) if os.path.isfile(d) else None, nom):
                 faute(f)
             juger_dropins(bac, nom, commun)
+            juger_familles_installees(bac, nom)
             juger_jeton(bac, nom, "/etc/plume/plume.conf", creee=True)
             juger_chargeur_installe(bac, nom)
     finally:
@@ -1423,7 +1696,6 @@ def main():
     eprouver_lecteur_systemd()
     eprouver_juge_lib()
     commun = lire(os.path.join(RACINE_DEPOT, "systemd/plume-collector-common.conf"))
-    COMMUN_ENTIER[0] = commun
     env_files = fichiers_environnement()
     if not refus:
         scenario_central(commun, env_files)
@@ -1432,6 +1704,11 @@ def main():
         juger_chargeur_audit()
         juger_chargeur_sans_cle()
         juger_fonctions_de_signalement()
+    if re.search(r"^\s*RestrictAddressFamilies\s*=", commun, re.M):
+        faute("systemd/plume-collector-common.conf : `RestrictAddressFamilies=` est de retour dans le drop-in "
+              "COMMUN. C'est une LISTE : elle s'UNIT à celle de chaque unité, et ÉLARGIT toutes celles qui en "
+              "déclarent moins. Chaque unité porte la sienne (`P10.33-d`).")
+    juger_familles_derivees()
     lecteurs_soc_de_plume_conf()
     juger_un_seul_chargeur()
     juger_pod_logs()

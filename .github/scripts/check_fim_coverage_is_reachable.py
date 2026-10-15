@@ -19,8 +19,8 @@ même pas la même chose : `bootstrap.sh` (central) posait alors l'unit SANS le 
 `P10.32-j`, le central le pose aussi, sans sa ligne `RestrictAddressFamilies=` : les scalaires sont
 les mêmes des deux côtés.
 
-CE QUE CETTE GARDE VÉRIFIE — DEUX JAMBES, AUCUNE ÉNUMÉRATION
-------------------------------------------------------------
+CE QUE CETTE GARDE VÉRIFIE — TROIS JAMBES, AUCUNE ÉNUMÉRATION
+-------------------------------------------------------------
 1. COUVERTURE ATTEIGNABLE. Pour tout capteur qui déclare des chemins à empreinter (critère
    OBJECTIF : il définit `emit_hash`), les chemins qu'il ANNONCE sont extraits de son code, le bac à
    sable EFFECTIF de son unit est recomposé (unit, puis drop-in partagé — scalaires écrasés,
@@ -30,6 +30,15 @@ CE QUE CETTE GARDE VÉRIFIE — DEUX JAMBES, AUCUNE ÉNUMÉRATION
 2. PROPRIÉTÉ DU SCALAIRE. `ProtectHome=` a été RETIRÉ du drop-in partagé pour que la valeur
    délibérée d'une unit ne soit plus écrasée. Ce retrait ne relâche rien tant que CHAQUE unit
    déclare la sienne : c'est exactement ce que cette jambe exige, sur toutes les unités livrées.
+3. `PrivateTmp=` (`P10.33-d`), MÊME FAUTE, AUTRE CAPTEUR. Le drop-in partagé posait aussi
+   `PrivateTmp=true`, qui écrasait le `PrivateTmp=false` que `systemd/plume-yara.service` pose
+   EXPRÈS : /tmp et /var/tmp, deux des quatre cibles par défaut de `collectors/yara.sh`
+   (`PLUME_YARA_PATHS`), devenaient sur chaque agent un tmpfs neuf et vide. Cette jambe exige que
+   chaque unit déclare son `PrivateTmp=`, refuse ce scalaire (et `ProtectHome=`) dans le drop-in en
+   NOMMANT chaque unit dont il écraserait la valeur, recompose le bac à sable effectif de tout capteur
+   qui annonce des cibles de scan par défaut (`PATHS="${PLUME_<X>_PATHS:-…}"`, dérivé du code) et
+   NOMME le capteur aveuglé ; une unit qui voit le /tmp de l'hôte doit poser `TMPDIR` sous un de ses
+   `ReadWritePaths=`. Témoins : sur les vraies cibles de yara, `PrivateTmp=yes` masque, `no` non.
 
 LA TABLE DE MASQUAGE EST MESURÉE, ET ELLE EST TOTALE
 -----------------------------------------------------
@@ -225,6 +234,20 @@ def annonces_de(src: str):
     return sorted(chemins)
 
 
+# `P10.33-d` — scalaires de bac à sable que CHAQUE unit possède : le drop-in partagé ne les pose pas.
+PROPRES_A_L_UNIT = ("ProtectHome", "PrivateTmp")
+
+
+def cibles_de_scan(src: str):
+    """Les chemins qu'un capteur ANNONCE scanner par défaut — `PATHS="${PLUME_<X>_PATHS:-/a /b}"` —,
+    DÉRIVÉS de son code (yara : /home /tmp /var/tmp /dev/shm). Un défaut vide (clamav : la liste est
+    celle de l'exploitant) n'annonce rien."""
+    chemins = set()
+    for m in re.finditer(r'^\s*\w*PATHS="\$\{PLUME_\w*PATHS:-([^}"]*)\}"', src, re.M):
+        chemins |= {w for w in m.group(1).split() if w.startswith("/")}
+    return sorted(chemins)
+
+
 def main() -> int:
     errs = []
     suivis = subprocess.run(["git", "ls-files", "collectors/*.sh", "systemd/plume-*.service",
@@ -303,6 +326,58 @@ def main() -> int:
                         f"plus pour personne : sans cette ligne, cette unit tourne SANS protection "
                         f"des répertoires personnels.")
 
+    # --- Jambe 3 (`P10.33-d`) : `PrivateTmp=` appartient à chaque unit, et une cible de scan ANNONCÉE ----
+    # reste joignable. Le drop-in partagé posait `PrivateTmp=true` : scalaire, il écrasait le
+    # `PrivateTmp=false` que plume-yara.service pose EXPRÈS — /tmp et /var/tmp, deux des quatre cibles par
+    # défaut de collectors/yara.sh, devenaient un tmpfs NEUF et vide sur chaque agent, sans un mot.
+    for cle in PROPRES_A_L_UNIT:
+        if cle not in dropin:
+            continue
+        valeur = dropin[cle][-1]
+        ecrasees = []
+        for unit_path in unites:
+            nom = unit_path.split("/")[-1][len("plume-"):-len(".service")]
+            if f"collectors/{nom}.sh" not in capteurs:
+                continue   # le drop-in n'est posé que sur les unités de capteur (install_collector)
+            propre = lire_reglages(open(unit_path, encoding="utf-8").read()).get(cle)
+            if propre and propre[-1].lower() != valeur.lower():
+                ecrasees.append(f"{unit_path} (`{cle}={propre[-1]}` → `{cle}={valeur}`)")
+        errs.append(f"{dropin_path}: `{cle}=` est de retour dans le drop-in PARTAGÉ. C'est un SCALAIRE : il "
+                    f"écrase la valeur que chaque unit pose délibérément (last-wins). Unit(s) ÉCRASÉE(S) : "
+                    f"{', '.join(ecrasees) or 'aucune aujourd’hui'}. Posez la valeur dans l'unit concernée.")
+    for unit_path in unites:
+        if "PrivateTmp" not in lire_reglages(open(unit_path, encoding="utf-8").read()):
+            errs.append(f"{unit_path}: ne déclare pas `PrivateTmp=`. Le drop-in partagé ne le pose plus pour "
+                        f"personne : sans cette ligne, cette unit partage le /tmp de l'hôte.")
+    cibles_vues = 0
+    for capteur in capteurs:
+        src = open(capteur, encoding="utf-8").read()
+        nom = capteur.split("/")[-1][:-3]
+        unit_path = f"systemd/plume-{nom}.service"
+        if unit_path not in unites:
+            continue
+        cibles = cibles_de_scan(src)
+        if not cibles:
+            continue
+        cibles_vues += 1
+        unit = lire_reglages(open(unit_path, encoding="utf-8").read())
+        masques, reexposes = masques_de(composer(unit, dropin), errs, f"{unit_path} + {dropin_path}")
+        for chemin, directive, origine, prefixe in injoignables(cibles, masques, reexposes):
+            errs.append(
+                f"{capteur}: la cible de scan ANNONCÉE `{chemin}` (défaut livré) est HORS DE PORTÉE du "
+                f"capteur `{nom}` — AVEUGLÉ : `{directive}` ({origine}) remplace `{prefixe}` par un "
+                f"répertoire vide, le scan ne trouvera rien, SANS erreur ni avertissement.")
+        # Une unit qui VOIT le /tmp de l'hôte n'y écrit pas ses propres temporaires (lien symbolique
+        # posé d'avance, fichier lu par un tiers) : TMPDIR vise un répertoire qu'elle possède.
+        if unit.get("PrivateTmp", ["yes"])[-1].lower() in ("no", "false", "off", "0"):
+            tmpdir = [v.split("=", 1)[1] for v in unit.get("Environment", []) if v.startswith("TMPDIR=")]
+            rw = composer(unit, dropin).get("ReadWritePaths", ([], ""))[0]
+            if not tmpdir or not any(sous(tmpdir[-1], p.lstrip("-+")) for p in rw):
+                errs.append(f"{unit_path}: `PrivateTmp=false` sans `Environment=TMPDIR=` sous un ReadWritePaths= "
+                            f"de l'unit : les temporaires du capteur iraient dans le /tmp PARTAGÉ de l'hôte.")
+    if cibles_vues < 1:
+        errs.append("aucun capteur à cibles de scan (`PLUME_<X>_PATHS:-…`) analysé : la découverte est cassée.")
+
     # --- Validation de l'INSTRUMENT : témoin positif ET témoin négatif ------------------------------
     # On rejoue la décision sur des bacs à sable synthétiques, avec la VRAIE liste annoncée.
     temoins = []
@@ -324,6 +399,23 @@ def main() -> int:
                     f"soit l'extraction des chemins annoncés est cassée, soit la table MASQUAGE l'est. "
                     f"Cette garde refuse de rendre vert dans cet état.")
 
+    # Témoin de la jambe 3 : sur les VRAIES cibles de yara, `PrivateTmp=yes` DOIT en masquer, `no` aucune.
+    for capteur in capteurs:
+        cibles = cibles_de_scan(open(capteur, encoding="utf-8").read())
+        if not any(sous(c, "/tmp") for c in cibles):
+            continue
+        for valeur, doit_masquer in (("yes", True), ("no", False)):
+            mq, rx = masques_de(composer(lire_reglages(f"[Service]\nProtectHome=read-only\nPrivateTmp={valeur}\n"), {}),
+                                [], "<témoin>")
+            masque = bool(injoignables(cibles, mq, rx))
+            temoins.append((capteur, f"PrivateTmp={valeur}", masque))
+            if masque is not doit_masquer:
+                errs.append(f"INSTRUMENT INVALIDE ({capteur}) : sous `PrivateTmp={valeur}` la garde conclut "
+                            f"« {'des cibles masquées' if masque else 'aucune cible masquée'} », attendu le contraire.")
+    if not any(str(t[1]).startswith("PrivateTmp=") for t in temoins):
+        errs.append("INSTRUMENT INVALIDE : aucun capteur n'annonce /tmp parmi ses cibles de scan — le témoin "
+                    "PrivateTmp ne s'est pas joué (yara.sh a-t-il perdu son PLUME_YARA_PATHS ?).")
+
     if errs:
         for e in errs:
             print(f"::error::{e}")
@@ -331,7 +423,8 @@ def main() -> int:
         return 1
     print(f"{analyses} capteur(s) à chemins analysé(s), {len(unites)} unit(s) vérifiée(s) : tout "
           f"chemin annoncé est atteignable sous le bac à sable effectif, et chaque unit possède son "
-          f"ProtectHome=. Témoins de l'instrument : {len(temoins)} (positif + négatif par capteur).")
+          f"ProtectHome= et son PrivateTmp=, toute cible de scan annoncée est joignable ({cibles_vues} "
+          f"capteur(s) à cibles). Témoins de l'instrument : {len(temoins)} (positif + négatif par capteur).")
     return 0
 
 

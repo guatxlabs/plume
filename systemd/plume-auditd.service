@@ -19,7 +19,9 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
-RestrictAddressFamilies=AF_UNIX
+# Familles d'adresses = ce que le script appelle (P10.33-d, dérivé par check_an_installation_is_hardened_in_every_mode.py) :
+# auditctl -l ouvre un socket AF_NETLINK (audit) ; sans lui, « 0 règle chargée » publié à tort.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 LockPersonality=true
 MemoryMax=96M
 CPUQuota=25%

@@ -11,6 +11,10 @@ RemainAfterExit=yes
 # silence, cf. systemd/plume-collector-common.conf. Chaque unit possede donc son ProtectHome=, et
 # .github/scripts/check_fim_coverage_is_reachable.py refuse une unit qui n'en declare pas.
 ProtectHome=true
+PrivateTmp=true
+# Familles d'adresses = ce que le script appelle (P10.33-d, dérivé par check_an_installation_is_hardened_in_every_mode.py) :
+# nft -f = AF_NETLINK.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 ExecStart=/usr/sbin/nft -f /etc/plume/plume-portscan.nft
 ExecReload=/usr/sbin/nft -f /etc/plume/plume-portscan.nft
 [Install]

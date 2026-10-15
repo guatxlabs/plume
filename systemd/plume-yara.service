@@ -20,6 +20,9 @@ ProtectHome=read-only
 # PrivateTmp=false : /tmp, /var/tmp, /dev/shm sont des cibles de scan (malware déposé) -> ne pas les masquer.
 PrivateTmp=false
 ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+# Familles d'adresses = ce que le script appelle (P10.33-d, dérivé par check_an_installation_is_hardened_in_every_mode.py) :
+# yara lit des fichiers : aucun socket réseau ni netlink.
+RestrictAddressFamilies=AF_UNIX
 LockPersonality=true
 MemoryMax=1200M
 CPUQuota=40%

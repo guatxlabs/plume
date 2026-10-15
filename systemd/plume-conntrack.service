@@ -13,7 +13,9 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
+# Familles d'adresses = ce que le script appelle (P10.33-d, dérivé par check_an_installation_is_hardened_in_every_mode.py) :
+# ss = AF_NETLINK (sock_diag) ; getent hosts (rDNS) = requête DNS, AF_INET/AF_INET6.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 LockPersonality=true
 MemoryMax=64M
 CPUQuota=20%

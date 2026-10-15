@@ -13,6 +13,9 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
+# Familles d'adresses = ce que le script appelle (P10.33-d, dérivé par check_an_installation_is_hardened_in_every_mode.py) :
+# clamdscan joint clamd par LocalSocket (AF_UNIX) OU TCPSocket (AF_INET/AF_INET6) selon clamd.conf.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true
 MemoryMax=1200M
 CPUQuota=40%

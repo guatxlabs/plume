@@ -17,7 +17,9 @@ ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/plume
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Familles d'adresses = ce que le script appelle (P10.33-d, dérivé par check_an_installation_is_hardened_in_every_mode.py) :
+# nft = AF_NETLINK, journalctl = fichiers/AF_UNIX.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 LockPersonality=true
 MemoryMax=96M
 CPUQuota=20%

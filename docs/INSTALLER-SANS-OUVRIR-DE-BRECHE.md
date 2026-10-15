@@ -249,10 +249,17 @@ démon le remplace.
 Sauf mention, l'unité systemd d'un capteur tourne en **root sans borne de capacités** ; « root, capacités
 bornées à … » veut dire que l'unité restreint son ensemble de capacités à celles nommées. Le drop-in
 de durcissement commun (filtre d'appels système `@system-service`, `ProtectSystem=strict`, écriture
-limitée au spool et à l'état) est posé sur les douze capteurs du central par `bootstrap.sh`, et sur
-l'agent sur ceux que pose `install_collector` — les trois du défaut et ceux de
-`PLUME_EXTRA_COLLECTORS`. Les modules `PLUME_WITH_*` de `bootstrap-agent.sh` posent leur unité **sans**
-ce drop-in : ils n'ont que le bac à sable de leur propre unité.
+limitée au spool et à l'état) est posé, **le même fichier** sur le central et sur l'agent, sur les douze
+capteurs du central par `bootstrap.sh`, et sur l'agent sur ceux que pose `install_collector` — les trois
+du défaut et ceux de `PLUME_EXTRA_COLLECTORS`. Les modules `PLUME_WITH_*` de `bootstrap-agent.sh` posent
+leur unité **sans** ce drop-in : ils n'ont que le bac à sable de leur propre unité.
+Deux réglages n'y sont **pas**, et chaque unité porte le sien : `PrivateTmp=` (un `/tmp` privé, sauf
+pour `yara`, qui doit voir le vrai `/tmp` pour le scanner) et `RestrictAddressFamilies=` (les familles
+de sockets que l'unité peut ouvrir : AF_INET/AF_INET6 pour qui parle au réseau — `ship`, `kubectl`,
+`cscli`, `curl` —, AF_NETLINK pour qui lit le noyau — `nft`, `auditctl`, `ss` —, AF_UNIX pour tous).
+Un réglage scalaire du drop-in écraserait celui de l'unité, une liste s'y ajouterait : c'est ainsi
+que `yara` avait perdu `/tmp` sur l'agent et que tous les capteurs de l'agent recevaient les quatre
+familles. La CI dérive les familles de chaque unité de ce que son script appelle et refuse tout écart.
 
 La colonne **Preuve** donne la requête qui montre que la source remonte. ♥ marque un capteur qui émet un
 **battement** (`category=health`) à chaque passage, même quand la source est calme : son silence est
@@ -283,7 +290,7 @@ fichier dans `/var/lib/plume/spool/`), comme le fait le
 | `falco` | sortie JSON de Falco | root, capacités bornées à `CAP_DAC_READ_SEARCH` | détections eBPF | — | `search source=falco \| stats count` |
 | `suricata` | `eve.json` | root | alertes IDS | — | `search source=suricata \| stats count` |
 | `clamav` | `clamscan` / `clamdscan` sur les fichiers nouveaux | root | fichier, signature | noms de fichiers échappés | `search source=clamav \| stats count` |
-| `yara` | `yara` + vos règles dans `/etc/plume/yara.d` | root | fichier, règle, SHA-256 | sans `yara` ou sans règle, ne scanne rien et le dit (`unavailable`) | `search source=yara \| stats count` |
+| `yara` | `yara` + vos règles dans `/etc/plume/yara.d` ; scanne par défaut `/home /tmp /var/tmp /dev/shm` | root, `/home` en lecture seule, **`/tmp` de l'hôte visible** (`PrivateTmp=false`, ses temporaires vont sous `/var/lib/plume/state`) | fichier, règle, SHA-256 | sans `yara` ou sans règle, ne scanne rien et le dit (`unavailable`) | `search source=yara \| stats count` |
 | `vuln` | `trivy`, `crictl` | root | CVE des images déployées (`category=vuln`) | — | `search source=vuln \| stats count by severity` |
 | `imgdrift` (`update`) | `skopeo`, `crictl` | root | nouveau digest sur un même tag | — | `search source=update \| stats count` |
 | `containerd` | `crictl`, `jq` | root | images tirées, conteneurs démarrés | — | `search source=containerd \| stats count` |

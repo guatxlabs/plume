@@ -1396,7 +1396,12 @@ jobs:
   shell:
     name: shell (bash -n — all tracked scripts)
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # BUDGET, PAS UNE GARDE : ce job porte aussi les gardes d'honnêteté des collecteurs, qui JOUENT les
+    # vrais scripts sous des outils factices — leur nombre croît à chaque lot de capteurs. À dix minutes,
+    # le job frôlait sa limite, puis l'a franchie : l'annulation tombait sur la garde en cours, quelle
+    # qu'elle soit, et l'agrégat `ci-ok` rougissait sans qu'aucune garde ait échoué. Une annulation par
+    # délai n'accuse rien ; si ce budget redevient juste, découper le job plutôt que l'élargir encore.
+    timeout-minutes: 25
     steps:
       - name: Checkout plume
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

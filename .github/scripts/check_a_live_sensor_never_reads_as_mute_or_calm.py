@@ -104,7 +104,12 @@ d'outils (les vrais, liés, plus des FAUX exécutables — `date` à heure fixe,
      carte inchangée (répertoires + fichier à risque) et UN aveu `missing-source` qui nomme les absents, eux
      seuls ; un chemin présent mais illisible (mode 000) ou lisible mais pas traversable (mode 0400, que
      `test -r` dirait lisible) -> aveu `missing-source` qui le nomme, lui seul, sans taire la carte des
-     autres ni son entrée de tête.
+     autres ni son entrée de tête. « Eux seuls » / « lui seul » se jugent contre TOUS les chemins posés du
+     cas (égalité de mot), dont un cas qui croise présent, absents, illisible et non traversable : un aveu
+     d'absent qui nommerait l'illisible, ou l'inverse, rougit. Variable NON posée (ou vide) : sur une copie
+     du capteur dont seule la liste par défaut est remplacée par des chemins du bac, les absents sont TUS
+     (aucun aveu d'absent, carte inchangée) et l'aveu « aucun chemin » dit « variable non posee », jamais
+     « valeur posee par l'exploitant ».
 Partout : sortie 0, enveloppes de spool lisibles comme JSON, aucun fichier caché laissé dans le spool, et
 les champs de chaque battement déclarés dans l'en-tête `# plume-emits:` de son capteur.
 
@@ -162,11 +167,13 @@ CE QU'ELLE NE TIENT PAS
   clés sur une règle) n'est pas lue, comme avant.
 · dataacl : des chemins ABSENTS à côté d'un chemin présent ne sont pas avoués quand la variable n'est PAS
   posée (choix du capteur : la liste par défaut vise plusieurs volumes d'un nœud k3s, tous ne sont pas sur
-  chaque nœud) — branche non jouée, pour la même raison que ci-dessous ; seule la TÊTE de
+  chaque nœud) ; cette branche est jouée sur une COPIE du capteur dont seule la ligne
+  `PATHS="${PLUME_ACL_PATHS:-…}"` change (introuvable ou en double : refus de conclure) — les chemins par
+  défaut eux-mêmes ne sont pas joués, ils dépendent de l'hôte (`/etc/ssl/private` existe sur la plupart, les
+  volumes k3s non) ; seule la TÊTE de
   chaque chemin est sondée (`find -maxdepth 1`) : un sous-répertoire illisible plus bas reste muet. Le cas
   « chemin illisible » n'est pas jouable sous root (un mode 000 ou 0400 ne ferme rien) : il est alors sauté et dit
-  sur la sortie. La variable NON posée n'est pas jouée : les défauts sont des chemins absolus de l'hôte
-  (`/etc/ssl/private` existe sur la plupart), la branche est la même que la variable posée. Les droits
+  sur la sortie. Les droits
   réels de l'unité (`CAP_DAC_READ_SEARCH`, `ProtectHome`) ne sont pas joués : qu'un chemin sous `/home`
   paraisse ABSENT (et non illisible) sous `ProtectHome=true` est lu dans la documentation de systemd. La tolérance
   `CESP_AVEU_ANNONCEES` du démon devient inerte (le capteur nomme `dataacl`) mais ne se retire pas d'elle-même.
@@ -1635,6 +1642,31 @@ def banc_dataaccess_preuves_du_journal(awk, nom_awk):
 
 
 # --- G. dataacl -----------------------------------------------------------------------------------
+ORIGINE_POSEE = "valeur posee par l'exploitant"
+ORIGINE_NON_POSEE = "variable non posee : ce sont les defauts d'un noeud k3s"
+DEFAUT_DATAACL = re.compile(r'^PATHS="\$\{PLUME_ACL_PATHS:-[^"}]*\}"$', re.M)
+
+
+def chemins_nommes(detail):
+    """Les mots d'un détail d'aveu, sans la ponctuation qui les borde : un chemin est NOMMÉ s'il est l'un d'eux
+    (égalité de mot, pas sous-chaîne : `…/ferme` ne se lit pas dans `…/fermeture`)."""
+    return {m.strip(".,;:()") for m in (detail or "").split()}
+
+
+def capteur_aux_defauts_du_banc(bac, defauts):
+    """Une copie de `collectors/dataacl.sh` dont SEULE la valeur par défaut de la liste est remplacée par des chemins
+    du bac : la branche « variable non posée » se joue sans dépendre des chemins de CET hôte (les défauts visent un
+    nœud k3s). Le reste du texte est celui du dépôt, octet pour octet ; une ligne de défaut introuvable ou en double
+    fait refuser de conclure."""
+    with open(os.path.join(CAPTEURS, "dataacl.sh"), encoding="utf-8") as fh:
+        texte = fh.read()
+    if len(DEFAUT_DATAACL.findall(texte)) != 1:
+        refus('dataacl.sh : la ligne `PATHS="${PLUME_ACL_PATHS:-…}"` n\'est pas trouvée une seule fois — la branche « variable non posée » ne peut pas être jouée')
+    copie = os.path.join(bac.racine, "dataacl-defauts-du-banc.sh")
+    ecrire(copie, DEFAUT_DATAACL.sub(lambda m: 'PATHS="${PLUME_ACL_PATHS:-%s}"' % defauts, texte, count=1), executable=True)
+    return copie
+
+
 def banc_dataacl(awk, nom_awk):
     bac = Bac(awk)
     illisible = non_traversable = None
@@ -1663,22 +1695,38 @@ def banc_dataacl(awk, nom_awk):
         absent = os.path.join(bac.racine, "absent")
         glob_vide = os.path.join(bac.racine, "*vault*")
         attendu_arbre = {arbre: "d", os.path.join(arbre, "sous"): "d", os.path.join(arbre, "ouvert"): "f"}
-        cas = [  # (nom, PLUME_ACL_PATHS, raison de l'aveu « aucun chemin » ou None, illisibles avoués, chemins émis)
-            ("pose_aucun_chemin", f"{absent} {glob_vide}", "missing-source", (), {}),
-            ("un_present_un_absent", f"{absent} {arbre} {glob_vide}", None, (), attendu_arbre),
+        # Chaque cas : (nom, liste de chemins, variable, raison de l'aveu « aucun chemin » ou None, absents
+        # avoués, illisibles avoués, chemins émis). `variable` dit comment la liste arrive au capteur : « posee »
+        # = PLUME_ACL_PATHS la porte ; « non_posee » / « vide » = la variable manque ou est vide, et la liste est
+        # la valeur PAR DÉFAUT d'une copie du capteur (voir capteur_aux_defauts_du_banc).
+        cas = [
+            ("pose_aucun_chemin", f"{absent} {glob_vide}", "posee", "missing-source", (), (), {}),
+            ("un_present_un_absent", f"{absent} {arbre} {glob_vide}", "posee", None, (absent, glob_vide), (), attendu_arbre),
+            # Variable non posée : les absents de la liste par défaut sont TUS, l'origine dit « non posée ».
+            ("non_posee_un_present_un_absent", f"{absent} {arbre} {glob_vide}", "non_posee", None, (), (), attendu_arbre),
+            ("vide_un_present_un_absent", f"{absent} {arbre} {glob_vide}", "vide", None, (), (), attendu_arbre),
+            ("non_posee_aucun_chemin", f"{absent} {glob_vide}", "non_posee", "missing-source", (), (), {}),
         ]
-        absents_avoues = {"pose_aucun_chemin": (), "un_present_un_absent": (absent, glob_vide),
-                          "seul_illisible": (absent,)}
         if droits_tenus:
-            cas += [("present_et_illisible", f"{arbre} {illisible}", None, (illisible,), dict(attendu_arbre, **{illisible: "d"})),
-                    ("seul_illisible", f"{illisible} {absent}", None, (illisible,), {illisible: "d"}),
-                    ("lisible_non_traversable", f"{arbre} {non_traversable}", None, (non_traversable,),
-                     dict(attendu_arbre, **{non_traversable: "d"}))]
+            cas += [("present_et_illisible", f"{arbre} {illisible}", "posee", None, (), (illisible,),
+                     dict(attendu_arbre, **{illisible: "d"})),
+                    ("seul_illisible", f"{illisible} {absent}", "posee", None, (absent,), (illisible,), {illisible: "d"}),
+                    ("lisible_non_traversable", f"{arbre} {non_traversable}", "posee", None, (), (non_traversable,),
+                     dict(attendu_arbre, **{non_traversable: "d"})),
+                    # Les trois sortes croisées : chaque aveu nomme les siens et AUCUN autre chemin posé.
+                    ("absents_et_illisibles_croises", f"{arbre} {illisible} {absent} {non_traversable} {glob_vide}", "posee",
+                     None, (absent, glob_vide), (illisible, non_traversable),
+                     dict(attendu_arbre, **{illisible: "d", non_traversable: "d"}))]
         else:
             print(f"{ETIQUETTE} : dataacl/{nom_awk} — droits non tenus (root ?) : cas « chemin illisible » non joué")
-        for nom, chemins, raison_vide, illisibles, emis in cas:
+        for nom, chemins, variable, raison_vide, absents_avoues, illisibles, emis in cas:
             q = f"dataacl/{nom_awk}/{nom}"
-            res = bac.jouer("dataacl.sh", {"PLUME_ACL_PATHS": chemins})
+            poses = chemins.split()
+            if variable == "posee":
+                res = bac.jouer("dataacl.sh", {"PLUME_ACL_PATHS": chemins})
+            else:
+                copie = capteur_aux_defauts_du_banc(bac, chemins)
+                res = bac.jouer(copie, {"PLUME_ACL_PATHS": ""} if variable == "vide" else {})
             evs = evenements(q, res, "dataacl.sh")
             tous = aveux(evs, "dataacl")
             vides = [e for e in tous if "aucun chemin de PLUME_ACL_PATHS" in ((e.get("fields") or {}).get("detail") or "")]
@@ -1693,10 +1741,12 @@ def banc_dataacl(awk, nom_awk):
                     f = vides[0]["fields"]
                     if f.get("collect_status") != "unavailable" or f.get("reason") != raison_vide:
                         faute(q, f"aveu {f.get('collect_status')}/{f.get('reason')}, attendu unavailable/{raison_vide}")
-                    contient(q, f.get("detail"), absent, glob_vide, "valeur posee par l'exploitant",
-                             "Aucune permission n'est cartographiee")
-                    if "defauts d'un noeud k3s" in (f.get("detail") or ""):
-                        faute(q, f"variable posée dite « non posée » : {f.get('detail')!r}")
+                    dit, tait = ORIGINE_POSEE, ORIGINE_NON_POSEE
+                    if variable != "posee":
+                        dit, tait = tait, dit
+                    contient(q, f.get("detail"), *poses, dit, "Aucune permission n'est cartographiee")
+                    if tait in (f.get("detail") or ""):
+                        faute(q, f"origine de la liste fausse (variable {variable}) : {f.get('detail')!r}")
             elif vides:
                 faute(q, f"aveu « aucun chemin » alors qu'un chemin existe : {vides[0]['fields'].get('detail')!r}")
             if illisibles:
@@ -1708,24 +1758,27 @@ def banc_dataacl(awk, nom_awk):
                         faute(q, f"aveu d'illisible {f.get('collect_status')}/{f.get('reason')}")
                     for p in illisibles:
                         contient(q, f.get("detail"), p)
-                    if arbre in (f.get("detail") or "").replace(illisible, "").replace(non_traversable, ""):
-                        faute(q, f"un chemin lisible est dit illisible : {f.get('detail')!r}")
+                    nommes = chemins_nommes(f.get("detail"))
+                    for p in poses:
+                        if p not in illisibles and p in nommes:
+                            faute(q, f"chemin posé {p!r} (lisible ou absent) dit présent mais illisible : {f.get('detail')!r}")
             elif fermes:
                 faute(q, f"aveu d'illisible sans chemin illisible : {fermes[0]['fields'].get('detail')!r}")
-            attendus_absents = absents_avoues.get(nom, ())
-            if attendus_absents:
+            if absents_avoues:
                 if len(manquants) != 1:
                     faute(q, f"chemin(s) posé(s) absent(s) à côté d'un présent : {len(manquants)} aveu(x), attendu 1")
                 else:
                     f = manquants[0]["fields"]
                     if f.get("reason") != "missing-source" or f.get("collect_status") != "unavailable":
                         faute(q, f"aveu d'absent {f.get('collect_status')}/{f.get('reason')}")
-                    for p in attendus_absents:
+                    for p in absents_avoues:
                         contient(q, f.get("detail"), p)
-                    if arbre in (f.get("detail") or "").replace(absent, "").replace(glob_vide, ""):
-                        faute(q, f"un chemin présent est dit absent : {f.get('detail')!r}")
+                    nommes = chemins_nommes(f.get("detail"))
+                    for p in poses:
+                        if p not in absents_avoues and p in nommes:
+                            faute(q, f"chemin posé {p!r} (présent) dit absent : {f.get('detail')!r}")
             elif manquants:
-                faute(q, f"aveu d'absent sans chemin absent : {manquants[0]['fields'].get('detail')!r}")
+                faute(q, f"aveu d'absent sans chemin absent avoué (variable {variable}) : {manquants[0]['fields'].get('detail')!r}")
             obtenus = {(e.get("fields") or {}).get("path"): (e.get("fields") or {}).get("type")
                        for e in evs if e.get("source") == "dataacl" and e.get("category") == "data"}
             if obtenus != emis:

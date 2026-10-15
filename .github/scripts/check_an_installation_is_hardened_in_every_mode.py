@@ -15,7 +15,8 @@ AF_INET6 à sept capteurs du central sans usage du réseau : le central le pose 
 sous `soc` ne le lit — et `responder.conf`, qui recopie le même jeton, aussi. Une conf déjà posée était
 gardée en silence, commentaires de fin de valeur compris. README.md prescrivait encore `chgrp soc` sur
 plume.conf ; deploy/SYSLOG.md présentait comme conf par défaut l'écoute 0.0.0.0, les commentaires en fin
-de valeur et « vider = désactiver », faux (une valeur vide rend le défaut du récepteur, 0.0.0.0:514). (e) `systemd/plume-pod-logs.service` forçait une liste de pods d'un parc
+de valeur et « vider = désactiver » (VRAI depuis `P10.32-l` : une écoute posée vide coupe son transport, une
+écoute ABSENTE vaut 0.0.0.0:514). (e) `systemd/plume-pod-logs.service` forçait une liste de pods d'un parc
 particulier et un seuil de sévérité que ni le script ni la sonde ne disent. (h) La conf syslog
 engendrée écrivait ses commentaires EN FIN DE VALEUR — systemd les garde dans la valeur, si bien que
 la liste d'autorisation valait `# ex: …` (le récepteur s'arrête) — et écoutait 0.0.0.0 avec une liste
@@ -51,11 +52,16 @@ leur absence est ainsi un scénario, pas un accident de l'exécuteur. Puis elle 
     lancent le démon : `PLUME_CONFIG` posé ailleurs ; sources des autres : aucune mention) ;
   · au re-passage, une conf existante est gardée OCTET POUR OCTET, mais chaque clé dont la valeur
     porte un commentaire est NOMMÉE — elles seules, jamais leur valeur (un jeton commenté ne sort pas) —,
-    ainsi qu'une écoute syslog hors boucle locale à liste vide ; la conf syslog posée est l'ANCIENNE
+    ainsi que chaque écoute syslog hors boucle locale à liste vide — par sa CLÉ, jamais sa valeur —, avec
+    « REFUSERA DE DEMARRER » (`P10.32-l` : le récepteur sort en code 2) ; la conf syslog posée est l'ANCIENNE
     CONF ENGENDRÉE octet pour octet (`PLUME_SYSLOG_ALLOW=          # ex: …`, valeur qui COMMENCE par
-    `#`). Les trois fonctions de signalement livrées sont aussi jouées seules sur treize confs syslog :
-    adresse absente ou vide = 0.0.0.0:514 (UDP, TCP, chacune seule), liste `""` ou `''` = vide, ligne
-    `;` = commentaire, et les témoins négatifs (liste posée, nue ou entre guillemets ; boucle locale).
+    `#`). Les trois fonctions de signalement livrées sont aussi jouées seules sur des confs syslog, la
+    sémantique de `env_ecoute` (collector-syslog) : adresse ABSENTE = 0.0.0.0:514, posée VIDE ou blanche =
+    transport coupé (UDP, TCP, chacune seule), adresse sans port ou à port hors bornes = hors boucle
+    locale, liste `""`, `''` ou faite de seuls séparateurs = vide, ligne `;` = commentaire, et les témoins
+    négatifs (liste posée, nue ou entre guillemets ; boucle locale v4, `[::1]`, `localhost` ; deux
+    écoutes coupées). Aucune sortie, aucun texte de l'installeur, de l'unité ni de deploy/SYSLOG.md ne
+    redit « absente ou vide = 0.0.0.0:514 », « vider ne désactive pas » ni « toute source est acceptée ».
     Un second passage sur les confs que l'installeur vient d'engendrer se tait (le témoin négatif) ;
   · toute conf engendrée sous /etc/plume qu'une unité charge par `EnvironmentFile=` est lue SELON
     systemd (un commentaire de fin de ligne reste dans la valeur) : aucune valeur n'en porte ; la
@@ -71,7 +77,7 @@ leur absence est ainsi un scénario, pas un accident de l'exécuteur. Puis elle 
   · la documentation suit — consigne affichée par bootstrap-agent.sh comprise (`sudo chmod 0600`, en
     en-tête ET au 1er passage sans secret) : aucun `chgrp soc`/`chmod 0640` prescrit sur plume.conf ou responder.conf,
     et la conf syslog de deploy/SYSLOG.md, lue selon systemd, est celle de l'installeur (127.0.0.1,
-    liste vide, aucun commentaire dans une valeur, pas de « vider = désactiver »).
+    liste vide, aucun commentaire dans une valeur, pas de « vider ne désactive pas »).
 CE QU'ELLE NE TIENT PAS : l'union des familles d'adresses sur l'AGENT (une trentaine d'unités, à
 mesurer capteur par capteur sous systemd avant de la resserrer).
 Ses propres instruments sont éprouvés à chaque exécution : le lecteur systemd sur des lignes connues,
@@ -550,7 +556,8 @@ def scenario_agent(commun, env_files):
     #    a) la conf syslog est l'ANCIENNE CONF ENGENDRÉE, octet pour octet — le cas qui motive le lot :
     #       `PLUME_SYSLOG_ALLOW=          # ex: …` vaut pour systemd une valeur qui COMMENCE par `#` ;
     #       un jeton porte aussi un commentaire, et sa valeur ne doit JAMAIS sortir ;
-    #    b) une conf syslog sans adresse et à liste vide : le récepteur écoute alors 0.0.0.0:514 deux fois.
+    #    b) une conf syslog sans adresse et à liste vide : le récepteur écouterait 0.0.0.0:514 deux fois,
+    #       donc REFUSERA DE DEMARRER (`P10.32-l`) — les deux clés sont nommées, absentes.
     repasser_agent("a", {
         "/etc/plume/plume.conf": "PLUME_CENTRAL=https://soc.example.test\n"
                                  f"PLUME_TOKEN={JETON_COMMENTE}   # pose a la main\n"
@@ -569,7 +576,7 @@ def scenario_agent(commun, env_files):
         "/etc/plume/responder.conf": "PLUME_CENTRAL=https://soc.example.test\nPLUME_TOKEN=leurre-du-bac\n"
                                      "PLUME_RESPONDER=1\nPLUME_RESPONDER_ALLOW={allow}\n",
         "/etc/plume/syslog.conf": "PLUME_SYSLOG_PARSER=fortigate\nPLUME_SYSLOG_ALLOW=\n",
-    }, set(), ["0.0.0.0:514", "0.0.0.0:514"])
+    }, set(), [ABSENTE_UDP, ABSENTE_TCP])
     # 3) tous les modules optionnels
     nom = "bootstrap-agent.sh (tous les modules optionnels)"
     modules = sorted(set(re.findall(r'"\$\{(PLUME_WITH_[A-Z_]+):-0\}"', lire(os.path.join(RACINE_DEPOT, "bootstrap-agent.sh")))))
@@ -595,7 +602,7 @@ def scenario_agent(commun, env_files):
         if bac.rc != 0:
             refuser(f"{nom} : le second passage a échoué (code {bac.rc}) :\n{bac.sortie[-3000:]}")
             return
-        for marque in ("COMMENTAIRE DANS UNE VALEUR", "SYSLOG OUVERT SANS LISTE"):
+        for marque in ("COMMENTAIRE DANS UNE VALEUR", MARQUE_SYSLOG, "SYSLOG OUVERT SANS LISTE"):
             if marque in bac.sortie:
                 faute(f"{nom} : au second passage, une conf que l'installeur vient d'engendrer est signalée « {marque} »")
         for c, contenu in avant.items():
@@ -631,7 +638,18 @@ ANCIENNE_CONF_SYSLOG = (
     "PLUME_SYSLOG_TCP=0.0.0.0:514       # vider = desactiver le TCP\n"
     "PLUME_SYSLOG_ALLOW=          # ex: 203.0.113.10/32,10.0.0.0/8\n")
 JETON_COMMENTE = "leurre-jeton-qui-ne-sort-jamais"
-OUVERT = re.compile(r"SYSLOG OUVERT SANS LISTE : (\S+) ecoute(.*?) avec PLUME_SYSLOG_ALLOW vide")
+# P10.32-l — le récepteur REFUSE DE DÉMARRER (code 2) une écoute hors boucle locale à liste vide : le
+# signalement le dit, et nomme les CLÉS (une écoute absente vaut 0.0.0.0:514, c'est le défaut du binaire,
+# pas une valeur lue). Une ligne sans « REFUSERA DE DEMARRER » ne compte pas comme signalement.
+MARQUE_SYSLOG = "SYSLOG HORS BOUCLE LOCALE SANS LISTE"
+OUVERT = re.compile(MARQUE_SYSLOG + r" : (\S+) : ecoute hors boucle locale par (.*?), PLUME_SYSLOG_ALLOW vide : "
+                    r"collector-syslog REFUSERA DE DEMARRER")
+ABSENTE_UDP, ABSENTE_TCP = "PLUME_SYSLOG_UDP(absente=0.0.0.0:514)", "PLUME_SYSLOG_TCP(absente=0.0.0.0:514)"
+# L'ANCIENNE sémantique, fausse depuis `P10.32-l` : vide = 0.0.0.0:514, vider ne désactive pas, liste vide
+# = toute source acceptée. Interdite dans la sortie de l'installeur ET dans les textes qui la décrivent.
+ANCIENNE_SEMANTIQUE = re.compile(
+    r"(absente?|non\s+pos[ée]e)\s+ou\s+vide|vider?\s+ne\s+d[ée]sactive\s+pas|ne\s+d[ée]sactive\s+pas\s+un\s+transport"
+    r"|toute\s+source\s+(est\s+)?accept[ée]e|SYSLOG OUVERT SANS LISTE", re.I)
 NOMMEE = re.compile(r"COMMENTAIRE DANS UNE VALEUR : (\S+) : (\S+)")
 
 
@@ -652,10 +670,14 @@ def juger_signalements(nom, sortie, racine, confs, attendues, ouvert_attendu, co
     ouverts = [(c.replace(racine, ""), a.split()) for c, a in OUVERT.findall(sortie)]
     ouverts = [a for c, a in ouverts if c == conf_syslog]
     if ouvert_attendu is None and ouverts:
-        faute(f"{nom} : {conf_syslog} signalée « SYSLOG OUVERT SANS LISTE » ({ouverts[0]}) à tort")
+        faute(f"{nom} : {conf_syslog} signalée « {MARQUE_SYSLOG} » ({ouverts[0]}) à tort")
     elif ouvert_attendu is not None and ouverts != [ouvert_attendu]:
-        faute(f"{nom} : {conf_syslog} écoute {' '.join(ouvert_attendu)} à liste vide (adresse absente ou vide = "
-              f"0.0.0.0:514) ; l'installeur dit {ouverts or 'rien'}")
+        faute(f"{nom} : {conf_syslog} écoute hors boucle locale par {' '.join(ouvert_attendu)} à liste vide "
+              f"(absente = 0.0.0.0:514, posée vide = coupée) : le récepteur refusera de démarrer ; l'installeur "
+              f"dit {ouverts or 'rien'}")
+    m = ANCIENNE_SEMANTIQUE.search(sortie)
+    if m:
+        faute(f"{nom} : l'installeur redit l'ancienne sémantique syslog (« {m.group(0)} ») — fausse depuis P10.32-l")
 
 
 def repasser_agent(lettre, posees, attendues, ouvert_attendu):
@@ -687,17 +709,31 @@ CONFS_SYSLOG = {
     "ancienne-conf-engendree": (ANCIENNE_CONF_SYSLOG,
                                 {"PLUME_SYSLOG_PARSER", "PLUME_SYSLOG_UDP", "PLUME_SYSLOG_TCP", "PLUME_SYSLOG_ALLOW"}, None),
     "transports-absents-liste-vide": ("PLUME_SYSLOG_PARSER=fortigate\nPLUME_SYSLOG_ALLOW=\n", set(),
-                                      ["0.0.0.0:514", "0.0.0.0:514"]),
-    "transports-vides-liste-vide": ("PLUME_SYSLOG_UDP=\nPLUME_SYSLOG_TCP=\nPLUME_SYSLOG_ALLOW=\n", set(),
-                                    ["0.0.0.0:514", "0.0.0.0:514"]),
-    "tcp-absent": ("PLUME_SYSLOG_UDP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n", set(), ["0.0.0.0:514"]),
-    "udp-absent": ("PLUME_SYSLOG_TCP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n", set(), ["0.0.0.0:514"]),
-    "udp-vide": ("PLUME_SYSLOG_UDP=\nPLUME_SYSLOG_TCP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n", set(), ["0.0.0.0:514"]),
-    "tcp-vide": ("PLUME_SYSLOG_UDP=127.0.0.1:514\nPLUME_SYSLOG_TCP=\nPLUME_SYSLOG_ALLOW=\n", set(), ["0.0.0.0:514"]),
+                                      [ABSENTE_UDP, ABSENTE_TCP]),
+    # P10.32-l — posée VIDE, une écoute est COUPÉE : deux écoutes coupées n'ouvrent rien
+    "transports-vides-liste-vide": ("PLUME_SYSLOG_UDP=\nPLUME_SYSLOG_TCP=\nPLUME_SYSLOG_ALLOW=\n", set(), None),
+    "tcp-absent": ("PLUME_SYSLOG_UDP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n", set(), [ABSENTE_TCP]),
+    "udp-absent": ("PLUME_SYSLOG_TCP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n", set(), [ABSENTE_UDP]),
+    "udp-vide": ("PLUME_SYSLOG_UDP=\nPLUME_SYSLOG_TCP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n", set(), None),
+    "tcp-vide": ("PLUME_SYSLOG_UDP=127.0.0.1:514\nPLUME_SYSLOG_TCP=\nPLUME_SYSLOG_ALLOW=\n", set(), None),
+    "udp-vide-tcp-reseau": ("PLUME_SYSLOG_UDP=\nPLUME_SYSLOG_TCP=0.0.0.0:514\nPLUME_SYSLOG_ALLOW=\n", set(),
+                            ["PLUME_SYSLOG_TCP"]),
+    "udp-blanc-entre-guillemets": ("PLUME_SYSLOG_UDP=\"   \"\nPLUME_SYSLOG_TCP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n",
+                                   set(), None),
+    "toutes-interfaces-v6": ("PLUME_SYSLOG_UDP=[::]:514\nPLUME_SYSLOG_TCP=\nPLUME_SYSLOG_ALLOW=\n", set(),
+                             ["PLUME_SYSLOG_UDP"]),
+    # sans port, ou port hors bornes : le récepteur ne la prouve pas locale, il la compte dehors
+    "boucle-locale-sans-port": ("PLUME_SYSLOG_UDP=127.0.0.1\nPLUME_SYSLOG_TCP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n",
+                                set(), ["PLUME_SYSLOG_UDP"]),
+    "boucle-locale-port-hors-bornes": ("PLUME_SYSLOG_UDP=127.0.0.1:514\nPLUME_SYSLOG_TCP=127.0.0.1:70000\n"
+                                       "PLUME_SYSLOG_ALLOW=\n", set(), ["PLUME_SYSLOG_TCP"]),
     "liste-entre-guillemets-doubles": ("PLUME_SYSLOG_UDP=127.0.0.1:514\nPLUME_SYSLOG_TCP=0.0.0.0:514\n"
-                                       "PLUME_SYSLOG_ALLOW=\"\"\n", set(), ["0.0.0.0:514"]),
+                                       "PLUME_SYSLOG_ALLOW=\"\"\n", set(), ["PLUME_SYSLOG_TCP"]),
     "liste-entre-guillemets-simples": ("PLUME_SYSLOG_UDP=0.0.0.0:514\nPLUME_SYSLOG_TCP=127.0.0.1:514\n"
-                                       "PLUME_SYSLOG_ALLOW=''\n", set(), ["0.0.0.0:514"]),
+                                       "PLUME_SYSLOG_ALLOW=''\n", set(), ["PLUME_SYSLOG_UDP"]),
+    # une liste faite de seuls séparateurs est VIDE pour le récepteur (parse_allowlist : aucun jeton)
+    "liste-de-separateurs": ("PLUME_SYSLOG_UDP=0.0.0.0:514\nPLUME_SYSLOG_TCP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=, ,\n",
+                             set(), ["PLUME_SYSLOG_UDP"]),
     "ligne-point-virgule": ("; PLUME_SYSLOG_PARSER=auto   # ancien essai\nPLUME_SYSLOG_UDP=127.0.0.1:514\n"
                             "PLUME_SYSLOG_TCP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n", set(), None),
     # témoins négatifs : une liste non vide (nue ou entre guillemets) fait taire le signalement
@@ -706,6 +742,8 @@ CONFS_SYSLOG = {
                                      set(), None),
     "boucle-locale": ("PLUME_SYSLOG_UDP=127.0.0.1:514\nPLUME_SYSLOG_TCP=127.0.0.1:514\nPLUME_SYSLOG_ALLOW=\n",
                       set(), None),
+    "boucle-locale-v6-et-nom": ("PLUME_SYSLOG_UDP=[::1]:514\nPLUME_SYSLOG_TCP=localhost:5514\nPLUME_SYSLOG_ALLOW=\n",
+                                set(), None),
 }
 
 
@@ -912,8 +950,14 @@ def juger_docs():
             faute(f"deploy/SYSLOG.md : la conf documentée écoute {cle}={v.get(cle)!r} — l'installeur pose 127.0.0.1:514")
     if v.get("PLUME_SYSLOG_ALLOW") != "":
         faute(f"deploy/SYSLOG.md : PLUME_SYSLOG_ALLOW={v.get('PLUME_SYSLOG_ALLOW')!r} dans la conf documentée")
-    if re.search(r"vider[^\n]{0,30}=\s*d[ée]sactiver", texte, re.I):
-        faute("deploy/SYSLOG.md dit encore « vider = désactiver » : une valeur vide rend le défaut du récepteur, 0.0.0.0:514")
+    # P10.32-l — l'ancienne sémantique (vide = 0.0.0.0:514, « toute source acceptée ») est fausse : ni la
+    # doc, ni l'unité, ni l'installeur (commentaires, conf engendrée, messages) ne la redisent.
+    for rel in ("deploy/SYSLOG.md", "systemd/plume-collector-syslog.service", "bootstrap-agent.sh"):
+        for i, ligne in enumerate(lire(os.path.join(RACINE_DEPOT, rel)).splitlines(), 1):
+            m = ANCIENNE_SEMANTIQUE.search(ligne)
+            if m:
+                faute(f"{rel}:{i} redit l'ancienne sémantique syslog (« {m.group(0)} ») : une écoute posée vide "
+                      f"coupe son transport, et une liste vide hors boucle locale fait REFUSER le démarrage")
 
 
 def main():

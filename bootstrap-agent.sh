@@ -98,25 +98,40 @@ signaler_conf_conservee() {
   fi
   return 0
 }
-# signaler_syslog_ouvert <fichier> : le recepteur prend 0.0.0.0:514 pour une adresse absente OU vide
-# (collector-syslog, env_or) ; une ecoute hors boucle locale avec une liste d'autorisation vide
-# accepte toute source sur un :514 authentifie par rien.
+# signaler_syslog_ouvert <fichier> : lit la conf COMME collector-syslog la lira (P10.32-l, `env_ecoute`) :
+# une ecoute ABSENTE vaut 0.0.0.0:514 ; une ecoute posee VIDE (ou blanche) COUPE son transport et
+# n'ouvre rien. Une liste d'autorisation sans aucun CIDR (rien entre les virgules et les blancs) avec
+# une ecoute hors boucle locale : le recepteur REFUSERA DE DEMARRER (code 2). Une ecoute qui n'est pas
+# 127.x.x.x:<port>, [::1]:<port> ou localhost:<port> compte hors boucle locale, comme pour le recepteur,
+# qui compte dehors toute adresse qu'il ne prouve pas locale. Seules les CLES sont nommees, jamais leurs valeurs.
 signaler_syslog_ouvert() {
-  local k v udp=0.0.0.0:514 tcp=0.0.0.0:514 allow="" a ouverts=""
+  local k v udp="" tcp="" udp_posee=0 tcp_posee=0 posee allow="" ouverts=""
   while IFS=$'\t' read -r k v; do
     case "$k" in
-      PLUME_SYSLOG_UDP) udp="${v:-0.0.0.0:514}" ;;
-      PLUME_SYSLOG_TCP) tcp="${v:-0.0.0.0:514}" ;;
+      PLUME_SYSLOG_UDP) udp="$v"; udp_posee=1 ;;
+      PLUME_SYSLOG_TCP) tcp="$v"; tcp_posee=1 ;;
       PLUME_SYSLOG_ALLOW) allow="$v" ;;
     esac
   done < <(lire_conf_systemd "$1")
-  [ -z "$allow" ] || return 0
-  for a in "$udp" "$tcp"; do
-    case "$a" in 127.*|'[::1]:'*|localhost:*) ;; *) ouverts="$ouverts $a" ;; esac
+  case "$allow" in *[!,[:space:]]*) return 0 ;; esac
+  for k in UDP TCP; do
+    if [ "$k" = UDP ]; then posee=$udp_posee; v="$udp"; else posee=$tcp_posee; v="$tcp"; fi
+    if [ "$posee" = 0 ]; then
+      ouverts="$ouverts PLUME_SYSLOG_$k(absente=0.0.0.0:514)"
+      continue
+    fi
+    v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+    [ -n "$v" ] || continue
+    if [[ "$v" =~ ^(127\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})|\[::1\]|localhost):([0-9]{1,5})$ ]] \
+       && [ "$((10#${BASH_REMATCH[2]:-0}))" -le 255 ] && [ "$((10#${BASH_REMATCH[3]:-0}))" -le 255 ] \
+       && [ "$((10#${BASH_REMATCH[4]:-0}))" -le 255 ] && [ "$((10#${BASH_REMATCH[5]}))" -le 65535 ]; then
+      continue
+    fi
+    ouverts="$ouverts PLUME_SYSLOG_$k"
   done
   if [ -n "$ouverts" ]; then
-    echo "!! SYSLOG OUVERT SANS LISTE : $1 ecoute${ouverts} avec PLUME_SYSLOG_ALLOW vide : toute source est acceptee."
-    echo "!!   Posez PLUME_SYSLOG_ALLOW=<CIDR> ET un pare-feu en refus par defaut, ou revenez a 127.0.0.1:514."
+    echo "!! SYSLOG HORS BOUCLE LOCALE SANS LISTE : $1 : ecoute hors boucle locale par${ouverts}, PLUME_SYSLOG_ALLOW vide : collector-syslog REFUSERA DE DEMARRER (code 2)."
+    echo "!!   Posez PLUME_SYSLOG_ALLOW=<CIDR ou IP des appareils> (accepter toute source s'ecrit 0.0.0.0/0,::/0) ET un pare-feu en refus par defaut, ou n'ecoutez qu'en boucle locale (127.0.0.1:514). Une ecoute absente vaut 0.0.0.0:514 ; posee vide, elle coupe son transport."
   fi
   return 0
 }
@@ -242,12 +257,12 @@ if [ "${PLUME_WITH_SYSLOG:-0}" = "1" ]; then
         echo "# PAR DEFAUT, CE RECEPTEUR N'ECOUTE QUE LA BOUCLE LOCALE (127.0.0.1) : aucun appareil distant n'y"
         echo "# arrive. POUR L'OUVRIR A VOS APPAREILS, LES TROIS GESTES ENSEMBLE (syslog n'est authentifie par rien) :"
         echo "#  1) liste d'autorisation applicative PLUME_SYSLOG_ALLOW (CIDR/IP separes par des virgules), p. ex. 203.0.113.10/32 ;"
-        echo "#     vide = TOUTE source acceptee, donc ne jamais ouvrir l'ecoute avec une liste vide ;"
+        echo "#     sans liste, le recepteur REFUSE DE DEMARRER des qu'une ecoute sort de la boucle locale ;"
         echo "#  2) pare-feu hote en refus par defaut vers ces seules sources, p. ex."
         echo "#     sudo ufw allow from 203.0.113.10 to any port 514  puis  sudo ufw deny 514 ;"
         echo "#  3) seulement alors, ecoute sur toutes les interfaces : PLUME_SYSLOG_UDP=0.0.0.0:514 et/ou PLUME_SYSLOG_TCP=0.0.0.0:514"
         echo "#     (TCP recommande pour les flux volumineux : pas de troncature UDP au MTU)."
-        echo "# Une variable VIDE ne desactive PAS un transport : le recepteur retombe alors sur son propre defaut, 0.0.0.0:514."
+        echo "# Une ecoute ABSENTE vaut le defaut du recepteur, 0.0.0.0:514 ; posee VIDE, elle coupe son transport."
         echo "# Puis :  sudo systemctl enable --now plume-collector-syslog.service"
         echo "PLUME_SPOOL=/var/lib/plume/spool"
         echo "# analyseur : fortigate | auto | generic"

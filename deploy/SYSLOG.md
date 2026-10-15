@@ -48,9 +48,9 @@ Cela pose `/usr/local/lib/plume/collectors/plume-collector-syslog`, l'unit
 ### 2. Config `/etc/plume/syslog.conf`
 Chaque commentaire sur **sa propre ligne** : systemd (`EnvironmentFile=`) garde un commentaire de fin
 de ligne **dans la valeur** (`PLUME_SYSLOG_ALLOW=   # ex` vaut `# ex`, que le recepteur refuse : il
-s'arrete au demarrage). Une variable **vide ne desactive pas** un transport : le recepteur retombe
-alors sur son propre defaut, `0.0.0.0:514` (`env_or`, `collector-syslog/src/main.rs`). La conf posee
-par `bootstrap-agent.sh` n'ecoute donc que la boucle locale :
+s'arrete au demarrage). Une ecoute **absente** vaut le defaut du recepteur, `0.0.0.0:514` ; posee
+**vide**, elle **coupe** son transport (`env_ecoute`, `collector-syslog/src/main.rs`). La conf posee
+par `bootstrap-agent.sh` n'ecoute que la boucle locale :
 ```sh
 PLUME_SPOOL=/var/lib/plume/spool
 # analyseur : fortigate | auto (sniff par message) | generic
@@ -81,8 +81,8 @@ PLUME_SYSLOG_FLUSH_MS=2000
 # PLUME_SYSLOG_QUEUE_MAX=20000
 ```
 Une conf **deja posee** est conservee telle quelle a la relance de `bootstrap-agent.sh`, qui NOMME
-toutefois chaque cle dont la valeur porte un commentaire, et une ecoute hors boucle locale avec une
-liste vide.
+toutefois chaque cle dont la valeur porte un commentaire, et chaque ecoute hors boucle locale (absente
+comprise) avec une liste vide : le recepteur refusera de demarrer, et le message dit quoi poser.
 
 ### 3. Durcir la source (OBLIGATOIRE — syslog n'est PAS authentifie)
 

@@ -51,11 +51,14 @@ masqué par défaut »)
 -------------------------------------------------------------------------------------------------------------
 `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL=1` rend en clair le champ `rcpt` d'un verdict INFECTED (`malware`) ou
 BANNED (`banned`) dont le domaine figure dans `PLUME_MAIL_DOMAINES_LOCAUX` — et RIEN d'autre. La garde joue le
-capteur sous SEPT réglages (absent, `0`, `1` avec liste, `1` sans liste, `1` avec une liste illisible, `1` avec
-une liste en partie illisible, une valeur autre que `0`/`1`) sur les lignes fabriquées ci-dessus PLUS des
-entrées amavis vers un domaine local, un domaine externe, un sous-domaine du domaine local, un domaine à
-espace fait de deux domaines locaux, une valeur sans `@` égale à un domaine local, sur INFECTED, BANNED, CLEAN
-et SPAM : seul le `rcpt` d'un INFECTED ou BANNED local sort en clair, et seulement réglage à `1`
+capteur sous DOUZE réglages (absent, `0`, `1` avec liste, `1` sans liste, `1` avec une liste illisible, `1` avec
+une liste en partie illisible, une valeur autre que `0`/`1`, `1` avec la seule liste `mail.example.test` dont
+les boîtes du domaine PARENT `example.test` restent masquées, `1` avec un point final, un point en tête, un
+double point, un motif `*`) sur les lignes fabriquées ci-dessus PLUS des entrées amavis vers un domaine local,
+un domaine externe, un sous-domaine du domaine local, un domaine PRÉFIXE d'un domaine local (`@example`), un
+domaine à espace fait de deux domaines locaux, une valeur sans `@` égale à un domaine local, sur INFECTED,
+BANNED, CLEAN et SPAM. Le capteur tourne dans un répertoire courant PIÉGÉ (un fichier au nom de domaine
+lisible), éprouvé d'abord : un motif de la liste qu'un shell développerait y rendrait un domaine. Seul le `rcpt` d'un INFECTED ou BANNED local sort en clair, et seulement réglage à `1`
 avec liste ; la boîte démasquée ne sort NI dans le message, NI dans `user`, NI dans la clé ; sans liste
 lisible ou sur une valeur illisible, rien n'est démasqué et un aveu `fallback`/`unreadable-config` le dit ;
 l'enveloppe de config dit l'état (`destinataire_local`) et la liste RETENUE (`domaines_locaux` : minuscules,
@@ -196,9 +199,14 @@ DESTINATAIRES = [
      "*@example.test example.invalid", None),
     # Une valeur SANS `@` égale à un domaine local : ce n'est pas une adresse, elle sort `*`.
     (_amavis(8, "Blocked INFECTED (Eicar-Signature)", "Example.TEST"), "malware", "*", None),
+    # Un domaine PRÉFIXE d'un domaine local (` example.test ` contient ` example`) : seule la borne d'espace
+    # DROITE de la comparaison le garde masqué.
+    (_amavis(9, "Blocked INFECTED (Eicar-Signature)", "marqprefixe@example"), "malware", "*@example", None),
 ]
 # (nom, réglages, démasque ?, clé avouée ou None, état attendu dans l'enveloppe de config, liste RETENUE
-# attendue dans l'enveloppe : `domaines_locaux`, en minuscules, sans doublon ni entrée illisible, `,` entre)
+# attendue dans l'enveloppe : `domaines_locaux`, en minuscules, sans doublon ni entrée illisible, `,` entre).
+# « Démasque ? » dit si les entrées de DESTINATAIRES vers `example.test` sortent en clair : la liste
+# `mail.example.test` démasque (état `demasque`) mais AUCUNE entrée n'est de ce domaine — toutes restent masquées.
 REGLAGES_LOCAUX = [
     ("réglage absent, liste posée", {LISTE_LOCALE: "example.test"}, False, None, "masque", ""),
     ("réglage à 0, liste posée", {REGLAGE_LOCAL: "0", LISTE_LOCALE: "example.test"}, False, None, "masque", ""),
@@ -210,7 +218,25 @@ REGLAGES_LOCAUX = [
     ("réglage à 1, liste en partie illisible", {REGLAGE_LOCAL: "1", LISTE_LOCALE: "example.test x_y EXAMPLE.test"},
      True, LISTE_LOCALE, "demasque", "example.test"),
     ("réglage à oui", {REGLAGE_LOCAL: "oui", LISTE_LOCALE: "example.test"}, False, REGLAGE_LOCAL, "masque", ""),
+    # Les boîtes du domaine PARENT d'un domaine local (` mail.example.test ` contient `example.test `) : seule la
+    # borne d'espace GAUCHE de la comparaison les garde masquées.
+    ("réglage à 1, liste d'un sous-domaine (boîtes du domaine parent)", {REGLAGE_LOCAL: "1",
+     LISTE_LOCALE: "mail.example.test"}, False, None, "demasque", "mail.example.test"),
+    # Un point final (notation FQDN), un point en tête, un double point : pas un domaine, avoué.
+    ("réglage à 1, liste au point final", {REGLAGE_LOCAL: "1", LISTE_LOCALE: "example.test."}, False, LISTE_LOCALE,
+     "masque-sans-liste", ""),
+    ("réglage à 1, liste au point en tête", {REGLAGE_LOCAL: "1", LISTE_LOCALE: ".example.test"}, False,
+     LISTE_LOCALE, "masque-sans-liste", ""),
+    ("réglage à 1, liste au double point", {REGLAGE_LOCAL: "1", LISTE_LOCALE: "example..test"}, False,
+     LISTE_LOCALE, "masque-sans-liste", ""),
+    # Un motif : le capteur tourne dans un répertoire courant PIÉGÉ (`PIEGE_DU_REPERTOIRE_COURANT`) ; sans
+    # `set -f`, `*` deviendrait le nom du piège, un domaine lisible, et la liste démasquerait sans aveu.
+    ("réglage à 1, liste réduite à un motif", {REGLAGE_LOCAL: "1", LISTE_LOCALE: "*"}, False, LISTE_LOCALE,
+     "masque-sans-liste", ""),
 ]
+# Le nom d'un fichier posé dans le répertoire courant du capteur : un domaine lisible, que tout motif de la liste
+# (`*`, `*.example.test`) rendrait s'il était développé.
+PIEGE_DU_REPERTOIRE_COURANT = "piege.example.test"
 
 
 def masquer(v):
@@ -488,7 +514,16 @@ def jouer(chemin_awk, lignes, reglages=None, configs=None):
                    PLUME_MAIL_LOG=journal, PLUME_MAIL_MAX=str(len(lignes) + 10),
                    PLUME_MAIL_CLAMAV_LOG="", PLUME_MAIL_FRESHCLAM_LOG="", LC_ALL="C.UTF-8")
         env.update(reglages or {})
-        r = subprocess.run(["sh", CAPTEUR], env=env, capture_output=True, text=True, timeout=120)
+        # Le répertoire courant est PIÉGÉ : un motif développé par le shell y rend un domaine lisible. Le piège
+        # est d'abord éprouvé (un `sh` qui ne développerait pas `*` ici rendrait le témoin vacant).
+        courant = os.path.join(bac, "repertoire-courant-piege")
+        os.makedirs(courant)
+        open(os.path.join(courant, PIEGE_DU_REPERTOIRE_COURANT), "w").close()
+        t = subprocess.run(["sh", "-c", "printf '%s' *"], cwd=courant, capture_output=True, text=True, timeout=30)
+        if t.stdout != PIEGE_DU_REPERTOIRE_COURANT:
+            refus(f"le répertoire courant piégé ne développe pas `*` (`{t.stdout[:80]}`) : le témoin de `set -f` "
+                  "serait vacant")
+        r = subprocess.run(["sh", CAPTEUR], env=env, cwd=courant, capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             refus(f"le capteur a échoué sous `{chemin_awk}` (rc={r.returncode}) : {r.stderr.strip()[:300]}")
         evenements = []
@@ -537,7 +572,7 @@ def main():
         for f in fautes:
             print(f"::error file=collectors/mail.sh::{ETIQUETTE} ({nom}) : {f}")
         total += len(fautes)
-        # P10.33-f — sept réglages, puis le corpus réglage actif.
+        # P10.33-f — chaque réglage de REGLAGES_LOCAUX, puis le corpus réglage actif.
         fautes = []
         lignes = [l for l, _, _ in FABRIQUEES] + [l for l, _, _, _ in DESTINATAIRES]
         for quoi, reglages, actif, cle, etat, liste in REGLAGES_LOCAUX:

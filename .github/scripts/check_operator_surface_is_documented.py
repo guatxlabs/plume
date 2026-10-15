@@ -209,7 +209,7 @@ PLAFOND_LEVIERS_DU_BUDGET_SANS_ENTREE = 0
 # chaque retrait est un levier documenté le jour où on le retire. Un lot concurrent qui documente un
 # levier retire SON nom : deux lots le même jour se rencontrent sur une ligne, plus sur un chiffre.
 LEVIERS_MUETS_ADMIS = frozenset((
-    "PLUME_ACL_DEPTH", "PLUME_ACL_MAX", "PLUME_ACL_PATHS", "PLUME_AI_MAX_CALLS_PER_MIN",
+    "PLUME_ACL_DEPTH", "PLUME_ACL_MAX", "PLUME_AI_MAX_CALLS_PER_MIN",
     "PLUME_AI_MAX_TOKENS", "PLUME_AUDIT_BULK_ROWS", "PLUME_AUDIT_LOG",
     "PLUME_AUDIT_REAL_USER_ONLY", "PLUME_AUDIT_TAMPER_KEYS",
     "PLUME_AUTOVACUUM_BATCH_PAGES", "PLUME_AUTOVACUUM_MIN_FREE_PAGES", "PLUME_BACKUP_DIR", "PLUME_BANNED_IP_BACKFILL",

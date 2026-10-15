@@ -71,8 +71,13 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
 ### 4.1 `plume-daemon` — le binaire unique (central)
 
 - **Crate** `daemon/` (`plume-daemon`, `axum` 0.7 + `tokio` + `tower-http`). DB via `rusqlite` avec
-  la feature `bundled-sqlcipher-vendored-openssl` → **SQLite chiffré (SQLCipher) at-rest** si
-  `PLUME_DB_KEY` est posé (sinon base en clair). WAL + FTS5.
+  la feature `bundled-sqlcipher-vendored-openssl` → **SQLite chiffré (SQLCipher) at-rest**. Une base
+  **neuve** naît chiffrée : sous `PLUME_DB_KEY`/`PLUME_DB_KEY_FILE` si l'une est posée, sinon sous une
+  clé que le démon engendre à son premier démarrage (`0600`, à côté de la base). Une base **existante**
+  en clair le reste, jusqu'au geste `plume-daemon chiffrer-au-repos` — y compris une base qu'une
+  sous-commande a créée avant ce premier démarrage
+  ([`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+  WAL + FTS5.
 - **Sert trois choses sur le même port `:7000`** : l'**API** (`/api/*`), l'**UI web** (assets statiques
   via `tower_http::ServeDir` depuis `PLUME_WEB=/usr/local/share/plume/web`), et l'**ingestion**
   (`/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/api/metrics/*`, `/loki/api/v1/push`).
@@ -306,8 +311,8 @@ Trois cibles, **même binaire** (mode-aware) :
   `bootstrap-agent.sh` installe un **agent** (collecteurs + `ship`, pas de daemon/DB/web).
 - **k3s** : manifeste générique [`deploy/k3s.yaml`](deploy/k3s.yaml) (Namespace + Secret + PVC +
   Deployment + Service + **Ingress** + **NetworkPolicy** egress *default‑deny*), backup natif activé.
-  L'Ingress est livré **sans TLS** (bloc à décommenter) et la NetworkPolicy n'a d'effet que si votre CNI
-  les applique. Un déploiement de **production** type (à porter dans **votre dépôt
+  L'Ingress est livré **en TLS seul** (entrée Traefik `websecure`, certificat du `Secret` `soc-tls`, à
+  créer avant d'appliquer) et la NetworkPolicy n'a d'effet que si votre CNI les applique. Un déploiement de **production** type (à porter dans **votre dépôt
   GitOps**, piloté par ArgoCD/Flux ou équivalent) ajoute :
   - **Deployment** — `replicas: 1`, **`strategy: Recreate`** (PVC RWO +
     SQLite = un seul writer, pas de rolling). `securityContext` non-root uid `10001`,

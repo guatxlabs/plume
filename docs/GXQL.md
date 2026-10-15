@@ -96,6 +96,33 @@ un filtre muet sur son dernier segment : la requête est **refusée**, le nom fa
 entier**, et le message suggère les guillemets. C'est un choix : un filtre qui porte sur autre chose
 que ce qu'on a écrit est pire qu'une erreur.
 
+### 2.4 Limite connue : une barre verticale dans une expression régulière
+
+**Il n'y a pas d'alternance possible dans une expression régulière aujourd'hui.** Le compilateur
+découpe la requête en étapes sur chaque `|` de premier niveau **avant** de lire les guillemets : il ne
+connaît que les crochets `[ … ]` comme groupement (`soql_split_pipes`, dans le cœur). Écrire
+`search message=~"(refused|denied)"` coupe donc la requête en deux étapes, et la seconde n'est pas une
+commande connue. Les guillemets ne protègent pas la barre.
+
+Ce qui s'écrit à la place, et ce que chaque forme veut dire :
+
+| Forme | Effet |
+|---|---|
+| `message=~"a\x7cb"` | la séquence `\x7c` est une barre verticale **littérale** pour le moteur d'expressions régulières : elle cherche le texte `a\|b`, ce n'est **pas** une alternance |
+| `message=~"a[\|]b"` | idem — une classe de caractères qui contient la barre ; le découpage ignore ce qui est entre crochets |
+| une alternance (`a` **ou** `b`) | **aucune forme** : une classe de caractères ne choisit qu'un caractère, jamais un mot. Écrivez deux recherches, ou une disjonction dans un `eval` (§2.2) sur des comparaisons sans expression régulière |
+
+Il n'existe pas non plus de fonction `match()` : la liste des fonctions d'`eval` (§4.2) est fermée, et
+`where` n'accepte qu'une comparaison (§3.1).
+
+**Le coût d'une expression régulière croît avec la fenêtre.** Elle est évaluée ligne par ligne par une
+fonction SQL (moteur `regex` de Rust, temps linéaire, motif limité à 512 octets) et aucun index ne la
+sert : sur une grande fenêtre, elle lit toutes les lignes que le reste du filtre laisse passer.
+Resserrez la fenêtre, et filtrez d'abord sur une colonne réelle (`source`, `host`, `category`) ou un
+champ chaud (§5.2) : `search source=sshd category=auth message=~"Invalid user"` ne passe le motif que
+sur les lignes de cette source. Ce que coûtent plusieurs motifs lourds à la fois est porté par une clé
+ouverte (`P10.32-q`).
+
 ---
 
 ## 3. Les vingt commandes de tube
@@ -260,7 +287,7 @@ refus lisible.
 |---|---|---|
 | budget de temps d'une requête « automatique » (panneaux, règles, pagination) | `PLUME_QUERY_BUDGET_MS` | `5000` ms |
 | budget d'une requête **interactive** | `PLUME_QUERY_BUDGET_INTERACTIVE_MS` | `60000` ms |
-| plafond de lignes rendues | `PLUME_QUERY_MAX` | `5000`, borné dur à `100000` |
+| plafond de lignes rendues | `PLUME_QUERY_MAX` | `5000` ; une valeur hors de `1`–`100000` retombe sur `5000` (§6.4) |
 | défaut et plafond de `/api/search` | `PLUME_SEARCH_LIMIT` / `PLUME_SEARCH_MAX` | `100` / `5000` |
 | requêtes simultanées | `PLUME_QUERY_CONCURRENCY` | `3`, **partagé** entre `/api/query` et `/api/search` |
 
@@ -293,6 +320,76 @@ l'injection sur ce chemin. Les paramètres liés existent, mais sur `/api/search
 `SELECT` » n'est pas un contrôle explicite : c'est une **propriété structurelle** — le compilateur
 n'émet qu'un `SELECT` fait de sous-requêtes imbriquées, ne peut pas produire de `;`, et la
 préparation ne compile de toute façon que la première instruction.
+
+### 6.4 Ce que le plafond coupe, et comment tout lire
+
+**`5000` n'est pas une limite de ce que plume interroge ni de ce qu'il compte.** C'est le nombre de
+**lignes rendues** dans un tableau — et, sous tier froid seulement, le nombre de lignes froides
+recopiées par un chemin de lecture (plus bas).
+
+`PLUME_QUERY_MAX` vaut `5000` par défaut et n'accepte qu'un entier de `1` à `100000`. **Toute autre
+valeur — au-delà de `100000`, `0`, négative, illisible — retombe en silence sur `5000`** : aucun refus,
+aucune ligne au démarrage. Écrire `PLUME_QUERY_MAX=200000` ne relève donc rien du tout.
+
+Le plafond s'applique une fois le SQL exécuté : au-delà, la lecture s'arrête, `truncated` est posé dans
+les statistiques de la réponse, et la console le dit. Sans tier froid, il ne touche pas au calcul :
+
+- **un agrégat compte tout.** `search source=sshd | stats count` rend une seule ligne, et ce compte
+  porte sur tous les événements de la fenêtre, quel qu'en soit le nombre ;
+- **mais les groupes sont des lignes.** `stats count by src_ip` sur plus de `PLUME_QUERY_MAX` adresses
+  rend les premiers groupes et signale la troncature ; chaque compte rendu reste complet. Un
+  `| sort -count | head 100` après le `stats` choisit lesquels ;
+- **le tableau de lignes brutes est ce qui est coupé.** Pour le parcourir en entier, la pagination par
+  **curseur** de `/api/query` lit page par page sans plafond de comptage (exemple ci-dessous). Elle ne
+  vaut que pour une requête qui **garde ses lignes** (filtre, `table`, `fields`, tri par date) ; sur une
+  autre forme, la réponse retombe sur la pagination par décalage, plafonnée ;
+- **resserrer la fenêtre** (`from`, `to`) reste le moyen le plus sûr de lire moins.
+
+**Avec le tier froid actif** (binaire construit avec `cold_tier`, `PLUME_COLD_TIER=1`) et une fenêtre
+qui descend dans le froid, la première puce ne tient plus toujours. Un des chemins de lecture recopie
+les lignes froides de la fenêtre dans une table temporaire, **au plus `PLUME_QUERY_MAX` lignes**, puis
+exécute la requête sur cette copie. Quand la recopie a atteint ce plafond :
+
+- une requête dont **chaque étage est par événement** — `where`, `head`, `limit`, `eval`, `rex`,
+  `rename`, `table`, `fields`, et rien d'autre — rend des lignes vraies, en nombre incomplet, avec
+  `truncated` ;
+- toute autre requête — un agrégat (`stats`, `timechart`, `top`, `rare`), mais aussi `eventstats`,
+  `rate`, `dedup`, `sort`, `join`, `append`, `lookup`, `mvexpand` — **calcule ou choisit sur
+  l'ensemble**, et elle est **refusée** : la réponse est un `422` dont le corps porte
+  `"reason": "cold_truncated_aggregate"`, `"truncated": true`, `cold_rows_hydrated` et `cold_row_cap`
+  (les lignes recopiées et le plafond), et un message `error` qui nomme l'étape en cause et les voies
+  qui échappent au plafond. **Jamais un nombre calculé sur un
+  échantillon.**
+
+Certaines formes n'empruntent pas ce chemin : un pré-agrégé (réponse marquée `stats.approx`, donc
+approximative) ou le moteur colonnaire, qui lit tout le froid sans le recopier, peuvent les servir
+d'abord ; le message du refus les détaille. Pour obtenir une réponse là où le refus tombe :
+
+- **resserrer la fenêtre** jusqu'à ce que la recopie tienne sous le plafond — l'ensemble lu redevient
+  complet ;
+- **relever `PLUME_QUERY_MAX`**, jusqu'à `100000` et pas au-delà (ci-dessus) : les lignes recopiées
+  sont tenues en mémoire, c'est donc la mémoire du démon qui paie.
+
+**Parcourir toutes les lignes par curseur.** Le premier appel porte `"keyset": true` ; la réponse rend
+`next_cursor` (et `has_more`) ; l'appel suivant renvoie ce `next_cursor` **tel quel** dans le champ
+`"cursor"` du corps, champ `espace` compris quand il y figure. `next_cursor` à `null` marque la dernière
+page ; `limit` (au plus `10000`, défaut `100`) fixe la taille d'une page.
+
+```sh
+curl -sS -u admin -H 'Content-Type: application/json' https://soc.example.org/api/query \
+  -d '{"soql":"search source=sshd","from":1767225600,"to":1767312000,"keyset":true,"limit":1000}'
+# puis, pour la page suivante, la valeur de next_cursor recopiée telle quelle :
+curl -sS -u admin -H 'Content-Type: application/json' https://soc.example.org/api/query \
+  -d '{"soql":"search source=sshd","from":1767225600,"to":1767312000,"keyset":true,"limit":1000,
+       "cursor":{"ts":1767311999,"id":48213}}'
+```
+
+`curl -u admin` demande le mot de passe sans l'écrire dans l'historique ; `from` et `to` sont des
+secondes depuis l'époque Unix.
+
+`PLUME_QUERY_MAX` est lu dans l'**environnement** du démon seul, pas dans le fichier de configuration :
+sur un hôte, il se pose par un drop-in de `plume-daemon.service`. L'export complet ne devrait obéir qu'à
+sa propre borne ; qu'il subisse aussi celle-ci est ouvert sous `P10.32-r`.
 
 ---
 
@@ -367,23 +464,33 @@ parler le même langage. La règle de contribution qui en découle est écrite d
 ## 10. Ce qui n'a pas été vérifié
 
 - **Aucune requête n'a été exécutée contre une instance.** Ce que cette page dit de la grammaire
-  n'est plus établi par lecture, mais par **COMPILATION** : le 2026-08-27, chaque requête publiée
-  ici, et chaque forme du tableau de §3.1, a été passée à `guatx_core::soql::to_sql` (étiquette
-  épinglée par `daemon/Cargo.toml`) et le SQL rendu a été relevé. C'est ce passage qui a montré
-  qu'un exemple de cette page ne compilait pas (§2.2) et que sa §3.1 annonçait un échec qui
-  n'arrive pas. Les BORNES d'exécution (§6.1) et les formes de réponse (§7) restent, elles,
+  repose, pour la plus grande part, sur une **COMPILATION** : le 2026-08-27, chaque requête alors
+  publiée ici, et chaque forme du tableau de §3.1, a été passée à `guatx_core::soql::to_sql`
+  (étiquette épinglée par `daemon/Cargo.toml`) et le SQL rendu a été relevé. C'est ce passage qui a
+  montré qu'un exemple de cette page ne compilait pas (§2.2) et que sa §3.1 annonçait un échec qui
+  n'arrive pas. Les BORNES d'exécution (§6.1, §6.4) et les formes de réponse (§7) restent, elles,
   établies par lecture des gestionnaires.
 
-  Les requêtes que cette page publie se relèvent — **sur l'arbre suivi, le 2026-08-27 : trois** :
+  Les requêtes que cette page publie se relèvent — **sur l'arbre suivi : 6 lignes** :
 
   ```sh
   grep -noE '(^|`)(search|metric) [^`]*' docs/GXQL.md
   ```
 
+  **Trois seulement ont été compilées** le 2026-08-27 : celle de l'en-tête et les deux de §2.2. Les
+  trois autres ont été ajoutées après ce relevé et **n'ont pas été compilées** — les deux de §2.4 et
+  celle de §6.4. Elles ont été **relues** contre le source du compilateur à l'étiquette épinglée : le
+  découpage en étapes, le filtre de base et l'aiguillage des commandes. Par cette lecture, la
+  requête à alternance de §2.4 échoue sur sa seconde étape (« commande GXQL inconnue »), comme la
+  section l'annonce, et les deux autres produisent un SQL. Sont **relues, non compilées** de la même
+  façon : les formes du tableau de §2.4, les étapes citées seules de §6.4 et la requête de l'exemple
+  d'appel par curseur.
+
   Cette commande ne voit **pas** une requête coupée sur deux lignes, ni une requête qui ne commence
-  pas par `search` ou `metric` (une étape citée seule, `| stats count by host`). Elle ne dit pas non
-  plus si elles compilent : rien dans ce dépôt ne les compile, le compilateur vivant dans une caisse
-  externe (§1). **Cette page est donc tenue par une relecture datée, pas par un cliquet.**
+  pas par `search` ou `metric` (une étape citée seule, `| stats count by host`), ni une requête écrite
+  dans un corps JSON. Elle ne dit pas non plus si elles compilent : rien dans ce dépôt ne les compile,
+  le compilateur vivant dans une caisse externe (§1). **Cette page est donc tenue par une relecture
+  datée, pas par un cliquet.**
 - Le **corps du compilateur** appartient à une caisse externe au dépôt : les comptes publiés en §1
   sont dérivés des **miroirs** présents ici, qu'un test de la suite tient égaux aux listes du cœur.
 - Le **taux d'acceptation** de l'importeur Sigma sur le dépôt SigmaHQ complet **n'est pas mesuré**,

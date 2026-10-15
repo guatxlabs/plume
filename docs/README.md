@@ -16,7 +16,7 @@ explicitement plutôt que laissé à la surprise de l'opérateur.
 
 ## S'en servir (le cycle de vie, pour l'exploitant)
 
-Ces cinq pages décrivent le produit **tel qu'il est**, pour quelqu'un qui l'exploite : installer,
+Ces six pages décrivent le produit **tel qu'il est**, pour quelqu'un qui l'exploite : installer,
 configurer, s'en servir, désinstaller — dans les **trois** modes de déploiement. Chaque affirmation y
 porte la commande qui la redonne, et ce qui n'a pas été exécuté y est dit à côté de l'exemple.
 La garde [`check_operator_surface_is_documented.py`](../.github/scripts/check_operator_surface_is_documented.py)
@@ -25,6 +25,7 @@ refuse qu'un ajout passe sans être écrit (`P9.7-b`).
 
 | Document | État | Pour quoi |
 |---|---|---|
+| [INSTALLER-SANS-OUVRIR-DE-BRECHE.md](INSTALLER-SANS-OUVRIR-DE-BRECHE.md) | ✅ | **Installer chez soi sans ouvrir de brèche, pas à pas** — ce qui est ouvert par défaut dans chaque mode, TLS et authentification, où vit chaque jeton et ce qu'il permet, **un tableau capteur par capteur** (ce qu'il lit, ses privilèges, ce qu'il fait entrer dans le SIEM, son risque, la requête qui prouve qu'il remonte), le transport, les risques assumés, et le capteur qui nourrit chaque tableau de bord semé. |
 | [TROIS-MODES.md](TROIS-MODES.md) | ✅ | **Le même geste dans les trois modes** — hôte natif, Docker, k3s. Où vivent les choses, comment on change un réglage, on ajoute une source, on crée un jeton, on sauvegarde, on met à jour — et **les gestes qui n'existent PAS** dans un mode, nommés au lieu d'être lissés. |
 | [CONSOLE.md](CONSOLE.md) | ✅ | **La console, espace par espace et onglet par onglet** — ce que chacun fait, quel rôle le voit, ce qu'il ne fait pas. Dérivé de la structure de navigation, pas recopié. |
 | [GXQL.md](GXQL.md) | ✅ | **Le langage de recherche** — les vingt commandes, les fonctions, les bornes, les couches de lecture seule, et surtout **ce que la grammaire n'accepte pas** (ni `OR`, ni groupement, ni tri multi-champs). |

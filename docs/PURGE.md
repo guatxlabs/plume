@@ -24,6 +24,9 @@ plume-daemon purge --source flux-de-test --since -2d --until -1h \
     --confirm <jeton> --reason "nettoyage des events de test d'onboarding"
 ```
 
+Les deux temps ouvrent la base pour y écrire au besoin, et la **créent** si elle manque : jamais avant le
+premier démarrage du démon ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+
 Le jeton n'est pas un identifiant de session : c'est **l'empreinte du résultat de la simulation** (périmètre
 canonique, cardinalité, bornes d'`id` et de `ts`, ventilation par source). L'exécution **re-simule** et
 recalcule cette empreinte. Donc :

@@ -45,7 +45,9 @@
 
 - **CLI** — `plume-daemon sigma-import ./rules/ --dry-run` affiche un **rapport JSON**
   (`imported[]` / `skipped[{title,reason}]` / `summary`) **sans écrire** ; sans `--dry-run`, UPSERT par
-  nom dans `PLUME_DB` (`managed=2`).
+  nom dans `PLUME_DB` (`managed=2`). Cette écriture **crée** la base si elle manque : sur un central
+  neuf, démarrez le démon avant, sans quoi la base naît en clair ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md`
+  §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)). `--dry-run` n'ouvre aucune base.
 - **API** — corps `{"content":"<yaml|json>","dry_run":false}` (texte Sigma, multi-docs `---` OK) **ou**
   `{"rules":[<sigma json>…]}`. Réponse `{imported:[…], skipped:[…]}`. Gate RBAC : la route `/api/sigma/*`
   tombe en **DEFAULT-DENY = admin** (l'import en masse de détections externes est privilégié).

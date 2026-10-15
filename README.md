@@ -42,7 +42,7 @@ sur **Docker**, un **hôte nu (systemd)** ou **Kubernetes/k3s**, dans **2 Go de 
 - 🧩 **Bring‑your‑own‑vendor** — *rien de spécifique à un éditeur n'est codé en dur.* Branchez **n'importe quelle** source : un **DSL de parsing** déclaratif (config.d, sans rebuild), un endpoint **compatible Splunk‑HEC** (pointez vos forwarders existants vers Plume), un **connecteur `http_pull` générique** (n'importe quelle API REST — CrowdStrike/SentinelOne/Defender par simple configuration), ou des flux **TAXII 2.1**. *Objectif de conception : ne pas vous faire perdre de capacité en migrant. Ce n'est pas une garantie mesurée — aucune matrice comparative n'existe dans `docs/` ; si une capacité vous manque, [ouvrez une issue](https://github.com/guatxlabs/plume/issues).*
 - 🛡️ **Une détection qui grandit avec vous** — l'**import Sigma** (unitaire et en masse) projette le jeu de règles communautaire sur la **matrice de couverture ATT&CK** ; le **threat‑intel** enrichit à l'ingestion ; l'**alerting basé sur le risque** score les entités pour réduire la fatigue d'alertes. Normalisé CIM, pour que les règles se composent par *catégorie*, jamais par éditeur.
 - 🔐 **Sécurisé et auditable par défaut** — argon2id + RBAC **fail‑closed** (une route non listée est refusée, pas autorisée), tokens d'agent liés à l'hôte, requêtes validées en lecture seule, un **ledger en chaîne de hachage** vérifiable (`plume-daemon verify`), conteneur durci (non‑root, rootfs en lecture seule, capabilities supprimées) et une **NetworkPolicy d'egress default‑deny** livrée dans [`deploy/k3s.yaml`](deploy/k3s.yaml). **Aucun secret dans le dépôt** — un code ouvert est une *fonctionnalité*, pas un risque.
-  *Deux réserves explicites, parce qu'un défaut annoncé vaut mieux qu'un défaut découvert :* le **chiffrement at‑rest SQLCipher** (par tenant en mode MSSP) est **compilé mais OPT‑IN** — sans clé (`PLUME_DB_KEY_FILE`), **la base est en clair sur le disque** ; et la NetworkPolicy n'a d'effet que si votre CNI les applique (flannel seul ne le fait pas — [vérifiez‑le](deploy/k3s.yaml), ne le supposez pas).
+  *Deux réserves explicites, parce qu'un défaut annoncé vaut mieux qu'un défaut découvert :* le **chiffrement at‑rest SQLCipher** (par tenant en mode MSSP) est **actif sur une base NEUVE** — sans clé fournie, le démon en engendre une (`0600`, à côté de la base) au premier démarrage : elle protège du vol du disque, pas d'une machine compromise, et la perdre fait perdre la base ; une base mise en service **avant** cette règle et restée en clair **n'est jamais convertie** par un démarrage ([`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md)) ; et la NetworkPolicy n'a d'effet que si votre CNI les applique (flannel seul ne le fait pas — [vérifiez‑le](deploy/k3s.yaml), ne le supposez pas).
 - 🌍 **Interface bilingue** (FR / EN) + tous les fuseaux horaires IANA.
 
 **Architecture** — *Central* : un seul binaire Rust qui ingère, stocke et sert l'API + la PWA sur `:7000`.
@@ -53,7 +53,8 @@ Le central est aussi son propre agent. Documentation approfondie : [`ARCHITECTUR
 conception) — dont [SDK](docs/SDK.md) · [CIM](docs/CIM.md) · [DSL de parsing](docs/PARSER-DSL.md) ·
 [Importeur Sigma](docs/SIGMA-IMPORTER.md) · [reprise après sinistre](docs/DR-plume-restore.md).
 
-**Pour s'en servir**, quatre pages écrites pour l'exploitant plutôt que pour le contributeur :
+**Pour s'en servir**, des pages écrites pour l'exploitant plutôt que pour le contributeur :
+**[installer sans ouvrir de brèche, pas à pas](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md)** ·
 [le même geste dans les trois modes](docs/TROIS-MODES.md) ·
 [la console, onglet par onglet](docs/CONSOLE.md) ·
 [le langage de recherche GXQL](docs/GXQL.md) ·
@@ -110,6 +111,10 @@ démo, adresses RFC 5737).
 Le mot de passe admin n'est **jamais** stocké en clair : vous fournissez son **hash argon2id** via
 `PLUME_PASS_HASH` (généré par la commande `hashpw`). En son absence, le central démarre en **mode SETUP**
 (un token d'installation à usage unique affiché dans les logs → assistant web).
+
+> **Installer chez soi sans rien exposer** : ce qui est ouvert par défaut dans chaque mode, le TLS,
+> l'authentification, où vit chaque jeton, ce que chaque capteur fait entrer dans le SIEM et comment
+> prouver qu'il remonte — [`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md`](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md).
 
 > ### ⚠️ À lire avant de choisir un mode : rien n'est encore pré‑construit
 > **Aucune image de conteneur et aucun binaire ne sont publiés à ce jour** (pas de `ghcr.io/...`, pas
@@ -254,8 +259,10 @@ identique dans les trois modes de déploiement). *Ce n'était pas vrai avant le 
 
 Enrôlez une autre machine comme agent qui pousse vers le central :
 ```sh
-sudo /usr/local/bin/plume-daemon token agent-$(hostname) $(hostname)   # on the central — 2e arg = l'hôte LIÉ
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token agent-$(hostname) $(hostname)   # on the central — 2e arg = l'hôte LIÉ
+# (PLUME_CONFIG : sudo ne transmet pas celui de l'unité ; sans lui, le jeton part dans /var/lib/plume/db/plume.db et l'agent est refusé)
 # (un forwarder multi-hôtes se déclare : `plume-daemon token <nom> --relais` ; la forme à 2 arguments est refusée)
+# (après le PREMIER démarrage du démon : lancée avant, la sous-commande fait naître la base EN CLAIR — docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md §1.1)
 # on the agent — le token passe par STDIN, JAMAIS par la ligne de commande (voir l'avertissement) :
 umask 077
 printf 'PLUME_CENTRAL=%s\nPLUME_TOKEN=%s\n' 'https://central:7000' '<token>' \
@@ -290,19 +297,28 @@ docker build -t soc:latest .
 docker save soc:latest | sudo k3s ctr images import -
 kubectl apply -f deploy/k3s.yaml
 ```
-L'Ingress est livré **sans TLS** (bloc `tls:` à décommenter) : ne l'exposez pas sur Internet sans certificat.
+L'Ingress est livré **en TLS seul** : il ne répond que sur l'entrée `websecure` de Traefik, avec le
+certificat du `Secret` `soc-tls` à créer (`kubectl -n soc create secret tls soc-tls --cert=… --key=…`, ou
+cert-manager) ; tant qu'il manque, Traefik présente son certificat auto-signé. Un autre contrôleur
+d'Ingress ignore ces annotations : sa redirection HTTP → HTTPS est alors à poser.
 Le PVC est à **1Gi**, une valeur de démarrage — dimensionnez‑le sur votre rétention réelle.
 
-### Chiffrement de la base (at‑rest) — opt‑in, à décider AVANT le premier démarrage
-Par défaut **la base est en clair sur le disque**. SQLCipher est compilé dans le binaire mais ne s'active
-qu'avec une clé : `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` (préféré — un fichier monté en lecture seule,
-**fail‑closed** s'il est absent) ou `PLUME_DB_KEY=<passphrase>` (lisible via `/proc/<pid>/environ`).
-Une base neuve est créée chiffrée d'office ; une base en clair existante est convertie au boot (idempotent).
+### Chiffrement de la base (at‑rest) — une base neuve naît chiffrée, une base existante n'est jamais convertie
+**Une base NEUVE naît chiffrée** : sans clé fournie, le démon engendre la sienne au premier démarrage
+(`0600`, à `PLUME_DB_KEY_AUTO_PATH`, sinon `<PLUME_DB>.key`) et le dit. **Mettez-la à l'abri hors de la
+machine**, puis posez `PLUME_DB_KEY_ESCROWED=1`. Pour apporter votre propre clé, posez-la **avant le
+premier démarrage** : `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` (préféré — un fichier monté en lecture
+seule, **fail‑closed** s'il est absent) ou `PLUME_DB_KEY=<passphrase>` (lisible via `/proc/<pid>/environ`).
+**Une base EXISTANTE n'est jamais convertie par un démarrage** : une clé posée sur une base en clair fait
+**refuser** le démarrage, qui nomme le geste explicite et irréversible `plume-daemon chiffrer-au-repos`
+([`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md)).
 Les deux se posent indifféremment **dans l'environnement ou dans le fichier de configuration**
 (`/etc/plume/soc.conf` sur un hôte, 0640 — c'est même l'endroit le plus discret : le fichier n'est pas
 lisible via `/proc/<pid>/environ`) ; l'environnement gagne s'il porte la même clé. *Avant le 2026‑08‑09
 (P8.7‑b) une clé écrite dans le fichier ne chiffrait que le tier froid et laissait la base chaude en
-clair, sans le dire ; si vous êtes dans ce cas, le démon l'annonce au démarrage et convertit la base.*
+clair, sans le dire ; si vous êtes dans ce cas, le démon l'annonce au démarrage, puis **refuse de
+démarrer** sur cette base en clair jusqu'au geste `chiffrer-au-repos` — ou jusqu'au retrait de la clé, qui
+rend l'état d'avant.*
 **Perte de la clé = perte de la base** : conservez‑la hors de la machine.
 
 ### Désinstallation — les trois modes
@@ -367,12 +383,16 @@ Cinq gestes. Aucun n'est facultatif, et le cinquième est celui qu'on oublie : *
 événements arrivent**.
 
 **① Installer le collecteur générique.** Il n'est **pas** installé par défaut : `bootstrap-agent.sh`
-n'installe que `resources integrity ship`. C'est la « règle d'or » du projet — on installe sans
-activer, l'opérateur décide.
+n'installe et n'arme d'office que `resources integrity ship`. Pour tout autre capteur, c'est la « règle d'or » du
+projet — on installe sans activer, l'opérateur décide.
 
 ```sh
-sudo env PLUME_EXTRA_COLLECTORS="custom" PLUME_CENTRAL=… PLUME_TOKEN=… bash bootstrap-agent.sh
+sudo env PLUME_EXTRA_COLLECTORS="custom" bash bootstrap-agent.sh   # /etc/plume/plume.conf déjà posé (§ B) : il est relu
 ```
+
+Le jeton et le central ne passent **pas** par cette ligne : `sudo` la journalise en entier, et le capteur
+`journal` la ferait entrer dans le SIEM (cf. l'avertissement plus haut). Sur une première installation,
+écrivez d'abord `/etc/plume/plume.conf` par `tee`, comme en [B](#b-hôte-nu-systemd--mode-de-première-classe-sans-docker).
 
 > **En conteneur ou en cluster, ce geste n'a pas cette forme** (une source de collecte s'ajoute autrement, ou n'existe pas dans ce mode) : voir [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.md).
 
@@ -425,8 +445,9 @@ TIMEOUT=45                                # borne de durée de CMD, en secondes 
 > ⚠️ **`MAX` est un plafond, pas une file d'attente — mais il ne coupe plus en silence.** Au‑delà de
 > `MAX` lignes dans un passage, le surplus est **jeté** et **n'est pas** reporté au passage suivant :
 > ces lignes-là ne reviendront jamais. Le collecteur **compte** ce qu'il écarte et l'**avoue** avec
-> son nombre (`reason=collection-capped`, `plafond-de-lignes`), ce qui lève l'alerte livrée
-> « capteur indisponible » et fait basculer la pastille de *cette* source. **Mesuré (2026‑08‑27)** :
+> son nombre (`reason=collection-capped`, `plafond-de-lignes`), ce qui lève l'alerte « capteur
+> indisponible » **une fois sa règle de catalogue activée** (voir plus bas) et fait basculer la pastille
+> de *cette* source. **Mesuré (2026‑08‑27)** :
 > `CMD=seq 1 10`, `MAX=3` → 3 événements publiés, **7 lignes écartées**, et l'aveu porte le 7 ;
 > avant, le même passage sortait en 0 sans un mot. Le prix de ce compte est écrit : lire le surplus
 > pour le compter prend du temps de collecteur — sur `CMD=yes`, `MAX=3`, `TIMEOUT=3`, le passage dure
@@ -511,8 +532,11 @@ le collecteur tourne sur un hôte Linux, mais la **cible** peut être n'importe 
 > **Linux** (serveur ou poste, toute distribution) est couvert nativement par les collecteurs
 > (`collectors/*.sh`, POSIX-sh). Un collecteur dont l'outil est absent **se désactive — et le DIT** :
 > il émet un événement `category=config` avec `collect_status=unavailable` et une `reason`
-> (`missing-dependency`, `missing-source`, `missing-config`, `subsystem-absent`, `unreachable`), et la
-> règle livrée `de-collector-unavailable` en lève une **alerte**.
+> (`missing-dependency`, `missing-source`, `missing-config`, `subsystem-absent`, `unreachable`). La
+> règle `config.d/rules/catalog/de-collector-unavailable.json` en lève une **alerte**, mais elle est
+> livrée **désactivée** (`enabled: false`, comme la quasi-totalité du catalogue) : **activez-la** dans la console
+> (rôle admin) — l'activation est enregistrée à part et survit au redémarrage. Tant qu'elle est éteinte,
+> un capteur aveugle ne lève rien, et seule la requête ci-dessous le montre.
 > *Jusqu'au 2026‑08‑01, il sortait silencieusement en succès : rien ne distinguait « ce capteur est
 > aveugle » de « il ne s'est rien passé » — 29 des 37 capteurs livrés portaient cette forme, soit 50
 > sorties muettes.* **Réserve, mesurée elle aussi :** cette alerte est **globale**. Elle ne fait pas
@@ -840,7 +864,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 | `PLUME_CONFIG_DIR` | overlays `config.d` (parsers, règles, playbooks) | `/usr/local/share/plume/config.d` |
 | `PLUME_WEB` | racine de la PWA servie | `/usr/local/share/plume/web` |
 
-**Chiffrement au repos** — voir la section dédiée plus haut ; **par défaut la base est en clair**.
+**Chiffrement au repos** — voir la section dédiée plus haut ; **une base neuve naît chiffrée** sous une clé engendrée, une base existante restée en clair n'est pas convertie.
 
 | Variable | Effet | Défaut |
 |---|---|---|
@@ -1055,7 +1079,7 @@ c'est un manque connu, nommé, et pas un oubli.
 - **Ban IP natif** : une adresse bannie prend un 403 sur **toutes** les routes d'un coup — UI, API, ingestion, fichiers statiques — *avant* la vérification d'hôte et l'authentification ; derrière un proxy ou un CDN, le blocage porte sur l'**IP réelle du client**, jamais sur celle du proxy. **Réversible** sans redémarrage (TTL ou retrait), avec une **valve de récupération** pour l'opérateur qui se bannirait lui-même, et une banlist **bornée en mémoire** dont le plafond et la saturation sont publiés en métrique.
 - **Base de données** : les requêtes de l'API sont **en lecture seule**, validées, à budget temps. Le SQL brut est réservé aux admins ; un autorisateur refuse les colonnes de mot de passe/token, même aux admins.
 - **Réponse** : les actions sont **déléguées** aux exécuteurs, en **dry‑run par défaut** + approbation + liste blanche + **ledger en chaîne de hachage** (vérifiable par `plume-daemon verify` ; voir la réserve sur l'épinglage de clé dans ARCHITECTURE §14).
-- **Au repos** : chiffrement optionnel **SQLCipher par tenant**. **Conteneur** : non‑root, rootfs en lecture seule, `no‑new‑privileges`, capabilities supprimées, NetworkPolicy d'egress.
+- **Au repos** : chiffrement **SQLCipher par tenant**, actif d'office sur une base neuve (clé engendrée, à mettre à l'abri). **Conteneur** : non‑root, rootfs en lecture seule, `no‑new‑privileges`, capabilities supprimées, NetworkPolicy d'egress.
 
 ## Licence et modèle
 Le cœur de Plume est **ouvert et copyleft** sous **[AGPL‑3.0](LICENSE)** — auto‑hébergez‑le, étudiez‑le, modifiez‑le.

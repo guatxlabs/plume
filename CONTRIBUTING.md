@@ -61,13 +61,15 @@ A pull request that weakens any of these will be **rejected**, no matter how use
   fails CI** (`.github/scripts/check_collector_exit_is_classified.py`): the gate enumerates no sensor
   list, so a collector written tomorrow is covered by construction. Reporting is not enough to be
   *seen*: an extra `config` event makes a blind source look **fresh** (measured: `/api/sources` returned
-  `status: "frais"` for a source that had just admitted it was blind), so the shipped rule
-  `config.d/rules/catalog/de-collector-unavailable.json` raises an **alert** on the admission —
-  verified end to end. *Known gap, stated rather than hidden:* that alert is **global**, it does not
-  flip the guilty feed to `warn`, because the daemon attributes `active_alerts` by scanning the rule's
-  **query text** for `source=` tokens (`daemon/src/handlers/freshness.rs`, "limite assumée") and a
-  deliberately generic rule carries none. Closing it means attributing an alert to the source of the
-  **matched events** instead of to the rule text.
+  `status: "frais"` for a source that had just admitted it was blind), so the catalogue rule
+  `config.d/rules/catalog/de-collector-unavailable.json` raises an **alert** on the admission — **once
+  an operator enables it**: like the whole catalogue it ships `"enabled": false`, and the loader reads
+  `enabled` from the file. Enabled, it raises **one global** alert, and the guilty feed still carries
+  it (an alert badge on that feed in the sources view): the alert records the `source` of the **matched events** (`alert.sources`,
+  `daemon/src/imputation.rs`), which `daemon/src/handlers/freshness.rs` reads to count `active_alerts`
+  per source; the older scan of the rule's query text for `source=` tokens remains only as a fallback
+  for alerts raised before that column existed. Left disabled, an admission is an event and nothing
+  more.
 - **The 2 GB RAM budget is non-negotiable — optimise, don't grow.** The reference deployment
   measures **~310 MiB RSS** (9,844,503 events, 2 vCPU, field masking off) and is **capped at
   runtime** to **2 GiB** (`limits.memory: 2Gi` in k3s, `MemoryMax=2G` in systemd) — **no CI job

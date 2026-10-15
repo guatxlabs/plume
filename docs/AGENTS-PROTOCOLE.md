@@ -206,9 +206,18 @@ ensemble ; un écart, ou le troisième qui grimpe, dit qu'un `2xx` a cessé d'ê
 ### 3.1 Le jeton
 
 ```sh
-plume-daemon token <nom> <hôte-lié>     # jeton de MACHINE
-plume-daemon token <nom> --relais       # jeton de RELAIS (forwarder multi-hôtes)
+# hôte natif : la configuration de l'unité, que `sudo` ne transmet pas
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token <nom> <hôte-lié>   # jeton de MACHINE
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token <nom> --relais     # jeton de RELAIS (forwarder multi-hôtes)
+# Docker / k3s : dans le conteneur où le démon tourne
+docker compose exec soc plume-daemon token <nom> <hôte-lié>
+kubectl -n soc exec deploy/soc -- plume-daemon token <nom> <hôte-lié>
 ```
+
+Sans le `PLUME_CONFIG` de l'unité, la sous-commande écrit dans une autre base que celle du démon :
+elle affiche un jeton, et le central le refuse. Sur un central neuf, démarrez le démon **avant** :
+une base que la sous-commande crée naît en clair
+([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
 
 La forme sans hôte **et** sans `--relais` est **refusée** : la portée d'un jeton se déclare, elle ne
 se déduit pas d'une omission. Poser les deux à la fois est refusé aussi.

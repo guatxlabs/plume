@@ -24,6 +24,13 @@ grep -n 'bundled-sqlcipher' daemon/Cargo.toml
 grep -n 'PRAGMA key' daemon/src/crypto/mod.rs daemon/src/db_open.rs
 ```
 
+**« Neuve → chiffrée » suppose que le démon ouvre la base le premier.** La clé n'est engendrée qu'à son
+démarrage. Une sous-commande qui écrit dans la base (`token`, `sigma-import` sans `--dry-run`, `retention`,
+`fts-compact`, `purge`, `restore-drill record`, `backup` après sa sauvegarde) la **crée** si elle
+manque, sous la seule clé déjà posée : sans aucune, la base naît en clair, et le démarrage suivant la
+trouve existante et n'y touche pas. L'ordre sûr dans les trois modes est dans
+[`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base).
+
 ### Les trois leviers, et l'ordre entre eux
 
 L'ordre de précédence est écrit **une fois**, dans le code, comme un tableau dont l'ordre EST la

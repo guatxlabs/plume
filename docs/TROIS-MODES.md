@@ -185,13 +185,17 @@ La même sous-commande, atteinte de trois façons.
 
 | | commande |
 |---|---|
-| `host` | `sudo /usr/local/bin/plume-daemon token <nom> <hôte-lié>` |
+| `host` | `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token <nom> <hôte-lié>` (`sudo` ne transmet pas le `PLUME_CONFIG` de l'unité : sans lui, le jeton s'écrit dans `/var/lib/plume/db/plume.db`, une autre base que celle du démon) |
 | `docker` | `docker compose exec soc plume-daemon token <nom> <hôte-lié>` |
 | `k3s` | `kubectl -n soc exec deploy/soc -- plume-daemon token <nom> <hôte-lié>` |
 
 *Non exécutées sur une installation réelle dans ce lot* — la forme à deux arguments et le drapeau
 `--relais` sont ceux décrits dans le [`README`](../README.md#b-hôte-nu-systemd--mode-de-première-classe-sans-docker).
 Le jeton s'affiche une fois ; il ne se relit pas.
+Sur un central neuf, le démon démarre **avant** la première sous-commande : en `docker` et `k3s`,
+`exec` l'impose (le conteneur du démon doit tourner) ; en `host`, une sous-commande lancée avant le
+premier démarrage fait naître la base en clair
+([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
 
 > ⚠️ **Le jeton ne passe JAMAIS par la ligne de commande côté agent**, dans aucun mode : `sudo`
 > journalise sa ligne complète et le collecteur `journal` la renvoie au SOC, qui la stocke en clair.
@@ -270,8 +274,12 @@ redémarrage**. Corriger l'intervalle, la destination ou la rétention **exige**
 
 ### 3.8 Chiffrer la base au repos
 
-Le geste est identique dans son principe — poser une clé **avant le premier démarrage** — et diffère
-par le support. Par défaut, **dans les trois modes, la base est en clair sur le disque**.
+Dans les trois modes, **une base NEUVE naît chiffrée** : sans clé fournie, le démon engendre la sienne
+au premier démarrage (`0600`, à `PLUME_DB_KEY_AUTO_PATH`, sinon `<PLUME_DB>.key`) — à copier hors de la
+machine, puis `PLUME_DB_KEY_ESCROWED=1`. **Une base EXISTANTE restée en clair n'est jamais convertie par
+un démarrage** : une clé posée dessus fait refuser le démarrage, qui nomme le geste explicite
+`plume-daemon chiffrer-au-repos` ([`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md)). Apporter
+**sa propre** clé se fait donc **avant le premier démarrage**, et le support diffère selon le mode :
 
 | | comment |
 |---|---|
@@ -406,8 +414,10 @@ d'exploitation, eux, diffèrent.
 d'un fichier que personne ne versionne, et qu'un `docker cp` malheureux pourrait créer. `/nonexistent`
 rend le niveau **explicitement** vide plutôt qu'accidentellement vide.
 
-**On installe sans activer.** C'est la règle d'or du mode hôte : `bootstrap-agent.sh` pose des
-capteurs sans armer leurs timers, et c'est l'opérateur qui décide. En conteneur, la règle prend une
+**On installe sans activer.** C'est la règle d'or du mode hôte : `bootstrap-agent.sh` pose les
+capteurs demandés sans armer leurs timers, et c'est l'opérateur qui décide. Trois unités font exception
+et sont armées d'office — `resources`, `integrity` et `ship` (`systemctl enable --now` en fin de
+script) — et `bootstrap.sh`, sur le central, en arme sept (le README les dénombre). En conteneur, la règle prend une
 autre forme — les récepteurs existent mais n'ingèrent que ce qu'on leur envoie, et les connecteurs
 en PULL sont créés un par un dans la console.
 

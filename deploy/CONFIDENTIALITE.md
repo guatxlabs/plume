@@ -1,18 +1,27 @@
 # Confidentialité (P4)
 
 ## Transport — TLS
-Le daemon sert en HTTP (localhost par défaut, bind configurable). Pour le réseau, mets-le derrière une terminaison TLS :
-- **Caddy** : `soc.tondomaine.tld { reverse_proxy 127.0.0.1:7000 }` (TLS auto Let's Encrypt).
-- **nginx / traefik** : `proxy_pass http://127.0.0.1:7000;` + certificat.
-- **k3s** : Ingress TLS (cf. `deploy/k3s.yaml`), `Host` = `PLUME_HOST`.
+Le daemon sert en HTTP sur la boucle locale par défaut (bind configurable par `PLUME_ADDR`). Pour le réseau, deux voies :
+- **TLS natif** : `PLUME_TLS_CERT` + `PLUME_TLS_KEY` (chemins PEM lisibles par l'utilisateur du démon). Un PEM illisible
+  arrête le démon au lieu de le faire retomber en HTTP ; HSTS et l'attribut `Secure` des cookies ne sont émis qu'avec ce TLS.
+  Aucun certificat client n'est vérifié : un mTLS se pose sur un mandataire.
+- **une terminaison TLS devant** (le cookie de session n'y est alors pas marqué `Secure` : ne servez pas le même nom en clair) :
+  - **Caddy** : `soc.tondomaine.tld { reverse_proxy 127.0.0.1:7000 }` (TLS auto Let's Encrypt).
+  - **nginx / traefik** : `proxy_pass http://127.0.0.1:7000;` + certificat.
+- **k3s** : l'Ingress livré est en TLS seul (entrée `websecure`, certificat du `Secret` `soc-tls`, cf. `deploy/k3s.yaml`), `Host` = `PLUME_HOST`.
 - Cert auto-signé rapide : `openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj /CN=soc.local`.
 
 ## Auth des agents — tokens (recommandé)
 Sur le central, crée un token par machine (révocable, ≠ mot de passe partagé). **La portée se DÉCLARE** :
 ```
-plume-daemon token agent-example example-host   # MACHINE : lié à cet hôte (hôte attesté à l'écriture)
-plume-daemon token relais-siem   --relais       # RELAIS  : forwarder multi-hôtes (hôte NON attesté)
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token agent-example agent.example.org   # MACHINE : lié à cet hôte (hôte attesté à l'écriture)
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token relais-siem --relais             # RELAIS  : forwarder multi-hôtes (hôte NON attesté)
 ```
+C'est la forme hôte natif : `sudo` ne transmet pas le `PLUME_CONFIG` de l'unité, et sans lui le jeton
+s'écrit dans une autre base que celle du démon. En Docker et en k3s, la sous-commande se lance dans le
+conteneur du démon (`docker compose exec soc plume-daemon token …`,
+`kubectl -n soc exec deploy/soc -- plume-daemon token …`). Sur un central neuf, le démon démarre **avant** toute sous-commande
+([`../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
 La forme à deux arguments (`plume-daemon token <nom>`) est **refusée** : elle produisait un jeton non lié,
 avec lequel une enveloppe `{"host":"CONTROLEUR-DE-DOMAINE-USURPE"}` était acceptée (202) et stockée sous ce
 nom-là (mesuré le 2026-08-02). Le token s'affiche **une seule fois**.
@@ -40,9 +49,14 @@ S'authentifier n'est pas être autorisé : l'autorisation reste `route_min_role`
   livré (`rusqlite` avec `bundled-sqlcipher-vendored-openssl`, cf. `daemon/Cargo.toml`) ; il ne manque
   que la **clé**. Posez `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` (préféré : fichier monté en lecture seule,
   **fail-closed** si absent → le daemon refuse de démarrer plutôt que d'ouvrir la base en clair) ou
-  `PLUME_DB_KEY=<passphrase>` (lisible via `/proc/<pid>/environ`). Une base neuve est créée chiffrée
-  d'office ; une base en clair existante est convertie au boot (idempotent).
-  **Sans clé, la base est EN CLAIR** — c'est le défaut. **Perte de la clé = perte de la base.**
+  `PLUME_DB_KEY=<passphrase>` (lisible via `/proc/<pid>/environ`), **avant le premier démarrage**.
+  **Sans clé fournie, une base NEUVE naît chiffrée quand même** (`P9.6-a`) : le démon engendre une clé
+  `0600` à `PLUME_DB_KEY_AUTO_PATH`, sinon `<PLUME_DB>.key`, et l'annonce ; à mettre à l'abri hors de la
+  machine, puis `PLUME_DB_KEY_ESCROWED=1`. Elle protège du vol du disque, pas d'une machine compromise.
+  **Une base EXISTANTE en clair n'est jamais convertie par un démarrage** : une clé posée dessus fait
+  refuser le démarrage, qui nomme le geste explicite `plume-daemon chiffrer-au-repos` (irréversible) ; une
+  base mise en service avant `P9.6-a` sans clé reste donc en clair tant que ce geste n'a pas eu lieu.
+  **Perte de la clé = perte de la base.**
   Les deux variables se lisent **dans l'environnement OU dans `PLUME_CONFIG`** (`/etc/plume/soc.conf`,
   0640, sur un hôte systemd) — l'environnement gagne. **P8.7-b, 2026-08-09** : avant cette date la voie
   qui OUVRE la base ne lisait que l'environnement, alors que le tier froid lisait aussi le fichier ; une

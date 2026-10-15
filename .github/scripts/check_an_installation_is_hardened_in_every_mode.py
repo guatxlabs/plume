@@ -49,10 +49,12 @@ leur absence est ainsi un scénario, pas un accident de l'exécuteur. Puis elle 
     (`revert-expired`) — par une table outil → famille (`FAMILLES_DES_OUTILS` : curl, kubectl, cscli,
     skopeo, trivy → AF_INET/AF_INET6 ; nft, auditctl, ss, ip → AF_NETLINK ; iptables, ufw → les deux ;
     docker, crictl, systemctl → AF_UNIX) : une famille MANQUANTE (le script l'ouvre, `socket()`
-    échouerait) et une famille EN TROP (rien ne l'ouvre) sont des fautes, sauf excès admis et motivé
-    (`custom` : commandes de l'exploitant). L'instrument est éprouvé : un appel direct, par variable,
-    par fonction est vu ; un message, un `command -v`, un commentaire, un chemin, l'argument d'un
-    `plume_unavailable` ne le sont pas ;
+    échouerait) et une famille EN TROP (rien ne l'ouvre) sont des fautes. Un script qui exécute du CODE
+    D'EXPLOITANT (`sh -c "$V"`/`eval "$V"`, V jamais affectée d'un littéral : `controls` et ses
+    catalogues `/etc/plume/controls.d/*.check`, `custom` et ses déclarations) exige TOUTES les familles.
+    L'instrument est éprouvé : un appel direct, par variable, par fonction, une ligne de catalogue lue
+    par `read` sont vus ; un message, un `command -v`, un commentaire, un chemin, l'argument d'un
+    `plume_unavailable`, un programme écrit dans le script (`_LIRE_JOURNAL` de mail.sh) ne le sont pas ;
   · sans `augenrules`, sans `auditctl`, ou sans les deux : aucune règle posée, l'installeur le dit, et
     `plume-auditd.timer` reste ACTIVÉ — c'est lui qui porte au SOC l'aveu `missing-source` du
     capteur ; avec les deux : règles posées (le témoin positif de la même mesure) ;
@@ -106,6 +108,10 @@ leur absence est ainsi un scénario, pas un accident de l'exécuteur. Puis elle 
 CE QU'ELLE NE TIENT PAS : la table outil → famille est lue du CODE des outils, pas MESURÉE sous
 systemd (aucune unité n'a été jouée avec sa nouvelle liste) ; un outil qui ouvrirait une famille
 inattendue (un `getaddrinfo` qui sonde les interfaces par netlink) n'est vu que par cette table.
+Le code d'exploitant n'est reconnu que sous la forme `sh|bash|dash -c "$V"` / `eval "$V"` : un script
+qui exécuterait un fichier d'exploitant autrement (`. "$f"`, `"$f"` nu, `xargs sh`) ne serait pas vu, et
+sa liste resserrée ferait mourir les commandes de l'exploitant. Les capacités (`CapabilityBoundingSet=`)
+ne sont pas jugées par cette dérivation.
 Ses propres instruments sont éprouvés à chaque exécution : le lecteur systemd sur des lignes connues,
 le juge d'ordre sur un journal où `lib.sh` arrive trop tard, le réacheminement sur l'absence de toute
 racine non réacheminée.
@@ -599,12 +605,34 @@ PYTHON_RESEAU = re.compile(r"^\s*(?:import|from)\s+(?:socket|socketserver|http|u
 # ExecStart qui n'est pas un script du dépôt : binaire bâti (démon, collector-*) — son code n'est pas un
 # texte que cette garde sait lire. Ses familles restent celles que l'unité DÉCLARE, déclaration exigée.
 BINAIRES_HORS_DERIVATION = {"plume-daemon", "plume-collector-mail", "plume-collector-syslog"}
-# Familles déclarées au-delà de la dérivation, ADMISES avec leur raison — et seulement celles-là.
-EXCES_ADMIS = {
-    # `custom.sh` exécute des commandes posées par l'EXPLOITANT (/etc/plume/custom.d) : ce qu'elles appellent
-    # n'est pas dans le dépôt, on ne le dérive pas.
-    "plume-custom.service": F_UNIX | F_NETLINK | F_INET,
-}
+# Familles déclarées au-delà de la dérivation, ADMISES avec leur raison — et seulement celles-là. Vide : le
+# seul cas qui y figurait (`custom`) est désormais DÉRIVÉ par la règle du code d'exploitant ci-dessous.
+EXCES_ADMIS = {}
+# CODE D'EXPLOITANT. Un script qui exécute une commande qu'il ne contient pas — `sh -c "$ccmd"` sur une
+# ligne lue d'un catalogue de /etc/plume/controls.d, `sh -c "$CMD"` d'une déclaration de /etc/plume/custom.d
+# — ouvre ce que CETTE commande ouvre : la garde ne peut pas le lire, l'unité doit donc garder TOUTES les
+# familles (un contrôle `kubectl get pods`, `nft list ruleset` ou `ss -ltn` mourrait en EAFNOSUPPORT, serait
+# compté `false` et lèverait une fausse alerte). Critère : `sh|bash|dash -c "$V"` ou `eval "$V"` dont la
+# variable V n'est JAMAIS affectée d'un littéral non vide dans le script (lue par `read`, copiée d'une
+# autre variable). Un programme que le script écrit lui-même (`_LIRE_JOURNAL='tail …'` de mail.sh) n'en
+# est pas : son texte est dans le dépôt.
+F_TOUTES = F_UNIX | F_NETLINK | F_INET
+EXEC_DE_VARIABLE = re.compile(r'(?<![\w/.-])(?:(?:ba|da)?sh\s+-c|eval)\s+"?\$\{?([A-Za-z_]\w*)\}?"?')
+
+
+def code_d_exploitant(texte):
+    """[(ligne, extrait)] des exécutions de code que le script ne contient pas (cf. CODE D'EXPLOITANT)."""
+    out = []
+    # les commentaires citent volontiers une affectation d'exemple (`CMD=sh -c '…'` dans custom.sh) : ni
+    # l'exécution ni l'affectation littérale n'y comptent.
+    code = "\n".join("" if l.lstrip().startswith("#") else l for l in texte.splitlines())
+    for k, ligne in enumerate(code.splitlines(), 1):
+        for m in EXEC_DE_VARIABLE.finditer(ligne):
+            v = m.group(1)
+            litteral = re.search(r"(?<![\w$])" + re.escape(v) + r"""=(?:'[^']+'|"[^"$]+"|[^\s'"$;][^\s;]*)""", code)
+            if not litteral:
+                out.append((k, m.group(0)))
+    return out
 
 
 def code_shell(texte):
@@ -731,6 +759,10 @@ def familles_derivees(chemin_script, lib, argument=None):
         debut = texte.count("\n", 0, m.start(1))
         fragment = "\n".join(code.splitlines()[debut:debut + m.group(1).count("\n")])
     fam, preuves = familles_du_fragment(fragment, fonctions_du_code(code), lib)
+    brut = m.group(1) if argument else texte
+    for k, extrait in code_d_exploitant(brut):
+        fam |= F_TOUTES
+        preuves.append(f"code d'exploitant `{extrait}` (l.{k}) → toutes familles")
     if PYTHON_RESEAU.search(fragment if argument else texte):
         fam |= F_INET
         preuves.append("python réseau embarqué → AF_INET AF_INET6")
@@ -811,10 +843,19 @@ def eprouver_derivation(lib):
         ('command -v ss >/dev/null || plume_unavailable conntrack missing-dependency "ss absent"\n', F_UNIX),
         ("# curl https://example.org\nP=/var/lib/docker\nfirst_ctr=0\nfor ip in $L; do echo \"$ip\"; done\n"
          "awk '\n  { if ($1 ~ /curl|wget/) print }\n' f\n", F_UNIX),
+        # code d'exploitant : une ligne lue d'un catalogue, une valeur copiée d'une déclaration → toutes ;
+        # un programme écrit dans le script, une mention en commentaire → rien de plus.
+        ('cid=""; ccmd=""\nwhile IFS="|" read -r cid ccmd; do\n  sh -c "$ccmd" >/dev/null\ndone < "$f"\n', F_TOUTES),
+        ('CMD=""\nCMD=$v\n$TO sh -c "$CMD"\n', F_TOUTES),
+        ('eval "$LIGNE"\n', F_TOUTES),
+        ("P='[ -e \"$1\" ] || exit 3; tail -n \"$2\" \"$1\"'\nsh -c \"$P\" lire \"$f\" 10\n", F_UNIX),
+        ('# `CMD` était exécuté par `sh -c "$CMD"`\n', F_UNIX),
     ]
     for src, attendu in cas:
         code = code_shell(src)
         obtenu, _ = familles_du_fragment(code, fonctions_du_code(code), lib)
+        if code_d_exploitant(src):
+            obtenu |= F_TOUTES
         if obtenu != attendu:
             refuser(f"dérivation des familles : {src!r} rend {sorted(obtenu)}, attendu {sorted(attendu)}")
 

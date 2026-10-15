@@ -15,8 +15,10 @@ ReadWritePaths=/var/lib/plume/spool
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 # Familles d'adresses = ce que le script appelle (P10.33-d, dérivé par check_an_installation_is_hardened_in_every_mode.py) :
-# systemctl (D-Bus, AF_UNIX) et sysctl (/proc/sys) : aucun socket réseau ni netlink.
-RestrictAddressFamilies=AF_UNIX
+# systemctl (D-Bus, AF_UNIX) et sysctl (/proc/sys) n'ouvrent rien d'autre, MAIS le script exécute aussi
+# les catalogues de l'exploitant (/etc/plume/controls.d/*.check, `sh -c "$ccmd"`) : un contrôle `kubectl`,
+# `nft`, `iptables` ou `ss` y a besoin du réseau ou du netlink. Toutes les familles restent donc ouvertes.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 LockPersonality=true
 MemoryMax=64M
 CPUQuota=20%

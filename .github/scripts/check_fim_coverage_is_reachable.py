@@ -33,12 +33,16 @@ CE QUE CETTE GARDE VÉRIFIE — TROIS JAMBES, AUCUNE ÉNUMÉRATION
 3. `PrivateTmp=` (`P10.33-d`), MÊME FAUTE, AUTRE CAPTEUR. Le drop-in partagé posait aussi
    `PrivateTmp=true`, qui écrasait le `PrivateTmp=false` que `systemd/plume-yara.service` pose
    EXPRÈS : /tmp et /var/tmp, deux des quatre cibles par défaut de `collectors/yara.sh`
-   (`PLUME_YARA_PATHS`), devenaient sur chaque agent un tmpfs neuf et vide. Cette jambe exige que
+   (`PLUME_YARA_PATHS`), devenaient un tmpfs neuf et vide sur tout agent où yara était posé par
+   `PLUME_EXTRA_COLLECTORS=yara` (`install_collector`, qui pose le drop-in ; `PLUME_WITH_YARA=1` pose
+   l'unit SANS drop-in, ce chemin-là n'avait rien perdu). Cette jambe exige que
    chaque unit déclare son `PrivateTmp=`, refuse ce scalaire (et `ProtectHome=`) dans le drop-in en
    NOMMANT chaque unit dont il écraserait la valeur, recompose le bac à sable effectif de tout capteur
    qui annonce des cibles de scan par défaut (`PATHS="${PLUME_<X>_PATHS:-…}"`, dérivé du code) et
-   NOMME le capteur aveuglé ; une unit qui voit le /tmp de l'hôte doit poser `TMPDIR` sous un de ses
-   `ReadWritePaths=`. Témoins : sur les vraies cibles de yara, `PrivateTmp=yes` masque, `no` non.
+   NOMME le capteur aveuglé ; une unit qui voit le /tmp de l'hôte doit poser `TMPDIR` sous un
+   `ReadWritePaths=` de L'UNIT ELLE-MÊME — jugé sans le drop-in, puisqu'un des deux chemins d'installation
+   la pose sans lui (`ProtectSystem=strict` : un TMPDIR hors de ses chemins inscriptibles fait échouer
+   `mktemp`). Témoins : sur les vraies cibles de yara, `PrivateTmp=yes` masque, `no` non.
 
 LA TABLE DE MASQUAGE EST MESURÉE, ET ELLE EST TOTALE
 -----------------------------------------------------
@@ -329,7 +333,8 @@ def main() -> int:
     # --- Jambe 3 (`P10.33-d`) : `PrivateTmp=` appartient à chaque unit, et une cible de scan ANNONCÉE ----
     # reste joignable. Le drop-in partagé posait `PrivateTmp=true` : scalaire, il écrasait le
     # `PrivateTmp=false` que plume-yara.service pose EXPRÈS — /tmp et /var/tmp, deux des quatre cibles par
-    # défaut de collectors/yara.sh, devenaient un tmpfs NEUF et vide sur chaque agent, sans un mot.
+    # défaut de collectors/yara.sh, devenaient un tmpfs NEUF et vide, sans un mot, sur l'agent où yara était
+    # posé par PLUME_EXTRA_COLLECTORS (drop-in posé) ; PLUME_WITH_YARA=1 pose l'unit sans drop-in.
     for cle in PROPRES_A_L_UNIT:
         if cle not in dropin:
             continue
@@ -368,13 +373,17 @@ def main() -> int:
                 f"capteur `{nom}` — AVEUGLÉ : `{directive}` ({origine}) remplace `{prefixe}` par un "
                 f"répertoire vide, le scan ne trouvera rien, SANS erreur ni avertissement.")
         # Une unit qui VOIT le /tmp de l'hôte n'y écrit pas ses propres temporaires (lien symbolique
-        # posé d'avance, fichier lu par un tiers) : TMPDIR vise un répertoire qu'elle possède.
+        # posé d'avance, fichier lu par un tiers) : TMPDIR vise un répertoire qu'elle possède. Jugé sur
+        # l'UNIT SEULE : `PLUME_WITH_YARA=1` (bootstrap-agent.sh) la pose SANS le drop-in, et sous
+        # `ProtectSystem=strict` un TMPDIR que seul le drop-in rendrait inscriptible ferait échouer mktemp.
         if unit.get("PrivateTmp", ["yes"])[-1].lower() in ("no", "false", "off", "0"):
             tmpdir = [v.split("=", 1)[1] for v in unit.get("Environment", []) if v.startswith("TMPDIR=")]
-            rw = composer(unit, dropin).get("ReadWritePaths", ([], ""))[0]
+            rw = composer(unit, {}).get("ReadWritePaths", ([], ""))[0]
             if not tmpdir or not any(sous(tmpdir[-1], p.lstrip("-+")) for p in rw):
                 errs.append(f"{unit_path}: `PrivateTmp=false` sans `Environment=TMPDIR=` sous un ReadWritePaths= "
-                            f"de l'unit : les temporaires du capteur iraient dans le /tmp PARTAGÉ de l'hôte.")
+                            f"de l'unit ELLE-MÊME (drop-in non compté : PLUME_WITH_YARA=1 la pose sans lui) : "
+                            f"les temporaires du capteur iraient dans le /tmp PARTAGÉ de l'hôte, ou mktemp "
+                            f"échouerait sous ProtectSystem=strict.")
     if cibles_vues < 1:
         errs.append("aucun capteur à cibles de scan (`PLUME_<X>_PATHS:-…`) analysé : la découverte est cassée.")
 

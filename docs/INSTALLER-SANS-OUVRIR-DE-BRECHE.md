@@ -258,8 +258,13 @@ pour `yara`, qui doit voir le vrai `/tmp` pour le scanner) et `RestrictAddressFa
 de sockets que l'unité peut ouvrir : AF_INET/AF_INET6 pour qui parle au réseau — `ship`, `kubectl`,
 `cscli`, `curl` —, AF_NETLINK pour qui lit le noyau — `nft`, `auditctl`, `ss` —, AF_UNIX pour tous).
 Un réglage scalaire du drop-in écraserait celui de l'unité, une liste s'y ajouterait : c'est ainsi
-que `yara` avait perdu `/tmp` sur l'agent et que tous les capteurs de l'agent recevaient les quatre
-familles. La CI dérive les familles de chaque unité de ce que son script appelle et refuse tout écart.
+que `yara` avait perdu `/tmp` sur l'agent quand il était posé par `PLUME_EXTRA_COLLECTORS=yara` (posé
+par `PLUME_WITH_YARA=1`, sans drop-in, il le voyait), et que les capteurs que l'agent posait avec le
+drop-in recevaient les quatre familles. La CI dérive les familles de chaque unité de ce que son script
+appelle et refuse tout écart ; `controls` et `custom`, qui exécutent les commandes de l'exploitant
+(`/etc/plume/controls.d/*.check`, `/etc/plume/custom.d`), gardent les quatre : un contrôle `kubectl`,
+`nft` ou `ss` doit pouvoir ouvrir son socket. La table outil → famille est lue dans le code des outils,
+pas mesurée sous systemd.
 
 La colonne **Preuve** donne la requête qui montre que la source remonte. ♥ marque un capteur qui émet un
 **battement** (`category=health`) à chaque passage, même quand la source est calme : son silence est

@@ -80,6 +80,19 @@ leur absence est ainsi un scénario, pas un accident de l'exécuteur. Puis elle 
     en-tête ET au 1er passage sans secret) : aucun `chgrp soc`/`chmod 0640` prescrit sur plume.conf ou responder.conf,
     et la conf syslog de deploy/SYSLOG.md, lue selon systemd, est celle de l'installeur (127.0.0.1,
     liste vide, aucun commentaire dans une valeur, pas de « vider ne désactive pas »).
+  · `P10.33-c` — les règles d'audit passent par UN SEUL chargeur (`systemd/plume-audit-rules-load.sh`) :
+    aucun installeur ne lance `augenrules --load`/`auditctl -R` lui-même ; le central l'appelle, l'agent
+    le pose et l'affiche, et le chargeur INSTALLÉ, joué sans argument, trouve son gabarit. Le chargeur est
+    joué SEUL, sous CHAQUE awk présent (gawk, mawk), contre des faux `auditctl`/`augenrules` qui imitent
+    le réel (un noyau en fichier ; « Rule exists » ; `auditctl -R` s'arrête à la première règle en échec
+    sans annuler les précédentes) : nominal et re-passage (le plume.rules précédent n'est pas un doublon)
+    → code 0, tout chargé, au redémarrage simulé aussi ; doublon
+    textuel d'un fichier tiers AVANT ou APRÈS plume.rules → tout chargé, au redémarrage aussi, doublon
+    nommé (fichier, ligne), règles tierces intactes ; doublon écrit autrement → code 2 avoué, tout chargé
+    maintenant ; erreur réelle dans le gabarit → code 1, nommée (ligne, règle, message), sans décapiter
+    les règles qui la suivent. Le central, joué avec ces faux : nominal, doublon tiers (dit, tout chargé,
+    code 0) et fichier tiers fautif avant plume (code 3, avoué en fin de course). La doc dit le geste de
+    vérification (`-k` ET `key=`) et quoi faire d'un doublon ; rien ne fait compter `key=plume_` seul.
 CE QU'ELLE NE TIENT PAS : l'union des familles d'adresses sur l'AGENT (une trentaine d'unités, à
 mesurer capteur par capteur sous systemd avant de la resserrer).
 Ses propres instruments sont éprouvés à chaque exécution : le lecteur systemd sur des lignes connues,
@@ -87,7 +100,7 @@ le juge d'ordre sur un journal où `lib.sh` arrive trop tard, le réacheminement
 racine non réacheminée.
 
 Codes de sortie : 0 conforme · 1 propriété violée · 2 l'instrument REFUSE DE CONCLURE.
-Aucun awk n'est exécuté par les installeurs jugés ici : la garde n'a pas à se jouer sous gawk et mawk.
+Le chargeur d'audit exécute awk : il est joué sous chaque awk présent ; aucun → REFUSE DE CONCLURE.
 """
 import os
 import re
@@ -218,8 +231,100 @@ exit 0
 SUITE_MODE = 'for a in "$@"; do [ -f "$a" ] && printf \'mode\\t%s\\t%s\\n\' "$a" "$(stat -c %a "$a")" >> "$PLUME_BAC_JOURNAL"; done'
 
 
+# `P10.33-c` — FAUX auditctl / augenrules QUI IMITENT LE COMPORTEMENT RÉEL, noyau compris (un fichier
+# d'état, une règle canonique par ligne) : une règle déjà présente rend « Error sending add rule data
+# request (Rule exists) » ; `-F dir=`/`-F path=` sur un chemin absent rend « (No such file or
+# directory) » ; `auditctl -R` S'ARRÊTE à la première règle en échec (« There was an error in line N »)
+# SANS annuler les précédentes ; `augenrules --load` concatène les `*.rules` dans l'ordre du nom puis
+# `auditctl -R`. `auditctl -l` rend la forme du noyau : `-F key=` pour une règle syscall, `-k` pour une
+# watch, `auid!=4294967295`/`unset` rendus `auid!=-1` (même valeur pour le noyau).
+FAUX_AUDITCTL = r"""#!/bin/bash
+etat=${PLUME_BAC_AUDIT_ETAT:?}
+printf 'auditctl\t%s\n' "$*" >> "${PLUME_BAC_JOURNAL:-/dev/null}"
+touch "$etat"
+canon() {
+  local a=("$@") out=() k= i=0 w
+  while [ $i -lt ${#a[@]} ]; do
+    w=${a[$i]}
+    if [ "$w" = -k ]; then k=${a[$((i+1))]}; i=$((i+2)); continue; fi
+    case $w in 'auid!=4294967295'|'auid!=unset') w='auid!=-1' ;; esac
+    out+=("$w"); i=$((i+1))
+  done
+  if [ -n "$k" ]; then if [ "${a[0]}" = -w ]; then out+=(-k "$k"); else out+=(-F "key=$k"); fi; fi
+  printf '%s\n' "${out[*]}"
+}
+ajouter() {
+  local a=("$@") i f c
+  case ${a[0]} in -a|-A|-w) ;; *) echo "auditctl: option inconnue ${a[0]}" >&2; return 1 ;; esac
+  for ((i = 0; i < ${#a[@]}; i++)); do
+    [ "${a[$i]}" = -F ] || continue
+    f=${a[$((i+1))]}
+    case $f in dir=*|path=*) [ -e "${f#*=}" ] || { echo "Error sending add rule data request (No such file or directory)" >&2; return 1; } ;; esac
+  done
+  c=$(canon "$@")
+  if grep -qxF -- "$c" "$etat"; then echo "Error sending add rule data request (Rule exists)" >&2; return 1; fi
+  printf '%s\n' "$c" >> "$etat"
+}
+case ${1:-} in
+  -l) if [ -s "$etat" ]; then cat "$etat"; else echo "No rules"; fi; exit 0 ;;
+  -D) : > "$etat"; exit 0 ;;
+  -R)
+    n=0
+    while IFS= read -r l || [ -n "$l" ]; do
+      n=$((n+1))
+      read -ra w <<< "$l"
+      [ ${#w[@]} -eq 0 ] && continue
+      case ${w[0]} in '#'*) continue ;; -D) : > "$etat"; continue ;; -b|-f|-e|-r|--backlog_wait_time) continue ;; esac
+      ajouter "${w[@]}" || { echo "There was an error in line $n of $2" >&2; exit 1; }
+    done < "$2"
+    exit 0 ;;
+  *) ajouter "$@" || exit 1; exit 0 ;;
+esac
+"""
+
+FAUX_AUGENRULES = r"""#!/bin/bash
+printf 'augenrules\t%s\n' "$*" >> "${PLUME_BAC_JOURNAL:-/dev/null}"
+d=${PLUME_BAC_RULES_D:?}; out=${PLUME_BAC_AUDIT_RULES:?}
+echo "## This file is automatically generated from $d" > "$out"
+for f in $(ls "$d" | LC_ALL=C sort); do
+  case $f in *.rules) cat "$d/$f" >> "$out" ;; esac
+done
+[ "${1:-}" = --load ] && exec auditctl -R "$out"
+exit 0
+"""
+
+# Base d'un /etc/audit/rules.d d'Ubuntu : `audit.rules` vient AVANT `plume.rules` et commence par -D.
+BASE_RULES_D = "-D\n-b 8192\n-f 1\n--backlog_wait_time 60000\n"
+CHARGEUR = "systemd/plume-audit-rules-load.sh"
+GABARIT = "systemd/plume-audit.rules"
+AWK_EXERCES = ("gawk", "mawk")
+VERIFIER_AUDIT = "sudo auditctl -l | grep -cE -- '(-k |key=)plume_'"
+
+
+def canon_regle(mots):
+    """Forme du noyau d'une règle (celle de FAUX_AUDITCTL), recalculée ICI de façon indépendante."""
+    out, k, i = [], None, 0
+    while i < len(mots):
+        w = mots[i]
+        if w == "-k":
+            k = mots[i + 1]
+            i += 2
+            continue
+        out.append({"auid!=4294967295": "auid!=-1", "auid!=unset": "auid!=-1"}.get(w, w))
+        i += 1
+    if k:
+        out += ["-k", k] if mots[0] == "-w" else ["-F", "key=" + k]
+    return " ".join(out)
+
+
+def regles_du_gabarit(texte):
+    """(numéro de ligne, forme canonique) de chaque règle ACTIVE du gabarit."""
+    return [(n, canon_regle(l.split())) for n, l in enumerate(texte.splitlines(), 1)
+            if re.match(r"\s*-[aAw]\b", l)]
+
+
 class Bac:
-    def __init__(self, nom, outils_audit=()):
+    def __init__(self, nom, outils_audit=(), gabarit=None):
         base = os.environ.get("TMPDIR") or None
         self.d = tempfile.mkdtemp(prefix=f"plume-installation-{nom}-", dir=base)
         self.racine = os.path.join(self.d, "racine")
@@ -233,6 +338,15 @@ class Bac:
         open(self.journal, "w").close()
         os.makedirs(self.src)
         for lien in ("collectors", "systemd", "web"):
+            if lien == "systemd" and gabarit is not None:
+                # `P10.33-c` — un gabarit d'audit VARIANTE, le reste de systemd/ lié au dépôt.
+                os.makedirs(os.path.join(self.src, lien))
+                for f in os.listdir(os.path.join(RACINE_DEPOT, lien)):
+                    if f != os.path.basename(GABARIT):
+                        os.symlink(os.path.join(RACINE_DEPOT, lien, f), os.path.join(self.src, lien, f))
+                with open(os.path.join(self.src, GABARIT), "w") as f:
+                    f.write(gabarit)
+                continue
             os.symlink(os.path.join(RACINE_DEPOT, lien), os.path.join(self.src, lien))
         self._binaire("daemon/target/release/plume-daemon",
                       "#!/bin/sh\necho '  cold-backup-plan   plan de sauvegarde du tier froid : INDISPONIBLE'\n")
@@ -263,10 +377,12 @@ class Bac:
             self._outil(n, FAUX_JOURNALISANT.replace("{nom}", n).replace("{suite}", suite))
         # Chaque outil d'audit est un scénario À LUI SEUL : l'installeur exige les DEUX.
         if "augenrules" in outils_audit:
-            self._outil("augenrules", FAUX_JOURNALISANT.replace("{nom}", "augenrules").replace("{suite}", ""))
+            self._outil("augenrules", FAUX_AUGENRULES)
         if "auditctl" in outils_audit:
-            self._outil("auditctl", FAUX_JOURNALISANT.replace("{nom}", "auditctl")
-                        .replace("{suite}", "echo '-w /usr/bin/x -p x -k svc_exec'"))
+            self._outil("auditctl", FAUX_AUDITCTL)
+        self.etat_audit = os.path.join(self.d, "noyau-audit")
+        with open(os.path.join(self.racine, "etc/audit/rules.d/audit.rules"), "w") as f:
+            f.write(BASE_RULES_D)
 
     def _binaire(self, rel, contenu):
         p = os.path.join(self.src, rel)
@@ -296,7 +412,8 @@ class Bac:
             f.write(texte)
         env = {"PATH": f"{self.bin}:{self.sys}", "HOME": self.d, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
                "PLUME_BAC_RACINE": self.racine, "PLUME_BAC_JOURNAL": self.journal,
-               "TMPDIR": self.d}
+               "TMPDIR": self.d, "PLUME_BAC_AUDIT_ETAT": self.etat_audit,
+               "PLUME_BAC_RULES_D": self.r("/etc/audit/rules.d"), "PLUME_BAC_AUDIT_RULES": self.r("/etc/audit/audit.rules")}
         env.update(env_sup)
         r = subprocess.run(["bash", cible], env=env, cwd=self.d, capture_output=True, text=True, timeout=300)
         self.sortie = r.stdout + r.stderr
@@ -526,12 +643,306 @@ def scenario_central(commun, env_files):
                 faute(f"{nom} : plume-auditd.timer non activé — l'aveu « source absente » n'atteindrait plus le SOC")
             if auditd and not regles:
                 faute(f"{nom} : auditd présent et règles NON posées — le témoin positif ne tient pas")
+            if auditd:
+                noyau = set(lire(bac.etat_audit).splitlines()) if os.path.isfile(bac.etat_audit) else set()
+                manque = [n for n, c in regles_du_gabarit(lire(os.path.join(RACINE_DEPOT, GABARIT))) if c not in noyau]
+                if manque or "OK —" not in bac.sortie:
+                    faute(f"{nom} : règles du gabarit absentes du noyau après installation (lignes {manque})")
             if not auditd:
                 if regles:
                     faute(f"{nom} : règles d'audit posées alors que l'installeur n'a pas les deux outils")
                 if "auditd ABSENT" not in bac.sortie:
                     faute(f"{nom} : l'installeur ne dit pas que auditd est absent")
             juger_confs_engendrees(bac, nom, env_files)
+        finally:
+            bac.nettoyer()
+
+
+# --------------------------------------------------------------------------------------------------
+# `P10.33-c` — le chargeur des règles d'audit, joué SEUL contre les faux réalistes
+# --------------------------------------------------------------------------------------------------
+def awks_presents():
+    awks, vus = [], set()
+    for nom in AWK_EXERCES:
+        p = shutil.which(nom)
+        if p and os.path.realpath(p) not in vus:
+            vus.add(os.path.realpath(p))
+            awks.append((nom, p))
+    return awks
+
+
+def jouer_chargeur(awk, tiers=None, gabarit=None, script=None, sans_argument=False, pose=None):
+    """Joue le chargeur dans un hôte factice : rules.d = audit.rules (base Ubuntu, -D en tête) + les
+    fichiers `tiers` ; rend (code, sortie, noyau après chargement, noyau après un REDÉMARRAGE simulé —
+    noyau vidé puis `augenrules --load` seul, comme auditd au boot). `pose` (dict), s'il est donné, reçoit
+    le plume.rules posé sous la clé "plume.rules"."""
+    d = tempfile.mkdtemp(prefix="plume-chargeur-audit-", dir=os.environ.get("TMPDIR") or None)
+    try:
+        b, rd = os.path.join(d, "bin"), os.path.join(d, "rules.d")
+        os.makedirs(b)
+        os.makedirs(rd)
+        for nom, contenu in (("auditctl", FAUX_AUDITCTL), ("augenrules", FAUX_AUGENRULES)):
+            with open(os.path.join(b, nom), "w") as f:
+                f.write(contenu)
+            os.chmod(os.path.join(b, nom), 0o755)
+        os.symlink(awk, os.path.join(b, "awk"))
+        with open(os.path.join(rd, "audit.rules"), "w") as f:
+            f.write(BASE_RULES_D)
+        for nom, contenu in (tiers or {}).items():
+            with open(os.path.join(rd, nom), "w") as f:
+                f.write(contenu)
+        gab = os.path.join(d, "plume-audit.rules")
+        with open(gab, "w") as f:
+            f.write(gabarit if gabarit is not None else lire(os.path.join(RACINE_DEPOT, GABARIT)))
+        etat = os.path.join(d, "noyau")
+        env = {"PATH": f"{b}:/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TMPDIR": d, "HOME": d,
+               "PLUME_BAC_AUDIT_ETAT": etat, "PLUME_BAC_RULES_D": rd,
+               "PLUME_BAC_AUDIT_RULES": os.path.join(d, "audit.rules"),
+               "PLUME_AUDIT_RULES_DEST": os.path.join(rd, "plume.rules"), "PLUME_BAC_JOURNAL": os.path.join(d, "j")}
+        cmd = ["sh", script or os.path.join(RACINE_DEPOT, CHARGEUR)] + ([] if sans_argument else [gab])
+        r = subprocess.run(cmd, env=env, cwd=d, capture_output=True, text=True, timeout=120)
+        noyau = set(lire(etat).splitlines()) if os.path.isfile(etat) else set()
+        if pose is not None and os.path.isfile(os.path.join(rd, "plume.rules")):
+            pose["plume.rules"] = lire(os.path.join(rd, "plume.rules"))
+        open(etat, "w").close()
+        subprocess.run([os.path.join(b, "augenrules"), "--load"], env=env, capture_output=True, timeout=60)
+        boot = set(lire(etat).splitlines())
+        return r.returncode, r.stdout + r.stderr, noyau, boot
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def juger_chargeur_audit():
+    gab = lire(os.path.join(RACINE_DEPOT, GABARIT))
+    regles = regles_du_gabarit(gab)
+    lignes = gab.splitlines()
+    b64 = [(n, l) for n, l in enumerate(lignes, 1) if re.match(r"-a always,exit -F arch=b64 -S execve .*-k exec_tracking$", l)]
+    if len(regles) < 3 or len(b64) != 1:
+        refuser(f"{GABARIT} : gabarit méconnaissable ({len(regles)} règles actives, {len(b64)} règle execve b64)")
+        return
+    n64, l64 = b64[0]
+    if n64 == regles[-1][0]:
+        refuser(f"{GABARIT} : la règle execve b64 est la DERNIÈRE — un doublon ne décapiterait rien, le témoin est vacant")
+        return
+    awks = awks_presents()
+    if not awks:
+        refuser(f"aucun awk parmi {AWK_EXERCES} : le chargeur n'est pas jouable")
+        return
+
+    def absentes(noyau):
+        return [n for n, c in regles if c not in noyau]
+
+    for awk_nom, awk in awks:
+        t = f"{CHARGEUR} [{awk_nom}]"
+        # A — nominal : inchangé (code 0, OK, rien à dédoublonner, tout chargé, et au redémarrage aussi).
+        rc, out, noyau, boot = jouer_chargeur(awk)
+        if rc != 0 or absentes(noyau) or absentes(boot) or "OK —" not in out or "doublon" in out:
+            faute(f"{t} nominal : code {rc}, absentes {absentes(noyau)}, au boot {absentes(boot)}\n{out[-1500:]}")
+        # A2 — re-passage : le plume.rules d'une installation précédente est DANS rules.d. Il n'est pas un
+        #      « autre fichier » : rien n'est dédoublonné contre lui, la pose reste nominale.
+        rc, out, noyau, boot = jouer_chargeur(awk, {"plume.rules": gab})
+        if rc != 0 or absentes(noyau) or absentes(boot) or "doublon" in out:
+            faute(f"{t} re-passage : code {rc}, absentes {absentes(noyau)}, au boot {absentes(boot)}\n{out[-1500:]}")
+        # B — un fichier tiers placé AVANT plume.rules déclare la règle b64 à l'identique (espaces
+        #     différents) : le cas constaté. Toutes les règles plume chargées, au boot aussi ; le
+        #     doublon est NOMMÉ (fichier et ligne du gabarit) ; la règle tierce qui suit reste chargée.
+        tiers = "  " + l64.replace(" ", "   ", 3) + "\n-w /etc/passwd -p wa -k tiers_passwd\n"
+        pose = {}
+        rc, out, noyau, boot = jouer_chargeur(awk, {"exec-tiers.rules": tiers}, pose=pose)
+        # La copie posée garde les NUMÉROS du gabarit (une ligne commentée pour une ligne retirée) : les
+        # « ligne N » des messages et de la doc désignent la même ligne dans plume.rules et le gabarit.
+        posees = pose.get("plume.rules", "").splitlines()
+        autres = [n for n, (a, b) in enumerate(zip(lignes, posees), 1) if n != n64 and a != b]
+        if (len(posees) != len(lignes) or autres
+                or not (len(posees) >= n64 and posees[n64 - 1].startswith("## plume-doublon") and "exec-tiers.rules" in posees[n64 - 1])):
+            faute(f"{t} doublon tiers AVANT plume : plume.rules posé ne commente pas la ligne {n64} À SA PLACE "
+                  f"({len(posees)} lignes posées pour {len(lignes)}, autres lignes changées {autres[:5]})")
+        if rc != 0 or absentes(noyau) or absentes(boot):
+            faute(f"{t} doublon tiers AVANT plume : code {rc}, absentes {absentes(noyau)}, au boot {absentes(boot)}\n{out[-1500:]}")
+        if "exec-tiers.rules" not in out or f"ligne {n64} " not in out:
+            faute(f"{t} doublon tiers AVANT plume : le doublon n'est pas nommé (fichier + ligne {n64})\n{out[-1500:]}")
+        if "-w /etc/passwd -p wa -k tiers_passwd" not in noyau:
+            faute(f"{t} doublon tiers AVANT plume : la règle propre au fichier tiers n'est plus chargée")
+        # B2 — le doublon tiers est une WATCH (`-w`), pas la règle syscall : cinq règles du gabarit sur huit
+        #      sont des watches. Placée avant les autres watches, elle décapiterait toutes celles qui suivent
+        #      au démarrage si le dédoublonnage ne reconnaissait que `-a`/`-A`.
+        watches = [(n, l) for n, l in enumerate(lignes, 1) if re.match(r"-w\s", l)]
+        if len(watches) < 2:
+            refuser(f"{GABARIT} : moins de deux watches — le témoin du doublon de watch est vacant")
+        else:
+            nw, lw = watches[0]
+            rc, out, noyau, boot = jouer_chargeur(awk, {"exec-tiers.rules": " ".join(lw.split()) + "\n"})
+            if rc != 0 or absentes(noyau) or absentes(boot) or f"ligne {nw} " not in out or "exec-tiers.rules" not in out:
+                faute(f"{t} watch doublée par un tiers AVANT plume : code {rc} (attendu 0), absentes {absentes(noyau)}, "
+                      f"au boot {absentes(boot)}, doublon ligne {nw} nommé {f'ligne {nw} ' in out}\n{out[-1500:]}")
+        # B3 — le fichier tiers qui porte le doublon s'arrête AVANT lui (erreur plus haut dans CE fichier) :
+        #      la copie retirée de plume.rules n'est chargée par personne. Le rattrapage la rend depuis le
+        #      gabarit (code 2 : complet maintenant, le démarrage s'arrêtera), au lieu d'un code 1 qui
+        #      renverrait à une ligne du gabarit sans en nommer aucune.
+        casse = "-a always,exit -F dir=/chemin/absent/plume-temoin -k tiers_casse\n" + l64 + "\n"
+        rc, out, noyau, boot = jouer_chargeur(awk, {"exec-tiers.rules": casse})
+        if rc != 2 or absentes(noyau) or "RATTRAPAGE" not in out or f"ligne {n64} chargée par le rattrapage" not in out:
+            faute(f"{t} tiers fautif AVANT son doublon : code {rc} (attendu 2), absentes {absentes(noyau)}, "
+                  f"ligne {n64} rattrapée {f'ligne {n64} chargée par le rattrapage' in out}\n{out[-1500:]}")
+        # C — le même doublon, fichier tiers APRÈS plume.rules : c'est le TIERS qui serait décapité.
+        rc, out, noyau, boot = jouer_chargeur(awk, {"zz-tiers.rules": l64 + "\n-w /etc/group -p wa -k tiers_group\n"})
+        tg = "-w /etc/group -p wa -k tiers_group"
+        if rc != 0 or absentes(noyau) or absentes(boot) or tg not in noyau or tg not in boot:
+            faute(f"{t} doublon tiers APRÈS plume : code {rc}, absentes {absentes(noyau)}, au boot {absentes(boot)}, "
+                  f"règle tierce chargée {tg in noyau}/{tg in boot}\n{out[-1500:]}")
+        # C2 — fichier tiers APRÈS plume.rules, avec une vraie erreur à lui : toutes les règles plume sont
+        #      chargées (code 0, au boot aussi), mais augenrules a rendu un échec — la note le DIT, avec la
+        #      sortie d'augenrules, au lieu d'un « OK » qui tairait que la règle tierce suivante manque.
+        casse_apres = "-a always,exit -F dir=/chemin/absent/plume-temoin -k tiers_casse\n" + tg + "\n"
+        rc, out, noyau, boot = jouer_chargeur(awk, {"zz-tiers.rules": casse_apres})
+        if (rc != 0 or absentes(noyau) or absentes(boot) or tg in noyau
+                or "augenrules a rendu rc=1 APRÈS les règles plume" not in out or "There was an error in line" not in out):
+            faute(f"{t} tiers fautif APRÈS plume : code {rc} (attendu 0), absentes {absentes(noyau)}, règle tierce "
+                  f"chargée {tg in noyau}, note « rc APRÈS les règles plume » {'dite' if 'APRÈS les règles plume' in out else 'TUE'}\n{out[-1500:]}")
+        # D — doublon ÉCRIT AUTREMENT (même valeur pour le noyau) : le dédoublonnage textuel ne le voit pas,
+        #     augenrules s'arrête ; le rattrapage charge tout MAINTENANT et le chargeur AVOUE (code 2) que le
+        #     prochain démarrage s'arrêtera — sortie d'augenrules montrée.
+        autre = l64.replace("auid!=-1", "auid!=4294967295")
+        if autre == l64:
+            refuser(f"{GABARIT} : la règle b64 ne porte plus `auid!=-1` — le témoin du doublon écrit autrement est vacant")
+        else:
+            rc, out, noyau, boot = jouer_chargeur(awk, {"exec-tiers.rules": autre + "\n"})
+            if rc != 2 or absentes(noyau) or "Rule exists" not in out or "RATTRAPAGE" not in out:
+                faute(f"{t} doublon écrit autrement : code {rc} (attendu 2), absentes {absentes(noyau)}\n{out[-1500:]}")
+        # D2 — EXACTEMENT UNE règle rattrapée : l'avant-dernière règle du gabarit, déclarée par un tiers placé
+        #      AVANT plume avec `-k` déplacé (même règle pour le noyau, texte différent). augenrules s'arrête
+        #      sur elle, seule la dernière règle manque, le rattrapage la rend : code 2, « 1 règle(s) », et
+        #      au démarrage simulé elle MANQUE bien. Un seuil « plus d'une » dirait OK.
+        na, la = regles[-2][0], lignes[regles[-2][0] - 1]
+        mots = la.split()
+        if "-k" not in mots or mots.index("-k") <= 2:
+            refuser(f"{GABARIT} : l'avant-dernière règle n'a pas de `-k` après ses champs — le témoin d'une seule règle rattrapée est vacant")
+        else:
+            ik = mots.index("-k")
+            deplace = " ".join(mots[:2] + mots[ik:ik + 2] + mots[2:ik] + mots[ik + 2:])
+            rc, out, noyau, boot = jouer_chargeur(awk, {"exec-tiers.rules": deplace + "\n"})
+            nd = regles[-1][0]
+            if (deplace == " ".join(mots) or rc != 2 or absentes(noyau) or absentes(boot) != [nd]
+                    or "PAR LE SEUL RATTRAPAGE (1 règle(s))" not in out or f"ligne {nd} chargée par le rattrapage" not in out
+                    or "OK —" in out):
+                faute(f"{t} une seule règle rattrapée (ligne {na} doublée par « {deplace} ») : code {rc} (attendu 2), "
+                      f"absentes {absentes(noyau)}, au boot {absentes(boot)} (attendu [{nd}])\n{out[-1500:]}")
+        # E — une VRAIE erreur dans le gabarit, avant sa dernière règle : nommée (ligne, règle, message
+        #     d'auditctl, sortie d'augenrules), code 1, et elle ne décapite plus les règles qui la suivent.
+        fausse = "-a always,exit -F dir=/chemin/absent/plume-temoin -F perm=wa -k plume_temoin_erreur"
+        i = regles[-1][0] - 1
+        variante = "\n".join(lignes[:i] + [fausse] + lignes[i:]) + "\n"
+        rc, out, noyau, boot = jouer_chargeur(awk, gabarit=variante)
+        nommee = f"ligne {i + 1} de" in out and fausse in out and "No such file or directory" in out
+        if rc != 1 or not nommee or "plume_temoin_erreur" not in out or "There was an error in line" not in out:
+            faute(f"{t} erreur de syntaxe : code {rc} (attendu 1), nommée {nommee}\n{out[-1500:]}")
+        if absentes(noyau):
+            faute(f"{t} erreur de syntaxe : elle décapite encore les règles qui la suivent : {absentes(noyau)}")
+        # Le message FINAL renvoie à la ligne refusée, pas à un « doublon du gabarit » qui n'existe pas.
+        if ("CHARGEMENT PARTIEL — REFUSÉ (1 ligne(s) du gabarit refusée(s) par auditctl" not in out
+                or "Corrigez ou commentez la ligne nommée" not in out or "Aucune ligne du gabarit n'est refusée" in out):
+            faute(f"{t} erreur de syntaxe : le message final ne renvoie pas à la ligne refusée (ou parle d'un doublon)\n{out[-1500:]}")
+        # MAINTENANT la dernière règle tourne (rattrapée) ; AU DÉMARRAGE simulé elle manque — et le chargeur le dit.
+        if absentes(boot) != [regles[-1][0]]:
+            faute(f"{t} erreur de syntaxe : au démarrage simulé, absentes {absentes(boot)} (attendu [{regles[-1][0]}]) — témoin vacant")
+        if "ces 1 règle(s) rattrapée(s) seront PERDUES au prochain démarrage" not in out:
+            faute(f"{t} erreur de syntaxe : le code 1 tait que la règle rattrapée sera PERDUE au prochain démarrage\n{out[-1500:]}")
+        # E2 — la même erreur sous une clé DÉJÀ portée par le gabarit : les autres règles de la clé sont
+        #      chargées, seul le COMPTE par clé voit qu'il en manque une. Un simple test de présence de la
+        #      clé dirait « OK », code 0.
+        cle = regles[-1][1].split()[-1].split("=", 1)[-1]
+        avant = sum(1 for _, c in regles if c.split()[-1].split("=", 1)[-1] == cle)
+        fausse2 = f"-a always,exit -F dir=/chemin/absent/plume-temoin -F perm=wa -k {cle}"
+        rc, out, noyau, _ = jouer_chargeur(awk, gabarit="\n".join(lignes[:i] + [fausse2] + lignes[i:]) + "\n")
+        compte = f"CLÉ '{cle}' : {avant} règle(s) chargée(s) sur {avant + 1} déclarée(s)"
+        if rc != 1 or compte not in out or "OK —" in out or absentes(noyau):
+            faute(f"{t} erreur sous la clé existante {cle} : code {rc} (attendu 1), « {compte} » "
+                  f"{'dit' if compte in out else 'TU'}, absentes {absentes(noyau)}\n{out[-1500:]}")
+        # G — le gabarit déclare DEUX FOIS la même règle : rien n'est refusé par auditctl (« Rule exists »),
+        #     il manque une règle à la clé. Code 1, et le message ne renvoie pas à une « ligne nommée »
+        #     qu'il n'a pas nommée.
+        rc, out, noyau, _ = jouer_chargeur(awk, gabarit="\n".join(lignes[:n64] + [l64] + lignes[n64:]) + "\n")
+        if (rc != 1 or "Aucune ligne du gabarit n'est refusée" not in out or "la ligne nommée" in out
+                or "REFUSÉE par auditctl" in out):
+            faute(f"{t} règle doublée DANS le gabarit : code {rc} (attendu 1), aveu sans ligne refusée "
+                  f"{'dit' if 'Aucune ligne du gabarit' in out else 'TU'}\n{out[-1500:]}")
+
+
+def juger_chargeur_sans_cle():
+    """Un gabarit sans aucune `-k` n'a rien de vérifiable : le chargeur REFUSE DE CONCLURE (code 1), il ne
+    dit pas « OK » sur un attendu vide."""
+    sans_cle = "\n".join(re.sub(r"\s+-k\s+\S+\s*$", "", l) for l in lire(os.path.join(RACINE_DEPOT, GABARIT)).splitlines()) + "\n"
+    if re.search(r"(^|\s)-k\s", sans_cle, re.M):
+        refuser(f"{GABARIT} : une `-k` n'est pas en fin de ligne — le témoin du gabarit sans clé est vacant")
+        return
+    for awk_nom, awk in awks_presents():
+        rc, out, _, _ = jouer_chargeur(awk, gabarit=sans_cle)
+        if rc != 1 or "aucune règle avec clé" not in out or "OK —" in out:
+            faute(f"{CHARGEUR} [{awk_nom}] gabarit sans clé : code {rc} (attendu 1), refus de conclure "
+                  f"{'dit' if 'aucune règle avec clé' in out else 'TU'}\n{out[-800:]}")
+
+
+def juger_un_seul_chargeur():
+    for rel in ("bootstrap.sh", "bootstrap-agent.sh"):
+        for i, ligne in enumerate(lire(os.path.join(RACINE_DEPOT, rel)).splitlines(), 1):
+            code = ligne.split("#", 1)[0]
+            if re.search(r"(^|[;&|(]\s*|\s)(augenrules\s+--load|auditctl\s+-R)\b", code) and not re.match(r"\s*echo\b", code):
+                faute(f"{rel}:{i} charge les règles d'audit lui-même au lieu de passer par {CHARGEUR} : {ligne.strip()}")
+
+
+def juger_chargeur_installe(bac, nom):
+    """Le geste que l'agent affiche — le chargeur INSTALLÉ, sans argument — trouve le gabarit installé."""
+    script = bac.r("/usr/local/lib/plume/plume-audit-rules-load.sh")
+    if not os.path.isfile(script) or not os.path.isfile(bac.r("/usr/local/share/plume/plume-audit.rules")):
+        faute(f"{nom} : chargeur ou gabarit d'audit non posé")
+        return
+    if "plume-audit-rules-load.sh" not in bac.sortie:
+        faute(f"{nom} : l'installeur n'affiche pas le geste du chargeur d'audit")
+    # L'agent ne charge rien : l'exploitant arme à la main, et c'est l'agent qui lui donne la SEULE preuve
+    # de ce qui tourne (watches comprises), la même que la doc.
+    if VERIFIER_AUDIT not in bac.sortie:
+        faute(f"{nom} : l'installeur n'affiche pas le geste de vérification « {VERIFIER_AUDIT} »")
+    awks = awks_presents()
+    if not awks:
+        return
+    rc, out, noyau, _ = jouer_chargeur(awks[0][1], script=script, sans_argument=True)
+    manque = [n for n, c in regles_du_gabarit(lire(os.path.join(RACINE_DEPOT, GABARIT))) if c not in noyau]
+    if rc != 0 or manque:
+        faute(f"{nom} : le chargeur INSTALLÉ, joué sans argument comme la doc le dit, rend {rc} (absentes {manque})\n{out[-1200:]}")
+
+
+def scenario_central_audit():
+    """bootstrap.sh passe par le chargeur : un doublon tiers est dédoublonné, et un arrêt d'augenrules
+    AVANT plume (fichier tiers fautif) finit l'installation en code 3, avoué en fin de course."""
+    regles = regles_du_gabarit(lire(os.path.join(RACINE_DEPOT, GABARIT)))
+    b64 = next((l for l in lire(os.path.join(RACINE_DEPOT, GABARIT)).splitlines()
+                if re.match(r"-a always,exit -F arch=b64 -S execve", l)), None)
+    lignes = lire(os.path.join(RACINE_DEPOT, GABARIT)).splitlines()
+    i = regles[-1][0] - 1 if regles else 0
+    fausse = "-a always,exit -F dir=/chemin/absent/plume-temoin -F perm=wa -k plume_temoin_erreur"
+    avec_erreur = "\n".join(lignes[:i] + [fausse] + lignes[i:]) + "\n"
+    m1, m2 = "RÈGLES D'AUDIT INCOMPLÈTES MAINTENANT", "RÈGLES D'AUDIT COMPLÈTES MAINTENANT, MAIS PAS AU PROCHAIN DÉMARRAGE"
+    # (libellé, fichiers posés, gabarit variante, code attendu, marque dite, marque TUE)
+    cas = (("doublon tiers", {"etc/audit/rules.d/exec-tiers.rules": (b64 or "") + "\n"}, None, 0, "doublon", "INSTALLATION POSÉE"),
+           # chargeur en code 2 : tout tourne maintenant, le démarrage s'arrêtera sur le fichier tiers.
+           ("fichier tiers fautif avant plume",
+            {"etc/audit/rules.d/00-casse.rules": "-a always,exit -F dir=/chemin/absent/plume-temoin -k tiers_casse\n"},
+            None, 3, m2, m1),
+           # chargeur en code 1 : une ligne du gabarit est refusée, il manque une règle MAINTENANT.
+           ("ligne du gabarit refusée", {}, avec_erreur, 3, m1, m2))
+    for libelle, poses, gabarit, rc_attendu, marque, tue in cas:
+        nom = f"bootstrap.sh (auditd, {libelle})"
+        bac = Bac("central", outils_audit=("augenrules", "auditctl"), gabarit=gabarit)
+        try:
+            for rel, contenu in poses.items():
+                bac.poser(rel, contenu, 0o640)
+            bac.jouer("bootstrap.sh", {"PLUME_PASS_HASH": ""})
+            noyau = set(lire(bac.etat_audit).splitlines()) if os.path.isfile(bac.etat_audit) else set()
+            manque = [n for n, c in regles if c not in noyau]
+            charge = any(g[0] == "augenrules" and g[1] == "--load" for g in bac.gestes())
+            if bac.rc != rc_attendu or marque not in bac.sortie or tue in bac.sortie or manque or not charge:
+                faute(f"{nom} : code {bac.rc} (attendu {rc_attendu}), « {marque} » {'dit' if marque in bac.sortie else 'TU'}, "
+                      f"« {tue} » {'DIT' if tue in bac.sortie else 'tu'}, absentes {manque}, augenrules --load joué {charge}\n{bac.sortie[-2000:]}")
         finally:
             bac.nettoyer()
 
@@ -552,6 +963,7 @@ def scenario_agent(commun, env_files):
                 faute(f)
             juger_dropins(bac, nom, commun)
             juger_jeton(bac, nom, "/etc/plume/plume.conf", creee=True)
+            juger_chargeur_installe(bac, nom)
     finally:
         bac.nettoyer()
     # 2) re-passage sur des confs 0640 existantes, écrites par une version qui commentait en fin de valeur :
@@ -929,6 +1341,35 @@ def juger_compose(yaml):
         faute(f"docker-compose.yml : PLUME_TLS_TERMINATED_UPSTREAM n'est pas vide par défaut ({env.get('PLUME_TLS_TERMINATED_UPSTREAM')!r})")
 
 
+def juger_docs_audit():
+    """`P10.33-c` — la doc dit comment VÉRIFIER (watches comprises : `-k`, pas seulement `key=`) et quoi
+    faire d'un doublon d'un autre fichier ; aucune doc ni installeur ne fait compter `key=plume_` seul."""
+    doc = lire(os.path.join(RACINE_DEPOT, "docs/ENDPOINT-SECURITY.md"))
+    if "auditctl -l | grep -cE -- '(-k |key=)plume_'" not in doc:
+        faute("docs/ENDPOINT-SECURITY.md : le geste de vérification `sudo auditctl -l | grep -cE -- '(-k |key=)plume_'` manque")
+    if not re.search(r"doublon", doc) or "/etc/audit/rules.d" not in doc or "Rule exists" not in doc:
+        faute("docs/ENDPOINT-SECURITY.md : rien ne dit quoi faire d'une règle plume déjà déclarée par un autre fichier de /etc/audit/rules.d")
+    # Le code que la doc annonce pour bootstrap.sh est celui du bloc AUDIT_RC de bootstrap.sh, lu ici.
+    bloc = re.search(r'if \[ "\$\{AUDIT_RC:-0\}" -ne 0 \]; then\n(.*?)\nfi\n', lire(os.path.join(RACINE_DEPOT, "bootstrap.sh")), re.S)
+    codes = re.findall(r"^\s*exit (\d+)\s*$", bloc.group(1), re.M) if bloc else []
+    if len(codes) != 1:
+        refuser(f"bootstrap.sh : bloc AUDIT_RC méconnaissable ({len(codes)} `exit` lus) — le code annoncé par la doc n'est pas jugeable")
+    elif f"`bootstrap.sh` finit alors en code `{codes[0]}`" not in doc:
+        faute(f"docs/ENDPOINT-SECURITY.md : n'annonce pas le code `{codes[0]}` que bootstrap.sh rend sur un chargement d'audit refusé")
+    vraie = re.search(r"^- \*\*vraie erreur\*\*.*?(?=^\S|^- |\Z)", doc, re.S | re.M)
+    if not vraie or "PERDUES au prochain démarrage" not in " ".join(vraie.group(0).split()):
+        faute("docs/ENDPOINT-SECURITY.md : le cas « vraie erreur » (code 1) ne dit pas que les règles rattrapées seront PERDUES au prochain démarrage")
+    seul = re.compile(r"grep\s+-c\s+['\"]?key=plume_")
+    fichiers = ["README.md", "bootstrap.sh", "bootstrap-agent.sh", CHARGEUR, GABARIT]
+    for rep in ("deploy", "docs"):
+        fichiers += [os.path.relpath(os.path.join(r, f), RACINE_DEPOT) for r, _, fs in os.walk(os.path.join(RACINE_DEPOT, rep))
+                     for f in fs if f.endswith(".md") and f != "ROADMAP.md"]
+    for rel in sorted(fichiers):
+        for i, ligne in enumerate(lire(os.path.join(RACINE_DEPOT, rel)).splitlines(), 1):
+            if seul.search(ligne):
+                faute(f"{rel}:{i} fait compter `key=plume_` seul — `auditctl -l` rend les watches en `-k`, qui y échappent")
+
+
 def juger_docs():
     prescrit = re.compile(r"chgrp\s+soc\s+/etc/plume/(plume|responder)\.conf|chmod\s+0?640\s+/etc/plume/(plume|responder)\.conf")
     docs = [os.path.join(RACINE_DEPOT, "README.md")]
@@ -986,11 +1427,16 @@ def main():
     env_files = fichiers_environnement()
     if not refus:
         scenario_central(commun, env_files)
+        scenario_central_audit()
         scenario_agent(commun, env_files)
+        juger_chargeur_audit()
+        juger_chargeur_sans_cle()
         juger_fonctions_de_signalement()
     lecteurs_soc_de_plume_conf()
+    juger_un_seul_chargeur()
     juger_pod_logs()
     juger_docs()
+    juger_docs_audit()
     yaml = charger_yaml()
     if yaml:
         juger_k3s(yaml)

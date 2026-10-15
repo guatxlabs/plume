@@ -182,6 +182,58 @@ surveiller est l'espace disque et la fenêtre de rétention, pas le RSS.
 Le collecteur **publie l'état de ces interrupteurs** en `category=config` à chaque passage — un
 défenseur voit donc la surface d'angle mort exacte quelle que soit leur position, sans lire le code.
 
+## 4ter. Charger les règles, et vérifier ce qui tourne
+
+**Un seul chargeur** : `systemd/plume-audit-rules-load.sh`, installé en
+`/usr/local/lib/plume/plume-audit-rules-load.sh`. `bootstrap.sh` (central) l'appelle ;
+`bootstrap-agent.sh` le pose sans l'exécuter (charger une politique d'audit est une décision
+d'exploitant) et affiche le geste :
+
+```sh
+sudo sh /usr/local/lib/plume/plume-audit-rules-load.sh      # gabarit : /usr/local/share/plume/plume-audit.rules
+```
+
+**Vérifier** — `auditctl -l` est la seule preuve de ce qui tourne. Il rend une règle syscall avec
+`-F key=<clé>` et une watch avec `-k <clé>` : ne compter que `key=plume_` oublie les watches.
+
+```sh
+sudo auditctl -l | grep -cE -- '(-k |key=)plume_'                      # règles plume_* chargées
+sudo auditctl -l | grep -oE -- '(-k |key=)[A-Za-z0-9_]+' | sort | uniq -c   # par clé, exec_tracking compris
+```
+
+Le chargeur fait ce compte lui-même, **par clé**, contre ce que le gabarit déclare, et rend :
+`0` tout est chargé ; `1` il manque des règles (clé, ligne du gabarit et message d'`auditctl` nommés) ;
+`2` tout est chargé **maintenant**, mais seulement parce qu'il a rattrapé les règles une par une :
+`augenrules` s'est arrêté avant elles, et le prochain démarrage d'auditd s'arrêtera au même endroit.
+`bootstrap.sh` finit alors en code `3`, après avoir posé tout le reste, avec un message propre à
+chacun : code `1` « règles d'audit INCOMPLÈTES MAINTENANT » (reprendre la ligne nommée du gabarit),
+code `2` « complètes maintenant, mais PAS au prochain démarrage » (reprendre la ligne nommée d'un
+fichier de `/etc/audit/rules.d`).
+
+**État du noyau maintenant, et au démarrage — ce n'est pas le même.** Le rattrapage charge dans le
+noyau COURANT les règles que l'assemblage a sautées ; auditd, au démarrage, ne rejoue que
+`augenrules --load`, qui s'arrête au même endroit. Tout ce que le chargeur annonce « chargée par le
+rattrapage » sera donc perdu au prochain démarrage tant que la ligne en cause reste là — en code `2`
+comme en code `1`, où il le dit avec leur nombre.
+
+**Une règle plume déjà déclarée par un autre fichier** de `/etc/audit/rules.d` (constaté : un fichier
+tiers portait déjà la règle `execve` b64). `augenrules` concatène les fichiers par ordre de nom puis
+`auditctl -R`, qui **s'arrête** sur « Error sending add rule data request (Rule exists) » : sans
+correctif, aucune règle plume qui suit n'était chargée, et l'installeur ne disait rien. Désormais :
+
+- doublon **à l'identique** (espaces près) : la ligne est commentée dans `plume.rules`
+  (`## plume-doublon : déjà déclarée par <fichier> …`) et le chargeur nomme le fichier. Rien à faire —
+  sauf relancer le chargeur si ce fichier tiers change ou disparaît (la règle ne vit alors plus que
+  chez lui) ;
+- doublon **écrit autrement** (ordre des champs, `auid!=-1` contre `auid!=4294967295`) : code `2`.
+  Retirez la règle de l'un des deux fichiers — c'est la même règle pour le noyau — puis relancez le
+  chargeur. `sudo augenrules --load` affiche « error in line N » de `/etc/audit/audit.rules`, le
+  fichier assemblé : `grep -n -- '<la règle>' /etc/audit/rules.d/*.rules` retrouve son origine ;
+- **vraie erreur** (chemin absent sous `-F dir=`/`-F path=`, champ inconnu) : code `1`, la ligne est
+  nommée. Les règles qui la suivent sont chargées MAINTENANT par le rattrapage, mais PERDUES au
+  prochain démarrage (l'assemblage s'arrête toujours sur elle). Corrigez ou commentez-la, puis
+  relancez le chargeur.
+
 ## 5. Réglages
 
 | Variable                      | Défaut   | Effet |

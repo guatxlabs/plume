@@ -198,11 +198,16 @@ done
 # REGLE D'OR RESPECTEE : on POSE, on n'ACTIVE PAS. Charger des regles d'audit modifie la politique de
 # journalisation du noyau et a un cout en volume : c'est une decision d'exploitant, pas un effet de bord
 # d'une installation d'agent. Le chargeur est fourni pret a l'emploi, et il REFUSE un chargement partiel.
+# `P10.33-c` — C'EST LE SEUL CHARGEUR, celui que bootstrap.sh (central) appelle : il dedoublonne une regle
+# plume deja declaree par un autre fichier de /etc/audit/rules.d (sinon « Rule exists » arretait tout ce
+# qui suit), compte par cle ce que `auditctl -l` rapporte, et NOMME ce qui manque. Sans argument, il lit
+# le gabarit pose ci-dessous (../../share/plume/ depuis son propre repertoire).
 install -d -m0755 /usr/local/share/plume
 install -m0644 "$SRC/systemd/plume-audit.rules" /usr/local/share/plume/plume-audit.rules
 install -m0755 "$SRC/systemd/plume-audit-rules-load.sh" /usr/local/lib/plume/plume-audit-rules-load.sh
 echo ">> gabarit auditd pose (NON charge) : /usr/local/share/plume/plume-audit.rules"
-echo "   pour l'armer :  sudo apt install auditd  &&  sudo bash /usr/local/lib/plume/plume-audit-rules-load.sh"
+echo "   pour l'armer :  sudo apt install auditd  &&  sudo sh /usr/local/lib/plume/plume-audit-rules-load.sh"
+echo "   verifier     :  sudo auditctl -l | grep -cE -- '(-k |key=)plume_'"
 
 # --- collector-mail (OPT-IN : PLUME_WITH_MAIL=1) : detection mail host-native (cf. deploy/MAIL.md, ADR-0008) ---
 if [ "${PLUME_WITH_MAIL:-0}" = "1" ]; then

@@ -86,6 +86,7 @@ install -m0755 "$SRC/collectors/kube-state.sh"     /usr/local/lib/plume/collecto
 install -m0755 "$SRC/collectors/pod-logs.sh"       /usr/local/lib/plume/collectors/pod-logs.sh
 install -m0755 "$SRC/collectors/prom-scrape.sh"    /usr/local/lib/plume/collectors/prom-scrape.sh
 install -m0644 "$SRC/systemd/plume-audit.rules"      /usr/local/share/plume/plume-audit.rules
+install -m0755 "$SRC/systemd/plume-audit-rules-load.sh" /usr/local/lib/plume/plume-audit-rules-load.sh
 install -m0644 "$SRC/systemd/plume-firewall.service" /etc/systemd/system/
 install -m0644 "$SRC/systemd/plume-firewall.timer"   /etc/systemd/system/
 install -m0644 "$SRC/systemd/plume-journal.service"  /etc/systemd/system/
@@ -234,9 +235,19 @@ fi
 # timer remplacerait cet aveu NOMMÉ par un simple silence de la sonde « audit ». Ce que l'installeur
 # doit en plus, c'est le DIRE ici, avec le geste qui arme le capteur.
 if command -v augenrules >/dev/null 2>&1 && command -v auditctl >/dev/null 2>&1; then
-  install -m0640 -o root -g root "$SRC/systemd/plume-audit.rules" /etc/audit/rules.d/plume.rules
-  augenrules --load >/dev/null 2>&1 || true
-  echo ">> règles auditd chargées dans /etc/audit/rules.d/plume.rules (svc_exec: $(auditctl -l 2>/dev/null | grep -c 'key=svc_exec'))"
+  # `P10.33-c` — UN SEUL CHARGEUR, celui que bootstrap-agent.sh pose et dont il affiche le geste. Ici
+  # se tenait `augenrules --load … || true` suivi du seul compte de `svc_exec` : un autre fichier de
+  # rules.d qui déclarait déjà une règle plume arrêtait l'assemblage sur « Rule exists », AUCUNE règle
+  # plume suivante n'était chargée, et l'installeur affichait un compte sans rien dire. Le chargeur
+  # dédoublonne, compte PAR CLÉ ce que `auditctl -l` rapporte, rattrape et NOMME ce qui manque. Son
+  # échec n'interrompt pas l'installation (le reste du SOC doit être posé) : il est redit à la fin,
+  # et le code de sortie de ce script le porte (3).
+  if PLUME_AUDIT_RULES_DEST=/etc/audit/rules.d/plume.rules \
+     sh /usr/local/lib/plume/plume-audit-rules-load.sh /usr/local/share/plume/plume-audit.rules; then
+    AUDIT_RC=0
+  else
+    AUDIT_RC=$?
+  fi
 else
   echo ">> auditd ABSENT (augenrules ou auditctl introuvable) : règles NON chargées. Le capteur auditd (dataaccess,"
   echo "   svc_exec) ne collecte RIEN ; il le dit au SOC à chaque passage (source absente). L'armer :"
@@ -312,5 +323,24 @@ else
   echo "   porte aucune des deux formes attendues pour 'cold-backup-plan'. Ceci n'est PAS « aucune"
   echo "   capacité » : c'est un contrôle qui REFUSE DE CONCLURE plutôt que d'en annoncer une."
   echo "   Vérifie à la main : /usr/local/bin/plume-daemon --help"
+fi
+# `P10.33-c` — DEUX ÉTATS DIFFÉRENTS, DEUX GESTES. Code 2 : le noyau tient TOUT, maintenant ; seul le
+# démarrage suivant est menacé, par une ligne d'un fichier de /etc/audit/rules.d. Code 1 (ou tout autre) :
+# il manque DÉJÀ des règles, et c'est le gabarit (ou le chargeur lui-même) qu'il faut reprendre.
+if [ "${AUDIT_RC:-0}" -ne 0 ]; then
+  systemctl is-active plume-daemon.service || true
+  if [ "$AUDIT_RC" -eq 2 ]; then
+    echo "!! INSTALLATION POSÉE, RÈGLES D'AUDIT COMPLÈTES MAINTENANT, MAIS PAS AU PROCHAIN DÉMARRAGE (chargeur : code 2)." >&2
+    echo "   Le noyau tient toutes les règles plume, mais par le seul rattrapage du chargeur : au démarrage, auditd" >&2
+    echo "   rejoue \`augenrules --load\`, qui s'arrête sur la ligne nommée plus haut, et la machine redémarrera à moitié" >&2
+    echo "   armée. Geste : corrigez ou retirez cette ligne du fichier de /etc/audit/rules.d qui la porte, puis :" >&2
+  else
+    echo "!! INSTALLATION POSÉE, RÈGLES D'AUDIT INCOMPLÈTES MAINTENANT (chargeur : code $AUDIT_RC — détail plus haut)." >&2
+    echo "   Le capteur auditd ne voit qu'une partie de ce que le gabarit déclare. Geste : corrigez la ligne nommée plus" >&2
+    echo "   haut dans $SRC/systemd/plume-audit.rules (ce script la recopie) puis rejouez ce script, ou dans la copie" >&2
+    echo "   installée /usr/local/share/plume/plume-audit.rules puis :" >&2
+  fi
+  echo "     sudo sh /usr/local/lib/plume/plume-audit-rules-load.sh /usr/local/share/plume/plume-audit.rules" >&2
+  exit 3
 fi
 systemctl is-active plume-daemon.service

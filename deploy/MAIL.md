@@ -2,8 +2,11 @@
 
 Le SOC traite le mail comme **un collecteur de plus** (agent collecte -> SOC ingere), au lieu d'un
 service a part. `collector-mail` lit le **maildir sur le FS de l'hote**, applique des **patterns
-curates** (IOC / phishing / URL), et emet des **events MINIMAUX** (compte, dossier, sujet/exp.,
-message-id, sample IOC/URL) -> spool -> `ship.sh` -> SOC central (`source=mail` + FTS).
+curates** (IOC / phishing / URL), et emet des **events MINIMAUX** (compte, dossier, domaine de
+l'expediteur, message-id, sample IOC/URL) -> spool -> `ship.sh` -> SOC central (`source=mail` + FTS).
+Le sample d'une URL n'en garde que schema, hote, port et chemin (requete, fragment et identifiants
+coupes, et la coupure est dite) ; un parametre decode sort par son NOM ; une partie locale d'adresse
+sort `*@domaine`. L'objet ne sort que sur `PLUME_MAIL_EMIT_SUBJECT=1`, borne a 80 caracteres.
 
 **JAMAIS de body en clair** dans le spool / la DB SOC (minimisation = "securite >= existant").
 Le **body complet** reste un **pull gate `role=admin` + audite**, capacite agent-side **distincte**
@@ -21,6 +24,7 @@ PLUME_MAIL_FOLDER=*                  # tous les dossiers (defaut)
 PLUME_MAIL_LIMIT=2000               # plafond messages/compte au 1er passage (incremental ensuite)
 PLUME_MAIL_MAX_EVENTS=1000          # cap d'alertes par run (anti-flood)
 # PLUME_MAIL_PATTERNS=/etc/plume/mail-patterns.json   # surcharge du jeu par defaut (optionnel)
+# PLUME_MAIL_EMIT_SUBJECT=0          # 1 = emet l'objet (80 caracteres) ; 0 ou rien = non ; autre = refus
 # PLUME_MAIL_STATE=/var/lib/plume/spool/.mail-seen    # etat incremental (defaut)
 ```
 > Le defaut du provisioner local-path de k3s est `/var/lib/rancher/k3s/storage` ; si ton cluster le

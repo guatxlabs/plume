@@ -49,6 +49,12 @@ Puis, toujours sur le capteur livré :
   * l'étape `search` de la règle de catalogue `ex-mail-mass-outbound`, sur les événements émis : elle ne
     retient du flux que l'entrée amavis, qui porte `sender` — ni la file, ni le sortant.
 
+`P10.32-l` — LE MASQUAGE VAUT POUR TOUTE LIGNE, PLUS SEULEMENT POUR LE SORTANT. Le message émis est la ligne
+masquée (valeurs lues remplacées à leur place — `user=<…>`, `sasl_username=`, `<…>` — puis toute partie
+locale, l'étiquette `clé=` collée gardée), et `user` et `sender` sortent sous la forme `*@<domaine>`. Le corpus
+garde la valeur LUE ; `attendu` en dérive ce qui est ÉMIS. Le masquage lui-même est tenu, propriété par
+propriété, par `check_mail_sensor_masks_every_local_part_it_emits.py`.
+
 CODES : 0 tout est tenu ; 1 un défaut mesuré ; 2 la garde refuse de conclure (instrument invalide,
 corpus hors forme, aucun awk) — rien n'a été mesuré.
 
@@ -123,7 +129,9 @@ IPV6 = re.compile(r"(?<![0-9A-Za-z:])((?:[0-9A-Fa-f]{1,4}:){1,7}:?(?:[0-9A-Fa-f]
 AROBASE = re.compile(r"@\[?([A-Za-z0-9.-]+)")
 # Ce qui précède un `@`, jusqu'à une espace, un `<`, un autre `@` ou le début : `*` après masquage, ou rien.
 # L'ancienne forme ne regardait que le caractère collé au `@` : `<jean:*@d>` la passait, le `jean:` restant.
-PARTIE_LOCALE_RESTANTE = re.compile(r"(?:^|[ <@])([^ <@]+)@")
+# P10.32-l — une étiquette de champ `clé=` collée devant (`sasl_username=*@d`) est gardée par le masquage : elle
+# n'est pas une partie locale. Elle ne l'est qu'à une borne (`_etiquette`) : `to=<a_b=*@d>` est accusé.
+PARTIE_LOCALE_RESTANTE = re.compile(r"[^ <@]+@")
 
 # Les exigences de plancher : chacune est une ligne qu'un capteur qui ne lit pas la famille, ou qui la
 # lit mal, classerait faux.
@@ -217,17 +225,57 @@ def empreinte(ligne):
     return h
 
 
-def masquer(ligne):
-    """Le masquage du sortant (`masquer_adresses`), écrit ICI une seconde fois."""
+def masquer_compte(v):
+    """`masquer_compte` de `collectors/mail.sh`, écrit ICI une seconde fois (`P10.32-l`)."""
+    if not v:
+        return ""
+    return "*@" + v.rsplit("@", 1)[1] if "@" in v else "*"
+
+
+# Une ÉTIQUETTE de champ (`sasl_username=`) : au début du morceau ou après un `,` ou un `;`, et jamais quand le
+# morceau suit un `<` ou un autre `@` — là, tout jusqu'au `@` est la partie locale (`to=<a_b=c@d>` -> `to=<*@d>`).
+ETIQUETTE_DE_CHAMP = re.compile(r"(?:^|[,;])[A-Za-z_-]+=")
+
+
+def _etiquette(m):
+    """L'étiquette de champ gardée devant le morceau `m` (motif `[^ <@]+@`), ou `""`."""
+    avant = m.string[m.start() - 1] if m.start() else ""
+    if avant in ("<", "@"):
+        return ""
+    e = ETIQUETTE_DE_CHAMP.search(m.group(0)[:-1])
+    return m.group(0)[:e.end()] if e else ""
+
+
+def _partie_locale_masquee(m):
+    return _etiquette(m) + "*@"
+
+
+DESTINATAIRE_DU_SORTANT = re.compile(r"^\S+ \S+ postfix/smtp\[\d+\]: [0-9A-Za-z]+: to=<([^<>]*)>")
+
+
+def masquer(ligne, usr="", exp=""):
+    """`masquer_ligne` et `masquer_adresses` de `collectors/mail.sh`, écrits ICI une seconde fois : les valeurs
+    LUES remplacées à leur place (`P10.32-l`), puis chaque partie locale, l'étiquette `clé=` collée gardée."""
+    def partout(s, de, vers):
+        return s.replace(de, vers) if de and de != vers else s
+    if usr:
+        ligne = partout(ligne, f"user=<{usr}>", f"user=<{masquer_compte(usr)}>")
+        ligne = partout(ligne, f"sasl_username={usr}", f"sasl_username={masquer_compte(usr)}")
+    if exp:
+        ligne = partout(ligne, f"<{exp}>", f"<{masquer_compte(exp)}>")
+    d = DESTINATAIRE_DU_SORTANT.match(ligne)
+    if d and d.group(1):
+        ligne = partout(ligne, f"<{d.group(1)}>", f"<{masquer_compte(d.group(1))}>")
     ligne = re.sub(r'"(?:[^"\\]|\\.)*"@', "*@", ligne)
-    return re.sub(r"[^ <@]+@", "*@", ligne)
+    return re.sub(r"[^ <@]+@", _partie_locale_masquee, ligne)
 
 
 def partie_locale_restante(message):
     """La première partie locale non masquée du message (autre chose que `*` devant un `@`), ou None."""
-    for m in PARTIE_LOCALE_RESTANTE.finditer(message):
-        if m.group(1) != "*":
-            return m.group(1)
+    for m in PARTIE_LOCALE_RESTANTE.finditer(message or ""):
+        reste = m.group(0)[len(_etiquette(m)):-1]
+        if reste != "*":
+            return reste
     return None
 
 
@@ -371,7 +419,12 @@ def attendu(e, decalage):
     champs.setdefault("src_ip", "")
     champs["action"] = action
     ts = epoch_mail(e["ligne"]) if e["flux"] == "mail" else mur_clamav(e["ligne"]) - decalage
-    message = masquer(e["ligne"]) if champs.get("service") == "smtp" else e["ligne"]
+    # P10.32-l — le message de TOUTE ligne sort masqué, le compte et l'expéditeur aussi (le corpus dit ce qui
+    # est LU). Le destinataire du sortant n'est pas un champ (`rcpt_domain` seul).
+    message = masquer(e["ligne"], champs["user"], champs.get("sender", ""))
+    champs["user"] = masquer_compte(champs["user"])
+    if "sender" in champs:
+        champs["sender"] = masquer_compte(champs["sender"])
     # La clé porte l'empreinte du MESSAGE ÉMIS : celle de la ligne brute laisserait retrouver, par essais,
     # une partie locale que le message masque (la clé est requêtable).
     return dict(category=cat, severity=int(e["sev"]), ts=ts, src_ip=champs["src_ip"], fields=champs,
@@ -402,7 +455,7 @@ def juger(entrees, evenements, decalage):
         if (ev.get("fields") or {}) != a["fields"]:
             fautes.append(f"{quoi} : champs {json.dumps(ev.get('fields'), ensure_ascii=False)} au lieu de "
                           f"{json.dumps(a['fields'], ensure_ascii=False)}")
-        if a["fields"].get("service") == "smtp" and partie_locale_restante(ev.get("message", "")):
+        if partie_locale_restante(ev.get("message", "")):
             fautes.append(f"{quoi} : une partie locale d'adresse subsiste dans le message émis")
     for message, vus in par_message.items():
         fautes.append(f"{len(vus)} événement(s) pour un message absent des corpus : `{str(message)[:120]}`")
@@ -434,10 +487,14 @@ def epreuve_du_juge():
     # guillemet échappé dans la forme entre guillemets. Et l'ancien résultat est bien accusé.
     for brut, masque in (('to=<jean:dupont@example.org>', 'to=<*@example.org>'),
                          ('to=<"a \\"b c"@example.org>', 'to=<*@example.org>'),
-                         ('to=<jean[1]@example.org>', 'to=<*@example.org>')):
+                         ('to=<jean[1]@example.org>', 'to=<*@example.org>'),
+                         # P10.32-l : un `nom=` DANS les chevrons est la partie locale, pas une étiquette.
+                         ('to=<jean_dupont=x@example.org>', 'to=<*@example.org>'),
+                         ('sasl_username=jean@example.org', 'sasl_username=*@example.org')):
         if masquer(brut) != masque or partie_locale_restante(masquer(brut)):
             return f"le masquage écrit ici laisse fuir une partie locale : `{brut}` -> `{masquer(brut)}`"
-    if partie_locale_restante("to=<jean:*@example.org>") != "jean:*" or partie_locale_restante('to=<"*@example.org>') != '"*':
+    if (partie_locale_restante("to=<jean:*@example.org>") != "jean:*" or partie_locale_restante('to=<"*@example.org>') != '"*'
+            or partie_locale_restante("to=<jean_dupont=*@example.org>") != "jean_dupont=*"):
         return "le juge ne voit pas une partie locale masquée à moitié"
     return None
 
@@ -755,9 +812,9 @@ def passage_des_bords(chemin_awk, entrees):
             fautes.append(f"(SKIP_IP) {ko}")
         else:
             msgs = [e.get("message") for e in ev]
-            if spf_fail[0]["ligne"] in msgs:
+            if masquer(spf_fail[0]["ligne"]) in msgs:
                 fautes.append("(SKIP_IP=203.0.113.40) le verdict SPF de l'adresse écartée est émis")
-            if spf_pass[0]["ligne"] not in msgs:
+            if masquer(spf_pass[0]["ligne"]) not in msgs:
                 fautes.append("(SKIP_IP=203.0.113.40) le verdict SPF d'une AUTRE adresse n'est plus émis")
         # 3. Envoi authentifié d'un client `unknown[unknown]` : non émis, COMPTÉ et avoué (`auth=1`).
         neuf()

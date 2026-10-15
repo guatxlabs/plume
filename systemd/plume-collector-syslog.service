@@ -16,7 +16,7 @@ Environment=PLUME_SPOOL=/var/lib/plume/spool
 #   l'ouvrir = PLUME_SYSLOG_ALLOW + pare-feu PUIS 0.0.0.0:514. NON POSEE OU VIDE, une variable retombe sur
 #   le defaut du binaire, 0.0.0.0:514 : vider ne desactive PAS un transport)
 #   PLUME_SYSLOG_BATCH_MAX=500  PLUME_SYSLOG_FLUSH_MS=2000  PLUME_SYSLOG_MAX_FRAME=65536  PLUME_SYSLOG_MAX_CONNS=128
-# DURCISSEMENT (syslog = non authentifie) : PLUME_SYSLOG_ALLOW=<cidr,...> (allowlist source-IP ; vide = tout)
+# DURCISSEMENT (syslog = non authentifie) : PLUME_SYSLOG_ALLOW=<cidr,...> (allowlist source-IP ; vide = refus hors boucle locale)
 #   + PLUME_SYSLOG_MAX_CONNS_PER_IP=16  PLUME_SYSLOG_TCP_IDLE=60  PLUME_SYSLOG_TCP_MAXLIFE=3600  (anti-slowloris)
 #   + PLUME_SYSLOG_SPOOL_MAX_BYTES=536870912  PLUME_SYSLOG_QUEUE_MAX (backpressure disque/memoire)
 #   + PLUME_SYSLOG_TZ=+0100 (tz par defaut si le device n'emet pas de champ tz ; sinon UTC)

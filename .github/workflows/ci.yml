@@ -2295,6 +2295,17 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_a_live_sensor_never_reads_as_mute_or_calm.py
 
+      # `P10.32-l` — LE CAPTEUR MAIL MASQUE CHAQUE PARTIE LOCALE QU'IL ÉMET, sur TOUTE ligne et plus seulement
+      # sur le sortant. Le capteur LIVRÉ est joué dans un bac sous chaque awk présent : une ligne fabriquée par
+      # famille, à marqueurs (aucun ne sort ; `user`, `sender`, `rcpt` masqués ; étiquettes de champ `clé=` gardées,
+      # mais un `nom=` entre chevrons, après `(` ou dans une signature BATV masqué avec la partie locale),
+      # et toutes les lignes des corpus mail livrés (aucune partie locale restante). L'expéditeur d'une entrée
+      # amavis ORIGINAIRE reste en clair dans `sender`, adossé à la règle `ex-mail-mass-outbound`, que la garde lit.
+      - name: Le capteur mail masque chaque partie locale qu'il émet (P10.32-l)
+        id: garde_80
+        continue-on-error: true
+        run: python3 .github/scripts/check_mail_sensor_masks_every_local_part_it_emits.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2783,6 +2794,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_77.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_collector_escapes_its_json_and_never_ships_or_listens_open.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_78.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_installation_is_hardened_in_every_mode.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_79.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_live_sensor_never_reads_as_mute_or_calm.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_80.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_masks_every_local_part_it_emits.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:
@@ -4104,10 +4116,14 @@ jobs:
       # ajouté à ce crate la garde de la liste d'adresses (une liste POSÉE ne peut jamais produire
       # une liste vide), le refus d'un pair dont l'adresse n'est pas lue, la paire sur l'identité de
       # l'hôte et la parité de vocabulaire avec le module du démon.
+      # 57 : MESURÉ le 2026-10-15 par la MÊME énumération (`cargo test -- --list` : 57 lignes `: test`,
+      # 57 annoncées). Le lot `P10.32-l` ajoute la règle de résolution de la porte d'écoute (1) et deux
+      # fichiers de témoins qui exécutent le binaire : la porte jouée sur chaque écoute (4), le cas par
+      # défaut sans écoute posée et ce que le refus dit au conteneur (2).
       - name: cargo test (collector-syslog) + assert the test count
         working-directory: collector-syslog
         env:
-          EXPECTED_SYSLOG_TESTS: "50"
+          EXPECTED_SYSLOG_TESTS: "57"
         run: |
           set -euo pipefail
           cargo test --locked --verbose 2>&1 | tee /tmp/syslog-tests.log
@@ -4124,10 +4140,14 @@ jobs:
       # 5 : MESURÉ le 2026-08-21 par la MÊME énumération. Ce crate n'avait AUCUN test avant le lot
       # `S36` ; les cinq sont la paire sur l'identité, le contrat d'aveu, la parité de vocabulaire et
       # la garde dérivée qui exécute le collecteur contre une arborescence de courrier fabriquée.
+      # 19 : MESURÉ le 2026-10-15 par la MÊME énumération (19 lignes `: test`, 19 annoncées). Le lot
+      # `P10.32-l` ajoute deux fichiers de témoins qui exécutent le collecteur contre une boîte fabriquée
+      # et lisent le spool : ce qu'un courriel à jeton dépose (6), puis l'objet plié ou en capitales,
+      # l'objet demandé assaini, les bornes de l'échantillon, le repli de l'URL et le port (7).
       - name: cargo test (collector-mail) + assert the test count
         working-directory: collector-mail
         env:
-          EXPECTED_MAIL_TESTS: "6"
+          EXPECTED_MAIL_TESTS: "19"
         run: |
           set -euo pipefail
           cargo test --locked --verbose 2>&1 | tee /tmp/mail-tests.log

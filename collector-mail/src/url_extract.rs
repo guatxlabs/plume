@@ -16,7 +16,9 @@ pub struct ExtractedUrl {
     pub source: String, // "html-anchor" | "text"
 }
 
-static URL_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r#"https?://[^\s<>"'\)\]\}]+"#).unwrap());
+/// Partage avec `confidentialite` (`P10.32-l`) : une URL trouvee dans un texte y est coupee par le
+/// MEME motif qui l'extrait ici.
+pub(crate) static URL_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r#"https?://[^\s<>"'\)\]\}]+"#).unwrap());
 static A_SELECTOR: Lazy<Selector> = Lazy::new(|| Selector::parse("a").unwrap());
 static B64_HINT: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9+/=_-]{16,}$").unwrap());
 

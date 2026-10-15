@@ -14,6 +14,8 @@ mod lisibilite;
 #[cfg(test)]
 mod tmp_possede; // P8.9-o : le temporaire de test SE POSSÈDE (copie identique de daemon/src/tmp_possede.rs, gardée)
 mod parser;
+#[cfg(test)]
+mod porte_ecoute_temoins; // P10.32-l : la regle « une seule resolution dehors suffit », jugee seule
 mod spool;
 
 use framing::{next_frame, parse_syslog, FrameOutcome};
@@ -29,6 +31,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn env_or(k: &str, d: &str) -> String {
     std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| d.to_string())
+}
+
+/// P10.32-l — UNE ECOUTE : non posee, le defaut ; posee VIDE, le transport est COUPE (`""`), comme le
+/// disent `deploy/SYSLOG.md`, l'unite systemd et `bootstrap-agent.sh` (« vider = desactiver »). Lue par
+/// `env_or`, une ecoute videe retombait sur `0.0.0.0:514` : le transport que l'exploitant croyait coupe
+/// restait ouvert sur toutes les interfaces, et le code qui traite une ecoute vide (`off`) etait mort.
+fn env_ecoute(k: &str, d: &str) -> String {
+    match std::env::var(k) {
+        Err(_) => d.to_string(),
+        Ok(v) => v.trim().to_string(),
+    }
 }
 
 /// UN REGLAGE NON POSE EST LE CAS NOMINAL ; UN REGLAGE POSE ET NON COMPRIS EST UN ECHEC (`S36`).
@@ -163,6 +176,30 @@ fn parse_allowlist(s: &str) -> lisibilite::Lecture<Vec<Cidr>> {
     }
     lisibilite::Lecture::Lue(out)
 }
+/// P10.32-l — LES ECOUTES QUI SORTENT DE LA BOUCLE LOCALE, nommees (`udp=0.0.0.0:514`). Une ecoute vide
+/// est un transport coupe (`env_ecoute`) : elle n'ouvre rien. Une adresse non resolue n'est pas prouvee
+/// locale, elle est donc comptee dehors — le doute ferme la porte, il ne l'ouvre pas.
+fn ecoutes_hors_boucle_locale(ecoutes: &[(&str, &str)]) -> Vec<String> {
+    use std::net::ToSocketAddrs;
+    ecoutes
+        .iter()
+        .filter(|(_, a)| !a.is_empty())
+        .filter(|(_, a)| match a.to_socket_addrs() {
+            Ok(it) => resolutions_hors_boucle_locale(&it.collect::<Vec<SocketAddr>>()),
+            Err(_) => true,
+        })
+        .map(|(t, a)| format!("{t}={a}"))
+        .collect()
+}
+
+/// Les resolutions d'UNE ecoute sortent-elles de la boucle locale ? Oui des qu'UNE seule en sort : un
+/// nom qui rend `127.0.0.1` et `192.0.2.1` ouvre le reseau. Aucune resolution : rien n'est prouve local.
+/// `0.0.0.0` et `::` (toutes les interfaces) ne sont pas la boucle locale ; `localhost` (`127.0.0.1` et
+/// `::1`) l'est.
+fn resolutions_hors_boucle_locale(v: &[SocketAddr]) -> bool {
+    v.is_empty() || v.iter().any(|s| !s.ip().is_loopback())
+}
+
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -183,7 +220,8 @@ struct Config {
     max_frame: usize,
     max_conns: usize,
     udp_recv_buf: usize,
-    /// Allowlist source-IP (vide = accepte tout, avec un WARN au boot). cf. PLUME_SYSLOG_ALLOW.
+    /// Allowlist source-IP. VIDE : admise seulement si l'ecoute est en boucle locale (P10.32-l, sinon le
+    /// demarrage est refuse) ; elle accepte alors toute source de cet hote. cf. PLUME_SYSLOG_ALLOW.
     allow: Vec<Cidr>,
     /// Budget disque du spool : au-dela, on JETTE (shed) plutot que de gonfler le disque sans borne.
     spool_max_bytes: u64,
@@ -197,9 +235,9 @@ struct Config {
 impl Config {
     /// L'IP `ip` est-elle acceptee ?
     ///
-    /// DEUX CAS, ET LE SECOND A CHANGE (`S36`). Allowlist VIDE : aucun perimetre n'a ete demande, on
-    /// accepte — le demarrage le dit deja en toutes lettres, et c'est le cas nominal d'un recepteur
-    /// borne par un pare-feu. Allowlist POSEE : l'appartenance doit etre ETABLIE, pas presumee.
+    /// DEUX CAS, ET LE SECOND A CHANGE (`S36`). Allowlist VIDE : on accepte — ce cas n'existe plus
+    /// qu'en boucle locale, le demarrage refusant une liste vide sur une ecoute reseau (`P10.32-l`).
+    /// Allowlist POSEE : l'appartenance doit etre ETABLIE, pas presumee.
     ///
     /// L'ANCIEN TROISIEME CAS ETAIT UN FAIL-OPEN. Un pair dont l'adresse n'a pas pu etre lue
     /// (`peer_addr()` en echec sur une connexion TCP qui se ferme aussitot) etait ACCEPTE, avec pour
@@ -259,8 +297,8 @@ fn main() {
     // <= cap events/req du daemon (PLUME_INGEST_MAX_EVENTS, defaut 50000) ; defaut prudent.
     let batch_max = env_nombre_usize("PLUME_SYSLOG_BATCH_MAX", 500, 1, &mut fautes).min(50000);
     let flush_ms = env_nombre_u64("PLUME_SYSLOG_FLUSH_MS", 2000, 1, &mut fautes);
-    let udp_addr = env_or("PLUME_SYSLOG_UDP", "0.0.0.0:514");
-    let tcp_addr = env_or("PLUME_SYSLOG_TCP", "0.0.0.0:514");
+    let udp_addr = env_ecoute("PLUME_SYSLOG_UDP", "0.0.0.0:514");
+    let tcp_addr = env_ecoute("PLUME_SYSLOG_TCP", "0.0.0.0:514");
 
     // Offset tz par defaut (device sans champ `tz`) : rend l'hypothese UTC explicite/configurable.
     fortigate::set_default_tz(std::env::var("PLUME_SYSLOG_TZ").ok().as_deref());
@@ -277,12 +315,41 @@ fn main() {
                 "collector-syslog: PLUME_SYSLOG_ALLOW NON EXPLOITABLE ({cause}) : {detail}\n\
                  collector-syslog: ARRET. Un perimetre a ete DEMANDE et n'a pas pu etre etabli ; \
                  demarrer sans lui ouvrirait :514 — qui n'est authentifie par rien — a toute source. \
-                 Corrige la liste (CIDR ou IP separes par des virgules), ou retire la variable pour \
-                 accepter deliberement toute source."
+                 Corrige la liste (CIDR ou IP separes par des virgules), ou pose \
+                 PLUME_SYSLOG_ALLOW=0.0.0.0/0,::/0 pour accepter deliberement toute source."
             );
             std::process::exit(2);
         }
     };
+
+    // P10.32-l — UNE LISTE VIDE N'OUVRE PLUS LE RESEAU. Une liste vide valait « accepte tout », avec un
+    // simple avertissement, alors que l'ecoute par defaut est `0.0.0.0:514` : n'importe quel hote qui
+    // joint ce port injectait des evenements que l'agent expedie ensuite au central sous SA propre
+    // identite (jeton et certificat de l'agent). La liste vide reste admise en boucle locale (un relais
+    // syslog du meme hote, le cas le plus etroit) ; hors de la boucle locale, le demarrage est REFUSE et
+    // le message dit quoi poser. Ouvrir a tous reste possible, mais ECRIT : `0.0.0.0/0,::/0`.
+    if allow.is_empty() {
+        let hors_boucle = ecoutes_hors_boucle_locale(&[("udp", &udp_addr), ("tcp", &tcp_addr)]);
+        if !hors_boucle.is_empty() {
+            eprintln!(
+                "collector-syslog: ARRET. PLUME_SYSLOG_ALLOW est vide et le recepteur ecoute HORS de la \
+                 boucle locale ({}). Le syslog n'est authentifie par rien : tout hote qui joint ce port \
+                 injecterait des evenements expedies sous l'identite de cet agent.\n\
+                 collector-syslog: pose PLUME_SYSLOG_ALLOW=<CIDR ou IP de tes appareils> (ex. \
+                 PLUME_SYSLOG_ALLOW=192.0.2.10/32,198.51.100.0/24) ; pour accepter deliberement toute \
+                 source (un pare-feu ou un repartiteur filtre deja en amont), pose \
+                 PLUME_SYSLOG_ALLOW=0.0.0.0/0,::/0 ; ou n'ecoute qu'en boucle locale \
+                 (PLUME_SYSLOG_UDP=127.0.0.1:514, PLUME_SYSLOG_TCP=127.0.0.1:514).\n\
+                 collector-syslog: en conteneur (Docker, k3s), l'ecoute est forcement hors de la boucle \
+                 locale du conteneur et l'image refuse donc de demarrer sans liste : pose \
+                 PLUME_SYSLOG_ALLOW avec les IP des emetteurs TELLES QUE LE CONTENEUR LES VOIT (un SNAT \
+                 les remplace par celle du noeud ou de la passerelle), et restreins la publication du port \
+                 cote hote (deploy/SYSLOG.md, section \"Conteneur\").",
+                hors_boucle.join(", ")
+            );
+            std::process::exit(2);
+        }
+    }
 
     // L'IDENTITE DE L'HOTE : lue, ou AVOUEE. `PLUME_HOST` est une identite DECLAREE par un
     // exploitant, elle n'a rien a prouver ; sinon on lit, et si la lecture echoue on publie le
@@ -388,10 +455,12 @@ fn main() {
         max_buf,
     );
     if cfg.allow.is_empty() {
+        // P10.32-l — on n'arrive ici qu'en boucle locale (la porte ci-dessus refuse le reste) : toute
+        // source DE CET HOTE est acceptee, et c'est dit.
         eprintln!(
-            "collector-syslog: AVERTISSEMENT — :514 accepte TOUTE source (syslog non authentifie). \
-             Scope l'acces au(x) CIDR de tes appareils : PLUME_SYSLOG_ALLOW=<cidr,...> ET/OU une regle \
-             pare-feu (ufw/nft) / loadBalancerSourceRanges. cf. deploy/SYSLOG.md (durcissement)."
+            "collector-syslog: AVERTISSEMENT — ecoute en boucle locale seulement, PLUME_SYSLOG_ALLOW vide : \
+             toute source de CET hote est acceptee (syslog non authentifie). Pour ecouter le reseau, \
+             pose PLUME_SYSLOG_ALLOW=<cidr,...>. cf. deploy/SYSLOG.md (durcissement)."
         );
     }
 

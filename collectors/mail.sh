@@ -25,6 +25,13 @@
 # pour un echec (signature fausse, DMARC/SPF `fail`, rebond sortant), 4 pour un virus trouve.
 # CONFIDENTIALITE DU SORTANT : seul le DOMAINE du destinataire est un champ, et le message emis est
 # la ligne dont chaque partie locale d'adresse est remplacee par `*` (`masquer_adresses`).
+# P10.32-l — CONFIDENTIALITE PARTOUT, plus seulement sur le sortant : le message emis de TOUTE ligne est
+# masque (`masquer_ligne`), et les champs qui portent une adresse ou un compte (`user`, `sender`, `rcpt`)
+# sortent sous la forme `*@<domaine>` (`*` sans domaine). Une exception, ecrite : l'expediteur d'une
+# entree amavis ORIGINAIRE de ce serveur (`LOCAL`, client de mynetworks ou authentifie) reste en clair,
+# parce que la regle livree `ex-mail-mass-outbound` compte `sender` par expediteur — masque, il se
+# confondrait avec tous les envois du domaine. Les dangers mesures : un `viewer` qui lisait les
+# correspondants de chaque boite, une base volee qui portait l'annuaire des echanges.
 #
 # Horodatage : le log est en ISO avec offset (+02:00) ; l'epoch UTC = mktime(heure) - offset, avec
 # TZ=UTC pour que mktime interprete l'heure en UTC quel que soit le fuseau de l'hote.
@@ -227,7 +234,7 @@ function empreinte(s,   i, n, h){
 # garde exige ce voisinage. La suite `(<id>) ...` n’est pas recollée : elle porte du texte du client
 # (famille de P10.23-w).
 function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
-  vd = ""; vir = ""; aip = ""; frm = ""; rcpt = ""; sco = ""; sz = ""; mid = ""
+  vd = ""; vir = ""; aip = ""; frm = ""; rcpt = ""; sco = ""; sz = ""; mid = ""; orig = 0
   coupee = (m !~ /, [0-9]+ ms$/)
   sub(/^\([^ ()]+\) /, "", m)
   match(m, /^(Passed|Blocked) [A-Z][A-Z0-9-]*/); vd = substr(m, 1, RLENGTH); reste = substr(m, RLENGTH + 1)
@@ -245,6 +252,8 @@ function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
   if (vd ~ /BANNED$/ && !(complete && unique)) return
   if (match(apres, /^([A-Za-z0-9_.\/-]+ )?(LOCAL )?\[[0-9A-Fa-f:.]+\]:[0-9]+ /)) {
     s = substr(apres, RSTART, RLENGTH); match(s, /\[[0-9A-Fa-f:.]+\]/); aip = adresse(substr(s, RSTART + 1, RLENGTH - 2))
+    # P10.32-l — `LOCAL` (`%l` de `$log_short_templ`) : le message est ORIGINAIRE de ce serveur.
+    if (s ~ /(^| )LOCAL \[/) orig = 1
   }
   if (!complete) return
   if (occurrences(apres, " -> ") == 1) {
@@ -272,10 +281,63 @@ function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
 # `<a\ b@d>` rend `<a\ *@d>` — aucune borne lisible ne sépare alors la partie locale du texte qui la précède.
 # CE QUE LE MASQUAGE MANGE EN TROP, DIT : la ponctuation collée devant une partie locale (`(a@d` rend
 # `*@d`), et le domaine d’une adresse collée à la suivante sans espace (`a@x,b@y` rend `*@*@y`).
-function masquer_adresses(s){
+# P10.32-l — UNE ÉTIQUETTE DE CHAMP `clé=` COLLÉE À LA PARTIE LOCALE N’EST PAS MANGÉE : `sasl_username=jean@d`
+# rend `sasl_username=*@d`, `envelope-from=jean@d;` rend `envelope-from=*@d;`. Une ÉTIQUETTE, et rien d’autre :
+# le préfixe `nom=` (`[A-Za-z_-]+=`, jusqu’au PREMIER `=`) au DÉBUT du morceau ou juste après un `,` ou un `;`
+# du morceau, et SEULEMENT si le morceau ne suit ni un `<` ni un autre `@`. Après un `<`, tout jusqu’au `@` est
+# la partie locale, masquée ENTIÈRE : `to=<jean_dupont=x@d>` rend `to=<*@d>` (l’ancienne règle gardait tout
+# préfixe `nom=` du morceau, chevron compris, et rendait `to=<jean_dupont=*@d>` : la partie locale fuyait).
+# `(` n’est pas une borne d’étiquette : Dovecot écrit le compte juste après (`imap(jean@d)`), et `imap(a_b=c@d)`
+# garderait `a_b=`. BATV HORS CHEVRONS (`envelope-from=prvs=0123abcd=jean@d`) : seule l’étiquette du champ sort,
+# l’étiquette `prvs=`, la signature et la partie locale sont masquées ensemble (`envelope-from=*@d`) ; sans
+# étiquette de champ devant (` prvs=0123abcd=jean@d`), `prvs=` est pris pour une étiquette et le reste masqué.
+# CE QUI FUIT ENCORE, DIT : une partie locale qui contient `=`, écrite HORS chevrons et SANS étiquette devant
+# (` jean_dupont=x@d` rend ` jean_dupont=*@d`) — aucune borne lisible ne la sépare d’une étiquette.
+function masquer_adresses(s,   r, t, e, p, q, c){
   gsub(/"([^"\\]|\\.)*"@/, "*@", s)
-  gsub(/[^ <@]+@/, "*@", s)
-  return s
+  r = ""
+  while (match(s, /[^ <@]+@/)) {
+    p = RSTART; q = RLENGTH; t = substr(s, p, q - 1); e = ""
+    # Le caractère qui précède le morceau : celui de la ligne, ou le `@` du morceau précédent.
+    if (p > 1) c = substr(s, p - 1, 1); else if (r != "") c = "@"; else c = ""
+    if (c != "<" && c != "@") {
+      if (match(t, /^[A-Za-z_-]+=/)) e = substr(t, 1, RLENGTH)
+      else if (match(t, /[,;][A-Za-z_-]+=/)) e = substr(t, 1, RSTART + RLENGTH - 1)
+    }
+    r = r substr(s, 1, p - 1) e "*@"
+    s = substr(s, p + q)
+  }
+  return r s
+}
+# P10.32-l — un compte ou une adresse LUS, tels qu’ils sortent dans un champ : `*@<domaine>` (le domaine est
+# ce qui suit le DERNIER `@`), `*` sans `@`, rien pour rien.
+function masquer_compte(v,   d){
+  if (v == "") return ""
+  if (index(v, "@") == 0) return "*"
+  d = v; sub(/^.*@/, "", d)
+  return "*@" d
+}
+# Chaque occurrence LITTÉRALE de `de` (aucun motif : une valeur lue peut porter `.`, `[`, `\`…).
+function remplacer_partout(s, de, vers,   r, p){
+  if (de == "" || de == vers) return s
+  r = ""
+  while ((p = index(s, de)) > 0) { r = r substr(s, 1, p - 1) vers; s = substr(s, p + length(de)) }
+  return r s
+}
+# P10.32-l — LE MESSAGE ÉMIS DE TOUTE LIGNE. Les valeurs que le programme a LUES (le compte `usr`, l’expéditeur
+# et le destinataire `lu_exp`/`lu_dest`) sont d’abord remplacées à leur place exacte, sous leur repère
+# (`user=<…>`, `sasl_username=`, `<…>`) — ce qui masque aussi une valeur sans `@` (`user=<sales>`) et une partie
+# locale à espace NON guillemetée (`<jean dupont@d>`, la limite dite de P10.32-f), pour la valeur lue et ses
+# recopies. Puis `masquer_adresses` sur le reste. CE QUI RESTE, DIT : une partie locale à espace que le
+# programme n’a pas lue (texte libre du serveur distant), et un nom SASL sans `@` recopié hors de son repère.
+function masquer_ligne(s, usr){
+  if (usr != "") {
+    s = remplacer_partout(s, "user=<" usr ">", "user=<" masquer_compte(usr) ">")
+    s = remplacer_partout(s, "sasl_username=" usr, "sasl_username=" masquer_compte(usr))
+  }
+  if (lu_exp != "") s = remplacer_partout(s, "<" lu_exp ">", "<" masquer_compte(lu_exp) ">")
+  if (lu_dest != "") s = remplacer_partout(s, "<" lu_dest ">", "<" masquer_compte(lu_dest) ">")
+  return masquer_adresses(s)
 }
 # P10.32-f — LE COURRIER SORTANT, `postfix/smtp[pid]:` (le client SMTP de Postfix sous son nom par défaut ;
 # `postfix/smtp-amavis/smtp` et `postfix/lmtp` sont des SAUTS INTERNES, d’autres étiquettes). Gabarit de
@@ -289,7 +351,8 @@ function masquer_adresses(s){
 function lire_sortant(m,   n, s, avant, a, rl, ds, st, rd, sev){
   n = occurrences(m, SUITE_SORTANT)
   if (n == 0) return
-  message_emis = masquer_adresses($0)
+  # P10.32-l — le destinataire lu (`to=<…>`, en tête du message) est masqué à sa place, ses recopies aussi.
+  if (match(m, /^[0-9A-Za-z]+: to=<[^<>]*>/)) { lu_dest = substr(m, RSTART, RLENGTH - 1); sub(/^[^<]*</, "", lu_dest) }
   if (n > 1) { emit("mailflow","ambiguous",2,"","","smtp",""); return }
   match(m, SUITE_SORTANT); avant = substr(m, 1, RSTART - 1); s = substr(m, RSTART, RLENGTH)
   match(s, /relay=[^ ,]+/); rl = substr(s, RSTART + 6, RLENGTH - 6)
@@ -398,10 +461,12 @@ function lire_qmgr(m,   s, f, sz, nr){
     match(s, />, size=[0-9]+, nrcpt=[0-9]+ \(queue active\)$/); f = substr(s, 1, RSTART - 1); s = substr(s, RSTART)
     match(s, /size=[0-9]+/); sz = substr(s, RSTART + 5, RLENGTH - 5)
     match(s, /nrcpt=[0-9]+/); nr = substr(s, RSTART + 6, RLENGTH - 6)
-    emit("mailflow","queued",1,"","","qmgr",",\"sender\":\"" jesc(f) "\",\"size\":\"" sz "\",\"nrcpt\":\"" nr "\"")
+    lu_exp = f
+    emit("mailflow","queued",1,"","","qmgr",",\"sender\":\"" jesc(masquer_compte(f)) "\",\"size\":\"" sz "\",\"nrcpt\":\"" nr "\"")
   } else if (m ~ /^[0-9A-Za-z]+: from=<.*>, status=expired, returned to sender$/) {
     f = m; sub(/^[0-9A-Za-z]+: from=</, "", f); sub(/>, status=expired, returned to sender$/, "", f)
-    emit("mailflow","expired",2,"","","qmgr",",\"sender\":\"" jesc(f) "\"")
+    lu_exp = f
+    emit("mailflow","expired",2,"","","qmgr",",\"sender\":\"" jesc(masquer_compte(f)) "\"")
   }
 }
 function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
@@ -426,8 +491,10 @@ function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   # brute, la clé (requêtable) laissait retrouver une partie locale masquée en essayant des candidats. CE QUE
   # CELA COÛTE, DIT : deux lignes sortantes qui ne diffèrent QUE par la partie locale, à la microseconde près,
   # portent la même clé et l’ingestion en écarte une.
-  dd=(dk!="")?dk:("mail-" et "-" ip "-" act "-" empreinte(message_emis != "" ? message_emis : $0))
-  ev="{\"ts\":" et ",\"source\":\"mail\",\"category\":\"" cat "\",\"severity\":" sev ",\"src_ip\":\"" ip "\",\"message\":\"" jesc(message_emis != "" ? message_emis : $0) "\",\"dedup\":\"" dd "\",\"fields\":{\"action\":\"" act "\",\"user\":\"" jesc(usr) "\",\"service\":\"" svc "\",\"src_ip\":\"" ip "\"" extra "}}"
+  # P10.32-l — et le message émis est masqué pour TOUTE ligne (`masquer_ligne`), le compte aussi.
+  message_emis = masquer_ligne($0, usr)
+  dd=(dk!="")?dk:("mail-" et "-" ip "-" act "-" empreinte(message_emis))
+  ev="{\"ts\":" et ",\"source\":\"mail\",\"category\":\"" cat "\",\"severity\":" sev ",\"src_ip\":\"" ip "\",\"message\":\"" jesc(message_emis) "\",\"dedup\":\"" dd "\",\"fields\":{\"action\":\"" act "\",\"user\":\"" jesc(masquer_compte(usr)) "\",\"service\":\"" svc "\",\"src_ip\":\"" ip "\"" extra "}}"
   if(n>0) buf=buf ","; buf=buf ev; n++
 }
 BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
@@ -444,7 +511,7 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
   if (decalage ~ /^[+-][0-2][0-9]:[0-5][0-9]$/) decal = (substr(decalage, 1, 1) == "-" ? -1 : 1) * (substr(decalage, 2, 2) * 3600 + substr(decalage, 5, 2) * 60)
   dernier_decalage = "" }
 {
-  message_emis = ""
+  message_emis = ""; lu_exp = ""; lu_dest = ""
   if (flux != "mail") { ligne_clamav(); next }
   if (n>=3000) next                                             # garde-fou volume/passage
   if ($0 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T/) next
@@ -529,7 +596,10 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
     else if (vd ~ /BANNED$/) { mcat="banned"; msev=3; mact="banned" }
     else if (vd ~ /SPAM/) { msev=2; mact="spam" }
     else if (vd ~ /^Blocked/) { msev=2; mact="blocked" }
-    ext=",\"verdict\":\"" jesc(vd) "\",\"sender\":\"" jesc(frm) "\",\"rcpt\":\"" jesc(rcpt) "\",\"score\":\"" jesc(sco) "\",\"size\":\"" sz "\""
+    # P10.32-l — destinataire masqué ; expéditeur masqué SAUF sur une entrée ORIGINAIRE (`LOCAL`) : c’est le
+    # compte de ce serveur, que `ex-mail-mass-outbound` compte (`stats count by sender`).
+    lu_exp = frm; lu_dest = rcpt
+    ext=",\"verdict\":\"" jesc(vd) "\",\"sender\":\"" jesc(orig ? frm : masquer_compte(frm)) "\",\"rcpt\":\"" jesc(masquer_compte(rcpt)) "\",\"score\":\"" jesc(sco) "\",\"size\":\"" sz "\""
     if (vd ~ /INFECTED$/) ext=ext ",\"virus\":\"" jesc(vir) "\""
     if (coupee) ext=ext ",\"truncated\":\"1\""
     # P10.24-j — `$log_short_templ` a DEUX blocs, `Passed …` (destinataires livrés, `%#D`) et `Blocked …`

@@ -1,12 +1,12 @@
 //! Patterns de detection (curated) + scan d'un message -> hits MINIMAUX.
 //! Moteur `regex` (automate fini, temps lineaire = pas de ReDoS) + cap taille compilee.
+use crate::confidentialite;
 use crate::maildir::{Parsed, MAX_HAYSTACK_BYTES};
 use crate::url_extract::ExtractedUrl;
 use anyhow::{anyhow, Result};
 use regex::{Regex, RegexBuilder};
 
 pub const MAX_PATTERN_LEN: usize = 512;
-const MAX_SAMPLE: usize = 200;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Target {
@@ -124,17 +124,30 @@ fn cap_boundary(s: &str) -> &str {
     &s[..cut]
 }
 
+/// Le texte trouve par un motif, tel qu'il peut sortir (`P10.32-l`) : URL coupees, parties locales
+/// masquees, borne. Le motif, lui, a ete juge sur le texte ENTIER.
 fn sample_of(s: &str) -> String {
-    s.chars().take(MAX_SAMPLE).collect()
+    confidentialite::texte_assaini(s)
 }
 
 /// Scanne un message : au plus 1 hit par pattern (suffit pour un event). Aucun body retourne.
-pub fn scan_message(parsed: &Parsed, raw: &[u8], urls: &[ExtractedUrl], patterns: &[Pattern]) -> Vec<Hit> {
+///
+/// `P10.32-l` — l'ECHANTILLON n'est plus la valeur qui a declenche : une URL sort coupee (schema, hote,
+/// chemin ; requete, fragment et identifiants coupes et dits), un parametre decode sort par son NOM,
+/// l'expediteur par son domaine, l'objet seulement si `objet_emis` (sinon `[objet non emis]`).
+pub fn scan_message(
+    parsed: &Parsed,
+    raw: &[u8],
+    urls: &[ExtractedUrl],
+    patterns: &[Pattern],
+    objet_emis: bool,
+) -> Vec<Hit> {
     let mut hits = Vec::new();
     for pat in patterns {
         let hit_sample: Option<String> = match pat.target {
-            Target::Subject => pat.re.find(&parsed.subject).map(|m| sample_of(m.as_str())),
-            Target::From => pat.re.find(&parsed.from).map(|m| sample_of(m.as_str())),
+            // L'objet suit sa regle (`P10.32-l`) : non emis sauf demande, borne a `OBJET_MAX` sinon.
+            Target::Subject => pat.re.find(&parsed.subject).map(|m| confidentialite::objet_emis(m.as_str(), objet_emis)),
+            Target::From => pat.re.find(&parsed.from).map(|_| confidentialite::adresse_masquee(&parsed.from)),
             Target::TextBody => parsed
                 .text_body
                 .as_deref()
@@ -146,20 +159,24 @@ pub fn scan_message(parsed: &Parsed, raw: &[u8], urls: &[ExtractedUrl], patterns
             Target::Headers => {
                 let end = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(raw.len().min(8192));
                 let h = String::from_utf8_lossy(&raw[..end]);
-                pat.re.find(&h).map(|m| sample_of(m.as_str()))
+                pat.re
+                    .find(&h)
+                    .map(|m| confidentialite::echantillon_d_en_tetes(&h, m.start(), m.end(), objet_emis))
             }
             Target::Url => urls
                 .iter()
                 .find(|u| pat.re.is_match(&u.url))
-                .map(|u| sample_of(&u.url)),
+                .map(|u| confidentialite::url_coupee(&u.url)),
             Target::DecodedUrl => urls.iter().find_map(|u| {
                 if pat.re.is_match(&u.url) {
-                    return Some(sample_of(&u.url));
+                    return Some(confidentialite::url_coupee(&u.url));
                 }
-                u.decoded_params
-                    .values()
-                    .find(|v| pat.re.is_match(v))
-                    .map(|v| sample_of(v))
+                // L'ordre d'une table de hachage n'est pas stable : le parametre retenu est le premier
+                // NOM, par ordre lexical, dont la valeur decodee declenche le motif.
+                let mut noms: Vec<&String> =
+                    u.decoded_params.iter().filter(|(_, v)| pat.re.is_match(v)).map(|(k, _)| k).collect();
+                noms.sort();
+                noms.first().map(|k| confidentialite::parametre_decode(&u.url, k))
             }),
         };
         if let Some(sample) = hit_sample {

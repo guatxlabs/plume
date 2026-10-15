@@ -147,6 +147,13 @@ exercent les catégories `auth` (Dovecot sans `rip=`) et `postscreen` (client `[
 sont FABRIQUÉES : aucune n'est relevée, et aucune source lue ne montre postscreen écrivant un client
 illisible. Les unités awk
 des capteurs échappent au recensement des définitions d'adresse de `P4.7-j`.
+`P10.32-l` — LE CORPUS DIT CE QUE LE CAPTEUR LIT, LE JUGE ATTEND CE QU'IL ÉMET. Depuis que le message de TOUTE
+ligne sort masqué, et `user`, `sender`, `rcpt` sous la forme `*@<domaine>`, les colonnes du corpus restent la
+valeur LUE (validée contre la ligne, comme avant) et `ce_que_le_capteur_emet` en dérive l'attendu : la ligne
+masquée (valeurs lues remplacées à leur place, puis toute partie locale), les comptes masqués, l'expéditeur
+d'une entrée amavis `LOCAL` en clair (la règle `ex-mail-mass-outbound` le compte), la clé de repli sur la
+ligne MASQUÉE. Le masquage lui-même — aucune partie locale ne subsiste — est tenu par
+`check_mail_sensor_masks_every_local_part_it_emits.py` ; ici, il est écrit une seconde fois pour apparier.
 Sortie : 0 tenu · 1 défaut · 2 rien n'a été mesuré (capteur, bibliothèque ou corpus absent, corpus
 invalide ou sous son plancher, juge ou validation non discriminants, aucun awk, capteur en échec,
 fonction d'adresse introuvable, spool illisible).
@@ -205,6 +212,69 @@ def cle_de_repli(epoch, ip, action, ligne):
 # P10.24-j — la clé d'une entrée amavis identifiée : `mail-<id>-<Passed|Blocked>-<catégorie>`.
 def cle_amavis(mail_id, verdict):
     return f"mail-{mail_id}-{verdict.replace(' ', '-', 1)}"
+
+
+# P10.32-l — CE QUE LE CAPTEUR ÉMET D'UNE LIGNE LUE, écrit ICI une seconde fois (`masquer_compte`,
+# `masquer_adresses`, `masquer_ligne` de `collectors/mail.sh`).
+def masquer_compte(v):
+    if not v:
+        return ""
+    return "*@" + v.rsplit("@", 1)[1] if "@" in v else "*"
+
+
+# Une ÉTIQUETTE de champ (`sasl_username=`) : au début du morceau ou après un `,` ou un `;`, et jamais quand le
+# morceau suit un `<` ou un autre `@` — là, tout jusqu'au `@` est la partie locale (`to=<a_b=c@d>` -> `to=<*@d>`).
+ETIQUETTE_DE_CHAMP = re.compile(r"(?:^|[,;])[A-Za-z_-]+=")
+
+
+def _etiquette(m):
+    """L'étiquette de champ gardée devant le morceau `m` (motif `[^ <@]+@`), ou `""`."""
+    avant = m.string[m.start() - 1] if m.start() else ""
+    if avant in ("<", "@"):
+        return ""
+    e = ETIQUETTE_DE_CHAMP.search(m.group(0)[:-1])
+    return m.group(0)[:e.end()] if e else ""
+
+
+def _partie_locale_masquee(m):
+    return _etiquette(m) + "*@"
+
+
+def masquer_adresses(s):
+    s = re.sub(r'"(?:[^"\\]|\\.)*"@', "*@", s)
+    return re.sub(r"[^ <@]+@", _partie_locale_masquee, s)
+
+
+def masquer_ligne(ligne, usr="", exp="", dest=""):
+    def partout(s, de, vers):
+        return s.replace(de, vers) if de and de != vers else s
+    if usr:
+        ligne = partout(ligne, f"user=<{usr}>", f"user=<{masquer_compte(usr)}>")
+        ligne = partout(ligne, f"sasl_username={usr}", f"sasl_username={masquer_compte(usr)}")
+    if exp:
+        ligne = partout(ligne, f"<{exp}>", f"<{masquer_compte(exp)}>")
+    if dest:
+        ligne = partout(ligne, f"<{dest}>", f"<{masquer_compte(dest)}>")
+    return masquer_adresses(ligne)
+
+
+# `LOCAL` après `{<actions>}, ` et la banque éventuelle : l'entrée amavis est ORIGINAIRE de ce serveur.
+AMAVIS_ORIGINAIRE = re.compile(r"[{][A-Za-z,]*[}], (?:[A-Za-z0-9_./-]+ )?LOCAL \[[0-9A-Fa-f:.]+\]:[0-9]+ ")
+
+
+def ce_que_le_capteur_emet(entrees):
+    """Les entrées, ramenées à ce que le capteur ÉMET : ligne masquée, `user`/`sender`/`rcpt` masqués."""
+    sorties = []
+    for e in entrees:
+        champs = dict(e.get("champs") or {})
+        exp, dest = champs.get("sender", ""), champs.get("rcpt", "")
+        if "sender" in champs and not (exp and AMAVIS_ORIGINAIRE.search(e["ligne"])):
+            champs["sender"] = masquer_compte(exp)
+        if "rcpt" in champs:
+            champs["rcpt"] = masquer_compte(dest)
+        sorties.append(dict(e, ligne=masquer_ligne(e["ligne"], e["user"], exp, dest), user=masquer_compte(e["user"]),
+                            champs=champs))
+    return sorties
 
 
 # P10.23-h — l'échec SASL de smtpd, ancré comme dans le capteur, et le nom SASL qu'on y lit : `None` si la
@@ -1279,15 +1349,15 @@ def jouer(chemin_awk, entrees):
     evenements, aveux, illisible = lancer(chemin_awk, entrees)
     if illisible:
         return [illisible]
-    fautes = juger(entrees, evenements) + juger_aveu(entrees, aveux)
+    fautes = juger(ce_que_le_capteur_emet(entrees), evenements) + juger_aveu(entrees, aveux)
     une = [e for e in entrees if e["verdict"] == "sans-adresse"][:1]
     ev1, av1, ill1 = lancer(chemin_awk, une)
     fautes += [f"(passage à une seule ligne sans adresse) {f}"
-               for f in ([ill1] if ill1 else juger(une, ev1) + juger_aveu(une, av1) + juger_cle_d_aveu(aveux, av1))]
+               for f in ([ill1] if ill1 else juger(ce_que_le_capteur_emet(une), ev1) + juger_aveu(une, av1) + juger_cle_d_aveu(aveux, av1))]
     journal, attendues = passage_d_epargne(entrees)
     ev2, av2, ill2 = lancer(chemin_awk, journal, epargnee=ADRESSE_EPARGNEE)
     fautes += [f"(passage PLUME_MAIL_SKIP_IP={ADRESSE_EPARGNEE}) {f}"
-               for f in ([ill2] if ill2 else juger(attendues, ev2) + juger_aveu(journal, av2))]
+               for f in ([ill2] if ill2 else juger(ce_que_le_capteur_emet(attendues), ev2) + juger_aveu(journal, av2))]
     return fautes
 
 

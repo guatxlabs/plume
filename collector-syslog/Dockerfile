@@ -26,6 +26,10 @@ RUN apt-get update \
  && mkdir -p /var/lib/plume/spool && chown -R soc /var/lib/plume
 COPY --from=build /src/target/release/plume-collector-syslog /usr/local/bin/plume-collector-syslog
 USER soc
+# P10.32-l — L'IMAGE DEMARRE REFUSEE TANT QUE PLUME_SYSLOG_ALLOW EST VIDE (code 2, le message dit quoi poser).
+# Dans un conteneur l'ecoute est forcement hors de sa boucle locale (0.0.0.0:514 par defaut) ; le syslog n'est
+# authentifie par rien. Poser PLUME_SYSLOG_ALLOW avec les emetteurs tels que le conteneur les voit, et
+# restreindre la publication du port cote hote : deploy/SYSLOG.md, section "Conteneur".
 EXPOSE 514/udp
 EXPOSE 514/tcp
 ENV PLUME_SPOOL=/var/lib/plume/spool

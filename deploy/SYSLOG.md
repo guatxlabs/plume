@@ -59,7 +59,8 @@ PLUME_SYSLOG_SOURCE=fortigate
 # boucle locale par defaut ; 0.0.0.0:514 SEULEMENT apres la liste ET le pare-feu (section 3)
 PLUME_SYSLOG_UDP=127.0.0.1:514
 PLUME_SYSLOG_TCP=127.0.0.1:514
-# liste d'autorisation source-IP (CIDR/IP separes par des virgules). VIDE = tout accepte (WARN au boot)
+# liste d'autorisation source-IP (CIDR/IP separes par des virgules).
+# VIDE = refus de demarrer des qu'une ecoute est hors boucle locale
 PLUME_SYSLOG_ALLOW=
 # events par enveloppe (<= PLUME_INGEST_MAX_EVENTS du daemon)
 PLUME_SYSLOG_BATCH_MAX=500
@@ -89,7 +90,9 @@ liste vide.
 de faux events** (spoof d'un FortiGate). AVANT d'activer, applique **deux couches** :
 
 1. **Allowlist applicative** (`PLUME_SYSLOG_ALLOW` dans `/etc/plume/syslog.conf`) = CIDR/IP de tes
-   appareils. Vide -> tout accepte (le service LOG un avertissement au boot).
+   appareils. Vide -> le service REFUSE de demarrer si une ecoute sort de la boucle locale (code 2,
+   le message dit quoi poser) ; en boucle locale seule, toute source de cet hote est acceptee (avertissement
+   au boot). Accepter deliberement toute source s'ecrit : `PLUME_SYSLOG_ALLOW=0.0.0.0/0,::/0`.
 2. **Pare-feu hote default-deny** vers `:514` (le seul rempart si l'IP source est SNAT) :
    ```sh
    sudo ufw allow from <CIDR-FortiGate> to any port 514
@@ -156,6 +159,42 @@ A appliquer **deliberement**, lors d'un onboarding in-cluster — pas en always-
 >
 > Borne aussi le spool cote pod (`emptyDir sizeLimit` + `ephemeral-storage` + le shed applicatif
 > `PLUME_SYSLOG_SPOOL_MAX_BYTES`) : une eviction reste alors LOCALE au pod, sans disk-pressure du node.
+
+---
+
+## Conteneur (Docker, et le `receiver` du deploiement B) — l'image demarre REFUSEE
+
+Dans un conteneur, la boucle locale est celle du CONTENEUR : aucun emetteur ne la joint, l'ecoute est
+donc forcement hors boucle locale (`0.0.0.0:514`, le defaut de l'image `runtime`). Avec
+`PLUME_SYSLOG_ALLOW` vide, le recepteur **refuse de demarrer** (code 2) et son message dit quoi poser.
+C'est voulu : l'image n'ouvre rien en silence, et aucune variable ne leve cette porte sans liste ECRITE.
+Pas a pas :
+
+1. **Lister les emetteurs TELS QUE LE CONTENEUR LES VOIT.** En reseau pont, Docker garde l'IP source
+   reelle d'un emetteur distant (DNAT). Un emetteur de l'HOTE lui-meme qui vise un port publie sur
+   `127.0.0.1` arrive par `docker-proxy`, donc depuis la passerelle du pont (`docker network inspect
+   bridge`, champ `Gateway`, souvent `172.17.0.1`). En k3s, un `Service` en
+   `externalTrafficPolicy: Cluster` remplace l'IP source par celle d'un noeud ; `Local` la garde.
+2. **Poser la liste** dans l'environnement du conteneur (`-e`, ou la `ConfigMap` du deploiement B) :
+   `PLUME_SYSLOG_ALLOW=<CIDR ou IP, separes par des virgules>`. Accepter toute source reste possible,
+   ECRIT (`0.0.0.0/0,::/0`), et seulement derriere le filtrage de l'etape 3.
+3. **Restreindre la publication cote hote.** Seul l'hote relaie (rsyslog local -> conteneur) :
+   `-p 127.0.0.1:514:514/udp -p 127.0.0.1:514:514/tcp`. Des appareils distants : publier sur l'IP de
+   l'interface qui les recoit, ET poser le pare-feu de la section 3 du deploiement A — dans la chaine
+   `DOCKER-USER`, car les regles de publication de Docker passent avant `ufw`.
+4. **Verifier** : `docker logs <conteneur>` montre `collector-syslog: parser=... allow=N cidr`. Sans liste,
+   il montre `ARRET. PLUME_SYSLOG_ALLOW est vide ...` et le conteneur sort en code 2.
+
+```sh
+# appareils distants (ici un FortiGate 203.0.113.10), publies sur l'interface 198.51.100.5 de l'hote
+docker run -d --name plume-syslog -e PLUME_SYSLOG_ALLOW=203.0.113.10/32 \
+  -p 198.51.100.5:514:514/udp -p 198.51.100.5:514:514/tcp \
+  -v plume-spool:/var/lib/plume/spool <image-runtime>
+# relais de l'hote seul : la source vue est la passerelle du pont
+docker run -d --name plume-syslog -e PLUME_SYSLOG_ALLOW=172.17.0.1/32 \
+  -p 127.0.0.1:514:514/udp -p 127.0.0.1:514:514/tcp \
+  -v plume-spool:/var/lib/plume/spool <image-runtime>
+```
 
 ---
 

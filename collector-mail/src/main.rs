@@ -1,11 +1,15 @@
 //! Collecteur SOC mail (host-natif) — cf. GuatX-Infra ADR-0008.
 //! Lit le maildir, applique des patterns IOC/phishing, emet des events MINIMAUX vers le spool
-//! (compte, dossier, sujet/exp., message-id, sample IOC/URL). JAMAIS de body en clair.
+//! (compte, dossier, domaine de l'expediteur, message-id, sample IOC/URL coupe ; l'objet sur demande,
+//! `PLUME_MAIL_EMIT_SUBJECT=1`). JAMAIS de body en clair, jamais une requete d'URL ni une valeur decodee
+//! (`P10.32-l`, module `confidentialite`).
 //! Le body complet reste un pull gate+audite (capacite agent-side distincte, hors de ce binaire).
 /// `S36` — la garde dérivée de cette surface (suite seulement) : une boîte qu'on ne sait pas
 /// examiner ne se conclut pas par « 0 alerte ».
 mod garde_lisibilite;
 mod lisibilite;
+/// `P10.32-l` — ce qui sort d'un courrier (URL coupees, adresses masquees, objet sur demande).
+mod confidentialite;
 #[cfg(test)]
 mod tmp_possede; // P8.9-o : le temporaire de test SE POSSÈDE (copie identique de daemon/src/tmp_possede.rs, gardée)
 mod maildir;
@@ -137,6 +141,10 @@ fn run() -> Result<()> {
     let max_events: usize = env_or("PLUME_MAIL_MAX_EVENTS", "1000").parse().unwrap_or(1000);
     let state_path = env_or("PLUME_MAIL_STATE", &format!("{spool}/.mail-seen"));
     let pat_file = std::env::var("PLUME_MAIL_PATTERNS").ok().filter(|v| !v.is_empty());
+    // P10.32-l — l'objet ne sort que sur demande ECRITE ; une valeur posee et non comprise arrete le
+    // passage plutot que de retomber en silence sur l'un des deux sens.
+    let objet_demande = confidentialite::emettre_l_objet(std::env::var("PLUME_MAIL_EMIT_SUBJECT").ok().as_deref())
+        .map_err(|e| anyhow!(e))?;
 
     std::fs::create_dir_all(&spool).ok();
     let patterns = patterns::load(pat_file.as_deref())?;
@@ -258,7 +266,7 @@ fn run() -> Result<()> {
                 continue;
             }
             let urls = url_extract::extract_urls(parsed.html_body.as_deref(), parsed.text_body.as_deref());
-            let hits = patterns::scan_message(&parsed, &raw, &urls, &patterns);
+            let hits = patterns::scan_message(&parsed, &raw, &urls, &patterns, objet_demande);
             if hits.is_empty() {
                 continue;
             }
@@ -266,8 +274,9 @@ fn run() -> Result<()> {
             let top = hits.iter().max_by_key(|h| h.severity).unwrap();
             let ids: Vec<&str> = hits.iter().map(|h| h.pattern_id.as_str()).collect();
             let msgid = if parsed.message_id.is_empty() { fileid.clone() } else { parsed.message_id.clone() };
-            let subj: String = parsed.subject.chars().take(160).collect();
-            let from: String = parsed.from.chars().take(160).collect();
+            // P10.32-l — l'objet ne sort que sur demande (tronque, assaini) ; l'expediteur, par son domaine.
+            let subj = confidentialite::objet_emis(&parsed.subject, objet_demande);
+            let from: String = confidentialite::adresse_masquee(&parsed.from).chars().take(160).collect();
             let message = format!(
                 "mail {}: {} -> {}/{} | subj: {} | msgid: {} | patterns: {} | sample: {}",
                 top.category, from, account, fname, subj, msgid, ids.join(","), top.sample

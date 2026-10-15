@@ -24,27 +24,40 @@ tmp=$(mktemp "$SPOOL/.acl.XXXXXX")
 #   · AUCUN chemin existant -> aveu `unavailable/missing-source` qui nomme la cause, la liste lue et la
 #     variable à poser (les défauts visent un nœud k3s : sur un hôte natif ou dans un conteneur, la variable
 #     non posée ne trouve souvent rien) ;
-#   · un chemin PRÉSENT mais que ce capteur ne peut pas parcourir (droits, `ProtectHome`, montage) -> aveu
+#   · un chemin PRÉSENT mais que ce capteur ne peut pas parcourir (droits, montage) -> aveu
 #     `missing-source` qui le nomme, SANS sortir : son entrée de tête reste cartographiée comme avant, son
-#     contenu ne l'est pas. La sonde est un vrai `find` (pas `test -r`, qui répond « oui » à root sans
-#     regarder les capacités) et ne voit que la TÊTE du chemin : un sous-répertoire illisible plus bas n'est
-#     pas avoué ;
-#   · des chemins ABSENTS à côté d'au moins un chemin présent ne sont PAS avoués : la liste par défaut couvre
-#     plusieurs volumes dont tous n'existent pas sur chaque nœud, l'avouer à chaque passage serait un bruit
-#     permanent. La collecte des chemins présents est inchangée.
+#     contenu ne l'est pas. La sonde est un vrai `find` qui lit ET traverse la tête (pas `test -r`, qui
+#     répond « oui » à un répertoire en mode 0400, lisible mais pas traversable, et à root sans regarder les
+#     capacités) ; elle ne voit que la TÊTE du chemin : un sous-répertoire illisible plus bas n'est pas avoué ;
+#   · des chemins ABSENTS à côté d'au moins un chemin présent : avoués (`missing-source`, nommés) quand
+#     l'EXPLOITANT a posé PLUME_ACL_PATHS — il les a choisis, et c'est aussi ainsi que se voit un chemin
+#     masqué par l'unité (`ProtectHome=true` rend /home, /root et /run/user vides pour ce capteur : un chemin
+#     dessous paraît ABSENT, pas illisible) ; TUS quand la variable n'est pas posée : la liste par défaut couvre
+#     plusieurs volumes d'un nœud k3s dont tous n'existent pas sur chaque nœud, l'avouer à chaque passage
+#     serait un bruit permanent. La collecte des chemins présents est inchangée.
+#   POURQUOI `unavailable` ALORS QUE LE RESTE DE LA CARTE EST PUBLIÉ. `docs/CIM.md` écarte `unavailable` pour
+#   une source SAINE dont on a tout lu (`fallback`) ou lu puis écarté des lignes (`partial`). Ici une SOURCE que
+#   le capteur doit cartographier (un chemin de la liste) n'est PAS lue du tout : c'est l'incapacité que le
+#   CIM range sous `unavailable/missing-source`, restreinte à ce chemin et nommée dans le détail. Qu'elle fasse
+#   alerter `de-collector-unavailable` est voulu : un joyau que la carte ne voit pas est un angle mort.
 set --
 _acl_illisibles=""
+_acl_absents=""
 for p in $PATHS; do
-  [ -e "$p" ] || continue
+  [ -e "$p" ] || { _acl_absents="$_acl_absents $p"; continue; }
   set -- "$@" "$p"
   find "$p" -maxdepth 1 -printf '%m\n' >/dev/null 2>&1 || _acl_illisibles="$_acl_illisibles $p"
 done
+if [ -n "${PLUME_ACL_PATHS:-}" ]; then _acl_origine="valeur posee par l'exploitant"; else _acl_origine="variable non posee : ce sont les defauts d'un noeud k3s"; fi
 if [ "$#" -eq 0 ]; then
   rm -f "$tmp"
-  plume_unavailable dataacl missing-source "aucun chemin de PLUME_ACL_PATHS n'existe sur cet hote ($PATHS ; non posee, ce sont les defauts d'un noeud k3s). Aucune permission n'est cartographiee : une carte vide ne dit PAS que les droits sont sains. Poser PLUME_ACL_PATHS (chemins sensibles separes par des espaces, glob admis)."
+  plume_unavailable dataacl missing-source "aucun chemin de PLUME_ACL_PATHS n'existe sur cet hote ($PATHS ; $_acl_origine). Aucune permission n'est cartographiee : une carte vide ne dit PAS que les droits sont sains. Poser ou corriger PLUME_ACL_PATHS (chemins sensibles separes par des espaces, glob admis)."
 fi
 if [ -n "$_acl_illisibles" ]; then
-  plume_report_availability dataacl unavailable missing-source "chemin(s) de PLUME_ACL_PATHS presents mais illisibles par ce capteur (droits, ProtectHome, montage) :$_acl_illisibles. Seule leur entree de tete est cartographiee, pas leur contenu ; les autres chemins le sont." 2 2>/dev/null || true
+  plume_report_availability dataacl unavailable missing-source "chemin(s) de PLUME_ACL_PATHS presents mais illisibles par ce capteur (droits, montage) :$_acl_illisibles. Seule leur entree de tete est cartographiee, pas leur contenu ; les autres chemins le sont." 2 2>/dev/null || true
+fi
+if [ -n "${PLUME_ACL_PATHS:-}" ] && [ -n "$_acl_absents" ]; then
+  plume_report_availability dataacl unavailable missing-source "chemin(s) de PLUME_ACL_PATHS (valeur posee par l'exploitant) absents de cet hote ou masques a ce capteur (ProtectHome de l'unite vide /home, /root, /run/user) :$_acl_absents. Ils ne sont pas cartographies ; les autres chemins le sont." 2 2>/dev/null || true
 fi
 find "$@" -maxdepth "$DEPTH" \( -type f -o -type d \) -printf '%p\t%u\t%g\t%m\t%y\n' 2>/dev/null \
   | head -n "$MAX" \

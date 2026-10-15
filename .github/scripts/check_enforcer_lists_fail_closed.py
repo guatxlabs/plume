@@ -204,7 +204,7 @@ def scenario_respond(nom, prepare_liste, attendu, cible="203.0.113.7"):
             "PATH": binaire,
             "PLUME_RESPONDER": "1",
             "PLUME_RESPONDER_APPLY": "1",
-            "PLUME_CENTRAL": "http://central.invalid",
+            "PLUME_CENTRAL": "https://central.invalid",
             "PLUME_HOST_LABEL": "hote-de-garde",
             "PLUME_TOKEN": "jeton-de-garde",
             "PLUME_BAN_BACKEND": "auto",
@@ -502,7 +502,7 @@ def scenario_remise(nom, statuts, cause):
             return None
         env = {
             "PATH": binaire, "PLUME_RESPONDER": "1", "PLUME_RESPONDER_APPLY": "1",
-            "PLUME_CENTRAL": "http://central.invalid", "PLUME_HOST_LABEL": "hote-de-garde",
+            "PLUME_CENTRAL": "https://central.invalid", "PLUME_HOST_LABEL": "hote-de-garde",
             "PLUME_TOKEN": JETON_DE_GARDE, "PLUME_BAN_BACKEND": "auto",
             "PLUME_RESPONDER_ALLOW": liste,
             "PENDING_TSV": "1\tban_ip\t203.0.113.7\t0\n2\tban_ip\t203.0.113.8\t0",
@@ -637,7 +637,7 @@ def tour_de_l_agent(tmp, statuts, pending, grand=None):
         return None
     env = {
         "PATH": binaire, "PLUME_RESPONDER": "1", "PLUME_RESPONDER_APPLY": "1",
-        "PLUME_CENTRAL": "http://central.invalid", "PLUME_HOST_LABEL": "hote-de-garde",
+        "PLUME_CENTRAL": "https://central.invalid", "PLUME_HOST_LABEL": "hote-de-garde",
         "PLUME_TOKEN": JETON_DE_GARDE, "PLUME_BAN_BACKEND": "auto", "PLUME_RESPONDER_ALLOW": liste,
         "PENDING_TSV": pending, "RESULTATS": resultats, "NFT_TRACE": trace_nft,
         "STATUTS_DE_REMISE": fichier_statuts, "ATTENTES": os.path.join(tmp, "attentes"),
@@ -841,7 +841,7 @@ def lancer_adaptateur(tmp, etat, args=(), cycles=1):
     env = {
         "PATH": binaire,
         "PLUME_ENGAGEMENT_ADAPTER": "1",
-        "PLUME_CENTRAL": "http://central.invalid",
+        "PLUME_CENTRAL": "https://central.invalid",
         "PLUME_TOKEN": "jeton-de-garde",
         "PLUME_HOST_LABEL": "hote-de-garde",
         "PLUME_STATE": etat,

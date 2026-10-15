@@ -95,7 +95,10 @@ while IFS= read -r line; do
   # dedup : collapse les reconciles identiques sur fenêtre 10min, garde les actions distinctes
   dd="kaudit-$(printf '%s|%s|%s|%s' "$user" "$verb" "$tgt" "$code" | cksum | cut -d' ' -f1)-$((ts / 600))"
   ev="{\"ts\":$ts,\"source\":\"kube-audit\",\"category\":\"k8s\",\"severity\":$sev,\"message\":\"$em\",\"fields\":$fields,\"dedup\":\"$dd\""
-  [ -n "$sip" ] && ev="$ev,\"src_ip\":\"$sip\""
+  # P10.33-a — l'adresse passe par `json_escape` comme les autres champs : le motif `[^"]+` s'arrete au
+  # guillemet mais garde un antislash (un `\"` du journal laissait `x\` brut, qui echappait le guillemet
+  # fermant et rendait l'enveloppe ENTIERE illisible).
+  [ -n "$sip" ] && ev="$ev,\"src_ip\":\"$(esc "$sip")\""
   ev="$ev}"
   events="$events${events:+,}$ev"
 done < "$chunk"

@@ -186,6 +186,59 @@ if [ "$SKEW_SUSPECT" = 0 ] && [ "$last_hb" -gt 0 ] && [ "$NOW" -lt "$((last_hb -
   log "WARN horloge: NOW=$NOW < dernier heartbeat=$last_hb - ${SKEW_TOL}s (recul suspect) -> pas de nouvelle exemption/extension ce cycle (fail-safe); expiry/révocation maintenus"
 fi
 
+# ---- transport vers le central : pas de clair distant sans choix (P10.33-a) ---
+# CE QUI SE PASSAIT. `ship.sh` refusait déjà `http://` vers un hôte distant (`P10.32-i`) ; cet
+# adaptateur tirait `/api/engagements/active` du même `PLUME_CENTRAL` en `http://` distant sans un mot :
+# le jeton partait en clair, et un intermédiaire pouvait RÉPONDRE À LA PLACE du central — une
+# exemption de ban pour la plage de son choix, posée en root sur cet hôte (une défense BAISSÉE).
+# CE QUI EST FAIT : la MÊME porte que `ship.sh` et `respond.sh` (https:// accepté ; `http://` vers
+# 127.0.0.0/8, ::1, localhost accepté ; sinon REFUS nommé sur stderr, sauf l'opt-in EXPLICITE
+# `PLUME_SHIP_ALLOW_PLAINTEXT=1`, même variable, avertissement à chaque cycle). Sur refus, le jeton ne
+# part pas (aucun appel au central) et le cycle se joue en REVERT-ALL : un set obtenu par ce même
+# transport n'est pas digne de foi, et le mode de panne d'une exemption est le re-arm (en-tête,
+# point 6). Le cycle finit en code 2. Le mode dead-man (`revert-expired`) n'appelle pas le central
+# et n'est pas concerné. Copie et non emprunt (enforcer sans bibliothèque) : la garde
+# `check_a_collector_escapes_its_json_and_never_ships_or_listens_open.py` joue le même corpus d'URL
+# sur les quatre scripts.
+ea_hote_en_boucle_locale() { # $1 = hote (sans crochets) -> 0 si boucle locale
+  case "$1" in
+    localhost|::1) return 0 ;;
+    127.*) : ;;
+    *) return 1 ;;
+  esac
+  case "$1" in *[!0-9.]*|*..*|*.) return 1 ;; esac
+  local _bl_points
+  _bl_points=$(printf '%s' "$1" | tr -cd . | wc -c | tr -d ' ')
+  [ "$_bl_points" = 3 ]
+}
+ea_verifier_le_transport() { # $1 = URL du central -> 0 admis, 1 refus (écrit sur stderr)
+  local _vt_schema _vt_reste _vt_aut _vt_hote
+  case "$1" in
+    *://*) _vt_schema=${1%%://*}; _vt_reste=${1#*://} ;;
+    *) _vt_schema=""; _vt_reste=$1 ;;
+  esac
+  # autorité = jusqu'au premier / ? ou # ; l'identité éventuelle (avant le DERNIER @) est retirée.
+  _vt_aut=${_vt_reste%%/*}; _vt_aut=${_vt_aut%%\?*}; _vt_aut=${_vt_aut%%#*}; _vt_aut=${_vt_aut##*@}
+  case "$_vt_schema" in
+    [Hh][Tt][Tt][Pp][Ss]) return 0 ;;
+    [Hh][Tt][Tt][Pp]|"") : ;;
+    *[!A-Za-z0-9+.-]*) log "REFUS : PLUME_CENTRAL — schema illisible (https:// attendu)"; return 1 ;;
+    *) log "REFUS : PLUME_CENTRAL — schema $_vt_schema:// non pris en charge (https:// attendu)"; return 1 ;;
+  esac
+  case "$_vt_aut" in
+    \[*\]*) _vt_hote=${_vt_aut#\[}; _vt_hote=${_vt_hote%%\]*} ;;
+    *) _vt_hote=${_vt_aut%%:*} ;;
+  esac
+  _vt_hote=$(printf '%s' "$_vt_hote" | tr 'A-Z' 'a-z')
+  ea_hote_en_boucle_locale "$_vt_hote" && return 0
+  if [ "${PLUME_SHIP_ALLOW_PLAINTEXT:-0}" = 1 ]; then
+    log "AVERTISSEMENT : périmètres lus EN CLAIR depuis $_vt_hote (PLUME_SHIP_ALLOW_PLAINTEXT=1) — jeton lisible et exemptions falsifiables sur le réseau"
+    return 0
+  fi
+  log "REFUS : PLUME_CENTRAL parle EN CLAIR à l'hôte distant '$_vt_hote' (jeton lisible, et un intermédiaire peut injecter des exemptions de ban). Utilisez https://, ou posez PLUME_SHIP_ALLOW_PLAINTEXT=1 pour l'accepter en connaissance de cause. Le central n'est pas appelé ; ce cycle révoque toutes les exemptions (REVERT-ALL)."
+  return 1
+}
+
 # ---- socle réseau (Host header + mTLS) — repris de respond.sh ----------------
 HH=(); [ -n "${PLUME_HOST_HEADER:-}" ] && HH=(-H "Host: $PLUME_HOST_HEADER")
 TLS=()
@@ -454,6 +507,8 @@ fi
 # =============================================================================
 : "${SOC:?PLUME_CENTRAL requis}"
 : "${PLUME_TOKEN:?PLUME_TOKEN requis (token agent host-bound)}"
+TRANSPORT_REFUSE=0
+ea_verifier_le_transport "$SOC" || TRANSPORT_REFUSE=1
 f2b_load_ledger
 BODY_TMP="$(mktemp)"; trap 'rm -f "$BODY_TMP"' EXIT
 # P5.5-a : le jeton passe par l'ENTRÉE STANDARD (format de config curl), jamais en argument — il y était
@@ -461,11 +516,15 @@ BODY_TMP="$(mktemp)"; trap 'rm -f "$BODY_TMP"' EXIT
 # collecte lui-même. Échappement `\` puis `"` fait sur place : cet adaptateur est un ENFORCER, et une
 # garde de CI vérifie qu'il ne dépend PAS de la bibliothèque des capteurs (surface de dépendance
 # minimale pour du code privilégié) — on paie deux lignes plutôt que d'affaiblir cette garde.
-http="$(printf 'header = "Authorization: Bearer %s"\n' \
-          "$(printf '%s' "$PLUME_TOKEN" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
-        | curl -K - "${HH[@]}" "${TLS[@]}" -sS --max-time 15 \
-          -o "$BODY_TMP" -w '%{http_code}' \
-          "$SOC/api/engagements/active" 2>/dev/null)" || http="000"
+if [ "$TRANSPORT_REFUSE" = 1 ]; then
+  http="refus-transport"   # aucun appel : le jeton ne part pas en clair
+else
+  http="$(printf 'header = "Authorization: Bearer %s"\n' \
+            "$(printf '%s' "$PLUME_TOKEN" | sed 's/\\/\\\\/g; s/"/\\"/g')" \
+          | curl -K - "${HH[@]}" "${TLS[@]}" -sS --max-time 15 \
+            -o "$BODY_TMP" -w '%{http_code}' \
+            "$SOC/api/engagements/active" 2>/dev/null)" || http="000"
+fi
 body="$(cat "$BODY_TMP" 2>/dev/null || true)"
 
 ok=0
@@ -514,7 +573,12 @@ else
   if ! printf '%s\n' "$fails" > "$FAILF" 2>/dev/null; then
     log "WARN: compteur d'échecs non persisté ($FAILF) — le cycle suivant le relira comme NON LU, donc ARMÉ (fail-closed)"
   fi
-  if [ "$fails" -ge "$NFAIL" ]; then
+  if [ "$TRANSPORT_REFUSE" = 1 ]; then
+    # P10.33-a — pas de HOLD sur un transport refusé : ce n'est pas un blip, et le set tenu a été lu
+    # par ce même transport en clair. DESIRED reste vide -> tout le set appliqué sera révoqué.
+    MODE="revert-all"
+    log "FAIL-CLOSED: transport vers le central REFUSÉ (clair distant) -> REVERT-ALL (re-arme les défenses)"
+  elif [ "$fails" -ge "$NFAIL" ]; then
     MODE="revert-all"   # DESIRED reste vide -> tout le set appliqué sera révoqué
     log "FAIL-CLOSED: /active KO (http=$http) x$fails >= $NFAIL -> REVERT-ALL (re-arme les défenses)"
   else
@@ -632,4 +696,6 @@ if [ -d "$SPOOL" ]; then
   fi
 fi
 
+# P10.33-a — le cycle a révoqué ce qu'il tenait, mais il n'a pas fait son travail : il le dit par son code.
+[ "$TRANSPORT_REFUSE" = 1 ] && exit 2
 exit 0

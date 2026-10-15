@@ -517,8 +517,9 @@ Essentiels : `PLUME_ADDR`, `PLUME_HOST`, `PLUME_USER`/`PLUME_PASS_HASH`, `PLUME_
   `ingest.example.com`). En interne (in-cluster), les agents peuvent pousser au ClusterIP
   `<svc>.<ns>.svc:7000` — à condition d'ouvrir explicitement leur pod dans la NetworkPolicy d'ingress
   (par défaut elle ne laisse passer que l'ingress controller), et, ce ClusterIP étant joint en
-  `http://` hors boucle locale, de poser `PLUME_SHIP_ALLOW_PLAINTEXT=1` : sans lui `ship.sh` refuse
-  d'expédier en clair (code 2, spool conservé).
+  `http://` hors boucle locale, de poser `PLUME_SHIP_ALLOW_PLAINTEXT=1` dans le fichier d'environnement de CHAQUE unité qui parle au
+  central : sans lui `ship.sh` refuse d'expédier en clair (code 2, spool conservé), `respond.sh` n'exécute
+  aucune action, `prom-scrape.sh` ne scrape rien et `engagement-adapter.sh` révoque ses exemptions (code 2).
 
 ## 14. Exigences non-fonctionnelles (rappel)
 

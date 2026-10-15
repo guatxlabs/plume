@@ -18,6 +18,12 @@ LES DÉFAUTS QUE CETTE GARDE REND NON-ÉCRIVABLES
     partait au central).
 (e) `minio-audit-relay.py` avec un jeton vide, absent ou illisible était OUVERT (un avertissement), et
     comparait le jeton par `!=`.
+(f) `P10.33-a` — `respond.sh`, `prom-scrape.sh` et `engagement-adapter.sh` parlaient au même
+    `PLUME_CENTRAL`, avec le même jeton, en `http://` distant sans un mot. `respond.sh` y lisait des actions
+    qu'il EXÉCUTE EN ROOT (cscli, fail2ban, nft) : un intermédiaire pouvait répondre à la place du central
+    et faire bannir l'adresse de son choix ; `engagement-adapter.sh` y lisait des exemptions de ban.
+(g) `kube-audit.sh` posait `src_ip` sans `json_escape` : le motif `[^"]+` garde un antislash, un `\"` du
+    journal laissait un antislash final qui rendait l'enveloppe ENTIÈRE illisible.
 
 CE QUE LA GARDE FAIT
 --------------------
@@ -36,7 +42,7 @@ capteurs sont joués sous CHAQUE awk présent (gawk, mawk), lié en `awk` dans l
   · ship : `http://` distant (avec et sans identité dans l'URL, sans schéma, majuscules, faux
     préfixe `127.`, identité `localhost@`, `@127.0.0.1` placé APRÈS un `/`, un `?` ou un `#` — chacune
     des trois coupures de l'autorité est exercée —, adresse `127.` à point doublé ou final, schéma
-    illisible) REFUSÉ — code non nul, `REFUS` sur stderr, curl jamais appelé, spool intact même
+    illisible) REFUSÉ — code 2, `REFUS` sur stderr, curl jamais appelé, spool intact même
     au-dessus du plafond, mot de passe de l'URL jamais imprimé ; opt-in `PLUME_SHIP_ALLOW_PLAINTEXT=1`
     expédie avec un avertissement, et le succès ne nomme le central que par schéma et hôte (ni en
     clair, ni en `https://`) ; boucle locale (127.0.0.1, ::1, localhost, LOCALHOST, identité devant
@@ -44,6 +50,23 @@ capteurs sont joués sous CHAQUE awk présent (gawk, mawk), lié en `awk` dans l
     un répertoire est ignoré (jamais passé à `--data-binary`, passage en code 0), un nom à espace part, un spool dont le CHEMIN porte un espace est
     expédié et évincé entier ; l'éviction ne supprime rien hors du spool, n'évince ni un lien, ni une
     FIFO nommée en `.json`, ni un fichier hors motif, et l'aveu porte le compte RÉEL (pas le surplus prévu) ;
+  · transport des trois autres (`P10.33-a`) : le MÊME corpus d'URL refusées que `ship.sh` est joué sur
+    `respond.sh`, `prom-scrape.sh` et `engagement-adapter.sh` (bash) contre un faux central qui journalise
+    chaque appel et un faux `nft` qui journalise chaque geste : code 2, `REFUS` sur stderr, AUCUN appel
+    au central (le jeton ne part pas), mot de passe de l'URL jamais imprimé ; `respond.sh` n'exécute RIEN, et
+    un verdict RETENU d'un tour précédent n'est pas rejoué (la porte passe avant le rejeu, qui appelle le
+    central avant la liste) et reste intact — sous un transport admis, ce même verdict est rejoué et remis ;
+    `engagement-adapter.sh` révoque l'exemption tenue d'un cycle précédent (REVERT-ALL, là où un échec
+    ordinaire la garderait en HOLD). Boucle locale (le corpus de `ship.sh`) et `https://` avec identité :
+    le central est appelé, l'action servie EST exécutée, le cycle réconcilie, sans un mot ; opt-in
+    `PLUME_SHIP_ALLOW_PLAINTEXT=1` -> admis avec avertissement, une autre valeur -> refus. `prom-scrape.sh` :
+    défaut (central absent) = boucle locale admise ; aucune cible scrapée ne reçoit `-K` (le jeton ne part
+    que vers le central), une cible et le central ne s'impriment que par schéma et hôte — cible vide, cible
+    injoignable et remise non-200 (503) comprises, chacune porteuse d'une identité dans son URL ;
+    `engagement-adapter.sh revert-expired` sous un central REFUSÉ révoque l'exemption échue (faux nft :
+    `delete rule … handle 42`), code 0, sans juger ni appeler le central ;
+  · kube-audit : `sourceIPs` porteur d'un `\"` ou de deux antislashs -> enveloppe lisible en JSON STRICT,
+    `src_ip` décodée égale à la valeur extraite ;
   · relais : jeton absent, vide, blanc, illisible (un répertoire) ou non UTF-8 -> refus de démarrer,
     code non nul, message nommé et non une trace d'exception ; jeton posé -> GET 200, POST sans jeton ou faux 401, POST juste 200 et événement au
     spool, jeton devenu vide en cours de route -> 503 ; jeton NON ASCII sous `LC_ALL=C`,
@@ -65,14 +88,18 @@ CE QU'ELLE NE TIENT PAS
   les seuls bans fail2ban) : ce sous-total n'est pas avoué, et cette garde ne le juge pas.
 · Le transport n'est jugé que par son schéma et son hôte : la validité du certificat `https://` est
   l'affaire de curl et de `PLUME_TLS_CACERT`.
-· LE CLAIR N'EST REFUSÉ QUE PAR `ship.sh`. `respond.sh`, `prom-scrape.sh` et `engagement-adapter.sh`
-  envoient le même `PLUME_TOKEN` au même `PLUME_CENTRAL` (`bootstrap-agent.sh` recopie les deux dans
-  `responder.conf`) et acceptent `http://` distant sans un mot ; `respond.sh` y RÉCUPÈRE en plus des
-  actions qu'il exécute en root. Ce reste n'est ni corrigé ni joué ici.
+· LA PORTE DU TRANSPORT EXISTE EN TROIS TEXTES : `lib.sh` (`ship.sh`, `prom-scrape.sh`) et une copie dans
+  chacun des deux enforcers, qui ne sourcent pas `lib.sh`. Leur égalité est tenue par le corpus commun
+  joué ici, pas par un texte unique : une forme d'URL absente du corpus peut les faire diverger.
+· Les CIBLES `/metrics` de `prom-scrape.sh` ne sont pas soumises à la porte : aucun jeton ne leur part
+  (jugé), mais une cible déclarée en `http://` est lue en clair — un tiers sur le chemin peut lire ou
+  FALSIFIER la mesure entrante. Choix assumé (un exporteur se sert en `http://`), non jugé ici.
+· Le collecteur Windows (`collectors/windows/plume-collector.ps1`) PORTE LE MÊME DÉFAUT, NON CORRIGÉ :
+  il envoie `Authorization: Bearer` à `$Central/api/ingest` sans contrôler le schéma (seul un
+  `TrimEnd('/')`), donc accepte `http://` distant. Reste ouvert sous la clé `P10.33-i`, non joué ici
+  (pas de `pwsh` sur les machines de la garde).
 · Les autres capteurs qui posent `src_ip` brut le tirent d'un motif borné (`SRC=[0-9A-Fa-f.:]*` de
-  ufw, portscan, origin-drop ; `[0-9.]*` d'auditd ; adresses de conntrack), SAUF `kube-audit.sh`
-  (motif `[^"]+` après `"sourceIPs":[`) : un antislash final y passerait. La valeur vient de l'apiserver, pas
-  d'un tiers ; ce reste n'est pas joué ici.
+  ufw, portscan, origin-drop ; `[0-9.]*` d'auditd ; adresses de conntrack) : non joués ici.
 · `crowdsec.sh` n'est joué que pour ses alertes : santé, hub et acquisition ne le sont pas ici.
 · Le temps constant de la comparaison n'est pas MESURÉ (un chronomètre frapperait dans les deux
   sens) : la garde exige l'appel de la primitive à temps constant.
@@ -105,7 +132,7 @@ NOM = "check_a_collector_escapes_its_json_and_never_ships_or_listens_open"
 
 OUTILS = ["date", "mktemp", "cat", "grep", "dirname", "basename", "cksum", "cut", "mv", "rm", "mkdir",
           "iconv", "head", "tail", "sed", "tr", "sync", "chmod", "printf", "env", "wc", "sort", "ls",
-          "touch", "test", "[", "find", "xargs", "stat", "sha256sum", "jq", "true", "false", "od"]
+          "touch", "test", "[", "find", "xargs", "stat", "sha256sum", "jq", "true", "false", "od", "dd"]
 AWK_EXERCES = ("gawk", "mawk")
 
 # Noms HOSTILES : chacun casse une forme différente d'assemblage brut.
@@ -250,12 +277,18 @@ class Bac:
         p = os.path.join(self.fake, "journal")
         return open(p).read().count("appel") if os.path.exists(p) else 0
 
-    def jouer(self, script, env_plus=None, cwd=None):
+    def jouer(self, script, env_plus=None, cwd=None, interp=None, args=()):
         env = {"PATH": self.bin, "FAKE_DIR": self.fake, "PLUME_SPOOL": self.spool, "PLUME_STATE": self.etat,
                "PLUME_LIB": LIB, "LC_ALL": "C.UTF-8", "HOME": self.d}
         env.update(env_plus or {})
-        return subprocess.run([SH, os.path.join(COL, script)], env=env, capture_output=True, text=True,
-                              timeout=120, cwd=cwd or self.d)
+        return subprocess.run([interp or SH, os.path.join(COL, script), *args], env=env, capture_output=True, text=True,
+                              timeout=120, cwd=cwd or self.d, stdin=subprocess.DEVNULL)
+
+    def outil(self, nom, texte):
+        p = os.path.join(self.bin, nom)
+        with open(p, "w") as f:
+            f.write(texte)
+        os.chmod(p, stat.S_IRWXU)
 
 
 def exiger_appel(scen, bac):
@@ -519,6 +552,23 @@ def scen_crowdsec_alertes(base, awk, tag):
 
 
 # --- (d) ship -------------------------------------------------------------------------------------------
+# LE CORPUS D'URL DU TRANSPORT, UN SEUL : il est joué sur `ship.sh` ET sur les trois autres scripts qui
+# parlent au central (`P10.33-a`). Deux copies de la porte vivent dans les enforcers (qui ne sourcent pas
+# lib.sh) : c'est ce corpus commun, et non un commentaire, qui tient l'égalité de leurs verdicts.
+URLS_REFUSEES = (
+    "http://central.invalid:7000", "http://u:motdepasse-de-garde@192.0.2.10:7000/",
+    "central.invalid:7000", "HTTP://192.0.2.10", "http://127.0.0.1.evil.invalid/",
+    "http://localhost@192.0.2.10/", "http://127.0.0.1x/", "http://127.0.0.1.2/",
+    "ftp://192.0.2.10/",
+    # l'autorite s'arrete au premier `/`, `?` ou `#` : un `@` APRES n'est pas une identite
+    # (curl vise `evil.invalid`, mesure) ; chaque URL retire l'une des trois coupures.
+    "http://evil.invalid/@127.0.0.1:7000", "http://evil.invalid?@127.0.0.1/",
+    "http://evil.invalid#@127.0.0.1/",
+    "http://127..0.1/", "http://127.0.0./", "x:motdepasse-de-garde@h/a://b")
+URLS_BOUCLE_LOCALE = ("http://127.0.0.1:7000", "http://localhost:7000", "http://[::1]:7000", "http://127.1.2.3:7000",
+                      "http://u@127.0.0.1:7000", "http://LOCALHOST:7000")
+
+
 def bac_ship(base, code="202"):
     bac = Bac(base, None, faux=("curl",))
     bac.poser("code", code)
@@ -561,15 +611,7 @@ def scen_ship(base):
         faute("ship-https", f"URL appelée {appels_curl(bac_ok)!r}")
 
     # REFUS : http distant, sous toutes ses formes
-    for url in ("http://central.invalid:7000", "http://u:motdepasse-de-garde@192.0.2.10:7000/",
-                "central.invalid:7000", "HTTP://192.0.2.10", "http://127.0.0.1.evil.invalid/",
-                "http://localhost@192.0.2.10/", "http://127.0.0.1x/", "http://127.0.0.1.2/",
-                "ftp://192.0.2.10/",
-                # l'autorite s'arrete au premier `/`, `?` ou `#` : un `@` APRES n'est pas une identite
-                # (curl vise `evil.invalid`, mesure) ; chaque URL retire l'une des trois coupures.
-                "http://evil.invalid/@127.0.0.1:7000", "http://evil.invalid?@127.0.0.1/",
-                "http://evil.invalid#@127.0.0.1/",
-                "http://127..0.1/", "http://127.0.0./", "x:motdepasse-de-garde@h/a://b"):
+    for url in URLS_REFUSEES:
         scen = f"ship-refus[{url}]"
         bac = bac_ship(base)
         for i in range(3):
@@ -577,8 +619,9 @@ def scen_ship(base):
             open(p, "w").write("{}")
             os.utime(p, (time.time() - 100 + i,) * 2)
         r = bac.jouer("ship.sh", dict(env_base, PLUME_CENTRAL=url, PLUME_SPOOL_MAX_FILES="1"))
-        if r.returncode == 0:
-            faute(scen, "code 0 : le clair vers un hôte distant n'est pas refusé")
+        if r.returncode != 2:
+            # le code 2 est le contrat écrit (README, ARCHITECTURE) : un superviseur le distingue d'un échec ordinaire
+            faute(scen, f"code {r.returncode} au lieu de 2 : le refus du clair distant n'a pas son code")
         if "REFUS" not in r.stderr:
             faute(scen, f"aucun refus nommé sur stderr : {r.stderr[:200]!r}")
         if "motdepasse-de-garde" in r.stderr + r.stdout:
@@ -612,12 +655,12 @@ def scen_ship(base):
     bac = bac_ship(base)
     open(os.path.join(bac.spool, "a.json"), "w").write("{}")
     r = bac.jouer("ship.sh", dict(env_base, PLUME_CENTRAL="http://192.0.2.10:7000", PLUME_SHIP_ALLOW_PLAINTEXT="oui"))
-    if r.returncode == 0 or appels_curl(bac):
-        faute("ship-opt-in-flou", "une valeur d'opt-in autre que 1 ouvre le clair")
+    if r.returncode != 2 or appels_curl(bac):
+        faute("ship-opt-in-flou", f"une valeur d'opt-in autre que 1 ouvre le clair (ou le refus n'a pas son code 2) : "
+                                  f"rc={r.returncode} curl={appels_curl(bac)}")
 
     # boucle locale : inchangé
-    for url in ("http://127.0.0.1:7000", "http://localhost:7000", "http://[::1]:7000", "http://127.1.2.3:7000",
-                "http://u@127.0.0.1:7000", "http://LOCALHOST:7000"):
+    for url in URLS_BOUCLE_LOCALE:
         scen = f"ship-boucle[{url}]"
         bac = bac_ship(base)
         open(os.path.join(bac.spool, "a.json"), "w").write("{}")
@@ -729,6 +772,308 @@ def scen_ship(base):
         faute(scen, "le seul fichier évinçable n'est pas évincé")
     if not av or "1 fichier(s) les plus anciens" not in av[0]:
         faute(scen, f"l'aveu spool-full ne porte pas le compte réel 1 (surplus prévu 3) : {[a[:200] for a in av]}")
+
+
+# --- (f) le transport des trois autres scripts qui parlent au central (`P10.33-a`) ----------------------
+# Un faux central : il journalise CHAQUE appel (URL, présence de `-K`, ce que `-K -` a reçu), sert une
+# action de ban sur `/api/actions/pending`, une liste vide d'engagements, accepte les métriques et les
+# verdicts ; toute autre URL est une CIBLE scrapée (`/vide` rend un corps vide, `/injoignable` échoue
+# comme une connexion refusée). `$FAKE_DIR/code-prom`, s'il existe, est le code rendu aux métriques.
+CURL_CENTRAL = r"""#!/bin/sh
+k=0; url=""; sortie=""; prec=""
+for a; do
+  [ "$prec" = "-o" ] && sortie=$a
+  [ "$prec" = "-K" ] && k=1
+  prec=$a; url=$a
+done
+entree=""; [ "$k" = 1 ] && entree=$(cat)
+printf '%s\t%s\n' "$k" "$url" >> "$FAKE_DIR/curl.appels"
+printf '%s\n' "$url" >> "$FAKE_DIR/curl.urls"
+[ "$k" = 1 ] && printf '%s\n' "$entree" >> "$FAKE_DIR/curl.k"
+ecrire() { if [ -n "$sortie" ]; then printf '%s' "$1" > "$sortie"; else printf '%s' "$1"; fi; }
+case "$url" in
+  */api/actions/pending*) printf '7\tban_ip\t203.0.113.7\t0\n' ;;
+  */api/actions/result) ecrire '{"ok":true}'; printf 200 ;;
+  */api/engagements/active) ecrire '[]'; printf 200 ;;
+  */api/metrics/prom*) if [ -f "$FAKE_DIR/code-prom" ]; then cat "$FAKE_DIR/code-prom"; else printf 200; fi ;;
+  */vide) : ;;
+  */injoignable) exit 7 ;;
+  *) printf 'mesure_de_garde 1\n' ;;
+esac
+"""
+# Faux enforcement : CHAQUE appel est journalisé ; rien n'est appliqué nulle part.
+NFT_JOURNAL = r"""#!/bin/sh
+printf 'nft %s\n' "$*" >> "$FAKE_DIR/enforcement"
+exit 0
+"""
+CIBLES_PROM = "http://u:motdepasse-de-garde@198.51.100.20:9100/metrics http://u:motdepasse-de-garde@198.51.100.21/vide"
+
+
+def bac_central(base):
+    bac = Bac(base, None)
+    bac.outil("curl", CURL_CENTRAL)
+    bac.outil("nft", NFT_JOURNAL)
+    vide = os.path.join(bac.d, "liste-d-epargne-vide")
+    open(vide, "w").close()
+    return bac, vide
+
+
+def appels_central(bac):
+    p = os.path.join(bac.fake, "curl.appels")
+    return [tuple(l.split("\t", 1)) for l in open(p).read().splitlines()] if os.path.exists(p) else []
+
+
+def enforcement(bac):
+    p = os.path.join(bac.fake, "enforcement")
+    return open(p).read() if os.path.exists(p) else ""
+
+
+# Faux nft du dead-man : il journalise chaque geste et, à `-a list chain`, rend UNE règle de l'adaptateur
+# (handle 42) pour l'exemption tenue ; `delete rule … handle 42` est la révocation attendue.
+NFT_DEADMAN = r"""#!/bin/sh
+printf 'nft %s\n' "$*" >> "$FAKE_DIR/enforcement"
+case "$*" in
+  *"list chain"*) printf '\t\tip saddr 198.51.100.0/24 accept comment "plume-engagement:eng-de-garde|198.51.100.0/24" # handle 42\n' ;;
+esac
+exit 0
+"""
+CIBLES_PROM_ECHEC = ("http://u:motdepasse-de-garde@198.51.100.22:9100/injoignable "
+                     "http://u:motdepasse-de-garde@198.51.100.20:9100/metrics")
+
+
+# Un verdict que `respond.sh` n'a pas pu remettre à un tour précédent (format de `retenir_pour_rejeu` :
+# `<id> TAB <tours> TAB <corps>`). L'id 9 n'est pas celui de l'action servie (7) : le ban reste exécuté.
+VERDICT_RETENU = '9\t0\t{"id":9,"status":"done","result":"ban pose au tour precedent"}\n'
+
+
+def chemin_verdicts_retenus(bac):
+    return os.path.join(bac.etat, "responder", "verdicts-a-remettre")
+
+
+def poser_verdict_retenu(bac):
+    os.makedirs(os.path.dirname(chemin_verdicts_retenus(bac)), mode=0o700, exist_ok=True)
+    with open(chemin_verdicts_retenus(bac), "w") as f:
+        f.write(VERDICT_RETENU)
+
+
+def lire_verdicts_retenus(bac):
+    p = chemin_verdicts_retenus(bac)
+    return open(p).read() if os.path.exists(p) else None
+
+
+def exiger_rejeu_joue(scen, bac, r):
+    """Validité de l'épreuve du refus : sous un transport admis, le verdict posé EST rejoué et remis (le
+    script lit bien ce fichier, à ce chemin, sous cette forme) — sans quoi « zéro appel au refus » ne
+    prouverait rien sur l'ordre porte -> rejeu. Jugé seulement si la porte a laissé passer (la liste est
+    demandée) : un transport admis à tort refusé est la faute de `juger_admis`, pas un instrument muet."""
+    if not any("/api/actions/pending" in u for _, u in appels_central(bac)):
+        return
+    if "#9 verdict REJOUE et remis" not in r.stderr or (lire_verdicts_retenus(bac) or "").strip():
+        refus(f"[{scen}] le verdict retenu posé n'est pas rejoué sous un transport admis : l'épreuve du refus "
+              f"avec verdict retenu ne mesure rien ({r.stderr[:300]!r}, file={lire_verdicts_retenus(bac)!r})")
+    if not any(u.endswith("/api/actions/result") for _, u in appels_central(bac)):
+        refus(f"[{scen}] aucune remise vers /api/actions/result : le faux central ne voit pas le rejeu")
+
+
+def jouer_capteur_central(bac, nom, vide, url, plus=None):
+    env = {"PLUME_TOKEN": "jeton-de-garde", "PLUME_HOST_LABEL": "hote-de-garde"}
+    if url is not None:
+        env["PLUME_CENTRAL"] = url
+    if nom == "respond.sh":
+        env.update(PLUME_RESPONDER="1", PLUME_RESPONDER_APPLY="1", PLUME_RESPONDER_ALLOW=vide, PLUME_BAN_BACKEND="nft")
+    elif nom == "engagement-adapter.sh":
+        env.update(PLUME_ENGAGEMENT_ADAPTER="1")
+    elif nom == "prom-scrape.sh":
+        env.update(PLUME_PROM_TARGETS=CIBLES_PROM)
+    env.update(plus or {})
+    return bac.jouer(nom, env, interp=BASH if nom == "engagement-adapter.sh" else None)
+
+
+def chemin_central(nom):
+    return {"respond.sh": "/api/actions/pending?host=hote-de-garde", "engagement-adapter.sh": "/api/engagements/active",
+            "prom-scrape.sh": "/api/metrics/prom?host=hote-de-garde"}[nom]
+
+
+def juger_admis(scen, bac, nom, r, url, mot_attendu):
+    """Le transport est admis : le central est appelé, le travail est fait, et le mot attendu (aucun, ou
+    l'avertissement de l'opt-in) est seul sur stderr."""
+    urls = [u for _, u in appels_central(bac)]
+    if not urls:
+        # Un transport ADMIS doit appeler le central : son silence est la faute jugée ici (le faux central
+        # lui-même est validé par les autres jugements de ce scénario, qui exigent ses réponses).
+        faute(scen, f"le central n'est jamais appelé alors que le transport est admis : {r.stderr[:300]!r}")
+        return
+    if r.returncode != 0:
+        faute(scen, f"rc={r.returncode} : {r.stderr[:300]!r}")
+    if "REFUS" in r.stderr:
+        faute(scen, f"refus alors que le transport est admis : {r.stderr[:300]!r}")
+    if mot_attendu is None and "AVERTISSEMENT" in r.stderr:
+        faute(scen, f"avertissement sans opt-in : {r.stderr[:300]!r}")
+    if mot_attendu and mot_attendu not in r.stderr:
+        faute(scen, f"l'opt-in passe sans {mot_attendu!r} : {r.stderr[:300]!r}")
+    if url is not None and (url.rstrip("/") + chemin_central(nom)) not in urls:
+        faute(scen, f"le central n'est pas appelé à {url + chemin_central(nom)!r} : {urls!r}")
+    if nom == "respond.sh" and "add element inet plume blocklist { 203.0.113.7 }" not in enforcement(bac):
+        faute(scen, f"l'action servie n'est pas exécutée (instrument muet ?) : {enforcement(bac)!r} {r.stderr[:300]!r}")
+    if nom == "engagement-adapter.sh" and "mode=reconcile" not in r.stderr:
+        faute(scen, f"le cycle ne réconcilie pas : {r.stderr[-300:]!r}")
+    if nom == "prom-scrape.sh":
+        juger_cibles_prom(scen, bac, r)
+
+
+def juger_cibles_prom(scen, bac, r):
+    """Aucune cible scrapée ne reçoit le jeton, et une cible ne s'imprime que par schéma et hôte."""
+    cibles = [(k, u) for k, u in appels_central(bac) if "/api/" not in u]
+    if sorted(u for _, u in cibles) != sorted(CIBLES_PROM.split()):
+        faute(scen, f"cibles scrapées {cibles!r} au lieu de {CIBLES_PROM.split()!r}")
+    if any(k != "0" for k, _ in cibles):
+        faute(scen, f"une cible scrapée reçoit une configuration `-K` (le jeton part vers elle) : {cibles!r}")
+    if "motdepasse-de-garde" in r.stdout + r.stderr:
+        faute(scen, f"l'identité d'une cible est imprimée : {(r.stdout + r.stderr)[:300]!r}")
+    if "http://198.51.100.21 vide" not in r.stderr:
+        faute(scen, f"la cible vide n'est pas nommée par schéma et hôte : {r.stderr[:300]!r}")
+    pk = os.path.join(bac.fake, "curl.k")
+    if not os.path.exists(pk) or "jeton-de-garde" not in open(pk).read():
+        refus(f"[{scen}] le jeton n'arrive pas au faux central par `-K -` : l'épreuve des cibles ne mesure rien")
+
+
+def scen_transport_des_autres(base):
+    for nom in ("respond.sh", "prom-scrape.sh", "engagement-adapter.sh"):
+        for url in URLS_REFUSEES:
+            scen = f"{nom}-refus[{url}]"
+            bac, vide = bac_central(base)
+            if nom == "engagement-adapter.sh":
+                # une exemption tenue d'un cycle précédent : un HOLD la garderait, le refus la révoque
+                with open(os.path.join(bac.etat, "engagement-adapter.applied"), "w") as f:
+                    f.write("198.51.100.0/24\teng-de-garde\t%d\n" % (int(time.time()) + 3600))
+            if nom == "respond.sh":
+                # un verdict RETENU d'un tour précédent : son rejeu appelle le central AVANT la liste, donc la
+                # porte doit passer avant LUI aussi (sinon le jeton part en clair vers /api/actions/result)
+                poser_verdict_retenu(bac)
+            r = jouer_capteur_central(bac, nom, vide, url)
+            if r.returncode != 2:
+                faute(scen, f"code {r.returncode} au lieu de 2 : le clair vers un hôte distant n'est pas refusé par son code")
+            if "REFUS" not in r.stderr:
+                faute(scen, f"aucun refus nommé sur stderr : {r.stderr[:300]!r}")
+            if "motdepasse-de-garde" in r.stderr + r.stdout:
+                faute(scen, "le mot de passe d'une URL est imprimé")
+            if appels_central(bac):
+                faute(scen, f"curl appelé malgré le refus (jeton et requête partis) : {appels_central(bac)}")
+            # (l'adaptateur, lui, DOIT agir sur refus : il révoque — jugé par son état ci-dessous)
+            if nom != "engagement-adapter.sh" and enforcement(bac):
+                faute(scen, f"un geste d'enforcement est parti malgré le refus : {enforcement(bac)!r}")
+            if nom == "respond.sh" and lire_verdicts_retenus(bac) != VERDICT_RETENU:
+                faute(scen, f"le verdict retenu n'est plus intact après le refus : {lire_verdicts_retenus(bac)!r}")
+            if nom == "engagement-adapter.sh":
+                tenu = open(os.path.join(bac.etat, "engagement-adapter.applied")).read()
+                if tenu.strip() or "mode=revert-all" not in r.stderr:
+                    faute(scen, f"le refus ne révoque pas l'exemption tenue (REVERT-ALL attendu) : état={tenu!r} "
+                                f"{r.stderr[-300:]!r}")
+        for url in URLS_BOUCLE_LOCALE + ("https://u:motdepasse-de-garde@central.invalid:7000",):
+            scen = f"{nom}-admis[{url}]"
+            bac, vide = bac_central(base)
+            if nom == "respond.sh":
+                poser_verdict_retenu(bac)
+            r = jouer_capteur_central(bac, nom, vide, url)
+            if nom == "respond.sh":
+                exiger_rejeu_joue(scen, bac, r)
+            schema, _, autorite = url.partition("://")
+            att = f"{schema}://{autorite.split('/', 1)[0].rsplit('@', 1)[-1]}"   # schéma://hôte[:port], sans identité
+            juger_admis(scen, bac, nom, r, url if "@" not in url else None, None)
+            if "@" in url and not any(u.startswith(url) for _, u in appels_central(bac)):
+                faute(scen, f"le central n'est pas appelé à {url!r} : {appels_central(bac)!r}")
+            if nom == "prom-scrape.sh" and not r.stdout.rstrip("\n").endswith(f"-> {att}"):
+                faute(scen, f"le succès ne nomme pas le central par schéma et hôte ({att}) : {r.stdout[:200]!r}")
+        scen = f"{nom}-opt-in"
+        bac, vide = bac_central(base)
+        r = jouer_capteur_central(bac, nom, vide, "http://192.0.2.10:7000", {"PLUME_SHIP_ALLOW_PLAINTEXT": "1"})
+        juger_admis(scen, bac, nom, r, "http://192.0.2.10:7000", "AVERTISSEMENT")
+        scen = f"{nom}-opt-in-flou"
+        bac, vide = bac_central(base)
+        r = jouer_capteur_central(bac, nom, vide, "http://192.0.2.10:7000", {"PLUME_SHIP_ALLOW_PLAINTEXT": "oui"})
+        if r.returncode != 2 or appels_central(bac) or (nom == "respond.sh" and enforcement(bac)):
+            faute(scen, f"une valeur d'opt-in autre que 1 ouvre le clair (ou le refus n'a pas son code 2) : "
+                        f"rc={r.returncode} {appels_central(bac)!r}")
+    # le défaut de prom-scrape (central absent) est la boucle locale : il scrape et expédie sans un mot
+    scen = "prom-scrape.sh-defaut"
+    bac, vide = bac_central(base)
+    r = jouer_capteur_central(bac, "prom-scrape.sh", vide, None)
+    juger_admis(scen, bac, "prom-scrape.sh", r, "http://127.0.0.1:7000", None)
+    scen_prom_echecs(base)
+    scen_dead_man_hors_transport(base)
+
+
+def scen_prom_echecs(base):
+    """Les deux autres messages qui nomment une cible — injoignable, et remise refusée par le central —
+    ne l'impriment, eux aussi, que par schéma et hôte (l'identité de l'URL ne sort pas)."""
+    scen = "prom-scrape.sh-echecs"
+    bac, vide = bac_central(base)
+    with open(os.path.join(bac.fake, "code-prom"), "w") as f:
+        f.write("503")
+    r = jouer_capteur_central(bac, "prom-scrape.sh", vide, "https://central.invalid:7000",
+                              {"PLUME_PROM_TARGETS": CIBLES_PROM_ECHEC})
+    urls = [u for _, u in appels_central(bac)]
+    if sorted(u for u in urls if "/api/" not in u) != sorted(CIBLES_PROM_ECHEC.split()):
+        refus(f"[{scen}] les deux cibles ne sont pas scrapées : {urls!r}")
+    if "https://central.invalid:7000/api/metrics/prom?host=hote-de-garde" not in urls:
+        refus(f"[{scen}] la remise au central n'est pas tentée : la branche non-200 n'est pas jouée {urls!r}")
+    if "motdepasse-de-garde" in r.stdout + r.stderr:
+        faute(scen, f"l'identité d'une cible en échec est imprimée : {(r.stdout + r.stderr)[:400]!r}")
+    for attendu in ("prom-scrape: http://198.51.100.22:9100 injoignable",
+                    "prom-scrape: http://198.51.100.20:9100 -> HTTP 503"):
+        if attendu not in r.stderr:
+            faute(scen, f"{attendu!r} absent (cible non nommée par schéma et hôte) : {r.stderr[:400]!r}")
+    if "prom-scrape: 0/2 cible(s)" not in r.stdout:
+        faute(scen, f"le bilan ne compte pas deux échecs sur deux : {r.stdout[:200]!r}")
+
+
+def scen_dead_man_hors_transport(base):
+    """`engagement-adapter.sh revert-expired` partage le fichier d'environnement du cycle : un central
+    refusé ne doit PAS l'empêcher de révoquer une exemption échue (aucun réseau, code 0)."""
+    scen = "engagement-adapter.sh-revert-expired[central refusé]"
+    bac, vide = bac_central(base)
+    bac.outil("nft", NFT_DEADMAN)
+    with open(os.path.join(bac.etat, "engagement-adapter.applied"), "w") as f:
+        f.write("198.51.100.0/24\teng-de-garde\t%d\n" % (int(time.time()) - 60))
+    env = {"PLUME_TOKEN": "jeton-de-garde", "PLUME_HOST_LABEL": "hote-de-garde", "PLUME_ENGAGEMENT_ADAPTER": "1",
+           "PLUME_CENTRAL": "http://u:motdepasse-de-garde@192.0.2.10:7000"}
+    r = bac.jouer("engagement-adapter.sh", env, interp=BASH, args=("revert-expired",))
+    geste = enforcement(bac)
+    # Pas de refus de conclure ici : un dead-man qui n'interroge plus nft NE RÉVOQUE PAS, c'est la faute
+    # jugée ; le faux nft est validé par le cas nominal (sa règle handle 42 doit être supprimée).
+    if r.returncode != 0:
+        faute(scen, f"rc={r.returncode} : le refus du transport bloque le dead-man {r.stderr[-300:]!r}")
+    if "delete rule inet plume-origin-fw prerouting handle 42" not in geste:
+        faute(scen, f"l'exemption échue n'est pas révoquée : {geste!r} {r.stderr[-300:]!r}")
+    if "REFUS" in r.stderr or appels_central(bac):
+        faute(scen, f"le dead-man juge ou appelle le central : {appels_central(bac)!r} {r.stderr[-300:]!r}")
+    if "motdepasse-de-garde" in r.stdout + r.stderr:
+        faute(scen, "le mot de passe de l'URL est imprimé")
+
+
+# --- (g) kube-audit : l'adresse source passe par l'échappement --------------------------------------------
+def scen_kube_audit(base):
+    scen = "kube-audit-src_ip"
+    bac = Bac(base, None)
+    journal = os.path.join(bac.d, "audit.log")
+    # `[^"]+` après `"sourceIPs":["` s'arrête au guillemet mais GARDE l'antislash : la valeur extraite du
+    # premier est `198.51.100.7\` (antislash final), du second `a\\b` (deux antislashs bruts).
+    hostiles = ['198.51.100.7\\', 'a\\\\b']
+    lignes = []
+    for i, brut in enumerate(('198.51.100.7\\"x', 'a\\\\b')):
+        lignes.append('{"stage":"ResponseComplete","verb":"get","user":{"username":"u%d"},"sourceIPs":["%s"],'
+                      '"objectRef":{"resource":"pods"},"responseStatus":{"metadata":{},"code":200}}' % (i, brut))
+    with open(journal, "w") as f:
+        f.write("\n".join(lignes) + "\n")
+    r = bac.jouer("kube-audit.sh", {"PLUME_KUBE_AUDIT_LOG": journal})
+    if r.returncode != 0:
+        faute(scen, f"sortie {r.returncode} : {r.stderr[:300]}")
+    evs, _ = evenements(scen, bac.spool)
+    ips = sorted(e.get("src_ip", "") for e in evs if e.get("source") == "kube-audit")
+    if not evs and not enveloppes(bac.spool):
+        refus(f"[{scen}] aucune enveloppe publiée : l'épreuve ne mesure rien ({r.stderr[:300]!r})")
+    if ips != sorted(hostiles):
+        faute(scen, f"src_ip {ips!r} au lieu de {sorted(hostiles)!r}")
 
 
 # --- (e) relais -----------------------------------------------------------------------------------------
@@ -904,14 +1249,17 @@ def scen_relais(base):
 
 
 def main():
-    global SH
+    global SH, BASH
     SH = shutil.which("dash") or shutil.which("sh")
     if not SH:
         refus("aucun `sh`")
+    BASH = shutil.which("bash")
+    if not BASH:
+        refus("aucun `bash` (engagement-adapter.sh en exige un)")
     if not shutil.which("jq"):
         refus("aucun `jq` (bans/CrowdSec le requiert)")
     for s in ("clamav.sh", "yara.sh", "vuln.sh", "imgdrift.sh", "bans.sh", "crowdsec.sh", "ship.sh", "lib.sh",
-              "minio-audit-relay.py"):
+              "respond.sh", "prom-scrape.sh", "engagement-adapter.sh", "kube-audit.sh", "minio-audit-relay.py"):
         if not os.path.isfile(os.path.join(COL, s)):
             refus(f"collectors/{s} introuvable")
     awks = [(a, shutil.which(a)) for a in AWK_EXERCES if shutil.which(a)]
@@ -928,6 +1276,8 @@ def main():
             scen_bans_presents(base, awk, tag)
             scen_crowdsec_alertes(base, awk, tag)
         scen_ship(base)
+        scen_transport_des_autres(base)
+        scen_kube_audit(base)
         scen_relais(base)
     finally:
         shutil.rmtree(base, ignore_errors=True)
@@ -937,11 +1287,13 @@ def main():
         print(f"{len(fautes)} faute(s).")
         return 1
     print(f"collecte sûre : JSON échappé sous {', '.join(t for t, _ in awks)} (clamav, yara, vuln, imgdrift, bans, crowdsec), "
-          "aveu sans backend, clair distant refusé, parcours du spool sûr, relais fermé sans jeton.")
+          "aveu sans backend, clair distant refusé (ship, respond, prom-scrape, engagement-adapter), src_ip de "
+          "kube-audit échappée, parcours du spool sûr, relais fermé sans jeton.")
     return 0
 
 
 SH = None
+BASH = None
 
 if __name__ == "__main__":
     sys.exit(main())

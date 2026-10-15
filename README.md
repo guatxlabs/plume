@@ -827,7 +827,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 | `PLUME_USER` / `PLUME_PASS` | repli *basic auth* si pas de jeton | vide |
 | `PLUME_HOST_HEADER` | force l'en‑tête `Host` quand on joint le central par IP | vide |
 | `PLUME_TLS_CACERT` / `PLUME_TLS_CERT` / `PLUME_TLS_KEY` | mTLS côté agent | vide |
-| `PLUME_SHIP_ALLOW_PLAINTEXT` | `1` autorise `ship.sh` à expédier en `http://` vers un hôte HORS boucle locale (jeton et événements lisibles sur le réseau, avertissement à chaque passage) ; sinon refus nommé, code 2, rien n'est expédié ni évincé. `https://` et `http://` vers 127.0.0.0/8, `::1`, `localhost` n'en ont pas besoin. Ne couvre que `ship.sh` : `respond.sh`, `prom-scrape.sh` et `engagement-adapter.sh` ne refusent pas encore le clair | `0` |
+| `PLUME_SHIP_ALLOW_PLAINTEXT` | `1` autorise `ship.sh`, `respond.sh`, `prom-scrape.sh` et `engagement-adapter.sh` à parler en `http://` à un central HORS boucle locale (jeton et données lisibles, actions et exemptions falsifiables sur le réseau, avertissement à chaque passage) ; sinon refus nommé, code 2, sans appel au central : `ship.sh` n'expédie ni n'évince rien, `respond.sh` n'exécute aucune action, `prom-scrape.sh` ne scrape rien, `engagement-adapter.sh` révoque ses exemptions (REVERT-ALL ; son dead-man `revert-expired` n'est pas concerné). `https://` et `http://` vers 127.0.0.0/8, `::1`, `localhost` n'en ont pas besoin. Chaque unité lit son PROPRE fichier d'environnement (`plume.conf`, `responder.conf`, `prom.conf`, `engagement-adapter.conf`) : l'opt-in se pose dans chacun. Le collecteur Windows (`plume-collector.ps1`) ne refuse pas encore le clair | `0` |
 
 **Où vivent les données**
 

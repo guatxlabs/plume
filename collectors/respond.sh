@@ -33,8 +33,62 @@ resp_curl_auth_stdin() {
   fi
 }
 
+# ================================================================================================
+# `P10.33-a` — LES ORDRES NE SE LISENT PAS EN CLAIR SUR LE RESEAU.
+# ------------------------------------------------------------------------------------------------
+# CE QUI SE PASSAIT. `ship.sh` refusait deja `http://` vers un hote distant (`P10.32-i`), mais ce script
+# lisait la liste des actions en attente, puis les EXECUTAIT EN ROOT (cscli, fail2ban, nft), sur le meme
+# `PLUME_CENTRAL` en `http://` distant, sans un mot : le jeton partait en clair, et un intermediaire
+# pouvait REPONDRE A LA PLACE du central — un ban sur l adresse de son choix, applique par cet hote.
+# CE QUI EST FAIT, AVANT TOUT APPEL AU CENTRAL (rejeu, liste, remise) : la MEME porte que `ship.sh` —
+# `https://` accepte, `http://` vers 127.0.0.0/8, ::1 ou localhost accepte, tout autre `http://` (ou
+# une adresse sans schema) REFUSE sur stderr, code 2, AUCUNE action recuperee ni executee, sauf
+# l opt-in EXPLICITE `PLUME_SHIP_ALLOW_PLAINTEXT=1` (la meme variable : un seul choix a apprendre ; il
+# se pose par fichier d environnement, donc par unite), qui passe avec un avertissement.
+# UNE COPIE, PAS UN EMPRUNT : cet enforcer ne source pas la bibliotheque des capteurs (cf. plus haut) ;
+# la garde `check_a_collector_escapes_its_json_and_never_ships_or_listens_open.py` joue le MEME corpus
+# d URL sur cette copie et sur la porte partagee des capteurs : c est elle qui tient leur egalite.
+resp_hote_en_boucle_locale() { # $1 = hote (sans crochets) -> 0 si boucle locale
+  case "$1" in
+    localhost|::1) return 0 ;;
+    127.*) : ;;
+    *) return 1 ;;
+  esac
+  case "$1" in *[!0-9.]*|*..*|*.) return 1 ;; esac
+  _bl_points=$(printf '%s' "$1" | tr -cd . | wc -c | tr -d ' ')
+  [ "$_bl_points" = 3 ]
+}
+# resp_verifier_le_transport <url> — 0 si admis, 1 (refus ecrit sur stderr) sinon. Seuls le schema et
+# l hote sont imprimes : une URL peut porter identifiant et mot de passe.
+resp_verifier_le_transport() {
+  case "$1" in
+    *://*) _vt_schema=${1%%://*}; _vt_reste=${1#*://} ;;
+    *) _vt_schema=""; _vt_reste=$1 ;;
+  esac
+  _vt_aut=${_vt_reste%%/*}; _vt_aut=${_vt_aut%%\?*}; _vt_aut=${_vt_aut%%#*}; _vt_aut=${_vt_aut##*@}
+  case "$_vt_schema" in
+    [Hh][Tt][Tt][Pp][Ss]) return 0 ;;
+    [Hh][Tt][Tt][Pp]|"") : ;;
+    *[!A-Za-z0-9+.-]*) echo "respond: REFUS : PLUME_CENTRAL — schema illisible (https:// attendu)" >&2; return 1 ;;
+    *) echo "respond: REFUS : PLUME_CENTRAL — schema $_vt_schema:// non pris en charge (https:// attendu)" >&2; return 1 ;;
+  esac
+  case "$_vt_aut" in
+    \[*\]*) _vt_hote=${_vt_aut#\[}; _vt_hote=${_vt_hote%%\]*} ;;
+    *) _vt_hote=${_vt_aut%%:*} ;;
+  esac
+  _vt_hote=$(printf '%s' "$_vt_hote" | tr 'A-Z' 'a-z')
+  resp_hote_en_boucle_locale "$_vt_hote" && return 0
+  if [ "${PLUME_SHIP_ALLOW_PLAINTEXT:-0}" = 1 ]; then
+    echo "respond: AVERTISSEMENT : ordres lus EN CLAIR depuis $_vt_hote (PLUME_SHIP_ALLOW_PLAINTEXT=1) — jeton lisible et actions falsifiables sur le reseau" >&2
+    return 0
+  fi
+  echo "respond: REFUS : PLUME_CENTRAL parle EN CLAIR a l hote distant '$_vt_hote' (jeton lisible, et un intermediaire peut injecter des actions executees en root). Utilisez https://, ou posez PLUME_SHIP_ALLOW_PLAINTEXT=1 pour l accepter en connaissance de cause. Aucune action n est recuperee ni executee, aucun verdict n est remis." >&2
+  return 1
+}
+
 [ "${PLUME_RESPONDER:-0}" = "1" ] || exit 0            # desactive tant que non explicitement active
 CENTRAL="${PLUME_CENTRAL:?PLUME_CENTRAL requis}"
+resp_verifier_le_transport "$CENTRAL" || exit 2
 HOSTN="${PLUME_HOST_LABEL:-$(hostname)}"
 APPLY="${PLUME_RESPONDER_APPLY:-0}"                     # 0 = dry-run meme pour une action 'reelle' (securite)
 BACKEND="${PLUME_BAN_BACKEND:-auto}"

@@ -15,59 +15,14 @@ set -eu
 plume_init
 SPOOL="${PLUME_SPOOL:-/var/lib/plume/spool}"
 
-# P10.32-i — LE CLAIR NE PART PAS VERS UN HOTE DISTANT SANS QU'ON L'AIT CHOISI. `http://` vers le central
-# envoie le jeton (ou le couple identifiant/mot de passe) ET les evenements EN CLAIR sur le reseau : un
-# tiers sur le chemin lit tout, et rejoue le jeton. L'agent l'acceptait sans un mot. Desormais :
-#   · `https://`                                  -> inchange ;
-#   · `http://` vers la boucle locale (127.0.0.0/8, ::1, localhost) -> inchange : le central est sur
-#     la meme machine, rien ne traverse le reseau (hote natif ou conteneur qui partage le reseau hote) ;
-#   · tout autre `http://` (ou une adresse sans schema, que curl lit en `http://`) -> REFUS nomme sur
-#     stderr, code 2, AVANT de toucher au spool (rien n'est evince, rien n'est expedie : tout est
-#     conserve pour le passage qui suivra la correction) ;
-#   · sauf opt-in EXPLICITE `PLUME_SHIP_ALLOW_PLAINTEXT=1` (reseau prive de confiance, tunnel deja
-#     chiffre), qui part avec un avertissement a chaque passage ;
-#   · tout autre schema -> refus, opt-in ou non (ce n'est pas un transport de ce capteur).
-# Un refus et non un aveu au central : l'aveu partirait par ce meme transport.
-ship_hote_en_boucle_locale() { # $1 = hote (sans crochets) -> 0 si boucle locale
-  case "$1" in
-    localhost|::1) return 0 ;;
-    127.*) : ;;
-    *) return 1 ;;
-  esac
-  case "$1" in *[!0-9.]*|*..*|*.) return 1 ;; esac
-  _bl_points=$(printf '%s' "$1" | tr -cd . | wc -c | tr -d ' ')
-  [ "$_bl_points" = 3 ]
-}
-SHIP_CENTRAL_AFFICHE=""   # schema://hote[:port] du central, SANS identite : seule forme imprimee
-ship_verifier_le_transport() { # $1 = URL du central
-  case "$1" in
-    *://*) _vt_schema=${1%%://*}; _vt_reste=${1#*://} ;;
-    *) _vt_schema=""; _vt_reste=$1 ;;
-  esac
-  # autorite = jusqu'au premier / ? ou # ; l'identite eventuelle (avant le DERNIER @) est retiree.
-  # Les messages ne citent que le schema et l hote : une URL peut porter identifiant et mot de passe.
-  _vt_aut=${_vt_reste%%/*}; _vt_aut=${_vt_aut%%\?*}; _vt_aut=${_vt_aut%%#*}; _vt_aut=${_vt_aut##*@}
-  SHIP_CENTRAL_AFFICHE="${_vt_schema:-http}://$_vt_aut"
-  case "$_vt_schema" in
-    [Hh][Tt][Tt][Pp][Ss]) return 0 ;;
-    [Hh][Tt][Tt][Pp]|"") : ;;
-    *[!A-Za-z0-9+.-]*) echo "ship: REFUS : PLUME_CENTRAL — schema illisible (https:// attendu)" >&2; exit 2 ;;
-    *) echo "ship: REFUS : PLUME_CENTRAL — schema $_vt_schema:// non pris en charge (https:// attendu)" >&2; exit 2 ;;
-  esac
-  case "$_vt_aut" in
-    \[*\]*) _vt_hote=${_vt_aut#\[}; _vt_hote=${_vt_hote%%\]*} ;;
-    *) _vt_hote=${_vt_aut%%:*} ;;
-  esac
-  _vt_hote=$(printf '%s' "$_vt_hote" | tr 'A-Z' 'a-z')
-  ship_hote_en_boucle_locale "$_vt_hote" && return 0
-  if [ "${PLUME_SHIP_ALLOW_PLAINTEXT:-0}" = 1 ]; then
-    echo "ship: AVERTISSEMENT : envoi EN CLAIR vers $_vt_hote (PLUME_SHIP_ALLOW_PLAINTEXT=1) — jeton et evenements lisibles sur le reseau" >&2
-    return 0
-  fi
-  echo "ship: REFUS : PLUME_CENTRAL envoie EN CLAIR vers l'hote distant '$_vt_hote' (jeton et evenements lisibles sur le reseau). Utilisez https://, ou posez PLUME_SHIP_ALLOW_PLAINTEXT=1 pour l'accepter en connaissance de cause. Rien n'est expedie ni evince : le spool est conserve." >&2
-  exit 2
-}
-[ -n "${PLUME_CENTRAL:-}" ] && ship_verifier_le_transport "$PLUME_CENTRAL"
+# P10.32-i — LE CLAIR NE PART PAS VERS UN HOTE DISTANT SANS QU'ON L'AIT CHOISI. La porte (https://
+# inchange, `http://` admis vers la boucle locale seule, sinon REFUS nomme sauf `PLUME_SHIP_ALLOW_PLAINTEXT=1`)
+# vit dans lib.sh (`plume_verifier_le_transport`, P10.33-a) : `prom-scrape.sh` juge par le meme texte.
+# Ici, le refus sort en code 2 AVANT de toucher au spool (rien n'est evince, rien n'est expedie : tout
+# est conserve pour le passage qui suivra la correction).
+if [ -n "${PLUME_CENTRAL:-}" ]; then
+  plume_verifier_le_transport ship "$PLUME_CENTRAL" "Rien n'est expedie ni evince : le spool est conserve." || exit 2
+fi
 
 # `P9.7-c` (4) — LE TAMPON DE L'HÔTE EST BORNÉ, ET LA PERTE EST COMPTÉE ET DITE. Trois familles de tampon
 # existaient et deux étaient bornées ; celle-ci — le spool qu'un hôte reçoit par défaut — n'avait ni plafond,
@@ -161,6 +116,6 @@ borner_le_spool
 ship_glob json   /api/ingest
 ship_glob ndjson /api/ingest/journal
 # P10.32-i — l'URL n'est pas imprimee telle quelle : elle peut porter identifiant et mot de passe.
-[ "$sent" -gt 0 ] && echo "ship: $sent fichier(s) -> $SHIP_CENTRAL_AFFICHE" || true
+[ "$sent" -gt 0 ] && echo "ship: $sent fichier(s) -> $_PLUME_CENTRAL_AFFICHE" || true
 [ "$refuses" -gt 0 ] && plume_report_availability ship unavailable ingest-refused \
   "REFUS PERMANENT : $refuses fichier(s) refusés par le central (4xx hors identité et cadence), mis à l'écart dans $STATE/refuses/ — leur contenu n'entrera JAMAIS tel quel ; à lire, pas à réessayer." 2 2>/dev/null || true

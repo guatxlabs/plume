@@ -11,6 +11,16 @@ set -eu
 # ne fait que DÉFINIR des fonctions — aucun effet de bord, `plume_init` n'est pas appelé ici.
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 SOC="${PLUME_CENTRAL:-http://127.0.0.1:7000}"
+# P10.33-a — LE JETON ET LES MESURES NE PARTENT PAS EN CLAIR VERS UN CENTRAL DISTANT. Meme porte que
+# `ship.sh` (lib.sh, `plume_verifier_le_transport`) : `https://` et la boucle locale (le defaut ci-dessus)
+# passent, tout autre `http://` est REFUSE, code 2, AVANT de scraper ou d'expedier quoi que ce soit, sauf
+# `PLUME_SHIP_ALLOW_PLAINTEXT=1`.
+# LES CIBLES SCRAPEES NE SONT PAS SOUMISES A CETTE PORTE, ET C'EST UN CHOIX : aucun jeton ne leur est
+# envoye (leur `curl` ne recoit ni `-K` ni en-tete d'authentification) ; ce qui circule en clair est la
+# mesure ENTRANTE, qu'un tiers sur le chemin peut lire ou falsifier. Un exporteur `/metrics` se sert en
+# `http://` dans l'usage courant : le refuser couperait le capteur sans proteger aucun secret. Une cible
+# `https://` reste possible. Une cible n'est imprimee que par schema et hote (elle peut porter une identite).
+plume_verifier_le_transport prom-scrape "$SOC" "Aucune cible n'est scrapee, rien n'est expedie." || exit 2
 HOSTN="${PLUME_HOST_LABEL:-$(hostname)}"
 TFILE="${PLUME_PROM_TARGETS_FILE:-/etc/plume/prom-targets}"
 targets="${PLUME_PROM_TARGETS:-}"
@@ -40,9 +50,10 @@ post() { # $1 = corps texte
 ok=0; total=0
 for t in $targets; do
   total=$((total + 1))
-  body=$(curl -sS --max-time 10 "$t" 2>/dev/null) || { echo "prom-scrape: $t injoignable" >&2; continue; }
-  [ -n "$body" ] || { echo "prom-scrape: $t vide" >&2; continue; }
+  ta=$(plume_url_affichee "$t")
+  body=$(curl -sS --max-time 10 "$t" 2>/dev/null) || { echo "prom-scrape: $ta injoignable" >&2; continue; }
+  [ -n "$body" ] || { echo "prom-scrape: $ta vide" >&2; continue; }
   code=$(post "$body")
-  if [ "$code" = "200" ]; then ok=$((ok + 1)); else echo "prom-scrape: $t -> HTTP $code" >&2; fi
+  if [ "$code" = "200" ]; then ok=$((ok + 1)); else echo "prom-scrape: $ta -> HTTP $code" >&2; fi
 done
-echo "prom-scrape: $ok/$total cible(s) -> $SOC"
+echo "prom-scrape: $ok/$total cible(s) -> $_PLUME_CENTRAL_AFFICHE"

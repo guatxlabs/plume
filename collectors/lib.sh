@@ -828,6 +828,80 @@ plume_curlcfg_header_auth() {
 }
 
 # ====================================================================================================
+# LE CLAIR NE PART PAS VERS UN HOTE DISTANT SANS QU'ON L'AIT CHOISI (P10.32-i, partage P10.33-a).
+#
+# `http://` vers le central envoie le jeton (ou le couple identifiant/mot de passe) ET les evenements EN
+# CLAIR sur le reseau : un tiers sur le chemin lit tout, et rejoue le jeton. Porte ecrite d'abord dans
+# `ship.sh`, deplacee ici SANS changer son comportement pour que `ship.sh` et `prom-scrape.sh` jugent par
+# le MEME texte. Les deux ENFORCERS (`respond.sh`, `engagement-adapter.sh`) ne sourcent pas cette
+# bibliotheque (une garde le leur interdit) : ils en portent une copie, et la garde
+# `check_a_collector_escapes_its_json_and_never_ships_or_listens_open.py` joue le MEME corpus d'URL
+# sur les quatre — c'est elle qui tient l'egalite des comportements, pas ce commentaire.
+#   · `https://`                                  -> accepte ;
+#   · `http://` vers la boucle locale (127.0.0.0/8, ::1, localhost) -> accepte : rien ne traverse le
+#     reseau (hote natif, ou conteneur qui partage le reseau de l'hote) ;
+#   · tout autre `http://` (ou une adresse sans schema, que curl lit en `http://`) -> REFUS nomme sur
+#     stderr, code 1 rendu a l'appelant, qui sort AVANT tout appel au central ;
+#   · sauf opt-in EXPLICITE `PLUME_SHIP_ALLOW_PLAINTEXT=1` (reseau prive de confiance, tunnel deja
+#     chiffre), qui passe avec un avertissement a chaque passage ;
+#   · tout autre schema -> refus, opt-in ou non.
+# Un refus et non un aveu au central : l'aveu partirait par ce meme transport.
+# ====================================================================================================
+plume_hote_en_boucle_locale() { # $1 = hote (sans crochets) -> 0 si boucle locale
+  case "$1" in
+    localhost|::1) return 0 ;;
+    127.*) : ;;
+    *) return 1 ;;
+  esac
+  case "$1" in *[!0-9.]*|*..*|*.) return 1 ;; esac
+  _bl_points=$(printf '%s' "$1" | tr -cd . | wc -c | tr -d ' ')
+  [ "$_bl_points" = 3 ]
+}
+
+# plume_url_affichee <url> — imprime `schema://hote[:port]`, SANS identite, chemin ni requete : la seule
+# forme d'une URL qui s'imprime (une URL peut porter identifiant et mot de passe). Schema absent -> http.
+plume_url_affichee() {
+  case "$1" in
+    *://*) _ua_schema=${1%%://*}; _ua_reste=${1#*://} ;;
+    *) _ua_schema=""; _ua_reste=$1 ;;
+  esac
+  # autorite = jusqu'au premier / ? ou # ; l'identite eventuelle (avant le DERNIER @) est retiree.
+  _ua_aut=${_ua_reste%%/*}; _ua_aut=${_ua_aut%%\?*}; _ua_aut=${_ua_aut%%#*}; _ua_aut=${_ua_aut##*@}
+  printf '%s://%s' "${_ua_schema:-http}" "$_ua_aut"
+}
+
+_PLUME_CENTRAL_AFFICHE=""   # schema://hote[:port] du dernier central juge, seule forme imprimee (interne, d ou le `_`)
+# plume_verifier_le_transport <capteur> <url> <ce-que-le-refus-laisse-intact> — 0 si le transport est
+# admis, 1 (refus deja ecrit sur stderr) sinon. Pose _PLUME_CENTRAL_AFFICHE. Usage :
+#     plume_verifier_le_transport ship "$PLUME_CENTRAL" "Rien n'est expedie." || exit 2
+plume_verifier_le_transport() {
+  _PLUME_CENTRAL_AFFICHE=$(plume_url_affichee "$2")
+  case "$2" in
+    *://*) _vt_schema=${2%%://*} ;;
+    *) _vt_schema="" ;;
+  esac
+  _vt_aut=${_PLUME_CENTRAL_AFFICHE#*://}
+  case "$_vt_schema" in
+    [Hh][Tt][Tt][Pp][Ss]) return 0 ;;
+    [Hh][Tt][Tt][Pp]|"") : ;;
+    *[!A-Za-z0-9+.-]*) echo "$1: REFUS : PLUME_CENTRAL — schema illisible (https:// attendu)" >&2; return 1 ;;
+    *) echo "$1: REFUS : PLUME_CENTRAL — schema $_vt_schema:// non pris en charge (https:// attendu)" >&2; return 1 ;;
+  esac
+  case "$_vt_aut" in
+    \[*\]*) _vt_hote=${_vt_aut#\[}; _vt_hote=${_vt_hote%%\]*} ;;
+    *) _vt_hote=${_vt_aut%%:*} ;;
+  esac
+  _vt_hote=$(printf '%s' "$_vt_hote" | tr 'A-Z' 'a-z')
+  plume_hote_en_boucle_locale "$_vt_hote" && return 0
+  if [ "${PLUME_SHIP_ALLOW_PLAINTEXT:-0}" = 1 ]; then
+    echo "$1: AVERTISSEMENT : envoi EN CLAIR vers $_vt_hote (PLUME_SHIP_ALLOW_PLAINTEXT=1) — jeton et evenements lisibles sur le reseau" >&2
+    return 0
+  fi
+  echo "$1: REFUS : PLUME_CENTRAL envoie EN CLAIR vers l'hote distant '$_vt_hote' (jeton et evenements lisibles sur le reseau). Utilisez https://, ou posez PLUME_SHIP_ALLOW_PLAINTEXT=1 pour l'accepter en connaissance de cause. $3" >&2
+  return 1
+}
+
+# ====================================================================================================
 # UNE MESURE D'HÔTE QUI ÉCHOUE N'EST PAS PUBLIÉE COMME UN ZÉRO (S33)
 # ----------------------------------------------------------------------------------------------------
 # LE DÉFAUT. Un capteur qui n'arrive pas à lire une source d'environnement publiait quand même un

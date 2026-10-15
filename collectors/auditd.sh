@@ -59,9 +59,16 @@ case "$prev" in *[!0-9]*) prev=0 ;; esac
 # perte muette.
 # S36 — et cette seconde porte n'est atteignable que si la lecture a ABOUTI : l'offset vaut la TAILLE
 # du fichier, il ne doit rien a la lecture, donc il acquittait sans cela une tranche jamais lue.
+# P10.32-k — CE SILENCE-LA RESTE UN SILENCE, ET C'EST VOULU : aucun battement de sante ici. Un journal qui
+# ne grossit plus est le signe d'un auditd TUE ou arrete (`kill`, `systemctl stop` : du silence, pas un
+# execve) ; la regle livree `de-auditd-silent` (T1562.001) compte `source=auditd` sur sa fenetre, et la
+# sonde « Capteur muet : auditd » lit le MAX(ts) de la meme source. Un battement emis ici les ferait taire
+# toutes les deux sur le cas meme qu'elles existent pour voir. Le battement part donc a chaque passage qui
+# a LU une tranche neuve, y compris quand elle ne donne aucun evenement — plus bas.
 if [ "$prev" -ge "$size" ]; then state_stage "$OFF" "$size"; plume_exit_nodata; fi
 
-new=$(mktemp)
+new=$(mktemp); tsv=$(mktemp); evf=$(mktemp); evu=$(mktemp); stf=$(mktemp)
+trap 'rm -f "$new" "$tsv" "$evf" "$evu" "$stf"' EXIT
 # S36 — le code de retour de la lecture est LU. Avant, `|| true` confondait « aucun octet neuf » et
 # « le `tail` a echoue » : l'offset etait deja en attente, `parsed` sortait vide, et la sortie « rien
 # a signaler » acquittait une tranche d'execve et de TAMPER que personne ne relirait jamais.
@@ -139,8 +146,37 @@ AUDIT_EXEC_DROP_LIST="$AUDIT_EXEC_DROP_LIST_TIER1"
 # (un execve sur un chemin surveille produit `exec` ET `tamper`) : les confondre effacerait un
 # constat reel. Un enregistrement sans identifiant `audit(...)` ne recoit AUCUNE cle : mieux vaut un
 # doublon visible qu'une cle inventee qui confondrait deux enregistrements distincts.
+# P10.32-k — PLUS DE BOUCLE SHELL PAR EVENEMENT : DEUX PASSES AWK, LINEAIRES. Le JSON de chaque evenement
+# etait construit par une boucle `while read` sur la sortie TSV du programme ci-dessous : deux `json_escape`
+# par ligne (trois processus chacun, plus un sous-shell), un `sed` par authentification, et une chaine
+# `events` reconstruite a chaque tour — un cout QUADRATIQUE en octets. Sur un journal d'audit volumineux, un
+# passage depassait la cadence de la sonde, et le capteur se lisait muet. Le programme de classement est
+# INCHANGE (il ecrit son TSV dans un fichier) ; un second programme awk lit ce TSV et ecrit les objets, a
+# l'octet pres de l'ancienne boucle : `json_escape` du message = suppression des controles C0 (le message
+# n'a deja plus ni antislash ni guillemet), `src_ip` = l'adresse IPv4 de `addr` seule (comme le `sed`
+# d'avant), puis `fields`. Le controle des octets UTF-8 (`iconv -c`) passe UNE fois sur tout le fragment.
+# Preuve differentielle : `collectors/auditd-differentiel.corpus` et son attendu, rendus par l'ancienne
+# boucle, rejoues sous gawk et mawk par `.github/scripts/check_a_live_sensor_never_reads_as_mute_or_calm.py`.
+# DEUX ECARTS, NOMMES, et seulement sur une entree que l'ancienne boucle rendait mal :
+#   · un enregistrement SANS identifiant `audit(...)` etait JETE en silence — le `read` a separateur
+#     tabulation fusionne deux tabulations consecutives, la cle vide decalait le message dans la colonne
+#     de la cle, et le message vide faisait sauter la ligne. Le second programme lit le TSV champ par
+#     champ (`FS` tabulation : un champ vide reste un champ) ; l'evenement part SANS cle, comme l'annonce
+#     le paragraphe S34 ;
+#   · un caractere de controle brut dans une valeur de `fields` rendait l'enveloppe ENTIERE illisible (le
+#     passage perdu, l'offset avance) : `af` le retire comme il retirait deja la tabulation.
+# LE PLAFOND `PLUME_AUDIT_MAX` S'AVOUE, ET IL NE COUPE PLUS LES TAMPER D'ABORD. `head -N` coupait le TSV en
+# silence, et les TAMPER, ecrits en dernier (dans END), etaient les PREMIERS perdus. Le second programme tient
+# les autres evenements dans un tableau borne au plafond, garde les TAMPER en priorite et garde l'ordre de
+# sortie d'avant ; le nombre ecarte est compte, porte par le battement et avoue par `plume_collecte_tronquee`
+# (canal `de-collector-unavailable`). Un plafond illisible faisait echouer `head`, et le capteur sortait en
+# ERREUR a chaque passage (plus rien n'etait collecte) : il retombe maintenant sur son defaut, et le dit.
+AUDIT_MAX="${PLUME_AUDIT_MAX:-4000}"
+case "$AUDIT_MAX" in
+  ''|*[!0-9]*) plume_reglage_illisible auditd PLUME_AUDIT_MAX "$AUDIT_MAX" 4000 "l'environnement du capteur"; AUDIT_MAX=4000 ;;
+esac
 # TSV : <sev> <cat> <fields> <dedup> <message>  (auid sorti en champ -> filtre/agrege dans l'UI)
-parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS" \
+if ! awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS" \
              -v exdrop="$AUDIT_EXEC_DROP" -v dropexe="$AUDIT_EXEC_DROP_LIST" '
   function val(key){
     if (match($0, key "=\"[^\"]*\"")) { return substr($0, RSTART+length(key)+2, RLENGTH-length(key)-3) }
@@ -149,7 +185,7 @@ parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS"
   }
   # S34 : identifiant du record noyau, extrait de audit(<sec>.<msec>:<serial>).
   function idc(x){ if (match(x, /[0-9]+\.[0-9]+:[0-9]+/)) return substr(x, RSTART, RLENGTH); return "" }
-  function af(k,v){ if(v!=""&&v!="(null)"){ gsub(/[\\"\t]/,"",v); F=F (F==""?"":",") "\"" k "\":\"" v "\"" } }
+  function af(k,v){ if(v!=""&&v!="(null)"){ gsub(/[\\"\001-\037]/,"",v); F=F (F==""?"":",") "\"" k "\":\"" v "\"" } }
   function mapsys(n){
     if(n=="2")return "open"; if(n=="257")return "openat"; if(n=="437")return "openat2";
     if(n=="87")return "unlink"; if(n=="263")return "unlinkat";
@@ -184,7 +220,7 @@ parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS"
     # svc_exec = exec par un compte SERVICE/DAEMON (auid non defini) d un shell/interpreteur/outil reseau
     # (limite connue : une regle exec_tracking filtree sur auid ne couvre pas les comptes de service). On NE le DROP JAMAIS,
     # meme en real-user-only : c est precisement le signal auid=unset que l on veut (regles -k svc_exec).
-    if (realonly=="1" && (auid=="4294967295" || auid=="-1" || auid=="") && k !~ /svc_exec/) next;
+    if (realonly=="1" && (auid=="4294967295" || auid=="-1" || auid=="") && k !~ /svc_exec/) { RUO++; next }
     # EXEC-DROP : allowlist-to-drop du bruit coreutils. Défaut OFF (exdrop vide). Voir le bloc
     # de doc + AUDIT_EXEC_DROP_LIST dans le shell. Garde KEEP = défense-en-profondeur : même si un nom
     # se glissait dans la liste de drop, ces familles (interpréteurs/priv/persist/réseau/audit/permission)
@@ -224,6 +260,8 @@ parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS"
     # EXEC-DROP self-report : sentinelle best-effort (interceptée par le shell, jamais émise
     # comme event) portant le nb d execve droppes ce run -> expose dans l event config collection-reducing.
     if (DROPPED>0) print "0\t__auditd_dropcount__\t" DROPPED "\t\tdrop";
+    # P10.32-k : comptes du passage (lignes lues, ecartes par real_user_only), lus par l etage 2.
+    print "0\t__auditd_comptes__\t" NR "\t" RUO+0 "\tcomptes";
     for (id in TID) {
       key=TKEY[id]; path=(id in TPATH)?TPATH[id]:""; sy=mapsys(TSY[id]);
       exe=TEXE[id]; auid=TAUID[id]; uid=TUID[id]; succ=TSUCC[id];
@@ -238,23 +276,66 @@ parsed=$(awk -v realonly="${PLUME_AUDIT_REAL_USER_ONLY:-0}" -v tk="$TAMPER_KEYS"
       print sev "\ttamper\t" F "\t" dd "\t" msg;
     }
   }
-' "$new" | head -"${PLUME_AUDIT_MAX:-4000}")
-rm -f "$new"
-[ -z "$parsed" ] && plume_exit_nodata
+' "$new" > "$tsv"; then
+  plume_lecture_echouee auditd forme_inconnue "$LOG : l'analyse awk de la tranche a partir de l'octet $((prev + 1)) a echoue, aucun evenement n'a ete construit"
+fi
+# Second programme : le TSV (<sev> <cat> <fields> <dedup> <message>) devient le fragment JSON du lot, plus
+# une ligne de comptes (lignes lues, emis, ecartes par exec_drop, ecartes par real_user_only, au-dela du plafond).
+if ! awk -v ts="$ts" -v cap="$AUDIT_MAX" -v out="$evf" -v stats="$stf" '
+  BEGIN { FS = "\t" }
+  # L objet evenement, pendant exact de la boucle shell d avant (voir le bandeau plus haut).
+  function ev(sev, cat, F, dd, msg,   j, ip){
+    gsub(/[\001-\037]/, "", msg); gsub(/[\001-\037]/, "", dd)
+    j = "{\"ts\":" ts ",\"source\":\"auditd\",\"category\":\"" cat "\",\"severity\":" sev ",\"message\":\"" msg "\""
+    if (dd != "") j = j ",\"dedup\":\"" dd "\""
+    if (match(F, /"addr":"[0-9.]*"/)) { ip = substr(F, RSTART+8, RLENGTH-9); if (ip != "") j = j ",\"src_ip\":\"" ip "\"" }
+    if (F != "") j = j ",\"fields\":{" F "}"
+    return j "}"
+  }
+  $2 == "__auditd_dropcount__" { DROPPED = $3 + 0; next }
+  $2 == "__auditd_comptes__"   { LUS = $3 + 0; RUO = $4 + 0; next }
+  {
+    msg = $5; for (i = 6; i <= NF; i++) msg = msg "\t" $i
+    if (msg == "") next
+    j = ev($1, $2, $3, $4, msg)
+    if ($2 == "tamper") T[++NT] = j
+    else if (NB < cap+0) B[++NB] = j
+    else NX++
+  }
+  END {
+    # Sous le plafond : tout part, dans l ordre d avant (passe principale, puis TAMPER). Au-dessus : les
+    # TAMPER d abord, la passe principale dans la place restante, le reste COMPTE.
+    tk_ = (NT < cap+0) ? NT : cap+0; nk = cap - tk_; if (nk > NB) nk = NB
+    n = 0
+    for (i = 1; i <= nk; i++)  { sep = (n > 0) ? "," : ""; printf "%s%s", sep, B[i] > out; n++ }
+    for (i = 1; i <= tk_; i++) { sep = (n > 0) ? "," : ""; printf "%s%s", sep, T[i] > out; n++ }
+    close(out)
+    printf "%d %d %d %d %d\n", LUS, n, DROPPED+0, RUO+0, (NB-nk)+NX+(NT-tk_) > stats
+    close(stats)
+  }
+' "$tsv"; then
+  plume_lecture_echouee auditd forme_inconnue "$LOG : la construction des evenements de la tranche a partir de l'octet $((prev + 1)) a echoue"
+fi
+n_lues=""; n_emis=""; n_drop=""; n_ruo=""; n_plafond=""
+read -r n_lues n_emis n_drop n_ruo n_plafond < "$stf" || true
+for _x in "$n_lues" "$n_emis" "$n_drop" "$n_ruo" "$n_plafond"; do
+  case "$_x" in ''|*[!0-9]*) plume_lecture_echouee auditd forme_inconnue "$LOG : les comptes de l'analyse sont illisibles, aucun evenement n'est publie" ;; esac
+done
+EXEC_DROPPED=$n_drop
 
-events=""; EXEC_DROPPED=0; TAB=$(printf '\t')
-while IFS="$TAB" read -r sev cat fields dd msg; do
-  # EXEC-DROP self-report : capte la sentinelle du nb droppé -> event config, PAS un event.
-  if [ "${cat:-}" = "__auditd_dropcount__" ]; then EXEC_DROPPED="${fields:-0}"; continue; fi
-  [ -z "${msg:-}" ] && continue
-  mj=$(json_escape "$msg")
-  fj=""; [ -n "${fields:-}" ] && fj=",\"fields\":{$fields}"
-  sip=""; case "${fields:-}" in *'"addr":"'*) ip=$(printf '%s' "$fields" | sed -n 's/.*"addr":"\([0-9.]*\)".*/\1/p'); [ -n "$ip" ] && sip=",\"src_ip\":\"$ip\"" ;; esac
-  ddj=""; [ -n "${dd:-}" ] && ddj=",\"dedup\":\"$(json_escape "$dd")\""
-  events="$events${events:+,}{\"ts\":$ts,\"source\":\"auditd\",\"category\":\"$cat\",\"severity\":$sev,\"message\":\"$mj\"$ddj$sip$fj}"
-done <<EOF
-$parsed
-EOF
+# P10.32-k — BATTEMENT DE SANTE, A CHAQUE PASSAGE QUI A LU UNE TRANCHE NEUVE, evenements ou non. Une tranche
+# entierement ecartee (filtres, enregistrements sans interet pour le capteur) ne publiait rien : la
+# source restait sans ligne neuve et le capteur se lisait muet sur un journal qui grossissait. Pas de cle de
+# dedoublonnage : chaque battement s'insere et fait avancer MAX(ts). Les comptes sont dans le MESSAGE et non
+# dans des champs : un champ neuf doit entrer dans l'inventaire de collecte du demon
+# (`daemon/src/collected.rs`), que ce changement ne touche pas — les champs poses ici y sont deja.
+hb_msg="auditd santé : $n_lues ligne(s) lue(s), $n_emis événement(s) émis, $((n_drop + n_ruo)) écarté(s) par filtre (exec_drop $n_drop, real_user_only $n_ruo), $n_plafond au-delà du plafond PLUME_AUDIT_MAX=$AUDIT_MAX"
+spool_write "auditd-health-$ts.json" "$(emit_event "$(heartbeat auditd "$hb_msg" '{"type":"collector-health","collector":"auditd"}')")" nl
+if [ "$n_plafond" -gt 0 ]; then
+  plume_collecte_tronquee auditd plafond-de-lignes "$n_plafond" \
+    "PLUME_AUDIT_MAX=$AUDIT_MAX evenements par passage : les TAMPER sont gardes en priorite, puis les premiers evenements de la tranche ; relevez la borne si l'ecart se repete."
+fi
+[ "$n_emis" -eq 0 ] && [ "$n_drop" -eq 0 ] && [ "$n_plafond" -eq 0 ] && plume_exit_nodata
 
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=auditd category=config) ------------
 # AVANT l'early-exit. Surface PLUME_AUDIT_REAL_USER_ONLY dans le panneau read-only. VISIBILITE cote
@@ -278,6 +359,15 @@ cfg_event=$(printf '{"ts":%s,"source":"auditd","category":"config","severity":0,
   "$ts" "$cfg_dd" "$cfg_fields")
 spool_write "config-auditd-$ts.json" "$(emit_event "$cfg_event")"
 
-[ -z "$events" ] && plume_exit_nodata
+[ "$n_emis" -gt 0 ] || plume_exit_nodata
 
-spool_write_then_ack "auditd-$ts.json" "$(emit_event "$events")"
+# Le controle UTF-8 de `json_escape` (`iconv -c`), passe UNE fois sur tout le fragment : une valeur a octet
+# invalide ne rend plus l'enveloppe illisible. `iconv -c` rend 1 quand il a retire des octets, sa sortie est
+# alors la bonne ; sans `iconv`, ou s'il n'a rien ecrit, le fragment part tel quel (le repli `|| cat` d'avant).
+if command -v iconv >/dev/null 2>&1 && iconv -c -f utf-8 -t utf-8 < "$evf" > "$evu" 2>/dev/null; then :
+elif [ -s "$evu" ]; then :
+else cat "$evf" > "$evu"; fi
+umask 027
+env_tmp=$(mktemp "$SPOOL/.auditd.XXXXXX")
+{ printf '{"ts":%s,"host":"%s","kind":"events","events":[' "$ts" "$host"; cat "$evu"; printf ']}'; } > "$env_tmp"
+spool_publish_then_ack "$env_tmp" "auditd-$ts.json"

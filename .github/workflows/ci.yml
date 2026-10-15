@@ -2285,6 +2285,16 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_an_installation_is_hardened_in_every_mode.py
 
+      # `P10.32-k` — UN CAPTEUR VIVANT NE SE LIT NI MUET NI CALME. Les capteurs LIVRÉS sont joués dans un bac
+      # (faux `date`, `auditctl`, `cscli`, `kubectl`) : auditd rend l'ancienne sortie à l'octet près sur son corpus
+      # différentiel (gawk et mawk), exécute autant de commandes et de processus pour vingt fois plus de journal,
+      # bat à chaque tranche lue mais pas sur un journal figé, avoue son plafond ; web bat à chaque lecture ;
+      # CrowdSec refuse de conclure quand tout part en liste blanche ; minio et dataaccess avouent leur cible.
+      - name: Un capteur vivant ne se lit ni muet ni calme (P10.32-k)
+        id: garde_79
+        continue-on-error: true
+        run: python3 .github/scripts/check_a_live_sensor_never_reads_as_mute_or_calm.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2772,6 +2782,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_76.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_crowdsec_sensor_says_what_it_reads.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_77.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_collector_escapes_its_json_and_never_ships_or_listens_open.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_78.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_installation_is_hardened_in_every_mode.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_79.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_live_sensor_never_reads_as_mute_or_calm.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

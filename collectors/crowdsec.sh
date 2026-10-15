@@ -61,6 +61,16 @@ else agent_logs() { false; }   # host/explicite : pas de chemin log pod -> scena
 fi
 command -v jq >/dev/null 2>&1 || plume_unavailable crowdsec missing-dependency "jq absent"
 plume_init
+# P10.32-k — SEUIL DE « LIT, MAIS SURTOUT EN LISTE BLANCHE », en pour cent des lignes analysées. Au-delà de
+# neuf lignes sur dix écartées, la détection ne porte plus que sur un résidu : c'est un ordre de grandeur de
+# conception, pas une valeur relevée sur une installation. Une installation dont le trafic légitime vient
+# massivement d'adresses privées (réseau interne servi sans mandataire) le relève ; à 100, il ne part plus que
+# lorsque toutes les lignes analysées sont en liste blanche et qu'une au moins a pourtant été versée.
+CS_WL_SEUIL="${PLUME_CROWDSEC_WHITELIST_SHARE_MAX:-90}"
+case "$CS_WL_SEUIL" in
+  [1-9]|[1-9][0-9]|100) ;;
+  *) plume_reglage_illisible crowdsec PLUME_CROWDSEC_WHITELIST_SHARE_MAX "$CS_WL_SEUIL" 90 "l'environnement du capteur"; CS_WL_SEUIL=90 ;;
+esac
 
 # ── 1) ALERTES (chemin existant) : ne SORT PLUS si vide -> le battement de santé ci-dessous part TOUJOURS.
 # S36 — `|| echo ''` REMPLACAIT LE STATUT DE LA LECTURE PAR CELUI D'UN `echo`, c'est-a-dire par un
@@ -147,8 +157,9 @@ fi
 # de zéro. Au premier passage (aucun état, ou état illisible), les différences valent -1 (inconnues).
 #
 # VERDICT `acq_verdict` : `lit` · `premier_passage` (aucun état, et au moins une ligne lue depuis le
-# démarrage de l'agent) · `aucune_lecture` · `aucune_analyse` · `aucune_source` · `illisible`. Les
-# quatre derniers sont un REFUS DE CONCLURE : l'absence d'alerte ne prouve plus rien. Ils partent par le canal déjà livré
+# démarrage de l'agent) · `aucune_lecture` · `aucune_analyse` · `aucune_source` · `illisible`, et depuis
+# `P10.32-k` `tout_en_liste_blanche` · `surtout_liste_blanche` (plus bas). Les quatre de la première ligne
+# après `premier_passage`, et `tout_en_liste_blanche`, sont un REFUS DE CONCLURE : l'absence d'alerte ne prouve plus rien. Ils partent par le canal déjà livré
 # (`plume_lecture_partielle`, donc `de-collector-unavailable`), relèvent la sévérité du battement à 3,
 # et n'avancent PAS l'état. Une source isolée figée alors que d'autres lisent — typiquement le fichier
 # d'un ancien pod, que l'agent garde jusqu'à son redémarrage — est NOMMÉE dans `acq_frozen_sources`,
@@ -160,6 +171,31 @@ fi
 # son détail (`unparsed_delta` == `reads_delta`), sans refus.
 # LE COÛT EST NOMMÉ : une installation réellement sans trafic pendant un intervalle entier refusera de
 # conclure ; la dédup horaire du canal en borne le volume, et c'est exact — rien n'a été observé.
+# P10.32-k — LIRE N'EST PAS DÉTECTER QUAND LA LISTE BLANCHE ABSORBE TOUT. Derrière un mandataire ou un
+# tunnel, l'adresse cliente que CrowdSec lit dans le journal est celle du RELAIS — une adresse privée — et
+# la liste blanche des adresses privées écarte la ligne avant les scénarios. Le moteur lit, analyse, et ne
+# peut rien détecter ; `lit` se lisait comme du calme. Deux verdicts de plus, sur la même base que les
+# autres (l'intervalle, ou depuis le démarrage au premier passage) :
+# DEUX FORMES DE COMPTAGE, DÉPARTAGÉES PAR `reads`. Selon la version, une ligne en liste blanche est comptée
+# PARMI les analysées (`whitelisted` ⊆ `parsed`, et `reads` = `parsed` + `unparsed`) ou À CÔTÉ d'elles
+# (`reads` = `parsed` + `unparsed` + `whitelisted`). Dès qu'il y a des lignes en liste blanche, `reads` les
+# distingue : `reads` >= `parsed` + `unparsed` + `whitelisted` est la forme disjointe. On en tire les lignes
+# analysées HORS liste blanche (`parsed`, ou `parsed` - `whitelisted`) et le total analysé (`parsed` +
+# `whitelisted`, ou `parsed`) ; un échantillon incohérent (plus d'écartées que d'analysées dans la forme
+# incluse) est borné par max(analysées, écartées), donc à 100 %.
+#   `tout_en_liste_blanche` — des lignes en liste blanche, AUCUNE analysée hors liste blanche, et aucune
+#     versée à un scénario (`pour` nul ; une ligne versée prouve que la détection reçoit quelque chose, même
+#     quand les compteurs se décalent d'un relevé à l'autre). REFUS DE CONCLURE, même canal, même sévérité
+#     que les quatre autres ; cause `forme_inconnue` (l'adresse portée par la ligne n'est pas celle du client).
+#   `surtout_liste_blanche` — la part en liste blanche (écartées / total analysé) ATTEINT le seuil
+#     `PLUME_CROWDSEC_WHITELIST_SHARE_MAX` : le moteur détecte encore sur le reste, ce n'est pas un refus ;
+#     la sévérité du battement monte à 2 et le message nomme la cause probable. L'état avance.
+# CE QUE CES VERDICTS NE VOIENT PAS : ils jugent les TOTAUX de toutes les sources. Une source entièrement en
+# liste blanche au milieu d'autres qui détectent laisse le verdict à `lit` ; seul son détail (`acquisition`,
+# `whitelisted` et `parsed` de la source) le montre.
+# La part est dite dans le MESSAGE du battement, à chaque passage où elle se calcule : un champ neuf doit
+# entrer dans l'inventaire de collecte du démon (`daemon/src/collected.rs`), que ce changement ne touche
+# pas ; `acq_whitelisted(_delta)` et `acq_parsed(_delta)`, déjà émis, la portent en chiffres.
 # Le détail par source (`acquisition`) et `acq_frozen_sources` sont bornés à 100 entrées chacun (le
 # roulement des pods multiplie les fichiers de conteneur) ; `acq_sources` porte le compte réel et les
 # totaux couvrent TOUTES les sources.
@@ -173,7 +209,7 @@ ACQ_STATE="$STATE/crowdsec-acquisition.json"
 acq_verdict=illisible; acq_cause=source_illisible
 acq_n=-1; acq_r=-1; acq_p=-1; acq_u=-1; acq_po=-1; acq_w=-1
 acq_dr=-1; acq_dp=-1; acq_du=-1; acq_dpo=-1; acq_dw=-1
-acq_reset=false; acq_frozen='[]'; acq_detail='[]'; acq_etat=''
+acq_reset=false; acq_frozen='[]'; acq_detail='[]'; acq_etat=''; acq_part=-1
 if acq_raw=$(cscli_agent metrics show acquisition -o json 2>/dev/null) || acq_raw=$(cscli_agent metrics -o json 2>/dev/null); then
   acq_prev=null
   if [ -r "$ACQ_STATE" ]; then
@@ -181,7 +217,7 @@ if acq_raw=$(cscli_agent metrics show acquisition -o json 2>/dev/null) || acq_ra
     [ -n "$acq_prev" ] || acq_prev=null
   fi
   # shellcheck disable=SC2016
-  if acq_out=$(printf '%s' "$acq_raw" | jq -c --argjson prev "$acq_prev" '
+  if acq_out=$(printf '%s' "$acq_raw" | jq -c --argjson prev "$acq_prev" --argjson seuil "$CS_WL_SEUIL" '
       def n: if . == null then 0 elif type == "number" then . else error("compteur non numerique") end;
       ["reads","parsed","unparsed","pour","whitelisted"] as $K
       | if type != "object" then error("forme") else . end
@@ -198,15 +234,24 @@ if acq_raw=$(cscli_agent metrics show acquisition -o json 2>/dev/null) || acq_ra
              d: (reduce $K[] as $k ({}; .[$k] = (if $p == null then -1 elif $reset then $c[$k] else $c[$k] - ($p[$k] // 0) end)))} ] as $src
       | (reduce $K[] as $k ({}; .[$k] = ([$src[].c[$k]] | add // 0))) as $tot
       | (reduce $K[] as $k ({}; .[$k] = (if $has then ([$src[].d[$k]] | add // 0) else -1 end))) as $dtot
-      | { n: ($src | length), tot: $tot, dtot: $dtot,
+      | (if $has then $dtot else $tot end) as $b
+      | ($b.whitelisted > 0 and $b.reads >= $b.parsed + $b.unparsed + $b.whitelisted) as $disjointe
+      | (if $disjointe then $b.parsed else $b.parsed - $b.whitelisted end) as $hors_lb
+      | (if $disjointe then $b.parsed + $b.whitelisted else ([$b.parsed, $b.whitelisted] | max) end) as $an
+      | (if $an > 0 then (($b.whitelisted * 100 / $an) | floor) else -1 end) as $part
+      | (if ($src | length) == 0 then "aucune_source"
+         elif ($has | not) then (if $tot.reads == 0 then "aucune_lecture"
+                                 elif $tot.parsed == 0 and $tot.whitelisted == 0 then "aucune_analyse"
+                                 else "premier_passage" end)
+         elif $dtot.reads == 0 then "aucune_lecture"
+         elif $dtot.parsed == 0 and $dtot.whitelisted == 0 then "aucune_analyse"
+         else "lit" end) as $v0
+      | { n: ($src | length), tot: $tot, dtot: $dtot, part: $part,
           reset: any($src[]; .reset),
-          verdict: (if ($src | length) == 0 then "aucune_source"
-                    elif ($has | not) then (if $tot.reads == 0 then "aucune_lecture"
-                                            elif $tot.parsed == 0 and $tot.whitelisted == 0 then "aucune_analyse"
-                                            else "premier_passage" end)
-                    elif $dtot.reads == 0 then "aucune_lecture"
-                    elif $dtot.parsed == 0 and $dtot.whitelisted == 0 then "aucune_analyse"
-                    else "lit" end),
+          verdict: (if ($v0 == "lit" or $v0 == "premier_passage") | not then $v0
+                    elif $b.whitelisted > 0 and $hors_lb <= 0 and $b.pour == 0 then "tout_en_liste_blanche"
+                    elif $part >= $seuil then "surtout_liste_blanche"
+                    else $v0 end),
           frozen: (if $has and $dtot.reads > 0 then [ $src[] | select(.d.reads == 0) | .source ][:100] else [] end),
           detail: [ $src[:100][] | {source} + .c + (.d | with_entries(.key += "_delta")) ],
           etat: (reduce $src[] as $x ({}; .[$x.source] = $x.c)) }' 2>/dev/null); then
@@ -214,19 +259,19 @@ if acq_raw=$(cscli_agent metrics show acquisition -o json 2>/dev/null) || acq_ra
     # écrire (bouchon, binaire tronqué) ne doit ni faire tomber le capteur sous `set -u` ni publier
     # un JSON cassé — c'est une lecture illisible, et elle se dit comme telle.
     _v=$(printf '%s' "$acq_out" | jq -r '.verdict' 2>/dev/null) || _v=''
-    _s=$(printf '%s' "$acq_out" | jq -r '[.n, .tot.reads, .tot.parsed, .tot.unparsed, .tot.pour, .tot.whitelisted, .dtot.reads, .dtot.parsed, .dtot.unparsed, .dtot.pour, .dtot.whitelisted, .reset] | map(tostring) | join(" ")' 2>/dev/null) || _s=''
+    _s=$(printf '%s' "$acq_out" | jq -r '[.n, .tot.reads, .tot.parsed, .tot.unparsed, .tot.pour, .tot.whitelisted, .dtot.reads, .dtot.parsed, .dtot.unparsed, .dtot.pour, .dtot.whitelisted, .part, .reset] | map(tostring) | join(" ")' 2>/dev/null) || _s=''
     _fz=$(printf '%s' "$acq_out" | jq -c '.frozen' 2>/dev/null) || _fz=''
     _dt=$(printf '%s' "$acq_out" | jq -c '.detail' 2>/dev/null) || _dt=''
     _et=$(printf '%s' "$acq_out" | jq -c '.etat' 2>/dev/null) || _et=''
     _ok=1
-    case "$_v" in lit|premier_passage|aucune_lecture|aucune_analyse|aucune_source) ;; *) _ok=0 ;; esac
+    case "$_v" in lit|premier_passage|aucune_lecture|aucune_analyse|aucune_source|tout_en_liste_blanche|surtout_liste_blanche) ;; *) _ok=0 ;; esac
     case "$_fz" in \[*\]) ;; *) _ok=0 ;; esac
     case "$_dt" in \[*\]) ;; *) _ok=0 ;; esac
     case "$_et" in \{*\}) ;; *) _ok=0 ;; esac
-    read -r _n _r _p _u _po _w _dr _dp _du _dpo _dw _rs _reste <<EOF
+    read -r _n _r _p _u _po _w _dr _dp _du _dpo _dw _pt _rs _reste <<EOF
 $_s
 EOF
-    for _x in "${_n:-}" "${_r:-}" "${_p:-}" "${_u:-}" "${_po:-}" "${_w:-}" "${_dr:-}" "${_dp:-}" "${_du:-}" "${_dpo:-}" "${_dw:-}"; do
+    for _x in "${_n:-}" "${_r:-}" "${_p:-}" "${_u:-}" "${_po:-}" "${_w:-}" "${_dr:-}" "${_dp:-}" "${_du:-}" "${_dpo:-}" "${_dw:-}" "${_pt:-}"; do
       case "$_x" in ''|-|*[!0-9-]*|?*-*) _ok=0 ;; esac
     done
     case "${_rs:-}" in true|false) ;; *) _ok=0 ;; esac
@@ -234,11 +279,11 @@ EOF
     if [ "$_ok" -eq 1 ]; then
       acq_verdict=$_v
       acq_n=$_n; acq_r=$_r; acq_p=$_p; acq_u=$_u; acq_po=$_po; acq_w=$_w
-      acq_dr=$_dr; acq_dp=$_dp; acq_du=$_du; acq_dpo=$_dpo; acq_dw=$_dw; acq_reset=$_rs
+      acq_dr=$_dr; acq_dp=$_dp; acq_du=$_du; acq_dpo=$_dpo; acq_dw=$_dw; acq_reset=$_rs; acq_part=$_pt
       acq_frozen=$_fz; acq_detail=$_dt; acq_etat=$_et
       case "$acq_verdict" in
         aucune_source|aucune_lecture) acq_cause=source_absente ;;
-        aucune_analyse) acq_cause=forme_inconnue ;;
+        aucune_analyse|tout_en_liste_blanche) acq_cause=forme_inconnue ;;
       esac
     else
       acq_cause=forme_inconnue
@@ -248,7 +293,7 @@ EOF
   fi
 fi
 case "$acq_verdict" in
-  lit|premier_passage)
+  lit|premier_passage|surtout_liste_blanche)
     acq_refus=0
     # Un état qu'on ne peut pas poser ne coupe PAS le battement (son silence lèverait MUET) : il est avoué.
     if acq_tmp=$(mktemp "$STATE/.crowdsec-acquisition.XXXXXX" 2>/dev/null) && printf '%s' "$acq_etat" > "$acq_tmp"; then
@@ -279,9 +324,20 @@ else
   hsev=0; hmsg="CrowdSec santé: $scen_loaded scénarios, 0 erreur de chargement"
 fi
 # P10.32-g — un moteur qui ne lit rien ne prouve rien par son silence : la sévérité monte à 3 au moins.
-if [ "$acq_refus" -eq 1 ]; then
+# P10.32-k — les deux verdicts de liste blanche nomment la cause probable, que l'exploitant corrige à la
+# source (faire lire à CrowdSec l'adresse du client, pas celle du relais).
+cs_cause_lb="cause probable : l'adresse cliente que CrowdSec lit est privée (celle d'un mandataire ou d'un tunnel) et la liste blanche des adresses privées l'écarte"
+if [ "$acq_verdict" = tout_en_liste_blanche ]; then
+  [ "$hsev" -lt 3 ] && hsev=3
+  hmsg="$hmsg — ACQUISITION tout_en_liste_blanche : toutes les lignes analysées sont parties en liste blanche ($cs_cause_lb), aucune n'atteint les scénarios, l'absence d'alerte ne prouve rien"
+elif [ "$acq_refus" -eq 1 ]; then
   [ "$hsev" -lt 3 ] && hsev=3
   hmsg="$hmsg — ACQUISITION $acq_verdict : aucune ligne n'atteint les scénarios, l'absence d'alerte ne prouve rien"
+elif [ "$acq_verdict" = surtout_liste_blanche ]; then
+  [ "$hsev" -lt 2 ] && hsev=2
+  hmsg="$hmsg — ACQUISITION surtout_liste_blanche : $acq_part % des lignes analysées sont parties en liste blanche (seuil $CS_WL_SEUIL %, $cs_cause_lb), la détection ne porte que sur le reste"
+elif [ "$acq_part" -ge 0 ] 2>/dev/null; then
+  hmsg="$hmsg — liste blanche : $acq_part % des lignes analysées"
 fi
 hfields="{\"scenarios_loaded\":$scen_loaded,\"scenarios_broken\":$scen_broken,\"agent_ready\":$ar,\"lapi_ok\":$lo,\"last_alert_age_s\":$last_age,\"acq_verdict\":\"$acq_verdict\",\"acq_sources\":$acq_n,\"acq_reads\":$acq_r,\"acq_parsed\":$acq_p,\"acq_unparsed\":$acq_u,\"acq_pour\":$acq_po,\"acq_whitelisted\":$acq_w,\"acq_reads_delta\":$acq_dr,\"acq_parsed_delta\":$acq_dp,\"acq_unparsed_delta\":$acq_du,\"acq_pour_delta\":$acq_dpo,\"acq_whitelisted_delta\":$acq_dw,\"acq_counters_reset\":$acq_reset,\"acq_frozen_sources\":$acq_frozen,\"acquisition\":$acq_detail}"
 # PAS de dedup (event.dedup est UNIQUE) -> chaque battement S'INSÈRE -> MAX(ts) avance -> heartbeat vivant.
@@ -301,7 +357,10 @@ fi
 # une clé prise sur le détail changerait à chaque passage et la dédup horaire ne tiendrait plus (une
 # alerte de couverture par passage). La matière de la clé est donc le verdict et la cause seuls ; le
 # central garde le détail du PREMIER aveu de l'heure, le battement porte les comptes du passage.
-if [ "$acq_refus" -eq 1 ]; then
+if [ "$acq_verdict" = tout_en_liste_blanche ]; then
+  plume_lecture_partielle crowdsec "$acq_cause" "acquisition CrowdSec : tout_en_liste_blanche (sources : $acq_n, lignes analysees : $( [ "$acq_dp" -ge 0 ] && echo "$acq_dp" || echo "$acq_p"), en liste blanche : $( [ "$acq_dw" -ge 0 ] && echo "$acq_dw" || echo "$acq_w"), versees aux scenarios : 0). Toutes les lignes analysees sont ecartees par la liste blanche ; cause probable : l'adresse cliente que CrowdSec lit est privee (celle d'un mandataire ou d'un tunnel) et la liste blanche des adresses privees l'ecarte. Aucune ligne n'atteint les scenarios ; l'absence d'alerte ne peut PAS etre conclue." \
+    "crowdsec acquisition $acq_verdict $acq_cause"
+elif [ "$acq_refus" -eq 1 ]; then
   plume_lecture_partielle crowdsec "$acq_cause" "acquisition CrowdSec : $acq_verdict (sources : $acq_n, lignes lues depuis le passage precedent : $acq_dr, analysees : $acq_dp). Aucune ligne n'atteint les scenarios ; l'absence d'alerte ne peut PAS etre conclue." \
     "crowdsec acquisition $acq_verdict $acq_cause"
 fi

@@ -36,8 +36,11 @@ répertoire temporaire. Les scénarios, chacun en un ou deux passages qui partag
                        détail), les différences totales la comptent : `lit`, pas `aucune_lecture` ;
   · une source lit sans analyser parmi d'autres qui analysent — `lit`, et elle n'est PAS nommée
                        figée (elle lit) ; sur tout refus, `acq_frozen_sources` reste vide ;
-  · liste blanche    — lignes lues, aucune analysée mais toutes en liste blanche : `premier_passage`
-                       puis `lit`, jamais `aucune_analyse` ;
+  · liste blanche    — lignes lues, aucune analysée mais toutes en liste blanche : jamais
+                       `aucune_analyse`, et depuis `P10.32-k` jamais `lit` non plus — c'est
+                       `tout_en_liste_blanche`, un refus (cause `forme_inconnue`), sur deux passages ;
+                       les échantillons « sains » portent une part en liste blanche SOUS le seuil
+                       (les verdicts de liste blanche sont éprouvés par la garde de `P10.32-k`) ;
   · état impossible à poser — répertoire d'état sous un fichier : battement présent, aveu
                        `etat/acquisition` ;
   · clé stable       — `aucune_analyse` répété sur un état figé (lignes lues qui grandissent) : même
@@ -121,29 +124,31 @@ def acq(d):
     return json.dumps({"acquisition": d})
 
 
-M1 = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 880},
-          S_OLD: {"reads": 50, "parsed": 40, "unparsed": 10, "whitelisted": 40}})
-M2 = acq({S_A: {"reads": 1300, "parsed": 1150, "unparsed": 150, "pour": 9, "whitelisted": 1120},
-          S_OLD: {"reads": 50, "parsed": 40, "unparsed": 10, "whitelisted": 40}})
+# P10.32-k : les parts en liste blanche des échantillons sains restent SOUS le seuil par défaut du capteur
+# (`surtout_liste_blanche`) — un échantillon où presque tout part en liste blanche n'est pas « sain ».
+M1 = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 88},
+          S_OLD: {"reads": 50, "parsed": 40, "unparsed": 10, "whitelisted": 4}})
+M2 = acq({S_A: {"reads": 1300, "parsed": 1150, "unparsed": 150, "pour": 9, "whitelisted": 112},
+          S_OLD: {"reads": 50, "parsed": 40, "unparsed": 10, "whitelisted": 4}})
 M_RESTART = acq({S_NEW: {"reads": 30, "parsed": 25, "unparsed": 5, "pour": 1, "whitelisted": 20},
                  S_A: {"reads": 12, "parsed": 10, "unparsed": 2, "whitelisted": 9}})
 M_ZERO = acq({S_A: {"reads": 0, "parsed": 0, "unparsed": 0, "whitelisted": 0}})
-M1_NEUVE_VIDE = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 880},
-                     S_OLD: {"reads": 50, "parsed": 40, "unparsed": 10, "whitelisted": 40},
+M1_NEUVE_VIDE = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 88},
+                     S_OLD: {"reads": 50, "parsed": 40, "unparsed": 10, "whitelisted": 4},
                      S_NEW: {"reads": 0}})
 M_NON_ANALYSE1 = acq({S_A: {"reads": 500, "unparsed": 500}})
 M_NON_ANALYSE2 = acq({S_A: {"reads": 800, "unparsed": 800}})
-M_A_ANALYSE = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 880}})
-M_A_SANS_ANALYSE = acq({S_A: {"reads": 1200, "parsed": 900, "unparsed": 300, "pour": 7, "whitelisted": 880}})
+M_A_ANALYSE = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 88}})
+M_A_SANS_ANALYSE = acq({S_A: {"reads": 1200, "parsed": 900, "unparsed": 300, "pour": 7, "whitelisted": 88}})
 
 
 M_WL1 = acq({S_A: {"reads": 100, "whitelisted": 100}})
 M_WL2 = acq({S_A: {"reads": 200, "whitelisted": 200}})
-M_DEUX_SOURCES1 = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "whitelisted": 880},
+M_DEUX_SOURCES1 = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "whitelisted": 88},
                        S_NEW: {"reads": 60, "unparsed": 60}})
-M_DEUX_SOURCES2 = acq({S_A: {"reads": 1100, "parsed": 990, "unparsed": 110, "whitelisted": 960},
+M_DEUX_SOURCES2 = acq({S_A: {"reads": 1100, "parsed": 990, "unparsed": 110, "whitelisted": 96},
                        S_NEW: {"reads": 90, "unparsed": 90}})
-M_A_SANS_ANALYSE_BIS = acq({S_A: {"reads": 1500, "parsed": 900, "unparsed": 600, "pour": 7, "whitelisted": 880}})
+M_A_SANS_ANALYSE_BIS = acq({S_A: {"reads": 1500, "parsed": 900, "unparsed": 600, "pour": 7, "whitelisted": 88}})
 
 
 def source_p(i):
@@ -375,11 +380,11 @@ def main():
             egal(s + "/1", f, "acq_parsed", 940)
             egal(s + "/1", f, "acq_unparsed", 110)
             egal(s + "/1", f, "acq_pour", 7)
-            egal(s + "/1", f, "acq_whitelisted", 920)
+            egal(s + "/1", f, "acq_whitelisted", 92)
             for k in ("reads", "parsed", "unparsed", "pour", "whitelisted"):
                 egal(s + "/1", f, f"acq_{k}_delta", -1)
             a = detail_de(f, S_A)
-            att = {"source": S_A, "reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 880,
+            att = {"source": S_A, "reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 88,
                    "reads_delta": -1, "parsed_delta": -1, "unparsed_delta": -1, "pour_delta": -1,
                    "whitelisted_delta": -1}
             if a != att:
@@ -395,22 +400,22 @@ def main():
             egal(s + "/2", f, "acq_parsed", 1190)
             egal(s + "/2", f, "acq_unparsed", 160)
             egal(s + "/2", f, "acq_pour", 9)
-            egal(s + "/2", f, "acq_whitelisted", 1160)
+            egal(s + "/2", f, "acq_whitelisted", 116)
             egal(s + "/2", f, "acq_reads_delta", 300)
             egal(s + "/2", f, "acq_parsed_delta", 250)
             egal(s + "/2", f, "acq_unparsed_delta", 50)
             egal(s + "/2", f, "acq_pour_delta", 2)
-            egal(s + "/2", f, "acq_whitelisted_delta", 240)
+            egal(s + "/2", f, "acq_whitelisted_delta", 24)
             egal(s + "/2", f, "acq_counters_reset", False)
             egal(s + "/2", f, "acq_frozen_sources", [S_OLD])
             a = detail_de(f, S_A)
-            att = {"source": S_A, "reads": 1300, "parsed": 1150, "unparsed": 150, "pour": 9, "whitelisted": 1120,
+            att = {"source": S_A, "reads": 1300, "parsed": 1150, "unparsed": 150, "pour": 9, "whitelisted": 112,
                    "reads_delta": 300, "parsed_delta": 250, "unparsed_delta": 50, "pour_delta": 2,
-                   "whitelisted_delta": 240}
+                   "whitelisted_delta": 24}
             if a != att:
                 faute(s + "/2", f"détail par source faux pour {S_A} : {a}, attendu {att}")
             o = detail_de(f, S_OLD)
-            att = {"source": S_OLD, "reads": 50, "parsed": 40, "unparsed": 10, "pour": 0, "whitelisted": 40,
+            att = {"source": S_OLD, "reads": 50, "parsed": 40, "unparsed": 10, "pour": 0, "whitelisted": 4,
                    "reads_delta": 0, "parsed_delta": 0, "unparsed_delta": 0, "pour_delta": 0,
                    "whitelisted_delta": 0}
             if o != att:
@@ -548,18 +553,21 @@ def main():
                 faute(s, f"détail de la source non analysée faux : {n}")
 
         # 3 septies) lignes lues, aucune analysée MAIS écartées par liste blanche : elles ont atteint
-        # l'analyse, ce n'est pas `aucune_analyse` — au premier passage puis sur l'intervalle.
+        # l'analyse, ce n'est pas `aucune_analyse` ; et rien n'atteint les scénarios, ce n'est pas `lit`
+        # non plus (`P10.32-k`) : `tout_en_liste_blanche`, un refus qui n'avance pas l'état — deux passages.
         s = "liste_blanche_sans_analyse"
         d = bac.scenario()
         r, evs = bac.passage(d, M_WL1)
         hb = battement(s + "/1", r, evs, declares)
         if hb:
-            attendre_sans_refus(s + "/1", hb, evs, "premier_passage")
+            attendre_refus(s + "/1", hb, evs, "tout_en_liste_blanche", "forme_inconnue")
         r, evs = bac.passage(d, M_WL2)
         hb = battement(s + "/2", r, evs, declares)
         if hb:
-            attendre_sans_refus(s + "/2", hb, evs, "lit")
-            egal(s + "/2", hb["fields"], "acq_whitelisted_delta", 100)
+            attendre_refus(s + "/2", hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+            egal(s + "/2", hb["fields"], "acq_whitelisted", 200)
+        if bac.etat(d) is not None:
+            faute(s, f"état posé sur un refus de liste blanche : {bac.etat(d)!r}")
 
         # 3 octies) état impossible à poser (répertoire d'état sous un FICHIER : `mktemp` échoue, même
         # pour root) : le battement part, la lecture est dite, et l'échec de l'état est AVOUÉ.

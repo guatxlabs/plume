@@ -43,6 +43,7 @@ Principe : *moteur générique + spécifique-infra en CONFIG, jamais en dur* ; c
 | `PLUME_POD_LOG_SKIP` | pods exclus de `pod-logs` (déjà couverts par un collecteur dédié) — liste `\|` | `mailserver` |
 | `PLUME_POD_LOG_FILTER` | regex des lignes pod retenues (erreurs + auth) | `error\|fail\|denied\|…\|authenticated\|…` |
 | `PLUME_CROWDSEC_NS` / `PLUME_CROWDSEC_LAPI` | namespace / pod LAPI CrowdSec | `crowdsec` |
+| `PLUME_CROWDSEC_WHITELIST_SHARE_MAX` | seuil, en pour cent des lignes analysées, à partir duquel le battement CrowdSec dit `surtout_liste_blanche` (sévérité 2, cause probable nommée : adresse cliente = relais d'un mandataire) ; entier de 1 à 100, une autre valeur retombe sur le défaut et le dit (`unreadable-config`) | `90` |
 | `PLUME_CONNTRACK_SCOPE` | portées conntrack collectées (`external internal loopback`) | toutes |
 | `PLUME_LOCKDOWN_IFACE` / `PLUME_LOCKDOWN_PORTS` | contrôle docker-lan-lockdown (laptop wifi) | `wlan0` (n/a si absent) |
 | `PLUME_MAIL_F2B` / `PLUME_MAIL_SKIP_IP` | collecteur mail (docker-mailserver) | — |

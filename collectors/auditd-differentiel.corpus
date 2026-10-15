@@ -1,0 +1,66 @@
+# Corpus DIFFÉRENTIEL de collectors/auditd.sh (P10.32-k). Lu par .github/scripts/check_a_live_sensor_never_reads_as_mute_or_calm.py.
+# Les lignes qui commencent par `#` sont retirées avant d'écrire le journal simulé ; tout le reste est écrit tel quel.
+# Chaque enregistrement a la FORME qu'écrit auditd (`type=… msg=audit(<s>.<ms>:<série>): …`) ; noms, chemins et adresses
+# sont d'exemple (adresse RFC 5737). Le fichier `auditd-differentiel.attendu.json` porte la sortie que l'ANCIENNE
+# construction (boucle shell par événement) rendait sur ce corpus : la nouvelle doit la rendre à l'octet près.
+# DÉFAUT HÉRITÉ, FIGÉ ICI À DESSEIN : dans un enregistrement SYSCALL, `val("uid")` prend la première sous-chaîne `uid=`,
+# qui est celle de `auid=` — le champ `uid` des événements exec et tamper y vaut donc l'auid. L'attendu le reproduit
+# (identité ancienne/nouvelle) ; le corriger relève de sa propre clé et changera cet attendu.
+#
+# exec réussi d'une session utilisateur (execve 64 bits), avec ses enregistrements compagnons
+type=SYSCALL msg=audit(1758650000.101:5001): arch=c000003e syscall=59 success=yes exit=0 a0=55d0 a1=55d1 a2=55d2 a3=0 items=2 ppid=900 pid=901 auid=1000 uid=1002 gid=1002 euid=1002 suid=1002 fsuid=1002 egid=1002 sgid=1002 fsgid=1002 tty=pts0 ses=3 comm="ls" exe="/usr/bin/ls" subj=unconfined key="exec_tracking"
+type=EXECVE msg=audit(1758650000.101:5001): argc=2 a0="ls" a1="-l"
+type=CWD msg=audit(1758650000.101:5001): cwd="/home/exemple"
+type=PATH msg=audit(1758650000.101:5001): item=0 name="/usr/bin/ls" inode=1201 dev=fd:00 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+type=PATH msg=audit(1758650000.101:5001): item=1 name="/lib64/ld-linux-x86-64.so.2" inode=1202 dev=fd:00 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+type=PROCTITLE msg=audit(1758650000.101:5001): proctitle=6C73002D6C
+# exec ÉCHOUÉ
+type=SYSCALL msg=audit(1758650000.202:5002): arch=c000003e syscall=59 success=no exit=-2 a0=55e0 a1=55e1 a2=55e2 a3=0 items=1 ppid=900 pid=902 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="bash" exe="/usr/bin/bash" subj=unconfined key="exec_tracking"
+# exec d'un compte de SERVICE (auid non défini, clé svc_exec)
+type=SYSCALL msg=audit(1758650000.303:5003): arch=c000003e syscall=59 success=yes exit=0 a0=55f0 a1=55f1 a2=55f2 a3=0 items=2 ppid=700 pid=703 auid=4294967295 uid=33 gid=33 euid=33 suid=33 fsuid=33 egid=33 sgid=33 fsgid=33 tty=(none) ses=4294967295 comm="sh" exe="/usr/bin/dash" subj=unconfined key="svc_exec"
+# execveat (322), clé d'escalade de privilège
+type=SYSCALL msg=audit(1758650000.404:5004): arch=c000003e syscall=322 success=yes exit=0 a0=3 a1=5600 a2=5601 a3=5602 items=2 ppid=900 pid=904 auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=3 comm="sudo" exe="/usr/bin/sudo" subj=unconfined key="priv_esc"
+# exec sans clé
+type=SYSCALL msg=audit(1758650000.505:5005): arch=c000003e syscall=59 success=yes exit=0 a0=5610 a1=5611 a2=5612 a3=0 items=2 ppid=1 pid=905 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=1 comm="date" exe="/usr/bin/date" subj=unconfined key=(null)
+# candidats au filtre EXEC-DROP : palier 1 (date), palier 2 (grep), hors préfixe standard, autre auid, échec, svc_exec
+type=SYSCALL msg=audit(1758650000.606:5006): arch=c000003e syscall=59 success=yes exit=0 a0=5620 a1=5621 a2=5622 a3=0 items=2 ppid=900 pid=906 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="date" exe="/usr/bin/date" subj=unconfined key="exec_tracking"
+type=SYSCALL msg=audit(1758650000.707:5007): arch=c000003e syscall=59 success=yes exit=0 a0=5630 a1=5631 a2=5632 a3=0 items=2 ppid=900 pid=907 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=3 comm="grep" exe="/usr/bin/grep" subj=unconfined key="exec_tracking"
+type=SYSCALL msg=audit(1758650000.808:5008): arch=c000003e syscall=59 success=yes exit=0 a0=5640 a1=5641 a2=5642 a3=0 items=2 ppid=900 pid=908 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="date" exe="/tmp/date" subj=unconfined key="exec_tracking"
+type=SYSCALL msg=audit(1758650000.909:5009): arch=c000003e syscall=59 success=yes exit=0 a0=5650 a1=5651 a2=5652 a3=0 items=2 ppid=900 pid=909 auid=1001 uid=1001 gid=1001 euid=1001 suid=1001 fsuid=1001 egid=1001 sgid=1001 fsgid=1001 tty=pts1 ses=5 comm="date" exe="/usr/bin/date" subj=unconfined key="exec_tracking"
+type=SYSCALL msg=audit(1758650001.010:5010): arch=c000003e syscall=59 success=no exit=-13 a0=5660 a1=5661 a2=5662 a3=0 items=1 ppid=900 pid=910 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="sort" exe="/usr/bin/sort" subj=unconfined key="exec_tracking"
+type=SYSCALL msg=audit(1758650001.020:5011): arch=c000003e syscall=59 success=yes exit=0 a0=5670 a1=5671 a2=5672 a3=0 items=2 ppid=700 pid=911 auid=4294967295 uid=33 gid=33 euid=33 suid=33 fsuid=33 egid=33 sgid=33 fsgid=33 tty=(none) ses=4294967295 comm="sleep" exe="/usr/bin/sleep" subj=unconfined key="svc_exec"
+# exec d'un compte de service SANS svc_exec (écarté par PLUME_AUDIT_REAL_USER_ONLY=1)
+type=SYSCALL msg=audit(1758650001.030:5012): arch=c000003e syscall=59 success=yes exit=0 a0=5680 a1=5681 a2=5682 a3=0 items=2 ppid=1 pid=912 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="cron" exe="/usr/sbin/cron" subj=unconfined key="exec_tracking"
+# authentification ÉCHOUÉE : adresse IPv4 (portée en src_ip), puis adresse inconnue (pas de src_ip), puis un succès (ignoré)
+type=USER_AUTH msg=audit(1758650001.111:5101): pid=1200 uid=0 auid=4294967295 ses=4294967295 subj=unconfined msg='op=PAM:authentication grantors=? acct="exemple" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=ssh res=failed'
+type=USER_AUTH msg=audit(1758650001.122:5102): pid=1201 uid=0 auid=1000 ses=3 subj=unconfined msg='op=PAM:authentication grantors=? acct="exemple" exe="/usr/bin/su" hostname=? addr=? terminal=/dev/pts/0 res=failed'
+type=USER_AUTH msg=audit(1758650001.133:5103): pid=1202 uid=0 auid=1000 ses=3 subj=unconfined msg='op=PAM:authentication grantors=pam_unix acct="exemple" exe="/usr/bin/sudo" hostname=? addr=? terminal=/dev/pts/0 res=success'
+# gestion des COMPTES
+type=ADD_USER msg=audit(1758650002.222:5201): pid=1300 uid=0 auid=1000 ses=3 subj=unconfined msg='op=adding user id=1003 exe="/usr/sbin/useradd" acct="nouveau" hostname=? addr=? terminal=pts/0 res=success'
+type=ADD_GROUP msg=audit(1758650002.233:5202): pid=1300 uid=0 auid=1000 ses=3 subj=unconfined msg='op=adding group id=1003 exe="/usr/sbin/useradd" acct="nouveau" hostname=? addr=? terminal=pts/0 res=success'
+type=USER_CHAUTHTOK msg=audit(1758650002.244:5203): pid=1301 uid=0 auid=1000 ses=3 subj=unconfined msg='op=PAM:chauthtok grantors=pam_unix acct="nouveau" exe="/usr/bin/passwd" hostname=? addr=? terminal=pts/0 res=success'
+type=USER_MGMT msg=audit(1758650002.255:5204): pid=1302 uid=0 auid=1000 ses=3 subj=unconfined msg='op=changing-shell acct="nouveau" exe="/usr/bin/chsh" hostname=? addr=? terminal=pts/0 res=success'
+type=DEL_USER msg=audit(1758650002.266:5205): pid=1303 uid=0 auid=1000 ses=3 subj=unconfined msg='op=deleting user acct="nouveau" exe="/usr/sbin/userdel" hostname=? addr=? terminal=pts/0 res=success'
+# TAMPER : écriture sous /etc (répertoire parent puis cible)
+type=SYSCALL msg=audit(1758650003.333:5301): arch=c000003e syscall=257 success=yes exit=3 a0=ffffff9c a1=5700 a2=241 a3=1b6 items=2 ppid=900 pid=1401 auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=3 comm="vi" exe="/usr/bin/vim.basic" subj=unconfined key="plume_etc"
+type=CWD msg=audit(1758650003.333:5301): cwd="/root"
+type=PATH msg=audit(1758650003.333:5301): item=0 name="/etc/" inode=2 dev=fd:00 mode=040755 ouid=0 ogid=0 rdev=00:00 nametype=PARENT cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+type=PATH msg=audit(1758650003.333:5301): item=1 name="/etc/hosts" inode=3 dev=fd:00 mode=0100644 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+type=PROCTITLE msg=audit(1758650003.333:5301): proctitle=7669002F6574632F686F737473
+# TAMPER : renommage du fichier shadow (sévérité 4)
+type=SYSCALL msg=audit(1758650003.444:5302): arch=c000003e syscall=82 success=yes exit=0 a0=5710 a1=5711 a2=0 a3=0 items=4 ppid=900 pid=1402 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=1 comm="usermod" exe="/usr/sbin/usermod" subj=unconfined key="shadow_changes"
+type=PATH msg=audit(1758650003.444:5302): item=0 name="/etc/" inode=2 dev=fd:00 mode=040755 ouid=0 ogid=0 rdev=00:00 nametype=PARENT cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+type=PATH msg=audit(1758650003.444:5302): item=1 name="/etc/" inode=2 dev=fd:00 mode=040755 ouid=0 ogid=0 rdev=00:00 nametype=PARENT cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+type=PATH msg=audit(1758650003.444:5302): item=2 name="/etc/nshadow" inode=11 dev=fd:00 mode=0100640 ouid=0 ogid=42 rdev=00:00 nametype=DELETE cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+type=PATH msg=audit(1758650003.444:5302): item=3 name="/etc/shadow" inode=12 dev=fd:00 mode=0100640 ouid=0 ogid=42 rdev=00:00 nametype=CREATE cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+# TAMPER ÉCHOUÉ sans enregistrement PATH (chemin inconnu)
+type=SYSCALL msg=audit(1758650003.555:5303): arch=c000003e syscall=268 success=no exit=-1 a0=ffffff9c a1=5720 a2=1ff a3=0 items=0 ppid=900 pid=1403 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="chmod" exe="/usr/bin/chmod" subj=unconfined key="sudoers"
+# TAMPER : numéro d'appel système hors de la table (rendu tel quel)
+type=SYSCALL msg=audit(1758650003.666:5304): arch=c000003e syscall=999 success=yes exit=0 a0=0 a1=0 a2=0 a3=0 items=1 ppid=900 pid=1404 auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=3 comm="outil" exe="/usr/local/bin/outil" subj=unconfined key="plume_persist"
+type=PATH msg=audit(1758650003.666:5304): item=0 name="/etc/ld.so.preload" inode=13 dev=fd:00 mode=0100644 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+# exec sur une clé de WATCH : un même événement noyau donne un exec ET un tamper
+type=SYSCALL msg=audit(1758650003.777:5305): arch=c000003e syscall=59 success=yes exit=0 a0=5730 a1=5731 a2=5732 a3=0 items=2 ppid=900 pid=1405 auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=3 comm="crontab" exe="/usr/bin/crontab" subj=unconfined key="plume_persist"
+type=PATH msg=audit(1758650003.777:5305): item=0 name="/usr/bin/crontab" inode=14 dev=fd:00 mode=0102755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0
+# enregistrements sans intérêt pour le capteur
+type=SERVICE_START msg=audit(1758650004.888:5401): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=unconfined msg='unit=cron comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+type=CRED_DISP msg=audit(1758650004.999:5402): pid=1202 uid=0 auid=1000 ses=3 subj=unconfined msg='op=PAM:setcred grantors=pam_unix acct="root" exe="/usr/bin/sudo" hostname=? addr=? terminal=/dev/pts/0 res=success'

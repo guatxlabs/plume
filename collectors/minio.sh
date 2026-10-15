@@ -19,10 +19,15 @@ if [ -n "$ALIAS" ] && command -v mc >/dev/null 2>&1; then
 else
   KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
   command -v "${KC%% *}" >/dev/null 2>&1 || plume_unavailable minio missing-dependency "ni kubectl ni k3s sur cet hote"
-  POD=$($KC -n "$NS" get pod -l app.kubernetes.io/name=minio \
-        -o jsonpath='{range .items[*]}{.metadata.name} {.status.phase}{"\n"}{end}' 2>/dev/null \
-        | awk '$2=="Running"{print $1; exit}')
-  [ -z "${POD:-}" ] && plume_exit_nodata
+  # P10.32-k — « PAS DE POD MINIO » N'EST PAS « RIEN DE NEUF ». Le capteur sortait en silence quand la
+  # cible manquait ; deux causes distinctes se disent maintenant, chacune par son mot : l'API ne répond pas
+  # (`unreachable`), ou elle répond sans pod MinIO en marche dans l'espace de noms (`subsystem-absent`).
+  if ! pods=$($KC -n "$NS" get pod -l app.kubernetes.io/name=minio \
+        -o jsonpath='{range .items[*]}{.metadata.name} {.status.phase}{"\n"}{end}' 2>/dev/null); then
+    plume_unavailable minio unreachable "lecture des pods MinIO impossible ($KC -n $NS get pod) : API Kubernetes injoignable ou droits insuffisants"
+  fi
+  POD=$(printf '%s\n' "$pods" | awk '$2=="Running"{print $1; exit}')
+  [ -n "${POD:-}" ] || plume_unavailable minio subsystem-absent "aucun pod MinIO en marche dans l'espace de noms $NS (selecteur app.kubernetes.io/name=minio) : ni utilisateur ni bucket ne peuvent etre lus. En hote natif, posez PLUME_MINIO_ALIAS."
   A="local"; mc(){ $KC -n "$NS" exec "$POD" -- mc "$@"; }
 fi
 

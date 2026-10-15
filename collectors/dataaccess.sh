@@ -25,8 +25,40 @@ last=$(cat "$WM" 2>/dev/null || echo 0)
 # indistinguable d'un collecteur mort. On écrit donc un petit .json kind:events health À CHAQUE run, AVANT
 # toute sortie précoce et INDÉPENDAMMENT du parsing. PAS de dedup -> chaque battement S'INSÈRE -> MAX(ts)
 # avance -> heartbeat vivant. Silence > 25 min = alerte MUET (collecteur CONTINU dataaccess-health, main.rs).
+# P10.32-k — « ACTIF » NE SUFFIT PAS : LE BATTEMENT DIT QUELLES CLÉS D'AUDIT SONT CHARGÉES. Le gabarit livré
+# (`systemd/plume-audit.rules`) n'arme que `plume_etc` ; `plume_data` et `plume_creds` sont à compléter avec
+# les chemins de l'installation. Sans elles, ce capteur ne voit que /etc et se disait pourtant « actif ». Les
+# clés chargées sont lues dans `auditctl -l` (watch `-k <clé>` ou règle `key=<clé>`) ; si la lecture échoue,
+# elles sont dites INCONNUES, pas absentes. Quand aucune clé de données n'est chargée, c'est avoué par le
+# canal de couverture (`plume_report_availability`, donc `de-collector-unavailable`), une fois par heure.
+# PAS `plume_lecture_partielle` : son texte fixe dit que le marqueur N'AVANCE PAS et que la tranche sera
+# relue — ici la lecture du journal est entière et le filigrane avance normalement ; ce qui manque est une
+# règle du noyau, et rien ne sera relu. LE PRIX, DIT : sur une installation qui garde le gabarit livré tel
+# quel, cet aveu part à chaque heure — c'est exact, ce capteur n'y voit aucun accès aux données.
+da_regles=""; da_cles_lues=0
+if command -v auditctl >/dev/null 2>&1 && da_regles=$(auditctl -l 2>/dev/null); then da_cles_lues=1; fi
+da_chargees=""; da_absentes=""
+for _k in plume_data plume_creds plume_etc; do
+  if printf '%s\n' "$da_regles" | grep -qE "(-k |key=)$_k( |\$)"; then da_chargees="$da_chargees $_k"; else da_absentes="$da_absentes $_k"; fi
+done
+da_chargees=${da_chargees# }; da_absentes=${da_absentes# }
+da_sev=0
+if [ "$da_cles_lues" -eq 0 ]; then
+  da_msg="dataaccess santé: collecteur actif — clés d'audit chargées INCONNUES (auditctl absent ou refusé)"
+else
+  case " $da_chargees " in
+    *" plume_data "*|*" plume_creds "*) da_msg="dataaccess santé: collecteur actif — clés d'audit chargées : ${da_chargees}${da_absentes:+ ; absentes : $da_absentes}" ;;
+    *) da_sev=1
+       da_msg="dataaccess santé: collecteur PARTIEL — clés d'audit chargées : ${da_chargees:-aucune} ; clés de données absentes : plume_data plume_creds, aucun accès aux données n'est observé" ;;
+  esac
+fi
 spool_write "dataaccess-health-$ts.json" \
-  "$(emit_event "$(heartbeat dataaccess 'dataaccess santé: collecteur actif' '{"alive":1}')")" nl
+  "$(emit_event "$(heartbeat dataaccess "$da_msg" '{"alive":1}' "$da_sev")")" nl
+if [ "$da_cles_lues" -eq 1 ] && [ "$da_sev" -eq 1 ]; then
+  plume_report_availability dataaccess unavailable missing-source \
+    "REGLES D'AUDIT DES CLES DE DONNEES ABSENTES (plume_data, plume_creds ; chargees : ${da_chargees:-aucune}) : le journal est lu en entier et le filigrane avance, mais seuls les acces sous les watches chargees sont observes — aucun acces aux donnees ne l'est. Completez systemd/plume-audit.rules avec les repertoires de donnees de l'installation, puis rechargez avec plume-audit-rules-load.sh." \
+    2 "dataaccess cles de donnees absentes" 2>/dev/null || true
+fi
 
 ids=$(mktemp); rec=$(mktemp); syscalls=$(mktemp)
 trap 'rm -f "$ids" "$rec" "$syscalls"' EXIT

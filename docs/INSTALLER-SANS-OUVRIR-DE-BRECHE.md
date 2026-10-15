@@ -50,7 +50,11 @@ la base si elle manque,
 avec la seule clé déjà posée (`PLUME_DB_KEY`, `PLUME_DB_KEY_FILE` ou un fichier de clé déjà engendré).
 Sans aucune, la base naît **en clair**. Le démarrage suivant la trouve existante, sans clé, et n'y
 touche pas : elle reste en clair, et le démarrage ne le refuse pas, jusqu'au geste
-`plume-daemon chiffrer-au-repos`.
+`plume-daemon chiffrer-au-repos`. Que la sous-commande refuse elle-même une base absente est une clé
+ouverte côté démon (`P10.33-g`) : d'ici là, l'ordre ci-dessous est la seule protection. Deux
+sous-commandes de lecture ne font pas naître de base : `verify` ouvre en lecture seule et ne crée rien ;
+`ledger-export` crée au plus un fichier vide, que le démarrage suivant traite encore comme une base
+neuve.
 
 L'ordre sûr, dans les trois modes : installer, **démarrer le démon une fois** — `bootstrap.sh` le fait
 en fin d'installation, `docker compose up -d`, `kubectl apply` —, vérifier que la clé existe
@@ -94,11 +98,14 @@ ne collecte rien (et le dit).
 5. **Choisir l'exposition.** Par défaut rien ne sort de la boucle locale. Pour le réseau, deux voies :
    - **un mandataire TLS devant** (Caddy, nginx, Traefik — exemples dans
      [`../deploy/CONFIDENTIALITE.md`](../deploy/CONFIDENTIALITE.md)), le démon restant sur `127.0.0.1` ;
-     posez `PLUME_HOST` sur le nom servi et `PLUME_TRUSTED_PROXIES` sur l'adresse exacte du mandataire ;
+     posez `PLUME_HOST` sur le nom servi, `PLUME_TRUSTED_PROXIES` sur l'adresse exacte du mandataire, et
+     `PLUME_TLS_TERMINATED_UPSTREAM=1` dans `/etc/plume/soc.conf` si le mandataire ne sert ce nom qu'en
+     HTTPS (§6.2) ;
    - **le TLS natif** : `PLUME_TLS_CERT` et `PLUME_TLS_KEY` (chemins PEM lisibles par l'utilisateur
      `soc`), `PLUME_ADDR` sur l'interface voulue, `PLUME_HOST` sur le nom du certificat. L'unité du démon
      n'a **aucune capacité** : choisissez un port au-dessus de 1024. Un certificat illisible **arrête** le
-     démon au lieu de le faire retomber en HTTP, et l'en-tête HSTS n'est émis qu'avec ce TLS actif.
+     démon au lieu de le faire retomber en HTTP. Avec ce TLS actif, le démon pose HSTS et l'attribut
+     `Secure` de ses cookies.
 6. **Prouver** :
    ```sh
    systemctl is-active plume-daemon                 # active
@@ -153,7 +160,9 @@ ne collecte rien (et le dit).
    nom que ceux de `PLUME_HOST` ou que la boucle locale reçoit `421`.
    - **un mandataire TLS devant**, sur l'hôte : la ligne `ports:` reste `127.0.0.1:7000:7000`, le
      mandataire vise `http://127.0.0.1:7000`. `PLUME_TRUSTED_PROXIES` n'est pas énumérée par le service :
-     le démon garde son défaut, qui fait confiance aux pairs privés et de boucle locale ;
+     le démon garde son défaut, qui fait confiance aux pairs privés et de boucle locale.
+     `PLUME_TLS_TERMINATED_UPSTREAM`, elle, l'est : posez-la à `1` dans `.env` si le mandataire ne sert
+     ce nom qu'en HTTPS (§6.2) ;
    - **le TLS natif** : `PLUME_TLS_CERT` et `PLUME_TLS_KEY` sont **énumérées** dans le bloc
      `environment:` (sans quoi `.env` ne servirait à rien) ; décommentez le montage
      `./tls:/etc/plume/tls:ro` et posez des chemins **du conteneur**, la clé lisible par l'utilisateur
@@ -248,7 +257,8 @@ ce drop-in : ils n'ont que le bac à sable de leur propre unité.
 La colonne **Preuve** donne la requête qui montre que la source remonte. ♥ marque un capteur qui émet un
 **battement** (`category=health`) à chaque passage, même quand la source est calme : son silence est
 alors anormal. Deux le font seulement après une lecture : `auditd` (aucun battement quand le journal
-d'audit n'a pas grandi) et `web` (aucun quand le journal d'accès est vide). Pour les capteurs sans ♥,
+d'audit n'a pas grandi) et `web` (aucun quand le passage n'a lu aucune requête neuve : journal vide,
+ou figé parce que Traefik n'écrit plus). Pour les capteurs sans ♥,
 une source calme ne produit rien, et la preuve est de jouer le capteur à la main (code de sortie 0, puis
 fichier dans `/var/lib/plume/spool/`), comme le fait le
 [`README`](../README.md#de-bout-en-bout-sans-rien-supposer-de-connu) pour `custom`.
@@ -287,12 +297,12 @@ fichier dans `/var/lib/plume/spool/`), comme le fait le
 | `collector-syslog` | UDP/TCP 514 | **utilisateur `soc`**, seule capacité `CAP_NET_BIND_SERVICE` | lignes syslog d'équipements (FortiGate, générique) | syslog n'est authentifié par **rien** (§5) | `search source=fortigate \| stats count` |
 | `minio-audit-relay.py` (`minio-audit`) | webhook d'audit MinIO | **utilisateur `soc`** | seau, objet, opération, clé d'accès, adresse | refuse de démarrer sans jeton (§5) | `search source=minio-audit \| stats count` |
 | `minio` | `mc` | root ; **kubeconfig** | politiques, seaux publics, utilisateurs | — | `search source=minio \| stats count by kind` |
-| `dataaccess` | règles d'audit d'accès | root, capacités bornées à `CAP_AUDIT_READ CAP_DAC_READ_SEARCH` | utilisateur, action, chemin | — | `search source=dataaccess category=health \| table ts, message` ♥ |
+| `dataaccess` | règles d'audit d'accès | root, capacités bornées à `CAP_AUDIT_READ CAP_DAC_READ_SEARCH` | utilisateur, action, chemin | sans `CAP_AUDIT_CONTROL`, `auditctl -l` lui est refusé : le battement nomme les clés **prouvées par le journal** (chargement ou accès depuis le dernier démarrage d'`auditd`), et dit « couverture INCONNUE » (sévérité 1) quand ni `plume_data` ni `plume_creds` n'y est prouvée | `search source=dataaccess category=health \| table ts, message` ♥ |
 | `dataacl` | droits des chemins surveillés | root, capacités bornées à `CAP_DAC_READ_SEARCH` | propriétaire, mode, risque | — | `search source=dataacl \| stats count` |
 | `cloudflare` · `cloudflare-http` | API GraphQL de Cloudflare · `curl`, `jq` | root, lit `/etc/plume/cloudflare.conf` | événements WAF, requêtes 4xx/5xx vues au bord | jeton en lecture seule sur la zone | `search source=cloudflare-http \| stats count` |
-| `prom-scrape` | vos cibles `/metrics` | root, lit `/etc/plume/prom.conf` | séries → `metric` | une cible authentifiée par paramètre d'URL expose ce paramètre | `metric <une de vos séries> \| timechart avg(value)` |
+| `prom-scrape` | vos cibles `/metrics` | root, lit `/etc/plume/prom.conf` | séries → `metric` | une cible authentifiée par paramètre d'URL expose ce paramètre ; refuse le clair distant vers le central (§5) | `metric <une de vos séries> \| timechart avg(value)` |
 | `custom` | votre `CMD`, en root | root | une ligne de sortie = un événement | `/etc/plume/inputs.d` **doit** être `0700 root` : y écrire, c'est exécuter en root | `search source=<SOURCE> \| stats count` |
-| `respond`, `engagement-adapter`, `backup` | *(pas des capteurs : ils agissent ou sauvegardent)* | `respond` du central (`plume-daemon respond`) : root, capacités bornées à `CAP_NET_ADMIN CAP_KILL` ; `respond` d'agent (`respond.sh`) et `engagement-adapter` : root ; `backup` : `soc` | résultats d'actions | le responder d'agent agit en root sans borne : dry-run par défaut | — |
+| `respond`, `engagement-adapter`, `backup` | *(pas des capteurs : ils agissent ou sauvegardent)* | `respond` du central (`plume-daemon respond`) : root, capacités bornées à `CAP_NET_ADMIN CAP_KILL` ; `respond` d'agent (`respond.sh`) et `engagement-adapter` : root ; `backup` : `soc` | résultats d'actions | le responder d'agent agit en root sans borne : dry-run par défaut ; `respond.sh` et `engagement-adapter` refusent le clair distant vers le central (§5) | — |
 | `windows/` | journaux Windows, pare-feu, Defender | tâche planifiée | voir [`../collectors/windows/README.md`](../collectors/windows/README.md) | — | `search source=windows-security \| stats count` |
 
 **Un capteur qui ne peut pas collecter le dit**, au lieu de se taire : un événement `category=config`,
@@ -316,13 +326,20 @@ search category=config reason=collection-capped | table ts, host, source, detail
 
 ## 5. Le transport
 
-- **`ship.sh` refuse le clair vers un hôte distant.** `PLUME_CENTRAL` en `http://` vers autre chose que
-  la boucle locale (`127.0.0.0/8`, `::1`, `localhost`) est **refusé** (code 2), et rien n'est expédié ni
-  évincé : le spool reste. `PLUME_SHIP_ALLOW_PLAINTEXT=1` l'accepte, avec un avertissement à chaque
-  passage — **le jeton et les événements passent alors lisibles sur le réseau**, et quiconque l'écoute
-  peut rejouer le jeton. Ne le posez que sur un lien déjà chiffré (tunnel) ou un réseau dont vous
-  répondez. Ce refus ne couvre que `ship.sh` : `respond.sh`, `prom-scrape.sh` et
-  `engagement-adapter.sh` ne refusent pas encore le clair.
+- **Les scripts qui parlent au central refusent le clair vers un hôte distant** : `ship.sh`,
+  `respond.sh`, `prom-scrape.sh` et `engagement-adapter.sh`. `PLUME_CENTRAL` en `http://` (ou sans
+  schéma) vers autre chose que la boucle locale (`127.0.0.0/8`, `::1`, `localhost`) est **refusé**,
+  code 2, avant tout appel au central : `ship.sh` n'expédie ni n'évince rien (le spool reste),
+  `respond.sh` ne récupère ni n'exécute aucune action, `prom-scrape.sh` ne scrape aucune cible,
+  `engagement-adapter.sh` révoque ses exemptions de ban pour ce cycle (son mode `revert-expired`
+  n'appelle pas le central et n'est pas concerné). `PLUME_SHIP_ALLOW_PLAINTEXT=1` l'accepte, avec un
+  avertissement à chaque passage — **le jeton passe alors lisible sur le réseau**, quiconque l'écoute
+  peut le rejouer, et un intermédiaire peut répondre à la place du central (des actions exécutées en
+  root par `respond.sh`, des exemptions posées par `engagement-adapter.sh`). Ne le posez que sur un lien
+  déjà chiffré (tunnel) ou un réseau dont vous répondez, et **dans le fichier d'environnement de chaque
+  unité** : chacune lit le sien (`plume.conf` pour `ship`, `responder.conf`, `prom.conf`,
+  `engagement-adapter.conf`). Le collecteur Windows (`plume-collector.ps1`) ne refuse pas encore le
+  clair.
 - **TLS côté agent** : `PLUME_TLS_CACERT` pour un central à autorité privée ; `PLUME_TLS_CERT` et
   `PLUME_TLS_KEY` pour un certificat client, si le mandataire du central l'exige. Le démon, lui, ne
   vérifie aucun certificat client : un mTLS obligatoire se pose sur le mandataire. Même nom de variable,
@@ -376,13 +393,31 @@ peut servir aussi l'entrée en clair (§2.4). Derrière tout mandataire, trois f
   l'adresse du mandataire : tous les clients partagent le même seau. Des échecs répétés contre le compte
   admin depuis l'extérieur verrouillent ce compte **pour tout le monde** derrière ce mandataire, le temps
   du *backoff* ;
-- **le cookie de session** n'est marqué `Secure` qu'avec le **TLS natif** : derrière un mandataire qui
-  termine le TLS, il ne l'est pas. Ne servez pas le même nom en clair, et posez HSTS sur le mandataire.
+- **le cookie de session et HSTS** : le démon pose l'attribut `Secure` sur ses cookies et l'en-tête HSTS
+  sur ses réponses avec le **TLS natif**, ou quand `PLUME_TLS_TERMINATED_UPSTREAM=1` lui dit qu'un
+  mandataire sert le HTTPS devant lui (« 1 » seul l'active ; vide par défaut). Il croit ce réglage sur
+  parole : il ne lit aucun en-tête du mandataire. `deploy/k3s.yaml` le pose à `1`, son `Ingress` ne
+  servant que `websecure` ; en hôte natif, il se pose dans `/etc/plume/soc.conf` ; en Docker, dans `.env`
+  (le service le transmet). Posé, un accès **direct** en HTTP au démon (tunnel, `port-forward`) perd son
+  cookie de session, et le démon le rappelle dans son journal au démarrage. Non posé derrière un
+  mandataire TLS, le cookie part sans `Secure` et sans HSTS : ne servez pas alors le même nom en clair.
 
-`PLUME_WEB_MAX` (défaut 10000) borne les lignes que le capteur `web` lit par passage. Un flot plus long
-entre deux passages fait sortir des lignes de la fenêtre **sans qu'elles soient comptées** : seul le
-battement le dit, d'une phrase qui porte la valeur en vigueur (« borne de lecture PLUME_WEB_MAX=10000
-atteinte » au défaut) : cherchez `PLUME_WEB_MAX=`. Montez-la si ce message revient.
+`PLUME_WEB_MAX` (défaut 10000) borne les lignes que le capteur `web` lit par passage. Ce qu'un flot plus
+long fait au-delà dépend de la source :
+
+- **`PLUME_WEB_SRC=file`** : le journal se lit par offset d'octets. Au-delà de la borne, le reste est lu
+  aux passages suivants : rien n'est sauté. Seul le premier passage (aucun état de lecture) lit les
+  `PLUME_WEB_MAX` dernières lignes, et le battement dit combien d'octets antérieurs il n'a pas lus. Après
+  une rotation, la fin du journal précédent est reprise dans `<journal>.1` ; si celui-ci est introuvable
+  (rotation compressée sans `delaycompress`), la perte est avouée (`missing-source`, nombre inconnu) ;
+- **`PLUME_WEB_SRC=k3s`** (le défaut) : `kubectl logs --tail` ne rend que les dernières lignes de la
+  fenêtre. Les plus anciennes ne sont pas lues, mais un second `kubectl logs` les **compte**, et le
+  nombre est avoué dans le battement et par un `collection-capped` : exact, « au moins N » quand le flot
+  dépasse aussi la borne du comptage (10 × `PLUME_WEB_MAX` lignes par pod), ou « nombre inconnu » quand
+  le comptage échoue.
+
+Le battement porte la valeur en vigueur (« borne de lecture PLUME_WEB_MAX=10000 atteinte » au défaut) :
+cherchez `PLUME_WEB_MAX=`. En k3s, montez-la si ce message revient.
 
 ### 6.3 Le plafond d'`auditd`
 
@@ -395,8 +430,26 @@ de **sabotage** (TAMPER) sont gardés d'abord, puis les autres par gravité déc
 
 `augenrules --load` concatène les fichiers de `/etc/audit/rules.d/` et **s'arrête à la première règle
 en échec** sans revenir en arrière. Une règle d'un **autre** fichier identique à une règle de
-`plume.rules` fait échouer ce doublon, et tout ce qui suit dans `plume.rules` n'est pas chargé.
-L'installateur du central charge les règles sans vérifier leur nombre.
+`plume.rules` fait échouer ce doublon (« Rule exists »), et tout ce qui suit n'est pas chargé — au
+chargement comme au démarrage d'`auditd`, qui rejoue le même assemblage.
+
+Les deux installateurs passent par **un seul chargeur**, `plume-audit-rules-load.sh` : `bootstrap.sh`
+l'appelle quand `auditd` est installé, `bootstrap-agent.sh` le pose sans le lancer et affiche le geste.
+Il commente dans la copie posée chaque ligne du gabarit déjà déclarée **à l'identique** par un autre fichier
+(`## plume-doublon : déjà déclarée par <fichier> …`), lance `augenrules --load`, compte par clé ce que
+`auditctl -l` rapporte, rattrape règle par règle ce qui manque, et rend :
+
+| Code | Ce que le noyau tient | Message |
+|---|---|---|
+| `0` | tout, par l'assemblage lui-même | `>> OK — toutes les règles déclarées sont chargées.` |
+| `1` | **pas tout** : chaque clé manquante est nommée, et la ligne refusée avec le message d'`auditctl` s'il y en a une — ou le chargeur n'a pas pu travailler (gabarit introuvable, `auditd` absent, pas root), message en `!!` | `!! CHARGEMENT PARTIEL — REFUSÉ` ; s'il a rattrapé des règles, il dit combien seront perdues au prochain démarrage |
+| `2` | tout **maintenant**, mais par le seul rattrapage : le prochain démarrage d'`auditd` s'arrêtera au même endroit | `!! RÈGLES PLUME COMPLÈTES MAINTENANT, MAIS PAR LE SEUL RATTRAPAGE` |
+
+`bootstrap.sh` pose tout le reste puis finit en code `3` si le chargeur n'a pas rendu `0`, avec un message
+propre à chaque cas (« RÈGLES D'AUDIT INCOMPLÈTES MAINTENANT » pour `1`, « RÈGLES D'AUDIT COMPLÈTES
+MAINTENANT, MAIS PAS AU PROCHAIN DÉMARRAGE » pour `2`). Un doublon écrit autrement (ordre des champs)
+n'est pas reconnu à l'identique : il finit en code `2`. Le détail est dans
+[`ENDPOINT-SECURITY.md` §4ter](ENDPOINT-SECURITY.md#4ter-charger-les-règles-et-vérifier-ce-qui-tourne).
 
 **Vérifier, en lecture seule** — ne modifie rien :
 
@@ -405,23 +458,27 @@ sudo auditctl -l | grep -oE '(-k |key=)[a-z_]+' | sort | uniq -c  # compte par c
 sudo grep -E '^[[:space:]]*-' /etc/audit/rules.d/plume.rules | grep -oE -- '-k [a-z_]+' | sort | uniq -c  # ce que le fichier déclare
 ```
 
-Chaque clé du second compte doit avoir au moins autant de règles dans le premier. La liste doit porter
+Chaque clé du second compte doit avoir au moins autant de règles dans le premier — une ligne commentée
+`## plume-doublon` ne compte pas dans le second, la règle étant tenue par l'autre fichier. La liste doit
+porter
 `exec_tracking` (deux règles `execve`, 64 et 32 bits) : sans elle, `category=exec` reste vide.
 `svc_exec` n'y figure que si vous avez décommenté ses règles dans le gabarit.
 
-**Recharger** — ce n'est pas une vérification : `plume-audit-rules-load.sh` **réinstalle** le gabarit
-par-dessus `/etc/audit/rules.d/plume.rules`, lance `augenrules --load`, puis compte par clé et échoue en
-nommant la clé manquante. **Une copie locale modifiée de `plume.rules` est écrasée** : reportez vos
-changements dans le gabarit que vous lui passez, ou sauvegardez le fichier avant.
+**Recharger** — ce n'est pas une vérification : `plume-audit-rules-load.sh` **réinstalle** le gabarit,
+dédoublonné, par-dessus `/etc/audit/rules.d/plume.rules`, puis charge et compte comme ci-dessus.
+**Une copie locale modifiée de `plume.rules` est écrasée** : reportez vos changements dans le gabarit
+que vous lui passez, ou sauvegardez le fichier avant. Relancez-le aussi après tout changement d'un autre
+fichier de `/etc/audit/rules.d` : une règle commentée chez plume parce qu'un autre fichier la portait
+disparaît avec ce fichier.
 
 ```sh
 sudo sh systemd/plume-audit-rules-load.sh                        # central, depuis le dépôt : gabarit systemd/plume-audit.rules
 sudo sh /usr/local/lib/plume/plume-audit-rules-load.sh /usr/local/share/plume/plume-audit.rules   # agent
 ```
 
-Sur un agent, le gabarit se passe **en argument** : sans lui, le chargeur cherche `plume-audit.rules`
-dans son propre répertoire, `/usr/local/lib/plume/`, où l'installateur ne l'a pas posé. Retirez le
-doublon de l'autre fichier, puis rechargez.
+Sans argument, le chargeur prend `plume-audit.rules` à côté de lui (le dépôt), sinon
+`../../share/plume/plume-audit.rules` depuis son répertoire : installé, `/usr/local/share/plume/`, où les
+deux installateurs posent le gabarit. Le passer en argument, comme ci-dessus, ne laisse aucun doute.
 
 ### 6.5 CrowdSec derrière un mandataire
 
@@ -486,3 +543,8 @@ est **refusée** (`422`, `"reason": "cold_truncated_aggregate"`) plutôt que de 
 s'en sort en resserrant la fenêtre, ou en relevant `PLUME_QUERY_MAX` jusqu'à `100000` au prix de la
 mémoire. Une expression régulière ne peut pas contenir d'alternance
 aujourd'hui ([`GXQL.md` §2.4](GXQL.md#24-limite-connue--une-barre-verticale-dans-une-expression-régulière)).
+Son motif est borné, au chaud comme au froid et à l'import Sigma : 512 octets (refus `400`,
+« motif regex trop long (max 512) »), 1 Mio de programme compilé (refus `400`, message du moteur),
+1 Mio de cache du DFA paresseux (dépassé, la recherche ralentit sans refus). Ce qui reste ouvert : les
+requêtes interactives se partagent un sémaphore (`PLUME_QUERY_CONCURRENCY`, défaut 3), et quelques
+requêtes lourdes lancées ensemble font attendre toutes les autres.

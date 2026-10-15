@@ -34,8 +34,14 @@ pratique pour documenter chaque fichier (JSON n'a pas de commentaires).
 > tags MITRE) au boot par `load_overlay_sigma`, `managed = 1`. Le mapping `logsource → category` passe par
 > le **CIM** (`docs/CIM.md`). Un construit non exprimable en GXQL (OU inter-champs, `1 of them`, agrégation,
 > `|base64`/`|cidr`…) est **signalé + ignoré** (jamais une règle silencieusement fausse). Voir la matrice de
-> couverture dans **`docs/SIGMA-IMPORTER.md`**. Import ponctuel/hors-git : `plume-daemon sigma-import <path>
-> [--dry-run]` ou `POST /api/sigma/import` (admin).
+> couverture dans **`docs/SIGMA-IMPORTER.md`**. Import ponctuel/hors-git : `POST /api/sigma/import` (admin),
+> ou la sous-commande sur le central — `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon
+> sigma-import <path> [--dry-run]` en hôte natif, `docker compose exec soc plume-daemon sigma-import <path>`
+> en Docker, `kubectl -n soc exec deploy/soc -- plume-daemon sigma-import <path>` en k3s (`<path>` est
+> alors un chemin du conteneur). Sans `--dry-run`, elle écrit dans la base : démarrez le démon une fois
+> avant, sinon elle crée la base en clair
+> ([`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)). `--dry-run`
+> n'ouvre aucune base.
 
 ## Sémantique de `managed`
 

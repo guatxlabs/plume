@@ -28,8 +28,10 @@ since=$((now - last + 10)); [ "$last" -eq 0 ] && since=300       # 1re fois : 5 
 # P10.33-e — LA BORNE DE LECTURE NE FAIT PLUS PERDRE EN SILENCE. Elle lisait les MAX DERNIERES lignes
 # (`tail -n`, `kubectl logs --tail`) sans egard au filigrane : entre deux passages, un flot plus long que MAX
 # — filtre ou non, un sondage de sante la consomme comme une requete — faisait sortir de la fenetre des
-# lignes reelles jamais lues ni comptees ; seul le battement disait « borne atteinte ». Un attaquant pouvait
-# noyer ses requetes sous un flot. Desormais :
+# lignes reelles jamais lues ni comptees ; seul le battement le disait, sans nombre ni reprise. Un attaquant
+# pouvait noyer ses requetes sous un flot. Desormais (le battement dit « borne de lecture PLUME_WEB_MAX=$MAX
+# atteinte », suivi de « restent à lire, repris au passage suivant » en mode file, de « jamais lue(s),
+# comptée(s) et avouée(s) » en k3s) :
 #  · MODE file — LECTURE PAR OFFSET D'OCTETS, comme auditd.sh : au plus MAX lignes COMPLETES a partir de
 #    l'octet ou le passage precedent s'est arrete ; le reste est lu aux passages suivants, rien n'est saute. Ce
 #    qui suit l'offset n'est plus filtre par le filigrane horaire (voir l'appel awk) : une seconde coupee en deux

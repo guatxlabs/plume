@@ -573,7 +573,7 @@ le collecteur tourne sur un hôte Linux, mais la **cible** peut être n'importe 
 > d'audit, pas un réglage du collecteur. Deux commandes :
 > ```sh
 > sudo apt install auditd                                       # absent d'une Ubuntu Server par défaut
-> sudo bash /usr/local/lib/plume/plume-audit-rules-load.sh       # posé par bootstrap-agent.sh
+> sudo sh /usr/local/lib/plume/plume-audit-rules-load.sh         # posé par bootstrap-agent.sh
 > ```
 > Le chargeur **REFUSE un chargement partiel** : il dérive du gabarit le nombre de règles attendues *par
 > clé*, le compare à ce que `auditctl -l` rapporte réellement, et échoue en nommant la clé manquante.

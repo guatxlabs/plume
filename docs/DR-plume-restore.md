@@ -20,8 +20,8 @@ qui attend une enveloppe age.
 
 ```sh
 sudo systemctl stop plume-daemon
-sudo install -o soc -g soc -m 0600 /var/lib/plume/backups/plume-<TS>.db /var/lib/plume/db/plume.db
-sudo rm -f /var/lib/plume/db/plume.db-wal /var/lib/plume/db/plume.db-shm   # WAL de l'ancienne base
+sudo install -o soc -g soc -m 0600 /var/lib/plume/backups/plume-<TS>.db /var/lib/plume/db/soc.db
+sudo rm -f /var/lib/plume/db/soc.db-wal /var/lib/plume/db/soc.db-shm   # WAL de l'ancienne base
 sudo systemctl start plume-daemon
 ```
 La copie n'est lisible qu'avec la **même clé SQLCipher** que la base d'origine : si vous aviez posé
@@ -219,15 +219,18 @@ mc cp <votre-bucket>/plume/plume-<TS>.db.age /restore/plume-<TS>.db.age
 
 # 2a) Backup en MODE PASSPHRASE : seule la clé SQLCipher suffit
 export PLUME_DB_KEY_FILE=/etc/plume/db/db.key            # ou PLUME_DB_KEY=<clé> (escrow)
-plume-daemon restore /restore/plume-<TS>.db.age /data/plume.db --force
+plume-daemon restore /restore/plume-<TS>.db.age /data/soc.db --force
 
 # 2b) Backup en MODE DESTINATAIRE : clé SQLCipher (cible) + identité age PRIVÉE (source)
 export PLUME_DB_KEY_FILE=/etc/plume/db/db.key
 export PLUME_BACKUP_AGE_IDENTITY_FILE=/escrow/plume-backup-identity.key   # depuis l'escrow, JAMAIS en cluster
-plume-daemon restore /restore/plume-<TS>.db.age /data/plume.db --force
+plume-daemon restore /restore/plume-<TS>.db.age /data/soc.db --force
 ```
 
-`restore` refuse d'écraser une DB existante sans `--force`. La DB restaurée est byte-rejouable
+La destination est la base que le démon ouvrira, son `PLUME_DB` : `/data/soc.db` dans l'image livrée
+(`Dockerfile`), `/var/lib/plume/db/soc.db` sur un hôte installé par `bootstrap.sh` (`/etc/plume/soc.conf`).
+Une autre destination laisse le démon sur son ancienne base. Restaurez démon arrêté, comme pour la copie
+du timer hôte. `restore` refuse d'écraser une DB existante sans `--force`. La DB restaurée est byte-rejouable
 (round-trip prouvé par les tests).
 
 > ⚠️ **Lisez le code de sortie de `plume-daemon restore` LUI-MÊME, jamais celui d'un tube** (`P8.10-k`,
@@ -287,10 +290,24 @@ fasse le voyage inverse** :
 # sur la machine d'exercice (isolée, avec l'identité d'escrow)
 plume-daemon backup-verify /restore/plume-<TS>.db.age > /media/attestation.txt
 
-# sur le nœud (qui n'a jamais vu l'identité privée)
-plume-daemon restore-drill record < /media/attestation.txt
-plume-daemon restore-drill status     # sortie 0 = éprouvé récemment ; 3 = un exercice est DÛ
+# sur le nœud (qui n'a jamais vu l'identité privée) — forme hôte natif
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon restore-drill record < /media/attestation.txt
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon restore-drill status     # sortie 0 = éprouvé récemment ; 3 = un exercice est DÛ
 ```
+
+En Docker et en k3s, les deux se lancent dans le conteneur du démon, l'attestation arrivant par l'entrée
+standard (`-T` pour Docker, `-i` pour k3s) :
+
+```sh
+docker compose exec -T soc plume-daemon restore-drill record < /media/attestation.txt
+kubectl -n soc exec -i deploy/soc -- plume-daemon restore-drill record < /media/attestation.txt
+```
+
+et de même `restore-drill status`, sans redirection. En hôte natif, `sudo` ne transmet pas le
+`PLUME_CONFIG` de l'unité : sans lui, `record` écrit l'attestation dans `/var/lib/plume/db/plume.db` et
+`status` lit cette même base, qui n'est pas celle du démon. `record` écrit dans la base : sur un nœud
+neuf, démarrez le démon une fois avant, sinon il la crée en clair
+([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
 
 `record` **refuse** une attestation datée dans le futur (au-delà d'une heure de tolérance d'horloge),
 une attestation plus ancienne que celle déjà enregistrée, et une attestation qui n'atteste rien

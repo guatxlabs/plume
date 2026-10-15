@@ -145,8 +145,12 @@ Overlay déclaratif, aucun rebuild. Deux formats, **une** table `rule` :
   (jamais une règle silencieusement fausse) — cf. matrice dans [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md).
 
 > Registration : `load_overlays`/`load_overlay_sigma`, UPSERT sur `name`, `managed=1` ; validation au boot
-> (la `query` doit **compiler**). Import ponctuel hors-git : `plume-daemon sigma-import <path> [--dry-run]`
-> ou `POST /api/sigma/import` (admin). **Écris la règle par `category`**, elle marchera pour tout vendeur.
+> (la `query` doit **compiler**). Import ponctuel hors-git : `POST /api/sigma/import` (admin), ou
+> `plume-daemon sigma-import <path> [--dry-run]` sur le central — en hôte natif
+> `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon sigma-import <path>`, en Docker et
+> k3s par `docker compose exec soc …` / `kubectl -n soc exec deploy/soc -- …`. Sans `--dry-run`, elle
+> écrit dans la base : démon démarré une fois avant
+> ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)). **Écris la règle par `category`**, elle marchera pour tout vendeur.
 
 ---
 

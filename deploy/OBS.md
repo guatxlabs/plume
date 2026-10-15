@@ -33,9 +33,22 @@ http://127.0.0.1:8080/metrics    # kube-state-metrics (kubectl -n <votre-ns> por
 `/etc/plume/prom.conf` :
 ```
 PLUME_CENTRAL=https://soc.exemple:7000
-PLUME_TOKEN=...        # genere par : plume-daemon token prom --relais  (scrape multi-cibles = RELAIS)
+PLUME_TOKEN=...        # frappe sur le central : plume-daemon token prom --relais  (scrape multi-cibles = RELAIS)
 ```
 Puis : `sudo systemctl enable --now plume-prom-scrape.timer`
+
+Les jetons de cette page se frappent **sur le central**, demon deja demarre une fois : sur une base
+absente, la sous-commande la cree, et sans cle, donc en clair
+([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+Forme par mode (meme chose pour `token alloy --relais`) :
+```
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token prom --relais   # hote natif
+docker compose exec soc plume-daemon token prom --relais                                     # Docker
+kubectl -n soc exec deploy/soc -- plume-daemon token prom --relais                           # k3s
+```
+En hote natif, `sudo` ne transmet pas le `PLUME_CONFIG` de l'unite : sans lui, le jeton s'ecrit dans
+`/var/lib/plume/db/plume.db`, une autre base que la `soc.db` du demon, et le central refuse ensuite ce
+jeton.
 
 Requetes (PromQL -> GXQL) :
 ```
@@ -54,7 +67,7 @@ ajoute un 2e `prometheus.remote_write` dans Alloy vers le SOC (EN PLUS de Promet
 prometheus.remote_write "soc" {
   endpoint {
     url          = "https://soc.exemple:7000/api/metrics/write"
-    bearer_token = "..."   // plume-daemon token alloy --relais  (Alloy relaie plusieurs hotes)
+    bearer_token = "..."   // sur le central : plume-daemon token alloy --relais (forme par mode plus haut ; Alloy relaie plusieurs hotes)
   }
 }
 ```
@@ -69,7 +82,7 @@ Dans la config Grafana Alloy, ajouter un `loki.write` vers le SOC (fan-out, EN P
 loki.write "soc" {
   endpoint {
     url          = "https://soc.exemple:7000/loki/api/v1/push"
-    bearer_token = "..."   // plume-daemon token alloy --relais  (Alloy relaie plusieurs hotes)
+    bearer_token = "..."   // sur le central : plume-daemon token alloy --relais (forme par mode plus haut ; Alloy relaie plusieurs hotes)
   }
 }
 ```

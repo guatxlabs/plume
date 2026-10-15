@@ -115,13 +115,34 @@ Ce qui s'écrit à la place, et ce que chaque forme veut dire :
 Il n'existe pas non plus de fonction `match()` : la liste des fonctions d'`eval` (§4.2) est fermée, et
 `where` n'accepte qu'une comparaison (§3.1).
 
+**Ce qu'un motif a le droit de coûter.** Un seul constructeur compile tous les motifs d'une requête
+(`champ=~motif`, `champ:~motif`, `| rex`) : celui du chemin chaud **et** celui du tier froid, et l'import
+Sigma (`|re`) valide ses motifs par le même. Il borne trois choses :
+
+- **la longueur du motif : 512 octets** (des octets, pas des caractères : un `é` en compte deux). Au-delà,
+  la requête est refusée en `400`, et le champ `error` de la réponse porte le message
+  « motif regex trop long (max 512) » ;
+- **la taille du programme compilé : 1 Mio** par automate. Un motif court peut la dépasser — `\w` est
+  Unicode, `\w{100}` suffit. Refus en `400` aussi, avec le message du moteur :
+  `Compiled regex exceeds size limit of 1048576 bytes.` ;
+- **le cache du DFA paresseux : 1 Mio**. Le dépasser ne refuse rien : la recherche continue sur un moteur
+  plus lent, sans message.
+
+Chaque connexion de lecture garde quatre motifs compilés par fonction (`=~` d'un côté, `rex` de
+l'autre) : une requête qui en combine quelques-uns ne les recompile pas à chaque ligne. Au froid, un
+motif refusé n'est pas évalué : la requête retombe sur le chemin chaud, qui rend le même refus. À
+l'import Sigma, une règle dont le motif généré dépasse 512 octets, ou que le constructeur refuse, est
+signalée et **non importée**.
+
 **Le coût d'une expression régulière croît avec la fenêtre.** Elle est évaluée ligne par ligne par une
-fonction SQL (moteur `regex` de Rust, temps linéaire, motif limité à 512 octets) et aucun index ne la
-sert : sur une grande fenêtre, elle lit toutes les lignes que le reste du filtre laisse passer.
-Resserrez la fenêtre, et filtrez d'abord sur une colonne réelle (`source`, `host`, `category`) ou un
-champ chaud (§5.2) : `search source=sshd category=auth message=~"Invalid user"` ne passe le motif que
-sur les lignes de cette source. Ce que coûtent plusieurs motifs lourds à la fois est porté par une clé
-ouverte (`P10.32-q`).
+fonction SQL (moteur `regex` de Rust, temps linéaire) et aucun index ne la sert : sur une grande
+fenêtre, elle lit toutes les lignes que le reste du filtre laisse passer. Resserrez la fenêtre, et
+filtrez d'abord sur une colonne réelle (`source`, `host`, `category`) ou un champ chaud (§5.2) :
+`search source=sshd category=auth message=~"Invalid user"` ne passe le motif que sur les lignes de
+cette source. **Ce que les bornes ne tiennent pas** : un motif admis reste cher sur une grande fenêtre,
+et les requêtes interactives se partagent un sémaphore (`PLUME_QUERY_CONCURRENCY`, défaut 3). Quelques
+requêtes lourdes lancées ensemble peuvent donc faire attendre toutes les autres recherches de la
+console, jusqu'à ce qu'elles finissent ou soient interrompues par leur budget de temps.
 
 ---
 

@@ -63,6 +63,10 @@ const I18N_EN = {
   "Enregistrer la requête comme panneau": "Save query as a panel",
   "Aide : syntaxe des requêtes (GXQL)": "Help: query syntax (GXQL)",
   "Événements par page": "Events per page", "Événements par page (pagination)": "Events per page (pagination)",
+  // `P10.32-m` — le sélecteur dit le plafond de sortie du serveur, et la taille qui le dépasse par défaut.
+  "Événements par page (pagination). Le serveur rend au plus PLUME_QUERY_MAX lignes par réponse (5000 par défaut) : une page plus grande que ce plafond sort partielle.": "Events per page (pagination). The server returns at most PLUME_QUERY_MAX rows per response (5000 by default): a page larger than that cap comes out partial.",
+  "10000/page (au-delà du plafond par défaut)": "10000/page (beyond the default cap)",
+  "Au-delà du plafond par défaut du serveur (PLUME_QUERY_MAX, 5000) : servie entière seulement si l'exploitant a relevé ce plafond.": "Beyond the server's default cap (PLUME_QUERY_MAX, 5000): served in full only if the operator has raised that cap.",
   "Fenêtre temporelle (Recherche)": "Time window (Search)", "Aide : Recherche": "Help: Search",
   "Fenêtre temporelle de la recherche — glissante depuis maintenant (perf)": "Search time window — sliding from now (perf)",
   "Arrêter la requête en cours": "Stop the running query",

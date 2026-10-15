@@ -238,13 +238,21 @@ async function renderIntegrations() {
     { famille: 'part', valeur: mute.length, dot: 'muet', libelle: LANG === 'en' ? 'mute sensor(s)' : 'capteur(s) muet(s)', suite: withNames(mute),
       titre: LANG === 'en' ? 'Connected then dropped out (continuous dead-man\'s-switch): to investigate.' : 'Branché puis décroché (dead-man\'s-switch continu) : à investiguer.' },
     { famille: 'part', valeur: waiting.length, dot: 'attente', libelle: LANG === 'en' ? 'never-seen sensor(s)' : 'capteur(s) jamais vu(s)', suite: withNames(waiting),
-      titre: LANG === 'en' ? 'Declared, never seen: no data yet from this probe.' : 'Déclaré, jamais vu : aucune donnée de cette sonde à ce jour.' },
+      titre: LANG === 'en' ? 'Declared, never seen: no data yet from this probe. Often it is simply not installed or not enabled in this deployment mode; the console cannot tell that apart from a probe that has not reported yet.' : 'Déclaré, jamais vu : aucune donnée de cette sonde à ce jour. Souvent, elle n\'est simplement pas installée ou pas activée dans ce mode de déploiement ; la console ne le distingue pas d\'une sonde qui n\'a pas encore remonté.' },
     { famille: 'part', valeur: nonLus.length, dot: 'muet', libelle: LANG === 'en' ? 'unread sensor(s)' : 'capteur(s) non lu(s)', suite: withNames(nonLus),
       titre: LANG === 'en' ? 'The daemon could not read this probe this time: neither never-seen nor mute. The cause is written under the row.' : 'Le démon n\'a pas pu lire cette sonde cette fois-ci : ni jamais vue, ni muette. La cause est écrite sous la rangée.' },
     { famille: 'recoupement', valeur: confondues, libelle: LANG === 'en' ? 'at « all hosts together » scope' : 'à portée « tous hôtes confondus »',
       titre: LANG === 'en' ? 'ALREADY counted in one of the terms above — this number crosses the distribution, it does not share it. These probes return the FRESHEST data of the estate: they stay green as long as a single machine still talks. Fully silent machines are counted separately (Hosts).' : 'DÉJÀ comptées dans l\'un des termes ci-dessus — ce nombre recoupe la répartition, il ne la partage pas. Ces sondes rendent la donnée la plus FRAÎCHE du parc : elles restent vertes tant qu\'une seule machine parle encore. Les machines entièrement muettes sont comptées à part (Hôtes).' },
   ]) +
     renvoi('#freshness-view') + renvoi('#sources') + `</div>`;
+  // `P10.32-m` — « JAMAIS VU » NE VEUT PAS DIRE « EN PANNE ». Mesuré avant ce lot : la rangée disait « jamais vu(s) »
+  // sans dire que le capteur peut simplement ne pas être installé ou activé dans ce mode (hôte natif, Docker, k3s) —
+  // le démon déclare tous ses capteurs en code, qu'ils soient déployés ici ou non. Il ne sert rien qui permette de
+  // trancher : la console NOMME donc cette possibilité, sous la rangée, seulement quand un capteur est jamais vu.
+  const jamaisVus = capteursNonLus || !waiting.length ? ''
+    : `<div class="kv"><span class="muted" data-capteurs-jamais-vus="1">${esc(LANG === 'en'
+      ? '« never seen » does not mean « broken »: such a sensor may simply not be installed or not enabled in this deployment mode. The console cannot tell that apart from a sensor that has not reported yet.'
+      : '« jamais vu » ne veut pas dire « en panne » : un tel capteur peut simplement ne pas être installé ou pas activé dans ce mode de déploiement. La console ne le distingue pas d\'un capteur qui n\'a pas encore remonté.')}</span></div>`;
   // `P11.20-l` — LA LISTE EST BORNÉE PAR LA ROUTE, ET LA COUPE SE LIT ICI. Le démon sert `hosts_window`
   // lignes au plus et DIT s'il en a coupé (`hosts_truncated`, mesuré par la ligne excédentaire) et combien
   // il y en a (`hosts_total`). La phrase est dérivée de ces trois nombres, jamais de la longueur seule.
@@ -327,7 +335,7 @@ async function renderIntegrations() {
   const cap = `<div class="muted intplug" style="font-size:11px">Capteurs = <b>couverture</b> (types de sondes déclarés ; un capteur mort est signalé <b>muet</b> ici) · Hôtes = <b>endpoints</b> (où les agents poussent). La santé fine par source (frais/calme/en retard/muet) vit dans Fraîcheur — « en retard » y désigne la même observation que « muet » ici, au même seuil.</div>`;
   // lien de découverte -> la Flotte (inventaire détaillé des hôtes : statut/enrôlement/dernier signal, paginé + export).
   const hostsHdr = `Hôtes (endpoints) ${renvoi('#fleet')}`;
-  b.innerHTML = `<div class="intgrid"><div><div class="fldname">Capteurs (couverture)</div>${capsum}${aveu}</div><div><div class="fldname">${hostsHdr}</div>${flotteLigne}${hosts}</div></div>${cap}`;
+  b.innerHTML = `<div class="intgrid"><div><div class="fldname">Capteurs (couverture)</div>${capsum}${jamaisVus}${aveu}</div><div><div class="fldname">${hostsHdr}</div>${flotteLigne}${hosts}</div></div>${cap}`;
 }
 // fraîcheur PAR SOURCE : âge du dernier point + statut. « Est-ce live ? »
 /* state: freshnessRepollTimer -> S (state.js) */   // re-poll rapproché quand le serveur calcule encore (warming)

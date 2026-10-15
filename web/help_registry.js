@@ -123,15 +123,19 @@ LIVE view, refreshed by the sensor (~5 min).` },
   },
   integrations: {
     fr: { title: `Intégrations & hôtes`, body:
-`État des capteurs (collecteurs) et des hôtes qui envoient des données.
-• Capteur actif = émet ; MUET = plus aucune donnée (à investiguer) ; en attente.
-• Hôtes : chaque machine reliée + heure de son dernier signal.
-• « Non branché » = capteur prévu mais pas encore raccordé (ex. YARA).` },
+`Couverture des capteurs (types de sondes déclarés par le démon) et hôtes qui envoient des données.
+• Capteurs déclarés = branchés + muets + jamais vus + non lus.
+• Branché = a déjà remonté au moins une donnée ; MUET = branché puis décroché (à investiguer).
+• Jamais vu = déclaré, aucune donnée à ce jour : souvent un capteur non installé ou non activé dans ce mode de déploiement — la console ne le distingue pas d'un capteur qui n'a pas encore remonté.
+• Non lu = le démon n'a pas pu lire cette sonde cette fois-ci ; la cause est écrite sous la rangée.
+• Hôtes : chaque machine reliée + heure de son dernier signal.` },
     en: { title: `Integrations & hosts`, body:
-`State of sensors (collectors) and of the hosts sending data.
-• Sensor active = emitting ; MUTE = no more data (investigate) ; pending.
-• Hosts: each connected machine + time of its last signal.
-• "Not wired" = a planned sensor not yet connected (e.g. YARA).` },
+`Sensor coverage (probe types declared by the daemon) and hosts sending data.
+• Declared sensors = connected + mute + never seen + unread.
+• Connected = has already reported at least one piece of data; MUTE = connected then dropped out (investigate).
+• Never seen = declared, no data so far: often a sensor that is not installed or not enabled in this deployment mode — the console cannot tell it apart from a sensor that has not reported yet.
+• Unread = the daemon could not read this probe this time; the cause is written under the row.
+• Hosts: each connected machine + time of its last signal.` },
   },
   fleet: {
     fr: { title: `Flotte d'agents`, body:

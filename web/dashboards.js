@@ -69,6 +69,32 @@ function corpsSansLigne(stats, phrase, laPhraseAffirmeUneAbsence = true) {
 }
 
 // --- dashboards (P3) ---
+// `P10.32-m` — LE CALENDRIER D'UNE CHAUFFE, ET SA FIN. Pure : rend le délai avant la prochaine relance, ou `null`
+// quand le délai borné est franchi (la carte cesse de relancer et le dit). Les relances doublent depuis la première
+// jusqu'à leur plafond : un démon qui calcule encore est relu vite, un démon qui ne finira pas n'est plus sondé sans
+// fin. Valeurs de conception de la console, aucune n'est relevée sur une installation.
+const CALENDRIER_DE_LA_CHAUFFE = { premiere_relance_ms: 3000, relance_maximale_ms: 30000, delai_borne_ms: 120000 };
+function prochaineRelanceDeLaChauffe(ecouleMs, essai) {
+  if (!(ecouleMs < CALENDRIER_DE_LA_CHAUFFE.delai_borne_ms)) return null;
+  return Math.min(CALENDRIER_DE_LA_CHAUFFE.relance_maximale_ms, CALENDRIER_DE_LA_CHAUFFE.premiere_relance_ms * 2 ** Math.max(0, essai));
+}
+const MOTS_DE_LA_CHAUFFE_SANS_FIN = {
+  n_a_pas_abouti: {
+    fr: "Le calcul de ce panneau n'a pas abouti en {secondes} s : le serveur répond toujours qu'il le prépare. Budget de calcul dépassé, requête refusée côté serveur, ou rafraîchissement abandonné par un serveur saturé — la console n'en connaît pas la cause. Les relances automatiques sont arrêtées ; ouvrez la requête dans Recherche, avec un budget plus large, pour voir le résultat ou l'erreur, ou rafraîchissez le panneau pour réessayer.",
+    en: 'The computation of this panel did not complete within {secondes} s: the server still answers that it is preparing it. Compute budget exceeded, query refused server-side, or refresh dropped by a saturated server — the console does not know the cause. Automatic retries are stopped; open the query in Search, with a larger budget, to see the result or the error, or refresh the panel to try again.' },
+  ouvrir: { fr: 'Ouvrir dans Recherche', en: 'Open in Search' },
+};
+function noeudDeLaChauffeSansFin(ecouleMs, ouvrir) {
+  const s = document.createElement('span');
+  s.setAttribute('data-chauffe-sans-fin', '1');
+  s.appendChild(document.createTextNode(faceDansLaLangue(MOTS_DE_LA_CHAUFFE_SANS_FIN.n_a_pas_abouti, { secondes: Math.round(ecouleMs / 1000) })));
+  if (typeof ouvrir === 'function') {   // requête privée (texte masqué) : pas d'ouverture, comme l'outil de tête
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'btn';
+    b.textContent = faceDansLaLangue(MOTS_DE_LA_CHAUFFE_SANS_FIN.ouvrir); b.onclick = ouvrir;
+    s.append(document.createTextNode(' '), b);
+  }
+  return s;
+}
 /* state: editing, dashList, viewList, panelCards -> S (state.js) */ // mode édition + listes + cartes panneaux
 const panelInflight = new Set();   // AbortControllers des panneaux en vol (bouton STOP de la vue Dashboards)
 // #dash-stop visible TANT QU'un panneau est en vol ; load()'s finally rappelle ceci -> auto-masquage propre.
@@ -81,7 +107,7 @@ function stopDashboards() {
 }
 function refreshDashboards() {
   const sb = $('#dash-stop'); if (sb) sb.hidden = false;
-  S.panelCards.forEach(c => { if (c.isConnected && c._panel && c._panel.loaded) c._panel.reload(); });
+  S.panelCards.forEach(c => { if (c.isConnected && c._panel && c._panel.loaded) c._panel.reload('geste'); });   // `P10.32-m` : geste explicite, rouvre le délai de chauffe
   syncDashStop();   // load()'s finally rappelle syncDashStop -> le bouton se masque quand le dernier load se termine
 }
 // LAZY-LOAD des panneaux : on ne fait le fetch /api/panels/{id}/data QUE lorsque la carte entre dans le
@@ -104,7 +130,9 @@ function getPanelObserver() {
 // un panneau a fenetre manuelle est fige (resync = remettre la fenetre a 0 dans l'edition).
 // auto-refresh : ne recharge QUE les panneaux déjà chargés ET visibles (window_s===0) -> ne force pas le
 // fetch des panneaux hors-écran/cachés à chaque tick (le lazy-load s'en charge à leur apparition).
-function refreshPanels() { S.panelCards.forEach(c => { const pn = c._panel; if (c.isConnected && pn && pn.window_s === 0 && pn.loaded && pn.visible) pn.reload(); }); }
+// `P10.32-m` — `origine` = celle que le coureur des charges donne (`'geste'` pour un rafraîchissement demandé, l'en-tête
+// « Rafraîchir maintenant » compris ; `'cadence'` pour l'auto-rafraîchissement) : seul un geste rouvre le délai de chauffe.
+function refreshPanels(origine) { S.panelCards.forEach(c => { const pn = c._panel; if (c.isConnected && pn && pn.window_s === 0 && pn.loaded && pn.visible) pn.reload(origine); }); }
 const VIZOPTS = REPRESENTATIONS; // `P11.20-d` : la liste unique (representations.js), plus une copie ici
 // `P11.17-b` — L'ACCÈS À CE QUI EST DÉJÀ ENREGISTRÉ PART DE L'ENDROIT OÙ L'ON COMPOSE, ET PORTE LE NOM DE
 // CE QU'IL OFFRE. La console offrait DEUX entrées voisines pour un même but, et une seule aboutissait :
@@ -344,7 +372,7 @@ function renderDashboard(d) {
   const dref = document.createElement('button'); dref.type = 'button'; dref.className = 'picon'; dref.innerHTML = ic('refresh'); dref.title = 'Rafraîchir ce dashboard';
   dref.onclick = () => {
     const sb = $('#dash-stop'); if (sb) sb.hidden = false;
-    grid.querySelectorAll('.panel').forEach(c => { if (c._panel && c._panel.loaded) c._panel.reload(); });
+    grid.querySelectorAll('.panel').forEach(c => { if (c._panel && c._panel.loaded) c._panel.reload('geste'); });   // `P10.32-m` : geste explicite, rouvre le délai de chauffe
     syncDashStop();
   };
   const ren = document.createElement('button'); ren.type = 'button'; ren.className = 'picon editonly crud-btn'; ren.innerHTML = ic('pencil'); ren.title = 'Renommer le dashboard';
@@ -709,7 +737,7 @@ async function renderPanel(p, editable = true) {
   wsel.onchange = () => { const n = Number(wsel.value); card.style.flexBasis = tileBasis(n); persisterLePanneau(p.id, { cols: n }); };
   tools.appendChild(seg);
   // refresh + STOP par panneau (non editonly : un viewer peut rafraîchir / arrêter SON chargement)
-  const pref = document.createElement('button'); pref.type = 'button'; pref.className = 'picon'; pref.innerHTML = ic('refresh'); pref.title = 'Rafraîchir ce panneau'; pref.onclick = () => load();
+  const pref = document.createElement('button'); pref.type = 'button'; pref.className = 'picon'; pref.innerHTML = ic('refresh'); pref.title = 'Rafraîchir ce panneau'; pref.onclick = () => load('geste');   // `P10.32-m` : un geste explicite rouvre le délai de chauffe
   const pstop = stopBtn('Arrêter ce panneau', () => { if (card._loadCtrl) { try { card._loadCtrl.abort(); } catch (e) {} } }); pstop.hidden = true;
   // EXPORT panneau (CSV / JSON) : sérialise les données DÉJÀ chargées (panel_data, déjà caviardé/gated).
   const pexp = document.createElement('button'); pexp.type = 'button'; pexp.className = 'picon'; pexp.innerHTML = ic('download'); pexp.title = 'Exporter les données de ce panneau (CSV / JSON)';
@@ -1007,7 +1035,8 @@ async function renderPanel(p, editable = true) {
     poserLesAveuxDuPanneau(body, result.stats, body.firstChild);
   }
   // chargement NON bloquant -> carte rendue tout de suite, requetes EN PARALLELE (WAL).
-  async function load() {
+  async function load(origine) {
+    if (origine === 'geste') card._chauffe = null;   // `P10.32-m` : le rafraîchissement demandé repart d'un délai neuf
     // `P11.20-w` — UN RENDU DU PANNEAU OUVRE UN PARCOURS : c'est le seul endroit d'où l'horloge est relue.
     if (serverPaged()) { spg.ouvrir = true; return loadServerPage(spg.page || 0); }
     if (card._loadCtrl) { try { card._loadCtrl.abort(); } catch (e) {} }
@@ -1033,15 +1062,34 @@ async function renderPanel(p, editable = true) {
       // On montre un placeholder « chargement… » et on re-poll (3s) jusqu'aux vraies données -> plus de
       // « aucune donnée » à tort au retour sur Dashboards.
       if (j.warming === true) {
+        // `P10.32-m` — LA CHAUFFE A UNE FIN. Mesuré avant ce lot : la carte relançait toutes les 3 s SANS FIN et disait
+        // « mesure en cours » pour toujours, alors qu'un calcul qui échoue côté démon n'y laisse aujourd'hui aucune
+        // trace (`P10.32-o`) — la chauffe peut ne jamais finir, et le texte mentait. Les relances s'espacent
+        // (`prochaineRelanceDeLaChauffe`) ; au-delà du délai borné, le panneau DIT que le calcul n'a pas abouti et
+        // s'arrête. Le délai est porté par la carte et par la fenêtre demandée : l'auto-rafraîchissement ne le
+        // remet pas à zéro (sinon la chauffe redeviendrait sans fin), un geste explicite ou une autre fenêtre, si.
+        // Une fenêtre GLISSANTE (`to` nul) se reconnaît au réglage qui la produit (`#range`), pas à sa borne basse, qui
+        // bouge avec l'horloge : sans quoi chaque relance ouvrirait une chauffe neuve, et la fin ne viendrait jamais.
+        const fenetreDeChauffe = p.window_s > 0 ? 'w' + p.window_s : (to ? from + ':' + to : 'g' + (($('#range') && $('#range').value) || ''));
+        if (!card._chauffe || card._chauffe.fenetre !== fenetreDeChauffe) card._chauffe = { fenetre: fenetreDeChauffe, depuis: Date.now(), essai: 0 };
+        const ecoule = Date.now() - card._chauffe.depuis;
+        const relance = prochaineRelanceDeLaChauffe(ecoule, card._chauffe.essai);
+        clearTimeout(card._warmTimer); card._warmTimer = null;
+        if (relance === null) {
+          body.replaceChildren(corpsSansLigne(j.stats, noeudDeLaChauffeSansFin(ecoule, p.query ? open.onclick : null), false));
+          poserLesAveuxDuPanneau(body, j.stats, body.firstChild);
+          return;
+        }
         // `P10.5-i` — CETTE BRANCHE JETTE LE CORPS ENTIER. Le démon publie pourtant l'horizon dans
         // l'objet synthétique : sans cette pose, un panneau en chauffe ne dirait rien de ce qu'il pourra
         // voir, alors même que c'est le premier écran que l'analyste regarde.
         body.replaceChildren(corpsSansLigne(j.stats, document.createTextNode('… chargement (mesure en cours)'), false));
         poserLesAveuxDuPanneau(body, j.stats, body.firstChild);
-        clearTimeout(card._warmTimer);
-        card._warmTimer = setTimeout(load, 3000);
+        card._chauffe.essai++;
+        card._warmTimer = setTimeout(() => load('chauffe'), relance);
         return;
       }
+      card._chauffe = null;
       clearTimeout(card._warmTimer); card._warmTimer = null;
       drawCount.total = null; drawCount.capped = false; drawCount.fired = false;   // ré-évalue la troncature à chaque (re)chargement
       result = { columns: j.columns, rows: j.rows, stats: j.stats }; draw();
@@ -1536,4 +1584,5 @@ function initDashboards() {
 // hors de ce module.
 // `P10.23-q` — les phrases et l'aveu d'un refus d'écriture et d'un geste de vue, joués par le témoin 121 hors du démon.
 export { aveuDeRefusDEcriture, phraseDuRefusDEcriture, phraseDuRefusDuPartageDeVue, motDuRefusServeurDeVue, avouerLeRefusDuTableauDeBord };
+export { prochaineRelanceDeLaChauffe, noeudDeLaChauffeSansFin };   // `P10.32-m` : jugés par le témoin 146
 export { addDashboardFlow, corpsSansLigne, initDashboards, loadDashboard, loadDashboards, loadPanelsInto, loadViews, refreshPanels, renderDashboard, visibiliteCouranteNonLue };

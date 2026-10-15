@@ -19543,6 +19543,28 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       `la page suivante du repli n'est pas demandée par son rang : page ${S111.evState.page}, ${JSON.stringify(demandeE2111)}`);
     exiger(/page partielle/.test(badgeE2111) && !/page sautée/.test(badgeE2111) && !/saut direct|par curseur/.test(ligneE2111) && ligneE2111.includes(FACE111("servie_par_decalage").trim()),
       `(111e2) UNE PAGE DU REPLI EST TRAITÉE EN SAUT : badge « ${badgeE2111} », ligne « ${ligneE2111.slice(0, 300)} » — les phrases du saut renvoient à un curseur qui n'existe pas`);
+    // `P10.32-m` (témoin 143e, posé ici parce que c'est le chargeur réel du repli) : l'infobulle du badge d'une page du repli ne
+    // promet pas un parcours « par curseur » — il n'y en a pas — et dit la voie qui existe (◀ / ▶ changent de page).
+    const titresE2111 = [...((badge111 && badge111.children) || [])].map((e) => String(e.title || "")).join(" | ").replace(/\s+/g, " ");
+    exiger(titresE2111.includes("◀ / ▶ changent de page") && !titresE2111.includes("par curseur"),
+      `(143e) l'infobulle du badge d'une page servie par le repli par décalage promet un parcours par curseur qui n'existe pas : « ${titresE2111.slice(-400)} »`);
+    // `P10.32-m` (témoin 143f, même chargeur réel `evLoad`, deux autres voies) : la voie que nomme l'infobulle est celle que
+    // la page a RÉELLEMENT suivie. (f1) Un vrai parcours par curseur (le démon sert `next_cursor`, ni `total` ni `offset`) dit
+    // « par curseur ». (f2) Une requête PIPÉE (`keyset` faux, servie par décalage, `total` inline) dit « changent de page » et
+    // jamais « par curseur » — le repli n'y est pas en cause : c'est le parcours ordinaire du décalage.
+    const titresDuBadge143f = () => [...((badge111 && badge111.children) || [])].map((e) => String(e.title || "")).join(" | ").replace(/\s+/g, " ");
+    servirLaPage111 = () => ({ columns: COLONNES111, rows: LIGNES111(3), stats: { elapsed_ms: 1, truncated: true }, has_more: true, next_cursor: CURSEUR111, limit: 3 });
+    await charger111(modViz111, S111);
+    const curseurF1143 = titresDuBadge143f(), repliF1143 = S111.evState.repliParDecalage;
+    servirLaPage111 = () => ({ columns: COLONNES111, rows: LIGNES111(3), stats: { elapsed_ms: 1, truncated: true }, total: 7, limit: 3 });
+    await charger111(modViz111, S111, { q: "search sshd | table ts source message", keyset: false });
+    const decalageF2143 = titresDuBadge143f(), demandeF2143 = derniereDemande111();
+    instrument111(repliF1143 === false && demandeF2143.keyset !== true,
+      `le parcours par curseur est lu comme un repli (${repliF1143}), ou la requête pipée part en keyset (${JSON.stringify(demandeF2143)}) : les deux voies jugées ci-dessous ne seraient pas celles qu'on croit`);
+    exiger(curseurF1143.includes("◀ / ▶ parcourent le résultat entier par curseur") && !curseurF1143.includes("changent de page"),
+      `(143f1) l'infobulle du badge d'un vrai parcours par curseur ne dit pas « par curseur » : « ${curseurF1143.slice(-400)} »`);
+    exiger(decalageF2143.includes("◀ / ▶ changent de page") && !decalageF2143.includes("par curseur"),
+      `(143f2) l'infobulle du badge d'une requête pipée servie par décalage promet un parcours par curseur : « ${decalageF2143.slice(-400)} »`);
     // (e3) Un total PLAFONNÉ relance le compte, et le repli se dit encore quand le compte remplace la ligne.
     let libererLeCompteE3111 = null;
     servirLeCompte111 = () => new Promise((r) => { libererLeCompteE3111 = () => r({ count_only: true, total: 12345 }); });
@@ -19609,7 +19631,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     // (f3) La ligne d'une agrégation, par le chargeur réel.
     const agreger111 = async (mod, S) => { S.exploreInflight = null; ligne111.replaceChildren(); if (sql111) sql111.value = "search sshd | stats count"; servirLaPage111 = () => ({ columns: ["count"], rows: [[5]], stats: { rows: 1, truncated: true, elapsed_ms: 2 } }); await mod.runQuery(); await laisser111(20); return nu111(ligne111); };
     const f3111 = await agreger111(modViz111, S111), f3En111 = await agreger111(modVizEn111, SEn111);
-    exiger(/^1 ligne\(s\) \(tronqué — affine la requête\) - serveur 2 ms - total \d+ ms$/.test(f3111) && /^1 row\(s\) \(truncated — refine the query\) - server 2 ms - total \d+ ms$/.test(f3En111),
+    exiger(/^1 ligne\(s\) \(tronqué — affine la requête\)(?: — seul le tableau est plafonné .*?)? - serveur 2 ms - total \d+ ms$/.test(f3111) && /^1 row\(s\) \(truncated — refine the query\)(?: — only the table is capped .*?)? - server 2 ms - total \d+ ms$/.test(f3En111),
       `(111f3) la ligne d'une agrégation reste française sous \`LANG='en'\`, ou sa face française a changé : « ${f3111} » / « ${f3En111} »`);
     // (f4) Le préfixe d'une erreur de transport ; l'annulation garde son nœud entier, que le lexique traduit.
     // `P10.29-g` — l'erreur de transport n'est plus « erreur : » collé au message : la face nommée d'une lecture non servie,
@@ -23577,6 +23599,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       "multitenant.js › MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE", "producer_ui.js › DESTINATIONS_DE_L_AVIS", "producer_ui.js › MOTS_DES_AVIS_DE_PRODUCTEUR", "threatintel.js › MOTS_DES_AVIS_D_INDICATEURS",
       // `P10.29-g`, `P10.29-f`, `P10.29-c` — les tables que le témoin 120 a posées : la face nommée d'une lecture non servie, les
       // avis d'échec, et les lignes, infobulles, confirmations et notes composées.
+      // `P10.32-m` — le plafond des lignes rendues (badge et ligne d'état) et la chauffe qui a une fin (témoins 143 à 146).
+      "dashboards.js › MOTS_DE_LA_CHAUFFE_SANS_FIN", "viz.js › MOTS_DU_PLAFOND_DES_LIGNES_RENDUES",
       "alerts.js › MOTS_DES_LECTURES_D_ALERTES", "attack.js › MOTS_DES_RESUMES_ATTACK", "cases.js › MOTS_DES_LECTURES_DE_DOSSIER", "cases.js › MOTS_DES_TEXTES_DE_DOSSIER",
       "core.js › MOTS_DE_L_AGE", "core.js › MOTS_DU_REFUS_D_UNE_LECTURE", "dashboards.js › MOTS_DE_L_INSTANTANE_DE_DASHBOARD",
       "detadv.js › MOTS_DES_NOTES_DE_DETECTION_AVANCEE", "detection_admin.js › MOTS_DES_NOTES_DE_DETECTION", "fleet.js › MOTS_DES_ATTENTES_D_HOTE", "fleet.js › MOTS_DE_L_INVENTAIRE_DE_FLOTTE", "knowledge.js › MOTS_DES_GESTES_DE_SAVOIR",
@@ -28653,6 +28677,369 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     `(142-faces) les deux langues ne rendent pas chacune leur mot : ${JSON.stringify(faces142)}`);
   if (echecs.length !== echecsAvant142) console.log(`(142) EN ÉCHEC — ${echecs.length - echecsAvant142} écart(s), dits ci-dessus`);
   else console.log("(142) OK — `P10.20-b` (console) : « Ingest / h » et « Alertes ouvertes » passent par le lecteur de verdict — non lus, « NON LISIBLE » / « NOT READABLE » avec la cause, jamais « 0 » ; lus, la valeur, vrai zéro compris ; un compte aveuglé seul laisse l'autre à sa valeur ; la pastille de `detection` dit un nombre de règles non lu sous son libellé ; une cause que `esc()` réécrirait est rendue telle quelle ; les trois sites d'aveu sont relus dans daemon/src/metrics.rs.");
+}
+
+// (143) à (148) `P10.32-m` (console) — CE QUI EST PLAFONNÉ ET CE QUI NE L'EST PAS ; UNE CHAUFFE QUI A UNE FIN ; L'AIDE
+// DES INTÉGRATIONS QUI DÉCRIT L'ÉCRAN SERVI ; « JAMAIS VU » QUI NOMME « NON INSTALLÉ / NON ACTIVÉ ICI ».
+//
+// MESURÉ AVANT CE LOT (86d1d772) : (143) les badges de troncature et (144) la ligne d'état d'une agrégation ne disaient
+// jamais que SEUL le tableau de lignes est plafonné (`PLUME_QUERY_MAX`, daemon/src/query_exec.rs) alors qu'un agrégat
+// compte toute la fenêtre ; (145) le sélecteur de taille de page offrait une taille au-delà du plafond par défaut sans
+// le dire ; (146) un panneau `warming:true` relançait toutes les 3 s SANS FIN en disant « mesure en cours » ; (147)
+// l'aide « Intégrations & hôtes » décrivait une pastille « Non branché » qu'aucun module ne rend ; (148) « jamais vu »
+// ne disait pas que le capteur peut simplement ne pas être installé ou activé dans ce mode.
+// JUGÉ SUR LE RENDU (texte), DANS LES DEUX LANGUES. Le défaut du plafond est RELU dans l'arbre du démon.
+// CE QUE CES TÉMOINS NE TIENNENT PAS : le démon ne publie pas la valeur réglée du plafond (la console lit `stats.max_rows`
+// s'il paraît, ce qu'aucune route ne sert aujourd'hui) ; la cause d'une chauffe sans fin n'est pas connue de la console
+// (`P10.32-o`, côté démon) ; l'installation réelle d'un capteur n'est pas sondée — elle est NOMMÉE comme possibilité.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant143 = echecs.length;
+  const url143 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modViz143 = await import(url143("viz.js"));
+  const modTdb143 = await import(url143("dashboards.js"));
+  const modFraicheur143 = await import(url143("freshness.js"));
+  const { HELP: AIDE143 } = await import(url143("help_registry.js"));
+  const { S: S143 } = await import(url143("state.js"));
+  const langueOrigine143 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modVizEn143 = await import(adresseSousLaLangue("viz.js"));
+  const modTdbEn143 = await import(adresseSousLaLangue("dashboards.js"));
+  const modFraicheurEn143 = await import(adresseSousLaLangue("freshness.js"));
+  const { S: SEn143 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine143 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine143);
+  const instrument143 = (vrai, quoi) => exiger(vrai, `(143-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu143 = (t) => String(t == null ? "" : t).replace(/\s+/g, " ").trim();
+  const texte143 = (el) => nu143(el && el.textContent);
+  const tic143 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser143 = async (n = 40) => { for (let i = 0; i < n; i++) await tic143(); };
+  const cueillir143 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir143(c, pred, acc)); return acc; };
+  const ACCENTS143 = /[éèêàçùôâîÉÈÊÀ]/;
+
+  // ── (0) L'INSTRUMENT : LE DÉFAUT DU PLAFOND, LU DANS LE DÉMON ET DANS LA CONSOLE ────────────────────
+  const execution143 = readFileSync(path.join(RACINE, "daemon", "src", "query_exec.rs"), "utf8");
+  const defautDuDemon143 = Number(((execution143.match(/std::env::var\("PLUME_QUERY_MAX"\)[^;]*?\.unwrap_or\((\d+)\);/) || [])[1]) || NaN);
+  const srcViz143 = readFileSync(path.join(WEB, "viz.js"), "utf8");
+  const defautDeLaConsole143 = Number(((srcViz143.match(/const PLAFOND_DE_LIGNES_PAR_DEFAUT_DU_SERVEUR = (\d+);/) || [])[1]) || NaN);
+  instrument143(Number.isFinite(defautDuDemon143) && /"stats": \{ "elapsed_ms": elapsed_ms, "rows": row_count, "truncated": truncated \}/.test(execution143),
+    `le défaut de \`PLUME_QUERY_MAX\` n'est plus lisible dans daemon/src/query_exec.rs (${defautDuDemon143}), ou \`stats\` n'y est plus { elapsed_ms, rows, truncated } : la phrase jugée ci-dessous serait à rejuger`);
+  exiger(defautDeLaConsole143 === defautDuDemon143,
+    `(143-defaut) la console nomme un plafond par défaut (${defautDeLaConsole143}) qui n'est pas celui du démon (${defautDuDemon143})`);
+  const fr143 = (n) => n.toLocaleString("fr-FR"), en143 = (n) => n.toLocaleString("en-US");
+
+  // ── (143) LE BADGE DE TRONCATURE ────────────────────────────────────────────────────────────────
+  // La voie « pour tout lire » dépend de l'écran : SANS pagination (agrégation d'Explore, carte d'accès aux données —
+  // navigation nulle) ni ◀ / ▶ ni « | stats » ; parcours par curseur servi = « par curseur » ; repli par décalage = « changent de page ».
+  const CONTEXTES143 = [
+    ["ampleur_inconnue sans parcours", null, "sans"],
+    ["ampleur_inconnue par décalage", { keyset: false, saut: false, page: 3, curseur: false }, "decalage"],
+    ["page_partielle par curseur", { keyset: true, saut: false, page: 2, curseur: true }, "curseur"],
+    ["page_partielle repli par décalage", { keyset: true, saut: false, page: 2, curseur: false }, "decalage"],
+    ["page_sautee", { keyset: true, saut: true, page: 7, curseur: true }, "curseur"]];
+  for (const [nom, nav, voie] of CONTEXTES143) {
+    const fr = nu143(modViz143.truncationBadge({ truncated: true }, nav)[2]);
+    const en = nu143(modVizEn143.truncationBadge({ truncated: true }, nav)[2]);
+    const lire = (fr.split("Pour tout lire :")[1] || ""), read = (en.split("To read everything:")[1] || "");
+    const voieFr = voie === "sans" ? !lire.includes("◀ / ▶") && !lire.includes("| stats") && lire.includes("resserrez la fenêtre temporelle ou affinez la requête")
+      : voie === "curseur" ? lire.includes("◀ / ▶ parcourent le résultat entier par curseur") && lire.includes("| stats")
+      : lire.includes("◀ / ▶ changent de page") && !lire.includes("curseur") && lire.includes("| stats");
+    const voieEn = voie === "sans" ? !read.includes("◀ / ▶") && !read.includes("| stats") && read.includes("narrow the time window or refine the query")
+      : voie === "curseur" ? read.includes("◀ / ▶ walk the whole result by cursor") : read.includes("◀ / ▶ change page") && !read.includes("cursor");
+    exiger(fr.includes("ne coupe QUE le tableau de lignes") && fr.includes("calculé sur TOUTES les lignes de la fenêtre") && voieFr
+      && fr.includes(nu143(`PLUME_QUERY_MAX (${fr143(defautDuDemon143)} par défaut`)),
+      `(143a) ${nom} : le badge ne dit pas que SEUL le tableau est plafonné, que les agrégats comptent tout, le plafond, ou nomme une voie de lecture que cet écran n'a pas (attendu « ${voie} ») : « ${fr.slice(-520)} »`);
+    exiger(en.includes("only cuts the TABLE of rows") && en.includes("computed over ALL rows of the window") && voieEn
+      && en.includes(`PLUME_QUERY_MAX (${en143(defautDuDemon143)} by default`) && !ACCENTS143.test(en),
+      `(143a) ${nom} : la face anglaise du badge ne dit pas la même chose, ou porte un accent : « ${en.slice(-520)} »`);
+  }
+  const servi143 = nu143(modViz143.truncationBadge({ truncated: true, max_rows: 20000 }, null)[2]);
+  const nul143 = nu143(modViz143.truncationBadge({ truncated: true, max_rows: 0 }, null)[2]);
+  exiger(servi143.includes(nu143(`au plus ${fr143(20000)} ligne(s)`)) && !servi143.includes("PLUME_QUERY_MAX (")
+    && nul143.includes(nu143(`PLUME_QUERY_MAX (${fr143(defautDuDemon143)} par défaut`)) && !nul143.includes("au plus 0 ligne"),
+    `(143b) un plafond SERVI par le démon (stats.max_rows) n'est pas celui que le badge écrit, ou un plafond nul est écrit tel quel : « ${servi143.slice(-400)} » / « ${nul143.slice(-300)} »`);
+  const rollup143 = nu143(modViz143.truncationBadge({ truncated: true, served_from: "rollup" }, null)[2]);
+  const chiffre143 = nu143(modViz143.truncationBadge({ truncated: true, topn_ecartes: 4, topn_total: 10 }, null)[2]);
+  exiger(!rollup143.includes("ne coupe QUE") && !rollup143.includes("TOUTES les lignes") && !chiffre143.includes("ne coupe QUE"),
+    `(143c) une réponse servie par un PRÉ-AGRÉGÉ (plafond top-N) dit que l'agrégat compte tout — c'est faux là : « ${rollup143.slice(-300)} » / « ${chiffre143.slice(-200)} »`);
+
+  // ── (144) LA LIGNE D'ÉTAT D'UNE AGRÉGATION ─────────────────────────────────────────────────────────
+  const ligne144 = document.querySelector("#qstats"), sql144 = document.querySelector("#sql");
+  instrument143(!!ligne144 && !!sql144, "`#qstats` ou `#sql` n'est plus dans index.html");
+  const fetchOrigine143 = globalThis.fetch, minuterieOrigine143 = globalThis.setTimeout, effaceurOrigine143 = globalThis.clearTimeout, horlogeOrigine143 = Date.now;
+  const sqlOrigine144 = sql144 ? sql144.value : "";
+  const etatOrigine143 = [S143, SEn143].map((S) => ({ S, vol: S.exploreInflight, dernier: S.lastResult, hist: S.qHist, histIdx: S.qHistIdx, cartes: S.panelCards }));
+  const reponse143 = (o) => { const t = JSON.stringify(o === undefined ? {} : o); return { ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => t, json: async () => JSON.parse(t) }; };
+  try {
+    let stats144 = {};
+    globalThis.fetch = async (u) => (String(u).split("?")[0] === "/api/query" ? reponse143({ columns: ["count"], rows: [[5]], stats: { rows: 1, elapsed_ms: 2, ...stats144 } }) : reponse143({}));
+    const agreger144 = async (mod, S, st) => { stats144 = st; S.exploreInflight = null; ligne144.replaceChildren(); sql144.value = "search sshd | stats count by host"; await mod.runQuery(); await laisser143(20); return texte143(ligne144); };
+    const fr144 = await agreger144(modViz143, S143, { truncated: true });
+    const badge144 = document.querySelector("#qbadge");
+    const titres144 = nu143(cueillir143(badge144, (e) => e !== badge144).map((e) => e.title).join(" | "));
+    const en144 = await agreger144(modVizEn143, SEn143, { truncated: true });
+    instrument143(!!badge144, "`#qbadge` n'est plus dans index.html");
+    const lire144 = titres144.split("Pour tout lire :")[1] || "";
+    exiger(titres144.includes("ne coupe QUE le tableau de lignes") && !titres144.includes("◀") && !titres144.includes("▶") && !lire144.includes("| stats")
+      && lire144.includes("resserrez la fenêtre temporelle ou affinez la requête"),
+      `(143d) le badge d'une agrégation tronquée d'Explore (aucune pagination) nomme ◀ / ▶ ou « | stats », ou ne dit pas comment tout lire : « ${titres144} »`);
+    exiger(fr144.includes(nu143(`seul le tableau est plafonné (PLUME_QUERY_MAX, ${fr143(defautDuDemon143)} par défaut) : chaque ligne rendue compte toute la fenêtre`)),
+      `(144a) la ligne d'état d'une agrégation tronquée ne dit pas que seul le tableau est plafonné : « ${fr144} »`);
+    exiger(en144.includes(`only the table is capped (PLUME_QUERY_MAX, ${en143(defautDuDemon143)} by default): each returned row counts the whole window`) && !ACCENTS143.test(en144),
+      `(144a) la ligne d'état anglaise ne le dit pas : « ${en144} »`);
+    const servi144 = await agreger144(modViz143, S143, { truncated: true, max_rows: 20000 });
+    const rollup144 = await agreger144(modViz143, S143, { truncated: true, served_from: "rollup" });
+    const entier144 = await agreger144(modViz143, S143, { truncated: false });
+    exiger(servi144.includes(nu143(`seul le tableau est plafonné (${fr143(20000)})`)) && !rollup144.includes("seul le tableau") && !entier144.includes("seul le tableau") && !entier144.includes("tronqué"),
+      `(144b) plafond servi « ${servi144} » ; pré-agrégé « ${rollup144} » ; réponse entière « ${entier144} »`);
+
+    // ── (145) LE SÉLECTEUR DE TAILLE DE PAGE ───────────────────────────────────────────────────────
+    const page145 = readFileSync(path.join(WEB, "index.html"), "utf8");
+    const lexique145 = readFileSync(path.join(WEB, "i18n.js"), "utf8");
+    const selecteur145 = (page145.match(/<select id="qsize"[\s\S]*?<\/select>/) || [""])[0];
+    const titreDuSelecteur145 = ((selecteur145.match(/^<select id="qsize"[^>]*title="([^"]*)"/) || [])[1]) || "";
+    const options145 = [...selecteur145.matchAll(/<option value="(\d+)"([^>]*)>([^<]*)<\/option>/g)].map((m) => ({ n: Number(m[1]), attributs: m[2], libelle: m[3] }));
+    instrument143(options145.length >= 5 && options145.some((o) => o.n <= defautDuDemon143), `le sélecteur #qsize n'est plus lisible dans index.html (${options145.length} option(s))`);
+    const auDela145 = options145.filter((o) => o.n > defautDuDemon143);
+    const muettes145 = auDela145.filter((o) => !/au-delà du plafond par défaut/.test(o.libelle) || !/title="[^"]*PLUME_QUERY_MAX/.test(o.attributs));
+    exiger(muettes145.length === 0 && titreDuSelecteur145.includes("PLUME_QUERY_MAX") && titreDuSelecteur145.includes(String(defautDuDemon143)),
+      `(145) le sélecteur propose sans le dire une taille au-delà du plafond par défaut (${defautDuDemon143}) : ${JSON.stringify(muettes145.map((o) => o.libelle))} ; titre « ${titreDuSelecteur145} »`);
+    const nonTraduits145 = [titreDuSelecteur145, ...auDela145.map((o) => o.libelle), ...auDela145.map((o) => ((o.attributs.match(/title="([^"]*)"/) || [])[1]) || "")]
+      .filter((t) => !lexique145.includes(JSON.stringify(t) + ":"));
+    exiger(nonTraduits145.length === 0, `(145) ces libellés du sélecteur n'ont pas de face anglaise au lexique : ${JSON.stringify(nonTraduits145)}`);
+
+    // ── (146) LA CHAUFFE A UNE FIN ─────────────────────────────────────────────────────────────────
+    const calendrier146 = [];
+    for (let e = 0, essai = 0; essai < 50; essai++) { const r = modTdb143.prochaineRelanceDeLaChauffe(e, essai); if (r === null) break; calendrier146.push(r); e += r; }
+    exiger(calendrier146.length > 1 && calendrier146.length < 20 && calendrier146[0] === 3000 && calendrier146[1] > calendrier146[0]
+      && calendrier146.every((r, i) => i === 0 || r >= calendrier146[i - 1]) && modTdb143.prochaineRelanceDeLaChauffe(10 * 60 * 1000, 0) === null,
+      `(146a) le calendrier de la chauffe ne s'espace pas ou ne finit pas : ${JSON.stringify(calendrier146)}`);
+    const horloge146 = { t: 1767225600000 };
+    const minuteries146 = [];
+    Date.now = () => horloge146.t;
+    globalThis.setTimeout = (fn, ms) => { if (ms >= 1000) { minuteries146.push({ fn, ms, vive: true }); return 900000 + minuteries146.length; } return minuterieOrigine143(fn, ms >= 100 ? 0 : ms); };
+    globalThis.clearTimeout = (h) => { if (typeof h === "number" && h > 900000) { const m = minuteries146[h - 900001]; if (m) m.vive = false; return; } effaceurOrigine143(h); };
+    let chauffe146 = true;
+    // LE CORPS DE CHAUFFE QUE LE DÉMON SERT, relu dans son arbre (jamais `stats: {}`) : `warming: true` et une couverture
+    // SYNTHÉTIQUE (`coverage_synthetique`, raison `mesure_en_cours`) qui recopie `horizon_ts` et `older_outside_window` de
+    // l'horizon mesuré. Servi ici avec une fenêtre qui descend SOUS l'horizon : le cas où le corps porte l'aveu de portée.
+    const tdbDuDemon146 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "dashboards.rs"), "utf8");
+    const avouDuDemon146 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "panneau_avoue.rs"), "utf8");
+    const raisonDeLaChauffe146 = ((avouDuDemon146.match(/pub\(crate\) const RAISON_MESURE_EN_COURS: &str = "([^"]+)";/) || [])[1]) || "";
+    const noticeDeLaChauffe146 = (((avouDuDemon146.match(/if raison == RAISON_MESURE_EN_COURS \{\s*"([^"]+)"/) || [])[1]) || "").replace(/\\\n\s*/g, "");
+    instrument143(/json!\(\{ "columns": \[\], "rows": \[\], "warming": true \}\);\s*v\["stats"\]\["coverage"\] = panneau_avoue::coverage_synthetique\(\s*panneau_avoue::RAISON_MESURE_EN_COURS/.test(tdbDuDemon146)
+      && /for champ in \["horizon_ts", "older_outside_window"\]/.test(avouDuDemon146) && !!raisonDeLaChauffe146 && noticeDeLaChauffe146.length > 40,
+      "le corps de chauffe du démon (`warming: true` + `coverage_synthetique(RAISON_MESURE_EN_COURS, …)` qui recopie horizon_ts et older_outside_window) n'est plus lisible dans daemon/src/handlers : le corps servi ci-dessous ne serait plus le sien");
+    const corpsDeChauffe146 = () => ({ columns: [], rows: [], warming: true, stats: { coverage: { searched_from: Math.floor(horloge146.t / 1000) - 3600, calcule_a: Math.floor(horloge146.t / 1000),
+      horizon_ts: Math.floor(horloge146.t / 1000) - 600, older_outside_window: true, reason: raisonDeLaChauffe146, notice: noticeDeLaChauffe146 } } });
+    const PANNEAU146 = { id: 4146, title: "Chauffe", query: "search source=sshd | stats count by host", is_soql: true, viz: "bar", window_s: 0, cols: 1, visibility: "shared" };
+    const PRIVE146 = { id: 4147, title: "Chauffe privée", query: "", is_soql: true, viz: "bar", window_s: 0, cols: 1, visibility: "shared", query_private: true };
+    const requetes146 = [];
+    let lectures146 = 0;
+    globalThis.fetch = async (u, o) => {
+      const url = String(u);
+      if (url.startsWith("/api/dashboard/147")) return reponse143({ panels: [PRIVE146], editable: true });
+      if (url.startsWith("/api/dashboard/")) return reponse143({ panels: [PANNEAU146], editable: true });
+      if (url.startsWith("/api/panels/4147/data")) return reponse143({ warming: true, stats: {} });
+      if (url.startsWith("/api/panels/4146/data")) lectures146++;
+      if (url.startsWith("/api/panels/4146/data")) return reponse143(chauffe146 ? corpsDeChauffe146() : { columns: ["host", "count"], rows: [["h", 3]], stats: { elapsed_ms: 1 } });
+      if (url.startsWith("/api/dashboards")) return reponse143({ dashboards: [], error: "liste non servie par ce simulacre (146i)" });   // l'en-tête rejoue aussi la liste : elle ne doit rien effacer
+      if (url.split("?")[0] === "/api/query") { requetes146.push(String((o && o.body) || "")); return reponse143({ columns: ["count"], rows: [[1]], stats: { rows: 1, elapsed_ms: 1 } }); }
+      return reponse143({});
+    };
+    S143.panelCards = [];
+    const tuile146 = modTdb143.renderDashboard({ id: 146, name: "Chauffe", panels: 1, cols: 1, editable: true, collapsed: false });
+    await laisser143();
+    const carte146 = cueillir143(tuile146, (e) => e.classList && e.classList.contains("panel"))[0];
+    instrument143(!!carte146 && !!carte146._panel && typeof carte146._panel.reload === "function", "le tableau de bord n'a rendu aucune carte de panneau rechargeable");
+    if (carte146 && carte146._panel) {
+      const corps146 = () => cueillir143(carte146, (e) => e.classList && e.classList.contains("panelbody"))[0];
+      const enAttente146 = () => minuteries146.filter((m) => m.vive);
+      minuteries146.length = 0;
+      await carte146._panel.reload(); await laisser143();
+      const premier146 = texte143(corps146());
+      const relances146 = [];
+      for (let i = 0; i < 60 && enAttente146().length; i++) {
+        const m = enAttente146()[0]; m.vive = false; relances146.push(m.ms); horloge146.t += m.ms;
+        await m.fn(); await laisser143();
+      }
+      const fin146 = texte143(corps146());
+      const ouvrir146 = cueillir143(corps146(), (e) => e.tagName === "BUTTON" && texte143(e) === "Ouvrir dans Recherche")[0];
+      const badges146 = (el) => cueillir143(el, (e) => e.classList && e.classList.contains("qb")).map((e) => texte143(e));
+      exiger(/chargement \(mesure en cours\)/.test(premier146) && relances146.length > 1 && relances146.length < 20 && relances146[0] === 3000 && relances146[relances146.length - 1] > relances146[0]
+        && enAttente146().length === 0,
+        `(146b) la chauffe d'un panneau ne s'espace pas ou ne s'arrête pas : relances ${JSON.stringify(relances146)}, encore en attente ${enAttente146().length} ; premier rendu « ${premier146} »`);
+      exiger(fin146.includes("n'a pas abouti") && fin146.includes("Budget de calcul dépassé, requête refusée côté serveur, ou rafraîchissement abandonné par un serveur saturé") && fin146.includes("la console n'en connaît pas la cause")
+        && fin146.includes("ouvrez la requête dans Recherche, avec un budget plus large, pour voir le résultat ou l'erreur") && !fin146.includes("mesure en cours") && !!ouvrir146 && typeof ouvrir146.onclick === "function",
+        `(146c) au-delà du délai, le panneau ne dit pas que le calcul n'a pas abouti, ou n'offre pas d'ouvrir la requête dans Recherche : « ${fin146} »`);
+      // (146k) LE CORPS RÉEL DU DÉMON porte une fenêtre sous l'horizon : la phrase de fin est un ÉTAT DU CALCUL, jamais une absence —
+      // elle reste, l'horizon la suit, et le badge « horizon atteint » est posé, au premier rendu comme à la fin.
+      exiger(fin146.includes("n'a pas abouti") && fin146.includes("l'horizon de conservation s'arrête ici") && fin146.indexOf("n'a pas abouti") < fin146.indexOf("l'horizon de conservation")
+        && badges146(corps146()).includes("horizon atteint") && /chargement \(mesure en cours\)/.test(premier146) && premier146.includes("horizon atteint"),
+        `(146k) sur le corps de chauffe que sert le démon (fenêtre sous l'horizon), la fin de chauffe perd sa phrase, son horizon ou son badge : premier « ${premier146} » ; fin « ${fin146} » ; badges ${JSON.stringify(badges146(corps146()))}`);
+      // le bouton OUVRE : la requête du panneau dans l'éditeur, l'onglet Recherche, et la requête PART au démon.
+      const hashAvant146 = location.hash, sqlAvant146 = sql144 ? sql144.value : "";
+      if (sql144) sql144.value = "";
+      requetes146.length = 0; S143.exploreInflight = null;
+      if (ouvrir146 && typeof ouvrir146.onclick === "function") { await ouvrir146.onclick(); await laisser143(20); }
+      const ouvert146 = { sql: sql144 ? sql144.value : "", hash: location.hash, parties: requetes146.slice() };
+      location.hash = hashAvant146; if (sql144) sql144.value = sqlAvant146;
+      exiger(ouvert146.sql === PANNEAU146.query && /^#?explore$/.test(ouvert146.hash) && ouvert146.parties.some((b) => b.includes("stats count by host")),
+        `(146c) « Ouvrir dans Recherche » n'ouvre pas la requête du panneau dans Recherche : #sql « ${ouvert146.sql} », onglet « ${ouvert146.hash} », requêtes parties ${JSON.stringify(ouvert146.parties)}`);
+      // l'auto-rafraîchissement ne rouvre pas une chauffe sans fin ; le geste explicite, si ; une donnée servie la clôt.
+      await carte146._panel.reload(); await laisser143();
+      const apresAuto146 = texte143(corps146()), attenteAuto146 = enAttente146().length;
+      const rafraichir146 = cueillir143(carte146, (e) => e.tagName === "BUTTON" && e.title === "Rafraîchir ce panneau")[0];
+      instrument143(!!rafraichir146, "le bouton « Rafraîchir ce panneau » n'est plus rendu");
+      if (rafraichir146) { rafraichir146.onclick(); await laisser143(); }
+      const apresGeste146 = texte143(corps146()), attenteGeste146 = enAttente146().map((m) => m.ms);
+      chauffe146 = false;
+      for (const m of enAttente146()) { m.vive = false; horloge146.t += m.ms; await m.fn(); await laisser143(); }
+      exiger(apresAuto146.includes("n'a pas abouti") && attenteAuto146 === 0 && /mesure en cours/.test(apresGeste146) && JSON.stringify(attenteGeste146) === "[3000]"
+        && !texte143(corps146()).includes("n'a pas abouti") && carte146._chauffe == null,
+        `(146d) auto-rafraîchissement « ${apresAuto146} » (${attenteAuto146} relance(s)) ; geste « ${apresGeste146} » (${JSON.stringify(attenteGeste146)}) ; données « ${texte143(corps146())} »`);
+      // (146f) une AUTRE fenêtre rouvre le délai, sans geste ; (146h) « Rafraîchir ce dashboard » et « Rafraîchir » de la vue sont des gestes.
+      const jusquALaFin146 = async () => { for (let i = 0; i < 60 && enAttente146().length; i++) { const m = enAttente146()[0]; m.vive = false; horloge146.t += m.ms; await m.fn(); await laisser143(); } };
+      chauffe146 = true;
+      await carte146._panel.reload(); await laisser143(); await jusquALaFin146();
+      const finAvantFenetre146 = texte143(corps146());
+      const plage146 = document.querySelector("#range"), plageAvant146 = plage146 ? plage146.value : "";
+      instrument143(!!plage146, "`#range` n'est plus dans index.html");
+      if (plage146) plage146.value = plageAvant146 === "3600" ? "900" : "3600";
+      await carte146._panel.reload(); await laisser143();
+      const apresFenetre146 = texte143(corps146()), attenteFenetre146 = enAttente146().map((m) => m.ms);
+      if (plage146) plage146.value = plageAvant146;
+      exiger(finAvantFenetre146.includes("n'a pas abouti") && /mesure en cours/.test(apresFenetre146) && JSON.stringify(attenteFenetre146) === "[3000]",
+        `(146f) une autre fenêtre ne rouvre pas le délai de chauffe : fin « ${finAvantFenetre146} » ; après changement de fenêtre « ${apresFenetre146} » (${JSON.stringify(attenteFenetre146)})`);
+      await jusquALaFin146();
+      const finAvantTableau146 = texte143(corps146());
+      carte146._panel.loaded = true;   // ce que pose l'observateur d'apparition : les rafraîchissements de tableau et de vue ne rechargent que les cartes déjà chargées
+      const rafraichirTableau146 = cueillir143(tuile146, (e) => e.tagName === "BUTTON" && e.title === "Rafraîchir ce dashboard")[0];
+      instrument143(!!rafraichirTableau146, "le bouton « Rafraîchir ce dashboard » n'est plus rendu");
+      if (rafraichirTableau146) { rafraichirTableau146.onclick(); await laisser143(); }
+      const apresTableau146 = texte143(corps146()), attenteTableau146 = enAttente146().map((m) => m.ms);
+      await jusquALaFin146();
+      const finAvantVue146 = texte143(corps146());
+      const vue146 = document.querySelector("#dash-refresh");
+      const ecouteursVue146 = ((vue146 && vue146._ecouteurs) || []).filter((e) => e.type === "click");
+      instrument143(ecouteursVue146.length > 0, "`#dash-refresh` ne porte plus d'écouteur de clic (initDashboards non joué ?)");
+      const parentAvant146 = tuile146.parentNode;
+      if (!tuile146.isConnected) document.body.appendChild(tuile146);
+      if (!S143.panelCards.includes(carte146)) S143.panelCards.push(carte146);
+      for (const e of ecouteursVue146) e.rappel({ type: "click", target: vue146, preventDefault() {}, stopPropagation() {} });
+      await laisser143();
+      const apresVue146 = texte143(corps146()), attenteVue146 = enAttente146().map((m) => m.ms);
+      if (!parentAvant146 && tuile146.parentNode) tuile146.parentNode.removeChild(tuile146);
+      exiger(finAvantTableau146.includes("n'a pas abouti") && /mesure en cours/.test(apresTableau146) && JSON.stringify(attenteTableau146) === "[3000]"
+        && finAvantVue146.includes("n'a pas abouti") && /mesure en cours/.test(apresVue146) && attenteVue146.length >= 1 && attenteVue146.every((ms) => ms === 3000),
+        `(146h) un rafraîchissement explicite du tableau de bord ou de la vue ne rouvre pas le délai : tableau « ${apresTableau146} » (${JSON.stringify(attenteTableau146)}) ; vue « ${apresVue146} » (${JSON.stringify(attenteVue146)})`);
+      // (146j) UN GESTE PENDANT UNE CHAUFFE : une seule relance reste en attente — celle du geste. La relance que la chauffe
+      // avait posée est retirée (sans quoi deux minuteurs se relaient et la cadence double à chaque geste).
+      await jusquALaFin146();
+      if (rafraichir146) { rafraichir146.onclick(); await laisser143(); }
+      const avantJ146 = enAttente146().map((m) => m.ms);
+      if (rafraichir146) { rafraichir146.onclick(); await laisser143(); }
+      const apresJ146 = enAttente146().map((m) => m.ms);
+      exiger(JSON.stringify(avantJ146) === "[3000]" && JSON.stringify(apresJ146) === "[3000]",
+        `(146j) un geste pendant une chauffe laisse plusieurs relances en attente : avant le second geste ${JSON.stringify(avantJ146)}, après ${JSON.stringify(apresJ146)}`);
+      // (146i) PAR LE COUREUR DES CHARGES RÉEL : l'en-tête « Rafraîchir maintenant » (#manual-refresh -> refreshCurrentView ->
+      // refresh() -> la charge `dashboards` -> refreshPanels) est un geste et rouvre le délai ; un tir de cadence (refresh({ depuis }))
+      // passe par la même charge et ne le rouvre pas.
+      await jusquALaFin146();
+      const modApp146 = await import(url143("app.js"));
+      // Le bouton du document porte le `refreshCurrentView` de la DERNIÈRE instance d'app.js évaluée (l'anglaise du harnais) :
+      // la liaison est donc relue dans la source, et c'est la fonction de CETTE instance — celle qui tient la carte — qui est jouée.
+      const srcApp146 = readFileSync(path.join(WEB, "app.js"), "utf8");
+      instrument143(/\$\('#manual-refresh'\)\.onclick = refreshCurrentView;/.test(srcApp146) && /function refreshCurrentView\(\) \{\s*refresh\(\);/.test(srcApp146)
+        && typeof modApp146.refreshCurrentView === "function" && typeof modApp146.refresh === "function",
+        "`#manual-refresh` ne porte plus `refreshCurrentView` qui appelle `refresh()` (app.js), ou l'un n'est plus exporté : le chemin de l'en-tête ne serait pas celui jugé");
+      const section146 = document.querySelector("#dashboards"), cachees146 = [];
+      for (let n = section146; n && n !== document.body; n = n.parentNode) if (n.hidden) { cachees146.push(n); n.hidden = false; }
+      const vueListe146 = document.querySelector("#dashview"), listeAvant146 = vueListe146 ? [...vueListe146.childNodes] : [];
+      const statut146 = document.querySelector("#status"), statutAvant146 = statut146 ? statut146.textContent : "";
+      const listeDesTableaux146 = S143.dashList, visibleAvant146 = carte146._panel.visible, sqlAvantI146 = sql144 ? sql144.value : "";
+      const parentAvantI146 = tuile146.parentNode;
+      if (!tuile146.isConnected) document.body.appendChild(tuile146);
+      if (!S143.panelCards.includes(carte146)) S143.panelCards.push(carte146);
+      carte146._panel.loaded = true; carte146._panel.visible = true; if (sql144) sql144.value = "";
+      try {
+        // les AUTRES charges affichées partent aussi : seule la relance que porte CETTE carte est lue (les leurs ne sont pas jugées ici).
+        const relanceDeLaCarte146 = () => { const h = carte146._warmTimer, m = typeof h === "number" && h > 900000 ? minuteries146[h - 900001] : null; return m && m.vive ? m.ms : null; };
+        // la borne du tir suit TOUTE demande antérieure (horloge réelle comprise) : la charge part, elle n'est pas écartée par fraîcheur.
+        const lecturesAvant146 = lectures146;
+        await modApp146.refresh({ depuis: horlogeOrigine143() + 1 }); await laisser143();
+        const apresCadence146 = texte143(corps146()), attenteCadence146 = relanceDeLaCarte146(), lecturesCadence146 = lectures146 - lecturesAvant146;
+        modApp146.refreshCurrentView(); await laisser143();
+        const apresEntete146 = texte143(corps146()), attenteEntete146 = relanceDeLaCarte146(), lecturesEntete146 = lectures146 - lecturesAvant146 - lecturesCadence146;
+        instrument143(lecturesCadence146 === 1 && lecturesEntete146 === 1,
+          `le tir de cadence (${lecturesCadence146}) ou l'en-tête (${lecturesEntete146}) n'a pas relu le panneau une fois : le verdict ci-dessous serait vrai par vacuité`);
+        exiger(apresCadence146.includes("n'a pas abouti") && attenteCadence146 === null && /mesure en cours/.test(apresEntete146) && attenteEntete146 === 3000,
+          `(146i) par le coureur des charges : cadence « ${apresCadence146.slice(0, 160)} » (relance ${attenteCadence146}) ; en-tête « Rafraîchir maintenant » « ${apresEntete146.slice(0, 160)} » (relance ${attenteEntete146})`);
+      } finally {
+        for (const n of cachees146) n.hidden = true;
+        if (vueListe146) vueListe146.replaceChildren(...listeAvant146);
+        if (statut146) statut146.textContent = statutAvant146;
+        S143.dashList = listeDesTableaux146; carte146._panel.visible = visibleAvant146; if (sql144) sql144.value = sqlAvantI146;
+        if (!parentAvantI146 && tuile146.parentNode) tuile146.parentNode.removeChild(tuile146);
+      }
+      for (const m of enAttente146()) m.vive = false;
+      carte146._chauffe = null; clearTimeout(carte146._warmTimer); carte146._warmTimer = null;
+    }
+    // (146g) un panneau dont la requête est PRIVÉE (texte masqué) : la chauffe sans fin le dit, sans offrir d'ouverture.
+    const tuile146p = modTdb143.renderDashboard({ id: 147, name: "Chauffe privée", panels: 1, cols: 1, editable: true, collapsed: false });
+    await laisser143();
+    const carte146p = cueillir143(tuile146p, (e) => e.classList && e.classList.contains("panel"))[0];
+    instrument143(!!carte146p && !!carte146p._panel, "le tableau de bord privé n'a rendu aucune carte de panneau");
+    if (carte146p && carte146p._panel) {
+      minuteries146.length = 0;
+      await carte146p._panel.reload(); await laisser143();
+      for (let i = 0; i < 60 && minuteries146.some((m) => m.vive); i++) { const m = minuteries146.find((x) => x.vive); m.vive = false; horloge146.t += m.ms; await m.fn(); await laisser143(); }
+      const corps146p = cueillir143(carte146p, (e) => e.classList && e.classList.contains("panelbody"))[0];
+      const boutons146p = cueillir143(corps146p, (e) => e.tagName === "BUTTON").map(texte143);
+      exiger(texte143(corps146p).includes("n'a pas abouti") && !boutons146p.includes("Ouvrir dans Recherche"),
+        `(146g) un panneau à requête privée offre d'ouvrir sa requête dans Recherche, ou ne dit pas la fin de sa chauffe : « ${texte143(corps146p)} » ; boutons ${JSON.stringify(boutons146p)}`);
+      for (const m of minuteries146) m.vive = false;
+    }
+    const fin146En = texte143(modTdbEn143.noeudDeLaChauffeSansFin(135000, () => {}));
+    exiger(fin146En.includes("did not complete within 135 s") && fin146En.includes("refresh dropped by a saturated server") && fin146En.includes("the console does not know the cause") && fin146En.includes("Open in Search") && !ACCENTS143.test(fin146En)
+      && !texte143(modTdb143.noeudDeLaChauffeSansFin(135000, null)).includes("Ouvrir dans Recherche"),
+      `(146e) la face anglaise de la chauffe sans fin manque, ou une requête privée offre l'ouverture : « ${fin146En} »`);
+
+    // ── (147) ET (148) LES INTÉGRATIONS : L'AIDE DÉCRIT L'ÉCRAN, « JAMAIS VU » NOMME SA POSSIBILITÉ ──────
+    const corps147 = new Element("div");
+    const qsOrigine147 = document.querySelector;
+    document.querySelector = (sel) => (sel === "#integrations .body" ? corps147 : qsOrigine147.call(document, sel));
+    const capteur147 = (id, status) => ({ id, label: id.toUpperCase(), interval_s: 60, last_seen: status === "inconnu" ? null : 1000, status, event_based: false, portee: "par hôte" });
+    const rendre147 = async (mod, capteurs) => {
+      globalThis.fetch = async () => reponse143({ collectors: capteurs, hosts: [], hosts_window: 50, hosts_served: 0, hosts_truncated: false, hosts_total: 0, flotte: null,
+        ...(capteurs.some((c) => c.status === "non_lu") ? { error: "lectures NON FAITES : a", non_lus: ["a"] } : {}) });
+      await mod.renderIntegrations();
+      return { html: corps147.innerHTML, texte: nu143(corps147.innerHTML.replace(/<[^>]+>/g, " ")) };
+    };
+    try {
+      const tous147 = [capteur147("a", "actif"), capteur147("b", "muet"), capteur147("c", "inconnu"), capteur147("d", "non_lu")];
+      for (const [langue, mod, aide] of [["fr", modFraicheur143, AIDE143.integrations.fr.body], ["en", modFraicheurEn143, AIDE143.integrations.en.body]]) {
+        const rendu = await rendre147(mod, tous147);
+        const termes = [...aide.matchAll(/^• ([^=\n]+?) = /gm)].map((m) => m[1].trim());
+        const sansRendu = termes.filter((t) => !rendu.texte.toLowerCase().replace(/-/g, " ").includes(t.toLowerCase().replace(/-/g, " ").replace(/^« | »$/g, "")));
+        exiger(termes.length >= 4 && sansRendu.length === 0,
+          `(147) ${langue} : l'aide « Intégrations & hôtes » nomme des états que l'écran ne rend pas : ${JSON.stringify(sansRendu)} (termes ${JSON.stringify(termes)}) — rendu « ${rendu.texte.slice(0, 300)} »`);
+        // (148) un capteur jamais vu : la possibilité « non installé / non activé ici » est NOMMÉE, sous la rangée.
+        const avec = await rendre147(mod, [capteur147("a", "actif"), capteur147("c", "inconnu")]);
+        const sans = await rendre147(mod, [capteur147("a", "actif")]);
+        const motif = langue === "fr" ? /ne pas être installé ou pas activé dans ce mode de déploiement/ : /not be installed or not enabled in this deployment mode/;
+        const titre = langue === "fr" ? /pas installée ou pas activée dans ce mode de déploiement/ : /not installed or not enabled in this deployment mode/;
+        exiger(motif.test(avec.texte) && /data-capteurs-jamais-vus="1"/.test(avec.html) && titre.test(avec.html) && !/data-capteurs-jamais-vus/.test(sans.html),
+          `(148) ${langue} : « jamais vu » ne nomme pas « non installé / non activé ici », ou le nomme sans capteur jamais vu : « ${avec.texte.slice(0, 500)} »`);
+      }
+    } finally { document.querySelector = qsOrigine147; }
+  } finally {
+    globalThis.fetch = fetchOrigine143; globalThis.setTimeout = minuterieOrigine143; globalThis.clearTimeout = effaceurOrigine143; Date.now = horlogeOrigine143;
+    if (sql144) sql144.value = sqlOrigine144;
+    if (ligne144) ligne144.replaceChildren();
+    for (const o of etatOrigine143) { o.S.exploreInflight = o.vol; o.S.lastResult = o.dernier; o.S.qHist = o.hist; o.S.qHistIdx = o.histIdx; o.S.panelCards = o.cartes; }
+  }
+  if (echecs.length !== echecsAvant143) console.log(`(143-148) EN ÉCHEC — ${echecs.length - echecsAvant143} écart(s), dits ci-dessus`);
+  else console.log("(143-148) OK — `P10.32-m` (console) : le badge de troncature et la ligne d'état d'une agrégation disent, dans les deux langues, que SEUL le tableau est plafonné (valeur servie, sinon PLUME_QUERY_MAX et son défaut relu dans le démon), que les agrégats comptent toute la fenêtre et comment tout lire par la voie que l'écran a (◀ / ▶ seulement là où il y a un parcours, « par curseur » seulement quand le curseur est servi) — jamais sur un pré-agrégé ; le sélecteur dit la taille qui dépasse le plafond par défaut ; une chauffe s'espace, finit, dit que le calcul n'a pas abouti et ouvre la requête dans Recherche, avec un budget plus large (jamais une requête privée) — sur le corps de chauffe que sert le démon, sa phrase, son horizon et son badge restent —, l'auto-rafraîchissement ne la rouvre pas (le tir de cadence réel compris), une autre fenêtre et les quatre rafraîchissements explicites si (l'en-tête « Rafraîchir maintenant » par le coureur des charges réel), et un geste pendant une chauffe ne laisse qu'une relance ; la voie de lecture du badge suit la page qu'evLoad a servie (curseur servi, repli, requête pipée par décalage) ; l'aide des intégrations ne nomme que des états rendus ; « jamais vu » nomme « non installé / non activé ici ».");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

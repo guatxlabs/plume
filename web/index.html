@@ -259,13 +259,13 @@
       <button id="qsave" type="button" title="Enregistrer la requête courante dans mes modèles (nommée, persistante, privée à votre compte)">Enregistrer</button>
       <button id="qrecent" type="button" title="Requêtes récemment exécutées (ce navigateur)">Récentes</button>
       <select id="viz" aria-label="Visualisation"></select>
-      <select id="qsize" aria-label="Événements par page" title="Événements par page (pagination)">
+      <select id="qsize" aria-label="Événements par page" title="Événements par page (pagination). Le serveur rend au plus PLUME_QUERY_MAX lignes par réponse (5000 par défaut) : une page plus grande que ce plafond sort partielle.">
         <option value="10">10/page</option><option value="50">50/page</option>
         <option value="100" selected>100/page</option><option value="200">200/page</option>
         <option value="300">300/page</option><option value="400">400/page</option>
         <option value="500">500/page</option><option value="1000">1000/page</option>
         <option value="2000">2000/page</option><option value="5000">5000/page</option>
-        <option value="10000">10000/page</option>
+        <option value="10000" title="Au-delà du plafond par défaut du serveur (PLUME_QUERY_MAX, 5000) : servie entière seulement si l'exploitant a relevé ce plafond.">10000/page (au-delà du plafond par défaut)</option>
       </select>
     </div>
     <!-- #16 ASSISTANT IA (advisory NL→GXQL) — caché par défaut ; révélé par ai.js SI /api/ai/status = enabled.

@@ -312,7 +312,7 @@ const CHARGES_DE_LA_CONSOLE = [
   // aucun autre moyen de se réparer), les DONNÉES des panneaux sont une lecture vive (cadence, et
   // déjà bornée aux panneaux chargés ET visibles par `dashboards.js`).
   { cible: 'dashview', charger: () => loadDashboards() },
-  { cible: 'dashboards', charger: () => refreshPanels(), vive: true },
+  { cible: 'dashboards', charger: (origine) => refreshPanels(origine), vive: true },   // `P10.32-m` : un geste rouvre la chauffe
   { cible: 'coverage', charger: () => renderCoverage() },
   { cible: 'rules', charger: () => loadRules() },
   { cible: 'notifiers', charger: () => loadNotifiers() },
@@ -431,7 +431,10 @@ function lancerLesCharges(liste, depuis) {
   const promesses = partantes.map(c => {
     if (!cadence) c._demande = Date.now();
     c._enVol = true;
-    return Promise.resolve().then(peintreDe(c)).finally(() => { c._enVol = false; });
+    // `P10.32-m` — LE PEINTRE APPREND QUI L'A LANCÉ : `'geste'` sans borne, `'cadence'` sous un tir. Les panneaux de
+    // tableau de bord en ont besoin (un geste rouvre le délai de chauffe, la cadence non) ; les autres l'ignorent.
+    const peintre = peintreDe(c), origine = cadence ? 'cadence' : 'geste';
+    return Promise.resolve().then(() => peintre(origine)).finally(() => { c._enVol = false; });
   });
   // L'ÉCHEC D'UNE CHARGE SE DIT, QUEL QUE SOIT CELUI QUI L'A LANCÉE. Écrit ICI et non chez l'appelant :
   // seule la cadence avait un `catch` qui portait l'aveu au pied de page ; une charge lancée à l'entrée

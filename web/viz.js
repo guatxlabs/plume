@@ -540,9 +540,53 @@ const LIBELLE_DU_BADGE_CHIFFRE = {
   fr: 'tronqué — {ecartes} écartés ({pct} %)',
   en: 'truncated — {ecartes} left out ({pct} %)',
 };
-const titreDuBadgeDeTroncature = (cle, stats, nombres) =>
+// `P10.32-m` — CE QUI EST PLAFONNÉ, ET CE QUI NE L'EST PAS. Mesuré avant ce lot : aucun des badges ni la ligne d'état
+// d'une agrégation ne disaient que le plafond de sortie du serveur (`PLUME_QUERY_MAX`, daemon/src/query_exec.rs) ne
+// coupe QUE les lignes rendues, alors qu'un agrégat est calculé sur toute la fenêtre avant ce plafond — l'analyste
+// lisait « plume ne sait pas requêter au-delà ». La phrase n'est posée que hors pré-agrégé : une réponse servie par un
+// rollup a son propre plafond top-N, qui écarte des valeurs AVANT l'agrégat, et y dire « l'agrégat compte tout » serait
+// faux. Un agrégat froid calculé sur un échantillon n'est jamais rendu (refus, daemon/src/cold_store/exactness.rs).
+// Le serveur ne publie pas encore la valeur réglée : la console lit `stats.max_rows` s'il est servi, sinon elle nomme
+// le réglage et son défaut, recopié du démon et relu par le harnais (témoin 143).
+const PLAFOND_DE_LIGNES_PAR_DEFAUT_DU_SERVEUR = 5000;
+const MOTS_DU_PLAFOND_DES_LIGNES_RENDUES = {
+  seul_le_tableau: {
+    fr: "Ce plafond ne coupe QUE le tableau de lignes : le serveur rend au plus {plafond} ligne(s) par réponse. Un agrégat rendu (| stats, timechart, count) est calculé sur TOUTES les lignes de la fenêtre : ses chiffres sont complets, seules ses lignes de sortie au-delà du plafond manquent.",
+    en: 'This cap only cuts the TABLE of rows: the server returns at most {plafond} row(s) per response. A returned aggregate (| stats, timechart, count) is computed over ALL rows of the window: its figures are complete, only its output rows beyond the cap are missing.' },
+  // Comment tout lire : la voie dépend de l'écran qui porte le badge. Une agrégation d'Explore et une carte d'accès aux
+  // données n'ont AUCUNE pagination (navigation nulle) : y nommer ◀ / ▶ serait faux (précédent `P10.22-e`). Un parcours
+  // servi par curseur traverse tout ; un parcours par décalage change de page, sans promesse de tout traverser.
+  lire_sans_parcours: {
+    fr: "Pour tout lire : resserrez la fenêtre temporelle ou affinez la requête, jusqu'à ce que la sortie tienne sous le plafond.",
+    en: 'To read everything: narrow the time window or refine the query until the output fits under the cap.' },
+  lire_par_curseur: {
+    fr: "Pour tout lire : ◀ / ▶ parcourent le résultat entier par curseur, « | stats … » résume la fenêtre entière, ou resserrez la fenêtre temporelle.",
+    en: 'To read everything: ◀ / ▶ walk the whole result by cursor, « | stats … » summarises the whole window, or narrow the time window.' },
+  lire_par_decalage: {
+    fr: "Pour tout lire : ◀ / ▶ changent de page, « | stats … » résume la fenêtre entière, ou resserrez la fenêtre temporelle.",
+    en: 'To read everything: ◀ / ▶ change page, « | stats … » summarises the whole window, or narrow the time window.' },
+  plafond_par_defaut: {
+    fr: 'PLUME_QUERY_MAX ({defaut} par défaut ; ce serveur ne publie pas la valeur réglée)',
+    en: 'PLUME_QUERY_MAX ({defaut} by default; this server does not report the value it uses)' },
+  plafond_par_defaut_court: {
+    fr: 'PLUME_QUERY_MAX, {defaut} par défaut',
+    en: 'PLUME_QUERY_MAX, {defaut} by default' },
+  ligne_d_etat: {
+    fr: ' — seul le tableau est plafonné ({plafond}) : chaque ligne rendue compte toute la fenêtre, les lignes au-delà manquent',
+    en: ' — only the table is capped ({plafond}): each returned row counts the whole window, rows beyond it are missing' },
+};
+const leTableauSeulEstPlafonne = (stats) => !!stats && stats.served_from !== 'rollup';
+const valeurDuPlafondDesLignes = (stats, faceDuDefaut) => (stats && Number.isFinite(stats.max_rows) && stats.max_rows > 0
+  ? stats.max_rows.toLocaleString(LOC)
+  : faceDansLaLangue(MOTS_DU_PLAFOND_DES_LIGNES_RENDUES[faceDuDefaut], { defaut: PLAFOND_DE_LIGNES_PAR_DEFAUT_DU_SERVEUR.toLocaleString(LOC) }));
+const phraseDuPlafondDesLignes = (cle, stats) => faceDansLaLangue(MOTS_DU_PLAFOND_DES_LIGNES_RENDUES[cle],
+  { plafond: valeurDuPlafondDesLignes(stats, cle === 'ligne_d_etat' ? 'plafond_par_defaut_court' : 'plafond_par_defaut') });
+const voieDeLecture = (navigation) => (!navigation ? 'lire_sans_parcours' : navigation.curseur ? 'lire_par_curseur' : 'lire_par_decalage');
+const titreDuBadgeDeTroncature = (cle, stats, nombres, navigation) =>
   (LANG === 'en' ? TITRES_DU_BADGE_DE_TRONCATURE[cle].en : TITRES_DU_BADGE_DE_TRONCATURE[cle].fr)
     .replace('{ecartes}', nombres ? nombres.ecartes : '').replace('{total}', nombres ? nombres.total : '')
+  + (cle !== 'plancher_chiffre' && leTableauSeulEstPlafonne(stats)
+    ? '\n\n' + phraseDuPlafondDesLignes('seul_le_tableau', stats) + '\n' + faceDansLaLangue(MOTS_DU_PLAFOND_DES_LIGNES_RENDUES[voieDeLecture(navigation)]) : '')
   + (stats.rollup_note ? '\n\n' + stats.rollup_note : '');
 function truncationBadge(stats, navigation) {
   const ec = stats.topn_ecartes, tot = stats.topn_total;
@@ -554,14 +598,14 @@ function truncationBadge(stats, navigation) {
   }
   if (navigation && navigation.keyset && navigation.saut) {
     return ['qb-trunc', 'page sautée — contenu partiel',   // libellé STATIQUE : traduisible par le lexique ; le numéro de page est dans la ligne d'état
-      titreDuBadgeDeTroncature('page_sautee', stats)];
+      titreDuBadgeDeTroncature('page_sautee', stats, null, navigation)];
   }
   if (navigation && navigation.keyset) {
     return ['qb-trunc', 'page partielle — plafond de lignes du serveur',
-      titreDuBadgeDeTroncature('page_partielle', stats)];
+      titreDuBadgeDeTroncature('page_partielle', stats, null, navigation)];
   }
   return ['qb-trunc', 'tronqué — ampleur inconnue',
-    titreDuBadgeDeTroncature('ampleur_inconnue', stats)];
+    titreDuBadgeDeTroncature('ampleur_inconnue', stats, null, navigation)];
 }
 
 // `P10.5-i` — CE QU'UN PANNEAU N'A PAS PU VOIR, DIT À L'ÉCRAN.
@@ -3034,7 +3078,7 @@ async function evLoad() {
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;   // requête supersédée pendant le yield -> on jette ce rendu périmé
     if (forceTable) renderTablePaged($('#qresult'), j.columns, rows);
     else renderEvents($('#qresult'), j.columns, rows);
-    renderQBadge(j.stats, { keyset, saut, page: S.evState.page + 1 });
+    renderQBadge(j.stats, { keyset, saut, page: S.evState.page + 1, curseur: keyset && !repli });   // `P10.32-m` : curseur réellement servi (le repli par décalage n'en a pas)
     showQExport(rows.length > 0);
     const net = Math.round(performance.now() - t0);
     // `P10.22-g` — LA LIGNE EST PEINTE EN NŒUDS, UNE FOIS : la face de la suite y est un nœud à part (le
@@ -3197,7 +3241,7 @@ async function runQuery() {
     showQExport((j.rows || []).length > 0);
     const net = Math.round(performance.now() - t0);
     // `P10.22-f` — la ligne d'une agrégation, français seulement avant ce lot (fragments d'un nœud composé).
-    $('#qstats').textContent = `${j.stats.rows} ${motDeLaLigneDEtatHorsParcours('lignes_de_l_agregat')}${j.stats.truncated ? motDeLaLigneDEtatHorsParcours('agregat_tronque') : ''} - ${motDeLaLigneDEtatHorsParcours('serveur')} ${j.stats.elapsed_ms} ms - total ${net} ms${j.compiled_sql ? ' - GXQL' : ''}`;
+    $('#qstats').textContent = `${j.stats.rows} ${motDeLaLigneDEtatHorsParcours('lignes_de_l_agregat')}${j.stats.truncated ? motDeLaLigneDEtatHorsParcours('agregat_tronque') + (leTableauSeulEstPlafonne(j.stats) ? phraseDuPlafondDesLignes('ligne_d_etat', j.stats) : '') : ''} - ${motDeLaLigneDEtatHorsParcours('serveur')} ${j.stats.elapsed_ms} ms - total ${net} ms${j.compiled_sql ? ' - GXQL' : ''}`;
     $('#qstats').title = j.compiled_sql || '';
   } catch (e) {
     if (!S.exploreInflight || S.exploreInflight.qid !== qid) return;

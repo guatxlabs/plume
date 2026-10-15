@@ -510,6 +510,27 @@ pub(crate) fn etat_du_fichier_de_base(path: &str) -> EtatDuFichierDeBase {
     EtatDuFichierDeBase::Neuve
 }
 
+/// `P10.33-g` — UNE SOUS-COMMANDE NE FAIT PAS NAÎTRE LA BASE. Seul le démarrage du démon passe par
+/// `ensure_encrypted`, qui engendre la clé auto sur une base `Neuve` ; une sous-commande qui ouvrirait
+/// par `PreparedDb::open` une base absente la créerait avec la seule clé de l'environnement — aucune,
+/// sur un déploiement livré tel quel — donc EN CLAIR, et le démarrage suivant la verrait `Existante`
+/// et la garderait en clair (`RienAFaire`), sans un mot. On refuse donc, en nommant le geste non fait.
+///
+/// La décision repose sur `etat_du_fichier_de_base` et RIEN d'autre (aucune lecture de plus) :
+/// `Neuve` refuse ; `Existante` laisse passer ; `Indecidable` laisse aussi passer, parce qu'on n'a
+/// rien établi et que l'ouverture qui suit dira la vraie cause — refuser ici inventerait une absence.
+pub(crate) fn refuser_une_base_absente(db_path: &str, geste: &str) -> Result<(), String> {
+    match etat_du_fichier_de_base(db_path) {
+        EtatDuFichierDeBase::Neuve => Err(format!(
+            "[base] {db_path} n'existe pas encore (absente ou vide) — {geste} NON exécuté : une \
+             sous-commande ne crée pas la base, elle la créerait sans la clé du démon, donc en clair \
+             pour de bon. Démarrez le démon une première fois (c'est lui qui crée la base, chiffrée si \
+             le déploiement l'exige), puis relancez."
+        )),
+        EtatDuFichierDeBase::Existante | EtatDuFichierDeBase::Indecidable => Ok(()),
+    }
+}
+
 /// CE QUE LE DÉMARRAGE FAIT DE L'ÉTAT AT-REST. Fonction **PURE** : aucun accès disque, aucune
 /// variable d'environnement, aucun `exit`. Elle existe pour que les cinq issues soient exerçables
 /// dans les deux sens sans tuer le processus de test — le fail-closed d'`ensure_encrypted` sort en 78,

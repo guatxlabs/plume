@@ -1124,10 +1124,25 @@ fn compter_les_runbooks_custom(conn: &Connection) -> Result<i64, String> {
         .map_err(|e| format!("{CAUSE_QUOTA_DE_RUNBOOKS_NON_LU} ({e})"))
 }
 
-/// Le statut d'un refus des cœurs `create_custom_runbook` / `clone_runbook` : 503 pour le plafond non lu (la
-/// base n'a pas répondu — réessayer), 400 pour tout le reste (saisie, quota atteint, source introuvable).
+/// `P10.20-w` — LES ÉTAPES D'UN RUNBOOK SONT ÉCRITES OU LE GESTE EST REFUSÉ. `insert_steps`, le retrait des
+/// étapes d'avant (`update_custom_runbook`) et la copie des étapes (`clone_runbook`) avalaient leur écriture
+/// (`let _ =`) : un refus de statement (trigger, contrainte, verrou, disque plein) ne fait pas avorter la
+/// transaction SQLite, qui validait alors un runbook amputé — ou VIDE après un retrait réussi — pendant que la
+/// trace inaltérable affirmait le nombre d'étapes DEMANDÉ. L'écriture refusée rend désormais cette cause en tête
+/// du refus ; le garde du geste annule la transaction (rien n'est écrit, rien n'est tracé) et la route rend 503.
+pub(crate) const CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES: &str = "ÉTAPES DE RUNBOOK NON ÉCRITES : la base a refusé \
+     l'écriture d'une étape (ou le retrait des étapes d'avant) et le geste est annulé — aucune étape modifiée, aucun \
+     runbook créé ni copié, rien tracé. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
+/// Le statut d'un refus des cœurs `create_custom_runbook` / `update_custom_runbook` / `clone_runbook` : 503 pour
+/// le plafond non lu et pour les étapes non écrites (la base n'a pas répondu — réessayer), 400 pour tout le reste
+/// (saisie, quota atteint, source introuvable, runbook managé). NON TENU dans ces mêmes gestes : un refus de la base
+/// sur la ligne `runbook` elle-même (« insertion runbook », « update », « insertion clone ») et une lecture ratée de
+/// `managed` (lue « runbook introuvable ») rendent encore le 400 d'une saisie, pas un 503.
 fn refus_d_ecriture_de_runbook(e: String) -> Response {
-    if e.starts_with(CAUSE_QUOTA_DE_RUNBOOKS_NON_LU) { err_json(StatusCode::SERVICE_UNAVAILABLE, e) } else { bad_req(e) }
+    let base_refusee = e.starts_with(CAUSE_QUOTA_DE_RUNBOOKS_NON_LU) || e.starts_with(CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES);
+    if base_refusee { err_json(StatusCode::SERVICE_UNAVAILABLE, e) } else { bad_req(e) }
 }
 
 /// CŒUR testable — CRÉE un runbook CUSTOM (managed=0, active=1). `key` générée (préfixe custom-), steps validées
@@ -1141,19 +1156,28 @@ pub(crate) fn create_custom_runbook(conn: &Connection, name: &str, mkind: &str, 
         params![key, name, mkind, mkey, desc, active as i64, now()],
     ).map_err(|e| format!("insertion runbook: {e}"))?;
     let rb_id = conn.last_insert_rowid();
-    insert_steps(conn, rb_id, steps);
+    insert_steps(conn, rb_id, steps)?;
     Ok(rb_id)
 }
 
 /// Écrit les étapes ordonnées d'un runbook (ordinal = position). Champs hors-genre déjà neutralisés par validate_step.
-fn insert_steps(conn: &Connection, rb_id: i64, steps: &[NewStep]) {
+/// Chaque INSERT doit écrire UNE ligne ; sinon `CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES` + l'étape + la cause du moteur
+/// (`P10.20-w`). Rend le nombre d'étapes écrites — `steps.len()` une fois toutes écrites ; les deux appelants
+/// (`create_custom_runbook`, `update_custom_runbook`) ne lisent que le refus (`?`) et jettent ce nombre : rendre
+/// `Ok(0)` à la place serait invisible (mutation équivalente, dite).
+fn insert_steps(conn: &Connection, rb_id: i64, steps: &[NewStep]) -> Result<usize, String> {
     for (i, (phase, title, guidance, kind, soql, act)) in steps.iter().enumerate() {
-        let _ = conn.execute(
+        match conn.execute(
             "INSERT INTO runbook_step(runbook_id,ordinal,phase,title,guidance,step_kind,search_soql,action_kind) \
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![rb_id, i as i64, phase, title, guidance, kind, soql, act],
-        );
+        ) {
+            Ok(1) => {}
+            Ok(n) => return Err(format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étape {} (ordinal {i}) non écrite : {n} ligne écrite)", i + 1)),
+            Err(e) => return Err(format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étape {} (ordinal {i}) non écrite : {e})", i + 1)),
+        }
     }
+    Ok(steps.len())
 }
 
 /// CŒUR testable — MET À JOUR un runbook CUSTOM en place (remplace name/match/description + toutes les étapes).
@@ -1163,8 +1187,9 @@ pub(crate) fn update_custom_runbook(conn: &Connection, rb_id: i64, name: &str, m
     if managed != 0 { return Err("runbook managé (git) : non modifiable en place — clonez pour personnaliser".into()); }
     conn.execute("UPDATE runbook SET name=?1, match_kind=?2, match_key=?3, description=?4 WHERE id=?5 AND managed=0",
         params![name, mkind, mkey, desc, rb_id]).map_err(|e| format!("update: {e}"))?;
-    let _ = conn.execute("DELETE FROM runbook_step WHERE runbook_id=?1", params![rb_id]);
-    insert_steps(conn, rb_id, steps);
+    conn.execute("DELETE FROM runbook_step WHERE runbook_id=?1", params![rb_id])
+        .map_err(|e| format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étapes d'avant non retirées : {e})"))?;
+    insert_steps(conn, rb_id, steps)?;
     Ok(())
 }
 
@@ -1182,12 +1207,18 @@ pub(crate) fn clone_runbook(conn: &Connection, src_id: i64, new_name: Option<&st
     conn.execute("INSERT INTO runbook(key,name,match_kind,match_key,description,managed,active,created) VALUES(?1,?2,?3,?4,?5,0,1,?6)",
         params![key, name, mkind, mkey, desc, now()]).map_err(|e| format!("insertion clone: {e}"))?;
     let new_id = conn.last_insert_rowid();
-    // copie des étapes (ordinal préservé).
-    let _ = conn.execute(
+    // copie des étapes (ordinal préservé). `P10.20-w` : la copie doit écrire AUTANT de lignes que la source en
+    // compte, dans la même transaction — sinon le clone serait rendu amputé (ou vide) avec un identifiant.
+    let a_copier: i64 = conn.query_row("SELECT COUNT(*) FROM runbook_step WHERE runbook_id=?1", params![src_id], |r| r.get(0))
+        .map_err(|e| format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étapes de la source non comptées : {e})"))?;
+    let copiees = conn.execute(
         "INSERT INTO runbook_step(runbook_id,ordinal,phase,title,guidance,step_kind,search_soql,action_kind) \
          SELECT ?1,ordinal,phase,title,guidance,step_kind,search_soql,action_kind FROM runbook_step WHERE runbook_id=?2",
         params![new_id, src_id],
-    );
+    ).map_err(|e| format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étapes non copiées : {e})"))?;
+    if copiees as i64 != a_copier {
+        return Err(format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étapes copiées : {copiees} sur {a_copier})"));
+    }
     Ok(new_id)
 }
 
@@ -1353,7 +1384,7 @@ pub(crate) async fn runbook_update_handler(State(st): State<AppState>, Extension
         Ok(()) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("modification du runbook #{id}"), CAUSE_RUNBOOK_INCHANGE, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { drop(tx); bad_req(e) } // Drop -> ROLLBACK
+        Err(e) => { drop(tx); refus_d_ecriture_de_runbook(e) } // Drop -> ROLLBACK
     }
 }
 

@@ -1347,6 +1347,11 @@ fn main() {
         // Schéma qui n'est pas celui attendu -> on n'écrit pas de token dans une base à moitié migrée
         // (code 1 : la CLI est scriptée, un échec doit être détectable par `$?`). La PORTE le fait —
         // et depuis qu'elle le fait, une base PLUS RÉCENTE que ce binaire est refusée ici aussi.
+        // `P10.33-g` — sur une base absente, la porte la CRÉERAIT sans la clé du démon : en clair.
+        if let Err(e) = refuser_une_base_absente(&db_path, "token") {
+            eprintln!("{e} — token NON créé. Arrêt propre.");
+            std::process::exit(1);
+        }
         let conn = match PreparedDb::open(&db_path) {
             Ok(c) => c,
             Err(e) => {
@@ -1406,6 +1411,10 @@ fn main() {
         let conn = if dry {
             None
         } else {
+            if let Err(e) = refuser_une_base_absente(&db_path, "sigma-import") {
+                eprintln!("{e} — AUCUNE règle importée. Arrêt propre.");
+                std::process::exit(1);
+            }
             match PreparedDb::open(&db_path) {
                 Ok(c) => Some(c),
                 Err(e) => {
@@ -1438,6 +1447,10 @@ fn main() {
         // La rétention SUPPRIME des lignes : elle passe par la porte comme tout le reste. Mesuré AVANT
         // ce correctif, avec le vrai binaire : sur une base estampillée 111 amputée de `net_ban` (celle
         // que le daemon refuse de servir) `retention` sortait en 0 et annonçait « rétention OK ».
+        if let Err(e) = refuser_une_base_absente(&db_path, "retention") {
+            eprintln!("{e} — AUCUNE rétention appliquée. Arrêt propre.");
+            std::process::exit(1);
+        }
         let conn = match PreparedDb::open(&db_path) {
             Ok(c) => c,
             Err(e) => {
@@ -1485,6 +1498,10 @@ fn main() {
         // MÊME PORTE que la rétention : la compaction ÉCRIT (elle réécrit des segments d'index), donc
         // elle passe par le contrat de schéma. Une base que le daemon refuse de servir ne se fait pas
         // compacter en douce par la CLI.
+        if let Err(e) = refuser_une_base_absente(&db_path, "fts-compact") {
+            eprintln!("{e} — AUCUNE compaction appliquée. Arrêt propre.");
+            std::process::exit(1);
+        }
         let conn = match PreparedDb::open(&db_path) {
             Ok(c) => c,
             Err(e) => {
@@ -1547,18 +1564,25 @@ fn main() {
                     // Ce signal ÉCRIT (un événement SOC) -> il passe par la porte. Best-effort DANS LES
                     // DEUX SENS : un contrat non satisfait ne casse pas le backup DÉJÀ produit, mais il
                     // n'écrit rien non plus — il le DIT, au lieu d'écrire sur un schéma inconnu.
-                    match PreparedDb::open(&db_path) {
-                        Ok(conn) => {
-                            let _ = signal_backup_symmetric_if_needed(&conn, recipient.as_deref(), now());
-                            // P8.3-a — UNE ARCHIVE VIENT D'ÊTRE ÉCRITE : c'est l'instant où « depuis quand
-                            // n'a-t-on rien restauré ? » se pose. Le signal part des chemins qui ÉCRIVENT une
-                            // archive (ici, et le cycle natif — P8.26-a), jamais du démarrage du démon, pour
-                            // la raison qui avait fait déplacer celui de v135 : une installation qui ne
-                            // sauvegarde pas n'a rien à éprouver, et ne doit donc rien recevoir.
-                            let _ = exercice_de_restauration::signal_apres_sauvegarde(
-                                &conn, recipient.as_deref().is_some_and(|r| !r.is_empty()), now());
+                    // `P10.33-g` — garde DÉFENSIVE : on n'arrive ici qu'après `backup_compressed`, qui
+                    // exige `PLUME_DB_KEY` ; sur une base absente la porte la créerait donc chiffrée,
+                    // pas en clair. Le refus garde la règle unique : une sous-commande ne crée pas la base.
+                    if let Err(e) = refuser_une_base_absente(&db_path, "signal de posture post-sauvegarde") {
+                        eprintln!("{e} — signal de posture NON émis.");
+                    } else {
+                        match PreparedDb::open(&db_path) {
+                            Ok(conn) => {
+                                let _ = signal_backup_symmetric_if_needed(&conn, recipient.as_deref(), now());
+                                // P8.3-a — UNE ARCHIVE VIENT D'ÊTRE ÉCRITE : c'est l'instant où « depuis quand
+                                // n'a-t-on rien restauré ? » se pose. Le signal part des chemins qui ÉCRIVENT une
+                                // archive (ici, et le cycle natif — P8.26-a), jamais du démarrage du démon, pour
+                                // la raison qui avait fait déplacer celui de v135 : une installation qui ne
+                                // sauvegarde pas n'a rien à éprouver, et ne doit donc rien recevoir.
+                                let _ = exercice_de_restauration::signal_apres_sauvegarde(
+                                    &conn, recipient.as_deref().is_some_and(|r| !r.is_empty()), now());
+                            }
+                            Err(e) => eprintln!("[backup] signal de posture NON émis (la base n'a pas passé le contrat de schéma : {e})"),
                         }
-                        Err(e) => eprintln!("[backup] signal de posture NON émis (la base n'a pas passé le contrat de schéma : {e})"),
                     }
                     // La ligne DIT quel chemin a tourné : c'est la seule façon pour l'opérateur de savoir si ce
                     // cycle a posé une copie EN CLAIR de la base sur un disque (chemin historique) ou non (dump).
@@ -1734,6 +1758,10 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
                     Err(e) => { eprintln!("restore-drill record : {e}"); std::process::exit(1); }
                 };
                 // L'attestation ÉCRIT dans la base : elle passe par la porte, comme tout le reste.
+                if let Err(e) = refuser_une_base_absente(&db_path, "restore-drill record") {
+                    eprintln!("{e} — attestation NON enregistrée.");
+                    std::process::exit(1);
+                }
                 let conn = match PreparedDb::open(&db_path) {
                     Ok(c) => c,
                     Err(e) => { eprintln!("[schema] {e} — attestation NON enregistrée."); std::process::exit(1); }

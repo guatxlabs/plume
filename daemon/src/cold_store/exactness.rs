@@ -119,7 +119,18 @@ impl AnswerShape {
     /// `PER_EVENT_STAGES` — inconnu compris — suffit à rendre la réponse `SetDerived`.
     /// Un `|` à l'intérieur d'une valeur citée peut produire un FAUX `SetDerived` : c'est le
     /// côté SÛR (au pire un refus de trop, jamais un nombre faux de trop).
+    /// `P10.32-u` — la forme est dérivée du texte DÉTENDU des macros (`soql_detendu_pour_juger`), celui que
+    /// le compilateur découpera : une macro qui cache `| stats count` rend la réponse dérivée, et une
+    /// détente en échec vaut l'aveu (`undecidable`), jamais le texte brut jugé à la place.
     pub(crate) fn of_gxql(soql: &str) -> Self {
+        Self::of_gxql_selon(soql, crate::active_knowledge)
+    }
+
+    /// `of_gxql` avec un jeu de savoir EXPLICITE (témoins : aucun état global touché).
+    pub(crate) fn of_gxql_selon(soql: &str, savoir: impl FnOnce() -> guatx_core::soql::KnowledgeSet) -> Self {
+        let Some(soql) = crate::soql_detendu_pour_juger(soql, savoir) else {
+            return Self::undecidable();
+        };
         for stage in soql.split('|').skip(1) {
             let cmd = stage.trim().split_whitespace().next().unwrap_or("").to_ascii_lowercase();
             if cmd.is_empty() {

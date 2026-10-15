@@ -165,16 +165,17 @@ pub(crate) fn plan_upsert_lu(conn: &Connection, table: &str, name: &str) -> rusq
 }
 
 /// Projection de `plan_upsert_lu` qui garde le comportement d'avant (lecture ratée = Insert) pour les
-/// appelants que `P10.20-b` n'a pas encore repris, dont cinq chargeurs d'objets OAC de ce fichier (`notifier`,
-/// `index_policy`, `library_panel`, `notification_policy`, `dashboard`) ; hors de ce fichier, la liste des
-/// appelants restants se lit par `grep -n 'plan_upsert(' daemon/src`. Ici, `destination` et `connector` lisent
-/// `plan_upsert_lu` et ignorent le fichier sur une lecture ratée ; `field_filter` (UNIQUE(name)) l'avoue et
-/// tente l'INSERT (`plan_oac_nom_unique_ou_aveu`).
+/// appelants que `P10.20-b` n'a pas encore repris, dont deux chargeurs d'objets OAC de ce fichier
+/// (`index_policy`, `dashboard`) ; hors de ce fichier, la liste des appelants restants se lit par
+/// `grep -n 'plan_upsert(' daemon/src`. Ici, `notifier`, `destination`, `connector`, `library_panel` et
+/// `notification_policy` lisent `plan_upsert_lu` et ignorent le fichier sur une lecture ratée ; `field_filter`
+/// (UNIQUE(name)) l'avoue et tente l'INSERT (`plan_oac_nom_unique_ou_aveu`).
 pub(crate) fn plan_upsert(conn: &Connection, table: &str, name: &str) -> UpsertPlan {
     plan_upsert_lu(conn, table, name).unwrap_or(UpsertPlan::Insert)
 }
 
-/// `P10.20-b` — le plan d'upsert d'un objet OAC SANS UNIQUE(name) (`destination`, `connector`), ou l'AVEU : une
+/// `P10.20-b` — le plan d'upsert d'un objet OAC SANS UNIQUE(name) (`notifier`, `destination`, `connector`,
+/// `library_panel`, `notification_policy`), ou l'AVEU : une
 /// lecture de l'existant NON faite ignore le fichier (compté dans `ignores` par l'appelant, WARN avec la cause
 /// du moteur, jamais une valeur de cellule : le secret d'un connecteur reste hors du journal) et n'écrit rien.
 /// Elle ne vaut pas « le nom n'existe pas » : `destination` et `connector` n'ont aucun UNIQUE(name), l'INSERT
@@ -222,16 +223,20 @@ fn plan_oac_nom_unique_ou_aveu(
 /// `P10.20-b` — un objet OAC n'est compté CHARGÉ que si son écriture a posé exactement une ligne (`Ok(1)`).
 /// Une écriture refusée par le moteur, ou sans effet (ligne disparue entre la lecture et l'UPDATE, trigger
 /// `RAISE(IGNORE)`), est ignorée et avouée (WARN avec la cause du moteur). Pour un `field_filter`, c'est ce
-/// qui empêche un masquage `mask`/`deny`/`hash` non posé d'être annoncé en place.
+/// qui empêche un masquage `mask`/`deny`/`hash` non posé d'être annoncé en place. Rend `true` sur la seule
+/// écriture comptée : ce qui se trace « accepté » après coup (le SQL brut d'un panneau) ne se trace que là.
 fn compter_l_ecriture_oac(
     genre: &str,
     name: &str,
     path: &std::path::Path,
     ecrit: rusqlite::Result<usize>,
     ch: &mut crate::overlays_adossement::Chargement,
-) {
+) -> bool {
     match ecrit {
-        Ok(1) => ch.charges += 1,
+        Ok(1) => {
+            ch.charges += 1;
+            return true;
+        }
         Ok(n) => {
             eprintln!("[oac] WARN {genre} '{name}' ({}) : écriture sans effet ({n} ligne posée) — overlay NON chargé", path.display());
             ch.ignores += 1;
@@ -241,6 +246,7 @@ fn compter_l_ecriture_oac(
             ch.ignores += 1;
         }
     }
+    false
 }
 
 /// Nom d'overlay (champ `name` trimmé, non vide) ou None (WARN émis par l'appelant).
@@ -289,12 +295,18 @@ pub(crate) fn load_overlay_notifiers(conn: &Connection, dir: &std::path::Path) -
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
         let min_sev = v.get("min_severity").and_then(|x| x.as_i64()).unwrap_or(2).clamp(0, 4);
         let config_s = config.to_string();
-        match plan_upsert(conn, "notifier", &name) {
+        // `P10.20-b` — une lecture de l'existant NON faite ignore le fichier (aucun UNIQUE(name) sur `notifier` : un
+        // INSERT créerait un canal en DOUBLON, chaque alerte partie deux fois) ; l'écriture n'est comptée que sur `Ok(1)`.
+        let Some(plan) = plan_oac_ou_aveu(conn, "notifier", "notifier", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        let ecrit = match plan {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN notifier '{name}' : un canal UI (managed=2) du même nom existe — overlay ignoré (renommez l'un des deux)"); ch.ignores += 1; continue; }
-            UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE notifier SET kind=?1, enabled=?2, url=?3, min_severity=?4, config=?5, managed=1 WHERE id=?6", params![kind, enabled, url, min_sev, config_s, id]); }
-            UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO notifier(name,kind,enabled,url,min_severity,config,managed) VALUES(?1,?2,?3,?4,?5,?6,1)", params![name, kind, enabled, url, min_sev, config_s]); }
-        }
-        ch.charges += 1;
+            UpsertPlan::Update(id) => conn.execute("UPDATE notifier SET kind=?1, enabled=?2, url=?3, min_severity=?4, config=?5, managed=1 WHERE id=?6", params![kind, enabled, url, min_sev, config_s, id]),
+            UpsertPlan::Insert => conn.execute("INSERT INTO notifier(name,kind,enabled,url,min_severity,config,managed) VALUES(?1,?2,?3,?4,?5,?6,1)", params![name, kind, enabled, url, min_sev, config_s]),
+        };
+        compter_l_ecriture_oac("notifier", &name, &path, ecrit, &mut ch);
     }
     ch
 }
@@ -488,15 +500,23 @@ pub(crate) fn load_overlay_library_panels(conn: &Connection, dir: &std::path::Pa
         let query = v.get("query").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let is_soql = v.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(true);
         if let Err(e) = panneau_avoue::valider_panneau(&query, is_soql) { eprintln!("[oac] WARN library-panel '{name}' : requête invalide ({e}) — ignoré"); ch.ignores += 1; continue; }
-        if !is_soql { tracer_panneau_sql_brut(conn, "library-panel", &name); }
         let viz = v.get("viz").and_then(|x| x.as_str()).unwrap_or("table").to_string();
         let drill = v.get("drill").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        match plan_upsert(conn, "library_panel", &name) {
+        // `P10.20-b` — même discipline que les canaux : `library_panel` n'a aucun UNIQUE(name).
+        let Some(plan) = plan_oac_ou_aveu(conn, "library_panel", "library-panel", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        let ecrit = match plan {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN library-panel '{name}' : un panneau UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
-            UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE library_panel SET title=?1, query=?2, is_soql=?3, viz=?4, drill=?5, managed=1, updated=?6 WHERE id=?7", params![title, query, is_soql as i64, viz, drill, now(), id]); }
-            UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO library_panel(name,title,query,is_soql,viz,drill,visibility,managed,created,updated) VALUES(?1,?2,?3,?4,?5,?6,'shared',1,?7,?7)", params![name, title, query, is_soql as i64, viz, drill, now()]); }
+            UpsertPlan::Update(id) => conn.execute("UPDATE library_panel SET title=?1, query=?2, is_soql=?3, viz=?4, drill=?5, managed=1, updated=?6 WHERE id=?7", params![title, query, is_soql as i64, viz, drill, now(), id]),
+            UpsertPlan::Insert => conn.execute("INSERT INTO library_panel(name,title,query,is_soql,viz,drill,visibility,managed,created,updated) VALUES(?1,?2,?3,?4,?5,?6,'shared',1,?7,?7)", params![name, title, query, is_soql as i64, viz, drill, now()]),
+        };
+        // Le SQL brut se trace « accepté » (registre non purgeable) seulement s'il a été POSÉ : une lecture ratée,
+        // une copie UI ou une écriture refusée ignorent l'overlay, et la trace l'aurait affirmé accepté.
+        if compter_l_ecriture_oac("library-panel", &name, &path, ecrit, &mut ch) && !is_soql {
+            tracer_panneau_sql_brut(conn, "library-panel", &name);
         }
-        ch.charges += 1;
     }
     ch
 }
@@ -516,12 +536,17 @@ pub(crate) fn load_overlay_notification_policies(conn: &Connection, dir: &std::p
         let cps_s = cps.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let cont = v.get("continue").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
-        match plan_upsert(conn, "notification_policy", &name) {
+        // `P10.20-b` — `notification_policy` n'a aucun UNIQUE(name) : un doublon doublerait le routage des alertes.
+        let Some(plan) = plan_oac_ou_aveu(conn, "notification_policy", "notification-policy", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        let ecrit = match plan {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN notification-policy '{name}' : une policy UI (managed=2) du même nom existe — overlay ignorée"); ch.ignores += 1; continue; }
-            UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE notification_policy SET matchers=?1, contact_points=?2, continue_=?3, enabled=?4, managed=1 WHERE id=?5", params![matchers_s, cps_s, cont, enabled, id]); }
-            UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO notification_policy(name,matchers,contact_points,continue_,enabled,managed,created,created_by) VALUES(?1,?2,?3,?4,?5,1,?6,'config.d')", params![name, matchers_s, cps_s, cont, enabled, now()]); }
-        }
-        ch.charges += 1;
+            UpsertPlan::Update(id) => conn.execute("UPDATE notification_policy SET matchers=?1, contact_points=?2, continue_=?3, enabled=?4, managed=1 WHERE id=?5", params![matchers_s, cps_s, cont, enabled, id]),
+            UpsertPlan::Insert => conn.execute("INSERT INTO notification_policy(name,matchers,contact_points,continue_,enabled,managed,created,created_by) VALUES(?1,?2,?3,?4,?5,1,?6,'config.d')", params![name, matchers_s, cps_s, cont, enabled, now()]),
+        };
+        compter_l_ecriture_oac("notification-policy", &name, &path, ecrit, &mut ch);
     }
     ch
 }

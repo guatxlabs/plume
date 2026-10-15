@@ -1034,8 +1034,9 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
 
 /// Alerte si un capteur ayant DÉJÀ remonté devient muet (> 5x son intervalle) = angle mort.
 /// REND SON BILAN (`P4.1-r`) : les sondes de capteurs lisent chacune un horodatage et rendent un verdict
-/// (`Inconnu` compris) — elles n'abandonnent rien ; c'est le dead-man's-switch du PARC qui peut se
-/// retrouver aveugle, et son bilan est celui de cette fonction.
+/// (`Inconnu` compris) — elles n'abandonnent rien ; le bilan est chargé par le dead-man's-switch du PARC
+/// quand il se retrouve aveugle, et par chaque alerte de capteur, de parc ou de magasin que la base refuse
+/// d'écrire (`Lue(1)` par alerte refusée, additionnées) : une alerte non écrite n'est jamais un tick calme.
 pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let conn = db.lock();
@@ -1049,6 +1050,7 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
     // n'a pas été lu est retiré du jugement et versé au bilan du tick (`Mesure::Illisible`, première cause).
     let mut capteurs_non_lus: Vec<String> = Vec::new();
     let mut cause_aveugle: Option<&'static str> = None;
+    let mut alertes_non_ecrites: u32 = 0;
     let pipe_fresh = match pipeline_est_frais(&conn, now_ts) {
         Ok(pf) => Some(pf),
         Err(e) => {
@@ -1113,10 +1115,24 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
             // dans /api/freshness : le `detail` de cette alerte ne porte aucun jeton `source=`, donc
             // l'extraction textuelle historique n'imputait RIEN pour AUCUN des 23 capteurs.
             let sources = imputation_encoder(&imputer_alerte_de_capteur(sonde));
-            let _ = conn.execute(
+            // `P10.20-w` (dead-man's-switch) — L'ALERTE EST ÉCRITE, OU LE REFUS EST COMPTÉ ET DIT. `Ok(0)` est
+            // l'épisode DÉJÀ ouvert (dedup `hb-{id}`) : légitime, rien à dire. `Err` = la base a refusé
+            // l'écriture : sans ce bras, le tick rendait `Lue(0)` et le détecteur de pannes se taisait sur
+            // la panne même. La ligne de journal porte l'identifiant du capteur et la cause du moteur,
+            // jamais le détail (il nomme des machines).
+            let ecrite = conn.execute(
                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources,basis) VALUES(?1,?2,2,?3,?4,?5,?6,?7)",
                 params![now_ts, format!("heartbeat.{id}"), format!("Capteur muet : {label}"), detail, dedup, sources, crate::fondement::Fondement::BattementDeCoeur.mot()],
             );
+            match ecrite {
+                Ok(_) => {}
+                Err(e) => {
+                    alertes_non_ecrites += 1;
+                    eprintln!(
+                        "[plume] battement de cœur : alerte « capteur muet » du capteur {id} NON ÉCRITE ({e}) — comptée abandonnée au bilan du tick, re-tentée au tick suivant"
+                    );
+                }
+            }
             // Épisode DÉJÀ ouvert (l'INSERT ci-dessus est un no-op) : l'imputation est tout de même
             // rafraîchie, pour la même raison que côté règles — la liste des sources d'un capteur peut
             // changer entre deux versions du binaire, et une pastille ne doit pas rester accrochée à
@@ -1139,6 +1155,8 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
     // bilans sont ABSORBÉS plutôt que l'un rendu à la place de l'autre — sans quoi une famille
     // aveugle serait masquée par une famille lisible, et le tick passerait pour calme.
     let mut b = crate::bilan_de_tick::BilanDuPlanificateur::default();
+    // `P10.20-w` — une alerte « capteur muet » refusée par la base = UN abandon par capteur, additionné aux autres.
+    b.absorber(crate::mesure_environnement::Mesure::Lue(alertes_non_ecrites));
     if !capteurs_non_lus.is_empty() {
         b.absorber(crate::mesure_environnement::Mesure::Illisible {
             cause: cause_aveugle.unwrap_or(crate::mesure_environnement::CAUSE_SOURCE_ILLISIBLE),
@@ -1198,7 +1216,7 @@ fn verifier_flotte_muette(conn: &Connection, now_ts: i64) -> crate::bilan_de_tic
     // source ferait basculer la pastille d'une source qui n'a rien fait, et la colonne VIDE la ferait
     // retomber en silence sur l'extraction textuelle (cf. `imputation.rs`).
     let sources = imputation_encoder(&[SOURCE_INDETERMINABLE.to_string()]);
-    let _ = conn.execute(
+    let ecrite = conn.execute(
         "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources,basis) VALUES(?1,?2,2,?3,?4,?5,?6,?7)",
         params![
             now_ts,
@@ -1210,5 +1228,15 @@ fn verifier_flotte_muette(conn: &Connection, now_ts: i64) -> crate::bilan_de_tic
             crate::fondement::Fondement::BattementDeCoeur.mot()
         ],
     );
-    crate::mesure_environnement::Mesure::Lue(0)
+    // `P10.20-w` — `Ok(0)` = épisode du MÊME ensemble déjà ouvert (légitime) ; `Err` = alerte refusée par la
+    // base : UN abandon au bilan et une ligne de journal SANS nom de machine ni compte (cause du moteur seule).
+    match ecrite {
+        Ok(_) => crate::mesure_environnement::Mesure::Lue(0),
+        Err(e) => {
+            eprintln!(
+                "[plume] battement de cœur : alerte « flotte muette » NON ÉCRITE ({e}) — comptée abandonnée au bilan du tick, re-tentée au tick suivant"
+            );
+            crate::mesure_environnement::Mesure::Lue(1)
+        }
+    }
 }

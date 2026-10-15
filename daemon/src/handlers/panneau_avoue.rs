@@ -207,6 +207,11 @@ pub(crate) const RAISON_PAYE_UTILE_ANTERIEURE: &str = "paye_utile_anterieure";
 pub(crate) const RAISON_PAYE_UTILE_ILLISIBLE: &str = "paye_utile_illisible";
 /// Aucun payload n'existe encore pour cette plage : la mesure est en cours (chemin `warming`).
 pub(crate) const RAISON_MESURE_EN_COURS: &str = "mesure_en_cours";
+/// `P10.32-o` — LE CALCUL DU PANNEAU A ÉCHOUÉ (erreur du moteur, budget dépassé, panique du fil) : le
+/// corps servi porte la cause dans `error` et n'établit PAS une absence. Il est écrit dans le cache à la
+/// place du résultat, donc re-servi jusqu'à l'expiration du ttl, puis retenté — jamais une chauffe
+/// éternelle, jamais un `warming` qui ne viendra pas.
+pub(crate) const RAISON_CALCUL_ECHOUE: &str = "calcul_echoue";
 
 /// LA PHRASE DU PLAFOND TOP-N, pour un SQL OPAQUE qui nomme `event_dim_rollup`. Elle dit qu'un plafond
 /// EXISTE, PAS de combien il mord : aucune `Sonde` n'est dérivable d'un SQL qu'on n'analyse pas, donc
@@ -515,8 +520,15 @@ const SQL_LIRE: &str = "SELECT payload, computed_at FROM panel_cache WHERE panel
 /// Écrit un payload de panneau + évince les plages les plus vieilles (cap anti-explosion, identique
 /// aux trois sites d'écriture d'avant).
 pub(crate) fn cache_ecrire(conn: &Connection, id: i64, range_key: &str, q_fp: &str, now_s: i64, payload: &str) {
-    let _ = conn.execute(SQL_ECRIRE, params![id, range_key, q_fp, now_s, payload]);
+    let _ = cache_ecrire_dit(conn, id, range_key, q_fp, now_s, payload);
+}
+
+/// `P10.32-o` — la même écriture, qui DIT si la ligne a été écrite (cause du moteur sinon). L'éviction
+/// suit l'écriture dans les deux cas, comme avant ; seul le refus de l'écriture est rendu.
+pub(crate) fn cache_ecrire_dit(conn: &Connection, id: i64, range_key: &str, q_fp: &str, now_s: i64, payload: &str) -> Result<(), String> {
+    let ecrit = conn.execute(SQL_ECRIRE, params![id, range_key, q_fp, now_s, payload]).map(|_| ()).map_err(|e| e.to_string());
     let _ = conn.execute(SQL_EVICTION, params![id, CACHE_MAX_RANGES_PER_PANEL]);
+    ecrit
 }
 
 /// Lit un payload SANS prédicat de fraîcheur : rend (payload, computed_at) quel que soit l'âge.
@@ -611,6 +623,9 @@ pub(crate) fn coverage_synthetique(raison: &str, from: i64, now_s: i64, horizon_
     let notice = if raison == RAISON_MESURE_EN_COURS {
         "aucune ligne n'a encore été calculée pour cette fenêtre : la mesure est en cours. Ce corps vide \
          n'établit donc PAS une absence."
+    } else if raison == RAISON_CALCUL_ECHOUE {
+        "le calcul de ce panneau a échoué (cause dans `error`) : aucune ligne n'a été calculée. Ce corps \
+         vide n'établit PAS une absence ; une nouvelle tentative suit l'expiration du cache."
     } else {
         "la charge utile mise en cache n'a pas pu être relue : le corps servi est synthétique. Ce corps \
          vide n'établit PAS une absence."
@@ -626,4 +641,14 @@ pub(crate) fn coverage_synthetique(raison: &str, from: i64, now_s: i64, horizon_
     cov["reason"] = json!(raison);
     cov["notice"] = json!(notice);
     cov
+}
+
+/// `P10.32-o` — LE CORPS D'UN RAFRAÎCHISSEMENT EN ÉCHEC : la cause du moteur dans `error` (la console
+/// le lit déjà comme un refus nommé), aucun `warming`, un aveu `calcul_echoue`. L'horizon n'est pas
+/// publié : le panneau compilé a été consommé par l'exécution qui a échoué, et un champ absent est un
+/// champ non mesuré.
+pub(crate) fn corps_d_echec(cause: &str, from: i64, now_s: i64) -> Value {
+    let mut v = json!({ "columns": [], "rows": [], "error": cause });
+    v["stats"]["coverage"] = coverage_synthetique(RAISON_CALCUL_ECHOUE, from, now_s, None);
+    v
 }

@@ -1586,6 +1586,10 @@ pub(crate) fn purge_cli(args: &[String]) {
     // MÊME PORTE que la rétention : une base qui ne satisfait pas le contrat de schéma n'est pas une base sur
     // laquelle on supprime des lignes. (Mesuré sur `retention` : sans cette porte, une base amputée sortait
     // en 0 et annonçait « OK ».)
+    if let Err(e) = refuser_une_base_absente(&db_path, "purge") {
+        eprintln!("{e} — AUCUNE purge appliquée. Arrêt propre.");
+        std::process::exit(2);
+    }
     let conn = match PreparedDb::open(&db_path) {
         Ok(c) => c.into_connection(),
         Err(e) => {

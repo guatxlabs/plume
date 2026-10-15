@@ -1199,13 +1199,19 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
         // n'ajoute pas une seule lecture disque ici.
         let pc = match panneau_avoue::compile_panneau_avoue(&query, is_soql, from_default, 0, None) {
             Ok(s) => s,
-            Err(_) => continue, // GXQL invalide -> on saute (le panneau retombe sur le fallback live)
+            Err(_) => continue, // GXQL invalide -> on saute (à la demande, `panel_data` rend le refus du compilateur)
         };
         let q_fp = query_fingerprint(&query, is_soql);
         // borne de concurrence sur le refresh_sem DÉDIÉ : si aucun permit libre, on saute ce
         // tick de pré-chauffage (jamais de permis pris à l'interactif ; le panneau reste servi du cache).
         let permit = match refresh_sem.try_acquire() { Ok(p) => p, Err(_) => break };
-        if let Ok(v) = panneau_avoue::executer(db_path, &conf, pc, from_default) {
+        // `P10.32-o` — l'échec n'est plus jeté sans un mot : il est JOURNALISÉ (identifiant + cause, jamais
+        // la requête). Rien d'autre : le chemin à la demande écrit, lui, le corps d'échec que la console lit.
+        let execution = panneau_avoue::executer(db_path, &conf, pc, from_default);
+        if let Err(e) = &execution {
+            eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({e}) — rien d'écrit, le chemin à la demande retentera");
+        }
+        if let Ok(v) = execution {
             let cost_ms = measured_cost_ms(&v); // PHASE 3d : pré-classe les panneaux dès le pré-chauffage
             if let Ok(payload) = serde_json::to_string(&v) {
                 { let conn = db.lock();

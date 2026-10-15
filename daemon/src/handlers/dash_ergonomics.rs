@@ -14,6 +14,7 @@
 //!          -> 403 pour ce tiers, mais `snapshot_create` -> 200 avec la ligne privée figée dedans.
 //! CRUD = editor+ (route_min_role section 7) ; lecture d'un snapshot par token = viewer+ (Read, section 6).
 use crate::*;
+use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apres_validation_du_garde};
 
 // ---------- helpers communs ----------
 /// Le compte peut-il modifier CET objet (library_panel / playlist) ? admin: toujours ; sinon: propriétaire,
@@ -35,6 +36,42 @@ fn ergo_editable(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> bool
         Err(_) => false,
     }
 }
+
+/// `P10.20-w` (gestes de `dash_ergonomics`) — UNE écriture sur une ligne dont l'existence vient d'être lue :
+/// `Ok(1)` seul est un fait. `Err` (refus du moteur) et `Ok(n != 1)` (un déclencheur qui ignore l'écriture)
+/// rendent la cause, que le geste porte dans son refus.
+fn une_ligne_ecrite(issue: rusqlite::Result<usize>, quoi: &str) -> Result<(), String> {
+    match issue {
+        Ok(1) => Ok(()),
+        Ok(n) => Err(format!("{quoi} : {}", crate::handlers::dashboards::lignes_ecrites_au_lieu_d_une(n))),
+        Err(e) => Err(format!("{quoi} : {e}")),
+    }
+}
+
+/// `P10.20-w` — la modification d'une définition de bibliothèque refusée : rien n'en est écrit.
+pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE: &str = "PANNEAU DE BIBLIOTHÈQUE INCHANGÉ : la base n'a pas \
+     pris l'écriture de la modification ou n'en a écrit aucune ligne, et la transaction est annulée — la définition, sa \
+     visibilité et le cache des panneaux qui la référencent sont ceux d'avant. Réessayez ; si le refus persiste, la base \
+     est en lecture seule, pleine ou verrouillée.";
+/// `P10.20-w` — le `BEGIN` de cette modification refusé.
+pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "PANNEAU DE BIBLIOTHÈQUE \
+     INCHANGÉ : la base n'a pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un \
+     autre geste pendante sur l'écrivain) — RIEN n'est écrit. Réessayez ; s'il est refusé encore, l'écrivain est occupé \
+     ou bloqué.";
+/// `P10.20-w` — la suppression d'une définition de bibliothèque refusée : la définition reste, ses référents aussi.
+pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME: &str = "PANNEAU DE BIBLIOTHÈQUE NON SUPPRIMÉ : la base n'a \
+     pas pris l'effacement de la définition ou n'en a effacé aucune ligne, et la transaction est annulée — la \
+     définition existe toujours et les panneaux qui la référencent y restent rattachés. Réessayez ; si le refus \
+     persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.20-w` — le `BEGIN` de cette suppression refusé.
+pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &str = "PANNEAU DE BIBLIOTHÈQUE \
+     NON SUPPRIMÉ : la base n'a pas pris la transaction de la suppression (BEGIN refusé : verrou tenu, ou transaction \
+     d'un autre geste pendante sur l'écrivain) — RIEN n'est écrit : la définition et ses rattachements sont intacts. \
+     Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.20-w` — la révocation d'un instantané refusée : il reste lisible par son jeton.
+pub(crate) const CAUSE_INSTANTANE_NON_SUPPRIME: &str = "INSTANTANÉ NON SUPPRIMÉ : la base a refusé la suppression (ou \
+     n'a supprimé aucune ligne) — l'instantané existe toujours et RESTE LISIBLE par son jeton de partage. Réessayez ; si \
+     le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
 
 fn vis_of(b: &Value) -> &'static str {
     if b.get("visibility").and_then(|v| v.as_str()) == Some("private") { "private" } else { "shared" }
@@ -136,36 +173,71 @@ pub(crate) async fn library_panel_update(State(st): State<AppState>, Extension(a
     if !raw_sql_allowed(eff_soql, &au.role) {
         return StatusCode::FORBIDDEN;
     }
-    for (k, col) in [("name", "name"), ("title", "title"), ("query", "query"), ("viz", "viz"), ("drill", "drill")] {
-        if let Some(v) = b.get(k).and_then(|v| v.as_str()) {
-            let _ = conn.execute(&format!("UPDATE library_panel SET {col}=?1 WHERE id=?2"), params![v, id]);
+    // `P10.20-w` (gestes de `dash_ergonomics`) — les écritures de la modification vivent sous UN garde de geste :
+    // une seule refusée ou sans effet (`Ok(0)` sur une ligne dont l'existence vient d'être lue) annule TOUTES les
+    // autres, et la route refuse en 503 au lieu de rendre 204. La forme d'avant enchaînait cinq `let _ =` : une
+    // bascule en « private » refusée laissait la définition PARTAGÉE pendant que la console lisait un succès.
+    // La signature reste `StatusCode` (six témoins existants lisent `.as_u16()` de ce retour) : la cause nommée
+    // part au journal par `err_json` (identifiant de corrélation), le corps n'est pas servi.
+    let geste = format!("modification du panneau de bibliothèque #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus.status(),
+    };
+    let ecrit: Result<(), String> = (|| {
+        for (k, col) in [("name", "name"), ("title", "title"), ("query", "query"), ("viz", "viz"), ("drill", "drill")] {
+            if let Some(v) = b.get(k).and_then(|v| v.as_str()) {
+                une_ligne_ecrite(conn.execute(&format!("UPDATE library_panel SET {col}=?1 WHERE id=?2"), params![v, id]), col)?;
+            }
         }
+        if let Some(v) = b.get("is_soql").and_then(|v| v.as_bool()) {
+            une_ligne_ecrite(conn.execute("UPDATE library_panel SET is_soql=?1 WHERE id=?2", params![v as i64, id]), "is_soql")?;
+        }
+        if let Some(v) = b.get("visibility").and_then(|v| v.as_str()) {
+            let vv = if v == "private" { "private" } else { "shared" };
+            une_ligne_ecrite(conn.execute("UPDATE library_panel SET visibility=?1 WHERE id=?2", params![vv, id]), "visibility")?;
+        }
+        une_ligne_ecrite(conn.execute("UPDATE library_panel SET updated=?1 WHERE id=?2", params![now(), id]), "updated")
+    })();
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : l'état d'avant, cache compris (rien n'est invalidé).
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE} ({geste} : {cause})")).status();
     }
-    if let Some(v) = b.get("is_soql").and_then(|v| v.as_bool()) {
-        let _ = conn.execute("UPDATE library_panel SET is_soql=?1 WHERE id=?2", params![v as i64, id]);
-    }
-    if let Some(v) = b.get("visibility").and_then(|v| v.as_str()) {
-        let vv = if v == "private" { "private" } else { "shared" };
-        let _ = conn.execute("UPDATE library_panel SET visibility=?1 WHERE id=?2", params![vv, id]);
-    }
-    let _ = conn.execute("UPDATE library_panel SET updated=?1 WHERE id=?2", params![now(), id]);
-    // Édition d'une bibliothèque -> purge le cache des panneaux qui la référencent (leur requête a pu changer).
-    panneau_avoue::cache_invalider_bibliotheque(&conn, id);
-    StatusCode::NO_CONTENT
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE, || {
+        // Édition d'une bibliothèque -> purge le cache des panneaux qui la référencent (leur requête a pu changer).
+        panneau_avoue::cache_invalider_bibliotheque(&conn, id);
+        StatusCode::NO_CONTENT.into_response()
+    })
+    .status()
 }
 
-pub(crate) async fn library_panel_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+pub(crate) async fn library_panel_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
     if conn.query_row("SELECT 1 FROM library_panel WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return StatusCode::NOT_FOUND;
+        return StatusCode::NOT_FOUND.into_response();
     }
     if !ergo_editable(&conn, &au, "library_panel", id) {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
     }
     // On DÉTACHE les panneaux référents (ils redeviennent autonomes avec leur query locale) — pas de perte.
-    let _ = conn.execute("UPDATE panel SET library_panel_id=NULL WHERE library_panel_id=?1", params![id]);
-    let _ = conn.execute("DELETE FROM library_panel WHERE id=?1", params![id]);
-    StatusCode::NO_CONTENT
+    // `P10.20-w` (gestes de `dash_ergonomics`) — détachement et suppression sous UN garde : une suppression refusée
+    // ou sans effet annule le détachement (les référents restent rattachés à la définition qui subsiste) et la
+    // route refuse en 503 nommé. La forme d'avant avalait les deux et rendait 204.
+    let geste = format!("suppression du panneau de bibliothèque #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    let ecrit: Result<(), String> = (|| {
+        conn.execute("UPDATE panel SET library_panel_id=NULL WHERE library_panel_id=?1", params![id])
+            .map_err(|e| format!("détachement des panneaux référents : {e}"))?;
+        une_ligne_ecrite(conn.execute("DELETE FROM library_panel WHERE id=?1", params![id]), "suppression de la définition")
+    })();
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : le détachement est annulé avec la suppression.
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME} ({geste} : {cause})"));
+    }
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME, || StatusCode::NO_CONTENT.into_response())
 }
 
 // =====================================================================================
@@ -499,16 +571,20 @@ pub(crate) async fn snapshot_get(State(st): State<AppState>, Extension(au): Exte
     }
 }
 
-pub(crate) async fn snapshot_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+pub(crate) async fn snapshot_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
     match conn.query_row("SELECT COALESCE(created_by,'') FROM dashboard_snapshot WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
         Ok(by) => {
             if !au.is_admin() && by != au.name {
-                return StatusCode::FORBIDDEN;
+                return StatusCode::FORBIDDEN.into_response();
             }
         }
-        Err(_) => return StatusCode::NOT_FOUND,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
     }
-    let _ = conn.execute("DELETE FROM dashboard_snapshot WHERE id=?1", params![id]);
-    StatusCode::NO_CONTENT
+    // `P10.20-w` (gestes de `dash_ergonomics`) — la révocation n'est affirmée que sur UNE ligne supprimée : la forme
+    // d'avant avalait le DELETE et rendait 204, et l'instantané « révoqué » restait servi par son jeton.
+    match une_ligne_ecrite(conn.execute("DELETE FROM dashboard_snapshot WHERE id=?1", params![id]), "suppression de l'instantané") {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_INSTANTANE_NON_SUPPRIME} (instantané #{id} : {cause})")),
+    }
 }

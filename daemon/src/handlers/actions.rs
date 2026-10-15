@@ -1553,6 +1553,12 @@ pub(crate) fn respond_run() {
     // (action 1 `approved` -> `failed`, `done_ts` posé) ; et sur une base en retard de 5 migrations, il
     // écrivait aussi sans migrer ni refuser. C'est l'asymétrie exacte que ce chantier voulait retirer :
     // le daemon refusait bruyamment de SERVIR pendant que le responder root continuait d'EXÉCUTER.
+    // `P10.33-g` — ce responder tourne en ROOT, souvent avant le premier démarrage : sur une base
+    // absente, la porte la créerait sans la clé du démon, donc EN CLAIR, et pour de bon.
+    if let Err(e) = refuser_une_base_absente(&db_path, "respond") {
+        eprintln!("{e} — AUCUNE action exécutée. Arrêt propre.");
+        std::process::exit(1);
+    }
     let conn = match PreparedDb::open(&db_path) {
         Ok(c) => c,
         Err(e) => {

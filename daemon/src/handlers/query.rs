@@ -488,7 +488,17 @@ fn keyset_sort_tenable(keys: &[String]) -> bool {
 /// `KEYSET_ORDRE`) : ce sont exactement les ordres que `page_sql` RAFFINE, donc qu'il ne peut pas
 /// contredire. `| sort -id` n'en est PAS un et retombe sur l'OFFSET (`P10.5-f`).
 /// Un `|` dans une valeur citée peut produire un FAUX NÉGATIF -> sûr (OFFSET).
+/// `P10.32-u` — le jugement porte sur le texte DÉTENDU des macros (`soql_detendu_pour_juger`), celui que
+/// le compilateur découpera : une macro qui cache `| stats count` n'est plus un filtre aux yeux du curseur.
 pub(crate) fn keyset_applicable(soql: &str) -> bool {
+    keyset_applicable_selon(soql, crate::active_knowledge)
+}
+
+/// `keyset_applicable` avec un jeu de savoir EXPLICITE (témoins : aucun état global touché).
+pub(crate) fn keyset_applicable_selon(soql: &str, savoir: impl FnOnce() -> guatx_core::soql::KnowledgeSet) -> bool {
+    let Some(soql) = crate::soql_detendu_pour_juger(soql, savoir) else {
+        return false; // détente refusée : le compilateur refusera aussi -> jamais de curseur
+    };
     soql.split('|').skip(1).all(|stage| {
         let stage = stage.trim();
         let cmd = stage.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
@@ -529,10 +539,23 @@ pub(crate) fn keyset_applicable(soql: &str) -> bool {
 /// base ; sans cursor_id le compilateur le résoudrait en `json_extract(fields,'$.id')` (mesuré) et le
 /// curseur serait NULL — c'est pourquoi cette fonction n'est appelée que sur le chemin keyset.
 /// `table *` / `table` nu sont des passe-plat (aucune liste) -> rien à augmenter.
+/// `P10.32-u` — l'augmentation lit et ré-émet le texte DÉTENDU des macros, le même que `keyset_applicable`
+/// a jugé : une projection cachée dans une macro reçoit elle aussi `ts`/`id`. Ce chemin compile donc le texte
+/// détendu (la détente du cœur ne laisse aucun backtick) ; une différence avec le chemin OFFSET, qui compile le
+/// texte brut : l'alias CIM de lecture s'y applique aussi au corps d'une macro. Sans backtick, rien ne change.
 pub(crate) fn keyset_projection_augment(soql: &str) -> (String, usize) {
+    keyset_projection_augment_selon(soql, crate::active_knowledge)
+}
+
+/// `keyset_projection_augment` avec un jeu de savoir EXPLICITE (témoins : aucun état global touché).
+pub(crate) fn keyset_projection_augment_selon(soql: &str, savoir: impl FnOnce() -> guatx_core::soql::KnowledgeSet) -> (String, usize) {
+    // Détente refusée : `keyset_applicable` a déjà refusé le curseur ; texte rendu tel quel, rien d'ajouté.
+    let Some(detendu) = crate::soql_detendu_pour_juger(soql, savoir) else {
+        return (soql.to_string(), 0);
+    };
     let mut out: Vec<String> = Vec::new();
     let mut added_last = 0usize;
-    for (i, stage) in soql.split('|').enumerate() {
+    for (i, stage) in detendu.split('|').enumerate() {
         if i == 0 {
             out.push(stage.to_string());
             continue;

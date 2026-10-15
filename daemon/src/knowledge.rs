@@ -372,3 +372,20 @@ pub(crate) fn active_knowledge() -> KnowledgeSet {
     }
     effective_knowledge(&db)
 }
+
+/// `P10.32-u` — LE TEXTE QUE LES JUGES D'ÉTAGES DU DÉMON DOIVENT LIRE. Le compilateur détend les macros
+/// (`expand_macros`) AVANT de découper la requête en étages : une macro dont le corps est un pipeline
+/// (`| stats count`) ajoute donc des étages que le texte brut ne montre pas. `keyset_applicable`,
+/// `keyset_projection_augment` et `AnswerShape::of_gxql` jugent CE texte détendu, avec la MÊME fonction
+/// publique du cœur et le jeu de savoir que la compilation lira. Sans backtick : texte inchangé, sans
+/// cloner le jeu (même chemin rapide que le cœur). Détente en échec -> `None`, que chaque juge lit comme un
+/// REFUS (le compilateur refusera la requête de toute façon ; jamais un texte brut jugé à la place).
+pub(crate) fn soql_detendu_pour_juger(
+    soql: &str,
+    savoir: impl FnOnce() -> KnowledgeSet,
+) -> Option<std::borrow::Cow<'_, str>> {
+    if !soql.contains('`') {
+        return Some(std::borrow::Cow::Borrowed(soql));
+    }
+    guatx_core::soql::expand_macros(soql, &savoir()).ok().map(std::borrow::Cow::Owned)
+}

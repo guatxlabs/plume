@@ -296,12 +296,14 @@ pub(crate) fn detail_du_magasin(non_prets: i64, total: Option<i64>, releves: usi
 /// LÈVE OU RÉSOUT, et rend son bilan de tick. Appelé depuis `check_heartbeats` (même tick, même
 /// verrou, même famille d'alertes que le capteur muet et la flotte muette).
 ///
-/// LES TROIS SORTIES SONT DISTINCTES, ET C'EST LE CŒUR :
+/// LES QUATRE SORTIES SONT DISTINCTES, ET C'EST LE CŒUR :
 ///   * lecture ÉCHOUÉE -> on ne lève ni ne résout, ET on le DIT (`Mesure::Illisible`) : un
 ///     dead-man's-switch qui ne sait plus lire n'a pas le droit de s'éteindre en silence ;
 ///   * `NonObserve` -> on ne lève ni ne résout, et ce n'est PAS un aveu : rien n'a échoué, personne
 ///     n'a simplement rapporté. Un aveu ici ferait crier tous les déploiements sans magasin ;
-///   * observé -> lève ou résout.
+///   * observé -> lève ou résout ;
+///   * observé, mais l'alerte à lever est REFUSÉE par la base -> rien n'est levé, la cause du moteur va au
+///     journal et le refus se compte (`Mesure::Lue(1)`) : une alerte non écrite n'est pas un tick calme.
 pub(crate) fn verifier_le_magasin_de_secrets(conn: &Connection, now_ts: i64) -> Mesure<u32> {
     let Some(etat) = etat_du_magasin(conn, now_ts) else {
         return Mesure::Illisible {
@@ -312,6 +314,7 @@ pub(crate) fn verifier_le_magasin_de_secrets(conn: &Connection, now_ts: i64) -> 
             ),
         };
     };
+    let mut alerte_non_ecrite: u32 = 0;
     match etat {
         // Rien n'a été rapporté : on se tait, et on ne résout rien. Le silence de ce signal ne vaut
         // PAS « l'approvisionnement va bien » — c'est la dette nommée du bandeau.
@@ -331,10 +334,19 @@ pub(crate) fn verifier_le_magasin_de_secrets(conn: &Connection, now_ts: i64) -> 
             // flux. Lui imputer la source qui l'a rapportée (`k8s`) ferait basculer la pastille d'un
             // capteur qui fonctionne parfaitement — la même raison que pour la flotte muette.
             let sources = crate::imputation_encoder(&[crate::SOURCE_INDETERMINABLE.to_string()]);
-            let _ = conn.execute(
+            // `P10.20-w` — `Ok(0)` = épisode déjà ouvert (légitime) ; `Err` = alerte refusée par la base : UN
+            // abandon au bilan (au lieu de `Lue(0)`, qui disait « rien d'abandonné ») et une ligne de journal
+            // avec la cause du moteur seule, jamais le détail.
+            let ecrite = conn.execute(
                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                 params![now_ts, FAMILLE_ALERTE, SEVERITE, titre, detail, DEDUP_MAGASIN, sources, crate::fondement::Fondement::Capteur.mot()],
             );
+            if let Err(e) = ecrite {
+                eprintln!(
+                    "[plume] magasin de secrets : alerte NON ÉCRITE ({e}) — comptée abandonnée au bilan du tick, re-tentée au tick suivant"
+                );
+                alerte_non_ecrite = 1;
+            }
             // Épisode DÉJÀ ouvert : on rafraîchit le texte et l'horodatage SANS toucher `notified`
             // (pas de re-notification à chaque tick), exactement comme `detection_aveugle`.
             let _ = conn.execute(
@@ -343,5 +355,5 @@ pub(crate) fn verifier_le_magasin_de_secrets(conn: &Connection, now_ts: i64) -> 
             );
         }
     }
-    Mesure::Lue(0)
+    Mesure::Lue(alerte_non_ecrite)
 }

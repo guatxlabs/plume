@@ -849,27 +849,75 @@ pub(crate) fn enqueue_panel_refresh(
         // try_acquire_owned (PAS await) : si aucun permit libre, on renonce — le cache périmé reste servi.
         if let Ok(_permit) = refresh_sem.try_acquire_owned() {
             let now_s = now();
-            if let Ok(Ok(v)) = tokio::task::spawn_blocking(move || panneau_avoue::executer(&db_path, &conf, pc, from)).await {
-                let cost_ms = measured_cost_ms(&v); // PHASE 3d : mesure du refresh -> classe le panneau
-                if let Ok(payload) = serde_json::to_string(&v) {
-                    { let conn = db.lock();
-                        // PHASE 3d : mémorise le coût (auto-reclassement) même si le cache est off ensuite.
-                        if let Some(c) = cost_ms {
-                            record_panel_cost(&conn, id, &q_fp, c, now_s);
-                        }
-                        if panel_cache_ttl(&conn, id, ttl_global) > 0 {
-                            // écriture + cap anti-explosion : le coffre POSSÈDE la table (garde de build).
-                            panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &payload);
-                        }
-                    }
-                }
-            }
+            // `P10.32-o` — L'ÉCHEC N'EST PLUS JETÉ : un `Err` du moteur (budget, SQL) ou une panique du fil
+            // laissait la ligne de cache ABSENTE, donc un `warming` servi à chaque interrogation, pour toujours.
+            let issue = tokio::task::spawn_blocking(move || panneau_avoue::executer(&db_path, &conf, pc, from)).await;
+            consigner_l_issue_du_rafraichissement(&db, id, &range_key, &q_fp, now_s, from, ttl_global, issue);
         }
         // retrait du set in-flight (succès, abandon ou erreur) -> un futur refresh pourra repartir.
         { let mut g = inflight.lock();
             g.remove(&key);
         }
     });
+}
+
+/// `P10.32-o` — L'ISSUE D'UN RAFRAÎCHISSEMENT, telle que rendue par le fil bloquant : succès (coût +
+/// cache), `Err` du moteur (cause du moteur) ou panique du fil (`JoinError`, cause « exécution échouée »).
+/// Séparée de la tâche pour que chaque bras — panique comprise — se joue sur une issue fabriquée.
+pub(crate) fn consigner_l_issue_du_rafraichissement(
+    db: &Arc<Mutex<Connection>>, id: i64, range_key: &str, q_fp: &str, now_s: i64, from: i64, ttl_global: i64,
+    issue: Result<Result<Value, String>, tokio::task::JoinError>,
+) {
+    match issue {
+        Ok(Ok(v)) => {
+            let cost_ms = measured_cost_ms(&v); // PHASE 3d : mesure du refresh -> classe le panneau
+            if let Ok(payload) = serde_json::to_string(&v) {
+                let conn = db.lock();
+                // PHASE 3d : mémorise le coût (auto-reclassement) même si le cache est off ensuite.
+                if let Some(c) = cost_ms {
+                    record_panel_cost(&conn, id, q_fp, c, now_s);
+                }
+                if panel_cache_ttl(&conn, id, ttl_global) > 0 {
+                    // écriture + cap anti-explosion : le coffre POSSÈDE la table (garde de build).
+                    panneau_avoue::cache_ecrire(&conn, id, range_key, q_fp, now_s, &payload);
+                }
+            }
+        }
+        Ok(Err(cause)) => memoriser_l_echec_du_rafraichissement(db, id, range_key, q_fp, now_s, from, ttl_global, &cause),
+        Err(_) => memoriser_l_echec_du_rafraichissement(db, id, range_key, q_fp, now_s, from, ttl_global, "exécution échouée"),
+    }
+}
+
+/// `P10.32-o` — L'ÉCHEC D'UN RAFRAÎCHISSEMENT EST ÉCRIT, À LA PLACE D'UNE ABSENCE. Le corps d'échec
+/// (`panneau_avoue::corps_d_echec` : `error` = cause du moteur, aucun `warming`) est servi par la
+/// prochaine interrogation, et la nouvelle tentative revient par le mécanisme ordinaire du cache périmé
+/// (`now_s - computed_at > ttl`). Un succès ultérieur l'écrase. Le coût n'est PAS enregistré : un échec
+/// ne classe pas le panneau.
+/// UNE CHARGE UTILE VALIDE DÉJÀ EN CACHE N'EST PAS ÉCRASÉE (lisible, sans `error`) : périmée, elle reste
+/// servie et la tentative suivante revient à la prochaine interrogation — comme au pré-chauffage, qui
+/// garde le périmé quand il échoue. Le corps d'échec ne remplace qu'une ABSENCE (ou un échec précédent).
+/// Journal : l'identifiant, la cause et le geste RÉELLEMENT fait (écrit, conservé, refusé, cache coupé),
+/// jamais la requête.
+fn memoriser_l_echec_du_rafraichissement(
+    db: &Arc<Mutex<Connection>>, id: i64, range_key: &str, q_fp: &str, now_s: i64, from: i64, ttl_global: i64, cause: &str,
+) {
+    let conn = db.lock();
+    if panel_cache_ttl(&conn, id, ttl_global) <= 0 {
+        eprintln!("[panel] WARN rafraîchissement du panneau {id} en échec ({cause}) — cache des panneaux coupé, rien d'écrit");
+        return;
+    }
+    let charge_valide = panneau_avoue::cache_lire(&conn, id, range_key, q_fp)
+        .and_then(|(payload, _)| serde_json::from_str::<Value>(&payload).ok())
+        .is_some_and(|v| v.is_object() && v.get("error").is_none());
+    if charge_valide {
+        eprintln!("[panel] WARN rafraîchissement du panneau {id} en échec ({cause}) — charge utile précédente conservée (périmée), nouvelle tentative à la prochaine interrogation");
+        return;
+    }
+    let corps = panneau_avoue::corps_d_echec(cause, from, now_s).to_string();
+    match panneau_avoue::cache_ecrire_dit(&conn, id, range_key, q_fp, now_s, &corps) {
+        Ok(()) => eprintln!("[panel] WARN rafraîchissement du panneau {id} en échec ({cause}) — corps d'échec servi, nouvelle tentative à l'expiration du cache"),
+        Err(e) => eprintln!("[panel] WARN rafraîchissement du panneau {id} en échec ({cause}) — corps d'échec NON ÉCRIT ({e}), le panneau reste sans charge utile"),
+    }
 }
 
 /// PHASE 3d — sert un panneau en SWR (stale-while-revalidate), logique EXACTE de 3c : HIT cache (frais OU
@@ -898,7 +946,14 @@ pub(crate) fn serve_swr(
     // elle sert (a) à re-confronter l'horizon du payload servi — la portée n'est écrite QUE dans le SQL
     // — et (b) à armer le rafraîchissement. Compilation en erreur -> `None` : on ne re-estampe rien (ce
     // qui a été mesuré à l'écriture reste ce qui est dit) et on n'arme rien, exactement comme avant.
-    let pc = panneau_avoue::compile_panneau_avoue(query, is_soql, from, to, env).ok();
+    // `P10.32-o` — SUR UN MISS, LA COMPILATION REFUSÉE EST RENDUE, PLUS TUE : le `.ok()` d'origine en
+    // faisait un corps `warming` servi à chaque interrogation, sans rien armer, donc sans fin — alors que
+    // le chemin LIVE rend `bad_req` pour la même compilation. La cause est gardée pour la branche MISS.
+    let compile = panneau_avoue::compile_panneau_avoue(query, is_soql, from, to, env);
+    let (pc, refus_de_compilation) = match compile {
+        Ok(pc) => (Some(pc), None),
+        Err(e) => (None, Some(e)),
+    };
     let db_path = req_db_path(st, au);
     // L'HORIZON D'UN CORPS SYNTHÉTIQUE : mesuré quand la portée est dérivable, `None` sinon. Il n'est
     // calculé que sur les deux branches qui fabriquent un corps sans ligne — jamais sur un HIT lisible,
@@ -928,6 +983,10 @@ pub(crate) fn serve_swr(
             Json(v).into_response()
         }
         None => {
+            // `P10.32-o` : le MÊME refus que le chemin live, avec la cause du compilateur.
+            if let Some(e) = refus_de_compilation {
+                return bad_req(e);
+            }
             // MISS total (jamais réchauffé) -> refresh async + JSON VALIDE non bloquant « warming ».
             // L'HORIZON EST MESURÉ AVANT L'ARMEMENT : la tâche de rafraîchissement CONSOMME le panneau
             // compilé, et la portée ne se lit que dans son SQL.

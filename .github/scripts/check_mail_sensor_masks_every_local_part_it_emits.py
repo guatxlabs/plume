@@ -53,11 +53,13 @@ masqué par défaut »)
 BANNED (`banned`) dont le domaine figure dans `PLUME_MAIL_DOMAINES_LOCAUX` — et RIEN d'autre. La garde joue le
 capteur sous SEPT réglages (absent, `0`, `1` avec liste, `1` sans liste, `1` avec une liste illisible, `1` avec
 une liste en partie illisible, une valeur autre que `0`/`1`) sur les lignes fabriquées ci-dessus PLUS des
-entrées amavis vers un domaine local, un domaine externe, un sous-domaine du domaine local, sur INFECTED,
-BANNED, CLEAN et SPAM : seul le `rcpt` d'un INFECTED ou BANNED local sort en clair, et seulement réglage à `1`
+entrées amavis vers un domaine local, un domaine externe, un sous-domaine du domaine local, un domaine à
+espace fait de deux domaines locaux, une valeur sans `@` égale à un domaine local, sur INFECTED, BANNED, CLEAN
+et SPAM : seul le `rcpt` d'un INFECTED ou BANNED local sort en clair, et seulement réglage à `1`
 avec liste ; la boîte démasquée ne sort NI dans le message, NI dans `user`, NI dans la clé ; sans liste
 lisible ou sur une valeur illisible, rien n'est démasqué et un aveu `fallback`/`unreadable-config` le dit ;
-l'enveloppe de config dit l'état (`destinataire_local`). Le corpus livré est rejoué réglage actif : un `rcpt`
+l'enveloppe de config dit l'état (`destinataire_local`) et la liste RETENUE (`domaines_locaux` : minuscules,
+sans doublon ni entrée illisible). Le corpus livré est rejoué réglage actif : un `rcpt`
 en clair n'y est admis que sur `malware`/`banned` d'un domaine local, et il doit y en avoir au moins un.
 CE QU'ELLE NE TIENT PAS, DIT : « local » est la liste DÉCLARÉE ; une liste fausse démasque des boîtes qui ne
 sont pas de ce serveur, et la garde ne peut pas le savoir.
@@ -188,19 +190,26 @@ DESTINATAIRES = [
      "banned", "*@sous.example.test", None),
     (_amavis(5, "Passed CLEAN", "marqclean@example.test"), "mailflow", "*@example.test", None),
     (_amavis(6, "Blocked SPAM", "marqspam@example.test"), "mailflow", "*@example.test", None),
+    # Un domaine à ESPACE dont les deux mots sont locaux (` example.test example.invalid ` contient
+    # ` example.test example.invalid `) : seule la règle « sans espace » le garde masqué.
+    (_amavis(7, "Blocked INFECTED (Eicar-Signature)", "marqesp@example.test example.invalid"), "malware",
+     "*@example.test example.invalid", None),
+    # Une valeur SANS `@` égale à un domaine local : ce n'est pas une adresse, elle sort `*`.
+    (_amavis(8, "Blocked INFECTED (Eicar-Signature)", "Example.TEST"), "malware", "*", None),
 ]
-# (nom, réglages, démasque ?, clé avouée ou None, état attendu dans l'enveloppe de config)
+# (nom, réglages, démasque ?, clé avouée ou None, état attendu dans l'enveloppe de config, liste RETENUE
+# attendue dans l'enveloppe : `domaines_locaux`, en minuscules, sans doublon ni entrée illisible, `,` entre)
 REGLAGES_LOCAUX = [
-    ("réglage absent, liste posée", {LISTE_LOCALE: "example.test"}, False, None, "masque"),
-    ("réglage à 0, liste posée", {REGLAGE_LOCAL: "0", LISTE_LOCALE: "example.test"}, False, None, "masque"),
+    ("réglage absent, liste posée", {LISTE_LOCALE: "example.test"}, False, None, "masque", ""),
+    ("réglage à 0, liste posée", {REGLAGE_LOCAL: "0", LISTE_LOCALE: "example.test"}, False, None, "masque", ""),
     ("réglage à 1, liste posée", {REGLAGE_LOCAL: "1", LISTE_LOCALE: " Example.TEST,example.invalid "}, True, None,
-     "demasque"),
-    ("réglage à 1, sans liste", {REGLAGE_LOCAL: "1"}, False, LISTE_LOCALE, "masque-sans-liste"),
+     "demasque", "example.test,example.invalid"),
+    ("réglage à 1, sans liste", {REGLAGE_LOCAL: "1"}, False, LISTE_LOCALE, "masque-sans-liste", ""),
     ("réglage à 1, liste illisible", {REGLAGE_LOCAL: "1", LISTE_LOCALE: "*.example.test"}, False, LISTE_LOCALE,
-     "masque-sans-liste"),
-    ("réglage à 1, liste en partie illisible", {REGLAGE_LOCAL: "1", LISTE_LOCALE: "example.test x_y"}, True,
-     LISTE_LOCALE, "demasque"),
-    ("réglage à oui", {REGLAGE_LOCAL: "oui", LISTE_LOCALE: "example.test"}, False, REGLAGE_LOCAL, "masque"),
+     "masque-sans-liste", ""),
+    ("réglage à 1, liste en partie illisible", {REGLAGE_LOCAL: "1", LISTE_LOCALE: "example.test x_y EXAMPLE.test"},
+     True, LISTE_LOCALE, "demasque", "example.test"),
+    ("réglage à oui", {REGLAGE_LOCAL: "oui", LISTE_LOCALE: "example.test"}, False, REGLAGE_LOCAL, "masque", ""),
 ]
 
 
@@ -213,7 +222,7 @@ def juger_destinataires(evenements, actif):
     for ev in evenements:
         par_ts.setdefault(ev.get("ts"), []).append(ev)
     for ligne, cat, clair, boite in DESTINATAIRES:
-        quoi = f"entrée `{ligne[57:110]}…`"
+        quoi = f"entrée `{ligne[57:90]}…` vers `<{ligne.split(' -> <', 1)[1].split('>', 1)[0]}>`"
         vus = par_ts.get(epoch(ligne), [])
         if len(vus) != 1:
             fautes.append(f"{quoi} : {len(vus)} événement(s) au lieu d'un")
@@ -239,8 +248,8 @@ def juger_destinataires(evenements, actif):
     return fautes
 
 
-def juger_reglage(configs, cle_avouee, etat):
-    """L'aveu attendu (ou son absence) et l'état dit dans l'enveloppe de config."""
+def juger_reglage(configs, cle_avouee, etat, liste):
+    """L'aveu attendu (ou son absence), l'état et la liste retenue dits dans l'enveloppe de config."""
     fautes = []
     aveux = [c for c in configs if (c.get("fields") or {}).get("collect_status") == "fallback"
              and (c.get("fields") or {}).get("reason") == "unreadable-config"]
@@ -253,6 +262,10 @@ def juger_reglage(configs, cle_avouee, etat):
              if (c.get("fields") or {}).get("type") == "collection-reducing"]
     if etats != [etat]:
         fautes.append(f"l'enveloppe de config dit `destinataire_local` = {etats} au lieu de [`{etat}`]")
+    listes = [((c.get("fields") or {}).get("filters") or {}).get("domaines_locaux") for c in configs
+              if (c.get("fields") or {}).get("type") == "collection-reducing"]
+    if listes != [liste]:
+        fautes.append(f"l'enveloppe de config dit `domaines_locaux` = {listes} au lieu de [`{liste}`]")
     return fautes
 
 
@@ -409,13 +422,17 @@ def epreuve_du_juge():
     }.items():
         if not juger_destinataires(evs, True):
             return f"le juge du destinataire local ne voit pas « {nom} »"
-    cfg = [{"fields": {"type": "collection-reducing", "filters": {"destinataire_local": "masque"}}}]
+    cfg = [{"fields": {"type": "collection-reducing", "filters": {"destinataire_local": "masque",
+                                                                   "domaines_locaux": "example.test"}}}]
     aveu = [{"fields": {"collect_status": "fallback", "reason": "unreadable-config", "detail": LISTE_LOCALE + '="" x'}}]
-    if juger_reglage(cfg, None, "masque") or juger_reglage(cfg + aveu, LISTE_LOCALE, "masque"):
+    if juger_reglage(cfg, None, "masque", "example.test") or juger_reglage(cfg + aveu, LISTE_LOCALE, "masque",
+                                                                          "example.test"):
         return "le juge du réglage accuse un état juste"
-    if not juger_reglage(cfg + aveu, None, "masque") or not juger_reglage(cfg, LISTE_LOCALE, "masque") \
-            or not juger_reglage(cfg, None, "demasque"):
-        return "le juge du réglage ne voit pas un aveu manquant, en trop, ou un état faux"
+    if not juger_reglage(cfg + aveu, None, "masque", "example.test") \
+            or not juger_reglage(cfg, LISTE_LOCALE, "masque", "example.test") \
+            or not juger_reglage(cfg, None, "demasque", "example.test") \
+            or not juger_reglage(cfg, None, "masque", "example.test x_y"):
+        return "le juge du réglage ne voit pas un aveu manquant, en trop, un état ou une liste retenue faux"
     return None
 
 
@@ -523,7 +540,7 @@ def main():
         # P10.33-f — sept réglages, puis le corpus réglage actif.
         fautes = []
         lignes = [l for l, _, _ in FABRIQUEES] + [l for l, _, _, _ in DESTINATAIRES]
-        for quoi, reglages, actif, cle, etat in REGLAGES_LOCAUX:
+        for quoi, reglages, actif, cle, etat, liste in REGLAGES_LOCAUX:
             configs = []
             ev, ko = jouer(chemin, lignes, reglages, configs)
             if ko:
@@ -531,7 +548,7 @@ def main():
                 continue
             fabriquees = [e for e in ev if e.get("ts") < epoch(DESTINATAIRES[0][0])]
             fautes += [f"{quoi} : {f}" for f in juger_fabriquees(fabriquees) + juger_destinataires(ev, actif)
-                       + juger_reglage(configs, cle, etat)]
+                       + juger_reglage(configs, cle, etat, liste)]
         ev, ko = jouer(chemin, corpus, {REGLAGE_LOCAL: "1", LISTE_LOCALE: "example.test"})
         if ko:
             fautes.append(f"corpus réglage actif : {ko}")

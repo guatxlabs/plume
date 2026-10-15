@@ -34,9 +34,12 @@ d'outils (les vrais, liés, plus des FAUX exécutables — `date` à heure fixe,
        quand elle ne donne aucun événement, avec lignes lues, émises, écartées par filtre et au-delà du
        plafond ; AUCUN battement quand le journal n'a pas grossi (journal figé = auditd arrêté : le silence
        est le signal de `de-auditd-silent` et de la sonde, il ne doit pas être couvert) ;
-     · PLAFOND AVOUÉ — `PLUME_AUDIT_MAX` bas : les TAMPER passent d'abord, puis les premiers événements de
-       la tranche, dans l'ordre d'avant ; le nombre écarté est dans le battement et dans l'aveu
-       `collection-capped` ; un plafond illisible retombe sur son défaut et le dit (`unreadable-config`) ;
+     · PLAFOND AVOUÉ — `PLUME_AUDIT_MAX` bas : les TAMPER passent d'abord, puis les autres par gravité
+       décroissante, les premiers de la tranche dans une même gravité, et les gardés sortent dans l'ordre
+       d'avant (ordre de la tranche, TAMPER en dernier) ; une tranche SATURÉE d'execve bénins (sev 1) ne
+       pousse plus hors du plafond un `svc_exec` (sev 3) ni un exec en échec (sev 2) qui la suivent ; le
+       nombre écarté est dans le battement et dans l'aveu `collection-capped` ; un plafond illisible
+       retombe sur son défaut et le dit (`unreadable-config`) ;
      · LES DEUX ÉCARTS NOMMÉS par le capteur — un enregistrement sans identifiant `audit(...)` est émis
        (sans clé), un contrôle brut ou un octet UTF-8 invalide dans une valeur laisse l'enveloppe lisible ;
      · ÉCHECS DE L'ANALYSE (premier awk, second awk, comptes illisibles) : avoués `missing-source`, sans
@@ -344,6 +347,21 @@ def renumeroter(lignes, k):
             for l in lignes]
 
 
+def gardes_par_gravite(evs, place):
+    """Les `place` événements que le plafond doit garder : gravité décroissante, les premiers à gravité égale,
+    rendus dans l'ordre de la tranche."""
+    quota, reste = {}, place
+    for sev in sorted({o["severity"] for b, o in evs}, reverse=True):
+        quota[sev] = min(reste, sum(1 for b, o in evs if o["severity"] == sev))
+        reste -= quota[sev]
+    out = []
+    for b, o in evs:
+        if quota.get(o["severity"], 0) > 0:
+            quota[o["severity"]] -= 1
+            out.append(b)
+    return out
+
+
 def bac_auditd(awk, compter=False):
     bac = Bac(awk, compter=compter)
     bac.outil("auditctl", "#!/bin/sh\ncat <<'X'\n" + AUDITCTL_REGLES + "X\n")
@@ -426,9 +444,9 @@ def banc_auditd(awk, nom_awk, attendu):
     finally:
         bac.nettoyer()
 
-    # A5 — plafond bas : TAMPER d'abord, puis les premiers événements, dans l'ordre d'avant ; avoué.
+    # A5 — plafond bas : TAMPER d'abord, puis par gravité décroissante, dans l'ordre d'avant ; avoué.
     defaut = decouper(attendu["defaut"][f"auditd-{ts}.json"])[1]
-    hors_tamper = [b for b, o in defaut if o["category"] != "tamper"]
+    hors_tamper_evs = [(b, o) for b, o in defaut if o["category"] != "tamper"]
     tampers = sorted(b for b, o in defaut if o["category"] == "tamper")
     for cap in (3, len(tampers) + 2, 0):
         q = f"auditd/{nom_awk}/plafond_{cap}"
@@ -444,8 +462,9 @@ def banc_auditd(awk, nom_awk, attendu):
             if len(gardes) != cap:
                 faute(q, f"{len(gardes)} événement(s) publiés, attendu {cap}")
             else:
-                if [b for b, o in gardes[:k_n]] != hors_tamper[:k_n]:
-                    faute(q, "les événements hors TAMPER gardés ne sont pas les premiers de la tranche, dans l'ordre")
+                if [b for b, o in gardes[:k_n]] != gardes_par_gravite(hors_tamper_evs, k_n):
+                    faute(q, "les événements hors TAMPER gardés ne sont pas les plus graves (les premiers à gravité "
+                             "égale), dans l'ordre de la tranche")
                 if any(o["category"] != "tamper" for b, o in gardes[k_n:]) or \
                         not set(b for b, o in gardes[k_n:]) <= set(tampers):
                     faute(q, "les TAMPER ne sont pas gardés en priorité au plafond")
@@ -461,6 +480,51 @@ def banc_auditd(awk, nom_awk, attendu):
             # un passage coupé n'est pas un passage « rien de neuf » : sa configuration de collecte part encore.
             if f"config-auditd-{ts}.json" not in res["fichiers"]:
                 faute(q, "configuration de collecte non publiée sur un passage coupé par le plafond")
+        finally:
+            bac.nettoyer()
+
+    # A5b — ÉVASION PAR SATURATION : une tranche ouverte par un flot d'execve bénins (sev 1), puis un exec en
+    # échec (sev 2), un `svc_exec` (sev 3) et un TAMPER, sous un plafond bas. Garder « les premiers » les
+    # perdait (l'offset avance) ; trier la SORTIE par gravité changerait l'ordre d'avant. Les deux rougissent.
+    q = f"auditd/{nom_awk}/plafond_sature"
+    def exec_ligne(serie, comm, succes="yes", auid="1000", cle="exec_tracking"):
+        return (f"type=SYSCALL msg=audit(1758650100.{serie:03d}:{7000 + serie}): arch=c000003e syscall=59 "
+                f"success={succes} exit=0 items=1 ppid=900 pid={2000 + serie} auid={auid} uid=1000 gid=1000 "
+                f"tty=pts0 ses=3 comm=\"{comm}\" exe=\"/usr/bin/{comm}\" key=\"{cle}\"\n")
+    benins = [f"b{i:02d}" for i in range(1, 11)]
+    sature = [exec_ligne(i, c) for i, c in enumerate(benins, 1)]
+    sature.append(exec_ligne(20, "echec", succes="no"))
+    sature.append(exec_ligne(21, "svc", auid="4294967295", cle="svc_exec"))
+    sature.append("type=SYSCALL msg=audit(1758650100.030:7030): arch=c000003e syscall=257 success=yes exit=3 "
+                  "items=2 ppid=900 pid=2030 auid=1000 uid=0 gid=0 tty=pts0 ses=3 comm=\"vi\" exe=\"/usr/bin/vi\" "
+                  "key=\"shadow_changes\"\n")
+    sature.append("type=PATH msg=audit(1758650100.030:7030): item=1 name=\"/etc/shadow\" inode=9 dev=fd:00 "
+                  "mode=0100640 ouid=0 ogid=42 rdev=00:00 nametype=NORMAL\n")
+    total = len(benins) + 3
+    for cap, voulus in ((5, ["b01", "b02", "echec", "svc", "tamper"]), (3, ["echec", "svc", "tamper"]),
+                        (2, ["svc", "tamper"]), (1, ["tamper"])):
+        qc = f"{q}_{cap}"
+        bac = bac_auditd(awk)
+        try:
+            log = journal(bac, sature)
+            res = bac.jouer("auditd.sh", {"PLUME_AUDIT_LOG": log, "PLUME_AUDIT_MAX": str(cap)})
+            evs = evenements(qc, res, "auditd.sh")
+            env_evs = res["fichiers"].get(f"auditd-{ts}.json")
+            gardes = [o for b, o in decouper(normaliser_hote(env_evs))[1]] if env_evs else []
+            obtenus = ["tamper" if o.get("category") == "tamper" else (o.get("fields") or {}).get("comm")
+                       for o in gardes]
+            if obtenus != voulus:
+                faute(qc, f"gardés au plafond {obtenus}, attendu {voulus} (TAMPER, puis gravité décroissante, "
+                          f"dans l'ordre de la tranche)")
+            ecartes = total - cap
+            hb = un_battement(qc, evs, "auditd")
+            if hb:
+                contient(qc, hb.get("message"), f"{ecartes} au-delà du plafond PLUME_AUDIT_MAX={cap}")
+            av = aveux(evs, "auditd", "unavailable", "collection-capped")
+            if len(av) != 1:
+                faute(qc, f"{len(av)} aveu(x) `collection-capped`, attendu 1")
+            else:
+                contient(qc, (av[0].get("fields") or {}).get("detail"), f"{ecartes} ligne(s)", "gravite decroissante")
         finally:
             bac.nettoyer()
 

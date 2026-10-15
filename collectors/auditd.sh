@@ -166,11 +166,17 @@ AUDIT_EXEC_DROP_LIST="$AUDIT_EXEC_DROP_LIST_TIER1"
 #   · un caractere de controle brut dans une valeur de `fields` rendait l'enveloppe ENTIERE illisible (le
 #     passage perdu, l'offset avance) : `af` le retire comme il retirait deja la tabulation.
 # LE PLAFOND `PLUME_AUDIT_MAX` S'AVOUE, ET IL NE COUPE PLUS LES TAMPER D'ABORD. `head -N` coupait le TSV en
-# silence, et les TAMPER, ecrits en dernier (dans END), etaient les PREMIERS perdus. Le second programme tient
-# les autres evenements dans un tableau borne au plafond, garde les TAMPER en priorite et garde l'ordre de
-# sortie d'avant ; le nombre ecarte est compte, porte par le battement et avoue par `plume_collecte_tronquee`
-# (canal `de-collector-unavailable`). Un plafond illisible faisait echouer `head`, et le capteur sortait en
-# ERREUR a chaque passage (plus rien n'etait collecte) : il retombe maintenant sur son defaut, et le dit.
+# silence, et les TAMPER, ecrits en dernier (dans END), etaient les PREMIERS perdus. Au-dela du plafond, le
+# second programme garde les TAMPER en priorite, puis les autres par GRAVITE DECROISSANTE (3, puis 2, puis 1,
+# puis 0), et dans une meme gravite les premiers de la tranche : garder "les premiers" laissait un flot
+# d'execve benins (sev 1) pousser hors du plafond les execve a risque qui le suivent (svc_exec sev 3, priv/
+# escal/susp ou echec sev 2), perdus puisque l'offset avance — une evasion par saturation. Il lit le TSV DEUX
+# fois : la premiere compte par gravite et fixe un quota par gravite, la seconde ecrit les gardes dans l'ordre
+# de sortie d'avant (ordre de la tranche, TAMPER en dernier) ; temps lineaire, et seuls les TAMPER sont tenus
+# en memoire. Sous le plafond, tout part : sortie identique a l'octet. Le nombre ecarte est compte, porte par
+# le battement et avoue par `plume_collecte_tronquee` (canal `de-collector-unavailable`). Un plafond illisible
+# faisait echouer `head`, et le capteur sortait en ERREUR a chaque passage (plus rien n'etait collecte) : il
+# retombe maintenant sur son defaut, et le dit.
 AUDIT_MAX="${PLUME_AUDIT_MAX:-4000}"
 case "$AUDIT_MAX" in
   ''|*[!0-9]*) plume_reglage_illisible auditd PLUME_AUDIT_MAX "$AUDIT_MAX" 4000 "l'environnement du capteur"; AUDIT_MAX=4000 ;;
@@ -292,28 +298,44 @@ if ! awk -v ts="$ts" -v cap="$AUDIT_MAX" -v out="$evf" -v stats="$stf" '
     if (F != "") j = j ",\"fields\":{" F "}"
     return j "}"
   }
-  $2 == "__auditd_dropcount__" { DROPPED = $3 + 0; next }
-  $2 == "__auditd_comptes__"   { LUS = $3 + 0; RUO = $4 + 0; next }
+  # Quotas, entre les deux passes : les TAMPER d abord, puis la place restante par gravite decroissante.
+  # Les gravites DISTINCTES sont une poignee (0 a 4) : leur tri par selection ne depend pas de la tranche.
+  function quotas(   r, i, j, m, s){
+    tk_ = (NT < cap+0) ? NT : cap+0; r = cap - tk_
+    for (i = 1; i <= NS; i++) {
+      m = i; for (j = i + 1; j <= NS; j++) if (S[j] > S[m]) m = j
+      s = S[m]; S[m] = S[i]; S[i] = s
+      Q[s] = (C[s] < r) ? C[s] : r; r -= Q[s]; nk += Q[s]
+    }
+    prets = 1
+  }
+  $2 == "__auditd_dropcount__" { if (passe == 1) DROPPED = $3 + 0; next }
+  $2 == "__auditd_comptes__"   { if (passe == 1) { LUS = $3 + 0; RUO = $4 + 0 }; next }
   {
     msg = $5; for (i = 6; i <= NF; i++) msg = msg "\t" $i
     if (msg == "") next
-    j = ev($1, $2, $3, $4, msg)
-    if ($2 == "tamper") T[++NT] = j
-    else if (NB < cap+0) B[++NB] = j
-    else NX++
+    s = $1 + 0
+  }
+  # Passe 1 : comptes par gravite, rien n est construit.
+  passe == 1 {
+    if ($2 == "tamper") NT++
+    else { if (!(s in C)) S[++NS] = s; C[s]++; NB++ }
+    next
+  }
+  # Passe 2 : les gardes, dans l ordre de la tranche ; les TAMPER, tenus, sortent en dernier.
+  {
+    if (!prets) quotas()
+    if ($2 == "tamper") { if (KT < tk_) T[++KT] = ev($1, $2, $3, $4, msg); next }
+    if (PRIS[s] < Q[s]) { PRIS[s]++; sep = (n > 0) ? "," : ""; printf "%s%s", sep, ev($1, $2, $3, $4, msg) > out; n++ }
   }
   END {
-    # Sous le plafond : tout part, dans l ordre d avant (passe principale, puis TAMPER). Au-dessus : les
-    # TAMPER d abord, la passe principale dans la place restante, le reste COMPTE.
-    tk_ = (NT < cap+0) ? NT : cap+0; nk = cap - tk_; if (nk > NB) nk = NB
-    n = 0
-    for (i = 1; i <= nk; i++)  { sep = (n > 0) ? "," : ""; printf "%s%s", sep, B[i] > out; n++ }
-    for (i = 1; i <= tk_; i++) { sep = (n > 0) ? "," : ""; printf "%s%s", sep, T[i] > out; n++ }
+    if (!prets) quotas()
+    for (i = 1; i <= KT; i++) { sep = (n > 0) ? "," : ""; printf "%s%s", sep, T[i] > out; n++ }
     close(out)
-    printf "%d %d %d %d %d\n", LUS, n, DROPPED+0, RUO+0, (NB-nk)+NX+(NT-tk_) > stats
+    printf "%d %d %d %d %d\n", LUS, n, DROPPED+0, RUO+0, (NB-nk)+(NT-tk_) > stats
     close(stats)
   }
-' "$tsv"; then
+' passe=1 "$tsv" passe=2 "$tsv"; then
   plume_lecture_echouee auditd forme_inconnue "$LOG : la construction des evenements de la tranche a partir de l'octet $((prev + 1)) a echoue"
 fi
 n_lues=""; n_emis=""; n_drop=""; n_ruo=""; n_plafond=""
@@ -333,7 +355,7 @@ hb_msg="auditd santé : $n_lues ligne(s) lue(s), $n_emis événement(s) émis, $
 spool_write "auditd-health-$ts.json" "$(emit_event "$(heartbeat auditd "$hb_msg" '{"type":"collector-health","collector":"auditd"}')")" nl
 if [ "$n_plafond" -gt 0 ]; then
   plume_collecte_tronquee auditd plafond-de-lignes "$n_plafond" \
-    "PLUME_AUDIT_MAX=$AUDIT_MAX evenements par passage : les TAMPER sont gardes en priorite, puis les premiers evenements de la tranche ; relevez la borne si l'ecart se repete."
+    "PLUME_AUDIT_MAX=$AUDIT_MAX evenements par passage : les TAMPER sont gardes en priorite, puis les autres par gravite decroissante, les premiers de la tranche dans une meme gravite ; relevez la borne si l'ecart se repete."
 fi
 [ "$n_emis" -eq 0 ] && [ "$n_drop" -eq 0 ] && [ "$n_plafond" -eq 0 ] && plume_exit_nodata
 

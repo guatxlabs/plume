@@ -45,6 +45,22 @@ partie locale qui contient `=`, HORS chevrons et sans étiquette devant (` jean_
 est gardé à dessein. Le compte d'une entrée `LOCAL` est l'adresse que le client authentifié a donnée
 (une banque de politique nommée `LOCAL` sans le drapeau `%l` serait lue comme originaire). Les lignes
 fabriquées ne sont pas relevées dans un journal réel ; leurs formes sont celles des corpus livrés.
+
+LE DESTINATAIRE LOCAL D'UN VIRUS OU D'UNE PIÈCE BANNIE (`P10.33-f`, décidé par l'exploitant : « configurable,
+masqué par défaut »)
+-------------------------------------------------------------------------------------------------------------
+`PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL=1` rend en clair le champ `rcpt` d'un verdict INFECTED (`malware`) ou
+BANNED (`banned`) dont le domaine figure dans `PLUME_MAIL_DOMAINES_LOCAUX` — et RIEN d'autre. La garde joue le
+capteur sous SEPT réglages (absent, `0`, `1` avec liste, `1` sans liste, `1` avec une liste illisible, `1` avec
+une liste en partie illisible, une valeur autre que `0`/`1`) sur les lignes fabriquées ci-dessus PLUS des
+entrées amavis vers un domaine local, un domaine externe, un sous-domaine du domaine local, sur INFECTED,
+BANNED, CLEAN et SPAM : seul le `rcpt` d'un INFECTED ou BANNED local sort en clair, et seulement réglage à `1`
+avec liste ; la boîte démasquée ne sort NI dans le message, NI dans `user`, NI dans la clé ; sans liste
+lisible ou sur une valeur illisible, rien n'est démasqué et un aveu `fallback`/`unreadable-config` le dit ;
+l'enveloppe de config dit l'état (`destinataire_local`). Le corpus livré est rejoué réglage actif : un `rcpt`
+en clair n'y est admis que sur `malware`/`banned` d'un domaine local, et il doit y en avoir au moins un.
+CE QU'ELLE NE TIENT PAS, DIT : « local » est la liste DÉCLARÉE ; une liste fausse démasque des boîtes qui ne
+sont pas de ce serveur, et la garde ne peut pas le savoir.
 """
 import datetime
 import json
@@ -72,6 +88,9 @@ ETIQUETTE_DE_CHAMP = re.compile(r"(?:^|[,;])[A-Za-z_-]+=")
 FORME_MASQUEE = re.compile(r"^(|\*|\*@[^@ ]*)$")
 AMAVIS_ORIGINAIRE = re.compile(r"[{][A-Za-z,]*[}], (?:[A-Za-z0-9_./-]+ )?LOCAL \[[0-9A-Fa-f:.]+\]:[0-9]+ ")
 COMPTE_LOCAL = "comptelocal@example.test"
+ETIQUETTE_LOCAL = "P10.33-f"
+REGLAGE_LOCAL = "PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL"
+LISTE_LOCALE = "PLUME_MAIL_DOMAINES_LOCAUX"
 
 
 def _h(s):
@@ -144,6 +163,99 @@ FABRIQUEES = [
 MARQUEUR = re.compile(r"marq[a-z]")
 
 
+# --- P10.33-f : LE DESTINATAIRE LOCAL ---------------------------------------------------------------
+def _h2(s):
+    return f"2026-10-14T06:01:{s:02d}.000000+00:00 mx1 "
+
+
+def _amavis(n, verdict, dest, fin="Hits: -, size: 1234, 45 ms"):
+    return (_h2(n) + f"amavis[{4200 + n}]: ({4200 + n:05d}-01) {verdict} {{DiscardedInbound,Quarantined}}, "
+            f"[192.0.2.{60 + n}]:{40200 + n} <marqy{n:02d}@example.net> -> <{dest}>, Queue-ID: 4ABCDEF2{n:02d}, "
+            f"Message-ID: <m2{n:02d}@example.net>, mail_id: AbCdEfGh2{n:03d}, {fin}")
+
+
+# (ligne, catégorie attendue, `rcpt` attendu réglage ACTIF avec la liste `example.test`, boîte qui ne doit
+# sortir nulle part ailleurs que dans `rcpt`). Réglage inactif, `rcpt` vaut `masquer(dest)` partout. La boîte
+# bannie a une partie locale à ESPACE : seul son remplacement à sa place (`lu_dest`) la masque dans le message,
+# `masquer_adresses` laisserait `<boitebannie *@…>`.
+DESTINATAIRES = [
+    (_amavis(1, "Blocked INFECTED (Eicar-Signature)", "boitevirus@example.test"),
+     "malware", "boitevirus@example.test", "boitevirus"),
+    (_amavis(2, "Blocked BANNED (application/x-msdownload,.exe,.exe-ms,facture.exe)", "boitebannie suite@Example.TEST"),
+     "banned", "boitebannie suite@Example.TEST", "boitebannie"),
+    (_amavis(3, "Blocked INFECTED (Eicar-Signature)", "marqexterne@example.net"), "malware", "*@example.net", None),
+    (_amavis(4, "Blocked BANNED (application/x-msdownload,.exe,.exe-ms,x.exe)", "marqsous@sous.example.test"),
+     "banned", "*@sous.example.test", None),
+    (_amavis(5, "Passed CLEAN", "marqclean@example.test"), "mailflow", "*@example.test", None),
+    (_amavis(6, "Blocked SPAM", "marqspam@example.test"), "mailflow", "*@example.test", None),
+]
+# (nom, réglages, démasque ?, clé avouée ou None, état attendu dans l'enveloppe de config)
+REGLAGES_LOCAUX = [
+    ("réglage absent, liste posée", {LISTE_LOCALE: "example.test"}, False, None, "masque"),
+    ("réglage à 0, liste posée", {REGLAGE_LOCAL: "0", LISTE_LOCALE: "example.test"}, False, None, "masque"),
+    ("réglage à 1, liste posée", {REGLAGE_LOCAL: "1", LISTE_LOCALE: " Example.TEST,example.invalid "}, True, None,
+     "demasque"),
+    ("réglage à 1, sans liste", {REGLAGE_LOCAL: "1"}, False, LISTE_LOCALE, "masque-sans-liste"),
+    ("réglage à 1, liste illisible", {REGLAGE_LOCAL: "1", LISTE_LOCALE: "*.example.test"}, False, LISTE_LOCALE,
+     "masque-sans-liste"),
+    ("réglage à 1, liste en partie illisible", {REGLAGE_LOCAL: "1", LISTE_LOCALE: "example.test x_y"}, True,
+     LISTE_LOCALE, "demasque"),
+    ("réglage à oui", {REGLAGE_LOCAL: "oui", LISTE_LOCALE: "example.test"}, False, REGLAGE_LOCAL, "masque"),
+]
+
+
+def masquer(v):
+    return "*@" + v.rsplit("@", 1)[1] if "@" in v else ("*" if v else "")
+
+
+def juger_destinataires(evenements, actif):
+    fautes, par_ts = [], {}
+    for ev in evenements:
+        par_ts.setdefault(ev.get("ts"), []).append(ev)
+    for ligne, cat, clair, boite in DESTINATAIRES:
+        quoi = f"entrée `{ligne[57:110]}…`"
+        vus = par_ts.get(epoch(ligne), [])
+        if len(vus) != 1:
+            fautes.append(f"{quoi} : {len(vus)} événement(s) au lieu d'un")
+            continue
+        ev = vus[0]
+        f = ev.get("fields") or {}
+        dest = ligne.split(" -> <", 1)[1].split(">", 1)[0]
+        attendu = clair if actif else masquer(dest)
+        if ev.get("category") != cat:
+            fautes.append(f"{quoi} : catégorie `{ev.get('category')}` au lieu de `{cat}`")
+        if f.get("rcpt") != attendu:
+            fautes.append(f"{quoi} : `rcpt` = `{f.get('rcpt')}` au lieu de `{attendu}`")
+        if f.get("user") != masquer(dest):
+            fautes.append(f"{quoi} : `user` = `{f.get('user')}` au lieu de `{masquer(dest)}`")
+        if "-> <" + masquer(dest) + ">" not in (ev.get("message") or ""):
+            fautes.append(f"{quoi} : le message ne masque pas le destinataire : `{(ev.get('message') or '')[:160]}`")
+        reste = dict(ev, fields={k: v for k, v in f.items() if k != "rcpt"})
+        texte = json.dumps(reste, ensure_ascii=False) + (f.get("rcpt") if boite is None else "")
+        for m in sorted(set(MARQUEUR.findall(texte))):
+            fautes.append(f"{quoi} : la partie locale `{m}` sort dans l'événement")
+        if boite and boite in json.dumps(reste, ensure_ascii=False):
+            fautes.append(f"{quoi} : la boîte `{boite}` sort hors du champ `rcpt`")
+    return fautes
+
+
+def juger_reglage(configs, cle_avouee, etat):
+    """L'aveu attendu (ou son absence) et l'état dit dans l'enveloppe de config."""
+    fautes = []
+    aveux = [c for c in configs if (c.get("fields") or {}).get("collect_status") == "fallback"
+             and (c.get("fields") or {}).get("reason") == "unreadable-config"]
+    cles = sorted({(c["fields"].get("detail") or "").split("=", 1)[0] for c in aveux})
+    if cle_avouee is None and aveux:
+        fautes.append(f"aveu inattendu sur {cles}")
+    if cle_avouee is not None and cles != [cle_avouee]:
+        fautes.append(f"aveu attendu sur `{cle_avouee}`, lu sur {cles}")
+    etats = [((c.get("fields") or {}).get("filters") or {}).get("destinataire_local") for c in configs
+             if (c.get("fields") or {}).get("type") == "collection-reducing"]
+    if etats != [etat]:
+        fautes.append(f"l'enveloppe de config dit `destinataire_local` = {etats} au lieu de [`{etat}`]")
+    return fautes
+
+
 def refus(msg):
     print(f"::error::{ETIQUETTE} : {msg} — la garde REFUSE DE CONCLURE, rien n'a été mesuré.")
     sys.exit(2)
@@ -205,7 +317,15 @@ def juger_fabriquees(evenements):
     return fautes
 
 
-def juger_corpus(evenements):
+def rcpt_local_admis(ev, domaines):
+    """`P10.33-f` : un `rcpt` en clair n'est admis que sur `malware`/`banned`, d'un domaine local DÉCLARÉ."""
+    v = str((ev.get("fields") or {}).get("rcpt") or "")
+    return (bool(domaines) and ev.get("category") in ("malware", "banned") and "@" in v
+            and re.fullmatch(r"[a-z0-9.-]+", v.rsplit("@", 1)[1].lower()) is not None
+            and v.rsplit("@", 1)[1].lower() in domaines)
+
+
+def juger_corpus(evenements, domaines=()):
     fautes = []
     for ev in evenements:
         quoi = f"événement `{(ev.get('message') or '')[:110]}`"
@@ -214,7 +334,8 @@ def juger_corpus(evenements):
             fautes.append(f"{quoi} : la partie locale `{reste}` subsiste dans le message")
         f = ev.get("fields") or {}
         for k in ("user", "sender", "rcpt"):
-            if k in f and not FORME_MASQUEE.match(str(f[k])) and not (k == "sender" and originaire(ev)):
+            if (k in f and not FORME_MASQUEE.match(str(f[k])) and not (k == "sender" and originaire(ev))
+                    and not (k == "rcpt" and rcpt_local_admis(ev, domaines))):
                 fautes.append(f"{quoi} : `{k}` = `{f[k]}` n'est pas masqué")
     return fautes
 
@@ -252,6 +373,49 @@ def epreuve_du_juge():
     }.items():
         if not juger_corpus([e]):
             return f"le juge des corpus ne voit pas « {nom} »"
+    # P10.33-f — le juge du destinataire local, dans les deux positions.
+    local = {"category": "malware", "message": "x", "fields": {"rcpt": "b@example.test"}}
+    if juger_corpus([local], {"example.test"}):
+        return "le juge des corpus accuse un destinataire local admis"
+    for nom, (e, dom) in {
+        "un destinataire local en clair sans réglage": (local, ()),
+        "un destinataire externe en clair": (dict(local, fields={"rcpt": "b@example.net"}), {"example.test"}),
+        "un destinataire local en clair hors malware/banned": (dict(local, category="mailflow"), {"example.test"}),
+        "un sous-domaine pris pour le domaine local": (dict(local, fields={"rcpt": "b@sous.example.test"}), {"example.test"}),
+    }.items():
+        if not juger_corpus([e], dom):
+            return f"le juge des corpus ne voit pas « {nom} »"
+    def dev(ligne, cat, rcpt, user=None, message=None):
+        dest = ligne.split(" -> <", 1)[1].split(">", 1)[0]
+        return {"ts": epoch(ligne), "category": cat, "dedup": "d",
+                "message": message if message is not None else "<*@example.net> -> <" + masquer(dest) + ">",
+                "fields": {"rcpt": rcpt, "user": user if user is not None else masquer(dest)}}
+    for actif in (False, True):
+        bons = [dev(l, c, clair if actif else masquer(l.split(" -> <", 1)[1].split(">", 1)[0]))
+                for l, c, clair, _ in DESTINATAIRES]
+        if juger_destinataires(bons, actif):
+            return f"le juge du destinataire local accuse des événements justes : {juger_destinataires(bons, actif)[:2]}"
+        inverses = [dev(l, c, clair if not actif else masquer(l.split(" -> <", 1)[1].split(">", 1)[0]))
+                    for l, c, clair, _ in DESTINATAIRES]
+        if not juger_destinataires(inverses, actif):
+            return f"le juge du destinataire local ne voit pas la position inversée (actif={actif})"
+    bons = [dev(l, c, clair) for l, c, clair, _ in DESTINATAIRES]
+    for nom, evs in {
+        "la boîte dans le message": [dict(bons[0], message=bons[0]["message"] + " boitevirus")] + bons[1:],
+        "la boîte dans `user`": [dict(bons[0], fields=dict(bons[0]["fields"], user="boitevirus@example.test"))] + bons[1:],
+        "le domaine externe en clair": bons[:2] + [dict(bons[2], fields=dict(bons[2]["fields"], rcpt="marqexterne@example.net"))] + bons[3:],
+        "le CLEAN local en clair": bons[:4] + [dict(bons[4], fields=dict(bons[4]["fields"], rcpt="marqclean@example.test"))] + bons[5:],
+        "une catégorie fausse": [dict(bons[0], category="mailflow")] + bons[1:],
+    }.items():
+        if not juger_destinataires(evs, True):
+            return f"le juge du destinataire local ne voit pas « {nom} »"
+    cfg = [{"fields": {"type": "collection-reducing", "filters": {"destinataire_local": "masque"}}}]
+    aveu = [{"fields": {"collect_status": "fallback", "reason": "unreadable-config", "detail": LISTE_LOCALE + '="" x'}}]
+    if juger_reglage(cfg, None, "masque") or juger_reglage(cfg + aveu, LISTE_LOCALE, "masque"):
+        return "le juge du réglage accuse un état juste"
+    if not juger_reglage(cfg + aveu, None, "masque") or not juger_reglage(cfg, LISTE_LOCALE, "masque") \
+            or not juger_reglage(cfg, None, "demasque"):
+        return "le juge du réglage ne voit pas un aveu manquant, en trop, ou un état faux"
     return None
 
 
@@ -292,7 +456,7 @@ def lignes_des_corpus():
     return lignes
 
 
-def jouer(chemin_awk, lignes):
+def jouer(chemin_awk, lignes, reglages=None, configs=None):
     with tempfile.TemporaryDirectory(prefix="garde-mail-masque-") as bac:
         rep = {d: os.path.join(bac, d) for d in ("bin", "spool", "state")}
         for d in rep.values():
@@ -306,6 +470,7 @@ def jouer(chemin_awk, lignes):
                    PLUME_LIB=LIB, PLUME_SPOOL=rep["spool"], PLUME_STATE=rep["state"], PLUME_MAIL_SRC="file",
                    PLUME_MAIL_LOG=journal, PLUME_MAIL_MAX=str(len(lignes) + 10),
                    PLUME_MAIL_CLAMAV_LOG="", PLUME_MAIL_FRESHCLAM_LOG="", LC_ALL="C.UTF-8")
+        env.update(reglages or {})
         r = subprocess.run(["sh", CAPTEUR], env=env, capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             refus(f"le capteur a échoué sous `{chemin_awk}` (rc={r.returncode}) : {r.stderr.strip()[:300]}")
@@ -318,6 +483,8 @@ def jouer(chemin_awk, lignes):
             except (OSError, ValueError) as e:
                 return None, f"enveloppe `{nom}` illisible comme JSON ({e})"
             evenements += [ev for ev in doc.get("events") or [] if ev.get("category") != "config"]
+            if configs is not None:
+                configs += [ev for ev in doc.get("events") or [] if ev.get("category") == "config"]
         return evenements, None
 
 
@@ -337,6 +504,7 @@ def main():
         print(f"::error file=config.d/rules/catalog/ex-mail-mass-outbound.json::{ETIQUETTE} : {f}")
         total += 1
     vus_corpus = 0
+    vus_locaux = 0
     for nom, chemin in awks:
         fautes = []
         ev, ko = jouer(chemin, [l for l, _, _ in FABRIQUEES])
@@ -352,6 +520,31 @@ def main():
         for f in fautes:
             print(f"::error file=collectors/mail.sh::{ETIQUETTE} ({nom}) : {f}")
         total += len(fautes)
+        # P10.33-f — sept réglages, puis le corpus réglage actif.
+        fautes = []
+        lignes = [l for l, _, _ in FABRIQUEES] + [l for l, _, _, _ in DESTINATAIRES]
+        for quoi, reglages, actif, cle, etat in REGLAGES_LOCAUX:
+            configs = []
+            ev, ko = jouer(chemin, lignes, reglages, configs)
+            if ko:
+                fautes.append(f"{quoi} : {ko}")
+                continue
+            fabriquees = [e for e in ev if e.get("ts") < epoch(DESTINATAIRES[0][0])]
+            fautes += [f"{quoi} : {f}" for f in juger_fabriquees(fabriquees) + juger_destinataires(ev, actif)
+                       + juger_reglage(configs, cle, etat)]
+        ev, ko = jouer(chemin, corpus, {REGLAGE_LOCAL: "1", LISTE_LOCALE: "example.test"})
+        if ko:
+            fautes.append(f"corpus réglage actif : {ko}")
+        else:
+            fautes += [f"corpus réglage actif : {f}" for f in juger_corpus(ev, {"example.test"})]
+            clairs = sum(1 for e in ev if rcpt_local_admis(e, {"example.test"}) and not FORME_MASQUEE.match(
+                str((e.get("fields") or {}).get("rcpt"))))
+            vus_locaux = clairs
+            if clairs == 0:
+                fautes.append("corpus réglage actif : aucun destinataire local démasqué — le réglage ne mord pas")
+        for f in fautes:
+            print(f"::error file=collectors/mail.sh::{ETIQUETTE_LOCAL} ({nom}) : {f}")
+        total += len(fautes)
     exerces = ", ".join(n for n, _ in awks)
     absents = ", ".join(n for n in AWK_EXERCES if n not in {n for n, _ in awks})
     if total:
@@ -361,7 +554,9 @@ def main():
           f"fabriquées (une par famille, marqueurs absents de l'événement, champs masqués, étiquettes `clé=` "
           f"gardées, expéditeur d'une entrée originaire en clair dans `sender` seul, adossé à "
           f"`ex-mail-mass-outbound`) et {vus_corpus} événements des {len(corpus)} lignes de corpus livrées sans "
-          f"partie locale restante. Awk exercés : {exerces}" + (f" ; NON EXERCÉS (absents) : {absents}." if absents else "."))
+          f"partie locale restante. {ETIQUETTE_LOCAL} : destinataire local d'un INFECTED/BANNED en clair SEULEMENT réglage à 1 "
+          f"avec liste ({len(REGLAGES_LOCAUX)} réglages, {len(DESTINATAIRES)} entrées, aveu sans liste ou valeur "
+          f"illisible ; {vus_locaux} démasqué(s) dans le corpus réglage actif). Awk exercés : {exerces}" + (f" ; NON EXERCÉS (absents) : {absents}." if absents else "."))
     sys.exit(0)
 
 

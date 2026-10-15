@@ -32,6 +32,9 @@
 # parce que la regle livree `ex-mail-mass-outbound` compte `sender` par expediteur — masque, il se
 # confondrait avec tous les envois du domaine. Les dangers mesures : un `viewer` qui lisait les
 # correspondants de chaque boite, une base volee qui portait l'annuaire des echanges.
+# P10.33-f — une seconde exception, OPT-IN et masquee par defaut : `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL=1`
+# rend en clair le champ `rcpt` d'un verdict INFECTED ou BANNED dont le domaine est dans
+# `PLUME_MAIL_DOMAINES_LOCAUX` (voir sa lecture, plus bas).
 #
 # Horodatage : le log est en ISO avec offset (+02:00) ; l'epoch UTC = mktime(heure) - offset, avec
 # TZ=UTC pour que mktime interprete l'heure en UTC quel que soit le fuseau de l'hote.
@@ -69,6 +72,49 @@ case "$CLAM_DECALAGE" in
   ''|[+-][0-2][0-9]:[0-5][0-9]) ;;
   *) plume_reglage_illisible mail PLUME_MAIL_CLAMAV_UTC_OFFSET "$CLAM_DECALAGE" "le decalage de mail.log (sinon +00:00)" "la forme +hh:mm ou -hh:mm"
      CLAM_DECALAGE="" ;;
+esac
+
+# P10.33-f — LE DESTINATAIRE LOCAL D'UN VIRUS OU D'UNE PIECE BANNIE, DEMASQUABLE PAR UN REGLAGE NOMME.
+# Masque, le champ `rcpt` d'un verdict amavis INFECTED ou BANNED rend `*@<domaine>` : l'analyste ne sait plus
+# quelle boite de ce serveur a ete visee. `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL=1` le rend en clair, et
+# RIEN D'AUTRE : seulement le champ `rcpt`, seulement sur les categories `malware` (INFECTED) et `banned`
+# (BANNED), seulement si son domaine figure dans `PLUME_MAIL_DOMAINES_LOCAUX`. Le message, `user`, `sender`,
+# les domaines externes et tout autre evenement restent masques. Toute autre valeur que `1` laisse le
+# masquage (defaut) ; une valeur ni vide, ni `0`, ni `1` est avouee (`plume_reglage_illisible`).
+# CE QUI EST « LOCAL », DIT : la liste EXPLICITE `PLUME_MAIL_DOMAINES_LOCAUX` (domaines separes par des
+# espaces ou des virgules, compares sans casse et EXACTEMENT : `sous.example.org` n'est pas `example.org`).
+# Rien n'est devine : ni `mydestination` ni `virtual_mailbox_domains` ne sont lus (le capteur ne lit que des
+# journaux, dans trois modes). Sans liste lisible, rien n'est demasque, et c'est avoue. L'etat est dit dans
+# l'enveloppe de config (`destinataire_local` : `masque`, `demasque`, `masque-sans-liste`).
+# LE RISQUE, DIT (deploy/CONFIDENTIALITE.md) : des adresses de boites reelles entrent dans le SIEM.
+DEMASQUER_RCPT_LOCAL="${PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL:-}"
+demasquer_rcpt_local=0; domaines_locaux=" "; etat_rcpt_local=masque
+case "$DEMASQUER_RCPT_LOCAL" in
+  ''|0) ;;
+  1)
+    _dl_illisibles=""
+    set -f
+    for _dl in $(printf '%s' "${PLUME_MAIL_DOMAINES_LOCAUX:-}" | tr ',;' '  ' | tr 'A-Z' 'a-z'); do
+      case "$_dl" in
+        .*|*.|*..*|*[!a-z0-9.-]*) _dl_illisibles="$_dl_illisibles $_dl" ;;
+        *) case "$domaines_locaux" in *" $_dl "*) ;; *) domaines_locaux="$domaines_locaux$_dl " ;; esac ;;
+      esac
+    done
+    set +f
+    if [ "$domaines_locaux" = " " ]; then
+      etat_rcpt_local=masque-sans-liste
+      plume_reglage_illisible mail PLUME_MAIL_DOMAINES_LOCAUX "${PLUME_MAIL_DOMAINES_LOCAUX:-}" \
+        "le masquage de TOUT destinataire (aucun domaine local lisible : rien n'est demasque)" \
+        "la liste des domaines locaux, requise par PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL=1"
+    else
+      demasquer_rcpt_local=1; etat_rcpt_local=demasque
+      [ -z "$_dl_illisibles" ] || plume_reglage_illisible mail PLUME_MAIL_DOMAINES_LOCAUX "${_dl_illisibles# }" \
+        "le masquage des destinataires de ces entrees (seuls les domaines lisibles sont locaux)" \
+        "la liste des domaines locaux (un domaine : lettres, chiffres, points et tirets)"
+    fi
+    ;;
+  *) plume_reglage_illisible mail PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL "$DEMASQUER_RCPT_LOCAL" \
+       "le masquage de tout destinataire (defaut)" "la valeur 1 (demasque le destinataire local) ou 0 (masque)" ;;
 esac
 
 # lire_journal <chemin> — les MAX dernieres lignes d'un journal du serveur mail, dans le mode choisi.
@@ -316,6 +362,16 @@ function masquer_compte(v,   d){
   if (index(v, "@") == 0) return "*"
   d = v; sub(/^.*@/, "", d)
   return "*@" d
+}
+# P10.33-f — le champ `rcpt` d’une entrée amavis : en clair SEULEMENT si le réglage est actif
+# (`demasquer_local`), la catégorie `malware` ou `banned`, et le domaine (après le DERNIER `@`, sans casse,
+# sans espace) un domaine local déclaré (`domaines_locaux`, ` a b ` : bornés d’espaces). Masqué sinon.
+function destinataire_emis(v, cat,   d){
+  if (demasquer_local == 1 && (cat == "malware" || cat == "banned") && index(v, "@") > 0) {
+    d = v; sub(/^.*@/, "", d); d = tolower(d)
+    if (d ~ /^[a-z0-9.-]+$/ && index(domaines_locaux, " " d " ") > 0) return v
+  }
+  return masquer_compte(v)
 }
 # Chaque occurrence LITTÉRALE de `de` (aucun motif : une valeur lue peut porter `.`, `[`, `\`…).
 function remplacer_partout(s, de, vers,   r, p){
@@ -596,10 +652,11 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
     else if (vd ~ /BANNED$/) { mcat="banned"; msev=3; mact="banned" }
     else if (vd ~ /SPAM/) { msev=2; mact="spam" }
     else if (vd ~ /^Blocked/) { msev=2; mact="blocked" }
+    # P10.33-f — sauf, sur INFECTED et BANNED, le destinataire LOCAL si l’exploitant l’a demandé (`destinataire_emis`).
     # P10.32-l — destinataire masqué ; expéditeur masqué SAUF sur une entrée ORIGINAIRE (`LOCAL`) : c’est le
     # compte de ce serveur, que `ex-mail-mass-outbound` compte (`stats count by sender`).
     lu_exp = frm; lu_dest = rcpt
-    ext=",\"verdict\":\"" jesc(vd) "\",\"sender\":\"" jesc(orig ? frm : masquer_compte(frm)) "\",\"rcpt\":\"" jesc(masquer_compte(rcpt)) "\",\"score\":\"" jesc(sco) "\",\"size\":\"" sz "\""
+    ext=",\"verdict\":\"" jesc(vd) "\",\"sender\":\"" jesc(orig ? frm : masquer_compte(frm)) "\",\"rcpt\":\"" jesc(destinataire_emis(rcpt, mcat)) "\",\"score\":\"" jesc(sco) "\",\"size\":\"" sz "\""
     if (vd ~ /INFECTED$/) ext=ext ",\"virus\":\"" jesc(vir) "\""
     if (coupee) ext=ext ",\"truncated\":\"1\""
     # P10.24-j — `$log_short_templ` a DEUX blocs, `Passed …` (destinataires livrés, `%#D`) et `Blocked …`
@@ -653,7 +710,7 @@ END{
 decalage_mail=""
 if [ -n "$raw" ]; then
 tmp=$(mktemp "$SPOOL/.mail.XXXXXX")
-sortie=$(printf '%s\n' "$raw" | LC_ALL=C TZ=UTC awk -v flux=mail -v last="$last" -v host="$host" -v now="$now" -v out="$tmp" -v skipip="$SKIPIP" "$_PLUME_AWK_ECHAPPEMENT_JSON""$PROGRAMME_MAIL")
+sortie=$(printf '%s\n' "$raw" | LC_ALL=C TZ=UTC awk -v flux=mail -v last="$last" -v host="$host" -v now="$now" -v out="$tmp" -v skipip="$SKIPIP" -v demasquer_local="$demasquer_rcpt_local" -v domaines_locaux="$domaines_locaux" "$_PLUME_AWK_ECHAPPEMENT_JSON""$PROGRAMME_MAIL")
 read -r newwm sans_adresse ventilation_sans_adresse decalage_mail <<EOF
 $sortie
 EOF
@@ -703,8 +760,9 @@ lire_clamav freshclam "$FRESHCLAM_LOG" "$FRESHCLAM_POSE"
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=mail category=config) --------------
 # Surface PLUME_MAIL_SKIP_IP dans le panneau read-only « Suppressions & whitelists actives ». VISIBILITE
 # cote daemon, CONTROLE ici. Dedup par empreinte. collection-reducing (drop des events de l'IP skippee).
-cfg_fields=$(printf '{"type":"collection-reducing","collector":"mail","filters":{"skip_ip":"%s","max":"%s","clamav":"%s"},"note":"ignore les events mail de SKIP_IP (probes internes/self) — postscreen HANGUP deja exclu. collecte reduite"}' \
-  "$(json_escape "$SKIPIP")" "$(json_escape "$MAX")" "$(json_escape "${etat_clamav# }")")
+cfg_fields=$(printf '{"type":"collection-reducing","collector":"mail","filters":{"skip_ip":"%s","max":"%s","clamav":"%s","destinataire_local":"%s","domaines_locaux":"%s"},"note":"ignore les events mail de SKIP_IP (probes internes/self) — postscreen HANGUP deja exclu. collecte reduite"}' \
+  "$(json_escape "$SKIPIP")" "$(json_escape "$MAX")" "$(json_escape "${etat_clamav# }")" "$etat_rcpt_local" \
+  "$(json_escape "$(printf '%s' "$domaines_locaux" | sed 's/^ //; s/ $//; s/ /,/g')")")
 cfg_dd="cfg-mail-$(printf '%s' "$cfg_fields" | cksum | cut -d' ' -f1)"
 spool_write_then_ack "config-mail-$now.json" "$(printf '{"ts":%s,"host":"%s","kind":"events","events":[{"ts":%s,"source":"mail","category":"config","severity":0,"message":"config collecteur mail (filtres de collecte)","dedup":"%s","fields":%s}]}' \
   "$now" "$host" "$now" "$cfg_dd" "$cfg_fields")"

@@ -87,3 +87,28 @@ S'authentifier n'est pas être autorisé : l'autorisation reste `route_min_role`
 
 ## Secrets
 Creds notifier / tokens stockés en base ou config `0640`. En multi-hôte : tokens révocables + volume chiffré. La clé de signature du ledger est en `0600` (hors base).
+
+## Capteur mail — le destinataire local d'un virus ou d'une pièce bannie (`P10.33-f`)
+Le capteur des journaux du serveur mail (`collectors/mail.sh`) masque toute partie locale d'adresse qu'il émet
+(`*@domaine`, `P10.32-l`). Sur un verdict amavis INFECTED ou BANNED, l'analyste ne sait donc pas quelle boîte de
+ce serveur a été visée. Un réglage nommé la rend lisible, **masqué par défaut** :
+
+| Réglage | Effet | Défaut | Risque |
+|---|---|---|---|
+| `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL` | `1` : le champ `rcpt` d'un événement `malware` (INFECTED) ou `banned` (BANNED) sort **en clair** si son domaine est local. Rien d'autre : le message, `user`, `sender`, les domaines externes et tous les autres événements restent masqués. `0` ou vide : masqué ; toute autre valeur : masqué, et avoué (`collect_status=fallback`, `reason=unreadable-config`) | vide (masqué) | **des adresses de boîtes réelles de ce serveur entrent dans le SIEM** : tout rôle qui lit `source=mail` les voit, une base volée les porte, et elles durent ce que dure la rétention |
+| `PLUME_MAIL_DOMAINES_LOCAUX` | ce qui est « local » : une liste **explicite** de domaines, séparés par des espaces ou des virgules, comparés sans casse et **exactement** (`sous.example.org` n'est pas `example.org`). Rien n'est deviné : le capteur ne lit que des journaux, ni `mydestination` ni `virtual_mailbox_domains`. Sans liste lisible, **rien n'est démasqué**, et c'est avoué ; une entrée illisible est écartée et avouée | vide | une liste fausse démasque des boîtes qui ne sont pas de ce serveur : elle est **déclarée**, rien ne la vérifie |
+
+L'état s'affiche dans l'enveloppe de config du capteur (`destinataire_local` : `masque`, `demasque`,
+`masque-sans-liste` ; `domaines_locaux` : la liste retenue) :
+champ `filters` de `search source=mail category=config`.
+
+**Où se pose le réglage, dans les trois modes.** `mail.sh` tourne **sur l'hôte**, sous `plume-mail.service`, dans
+les trois modes : il lit le journal par fichier (hôte natif, `PLUME_MAIL_SRC=file`), par `docker exec` (Docker)
+ou par `kubectl exec` dans le pod du serveur mail (k3s). Il ne tourne dans aucun conteneur de Plume : ni l'image
+ni `docker-compose.yml` ni `deploy/k3s.yaml` ne le portent. Le réglage se pose donc toujours dans le fichier
+d'environnement de l'unité, `/etc/plume/plume.conf` (`EnvironmentFile=` de `plume-mail.service`) :
+```sh
+PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL=1
+PLUME_MAIL_DOMAINES_LOCAUX="example.org example.net"
+```
+Il vaut au passage suivant de la minuterie ; le retirer remet le masquage, sans effacer ce qui a déjà été émis.

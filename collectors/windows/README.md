@@ -90,8 +90,11 @@ plume-daemon token poste-win01 POSTE-WIN01      # 2e argument = l'hôte AUQUEL l
 > l'était que sur `/api/ingest` et `/loki/api/v1/push` — mesuré usurpable avec un jeton lié sur
 > `/api/metrics/prom` (200), `/api/metrics/write` (204) et `/services/collector` (200). Cf. `docs/CIM.md`.*
 
-Puis renseignez `C:\ProgramData\plume\plume.conf` (des variables d'environnement sont lues aussi, mais
-pas pour le jeton, voir plus bas) :
+Puis renseignez `C:\ProgramData\plume\plume.conf`. Le script lit aussi `PLUME_CENTRAL` et `PLUME_TOKEN` dans
+l'**environnement**, et l'environnement **l'emporte** sur le fichier : un `PLUME_TOKEN` posé en variable machine
+(ce qu'une ancienne version de ce README proposait) reste prioritaire en silence et se lit par tout
+utilisateur local. Mettez le jeton dans `plume.conf` seulement, et retirez une telle variable :
+`[Environment]::SetEnvironmentVariable('PLUME_TOKEN',$null,'Machine')`.
 
 ```ini
 PLUME_CENTRAL=https://soc.example.org:7000

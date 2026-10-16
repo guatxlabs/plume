@@ -386,7 +386,9 @@ disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
    ```
    Puis, sur le central, **révoquez le jeton** par son nom : gestion des jetons de la console (admin), ou
    `DELETE /api/tokens/poste-win01`, qui révoque tous les jetons de ce nom. Retirez aussi
-   `PLUME_TLS_INSECURE` si elle a été posée, et l'autorité importée dans `Cert:\LocalMachine\Root` si
+   `PLUME_TOKEN` et `PLUME_TLS_INSECURE` s'ils ont été posés en variables machine
+   (`[Environment]::SetEnvironmentVariable('PLUME_TOKEN',$null,'Machine')` : l'environnement l'emporte sur
+   `plume.conf`, et une variable machine se lit par tout utilisateur local), et l'autorité importée dans `Cert:\LocalMachine\Root` si
    rien d'autre ne s'en sert. Les événements déjà reçus restent au central, soumis à sa rétention.
 
 **Ce que le collecteur ne fait pas**

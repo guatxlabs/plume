@@ -226,10 +226,11 @@ tâche planifiée ; il lit les journaux Windows et **poste directement** sur `/a
 disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
 [`../collectors/windows/README.md`](../collectors/windows/README.md). Ce qui suit est l'ordre des gestes.
 
-> **Ce qui a été joué, et ce qui ne l'a pas été.** Le README consigne l'exécution réelle des commandes
-> `auditpol`, `Import-Certificate` et `schtasks` sur des machines Windows de test. Les commandes `icacls`,
-> `Get-Acl`, `Get-ScheduledTaskInfo` et la désinstallation ci-dessous sont des commandes Windows
-> standard, **non jouées** pour écrire cette page. La porte de transport du script est exécutée en
+> **Ce qui a été joué, et ce qui ne l'a pas été.** Le README consigne l'exécution réelle de
+> `auditpol /set` (noms anglais des sous-catégories, sur un Windows anglophone), d'`Import-Certificate`
+> et de `schtasks /Create` sur des machines Windows de test. Tout le reste de cette page est fait de
+> commandes Windows standard **non jouées** pour l'écrire : `auditpol /set` par GUID, `auditpol /backup`
+> et `/restore`, `icacls`, `Get-Acl`, `schtasks /Run`, `Get-ScheduledTaskInfo` et la désinstallation. La porte de transport du script est exécutée en
 > intégration continue sous `pwsh` 7 seulement : **Windows PowerShell 5.1, celui que lance la tâche,
 > n'y est exécuté nulle part** (`.github/scripts/check_windows_collector_is_honest.py`).
 
@@ -237,21 +238,27 @@ disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
 
 - **Windows PowerShell 5.1** (`powershell.exe`, présent sur tout Windows pris en charge). C'est lui que
   la tâche lance, et le script porte `#Requires -Version 5.1`. `pwsh` 7 l'exécute aussi, mais deux
-  comportements y diffèrent (voir *Certificat* et *Ce que le collecteur ne fait pas*).
+  réglages du script y sont sans effet, parce qu'ils passent par `ServicePointManager`, que les
+  commandes web de PowerShell 7 n'emploient pas (lecture, non jouée) : `PLUME_TLS_INSECURE` (étape 5)
+  et l'imposition de TLS 1.2 (ci-dessous).
 - Une console **élevée** (administrateur) pour l'installation ; la tâche tourne en **SYSTEM** : la
   lecture du journal *Security* l'exige.
 - Les politiques d'audit : sans elles, `category=exec` est trompeuse et le pare-feu ne remonte aucun
   blocage ([README, Prérequis](../collectors/windows/README.md#prérequis)). Relevez l'état d'avant pour
-  pouvoir le rendre à la désinstallation :
+  pouvoir le rendre à la désinstallation. Les noms de sous-catégories sont **localisés** (un Windows
+  en français refuse `"Process Creation"`) ; leurs GUID ne le sont pas :
   ```powershell
   auditpol /backup /file:$env:USERPROFILE\auditpol-avant-plume.csv
-  auditpol /set /subcategory:"Filtering Platform Connection" /success:disable /failure:enable
-  auditpol /set /subcategory:"Process Creation" /success:enable
-  auditpol /set /subcategory:"Logon" /success:enable /failure:enable
+  auditpol /set /subcategory:"{0CCE9226-69AE-11D9-BED3-505054503030}" /success:disable /failure:enable  # Filtering Platform Connection
+  auditpol /set /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}" /success:enable                  # Process Creation
+  auditpol /set /subcategory:"{0CCE9215-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable  # Logon
   ```
+  `auditpol /get /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}"` relit l'état ; les GUID sont
+  ceux que publie Microsoft pour ces sous-catégories (forme par GUID non jouée ici).
 - Le central joignable en `https://`, sous un nom que son `PLUME_HOST` liste (sinon `421` à tout), et qui
   accepte **TLS 1.2** : le script impose `Tls12` au protocole de sécurité de .NET, ce qui, sous 5.1,
-  écarte TLS 1.3 (lecture du script).
+  écarte TLS 1.3 (lecture du script). Sous `pwsh` 7, cette imposition est sans effet : la version se
+  négocie selon le système.
 
 1. **Sur le central, frapper un jeton LIÉ à cette machine.** Le second argument est l'hôte du jeton ;
    donnez-lui la valeur exacte de `$env:COMPUTERNAME` sur le poste, le nom que le collecteur déclare :
@@ -275,9 +282,11 @@ disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
    `*S-1-5-18` est SYSTEM et `*S-1-5-32-544` le groupe Administrateurs : les SID ne dépendent pas de la
    langue du système, leurs noms si. `/inheritance:r` retire les droits hérités de `C:\ProgramData`, qui
    donne par défaut aux utilisateurs locaux la lecture et la création dans ses sous-répertoires (vérifiable par
-   `icacls C:\ProgramData`) ; `/grant:r` remplace les droits explicites de ces deux comptes. Si le répertoire existait et
-   que son propriétaire est un autre compte, supprimez-le et recréez-le : un propriétaire peut toujours
-   réécrire les droits.
+   `icacls C:\ProgramData`) ; `/grant:r` remplace les droits explicites de ces deux comptes. **Si le répertoire existait déjà**
+   (réinstallation, essai antérieur), supprimez-le et recréez-le plutôt que de le resserrer : `icacls`
+   sans `/T` ne touche que la racine, et un sous-répertoire comme `state` créé ou possédé par un autre
+   compte garderait ses droits explicites — un propriétaire peut toujours réécrire les siens. La
+   recréation efface les filigranes : le premier run rattrape alors `-MaxAgeMinutes` (étape 6).
    **Pourquoi personne d'autre ne doit lire ce répertoire.** Le jeton y est en clair. Qui le lit
    s'identifie comme ce poste sur les chemins machine du central (§3) : il écrit des événements que le
    central range sous le nom du poste — de fausses ouvertures de session, ou assez de bruit pour noyer
@@ -295,13 +304,22 @@ disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
    PLUME_CENTRAL=https://soc.example.org:7000
    PLUME_TOKEN=<le-jeton>
    ```
-   Le jeton ne se tape **jamais** sur une ligne de commande, ni en argument du script (le paramètre
-   `-Token` n'existe plus), ni dans un `Set-Content` : dès que l'audit `Process Creation` est actif avec
-   la ligne de commande, ou que Sysmon tourne, la ligne entière part dans le journal *Security*, que ce
-   collecteur expédie lui-même au SIEM ([README](../collectors/windows/README.md#configuration)).
+   Le jeton ne se tape **jamais** dans une console ni sur une ligne de commande, et pour deux raisons
+   distinctes. Passé en argument à un processus (le paramètre `-Token` du script n'existe plus, mais
+   `powershell -Command "…"` ou `cmd /c echo … >` en créent un), il est écrit dans le `4688` dès que
+   l'audit `Process Creation` inclut la ligne de commande — et ce collecteur expédie lui-même ce `4688`
+   au SIEM ([README](../collectors/windows/README.md#configuration)) ; Sysmon, s'il tourne, l'écrit aussi
+   dans son propre canal. Tapé dans une console PowerShell, un `Set-Content … PLUME_TOKEN=…` ne crée
+   aucun processus, mais la ligne reste dans l'historique de PSReadLine
+   (`%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`) et, si la
+   journalisation des blocs de script est active, dans l'événement `4104` du journal
+   *Microsoft-Windows-PowerShell/Operational* (lecture, non jouée). L'éditeur n'a ni l'un ni l'autre.
    `plume.conf` ne porte que trois clés : `PLUME_CENTRAL`, `PLUME_TOKEN` et
-   `PLUME_SHIP_ALLOW_PLAINTEXT`. Une variable d'environnement gagne sur le fichier ; sous SYSTEM, seules
-   les variables **machine** sont vues.
+   `PLUME_SHIP_ALLOW_PLAINTEXT`. Une variable d'environnement gagne sur le fichier, et sous SYSTEM seules
+   les variables **machine** sont vues ; mais **`PLUME_TOKEN` ne se pose jamais en variable machine** :
+   elle est lisible par tout utilisateur local (clé
+   `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, et environnement hérité par
+   chaque processus), ce qui défait l'étape 2. Le jeton vit dans `plume.conf`, et nulle part ailleurs.
 4. **`PLUME_CENTRAL` en `https://`.** Une adresse `http://` vers autre chose que la boucle locale
    (`127.0.0.0/8`, `::1`, `localhost`) est **refusée** : message `REFUS` sur la sortie d'erreur,
    **code 2**, avant toute lecture de journal et tout envoi — rien n'est lu, aucun filigrane n'avance.
@@ -311,8 +329,9 @@ disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
    qui écoute le chemin rejoue le jeton et écrit sous le nom de ce poste. Seulement sur un lien déjà
    chiffré ou un réseau dont vous répondez (§5).
 5. **Certificat.** La vérification TLS est **active par défaut**. Pour un central signé par une autorité
-   interne, posez-la dans le magasin machine avant le premier run, faute de quoi le lot du run est
-   perdu (pas de spool) :
+   interne, posez-la dans le magasin machine avant le premier run, faute de quoi chaque run échoue
+   (`LastTaskResult` à `1`) sans rien commettre : les événements attendent dans le journal Windows et
+   partent au premier run qui passe, tant que la rotation du journal ne les a pas emportés (étape 7) :
    ```powershell
    Import-Certificate -FilePath C:\ProgramData\plume\ca.crt -CertStoreLocation Cert:\LocalMachine\Root
    ```
@@ -344,8 +363,10 @@ disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
 7. **Prouver.** Un premier run, puis son code de retour :
    ```powershell
    schtasks /Run /TN "Plume Collector"
-   Get-ScheduledTaskInfo -TaskName "Plume Collector"    # LastTaskResult : 0
+   Get-ScheduledTaskInfo -TaskName "Plume Collector"    # une fois le run fini : LastTaskResult : 0
    ```
+   Interrogée pendant que le run tourne, la tâche rend `267009` (en cours) ; `267011` dit qu'elle n'a
+   jamais tourné. Attendez que `(Get-ScheduledTask -TaskName "Plume Collector").State` revienne à `Ready`.
    `LastTaskResult` vaut `2` pour un refus de transport (rien lu ni expédié), `1` pour une clé manquante ou un envoi non
    acquitté (central injoignable, jeton refusé, certificat non reconnu) : le filigrane n'avance pas et
    le run suivant relit. Sur le central, pour l'hôte donné au jeton :
@@ -379,11 +400,14 @@ disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
   aucun contenu de fichier.
 - **Il ne masque rien.** Le champ `CommandLine` des `4688` part tel quel : un secret tapé sur une ligne
   de commande du poste arrive dans le SIEM.
-- **Il ne lit pas Sysmon** (l'agent Rust le fait, [`../agent/README.md`](../agent/README.md)), et ne pose
-  jamais le champ CIM `action`.
+- **Il ne lit pas Sysmon** (l'agent Rust le fait, [`../agent/README.md`](../agent/README.md)). Il pose en
+  revanche le champ CIM `action` (`failure`, `success`, `session_open`, `blocked`…) sur
+  l'authentification, l'exécution, les comptes, le système, Defender et le pare-feu, d'après la table
+  d'issues de chaque journal : une règle `category=auth action=failure` voit les `4625` (lecture du
+  script ; la mesure du README qui disait le contraire date d'avant cette table).
 - **Sous Windows PowerShell 5.1, rien n'est exécuté en intégration continue** : ni la syntaxe de la
-  porte de transport, ni la lecture d'adresse de .NET Framework. Sous `pwsh` 7, `PLUME_TLS_INSECURE` est
-  sans effet (étape 5).
+  porte de transport, ni la lecture d'adresse de .NET Framework. Sous `pwsh` 7, `PLUME_TLS_INSECURE` et
+  l'imposition de TLS 1.2 sont sans effet (*Prérequis*, étape 5).
 
 ---
 
@@ -393,6 +417,7 @@ disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
 |---|---|---|---|
 | jeton d'agent | `/etc/plume/plume.conf` de l'agent | `0600 root:root`, resserré à chaque passage de l'installateur | s'identifier sur la **liste fermée** des chemins machine (ingestion, métriques, traces, canal de réponse, engagements actifs) — jamais l'interface ; un jeton lié à l'hôte écrit **sous cet hôte**, quel que soit le `host` déclaré |
 | le même jeton, recopié | `/etc/plume/responder.conf`, `/etc/plume/engagement-adapter.conf` (modules optionnels) | `0600` | réclamer les actions **de son hôte** sur le canal de réponse |
+| jeton du collecteur Windows | `C:\ProgramData\plume\plume.conf` | SYSTEM et Administrateurs seuls, héritage coupé (§2.5, étape 2) ; jamais en variable machine | les mêmes chemins machine que le jeton d'agent, sous l'hôte auquel il est lié ; qui peut **écrire** le répertoire fait aussi exécuter son code en SYSTEM (script remplacé) |
 | jeton du relais MinIO | `/etc/plume/minio-audit.token` | `0640 root:soc` (le relais tourne sous `soc`) | déposer des événements d'audit objet dans le spool de l'hôte |
 | jetons Cloudflare | `/etc/plume/cloudflare.conf` | `0600` | lecture d'analytique de la zone (posez un jeton en lecture seule) |
 | hash admin, clé de base explicite | `/etc/plume/soc.conf` (hôte) · `.env` (Docker) · `Secret` `soc-auth` (k3s) | `0640 root:soc` sur l'hôte | ouvrir la console en admin (hash à attaquer hors ligne) ; ouvrir la base |

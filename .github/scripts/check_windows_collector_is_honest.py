@@ -86,6 +86,21 @@ CE QUE LA PARTIE JOUÉE NE TIENT PAS
 · L'hôte jugé est l'hôte NORMALISÉ par `[System.Uri]` : `http://127.1`, `http://0x7f.1`,
   `http://[0:0:0:0:0:0:0:1]` et `http://loopback` (réécrit `localhost` par .NET) sont admis ici et
   refusés par la porte shell, plus stricte sur l'écriture. Tous visent la boucle locale.
+QUATRIÈME PROPRIÉTÉ, LUE : LA DOC D'INSTALLATION NE CONTREDIT PAS LE SCRIPT (P10.32-n)
+-------------------------------------------------------------------------------------
+Le pas à pas Windows (docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md §2.5 et §3) et le README du collecteur
+ont recopié des phrases périmées par les correctifs du script : « ne pose jamais le champ CIM
+`action` » (faux depuis la table d'issues de `Collect-Log`), « certificat non reconnu : le lot est
+perdu » (faux depuis `Complete-Run`, qui ne commet rien après un envoi raté). Et rien ne tenait
+« `PLUME_TLS_INSECURE` n'est pas lue dans plume.conf » : y ajouter un cas laissait tout vert. On
+juge donc, hors passages barrés (`~~…~~`, l'historique d'un défaut corrigé) :
+  · les clés lues dans plume.conf par le script == les trois clés que la doc annonce ;
+  · si le script pose `action`, aucune phrase ne dit qu'il ne la pose jamais ;
+  · aucune phrase ne dit qu'un lot est perdu (le journal Windows est le spool) ;
+  · chaque doc dit que `PLUME_TOKEN` ne se pose jamais en variable machine (lisible par tout
+    utilisateur local), puisqu'elle propose des variables machine pour d'autres réglages.
+CE QU'ELLE NE TIENT PAS : c'est une lecture de phrases. Une autre tournure fausse passe ; une clé de
+plume.conf lue ailleurs que dans le `switch` de lecture du fichier échappe au relevé.
 """
 import json
 import os
@@ -560,6 +575,61 @@ def jouer_le_transport(errs: list) -> int:
     return joues
 
 
+# --- P10.32-n : la doc d'installation ne contredit pas le script ---------------------------------
+DOCS_WINDOWS = {
+    # chemin -> (début, fin) de la tranche jugée ; None = tout le fichier
+    "collectors/windows/README.md": None,
+    "docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md": ("### 2.5 Windows", "\n## 4. "),
+}
+# Ce que les deux docs annoncent : « plume.conf ne porte que trois clés ».
+CLES_PLUME_CONF_DOCUMENTEES = {"PLUME_CENTRAL", "PLUME_TOKEN", "PLUME_SHIP_ALLOW_PLAINTEXT"}
+PHRASE_ACTION_JAMAIS = re.compile(r"jamais[^.]{0,60}champ CIM `action`|champ CIM `action`[^.]{0,30}jamais", re.I)
+PHRASE_LOT_PERDU = re.compile(r"\blot\b[^.]{0,25}\bperdu", re.I)
+AVERTISSEMENT_JETON = "`PLUME_TOKEN` ne se pose jamais en variable machine"
+
+
+def texte_juge(brut: str) -> str:
+    t = re.sub(r"~~.*?~~", "", brut, flags=re.S)
+    t = re.sub(r"(?m)^\s*>\s?", "", t)
+    t = t.replace("**", "")
+    return re.sub(r"\s+", " ", t)
+
+
+def juger_la_doc(errs: list) -> None:
+    src = Path(COLLECTOR).read_text(encoding="utf-8-sig")
+    i = src.find("Get-Content $ConfFile")
+    if i < 0:
+        errs.append(f"{COLLECTOR}: lecture de plume.conf (`Get-Content $ConfFile`) introuvable : la "
+                    f"concordance des clés avec la doc ne peut pas être jugée.")
+        cles = None
+    else:
+        bloc = src[i:src.find("\n}", i)]
+        cles = set(re.findall(r"'(PLUME_[A-Z_]+)'\s*\{", bloc))
+        if cles != CLES_PLUME_CONF_DOCUMENTEES:
+            errs.append(f"{COLLECTOR}: plume.conf lit {sorted(cles)}, la doc annonce "
+                        f"{sorted(CLES_PLUME_CONF_DOCUMENTEES)} (et que `PLUME_TLS_INSECURE` n'y est pas lue).")
+    pose_action = bool(re.search(r"\$fields\['action'\]\s*=|\baction\s*=\s*'", src))
+    for chemin, tranche in DOCS_WINDOWS.items():
+        brut = Path(chemin).read_text(encoding="utf-8")
+        if tranche:
+            a = brut.find(tranche[0]); b = brut.find(tranche[1], a + 1)
+            if a < 0 or b < 0:
+                errs.append(f"{chemin}: tranche {tranche!r} introuvable : la doc Windows n'est pas jugée.")
+                continue
+            brut = brut[a:b]
+        t = texte_juge(brut)
+        if pose_action:
+            for m in PHRASE_ACTION_JAMAIS.finditer(t):
+                errs.append(f"{chemin}: « …{m.group(0)}… » alors que le script pose `fields.action` "
+                            f"(table d'issues de {COLLECT_FN}, `blocked` du pare-feu).")
+        for m in PHRASE_LOT_PERDU.finditer(t):
+            errs.append(f"{chemin}: « …{m.group(0)}… » alors qu'un envoi raté ne commet aucun filigrane "
+                        f"({COMMIT_FN}) : le run suivant relit, seuls les échantillons sont perdus.")
+        if AVERTISSEMENT_JETON not in t:
+            errs.append(f"{chemin}: la phrase « {AVERTISSEMENT_JETON} » manque, alors que la doc propose "
+                        f"des variables machine (lisibles par tout utilisateur local).")
+
+
 def main() -> int:
     files = subprocess.run(
         ["git", "ls-files", "collectors/windows/*.ps1"], capture_output=True, text=True, check=True
@@ -573,6 +643,8 @@ def main() -> int:
         joues = jouer_le_transport(errs)
     else:
         errs.append(f"{COLLECTOR} introuvable parmi les fichiers suivis : la porte du transport n'est pas jouée.")
+    if COLLECTOR in files:
+        juger_la_doc(errs)
     if len(files) < MIN_FILES:
         errs.append(
             f"seulement {len(files)} collecteur(s) PowerShell découvert(s), plancher {MIN_FILES} : la "
@@ -588,7 +660,8 @@ def main() -> int:
         f"{len(files)} collecteur(s) PowerShell, {total_catches} `catch` : toute erreur est classée "
         f"(incapacité / désactivé / rien de neuf) ou relevée, et aucun filigrane ne s'écrit avant un "
         f"envoi acquitté ; {joues} cas de transport joués sur le collecteur tel quel (http distant "
-        f"refusé en code 2 sans appel ni lecture, opt-in, https et boucle locale admis)."
+        f"refusé en code 2 sans appel ni lecture, opt-in, https et boucle locale admis) ; "
+        f"la doc Windows ne contredit pas le script (clés de plume.conf, `action`, spool, jeton)."
     )
     return 0
 

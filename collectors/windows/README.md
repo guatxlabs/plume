@@ -62,6 +62,11 @@ métadonnées d'événements.
    auditpol /set /subcategory:"Process Creation" /success:enable                                  # 4688
    auditpol /set /subcategory:"Logon" /success:enable /failure:enable                             # 4624/4625
    ```
+   Ces noms sont **localisés** : mesurés sur un Windows anglophone, ils échouent sur un Windows en
+   français. Les GUID ne dépendent pas de la langue (forme non jouée ici) — `Filtering Platform
+   Connection` = `{0CCE9226-69AE-11D9-BED3-505054503030}`, `Process Creation` =
+   `{0CCE922B-69AE-11D9-BED3-505054503030}`, `Logon` = `{0CCE9215-69AE-11D9-BED3-505054503030}`, à passer
+   tels quels : `auditpol /set /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}" /success:enable`.
 
 ## Configuration
 
@@ -85,7 +90,8 @@ plume-daemon token poste-win01 POSTE-WIN01      # 2e argument = l'hôte AUQUEL l
 > l'était que sur `/api/ingest` et `/loki/api/v1/push` — mesuré usurpable avec un jeton lié sur
 > `/api/metrics/prom` (200), `/api/metrics/write` (204) et `/services/collector` (200). Cf. `docs/CIM.md`.*
 
-Puis renseignez soit des variables d'environnement, soit `C:\ProgramData\plume\plume.conf` :
+Puis renseignez `C:\ProgramData\plume\plume.conf` (des variables d'environnement sont lues aussi, mais
+pas pour le jeton, voir plus bas) :
 
 ```ini
 PLUME_CENTRAL=https://soc.example.org:7000
@@ -99,7 +105,10 @@ vérification TLS reste active. Le fichier porte le jeton : ses droits (SYSTEM e
 héritage coupé) et la façon de l'écrire sans que le jeton passe par une ligne de commande sont dans
 [`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §2.5](../../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#25-windows--le-collecteur-plume-collectorps1).
 Une variable d'environnement gagne sur le fichier ; sous la tâche planifiée en SYSTEM, seules les
-variables **machine** sont vues.
+variables **machine** sont vues. **`PLUME_TOKEN` ne se pose jamais en variable machine** : elle est
+lisible par tout utilisateur local (clé `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`,
+et environnement hérité par chaque processus), ce qui défait les droits du fichier. Le jeton vit dans
+`plume.conf`, et nulle part ailleurs.
 
 > ### Le clair vers un central distant est refusé
 > `PLUME_CENTRAL` en `http://` vers autre chose que la boucle locale (`127.0.0.0/8`,
@@ -149,8 +158,10 @@ variables **machine** sont vues.
 
 > ### Le central est en TLS : préparez la confiance AVANT le premier run
 > Avec un certificat émis par une CA que le poste ne connaît pas, le run échoue sur
-> `Could not establish trust relationship for the SSL/TLS secure channel` — et, faute de spool
-> (voir plus bas), **le lot est perdu**. Le chemin d'entreprise est de poser la CA interne dans le
+> `Could not establish trust relationship for the SSL/TLS secure channel`, sort en `1` et ne commet
+> aucun filigrane : les événements attendent dans le journal Windows et partent au premier run qui passe
+> (limite 1 ci-dessous). Ne sont pas rejoués les échantillons du run raté (profils, réseau, battement),
+> ni ce que la rotation du journal a emporté entre-temps. Le chemin d'entreprise est de poser la CA interne dans le
 > magasin machine, une fois, avant de planifier la tâche :
 > ```powershell
 > Import-Certificate -FilePath C:\ProgramData\plume\ca.crt -CertStoreLocation Cert:\LocalMachine\Root
@@ -385,13 +396,17 @@ trouvée, dans le collecteur comme dans l'agent.
    garde reste verte tout en sous-couvrant ce chemin — c'est une limite de méthode, pas une dérive.
 4. **Sysmon n'est pas lu.** Ce script ne touche pas au canal `Microsoft-Windows-Sysmon/Operational`.
    Pour de la télémétrie Sysmon, il faut l'agent Rust (`agent/README.md`).
-5. **Le champ CIM `action` n'est JAMAIS posé.** *Mesuré le 2026‑08‑02 sur les deux Windows Server 2022 :
+5. ~~**Le champ CIM `action` n'est JAMAIS posé.**~~ **Périmé** (lecture du script, non re-mesuré) :
+   `Collect-Log` prend désormais une table `identifiant -> issue` et pose `fields.action` (`failure` pour
+   `4625`/`4771`, `success` pour `4688` et les comptes, `session_open`…), et le pare-feu pose `blocked` ;
+   le compte « 0 des 1 505 » ci-dessous est celui d'**avant** ce correctif. *Mesuré le 2026‑08‑02 sur les deux Windows Server 2022 :
    **0 des 1 505** événements de ce collecteur porte `action` — comme les **0 / 6 962** de l'agent Rust
    (`docs/CIM.md` §4c en fait pourtant le vocabulaire neutre de composition).* En revanche ce collecteur
    pose **toujours** une `category` (**0 / 1 505** sans catégorie), là où l'agent en laisse 36,7 % vides :
    sur ce point précis, le collecteur PowerShell est le plus complet des deux.
-6. **Kerberos manque sur un contrôleur de domaine** (`4768`/`4769`/`4771`/`4776` absents de la liste
-   d'identifiants) — mesuré, cf. la section Windows Server 2022 ci-dessus.
+6. ~~**Kerberos manque sur un contrôleur de domaine**~~ **Périmé** : `4768`/`4769`/`4771`/`4776` sont
+   dans la table d'issues de `win-auth` (lecture du script) — cf. la section Windows Server 2022
+   ci-dessus, qui dit le trou mesuré et sa correction.
 
 ## Étendre
 

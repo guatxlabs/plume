@@ -69,6 +69,8 @@ if plume_registre_illisible "$SEEN"; then
 fi
 
 events=""; ne=0
+# L'hote est le meme pour tout le passage : echappe UNE fois, pas a chaque evenement.
+host_echappe=$(json_escape "$host")
 while IFS="$TAB" read -r sev cve pkg inst fixed cvss img; do
   [ -z "${cve:-}" ] && continue
   key="$img|$cve|$pkg"
@@ -89,7 +91,7 @@ while IFS="$TAB" read -r sev cve pkg inst fixed cvss img; do
   # `image` sont propres a ce capteur ; `agent_name` = l'hote qui scanne (la colonne `host`), sans quoi
   # « Hotes les plus vulnerables » reste vide. Toute valeur venue de trivy ou du registre est echappee.
   vs=$(printf '%s' "$sev" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
-  f="\"agent_name\":\"$(json_escape "$host")\",\"cve\":\"$(json_escape "$cve")\",\"vuln_package\":\"$(json_escape "$pkg")\""
+  f="\"agent_name\":\"$host_echappe\",\"cve\":\"$(json_escape "$cve")\",\"vuln_package\":\"$(json_escape "$pkg")\""
   f="$f,\"vuln_package_version\":\"$(json_escape "$inst")\",\"vuln_severity\":\"$(json_escape "$vs")\",\"image\":\"$(json_escape "$img")\""
   [ "$fixed" != "-" ] && f="$f,\"vuln_fixed\":\"$(json_escape "$fixed")\""
   [ "$cvss" != "-" ] && f="$f,\"vuln_cvss\":\"$(json_escape "$cvss")\""

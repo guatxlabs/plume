@@ -56,14 +56,26 @@ une lecture, pas un `stat` isole.
   domaine.
 - **Trois modes** : le collecteur tourne sur l'HOTE dans les trois (le maildir est sur son disque) ; le
   reglage se pose dans `/etc/plume/mail.conf` (lu par `plume-collector-mail.service`), que le serveur
-  mail soit natif, en conteneur Docker ou dans k3s. Lance a la main, passe la variable dans son
-  environnement.
-- **`body` relit `mail.conf` lui-meme** : lance par le demon (`PLUME_MAIL_BODY_CMD`), il herite de
-  l'environnement du DEMON, qui ne charge pas ce fichier. Il lit donc `/etc/plume/mail.conf` (autre
-  chemin : `PLUME_MAIL_CONF`) et JOINT sa liste a celle de son environnement ; le domaine du layout
-  plat y est lu aussi (`PLUME_MAIL_DOMAIN` du fichier, sinon de l'environnement). Fichier absent :
-  l'environnement seul. Fichier present mais illisible pour l'utilisateur qui lance `body` (le demon
-  tourne `soc` ; `bootstrap-agent.sh` pose `root:soc 0640`) : la lecture est REFUSEE.
+  mail soit natif, en conteneur Docker ou dans k3s. Lance a la main, la variable de l'environnement
+  s'ajoute a la liste du fichier (elle ne la remplace pas).
+- **Le balayage et `body` relisent `mail.conf` eux-memes, avec UNE seule regle** : `body`, lance par le
+  demon (`PLUME_MAIL_BODY_CMD`), herite de l'environnement du DEMON, qui ne charge pas ce fichier. Les
+  deux chemins lisent donc `/etc/plume/mail.conf` (autre chemin : `PLUME_MAIL_CONF`) par la meme
+  fonction :
+  - la liste du fichier est JOINTE a celle de l'environnement (une entree de l'un OU de l'autre exclut) ;
+  - le domaine du layout plat suit la precedence du service (`EnvironmentFile=` l'emporte) : le fichier
+    qui PORTE `PLUME_MAIL_DOMAIN` decide, meme d'une valeur vide (qui vaut alors `localhost`, comme pour
+    le service) ; sinon l'environnement ; sinon `localhost` ;
+  - fichier ABSENT : l'environnement seul ;
+  - fichier present mais ILLISIBLE pour l'utilisateur qui lance la commande : REFUS, au balayage (aveu
+    `collect_status=unavailable`) comme a `body`, que l'environnement porte une liste ou non, et meme si
+    aucune liste n'est posee — la liste du fichier n'est pas jugeable. **Consequence a connaitre** :
+    `body` lance sous un utilisateur qui ne lit pas `mail.conf` (`root:soc 0640` par
+    `bootstrap-agent.sh`) ne rend plus rien ; le lancer sous l'utilisateur du balayage (root), qui lit
+    deja le maildir et ce fichier.
+- **Un dossier ne sort pas du compte** : le `folder` de `body` (et `PLUME_MAIL_FOLDER`) est refuse s'il
+  est vide, porte `/`, `\`, `..` ou un caractere de controle ; un dossier ou un `cur/`/`new/` en lien qui
+  resout hors du compte est refuse sans y entrer. Avant, `Sent/../../bob` lisait la boite `bob`.
 - **`body` juge la boite, pas l'adresse ecrite** : le chemin que l'adresse resout (liens et `.`
   suivis) decide. En layout plat, `alice@autre.test` ou `alice@example.test.` ouvrent la meme boite
   `alice` : elles sont refusees comme `alice@example.test`. Un dossier d'un compte retire
@@ -93,8 +105,8 @@ le body ; il reste **gate + audite**, et vit agent-side (pas de body en clair sh
 ```sh
 PLUME_MAIL_ROOT=... PLUME_ACTOR=<qui> plume-collector-mail body <account> <id> [folder]
 # -> stdout : JSON {account,folder,subject,from,to,date,headers,text,html}
-# relit /etc/plume/mail.conf (ou PLUME_MAIL_CONF) pour PLUME_MAIL_EXCLURE_COMPTES : un compte retire
-# du balayage est refuse ici aussi, avant toute recherche du message
+# relit /etc/plume/mail.conf (ou PLUME_MAIL_CONF) comme le balayage (liste ET domaine, meme regle) :
+# un compte retire du balayage est refuse ici aussi, avant toute recherche du message
 ```
 - **Gate** : l'invocation est reservee au central (acces agent/SSH via le role agent) ; le central
   verifie `role=admin` AVANT d'appeler, et passe `PLUME_ACTOR` (qui declenche).

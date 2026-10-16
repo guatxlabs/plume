@@ -85,7 +85,9 @@ fn passage_de(poser: fn(&Path), objet: Option<&str>, motifs: Option<&str>) -> Pa
     c.env("PLUME_MAIL_ROOT", &boite)
         .env("PLUME_MAIL_DOMAIN", "example.test")
         .env("PLUME_SPOOL", &spool)
-        .env("PLUME_HOST", "hote-de-temoin");
+        .env("PLUME_HOST", "hote-de-temoin")
+        // le balayage relit `mail.conf` (P10.33-m) : celui de la machine de test reste dehors
+        .env("PLUME_MAIL_CONF", tmp.join("pas-de-mail.conf"));
     if let Some(v) = objet {
         c.env("PLUME_MAIL_EMIT_SUBJECT", v);
     }

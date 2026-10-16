@@ -57,6 +57,36 @@ pub fn resoudre_compte(root: &str, email: &str) -> Result<CompteResolu> {
     })
 }
 
+/// `P10.33-m` — UN NOM DE DOSSIER NE DESIGNE QU'UN SOUS-REPERTOIRE DU COMPTE. Il etait joint au chemin
+/// du compte sans examen : `Sent/../../bob` resolvait `<racine>/bob`, une AUTRE boite, exclue ou non, et
+/// le controle d'exclusion de `body` (porte sur le compte nomme) ne la voyait pas. Refus d'un nom vide,
+/// d'un separateur (`/`, `\`), de `..` et de tout caractere de controle (NUL compris) — AVANT tout acces
+/// au disque. Le nom n'est pas recopie dans l'erreur.
+fn dossier_valide(folder: &str) -> Result<()> {
+    if folder.is_empty()
+        || folder.contains(['/', '\\'])
+        || folder.contains("..")
+        || folder.chars().any(char::is_control)
+    {
+        return Err(anyhow!(
+            "nom de dossier refuse (vide, separateur, `..` ou caractere de controle) : un dossier ne \
+             designe qu'un sous-repertoire du compte"
+        ));
+    }
+    Ok(())
+}
+
+/// `P10.33-m` — `dir` (un dossier du compte, ou son `cur/`/`new/`) RESOUT-il sous le compte ? Un lien qui
+/// en sort (`.Sent -> ../bob`) ferait enumerer une autre boite : `canonicalize` (un `lstat` par
+/// composant, rien n'est liste) puis comparaison par composants au compte resolu.
+fn sous_le_compte(dir: &Path, compte: &Path) -> Result<()> {
+    let resolu = std::fs::canonicalize(dir).map_err(|e| anyhow!("dossier non resolu ({})", e.kind()))?;
+    if !resolu.starts_with(compte) {
+        return Err(anyhow!("dossier hors du compte : un lien sort de la boite, rien n'y est lu"));
+    }
+    Ok(())
+}
+
 fn folder_subpath(folder: &str) -> String {
     if folder == "INBOX" {
         String::new()
@@ -170,8 +200,14 @@ pub fn message_paths(root: &str, email: &str, folder: &str) -> Result<(Vec<(Stri
     if !base.exists() {
         return Err(anyhow!("compte introuvable: {}", email));
     }
+    let tous = folder == "*" || folder.eq_ignore_ascii_case("all");
+    if !tous && folder != "INBOX" {
+        dossier_valide(folder)?;
+    }
+    let compte_resolu =
+        std::fs::canonicalize(&base).map_err(|e| anyhow!("compte non resolu ({})", e.kind()))?;
     let mut illisibles = 0usize;
-    let folder_dirs: Vec<(String, PathBuf)> = if folder == "*" || folder.eq_ignore_ascii_case("all") {
+    let folder_dirs: Vec<(String, PathBuf)> = if tous {
         let mut dirs = vec![("INBOX".to_string(), base.clone())];
         // Les SOUS-DOSSIERS du compte (`.Sent`, `.Junk`…). Un compte qu'on ne sait pas lister, ou une entree
         // qui refuse l'enumeration, c'est un ou plusieurs dossiers entiers qui ne seront JAMAIS analyses :
@@ -203,6 +239,7 @@ pub fn message_paths(root: &str, email: &str, folder: &str) -> Result<(Vec<(Stri
         if !p.exists() {
             return Err(anyhow!("dossier introuvable: {}", folder));
         }
+        sous_le_compte(&p, &compte_resolu)?;
         vec![(folder.to_string(), p)]
     };
 
@@ -213,6 +250,8 @@ pub fn message_paths(root: &str, email: &str, folder: &str) -> Result<(Vec<(Stri
             if !d.exists() {
                 continue;
             }
+            // `cur/` ou `new/` en lien hors du compte : refuse, comme un dossier qui en sort.
+            sous_le_compte(&d, &compte_resolu)?;
             // UN PARCOURS INTERROMPU N'EST PAS UN PARCOURS COMPLET (`S36`). `flatten()` sautait en
             // silence toute entree que l'enumeration refuse : la liste rendue etait alors PLUS PETITE
             // que la boite reelle, et les messages manquants n'etaient jamais analyses. Le compte est

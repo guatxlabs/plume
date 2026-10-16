@@ -86,38 +86,6 @@ fn write_spool(spool: &str, name: &str, env: &serde_json::Value) -> Result<Strin
     Ok(dst)
 }
 
-/// `P10.33-m` — LA LISTE QUE `body` APPLIQUE, ET LE DOMAINE DU LAYOUT PLAT. `body` est lance par le demon
-/// (`PLUME_MAIL_BODY_CMD`) et herite de SON environnement, qui ne charge pas `/etc/plume/mail.conf` :
-/// une liste posee la ou la documentation le dit ne protegeait que le balayage. `body` relit donc ce
-/// fichier (`PLUME_MAIL_CONF` pour un autre chemin) et JOINT sa liste a celle de l'environnement. Le
-/// domaine suit la precedence du service (`EnvironmentFile=` l'emporte sur l'environnement). Fichier
-/// absent : l'environnement seul. Fichier present mais illisible : REFUS — on ne lit pas une boite
-/// dont on n'a pas su dire si elle est retiree.
-fn exclusion_de_body() -> Result<(exclusion::Exclusion, String)> {
-    let chemin = env_or(exclusion::VARIABLE_FICHIER, exclusion::FICHIER_DEFAUT);
-    let fichier = match std::fs::read_to_string(&chemin) {
-        Ok(t) => Some(t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            return Err(anyhow!(
-                "lecture refusee : {chemin} illisible ({}) — la liste {} qu'il peut porter n'est pas jugeable, \
-                 aucun fichier de boite n'a ete ouvert",
-                e.kind(),
-                exclusion::VARIABLE
-            ))
-        }
-    };
-    let du_fichier = |cle: &str| fichier.as_deref().and_then(|t| exclusion::valeur_du_fichier(t, cle));
-    let de_l_environnement = exclusion::Exclusion::lire(std::env::var(exclusion::VARIABLE).ok().as_deref())
-        .map_err(|e| anyhow!("environnement : {e}"))?;
-    let de_la_configuration = exclusion::Exclusion::lire(du_fichier(exclusion::VARIABLE).as_deref())
-        .map_err(|e| anyhow!("{chemin} : {e}"))?;
-    let domaine = du_fichier("PLUME_MAIL_DOMAIN")
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| env_or("PLUME_MAIL_DOMAIN", "localhost"));
-    Ok((de_l_environnement.joindre(de_la_configuration), domaine))
-}
-
 /// body-fetch GATE + AUDITE (cf. ADR-0006/0008) : lecture complete d'UN message a la demande.
 /// Gate = l'invocation est reservee au central admin (acces agent/SSH) ; chaque lecture est tracee
 /// par un event `source=mail-audit` -> SOC (cherchable). Le central rend le html en iframe sandbox+CSP.
@@ -132,8 +100,11 @@ fn run_body(args: &[String]) -> Result<()> {
     let actor = env_or("PLUME_ACTOR", "unknown"); // le central renseigne QUI declenche la lecture
     // P10.33-m — une boite retiree du balayage ne se lit pas davantage a la demande : la liste est jugee
     // AVANT toute recherche du message, sur la boite que le chemin RESOUT (pas sur l'adresse ecrite), et
-    // une liste invalide ou un fichier de configuration illisible refusent la lecture.
-    let (exclusion, domaine_plat) = exclusion_de_body()?;
+    // une liste invalide ou un fichier de configuration illisible refusent la lecture. `body` est lance
+    // par le demon (`PLUME_MAIL_BODY_CMD`) et herite de SON environnement, qui ne charge pas `mail.conf` :
+    // la liste et le domaine viennent de la MEME fonction que celle du balayage.
+    let exclusion::Configuration { exclusion, domaine: domaine_plat } = exclusion::configuration_effective()
+        .map_err(|e| anyhow!("lecture refusee : {} (aucun fichier de boite n'a ete ouvert)", e.message))?;
     if !exclusion.est_vide() {
         let refus = |pourquoi: &str| {
             anyhow!("lecture refusee : {pourquoi} (aucun fichier de la boite n'a ete ouvert)")
@@ -189,7 +160,6 @@ fn run_body(args: &[String]) -> Result<()> {
 fn run() -> Result<()> {
     let root = std::env::var("PLUME_MAIL_ROOT")
         .map_err(|_| anyhow!("PLUME_MAIL_ROOT requis (racine maildir, ex: /opt/local-path-provisioner/<pvc>_mail_mail-data-mailserver-0)"))?;
-    let domain = env_or("PLUME_MAIL_DOMAIN", "localhost");
     let spool = env_or("PLUME_SPOOL", "/var/lib/plume/spool");
     let identite = identite();
     let host = identite.valeur().cloned().unwrap_or_else(|| lisibilite::HOTE_NON_LU.to_string());
@@ -204,17 +174,18 @@ fn run() -> Result<()> {
         .map_err(|e| anyhow!(e))?;
 
     // P10.33-m — LA LISTE D'EXCLUSION EST JUGEE AVANT TOUTE LECTURE (motifs, etat, maildir). Une entree
-    // invalide arrete le passage : l'ignorer ferait lire la boite que l'exploitant a retiree. L'aveu
-    // part par le canal d'indisponibilite (la regle livree alerte dessus) et nomme le RANG de l'entree,
-    // jamais sa valeur.
-    let exclusion = match exclusion::Exclusion::lire(std::env::var(exclusion::VARIABLE).ok().as_deref()) {
-        Ok(x) => x,
-        Err(e) => {
+    // invalide, ou un `mail.conf` present et illisible, arrete le passage : l'ignorer ferait lire la
+    // boite que l'exploitant a retiree. L'aveu part par le canal d'indisponibilite (la regle livree
+    // alerte dessus) et nomme le RANG de l'entree, jamais sa valeur. La liste et le domaine du layout
+    // plat viennent de la fonction que `body` appelle aussi : une seule precedence pour les deux.
+    let (exclusion, domain) = match exclusion::configuration_effective() {
+        Ok(c) => (c.exclusion, c.domaine),
+        Err(exclusion::ConfigurationRefusee { cause, message: e }) => {
             let ts = now();
             let aveu = lisibilite::event_indisponibilite(
                 "mail",
                 lisibilite::RAISON_CONFIG_ABSENTE,
-                lisibilite::CAUSE_FORME_INCONNUE,
+                cause,
                 &e,
                 ts as i64,
             );

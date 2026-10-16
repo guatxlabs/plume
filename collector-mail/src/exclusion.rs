@@ -29,7 +29,10 @@ enum Entree {
     PartieLocale(String),
 }
 
-/// La liste retenue. Vide = le comportement d'avant cette cle, a l'identique.
+/// La liste retenue. Vide : aucun compte n'est retire ; le passage et `body` lisent ce qu'ils lisaient,
+/// a UNE exception pres, qui ne tient pas a la liste mais a sa SOURCE : un `mail.conf` present et
+/// illisible arrete le balayage comme `body` (`configuration_effective`), parce que la liste qu'il peut
+/// porter n'est pas jugeable.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Exclusion {
     entrees: Vec<Entree>,
@@ -149,10 +152,10 @@ impl Exclusion {
     }
 }
 
-/// Le fichier que `plume-collector-mail.service` charge (`EnvironmentFile=`) et que `body` RELIT
-/// lui-meme : lance par le demon (`PLUME_MAIL_BODY_CMD`), `body` herite de l'environnement du demon,
-/// qui ne charge pas ce fichier. Sans cette relecture, une liste posee ou la documentation le dit ne
-/// protegeait que le balayage.
+/// Le fichier que `plume-collector-mail.service` charge (`EnvironmentFile=`) et que le collecteur RELIT
+/// lui-meme (`configuration_effective`, balayage ET `body`) : lance par le demon (`PLUME_MAIL_BODY_CMD`),
+/// `body` herite de l'environnement du demon, qui ne charge pas ce fichier. Sans cette relecture, une
+/// liste posee ou la documentation le dit ne protegeait que le balayage.
 pub const VARIABLE_FICHIER: &str = "PLUME_MAIL_CONF";
 pub const FICHIER_DEFAUT: &str = "/etc/plume/mail.conf";
 
@@ -179,6 +182,81 @@ pub fn valeur_du_fichier(texte: &str, cle: &str) -> Option<String> {
         retenue = Some(v.to_string());
     }
     retenue
+}
+
+/// Le domaine du layout plat quand rien ne le nomme (le defaut historique du balayage).
+pub const DOMAINE_DEFAUT: &str = "localhost";
+
+/// `P10.33-m` — LE DOMAINE DU LAYOUT PLAT, UNE SEULE REGLE POUR LE BALAYAGE ET POUR `body`.
+///
+/// C'est la precedence que `plume-collector-mail.service` donne au balayage : `EnvironmentFile=` charge
+/// `mail.conf` PAR-DESSUS l'environnement. Le fichier qui PORTE la cle decide donc, meme d'une valeur
+/// VIDE (sous systemd elle ecrase l'environnement, et le balayage retombe sur le defaut) ; l'environnement
+/// ne compte que si le fichier ne porte pas la cle ; une valeur vide de l'environnement vaut le defaut.
+/// Deux regles distinctes faisaient nommer la meme boite `alice@localhost` au balayage et
+/// `alice@example.test` a `body` : l'une retirait le compte, l'autre le lisait.
+pub fn domaine_effectif(du_fichier: Option<&str>, de_l_environnement: Option<&str>) -> String {
+    du_fichier
+        .or(de_l_environnement)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(DOMAINE_DEFAUT)
+        .to_string()
+}
+
+/// Ce que le balayage ET `body` appliquent : la liste (environnement JOINT au fichier) et le domaine du
+/// layout plat.
+#[derive(Debug)]
+pub struct Configuration {
+    pub exclusion: Exclusion,
+    pub domaine: String,
+}
+
+/// Pourquoi la configuration n'est pas jugeable : la cause (vocabulaire de `lisibilite`) et un texte qui
+/// ne cite aucune valeur de la liste.
+#[derive(Debug)]
+pub struct ConfigurationRefusee {
+    pub cause: &'static str,
+    pub message: String,
+}
+
+/// `P10.33-m` — LA CONFIGURATION EFFECTIVE, LUE PAR UNE SEULE FONCTION.
+///
+/// `mail.conf` (`PLUME_MAIL_CONF` pour un autre chemin) n'est lu que s'il EXISTE : absent, l'environnement
+/// seul. Present et lisible : sa liste rejoint celle de l'environnement, son `PLUME_MAIL_DOMAIN` decide
+/// (`domaine_effectif`). Present et ILLISIBLE : REFUS, que l'environnement porte une liste ou non — la
+/// liste du fichier peut nommer un compte que celle de l'environnement ne nomme pas, et lire alors la
+/// boite qu'elle retire est la fuite que cette cle ferme. Le refus vaut aussi liste vide : on ne sait pas
+/// qu'elle est vide.
+pub fn configuration_effective() -> Result<Configuration, ConfigurationRefusee> {
+    let chemin = std::env::var(VARIABLE_FICHIER)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| FICHIER_DEFAUT.to_string());
+    let fichier = match std::fs::read_to_string(&chemin) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(ConfigurationRefusee {
+                cause: crate::lisibilite::cause_io(&e),
+                message: format!(
+                    "{chemin} present mais illisible ({}) : la liste {VARIABLE} qu'il peut porter n'est pas \
+                     jugeable, aucune boite n'est ouverte",
+                    e.kind()
+                ),
+            })
+        }
+    };
+    let du_fichier = |cle: &str| fichier.as_deref().and_then(|t| valeur_du_fichier(t, cle));
+    let forme = |message: String| ConfigurationRefusee { cause: crate::lisibilite::CAUSE_FORME_INCONNUE, message };
+    let de_l_environnement = Exclusion::lire(std::env::var(VARIABLE).ok().as_deref())
+        .map_err(|e| forme(format!("environnement : {e}")))?;
+    let de_la_configuration =
+        Exclusion::lire(du_fichier(VARIABLE).as_deref()).map_err(|e| forme(format!("{chemin} : {e}")))?;
+    let domaine = domaine_effectif(
+        du_fichier("PLUME_MAIL_DOMAIN").as_deref(),
+        std::env::var("PLUME_MAIL_DOMAIN").ok().as_deref(),
+    );
+    Ok(Configuration { exclusion: de_l_environnement.joindre(de_la_configuration), domaine })
 }
 
 #[cfg(test)]

@@ -83,7 +83,9 @@ fn passer(tmp: &Path, racine: &Path, exclure: Option<&str>) -> Passage {
         .env("PLUME_MAIL_DOMAIN", "example.test")
         .env("PLUME_SPOOL", &spool)
         .env("PLUME_MAIL_STATE", &etat)
-        .env("PLUME_HOST", "hote-de-temoin");
+        .env("PLUME_HOST", "hote-de-temoin")
+        // Le balayage relit `mail.conf` : celui de la machine de test ne doit pas entrer dans le temoin.
+        .env("PLUME_MAIL_CONF", tmp.join("pas-de-mail.conf"));
     if let Some(v) = exclure {
         c.env(VARIABLE, v);
     }
@@ -194,7 +196,10 @@ fn en_layout_imbrique_une_partie_locale_exclut_dans_chaque_domaine_et_une_adress
     boite(&d2.join("bob"), "VOISINBOB2");
     boite(&d1.join("alicex"), "VOISINALICEX");
     // Un domaine dont le SEUL compte est exclu et prive : il reste un domaine (un exclu), pas un compte
-    // plat fantome `seul.test@example.test` « ouvert ».
+    // plat fantome `seul.test@example.test` « ouvert ». Ce fantome ne lit RIEN (un domaine n'a ni `cur/`
+    // ni dossier pointe lisible, sinon il serait reconnu domaine par ce dossier) : seul le BATTEMENT le
+    // voit (« 4 ouvert(s), 4 exclu(s) » au lieu de « 3, 5 »). Aucune assertion sur l'etat ne peut donc le
+    // prendre — celle qui pretendait le faire etait vacante, elle est retiree.
     let d3 = racine.join("seul.test");
     boite(&d3.join("alice"), "EXCLUALICE3");
     // Un domaine ecrit en majuscules sur le disque : `bob@example.test` l'exclut (casse ASCII pliee).
@@ -212,9 +217,8 @@ fn en_layout_imbrique_une_partie_locale_exclut_dans_chaque_domaine_et_une_adress
     for marque in ["EXCLUALICE1", "EXCLUALICE2", "EXCLUBOB1", "EXCLUALICE3", "EXCLUBOB4"] {
         assert!(!p.spool.contains(marque) && !p.etat.contains(marque), "`{marque}` a ete lu");
     }
-    assert!(!p.etat.contains("seul.test@"), "un domaine lu comme compte plat : {}", p.etat);
     let b = battement(&p);
-    assert!(b.contains("8 compte(s) dont 3 ouvert(s), 5 exclu(s) par"), "{b}");
+    assert!(b.contains("8 compte(s) dont 3 ouvert(s), 5 exclu(s) par"), "domaine `seul.test` lu comme compte plat ? {b}");
 }
 
 #[test]

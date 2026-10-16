@@ -747,10 +747,10 @@ Un tableau semé vide n'est pas un tableau cassé : c'est souvent un producteur 
 | Vault — accès secrets (Varonis) | `custom`, avec la déclaration d'exemple [`../deploy/vault-audit.input.example`](../deploy/vault-audit.input.example) | rien sans cette déclaration |
 | Infra & logs (OBS) | `resources`, `kube-state` | — |
 | Posture de configuration (SCA/CIS) | **aucun** | nourri par un agent tiers (Wazuh, source `wazuh`) normalisé à l'ingestion |
-| Vulnérabilités (CVE endpoint) | **aucun** pour les champs groupés | `vuln` pose `category=vuln` mais ni `cve`, ni `vuln_severity`, ni `vuln_package`, ni `agent_name` : les panneaux groupés restent vides, et seul le détail (gravité ≥ 3) liste des lignes, aux colonnes vides |
+| Vulnérabilités (CVE endpoint) | `vuln` (images scannées par trivy) | aussi nourri par un agent tiers (Wazuh, source `wazuh`) normalisé à l'ingestion ; `vuln` pose dans `fields` les mêmes noms que le normaliseur Wazuh — `cve`, `vuln_package`, `vuln_package_version` (version installée), `vuln_severity` (minuscules), `vuln_cvss` (score v3 `nvd` quand trivy l'a), `agent_name` (l'hôte qui scanne) — plus `vuln_fixed` (version corrigée) et `image`, qui lui sont propres ; `vuln_title` et `vuln_status` ne viennent que de Wazuh |
 | Conformité — `<cadre>` | **aucun** | même source que la posture |
 
-Que ces trois tableaux disent eux-mêmes qu'ils n'ont pas de source est porté par `P10.32-p`.
+Que les deux tableaux sans producteur livré (posture, conformité) disent eux-mêmes qu'ils n'ont pas de source est porté par `P10.32-p`.
 
 ---
 

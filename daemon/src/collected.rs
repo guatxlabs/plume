@@ -193,6 +193,7 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("action", "web.sh"),
     ("active_bans", "bans.sh"),
     ("addr", "auditd.sh"),
+    ("agent_name", "vuln.sh"),
     ("agent_ready", "crowdsec.sh"),
     ("alive", "dataaccess.sh"),
     ("alive", "integrity.sh"),
@@ -247,6 +248,7 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("count", "cloudflare-http.sh"),
     ("count", "conntrack.sh"),
     ("country", "cloudflare.sh"),
+    ("cve", "vuln.sh"),
     ("decision", "kube-audit.sh"),
     ("desired", "engagement-adapter.sh"),
     ("detail", "lib.sh"),
@@ -320,6 +322,7 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("group", "dataacl.sh"),
     ("hits_seen", "origin-drop.sh"),
     ("http", "engagement-adapter.sh"),
+    ("image", "vuln.sh"),
     ("inbound", "plume-collector.ps1"),
     ("key", "auditd.sh"),
     ("key", "dataaccess.sh"),
@@ -486,6 +489,11 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("vhost", "cloudflare.sh"),
     ("vhost", "web.sh"),
     ("virus", "mail.sh"),
+    ("vuln_cvss", "vuln.sh"),
+    ("vuln_fixed", "vuln.sh"),
+    ("vuln_package", "vuln.sh"),
+    ("vuln_package_version", "vuln.sh"),
+    ("vuln_severity", "vuln.sh"),
 ];
 
 /// Plume peuple-t-il réellement ce champ plume ? = colonne CŒUR du CIM (enveloppe de TOUT event, toujours

@@ -65,6 +65,13 @@ capteurs sont joués sous CHAQUE awk présent (gawk, mawk), lié en `awk` dans l
     injoignable et remise non-200 (503) comprises, chacune porteuse d'une identité dans son URL ;
     `engagement-adapter.sh revert-expired` sous un central REFUSÉ révoque l'exemption échue (faux nft :
     `delete rule … handle 42`), code 0, sans juger ni appeler le central ;
+  · vuln (`P10.32-p`) : `fields` de chaque événement est égal, ENSEMBLE EXACT, à ce que dit la ligne du
+    scanner — `agent_name` (l'hôte de l'enveloppe), `cve`, `vuln_package`, `vuln_package_version`,
+    `vuln_severity` (minuscules, vocabulaire Wazuh), `image`, plus `vuln_fixed` et `vuln_cvss` quand le
+    scanner les donne —, `message` garde sa forme livrée ; une seconde ligne porte une valeur hostile dans
+    l'identifiant, la sévérité et le score (les trois colonnes que la première laisse saines) : enveloppe
+    STRICTE, valeurs décodées telles quelles. Le TEMPLATE de `vuln.sh` est joué par le VRAI moteur
+    (`trivy convert` sur un rapport fabriqué) quand un trivy réel est présent ;
   · kube-audit : `sourceIPs` porteur d'un `\"` ou de deux antislashs -> enveloppe lisible en JSON STRICT,
     `src_ip` décodée égale à la valeur extraite ;
   · relais : jeton absent, vide, blanc, illisible (un répertoire) ou non UTF-8 -> refus de démarrer,
@@ -99,6 +106,13 @@ CE QU'ELLE NE TIENT PAS
   qui exécute le collecteur sous `pwsh` sur son propre corpus d'URL.
 · Les autres capteurs qui posent `src_ip` brut le tirent d'un motif borné (`SRC=[0-9A-Fa-f.:]*` de
   ufw, portscan, origin-drop ; `[0-9.]*` d'auditd ; adresses de conntrack) : non joués ici.
+· Le template trivy de `vuln.sh` n'est jugé QUE si un trivy réel est là (`PLUME_TRIVY_REEL` ou PATH) ; sans
+  lui, la sortie de la garde le dit « NON JOUÉ » — la CI n'installe pas trivy. Le faux `trivy` des bacs
+  ignore `--template`.
+· `agent_name` de `vuln.sh` est l'hôte lu dans `/proc` : non injectable dans le bac, son échappement n'est
+  pas éprouvé (l'enveloppe de `lib.sh` pose d'ailleurs `host` sans échappement). Une version installée VIDE
+  devient `-` dans `vuln_package_version` (le filtre awk bouche les colonnes vides, sans quoi `read` les
+  fondrait) : forme non jugée.
 · `crowdsec.sh` n'est joué que pour ses alertes : santé, hub et acquisition ne le sont pas ici.
 · Le temps constant de la comparaison n'est pas MESURÉ (un chronomètre frapperait dans les deux
   sens) : la garde exige l'appel de la primitive à temps constant.
@@ -358,14 +372,29 @@ def scen_yara(base, awk, tag):
             faute(scen, f"fields.sha256 n'est pas l'empreinte du fichier : {e.get('fields')}")
 
 
+# P10.32-p — les champs que `vuln.sh` pose dans `fields` : les MÊMES noms que le normaliseur Wazuh du démon
+# (`daemon/src/ingest/endpoint.rs`, famille vulnerability-detector), que les panneaux semés « Vulnérabilités
+# (CVE endpoint) » regroupent ; `vuln_fixed` et `image` sont propres au capteur. Ensemble EXACT, pas un compte.
+VULN_CHAMPS_TOUJOURS = {"agent_name", "cve", "vuln_package", "vuln_package_version", "vuln_severity", "image"}
+VULN_SEVERITES_WAZUH = {"critical", "high", "medium", "low"}
+
+
 def scen_vuln(base, awk, tag):
     scen = f"vuln/{tag}"
     bac = Bac(base, awk, faux=("trivy",))
     # `vuln.sh` passe l image par `awk -v`, qui interprete les antislashs : l image porte le guillemet,
     # l antislash final est porte par le paquet (lu par `$0`, sans interpretation).
     img = "reg/img" + FORGE
-    bac.poser("trivy.out", f"CRITICAL\tCVE-0001\t{FORGE}\t1.0\t-\nHIGH\tCVE-0002\t{ANTISLASH}\t1.0\t2.0\n"
-                           f"HIGH\tCVE-0003\t{GUILLEMET}\t1.0\t2.0\n")
+    # Sortie FIDÈLE au template TSV de vuln.sh : sévérité, id, paquet, installée, corrigée (`-` si aucune),
+    # CVSS v3 nvd (VIDE si trivy n'en a pas : la ligne finit alors par une tabulation). Valeurs piégées :
+    # guillemet, antislash final, retour chariot (caractère de contrôle, invalide brut en JSON).
+    ver_cr = "1.0\rx"
+    lignes = [
+        ("CRITICAL", "CVE-0001", FORGE, "1.0", "-", "9.8"),
+        ("HIGH", "CVE-0002", ANTISLASH, GUILLEMET, ANTISLASH, ""),
+        ("HIGH", "CVE-0003", GUILLEMET, ver_cr, "2.0", "7.5"),
+    ]
+    bac.poser("trivy.out", "".join("\t".join(l) + "\n" for l in lignes))
     r = bac.jouer("vuln.sh", {"PLUME_VULN_IMAGES": img})
     exiger_appel(scen, bac)
     if r.returncode != 0:
@@ -377,6 +406,115 @@ def scen_vuln(base, awk, tag):
     crit = [e for e in evs if e.get("source") == "vuln" and "CVE-0001" in e.get("dedup", "")]
     if not crit or crit[0].get("severity") != 4:
         faute(scen, f"la CVE CRITICAL n'a pas gardé sa sévérité 4 : {crit}")
+    lisibles = [env for _, env, _, _ in enveloppes(bac.spool) if env]
+    if not lisibles:
+        faute(scen, "aucune enveloppe lisible : les champs de vulnérabilité ne se jugent pas")
+        return
+    hotes = {env.get("host") for env in lisibles}
+    if len(hotes) != 1 or not next(iter(hotes)):
+        refus(f"[{scen}] l'enveloppe ne porte pas un hôte unique ({hotes}) : agent_name ne se juge pas")
+    hote = next(iter(hotes))
+    par_cve = {(e.get("fields") or {}).get("cve"): e for e in evs if e.get("source") == "vuln"}
+    for sev, cve, pkg, inst, fixed, cvss in lignes:
+        e = par_cve.get(cve)
+        if e is None:
+            faute(scen, f"{cve} : aucun événement ne porte fields.cve={cve!r} (champ absent ou renommé)")
+            continue
+        f = e.get("fields")
+        if not isinstance(f, dict):
+            faute(scen, f"{cve} : `fields` absent ou non objet : {e}")
+            continue
+        attendu = {"agent_name": hote, "cve": cve, "vuln_package": pkg,
+                   # json_escape retire les caractères de contrôle (le \r) : c'est sa règle, la même partout.
+                   "vuln_package_version": inst.replace("\r", ""), "vuln_severity": sev.lower(), "image": img}
+        if fixed != "-":
+            attendu["vuln_fixed"] = fixed
+        if cvss:
+            attendu["vuln_cvss"] = cvss
+        if f != attendu:
+            faute(scen, f"{cve} : fields {f!r} au lieu de {attendu!r}")
+        if not VULN_CHAMPS_TOUJOURS <= set(f):
+            faute(scen, f"{cve} : champs manquants {sorted(VULN_CHAMPS_TOUJOURS - set(f))}")
+        if f.get("vuln_severity") not in VULN_SEVERITES_WAZUH:
+            faute(scen, f"{cve} : vuln_severity={f.get('vuln_severity')!r} hors du vocabulaire Wazuh "
+                        f"{sorted(VULN_SEVERITES_WAZUH)} (minuscules)")
+        # `message` inchangé : la forme livrée avant P10.32-p.
+        m = f"{cve} dans {pkg} {inst.replace(chr(13), '')} (corrige: {fixed}) image {img}"
+        if e.get("message") != m:
+            faute(scen, f"{cve} : message {e.get('message')!r} au lieu de {m!r}")
+
+
+def scen_vuln_colonnes_hostiles(base, awk, tag):
+    """Les trois colonnes que `scen_vuln` laisse saines — identifiant, sévérité, score — portent chacune une
+    valeur hostile : sans `json_escape`, FORGE pose ses clés dans `fields`, l'antislash final et le guillemet
+    rendent l'enveloppe illisible. Une sévérité hors vocabulaire rend `severity` 0 (`sevmap`) : c'est la
+    forme livrée, jugée ici pour que la ligne ne disparaisse pas."""
+    scen = f"vuln-colonnes/{tag}"
+    bac = Bac(base, awk, faux=("trivy",))
+    img = "reg/img2"
+    sev, cve, cvss = ANTISLASH, FORGE, GUILLEMET
+    bac.poser("trivy.out", "\t".join((sev, cve, "paq", "1.0", "2.0", cvss)) + "\n")
+    r = bac.jouer("vuln.sh", {"PLUME_VULN_IMAGES": img})
+    exiger_appel(scen, bac)
+    if r.returncode != 0:
+        faute(scen, f"sortie {r.returncode} : {r.stderr[:300]}")
+    evs, _ = evenements(scen, bac.spool)
+    lisibles = [env for _, env, _, _ in enveloppes(bac.spool) if env]
+    vuln = [e for e in evs if e.get("source") == "vuln"]
+    if len(vuln) != 1 or not lisibles:
+        faute(scen, f"un événement vuln attendu, {len(vuln)} lu(s)")
+        return
+    e = vuln[0]
+    attendu = {"agent_name": lisibles[0].get("host"), "cve": cve, "vuln_package": "paq",
+               "vuln_package_version": "1.0", "vuln_severity": sev.lower(), "image": img,
+               "vuln_fixed": "2.0", "vuln_cvss": cvss}
+    if e.get("fields") != attendu:
+        faute(scen, f"fields {e.get('fields')!r} au lieu de {attendu!r}")
+    if e.get("severity") != 0 or e.get("category") != "vuln":
+        faute(scen, f"severity/category {e.get('severity')!r}/{e.get('category')!r} au lieu de 0/'vuln'")
+    if e.get("dedup") != f"vuln-{img}|{cve}|paq":
+        faute(scen, f"dedup {e.get('dedup')!r}")
+
+
+# P10.32-p — le faux `trivy` des bacs ignore `--template` : il ne prouve RIEN du template. Ce rapport, rendu
+# par le VRAI moteur (`trivy convert`, sans base de vulnérabilités ni réseau), le juge quand un trivy réel est
+# là (`PLUME_TRIVY_REEL`, sinon `trivy` dans le PATH) : 6e colonne = `V3Score` de la source `nvd` SEULE
+# (ghsa et redhat présents et ignorés), vide sans elle ; `-` pour une version corrigée absente.
+VULN_RAPPORT_TRIVY = {"SchemaVersion": 2, "ArtifactName": "reg/img:1", "ArtifactType": "container_image",
+                      "Results": [{"Target": "reg/img:1 (debian 12)", "Class": "os-pkgs", "Type": "debian",
+                                   "Vulnerabilities": [
+    {"VulnerabilityID": "CVE-2024-0001", "PkgName": "openssl", "InstalledVersion": "3.0.1", "FixedVersion": "3.0.2",
+     "Severity": "CRITICAL", "CVSS": {"ghsa": {"V3Score": 5.5}, "nvd": {"V3Score": 9.8}, "redhat": {"V3Score": 7.1}}},
+    {"VulnerabilityID": "CVE-2024-0002", "PkgName": "zlib", "InstalledVersion": "1.2", "Severity": "HIGH",
+     "CVSS": {"ghsa": {"V3Score": 7.5}}},
+    {"VulnerabilityID": "CVE-2024-0003", "PkgName": "curl", "InstalledVersion": "8.0", "FixedVersion": "8.1",
+     "Severity": "HIGH"}]}]}
+VULN_TSV_ATTENDU = sorted(["CRITICAL\tCVE-2024-0001\topenssl\t3.0.1\t3.0.2\t9.8",
+                           "HIGH\tCVE-2024-0002\tzlib\t1.2\t-\t", "HIGH\tCVE-2024-0003\tcurl\t8.0\t8.1\t"])
+
+
+def scen_vuln_template_reel(base):
+    """Rend True si le template a été joué par un trivy réel, False s'il n'y en a pas (avoué en sortie)."""
+    scen = "vuln-template"
+    trivy = os.environ.get("PLUME_TRIVY_REEL") or shutil.which("trivy")
+    if not trivy:
+        return False
+    with open(os.path.join(COL, "vuln.sh"), encoding="utf-8") as f:
+        tpl = [l[len("TPL='"):-1] for l in f.read().splitlines() if l.startswith("TPL='") and l.endswith("'")]
+    if len(tpl) != 1:
+        faute(scen, f"vuln.sh : {len(tpl)} ligne(s) `TPL='…'` au lieu d'une : le template ne se juge pas")
+        return True
+    rapport = os.path.join(base, "trivy-rapport.json")
+    with open(rapport, "w", encoding="utf-8") as f:
+        json.dump(VULN_RAPPORT_TRIVY, f)
+    r = subprocess.run([trivy, "convert", "--quiet", "--format", "template", "--template", tpl[0], rapport],
+                       capture_output=True, text=True, timeout=120, cwd=base)
+    if r.returncode != 0:
+        refus(f"[{scen}] `{trivy} convert` sort en {r.returncode} : {r.stderr[:300]!r}")
+    obtenu = sorted(l for l in r.stdout.split("\n") if l)
+    if obtenu != VULN_TSV_ATTENDU:
+        faute(scen, f"template de vuln.sh sous le vrai trivy : {obtenu!r} au lieu de {VULN_TSV_ATTENDU!r}")
+    return True
 
 
 def scen_imgdrift(base, awk, tag):
@@ -1270,10 +1408,12 @@ def main():
             scen_clamav(base, awk, tag)
             scen_yara(base, awk, tag)
             scen_vuln(base, awk, tag)
+            scen_vuln_colonnes_hostiles(base, awk, tag)
             scen_imgdrift(base, awk, tag)
             scen_bans_sans_backend(base, awk, tag)
             scen_bans_presents(base, awk, tag)
             scen_crowdsec_alertes(base, awk, tag)
+        tpl_joue = scen_vuln_template_reel(base)
         scen_ship(base)
         scen_transport_des_autres(base)
         scen_kube_audit(base)
@@ -1287,7 +1427,8 @@ def main():
         return 1
     print(f"collecte sûre : JSON échappé sous {', '.join(t for t, _ in awks)} (clamav, yara, vuln, imgdrift, bans, crowdsec), "
           "aveu sans backend, clair distant refusé (ship, respond, prom-scrape, engagement-adapter), src_ip de "
-          "kube-audit échappée, parcours du spool sûr, relais fermé sans jeton.")
+          "kube-audit échappée, parcours du spool sûr, relais fermé sans jeton ; template trivy de vuln : "
+          + ("joué par un trivy réel." if tpl_joue else "NON JOUÉ (aucun trivy réel : PLUME_TRIVY_REEL ou PATH)."))
     return 0
 
 

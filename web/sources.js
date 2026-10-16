@@ -218,26 +218,60 @@ const raisonDUnDormant = (s) => {
 // lues (le plafond), et un `last_seen` qui est une BORNE : le dernier événement réel est AU PLUS TARD là.
 // L'écrire « il y a … » comme une date vue serait affirmer une collecte que personne n'a observée ; la
 // cellule dit donc « au moins … » et nomme le plafond, l'infobulle dit la nature de la borne. Champ
-// absent, nul ou non numérique (démon antérieur, chemin nominal) -> l'affichage d'avant, à l'identique.
+// absent, nul ou non numérique (démon antérieur, chemin nominal) -> l'affichage d'avant, à l'identique
+// (« il y a … », l'infobulle porte la date).
+// LA LECTURE RATÉE EST LA MÊME FAUTE, ET ELLE A LE MÊME REMÈDE. Une source dont la lecture hors aveu a
+// RÉELLEMENT échoué sort `derniere_collecte_non_etablie` (la cause) avec un `last_seen` qui reste celui
+// du rollup, AVEUX COMPRIS : ce n'est pas l'instant d'une collecte vue, c'est la dernière ligne comptée,
+// peut-être un aveu « capteur indisponible ». Le rollup compte tout ce qu'`event` reçoit, donc le
+// dernier événement réel est au plus tard là : c'est AUSSI une borne, et elle se dit « au moins … » avec
+// la cause dans l'infobulle — jamais « il y a … ».
+// LA FAÇON DE LE DIRE EST PARTAGÉE : `faceDuDernierVuBorne` sert aussi `freshness.js`, dont
+// `/api/freshness` porte le même champ et la même cause sur ses flux d'événements (même emprunt que le
+// vocabulaire d'état, `P11.18-f`) ; une surface ne dit pas « il y a » d'une borne que l'autre nomme.
 const MOTS_DU_DERNIER_VU_BORNE = {
   cellule: { fr: 'au moins {age} — au-delà du plafond de lignes', en: 'at least {age} — beyond the row cap' },
   cellule_sans_age: { fr: 'au-delà du plafond de lignes', en: 'beyond the row cap' },
   titre: {
     fr: 'Aucun signe de vie de cette source dans ses {n} dernières lignes — le plafond de lecture du démon : seuls des aveux « capteur indisponible » s\'y trouvent. Le dernier événement réel, s\'il existe, est AU PLUS TARD au {date} : c\'est une BORNE, pas l\'instant d\'une collecte vue.',
     en: 'No sign of life from this source in its last {n} rows — the daemon\'s read cap: only “sensor unavailable” admissions are there. The last real event, if any, is AT THE LATEST at {date}: this is a BOUND, not the time of a collection seen.' },
+  cellule_non_etablie: { fr: 'au moins {age} — dernière collecte non établie', en: 'at least {age} — last collection not established' },
+  cellule_non_etablie_sans_age: { fr: 'dernière collecte non établie', en: 'last collection not established' },
+  titre_non_etabli: {
+    fr: 'La lecture de la dernière collecte réelle a échoué (« {cause} ») : la date retenue est celle de la dernière ligne comptée par le rollup, aveux « capteur indisponible » compris. Le dernier événement réel, s\'il existe, est AU PLUS TARD au {date} : c\'est une BORNE, pas l\'instant d\'une collecte vue.',
+    en: 'Reading the last real collection failed (“{cause}”): the date kept is that of the last row counted by the rollup, “sensor unavailable” admissions included. The last real event, if any, is AT THE LATEST at {date}: this is a BOUND, not the time of a collection seen.' },
 };
 const lignesAuDelaDuPlafond = (s) => (s && Number.isFinite(s.derniere_collecte_au_dela_des_lignes) && s.derniere_collecte_au_dela_des_lignes > 0
   ? s.derniere_collecte_au_dela_des_lignes : null);
+const causeDeLaCollecteNonEtablie = (s) => (s && typeof s.derniere_collecte_non_etablie === 'string' && s.derniere_collecte_non_etablie.trim()
+  ? s.derniere_collecte_non_etablie.trim() : null);
+// `null` -> rien n'est borné, la date est une collecte vue ; sinon `{ texte, titre }`, dans la langue de la console.
+function faceDuDernierVuBorne(s) {
+  const age = s && Number.isFinite(s.age_s) ? humanAge(s.age_s) : null;
+  const n = lignesAuDelaDuPlafond(s);
+  if (n !== null) {
+    return {
+      texte: age !== null ? faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.cellule, { age }) : faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.cellule_sans_age),
+      titre: faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.titre, { n, date: fmtTs(s.last_seen) }),
+    };
+  }
+  const cause = causeDeLaCollecteNonEtablie(s);
+  if (cause === null) return null;
+  return {
+    texte: age !== null ? faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.cellule_non_etablie, { age }) : faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.cellule_non_etablie_sans_age),
+    titre: faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.titre_non_etabli, { cause, date: fmtTs(s.last_seen) }),
+  };
+}
 function noeudDuDernierVu(s) {
   const sp = document.createElement('span');
-  const n = lignesAuDelaDuPlafond(s);
-  if (n === null) {
+  const borne = faceDuDernierVuBorne(s);
+  if (borne === null) {
     sp.textContent = s.last_seen ? ilYA(s.age_s) : '—'; if (s.last_seen) sp.title = fmtTs(s.last_seen);
     return sp;
   }
   sp.setAttribute('data-dernier-vu-borne', '1');
-  sp.textContent = Number.isFinite(s.age_s) ? faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.cellule, { age: humanAge(s.age_s) }) : faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.cellule_sans_age);
-  sp.title = faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.titre, { n, date: fmtTs(s.last_seen) });
+  sp.textContent = borne.texte;
+  sp.title = borne.titre;
   return sp;
 }
 
@@ -572,4 +606,4 @@ async function clearSourceMeta(s) {
 }
 
 
-export { loadSourcesView, renderSourcesInventory, ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource, sourcePut, declareCadence };
+export { loadSourcesView, renderSourcesInventory, ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource, sourcePut, declareCadence, faceDuDernierVuBorne };

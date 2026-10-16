@@ -29077,10 +29077,13 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 // JUGÉ, DANS LES DEUX LANGUES : (a) dormant par aveux seuls (aucun marquage, `n_24h` > 0) -> la raison nomme les aveux et
 // dit que c'est cette porte-là ; (a-inverse) dormant avec marquage et `n_24h` 0 -> les trois portes, sans trancher ;
 // (b) champ présent -> la cellule nomme le plafond, dit « au moins », jamais « il y a » ; l'infobulle dit BORNE ; (c) champ
-// absent, nul ou non numérique -> l'affichage d'avant, rien ne casse ; (d) la légende ne dit plus « une source déclarée
-// ici » et nomme les aveux.
+// absent, nul ou non numérique -> l'affichage d'avant, infobulle comprise (la date vue, `fmtTs`), rien ne casse ; (d) la
+// légende ne dit plus « une source déclarée ici » et nomme les aveux ; (e) le même champ sur `/api/freshness` : la ligne du
+// flux dit la borne, jamais « il y a » ni « dernière donnée » (MESURÉ à ea88f8e1 : « il y a 3 j », « dernière donnée <date> ») ;
+// (f) une lecture ratée (`derniere_collecte_non_etablie`, `last_seen` = rollup, aveux compris), sur les deux surfaces :
+// « au moins … » et la cause dans l'infobulle (MESURÉ à ea88f8e1 : « il y a 3 j », cause tue).
 // CE QUE CE TÉMOIN NE TIENT PAS : il lit le TEXTE du démon, pas son exécution (les témoins Rust `p10_32s_*` tiennent la
-// route) ; la cause d'un `non_lu` de ligne (`derniere_collecte_non_etablie`) n'est toujours pas affichée ; la mise en page.
+// route) ; la cause d'un `non_lu` de ligne n'est dite qu'en infobulle ; la mise en page.
 // ---------------------------------------------------------------------------------------------
 {
   const echecsAvant149 = echecs.length;
@@ -29101,9 +29104,17 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const PLAFOND149 = mPlafond149 ? Number(mPlafond149[1]) : 1024;
 
   const modFr149 = await import(pathToFileURL(path.join(WEB, "sources.js")).href);
+  const noyauFr149 = await import(pathToFileURL(path.join(WEB, "core.js")).href);
+  const fraicheurFr149 = await import(pathToFileURL(path.join(WEB, "freshness.js")).href);
+  // La lecture ratée, relue dans les deux routes : la cause sous `derniere_collecte_non_etablie`, `last_seen` = le rollup.
+  instrument149(/f\["derniere_collecte_non_etablie"\] = json!\(cause\);/.test(frRs149) && /f\[CHAMP_DERNIERE_COLLECTE_AU_DELA_DES_LIGNES\] = json!\(lues\);/.test(frRs149),
+    "`/api/freshness` ne sert plus, sur un flux d'événements, le fait borné ou la cause d'une lecture ratée");
+  instrument149(/o\.insert\("derniere_collecte_non_etablie"\.into\(\), json!\(cause\)\);/.test(srcRs149), "`/api/sources` ne sert plus la cause d'une lecture ratée sous `derniere_collecte_non_etablie`");
   const langueOrigine149 = localStorage.getItem("soc_lang");
   localStorage.setItem("soc_lang", "en");
   const modEn149 = await import(adresseSousLaLangue("sources.js"));
+  const noyauEn149 = await import(adresseSousLaLangue("core.js"));
+  const fraicheurEn149 = await import(adresseSousLaLangue("freshness.js"));
   if (langueOrigine149 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine149);
   const cueillir149 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir149(c, pred, acc)); return acc; };
   const motDEtat149 = (r, mot) => cueillir149(r, (e) => e.tagName === "B" && String(e.textContent) === mot, [])[0] || null;
@@ -29116,10 +29127,10 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }, o);
   const rendre149 = (mod, sources) => { const h = new Element("div"); mod.renderSourcesInventory(h, { ok: true, pipeline_fresh: true, sources }); return h; };
   const MOTS149 = {
-    fr: { mod: modFr149, dormant: "dormant", aveux: /aveux « capteur indisponible »/, tranche: /Ici, c'est le troisième/, sansMarquage: /aucune déclaration ni métadonnée n'est posée sur cette source/, trois: /Trois faits différents/, vieux: /Deux faits/,
+    fr: { mod: modFr149, noyau: noyauFr149, fraicheur: fraicheurFr149, nonEtabli: /^au moins 3 j — dernière collecte non établie$/, titreNonEtabli: /a échoué[\s\S]*aveux « capteur indisponible » compris[\s\S]*AU PLUS TARD[\s\S]*BORNE/, dormant: "dormant", aveux: /aveux « capteur indisponible »/, tranche: /Ici, c'est le troisième/, sansMarquage: /aucune déclaration ni métadonnée n'est posée sur cette source/, trois: /Trois faits différents/, vieux: /Deux faits/,
       plafond: /au-delà du plafond de lignes/, auMoins: /^au moins /, ilYa: /il y a/, titre: new RegExp(`dans ses ${PLAFOND149} dernières lignes[\\s\\S]*AU PLUS TARD[\\s\\S]*BORNE`), avant: /^il y a 3 j$/,
       legendeVieille: /une source déclarée ici dont/, legendeAveux: /aveux « capteur indisponible »/ },
-    en: { mod: modEn149, dormant: "dormant", aveux: /“sensor unavailable” admissions/, tranche: /Here it is the third one/, sansMarquage: /no declaration or metadata is set on this source/, trois: /Three different facts/, vieux: /Two different facts/,
+    en: { mod: modEn149, noyau: noyauEn149, fraicheur: fraicheurEn149, nonEtabli: /^at least 3 d — last collection not established$/, titreNonEtabli: /failed[\s\S]*“sensor unavailable” admissions included[\s\S]*AT THE LATEST[\s\S]*BOUND/, dormant: "dormant", aveux: /“sensor unavailable” admissions/, tranche: /Here it is the third one/, sansMarquage: /no declaration or metadata is set on this source/, trois: /Three different facts/, vieux: /Two different facts/,
       plafond: /beyond the row cap/, auMoins: /^at least /, ilYa: / ago/, titre: new RegExp(`in its last ${PLAFOND149} rows[\\s\\S]*AT THE LATEST[\\s\\S]*BOUND`), avant: /^3 d ago$/,
       legendeVieille: /a source declared here of which/, legendeAveux: /“sensor unavailable” admissions/ },
   };
@@ -29160,7 +29171,45 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
         if (!h) continue;
         const ages = cueillir149(h, (e) => e.tagName === "SPAN" && M.avant.test(String(e.textContent)), []);
         exiger(borne149(h).length === 0 && ages.length === 1, `(149c) ${langue} : champ ${nom} -> la cellule « Dernier vu » n'est plus celle d'avant (bornée : ${borne149(h).length}, « il y a » : ${ages.length})`);
+        // ... et son infobulle aussi : la date de la collecte vue, dans le format de la console (celui de `fmtTs`, même langue).
+        const attendu149 = M.noyau.fmtTs(1_700_000_000);
+        exiger(ages.length === 1 && ages[0].title === attendu149, `(149c) ${langue} : champ ${nom} -> l'infobulle de « Dernier vu » n'est plus la date vue « ${attendu149} » : « ${ages[0] && ages[0].title} »`);
       }
+      // (e) LA MÊME LECTURE SUR /api/freshness. Le flux d'événements au plafond y porte le même champ et la même borne : la ligne
+      // dit « au moins … — au-delà du plafond de lignes », jamais « il y a » ni « dernière donnée » ; absent, nul, texte ou zéro,
+      // la ligne d'avant (« il y a 3 j », « dernière donnée <date> »).
+      const deshtml149 = (t) => String(t).replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+      const unFlux149 = (o) => Object.assign({ kind: "event", name: "auditd", status: "en_retard", age_s: 3 * 86400, last_seen: 1_700_000_000, n_24h: 5, active_alerts: 0,
+        cadence_declaree: "continue", cadence_interval_s: 120, cadence_capteur: "audit", observed_interval_s: null }, o);
+      const ligneDuFlux149 = (f) => {
+        const tout = M.fraicheur.renderFreshnessDetail({ pipeline_fresh: true, feeds: [f] });
+        // la LIGNE du flux seule (l'en-tête et la légende parlent de « dernière donnée » pour toute la vue) : le corps du groupe.
+        const corps = tout.match(/<div class="fgbody"[^>]*>([\s\S]*?)<\/div><\/div>/);
+        instrument149(!!corps && corps[1].includes(">auditd "), `${langue} : la ligne du flux n'est plus isolable dans le rendu de la fraîcheur`);
+        const html = corps ? corps[1] : "";
+        const b = html.match(/<b class="[^"]*" data-dernier-vu-borne="1" title="([^"]*)">([^<]*)<\/b>/);
+        return { html, borne: b ? { titre: deshtml149(b[1]), texte: deshtml149(b[2]) } : null };
+      };
+      const fBorne = ligneDuFlux149(unFlux149({ [CHAMP149]: PLAFOND149 }));
+      exiger(!!fBorne.borne && M.plafond.test(fBorne.borne.texte) && M.auMoins.test(fBorne.borne.texte) && !M.ilYa.test(fBorne.borne.texte) && !/il y a|dernière donnée/.test(fBorne.html),
+        `(149e) ${langue} : /api/freshness sert \`${CHAMP149}\` et la ligne du flux ne le dit pas comme une borne au-delà du plafond, ou dit encore « il y a » / « dernière donnée » : « ${fBorne.borne ? fBorne.borne.texte : fBorne.html.slice(0, 300)} »`);
+      exiger(!!fBorne.borne && M.titre.test(fBorne.borne.titre), `(149e) ${langue} : l'infobulle du flux borné ne dit pas la nature de borne : « ${fBorne.borne && fBorne.borne.titre} »`);
+      for (const [nom, extra] of [["absent", {}], ["nul", { [CHAMP149]: null }], ["texte", { [CHAMP149]: "1024" }], ["zéro", { [CHAMP149]: 0 }]]) {
+        const l = ligneDuFlux149(unFlux149(extra));
+        exiger(!l.borne && l.html.includes(`title="dernière donnée ${M.noyau.fmtTs(1_700_000_000)}">il y a 3 j</b>`), `(149e) ${langue} : flux, champ ${nom} -> la ligne n'est plus celle d'avant`);
+      }
+      // (f) LA LECTURE RATÉE, SUR LES DEUX SURFACES : `last_seen` est la dernière ligne du rollup, aveux compris -> « au moins … »,
+      // la cause et la borne dans l'infobulle, jamais « il y a ». Une cause blanche -> l'affichage d'avant.
+      const CAUSE149 = "lecture interrompue : database is locked";
+      const ratee = borne149(rendre149(M.mod, [uneSource149({ status: "non_lu", derniere_collecte_non_etablie: CAUSE149 })]))[0];
+      exiger(!!ratee && M.nonEtabli.test(ratee.textContent) && M.titreNonEtabli.test(ratee.title || "") && (ratee.title || "").includes(CAUSE149) && (ratee.title || "").includes(M.noyau.fmtTs(1_700_000_000)),
+        `(149f) ${langue} : une source non_lu (lecture hors aveu ratée) affiche le last_seen du rollup comme une date vue, ou tait la cause : « ${ratee ? ratee.textContent + " | " + ratee.title : "(aucune cellule bornée)"} »`);
+      const fRatee = ligneDuFlux149(unFlux149({ status: "non_lu", derniere_collecte_non_etablie: CAUSE149 }));
+      exiger(!!fRatee.borne && M.nonEtabli.test(fRatee.borne.texte) && fRatee.borne.titre.includes(CAUSE149) && M.titreNonEtabli.test(fRatee.borne.titre) && !/il y a|dernière donnée/.test(fRatee.html),
+        `(149f) ${langue} : un flux non_lu (lecture ratée) sur /api/freshness dit encore « il y a » / « dernière donnée », ou tait la cause : « ${fRatee.borne ? fRatee.borne.texte : fRatee.html.slice(0, 300)} »`);
+      const blanche = rendre149(M.mod, [uneSource149({ derniere_collecte_non_etablie: "  " })]);
+      exiger(borne149(blanche).length === 0 && cueillir149(blanche, (e) => e.tagName === "SPAN" && M.avant.test(String(e.textContent)), []).length === 1,
+        `(149f) ${langue} : une cause blanche borne la cellule « Dernier vu »`);
       // (d) la légende : plus « une source déclarée ici », et les aveux nommés.
       const leg = texte(rendre149(M.mod, [uneSource149({}), uneSource149({ source: "x", status: "dormant", last_seen: null, age_s: null })]));
       exiger(!M.legendeVieille.test(leg) && M.legendeAveux.test(leg), `(149d) ${langue} : la légende de « dormant » dit encore « une source déclarée ici », ou ne nomme pas les aveux`);
@@ -29169,7 +29218,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     document.body.className = roleAvant149;
   }
   if (echecs.length !== echecsAvant149) console.log(`(149) EN ÉCHEC — ${echecs.length - echecsAvant149} écart(s), dits ci-dessus`);
-  else console.log(`(149) OK — \`P10.32-s\` (console) : dans les deux langues, un dormant à last_seen nul par aveux seuls est dit tel par chacune de ses deux preuves jugée seule (aucun marquage avec n_24h à 0, ou des lignes sur 24 h avec un marquage), un dormant que la charge utile ne tranche pas nomme ses trois portes sans en choisir une, et « deux faits » ne se lit plus ; le champ \`${CHAMP149}\` (nom lu dans le démon) est affiché comme une BORNE au-delà des ${PLAFOND149} lignes (plafond lu dans le démon), jamais « il y a » ; absent, nul, texte ou zéro, la cellule est celle d'avant. Ce qu'il NE tient PAS : l'exécution de la route (témoins Rust), la cause d'un non_lu de ligne (non affichée), la mise en page.`);
+  else console.log(`(149) OK — \`P10.32-s\` (console) : dans les deux langues, un dormant à last_seen nul par aveux seuls est dit tel par chacune de ses deux preuves jugée seule (aucun marquage avec n_24h à 0, ou des lignes sur 24 h avec un marquage), un dormant que la charge utile ne tranche pas nomme ses trois portes sans en choisir une, et « deux faits » ne se lit plus ; le champ \`${CHAMP149}\` (nom lu dans le démon) est affiché comme une BORNE au-delà des ${PLAFOND149} lignes (plafond lu dans le démon), jamais « il y a » ; absent, nul, texte ou zéro, la cellule est celle d'avant, infobulle comprise ; la ligne d'un flux de /api/freshness dit la même borne, et une lecture ratée se dit « au moins … » avec sa cause sur les deux surfaces. Ce qu'il NE tient PAS : l'exécution des routes (témoins Rust), la cause d'un non_lu de ligne hors infobulle, la mise en page.`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -29182,7 +29231,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 // JUGÉ : (a) corps vide + `fenetre_non_bornee` / `horizon_perime` non dehors / `mesure_en_cours` sans horizon -> la notice est
 // dans le corps, nœud à part ; (b) panneau plein + `older_outside_window: false` -> aucun badge, donc aucune notice, et la
 // seule fabrique qui la porte n'est appelée que par le corps sans ligne ; (c) une notice qui porte du balisage est rendue en
-// TEXTE (aucun élément IMG créé). CE QU'IL NE TIENT PAS : la notice reste en français sous LANG='en' (le démon ne la sert que
+// TEXTE (aucun élément IMG créé) ; (a-ordre) la notice est le dernier nœud, après le libellé et la date. CE QU'IL NE TIENT PAS : la notice reste en français sous LANG='en' (le démon ne la sert que
 // dans cette langue) ; la mise en page.
 // ---------------------------------------------------------------------------------------------
 {
@@ -29212,6 +29261,15 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     const n = notices150(corps);
     exiger(n.length === 1 && n[0].textContent === stats.coverage.notice && texte(corps).includes(stats.coverage.notice),
       `(150a) ${nom} : un panneau VIDE ne montre pas la notice du serveur (older_outside_window ${stats.coverage.older_outside_window}) — « ${texte(corps)} »`);
+    // (a-ordre) la notice vient APRÈS le libellé et la date (ou le refus de conclure) : dernier nœud de la fabrique, dernier
+    // nœud du corps, et le libellé et la date restent deux nœuds texte entiers devant elle.
+    const h150 = viz150.coverageHorizonNodes(stats) || [];
+    const devant150 = h150.slice(0, -1);
+    const dernier150 = (l) => l.length ? l[l.length - 1] : null;
+    const estNotice150 = (e) => !!(e && e.getAttribute && e.getAttribute("data-notice-de-couverture") === "1");
+    const attendusDevant150 = Number.isFinite(stats.coverage.horizon_ts) ? 2 : (stats.coverage.reason ? 1 : 0);
+    exiger(estNotice150(dernier150(h150)) && estNotice150(dernier150([...(corps.childNodes || [])])) && devant150.length === attendusDevant150 && !devant150.some(estNotice150),
+      `(150a-ordre) ${nom} : la notice n'est pas posée après le libellé et la date (${h150.length} nœud(s), notice au rang ${h150.findIndex(estNotice150)})`);
   }
   // (a-vide) une notice VIDE ou blanche n'ajoute aucun nœud : le corps reste celui d'avant, nœud pour nœud.
   for (const [nom, notice] of [["vide", ""], ["blanche", "   \n\t "]]) {
@@ -29237,7 +29295,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   exiger(nXss.length === 1 && nXss[0].textContent === XSS150 && cueillir150(corpsXss, (e) => e.tagName === "IMG", []).length === 0,
     `(150c) une notice qui porte du balisage n'est pas rendue en texte : ${cueillir150(corpsXss, (e) => e.tagName === "IMG", []).length} élément(s) IMG créé(s), texte « ${nXss[0] ? nXss[0].textContent : "(aucune notice)"} »`);
   if (echecs.length !== echecsAvant150) console.log(`(150) EN ÉCHEC — ${echecs.length - echecsAvant150} écart(s), dits ci-dessus`);
-  else console.log("(150) OK — `P10.32-p` (console) : un panneau VIDE montre la notice du serveur (fenêtre non bornée relue dans le démon, horizon périmé non dehors, mesure en cours sans horizon, notice servie sans raison), en nœud à part ; une notice vide ou blanche n'ajoute aucun nœud et en TEXTE (une notice balisée ne crée aucun élément) ; un panneau plein dont rien n'est resté dehors n'en porte aucune, et la seule fabrique qui la porte n'est appelée que par le corps sans ligne. Ce qu'il NE tient PAS : la notice reste en français sous LANG='en' (le démon ne la sert que dans cette langue) ; la mise en page.");
+  else console.log("(150) OK — `P10.32-p` (console) : un panneau VIDE montre la notice du serveur (fenêtre non bornée relue dans le démon, horizon périmé non dehors, mesure en cours sans horizon, notice servie sans raison), en nœud à part, après le libellé et la date ; une notice vide ou blanche n'ajoute aucun nœud et en TEXTE (une notice balisée ne crée aucun élément) ; un panneau plein dont rien n'est resté dehors n'en porte aucune, et la seule fabrique qui la porte n'est appelée que par le corps sans ligne. Ce qu'il NE tient PAS : la notice reste en français sous LANG='en' (le démon ne la sert que dans cette langue) ; la mise en page.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

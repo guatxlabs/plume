@@ -680,10 +680,14 @@ function provenanceBadge(stats) {
 // elle, n'arrivait à l'écran que par l'infobulle de `coverageBadge`, posé SEULEMENT quand
 // `older_outside_window === true`. Un panneau VIDE dont la fenêtre n'est pas passée sous l'horizon — servi
 // `fenetre_non_bornee` (« tout ce que la base porte encore a été cherché »), `horizon_perime`,
-// `mesure_en_cours`, `calcul_echoue`, ou un refus de conclure — ne la montrait donc jamais : l'analyste
-// voyait un panneau vide sans l'explication que le démon avait écrite. Elle est
-// désormais un nœud À PART (après le libellé et la date, qui restent deux nœuds entiers pour le lexique),
-// posé quelle que soit `older_outside_window`. C'est du TEXTE du serveur : posé par `textContent`,
+// `mesure_en_cours`, ou un refus de conclure — ne la montrait donc jamais : l'analyste voyait un panneau
+// vide sans l'explication que le démon avait écrite. Elle est désormais un nœud À PART, posé APRÈS le
+// libellé et la date (qui restent deux nœuds entiers pour le lexique ; ordre tenu par le témoin 150),
+// quelle que soit `older_outside_window`.
+// CE QUE CETTE NOTICE N'ATTEINT PAS : `calcul_echoue`. Le corps d'échec du démon
+// (`daemon/src/handlers/panneau_avoue.rs`, `corps_d_echec`) porte `error` à côté de sa couverture, et la
+// carte d'un panneau (web/dashboards.js) passe alors par le refus d'une lecture non servie, qui écrit la
+// cause — jamais par `corpsSansLigne`. La cause se voit ; la notice de ce cas-là, non. C'est du TEXTE du serveur : posé par `textContent`,
 // jamais par `innerHTML` — une notice qui porterait du balisage se lit, elle ne s'exécute pas. Elle reste
 // en français sous `LANG='en'` : le démon ne la sert que dans cette langue. Le badge, lui, garde sa garde
 // anti-fatigue : un panneau AVEC lignes et `older_outside_window: false` reste sans notice.

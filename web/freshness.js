@@ -8,7 +8,8 @@
 // membre du concern Fraîcheur (que renderFreshness/renderIntegrations n'appellent pas) — d'où non importé ici.
 //
 // TROIS EMPRUNTS, AUCUNE RECOPIE (`P11.18-f`, `P11.18-g`) : le VOCABULAIRE d'état d'une source vient de
-// `sources.js` (il y est canonique et l'inventaire le pose déjà) ; le COMPARATEUR de tri vient de
+// `sources.js` (il y est canonique et l'inventaire le pose déjà), et avec lui les mots d'un « dernier vu »
+// qui est une BORNE (`P10.32-s`, `faceDuDernierVuBorne`) ; le COMPARATEUR de tri vient de
 // `core.js`, c'est celui du tri par colonne des listes partagées, qui MESURE le type des valeurs au lieu
 // de le supposer ; la MÉMOIRE d'un choix d'affichage vient de `prefs.js`. Le sens des imports va de
 // freshness vers sources, jamais l'inverse : sources.js ne dépend que de core.js, donc aucun cycle neuf
@@ -16,7 +17,7 @@
 import { $, api, colComparator, disclosure, esc, fetchInto, fmtTs, ic, LANG, faceDansLaLangue } from './core.js';
 import { S, ecrireSansDireLeRefus, RAISONS_DE_SILENCE } from './state.js';
 import { setAlertSourceFilter } from './app.js';
-import { ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource } from './sources.js';
+import { ETAT_DE_SOURCE, etatDeSource, rangDEtatDeSource, faceDuDernierVuBorne } from './sources.js';
 import { prefGet, prefSet } from './prefs.js';
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -936,8 +937,16 @@ function renderFreshnessDetail(d) {
       ? `en retard — aucune donnée depuis ${age(f.age_s)} pour une cadence déclarée de ${age(f.cadence_interval_s || 0)} (sonde « ${f.cadence_capteur || '?'} »)`
       : '';
     const why = reason ? ` <span class="muted fwhy">· au-delà de ${age(f.cadence_interval_s || 0)}</span>` : '';
+    // `P10.32-s` — UNE BORNE N'EST PAS UNE DONNÉE VUE. `/api/freshness` sert sur un flux d'événements le même fait borné
+    // que l'inventaire (`derniere_collecte_au_dela_des_lignes`, `last_seen` = la borne) et la même lecture ratée
+    // (`derniere_collecte_non_etablie`, `last_seen` = le rollup, aveux compris). « il y a … » et « dernière donnée <date> »
+    // y affirmaient une collecte que personne n'a observée : l'âge se dit « au moins … », l'infobulle dit la borne.
+    const borne = faceDuDernierVuBorne(f);
+    const age_ = borne
+      ? `<b class="${couleurDEtat(st)}" data-dernier-vu-borne="1" title="${esc(borne.titre)}">${esc(borne.texte)}</b>`
+      : `<b class="${couleurDEtat(st)}" title="dernière donnée ${fmtTs(f.last_seen)}">il y a ${age(f.age_s)}</b>`;
     return `<div class="kv"${reason ? ` title="${esc(reason)}"` : ''}><span><span class="fdot ${pastilleDEtat(st)}"></span>${esc(f.name)} <span class="muted fkind" title="${esc(cadenceTitle(f))}">${esc(cadenceLabel(f))}</span>${badge}${why}</span>` +
-      `<b class="${couleurDEtat(st)}" title="dernière donnée ${fmtTs(f.last_seen)}">il y a ${age(f.age_s)}</b></div>`;
+      age_ + '</div>';
   };
   // GROUPES PAR ÉTAT : chaque état est une section repliable (libellé + nombre + pastille), tri DANS le groupe
   // le plus PÉRIMÉ d'abord (age décroissant). Par défaut seul « calme » est replié (voir init de

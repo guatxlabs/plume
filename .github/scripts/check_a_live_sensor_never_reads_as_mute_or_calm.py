@@ -70,14 +70,18 @@ d'outils (les vrais, liés, plus des FAUX exécutables — `date` à heure fixe,
      reste non lu est repris dans `.2` depuis l'offset (borne 2 : deux passages), puis `.1` depuis 0, puis le
      courant, chaque ligne publiée une fois et le compte de lignes lues juste à chaque passage, sans aveu ; un
      `.2` lu jusqu'au bout fait passer à `.1` dans le même passage ; `.2.gz` est lu quand `gzip` est là (sinon,
-     comme `.2` effacé, la perte est avouée et seul le courant est lu). En k3s (faux `kubectl` FIDÈLE :
+     comme `.2` effacé, la perte est avouée et seul le courant est lu) ; `.2` fini sans `.1` : courant lu, perte
+     avouée ; journal POINTÉ depuis 0 (après `.1` fini) puis tourné hors de portée (`.2.gz` sans gzip, trois
+     rotations) : perte avouée, jamais « rien à perdre » à l'offset 0 ; borne atteinte pile dans un journal tourné :
+     dite telle ; une première ligne en cours d'écriture puis achevée n'est pas une rotation. En k3s (faux `kubectl` FIDÈLE :
      `--since` avant `--tail`, `--tail` par pod, pods bout à bout, `--prefix` qui nomme le pod, et 10 lignes par
      pod sous `-l` sans `--tail`, comme le vrai) : les lignes plus anciennes de la fenêtre sont comptées PAR POD
      par un second appel à `--tail` explicite (10 × la borne), SANS `--since` (une ligne antérieure à la fenêtre
      rendue en tête d'un pod prouve son compte exact), borné à l'horodatage runtime le PLUS RÉCENT des lignes
      lues (deux pods : la dernière ligne n'est pas la plus récente ; deux lignes arrivées entre les deux appels,
      dont une à la fraction tronquée par RFC3339Nano, ne comptent pas) et avouées (`collection-capped`, nombre
-     exact : 80 sur 100 à la borne 20 ; les requêtes sous le filigrane n'en sont pas) ; un comptage qui atteint
+     exact : 80 sur 100 à la borne 20 ; les requêtes sous le filigrane n'en sont pas, ni une requête longue lue
+     et dite déjà vue : 4 exactes, pas 3) ; un comptage qui atteint
      son propre `--tail` sans remonter avant la fenêtre dit « au moins N » ; deux pods, l'un exact (6), l'autre
      au-delà du comptage (« au moins 36 ») : total « au moins 42 », chaque pod nommé par son nom, aucune adresse ;
      un comptage en échec, qui voit moins de requêtes que la lecture
@@ -1149,9 +1153,12 @@ def banc_web_borne_de_lecture(awk, nom_awk):
     #    récente ; la borne du comptage est le MAX des horodatages lus (6 sautées du premier pod) ;
     #  · apres_filigrane — au second passage, les requêtes déjà vues (sous le filigrane) ne sont pas des sautées ;
     #  · non_z / non_z_deja_vues — horodatages runtime hors `Z` : « nombre inconnu », que des requêtes neuves aient
-    #    été lues ou non.
+    #    été lues ou non ;
+    #  · requete_longue_k3s — une requête LONGUE (StartUTC sous le filigrane) écrite en dernier est lue et dite déjà
+    #    vue : elle ne compte pas parmi les requêtes neuves lues du pod, sans quoi le compte EXACT des sautées (4)
+    #    serait trop petit d'une.
     for cas in ("cent_lignes", "comptage_borne", "pod_tourne", "deux_pods", "pods_nommes", "apres_filigrane", "non_z",
-                "non_z_deja_vues"):
+                "non_z_deja_vues", "requete_longue_k3s"):
         q = f"web/{nom_awk}/flot_k3s/{cas}"
         bac = Bac(awk)
         try:
@@ -1188,6 +1195,14 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                 bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": "10"})
                 ecrire(k3s, ANCIENNE_K3S + "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 14)))
                 attendu = "6"
+            elif cas == "requete_longue_k3s":
+                vues = ANCIENNE_K3S + "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 4))
+                ecrire(k3s, vues)
+                bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": "10"})
+                neuves = "".join(ligne_k3s(i, f"/n{i}", seconde=20 + i) for i in range(4, 11))
+                longue = "2026-09-23T19:40:40.000000001Z " + ligne_web(1, "/longue", seconde=1, fraction=1)
+                ecrire(k3s, vues + neuves + longue)
+                attendu, par_pod = "4", ("par pod : k3s : 4",)
             else:
                 ecrire(k3s, "".join(ligne_k3s(i, f"/t{i}").replace(".123456789Z ", ".123456789+00:00 ", 1)
                                     for i in range(1, 11)))
@@ -1211,6 +1226,8 @@ def banc_web_borne_de_lecture(awk, nom_awk):
             hb = battements(evs, "web")
             if hb:
                 contient(q, hb[0].get("message"), dit, *par_pod)
+                if cas == "requete_longue_k3s":
+                    contient(q, hb[0].get("message"), "1 déjà vue(s)")
             contient(q, detail, *par_pod)
             if re.search(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+", detail.split("par pod :")[-1]):
                 faute(q, f"un pod nommé par une adresse : {detail!r}")
@@ -1265,6 +1282,51 @@ def banc_web_borne_de_lecture(awk, nom_awk):
             contient(q, hb.get("message"), "PLUME_WEB_MAX=3 atteinte pile", "rien n'est sauté")
             if "au moins 0 octet" in (hb.get("message") or ""):
                 faute(q, f"borne atteinte pile dite « au moins 0 octet(s) restent » : {hb.get('message')!r}")
+    finally:
+        bac.nettoyer()
+
+    # BORNE ATTEINTE PILE DANS UN JOURNAL TOURNÉ : deux lignes restent dans `.1`, borne 2. Le battement dit le journal
+    # tourné lu jusqu'au bout, jamais « au moins 0 octet(s) du journal .1 restent à lire ».
+    q = f"web/{nom_awk}/borne_pile_tourne"
+    bac = Bac(awk)
+    try:
+        log = os.path.join(bac.racine, "access.log")
+        env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log, "PLUME_WEB_MAX": "2"}
+        ecrire(log, ligne_web(1, "/r1"))
+        bac.jouer("web.sh", env)
+        with open(log, "a") as fh:
+            fh.write(ligne_web(2, "/r2") + ligne_web(3, "/r3"))
+        os.rename(log, log + ".1")
+        ecrire(log, ligne_web(4, "/r4"))
+        vus = passages(bac, env, 2, q)
+        if [pub for pub, _ in vus] != [["/r2", "/r3"], ["/r4"]]:
+            faute(q, f"publiées par passage : {[pub for pub, _ in vus]}, attendu [['/r2', '/r3'], ['/r4']]")
+        hb = un_battement(q, vus[0][1], "web")
+        if hb:
+            contient(q, hb.get("message"), "PLUME_WEB_MAX=2 atteinte pile : le journal tourné", "lu jusqu'au bout",
+                     "rien n'est sauté")
+            if "au moins 0 octet" in (hb.get("message") or ""):
+                faute(q, f"journal tourné lu jusqu'au bout dit « au moins 0 octet(s) restent » : {hb.get('message')!r}")
+    finally:
+        bac.nettoyer()
+
+    # PREMIÈRE LIGNE EN COURS D'ÉCRITURE : le journal ne contient qu'une ligne inachevée ; rien n'est lu, l'état pointe
+    # le journal depuis 0. Son achèvement ne change pas l'identité du journal (l'empreinte ne prend que la première
+    # ligne COMPLÈTE) : ce n'est pas une rotation, rien n'est avoué perdu, la ligne est lue une fois.
+    q = f"web/{nom_awk}/premiere_ligne_en_cours"
+    bac = Bac(awk)
+    try:
+        log = os.path.join(bac.racine, "access.log")
+        env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+        entiere = ligne_web(1, "/r1")
+        ecrire(log, entiere[:-40])
+        vus = passages(bac, env, 1, q + "/a")
+        ecrire(log, entiere + ligne_web(2, "/r2"))
+        vus += passages(bac, env, 2, q + "/b")
+        if [pub for pub, _ in vus] != [[], ["/r1", "/r2"], []]:
+            faute(q, f"publiées par passage : {[pub for pub, _ in vus]}, attendu [[], ['/r1', '/r2'], []]")
+        if any(aveux(evs, "web") for _, evs in vus):
+            faute(q, "aveu émis alors que rien n'est perdu : l'achèvement de la première ligne lu comme une rotation")
     finally:
         bac.nettoyer()
 
@@ -1331,9 +1393,11 @@ def banc_web_borne_de_lecture(awk, nom_awk):
     #  · double_introuvable — `.2` effacé : perte avouée (`missing-source`), `.1` non lu (rien n'y est daté du
     #    journal perdu), le courant depuis son début ;
     #  · tourne_plus_court — `.1` a la même première ligne mais est plus court que l'offset : ce n'est pas le journal
-    #    lu ; le prendre pour lui ne lirait rien et tairait la perte.
+    #    lu ; le prendre pour lui ne lirait rien et tairait la perte ;
+    #  · double_sans_point1 — `.2` lu jusqu'au bout, mais `.1` (le journal d'entre les deux rotations) a disparu : le
+    #    courant est lu, et la perte de `.1` est avouée, jamais une lecture en échec ni un saut muet.
     for forme in ("double", "double_reste", "double_gz", "double_gz_sans_gzip", "double_introuvable",
-                  "tourne_plus_court"):
+                  "tourne_plus_court", "double_sans_point1"):
         q = f"web/{nom_awk}/rotation_{forme}"
         bac = Bac(awk)
         try:
@@ -1352,7 +1416,7 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                     env["PLUME_WEB_MAX"] = "2"
                 ecrire(log, ligne_web(1, "/a1") + ligne_web(2, "/a2"))
                 bac.jouer("web.sh", env)
-                reste = [] if forme == "double" else ["/a3", "/a4", "/a5"]
+                reste = [] if forme in ("double", "double_sans_point1") else ["/a3", "/a4", "/a5"]
                 with open(log, "a") as fh:
                     fh.write("".join(ligne_web(int(c[2:]), c) for c in reste))
                 os.rename(log, log + ".1")
@@ -1371,6 +1435,8 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                         os.symlink(shutil.which("gzip"), os.path.join(bac.bin, "gzip"))
                 elif forme == "double_introuvable":
                     os.remove(log + ".2")
+                elif forme == "double_sans_point1":
+                    os.remove(log + ".1")
                 if forme == "double":
                     attendu, n_rot = [b, ["/c9"], []], 0
                 elif forme == "double_reste":
@@ -1398,6 +1464,55 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                     contient(f"{q}/{j + 1}", hb.get("message"), f"santé : {n} ligne(s) lue(s), {n} gardée(s)")
                     if "au moins 0 octet" in (hb.get("message") or ""):
                         faute(f"{q}/{j + 1}", f"journal tourné lu jusqu'au bout dit « au moins 0 octet(s) restent » : {hb.get('message')!r}")
+        finally:
+            bac.nettoyer()
+
+    # JOURNAL POINTÉ MAIS PAS ENCORE LU, PUIS INTROUVABLE (P10.33-e) : `.1` lu jusqu'au bout, l'état pointe le journal
+    # courant B (non vide) depuis 0. B tourne ensuite hors de portée : (a) deux rotations `delaycompress`, B dans
+    # `.2.gz`, `gzip` absent ; (b) trois rotations sans compression, B dans `.3`. Ses lignes (et celles des journaux
+    # suivants) ne sont pas lues : la perte est AVOUÉE (`missing-source`), jamais « rien à perdre » parce que l'offset
+    # vaut 0. Un journal pointé VIDE (`logrotate create`) n'a rien à perdre : voir rotation_creation.
+    for forme in ("pointe_gz_sans_gzip", "pointe_trois_rotations"):
+        q = f"web/{nom_awk}/rotation_{forme}"
+        bac = Bac(awk)
+        try:
+            log = os.path.join(bac.racine, "access.log")
+            env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+            ecrire(log, ligne_web(1, "/a1") + ligne_web(2, "/a2"))
+            bac.jouer("web.sh", env)
+            with open(log, "a") as fh:
+                fh.write(ligne_web(3, "/a3"))
+            os.rename(log, log + ".1")
+            ecrire(log, ligne_web(4, "/b4"))
+            vus = passages(bac, env, 1, q + "/a")
+            with open(log, "a") as fh:
+                fh.write(ligne_web(5, "/b5"))
+            if forme == "pointe_gz_sans_gzip":
+                os.remove(log + ".1")
+                with open(log, "rb") as src, gzip.open(log + ".2.gz", "wb") as dst:
+                    dst.write(src.read())
+                os.remove(log)
+                ecrire(log + ".1", ligne_web(6, "/c6"))
+                ecrire(log, ligne_web(7, "/d7"))
+                dernier = "/d7"
+            else:
+                os.rename(log + ".1", log + ".4")
+                os.rename(log, log + ".3")
+                ecrire(log + ".2", ligne_web(6, "/c6"))
+                ecrire(log + ".1", ligne_web(7, "/d7"))
+                ecrire(log, ligne_web(8, "/e8"))
+                dernier = "/e8"
+            vus += passages(bac, env, 2, q + "/b")
+            pubs = [pub for pub, _ in vus]
+            if pubs != [["/a3"], [dernier], []]:
+                faute(q, f"publiées par passage : {pubs}, attendu [['/a3'], [{dernier!r}], []]")
+            rot = [[e for e in aveux(evs, "web", "unavailable", "missing-source")
+                    if "ROTATION" in ((e.get("fields") or {}).get("detail") or "")] for _, evs in vus]
+            if [len(r) for r in rot] != [0, 1, 0]:
+                faute(q, f"aveux de rotation par passage : {[len(r) for r in rot]}, attendu [0, 1, 0] — le journal "
+                         "pointé, non vide, est perdu en silence")
+            elif "pas encore lu" not in ((rot[1][0].get("fields") or {}).get("detail") or ""):
+                faute(q, f"l'aveu ne dit pas le journal pointé non lu : {rot[1][0].get('fields')!r}")
         finally:
             bac.nettoyer()
 

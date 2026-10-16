@@ -428,7 +428,8 @@ long fait au-delà dépend de la source :
   une rotation, la fin du journal précédent est reprise dans `<journal>.1` ; après deux rotations entre
   deux passages, dans `<journal>.2` (ou `<journal>.2.gz` si `gzip` est installé), puis `.1`, puis le
   journal courant, chaque ligne une fois ; introuvable (rotation compressée sans `delaycompress`, ou
-  trois rotations), la perte est avouée (`missing-source`, nombre inconnu) ;
+  trois rotations), la perte est avouée (`missing-source`, nombre inconnu), même quand rien n'en avait
+  encore été lu, et de même pour un `.1` absent entre `.2` et le journal courant ;
 - **`PLUME_WEB_SRC=k3s`** (le défaut) : `kubectl logs --tail` ne rend que les dernières lignes de la
   fenêtre. Les plus anciennes ne sont pas lues, mais un second `kubectl logs` les **compte**, et le
   nombre est avoué dans le battement et par un `collection-capped`, total et **par pod nommé** : exact

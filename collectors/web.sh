@@ -72,8 +72,12 @@ read_log() {
 # web_flux <chemin> — le contenu du journal, decompresse au fil de l'eau s'il est un `.gz` (gzip -dc ne garde en
 # memoire qu'un tampon, pas le fichier : P10.33-e). Un `.gz` n'est jamais pris sans gzip (voir web_tourne_lu).
 web_flux() { case "$1" in *.gz) gzip -dc "$1" 2>/dev/null ;; *) cat "$1" ;; esac; }
-# web_empreinte <chemin> — empreinte de la PREMIERE ligne du fichier (identite du journal, P10.33-e).
-web_empreinte() { case "$1" in *.gz) web_flux "$1" | head -n 1 ;; *) head -n 1 "$1" 2>/dev/null ;; esac | cksum | cut -d' ' -f1; }
+# web_empreinte <chemin> — empreinte de la PREMIERE ligne COMPLETE du fichier (identite du journal, P10.33-e). Une
+# premiere ligne sans fin de ligne (ecriture en cours) ne l'identifie pas encore : empreinte du vide, comme un
+# journal vide (W_EMP_VIDE), sans quoi son achevement se lirait comme une rotation.
+web_empreinte() { case "$1" in *.gz) web_flux "$1" | head -n 1 ;; *) head -n 1 "$1" 2>/dev/null ;; esac \
+  | { IFS= read -r _we_l && printf '%s\n' "$_we_l"; } | cksum | cut -d' ' -f1; }
+W_EMP_VIDE=$(printf '' | cksum | cut -d' ' -f1)
 web_taille() { case "$1" in *.gz) web_flux "$1" | wc -c ;; *) wc -c < "$1" ;; esac; }
 # web_tourne_lu <chemin> — vrai si <chemin> est le journal lu au passage precedent (meme empreinte, assez long pour
 # l'offset) ; pose alors w_src, w_emp_src, w_taille_src, w_debut.
@@ -95,8 +99,12 @@ web_tourne_lu() {
 # 0 (`.2` -> `.1` -> courant, empreinte du suivant). Un journal tourne deja lu jusqu'au bout n'est pas relu : on
 # passe au suivant dans le meme passage. Chaque ligne est donc lue une fois, dans la borne. Un etat d'offset 0 dont
 # l'empreinte est celle de `.1` (journal pointe mais pas encore lu, tourne depuis) fait lire `.1` depuis 0, au lieu
-# de sauter au courant. Introuvable dans `.1`, `.2` et `.2.gz` : perte avouee, comme avant.
+# de sauter au courant. Introuvable dans `.1`, `.2` et `.2.gz` : perte avouee, comme avant — y compris a l'offset 0
+# quand le journal pointe n'etait pas vide (pointe apres avoir fini `.1` ou `.2`, puis tourne hors de portee) :
+# seul un journal pointe VIDE (empreinte W_EMP_VIDE) n'a rien a perdre. Et `.2` fini sans `.1` lisible (le journal
+# d'entre les deux rotations a disparu) : le courant est lu, la perte de `.1` avouee (w_perte_intermediaire).
 w_src=""; w_debut=0; w_taille_src=0; w_emp_src=""; w_emp_cour=""; w_emp_suiv=""; w_perte_rotation=""; w_par_offset=0
+w_perte_intermediaire=""
 web_lire_fichier() {
   [ -r "$WEB_LOG" ] || return 1
   w_taille_cour=$(wc -c < "$WEB_LOG") || return 1
@@ -117,14 +125,17 @@ web_lire_fichier() {
     :
   elif [ ! -e "$WEB_LOG.2" ] && web_tourne_lu "$WEB_LOG.2.gz"; then
     :
-  elif [ "$_p_off" -eq 0 ]; then
-    w_debut=0                                                   # rien n'avait ete lu : rien a perdre
+  elif [ "$_p_off" -eq 0 ] && [ "$_p_emp" = "$W_EMP_VIDE" ]; then
+    w_debut=0                                                   # journal pointe vide : rien a perdre
   else
     w_perte_rotation=$_p_off; w_debut=0
   fi
   # Un journal tourne lu jusqu'au bout : le suivant, depuis 0 (`.2` -> `.1` -> courant).
   while [ "$w_src" != "$WEB_LOG" ] && [ "$w_debut" -ge "$w_taille_src" ]; do
-    if [ "$w_src" = "$WEB_LOG.1" ] || [ ! -f "$WEB_LOG.1" ] || [ ! -r "$WEB_LOG.1" ]; then
+    if [ "$w_src" = "$WEB_LOG.1" ]; then
+      w_src=$WEB_LOG; w_emp_src=$w_emp_cour; w_taille_src=$w_taille_cour
+    elif [ ! -f "$WEB_LOG.1" ] || [ ! -r "$WEB_LOG.1" ]; then
+      w_perte_intermediaire=1                                   # `.2` fini, `.1` absent ou illisible : perdu, avoue
       w_src=$WEB_LOG; w_emp_src=$w_emp_cour; w_taille_src=$w_taille_cour
     else
       w_src=$WEB_LOG.1; w_emp_src=$(web_empreinte "$w_src"); w_taille_src=$(wc -c < "$w_src") || return 1
@@ -165,9 +176,16 @@ web_offset_suivant() {
     printf '%s %s' "$w_emp_src" "$_wo"
   fi
 }
-if [ -n "$w_perte_rotation" ]; then
+if [ -n "$w_perte_intermediaire" ]; then
   plume_report_availability web unavailable missing-source \
-    "ROTATION DU JOURNAL D'ACCES : le journal lu au passage precedent (lu jusqu'a l'octet $w_perte_rotation) est introuvable sous $WEB_LOG.1, $WEB_LOG.2 et $WEB_LOG.2.gz (ce dernier n'est lu que si gzip est present) — ce qui y a ete ecrit apres ce passage n'a pas ete lu et est PERDU, nombre inconnu (peut-etre nul). Le journal neuf est lu depuis son debut. Gardez le journal tourne non compresse un cycle (logrotate delaycompress)." \
+    "ROTATION DU JOURNAL D'ACCES : deux rotations depuis le passage precedent ; le journal lu ($WEB_LOG.2 ou $WEB_LOG.2.gz) l'est jusqu'au bout, mais le journal d'entre les deux, $WEB_LOG.1, est absent ou illisible — ce qui y a ete ecrit n'a pas ete lu et est PERDU, nombre inconnu (peut-etre nul). Le journal courant est lu depuis son debut." \
+    2 "web-rotation-introuvable" 2>/dev/null || true
+fi
+if [ -n "$w_perte_rotation" ]; then
+  _w_lu="lu jusqu'a l'octet $w_perte_rotation"
+  [ "$w_perte_rotation" -eq 0 ] && _w_lu="pointe mais pas encore lu, non vide"
+  plume_report_availability web unavailable missing-source \
+    "ROTATION DU JOURNAL D'ACCES : le journal lu au passage precedent ($_w_lu) est introuvable sous $WEB_LOG.1, $WEB_LOG.2 et $WEB_LOG.2.gz (ce dernier n'est lu que si gzip est present) — ce qui y a ete ecrit apres ce passage n'a pas ete lu et est PERDU, nombre inconnu (peut-etre nul). Le journal neuf est lu depuis son debut. Gardez le journal tourne non compresse un cycle (logrotate delaycompress)." \
     2 "web-rotation-introuvable" 2>/dev/null || true
 fi
 

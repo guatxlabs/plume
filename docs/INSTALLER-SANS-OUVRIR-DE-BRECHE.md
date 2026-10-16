@@ -217,6 +217,174 @@ Les agents du cluster poussent **par l'`Ingress`** (`PLUME_CENTRAL=https://soc.e
 chemin que la `NetworkPolicy` livrée laisse entrer (contrôleur dans `kube-system`, ou pods du namespace
 `soc`). Les capteurs Kubernetes tournent sur le **nœud**, pas dans le pod (§4, §6.1).
 
+### 2.5 Windows — le collecteur (`plume-collector.ps1`)
+
+Un poste ou un serveur Windows n'est pas un mode du central : c'est un **émetteur** qui pousse vers un
+central installé par l'un des trois modes ci-dessus. Le collecteur est un fichier unique,
+[`../collectors/windows/plume-collector.ps1`](../collectors/windows/plume-collector.ps1), lancé par une
+tâche planifiée ; il lit les journaux Windows et **poste directement** sur `/api/ingest`, sans spool
+disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
+[`../collectors/windows/README.md`](../collectors/windows/README.md). Ce qui suit est l'ordre des gestes.
+
+> **Ce qui a été joué, et ce qui ne l'a pas été.** Le README consigne l'exécution réelle des commandes
+> `auditpol`, `Import-Certificate` et `schtasks` sur des machines Windows de test. Les commandes `icacls`,
+> `Get-Acl`, `Get-ScheduledTaskInfo` et la désinstallation ci-dessous sont des commandes Windows
+> standard, **non jouées** pour écrire cette page. La porte de transport du script est exécutée en
+> intégration continue sous `pwsh` 7 seulement : **Windows PowerShell 5.1, celui que lance la tâche,
+> n'y est exécuté nulle part** (`.github/scripts/check_windows_collector_is_honest.py`).
+
+**Prérequis**
+
+- **Windows PowerShell 5.1** (`powershell.exe`, présent sur tout Windows pris en charge). C'est lui que
+  la tâche lance, et le script porte `#Requires -Version 5.1`. `pwsh` 7 l'exécute aussi, mais deux
+  comportements y diffèrent (voir *Certificat* et *Ce que le collecteur ne fait pas*).
+- Une console **élevée** (administrateur) pour l'installation ; la tâche tourne en **SYSTEM** : la
+  lecture du journal *Security* l'exige.
+- Les politiques d'audit : sans elles, `category=exec` est trompeuse et le pare-feu ne remonte aucun
+  blocage ([README, Prérequis](../collectors/windows/README.md#prérequis)). Relevez l'état d'avant pour
+  pouvoir le rendre à la désinstallation :
+  ```powershell
+  auditpol /backup /file:$env:USERPROFILE\auditpol-avant-plume.csv
+  auditpol /set /subcategory:"Filtering Platform Connection" /success:disable /failure:enable
+  auditpol /set /subcategory:"Process Creation" /success:enable
+  auditpol /set /subcategory:"Logon" /success:enable /failure:enable
+  ```
+- Le central joignable en `https://`, sous un nom que son `PLUME_HOST` liste (sinon `421` à tout), et qui
+  accepte **TLS 1.2** : le script impose `Tls12` au protocole de sécurité de .NET, ce qui, sous 5.1,
+  écarte TLS 1.3 (lecture du script).
+
+1. **Sur le central, frapper un jeton LIÉ à cette machine.** Le second argument est l'hôte du jeton ;
+   donnez-lui la valeur exacte de `$env:COMPUTERNAME` sur le poste, le nom que le collecteur déclare :
+   ```sh
+   sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token poste-win01 POSTE-WIN01   # hôte natif
+   docker compose exec soc plume-daemon token poste-win01 POSTE-WIN01                                   # Docker
+   kubectl -n soc exec deploy/soc -- plume-daemon token poste-win01 POSTE-WIN01                         # k3s
+   ```
+   Le jeton s'affiche **une fois**. Un jeton lié **réécrit** l'hôte de chaque ligne vers le sien : les
+   événements sont stockés sous le nom donné ici, quel que soit le `host` que l'enveloppe déclare. Un
+   jeton `--relais` laisserait le poste écrire sous n'importe quel nom : il n'est pas fait pour une
+   machine ([`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-lauthentification-et-ce-que--lié-à-lhôte--veut-dire)).
+2. **Créer le répertoire, et couper ses droits AVANT d'y écrire le jeton.** Le script lit
+   `C:\ProgramData\plume\plume.conf` et écrit ses filigranes sous `C:\ProgramData\plume\state` :
+   ```powershell
+   New-Item -ItemType Directory -Force -Path C:\ProgramData\plume | Out-Null
+   (Get-Acl C:\ProgramData\plume).Owner      # Administrateurs ou SYSTEM (noms localisés), rien d'autre
+   icacls C:\ProgramData\plume /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"
+   icacls C:\ProgramData\plume               # deux entrées : SYSTEM et Administrateurs, aucune héritée
+   ```
+   `*S-1-5-18` est SYSTEM et `*S-1-5-32-544` le groupe Administrateurs : les SID ne dépendent pas de la
+   langue du système, leurs noms si. `/inheritance:r` retire les droits hérités de `C:\ProgramData`, qui
+   donne par défaut aux utilisateurs locaux la lecture et la création dans ses sous-répertoires (vérifiable par
+   `icacls C:\ProgramData`) ; `/grant:r` remplace les droits explicites de ces deux comptes. Si le répertoire existait et
+   que son propriétaire est un autre compte, supprimez-le et recréez-le : un propriétaire peut toujours
+   réécrire les droits.
+   **Pourquoi personne d'autre ne doit lire ce répertoire.** Le jeton y est en clair. Qui le lit
+   s'identifie comme ce poste sur les chemins machine du central (§3) : il écrit des événements que le
+   central range sous le nom du poste — de fausses ouvertures de session, ou assez de bruit pour noyer
+   les vraies. Qui peut **écrire** dans le répertoire fait pire : avancer un filigrane rend le
+   collecteur aveugle aux événements d'avant, et remplacer `plume-collector.ps1` fait exécuter son
+   code en SYSTEM au prochain déclenchement.
+3. **Écrire `plume.conf` sans que le jeton passe par une ligne de commande**, puis copier le script :
+   ```powershell
+   notepad C:\ProgramData\plume\plume.conf
+   Copy-Item .\plume-collector.ps1 C:\ProgramData\plume\
+   icacls C:\ProgramData\plume\plume.conf    # mêmes deux entrées, héritées du répertoire
+   ```
+   Le contenu, collé dans l'éditeur :
+   ```ini
+   PLUME_CENTRAL=https://soc.example.org:7000
+   PLUME_TOKEN=<le-jeton>
+   ```
+   Le jeton ne se tape **jamais** sur une ligne de commande, ni en argument du script (le paramètre
+   `-Token` n'existe plus), ni dans un `Set-Content` : dès que l'audit `Process Creation` est actif avec
+   la ligne de commande, ou que Sysmon tourne, la ligne entière part dans le journal *Security*, que ce
+   collecteur expédie lui-même au SIEM ([README](../collectors/windows/README.md#configuration)).
+   `plume.conf` ne porte que trois clés : `PLUME_CENTRAL`, `PLUME_TOKEN` et
+   `PLUME_SHIP_ALLOW_PLAINTEXT`. Une variable d'environnement gagne sur le fichier ; sous SYSTEM, seules
+   les variables **machine** sont vues.
+4. **`PLUME_CENTRAL` en `https://`.** Une adresse `http://` vers autre chose que la boucle locale
+   (`127.0.0.0/8`, `::1`, `localhost`) est **refusée** : message `REFUS` sur la sortie d'erreur,
+   **code 2**, avant toute lecture de journal et tout envoi — rien n'est lu, aucun filigrane n'avance.
+   Une adresse sans `schéma://` est refusée elle aussi, boucle locale comprise. `PLUME_SHIP_ALLOW_PLAINTEXT=1`
+   (environnement ou `plume.conf`) accepte le clair avec un avertissement à chaque run ; **le risque est
+   entier** : le jeton et chaque événement (comptes, lignes de commande, adresses) passent lisibles, et
+   qui écoute le chemin rejoue le jeton et écrit sous le nom de ce poste. Seulement sur un lien déjà
+   chiffré ou un réseau dont vous répondez (§5).
+5. **Certificat.** La vérification TLS est **active par défaut**. Pour un central signé par une autorité
+   interne, posez-la dans le magasin machine avant le premier run, faute de quoi le lot du run est
+   perdu (pas de spool) :
+   ```powershell
+   Import-Certificate -FilePath C:\ProgramData\plume\ca.crt -CertStoreLocation Cert:\LocalMachine\Root
+   ```
+   `PLUME_TLS_INSECURE=1` coupe la vérification. Elle n'est lue **que dans l'environnement** — posée
+   dans `plume.conf`, elle est sans effet —, donc pour la tâche en SYSTEM, comme variable machine :
+   `[Environment]::SetEnvironmentVariable('PLUME_TLS_INSECURE','1','Machine')`. Le risque est celui du
+   clair face à un intermédiaire actif : il présente n'importe quel certificat, reçoit le jeton et les
+   événements, et répond à la place du central. Réservé à un central de test en certificat auto-signé ;
+   retirez-la par `[Environment]::SetEnvironmentVariable('PLUME_TLS_INSECURE',$null,'Machine')`.
+   Sous `pwsh` 7, ce réglage passe par `ServicePointManager`, que les commandes web de PowerShell 7
+   n'emploient pas : la vérification y reste active (lecture, non jouée).
+6. **Tâche planifiée, toutes les 5 minutes, en SYSTEM.** Tapée dans **Windows PowerShell 5.1** élevé —
+   `$PSHOME` est le dossier de la console où la commande est tapée, et celui de `pwsh` 7 ne contient
+   pas de `powershell.exe` :
+   ```powershell
+   $ps  = "$PSHOME\powershell.exe"
+   $arg = "-NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\plume\plume-collector.ps1"
+   schtasks /Create /TN "Plume Collector" /SC MINUTE /MO 5 /RU SYSTEM /RL HIGHEST `
+     /TR "`"$ps`" $arg" /F
+   ```
+   `-ExecutionPolicy Bypass` ne vaut que pour ce processus ; il fait exécuter un script non signé, d'où
+   l'exigence que seuls SYSTEM et les Administrateurs puissent l'écrire (étape 2). Le script accepte
+   `-MaxAgeMinutes` (défaut `60`, la profondeur de rattrapage du **premier** run, sans filigrane) et
+   `-BatchSize` (défaut `400` événements par envoi) ; ni l'un ni l'autre n'est nécessaire. **Seul le
+   compte SYSTEM a été joué.** Un compte de service dédié ne l'a été nulle part : il lui faudrait la
+   lecture de `plume.conf`, l'écriture sous `state` (deux entrées de plus dans les `icacls` ci-dessus), et
+   ce qu'il ne pourra pas lire, le collecteur l'avouera (`collect_status=unavailable`) plutôt que de se
+   taire.
+7. **Prouver.** Un premier run, puis son code de retour :
+   ```powershell
+   schtasks /Run /TN "Plume Collector"
+   Get-ScheduledTaskInfo -TaskName "Plume Collector"    # LastTaskResult : 0
+   ```
+   `LastTaskResult` vaut `2` pour un refus de transport (rien lu ni expédié), `1` pour une clé manquante ou un envoi non
+   acquitté (central injoignable, jeton refusé, certificat non reconnu) : le filigrane n'avance pas et
+   le run suivant relit. Sur le central, pour l'hôte donné au jeton :
+   ```text
+   search host=POSTE-WIN01 source=windows-security | stats count
+   search host=POSTE-WIN01 source=windows-agent category=health | stats count
+   search host=POSTE-WIN01 category=config collect_status=unavailable | table host, source, reason, detail
+   ```
+   Le premier compte doit être non nul. Le battement de santé est bucketé à l'**heure** : un par heure au
+   plus, quelle que soit la cadence de la tâche. La troisième requête doit être vide ; une ligne y nomme
+   une source aveugle et sa raison (journal refusé, cmdlet absente).
+8. **Désinstaller.**
+   ```powershell
+   schtasks /Delete /TN "Plume Collector" /F
+   Remove-Item -Recurse -Force C:\ProgramData\plume
+   auditpol /restore /file:$env:USERPROFILE\auditpol-avant-plume.csv
+   ```
+   Puis, sur le central, **révoquez le jeton** par son nom : gestion des jetons de la console (admin), ou
+   `DELETE /api/tokens/poste-win01`, qui révoque tous les jetons de ce nom. Retirez aussi
+   `PLUME_TLS_INSECURE` si elle a été posée, et l'autorité importée dans `Cert:\LocalMachine\Root` si
+   rien d'autre ne s'en sert. Les événements déjà reçus restent au central, soumis à sa rétention.
+
+**Ce que le collecteur ne fait pas**
+
+- **Pas de spool disque.** Le journal Windows en tient lieu tant que le filigrane n'avance pas ; un
+  central injoignable plus longtemps que la rotation du journal *Security* perd ce qui a tourné (lecture). Les
+  échantillons d'un run perdu (profils de pare-feu, connexions, battement) ne sont pas rejoués.
+- **Pas un service.** Rien ne tourne entre deux déclenchements, et le battement horaire n'est pas un
+  signal de vie à la maille de la tâche.
+- **Aucune action.** Il ne reçoit ni n'exécute aucune action de réponse, n'ouvre aucun port et ne lit
+  aucun contenu de fichier.
+- **Il ne masque rien.** Le champ `CommandLine` des `4688` part tel quel : un secret tapé sur une ligne
+  de commande du poste arrive dans le SIEM.
+- **Il ne lit pas Sysmon** (l'agent Rust le fait, [`../agent/README.md`](../agent/README.md)), et ne pose
+  jamais le champ CIM `action`.
+- **Sous Windows PowerShell 5.1, rien n'est exécuté en intégration continue** : ni la syntaxe de la
+  porte de transport, ni la lecture d'adresse de .NET Framework. Sous `pwsh` 7, `PLUME_TLS_INSECURE` est
+  sans effet (étape 5).
+
 ---
 
 ## 3. Où vivent les secrets, et ce qu'ils permettent
@@ -318,7 +486,7 @@ fichier dans `/var/lib/plume/spool/`), comme le fait le
 | `prom-scrape` | vos cibles `/metrics` | root, lit `/etc/plume/prom.conf` | séries → `metric` | une cible authentifiée par paramètre d'URL expose ce paramètre ; refuse le clair distant vers le central (§5) | `metric <une de vos séries> \| timechart avg(value)` |
 | `custom` | votre `CMD`, en root | root | une ligne de sortie = un événement | `/etc/plume/inputs.d` **doit** être `0700 root` : y écrire, c'est exécuter en root | `search source=<SOURCE> \| stats count` |
 | `respond`, `engagement-adapter`, `backup` | *(pas des capteurs : ils agissent ou sauvegardent)* | `respond` du central (`plume-daemon respond`) : root, capacités bornées à `CAP_NET_ADMIN CAP_KILL` ; `respond` d'agent (`respond.sh`) et `engagement-adapter` : root ; `backup` : `soc` | résultats d'actions | le responder d'agent agit en root sans borne : dry-run par défaut ; `respond.sh` et `engagement-adapter` refusent le clair distant vers le central (§5) | — |
-| `windows/` | journaux Windows, pare-feu, Defender | tâche planifiée | voir [`../collectors/windows/README.md`](../collectors/windows/README.md) | refuse le clair distant vers le central (code 2, rien lu ni expédié) sauf `PLUME_SHIP_ALLOW_PLAINTEXT=1`, qui laisse le jeton lisible sur le réseau (§5) | `search source=windows-security \| stats count` |
+| `windows/` | journaux Windows, pare-feu, Defender | tâche planifiée | §2.5, et [`../collectors/windows/README.md`](../collectors/windows/README.md) | refuse le clair distant vers le central (code 2, rien lu ni expédié) sauf `PLUME_SHIP_ALLOW_PLAINTEXT=1`, qui laisse le jeton lisible sur le réseau (§5) | `search source=windows-security \| stats count` |
 
 **Un capteur qui ne peut pas collecter le dit**, au lieu de se taire : un événement `category=config`,
 `collect_status=unavailable` et une `reason` (`missing-dependency`, `missing-source`, `missing-config`,

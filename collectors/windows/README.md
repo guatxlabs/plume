@@ -22,7 +22,10 @@ métadonnées d'événements.
 
 ## Prérequis
 
-1. **PowerShell 5.1+** (intégré à Windows) — ou PowerShell 7.
+1. **Windows PowerShell 5.1** (`powershell.exe`, intégré à Windows) : c'est lui que la tâche planifiée
+   ci-dessous lance, et le script exige `#Requires -Version 5.1`. PowerShell 7 (`pwsh`) l'exécute aussi,
+   mais c'est **le seul** que l'intégration continue joue : sous 5.1, rien n'est exécuté en CI (la
+   syntaxe est tenue par relecture seulement, cf. `.github/scripts/check_windows_collector_is_honest.py`).
 2. **Exécuter en compte SYSTEM ou administrateur** (le journal *Security* l'exige).
 3. **Activer les politiques d'audit** pour peupler certains événements.
 
@@ -85,11 +88,18 @@ plume-daemon token poste-win01 POSTE-WIN01      # 2e argument = l'hôte AUQUEL l
 Puis renseignez soit des variables d'environnement, soit `C:\ProgramData\plume\plume.conf` :
 
 ```ini
-PLUME_CENTRAL=https://soc.central:7000
+PLUME_CENTRAL=https://soc.example.org:7000
 PLUME_TOKEN=<le-jeton>
-# PLUME_TLS_INSECURE=1   # UNIQUEMENT pour un central en certificat auto-signé de test
 # PLUME_SHIP_ALLOW_PLAINTEXT=1   # http:// vers un central DISTANT — jeton lisible sur le réseau, voir ci-dessous
 ```
+
+`plume.conf` ne porte que ces trois clés : le script n'y lit rien d'autre. **`PLUME_TLS_INSECURE` n'y est
+pas lue** (elle ne vient que de l'environnement) : posée dans ce fichier, elle est sans effet, et la
+vérification TLS reste active. Le fichier porte le jeton : ses droits (SYSTEM et Administrateurs seuls,
+héritage coupé) et la façon de l'écrire sans que le jeton passe par une ligne de commande sont dans
+[`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §2.5](../../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#25-windows--le-collecteur-plume-collectorps1).
+Une variable d'environnement gagne sur le fichier ; sous la tâche planifiée en SYSTEM, seules les
+variables **machine** sont vues.
 
 > ### Le clair vers un central distant est refusé
 > `PLUME_CENTRAL` en `http://` vers autre chose que la boucle locale (`127.0.0.0/8`,
@@ -159,6 +169,12 @@ $arg = "-NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\plume\plume-coll
 schtasks /Create /TN "Plume Collector" /SC MINUTE /MO 5 /RU SYSTEM /RL HIGHEST `
   /TR "`"$ps`" $arg" /F
 ```
+
+`$PSHOME` est le dossier de la console **où la commande est tapée** : tapée dans Windows PowerShell 5.1,
+elle vise `powershell.exe` 5.1 ; tapée dans `pwsh` 7, elle vise un `powershell.exe` qui n'existe pas
+dans le dossier de `pwsh`, et la tâche échoue à chaque déclenchement (lecture, non jouée). Tapez-la
+dans Windows PowerShell 5.1, ou écrivez le chemin en entier
+(`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`).
 
 Test manuel (voir les événements arriver dans Plume) :
 ```powershell

@@ -2,10 +2,14 @@
 //!
 //! Ces temoins executent le BINAIRE livre contre un maildir fabrique. Chaque compte exclu porte un
 //! message qui DECLENCHERAIT une alerte (URL a IP brute), sous un nom de fichier marque `EXCLU…`, et son
-//! repertoire est en droits 000 : toute sonde du collecteur — `stat` de `cur/`, `read_dir`, lecture de
-//! message — y echoue, et un echec d'enumeration fait echouer le passage entier. L'instrument est
-//! VALIDE avant d'etre cru : le temoin verifie que la privation MORD (une execution privilegiee lit un
-//! repertoire 000) et refuse sinon de conclure, plutot que de declarer « jamais ouvert » sans l'avoir vu.
+//! repertoire est en droits 000 : un `read_dir` ou une lecture de message y echoue, et ce qui se voit
+//! alors (passage en echec, aveu, compte qui change dans le battement, « introuvable » au lieu du refus)
+//! fait rougir le temoin. CE QUE CES TEMOINS NE VOIENT PAS : un simple `stat` de `cur/` dans un compte
+//! exclu. `is_maildir` avale l'EACCES et rend « pas un maildir », sans trace observable de l'exterieur ;
+//! le « ni stat » de `deploy/MAIL.md` repose sur l'ORDRE du code (la decision sur le nom tombe avant la
+//! sonde, `maildir.rs`), pas sur un temoin. L'instrument est VALIDE avant d'etre cru : le temoin
+//! verifie que la privation MORD (une execution privilegiee lit un repertoire 000) et refuse sinon de
+//! conclure, plutot que de declarer « jamais ouvert » sans l'avoir vu.
 //! Les voisins dont le nom est un PREFIXE ou un SUFFIXE du compte exclu (et l'inverse) restent lus.
 
 #[path = "../src/tmp_possede.rs"]
@@ -189,18 +193,28 @@ fn en_layout_imbrique_une_partie_locale_exclut_dans_chaque_domaine_et_une_adress
     boite(&d1.join("bob"), "EXCLUBOB1");
     boite(&d2.join("bob"), "VOISINBOB2");
     boite(&d1.join("alicex"), "VOISINALICEX");
-    let (_rendre, mord) = priver(&[d1.join("alice"), d2.join("alice"), d1.join("bob")]);
+    // Un domaine dont le SEUL compte est exclu et prive : il reste un domaine (un exclu), pas un compte
+    // plat fantome `seul.test@example.test` « ouvert ».
+    let d3 = racine.join("seul.test");
+    boite(&d3.join("alice"), "EXCLUALICE3");
+    // Un domaine ecrit en majuscules sur le disque : `bob@example.test` l'exclut (casse ASCII pliee).
+    let d4 = racine.join("Example.TEST");
+    boite(&d4.join("bob"), "EXCLUBOB4");
+    boite(&d4.join("carol"), "VOISINCAROL4");
+    let (_rendre, mord) =
+        priver(&[d1.join("alice"), d2.join("alice"), d1.join("bob"), d3.join("alice"), d4.join("bob")]);
     assert!(mord, "execution privilegiee : la privation ne mord pas, ce temoin ne peut pas conclure");
 
     let p = passer(&tmp, &racine, Some("alice bob@example.test"));
     assert_eq!(p.code, Some(0), "le passage a touche un compte exclu : {}", p.stderr);
     assert!(p.aveux.is_empty(), "aucun aveu attendu : {:#?}", p.aveux);
-    assert_eq!(comptes_alertes(&p), ["alicex@example.test", "bob@autre.example.test"]);
-    for marque in ["EXCLUALICE1", "EXCLUALICE2", "EXCLUBOB1"] {
+    assert_eq!(comptes_alertes(&p), ["alicex@example.test", "bob@autre.example.test", "carol@Example.TEST"]);
+    for marque in ["EXCLUALICE1", "EXCLUALICE2", "EXCLUBOB1", "EXCLUALICE3", "EXCLUBOB4"] {
         assert!(!p.spool.contains(marque) && !p.etat.contains(marque), "`{marque}` a ete lu");
     }
+    assert!(!p.etat.contains("seul.test@"), "un domaine lu comme compte plat : {}", p.etat);
     let b = battement(&p);
-    assert!(b.contains("5 compte(s) dont 2 ouvert(s), 3 exclu(s) par"), "{b}");
+    assert!(b.contains("8 compte(s) dont 3 ouvert(s), 5 exclu(s) par"), "{b}");
 }
 
 #[test]
@@ -221,6 +235,26 @@ fn une_liste_vide_garde_le_passage_d_avant_et_une_liste_sans_cible_dit_zero() {
     let p = passer(&tmp, &racine, Some("carol"));
     assert_eq!(comptes_alertes(&p), ["alice@example.test", "bob@example.test"]);
     assert!(battement(&p).contains("2 compte(s) dont 2 ouvert(s), 0 exclu(s) par"), "{}", p.stderr);
+}
+
+#[test]
+fn le_battement_sans_alerte_compte_aussi_les_exclus() {
+    // Le regime NORMAL d'un passage : aucune alerte. Sa ligne doit dire le total (exclus compris) et
+    // le nombre d'exclus, comme celle d'un passage qui alerte.
+    let tmp = tmp_possede::TmpPossede::neuf("mail-p10-33-m-zero");
+    let racine = tmp.join("maildir");
+    for compte in ["alice", "bob"] {
+        std::fs::create_dir_all(racine.join(compte).join("cur")).unwrap();
+        std::fs::create_dir_all(racine.join(compte).join("new")).unwrap();
+    }
+    let p = passer(&tmp, &racine, Some("alice"));
+    assert_eq!(p.code, Some(0), "{}", p.stderr);
+    assert!(p.alertes.is_empty() && p.aveux.is_empty(), "{}", p.spool);
+    let b = battement(&p);
+    assert!(
+        b.contains("2 compte(s) dont 1 ouvert(s), 1 exclu(s) par PLUME_MAIL_EXCLURE_COMPTES, 0 message(s) examine(s), 0 alerte"),
+        "{b}"
+    );
 }
 
 #[test]
@@ -250,32 +284,134 @@ fn une_entree_invalide_arrete_le_passage_avant_toute_lecture_et_l_avoue_par_son_
     }
 }
 
+struct Lecture {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    /// Fichiers deposes dans le spool (l'audit d'une lecture en est un).
+    spool: usize,
+}
+
+/// `body <compte> <id>` avec un environnement NETTOYE ; `conf` = chemin de `PLUME_MAIL_CONF` (toujours
+/// pose : le `/etc/plume/mail.conf` de la machine de test ne doit pas entrer dans le temoin).
+fn lire(tmp: &Path, racine: &Path, conf: &Path, env: &[(&str, &str)], compte: &str, id: &str) -> Lecture {
+    let spool = tmp.join("spool-body");
+    let _ = std::fs::remove_dir_all(&spool);
+    let mut c = Command::new(BINAIRE);
+    for (k, _) in std::env::vars() {
+        if k.starts_with("PLUME_") {
+            c.env_remove(k);
+        }
+    }
+    c.args(["body", compte, id])
+        .env("PLUME_MAIL_ROOT", racine)
+        .env("PLUME_SPOOL", &spool)
+        .env("PLUME_HOST", "hote-de-temoin")
+        .env("PLUME_MAIL_CONF", conf);
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    let o = c.output().unwrap();
+    Lecture {
+        code: o.status.code(),
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        spool: std::fs::read_dir(&spool).map(|rd| rd.count()).unwrap_or(0),
+    }
+}
+
+fn refusee(l: &Lecture, pourquoi: &str, cas: &str) {
+    assert_eq!(l.code, Some(1), "{cas} : refus attendu : {}", l.stderr);
+    assert!(l.stdout.is_empty(), "{cas} : aucun contenu rendu : {}", l.stdout);
+    assert_eq!(l.spool, 0, "{cas} : aucune lecture auditee, donc aucune lecture");
+    assert!(l.stderr.contains(pourquoi), "{cas} : `{pourquoi}` attendu : {}", l.stderr);
+}
+
+fn rendue(l: &Lecture, cas: &str) {
+    assert_eq!(l.code, Some(0), "{cas} : {}", l.stderr);
+    assert!(l.stdout.contains("192.0.2.10"), "{cas} : contenu attendu : {}", l.stdout);
+}
+
 #[test]
 fn la_lecture_a_la_demande_refuse_un_compte_exclu_sans_rien_ouvrir() {
     let tmp = tmp_possede::TmpPossede::neuf("mail-p10-33-m-body");
     let racine = tmp.join("maildir");
+    let sans_conf = tmp.join("pas-de-mail.conf");
     boite(&racine.join("alice"), "BODYALICE");
     boite(&racine.join("alicex"), "BODYALICEX");
-    let lire = |compte: &str, id: &str| {
-        let mut c = Command::new(BINAIRE);
-        for (k, _) in std::env::vars() {
-            if k.starts_with("PLUME_") {
-                c.env_remove(k);
-            }
-        }
-        c.args(["body", compte, id])
-            .env("PLUME_MAIL_ROOT", &racine)
-            .env("PLUME_SPOOL", tmp.join("spool"))
-            .env("PLUME_HOST", "hote-de-temoin")
-            .env(VARIABLE, "Alice")
-            .output()
-            .unwrap()
-    };
-    let refus = lire("alice@example.test", "1700000100.BODYALICE");
-    assert_eq!(refus.status.code(), Some(1));
-    assert!(refus.stdout.is_empty(), "aucun contenu rendu");
-    assert!(String::from_utf8_lossy(&refus.stderr).contains("retire par PLUME_MAIL_EXCLURE_COMPTES"));
-    let voisin = lire("alicex@example.test", "1700000100.BODYALICEX");
-    assert_eq!(voisin.status.code(), Some(0), "{}", String::from_utf8_lossy(&voisin.stderr));
-    assert!(String::from_utf8_lossy(&voisin.stdout).contains("192.0.2.10"));
+    let env = [(VARIABLE, "Alice")];
+    refusee(&lire(&tmp, &racine, &sans_conf, &env, "alice@example.test", "1700000100.BODYALICE"), "retire par", "alice");
+    rendue(&lire(&tmp, &racine, &sans_conf, &env, "alicex@example.test", "1700000100.BODYALICEX"), "voisin");
+
+    // Liste INVALIDE : la lecture est refusee, meme pour un compte qu'aucune entree valide ne viserait.
+    let invalide = [(VARIABLE, "ali*")];
+    let l = lire(&tmp, &racine, &sans_conf, &invalide, "alicex@example.test", "1700000100.BODYALICEX");
+    refusee(&l, "entree n°1 refusee (motif glob", "liste invalide");
+
+    // Boite exclue PRIVEE (000) : le refus tombe AVANT toute recherche du message. Lire d'abord rendrait
+    // « message introuvable » (l'enumeration y echoue), pas le refus.
+    let (_rendre, mord) = priver(&[racine.join("alice")]);
+    assert!(mord, "execution privilegiee : la privation ne mord pas, ce temoin ne peut pas conclure");
+    refusee(&lire(&tmp, &racine, &sans_conf, &env, "alice@example.test", "1700000100.BODYALICE"), "retire par", "alice 000");
+}
+
+#[test]
+fn en_layout_plat_la_boite_resolue_decide_pas_l_adresse_ecrite() {
+    // Layout plat : `alice@<n'importe quoi>` resout la meme boite `<racine>/alice`. L'entree
+    // `alice@example.test` (le domaine du layout plat) doit la proteger sous TOUTES ses ecritures.
+    let tmp = tmp_possede::TmpPossede::neuf("mail-p10-33-m-body-plat");
+    let racine = tmp.join("maildir");
+    let sans_conf = tmp.join("pas-de-mail.conf");
+    boite(&racine.join("alice"), "PLATALICE");
+    boite(&racine.join("alice").join(".Sent"), "PLATALICESENT");
+    boite(&racine.join("alicex"), "PLATALICEX");
+    let env = [(VARIABLE, "alice@example.test"), ("PLUME_MAIL_DOMAIN", "example.test")];
+    for compte in ["alice@example.test", "alice@autre.test", "alice@example.test.", ".Sent@alice", "alice@."] {
+        let id = if compte.starts_with(".Sent") { "1700000100.PLATALICESENT" } else { "1700000100.PLATALICE" };
+        refusee(&lire(&tmp, &racine, &sans_conf, &env, compte, id), "lecture refusee", compte);
+    }
+    // La racine elle-meme (`.` en layout plat) ne designe aucun compte : refusee, pas lue.
+    refusee(&lire(&tmp, &racine, &sans_conf, &env, ".@nulle.part", "1700000100.PLATALICE"), "lecture refusee", "racine");
+    // Un lien qui sort de la racine : le balayage ne le suit pas, `body` ne le lit pas.
+    boite(&tmp.join("dehors"), "DEHORS");
+    std::os::unix::fs::symlink(tmp.join("dehors"), racine.join("lien")).unwrap();
+    refusee(&lire(&tmp, &racine, &sans_conf, &env, "lien@example.test", "1700000100.DEHORS"), "hors de la racine", "lien");
+    rendue(&lire(&tmp, &racine, &sans_conf, &env, "alicex@autre.test", "1700000100.PLATALICEX"), "voisin plat");
+    // L'adresse vise le domaine du layout PLAT : sous un autre domaine plat, `alice` n'est pas visee.
+    let ailleurs = [(VARIABLE, "alice@example.test"), ("PLUME_MAIL_DOMAIN", "autre.test")];
+    rendue(&lire(&tmp, &racine, &sans_conf, &ailleurs, "alice@example.test", "1700000100.PLATALICE"), "autre domaine");
+}
+
+#[test]
+fn la_lecture_a_la_demande_applique_la_liste_du_fichier_de_configuration() {
+    // `body` est lance par le DEMON (`PLUME_MAIL_BODY_CMD`) : il n'herite pas de `mail.conf`. Il doit
+    // relire le fichier lui-meme, joindre sa liste a celle de l'environnement, et refuser s'il ne peut
+    // pas le lire.
+    let tmp = tmp_possede::TmpPossede::neuf("mail-p10-33-m-body-conf");
+    let racine = tmp.join("maildir");
+    let conf = tmp.join("mail.conf");
+    for compte in ["alice", "bob", "carol"] {
+        boite(&racine.join(compte), &format!("CONF{compte}"));
+    }
+    std::fs::write(
+        &conf,
+        "# comme /etc/plume/mail.conf\nPLUME_MAIL_DOMAIN=example.test\nPLUME_MAIL_EXCLURE_COMPTES=\"alice@example.test\"\n",
+    )
+    .unwrap();
+    let env = [(VARIABLE, "bob")];
+    refusee(&lire(&tmp, &racine, &conf, &[], "alice@example.test", "1700000100.CONFalice"), "retire par", "fichier seul");
+    refusee(&lire(&tmp, &racine, &conf, &env, "alice@example.test", "1700000100.CONFalice"), "retire par", "fichier + env");
+    refusee(&lire(&tmp, &racine, &conf, &env, "bob@example.test", "1700000100.CONFbob"), "retire par", "env + fichier");
+    rendue(&lire(&tmp, &racine, &conf, &env, "carol@example.test", "1700000100.CONFcarol"), "carol");
+
+    std::fs::write(&conf, "PLUME_MAIL_EXCLURE_COMPTES=alice,,bob\n").unwrap();
+    refusee(&lire(&tmp, &racine, &conf, &[], "carol@example.test", "1700000100.CONFcarol"), "entree n°2 refusee", "fichier invalide");
+
+    std::fs::write(&conf, "PLUME_MAIL_EXCLURE_COMPTES=alice\n").unwrap();
+    std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let illisible = std::fs::read(&conf).is_err();
+    let l = lire(&tmp, &racine, &conf, &[], "carol@example.test", "1700000100.CONFcarol");
+    std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(illisible, "execution privilegiee : un fichier 000 reste lisible, ce temoin ne peut pas conclure");
+    refusee(&l, "illisible", "fichier illisible");
 }

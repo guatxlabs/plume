@@ -123,14 +123,62 @@ impl Exclusion {
         })
     }
 
-    /// Meme question pour une adresse ecrite d'un bloc (sous-commande `body`). Une adresse sans `@`
-    /// ne designe aucun compte du layout : elle n'est pas exclue ici, et `body` la refuse ensuite.
-    pub fn exclut_adresse(&self, adresse: &str) -> bool {
-        match adresse.split_once('@') {
-            Some((l, d)) => self.exclut(l, d),
-            None => false,
+    /// Ajoute les entrees d'une autre liste (`body` joint celle de son environnement et celle du
+    /// fichier de configuration : une entree posee a l'un OU a l'autre exclut).
+    pub fn joindre(mut self, autre: Exclusion) -> Exclusion {
+        self.entrees.extend(autre.entrees);
+        self
+    }
+
+    /// Le repertoire que `body` s'apprete a lire est-il retire, AU SENS DU BALAYAGE ? `composants` est
+    /// son chemin RESOLU (liens et `.` compris), relatif a la racine du maildir.
+    ///   * `[compte]` : compte du layout plat, que le balayage nomme `<compte>@<domaine_plat>` ;
+    ///   * `[parent, compte]` : compte `<compte>@<parent>` du layout imbrique — OU dossier d'un compte
+    ///     plat (`alice/.Sent`) : retire aussi quand `parent` l'est au premier niveau, comme le balayage
+    ///     retire entier un repertoire de premier niveau dont le nom est exclu ;
+    ///   * toute autre forme (la racine elle-meme, plus profond) ne designe aucun compte que le
+    ///     balayage nomme : elle est REFUSEE, faute de pouvoir dire qu'elle n'est pas retiree.
+    /// L'adresse ECRITE par le demandeur n'entre pas dans la decision : en layout plat, `alice@autre`
+    /// et `alice@example.test.` resolvent la meme boite `alice`, et c'est la boite qu'on juge.
+    pub fn exclut_chemin(&self, composants: &[String], domaine_plat: &str) -> bool {
+        match composants {
+            [compte] => self.exclut(compte, domaine_plat),
+            [parent, compte] => self.exclut(compte, parent) || self.exclut(parent, domaine_plat),
+            _ => true,
         }
     }
+}
+
+/// Le fichier que `plume-collector-mail.service` charge (`EnvironmentFile=`) et que `body` RELIT
+/// lui-meme : lance par le demon (`PLUME_MAIL_BODY_CMD`), `body` herite de l'environnement du demon,
+/// qui ne charge pas ce fichier. Sans cette relecture, une liste posee ou la documentation le dit ne
+/// protegeait que le balayage.
+pub const VARIABLE_FICHIER: &str = "PLUME_MAIL_CONF";
+pub const FICHIER_DEFAUT: &str = "/etc/plume/mail.conf";
+
+/// Valeur de `cle` dans un fichier au format `EnvironmentFile=` (sous-ensemble : `CLE=valeur`, lignes
+/// `#` et `;` ignorees, guillemets simples ou doubles englobants retires, la DERNIERE affectation
+/// l'emporte, comme sous systemd). Une valeur que ce sous-ensemble ne comprend pas reste telle quelle :
+/// la lecture de la liste la refuse ensuite (caractere hors classe), elle n'est jamais ignoree.
+pub fn valeur_du_fichier(texte: &str, cle: &str) -> Option<String> {
+    let mut retenue = None;
+    for ligne in texte.lines() {
+        let l = ligne.trim();
+        if l.is_empty() || l.starts_with('#') || l.starts_with(';') {
+            continue;
+        }
+        let Some((k, v)) = l.split_once('=') else { continue };
+        if k.trim() != cle {
+            continue;
+        }
+        let v = v.trim();
+        let v = ['"', '\'']
+            .iter()
+            .find_map(|q| v.strip_prefix(*q).and_then(|r| r.strip_suffix(*q)))
+            .unwrap_or(v);
+        retenue = Some(v.to_string());
+    }
+    retenue
 }
 
 #[cfg(test)]
@@ -167,5 +215,24 @@ mod tests {
             assert!(e.contains(&format!("n°{rang} ")) && e.contains(cause), "{valeur:?} -> {e}");
             assert!(!e.contains(valeur.trim_end_matches(',')), "l'aveu ne recopie pas l'entree : {e}");
         }
+    }
+
+    #[test]
+    fn le_chemin_resolu_decide_et_le_fichier_se_lit_comme_systemd() {
+        let c = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let x = Exclusion::lire(Some("alice@example.test carol")).unwrap();
+        assert!(x.exclut_chemin(&c(&["alice"]), "example.test"));
+        assert!(!x.exclut_chemin(&c(&["alice"]), "autre.test"), "l'adresse vise le domaine du layout plat");
+        assert!(x.exclut_chemin(&c(&["alice", ".Sent"]), "example.test"), "dossier d'un compte plat retire");
+        assert!(x.exclut_chemin(&c(&["Example.TEST", "alice"]), "localhost"));
+        assert!(x.exclut_chemin(&c(&["autre.test", "carol"]), "localhost"));
+        assert!(!x.exclut_chemin(&c(&["autre.test", "alice"]), "localhost"));
+        assert!(x.exclut_chemin(&c(&[]), "example.test") && x.exclut_chemin(&c(&["a", "b", "c"]), "x"));
+        let t = "# commentaire\n; autre\nPLUME_MAIL_EXCLURE_COMPTES=bob\n  PLUME_MAIL_EXCLURE_COMPTES = \"alice bob\"\nPLUME_MAIL_DOMAIN='example.test'\nX=1";
+        assert_eq!(valeur_du_fichier(t, VARIABLE).as_deref(), Some("alice bob"), "la derniere l'emporte");
+        assert_eq!(valeur_du_fichier(t, "PLUME_MAIL_DOMAIN").as_deref(), Some("example.test"));
+        assert_eq!(valeur_du_fichier(t, "ABSENTE"), None);
+        let joint = Exclusion::lire(Some("bob")).unwrap().joindre(Exclusion::lire(Some("alice")).unwrap());
+        assert!(joint.exclut("bob", "d") && joint.exclut("alice", "d"));
     }
 }

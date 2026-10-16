@@ -86,6 +86,38 @@ fn write_spool(spool: &str, name: &str, env: &serde_json::Value) -> Result<Strin
     Ok(dst)
 }
 
+/// `P10.33-m` — LA LISTE QUE `body` APPLIQUE, ET LE DOMAINE DU LAYOUT PLAT. `body` est lance par le demon
+/// (`PLUME_MAIL_BODY_CMD`) et herite de SON environnement, qui ne charge pas `/etc/plume/mail.conf` :
+/// une liste posee la ou la documentation le dit ne protegeait que le balayage. `body` relit donc ce
+/// fichier (`PLUME_MAIL_CONF` pour un autre chemin) et JOINT sa liste a celle de l'environnement. Le
+/// domaine suit la precedence du service (`EnvironmentFile=` l'emporte sur l'environnement). Fichier
+/// absent : l'environnement seul. Fichier present mais illisible : REFUS — on ne lit pas une boite
+/// dont on n'a pas su dire si elle est retiree.
+fn exclusion_de_body() -> Result<(exclusion::Exclusion, String)> {
+    let chemin = env_or(exclusion::VARIABLE_FICHIER, exclusion::FICHIER_DEFAUT);
+    let fichier = match std::fs::read_to_string(&chemin) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(anyhow!(
+                "lecture refusee : {chemin} illisible ({}) — la liste {} qu'il peut porter n'est pas jugeable, \
+                 aucun fichier de boite n'a ete ouvert",
+                e.kind(),
+                exclusion::VARIABLE
+            ))
+        }
+    };
+    let du_fichier = |cle: &str| fichier.as_deref().and_then(|t| exclusion::valeur_du_fichier(t, cle));
+    let de_l_environnement = exclusion::Exclusion::lire(std::env::var(exclusion::VARIABLE).ok().as_deref())
+        .map_err(|e| anyhow!("environnement : {e}"))?;
+    let de_la_configuration = exclusion::Exclusion::lire(du_fichier(exclusion::VARIABLE).as_deref())
+        .map_err(|e| anyhow!("{chemin} : {e}"))?;
+    let domaine = du_fichier("PLUME_MAIL_DOMAIN")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| env_or("PLUME_MAIL_DOMAIN", "localhost"));
+    Ok((de_l_environnement.joindre(de_la_configuration), domaine))
+}
+
 /// body-fetch GATE + AUDITE (cf. ADR-0006/0008) : lecture complete d'UN message a la demande.
 /// Gate = l'invocation est reservee au central admin (acces agent/SSH) ; chaque lecture est tracee
 /// par un event `source=mail-audit` -> SOC (cherchable). Le central rend le html en iframe sandbox+CSP.
@@ -99,14 +131,27 @@ fn run_body(args: &[String]) -> Result<()> {
     let host = identite().valeur().cloned().unwrap_or_else(|| lisibilite::HOTE_NON_LU.to_string());
     let actor = env_or("PLUME_ACTOR", "unknown"); // le central renseigne QUI declenche la lecture
     // P10.33-m — une boite retiree du balayage ne se lit pas davantage a la demande : la liste est jugee
-    // AVANT toute recherche du message, et une liste invalide refuse la lecture.
-    let exclusion = exclusion::Exclusion::lire(std::env::var(exclusion::VARIABLE).ok().as_deref())
-        .map_err(|e| anyhow!(e))?;
-    if exclusion.exclut_adresse(account) {
-        return Err(anyhow!(
-            "lecture refusee : ce compte est retire par {} (aucun fichier n'a ete ouvert)",
-            exclusion::VARIABLE
-        ));
+    // AVANT toute recherche du message, sur la boite que le chemin RESOUT (pas sur l'adresse ecrite), et
+    // une liste invalide ou un fichier de configuration illisible refusent la lecture.
+    let (exclusion, domaine_plat) = exclusion_de_body()?;
+    if !exclusion.est_vide() {
+        let refus = |pourquoi: &str| {
+            anyhow!("lecture refusee : {pourquoi} (aucun fichier de la boite n'a ete ouvert)")
+        };
+        match maildir::resoudre_compte(&root, account)? {
+            maildir::CompteResolu::Introuvable => {}
+            maildir::CompteResolu::HorsRacine => {
+                return Err(refus(&format!(
+                    "ce compte resout hors de la racine du maildir, {} posee : on ne sait pas dire qu'il n'est pas retire",
+                    exclusion::VARIABLE
+                )))
+            }
+            maildir::CompteResolu::Sous(c) => {
+                if exclusion.exclut_chemin(&c, &domaine_plat) {
+                    return Err(refus(&format!("ce compte est retire par {}", exclusion::VARIABLE)));
+                }
+            }
+        }
     }
 
     let (fname, path) = maildir::find_message(&root, account, folder, id)?;

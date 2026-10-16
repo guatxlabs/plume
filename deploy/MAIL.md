@@ -35,7 +35,10 @@ PLUME_MAIL_MAX_EVENTS=1000          # cap d'alertes par run (anti-flood)
 ## Retirer une boite du balayage — `PLUME_MAIL_EXCLURE_COMPTES`
 Une boite hebergee qui ne doit pas etre analysee se nomme ici ; le collecteur ne l'ouvre JAMAIS : ni
 `stat` dans son repertoire, ni `read_dir`, ni lecture de message, ni ligne dans l'etat incremental, et
-la sous-commande `body` refuse de la lire.
+la sous-commande `body` refuse de la lire (voir plus bas ce qu'elle lit pour le savoir). Le « ni
+`stat` » tient a l'ordre du code (la decision sur le nom precede toute sonde) ; les temoins
+(`collector-mail/tests/compte_exclu_jamais_ouvert.rs`, boites en droits 000) voient un `read_dir` ou
+une lecture, pas un `stat` isole.
 - **Forme** : entrees separees par des virgules et/ou des blancs. Avec un `@` (`alice@example.test`) :
   l'adresse complete, ce compte-la seulement. Sans `@` (`alice`) : la partie locale, dans **chaque**
   domaine du maildir (layout plat : le domaine est `PLUME_MAIL_DOMAIN` ; imbrique : celui du repertoire).
@@ -55,6 +58,17 @@ la sous-commande `body` refuse de la lire.
   reglage se pose dans `/etc/plume/mail.conf` (lu par `plume-collector-mail.service`), que le serveur
   mail soit natif, en conteneur Docker ou dans k3s. Lance a la main, passe la variable dans son
   environnement.
+- **`body` relit `mail.conf` lui-meme** : lance par le demon (`PLUME_MAIL_BODY_CMD`), il herite de
+  l'environnement du DEMON, qui ne charge pas ce fichier. Il lit donc `/etc/plume/mail.conf` (autre
+  chemin : `PLUME_MAIL_CONF`) et JOINT sa liste a celle de son environnement ; le domaine du layout
+  plat y est lu aussi (`PLUME_MAIL_DOMAIN` du fichier, sinon de l'environnement). Fichier absent :
+  l'environnement seul. Fichier present mais illisible pour l'utilisateur qui lance `body` (le demon
+  tourne `soc` ; `bootstrap-agent.sh` pose `root:soc 0640`) : la lecture est REFUSEE.
+- **`body` juge la boite, pas l'adresse ecrite** : le chemin que l'adresse resout (liens et `.`
+  suivis) decide. En layout plat, `alice@autre.test` ou `alice@example.test.` ouvrent la meme boite
+  `alice` : elles sont refusees comme `alice@example.test`. Un dossier d'un compte retire
+  (`.Sent@alice`) l'est aussi ; un chemin qui sort de la racine, ou qui ne designe aucun compte que
+  le balayage nomme, est refuse des qu'une liste est posee.
 - **Ce qui n'est pas efface** : les lignes de l'etat incremental ecrites AVANT l'exclusion restent dans
   `.mail-seen` (identifiants de fichiers, aucun contenu).
 
@@ -79,6 +93,8 @@ le body ; il reste **gate + audite**, et vit agent-side (pas de body en clair sh
 ```sh
 PLUME_MAIL_ROOT=... PLUME_ACTOR=<qui> plume-collector-mail body <account> <id> [folder]
 # -> stdout : JSON {account,folder,subject,from,to,date,headers,text,html}
+# relit /etc/plume/mail.conf (ou PLUME_MAIL_CONF) pour PLUME_MAIL_EXCLURE_COMPTES : un compte retire
+# du balayage est refuse ici aussi, avant toute recherche du message
 ```
 - **Gate** : l'invocation est reservee au central (acces agent/SSH via le role agent) ; le central
   verifie `role=admin` AVANT d'appeler, et passe `PLUME_ACTOR` (qui declenche).

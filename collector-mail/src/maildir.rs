@@ -30,6 +30,33 @@ pub fn account_path(root: &str, email: &str) -> Result<PathBuf> {
     Ok(Path::new(root).join(local))
 }
 
+/// `P10.33-m` — ce que `account_path` resout pour `email`, juge sur le DISQUE et non sur l'adresse ecrite.
+pub enum CompteResolu {
+    /// Rien a ce chemin : la lecture echouera « compte introuvable », sans rien ouvrir.
+    Introuvable,
+    /// Le chemin resolu sort de la racine (lien) : aucun compte que le balayage nomme.
+    HorsRacine,
+    /// Composants du chemin resolu, relatifs a la racine resolue.
+    Sous(Vec<String>),
+}
+
+/// Resout le repertoire que `body` lirait pour `email` (`canonicalize` : liens et `.` suivis, un `lstat`
+/// par composant du chemin — le repertoire du compte n'est ni liste ni ouvert). Toute autre erreur que
+/// « introuvable » remonte : on ne lit pas une boite dont on n'a pas su dire si elle est retiree.
+pub fn resoudre_compte(root: &str, email: &str) -> Result<CompteResolu> {
+    let base = account_path(root, email)?;
+    let racine = std::fs::canonicalize(root).with_context(|| format!("racine maildir {root}"))?;
+    let resolu = match std::fs::canonicalize(&base) {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CompteResolu::Introuvable),
+        Err(e) => return Err(anyhow!("compte non resolu ({})", e.kind())),
+    };
+    Ok(match resolu.strip_prefix(&racine) {
+        Ok(rel) => CompteResolu::Sous(rel.iter().map(|c| c.to_string_lossy().into_owned()).collect()),
+        Err(_) => CompteResolu::HorsRacine,
+    })
+}
+
 fn folder_subpath(folder: &str) -> String {
     if folder == "INBOX" {
         String::new()

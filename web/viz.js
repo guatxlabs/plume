@@ -674,17 +674,41 @@ function provenanceBadge(stats) {
 //       console afficher « aucune donnée sur la fenêtre » toute seule, c'est-à-dire CONCLURE à l'absence
 //       là où le démon écrit noir sur blanc « on ne sait pas jusqu'où cette réponse a pu voir » ;
 //   (3) aucun aveu du tout (binaire antérieur, surface non couverte) -> `null`, affichage d'avant.
+//
+// `P10.32-p` — LA PHRASE DU SERVEUR SUIT, SUR TOUT CORPS SANS LIGNE. Cette fabrique ne sert QUE le corps
+// d'un panneau sans ligne (`corpsSansLigne`, web/dashboards.js, ses trois sites) ; la notice du démon,
+// elle, n'arrivait à l'écran que par l'infobulle de `coverageBadge`, posé SEULEMENT quand
+// `older_outside_window === true`. Un panneau VIDE dont la fenêtre n'est pas passée sous l'horizon — servi
+// `fenetre_non_bornee` (« tout ce que la base porte encore a été cherché »), `horizon_perime`,
+// `mesure_en_cours`, `calcul_echoue`, ou un refus de conclure — ne la montrait donc jamais : l'analyste
+// voyait un panneau vide sans l'explication que le démon avait écrite. Elle est
+// désormais un nœud À PART (après le libellé et la date, qui restent deux nœuds entiers pour le lexique),
+// posé quelle que soit `older_outside_window`. C'est du TEXTE du serveur : posé par `textContent`,
+// jamais par `innerHTML` — une notice qui porterait du balisage se lit, elle ne s'exécute pas. Elle reste
+// en français sous `LANG='en'` : le démon ne la sert que dans cette langue. Le badge, lui, garde sa garde
+// anti-fatigue : un panneau AVEC lignes et `older_outside_window: false` reste sans notice.
+function noeudDeLaNoticeDeCouverture(c) {
+  if (typeof c.notice !== 'string' || !c.notice.trim()) return null;
+  const n = document.createElement('span');
+  n.className = 'muted';
+  n.style.cssText = 'display:block;margin-top:4px';
+  n.setAttribute('data-notice-de-couverture', '1');
+  n.textContent = c.notice;
+  return n;
+}
 function coverageHorizonNodes(stats) {
   const c = stats && stats.coverage;
   if (!c) return null;
+  const notice = noeudDeLaNoticeDeCouverture(c);
+  const avecLaNotice = (noeuds) => (notice ? [...noeuds, notice] : noeuds);
   if (Number.isFinite(c.horizon_ts)) {
-    return [
+    return avecLaNotice([
       document.createTextNode("l'horizon de conservation s'arrête ici"),
       document.createTextNode(' — ' + fmtTs(c.horizon_ts)),
-    ];
+    ]);
   }
-  if (!c.reason) return null;
-  return [document.createTextNode("jusqu'où ce panneau a pu voir n'est pas établi")];
+  if (!c.reason) return notice ? [notice] : null;
+  return avecLaNotice([document.createTextNode("jusqu'où ce panneau a pu voir n'est pas établi")]);
 }
 
 // BADGE de transparence (confiance SOC) : l'analyste DOIT voir si le chiffre vient d'un rollup, et s'il

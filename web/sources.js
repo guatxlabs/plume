@@ -33,8 +33,9 @@ const MOTS_DE_L_INVENTAIRE_DES_SOURCES = {
 // miroir finit toujours par diverger : c'est la famille de défaut que ce dépôt poursuit.
 //
 // CE QUI N'EST PAS UN MIROIR, ET POURQUOI LA COLONNE RESTE. L'inventaire rend un CINQUIÈME mot que la
-// fraîcheur ne peut pas rendre : `dormant`, posé par le démon quand aucune donnée n'a été observée sur
-// la fenêtre de l'inventaire. Une source dans cet état n'a AUCUN flux dans `/api/freshness` — elle n'y
+// fraîcheur ne peut pas rendre : `dormant`, posé par le démon quand l'inventaire ne retient aucun signe
+// de vie sur sa fenêtre (`last_seen` nul — ses trois portes sont dites à `raisonDUnDormant`). Une source
+// dans cet état n'a AUCUN flux dans `/api/freshness` — elle n'y
 // figure pas du tout. Retirer la colonne ferait donc perdre une information que l'autre vue ne porte
 // pas ; c'est ce que la mesure évite, et c'est pourquoi rien n'est retiré ici.
 //
@@ -59,12 +60,17 @@ const MOTS_DE_L_INVENTAIRE_DES_SOURCES = {
 // « collecte saine ». Un relevé dont AUCUNE ligne n'a pu être jugée se peignait donc comme un parc
 // entier en bonne santé : un verdict qui RASSURE, formé précisément quand rien n'a été observé.
 //
-// CE QUI SE VÉRIFIE EN LISANT LA ROUTE, ET QUI RÉFUTE UNE MOITIÉ DE L'ÉNONCÉ : `/api/sources` ne sert
-// JAMAIS ce mot. Sa lecture de la fraîcheur du pipeline est typée depuis `P10.7-g` (lot 98) et son
-// échec rend l'INVENTAIRE ENTIER non lu (`corps_inventaire_non_lu`, `pipeline_fresh: null`, aucune
-// source) — aucune ligne ne sort avec un statut. Le mot entre donc dans cette table parce qu'elle est
-// l'unique vocabulaire d'état de source de la console et que `freshness.js` la LIT, exactement comme
-// `dormant` y vit alors que la fraîcheur ne peut pas le rendre. La symétrie est assumée, pas subie.
+// CE QUE LA ROUTE SERT, RELU DANS `daemon/src/handlers/sources.rs`. L'échec de SA lecture de la fraîcheur
+// du pipeline (typée depuis `P10.7-g`, lot 98) rend toujours l'INVENTAIRE ENTIER non lu
+// (`corps_inventaire_non_lu`, `pipeline_fresh: null`, aucune source) : ce cas-là ne sort aucune ligne.
+// MAIS LE MOT SORT DÉSORMAIS SUR UNE LIGNE — « `/api/sources` ne sert JAMAIS ce mot », écrit ici avant
+// `P10.32-s`, est devenu FAUX avec ce lot du démon : une source dont la lecture de la dernière collecte
+// hors aveu a RÉELLEMENT échoué (index absent, lecture interrompue) sort `status: "non_lu"`, avec la
+// cause sous `derniere_collecte_non_etablie` et un `last_seen` qui reste celui du rollup (aveux compris).
+// Le plafond de lignes atteint, lui, n'est PAS une lecture ratée : il sort un statut tiré de la borne
+// (jamais `frais`, jamais `non_lu`) et le champ `derniere_collecte_au_dela_des_lignes`, lu par la colonne
+// « Dernier vu ». Le mot vit donc dans cette table pour les deux surfaces : `freshness.js` la LIT, et
+// l'inventaire le reçoit pour ses propres lignes.
 //
 // LE TON. Pastille et encre du plus grave — celles de `muet` —, JAMAIS celles de `calme` : c'est le
 // geste que la rangée d'Intégrations tient déjà pour ses « capteur(s) non lu(s) ». Le RANG, lui, est
@@ -170,16 +176,70 @@ function noteDePerimetreDeLInventaire() {
   return el;
 }
 
-// CE QUE « dormant » DIT VRAIMENT, à côté du mot. MESURÉ dans `sources.rs` : une source n'entre avec
-// `last_seen` nul QUE par la porte des marquages (`obs.entry(src).or_insert((0, 0))`), qui ne sait pas si
-// la source n'a rien poussé ou si son volume est resté sous le seuil — les deux arrivent ici sous le même
-// mot, avec « dernier vu » à blanc. La légende affirmait « aucune donnée n'a été observée » : c'est FAUX
-// pour une source qui a poussé une ou deux lignes. Le mot reste (le démon le rend), sa raison est dite.
-const raisonDUnDormant = () => (LANG === 'en'
-  ? 'No data RETAINED by the inventory over its ' + FENETRE_INVENTAIRE_JOURS + '-day window. Two different facts land on this same word, and it cannot tell them apart: either nothing arrived, or what arrived stays below the volume threshold ('
-    + SEUIL_EVENEMENTS_INVENTAIRE + ' event(s)) — in which case « last seen » is blank while the source did push.'
-  : 'Aucune donnée RETENUE par l\'inventaire sur sa fenêtre de ' + FENETRE_INVENTAIRE_JOURS + ' jours. Deux faits différents arrivent sous ce même mot, et il ne les distingue pas : soit rien n\'est arrivé, soit ce qui est arrivé reste sous le seuil de volume ('
-    + SEUIL_EVENEMENTS_INVENTAIRE + ' événement(s)) — auquel cas « dernier vu » est à blanc alors que la source a bien poussé.');
+// CE QUE « dormant » DIT VRAIMENT, à côté du mot. RELU dans `daemon/src/handlers/sources.rs` (démon
+// `P10.32-s`) : le statut `dormant` est posé sur `last == 0`, et `last` vaut 0 par TROIS portes.
+//   (1) et (2) LA PORTE DES MARQUAGES (`obs.entry(src).or_insert((0, 0))`) : une source qui porte une
+//       ligne de déclaration ou de métadonnée (`source_settings`, d'où `marquage` non nul) et que la
+//       lecture du rollup n'a pas retenue — soit rien n'est arrivé, soit le volume reste sous le seuil
+//       `HAVING`. Les deux arrivent sous le même mot, `n_24h` à 0, et rien ne les distingue.
+//   (3) LES AVEUX SEULS : la source FRANCHIT les deux bornes, mais `event` ne retient d'elle, sous le
+//       plafond de lecture (`LIGNES_HORS_AVEU_MAX`, `daemon/src/sondes.rs`), que des aveux « capteur
+//       indisponible » (`last_du_rollup_hors_aveu` rend `None`). Une telle source n'a pas besoin d'être
+//       déclarée pour être listée, et `n_24h` compte ses aveux (le volume du rollup).
+// La phrase d'avant (« une source n'entre avec `last_seen` nul QUE par la porte des marquages », d'où
+// « deux faits ») est FAUSSE depuis ce lot du démon : elle taisait la troisième porte, celle du capteur
+// aveugle qui avoue. La charge utile PROUVE la troisième dans deux cas, et la raison le dit alors : aucun
+// `marquage` (pas de ligne de déclaration, donc pas d'entrée par les marquages), ou un `n_24h` positif
+// (la porte des marquages insère 0). Sinon, les trois restent possibles et la raison les nomme toutes.
+// CE QUI N'EST PAS DIT : un événement réel horodaté à l'instant 0 rendrait lui aussi `last == 0` — cas
+// pathologique que rien à l'écran ne distingue. Le plafond ATTEINT, lui, n'est pas un dormant : il sort
+// avec une borne (cf. `noeudDuDernierVu`).
+const MOTS_DU_DORMANT = {
+  trois_portes: {
+    fr: 'Aucun signe de vie RETENU par l\'inventaire sur sa fenêtre de {jours} jours. Trois faits différents arrivent sous ce même mot : soit rien n\'est arrivé, soit ce qui est arrivé reste sous le seuil de volume ({seuil} événement(s)) — ces deux-là ne concernent qu\'une source qui porte une déclaration ou une métadonnée, et « dernier vu » y est à blanc alors que la source a pu pousser —, soit tout ce que la base retient de cette source, sous le plafond de lecture du démon, n\'est qu\'aveux « capteur indisponible » : le capteur dit lui-même qu\'il ne collecte pas, et la colonne « 24 h » compte ces aveux.',
+    en: 'No sign of life RETAINED by the inventory over its {jours}-day window. Three different facts land on this same word: either nothing arrived, or what arrived stays below the volume threshold ({seuil} event(s)) — those two only concern a source carrying a declaration or a piece of metadata, and « last seen » is blank there while the source may have pushed —, or everything the database retains of this source, under the daemon\'s read cap, is only “sensor unavailable” admissions: the sensor itself says it is not collecting, and the « 24 h » column counts those admissions.' },
+  aveux_sans_marquage: {
+    fr: ' Ici, c\'est le troisième : aucune déclaration ni métadonnée n\'est posée sur cette source, elle n\'est donc entrée que par ses propres lignes — et ce ne sont que des aveux d\'indisponibilité.',
+    en: ' Here it is the third one: no declaration or metadata is set on this source, so it only came in through its own rows — and those are only unavailability admissions.' },
+  aveux_comptes: {
+    fr: ' Ici, c\'est le troisième : {n} ligne(s) comptée(s) sur 24 h sans aucun signe de vie retenu — ce sont des aveux d\'indisponibilité.',
+    en: ' Here it is the third one: {n} row(s) counted over 24 h with no sign of life retained — those are unavailability admissions.' },
+};
+const raisonDUnDormant = (s) => {
+  const bornes = { jours: FENETRE_INVENTAIRE_JOURS, seuil: SEUIL_EVENEMENTS_INVENTAIRE };
+  const base = faceDansLaLangue(MOTS_DU_DORMANT.trois_portes, bornes);
+  if (s && s.marquage === null) return base + faceDansLaLangue(MOTS_DU_DORMANT.aveux_sans_marquage);
+  if (s && Number.isFinite(s.n_24h) && s.n_24h > 0) return base + faceDansLaLangue(MOTS_DU_DORMANT.aveux_comptes, { n: s.n_24h });
+  return base;
+};
+
+// `P10.32-s` — LE FAIT BORNÉ DU DÉMON, LU. Quand la lecture hors aveu atteint son plafond sans trouver un
+// seul événement réel, `/api/sources` sert `derniere_collecte_au_dela_des_lignes` = le NOMBRE de lignes
+// lues (le plafond), et un `last_seen` qui est une BORNE : le dernier événement réel est AU PLUS TARD là.
+// L'écrire « il y a … » comme une date vue serait affirmer une collecte que personne n'a observée ; la
+// cellule dit donc « au moins … » et nomme le plafond, l'infobulle dit la nature de la borne. Champ
+// absent, nul ou non numérique (démon antérieur, chemin nominal) -> l'affichage d'avant, à l'identique.
+const MOTS_DU_DERNIER_VU_BORNE = {
+  cellule: { fr: 'au moins {age} — au-delà du plafond de lignes', en: 'at least {age} — beyond the row cap' },
+  cellule_sans_age: { fr: 'au-delà du plafond de lignes', en: 'beyond the row cap' },
+  titre: {
+    fr: 'Aucun signe de vie de cette source dans ses {n} dernières lignes — le plafond de lecture du démon : seuls des aveux « capteur indisponible » s\'y trouvent. Le dernier événement réel, s\'il existe, est AU PLUS TARD au {date} : c\'est une BORNE, pas l\'instant d\'une collecte vue.',
+    en: 'No sign of life from this source in its last {n} rows — the daemon\'s read cap: only “sensor unavailable” admissions are there. The last real event, if any, is AT THE LATEST at {date}: this is a BOUND, not the time of a collection seen.' },
+};
+const lignesAuDelaDuPlafond = (s) => (s && Number.isFinite(s.derniere_collecte_au_dela_des_lignes) && s.derniere_collecte_au_dela_des_lignes > 0
+  ? s.derniere_collecte_au_dela_des_lignes : null);
+function noeudDuDernierVu(s) {
+  const sp = document.createElement('span');
+  const n = lignesAuDelaDuPlafond(s);
+  if (n === null) {
+    sp.textContent = s.last_seen ? ilYA(s.age_s) : '—'; if (s.last_seen) sp.title = fmtTs(s.last_seen);
+    return sp;
+  }
+  sp.setAttribute('data-dernier-vu-borne', '1');
+  sp.textContent = Number.isFinite(s.age_s) ? faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.cellule, { age: humanAge(s.age_s) }) : faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.cellule_sans_age);
+  sp.title = faceDansLaLangue(MOTS_DU_DERNIER_VU_BORNE.titre, { n, date: fmtTs(s.last_seen) });
+  return sp;
+}
 
 // RENDU PUR de l'inventaire à partir de la charge utile de /api/sources (exercé par le harnais ESM sur des
 // objets fabriqués ; `loadSourcesView` ne fait que l'appeler après le fetch).
@@ -356,19 +416,17 @@ function renderSourcesInventory(wrap, d) {
       f.appendChild(qui);
       return f;
     } },
-    { key: 'age', label: 'Dernier vu', sortable: true, sortVal: s => s.last_seen || 0, render: s => {
-      const sp = document.createElement('span'); sp.textContent = s.last_seen ? ilYA(s.age_s) : '—'; if (s.last_seen) sp.title = fmtTs(s.last_seen); return sp;
-    } },
+    { key: 'age', label: 'Dernier vu', sortable: true, sortVal: s => s.last_seen || 0, render: s => noeudDuDernierVu(s) },
     { key: 'n_24h', label: '24 h', sortable: true, align: 'r', sortVal: s => s.n_24h || 0, render: s => s.n_24h != null ? String(s.n_24h) : '0' },
     { key: 'status', label: 'Statut', sortable: true, sortVal: s => rangDeSource(s), render: s => {
       const f = document.createDocumentFragment();
       const voc = vocDeSource(s);
       const dot = document.createElement('span'); dot.className = 'fdot ' + (voc ? voc.dot : 'calme');
       const lbl = document.createElement('b'); lbl.className = voc ? voc.txt : 'calm'; lbl.textContent = voc ? voc.court : '—';
-      // `P11.18-y` — SEUL `dormant` porte sa raison, et il la porte parce qu'il RECOUVRE deux faits (voir
-      // `raisonDUnDormant`). Les quatre autres mots dérivent d'un âge et d'une cadence, que la ligne montre
-      // déjà : leur coller une phrase de plus n'apprendrait rien.
-      if (s && s.status && etatDeSource(s.status) === 'dormant') lbl.title = raisonDUnDormant();
+      // `P11.18-y` — SEUL `dormant` porte sa raison, et il la porte parce qu'il RECOUVRE trois faits (voir
+      // `raisonDUnDormant`, `P10.32-s` : « deux faits » taisait les aveux seuls). Les autres mots dérivent
+      // d'un âge et d'une cadence, que la ligne montre déjà : leur coller une phrase de plus n'apprendrait rien.
+      if (s && s.status && etatDeSource(s.status) === 'dormant') lbl.title = raisonDUnDormant(s);
       f.append(dot, lbl); return f;
     } },
     { key: 'category', label: 'Catégorie', sortable: true, sortVal: s => s.category || '', render: s => s.category || '—' },
@@ -421,12 +479,15 @@ function renderSourcesInventory(wrap, d) {
     // `P11.18-y` — LA DÉFINITION DE « dormant » ÉTAIT FAUSSE dans un cas que le démon produit : elle
     // affirmait qu'aucune donnée n'avait été OBSERVÉE, alors que le mot couvre aussi une source qui a
     // poussé sous le seuil de volume (mesuré : `sources.rs`, la porte des marquages insère `(0, 0)` sans
-    // regarder ce que la source a poussé). Ce qu'il dit vraiment est dit — ici, et au survol du mot.
+    // regarder ce que la source a poussé). `P10.32-s` — ET ELLE ÉTAIT FAUSSE UNE SECONDE FOIS : « une source
+    // déclarée ici », « deux faits ». Une source que personne n'a déclarée sort `dormant` dès que la base ne
+    // retient d'elle que des aveux d'indisponibilité (troisième porte, cf. `raisonDUnDormant`). Ce que le
+    // mot dit vraiment est dit — ici, et au survol du mot.
     doublon.textContent = LANG === 'en'
-      ? 'Four of these words come from the SAME derivation as Data → Source freshness, on the same measure: they say the same thing, seen from the inventory. The fifth belongs to this view alone — « dormant » : a source declared here of which the inventory RETAINED no data over its '
-        + FENETRE_INVENTAIRE_JOURS + '-day window, either because nothing arrived or because the volume stays below the threshold named above — the word does not tell the two apart. Such a source has no feed at all in Source freshness (same two bounds), so it does not appear there.'
-      : 'Quatre de ces mots viennent de la MÊME dérivation que Données → Fraîcheur des sources, sur la même mesure : ils disent la même chose, vue depuis l\'inventaire. Le cinquième n\'appartient qu\'à cette vue — « dormant » : une source déclarée ici dont l\'inventaire n\'a RETENU aucune donnée sur sa fenêtre de '
-        + FENETRE_INVENTAIRE_JOURS + ' jours, soit qu\'il ne soit rien arrivé, soit que le volume reste sous le seuil nommé plus haut — le mot ne distingue pas les deux. Une telle source n\'a aucun flux dans Fraîcheur des sources (mêmes deux bornes), elle n\'y figure donc pas.';
+      ? 'Four of these words come from the SAME derivation as Data → Source freshness, on the same measure: they say the same thing, seen from the inventory. The fifth belongs to this view alone — « dormant » : a source of which the inventory RETAINED no sign of life over its '
+        + FENETRE_INVENTAIRE_JOURS + '-day window, for one of three reasons the word does not always tell apart: nothing arrived, or the volume stays below the threshold named above (those two only for a source declared or annotated here), or everything retained is “sensor unavailable” admissions — the sensor says itself that it is not collecting, and the « 24 h » column counts them. Such a source has no feed at all in Source freshness, so it does not appear there.'
+      : 'Quatre de ces mots viennent de la MÊME dérivation que Données → Fraîcheur des sources, sur la même mesure : ils disent la même chose, vue depuis l\'inventaire. Le cinquième n\'appartient qu\'à cette vue — « dormant » : une source dont l\'inventaire n\'a RETENU aucun signe de vie sur sa fenêtre de '
+        + FENETRE_INVENTAIRE_JOURS + ' jours, pour l\'une de trois raisons que le mot ne distingue pas toujours : rien n\'est arrivé, ou le volume reste sous le seuil nommé plus haut (ces deux-là pour une source déclarée ou annotée ici), ou tout ce qui est retenu n\'est qu\'aveux « capteur indisponible » — le capteur dit lui-même qu\'il ne collecte pas, et la colonne « 24 h » les compte. Une telle source n\'a aucun flux dans Fraîcheur des sources, elle n\'y figure donc pas.';
     wrap.appendChild(doublon);
   }
 }

@@ -5912,8 +5912,9 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 //         posée avant le tableau, pas dans la légende, qui ne paraît qu'avec des lignes.
 //     (c) « dormant » NE SE DIT PLUS « aucune donnée observée ». Mesuré dans `sources.rs` : une source
 //         entre avec `last_seen` nul par la porte des marquages (`or_insert((0, 0))`), qui ne sait pas
-//         si la source n'a rien poussé ou si son volume reste sous le seuil — le mot RECOUVRE deux
-//         faits. Le témoin exige que la raison le dise, et le témoin inverse (un état non dormant)
+//         si la source n'a rien poussé ou si son volume reste sous le seuil — et, depuis `P10.32-s`, par
+//         une troisième porte, les aveux seuls (témoin 149) : le mot RECOUVRE trois faits, dont les deux
+//         jugés ici. Le témoin exige que la raison le dise, et le témoin inverse (un état non dormant)
 //         interdit qu'une version qui collerait la phrase partout passe pour une correction.
 //     (d) `P11.16-a` — LE QUATRIÈME CAS DU PRODUCTEUR. Deux booléens décidaient de trois cas ; le
 //         premier rendait `raison_attendue || ''`, donc un BLANC dès qu'une charge utile déclare le
@@ -7122,8 +7123,11 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   exiger(viz50.coverageBadge({}) === null && viz50.coverageBadge(null) === null, "(50a-inverse) une réponse SANS aveu produit un badge");
 
   // --- (a2) LES DEUX NŒUDS DE L'HORIZON, ET LA RAISON DE LEUR SÉPARATION. ---
-  const noeuds50 = viz50.coverageHorizonNodes(AMPUTE);
-  exiger(Array.isArray(noeuds50) && noeuds50.length === 2,
+  // `P10.32-p` — la notice du démon suit désormais en TROISIÈME nœud (témoin 150) : la séparation jugée ici est celle du
+  // libellé et de sa date, et elle se juge sur les nœuds qui ne sont PAS la notice.
+  const horsNotice50 = (n) => (Array.isArray(n) ? n.filter((x) => !(x && x.getAttribute && x.getAttribute("data-notice-de-couverture") === "1")) : n);
+  const noeuds50 = horsNotice50(viz50.coverageHorizonNodes(AMPUTE));
+  exiger(Array.isArray(noeuds50) && noeuds50.length === 2 && texte50(noeuds50[0]) === "l'horizon de conservation s'arrête ici",
     "(50a2) l'horizon n'est pas rendu en DEUX nœuds : concaténé à sa date, le libellé serait classé « dynamique » et son entrée de lexique naîtrait MORTE");
   exiger(viz50.coverageHorizonNodes(COMPLET) !== null, "(50a2) un horizon MESURÉ doit être disponible même quand rien n'est resté dehors — c'est le corps sans ligne qui décide de le montrer");
   // LE REFUS DU DÉMON EST UN TROISIÈME CAS, ET IL NE DOIT PAS SE LIRE COMME UNE ABSENCE. `portee_non_derivable`
@@ -7131,7 +7135,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   // horizon : rendre `null` laissait « aucune donnée sur la fenêtre » CONCLURE là où le démon écrit
   // « on ne sait pas jusqu'où cette réponse a pu voir ».
   for (const [nom, cas] of [["portee_non_derivable", REFUS], ["horizon_non_mesure", NON_MESURE]]) {
-    const n = viz50.coverageHorizonNodes(cas);
+    const n = horsNotice50(viz50.coverageHorizonNodes(cas));
     exiger(Array.isArray(n) && n.length === 1,
       `(50a2-refus) « ${nom} » : le refus de conclure du démon ne produit AUCUN nœud — la console conclurait à l'absence à sa place`);
     const t = Array.isArray(n) ? n.map(texte50).join("") : "";
@@ -7161,7 +7165,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const { i18nWalk: walk50 } = await import(url50("i18n.js") + SUFFIXE50);
   localStorage.removeItem("soc_lang");
   const hote50 = document.createElement("div");
-  const nEN50 = vizEN50.coverageHorizonNodes(AMPUTE);
+  const nEN50 = horsNotice50(vizEN50.coverageHorizonNodes(AMPUTE));
   exiger(Array.isArray(nEN50) && nEN50.length === 2, "(50a2-en) instrument : les deux nœuds ne sont pas rendus sous LANG='en'");
   if (Array.isArray(nEN50)) {
     hote50.append(...nEN50);
@@ -12864,11 +12868,10 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 //      coupé à 160 caractères, une phrase tranchée au milieu dans une syntaxe de machine. (2) Sur une
 //      attache non lue, la checklist n'avait pas « un en-tête vide » : elle N'ÉTAIT PAS RENDUE DU TOUT
 //      — `hasRunbook` valant faux, le panneau prenait la branche « aucun runbook attaché » et Y
-//      RETOURNAIT, emportant les étapes SERVIES et leur progression. (3) `/api/sources` ne sert JAMAIS
-//      `non_lu` : sa lecture de fraîcheur est typée depuis `P10.7-g` (lot 98) et son échec rend
-//      l'inventaire ENTIER non lu, sans aucune ligne — le mot entre dans `ETAT_DE_SOURCE` parce que
-//      cette table est l'unique vocabulaire de la console et que `freshness.js` la LIT, pas parce que
-//      l'inventaire le rendrait. (4) `web/risk.js` ne lisait pas davantage `timeline_error` ni
+//      RETOURNAIT, emportant les étapes SERVIES et leur progression. (3) `/api/sources` ne servait JAMAIS
+//      `non_lu` à cette date : sa lecture de fraîcheur est typée depuis `P10.7-g` (lot 98) et son échec rend
+//      l'inventaire ENTIER non lu, sans aucune ligne. DEVENU FAUX avec `P10.32-s` (démon) : une source dont
+//      la lecture hors aveu a réellement échoué sort `non_lu` sur sa ligne (cf. l'en-tête de web/sources.js). (4) `web/risk.js` ne lisait pas davantage `timeline_error` ni
 //      `contributions_error`, servis depuis un lot antérieur : la même faute, deux fois, sur la même
 //      fonction — « aucune contribution enregistrée pour cette entité » est le texte que la fabrique
 //      partagée peignait sur une lecture ratée.
@@ -23641,7 +23644,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // `P10.20-b` — la table que le témoin 140 pose : le registre d'ingestion non relu, gardé en place.
       "processors.js › MOTS_DU_REGISTRE_NON_RELU",
       // `P10.20-b` — la table que le témoin 141 pose : l'inventaire des accès non lu, à la place de « aucun accès observé ».
-      "admin_users.js › MOTS_DE_L_INVENTAIRE_DES_ACCES"];
+      "admin_users.js › MOTS_DE_L_INVENTAIRE_DES_ACCES",
+      // `P10.32-s` — les tables que le témoin 149 pose : les trois portes d'un dormant, et le fait borné de la dernière collecte.
+      "sources.js › MOTS_DU_DORMANT", "sources.js › MOTS_DU_DERNIER_VU_BORNE"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -29056,6 +29061,168 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvant143) console.log(`(143-148) EN ÉCHEC — ${echecs.length - echecsAvant143} écart(s), dits ci-dessus`);
   else console.log("(143-148) OK — `P10.32-m` (console) : le badge de troncature et la ligne d'état d'une agrégation disent, dans les deux langues, que SEUL le tableau est plafonné (valeur servie, sinon PLUME_QUERY_MAX et son défaut relu dans le démon), que les agrégats comptent toute la fenêtre et comment tout lire par la voie que l'écran a (◀ / ▶ seulement là où il y a un parcours, « par curseur » seulement quand le curseur est servi) — jamais sur un pré-agrégé ; le sélecteur dit la taille qui dépasse le plafond par défaut ; une chauffe s'espace, finit, dit que le calcul n'a pas abouti et ouvre la requête dans Recherche, avec un budget plus large (jamais une requête privée) — sur le corps de chauffe que sert le démon, sa phrase, son horizon et son badge restent —, l'auto-rafraîchissement ne la rouvre pas (le tir de cadence réel compris), une autre fenêtre et les quatre rafraîchissements explicites si (l'en-tête « Rafraîchir maintenant » par le coureur des charges réel), et un geste pendant une chauffe ne laisse qu'une relance ; la voie de lecture du badge suit la page qu'evLoad a servie (curseur servi, repli, requête pipée par décalage) ; l'aide des intégrations ne nomme que des états rendus ; « jamais vu » nomme « non installé / non activé ici ».");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (149) `P10.32-s` (console) — UN DORMANT À `last_seen` NUL A TROIS PORTES, ET LE FAIT BORNÉ DU DÉMON EST LU.
+//
+// CE QUE LE DÉMON SERT (RELU ICI, PAS RECOPIÉ) : `daemon/src/handlers/sources.rs` pose `dormant` sur `last == 0` ; `last`
+// vaut 0 par la porte des marquages (`or_insert((0, 0))`, une ligne de déclaration sans donnée retenue) ET par les aveux
+// seuls (`last_du_rollup_hors_aveu` rend `None` : `event` ne retient, sous le plafond, que des aveux « capteur
+// indisponible »). Au plafond, la route pose le champ `CHAMP_DERNIERE_COLLECTE_AU_DELA_DES_LIGNES` (nom LU dans
+// `freshness.rs`) = le nombre de lignes lues, et `last_seen` est une BORNE.
+// CE QUE LA CONSOLE EN FAISAIT AVANT CE LOT, MESURÉ (fee92f67) : la raison du dormant disait « Deux faits » (rien poussé /
+// sous le seuil) et taisait les aveux ; la légende disait « une source déclarée ici » ; la cellule « Dernier vu » rendait
+// la borne « il y a … » comme une date vue, et le champ du fait n'était lu nulle part.
+// JUGÉ, DANS LES DEUX LANGUES : (a) dormant par aveux seuls (aucun marquage, `n_24h` > 0) -> la raison nomme les aveux et
+// dit que c'est cette porte-là ; (a-inverse) dormant avec marquage et `n_24h` 0 -> les trois portes, sans trancher ;
+// (b) champ présent -> la cellule nomme le plafond, dit « au moins », jamais « il y a » ; l'infobulle dit BORNE ; (c) champ
+// absent, nul ou non numérique -> l'affichage d'avant, rien ne casse ; (d) la légende ne dit plus « une source déclarée
+// ici » et nomme les aveux.
+// CE QUE CE TÉMOIN NE TIENT PAS : il lit le TEXTE du démon, pas son exécution (les témoins Rust `p10_32s_*` tiennent la
+// route) ; la cause d'un `non_lu` de ligne (`derniere_collecte_non_etablie`) n'est toujours pas affichée ; la mise en page.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant149 = echecs.length;
+  const instrument149 = (vrai, quoi) => exiger(vrai, `(149-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const lire149 = (...p) => { try { return readFileSync(path.join(RACINE, ...p), "utf8"); } catch (e) { return ""; } };
+  const srcRs149 = lire149("daemon", "src", "handlers", "sources.rs");
+  const frRs149 = lire149("daemon", "src", "handlers", "freshness.rs");
+  const mChamp149 = frRs149.match(/pub\(crate\) const CHAMP_DERNIERE_COLLECTE_AU_DELA_DES_LIGNES: &str = "([a-z_]+)";/);
+  instrument149(!!mChamp149, "le nom du champ du fait borné n'est plus lisible dans daemon/src/handlers/freshness.rs");
+  instrument149(/\} else if \*last == 0 \{\s*"dormant"/.test(srcRs149), "`/api/sources` ne pose plus `dormant` sur `last == 0`");
+  instrument149(/obs\.entry\(src\.clone\(\)\)\.or_insert\(\(0, 0\)\)/.test(srcRs149), "la porte des marquages (`or_insert((0, 0))`) n'est plus dans sources.rs");
+  instrument149(/last_du_rollup_hors_aveu\(conn, &src, last, ""\) \{\s*None => 0,/.test(srcRs149), "les aveux seuls (`None => 0`) ne rendent plus `last` nul dans sources.rs");
+  instrument149(/CHAMP_DERNIERE_COLLECTE_AU_DELA_DES_LIGNES\.into\(\), json!\(lues\)/.test(srcRs149), "`/api/sources` ne sert plus le champ du fait borné avec le nombre de lignes lues");
+  instrument149(/"marquage": m\.map\(/.test(srcRs149), "`marquage` n'est plus nul exactement quand la source n'a pas de ligne de déclaration");
+  const CHAMP149 = mChamp149 ? mChamp149[1] : "derniere_collecte_au_dela_des_lignes";
+  const mPlafond149 = lire149("daemon", "src", "sondes.rs").match(/pub\(crate\) const LIGNES_HORS_AVEU_MAX: i64 = (\d+);/);
+  instrument149(!!mPlafond149, "`LIGNES_HORS_AVEU_MAX` n'est plus lisible dans daemon/src/sondes.rs");
+  const PLAFOND149 = mPlafond149 ? Number(mPlafond149[1]) : 1024;
+
+  const modFr149 = await import(pathToFileURL(path.join(WEB, "sources.js")).href);
+  const langueOrigine149 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modEn149 = await import(adresseSousLaLangue("sources.js"));
+  if (langueOrigine149 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine149);
+  const cueillir149 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir149(c, pred, acc)); return acc; };
+  const motDEtat149 = (r, mot) => cueillir149(r, (e) => e.tagName === "B" && String(e.textContent) === mot, [])[0] || null;
+  const borne149 = (r) => cueillir149(r, (e) => e.getAttribute && e.getAttribute("data-dernier-vu-borne") === "1", []);
+  const uneSource149 = (o) => Object.assign({
+    source: "auditd", expected: true, unexpected: false, in_collectors: true, declaree_par: "ce dépôt",
+    raison_attendue: "émise par un fichier livré (collectors/audit.sh)", marquage: null,
+    cadence_declarable: false, cadence_declaree: "continue", cadence_interval_s: 120, cadence_capteur: "audit",
+    cadence_par: null, cadence_le: null, observed_interval_s: null, last_seen: 1_700_000_000, age_s: 3 * 86400, n_24h: 0, status: "en_retard",
+  }, o);
+  const rendre149 = (mod, sources) => { const h = new Element("div"); mod.renderSourcesInventory(h, { ok: true, pipeline_fresh: true, sources }); return h; };
+  const MOTS149 = {
+    fr: { mod: modFr149, dormant: "dormant", aveux: /aveux « capteur indisponible »/, tranche: /Ici, c'est le troisième/, trois: /Trois faits différents/, vieux: /Deux faits/,
+      plafond: /au-delà du plafond de lignes/, auMoins: /^au moins /, ilYa: /il y a/, titre: new RegExp(`dans ses ${PLAFOND149} dernières lignes[\\s\\S]*AU PLUS TARD[\\s\\S]*BORNE`), avant: /^il y a 3 j$/,
+      legendeVieille: /une source déclarée ici dont/, legendeAveux: /aveux « capteur indisponible »/ },
+    en: { mod: modEn149, dormant: "dormant", aveux: /“sensor unavailable” admissions/, tranche: /Here it is the third one/, trois: /Three different facts/, vieux: /Two different facts/,
+      plafond: /beyond the row cap/, auMoins: /^at least /, ilYa: / ago/, titre: new RegExp(`in its last ${PLAFOND149} rows[\\s\\S]*AT THE LATEST[\\s\\S]*BOUND`), avant: /^3 d ago$/,
+      legendeVieille: /a source declared here of which/, legendeAveux: /“sensor unavailable” admissions/ },
+  };
+  const roleAvant149 = document.body.className;
+  document.body.className = "role-viewer";
+  try {
+    for (const [langue, M] of Object.entries(MOTS149)) {
+      // (a) dormant par AVEUX SEULS : forme servie par le démon — aucun marquage, `last_seen` nul, `n_24h` qui compte les aveux.
+      const aveux = rendre149(M.mod, [uneSource149({ status: "dormant", last_seen: null, age_s: null, n_24h: 7 })]);
+      const bAveux = motDEtat149(aveux, M.dormant);
+      instrument149(!!bAveux, `${langue} : le mot « dormant » n'est pas rendu`);
+      const tAveux = String((bAveux && bAveux.title) || "");
+      exiger(M.aveux.test(tAveux) && M.tranche.test(tAveux) && !M.vieux.test(tAveux),
+        `(149a) ${langue} : un dormant par aveux seuls ne dit pas que ce sont des aveux d'indisponibilité, ou dit encore « deux faits » : « ${tAveux} »`);
+      // (a') un compte sur 24 h PROUVE aussi la troisième porte, même avec un marquage.
+      const compte = motDEtat149(rendre149(M.mod, [uneSource149({ status: "dormant", last_seen: null, age_s: null, n_24h: 4, marquage: { expected: true, updated_by: "eve", updated: 1_700_000_000 } })]), M.dormant);
+      exiger(compte && M.tranche.test(compte.title || "") && /\b4\b/.test(compte.title || ""), `(149a') ${langue} : un dormant avec marquage mais des lignes sur 24 h ne dit pas qu'il s'agit d'aveux : « ${compte && compte.title} »`);
+      // (a-inverse) marquage posé, `n_24h` 0 : les trois portes restent possibles, la raison ne tranche pas.
+      const marque = motDEtat149(rendre149(M.mod, [uneSource149({ status: "dormant", last_seen: null, age_s: null, n_24h: 0, marquage: { expected: true, updated_by: "eve", updated: 1_700_000_000 } })]), M.dormant);
+      exiger(marque && M.trois.test(marque.title || "") && M.aveux.test(marque.title || "") && !M.tranche.test(marque.title || ""),
+        `(149a-inverse) ${langue} : un dormant que la charge utile ne tranche pas est attribué à une porte, ou les trois ne sont pas nommées : « ${marque && marque.title} »`);
+      // (b) le champ du fait BORNÉ, présent : la cellule le nomme, jamais « il y a ».
+      const borne = rendre149(M.mod, [uneSource149({ status: "en_retard", [CHAMP149]: PLAFOND149 })]);
+      const cellule = borne149(borne)[0];
+      exiger(!!cellule && M.plafond.test(cellule.textContent) && M.auMoins.test(cellule.textContent) && !M.ilYa.test(cellule.textContent),
+        `(149b) ${langue} : le champ \`${CHAMP149}\` servi n'est pas affiché comme une borne au-delà du plafond de lignes : « ${cellule ? cellule.textContent : "(aucune cellule bornée)"} »`);
+      exiger(!!cellule && M.titre.test(cellule.title || ""), `(149b) ${langue} : l'infobulle ne dit pas la nature de borne (plafond, au plus tard) : « ${cellule && cellule.title} »`);
+      // (c) champ absent, nul, ou non numérique : l'affichage d'avant, à l'identique, et rien ne casse.
+      for (const [nom, extra] of [["absent", {}], ["nul", { [CHAMP149]: null }], ["texte", { [CHAMP149]: "1024" }], ["zéro", { [CHAMP149]: 0 }]]) {
+        let h = null, erreur = null;
+        try { h = rendre149(M.mod, [uneSource149(extra)]); } catch (e) { erreur = e; }
+        exiger(!erreur, `(149c) ${langue} : champ ${nom} -> le rendu LÈVE : ${erreur && erreur.message}`);
+        if (!h) continue;
+        const ages = cueillir149(h, (e) => e.tagName === "SPAN" && M.avant.test(String(e.textContent)), []);
+        exiger(borne149(h).length === 0 && ages.length === 1, `(149c) ${langue} : champ ${nom} -> la cellule « Dernier vu » n'est plus celle d'avant (bornée : ${borne149(h).length}, « il y a » : ${ages.length})`);
+      }
+      // (d) la légende : plus « une source déclarée ici », et les aveux nommés.
+      const leg = texte(rendre149(M.mod, [uneSource149({}), uneSource149({ source: "x", status: "dormant", last_seen: null, age_s: null })]));
+      exiger(!M.legendeVieille.test(leg) && M.legendeAveux.test(leg), `(149d) ${langue} : la légende de « dormant » dit encore « une source déclarée ici », ou ne nomme pas les aveux`);
+    }
+  } finally {
+    document.body.className = roleAvant149;
+  }
+  if (echecs.length !== echecsAvant149) console.log(`(149) EN ÉCHEC — ${echecs.length - echecsAvant149} écart(s), dits ci-dessus`);
+  else console.log(`(149) OK — \`P10.32-s\` (console) : dans les deux langues, un dormant à last_seen nul par aveux seuls (aucun marquage, ou des lignes sur 24 h) est dit tel, un dormant que la charge utile ne tranche pas nomme ses trois portes sans en choisir une, et « deux faits » ne se lit plus ; le champ \`${CHAMP149}\` (nom lu dans le démon) est affiché comme une BORNE au-delà des ${PLAFOND149} lignes (plafond lu dans le démon), jamais « il y a » ; absent, nul, texte ou zéro, la cellule est celle d'avant. Ce qu'il NE tient PAS : l'exécution de la route (témoins Rust), la cause d'un non_lu de ligne (non affichée), la mise en page.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// (150) `P10.32-p` (console) — UN PANNEAU VIDE MONTRE LA NOTICE DU SERVEUR, QUELLE QUE SOIT `older_outside_window`.
+//
+// CE QUE LE DÉMON SERT (RELU) : `daemon/src/handlers/panneau_avoue.rs` pose `reason: "fenetre_non_bornee"`,
+// `older_outside_window: false` et une notice « fenêtre non bornée : tout ce que la base porte encore a été cherché » quand
+// `from <= 0`. AVANT CE LOT (fee92f67) : la notice n'atteignait l'écran que par l'infobulle de `coverageBadge`, posé SEULEMENT
+// si `older_outside_window === true` ; le corps sans ligne (`corpsSansLigne` -> `coverageHorizonNodes`) ne la portait pas.
+// JUGÉ : (a) corps vide + `fenetre_non_bornee` / `horizon_perime` non dehors / `mesure_en_cours` sans horizon -> la notice est
+// dans le corps, nœud à part ; (b) panneau plein + `older_outside_window: false` -> aucun badge, donc aucune notice, et la
+// seule fabrique qui la porte n'est appelée que par le corps sans ligne ; (c) une notice qui porte du balisage est rendue en
+// TEXTE (aucun élément IMG créé). CE QU'IL NE TIENT PAS : la notice reste en français sous LANG='en' (le démon ne la sert que
+// dans cette langue) ; la mise en page.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant150 = echecs.length;
+  const instrument150 = (vrai, quoi) => exiger(vrai, `(150-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const avoue150 = (() => { try { return readFileSync(path.join(RACINE, "daemon", "src", "handlers", "panneau_avoue.rs"), "utf8"); } catch (e) { return ""; } })();
+  instrument150(/pub\(crate\) const RAISON_FENETRE_NON_BORNEE: &str = "fenetre_non_bornee";/.test(avoue150)
+    && /cov\["reason"\] = json!\(if from <= 0 \{ RAISON_FENETRE_NON_BORNEE \} else \{ raison \}\);/.test(avoue150)
+    && /let dehors = from > 0 && /.test(avoue150), "le démon ne sert plus `fenetre_non_bornee` avec `older_outside_window` faux");
+  const mNotice150 = avoue150.match(/"(fenêtre non bornée : tout ce que la base porte encore a été cherché\.)/);
+  instrument150(!!mNotice150, "la notice de la fenêtre non bornée n'est plus lisible dans panneau_avoue.rs");
+  const NOTICE150 = mNotice150 ? mNotice150[1] : "fenêtre non bornée : tout ce que la base porte encore a été cherché.";
+  const viz150 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const dash150 = await import(pathToFileURL(path.join(WEB, "dashboards.js")).href);
+  const cueillir150 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir150(c, pred, acc)); return acc; };
+  const notices150 = (r) => cueillir150(r, (e) => e.getAttribute && e.getAttribute("data-notice-de-couverture") === "1", []);
+  const phrase150 = () => document.createTextNode("aucune donnée sur la fenêtre");
+  const NON_BORNEE = { coverage: { searched_from: 0, calcule_a: 1_700_100_000, horizon_ts: 1_697_500_000, older_outside_window: false, reason: "fenetre_non_bornee", notice: NOTICE150 + " L'horizon de conservation : sous lui, …" } };
+  const PERIME = { coverage: { searched_from: 1_699_000_000, calcule_a: 1_700_100_000, horizon_ts: 1_697_500_000, older_outside_window: false, reason: "horizon_perime", notice: "réponse servie depuis le cache : l'horizon de conservation a BOUGÉ depuis." } };
+  const CHAUFFE = { coverage: { searched_from: 1_699_000_000, calcule_a: 1_700_100_000, reason: "mesure_en_cours", notice: "aucune ligne n'a encore été calculée pour cette fenêtre : la mesure est en cours." } };
+  // (a) corps vide : la notice, quelle que soit `older_outside_window`.
+  for (const [nom, stats] of [["fenetre_non_bornee", NON_BORNEE], ["horizon_perime", PERIME], ["mesure_en_cours", CHAUFFE]]) {
+    const corps = dash150.corpsSansLigne(stats, phrase150());
+    const n = notices150(corps);
+    exiger(n.length === 1 && n[0].textContent === stats.coverage.notice && texte(corps).includes(stats.coverage.notice),
+      `(150a) ${nom} : un panneau VIDE ne montre pas la notice du serveur (older_outside_window ${stats.coverage.older_outside_window}) — « ${texte(corps)} »`);
+  }
+  // (b) panneau plein + older_outside_window false : aucune notice. La seule fabrique du corps qui la porte n'est appelée
+  // que par le corps sans ligne (dérivé du source), et le badge garde sa garde anti-fatigue.
+  const PLEIN = { coverage: { ...NON_BORNEE.coverage, searched_from: 1_699_000_000, reason: "retention_floor" } };
+  const badges150 = [viz150.coverageBadge(PLEIN), viz150.provenanceBadge(PLEIN), viz150.coldShareBadge(PLEIN)].filter(Boolean);
+  exiger(viz150.coverageBadge(PLEIN) === null && !badges150.some((b) => String(b.title || "").includes(PLEIN.coverage.notice) || texte(b).includes(PLEIN.coverage.notice)),
+    "(150b) un panneau PLEIN dont rien n'est resté dehors porte la notice : l'aveu permanent rend la cause illisible quand elle est vraie");
+  const appels150 = readdirSync(WEB).filter((f) => f.endsWith(".js")).flatMap((f) => [...readFileSync(path.join(WEB, f), "utf8").matchAll(/(?<!function )coverageHorizonNodes\(/g)].map(() => f));
+  const dashSrc150 = readFileSync(path.join(WEB, "dashboards.js"), "utf8");
+  exiger(appels150.length === 1 && appels150[0] === "dashboards.js" && /function corpsSansLigne\([^)]*\) \{[^}]*coverageHorizonNodes\(stats\)/.test(dashSrc150),
+    `(150b) la fabrique qui porte la notice est appelée ailleurs que dans le corps sans ligne : ${JSON.stringify(appels150)} — un panneau plein pourrait la recevoir`);
+  // (c) une notice qui porte du balisage est rendue en TEXTE.
+  const XSS150 = '<img src=x onerror=alert(1)>';
+  const corpsXss = dash150.corpsSansLigne({ coverage: { ...NON_BORNEE.coverage, notice: XSS150 } }, phrase150());
+  const nXss = notices150(corpsXss);
+  exiger(nXss.length === 1 && nXss[0].textContent === XSS150 && cueillir150(corpsXss, (e) => e.tagName === "IMG", []).length === 0,
+    `(150c) une notice qui porte du balisage n'est pas rendue en texte : ${cueillir150(corpsXss, (e) => e.tagName === "IMG", []).length} élément(s) IMG créé(s), texte « ${nXss[0] ? nXss[0].textContent : "(aucune notice)"} »`);
+  if (echecs.length !== echecsAvant150) console.log(`(150) EN ÉCHEC — ${echecs.length - echecsAvant150} écart(s), dits ci-dessus`);
+  else console.log("(150) OK — `P10.32-p` (console) : un panneau VIDE montre la notice du serveur (fenêtre non bornée relue dans le démon, horizon périmé non dehors, mesure en cours sans horizon), en nœud à part et en TEXTE (une notice balisée ne crée aucun élément) ; un panneau plein dont rien n'est resté dehors n'en porte aucune, et la seule fabrique qui la porte n'est appelée que par le corps sans ligne. Ce qu'il NE tient PAS : la notice reste en français sous LANG='en' (le démon ne la sert que dans cette langue) ; la mise en page.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

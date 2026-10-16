@@ -3064,6 +3064,15 @@ jobs:
         working-directory: daemon
         run: cargo audit --deny warnings
 
+      # VERSIONS RETIRÉES, REJOUÉES SANS LE RELEVÉ DU DÉMON (2026-10-16). `daemon/.cargo/audit.toml` coupe le contrôle
+      # des versions retirées (cargo-audit n'admet pas d'exception par crate : `zip` 6.0.0, dépendance de build de
+      # `libduckdb-sys`, feature OFF). Cette garde le rejoue depuis la racine — donc SANS ce fichier — et n'admet que
+      # l'ensemble NOMMÉ de ses exceptions : tout autre crate retiré rougit le travail.
+      - name: Versions retirées hors de l'ensemble admis (cargo-audit sans le relevé du démon)
+        id: crates_retires
+        continue-on-error: true
+        run: python3 .github/scripts/check_only_the_admitted_crates_are_yanked.py
+
       # Ephemeral gitleaks config (runner-only, never committed) — extends the default RULES +
       # allowlists the documented unit-test PEM fixtures so they cannot false-positive.
       - name: Write gitleaks config (allowlist documented test PEM fixtures + env-ref/placeholder paths + schema-rebrand SQL)
@@ -4006,10 +4015,12 @@ jobs:
         run: |
           set -u
           echo "cargo-audit : ${{ steps.cargo_audit.outcome }}"
+          echo "retirées    : ${{ steps.crates_retires.outcome }}"
           echo "gitleaks    : ${{ steps.gitleaks.outcome }}"
           echo "témoin      : ${{ steps.gitleaks_temoin.outcome }}"
           rc=0
           [ "${{ steps.cargo_audit.outcome }}" = success ] || { echo "::error::cargo audit a échoué (avis de dépendance ou version retirée)."; rc=1; }
+          [ "${{ steps.crates_retires.outcome }}" = success ] || { echo "::error::une version retirée hors de l'ensemble admis, ou la garde des versions retirées n'a pas pu conclure."; rc=1; }
           [ "${{ steps.gitleaks.outcome }}" = success ] || { echo "::error::le scan de secrets a échoué."; rc=1; }
           [ "${{ steps.gitleaks_temoin.outcome }}" = success ] || { echo "::error::le témoin du scan de secrets a échoué (la configuration tait un secret posé, ou n'admet plus le PEM de test exact)."; rc=1; }
           exit $rc

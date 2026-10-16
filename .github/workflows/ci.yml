@@ -3064,10 +3064,11 @@ jobs:
         working-directory: daemon
         run: cargo audit --deny warnings
 
-      # VERSIONS RETIRÉES, REJOUÉES SANS LE RELEVÉ DU DÉMON (2026-10-16). `daemon/.cargo/audit.toml` coupe le contrôle
-      # des versions retirées (cargo-audit n'admet pas d'exception par crate : `zip` 6.0.0, dépendance de build de
-      # `libduckdb-sys`, feature OFF). Cette garde le rejoue depuis la racine — donc SANS ce fichier — et n'admet que
-      # l'ensemble NOMMÉ de ses exceptions : tout autre crate retiré rougit le travail.
+      # VERSIONS RETIRÉES, REJOUÉES SANS LA CONFIGURATION DU DÉMON (posée le 2026-10-16, `P10.33-q`). Le contrôle des
+      # versions retirées est RALLUMÉ dans `daemon/.cargo/audit.toml` (`zip` 6.0.0, coupé le matin, a été rétabli par
+      # l'amont le même jour). Cette garde le rejoue depuis la racine — donc SANS ce fichier — et n'admet que
+      # l'ensemble NOMMÉ de ses exceptions (vide) : si le contrôle est un jour recoupé là-bas, tout crate retiré non
+      # nommé rougit ici quand même.
       - name: Versions retirées hors de l'ensemble admis (cargo-audit sans le relevé du démon)
         id: crates_retires
         continue-on-error: true

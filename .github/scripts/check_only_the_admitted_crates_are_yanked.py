@@ -8,7 +8,9 @@ l'amont de `zip` a retiré toutes ses versions sauf la dernière, sans motif pub
 `duckdb`, désactivée par défaut, dépendance de BUILD) exige `zip ^6` dans toutes ses versions : la mise à jour
 est impossible. Décision de l'exploitant (2026-10-16) : couper le contrôle dans `daemon/.cargo/audit.toml`,
 justifié et daté, ET le rejouer ici avec une exception NOMMÉE — pour qu'un AUTRE crate retiré ne passe jamais
-en silence.
+en silence. Le même jour, l'amont a RÉTABLI `zip` 6.0.0 : cette garde a rougi (« exemption sans objet »),
+l'exception est retirée et le contrôle rallumé dans `daemon/.cargo/audit.toml`. Elle reste comme seconde lecture,
+indépendante de ce fichier : s'il recoupe un jour le contrôle, un crate retiré non nommé rougit ici quand même.
 
 COMMENT. `cargo-audit` lit sa configuration dans le `.cargo/audit.toml` du répertoire COURANT. Lancé depuis la
 racine du dépôt avec `-f daemon/Cargo.lock`, il juge donc le verrou du démon SANS le relevé. La garde lit la
@@ -37,11 +39,8 @@ VERROU = "daemon/Cargo.lock"
 # (crate, version) -> raison ÉCRITE, date et condition de levée. Toute entrée est une dette : elle se retire
 # dès que sa condition est remplie, et la garde rougit si elle reste alors qu'elle n'a plus d'objet.
 ADMIS = {
-    ("zip", "6.0.0"): (
-        "dépendance de BUILD de libduckdb-sys (feature `duckdb`, OFF par défaut, jamais compilée en prod) ; "
-        "toutes les versions de libduckdb-sys exigent zip ^6 et 6.0.0 est la seule 6.x ; retirée en amont le "
-        "2026-10-16 sans motif publié. Lever quand libduckdb-sys accepte zip >= 9 ou qu'une 6.x non retirée paraît."
-    ),
+    # Vide depuis le 2026-10-16 : `zip` 6.0.0, admis le matin (retrait amont), a été RÉTABLI par l'amont le même
+    # jour ; l'exception a été retirée et le contrôle rallumé dans `daemon/.cargo/audit.toml` (`P10.33-q`).
 }
 
 

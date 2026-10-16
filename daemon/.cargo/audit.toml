@@ -33,15 +33,3 @@ ignore = [
   # désérialisée par plume. Lever dès que rust_decimal passe sa dép normale à rkyv 0.8.
   "RUSTSEC-2026-0235",
 ]
-
-# VERSIONS RETIRÉES (yanked) — contrôle COUPÉ ici le 2026-10-16, décision de l'exploitant, et REJOUÉ ailleurs avec
-# une exception NOMMÉE. Cause : l'amont de `zip` a retiré ce jour-là toutes ses versions sauf 9.0.3, sans motif
-# publié ; `zip` 6.0.0 n'entre que comme dépendance de BUILD de `libduckdb-sys` (feature `duckdb`, OFF par
-# défaut, jamais compilée en prod), dont TOUTES les versions exigent `zip ^6` (6.0.0 est la seule 6.x) : la mise
-# à jour est impossible, et cargo-audit n'admet pas d'exception par crate pour ce contrôle. Les AVIS (RUSTSEC)
-# restent bloquants ci-dessus. COMPENSATION : `.github/scripts/check_only_the_admitted_crates_are_yanked.py`
-# rejoue le contrôle sans ce fichier et n'admet que `zip 6.0.0` — tout autre crate retiré rougit la CI.
-# Lever (rallumer, et retirer l'exception de la garde) dès que libduckdb-sys accepte zip >= 9 ou qu'une 6.x
-# non retirée paraît.
-[yanked]
-enabled = false

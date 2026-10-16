@@ -164,18 +164,8 @@ pub(crate) fn plan_upsert_lu(conn: &Connection, table: &str, name: &str) -> rusq
     }
 }
 
-/// Projection de `plan_upsert_lu` qui garde le comportement d'avant (lecture ratée = Insert) pour les
-/// appelants que `P10.20-b` n'a pas encore repris, dont deux chargeurs d'objets OAC de ce fichier
-/// (`index_policy`, `dashboard`) ; hors de ce fichier, la liste des appelants restants se lit par
-/// `grep -n 'plan_upsert(' daemon/src`. Ici, `notifier`, `destination`, `connector`, `library_panel` et
-/// `notification_policy` lisent `plan_upsert_lu` et ignorent le fichier sur une lecture ratée ; `field_filter`
-/// (UNIQUE(name)) l'avoue et tente l'INSERT (`plan_oac_nom_unique_ou_aveu`).
-pub(crate) fn plan_upsert(conn: &Connection, table: &str, name: &str) -> UpsertPlan {
-    plan_upsert_lu(conn, table, name).unwrap_or(UpsertPlan::Insert)
-}
-
 /// `P10.20-b` — le plan d'upsert d'un objet OAC SANS UNIQUE(name) (`notifier`, `destination`, `connector`,
-/// `library_panel`, `notification_policy`), ou l'AVEU : une
+/// `library_panel`, `notification_policy`, `dashboard`), ou l'AVEU : une
 /// lecture de l'existant NON faite ignore le fichier (compté dans `ignores` par l'appelant, WARN avec la cause
 /// du moteur, jamais une valeur de cellule : le secret d'un connecteur reste hors du journal) et n'écrit rien.
 /// Elle ne vaut pas « le nom n'existe pas » : `destination` et `connector` n'ont aucun UNIQUE(name), l'INSERT
@@ -199,7 +189,7 @@ fn plan_oac_ou_aveu(
 }
 
 /// `P10.20-b` — le plan d'upsert d'un objet OAC dont la table porte UNIQUE(name) (`field_filter`,
-/// `migrate.rs`, `CREATE TABLE … field_filter`). Une lecture de l'existant NON faite est AVOUÉE (WARN avec la
+/// `index_policy` : `migrate.rs`, `CREATE TABLE … field_filter`, `… index_policy`). Une lecture de l'existant NON faite est AVOUÉE (WARN avec la
 /// cause du moteur) puis rend `Insert` : ici, s'abstenir ferait sauter un masquage `mask`/`deny`/`hash` (le
 /// champ servi en clair jusqu'au rechargement suivant) sans rien gagner, car l'INSERT ne peut ni créer de
 /// doublon ni écraser une copie UI `managed=2` — le moteur le refuse, et `compter_l_ecriture_oac` compte ce
@@ -419,12 +409,17 @@ pub(crate) fn load_overlay_index_policies(conn: &Connection, dir: &std::path::Pa
         let rd = if rdays > 0 { rdays.clamp(7, 3650) } else { 0 };
         let description = v.get("description").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true) as i64;
-        match plan_upsert(conn, "index_policy", &name) {
+        // `P10.20-b` — AVANT : plan lu par la projection qui repliait une lecture ratée sur `Insert` (sans un
+        // mot), écriture jetée (`let _`) puis `charges += 1` : une politique de rétention refusée par le moteur
+        // était annoncée chargée alors que la base gardait l'ancienne. DÉSORMAIS la lecture ratée est avouée
+        // (UNIQUE(name) borne l'INSERT tenté : ni doublon, ni copie UI écrasée) et seule une écriture `Ok(1)`
+        // compte chargé ; un refus est ignoré et dit avec la cause du moteur.
+        let ecrit = match plan_oac_nom_unique_ou_aveu(conn, "index_policy", "index-policy", &name, &path) {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN index-policy '{name}' : une policy UI (managed=2) du même nom existe — overlay ignorée"); ch.ignores += 1; continue; }
-            UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE index_policy SET retention_days=?1, max_rows=?2, max_bytes=?3, description=?4, enabled=?5, managed=1, updated=?6, updated_by='config.d' WHERE id=?7", params![rd, max_rows, max_bytes, description, enabled, now(), id]); }
-            UpsertPlan::Insert => { let _ = conn.execute("INSERT INTO index_policy(name,retention_days,max_rows,max_bytes,description,enabled,managed,created,updated,updated_by) VALUES(?1,?2,?3,?4,?5,?6,1,?7,?7,'config.d')", params![name, rd, max_rows, max_bytes, description, enabled, now()]); }
-        }
-        ch.charges += 1;
+            UpsertPlan::Update(id) => conn.execute("UPDATE index_policy SET retention_days=?1, max_rows=?2, max_bytes=?3, description=?4, enabled=?5, managed=1, updated=?6, updated_by='config.d' WHERE id=?7", params![rd, max_rows, max_bytes, description, enabled, now(), id]),
+            UpsertPlan::Insert => conn.execute("INSERT INTO index_policy(name,retention_days,max_rows,max_bytes,description,enabled,managed,created,updated,updated_by) VALUES(?1,?2,?3,?4,?5,?6,1,?7,?7,'config.d')", params![name, rd, max_rows, max_bytes, description, enabled, now()]),
+        };
+        compter_l_ecriture_oac("index-policy", &name, &path, ecrit, &mut ch);
     }
     ch
 }
@@ -581,39 +576,104 @@ pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) 
         if compiled.iter().any(|(_, _, is_soql, _, _, _)| *is_soql == 0) {
             tracer_panneau_sql_brut(conn, "dashboard-panel", &name);
         }
-        let did = match plan_upsert(conn, "dashboard", &name) {
-            UpsertPlan::SkipUser => { eprintln!("[oac] WARN dashboard '{name}' : un dashboard UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
-            UpsertPlan::Update(id) => { let _ = conn.execute("UPDATE dashboard SET managed=1 WHERE id=?1", params![id]); id }
-            // `P10.20-w` (rang six) — AVANT : l'INSERT du tableau était avalé et `last_insert_rowid()` lu quand même ; sur
-            // un INSERT refusé, c'était l'identifiant de la DERNIÈRE ligne insérée sur la connexion (un autre objet), et le
-            // `DELETE … managed=1` ci-dessous vidait les panneaux managés d'un AUTRE tableau, puis y rattachait ceux du
-            // fichier. DÉSORMAIS l'identifiant n'est lu que sous `Ok(1)` ; sinon le tableau est ignoré, avoué, et aucun
-            // panneau n'est touché.
-            UpsertPlan::Insert => match conn.execute("INSERT INTO dashboard(name,created,managed) VALUES(?1,?2,1)", params![name, now()]) {
-                Ok(1) => conn.last_insert_rowid(),
-                Ok(n) => {
-                    eprintln!("[oac] WARN dashboard '{name}' : l'insertion a écrit {n} ligne(s) au lieu d'une — overlay ignoré, aucun panneau touché");
-                    ch.ignores += 1;
-                    continue;
-                }
+        // `P10.20-b` — AVANT : plan lu par la projection qui repliait une lecture ratée sur `Insert` (`dashboard`
+        // n'a aucun UNIQUE(name), `db/schema.sql` : l'INSERT créait un tableau DOUBLON), UPDATE `managed=1` jeté,
+        // puis `DELETE` des panneaux managés et INSERT de chacun jetés : un DELETE passé suivi d'INSERT refusés
+        // VIDAIT le tableau, compté chargé. DÉSORMAIS : lecture ratée -> fichier ignoré et avoué ; les écritures
+        // (tableau, DELETE, chaque panneau) tiennent sous un SAVEPOINT, la première refusée annule le tout
+        // (`ROLLBACK TO` : le tableau garde ses panneaux d'avant), l'overlay est ignoré et dit avec la cause du
+        // moteur ; `charges` ne bouge qu'après le `RELEASE`.
+        let Some(plan) = plan_oac_ou_aveu(conn, "dashboard", "dashboard", &name, &path) else {
+            ch.ignores += 1;
+            continue;
+        };
+        if matches!(plan, UpsertPlan::SkipUser) {
+            eprintln!("[oac] WARN dashboard '{name}' : un dashboard UI (managed=2) du même nom existe — overlay ignoré");
+            ch.ignores += 1;
+            continue;
+        }
+        // Le chargeur appelé hors transaction : le SAVEPOINT est alors la transaction la plus externe, et un
+        // ROLLBACK complet est la même annulation (repli si `ROLLBACK TO … ; RELEASE` est refusé à son tour).
+        let hors_transaction = conn.is_autocommit();
+        if let Err(e) = conn.execute_batch("SAVEPOINT oac_dashboard") {
+            eprintln!("[oac] WARN dashboard '{name}' ({}) : point de reprise non ouvert ({e}) — overlay ignoré, aucun panneau touché", path.display());
+            ch.ignores += 1;
+            continue;
+        }
+        match ecrire_le_tableau_oac(conn, &name, plan, &compiled) {
+            Ok(()) => match conn.execute_batch("RELEASE oac_dashboard") {
+                Ok(()) => ch.charges += 1,
                 Err(e) => {
-                    eprintln!("[oac] WARN dashboard '{name}' : insertion refusée ({e}) — overlay ignoré, aucun panneau touché, retenté au prochain chargement");
+                    let annule = annuler_le_tableau_oac(conn, hors_transaction);
+                    eprintln!("[oac] WARN dashboard '{name}' ({}) : validation refusée ({e}) — overlay NON chargé, annulation : {annule}", path.display());
                     ch.ignores += 1;
-                    continue;
                 }
             },
-        };
-        // Synchronise les panneaux managed=1 de CE dashboard sur le fichier (remplace intégralement).
-        let _ = conn.execute("DELETE FROM panel WHERE dashboard_id=?1 AND managed=1", params![did]);
-        for (i, (title, query, is_soql, viz, window_s, drill)) in compiled.iter().enumerate() {
-            let _ = conn.execute(
-                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,window_s,position,drill,managed) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1)",
-                params![did, title, query, is_soql, viz, window_s, i as i64, drill],
-            );
+            Err(cause) => {
+                eprintln!("[oac] WARN dashboard '{name}' ({}) : {cause} — overlay NON chargé, {}", path.display(), annuler_le_tableau_oac(conn, hors_transaction));
+                ch.ignores += 1;
+            }
         }
-        ch.charges += 1;
     }
     ch
+}
+
+/// `P10.20-b` — annule les écritures d'un tableau sous le SAVEPOINT `oac_dashboard` et rend la phrase qui le dit.
+/// `ROLLBACK TO` puis `RELEASE` ; si l'un des deux est refusé et que le chargeur a été appelé hors transaction
+/// (`hors_transaction`), un `ROLLBACK` complet : la connexion n'est jamais laissée dans une transaction ouverte.
+fn annuler_le_tableau_oac(conn: &Connection, hors_transaction: bool) -> String {
+    match conn.execute_batch("ROLLBACK TO oac_dashboard; RELEASE oac_dashboard") {
+        Ok(()) => "écritures annulées, panneaux d'avant gardés".to_string(),
+        Err(e) if hors_transaction && !conn.is_autocommit() => match conn.execute_batch("ROLLBACK") {
+            Ok(()) => format!("retour au point de reprise refusé ({e}), transaction annulée en entier, panneaux d'avant gardés"),
+            Err(e2) => format!("ANNULATION REFUSÉE ({e} ; puis {e2})"),
+        },
+        Err(e) => format!("ANNULATION REFUSÉE ({e})"),
+    }
+}
+
+/// `P10.20-b` — les écritures d'un tableau OAC (la ligne `dashboard`, puis le remplacement de ses panneaux
+/// `managed=1`), à jouer sous le SAVEPOINT de l'appelant. Rend la cause de la PREMIÈRE écriture refusée ou sans
+/// effet, et s'arrête là : l'appelant annule le tout. `plan` n'est jamais `SkipUser` ici.
+fn ecrire_le_tableau_oac(
+    conn: &Connection,
+    name: &str,
+    plan: UpsertPlan,
+    compiled: &[(String, String, i64, String, i64, String)],
+) -> Result<(), String> {
+    let did = match plan {
+        UpsertPlan::SkipUser => return Err("copie UI (managed=2) du même nom".to_string()),
+        UpsertPlan::Update(id) => {
+            match conn.execute("UPDATE dashboard SET managed=1 WHERE id=?1", params![id]) {
+                Ok(1) => {}
+                Ok(n) => return Err(format!("mise à jour du tableau sans effet ({n} ligne posée)")),
+                Err(e) => return Err(format!("mise à jour du tableau refusée ({e})")),
+            }
+            id
+        }
+        // `P10.20-w` (rang six) — l'identifiant n'est lu que sous `Ok(1)` : sur un INSERT refusé,
+        // `last_insert_rowid()` rendait celui d'un AUTRE objet, dont les panneaux managés étaient alors remplacés.
+        UpsertPlan::Insert => match conn.execute("INSERT INTO dashboard(name,created,managed) VALUES(?1,?2,1)", params![name, now()]) {
+            Ok(1) => conn.last_insert_rowid(),
+            Ok(n) => return Err(format!("l'insertion du tableau a écrit {n} ligne(s) au lieu d'une")),
+            Err(e) => return Err(format!("insertion du tableau refusée ({e})")),
+        },
+    };
+    // Synchronise les panneaux managed=1 de CE dashboard sur le fichier (remplace intégralement).
+    if let Err(e) = conn.execute("DELETE FROM panel WHERE dashboard_id=?1 AND managed=1", params![did]) {
+        return Err(format!("retrait des panneaux managés refusé ({e})"));
+    }
+    for (i, (title, query, is_soql, viz, window_s, drill)) in compiled.iter().enumerate() {
+        match conn.execute(
+            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,window_s,position,drill,managed) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1)",
+            params![did, title, query, is_soql, viz, window_s, i as i64, drill],
+        ) {
+            Ok(1) => {}
+            Ok(n) => return Err(format!("panneau {} posé sans effet ({n} ligne)", i + 1)),
+            Err(e) => return Err(format!("panneau {} refusé ({e})", i + 1)),
+        }
+    }
+    Ok(())
 }
 
 /// Applique TOUS les overlays d'objets de config d'un `config.d` (sous-dossiers dédiés). Racine absente ->

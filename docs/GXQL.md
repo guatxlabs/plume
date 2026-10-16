@@ -311,6 +311,7 @@ refus lisible.
 | plafond de lignes rendues | `PLUME_QUERY_MAX` | `5000` ; une valeur hors de `1`–`100000` retombe sur `5000` (§6.4) |
 | défaut et plafond de `/api/search` | `PLUME_SEARCH_LIMIT` / `PLUME_SEARCH_MAX` | `100` / `5000` |
 | requêtes simultanées | `PLUME_QUERY_CONCURRENCY` | `3`, **partagé** entre `/api/query` et `/api/search` |
+| jetons réservés aux requêtes légères | `PLUME_QUERY_RESERVE_LIGHT` | `1` : les lourdes (`interactive:true`, export, Pivot) tiennent au plus N − 1 jetons |
 
 Le dépassement de budget **interrompt** la requête en cours ; le dépassement du plafond de lignes la
 **tronque** et le signale dans les statistiques de réponse plutôt que de rendre un résultat partiel

@@ -167,8 +167,18 @@ pub(crate) async fn report_run_now(State(st): State<AppState>, Extension(au): Ex
         }
     }
     let outcome = tokio::task::spawn_blocking(move || deliver_report(&__rc, &db_path, id)).await;
+    // `P10.20-w` — la réponse DIT si la marque d'échéance est écrite : un envoi dont la marque manque repartirait
+    // au prochain tick, et l'appelant doit le lire au lieu d'un « ok » nu.
     match outcome {
-        Ok(Ok((count, delivered))) => Json(json!({ "ok": true, "rows": count, "delivered": delivered })).into_response(),
+        Ok(Ok(IssueDuRapport::Envoye { count, delivered, statut_ecrit })) => Json(json!({
+            "ok": true, "rows": count, "delivered": delivered, "marque_ecrite": true, "statut_ecrit": statut_ecrit,
+        })).into_response(),
+        Ok(Ok(IssueDuRapport::MarqueRefusee)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "error": "marque d'échéance du rapport non écrite : aucun envoi", "delivered": false, "marque_ecrite": false,
+        }))).into_response(),
+        Ok(Ok(IssueDuRapport::Echec { erreur, consigne })) => (StatusCode::BAD_REQUEST, Json(json!({
+            "error": erreur, "marque_ecrite": consigne,
+        }))).into_response(),
         Ok(Err(e)) => bad_req(e),
         Err(_) => server_err("exécution du rapport échouée"),
     }
@@ -200,11 +210,59 @@ fn format_report_detail(name: &str, v: &Value) -> (i64, String) {
     (n, out)
 }
 
+/// Issue d'un rapport dont la définition a été lue (`P10.20-w`). Chaque écriture de statut est COMPTÉE : une
+/// écriture refusée (ou sans effet) n'est plus avalée, elle se lit ici et se compte au bilan du tick.
+#[derive(Debug, PartialEq)]
+pub(crate) enum IssueDuRapport {
+    /// Marque d'échéance (`last_run`) écrite AVANT l'envoi, puis rapport envoyé. `statut_ecrit` : `last_ok` /
+    /// `last_count` écrits (une ligne) ; `false` = envoi fait, statut perdu (journalisé, compté, aucun second envoi).
+    Envoye { count: i64, delivered: bool, statut_ecrit: bool },
+    /// Marque d'échéance refusée ou sans effet : AUCUN envoi. Le rapport reste dû au tick suivant, sans effet
+    /// externe à re-tenter.
+    MarqueRefusee,
+    /// Exécution en échec (aucun envoi). `consigne` : `last_run` + `last_error` écrits (une ligne).
+    Echec { erreur: String, consigne: bool },
+}
+
+/// Écriture de statut d'un rapport : `true` sur UNE ligne écrite ; sinon la ligne de journal (identifiant du
+/// rapport + cause du moteur — jamais le nom, l'endpoint du notificateur ni le contenu) et `false`.
+fn statut_du_rapport_ecrit(id: i64, ecrit: rusqlite::Result<usize>, geste: &str) -> bool {
+    match ecrit {
+        Ok(1) => true,
+        autre => {
+            let cause = match autre { Err(e) => e.to_string(), Ok(n) => format!("{n} ligne(s) écrite(s) au lieu d'une") };
+            eprintln!("[plume] rapport planifié {id} : {geste} : {cause}");
+            false
+        }
+    }
+}
+
+/// Transmet le rapport au notificateur. Point unique d'envoi du tick ET de /run ; en test, un témoin du fil
+/// courant peut l'intercepter (compter les envois, refuser, paniquer) — aucun réseau.
+fn envoyer_le_rapport(kind: &str, url: &str, config: &Value, title: &str, detail: &str, ts: i64) -> bool {
+    #[cfg(test)]
+    {
+        if let Some(verdict) = temoin_d_envoi::intercepter(kind, title, detail) {
+            return verdict;
+        }
+    }
+    notify_send(kind, url, config, 2, title, detail, "", ts)
+}
+
 /// EXÉCUTE un rapport (dataset GXQL) MASQUÉ par son `run_as_role` et le LIVRE via son notifier. Coeur partagé
 /// par le tick de fond et /run. Ne PANIQUE jamais (les erreurs remontent en `Err`). Le lock métadonnées n'est
 /// tenu QUE pour lire la définition + écrire le statut ; la requête (`run_query_ex`, pool read séparé) et
 /// l'envoi (`notify_send`) tournent HORS lock.
-pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64) -> Result<(i64, bool), String> {
+///
+/// `P10.20-w` — MARQUE D'ABORD : `last_run` est posé et COMPTÉ (une ligne) AVANT l'envoi. Avant, l'UPDATE venait
+/// après `notify_send` en `let _ =` : refusé, `last_run` n'avançait pas et le rapport repartait vers le
+/// notificateur tiers à chaque tick, sans `last_error` ni bilan. `Err` = définition non lue (rien écrit).
+///
+/// Ce que « marque d'abord » change, et seulement cela : un processus tué ENTRE la marque et l'envoi perd le
+/// rapport de cet intervalle (`interval_s`) au lieu de le renvoyer au redémarrage. Un envoi rendu `false` ou un
+/// panic écrivaient déjà `last_run` avant ce changement : un envoi raté attendait déjà l'échéance suivante.
+/// `delivered = false` est rendu tel quel (réponse de /run), mais `last_ok` est écrit quand même (reste ouvert).
+pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64) -> Result<IssueDuRapport, String> {
     // 1) charge la définition + le dataset GXQL + le notifier (kind/url/config) sous lock, puis relâche.
     let (name, run_as, tenant, soql, nkind, nurl, nconfig): (String, String, String, String, String, String, String) = {
         let conn = db.lock();
@@ -220,23 +278,31 @@ pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64
         (name, run_as, tenant, soql, nkind, nurl, nconfig)
     };
     // 2) COMPILE+EXÉCUTE MASQUÉ (via render_report_detail) puis LIVRE. Séparé pour que le CONTENU masqué livré
-    //    soit OBSERVABLE en test (deliver_report ne rend que count+bool).
+    //    soit OBSERVABLE en test.
     let now_ts = now();
     match render_report_detail(db_path, &name, &run_as, &tenant, &soql) {
         Ok((count, detail)) => {
             let config: Value = serde_json::from_str(&nconfig).unwrap_or(json!({}));
             let title = format!("Rapport planifié : {name}");
-            let delivered = notify_send(&nkind, &nurl, &config, 2, &title, &detail, "", now_ts);
-            let conn = db.lock();
-            let _ = conn.execute(
-                "UPDATE scheduled_report SET last_run=?1, last_ok=?1, last_error=NULL, last_count=?2 WHERE id=?3",
-                params![now_ts, count, id]);
-            Ok((count, delivered))
+            // 2a) la marque d'échéance, comptée, AVANT tout effet externe.
+            let marque = { let conn = db.lock(); conn.execute("UPDATE scheduled_report SET last_run=?1 WHERE id=?2", params![now_ts, id]) };
+            if !statut_du_rapport_ecrit(id, marque, "marque d'échéance NON ÉCRITE, aucun envoi, le rapport reste dû au prochain tick") {
+                return Ok(IssueDuRapport::MarqueRefusee);
+            }
+            // 2b) l'envoi, une fois la marque posée.
+            let delivered = envoyer_le_rapport(&nkind, &nurl, &config, &title, &detail, now_ts);
+            // 2c) le statut d'après envoi, compté — un refus est dit et compté, jamais un second envoi.
+            let statut = {
+                let conn = db.lock();
+                conn.execute("UPDATE scheduled_report SET last_ok=?1, last_error=NULL, last_count=?2 WHERE id=?3", params![now_ts, count, id])
+            };
+            let statut_ecrit = statut_du_rapport_ecrit(id, statut, "envoi tenté, mais statut d'envoi (last_ok, last_count) NON ÉCRIT");
+            Ok(IssueDuRapport::Envoye { count, delivered, statut_ecrit })
         }
         Err(e) => {
-            let conn = db.lock();
-            let _ = conn.execute("UPDATE scheduled_report SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, e, id]);
-            Err(e)
+            let ecrit = { let conn = db.lock(); conn.execute("UPDATE scheduled_report SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, e, id]) };
+            let consigne = statut_du_rapport_ecrit(id, ecrit, "échec d'exécution NON CONSIGNÉ (last_run, last_error)");
+            Ok(IssueDuRapport::Echec { erreur: e, consigne })
         }
     }
 }
@@ -270,6 +336,8 @@ pub(crate) fn render_report_detail(db_path: &str, name: &str, run_as: &str, tena
 /// REND SON BILAN (`P4.1-r`) : `Illisible` si la liste des rapports dus n'a pas pu être lue, `Lue(n)` =
 /// rapports dus abandonnés (ligne indécodable, ou panic capturé — consigné aussi dans `last_error`). Une
 /// livraison en erreur n'est PAS un abandon : `deliver_report` l'a consignée dans `last_error`.
+/// `P10.20-w` — s'y ajoutent les écritures de statut perdues : marque d'échéance refusée (aucun envoi), statut
+/// d'après envoi non écrit, échec non consigné, et la consignation d'un panic elle-même refusée.
 pub(crate) fn run_due_reports(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnes = 0u32;
@@ -297,15 +365,43 @@ pub(crate) fn run_due_reports(db: &Arc<Mutex<Connection>>, db_path: &str) -> cra
     for id in due {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| deliver_report(db, db_path, id)));
         match r {
-            Ok(Ok(_)) => {}
-            Ok(Err(_)) => {} // erreur déjà consignée dans last_error par deliver_report
+            Ok(Ok(IssueDuRapport::Envoye { statut_ecrit: true, .. })) => {}
+            Ok(Ok(IssueDuRapport::Envoye { statut_ecrit: false, .. })) => abandonnes += 1,
+            Ok(Ok(IssueDuRapport::MarqueRefusee)) => abandonnes += 1,
+            Ok(Ok(IssueDuRapport::Echec { consigne: true, .. })) => {} // erreur consignée dans last_error
+            Ok(Ok(IssueDuRapport::Echec { consigne: false, .. })) => abandonnes += 1,
+            Ok(Err(_)) => {} // définition non lue (rapport, dataset ou notifier désactivé) : rien à envoyer ni à écrire
             Err(_) => {
                 abandonnes += 1;
-                let conn = db.lock();
-                let _ = conn.execute("UPDATE scheduled_report SET last_run=?1, last_error=?2 WHERE id=?3",
-                    params![now_ts, "panic interne du rapport (capturé)", id]);
+                let ecrit = {
+                    let conn = db.lock();
+                    conn.execute("UPDATE scheduled_report SET last_run=?1, last_error=?2 WHERE id=?3",
+                        params![now_ts, "panic interne du rapport (capturé)", id])
+                };
+                if !statut_du_rapport_ecrit(id, ecrit, "panic capturé NON CONSIGNÉ (last_run, last_error)") {
+                    abandonnes += 1;
+                }
             }
         }
     }
     crate::mesure_environnement::Mesure::Lue(abandonnes)
+}
+
+/// Témoin d'envoi (tests seulement) : intercepte `envoyer_le_rapport` sur le fil courant — le tick appelle
+/// `deliver_report` sur SON fil (`catch_unwind`), donc un témoin posé par le test voit chaque envoi du tick.
+#[cfg(test)]
+pub(crate) mod temoin_d_envoi {
+    use std::cell::RefCell;
+    type Intercepteur = Box<dyn FnMut(&str, &str, &str) -> bool>;
+    thread_local! { static INTERCEPTEUR: RefCell<Option<Intercepteur>> = RefCell::new(None); }
+    /// Pose l'intercepteur `(kind, titre, détail) -> livré` du fil courant.
+    pub(crate) fn poser(f: impl FnMut(&str, &str, &str) -> bool + 'static) {
+        INTERCEPTEUR.with(|c| *c.borrow_mut() = Some(Box::new(f)));
+    }
+    pub(crate) fn retirer() {
+        INTERCEPTEUR.with(|c| *c.borrow_mut() = None);
+    }
+    pub(super) fn intercepter(kind: &str, title: &str, detail: &str) -> Option<bool> {
+        INTERCEPTEUR.with(|c| c.borrow_mut().as_mut().map(|f| f(kind, title, detail)))
+    }
 }

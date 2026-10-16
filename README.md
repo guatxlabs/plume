@@ -870,6 +870,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 |---|---|---|
 | `PLUME_DB_KEY_FILE` | chemin d'un fichier‑clé monté en lecture seule (**préféré**, *fail‑closed*) | vide |
 | `PLUME_DB_KEY` | passphrase SQLCipher — lisible via `/proc/<pid>/environ` | vide |
+| `PLUME_DB_EN_CLAIR_ASSUME` | `1`/`true`/`yes`/`on` déclare VOULUE une base en clair (aucune clé, ni explicite ni automatique) : tait l'avertissement de santé non purgeable posé au démarrage tant que la base est lisible par `sqlite3` nu (remède : `chiffrer-au-repos`). Jamais de refus : le clair reste le mode rétrocompatible | vide |
 
 **Sauvegarde et reprise** — toutes détaillées dans [`docs/DR-plume-restore.md`](docs/DR-plume-restore.md).
 
@@ -905,6 +906,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 | Variable | Effet | Défaut |
 |---|---|---|
 | `PLUME_QUERY_CONCURRENCY` | requêtes simultanées (sémaphore partagé recherche + query) | `3` |
+| `PLUME_QUERY_RESERVE_LIGHT` | jetons de `PLUME_QUERY_CONCURRENCY` RÉSERVÉS aux requêtes légères (budget automatique) : les requêtes lourdes (`interactive:true`, export, Pivot) passent d'abord par un couloir de N − r jetons et ne peuvent plus affamer l'API interactive ; borné à N − 1, sans effet si N = 1, `0` rend le comportement d'avant | `1` |
 | `PLUME_PANEL_REFRESH_CONCURRENCY` | rafraîchissements ASYNC de panneaux simultanés — sémaphore **séparé** de `PLUME_QUERY_CONCURRENCY`, de sorte qu'un tableau de bord qui se rafraîchit ne prend jamais de permis à l'interactif. Saturé, le permis n'est PAS attendu : le cache périmé reste servi. Compte aussi comme **porteur** de mémoire SQLite (le budget se divise par le nombre de porteurs, cf. `PLUME_SQLITE_BUDGET_MB`) | `2` |
 | `PLUME_QUERY_BUDGET_MS` | budget d'une requête avant abandon | `5000` |
 | `PLUME_QUERY_MAX` | plafond de lignes rendues par `/api/query` (borné dur à `100000`) | `5000` |

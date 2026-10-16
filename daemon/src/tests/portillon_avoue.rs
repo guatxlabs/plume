@@ -157,8 +157,9 @@
     /// Les sites d'acquisition d'un texte de fichier : `(ligne, fonction, branche Err)`.
     ///
     /// LE MARQUEUR EST L'ACCÈS AU SÉMAPHORE, pas le nom d'une fonction d'acquisition : c'est ce qui
-    /// rend la lecture insensible au choix entre `acquire_query_permit(&st.query_sem)` et
-    /// `clock.permit(&st.query_sem)`, les deux seules écritures que `P7.8-a` autorise.
+    /// rend la lecture insensible au choix entre `acquire_query_permit(&st.query_sem)`,
+    /// `acquire_query_permit_lourd(&st.query_sem)` (porte jumelle des requêtes lourdes, `P10.32-q`) et
+    /// `clock.permit(&st.query_sem)`, les trois seules écritures que `P7.8-a` autorise.
     fn portillon_sites_du_texte(brut: &str) -> Vec<(usize, String, String)> {
         let texte = portillon_depouiller(brut);
         let mut out = Vec::new();

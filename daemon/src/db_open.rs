@@ -180,6 +180,7 @@ impl PreparedDb {
         // le jour où il est écrit. Le coût de cette couverture large est UNE ligne par heure au plus
         // (déduplication horaire, comme tous les signaux de santé non purgeables du dépôt).
         signaler_la_cle_auto_si_besoin(&prete);
+        signaler_la_base_en_clair_si_besoin(&prete, path); // une base EN CLAIR sans clé se dit aussi, ici, sans jamais refuser
         Ok(prete)
     }
 

@@ -716,6 +716,160 @@ pub(crate) fn signaler_la_cle_auto_si_besoin(conn: &Connection) {
     }
 }
 
+// ================================================================================================
+// UNE BASE DÉJÀ NÉE EN CLAIR SE DIT À CHAQUE OUVERTURE — AVEU FORT, JAMAIS DE REFUS
+// ------------------------------------------------------------------------------------------------
+// CE QUI MANQUAIT. Sans aucune clé (ni explicite, ni auto-engendrée), `decision_at_rest` rend
+// `RienAFaire` pour toute base existante et `ensure_encrypted` ne sonde rien : une base EN CLAIR —
+// née avant `P9.6-a`, née par une sous-commande avant la garde `refuser_une_base_absente`, ou
+// restaurée en clair — tournait sans un mot. Ses octets se relisent pourtant avec un `sqlite3` nu.
+//
+// POURQUOI UN AVEU ET PAS UN REFUS (décision de l'exploitant, 2026-10-16). Le mode en clair est le
+// mode RÉTROCOMPATIBLE supporté : toute installation antérieure à `P9.6-a` y est, et rien dans la
+// configuration ne distingue un clair VOULU d'un clair SUBI. Refuser de démarrer casserait les
+// premiers pour protéger les seconds. La seule distinction possible est une DÉCLARATION :
+// `PLUME_DB_EN_CLAIR_ASSUME`, même grammaire que `PLUME_DB_KEY_ESCROWED`, lue par `cfg()` (env >
+// fichier `PLUME_CONFIG`), donc valable à l'identique en hôte natif, Docker et k3s. Absent = aveu.
+//
+// CE QUE LE PRODUIT ÉTABLIT, ET RIEN DE PLUS : les SEIZE premiers octets du fichier, lus sans
+// l'ouvrir comme base et sans clé. `SQLite format 3\0` est la preuve directe du clair (SQLCipher
+// chiffre la page 1 en entier, en-tête compris). Fichier absent, vide, trop court ou illisible : on
+// ne conclut PAS, et on se tait — un aveu sur une mesure ratée serait un bruit, pas une preuve.
+//
+// CE QUE CET AVEU NE COUVRE PAS : les bases de TENANT. Elles s'ouvrent par `open_keyed`, qui ne passe
+// jamais par la porte de l'aveu, alors que `resolve_tenant_key` peut rendre « pas de clé » (clair)
+// pour un `key_ref` vide ou une variable `env:` absente. Le mode multi-tenant est désactivé par défaut
+// (`PLUME_MULTI_TENANT`) ; une base de tenant en clair reste donc muette, et c'est un reste assumé.
+// ================================================================================================
+
+/// Le levier par lequel l'exploitant DÉCLARE que la base en clair est voulue (`1/true/yes/on`).
+/// Comme `PLUME_DB_KEY_ESCROWED`, c'est une DÉCLARATION, pas un fait vérifié par le produit.
+pub(crate) const CLE_DB_EN_CLAIR_ASSUME: &str = "PLUME_DB_EN_CLAIR_ASSUME";
+
+/// L'en-tête d'un fichier SQLite NON chiffré, tel qu'il est écrit sur le disque.
+pub(crate) const EN_TETE_D_UNE_BASE_EN_CLAIR: &[u8; 16] = b"SQLite format 3\0";
+
+
+/// Ce que les seize premiers octets du fichier de base permettent d'établir.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum EnTeteDeLaBase {
+    /// Les seize octets valent `SQLite format 3\0` : la base est EN CLAIR sur le disque.
+    EnClair,
+    /// Seize octets lus, et ce n'est pas l'en-tête SQLite : chiffrée (ou autre chose). Pas d'aveu.
+    AutreContenu,
+    /// Absent, vide, plus court que seize octets, ou illisible : rien d'établi, rien de dit.
+    NonEtabli,
+}
+
+/// LECTURE SEULE des seize premiers octets — jamais d'ouverture SQLite, jamais de clé, jamais
+/// d'écriture. C'est la même preuve sur les octets que les témoins de `P8.7-b` et `P9.6-a`.
+pub(crate) fn en_tete_de_la_base(path: &str) -> EnTeteDeLaBase {
+    use std::io::Read;
+    let mut tete = [0u8; 16];
+    let lu = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut tete));
+    match lu {
+        Err(_) => EnTeteDeLaBase::NonEtabli,
+        Ok(()) if &tete == EN_TETE_D_UNE_BASE_EN_CLAIR => EnTeteDeLaBase::EnClair,
+        Ok(()) => EnTeteDeLaBase::AutreContenu,
+    }
+}
+
+/// PURE — y a-t-il lieu d'avouer ? Vrai SSI aucune clé (ni explicite ni auto), l'en-tête prouve le
+/// clair, et l'exploitant n'a pas déclaré ce clair voulu. Une clé présente : silence (la base est
+/// chiffrée, ou le démarrage la refuse déjà en nommant le geste — `RefusConversionRequise`,
+/// `RefusCleAutoOrpheline`).
+pub(crate) fn base_en_clair_a_signaler(cle_presente: bool, en_tete: EnTeteDeLaBase, assume: bool) -> bool {
+    !cle_presente && en_tete == EnTeteDeLaBase::EnClair && !assume
+}
+
+/// L'exploitant a-t-il DÉCLARÉ le clair voulu ? Grammaire unique du produit (`drapeau_sauvegarde`).
+pub(crate) fn base_en_clair_declaree(conf: &HashMap<String, String>) -> bool {
+    drapeau_sauvegarde(&cfg(conf, CLE_DB_EN_CLAIR_ASSUME, ""))
+}
+
+/// L'ADAPTATEUR sur une configuration et un fichier RÉELS. « Une clé » se résout EXACTEMENT comme
+/// `db_key()` : la clé explicite d'abord, la clé auto-engendrée ensuite — c'est la clé avec laquelle
+/// la connexion vient d'être ouverte.
+pub(crate) fn base_en_clair_a_signaler_depuis(conf: &HashMap<String, String>, path: &str) -> bool {
+    let cle_presente = db_key_depuis(conf).is_some() || cle_auto_lire(&cle_auto_chemin(conf)).is_some();
+    base_en_clair_a_signaler(cle_presente, en_tete_de_la_base(path), base_en_clair_declaree(conf))
+}
+
+/// LE TEXTE DE L'AVEU, écrit une fois pour l'événement et pour la ligne de journal. Il nomme des
+/// RÉGLAGES, jamais une valeur ni un chemin de clé.
+pub(crate) fn aveu_base_en_clair() -> String {
+    format!(
+        "BASE EN CLAIR SUR LE DISQUE : aucune clé at-rest n'est configurée et le fichier de la base \
+         commence par l'en-tête `SQLite format 3` — un `sqlite3` nu y relit tous les événements, \
+         dossiers et comptes. CE QUE CELA NE PROTÈGE PAS : le vol du disque, une image de volume, une \
+         sauvegarde de fichier, un stockage mal décommissionné. POUR CHIFFRER (irréversible) : arrêter \
+         le démon, poser une clé EXPLICITE ({CLE_DB_KEY_FILE} ou {CLE_DB_KEY}) et \
+         {CLE_DB_KEY_ESCROWED}=1, puis lancer `plume-daemon chiffrer-au-repos`, qui produit une \
+         sauvegarde vérifiée avant de basculer. SI LE CLAIR EST VOULU : poser \
+         {CLE_DB_EN_CLAIR_ASSUME}=1 — une DÉCLARATION de l'exploitant, que le produit ne vérifie pas."
+    )
+}
+
+/// SIGNAL SOC NON PURGEABLE — jumeau exact de `emit_cle_auto_sans_abri` : source `plume-config`,
+/// `category='health'`, `origin='daemon'` (donc `RETENTION_NONPURGE`), sévérité 4, déduplication
+/// HORAIRE. Rend vrai si une ligne a été écrite.
+pub(crate) fn emit_base_en_clair(conn: &Connection, now_ts: i64) -> bool {
+    let bucket = now_ts / 3600;
+    let dedup = format!("plume-base-en-clair-sans-cle-{bucket}");
+    let fields = json!({
+        "at_rest": "plaintext",
+        "key_configured": false,
+        "gesture": "chiffrer-au-repos",
+        "ack_setting": CLE_DB_EN_CLAIR_ASSUME,
+    })
+    .to_string();
+    let ligne = EventRow {
+        ts: now_ts,
+        source: "plume-config".into(), // NON-PURGEABLE avec origin='daemon' (RETENTION_NONPURGE)
+        category: "health".into(),
+        severity: 4,
+        message: aveu_base_en_clair(),
+        host: Some("plume-daemon".into()),
+        src_ip: None,
+        dst_ip: None,
+        url: None,
+        dedup: Some(dedup),
+        fields: Some(fields),
+        engagement_id: String::new(),
+        origin: "daemon".into(),
+        env_id: None,
+    };
+    store().insert_event(conn, &ligne).unwrap_or(0) > 0
+}
+
+/// UNE ligne de journal PAR PROCESSUS : la porte s'ouvre à chaque connexion d'écriture, l'aveu ne
+/// doit pas inonder la sortie d'erreur d'un démon ni d'une sous-commande.
+static BASE_EN_CLAIR_JOURNALISEE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Vrai la PREMIÈRE fois seulement, pour un drapeau donné.
+pub(crate) fn premiere_fois_dans_ce_processus(drapeau: &std::sync::atomic::AtomicBool) -> bool {
+    !drapeau.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// LE CŒUR INJECTABLE de l'aveu : configuration, fichier et instant passés en argument. N'écrit
+/// rien d'autre qu'un événement dédupliqué et, une fois par processus, une ligne de journal ; ne
+/// refuse JAMAIS. Rend vrai si un événement a été écrit.
+pub(crate) fn signaler_la_base_en_clair_selon(conn: &Connection, conf: &HashMap<String, String>, path: &str, now_ts: i64) -> bool {
+    if !base_en_clair_a_signaler_depuis(conf, path) {
+        return false;
+    }
+    if premiere_fois_dans_ce_processus(&BASE_EN_CLAIR_JOURNALISEE) {
+        eprintln!("[sqlcipher] {}", aveu_base_en_clair());
+    }
+    emit_base_en_clair(conn, now_ts)
+}
+
+/// L'ADAPTATEUR appelé par LA PORTE (`db_open`), au même point que `signaler_la_cle_auto_si_besoin`
+/// et pour la même raison : connexion d'écriture de l'environnement, contrat de schéma satisfait.
+pub(crate) fn signaler_la_base_en_clair_si_besoin(conn: &Connection, path: &str) {
+    let _ = signaler_la_base_en_clair_selon(conn, &load_config(), path, now());
+}
+
 /// P8.7-b — `conf` EXPLICITE. L'appelant unique (`open_and_migrate_db`) tient déjà la configuration :
 /// la lui prendre supprime une lecture AMBIANTE sur le chemin qui DÉCIDE du chiffrement at-rest, et
 /// rend la fonction mesurable sans toucher à `PLUME_CONFIG` — donc testable en parallèle. (Ce n'est

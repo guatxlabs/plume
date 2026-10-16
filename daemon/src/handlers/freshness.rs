@@ -184,6 +184,27 @@ pub(crate) fn statut_de_source(age_s: i64, pipeline_fresh: bool, cadence: Option
     }
 }
 
+/// `P10.32-s` — LE STATUT D'UNE SOURCE DONT ON NE CONNAÎT QU'UNE BORNE de la dernière collecte réelle
+/// (`sondes::LastHorsAveu::Borne` : plafond de lignes atteint sans événement réel). `statut` est celui que
+/// `statut_de_source` dérive de l'âge de la BORNE, qui MINORE l'âge vrai : `muet` et `en_retard` restent
+/// donc établis (l'âge vrai dépasse ce que la borne dépasse déjà), `frais` NE L'EST PAS — l'âge vrai peut
+/// être bien plus grand. Il cède au mot suivant de l'échelle d'âge, `calme`. Jamais `non_lu` : rien n'a
+/// échoué, c'est le champ `CHAMP_DERNIERE_COLLECTE_AU_DELA_DES_LIGNES` qui dit le fait borné.
+pub(crate) fn statut_sur_une_borne(statut: &str) -> &str {
+    if statut == "frais" {
+        "calme"
+    } else {
+        statut
+    }
+}
+
+/// `P10.32-s` — LE CHAMP DU FAIT BORNÉ, servi par Fraîcheur et `/api/sources` sur un flux dont la
+/// correction hors aveu a atteint son plafond : sa valeur est le nombre de lignes lues (le plafond), et
+/// se lit « aucun signe de vie (de cet environnement, sous filtre) dans les N dernières lignes de la
+/// source ; `last_seen` est une BORNE, le dernier événement réel est au plus tard là ». La console ne le
+/// lit pas encore.
+pub(crate) const CHAMP_DERNIERE_COLLECTE_AU_DELA_DES_LIGNES: &str = "derniere_collecte_au_dela_des_lignes";
+
 /// Les champs de cadence d'un feed, tels que les deux surfaces les rendent : la déclaration (et la sonde
 /// qui la porte), et le rythme OBSERVÉ sur vingt-quatre heures — nommé pour ce qu'il est, jamais plus
 /// « attendu ».
@@ -845,8 +866,35 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         // manquait qu'on l'écrive pour la préparation aussi, et qu'on LISTE la famille avec son aveu.
         let fin = match conn.prepare(&format!("SELECT source, COALESCE(NULLIF(MAX(last_ts),0), MAX(bucket)), SUM(CASE WHEN bucket>=?1 THEN n ELSE 0 END) FROM event_rollup WHERE bucket>=?2 AND source<>''{envp} GROUP BY source HAVING SUM(n)>=3")) {
             Ok(mut s) => match s.query_map(params![d1, cut7], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
+                // `P10.32-s` — LE `last_ts` DU ROLLUP COMPTE L'AVEU « CAPTEUR INDISPONIBLE » : il est corrigé
+                // par un SEEK plafonné sur `event` (`last_du_rollup_hors_aveu`, une ligne lue sur le chemin
+                // nominal), SANS borne de date : un dernier événement réel antérieur à la fenêtre est servi
+                // avec son âge (« en retard » : l'aveuglement se voit). Une source dont `event` ne retient,
+                // sous le plafond, que des aveux n'est PAS listée — elle n'a jamais rien collecté. AU PLAFOND
+                // (aucun événement réel dans les `LIGNES_HORS_AVEU_MAX` dernières lignes), c'est un FAIT
+                // BORNÉ, pas une lecture ratée : la source est listée avec la BORNE pour `last_seen`, un
+                // statut dérivé de cette borne (jamais `frais`, jamais `non_lu`) et le champ du fait — rien
+                // à la racine. Seule une lecture RÉELLEMENT ratée garde le `last` du rollup et le DIT
+                // (`non_lu` sur le flux, cause à la racine).
                 Ok(rows) => parcourir_chaque(rows, |(src, last, n): (String, i64, i64)| {
-                    feeds.push(mk("event", src, last, Some(n)));
+                    match crate::sondes::last_du_rollup_hors_aveu(conn, &src, last, &envp) {
+                        None => {}
+                        Some(crate::sondes::LastHorsAveu::Etabli(last)) => feeds.push(mk("event", src, last, Some(n))),
+                        Some(crate::sondes::LastHorsAveu::Borne { borne, lues }) => {
+                            let mut f = mk("event", src, borne, Some(n));
+                            let statut = statut_sur_une_borne(f["status"].as_str().unwrap_or_default()).to_owned();
+                            f["status"] = json!(statut);
+                            f[CHAMP_DERNIERE_COLLECTE_AU_DELA_DES_LIGNES] = json!(lues);
+                            feeds.push(f);
+                        }
+                        Some(crate::sondes::LastHorsAveu::NonLu { last_du_rollup: last, cause }) => {
+                            lignes_non_lues.push(format!("la dernière collecte de « {src} » : {cause}"));
+                            let mut f = mk("event", src, last, Some(n));
+                            f["status"] = json!(STATUT_DE_SOURCE_NON_LU);
+                            f["derniere_collecte_non_etablie"] = json!(cause);
+                            feeds.push(f);
+                        }
+                    }
                 }),
                 Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
             },

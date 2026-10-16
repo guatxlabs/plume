@@ -4824,12 +4824,28 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   // — instrument : LES DEUX RÉFUTATIONS. Elles sont la raison d'être de la phrase servie ; si le démon
   //   changeait, la phrase pourrait redevenir nommable et ce témoin doit le voir plutôt que l'ignorer.
   const srcPermis = readFileSync(path.join(RACINE, "daemon", "src", "query_timing.rs"), "utf8");
-  const permis = srcPermis.match(/pub\(crate\) async fn acquire_query_permit\([\s\S]*?\n\}/);
-  exiger(!!permis
-    && /Err\(TryAcquireError::NoPermits\) => \{\}/.test(permis[0])
-    && /Err\(TryAcquireError::Closed\) => \{/.test(permis[0])
-    && /acquire_owned\(\)\.await\?/.test(permis[0].replace(/\s+/g, "")),
-    "(39) instrument : `acquire_query_permit` ne montre plus qu'il ATTEND sur `NoPermits` — la réfutation de « permis saturé » n'est plus lisible dans le démon");
+  // `P10.32-q` — le corps de la porte est passé dans `acquerir_par_la_voie`, commun aux voies légère et lourde ;
+  // `acquire_query_permit` (la porte des gestionnaires) n'en est plus qu'une délégation, exigée telle. L'ATTENTE
+  // se lit sur le JETON INTERACTIF (`sem.clone().acquire_owned().await?`, APRÈS le bras `NoPermits`) : la forme
+  // nue `acquire_owned().await?` ne suffit plus, l'attente au COULOIR lourd (`c.acquire_owned().await?`) la
+  // satisferait encore si celle du jeton disparaissait.
+  const montreLAttente = (corps) => {
+    const plat = corps.replace(/\s+/g, "");
+    const bras = plat.indexOf("Err(TryAcquireError::NoPermits)=>{}");
+    const attente = plat.indexOf("letp=sem.clone().acquire_owned().await?;", bras);
+    return bras >= 0 && plat.includes("Err(TryAcquireError::Closed)=>{") && attente > bras;
+  };
+  const porte = srcPermis.match(/pub\(crate\) async fn acquire_query_permit\([\s\S]*?\n\}/);
+  const voie = srcPermis.match(/pub\(crate\) async fn acquerir_par_la_voie\([\s\S]*?\n\}/);
+  exiger(!!porte && /acquerir_par_la_voie\(sem,Voie::Legere,None\)\.await/.test(porte[0].replace(/\s+/g, "")),
+    "(39) instrument : `acquire_query_permit` ne délègue plus à `acquerir_par_la_voie` en voie légère — le corps lu ci-dessous n'est plus celui de la porte des gestionnaires");
+  // Épreuve de l'instrument : le corps réel, privé de la seule attente sur le jeton interactif (l'attente au
+  // couloir y reste), doit être REFUSÉ — sinon ce témoin ne verrait pas la disparition qu'il garde.
+  const privee = voie ? voie[0].replace(/let\s+p\s*=\s*sem\s*\.clone\(\)\s*\.acquire_owned\(\)\s*\.await\?;/, "") : "";
+  exiger(!!voie && privee !== voie[0] && /c\.acquire_owned\(\)\.await\?/.test(privee) && !montreLAttente(privee),
+    "(39) instrument : épreuve — un corps privé de son attente sur le jeton interactif (l'attente au couloir conservée) n'est pas refusé, ou la forme à retirer est introuvable");
+  exiger(!!voie && montreLAttente(voie[0]),
+    "(39) instrument : `acquerir_par_la_voie` ne montre plus qu'il ATTEND le jeton interactif sur `NoPermits` — la réfutation de « permis saturé » n'est plus lisible dans le démon");
   const srcExec = readFileSync(path.join(RACINE, "daemon", "src", "query_exec.rs"), "utf8");
   const wd = srcExec.match(/pub\(crate\) fn read_with_watchdog<T>\([\s\S]*?\n\}/);
   exiger(!!wd && /read_conn_get\(db_path\) \{ Ok\(c\) => c, Err\(_\) => return default \}/.test(wd[0].replace(/\s+/g, " ")),

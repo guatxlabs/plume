@@ -54,7 +54,7 @@ pub(crate) fn overlay_read_json(path: &std::path::Path) -> Option<Value> {
 // LA DÉCISION (et non un effet subi). Un homonyme `managed=2` fait IGNORER le fichier d'overlay
 // (WARN + compté dans les ignorés du bilan de boot) ; il ne crée PAS une deuxième ligne du même nom.
 // C'est la politique DÉJÀ arrêtée et mesurée pour les objets d'observabilité-as-code — et
-// `overlays_oac::plan_upsert` EST le point unique réutilisé ici, plutôt qu'une seconde règle qui
+// `overlays_oac::plan_upsert_lu` EST le point unique réutilisé ici, plutôt qu'une seconde règle qui
 // aurait divergé de la première. Un homonyme `managed=0` (builtin/seed) reste, lui, ADOPTÉ par
 // l'overlay : c'est l'override intentionnel documenté en tête de ce module et dans config.d/README.md.
 //
@@ -76,7 +76,7 @@ pub(crate) const COLONNES_REIMPOSEES_RULE: [&str; 10] = [
 ];
 
 /// L'`UPDATE` de réimposition d'une règle d'overlay, DÉRIVÉ de `COLONNES_REIMPOSEES_RULE` (`?1..?N`
-/// dans l'ordre du tableau ; `?N+1` = l'`id` de la ligne possédée, rendu par `plan_upsert`).
+/// dans l'ordre du tableau ; `?N+1` = l'`id` de la ligne possédée, rendu par `plan_upsert_lu`).
 /// `managed=1` est posé à part : ce n'est pas un champ réimposé mais la REQUALIFICATION de la ligne en
 /// contenu adossé à un fichier.
 pub(crate) fn sql_reimposition_rule() -> String {

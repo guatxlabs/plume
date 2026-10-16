@@ -81,6 +81,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // `OwnedSemaphorePermit` n'est PLUS nommé ici : le permit nu ne quitte plus ce fichier, il repart
 // enveloppé dans `semaphore_interactif::PermitMesure` (qui publie sa détention à la libération).
 use tokio::sync::{AcquireError, Semaphore, TryAcquireError};
+use crate::semaphore_interactif::Voie;
 
 /// L'ATTENTE D'UN PERMIT, et rien d'autre. Microsecondes.
 ///
@@ -130,8 +131,58 @@ impl PermitWait {
 pub(crate) async fn acquire_query_permit(
     sem: &Arc<Semaphore>,
 ) -> Result<(crate::semaphore_interactif::PermitMesure, PermitWait), AcquireError> {
+    acquerir_par_la_voie(sem, Voie::Legere, None).await
+}
+
+/// LA PORTE JUMELLE, POUR UNE REQUÊTE LOURDE (`P10.32-q`) — celle dont le budget accordé dépasse le
+/// budget automatique : `interactive:true` de `/api/query`, l'export, le Pivot. La classe est choisie
+/// AU SITE par le gestionnaire, d'après le budget qu'il accorde ; le client ne peut pas se déclarer
+/// légère pour passer devant, car être légère lui vaut le budget automatique.
+///
+/// Elle prend D'ABORD un jeton du couloir lourd (`semaphore_interactif::couloir_lourd`), ENSUITE le
+/// jeton interactif — ordre fixe, donc aucun interblocage : une légère ne tient jamais de jeton de
+/// couloir, une lourde ne prend jamais le couloir en tenant déjà un jeton interactif. Les lourdes ne
+/// tiennent donc jamais plus de jetons interactifs que le couloir n'en a. Sans couloir posé (ou à
+/// réserve nulle), elle se comporte exactement comme `acquire_query_permit`.
+///
+/// L'attente publiée couvre les DEUX files (couloir puis jeton) : c'est le temps que la requête a
+/// passé à attendre son tour, et le zéro reste structurel quand les deux jetons étaient libres.
+pub(crate) async fn acquire_query_permit_lourd(
+    sem: &Arc<Semaphore>,
+) -> Result<(crate::semaphore_interactif::PermitMesure, PermitWait), AcquireError> {
+    acquerir_par_la_voie(sem, Voie::Lourde, crate::semaphore_interactif::couloir_lourd()).await
+}
+
+/// LE CORPS COMMUN DES DEUX PORTES, le couloir passé en argument : les gestionnaires passent par
+/// `acquire_query_permit` / `acquire_query_permit_lourd` (le couloir posé au démarrage), un essai passe
+/// ici le couloir qu'il a construit (`CouloirLourd::neuf`). Une légère ignore le couloir.
+pub(crate) async fn acquerir_par_la_voie(
+    sem: &Arc<Semaphore>,
+    voie: Voie,
+    couloir: Option<Arc<Semaphore>>,
+) -> Result<(crate::semaphore_interactif::PermitMesure, PermitWait), AcquireError> {
+    // Le chronomètre ne démarre qu'à la PREMIÈRE file réellement rencontrée.
+    let mut file_depuis: Option<Instant> = None;
+    let couloir = match (voie, couloir) {
+        (Voie::Lourde, Some(c)) => Some(match c.clone().try_acquire_owned() {
+            Ok(j) => j,
+            Err(_) => {
+                file_depuis = Some(Instant::now());
+                c.acquire_owned().await?
+            }
+        }),
+        _ => None,
+    };
     match sem.clone().try_acquire_owned() {
-        Ok(p) => return Ok((crate::semaphore_interactif::permis_pris(p, None), PermitWait::none())),
+        Ok(p) => {
+            return Ok(match file_depuis.map(|t| t.elapsed()) {
+                None => (crate::semaphore_interactif::permis_pris(p, couloir, voie, None), PermitWait::none()),
+                Some(attente) => (
+                    crate::semaphore_interactif::permis_pris(p, couloir, voie, Some(attente)),
+                    PermitWait(attente.as_micros() as u64),
+                ),
+            })
+        }
         Err(TryAcquireError::NoPermits) => {}
         Err(TryAcquireError::Closed) => {
             // Sémaphore fermé (arrêt) : on rend l'erreur CANONIQUE de tokio plutôt qu'une erreur
@@ -145,13 +196,13 @@ pub(crate) async fn acquire_query_permit(
                 .expect("un sémaphore fermé ne délivre pas de permit"));
         }
     }
-    let t = Instant::now();
+    let t = file_depuis.unwrap_or_else(Instant::now);
     let p = sem.clone().acquire_owned().await?;
     // UNE seule lecture d'horloge sert les deux publications (le champ `stats` de l'appelant et la
     // série d'exploitation) : deux lectures pourraient diverger, et la question « pourquoi la
     // réponse et /metrics ne disent-ils pas la même attente ? » n'a pas de bonne réponse.
     let attente = t.elapsed();
-    Ok((crate::semaphore_interactif::permis_pris(p, Some(attente)), PermitWait(attente.as_micros() as u64)))
+    Ok((crate::semaphore_interactif::permis_pris(p, couloir, voie, Some(attente)), PermitWait(attente.as_micros() as u64)))
 }
 
 /// LE TEMPS PASSÉ À OBTENIR LE VERROU DE LA CONNEXION PARTAGÉE — la sérialisation que personne ne
@@ -195,11 +246,18 @@ impl SharedDbWait {
 pub(crate) struct QueryClock {
     entry: Instant,
     db: SharedDbWait,
+    voie: Voie,
 }
 
 impl QueryClock {
     pub(crate) fn start() -> Self {
-        Self { entry: Instant::now(), db: SharedDbWait::new() }
+        Self { entry: Instant::now(), db: SharedDbWait::new(), voie: Voie::Legere }
+    }
+
+    /// LA REQUÊTE EST LOURDE (`P10.32-q`) : `permit` passera par la porte jumelle
+    /// `acquire_query_permit_lourd`. Posé AU SITE par le gestionnaire, d'après le budget qu'il accorde.
+    pub(crate) fn voie_lourde(self) -> Self {
+        Self { voie: Voie::Lourde, ..self }
     }
 
     /// Le chronomètre des verrous de la connexion PARTAGÉE pris sur ce chemin de requête.
@@ -218,7 +276,10 @@ impl QueryClock {
         sem: &Arc<Semaphore>,
     ) -> Result<(crate::semaphore_interactif::PermitMesure, QueryTimings), AcquireError> {
         let prepare = self.entry.elapsed();
-        let (permit, wait) = acquire_query_permit(sem).await?;
+        let (permit, wait) = match self.voie {
+            Voie::Legere => acquire_query_permit(sem).await?,
+            Voie::Lourde => acquire_query_permit_lourd(sem).await?,
+        };
         // Le compteur de verrous est DÉPLACÉ, pas recopié : un verrou pris APRÈS le permit compte
         // dans le même total. Sinon la même attente serait visible ou invisible selon l'endroit où
         // le verrou est pris — c'est-à-dire selon un détail que l'exploitant ne peut pas connaître.

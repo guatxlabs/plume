@@ -1326,6 +1326,9 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // MÉTRIQUE : `clock.permit` CONSOMME l'horloge d'entrée et rend le DÉCOUPAGE (`QueryTimings`).
     // C'est la seule porte : l'attente publiée en `sem_wait_ms` ne peut venir que de l'acquisition
     // qui vient d'avoir lieu ici, jamais du temps écoulé depuis l'entrée du handler.
+    // `P10.32-q` — LA CLASSE EST LUE ICI, AU SITE : `interactive` accorde le budget grandi, donc la
+    // requête passe par le couloir lourd et laisse le jeton réservé aux requêtes au budget automatique.
+    let clock = if interactive { clock.voie_lourde() } else { clock };
     let (_permit, timings) = match clock.permit(&st.query_sem).await {
         Ok(x) => x,
         Err(_) => {
@@ -2045,7 +2048,8 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         .unwrap_or_else(export_max_rows)
         .min(export_max_rows());
     // backpressure : MÊME sémaphore que /api/query (borne les déchiffrements concurrents ; anti-OOM).
-    let _permit = match acquire_query_permit(&st.query_sem).await {
+    // `P10.32-q` : budget interactif accordé plus bas -> requête LOURDE, porte jumelle (couloir d'abord).
+    let _permit = match acquire_query_permit_lourd(&st.query_sem).await {
         Ok((p, _wait)) => p,
         Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"),
     };

@@ -68,6 +68,34 @@ pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_TRANSACTION_NON_OUVE
      NON SUPPRIMÉ : la base n'a pas pris la transaction de la suppression (BEGIN refusé : verrou tenu, ou transaction \
      d'un autre geste pendante sur l'écrivain) — RIEN n'est écrit : la définition et ses rattachements sont intacts. \
      Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.33-l` — la modification d'une liste de lecture refusée : rien n'en est écrit. Elle part au JOURNAL (par
+/// `err_json`) : `playlist_update` rend un `StatusCode` sans corps, la console ne reçoit qu'un 503 nu. Son ouverture
+/// suit pourtant celle que la console sait lire (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js), pour le jour où
+/// la route servira son corps.
+pub(crate) const CAUSE_LISTE_DE_LECTURE_INCHANGEE: &str = "LISTE DE LECTURE INCHANGÉE : la base n'a pas pris l'écriture \
+     de la modification ou n'en a écrit aucune ligne, et la transaction est annulée — le nom, l'intervalle, les tableaux \
+     et la visibilité de la liste sont ceux d'avant (une liste partagée le reste). Réessayez ; si le refus persiste, la \
+     base est en lecture seule, pleine ou verrouillée.";
+/// `P10.33-l` — le `BEGIN` de cette modification refusé. Même régime : journal seul, 503 nu côté console ; ouverture
+/// de la forme `OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`.
+pub(crate) const CAUSE_LISTE_DE_LECTURE_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "LISTE DE LECTURE INCHANGÉE : la base \
+     n'a pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.33-l` — la suppression d'une liste de lecture refusée : la liste reste, avec sa visibilité.
+pub(crate) const CAUSE_LISTE_DE_LECTURE_NON_SUPPRIMEE: &str = "LISTE DE LECTURE NON SUPPRIMÉE : la base n'a pas pris \
+     l'effacement de la liste ou n'en a effacé aucune ligne, et la transaction est annulée — la liste existe toujours, \
+     avec sa visibilité (partagée si elle l'était). Réessayez ; si le refus persiste, la base est en lecture seule, \
+     pleine ou verrouillée.";
+/// `P10.33-l` — le `BEGIN` de cette suppression refusé.
+pub(crate) const CAUSE_LISTE_DE_LECTURE_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE: &str = "LISTE DE LECTURE NON SUPPRIMÉE : \
+     la base n'a pas pris la transaction de la suppression (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : la liste est intacte. Réessayez ; s'il est refusé encore, l'écrivain \
+     est occupé ou bloqué.";
+/// `P10.33-l` — l'existence de la liste n'a pas pu être lue : ni absence (404) ni présence ne sont établies, rien
+/// n'est écrit.
+pub(crate) const CAUSE_LISTE_DE_LECTURE_NON_LUE: &str = "LISTE DE LECTURE NON LUE : la base a refusé la lecture qui \
+     établit son existence — ce n'est pas une absence, et RIEN n'est écrit. Réessayez ; si le refus persiste, la base \
+     est illisible ou verrouillée.";
 /// `P10.20-w` — la révocation d'un instantané refusée : il reste lisible par son jeton.
 pub(crate) const CAUSE_INSTANTANE_NON_SUPPRIME: &str = "INSTANTANÉ NON SUPPRIMÉ : la base a refusé la suppression (ou \
      n'a supprimé aucune ligne) — l'instantané existe toujours et RESTE LISIBLE par son jeton de partage. Réessayez ; si \
@@ -305,41 +333,81 @@ pub(crate) async fn playlist_create(State(st): State<AppState>, Extension(au): E
     }
 }
 
-pub(crate) async fn playlist_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
-    crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM playlist WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return StatusCode::NOT_FOUND;
+/// `P10.33-l` — L'EXISTENCE D'UNE LISTE DE LECTURE, LUE AVANT UN GESTE : `Ok(())` elle existe, `Err(404)` son absence
+/// est ÉTABLIE (aucune ligne), `Err(503 nommé)` la lecture a été refusée — ni absence ni présence ne sont établies.
+/// La forme d'avant (`query_row(..).is_err()`) rendait 404 sur une lecture refusée : « cette liste n'existe pas »,
+/// pour une liste qui existe toujours.
+fn liste_de_lecture_existe(conn: &Connection, id: i64) -> Result<(), Response> {
+    match conn.query_row("SELECT 1 FROM playlist WHERE id=?1", params![id], |_| Ok(())) {
+        Ok(()) => Ok(()),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(StatusCode::NOT_FOUND.into_response()),
+        Err(e) => Err(err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LISTE_DE_LECTURE_NON_LUE} (liste de lecture #{id} : {e})"))),
     }
-    if !ergo_editable(&conn, &au, "playlist", id) {
-        return StatusCode::FORBIDDEN;
-    }
-    if let Some(v) = b.get("name").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE playlist SET name=?1 WHERE id=?2", params![v, id]);
-    }
-    if let Some(v) = b.get("interval_s").and_then(|v| v.as_i64()) {
-        let _ = conn.execute("UPDATE playlist SET interval_s=?1 WHERE id=?2", params![v.clamp(3, 3600), id]);
-    }
-    if let Some(items) = playlist_items_json(&b) {
-        let _ = conn.execute("UPDATE playlist SET items=?1 WHERE id=?2", params![items, id]);
-    }
-    if let Some(v) = b.get("visibility").and_then(|v| v.as_str()) {
-        let vv = if v == "private" { "private" } else { "shared" };
-        let _ = conn.execute("UPDATE playlist SET visibility=?1 WHERE id=?2", params![vv, id]);
-    }
-    let _ = conn.execute("UPDATE playlist SET updated=?1 WHERE id=?2", params![now(), id]);
-    StatusCode::NO_CONTENT
 }
 
-pub(crate) async fn playlist_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+pub(crate) async fn playlist_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM playlist WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return StatusCode::NOT_FOUND;
+    if let Err(refus) = liste_de_lecture_existe(&conn, id) {
+        return refus.status();
     }
     if !ergo_editable(&conn, &au, "playlist", id) {
         return StatusCode::FORBIDDEN;
     }
-    let _ = conn.execute("DELETE FROM playlist WHERE id=?1", params![id]);
-    StatusCode::NO_CONTENT
+    // `P10.33-l` — même forme que `library_panel_update` : les écritures de la modification vivent sous UN garde de
+    // geste ; une seule refusée ou sans effet (`Ok(0)` sur une ligne dont l'existence vient d'être lue) annule TOUTES
+    // les autres, et la route refuse en 503 au lieu de rendre 204. La forme d'avant enchaînait cinq `let _ =` : une
+    // bascule en « private » refusée laissait la liste PARTAGÉE pendant que la console lisait un succès. La signature
+    // reste `StatusCode` (la porte d'`objet_sans_proprietaire` lit ce retour) : la cause nommée part au journal par
+    // `err_json`, le corps n'est pas servi.
+    let geste = format!("modification de la liste de lecture #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_LISTE_DE_LECTURE_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus.status(),
+    };
+    let ecrit: Result<(), String> = (|| {
+        if let Some(v) = b.get("name").and_then(|v| v.as_str()) {
+            une_ligne_ecrite(conn.execute("UPDATE playlist SET name=?1 WHERE id=?2", params![v, id]), "name")?;
+        }
+        if let Some(v) = b.get("interval_s").and_then(|v| v.as_i64()) {
+            une_ligne_ecrite(conn.execute("UPDATE playlist SET interval_s=?1 WHERE id=?2", params![v.clamp(3, 3600), id]), "interval_s")?;
+        }
+        if let Some(items) = playlist_items_json(&b) {
+            une_ligne_ecrite(conn.execute("UPDATE playlist SET items=?1 WHERE id=?2", params![items, id]), "items")?;
+        }
+        if let Some(v) = b.get("visibility").and_then(|v| v.as_str()) {
+            let vv = if v == "private" { "private" } else { "shared" };
+            une_ligne_ecrite(conn.execute("UPDATE playlist SET visibility=?1 WHERE id=?2", params![vv, id]), "visibility")?;
+        }
+        une_ligne_ecrite(conn.execute("UPDATE playlist SET updated=?1 WHERE id=?2", params![now(), id]), "updated")
+    })();
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : la liste d'avant, visibilité comprise.
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LISTE_DE_LECTURE_INCHANGEE} ({geste} : {cause})")).status();
+    }
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_LISTE_DE_LECTURE_INCHANGEE, || StatusCode::NO_CONTENT.into_response()).status()
+}
+
+pub(crate) async fn playlist_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
+    crate::req_conn!(st, au, conn);
+    if let Err(refus) = liste_de_lecture_existe(&conn, id) {
+        return refus;
+    }
+    if !ergo_editable(&conn, &au, "playlist", id) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // `P10.33-l` — l'effacement exige UNE ligne, sous le garde du geste (il n'écrit jamais dans la transaction d'un
+    // autre geste) ; un refus rend le 503 nommé. La forme d'avant avalait le `DELETE` et rendait 204 : la liste
+    // restait en place, partagée si elle l'était.
+    let geste = format!("suppression de la liste de lecture #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_LISTE_DE_LECTURE_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    if let Err(cause) = une_ligne_ecrite(conn.execute("DELETE FROM playlist WHERE id=?1", params![id]), "suppression de la liste") {
+        drop(tx); // Drop -> ROLLBACK.
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LISTE_DE_LECTURE_NON_SUPPRIMEE} ({geste} : {cause})"));
+    }
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_LISTE_DE_LECTURE_NON_SUPPRIMEE, || StatusCode::NO_CONTENT.into_response())
 }
 
 // =====================================================================================

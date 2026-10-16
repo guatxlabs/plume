@@ -40,22 +40,35 @@
 //! depuis axum 0.8 — donc la VALEUR de l'étiquette `route` exposée par `/metrics` a changé avec
 //! elle : un tableau de bord qui sélectionnait `route="/api/x/:id"` ne trouve plus que `route="/api/x/{id}"`,
 //! donc il ne sélectionne plus rien. CE FAIT NE PEUT PAS RESTER ICI : qui scrape ce démon ne lit pas sa
-//! source, donc il est APPOSÉ AU `# HELP` des six séries étiquetées (`SYNTAXE_ETIQUETTE_ROUTE`), écrit
-//! une fois et rendu six. Le
+//! source, donc il est APPOSÉ AU `# HELP` des sept séries étiquetées (`SYNTAXE_ETIQUETTE_ROUTE`), écrit
+//! une fois et rendu sept. Le
 //! registre est en OUTRE plafonné à `ROUTES_CAP` entrées + une entrée de débordement, de sorte que
 //! la borne ne dépend PAS du nombre de routes déclarées dans le routeur : au pire
 //! `(ROUTES_CAP + 1)` valeurs d'étiquette. Un débordement ne perd pas la mesure (elle tombe dans le
 //! seau `(débordement)`), il perd son ATTRIBUTION — et le dit, par
 //! `plume_query_permit_routes_tronque=1`, sur le modèle de `plume_netban_store_tronque`.
 //!
-//! CE QUE CE MODULE NE FAIT PAS : il ne prend aucun permit, ne change aucune taille de sémaphore,
-//! n'altère aucune réponse. Des atomiques et un registre de quelques dizaines d'entrées (~4 Kio au
-//! plafond) : le mode 0 reste byte-identique du point de vue d'un client.
+//! CE QUE CE MODULE NE FAIT PAS : il ne prend aucun permit du sémaphore interactif, ne change pas sa
+//! taille, n'altère aucune réponse. Des atomiques et un registre de quelques dizaines d'entrées (~4 Kio
+//! au plafond) : le mode 0 reste byte-identique du point de vue d'un client.
+//!
+//! LE COULOIR LOURD (`P10.32-q`, reste « famine »). Une requête dont le budget accordé dépasse le budget
+//! automatique (`interactive:true` de `/api/query`, export, Pivot) TIENT son permit jusqu'à ce budget
+//! grandi. Avec un seul sémaphore, quelques-unes suffisaient à prendre tous les jetons : la flotte, les
+//! alertes, la recherche attendaient en file sans borne derrière elles. Le remède est un JETON RÉSERVÉ
+//! aux requêtes légères : un second sémaphore, le couloir, de taille `N − r` (`N` =
+//! `PLUME_QUERY_CONCURRENCY`, `r` = `PLUME_QUERY_RESERVE_LIGHT` borné à `N − 1`), que seule une requête
+//! LOURDE prend, AVANT le jeton interactif et en le rendant APRÈS lui. Donc, à tout instant, les jetons
+//! interactifs tenus par des lourdes sont au plus `N − r` : `r` jetons restent à ce qui n'a que le budget
+//! automatique. La mémoire ne bouge pas — le nombre total de jetons interactifs reste `N`. À `N = 1`, la
+//! réserve effective est 0 (sinon aucune lourde ne passerait jamais) et la jauge
+//! `plume_query_permits_reserved` le dit. Hors démarrage (outil CLI, essais) aucun couloir n'est posé :
+//! comportement d'avant.
 
 use crate::*;
 use parking_lot::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// PLAFOND DU REGISTRE D'ÉTIQUETTES. 21 gabarits de route acquièrent la borne au 2026-08-20 (compte
 /// DÉRIVÉ, cf. `routes_qui_consomment_le_semaphore_interactif`) ; le reste est de la marge pour les
@@ -80,6 +93,7 @@ pub(crate) struct Compteurs {
     attente_max_us: AtomicU64,
     travail_us: AtomicU64,
     travail_max_us: AtomicU64,
+    lourdes: AtomicU64,
 }
 
 impl Compteurs {
@@ -106,6 +120,11 @@ impl Compteurs {
     /// Plus longue détention observée (µs).
     pub(crate) fn travail_max_us(&self) -> u64 {
         self.travail_max_us.load(Ordering::Relaxed)
+    }
+    /// Acquisitions faites par la VOIE LOURDE (budget accordé au-delà du budget automatique), qu'un
+    /// couloir soit posé ou non : la classe est un fait de la requête, la réserve un réglage.
+    pub(crate) fn lourdes(&self) -> u64 {
+        self.lourdes.load(Ordering::Relaxed)
     }
 }
 
@@ -187,11 +206,65 @@ static DETENUS: AtomicU64 = AtomicU64::new(0);
 /// Taille du sémaphore interactif, POSÉE au démarrage (`PLUME_QUERY_CONCURRENCY`). 0 = pas encore
 /// posée : la jauge est alors ABSENTE de l'exposition plutôt que fausse à zéro.
 static BORNE: AtomicU64 = AtomicU64::new(0);
-/// ENREGISTRE LA TAILLE DU SÉMAPHORE. Ne la fixe pas et ne la lit pas ailleurs : elle est publiée
-/// pour que `plume_query_permits_held` se lise CONTRE quelque chose (« 3 permis pris » ne dit rien
-/// sans « sur 3 »).
-pub(crate) fn poser_borne(taille: usize) {
+/// ENREGISTRE LA TAILLE DU SÉMAPHORE ET POSE LE COULOIR LOURD. La taille n'est pas fixée ici (le
+/// sémaphore est construit par l'appelant) : elle est publiée pour que `plume_query_permits_held` se
+/// lise CONTRE quelque chose (« 3 permis pris » ne dit rien sans « sur 3 »). Le couloir, lui, est
+/// construit ici, depuis la même taille et la réserve DEMANDÉE (`PLUME_QUERY_RESERVE_LIGHT`) : un seul
+/// site de démarrage pose les deux, ils ne peuvent pas diverger.
+pub(crate) fn poser_borne(taille: usize, reserve_demandee: usize) {
     BORNE.store(taille as u64, Ordering::Relaxed);
+    *COULOIR.write() = Some(Arc::new(CouloirLourd::neuf(taille, reserve_demandee)));
+}
+
+/// LA RÉSERVE EFFECTIVE — `r` borné à `N − 1`, et 0 sous `N = 2`. Sans ce bornage, une réserve égale
+/// à la taille ferait un couloir de taille 0 : aucune requête lourde ne serait JAMAIS admise, ce qui
+/// déplacerait la famine au lieu de la retirer.
+pub(crate) fn reserve_effective(taille: usize, reserve_demandee: usize) -> usize {
+    if taille >= 2 { reserve_demandee.min(taille - 1) } else { 0 }
+}
+
+/// LE COULOIR LOURD — une structure, pas un `static`, pour la même raison que `Registre` : sa propriété
+/// (les lourdes ne tiennent jamais plus de `N − r` jetons interactifs) ne se prouve qu'en la FAISANT
+/// MORDRE, sur une instance que l'essai construit lui-même.
+#[derive(Debug)]
+pub(crate) struct CouloirLourd {
+    /// `None` quand la réserve effective est nulle : la requête lourde ne prend alors que le jeton
+    /// interactif, comme avant.
+    sem: Option<Arc<Semaphore>>,
+    reserve: usize,
+}
+
+impl CouloirLourd {
+    pub(crate) fn neuf(taille: usize, reserve_demandee: usize) -> Self {
+        let reserve = reserve_effective(taille, reserve_demandee);
+        let sem = (reserve > 0).then(|| Arc::new(Semaphore::new(taille - reserve)));
+        Self { sem, reserve }
+    }
+    /// Jetons interactifs qu'aucune requête lourde ne peut tenir.
+    pub(crate) fn reserve(&self) -> usize {
+        self.reserve
+    }
+    /// Le sémaphore du couloir, s'il y a une réserve à défendre.
+    pub(crate) fn semaphore(&self) -> Option<Arc<Semaphore>> {
+        self.sem.clone()
+    }
+}
+
+/// Le couloir posé au démarrage — `None` hors démarrage (outil CLI, essais).
+static COULOIR: RwLock<Option<Arc<CouloirLourd>>> = parking_lot::const_rwlock(None);
+
+/// Le sémaphore du couloir à prendre par une requête lourde, ou `None` (aucun couloir posé, ou réserve
+/// effective nulle). Lu par la porte lourde de `query_timing`, et par elle seule.
+pub(crate) fn couloir_lourd() -> Option<Arc<Semaphore>> {
+    COULOIR.read().as_ref().and_then(|c| c.semaphore())
+}
+
+/// LA CLASSE D'UNE ACQUISITION, lue AU SITE par l'appelant (jamais déclarée par le client) : `Lourde`
+/// pour une requête dont le budget accordé dépasse le budget automatique.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Voie {
+    Legere,
+    Lourde,
 }
 
 /// Permis détenus à l'instant présent.
@@ -273,9 +346,15 @@ fn compteurs_de_la_route_courante() -> Arc<Compteurs> {
 ///
 /// Le champ est PRIVÉ : un appelant ne peut ni extraire le permit nu, ni prolonger sa détention
 /// au-delà de la valeur, ni fabriquer une détention qui n'a pas eu lieu.
+///
+/// LE JETON DE COULOIR (requête lourde) EST RENDU APRÈS LE JETON INTERACTIF, explicitement dans `drop`
+/// et non par l'ordre des champs : rendu avant, il réveillerait une lourde en file qui pourrait prendre
+/// le jeton réservé pendant que celui-ci est encore tenu — l'invariant « les lourdes tiennent au plus
+/// `N − r` jetons » serait faux un instant, et c'est cet instant qui affame une légère.
 #[derive(Debug)]
 pub(crate) struct PermitMesure {
-    _permis: OwnedSemaphorePermit,
+    permis: Option<OwnedSemaphorePermit>,
+    couloir: Option<OwnedSemaphorePermit>,
     compteurs: Arc<Compteurs>,
     depuis: Instant,
 }
@@ -286,6 +365,8 @@ impl Drop for PermitMesure {
         self.compteurs.travail_us.fetch_add(us, Ordering::Relaxed);
         max_atomique(&self.compteurs.travail_max_us, us);
         DETENUS.fetch_sub(1, Ordering::Relaxed);
+        drop(self.permis.take());
+        drop(self.couloir.take());
     }
 }
 
@@ -296,9 +377,20 @@ impl Drop for PermitMesure {
 /// c'est le zéro STRUCTUREL de `PermitWait`, cf. `query_timing`) et `Some(d)` quand il a fallu faire
 /// la queue. La distinction n'est donc pas « une durée nulle », c'est « il n'y a pas eu de file » —
 /// et c'est ce qui rend `plume_query_permit_waits_total` lisible comme une saturation.
-pub(crate) fn permis_pris(permis: OwnedSemaphorePermit, attente: Option<Duration>) -> PermitMesure {
+///
+/// `couloir` porte le jeton du couloir lourd quand la requête en a pris un ; `voie` est compté à part
+/// (`plume_query_permit_heavy_total`), couloir posé ou non.
+pub(crate) fn permis_pris(
+    permis: OwnedSemaphorePermit,
+    couloir: Option<OwnedSemaphorePermit>,
+    voie: Voie,
+    attente: Option<Duration>,
+) -> PermitMesure {
     let compteurs = compteurs_de_la_route_courante();
     compteurs.acquisitions.fetch_add(1, Ordering::Relaxed);
+    if voie == Voie::Lourde {
+        compteurs.lourdes.fetch_add(1, Ordering::Relaxed);
+    }
     if let Some(d) = attente {
         let us = d.as_micros() as u64;
         compteurs.attentes.fetch_add(1, Ordering::Relaxed);
@@ -306,7 +398,7 @@ pub(crate) fn permis_pris(permis: OwnedSemaphorePermit, attente: Option<Duration
         max_atomique(&compteurs.attente_max_us, us);
     }
     DETENUS.fetch_add(1, Ordering::Relaxed);
-    PermitMesure { _permis: permis, compteurs, depuis: Instant::now() }
+    PermitMesure { permis: Some(permis), couloir, compteurs, depuis: Instant::now() }
 }
 
 /// CE QUE LA VALEUR DE L'ÉTIQUETTE `route` NE DIT PAS D'ELLE-MÊME — ET QUI VOYAGE DONC DANS LE `# HELP`,
@@ -315,8 +407,8 @@ pub(crate) fn permis_pris(permis: OwnedSemaphorePermit, attente: Option<Duration
 /// ce qui n'est pas dans l'exposition n'atteint pas l'exploitant, et une règle d'alerte qui sélectionne sur
 /// `route=` devient MUETTE sans rien rougir — une série qui disparaît ne déclenche pas, elle se tait.
 ///
-/// ÉCRIT UNE FOIS, RENDU SUR LES SIX SÉRIES ÉTIQUETÉES : `bloc` l'appose, donc une série ajoutée demain le
-/// porte sans que personne y pense, et les six ne peuvent pas diverger. Rien ici ne dépend d'un état
+/// ÉCRIT UNE FOIS, RENDU SUR LES SEPT SÉRIES ÉTIQUETÉES : `bloc` l'appose, donc une série ajoutée demain le
+/// porte sans que personne y pense, et les sept ne peuvent pas diverger. Rien ici ne dépend d'un état
 /// d'installation : c'est la syntaxe d'un gabarit, une grandeur de CONCEPTION.
 ///
 /// CE QU'IL NE TIENT PAS : il DÉCRIT la rupture, il ne la RÉPARE pas — aucun alias, aucune double
@@ -340,7 +432,7 @@ fn us_en_ms(us: u64) -> String {
     format!("{:.3}", dur_ms(Duration::from_micros(us)))
 }
 
-/// EXPOSITION PROMETHEUS de la borne interactive — six séries étiquetées par route, cinq globales.
+/// EXPOSITION PROMETHEUS de la borne interactive — sept séries étiquetées par route, six globales.
 /// Appelée depuis `metrics::gather_prom` (source de vérité unique, comme `ventilation_serie`).
 ///
 /// Aucune requête SQL, aucun verrou d'écriture : un scrape ne coûte rien à la base.
@@ -371,6 +463,9 @@ pub(crate) fn exposition_prom() -> String {
     bloc(&mut o, "plume_query_work_ms_max", "gauge",
         "Plus longue détention d'un permit observée depuis le démarrage (ms)",
         &|c| us_en_ms(c.travail_max_us()));
+    bloc(&mut o, "plume_query_permit_heavy_total", "counter",
+        "Permis obtenus par la VOIE LOURDE (budget accordé au-delà du budget automatique)",
+        &|c| c.lourdes().to_string());
     let (n_routes, plafond, tronque) = registre().etat();
     o.push_str("# HELP plume_query_permits_held Permis du sémaphore interactif détenus à l'instant du scrape\n");
     o.push_str("# TYPE plume_query_permits_held gauge\n");
@@ -382,6 +477,11 @@ pub(crate) fn exposition_prom() -> String {
         o.push_str("# HELP plume_query_permits_limit Taille du sémaphore interactif (PLUME_QUERY_CONCURRENCY)\n");
         o.push_str("# TYPE plume_query_permits_limit gauge\n");
         o.push_str(&format!("plume_query_permits_limit {borne}\n"));
+        // Posée par le même site que la borne : la réserve EFFECTIVE (0 à `N = 1`), pas la demandée.
+        let reserve = COULOIR.read().as_ref().map(|c| c.reserve()).unwrap_or(0);
+        o.push_str("# HELP plume_query_permits_reserved Permis interactifs réservés aux requêtes légères (PLUME_QUERY_RESERVE_LIGHT, effectif)\n");
+        o.push_str("# TYPE plume_query_permits_reserved gauge\n");
+        o.push_str(&format!("plume_query_permits_reserved {reserve}\n"));
     }
     o.push_str("# HELP plume_query_permit_routes Étiquettes de route enregistrées (cardinalité réelle)\n");
     o.push_str("# TYPE plume_query_permit_routes gauge\n");

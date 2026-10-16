@@ -463,9 +463,13 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     ("daemon/src/handlers/connectors/mod.rs", "connector_poll"): ("ok",),
     ("daemon/src/handlers/connectors/mod.rs", "connector_test"): ("ok",),
     ("daemon/src/handlers/connectors/mod.rs", "connector_update"): ("is_err",),
+    # `P10.33-l` — DEUX ENTRÉES RETIRÉES (2026-10-16), PARCE QUE LES DEUX SITES SONT CORRIGÉS :
+    # `dash_ergonomics.rs::playlist_update` et `playlist_delete` (`is_err`) — une lecture ratée de la liste de
+    # lecture visée rendait 404 « introuvable » pour une liste bien vivante. Elles sont lues en `.optional()` :
+    # absence établie = le 404 d'avant, lecture ratée = 503 (`CAUSE_LISTE_DE_LECTURE_NON_LUE` au journal,
+    # servie en corps par `playlist_delete` seule), rien d'écrit (témoins `ldl_`, `listes_de_lecture_ecrites_ou_refusees.rs`).
+    # `dash_ergonomics.rs` reste au relevé par `library_panel_delete`.
     ("daemon/src/handlers/dash_ergonomics.rs", "library_panel_delete"): ("is_err",),
-    ("daemon/src/handlers/dash_ergonomics.rs", "playlist_delete"): ("is_err",),
-    ("daemon/src/handlers/dash_ergonomics.rs", "playlist_update"): ("is_err",),
     ("daemon/src/handlers/dashboards.rs", "dash_get"): ("ok",),
     # DEUX `.ok()?` dans la porte d'accès aux panneaux : la porte rend `None`, l'appelant refuse. La
     # porte est bien fail-closed ; ce qui manque est la DISTINCTION entre « ce panneau n'existe pas »

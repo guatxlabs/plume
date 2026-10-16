@@ -1291,15 +1291,15 @@
         let id = dossier_seme(&conn, "alice", "Case", 2, "", None, 3);
         case_add_item(&conn, id, now(), "alert", "alice", "rattachée", Some("alert:5"));
         let item_id: i64 = conn.query_row("SELECT id FROM incident_item WHERE incident_id=?1 AND kind='alert'", params![id], |r| r.get(0)).unwrap();
-        assert!(case_detach_item(&conn, id, item_id, "bob"));
+        assert!(matches!(case_detach_item(&conn, id, item_id, "bob"), IssueDuDetachement::Detache));
         // NB : ne pas compter par rowid (SQLite réutilise le rowid libéré pour la note de détachement) -> par kind.
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1 AND kind='alert'", params![id], |r| r.get(0)).unwrap(), 0, "item alerte détaché");
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM incident_item WHERE incident_id=?1 AND kind='note' AND body LIKE 'détaché%'", params![id], |r| r.get(0)).unwrap(), 1, "note de détachement tracée");
-        assert!(!case_detach_item(&conn, id, 999999, "bob"), "item inexistant -> false");
+        assert!(matches!(case_detach_item(&conn, id, 999999, "bob"), IssueDuDetachement::ElementAbsent), "item inexistant -> absent");
         let other = dossier_seme(&conn, "alice", "Other", 2, "", None, 3);
         case_add_item(&conn, other, now(), "note", "alice", "x", None);
         let other_item: i64 = conn.query_row("SELECT id FROM incident_item WHERE incident_id=?1 AND kind='note'", params![other], |r| r.get(0)).unwrap();
-        assert!(!case_detach_item(&conn, id, other_item, "bob"), "ne détache pas l'item d'un AUTRE case (anti-IDOR)");
+        assert!(matches!(case_detach_item(&conn, id, other_item, "bob"), IssueDuDetachement::ElementAbsent), "ne détache pas l'item d'un AUTRE case (anti-IDOR)");
     }
 
     /// ESCALADE SLA : un case overdue non escaladé -> escalated=1 + item 'sla' + ledger, une SEULE fois. Sans

@@ -753,21 +753,92 @@ pub(crate) fn cases_list_json(conn: &Connection, now_i: i64, status: &str, assig
     cases_list_json_paged(conn, now_i, status, assignee, priority, overdue_only, archived, "", 300, 0)
 }
 
+/// `P10.33-l` — CE QU'A FAIT LE DÉTACHEMENT D'UN ÉLÉMENT. La forme d'avant rendait `true` après un `DELETE` jeté
+/// (`let _ =`) et une note « détaché … » posée par `case_add_item`, qui jette aussi la sienne : sur un effacement
+/// refusé, l'élément restait au dossier, la chronologie ATTESTAIT son détachement et la route répondait 204.
+#[derive(Debug)]
+pub(crate) enum IssueDuDetachement {
+    /// L'effacement a pris UNE ligne, la note l'atteste, la transaction est VALIDÉE.
+    Detache,
+    /// La lecture, dans la transaction, n'a trouvé aucun élément sous cet identifiant dans CE dossier : rien n'est écrit.
+    ElementAbsent,
+    /// Rien n'est écrit (relecture refusée, transaction annulée, non ouverte ou non validée) : la cause servie, et
+    /// celle du moteur quand elle se sert (`None` : refus de la note, dont la cause est journalisée, jamais servie —
+    /// contrat de `ajouter_l_element_au_dossier`).
+    NonEcrit { cause: &'static str, moteur: Option<String> },
+}
+
+/// `P10.33-l` — l'effacement de l'élément ou la note qui l'atteste refusés (ou aucune ligne effacée) : tout est annulé.
+pub(crate) const CAUSE_ELEMENT_NON_DETACHE: &str = "ÉLÉMENT NON DÉTACHÉ DU DOSSIER : la base n'a pas pris l'effacement \
+     de l'élément ou la note qui l'atteste, et la transaction est annulée — l'élément reste au dossier et la chronologie \
+     n'atteste aucun détachement. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.33-l` — le `BEGIN` du détachement refusé : rien n'est lu ni écrit.
+pub(crate) const CAUSE_ELEMENT_NON_DETACHE_TRANSACTION_NON_OUVERTE: &str = "ÉLÉMENT NON DÉTACHÉ DU DOSSIER : la base n'a \
+     pas pris la transaction du détachement (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est lu ni écrit, l'élément reste au dossier. Réessayez.";
+
+/// `P10.33-l` — le `COMMIT` du détachement refusé : annulé, l'élément reste, aucune note.
+pub(crate) const CAUSE_ELEMENT_NON_DETACHE_TRANSACTION_NON_VALIDEE: &str = "ÉLÉMENT NON DÉTACHÉ DU DOSSIER : la base n'a \
+     pas validé la transaction (COMMIT refusé) et l'a annulée — l'élément reste au dossier et la chronologie n'atteste \
+     aucun détachement. Réessayez.";
+
+/// Pourquoi le corps du détachement annule sa transaction.
+enum RefusDuDetachement {
+    Absent,
+    /// La relecture refusée par le moteur (autre que « aucune ligne ») : rien n'est su de l'élément — une LECTURE, pas
+    /// un effacement refusé ni une absence.
+    NonRelu(String),
+    /// L'effacement refusé, ou sans effet.
+    Effacement(String),
+    /// La note qui atteste le détachement refusée (cause de `ajouter_l_element_au_dossier`, journalisée seulement).
+    NoteRefusee(String),
+}
+
 /// Détache un item de timeline d'un case (anti-IDOR : borné à incident_id) et trace le geste (item 'note'
-/// « détaché … »). false si l'item n'existe pas / n'appartient pas au case. #4a.
-pub(crate) fn case_detach_item(conn: &Connection, id: i64, item_id: i64, author: &str) -> bool {
-    let rf: String = match conn.query_row(
-        "SELECT COALESCE(ref,'') FROM incident_item WHERE id=?1 AND incident_id=?2",
-        params![item_id, id],
-        |r| r.get(0),
-    ) {
-        Ok(v) => v,
-        Err(_) => return false,
+/// « détaché … »). #4a.
+///
+/// `P10.33-l` — LA LECTURE DE L'ÉLÉMENT, SON EFFACEMENT ET LA NOTE QUI L'ATTESTE VIVENT DANS UNE TRANSACTION
+/// (`jouer_le_geste_garde`). L'effacement doit prendre UNE ligne : la lecture est faite sous le `BEGIN IMMEDIATE`, donc
+/// un `Ok(0)` n'est pas une disparition entre lecture et écriture (aucun écrivain ne s'intercale) mais un effacement
+/// non pris (déclencheur `RAISE(IGNORE)`) — refusé comme tel, l'élément est encore là. La note est posée par
+/// `ajouter_l_element_au_dossier`, qui COMPTE ; refusée, l'effacement est annulé avec elle (sa cause est journalisée,
+/// pas servie). La relecture refusée par le moteur n'est ni une absence (404) ni un effacement refusé : elle prend la
+/// cause de la pré-lecture du gestionnaire, `CAUSE_ELEMENT_NON_LU_GESTE_NON_FAIT`, avec celle du moteur.
+pub(crate) fn case_detach_item(conn: &Connection, id: i64, item_id: i64, author: &str) -> IssueDuDetachement {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
+    let geste = |conn: &Connection| -> Result<(), RefusDuDetachement> {
+        let rf: String = match conn.query_row(
+            "SELECT COALESCE(ref,'') FROM incident_item WHERE id=?1 AND incident_id=?2",
+            params![item_id, id],
+            |r| r.get(0),
+        ) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Err(RefusDuDetachement::Absent),
+            Err(e) => return Err(RefusDuDetachement::NonRelu(e.to_string())),
+        };
+        match conn.execute("DELETE FROM incident_item WHERE id=?1 AND incident_id=?2", params![item_id, id]) {
+            Ok(1) => {}
+            Ok(n) => return Err(RefusDuDetachement::Effacement(format!("{n} élément(s) effacé(s) au lieu d'un"))),
+            Err(e) => return Err(RefusDuDetachement::Effacement(format!("effacement refusé : {e}"))),
+        }
+        let body = if rf.is_empty() { "élément détaché".to_string() } else { format!("détaché {rf}") };
+        ajouter_l_element_au_dossier(conn, id, now(), "note", author, &body, None).map_err(RefusDuDetachement::NoteRefusee)
     };
-    let _ = conn.execute("DELETE FROM incident_item WHERE id=?1 AND incident_id=?2", params![item_id, id]);
-    let body = if rf.is_empty() { "élément détaché".to_string() } else { format!("détaché {rf}") };
-    case_add_item(conn, id, now(), "note", author, &body, None);
-    true
+    match jouer_le_geste_garde(conn, "cases", &format!("détachement de l'élément #{item_id} du dossier #{id}"), geste) {
+        Issue::Valide(()) => IssueDuDetachement::Detache,
+        Issue::Refuse(RefusDuDetachement::Absent) => IssueDuDetachement::ElementAbsent,
+        Issue::Refuse(RefusDuDetachement::NonRelu(moteur)) => {
+            IssueDuDetachement::NonEcrit { cause: CAUSE_ELEMENT_NON_LU_GESTE_NON_FAIT, moteur: Some(moteur) }
+        }
+        Issue::Refuse(RefusDuDetachement::Effacement(moteur)) => IssueDuDetachement::NonEcrit { cause: CAUSE_ELEMENT_NON_DETACHE, moteur: Some(moteur) },
+        Issue::Refuse(RefusDuDetachement::NoteRefusee(moteur)) => {
+            eprintln!("[cases] WARN note de détachement de l'élément #{item_id} du dossier #{id} refusée : {moteur}");
+            IssueDuDetachement::NonEcrit { cause: CAUSE_ELEMENT_NON_DETACHE, moteur: None }
+        }
+        Issue::NonOuvert(e) => IssueDuDetachement::NonEcrit { cause: CAUSE_ELEMENT_NON_DETACHE_TRANSACTION_NON_OUVERTE, moteur: Some(e.to_string()) },
+        Issue::NonValide(e) => IssueDuDetachement::NonEcrit { cause: CAUSE_ELEMENT_NON_DETACHE_TRANSACTION_NON_VALIDEE, moteur: Some(e.to_string()) },
+    }
 }
 
 /// #4a — ESCALADE SLA : pour chaque case dont le SLA est DÉPASSÉ et pas encore escaladé, pose D'ABORD le marqueur
@@ -1146,10 +1217,15 @@ pub(crate) async fn case_item_delete(State(st): State<AppState>, Extension(au): 
         Err(rusqlite::Error::QueryReturnedNoRows) => return not_found(CAUSE_ELEMENT_ABSENT_DE_CE_DOSSIER),
         Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ELEMENT_NON_LU_GESTE_NON_FAIT} ({e})")),
     }
-    if case_detach_item(&conn, id, item_id, &au.name) {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ELEMENT_NON_LU_GESTE_NON_FAIT} (relecture de l'élément)"))
+    // `P10.33-l` — le 204 n'est rendu qu'après la validation de l'effacement ET de sa note ; refusé, rien n'est écrit.
+    match case_detach_item(conn, id, item_id, &au.name) {
+        IssueDuDetachement::Detache => StatusCode::NO_CONTENT.into_response(),
+        IssueDuDetachement::ElementAbsent => not_found(CAUSE_ELEMENT_ABSENT_DE_CE_DOSSIER),
+        IssueDuDetachement::NonEcrit { cause, moteur: Some(moteur) } => {
+            eprintln!("[cases] WARN élément #{item_id} du dossier #{id} NON détaché : {moteur}");
+            err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{cause} ({moteur})"))
+        }
+        IssueDuDetachement::NonEcrit { cause, moteur: None } => err_json(StatusCode::SERVICE_UNAVAILABLE, cause),
     }
     })
 }

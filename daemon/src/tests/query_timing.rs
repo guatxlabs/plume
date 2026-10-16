@@ -357,13 +357,20 @@
             }
         }
         assert!(!sites.is_empty(), "invariant vide = invariant mort : plus aucune acquisition trouvée");
+        // `P10.32-q` — LA PORTE JUMELLE DES REQUÊTES LOURDES est la même acquisition chronométrée (elle
+        // passe par `semaphore_interactif::permis_pris`, le couloir en plus) : elle est ADMISE, et
+        // nommée en toutes lettres plutôt que reconnue par un préfixe — `acquire_query_permit_x` reste
+        // refusé.
         for (site, line) in &sites {
             assert!(
-                line.contains("acquire_query_permit(&st.query_sem)") || line.contains(".permit(&st.query_sem)"),
+                line.contains("acquire_query_permit(&st.query_sem)")
+                    || line.contains("acquire_query_permit_lourd(&st.query_sem)")
+                    || line.contains(".permit(&st.query_sem)"),
                 "{site} touche au sémaphore interactif hors de l'acquisition chronométrée : son attente ne \
                  sera mesurée nulle part, la route pèsera sur la concurrence sans apparaître dans aucune \
                  courbe (P7.8-a), et rien ne publiera le temps pendant lequel elle occupe la borne. \
-                 Passer par `acquire_query_permit(&st.query_sem)` ou `clock.permit(&st.query_sem)`. {line}"
+                 Passer par `acquire_query_permit(&st.query_sem)`, `acquire_query_permit_lourd(&st.query_sem)` \
+                 ou `clock.permit(&st.query_sem)`. {line}"
             );
         }
     }

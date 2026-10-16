@@ -684,9 +684,29 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
                         .and_then(|it| it.collect())
                 });
             let mut obs: std::collections::BTreeMap<String, (i64, i64)> = std::collections::BTreeMap::new();
+            // `P10.32-s` — `last_ts` compte l'aveu « capteur indisponible » : corrigé par le même SEEK plafonné
+            // que Fraîcheur, sans borne de date (un dernier réel antérieur à la fenêtre est servi : « en retard »).
+            // `event` ne retient, sous le plafond, que des aveux -> `last` 0, la forme « dormant » déjà servie
+            // (la source reste à l'inventaire, `n_24h` inchangé). AU PLAFOND : un FAIT BORNÉ (`last` = la
+            // borne, statut dérivé de la borne, jamais `frais` ni `non_lu`, champ du fait). Lecture RÉELLEMENT
+            // ratée -> `last` du rollup + aveu (`non_lu`).
+            let mut non_etablies: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+            let mut au_dela: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
             match observees {
                 Ok(lignes) => {
                     for (src, last, n) in lignes {
+                        let last = match crate::sondes::last_du_rollup_hors_aveu(conn, &src, last, "") {
+                            None => 0,
+                            Some(crate::sondes::LastHorsAveu::Etabli(last)) => last,
+                            Some(crate::sondes::LastHorsAveu::Borne { borne, lues }) => {
+                                au_dela.insert(src.clone(), lues);
+                                borne
+                            }
+                            Some(crate::sondes::LastHorsAveu::NonLu { last_du_rollup, cause }) => {
+                                non_etablies.insert(src.clone(), cause);
+                                last_du_rollup
+                            }
+                        };
                         obs.insert(src, (last, n));
                     }
                 }
@@ -724,7 +744,16 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
                 // l'exploitant — et le statut qui en dérive (`statut_de_source`). `dormant` = ligne de
                 // déclaration sans aucune donnée observée sur la fenêtre de l'inventaire.
                 let cadence = cadence_du_feed("event", src, m.and_then(|x| x.cadence.as_ref()));
-                let status = if *last == 0 { "dormant" } else { statut_de_source(age, pipe_fresh, Some(&cadence)) };
+                let non_etablie = non_etablies.get(src);
+                let status = if non_etablie.is_some() {
+                    STATUT_DE_SOURCE_NON_LU
+                } else if *last == 0 {
+                    "dormant"
+                } else if au_dela.contains_key(src) {
+                    crate::handlers::freshness::statut_sur_une_borne(statut_de_source(age, pipe_fresh, Some(&cadence)))
+                } else {
+                    statut_de_source(age, pipe_fresh, Some(&cadence))
+                };
                 // CE QU'UN HUMAIN PEUT ENCORE DÉCLARER ICI : la cadence n'est offerte que là où aucune sonde
                 // n'en déclare — l'écrire ailleurs serait accepter un réglage que la préséance ignorerait.
                 let cadence_declarable = cadence_declaree("event", src) == CadenceDeclaree::NonDeclaree;
@@ -764,6 +793,12 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
                 // dit pas « peut-être zéro », elle dit « peut-être pas compté » — et ici il l'a été.
                 if let (Some(o), Value::Object(c)) = (entry.as_object_mut(), cadence_json(&cadence, Some(*n24))) {
                     o.extend(c);
+                }
+                if let (Some(o), Some(cause)) = (entry.as_object_mut(), non_etablie) {
+                    o.insert("derniere_collecte_non_etablie".into(), json!(cause));
+                }
+                if let (Some(o), Some(lues)) = (entry.as_object_mut(), au_dela.get(src)) {
+                    o.insert(crate::handlers::freshness::CHAMP_DERNIERE_COLLECTE_AU_DELA_DES_LIGNES.into(), json!(lues));
                 }
                 sources.push(entry);
             }

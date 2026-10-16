@@ -124,6 +124,9 @@ SITES_HORS_ROUTE = {
     ("daemon/src/seeds.rs", "semer_sous_son_drapeau"): ("Txn::begin",),
     # Le spool de métriques et d'instantanés : refus dit par `dire_la_transaction_non_ouverte`, lot laissé au spool.
     ("daemon/src/ingest/mod.rs", "ingest_once"): ("Txn::begin", "Txn::begin"),
+    # Le chargeur des tableaux de config.d au démarrage (`P10.20-b`), pas une route : un `SAVEPOINT` par tableau,
+    # dont le refus est dit au journal avec la cause du moteur et compté ignoré au bilan de boot (aucun panneau touché).
+    ("daemon/src/overlays_oac.rs", "load_overlay_dashboards"): ("BEGIN littéral",),
 }
 
 # --- LES RESTES : des routes, ou des aides de route, qui ouvrent encore nu. Chacun porte la clé qui le reprend.

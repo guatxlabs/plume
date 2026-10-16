@@ -436,7 +436,8 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
         match soql_to_sql_masked_x(soql, from, to, env, &masks) { Ok(s) => s, Err(e) => return bad_req(e) }
     };
     if compiled.is_empty() { return bad_req("requête vide"); }
-    let _permit = match acquire_query_permit(&st.query_sem).await {
+    // `P10.32-q` : le Pivot s'exécute au budget interactif (plus bas) -> requête LOURDE, porte jumelle.
+    let _permit = match acquire_query_permit_lourd(&st.query_sem).await {
         Ok((p, _wait)) => p,
         Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "columns": [], "rows": [] }))).into_response(),
     };

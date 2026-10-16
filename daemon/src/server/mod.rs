@@ -404,7 +404,12 @@ fn boot_config() -> BootConfig {
     let query_sem = Arc::new(tokio::sync::Semaphore::new(query_concurrency));
     // P7.8-a : la BORNE est publiée (jamais modifiée ici). « 3 permis détenus » ne dit rien sans
     // « sur 3 » : `plume_query_permits_held` ne se lit que contre `plume_query_permits_limit`.
-    semaphore_interactif::poser_borne(query_concurrency);
+    // `P10.32-q` : le même site pose le COULOIR LOURD — `PLUME_QUERY_RESERVE_LIGHT` jetons (défaut 1,
+    // borné à N − 1, nul à N = 1) qu'aucune requête lourde (budget grandi) ne peut tenir, pour que
+    // quelques requêtes longues n'affament pas l'API interactive. Lu par `cfg` (env > fichier > défaut) :
+    // même effet en hôte natif, Docker et k3s ; le défaut ne dépend d'aucun matériel.
+    let query_reserve_light: usize = cfg(&conf, "PLUME_QUERY_RESERVE_LIGHT", "1").parse().unwrap_or(1);
+    semaphore_interactif::poser_borne(query_concurrency, query_reserve_light);
     // CHANGEMENT 1 — sémaphore SÉPARÉ du refresh ASYNC des panneaux (SWR + cache_refresh_all_panels) :
     // le refresh ne partage PLUS la borne de l'interactif -> sem_wait interactif ~0 même sous rafale de
     // rafraîchissement (14 panneaux). Taille via PLUME_PANEL_REFRESH_CONCURRENCY (défaut 2), au moins 1.

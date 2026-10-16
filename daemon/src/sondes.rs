@@ -165,6 +165,11 @@ pub(crate) enum Cout {
     /// MESURÉ le 2026-08-03 sur la MÊME requête, le CLI 3.53 rend `USING COVERING INDEX` là où le
     /// SQLCipher EMBARQUÉ rend `USING INDEX`. Même chemin, même coût constant (13 VM steps) : c'est
     /// pourquoi le juge est la mutation de volume, jamais la chaîne du plan.
+    /// `P10.32-s` — LE NOM DIT « SEEK SUR CET INDEX », PAS « INDEX-ONLY ». Le bras `EventFlux` n'est plus
+    /// couvrant : il exclut l'aveu d'indisponibilité, dont la forme est dans `fields`, hors index. Il
+    /// reste un SEEK sur `idx_event_src_ts`, indépendant du VOLUME du flux (c'est ce que la mutation de
+    /// volume juge), mais il LIT chaque aveu postérieur au dernier événement réel : ce coût-là grandit
+    /// avec le nombre d'aveux, que `sondes_cout` ne fait pas varier (cf. `EST_SIGNE_DE_VIE`).
     IndexCouvrant(&'static str),
     /// Coût borné par la CARDINALITÉ D'UNE TABLE — nommée ici — et non par le volume d'events. La
     /// sonde d'instantané en est le seul cas : `SELECT MIN(l) FROM (… GROUP BY host)` est servi par un
@@ -270,12 +275,13 @@ impl Sonde {
                 cout: Cout::BorneParLaTable("snapshot"),
             },
             // `source=?1` (une source) ou `source IN (?1,…,?n)` : les DEUX sont servis par le composite
-            // (source, ts) en INDEX-ONLY — le `MAX(ts)` est un saut en fin de plage, sans lecture de ligne.
+            // (source, ts) en SEEK — le `MAX(ts)` part de la fin de la plage de chaque source et s'arrête
+            // à la première ligne qui n'est pas un aveu d'indisponibilité (cf. `EST_SIGNE_DE_VIE`).
             Sonde::EventFlux { sources } => {
                 let trous = (1..=sources.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
                 let ou = if sources.len() == 1 { "source=?1".to_string() } else { format!("source IN ({trous})") };
                 Requete {
-                    sql: format!("SELECT MAX(ts) FROM event WHERE {ou}"),
+                    sql: format!("SELECT MAX(ts) FROM event WHERE {ou} AND {EST_SIGNE_DE_VIE}"),
                     binds: sources.to_vec(),
                     cout: Cout::IndexCouvrant("idx_event_src_ts"),
                 }
@@ -341,6 +347,173 @@ impl Sonde {
             return Vec::new();
         };
         rows.flatten().take(max).collect()
+    }
+}
+
+/// `P10.32-s` — L'AVEU « CAPTEUR INDISPONIBLE » N'EST PAS UN SIGNE DE VIE.
+///
+/// CE QUI ÉTAIT CASSÉ. La sonde de flux prenait `MAX(ts)` sur TOUTE ligne de la source. Or un capteur
+/// qui ne peut pas collecter le DIT par un événement de SA source (`collectors/lib.sh`,
+/// `plume_report_availability` : `category=config`, `fields.type=collector-availability`,
+/// `fields.collect_status=unavailable` — même forme chez l'agent, `collector-mail` et le collecteur
+/// Windows). Cet aveu comptait comme une collecte : un capteur ÉVÉNEMENTIEL jamais entendu passait
+/// d'« inconnu » à « actif » sur son seul aveu (`statut_capteur` : `Some(_)` + pipeline frais), et un
+/// capteur CONTINU (`audit`, `kube-audit`) voyait son âge remis à zéro à chaque aveu (dédoublonné à
+/// l'heure), donc son « muet » masqué pendant `CYCLES_TOLERES_ALERTE` x intervalle à chaque heure.
+/// Fraîcheur et `/api/sources` (lus sur `event_rollup.last_ts`) le comptaient de même : cf.
+/// `derniere_collecte_hors_aveu`.
+///
+/// LE DISCRIMINANT EST LA FORME DE L'AVEU, PAS LA CATÉGORIE. Plusieurs capteurs émettent à chaque
+/// passage un auto-rapport `category=config` (filtres de collecte, état du capteur) — pour `web` c'est
+/// le SEUL signe de vie. Exclure `category='config'` le rendrait muet à tort : on n'exclut que la ligne
+/// qui porte les DEUX champs de l'aveu. `IS NOT` et pas `<>` : une clé ABSENTE (`json_extract` rend
+/// NULL) ne fait pas de la ligne un aveu — `NULL <> 'x'` vaut NULL et l'aurait écartée. `json_valid`
+/// d'abord, dans un `CASE` (ordre d'évaluation garanti) : un `fields` NULL ou qui n'est pas du JSON
+/// n'est pas un aveu et reste compté, au lieu de faire lever « malformed JSON » à `json_extract` et
+/// de rendre la sonde NON LUE.
+///
+/// CE QUI RESTE COMPTÉ, À DESSEIN : `collect_status=disabled` (coupé par l'exploitant), `fallback`
+/// (réglage illisible, collecte ENTIÈRE) et `partial` (lignes perdues, mais le capteur LIT). Seul
+/// `unavailable` dit « je ne collecte pas ». Exclure aussi `disabled` est une décision de l'exploitant,
+/// pas de ce correctif. (`unavailable` couvre aussi `collection-capped` : un capteur qui plafonne émet
+/// AUSSI ses événements réels, il reste donc vu vivant par ceux-là.)
+///
+/// CE QUE ÇA COÛTE À LA SONDE. Le filtre n'est pas dans `idx_event_src_ts(source, ts)` : la sonde
+/// reste un SEEK sur la source, mais elle LIT chaque ligne en partant de la fin, jusqu'à la première
+/// qui n'est pas un aveu. Le coût suit donc le nombre d'aveux POSTÉRIEURS au dernier événement réel,
+/// jamais le volume du flux — et ce nombre grandit justement quand le capteur est aveugle. Il vaut au
+/// plus : aveux distincts x HÔTES x heures (le dédoublonnage horaire est cloisonné par hôte), borné
+/// par la rétention. Pente MESURÉE le 2026-10-15 par `p10_32s_la_sonde_lit_chaque_aveu_posterieur`
+/// (exacte, affichée par le témoin) : 19 VM steps par aveu avec la garde `json_valid` (9 sans elle),
+/// soit de l'ordre de 7.10^5 VM steps pour 50 hôtes x 30 j d'aveux sans événement réel. `check_heartbeats` la joue sous
+/// le verrou écrivain : ce coût n'est pas plafonné ici, il est DIT. LITTÉRAL, pas lié : aucune valeur
+/// ne vient de l'appelant, et les binds restent les seules sources.
+pub(crate) const EST_SIGNE_DE_VIE: &str = "CASE WHEN json_valid(fields) THEN \
+     (json_extract(fields,'$.type') IS NOT 'collector-availability' \
+     OR json_extract(fields,'$.collect_status') IS NOT 'unavailable') ELSE 1 END";
+
+/// `P10.32-s` — CE QUE FRAÎCHEUR ET `/api/sources` SAVENT DE LA DERNIÈRE COLLECTE HORS AVEU.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum DerniereCollecteHorsAveu {
+    /// Le dernier événement de la source qui n'est pas un aveu d'indisponibilité — SANS borne de date :
+    /// s'il précède la fenêtre de l'inventaire, c'est lui qui est servi, et la source se dit « en
+    /// retard » au lieu de disparaître.
+    Vue(i64),
+    /// `lues` lignes (moins que le plafond), TOUTES des aveux (ou d'un autre environnement) : `event` ne
+    /// retient AUCUNE collecte réelle de cette source. `lues == 0` : `event` ne retient rien de cette
+    /// source (rétention plus courte que celle du rollup, fixture de rollup seul) — on ne sait alors rien
+    /// de plus que le rollup.
+    QueDesAveux { lues: i64 },
+    /// Le plafond `LIGNES_HORS_AVEU_MAX` est atteint sans trouver d'événement réel. C'est un FAIT BORNÉ,
+    /// pas une lecture ratée : « aucun signe de vie (de cet environnement, sous filtre) dans les `lues`
+    /// dernières lignes de la source ». Le dernier événement réel, s'il existe, est AU PLUS TARD
+    /// `plus_ancien_ts`, l'instant de la plus ancienne ligne lue (`<=` et pas `<` : une ligne réelle de
+    /// même instant peut être restée sous le `LIMIT`).
+    AuDela { lues: i64, plus_ancien_ts: i64 },
+}
+
+/// Plafond de lignes LUES par source pour `derniere_collecte_hors_aveu` — la SEULE borne de son coût
+/// (aucune borne de date). Un hôte qui avoue une fois par heure en pose 168 par semaine : le plafond
+/// couvre environ 6 semaines d'aveux d'un hôte aveugle, ou une semaine de 6 hôtes ; au-delà, la réponse
+/// est une BORNE (`AuDela`), jamais un balayage, et jamais une lecture ratée.
+pub(crate) const LIGNES_HORS_AVEU_MAX: i64 = 1024;
+
+/// L'énoncé de `derniere_collecte_hors_aveu`, exposé pour les témoins de coût. `INDEXED BY` : sans
+/// l'index (création en fond au démarrage), la préparation ÉCHOUE au lieu de balayer la source.
+/// `envp` = le prédicat d'environnement déjà validé (`env_and_pred`), vide hors filtre : il est posé
+/// dans la COLONNE, pas dans le WHERE, pour que les lignes d'un autre environnement comptent dans le
+/// plafond (sinon le plafond ne bornerait plus rien). PAS DE BORNE DE DATE, à dessein : un capteur
+/// aveugle dont le dernier événement réel précède la fenêtre de l'inventaire doit être servi avec cet
+/// âge-là (« en retard »), pas disparaître ni passer pour « dormant » — un aveu n'est pas un signe de
+/// vie, et l'AVEUGLEMENT se voit (par l'âge du dernier réel). L'AVEU LUI-MÊME, lui, ne se voit pas :
+/// ni sa raison ni son instant ne sont servis par une surface de santé ; une source qui n'a que des
+/// aveux sort de Fraîcheur et reste « dormant » dans `/api/sources`, avec un `n_24h` qui compte ses
+/// aveux (le volume du rollup). C'est un RESTE, dit. Le `LIMIT` borne seul la lecture.
+pub(crate) fn requete_hors_aveu(envp: &str) -> String {
+    format!(
+        "SELECT ts, {EST_SIGNE_DE_VIE}{envp} FROM event INDEXED BY idx_event_src_ts \
+         WHERE source=?1 ORDER BY ts DESC LIMIT ?2"
+    )
+}
+
+/// `P10.32-s` — LA DERNIÈRE COLLECTE D'UNE SOURCE, AVEUX EXCLUS, À COÛT PLAFONNÉ. Fraîcheur et
+/// `/api/sources` lisent `event_rollup.last_ts`, qui prend `MAX(ts)` sur toute ligne : un aveu y fait
+/// une source « fraîche ». Le rollup reste ce qu'il est (schéma et sens inchangés) ; ces deux surfaces
+/// le CORRIGENT par cette lecture, un SEEK sur `idx_event_src_ts` lu à reculons depuis la fin de la
+/// source et ARRÊTÉ à la première ligne qui n'est pas un aveu (une ligne sur le chemin nominal), ou à
+/// `LIGNES_HORS_AVEU_MAX` lignes.
+pub(crate) fn derniere_collecte_hors_aveu(
+    conn: &Connection,
+    source: &str,
+    envp: &str,
+) -> Result<DerniereCollecteHorsAveu, rusqlite::Error> {
+    let mut s = conn.prepare_cached(&requete_hors_aveu(envp))?;
+    let mut lignes = s.query(rusqlite::params![source, LIGNES_HORS_AVEU_MAX])?;
+    let mut lues = 0i64;
+    let mut plus_ancien_ts = i64::MAX;
+    while let Some(l) = lignes.next()? {
+        lues += 1;
+        let ts: i64 = l.get(0)?;
+        if l.get::<_, i64>(1)? != 0 {
+            return Ok(DerniereCollecteHorsAveu::Vue(ts));
+        }
+        plus_ancien_ts = ts;
+    }
+    Ok(if lues >= LIGNES_HORS_AVEU_MAX {
+        DerniereCollecteHorsAveu::AuDela { lues, plus_ancien_ts }
+    } else {
+        DerniereCollecteHorsAveu::QueDesAveux { lues }
+    })
+}
+
+/// `P10.32-s` — LE `last` QUE FRAÎCHEUR ET `/api/sources` SERVENT, CORRIGÉ DE L'AVEU.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) enum LastHorsAveu {
+    /// Établi : le dernier événement réel s'il précède le `last` du rollup (la source se dit alors « en
+    /// retard » au besoin), sinon le `last` du rollup TEL QUEL (byte-identique sur le chemin nominal
+    /// SANS filtre d'environnement ; sous filtre, cf. `last_du_rollup_hors_aveu`).
+    Etabli(i64),
+    /// Plafond atteint (`DerniereCollecteHorsAveu::AuDela`) : un FAIT BORNÉ, sans cause. `borne` =
+    /// `min(last du rollup, plus ancienne ligne lue)` — le dernier événement réel est AU PLUS TARD là,
+    /// donc l'âge vrai est AU MOINS celui de la borne. Jamais le `last` du rollup seul : c'est l'aveu
+    /// qui l'a rajeuni. `lues` = le nombre de lignes lues (le plafond), servi tel quel.
+    Borne { borne: i64, lues: i64 },
+    /// Lecture RÉELLEMENT ratée (index absent -> préparation refusée, lecture interrompue) : le `last`
+    /// du rollup rendu tel quel, et la cause que l'appelant DIT (`non_lu`).
+    NonLu { last_du_rollup: i64, cause: String },
+}
+
+/// `P10.32-s` — LE `last` DU ROLLUP, CORRIGÉ DE L'AVEU. `None` = `event` ne retient que des aveux de
+/// cette source, sous le plafond : aucune collecte réelle, jamais. Un dernier événement réel ANTÉRIEUR à
+/// la fenêtre du rollup est rendu tel quel (la source se dit alors « en retard »). BYTE-IDENTIQUE sur le
+/// chemin nominal SANS FILTRE D'ENVIRONNEMENT : le `last` du rollup n'est remplacé que par un instant PLUS
+/// ANCIEN (les lignes entre les deux sont des aveux) ; une ligne réelle plus récente que le rollup
+/// (ingérée depuis sa dernière passe) ne le change pas. Au plafond : une BORNE (`LastHorsAveu::Borne`),
+/// jamais une cause ; `borne = min(last du rollup, plus ancienne ligne lue)` — le `min` garde le `last`
+/// du rollup quand il précède toute la lecture (lignes d'un autre environnement, ou ingérées depuis la
+/// dernière passe du rollup) : la plus ancienne ligne lue ne vient alors pas de cette source-là.
+/// SOUS FILTRE D'ENVIRONNEMENT, PAS BYTE-IDENTIQUE, et c'est un reste dit : une source SANS AUCUN aveu
+/// dont les `LIGNES_HORS_AVEU_MAX` lignes les plus récentes viennent d'un AUTRE environnement est servie
+/// en borne. Son `last_seen` reste exact (le `min` rend le `last` du rollup de cet environnement), mais
+/// son statut ne peut plus être `frais` (`calme` à la place) et le champ du fait est posé : la lecture ne
+/// contient aucune ligne de cet environnement, elle ne peut donc pas dire si ce `last` est un réel ou un
+/// aveu.
+pub(crate) fn last_du_rollup_hors_aveu(
+    conn: &Connection,
+    source: &str,
+    last_du_rollup: i64,
+    envp: &str,
+) -> Option<LastHorsAveu> {
+    match derniere_collecte_hors_aveu(conn, source, envp) {
+        Ok(DerniereCollecteHorsAveu::Vue(t)) if t < last_du_rollup => Some(LastHorsAveu::Etabli(t)),
+        Ok(DerniereCollecteHorsAveu::Vue(_)) | Ok(DerniereCollecteHorsAveu::QueDesAveux { lues: 0 }) => {
+            Some(LastHorsAveu::Etabli(last_du_rollup))
+        }
+        Ok(DerniereCollecteHorsAveu::QueDesAveux { .. }) => None,
+        Ok(DerniereCollecteHorsAveu::AuDela { lues, plus_ancien_ts }) => {
+            Some(LastHorsAveu::Borne { borne: last_du_rollup.min(plus_ancien_ts), lues })
+        }
+        Err(e) => Some(LastHorsAveu::NonLu { last_du_rollup, cause: format!("dernière collecte hors aveu NON lue : {e}") }),
     }
 }
 

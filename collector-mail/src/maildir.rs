@@ -48,19 +48,46 @@ fn is_maildir(path: &Path) -> bool {
 /// les boites des utilisateurs qu'il contient n'etaient jamais balayees — « 0 alerte », sans trace.
 /// Une entree illisible en cours de parcours remonte de meme : un parcours interrompu n'est pas un
 /// parcours complet (`S36`).
-fn has_maildir_children(path: &Path) -> std::io::Result<bool> {
+///
+/// `P10.33-m` — un enfant dont le nom est EXCLU pour ce domaine n'est pas sonde (aucun `stat` dans son
+/// repertoire) : l'exploitant l'a nomme comme un compte de ce domaine, c'est la preuve retenue que le
+/// repertoire est un domaine. Le sonder pour en decider, ce serait ouvrir le compte qu'on retire.
+fn has_maildir_children(
+    path: &Path,
+    domaine: &str,
+    exclusion: &crate::exclusion::Exclusion,
+) -> std::io::Result<bool> {
     for e in std::fs::read_dir(path)? {
         let e = e?;
-        if e.file_type().map(|t| t.is_dir()).unwrap_or(false) && is_maildir(&e.path()) {
+        if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        if exclusion.exclut(&e.file_name().to_string_lossy(), domaine) {
+            return Ok(true);
+        }
+        if is_maildir(&e.path()) {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-/// Emails des comptes (gere layout PLAT et NESTED, comme le scanner).
-pub fn list_account_emails(root: &str, mail_domain: &str) -> Result<Vec<String>> {
+/// Emails des comptes (gere layout PLAT et NESTED, comme le scanner), et le NOMBRE de comptes retires
+/// par `PLUME_MAIL_EXCLURE_COMPTES` (`P10.33-m`).
+///
+/// UN COMPTE EXCLU N'EST JAMAIS OUVERT. La decision tombe sur le NOM rendu par l'enumeration de son
+/// parent, AVANT toute sonde de son repertoire (`is_maildir` y regarde deja `cur/` et `new/`) : ni
+/// `stat` a l'interieur, ni `read_dir`, ni lecture de message, ni cle dans l'etat incremental — le
+/// compte ne figure pas dans la liste rendue. Consequence assumee en layout IMBRIQUE : un repertoire
+/// de premier niveau dont le nom egale une entree exclue (partie locale, ou `<nom>@PLUME_MAIL_DOMAIN`)
+/// est retire SANS savoir s'il est un compte plat ou un domaine ; il compte alors pour un exclu.
+pub fn list_account_emails(
+    root: &str,
+    mail_domain: &str,
+    exclusion: &crate::exclusion::Exclusion,
+) -> Result<(Vec<String>, usize)> {
     let mut out = Vec::new();
+    let mut exclus = 0usize;
     let root_path = Path::new(root);
     if !root_path.exists() {
         return Err(anyhow!("maildir root introuvable: {}", root));
@@ -74,10 +101,14 @@ pub fn list_account_emails(root: &str, mail_domain: &str) -> Result<Vec<String>>
         if name.starts_with('.') {
             continue;
         }
+        if exclusion.exclut(&name, mail_domain) {
+            exclus += 1;
+            continue;
+        }
         let path = entry.path();
         if is_maildir(&path) {
             out.push(format!("{}@{}", name, mail_domain));
-        } else if has_maildir_children(&path)? {
+        } else if has_maildir_children(&path, &name, exclusion)? {
             let domain = name;
             for ue in std::fs::read_dir(&path)? {
                 let ue = ue?;
@@ -88,6 +119,10 @@ pub fn list_account_emails(root: &str, mail_domain: &str) -> Result<Vec<String>>
                 if user.starts_with('.') {
                     continue;
                 }
+                if exclusion.exclut(&user, &domain) {
+                    exclus += 1;
+                    continue;
+                }
                 out.push(format!("{}@{}", user, domain));
             }
         } else {
@@ -96,7 +131,7 @@ pub fn list_account_emails(root: &str, mail_domain: &str) -> Result<Vec<String>>
     }
     out.sort();
     out.dedup();
-    Ok(out)
+    Ok((out, exclus))
 }
 
 /// Chemins (dossier, fichier) des messages cur+new ; folder "*"/"all" = tous les dossiers.

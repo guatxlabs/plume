@@ -26,10 +26,37 @@ PLUME_MAIL_MAX_EVENTS=1000          # cap d'alertes par run (anti-flood)
 # PLUME_MAIL_PATTERNS=/etc/plume/mail-patterns.json   # surcharge du jeu par defaut (optionnel)
 # PLUME_MAIL_EMIT_SUBJECT=0          # 1 = emet l'objet (80 caracteres) ; 0 ou rien = non ; autre = refus
 # PLUME_MAIL_STATE=/var/lib/plume/spool/.mail-seen    # etat incremental (defaut)
+# PLUME_MAIL_EXCLURE_COMPTES=          # comptes JAMAIS ouverts (vide = tous lus) ; cf. ci-dessous
 ```
 > Le defaut du provisioner local-path de k3s est `/var/lib/rancher/k3s/storage` ; si ton cluster le
 > monte ailleurs, mets le VRAI chemin ici **et** regle `PLUME_K3S_STORAGE` (collector kube-state) sur
 > le meme chemin, sinon la metrique storage% est muette.
+
+## Retirer une boite du balayage — `PLUME_MAIL_EXCLURE_COMPTES`
+Une boite hebergee qui ne doit pas etre analysee se nomme ici ; le collecteur ne l'ouvre JAMAIS : ni
+`stat` dans son repertoire, ni `read_dir`, ni lecture de message, ni ligne dans l'etat incremental, et
+la sous-commande `body` refuse de la lire.
+- **Forme** : entrees separees par des virgules et/ou des blancs. Avec un `@` (`alice@example.test`) :
+  l'adresse complete, ce compte-la seulement. Sans `@` (`alice`) : la partie locale, dans **chaque**
+  domaine du maildir (layout plat : le domaine est `PLUME_MAIL_DOMAIN` ; imbrique : celui du repertoire).
+- **Comparaison EXACTE** du nom tel que le layout le donne, apres passage en minuscules ASCII des deux
+  cotes : `alice` n'exclut ni `alic` ni `alicex`. Un nom de compte non ASCII n'egale aucune entree.
+- **Refus** : une entree vide (`a,,b`, virgule finale), un motif (`*?[]{}`), un caractere hors classe
+  (partie locale `a-z 0-9 . _ + -`, domaine `a-z 0-9 . -`) ou une adresse mal formee ARRETE le
+  passage avant toute lecture ; l'aveu (sortie d'erreur + `collect_status=unavailable` dans le spool)
+  nomme le RANG de l'entree et la cause, jamais sa valeur.
+- **Ce que le passage en dit** : le battement (`journalctl -u plume-collector-mail`) porte
+  `N compte(s) dont M ouvert(s), K exclu(s) par PLUME_MAIL_EXCLURE_COMPTES` — un COMPTE, jamais un nom.
+  `0 exclu(s)` alors qu'une liste est posee : l'entree ne vise aucun compte (faute de frappe ?).
+- **Layout imbrique** : un repertoire de premier niveau dont le nom egale une entree (partie locale, ou
+  `<nom>@PLUME_MAIL_DOMAIN`) est retire entier, sans etre sonde pour savoir s'il est un compte ou un
+  domaine.
+- **Trois modes** : le collecteur tourne sur l'HOTE dans les trois (le maildir est sur son disque) ; le
+  reglage se pose dans `/etc/plume/mail.conf` (lu par `plume-collector-mail.service`), que le serveur
+  mail soit natif, en conteneur Docker ou dans k3s. Lance a la main, passe la variable dans son
+  environnement.
+- **Ce qui n'est pas efface** : les lignes de l'etat incremental ecrites AVANT l'exclusion restent dans
+  `.mail-seen` (identifiants de fichiers, aucun contenu).
 
 ## Activation (OPT-IN, regle d'or)
 Installe mais **non active** par defaut. Quand tu le veux :

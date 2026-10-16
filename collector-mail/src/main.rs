@@ -10,6 +10,8 @@ mod garde_lisibilite;
 mod lisibilite;
 /// `P10.32-l` — ce qui sort d'un courrier (URL coupees, adresses masquees, objet sur demande).
 mod confidentialite;
+/// `P10.33-m` — les comptes que l'exploitant retire du balayage (`PLUME_MAIL_EXCLURE_COMPTES`).
+mod exclusion;
 #[cfg(test)]
 mod tmp_possede; // P8.9-o : le temporaire de test SE POSSÈDE (copie identique de daemon/src/tmp_possede.rs, gardée)
 mod maildir;
@@ -96,6 +98,16 @@ fn run_body(args: &[String]) -> Result<()> {
     let spool = env_or("PLUME_SPOOL", "/var/lib/plume/spool");
     let host = identite().valeur().cloned().unwrap_or_else(|| lisibilite::HOTE_NON_LU.to_string());
     let actor = env_or("PLUME_ACTOR", "unknown"); // le central renseigne QUI declenche la lecture
+    // P10.33-m — une boite retiree du balayage ne se lit pas davantage a la demande : la liste est jugee
+    // AVANT toute recherche du message, et une liste invalide refuse la lecture.
+    let exclusion = exclusion::Exclusion::lire(std::env::var(exclusion::VARIABLE).ok().as_deref())
+        .map_err(|e| anyhow!(e))?;
+    if exclusion.exclut_adresse(account) {
+        return Err(anyhow!(
+            "lecture refusee : ce compte est retire par {} (aucun fichier n'a ete ouvert)",
+            exclusion::VARIABLE
+        ));
+    }
 
     let (fname, path) = maildir::find_message(&root, account, folder, id)?;
     let raw = maildir::read_capped(&path)?;
@@ -146,6 +158,29 @@ fn run() -> Result<()> {
     let objet_demande = confidentialite::emettre_l_objet(std::env::var("PLUME_MAIL_EMIT_SUBJECT").ok().as_deref())
         .map_err(|e| anyhow!(e))?;
 
+    // P10.33-m — LA LISTE D'EXCLUSION EST JUGEE AVANT TOUTE LECTURE (motifs, etat, maildir). Une entree
+    // invalide arrete le passage : l'ignorer ferait lire la boite que l'exploitant a retiree. L'aveu
+    // part par le canal d'indisponibilite (la regle livree alerte dessus) et nomme le RANG de l'entree,
+    // jamais sa valeur.
+    let exclusion = match exclusion::Exclusion::lire(std::env::var(exclusion::VARIABLE).ok().as_deref()) {
+        Ok(x) => x,
+        Err(e) => {
+            let ts = now();
+            let aveu = lisibilite::event_indisponibilite(
+                "mail",
+                lisibilite::RAISON_CONFIG_ABSENTE,
+                lisibilite::CAUSE_FORME_INCONNUE,
+                &e,
+                ts as i64,
+            );
+            let env = serde_json::json!({ "ts": ts, "host": host, "kind": "events", "events": [aveu] });
+            if let Err(w) = write_spool(&spool, &format!("mail-availability-{ts}-{}", std::process::id()), &env) {
+                eprintln!("collector-mail: aveu NON ecrit ({w})");
+            }
+            return Err(anyhow!(e));
+        }
+    };
+
     std::fs::create_dir_all(&spool).ok();
     let patterns = patterns::load(pat_file.as_deref())?;
 
@@ -163,7 +198,15 @@ fn run() -> Result<()> {
             ),
         };
 
-    let accounts = maildir::list_account_emails(&root, &domain)?;
+    let (accounts, comptes_exclus) = maildir::list_account_emails(&root, &domain, &exclusion)?;
+    // Le battement DIT combien de comptes sont retires — un COMPTE, jamais un nom ni une adresse. Dit
+    // des qu'une liste est posee (« 0 exclu » revele une entree qui ne vise aucun compte) ; liste vide :
+    // la ligne d'avant, a l'identique.
+    let dit_exclus = if exclusion.est_vide() {
+        String::new()
+    } else {
+        format!(", {comptes_exclus} exclu(s) par {}", exclusion::VARIABLE)
+    };
     let ts = now();
     let mut events: Vec<serde_json::Value> = Vec::new();
     let mut scanned = 0usize;
@@ -401,8 +444,8 @@ fn run() -> Result<()> {
 
     if events.is_empty() {
         eprintln!(
-            "collector-mail: {} compte(s) dont {} ouvert(s), {scanned} message(s) examine(s), 0 alerte{}",
-            accounts.len(),
+            "collector-mail: {} compte(s) dont {} ouvert(s){dit_exclus}, {scanned} message(s) examine(s), 0 alerte{}",
+            accounts.len() + comptes_exclus,
             accounts.len() - comptes_sautes.len(),
             if capped { " (cap atteint)" } else { "" }
         );
@@ -414,8 +457,8 @@ fn run() -> Result<()> {
     let env = serde_json::json!({ "ts": ts, "host": host, "kind": "events", "events": events });
     let dst = write_spool(&spool, &format!("mail-{ts}"), &env)?;
     eprintln!(
-        "collector-mail: {} compte(s) dont {} ouvert(s), {scanned} message(s) examine(s), {n_ev} alerte(s) -> {dst}{}",
-        accounts.len(),
+        "collector-mail: {} compte(s) dont {} ouvert(s){dit_exclus}, {scanned} message(s) examine(s), {n_ev} alerte(s) -> {dst}{}",
+        accounts.len() + comptes_exclus,
         accounts.len() - comptes_sautes.len(),
         if capped { " (cap atteint)" } else { "" }
     );

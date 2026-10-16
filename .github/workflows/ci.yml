@@ -4152,7 +4152,7 @@ jobs:
       - name: cargo test (collector-mail) + assert the test count
         working-directory: collector-mail
         env:
-          EXPECTED_MAIL_TESTS: "19"
+          EXPECTED_MAIL_TESTS: "34"
         run: |
           set -euo pipefail
           cargo test --locked --verbose 2>&1 | tee /tmp/mail-tests.log

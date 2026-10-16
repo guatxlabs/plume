@@ -425,13 +425,16 @@ long fait au-delà dépend de la source :
 - **`PLUME_WEB_SRC=file`** : le journal se lit par offset d'octets. Au-delà de la borne, le reste est lu
   aux passages suivants : rien n'est sauté. Seul le premier passage (aucun état de lecture) lit les
   `PLUME_WEB_MAX` dernières lignes, et le battement dit combien d'octets antérieurs il n'a pas lus. Après
-  une rotation, la fin du journal précédent est reprise dans `<journal>.1` ; si celui-ci est introuvable
-  (rotation compressée sans `delaycompress`), la perte est avouée (`missing-source`, nombre inconnu) ;
+  une rotation, la fin du journal précédent est reprise dans `<journal>.1` ; après deux rotations entre
+  deux passages, dans `<journal>.2` (ou `<journal>.2.gz` si `gzip` est installé), puis `.1`, puis le
+  journal courant, chaque ligne une fois ; introuvable (rotation compressée sans `delaycompress`, ou
+  trois rotations), la perte est avouée (`missing-source`, nombre inconnu) ;
 - **`PLUME_WEB_SRC=k3s`** (le défaut) : `kubectl logs --tail` ne rend que les dernières lignes de la
   fenêtre. Les plus anciennes ne sont pas lues, mais un second `kubectl logs` les **compte**, et le
-  nombre est avoué dans le battement et par un `collection-capped` : exact, « au moins N » quand le flot
-  dépasse aussi la borne du comptage (10 × `PLUME_WEB_MAX` lignes par pod), ou « nombre inconnu » quand
-  le comptage échoue.
+  nombre est avoué dans le battement et par un `collection-capped`, total et **par pod nommé** : exact
+  pour un pod dont le comptage (10 × `PLUME_WEB_MAX` lignes par pod) remonte avant la fenêtre, « au
+  moins N » sinon, ou « nombre inconnu » quand le comptage échoue. Il faut un `kubectl` 1.17 ou plus
+  récent (`--prefix`).
 
 Le battement porte la valeur en vigueur (« borne de lecture PLUME_WEB_MAX=10000 atteinte » au défaut) :
 cherchez `PLUME_WEB_MAX=`. En k3s, montez-la si ce message revient.

@@ -41,7 +41,8 @@ since=$((now - last + 10)); [ "$last" -eq 0 ] && since=300       # 1re fois : 5 
 #    ligne (`cksum`), pas a son inode, que le systeme peut redonner a un journal neuf apres une rotation
 #    compressee. ROTATION (empreinte changee ou fichier plus court que l'offset) : le reste non lu est cherche
 #    dans `$PLUME_WEB_LOG.1` (renomme, ou copie de `copytruncate`), lu jusqu'au bout, puis le journal neuf
-#    depuis son debut ; s'il est introuvable (rotation compressee sans `delaycompress`), la perte est AVOUEE
+#    depuis son debut ; apres DEUX rotations, dans `.2` (ou `.2.gz` si gzip est la), puis `.1`, puis le courant
+#    (voir web_lire_fichier) ; s'il est introuvable (rotation compressee sans `delaycompress`), la perte est AVOUEE
 #    (`missing-source`, nombre inconnu). Premier passage (ou etat de lecture illisible) : les MAX dernieres lignes,
 #    comme avant, filtrees par le filigrane ; ce qui les precede n'est pas lu, et le battement le DIT ;
 #  · MODE k3s — `kubectl logs` ne sait rendre que les DERNIERES lignes d'une fenetre (`--tail`) : la perte n'est
@@ -50,35 +51,57 @@ since=$((now - last + 10)); [ "$last" -eq 0 ] && since=300       # 1re fois : 5 
 #    filigrane ecrites (horodatage du runtime, `--timestamps`) au plus tard a la plus RECENTE ligne lue (le MAX
 #    des horodatages : `kubectl` met les pods bout a bout, la derniere ligne est celle du dernier pod) ; la
 #    difference avec celles lues est le nombre de lignes sautees, avoue par `collection-capped`. Ce second appel
-#    porte un `--tail` EXPLICITE : sans lui, `kubectl logs -l` rend 10 lignes par pod (`kubectl logs --help` :
+#    porte un `--tail` EXPLICITE (et PAS de `--since` : compte exact par pod, voir plus bas) : sans lui, `kubectl logs -l` rend 10 lignes par pod (`kubectl logs --help` :
 #    « Defaults to -1 with no selector, showing all log lines otherwise 10, if a selector is provided »), et le
 #    compte, plafonne a 10, se lisait « 0 ligne sautee ». Ce `--tail` vaut 10 x PLUME_WEB_MAX par pod : le compte
-#    ne garde rien en memoire, mais chaque ligne relue traverse l'API ; un flot plus long que cette borne est
-#    avoue « au moins N ». Si ce comptage echoue, ou rend moins de requetes que celles lues (journal du pod tourne
+#    ne garde rien en memoire, mais chaque ligne relue traverse l'API ; un pod dont la plus ancienne ligne rendue
+#    ne precede pas la fenetre est avoue « au moins N », par son nom (`--prefix`), les autres en nombre exact. Si ce comptage echoue, ou rend moins de requetes que celles lues (journal du pod tourne
 #    entre les deux appels, horodatages illisibles), l'aveu part quand meme, « nombre inconnu ».
 read_log() {
   case "$WEBSRC" in
     k3s)
       KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
       command -v "${KC%% *}" >/dev/null 2>&1 || return 1
-      $KC -n "$WEB_NS" logs -l "$WEB_SEL" --since="${since}s" --tail="$MAX" --timestamps --max-log-requests=5 2>/dev/null
+      $KC -n "$WEB_NS" logs -l "$WEB_SEL" --since="${since}s" --tail="$MAX" --timestamps --prefix --max-log-requests=5 2>/dev/null
       ;;
     file) web_lire_fichier ;;
     *) return 1 ;;
   esac
 }
 
+# web_flux <chemin> — le contenu du journal, decompresse au fil de l'eau s'il est un `.gz` (gzip -dc ne garde en
+# memoire qu'un tampon, pas le fichier : P10.33-e). Un `.gz` n'est jamais pris sans gzip (voir web_tourne_lu).
+web_flux() { case "$1" in *.gz) gzip -dc "$1" 2>/dev/null ;; *) cat "$1" ;; esac; }
 # web_empreinte <chemin> — empreinte de la PREMIERE ligne du fichier (identite du journal, P10.33-e).
-web_empreinte() { head -n 1 "$1" 2>/dev/null | cksum | cut -d' ' -f1; }
+web_empreinte() { case "$1" in *.gz) web_flux "$1" | head -n 1 ;; *) head -n 1 "$1" 2>/dev/null ;; esac | cksum | cut -d' ' -f1; }
+web_taille() { case "$1" in *.gz) web_flux "$1" | wc -c ;; *) wc -c < "$1" ;; esac; }
+# web_tourne_lu <chemin> — vrai si <chemin> est le journal lu au passage precedent (meme empreinte, assez long pour
+# l'offset) ; pose alors w_src, w_emp_src, w_taille_src, w_debut.
+web_tourne_lu() {
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  case "$1" in *.gz) command -v gzip >/dev/null 2>&1 || return 1 ;; esac
+  [ "$(web_empreinte "$1")" = "$_p_emp" ] || return 1
+  _wt=$(web_taille "$1") || return 1
+  [ "$_p_off" -le "$_wt" ] || return 1
+  w_src=$1; w_emp_src=$_p_emp; w_taille_src=$_wt; w_debut=$_p_off
+}
 
 # web_lire_fichier — choisit le fichier et l'octet de depart, ecrit sur la sortie au plus MAX lignes a partir
-# de lui. Pose w_src, w_debut, w_taille_src, w_emp_src, w_emp_cour, w_perte_rotation.
-w_src=""; w_debut=0; w_taille_src=0; w_emp_src=""; w_emp_cour=""; w_perte_rotation=""; w_par_offset=0
+# de lui. Pose w_src, w_debut, w_taille_src, w_emp_src, w_emp_cour, w_emp_suiv, w_perte_rotation.
+# P10.33-e — DEUX ROTATIONS ENTRE DEUX PASSAGES : le journal lu au passage precedent est devenu `.2` (`.1` est un
+# journal posterieur). Il etait avoue perdu ; il est desormais cherche dans `.2`, puis dans `.2.gz` si `gzip` est la
+# (`logrotate delaycompress` comprime le second), reconnu a la MEME empreinte que pour `.1`, et lu depuis l'offset.
+# Un passage lit UNE source (comme pour `.1`) : arrive au bout d'un journal tourne, l'etat pointe le SUIVANT depuis
+# 0 (`.2` -> `.1` -> courant, empreinte du suivant). Un journal tourne deja lu jusqu'au bout n'est pas relu : on
+# passe au suivant dans le meme passage. Chaque ligne est donc lue une fois, dans la borne. Un etat d'offset 0 dont
+# l'empreinte est celle de `.1` (journal pointe mais pas encore lu, tourne depuis) fait lire `.1` depuis 0, au lieu
+# de sauter au courant. Introuvable dans `.1`, `.2` et `.2.gz` : perte avouee, comme avant.
+w_src=""; w_debut=0; w_taille_src=0; w_emp_src=""; w_emp_cour=""; w_emp_suiv=""; w_perte_rotation=""; w_par_offset=0
 web_lire_fichier() {
   [ -r "$WEB_LOG" ] || return 1
-  w_taille_src=$(wc -c < "$WEB_LOG") || return 1
+  w_taille_cour=$(wc -c < "$WEB_LOG") || return 1
   w_emp_cour=$(web_empreinte "$WEB_LOG") || return 1
-  w_src=$WEB_LOG; w_emp_src=$w_emp_cour
+  w_src=$WEB_LOG; w_emp_src=$w_emp_cour; w_taille_src=$w_taille_cour
   _p_emp=""; _p_off=""
   if [ -r "$OFFS" ]; then read -r _p_emp _p_off < "$OFFS" || true; fi
   case "$_p_off" in ''|*[!0-9]*) _p_emp="" ;; esac
@@ -88,16 +111,35 @@ web_lire_fichier() {
     w_debut=$((w_taille_src - _t)); [ "$w_debut" -ge 0 ] || w_debut=0
   elif [ "$_p_emp" = "$w_emp_cour" ] && [ "$_p_off" -le "$w_taille_src" ]; then
     w_debut=$_p_off
+  elif web_tourne_lu "$WEB_LOG.1"; then
+    :
+  elif web_tourne_lu "$WEB_LOG.2"; then
+    :
+  elif [ ! -e "$WEB_LOG.2" ] && web_tourne_lu "$WEB_LOG.2.gz"; then
+    :
   elif [ "$_p_off" -eq 0 ]; then
     w_debut=0                                                   # rien n'avait ete lu : rien a perdre
-  elif [ -r "$WEB_LOG.1" ] && [ "$(web_empreinte "$WEB_LOG.1")" = "$_p_emp" ] \
-       && [ "$_p_off" -le "$(wc -c < "$WEB_LOG.1")" ]; then
-    w_src="$WEB_LOG.1"; w_emp_src=$_p_emp; w_debut=$_p_off; w_taille_src=$(wc -c < "$WEB_LOG.1")
   else
     w_perte_rotation=$_p_off; w_debut=0
   fi
+  # Un journal tourne lu jusqu'au bout : le suivant, depuis 0 (`.2` -> `.1` -> courant).
+  while [ "$w_src" != "$WEB_LOG" ] && [ "$w_debut" -ge "$w_taille_src" ]; do
+    if [ "$w_src" = "$WEB_LOG.1" ] || [ ! -f "$WEB_LOG.1" ] || [ ! -r "$WEB_LOG.1" ]; then
+      w_src=$WEB_LOG; w_emp_src=$w_emp_cour; w_taille_src=$w_taille_cour
+    else
+      w_src=$WEB_LOG.1; w_emp_src=$(web_empreinte "$w_src"); w_taille_src=$(wc -c < "$w_src") || return 1
+    fi
+    w_debut=0
+  done
+  w_emp_suiv=$w_emp_cour
+  if [ "$w_src" = "$WEB_LOG.2" ] || [ "$w_src" = "$WEB_LOG.2.gz" ]; then
+    if [ -f "$WEB_LOG.1" ] && [ -r "$WEB_LOG.1" ]; then w_emp_suiv=$(web_empreinte "$WEB_LOG.1"); fi
+  fi
   [ -z "$_p_emp" ] || w_par_offset=1
-  tail -c +"$((w_debut + 1))" "$w_src" 2>/dev/null | head -n "$MAX"
+  case "$w_src" in
+    *.gz) web_flux "$w_src" | tail -c +"$((w_debut + 1))" | head -n "$MAX" ;;
+    *) tail -c +"$((w_debut + 1))" "$w_src" 2>/dev/null | head -n "$MAX" ;;
+  esac
 }
 
 # S36 — meme distinction, dite avec le mot de la famille : une lecture qui echoue n'est pas une
@@ -105,7 +147,7 @@ web_lire_fichier() {
 # manquait a la forme generique — JETER ce qui serait en attente, pour qu'aucune sortie ne puisse
 # acquitter ce qu'elle n'a pas publie.
 w_brut=$(mktemp)
-trap 'rm -f "$w_brut" "$w_brut.c"' EXIT
+trap 'rm -f "$w_brut" "$w_brut.c" "$w_brut.p"' EXIT
 read_log > "$w_brut" || plume_lecture_echouee web source_illisible "source de log web illisible (PLUME_WEB_SRC=$WEBSRC) : ni fichier lisible, ni pod joignable"
 # Une derniere ligne sans fin de ligne dans le journal COURANT est une ecriture en cours : ni lue, ni comptee dans
 # l'offset. Dans un journal tourne, plus personne n'ecrit : elle est lue, sans quoi l'offset n'en sortirait jamais.
@@ -118,14 +160,14 @@ web_offset_suivant() {
   [ "$WEBSRC" = file ] || return 0
   _wo=$((w_debut + $(head -n "$1" "$w_brut" | wc -c)))
   if [ "$w_src" != "$WEB_LOG" ] && [ "$_wo" -ge "$w_taille_src" ]; then
-    printf '%s 0' "$w_emp_cour"                                # journal tourne lu jusqu'au bout : le neuf, depuis 0
+    printf '%s 0' "$w_emp_suiv"                                # journal tourne lu jusqu'au bout : le suivant, depuis 0
   else
     printf '%s %s' "$w_emp_src" "$_wo"
   fi
 }
 if [ -n "$w_perte_rotation" ]; then
   plume_report_availability web unavailable missing-source \
-    "ROTATION DU JOURNAL D'ACCES : le journal lu au passage precedent (lu jusqu'a l'octet $w_perte_rotation) est introuvable sous $WEB_LOG.1 — ce qui y a ete ecrit apres ce passage n'a pas ete lu et est PERDU, nombre inconnu (peut-etre nul). Le journal neuf est lu depuis son debut. Gardez le journal tourne non compresse un cycle (logrotate delaycompress)." \
+    "ROTATION DU JOURNAL D'ACCES : le journal lu au passage precedent (lu jusqu'a l'octet $w_perte_rotation) est introuvable sous $WEB_LOG.1, $WEB_LOG.2 et $WEB_LOG.2.gz (ce dernier n'est lu que si gzip est present) — ce qui y a ete ecrit apres ce passage n'a pas ete lu et est PERDU, nombre inconnu (peut-etre nul). Le journal neuf est lu depuis son debut. Gardez le journal tourne non compresse un cycle (logrotate delaycompress)." \
     2 "web-rotation-introuvable" 2>/dev/null || true
 fi
 
@@ -178,7 +220,8 @@ tmp=$(mktemp "$SPOOL/.web.XXXXXX")
 # magasin (`INSERT OR IGNORE`). Un doublon ecarte vaut mieux qu'une requete perdue.
 w_par_wm=1; w_relu=0
 if [ "$WEBSRC" = file ]; then w_relu=1; [ "$w_par_offset" -eq 1 ] && w_par_wm=0; fi
-newwm=$(TZ=UTC awk -v last="$last" -v parwm="$w_par_wm" -v relu="$w_relu" -v host="$host" -v now="$now" -v out="$tmp" -v skiphost="$SKIP_HOST" -v skippath="$SKIP_PATH" -v skiprouter="$SKIP_ROUTER" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
+w_k3s=0; [ "$WEBSRC" = k3s ] && w_k3s=1
+newwm=$(TZ=UTC awk -v last="$last" -v parwm="$w_par_wm" -v relu="$w_relu" -v k3s="$w_k3s" -v podsout="$w_brut.p" -v host="$host" -v now="$now" -v out="$tmp" -v skiphost="$SKIP_HOST" -v skippath="$SKIP_PATH" -v skiprouter="$SKIP_ROUTER" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
 # jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
 function sval(name,   re,v){ re="\"" name "\":\"[^\"]*\""; if(match($0,re)){ v=substr($0,RSTART,RLENGTH); sub(/^"[^"]*":"/,"",v); sub(/"$/,"",v); return v } return "" }
 function nval(name,   re,v){ re="\"" name "\":-?[0-9]+"; if(match($0,re)){ v=substr($0,RSTART,RLENGTH); sub(/^"[^"]*":/,"",v); return v } return "" }
@@ -188,12 +231,16 @@ function nval(name,   re,v){ re="\"" name "\":-?[0-9]+"; if(match($0,re)){ v=sub
 function rt(   t){ t=$1; if (t !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T.*Z$/) return ""; sub(/Z$/,"",t); return t }
 BEGIN{ n=0; buf=""; maxts=last+0; nfil=0; nvu=0; nautre=0; nreport=0; nperdu=0; coupe=0; nneuf=0; borne="" }
 {
+  # P10.33-e — `--prefix` (k3s) : `[pod/<pod>/<conteneur>] ` en tete de ligne, avant l horodatage ; retire, il
+  # nomme le pod dont la ligne vient (les requetes neuves lues sont comptees PAR POD, pour le comptage des sautees).
+  pod="-"; if (k3s && $1 ~ /^\[pod\/.*\]$/) { split(substr($1,2,length($1)-2),PA,"/"); pod=PA[2]; $0=substr($0,length($1)+2) }
+  VUPOD[pod]=1
   r=rt(); if (r > borne) borne=r
   if ($0 !~ /"DownstreamStatus":/) { nautre++; next }            # garde uniquement les lignes access-log
   su=sval("StartUTC"); if(su=="") { nautre++; next }
   d=substr(su,1,19); gsub(/[-T:]/," ",d); et=mktime(d); if(et<0) { nautre++; next }
   if (parwm && et <= last) { nvu++; next }
-  nneuf++
+  nneuf++; NPOD[pod]++
   hostr=sval("RequestHost")
   ip=sval("request_Cf-Connecting-Ip"); if(ip=="") ip=sval("ClientHost")
   sc="external"; if(ip ~ /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|127\.|::1|fc|fd|fe80)/) sc="internal"
@@ -227,6 +274,7 @@ END{ if(n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[
   # meme seconde que lui (ou d une seconde anterieure, journaux de plusieurs pods entrelaces) ne le sera jamais.
   # En mode file (relu), l offset s arrete devant la premiere ligne coupee : toutes sont relues, aucune n est perdue.
   for (e in PLAF) { if (relu || e+0 > maxts) nreport += PLAF[e]; else nperdu += PLAF[e] }
+  if (k3s) { for (p in VUPOD) print p, NPOD[p]+0 > podsout; close(podsout) }
   print maxts, NR, n, nfil, nvu, nautre, nreport, nperdu, (coupe ? coupe-1 : NR), nneuf, (borne=="" ? "-" : borne) }' "$w_brut")
 # Le filigrane, puis les comptes du passage (lignes lues, gardees, filtrees, deja vues, hors journal, coupees par le
 # plafond et reportees, coupees et perdues).
@@ -246,28 +294,55 @@ if [ "${w_lus:-0}" -ge "$MAX" ] 2>/dev/null; then
     _ws=" — rien n'est sauté"; [ -z "$w_note_debut" ] || _ws=""   # premier passage : le debut du journal l'est, dit a part
     if [ "$_wr" -eq 0 ] && [ "$w_src" = "$WEB_LOG" ]; then
       w_note_borne="borne de lecture PLUME_WEB_MAX=$MAX atteinte pile : le journal est lu jusqu'à sa dernière ligne complète$_ws"
+    elif [ "$_wr" -eq 0 ]; then
+      w_note_borne="borne de lecture PLUME_WEB_MAX=$MAX atteinte pile : le journal tourné ${w_src} est lu jusqu'au bout, le suivant est lu au passage suivant$_ws"
     else
       w_note_borne="borne de lecture PLUME_WEB_MAX=$MAX atteinte : au moins $_wr octet(s) du journal ${w_src} restent à lire, repris au passage suivant$_ws"
     fi
   else
-    _since2=$(( since + $(date +%s) - now + 1 ))
+    # P10.33-e — LE COMPTE PAR POD. `--tail` borne CHAQUE pod : un compte global ne savait pas quel pod depassait,
+    # et disait « au moins N » pour tous des que le total atteignait la borne. Le comptage nomme les pods
+    # (`--prefix`), ne porte PAS de `--since` et rend jusqu'a 10 x PLUME_WEB_MAX lignes par pod : un pod dont la plus
+    # ANCIENNE ligne rendue precede la fenetre de lecture (`_wlo`, une seconde avant elle) a ete vu en entier depuis
+    # le debut de la fenetre — son nombre est EXACT ; sinon (flot plus long que la borne, journal du pod tourne ou
+    # conteneur redemarre) il est un MINIMUM, « au moins N ». Un pod dont le comptage voit moins de requetes que la
+    # lecture n'en a lu, ou qui manque au comptage, est « nombre inconnu ». Le total est exact si tous le sont, un
+    # minimum si l'un l'est, inconnu si l'un l'est ; chaque pod est dit par son NOM (jamais une adresse).
+    _wlo=$(( now - since - 1 ))
     _wcap=$(( MAX * 10 ))
-    w_comptage=$( { $KC -n "$WEB_NS" logs -l "$WEB_SEL" --since="${_since2}s" --tail="$_wcap" --timestamps --max-log-requests=5 2>/dev/null \
-                 || printf 'plume-comptage-en-echec\n'; } | TZ=UTC awk -v last="$last" -v borne="$w_borne" -v lus="${w_neufs:-0}" -v cap="$_wcap" '
+    [ -f "$w_brut.p" ] || : > "$w_brut.p"
+    w_comptage=$( { $KC -n "$WEB_NS" logs -l "$WEB_SEL" --tail="$_wcap" --timestamps --prefix --max-log-requests=5 2>/dev/null \
+                 || printf 'plume-comptage-en-echec\n'; } | TZ=UTC awk -v last="$last" -v borne="$w_borne" -v lo="$_wlo" -v lusf="$w_brut.p" '
       function rt(   t){ t=$1; if (t !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T.*Z$/) return ""; sub(/Z$/,"",t); return t }
+      function ep(t,   d){ d=substr(t,1,19); gsub(/[-T:]/," ",d); return mktime(d) }
+      function nommer(p){ if (!(p in K)) { K[p]=1; NOMS[++np]=p } }
+      BEGIN { np=0; while ((getline l < lusf) > 0) { split(l, F, " "); nommer(F[1]); L[F[1]]=F[2]+0 } close(lusf) }
       $0 == "plume-comptage-en-echec" { ko=1; next }
-      { tot++; r=rt(); if (r=="" || r > borne) next
+      { pod="-"; if ($1 ~ /^\[pod\/.*\]$/) { split(substr($1,2,length($1)-2),PA,"/"); pod=PA[2]; $0=substr($0,length($1)+2) }
+        nommer(pod); r=rt()
+        if (!(pod in PREM)) PREM[pod]=r                    # kubectl rend chaque pod dans l ordre : sa plus ancienne ligne
+        if (r=="" || r > borne || ep(r) < lo+0) next
         if (!match($0,/"StartUTC":"[^"]*"/)) next; su=substr($0,RSTART+12,19); if ($0 !~ /"DownstreamStatus":/) next
-        gsub(/[-T:]/," ",su); et=mktime(su); if (et > last+0) c++ }
-      # Moins de requetes comptees que lues : le comptage ne voit pas ce que la lecture a vu, son nombre ne vaut rien.
-      # Le --tail du comptage atteint (sur l ensemble des pods, borne par pod) : le nombre est un minimum.
-      END { if (ko || borne=="-" || c+0 < lus+0) print "inconnu"; else if (cap+0 > 0 && tot+0 >= cap+0) print "au-moins", c-lus; else print "exact", c-lus }')
+        gsub(/[-T:]/," ",su); et=mktime(su); if (et > last+0) C[pod]++ }
+      END { if (ko || borne=="-") { print "inconnu"; print ""; exit }
+        for (i=2;i<=np;i++) { v=NOMS[i]; j=i-1; while (j>0 && NOMS[j] > v) { NOMS[j+1]=NOMS[j]; j-- } NOMS[j+1]=v }
+        tot=0; inc=0; mini=0; det=""
+        for (i=1;i<=np;i++) { p=NOMS[i]; c=C[p]+0; l=L[p]+0
+          if (!(p in PREM) || c < l) { inc=1; d="nombre inconnu" }
+          else if (PREM[p] != "" && ep(PREM[p]) < lo+0) { d=c-l; tot+=c-l }
+          else { mini=1; d="au moins " (c-l); tot+=c-l }
+          det=det (det=="" ? "" : ", ") p " : " d }
+        if (inc) print "inconnu"; else if (mini) print "au-moins", tot; else print "exact", tot
+        print det }')
+    w_pods_dit=$(printf '%s\n' "$w_comptage" | sed -n 2p); w_comptage=$(printf '%s\n' "$w_comptage" | sed -n 1p)
+    w_pods_note=""; [ -z "$w_pods_dit" ] || w_pods_note=" — par pod : $w_pods_dit"
     w_saute=""; w_saute_dit="nombre inconnu de"
     case "$w_comptage" in
       "exact "*) w_saute=${w_comptage#exact }; w_saute_dit=$w_saute ;;
       "au-moins "*) w_saute_dit="au moins ${w_comptage#au-moins }"
-                    w_saute_note=" (comptage borné à $_wcap lignes par pod, 10 x PLUME_WEB_MAX : le flot le dépasse)" ;;
+                    w_saute_note=" (comptage borné à $_wcap lignes par pod, 10 x PLUME_WEB_MAX : la plus ancienne ligne rendue d'un pod au moins ne précède pas la fenêtre)" ;;
     esac
+    w_saute_note="$w_saute_note$w_pods_note"
     w_note_borne="borne de lecture PLUME_WEB_MAX=$MAX atteinte : $w_saute_dit ligne(s) plus ancienne(s) de la fenêtre jamais lue(s), comptée(s) et avouée(s)$w_saute_note"
   fi
 fi

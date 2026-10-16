@@ -65,15 +65,22 @@ d'outils (les vrais, liés, plus des FAUX exécutables — `date` à heure fixe,
      rotation au milieu d'une écriture : la ligne incomplète de `.1` est lue, puis le journal neuf ; journal
      remplacé par un autre plus long que l'offset (empreinte de la première ligne) : lu depuis 0, rotation
      avouée ; même première ligne mais plus court que l'offset, `.1` introuvable ou journal tronqué : rotation
-     avouée (`missing-source`) ; deux rotations entre deux passages (le `.1` n'est plus le journal lu), ou un
-     `.1` de même première ligne mais plus court que l'offset : perte avouée, rien du `.1` publié. En k3s (faux
-     `kubectl` FIDÈLE : `--tail` par pod, pods bout à bout, et 10 lignes par pod sous `-l` sans `--tail`, comme
-     le vrai) : les lignes plus anciennes de la fenêtre sont comptées par un second appel à `--tail` explicite
-     (10 × la borne), de fenêtre `--since` plus large, borné à l'horodatage runtime le PLUS RÉCENT des lignes
+     avouée (`missing-source`) ; un `.1` de même première ligne mais plus court que l'offset : perte avouée,
+     rien du `.1` publié. Deux rotations entre deux passages (le journal lu est devenu `.2`, P10.33-e) : le
+     reste non lu est repris dans `.2` depuis l'offset (borne 2 : deux passages), puis `.1` depuis 0, puis le
+     courant, chaque ligne publiée une fois et le compte de lignes lues juste à chaque passage, sans aveu ; un
+     `.2` lu jusqu'au bout fait passer à `.1` dans le même passage ; `.2.gz` est lu quand `gzip` est là (sinon,
+     comme `.2` effacé, la perte est avouée et seul le courant est lu). En k3s (faux `kubectl` FIDÈLE :
+     `--since` avant `--tail`, `--tail` par pod, pods bout à bout, `--prefix` qui nomme le pod, et 10 lignes par
+     pod sous `-l` sans `--tail`, comme le vrai) : les lignes plus anciennes de la fenêtre sont comptées PAR POD
+     par un second appel à `--tail` explicite (10 × la borne), SANS `--since` (une ligne antérieure à la fenêtre
+     rendue en tête d'un pod prouve son compte exact), borné à l'horodatage runtime le PLUS RÉCENT des lignes
      lues (deux pods : la dernière ligne n'est pas la plus récente ; deux lignes arrivées entre les deux appels,
      dont une à la fraction tronquée par RFC3339Nano, ne comptent pas) et avouées (`collection-capped`, nombre
      exact : 80 sur 100 à la borne 20 ; les requêtes sous le filigrane n'en sont pas) ; un comptage qui atteint
-     son propre `--tail` dit « au moins N » ; un comptage en échec, qui voit moins de requêtes que la lecture
+     son propre `--tail` sans remonter avant la fenêtre dit « au moins N » ; deux pods, l'un exact (6), l'autre
+     au-delà du comptage (« au moins 36 ») : total « au moins 42 », chaque pod nommé par son nom, aucune adresse ;
+     un comptage en échec, qui voit moins de requêtes que la lecture
      (journal du pod tourné entre les deux appels) ou des horodatages hors `Z` avoue « nombre inconnu » ; sous la
      borne, ni second appel (appels du faux `kubectl` comptés) ni aveu ; des lignes hors journal d'accès dans la
      fenêtre (y compris une qui porte `StartUTC` sans `DownstreamStatus`) ne faussent pas le compte.
@@ -145,11 +152,14 @@ CE QU'ELLE NE TIENT PAS
   Le journal est reconnu à l'empreinte de sa première ligne : deux journaux dont la première ligne est
   identique octet pour octet seraient confondus. Mode k3s : la perte n'est pas évitée, elle est comptée ; le
   second appel relit jusqu'à 10 × la borne lignes par pod (coût en octets transférés par l'API, pas en mémoire)
-  quand la borne est atteinte, et au-delà ne donne qu'un minimum ; seul le `.1` est cherché après une rotation
-  (pas `.2`) ;
+  quand la borne est atteinte (sans `--since` : même un flot à peine au-dessus de la borne les relit), et au-delà
+  ne donne qu'un minimum ; un pod jeune, redémarré ou dont le kubelet a tourné le journal dans la fenêtre est dit
+  « au moins N » même quand le nombre est juste (rien ne prouve qu'il l'est) ; mode file : après `.1` et `.2`
+  (et `.2.gz` avec `gzip`), une TROISIÈME rotation entre deux passages reste avouée sans nombre, et un `.1.gz`
+  n'est jamais lu ; une source par passage : le rattrapage d'une double rotation prend des passages ;
   le comptage suppose que les pods rendent `--timestamps` au format RFC3339 UTC (`Z`), sinon « nombre
-  inconnu » ; plusieurs pods : la borne `--tail` est par pod, le compte est global. Aucun banc ne joue une
-  vraie rotation logrotate ni un vrai `kubectl logs`.
+  inconnu », et un `kubectl` qui connaît `--prefix` (1.17 et après ; sans lui, la lecture échoue et s'avoue).
+  Aucun banc ne joue une vraie rotation logrotate ni un vrai `kubectl logs`.
 · crowdsec : les verdicts de liste blanche jugent les TOTAUX ; une source entièrement en liste blanche parmi
   d'autres qui détectent laisse `lit` (son détail par source le montre). La forme de comptage se déduit de
   `reads` ; un relevé où des lignes lues ne sont pas encore analysées peut la faire mal lire quand la liste
@@ -181,6 +191,7 @@ CE QU'ELLE NE TIENT PAS
 Sortie : 0 tenu · 1 au moins un défaut · 2 l'instrument REFUSE DE CONCLURE.
 """
 import glob
+import gzip
 import json
 import os
 import re
@@ -915,30 +926,44 @@ def ligne_k3s(i, chemin, statut=200, fraction="123456789", seconde=None):
     return "2026-09-23T19:40:%02d.%sZ %s" % (sec, fraction, ligne_web(i, chemin, statut, seconde=sec))
 
 
+# Une ligne ANTÉRIEURE à la fenêtre de lecture (dix minutes avant l'heure fixée, la fenêtre d'un premier passage en
+# couvre cinq) : `--since` l'écarte de la lecture ; le comptage, sans `--since`, la rend en tête du pod et PROUVE
+# qu'il a vu tout ce que le pod a écrit depuis le début de la fenêtre (P10.33-e : compte exact par pod).
+ANCIENNE_K3S = "2025-09-23T20:30:00.000000000Z " + ligne_web(0, "/ancienne")
+
+
 # Faux `kubectl logs`, FIDÈLE au vrai sur ce que le capteur en attend : un journal par pod (`k3s.log`, ou
-# `pod-*.log`), mis BOUT À BOUT dans l'ordre des pods ; `--tail=N` rend les N dernières lignes DE CHAQUE pod, et
-# SANS `--tail`, un sélecteur `-l` en rend 10 par pod (`kubectl logs --help` : « --tail=-1 … Defaults to -1 with
-# no selector, showing all log lines otherwise 10, if a selector is provided »), `--tail=-1` toutes. Le premier
-# appel d'un passage voit le journal tel qu'écrit ; un appel suivant (le comptage) voit en plus `<pod>.apres`
-# (lignes arrivées entre deux appels), ou `<pod>.comptage` À LA PLACE du journal (journal du pod tourné par le
-# kubelet entre les deux appels), et échoue si `comptage-en-echec` existe. L'horodatage runtime n'est rendu que
-# sous `--timestamps`, comme le vrai.
+# `pod-*.log` ; le pod porte le nom du fichier sans `.log`), mis BOUT À BOUT dans l'ordre des pods ; `--since=Ns`
+# ne garde que les lignes d'horodatage runtime postérieur à l'heure fixée moins N (comme le kubelet, AVANT la
+# borne `--tail`) ; `--tail=N` rend les N dernières lignes DE CHAQUE pod, et SANS `--tail`, un sélecteur `-l` en
+# rend 10 par pod (`kubectl logs --help` : « --tail=-1 … Defaults to -1 with no selector, showing all log lines
+# otherwise 10, if a selector is provided »), `--tail=-1` toutes ; `--prefix` met `[pod/<pod>/traefik] ` en tête
+# de chaque ligne, AVANT l'horodatage. Le premier appel d'un passage voit le journal tel qu'écrit ; un appel
+# suivant (le comptage) voit en plus `<pod>.apres` (lignes arrivées entre deux appels), ou `<pod>.comptage` À LA
+# PLACE du journal (journal du pod tourné par le kubelet entre les deux appels), et échoue si `comptage-en-echec`
+# existe. L'horodatage runtime n'est rendu que sous `--timestamps`, comme le vrai. Écart assumé : un `--since`
+# négatif n'est pas refusé (les lignes du banc sont datées après l'heure fixée, le filigrane aussi).
 FAUX_KUBECTL = r"""#!/bin/sh
 echo "$*" >> "$FAUX/appels-kubectl"
 napp=$(wc -l < "$FAUX/appels-kubectl")
 hdt=0; case " $* " in *" --timestamps "*) hdt=1 ;; esac
-sortie() { if [ "$hdt" = 1 ]; then cat; else sed 's/^[^{]*//'; fi; }
-n=""; for a in "$@"; do case "$a" in --tail=*) n=${a#--tail=} ;; esac; done
+pfx=0; case " $* " in *" --prefix "*) pfx=1 ;; esac
+n=""; sn=""; for a in "$@"; do case "$a" in --tail=*) n=${a#--tail=} ;; --since=*s) sn=${a#--since=}; sn=${sn%s} ;; esac; done
 if [ -z "$n" ]; then case " $* " in *" -l "*) n=10 ;; *) n=-1 ;; esac; fi
 if [ "$napp" -gt 1 ] && [ -f "$FAUX/comptage-en-echec" ]; then exit 1; fi
+lo=""; [ -n "$sn" ] && lo=$(( $(date +%s) - sn ))
 pod() {
   _src=$1; [ "$napp" -gt 1 ] && [ -f "${1%.log}.comptage" ] && _src=${1%.log}.comptage
   cat "$_src"; if [ "$napp" -gt 1 ] && [ -f "${1%.log}.apres" ]; then cat "${1%.log}.apres"; fi
 }
 for p in "$FAUX"/k3s.log "$FAUX"/pod-*.log; do
   [ -f "$p" ] || continue
-  if [ "$n" = -1 ]; then pod "$p"; else pod "$p" | tail -n "$n"; fi
-done | sortie
+  nom=${p##*/}; nom=${nom%.log}
+  pod "$p" | TZ=UTC awk -v lo="$lo" '{ if (lo != "") { d=substr($1,1,19); gsub(/[-T:]/," ",d); if (mktime(d) < lo+0) next } print }' \
+    | if [ "$n" = -1 ]; then cat; else tail -n "$n"; fi \
+    | if [ "$hdt" = 1 ]; then cat; else sed 's/^[^ ]* //'; fi \
+    | if [ "$pfx" = 1 ]; then sed "s|^|[pod/$nom/traefik] |"; else cat; fi
+done
 """
 
 
@@ -1047,7 +1072,7 @@ def banc_web_borne_de_lecture(awk, nom_awk):
             n = 3 if cas == "sous_la_borne" else 10
             # fraction tronquée par RFC3339Nano sur la dernière ligne lue ; les deux lignes arrivées APRÈS la première
             # lecture (même seconde, fraction plus grande une fois complétée à 9 chiffres) ne doivent pas être comptées.
-            lignes = [ligne_k3s(i, f"/k{i}") for i in range(1, n)] + [ligne_k3s(n, f"/k{n}", fraction="5")]
+            lignes = [ANCIENNE_K3S] + [ligne_k3s(i, f"/k{i}") for i in range(1, n)] + [ligne_k3s(n, f"/k{n}", fraction="5")]
             ecrire(os.path.join(bac.faux, "k3s.log"), "".join(lignes))
             ecrire(os.path.join(bac.faux, "k3s.apres"),
                    ligne_k3s(n + 1, "/apres1", fraction="50001", seconde=n) + ligne_k3s(n + 2, "/apres2", fraction="6", seconde=n))
@@ -1066,10 +1091,11 @@ def banc_web_borne_de_lecture(awk, nom_awk):
             if len(appels) != (1 if cas == "sous_la_borne" else 2):
                 faute(q, f"{len(appels)} appel(s) `kubectl logs`, attendu {1 if cas == 'sous_la_borne' else 2} : {appels}")
             elif cas == "compte":
-                # le comptage couvre AU MOINS la fenêtre lue : sa fenêtre `--since` est plus large que celle de la lecture.
-                fen = [re.search(r"--since=([0-9]+)s", a) for a in appels]
-                if not all(fen) or int(fen[1].group(1)) <= int(fen[0].group(1)):
-                    faute(q, f"fenêtre du comptage pas plus large que celle de la lecture : {appels}")
+                # la lecture porte `--since` ; le comptage n'en porte pas (il doit voir la ligne qui PRÉCÈDE la fenêtre
+                # pour prouver un compte exact), mais un `--tail` explicite ; les deux nomment le pod (`--prefix`).
+                if (not re.search(r"--since=[0-9]+s", appels[0]) or "--since" in appels[1]
+                        or "--tail=40" not in appels[1].split() or not all("--prefix" in a.split() for a in appels)):
+                    faute(q, f"forme des appels `kubectl logs` : {appels}")
             if cas == "sous_la_borne":
                 if pub != ["/k1", "/k2", "/k3"] or av:
                     faute(q, f"sous la borne : publiées {pub}, {len(av)} aveu(x)")
@@ -1099,6 +1125,7 @@ def banc_web_borne_de_lecture(awk, nom_awk):
         lignes.insert(9, '2026-09-23T19:40:09.900000000Z time="x" level=info msg="Starting provider"\n')
         # porte un StartUTC mais pas de DownstreamStatus : la lecture ne la tient pas pour une requête, le comptage non plus.
         lignes.insert(0, '2026-09-23T19:40:00.500000000Z {"StartUTC":"2026-09-23T19:40:00.5Z","level":"info"}\n')
+        lignes.insert(0, ANCIENNE_K3S)
         ecrire(os.path.join(bac.faux, "k3s.log"), "".join(lignes))
         evs = evenements(q, bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": "4"}), "web.sh")
         if publiees(evs) != ["/k9", "/k10"]:
@@ -1123,32 +1150,43 @@ def banc_web_borne_de_lecture(awk, nom_awk):
     #  · apres_filigrane — au second passage, les requêtes déjà vues (sous le filigrane) ne sont pas des sautées ;
     #  · non_z / non_z_deja_vues — horodatages runtime hors `Z` : « nombre inconnu », que des requêtes neuves aient
     #    été lues ou non.
-    for cas in ("cent_lignes", "comptage_borne", "pod_tourne", "deux_pods", "apres_filigrane", "non_z", "non_z_deja_vues"):
+    for cas in ("cent_lignes", "comptage_borne", "pod_tourne", "deux_pods", "pods_nommes", "apres_filigrane", "non_z",
+                "non_z_deja_vues"):
         q = f"web/{nom_awk}/flot_k3s/{cas}"
         bac = Bac(awk)
         try:
             bac.outil("kubectl", FAUX_KUBECTL)
             k3s = os.path.join(bac.faux, "k3s.log")
-            maxi, attendu = "4", None
+            maxi, attendu, par_pod = "4", None, ()
             if cas == "cent_lignes":
-                ecrire(k3s, "".join(ligne_k3s(i, f"/c{i}", seconde=10, fraction="%09d" % (i + 1)) for i in range(100)))
+                ecrire(k3s, ANCIENNE_K3S + "".join(ligne_k3s(i, f"/c{i}", seconde=10, fraction="%09d" % (i + 1)) for i in range(100)))
                 maxi, attendu = "20", "80"
             elif cas == "comptage_borne":
                 ecrire(k3s, "".join(ligne_k3s(i, f"/c{i}", seconde=10, fraction="%09d" % (i + 1)) for i in range(60)))
-                attendu = "au moins 36"
+                attendu, par_pod = "au moins 36", ("par pod : k3s : au moins 36",)
             elif cas == "pod_tourne":
                 lignes = [ligne_k3s(i, f"/k{i}") for i in range(1, 11)]
                 ecrire(k3s, "".join(lignes))
                 ecrire(os.path.join(bac.faux, "k3s.comptage"), "".join(lignes[-2:]))
+                par_pod = ("par pod : k3s : nombre inconnu",)
             elif cas == "deux_pods":
                 os.remove(k3s) if os.path.exists(k3s) else None
-                ecrire(os.path.join(bac.faux, "pod-a.log"), "".join(ligne_k3s(i, f"/a{i}") for i in range(10, 20)))
-                ecrire(os.path.join(bac.faux, "pod-b.log"), "".join(ligne_k3s(i, f"/b{i}") for i in range(1, 4)))
-                attendu = "6"
+                ecrire(os.path.join(bac.faux, "pod-a.log"), ANCIENNE_K3S + "".join(ligne_k3s(i, f"/a{i}") for i in range(10, 20)))
+                ecrire(os.path.join(bac.faux, "pod-b.log"), ANCIENNE_K3S + "".join(ligne_k3s(i, f"/b{i}") for i in range(1, 4)))
+                attendu, par_pod = "6", ("par pod : pod-a : 6, pod-b : 0",)
+            elif cas == "pods_nommes":
+                # pod-a : sa ligne antérieure à la fenêtre est rendue, compte EXACT (6) ; pod-b : 60 requêtes dans la
+                # fenêtre, le comptage n'en rend que 40 (10 x la borne) et aucune ne la précède : AU MOINS 36. Le total
+                # n'est qu'un minimum (42), chaque pod est nommé par son nom, jamais par une adresse.
+                os.remove(k3s) if os.path.exists(k3s) else None
+                ecrire(os.path.join(bac.faux, "pod-a.log"), ANCIENNE_K3S + "".join(ligne_k3s(i, f"/a{i}") for i in range(10, 20)))
+                ecrire(os.path.join(bac.faux, "pod-b.log"),
+                       "".join(ligne_k3s(i, f"/b{i}", seconde=30, fraction="%09d" % (i + 1)) for i in range(60)))
+                attendu, par_pod = "au moins 42", ("par pod : pod-a : 6, pod-b : au moins 36",)
             elif cas == "apres_filigrane":
-                ecrire(k3s, "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 4)))
+                ecrire(k3s, ANCIENNE_K3S + "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 4)))
                 bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": "10"})
-                ecrire(k3s, "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 14)))
+                ecrire(k3s, ANCIENNE_K3S + "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 14)))
                 attendu = "6"
             else:
                 ecrire(k3s, "".join(ligne_k3s(i, f"/t{i}").replace(".123456789Z ", ".123456789+00:00 ", 1)
@@ -1172,7 +1210,10 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                 dit = f"atteinte : {attendu} ligne(s) plus ancienne(s)"
             hb = battements(evs, "web")
             if hb:
-                contient(q, hb[0].get("message"), dit)
+                contient(q, hb[0].get("message"), dit, *par_pod)
+            contient(q, detail, *par_pod)
+            if re.search(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+", detail.split("par pod :")[-1]):
+                faute(q, f"un pod nommé par une adresse : {detail!r}")
         finally:
             bac.nettoyer()
 
@@ -1280,32 +1321,67 @@ def banc_web_borne_de_lecture(awk, nom_awk):
             bac.nettoyer()
 
     # ROTATIONS DONT LE `.1` N'EST PAS LE JOURNAL LU (P10.33-e) :
-    #  · double — deux rotations entre deux passages : le journal lu est devenu `.2`, `.1` est un journal postérieur ;
-    #    le lire depuis l'offset de l'autre publierait le milieu d'un journal et tairait la perte ;
+    #  · double — deux rotations entre deux passages, le journal lu (devenu `.2`) l'avait été jusqu'au bout : `.1`
+    #    est lu depuis son début, puis le courant ; rien n'est perdu, rien n'est avoué ;
+    #  · double_reste — même chose, mais trois lignes de `.2` n'avaient pas été lues, borne 2 : elles sont reprises
+    #    dans `.2` depuis l'offset (empreinte de la première ligne), puis `.1`, puis le courant, chaque ligne une
+    #    fois, dans la borne, le compte de lignes lues juste à chaque passage ;
+    #  · double_gz / double_gz_sans_gzip — `.2` compressé (`logrotate delaycompress`) : lu par `gzip -dc` quand
+    #    `gzip` est là ; sinon, perte avouée comme avant ;
+    #  · double_introuvable — `.2` effacé : perte avouée (`missing-source`), `.1` non lu (rien n'y est daté du
+    #    journal perdu), le courant depuis son début ;
     #  · tourne_plus_court — `.1` a la même première ligne mais est plus court que l'offset : ce n'est pas le journal
     #    lu ; le prendre pour lui ne lirait rien et tairait la perte.
-    for forme in ("double", "tourne_plus_court"):
+    for forme in ("double", "double_reste", "double_gz", "double_gz_sans_gzip", "double_introuvable",
+                  "tourne_plus_court"):
         q = f"web/{nom_awk}/rotation_{forme}"
         bac = Bac(awk)
         try:
             log = os.path.join(bac.racine, "access.log")
             env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
-            if forme == "double":
-                ecrire(log, ligne_web(1, "/a1") + ligne_web(2, "/a2"))
-                bac.jouer("web.sh", env)
-                os.rename(log, log + ".2")
-                ecrire(log + ".1", "".join(ligne_web(i, f"/b{i}") for i in range(3, 8)))
-                ecrire(log, ligne_web(8, "/c8"))
-                attendu = [["/c8"], []]
-            else:
+            lus = None
+            if forme == "tourne_plus_court":
                 ecrire(log, ligne_web(1, "/r1") + ligne_web(2, "/r2") + ligne_web(3, "/r3"))
                 bac.jouer("web.sh", env)
                 os.remove(log)
                 ecrire(log + ".1", ligne_web(1, "/r1"))
                 ecrire(log, ligne_web(4, "/n4"))
-                attendu = [["/n4"], []]
+                attendu, n_rot = [["/n4"], []], 1
+            else:
+                if forme == "double_reste":
+                    env["PLUME_WEB_MAX"] = "2"
+                ecrire(log, ligne_web(1, "/a1") + ligne_web(2, "/a2"))
+                bac.jouer("web.sh", env)
+                reste = [] if forme == "double" else ["/a3", "/a4", "/a5"]
+                with open(log, "a") as fh:
+                    fh.write("".join(ligne_web(int(c[2:]), c) for c in reste))
+                os.rename(log, log + ".1")
+                ecrire(log, "".join(ligne_web(i, f"/b{i}") for i in range(6, 9)))
+                os.rename(log + ".1", log + ".2")
+                os.rename(log, log + ".1")
+                ecrire(log, ligne_web(9, "/c9"))
+                b = ["/b6", "/b7", "/b8"]
+                if forme in ("double_gz", "double_gz_sans_gzip"):
+                    with open(log + ".2", "rb") as src, gzip.open(log + ".2.gz", "wb") as dst:
+                        dst.write(src.read())
+                    os.remove(log + ".2")
+                    if forme == "double_gz":
+                        if not shutil.which("gzip"):
+                            refus("`gzip` absent : le journal tourné compressé ne peut pas être joué")
+                        os.symlink(shutil.which("gzip"), os.path.join(bac.bin, "gzip"))
+                elif forme == "double_introuvable":
+                    os.remove(log + ".2")
+                if forme == "double":
+                    attendu, n_rot = [b, ["/c9"], []], 0
+                elif forme == "double_reste":
+                    attendu, n_rot = [["/a3", "/a4"], ["/a5"], ["/b6", "/b7"], ["/b8"], ["/c9"], []], 0
+                    lus = [2, 1, 2, 1, 1]
+                elif forme == "double_gz":
+                    attendu, n_rot = [reste, b, ["/c9"], []], 0
+                else:
+                    attendu, n_rot = [["/c9"], []], 1
             vus = []
-            for j in range(2):
+            for j in range(len(attendu)):
                 evs = evenements(f"{q}/{j + 1}", bac.jouer("web.sh", env), "web.sh")
                 vus.append((publiees(evs), evs))
             pubs = [pub for pub, _ in vus]
@@ -1313,8 +1389,15 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                    if "ROTATION" in ((e.get("fields") or {}).get("detail") or "")]
             if pubs != attendu:
                 faute(q, f"publiées par passage : {pubs}, attendu {attendu}")
-            if len(rot) != 1 or not aveux(vus[0][1], "web", "unavailable", "missing-source"):
-                faute(q, f"{len(rot)} aveu(x) de rotation, attendu 1 au premier passage : la perte serait tue")
+            if len(rot) != n_rot or (n_rot and not aveux(vus[0][1], "web", "unavailable", "missing-source")):
+                faute(q, f"{len(rot)} aveu(x) de rotation, attendu {n_rot}" + (" au premier passage : la perte serait tue"
+                                                                              if n_rot else " : rien n'est perdu"))
+            for j, n in enumerate(lus or []):
+                hb = un_battement(f"{q}/{j + 1}", vus[j][1], "web")
+                if hb:
+                    contient(f"{q}/{j + 1}", hb.get("message"), f"santé : {n} ligne(s) lue(s), {n} gardée(s)")
+                    if "au moins 0 octet" in (hb.get("message") or ""):
+                        faute(f"{q}/{j + 1}", f"journal tourné lu jusqu'au bout dit « au moins 0 octet(s) restent » : {hb.get('message')!r}")
         finally:
             bac.nettoyer()
 

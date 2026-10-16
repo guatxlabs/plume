@@ -427,14 +427,22 @@ long fait au-delà dépend de la source :
   `PLUME_WEB_MAX` dernières lignes, et le battement dit combien d'octets antérieurs il n'a pas lus. Après
   une rotation, la fin du journal précédent est reprise dans `<journal>.1` ; après deux rotations entre
   deux passages, dans `<journal>.2` (ou `<journal>.2.gz` si `gzip` est installé), puis `.1`, puis le
-  journal courant, chaque ligne une fois ; introuvable (rotation compressée sans `delaycompress`, ou
-  trois rotations), la perte est avouée (`missing-source`, nombre inconnu), même quand rien n'en avait
-  encore été lu, et de même pour un `.1` absent entre `.2` et le journal courant ;
+  journal courant, chaque ligne une fois. Un journal vide n'a pas d'identité : quand le journal courant
+  est vide après une rotation, l'état pointe la fin du journal tourné, et ce journal vide, rempli puis
+  tourné à son tour, est lu dans `.1`. Journal précédent introuvable (rotation compressée sans
+  `delaycompress`, ou trois rotations) : les journaux tournés modifiés depuis le passage précédent
+  (repère daté `web.lecture` de l'état, comparé par `find -newer`) sont lus ; la perte est avouée
+  (`missing-source`, nombre inconnu, « peut-être nul » pour le seul reste du journal précédent), y
+  compris quand rien n'en avait encore été lu, avec le nom des journaux modifiés qui ne se lisent pas.
+  Un `.1` absent ou illisible entre `.2` et le journal courant est avoué perdu, que `.2` soit fini au
+  début d'un passage ou à sa fin. Limite : un journal écrit puis tourné dans la même seconde que le
+  repère n'est pas reconnu postérieur là où `find` ne compare qu'à la seconde ;
 - **`PLUME_WEB_SRC=k3s`** (le défaut) : `kubectl logs --tail` ne rend que les dernières lignes de la
   fenêtre. Les plus anciennes ne sont pas lues, mais un second `kubectl logs` les **compte**, et le
   nombre est avoué dans le battement et par un `collection-capped`, total et **par pod nommé** : exact
   pour un pod dont le comptage (10 × `PLUME_WEB_MAX` lignes par pod) remonte avant la fenêtre, « au
-  moins N » sinon, ou « nombre inconnu » quand le comptage échoue. Il faut un `kubectl` 1.17 ou plus
+  moins N » sinon, ou « nombre inconnu » quand le comptage échoue, voit moins de requêtes que la
+  lecture, ou ne rend plus un pod lu. Il faut un `kubectl` 1.17 ou plus
   récent (`--prefix`).
 
 Le battement porte la valeur en vigueur (« borne de lecture PLUME_WEB_MAX=10000 atteinte » au défaut) :

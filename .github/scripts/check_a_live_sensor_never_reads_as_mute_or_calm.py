@@ -971,6 +971,24 @@ done
 """
 
 
+# Un journal daté d'AVANT le repère de lecture du capteur (`etat/web.lecture`, posé au début de chaque lecture) : il
+# ne passe pas pour écrit depuis le passage précédent. Sert à mesurer ce que l'état sait SANS l'aide de la date, et à
+# poser un journal réellement plus ancien.
+def vieillir(bac, *chemins):
+    repere = os.path.join(bac.racine, "etat", "web.lecture")
+    if not os.path.isfile(repere):
+        faute(bac.racine, "le capteur web n'a pas écrit son repère de lecture `etat/web.lecture` avec son état : un "
+                          "journal écrit depuis le passage ne serait plus reconnu")
+        return
+    t = os.stat(repere).st_mtime - 60
+    for c in chemins:
+        os.utime(c, (t, t))
+
+
+# Cas joués seulement hors root (un fichier `chmod 000` reste lisible pour root) : leur absence est DITE à la fin.
+non_joues = []
+
+
 def banc_web_borne_de_lecture(awk, nom_awk):
     def passages(bac, env, k, quoi):
         vus = []
@@ -1157,8 +1175,11 @@ def banc_web_borne_de_lecture(awk, nom_awk):
     #  · requete_longue_k3s — une requête LONGUE (StartUTC sous le filigrane) écrite en dernier est lue et dite déjà
     #    vue : elle ne compte pas parmi les requêtes neuves lues du pod, sans quoi le compte EXACT des sautées (4)
     #    serait trop petit d'une.
+    #  · pod_absent_du_comptage — un pod lu (lignes de démarrage, hors journal d'accès) ne rend plus rien au
+    #    comptage (supprimé entre les deux appels) : « nombre inconnu » pour lui, et pour le total — jamais un
+    #    compte exact qui l'oublie, ni un « au moins » qui le suppose vu.
     for cas in ("cent_lignes", "comptage_borne", "pod_tourne", "deux_pods", "pods_nommes", "apres_filigrane", "non_z",
-                "non_z_deja_vues", "requete_longue_k3s"):
+                "non_z_deja_vues", "requete_longue_k3s", "pod_absent_du_comptage"):
         q = f"web/{nom_awk}/flot_k3s/{cas}"
         bac = Bac(awk)
         try:
@@ -1195,6 +1216,14 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                 bac.jouer("web.sh", {"PLUME_WEB_SRC": "k3s", "PLUME_WEB_MAX": "10"})
                 ecrire(k3s, ANCIENNE_K3S + "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 14)))
                 attendu = "6"
+            elif cas == "pod_absent_du_comptage":
+                os.remove(k3s) if os.path.exists(k3s) else None
+                ecrire(os.path.join(bac.faux, "pod-a.log"), ANCIENNE_K3S + "".join(ligne_k3s(i, f"/a{i}") for i in range(10, 20)))
+                ecrire(os.path.join(bac.faux, "pod-b.log"), "".join(
+                    '2026-09-23T19:40:%02d.900000000Z time="x" level=info msg="Starting provider %d"\n' % (i, i)
+                    for i in range(1, 7)))
+                ecrire(os.path.join(bac.faux, "pod-b.comptage"), "")
+                par_pod = ("par pod : pod-a : 6, pod-b : nombre inconnu",)
             elif cas == "requete_longue_k3s":
                 vues = ANCIENNE_K3S + "".join(ligne_k3s(i, f"/v{i}") for i in range(1, 4))
                 ecrire(k3s, vues)
@@ -1390,10 +1419,13 @@ def banc_web_borne_de_lecture(awk, nom_awk):
     #    fois, dans la borne, le compte de lignes lues juste à chaque passage ;
     #  · double_gz / double_gz_sans_gzip — `.2` compressé (`logrotate delaycompress`) : lu par `gzip -dc` quand
     #    `gzip` est là ; sinon, perte avouée comme avant ;
-    #  · double_introuvable — `.2` effacé : perte avouée (`missing-source`), `.1` non lu (rien n'y est daté du
-    #    journal perdu), le courant depuis son début ;
-    #  · tourne_plus_court — `.1` a la même première ligne mais est plus court que l'offset : ce n'est pas le journal
-    #    lu ; le prendre pour lui ne lirait rien et tairait la perte ;
+    #  · double_gz_sans_gzip — sans `gzip`, `.2.gz` ne se lit pas : la perte est avouée et le nomme ; `.1`, modifié
+    #    depuis le passage précédent (repère daté `web.lecture`), est lu depuis son début, puis le courant ;
+    #  · double_introuvable — `.2` effacé : perte avouée (`missing-source`) ; `.1`, écrit tout entier après le
+    #    passage précédent, est LU (il était sauté, et l'aveu disait « peut-être nul » une perte certaine) ;
+    #  · tourne_plus_court — `.1` a la même première ligne mais est plus court que l'offset, et il est daté d'AVANT
+    #    le passage précédent (un journal plus ancien) : ce n'est pas le journal lu ; le prendre pour lui ne lirait
+    #    rien et tairait la perte ;
     #  · double_sans_point1 — `.2` lu jusqu'au bout, mais `.1` (le journal d'entre les deux rotations) a disparu : le
     #    courant est lu, et la perte de `.1` est avouée, jamais une lecture en échec ni un saut muet.
     for forme in ("double", "double_reste", "double_gz", "double_gz_sans_gzip", "double_introuvable",
@@ -1409,6 +1441,7 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                 bac.jouer("web.sh", env)
                 os.remove(log)
                 ecrire(log + ".1", ligne_web(1, "/r1"))
+                vieillir(bac, log + ".1")
                 ecrire(log, ligne_web(4, "/n4"))
                 attendu, n_rot = [["/n4"], []], 1
             else:
@@ -1444,6 +1477,8 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                     lus = [2, 1, 2, 1, 1]
                 elif forme == "double_gz":
                     attendu, n_rot = [reste, b, ["/c9"], []], 0
+                elif forme in ("double_gz_sans_gzip", "double_introuvable"):
+                    attendu, n_rot = [b, ["/c9"], []], 1
                 else:
                     attendu, n_rot = [["/c9"], []], 1
             vus = []
@@ -1458,6 +1493,8 @@ def banc_web_borne_de_lecture(awk, nom_awk):
             if len(rot) != n_rot or (n_rot and not aveux(vus[0][1], "web", "unavailable", "missing-source")):
                 faute(q, f"{len(rot)} aveu(x) de rotation, attendu {n_rot}" + (" au premier passage : la perte serait tue"
                                                                               if n_rot else " : rien n'est perdu"))
+            elif forme == "double_gz_sans_gzip":
+                contient(q, (rot[0].get("fields") or {}).get("detail"), "non lu(s)", log + ".2.gz —")
             for j, n in enumerate(lus or []):
                 hb = un_battement(f"{q}/{j + 1}", vus[j][1], "web")
                 if hb:
@@ -1471,7 +1508,8 @@ def banc_web_borne_de_lecture(awk, nom_awk):
     # courant B (non vide) depuis 0. B tourne ensuite hors de portée : (a) deux rotations `delaycompress`, B dans
     # `.2.gz`, `gzip` absent ; (b) trois rotations sans compression, B dans `.3`. Ses lignes (et celles des journaux
     # suivants) ne sont pas lues : la perte est AVOUÉE (`missing-source`), jamais « rien à perdre » parce que l'offset
-    # vaut 0. Un journal pointé VIDE (`logrotate create`) n'a rien à perdre : voir rotation_creation.
+    # vaut 0. Les journaux écrits depuis (`.2`/`.1`, datés après le repère `web.lecture`) sont LUS, et celui qui ne se
+    # lit pas (`.2.gz` sans gzip, `.3`) est NOMMÉ dans l'aveu. Un journal pointé VIDE : voir rotation_vide_*.
     for forme in ("pointe_gz_sans_gzip", "pointe_trois_rotations"):
         q = f"web/{nom_awk}/rotation_{forme}"
         bac = Bac(awk)
@@ -1502,18 +1540,218 @@ def banc_web_borne_de_lecture(awk, nom_awk):
                 ecrire(log + ".1", ligne_web(7, "/d7"))
                 ecrire(log, ligne_web(8, "/e8"))
                 dernier = "/e8"
-            vus += passages(bac, env, 2, q + "/b")
+            vus += passages(bac, env, 3 if forme == "pointe_gz_sans_gzip" else 4, q + "/b")
             pubs = [pub for pub, _ in vus]
-            if pubs != [["/a3"], [dernier], []]:
-                faute(q, f"publiées par passage : {pubs}, attendu [['/a3'], [{dernier!r}], []]")
+            lus_ensuite = [["/c6"], ["/d7"]] if forme == "pointe_gz_sans_gzip" else [["/c6"], ["/d7"], ["/e8"]]
+            if pubs != [["/a3"]] + lus_ensuite + [[]]:
+                faute(q, f"publiées par passage : {pubs}, attendu {[['/a3']] + lus_ensuite + [[]]}")
             rot = [[e for e in aveux(evs, "web", "unavailable", "missing-source")
                     if "ROTATION" in ((e.get("fields") or {}).get("detail") or "")] for _, evs in vus]
-            if [len(r) for r in rot] != [0, 1, 0]:
-                faute(q, f"aveux de rotation par passage : {[len(r) for r in rot]}, attendu [0, 1, 0] — le journal "
-                         "pointé, non vide, est perdu en silence")
-            elif "pas encore lu" not in ((rot[1][0].get("fields") or {}).get("detail") or ""):
-                faute(q, f"l'aveu ne dit pas le journal pointé non lu : {rot[1][0].get('fields')!r}")
+            if [len(r) for r in rot] != [0, 1] + [0] * (len(vus) - 2):
+                faute(q, f"aveux de rotation par passage : {[len(r) for r in rot]}, attendu un seul, au deuxième — le "
+                         "journal pointé, non vide, est perdu en silence")
+            else:
+                hors = log + (".2.gz" if forme == "pointe_gz_sans_gzip" else ".3")
+                contient(q, (rot[1][0].get("fields") or {}).get("detail"), "pas encore lu", f"non lu(s)", f"{hors} —")
         finally:
+            bac.nettoyer()
+
+    # JOURNAL VIDE, PUIS REMPLI ET TOURNÉ (P10.33-e) — un journal vide n'a pas d'identité :
+    #  · vide_apres_tourne — `.1`, déjà lu jusqu'au bout, est fini dès le DÉBUT du passage pendant que le courant est
+    #    vide (`logrotate create`) ; le courant se remplit (b3-b5) et tourne avant le passage suivant. L'état pointait
+    #    « vide, offset 0 » et ces lignes étaient sautées sans aveu ; il pointe désormais la FIN du tourné, retrouvée
+    #    en `.2`, et `.1` est lu. Les journaux sont datés d'avant le repère : c'est l'état seul qui est mesuré ;
+    #  · vide_fin_de_passage — même chose, `.1` (son reste r2) fini en FIN de passage ;
+    #  · vide_premiere_ligne — pas de tourné fini : une première ligne en cours d'écriture, achevée puis tournée avec
+    #    la suivante. `.1`, modifié depuis le repère de lecture, est lu ;
+    #  · vide_sans_repere — même chose sans repère (état d'une version antérieure) : rien ne dit si le journal
+    #    pointé a été rempli puis tourné ; la perte est AVOUÉE, nombre inconnu, jamais tue ;
+    #  · vide_deux_tournes — `.2` fini, `.1` VIDE (tourné vide), courant vide : l'état garde la fin de `.2`, pas
+    #    l'identité vide de `.1`. Trois rotations plus tard (dates d'avant le repère), le journal pointé est
+    #    introuvable : la perte est AVOUÉE ; pointer « vide » l'aurait tue.
+    for forme in ("vide_apres_tourne", "vide_fin_de_passage", "vide_premiere_ligne", "vide_sans_repere",
+                  "vide_deux_tournes"):
+        q = f"web/{nom_awk}/rotation_{forme}"
+        bac = Bac(awk)
+        try:
+            log = os.path.join(bac.racine, "access.log")
+            env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+            vus = []
+            if forme in ("vide_apres_tourne", "vide_fin_de_passage"):
+                ecrire(log, ligne_web(1, "/r1"))
+                bac.jouer("web.sh", env)
+                if forme == "vide_fin_de_passage":
+                    with open(log, "a") as fh:
+                        fh.write(ligne_web(2, "/r2"))
+                os.rename(log, log + ".1")
+                ecrire(log, "")
+                vus += passages(bac, env, 1, q + "/a")
+                with open(log, "a") as fh:
+                    fh.write("".join(ligne_web(i, f"/b{i}") for i in (3, 4, 5)))
+                os.rename(log + ".1", log + ".2")
+                os.rename(log, log + ".1")
+                ecrire(log, ligne_web(6, "/c6"))
+                vieillir(bac, log + ".2", log + ".1")
+                vus += passages(bac, env, 3, q + "/b")
+                attendu = [[] if forme == "vide_apres_tourne" else ["/r2"], ["/b3", "/b4", "/b5"], ["/c6"], []]
+                n_rot = 0
+            elif forme == "vide_deux_tournes":
+                ecrire(log, ligne_web(1, "/r1"))
+                bac.jouer("web.sh", env)
+                os.rename(log, log + ".1")
+                ecrire(log, "")
+                os.rename(log + ".1", log + ".2")
+                os.rename(log, log + ".1")
+                ecrire(log, "")
+                vus += passages(bac, env, 1, q + "/a")
+                with open(log, "a") as fh:
+                    fh.write("".join(ligne_web(i, f"/b{i}") for i in (3, 4, 5)))
+                os.rename(log + ".2", log + ".3")
+                os.rename(log + ".1", log + ".2")
+                os.rename(log, log + ".1")
+                ecrire(log, ligne_web(6, "/c6"))
+                vieillir(bac, log + ".3", log + ".2", log + ".1")
+                vus += passages(bac, env, 2, q + "/b")
+                attendu, n_rot = [[], ["/c6"], []], 1
+            else:
+                entiere = ligne_web(1, "/r1")
+                ecrire(log, entiere[:-40])
+                vus += passages(bac, env, 1, q + "/a")
+                ecrire(log, entiere + ligne_web(2, "/r2"))
+                os.rename(log, log + ".1")
+                ecrire(log, ligne_web(3, "/r3"))
+                if forme == "vide_premiere_ligne":
+                    attendu, n_rot = [[], ["/r1", "/r2"], ["/r3"], []], 0
+                else:
+                    repere = os.path.join(bac.racine, "etat", "web.lecture")
+                    if os.path.isfile(repere):
+                        os.remove(repere)
+                    else:
+                        faute(q, "le capteur web n'a pas écrit son repère de lecture `etat/web.lecture` avec son état")
+                    attendu, n_rot = [[], ["/r3"], []], 1
+                vus += passages(bac, env, len(attendu) - 1, q + "/b")
+            pubs = [pub for pub, _ in vus]
+            rot = [e for _, evs in vus for e in aveux(evs, "web", "unavailable", "missing-source")
+                   if "ROTATION" in ((e.get("fields") or {}).get("detail") or "")]
+            if pubs != attendu:
+                faute(q, f"publiées par passage : {pubs}, attendu {attendu}")
+            if len(rot) != n_rot:
+                faute(q, f"{len(rot)} aveu(x) de rotation, attendu {n_rot}")
+            elif forme == "vide_deux_tournes":
+                contient(q, (rot[0].get("fields") or {}).get("detail"), "est introuvable", "PERDU")
+            elif n_rot:
+                contient(q, (rot[0].get("fields") or {}).get("detail"), "etait vide", "aucun repere de lecture",
+                         "nombre inconnu")
+        finally:
+            bac.nettoyer()
+
+    # DEUX PERTES DISTINCTES DANS LA MÊME HEURE : deux aveux de clés distinctes. Le central écarte un aveu dont la clé
+    # de dédoublonnage (clé et heure) est déjà vue : une clé fixe faisait taire la seconde perte.
+    q = f"web/{nom_awk}/rotation_deux_pertes_meme_heure"
+    bac = Bac(awk)
+    try:
+        log = os.path.join(bac.racine, "access.log")
+        env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+        ecrire(log, ligne_web(1, "/r1") + ligne_web(2, "/r2"))
+        bac.jouer("web.sh", env)
+        cles = []
+        for j, (i, chemin) in enumerate(((3, "/n3"), (4, "/m4"))):
+            os.remove(log)
+            ecrire(log, ligne_web(i, chemin))
+            (pub, evs), = passages(bac, env, 1, f"{q}/{j + 1}")
+            cles += [e.get("dedup") for e in aveux(evs, "web", "unavailable", "missing-source")]
+        if len(cles) != 2 or len(set(cles)) != 2:
+            faute(q, f"clés des aveux de rotation : {cles}, attendu deux clés distinctes — la seconde perte serait "
+                     "écartée par le central")
+    finally:
+        bac.nettoyer()
+
+    # TRANSITIONS D'UN MÊME PASSAGE (P10.33-e) — l'état écrit après elles est relu au passage suivant :
+    #  · apres_lecture_complete — rotation juste après une lecture complète (le cas courant) : `.1` est fini dès le
+    #    début du passage, le courant est lu, et l'état le pointe LUI (son empreinte) ; pointer encore `.1` le
+    #    relirait au passage suivant ;
+    #  · double_point1_long — `.2` fini dès le début, `.1` plus long que la borne (2) : `.1` est lu en trois passages
+    #    depuis son début, avec SA taille et SON empreinte, puis le courant ;
+    #  · double_reste_sans_point1 / …_borne — `.2` garde un reste, `.1` a disparu (logrotate `compress` sans
+    #    `delaycompress`) : `.2` est fini en FIN de passage, et la perte de `.1` est avouée dans CE passage ;
+    #  · …_courant_vide — même perte, journal courant VIDE : elle est avouée UNE fois, pas à chaque passage (l'état ne
+    #    pointe pas la fin de `.2`, qui la ferait avouer de nouveau) ; `.2` fini à la fin du passage ou à son début ;
+    #  · point1_illisible — `.2` fini, `.1` illisible : la perte est avouée (certaine : `.1` n'est pas vide), le
+    #    courant est lu, et le capteur ne tombe pas en lecture impossible à chaque passage.
+    for forme in ("apres_lecture_complete", "double_point1_long", "double_reste_sans_point1",
+                  "double_reste_sans_point1_borne", "double_reste_sans_point1_courant_vide",
+                  "double_sans_point1_courant_vide", "point1_illisible"):
+        q = f"web/{nom_awk}/rotation_{forme}"
+        if forme == "point1_illisible" and os.geteuid() == 0:
+            if q not in non_joues:
+                non_joues.append(q)
+            continue
+        bac = Bac(awk)
+        illisible = None
+        try:
+            log = os.path.join(bac.racine, "access.log")
+            env = {"PLUME_WEB_SRC": "file", "PLUME_WEB_LOG": log}
+            rot_au = None
+            if forme == "apres_lecture_complete":
+                ecrire(log, "".join(ligne_web(i, f"/a{i}") for i in (1, 2, 3)))
+                bac.jouer("web.sh", env)
+                os.rename(log, log + ".1")
+                ecrire(log, ligne_web(4, "/b4"))
+                attendu = [["/b4"], [], []]
+            else:
+                if forme in ("double_point1_long", "double_reste_sans_point1_borne"):
+                    env["PLUME_WEB_MAX"] = "2"
+                ecrire(log, ligne_web(1, "/a1") + ligne_web(2, "/a2"))
+                bac.jouer("web.sh", env)
+                if forme.startswith("double_reste"):
+                    with open(log, "a") as fh:
+                        fh.write("".join(ligne_web(i, f"/a{i}") for i in (3, 4, 5)))
+                os.rename(log, log + ".1")
+                milieu = range(3, 8) if forme == "double_point1_long" else range(6, 9)
+                ecrire(log, "".join(ligne_web(i, f"/b{i}") for i in milieu))
+                os.rename(log + ".1", log + ".2")
+                os.rename(log, log + ".1")
+                ecrire(log, "" if forme.endswith("courant_vide") else ligne_web(9, "/c9"))
+                if forme == "double_point1_long":
+                    attendu = [["/b3", "/b4"], ["/b5", "/b6"], ["/b7"], ["/c9"], []]
+                elif forme == "double_reste_sans_point1":
+                    os.remove(log + ".1")
+                    attendu, rot_au = [["/a3", "/a4", "/a5"], ["/c9"], []], 0
+                elif forme == "double_reste_sans_point1_borne":
+                    os.remove(log + ".1")
+                    attendu, rot_au = [["/a3", "/a4"], ["/a5"], ["/c9"], []], 1
+                elif forme == "double_reste_sans_point1_courant_vide":
+                    os.remove(log + ".1")
+                    attendu, rot_au = [["/a3", "/a4", "/a5"], [], []], 0
+                elif forme == "double_sans_point1_courant_vide":
+                    os.remove(log + ".1")
+                    attendu, rot_au = [[], [], []], 0
+                else:
+                    illisible = log + ".1"
+                    os.chmod(illisible, 0)
+                    attendu, rot_au = [["/c9"], []], 0
+            vus = passages(bac, env, len(attendu), q)
+            pubs = [pub for pub, _ in vus]
+            if pubs != attendu:
+                faute(q, f"publiées par passage : {pubs}, attendu {attendu}")
+            rot = [[e for e in aveux(evs, "web", "unavailable", "missing-source")
+                    if "ROTATION" in ((e.get("fields") or {}).get("detail") or "")] for _, evs in vus]
+            autres = [e for _, evs in vus for e in aveux(evs, "web")
+                      if "ROTATION" not in ((e.get("fields") or {}).get("detail") or "")]
+            voulu = [1 if j == rot_au else 0 for j in range(len(vus))]
+            if [len(r) for r in rot] != voulu:
+                faute(q, f"aveux de rotation par passage : {[len(r) for r in rot]}, attendu {voulu}")
+            elif rot_au is not None:
+                d = (rot[rot_au][0].get("fields") or {}).get("detail")
+                contient(q, d, f"{log}.1, est absent ou illisible", "PERDU")
+                if forme == "point1_illisible":
+                    contient(q, d, "perte certaine")
+            if autres:
+                faute(q, f"aveu(x) hors rotation : {[(e.get('fields') or {}).get('reason') for e in autres]} — une "
+                         "lecture impossible, ou une perte que rien n'explique")
+        finally:
+            if illisible and os.path.exists(illisible):
+                os.chmod(illisible, stat.S_IRUSR | stat.S_IWUSR)
             bac.nettoyer()
 
 # --- C. crowdsec ----------------------------------------------------------------------------------
@@ -2053,7 +2291,8 @@ def main():
             print(f"::error::{x}")
         print(f"{ETIQUETTE} : {len(fautes)} faute(s)")
         return 1
-    print(f"{ETIQUETTE} : tenu — awk joués : {', '.join(n for n, _ in awks)}")
+    dit = f" ; cas NON joués : {', '.join(non_joues)} (root lit un fichier chmod 000)" if non_joues else ""
+    print(f"{ETIQUETTE} : tenu — awk joués : {', '.join(n for n, _ in awks)}{dit}")
     return 0
 
 

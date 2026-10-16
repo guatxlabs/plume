@@ -97,6 +97,10 @@ jobs:
           PLAGE: ${{ steps.plage.outputs.plage }}
         run: |
           set -uo pipefail
+          # `set +e` EXPRES : sans `shell:`, GitHub lance `bash -e`, et `set -uo pipefail` ne le retire
+          # pas. Un verificateur qui rendait 1 TUAIT l'etape avant `rc=$?` : le job echouait sans nommer
+          # le commit refuse (vu sur la plage d'une livraison, 2026-10-16). Les refus sont lus ci-dessous.
+          set +e
           if ! commits="$(git rev-list "$PLAGE" 2>"$RUNNER_TEMP/err")"; then
             echo "::error::REFUS DE CONCLURE — plage « $PLAGE » illisible : aucun message n'a ete juge."
             sed 's/^/    /' "$RUNNER_TEMP/err"
@@ -139,6 +143,7 @@ jobs:
           PLAGE: ${{ steps.plage.outputs.plage }}
         run: |
           set -uo pipefail
+          set +e   # meme raison que l'etape precedente : le code est lu par `rc=$?`, pas par `bash -e`
           # Le hook local se contourne et disparait a chaque clone frais ; c'est ICI que la
           # regle lie. Le canonique n'est ecrit qu'une fois, dans le script appele.
           ./.github/scripts/verifier-identite.sh "$PLAGE"

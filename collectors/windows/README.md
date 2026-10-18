@@ -24,8 +24,15 @@ métadonnées d'événements.
 
 1. **Windows PowerShell 5.1** (`powershell.exe`, intégré à Windows) : c'est lui que la tâche planifiée
    ci-dessous lance, et le script exige `#Requires -Version 5.1`. PowerShell 7 (`pwsh`) l'exécute aussi,
-   mais c'est **le seul** que l'intégration continue joue : sous 5.1, rien n'est exécuté en CI (la
-   syntaxe est tenue par relecture seulement, cf. `.github/scripts/check_windows_collector_is_honest.py`).
+   mais c'est **le seul** que l'intégration continue joue : sous 5.1, rien n'est exécuté en CI. La
+   compatibilité 5.1 y est **jugée sans être exécutée** (`.github/scripts/check_windows_collector_is_honest.py`) :
+   PSScriptAnalyzer, à version épinglée, confronte le script aux profils Windows PowerShell 5.1 qu'il
+   livre (Windows 10 1809, Windows Server 2016 et 2019 : syntaxe, commandes, paramètres, types), et
+   l'arbre syntaxique refuse `??`, le ternaire, `&&`, `?.`/`?[` et tout type absent de ces profils. Ce
+   jugement ne prouve pas le **comportement** de .NET Framework : la lecture d'une adresse par
+   `[System.Uri]` et par `Invoke-RestMethod` 5.1 (redirections, proxy, TLS) n'est jouée que sous
+   PowerShell 7. Le script n'envoie que par `Invoke-RestMethod` : toute autre voie (`Invoke-WebRequest`,
+   BITS, une classe `System.Net.*`, un objet COM, `Add-Type`) est refusée par la même garde.
 2. **Exécuter en compte SYSTEM ou administrateur** (le journal *Security* l'exige).
 3. **Activer les politiques d'audit** pour peupler certains événements.
 

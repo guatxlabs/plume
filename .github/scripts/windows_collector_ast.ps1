@@ -9,11 +9,77 @@
 #
 # Ce script n'applique AUCUNE règle : il ne fait qu'exposer des faits. Les règles sont en
 # Python, à côté des autres gardes du dépôt.
+#
+# SECOND MODE (P10.33-i) : `-Compatibilite`. La tâche planifiée lance Windows PowerShell 5.1, qu'aucun
+# runner Linux n'exécute ; PSScriptAnalyzer, lui, tourne sous pwsh 7 et juge un script CONTRE les
+# profils de Windows PowerShell 5.1 qu'il livre (commandes, paramètres, types, syntaxe). Ce mode charge
+# la version EXACTE demandée, charge les profils NOMMÉS, analyse chaque fichier et imprime une ligne
+# `PLUME-PSSA-JSON:` (le reste de la sortie — avertissements du module — n'est pas du verdict).
+# Code 3 : module ou profil absent. La garde en fait un REFUS DE CONCLURE, jamais un vert.
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$Path)
+param(
+  [Parameter(Mandatory)][string[]]$Path,
+  [switch]$Compatibilite,
+  [string]$Version,
+  [string[]]$Profils
+)
 
 $ErrorActionPreference = 'Stop'
-$full = (Resolve-Path -LiteralPath $Path).Path
+
+if ($Compatibilite) {
+  # `pwsh -File` ne fabrique pas de tableau : les listes arrivent jointes par des virgules.
+  $Path = @($Path | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+  $Profils = @($Profils | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+  $m = @(Get-Module -ListAvailable -Name PSScriptAnalyzer | Where-Object { $_.Version -eq [version]$Version })
+  if ($m.Count -eq 0) {
+    $vus = @(Get-Module -ListAvailable -Name PSScriptAnalyzer | ForEach-Object { "$($_.Version)" }) -join ', '
+    [Console]::Error.WriteLine("PSScriptAnalyzer $Version introuvable (versions vues : '$vus' ; PSModulePath=$env:PSModulePath)")
+    exit 3
+  }
+  Import-Module -Name $m[0].Path -Force
+  $charge = @(Get-Module -Name PSScriptAnalyzer)
+  if ($charge.Count -ne 1 -or $charge[0].Version -ne [version]$Version) {
+    [Console]::Error.WriteLine("PSScriptAnalyzer chargé : '$($charge.Version -join ',')', attendu $Version")
+    exit 3
+  }
+  $dir = Join-Path $charge[0].ModuleBase 'compatibility_profiles'
+  $fichiersProfils = @()
+  foreach ($p in $Profils) {
+    $f = Join-Path $dir "$p.json"
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) {
+      [Console]::Error.WriteLine("profil de compatibilité absent du module : $f")
+      exit 3
+    }
+    $fichiersProfils += $f
+  }
+  if ($fichiersProfils.Count -eq 0) { [Console]::Error.WriteLine('aucun profil demandé'); exit 3 }
+  $regles = @{
+    IncludeRules = @('PSUseCompatibleSyntax', 'PSUseCompatibleCommands', 'PSUseCompatibleTypes')
+    Rules        = @{
+      PSUseCompatibleSyntax   = @{ Enable = $true; TargetVersions = @('5.1') }
+      PSUseCompatibleCommands = @{ Enable = $true; TargetProfiles = @($Profils) }
+      PSUseCompatibleTypes    = @{ Enable = $true; TargetProfiles = @($Profils) }
+    }
+  }
+  $parFichier = [ordered]@{}
+  foreach ($cible in $Path) {
+    $c = (Resolve-Path -LiteralPath $cible).Path
+    $parFichier[$cible] = @(Invoke-ScriptAnalyzer -Path $c -Settings $regles | ForEach-Object {
+        [ordered]@{ rule = $_.RuleName; line = $_.Line; message = $_.Message }
+      })
+  }
+  $sortie = [ordered]@{
+    version     = "$($charge[0].Version)"
+    module_base = $charge[0].ModuleBase
+    profils     = @($fichiersProfils)
+    fichiers    = $parFichier
+  }
+  'PLUME-PSSA-JSON:' + ($sortie | ConvertTo-Json -Depth 6 -Compress)
+  exit 0
+}
+
+if ($Path.Count -ne 1) { throw 'le mode AST prend un seul fichier' }
+$full = (Resolve-Path -LiteralPath $Path[0]).Path
 
 $tokens = $null
 $errors = $null
@@ -122,6 +188,46 @@ foreach ($v in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Lan
   }
 }
 
+# --- types nommés par le script (P10.33-i) ------------------------------------------------------
+# `[T]`, `[T]::Membre`, `[T]$x`, `[T[]]`, `[A[B]]` : le nom ÉCRIT, et le nom que pwsh lui RÉSOUT
+# (accélérateurs comme `[ipaddress]`) quand il le résout. Rien n'est jugé ici.
+$types = @()
+foreach ($t in $ast.FindAll({ param($n)
+      $n -is [System.Management.Automation.Language.TypeExpressionAst] -or
+      $n -is [System.Management.Automation.Language.TypeConstraintAst] }, $true)) {
+  $resolu = ''
+  try { $r = $t.TypeName.GetReflectionType(); if ($r) { $resolu = $r.FullName } } catch { $resolu = '' }
+  $types += [ordered]@{
+    line      = $t.Extent.StartLineNumber
+    enclosing = Get-Enclosing $t.Extent.StartOffset
+    written   = $t.TypeName.FullName
+    resolved  = $resolu
+  }
+}
+
+# --- `using namespace|assembly|module` : un espace de noms importé rend `[WebClient]` illisible ---------
+$usings = @($ast.UsingStatements | ForEach-Object {
+    [ordered]@{ line = $_.Extent.StartLineNumber; kind = "$($_.UsingStatementKind)"; text = $_.Extent.Text }
+  })
+
+# --- syntaxe postérieure à Windows PowerShell 5.1 (jambe indépendante de PSScriptAnalyzer) ---------
+# Mesuré le 2026-10-18 : PSScriptAnalyzer 1.25.0 signale `??`, `??=`, le ternaire, `&&`/`||` et `${x}?.m`,
+# mais PAS l'index null-conditionnel `${x}?[0]`. Les nœuds sont reconnus par NOM de classe : la jambe
+# ne dépend pas de la version de pwsh qui l'exécute.
+$post51 = @()
+foreach ($n in $ast.FindAll({ param($x) $true }, $true)) {
+  $k = $n.GetType().Name
+  $forme = ''
+  if ($k -eq 'TernaryExpressionAst') { $forme = 'ternaire' }
+  elseif ($k -eq 'PipelineChainAst') { $forme = 'chaîne de pipelines && / ||' }
+  elseif ($k -eq 'BinaryExpressionAst' -and "$($n.Operator)" -eq 'QuestionQuestion') { $forme = 'opérateur ??' }
+  elseif ($k -eq 'AssignmentStatementAst' -and "$($n.Operator)" -eq 'QuestionQuestionEquals') { $forme = 'affectation ??=' }
+  elseif (($k -eq 'MemberExpressionAst' -or $k -eq 'InvokeMemberExpressionAst' -or $k -eq 'IndexExpressionAst') -and
+          $n.PSObject.Properties['NullConditional'] -and $n.NullConditional) { $forme = 'accès null-conditionnel ?. / ?[' }
+  elseif ($k -eq 'ScriptBlockAst' -and $n.PSObject.Properties['CleanBlock'] -and $n.CleanBlock) { $forme = 'bloc clean' }
+  if ($forme) { $post51 += [ordered]@{ line = $n.Extent.StartLineNumber; forme = $forme; text = $n.Extent.Text } }
+}
+
 $out = [ordered]@{
   file         = $full
   parse_errors = @($errors | ForEach-Object { "ligne $($_.Extent.StartLineNumber): $($_.Message)" })
@@ -132,5 +238,8 @@ $out = [ordered]@{
   strings      = @($strings)
   assignments  = @($assigns)
   variables    = @($vars)
+  types        = @($types)
+  usings       = @($usings)
+  post51       = @($post51)
 }
 $out | ConvertTo-Json -Depth 8 -Compress

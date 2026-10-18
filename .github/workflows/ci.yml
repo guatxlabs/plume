@@ -1482,6 +1482,26 @@ jobs:
       # erreur ne soit avalée en silence, et qu'aucun filigrane ne s'écrive avant un POST acquitté.
       # `pwsh` est fourni par l'image ubuntu-24.04 (PowerShell 7.6.3, vérifié dans le README de
       # actions/runner-images) ; s'il manquait, la garde ÉCHOUE au lieu de passer.
+      # P10.33-i — la tâche planifiée lance Windows PowerShell 5.1, qu'aucun runner n'exécute : la garde
+      # juge le collecteur contre les profils 5.1 de PSScriptAnalyzer. Le pas ci-dessous l'installe à la
+      # version ÉPINGLÉE, nupkg vérifié par sha256 ; version et empreinte sont LUES dans la garde
+      # (PSSA_VERSION, PSSA_SHA256 : une seule source). Pas d'`Install-Module` (aucune empreinte
+      # vérifiée). `continue-on-error` : un échec ici n'escamote pas les gardes suivantes, et la garde,
+      # privée du module, REFUSE DE CONCLURE (code 2) — l'agrégat rougit sur elle.
+      - name: PSScriptAnalyzer épinglé pour la garde du collecteur Windows (P10.33-i)
+        continue-on-error: true
+        run: |
+          set -eu
+          g=.github/scripts/check_windows_collector_is_honest.py
+          v=$(sed -n 's/^PSSA_VERSION = "\(.*\)"$/\1/p' "$g")
+          h=$(sed -n 's/^PSSA_SHA256 = "\(.*\)"$/\1/p' "$g")
+          [ -n "$v" ] && [ -n "$h" ] || { echo "::error::PSSA_VERSION ou PSSA_SHA256 introuvable dans $g"; exit 1; }
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP:?}/pssa.nupkg" "https://www.powershellgallery.com/api/v2/package/PSScriptAnalyzer/$v"
+          echo "$h  $RUNNER_TEMP/pssa.nupkg" | sha256sum -c -
+          d="$HOME/.local/share/powershell/Modules/PSScriptAnalyzer/$v"
+          rm -rf "$d"; mkdir -p "$d"
+          unzip -q "$RUNNER_TEMP/pssa.nupkg" -d "$d"
+          rm -rf "$d/_rels" "$d/package" "$d/[Content_Types].xml" "$d/PSScriptAnalyzer.nuspec"
       - name: Le collecteur Windows ne peut ni mentir ni oublier (AST PowerShell)
         id: garde_04
         continue-on-error: true

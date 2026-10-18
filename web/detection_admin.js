@@ -638,6 +638,35 @@ async function loadNotifiers() {
   if (!notifiers.length) { wrap.appendChild(muted('aucun canal - les alertes ne sont envoyées nulle part. Clique " + Nouveau canal ".')); return; }
   notifiers.forEach(n => wrap.appendChild(notifRow(n)));
 }
+// `P10.33-n` (reste console) — CE QU'UN ESSAI DE CANAL ÉTABLIT, DIT TEL QUEL. Depuis le démon de `P10.33-n` (`notifier_test`,
+// daemon/src/handlers/notifiers.rs), l'essai sert `remis_au_service` (vrai SEULEMENT sur un succès réseau) et
+// `accuse_de_lecture` (`inconnu`, `local`, `sans_objet` : jamais « lu ») à côté de `ok`, et la liste porte l'accusé.
+// La console disait « envoyé » sur `ok` seul : un sujet sans abonné « réussit » pareil. Elle dit désormais la remise au
+// service — ou l'échec — puis l'accusé, sans jamais dire que quelqu'un a lu ni reçu. Une réponse d'un démon ANTÉRIEUR
+// (sans ces champs) garde l'affichage d'avant. Tout texte servi passe par `textContent` / `title`, jamais par du balisage.
+const MOTS_DE_L_ACCUSE_D_UN_CANAL = {
+  inconnu: { fr: 'lecture non vérifiable', en: 'read not verifiable' },
+  local: { fr: 'remis localement', en: 'handed over locally' },
+  sans_objet: { fr: 'sans objet', en: 'not applicable' },
+};
+const MOTS_DE_L_ESSAI_D_UN_CANAL = {
+  remis: { fr: 'remis au service', en: 'handed to the service' },
+  accepte: { fr: 'accepté', en: 'accepted' },
+  echec: { fr: 'échec (vérifie URL / curl / config)', en: 'failed (check URL / curl / config)' },
+  accuse: { fr: 'accusé : {accuse}', en: 'acknowledgement: {accuse}' },
+};
+// L'accusé servi, dans la langue : un code connu par son libellé, un code inconnu TEL QUEL (texte), rien s'il manque.
+function motDeLAccuseDUnCanal(code) {
+  if (typeof code !== 'string' || !code.trim()) return '';
+  const connu = Object.prototype.hasOwnProperty.call(MOTS_DE_L_ACCUSE_D_UN_CANAL, code);
+  return faceDansLaLangue(MOTS_DE_L_ESSAI_D_UN_CANAL.accuse, { accuse: connu ? faceDansLaLangue(MOTS_DE_L_ACCUSE_D_UN_CANAL[code]) : code.trim() });
+}
+// Le résultat d'un essai d'un démon qui sert `remis_au_service` (l'appelant garde la forme d'avant sinon).
+function phraseDeLEssaiDUnCanal(x) {
+  const verdict = faceDansLaLangue(x.remis_au_service ? MOTS_DE_L_ESSAI_D_UN_CANAL.remis : x.ok ? MOTS_DE_L_ESSAI_D_UN_CANAL.accepte : MOTS_DE_L_ESSAI_D_UN_CANAL.echec);
+  const accuse = motDeLAccuseDUnCanal(x.accuse_de_lecture);
+  return accuse ? verdict + ' — ' + accuse : verdict;
+}
 function notifRow(n) {
   const row = document.createElement('div'); row.className = 'rulerow';
   // COMMUTATEUR PARTAGÉ (`P11.13-c`) : ce que la bascule arme, c'est un ENVOI SORTANT à chaque alerte ; la
@@ -656,12 +685,15 @@ function notifRow(n) {
   const auth = document.createElement('span'); auth.className = 'rulemeta muted';
   auth.textContent = n.has_auth ? '• auth' : '';
   if (n.has_auth) auth.title = 'credential enregistré (token ntfy / user:pass SMTP) — jamais réaffiché';
+  const accuse = document.createElement('span'); accuse.className = 'rulemeta muted';   // `P10.33-n` (reste console) : l'accusé servi par la liste
+  accuse.textContent = motDeLAccuseDUnCanal(n.accuse_de_lecture);
+  // `P10.33-n` (reste console) : l'essai dit la remise et l'accusé ; un démon ANTÉRIEUR (sans `remis_au_service`) garde l'affichage d'avant.
   const test = document.createElement('button'); test.textContent = 'Tester';
   test.onclick = async () => {   // `P10.23-t` : la face nommée d'un essai, dans le puits des canaux
     const puits = puitsDesCanaux(), avant = commencerLEssaiDUneLigne(puits, meta);
     let j;
     try { j = await apiSend('/notifiers/' + n.id + '/test'); } catch (e) { refuserLEssaiDUneLigne(puits, meta, avant, e); return; }
-    conclureLEssaiDUneLigne(puits, meta, avant, j, (x) => typeof x.ok === 'boolean', (x) => { meta.textContent = x.ok ? 'envoyé' : 'échec (vérifie URL / curl / config)'; });
+    conclureLEssaiDUneLigne(puits, meta, avant, j, (x) => typeof x.ok === 'boolean', (x) => { if (typeof x.remis_au_service !== 'boolean') meta.textContent = x.ok ? 'envoyé' : 'échec (vérifie URL / curl / config)'; else meta.textContent = phraseDeLEssaiDUnCanal(x); meta.title = typeof x.remise === 'string' ? x.remise : ''; });
   };
   const edit = document.createElement('button'); edit.textContent = 'Éditer'; edit.onclick = () => openNotifForm(n);
   const del = document.createElement('button'); del.innerHTML = ic('x'); del.title = 'Supprimer le canal';
@@ -671,7 +703,7 @@ function notifRow(n) {
     try { await apiSend('/notifiers/' + n.id, 'DELETE'); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
     loadNotifiers();
   };
-  row.append(en, name, kind, meta, auth, test, edit, del);
+  row.append(en, name, kind, meta, auth, accuse, test, edit, del);
   return row;
 }
 function openNotifForm(n) {
@@ -1701,4 +1733,4 @@ export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SA
   OUVERTURE_DE_LA_RIPOSTE_NON_LUE, OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE,
   // `P10.20-w` — et les deux de l'ANNULATION, nues elles aussi : chacune a une voisine dont elle ne
   // diffère que par un mot, et l'ordre des branches ne prouverait rien de cette différence-là.
-  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, reparserLesEvenements, MOTS_DU_REPARSE, loadPlaybooks, enregistrerLeCanalDuFormulaire, parserRow, notifRow, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, reparserLesEvenements, MOTS_DU_REPARSE, loadPlaybooks, enregistrerLeCanalDuFormulaire, parserRow, notifRow, phraseDeLEssaiDUnCanal, motDeLAccuseDUnCanal, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

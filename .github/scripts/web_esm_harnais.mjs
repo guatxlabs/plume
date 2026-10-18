@@ -23646,7 +23646,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // `P10.20-b` — la table que le témoin 141 pose : l'inventaire des accès non lu, à la place de « aucun accès observé ».
       "admin_users.js › MOTS_DE_L_INVENTAIRE_DES_ACCES",
       // `P10.32-s` — les tables que le témoin 149 pose : les trois portes d'un dormant, et le fait borné de la dernière collecte.
-      "sources.js › MOTS_DU_DORMANT", "sources.js › MOTS_DU_DERNIER_VU_BORNE"];
+      "sources.js › MOTS_DU_DORMANT", "sources.js › MOTS_DU_DERNIER_VU_BORNE",
+      // `P10.33-n` (reste console) — les tables que le témoin 151 pose : le résultat de l'essai d'un canal, et l'accusé servi.
+      "detection_admin.js › MOTS_DE_L_ACCUSE_D_UN_CANAL", "detection_admin.js › MOTS_DE_L_ESSAI_D_UN_CANAL"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -29296,6 +29298,150 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     `(150c) une notice qui porte du balisage n'est pas rendue en texte : ${cueillir150(corpsXss, (e) => e.tagName === "IMG", []).length} élément(s) IMG créé(s), texte « ${nXss[0] ? nXss[0].textContent : "(aucune notice)"} »`);
   if (echecs.length !== echecsAvant150) console.log(`(150) EN ÉCHEC — ${echecs.length - echecsAvant150} écart(s), dits ci-dessus`);
   else console.log("(150) OK — `P10.32-p` (console) : un panneau VIDE montre la notice du serveur (fenêtre non bornée relue dans le démon, horizon périmé non dehors, mesure en cours sans horizon, notice servie sans raison), en nœud à part, après le libellé et la date ; une notice vide ou blanche n'ajoute aucun nœud et en TEXTE (une notice balisée ne crée aucun élément) ; un panneau plein dont rien n'est resté dehors n'en porte aucune, et la seule fabrique qui la porte n'est appelée que par le corps sans ligne. Ce qu'il NE tient PAS : la notice reste en français sous LANG='en' (le démon ne la sert que dans cette langue) ; la mise en page.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (151) `P10.33-n` (reste console) — UN ESSAI DE CANAL DIT LA REMISE AU SERVICE ET L'ACCUSÉ, JAMAIS « LU » NI « REÇU ».
+//
+// CE QUE LE DÉMON SERT (RELU dans son arbre, d6e44893, `P10.33-n`) : `notifier_test` (daemon/src/handlers/notifiers.rs)
+// rend `ok`, `remis_au_service` (vrai SEULEMENT sur un succès réseau), `accuse_de_lecture` (codes de `AccuseDuCanal::code` :
+// `inconnu`, `local`, `sans_objet`) et `remise` (la phrase, sur une remise seulement) ; la liste des canaux porte
+// `accuse_de_lecture`. AVANT CE LOT : `notifRow` (web/detection_admin.js) disait « envoyé » sur `ok` seul et ignorait l'accusé.
+// JUGÉ, DANS LES DEUX LANGUES, par le bouton « Tester » de la vraie ligne et un transport simulé : (a) remis + inconnu → la
+// remise et « lecture non vérifiable », la phrase servie en infobulle ; (b) non remis → l'échec, jamais la remise ; (c) local
+// → « accepté » et « remis localement » ; (d) sans_objet → l'échec et « sans objet » ; (e) réponse d'un démon antérieur
+// (`{ok}` seul) → l'affichage d'avant, à l'octet, sans accusé ; (f) la liste des canaux dit l'accusé servi, et rien sans le
+// champ ; (g) un accusé, une phrase de remise balisés sont rendus en TEXTE (aucun élément créé) ; (h) aucune face ne dit
+// « lu », « reçu », « envoyé » (fr) ni « received », « was read », « sent » (en) sur une réponse neuve ; (0) l'ensemble des
+// codes que la console traduit est l'ensemble que le démon sert, jugé dans les deux sens.
+// CE QU'IL NE TIENT PAS : l'exécution de la route (témoins Rust de `P10.33-n`) ; la phrase `remise` reste française sous
+// LANG='en' (le démon ne la sert que dans cette langue) ; la mise en page ; aucune santé ne dit un canal sans destinataire.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant151 = echecs.length;
+  const FICHIERS151 = { noyau: "core.js", etat: "state.js", detection: "detection_admin.js" };
+  const importer151 = async (adresse) => { const L = {}; for (const [cle, f] of Object.entries(FICHIERS151)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr151 = await importer151((f) => pathToFileURL(path.join(WEB, f)).href);
+  const langueOrigine151 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn151 = await importer151((f) => adresseSousLaLangue(f));
+  if (langueOrigine151 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine151);
+  const FR151 = { nom: "fr", ...modsFr151 }, EN151 = { nom: "en", ...modsEn151 };
+  const instrument151 = (vrai, quoi) => exiger(vrai, `(151-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic151 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser151 = async (n = 30) => { for (let i = 0; i < n; i++) await tic151(); };
+  const nu151 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir151 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir151(c, pred, acc)); return acc; };
+  const lireLeDemon151 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const corpsDeFonction151 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+
+  // ══ (0) CE QUE LE DÉMON SERT ══
+  const NOTIF151 = lireLeDemon151("handlers/notifiers.rs");
+  const essai151 = corpsDeFonction151(NOTIF151, "pub(crate) async fn notifier_test(");
+  const code151 = corpsDeFonction151(NOTIF151, "impl AccuseDuCanal {");
+  const CODES_SERVIS151 = [...code151.matchAll(/Self::\w+ => "([a-z_]+)"/g)].map((m) => m[1]).sort();
+  instrument151(/"ok": ok, "remis_au_service": remis, "accuse_de_lecture": accuse\.code\(\)/.test(essai151) && /corps\["remise"\]/.test(essai151),
+    "`notifier_test` (daemon/src/handlers/notifiers.rs) ne sert plus `ok`, `remis_au_service`, `accuse_de_lecture` et `remise`");
+  instrument151(/"accuse_de_lecture": accuse\b/.test(NOTIF151), "la liste des canaux (daemon/src/handlers/notifiers.rs) ne sert plus `accuse_de_lecture`");
+  const mPhrase151 = NOTIF151.match(/const PHRASE_REMIS_AU_SERVICE_SANS_ACCUSE_DE_LECTURE: &str = "((?:[^"\\]|\\[\s\S])*)";/);
+  const PHRASE151 = mPhrase151 ? mPhrase151[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : "";
+  instrument151(!!PHRASE151, "la phrase de remise n'est plus lisible dans daemon/src/handlers/notifiers.rs");
+  // Les faces ATTENDUES, écrites ici (jamais relues dans le module jugé) : un code du démon sans face attendue fait rougir.
+  const ATTENDU151 = {
+    fr: { remis: "remis au service", accepte: "accepté", echec: "échec (vérifie URL / curl / config)", accuse: (a) => "accusé : " + a,
+      codes: { inconnu: "lecture non vérifiable", local: "remis localement", sans_objet: "sans objet" } },
+    en: { remis: "handed to the service", accepte: "accepted", echec: "failed (check URL / curl / config)", accuse: (a) => "acknowledgement: " + a,
+      codes: { inconnu: "read not verifiable", local: "handed over locally", sans_objet: "not applicable" } },
+  };
+  instrument151(JSON.stringify(CODES_SERVIS151) === JSON.stringify(Object.keys(ATTENDU151.fr.codes).sort()),
+    `les codes d'accusé servis par \`AccuseDuCanal::code\` (${JSON.stringify(CODES_SERVIS151)}) ne sont plus ceux que ce témoin attend`);
+  // Bornes écrites sans `\b` en fin de mot : « é » n'est pas un caractère de mot pour `\b`, « envoyé » y échappait. Les deux
+  // listes valent dans les deux langues (une face française restée sous LANG='en' est jugée aussi).
+  const FIN151 = "(?![\\wÀ-ÿ])";
+  const INTERDIT_UN151 = new RegExp("(?<![\\wÀ-ÿ])(?:lue?s?|reçue?s?|envoyée?s?|received|sent|delivered to|(?:was|been|is) read)" + FIN151, "i");
+  const INTERDIT151 = { fr: INTERDIT_UN151, en: INTERDIT_UN151 };
+  instrument151(["envoyé", "lu", "reçu", "Was read", "sent"].every((t) => INTERDIT_UN151.test(t)) && !["lecture non vérifiable", "remis localement", "accepté", "read not verifiable", "acknowledgement: not applicable", "handed over locally"].some((t) => INTERDIT_UN151.test(t)),
+    "le filtre des mots interdits ne prend pas « envoyé », « lu », « reçu », « was read », « sent », ou prend une face permise");
+
+  const liste151 = document.querySelector("#notif-list");
+  instrument151(!!liste151, "#notif-list (index.html) n'est pas monté");
+  const fetchOrigine151 = globalThis.fetch;
+  let servi151 = { ok: true }, appels151 = 0;
+  globalThis.fetch = async (u, init) => {
+    const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+    const corps = k === "POST /api/notifiers/6/test" ? (appels151++, servi151) : {};
+    const texte = JSON.stringify(corps);
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte), clone() { return this; } };
+  };
+  const CANAL151 = { id: 6, name: "c151", kind: "ntfy", url: "https://ntfy.example.org/t", min_severity: 2, enabled: true, has_auth: false };
+  const XSS151 = "<img src=x onerror=alert(151)>";
+  const imgs151 = (el) => cueillir151(el, (e) => String(e.tagName || "").toUpperCase() === "IMG").length;
+  const essayer151 = async (L, corps) => {
+    servi151 = corps; appels151 = 0;
+    liste151.replaceChildren();
+    const row = L.detection.notifRow(CANAL151); liste151.appendChild(row);
+    const meta = cueillir151(row, (e) => e.classList && e.classList.contains("rulemeta"))[0];
+    const bouton = cueillir151(row, (e) => e.tagName === "BUTTON" && nu151(e) === "Tester")[0];
+    if (!bouton || typeof bouton.onclick !== "function") return { meta: "(bouton « Tester » absent)", titre: "", imgs: 0, appels: 0 };
+    await bouton.onclick({ preventDefault() {}, stopPropagation() {} }); await laisser151();
+    return { meta: nu151(meta), brut: meta ? String(meta.textContent) : "", titre: meta ? String(meta.title || "") : "", imgs: imgs151(row), appels: appels151 };
+  };
+  try {
+    for (const L of [FR151, EN151]) {
+      const A = ATTENDU151[L.nom];
+      instrument151(typeof L.detection.notifRow === "function", `${L.nom} : \`notifRow\` n'est plus exportée par web/detection_admin.js`);
+      const neufs = [];
+      // (a) remis + inconnu
+      const a = await essayer151(L, { ok: true, remis_au_service: true, accuse_de_lecture: "inconnu", remise: PHRASE151 });
+      neufs.push(a);
+      exiger(a.appels === 1 && a.meta === A.remis + " — " + A.accuse(A.codes.inconnu) && a.titre === PHRASE151,
+        `(151a) ${L.nom} : remis + inconnu ne rend pas « ${A.remis} — ${A.accuse(A.codes.inconnu)} » avec la phrase servie en infobulle : « ${a.meta} » (titre « ${a.titre.slice(0, 60)} », ${a.appels} envoi(s))`);
+      // (b) non remis
+      const b = await essayer151(L, { ok: false, remis_au_service: false, accuse_de_lecture: "inconnu" });
+      neufs.push(b);
+      exiger(b.meta === A.echec + " — " + A.accuse(A.codes.inconnu) && !b.meta.includes(A.remis) && b.titre === "",
+        `(151b) ${L.nom} : un essai NON remis ne rend pas l'échec et l'accusé, ou dit la remise : « ${b.meta} » (titre « ${b.titre} »)`);
+      // (c) local
+      const c = await essayer151(L, { ok: true, remis_au_service: false, accuse_de_lecture: "local" });
+      neufs.push(c);
+      exiger(c.meta === A.accepte + " — " + A.accuse(A.codes.local) && !c.meta.includes(A.remis),
+        `(151c) ${L.nom} : un essai local ne rend pas « ${A.accepte} — ${A.accuse(A.codes.local)} » : « ${c.meta} »`);
+      // (d) sans_objet
+      const d = await essayer151(L, { ok: false, remis_au_service: false, accuse_de_lecture: "sans_objet" });
+      neufs.push(d);
+      exiger(d.meta === A.echec + " — " + A.accuse(A.codes.sans_objet),
+        `(151d) ${L.nom} : un genre sans objet ne rend pas l'échec et « ${A.codes.sans_objet} » : « ${d.meta} »`);
+      // (e) réponse d'un démon antérieur : l'affichage d'avant, à l'octet, dans les deux langues.
+      const e1 = await essayer151(L, { ok: true }), e2 = await essayer151(L, { ok: false });
+      exiger(e1.brut === "envoyé" && e2.brut === "échec (vérifie URL / curl / config)" && e1.titre === "" && e2.titre === "",
+        `(151e) ${L.nom} : une réponse SANS \`remis_au_service\` ne garde pas l'affichage d'avant : « ${e1.brut} » / « ${e2.brut} »`);
+      // (g) balisage servi : rendu en texte.
+      const g = await essayer151(L, { ok: true, remis_au_service: true, accuse_de_lecture: XSS151, remise: XSS151 });
+      exiger(g.imgs === 0 && g.meta === A.remis + " — " + A.accuse(XSS151) && g.titre === XSS151,
+        `(151g) ${L.nom} : un accusé ou une phrase de remise balisés ne sont pas rendus en texte : ${g.imgs} élément(s) IMG, « ${g.meta} »`);
+      // (g') un code hors table qui nomme une propriété héritée reste dit tel quel.
+      const h0 = await essayer151(L, { ok: true, remis_au_service: true, accuse_de_lecture: "constructor" });
+      exiger(h0.meta === A.remis + " — " + A.accuse("constructor"), `(151g) ${L.nom} : un code d'accusé inconnu (« constructor ») n'est pas dit tel quel : « ${h0.meta} »`);
+      // (h) aucune face neuve ne dit lu / reçu / envoyé.
+      for (const r of neufs) exiger(!INTERDIT151[L.nom].test(r.meta), `(151h) ${L.nom} : une réponse neuve rend un mot de lecture ou d'envoi : « ${r.meta} »`);
+      // (f) la liste des canaux
+      for (const [code, face] of Object.entries(A.codes)) {
+        const row = L.detection.notifRow({ ...CANAL151, accuse_de_lecture: code });
+        const t = nu151(row);
+        exiger(t.includes(A.accuse(face)) && !INTERDIT151[L.nom].test(t.replace(CANAL151.url, "")),
+          `(151f) ${L.nom} : la ligne d'un canal \`accuse_de_lecture: ${code}\` ne dit pas « ${A.accuse(face)} » : « ${t} »`);
+      }
+      const sans = L.detection.notifRow(CANAL151);
+      exiger(!/accusé|acknowledgement/.test(nu151(sans)), `(151f) ${L.nom} : une ligne SANS \`accuse_de_lecture\` (démon antérieur) invente un accusé : « ${nu151(sans)} »`);
+      const xss = L.detection.notifRow({ ...CANAL151, accuse_de_lecture: XSS151 });
+      exiger(imgs151(xss) === 0 && nu151(xss).includes(A.accuse(XSS151)), `(151g) ${L.nom} : un accusé balisé dans la liste n'est pas rendu en texte : ${imgs151(xss)} IMG, « ${nu151(xss)} »`);
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine151;
+    if (liste151) liste151.replaceChildren();
+  }
+  if (echecs.length !== echecsAvant151) console.log(`(151) EN ÉCHEC — ${echecs.length - echecsAvant151} écart(s), dits ci-dessus`);
+  else console.log("(151) OK — `P10.33-n` (reste console) : dans les deux langues, l'essai d'un canal dit la remise au service seulement quand le démon la sert, l'échec sinon, « accepté » pour un canal local, et l'accusé servi (lecture non vérifiable, remis localement, sans objet — codes relus dans le démon), jamais « lu », « reçu » ni « envoyé » ; la phrase de remise est en infobulle ; une réponse d'un démon antérieur garde « envoyé » / l'échec d'avant ; la liste des canaux dit l'accusé, et rien sans le champ ; un accusé ou une phrase balisés sont rendus en texte. Ce qu'il NE tient PAS : l'exécution de la route (témoins Rust), la phrase de remise reste française sous LANG='en', la mise en page.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

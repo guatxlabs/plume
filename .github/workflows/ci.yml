@@ -3041,16 +3041,6 @@ jobs:
       #     front-end (YAML -> serde_json::Value) on operator-supplied rule files. "Unmaintained" != vulnerable;
       #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the whole default suite),
       #     so there is no in-place fix-by-update. Revisit if a real yaml-rust CVE lands.
-      #   RUSTSEC-2026-0235 (rkyv 0.7.46, insufficient archive validation -> OOB reads on Rc/Arc archives) —
-      #     the announced fix is >=0.8.17, which is UNREACHABLE by update: rust_decimal, up to and including
-      #     its latest release 1.42.1, declares `rkyv = "^0.7.46"` as its NORMAL optional dep (0.8 is only a
-      #     dev-dependency there), and 0.7.46 is the last 0.7.x — so `cargo update -p rkyv --precise 0.8.17`
-      #     hard-fails on that requirement. Chain measured 2026-08-19: plume-daemon -> duckdb (off-by-default
-      #     feature) -> rust_decimal -> rkyv. Real surface is NIL: nobody enables rust_decimal's `rkyv`
-      #     feature (its defaults are serde+std, duckdb takes it with `features = []`), and
-      #     `cargo tree -i rkyv --all-features` prints "nothing to print" — rkyv is never compiled or
-      #     linked, it exists only as a Cargo.lock entry that cargo-audit scans. Lift when rust_decimal
-      #     moves its normal dep to rkyv 0.8.
       # `P8.29-a` — UN PAS QUI ÉCHOUE NE DOIT PAS CACHER CELUI D'APRÈS. Mesuré le 2026-08-28 : le scan de
       # secrets était rouge depuis le 2026-08-27 et DEUX exécutions ne l'ont pas montré, parce que l'audit
       # des dépendances échoue AVANT lui et arrête le travail. Le rouge affiché nommait donc une cause

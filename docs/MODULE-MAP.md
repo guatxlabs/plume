@@ -134,6 +134,7 @@ listed here does not count as a row for the module check.)
 | Path | Purpose | Ownable? |
 |------|---------|----------|
 | `db_open.rs` | **THE door to a write connection on a plume database**: every production path that prepares a database goes through it (two shipped paths were outside and wrote to a base the daemon refused to serve) | Guarded — the single schema-convergence point |
+| `integrity_check.rs` | **The integrity verdict of a database, read without touching it (`P10.33-v`)**: the `integrity-check` subcommand opens READ-ONLY with no migration and no creation — live (WAL companions present, held by the daemon) or `immutable=1` (no companion), refusing when only one companion exists — runs `quick_check` (`--full`: `integrity_check`) plus `cipher_integrity_check` under a key, and turns the result into three exclusive verdicts: sound (0), corrupted (1), not concluded (2: absent or empty file, wrong key or unreadable header, busy base). File state is read by `stat` only, never by a second descriptor (`P10.33-u`) | Guarded — runs next to the live daemon |
 | `crypto/` (`mod`) | SQLCipher open (`db_key`/`open_db`/`ensure_encrypted`), per-database key registry, Vault key resolution and TLS roots; the SQLCipher key is read by ONE path (`P8.7-b`) | Guarded — key handling |
 | `migrate.rs` | Append-only migration registry (exemplary; convergence with `db/schema.sql` guarded by tests) | Yes — append only, never edit history |
 | `maintenance.rs`, `disk.rs` | Retention, disk-pressure guard (statvfs), housekeeping | Yes |

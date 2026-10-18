@@ -3,9 +3,9 @@
 ## Transport — TLS
 Le daemon sert en HTTP sur la boucle locale par défaut (bind configurable par `PLUME_ADDR`). Pour le réseau, deux voies :
 - **TLS natif** : `PLUME_TLS_CERT` + `PLUME_TLS_KEY` (chemins PEM lisibles par l'utilisateur du démon). Un PEM illisible
-  arrête le démon au lieu de le faire retomber en HTTP ; HSTS et l'attribut `Secure` des cookies ne sont émis qu'avec ce TLS.
+  arrête le démon au lieu de le faire retomber en HTTP ; HSTS et l'attribut `Secure` des cookies sont émis avec ce TLS, ou derrière un mandataire (ci-dessous).
   Aucun certificat client n'est vérifié : un mTLS se pose sur un mandataire.
-- **une terminaison TLS devant** (le cookie de session n'y est alors pas marqué `Secure` : ne servez pas le même nom en clair) :
+- **une terminaison TLS devant** (le cookie de session n'y est marqué `Secure`, avec HSTS, que si `PLUME_TLS_TERMINATED_UPSTREAM=1`, ou si le mandataire figure dans `PLUME_TRUSTED_PROXIES` et envoie `X-Forwarded-Proto: https` ; sinon, ne servez pas le même nom en clair) :
   - **Caddy** : `soc.tondomaine.tld { reverse_proxy 127.0.0.1:7000 }` (TLS auto Let's Encrypt).
   - **nginx / traefik** : `proxy_pass http://127.0.0.1:7000;` + certificat.
 - **k3s** : l'Ingress livré est en TLS seul (entrée `websecure`, certificat du `Secret` `soc-tls`, cf. `deploy/k3s.yaml`), `Host` = `PLUME_HOST`.

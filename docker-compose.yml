@@ -236,7 +236,9 @@ services:
       # --- TLS TERMINÉ EN AMONT — `P10.32-t` : MÊME RAISON, SANS CETTE LIGNE `.env` NE SERT À RIEN ---
       # 1 = le mandataire placé devant sert le HTTPS au navigateur et parle au démon en clair : le
       # cookie de session porte `Secure` et la réponse pose HSTS, comme avec le TLS natif. VIDE (défaut)
-      # = comportement d'avant. Actif sans TLS natif, un accès DIRECT en http au démon perd son cookie.
+      # = seulement le TLS natif : ce service ne transmet pas PLUME_TRUSTED_PROXIES, donc le repli par
+      # `X-Forwarded-Proto` d'un mandataire de confiance ne joue pas ici. Derrière un mandataire TLS,
+      # posez 1. Actif sans TLS natif, un accès DIRECT en http au démon perd son cookie.
       PLUME_TLS_TERMINATED_UPSTREAM: "${PLUME_TLS_TERMINATED_UPSTREAM:-}"
     # --- BUDGET RESSOURCES — `P4.14-a` : LE PLAFOND EST POSÉ ICI, PAS SEULEMENT ANNONCÉ ------------
     # Le démon DIT lui-même, au démarrage, si quelque chose d'extérieur le borne. Sans les lignes

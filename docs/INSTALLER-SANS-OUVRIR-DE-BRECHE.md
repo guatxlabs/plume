@@ -608,11 +608,15 @@ peut servir aussi l'entrée en clair (§2.4). Derrière tout mandataire, trois f
 - **le cookie de session et HSTS** : le démon pose l'attribut `Secure` sur ses cookies et l'en-tête HSTS
   sur ses réponses avec le **TLS natif**, ou quand `PLUME_TLS_TERMINATED_UPSTREAM=1` lui dit qu'un
   mandataire sert le HTTPS devant lui (« 1 » seul l'active ; vide par défaut). Il croit ce réglage sur
-  parole : il ne lit aucun en-tête du mandataire. `deploy/k3s.yaml` le pose à `1`, son `Ingress` ne
+  parole. À défaut de ce réglage, il lit `X-Forwarded-Proto` d'un pair listé dans
+  `PLUME_TRUSTED_PROXIES` (liste explicite, jamais le défaut « pairs privés ») : `https` sur chaque
+  valeur pose aussi `Secure` et HSTS. Une liste posée pour l'adresse réelle du client active donc HSTS
+  si ce mandataire annonce `https`. `deploy/k3s.yaml` pose `PLUME_TLS_TERMINATED_UPSTREAM` à `1`, son `Ingress` ne
   servant que `websecure` ; en hôte natif, il se pose dans `/etc/plume/soc.conf` ; en Docker, dans `.env`
   (le service le transmet). Posé, un accès **direct** en HTTP au démon (tunnel, `port-forward`) perd son
-  cookie de session, et le démon le rappelle dans son journal au démarrage. Non posé derrière un
-  mandataire TLS, le cookie part sans `Secure` et sans HSTS : ne servez pas alors le même nom en clair.
+  cookie de session, et le démon le rappelle dans son journal au démarrage. Sans ce réglage ni
+  mandataire listé qui annonce `https`, le cookie part sans `Secure` et sans HSTS : ne servez pas alors le
+  même nom en clair.
 
 `PLUME_WEB_MAX` (défaut 10000) borne les lignes que le capteur `web` lit par passage. Ce qu'un flot plus
 long fait au-delà dépend de la source :

@@ -724,6 +724,7 @@ personne ne nommait (`P4.1-u`). La colonne de droite est le texte d'aide du bina
 | `cold-backup-plan` | plan de mise à l'abri des jours froids, lecture seule, pour un exécutant externe — binaire bâti avec `cold_tier` |
 | `migrate-check` | compare le schéma live au code (lecture seule) |
 | `db-stats` | occupation disque SQLite (lecture seule) |
+| `integrity-check` | intégrité de la base, en lecture seule : `quick_check` (ou `integrity_check` avec `--full`), plus `cipher_integrity_check` sous clé ; une ligne JSON, sortie 0 saine, 1 corrompue, 2 refus de conclure, 78 fichier de clé illisible. Ne crée ni ne délie `-wal`/`-shm`, ne crée jamais une base absente. Accepte un chemin : une copie DÉCHIFFRÉE s'examine dans un environnement sans `PLUME_DB_KEY` |
 | `fts-compact` | fusionne les segments de l'index plein-texte (rend les octets morts des purges) |
 | `spool-requeue` | remet dans la file d'ingest les lots mis en QUARANTAINE (écartés après un ROLLBACK, donc rejouables et absents de la base). N'ouvre PAS la base : le geste reste disponible quand le démon refuse de servir |
 
@@ -837,7 +838,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 | `PLUME_HOST` | hôte attendu — **garde anti‑DNS‑rebinding**, un écart rend `421` | `plume.localhost` |
 | `PLUME_HOST_STRICT` | `1` = n'accepte plus le *loopback* d'office, seulement les FQDN de `PLUME_HOST` | `0` |
 | `PLUME_USER` / `PLUME_PASS_HASH` | compte admin ; le hash vient de `plume-daemon hashpw`. Hash vide → **mode SETUP** | `admin` / vide |
-| `PLUME_TRUSTED_PROXIES` | reverse proxies dont on accepte l'IP réelle | vide |
+| `PLUME_TRUSTED_PROXIES` | reverse proxies dont on accepte l'IP réelle. Liste explicite non vide : un pair de la liste qui envoie `X-Forwarded-Proto: https` (chaque valeur de chaque ligne à `https`) fait aussi poser `Secure` et HSTS, en repli de `PLUME_TLS_TERMINATED_UPSTREAM` (prioritaire) ; liste vide : l'en-tête n'est jamais lu pour cela | vide |
 | `PLUME_TLS_TERMINATED_UPSTREAM` | `1` = le reverse proxy sert le HTTPS et parle au démon en clair : cookie `Secure` et HSTS posés comme avec le TLS natif (un accès direct en http au démon perd alors son cookie). Posé à `1` dans `deploy/k3s.yaml`, dont l'Ingress ne sert que du HTTPS | vide |
 | `PLUME_SESSION_TTL_S` | durée d'une session web | `43200` |
 | `PLUME_MULTI_TENANT` | mode multi‑tenant (une base + une clé par tenant) | `0` |

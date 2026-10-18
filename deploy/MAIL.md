@@ -120,3 +120,25 @@ PLUME_MAIL_ROOT=... PLUME_ACTOR=<qui> plume-collector-mail body <account> <id> [
 Si tu as deja un scanner mail (service dedie, onglet d'une console existante), **ne le retire pas**
 tant que la recherche mail du SOC n'a pas atteint la **parite** (cf. `deploy/K8S.md`, « Ordre de
 bascule »). Sequence : construire -> verifier parite -> puis retirer.
+
+## Le capteur de journal `collectors/mail.sh` : d'ou il lit (`PLUME_MAIL_SRC`)
+A ne pas confondre avec `collector-mail` (le maildir, ci-dessus) : `mail.sh` lit le JOURNAL du serveur
+mail (`mail.log`, ClamAV). Il vaut dans les **trois modes** de deploiement, et sa source se regle ou se
+detecte :
+- **Posee** (`PLUME_MAIL_SRC=k3s|docker|file`) : prise telle quelle, **prioritaire**, jamais devinee et
+  sans aucune sonde. `k3s` lit par `kubectl exec` (ou `k3s kubectl`) dans le pod de `PLUME_MAIL_SELECTOR`
+  (defaut `app=mailserver`) du namespace `PLUME_MAIL_NS` (defaut `mail`) ; `docker` par `docker exec` dans
+  le conteneur `PLUME_MAIL_CONTAINER` (defaut `mailserver`) ; `file` lit `PLUME_MAIL_LOG` sur l'hote
+  (defaut `/var/log/mail/mail.log`). Si l'outil manque, l'echec de lecture est avoue, rien n'est tente
+  a la place.
+- **Non posee** : detection, dans cet ordre, chaque sonde en lecture seule et bornee par `timeout`
+  (`PLUME_MAIL_DETECTION_DELAI`, 5 s par defaut) : (a) `k3s` si `kubectl` ou `k3s` est present ET qu'un pod
+  du selecteur existe dans le namespace ; (b) `docker` si `docker` est present ET que le conteneur nomme
+  est en marche (`docker inspect`) ; (c) `file` si `PLUME_MAIL_LOG` est un fichier lisible. Hote natif
+  (systemd, journal local) : (c) ; serveur mail en conteneur Docker : (b) ; dans k3s : (a).
+- **Aucune** : aveu `collect_status=unavailable`, `reason=missing-source`, qui dit ce qui a ete essaye et
+  qu'il faut poser `PLUME_MAIL_SRC` ; rien n'est acquitte.
+
+La source RETENUE et son origine sont dites dans l'enveloppe de config du capteur (evenement
+`source=mail category=config`, `type=collection-reducing`, sous `filters` : `source`, et `source_origine`
+qui vaut `posee` ou `detectee`). Temoin : `.github/scripts/check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py`.

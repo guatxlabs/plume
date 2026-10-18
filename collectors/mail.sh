@@ -8,7 +8,7 @@
 # echecs d'auth, rejets, postscreen, + verdicts ANTIVIRUS ClamAV/amavis (virus detecte, piece
 # jointe bannie, panne du scanner). Champs PARSES (qui=src_ip/user, quand=ts, ou=service,
 # comment=action) -> groupables en GXQL ( | stats count by action / by src_ip / by user ).
-# Mode-aware : PLUME_MAIL_SRC=k3s|docker|file. OPT-IN (non actif par defaut). Lecture seule, aucune action.
+# Mode-aware : PLUME_MAIL_SRC=k3s|docker|file, detecte s'il n'est pas pose (P10.33-x). OPT-IN (non actif par defaut). Lecture seule, aucune action.
 #
 # P10.32-f — LA SURFACE QUE LE CAPTEUR NE LISAIT PAS, constatee sur un journal docker-mailserver reel :
 # seuls dovecot, smtpd, postscreen et amavis etaient lus. Rien n'etait emis pour les
@@ -45,11 +45,52 @@
 set -eu
 . "${PLUME_LIB:-$(dirname "$0")/lib.sh}"
 plume_init
-MAILSRC="${PLUME_MAIL_SRC:-k3s}"                       # k3s (kubectl exec) | docker (docker exec) | file (chemin local)
 MAIL_NS="${PLUME_MAIL_NS:-mail}"
 MAIL_SEL="${PLUME_MAIL_SELECTOR:-app=mailserver}"
 MAIL_CONTAINER="${PLUME_MAIL_CONTAINER:-mailserver}"   # conteneur du pod (k3s) ou nom du conteneur (docker)
 MAIL_LOG="${PLUME_MAIL_LOG:-/var/log/mail/mail.log}"
+# P10.33-x — LA SOURCE, POSEE OU DETECTEE. Elle valait `k3s` par defaut : hors k3s et sans reglage, le
+# capteur tentait kubectl, echouait et avouait `source_illisible` alors que le journal etait peut-etre la
+# (conteneur docker ou fichier). Decision de l'exploitant (2026-10-18) : auto-detection, et une valeur
+# POSEE reste prioritaire — `PLUME_MAIL_SRC` non vide (k3s | docker | file) est prise telle quelle, sans
+# aucune sonde, meme si l'outil manque (l'echec de lecture est alors avoue comme avant) ; une valeur
+# inconnue n'est pas devinee non plus. Non posee, dans cet ordre, chaque sonde en lecture seule et bornee
+# par `timeout` (PLUME_MAIL_DETECTION_DELAI secondes, 5 par defaut) quand l'outil existe :
+#   (a) k3s    : `kubectl` (ou `k3s kubectl`) present ET un pod de PLUME_MAIL_SELECTOR dans PLUME_MAIL_NS ;
+#   (b) docker : `docker` present ET le conteneur PLUME_MAIL_CONTAINER en marche (`docker inspect`) ;
+#   (c) file   : PLUME_MAIL_LOG est un fichier lisible.
+# Aucune : aveu `unavailable / missing-source` qui dit ce qui a ete essaye et la variable a poser, et
+# sortie (rien n'a ete mis en attente). La source RETENUE et son origine (`posee` | `detectee`) sont
+# dites dans l'enveloppe de config (`source`, `source_origine`).
+DELAI_DETECTION="${PLUME_MAIL_DETECTION_DELAI:-5}"
+case "$DELAI_DETECTION" in ''|*[!0-9]*|0) DELAI_DETECTION=5 ;; esac
+_borne() { if command -v timeout >/dev/null 2>&1; then timeout "$DELAI_DETECTION" "$@"; else "$@"; fi; }
+KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
+_pod=""; _pod_lu=0
+MAILSRC="${PLUME_MAIL_SRC:-}"
+if [ -n "$MAILSRC" ]; then
+  MAILSRC_ORIGINE=posee
+else
+  MAILSRC_ORIGINE=detectee; _essais=""
+  if command -v "${KC%% *}" >/dev/null 2>&1; then
+    _pod=$(_borne $KC -n "$MAIL_NS" get pod -l "$MAIL_SEL" -o name 2>/dev/null | head -1) || _pod=""
+    if [ -n "$_pod" ]; then MAILSRC=k3s; _pod_lu=1
+    else _essais="$_essais k3s ($KC : aucun pod $MAIL_SEL dans le namespace $MAIL_NS, ou cluster injoignable) ;"; fi
+  else _essais="$_essais k3s (ni kubectl ni k3s sur cet hote) ;"; fi
+  if [ -z "$MAILSRC" ]; then
+    if command -v docker >/dev/null 2>&1; then
+      _marche=$(_borne docker inspect -f '{{.State.Running}}' "$MAIL_CONTAINER" 2>/dev/null) || _marche=""
+      if [ "$_marche" = true ]; then MAILSRC=docker
+      else _essais="$_essais docker (conteneur $MAIL_CONTAINER absent, arrete, ou demon injoignable) ;"; fi
+    else _essais="$_essais docker (commande docker absente) ;"; fi
+  fi
+  if [ -z "$MAILSRC" ]; then
+    if [ -f "$MAIL_LOG" ] && [ -r "$MAIL_LOG" ]; then MAILSRC=file
+    else _essais="$_essais file ($MAIL_LOG n'est pas un fichier lisible) ;"; fi
+  fi
+  [ -n "$MAILSRC" ] || plume_unavailable mail missing-source \
+    "aucune source de journal mail detectee (PLUME_MAIL_SRC non pose). Essaye :${_essais% ;}. Poser PLUME_MAIL_SRC=k3s|docker|file (et PLUME_MAIL_NS/PLUME_MAIL_SELECTOR, PLUME_MAIL_CONTAINER ou PLUME_MAIL_LOG)"
+fi
 # VOLUME, PAR FLUX ET NON AU TOTAL (P10.32-f) : `PLUME_MAIL_MAX` borne les lignes lues de CHAQUE journal, et
 # le programme n'émet pas plus de 3000 événements par flux et par passage. Les flux sont jusqu'à trois
 # (mail.log, clamd, freshclam) : un passage peut donc publier jusqu'à trois fois le plafond.
@@ -122,9 +163,7 @@ esac
 # tout autre echec : source injoignable ou illisible. Le code de la commande distante est celui que
 # `kubectl exec` et `docker exec` rendent.
 _LIRE_JOURNAL='[ -e "$1" ] || exit 3; tail -n "$2" "$1"'
-_pod=""
-if [ "$MAILSRC" = k3s ]; then
-  KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
+if [ "$MAILSRC" = k3s ] && [ "$_pod_lu" = 0 ]; then
   if command -v "${KC%% *}" >/dev/null 2>&1; then
     _pod=$($KC -n "$MAIL_NS" get pod -l "$MAIL_SEL" -o name 2>/dev/null | head -1) || _pod=""
   fi
@@ -149,7 +188,7 @@ lire_journal() {
 
 # S36 — meme distinction, dite avec le mot de la famille (cf. `web.sh`) : le routage etait deja le
 # bon, la primitive y ajoute le rejet des marqueurs en attente.
-raw=$(lire_journal "$MAIL_LOG") || plume_lecture_echouee mail source_illisible "source de log mail illisible (PLUME_MAIL_SRC=$MAILSRC) : ni fichier lisible, ni conteneur joignable"
+raw=$(lire_journal "$MAIL_LOG") || plume_lecture_echouee mail source_illisible "source de log mail illisible (PLUME_MAIL_SRC=$MAILSRC, $MAILSRC_ORIGINE) : ni fichier lisible, ni conteneur joignable"
 
 now=$(date +%s)
 umask 027
@@ -760,9 +799,9 @@ lire_clamav freshclam "$FRESHCLAM_LOG" "$FRESHCLAM_POSE"
 # --- CHANTIER whitelists->webui : AUTO-REPORT de config (source=mail category=config) --------------
 # Surface PLUME_MAIL_SKIP_IP dans le panneau read-only « Suppressions & whitelists actives ». VISIBILITE
 # cote daemon, CONTROLE ici. Dedup par empreinte. collection-reducing (drop des events de l'IP skippee).
-cfg_fields=$(printf '{"type":"collection-reducing","collector":"mail","filters":{"skip_ip":"%s","max":"%s","clamav":"%s","destinataire_local":"%s","domaines_locaux":"%s"},"note":"ignore les events mail de SKIP_IP (probes internes/self) — postscreen HANGUP deja exclu. collecte reduite"}' \
+cfg_fields=$(printf '{"type":"collection-reducing","collector":"mail","filters":{"skip_ip":"%s","max":"%s","clamav":"%s","destinataire_local":"%s","domaines_locaux":"%s","source":"%s","source_origine":"%s"},"note":"ignore les events mail de SKIP_IP (probes internes/self) — postscreen HANGUP deja exclu. collecte reduite"}' \
   "$(json_escape "$SKIPIP")" "$(json_escape "$MAX")" "$(json_escape "${etat_clamav# }")" "$etat_rcpt_local" \
-  "$(json_escape "$(printf '%s' "$domaines_locaux" | sed 's/^ //; s/ $//; s/ /,/g')")")
+  "$(json_escape "$(printf '%s' "$domaines_locaux" | sed 's/^ //; s/ $//; s/ /,/g')")" "$(json_escape "$MAILSRC")" "$MAILSRC_ORIGINE")
 cfg_dd="cfg-mail-$(printf '%s' "$cfg_fields" | cksum | cut -d' ' -f1)"
 spool_write_then_ack "config-mail-$now.json" "$(printf '{"ts":%s,"host":"%s","kind":"events","events":[{"ts":%s,"source":"mail","category":"config","severity":0,"message":"config collecteur mail (filtres de collecte)","dedup":"%s","fields":%s}]}' \
   "$now" "$host" "$now" "$cfg_dd" "$cfg_fields")"

@@ -49,6 +49,18 @@ Puis, toujours sur le capteur livré :
   * l'étape `search` de la règle de catalogue `ex-mail-mass-outbound`, sur les événements émis : elle ne
     retient du flux que l'entrée amavis, qui porte `sender` — ni la file, ni le sortant.
 
+`P10.33-x` — LA SOURCE, POSÉE OU DÉTECTÉE. `PLUME_MAIL_SRC` valait `k3s` par défaut : hors k3s, sans réglage,
+le capteur tentait kubectl et avouait `source_illisible` alors que le journal était là. Sur le capteur livré,
+avec des `kubectl`, `k3s` et `docker` FACTICES fidèles (sorties et codes de retour réels) et un PATH qui ne
+contient aucun vrai kubectl, k3s ni docker : une valeur POSÉE est prise telle quelle, sans aucune sonde (k3s
+posé sans kubectl : l'échec de lecture avoué, rien demandé à docker ; file posé : ni kubectl ni docker
+sollicités) ; non posée, l'ordre k3s (pod du sélecteur dans le namespace), docker (conteneur en marche),
+fichier lisible, chaque étape écartée quand son outil manque, qu'aucun pod n'existe, que le cluster est
+injoignable, que le conteneur est arrêté ou absent ; une sonde qui ne rend pas la main est bornée
+(`PLUME_MAIL_DETECTION_DELAI`) ; aucune source : aveu `unavailable / missing-source` qui nomme les trois
+essais et `PLUME_MAIL_SRC`. L'enveloppe de config dit `source` et `source_origine` (`posee` | `detectee`).
+Non tenu : le comportement des VRAIS outils (les factices le reproduisent, ils ne le prouvent pas).
+
 `P10.32-l` — LE MASQUAGE VAUT POUR TOUTE LIGNE, PLUS SEULEMENT POUR LE SORTANT. Le message émis est la ligne
 masquée (valeurs lues remplacées à leur place — `user=<…>`, `sasl_username=`, `<…>` — puis toute partie
 locale, l'étiquette `clé=` collée gardée), et `user` et `sender` sortent sous la forme `*@<domaine>`. Le corpus
@@ -75,6 +87,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
@@ -777,6 +790,196 @@ def passage_des_modes(chemin_awk, entrees):
     return fautes
 
 
+# P10.33-x — LA SOURCE DÉTECTÉE QUAND ELLE N'EST PAS POSÉE, et la valeur posée prioritaire. Les trois outils
+# sont FACTICES et FIDÈLES à leurs sorties réelles (code de retour compris) : `kubectl get pod -l … -o name`
+# rend `pod/<nom>` (0), « No resources found in <ns> namespace. » sur stderr (0) sans pod, « The connection
+# to the server … was refused » (1) sans cluster ; `docker inspect -f '{{.State.Running}}'` rend `true` ou
+# `false` (0), « Error: No such object: <nom> » (1) sans conteneur ; `docker exec` sur un conteneur arrêté
+# ou absent rend 1. Chaque outil lit le journal sous SA racine (le chemin demandé y est préfixé), si bien
+# que le fichier de l'hôte, celui du conteneur et celui du pod sont trois fichiers distincts. Le PATH du
+# capteur ne contient AUCUN vrai kubectl, k3s ni docker (rien n'est lancé contre un cluster ou un démon réel).
+FAUX_KUBECTL = """#!/bin/sh
+printf 'kubectl %s\\n' "$*" >> "$BANC_TRACE"
+case "$*" in
+  "-n $BANC_NS get pod -l $BANC_SEL -o name")
+    case "$BANC_K3S" in
+      pod) echo pod/mail-0; exit 0 ;;
+      injoignable) echo "The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?" >&2; exit 1 ;;
+      lent) exec sleep 60 ;;
+    esac
+    echo "No resources found in $BANC_NS namespace." >&2; exit 0 ;;
+  "-n "*" get pod "*) echo "No resources found in $2 namespace." >&2; exit 0 ;;
+esac
+[ "$BANC_K3S" = pod ] && [ "$1" = -n ] && [ "$2" = "$BANC_NS" ] && [ "$3" = exec ] && [ "$4" = pod/mail-0 ] && [ "$5" = -c ] && [ "$6" = "$BANC_CONTENEUR" ] || { echo 'Error from server (NotFound): pods "x" not found' >&2; exit 1; }
+shift 6; [ "$1" = -- ] && shift
+n=$#; while [ "$n" -gt 0 ]; do a=$1; shift; case $a in "$BANC_HOTE"/*) a="$BANC_RACINE_K3S$a" ;; esac; set -- "$@" "$a"; n=$((n-1)); done
+exec "$@"
+"""
+FAUX_K3S = """#!/bin/sh
+[ "$1" = kubectl ] || { echo "k3s: unknown command $1" >&2; exit 1; }
+shift; exec sh "$BANC_FAUX_KUBECTL" "$@"
+"""
+FAUX_DOCKER = """#!/bin/sh
+printf 'docker %s\\n' "$*" >> "$BANC_TRACE"
+case "$1" in
+  inspect)
+    if [ "$2" = -f ] && [ "$3" = '{{.State.Running}}' ] && [ "$4" = "$BANC_CONTENEUR" ]; then
+      case "$BANC_DOCKER" in marche) echo true; exit 0 ;; arrete) echo false; exit 0 ;; esac
+    fi
+    echo "Error: No such object: $4" >&2; exit 1 ;;
+  exec)
+    [ "$2" = "$BANC_CONTENEUR" ] || { echo "Error response from daemon: No such container: $2" >&2; exit 1; }
+    case "$BANC_DOCKER" in
+      marche) ;;
+      arrete) echo "Error response from daemon: container $2 is not running" >&2; exit 1 ;;
+      *) echo "Error response from daemon: No such container: $2" >&2; exit 1 ;;
+    esac
+    shift 2
+    n=$#; while [ "$n" -gt 0 ]; do a=$1; shift; case $a in "$BANC_HOTE"/*) a="$BANC_RACINE_DOCKER$a" ;; esac; set -- "$@" "$a"; n=$((n-1)); done
+    exec "$@" ;;
+esac
+echo "docker: '$1' is not a docker command." >&2; exit 125
+"""
+SANS_VRAIS_OUTILS = ("kubectl", "k3s", "docker")
+
+
+def systeme_sans_les_vrais_outils(rep_systeme):
+    """Le PATH de l'hôte, MOINS kubectl, k3s et docker : des liens vers chaque exécutable, premier trouvé."""
+    os.makedirs(rep_systeme, exist_ok=True)
+    for d in os.environ.get("PATH", "/usr/bin:/bin").split(os.pathsep):
+        if not os.path.isdir(d):
+            continue
+        for nom in os.listdir(d):
+            cible = os.path.join(d, nom)
+            lien = os.path.join(rep_systeme, nom)
+            if nom in SANS_VRAIS_OUTILS or os.path.lexists(lien) or not os.access(cible, os.X_OK) or os.path.isdir(cible):
+                continue
+            os.symlink(cible, lien)
+
+
+def passage_de_la_detection(chemin_awk, entrees):
+    fautes = []
+    mail = [e["ligne"] for e in entrees if e["corpus"] == "mail-opendmarc.corpus" and e["verdict"] != "aucun"][:1]
+    with tempfile.TemporaryDirectory(prefix="garde-mail-detection-") as bac:
+        rep = preparer(bac, chemin_awk)
+        systeme = os.path.join(bac, "systeme")
+        systeme_sans_les_vrais_outils(systeme)
+        faux = os.path.join(bac, "faux")
+        os.makedirs(faux)
+        for nom, texte in (("kubectl", FAUX_KUBECTL), ("k3s", FAUX_K3S), ("docker", FAUX_DOCKER)):
+            p = os.path.join(faux, nom)
+            open(p, "w").write(texte)
+            os.chmod(p, 0o755)
+        hote = os.path.join(bac, "hote")
+        racines = {"k3s": os.path.join(bac, "racine-k3s"), "docker": os.path.join(bac, "racine-docker")}
+        trace = os.path.join(bac, "trace")
+        journal_hote = os.path.join(hote, "mail.log")
+
+        def poser(chemin, present):
+            if present:
+                os.makedirs(os.path.dirname(chemin), exist_ok=True)
+                open(chemin, "w", encoding="utf-8").write(mail[0] + "\n")
+            elif os.path.exists(chemin):
+                os.remove(chemin)
+
+        def jouer(outils, k3s="vide", docker="marche", fichier=False, dans_k3s=True, dans_docker=True, env=None):
+            """`outils` : les noms d'outils factices visibles dans le PATH du capteur."""
+            poser(journal_hote, fichier)
+            poser(racines["k3s"] + journal_hote, dans_k3s)
+            poser(racines["docker"] + journal_hote, dans_docker)
+            bin_cas = os.path.join(bac, "bin-cas")
+            shutil.rmtree(bin_cas, ignore_errors=True)
+            os.makedirs(bin_cas)
+            for o in outils:
+                os.symlink(os.path.join(faux, o), os.path.join(bin_cas, o))
+            if os.path.exists(trace):
+                os.remove(trace)
+            for d in os.listdir(rep["state"]):
+                os.remove(os.path.join(rep["state"], d))
+            e = {"PATH": os.pathsep.join((rep["bin"], bin_cas, systeme)), "PLUME_MAIL_SRC": None,
+                 "PLUME_MAIL_LOG": journal_hote, "PLUME_MAIL_CLAMAV_LOG": "", "PLUME_MAIL_FRESHCLAM_LOG": "",
+                 "PLUME_MAIL_NS": "messagerie", "PLUME_MAIL_SELECTOR": "app=mta", "PLUME_MAIL_CONTAINER": "mta",
+                 "BANC_TRACE": trace, "BANC_NS": "messagerie", "BANC_SEL": "app=mta", "BANC_CONTENEUR": "mta",
+                 "BANC_K3S": k3s, "BANC_DOCKER": docker, "BANC_HOTE": hote,
+                 "BANC_RACINE_K3S": racines["k3s"], "BANC_RACINE_DOCKER": racines["docker"],
+                 "BANC_FAUX_KUBECTL": os.path.join(faux, "kubectl")}
+            e.update(env or {})
+            debut = time.monotonic()
+            ev, aveux, filtres, ko = jouer_capteur(rep, {}, e)
+            duree = time.monotonic() - debut
+            lu = open(trace).read() if os.path.exists(trace) else ""
+            return ev, aveux, filtres, ko, lu, duree
+
+        def retenue(quoi, attendue, origine, lecteur, **cas):
+            ev, aveux, filtres, ko, lu, _ = jouer(**cas)
+            if ko:
+                fautes.append(f"(détection, {quoi}) {ko}")
+                return
+            dit = ((filtres or {}).get("source"), (filtres or {}).get("source_origine"))
+            if dit != (attendue, origine):
+                fautes.append(f"(détection, {quoi}) source retenue {dit} au lieu de ({attendue!r}, {origine!r}) ; "
+                              f"aveux : {[a.get('message') for a in aveux][:2]}")
+            if not any(e.get("message") == mail[0] for e in ev):
+                fautes.append(f"(détection, {quoi}) le journal n'a pas été lu par la source retenue")
+            if aveux:
+                fautes.append(f"(détection, {quoi}) aveu inattendu : `{aveux[0].get('message')}`")
+            if lecteur and f"{lecteur} " not in "".join(l.split(" ", 1)[0] + " " for l in lu.splitlines() if " exec " in l):
+                fautes.append(f"(détection, {quoi}) la lecture n'est pas passée par `{lecteur} exec` : {lu.splitlines()[-3:]}")
+
+        # La valeur POSÉE est prise telle quelle, sans sonde, même si son outil manque.
+        ev, aveux, filtres, ko, lu, _ = jouer(("docker",), docker="marche", fichier=True,
+                                              env={"PLUME_MAIL_SRC": "k3s"})
+        if ko:
+            fautes.append(f"(posée k3s sans kubectl) {ko}")
+        else:
+            if ev or not any("(PLUME_MAIL_SRC=k3s, posee)" in (a.get("message") or "") for a in aveux):
+                fautes.append("(posée k3s sans kubectl) la valeur posée n'a pas été prise telle quelle : "
+                              f"{len(ev)} événement(s), aveux {[a.get('message') for a in aveux][:2]}")
+            if lu:
+                fautes.append(f"(posée k3s sans kubectl) une sonde a été lancée malgré la valeur posée : {lu.splitlines()[:2]}")
+        ev, aveux, filtres, ko, lu, _ = jouer(("kubectl", "docker"), k3s="pod", docker="marche", fichier=True,
+                                              env={"PLUME_MAIL_SRC": "file"})
+        if ko:
+            fautes.append(f"(posée file, k3s et docker présents) {ko}")
+        else:
+            if ((filtres or {}).get("source"), (filtres or {}).get("source_origine")) != ("file", "posee") or lu:
+                fautes.append(f"(posée file, k3s et docker présents) source dite {filtres and filtres.get('source')}/"
+                              f"{filtres and filtres.get('source_origine')}, sondes : {lu.splitlines()[:2]}")
+        # Non posée : l'ordre k3s, docker, file.
+        retenue("docker seul", "docker", "detectee", "docker", outils=("docker",), docker="marche")
+        retenue("fichier seul", "file", "detectee", None, outils=(), fichier=True)
+        retenue("k3s, docker et fichier", "k3s", "detectee", "kubectl", outils=("kubectl", "docker"), k3s="pod",
+                docker="marche", fichier=True)
+        retenue("`k3s kubectl` seul", "k3s", "detectee", "kubectl", outils=("k3s",), k3s="pod")
+        retenue("kubectl sans pod, docker et fichier", "docker", "detectee", "docker", outils=("kubectl", "docker"),
+                k3s="vide", docker="marche", fichier=True)
+        retenue("kubectl sans pod, fichier", "file", "detectee", None, outils=("kubectl",), k3s="vide", fichier=True)
+        retenue("cluster injoignable, fichier", "file", "detectee", None, outils=("kubectl",), k3s="injoignable",
+                fichier=True)
+        retenue("conteneur arrêté, fichier", "file", "detectee", None, outils=("docker",), docker="arrete", fichier=True)
+        retenue("conteneur absent, fichier", "file", "detectee", None, outils=("docker",), docker="absent", fichier=True)
+        # Une sonde BORNÉE : un kubectl qui ne rend pas la main n'arrête pas la détection.
+        ev, aveux, filtres, ko, lu, duree = jouer(("kubectl",), k3s="lent", fichier=True,
+                                                  env={"PLUME_MAIL_DETECTION_DELAI": "1"})
+        if ko or (filtres or {}).get("source") != "file" or duree > 30:
+            fautes.append(f"(kubectl qui ne rend pas la main) la sonde n'est pas bornée : {ko or ''} source "
+                          f"{(filtres or {}).get('source')}, {duree:.0f} s")
+        # Rien : l'aveu nommé, qui dit ce qui a été essayé et la variable à poser.
+        ev, aveux, filtres, ko, lu, _ = jouer(("kubectl", "docker"), k3s="vide", docker="absent", fichier=False)
+        if ko:
+            fautes.append(f"(aucune source) {ko}")
+        else:
+            bons = [a for a in aveux if (a.get("fields") or {}).get("collect_status") == "unavailable"
+                    and (a.get("fields") or {}).get("reason") == "missing-source"
+                    and "aucune source de journal mail detectee" in (a.get("message") or "")]
+            m = bons[0].get("message") if bons else ""
+            manque = [mot for mot in ("k3s (", "docker (", "file (", "PLUME_MAIL_SRC=k3s|docker|file") if mot not in m]
+            if len(bons) != 1 or manque or ev or filtres is not None:
+                fautes.append(f"(aucune source) aveu nommé attendu (manque {manque}) : {[a.get('message') for a in aveux][:2]}, "
+                              f"{len(ev)} événement(s), enveloppe de config {'émise' if filtres is not None else 'absente'}")
+    return fautes
+
+
 # Les cas de bord du passage : mail.log vide, SKIP_IP sur un verdict SPF, envoi authentifié d'un client
 # `unknown[unknown]`, décalage posé illisible.
 def passage_des_bords(chemin_awk, entrees):
@@ -960,6 +1163,7 @@ def main():
     total = 0
     for nom, chemin in awks:
         defauts = (passage_du_corpus(chemin, entrees) + passage_du_filigrane(chemin, entrees) + passage_des_modes(chemin, entrees)
+                   + passage_de_la_detection(chemin, entrees)
                    + passage_des_bords(chemin, entrees) + passage_des_plafonds(chemin)
                    + passage_de_la_regle(chemin, entrees))
         for f in defauts:
@@ -974,7 +1178,7 @@ def main():
     print(f"{ETIQUETTE} : le capteur mail LIVRÉ classe les {len(entrees)} lignes ({par_corpus}) comme attendu — "
           f"{len(EXIGENCES)} exigences de plancher, catégorie, sévérité, champs, horodatage et clé jugés, sortant masqué, "
           f"filigrane ClamAV sans rejeu ni saut d'un passage à l'autre, décalage posé et dérivé, trois modes et chemins "
-          f"par défaut, rien d'inventé. Awk exercés : {exerces}" + (f" ; NON EXERCÉS (absents) : {absents}." if absents else "."))
+          f"par défaut, source posée prioritaire ou détectée (k3s, docker, fichier, aveu), rien d'inventé. Awk exercés : {exerces}" + (f" ; NON EXERCÉS (absents) : {absents}." if absents else "."))
     sys.exit(0)
 
 

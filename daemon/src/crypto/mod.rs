@@ -763,6 +763,16 @@ pub(crate) enum EnTeteDeLaBase {
 
 /// LECTURE SEULE des seize premiers octets — jamais d'ouverture SQLite, jamais de clé, jamais
 /// d'écriture. C'est la même preuve sur les octets que les témoins de `P8.7-b` et `P9.6-a`.
+///
+/// `P10.33-u` — RÉSERVÉE AUX TÉMOINS, JAMAIS DANS UN PROCESSUS QUI TIENT LA BASE. Ouvrir puis fermer
+/// le fichier de base par un second descripteur LÂCHE TOUS les verrous POSIX (`fcntl`) que le
+/// processus tient sur cet inode — sémantique POSIX, SQLite n'en sait rien et croit garder son
+/// SHARED. Le prochain processus qui ferme sa connexion (le sidecar de sauvegarde) obtient alors
+/// l'EXCLUSIVE, se croit seul, fait son checkpoint et DÉLIE `-wal` et `-shm` sous le démon (mesuré en
+/// production le 2026-10-18 : connexions sur un WAL délié, d'autres sur un WAL neuf, lectures
+/// SQLITE_IOERR_SHORT_READ). La porte établit le clair par la connexion
+/// (`en_tete_par_la_connexion`), jamais par ici.
+#[cfg(test)]
 pub(crate) fn en_tete_de_la_base(path: &str) -> EnTeteDeLaBase {
     use std::io::Read;
     let mut tete = [0u8; 16];
@@ -787,12 +797,38 @@ pub(crate) fn base_en_clair_declaree(conf: &HashMap<String, String>) -> bool {
     drapeau_sauvegarde(&cfg(conf, CLE_DB_EN_CLAIR_ASSUME, ""))
 }
 
-/// L'ADAPTATEUR sur une configuration et un fichier RÉELS. « Une clé » se résout EXACTEMENT comme
-/// `db_key()` : la clé explicite d'abord, la clé auto-engendrée ensuite — c'est la clé avec laquelle
-/// la connexion vient d'être ouverte.
+/// « Une clé » se résout EXACTEMENT comme `db_key()` : la clé explicite d'abord, la clé
+/// auto-engendrée ensuite — c'est la clé avec laquelle la connexion vient d'être ouverte.
+fn cle_at_rest_presente(conf: &HashMap<String, String>) -> bool {
+    db_key_depuis(conf).is_some() || cle_auto_lire(&cle_auto_chemin(conf)).is_some()
+}
+
+/// L'ADAPTATEUR des témoins, sur un FICHIER de fixture (voir `en_tete_de_la_base` : jamais dans un
+/// processus qui tient la base).
+#[cfg(test)]
 pub(crate) fn base_en_clair_a_signaler_depuis(conf: &HashMap<String, String>, path: &str) -> bool {
-    let cle_presente = db_key_depuis(conf).is_some() || cle_auto_lire(&cle_auto_chemin(conf)).is_some();
-    base_en_clair_a_signaler(cle_presente, en_tete_de_la_base(path), base_en_clair_declaree(conf))
+    base_en_clair_a_signaler(cle_at_rest_presente(conf), en_tete_de_la_base(path), base_en_clair_declaree(conf))
+}
+
+/// `P10.33-u` — LE CLAIR ÉTABLI PAR LA CONNEXION, SANS SECOND DESCRIPTEUR. Appelée seulement quand
+/// AUCUNE clé n'est résolue : la connexion vient alors d'être ouverte SANS `PRAGMA key`, et elle a lu
+/// le schéma (le contrat est satisfait) — SQLCipher ne lit une base chiffrée qu'avec sa clé, donc des
+/// pages lues sans clé SONT des pages en clair. Zéro page (base vide, rien encore écrit) : rien
+/// d'établi, comme un fichier vide pour `en_tete_de_la_base`. Une lecture ratée : rien d'établi.
+pub(crate) fn en_tete_par_la_connexion(conn: &Connection) -> EnTeteDeLaBase {
+    match conn.query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0)) {
+        Ok(n) if n > 0 => EnTeteDeLaBase::EnClair,
+        _ => EnTeteDeLaBase::NonEtabli,
+    }
+}
+
+/// L'ADAPTATEUR de la porte. La clé est résolue D'ABORD : clé présente (le cas de toute installation
+/// chiffrée) -> silence sans rien lire ; sinon le clair s'établit par la connexion.
+pub(crate) fn base_en_clair_a_signaler_par_la_connexion(conf: &HashMap<String, String>, conn: &Connection) -> bool {
+    if cle_at_rest_presente(conf) || base_en_clair_declaree(conf) {
+        return false;
+    }
+    base_en_clair_a_signaler(false, en_tete_par_la_connexion(conn), false)
 }
 
 /// LE TEXTE DE L'AVEU, écrit une fois pour l'événement et pour la ligne de journal. Il nomme des
@@ -854,8 +890,8 @@ pub(crate) fn premiere_fois_dans_ce_processus(drapeau: &std::sync::atomic::Atomi
 /// LE CŒUR INJECTABLE de l'aveu : configuration, fichier et instant passés en argument. N'écrit
 /// rien d'autre qu'un événement dédupliqué et, une fois par processus, une ligne de journal ; ne
 /// refuse JAMAIS. Rend vrai si un événement a été écrit.
-pub(crate) fn signaler_la_base_en_clair_selon(conn: &Connection, conf: &HashMap<String, String>, path: &str, now_ts: i64) -> bool {
-    if !base_en_clair_a_signaler_depuis(conf, path) {
+pub(crate) fn signaler_la_base_en_clair_selon(conn: &Connection, conf: &HashMap<String, String>, now_ts: i64) -> bool {
+    if !base_en_clair_a_signaler_par_la_connexion(conf, conn) {
         return false;
     }
     if premiere_fois_dans_ce_processus(&BASE_EN_CLAIR_JOURNALISEE) {
@@ -866,8 +902,8 @@ pub(crate) fn signaler_la_base_en_clair_selon(conn: &Connection, conf: &HashMap<
 
 /// L'ADAPTATEUR appelé par LA PORTE (`db_open`), au même point que `signaler_la_cle_auto_si_besoin`
 /// et pour la même raison : connexion d'écriture de l'environnement, contrat de schéma satisfait.
-pub(crate) fn signaler_la_base_en_clair_si_besoin(conn: &Connection, path: &str) {
-    let _ = signaler_la_base_en_clair_selon(conn, &load_config(), path, now());
+pub(crate) fn signaler_la_base_en_clair_si_besoin(conn: &Connection) {
+    let _ = signaler_la_base_en_clair_selon(conn, &load_config(), now());
 }
 
 /// P8.7-b — `conf` EXPLICITE. L'appelant unique (`open_and_migrate_db`) tient déjà la configuration :

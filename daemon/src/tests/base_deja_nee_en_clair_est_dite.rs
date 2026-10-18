@@ -160,8 +160,8 @@ mod base_deja_nee_en_clair_est_dite {
         let conn = crate::db_open::PreparedDb::open_keyed(&clair, None).expect("base en clair préparée");
         let conf = bnc_conf(&[("PLUME_DB", clair.as_str())]);
         assert!(base_en_clair_a_signaler_depuis(&conf, &clair), "aucune clé, en clair, rien déclaré -> aveu");
-        assert!(signaler_la_base_en_clair_selon(&conn, &conf, &clair, t), "l'aveu est écrit, et rien n'est refusé");
-        assert!(!signaler_la_base_en_clair_selon(&conn, &conf, &clair, t + 60), "même heure : pas de seconde ligne");
+        assert!(signaler_la_base_en_clair_selon(&conn, &conf, t), "l'aveu est écrit, et rien n'est refusé");
+        assert!(!signaler_la_base_en_clair_selon(&conn, &conf, t + 60), "même heure : pas de seconde ligne");
         assert_eq!(bnc_aveux(&conn), 1);
 
         // La DÉCLARATION fait taire ; toutes les formes du drapeau, et seulement elles.
@@ -201,7 +201,7 @@ mod base_deja_nee_en_clair_est_dite {
         let cle = cle_auto_lire(&cle_auto_chemin(&conf_neuve)).expect("clé auto engendrée");
         let cn = crate::db_open::PreparedDb::open_keyed(&neuve, Some(&cle)).expect("base née chiffrée");
         assert_eq!(en_tete_de_la_base(&neuve), EnTeteDeLaBase::AutreContenu, "née chiffrée : pas d'en-tête");
-        assert!(!signaler_la_base_en_clair_selon(&cn, &conf_neuve, &neuve, t), "base née chiffrée -> silence");
+        assert!(!signaler_la_base_en_clair_selon(&cn, &conf_neuve, t), "base née chiffrée -> silence");
         assert_eq!(bnc_aveux(&cn), 0);
     }
 

@@ -103,7 +103,7 @@ L'état s'affiche dans l'enveloppe de config du capteur (`destinataire_local` : 
 champ `filters` de `search source=mail category=config`.
 
 **Où se pose le réglage, dans les trois modes.** `mail.sh` tourne **sur l'hôte**, sous `plume-mail.service`, dans
-les trois modes : il lit le journal par fichier (hôte natif, `PLUME_MAIL_SRC=file`), par `docker exec` (Docker)
+les trois modes (la source est posée par `PLUME_MAIL_SRC`, ou détectée si elle ne l'est pas : `deploy/MAIL.md`) : il lit le journal par fichier (hôte natif, `PLUME_MAIL_SRC=file`), par `docker exec` (Docker)
 ou par `kubectl exec` dans le pod du serveur mail (k3s). Il ne tourne dans aucun conteneur de Plume : ni l'image
 ni `docker-compose.yml` ni `deploy/k3s.yaml` ne le portent. Le réglage se pose donc toujours dans le fichier
 d'environnement de l'unité, `/etc/plume/plume.conf` (`EnvironmentFile=` de `plume-mail.service`) :

@@ -56,9 +56,13 @@ contient aucun vrai kubectl, k3s ni docker : une valeur POSÉE est prise telle q
 posé sans kubectl : l'échec de lecture avoué, rien demandé à docker ; file posé : ni kubectl ni docker
 sollicités) ; non posée, l'ordre k3s (pod du sélecteur dans le namespace), docker (conteneur en marche),
 fichier lisible, chaque étape écartée quand son outil manque, qu'aucun pod n'existe, que le cluster est
-injoignable, que le conteneur est arrêté ou absent ; une sonde qui ne rend pas la main est bornée
-(`PLUME_MAIL_DETECTION_DELAI`) ; aucune source : aveu `unavailable / missing-source` qui nomme les trois
-essais et `PLUME_MAIL_SRC`. L'enveloppe de config dit `source` et `source_origine` (`posee` | `detectee`).
+injoignable, que le conteneur est arrêté ou absent, ou que le journal est un dossier ou un fichier illisible ;
+une valeur posée INCONNUE n'est ni devinée ni sondée. LECTURE SEULE et BORNE jugées sur la TRACE des outils
+factices (et d'un `timeout` factice qui passe la main au vrai) : seuls `get pod` et `inspect`, une fois chacun,
+chacun sous `timeout <PLUME_MAIL_DETECTION_DELAI>`, puis UNE lecture par `<outil> exec` ; un kubectl ou un docker
+qui ne rend pas la main n'arrête pas la détection ; un délai illisible (`00`, `abc`) est avoué et vaut 5 ;
+aucune source : aveu `unavailable / missing-source` qui nomme les trois
+essais et `PLUME_MAIL_SRC`, seul (le capteur sort). L'enveloppe de config dit `source` et `source_origine` (`posee` | `detectee`).
 Non tenu : le comportement des VRAIS outils (les factices le reproduisent, ils ne le prouvent pas).
 
 `P10.32-l` — LE MASQUAGE VAUT POUR TOUTE LIGNE, PLUS SEULEMENT POUR LE SORTANT. Le message émis est la ligne
@@ -824,7 +828,7 @@ printf 'docker %s\\n' "$*" >> "$BANC_TRACE"
 case "$1" in
   inspect)
     if [ "$2" = -f ] && [ "$3" = '{{.State.Running}}' ] && [ "$4" = "$BANC_CONTENEUR" ]; then
-      case "$BANC_DOCKER" in marche) echo true; exit 0 ;; arrete) echo false; exit 0 ;; esac
+      case "$BANC_DOCKER" in marche) echo true; exit 0 ;; arrete) echo false; exit 0 ;; lent) exec sleep 60 ;; esac
     fi
     echo "Error: No such object: $4" >&2; exit 1 ;;
   exec)
@@ -840,7 +844,14 @@ case "$1" in
 esac
 echo "docker: '$1' is not a docker command." >&2; exit 125
 """
+# Un `timeout` qui TRACE ses arguments puis passe la main au vrai : la borne d'une sonde se lit dans la trace
+# (structure), pas au chronomètre.
+FAUX_TIMEOUT = """#!/bin/sh
+printf 'timeout %s\\n' "$*" >> "$BANC_TRACE"
+exec "$BANC_VRAI_TIMEOUT" "$@"
+"""
 SANS_VRAIS_OUTILS = ("kubectl", "k3s", "docker")
+_LIRE = '[ -e "$1" ] || exit 3; tail -n "$2" "$1"'  # `_LIRE_JOURNAL` de mail.sh, tel que la trace le rend
 
 
 def systeme_sans_les_vrais_outils(rep_systeme):
@@ -866,7 +877,10 @@ def passage_de_la_detection(chemin_awk, entrees):
         systeme_sans_les_vrais_outils(systeme)
         faux = os.path.join(bac, "faux")
         os.makedirs(faux)
-        for nom, texte in (("kubectl", FAUX_KUBECTL), ("k3s", FAUX_K3S), ("docker", FAUX_DOCKER)):
+        vrai_timeout = shutil.which("timeout")
+        if not vrai_timeout:
+            return ["(détection) `timeout` absent de l'hôte de la garde : la borne des sondes n'est pas jugeable"]
+        for nom, texte in (("kubectl", FAUX_KUBECTL), ("k3s", FAUX_K3S), ("docker", FAUX_DOCKER), ("timeout", FAUX_TIMEOUT)):
             p = os.path.join(faux, nom)
             open(p, "w").write(texte)
             os.chmod(p, 0o755)
@@ -890,7 +904,7 @@ def passage_de_la_detection(chemin_awk, entrees):
             bin_cas = os.path.join(bac, "bin-cas")
             shutil.rmtree(bin_cas, ignore_errors=True)
             os.makedirs(bin_cas)
-            for o in outils:
+            for o in tuple(outils) + ("timeout",):
                 os.symlink(os.path.join(faux, o), os.path.join(bin_cas, o))
             if os.path.exists(trace):
                 os.remove(trace)
@@ -902,7 +916,8 @@ def passage_de_la_detection(chemin_awk, entrees):
                  "BANC_TRACE": trace, "BANC_NS": "messagerie", "BANC_SEL": "app=mta", "BANC_CONTENEUR": "mta",
                  "BANC_K3S": k3s, "BANC_DOCKER": docker, "BANC_HOTE": hote,
                  "BANC_RACINE_K3S": racines["k3s"], "BANC_RACINE_DOCKER": racines["docker"],
-                 "BANC_FAUX_KUBECTL": os.path.join(faux, "kubectl")}
+                 "BANC_FAUX_KUBECTL": os.path.join(faux, "kubectl"), "BANC_VRAI_TIMEOUT": vrai_timeout,
+                 "PLUME_MAIL_DETECTION_DELAI": "7"}
             e.update(env or {})
             debut = time.monotonic()
             ev, aveux, filtres, ko = jouer_capteur(rep, {}, e)
@@ -910,7 +925,40 @@ def passage_de_la_detection(chemin_awk, entrees):
             lu = open(trace).read() if os.path.exists(trace) else ""
             return ev, aveux, filtres, ko, lu, duree
 
-        def retenue(quoi, attendue, origine, lecteur, **cas):
+        sonde_k3s = "kubectl -n messagerie get pod -l app=mta -o name"
+        sonde_docker = "docker inspect -f {{.State.Running}} mta"
+        fin_lecture = f" sh -c {_LIRE} lire {journal_hote} 1000"
+        lectures = {"kubectl": "kubectl -n messagerie exec pod/mail-0 -c mta --" + fin_lecture,
+                    "docker": "docker exec mta" + fin_lecture}
+
+        def sondes(quoi, lu, lecteur, delai=None):
+            """LECTURE SEULE et BORNÉE, jugées sur la trace : les seuls appels admis sont la sonde du pod
+            (`get pod`), celle du conteneur (`inspect`), chacune une fois au plus, et UNE lecture du journal par
+            `<lecteur> exec` (aucune sans lecteur). `delai` posé : chaque sonde passe par `timeout <delai>`, et
+            aucun `timeout` d'autre durée ; `delai=None` : aucune sonde bornée attendue (valeur posée)."""
+            lignes = lu.splitlines()
+            bornes = [l[len("timeout "):] for l in lignes if l.startswith("timeout ")]
+            autres = [l for l in lignes if not l.startswith("timeout ")]
+            hors = [l for l in autres if l not in (sonde_k3s, sonde_docker) and l not in lectures.values()]
+            if hors:
+                fautes.append(f"({quoi}) appel hors lecture seule pendant la détection ou la lecture : {hors[:2]}")
+            execs = [l for l in autres if l in lectures.values()]
+            if execs != ([lectures[lecteur]] if lecteur else []):
+                fautes.append(f"({quoi}) lecture du journal attendue {'par `' + lecteur + ' exec`, une fois' if lecteur else 'sans exec'} : {execs[:3]}")
+            for s_ in (sonde_k3s, sonde_docker):
+                if autres.count(s_) > 1:
+                    fautes.append(f"({quoi}) `{s_}` lancée {autres.count(s_)} fois (une seule sonde par passage)")
+            if delai is None:
+                if bornes:
+                    fautes.append(f"({quoi}) sonde bornée inattendue (valeur posée, aucune détection) : {bornes[:2]}")
+                return
+            sondees = [l for l in autres if l in (sonde_k3s, sonde_docker)]
+            attendu = sorted(f"{delai} {l}" for l in sondees)
+            vu = sorted(b.replace(" k3s kubectl ", " kubectl ", 1) for b in bornes)
+            if vu != attendu:
+                fautes.append(f"({quoi}) chaque sonde doit passer par `timeout {delai}` : sondes {sondees}, bornes {bornes}")
+
+        def retenue(quoi, attendue, origine, lecteur, delai="7", aveu_attendu=None, **cas):
             ev, aveux, filtres, ko, lu, _ = jouer(**cas)
             if ko:
                 fautes.append(f"(détection, {quoi}) {ko}")
@@ -921,10 +969,13 @@ def passage_de_la_detection(chemin_awk, entrees):
                               f"aveux : {[a.get('message') for a in aveux][:2]}")
             if not any(e.get("message") == mail[0] for e in ev):
                 fautes.append(f"(détection, {quoi}) le journal n'a pas été lu par la source retenue")
-            if aveux:
+            if aveu_attendu is None and aveux:
                 fautes.append(f"(détection, {quoi}) aveu inattendu : `{aveux[0].get('message')}`")
-            if lecteur and f"{lecteur} " not in "".join(l.split(" ", 1)[0] + " " for l in lu.splitlines() if " exec " in l):
-                fautes.append(f"(détection, {quoi}) la lecture n'est pas passée par `{lecteur} exec` : {lu.splitlines()[-3:]}")
+            if aveu_attendu is not None and (len(aveux) != 1 or aveu_attendu not in (aveux[0].get("message") or "")
+                                              or (aveux[0].get("fields") or {}).get("reason") != "unreadable-config"):
+                fautes.append(f"(détection, {quoi}) un seul aveu `unreadable-config` qui nomme `{aveu_attendu}` attendu : "
+                              f"{[a.get('message') for a in aveux][:2]}")
+            sondes(f"détection, {quoi}", lu, lecteur, delai)
 
         # La valeur POSÉE est prise telle quelle, sans sonde, même si son outil manque.
         ev, aveux, filtres, ko, lu, _ = jouer(("docker",), docker="marche", fichier=True,
@@ -937,6 +988,26 @@ def passage_de_la_detection(chemin_awk, entrees):
                               f"{len(ev)} événement(s), aveux {[a.get('message') for a in aveux][:2]}")
             if lu:
                 fautes.append(f"(posée k3s sans kubectl) une sonde a été lancée malgré la valeur posée : {lu.splitlines()[:2]}")
+        # Posée k3s, kubectl présent : UN `get pod` (celui de la lecture, non borné comme avant), UNE lecture.
+        ev, aveux, filtres, ko, lu, _ = jouer(("kubectl", "docker"), k3s="pod", docker="marche", fichier=True,
+                                              env={"PLUME_MAIL_SRC": "k3s"})
+        if ko:
+            fautes.append(f"(posée k3s, kubectl présent) {ko}")
+        else:
+            if ((filtres or {}).get("source"), (filtres or {}).get("source_origine")) != ("k3s", "posee") or aveux \
+                    or not any(e.get("message") == mail[0] for e in ev):
+                fautes.append(f"(posée k3s, kubectl présent) source {filtres and filtres.get('source')}/"
+                              f"{filtres and filtres.get('source_origine')}, {len(ev)} événement(s), aveux "
+                              f"{[a.get('message') for a in aveux][:2]}")
+            sondes("posée k3s, kubectl présent", lu, "kubectl")
+        # Une valeur posée INCONNUE n'est pas devinée : prise telle quelle (aucune sonde), échec de lecture avoué.
+        ev, aveux, filtres, ko, lu, _ = jouer(("kubectl", "docker"), k3s="pod", docker="marche", fichier=True,
+                                              env={"PLUME_MAIL_SRC": "K3s"})
+        if ko:
+            fautes.append(f"(posée inconnue `K3s`) {ko}")
+        elif ev or lu or not any("(PLUME_MAIL_SRC=K3s, posee)" in (a.get("message") or "") for a in aveux):
+            fautes.append(f"(posée inconnue `K3s`) la valeur a été devinée ou sondée : {len(ev)} événement(s), "
+                          f"sondes {lu.splitlines()[:2]}, aveux {[a.get('message') for a in aveux][:2]}")
         ev, aveux, filtres, ko, lu, _ = jouer(("kubectl", "docker"), k3s="pod", docker="marche", fichier=True,
                                               env={"PLUME_MAIL_SRC": "file"})
         if ko:
@@ -964,19 +1035,54 @@ def passage_de_la_detection(chemin_awk, entrees):
         if ko or (filtres or {}).get("source") != "file" or duree > 30:
             fautes.append(f"(kubectl qui ne rend pas la main) la sonde n'est pas bornée : {ko or ''} source "
                           f"{(filtres or {}).get('source')}, {duree:.0f} s")
+        sondes("kubectl qui ne rend pas la main", lu, None, "1")
+        ev, aveux, filtres, ko, lu, duree = jouer(("docker",), docker="lent", fichier=True,
+                                                  env={"PLUME_MAIL_DETECTION_DELAI": "1"})
+        if ko or (filtres or {}).get("source") != "file" or duree > 30:
+            fautes.append(f"(docker qui ne rend pas la main) la sonde n'est pas bornée : {ko or ''} source "
+                          f"{(filtres or {}).get('source')}, {duree:.0f} s")
+        sondes("docker qui ne rend pas la main", lu, None, "1")
+        # Le délai par défaut, et un délai posé illisible : avoué, c'est 5 qui borne (`00` couperait la borne).
+        retenue("délai non posé", "docker", "detectee", "docker", delai="5", outils=("kubectl", "docker"),
+                k3s="vide", docker="marche", env={"PLUME_MAIL_DETECTION_DELAI": None})
+        for illisible in ("00", "0", "abc", "-3"):
+            retenue(f"délai illisible `{illisible}`", "docker", "detectee", "docker", delai="5",
+                    aveu_attendu="PLUME_MAIL_DETECTION_DELAI", outils=("kubectl", "docker"), k3s="vide",
+                    docker="marche", env={"PLUME_MAIL_DETECTION_DELAI": illisible})
         # Rien : l'aveu nommé, qui dit ce qui a été essayé et la variable à poser.
         ev, aveux, filtres, ko, lu, _ = jouer(("kubectl", "docker"), k3s="vide", docker="absent", fichier=False)
         if ko:
             fautes.append(f"(aucune source) {ko}")
         else:
+            sondes("aucune source", lu, None, "7")
             bons = [a for a in aveux if (a.get("fields") or {}).get("collect_status") == "unavailable"
                     and (a.get("fields") or {}).get("reason") == "missing-source"
                     and "aucune source de journal mail detectee" in (a.get("message") or "")]
             m = bons[0].get("message") if bons else ""
             manque = [mot for mot in ("k3s (", "docker (", "file (", "PLUME_MAIL_SRC=k3s|docker|file") if mot not in m]
-            if len(bons) != 1 or manque or ev or filtres is not None:
+            if len(bons) != 1 or len(aveux) != 1 or manque or ev or filtres is not None:
                 fautes.append(f"(aucune source) aveu nommé attendu (manque {manque}) : {[a.get('message') for a in aveux][:2]}, "
                               f"{len(ev)} événement(s), enveloppe de config {'émise' if filtres is not None else 'absente'}")
+        # (c) exige un FICHIER LISIBLE : un dossier au chemin du journal, ou un fichier illisible, n'est pas une source.
+        cas_non_fichier = [("dossier", "dossier")]
+        if os.geteuid() != 0:
+            cas_non_fichier.append(("fichier illisible", "illisible"))
+        for quoi, forme in cas_non_fichier:
+            chemin = os.path.join(bac, "non-fichier", forme)
+            os.makedirs(os.path.dirname(chemin), exist_ok=True)
+            if forme == "dossier":
+                os.makedirs(chemin, exist_ok=True)
+            else:
+                open(chemin, "w").write(mail[0] + "\n")
+                os.chmod(chemin, 0)
+            ev, aveux, filtres, ko, lu, _ = jouer((), env={"PLUME_MAIL_LOG": chemin})
+            # `plume_lecture_echouee` porte aussi `missing-source` : c'est le MESSAGE de la détection qui distingue
+            # « aucune source détectée » de « source retenue, lecture ratée ».
+            dits = [((a.get("fields") or {}).get("reason"), "aucune source de journal mail detectee" in (a.get("message") or ""))
+                    for a in (aveux or [])]
+            if ko or dits != [("missing-source", True)] or ev:
+                fautes.append(f"(journal {quoi}) seul l'aveu de détection `missing-source` attendu : {ko or ''} "
+                              f"{[a.get('message', '')[:90] for a in (aveux or [])]}, {len(ev or [])} événement(s)")
     return fautes
 
 

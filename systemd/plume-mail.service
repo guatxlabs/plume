@@ -2,7 +2,9 @@
 Description=plume collector — logs mailserver (postfix/dovecot/postscreen) -> events source=mail
 # OPT-IN : installe mais NON active. Activer : systemctl enable --now plume-mail.timer
 # Lit le mail.log et le journal ClamAV de docker-mailserver (k3s exec, docker exec : PLUME_MAIL_SRC=docker)
-# ou des fichiers locaux (PLUME_MAIL_SRC=file). Lecture seule.
+# ou des fichiers locaux (PLUME_MAIL_SRC=file). Lecture seule. PLUME_MAIL_SRC non pose : source DETECTEE
+# (k3s, docker, fichier ; sondes bornees par PLUME_MAIL_DETECTION_DELAI) — sous CPUQuota=25% et HOME=/tmp
+# (cache de k3s kubectl froid a chaque passage), poser PLUME_MAIL_SRC dans plume.conf (deploy/MAIL.md).
 
 [Service]
 Type=oneshot

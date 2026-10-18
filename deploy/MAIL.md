@@ -132,12 +132,17 @@ detecte :
   (defaut `/var/log/mail/mail.log`). Si l'outil manque, l'echec de lecture est avoue, rien n'est tente
   a la place.
 - **Non posee** : detection, dans cet ordre, chaque sonde en lecture seule et bornee par `timeout`
-  (`PLUME_MAIL_DETECTION_DELAI`, 5 s par defaut) : (a) `k3s` si `kubectl` ou `k3s` est present ET qu'un pod
+  (`PLUME_MAIL_DETECTION_DELAI`, 5 s par defaut ; un entier >= 1 sans zero en tete, `0`/`00` couperaient la
+  borne : pose et illisible, il est avoue `unreadable-config` et c'est 5 qui s'applique) : (a) `k3s` si `kubectl` ou `k3s` est present ET qu'un pod
   du selecteur existe dans le namespace ; (b) `docker` si `docker` est present ET que le conteneur nomme
   est en marche (`docker inspect`) ; (c) `file` si `PLUME_MAIL_LOG` est un fichier lisible. Hote natif
   (systemd, journal local) : (c) ; serveur mail en conteneur Docker : (b) ; dans k3s : (a).
 - **Aucune** : aveu `collect_status=unavailable`, `reason=missing-source`, qui dit ce qui a ete essaye et
   qu'il faut poser `PLUME_MAIL_SRC` ; rien n'est acquitte.
+- **Sous une unite contrainte** (`plume-mail.service` : `CPUQuota=25%`, `HOME=/tmp` en `PrivateTmp`, donc le
+  cache de decouverte de `k3s kubectl` repart a froid a chaque passage) : une sonde k3s qui depasse le delai
+  fait un passage aveugle (avoue `missing-source`, rien d'acquitte). **Poser** `PLUME_MAIL_SRC` dans
+  `/etc/plume/plume.conf` quand la source est connue ; la detection est le repli, pas le reglage d'exploitation.
 
 La source RETENUE et son origine sont dites dans l'enveloppe de config du capteur (evenement
 `source=mail category=config`, `type=collection-reducing`, sous `filters` : `source`, et `source_origine`

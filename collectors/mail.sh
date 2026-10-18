@@ -62,8 +62,15 @@ MAIL_LOG="${PLUME_MAIL_LOG:-/var/log/mail/mail.log}"
 # Aucune : aveu `unavailable / missing-source` qui dit ce qui a ete essaye et la variable a poser, et
 # sortie (rien n'a ete mis en attente). La source RETENUE et son origine (`posee` | `detectee`) sont
 # dites dans l'enveloppe de config (`source`, `source_origine`).
-DELAI_DETECTION="${PLUME_MAIL_DETECTION_DELAI:-5}"
-case "$DELAI_DETECTION" in ''|*[!0-9]*|0) DELAI_DETECTION=5 ;; esac
+# Le delai : un entier de secondes, au moins 1, sans zero en tete (`timeout 0`, `timeout 00` coupent la
+# borne : la sonde ne serait plus bornee du tout). Pose et illisible : avoue, et c'est 5 qui s'applique.
+DELAI_DETECTION="${PLUME_MAIL_DETECTION_DELAI:-}"
+case "$DELAI_DETECTION" in
+  '') DELAI_DETECTION=5 ;;
+  *[!0-9]*|0*) plume_reglage_illisible mail PLUME_MAIL_DETECTION_DELAI "$DELAI_DETECTION" "5 secondes par sonde de detection" \
+                 "un nombre entier de secondes, au moins 1, sans zero en tete (0 couperait la borne)"
+               DELAI_DETECTION=5 ;;
+esac
 _borne() { if command -v timeout >/dev/null 2>&1; then timeout "$DELAI_DETECTION" "$@"; else "$@"; fi; }
 KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
 _pod=""; _pod_lu=0

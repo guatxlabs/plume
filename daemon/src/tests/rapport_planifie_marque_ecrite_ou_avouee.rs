@@ -230,8 +230,6 @@ mod rapport_planifie_marque_ecrite_ou_avouee {
 
     const RPM_REFUS_MARQUE: &str = "CREATE TRIGGER rpm_refus BEFORE UPDATE OF last_run ON scheduled_report \
          BEGIN SELECT RAISE(ABORT,'marque refusee par le temoin u6'); END;";
-    const RPM_REFUS_STATUT: &str = "CREATE TRIGGER rpm_statut BEFORE UPDATE OF last_ok ON scheduled_report \
-         BEGIN SELECT RAISE(ABORT,'statut refuse par le temoin u6'); END;";
     const RPM_REFUS_ERREUR: &str = "CREATE TRIGGER rpm_err BEFORE UPDATE OF last_error ON scheduled_report \
          BEGIN SELECT RAISE(ABORT,'erreur refusee par le temoin u6'); END;";
 
@@ -244,9 +242,11 @@ mod rapport_planifie_marque_ecrite_ou_avouee {
         assert_eq!(c["statut_ecrit"], json!(true), "{c}");
         assert_eq!(c["delivered"], json!(false), "notificateur inconnu : livraison rendue false, dite telle quelle : {c}");
         assert!(c["rows"].as_i64().unwrap_or(0) >= 1, "{c}");
-        assert!(last_run > 0 && last_ok == last_run, "marque et statut écrits : {last_run} {last_ok}");
+        // `P10.33-h` — l'envoi rendu `false` n'est pas un succès : `last_ok` n'est pas écrit, `last_error` le dit.
+        assert!(last_run > 0 && last_ok == 0, "marque écrite, aucun « dernier succès » pour un envoi refusé : {last_run} {last_ok}");
 
-        let (code, c, (last_run, last_ok, _, _)) = rpm_run("run-statut", RPM_GXQL_VALIDE, Some(RPM_REFUS_STATUT)).await;
+        // Statut d'après envoi refusé : l'envoi rendant `false`, c'est l'écriture de `last_error` qui est refusée.
+        let (code, c, (last_run, last_ok, _, _)) = rpm_run("run-statut", RPM_GXQL_VALIDE, Some(RPM_REFUS_ERREUR)).await;
         assert_eq!(code, StatusCode::OK, "l'envoi a eu lieu : {c}");
         assert_eq!(c["marque_ecrite"], json!(true), "{c}");
         assert_eq!(c["statut_ecrit"], json!(false), "statut refusé : dit dans la réponse : {c}");

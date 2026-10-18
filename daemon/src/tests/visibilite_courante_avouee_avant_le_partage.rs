@@ -191,7 +191,7 @@ async fn p10_20k_un_panneau_dont_la_visibilite_n_est_pas_lue_n_est_pas_publie() 
         204,
         "fixture : le rattachement est licite tant que la définition est commune"
     );
-    assert_eq!(library_panel_update(State(st.clone()), Extension(bob.clone()), Path(lib), Json(json!({ "visibility": "private" }))).await.as_u16(), 204);
+    assert_eq!(library_panel_update(State(st.clone()), Extension(bob.clone()), Path(lib), Json(json!({ "visibility": "private" }))).await.status().as_u16(), 204);
 
     // CONTRÔLE POSITIF (1/2) — la visibilité courante est LUE, la porte juge et nomme le propriétaire.
     let (statut, refus) =
@@ -217,7 +217,7 @@ async fn p10_20k_un_panneau_dont_la_visibilite_n_est_pas_lue_n_est_pas_publie() 
 
     // CONTRÔLE POSITIF (2/2) — la visibilité redevient lisible et bob partage sa définition : le geste passe.
     vca_ecrire(&st, &format!("UPDATE panel SET visibility='private' WHERE id={pid};"));
-    assert_eq!(library_panel_update(State(st.clone()), Extension(bob.clone()), Path(lib), Json(json!({ "visibility": "shared" }))).await.as_u16(), 204);
+    assert_eq!(library_panel_update(State(st.clone()), Extension(bob.clone()), Path(lib), Json(json!({ "visibility": "shared" }))).await.status().as_u16(), 204);
     assert_eq!(
         panel_update(State(st.clone()), Extension(alice.clone()), Path(pid), Json(json!({ "visibility": "shared" }))).await.status().as_u16(),
         204

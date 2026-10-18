@@ -131,21 +131,33 @@ pub(crate) fn install_query_udfs(conn: &Connection) {
 /// (posé immuable par migrate_v86) -> stable = corrélation préservée. La connexion d'UNION cold ayant le HOT
 /// en `main`, le sel se lit à L'IDENTIQUE (même `meta`). Enregistrée sur TOUTES les connexions de lecture
 /// (inoffensif si jamais appelée -> mode 0 byte-identique).
+///
+/// `P10.33-r` — LE SEL EST RELU À LA DEMANDE, SEUL LE SUCCÈS EST MIS EN CACHE. Lu une seule fois à
+/// l'installation, un échec TRANSITOIRE (« disk I/O error » d'un pod neuf) figeait le refus pour toute la
+/// vie de la connexion, et les connexions vivent dans `READ_POOL`. Tant que le sel n'est pas établi,
+/// chaque appel le relit SUR LA CONNEXION MÊME ; le premier échec arrête l'instruction (au plus une
+/// relecture par instruction) ; un succès est gardé pour la vie de la connexion (un sel effacé ensuite ne
+/// change pas le hash : la corrélation tient). Absent, vide ou illisible DURABLEMENT : refus à chaque
+/// appel, comme avant.
 pub(crate) fn install_fmask_udf(conn: &Connection) {
     use rusqlite::functions::FunctionFlags;
     // `P10.20-b` : un sel ABSENT ou ILLISIBLE n'est jamais "" — la fonction rend alors une ERREUR (la requête
     // HASH échoue fermé) au lieu d'un hash non salé de "\0"+valeur, attaquable au dictionnaire.
-    let fmask_salt: Option<String> = match crate::read_field_mask_salt(conn) {
+    let mut sel_etabli: Option<String> = match crate::read_field_mask_salt(conn) {
         Ok(Some(salt)) => Some(salt),
         Ok(None) => {
-            eprintln!("[field_filter] sel de hachage ABSENT (meta.field_mask_salt) sur cette connexion — plume_fmask_hash refusera");
+            eprintln!("[field_filter] sel de hachage ABSENT (meta.field_mask_salt) sur cette connexion — plume_fmask_hash le relira à chaque appel, et refusera tant qu'il manque");
             None
         }
         Err(e) => {
-            eprintln!("[field_filter] sel de hachage ILLISIBLE sur cette connexion : {e} — plume_fmask_hash refusera");
+            eprintln!("[field_filter] sel de hachage ILLISIBLE sur cette connexion : {e} — plume_fmask_hash le relira à chaque appel, et refusera tant qu'il est illisible");
             None
         }
     };
+    // SAFETY : l'adresse de la connexion sur laquelle la fonction est enregistrée. SQLite n'appelle la
+    // fonction que sur CETTE connexion, ouverte (il la détruit à la fermeture) : la poignée est valide à
+    // chaque appel. Elle n'est jamais fermée ni partagée par ce code.
+    let poignee = PoigneeDeLaConnexion(unsafe { conn.handle() });
     let _ = conn.create_scalar_function(
         "plume_fmask_hash",
         1,
@@ -158,7 +170,35 @@ pub(crate) fn install_fmask_udf(conn: &Connection) {
                 rusqlite::types::ValueRef::Real(f) => f.to_string(),
                 rusqlite::types::ValueRef::Blob(b) => format!("<blob {} o>", b.len()),
             };
-            match &fmask_salt {
+            if sel_etabli.is_none() {
+                match relire_le_sel_sur(&poignee) {
+                    Ok(Some(salt)) => sel_etabli = Some(salt),
+                    Ok(None) => {
+                        return Err(rusqlite::Error::UserFunctionError(
+                            "sel de hachage (meta.field_mask_salt) absent : HASH refusé".into(),
+                        ))
+                    }
+                    // Une INTERRUPTION de la relecture (annulation client, budget temps, quota de
+                    // déversement : le rappel de progression vaut aussi pour l'instruction imbriquée) sort
+                    // SOUS SON CODE, sans message (un message rabattrait le code sur `SQLITE_ERROR`) :
+                    // l'instruction externe échoue en `SQLITE_INTERRUPT`, que `classer_l_echec` classe.
+                    Err(EchecDeRelecture::Interrompue) => {
+                        return Err(rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+                            None,
+                        ))
+                    }
+                    Err(EchecDeRelecture::Illisible(e)) => {
+                        // Le journal de l'hôte le dit aussi, avec le code étendu : le message rendu au
+                        // client ne suffit pas à trancher un incident (au plus une ligne par instruction).
+                        eprintln!("[field_filter] sel de hachage ILLISIBLE à la relecture : {e} — HASH refusé pour cette instruction");
+                        return Err(rusqlite::Error::UserFunctionError(
+                            format!("sel de hachage (meta.field_mask_salt) illisible : {e} — HASH refusé").into(),
+                        ));
+                    }
+                }
+            }
+            match &sel_etabli {
                 Some(salt) => Ok(Some(crate::fmask_hash(salt, &s))),
                 None => Err(rusqlite::Error::UserFunctionError(
                     "sel de hachage (meta.field_mask_salt) absent ou illisible : HASH refusé".into(),
@@ -166,6 +206,99 @@ pub(crate) fn install_fmask_udf(conn: &Connection) {
             }
         },
     );
+}
+
+/// La poignée brute de la connexion qui porte `plume_fmask_hash`, transportée dans la fermeture.
+struct PoigneeDeLaConnexion(*mut rusqlite::ffi::sqlite3);
+// SAFETY : la poignée n'est déréférencée que par SQLite, depuis la fonction scalaire, c'est-à-dire sur le
+// fil qui exécute une instruction de CETTE connexion (rusqlite ne partage pas une `Connection` entre fils
+// pendant une instruction). La fermeture n'est `Send` que parce que rusqlite l'exige à l'enregistrement.
+unsafe impl Send for PoigneeDeLaConnexion {}
+
+/// Pourquoi la relecture du sel n'a rien rendu : une interruption de l'instruction (elle sera classée
+/// comme telle), ou une lecture ratée (le texte, avec le code étendu).
+enum EchecDeRelecture {
+    Interrompue,
+    Illisible(String),
+}
+
+/// `P10.33-r` — RELIT `meta.field_mask_salt` SUR LA CONNEXION MÊME, depuis l'intérieur de la fonction
+/// scalaire (SQLite admet qu'une fonction prépare et exécute une instruction sur sa propre connexion ;
+/// l'authorizer et le rappel de progression de la connexion s'y appliquent). Mêmes issues que
+/// `read_field_mask_salt` : `Ok(None)` = absent ou vide, `Err` = interruption ou lecture ratée (avec le code
+/// étendu).
+///
+/// PAS `Context::get_connection` : en rusqlite 0.31, la `ConnectionRef` qu'elle rend, en tombant, passe par
+/// `InnerConnection::close`, qui appelle `remove_hooks()` AVANT de tester `owned` — elle EFFACERAIT
+/// l'authorizer DENY (secrets, champs déniés) et le rappel de progression (budget, quota de déversement) de
+/// la connexion du pool. D'où les appels directs, sans objet rusqlite qui tombe.
+fn relire_le_sel_sur(poignee: &PoigneeDeLaConnexion) -> Result<Option<String>, EchecDeRelecture> {
+    use rusqlite::ffi;
+    use rusqlite::types::{FromSql, ValueRef};
+    const SQL: &[u8] = b"SELECT value FROM meta WHERE key='field_mask_salt'\0";
+    let db = poignee.0;
+    // Le code étendu et le message du moteur, mis en forme comme toute erreur SQLite du démon.
+    let echec = |rc: std::os::raw::c_int| -> EchecDeRelecture {
+        if rc & 0xff == ffi::SQLITE_INTERRUPT {
+            return EchecDeRelecture::Interrompue;
+        }
+        // SAFETY : `db` est la connexion ouverte qui exécute cette fonction (cf. `install_fmask_udf`).
+        let message = unsafe {
+            let p = ffi::sqlite3_errmsg(db);
+            (!p.is_null()).then(|| std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned())
+        };
+        let etendu = unsafe { ffi::sqlite3_extended_errcode(db) };
+        let code = if etendu & 0xff == rc & 0xff { etendu } else { rc };
+        EchecDeRelecture::Illisible(crate::sqlite_plafond::decrire_l_erreur(&rusqlite::Error::SqliteFailure(
+            ffi::Error::new(code),
+            message,
+        )))
+    };
+    let mut st: *mut ffi::sqlite3_stmt = std::ptr::null_mut();
+    // SAFETY : `db` est ouverte (cf. ci-dessus) ; `SQL` est terminée par NUL ; `st` est finalisée sur
+    // TOUS les chemins qui l'ont obtenue (`sqlite3_finalize(NULL)` est sans effet).
+    unsafe {
+        let rc = ffi::sqlite3_prepare_v2(db, SQL.as_ptr().cast(), -1, &mut st, std::ptr::null_mut());
+        if rc != ffi::SQLITE_OK {
+            ffi::sqlite3_finalize(st);
+            return Err(echec(rc));
+        }
+        let rendu = match ffi::sqlite3_step(st) {
+            ffi::SQLITE_DONE => Ok(None),
+            ffi::SQLITE_ROW => {
+                // SAFETY (appelant) : `p`/`n` viennent de `sqlite3_column_*` sur la ligne courante ; la tranche
+                // est consommée (copiée en `String`) avant tout autre appel sur `st`.
+                unsafe fn octets<'a>(p: *const u8, n: std::os::raw::c_int) -> &'a [u8] {
+                    if p.is_null() || n <= 0 { &[] } else { std::slice::from_raw_parts(p, n as usize) }
+                }
+                // La valeur telle que rusqlite la verrait (`r.get::<_, String>(0)`), convertie par le MÊME
+                // `FromSql` : un BLOB, un nombre, un NULL ou un texte non UTF-8 sont « illisibles ».
+                let valeur = match ffi::sqlite3_column_type(st, 0) {
+                    ffi::SQLITE_NULL => ValueRef::Null,
+                    ffi::SQLITE_INTEGER => ValueRef::Integer(ffi::sqlite3_column_int64(st, 0)),
+                    ffi::SQLITE_FLOAT => ValueRef::Real(ffi::sqlite3_column_double(st, 0)),
+                    ffi::SQLITE_TEXT => {
+                        let p = ffi::sqlite3_column_text(st, 0);
+                        ValueRef::Text(octets(p, ffi::sqlite3_column_bytes(st, 0)))
+                    }
+                    _ => {
+                        let p = ffi::sqlite3_column_blob(st, 0).cast::<u8>();
+                        ValueRef::Blob(octets(p, ffi::sqlite3_column_bytes(st, 0)))
+                    }
+                };
+                match <String as FromSql>::column_result(valeur) {
+                    Ok(sel) if sel.is_empty() => Ok(None),
+                    Ok(sel) => Ok(Some(sel)),
+                    Err(e) => Err(EchecDeRelecture::Illisible(format!(
+                        "valeur de meta.field_mask_salt illisible en texte : {e}"
+                    ))),
+                }
+            }
+            rc => Err(echec(rc)),
+        };
+        ffi::sqlite3_finalize(st);
+        rendu
+    }
 }
 
 /// #18 P3 — AUTHORIZER DENY (#45 + secrets + v134 tables-miroirs) posé sur une connexion de lecture. Extrait

@@ -125,7 +125,7 @@ async fn p10_20b_un_panneau_dont_la_definition_retenant_n_est_pas_lue_n_est_pas_
     let (_, nu) = sp_panneau(&st, &alice, did, "sans définition", "private").await;
     let (statut, v) = ern_panel_update(&st, &alice, pid, json!({ "library_panel_id": lib })).await;
     assert_eq!(statut, 204, "fixture : rattachement licite tant que la définition est commune : {v}");
-    assert_eq!(library_panel_update(State(st.clone()), Extension(bob.clone()), Path(lib), Json(json!({ "visibility": "private" }))).await.as_u16(), 204);
+    assert_eq!(library_panel_update(State(st.clone()), Extension(bob.clone()), Path(lib), Json(json!({ "visibility": "private" }))).await.status().as_u16(), 204);
 
     // LUE : la porte juge et nomme la définition AVEC son propriétaire.
     let (statut, refus) = ern_panel_update(&st, &alice, pid, json!({ "visibility": "shared" })).await;
@@ -154,7 +154,7 @@ async fn p10_20b_un_panneau_dont_la_definition_retenant_n_est_pas_lue_n_est_pas_
     // LUE ET NULLE : les deux gestes passent.
     let (statut, v) = ern_panel_update(&st, &alice, nu, json!({ "visibility": "shared" })).await;
     assert_eq!(statut, 204, "{v}");
-    assert_eq!(library_panel_update(State(st.clone()), Extension(bob.clone()), Path(lib), Json(json!({ "visibility": "shared" }))).await.as_u16(), 204);
+    assert_eq!(library_panel_update(State(st.clone()), Extension(bob.clone()), Path(lib), Json(json!({ "visibility": "shared" }))).await.status().as_u16(), 204);
     let (statut, v) = ern_panel_update(&st, &alice, pid, json!({ "visibility": "shared" })).await;
     assert_eq!(statut, 204, "{v}");
     assert_eq!(ern_texte(&st, "SELECT visibility FROM panel WHERE id=?1", pid), "shared");

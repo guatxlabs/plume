@@ -12,31 +12,81 @@ pub(crate) fn oneline(s: &str) -> String {
 /// DURCISSEMENT — exécute `curl` en passant les options SENSIBLES (auth) via un fichier de
 /// CONFIG lu sur STDIN (`-K -`), JAMAIS en argv : `/proc/<pid>/cmdline` est lisible par tout ce qui partage le
 /// PID-ns (sidecar, `kubectl debug`, descendants). `secret_cfg` = lignes de config curl (`header = "…"` /
-/// `user = "…"`) déjà échappées. Vide -> exécution argv-only classique (aucun secret à cacher).
+/// `user = "…"`) déjà échappées. Vide -> aucune ligne de config, stdin fermé (aucun secret à cacher).
+///
+/// `P10.33-n` (confidentialité) — LA RÉPONSE DU SERVICE NE VA PLUS DANS LE JOURNAL DU DÉMON. curl héritait de
+/// la sortie standard du démon, et `-s` ne retire que la barre de progression : le CORPS DE RÉPONSE y était
+/// imprimé. ntfy répond à une publication par le message publié — le détail de l'alerte et le nom d'hôte
+/// atterrissaient donc dans le journal du démon (journald, `kubectl logs`), lisible bien au-delà des
+/// administrateurs du canal. La sortie standard part désormais vers le néant. La sortie d'erreur (`-S` : une
+/// ligne de cause, jamais de corps — `-f` n'imprime pas le corps d'une réponse en erreur) est lue au plus
+/// `STDERR_CURL_LU_MAX` octets, le reste drainé sans être gardé, et réémise sur UNE ligne bornée à
+/// `STDERR_CURL_EMIS_MAX` caractères. Le succès reste le seul code de sortie de curl.
 fn curl_send(args: &[String], secret_cfg: &str) -> bool {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     let mut cmd = Command::new("curl");
     if !secret_cfg.is_empty() {
         cmd.arg("-K").arg("-"); // options sensibles lues depuis stdin, hors argv
     }
     cmd.args(args);
-    if secret_cfg.is_empty() {
-        return cmd.status().map(|s| s.success()).unwrap_or(false);
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
+    cmd.stdin(if secret_cfg.is_empty() { Stdio::null() } else { Stdio::piped() });
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    if let Some(si) = child.stdin.as_mut() {
+        let _ = si.write_all(secret_cfg.as_bytes());
     }
-    match cmd.stdin(Stdio::piped()).spawn() {
-        Ok(mut child) => {
-            if let Some(si) = child.stdin.as_mut() {
-                let _ = si.write_all(secret_cfg.as_bytes());
-            }
-            let _ = child.stdin.take(); // ferme stdin -> curl lit EOF
-            child.wait().map(|s| s.success()).unwrap_or(false)
-        }
-        Err(_) => false,
+    let _ = child.stdin.take(); // ferme stdin -> curl lit EOF
+    let mut erreur = Vec::new();
+    if let Some(mut se) = child.stderr.take() {
+        let _ = (&mut se).take(STDERR_CURL_LU_MAX).read_to_end(&mut erreur);
+        let _ = std::io::copy(&mut se, &mut std::io::sink()); // drainé, jamais gardé : curl n'est pas bloqué
     }
+    let statut = child.wait();
+    if let Some(ligne) = ligne_bornee_de_la_sortie_d_erreur_de_curl(&erreur) {
+        let code = match &statut {
+            Ok(s) => s.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into()),
+            Err(_) => "attente impossible".into(),
+        };
+        eprintln!("[plume] notification : curl (code {code}) a écrit sur sa sortie d'erreur : {ligne}");
+    }
+    statut.map(|s| s.success()).unwrap_or(false)
+}
+/// `P10.33-n` — octets de la sortie d'erreur de curl gardés en mémoire (le reste est drainé).
+const STDERR_CURL_LU_MAX: u64 = 4096;
+/// `P10.33-n` — caractères de la sortie d'erreur de curl réémis dans le journal du démon.
+pub(crate) const STDERR_CURL_EMIS_MAX: usize = 240;
+/// `P10.33-n` — la sortie d'erreur de curl sur UNE ligne (blancs et sauts repliés), bornée à
+/// `STDERR_CURL_EMIS_MAX` caractères ; `None` si curl n'a rien écrit.
+fn ligne_bornee_de_la_sortie_d_erreur_de_curl(erreur: &[u8]) -> Option<String> {
+    let texte = String::from_utf8_lossy(erreur);
+    let une_ligne = texte.split_whitespace().collect::<Vec<_>>().join(" ");
+    if une_ligne.is_empty() {
+        return None;
+    }
+    if une_ligne.chars().count() <= STDERR_CURL_EMIS_MAX {
+        return Some(une_ligne);
+    }
+    Some(une_ligne.chars().take(STDERR_CURL_EMIS_MAX).collect::<String>() + " [tronqué]")
 }
 /// Échappe une valeur pour une chaîne `"…"` d'un fichier de config curl (backslash + guillemet). Combiné à
 /// `oneline` (retire CR/LF) -> aucune évasion de la ligne de config (anti config-injection).
+/// `P10.33-s` (sécurité) — un en-tête d'auth n'est admis que sous la forme `Nom: valeur`, le nom fait de lettres,
+/// chiffres, `-` et `_`. Dans la config curl, `header = "@chemin"` fait LIRE le fichier local `chemin` et en
+/// envoie chaque ligne `Nom: valeur` comme en-tête vers l'URL du canal : un admin lisait ainsi des fichiers du
+/// démon. Rend la ligne admise (CR/LF neutralisés), ou `None` : l'envoi est alors annulé, jamais tenté sans.
+pub(crate) fn en_tete_d_auth_admis(auth: &str) -> Option<String> {
+    let ligne = oneline(auth.trim());
+    let (nom, _) = ligne.split_once(':')?;
+    if nom.is_empty() || !nom.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return None;
+    }
+    Some(ligne)
+}
 fn curl_cfg_quote(v: &str) -> String {
     v.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -56,19 +106,20 @@ pub(crate) fn egress_url_ok(url: &str) -> bool {
 
 /// Envoie une notification via `curl` (https/SMTP sans dépendance Rust). Args directs + `--` = pas d'injection.
 pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title: &str, detail: &str, host: &str, ts: i64) -> bool {
-    use std::process::Command;
-    let done = |r: std::io::Result<std::process::ExitStatus>| r.map(|s| s.success()).unwrap_or(false);
     match kind {
         "ntfy" => {
             if !egress_url_ok(url) { return false; } // garde SSRF au point d'égress (couvre aussi le bypass config direct)
             let prio = match sev { 4 => "5", 3 => "4", 2 => "3", 1 => "2", _ => "1" };
             let g = |k: &str| config.str_field(k);
+            // `P10.33-s` (sécurité) — `--data-raw`, jamais `-d` : `-d @chemin` fait LIRE à curl un fichier local
+            // et en envoie le contenu au service. Le début du détail vient de la requête de la règle ; un détail
+            // « @/var/lib/… » exfiltrait donc un fichier du démon vers le canal. `--data-raw` envoie le littéral.
             let mut args: Vec<String> = vec![
                 "-fsS".into(), "--max-time".into(), "10".into(),
                 "-H".into(), format!("Title: {}", oneline(title)),
                 "-H".into(), format!("Priority: {prio}"),
                 "-H".into(), "Tags: rotating_light".into(),
-                "-d".into(), format!("{detail}{}", if host.is_empty() { String::new() } else { format!("\n[{host}]") }),
+                "--data-raw".into(), format!("{detail}{}", if host.is_empty() { String::new() } else { format!("\n[{host}]") }),
             ];
             // Auth ntfy (serveurs en deny-all/protégés) : token Bearer (préféré) OU user/pass (basic). S2 : les
             // creds passent par la CONFIG STDIN (`curl_send`), plus jamais en argv (fuite /proc/<pid>/cmdline).
@@ -86,10 +137,12 @@ pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title
         "webhook" => {
             if !egress_url_ok(url) { return false; } // garde SSRF au point d'égress
             let body = json!({ "ts": ts, "severity": sev, "title": title, "detail": detail, "host": host }).to_string();
-            done(Command::new("curl").args([
+            // `P10.33-n` : par `curl_send` comme les autres genres — la réponse du service ne va pas au journal.
+            let args: Vec<String> = [
                 "-fsS", "--max-time", "10", "-X", "POST",
                 "-H", "Content-Type: application/json", "-d", &body, "--", url,
-            ]).status())
+            ].iter().map(|a| a.to_string()).collect();
+            curl_send(&args, "")
         }
         "email" => {
             let g = |k: &str| config.str_field(k);
@@ -182,8 +235,22 @@ pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title
             // S2 : l'`auth_header` (SECRET, ex. `Authorization: Bearer …`) passe par la config STDIN (`header = …`),
             // plus en argv (fuite /proc/<pid>/cmdline). CR/LF déjà neutralisés (`oneline`) + échappement config.
             let auth = config.str_field("auth_header");
-            let secret_cfg = if auth.is_empty() { String::new() } else { format!("header = \"{}\"\n", curl_cfg_quote(&oneline(auth))) };
-            args.push("-d".into());
+            let secret_cfg = if auth.is_empty() {
+                String::new()
+            } else {
+                match en_tete_d_auth_admis(auth) {
+                    Some(ligne) => format!("header = \"{}\"\n", curl_cfg_quote(&ligne)),
+                    None => {
+                        // La valeur est un SECRET : jamais au journal, seule la forme attendue l'est.
+                        eprintln!("[plume] notification generic : auth_header refusé, forme « Nom: valeur » exigée — envoi annulé");
+                        return false;
+                    }
+                }
+            };
+            // `P10.33-s` (sécurité) — `--data-raw` : un gabarit qui commence par {{title}}, {{host}} ou {{detail}}
+            // rend un corps qui peut commencer par « @ », que `-d` lirait comme un chemin de fichier local.
+            // (webhook et slack gardent `-d` : leur corps est un objet JSON sérialisé, il commence par « { ».)
+            args.push("--data-raw".into());
             args.push(body);
             args.push("--".into());
             args.push(url.to_string());
@@ -195,6 +262,48 @@ pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title
         _ => false,
     }
 }
+
+/// `P10.33-n` — CE QU'UN ENVOI RÉUSSI ÉTABLIT, PAR GENRE DE CANAL. `notify_send` rend `true` quand curl sort en
+/// zéro, c'est-à-dire quand le SERVICE a accepté l'envoi (ntfy a pris la publication, le relais SMTP a pris le
+/// message, l'URL a répondu 2xx). Aucun de ces services ne renvoie un accusé de LECTURE, et un sujet ntfy sans
+/// abonné accepte une publication comme un autre : un succès ne dit donc jamais que quelqu'un a vu l'alerte. Le
+/// démon dit ce qu'il sait — « remis au service, aucun accusé de lecture connu » — et ne fabrique pas d'échec là
+/// où le service ne sait pas répondre. Fonction PURE : aucun réseau, le genre seul décide (aucun réglage d'un
+/// canal ne lui fait renvoyer un accusé).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccuseDuCanal {
+    /// ntfy, webhook, email, slack, pagerduty, generic : le succès est la remise au service, rien au-delà.
+    RemisAuServiceSansAccuseDeLecture,
+    /// lookup : écriture dans une table locale, vérifiable sur place — aucun destinataire en jeu.
+    Local,
+    /// Genre que `notify_send` ne connaît pas : rien ne part, il n'y a rien à accuser.
+    GenreInconnu,
+}
+
+impl AccuseDuCanal {
+    /// La valeur servie sous `accuse_de_lecture` (liste des canaux, essai d'un canal).
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::RemisAuServiceSansAccuseDeLecture => "inconnu",
+            Self::Local => "local",
+            Self::GenreInconnu => "sans_objet",
+        }
+    }
+}
+
+/// `P10.33-n` — le genre d'un canal -> ce que son succès établit. Voir `AccuseDuCanal`.
+pub(crate) fn accuse_du_canal(kind: &str) -> AccuseDuCanal {
+    match kind {
+        "ntfy" | "webhook" | "email" | "slack" | "pagerduty" | "generic" => AccuseDuCanal::RemisAuServiceSansAccuseDeLecture,
+        "lookup" => AccuseDuCanal::Local,
+        _ => AccuseDuCanal::GenreInconnu,
+    }
+}
+
+/// `P10.33-n` — la phrase servie par l'essai d'un canal quand le service a ACCEPTÉ l'envoi (jamais sur un échec).
+pub(crate) const PHRASE_REMIS_AU_SERVICE_SANS_ACCUSE_DE_LECTURE: &str = "Remis au service : il a accepté l'envoi. \
+     Aucun accusé de lecture n'existe pour ce canal — Plume ne sait pas si quelqu'un reçoit ou consulte ce message \
+     (un sujet sans abonné accepte une publication comme un autre).";
 
 /// Kinds de canaux dont la CIBLE (endpoint) est dans `url` (donc `url` requis & validé à la création).
 /// Slack/PagerDuty/lookup portent leur cible/clé dans `config` (secret) -> `url` peut rester vide.
@@ -350,10 +459,14 @@ pub(crate) async fn notifiers_list(State(st): State<AppState>, Extension(au): Ex
                     .ok()
                     .map(|v| ["token", "user", "pass", "webhook_url", "routing_key", "auth_header"].iter().any(|k| v.get(*k).and_then(|x| x.as_str()).map(|s| !s.is_empty()).unwrap_or(false)))
                     .unwrap_or(false);
+                // `P10.33-n` : ce que le succès de ce canal établit (« inconnu » pour un canal réseau : aucun accusé
+                // de lecture n'existe). Un inconnu CONSTANT n'est pas un signal : aucun état de santé n'en dérive.
+                let kind: String = r.get(2)?;
+                let accuse = accuse_du_canal(&kind).code();
                 Ok(json!({
-                    "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "kind": r.get::<_, String>(2)?,
+                    "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "kind": kind,
                     "enabled": r.get::<_, i64>(3)? != 0, "url": r.get::<_, String>(4)?,
-                    "min_severity": r.get::<_, i64>(5)?, "has_auth": has_auth
+                    "min_severity": r.get::<_, i64>(5)?, "has_auth": has_auth, "accuse_de_lecture": accuse
                 }))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -589,7 +702,16 @@ pub(crate) async fn notifier_test(State(st): State<AppState>, Extension(au): Ext
     };
     let config: Value = serde_json::from_str(&cfg).unwrap_or_else(|_| json!({}));
     let ts = now();
+    let accuse = accuse_du_canal(&kind);
     let ok = tokio::task::spawn_blocking(move || notify_send(&kind, &url, &config, 3, "Test Plume", "Notification de test depuis Plume.", "", ts))
         .await.unwrap_or(false);
-    Json(json!({ "ok": ok })).into_response()
+    // `P10.33-n` — `ok` reste tel quel (la console le lit) ; s'y ajoute ce qu'il établit. Un succès d'un canal
+    // réseau est une REMISE AU SERVICE, sans accusé de lecture : la phrase le dit, et elle n'est servie que sur un
+    // succès — un échec reste un échec, sans phrase d'accusé.
+    let remis = ok && accuse == AccuseDuCanal::RemisAuServiceSansAccuseDeLecture;
+    let mut corps = json!({ "ok": ok, "remis_au_service": remis, "accuse_de_lecture": accuse.code() });
+    if remis {
+        corps["remise"] = json!(PHRASE_REMIS_AU_SERVICE_SANS_ACCUSE_DE_LECTURE);
+    }
+    Json(corps).into_response()
 }

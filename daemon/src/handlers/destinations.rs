@@ -340,6 +340,11 @@ fn transport_ok(status: u16) -> bool {
     status == 0 || (200..300).contains(&status)
 }
 
+/// `last_error` d'une destination dont le lot est parti mais dont le filigrane est refusé (`P10.33-h`) : constante
+/// nommée, sans l'endpoint (il peut porter une crédence) ni un événement.
+pub(crate) const FILIGRANE_NON_ECRIT_APRES_ENVOI: &str =
+    "lot transmis au puits, filigrane non écrit : le même lot repartira à la prochaine échéance";
+
 // ===================================================================================================
 // FORWARDER (cœur). Miroir SORTIE de poll_one_connector : lit un lot borné, envoie HORS lock, avance le
 // watermark UNIQUEMENT sur succès. FAIL-SAFE : ne remonte jamais (toute erreur -> last_error).
@@ -469,9 +474,19 @@ where
                 Ok(1) => {}
                 autre => {
                     let cause = match autre { Err(e) => e.to_string(), Ok(n) => format!("{n} ligne(s) écrite(s) au lieu d'une") };
-                    eprintln!(
-                        "[plume] destination {id} : lot transmis au puits mais filigrane NON ÉCRIT, le même lot repartira au prochain tick : {cause}"
+                    // `P10.33-h` — l'UPDATE refusé portait aussi `last_run` et `last_error` : sans une seconde écriture
+                    // ÉTROITE, la destination restait due à chaque tick et la console ne voyait rien. Celle-ci pose
+                    // l'échéance et l'aveu ; si elle refuse aussi, la même ligne de journal le dit.
+                    let consigne = conn.execute(
+                        "UPDATE destination SET last_run=?1, last_error=?2, error_count=error_count+1 WHERE id=?3",
+                        params![now_ts, FILIGRANE_NON_ECRIT_APRES_ENVOI, id],
                     );
+                    let suite = match consigne {
+                        Ok(1) => "last_run et last_error écrits, le même lot repartira à la prochaine échéance".to_string(),
+                        Err(e) => format!("last_run et last_error NON ÉCRITS non plus, le même lot repartira au prochain tick : {e}"),
+                        Ok(n) => format!("last_run et last_error NON ÉCRITS non plus, le même lot repartira au prochain tick : {n} ligne(s) écrite(s) au lieu d'une"),
+                    };
+                    eprintln!("[plume] destination {id} : lot transmis au puits mais filigrane NON ÉCRIT : {cause} ; {suite}");
                     return Mesure::Lue(1); // un lot transmis dont la marque manque : compté au bilan du planificateur
                 }
             }

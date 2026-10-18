@@ -572,10 +572,11 @@ pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) 
         }
         if bad { ch.ignores += 1; continue; }
         // Même frontière que les library-panels : un panneau de dashboard overlay en SQL brut est
-        // opérateur-authoré, donc accepté — mais TRACÉ (cf. `tracer_panneau_sql_brut`).
-        if compiled.iter().any(|(_, _, is_soql, _, _, _)| *is_soql == 0) {
-            tracer_panneau_sql_brut(conn, "dashboard-panel", &name);
-        }
+        // opérateur-authoré, donc accepté — mais TRACÉ (cf. `tracer_panneau_sql_brut`), et seulement une fois
+        // l'écriture VALIDÉE (après le `RELEASE`, plus bas) : une lecture ratée, une copie UI homonyme, un point de
+        // reprise refusé ou une écriture annulée ignorent le tableau, et le registre non purgeable l'aurait dit
+        // « accepté ».
+        let sql_brut = compiled.iter().any(|(_, _, is_soql, _, _, _)| *is_soql == 0);
         // `P10.20-b` — AVANT : plan lu par la projection qui repliait une lecture ratée sur `Insert` (`dashboard`
         // n'a aucun UNIQUE(name), `db/schema.sql` : l'INSERT créait un tableau DOUBLON), UPDATE `managed=1` jeté,
         // puis `DELETE` des panneaux managés et INSERT de chacun jetés : un DELETE passé suivi d'INSERT refusés
@@ -602,7 +603,13 @@ pub(crate) fn load_overlay_dashboards(conn: &Connection, dir: &std::path::Path) 
         }
         match ecrire_le_tableau_oac(conn, &name, plan, &compiled) {
             Ok(()) => match conn.execute_batch("RELEASE oac_dashboard") {
-                Ok(()) => ch.charges += 1,
+                Ok(()) => {
+                    ch.charges += 1;
+                    // Après le `RELEASE`, hors du point de reprise du chargeur : son `ROLLBACK TO` ne peut plus emporter la trace.
+                    if sql_brut {
+                        tracer_panneau_sql_brut(conn, "dashboard-panel", &name);
+                    }
+                }
                 Err(e) => {
                     let annule = annuler_le_tableau_oac(conn, hors_transaction);
                     eprintln!("[oac] WARN dashboard '{name}' ({}) : validation refusée ({e}) — overlay NON chargé, annulation : {annule}", path.display());

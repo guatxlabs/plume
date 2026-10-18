@@ -10,10 +10,10 @@
 //! MODE 0 BYTE-IDENTIQUE : tables VIDES + `incident_tier` NULL -> un case ordinaire ne lit/écrit RIEN de neuf.
 //! Chaque élévation/attachement/avancement écrit un item de timeline TYPÉ (kinds 'incident'/'runbook'/'step',
 //! HORS de l'allowlist client-read created/status/sla/merge -> jamais exposés au MSSP) + une entrée LEDGER
-//! (tamper-evident, comme case.status/case.assign). Réutilise : case_add_item (timeline + MTTA), ledger_append,
+//! (tamper-evident, comme case.status/case.assign). Réutilise : ajouter_l_element_au_dossier (timeline + MTTA, comptés), ledger_append,
 //! guatx_core::attack (technique->tactique), le compilateur GXQL FERMÉ, l'enum action_kind_valid.
 use crate::*;
-use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apres_validation_du_garde};
+use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apres_validation_du_garde, IssueDuGesteGarde};
 use rusqlite::OptionalExtension;
 
 /// `P10.20-b` (rang 2) — LA RECOMMANDATION N'EST PAS ÉTABLIE, ET CE N'EST PAS « AUCUN RUNBOOK NE CONVIENT ».
@@ -136,17 +136,6 @@ pub(crate) fn incident_apply_tier(conn: &Connection, id: i64, author: &str, tier
     // NON FOURNI (`None`) garde sa valeur (`CASE … ELSE`), un type ou un pilote BLANC l'efface — comme avant.
     let type_fourni = itype.map(str::trim).map(|ty| if ty.is_empty() { None } else { Some(ty) });
     let pilote_fourni = commander.map(str::trim).map(|cm| if cm.is_empty() { None } else { Some(cm) });
-    match conn.execute(
-        "UPDATE incident SET incident_tier=?1, \
-         incident_type=CASE WHEN ?2 THEN ?3 ELSE incident_type END, \
-         commander=CASE WHEN ?4 THEN ?5 ELSE commander END WHERE id=?6",
-        params![tier, type_fourni.is_some(), type_fourni.flatten(), pilote_fourni.is_some(), pilote_fourni.flatten(), id],
-    ) {
-        Ok(1) => {}
-        Ok(0) => return DeclarationDIncident::DossierIntrouvable,
-        Ok(n) => return DeclarationDIncident::NonEcrite(format!("{n} ligne(s) écrite(s) au lieu d'une")),
-        Err(e) => return DeclarationDIncident::NonEcrite(e.to_string()),
-    }
     let body = match tier {
         // MISC (off-by-one) : on teste la VALEUR trimée non-vide, pas la longueur de la chaîne préfixée (", type "
         // = 7 > 6 et ", pilote " = 9 > 8 étaient TOUJOURS vrais -> label pendouillant « , type » quand vide).
@@ -157,7 +146,32 @@ pub(crate) fn incident_apply_tier(conn: &Connection, id: i64, author: &str, tier
         }
         None => "incident RÉTROGRADÉ (redevient case ordinaire)".to_string(),
     };
-    case_add_item(conn, id, t, "incident", author, &body, None);
+    // `P10.33-k` — LA DÉCLARATION ET SA CHRONOLOGIE DANS UNE TRANSACTION, LA CHRONOLOGIE COMPTÉE. `case_add_item` jetait
+    // l'issue de l'élément « incident DÉCLARÉ » (et du MTTA qu'il fige) : palier, type et pilote écrits, chronologie
+    // absente, registre consommé quand même, `204`. Aucun appelant ne tient de transaction (`with_write` ne prend que le
+    // verrou) : le geste ouvre la sienne (`jouer_le_geste_garde`, `BEGIN` refusé dit et compté au journal), et un refus
+    // de l'un des deux annule l'autre — `NonEcrite(cause)`, rien n'est posé ni attesté.
+    let issue = crate::handlers::transaction_validee::jouer_le_geste_garde(conn, "incidents", "déclaration d'incident", |conn| {
+        match conn.execute(
+            "UPDATE incident SET incident_tier=?1, \
+             incident_type=CASE WHEN ?2 THEN ?3 ELSE incident_type END, \
+             commander=CASE WHEN ?4 THEN ?5 ELSE commander END WHERE id=?6",
+            params![tier, type_fourni.is_some(), type_fourni.flatten(), pilote_fourni.is_some(), pilote_fourni.flatten(), id],
+        ) {
+            Ok(1) => {}
+            Ok(0) => return Err(DeclarationDIncident::DossierIntrouvable),
+            Ok(n) => return Err(DeclarationDIncident::NonEcrite(format!("{n} ligne(s) écrite(s) au lieu d'une"))),
+            Err(e) => return Err(DeclarationDIncident::NonEcrite(e.to_string())),
+        }
+        ajouter_l_element_au_dossier(conn, id, t, "incident", author, &body, None)
+            .map_err(|e| DeclarationDIncident::NonEcrite(format!("chronologie : {e}")))
+    });
+    match issue {
+        IssueDuGesteGarde::Valide(()) => {}
+        IssueDuGesteGarde::Refuse(refus) => return refus,
+        IssueDuGesteGarde::NonOuvert(e) => return DeclarationDIncident::NonEcrite(format!("transaction refusée ({e})")),
+        IssueDuGesteGarde::NonValide(e) => return DeclarationDIncident::NonEcrite(format!("validation refusée ({e})")),
+    }
     // `P10.31-u` — LE MAILLON EST CONSOMMÉ : il était jeté (appel nu), et la déclaration se disait attestée sans trace.
     match ledger_append(conn, "case.incident", &format!("#{id} tier={} by {author}", tier.map(|t| t.to_string()).unwrap_or_else(|| "none".into()))) {
         MaillonDeRegistre::Inscrit => DeclarationDIncident::Posee,
@@ -604,8 +618,14 @@ pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author
             Err(e) => return Err(RefusDAttache::EtapesNonEcrites(format!("étape {step_id} : {e}"))),
         }
     }
+    // `P10.33-k`, `P10.22-q` — LA CHRONOLOGIE EST ÉCRITE DANS LA TRANSACTION DES ÉTAPES, ET COMPTÉE. Elle était posée
+    // APRÈS le `COMMIT` par `case_add_item`, qui jette son issue : les étapes validées, l'élément « runbook attaché »
+    // pouvait manquer, le MTTA (`first_response_ts`) rester non figé, et le registre attestait quand même. Un refus
+    // abandonne `txn` : son `Drop` annule les étapes avec elle — l'attache est entière (étapes ET chronologie) ou n'est pas.
+    let chronologie = format!("runbook « {rb_name} » attaché ({n} étapes)");
+    ajouter_l_element_au_dossier(conn, id, now(), "runbook", author, &chronologie, None)
+        .map_err(|e| RefusDAttache::EtapesNonEcrites(format!("chronologie : {e}")))?;
     txn.commit().map_err(|e| RefusDAttache::EtapesNonEcrites(format!("validation refusée ({e})")))?;
-    case_add_item(conn, id, now(), "runbook", author, &format!("runbook « {rb_name} » attaché ({n} étapes)"), None);
     ledger_append(conn, "case.runbook_attach", &format!("#{id} runbook={runbook_id} '{rb_name}' steps={n} by {author}"));
     Ok(n)
 }
@@ -720,20 +740,33 @@ pub(crate) fn step_advance(conn: &Connection, id: i64, step_id: i64, status: &st
     };
     let t = now();
     let note_s = note.map(str::trim).filter(|s| !s.is_empty());
-    match conn.execute(
-        "UPDATE case_step SET status=?1, actor=?2, ts=?3, note=?4 WHERE id=?5 AND incident_id=?6",
-        params![st, actor, t, note_s, step_id, id],
-    ) {
-        Ok(0) => return IssueDeLEtape::EtapeAbsente, // aucune ligne modifiée : absence
-        Ok(_) => {}
-        Err(e) => return IssueDeLEtape::NonEcrite(e.to_string()),
-    }
     let body = match st {
         "done" => format!("étape « {title} » marquée FAITE"),
         "skipped" => format!("étape « {title} » IGNORÉE{}", note_s.map(|n| format!(" — {n}")).unwrap_or_default()),
         _ => format!("étape « {title} » remise EN ATTENTE"),
     };
-    case_add_item(conn, id, t, "step", actor, &body, None);
+    // `P10.33-k` — L'ÉTAPE ET SA CHRONOLOGIE DANS UNE TRANSACTION, LA CHRONOLOGIE COMPTÉE. `case_add_item` jetait l'issue
+    // de l'élément `step` (et du MTTA qu'il fige) : l'étape écrite, la chronologie absente, le registre `case.step`
+    // consommé, `Ecrite` et `204`. Aucun appelant ne tient de transaction (`with_write` ne prend que le verrou) : le geste
+    // ouvre la sienne, et un refus de l'un des deux annule l'autre — `NonEcrite(cause)`, l'étape garde son statut.
+    let issue = crate::handlers::transaction_validee::jouer_le_geste_garde(conn, "incidents", "avancement d'une étape", |conn| {
+        match conn.execute(
+            "UPDATE case_step SET status=?1, actor=?2, ts=?3, note=?4 WHERE id=?5 AND incident_id=?6",
+            params![st, actor, t, note_s, step_id, id],
+        ) {
+            Ok(0) => return Err(IssueDeLEtape::EtapeAbsente), // aucune ligne modifiée : absence
+            Ok(_) => {}
+            Err(e) => return Err(IssueDeLEtape::NonEcrite(e.to_string())),
+        }
+        ajouter_l_element_au_dossier(conn, id, t, "step", actor, &body, None)
+            .map_err(|e| IssueDeLEtape::NonEcrite(format!("chronologie : {e}")))
+    });
+    match issue {
+        IssueDuGesteGarde::Valide(()) => {}
+        IssueDuGesteGarde::Refuse(refus) => return refus,
+        IssueDuGesteGarde::NonOuvert(e) => return IssueDeLEtape::NonEcrite(format!("transaction refusée ({e})")),
+        IssueDuGesteGarde::NonValide(e) => return IssueDeLEtape::NonEcrite(format!("validation refusée ({e})")),
+    }
     // `P10.31-u` — LE MAILLON EST CONSOMMÉ (il était jeté par un appel nu).
     match ledger_append(conn, "case.step", &format!("#{id} step={step_id} -> {st} by {actor}")) {
         MaillonDeRegistre::Inscrit => IssueDeLEtape::Ecrite,

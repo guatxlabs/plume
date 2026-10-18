@@ -394,6 +394,13 @@ fn refus_budget_pour(p: &Plafond) -> String {
 /// `mallocWithAlarm` provoque en refusant l'allocation. Toute autre erreur est rendue TELLE QUELLE — ce
 /// traducteur n'existe que pour la seule qui était illisible.
 pub(crate) fn message_erreur(e: &rusqlite::Error) -> String {
+    // `P10.33-r` — UNE ERREUR DU SUPPORT DE LA BASE (E/S, ouverture, disque plein, corruption, verrou)
+    // SE DIT AU JOURNAL AVEC SON CODE ÉTENDU. Le texte du moteur est le même pour trente causes
+    // (« disk I/O error » couvre `IOERR_READ`, `IOERR_SHMSIZE`, `IOERR_SHMMAP`, `IOERR_LOCK`…) : sans le
+    // code, un incident de démarrage ne se tranche pas. Le TEXTE rendu au client ne change pas.
+    if est_erreur_du_support(e) {
+        eprintln!("[sqlite] erreur du support de la base : {}", decrire_l_erreur(e));
+    }
     if est_manque_de_memoire(e) {
         return refus_budget_pour(&plafond_courant());
     }
@@ -419,8 +426,88 @@ fn est_interruption(e: &rusqlite::Error) -> bool {
 
 /// La reconnaissance, isolée pour être EXERCÉE. `SQLITE_NOMEM` est le SEUL code que le franchissement du
 /// plafond peut produire (`*pp = 0` dans l'allocateur -> `SQLITE_NOMEM` remonté par le VDBE).
+/// `P10.33-r` — un refus d'allocation de la couche d'E/S (`SQLITE_IOERR_NOMEM`, code primaire
+/// `SQLITE_IOERR`) n'arrive JAMAIS ici sous ce code : SQLite le convertit en `SQLITE_NOMEM` à la frontière
+/// de l'API (`sqlite3OomFault` à l'abandon de l'instruction, puis `apiHandleError` dans `sqlite3ApiExit`,
+/// que traversent `sqlite3_step`, `sqlite3_prepare*` et l'ouverture). Il est donc déjà reconnu ici.
 fn est_manque_de_memoire(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::OutOfMemory)
+}
+
+/// `P10.33-r` — LES ERREURS QUI ACCUSENT LE SUPPORT DE LA BASE, et non la requête : celles-là se
+/// journalisent avec leur code étendu (`message_erreur`). Une erreur de la requête (syntaxe, colonne
+/// inconnue, refus de l'authorizer) n'y entre pas : elle est l'affaire de l'analyste, et la journaliser
+/// noierait le journal d'hôte sous les fautes de frappe.
+fn est_erreur_du_support(e: &rusqlite::Error) -> bool {
+    use rusqlite::ErrorCode as C;
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if matches!(
+        f.code,
+        C::SystemIoFailure | C::CannotOpen | C::DiskFull | C::DatabaseCorrupt | C::NotADatabase
+            | C::FileLockingProtocolFailed
+    ))
+}
+
+/// Les codes étendus de la famille `SQLITE_IOERR` (code primaire 10), indexés par leur rang étendu
+/// (`code >> 8`), recopiés de `sqlite3.h` : `SQLITE_IOERR_NOMEM` = `10 | (12 << 8)` = 3082.
+const NOMS_DES_CODES_IOERR: [&str; 35] = [
+    "SQLITE_IOERR",
+    "SQLITE_IOERR_READ",
+    "SQLITE_IOERR_SHORT_READ",
+    "SQLITE_IOERR_WRITE",
+    "SQLITE_IOERR_FSYNC",
+    "SQLITE_IOERR_DIR_FSYNC",
+    "SQLITE_IOERR_TRUNCATE",
+    "SQLITE_IOERR_FSTAT",
+    "SQLITE_IOERR_UNLOCK",
+    "SQLITE_IOERR_RDLOCK",
+    "SQLITE_IOERR_DELETE",
+    "SQLITE_IOERR_BLOCKED",
+    "SQLITE_IOERR_NOMEM",
+    "SQLITE_IOERR_ACCESS",
+    "SQLITE_IOERR_CHECKRESERVEDLOCK",
+    "SQLITE_IOERR_LOCK",
+    "SQLITE_IOERR_CLOSE",
+    "SQLITE_IOERR_DIR_CLOSE",
+    "SQLITE_IOERR_SHMOPEN",
+    "SQLITE_IOERR_SHMSIZE",
+    "SQLITE_IOERR_SHMLOCK",
+    "SQLITE_IOERR_SHMMAP",
+    "SQLITE_IOERR_SEEK",
+    "SQLITE_IOERR_DELETE_NOENT",
+    "SQLITE_IOERR_MMAP",
+    "SQLITE_IOERR_GETTEMPPATH",
+    "SQLITE_IOERR_CONVPATH",
+    "SQLITE_IOERR_VNODE",
+    "SQLITE_IOERR_AUTH",
+    "SQLITE_IOERR_BEGIN_ATOMIC",
+    "SQLITE_IOERR_COMMIT_ATOMIC",
+    "SQLITE_IOERR_ROLLBACK_ATOMIC",
+    "SQLITE_IOERR_DATA",
+    "SQLITE_IOERR_CORRUPTFS",
+    "SQLITE_IOERR_IN_PAGE",
+];
+
+/// Le nom lisible d'un code étendu de la famille `SQLITE_IOERR`, `None` hors de cette famille ou pour
+/// un rang inconnu de cette table (le nombre seul est alors dit).
+fn nom_du_code_etendu(code: i32) -> Option<&'static str> {
+    if code & 0xff != rusqlite::ffi::SQLITE_IOERR {
+        return None;
+    }
+    usize::try_from(code >> 8).ok().and_then(|rang| NOMS_DES_CODES_IOERR.get(rang)).copied()
+}
+
+/// `P10.33-r` — CE QUE LE DÉMON DIT D'UNE ERREUR SQLITE À SON JOURNAL : le texte du moteur, suivi du
+/// code ÉTENDU (`[SQLITE_IOERR_NOMEM, code étendu 3082]`, ou `[code étendu N]` hors de la famille
+/// d'E/S). PURE. Une erreur qui n'est pas une `SqliteFailure` (conversion de type, ligne absente) n'a
+/// pas de code : son texte seul.
+pub(crate) fn decrire_l_erreur(e: &rusqlite::Error) -> String {
+    match e {
+        rusqlite::Error::SqliteFailure(f, _) => match nom_du_code_etendu(f.extended_code) {
+            Some(nom) => format!("{e} [{nom}, code étendu {}]", f.extended_code),
+            None => format!("{e} [code étendu {}]", f.extended_code),
+        },
+        _ => e.to_string(),
+    }
 }
 
 /// CE QUE LE PROCESSUS FERA DE SES TRIS. Trois cas, et ils sont EXCLUSIFS — d'où un type plutôt qu'un

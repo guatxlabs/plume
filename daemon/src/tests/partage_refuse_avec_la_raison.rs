@@ -33,7 +33,7 @@ async fn pr_panneau(st: &AppState, au: &AuthUser, pid: i64, corps: Value) -> u16
 }
 
 async fn pr_definition(st: &AppState, au: &AuthUser, lib: i64, visibilite: &str) -> u16 {
-    library_panel_update(State(st.clone()), Extension(au.clone()), Path(lib), Json(json!({ "visibility": visibilite }))).await.as_u16()
+    library_panel_update(State(st.clone()), Extension(au.clone()), Path(lib), Json(json!({ "visibility": visibilite }))).await.status().as_u16()
 }
 
 #[tokio::test]

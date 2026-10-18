@@ -169,7 +169,13 @@ mod masques_de_champ_lecture_ratee_ne_desarme_rien {
         let m = effective_masks(&path, "viewer", "default", None);
         let sql = soql_to_sql_masked_x("search | table src_user", 0, 0, None, &m).unwrap();
         match run_query_ex(&path, &sql, 5000, None) {
-            Err(e) => assert!(e.to_string().contains("sel"), "refus qui nomme le sel : {e}"),
+            // Sel ABSENT : le refus le dit tel, jamais « illisible » (vérification finale de la vague V, mutant
+            // C10 : `SQLITE_DONE` rendu en échec de lecture restait vert sous un simple `contains("sel")`).
+            Err(e) => {
+                let e = e.to_string();
+                assert!(e.contains("sel") && e.contains("absent"), "refus qui nomme le sel absent : {e}");
+                assert!(!e.contains("illisible"), "un sel absent n'est pas un sel illisible : {e}");
+            }
             Ok(r) => panic!("sans sel, la requête HASH doit échouer fermé, servi : {}", r["rows"]),
         }
     }

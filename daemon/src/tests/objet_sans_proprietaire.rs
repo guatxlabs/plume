@@ -589,9 +589,9 @@ async fn sp_liste_ergo(st: &AppState, au: &AuthUser, quoi: &str) -> Vec<(i64, bo
 /// LA PORTE RÉELLE, exercée : un `PATCH` vide passe la garde puis n'écrit que l'horodatage.
 async fn sp_porte_ergo(st: &AppState, au: &AuthUser, quoi: &str, id: i64) -> StatusCode {
     if quoi == "library_panels" {
-        library_panel_update(State(st.clone()), Extension(au.clone()), Path(id), Json(json!({}))).await
+        library_panel_update(State(st.clone()), Extension(au.clone()), Path(id), Json(json!({}))).await.status()
     } else {
-        playlist_update(State(st.clone()), Extension(au.clone()), Path(id), Json(json!({}))).await
+        playlist_update(State(st.clone()), Extension(au.clone()), Path(id), Json(json!({}))).await.status()
     }
 }
 

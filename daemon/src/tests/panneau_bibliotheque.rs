@@ -352,7 +352,7 @@ async fn une_bibliotheque_passee_privee_apres_coup_reste_resolue() {
     }
     let (_, lib) = pb_lib(&st, &adm, json!({ "name": "p", "query": "search source=coffre | table message", "is_soql": true, "visibility": "shared" })).await;
     assert_eq!(panel_update(State(st.clone()), Extension(edt.clone()), Path(pid), Json(json!({ "library_panel_id": lib }))).await.status().as_u16(), 204);
-    assert_eq!(library_panel_update(State(st.clone()), Extension(adm.clone()), Path(lib), Json(json!({ "visibility": "private" }))).await.as_u16(), 204);
+    assert_eq!(library_panel_update(State(st.clone()), Extension(adm.clone()), Path(lib), Json(json!({ "visibility": "private" }))).await.status().as_u16(), 204);
     let (cd, vd) = pb_json(panel_data(State(st.clone()), Extension(edt.clone()), Path(pid), pb_q()).await).await;
     assert_eq!((cd, pb_lignes(&vd)), (200, 1), "RÉSIDU DÉCLARÉ : la révocation n'est pas rétroactive");
     ff_rm(&dbp);

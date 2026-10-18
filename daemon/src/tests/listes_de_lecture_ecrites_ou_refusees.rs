@@ -14,15 +14,15 @@
 // d'écrit, transaction refermée ; la lecture d'existence refusée -> 503 (jamais 404), une absence -> 404 ;
 // 403 inchangé ; nominal inchangé (contrôle positif dans chaque témoin) ; les quatre causes de transaction
 // prennent les ouvertures que la console sait lire (copie des expressions de web/core.js, lookahead traduit pour
-// `regex`) — servies en corps par la SUPPRESSION seule, la modification les écrit au journal.
+// `regex`) — servies en corps par la suppression comme par la modification (`P10.33-l`).
 //
 // MUTANTS JOUÉS (VERIF_MUT, retirés avant le commit) : U8_VIS_LET (le `let _` remis sur visibility),
 // U8_SANS_GARDE (écritures d'avant le refus validées), U8_OK0 (`Ok(0)` accepté), U8_LECTURE_404 (404 pour une
 // lecture refusée), U8_503_EN_204 (204 rendu malgré le refus), U8_DEL_LET (le `DELETE` avalé).
 //
-// CE QU'ILS NE TIENNENT PAS : le corps du 503 de la MODIFICATION (signature `StatusCode` conservée, la cause part
-// au journal) ; `ergo_editable` rend toujours 403 sur une lecture refusée de la propriété (hors de ce lot) ; ce que
-// la console peint de ces refus (web/ hors périmètre) ; `case_detach_item`, troisième reste nommé de P10.33-l.
+// CE QU'ILS NE TIENNENT PAS : le corps du 503 de la MODIFICATION et la porte d'édition tri-état (`P10.33-l`) sont
+// tenus par `refus_de_modification_servi_avec_sa_cause.rs`, pas ici ; ce que la console peint de ces refus (web/ hors
+// périmètre) ; `case_detach_item`, troisième reste nommé de P10.33-l.
 // =====================================================================================
 mod listes_de_lecture_ecrites_ou_refusees {
     use super::*;
@@ -64,7 +64,7 @@ mod listes_de_lecture_ecrites_ou_refusees {
     }
 
     async fn ldl_modifier(st: &AppState, qui: &AuthUser, id: i64, corps: Value) -> u16 {
-        playlist_update(State(st.clone()), Extension(qui.clone()), Path(id), Json(corps)).await.as_u16()
+        playlist_update(State(st.clone()), Extension(qui.clone()), Path(id), Json(corps)).await.status().as_u16()
     }
 
     /// MUTATIONS QUI LE FONT ROUGIR : U8_VIS_LET (204, liste restée partagée), U8_SANS_GARDE (nom et intervalle
@@ -251,7 +251,7 @@ mod listes_de_lecture_ecrites_ou_refusees {
     }
 
     /// Les causes « transaction annulée » et « transaction non prise » s'ouvrent comme la console sait les lire (la
-    /// suppression les sert en corps ; la modification, 503 nu, ne les écrit qu'au journal)
+    /// suppression et la modification les servent en corps)
     /// (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, `OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`, web/core.js — copie, le
     /// lookahead négatif traduit par une alternative fin/non-lettre).
     #[test]

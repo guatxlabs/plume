@@ -22,18 +22,34 @@ use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apre
 /// P7.13-a : le PRÉDICAT lui-même n'est plus réécrit ici — c'est `panneau_resolu::lisible_par`, le MÊME que
 /// celui qui filtre l'inventaire (`library_panels_list`) et que celui qui autorise un RATTACHEMENT. Trois
 /// surfaces, une seule expression : elles ne peuvent plus diverger.
-fn ergo_editable(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> bool {
+///
+/// `P10.33-l` — TROIS ISSUES : `Ok(true)` le droit est établi, `Ok(false)` le refus de droit est établi
+/// (403), `Err` la lecture du propriétaire et de la visibilité a été refusée — ni droit ni refus ne sont établis. La
+/// forme d'avant (`Err(_) => false`) rendait 403 sur une lecture refusée : un refus de droit inventé, pour un objet que
+/// le compte a peut-être le droit de modifier.
+fn ergo_editable(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> rusqlite::Result<bool> {
     if au.is_admin() {
-        return true;
+        return Ok(true);
     }
     let sql = match table {
         "library_panel" => "SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM library_panel WHERE id=?1",
         "playlist" => "SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM playlist WHERE id=?1",
-        _ => return false,
+        _ => return Ok(false),
     };
-    match conn.query_row(sql, params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-        Ok((owner, vis)) => panneau_resolu::lisible_par(&owner, &vis, au),
-        Err(_) => false,
+    let (owner, vis) = conn.query_row(sql, params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    Ok(panneau_resolu::lisible_par(&owner, &vis, au))
+}
+
+/// `P10.33-l` — LA PORTE D'ÉDITION D'UN GESTE, rendue en réponse : `None` le geste peut continuer ; `Some(403)` refus
+/// de droit établi ; `Some(404)` l'objet n'a plus de ligne (l'appelant vient d'en lire l'existence sous le même verrou
+/// d'écrivain : seul un autorisateur à état l'atteint, dans le témoin) ; `Some(503 nommé)` la lecture du droit a été
+/// refusée — la cause du moteur part au journal avec le reste de la phrase, par `err_json`.
+fn refus_de_la_porte_d_edition(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> Option<Response> {
+    match ergo_editable(conn, au, table, id) {
+        Ok(true) => None,
+        Ok(false) => Some(StatusCode::FORBIDDEN.into_response()),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Some(StatusCode::NOT_FOUND.into_response()),
+        Err(e) => Some(err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DROIT_D_EDITION_NON_LU} ({table} #{id} : {e})"))),
     }
 }
 
@@ -68,16 +84,15 @@ pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_TRANSACTION_NON_OUVE
      NON SUPPRIMÉ : la base n'a pas pris la transaction de la suppression (BEGIN refusé : verrou tenu, ou transaction \
      d'un autre geste pendante sur l'écrivain) — RIEN n'est écrit : la définition et ses rattachements sont intacts. \
      Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
-/// `P10.33-l` — la modification d'une liste de lecture refusée : rien n'en est écrit. Elle part au JOURNAL (par
-/// `err_json`) : `playlist_update` rend un `StatusCode` sans corps, la console ne reçoit qu'un 503 nu. Son ouverture
-/// suit pourtant celle que la console sait lire (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js), pour le jour où
-/// la route servira son corps.
+/// `P10.33-l` — la modification d'une liste de lecture refusée : rien n'en est écrit. Servie en corps du 503 de
+/// `playlist_update` (et au journal par `err_json`), à l'ouverture que la console sait lire
+/// (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
 pub(crate) const CAUSE_LISTE_DE_LECTURE_INCHANGEE: &str = "LISTE DE LECTURE INCHANGÉE : la base n'a pas pris l'écriture \
      de la modification ou n'en a écrit aucune ligne, et la transaction est annulée — le nom, l'intervalle, les tableaux \
      et la visibilité de la liste sont ceux d'avant (une liste partagée le reste). Réessayez ; si le refus persiste, la \
      base est en lecture seule, pleine ou verrouillée.";
-/// `P10.33-l` — le `BEGIN` de cette modification refusé. Même régime : journal seul, 503 nu côté console ; ouverture
-/// de la forme `OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`.
+/// `P10.33-l` — le `BEGIN` de cette modification refusé. Servie en corps du 503 ; ouverture de la forme
+/// `OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`.
 pub(crate) const CAUSE_LISTE_DE_LECTURE_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "LISTE DE LECTURE INCHANGÉE : la base \
      n'a pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
      pendante sur l'écrivain) — RIEN n'est écrit. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
@@ -96,6 +111,11 @@ pub(crate) const CAUSE_LISTE_DE_LECTURE_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE: &
 pub(crate) const CAUSE_LISTE_DE_LECTURE_NON_LUE: &str = "LISTE DE LECTURE NON LUE : la base a refusé la lecture qui \
      établit son existence — ce n'est pas une absence, et RIEN n'est écrit. Réessayez ; si le refus persiste, la base \
      est illisible ou verrouillée.";
+/// `P10.33-l` — le droit de modifier un panneau de bibliothèque ou une liste de lecture n'a pas pu être lu (propriétaire
+/// et visibilité) : ce n'est pas un refus de droit (403), et rien n'est écrit.
+pub(crate) const CAUSE_DROIT_D_EDITION_NON_LU: &str = "DROIT D'ÉDITION NON LU : la base a refusé la lecture du \
+     propriétaire et de la visibilité de l'objet — ce n'est pas un refus de droit, et RIEN n'est écrit. Réessayez ; si le \
+     refus persiste, la base est illisible ou verrouillée.";
 /// `P10.20-w` — la révocation d'un instantané refusée : il reste lisible par son jeton.
 pub(crate) const CAUSE_INSTANTANE_NON_SUPPRIME: &str = "INSTANTANÉ NON SUPPRIMÉ : la base a refusé la suppression (ou \
      n'a supprimé aucune ligne) — l'instantané existe toujours et RESTE LISIBLE par son jeton de partage. Réessayez ; si \
@@ -186,31 +206,33 @@ pub(crate) async fn library_panel_create(State(st): State<AppState>, Extension(a
     }
 }
 
-pub(crate) async fn library_panel_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+pub(crate) async fn library_panel_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
     // is_soql EFFECTIF (corps si fourni, sinon base) -> un editor ne peut NI basculer en SQL brut NI éditer un
     // panneau déjà en SQL brut (miroir panel_update, anti-contournement fail-closed).
     let cur_soql: bool = match conn.query_row("SELECT COALESCE(is_soql,1) FROM library_panel WHERE id=?1", params![id], |r| r.get::<_, i64>(0).map(|n| n != 0)) {
         Ok(x) => x,
-        Err(_) => return StatusCode::NOT_FOUND,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    if !ergo_editable(&conn, &au, "library_panel", id) {
-        return StatusCode::FORBIDDEN;
+    if let Some(refus) = refus_de_la_porte_d_edition(&conn, &au, "library_panel", id) {
+        return refus;
     }
     let eff_soql = b.get("is_soql").and_then(|v| v.as_bool()).unwrap_or(cur_soql);
     if !raw_sql_allowed(eff_soql, &au.role) {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
     }
     // `P10.20-w` (gestes de `dash_ergonomics`) — les écritures de la modification vivent sous UN garde de geste :
     // une seule refusée ou sans effet (`Ok(0)` sur une ligne dont l'existence vient d'être lue) annule TOUTES les
     // autres, et la route refuse en 503 au lieu de rendre 204. La forme d'avant enchaînait cinq `let _ =` : une
     // bascule en « private » refusée laissait la définition PARTAGÉE pendant que la console lisait un succès.
-    // La signature reste `StatusCode` (six témoins existants lisent `.as_u16()` de ce retour) : la cause nommée
-    // part au journal par `err_json` (identifiant de corrélation), le corps n'est pas servi.
+    // `P10.33-l` — la route rend une `Response` : les trois refus (transaction non ouverte, écriture refusée ou sans
+    // effet, validation refusée) servent leur cause nommée en corps, avec l'identifiant de corrélation du journal. La
+    // forme d'avant rendait `StatusCode` : la cause partait au journal seul et la console lisait un 503 nu — sans
+    // apprendre que la définition gardait sa visibilité d'avant (partagée si elle l'était).
     let geste = format!("modification du panneau de bibliothèque #{id}");
     let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE_TRANSACTION_NON_OUVERTE) {
         Ok(t) => t,
-        Err(refus) => return refus.status(),
+        Err(refus) => return refus,
     };
     let ecrit: Result<(), String> = (|| {
         for (k, col) in [("name", "name"), ("title", "title"), ("query", "query"), ("viz", "viz"), ("drill", "drill")] {
@@ -229,14 +251,13 @@ pub(crate) async fn library_panel_update(State(st): State<AppState>, Extension(a
     })();
     if let Err(cause) = ecrit {
         drop(tx); // Drop -> ROLLBACK : l'état d'avant, cache compris (rien n'est invalidé).
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE} ({geste} : {cause})")).status();
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE} ({geste} : {cause})"));
     }
     rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE, || {
         // Édition d'une bibliothèque -> purge le cache des panneaux qui la référencent (leur requête a pu changer).
         panneau_avoue::cache_invalider_bibliotheque(&conn, id);
         StatusCode::NO_CONTENT.into_response()
     })
-    .status()
 }
 
 pub(crate) async fn library_panel_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -244,8 +265,8 @@ pub(crate) async fn library_panel_delete(State(st): State<AppState>, Extension(a
     if conn.query_row("SELECT 1 FROM library_panel WHERE id=?1", params![id], |_| Ok(())).is_err() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    if !ergo_editable(&conn, &au, "library_panel", id) {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Some(refus) = refus_de_la_porte_d_edition(&conn, &au, "library_panel", id) {
+        return refus;
     }
     // On DÉTACHE les panneaux référents (ils redeviennent autonomes avec leur query locale) — pas de perte.
     // `P10.20-w` (gestes de `dash_ergonomics`) — détachement et suppression sous UN garde : une suppression refusée
@@ -345,24 +366,23 @@ fn liste_de_lecture_existe(conn: &Connection, id: i64) -> Result<(), Response> {
     }
 }
 
-pub(crate) async fn playlist_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> StatusCode {
+pub(crate) async fn playlist_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
     if let Err(refus) = liste_de_lecture_existe(&conn, id) {
-        return refus.status();
+        return refus;
     }
-    if !ergo_editable(&conn, &au, "playlist", id) {
-        return StatusCode::FORBIDDEN;
+    if let Some(refus) = refus_de_la_porte_d_edition(&conn, &au, "playlist", id) {
+        return refus;
     }
     // `P10.33-l` — même forme que `library_panel_update` : les écritures de la modification vivent sous UN garde de
     // geste ; une seule refusée ou sans effet (`Ok(0)` sur une ligne dont l'existence vient d'être lue) annule TOUTES
     // les autres, et la route refuse en 503 au lieu de rendre 204. La forme d'avant enchaînait cinq `let _ =` : une
-    // bascule en « private » refusée laissait la liste PARTAGÉE pendant que la console lisait un succès. La signature
-    // reste `StatusCode` (la porte d'`objet_sans_proprietaire` lit ce retour) : la cause nommée part au journal par
-    // `err_json`, le corps n'est pas servi.
+    // bascule en « private » refusée laissait la liste PARTAGÉE pendant que la console lisait un succès. Les trois refus
+    // servent leur cause nommée en corps (la route rend une `Response`, plus un `StatusCode` qui la laissait au journal).
     let geste = format!("modification de la liste de lecture #{id}");
     let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_LISTE_DE_LECTURE_INCHANGEE_TRANSACTION_NON_OUVERTE) {
         Ok(t) => t,
-        Err(refus) => return refus.status(),
+        Err(refus) => return refus,
     };
     let ecrit: Result<(), String> = (|| {
         if let Some(v) = b.get("name").and_then(|v| v.as_str()) {
@@ -382,9 +402,9 @@ pub(crate) async fn playlist_update(State(st): State<AppState>, Extension(au): E
     })();
     if let Err(cause) = ecrit {
         drop(tx); // Drop -> ROLLBACK : la liste d'avant, visibilité comprise.
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LISTE_DE_LECTURE_INCHANGEE} ({geste} : {cause})")).status();
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LISTE_DE_LECTURE_INCHANGEE} ({geste} : {cause})"));
     }
-    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_LISTE_DE_LECTURE_INCHANGEE, || StatusCode::NO_CONTENT.into_response()).status()
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_LISTE_DE_LECTURE_INCHANGEE, || StatusCode::NO_CONTENT.into_response())
 }
 
 pub(crate) async fn playlist_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -392,8 +412,8 @@ pub(crate) async fn playlist_delete(State(st): State<AppState>, Extension(au): E
     if let Err(refus) = liste_de_lecture_existe(&conn, id) {
         return refus;
     }
-    if !ergo_editable(&conn, &au, "playlist", id) {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Some(refus) = refus_de_la_porte_d_edition(&conn, &au, "playlist", id) {
+        return refus;
     }
     // `P10.33-l` — l'effacement exige UNE ligne, sous le garde du geste (il n'écrit jamais dans la transaction d'un
     // autre geste) ; un refus rend le 503 nommé. La forme d'avant avalait le `DELETE` et rendait 204 : la liste

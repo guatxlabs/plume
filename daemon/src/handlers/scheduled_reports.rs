@@ -214,8 +214,9 @@ fn format_report_detail(name: &str, v: &Value) -> (i64, String) {
 /// écriture refusée (ou sans effet) n'est plus avalée, elle se lit ici et se compte au bilan du tick.
 #[derive(Debug, PartialEq)]
 pub(crate) enum IssueDuRapport {
-    /// Marque d'échéance (`last_run`) écrite AVANT l'envoi, puis rapport envoyé. `statut_ecrit` : `last_ok` /
-    /// `last_count` écrits (une ligne) ; `false` = envoi fait, statut perdu (journalisé, compté, aucun second envoi).
+    /// Marque d'échéance (`last_run`) écrite AVANT l'envoi, puis rapport envoyé. `statut_ecrit` : le statut d'après
+    /// envoi écrit (une ligne) — `last_ok` / `last_count` si `delivered`, `last_error` sinon (`P10.33-h`) ; `false` =
+    /// envoi tenté, statut perdu (journalisé, compté, aucun second envoi).
     Envoye { count: i64, delivered: bool, statut_ecrit: bool },
     /// Marque d'échéance refusée ou sans effet : AUCUN envoi. Le rapport reste dû au tick suivant, sans effet
     /// externe à re-tenter.
@@ -249,6 +250,10 @@ fn envoyer_le_rapport(kind: &str, url: &str, config: &Value, title: &str, detail
     notify_send(kind, url, config, 2, title, detail, "", ts)
 }
 
+/// `last_error` d'un rapport dont l'envoi a été refusé par le notificateur (`P10.33-h`) : constante nommée, sans
+/// l'URL du notificateur (elle peut porter une crédence) ni le contenu du rapport.
+pub(crate) const ENVOI_REFUSE_PAR_LE_NOTIFICATEUR: &str = "envoi refusé par le notificateur";
+
 /// EXÉCUTE un rapport (dataset GXQL) MASQUÉ par son `run_as_role` et le LIVRE via son notifier. Coeur partagé
 /// par le tick de fond et /run. Ne PANIQUE jamais (les erreurs remontent en `Err`). Le lock métadonnées n'est
 /// tenu QUE pour lire la définition + écrire le statut ; la requête (`run_query_ex`, pool read séparé) et
@@ -261,7 +266,10 @@ fn envoyer_le_rapport(kind: &str, url: &str, config: &Value, title: &str, detail
 /// Ce que « marque d'abord » change, et seulement cela : un processus tué ENTRE la marque et l'envoi perd le
 /// rapport de cet intervalle (`interval_s`) au lieu de le renvoyer au redémarrage. Un envoi rendu `false` ou un
 /// panic écrivaient déjà `last_run` avant ce changement : un envoi raté attendait déjà l'échéance suivante.
-/// `delivered = false` est rendu tel quel (réponse de /run), mais `last_ok` est écrit quand même (reste ouvert).
+/// `P10.33-h` — un envoi que le notificateur rend `false` n'écrit NI `last_ok` NI `last_count`, et n'efface pas
+/// l'erreur : il pose `last_error` = [`ENVOI_REFUSE_PAR_LE_NOTIFICATEUR`] (jamais l'URL ni le contenu). Avant, le
+/// même UPDATE que le succès écrivait un « dernier succès » et effaçait l'erreur précédente. `delivered` reste rendu
+/// tel quel à /run ; `statut_ecrit` se rapporte à l'écriture faite, quelle que soit l'issue de l'envoi.
 pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64) -> Result<IssueDuRapport, String> {
     // 1) charge la définition + le dataset GXQL + le notifier (kind/url/config) sous lock, puis relâche.
     let (name, run_as, tenant, soql, nkind, nurl, nconfig): (String, String, String, String, String, String, String) = {
@@ -292,11 +300,21 @@ pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64
             // 2b) l'envoi, une fois la marque posée.
             let delivered = envoyer_le_rapport(&nkind, &nurl, &config, &title, &detail, now_ts);
             // 2c) le statut d'après envoi, compté — un refus est dit et compté, jamais un second envoi.
+            //     `P10.33-h` — un envoi refusé n'est pas un succès : `last_error` seul, `last_ok`/`last_count` intacts.
             let statut = {
                 let conn = db.lock();
-                conn.execute("UPDATE scheduled_report SET last_ok=?1, last_error=NULL, last_count=?2 WHERE id=?3", params![now_ts, count, id])
+                if delivered {
+                    conn.execute("UPDATE scheduled_report SET last_ok=?1, last_error=NULL, last_count=?2 WHERE id=?3", params![now_ts, count, id])
+                } else {
+                    conn.execute("UPDATE scheduled_report SET last_error=?1 WHERE id=?2", params![ENVOI_REFUSE_PAR_LE_NOTIFICATEUR, id])
+                }
             };
-            let statut_ecrit = statut_du_rapport_ecrit(id, statut, "envoi tenté, mais statut d'envoi (last_ok, last_count) NON ÉCRIT");
+            let geste = if delivered {
+                "envoi tenté, mais statut d'envoi (last_ok, last_count) NON ÉCRIT"
+            } else {
+                "envoi refusé par le notificateur, et last_error NON ÉCRIT"
+            };
+            let statut_ecrit = statut_du_rapport_ecrit(id, statut, geste);
             Ok(IssueDuRapport::Envoye { count, delivered, statut_ecrit })
         }
         Err(e) => {

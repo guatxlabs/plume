@@ -289,7 +289,9 @@ pub(crate) fn read_field_mask_salt(conn: &Connection) -> Result<Option<String>, 
         Ok(s) if s.is_empty() => Ok(None),
         Ok(s) => Ok(Some(s)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.to_string()),
+        // `P10.33-r` : l'échec garde son CODE ÉTENDU (« disk I/O error » seul ne dit pas laquelle des
+        // trente causes d'E/S) — ce texte va aux deux journaux du sel.
+        Err(e) => Err(crate::sqlite_plafond::decrire_l_erreur(&e)),
     }
 }
 

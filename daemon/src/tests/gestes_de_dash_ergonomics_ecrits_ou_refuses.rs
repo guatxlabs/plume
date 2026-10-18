@@ -24,8 +24,8 @@
 //
 // CE QU'ILS NE TIENNENT PAS : un détachement SANS EFFET (`Ok(0)` du `UPDATE panel`, déclencheur IGNORE) n'est
 // pas refusé — le nombre de référents n'est pas relu avant, la suppression passe et les panneaux gardent un
-// `library_panel_id` orphelin ; le corps du 503 de la MODIFICATION (sa signature reste `StatusCode`, la
-// cause part au journal) ; ce que la console peint de ces refus.
+// `library_panel_id` orphelin ; ce que la console peint de ces refus. (Le corps du 503 de la MODIFICATION,
+// servi depuis `P10.33-l`, est tenu par `refus_de_modification_servi_avec_sa_cause.rs`.)
 // =====================================================================================
 mod gestes_de_dash_ergonomics_ecrits_ou_refuses {
     use super::*;
@@ -87,7 +87,7 @@ mod gestes_de_dash_ergonomics_ecrits_ou_refuses {
     }
 
     async fn gde_modifier(st: &AppState, qui: &AuthUser, lib: i64, corps: Value) -> u16 {
-        library_panel_update(State(st.clone()), Extension(qui.clone()), Path(lib), Json(corps)).await.as_u16()
+        library_panel_update(State(st.clone()), Extension(qui.clone()), Path(lib), Json(corps)).await.status().as_u16()
     }
 
     /// MUTATIONS QUI LE FONT ROUGIR : T8_UPD_LET (204, titre écrit), T8_UPD_204 (204).

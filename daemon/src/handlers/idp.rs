@@ -213,16 +213,15 @@ fn fetch_json(url: &str) -> Result<Value, String> {
 }
 
 /// Pose les cookies de session (plume_session HttpOnly + plume_csrf) sur une réponse — MÊME construction
-/// que `login_post` (jeton HMAC lié à l'epoch, TTL, Secure si TLS). Chemin de sortie commun OIDC/LDAP/MFA.
+/// que `login_post` (jeton HMAC lié à l'epoch, TTL ; `Secure` posé par `security_headers`, `P10.32-t`). Chemin de sortie commun OIDC/LDAP/MFA.
 /// `P10.23-l` — le jeton est frappé PAR L'APPELANT, AVANT sa ligne de registre (`frapper_la_session_du_compte`, qui
 /// lit l'époque du compte et peut refuser ; ou, au second facteur, l'époque que le ticket vient de prouver) : une
 /// époque de compte non lue refuse la connexion sans que le registre l'ait attestée.
 fn attach_session_cookies(st: &AppState, resp: &mut Response, token: &str) {
     let csrf = csrf_for(st.session_secret.as_slice(), token);
-    let secure = cookie_secure_suffix();
     let ttl = st.session_ttl_s.max(1);
-    let c_sess = format!("plume_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}{secure}");
-    let c_csrf = format!("plume_csrf={csrf}; SameSite=Strict; Path=/; Max-Age={ttl}{secure}");
+    let c_sess = format!("plume_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}");
+    let c_csrf = format!("plume_csrf={csrf}; SameSite=Strict; Path=/; Max-Age={ttl}");
     if let Ok(v) = c_sess.parse() {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
@@ -641,10 +640,9 @@ pub(crate) async fn oidc_start(State(st): State<AppState>, Path(name): Path<Stri
     };
     let challenge = pkce_challenge_s256(&verifier);
     let blob = oidc_state_sign(st.session_secret.as_slice(), &name, &state, &nonce, &verifier, 600);
-    let secure = cookie_secure_suffix();
     // SameSite=Lax : le cookie DOIT survivre à la navigation top-level de retour depuis l'IdP (Strict le
-    // droperait). HttpOnly ; Max-Age court (10 min) borné à la durée du flux.
-    let cookie = format!("plume_oidc={blob}; HttpOnly; SameSite=Lax; Path=/api/auth/oidc; Max-Age=600{secure}");
+    // droperait). HttpOnly ; Max-Age court (10 min) borné à la durée du flux. `Secure` : `security_headers`.
+    let cookie = format!("plume_oidc={blob}; HttpOnly; SameSite=Lax; Path=/api/auth/oidc; Max-Age=600");
     let url = oidc_authorize_url(&cfg, &ep, &state, &nonce, &challenge);
     let mut resp = (StatusCode::FOUND, [(header::LOCATION, url)]).into_response();
     if let Ok(v) = cookie.parse() {
@@ -760,8 +758,7 @@ pub(crate) async fn oidc_callback(
     // 8) Redirige vers `/` (jamais une URL contrôlée par l'utilisateur -> pas d'open redirect) + efface le state.
     let mut resp = (StatusCode::FOUND, [(header::LOCATION, "/")]).into_response();
     attach_session_cookies(&st, &mut resp, &jeton);
-    let secure = cookie_secure_suffix();
-    if let Ok(v) = format!("plume_oidc=; HttpOnly; SameSite=Lax; Path=/api/auth/oidc; Max-Age=0{secure}").parse() {
+    if let Ok(v) = "plume_oidc=; HttpOnly; SameSite=Lax; Path=/api/auth/oidc; Max-Age=0".parse() {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
     resp
@@ -794,10 +791,10 @@ pub(crate) async fn saml_start(State(st): State<AppState>, Path(name): Path<Stri
         Err(e) if e.contains("non compilé") => return err_json(StatusCode::NOT_IMPLEMENTED, e),
         Err(e) => return server_err(format!("échec de l'AuthnRequest SAML: {e}")),
     };
-    let secure = cookie_secure_suffix();
     // Cookie de flux Lax = défense en profondeur : peut NE PAS survivre au POST cross-site vers l'ACS
     // (SameSite=Lax exclut les POST cross-site) -> le RelayState signé (echo IdP) reste la SOURCE DE VÉRITÉ.
-    let cookie = format!("plume_saml={blob}; HttpOnly; SameSite=Lax; Path=/api/auth/saml; Max-Age=600{secure}");
+    // `Secure` : posé par `security_headers` selon la requête (`P10.32-t`).
+    let cookie = format!("plume_saml={blob}; HttpOnly; SameSite=Lax; Path=/api/auth/saml; Max-Age=600");
     let mut resp = (StatusCode::FOUND, [(header::LOCATION, url)]).into_response();
     if let Ok(v) = cookie.parse() {
         resp.headers_mut().append(header::SET_COOKIE, v);
@@ -881,8 +878,7 @@ pub(crate) async fn saml_acs(
     // 8) Redirige vers `/` (jamais une URL contrôlée par l'utilisateur) + efface le cookie de flux.
     let mut resp = (StatusCode::FOUND, [(header::LOCATION, "/")]).into_response();
     attach_session_cookies(&st, &mut resp, &jeton);
-    let secure = cookie_secure_suffix();
-    if let Ok(v) = format!("plume_saml=; HttpOnly; SameSite=Lax; Path=/api/auth/saml; Max-Age=0{secure}").parse() {
+    if let Ok(v) = "plume_saml=; HttpOnly; SameSite=Lax; Path=/api/auth/saml; Max-Age=0".parse() {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
     resp

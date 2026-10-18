@@ -35,14 +35,17 @@ pub(crate) static TLS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// `P10.32-t` — LE TLS EST TERMINÉ EN AMONT (Ingress k3s, Traefik, mandataire Docker, nginx hôte) : le démon parle
 /// HTTP en clair, le navigateur voit HTTPS. Posé au boot par `PLUME_TLS_TERMINATED_UPSTREAM=1` (« 1 » seul, toute
 /// autre valeur = off, défaut off). Ne pilote QUE l'attribut `Secure` des cookies et l'en-tête HSTS, jamais le listener
-/// (piloté par le `tls_on` local de `run`). Le démon croit le réglage sur parole : il ne lit aucun en-tête de mandataire.
+/// (piloté par le `tls_on` local de `run`). Le démon croit le réglage sur parole. Prioritaire sur l'annonce par requête
+/// (`X-Forwarded-Proto: https` d'un pair de `PLUME_TRUSTED_PROXIES`, `auth::https_vu_par_la_requete`), qui n'est qu'un repli.
 pub(crate) static TLS_TERMINATED_UPSTREAM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// `P10.32-t` — LE SITE UNIQUE DE DÉCISION : le navigateur parle-t-il HTTPS ? Vrai si le démon sert lui-même le TLS
-/// OU si l'exploitant déclare un mandataire TLS en amont. PURE : `cookie_secure_suffix_pour` (attribut `Secure`) et
-/// `hsts_pour` (en-tête HSTS) le lisent tous deux — aucune seconde copie de la règle.
-pub(crate) fn https_percu_par_le_navigateur(tls_natif: bool, termine_en_amont: bool) -> bool {
-    tls_natif || termine_en_amont
+/// `P10.32-t` — LE SITE UNIQUE DE DÉCISION : le navigateur parle-t-il HTTPS ? Vrai si le démon sert lui-même le TLS,
+/// OU si l'exploitant déclare un mandataire TLS en amont (le réglage, prioritaire), OU — repli, par requête — si un pair
+/// de la liste EXPLICITE `PLUME_TRUSTED_PROXIES` annonce `X-Forwarded-Proto: https` (`auth::https_vu_par_la_requete`).
+/// PURE : `cookie_secure_suffix_pour` (attribut `Secure`) et `hsts_pour` (en-tête HSTS) le lisent tous deux — aucune
+/// seconde copie de la règle.
+pub(crate) fn https_percu_par_le_navigateur(tls_natif: bool, termine_en_amont: bool, annonce_par_le_mandataire: bool) -> bool {
+    tls_natif || termine_en_amont || annonce_par_le_mandataire
 }
 
 /// `P10.32-t` — l'état posé au boot `(tls_natif, termine_en_amont)`, lu par les deux sites sur le chemin chaud.
@@ -60,8 +63,8 @@ pub(crate) fn tls_termine_en_amont_demande(conf: &std::collections::HashMap<Stri
 }
 
 /// `P10.32-t` — valeur de l'en-tête HSTS rendu (None = en-tête absent). PURE : seule source de `security_headers`.
-pub(crate) fn hsts_pour(tls_natif: bool, termine_en_amont: bool) -> Option<&'static str> {
-    if https_percu_par_le_navigateur(tls_natif, termine_en_amont) {
+pub(crate) fn hsts_pour(tls_natif: bool, termine_en_amont: bool, annonce_par_le_mandataire: bool) -> Option<&'static str> {
+    if https_percu_par_le_navigateur(tls_natif, termine_en_amont, annonce_par_le_mandataire) {
         Some("max-age=31536000; includeSubDomains")
     } else {
         None
@@ -110,6 +113,9 @@ pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     // requêtes (aucune nouvelle couche, aucune State) : invisible du client, coût ~1 ns -> mode 0 identique.
     HTTP_REQUESTS_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = req.uri().path().to_string();   // capturé avant next.run (req consommé ensuite)
+    // `P10.32-t` — l'annonce HTTPS d'un mandataire de confiance se lit sur la REQUÊTE (pair TCP + X-Forwarded-Proto),
+    // donc avant next.run ; ce booléen unique sert HSTS ET l'attribut `Secure` des cookies, plus bas.
+    let annonce_par_le_mandataire = crate::auth::https_vu_par_la_requete(&client_ip(&req), req.headers());
     let mut res = next.run(req).await;
     if res.status().is_server_error() {
         HTTP_5XX_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -123,13 +129,15 @@ pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
     set(h, "referrer-policy", "no-referrer");
     set(h, "permissions-policy", "geolocation=(), microphone=(), camera=()");
     set(h, "content-security-policy", CSP);
-    // HSTS UNIQUEMENT quand le navigateur parle HTTPS (item 1, `P10.32-t`) : TLS natif (PLUME_TLS_CERT/KEY) ou
-    // mandataire TLS déclaré en amont (PLUME_TLS_TERMINATED_UPSTREAM=1). Sinon (défaut) aucun HSTS sur l'origine
-    // en clair -> on ne casse pas un déploiement HTTP. Même règle que l'attribut `Secure` (`hsts_pour`).
+    // HSTS ET `Secure` UNIQUEMENT quand le navigateur parle HTTPS (item 1, `P10.32-t`) : TLS natif (PLUME_TLS_CERT/KEY),
+    // mandataire TLS déclaré en amont (PLUME_TLS_TERMINATED_UPSTREAM=1), ou X-Forwarded-Proto https d'un pair de la
+    // liste explicite PLUME_TRUSTED_PROXIES. Sinon (défaut) ni HSTS ni `Secure` sur l'origine en clair -> on ne casse
+    // pas un déploiement HTTP. UN état, UN booléen de requête, rendus par les deux fonctions pures du prédicat.
     let (tls_natif, termine_en_amont) = etat_tls_au_demarrage();
-    if let Some(hsts) = hsts_pour(tls_natif, termine_en_amont) {
+    if let Some(hsts) = hsts_pour(tls_natif, termine_en_amont, annonce_par_le_mandataire) {
         set(h, "strict-transport-security", hsts);
     }
+    crate::session::poser_l_attribut_secure(h, crate::session::cookie_secure_suffix_pour(tls_natif, termine_en_amont, annonce_par_le_mandataire));
     // Cache-Control par chemin (défense en profondeur, v118). Politique PURE & testable : cf. cache_control_for.
     if let Some(cc) = cache_control_for(&path) {
         set(h, "cache-control", cc);

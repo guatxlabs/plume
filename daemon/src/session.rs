@@ -1,6 +1,6 @@
 //! Sessions form-login (cookie HMAC) & endpoints d'identité : émission/vérif du jeton signé
 //! (`mint_session_du_compte`/`verify_session_du_compte`) mêlé à l'epoch de révocation (`load_session_epoch`/`bump_session_epoch`),
-//! rôle live (`live_role_for`), CSRF (`csrf_for`), cookies (`cookie_value`/`cookie_secure_suffix`), secret de
+//! rôle live (`live_role_for`), CSRF (`csrf_for`), cookies (`cookie_value`/`cookie_secure_suffix_pour`), secret de
 //! session (`load_session_secret`), hash/pose du mot de passe admin (`hash_pw`/`set_admin`) et les handlers
 //! `setup_status`/`setup_post`/`password_post`/`login_post`/`logout_post`/`me`. Extrait de main.rs
 //! (refactor split #25 — byte-identique). `P10.23-l` : l'époque PROPRE À UN COMPTE (`epoque_du_compte`,
@@ -511,20 +511,36 @@ pub(crate) fn cookie_value(header: &str, name: &str) -> Option<String> {
     header.split(';').map(|p| p.trim()).find_map(|p| p.strip_prefix(&prefix).map(|v| v.to_string()))
 }
 
-/// Attribut `Secure` des cookies UNIQUEMENT quand le navigateur parle HTTPS (sinon le cookie ne serait jamais
-/// renvoyé en HTTP) : TLS natif, ou mandataire TLS déclaré en amont (`P10.32-t`, PLUME_TLS_TERMINATED_UPSTREAM=1).
-/// Défaut : origine en clair, aucun `Secure`. Site UNIQUE de tous les cookies de session et d'IdP.
-pub(crate) fn cookie_secure_suffix() -> &'static str {
-    let (tls_natif, termine_en_amont) = crate::server::etat_tls_au_demarrage();
-    cookie_secure_suffix_pour(tls_natif, termine_en_amont)
-}
-
-/// `P10.32-t` — suffixe rendu, PUR : même règle que HSTS (`server::https_percu_par_le_navigateur`).
-pub(crate) fn cookie_secure_suffix_pour(tls_natif: bool, termine_en_amont: bool) -> &'static str {
-    if crate::server::https_percu_par_le_navigateur(tls_natif, termine_en_amont) {
+/// `P10.32-t` — suffixe `Secure` des cookies, PUR : même règle que HSTS (`server::https_percu_par_le_navigateur`).
+/// Attribut posé UNIQUEMENT quand le navigateur parle HTTPS (sinon le cookie ne serait jamais renvoyé en HTTP) : TLS
+/// natif, mandataire TLS déclaré en amont (PLUME_TLS_TERMINATED_UPSTREAM=1), ou X-Forwarded-Proto https d'un pair de la
+/// liste explicite PLUME_TRUSTED_PROXIES. Défaut : origine en clair, aucun `Secure`.
+pub(crate) fn cookie_secure_suffix_pour(tls_natif: bool, termine_en_amont: bool, annonce_par_le_mandataire: bool) -> &'static str {
+    if crate::server::https_percu_par_le_navigateur(tls_natif, termine_en_amont, annonce_par_le_mandataire) {
         "; Secure"
     } else {
         ""
+    }
+}
+
+/// `P10.32-t` — LE SITE UNIQUE DE L'ATTRIBUT `Secure` de tous les cookies de session et d'IdP : appelé par
+/// `server::security_headers`, qui connaît la requête (pair TCP, X-Forwarded-Proto) et rend HSTS par le même booléen.
+/// Ajoute `suffixe` (rendu par `cookie_secure_suffix_pour`) à chaque `Set-Cookie` de la réponse qui ne porte pas déjà
+/// l'attribut ; suffixe vide -> rien ne change. Les gestionnaires qui posent un cookie n'écrivent jamais `Secure`.
+pub(crate) fn poser_l_attribut_secure(entetes: &mut axum::http::HeaderMap, suffixe: &'static str) {
+    if suffixe.is_empty() || !entetes.contains_key(header::SET_COOKIE) {
+        return;
+    }
+    let cookies: Vec<axum::http::HeaderValue> = entetes.get_all(header::SET_COOKIE).iter().cloned().collect();
+    entetes.remove(header::SET_COOKIE);
+    for cookie in cookies {
+        let rendu = match cookie.to_str() {
+            Ok(texte) if !texte.split(';').skip(1).any(|a| a.trim().eq_ignore_ascii_case("secure")) => {
+                axum::http::HeaderValue::from_str(&format!("{texte}{suffixe}")).unwrap_or_else(|_| cookie.clone())
+            }
+            _ => cookie.clone(),
+        };
+        entetes.append(header::SET_COOKIE, rendu);
     }
 }
 
@@ -1241,7 +1257,7 @@ pub(crate) async fn password_post(
 
 // ---------- form-login : /api/login, /api/logout, /api/me (cookie de session signé + CSRF) ----------
 // POST /api/login {user,pass} -> vérifie via la MÊME résolution de compte que Basic (table user ->
-// admin -> config) puis pose `plume_session` (HttpOnly, SameSite=Strict, Path=/, Secure si TLS) +
+// admin -> config) puis pose `plume_session` (HttpOnly, SameSite=Strict, Path=/, Secure posé par security_headers selon la requête) +
 // `plume_csrf` (lisible JS). Échec -> 401 + lockout brute-force Phase 3 (compteur (user,ip) + SIEM).
 pub(crate) async fn login_post(
     State(st): State<AppState>,
@@ -1296,11 +1312,11 @@ pub(crate) async fn login_post(
         Err(refus) => return refus,
     };
     let csrf = csrf_for(st.session_secret.as_slice(), &token);
-    let secure = cookie_secure_suffix();
     let ttl = st.session_ttl_s.max(1);
     // plume_session : HttpOnly (invisible au JS) ; plume_csrf : lisible JS (le SPA le renvoie en header).
-    let c_sess = format!("plume_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}{secure}");
-    let c_csrf = format!("plume_csrf={csrf}; SameSite=Strict; Path=/; Max-Age={ttl}{secure}");
+    // `Secure` : posé par `security_headers` selon la requête (`poser_l_attribut_secure`, `P10.32-t`).
+    let c_sess = format!("plume_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}");
+    let c_csrf = format!("plume_csrf={csrf}; SameSite=Strict; Path=/; Max-Age={ttl}");
     let mut resp = (StatusCode::OK, Json(json!({ "ok": true, "user": name, "role": role }))).into_response();
     if let Ok(v) = c_sess.parse() {
         resp.headers_mut().append(header::SET_COOKIE, v);
@@ -1373,10 +1389,10 @@ fn admin_de_la_session(st: &AppState, jeton: &str) -> Option<String> {
 }
 
 fn cookies_effaces(statut: StatusCode, corps: Value) -> Response {
-    let secure = cookie_secure_suffix();
+    // `Secure` : posé par `security_headers` selon la requête (`poser_l_attribut_secure`, `P10.32-t`).
     let exp = "Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT";
-    let c_sess = format!("plume_session=; HttpOnly; SameSite=Strict; Path=/; {exp}{secure}");
-    let c_csrf = format!("plume_csrf=; SameSite=Strict; Path=/; {exp}{secure}");
+    let c_sess = format!("plume_session=; HttpOnly; SameSite=Strict; Path=/; {exp}");
+    let c_csrf = format!("plume_csrf=; SameSite=Strict; Path=/; {exp}");
     let mut resp = (statut, Json(corps)).into_response();
     if let Ok(v) = c_sess.parse() {
         resp.headers_mut().append(header::SET_COOKIE, v);

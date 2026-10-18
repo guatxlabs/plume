@@ -65,6 +65,7 @@ pub(crate) use ingest::*;
 mod query_exec;
 pub(crate) use query_exec::*;
 mod regex_de_requete; // P10.32-q : LE MOTIF REGEX D'UNE REQUÊTE — un constructeur borné (longueur, taille du programme, cache du DFA paresseux) commun au chaud et au froid, un cache à plusieurs motifs servis par référence
+mod integrity_check; // P10.33-v : LE CONTRÔLE D'INTÉGRITÉ SQLITE en lecture seule (quick_check, integrity_check, cipher_integrity_check) — trois sorties (0 sain, 1 corrompu, 2 aucun verdict), état des fichiers par `stat` seul, jamais de création ni de suppression de -wal/-shm
 mod db_ventilation; // OÙ PARTENT LES OCTETS : ventilation par objet, DÉRIVÉE du schéma (opt-in, dbstat parcourt tout)
 mod ventilation_serie; // LA MÊME MESURE, DANS LE TEMPS : tick lent -> table `metric` -> `metric_rollup` (90 j) -> SOQL `metric`. Un refus de publier reste un TROU, jamais un zéro
 mod limite_corps; // LE PLAFOND DE TAILLE D'UN CORPS INGERE : la limite qui MORD comptait des octets et ne le disait pas -> un seul auteur pour ce plafond ET pour son message
@@ -1029,7 +1030,7 @@ const SUBCOMMANDS_COLD: [(&str, &str); 3] = [
 /// détection d'une sous-commande INCONNUE, elle, n'est PAS une comparaison à cette liste (cf. la
 /// garde en bas de `main`). La liste est tenue alignée sur le code par
 /// `aide_cli_liste_les_memes_sous_commandes_que_le_dispatch` (elle lit `main.rs`).
-const SUBCOMMANDS: [(&str, &str); 23] = [
+const SUBCOMMANDS: [(&str, &str); 24] = [
     ("hashpw", "hashpw [<mdp>] — hash argon2 d'un mot de passe (stdin si omis)"),
     ("secret-des-gestes", "secret-des-gestes [--generer] — empreinte argon2id du secret des gestes (secret lu sur stdin, ou engendré et affiché une fois sur stderr) pour PLUME_GESTURE_SECRET_FILE"),
     ("respond", "respond — boucle du moteur de réponse (service séparé)"),
@@ -1051,6 +1052,7 @@ const SUBCOMMANDS: [(&str, &str); 23] = [
     ("backup-classify", "backup-classify <nom>… — classe de rétention d'un nom de sauvegarde, une ligne « <nom> <classe> » par nom (stdin si aucun argument ; sortie 3 si un nom est inclassable, donc jamais purgé)"),
     ("migrate-check", "migrate-check — compare le schéma live au code (lecture seule)"),
     ("db-stats", "db-stats — occupation disque SQLite (lecture seule)"),
+    ("integrity-check", "integrity-check [--full] [<chemin>] — contrôle d'intégrité SQLite en lecture seule (quick_check, integrity_check avec --full, plus cipher_integrity_check sous clé), une ligne JSON sur stdout ; 0 = sain, 1 = corrompu, 2 = AUCUN verdict (absente ou vide, clé fausse ou en-tête illisible, base occupée), 78 = PLUME_DB_KEY_FILE posé mais illisible (fail-closed, avant tout examen) ; applique la clé du démon même sur un chemin donné : une copie déchiffrée s'examine sans aucune clé du démon (ni PLUME_DB_KEY ni PLUME_DB_KEY_FILE, dans l'environnement comme dans le fichier PLUME_CONFIG — soc.conf sur un hôte systemd —, ni fichier de clé auto-engendrée PLUME_DB_KEY_AUTO_PATH, défaut <PLUME_DB>.key) ; un argument inconnu (drapeau ou second chemin) sort en 2 sans rien juger ; ne crée ni ne délie -wal ni -shm, sauf si le démon s'arrête pendant l'examen (course entre le stat et l'ouverture)"),
     ("fts-compact", "fts-compact — fusionne les segments de l'index plein-texte (rend les octets morts des purges)"),
     ("spool-requeue", "spool-requeue [--dry-run] — remet dans la file d'ingest les lots mis en QUARANTAINE (écartés après un ROLLBACK, donc rejouables et absents de la base). N'ouvre PAS la base : le geste reste disponible quand le démon refuse de servir"),
 ];
@@ -2127,6 +2129,28 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
             println!("   main : `metric plume_db_poste_bytes by poste | timechart span=1d avg(value)`)");
         }
         return;
+    }
+    // `P10.33-v` — LE CONTRÔLE D'INTÉGRITÉ, sur la base de la configuration ou sur un chemin donné.
+    // Le corps vit dans `integrity_check` (verdict pur, exerçable sans processus) ; ici : les arguments,
+    // la clé que le démon appliquerait, la ligne JSON sur stdout, le code de sortie. Trois sorties,
+    // comme `verify-control` : 0 = sain, 1 = corrompu, 2 = REFUS DE CONCLURE ; `db_key()` peut sortir
+    // en 78 avant tout examen (PLUME_DB_KEY_FILE posé mais illisible, fail-closed).
+    if args.get(1).map(String::as_str) == Some("integrity-check") {
+        let arguments = match integrity_check::analyser_les_arguments(&integrity_check::arguments_a_analyser(&args)) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(integrity_check::CODE_REFUS);
+            }
+        };
+        let chemin = match arguments.chemin {
+            Some(c) => c,
+            None => cfg(&load_config(), "PLUME_DB", "/var/lib/plume/db/plume.db"),
+        };
+        let cle = db_key();
+        let verdict = integrity_check::verifier(&chemin, arguments.mode, cle.as_deref());
+        println!("{}", verdict.rapport);
+        std::process::exit(verdict.code);
     }
     // ─────────────────────────────────────────────────────────────────────────────────────────────
     // ON N'ARRIVE ICI QUE SI AUCUNE SOUS-COMMANDE N'A RÉCLAMÉ L'ARGUMENT.

@@ -26,8 +26,8 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : la part de la formule de mémoire de `regex_de_requete.rs` qui n'est
 // pas le cache du DFA paresseux (automates, onepass, caches par fil du `Pool`) — lue dans la source, non
-// mesurée ; les tokens Sigma NON `|re` (`contains`, `startswith`…, littéraux échappés) ne sont pas compilés
-// à l'import, seule leur longueur l'est ; le clone par ligne n'est pas observable à l'exécution (il ne recompile
+// mesurée ; (les tokens Sigma NON `|re` passent désormais aussi par `compiler_motif` : témoins dans
+// `sigma_jetons_hors_re_compiles_comme_l_udf.rs`) ; le clone par ligne n'est pas observable à l'exécution (il ne recompile
 // pas) — il est rendu impossible par le type (`MotifCompile` sans `Clone`, champ privé), pas témoigné ; la
 // famine du sémaphore interactif (`acquire_query_permit`, politique de file non écrite) ; le coût de
 // recherche d'un motif admis à la limite ; la valeur recopiée en `String` à chaque ligne ; les compilations de

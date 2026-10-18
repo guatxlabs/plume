@@ -6,7 +6,8 @@
 // réglage ne permettait de les demander.
 //
 // TENU : le réglage `PLUME_TLS_TERMINATED_UPSTREAM` (« 1 » seul) et un prédicat PUR unique
-// `https_percu_par_le_navigateur(tls_natif, termine_en_amont)` lu par les DEUX sites. Témoins sur le prédicat, sur les
+// `https_percu_par_le_navigateur(tls_natif, termine_en_amont, annonce_par_le_mandataire)` lu par les DEUX sites (le
+// troisième terme, X-Forwarded-Proto d'un pair de confiance, est jugé dans `xfp_d_un_pair_de_confiance_pose_secure_et_hsts.rs`). Témoins sur le prédicat, sur les
 // chaînes rendues (`cookie_secure_suffix_pour`, `hsts_pour`) et sur la lecture du réglage — jamais en mutant les
 // statiques `TLS_ON` / `TLS_TERMINATED_UPSTREAM` dans le processus des tests (ils tournent en parallèle). La chaîne
 // réglage -> `boot_config` -> statique -> sites se juge de bout en bout dans un SOUS-PROCESSUS par cas (test 5) : en-tête
@@ -46,11 +47,13 @@ mod secure_et_hsts_derriere_un_mandataire_tls {
     fn p1032t_le_predicat_est_vrai_ssi_tls_natif_ou_mandataire_en_amont() {
         for natif in [false, true] {
             for amont in [false, true] {
-                assert_eq!(
-                    https_percu_par_le_navigateur(natif, amont),
-                    natif || amont,
-                    "(tls_natif={natif}, termine_en_amont={amont})"
-                );
+                for annonce in [false, true] {
+                    assert_eq!(
+                        https_percu_par_le_navigateur(natif, amont, annonce),
+                        natif || amont || annonce,
+                        "(tls_natif={natif}, termine_en_amont={amont}, annonce_par_le_mandataire={annonce})"
+                    );
+                }
             }
         }
     }
@@ -59,19 +62,21 @@ mod secure_et_hsts_derriere_un_mandataire_tls {
     fn p1032t_secure_et_hsts_poses_ensemble_ssi_l_un_des_deux() {
         for natif in [false, true] {
             for amont in [false, true] {
-                let attendu = natif || amont;
-                let secure = crate::session::cookie_secure_suffix_pour(natif, amont);
-                let hsts = hsts_pour(natif, amont);
-                assert_eq!(
-                    secure,
-                    if attendu { "; Secure" } else { "" },
-                    "attribut Secure faux pour (tls_natif={natif}, termine_en_amont={amont})"
-                );
-                assert_eq!(
-                    hsts,
-                    if attendu { Some("max-age=31536000; includeSubDomains") } else { None },
-                    "HSTS faux pour (tls_natif={natif}, termine_en_amont={amont})"
-                );
+                for annonce in [false, true] {
+                    let attendu = natif || amont || annonce;
+                    let secure = crate::session::cookie_secure_suffix_pour(natif, amont, annonce);
+                    let hsts = hsts_pour(natif, amont, annonce);
+                    assert_eq!(
+                        secure,
+                        if attendu { "; Secure" } else { "" },
+                        "attribut Secure faux pour (tls_natif={natif}, termine_en_amont={amont}, annonce={annonce})"
+                    );
+                    assert_eq!(
+                        hsts,
+                        if attendu { Some("max-age=31536000; includeSubDomains") } else { None },
+                        "HSTS faux pour (tls_natif={natif}, termine_en_amont={amont}, annonce={annonce})"
+                    );
+                }
             }
         }
     }
@@ -94,23 +99,22 @@ mod secure_et_hsts_derriere_un_mandataire_tls {
         // Défaut : aucun test ne pose les statiques (seul `boot_config` les écrit) -> origine en clair, sans Secure ni HSTS.
         let (natif, amont) = etat_tls_au_demarrage();
         assert_eq!((natif, amont), (false, false), "statiques TLS posées hors boot_config : le défaut n'est pas jugé");
-        assert_eq!(crate::session::cookie_secure_suffix(), "", "défaut : aucun attribut Secure");
-        // Le défaut « aucun HSTS » se juge AU SITE, sur l'en-tête servi par le routeur réel après le démarrage réel :
+        // Les défauts « aucun Secure » et « aucun HSTS » se jugent AU SITE, sur l'en-tête servi par le routeur réel après le démarrage réel :
         // `p1032t_le_routeur_reel_sert_secure_et_hsts_selon_le_reglage_lu_au_demarrage`, cas « réglage absent ».
 
-        // Câblage des deux sites (jugé sur le source, pas sur les statiques) : l'un et l'autre lisent l'état du boot
-        // par `etat_tls_au_demarrage` et rendent par la fonction pure qui porte le prédicat ; aucun ne relit `TLS_ON`.
+        // Câblage des deux sites (jugé sur le source, pas sur les statiques). Depuis la lecture par requête de
+        // X-Forwarded-Proto, les deux sites sont UNE fonction : `security_headers` lit l'état du boot par
+        // `etat_tls_au_demarrage` et l'annonce par `https_vu_par_la_requete`, puis rend HSTS par `hsts_pour` et pose
+        // `Secure` sur les cookies par `poser_l_attribut_secure(…, cookie_secure_suffix_pour(…))` ; elle ne relit pas
+        // `TLS_ON`. Que plus aucun gestionnaire n'écrive `Secure` lui-même se juge dans
+        // `xfp_d_un_pair_de_confiance_pose_secure_et_hsts.rs`.
         let serveur = include_str!("../server/mod.rs");
         let session = include_str!("../session.rs");
         let entetes = corps(serveur, "pub(crate) async fn security_headers(");
-        assert!(entetes.contains("etat_tls_au_demarrage()") && entetes.contains("hsts_pour("), "security_headers doit rendre HSTS par hsts_pour");
+        for appel in ["etat_tls_au_demarrage()", "https_vu_par_la_requete(", "hsts_pour(", "poser_l_attribut_secure(", "cookie_secure_suffix_pour("] {
+            assert!(entetes.contains(appel), "security_headers n'appelle plus {appel} : HSTS et Secure ne sont plus rendus au même site");
+        }
         assert!(!entetes.contains("TLS_ON"), "security_headers relit TLS_ON : second site de décision");
-        let suffixe = corps(session, "pub(crate) fn cookie_secure_suffix() ");
-        assert!(
-            suffixe.contains("etat_tls_au_demarrage()") && suffixe.contains("cookie_secure_suffix_pour("),
-            "cookie_secure_suffix doit rendre par cookie_secure_suffix_pour"
-        );
-        assert!(!suffixe.contains("TLS_ON"), "cookie_secure_suffix relit TLS_ON : second site de décision");
         for (nom, signature, source) in [
             ("hsts_pour", "pub(crate) fn hsts_pour(", serveur),
             ("cookie_secure_suffix_pour", "pub(crate) fn cookie_secure_suffix_pour(", session),

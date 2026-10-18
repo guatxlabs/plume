@@ -151,19 +151,31 @@ pub(crate) fn sigma_in_safe(s: &str) -> bool {
     !s.trim().is_empty() && !s.chars().any(|c| matches!(c, ',' | '(' | ')' | '|' | '"'))
 }
 
-/// Assemble un token `field=~PATTERN` en bornant la longueur du motif à `LONGUEUR_MAX_DU_MOTIF` OCTETS
-/// (limite DURE de l'UDF `regexp`, `crate::regex_de_requete`) : au-delà, l'UDF renverrait une ERREUR à
-/// l'ÉVAL -> `eval_value=0` -> règle MUETTE (angle mort SILENCIEUX). On préfère FLAGGER à la traduction
-/// (`Err`) qu'émettre une règle qui ne fire jamais.
+/// Refus NOMMÉ d'un jeton Sigma dont le programme compilé dépasserait `PLAFOND_DU_PROGRAMME` : un fait
+/// BORNÉ (le motif a été lu en entier et jugé), jamais une lecture ratée.
+pub(crate) const REFUS_SIGMA_PLAFOND_DU_PROGRAMME: &str = "programme compilé au-delà du plafond de l'UDF";
+
+/// Assemble un token `field=~PATTERN` après l'avoir passé par `compiler_motif` — LE constructeur de l'UDF
+/// `regexp` (`crate::regex_de_requete`) : même plafond de longueur (`LONGUEUR_MAX_DU_MOTIF` OCTETS), même
+/// plafond de programme (`PLAFOND_DU_PROGRAMME`). Un motif que l'UDF refuserait renverrait une ERREUR à
+/// CHAQUE éval -> `eval_value=0` -> règle MUETTE (angle mort SILENCIEUX) : on le FLAGGE à la traduction
+/// (`Err`) plutôt qu'émettre une règle qui ne fire jamais. `P10.32-q` : tous les jetons (contains,
+/// startswith, endswith, égalité, mot-clé, `|re`) passent ici ; avant, seuls les `|re` étaient compilés.
 pub(crate) fn sigma_regex_token(field: &str, pattern: &str) -> Result<String, String> {
-    use crate::regex_de_requete::LONGUEUR_MAX_DU_MOTIF;
-    if pattern.len() > LONGUEUR_MAX_DU_MOTIF {
-        return Err(format!(
+    use crate::regex_de_requete::{compiler_motif, MotifRefuse, LONGUEUR_MAX_DU_MOTIF, PLAFOND_DU_PROGRAMME};
+    match compiler_motif(pattern) {
+        Ok(_) => Ok(format!("{field}=~{pattern}")),
+        Err(MotifRefuse::TropLong) => Err(format!(
             "champ '{field}' : motif regex généré trop long ({} > {LONGUEUR_MAX_DU_MOTIF}, limite UDF) — non supporté",
             pattern.len()
-        ));
+        )),
+        Err(MotifRefuse::Invalide(regex::Error::CompiledTooBig(_))) => Err(format!(
+            "champ '{field}' : {REFUS_SIGMA_PLAFOND_DU_PROGRAMME} ({PLAFOND_DU_PROGRAMME} octets, borne de l'UDF regexp) — règle non importée"
+        )),
+        Err(MotifRefuse::Invalide(e)) => Err(format!(
+            "champ '{field}' : motif regex généré invalide pour le moteur Rust ({e}) — non importée"
+        )),
     }
-    Ok(format!("{field}=~{pattern}"))
 }
 
 /// Sigma `tags` -> 1re technique MITRE (`attack.t1059.001` -> `T1059.001`), validée par `norm_mitre`.

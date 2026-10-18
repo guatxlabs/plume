@@ -467,7 +467,83 @@ pub(crate) fn ledger_file_target_validate(root: &std::path::Path, target: &str) 
             return Err("target: non-fichier-régulier refusé (FIFO/device/répertoire)".into());
         }
     }
+    refuser_une_cible_sur_la_base_vivante(&parent_canon, file_name, &full)?;
     Ok(full)
+}
+
+/// `P10.33-w` — début de TOUTE phrase de refus d'une cible de puits `file` posée sur la base vivante.
+pub(crate) const REFUS_PUITS_SUR_LA_BASE_VIVANTE: &str = "target: la base vivante n'est jamais une cible de puits";
+
+/// `P10.33-w` — les fichiers d'une base SQLite : la base elle-même et ses compagnons, nommés par suffixe.
+pub(crate) const SUFFIXES_DES_FICHIERS_DE_BASE: [&str; 4] = ["", "-wal", "-shm", "-journal"];
+
+/// `P10.33-w` — UN PUITS `file` N'ÉCRIT JAMAIS DANS LA BASE VIVANTE. Une racine d'export posée sur le répertoire même
+/// de la base laissait passer `plume.db` (fichier régulier dans la racine) : l'écriture ajoutait des lignes JSONL à la
+/// fin du fichier SQLite, ou de son `-wal`. Refusés, pour la base de `PLUME_DB` et celle du plan de contrôle :
+///  1. un NOM de fichier de base (la base, et la même suffixée `-wal`, `-shm`, `-journal`), dans quelque répertoire
+///     que ce soit ;
+///  2. une cible dont le répertoire (canonique) EST celui de la base — même chemin canonique, ou même (périphérique,
+///     inode) par `stat` (montage lié). NE TIENT PAS PAR TÉMOIN : la moitié « même inode de répertoire » est
+///     intestable sans droit de montage (un même chemin canonique a toujours le même inode, et un répertoire ne se lie
+///     pas en dur) ; la retirer laisse tous les témoins verts. Gardée comme défense pour le montage lié ;
+///  3. une cible existante qui est le MÊME fichier (périphérique, inode) qu'un fichier de base : un lien dur.
+/// Tout se lit par chemins canoniques et `std::fs::metadata` (stat, aucun descripteur) : ouvrir un fichier de la base
+/// vivante depuis le processus qui la tient lâcherait ses verrous POSIX (`P10.33-u`). Appelée par
+/// `ledger_file_target_validate`, donc à la création du puits ET à chaque écriture confinée.
+fn refuser_une_cible_sur_la_base_vivante(
+    parent_canon: &std::path::Path,
+    file_name: &std::ffi::OsStr,
+    full: &std::path::Path,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let conf = load_config();
+    let base = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
+    let controle = crate::state::control_db_path(&conf, &base);
+    let meme_inode = |a: &std::fs::Metadata, b: &std::fs::Metadata| a.dev() == b.dev() && a.ino() == b.ino();
+    let cible = std::fs::symlink_metadata(full).ok();
+    for chemin in [base.as_str(), controle.as_str()] {
+        let chemin = std::path::Path::new(chemin);
+        let Some(nom_de_base) = chemin.file_name() else { continue };
+        let dossier = match chemin.parent() {
+            Some(d) if !d.as_os_str().is_empty() => d,
+            _ => std::path::Path::new("."),
+        };
+        for suffixe in SUFFIXES_DES_FICHIERS_DE_BASE {
+            let mut nom = nom_de_base.to_os_string();
+            nom.push(suffixe);
+            if file_name == nom.as_os_str() {
+                return Err(format!(
+                    "{REFUS_PUITS_SUR_LA_BASE_VIVANTE} : le nom {} est celui d'un fichier de base ; nommer la cible autrement",
+                    nom.to_string_lossy()
+                ));
+            }
+        }
+        let meme_repertoire = dossier.canonicalize().map(|d| d == parent_canon).unwrap_or(false)
+            || matches!(
+                (std::fs::metadata(dossier), std::fs::metadata(parent_canon)),
+                (Ok(a), Ok(b)) if meme_inode(&a, &b)
+            );
+        if meme_repertoire {
+            return Err(format!(
+                "{REFUS_PUITS_SUR_LA_BASE_VIVANTE} : le répertoire {} est celui de la base ; poser la racine d'export ailleurs",
+                parent_canon.display()
+            ));
+        }
+        if let Some(cible) = cible.as_ref() {
+            for suffixe in SUFFIXES_DES_FICHIERS_DE_BASE {
+                let mut nom = nom_de_base.to_os_string();
+                nom.push(suffixe);
+                let lien_dur = std::fs::metadata(dossier.join(&nom)).map(|f| meme_inode(&f, cible)).unwrap_or(false);
+                if lien_dur {
+                    return Err(format!(
+                        "{REFUS_PUITS_SUR_LA_BASE_VIVANTE} : la cible est le même fichier (lien dur) que {}",
+                        nom.to_string_lossy()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // =====================================================================================

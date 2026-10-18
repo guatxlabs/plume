@@ -304,6 +304,49 @@ pub(crate) fn proxy_is_trusted(peer: &str, trusted_list: &[String]) -> bool {
     }
 }
 
+/// `P10.32-t` — LE MANDATAIRE DE CONFIANCE ANNONCE-T-IL HTTPS ? Vrai SEULEMENT si (1) la liste `PLUME_TRUSTED_PROXIES`
+/// est EXPLICITE et NON VIDE, (2) le pair TCP y figure (comparaison par `IpAddr` replié, comme `proxy_is_trusted`), et
+/// (3) `X-Forwarded-Proto` est présent et que CHACUNE de ses valeurs (liste à virgules) vaut `https` (casse ignorée).
+/// PURE. Variante STRICTE de `proxy_is_trusted` : jamais la politique par défaut « pair privé/loopback », car sous la
+/// liste vide toute machine du réseau privé qui atteint le démon en direct pourrait annoncer un HTTPS qu'elle ne parle
+/// pas. Chaque valeur exigée, pas la première seule : un mandataire qui AJOUTE sa valeur (`https, http` quand un client
+/// en clair a forgé `https`) ne doit pas faire croire HTTPS ; la valeur du pair de confiance est la dernière. Le secret
+/// d'edge n'entre pas en jeu (décision de l'exploitant).
+pub(crate) fn https_annonce_par_un_pair_de_confiance(pair: &str, x_forwarded_proto: Option<&str>, liste_explicite: &[String]) -> bool {
+    if liste_explicite.is_empty() {
+        return false;
+    }
+    let Some(pair) = crate::ledger::ssrf_norm_ip(pair) else { return false };
+    if !liste_explicite.iter().any(|t| crate::ledger::ssrf_norm_ip(t) == Some(pair)) {
+        return false;
+    }
+    let Some(valeur) = x_forwarded_proto else { return false };
+    valeur.split(',').all(|v| v.trim().eq_ignore_ascii_case("https"))
+}
+
+/// `P10.32-t` — TOUTES LES LIGNES `X-Forwarded-Proto` d'une requête, jugées comme UNE liste (RFC 9110 §5.3 : des lignes
+/// répétées valent leurs valeurs jointes par virgule). Un mandataire qui AJOUTE sa ligne (`https` forgé par le client
+/// puis `http` du mandataire) ne doit pas faire croire HTTPS : lire la première ligne seule le ferait. Une ligne
+/// illisible (octets non visibles) vaut « pas https ». PURE (la liste est passée).
+pub(crate) fn https_annonce_par_les_entetes(pair: &str, headers: &axum::http::HeaderMap, liste_explicite: &[String]) -> bool {
+    let mut lignes: Vec<&str> = Vec::new();
+    for ligne in headers.get_all("x-forwarded-proto") {
+        match ligne.to_str() {
+            Ok(v) => lignes.push(v),
+            Err(_) => return false,
+        }
+    }
+    let jointes = lignes.join(",");
+    https_annonce_par_un_pair_de_confiance(pair, (!lignes.is_empty()).then_some(jointes.as_str()), liste_explicite)
+}
+
+/// `P10.32-t` — LA LECTURE PAR REQUÊTE, unique pour les deux sites (attribut `Secure` des cookies, en-tête HSTS) : le
+/// pair TCP (déjà replié par `client_ip`/`ip_du_pair`) et les lignes `X-Forwarded-Proto`, jugés contre la liste
+/// explicite lue une fois au premier appel.
+pub(crate) fn https_vu_par_la_requete(pair: &str, headers: &axum::http::HeaderMap) -> bool {
+    https_annonce_par_les_entetes(pair, headers, netban_trusted_proxies())
+}
+
 /// IP RÉELLE du client pour le ban natif. Si le pair TCP est un PROXY DE CONFIANCE
 /// (`proxy_is_trusted`), on lit l'IP réelle dans les en-têtes PAR PRIORITÉ : `CF-Connecting-IP` (posé par un
 /// CDN/WAF = client réel) > `X-Real-IP` > hop GAUCHE de `X-Forwarded-For` ; CHACUNE doit parser en `IpAddr`

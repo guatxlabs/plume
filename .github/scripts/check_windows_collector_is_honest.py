@@ -71,42 +71,62 @@ c'est ce qui prouve que les faux sont branchés — sans cela, « 0 appel » dan
 prouverait rien.
 
 CE QUE LA PARTIE JOUÉE NE TIENT PAS
-· Seul `Invoke-RestMethod` est simulé. Tout autre chemin d'envoi rendrait le compte AVEUGLE ; la garde
-  le REFUSE donc dans l'AST, sans attendre de l'exécuter (P10.33-i) : les commandes réseau de
-  `NET_CMDS` (`Invoke-WebRequest`, `curl`, `Start-BitsTransfer`, `bitsadmin`, `certutil`…), TOUT type
-  de l'espace `System.Net.*` hors `NET_TYPES_ADMIS` (les deux réglages TLS du collecteur, qui
-  n'envoient rien) — qu'il soit écrit en type (`[System.Net.Http.HttpClient]`, `[Net.WebRequest]::Create`,
-  `[System.Net.Sockets.TcpClient]::new`, un accélérateur résolu comme `[ipaddress]`, un argument
-  générique) ou en chaîne (`New-Object Net.WebClient`, `New-Object -TypeName 'System.Net.WebClient'`,
-  `[type]'System.Net.…'`) —, `using namespace System.Net…`, `using assembly|module`, `New-Object
-  -ComObject` (WinHttp, XMLHTTP), et le code DYNAMIQUE (`Add-Type`, `Invoke-Expression`) qui
-  ferait tout cela hors de portée de l'AST. CE QUE L'AST NE TIENT PAS : un nom de type FABRIQUÉ à
-  l'exécution (`'Sys'+'tem.Net.WebClient'`, lu d'un fichier), la réflexion sur un objet déjà en main,
-  un exécutable externe appelé par un chemin calculé (`& $outil`).
+· Seul `Invoke-RestMethod`, écrit NU, est simulé. Tout autre chemin d'envoi rendrait le compte AVEUGLE ;
+  la garde le REFUSE donc dans l'AST, sans attendre de l'exécuter (P10.33-i), par des LISTES FERMÉES de
+  ce que le collecteur EMPLOIE — pas par une liste de méchants : une première version listait les
+  commandes réseau, et le vérificateur du 2026-10-18 a fait passer, écrits en dur dans le source,
+  `Microsoft.PowerShell.Utility\\Invoke-WebRequest` (et `…\\Invoke-RestMethod`, qui contourne le central
+  simulé), `& 'C:\\…\\curl.exe'`, `Start-Process`, `cmd /c`, `[scriptblock]::Create`,
+  `[Activator]::CreateInstance(…GetTypeFromProgID…)`, `([xml]…).Load(url)`, `Invoke-Command
+  -ComputerName`, `Set-Content` vers un chemin UNC. Sont refusés : une commande hors de `CMDS_ADMIS` (nom
+  qualifié, chemin et `.exe` compris) ou au nom calculé (`& $x`) ; un paramètre de cmdlet hors de
+  `PARAMS_ADMIS` (tel qu'écrit : `-Comp` n'est pas admis) ; un type nommé hors de `TYPES_ADMIS` (chaque
+  composant, contrainte `[T]$x` comprise, et le type passé à `New-Object`) ; une méthode appelée hors de
+  `METHODES_ADMISES` ; un chemin UNC littéral passé à une commande ; un nom `System.Net.*` en chaîne ;
+  `using namespace System.Net…`, `using assembly|module`. Le témoin de la garde porte un exemple PAR
+  SITE de refus. CE QUE L'AST NE TIENT PAS : ce qui n'est pas ÉCRIT dans le source — un nom de type ou
+  de commande fabriqué à l'exécution et passé à une commande ou une méthode ADMISE (`New-Object $nom`
+  rougit, mais une propriété lue sur un objet admis n'est pas jugée), un chemin UNC CALCULÉ (lu de la
+  configuration) passé à `Set-Content`/`Get-Content`/`Test-Path`, l'usage d'une méthode admise sur un
+  autre objet que celui pour lequel elle a été admise.
 · WINDOWS POWERSHELL 5.1 N'EST EXÉCUTÉ NULLE PART — mais il est désormais JUGÉ (P10.33-i). La tâche
   planifiée lance `powershell -File` (collectors/windows/README.md), c'est-à-dire 5.1 sur .NET
-  Framework ; cette garde joue `pwsh` 7 sous Linux (.NET 10). Trois jambes, chacune avec son témoin :
+  Framework ; cette garde joue `pwsh` 7 sous Linux (.NET 10). Jambes, chacune avec son témoin :
   (a) PSScriptAnalyzer `PSSA_VERSION` (installé à cette version, nupkg vérifié par `PSSA_SHA256` dans le
       job `shell` de ci.yml) joue `PSUseCompatibleSyntax` (cible 5.1), `PSUseCompatibleCommands` et
       `PSUseCompatibleTypes` contre les trois profils Windows PowerShell 5.1 Desktop qu'il LIVRE
-      (`PROFILS_51` : Windows 10 1809, Windows Server 2016 et 2019) ; tout diagnostic rougit. Module
-      absent, autre version, profil manquant : REFUS DE CONCLURE (code 2), jamais un vert ;
-  (b) l'AST interdit la syntaxe postérieure à 5.1 (`??`, `??=`, ternaire, `&&`/`||`, `?.`, `?[`, bloc
-      `clean`) — mesuré le 2026-10-18, PSScriptAnalyzer 1.25.0 ne voit PAS `${x}?[0]` ;
-  (c) tout type NOMMÉ par le collecteur doit exister dans chacun des trois profils 5.1 (accélérateurs
-      compris) — mesuré, `PSUseCompatibleTypes` ne voit pas `[System.Management.Automation.PSStyle]`
-      (PowerShell 7.2), ce que (c) refuse.
-  Un fichier TÉMOIN fabriqué à chaque passage (`??`, ternaire, `ConvertFrom-Json -AsHashtable`, `?[`,
-  `PSStyle`, `HttpClient`) doit faire rougir CHAQUE jambe, et `[System.Uri]` aucune : sans cela la
-  garde refuse de conclure (une règle mal nommée ou un profil vide rendrait « 0 diagnostic »).
+      (`PROFILS_51` : Windows 10 1809, Windows Server 2016 et 2019 — le témoin exige un diagnostic
+      nommant CHACUNE des trois plateformes), et `PSUseBOMForUnicodeEncodedFile` ; tout diagnostic
+      rougit. Module absent, autre version, profil manquant : REFUS DE CONCLURE (code 2), jamais un vert ;
+  (b) l'ENCODAGE DU SOURCE, lu en octets : sans BOM, 5.1 lit un script dans la page de code ANSI.
+      Mesuré le 2026-10-18 (vérificateur) : le collecteur était en UTF-8 sans BOM, et lu en cp1252 il
+      avait 19 erreurs de parsage — « — » (E2 80 94) y devient « â€" », 0x94 étant un guillemet fermant
+      pour PowerShell. La tâche planifiée mourait au parsage, avant la porte du clair, et cette garde
+      affichait « compatible ». Tout octet non ASCII exige le BOM UTF-8 ;
+  (c) l'AST interdit la syntaxe postérieure à 5.1 (`??`, `??=`, ternaire, `&&`/`||`, `?.`, `?[`, bloc
+      `clean`, opérateur d'arrière-plan `… &`, échappement `` `u{…} ``) — mesuré le 2026-10-18,
+      PSScriptAnalyzer 1.25.0 ne voit ni `${x}?[0]`, ni `Get-Date &`, ni `` `u{…} `` ;
+  (d) tout type NOMMÉ doit exister dans chacun des trois profils 5.1, le nom étant résolu PAR LES
+      PROFILS (types complets et accélérateurs de 5.1) et jamais par pwsh 7, qui résout `[uint]` alors que
+      5.1 n'a pas cet accélérateur — mesuré, `PSUseCompatibleTypes` ne voit pas
+      `[System.Management.Automation.PSStyle]` (PowerShell 7.2) ;
+  (e) tout membre statique `[T]::M` d'un type connu de 5.1 doit exister dans ses profils — mesuré,
+      `PSUseCompatibleTypes` ne voit pas `[Math]::Clamp` (.NET Core 2.0).
+  Un fichier TÉMOIN fabriqué à chaque passage, sans BOM, passe par le MÊME puits que le collecteur
+  (`errs`, d'où il est relu puis retiré) : chaque (jambe, ligne) attendue doit y être, et la ligne
+  `[System.Uri]` sur aucune — sinon la garde refuse de conclure. Le verdict imprimé est TIRÉ du bilan de
+  ce jugement (comptes, version, profils chargés), pas écrit en dur ; jugement non joué = code 2.
   CE QUE L'ANALYSE STATIQUE NE PROUVE PAS : le COMPORTEMENT de .NET Framework 4.x à l'exécution — la
   normalisation de l'hôte par `[System.Uri]` (la porte juge `Host`/`HostNameType`, que .NET Framework
   peut lire autrement que .NET 10 pour `127.1`, `0x7f.1`, `loopback`), la façon dont
   `Invoke-RestMethod` 5.1 lit et suit une URL (redirections, proxy système, négociation TLS par
   `ServicePointManager`), les différences de SÉMANTIQUE d'une cmdlet de même nom et mêmes paramètres
-  entre 5.1 et 7 (encodage par défaut de `Set-Content`/`Out-File`, `ConvertTo-Json`) ; ni rien de ce
-  qu'aucun profil livré ne connaît (le plus récent est PowerShell 7.0 : une commande APPARUE après 7.0
-  et absente de 5.1 n'est vue que si l'analyseur la connaît — `Get-Date -AsUTC` l'est, mesuré).
+  entre 5.1 et 7 (encodage par défaut de `Set-Content`/`Out-File`, `ConvertTo-Json`) ; une SURCHARGE de
+  méthode d'instance absente de .NET Framework (`'abc'.Contains('a', [StringComparison]::Ordinal)` : le
+  type de l'objet n'est pas connu statiquement) ; la page de code d'un poste dont l'ANSI n'est pas
+  cp1252 (le BOM rend la question sans objet, la jambe (b) l'exige) ; ni rien de ce qu'aucun profil livré
+  ne connaît (le plus récent est PowerShell 7.0 : une commande APPARUE après 7.0 et absente de 5.1 n'est
+  vue que si l'analyseur la connaît — `Get-Date -AsUTC` l'est, mesuré).
 · `http://evil.localhost` est refusé (nom DNS autre que `localhost`) alors que .NET 10 le RÉSOUT en
   boucle locale (sonde 2026-10-15 : `::1,127.0.0.1`, RFC 6761) : sévérité de trop, pas une fuite.
 · Une adresse sans schéma vers la boucle locale (`127.0.0.1:7000`) est REFUSÉE ici, alors que la porte
@@ -412,19 +432,52 @@ def check(path: str, errs: list) -> int:
 # P10.33-i — LA PORTE DU TRANSPORT, JOUÉE SUR LE COLLECTEUR TEL QUEL
 # =================================================================================================
 COLLECTOR = "collectors/windows/plume-collector.ps1"
-# Commandes réseau : le harnais ne compte que la première. Toute autre, présente dans le collecteur,
-# rendrait le compte d'appels AVEUGLE — la garde le refuse au lieu de compter faux.
+# Le harnais ne compte que `Invoke-RestMethod` écrit NU. Tout autre chemin vers l'extérieur rendrait le
+# compte d'appels AVEUGLE : la garde le refuse au lieu de compter faux.
 NET_CMD_COUNTED = "invoke-restmethod"
-NET_CMDS = {"invoke-restmethod", "irm", "invoke-webrequest", "iwr", "curl", "wget", "curl.exe",
-            "wget.exe", "start-bitstransfer", "send-mailmessage", "bitsadmin", "bitsadmin.exe",
-            "certutil", "certutil.exe", "new-webserviceproxy"}
-# Code DYNAMIQUE : compiler du C# ou évaluer une chaîne place l'envoi hors de portée de l'AST.
-CODE_DYNAMIQUE = {"add-type", "invoke-expression", "iex"}
-# P10.33-i — les classes .NET. Tout l'espace `System.Net.*` est refusé (partition FERMÉE : un type
-# d'envoi ajouté demain à .NET est couvert sans retoucher cette liste), sauf ce qui n'envoie RIEN et
-# que le collecteur emploie : les deux réglages TLS de `ServicePointManager`.
+# P10.33-i — CE SONT DES LISTES FERMÉES, PAS DES LISTES DE MÉCHANTS. Une liste de commandes réseau
+# (« Invoke-WebRequest, curl, bitsadmin… ») laissait passer, mesuré par le vérificateur du 2026-10-18 :
+# `Microsoft.PowerShell.Utility\Invoke-WebRequest` (le nom qualifié n'est pas le nom de la liste — et
+# `…\Invoke-RestMethod` contourne en plus le central simulé, donc n'est pas compté), `& 'C:\…\curl.exe'`,
+# `Start-Process`, `cmd /c`, `[scriptblock]::Create`, `[Activator]::CreateInstance(…GetTypeFromProgID…)`,
+# `([xml]…).Load(url)`, `Invoke-Command -ComputerName`, `Set-Content` vers un chemin UNC. On admet donc
+# ce que le collecteur EMPLOIE (relevé le 2026-10-18 sur l'AST), et RIEN D'AUTRE : une commande, un
+# paramètre de cmdlet, un type ou une méthode qui n'y est pas est refusé, quel que soit son nom.
+# Ajouter une entrée = l'avoir lue : elle ne doit ni envoyer, ni exécuter du code fabriqué, ni ouvrir
+# une session distante. Les fonctions DÉFINIES dans le fichier sont admises (leur corps est jugé).
+CMDS_ADMIS = {
+    "convertto-json", "foreach-object", "get-ciminstance", "get-content", "get-date",
+    "get-netfirewallprofile", "get-nettcpconnection", "get-process", "get-winevent", NET_CMD_COUNTED,
+    "join-path", "new-item", "new-object", "out-null", "set-content", "set-strictmode", "sort-object",
+    "test-path", "where-object",
+}
+# Paramètres des cmdlets, tels qu'ÉCRITS : `-Comp` (abréviation de `-ComputerName`) n'est pas `-Path`.
+# Pas de `-ComputerName`, `-CimSession`, `-Session`, `-ComObject`, `-Proxy`.
+PARAMS_ADMIS = {
+    "body", "compress", "contenttype", "depth", "erroraction", "filterhashtable", "force", "headers",
+    "itemtype", "maxevents", "method", "nonewline", "path", "raw", "state", "timeoutsec", "uri", "value",
+    "version",
+}
+# Types NOMMÉS (chaque composant d'un nom générique ou tableau), et type passé à `New-Object`. Pas de
+# `[scriptblock]`, `[type]`, `[Activator]`, `[powershell]`, `[ipaddress]`, ni rien de `System.Net.*`
+# hors des deux réglages TLS (qui n'envoient rien).
+TYPES_ADMIS = {
+    "bool", "console", "convert", "datetime", "datetimeoffset", "hashtable", "int", "int64", "ordered",
+    "pscustomobject", "ref", "string", "system.net.securityprotocoltype", "system.net.servicepointmanager",
+    "system.uri", "system.urihostnametype", "system.urikind", "timespan", "xml",
+    "system.collections.arraylist",
+}
+# Méthodes APPELÉES (`x.M()` et `[T]::M()`). Pas de `Load`, `Create`, `Start`, `Invoke`, `InvokeScript`,
+# `CreateInstance`, `GetTypeFromProgID`. Une propriété LUE n'est pas jugée (elle n'envoie rien).
+METHODES_ADMISES = {
+    "add", "addminutes", "clear", "containskey", "new", "parse", "split", "toint64", "tolowerinvariant",
+    "tostring", "touniversaltime", "tounixtimeseconds", "toxml", "trim", "trimend", "trycreate",
+    "writeline",
+}
 NET_TYPES_ADMIS = {"System.Net.ServicePointManager", "System.Net.SecurityProtocolType"}
 NOM_NET = re.compile(r"(?i)(?<![\w.])(?:system\.net(?!\w)(?:\.[\w.+`]*)?|net\.[\w.+`]+)")
+# Chemin UNC littéral : `Set-Content '\\hote\partage\x'` envoie par SMB, sans aucune commande réseau.
+UNC = re.compile(r"^(?:\\\\|//)")
 
 
 def noms_net(texte: str) -> list:
@@ -443,28 +496,54 @@ def net_admis(nom: str) -> bool:
     return nom.lower() in {a.lower() for a in NET_TYPES_ADMIS}
 
 
+def composants_de_type(nom: str) -> list:
+    """`System.Int32[]` -> [system.int32] ; `List[System.Net.WebClient]` -> [list, system.net.webclient]."""
+    return [x.lower() for x in re.split(r"[\[\],\s]+", nom or "") if x]
+
+
 def envois_hors_du_central_simule(d: dict) -> list:
-    """Tout chemin d'envoi que le central simulé (`Invoke-RestMethod`) ne compterait pas."""
+    """(ligne, site, quoi) pour tout ce que le central simulé (`Invoke-RestMethod` nu) ne compterait pas.
+
+    `site` nomme la règle qui a refusé : le témoin de la garde en exige un exemple PAR SITE."""
+    fonctions = {f["name"].lower() for f in d["functions"]}
     vus = []
     for c in d["commands"]:
         n = c["name"].lower()
-        if n in NET_CMDS and n != NET_CMD_COUNTED:
-            vus.append((c["line"], f"commande réseau `{c['name']}`"))
-        elif n in CODE_DYNAMIQUE:
-            vus.append((c["line"], f"code dynamique `{c['name']}` (l'envoi échapperait à l'AST)"))
-        elif n == "new-object" and re.search(r"(?i)(?<!\S)-c[a-z]*\b", c["text"]):
-            vus.append((c["line"], "`New-Object -ComObject` (WinHttp/XMLHTTP hors de portée)"))
+        if not n:
+            vus.append((c["line"], "invocation-dynamique",
+                        f"commande au nom CALCULÉ `{c['text'][:60]}` (`& $x`, `& (Get-Command …)`)"))
+            continue
+        if n in fonctions:
+            continue
+        if n not in CMDS_ADMIS:
+            vus.append((c["line"], "commande", f"commande `{c['name']}` hors de CMDS_ADMIS "
+                        f"(un nom qualifié par module, un chemin ou un `.exe` n'est pas le nom admis)"))
+            continue
+        for prm in c.get("params", []):
+            if prm.lower() not in PARAMS_ADMIS:
+                vus.append((c["line"], "parametre", f"paramètre `-{prm}` de `{c['name']}` hors de PARAMS_ADMIS"))
+        if n == "new-object":
+            for lit in c.get("litteraux", []):
+                if lit.lower() not in TYPES_ADMIS:
+                    vus.append((c["line"], "new-object", f"`New-Object {lit}` : type hors de TYPES_ADMIS"))
+        for lit in c.get("litteraux", []):
+            if UNC.match(lit):
+                vus.append((c["line"], "unc", f"chemin UNC `{lit[:60]}` passé à `{c['name']}` (envoi SMB)"))
     for t in d.get("types", []):
-        for nom in sorted(set(noms_net(t["written"]) + noms_net(t["resolved"]))):
-            if not net_admis(nom):
-                vus.append((t["line"], f"type .NET `{nom}` (écrit `[{t['written']}]`)"))
+        for comp in composants_de_type(t["written"]):
+            if comp not in TYPES_ADMIS:
+                vus.append((t["line"], "type", f"type `{comp}` (écrit `[{t['written']}]`) hors de TYPES_ADMIS"))
+    for m in d.get("members", []):
+        if m["invoked"] and m["member"].lower() not in METHODES_ADMISES:
+            vus.append((m["line"], "methode", f"méthode `{m['member'] or '<nom calculé>'}` hors de METHODES_ADMISES"))
     for st in d["strings"]:
         for nom in sorted(n for n in set(noms_net(st["value"].strip("'\""))) if not net_admis(n)):
-            vus.append((st["line"], f"nom de type .NET `{nom}` en chaîne ({st['value'][:60]})"))
+            vus.append((st["line"], "chaine-net", f"nom de type .NET `{nom}` en chaîne ({st['value'][:60]})"))
     for u in d.get("usings", []):
         if u["kind"].lower() != "namespace" or noms_net(u["text"].split(None, 2)[-1]):
-            vus.append((u["line"], f"`{u['text']}` (un nom court deviendrait illisible à l'AST)"))
+            vus.append((u["line"], "using", f"`{u['text']}` (un nom court deviendrait illisible à l'AST)"))
     return sorted(set(vus))
+
 
 HARNAIS_PS1 = r"""
 param([Parameter(Mandatory)][string]$Collecteur, [Parameter(Mandatory)][string]$Racine)
@@ -552,21 +631,16 @@ TRANSPORT_CASES = [
 ]
 
 
-def jouer_le_transport(errs: list) -> int:
-    """Joue chaque cas sur le collecteur tel quel ; rend le nombre de cas joués."""
+def jouer_le_transport(errs: list, envois_hors_irm: int) -> int:
+    """Joue chaque cas sur le collecteur tel quel ; rend le nombre de cas joués.
+
+    `envois_hors_irm` : nombre d'envois que le central simulé ne compterait pas, déjà portés dans `errs`
+    par `juger_statiquement` (même puits que son témoin). Le harnais n'est alors pas joué : son compte
+    d'appels n'aurait pas de sens. Le forcer à 0 ne masque rien — les défauts sont déjà dans `errs`."""
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
     if not pwsh:   # ast_of() a déjà refusé de conclure avant d'arriver ici
         sys.exit(CODE_INSTRUMENT)
-    # Le compte d'appels n'a de sens que si le seul transport du collecteur est celui qu'on simule.
-    d = ast_of(COLLECTOR)
-    autres = envois_hors_du_central_simule(d)
-    if autres:
-        for ligne, quoi in autres:
-            errs.append(
-                f"{COLLECTOR}:{ligne}: {quoi} hors du central simulé (`Invoke-RestMethod`) : le compte "
-                f"d'appels du harnais serait aveugle à cet envoi. Envoyez par `Invoke-RestMethod`, ou "
-                f"étendez le harnais AVANT d'ajouter un transport."
-            )
+    if envois_hors_irm:
         return 0
     collecteur = str(Path(COLLECTOR).resolve())
     joues = 0
@@ -652,24 +726,37 @@ def jouer_le_transport(errs: list) -> int:
 
 
 # =================================================================================================
-# P10.33-i — WINDOWS POWERSHELL 5.1 : JUGÉ CONTRE SES PROFILS, FAUTE DE POUVOIR L'EXÉCUTER
+# P10.33-i — CE QUE LE COLLECTEUR NE PEUT PAS ÉCRIRE, JUGÉ SANS L'EXÉCUTER : WINDOWS POWERSHELL 5.1
+# (QU'AUCUN RUNNER LINUX N'EXÉCUTE) ET TOUT ENVOI QUE LE CENTRAL SIMULÉ NE COMPTERAIT PAS
 # =================================================================================================
 # Monter PSScriptAnalyzer = changer les DEUX ensemble ; le pas d'installation de ci.yml les LIT ici.
 # Empreinte relevée le 2026-10-18 : sha256 du nupkg servi par la galerie, dont le SHA512 publié
 # (`PackageHash` de l'API v2) concorde.
 PSSA_VERSION = "1.25.0"
 PSSA_SHA256 = "14e634c828eb98efb9f40b2918ba90f139ed5eccdf663a2a747736d996995d60"
-# Les profils Windows PowerShell 5.1 Desktop (.NET Framework) que ce module LIVRE, tous trois.
+# Les profils Windows PowerShell 5.1 Desktop (.NET Framework) que ce module LIVRE, tous trois, et la
+# plateforme que PSScriptAnalyzer NOMME dans ses messages pour chacun (le témoin exige les trois : une
+# analyse restreinte à un profil rendrait le même « 0 diagnostic » sur le collecteur).
 PROFILS_51 = (
     "win-48_x64_10.0.17763.0_5.1.17763.316_x64_4.0.30319.42000_framework",   # Windows 10 1809
     "win-8_x64_10.0.14393.0_5.1.14393.2791_x64_4.0.30319.42000_framework",   # Windows Server 2016
     "win-8_x64_10.0.17763.0_5.1.17763.316_x64_4.0.30319.42000_framework",    # Windows Server 2019
 )
-REGLES_PSSA = ("PSUseCompatibleSyntax", "PSUseCompatibleCommands", "PSUseCompatibleTypes")
-# TÉMOIN fabriqué à chaque passage : chaque ligne marquée doit rougir sur la jambe nommée (y compris la
-# jambe réseau, qui refuse tout envoi hors d'`Invoke-RestMethod`), et la ligne `[System.Uri]` sur AUCUNE (témoin négatif : le collecteur l'emploie, une jambe qui la
-# refuserait rougirait sur un faux).
-TEMOIN_51 = """$a = $null
+PLATEFORMES_51 = ("Microsoft Windows 10 Pro", "Microsoft Windows Server 2016 Datacenter",
+                  "Microsoft Windows Server 2019 Datacenter")
+REGLES_PROFILEES = ("PSUseCompatibleCommands", "PSUseCompatibleTypes")
+# Lecture du SOURCE par Windows PowerShell 5.1 : sans BOM, il lit un script dans la page de code ANSI.
+# Mesuré par le vérificateur du 2026-10-18 : le collecteur en UTF-8 SANS BOM, lu en cp1252, a 19 erreurs
+# de parsage (« — » = E2 80 94, et 0x94 = U+201D, que PowerShell prend pour un guillemet fermant) — la
+# tâche planifiée mourait au parsage, avant la porte du clair. Deux jambes : la règle du module, et la
+# lecture des OCTETS ici même.
+BOM_UTF8 = b"\xef\xbb\xbf"
+# TÉMOIN fabriqué à chaque passage, écrit SANS BOM. Chaque (jambe, ligne) de TEMOIN_51_ATTENDU doit
+# sortir par le MÊME puits que les défauts du collecteur (`errs`), et la ligne `[System.Uri]` par AUCUNE
+# jambe (témoin négatif : le collecteur l'emploie, une jambe qui la refuserait rougirait sur un faux).
+# Une jambe = un SITE de refus : en retirer un laisse sa ligne muette, et la garde refuse de conclure.
+TEMOIN_51 = r"""using namespace System.Net
+$a = $null
 $b = $a ?? 'x'
 $c = $true ? 1 : 2
 $h = '{}' | ConvertFrom-Json -AsHashtable
@@ -679,16 +766,52 @@ $w = [System.Net.Http.HttpClient]::new()
 $u = [System.Uri]'https://example.org'
 $c2 = New-Object Net.WebClient
 Invoke-WebRequest -Uri 'https://example.org'
+Microsoft.PowerShell.Utility\Invoke-RestMethod -Uri 'https://example.org'
+& 'C:\Windows\System32\curl.exe' 'https://example.org'
+bitsadmin /transfer j https://example.org C:\x
+Invoke-Expression 'Get-Date'
+Add-Type -TypeDefinition 'public class X {}'
+$outil = 'curl.exe'; & $outil 'https://example.org'
+Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName 'hote'
+New-Object -ComObject 'WinHttp.WinHttpRequest.5.1'
+$x = [scriptblock]::Create('Get-Date')
+$o = [Activator]::CreateInstance([type]::GetTypeFromProgID('WinHttp.WinHttpRequest.5.1'))
+$d = ([xml]'<a/>').Load('https://example.org')
+$r = $ExecutionContext.InvokeCommand.InvokeScript('Get-Date')
+Set-Content -Path '\\192.0.2.10\partage\x' -Value 1
+$t = 'System.Net.WebClient'
+[System.Net.WebClient]$wc = $null
+[System.Management.Automation.PSStyle]$p = $null
+$a ??= 1
+Get-Date && Get-Date
+Get-Date &
+function F { clean { 2 } }
+$e = "`u{2014}"
+$n = [uint]1
+$m = [System.Math]::Clamp(5, 1, 3)
+$z = 'é — x'
+$ip = [ipaddress]'192.0.2.10'
 """
-TEMOIN_51_ATTENDU = {   # jambe -> lignes qui DOIVENT rougir
-    "PSUseCompatibleSyntax": {2, 3},
-    "PSUseCompatibleCommands": {4},
-    "PSUseCompatibleTypes": {7},
-    "ast-syntaxe": {2, 3, 5},
-    "ast-types": {6},
-    "envoi-hors-irm": {7, 9, 10},   # la jambe réseau (P10.33-i, point 2) a AUSSI son témoin
+TEMOIN_51_ATTENDU = {   # jambe -> lignes qui DOIVENT sortir par le puits
+    "PSUseCompatibleSyntax": {3, 4},
+    "PSUseCompatibleCommands": {5},
+    "PSUseCompatibleTypes": {8},
+    "PSUseBOMForUnicodeEncodedFile": {0},   # diagnostic de FICHIER : le module ne donne pas de ligne
+    "encodage": {35},
+    "ast-syntaxe": {3, 4, 6, 28, 29, 30, 31, 32},
+    "ast-types": {7, 27, 33},
+    "ast-membres": {34},
+    "envoi:commande": {11, 12, 13, 14, 15, 16},
+    "envoi:invocation-dynamique": {17},
+    "envoi:parametre": {18, 19},
+    "envoi:new-object": {10},
+    "envoi:type": {8, 20, 21, 26, 36},
+    "envoi:methode": {22, 23},
+    "envoi:unc": {24},
+    "envoi:chaine-net": {25},
+    "envoi:using": {1},
 }
-TEMOIN_51_NEUTRE = 8   # ligne qu'AUCUNE jambe ne doit signaler
+TEMOIN_51_NEUTRE = 9   # ligne qu'AUCUNE jambe ne doit signaler
 # Noms de types que le PARSEUR traite lui-même (pas des accélérateurs du profil).
 TYPES_DU_PARSEUR = {"ordered"}
 
@@ -719,17 +842,30 @@ def analyser_51(chemins: list) -> dict:
     return json.loads(ligne[len("PLUME-PSSA-JSON:"):])
 
 
+def _noms(v) -> set:
+    """Une rubrique de membres du profil : liste de noms, ou objet dont les clés sont les noms."""
+    return {k.lower() for k in (v.keys() if isinstance(v, dict) else (v or []))}
+
+
 def index_des_profils(fichiers: list) -> list:
-    """Par profil : (noms complets de types en minuscules, accélérateurs en minuscules)."""
+    """Par profil : (nom, types complets, accélérateur -> type complet, type complet -> membres statiques)."""
     out = []
     for f in fichiers:
         j = json.loads(Path(f).read_text(encoding="utf-8-sig"))
         t = j["Runtime"]["Types"]
-        noms = {f"{ns}.{n}".lower() for a in t["Assemblies"].values()
-                for ns, ty in (a.get("Types") or {}).items() for n in ty}
-        out.append((Path(f).stem, noms, {k.lower() for k in t["TypeAccelerators"]}))
-    if not out or any(len(n) < 1000 or len(a) < 10 for _, n, a in out):
-        print(f"::error::profils 5.1 illisibles ou vides ({[(p, len(n), len(a)) for p, n, a in out]}) — "
+        noms, statiques = set(), {}
+        for a in t["Assemblies"].values():
+            for ns, ty in (a.get("Types") or {}).items():
+                for n, corps in ty.items():
+                    plein = f"{ns}.{n}".lower()
+                    noms.add(plein)
+                    st = (corps or {}).get("Static") or {}
+                    statiques[plein] = set().union(*(_noms(st.get(r)) for r in ("Methods", "Properties", "Fields", "Events")))
+        accel = {k.lower(): (v.get("Type") if isinstance(v, dict) else str(v)).lower()
+                 for k, v in t["TypeAccelerators"].items()}
+        out.append((Path(f).stem, noms, accel, statiques))
+    if not out or any(len(n) < 1000 or len(a) < 10 or len(s) < 1000 for _, n, a, s in out):
+        print(f"::error::profils 5.1 illisibles ou vides ({[(p, len(n), len(a)) for p, n, a, _ in out]}) — "
               f"la garde REFUSE DE CONCLURE.")
         sys.exit(CODE_INSTRUMENT)
     return out
@@ -740,55 +876,148 @@ def nom_de_base(nom: str) -> str:
     return re.split(r"\[", nom, maxsplit=1)[0].strip().lower()
 
 
+def type_du_profil(nom: str, noms: set, accel: dict):
+    """Le type complet que Windows PowerShell 5.1 donnerait à ce nom écrit, ou None."""
+    for candidat in (nom, "system." + nom):
+        if candidat in noms:
+            return candidat
+    return accel.get(nom)
+
+
 def types_hors_51(types: list, profils: list) -> list:
+    """Tout type NOMMÉ absent d'un profil. Le nom est résolu par les profils 5.1, jamais par pwsh 7 :
+    pwsh 7 résout `[uint]` en System.UInt32, et Windows PowerShell 5.1 n'a pas cet accélérateur."""
     hors = []
     for t in types:
-        ecrit, resolu = nom_de_base(t["written"]), nom_de_base(t["resolved"])
+        ecrit = nom_de_base(t["written"])
         if ecrit in TYPES_DU_PARSEUR:
             continue
-        manquants = [p for p, noms, accel in profils
-                     if not ({ecrit, "system." + ecrit, resolu} & noms or ecrit in accel)]
+        manquants = [p for p, noms, accel, _ in profils if type_du_profil(ecrit, noms, accel) is None]
         if manquants:
             hors.append((t["line"], t["written"], manquants))
     return hors
 
 
-def juger_la_compatibilite_51(errs: list) -> None:
+def membres_statiques_hors_51(membres: list, profils: list) -> list:
+    """`[T]::M` dont le type existe en 5.1 mais pas le membre (`[Math]::Clamp`, .NET Core 2.0) —
+    mesuré : PSUseCompatibleTypes ne le voit pas. `::new` est le constructeur (PowerShell 5.0)."""
+    hors = []
+    for m in membres:
+        if not (m["static"] and m["type"] and m["member"]) or m["member"].lower() == "new":
+            continue
+        base = nom_de_base(m["type"])
+        manquants = []
+        for p, noms, accel, statiques in profils:
+            plein = type_du_profil(base, noms, accel)
+            if plein is not None and m["member"].lower() not in statiques.get(plein, set()):
+                manquants.append(p)
+        if manquants:
+            hors.append((m["line"], f"[{m['type']}]::{m['member']}", manquants))
+    return hors
+
+
+def encodage_illisible_par_51(octets: bytes) -> int:
+    """Ligne du premier octet non ASCII d'un fichier SANS BOM UTF-8 ; 0 si 5.1 le lit tel qu'écrit."""
+    if octets.startswith(BOM_UTF8):
+        return 0
+    for i, b in enumerate(octets):
+        if b > 0x7F:
+            return octets.count(b"\n", 0, i) + 1
+    return 0
+
+
+def diagnostics_statiques(octets: bytes, d: dict, pssa: list, profils: list) -> list:
+    """(ligne, jambe, message) pour UN fichier — la même fonction juge le témoin et le collecteur."""
+    out = []
+    for x in pssa:
+        out.append((x["line"] or 0, x["rule"],
+                    f"Windows PowerShell 5.1 (que lance la tâche planifiée) — {x['message']}"))
+    ligne = encodage_illisible_par_51(octets)
+    if ligne:
+        out.append((ligne, "encodage",
+                    "octet non ASCII dans un fichier SANS BOM UTF-8 : Windows PowerShell 5.1 le lit dans la "
+                    "page de code ANSI, et un « — » devient un guillemet fermant (la tâche planifiée meurt au "
+                    "parsage, avant tout aveu). Encodez en UTF-8 AVEC BOM, ou en ASCII."))
+    for x in d["post51"]:
+        out.append((x["line"], "ast-syntaxe",
+                    f"syntaxe postérieure à Windows PowerShell 5.1 ({x['forme']}) : `{x['text'][:80]}` — "
+                    f"la tâche planifiée échouerait au parsage ou lirait autre chose."))
+    for ligne, ecrit, manquants in types_hors_51(d["types"], profils):
+        out.append((ligne, "ast-types", f"type `[{ecrit}]` absent de Windows PowerShell 5.1 (profils {manquants})."))
+    for ligne, quoi, manquants in membres_statiques_hors_51(d.get("members", []), profils):
+        out.append((ligne, "ast-membres",
+                    f"membre statique `{quoi}` absent de Windows PowerShell 5.1 (profils {manquants})."))
+    for ligne, site, quoi in envois_hors_du_central_simule(d):
+        out.append((ligne, f"envoi:{site}",
+                    f"{quoi} — hors du central simulé (`Invoke-RestMethod` nu) : le compte d'appels du harnais "
+                    f"serait aveugle à cet envoi. Envoyez par `Invoke-RestMethod`, ou lisez l'entrée et "
+                    f"ajoutez-la à sa liste fermée (ou étendez le harnais) AVANT de l'employer."))
+    return out
+
+
+def juger_statiquement(errs: list) -> dict:
+    """Juge le témoin PUIS le collecteur par le MÊME puits (`errs`) ; relit et retire du puits ce qu'y a
+    déposé le témoin. Retirer ce dépôt ou une jambe fait taire le témoin : la garde refuse de conclure.
+    Rend le bilan dont `main` tire son verdict (rien n'y est écrit en dur)."""
+    debut = len(errs)
     with tempfile.TemporaryDirectory(prefix="plume-compat-51-") as base:
-        temoin = Path(base) / "temoin-51.ps1"
-        temoin.write_text(TEMOIN_51, encoding="utf-8")
-        r = analyser_51([COLLECTOR, str(temoin)])
+        temoin = str(Path(base) / "temoin-51.ps1")
+        Path(temoin).write_bytes(TEMOIN_51.encode("utf-8"))
+        r = analyser_51([COLLECTOR, temoin])
         if r.get("version") != PSSA_VERSION:
             print(f"::error::PSScriptAnalyzer chargé en {r.get('version')!r}, épinglé {PSSA_VERSION} — "
                   f"la garde REFUSE DE CONCLURE.")
             sys.exit(CODE_INSTRUMENT)
+        charges = [Path(f).stem for f in r.get("profils", [])]
+        if charges != list(PROFILS_51):
+            print(f"::error::profils chargés {charges}, attendus {list(PROFILS_51)} — la garde REFUSE DE CONCLURE.")
+            sys.exit(CODE_INSTRUMENT)
         profils = index_des_profils(r["profils"])
-        d_temoin = ast_of(str(temoin))
-    d_coll = ast_of(COLLECTOR)
+        asts = {}
+        for chemin in (temoin, COLLECTOR):
+            asts[chemin] = ast_of(chemin)
+            for ligne, jambe, msg in diagnostics_statiques(Path(chemin).read_bytes(), asts[chemin],
+                                                           r["fichiers"][chemin], profils):
+                errs.append(f"{chemin}:{ligne}: [{jambe}] {msg}")
 
-    # --- témoin : chaque jambe mord, aucune ne mord sur le neutre ---
-    vu = {regle: {x["line"] for x in r["fichiers"][str(temoin)] if x["rule"] == regle} for regle in REGLES_PSSA}
-    vu["ast-syntaxe"] = {x["line"] for x in d_temoin["post51"]}
-    vu["ast-types"] = {ln for ln, _, _ in types_hors_51(d_temoin["types"], profils)}
-    vu["envoi-hors-irm"] = {ln for ln, _ in envois_hors_du_central_simule(d_temoin)}
-    muettes = {j: sorted(att - vu[j]) for j, att in TEMOIN_51_ATTENDU.items() if not att <= vu[j]}
+    # --- témoin : relu DANS le puits, puis retiré ---
+    prefixe = f"{temoin}:"
+    du_temoin = [e for e in errs[debut:] if e.startswith(prefixe)]
+    errs[debut:] = [e for e in errs[debut:] if not e.startswith(prefixe)]
+    vu: dict = {}
+    plateformes = {regle: set() for regle in REGLES_PROFILEES}
+    for e in du_temoin:
+        m = re.match(re.escape(prefixe) + r"(\d+): \[([^\]]+)\] (.*)", e, re.S)
+        vu.setdefault(m.group(2), set()).add(int(m.group(1)))
+        if m.group(2) in plateformes:
+            plateformes[m.group(2)].update(re.findall(r"on platform '([^']+)'", m.group(3)))
+    muettes = {j: sorted(att - vu.get(j, set())) for j, att in TEMOIN_51_ATTENDU.items() if not att <= vu.get(j, set())}
     fausses = sorted(j for j, lignes in vu.items() if TEMOIN_51_NEUTRE in lignes)
-    if muettes or fausses:
-        print(f"::error::témoin Windows PowerShell 5.1 : jambes MUETTES {muettes}, jambes qui signalent "
-              f"`[System.Uri]` {fausses} (vu : { {j: sorted(v) for j, v in vu.items()} }) — l'instrument "
-              f"ne juge pas ce qu'il prétend, la garde REFUSE DE CONCLURE.")
+    profils_muets = {regle: sorted(set(PLATEFORMES_51) - vus) for regle, vus in plateformes.items()
+                     if not set(PLATEFORMES_51) <= vus}
+    encodage_faux = [nom for nom, octets in (("avec BOM", BOM_UTF8 + TEMOIN_51.encode("utf-8")),
+                                             ("ASCII", b"$a = 1\n"))
+                     if encodage_illisible_par_51(octets)]
+    if muettes or fausses or profils_muets or encodage_faux:
+        print(f"::error::témoin du jugement statique : jambes MUETTES {muettes}, jambes qui signalent "
+              f"`[System.Uri]` {fausses}, plateformes 5.1 non jugées {profils_muets}, encodage refusé à tort "
+              f"{encodage_faux} (vu : { {j: sorted(v) for j, v in vu.items()} }) — l'instrument ne juge pas "
+              f"ce qu'il prétend, la garde REFUSE DE CONCLURE.")
         sys.exit(CODE_INSTRUMENT)
 
-    # --- le collecteur ---
-    for x in r["fichiers"][COLLECTOR]:
-        errs.append(f"{COLLECTOR}:{x['line']}: Windows PowerShell 5.1 (que lance la tâche planifiée) — "
-                    f"{x['rule']} : {x['message']}")
-    for x in d_coll["post51"]:
-        errs.append(f"{COLLECTOR}:{x['line']}: syntaxe postérieure à Windows PowerShell 5.1 ({x['forme']}) : "
-                    f"`{x['text'][:80]}` — la tâche planifiée échouerait AU PARSAGE, avant tout aveu.")
-    for ligne, ecrit, manquants in types_hors_51(d_coll["types"], profils):
-        errs.append(f"{COLLECTOR}:{ligne}: type `[{ecrit}]` absent de Windows PowerShell 5.1 "
-                    f"(profils {manquants}).")
+    d = asts[COLLECTOR]
+    octets = Path(COLLECTOR).read_bytes()
+    return {
+        "version": r["version"],
+        "profils": len(charges),
+        "jambes_temoin": len(TEMOIN_51_ATTENDU),
+        "lignes_temoin": len({ln for lignes in vu.values() for ln in lignes}),
+        "envois_collecteur": sum(1 for e in errs[debut:] if "[envoi:" in e),
+        "commandes": len(d["commands"]),
+        "types": len(d["types"]),
+        "methodes": sum(1 for m in d.get("members", []) if m["invoked"]),
+        "encodage": "UTF-8 avec BOM" if octets.startswith(BOM_UTF8) else "ASCII",
+    }
 
 
 # --- P10.32-n : la doc d'installation ne contredit pas le script ---------------------------------
@@ -855,13 +1084,14 @@ def main() -> int:
     for f in files:
         total_catches += check(f, errs)
     joues = 0
+    bilan = None   # posé par juger_statiquement : le verdict en est TIRÉ, jamais écrit en dur
     if COLLECTOR in files:
-        joues = jouer_le_transport(errs)
+        bilan = juger_statiquement(errs)
     else:
         errs.append(f"{COLLECTOR} introuvable parmi les fichiers suivis : la porte du transport n'est pas jouée.")
-    if COLLECTOR in files:
+    if bilan is not None:
+        joues = jouer_le_transport(errs, bilan["envois_collecteur"])
         juger_la_doc(errs)
-        juger_la_compatibilite_51(errs)
     if len(files) < MIN_FILES:
         errs.append(
             f"seulement {len(files)} collecteur(s) PowerShell découvert(s), plancher {MIN_FILES} : la "
@@ -873,15 +1103,21 @@ def main() -> int:
             print(f"::error::{e}")
         print(f"\n{len(errs)} défaut(s) sur {len(files)} collecteur(s) PowerShell.")
         return 1
+    if bilan is None:
+        print("::error::le jugement statique du collecteur (Windows PowerShell 5.1, envois hors du central "
+              "simulé) n'a pas été joué — la garde REFUSE DE CONCLURE.")
+        return CODE_INSTRUMENT
     print(
         f"{len(files)} collecteur(s) PowerShell, {total_catches} `catch` : toute erreur est classée "
         f"(incapacité / désactivé / rien de neuf) ou relevée, et aucun filigrane ne s'écrit avant un "
         f"envoi acquitté ; {joues} cas de transport joués sur le collecteur tel quel (http distant "
         f"refusé en code 2 sans appel ni lecture, opt-in, https et boucle locale admis) ; "
         f"la doc Windows ne contredit pas le script (clés de plume.conf, `action`, spool, jeton) ; "
-        f"aucun envoi hors d'`Invoke-RestMethod` (commande, classe `System.Net.*`, COM, code dynamique) ; "
-        f"compatible Windows PowerShell 5.1 (PSScriptAnalyzer {PSSA_VERSION}, {len(PROFILS_51)} profils "
-        f"Desktop, syntaxe et types jugés par l'AST, témoin rouge sur chaque jambe)."
+        f"{bilan['commandes']} commandes, {bilan['types']} types nommés et {bilan['methodes']} appels de "
+        f"méthode du collecteur, tous dans les listes fermées (aucun envoi hors d'`Invoke-RestMethod` nu "
+        f"ÉCRIT dans le source) ; source en {bilan['encodage']}, jugé contre {bilan['profils']} profils "
+        f"Windows PowerShell 5.1 Desktop par PSScriptAnalyzer {bilan['version']} et par l'AST ; témoin : "
+        f"{bilan['jambes_temoin']} jambes rouges sur {bilan['lignes_temoin']} lignes, aucune sur `[System.Uri]`."
     )
     return 0
 

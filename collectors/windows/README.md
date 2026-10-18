@@ -28,11 +28,17 @@ métadonnées d'événements.
    compatibilité 5.1 y est **jugée sans être exécutée** (`.github/scripts/check_windows_collector_is_honest.py`) :
    PSScriptAnalyzer, à version épinglée, confronte le script aux profils Windows PowerShell 5.1 qu'il
    livre (Windows 10 1809, Windows Server 2016 et 2019 : syntaxe, commandes, paramètres, types), et
-   l'arbre syntaxique refuse `??`, le ternaire, `&&`, `?.`/`?[` et tout type absent de ces profils. Ce
-   jugement ne prouve pas le **comportement** de .NET Framework : la lecture d'une adresse par
-   `[System.Uri]` et par `Invoke-RestMethod` 5.1 (redirections, proxy, TLS) n'est jouée que sous
-   PowerShell 7. Le script n'envoie que par `Invoke-RestMethod` : toute autre voie (`Invoke-WebRequest`,
-   BITS, une classe `System.Net.*`, un objet COM, `Add-Type`) est refusée par la même garde.
+   l'arbre syntaxique refuse `??`, le ternaire, `&&`, `?.`/`?[`, `clean`, l'arrière-plan `… &`,
+   `` `u{…} ``, tout type et tout membre statique absents de ces profils. Ce jugement ne prouve pas le
+   **comportement** de .NET Framework : la lecture d'une adresse par `[System.Uri]` et par
+   `Invoke-RestMethod` 5.1 (redirections, proxy, TLS) n'est jouée que sous PowerShell 7.
+   **Le fichier est en UTF-8 avec BOM, et doit le rester** : sans BOM, Windows PowerShell 5.1 lit un
+   script dans la page de code ANSI, et le collecteur ne parsait plus (un « — » y devient un guillemet
+   fermant). Un éditeur qui réenregistre sans BOM casse la tâche planifiée ; la garde le refuse.
+   Le script n'envoie que par `Invoke-RestMethod` : la garde n'admet que les commandes, paramètres,
+   types et méthodes qu'il emploie (liste fermée ; un nom qualifié par module, un chemin vers un `.exe`,
+   un nom de commande calculé, un chemin UNC littéral sont refusés). Elle ne voit pas un nom fabriqué
+   à l'exécution passé à une commande admise, ni un chemin UNC lu de la configuration.
 2. **Exécuter en compte SYSTEM ou administrateur** (le journal *Security* l'exige).
 3. **Activer les politiques d'audit** pour peupler certains événements.
 

@@ -63,6 +63,16 @@ chacun sous `timeout <PLUME_MAIL_DETECTION_DELAI>`, puis UNE lecture par `<outil
 qui ne rend pas la main n'arrête pas la détection ; un délai illisible (`00`, `abc`) est avoué et vaut 5 ;
 aucune source : aveu `unavailable / missing-source` qui nomme les trois
 essais et `PLUME_MAIL_SRC`, seul (le capteur sort). L'enveloppe de config dit `source` et `source_origine` (`posee` | `detectee`).
+Une source DÉTECTÉE fixe les chemins ClamAV par défaut comme une source posée (`PLUME_MAIL_CLAMAV_LOG` et
+`PLUME_MAIL_FRESHCLAM_LOG` non posées) : `/var/log/clamav/*` lu sur l'hôte pour un fichier détecté,
+`/var/log/mail/*` lu par `exec` pour docker et k3s. `PLUME_MAIL_LOG` non posée, la sonde fichier essaie
+`/var/log/mail/mail.log` puis `/var/log/mail.log` (postfix natif), sous une racine factice : un `sh` factice
+qui réécrit `/var/log/…` et passe la main au vrai, aucun fichier du `/var/log` de l'hôte n'est ouvert. LE CANAL
+D'AVEU, et non la seule phrase : la bibliothèque du capteur est rejouée INSTRUMENTÉE (une ligne de trace en
+tête de `plume_unavailable`, `plume_lecture_echouee`, `plume_lecture_partielle`, `plume_reglage_illisible`) ;
+« aucune source » exige `plume_unavailable missing-source` et un détail sans le préfixe de lecture ratée,
+« source retenue, lecture ratée » (posée sans outil, posée inconnue, docker détecté sans journal)
+`plume_lecture_echouee source_illisible` et ce préfixe.
 Non tenu : le comportement des VRAIS outils (les factices le reproduisent, ils ne le prouvent pas).
 
 `P10.32-l` — LE MASQUAGE VAUT POUR TOUTE LIGNE, PLUS SEULEMENT POUR LE SORTANT. Le message émis est la ligne
@@ -816,7 +826,7 @@ case "$*" in
 esac
 [ "$BANC_K3S" = pod ] && [ "$1" = -n ] && [ "$2" = "$BANC_NS" ] && [ "$3" = exec ] && [ "$4" = pod/mail-0 ] && [ "$5" = -c ] && [ "$6" = "$BANC_CONTENEUR" ] || { echo 'Error from server (NotFound): pods "x" not found' >&2; exit 1; }
 shift 6; [ "$1" = -- ] && shift
-n=$#; while [ "$n" -gt 0 ]; do a=$1; shift; case $a in "$BANC_HOTE"/*) a="$BANC_RACINE_K3S$a" ;; esac; set -- "$@" "$a"; n=$((n-1)); done
+n=$#; while [ "$n" -gt 0 ]; do a=$1; shift; case $a in "$BANC_HOTE"/*|/var/log/*) a="$BANC_RACINE_K3S$a" ;; esac; set -- "$@" "$a"; n=$((n-1)); done
 exec "$@"
 """
 FAUX_K3S = """#!/bin/sh
@@ -839,7 +849,7 @@ case "$1" in
       *) echo "Error response from daemon: No such container: $2" >&2; exit 1 ;;
     esac
     shift 2
-    n=$#; while [ "$n" -gt 0 ]; do a=$1; shift; case $a in "$BANC_HOTE"/*) a="$BANC_RACINE_DOCKER$a" ;; esac; set -- "$@" "$a"; n=$((n-1)); done
+    n=$#; while [ "$n" -gt 0 ]; do a=$1; shift; case $a in "$BANC_HOTE"/*|/var/log/*) a="$BANC_RACINE_DOCKER$a" ;; esac; set -- "$@" "$a"; n=$((n-1)); done
     exec "$@" ;;
 esac
 echo "docker: '$1' is not a docker command." >&2; exit 125
@@ -850,6 +860,28 @@ FAUX_TIMEOUT = """#!/bin/sh
 printf 'timeout %s\\n' "$*" >> "$BANC_TRACE"
 exec "$BANC_VRAI_TIMEOUT" "$@"
 """
+# Le `sh` de l'HÔTE : la sonde fichier et la lecture du mode fichier passent par `sh -c` ; ce `sh` trace ses
+# arguments, réécrit tout `/var/log/…` sous la racine factice de l'hôte natif, puis passe la main au vrai `sh`.
+FAUX_SH = """#!/bin/sh
+printf 'sh %s\\n' "$*" >> "$BANC_TRACE"
+n=$#; while [ "$n" -gt 0 ]; do a=$1; shift; case $a in /var/log/*) a="$BANC_RACINE_NATIF$a" ;; esac; set -- "$@" "$a"; n=$((n-1)); done
+exec "$BANC_VRAI_SH" "$@"
+"""
+# LE CANAL D'AVEU : une ligne de trace en tête de chaque primitive d'aveu, dans une COPIE de `lib.sh` jouée
+# à la place de l'original. Le reste de la bibliothèque est l'original à l'octet près.
+CANAUX = ("plume_unavailable", "plume_lecture_echouee", "plume_lecture_partielle", "plume_reglage_illisible")
+
+
+def bibliotheque_instrumentee(destination):
+    texte = open(LIB, encoding="utf-8").read()
+    for nom in CANAUX:
+        tete = f"\n{nom}() {{\n"
+        if texte.count(tete) != 1:
+            refus(f"instrument INVALIDE — `{nom}() {{` trouvé {texte.count(tete)} fois dans collectors/lib.sh (une attendue)")
+        texte = texte.replace(tete, tete + f"  printf 'canal {nom} %s\\n' \"$2\" >> \"$BANC_CANAL\"\n")
+    open(destination, "w", encoding="utf-8").write(texte)
+
+
 SANS_VRAIS_OUTILS = ("kubectl", "k3s", "docker")
 _LIRE = '[ -e "$1" ] || exit 3; tail -n "$2" "$1"'  # `_LIRE_JOURNAL` de mail.sh, tel que la trace le rend
 
@@ -871,6 +903,9 @@ def systeme_sans_les_vrais_outils(rep_systeme):
 def passage_de_la_detection(chemin_awk, entrees):
     fautes = []
     mail = [e["ligne"] for e in entrees if e["corpus"] == "mail-opendmarc.corpus" and e["verdict"] != "aucun"][:1]
+    autre = [e["ligne"] for e in entrees if e["corpus"] == "mail-opendkim.corpus" and e["verdict"] != "aucun"][:1]
+    clamd = [e["ligne"] for e in entrees if e["flux"] == "clamd" and e["verdict"] == "malware/infected"][:1]
+    fc = [e["ligne"] for e in entrees if e["flux"] == "freshclam" and e["verdict"] != "aucun"][:1]
     with tempfile.TemporaryDirectory(prefix="garde-mail-detection-") as bac:
         rep = preparer(bac, chemin_awk)
         systeme = os.path.join(bac, "systeme")
@@ -880,12 +915,21 @@ def passage_de_la_detection(chemin_awk, entrees):
         vrai_timeout = shutil.which("timeout")
         if not vrai_timeout:
             return ["(détection) `timeout` absent de l'hôte de la garde : la borne des sondes n'est pas jugeable"]
-        for nom, texte in (("kubectl", FAUX_KUBECTL), ("k3s", FAUX_K3S), ("docker", FAUX_DOCKER), ("timeout", FAUX_TIMEOUT)):
+        vrai_sh = shutil.which("sh")
+        if not vrai_sh:
+            refus("`sh` absent du PATH de la garde")
+        lib_tracee = os.path.join(bac, "lib-canal.sh")
+        bibliotheque_instrumentee(lib_tracee)
+        canal = os.path.join(bac, "canal")
+        dernier = {"canaux": []}
+        for nom, texte in (("kubectl", FAUX_KUBECTL), ("k3s", FAUX_K3S), ("docker", FAUX_DOCKER), ("timeout", FAUX_TIMEOUT),
+                           ("sh", FAUX_SH)):
             p = os.path.join(faux, nom)
             open(p, "w").write(texte)
             os.chmod(p, 0o755)
         hote = os.path.join(bac, "hote")
-        racines = {"k3s": os.path.join(bac, "racine-k3s"), "docker": os.path.join(bac, "racine-docker")}
+        racines = {"k3s": os.path.join(bac, "racine-k3s"), "docker": os.path.join(bac, "racine-docker"),
+                   "natif": os.path.join(bac, "racine-natif")}
         trace = os.path.join(bac, "trace")
         journal_hote = os.path.join(hote, "mail.log")
 
@@ -896,18 +940,27 @@ def passage_de_la_detection(chemin_awk, entrees):
             elif os.path.exists(chemin):
                 os.remove(chemin)
 
-        def jouer(outils, k3s="vide", docker="marche", fichier=False, dans_k3s=True, dans_docker=True, env=None):
-            """`outils` : les noms d'outils factices visibles dans le PATH du capteur."""
+        def jouer(outils, k3s="vide", docker="marche", fichier=False, dans_k3s=True, dans_docker=True, env=None,
+                  var_log=None):
+            """`outils` : les noms d'outils factices visibles dans le PATH du capteur. `var_log` : (racine, chemin
+            sous /var/log) -> lignes, posés sous la racine factice nommée (`natif`, `docker`, `k3s`)."""
             poser(journal_hote, fichier)
             poser(racines["k3s"] + journal_hote, dans_k3s)
             poser(racines["docker"] + journal_hote, dans_docker)
+            for r in racines.values():
+                shutil.rmtree(os.path.join(r, "var"), ignore_errors=True)
+            for (r, chemin), lignes in (var_log or {}).items():
+                assert chemin.startswith("/var/log/"), chemin
+                os.makedirs(os.path.dirname(racines[r] + chemin), exist_ok=True)
+                open(racines[r] + chemin, "w", encoding="utf-8").write("".join(l + "\n" for l in lignes))
             bin_cas = os.path.join(bac, "bin-cas")
             shutil.rmtree(bin_cas, ignore_errors=True)
             os.makedirs(bin_cas)
-            for o in tuple(outils) + ("timeout",):
+            for o in tuple(outils) + ("timeout", "sh"):
                 os.symlink(os.path.join(faux, o), os.path.join(bin_cas, o))
-            if os.path.exists(trace):
-                os.remove(trace)
+            for t in (trace, canal):
+                if os.path.exists(t):
+                    os.remove(t)
             for d in os.listdir(rep["state"]):
                 os.remove(os.path.join(rep["state"], d))
             e = {"PATH": os.pathsep.join((rep["bin"], bin_cas, systeme)), "PLUME_MAIL_SRC": None,
@@ -917,34 +970,58 @@ def passage_de_la_detection(chemin_awk, entrees):
                  "BANC_K3S": k3s, "BANC_DOCKER": docker, "BANC_HOTE": hote,
                  "BANC_RACINE_K3S": racines["k3s"], "BANC_RACINE_DOCKER": racines["docker"],
                  "BANC_FAUX_KUBECTL": os.path.join(faux, "kubectl"), "BANC_VRAI_TIMEOUT": vrai_timeout,
-                 "PLUME_MAIL_DETECTION_DELAI": "7"}
+                 "BANC_RACINE_NATIF": racines["natif"], "BANC_VRAI_SH": vrai_sh, "BANC_CANAL": canal,
+                 "PLUME_LIB": lib_tracee, "PLUME_MAIL_DETECTION_DELAI": "7"}
             e.update(env or {})
             debut = time.monotonic()
             ev, aveux, filtres, ko = jouer_capteur(rep, {}, e)
             duree = time.monotonic() - debut
             lu = open(trace).read() if os.path.exists(trace) else ""
+            dernier["canaux"] = [tuple(l.split(" ", 2)[1:]) for l in
+                                 (open(canal).read().splitlines() if os.path.exists(canal) else [])]
             return ev, aveux, filtres, ko, lu, duree
+
+        PREFIXE_LECTURE_RATEE = "LECTURE DE LA SOURCE IMPOSSIBLE ("
+
+        def canal_attendu(quoi, attendus, aveux):
+            """LE CANAL : la primitive d'aveu appelée et son 2e argument (la cause), lus sur la trace de la
+            bibliothèque instrumentée ; puis le détail émis, qui doit porter le préfixe de CETTE primitive."""
+            if dernier["canaux"] != attendus:
+                fautes.append(f"({quoi}) canal d'aveu {dernier['canaux']} au lieu de {attendus}")
+            for a in aveux or []:
+                detail = (a.get("fields") or {}).get("detail") or ""
+                if (a.get("fields") or {}).get("reason") != "missing-source":
+                    continue
+                ratee = detail.startswith(PREFIXE_LECTURE_RATEE)
+                if ratee != any(c == "plume_lecture_echouee" for c, _ in attendus):
+                    fautes.append(f"({quoi}) détail `{detail[:70]}` : préfixe de lecture ratée "
+                                  f"{'présent' if ratee else 'absent'} pour les canaux attendus {attendus}")
 
         sonde_k3s = "kubectl -n messagerie get pod -l app=mta -o name"
         sonde_docker = "docker inspect -f {{.State.Running}} mta"
-        fin_lecture = f" sh -c {_LIRE} lire {journal_hote} 1000"
-        lectures = {"kubectl": "kubectl -n messagerie exec pod/mail-0 -c mta --" + fin_lecture,
-                    "docker": "docker exec mta" + fin_lecture}
+        prefixes_exec = {"kubectl": "kubectl -n messagerie exec pod/mail-0 -c mta --", "docker": "docker exec mta"}
 
-        def sondes(quoi, lu, lecteur, delai=None):
+        def lecture(lecteur, chemin):
+            return f"{prefixes_exec[lecteur]} sh -c {_LIRE} lire {chemin} 1000"
+
+        def lus_par_l_hote(lu):
+            return [l[len("sh -c "):] for l in lu.splitlines() if l.startswith("sh -c ")]
+
+        def sondes(quoi, lu, lecteur, delai=None, clam=()):
             """LECTURE SEULE et BORNÉE, jugées sur la trace : les seuls appels admis sont la sonde du pod
-            (`get pod`), celle du conteneur (`inspect`), chacune une fois au plus, et UNE lecture du journal par
-            `<lecteur> exec` (aucune sans lecteur). `delai` posé : chaque sonde passe par `timeout <delai>`, et
-            aucun `timeout` d'autre durée ; `delai=None` : aucune sonde bornée attendue (valeur posée)."""
+            (`get pod`), celle du conteneur (`inspect`), chacune une fois au plus, et, par `<lecteur> exec`, UNE
+            lecture du journal puis celle de chaque chemin ClamAV de `clam` (aucune sans lecteur). `delai`
+            posé : chaque sonde passe par `timeout <delai>`, et aucun `timeout` d'autre durée ; `delai=None` :
+            aucune sonde bornée attendue (valeur posée). Les lignes `sh …` (le `sh` de l'hôte) sont jugées à part."""
             lignes = lu.splitlines()
             bornes = [l[len("timeout "):] for l in lignes if l.startswith("timeout ")]
-            autres = [l for l in lignes if not l.startswith("timeout ")]
-            hors = [l for l in autres if l not in (sonde_k3s, sonde_docker) and l not in lectures.values()]
+            autres = [l for l in lignes if not l.startswith(("timeout ", "sh "))]
+            execs = [l for l in autres if l.startswith(tuple(p + " " for p in prefixes_exec.values()))]
+            hors = [l for l in autres if l not in (sonde_k3s, sonde_docker) and l not in execs]
             if hors:
                 fautes.append(f"({quoi}) appel hors lecture seule pendant la détection ou la lecture : {hors[:2]}")
-            execs = [l for l in autres if l in lectures.values()]
-            if execs != ([lectures[lecteur]] if lecteur else []):
-                fautes.append(f"({quoi}) lecture du journal attendue {'par `' + lecteur + ' exec`, une fois' if lecteur else 'sans exec'} : {execs[:3]}")
+            if execs != ([lecture(lecteur, c) for c in (journal_hote,) + tuple(clam)] if lecteur else []):
+                fautes.append(f"({quoi}) lecture attendue {'par `' + lecteur + ' exec` du journal' + (' puis de ' + ', '.join(clam) if clam else '') + ', une fois chacun' if lecteur else 'sans exec'} : {execs[:3]}")
             for s_ in (sonde_k3s, sonde_docker):
                 if autres.count(s_) > 1:
                     fautes.append(f"({quoi}) `{s_}` lancée {autres.count(s_)} fois (une seule sonde par passage)")
@@ -958,11 +1035,31 @@ def passage_de_la_detection(chemin_awk, entrees):
             if vu != attendu:
                 fautes.append(f"({quoi}) chaque sonde doit passer par `timeout {delai}` : sondes {sondees}, bornes {bornes}")
 
-        def retenue(quoi, attendue, origine, lecteur, delai="7", aveu_attendu=None, **cas):
+        def retenue(quoi, attendue, origine, lecteur, delai="7", aveu_attendu=None, clam=(), lus_hote=(),
+                    pas_lus_hote=(), **cas):
+            """`clam` : chemins ClamAV PAR DÉFAUT attendus (variables non posées), lus et émis ; `lus_hote` /
+            `pas_lus_hote` : chemins que le `sh` de l'hôte doit lire, ou ne pas lire."""
+            if clam:
+                cas["env"] = dict(cas.get("env") or {}, PLUME_MAIL_CLAMAV_LOG=None, PLUME_MAIL_FRESHCLAM_LOG=None)
             ev, aveux, filtres, ko, lu, _ = jouer(**cas)
             if ko:
                 fautes.append(f"(détection, {quoi}) {ko}")
                 return
+            canal_attendu(f"détection, {quoi}", [("plume_reglage_illisible", aveu_attendu)] if aveu_attendu else [], aveux)
+            if clam:
+                if (filtres or {}).get("clamav") != "clamd=lu freshclam=lu":
+                    fautes.append(f"(détection, {quoi}) ClamAV par défaut de la source détectée : clamav="
+                                  f"`{(filtres or {}).get('clamav')}` au lieu de `clamd=lu freshclam=lu`")
+                for flux, ligne in (("clamd", clamd[0]), ("freshclam", fc[0])):
+                    if not any(e.get("message") == ligne for e in ev):
+                        fautes.append(f"(détection, {quoi}) le journal {flux} par défaut n'a pas été lu ni émis")
+            hote = lus_par_l_hote(lu)
+            for c in tuple(lus_hote) + (tuple(clam) if lecteur is None else ()):
+                if f"{_LIRE} lire {c} 1000" not in hote:
+                    fautes.append(f"(détection, {quoi}) `{c}` n'a pas été lu par le `sh` de l'hôte : {hote[-3:]}")
+            for c in pas_lus_hote:
+                if any(f" {c} " in f" {l} " for l in hote):
+                    fautes.append(f"(détection, {quoi}) `{c}` a été sondé ou lu alors qu'il ne devait pas l'être")
             dit = ((filtres or {}).get("source"), (filtres or {}).get("source_origine"))
             if dit != (attendue, origine):
                 fautes.append(f"(détection, {quoi}) source retenue {dit} au lieu de ({attendue!r}, {origine!r}) ; "
@@ -975,7 +1072,7 @@ def passage_de_la_detection(chemin_awk, entrees):
                                               or (aveux[0].get("fields") or {}).get("reason") != "unreadable-config"):
                 fautes.append(f"(détection, {quoi}) un seul aveu `unreadable-config` qui nomme `{aveu_attendu}` attendu : "
                               f"{[a.get('message') for a in aveux][:2]}")
-            sondes(f"détection, {quoi}", lu, lecteur, delai)
+            sondes(f"détection, {quoi}", lu, lecteur, delai, clam=clam if lecteur else ())
 
         # La valeur POSÉE est prise telle quelle, sans sonde, même si son outil manque.
         ev, aveux, filtres, ko, lu, _ = jouer(("docker",), docker="marche", fichier=True,
@@ -986,8 +1083,9 @@ def passage_de_la_detection(chemin_awk, entrees):
             if ev or not any("(PLUME_MAIL_SRC=k3s, posee)" in (a.get("message") or "") for a in aveux):
                 fautes.append("(posée k3s sans kubectl) la valeur posée n'a pas été prise telle quelle : "
                               f"{len(ev)} événement(s), aveux {[a.get('message') for a in aveux][:2]}")
-            if lu:
+            if [l for l in lu.splitlines() if not l.startswith("sh ")]:
                 fautes.append(f"(posée k3s sans kubectl) une sonde a été lancée malgré la valeur posée : {lu.splitlines()[:2]}")
+            canal_attendu("posée k3s sans kubectl", [("plume_lecture_echouee", "source_illisible")], aveux)
         # Posée k3s, kubectl présent : UN `get pod` (celui de la lecture, non borné comme avant), UNE lecture.
         ev, aveux, filtres, ko, lu, _ = jouer(("kubectl", "docker"), k3s="pod", docker="marche", fichier=True,
                                               env={"PLUME_MAIL_SRC": "k3s"})
@@ -1005,15 +1103,20 @@ def passage_de_la_detection(chemin_awk, entrees):
                                               env={"PLUME_MAIL_SRC": "K3s"})
         if ko:
             fautes.append(f"(posée inconnue `K3s`) {ko}")
-        elif ev or lu or not any("(PLUME_MAIL_SRC=K3s, posee)" in (a.get("message") or "") for a in aveux):
+        elif ev or [l for l in lu.splitlines() if not l.startswith("sh ")] \
+                or not any("(PLUME_MAIL_SRC=K3s, posee)" in (a.get("message") or "") for a in aveux):
             fautes.append(f"(posée inconnue `K3s`) la valeur a été devinée ou sondée : {len(ev)} événement(s), "
                           f"sondes {lu.splitlines()[:2]}, aveux {[a.get('message') for a in aveux][:2]}")
+        else:
+            canal_attendu("posée inconnue `K3s`", [("plume_lecture_echouee", "source_illisible")], aveux)
         ev, aveux, filtres, ko, lu, _ = jouer(("kubectl", "docker"), k3s="pod", docker="marche", fichier=True,
                                               env={"PLUME_MAIL_SRC": "file"})
         if ko:
             fautes.append(f"(posée file, k3s et docker présents) {ko}")
         else:
-            if ((filtres or {}).get("source"), (filtres or {}).get("source_origine")) != ("file", "posee") or lu:
+            if ((filtres or {}).get("source"), (filtres or {}).get("source_origine")) != ("file", "posee") \
+                    or [l for l in lu.splitlines() if not l.startswith("sh ")] \
+                    or any(" sonder " in l for l in lus_par_l_hote(lu)):
                 fautes.append(f"(posée file, k3s et docker présents) source dite {filtres and filtres.get('source')}/"
                               f"{filtres and filtres.get('source_origine')}, sondes : {lu.splitlines()[:2]}")
         # Non posée : l'ordre k3s, docker, file.
@@ -1029,6 +1132,46 @@ def passage_de_la_detection(chemin_awk, entrees):
                 fichier=True)
         retenue("conteneur arrêté, fichier", "file", "detectee", None, outils=("docker",), docker="arrete", fichier=True)
         retenue("conteneur absent, fichier", "file", "detectee", None, outils=("docker",), docker="absent", fichier=True)
+        # Une source DÉTECTÉE fixe les chemins ClamAV par défaut, comme une source posée : la détection précède
+        # leur calcul. Fichier : /var/log/clamav/ de l'hôte ; docker et k3s : /var/log/mail/ par exec.
+        clam_natif = ("/var/log/clamav/clamav.log", "/var/log/clamav/freshclam.log")
+        clam_dms = ("/var/log/mail/clamav.log", "/var/log/mail/freshclam.log")
+        retenue("fichier détecté, ClamAV par défaut", "file", "detectee", None, outils=(), fichier=True,
+                clam=clam_natif, var_log={("natif", clam_natif[0]): clamd, ("natif", clam_natif[1]): fc})
+        retenue("docker détecté, ClamAV par défaut", "docker", "detectee", "docker", outils=("docker",), docker="marche",
+                clam=clam_dms, var_log={("docker", clam_dms[0]): clamd, ("docker", clam_dms[1]): fc})
+        retenue("k3s détecté, ClamAV par défaut", "k3s", "detectee", "kubectl", outils=("kubectl",), k3s="pod",
+                clam=clam_dms, var_log={("k3s", clam_dms[0]): clamd, ("k3s", clam_dms[1]): fc})
+        # `PLUME_MAIL_LOG` non posée : /var/log/mail/mail.log (docker-mailserver) puis /var/log/mail.log (natif).
+        sans_log = {"PLUME_MAIL_LOG": None}
+        retenue("postfix natif seul, /var/log/mail.log", "file", "detectee", None, outils=(), env=sans_log,
+                lus_hote=("/var/log/mail.log",), var_log={("natif", "/var/log/mail.log"): mail})
+        retenue("les deux chemins, docker-mailserver d'abord", "file", "detectee", None, outils=(), env=sans_log,
+                lus_hote=("/var/log/mail/mail.log",), pas_lus_hote=("/var/log/mail.log",),
+                var_log={("natif", "/var/log/mail/mail.log"): mail, ("natif", "/var/log/mail.log"): autre})
+        # `PLUME_MAIL_LOG` POSÉE : seul ce chemin, jamais les défauts, même présents.
+        ev, aveux, filtres, ko, lu, _ = jouer((), env={"PLUME_MAIL_LOG": os.path.join(bac, "pose-absent.log")},
+                                              var_log={("natif", "/var/log/mail.log"): mail,
+                                                       ("natif", "/var/log/mail/mail.log"): mail})
+        if ko or ev or filtres is not None or any("/var/log/" in l for l in lus_par_l_hote(lu)):
+            fautes.append(f"(PLUME_MAIL_LOG posée absente, défauts présents) un chemin par défaut a été sondé ou lu : "
+                          f"{ko or ''} {len(ev or [])} événement(s), {lus_par_l_hote(lu)[-2:]}")
+        canal_attendu("PLUME_MAIL_LOG posée absente, défauts présents", [("plume_unavailable", "missing-source")], aveux)
+        # Rien, PLUME_MAIL_LOG non posée : l'aveu nomme les deux chemins essayés.
+        ev, aveux, filtres, ko, lu, _ = jouer((), env=sans_log)
+        m = " ".join(a.get("message") or "" for a in aveux or [])
+        if ko or ev or "/var/log/mail/mail.log" not in m or "/var/log/mail.log " not in m.replace(",", " "):
+            fautes.append(f"(aucun fichier, PLUME_MAIL_LOG non posée) l'aveu ne nomme pas les deux chemins : {m[:200]}")
+        canal_attendu("aucun fichier, PLUME_MAIL_LOG non posée", [("plume_unavailable", "missing-source")], aveux)
+        # Source DÉTECTÉE puis lecture ratée (conteneur en marche, journal absent) : c'est l'aveu de LECTURE,
+        # pas celui de détection, et il nomme la source et son origine.
+        ev, aveux, filtres, ko, lu, _ = jouer(("docker",), docker="marche", dans_docker=False)
+        if ko or ev or filtres is not None or not any("(PLUME_MAIL_SRC=docker, detectee)" in (a.get("message") or "")
+                                                      for a in aveux or []):
+            fautes.append(f"(docker détecté, journal absent) aveu de lecture ratée qui nomme la source attendu : {ko or ''} "
+                          f"{[a.get('message', '')[:120] for a in (aveux or [])]}")
+        canal_attendu("docker détecté, journal absent", [("plume_lecture_echouee", "source_illisible")], aveux)
+        sondes("docker détecté, journal absent", lu, "docker", "7")
         # Une sonde BORNÉE : un kubectl qui ne rend pas la main n'arrête pas la détection.
         ev, aveux, filtres, ko, lu, duree = jouer(("kubectl",), k3s="lent", fichier=True,
                                                   env={"PLUME_MAIL_DETECTION_DELAI": "1"})
@@ -1063,6 +1206,7 @@ def passage_de_la_detection(chemin_awk, entrees):
             if len(bons) != 1 or len(aveux) != 1 or manque or ev or filtres is not None:
                 fautes.append(f"(aucune source) aveu nommé attendu (manque {manque}) : {[a.get('message') for a in aveux][:2]}, "
                               f"{len(ev)} événement(s), enveloppe de config {'émise' if filtres is not None else 'absente'}")
+            canal_attendu("aucune source", [("plume_unavailable", "missing-source")], aveux)
         # (c) exige un FICHIER LISIBLE : un dossier au chemin du journal, ou un fichier illisible, n'est pas une source.
         cas_non_fichier = [("dossier", "dossier")]
         if os.geteuid() != 0:
@@ -1076,13 +1220,14 @@ def passage_de_la_detection(chemin_awk, entrees):
                 open(chemin, "w").write(mail[0] + "\n")
                 os.chmod(chemin, 0)
             ev, aveux, filtres, ko, lu, _ = jouer((), env={"PLUME_MAIL_LOG": chemin})
-            # `plume_lecture_echouee` porte aussi `missing-source` : c'est le MESSAGE de la détection qui distingue
-            # « aucune source détectée » de « source retenue, lecture ratée ».
+            # `plume_lecture_echouee` porte aussi `missing-source` : le CANAL (`plume_unavailable`) et le détail
+            # sans préfixe de lecture ratée distinguent « aucune source détectée » de « source retenue, lecture ratée ».
             dits = [((a.get("fields") or {}).get("reason"), "aucune source de journal mail detectee" in (a.get("message") or ""))
                     for a in (aveux or [])]
             if ko or dits != [("missing-source", True)] or ev:
                 fautes.append(f"(journal {quoi}) seul l'aveu de détection `missing-source` attendu : {ko or ''} "
                               f"{[a.get('message', '')[:90] for a in (aveux or [])]}, {len(ev or [])} événement(s)")
+            canal_attendu(f"journal {quoi}", [("plume_unavailable", "missing-source")], aveux)
     return fautes
 
 

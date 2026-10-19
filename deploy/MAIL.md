@@ -129,16 +129,23 @@ detecte :
   sans aucune sonde. `k3s` lit par `kubectl exec` (ou `k3s kubectl`) dans le pod de `PLUME_MAIL_SELECTOR`
   (defaut `app=mailserver`) du namespace `PLUME_MAIL_NS` (defaut `mail`) ; `docker` par `docker exec` dans
   le conteneur `PLUME_MAIL_CONTAINER` (defaut `mailserver`) ; `file` lit `PLUME_MAIL_LOG` sur l'hote
-  (defaut `/var/log/mail/mail.log`). Si l'outil manque, l'echec de lecture est avoue, rien n'est tente
-  a la place.
+  (defaut `/var/log/mail/mail.log`, celui de docker-mailserver ; source posee `file`, aucun autre chemin n'est
+  essaye : un postfix natif Debian/Ubuntu ecrit `/var/log/mail.log`, a poser). Si l'outil manque, l'echec de
+  lecture est avoue, rien n'est tente a la place.
 - **Non posee** : detection, dans cet ordre, chaque sonde en lecture seule et bornee par `timeout`
   (`PLUME_MAIL_DETECTION_DELAI`, 5 s par defaut ; un entier >= 1 sans zero en tete, `0`/`00` couperaient la
   borne : pose et illisible, il est avoue `unreadable-config` et c'est 5 qui s'applique) : (a) `k3s` si `kubectl` ou `k3s` est present ET qu'un pod
   du selecteur existe dans le namespace ; (b) `docker` si `docker` est present ET que le conteneur nomme
-  est en marche (`docker inspect`) ; (c) `file` si `PLUME_MAIL_LOG` est un fichier lisible. Hote natif
-  (systemd, journal local) : (c) ; serveur mail en conteneur Docker : (b) ; dans k3s : (a).
-- **Aucune** : aveu `collect_status=unavailable`, `reason=missing-source`, qui dit ce qui a ete essaye et
-  qu'il faut poser `PLUME_MAIL_SRC` ; rien n'est acquitte.
+  est en marche (`docker inspect`) ; (c) `file` si `PLUME_MAIL_LOG` est un fichier lisible, et, `PLUME_MAIL_LOG`
+  non posee, le premier fichier lisible de `/var/log/mail/mail.log` (docker-mailserver) puis `/var/log/mail.log`
+  (postfix natif Debian/Ubuntu), qui devient le journal lu. Hote natif (systemd, journal local) : (c) ;
+  serveur mail en conteneur Docker : (b) ; dans k3s : (a). Les chemins ClamAV par defaut suivent la source
+  RETENUE, posee ou detectee : `/var/log/clamav/` pour `file`, `/var/log/mail/` (dans le conteneur) sinon.
+- **Aucune** : aveu `collect_status=unavailable`, `reason=missing-source`, detail `aucune source de journal
+  mail detectee …`, qui dit ce qui a ete essaye et qu'il faut poser `PLUME_MAIL_SRC` ; le capteur sort.
+- **Retenue, lecture ratee** (posee ou detectee) : un AUTRE aveu, celui d'une lecture qui lache, sous la meme
+  raison `missing-source` mais au detail `LECTURE DE LA SOURCE IMPOSSIBLE (source_illisible) : …` qui nomme la
+  source et son origine ; aucun marqueur n'est acquitte, la tranche sera relue.
 - **Sous une unite contrainte** (`plume-mail.service` : `CPUQuota=25%`, `HOME=/tmp` en `PrivateTmp`, donc le
   cache de decouverte de `k3s kubectl` repart a froid a chaque passage) : une sonde k3s qui depasse le delai
   fait un passage aveugle (avoue `missing-source`, rien d'acquitte). **Poser** `PLUME_MAIL_SRC` dans

@@ -58,7 +58,9 @@ MAIL_LOG="${PLUME_MAIL_LOG:-/var/log/mail/mail.log}"
 # par `timeout` (PLUME_MAIL_DETECTION_DELAI secondes, 5 par defaut) quand l'outil existe :
 #   (a) k3s    : `kubectl` (ou `k3s kubectl`) present ET un pod de PLUME_MAIL_SELECTOR dans PLUME_MAIL_NS ;
 #   (b) docker : `docker` present ET le conteneur PLUME_MAIL_CONTAINER en marche (`docker inspect`) ;
-#   (c) file   : PLUME_MAIL_LOG est un fichier lisible.
+#   (c) file   : PLUME_MAIL_LOG est un fichier lisible ; NON POSEE, deux chemins dans cet ordre, celui de
+#                docker-mailserver (/var/log/mail/mail.log) puis celui d'un postfix natif Debian/Ubuntu
+#                (/var/log/mail.log), et le premier fichier lisible devient le journal lu.
 # Aucune : aveu `unavailable / missing-source` qui dit ce qui a ete essaye et la variable a poser, et
 # sortie (rien n'a ete mis en attente). La source RETENUE et son origine (`posee` | `detectee`) sont
 # dites dans l'enveloppe de config (`source`, `source_origine`).
@@ -71,6 +73,7 @@ case "$DELAI_DETECTION" in
                  "un nombre entier de secondes, au moins 1, sans zero en tete (0 couperait la borne)"
                DELAI_DETECTION=5 ;;
 esac
+_fichier_lisible() { sh -c '[ -f "$1" ] && [ -r "$1" ]' sonder "$1"; }
 _borne() { if command -v timeout >/dev/null 2>&1; then timeout "$DELAI_DETECTION" "$@"; else "$@"; fi; }
 KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
 _pod=""; _pod_lu=0
@@ -91,9 +94,15 @@ else
       else _essais="$_essais docker (conteneur $MAIL_CONTAINER absent, arrete, ou demon injoignable) ;"; fi
     else _essais="$_essais docker (commande docker absente) ;"; fi
   fi
+  # La sonde (c) est jouee par `sh -c`, le lecteur meme du mode fichier (`lire_journal`) : elle juge le fichier
+  # que la lecture ouvrira, et un temoin la rejoue sous une racine factice sans toucher au /var/log de l'hote.
   if [ -z "$MAILSRC" ]; then
-    if [ -f "$MAIL_LOG" ] && [ -r "$MAIL_LOG" ]; then MAILSRC=file
-    else _essais="$_essais file ($MAIL_LOG n'est pas un fichier lisible) ;"; fi
+    if [ -n "${PLUME_MAIL_LOG:-}" ]; then
+      if _fichier_lisible "$MAIL_LOG"; then MAILSRC=file
+      else _essais="$_essais file ($MAIL_LOG n'est pas un fichier lisible) ;"; fi
+    elif _fichier_lisible /var/log/mail/mail.log; then MAILSRC=file
+    elif _fichier_lisible /var/log/mail.log; then MAILSRC=file; MAIL_LOG=/var/log/mail.log
+    else _essais="$_essais file (ni /var/log/mail/mail.log ni /var/log/mail.log n'est un fichier lisible, PLUME_MAIL_LOG non pose) ;"; fi
   fi
   [ -n "$MAILSRC" ] || plume_unavailable mail missing-source \
     "aucune source de journal mail detectee (PLUME_MAIL_SRC non pose). Essaye :${_essais% ;}. Poser PLUME_MAIL_SRC=k3s|docker|file (et PLUME_MAIL_NS/PLUME_MAIL_SELECTOR, PLUME_MAIL_CONTAINER ou PLUME_MAIL_LOG)"
@@ -109,6 +118,8 @@ last=$(cat "$WM" 2>/dev/null || echo 0)
 # l'ecrit sous /var/log/mail/, un hote natif Debian/Ubuntu sous /var/log/clamav/. Une variable posee VIDE
 # coupe la lecture ; un fichier ABSENT au chemin par defaut est un hote sans ClamAV (dit dans l'enveloppe
 # de config, pas avoue) ; un chemin POSE que la lecture ne rend pas est avoue (`plume_lecture_partielle`).
+# APRES la detection (P10.33-x) : le repertoire suit la source RETENUE, posee ou detectee — pris sur la
+# valeur brute de PLUME_MAIL_SRC, un fichier detecte sur un hote natif chercherait ClamAV sous /var/log/mail/.
 case "$MAILSRC" in file) _clam_rep=/var/log/clamav ;; *) _clam_rep=/var/log/mail ;; esac
 CLAMD_LOG="${PLUME_MAIL_CLAMAV_LOG-$_clam_rep/clamav.log}"
 FRESHCLAM_LOG="${PLUME_MAIL_FRESHCLAM_LOG-$_clam_rep/freshclam.log}"

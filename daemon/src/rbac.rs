@@ -1,7 +1,7 @@
 //! Autorisation (default-deny) & gouvernance multi-tenant : ordre des rôles (`role_rank`/`role_satisfies`/
 //! `MinRole`/`route_min_role`/`rbac_gate`), grants SSO/per-tenant (`sso_grants`/`grant_role_for`/
 //! `default_grant`/`platform_user_is_superadmin`), résolution d'accès (`TenantAccess`/`resolve_tenant_access`),
-//! marqueur opérateur cross-tenant (`OPERATOR_ACCESS_*`/`operator_access_should_emit`/`emit_operator_access`/`TraceDAccesOperateur`/
+//! marqueur opérateur cross-tenant (`OPERATOR_ACCESS_*`/`operator_access_should_emit`/`DecisionDeFenetre`/`emit_operator_access`/`TraceDAccesOperateur`/
 //! `control_ledger_prev_hash`/`control_ledger_append`/`control_ledger_verify_conn`), garde de gestion tenant (`mgmt_*`/`tenant_mgmt_gate`/`can_manage_grants`/
 //! `valid_grant_role`/`platform_user_name_ok`/`gen_control_id`/`ensure_platform_user`/`ensure_platform_user_conn`/
 //! `le_geste_retirerait_le_dernier_administrateur` — `P10.21-r`, lue dans la transaction du geste)
@@ -520,23 +520,85 @@ pub(crate) fn rbac_gate(role: &str, path: &str, mutating: bool) -> Result<(), (S
 // #2b/D3/R9 — MARQUEUR OPÉRATEUR cross-tenant : debounce du 2e ledger (event tenant-visible) + control_ledger.
 pub(crate) const OPERATOR_ACCESS_DEBOUNCE_S: i64 = 600; // 1 event tenant-visible / 10 min / (superadmin,tenant)
 
-pub(crate) static OPERATOR_ACCESS_LAST: std::sync::OnceLock<Mutex<HashMap<(String, String), i64>>> = std::sync::OnceLock::new();
+/// `P10.21-q` — LA FENÊTRE DE DEBOUNCE d'un couple (opérateur, tenant), EN DEUX TEMPS : RÉSERVÉE par
+/// l'accès qui va écrire l'événement, CONFIRMÉE seulement une fois l'INSERT réussi. Seule une fenêtre
+/// confirmée couvre une lecture débouncée : avant, la fenêtre était armée AVANT l'écriture, et une lecture
+/// concurrente s'appuyait sur une trace qui pouvait ne jamais exister. `jeton` désigne la réservation, pour
+/// que l'échec d'un accès n'efface ni la réservation d'un autre ni une fenêtre déjà confirmée.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FenetreDAccesOperateur {
+    pub(crate) depuis: i64,
+    pub(crate) jeton: u64,
+    pub(crate) confirmee: bool,
+}
 
-/// True si l'event operator-access DOIT être émis dans la base du tenant : `force` (break-glass) OU fenêtre
-/// de debounce écoulée pour ce (superadmin, tenant). Réarme le debounce quand il renvoie true. Borné anti-OOM.
-pub(crate) fn operator_access_should_emit(superadmin: &str, tenant: &str, now_i: i64, force: bool) -> bool {
+pub(crate) static OPERATOR_ACCESS_LAST: std::sync::OnceLock<Mutex<HashMap<(String, String), FenetreDAccesOperateur>>> =
+    std::sync::OnceLock::new();
+
+/// Jetons de réservation : uniques au processus, jamais réutilisés.
+static OPERATOR_ACCESS_JETON: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `P10.21-q` — CE QUE LA FENÊTRE DIT À UN ACCÈS : couvert par un événement DÉJÀ ÉCRIT, ou à lui d'écrire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DecisionDeFenetre {
+    /// Un événement de ce couple est écrit et confirmé dans la fenêtre : la lecture s'appuie sur lui.
+    Couverte,
+    /// L'accès doit écrire l'événement ; il confirme (`confirmer_la_fenetre`) après un INSERT réussi, ou
+    /// oublie (`oublier_la_reservation`) sur un échec.
+    Reservee(u64),
+}
+
+/// `Couverte` si une fenêtre CONFIRMÉE de ce (superadmin, tenant) court encore et que l'accès n'est pas
+/// forcé (break-glass) ; sinon RÉSERVE la fenêtre et rend son jeton. Une réservation non confirmée (une
+/// écriture en cours ailleurs) ne couvre RIEN : l'accès qui la voit écrit lui-même sa trace (décision par
+/// défaut `P10.21-q` : quelques événements en double pendant un INSERT en cours plutôt qu'un accès sans
+/// trace). Un accès FORCÉ écrit toujours son événement, mais ne pose pas sa réservation PAR-DESSUS une
+/// fenêtre confirmée qui court : elle reste en place (son événement est écrit), et l'échec du forcé
+/// n'oublie que son propre jeton, absent de la table. Aucun verrou n'est tenu pendant l'écriture. Borné
+/// anti-OOM (4096).
+pub(crate) fn operator_access_should_emit(superadmin: &str, tenant: &str, now_i: i64, force: bool) -> DecisionDeFenetre {
     let cell = OPERATOR_ACCESS_LAST.get_or_init(|| Mutex::new(HashMap::new()));
     let mut g = cell.lock();
     if g.len() > 4096 {
-        g.retain(|_, &mut last| now_i - last < OPERATOR_ACCESS_DEBOUNCE_S);
+        g.retain(|_, f| now_i - f.depuis < OPERATOR_ACCESS_DEBOUNCE_S);
     }
     let key = (superadmin.to_string(), tenant.to_string());
-    let elapsed = g.get(&key).map(|&last| now_i - last >= OPERATOR_ACCESS_DEBOUNCE_S).unwrap_or(true);
-    if force || elapsed {
-        g.insert(key, now_i);
-        true
-    } else {
-        false
+    let confirmee_qui_court = g.get(&key).is_some_and(|f| f.confirmee && now_i - f.depuis < OPERATOR_ACCESS_DEBOUNCE_S);
+    if confirmee_qui_court && !force {
+        return DecisionDeFenetre::Couverte;
+    }
+    let jeton = OPERATOR_ACCESS_JETON.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if !confirmee_qui_court {
+        g.insert(key, FenetreDAccesOperateur { depuis: now_i, jeton, confirmee: false });
+    }
+    DecisionDeFenetre::Reservee(jeton)
+}
+
+/// `P10.21-q` — L'ÉVÉNEMENT DE CETTE RÉSERVATION EST ÉCRIT (horodaté `depuis`) : la fenêtre est confirmée
+/// et couvre désormais les lectures. Une fenêtre déjà confirmée par un événement plus récent est gardée.
+/// LIMITE : cette garde n'a pas de témoin. `now()` est en secondes ; deux confirmations de la même seconde
+/// sont équivalentes, et une confirmation plus ANCIENNE qu'une fenêtre déjà confirmée suppose un INSERT
+/// horodaté avant un autre mais terminé après lui, à la seconde près — une course que seule une attente
+/// chronométrée produirait.
+fn confirmer_la_fenetre(superadmin: &str, tenant: &str, jeton: u64, depuis: i64) {
+    let cell = OPERATOR_ACCESS_LAST.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut g = cell.lock();
+    let key = (superadmin.to_string(), tenant.to_string());
+    if g.get(&key).is_some_and(|f| f.confirmee && f.depuis >= depuis) {
+        return;
+    }
+    g.insert(key, FenetreDAccesOperateur { depuis, jeton, confirmee: true });
+}
+
+/// `P10.21-q` — L'ÉVÉNEMENT DE CETTE RÉSERVATION N'EST PAS ENTRÉ : la réservation est oubliée si elle est
+/// encore la sienne. Celle d'un accès concurrent, ou une fenêtre confirmée par lui, restent en place.
+fn oublier_la_reservation(superadmin: &str, tenant: &str, jeton: u64) {
+    if let Some(cell) = OPERATOR_ACCESS_LAST.get() {
+        let mut g = cell.lock();
+        let key = (superadmin.to_string(), tenant.to_string());
+        if g.get(&key).is_some_and(|f| f.jeton == jeton) {
+            g.remove(&key);
+        }
     }
 }
 
@@ -856,10 +918,10 @@ enum EvenementDuTenant {
     /// La ligne est écrite dans la base du tenant visité.
     Ecrit,
     /// Lecture débouncée : un événement de ce couple (opérateur, tenant) a été ÉCRIT dans la fenêtre — la
-    /// fenêtre n'est armée que par une écriture réussie (`perdre_la_trace_du_tenant` l'oublie sinon) —
-    /// et c'est lui qui atteste les lectures de la fenêtre auprès du tenant.
+    /// fenêtre ne couvre qu'une fois CONFIRMÉE, après l'INSERT réussi (`P10.21-q`) ; une réservation en
+    /// cours ne couvre rien — et c'est lui qui atteste les lectures de la fenêtre auprès du tenant.
     CouvertParLaFenetre,
-    /// Rien n'est entré ; la cause est portée, la perte comptée et la fenêtre oubliée.
+    /// Rien n'est entré ; la cause est portée, la perte comptée et la réservation oubliée.
     Perdu(String),
 }
 
@@ -867,12 +929,13 @@ enum EvenementDuTenant {
 /// pour que son issue se lise en un seul type.
 fn poser_l_evenement_du_tenant(st: &AppState, superadmin: &str, tenant: &str, write: bool, reason: &str) -> EvenementDuTenant {
     let now_i = now();
-    if !operator_access_should_emit(superadmin, tenant, now_i, write) {
-        return EvenementDuTenant::CouvertParLaFenetre;
-    }
+    let jeton = match operator_access_should_emit(superadmin, tenant, now_i, write) {
+        DecisionDeFenetre::Couverte => return EvenementDuTenant::CouvertParLaFenetre,
+        DecisionDeFenetre::Reservee(jeton) => jeton,
+    };
     let trace_du_tenant = if write { TRACE_OPERATEUR_TENANT_ECRITURE } else { TRACE_OPERATEUR_TENANT_LECTURE };
     let Some(handle) = st.tenants.handle_for(tenant) else {
-        return perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, "base du tenant non résoluble au moment de l'écriture");
+        return perdre_la_trace_du_tenant(superadmin, tenant, jeton, trace_du_tenant, "base du tenant non résoluble au moment de l'écriture");
     };
     let conn = handle.lock();
     let (sev, action, msg) = if write {
@@ -881,16 +944,20 @@ fn poser_l_evenement_du_tenant(st: &AppState, superadmin: &str, tenant: &str, wr
         (2, "read", format!("l'opérateur plateforme '{superadmin}' a consulté vos données (lecture cross-tenant)"))
     };
     let fields = json!({ "operator": superadmin, "access": action, "reason": reason }).to_string();
-    // `P10.21-g` — L'ÉCRITURE EST COMPTÉE : une ligne, ou la perte est comptée et le debounce OUBLIÉ.
+    // `P10.21-g` — L'ÉCRITURE EST COMPTÉE : une ligne, ou la perte est comptée et la réservation OUBLIÉE.
+    // `P10.21-q` — la fenêtre n'est CONFIRMÉE qu'ici, une fois la ligne entrée.
     match conn.execute(
         // origin='daemon' (v72/M4) : marqueur d'accès opérateur NON-purgeable et NON-forgeable (cf. retention_run).
         "INSERT INTO event(ts,source,category,severity,message,host,fields,origin) \
          VALUES(?1,'plume-operator-access','audit',?2,?3,'plume-daemon',?4,'daemon')",
         params![now_i, sev, msg, fields],
     ) {
-        Ok(1) => EvenementDuTenant::Ecrit,
-        Ok(n) => perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, &format!("{n} ligne(s) écrite(s) au lieu d'une")),
-        Err(e) => perdre_la_trace_du_tenant(superadmin, tenant, trace_du_tenant, &e.to_string()),
+        Ok(1) => {
+            confirmer_la_fenetre(superadmin, tenant, jeton, now_i);
+            EvenementDuTenant::Ecrit
+        }
+        Ok(n) => perdre_la_trace_du_tenant(superadmin, tenant, jeton, trace_du_tenant, &format!("{n} ligne(s) écrite(s) au lieu d'une")),
+        Err(e) => perdre_la_trace_du_tenant(superadmin, tenant, jeton, trace_du_tenant, &e.to_string()),
     }
 }
 
@@ -903,14 +970,12 @@ pub(crate) const TRACE_OPERATEUR_TENANT_LECTURE: &str = "tenant.plume-operator-a
 pub(crate) const TRACE_OPERATEUR_TENANT_ECRITURE: &str = "tenant.plume-operator-access.write";
 
 /// `P10.21-g` — L'ÉVÉNEMENT D'ACCÈS N'EST PAS ENTRÉ DANS LA BASE DU TENANT : la perte est comptée, et
-/// la fenêtre de debounce de ce couple est OUBLIÉE. Sans cet oubli, une lecture dont l'événement a été
-/// refusé aurait consommé la fenêtre : les lectures suivantes de la même fenêtre ne réessaieraient pas,
-/// et le tenant ne verrait aucune de ces consultations.
-fn perdre_la_trace_du_tenant(superadmin: &str, tenant: &str, trace: &'static str, cause: &str) -> EvenementDuTenant {
+/// la réservation de cet accès est OUBLIÉE (`P10.21-q` : la sienne seulement, par son jeton — ni celle
+/// d'un accès concurrent, ni une fenêtre qu'un autre a confirmée). Une réservation jamais confirmée ne
+/// couvre aucune lecture ; l'oubli la retire de la table bornée.
+fn perdre_la_trace_du_tenant(superadmin: &str, tenant: &str, jeton: u64, trace: &'static str, cause: &str) -> EvenementDuTenant {
     crate::metrics::compter_un_acces_operateur_non_trace(trace, cause);
-    if let Some(cell) = OPERATOR_ACCESS_LAST.get() {
-        cell.lock().remove(&(superadmin.to_string(), tenant.to_string()));
-    }
+    oublier_la_reservation(superadmin, tenant, jeton);
     EvenementDuTenant::Perdu(cause.to_string())
 }
 

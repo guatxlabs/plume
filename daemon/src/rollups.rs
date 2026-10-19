@@ -641,9 +641,24 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // porte alors EXACTEMENT les lignes `id <= new_cov`, donc la couverture publiée plus bas est vraie par
     // CONSTRUCTION et non par espoir (une ligne insérée PENDANT l'agrégation ne peut plus y entrer à
     // moitié — elle sera rattrapée par le fragment retardataire de la route, puis par le tick suivant).
-    let new_cov: i64 = conn.query_row("SELECT COALESCE(MAX(id),0) FROM event", [], |r| r.get(0)).unwrap_or(0);
+    // `P10.32-a` — la borne LUE ou NON LUE. Avant, `.unwrap_or(0)` : une lecture ratée valait 0, la bande était
+    // rétractée (DELETE) puis ré-agrégée sous `id <= 0` (rien), le watermark avançait et la couverture `0` était publiée.
+    // Non lue : ni rétraction, ni agrégation, watermark et couverture LAISSÉS tels quels, repris au prochain passage.
+    // Décision par défaut, vague Y. La paire (wm, cov) du passage précédent reste vraie TANT QUE `wm <= recent` : seuls
+    // les buckets `>= recent` bougent alors. LIMITE (non corrigée) : horloge reculée (`wm > recent`), la fenêtre chaude
+    // purge et ré-agrège `[recent, wm)` SANS borne d'identifiant ; ces buckets, sous `wm`, portent alors les lignes
+    // tardives `id > cov` que la route ajoute aussi en brut -> double compte jusqu'au prochain passage à borne lue.
+    let mut borne_lue = true;
+    let new_cov: i64 = match conn.query_row("SELECT COALESCE(MAX(id),0) FROM event", [], |r| r.get(0)) {
+        Ok(m) => m,
+        Err(e) => {
+            borne_lue = false;
+            eprintln!("[rollup] WARN borne d'identifiant d'event NON lue ({e}) — rétraction et agrégation de la bande sautées, watermark et couverture laissés tels quels, reprise au prochain passage");
+            0
+        }
+    };
     let mut aggregated = true;
-    if recent > agg_from {
+    if recent > agg_from && borne_lue {
         // RÉTRACTER D'ABORD, RÉPARER ENSUITE : tant que la ré-agrégation n'a pas fini, la route doit servir
         // cette bande en BRUT (exact, plus lent) et non depuis un rollup qu'on SAIT incomplet. On efface donc
         // la couverture avant de toucher quoi que ce soit ; elle sera republiée si et seulement si on finit.
@@ -661,16 +676,21 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // qu'une fois et restent stables). Borne = i64 (pas d'injection).
     let _ = conn.execute("DELETE FROM event_rollup WHERE bucket >= ?1", params![recent]);
     let _ = conn.execute(&rollup_insert_sql(&format!("ts >= {recent}"), min_sev, topn), []); // fenêtre chaude
-    let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_WM]);
-    let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_WM, recent.to_string()]);
+    if borne_lue {
+        let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_WM]);
+        let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_WM, recent.to_string()]);
+    }
     // PUBLICATION DE LA COUVERTURE — jamais avant, jamais seule. Si l'agrégation a échoué (base occupée,
     // interruption, disque), on N'ANNONCE RIEN : la clé reste absente, la route décline, le brut sert.
     // FAIL-CLOSED : une couverture qu'on n'a pas prouvée ne s'écrit pas. Une bande sale NON LUE (`P10.20-b`) n'est pas
     // prouvée : les lignes tardives sous le watermark n'ont pas été réparées. Un plancher NON LU non plus quand une
     // reconstruction était demandée (`dirty_lo`) : elle a été sautée. Sans rien de sale, le rattrapage `[wm, recent)` ne
     // dépend pas du plancher et la couverture reste publiée comme avant.
-    let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]);
-    if aggregated && bande_sale_lue && (plancher_lu || dirty_lo.is_none()) {
+    // Borne NON LUE (`P10.32-a`) : la couverture n'est ni effacée ni republiée, le watermark n'ayant pas bougé.
+    if borne_lue {
+        let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]);
+    }
+    if borne_lue && aggregated && bande_sale_lue && (plancher_lu || dirty_lo.is_none()) {
         let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_COV_ID, new_cov.to_string()]);
     }
 

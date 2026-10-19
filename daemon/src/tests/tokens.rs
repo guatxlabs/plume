@@ -1169,6 +1169,9 @@
             pass_hash: Arc::new(String::new()),
             admin: Arc::new(Mutex::new(None)),
             setup_token: Arc::new(String::new()),
+            // `P10.30-b` — l'état de test est celui d'un premier démarrage (aucun compte) : installation ouverte, que
+            // resserrent un mot de passe de configuration ou un administrateur posés par le test, comme avant.
+            installation_ouverte: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             host: Arc::new(String::new()),
             host_strict: false,
             sso_secret: Arc::new(String::new()),

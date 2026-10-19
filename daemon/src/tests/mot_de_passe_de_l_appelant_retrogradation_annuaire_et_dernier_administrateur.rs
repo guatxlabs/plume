@@ -113,10 +113,14 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
         nom.and_then(|n| c.query_row(MPRA_RECHARGEMENT_HACHE, params![n], |r| r.get::<_, String>(0)).optional().expect("fixture : user se lit").map(|h| (n, h)))
     }
 
-    /// L'état d'un démon redémarré sur cette base (même configuration, crédence d'assistant rechargée).
+    /// L'état d'un démon redémarré sur cette base (même configuration, crédence d'assistant rechargée, installation
+    /// ouverte jugée à neuf par la lecture du démarrage — `P10.30-b`).
     async fn mpra_configure_apres_redemarrage(st: &AppState) -> bool {
         let mut redemarre = st.clone();
         redemarre.admin = Arc::new(Mutex::new(mpra_rechargement(st)));
+        let ouverte = crate::server::lire_l_etat_d_administration(&st.db.lock(), !st.pass_hash.is_empty())
+            == crate::server::EtatDAdministrationAuDemarrage::Ouverte;
+        redemarre.installation_ouverte = Arc::new(std::sync::atomic::AtomicBool::new(ouverte));
         let Json(v) = setup_status(State(redemarre)).await;
         v["configured"].as_bool().expect("fixture : setup-status répond")
     }
@@ -309,8 +313,8 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
     /// nommé), et un corps qui mêle mot de passe et rôle n'écrit rien (le mot de passe de `wiz` vaut toujours, son
     /// époque n'a pas bougé, aucun changement de rôle attesté). Le redémarrage (énoncé de `server/mod.rs`, épinglé et
     /// rejoué) le recharge : `configured: true`. L'ÉTAT HÉRITÉ, mesuré : rétrogradé AVANT ce refus, le rejeu ne rend
-    /// rien et l'état redémarré est celui de l'installation (`configured: false`) — la promotion vers `admin` reste
-    /// permise et le répare. CONTRÔLE POSITIF : un autre administrateur se rétrograde (204).
+    /// rien ; l'état redémarré était celui de l'installation (`configured: false`) jusqu'à `P10.30-b` : une autre
+    /// administratrice existant, il reste installé. La promotion vers `admin` reste permise et le recharge. CONTRÔLE POSITIF : un autre administrateur se rétrograde (204).
     ///
     /// LA MUTATION QUI LE FAIT ROUGIR, ET QUI EST LA FORME D'AVANT : retirer le refus de `user_update` — 204, puis
     /// l'état redémarré est le mode installation.
@@ -343,7 +347,7 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
         // L'ÉTAT HÉRITÉ : rétrogradé avant ce refus.
         st.db.lock().execute("UPDATE user SET role='viewer' WHERE name='wiz'", []).expect("fixture : état hérité");
         assert!(mpra_rechargement(&st).is_none(), "MESURÉ : rétrogradé, le démarrage ne le recharge pas");
-        assert!(!mpra_configure_apres_redemarrage(&st).await, "MESURÉ : l'état redémarré serait le mode installation");
+        assert!(mpra_configure_apres_redemarrage(&st).await, "P10.30-b : une autre administratrice existe, l'état redémarré reste installé");
         let (statut, corps) = modifier(json!({ "role": "admin" })).await;
         assert_eq!(statut, 204, "la promotion répare : {corps}");
         assert!(mpra_configure_apres_redemarrage(&st).await, "et l'état redémarré est de nouveau installé");

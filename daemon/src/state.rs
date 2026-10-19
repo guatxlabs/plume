@@ -15,6 +15,10 @@ pub(crate) struct AppState {
     pub(crate) admin: Arc<Mutex<Option<(String, String)>>>,
     // token d'installation à usage unique (setup mode) ; vide sinon
     pub(crate) setup_token: Arc<String>,
+    // `P10.30-b` — L'INSTALLATION OUVERTE, FAIT JUGÉ UNE FOIS AU DÉMARRAGE (`installation_au_demarrage` : aucun compte
+    // `role='admin'` ET aucun mot de passe de configuration), fermé par la pose d'un administrateur. Lu par
+    // `en_mode_installation`, jamais recalculé depuis `admin` seul.
+    pub(crate) installation_ouverte: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) host: Arc<String>,
     // DURCISSEMENT STANDALONE — allowlist Host STRICTE (PLUME_HOST_STRICT=1) : host_guard n'accepte
     // QUE les FQDN de PLUME_HOST (retire l'auto-allow loopback). Défaut false = comportement actuel
@@ -136,6 +140,17 @@ pub(crate) struct AppState {
     // ENCORE st.db (la data-isolation par tenant est PENDING #2a-2b). `tenants.control` = Some seulement
     // en mode 1 (control-plane ouvert) -> sert d'aiguillage aux accesseurs d'identité (token/user).
     pub(crate) tenants: TenantDbManager,
+}
+
+impl AppState {
+    /// `P10.30-b` — LE MODE INSTALLATION (`auth_guard`, `setup_status`, `setup_post`). Le démarrage déduisait jadis
+    /// l'installation de « aucun administrateur de l'assistant rechargé et mot de passe vide » : un compte de
+    /// l'assistant rétrogradé (une autre administratrice existant pourtant) remettait le démon en installation, toute
+    /// l'API fermée à tous. Le fait jugé au démarrage DÉCIDE ; les deux autres conditions ne font que le resserrer
+    /// (un administrateur posé depuis ferme aussi), elles ne l'ouvrent jamais.
+    pub(crate) fn en_mode_installation(&self) -> bool {
+        self.installation_ouverte.load(std::sync::atomic::Ordering::SeqCst) && self.pass_hash.is_empty() && self.admin.lock().is_none()
+    }
 }
 
 // Identité authentifiée, injectée dans les extensions de requête par auth_guard.

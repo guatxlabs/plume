@@ -36,8 +36,8 @@
 //       (`use …::spool::publier_bloquant;`, `spool::{…}`, `spool::*`), renommage (`spool as sp`). Un chemin
 //       par métavariable de macro (`crate::ingest::$m::…`, hors `$crate`) est refusé de même, le module réel
 //       n'étant écrit qu'à l'appel (`m!(spool, …)`).
-// Trois fonctions HORS RÉCEPTION (`HORS_RECEPTION` : lancement, remise en file et mise à l'écart de la
-// quarantaine) écrivent le spool par `fs::write`/`fs::rename` sans qu'aucun émetteur externe n'efface sa
+// Deux fonctions HORS RÉCEPTION (`HORS_RECEPTION` : remise en file et mise à l'écart de la
+// quarantaine) écrivent le spool par `fs::rename` sans qu'aucun émetteur externe n'efface sa
 // copie sur un accusé : nommées, jugées dans les deux sens, leur liste de gestes directs épinglée ; une
 // entrée couvre UN site (un homonyme du même fichier rend « hors réception ambigu », jamais l'exemption).
 // HORS FONCTION, une référence interdite au module `spool` est refusée dans TOUT fichier du corpus ; un
@@ -187,7 +187,7 @@
 //     les littéraux de caractère à échappement long (`'\x..'`, `'\u{…}'`) et l'apostrophe échappée `'\''`
 //     (qu'il lit `'\'`, laissant un `'` orphelin) sont neutralisés avant lui ; un autre littéral qu'il
 //     apparierait mal (aucun connu à ce jour) déplacerait la pile de `contexte_detache` ;
-//   * les trois sites `HORS_RECEPTION` ne sont pas jugés sur leur conformité : seule leur liste de gestes
+//   * les deux sites `HORS_RECEPTION` ne sont pas jugés sur leur conformité : seule leur liste de gestes
 //     directs est épinglée — un `spool::publier(…, false)` ou un `.tmp` ajouté dans l'une d'elles passerait,
 //     et un site qui REMPLACE l'un d'eux sous le même nom dans le même fichier (l'original retiré, un seul
 //     site restant) hérite de l'exemption, gestes épinglés compris ;
@@ -214,7 +214,6 @@ mod spool_toute_ecriture_passe_par_publier {
     /// conformité, PAS de l'ensemble : jugés dans les deux sens comme `SITES_NOMMES` (un site exempté qui
     /// disparaît rend « sans objet »), et leur liste de gestes directs est ÉPINGLÉE (un geste ajouté rougit).
     const HORS_RECEPTION: &[(&str, &str, &[&str], &str)] = &[
-        ("server/mod.rs", "run", &["fs::write"], "lancement du démon : le seul geste direct écrit le jeton d'installation à côté de la base ; le spool n'y est que déstructuré de la configuration et transmis"),
         ("state.rs", "remettre_la_quarantaine_en_file", &["fs::rename"], "remise en file de la quarantaine vers le spool, `fs::rename` local d'un lot déjà reçu"),
         ("state.rs", "quarantine_spool_file", &["fs::rename"], "mise à l'écart d'un lot du spool vers la quarantaine"),
     ];
@@ -2132,12 +2131,11 @@ pub(crate) async fn recu_post(st: AppState, corps: Vec<u8>) -> Response {
     }
 
     /// Une exemption `HORS_RECEPTION` couvre UN site, et sa disparition rougit : sur le corpus RÉEL, un homonyme
-    /// d'un site exempté (`mod v2` dans `server/mod.rs`, `mod v2` / `impl Autre` dans `state.rs`) rend l'entrée
+    /// d'un site exempté (`mod v2` / `impl Autre` dans `state.rs`) rend l'entrée
     /// ambiguë au lieu d'hériter de l'exemption ; un site exempté retiré du texte rend « sans objet ».
     #[test]
     fn une_exemption_hors_reception_couvre_un_seul_site_et_sa_disparition_rougit() {
-        let homonymes: [(&str, &str, &str, &str); 3] = [
-            ("server/mod.rs", "run", "\nmod v2 {\n    pub(crate) fn run(spool: &str, corps: &[u8]) {\n        let dst = format!(\"{spool}/v2.json\");\n        let _ = std::fs::write(&dst, corps);\n    }\n}\n", "server/mod.rs run"),
+        let homonymes: [(&str, &str, &str, &str); 2] = [
             ("state.rs", "quarantine_spool_file", "\nmod v2 {\n    pub(crate) async fn quarantine_spool_file(st: AppState, corps: Vec<u8>) -> Response {\n        let tmp = format!(\"{}/.v2.tmp\", st.spool);\n        let dst = format!(\"{}/v2.json\", st.spool);\n        tokio::spawn(crate::ingest::spool::publier(tmp, dst, corps, false));\n        let _ = std::fs::rename(\"/var/x\", \"/var/y\");\n        ok()\n    }\n}\n", "state.rs quarantine_spool_file"),
             ("state.rs", "remettre_la_quarantaine_en_file", "\nimpl Autre {\n    pub(crate) fn remettre_la_quarantaine_en_file(spool: &str, src: &str) {\n        let dst = format!(\"{spool}/final.json\");\n        let _ = std::fs::rename(src, &dst);\n    }\n}\n", "state.rs remettre_la_quarantaine_en_file"),
         ];

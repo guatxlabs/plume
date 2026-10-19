@@ -724,6 +724,8 @@ fn poser_l_administrateur(st: &AppState, user: &str, hash: &str, revoquer_ses_se
     match issue {
         Issue::Valide(()) => {
             *st.admin.lock() = Some((user.to_string(), hash.to_string()));
+            // `P10.30-b` — un administrateur posé ferme l'installation dans l'état aussi.
+            st.installation_ouverte.store(false, std::sync::atomic::Ordering::SeqCst);
             st.auth_cache.lock().clear(); // invalide les creds en cache (l'ancien défaut ne marche plus)
             Ok(())
         }
@@ -734,7 +736,8 @@ fn poser_l_administrateur(st: &AppState, user: &str, hash: &str, revoquer_ses_se
 }
 
 pub(crate) async fn setup_status(State(st): State<AppState>) -> Json<Value> {
-    let configured = st.admin.lock().is_some() || !st.pass_hash.is_empty();
+    // `P10.30-b` — le fait jugé au démarrage, pas « un administrateur de l'assistant chargé ».
+    let configured = !st.en_mode_installation();
     Json(json!({ "configured": configured }))
 }
 
@@ -743,7 +746,7 @@ pub(crate) async fn setup_post(
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Json(b): Json<Value>,
 ) -> Response {
-    if st.admin.lock().is_some() || !st.pass_hash.is_empty() {
+    if !st.en_mode_installation() {
         return err_json(StatusCode::CONFLICT, "déjà configuré (utilise Réglages > changer le mot de passe)");
     }
     // ANTI-RAFALE : `/api/setup` est la SEULE route qu'un anonyme atteint au premier boot, et le seul secret

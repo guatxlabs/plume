@@ -1949,8 +1949,9 @@ pub(crate) fn is_readonly_post(path: &str) -> bool {
 pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     // SETUP MODE : aucun credential par défaut ; seul le wizard répond (page statique + /api/setup[-status]),
-    // toutes les autres API sont bloquées. /api/setup exige le token d'installation.
-    if st.pass_hash.is_empty() && st.admin.lock().is_none() && !st.public_demo {
+    // toutes les autres API sont bloquées. /api/setup exige le token d'installation. `P10.30-b` : le mode installation
+    // est le fait jugé au démarrage (`en_mode_installation`), plus « aucun administrateur de l'assistant chargé ».
+    if st.en_mode_installation() && !st.public_demo {
         if !path.starts_with("/api/") || path == "/api/setup" || path == "/api/setup-status" {
             return next.run(req).await;
         }

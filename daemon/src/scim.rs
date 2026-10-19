@@ -17,7 +17,7 @@ pub(crate) struct ScimCtx {
 }
 
 /// Valide un bearer SCIM (`Authorization: Bearer <tok>`) contre `scim_token` (hash sha256) et rend le
-/// tenant provisionné. Met à jour last_used (best-effort). Le hash est la
+/// tenant provisionné. Met à jour last_used (un échec est compté, `SCIM_LAST_USED_NON_ECRITS`). Le hash est la
 /// clé primaire -> lookup direct (comme token_lookup agent) ; le secret n'est jamais stocké en clair.
 ///
 /// `P10.21-u` — TROIS ISSUES, JAMAIS DEUX : `Ok(Some(tenant))` jeton connu ; `Ok(None)` bearer absent, vide ou
@@ -38,10 +38,28 @@ pub(crate) fn scim_authenticate(cp: &ControlPlane, authz: &str) -> Result<Option
         .optional()
         .map_err(|e| e.to_string())?;
     if tenant.is_some() {
-        let _ = conn.execute("UPDATE scim_token SET last_used=?1 WHERE hash=?2", params![now(), h]);
+        // `P10.30-d` (reste `last_used`) — l'horodatage d'usage n'est PAS une condition de l'authentification : une
+        // écriture refusée ne refuse pas le jeton (il vient d'être lu valide). Mais elle n'est plus avalée : COMPTÉE
+        // ici, au site, et dite sur la sortie d'erreur du démon (genre seul — ni jeton, ni empreinte, ni tenant).
+        match EcritureDuPlanDeControle::from(conn.execute("UPDATE scim_token SET last_used=?1 WHERE hash=?2", params![now(), h])) {
+            EcritureDuPlanDeControle::Ecrite => {}
+            EcritureDuPlanDeControle::AucuneLigne => {
+                SCIM_LAST_USED_NON_ECRITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eprintln!("[scim] WARN last_used du jeton SCIM NON écrit (aucune ligne) : authentification servie, date d'usage périmée");
+            }
+            EcritureDuPlanDeControle::Refusee(cause) => {
+                SCIM_LAST_USED_NON_ECRITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eprintln!("[scim] WARN last_used du jeton SCIM NON écrit : authentification servie, date d'usage périmée : {cause}");
+            }
+        }
     }
     Ok(tenant)
 }
+
+/// `P10.30-d` (reste `last_used`) — les écritures de `scim_token.last_used` que la base n'a pas prises depuis le
+/// démarrage, servies sur `/metrics` (`plume_scim_last_used_non_ecrits_total`). Un compte de processus, pas une grandeur
+/// de la base : il ne dit rien d'un autre démon.
+pub(crate) static SCIM_LAST_USED_NON_ECRITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// `P10.21-u` — le jeton SCIM n'a pas pu être lu : ni valide ni révoqué n'est affirmé.
 pub(crate) const CAUSE_SCIM_JETON_NON_LU: &str =
@@ -364,6 +382,34 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
     if !platform_user_name_ok(&username) {
         return scim_err(StatusCode::BAD_REQUEST, "userName invalide");
     }
+    // `P10.30-c` — UN SEUL RÔLE PAR MEMBRE ET PAR TENANT (clé primaire `(user_id, tenant_id)` de `"grant"`). Mesuré
+    // sur la forme d'avant : `groups` = `[admin, viewer]` rendait `201`, chaque `UPSERT` écrasait le précédent, le
+    // DERNIER de la liste restait en base et le journal de contrôle attestait `grants=[admin,viewer]`. DÉCISION (la
+    // plus sûre) : des groupes menant à des rôles DISTINCTS sont refusés en `400` SCIM `invalidValue`, AVANT la
+    // création de l'utilisateur et avant tout geste gardé — jamais « le droit le plus élevé gagne », que ce dépôt
+    // n'a aucun moyen d'ordonner pour un rôle composable. Le même rôle répété est admis et compté UNE fois. Un rôle
+    // inconnu reste ignoré (default-deny, inchangé).
+    let mut demandes: Vec<String> = Vec::new();
+    for role in b
+        .get("groups")
+        .and_then(|g| g.as_array())
+        .map(|groups| groups.iter().filter_map(|g| g.get("value").and_then(|v| v.as_str())).filter(|r| valid_grant_role(r)).collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        if !demandes.iter().any(|d| d == role) {
+            demandes.push(role.to_string());
+        }
+    }
+    if demandes.iter().any(|d| d != &demandes[0]) {
+        return scim_refuser_la_demande(
+            "invalidValue",
+            &format!(
+                "groupes menant à des rôles distincts ({}) : un membre porte UN seul rôle par tenant ; l'utilisateur n'est \
+                 ni créé ni modifié",
+                demandes.join(", ")
+            ),
+        );
+    }
     // ensure_platform_user : crée (is_superadmin=0) OU récupère l'existant — jamais ne modifie is_superadmin.
     let Some(id) = ensure_platform_user(cp, &username) else {
         return scim_err(StatusCode::INTERNAL_SERVER_ERROR, "création platform_user échouée");
@@ -380,11 +426,6 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
     // administrateur avec le groupe `viewer` rendait 201 — l'`UPSERT` écrasait son rôle et le tenant n'avait plus
     // d'administrateur ; chaque droit s'écrivait en autocommit (un refus au second laissait le premier en place).
     use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
-    let demandes: Vec<String> = b
-        .get("groups")
-        .and_then(|g| g.as_array())
-        .map(|groups| groups.iter().filter_map(|g| g.get("value").and_then(|v| v.as_str())).filter(|r| valid_grant_role(r)).map(String::from).collect())
-        .unwrap_or_default();
     let mut applied: Vec<String> = Vec::new();
     if !demandes.is_empty() {
         let issue = {

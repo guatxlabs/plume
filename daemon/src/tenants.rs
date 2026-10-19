@@ -332,7 +332,8 @@ pub(crate) async fn tenant_create(
         detail["first_admin_non_pose"] = json!(true);
     }
     let maillon = control_ledger_append(&st, "tenant.create", &au.name, &id, &detail.to_string());
-    audit_tenant_event(
+    // `P10.21-m` — l'événement du tenant rend son issue ; perdu, il est avoué à côté du deux cent un.
+    let evenement = audit_tenant_event(
         &st,
         &id,
         "tenant.create",
@@ -342,6 +343,7 @@ pub(crate) async fn tenant_create(
     );
     let mut corps = json!({ "ok": true, "id": id, "name": name, "first_admin": first_admin });
     avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    avouer_l_evenement_du_tenant_non_ecrit(&mut corps, &evenement);
     if let Some(cause) = premier_administrateur_non_pose {
         corps[CLE_PREMIER_ADMINISTRATEUR_NON_POSE] = json!(format!("{CAUSE_PREMIER_ADMINISTRATEUR_NON_POSE} ({cause})"));
     }
@@ -436,12 +438,19 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
         return (StatusCode::INTERNAL_SERVER_ERROR, "control-plane indisponible").into_response();
     };
     // Existence + audit AVANT de basculer (à la suspension, la base doit encore être résoluble pour l'event).
-    let exists = {
+    // `P10.21-m` — TROIS ISSUES : présent, ABSENT (404), ILLISIBLE (503 nommé, comme `grant_set`). `.is_ok()`
+    // servait une lecture ratée comme « tenant inconnu » : une lecture non faite rendue comme un fait.
+    let existence = {
         let conn = cp.conn.lock();
-        conn.query_row("SELECT 1 FROM tenant WHERE id=?1", params![id], |_| Ok(())).is_ok()
+        conn.query_row("SELECT 1 FROM tenant WHERE id=?1", params![id], |_| Ok(()))
     };
-    if !exists {
-        return (StatusCode::NOT_FOUND, "tenant inconnu").into_response();
+    match existence {
+        Ok(()) => {}
+        Err(rusqlite::Error::QueryReturnedNoRows) => return (StatusCode::NOT_FOUND, "tenant inconnu").into_response(),
+        Err(e) => {
+            eprintln!("[tenants] WARN tenant '{id}' NON lu à la bascule de suspension : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE);
+        }
     }
     let (kind, sev, verb) = if suspend {
         ("tenant.suspend", 3, "suspendu")
@@ -464,18 +473,25 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
         EcritureDuPlanDeControle::Refusee(cause) => return refuser_le_geste_non_ecrit(CAUSE_BASCULE_DE_SUSPENSION_NON_ECRITE, &cause),
     }
     let message = format!("tenant '{id}' {verb} par '{}'", au.name);
-    match poignee_avant_suspension {
+    // `P10.21-m` — la bascule est ÉCRITE : un événement perdu ne l'annule pas, il est avoué à côté du succès.
+    let evenement = match poignee_avant_suspension {
         Some(poignee) => audit_tenant_event_sur(&poignee, kind, sev, &message, json!({ "operator": au.name })),
         // Réactivation : la base redevient résoluble APRÈS la bascule. Suspension d'un tenant dont la
         // base ne se résolvait déjà pas : l'appel ne trouve rien, comme avant.
         None => audit_tenant_event(st, id, kind, sev, &message, json!({ "operator": au.name })),
-    }
+    };
     // `P10.20-z` — la bascule est faite ; une ligne manquante au journal de contrôle est dite à côté.
     let maillon = control_ledger_append(st, kind, &au.name, id, &json!({ "operator": au.name }).to_string());
     let mut corps = json!({ "ok": true, "id": id, "suspended": suspend });
     avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    avouer_l_evenement_du_tenant_non_ecrit(&mut corps, &evenement);
     Json(corps).into_response()
 }
+
+/// `P10.21-m` — la lecture du tenant visé par une bascule de suspension a échoué : ni présent ni absent n'est affirmé.
+pub(crate) const CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE: &str = "TENANT NON LU, BASCULE NON FAITE : le plan de contrôle \
+     n'a pas pu lire le tenant visé — ce n'est PAS « tenant inconnu », son existence n'est ni affirmée ni niée. Le tenant \
+     garde l'état qu'il avait (suspendu ou actif), rien n'est tracé. Réessayez une fois le plan de contrôle de nouveau lisible.";
 
 /// `P10.21-g` — LA BASCULE DE SUSPENSION QUE LA BASE N'A PAS PRISE EST REFUSÉE : 503, et rien n'est posé
 /// — ni au journal de contrôle, ni dans la base du tenant. L'état du tenant est celui d'avant la demande.
@@ -661,15 +677,20 @@ pub(crate) async fn grant_set(
             return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — rétrogradation refusée").into_response()
         }
         Issue::Refuse(RefusDuDroit::NonEtabli(cause)) => return refuser_le_geste_sans_anti_verrouillage_lu(&cause),
+        // `P10.30-d` — LIMITE ÉCRITE : ce refus reste un 500 à phrase fixe (sans cause du moteur, mais ni 503 ni
+        // nommé) — `ensure_platform_user_conn` perd la cause par `.ok()?` avant ce gestionnaire.
         Issue::Refuse(RefusDuDroit::Materialisation) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, "échec de matérialisation du compte plateforme").into_response()
         }
-        Issue::Refuse(RefusDuDroit::NonEcrit(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("échec du grant: {e}")).into_response(),
-        Issue::NonOuvert(e) | Issue::NonValide(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("échec du grant: {e}")).into_response(),
+        // `P10.30-d` — LE DROIT NON ÉCRIT EST UN 503 NOMMÉ, la cause du moteur au journal du démon seul. Un 500
+        // `échec du grant: <cause du moteur>` la servait au client, sans dire que rien n'avait changé.
+        Issue::Refuse(RefusDuDroit::NonEcrit(cause)) => return refuser_le_droit_non_pose(&id, &cause),
+        Issue::NonOuvert(e) | Issue::NonValide(e) => return refuser_le_droit_non_pose(&id, &e.to_string()),
     }
     // `P10.20-z` — le grant est écrit ; une ligne manquante au journal de contrôle est dite à côté du succès.
     let maillon = control_ledger_append(&st, "grant.set", &au.name, &id, &json!({ "user": user, "role": role, "by": au.name }).to_string());
-    audit_tenant_event(
+    // `P10.21-m` — l'événement du tenant rend son issue ; perdu, il est avoué à côté du succès.
+    let evenement = audit_tenant_event(
         &st,
         &id,
         "grant.set",
@@ -679,7 +700,22 @@ pub(crate) async fn grant_set(
     );
     let mut corps = json!({ "ok": true, "tenant": id, "user": user, "role": role });
     avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    avouer_l_evenement_du_tenant_non_ecrit(&mut corps, &evenement);
     Json(corps).into_response()
+}
+
+/// `P10.30-d` — LA POSE DE DROIT QUE LE PLAN DE CONTRÔLE N'A PAS PRISE EST REFUSÉE : 503, rien n'a changé (la
+/// transaction du geste est jouée par `jouer_le_geste_garde`, qui n'écrit rien quand elle n'aboutit pas).
+pub(crate) const CAUSE_DROIT_NON_POSE: &str =
+    "DROIT NON ENREGISTRÉ, RIEN N'A CHANGÉ : le plan de contrôle n'a pas pris la pose de ce droit ; le compte \
+     garde le rôle qu'il avait sur ce tenant, ou n'y a toujours aucun accès, et aucune trace ne dit le contraire. \
+     Réessayez une fois le plan de contrôle de nouveau écrivable.";
+
+/// `P10.30-d` — LE REFUS D'UNE POSE DE DROIT NON ÉCRITE : la phrase nommée au client, la cause du moteur au
+/// journal du démon (jamais dans le corps).
+fn refuser_le_droit_non_pose(tenant: &str, cause_du_moteur: &str) -> Response {
+    eprintln!("[tenants] WARN droit NON posé sur '{tenant}' : {cause_du_moteur}");
+    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROIT_NON_POSE)
 }
 
 /// `P10.21-g` — LE RETRAIT DE DROIT QUE LA BASE N'A PAS PRIS EST REFUSÉ : 503, et l'accès N'EST PAS
@@ -784,7 +820,7 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
         EcritureDuPlanDeControle::Refusee(cause) => return refuser_le_geste_non_ecrit(CAUSE_RETRAIT_DE_DROIT_NON_ECRIT, &cause),
     }
     let maillon = control_ledger_append(&st, "grant.remove", &au.name, &id, &json!({ "user": user, "by": au.name }).to_string());
-    audit_tenant_event(
+    let evenement = audit_tenant_event(
         &st,
         &id,
         "grant.remove",
@@ -795,10 +831,14 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
     // `P10.20-z` — LE CHEMIN NOMINAL RESTE UN 204 SANS CORPS, byte-identique. Un 204 ne peut porter aucun
     // aveu : quand la ligne manque au journal de contrôle, la réponse devient un 200 dont le corps DIT le
     // retrait ET le trou. Refuser serait faux : le grant est déjà retiré.
-    if maillon.cause_de_non_inscription().is_none() {
+    // `P10.21-m` — un événement du tenant PERDU force aussi le deux cents : le 204 ne peut pas l'avouer.
+    if evenement.est_perdu() {
+        // Le corps qui avoue est posé plus bas, sous la même forme que l'aveu du maillon.
+    } else if maillon.cause_de_non_inscription().is_none() {
         return StatusCode::NO_CONTENT.into_response();
     }
     let mut corps = json!({ "ok": true, "tenant": id, "user": user, "removed": true });
     avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
+    avouer_l_evenement_du_tenant_non_ecrit(&mut corps, &evenement);
     Json(corps).into_response()
 }

@@ -633,6 +633,37 @@ pub(crate) fn temoin_de_la_periode_de_ce_fil(temoin: Option<Arc<parking_lot::Mut
     TEMOIN_DE_LA_PERIODE.with(|t| *t.borrow_mut() = temoin);
 }
 
+// Instrument de TEST seulement (`P10.32-c`) : le DÉROULÉ de la garde, sur son fil, pas à pas — chaque
+// interruption émise et chaque attente DEMANDÉE avec la durée passée à l'attente. La période se juge alors
+// sur ce que la boucle DEMANDE (une attente de `REITERATION_DE_L_INTERRUPTION`, et une seule, entre deux
+// interruptions), sans chronomètre ; la garde statique `la_boucle_de_la_garde_n_attend_que_par_ses_deux_attentes`
+// interdit toute autre attente bloquante dans `query_exec.rs`.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PasDeLaGarde {
+    Interruption,
+    Attente(Duration),
+}
+#[cfg(test)]
+thread_local! {
+    static TEMOIN_DU_DEROULE: std::cell::RefCell<Option<Arc<parking_lot::Mutex<Vec<PasDeLaGarde>>>>> =
+        const { std::cell::RefCell::new(None) };
+    static TEMOIN_DE_L_ATTENTE: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn temoin_du_deroule_de_ce_fil(temoin: Option<Arc<parking_lot::Mutex<Vec<PasDeLaGarde>>>>) {
+    TEMOIN_DU_DEROULE.with(|t| *t.borrow_mut() = temoin);
+}
+/// `P10.32-c` — posé à `true` par le fil de la garde SOUS LE VERROU de la garde, juste avant sa première
+/// attente. `ReveilDeLaGarde::annuler` prend ce verrou : une annulation lancée après avoir lu `true` ne
+/// peut donc tomber qu'une fois la garde DANS son attente (l'attente seule rend le verrou) : le témoin du
+/// réveil de `P10.32-c` n'attend aucun délai.
+#[cfg(test)]
+pub(crate) fn temoin_de_l_attente_de_ce_fil(temoin: Option<Arc<std::sync::atomic::AtomicBool>>) {
+    TEMOIN_DE_L_ATTENTE.with(|t| *t.borrow_mut() = temoin);
+}
+
 /// La SEULE prise de la garde sur la connexion : une poignée d'interruption et, dans les tests seulement,
 /// les instruments qui comptent et horodatent chaque interruption (`P10.31-y`). `interrompre` émet
 /// l'interruption PUIS la note, dans la même fonction : une interruption notée est une interruption
@@ -645,6 +676,10 @@ struct Interrupteur {
     compte: Option<Arc<std::sync::atomic::AtomicUsize>>,
     #[cfg(test)]
     periode: Option<Arc<parking_lot::Mutex<Vec<Instant>>>>,
+    #[cfg(test)]
+    deroule: Option<Arc<parking_lot::Mutex<Vec<PasDeLaGarde>>>>,
+    #[cfg(test)]
+    entree_dans_l_attente: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl Interrupteur {
     /// Emporte les instruments posés sur le fil APPELANT (celui qui arme la garde).
@@ -655,18 +690,45 @@ impl Interrupteur {
             compte: TEMOIN_DES_INTERRUPTIONS.with(|t| t.borrow().clone()),
             #[cfg(test)]
             periode: TEMOIN_DE_LA_PERIODE.with(|t| t.borrow().clone()),
+            #[cfg(test)]
+            deroule: TEMOIN_DU_DEROULE.with(|t| t.borrow().clone()),
+            #[cfg(test)]
+            entree_dans_l_attente: TEMOIN_DE_L_ATTENTE.with(|t| t.borrow().clone()),
         }
     }
     fn interrompre(&self) {
         self.poignee.interrupt();
         #[cfg(test)]
         {
+            if let Some(d) = &self.deroule {
+                d.lock().push(PasDeLaGarde::Interruption);
+            }
             if let Some(p) = &self.periode {
                 p.lock().push(Instant::now());
             }
             if let Some(t) = &self.compte {
                 t.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
+        }
+    }
+    /// L'attente ENTRE DEUX interruptions (`P10.32-c`) : la durée notée est celle passée à l'attente,
+    /// pas une variable voisine. La sortie est la même qu'avant : fin de requête, ou période écoulée.
+    fn attendre_la_reiteration(
+        &self,
+        woke: &parking_lot::Condvar,
+        etat: &mut parking_lot::MutexGuard<'_, EtatDeLaGarde>,
+        demandee: Duration,
+    ) {
+        #[cfg(test)]
+        if let Some(d) = &self.deroule {
+            d.lock().push(PasDeLaGarde::Attente(demandee));
+        }
+        woke.wait_while_for(etat, |e| !e.fini, demandee);
+    }
+    #[cfg(test)]
+    fn noter_l_entree_dans_l_attente(&self) {
+        if let Some(a) = &self.entree_dans_l_attente {
+            a.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
 }
@@ -685,6 +747,8 @@ pub(crate) fn budget_guard(interrupt: rusqlite::InterruptHandle, budget_ms: u64)
     let interrupteur = Interrupteur::du_fil_appelant(interrupt);
     let thread = std::thread::spawn(move || {
         let mut etat = g.etat.lock();
+        #[cfg(test)]
+        interrupteur.noter_l_entree_dans_l_attente();
         // `wait_while_for` re-teste la condition après chaque réveil -> immunise contre les réveils
         // spurieux (une condvar peut réveiller sans notification). Elle sort à l'échéance, à la fin
         // de requête, ou à l'annulation.
@@ -697,7 +761,7 @@ pub(crate) fn budget_guard(interrupt: rusqlite::InterruptHandle, budget_ms: u64)
         while !etat.fini {
             interrupteur.interrompre();
             let periode = REITERATION_DE_L_INTERRUPTION;
-            g.woke.wait_while_for(&mut etat, |e| !e.fini, periode);
+            interrupteur.attendre_la_reiteration(&g.woke, &mut etat, periode);
         }
     });
     BudgetGuard { gate, thread: Some(thread) }
@@ -921,18 +985,130 @@ pub(crate) struct CancelEntry {
     /// `P10.31-y` — le réveil de la garde de la requête : l'annulation la fait réitérer jusqu'à la fin.
     /// `None` seulement pour une entrée posée sans garde (aucun chemin de lecture ne le fait).
     reveil: Option<ReveilDeLaGarde>,
+    /// `P10.32-c` — l'identité qui a lancé la requête, lue dans le qid lié (`qid_d_annulation_de_la_requete`).
+    proprietaire: ProprietaireDeLaRequete,
 }
 impl CancelEntry {
     /// LE GESTE DE `/api/cancel`, en un seul endroit (`P10.31-y`). Le drapeau d'abord (c'est lui qui
     /// classe l'interruption « annulée » et non « budget »), puis le réveil de la garde, qui réitère
     /// `interrupt()` jusqu'à la fin de la requête — une interruption UNIQUE tombée pendant la
-    /// préparation ou avant le premier pas est effacée par SQLite —, puis une interruption immédiate.
+    /// préparation ou avant le premier pas est effacée par SQLite —, puis une interruption immédiate,
+    /// qui frappe la requête avant même que `/api/cancel` rende la main. `P10.32-c` : l'ordre et
+    /// l'interruption immédiate sont témoignés (`annulation_proprietaire_et_ordre_structurel.rs`) ; les
+    /// notes de test relisent le drapeau JUSTE APRÈS chaque geste.
     pub(crate) fn annuler(&self) {
         self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(r) = &self.reveil {
             r.annuler();
+            #[cfg(test)]
+            noter_le_geste_d_annulation(GesteDAnnulation::Reveil, &self.cancelled);
         }
         self.interrupt.interrupt();
+        #[cfg(test)]
+        noter_le_geste_d_annulation(GesteDAnnulation::Interruption, &self.cancelled);
+    }
+}
+
+// Instrument de TEST seulement (`P10.32-c`) : sur le fil qui annule, chaque geste de `CancelEntry::annuler`
+// et l'état du drapeau `cancelled` relu JUSTE APRÈS ce geste. Un drapeau posé après le réveil ou après
+// l'interruption se lit `false` ici, sans fenêtre de temps à attraper.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum GesteDAnnulation {
+    Reveil,
+    Interruption,
+}
+#[cfg(test)]
+thread_local! {
+    static TEMOIN_DES_GESTES_D_ANNULATION: std::cell::RefCell<Option<Vec<(GesteDAnnulation, bool)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn noter_le_geste_d_annulation(geste: GesteDAnnulation, cancelled: &std::sync::atomic::AtomicBool) {
+    let pose = cancelled.load(std::sync::atomic::Ordering::SeqCst);
+    TEMOIN_DES_GESTES_D_ANNULATION.with(|t| {
+        if let Some(v) = t.borrow_mut().as_mut() {
+            v.push((geste, pose));
+        }
+    });
+}
+/// Pose (`Some(vec![])`) ou retire (`None`) le témoin de ce fil ; rend ce qu'il avait noté.
+#[cfg(test)]
+pub(crate) fn temoin_des_gestes_d_annulation_de_ce_fil(
+    temoin: Option<Vec<(GesteDAnnulation, bool)>>,
+) -> Option<Vec<(GesteDAnnulation, bool)>> {
+    TEMOIN_DES_GESTES_D_ANNULATION.with(|t| std::mem::replace(&mut *t.borrow_mut(), temoin))
+}
+
+// =====================================================================================
+// `P10.32-c` — QUI PEUT ANNULER UNE REQUÊTE EN VOL.
+// DÉCISION (la plus sûre, posée par l'orchestrateur de la vague X) : une annulation n'est honorée que pour
+// l'identité qui a lancé la requête, ou pour un admin de la base ; sinon la réponse de `/api/cancel` est
+// EXACTEMENT celle d'un qid inconnu (`cancelled: 0`) — elle ne révèle pas que le qid est en vol.
+// Avant : sur une même base (mono-tenant = tous les comptes), quiconque connaissait un qid l'annulait.
+//
+// COMMENT L'IDENTITÉ VOYAGE. `/api/query` ne passe plus le qid du client tel quel : il le LIE à
+// `au.name` (`qid_d_annulation_de_la_requete`), et c'est cette forme qui descend jusqu'au registre par
+// `run_query_ex`, `run_on_conn` et les chemins du tier froid, sans changer leur signature. Le registre
+// la DÉLIE (`delier_le_qid`) : la clé reste `(db_path, qid du client)`, le propriétaire va dans l'entrée.
+// Forme liée : `\u{1}` + longueur en octets du nom + `:` + nom + qid du client. Le nom est lu par sa
+// LONGUEUR, jamais par un séparateur : aucun qid choisi par un client ne peut se faire passer pour le
+// nom d'un autre (le client ne contrôle que la queue).
+//
+// CE QUI N'EST PAS FERMÉ : une entrée posée avec un qid NU (non lié) reste annulable par tout appelant
+// de la base — c'est la forme des témoins de `P10.31-y`. Aucune lecture de production ne la pose :
+// `/api/query` lie toujours (témoin statique `la_route_query_lie_le_qid_a_son_proprietaire`).
+const MARQUE_DU_QID_LIE: char = '\u{1}';
+
+/// Le qid d'annulation de `/api/query` : celui du client (`qid`, rogné), LIÉ à l'identité de l'appelant.
+/// `None` sans qid : la requête n'est pas annulable, comme avant.
+pub(crate) fn qid_d_annulation_de_la_requete(body: &Value, au: &AuthUser) -> Option<String> {
+    let qid = body.get("qid").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())?;
+    Some(format!("{MARQUE_DU_QID_LIE}{}:{}{qid}", au.name.len(), au.name))
+}
+
+/// Le propriétaire d'une entrée du registre.
+#[derive(Debug, PartialEq)]
+enum ProprietaireDeLaRequete {
+    /// Qid lié par `/api/query` : seule cette identité (ou un admin) l'annule.
+    Lie(String),
+    /// Qid nu (témoins de `P10.31-y`) : annulable par tout appelant de la base, comme avant.
+    NonLie,
+}
+
+/// Délie un qid circulant : (propriétaire, qid du client). Un qid qui n'a pas la forme liée exacte est NU.
+fn delier_le_qid(qid: &str) -> (ProprietaireDeLaRequete, &str) {
+    let lie = qid.strip_prefix(MARQUE_DU_QID_LIE).and_then(|reste| {
+        let (longueur, reste) = reste.split_once(':')?;
+        let n: usize = longueur.parse().ok().filter(|_| longueur.bytes().all(|b| b.is_ascii_digit()))?;
+        // `get` rend `None` hors bornes ou au milieu d'un caractère : la forme n'est alors pas liée.
+        let nom = reste.get(..n)?;
+        Some((nom.to_string(), &reste[n..]))
+    });
+    match lie {
+        Some((nom, qid_client)) => (ProprietaireDeLaRequete::Lie(nom), qid_client),
+        None => (ProprietaireDeLaRequete::NonLie, qid),
+    }
+}
+
+/// Qui demande l'annulation (`/api/cancel`) : son nom et son autorité d'admin sur la base.
+pub(crate) struct DemandeurDAnnulation<'a> {
+    nom: &'a str,
+    admin: bool,
+}
+impl<'a> DemandeurDAnnulation<'a> {
+    pub(crate) fn de(au: &'a AuthUser) -> Self {
+        DemandeurDAnnulation { nom: &au.name, admin: au.is_admin() }
+    }
+}
+impl CancelEntry {
+    /// `P10.32-c` — l'entrée est-elle annulable par ce demandeur ? Le propriétaire, un admin, ou tout
+    /// appelant pour une entrée non liée.
+    fn annulable_par(&self, d: &DemandeurDAnnulation<'_>) -> bool {
+        match &self.proprietaire {
+            ProprietaireDeLaRequete::Lie(nom) => d.admin || nom == d.nom,
+            ProprietaireDeLaRequete::NonLie => true,
+        }
     }
 }
 /// Ce que le registre retient d'une requête pour pouvoir l'annuler : son drapeau `cancelled` et, pour
@@ -983,31 +1159,42 @@ impl Drop for CancelGuard {
         }
     }
 }
+/// `qid` est le qid CIRCULANT : lié par `/api/query` (`qid_d_annulation_de_la_requete`) ou nu. La clé du
+/// registre est `(db_path, qid du client)` ; le propriétaire lu dans la forme liée va dans l'entrée.
 pub(crate) fn cancel_register(db_path: &str, qid: &str, interrupt: rusqlite::InterruptHandle, annulation: impl Into<DrapeauDAnnulation>) -> CancelGuard {
     let DrapeauDAnnulation { cancelled, reveil } = annulation.into();
+    let (proprietaire, qid) = delier_le_qid(qid);
     let slot = CANCEL_SLOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reg = QUERY_CANCEL.get_or_init(|| Mutex::new(HashMap::new()));
     { let mut map = reg.lock();
-        map.entry((db_path.to_string(), qid.to_string())).or_default().push(CancelEntry { slot, interrupt, cancelled, reveil });
+        map.entry((db_path.to_string(), qid.to_string())).or_default().push(CancelEntry { slot, interrupt, cancelled, reveil, proprietaire });
     }
     CancelGuard { db_path: db_path.to_string(), qid: qid.to_string(), slot }
 }
 
 /// `/api/cancel` : annule TOUTES les requêtes en vol de (db_path, qid) — la page et le COUNT de
-/// pagination — et rend leur nombre. Sous le verrou du registre : une entrée dont le `CancelGuard` est
-/// déjà tombé n'est plus visible, donc rien n'est annulé après la sortie de portée de la requête.
-pub(crate) fn annuler_les_requetes(db_path: &str, qid: &str) -> u32 {
+/// pagination — que le demandeur a le droit d'annuler (`P10.32-c`), et rend leur nombre. Une requête
+/// d'un autre compte n'est pas comptée : la réponse est celle d'un qid inconnu. Sous le verrou du
+/// registre : une entrée dont le `CancelGuard` est déjà tombé n'est plus visible, donc rien n'est annulé
+/// après la sortie de portée de la requête.
+pub(crate) fn annuler_les_requetes_de(db_path: &str, qid: &str, demandeur: &DemandeurDAnnulation<'_>) -> u32 {
     let mut n = 0u32;
     if let Some(reg) = QUERY_CANCEL.get() {
         let map = reg.lock();
         if let Some(vec) = map.get(&(db_path.to_string(), qid.to_string())) {
-            for e in vec {
+            for e in vec.iter().filter(|e| e.annulable_par(demandeur)) {
                 e.annuler();
                 n += 1;
             }
         }
     }
     n
+}
+
+/// TESTS seulement : le geste d'un ADMIN de la base (toute entrée du qid), forme des témoins de `P10.31-y`.
+#[cfg(test)]
+pub(crate) fn annuler_les_requetes(db_path: &str, qid: &str) -> u32 {
+    annuler_les_requetes_de(db_path, qid, &DemandeurDAnnulation { nom: "", admin: true })
 }
 
 /// `P10.31-y` — LA CAUSE D'UN ÉCHEC D'EXÉCUTION, la même aux trois sites (préparation, `stmt.query`,

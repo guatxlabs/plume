@@ -1081,7 +1081,8 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // inchangé : panneaux/tuiles protégés). CHANGEMENT 2 : qid client optionnel -> annulable via /api/cancel.
     let interactive = body.bool_field("interactive", false);
     let budget_ms: u64 = if interactive { query_budget_interactive_ms() } else { query_budget_ms() };
-    let qid_owned: Option<String> = body.get("qid").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    // P10.32-c : le qid est LIÉ à l'identité de l'appelant ; seul ce compte (ou un admin) peut l'annuler.
+    let qid_owned: Option<String> = crate::query_exec::qid_d_annulation_de_la_requete(&body, &au);
     // KEYSET (#28) — le client OPTE dans la pagination par CURSEUR avec `keyset:true`. Le browse Explore raw
     // l'utilise pour parcourir l'INTÉGRALITÉ du match-set (millions de lignes auditd-7d) sans le cap 10 000 qui
     // CACHAIT des événements. N'a d'effet que sur le chemin GXQL (la compilation cursor_id est GXQL-only) : un
@@ -1773,16 +1774,18 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
 /// puis fait interrompre jusqu'à leur fin (`P10.31-y`) TOUTES les requêtes en vol de ce qid (page + count de pagination) ->
 /// la requête en cours s'arrête et renvoie « annulé par l'utilisateur » (pas un 500). Idempotent (qid
 /// inconnu/déjà fini -> cancelled:0). Même garde d'auth que /api/query (viewer) via readonly_post.
+/// P10.32-c : seules les requêtes lancées par l'appelant (ou toutes, pour un admin) sont atteintes ; le qid
+/// d'un autre compte rend EXACTEMENT la réponse d'un qid inconnu.
 pub(crate) async fn cancel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let qid = b.trimmed("qid");
     if qid.is_empty() {
         return bad_req("qid requis");
     }
     // MT-KEY : n'annule QUE les requêtes en vol de CE db_path portant ce qid (jamais celles d'une autre base).
-    // P10.31-y : `annuler_les_requetes` pose le drapeau ET réveille la garde de chaque requête, qui
+    // P10.31-y : `annuler_les_requetes_de` pose le drapeau ET réveille la garde de chaque requête, qui
     // réitère l'interruption jusqu'à la fin (une interruption unique tombée avant le premier pas est
     // effacée par SQLite).
-    let n = annuler_les_requetes(&req_db_path(&st, &au), &qid);
+    let n = crate::query_exec::annuler_les_requetes_de(&req_db_path(&st, &au), &qid, &crate::query_exec::DemandeurDAnnulation::de(&au));
     Json(json!({ "cancelled": n, "qid": qid })).into_response()
 }
 

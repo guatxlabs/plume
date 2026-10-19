@@ -630,6 +630,130 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     conn
 }
 
+/// `P10.30-b`, `P10.30-d` — L'ÉTAT D'ADMINISTRATION AU DÉMARRAGE, À TROIS ISSUES. Le démarrage lisait `meta.admin_user`
+/// puis le haché du compte `role='admin'` de ce nom, et repliait TOUT échec sur « aucun administrateur » (`.ok()`,
+/// `Err(_) => None`) : une lecture ratée, un administrateur de l'assistant rétrogradé avant le lot 202, ou un
+/// `meta.admin_user` absent rouvraient l'installation (jeton fabriqué, `/api/setup` ouvert, toute autre route fermée)
+/// alors que des comptes administrateurs existaient. DÉCISION (orchestrateur, la plus sûre) : l'installation ne s'ouvre
+/// que si AUCUN compte `role='admin'` n'existe dans `user` ET qu'aucun mot de passe de configuration n'est posé ;
+/// `meta.admin_user` seul ne décide plus ; une lecture illisible n'ouvre JAMAIS l'installation (refus de démarrer
+/// nommé). Aucun compte n'est repromu en silence : sa rétrogradation a pu être voulue.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EtatDAdministrationAuDemarrage {
+    /// Installation FERMÉE. Porte l'administrateur de l'assistant (nom, haché) s'il se recharge, sinon `None`.
+    Fermee(Option<(String, String)>),
+    /// Aucun compte `role='admin'`, aucun mot de passe de configuration : l'installation s'ouvre.
+    Ouverte,
+    /// Une lecture dont la conclusion dépend n'a pas abouti : rien ne se conclut, le démon refuse de démarrer.
+    Illisible(String),
+}
+
+/// Le jugement PUR. `assistant` : le nom lu dans `meta.admin_user` (absent -> `None`) et le haché de son compte s'il
+/// est `role='admin'` (sinon `None`) ; `comptes_administrateurs` : le nombre de comptes `role='admin'`. Une lecture
+/// en échec ne décide que si la conclusion en dépend.
+pub(crate) fn juger_l_etat_d_administration(
+    assistant: Result<Option<(String, Option<String>)>, String>,
+    comptes_administrateurs: Result<i64, String>,
+    mot_de_passe_de_configuration_pose: bool,
+) -> EtatDAdministrationAuDemarrage {
+    use EtatDAdministrationAuDemarrage::{Fermee, Illisible, Ouverte};
+    match assistant {
+        Err(cause) => Illisible(cause),
+        Ok(Some((nom, Some(hache)))) => Fermee(Some((nom, hache))),
+        Ok(_) if mot_de_passe_de_configuration_pose => Fermee(None),
+        Ok(_) => match comptes_administrateurs {
+            Err(cause) => Illisible(cause),
+            Ok(0) => Ouverte,
+            Ok(_) => Fermee(None),
+        },
+    }
+}
+
+/// Les lectures du démarrage, puis le jugement. « Aucune ligne » (absence) et « lecture en échec » sont SÉPARÉS.
+pub(crate) fn lire_l_etat_d_administration(c: &Connection, mot_de_passe_de_configuration_pose: bool) -> EtatDAdministrationAuDemarrage {
+    use rusqlite::OptionalExtension as _;
+    let assistant = match c.query_row("SELECT value FROM meta WHERE key='admin_user'", [], |r| r.get::<_, String>(0)).optional() {
+        Err(e) => Err(format!("meta.admin_user non lu : {e}")),
+        Ok(None) => Ok(None),
+        Ok(Some(u)) => {
+            let lu = c.query_row("SELECT hash FROM user WHERE name=?1 AND role='admin'", params![u], |r| r.get::<_, String>(0)).optional();
+            match lu {
+                Err(e) => Err(format!("compte de l'administrateur de l'assistant non lu : {e}")),
+                Ok(hache) => Ok(Some((u, hache))),
+            }
+        }
+    };
+    let comptes = c
+        .query_row("SELECT COUNT(*) FROM user WHERE role='admin'", [], |r| r.get::<_, i64>(0))
+        .map_err(|e| format!("comptes administrateurs non lus : {e}"));
+    juger_l_etat_d_administration(assistant, comptes, mot_de_passe_de_configuration_pose)
+}
+
+/// Ce que le démarrage porte dans l'état servi. `ouverte` devient `AppState::installation_ouverte` : `auth_guard`,
+/// `/api/setup-status` et `/api/setup` lisent CE fait (`P10.30-b`), plus « aucun administrateur de l'assistant chargé ».
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct InstallationAuDemarrage {
+    pub(crate) administrateur_de_l_assistant: Option<(String, String)>,
+    /// VIDE hors installation ouverte (et sans entropie).
+    pub(crate) jeton: String,
+    pub(crate) ouverte: bool,
+}
+
+/// L'installation au démarrage. `Err` = état illisible : l'appelant refuse de démarrer, aucun jeton n'est fabriqué.
+pub(crate) fn installation_au_demarrage(
+    c: &Connection,
+    db_path: &str,
+    mot_de_passe_de_configuration_pose: bool,
+) -> Result<InstallationAuDemarrage, String> {
+    // ANTI-FUITE PAR EXPORT — le hash admin n'est PLUS lu depuis meta (il y était exfiltrable en SQL
+    // brut admin). Source de vérité = user.hash (protégé par l'authorizer read-pool). set_admin écrit déjà
+    // user(name,hash,role='admin') ; la migration v10 a seedé user depuis l'ancien meta.admin_hash. On PURGE
+    // la copie héritée en clair au démarrage (idempotent ; ne casse rien puisqu'on lit désormais user.hash).
+    let _ = c.execute("DELETE FROM meta WHERE key='admin_hash'", []);
+    let tp = std::path::Path::new(db_path).with_file_name("setup-token.txt");
+    match lire_l_etat_d_administration(c, mot_de_passe_de_configuration_pose) {
+        EtatDAdministrationAuDemarrage::Illisible(cause) => Err(cause),
+        EtatDAdministrationAuDemarrage::Ouverte => {
+            use std::os::unix::fs::PermissionsExt;
+            // Le token d'installation ouvre le compte ADMIN à un anonyme : il n'est FABRIQUÉ qu'à partir
+            // d'entropie réelle (cf. `setup_token_from_entropy`). Aucune entropie -> aucun token -> `/api/setup`
+            // refuse tout (fail-closed) et on le DIT, au lieu de servir un secret énumérable.
+            let jeton = match setup_token_from_entropy(setup_token_entropy()) {
+                Some(tok) => {
+                    let _ = std::fs::write(&tp, &tok);
+                    let _ = std::fs::set_permissions(&tp, std::fs::Permissions::from_mode(0o600));
+                    eprintln!("\n===== SETUP MODE — token d'installation (usage unique) =====\n  {tok}\n  -> ouvre la page, ⚙️ Réglages : colle ce token + définis tes identifiants.\n  (aussi dans : {})\n===========================================================\n", tp.display());
+                    tok
+                }
+                None => {
+                    eprintln!("\n===== SETUP IMPOSSIBLE — aucune source d'entropie (ni /dev/urandom ni getrandom) =====\n  AUCUN token d'installation n'est émis : /api/setup REFUSERA tout appel.\n  Répare l'entropie de l'hôte et redémarre, ou pose PLUME_PASS_HASH (plume-daemon hashpw).\n=====================================================================================\n");
+                    String::new()
+                }
+            };
+            Ok(InstallationAuDemarrage { administrateur_de_l_assistant: None, jeton, ouverte: true })
+        }
+        EtatDAdministrationAuDemarrage::Fermee(admin0) => {
+            if admin0.is_none() && !mot_de_passe_de_configuration_pose {
+                eprintln!(
+                    "[setup] INSTALLATION FERMÉE : des comptes administrateurs existent, mais aucun administrateur de \
+                     l'assistant ne se recharge (meta.admin_user absent, ou son compte n'est plus administrateur) et aucun \
+                     mot de passe de configuration n'est posé. AUCUN jeton d'installation n'est émis, aucun compte n'est \
+                     repromu. Pour reprendre la main : pose PLUME_PASS_HASH (plume-daemon hashpw), redémarre, connecte-toi \
+                     et repromeus le compte voulu."
+                );
+            }
+            // F4 — plus en mode setup (un admin existe / pass défini) : on efface tout `setup-token.txt`
+            // RÉSIDUEL d'un premier boot (inerte car la route setup est gated sur le mode installation, mais c'est
+            // un token en clair token-shaped sur /data). shred (écrasement best-effort) + unlink. Idempotent.
+            if tp.exists() {
+                shred_file(&tp.to_string_lossy());
+                eprintln!("[setup] token d'installation résiduel effacé ({})", tp.display());
+            }
+            Ok(InstallationAuDemarrage { administrateur_de_l_assistant: admin0, jeton: String::new(), ouverte: false })
+        }
+    }
+}
+
 pub(crate) async fn run() {
     let BootConfig { conf, db_path, spool, addr, user, pass, webdir, host, host_strict, sso_secret, public_demo, metrics_token, sso_group_admin, sso_group_editor, sso_group_superadmin, sso_header_user, sso_header_groups, tls_cert, tls_key, tls_on, lock_threshold, lock_base_s, lock_max_s, rl_ip_max, rl_auth_max, rl_global_max, shell_octets_ip_max, shell_octets_global_max, session_ttl_s, session_secret, ingest_min_free_mb, ingest_max_events, ingest_fsync, search_limit_default, search_limit_max, query_sem, refresh_sem, bound } = boot_config();
     let conn = open_and_migrate_db(db_path.clone(), spool.clone(), conf.clone());
@@ -820,52 +944,23 @@ pub(crate) async fn run() {
         control,
         writers: Arc::new(Mutex::new(HashMap::new())),
     };
+    // `P10.30-b`, `P10.30-d` — l'état d'administration se juge à trois issues (`installation_au_demarrage`) : une
+    // lecture illisible n'ouvre JAMAIS l'installation, le démon refuse de démarrer en la nommant. Jugé AVANT le
+    // lancement des tâches de fond : un refus ne les lance pas pour les tuer net.
+    let issue_de_l_installation = installation_au_demarrage(&db.lock(), &db_path, !pass.is_empty());
+    let installation = match issue_de_l_installation {
+        Ok(issue) => issue,
+        Err(cause) => {
+            eprintln!(
+                "[setup] REFUS DE DÉMARRER : l'état d'administration ne se lit pas ({cause}). Ouvrir l'installation \
+                 sur une lecture ratée livrerait le compte administrateur à un jeton neuf : aucun jeton n'est émis. \
+                 Réparer la base (droits, disque, schéma) puis redémarrer. Arrêt propre."
+            );
+            std::process::exit(1);
+        }
+    };
     spawn_background_jobs(conf.clone(), spool.clone(), db_path.clone(), db.clone(), tenants.clone(), refresh_sem.clone(), bound.clone());
 
-    let admin0: Option<(String, String)> = {
-        let c = db.lock();
-        // ANTI-FUITE PAR EXPORT — le hash admin n'est PLUS lu depuis meta (il y était exfiltrable en SQL
-        // brut admin). Source de vérité = user.hash (protégé par l'authorizer read-pool). set_admin écrit déjà
-        // user(name,hash,role='admin') ; la migration v10 a seedé user depuis l'ancien meta.admin_hash. On PURGE
-        // la copie héritée en clair au démarrage (idempotent ; ne casse rien puisqu'on lit désormais user.hash).
-        let _ = c.execute("DELETE FROM meta WHERE key='admin_hash'", []);
-        match c.query_row("SELECT value FROM meta WHERE key='admin_user'", [], |r| r.get::<_, String>(0)) {
-            Ok(u) => c
-                .query_row("SELECT hash FROM user WHERE name=?1 AND role='admin'", params![u], |r| r.get::<_, String>(0))
-                .ok()
-                .map(|h| (u, h)),
-            Err(_) => None,
-        }
-    };
-    let setup_token = if admin0.is_none() && pass.is_empty() {
-        use std::os::unix::fs::PermissionsExt;
-        // Le token d'installation ouvre le compte ADMIN à un anonyme : il n'est FABRIQUÉ qu'à partir
-        // d'entropie réelle (cf. `setup_token_from_entropy`). Aucune entropie -> aucun token -> `/api/setup`
-        // refuse tout (fail-closed) et on le DIT, au lieu de servir un secret énumérable.
-        match setup_token_from_entropy(setup_token_entropy()) {
-            Some(tok) => {
-                let tp = std::path::Path::new(&db_path).with_file_name("setup-token.txt");
-                let _ = std::fs::write(&tp, &tok);
-                let _ = std::fs::set_permissions(&tp, std::fs::Permissions::from_mode(0o600));
-                eprintln!("\n===== SETUP MODE — token d'installation (usage unique) =====\n  {tok}\n  -> ouvre la page, ⚙️ Réglages : colle ce token + définis tes identifiants.\n  (aussi dans : {})\n===========================================================\n", tp.display());
-                tok
-            }
-            None => {
-                eprintln!("\n===== SETUP IMPOSSIBLE — aucune source d'entropie (ni /dev/urandom ni getrandom) =====\n  AUCUN token d'installation n'est émis : /api/setup REFUSERA tout appel.\n  Répare l'entropie de l'hôte et redémarre, ou pose PLUME_PASS_HASH (plume-daemon hashpw).\n=====================================================================================\n");
-                String::new()
-            }
-        }
-    } else {
-        // F4 — plus en mode setup (un admin existe / pass défini) : on efface tout `setup-token.txt`
-        // RÉSIDUEL d'un premier boot (inerte car la route setup est gated sur admin0.is_none(), mais c'est
-        // un token en clair token-shaped sur /data). shred (écrasement best-effort) + unlink. Idempotent.
-        let tp = std::path::Path::new(&db_path).with_file_name("setup-token.txt");
-        if tp.exists() {
-            shred_file(&tp.to_string_lossy());
-            eprintln!("[setup] token d'installation résiduel effacé ({})", tp.display());
-        }
-        String::new()
-    };
     // `P10.24-m` — DIT AU DÉMARRAGE, pour qu'un refus de geste ne soit pas la première nouvelle.
     if cfg(&conf, crate::secret_des_gestes::VARIABLE_DU_FICHIER_DU_SECRET_DES_GESTES, "").trim().is_empty() {
         eprintln!(
@@ -889,8 +984,9 @@ pub(crate) async fn run() {
         db,
         user: Arc::new(user),
         pass_hash: Arc::new(pass),
-        admin: Arc::new(Mutex::new(admin0)),
-        setup_token: Arc::new(setup_token),
+        admin: Arc::new(Mutex::new(installation.administrateur_de_l_assistant)),
+        setup_token: Arc::new(installation.jeton),
+        installation_ouverte: Arc::new(std::sync::atomic::AtomicBool::new(installation.ouverte)),
         host: Arc::new(host.clone()),
         host_strict,
         sso_secret: Arc::new(sso_secret),

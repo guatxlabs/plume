@@ -1097,19 +1097,24 @@ pub(crate) fn refuser_le_geste_sans_anti_verrouillage_lu(cause_du_moteur: &str) 
 }
 
 /// (#2c) AUDIT : écrit un event `source='plume-tenant-admin'` DANS la base du tenant visé (visible du client,
-/// cf. tâche 6). Best-effort. Le tenant doit être résoluble (sinon no-op — ex. destruction déjà faite).
-pub(crate) fn audit_tenant_event(st: &AppState, tenant: &str, action: &str, sev: i64, msg: &str, detail: Value) {
+/// cf. tâche 6). Le tenant doit être résoluble (sinon `SansBaseServie` — ex. destruction déjà faite, tenant suspendu).
+///
+/// `P10.21-m` — L'ÉVÉNEMENT REND SON ISSUE. Il était « best-effort » sous `let _ =` : une base du tenant qui
+/// refusait l'`INSERT` laissait la réponse et le journal de contrôle dire le geste, pendant que le tenant ne le
+/// voyait jamais dans ses propres événements, sans un mot nulle part. L'appelant consomme l'issue et l'AVOUE à
+/// côté du succès (`avouer_l_evenement_du_tenant_non_ecrit`) : le geste est fait, il n'est jamais annulé.
+pub(crate) fn audit_tenant_event(st: &AppState, tenant: &str, action: &str, sev: i64, msg: &str, detail: Value) -> EvenementDAuditDuTenant {
     let Some(handle) = st.tenants.handle_for(tenant) else {
-        return;
+        return EvenementDAuditDuTenant::SansBaseServie;
     };
-    audit_tenant_event_sur(&handle, action, sev, msg, detail);
+    audit_tenant_event_sur(&handle, action, sev, msg, detail)
 }
 
 /// `P10.21-g` — LA MÊME ÉCRITURE, SUR UNE POIGNÉE DÉJÀ RÉSOLUE. La suspension en a besoin : l'événement
 /// doit suivre la bascule écrite (jamais la précéder, sinon le tenant lit « suspendu » sur une bascule
 /// refusée), et après la bascule la base du tenant ne se résout plus. La poignée est donc prise AVANT,
 /// l'événement écrit APRÈS.
-pub(crate) fn audit_tenant_event_sur(handle: &Mutex<Connection>, action: &str, sev: i64, msg: &str, detail: Value) {
+pub(crate) fn audit_tenant_event_sur(handle: &Mutex<Connection>, action: &str, sev: i64, msg: &str, detail: Value) -> EvenementDAuditDuTenant {
     let mut fields = serde_json::Map::new();
     fields.insert("action".into(), json!(action));
     if let Value::Object(m) = detail {
@@ -1118,12 +1123,61 @@ pub(crate) fn audit_tenant_event_sur(handle: &Mutex<Connection>, action: &str, s
         }
     }
     let conn = handle.lock();
-    let _ = conn.execute(
+    // `P10.21-m` — L'ÉCRITURE EST COMPTÉE : une ligne, ou `Perdu` (la cause du moteur au journal du démon seul).
+    let ecriture = conn.execute(
         // origin='daemon' (v72/M4) : marqueur d'action tenant-admin NON-purgeable et NON-forgeable (cf. retention_run).
         "INSERT INTO event(ts,source,category,severity,message,host,fields,origin) \
          VALUES(?1,'plume-tenant-admin','audit',?2,?3,'plume-daemon',?4,'daemon')",
         params![now(), sev, msg, Value::Object(fields).to_string()],
     );
+    let cause = match ecriture {
+        Ok(1) => return EvenementDAuditDuTenant::Ecrit,
+        Ok(n) => format!("{n} ligne(s) écrite(s) au lieu d'une"),
+        Err(e) => e.to_string(),
+    };
+    eprintln!("[tenants] WARN événement d'audit '{action}' NON écrit dans la base du tenant : {cause}");
+    EvenementDAuditDuTenant::Perdu
+}
+
+/// `P10.21-m` — CE QUE L'ÉVÉNEMENT D'AUDIT POSÉ DANS LA BASE D'UN TENANT A FAIT.
+#[must_use = "un événement de tenant PERDU doit être avoué par l'appelant qui affirme le geste (`avouer_l_evenement_du_tenant_non_ecrit`)"]
+#[derive(Debug)]
+pub(crate) enum EvenementDAuditDuTenant {
+    /// La ligne est écrite dans la base du tenant.
+    Ecrit,
+    /// La base du tenant n'est pas servie (tenant suspendu, détruit, clé non résoluble) : l'événement n'a pas de
+    /// destinataire. LIMITE ÉCRITE, pas une perte d'écriture : rien n'est avoué (le geste sur un tenant suspendu
+    /// ne peut rien lui montrer tant qu'il l'est) — c'est la forme d'avant ce lot, inchangée.
+    SansBaseServie,
+    /// La base du tenant n'a pas pris l'événement. La cause du moteur est écrite au journal du démon, jamais
+    /// dans un corps de réponse.
+    Perdu,
+}
+
+impl EvenementDAuditDuTenant {
+    pub(crate) fn est_perdu(&self) -> bool {
+        matches!(self, Self::Perdu)
+    }
+}
+
+/// `P10.21-m` — LA CLÉ SOUS LAQUELLE UN SUCCÈS AVOUE QUE L'ÉVÉNEMENT DU TENANT N'EST PAS ÉCRIT. Absente sur le
+/// chemin nominal : le corps y ressort byte-identique.
+pub(crate) const CLE_EVENEMENT_DU_TENANT_NON_ECRIT: &str = "evenement_du_tenant_non_ecrit";
+
+/// `P10.21-m` — CE QU'UN SUCCÈS DIT QUAND LA BASE DU TENANT N'A PAS PRIS L'ÉVÉNEMENT D'AUDIT DU GESTE. Le geste
+/// est fait (refuser mentirait, il est écrit au plan de contrôle) ; la phrase dit ce qui manque, sans la cause
+/// du moteur (au journal du démon).
+pub(crate) const CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT: &str =
+    "ÉVÉNEMENT DU TENANT NON ÉCRIT : le geste d'administration a bien eu lieu, mais la base du tenant n'a pas \
+     pris l'événement d'audit qui le lui montre — ce tenant ne verra pas ce changement parmi ses propres \
+     événements. Refaire le geste ne le comble pas : signalez-le.";
+
+/// `P10.21-m` — POSE L'AVEU D'UN ÉVÉNEMENT DE TENANT PERDU À CÔTÉ D'UN SUCCÈS. Rien sur le chemin nominal, rien
+/// non plus pour une base non servie (`SansBaseServie`, limite écrite).
+pub(crate) fn avouer_l_evenement_du_tenant_non_ecrit(corps: &mut Value, evenement: &EvenementDAuditDuTenant) {
+    if evenement.est_perdu() {
+        corps[CLE_EVENEMENT_DU_TENANT_NON_ECRIT] = json!(CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT);
+    }
 }
 
 /// (#2c) db_path d'un NOUVEAU tenant : `<répertoire de PLUME_DB>/tenants/<slug>/plume.db`. Un slug déjà

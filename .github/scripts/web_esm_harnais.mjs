@@ -29311,13 +29311,19 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 // remise et « lecture non vérifiable », la phrase servie en infobulle ; (b) non remis → l'échec, jamais la remise ; (c) local,
 // sur la réponse que le démon sert VRAIMENT pour un `lookup` (`{ok: false, remis_au_service: false, accuse_de_lecture: 'local'}`,
 // tenue par le témoin Rust `p10_33n_un_essai_rate_ne_porte_aucune_phrase_de_remise`) → « aucun essai », ni l'échec d'URL / curl
-// ni une remise ni un accusé ; (d) sans_objet → l'échec et « sans objet » ; (e) réponse d'un démon antérieur
+// ni une remise ni un accusé ; (d) sans_objet (genre inconnu du démon : `notify_send` `_ => false`, la création l'accepte) →
+// « genre de canal inconnu du démon » seul, ni l'échec d'URL / curl ni une remise ; (j) `ok` et `remis_au_service` qui
+// DIFFÈRENT — `ok` vrai sans remise, `ok` faux avec remise (aucune des deux n'est servie : le démon pose
+// `remis = ok && genre réseau`, relu ci-dessous ; elles séparent la remise de `ok`) → la remise est dite SI ET SEULEMENT SI
+// `remis_au_service` est vrai ; (k) un code d'accusé vide ou fait d'espaces ne rend aucun « accusé : » ; (e) réponse d'un démon antérieur
 // (`{ok}` seul) → l'affichage d'avant, à l'octet, sans accusé ; (f) la liste des canaux dit l'accusé servi, et rien sans le
 // champ ; (g) un accusé, une phrase de remise balisés sont rendus en TEXTE (aucun élément créé) ; (h) aucune face ne dit
 // « lu », « reçu », « envoyé » (fr) ni « received », « was read », « sent » (en) sur une réponse neuve ; (i) deux essais sur la
 // MÊME ligne : remis puis raté, l'infobulle de la remise est retirée ; (0) l'ensemble des codes que la console traduit (clés de
 // `MOTS_DE_L_ACCUSE_D_UN_CANAL`, lues dans web/detection_admin.js) est l'ensemble que le démon sert (`AccuseDuCanal::code`),
-// et ce dernier celui que ce témoin attend — deux égalités d'ensembles, donc un code en trop d'UN côté comme de l'autre rougit.
+// et ce dernier celui que ce témoin attend — deux égalités d'ensembles, donc un code en trop d'UN côté comme de l'autre rougit ;
+// les clés de la console sont lues au PREMIER niveau de la table quelle que soit leur écriture (nue, entre apostrophes ou
+// guillemets, plusieurs sur une ligne).
 // CE QU'IL NE TIENT PAS : l'exécution de la route (témoins Rust de `P10.33-n`) ; la phrase `remise` reste française sous
 // LANG='en' (le démon ne la sert que dans cette langue) ; la mise en page ; aucune santé ne dit un canal sans destinataire.
 // ---------------------------------------------------------------------------------------------
@@ -29350,17 +29356,32 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const mPhrase151 = NOTIF151.match(/const PHRASE_REMIS_AU_SERVICE_SANS_ACCUSE_DE_LECTURE: &str = "((?:[^"\\]|\\[\s\S])*)";/);
   const PHRASE151 = mPhrase151 ? mPhrase151[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : "";
   instrument151(!!PHRASE151, "la phrase de remise n'est plus lisible dans daemon/src/handlers/notifiers.rs");
+  // (j) dit d'où vient la remise : le démon la tire de `ok` ET du genre ; s'il cessait, les cas (j) ne seraient plus « non servis ».
+  instrument151(/let remis = ok && accuse == AccuseDuCanal::RemisAuServiceSansAccuseDeLecture;/.test(essai151),
+    "`notifier_test` ne pose plus `remis = ok && accuse == AccuseDuCanal::RemisAuServiceSansAccuseDeLecture` — les cas (151j) sont à rejuger");
   // Les faces ATTENDUES, écrites ici (jamais relues dans le module jugé) : un code du démon sans face attendue fait rougir.
   const ATTENDU151 = {
-    fr: { remis: "remis au service", local: "aucun essai : un canal local n'émet rien, il écrit l'alerte dans sa table lookup", echec: "échec (vérifie URL / curl / config)", accuse: (a) => "accusé : " + a,
+    fr: { remis: "remis au service", local: "aucun essai : un canal local n'émet rien, il écrit l'alerte dans sa table lookup", inconnu: "aucun essai : genre de canal inconnu du démon", echec: "échec (vérifie URL / curl / config)", accuse: (a) => "accusé : " + a,
       codes: { inconnu: "lecture non vérifiable", local: "local, vérifiable sur place", sans_objet: "sans objet" } },
-    en: { remis: "handed to the service", local: "no test run: a local channel emits nothing, it writes the alert to its lookup table", echec: "failed (check URL / curl / config)", accuse: (a) => "acknowledgement: " + a,
+    en: { remis: "handed to the service", local: "no test run: a local channel emits nothing, it writes the alert to its lookup table", inconnu: "no test run: channel kind unknown to the daemon", echec: "failed (check URL / curl / config)", accuse: (a) => "acknowledgement: " + a,
       codes: { inconnu: "read not verifiable", local: "local, checkable on site", sans_objet: "not applicable" } },
   };
   // (0) côté console : les clés de la table d'accusé, LUES dans le module (aucune face n'en est relue), contre les codes servis.
   const SRC_DETECTION151 = (() => { try { return readFileSync(path.join(WEB, "detection_admin.js"), "utf8"); } catch (e) { return ""; } })();
   const blocAccuse151 = (SRC_DETECTION151.match(/const MOTS_DE_L_ACCUSE_D_UN_CANAL = \{\n([\s\S]*?)\n\};/) || [])[1] || "";
-  const CODES_CONSOLE151 = [...blocAccuse151.matchAll(/^\s*([A-Za-z_]\w*)\s*:/gm)].map((m) => m[1]).sort();
+  // Clés du PREMIER niveau : commentaires retirés, chaînes neutralisées, objets imbriqués (les faces fr/en) effacés, puis
+  // toute clé — nue, 'entre apostrophes' ou "entre guillemets", seule ou à plusieurs sur une ligne — est recueillie.
+  const clesDuPremierNiveau151 = (bloc) => {
+    const chaines = [];
+    // Un seul passage, de gauche à droite : un « // » dans une chaîne (« https://… ») n'est pas un commentaire.
+    let t = bloc.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|'((?:[^'\\\n]|\\.)*)'|"((?:[^"\\\n]|\\.)*)"|`((?:[^`\\]|\\.)*)`/g,
+      (m, a, b, c) => { if (a === undefined && b === undefined && c === undefined) return " "; chaines.push(a ?? b ?? c); return `\u0000${chaines.length - 1}\u0000`; });
+    for (let avant = null; avant !== t;) { avant = t; t = t.replace(/\{[^{}]*\}/g, " "); }
+    return [...t.matchAll(/(?:^|[\s,{])(?:([A-Za-z_$][\w$]*)|\u0000(\d+)\u0000)\s*:/g)].map((m) => m[1] ?? chaines[Number(m[2])]);
+  };
+  instrument151(JSON.stringify(clesDuPremierNiveau151("  a: { fr: 'x: y // https://example.org', en: \"z\" },\n  'b': { fr: '}' }, \"c\": {}, d: {},\n  // e: {}\n")) === JSON.stringify(["a", "b", "c", "d"]),
+    "le lecteur des clés de la table d'accusé ne rend pas les clés nues, entre apostrophes, entre guillemets et à plusieurs par ligne, ou prend une clé imbriquée ou commentée");
+  const CODES_CONSOLE151 = clesDuPremierNiveau151(blocAccuse151).sort();
   instrument151(CODES_CONSOLE151.length > 0, "la table `MOTS_DE_L_ACCUSE_D_UN_CANAL` n'est plus lisible dans web/detection_admin.js");
   exiger(JSON.stringify(CODES_CONSOLE151) === JSON.stringify(CODES_SERVIS151),
     `(151-0) les codes d'accusé que la console traduit (${JSON.stringify(CODES_CONSOLE151)}) ne sont pas ceux que le démon sert (${JSON.stringify(CODES_SERVIS151)})`);
@@ -29371,7 +29392,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const FIN151 = "(?![\\wÀ-ÿ])";
   const INTERDIT_UN151 = new RegExp("(?<![\\wÀ-ÿ])(?:lue?s?|reçue?s?|envoyée?s?|received|sent|delivered to|(?:was|been|is) read)" + FIN151, "i");
   const INTERDIT151 = { fr: INTERDIT_UN151, en: INTERDIT_UN151 };
-  instrument151(["envoyé", "lu", "reçu", "Was read", "sent"].every((t) => INTERDIT_UN151.test(t)) && !["lecture non vérifiable", "local, vérifiable sur place", "aucun essai : un canal local n'émet rien, il écrit l'alerte dans sa table lookup", "read not verifiable", "acknowledgement: not applicable", "local, checkable on site", "no test run: a local channel emits nothing, it writes the alert to its lookup table"].some((t) => INTERDIT_UN151.test(t)),
+  instrument151(["envoyé", "lu", "reçu", "Was read", "sent"].every((t) => INTERDIT_UN151.test(t)) && !["lecture non vérifiable", "local, vérifiable sur place", "aucun essai : un canal local n'émet rien, il écrit l'alerte dans sa table lookup", "read not verifiable", "acknowledgement: not applicable", "local, checkable on site", "no test run: a local channel emits nothing, it writes the alert to its lookup table", "aucun essai : genre de canal inconnu du démon", "no test run: channel kind unknown to the daemon"].some((t) => INTERDIT_UN151.test(t)),
     "le filtre des mots interdits ne prend pas « envoyé », « lu », « reçu », « was read », « sent », ou prend une face permise");
 
   const liste151 = document.querySelector("#notif-list");
@@ -29420,8 +29441,24 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // (d) sans_objet
       const d = await essayer151(L, { ok: false, remis_au_service: false, accuse_de_lecture: "sans_objet" });
       neufs.push(d);
-      exiger(d.meta === A.echec + " — " + A.accuse(A.codes.sans_objet),
-        `(151d) ${L.nom} : un genre sans objet ne rend pas l'échec et « ${A.codes.sans_objet} » : « ${d.meta} »`);
+      exiger(d.meta === A.inconnu && !d.meta.includes(A.echec) && !d.meta.includes(A.remis) && d.titre === "",
+        `(151d) ${L.nom} : un canal de genre inconnu du démon ne rend pas « ${A.inconnu} » seul (ni échec d'URL / curl, ni remise) : « ${d.meta} »`);
+      // (j) `ok` et `remis_au_service` qui DIFFÈRENT : la remise se lit sur `remis_au_service` seul, jamais sur `ok`.
+      const j1 = await essayer151(L, { ok: true, remis_au_service: false, accuse_de_lecture: "inconnu" });
+      neufs.push(j1);
+      exiger(j1.meta === A.echec + " — " + A.accuse(A.codes.inconnu) && !j1.meta.includes(A.remis) && j1.titre === "",
+        `(151j) ${L.nom} : ok VRAI sans remise au service rend la remise, ou pas l'échec : « ${j1.meta} »`);
+      const j2 = await essayer151(L, { ok: false, remis_au_service: true, accuse_de_lecture: "inconnu", remise: PHRASE151 });
+      neufs.push(j2);
+      exiger(j2.meta === A.remis + " — " + A.accuse(A.codes.inconnu) && j2.titre === PHRASE151,
+        `(151j) ${L.nom} : remis_au_service VRAI avec ok faux ne rend pas la remise : « ${j2.meta} »`);
+      // (k) un code d'accusé vide ou fait d'espaces : aucun « accusé : », ni sur l'essai ni sur la liste.
+      for (const vide of ["", "   "]) {
+        const k = await essayer151(L, { ok: true, remis_au_service: true, accuse_de_lecture: vide });
+        exiger(k.meta === A.remis, `(151k) ${L.nom} : un accusé ${JSON.stringify(vide)} rend autre chose que « ${A.remis} » seul : « ${k.meta} »`);
+        const ligne = L.detection.notifRow({ ...CANAL151, accuse_de_lecture: vide });
+        exiger(!/accusé|acknowledgement/.test(nu151(ligne)), `(151k) ${L.nom} : la ligne d'un canal d'accusé ${JSON.stringify(vide)} invente un accusé : « ${nu151(ligne)} »`);
+      }
       // (e) réponse d'un démon antérieur : l'affichage d'avant, à l'octet, dans les deux langues.
       const e1 = await essayer151(L, { ok: true }), e2 = await essayer151(L, { ok: false });
       exiger(e1.brut === "envoyé" && e2.brut === "échec (vérifie URL / curl / config)" && e1.titre === "" && e2.titre === "",
@@ -29458,7 +29495,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     if (liste151) liste151.replaceChildren();
   }
   if (echecs.length !== echecsAvant151) console.log(`(151) EN ÉCHEC — ${echecs.length - echecsAvant151} écart(s), dits ci-dessus`);
-  else console.log("(151) OK — `P10.33-n` (reste console) : dans les deux langues, l'essai d'un canal dit la remise au service seulement quand le démon la sert, l'échec sinon, « aucun essai » pour un canal local sur la réponse que le démon lui sert (ni échec d'URL / curl, ni remise), et l'accusé servi (lecture non vérifiable, local vérifiable sur place, sans objet — codes relus dans le démon ET dans la table de la console, égalité jugée), jamais « lu », « reçu » ni « envoyé » ; la phrase de remise est en infobulle et retirée par un essai raté sur la même ligne ; une réponse d'un démon antérieur garde « envoyé » / l'échec d'avant ; la liste des canaux dit l'accusé, et rien sans le champ ; un accusé ou une phrase balisés sont rendus en texte. Ce qu'il NE tient PAS : l'exécution de la route (témoins Rust), la phrase de remise reste française sous LANG='en', la mise en page.");
+  else console.log("(151) OK — `P10.33-n` (reste console) : dans les deux langues, l'essai d'un canal dit la remise au service seulement quand le démon la sert — lue sur \`remis_au_service\` seul, \`ok\` divergent joué dans les deux sens —, l'échec sinon, « aucun essai » pour un canal local et « genre de canal inconnu du démon » pour un genre inconnu sur la réponse que le démon leur sert (ni échec d'URL / curl, ni remise), aucun « accusé : » sur un code vide, et l'accusé servi (lecture non vérifiable, local vérifiable sur place, sans objet — codes relus dans le démon ET dans la table de la console quelle que soit leur écriture, égalité jugée), jamais « lu », « reçu » ni « envoyé » ; la phrase de remise est en infobulle et retirée par un essai raté sur la même ligne ; une réponse d'un démon antérieur garde « envoyé » / l'échec d'avant ; la liste des canaux dit l'accusé, et rien sans le champ ; un accusé ou une phrase balisés sont rendus en texte. Ce qu'il NE tient PAS : l'exécution de la route (témoins Rust), la phrase de remise reste française sous LANG='en', la mise en page.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

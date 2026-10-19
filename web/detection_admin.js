@@ -644,9 +644,11 @@ async function loadNotifiers() {
 // La console disait « envoyé » sur `ok` seul : un sujet sans abonné « réussit » pareil. Elle dit désormais la remise au
 // service — ou l'échec — puis l'accusé, sans jamais dire que quelqu'un a lu ni reçu. Un canal LOCAL (`lookup`) n'a pas
 // d'essai : `notify_send` n'y fait rien et le démon sert `{ok: false, remis_au_service: false, accuse_de_lecture: 'local'}` —
-// la console le dit (« aucun essai »), sans fabriquer un échec d'URL ou de curl ni une remise qui n'a pas eu lieu. `ok` vrai
-// sans remise n'est servi par aucun genre (succès réseau = remise ; lookup et genre inconnu rendent faux) : pas de face pour
-// lui, il tombe sur l'échec. Une réponse d'un démon ANTÉRIEUR
+// la console le dit (« aucun essai »), sans fabriquer un échec d'URL ou de curl ni une remise qui n'a pas eu lieu. Un genre
+// que le démon ne connaît pas (`notify_send` : `_ => false`, et la création l'accepte) est servi `sans_objet` : la console
+// dit « genre de canal inconnu du démon », pas un échec d'URL ou de curl. La remise se lit sur `remis_au_service` SEUL,
+// jamais sur `ok` : `ok` vrai sans remise n'est servi par aucun genre (le démon pose `remis = ok && genre réseau`), il
+// tombe sur l'échec. Une réponse d'un démon ANTÉRIEUR
 // (sans ces champs) garde l'affichage d'avant. Tout texte servi passe par `textContent` / `title`, jamais par du balisage.
 const MOTS_DE_L_ACCUSE_D_UN_CANAL = {
   inconnu: { fr: 'lecture non vérifiable', en: 'read not verifiable' },
@@ -656,6 +658,7 @@ const MOTS_DE_L_ACCUSE_D_UN_CANAL = {
 const MOTS_DE_L_ESSAI_D_UN_CANAL = {
   remis: { fr: 'remis au service', en: 'handed to the service' },
   local: { fr: "aucun essai : un canal local n'émet rien, il écrit l'alerte dans sa table lookup", en: 'no test run: a local channel emits nothing, it writes the alert to its lookup table' },
+  genre_inconnu: { fr: 'aucun essai : genre de canal inconnu du démon', en: 'no test run: channel kind unknown to the daemon' },
   echec: { fr: 'échec (vérifie URL / curl / config)', en: 'failed (check URL / curl / config)' },
   accuse: { fr: 'accusé : {accuse}', en: 'acknowledgement: {accuse}' },
 };
@@ -668,6 +671,7 @@ function motDeLAccuseDUnCanal(code) {
 // Le résultat d'un essai d'un démon qui sert `remis_au_service` (l'appelant garde la forme d'avant sinon).
 function phraseDeLEssaiDUnCanal(x) {
   if (!x.remis_au_service && x.accuse_de_lecture === 'local') return faceDansLaLangue(MOTS_DE_L_ESSAI_D_UN_CANAL.local);
+  if (!x.remis_au_service && x.accuse_de_lecture === 'sans_objet') return faceDansLaLangue(MOTS_DE_L_ESSAI_D_UN_CANAL.genre_inconnu);
   const verdict = faceDansLaLangue(x.remis_au_service ? MOTS_DE_L_ESSAI_D_UN_CANAL.remis : MOTS_DE_L_ESSAI_D_UN_CANAL.echec);
   const accuse = motDeLAccuseDUnCanal(x.accuse_de_lecture);
   return accuse ? verdict + ' — ' + accuse : verdict;
@@ -1738,4 +1742,4 @@ export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SA
   OUVERTURE_DE_LA_RIPOSTE_NON_LUE, OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE,
   // `P10.20-w` — et les deux de l'ANNULATION, nues elles aussi : chacune a une voisine dont elle ne
   // diffère que par un mot, et l'ordre des branches ne prouverait rien de cette différence-là.
-  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, reparserLesEvenements, MOTS_DU_REPARSE, loadPlaybooks, enregistrerLeCanalDuFormulaire, parserRow, notifRow, phraseDeLEssaiDUnCanal, motDeLAccuseDUnCanal, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, reparserLesEvenements, MOTS_DU_REPARSE, loadPlaybooks, enregistrerLeCanalDuFormulaire, parserRow, notifRow, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };

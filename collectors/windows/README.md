@@ -29,16 +29,19 @@ métadonnées d'événements.
    PSScriptAnalyzer, à version épinglée, confronte le script aux profils Windows PowerShell 5.1 qu'il
    livre (Windows 10 1809, Windows Server 2016 et 2019 : syntaxe, commandes, paramètres, types), et
    l'arbre syntaxique refuse `??`, le ternaire, `&&`, `?.`/`?[`, `clean`, l'arrière-plan `… &`,
-   `` `u{…} ``, tout type et tout membre statique absents de ces profils. Ce jugement ne prouve pas le
+   `` `u{…} ``, `` `e ``, `-replace` avec un bloc de script écrit, `$IsWindows` et ses pareils, tout type
+   absent d'un seul de ces profils et tout membre statique qui y manque. Ce jugement ne prouve pas le
    **comportement** de .NET Framework : la lecture d'une adresse par `[System.Uri]` et par
    `Invoke-RestMethod` 5.1 (redirections, proxy, TLS) n'est jouée que sous PowerShell 7.
    **Le fichier est en UTF-8 avec BOM, et doit le rester** : sans BOM, Windows PowerShell 5.1 lit un
    script dans la page de code ANSI, et le collecteur ne parsait plus (un « — » y devient un guillemet
    fermant). Un éditeur qui réenregistre sans BOM casse la tâche planifiée ; la garde le refuse.
    Le script n'envoie que par `Invoke-RestMethod` : la garde n'admet que les commandes, paramètres,
-   types et méthodes qu'il emploie (liste fermée ; un nom qualifié par module, un chemin vers un `.exe`,
-   un nom de commande calculé, un chemin UNC littéral sont refusés). Elle ne voit pas un nom fabriqué
-   à l'exécution passé à une commande admise, ni un chemin UNC lu de la configuration.
+   types et méthodes qu'il emploie, ÉCRITS dans le source (liste fermée ; un nom qualifié par module, un
+   chemin vers un `.exe`, un nom de commande calculé, un paramètre abrégé, la table d'un splatting `@p`
+   jugée par ses clés, le membre de `ForEach-Object`, toute chaîne littérale qui commence par `\\` ou
+   `//` sont refusés). Elle ne voit pas un nom fabriqué à l'exécution passé à une commande admise, ni un
+   chemin UNC concaténé ou lu de la configuration.
 2. **Exécuter en compte SYSTEM ou administrateur** (le journal *Security* l'exige).
 3. **Activer les politiques d'audit** pour peupler certains événements.
 

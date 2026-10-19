@@ -78,17 +78,26 @@ CE QUE LA PARTIE JOUÉE NE TIENT PAS
   `Microsoft.PowerShell.Utility\\Invoke-WebRequest` (et `…\\Invoke-RestMethod`, qui contourne le central
   simulé), `& 'C:\\…\\curl.exe'`, `Start-Process`, `cmd /c`, `[scriptblock]::Create`,
   `[Activator]::CreateInstance(…GetTypeFromProgID…)`, `([xml]…).Load(url)`, `Invoke-Command
-  -ComputerName`, `Set-Content` vers un chemin UNC. Sont refusés : une commande hors de `CMDS_ADMIS` (nom
+  -ComputerName`, `Set-Content` vers un chemin UNC ; puis celui du 2026-10-19, `ForEach-Object Load 'url'`
+  (une connexion est tentée, mesuré), un chemin UNC par `-Path:'…'`, `('…')`, `FileSystem::`, une table
+  ou une variable, et `-ComputerName` par splatting. Sont refusés : une commande hors de `CMDS_ADMIS` (nom
   qualifié, chemin et `.exe` compris) ou au nom calculé (`& $x`) ; un paramètre de cmdlet hors de
-  `PARAMS_ADMIS` (tel qu'écrit : `-Comp` n'est pas admis) ; un type nommé hors de `TYPES_ADMIS` (chaque
-  composant, contrainte `[T]$x` comprise, et le type passé à `New-Object`) ; une méthode appelée hors de
-  `METHODES_ADMISES` ; un chemin UNC littéral passé à une commande ; un nom `System.Net.*` en chaîne ;
-  `using namespace System.Net…`, `using assembly|module`. Le témoin de la garde porte un exemple PAR
-  SITE de refus. CE QUE L'AST NE TIENT PAS : ce qui n'est pas ÉCRIT dans le source — un nom de type ou
-  de commande fabriqué à l'exécution et passé à une commande ou une méthode ADMISE (`New-Object $nom`
-  rougit, mais une propriété lue sur un objet admis n'est pas jugée), un chemin UNC CALCULÉ (lu de la
+  `PARAMS_ADMIS`, tel qu'écrit (`-Comp`, abréviation de `-Compress` qui est admis, est refusé) ; par
+  `@p`, les clés de la table LITTÉRALE affectée à `$p`, jugées comme des paramètres — une table
+  introuvable, calculée, ou dont la variable est lue ou modifiée ailleurs (`$p.ComputerName = …`) est
+  refusée ; un type nommé hors de `TYPES_ADMIS` (chaque composant, contrainte `[T]$x` comprise) ; le
+  type passé à `New-Object`, littéral ou variable affectée de chaînes littérales seulement (tout autre
+  argument de type est refusé comme calculé) ; une méthode appelée hors de `METHODES_ADMISES`, par
+  `x.M()`, `[T]::M()` ou comme membre de `ForEach-Object`/`%`/`foreach` (1er argument positionnel ou
+  `-MemberName`, nom calculé refusé) ; TOUTE chaîne littérale du script qui commence par `\\\\` ou `//`,
+  préfixe de fournisseur `FileSystem::` compris ; un nom `System.Net.*` en chaîne ; `using namespace
+  System.Net…`, `using assembly|module`. Le témoin de la garde porte un exemple PAR SITE de refus, et
+  par forme. CE QUE L'AST NE TIENT PAS : ce qui n'est pas ÉCRIT dans le source — un nom de type, de
+  commande ou de méthode fabriqué à l'exécution et passé à une commande ou une méthode ADMISE (une
+  propriété lue sur un objet admis n'est pas jugée), un chemin UNC CALCULÉ (concaténé, lu de la
   configuration) passé à `Set-Content`/`Get-Content`/`Test-Path`, l'usage d'une méthode admise sur un
-  autre objet que celui pour lequel elle a été admise.
+  autre objet que celui pour lequel elle a été admise ; la portée des variables n'est pas suivie
+  (`$p` et `$script:p` sont le même nom pour la garde, ce qui ne peut qu'en refuser plus).
 · WINDOWS POWERSHELL 5.1 N'EST EXÉCUTÉ NULLE PART — mais il est désormais JUGÉ (P10.33-i). La tâche
   planifiée lance `powershell -File` (collectors/windows/README.md), c'est-à-dire 5.1 sur .NET
   Framework ; cette garde joue `pwsh` 7 sous Linux (.NET 10). Jambes, chacune avec son témoin :
@@ -104,8 +113,11 @@ CE QUE LA PARTIE JOUÉE NE TIENT PAS
       pour PowerShell. La tâche planifiée mourait au parsage, avant la porte du clair, et cette garde
       affichait « compatible ». Tout octet non ASCII exige le BOM UTF-8 ;
   (c) l'AST interdit la syntaxe postérieure à 5.1 (`??`, `??=`, ternaire, `&&`/`||`, `?.`, `?[`, bloc
-      `clean`, opérateur d'arrière-plan `… &`, échappement `` `u{…} ``) — mesuré le 2026-10-18,
-      PSScriptAnalyzer 1.25.0 ne voit ni `${x}?[0]`, ni `Get-Date &`, ni `` `u{…} `` ;
+      `clean`, opérateur d'arrière-plan `… &`, échappements `` `u{…} `` et `` `e `` — lus par paires,
+      ``` ``e ``` n'en est pas un —, `-replace` dont le remplacement est un bloc de script ÉCRIT, et la
+      lecture de `$IsWindows`/`$IsLinux`/`$IsMacOS`/`$IsCoreCLR`, absents de 5.1) — mesuré le 2026-10-18,
+      PSScriptAnalyzer 1.25.0 ne voit ni `${x}?[0]`, ni `Get-Date &`, ni `` `u{…} `` ; un bloc de script
+      passé à `-replace` par une variable n'est pas vu ;
   (d) tout type NOMMÉ doit exister dans chacun des trois profils 5.1, le nom étant résolu PAR LES
       PROFILS (types complets et accélérateurs de 5.1) et jamais par pwsh 7, qui résout `[uint]` alors que
       5.1 n'a pas cet accélérateur — mesuré, `PSUseCompatibleTypes` ne voit pas
@@ -467,8 +479,9 @@ TYPES_ADMIS = {
     "system.uri", "system.urihostnametype", "system.urikind", "timespan", "xml",
     "system.collections.arraylist",
 }
-# Méthodes APPELÉES (`x.M()` et `[T]::M()`). Pas de `Load`, `Create`, `Start`, `Invoke`, `InvokeScript`,
-# `CreateInstance`, `GetTypeFromProgID`. Une propriété LUE n'est pas jugée (elle n'envoie rien).
+# Méthodes APPELÉES (`x.M()`, `[T]::M()`, et le membre de `ForEach-Object M`). Pas de `Load`, `Create`,
+# `Start`, `Invoke`, `InvokeScript`, `CreateInstance`, `GetTypeFromProgID`. Une propriété LUE n'est pas jugée
+# (elle n'envoie rien).
 METHODES_ADMISES = {
     "add", "addminutes", "clear", "containskey", "new", "parse", "split", "toint64", "tolowerinvariant",
     "tostring", "touniversaltime", "tounixtimeseconds", "toxml", "trim", "trimend", "trycreate",
@@ -476,8 +489,13 @@ METHODES_ADMISES = {
 }
 NET_TYPES_ADMIS = {"System.Net.ServicePointManager", "System.Net.SecurityProtocolType"}
 NOM_NET = re.compile(r"(?i)(?<![\w.])(?:system\.net(?!\w)(?:\.[\w.+`]*)?|net\.[\w.+`]+)")
-# Chemin UNC littéral : `Set-Content '\\hote\partage\x'` envoie par SMB, sans aucune commande réseau.
-UNC = re.compile(r"^(?:\\\\|//)")
+# Chemin UNC : `Set-Content '\\hote\partage\x'` envoie par SMB, sans aucune commande réseau. Jugé sur TOUTE
+# chaîne littérale du script (argument, `-Path:'…'`, `('…')`, valeur d'une table, variable), préfixe de
+# fournisseur compris (`FileSystem::\\…`, `Microsoft.PowerShell.Core\FileSystem::\\…`).
+UNC = re.compile(r"^(?i:(?:[\w.]+\\)?FileSystem::)?(?:\\\\|//)")
+# `ForEach-Object Load 'url'` APPELLE la méthode `Load` (mesuré par le vérificateur du 2026-10-19 : une
+# connexion est tentée) : le nom de membre de ForEach-Object est jugé comme une méthode appelée.
+FOREACH_CMDS = {"foreach-object", "%", "foreach"}
 
 
 def noms_net(texte: str) -> list:
@@ -506,9 +524,39 @@ def envois_hors_du_central_simule(d: dict) -> list:
 
     `site` nomme la règle qui a refusé : le témoin de la garde en exige un exemple PAR SITE."""
     fonctions = {f["name"].lower() for f in d["functions"]}
+    affectations: dict = {}
+    for a in d.get("assignments", []):
+        if a.get("cible"):
+            affectations.setdefault(a["cible"].lower(), []).append(a)
+
+    def valeurs_ecrites(nom: str, forme: str):
+        """Les affectations de `$nom`, si TOUTES sont de la forme écrite demandée et que la variable n'est lue
+        nulle part ailleurs qu'où on la juge (sinon : None, la valeur n'est pas lisible dans le source)."""
+        aff = affectations.get(nom.lower(), [])
+        if not aff or any(a["forme"] != forme for a in aff):
+            return None
+        gauches = {a["offset_gauche"] for a in aff}
+        autres = [v for v in d["variables"] if v.get("nom", "").lower() == nom.lower()
+                  and v["offset"] not in gauches and not (forme == "table" and v["splatted"])]
+        if forme == "table" and autres:
+            return None   # `$p.ComputerName = …`, `$p.Add(…)`, `$p += …` : la table n'est plus celle écrite
+        return aff
+
     vus = []
     for c in d["commands"]:
         n = c["name"].lower()
+        # Le membre de ForEach-Object (1er argument positionnel, ou `-MemberName`) est une MÉTHODE APPELÉE.
+        # Jugé avant tout `continue` : `%` est aussi refusé comme commande, et les deux le disent.
+        if n in FOREACH_CMDS:
+            membres = [a for a in c.get("arguments", []) if a["kind"] != "scriptblock"
+                       and (a["parametre"] == "" or a["parametre"].lower().startswith("m"))]
+            if membres:
+                a = membres[0]
+                nom = a["valeur"] if a["kind"] == "chaine" else ""
+                if nom.lower() not in METHODES_ADMISES:
+                    vus.append((c["line"], "membre-foreach",
+                                f"`{c['name']} {nom or '<nom calculé>'}` appelle la méthode `{nom or '<nom calculé>'}`, "
+                                f"hors de METHODES_ADMISES"))
         if not n:
             vus.append((c["line"], "invocation-dynamique",
                         f"commande au nom CALCULÉ `{c['text'][:60]}` (`& $x`, `& (Get-Command …)`)"))
@@ -522,13 +570,41 @@ def envois_hors_du_central_simule(d: dict) -> list:
         for prm in c.get("params", []):
             if prm.lower() not in PARAMS_ADMIS:
                 vus.append((c["line"], "parametre", f"paramètre `-{prm}` de `{c['name']}` hors de PARAMS_ADMIS"))
+        # SPLATTING : `@p` vaut les clés de la table LITTÉRALE affectée à `$p`, jugées comme des paramètres.
+        # Table introuvable, calculée ou modifiée après coup : refusé (ses paramètres ne sont pas écrits).
+        for a in c.get("arguments", []):
+            if a["kind"] != "splat":
+                continue
+            aff = valeurs_ecrites(a["valeur"], "table")
+            if aff is None:
+                vus.append((c["line"], "splat", f"`{c['name']} @{a['valeur']}` : la table n'est pas une table "
+                            f"littérale du script, ou elle est modifiée ou lue ailleurs (paramètres non écrits)"))
+                continue
+            for cle in sorted({k for x in aff for k in x["cles"]}):
+                if not cle or cle.lower() not in PARAMS_ADMIS:
+                    vus.append((c["line"], "parametre", f"paramètre `{cle or '<clé calculée>'}` de `{c['name']}` "
+                                f"(par `@{a['valeur']}`) hors de PARAMS_ADMIS"))
         if n == "new-object":
-            for lit in c.get("litteraux", []):
-                if lit.lower() not in TYPES_ADMIS:
-                    vus.append((c["line"], "new-object", f"`New-Object {lit}` : type hors de TYPES_ADMIS"))
-        for lit in c.get("litteraux", []):
-            if UNC.match(lit):
-                vus.append((c["line"], "unc", f"chemin UNC `{lit[:60]}` passé à `{c['name']}` (envoi SMB)"))
+            # Le TYPE : `-TypeName`/`-T…` ou positionnel (le 2e positionnel, `-ArgumentList`, est jugé aussi).
+            for a in c.get("arguments", []):
+                if a["parametre"] and not a["parametre"].lower().startswith("t"):
+                    continue
+                if a["kind"] == "chaine":
+                    noms = [a["valeur"]]
+                elif a["kind"] == "variable":
+                    aff = valeurs_ecrites(a["valeur"], "chaine")
+                    noms = [x["chaine"] for x in aff] if aff is not None else [None]
+                else:
+                    noms = [None]
+                for lit in noms:
+                    if lit is None:
+                        vus.append((c["line"], "new-object", f"`New-Object` d'un type CALCULÉ "
+                                    f"(`{a['valeur'][:40]}`, non affecté d'une seule chaîne littérale)"))
+                    elif lit.lower() not in TYPES_ADMIS:
+                        vus.append((c["line"], "new-object", f"`New-Object {lit}` : type hors de TYPES_ADMIS"))
+    for st in d["strings"]:
+        if UNC.match(st.get("valeur", "")):
+            vus.append((st["line"], "unc", f"chemin UNC `{st['valeur'][:60]}` écrit dans le source (envoi SMB)"))
     for t in d.get("types", []):
         for comp in composants_de_type(t["written"]):
             if comp not in TYPES_ADMIS:
@@ -791,6 +867,26 @@ $n = [uint]1
 $m = [System.Math]::Clamp(5, 1, 3)
 $z = 'é — x'
 $ip = [ipaddress]'192.0.2.10'
+([xml]'<a/>') | ForEach-Object Load 'https://example.org'
+([xml]'<a/>') | % Load 'https://example.org'
+([xml]'<a/>') | ForEach-Object -MemberName Load
+Set-Content -Path:'\\192.0.2.10\p\a' -Value 1
+Set-Content -Path ('\\192.0.2.10\p\b') -Value 1
+Get-Content 'FileSystem::\\192.0.2.10\p\c'
+Get-WinEvent -FilterHashtable @{ Path = '\\192.0.2.10\p\d' }
+$q = '//192.0.2.10/p/e'; Set-Content -Path $q -Value 1
+$p5 = @{ ClassName = 'Win32_OperatingSystem'; ComputerName = 'hote' }; Get-CimInstance @p5
+Get-CimInstance @inconnu
+$nom8 = 'System.IO.StreamWriter'; New-Object $nom8
+New-Object ('System.IO.' + 'StreamWriter')
+Get-CimInstance Win32_OperatingSystem -Comp 'hote'
+$col = [System.Drawing.Color]
+$esc = "`e[0m"
+if ($IsWindows) { 1 }
+$r2 = 'a1' -replace '\d', { $_.Value }
+([xml]'<a/>') | ForEach-Object -MemberName:Load
+$p6 = @{ Path = 'x' }; $p6.ComputerName = 'h'; Get-Content @p6
+$ok = "``e"
 """
 TEMOIN_51_ATTENDU = {   # jambe -> lignes qui DOIVENT sortir par le puits
     "PSUseCompatibleSyntax": {3, 4},
@@ -798,20 +894,26 @@ TEMOIN_51_ATTENDU = {   # jambe -> lignes qui DOIVENT sortir par le puits
     "PSUseCompatibleTypes": {8},
     "PSUseBOMForUnicodeEncodedFile": {0},   # diagnostic de FICHIER : le module ne donne pas de ligne
     "encodage": {35},
-    "ast-syntaxe": {3, 4, 6, 28, 29, 30, 31, 32},
-    "ast-types": {7, 27, 33},
+    "ast-syntaxe": {3, 4, 6, 28, 29, 30, 31, 32, 51, 52, 53},
+    # 50 : `[System.Drawing.Color]` manque au SEUL profil Windows Server 2016 (présent dans les deux autres).
+    "ast-types": {7, 27, 33, 50},
     "ast-membres": {34},
     "envoi:commande": {11, 12, 13, 14, 15, 16},
     "envoi:invocation-dynamique": {17},
-    "envoi:parametre": {18, 19},
-    "envoi:new-object": {10},
+    # 49 : `-Comp` abrège `-Compress`, qui est admis — l'abréviation, elle, ne l'est pas.
+    "envoi:parametre": {18, 19, 39, 45, 49},
+    "envoi:splat": {46, 55},   # 55 : table littérale MODIFIÉE avant le splatting
+    "envoi:new-object": {10, 47, 48},
     "envoi:type": {8, 20, 21, 26, 36},
     "envoi:methode": {22, 23},
-    "envoi:unc": {24},
+    "envoi:membre-foreach": {37, 38, 39, 54},
+    "envoi:unc": {24, 40, 41, 42, 43, 44},
     "envoi:chaine-net": {25},
     "envoi:using": {1},
 }
-TEMOIN_51_NEUTRE = 9   # ligne qu'AUCUNE jambe ne doit signaler
+# Lignes qu'AUCUNE jambe ne doit signaler : `[System.Uri]` (le collecteur l'emploie), et un accent grave
+# ÉCHAPPÉ suivi de « e » (``e n'est pas l'échappement `e).
+TEMOIN_51_NEUTRES = {9, 56}
 # Noms de types que le PARSEUR traite lui-même (pas des accélérateurs du profil).
 TYPES_DU_PARSEUR = {"ordered"}
 
@@ -992,7 +1094,7 @@ def juger_statiquement(errs: list) -> dict:
         if m.group(2) in plateformes:
             plateformes[m.group(2)].update(re.findall(r"on platform '([^']+)'", m.group(3)))
     muettes = {j: sorted(att - vu.get(j, set())) for j, att in TEMOIN_51_ATTENDU.items() if not att <= vu.get(j, set())}
-    fausses = sorted(j for j, lignes in vu.items() if TEMOIN_51_NEUTRE in lignes)
+    fausses = sorted(j for j, lignes in vu.items() if TEMOIN_51_NEUTRES & lignes)
     profils_muets = {regle: sorted(set(PLATEFORMES_51) - vus) for regle, vus in plateformes.items()
                      if not set(PLATEFORMES_51) <= vus}
     encodage_faux = [nom for nom, octets in (("avec BOM", BOM_UTF8 + TEMOIN_51.encode("utf-8")),
@@ -1000,7 +1102,7 @@ def juger_statiquement(errs: list) -> dict:
                      if encodage_illisible_par_51(octets)]
     if muettes or fausses or profils_muets or encodage_faux:
         print(f"::error::témoin du jugement statique : jambes MUETTES {muettes}, jambes qui signalent "
-              f"`[System.Uri]` {fausses}, plateformes 5.1 non jugées {profils_muets}, encodage refusé à tort "
+              f"une ligne neutre (`[System.Uri]`, ``e) {fausses}, plateformes 5.1 non jugées {profils_muets}, encodage refusé à tort "
               f"{encodage_faux} (vu : { {j: sorted(v) for j, v in vu.items()} }) — l'instrument ne juge pas "
               f"ce qu'il prétend, la garde REFUSE DE CONCLURE.")
         sys.exit(CODE_INSTRUMENT)
@@ -1107,17 +1209,23 @@ def main() -> int:
         print("::error::le jugement statique du collecteur (Windows PowerShell 5.1, envois hors du central "
               "simulé) n'a pas été joué — la garde REFUSE DE CONCLURE.")
         return CODE_INSTRUMENT
+    # PLANCHER des cas joués, dérivé de la liste : sans lui, un harnais qui ne joue RIEN rendait le vert
+    # (mesuré par le vérificateur du 2026-10-19 : « 0 cas de transport joués », code 0).
+    if joues < len(TRANSPORT_CASES):
+        print(f"::error::{joues} cas de transport joués sur {len(TRANSPORT_CASES)} : la porte du clair n'a pas "
+              f"été jouée sur le collecteur — la garde REFUSE DE CONCLURE.")
+        return CODE_INSTRUMENT
     print(
         f"{len(files)} collecteur(s) PowerShell, {total_catches} `catch` : toute erreur est classée "
         f"(incapacité / désactivé / rien de neuf) ou relevée, et aucun filigrane ne s'écrit avant un "
-        f"envoi acquitté ; {joues} cas de transport joués sur le collecteur tel quel (http distant "
+        f"envoi acquitté ; {joues}/{len(TRANSPORT_CASES)} cas de transport joués sur le collecteur tel quel (http distant "
         f"refusé en code 2 sans appel ni lecture, opt-in, https et boucle locale admis) ; "
         f"la doc Windows ne contredit pas le script (clés de plume.conf, `action`, spool, jeton) ; "
         f"{bilan['commandes']} commandes, {bilan['types']} types nommés et {bilan['methodes']} appels de "
         f"méthode du collecteur, tous dans les listes fermées (aucun envoi hors d'`Invoke-RestMethod` nu "
         f"ÉCRIT dans le source) ; source en {bilan['encodage']}, jugé contre {bilan['profils']} profils "
         f"Windows PowerShell 5.1 Desktop par PSScriptAnalyzer {bilan['version']} et par l'AST ; témoin : "
-        f"{bilan['jambes_temoin']} jambes rouges sur {bilan['lignes_temoin']} lignes, aucune sur `[System.Uri]`."
+        f"{bilan['jambes_temoin']} jambes rouges sur {bilan['lignes_temoin']} lignes, aucune sur ses {len(TEMOIN_51_NEUTRES)} lignes neutres (`[System.Uri]`, ``e)."
     )
     return 0
 

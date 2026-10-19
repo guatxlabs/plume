@@ -120,18 +120,43 @@ foreach ($c in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Lan
   }
 }
 
+# Un argument tel qu'ÉCRIT : chaîne littérale (sa valeur), variable (son nom, sans portée), autre (calculé).
+function Get-ArgumentKind($e) {
+  if ($e -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+      $e -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) {
+    return [ordered]@{ kind = 'chaine'; valeur = "$($e.Value)" }
+  }
+  if ($e -is [System.Management.Automation.Language.VariableExpressionAst]) {
+    $k = 'variable'; if ($e.Splatted) { $k = 'splat' }
+    return [ordered]@{ kind = $k; valeur = ($e.VariablePath.UserPath -replace '^(?i)(script|global|local|private):', '') }
+  }
+  if ($e -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { return [ordered]@{ kind = 'scriptblock'; valeur = '' } }
+  return [ordered]@{ kind = 'autre'; valeur = $e.Extent.Text }
+}
+
 # --- commandes : nom, position, fonction englobante, texte ----------------------------------
 $commands = @()
 foreach ($c in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
   $name = $c.GetCommandName()
   if (-not $name) { $name = '' }
-  # P10.33-i : paramètres tels qu'ÉCRITS (une abréviation `-Comp` reste `Comp`) et arguments littéraux
-  # (chaînes), pour les listes fermées de la garde.
+  # P10.33-i : paramètres tels qu'ÉCRITS (une abréviation `-Comp` reste `Comp`), pour les listes fermées de la garde.
   $params = @($c.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } |
       ForEach-Object { $_.ParameterName })
-  $litteraux = @($c.CommandElements | Select-Object -Skip 1 | Where-Object {
-        $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
-        $_ -is [System.Management.Automation.Language.ExpandableStringExpressionAst] } | ForEach-Object { "$($_.Value)" })
+  # P10.33-i : tout argument (positionnel, ou collé `-P:x`), avec le paramètre qui le précède ('' = positionnel).
+  # Un paramètre sans `:` prend l'élément suivant pour argument, sauf si c'est un autre paramètre.
+  $arguments = @()
+  $els = @($c.CommandElements)
+  $prec = ''
+  for ($i = 1; $i -lt $els.Count; $i++) {
+    $el = $els[$i]
+    if ($el -is [System.Management.Automation.Language.CommandParameterAst]) {
+      if ($null -ne $el.Argument) {
+        $a = Get-ArgumentKind $el.Argument; $a['parametre'] = $el.ParameterName; $arguments += $a; $prec = ''
+      } else { $prec = $el.ParameterName }
+      continue
+    }
+    $a = Get-ArgumentKind $el; $a['parametre'] = $prec; $arguments += $a; $prec = ''
+  }
   $commands += [ordered]@{
     name       = $name
     line       = $c.Extent.StartLineNumber
@@ -139,7 +164,7 @@ foreach ($c in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Lan
     enclosing  = Get-Enclosing $c.Extent.StartOffset
     text       = $c.Extent.Text
     params     = @($params)
-    litteraux  = @($litteraux)
+    arguments  = @($arguments)
   }
 }
 
@@ -171,6 +196,7 @@ foreach ($s in $ast.FindAll({ param($n)
     line      = $s.Extent.StartLineNumber
     enclosing = Get-Enclosing $s.Extent.StartOffset
     value     = $s.Extent.Text
+    valeur    = "$($s.Value)"
   }
 }
 
@@ -181,11 +207,34 @@ foreach ($a in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Lan
   if ($a.Left -is [System.Management.Automation.Language.VariableExpressionAst]) {
     $left = $a.Left.VariablePath.UserPath
   } else { $left = $a.Left.Extent.Text }
+  # P10.33-i : la valeur affectée, quand elle est ÉCRITE dans le source — table littérale (ses clés) ou
+  # chaîne littérale — pour juger `Get-CimInstance @p` et `New-Object $nom`. `cible` : nom sans portée.
+  $droite = $a.Right
+  if ($droite -is [System.Management.Automation.Language.PipelineAst] -and $droite.PipelineElements.Count -eq 1) { $droite = $droite.PipelineElements[0] }
+  if ($droite -is [System.Management.Automation.Language.CommandExpressionAst]) { $droite = $droite.Expression }
+  while ($droite -is [System.Management.Automation.Language.ConvertExpressionAst]) { $droite = $droite.Child }
+  $forme = 'autre'; $cles = @(); $chaine = ''
+  if ($droite -is [System.Management.Automation.Language.HashtableAst]) {
+    $forme = 'table'
+    $cles = @($droite.KeyValuePairs | ForEach-Object {
+        if ($_.Item1 -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $_.Item1.Value } else { '' } })
+  } elseif ($droite -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+    $forme = 'chaine'; $chaine = $droite.Value
+  }
+  $cible = ''
+  if ($a.Left -is [System.Management.Automation.Language.VariableExpressionAst]) {
+    $cible = $a.Left.VariablePath.UserPath -replace '^(?i)(script|global|local|private):', ''
+  }
   $assigns += [ordered]@{
     line      = $a.Extent.StartLineNumber
     enclosing = Get-Enclosing $a.Extent.StartOffset
     left      = $left
     right     = $a.Right.Extent.Text
+    cible     = $cible
+    offset_gauche = $a.Left.Extent.StartOffset
+    forme     = $forme
+    cles      = @($cles)
+    chaine    = $chaine
   }
 }
 
@@ -196,6 +245,9 @@ foreach ($v in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Lan
     line      = $v.Extent.StartLineNumber
     enclosing = Get-Enclosing $v.Extent.StartOffset
     name      = $v.VariablePath.UserPath
+    nom       = ($v.VariablePath.UserPath -replace '^(?i)(script|global|local|private):', '')
+    offset    = $v.Extent.StartOffset
+    splatted  = [bool]$v.Splatted
   }
 }
 
@@ -254,6 +306,17 @@ foreach ($n in $ast.FindAll({ param($x) $true }, $true)) {
           $n.PSObject.Properties['NullConditional'] -and $n.NullConditional) { $forme = 'accès null-conditionnel ?. / ?[' }
   elseif ($k -eq 'ScriptBlockAst' -and $n.PSObject.Properties['CleanBlock'] -and $n.CleanBlock) { $forme = 'bloc clean' }
   elseif ($k -eq 'PipelineAst' -and $n.PSObject.Properties['Background'] -and $n.Background) { $forme = 'opérateur d''arrière-plan &' }
+  # `-replace` avec un bloc de script (PowerShell 6) : 5.1 convertit le bloc en TEXTE de remplacement.
+  elseif ($k -eq 'BinaryExpressionAst' -and "$($n.Operator)" -match 'replace$' -and
+          $n.Right -is [System.Management.Automation.Language.ArrayLiteralAst] -and
+          @($n.Right.Elements | Where-Object { $_ -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }).Count -gt 0) {
+    $forme = '-replace avec un bloc de script'
+  }
+  # Variables automatiques de PowerShell 6+ : absentes de 5.1 — `$null` sans StrictMode (changement de sens),
+  # erreur sous `Set-StrictMode -Version 2.0` (celui du collecteur).
+  elseif ($k -eq 'VariableExpressionAst' -and $n.VariablePath.UserPath -in @('IsWindows', 'IsLinux', 'IsMacOS', 'IsCoreCLR')) {
+    $forme = "variable automatique `$$($n.VariablePath.UserPath) (PowerShell 6+)"
+  }
   if ($forme) { $post51 += [ordered]@{ line = $n.Extent.StartLineNumber; forme = $forme; text = $n.Extent.Text } }
 }
 
@@ -262,6 +325,12 @@ foreach ($n in $ast.FindAll({ param($x) $true }, $true)) {
 foreach ($tk in $tokens) {
   if (($tk.Kind -eq 'StringExpandable' -or $tk.Kind -eq 'HereStringExpandable') -and $tk.Text -match '`u\{') {
     $post51 += [ordered]@{ line = $tk.Extent.StartLineNumber; forme = 'échappement `u{…}'; text = $tk.Text }
+  }
+  # `e (ESC, PowerShell 6) : 5.1 le lit comme la lettre « e ». Les échappements sont lus PAR PAIRES, pour
+  # qu'un accent grave échappé (``e) ne compte pas.
+  if (($tk.Kind -eq 'StringExpandable' -or $tk.Kind -eq 'HereStringExpandable') -and
+      @([regex]::Matches($tk.Text, '`.') | Where-Object { $_.Value -ceq '`e' }).Count -gt 0) {
+    $post51 += [ordered]@{ line = $tk.Extent.StartLineNumber; forme = 'échappement `e'; text = $tk.Text }
   }
 }
 

@@ -139,7 +139,7 @@ entree=$(cat 2>/dev/null)                 # consomme la config d'auth passee sur
 corps=""; url=""; format=""; sortie=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --data-binary) corps="$2"; shift ;;
+    --data-raw) corps="$2"; shift ;;      # la remise part en `--data-raw` (jamais lu comme `@fichier`)
     -w) format="$2"; shift ;;
     -o) sortie="$2"; shift ;;
     --max-filesize|--max-time) shift ;;

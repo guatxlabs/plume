@@ -391,6 +391,9 @@ reponse_bornee() {
   if [ "$_rb_coupe" = "$_rb_entier" ]; then printf '%s' "$_rb_coupe"; else printf '%s [...]' "$_rb_coupe"; fi
 }
 
+# Corps en ligne — le corps part en `--data-raw`, jamais en `-d`/`--data`/`--data-binary` : ces trois-la lisent un
+# corps qui COMMENCE par « @ » comme un FICHIER LOCAL et l envoient (ici en root, au central).
+# Le corps livre commence par « { », mais la remise ne doit pas dependre de cette forme.
 # remettre_une_fois <corps-json> — UNE remise, rend `_rv_code` (statut HTTP lu, vide si aucun),
 # `_rv_corps` (au plus RESULTAT_CORPS_LU octets, une ligne) et `_rv_tronque` (1 si le corps depassait).
 remettre_une_fois() {
@@ -401,13 +404,13 @@ remettre_une_fois() {
     echo "respond: remise du verdict sans fichier temporaire (mktemp refuse) : la reponse du central n est pas lue, son statut l est" >&2
     # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
     _rv_code=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 -o /dev/null -w '%{http_code}' \
-      -H 'Content-Type: application/json' --data-binary "$1" "$CENTRAL/api/actions/result" 2>/dev/null) || :
+      -H 'Content-Type: application/json' --data-raw "$1" "$CENTRAL/api/actions/result" 2>/dev/null) || :
     return 0
   fi
   # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
   _rv_code=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 --max-filesize "$RESULTAT_CORPS_FICHIER" \
     -o "$_rv_fichier" -w '%{http_code}' \
-    -H 'Content-Type: application/json' --data-binary "$1" "$CENTRAL/api/actions/result" 2>/dev/null) || :
+    -H 'Content-Type: application/json' --data-raw "$1" "$CENTRAL/api/actions/result" 2>/dev/null) || :
   _rv_corps=$(dd if="$_rv_fichier" bs="$RESULTAT_CORPS_LU" count=1 2>/dev/null | tr '\000-\037' ' ' | sans_caractere_entame) || _rv_corps=""
   _rv_suite=$(dd if="$_rv_fichier" bs="$RESULTAT_CORPS_LU" skip=1 count=1 2>/dev/null | tr '\000-\037' ' ') || _rv_suite=""
   [ -n "$_rv_suite" ] && _rv_tronque=1

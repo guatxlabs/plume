@@ -24,6 +24,10 @@ LES DÉFAUTS QUE CETTE GARDE REND NON-ÉCRIVABLES
     et faire bannir l'adresse de son choix ; `engagement-adapter.sh` y lisait des exemptions de ban.
 (g) `kube-audit.sh` posait `src_ip` sans `json_escape` : le motif `[^"]+` garde un antislash, un `\"` du
     journal laissait un antislash final qui rendait l'enveloppe ENTIÈRE illisible.
+(h) `respond.sh` (remise du verdict, deux envois) passait son corps en `--data-binary "$1"`,
+    `cloudflare.sh` et `cloudflare-http.sh` en `--data "$body"`. curl lit un tel argument qui COMMENCE par
+    « @ » comme un FICHIER LOCAL et en envoie le contenu (`respond.sh` tourne en root). Ces corps commencent
+    dans la forme livrée par « { » : piège latent, rendu non-écrivable. Les quatre passent en `--data-raw`.
 
 CE QUE LA GARDE FAIT
 --------------------
@@ -81,6 +85,16 @@ capteurs sont joués sous CHAQUE awk présent (gawk, mawk), lié en `awk` dans l
     passe par `hmac.compare_digest` (espion posé sur le module : un `!=` ne l'appelle pas), et
     `autorisation_acceptee(…, "")` rend False en appel direct.
 
+  · corps en ligne : dans `collectors/**/*.sh`, toute invocation de curl est découpée en mots
+    (commentaires, suites de ligne, `$(…)` entre guillemets compris) ; un `-d` (grappe courte comprise),
+    `--data`, `--data-ascii`, `--data-binary`, `--data-urlencode` ou `--json` est une FAUTE, sauf la forme
+    `@"$<variable>"` dans un script de `ENVOI_DE_FICHIER_ADMIS` — DEUX entrées, À DESSEIN : `ship.sh`
+    (lot du spool) et `prom-scrape.sh` (son propre `mktemp`), où le fichier est choisi par le script ;
+    une exception qui ne sert plus est une faute. Puis les quatre envois LIVRÉS (extraits du script :
+    `remettre_une_fois` avec et sans `mktemp`, la requête des deux capteurs Cloudflare) sont joués avec un
+    corps « @<fichier témoin> » sous un faux curl FIDÈLE (il lit le fichier comme le vrai) : le fichier
+    n'est jamais lu, l'argument part tel quel.
+
 L'INSTRUMENT SE VALIDE AVANT DE CONCLURE
 ----------------------------------------
 Sans `sh`, sans `jq`, sans awk exercé, ou si un script est introuvable, la garde REFUSE DE CONCLURE
@@ -117,6 +131,11 @@ CE QU'ELLE NE TIENT PAS
 · Le temps constant de la comparaison n'est pas MESURÉ (un chronomètre frapperait dans les deux
   sens) : la garde exige l'appel de la primitive à temps constant.
 
+· Corps en ligne : aucun corps livré ne commence par « @ » (`post_result` et le rejeu exigent
+  `{"id":`, les corps Cloudflare sortent de `jq -n`) : le témoin comportemental joue donc le TEXTE extrait
+  de l'envoi avec un corps fabriqué, pas le capteur entier. Le découpage statique ne suit ni un `curl`
+  appelé par une variable (`$CURL`) ni une configuration `-K` qui porterait un `data = @…`.
+
 Sortie : 0 tenu · 1 au moins une propriété violée · 2 l'instrument REFUSE DE CONCLURE.
 """
 import glob
@@ -125,6 +144,7 @@ import hmac as hmac_de_la_garde
 import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -157,6 +177,8 @@ fautes = []
 
 
 def refus(msg):
+    for f in fautes:   # une faute déjà jugée reste dite, même quand un autre scénario refuse de conclure
+        print(f"::error::{NOM} : {f}")
     print(f"::error::{NOM} : REFUSE DE CONCLURE — {msg}")
     sys.exit(2)
 
@@ -1385,6 +1407,249 @@ def scen_relais(base):
             faute("relais-attendu-vide", f"autorisation_acceptee({entete!r}, '') ne rend pas False")
 
 
+# --- (h) un corps de requête en ligne n'est jamais lu comme un FICHIER LOCAL ----------------
+# curl lit un argument de `-d`/`--data`/`--data-ascii`/`--data-binary` (et `--data-urlencode`, `--json`) qui
+# COMMENCE par « @ » comme le CHEMIN d'un fichier, et en envoie le contenu. `--data-raw` ne le fait jamais.
+# Les seuls envois admis sous ces options sont ceux d'un fichier CHOISI PAR LE SCRIPT, nommés ci-dessous.
+OPTIONS_CORPS_LU_COMME_FICHIER = ("-d", "--data", "--data-ascii", "--data-binary", "--data-urlencode", "--json")
+# Options courtes de curl qui prennent un argument : elles terminent une grappe (`-sd x` = `-s -d x`).
+COURTES_A_ARGUMENT = set("dHKowmuFeAbcETxXryYzCDPQtU")
+ENVOI_DE_FICHIER_ADMIS = {
+    # le fichier est un lot du spool que `ship.sh` a lui-même choisi (`find … -type f`, liens écartés)
+    "ship.sh": "lot du spool expédié tel quel : `--data-binary @\"$1\"`, chemin choisi par l'éviction",
+    # le fichier est le temporaire où `prom-scrape.sh` a écrit la mesure (`mktemp`), jamais une donnée lue
+    "prom-scrape.sh": "mesures assemblées dans son propre `mktemp` : `--data-binary @\"$_pb\"`",
+}
+FORME_FICHIER_ADMISE = re.compile(r'^@"\$\{?([A-Za-z_][A-Za-z0-9_]*|[0-9])\}?"$')   # @"$var" ou @"$1"
+
+
+def mots_de_curl(texte):
+    """Rend la liste des invocations de curl du script : pour chacune, ses mots BRUTS (guillemets gardés),
+    jusqu'au premier `|`, `;`, `&` ou `)` hors guillemets. Commentaires et suites de ligne retirés."""
+    texte = texte.replace("\\\n", " ")
+    # `pile` : une substitution `$(…)` ouverte DANS des guillemets doubles y est analysée hors guillemets
+    # (`x="$(… | curl …)"`), et ses guillemets reprennent à sa parenthèse fermante.
+    invocations, mots, mot, q, dans_curl, pile, prof = [], [], "", None, False, [], 0
+    i, n = 0, len(texte)
+
+    def finir_mot():
+        nonlocal mot
+        if mot:
+            mots.append(mot)
+        mot = ""
+
+    def finir_invocation():
+        nonlocal mots, dans_curl
+        finir_mot()
+        if dans_curl and mots:
+            invocations.append(mots)
+        mots, dans_curl = [], False
+
+    while i < n:
+        c = texte[i]
+        if q:
+            mot += c
+            if c == "\\" and q == '"' and i + 1 < n:
+                mot += texte[i + 1]; i += 2; continue
+            if c == q:
+                q = None
+            elif q == '"' and texte.startswith("$(", i):
+                pile.append(prof); prof = 0; q = None; mot += "("; i += 2
+                continue
+            i += 1
+            continue
+        if c in "'\"":
+            q = c; mot += c; i += 1; continue
+        if c == "#" and not mot:
+            j = texte.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if c.isspace():
+            finir_mot()
+            if not dans_curl and mots and mots[-1] == "curl":
+                dans_curl = True; mots = []
+            elif not dans_curl:
+                mots = mots[-1:]
+            if c == "\n":
+                finir_invocation()
+            i += 1
+            continue
+        if c == "(":
+            prof += 1
+        if c == ")":
+            if prof == 0 and pile:
+                finir_mot()
+                if not dans_curl and mots and mots[-1] == "curl":
+                    dans_curl = True; mots = []
+                finir_invocation()
+                prof = pile.pop(); q = '"'; mot = '"'; i += 1
+                continue
+            prof = max(prof - 1, 0)
+        if c in "|;&()`":
+            finir_mot()
+            if not dans_curl and mots and mots[-1] == "curl":
+                dans_curl = True; mots = []
+            finir_invocation()
+            i += 1
+            continue
+        mot += c
+        i += 1
+    finir_invocation()
+    return invocations
+
+
+def corps_lus_comme_fichier(mots):
+    """Rend [(option, argument)] des corps envoyés sous une option qui lit « @… » comme un fichier."""
+    out, k = [], 0
+    while k < len(mots):
+        m = mots[k]
+        nxt = mots[k + 1] if k + 1 < len(mots) else ""
+        if m in OPTIONS_CORPS_LU_COMME_FICHIER:
+            out.append((m, nxt)); k += 2; continue
+        lon = next((o for o in OPTIONS_CORPS_LU_COMME_FICHIER if o.startswith("--") and m.startswith(o + "=")), None)
+        if lon:
+            out.append((lon, m[len(lon) + 1:])); k += 1; continue
+        if m.startswith("-") and not m.startswith("--") and len(m) > 1:
+            for j, ch in enumerate(m[1:], start=1):
+                if ch in COURTES_A_ARGUMENT:
+                    if ch == "d":
+                        reste = m[j + 1:]
+                        out.append(("-d", reste if reste else nxt))
+                        if not reste:
+                            k += 1
+                    elif not m[j + 1:]:
+                        k += 1          # l'argument de l'option courte est le mot suivant : on le saute
+                    break
+        k += 1
+    return out
+
+
+def scen_corps_jamais_lu_comme_fichier_statique():
+    """Tout envoi de corps sous une option qui lit « @… » comme un fichier est REFUSÉ dans collectors/**/*.sh,
+    sauf la forme `@"$<variable>"` dans un script NOMMÉ par `ENVOI_DE_FICHIER_ADMIS` ; une exception qui ne
+    sert plus est une faute (liste orpheline) ; l'instrument doit voir les quatre envois de corps en ligne."""
+    scen = "corps-en-ligne/statique"
+    scripts = sorted(glob.glob(os.path.join(COL, "**", "*.sh"), recursive=True))
+    if len(scripts) < 30:
+        refus(f"[{scen}] {len(scripts)} script(s) de capteur trouvés : l'arbre lu n'est pas celui des capteurs")
+    servies, bruts = set(), {}
+    for p in scripts:
+        nom = os.path.relpath(p, COL)
+        invocs = mots_de_curl(open(p, encoding="utf-8", errors="surrogateescape").read())
+        # envois porteurs d'un corps, quelle que soit l'option : la validité du découpage ne dépend pas du correctif
+        bruts[nom] = sum(1 for m in invocs if "--data-raw" in m or corps_lus_comme_fichier(m))
+        for mots in invocs:
+            for opt, arg in corps_lus_comme_fichier(mots):
+                if nom in ENVOI_DE_FICHIER_ADMIS and FORME_FICHIER_ADMISE.match(arg):
+                    servies.add(nom)
+                    continue
+                faute(scen, f"collectors/{nom} : `curl … {opt} {arg}` — un corps en ligne qui commencerait par « @ » "
+                            f"serait lu comme un FICHIER LOCAL et envoyé : `--data-raw` (ou une exception nommée "
+                            f"de `ENVOI_DE_FICHIER_ADMIS` pour un fichier choisi par le script)")
+    for nom in sorted(set(ENVOI_DE_FICHIER_ADMIS) - servies):
+        faute(scen, f"exception `{nom}` de `ENVOI_DE_FICHIER_ADMIS` orpheline : aucun envoi `@\"$fichier\"` ne la sert")
+    attendus = {"respond.sh": 2, "cloudflare.sh": 1, "cloudflare-http.sh": 1}
+    for nom, nb in attendus.items():
+        if bruts.get(nom, 0) < nb:
+            refus(f"[{scen}] l'analyse ne voit que {bruts.get(nom, 0)} envoi(s) de corps dans collectors/{nom} "
+                  f"(au moins {nb} attendu(s)) : le découpage des invocations de curl ne mesure rien")
+
+
+# Faux curl FIDÈLE sur ce point : comme le vrai, `-d`/`--data`/`--data-ascii`/`--data-binary` (et
+# `--data-urlencode`, `--json`) suivis d'un argument « @chemin » LISENT le fichier et envoient son contenu ;
+# `--data-raw` envoie l'argument tel quel. Chaque lecture de fichier est journalisée dans `$FAKE_DIR/lus`,
+# chaque corps envoyé dans `$FAKE_DIR/corps` ; `-o` reçoit la réponse et `-w` rend le statut, comme curl.
+CURL_FIDELE_AU_AROBASE = r"""#!/bin/sh
+entree=$(cat 2>/dev/null)
+corps=""; sortie=""; format=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -d|--data|--data-ascii|--data-binary|--data-urlencode|--json)
+      case "$2" in
+        @*) f=${2#@}; printf '%s\n' "$f" >> "$FAKE_DIR/lus"; corps=$(cat "$f" 2>/dev/null) ;;
+        *) corps=$2 ;;
+      esac; shift ;;
+    --data-raw) corps=$2; shift ;;
+    -o) sortie=$2; shift ;;
+    -w) format=$2; shift ;;
+    -K|-m|-H|--max-time|--max-filesize) shift ;;
+  esac
+  shift
+done
+printf '%s\n' "$corps" >> "$FAKE_DIR/corps"
+reponse='{"ok":true}'
+if [ -n "$sortie" ] && [ "$sortie" != /dev/null ]; then printf '%s' "$reponse" > "$sortie"
+elif [ -z "$sortie" ]; then printf '%s' "$reponse"; fi
+case "$format" in *'\n'*) printf '\n200' ;; ?*) printf 200 ;; esac
+exit 0
+"""
+SECRET_TEMOIN = "contenu-du-fichier-temoin-qui-ne-doit-jamais-partir"
+
+
+def extraire(nom, debut, fin_re, scen, apres=None):
+    """Texte LIVRÉ de `collectors/<nom>` : de la première ligne qui commence par `debut` à la première ligne
+    qui satisfait `fin_re` — cherchée à partir de la ligne qui commence par `apres` s'il est donné.
+    Introuvable -> refus (une extraction vide ne mesurerait rien)."""
+    lignes = open(os.path.join(COL, nom), encoding="utf-8").read().split("\n")
+    i = next((k for k, l in enumerate(lignes) if l.startswith(debut)), None)
+    if i is None:
+        refus(f"[{scen}] `{debut}` introuvable dans collectors/{nom} : le témoin ne joue plus le texte livré")
+    a = i if apres is None else next((k for k in range(i, len(lignes)) if lignes[k].startswith(apres)), None)
+    if a is None:
+        refus(f"[{scen}] `{apres}` introuvable dans collectors/{nom} après `{debut}`")
+    j = next((k for k in range(a, len(lignes)) if re.search(fin_re, lignes[k])), None)
+    if j is None:
+        refus(f"[{scen}] fin de l'extraction introuvable dans collectors/{nom}")
+    return "\n".join(lignes[i:j + 1]) + "\n"
+
+
+def jouer_corps_arobase(base, scen, prelude, texte_livre, appel, sans_mktemp=False):
+    bac = Bac(base, None, sans=("mktemp",) if sans_mktemp else ())
+    bac.outil("curl", CURL_FIDELE_AU_AROBASE)
+    if sans_mktemp:
+        bac.outil("mktemp", "#!/bin/sh\nexit 1\n")
+    temoin = os.path.join(bac.d, "fichier-temoin")
+    with open(temoin, "w") as f:
+        f.write(SECRET_TEMOIN + "\n")
+    corps = "@" + temoin
+    prog = os.path.join(bac.d, "joue.sh")
+    with open(prog, "w") as f:
+        f.write(prelude + texte_livre + appel)
+    r = subprocess.run([SH, prog, corps], env={"PATH": bac.bin, "FAKE_DIR": bac.fake, "LC_ALL": "C.UTF-8",
+                                               "HOME": bac.d}, capture_output=True, text=True, timeout=60,
+                       cwd=bac.d, stdin=subprocess.DEVNULL)
+    pc, pl = os.path.join(bac.fake, "corps"), os.path.join(bac.fake, "lus")
+    envoyes = open(pc).read() if os.path.exists(pc) else None
+    if envoyes is None:
+        refus(f"[{scen}] le faux curl n'a jamais été appelé : le témoin ne mesure rien ({r.stderr[:300]!r})")
+    if os.path.exists(pl) or SECRET_TEMOIN in envoyes:
+        faute(scen, f"le corps « @{temoin} » a été LU COMME UN FICHIER et son contenu envoyé "
+                    f"(lus={open(pl).read() if os.path.exists(pl) else ''!r}, corps={envoyes[:200]!r})")
+    elif envoyes.strip("\n") != corps:
+        faute(scen, f"le corps envoyé n'est pas l'argument tel quel : {envoyes[:200]!r} au lieu de {corps!r}")
+
+
+def scen_corps_jamais_lu_comme_fichier(base):
+    """Les quatre envois en ligne LIVRÉS (remise du verdict de `respond.sh`, avec et sans `mktemp` ; requête
+    GraphQL des deux capteurs Cloudflare), extraits du script et joués avec un corps « @<fichier témoin> »
+    sous un faux curl fidèle : le fichier témoin n'est JAMAIS lu, l'argument part tel quel."""
+    scen_corps_jamais_lu_comme_fichier_statique()
+    resp = extraire("respond.sh", "RESULTAT_CORPS_FICHIER=", r"^}$", "corps-en-ligne/respond",
+                    apres="remettre_une_fois()")
+    if "remettre_une_fois()" not in resp:
+        refus("[corps-en-ligne/respond] `remettre_une_fois` hors de l'extraction : le témoin ne joue pas la remise")
+    prelude = ('HH=""; TLS=""; CENTRAL="https://central.invalid:7000"\n'
+               "resp_curl_auth_stdin() { printf 'header = \"Authorization: Bearer x\"\\n'; }\n")
+    for sans in (False, True):
+        jouer_corps_arobase(base, f"corps-en-ligne/respond{'-sans-mktemp' if sans else ''}", prelude, resp,
+                            'remettre_une_fois "$1"\n', sans_mktemp=sans)
+    for nom in ("cloudflare.sh", "cloudflare-http.sh"):
+        envoi = extraire(nom, "resp=$(plume_curlcfg_header_auth", r"\|\| true\)\s*$", f"corps-en-ligne/{nom}")
+        prelude = ('TOKEN="jeton-de-garde"; API="https://api.cloudflare.invalid/graphql"; body=$1\n'
+                   "plume_curlcfg_header_auth() { printf 'header = \"Authorization: Bearer %s\"\\n' \"$1\"; }\n")
+        jouer_corps_arobase(base, f"corps-en-ligne/{nom}", prelude, envoi, "")
+
+
 def main():
     global SH, BASH
     SH = shutil.which("dash") or shutil.which("sh")
@@ -1396,7 +1661,8 @@ def main():
     if not shutil.which("jq"):
         refus("aucun `jq` (bans/CrowdSec le requiert)")
     for s in ("clamav.sh", "yara.sh", "vuln.sh", "imgdrift.sh", "bans.sh", "crowdsec.sh", "ship.sh", "lib.sh",
-              "respond.sh", "prom-scrape.sh", "engagement-adapter.sh", "kube-audit.sh", "minio-audit-relay.py"):
+              "respond.sh", "prom-scrape.sh", "engagement-adapter.sh", "kube-audit.sh", "minio-audit-relay.py",
+              "cloudflare.sh", "cloudflare-http.sh"):
         if not os.path.isfile(os.path.join(COL, s)):
             refus(f"collectors/{s} introuvable")
     awks = [(a, shutil.which(a)) for a in AWK_EXERCES if shutil.which(a)]
@@ -1404,6 +1670,7 @@ def main():
         refus(f"aucun awk exercé présent parmi {AWK_EXERCES}")
     base = tempfile.mkdtemp(prefix="plume-collecte-sure-")
     try:
+        scen_corps_jamais_lu_comme_fichier(base)   # d'abord : un statique pur, indépendant des bacs
         for tag, awk in awks:
             scen_clamav(base, awk, tag)
             scen_yara(base, awk, tag)
@@ -1427,7 +1694,7 @@ def main():
         return 1
     print(f"collecte sûre : JSON échappé sous {', '.join(t for t, _ in awks)} (clamav, yara, vuln, imgdrift, bans, crowdsec), "
           "aveu sans backend, clair distant refusé (ship, respond, prom-scrape, engagement-adapter), src_ip de "
-          "kube-audit échappée, parcours du spool sûr, relais fermé sans jeton ; template trivy de vuln : "
+          "kube-audit échappée, parcours du spool sûr, relais fermé sans jeton, aucun corps en ligne lu comme fichier ; template trivy de vuln : "
           + ("joué par un trivy réel." if tpl_joue else "NON JOUÉ (aucun trivy réel : PLUME_TRIVY_REEL ou PATH)."))
     return 0
 

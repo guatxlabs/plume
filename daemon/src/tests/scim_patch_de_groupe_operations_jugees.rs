@@ -112,11 +112,16 @@ mod scim_patch_de_groupe_operations_jugees {
         assert_eq!(pgoj_acces(&st, "pgoj-bert"), Err(StatusCode::FORBIDDEN), "ACCÈS : l'ajout refusé n'a rien donné");
     }
 
-    /// CE QU'IL TIENT : `add` ou `remove` d'une identité inconnue refuse la demande en `400 noTarget`, les
-    /// opérations précédentes défaites (l'ajout de B, le retrait de C).
-    /// LA MUTATION QUI LE FAIT ROUGIR : `VERIF_MUT=g8_membre_inconnu_saute` — plus de `400`.
+    /// CE QU'IL TIENT : `add` d'une identité inconnue refuse la demande en `400 noTarget`, l'ajout précédent (B)
+    /// défait ; `remove` d'une identité inconnue NE refuse PAS la demande (`200`), le membre réel C y est révoqué. Le
+    /// nom d'avant (`…_refuse_la_demande_entiere`) ne disait que l'ajout. `P10.34-a` — ATTENTE INVERSÉE,
+    /// explicitement, pour le `remove` : le retrait d'un id inconnu refusait la demande entière (`400 noTarget`, le
+    /// retrait de C défait) ; c'est désormais un no-op silencieux identique au retrait d'un id sans droit dans le
+    /// tenant (`200`), et le retrait de C, membre réel de la même demande, A LIEU — un refus bloquait la révocation
+    /// des autres membres listés (témoins `psoe_`).
+    /// LA MUTATION QUI LE FAIT ROUGIR : `VERIF_MUT=g8_membre_inconnu_saute` — plus de `400` sur l'ajout.
     #[tokio::test]
-    async fn pgoj_un_membre_inconnu_refuse_la_demande_entiere() {
+    async fn pgoj_un_membre_inconnu_refuse_un_ajout_mais_pas_un_retrait() {
         let (st, _tmp, ids) = pgoj_etat(&[("pgoj-anne", Some("admin")), ("pgoj-bert", None), ("pgoj-carl", Some("editor"))]);
         let (bert, carl) = (ids[1].clone(), ids[2].clone());
         pgoj_refuse(
@@ -127,15 +132,15 @@ mod scim_patch_de_groupe_operations_jugees {
             "noTarget",
         )
         .await;
-        pgoj_refuse(
+        assert_eq!(pgoj_acces(&st, "pgoj-carl"), Ok("editor".to_string()), "ACCÈS : l'ajout refusé n'a rien touché");
+        let (statut, v) = pgoj_patch(
             &st,
-            "remove d'un inconnu",
             "editor",
             json!({ "Operations": [{ "op": "remove", "value": [{ "value": carl }] }, { "op": "remove", "value": [{ "value": "pgoj-id-qui-n-existe-pas" }] }] }),
-            "noTarget",
         )
         .await;
-        assert_eq!(pgoj_acces(&st, "pgoj-carl"), Ok("editor".to_string()), "ACCÈS : le retrait défait n'a rien retiré");
+        assert_eq!(statut, StatusCode::OK, "remove d'un inconnu à côté d'un membre réel : no-op pour l'inconnu : {v}");
+        assert_eq!(pgoj_acces(&st, "pgoj-carl"), Err(StatusCode::FORBIDDEN), "ACCÈS : le membre réel est révoqué");
     }
 
     /// CE QU'IL TIENT : `replace` (casse d'Azure, `path: members`) fait de l'ensemble servi les membres du rôle :

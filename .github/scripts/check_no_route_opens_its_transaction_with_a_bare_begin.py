@@ -131,10 +131,8 @@ SITES_HORS_ROUTE = {
 
 # --- LES RESTES : des routes, ou des aides de route, qui ouvrent encore nu. Chacun porte la clé qui le reprend.
 SITES_DE_ROUTE_TOLERES = {
-    # `purge_apply` (aide de `/api/purge/apply`, partagée avec la CLI) : son refus est une variante de `PurgeRefusal`
-    # (`db`, 500 `{ok:false, refusal, message}`), un contrat propre que la forme commune ne rend pas. Le reprendre
-    # demande une variante neuve et sa face console — clé proposée par le lot `P10.28-d`.
-    ("daemon/src/purge.rs", "purge_apply"): ("BEGIN littéral",),
+    # `P10.29-h` — `purge_apply` EST RETIRÉ : il ouvre par `ouvrir_sa_transaction` (refus dit au journal et compté), et
+    # son refus sort sous sa variante propre `PurgeRefusal::TransactionNotOpened` (`transaction_not_opened`, 503).
     # `P10.21-r` — `scim_group_patch` EST RETIRÉ (2026-09-25) : il ouvre sa transaction par la forme commune d'un geste
     # gardé (`transaction_validee::jouer_le_geste_garde`, qui passe par `ouvrir_sa_transaction` et dit au journal les deux
     # causes d'un `BEGIN` refusé) ; son refus reste le 503 au format d'erreur SCIM (`scim_refuser_a_rejouer`).

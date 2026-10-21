@@ -76,6 +76,7 @@ async fn prs_chaque_refus_est_servi_avec_sa_nature() {
         PurgeRefusal::ReasonRequired,
         PurgeRefusal::CountMismatch { declared: 2, deleted: 1 },
         PurgeRefusal::PlanRowUnread { site: "sources", cause: "interrupted".into() },
+        PurgeRefusal::TransactionNotOpened,
         PurgeRefusal::Db("interrupted".into()),
     ];
     let mut lecture_non_faite = 0;
@@ -89,6 +90,8 @@ async fn prs_chaque_refus_est_servi_avec_sa_nature() {
                 500
             }
             PurgeRefusal::ReasonRequired => 400,
+            // `P10.29-h` — transaction de la purge non ouverte : 503, comme une route dont le `BEGIN` est refusé.
+            PurgeRefusal::TransactionNotOpened => 503,
             PurgeRefusal::LegalHold(_)
             | PurgeRefusal::ColdTier { .. }
             | PurgeRefusal::CitedByCase { .. }

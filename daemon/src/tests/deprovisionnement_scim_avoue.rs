@@ -183,8 +183,15 @@ mod deprovisionnement_scim_avoue {
     /// est toujours en base, aucun `scim.group.patch` n'entre, l'accès est toujours servi. Contrôle positif :
     /// le membre retiré, `-1` au journal, l'accès tombe ; un second retrait (déjà absent) rend `200` et `-0`.
     ///
-    /// LA MUTATION QUI LE FAIT ROUGIR : remettre `.unwrap_or(0)` sur le `DELETE` — `200` et un maillon
-    /// `-0 membres` sur un accès en place.
+    /// `P10.34-a` — UNE ATTENTE AJUSTÉE, explicitement : sous la voie « table retirée », la lecture d'appartenance
+    /// au tenant (jointure sur `grant`) précède le `DELETE` et échoue la première : la cause est
+    /// `CAUSE_SCIM_UTILISATEUR_ILLISIBLE` (la voie « vue temporaire » tient toujours le refus de l'écriture). Une
+    /// lecture ratée reste un REFUS, jamais un no-op. Le second retrait garde son `200 -0` : un id absent du
+    /// groupe du tenant (déjà retiré, inconnu ou d'un autre tenant) est un no-op identique (témoins `psoe_`).
+    ///
+    /// LES MUTATIONS QUI LE FONT ROUGIR : remettre `.unwrap_or(0)` sur le `DELETE` — `200` et un maillon
+    /// `-0 membres` sur un accès en place ; `VERIF_MUT=Z1_lecture_ratee_vaut_absence` — la lecture ratée prise pour
+    /// une absence, `200` sur un accès en place.
     #[tokio::test]
     async fn dsa_un_retrait_de_membre_que_la_base_refuse_est_refuse() {
         let (st, _tmp, id) = dsa_etat_avec_membre("dsa-grp");
@@ -199,7 +206,7 @@ mod deprovisionnement_scim_avoue {
             let (statut, v) = jouer(st.clone()).await;
             let droits = dsa_compter(&st, &format!("SELECT COUNT(*) FROM {table} WHERE user_id=?1"), &id);
             dsa_executer(&st, remise);
-            dsa_refus_scim(&format!("PATCH remove ({voie})"), statut, &v, CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE);
+            dsa_refus_scim(&format!("PATCH remove ({voie})"), statut, &v, dsa_cause_attendue(voie, CAUSE_SCIM_OPERATION_DE_GROUPE_NON_ECRITE));
             assert_eq!(droits, 1, "ÉTAT RELU ({voie}) : le membre porte toujours son droit");
             assert_eq!(dsa_maillons(&st, "scim.group.patch"), 0, "JOURNAL ({voie}) : aucun retrait attesté");
             assert_eq!(dsa_acces(&st, "dsa-grp"), Ok("editor".to_string()), "ACCÈS ({voie}) : toujours servi");
@@ -208,8 +215,8 @@ mod deprovisionnement_scim_avoue {
         assert_eq!(statut, StatusCode::OK, "{v}");
         assert_eq!(dsa_compter(&st, "SELECT COUNT(*) FROM \"grant\" WHERE user_id=?1", &id), 0, "le membre est retiré");
         assert_eq!(dsa_acces(&st, "dsa-grp"), Err(StatusCode::FORBIDDEN), "l'accès tombe");
-        let (statut, _v) = jouer(st.clone()).await;
-        assert_eq!(statut, StatusCode::OK, "un membre déjà absent n'est pas un échec");
+        let (statut, v) = jouer(st.clone()).await;
+        assert_eq!(statut, StatusCode::OK, "un membre déjà absent n'est pas un échec : {v}");
         let details: Vec<String> = {
             let c = dsa_plan(&st).conn.lock();
             let mut s = c.prepare("SELECT detail FROM control_ledger WHERE kind='scim.group.patch' ORDER BY id").expect("journal");

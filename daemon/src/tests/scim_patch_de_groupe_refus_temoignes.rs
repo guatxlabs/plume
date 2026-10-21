@@ -21,9 +21,9 @@
 // g8c_objet_sans_members_remove_aucun, g8c_add_members_sans_value_aucun, g8c_valeur_scalaire_aucun,
 // g8c_operations_non_liste_vide, g8c_operations_casse_stricte, g8c_urn_refuse.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : l'existence d'un membre est jugée sur `platform_user` GLOBAL — `remove` d'un
-// id inconnu rend `400 noTarget`, d'un id d'un autre tenant `200` : un oracle d'existence cross-tenant subsiste
-// (ids aléatoires de 24 caractères, valeur faible), à reprendre sous une clé neuve ; les autres URN (extension
+// CE QUE CES TÉMOINS NE TIENNENT PAS : l'oracle d'existence cross-tenant — `P10.34-a` juge désormais un `remove`
+// sur le droit du tenant (inconnu et id d'un autre tenant : même no-op `200`, témoins `psoe_`), l'ajout reste
+// jugé sur `platform_user` GLOBAL ; les autres URN (extension
 // d'entreprise) restent refusées en `invalidPath` ; `Operations: []` reste admis (aucune opération, `200`).
 // =====================================================================================
 mod scim_patch_de_groupe_refus_temoignes {

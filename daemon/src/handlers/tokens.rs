@@ -206,8 +206,12 @@ pub(crate) async fn tokens_list(State(st): State<AppState>, Extension(au): Exten
     // `COALESCE(kind,'agent')` est la règle de `JetonsDuCompteSupprime::traiter` : NULL (jeton de la ligne de commande,
     // antérieur à la colonne) vaut `agent`, le défaut historique du CLI ; tout autre genre est servi par son nom.
     // `connector_id` dit la source push qu'une clé de livraison alimente (NULL pour tout autre jeton).
+    // `P10.25-r` — L'AUTEUR ET LA MARQUE DE SUPPRESSION SONT SERVIS. Les colonnes `created_by` / `created_by_deleted_at`
+    // (v123, `P10.24-w`) étaient écrites mais jamais lues ici : l'admin ne pouvait pas relever, depuis l'inventaire, un
+    // jeton conservé au secret connu d'un compte supprimé. Décision par défaut (la plus sûre) : on SERT, on ne révoque
+    // rien et aucun droit ne change ; `created_by` NULL = auteur non établi (ligne de commande, jeton antérieur).
     let lues: rusqlite::Result<Vec<Value>> = conn
-        .prepare("SELECT id,name,COALESCE(kind,'agent'),host,created,last_used,role,connector_id FROM token ORDER BY id")
+        .prepare("SELECT id,name,COALESCE(kind,'agent'),host,created,last_used,role,connector_id,created_by,created_by_deleted_at FROM token ORDER BY id")
         .and_then(|mut stmt| {
             stmt.query_map([], |r| {
             let host: Option<String> = r.get(3)?;
@@ -223,6 +227,8 @@ pub(crate) async fn tokens_list(State(st): State<AppState>, Extension(au): Exten
                 "created": r.get::<_, Option<i64>>(4)?,
                 "last_used": r.get::<_, Option<i64>>(5)?,
                 "connector_id": r.get::<_, Option<i64>>(7)?,
+                "created_by": r.get::<_, Option<String>>(8)?,
+                "created_by_deleted_at": r.get::<_, Option<i64>>(9)?,
             }))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()

@@ -18,7 +18,7 @@
 // g8d_filtre_sans_guillemets, g8d_filtre_id_vide_admis, g8d_ajout_garde_err_avalee.
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : l'oracle d'existence cross-tenant (`noTarget` sur `platform_user` global)
-// reste ouvert ; le détail du journal n'est relu que sur le `replace` et le `remove` sans value, pas sur chaque forme ;
+// reste ouvert sur l'ajout (`P10.34-a` : le retrait d'un absent est un no-op identique, témoins `psoe_`) ; le détail du journal n'est relu que sur le `replace` et le `remove` sans value, pas sur chaque forme ;
 // la lecture ratée de la garde d'ajout n'est éprouvée que sur sa PREMIÈRE lecture (le droit actuel du membre), pas sur
 // le compte des administrateurs effectifs.
 // =====================================================================================

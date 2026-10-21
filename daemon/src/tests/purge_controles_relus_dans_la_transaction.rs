@@ -460,6 +460,10 @@ fn pcr_statut_attendu(code: &str) -> u16 {
     match code {
         "db" | "plan_row_unread" | "legal_hold_undetermined" | "legal_hold_unread" => 500,
         "reason_required" => 400,
+        // `P10.29-h` — une interruption qui frappe le `BEGIN IMMEDIATE` de `purge_apply` sort sous sa variante propre.
+        // Branche NON ATTEINTE par ce fichier : le balayage `apply` présente un jeton périmé (refus avant le `BEGIN`).
+        // Le 503 est exercé par `purge_begin_refuse_variante_dediee.rs` ; cette ligne n'en témoigne pas.
+        "transaction_not_opened" => 503,
         _ => 409,
     }
 }

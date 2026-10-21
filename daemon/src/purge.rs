@@ -323,6 +323,11 @@ pub(crate) enum PurgeRefusal {
     /// DELETE détruit. FAIL-CLOSED : aucun plan partiel, aucun jeton. `site` nomme la lecture, `cause` porte
     /// l'erreur du moteur.
     PlanRowUnread { site: &'static str, cause: String },
+    /// `P10.29-h` — la transaction de la purge n'a PAS été ouverte : `BEGIN IMMEDIATE` refusé (verrou d'écriture tenu
+    /// ailleurs, refus du moteur, transaction étrangère pendante sur l'écrivain). Rien n'est inscrit, rien n'est
+    /// supprimé. La cause du moteur va au JOURNAL (`dire_la_transaction_non_ouverte`, comptée par cause), pas dans le
+    /// corps servi : la réponse dit ce qui n'a pas eu lieu, pas l'état interne de la base. Servie en 503.
+    TransactionNotOpened,
     /// Erreur base (verrou, schéma, I/O). Aucune ligne supprimée.
     Db(String),
 }
@@ -389,6 +394,14 @@ impl std::fmt::Display for PurgeRefusal {
                  aucun plan partiel, aucun jeton — un plan qui sauterait cette ligne décrirait moins que ce que \
                  la purge détruirait. Aucune ligne supprimée."
             ),
+            PurgeRefusal::TransactionNotOpened => write!(
+                f,
+                "REFUS — PURGE NON PRISE : la base n'a pas ouvert la transaction de la purge (verrou d'écriture tenu \
+                 ailleurs, ou refus du moteur ; la cause est écrite au journal de qui a lancé la purge : le démon \
+                 pour la route, la sortie d'erreur pour la CLI). Rien n'est inscrit au registre, \
+                 aucune ligne supprimée. Le même jeton peut être rejoué : il reste valide tant que le périmètre n'a \
+                 pas changé."
+            ),
             PurgeRefusal::Db(e) => write!(f, "REFUS — base : {e} (aucune ligne supprimée)"),
         }
     }
@@ -407,6 +420,7 @@ pub(crate) fn purge_refusal_code(r: &PurgeRefusal) -> &'static str {
         PurgeRefusal::ReasonRequired => "reason_required",
         PurgeRefusal::CountMismatch { .. } => "count_mismatch",
         PurgeRefusal::PlanRowUnread { .. } => "plan_row_unread",
+        PurgeRefusal::TransactionNotOpened => "transaction_not_opened",
         PurgeRefusal::Db(_) => "db",
     }
 }
@@ -1262,11 +1276,13 @@ fn purge_rebuild_rollups(conn: &Connection, b0: i64, b1: i64) -> Result<bool, Pu
 /// une purge qui n'a pas eu lieu). Le seul argument est un `ConfirmedPurge` : il n'existe pas de signature
 /// permettant d'exécuter sans avoir simulé ET confirmé.
 pub(crate) fn purge_apply(conn: &Connection, c: ConfirmedPurge) -> Result<PurgeReceipt, PurgeRefusal> {
-    // `P10.27-h` — le `BEGIN` refusé est dit avec sa cause et compté ; rien n'est inscrit. La réponse garde son contrat
-    // (`PurgeRefusal::Db`, « verrou base indisponible » quelle que soit la cause) : sa variante propre est `P10.29-h`.
-    if let Err(refus) = conn.execute_batch("BEGIN IMMEDIATE") {
-        crate::handlers::transaction_validee::dire_la_transaction_non_ouverte(conn, "purge", "purge confirmée", &refus);
-        return Err(PurgeRefusal::Db("verrou base indisponible".into()));
+    // `P10.27-h` — le `BEGIN` refusé est dit avec sa cause et compté (`ouvrir_sa_transaction` -> `dire_la_transaction_non_ouverte`,
+    // journal `purge`) ; rien n'est inscrit. `P10.29-h` — il sort sous sa variante propre, `transaction_not_opened` servie en
+    // 503, et non plus `db` « verrou base indisponible » en 500 : la cause du moteur reste au journal, pas dans le corps.
+    // Décision écrite : code machine NEUF, car aucun lecteur ne ferme la liste des codes (la CLI rend tout refus en
+    // sortie 3 et recopie le code ; la console ne lit pas `/api/purge`).
+    if crate::handlers::transaction_validee::ouvrir_sa_transaction(conn, "purge", "purge confirmée").is_err() {
+        return Err(PurgeRefusal::TransactionNotOpened);
     }
     let outcome = (|| -> Result<PurgeReceipt, PurgeRefusal> {
         let proof = purge_inscribe(conn, &c).map_err(|e| PurgeRefusal::Db(e.to_string()))?;

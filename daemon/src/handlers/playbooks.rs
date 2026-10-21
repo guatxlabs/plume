@@ -49,10 +49,13 @@ pub(crate) const TOUR_DE_DETECTION_S: u64 = 20;
 /// aucune marge FIXE ne borne cette durée. C'est donc la déduplication elle-même qui couvre l'écart
 /// réel : `debut_de_la_deduplication_du_playbook` la fait remonter jusqu'au passage précédent.
 ///
-/// POURQUOI LE PLANCHER RESTE : `window_s` est AUSSI la fenêtre de la requête de détection
-/// (`rule_sql`) et celle des hôtes d'un ban. Sous `interval_s`, les événements tombés entre deux
-/// passages ne sont vus par aucun passage. Au-dessus, suivre le levier élargit la recherche : le scan
-/// coûte plus et un seuil (`count > N`) porte sur une durée plus longue. Le refus le dit.
+/// POURQUOI LE PLANCHER RESTE À L'ÉCRITURE : `window_s` est AUSSI la fenêtre DEMANDÉE de la requête de
+/// détection (`rule_sql`) et de celle des hôtes d'un ban. À l'exécution, une fenêtre POSITIVE est planchée
+/// pour toutes deux (`P10.31-k`, `fenetre_effective_du_playbook`) : la fenêtre réellement cherchée n'est donc
+/// pas celle que la ligne enregistrée affiche, et le refus évite cet écart silencieux. Une fenêtre NULLE OU
+/// NÉGATIVE n'est pas planchée : elle veut dire « sans borne » (tout l'historique) pour la requête comme pour
+/// les hôtes, et le refus le dit aussi. Suivre le levier élargit la
+/// recherche : le scan coûte plus et un seuil (`count > N`) porte sur une durée plus longue. Le refus le dit.
 ///
 /// Fonction PURE, appelée par la création, la modification et l'import d'overlay, et lue par la liste
 /// pour SIGNALER les lignes déjà sous le plancher sans les modifier.
@@ -73,10 +76,48 @@ pub(crate) fn juger_le_plancher_de_fenetre_du_playbook(window_s: i64, interval_s
     Err(format!(
         "FENÊTRE DE DÉDUPLICATION SOUS LE PLANCHER : window_s = {window_s} s est plus court que l'écart minimal \
          entre deux passages du playbook (interval_s = {interval_s} s, tour de l'ordonnanceur = {TOUR_DE_DETECTION_S} s, \
-         plancher = {plancher} s). window_s est aussi la fenêtre de la requête de détection : sous cet écart, les \
-         événements tombés entre deux passages ne seraient vus par aucun passage. L'allonger élargit d'autant la \
-         recherche (scan plus coûteux, un seuil de comptage porte sur une durée plus longue). Levier : {levier}."
+         plancher = {plancher} s). window_s est aussi la fenêtre de la requête de détection et des hôtes d'un ban : \
+         positive et sous cet écart, l'exécution la porterait d'office au plancher, et la ligne enregistrée \
+         n'afficherait pas la fenêtre réellement cherchée ; nulle ou négative, elle veut dire sans borne (tout \
+         l'historique) pour la requête comme pour les hôtes. Porter une fenêtre positive au plancher élargit d'autant \
+         la recherche (scan plus coûteux, un seuil de comptage porte sur une durée plus longue) ; une fenêtre sans \
+         borne la rétrécit au contraire. Levier : {levier}."
     ))
+}
+
+/// `P10.31-k` — LA FENÊTRE EFFECTIVE D'UN PLAYBOOK : `max(window_s, interval_s, TOUR_DE_DETECTION_S)`.
+/// Le plancher jugé à l'écriture (`juger_le_plancher_de_fenetre_du_playbook`) n'arrête pas toutes les voies
+/// d'armement : une dérogation d'activation réappliquée au démarrage (overlay `config.d` coupé) ou une ligne
+/// posée avant le plancher arme une fenêtre plus courte que l'écart entre deux passages. Décision retenue :
+/// pas de refus au démarrage, la fenêtre est planchée À L'EXÉCUTION, la même pour la déduplication et la
+/// requête de détection et la recherche des hôtes d'un ban — aucun événement tombé entre deux passages
+/// n'échappe à tous les passages, et la cible trouvée l'est avec ses hôtes.
+/// Fonction PURE, sans débordement (`max` seul).
+pub(crate) fn fenetre_effective_du_playbook(window_s: i64, interval_s: i64) -> i64 {
+    window_s.max(interval_s.max(TOUR_DE_DETECTION_S as i64))
+}
+
+/// `P10.31-k` — LA FENÊTRE DE LA REQUÊTE DE DÉTECTION D'UN PASSAGE, passée à `rule_sql`. Une fenêtre
+/// positive est planchée (`fenetre_effective_du_playbook`). Une fenêtre NULLE OU NÉGATIVE veut dire « sans
+/// borne » pour `rule_sql` (tout l'historique) : elle couvre déjà l'écart entre deux passages, la plancher
+/// rétrécirait la recherche — elle reste telle quelle. Fonction PURE, lue par `run_playbooks`.
+pub(crate) fn fenetre_de_requete_du_playbook(window_s: i64, interval_s: i64) -> i64 {
+    if window_s <= 0 {
+        return window_s;
+    }
+    fenetre_effective_du_playbook(window_s, interval_s)
+}
+
+/// `P10.31-k` — LE DÉBUT DE LA RECHERCHE DES HÔTES D'UN BAN (`SELECT DISTINCT host … ts >= ?`). Même fenêtre
+/// que la requête de détection (`fenetre_de_requete_du_playbook`) : une cible trouvée par la fenêtre planchée
+/// l'est avec les hôtes qui l'ont vue. Fenêtre nulle ou négative = sans borne, comme `rule_sql` (début 0).
+/// Arithmétique SATURÉE. Fonction PURE, lue par `run_playbooks`.
+pub(crate) fn debut_des_hotes_du_ban(now_ts: i64, window_s: i64, interval_s: i64) -> i64 {
+    let fenetre = fenetre_de_requete_du_playbook(window_s, interval_s);
+    if fenetre <= 0 {
+        return 0;
+    }
+    now_ts.saturating_sub(fenetre)
 }
 
 /// `P10.21-e` — LE DÉBUT DE LA FENÊTRE DE DÉDUPLICATION D'UN PASSAGE. La fenêtre nominale commence à
@@ -91,14 +132,13 @@ pub(crate) fn juger_le_plancher_de_fenetre_du_playbook(window_s: i64, interval_s
 /// LE PLANCHER EST AUSSI TENU ICI, À L'EXÉCUTION. La fenêtre nominale de déduplication est
 /// `max(window_s, interval_s, TOUR_DE_DETECTION_S)`, pas `window_s` seul : une ligne sous le plancher
 /// peut être ARMÉE sans qu'aucun geste juge sa fenêtre (fichier `config.d` coupé puis dérogation
-/// d'activation réappliquée au démarrage, ligne posée avant le plancher). La requête de détection
-/// garde `window_s` ; seule la mémoire des ripostes est planchée, pour qu'aucune voie d'armement ne
-/// fasse reposer une riposte au passage suivant.
+/// d'activation réappliquée au démarrage, ligne posée avant le plancher). `P10.31-k` : la requête de
+/// détection prend la MÊME fenêtre (`fenetre_effective_du_playbook`), voir `fenetre_de_requete_du_playbook`.
 /// Arithmétique SATURÉE : le juge admet `window_s = interval_s = i64::MAX`, qui déborderait sinon.
 /// Fonction PURE, lue par `run_playbooks` (requête de déduplication).
 pub(crate) fn debut_de_la_deduplication_du_playbook(now_ts: i64, window_s: i64, interval_s: i64, passage_precedent: Option<i64>) -> i64 {
     let ecart_minimal = interval_s.max(TOUR_DE_DETECTION_S as i64);
-    let fenetre = window_s.max(ecart_minimal);
+    let fenetre = fenetre_effective_du_playbook(window_s, interval_s);
     let nominal = now_ts.saturating_sub(fenetre);
     let borne = nominal.saturating_sub(ecart_minimal);
     match passage_precedent {
@@ -467,7 +507,7 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     };
     for (id, name, query, is_soql, kind, window_s, admin_authored, interval_s, passage_precedent) in due {
         let debut_dedup = debut_de_la_deduplication_du_playbook(now_ts, window_s, interval_s, passage_precedent);
-        let sql = match rule_sql(&query, is_soql, window_s) {
+        let sql = match rule_sql(&query, is_soql, fenetre_de_requete_du_playbook(window_s, interval_s)) {
             Ok(s) => s,
             Err(_) => {
                 abandonnes += 1;
@@ -493,7 +533,8 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         // dus. Avalé, il laissait ce playbook dû indéfiniment — donc réévalué à chaque tour, requête
         // de cibles comprise — pendant que le bilan du tick publiait « 0 abandon ». La seule chose
         // qui empêchait alors une SECONDE riposte et un SECOND armement était la déduplication, dont
-        // la fenêtre est la colonne `window_s` de CE playbook (`P10.21-e` : planchée à l'écriture, et
+        // la fenêtre est la colonne `window_s` de CE playbook planchée à l'exécution (`P10.21-e`, `P10.31-k` :
+        // `fenetre_effective_du_playbook`, que l'écriture ne garantit pas — dérogation du démarrage), et
         // remontée au passage précédent — qui, marqueur non écrit, reste l'ANCIEN). Le tour est donc refusé, la perte comptée, et la réévaluation gardée pour
         // le tour suivant — un état d'ordonnancement qu'on n'a pas su écrire n'arme rien.
         match marquer_le_passage_du_playbook(&conn, id, now_ts) {
@@ -556,7 +597,7 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 // un abandon (avant, `flatten()` le taisait et la réponse partait « partout » sans lui).
                 let mut h: Vec<Option<String>> = Vec::new();
                 match conn.prepare("SELECT DISTINCT host FROM event WHERE src_ip=?1 AND ts>=?2 AND host IS NOT NULL AND host<>''") {
-                    Ok(mut s) => match s.query_map(params![target, now_ts - window_s], |r| r.get::<_, Option<String>>(0)) {
+                    Ok(mut s) => match s.query_map(params![target, debut_des_hotes_du_ban(now_ts, window_s, interval_s)], |r| r.get::<_, Option<String>>(0)) {
                         Ok(it) => {
                             for r in it {
                                 match r {

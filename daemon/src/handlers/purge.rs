@@ -76,9 +76,13 @@ fn scope_from_body(b: &Value) -> Result<PurgeScope, String> {
 /// machine restent distincts parce qu'ils nomment le SITE (et, pour la rétention légale, qu'une preuve est
 /// peut-être retenue), pas la nature. Le refus reste fail-closed et rien n'est supprimé, comme avant. 500 et
 /// non 503 : c'est le contrat déjà servi pour `db`, que la CLI et les intégrations lisent.
+///
+/// `P10.29-h` — LA TRANSACTION NON OUVERTE EST UN 503, comme toute route dont le `BEGIN` est refusé
+/// (`ouvrir_la_transaction_du_geste`) : rien n'a été lu de travers ni décidé, l'écrivain n'était pas disponible.
 pub(crate) fn statut_du_refus_de_purge(e: &PurgeRefusal) -> StatusCode {
     match e {
         PurgeRefusal::ReasonRequired => StatusCode::BAD_REQUEST,
+        PurgeRefusal::TransactionNotOpened => StatusCode::SERVICE_UNAVAILABLE,
         PurgeRefusal::Db(_)
         | PurgeRefusal::PlanRowUnread { .. }
         | PurgeRefusal::LegalHoldUndetermined

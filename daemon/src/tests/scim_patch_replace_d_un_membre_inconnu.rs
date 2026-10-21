@@ -9,7 +9,8 @@
 // `SELECT 1 FROM platform_user`) — `200`, la ligne fantôme écrite dans `grant`.
 //
 // CE QU'IL NE TIENT PAS : l'oracle d'existence cross-tenant (une identité connue de la plateforme mais sans droit
-// dans ce tenant est une cible valide, une inconnue rend `noTarget`) — reste consigné hors de ce fichier.
+// dans ce tenant est une cible valide d'ajout, une inconnue rend `noTarget`) — reste de `P10.34-a` ; le RETRAIT d'un
+// absent est un no-op identique (témoins `psoe_`).
 // =====================================================================================
 mod scim_patch_replace_d_un_membre_inconnu {
     use super::*;

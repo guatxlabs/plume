@@ -177,16 +177,20 @@ fn scim_avouer_la_representation_non_relue(genre: &str, cause_du_moteur: &str) -
 /// `(user_id, tenant_id)` et `platform_user.id` est clé primaire, donc ce prédicat lié sur les DEUX
 /// colonnes de la clé ne peut joindre qu'AU PLUS UNE ligne. Le singleton vient du SCHÉMA.
 fn scim_nom_dans_le_tenant(cp: &ControlPlane, tenant: &str, id: &str) -> rusqlite::Result<Option<String>> {
+    scim_nom_dans_le_tenant_sur(&cp.conn.lock(), tenant, id)
+}
+
+/// `scim_nom_dans_le_tenant` sur une connexion DÉJÀ tenue (le PATCH de groupe lit dans sa transaction : le
+/// verrou du plan de contrôle n'est pas réentrant). Même prédicat, mêmes trois issues.
+fn scim_nom_dans_le_tenant_sur(conn: &Connection, tenant: &str, id: &str) -> rusqlite::Result<Option<String>> {
     use rusqlite::OptionalExtension as _;
-    cp.conn
-        .lock()
-        .query_row(
-            "SELECT p.name FROM platform_user p JOIN \"grant\" g ON g.user_id=p.id \
-             WHERE p.id=?1 AND g.tenant_id=?2 LIMIT 1",
-            params![id, tenant],
-            |r| r.get(0),
-        )
-        .optional()
+    conn.query_row(
+        "SELECT p.name FROM platform_user p JOIN \"grant\" g ON g.user_id=p.id \
+         WHERE p.id=?1 AND g.tenant_id=?2 LIMIT 1",
+        params![id, tenant],
+        |r| r.get(0),
+    )
+    .optional()
 }
 
 /// La forme SCIM d'un utilisateur, à partir de droits DÉJÀ ÉTABLIS (lus, ou posés par le geste qui répond).
@@ -817,11 +821,36 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
                     GesteDeGroupeScim::Aucun => continue,
                 };
                 // le user doit exister (identité plateforme) — jamais de grant fantôme. `P10.21-l` — une lecture RATÉE
-                // n'est pas une absence (503). `P10.21-v` — une absence n'est plus SAUTÉE en silence : `noTarget`.
+                // n'est pas une absence (503). `P10.21-v` — à l'AJOUT, une absence n'est plus SAUTÉE en silence : `noTarget`.
+                // `P10.34-a` — RETIRER juge l'appartenance sur le DROIT du tenant appelant, plus sur `platform_user` global.
+                // Un id ABSENT du groupe du tenant — inconnu de la plateforme OU sans droit ici — est un NO-OP SILENCIEUX,
+                // identique dans les deux cas (même `200`, même corps, rien de compté) : aucun oracle sur l'existence d'un
+                // compte d'un autre tenant, ET un id ABSENT ne retient jamais la révocation des membres réels listés dans la
+                // même demande, avant ou après lui : chacun d'eux est retiré (un IdP qui renvoie le retrait d'un membre déjà
+                // retiré est le cas courant ; un refus bloquerait la révocation des autres). Les refus d'un AUTRE id présent
+                // (`409` dernier administrateur, `503`) défont toujours la demande entière, atomique. Une lecture RATÉE du
+                // droit reste un refus nommé (503), jamais un no-op. Le retrait d'un `replace` lit ses porteurs dans le droit
+                // du tenant (déjà borné). AJOUTER (et
+                // l'ensemble servi d'un `replace`, qui s'ajoute) reste jugé sur `platform_user`, `noTarget` pour un inconnu :
+                // `POST /Users` sans groupe crée une identité sans droit, qui doit pouvoir être ajoutée ensuite — l'oracle
+                // restant sur l'ajout est un reste de `P10.34-a`.
+                let juge_dans_le_tenant = matches!(geste, GesteDeGroupeScim::Retirer(_));
+                let mut presents: Vec<&String> = Vec::with_capacity(membres.len());
                 for uid in membres {
-                    match conn.query_row("SELECT 1 FROM platform_user WHERE id=?1", params![uid], |r| r.get::<_, i64>(0)) {
-                        Ok(_) => {}
-                        Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    let lu = if juge_dans_le_tenant {
+                        scim_nom_dans_le_tenant_sur(conn, &ctx.tenant, uid).map(|nom| nom.is_some())
+                    } else {
+                        match conn.query_row("SELECT 1 FROM platform_user WHERE id=?1", params![uid], |r| r.get::<_, i64>(0)) {
+                            Ok(_) => Ok(true),
+                            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+                            Err(e) => Err(e),
+                        }
+                    };
+                    match lu {
+                        Ok(true) => presents.push(uid),
+                        // Absent du groupe du tenant : no-op silencieux, identique pour un inconnu et un id d'un autre tenant.
+                        Ok(false) if juge_dans_le_tenant => {}
+                        Ok(false) => {
                             return Err(scim_refuser_la_demande(
                                 "noTarget",
                                 &format!("opération n°{} : un membre visé n'est pas une identité connue", i + 1),
@@ -838,8 +867,8 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
                             added += i64::from(scim_ajouter_au_role(conn, &ctx.tenant, uid, &role)?);
                         }
                     }
-                    GesteDeGroupeScim::Retirer(m) => {
-                        for uid in m {
+                    GesteDeGroupeScim::Retirer(_) => {
+                        for &uid in &presents {
                             removed += i64::from(scim_retirer_du_role(conn, &ctx.tenant, uid, &role)?);
                         }
                     }

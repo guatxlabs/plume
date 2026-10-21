@@ -26,10 +26,10 @@
 // CE QUE CES TÉMOINS NE TIENNENT PAS : rien n'est jugé côté console (la cause servie sur la liste
 // n'est peinte par aucun module de `web/`) ; un tour plus long que `max(window_s, interval_s, 20)
 // + max(interval_s, 20)` sort de la borne et retombe sur la fenêtre nominale ; la cadence de la
-// boucle est gardée par une lecture de SOURCE (témoin 7), pas par une mesure du temps ; une ligne
-// armée sous le plancher par la dérogation du démarrage garde sa fenêtre de REQUÊTE courte (les
-// événements tombés entre deux passages ne sont vus par aucun) — seule sa déduplication est planchée,
-// et rien ne refuse cette réactivation au démarrage.
+// boucle est gardée par une lecture de SOURCE (témoin 7), pas par une mesure du temps ; rien ne
+// refuse la réactivation au démarrage d'une ligne sous le plancher — depuis `P10.31-k`, sa requête de
+// détection et la recherche des hôtes d'un ban sont planchées à l'exécution comme sa déduplication
+// (témoins dans `fenetre_de_requete_du_playbook_planchee.rs`).
 // =====================================================================================
 mod plancher_de_fenetre_des_playbooks {
     use super::*;

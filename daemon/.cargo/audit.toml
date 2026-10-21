@@ -14,6 +14,11 @@ ignore = [
   # proc-macro-error2 — RUSTSEC-2026-0173 (unmaintained). Proc-macro de BUILD via age->i18n-embed-fl.
   # Compile-time only, aucune surface runtime. Lever si l'arbre s'en débarrasse.
   "RUSTSEC-2026-0173",
+  # basic-toml 0.1 — RUSTSEC-2026-0374 (unmaintained, NON vulnérable). Tiré par i18n-config, lui-même
+  # tiré UNIQUEMENT par deux proc-macros (i18n-embed-fl, i18n-embed-impl) via age : lecture d'i18n.toml
+  # à la compilation, aucune surface runtime. Pas de version d'age qui s'en passe au 2026-10-21.
+  # Lever si l'arbre s'en débarrasse.
+  "RUSTSEC-2026-0374",
   # yaml-rust 0.4 — RUSTSEC-2024-0320 (unmaintained, NON vulnérable). Front-end de l'importeur
   # Sigma uniquement. Successeur `yaml-rust2` = crate différent (API-break -> risque sur toute la
   # suite par défaut ; son compte vivant est `EXPECTED_TESTS` dans ci.yml, pas recopié ici).

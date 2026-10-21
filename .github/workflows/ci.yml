@@ -3057,6 +3057,9 @@ jobs:
       #     only, no runtime attack surface. No fix available.
       #   RUSTSEC-2026-0173 (proc-macro-error2 2.0.1, unmaintained) — build-time proc-macro, transitive via
       #     age -> i18n-embed-fl. Compile-time only, no runtime surface. No fix available.
+      #   RUSTSEC-2026-0374 (basic-toml 0.1.10, unmaintained) — build-time only, via age -> i18n-config, whose
+      #     sole dependents are the proc-macros i18n-embed-fl and i18n-embed-impl (i18n.toml read at compile
+      #     time). No runtime surface. No age release drops it yet.
       #   RUSTSEC-2024-0320 (yaml-rust 0.4.5, unmaintained) — direct dep, used ONLY by the Sigma-rule importer
       #     front-end (YAML -> serde_json::Value) on operator-supplied rule files. "Unmaintained" != vulnerable;
       #     the successor `yaml-rust2` is a DIFFERENT crate (API break, migration risk to the whole default suite),

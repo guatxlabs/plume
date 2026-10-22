@@ -280,6 +280,31 @@ const MOTS_DU_PLAN_DE_CONTROLE = {
   premier_administrateur_non_pose: {
     fr: "Tenant CRÉÉ, mais SANS ADMINISTRATEUR : le droit d'administration demandé n'a pas été écrit, personne n'administre encore ce tenant. Posez-le par « Accès » sur sa carte ; ne le recréez pas. Le démon en nomme la cause —",
     en: 'Tenant CREATED, but WITHOUT AN ADMINISTRATOR: the requested administration grant was not written, nobody administers this tenant yet. Set it through « Accès » on its card; do not create it again. The daemon names the cause —' },
+  // `P10.30-d` (servi par le démon depuis `P10.21-m`, lu ici) — UN AVEU DE SUCCÈS ET QUATRE REFUS NOMMÉS. Les quatre gestes
+  // (création, suspension et réactivation, pose et retrait d'un droit) ont lieu, mais la base du tenant peut ne pas prendre
+  // l'événement d'audit qui le lui montre : le succès le dit sous `evenement_du_tenant_non_ecrit`. Et une lecture ratée du
+  // tenant ou du droit visé, ou une pose de droit que le plan de contrôle n'a pas prise, est REFUSÉE en cinq cent trois
+  // nommé : rien n'a changé, ce n'est ni « inconnu » ni un succès.
+  evenement_non_ecrit: {
+    fr: "Le geste a bien eu lieu, mais CE TENANT NE LE VERRA PAS parmi ses propres événements : sa base n'a pas pris l'événement d'audit qui le lui montre. Le refaire ne comblerait rien. Le démon le dit —",
+    en: 'The gesture did happen, but THIS TENANT WILL NOT SEE IT among its own events: its database did not take the audit event that shows it. Doing it again would fill nothing. The daemon says —' },
+  tenant_non_lu_bascule: {
+    fr: "Tenant INCHANGÉ : le plan de contrôle n'a pas pu LIRE ce tenant, la bascule n'a PAS été faite — ce n'est pas « tenant inconnu ». Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Tenant UNCHANGED: the control plane could not READ this tenant, the switch was NOT made — this is not "unknown tenant". The gesture can be replayed. The daemon names the cause —' },
+  droit_non_pose: {
+    fr: "Accès NON ACCORDÉ, rien n'a changé : le plan de contrôle n'a pas pris la pose de ce droit, le compte garde le rôle qu'il avait sur ce tenant. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Access NOT GRANTED, nothing changed: the control plane did not take this grant, the account keeps the role it had on this tenant. The gesture can be replayed. The daemon names the cause —' },
+  tenant_non_lu_droit: {
+    fr: "Accès NON ACCORDÉ, rien n'a changé : le plan de contrôle n'a pas pu LIRE ce tenant — ce n'est pas « tenant inconnu ». Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Access NOT GRANTED, nothing changed: the control plane could not READ this tenant — this is not "unknown tenant". The gesture can be replayed. The daemon names the cause —' },
+  droit_non_lu_retrait: {
+    fr: "Accès NON RETIRÉ : le plan de contrôle n'a pas pu LIRE ce droit, l'accès est TOUJOURS EN PLACE — ce n'est pas « droit inconnu ». Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Access NOT REMOVED: the control plane could not READ this grant, the access is STILL IN PLACE — this is not "unknown grant". The gesture can be replayed. The daemon names the cause —' },
+  // `P10.30-d` — l'anti-verrouillage qui n'a pas pu lire (`CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI`, daemon/src/rbac.rs, servi
+  // par la pose ET le retrait d'un droit) : le geste pouvait retirer au tenant son dernier administrateur, il est REFUSÉ.
+  dernier_administrateur_non_etabli: {
+    fr: "Accès INCHANGÉ : le plan de contrôle n'a pas pu LIRE les droits d'administration de ce tenant, et ce geste pouvait lui retirer son dernier administrateur — il est REFUSÉ, rien n'a changé. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: "Access UNCHANGED: the control plane could not READ this tenant's administration grants, and this gesture could have removed its last administrator — it is REFUSED, nothing changed. The gesture can be replayed. The daemon names the cause —" },
 };
 const motDuPlanDeControle = (cle) => (LANG === 'en' ? MOTS_DU_PLAN_DE_CONTROLE[cle].en : MOTS_DU_PLAN_DE_CONTROLE[cle].fr);
 // LE DISCRIMINANT de la destruction refusée, ancré sur l'OUVERTURE du littéral du démon
@@ -291,6 +316,26 @@ const OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE = /^DESTRUCTION REFUSÉE, RIEN N'ES
 // `CAUSE_RETRAIT_DE_ROLE_NON_ECRIT` (governance.rs) ouvre sur les mêmes trois mots, puis « LE RÔLE ».
 const OUVERTURE_DE_LA_BASCULE_NON_ECRITE = /^BASCULE NON ENREGISTRÉE, RIEN N'A CHANGÉ(?![\p{L}\p{N}])/u;
 const OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT = /^RETRAIT NON ENREGISTRÉ, L'ACCÈS EST TOUJOURS EN PLACE(?![\p{L}\p{N}])/u;
+// `P10.30-d` — les quatre refus nommés en cinq cent trois que la console ne distinguait pas d'un refus quelconque
+// (`CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE`, `CAUSE_TENANT_NON_LU_DROIT_NON_POSE`, `CAUSE_DROIT_NON_POSE`,
+// `CAUSE_DROIT_NON_LU_RETRAIT_NON_FAIT`, daemon/src/tenants.rs), ancrés sur l'ouverture servie, bornés par Unicode.
+const OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE = /^TENANT NON LU, BASCULE NON FAITE(?![\p{L}\p{N}])/u;
+const OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE = /^TENANT NON LU, DROIT NON POSÉ(?![\p{L}\p{N}])/u;
+const OUVERTURE_DU_DROIT_NON_POSE = /^DROIT NON ENREGISTRÉ, RIEN N'A CHANGÉ(?![\p{L}\p{N}])/u;
+const OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT = /^DROIT NON LU, RETRAIT NON FAIT(?![\p{L}\p{N}])/u;
+// `CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI` (daemon/src/rbac.rs), servi par `refuser_le_geste_sans_anti_verrouillage_lu` à la
+// pose et au retrait d'un droit. Sa sœur SCIM (`CAUSE_SCIM_DERNIER_ADMINISTRATEUR_NON_ETABLI`) ouvre pareil et dit la même
+// chose ; elle n'est servie qu'à un fournisseur d'identité, jamais à cette console.
+const OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI = /^DERNIER ADMINISTRATEUR NON ÉTABLI(?![\p{L}\p{N}])/u;
+// L'AIGUILLAGE D'UN REFUS PAR GESTE : la phrase servie choisit au plus une face ; aucune ne reconnaît la phrase d'un
+// autre geste, et un refus qu'aucune ne reconnaît garde la phrase du geste refusé (`phraseDuGesteRefuse`).
+const REFUS_NOMMES_DE_LA_BASCULE = [[OUVERTURE_DE_LA_BASCULE_NON_ECRITE, 'bascule_non_ecrite'], [OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE, 'tenant_non_lu_bascule']];
+const REFUS_NOMMES_DE_LA_POSE_DE_DROIT = [[OUVERTURE_DU_DROIT_NON_POSE, 'droit_non_pose'], [OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE, 'tenant_non_lu_droit'], [OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI, 'dernier_administrateur_non_etabli']];
+const REFUS_NOMMES_DU_RETRAIT_DE_DROIT = [[OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT, 'retrait_de_droit_non_ecrit'], [OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT, 'droit_non_lu_retrait'], [OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI, 'dernier_administrateur_non_etabli']];
+function refusNommeDuPlanDeControle(phrase, refusNommes) {
+  const trouve = refusNommes.find(([ouverture]) => ouverture.test(phrase));
+  return trouve ? trouve[1] : null;
+}
 // LA CLÉ du premier administrateur non posé (`CLE_PREMIER_ADMINISTRATEUR_NON_POSE`, daemon/src/tenants.rs),
 // écrite ICI seulement : absente du chemin nominal, sa PRÉSENCE est le fait.
 const CLE_DU_PREMIER_ADMINISTRATEUR_NON_POSE = 'premier_administrateur_non_pose';
@@ -298,6 +343,25 @@ function causeDuPremierAdministrateurNonPose(j) {
   const cause = j && j[CLE_DU_PREMIER_ADMINISTRATEUR_NON_POSE];
   return cause ? String(cause).trim() : '';
 }
+// `P10.30-d` — LA CLÉ de l'événement du tenant non écrit (`CLE_EVENEMENT_DU_TENANT_NON_ECRIT`, daemon/src/rbac.rs), écrite ICI
+// seulement. Absente du chemin nominal (et d'un démon antérieur) : sa PRÉSENCE est le fait. Rend la phrase SERVIE (fixe côté
+// démon, jamais la cause du moteur), la chaîne vide si la clé est là sans texte, ou `null` quand rien n'est avoué.
+const CLE_DE_L_EVENEMENT_DU_TENANT_NON_ECRIT = 'evenement_du_tenant_non_ecrit';
+function phraseDeLEvenementDuTenantNonEcrit(j) {
+  const servi = j && j[CLE_DE_L_EVENEMENT_DU_TENANT_NON_ECRIT];
+  return (servi === undefined || servi === null || servi === false) ? null : String(servi).trim();
+}
+// L'aveu à DEUX nœuds : la phrase de la console au puits, la phrase servie à côté (omise si le démon n'en sert aucune).
+function aveuDeLEvenementDuTenantNonEcrit(phrase, balise) {
+  const aveu = document.createElement(balise || 'div'); aveu.className = 'bad';
+  const dit = document.createElement('span');
+  dit.textContent = motDuPlanDeControle('evenement_non_ecrit');
+  aveu.append(dit);
+  if (phrase) aveu.append(' « ' + phrase + ' »');
+  aveu.dataset.evenementDuTenantNonEcrit = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
+  return aveu;
+}
+const paireDeLEvenementDuTenantNonEcrit = (phrase) => [aveuDeLEvenementDuTenantNonEcrit(phrase), motDuPlanDeControle('evenement_non_ecrit') + (phrase ? ' « ' + phrase + ' »' : '')];
 // LE PUITS DU PANNEAU. Le rendu des cartes REMPLACE `#tenant-list` à chaque rechargement : un aveu posé
 // dans une carte disparaîtrait avec elle. Il se pose donc JUSTE AVANT la liste, et le geste suivant du
 // panneau le retire — il parle du dernier geste, jamais d'un geste plus ancien que la carte a oublié.
@@ -319,13 +383,10 @@ function poserLesAveuxDuPanneauDesTenants(aveux) {
 }
 // Le geste a eu lieu, sa ligne manque : l'aveu à DEUX nœuds (phrase du geste au puits, cause servie à côté).
 const aveuDuGesteSansTrace = (geste, cause) => [aveuDUneTraceManquante(motDuPlanDeControle(geste), cause), motDuPlanDeControle(geste) + ' « ' + cause + ' »'];
-function avouerLeGesteSansTrace(geste, cause) {
-  poserLesAveuxDuPanneauDesTenants(cause ? [aveuDuGesteSansTrace(geste, cause)] : []);
-}
 // Un refus NOMMÉ du plan de contrôle, à DEUX nœuds : la phrase de la console au puits, la phrase SERVIE à
 // côté. La marque dit lequel ; aucune règle CSS ne la vise.
-function aveuDuRefusDuPlanDeControle(cle, phrase) {
-  const aveu = document.createElement('div'); aveu.className = 'bad';
+function aveuDuRefusDuPlanDeControle(cle, phrase, balise) {
+  const aveu = document.createElement(balise || 'div'); aveu.className = 'bad';
   const dit = document.createElement('span');
   dit.textContent = motDuPlanDeControle(cle);
   aveu.append(dit, ' « ' + phrase + ' »');
@@ -340,6 +401,8 @@ function avouerLeProvisionnement(j) {
   if (sansMaillon) aveux.push(aveuDuGesteSansTrace('provisionnement', sansMaillon));
   const sansAdministrateur = causeDuPremierAdministrateurNonPose(j);
   if (sansAdministrateur) aveux.push([aveuDuRefusDuPlanDeControle('premier_administrateur_non_pose', sansAdministrateur), motDuPlanDeControle('premier_administrateur_non_pose') + ' « ' + sansAdministrateur + ' »']);
+  const evenement = phraseDeLEvenementDuTenantNonEcrit(j);   // `P10.30-d`
+  if (evenement !== null) aveux.push(paireDeLEvenementDuTenantNonEcrit(evenement));
   poserLesAveuxDuPanneauDesTenants(aveux);
 }
 // Un refus qui n'est pas celui de la destruction sans trace : l'avis cite ce que le démon a répondu.
@@ -431,15 +494,22 @@ async function toggleSuspend(t) {
   try { j = await apiSend(path, 'POST'); }
   catch (e) {
     // `P10.21-g` — la bascule que la base n'a pas prise : le tenant est INCHANGÉ, et c'est avoué au panneau.
+    // `P10.30-d` — de même le tenant que le plan de contrôle n'a pas pu lire : bascule NON faite, ni « inconnu » ni succès.
     const phrase = phraseDuRefusDuDemon(e);
-    if (OUVERTURE_DE_LA_BASCULE_NON_ECRITE.test(phrase)) poserLesAveuxDuPanneauDesTenants([[aveuDuRefusDuPlanDeControle('bascule_non_ecrite', phrase), motDuPlanDeControle('bascule_non_ecrite') + ' « ' + phrase + ' »']]);
+    const refus = refusNommeDuPlanDeControle(phrase, REFUS_NOMMES_DE_LA_BASCULE);
+    if (refus) poserLesAveuxDuPanneauDesTenants([[aveuDuRefusDuPlanDeControle(refus, phrase), motDuPlanDeControle(refus) + ' « ' + phrase + ' »']]);
     else toast(phraseDuGesteRefuse(e), 'bad', 9000);
     return;
   }
   toast(faceDansLaLangue(suspend ? MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE.tenant_suspendu : MOTS_DES_AVIS_DU_PLAN_DE_CONTROLE.tenant_reactive), 'ok');
   // `P10.21-h` — le succès peut porter l'aveu du journal de contrôle : il est lu, et dit.
+  // `P10.30-d` — et celui de l'événement du tenant non écrit, à côté : le geste a eu lieu, le tenant ne le verra pas.
+  const aveux = [];
   const sansMaillon = causeDeLaTraceManquante(j);
-  if (sansMaillon) avouerLeGesteSansTrace(suspend ? 'suspension' : 'reactivation', sansMaillon);
+  if (sansMaillon) aveux.push(aveuDuGesteSansTrace(suspend ? 'suspension' : 'reactivation', sansMaillon));
+  const evenement = phraseDeLEvenementDuTenantNonEcrit(j);
+  if (evenement !== null) aveux.push(paireDeLEvenementDuTenantNonEcrit(evenement));
+  poserLesAveuxDuPanneauDesTenants(aveux);
   loadTenantsView();
 }
 
@@ -525,9 +595,16 @@ async function loadGrants(tid, host) {
     let j;
     // `P10.24-m` — un droit de tenant, DE TOUT RÔLE, est un accès persistant : le secret des gestes est demandé avant l'envoi.
     try { j = await avecLeSecretDesGestes('accorder_un_acces_de_tenant', (entetes) => apiSend('/tenants/' + encodeURIComponent(tid) + '/grants', 'POST', { user, role }, entetes)); }
-    catch (err) { res.textContent = phraseDuGesteRefuse(err); res.className = 'bad'; return; }
+    catch (err) {
+      // `P10.30-d` — la pose que le plan de contrôle n'a pas prise, ou le tenant qu'il n'a pas pu lire : rien n'a changé, dit à DEUX nœuds.
+      const phrase = phraseDuRefusDuDemon(err);
+      const refus = refusNommeDuPlanDeControle(phrase, REFUS_NOMMES_DE_LA_POSE_DE_DROIT);
+      if (refus) res.replaceChildren(aveuDuRefusDuPlanDeControle(refus, phrase, 'span'));
+      else res.textContent = phraseDuGesteRefuse(err);
+      res.className = 'bad'; return;
+    }
     uinp.value = ''; res.textContent = ''; res.className = 'muted'; toast('accès accordé', 'ok');
-    await rechargerLesAccesAvecLAveu(tid, host, 'pose_de_droit', causeDeLaTraceManquante(j));
+    await rechargerLesAccesAvecLAveu(tid, host, 'pose_de_droit', causeDeLaTraceManquante(j), phraseDeLEvenementDuTenantNonEcrit(j));
   };
   host.appendChild(form);
 }
@@ -543,23 +620,28 @@ async function removeGrant(tid, user, host) {
   let j;
   try { j = await apiSend('/tenants/' + encodeURIComponent(tid) + '/grants/' + encodeURIComponent(user), 'DELETE'); }
   catch (e) {
+    // `P10.30-d` — le droit que le plan de contrôle n'a pas pu lire rejoint le retrait non écrit : l'accès est TOUJOURS en place.
     const phrase = phraseDuRefusDuDemon(e);
-    if (OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT.test(phrase)) host.appendChild(aveuDuRefusDuPlanDeControle('retrait_de_droit_non_ecrit', phrase));
+    const refus = refusNommeDuPlanDeControle(phrase, REFUS_NOMMES_DU_RETRAIT_DE_DROIT);
+    if (refus) host.appendChild(aveuDuRefusDuPlanDeControle(refus, phrase));
     else toast(phraseDuGesteRefuse(e), 'bad', 9000);
     return;
   }
   toast('accès retiré', 'ok');
-  await rechargerLesAccesAvecLAveu(tid, host, 'retrait_de_droit', causeDeLaTraceManquante(j));
+  // `P10.30-d` — le deux cents porte aussi, ou seulement, l'événement du tenant non écrit ; le deux cent quatre (`null`) n'avoue rien.
+  await rechargerLesAccesAvecLAveu(tid, host, 'retrait_de_droit', causeDeLaTraceManquante(j), phraseDeLEvenementDuTenantNonEcrit(j));
 }
 
 // Les aveux de retrait refusé déjà posés dans cette liste : un nouveau geste les remplace.
-const cueillirLesAveuxDeRetrait = (host) => Array.from(host.children || []).filter(c => c.dataset && c.dataset.refusDuPlanDeControle === 'retrait_de_droit_non_ecrit');
+const cueillirLesAveuxDeRetrait = (host) => Array.from(host.children || []).filter(c => c.dataset && REFUS_NOMMES_DU_RETRAIT_DE_DROIT.some(([, cle]) => c.dataset.refusDuPlanDeControle === cle));
 
 // La liste des accès est REPEINTE après un geste : l'aveu se pose APRÈS la repeinte, sous la liste qu'il
-// commente, sans quoi le rechargement l'effacerait avant qu'on l'ait lu.
-async function rechargerLesAccesAvecLAveu(tid, host, geste, cause) {
+// commente, sans quoi le rechargement l'effacerait avant qu'on l'ait lu. `evenement` : la phrase servie de
+// l'événement du tenant non écrit, ou `null` quand le succès n'en avoue aucun (`P10.30-d`).
+async function rechargerLesAccesAvecLAveu(tid, host, geste, cause, evenement) {
   await loadGrants(tid, host);
   if (cause) host.appendChild(aveuDUneTraceManquante(motDuPlanDeControle(geste), cause));
+  if (evenement !== null && evenement !== undefined) host.appendChild(aveuDeLEvenementDuTenantNonEcrit(evenement));
 }
 
 // --- Audit accès opérateur (item 4) : événements plume-operator-access / plume-tenant-admin du tenant courant.
@@ -585,4 +667,5 @@ async function loadOperatorAudit() {
 
 // `P10.23-q` — la phrase d'un geste refusé et la destruction refusée, jouées par le témoin 121 sur une réponse hors du démon.
 export { phraseDuGesteRefuse, direLaDestructionRefusee };
+export { CLE_DE_L_EVENEMENT_DU_TENANT_NON_ECRIT, OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE, OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE, OUVERTURE_DU_DROIT_NON_POSE, OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT, OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI };
 export { CLE_DU_PREMIER_ADMINISTRATEUR_NON_POSE, OUVERTURE_DE_LA_BASCULE_NON_ECRITE, OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE, OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT, avouerLeProvisionnement, initEnvironments, initTenants, loadOperatorAudit, loadTenantsView, motDuPlanDeControle, multiTenantMode, uiIsAdmin };

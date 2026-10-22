@@ -25771,6 +25771,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       "detection_admin.js › cleDuRefusDeRiposte": [/return '/, "choisit une CLÉ ; le refus est retenu avec `cadreDUneReponseQuiNeVientPasDuDemon` par `noterLeRefusDeRiposte`"],
       "multitenant.js › toggleSuspend": [/phraseDuGesteRefuse\(e\)/, "la phrase ne choisit qu'une clé ; le refus se dit par `phraseDuGesteRefuse`, qui consulte la nature"],
       "multitenant.js › removeGrant": [/phraseDuGesteRefuse\(e\)/, "la phrase ne choisit qu'une clé ; le refus se dit par `phraseDuGesteRefuse`, qui consulte la nature"],
+      // `P10.30-d` — la pose d'un droit lit à son tour l'ouverture de ses deux cinq cent trois nommés (témoin « web »).
+      "multitenant.js › loadGrants": [/phraseDuGesteRefuse\(err\)/, "la phrase choisit une clé par une ouverture ANCRÉE du démon (`refusNommeDuPlanDeControle`) et n'est peinte, citée, que dans l'aveu de ce refus nommé ; tout autre refus se dit par `phraseDuGesteRefuse`, qui consulte la nature"],
       "dashboards.js › noterLIssueDUnViewUpdate": [/else if \(visibiliteCouranteNonLue\(e\)\) \{ VISIBILITE_DE_VUE_NON_LUE = phraseDuRefusDuDemon\(e\); \}/, "ne retient la phrase qu'après avoir reconnu la cause de la visibilité non lue"],
       "dataaccess.js › renderDataAccess": [/\.catch\(e => slot\.replaceChildren\(daRenduDeReponse\(\{ error: phraseDuRefusDuDemon\(e\) \}/, "la face dit « le serveur n'a pas rendu de réponse », elle n'attribue aucune cause au démon"],
       "composer_depuis_lexistant.js › inventaireComposable": [/err: phraseDuRefusDuDemon\(e\) \}/, "la phrase part dans l'aveu des stocks absents, dont la face ne nomme plus le démon (« Réponse reçue pour chaque stock ») — vérifié ci-dessous"],
@@ -29496,6 +29498,477 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvant151) console.log(`(151) EN ÉCHEC — ${echecs.length - echecsAvant151} écart(s), dits ci-dessus`);
   else console.log("(151) OK — `P10.33-n` (reste console) : dans les deux langues, l'essai d'un canal dit la remise au service seulement quand le démon la sert — lue sur \`remis_au_service\` seul, \`ok\` divergent joué dans les deux sens —, l'échec sinon, « aucun essai » pour un canal local et « genre de canal inconnu du démon » pour un genre inconnu sur la réponse que le démon leur sert (ni échec d'URL / curl, ni remise), aucun « accusé : » sur un code vide, et l'accusé servi (lecture non vérifiable, local vérifiable sur place, sans objet — codes relus dans le démon ET dans la table de la console quelle que soit leur écriture, égalité jugée), jamais « lu », « reçu » ni « envoyé » ; la phrase de remise est en infobulle et retirée par un essai raté sur la même ligne ; une réponse d'un démon antérieur garde « envoyé » / l'échec d'avant ; la liste des canaux dit l'accusé, et rien sans le champ ; un accusé ou une phrase balisés sont rendus en texte. Ce qu'il NE tient PAS : l'exécution de la route (témoins Rust), la phrase de remise reste française sous LANG='en', la mise en page.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (web) `P10.30-d` (volet console) — LES QUATRE GESTES DES TENANTS LISENT L'ÉVÉNEMENT DU TENANT NON ÉCRIT, LE RETRAIT D'UN
+//       DROIT LIT SES DEUX SUCCÈS, ET LES CINQ CENT TROIS NOMMÉS DU PLAN DE CONTRÔLE SE DISENT COMME DES REFUS.
+//
+// CE QUE LE DÉMON SERT (RELU ci-dessous dans daemon/src/rbac.rs et daemon/src/tenants.rs) : la création, la suspension et la
+// réactivation, la pose et le retrait d'un droit avouent, à côté de leur succès, sous `evenement_du_tenant_non_ecrit`, que la
+// base du tenant n'a pas pris l'événement d'audit (phrase FIXE `CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT`, jamais la cause du
+// moteur) ; le retrait passe alors du deux cent quatre nu au deux cents `{ok, tenant, user, removed}` + aveu(x) ; la bascule
+// d'un tenant illisible est refusée en cinq cent trois `CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE` (le quatre cent quatre reste
+// « tenant inconnu »), la pose non écrite en cinq cent trois `CAUSE_DROIT_NON_POSE`. Deux refus voisins plus anciens, que la
+// console ne nommait pas non plus, sont joués avec : `CAUSE_TENANT_NON_LU_DROIT_NON_POSE`, `CAUSE_DROIT_NON_LU_RETRAIT_NON_FAIT`.
+//
+// MESURÉ AVANT CE LOT : aucun module web ne citait `evenement_du_tenant_non_ecrit` — un succès qui l'avouait se lisait nu ;
+// les cinq cent trois nommés se disaient par la phrase générique du geste refusé (« Geste REFUSÉ par le démon, rien n'a
+// changé »), sans face propre. CE QUI ÉTAIT FAUX DANS L'ÉNONCÉ : le deux cents du retrait était DÉJÀ lu comme un retrait
+// (`P10.21-h`, témoin 105c), et les cinq cent trois ne se lisaient pas comme des succès.
+//
+// Le cinq cent trois de l'anti-verrouillage qui n'a pas pu lire (`CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI`, rbac.rs, servi par
+// `refuser_le_geste_sans_anti_verrouillage_lu` à la pose ET au retrait d'un droit) n'avait pas de face non plus : joué aussi.
+//
+// JUGÉ, sur les chargeurs réels et un transport simulé : (a) suspension et réactivation, nominal, aveu seul, aveu à côté de
+// la trace manquante, aveu servi SANS phrase (la clé est le fait) ; (b) provisionnement, et sans puits (`#tenant-list`
+// détaché : l'aveu part à l'avis) ; (c) pose d'un droit ; (d) retrait 204, 200 avec l'aveu seul, avec l'aveu sans phrase,
+// avec les deux aveux, 200 d'un démon antérieur sans aveu ; (e) les cinq cent trois nommés : refus à DEUX nœuds, aucun avis de
+// succès, l'accès retiré toujours listé ; le quatre cent quatre garde la phrase du geste refusé ; deux retraits refusés de
+// suite SANS repeinte de la liste n'y laissent que le dernier aveu ; (f) les ouvertures nues reconnaissent leur phrase et
+// AUCUNE autre `CAUSE_*` du démon (hors la sœur SCIM nommée) ; (g) les faces fr et en des clés neuves existent et diffèrent ;
+// (h) la clé n'est écrite que dans web/multitenant.js. Le transport simulé sert un TEXTE : un corps donné en objet ou déjà
+// sérialisé rend le même octet, il n'y a donc qu'un cas par forme servie.
+// JUGÉ PAR CLÉ, DEPUIS LE 2026-10-19 : (g2) chaque face de refus ou d'aveu porte un fragment DISTINCTIF de sa conséquence, écrit
+// dans ce témoin en français et en anglais, et aucune autre face ne le porte ; (i) les sept refus nommés des trois gestes, joués
+// sur l'instance française puis l'anglaise, AFFICHENT ce fragment-là et aucun autre ; (b) le deux cent un du provisionnement
+// joué dans ses huit combinaisons (trace manquante, événement du tenant non écrit, premier administrateur non posé : aucun,
+// chacun, chaque paire, les trois) dit chaque aveu servi avec sa face, aucun n'en tait un autre — au puits, en anglais, et à
+// l'avis sans puits. AVANT, une face recopiée d'une autre clé, ou un aveu du provisionnement tu par un autre, restait vert.
+// CE QU'IL NE TIENT PAS : aucune route du démon n'est rejouée ; la phrase servie reste française sous LANG='en' ; un audit perdu sur une base de tenant NON servie n'est avoué par
+// aucun corps (limite du démon), donc par aucune face.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvantWeb = echecs.length;
+  const urlW = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modTW = await import(urlW("multitenant.js"));
+  const { S: SW } = await import(urlW("state.js"));
+  await import(urlW("app.js"));   // l'écouteur du provisionnement (déjà chargé par le témoin 105 : même instance)
+  const langueOrigineW = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modTEnW = await import(adresseSousLaLangue("multitenant.js"));
+  const { S: SEnW } = await import(adresseSousLaLangue("state.js"));   // l'état de l'instance anglaise, que ses chargeurs lisent
+  if (langueOrigineW === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigineW);
+
+  const ticW = () => new Promise((r) => setTimeout(r, 0));
+  const laisserW = async (n = 30) => { for (let i = 0; i < n; i++) await ticW(); };
+  const nuW = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const cueillirW = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillirW(c, pred, acc)); return acc; };
+  const avisW = () => document.querySelectorAll(".toast").map((t) => String(t.textContent).replace(/\s+/g, " "));
+  const instrumentW = (vrai, quoi) => exiger(vrai, `(web-instrument) ${quoi} : le corps jugé ci-dessous n'existe plus côté démon, ce témoin REFUSE DE CONCLURE`);
+
+  // ── (0) L'INSTRUMENT : CE QUI EST JUGÉ EST LU DANS L'ARBRE DU DÉMON ─────────────────────────────
+  const srcW = (f) => { try { return readFileSync(path.join(RACINE, "daemon", "src", ...f.split("/")), "utf8"); } catch { return ""; } };
+  const RBACW = srcW("rbac.rs"), TENANTSW = srcW("tenants.rs"), LEDGERW = srcW("ledger.rs");
+  const litteralW = (src, nom) => { const m = src.match(new RegExp("\\b" + nom + ': &str =\\s*"([\\s\\S]*?)";')); return m ? String(m[1]).replace(/\\\r?\n\s*/g, "") : ""; };
+  const CLE_EV = litteralW(RBACW, "CLE_EVENEMENT_DU_TENANT_NON_ECRIT"), CAUSE_EV = litteralW(RBACW, "CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT");
+  const CLE_TRACE = litteralW(LEDGERW, "CLE_REGISTRE_SANS_MAILLON"), CAUSE_TRACE = litteralW(RBACW, "CAUSE_GESTE_SANS_TRACE_DE_CONTROLE");
+  const NOUVEAUX = {
+    tenant_non_lu_bascule: ["CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE", modTW.OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE, TENANTSW],
+    tenant_non_lu_droit: ["CAUSE_TENANT_NON_LU_DROIT_NON_POSE", modTW.OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE, TENANTSW],
+    droit_non_pose: ["CAUSE_DROIT_NON_POSE", modTW.OUVERTURE_DU_DROIT_NON_POSE, TENANTSW],
+    droit_non_lu_retrait: ["CAUSE_DROIT_NON_LU_RETRAIT_NON_FAIT", modTW.OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT, TENANTSW],
+    dernier_administrateur_non_etabli: ["CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI", modTW.OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI, RBACW],
+  };
+  // La seule voisine admise, nommée : la sœur SCIM dit la même chose à un fournisseur d'identité, jamais à cette console.
+  const VOISINES_ADMISES = { dernier_administrateur_non_etabli: ["CAUSE_SCIM_DERNIER_ADMINISTRATEUR_NON_ETABLI"] };
+  const CAUSE = Object.fromEntries(Object.entries(NOUVEAUX).map(([k, [nom, , src]]) => [k, litteralW(src, nom)]));
+  instrumentW(CLE_EV === "evenement_du_tenant_non_ecrit" && CAUSE_EV.startsWith("ÉVÉNEMENT DU TENANT NON ÉCRIT") && !/\{|\(/.test(CAUSE_EV)
+    && /corps\[CLE_EVENEMENT_DU_TENANT_NON_ECRIT\] = json!\(CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT\);/.test(RBACW),
+    "l'aveu `evenement_du_tenant_non_ecrit` n'est plus posé en phrase FIXE par daemon/src/rbac.rs");
+  instrumentW((TENANTSW.match(/avouer_l_evenement_du_tenant_non_ecrit\(&mut corps, &evenement\);/g) || []).length === 4,
+    "les QUATRE gestes de tenants.rs qui avouent l'événement perdu ne sont plus quatre");
+  instrumentW(/if evenement\.est_perdu\(\) \{[\s\S]{0,200}?\} else if maillon\.cause_de_non_inscription\(\)\.is_none\(\) \{\s*return StatusCode::NO_CONTENT\.into_response\(\);\s*\}\s*let mut corps = json!\(\{ "ok": true, "tenant": id, "user": user, "removed": true \}\);/.test(TENANTSW),
+    "le retrait d'un droit ne passe plus du deux cent quatre au deux cents sur un événement perdu");
+  instrumentW(/return err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE\);/.test(TENANTSW)
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROIT_NON_POSE\)/.test(TENANTSW)
+    && /return err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_LU_DROIT_NON_POSE\);/.test(TENANTSW)
+    && /return err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROIT_NON_LU_RETRAIT_NON_FAIT\);/.test(TENANTSW)
+    && /Err\(rusqlite::Error::QueryReturnedNoRows\) => return \(StatusCode::NOT_FOUND, "tenant inconnu"\)\.into_response\(\),/.test(TENANTSW),
+    "les cinq cent trois nommés (bascule, pose, lectures) ou le quatre cent quatre « tenant inconnu » ne sont plus servis ainsi");
+  instrumentW((TENANTSW.match(/=> return refuser_le_geste_sans_anti_verrouillage_lu\(&cause\),/g) || []).length === 2
+    && /fn refuser_le_geste_sans_anti_verrouillage_lu\(cause_du_moteur: &str\) -> Response \{\s*err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI\} \(\{cause_du_moteur\}\)"\)\)/.test(RBACW),
+    "le cinq cent trois de l'anti-verrouillage non lu n'est plus servi à la pose ET au retrait d'un droit, cause fixe d'abord");
+  instrumentW(Object.values(CAUSE).every((c) => c.length > 100) && CLE_TRACE === "registre_sans_maillon" && CAUSE_TRACE.startsWith("TRACE MANQUANTE"),
+    "une cause jugée n'est plus lisible dans daemon/src/");
+
+  // ── (f) LES OUVERTURES NUES, CONTRE TOUTES LES `CAUSE_*` DU DÉMON ─────────────────────────────
+  const TOUTES = [];
+  const marcherW = (d) => { for (const n of readdirSync(d, { withFileTypes: true })) { const p = path.join(d, n.name); if (n.isDirectory()) marcherW(p); else if (n.name.endsWith(".rs")) for (const m of readFileSync(p, "utf8").matchAll(/\bconst (CAUSE_[A-Z0-9_]+): &str =\s*"([\s\S]*?)";/g)) TOUTES.push([m[1], m[2].replace(/\\\r?\n\s*/g, "")]); } };
+  marcherW(path.join(RACINE, "daemon", "src"));
+  instrumentW(TOUTES.length > 50, `seulement ${TOUTES.length} phrases \`CAUSE_*\` lues dans daemon/src : le relevé des voisines est cassé`);
+  for (const [cle, [nom, o]] of Object.entries(NOUVEAUX)) {
+    const cause = CAUSE[cle];
+    exiger(o instanceof RegExp, `(web-f) l'ouverture de \`${nom}\` n'est pas exportée NUE par web/multitenant.js`);
+    if (!(o instanceof RegExp)) continue;
+    exiger(o.test(cause) && o.test(cause + " (database is locked)"), `(web-f) l'ouverture de \`${nom}\` ne reconnaît plus la phrase que le démon écrit`);
+    const voisines = TOUTES.filter(([n, c]) => n !== nom && o.test(c) && !(VOISINES_ADMISES[cle] || []).includes(n)).map(([n]) => n);
+    for (const admise of VOISINES_ADMISES[cle] || []) exiger(TOUTES.some(([n, c]) => n === admise && o.test(c)), `(web-f-instrument) la voisine admise \`${admise}\` n'existe plus ou n'ouvre plus pareil : l'exception est périmée`);
+    exiger(voisines.length === 0, `(web-f-négatif) l'ouverture de \`${nom}\` reconnaît des phrases VOISINES : ${voisines.join(", ")}`);
+    const tete = cause.split(" :")[0];
+    exiger(!o.test(tete + "S : x") && !o.test(tete + "É : x") && !o.test(CAUSE_TRACE + " " + cause),
+      `(web-f-négatif) l'ouverture de \`${nom}\` mord sur un mot plus long, une lettre accentuée, ou sa phrase citée ailleurs qu'en tête`);
+  }
+
+  // ── (g) LES DEUX FACES DES CLÉS NEUVES ─────────────────────────────────────────────────────────
+  const mot = modTW.motDuPlanDeControle;
+  for (const k of ["evenement_non_ecrit", ...Object.keys(NOUVEAUX)]) {
+    let fr = "", en = "";
+    try { fr = mot(k); en = modTEnW.motDuPlanDeControle(k); } catch { /* jugé ci-dessous */ }
+    exiger(fr.length > 60 && en.length > 60 && fr !== en, `(web-g) la face « ${k} » manque dans une langue, ou l'anglaise est la française : « ${fr.slice(0, 60)} » / « ${en.slice(0, 60)} »`);
+  }
+  // ── (g2) CHAQUE CLÉ DIT SA CONSÉQUENCE PROPRE, ET AUCUNE AUTRE ─────────────────────────────────────
+  // Un fragment DISTINCTIF par clé et par langue, écrit ICI — jamais relu de la table jugée, sans quoi une face recopiée
+  // d'une autre clé se jugerait contre elle-même. La face de la clé porte son fragment ; aucune autre face jugée ne le porte.
+  // Une face recopiée perd le sien ET porte celui d'une autre : les deux rougissent. Les mêmes fragments jugent plus bas le
+  // texte AFFICHÉ par chaque geste, dans les deux langues (i), et au provisionnement (b).
+  const CONSEQUENCES_W = {
+    bascule_non_ecrite: { fr: "la bascule n'a pas été enregistrée", en: "the switch was not recorded" },
+    tenant_non_lu_bascule: { fr: "n'a pas pu LIRE ce tenant, la bascule n'a PAS été faite", en: "could not READ this tenant, the switch was NOT made" },
+    droit_non_pose: { fr: "n'a pas pris la pose de ce droit", en: "did not take this grant" },
+    tenant_non_lu_droit: { fr: "Accès NON ACCORDÉ, rien n'a changé : le plan de contrôle n'a pas pu LIRE ce tenant", en: "Access NOT GRANTED, nothing changed: the control plane could not READ this tenant" },
+    retrait_de_droit_non_ecrit: { fr: "le retrait n'a pas été enregistré", en: "the removal was not recorded" },
+    droit_non_lu_retrait: { fr: "n'a pas pu LIRE ce droit", en: "could not READ this grant" },
+    dernier_administrateur_non_etabli: { fr: "pouvait lui retirer son dernier administrateur", en: "could have removed its last administrator" },
+    premier_administrateur_non_pose: { fr: "Tenant CRÉÉ, mais SANS ADMINISTRATEUR", en: "Tenant CREATED, but WITHOUT AN ADMINISTRATOR" },
+    provisionnement: { fr: "Tenant PROVISIONNÉ, mais SANS TRACE", en: "Tenant PROVISIONED, but WITHOUT A TRACE" },
+    evenement_non_ecrit: { fr: "CE TENANT NE LE VERRA PAS", en: "THIS TENANT WILL NOT SEE IT" },
+  };
+  const faceW = (langue, k) => { try { return (langue === "en" ? modTEnW : modTW).motDuPlanDeControle(k); } catch { return ""; } };
+  // Les fragments d'AUTRES clés que porte un texte affiché (le sien exclu).
+  const fragmentsEtrangersW = (langue, cle, texte) => Object.keys(CONSEQUENCES_W).filter((k) => k !== cle && texte.includes(CONSEQUENCES_W[k][langue]));
+  for (const langue of ["fr", "en"]) {
+    for (const [cle, fragments] of Object.entries(CONSEQUENCES_W)) {
+      const face = faceW(langue, cle);
+      const etrangers = fragmentsEtrangersW(langue, cle, face);
+      exiger(face.includes(fragments[langue]) && etrangers.length === 0,
+        `(web-g2) la face ${langue} de « ${cle} » ne dit pas SA conséquence (« ${fragments[langue]} ») ou dit celle d'une autre clé (${etrangers.join(", ")}) : « ${face.slice(0, 160)} »`);
+    }
+  }
+
+  // ── LE SIMULACRE DE TRANSPORT ───────────────────────────────────────────────────────────────
+  const fetchOrigineW = globalThis.fetch, minuterieOrigineW = globalThis.setTimeout;
+  let hoteDesAvisW = document.querySelector("#toasts");
+  if (!hoteDesAvisW || !hoteDesAvisW.isConnected) { hoteDesAvisW = document.createElement("div"); hoteDesAvisW.id = "toasts"; document.body.appendChild(hoteDesAvisW); }
+  const etatOrigineW = { admin: SW.isAdmin, auth: SW.AUTH, mes: SW.MY_TENANTS, courant: SW.CURRENT_TENANT };
+  const etatOrigineEnW = { admin: SEnW.isAdmin, auth: SEnW.AUTH, mes: SEnW.MY_TENANTS, courant: SEnW.CURRENT_TENANT };
+  const servisW = {};
+  const appelsW = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0];
+    const methode = ((init && init.method) || "GET").toUpperCase();
+    appelsW.push(methode + " " + chemin);
+    const r = servisW[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+    const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => { if (ms >= 1000) return 0; if (ms >= 100) return minuterieOrigineW(fn, 0); return minuterieOrigineW(fn, ms); };
+  const fenetreW = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const validerW = async (champs = {}) => {
+    const ov = fenetreW();
+    const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    if (form) for (const el of form.querySelectorAll("[data-n]")) if (Object.prototype.hasOwnProperty.call(champs, el.dataset.n)) el.value = champs[el.dataset.n];
+    if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    await laisserW();
+  };
+  const gesteW = async (lancer, champs) => {
+    const avant = avisW().length, appelsAvant = appelsW.length;
+    let rejet = null;
+    const p = Promise.resolve().then(lancer).then(() => {}, (e) => { rejet = e; });
+    await laisserW(); await validerW(champs); await repondreAuSecretDesGestes("secret-des-gestes-web", () => laisserW()); await p; await laisserW(40);
+    return { avis: avisW().slice(avant), appels: appelsW.slice(appelsAvant), rejet };
+  };
+  const sansCodeNiJsonW = (t) => !/[{}]/.test(t) && !/\b(50[0-9]|40[0-9]|20[0-9])\b/.test(t) && !/plume-e/.test(t);
+  const panneauW = () => document.querySelector("#tenants-panel");
+  // Sur le PANNEAU, seuls comptent les aveux posés HORS de la liste des cartes (le puits du panneau) ; sous une liste des
+  // accès (qui vit DANS une carte), tout ce que l'hôte porte compte.
+  const filtreW = (hote, els) => (hote === panneauW() ? els.filter((e) => !cueillirW(document.querySelector("#tenant-list"), (x) => x === e).length) : els);
+  const evenementsW = (hote) => filtreW(hote, cueillirW(hote, (e) => e.getAttribute && e.getAttribute("data-evenement-du-tenant-non-ecrit") === "1"));
+  const tracesW = (hote) => filtreW(hote, cueillirW(hote, (e) => e.getAttribute && e.getAttribute("data-trace-manquante") === "1"));
+  const refusW = (hote, cle) => filtreW(hote, cueillirW(hote, (e) => e.getAttribute && e.getAttribute("data-refus-du-plan-de-controle") === cle));
+  const boutonW = (hote, texte) => cueillirW(hote, (e) => e.tagName === "BUTTON" && nuW(e).trim() === texte)[0];
+  // Un aveu d'événement BIEN posé : la phrase de la console au premier nœud, la phrase servie à côté, rien du moteur.
+  // Servi SANS phrase (`""`), l'aveu se dit quand même, par la seule phrase de la console : la clé est le fait.
+  const aveuEvenementJusteW = (a, servi = CAUSE_EV) => !!a && nuW(a.children[0]) === mot("evenement_non_ecrit")
+    && (servi ? nuW(a).includes("« " + servi + " »") : nuW(a).trim() === mot("evenement_non_ecrit")) && sansCodeNiJsonW(nuW(a));
+  const refusJusteW = (a, cle, cause) => !!a && nuW(a.children[0]) === mot(cle) && nuW(a).includes(cause) && sansCodeNiJsonW(nuW(a));
+  const geste_refuse = mot("geste_refuse");
+  // Retire du panneau tout aveu posé : l'instance qui joue ne retire que les siens, et un aveu de l'AUTRE instance resterait.
+  const viderLePanneauW = () => cueillirW(panneauW(), (e) => e.getAttribute && (e.getAttribute("data-trace-manquante") || e.getAttribute("data-refus-du-plan-de-controle") || e.getAttribute("data-evenement-du-tenant-non-ecrit"))).forEach((e) => e.remove());
+
+  try {
+    instrumentW(!!panneauW() && !!document.querySelector("#tenant-list") && !!document.querySelector("#tenant-form"), "`#tenants-panel`, `#tenant-list` ou `#tenant-form` est absent d'index.html");
+    SW.isAdmin = true;
+    SW.AUTH = { user: "hugo", role: "admin", is_superadmin: true, tenant: "default" };
+    SW.MY_TENANTS = [{ id: "default" }, { id: "acme", name: "Acme" }];
+    SEnW.isAdmin = SW.isAdmin; SEnW.AUTH = SW.AUTH; SEnW.MY_TENANTS = SW.MY_TENANTS;
+    // `modT` : l'instance du module jouée (française par défaut, anglaise au (i)) ; ses chargeurs peignent le même document.
+    const chargerW = async (suspendu, modT = modTW) => { servisW["GET /api/tenants"] = { corps: { tenants: [{ id: "acme", name: "Acme", suspended: suspendu, created: 1, nb_users: 1 }] } }; await modT.loadTenantsView(); await laisserW(); return document.querySelector("#tenant-list"); };
+
+    // ══ (a) SUSPENSION ET RÉACTIVATION ═══════════════════════════════════════════════════════════
+    for (const [suspendu, texteBouton, route, succes] of [[false, "Suspendre", "suspend", /tenant suspendu/], [true, "Réactiver", "unsuspend", /tenant réactivé/]]) {
+      const base = { ok: true, id: "acme", suspended: !suspendu };
+      for (const [cas, corps, nEv, nTr] of [
+        ["aveu seul", { ...base, [CLE_EV]: CAUSE_EV }, 1, 0],
+        ["aveu servi sans phrase", { ...base, [CLE_EV]: "" }, 1, 0],
+        ["aveu et trace manquante", { ...base, [CLE_EV]: CAUSE_EV, [CLE_TRACE]: CAUSE_TRACE + " (disk full)" }, 1, 1],
+        ["nominal (démon antérieur ou geste entier)", base, 0, 0],
+      ]) {
+        const liste = await chargerW(suspendu);
+        instrumentW(!!boutonW(liste, texteBouton), `le chargeur réel ne rend pas le bouton « ${texteBouton} »`);
+        servisW[`POST /api/tenants/acme/${route}`] = { corps };
+        const g = await gesteW(() => boutonW(liste, texteBouton).onclick());
+        const ev = evenementsW(panneauW()), tr = tracesW(panneauW());
+        exiger(g.appels.includes(`POST /api/tenants/acme/${route}`), `(web-a-instrument) « ${texteBouton} » n'atteint pas sa route : ${JSON.stringify(g.appels)}`);
+        exiger(ev.length === nEv && (nEv === 0 || aveuEvenementJusteW(ev[0], corps[CLE_EV])) && tr.length === nTr,
+          `(web-a) « ${texteBouton} », ${cas} : ${ev.length} aveu(x) d'événement au lieu de ${nEv}, ${tr.length} trace(s) au lieu de ${nTr} : « ${ev.concat(tr).map(nuW).join(" | ").slice(0, 300)} »`);
+        exiger(g.rejet === null && g.avis.some((a) => succes.test(a)) && !g.avis.some((a) => a.startsWith(geste_refuse)),
+          `(web-a) « ${texteBouton} », ${cas} : le geste qui a EU LIEU n'est plus dit comme tel, ou se dit refusé : ${JSON.stringify(g.avis)}`);
+      }
+    }
+
+    // ══ (b) PROVISIONNEMENT (app.js) ═════════════════════════════════════════════════════════════
+    {
+      const form = document.querySelector("#tenant-form");
+      const ecouteurs = ((form && form._ecouteurs) || []).filter((e) => e.type === "submit");
+      instrumentW(ecouteurs.length >= 1, "`#tenant-form` ne porte aucun écouteur de soumission");
+      // LE CUMUL : le deux cent un pose sur le MÊME corps la trace manquante, l'événement du tenant non écrit et le premier
+      // administrateur non posé (relu dans tenants.rs). Les huit combinaisons sont jouées — aucun, chacun seul, chaque paire,
+      // les trois : chaque aveu servi est dit, à son nœud et avec SA conséquence ; aucun n'en tait un autre ; aucun ne s'ajoute.
+      const CLE_ADMIN = litteralW(TENANTSW, "CLE_PREMIER_ADMINISTRATEUR_NON_POSE"), CAUSE_ADMIN = litteralW(TENANTSW, "CAUSE_PREMIER_ADMINISTRATEUR_NON_POSE");
+      instrumentW(CLE_ADMIN === "premier_administrateur_non_pose" && CAUSE_ADMIN.startsWith("PREMIER ADMINISTRATEUR NON POSÉ")
+        && /let mut corps = json!\(\{ "ok": true, "id": id, "name": name, "first_admin": first_admin \}\);\s*avouer_le_maillon_de_controle_manquant\(&mut corps, &maillon\);\s*avouer_l_evenement_du_tenant_non_ecrit\(&mut corps, &evenement\);\s*if let Some\(cause\) = premier_administrateur_non_pose \{\s*corps\[CLE_PREMIER_ADMINISTRATEUR_NON_POSE\] = json!\(format!\("\{CAUSE_PREMIER_ADMINISTRATEUR_NON_POSE\} \(\{cause\}\)"\)\);\s*\}\s*\(StatusCode::CREATED, Json\(corps\)\)/.test(TENANTSW)
+        && /corps\[CLE_REGISTRE_SANS_MAILLON\] = json!\(format!\("\{CAUSE_GESTE_SANS_TRACE_DE_CONTROLE\} \(\{cause\}\)"\)\);/.test(RBACW),
+        "le deux cent un du provisionnement ne pose plus ses trois aveux sur le même corps");
+      const AVEUX_DU_201 = {
+        trace: [CLE_TRACE, CAUSE_TRACE + " (disk full)"],
+        evenement: [CLE_EV, CAUSE_EV],
+        administrateur: [CLE_ADMIN, CAUSE_ADMIN + " (database is locked)"],
+      };
+      // Les aveux posés au puits du panneau, par sorte, chacun jugé sur SA face et SA phrase servie.
+      const aveuxDuPuitsW = () => ({
+        trace: tracesW(panneauW()),
+        evenement: evenementsW(panneauW()),
+        administrateur: refusW(panneauW(), "premier_administrateur_non_pose"),
+      });
+      const faceDeLaSorteW = { trace: "provisionnement", evenement: "evenement_non_ecrit", administrateur: "premier_administrateur_non_pose" };
+      const aveuDeLaSorteJusteW = (langue, sorte, a) => {
+        const dit = nuW(a && a.children[0]), cle = faceDeLaSorteW[sorte];
+        return !!a && dit === faceW(langue, cle) && dit.includes(CONSEQUENCES_W[cle][langue]) && fragmentsEtrangersW(langue, cle, dit).length === 0
+          && nuW(a).includes("« " + AVEUX_DU_201[sorte][1] + " »") && sansCodeNiJsonW(nuW(a));
+      };
+      const SORTES = Object.keys(AVEUX_DU_201);
+      const COMBINAISONS = [[], ...SORTES.map((x) => [x]), ...SORTES.flatMap((x, i) => SORTES.slice(i + 1).map((y) => [x, y])), SORTES];
+      instrumentW(COMBINAISONS.length === 8, "les combinaisons des trois aveux du deux cent un ne sont plus huit");
+      for (const servies of COMBINAISONS) {
+        const cas = servies.length ? servies.join(" + ") : "nominal";
+        const corps = { ok: true, id: "globex", name: "globex", first_admin: null };
+        for (const sorte of servies) corps[AVEUX_DU_201[sorte][0]] = AVEUX_DU_201[sorte][1];
+        document.querySelector("#tf-id").value = "globex";
+        servisW["POST /api/tenants"] = { statut: 201, corps };
+        const g = await gesteW(() => ecouteurs[0].rappel({ preventDefault() {}, target: form, type: "submit" }));
+        const poses = aveuxDuPuitsW();
+        exiger(g.appels.includes("POST /api/tenants"), `(web-b-instrument) le provisionnement n'atteint pas sa route : ${JSON.stringify(g.appels)}`);
+        for (const sorte of SORTES) {
+          const attendu = servies.includes(sorte) ? 1 : 0;
+          exiger(poses[sorte].length === attendu && (attendu === 0 || aveuDeLaSorteJusteW("fr", sorte, poses[sorte][0])),
+            `(web-b) provisionnement, ${cas} : ${poses[sorte].length} aveu(x) « ${sorte} » au puits au lieu de ${attendu}, ou il ne dit pas SA conséquence avec SA phrase servie : « ${SORTES.flatMap((k) => poses[k]).map(nuW).join(" | ").slice(0, 400)} »`);
+        }
+        exiger(g.avis.some((a) => a.includes("globex")) && !g.avis.some((a) => a.startsWith(geste_refuse)),
+          `(web-b) provisionnement, ${cas} : le tenant créé n'est plus dit, ou se dit refusé : ${JSON.stringify(g.avis)}`);
+      }
+      // LES TROIS, posés par l'instance ANGLAISE : chaque aveu affiché dit sa conséquence en anglais.
+      {
+        const corps = { ok: true, id: "globex" };
+        for (const sorte of SORTES) corps[AVEUX_DU_201[sorte][0]] = AVEUX_DU_201[sorte][1];
+        viderLePanneauW();
+        modTEnW.avouerLeProvisionnement(corps); await laisserW();
+        const poses = aveuxDuPuitsW();
+        for (const sorte of SORTES) exiger(poses[sorte].length === 1 && aveuDeLaSorteJusteW("en", sorte, poses[sorte][0]),
+          `(web-b) provisionnement (en), les trois aveux : ${poses[sorte].length} aveu(x) « ${sorte} » au lieu d'un, ou il ne dit pas SA conséquence en anglais : « ${SORTES.flatMap((k) => poses[k]).map(nuW).join(" | ").slice(0, 400)} »`);
+        modTEnW.avouerLeProvisionnement({ ok: true, id: "globex" }); await laisserW();
+        exiger(SORTES.every((k) => aveuxDuPuitsW()[k].length === 0), "(web-b) provisionnement (en) : un provisionnement entier ne retire plus les aveux du précédent");
+      }
+      // SANS PUITS (`#tenant-list` détaché) : l'aveu part à l'avis, phrase de la console PUIS phrase servie, en une chaîne.
+      const listeB = document.querySelector("#tenant-list"), parentB = listeB.parentNode, suivantB = parentB.children[parentB.children.indexOf(listeB) + 1] || null;
+      const avantB = avisW().length;
+      listeB.remove();
+      try { modTW.avouerLeProvisionnement({ ok: true, id: "globex", [CLE_EV]: CAUSE_EV }); await laisserW(); }
+      finally { parentB.insertBefore(listeB, suivantB); }
+      const avisB = avisW().slice(avantB);
+      exiger(avisB.length === 1 && avisB[0] === mot("evenement_non_ecrit") + " « " + CAUSE_EV + " »",
+        `(web-b) sans puits du panneau, l'événement du tenant non écrit ne part plus à l'avis (phrase de la console puis phrase servie) : ${JSON.stringify(avisB)}`);
+      // SANS PUITS, LES TROIS : trois avis, chacun la face de SA sorte suivie de SA phrase servie, aucun tu.
+      const avantB3 = avisW().length;
+      listeB.remove();
+      try {
+        const corps = { ok: true, id: "globex" };
+        for (const sorte of SORTES) corps[AVEUX_DU_201[sorte][0]] = AVEUX_DU_201[sorte][1];
+        modTW.avouerLeProvisionnement(corps); await laisserW();
+      } finally { parentB.insertBefore(listeB, suivantB); }
+      const avisB3 = avisW().slice(avantB3);
+      exiger(avisB3.length === 3 && SORTES.every((k) => avisB3.filter((a) => a === mot(faceDeLaSorteW[k]) + " « " + AVEUX_DU_201[k][1] + " »").length === 1),
+        `(web-b) sans puits du panneau, les trois aveux du provisionnement ne partent plus chacun à l'avis avec sa face et sa phrase : ${JSON.stringify(avisB3)}`);
+    }
+
+    // ══ (c) POSE D'UN DROIT, (d) RETRAIT D'UN DROIT ═══════════════════════════════════════════════
+    servisW["GET /api/tenants/acme/grants"] = { corps: { tenant: "acme", grants: [{ user: "bob", role: "viewer" }] } };
+    const ouvrirLesAccesW = async (modT = modTW) => {
+      const liste = await chargerW(false, modT);
+      await gesteW(() => boutonW(liste, "Accès").onclick());
+      return cueillirW(liste, (e) => e.className === "tnt-grants")[0];
+    };
+    const formulaireW = (hote) => cueillirW(hote, (e) => e.tagName === "FORM")[0];
+    const poserW = async (corps, statut, modT = modTW) => {
+      const hote = await ouvrirLesAccesW(modT);
+      const form = formulaireW(hote);
+      instrumentW(!!form, "le chargeur réel ne rend pas le formulaire des accès");
+      cueillirW(form, (e) => e.tagName === "INPUT")[0].value = "carol";
+      servisW["POST /api/tenants/acme/grants"] = { statut, corps };
+      const g = await gesteW(() => form.onsubmit({ preventDefault() {} }));
+      return { hote, form: formulaireW(hote) || form, g };
+    };
+    const baseDeLaPose = { ok: true, tenant: "acme", user: "carol", role: "viewer" };
+    for (const [cas, corps, nEv] of [["aveu", { ...baseDeLaPose, [CLE_EV]: CAUSE_EV }, 1], ["nominal", baseDeLaPose, 0]]) {
+      const { hote, g } = await poserW(corps);
+      const ev = evenementsW(hote);
+      exiger(g.appels.includes("POST /api/tenants/acme/grants") && g.appels.includes("GET /api/tenants/acme/grants"), `(web-c-instrument) la pose n'atteint pas sa route ou ne repeint pas : ${JSON.stringify(g.appels)}`);
+      exiger(ev.length === nEv && (nEv === 0 || aveuEvenementJusteW(ev[0])) && g.avis.includes("accès accordé"),
+        `(web-c) pose, ${cas} : ${ev.length} aveu(x) d'événement sous la liste repeinte au lieu de ${nEv}, ou l'accès accordé n'est plus dit : « ${ev.map(nuW).join(" | ").slice(0, 300)} » ${JSON.stringify(g.avis)}`);
+    }
+    const retirerW = async (statut, corps, modT = modTW) => {
+      const hote = await ouvrirLesAccesW(modT);
+      const croix = cueillirW(hote, (e) => e.tagName === "BUTTON" && e.title === "Retirer l'accès")[0];
+      instrumentW(!!croix, "le chargeur réel ne rend pas le bouton de retrait d'un accès");
+      servisW["DELETE /api/tenants/acme/grants/bob"] = { statut, corps };
+      const g = await gesteW(() => croix.onclick());
+      return { hote, g };
+    };
+    const baseDuRetrait = { ok: true, tenant: "acme", user: "bob", removed: true };
+    for (const [cas, statut, corps, nEv, nTr] of [
+      ["deux cent quatre sans corps", 204, "", 0, 0],
+      ["deux cents, aveu d'événement seul", 200, { ...baseDuRetrait, [CLE_EV]: CAUSE_EV }, 1, 0],
+      ["deux cents, aveu d'événement servi sans phrase", 200, { ...baseDuRetrait, [CLE_EV]: "" }, 1, 0],
+      ["deux cents, les deux aveux", 200, { ...baseDuRetrait, [CLE_EV]: CAUSE_EV, [CLE_TRACE]: CAUSE_TRACE + " (x)" }, 1, 1],
+      ["deux cents d'un démon antérieur, sans aveu", 200, baseDuRetrait, 0, 0],
+    ]) {
+      const { hote, g } = await retirerW(statut, corps);
+      const ev = evenementsW(hote), tr = tracesW(hote);
+      exiger(g.appels.includes("DELETE /api/tenants/acme/grants/bob") && g.rejet === null && g.avis.includes("accès retiré") && !g.avis.some((a) => a.startsWith(geste_refuse) || /échec|failed/i.test(a)),
+        `(web-d) retrait, ${cas} : il n'est plus dit comme un retrait, ou se dit en échec : ${JSON.stringify(g.avis)} ${JSON.stringify(g.appels)}`);
+      exiger(ev.length === nEv && (nEv === 0 || aveuEvenementJusteW(ev[0], corps[CLE_EV])) && tr.length === nTr,
+        `(web-d) retrait, ${cas} : ${ev.length} aveu(x) d'événement au lieu de ${nEv}, ${tr.length} trace(s) au lieu de ${nTr} : « ${ev.concat(tr).map(nuW).join(" | ").slice(0, 300)} »`);
+    }
+
+    // ══ (e) LES CINQ CENT TROIS NOMMÉS : DES REFUS, RIEN N'A CHANGÉ ; LE QUATRE CENT QUATRE RESTE « TENANT INCONNU » ═
+    for (const [suspendu, texteBouton, route] of [[false, "Suspendre", "suspend"], [true, "Réactiver", "unsuspend"]]) {
+      {
+        const liste = await chargerW(suspendu);
+        servisW[`POST /api/tenants/acme/${route}`] = { statut: 503, corps: { error: CAUSE.tenant_non_lu_bascule, id: "plume-e7-0" } };
+        const g = await gesteW(() => boutonW(liste, texteBouton).onclick());
+        const r = refusW(panneauW(), "tenant_non_lu_bascule");
+        exiger(r.length === 1 && refusJusteW(r[0], "tenant_non_lu_bascule", CAUSE.tenant_non_lu_bascule) && evenementsW(panneauW()).length === 0,
+          `(web-e) « ${texteBouton} » sur un tenant NON LU n'est pas un refus à DEUX nœuds : « ${r.map(nuW).join(" | ").slice(0, 300)} »`);
+        exiger(g.rejet === null && !g.avis.some((a) => /tenant (suspendu|réactivé)/.test(a)), `(web-e-négatif) un SUCCÈS est dit sur une bascule non faite : ${JSON.stringify(g.avis)}`);
+      }
+      const liste = await chargerW(suspendu);
+      servisW[`POST /api/tenants/acme/${route}`] = { statut: 404, corps: "tenant inconnu" };
+      const g = await gesteW(() => boutonW(liste, texteBouton).onclick());
+      exiger(g.avis.length === 1 && g.avis[0] === geste_refuse + " « tenant inconnu »" && refusW(panneauW(), "tenant_non_lu_bascule").length === 0,
+        `(web-e) le quatre cent quatre de « ${texteBouton} » ne dit plus « tenant inconnu » par la phrase du geste refusé, ou prend la face du tenant non lu : ${JSON.stringify(g.avis)}`);
+    }
+    for (const [cle, servie] of [["droit_non_pose", CAUSE.droit_non_pose], ["tenant_non_lu_droit", CAUSE.tenant_non_lu_droit],
+      ["dernier_administrateur_non_etabli", CAUSE.dernier_administrateur_non_etabli + " (database is locked)"]]) {
+      const { form, g } = await poserW({ error: servie, id: "plume-e8-0" }, 503);
+      const r = refusW(form, cle);
+      exiger(r.length === 1 && refusJusteW(r[0], cle, servie),
+        `(web-e) la pose refusée « ${cle} » n'est pas dite à DEUX nœuds dans la ligne du formulaire : « ${nuW(form).slice(0, 300)} »`);
+      exiger(g.rejet === null && !g.avis.includes("accès accordé"), `(web-e-négatif) la pose refusée « ${cle} » est dite ACCORDÉE : ${JSON.stringify(g.avis)}`);
+    }
+    {
+      const { form } = await poserW("tenant inconnu", 404);
+      exiger(nuW(form).includes(geste_refuse + " « tenant inconnu »") && refusW(form, "tenant_non_lu_droit").length === 0,
+        `(web-e) le quatre cent quatre de la pose ne dit plus « tenant inconnu » par la phrase du geste refusé : « ${nuW(form).slice(0, 300)} »`);
+    }
+    for (const [cle, servie] of [["droit_non_lu_retrait", CAUSE.droit_non_lu_retrait],
+      ["dernier_administrateur_non_etabli", CAUSE.dernier_administrateur_non_etabli + " (database is locked)"]]) {
+      const { hote, g } = await retirerW(503, { error: servie, id: "plume-e9-0" });
+      const r = refusW(hote, cle);
+      exiger(r.length === 1 && refusJusteW(r[0], cle, servie),
+        `(web-e) le retrait refusé « ${cle} » n'est pas un refus à DEUX nœuds sous la liste : « ${r.map(nuW).join(" | ").slice(0, 300)} »`);
+      exiger(g.rejet === null && !g.avis.includes("accès retiré") && nuW(hote).includes("bob"), `(web-e-négatif) la console dit « accès retiré » d'un accès TOUJOURS en place : ${JSON.stringify(g.avis)}`);
+    }
+    // DEUX RETRAITS REFUSÉS DE SUITE, SANS REPEINTE de la liste (le refus ne recharge rien) : le second geste cueille l'aveu
+    // du premier, quelle que soit sa face, et la liste ne porte que le dernier — jamais un aveu périmé empilé dessous.
+    const CLES_DU_RETRAIT = ["retrait_de_droit_non_ecrit", "droit_non_lu_retrait", "dernier_administrateur_non_etabli"];
+    const RETRAIT_NON_ECRIT = litteralW(TENANTSW, "CAUSE_RETRAIT_DE_DROIT_NON_ECRIT");
+    instrumentW(modTW.OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT.test(RETRAIT_NON_ECRIT), "`CAUSE_RETRAIT_DE_DROIT_NON_ECRIT` n'est plus lisible dans daemon/src/tenants.rs");
+    const servieDuRetrait = { retrait_de_droit_non_ecrit: RETRAIT_NON_ECRIT + " (disk full)", droit_non_lu_retrait: CAUSE.droit_non_lu_retrait, dernier_administrateur_non_etabli: CAUSE.dernier_administrateur_non_etabli + " (x)" };
+    for (const [premier, second] of [["droit_non_lu_retrait", "droit_non_lu_retrait"], ["dernier_administrateur_non_etabli", "dernier_administrateur_non_etabli"],
+      ["droit_non_lu_retrait", "retrait_de_droit_non_ecrit"], ["retrait_de_droit_non_ecrit", "dernier_administrateur_non_etabli"]]) {
+      const { hote } = await retirerW(503, { error: servieDuRetrait[premier], id: "plume-e9-1" });
+      exiger(refusW(hote, premier).length === 1, `(web-e-instrument) le premier retrait refusé « ${premier} » n'a pas posé son aveu : la cueillette ne serait pas jouée`);
+      const croix = cueillirW(hote, (e) => e.tagName === "BUTTON" && e.title === "Retirer l'accès")[0];
+      servisW["DELETE /api/tenants/acme/grants/bob"] = { statut: 503, corps: { error: servieDuRetrait[second], id: "plume-e9-2" } };
+      const g = await gesteW(() => croix.onclick());
+      const poses = CLES_DU_RETRAIT.flatMap((k) => refusW(hote, k));
+      exiger(!g.appels.includes("GET /api/tenants/acme/grants") && poses.length === 1 && refusJusteW(poses[0], second, servieDuRetrait[second]),
+        `(web-e) deux retraits refusés de suite (« ${premier} » puis « ${second} »), sans repeinte : ${poses.length} aveu(x) sous la liste au lieu du seul dernier : « ${poses.map(nuW).join(" | ").slice(0, 300)} » ${JSON.stringify(g.appels)}`);
+    }
+
+    // ══ (i) CHAQUE REFUS NOMMÉ AFFICHÉ DIT SA CONSÉQUENCE, PAR CLÉ, DANS LES DEUX LANGUES ═════════════
+    // Les sept refus que les trois gestes aiguillent, joués sur l'instance française PUIS sur l'anglaise : le texte AFFICHÉ au
+    // premier nœud porte le fragment de SA clé (écrit au (g2), jamais relu de la table) et celui d'aucune autre ; la phrase
+    // servie suit. Un refus qui prendrait la face d'un autre — même table, ou aiguillage — rougit sur sa clé.
+    const BASCULE_NON_ECRITE = litteralW(TENANTSW, "CAUSE_BASCULE_DE_SUSPENSION_NON_ECRITE");
+    instrumentW(modTW.OUVERTURE_DE_LA_BASCULE_NON_ECRITE.test(BASCULE_NON_ECRITE), "`CAUSE_BASCULE_DE_SUSPENSION_NON_ECRITE` n'est plus lisible dans daemon/src/tenants.rs");
+    const REFUS_JOUES_W = [
+      ["bascule", "bascule_non_ecrite", BASCULE_NON_ECRITE + " (disk full)"],
+      ["bascule", "tenant_non_lu_bascule", CAUSE.tenant_non_lu_bascule + " (database is locked)"],
+      ["pose", "droit_non_pose", CAUSE.droit_non_pose],
+      ["pose", "tenant_non_lu_droit", CAUSE.tenant_non_lu_droit],
+      ["pose", "dernier_administrateur_non_etabli", CAUSE.dernier_administrateur_non_etabli + " (database is locked)"],
+      ["retrait", "retrait_de_droit_non_ecrit", RETRAIT_NON_ECRIT + " (disk full)"],
+      ["retrait", "droit_non_lu_retrait", CAUSE.droit_non_lu_retrait],
+      ["retrait", "dernier_administrateur_non_etabli", CAUSE.dernier_administrateur_non_etabli + " (x)"],
+    ];
+    for (const [langue, modT] of [["fr", modTW], ["en", modTEnW]]) {
+      for (const [geste, cle, servie] of REFUS_JOUES_W) {
+        viderLePanneauW();
+        let hote = null;
+        if (geste === "bascule") {
+          const liste = await chargerW(false, modT);
+          servisW["POST /api/tenants/acme/suspend"] = { statut: 503, corps: { error: servie, id: "plume-e7-1" } };
+          await gesteW(() => boutonW(liste, "Suspendre").onclick());
+          hote = panneauW();
+        } else if (geste === "pose") {
+          hote = (await poserW({ error: servie, id: "plume-e8-1" }, 503, modT)).form;
+        } else {
+          hote = (await retirerW(503, { error: servie, id: "plume-e9-3" }, modT)).hote;
+        }
+        const r = refusW(hote, cle);
+        const dit = nuW(r[0] && r[0].children[0]);
+        const etrangers = fragmentsEtrangersW(langue, cle, dit);
+        exiger(r.length === 1 && dit.includes(CONSEQUENCES_W[cle][langue]) && etrangers.length === 0 && nuW(r[0]).includes("« " + servie + " »"),
+          `(web-i) ${geste} refusé « ${cle} » (${langue}) : le texte affiché ne dit pas SA conséquence (« ${CONSEQUENCES_W[cle][langue]} »), dit celle d'une autre clé (${etrangers.join(", ")}), ou perd la phrase servie : « ${r.map(nuW).join(" | ").slice(0, 300)} »`);
+      }
+    }
+
+    // ══ (h) LA CLÉ N'EST ÉCRITE QU'À UN ENDROIT ═══════════════════════════════════════════════════
+    const appelantsW = (motif) => CORPUS_WEB.filter(([f, src]) => f.endsWith(".js") && motif.test(src.replace(/\/\/[^\n]*/g, ""))).map(([f]) => f).sort().join(",");
+    exiger(appelantsW(/['"`]evenement_du_tenant_non_ecrit['"`]/) === "multitenant.js",
+      `(web-h) la clé \`evenement_du_tenant_non_ecrit\` est écrite ailleurs que dans web/multitenant.js, ou nulle part : « ${appelantsW(/['"`]evenement_du_tenant_non_ecrit['"`]/)} »`);
+  } finally {
+    globalThis.fetch = fetchOrigineW;
+    globalThis.setTimeout = minuterieOrigineW;
+    SW.isAdmin = etatOrigineW.admin; SW.AUTH = etatOrigineW.auth; SW.MY_TENANTS = etatOrigineW.mes; SW.CURRENT_TENANT = etatOrigineW.courant;
+    SEnW.isAdmin = etatOrigineEnW.admin; SEnW.AUTH = etatOrigineEnW.auth; SEnW.MY_TENANTS = etatOrigineEnW.mes; SEnW.CURRENT_TENANT = etatOrigineEnW.courant;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    cueillirW(document.querySelector("#tenants-panel"), (e) => e.getAttribute && (e.getAttribute("data-trace-manquante") || e.getAttribute("data-refus-du-plan-de-controle") || e.getAttribute("data-evenement-du-tenant-non-ecrit"))).forEach((e) => e.remove());
+  }
+  if (echecs.length !== echecsAvantWeb) console.log(`(web) EN ÉCHEC — ${echecs.length - echecsAvantWeb} écart(s), dits ci-dessus`);
+  else console.log("(web) OK — `P10.30-d` (volet console) : la suspension, la réactivation, le provisionnement, la pose et le retrait d'un droit lisent l'aveu `evenement_du_tenant_non_ecrit` : présent, il se dit à DEUX nœuds — la phrase de la console, la phrase fixe servie — à côté d'un succès qui reste dit, distinct de la trace manquante ; absent (geste entier ou démon antérieur), rien ne s'ajoute. Le retrait lit ses deux succès — deux cent quatre nu, deux cents avec un aveu, deux aveux ou aucun — sans jamais dire « échec ». Un aveu servi sans phrase se dit encore ; sans puits du panneau, il part à l'avis. Les cinq cent trois nommés (bascule d'un tenant non lu, pose non écrite ou sur un tenant non lu, retrait d'un droit non lu, anti-verrouillage non lu à la pose et au retrait) se disent comme des REFUS avec leur cause, sans avis de succès, l'accès toujours listé ; deux retraits refusés de suite ne laissent que le dernier aveu ; le quatre cent quatre garde « tenant inconnu ». Les cinq ouvertures nues ne reconnaissent aucune autre phrase du démon que la sœur SCIM nommée ; les faces existent en français et en anglais. Par clé : chaque refus nommé affiché (sept, trois gestes) dit SA conséquence et celle d'aucune autre, en français et en anglais ; le provisionnement dit chacun de ses trois aveux dans les huit combinaisons, aucun n'en taisant un autre.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

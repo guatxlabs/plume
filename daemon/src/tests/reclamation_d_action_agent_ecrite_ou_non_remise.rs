@@ -18,8 +18,8 @@
 // CE QU'ILS NE TIENNENT PAS — LE RESTE OUVERT DE `P10.21-n`, que ce lot n'avance pas : une riposte encore
 // ré-exécutée après l'abandon de son verdict (l'agent `collectors/respond.sh` ; le central qui re-sert une
 // riposte dont un verdict a été tenté), et la fenêtre de péremption de la réclamation
-// (`RECLAMATION_PERIMEE_S`), à mesurer d'abord. Ni : la condition de réclamation n'est pas rejouée dans
-// l'UPDATE (course avec le responder local, une autre connexion).
+// (`RECLAMATION_PERIMEE_S`), à mesurer d'abord. La condition de réclamation rejouée dans l'UPDATE (course avec
+// le responder local, une autre connexion) est tenue depuis par `reclamation_d_action_rejoue_sa_condition.rs`.
 // =====================================================================================
 
 /// Statut + corps texte d'une réponse.

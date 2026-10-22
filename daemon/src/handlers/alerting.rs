@@ -333,11 +333,33 @@ pub(crate) fn plan_dispatch(labels: &HashMap<String, String>, policies: &[Policy
 // 8) FIRING AVANCÉ — run_advanced_rules (isolé, comme run_risk_rules ; mode-0 = 0 ligne due)
 // ======================================================================================
 
+/// `P10.32-x` — écrit l'état d'une règle avancée ÉVALUÉE (`last_run`, `last_value`). Un refus du moteur est dit au
+/// journal (la cause, ni valeur ni requête) et rendu `false` : l'appelant le compte (une règle, un abandon).
+fn ecrire_l_etat_de_la_regle_avancee(conn: &Connection, id: i64, now_ts: i64, val: f64) -> bool {
+    match conn.execute("UPDATE rule SET last_run=?1, last_value=?2 WHERE id=?3", params![now_ts, val, id]) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("[alerting] WARN règle avancée #{id} : son évaluation n'a pas pu être écrite ({e}) — last_run et last_value restent ceux d'avant, la règle est due dès le tick suivant");
+            false
+        }
+    }
+}
+
+/// `P10.32-x` — replanifie une règle avancée ABANDONNÉE (compilation ou évaluation ratée : `last_run` seul, comme
+/// avant). Son abandon est déjà compté par l'appelant ; un refus du moteur est dit au journal, sans second compte.
+fn replanifier_la_regle_avancee_abandonnee(conn: &Connection, id: i64, now_ts: i64) {
+    if let Err(e) = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now_ts, id]) {
+        eprintln!("[alerting] WARN règle avancée #{id} : sa replanification après abandon n'a pas pu être écrite ({e}) — elle sera réévaluée dès le tick suivant");
+    }
+}
+
 /// Évalue les règles « avancées » (fenêtre de suppression / throttle-by-field / per-result) EXCLUES de
 /// `run_due_rules`. INERTE en mode 0 : aucune règle ne porte ces réglages -> le SELECT ne rend 0 ligne ->
 /// retour immédiat (run_due_rules reste byte-identique car son WHERE exclut ces mêmes règles).
 /// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des règles
-/// avancées dues n'a pas pu être lue, `Lue(n)` = règles dues abandonnées ce tick.
+/// avancées dues n'a pas pu être lue, `Lue(n)` = règles dues abandonnées ce tick (non évaluées, ou dont l'alerte,
+/// l'état, `last_fired`, la résolution ou la purge du throttle a été refusé par le moteur — `P10.32-x`). Le throttle
+/// refusé d'une alerte ENTRÉE est dit au journal sans être compté : l'alerte existe, le refus est bruyant, pas aveugle.
 pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnees = 0u32;
@@ -377,30 +399,41 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
         let sql = match rule_sql(&query, is_soql, window_s) {
             Ok(s) => s,
             Err(_) => {
-                abandonnees += 1;
+                abandonnees += 1; // compilation refusée : une règle non évaluée, comptée ; un refus de sa replanification est dit, pas recompté
                 let conn = db.lock();
-                let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now_ts, id]);
+                replanifier_la_regle_avancee_abandonnee(&conn, id, now_ts);
                 continue;
             }
         };
         // scalaire décide s'il y a franchissement (comme run_due_rules) — fail-closed si éval échoue.
         let scalar = eval_value_budget(db_path, &sql, query_budget_interactive_ms());
         let Some(val) = scalar else {
-            abandonnees += 1;
+            abandonnees += 1; // évaluation ratée : comptée ; un refus de sa replanification est dit, pas recompté
             let conn = db.lock();
-            let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now_ts, id]);
+            replanifier_la_regle_avancee_abandonnee(&conn, id, now_ts);
             continue;
         };
-        {
-            let conn = db.lock();
-            let _ = conn.execute("UPDATE rule SET last_run=?1, last_value=?2 WHERE id=?3", params![now_ts, val, id]);
-        }
+        // `P10.32-x` — L'ÉTAT DE LA RÈGLE N'AVANCE PLUS ICI. `last_run`/`last_value` étaient posés (en `let _`) AVANT les
+        // alertes : une alerte refusée laissait la règle avancée, donc muette pendant tout `interval_s`. Ils sont
+        // désormais écrits par chaque branche, APRÈS ce qu'elle doit écrire d'abord (même ordre que `run_due_rules`).
+        // Chaque écriture refusée est dite au journal et comptée : une règle, un abandon, quel que soit le nombre de refus.
         if !cmp_op(val, &op, threshold) {
             // retour sous le seuil -> résout les alertes ouvertes de CETTE règle (préfixe de dédup) et purge le throttle.
+            // Comme le jumeau (`consigner_evaluation_reussie`) : l'état d'abord, la résolution ensuite, refus comptés.
             let conn = db.lock();
+            let mut ecriture_refusee = !ecrire_l_etat_de_la_regle_avancee(&conn, id, now_ts, val);
             let like = format!("rule-{id}::%");
-            let _ = conn.execute("UPDATE alert SET status='resolved', dedup=NULL WHERE dedup LIKE ?1 AND status IN ('new','ack')", params![like]);
-            let _ = conn.execute("DELETE FROM alert_throttle WHERE rule_id=?1", params![id]);
+            if let Err(e) = conn.execute("UPDATE alert SET status='resolved', dedup=NULL WHERE dedup LIKE ?1 AND status IN ('new','ack')", params![like]) {
+                eprintln!("[alerting] WARN règle avancée #{id} : ses alertes ouvertes n'ont pas pu être résolues ({e}) — elles restent ouvertes sur une règle revenue sous le seuil");
+                ecriture_refusee = true;
+            }
+            if let Err(e) = conn.execute("DELETE FROM alert_throttle WHERE rule_id=?1", params![id]) {
+                eprintln!("[alerting] WARN règle avancée #{id} : son throttle n'a pas pu être purgé ({e}) — un prochain tir peut rester muté par la fenêtre de suppression");
+                ecriture_refusee = true;
+            }
+            if ecriture_refusee {
+                abandonnees += 1; // une règle, un abandon
+            }
             continue;
         }
         // fenêtre de throttle : suppress_window_s si posé, sinon la fenêtre d'évaluation de la règle.
@@ -415,6 +448,10 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
                 }
                 Err(_) => {
                     abandonnees += 1; // fail-closed : pas de fabrication d'unités sur éval en erreur — et c'est COMPTÉ
+                    // Replanifiée comme avant (`last_run` ET `last_value`, posés avant `P10.32-x`) : un refus est dit
+                    // par l'écrivain, et l'abandon est déjà compté (une règle, un abandon).
+                    let conn = db.lock();
+                    ecrire_l_etat_de_la_regle_avancee(&conn, id, now_ts, val);
                     continue;
                 }
             }
@@ -426,13 +463,17 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
         // alerte est entrée (`INSERT OR IGNORE` réussi : une ligne écrite, ou la dédup d'une alerte encore ouverte).
         // Avant, il l'était sans condition : une alerte refusée par le moteur (verrou, disque, trigger) laissait un
         // throttle qui mutait le tir suivant pendant `win` — l'alerte n'existait ni à ce tour ni au suivant. Une
-        // écriture refusée laisse le throttle absent, sa cause va au journal seul, et l'unité tire de nouveau au prochain
-        // intervalle de la règle. Le bilan du tick compte des RÈGLES (contrat ci-dessus) : une règle dont au moins une
-        // alerte a été refusée compte pour UN abandon, quel que soit le nombre de ses unités refusées. `last_fired`
-        // n'est pas écrit si aucune alerte de ce tour n'est entrée alors qu'une au moins a été refusée ; il l'est,
-        // comme avant, quand toutes les unités sont muettes (aucun refus) ou quand une alerte au moins est entrée.
+        // écriture refusée laisse le throttle absent, sa cause va au journal seul. Le bilan du tick compte des RÈGLES
+        // (contrat ci-dessus) : une règle dont au moins une écriture a été refusée compte pour UN abandon, quel que soit
+        // le nombre de ses refus. `last_fired` n'est pas écrit si aucune alerte de ce tour n'est entrée alors qu'une au
+        // moins a été refusée ; il l'est, comme avant, quand toutes les unités sont muettes (aucun refus) ou quand une
+        // alerte au moins est entrée.
+        // `P10.32-x` — `last_run`/`last_value` ne sont écrits qu'APRÈS les alertes, et seulement si AUCUNE n'a été
+        // refusée : une alerte refusée laisse l'état d'avant, la règle reste due et se rejoue dès le tick suivant (les
+        // unités entrées sont alors mutées par leur throttle ou écartées par la dédup, la refusée retente).
         let mut alertes_ecrites = 0u32;
         let mut alertes_refusees = 0u32;
+        let mut ecriture_refusee = false;
         for unit in units {
             // Le throttle lu en TROIS issues : absence établie = aucun tir antérieur (comme avant) ; lecture ratée = tir
             // quand même (sens BRUYANT conservé, la dédup le borne), dite au journal. Elle n'est PAS un abandon : l'unité
@@ -478,20 +519,34 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
                 params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, a_src, a_pid, a_host, crate::fondement::Fondement::Regle.mot()],
             ) {
                 alertes_refusees += 1;
-                eprintln!("[alerting] WARN règle avancée #{id} : l'alerte d'une unité n'a pas pu être écrite ({e}) — throttle non posé, l'unité tirera de nouveau au prochain intervalle");
+                eprintln!("[alerting] WARN règle avancée #{id} : l'alerte d'une unité n'a pas pu être écrite ({e}) — ni son throttle ni last_run/last_value ne sont posés : la règle est due dès le tick suivant");
                 continue;
             }
             alertes_ecrites += 1;
-            let _ = conn.execute(
+            // Le throttle d'une alerte ENTRÉE : refusé, l'alerte existe mais sa fenêtre de suppression n'est pas posée (sens
+            // BRUYANT : l'unité peut réalerter au prochain intervalle, la dédup le borne tant que l'alerte reste ouverte).
+            // Dit au journal, PAS compté : le bilan compte les règles non évaluées ou dont l'alerte ou l'état n'est pas écrit,
+            // et un throttle illisible ou refusé n'éteint aucune détection (même sens que sa lecture ratée, ci-dessus).
+            if let Err(e) = conn.execute(
                 "INSERT OR REPLACE INTO alert_throttle(rule_id,throttle_key,last_fire) VALUES(?1,?2,?3)",
                 params![id, unit.key, now_ts],
-            );
+            ) {
+                eprintln!("[alerting] WARN règle avancée #{id} : le throttle d'une unité dont l'alerte est entrée n'a pas pu être écrit ({e}) — sa fenêtre de suppression n'est pas posée");
+            }
         }
         if alertes_refusees > 0 {
-            abandonnees += 1; // une règle, un abandon
+            ecriture_refusee = true;
+        } else if !ecrire_l_etat_de_la_regle_avancee(&conn, id, now_ts, val) {
+            ecriture_refusee = true;
         }
         if alertes_refusees == 0 || alertes_ecrites > 0 {
-            let _ = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]);
+            if let Err(e) = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]) {
+                eprintln!("[alerting] WARN règle avancée #{id} : son dernier tir n'a pas pu être écrit ({e}) — last_fired reste celui d'avant");
+                ecriture_refusee = true;
+            }
+        }
+        if ecriture_refusee {
+            abandonnees += 1; // une règle, un abandon
         }
     }
     crate::mesure_environnement::Mesure::Lue(abandonnees)

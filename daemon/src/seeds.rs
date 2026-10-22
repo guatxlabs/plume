@@ -228,31 +228,135 @@ pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i6
 /// `P10.20-w` (rang six) — REND `true` SEULEMENT si le semis vient d'être écrit ET validé (COMMIT réussi) à cet appel :
 /// c'est ce qui permet à un semis audité (`seed_ti_alert_rules`, `seed_risk_rules`) de n'attester qu'un semis VALIDÉ.
 /// `false` : déjà semé (drapeau présent), ou refusé (rien conservé, aveu déjà écrit).
-fn semer_sous_son_drapeau(conn: &Connection, drapeau: &str, semis: impl FnOnce(&Connection) -> rusqlite::Result<()>) -> bool {
-    if conn.query_row("SELECT value FROM meta WHERE key=?1", params![drapeau], |r| r.get::<_, String>(0)).is_ok() {
-        return false;
+///
+/// `P10.28-l` — LE MÊME TOUT-OU-RIEN POUR LES SEMIS PAR NOM (`PointDeReprise`) : sans drapeau, c'est l'existence du nom
+/// qui dit le semis fait ; la transaction rend cette existence entière, et un refus y est en plus COMPTÉ
+/// (`compter_un_geste_de_fond_non_valide`, journal `seed`), une présence non lue comprise.
+fn semer_sous_son_drapeau<'a>(
+    conn: &Connection,
+    reprise: impl Into<PointDeReprise<'a>>,
+    semis: impl FnOnce(&Connection) -> rusqlite::Result<()>,
+) -> bool {
+    let reprise = reprise.into();
+    match reprise.deja_seme(conn) {
+        Ok(true) => return false,
+        Ok(false) => {}
+        Err(e) => {
+            // `P10.28-l` — une lecture ratée n'est ni « présent » (le semis serait perdu en silence) ni « absent » (un
+            // second tableau du même nom serait écrit) : rien n'est écrit, c'est compté et dit, le démarrage suivant relit.
+            if let Some(geste) = reprise.geste() {
+                crate::comptes_de_transaction::compter_un_geste_de_fond_non_valide(conn, JOURNAL_DES_SEMIS, geste, ETAPE_PRESENCE_NON_LUE, &e);
+            }
+            eprintln!("[seed] {reprise} NON semé : sa présence n'a pas pu être lue ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
+            return false;
+        }
     }
     let txn = match Txn::begin(conn) {
         Ok(txn) => txn,
         Err(e) => {
             // `P10.27-h` — ce `BEGIN` refusé garde sa phrase, et il est compté comme tout `BEGIN` refusé sur l'écrivain.
             crate::comptes_de_transaction::compter_un_begin_refuse(conn, "seed", &e);
-            eprintln!("[seed] `{drapeau}` NON semé : transaction refusée ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
+            eprintln!("[seed] {reprise} NON semé : transaction refusée ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
             return false;
         }
     };
-    let ecrit = semis(conn)
-        .and_then(|()| conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,'1')", params![drapeau]).and_then(une_ligne_ecrite))
-        .and_then(|()| txn.commit());
+    let ecrit = semis(conn).and_then(|()| reprise.marquer(conn)).and_then(|()| txn.commit());
     if let Err(e) = ecrit {
+        if let Some(geste) = reprise.geste() {
+            crate::comptes_de_transaction::compter_un_geste_de_fond_non_valide(conn, JOURNAL_DES_SEMIS, geste, ETAPE_ECRITURE_REFUSEE, &e);
+        }
         eprintln!(
-            "[seed] `{drapeau}` NON semé : une écriture a été refusée ({e}) — RIEN n'est conservé (ni tableau, ni panneau, ni \
-             drapeau), le semis sera retenté au prochain démarrage"
+            "[seed] {reprise} NON semé : une écriture a été refusée ({e}) — RIEN n'est conservé (ni tableau, ni panneau, ni \
+             règle, ni drapeau), le semis sera retenté au prochain démarrage"
         );
         return false;
     }
     true
 }
+
+/// `P10.28-l` — CE QUI DIT QU'UN SEMIS EST DÉJÀ FAIT. Un drapeau `meta` posé en dernier dans la transaction du semis
+/// (`P10.28-e`), ou, pour les semis idempotents PAR NOM (sans drapeau), l'existence du tableau de bord ou de la règle de
+/// ce nom : la transaction du semis rend cette existence ENTIÈRE (en-tête et panneaux, ou rien), donc un nom présent est
+/// un semis fait.
+enum PointDeReprise<'a> {
+    /// Le drapeau `meta` du semis, écrit en dernier dans sa transaction.
+    Drapeau(&'a str),
+    /// Un tableau de bord de ce nom (`seed_dashboard_head_named`).
+    TableauNomme(&'a str),
+    /// Une règle de ce nom (`seed_malware_rule`).
+    RegleNommee(&'a str),
+}
+
+impl<'a> From<&'a str> for PointDeReprise<'a> {
+    fn from(drapeau: &'a str) -> Self {
+        PointDeReprise::Drapeau(drapeau)
+    }
+}
+
+impl<'a> From<&'a String> for PointDeReprise<'a> {
+    fn from(drapeau: &'a String) -> Self {
+        PointDeReprise::Drapeau(drapeau.as_str())
+    }
+}
+
+impl std::fmt::Display for PointDeReprise<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PointDeReprise::Drapeau(drapeau) => write!(f, "`{drapeau}`"),
+            PointDeReprise::TableauNomme(nom) => write!(f, "le tableau de bord « {nom} »"),
+            PointDeReprise::RegleNommee(nom) => write!(f, "la règle « {nom} »"),
+        }
+    }
+}
+
+impl PointDeReprise<'_> {
+    /// `Ok(true)` : déjà semé. Pour un drapeau, la lecture d'avant est gardée telle quelle (une lecture ratée vaut
+    /// absence ; hors du périmètre de `P10.28-l`, dit dans les restes). Pour un nom, les trois issues sont distinctes.
+    fn deja_seme(&self, conn: &Connection) -> rusqlite::Result<bool> {
+        use rusqlite::OptionalExtension as _;
+        match self {
+            PointDeReprise::Drapeau(drapeau) => {
+                Ok(conn.query_row("SELECT value FROM meta WHERE key=?1", params![drapeau], |r| r.get::<_, String>(0)).is_ok())
+            }
+            PointDeReprise::TableauNomme(nom) => {
+                conn.query_row("SELECT 1 FROM dashboard WHERE name=?1", params![nom], |r| r.get::<_, i64>(0)).optional().map(|l| l.is_some())
+            }
+            PointDeReprise::RegleNommee(nom) => {
+                conn.query_row("SELECT 1 FROM rule WHERE name=?1", params![nom], |r| r.get::<_, i64>(0)).optional().map(|l| l.is_some())
+            }
+        }
+    }
+
+    /// La dernière écriture de la transaction : le drapeau (`Ok(0)` est un refus) ; rien pour un semis par nom, dont
+    /// les lignes écrites SONT la marque.
+    fn marquer(&self, conn: &Connection) -> rusqlite::Result<()> {
+        match self {
+            PointDeReprise::Drapeau(drapeau) => {
+                conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,'1')", params![drapeau]).and_then(une_ligne_ecrite)
+            }
+            PointDeReprise::TableauNomme(_) | PointDeReprise::RegleNommee(_) => Ok(()),
+        }
+    }
+
+    /// Le geste compté quand un semis par nom n'est pas validé (`comptes_de_transaction`, sous `scheduler`) ; `None`
+    /// pour un semis sous drapeau, dont le refus d'écriture reste dit au journal seul, comme avant.
+    fn geste(&self) -> Option<&'static str> {
+        match self {
+            PointDeReprise::Drapeau(_) => None,
+            PointDeReprise::TableauNomme(_) => Some(GESTE_TABLEAU_SEME_PAR_NOM),
+            PointDeReprise::RegleNommee(_) => Some(GESTE_REGLE_SEMEE_PAR_NOM),
+        }
+    }
+}
+
+/// Le journal et les gestes sous lesquels un semis par nom non validé est compté (`P10.28-l`).
+const JOURNAL_DES_SEMIS: &str = "seed";
+pub(crate) const GESTE_TABLEAU_SEME_PAR_NOM: &str = "tableau de bord semé par nom";
+pub(crate) const GESTE_REGLE_SEMEE_PAR_NOM: &str = "règle semée par nom";
+/// L'étape : la présence du nom n'a pas pu être lue (rien n'est écrit).
+pub(crate) const ETAPE_PRESENCE_NON_LUE: &str = "présence non lue";
+/// L'étape : une écriture du semis, ou son `COMMIT`, a été refusée (rien n'est conservé).
+pub(crate) const ETAPE_ECRITURE_REFUSEE: &str = "écriture ou COMMIT refusé";
 
 /// `P10.20-w` (rang six, correction) — une écriture de semis qui rend `Ok(0)` (un déclencheur `RAISE(IGNORE)`, un
 /// `INSERT OR IGNORE` muet) n'a RIEN écrit : elle est traitée comme un refus, et la transaction du semis est annulée.
@@ -285,25 +389,28 @@ pub(crate) fn seed_dashboard_head(
 }
 
 /// PROLOGUE des seeds de dashboard idempotents PAR NOM (l'AUTRE moitié : `web`/`mail`/`dataaccess`/`dataacl`/
-/// `sca`/`vuln` dédupent sur l'existence du DASHBOARD, sans méta-flag). Retourne `Some(did)` ou `None` si un
-/// dashboard de ce nom existe déjà / INSERT échoué. Parametré (`name=?1`) -> plus sûr que l'ancien inline
-/// SQL-escaped (`name='Carte d''accès…'`). Panel-loop préservé dans chaque fonction.
-pub(crate) fn seed_dashboard_head_named(conn: &Connection, name: &str, view: &str, collapsed: bool) -> Option<i64> {
-    if conn.query_row("SELECT 1 FROM dashboard WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).is_ok() {
-        return None;
-    }
-    if conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES(?1,?2,'shared')", params![name, now()]).is_err() {
-        return None;
-    }
-    let did = conn.last_insert_rowid();
-    seed_dashboard_attach(conn, did, view, collapsed);
-    Some(did)
-}
-
-/// Rattache un dashboard à sa vue (repliée ou non) — commun aux deux prologues. Le prologue idempotent PAR NOM
-/// (`seed_dashboard_head_named`, hors du périmètre de `P10.28-e`) ignore toujours l'échec, comme avant.
-fn seed_dashboard_attach(conn: &Connection, did: i64, view: &str, collapsed: bool) {
-    let _ = rattacher_le_tableau_a_sa_vue(conn, did, view, collapsed);
+/// `sca`/`vuln`/`kube_rbac`/`minio`/`vault`/conformité dédupent sur l'existence du DASHBOARD, sans méta-flag).
+/// Parametré (`name=?1`) -> plus sûr que l'ancien inline SQL-escaped (`name='Carte d''accès…'`). Les panneaux sont
+/// écrits par `panneaux` (données PRÉSERVÉES telles quelles dans chaque appelant).
+///
+/// `P10.28-l` — AVANT : l'`INSERT` du tableau, puis le rattachement à la vue et chaque panneau en `let _` : un panneau
+/// refusé laissait un tableau PARTIEL (ou vide) que l'idempotence par nom tenait pour semé, jamais réparé. DÉSORMAIS :
+/// `semer_sous_son_drapeau` avec le nom pour point de reprise — en-tête, rattachement et panneaux dans UNE transaction,
+/// chaque écriture propagée (`Ok(0)` = refus) ; un refus annule le tableau entier, est dit et compté, et le démarrage
+/// suivant le sème entier. Une présence non lue n'écrit rien (ni perdu, ni doublé). Le démarrage n'est jamais refusé.
+pub(crate) fn seed_dashboard_head_named(
+    conn: &Connection,
+    name: &str,
+    view: &str,
+    collapsed: bool,
+    panneaux: impl FnOnce(&Connection, i64) -> rusqlite::Result<()>,
+) {
+    semer_sous_son_drapeau(conn, PointDeReprise::TableauNomme(name), |conn| {
+        une_ligne_ecrite(conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES(?1,?2,'shared')", params![name, now()])?)?;
+        let did = conn.last_insert_rowid();
+        rattacher_le_tableau_a_sa_vue(conn, did, view, collapsed)?;
+        panneaux(conn, did)
+    });
 }
 
 /// `P10.28-e` — le rattachement, écriture PROPAGÉE. Une vue introuvable et non créable (`find_or_create_view` rend
@@ -393,15 +500,19 @@ pub(crate) fn seed_velero_rule(conn: &Connection) {
 /// Règle par défaut : alerte sur détection antivirus (ClamAV via amavis -> events
 /// category=malware, cf collectors/mail.sh). DÉSACTIVÉE par défaut (opt-in : active pour la
 /// notif ntfy). Idempotent PAR NOM -> ne duplique pas une règle déjà créée à la main.
+///
+/// `P10.28-l` — AVANT : présence lue par `.is_ok()` (une lecture ratée valait absence) et `INSERT` avalé (`let _`).
+/// DÉSORMAIS : `semer_sous_son_drapeau` avec le nom pour point de reprise — `Ok(0)` est un refus, un refus ou une
+/// présence non lue est dit et compté, et la règle est resemée au démarrage suivant.
 pub(crate) fn seed_malware_rule(conn: &Connection) {
-    if conn.query_row("SELECT 1 FROM rule WHERE name='ClamAV : virus détecté'", [], |r| r.get::<_, i64>(0)).is_ok() {
-        return;
-    }
-    let _ = conn.execute(
-        "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) \
-         VALUES('ClamAV : virus détecté', 'search source=mail category=malware | stats count', 1, '>', 0.0, 4, 300, 300, 0)",
-        [],
-    );
+    semer_sous_son_drapeau(conn, PointDeReprise::RegleNommee("ClamAV : virus détecté"), |conn| {
+        let ecrites = conn.execute(
+            "INSERT INTO rule(name,query,is_soql,op,threshold,severity,interval_s,window_s,enabled) \
+             VALUES('ClamAV : virus détecté', 'search source=mail category=malware | stats count', 1, '>', 0.0, 4, 300, 300, 0)",
+            [],
+        );
+        une_ligne_ecrite(ecrites?)
+    });
 }
 
 /// Dashboard « Réseau sortant (egress) » — flag `seeded_egress`. Vue de ce que le serveur CONTACTE
@@ -435,33 +546,35 @@ pub(crate) fn seed_egress_dashboard(conn: &Connection) {
 /// (OPT-IN) ne tourne pas, mais prêt. Dans la vue 'Sécurité'.
 pub(crate) fn seed_web_dashboard(conn: &Connection) {
     // v63 : « Trafic web » est le dashboard PRIMAIRE (déplié) de la vue « Réseau & Web ».
-    let Some(did) = seed_dashboard_head_named(conn, "Trafic web", "Réseau & Web", false) else { return };
-    // Panneaux GROUP-BY PURS (vhost/status/path) -> lisent le pré-agrégé event_dim_rollup (is_soql=0,
-    // <100 ms, pré-chauffables) ; les autres (timechart / filtre scope / table détail) restent GXQL live.
-    let (q_vhost, q_status, q_path) = (
-        dim_panel_sql("web", "vhost", 0, false),
-        dim_panel_sql("web", "status", 0, false),
-        dim_panel_sql("web", "path", 20, false),
-    );
-    let panels: [(&str, &str, i64, &str); 7] = [
-        ("Requêtes dans le temps", "search source=web | timechart count", 1, "line"),
-        ("Top hôtes (sites)", q_vhost.as_str(), 0, "bar"),
-        ("Codes statut", q_status.as_str(), 0, "bar"),
-        ("Top clients externes", "search source=web scope=external __OPERATOR_EXCL__ | stats count by src_ip | sort -count | head 20", 1, "table"),
-        ("Top URLs", q_path.as_str(), 0, "table"),
-        ("Erreurs 4xx/5xx (détail)", "search source=web __OPERATOR_EXCL__ __SELF_EXCL__ | where severity>=2 | sort -ts | table vhost,path,status,src_ip,ua", 1, "table"),
-        // CF EXTERNE débruité : l'essentiel des events source=cloudflare peut être de l'auto-trafic opérateur
-        // (navigateur du dashboard). Les placeholders __OPERATOR_EXCL__ (IP opérateur) + __SELF_EXCL__ (vhost self),
-        // substitués SEULEMENT à la compilation des panneaux (jamais dans les règles/la collecte), laissent l'activité CF
-        // RÉELLE. Voie LIVE (les termes d'exclusion injectés bloquent le rollup-route -> soql_to_sql sur `event`).
-        ("Cloudflare (hors self)", "search source=cloudflare __OPERATOR_EXCL__ __SELF_EXCL__ | stats count by src_ip | sort -count | head 30", 1, "table"),
-    ];
-    for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
-            params![did, title, q, is_soql, viz, i as i64],
+    seed_dashboard_head_named(conn, "Trafic web", "Réseau & Web", false, |conn, did| {
+        // Panneaux GROUP-BY PURS (vhost/status/path) -> lisent le pré-agrégé event_dim_rollup (is_soql=0,
+        // <100 ms, pré-chauffables) ; les autres (timechart / filtre scope / table détail) restent GXQL live.
+        let (q_vhost, q_status, q_path) = (
+            dim_panel_sql("web", "vhost", 0, false),
+            dim_panel_sql("web", "status", 0, false),
+            dim_panel_sql("web", "path", 20, false),
         );
-    }
+        let panels: [(&str, &str, i64, &str); 7] = [
+            ("Requêtes dans le temps", "search source=web | timechart count", 1, "line"),
+            ("Top hôtes (sites)", q_vhost.as_str(), 0, "bar"),
+            ("Codes statut", q_status.as_str(), 0, "bar"),
+            ("Top clients externes", "search source=web scope=external __OPERATOR_EXCL__ | stats count by src_ip | sort -count | head 20", 1, "table"),
+            ("Top URLs", q_path.as_str(), 0, "table"),
+            ("Erreurs 4xx/5xx (détail)", "search source=web __OPERATOR_EXCL__ __SELF_EXCL__ | where severity>=2 | sort -ts | table vhost,path,status,src_ip,ua", 1, "table"),
+            // CF EXTERNE débruité : l'essentiel des events source=cloudflare peut être de l'auto-trafic opérateur
+            // (navigateur du dashboard). Les placeholders __OPERATOR_EXCL__ (IP opérateur) + __SELF_EXCL__ (vhost self),
+            // substitués SEULEMENT à la compilation des panneaux (jamais dans les règles/la collecte), laissent l'activité CF
+            // RÉELLE. Voie LIVE (les termes d'exclusion injectés bloquent le rollup-route -> soql_to_sql sur `event`).
+            ("Cloudflare (hors self)", "search source=cloudflare __OPERATOR_EXCL__ __SELF_EXCL__ | stats count by src_ip | sort -count | head 30", 1, "table"),
+        ];
+        for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
+                params![did, title, q, is_soql, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Dashboard « Mail — flux & verdicts » (IronPort-like) — passerelle mail : volume + verdicts amavis
@@ -469,24 +582,26 @@ pub(crate) fn seed_web_dashboard(conn: &Connection) {
 /// par nom. Vide tant que mail.sh (OPT-IN) ne tourne pas. Vue 'Sécurité'.
 pub(crate) fn seed_mail_dashboard(conn: &Connection) {
     // v63 : « Mail — flux & verdicts » est le seul dashboard (primaire/déplié) de la vue « Mail ».
-    let Some(did) = seed_dashboard_head_named(conn, "Mail — flux & verdicts", "Mail", false) else { return };
-    // « Verdicts » est un GROUP-BY pur (le filtre verdict=* ≡ verdict IS NOT NULL ≡ val<>'') -> pré-agrégé
-    // is_soql=0. Les autres panneaux gardent un filtre/agrégat non couvert par le rollup -> GXQL live.
-    let q_verdict = dim_panel_sql("mail", "verdict", 0, true);
-    let panels: [(&str, &str, i64, &str); 6] = [
-        ("Verdicts", q_verdict.as_str(), 0, "bar"),
-        ("Flux mail dans le temps", "search source=mail verdict=* | timechart count", 1, "line"),
-        ("Top expéditeurs", "search source=mail verdict=* | stats count by sender | sort -count | head 15", 1, "table"),
-        ("Top destinataires", "search source=mail verdict=* | stats count by rcpt | sort -count | head 15", 1, "table"),
-        ("Menaces (virus / bannis)", "search source=mail | where severity>=3 | sort -ts | table rcpt,sender,verdict,virus,src_ip", 1, "table"),
-        ("Échecs d'authentification", "search source=mail action=failure | stats count by src_ip | sort -count | head 15", 1, "table"),
-    ];
-    for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
-            params![did, title, q, is_soql, viz, i as i64],
-        );
-    }
+    seed_dashboard_head_named(conn, "Mail — flux & verdicts", "Mail", false, |conn, did| {
+        // « Verdicts » est un GROUP-BY pur (le filtre verdict=* ≡ verdict IS NOT NULL ≡ val<>'') -> pré-agrégé
+        // is_soql=0. Les autres panneaux gardent un filtre/agrégat non couvert par le rollup -> GXQL live.
+        let q_verdict = dim_panel_sql("mail", "verdict", 0, true);
+        let panels: [(&str, &str, i64, &str); 6] = [
+            ("Verdicts", q_verdict.as_str(), 0, "bar"),
+            ("Flux mail dans le temps", "search source=mail verdict=* | timechart count", 1, "line"),
+            ("Top expéditeurs", "search source=mail verdict=* | stats count by sender | sort -count | head 15", 1, "table"),
+            ("Top destinataires", "search source=mail verdict=* | stats count by rcpt | sort -count | head 15", 1, "table"),
+            ("Menaces (virus / bannis)", "search source=mail | where severity>=3 | sort -ts | table rcpt,sender,verdict,virus,src_ip", 1, "table"),
+            ("Échecs d'authentification", "search source=mail action=failure | stats count by src_ip | sort -count | head 15", 1, "table"),
+        ];
+        for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
+                params![did, title, q, is_soql, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Dashboard « Accès données (Varonis) » — gouvernance d'accès : QUI (humain) a fait QUELLE action
@@ -494,27 +609,29 @@ pub(crate) fn seed_mail_dashboard(conn: &Connection) {
 /// plume_data/plume_etc/plume_creds). Idempotent par nom. Vide tant que dataaccess.sh ne tourne pas. Vue 'Sécurité'.
 pub(crate) fn seed_dataaccess_dashboard(conn: &Connection) {
     // v63 : « Accès données (Varonis) » est le dashboard PRIMAIRE (déplié) de la vue « Accès données ».
-    let Some(did) = seed_dashboard_head_named(conn, "Accès données (Varonis)", "Accès données", false) else { return };
-    // GROUP-BY purs (user/action/path) -> pré-agrégé is_soql=0 ; creds/timechart/détail restent GXQL live.
-    let (q_user, q_action, q_path) = (
-        dim_panel_sql("dataaccess", "user", 0, false),
-        dim_panel_sql("dataaccess", "action", 0, false),
-        dim_panel_sql("dataaccess", "path", 20, false),
-    );
-    let panels: [(&str, &str, i64, &str); 6] = [
-        ("Accès aux secrets / creds", "search source=dataaccess key=plume_creds | sort -ts | table user,action,path,comm", 1, "table"),
-        ("Accès par utilisateur", q_user.as_str(), 0, "bar"),
-        ("Accès par action", q_action.as_str(), 0, "bar"),
-        ("Top fichiers touchés", q_path.as_str(), 0, "table"),
-        ("Activité dans le temps", "search source=dataaccess | timechart count", 1, "line"),
-        ("Détail récent (qui/action/fichier)", "search source=dataaccess | sort -ts | table user,action,path,key,comm", 1, "table"),
-    ];
-    for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
-            params![did, title, q, is_soql, viz, i as i64],
+    seed_dashboard_head_named(conn, "Accès données (Varonis)", "Accès données", false, |conn, did| {
+        // GROUP-BY purs (user/action/path) -> pré-agrégé is_soql=0 ; creds/timechart/détail restent GXQL live.
+        let (q_user, q_action, q_path) = (
+            dim_panel_sql("dataaccess", "user", 0, false),
+            dim_panel_sql("dataaccess", "action", 0, false),
+            dim_panel_sql("dataaccess", "path", 20, false),
         );
-    }
+        let panels: [(&str, &str, i64, &str); 6] = [
+            ("Accès aux secrets / creds", "search source=dataaccess key=plume_creds | sort -ts | table user,action,path,comm", 1, "table"),
+            ("Accès par utilisateur", q_user.as_str(), 0, "bar"),
+            ("Accès par action", q_action.as_str(), 0, "bar"),
+            ("Top fichiers touchés", q_path.as_str(), 0, "table"),
+            ("Activité dans le temps", "search source=dataaccess | timechart count", 1, "line"),
+            ("Détail récent (qui/action/fichier)", "search source=dataaccess | sort -ts | table user,action,path,key,comm", 1, "table"),
+        ];
+        for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
+                params![did, title, q, is_soql, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Dashboard « Carte d'accès (Varonis) » — gouvernance : QUI PEUT accéder à QUOI + propriétaire
@@ -522,25 +639,27 @@ pub(crate) fn seed_dataaccess_dashboard(conn: &Connection) {
 /// Idempotent par nom. Vide tant que dataacl.sh ne tourne pas. Vue 'Sécurité'.
 pub(crate) fn seed_dataacl_dashboard(conn: &Connection) {
     // v63 : « Carte d'accès (Varonis) » -> vue « Accès données », REPLIÉ (non primaire).
-    let Some(did) = seed_dashboard_head_named(conn, "Carte d'accès (Varonis)", "Accès données", true) else { return };
-    // GROUP-BY purs (owner/group) -> pré-agrégé is_soql=0 ; risques/carte/détail (filtre+table) GXQL live.
-    let (q_owner, q_group) = (
-        dim_panel_sql("dataacl", "owner", 0, false),
-        dim_panel_sql("dataacl", "group", 0, false),
-    );
-    let panels: [(&str, &str, i64, &str); 5] = [
-        ("Risques (accès global / SUID)", "search source=dataacl | where severity>=3 | sort -ts | table path,owner,mode,risk", 1, "table"),
-        ("Par propriétaire", q_owner.as_str(), 0, "bar"),
-        ("Par groupe", q_group.as_str(), 0, "bar"),
-        ("Carte des dossiers (perms)", "search source=dataacl type=d | sort -ts | table path,owner,group,mode", 1, "table"),
-        ("Tout (chemin / owner / perms)", "search source=dataacl | sort -ts | table path,owner,group,mode,flags,risk", 1, "table"),
-    ];
-    for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
-            params![did, title, q, is_soql, viz, i as i64],
+    seed_dashboard_head_named(conn, "Carte d'accès (Varonis)", "Accès données", true, |conn, did| {
+        // GROUP-BY purs (owner/group) -> pré-agrégé is_soql=0 ; risques/carte/détail (filtre+table) GXQL live.
+        let (q_owner, q_group) = (
+            dim_panel_sql("dataacl", "owner", 0, false),
+            dim_panel_sql("dataacl", "group", 0, false),
         );
-    }
+        let panels: [(&str, &str, i64, &str); 5] = [
+            ("Risques (accès global / SUID)", "search source=dataacl | where severity>=3 | sort -ts | table path,owner,mode,risk", 1, "table"),
+            ("Par propriétaire", q_owner.as_str(), 0, "bar"),
+            ("Par groupe", q_group.as_str(), 0, "bar"),
+            ("Carte des dossiers (perms)", "search source=dataacl type=d | sort -ts | table path,owner,group,mode", 1, "table"),
+            ("Tout (chemin / owner / perms)", "search source=dataacl | sort -ts | table path,owner,group,mode,flags,risk", 1, "table"),
+        ];
+        for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
+                params![did, title, q, is_soql, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Dashboard « Posture de configuration (SCA/CIS) » (#57) — évaluation de conformité endpoint (BYO-agent :
@@ -548,22 +667,24 @@ pub(crate) fn seed_dataacl_dashboard(conn: &Connection) {
 /// × cadres de conformité. Idempotent par nom. VIDE tant qu'aucune télémétrie SCA n'est ingérée (source
 /// endpoint via `PLUME_ENDPOINT_NORMALIZE`, défaut `wazuh`). Vue « Endpoint (BYO-agent) » — PRIMAIRE (déplié).
 pub(crate) fn seed_sca_dashboard(conn: &Connection) {
-    let Some(did) = seed_dashboard_head_named(conn, "Posture de configuration (SCA/CIS)", "Endpoint (BYO-agent)", false) else { return };
-    // Panneaux GXQL live (volume posture modeste ; pas de rollup dédié). Composent sur `category=posture` +
-    // champs `posture_*`/`agent_name` normalisés par `endpoint_normalize` -> lecture GXQL masquée (RBAC/#45).
-    let panels: [(&str, &str, i64, &str); 5] = [
-        ("Contrôles pass / fail", "search category=posture posture_kind=check | stats count by posture_result", 1, "bar"),
-        ("Échecs par hôte", "search category=posture posture_result=fail | stats count by agent_name | sort -count | head 20", 1, "table"),
-        ("Échecs par benchmark", "search category=posture posture_result=fail | stats count by posture_policy | sort -count | head 20", 1, "bar"),
-        ("Cadres de conformité impactés", "search category=posture posture_result=fail | stats count by posture_framework | sort -count | head 15", 1, "table"),
-        ("Contrôles échoués (détail)", "search category=posture posture_result=fail | sort -ts | table agent_name,posture_policy,posture_check_id,posture_check_title,posture_compliance", 1, "table"),
-    ];
-    for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
-            params![did, title, q, is_soql, viz, i as i64],
-        );
-    }
+    seed_dashboard_head_named(conn, "Posture de configuration (SCA/CIS)", "Endpoint (BYO-agent)", false, |conn, did| {
+        // Panneaux GXQL live (volume posture modeste ; pas de rollup dédié). Composent sur `category=posture` +
+        // champs `posture_*`/`agent_name` normalisés par `endpoint_normalize` -> lecture GXQL masquée (RBAC/#45).
+        let panels: [(&str, &str, i64, &str); 5] = [
+            ("Contrôles pass / fail", "search category=posture posture_kind=check | stats count by posture_result", 1, "bar"),
+            ("Échecs par hôte", "search category=posture posture_result=fail | stats count by agent_name | sort -count | head 20", 1, "table"),
+            ("Échecs par benchmark", "search category=posture posture_result=fail | stats count by posture_policy | sort -count | head 20", 1, "bar"),
+            ("Cadres de conformité impactés", "search category=posture posture_result=fail | stats count by posture_framework | sort -count | head 15", 1, "table"),
+            ("Contrôles échoués (détail)", "search category=posture posture_result=fail | sort -ts | table agent_name,posture_policy,posture_check_id,posture_check_title,posture_compliance", 1, "table"),
+        ];
+        for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
+                params![did, title, q, is_soql, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Dashboard « Vulnérabilités (CVE endpoint) » (#57) — inventaire des vulnérabilités remontées par l'agent
@@ -571,20 +692,22 @@ pub(crate) fn seed_sca_dashboard(conn: &Connection) {
 /// × sévérité × statut. Idempotent par nom. VIDE tant qu'aucune télémétrie vuln n'est ingérée. Vue « Endpoint
 /// (BYO-agent) » — REPLIÉ (non primaire).
 pub(crate) fn seed_vuln_dashboard(conn: &Connection) {
-    let Some(did) = seed_dashboard_head_named(conn, "Vulnérabilités (CVE endpoint)", "Endpoint (BYO-agent)", true) else { return };
-    let panels: [(&str, &str, i64, &str); 5] = [
-        ("CVE par sévérité", "search category=vuln | stats count by vuln_severity", 1, "bar"),
-        ("Hôtes les plus vulnérables", "search category=vuln | stats count by agent_name | sort -count | head 20", 1, "table"),
-        ("Top CVE", "search category=vuln | stats count by cve | sort -count | head 20", 1, "table"),
-        ("Paquets les plus touchés", "search category=vuln | stats count by vuln_package | sort -count | head 20", 1, "table"),
-        ("Critiques / hautes (détail)", "search category=vuln | where severity>=3 | sort -ts | table agent_name,cve,vuln_severity,vuln_package,vuln_package_version,vuln_cvss", 1, "table"),
-    ];
-    for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
-            params![did, title, q, is_soql, viz, i as i64],
-        );
-    }
+    seed_dashboard_head_named(conn, "Vulnérabilités (CVE endpoint)", "Endpoint (BYO-agent)", true, |conn, did| {
+        let panels: [(&str, &str, i64, &str); 5] = [
+            ("CVE par sévérité", "search category=vuln | stats count by vuln_severity", 1, "bar"),
+            ("Hôtes les plus vulnérables", "search category=vuln | stats count by agent_name | sort -count | head 20", 1, "table"),
+            ("Top CVE", "search category=vuln | stats count by cve | sort -count | head 20", 1, "table"),
+            ("Paquets les plus touchés", "search category=vuln | stats count by vuln_package | sort -count | head 20", 1, "table"),
+            ("Critiques / hautes (détail)", "search category=vuln | where severity>=3 | sort -ts | table agent_name,cve,vuln_severity,vuln_package,vuln_package_version,vuln_cvss", 1, "table"),
+        ];
+        for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
+                params![did, title, q, is_soql, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// #38 — Dashboard de POSTURE DE CONFORMITÉ pour UN cadre (PCI DSS / HIPAA / NIST 800-53…). GXQL-backed,
@@ -597,26 +720,28 @@ pub(crate) fn seed_vuln_dashboard(conn: &Connection) {
 pub(crate) fn seed_compliance_dashboard(conn: &Connection, fw_id: &str, label: &str, primary: bool) {
     let dash_name = format!("Conformité — {label}");
     // primary -> déplié ; secondaire -> replié (collapsed = !primary).
-    let Some(did) = seed_dashboard_head_named(conn, &dash_name, "Conformité (posture)", !primary) else { return };
-    // Filtre cadre : `posture_framework=*<fw>*` (wildcard GXQL -> LIKE '%<fw>%', échappé par le compilo). Le
-    // token <fw> est un id de vocab CONSTANT (aucune entrée utilisateur) -> injection-safe.
-    let f = format!("posture_framework=*{fw_id}*");
-    let q_passfail = format!("search category=posture posture_kind=check {f} | stats count by posture_result");
-    let q_bycontrol = format!("search category=posture posture_result=fail {f} | stats count by posture_compliance | sort -count | head 20");
-    let q_byhost = format!("search category=posture posture_result=fail {f} | stats count by agent_name | sort -count | head 20");
-    let q_detail = format!("search category=posture posture_result=fail {f} | sort -ts | table agent_name,posture_check_id,posture_check_title,posture_compliance");
-    let panels: [(&str, &str, &str); 4] = [
-        ("Contrôles pass / fail", q_passfail.as_str(), "bar"),
-        ("Échecs par contrôle", q_bycontrol.as_str(), "table"),
-        ("Échecs par hôte", q_byhost.as_str(), "table"),
-        ("Contrôles échoués (détail)", q_detail.as_str(), "table"),
-    ];
-    for (i, (title, q, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
-            params![did, title, q, viz, i as i64],
-        );
-    }
+    seed_dashboard_head_named(conn, &dash_name, "Conformité (posture)", !primary, |conn, did| {
+        // Filtre cadre : `posture_framework=*<fw>*` (wildcard GXQL -> LIKE '%<fw>%', échappé par le compilo). Le
+        // token <fw> est un id de vocab CONSTANT (aucune entrée utilisateur) -> injection-safe.
+        let f = format!("posture_framework=*{fw_id}*");
+        let q_passfail = format!("search category=posture posture_kind=check {f} | stats count by posture_result");
+        let q_bycontrol = format!("search category=posture posture_result=fail {f} | stats count by posture_compliance | sort -count | head 20");
+        let q_byhost = format!("search category=posture posture_result=fail {f} | stats count by agent_name | sort -count | head 20");
+        let q_detail = format!("search category=posture posture_result=fail {f} | sort -ts | table agent_name,posture_check_id,posture_check_title,posture_compliance");
+        let panels: [(&str, &str, &str); 4] = [
+            ("Contrôles pass / fail", q_passfail.as_str(), "bar"),
+            ("Échecs par contrôle", q_bycontrol.as_str(), "table"),
+            ("Échecs par hôte", q_byhost.as_str(), "table"),
+            ("Contrôles échoués (détail)", q_detail.as_str(), "table"),
+        ];
+        for (i, (title, q, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
+                params![did, title, q, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// #38 — seed des dashboards de conformité pour les cadres MAJEURS (PCI DSS déplié, HIPAA + NIST 800-53 repliés).
@@ -632,25 +757,27 @@ pub(crate) fn seed_compliance_dashboards(conn: &Connection) {
 /// cluster-admin / secrets-access). Idempotent par nom. Vue 'Sécurité'.
 pub(crate) fn seed_kube_rbac_dashboard(conn: &Connection) {
     // v63 : « RBAC k8s (Varonis) » est le dashboard PRIMAIRE (déplié) de la vue « Accès infra ».
-    let Some(did) = seed_dashboard_head_named(conn, "RBAC k8s (Varonis)", "Accès infra", false) else { return };
-    // GROUP-BY purs (role/subject) -> pré-agrégé is_soql=0 ; cluster-admin/accès sensible/map (filtre+table) GXQL live.
-    let (q_role, q_subject) = (
-        dim_panel_sql("kube-rbac", "role", 20, false),
-        dim_panel_sql("kube-rbac", "subject", 20, false),
-    );
-    let panels: [(&str, &str, i64, &str); 5] = [
-        ("Cluster-admin (clés du royaume)", "search source=kube-rbac role=cluster-admin | table subject,kind,binding", 1, "table"),
-        ("Accès sensible (secrets / cluster-admin)", "search source=kube-rbac | where severity>=3 | sort -severity | table subject,kind,role,scope,ns,risk", 1, "table"),
-        ("Par rôle", q_role.as_str(), 0, "bar"),
-        ("Par sujet", q_subject.as_str(), 0, "table"),
-        ("Map complète (sujet -> rôle)", "search source=kube-rbac | sort -ts | table subject,kind,role,scope,ns,risk", 1, "table"),
-    ];
-    for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
-            params![did, title, q, is_soql, viz, i as i64],
+    seed_dashboard_head_named(conn, "RBAC k8s (Varonis)", "Accès infra", false, |conn, did| {
+        // GROUP-BY purs (role/subject) -> pré-agrégé is_soql=0 ; cluster-admin/accès sensible/map (filtre+table) GXQL live.
+        let (q_role, q_subject) = (
+            dim_panel_sql("kube-rbac", "role", 20, false),
+            dim_panel_sql("kube-rbac", "subject", 20, false),
         );
-    }
+        let panels: [(&str, &str, i64, &str); 5] = [
+            ("Cluster-admin (clés du royaume)", "search source=kube-rbac role=cluster-admin | table subject,kind,binding", 1, "table"),
+            ("Accès sensible (secrets / cluster-admin)", "search source=kube-rbac | where severity>=3 | sort -severity | table subject,kind,role,scope,ns,risk", 1, "table"),
+            ("Par rôle", q_role.as_str(), 0, "bar"),
+            ("Par sujet", q_subject.as_str(), 0, "table"),
+            ("Map complète (sujet -> rôle)", "search source=kube-rbac | sort -ts | table subject,kind,role,scope,ns,risk", 1, "table"),
+        ];
+        for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,?4,?5,?6,2)",
+                params![did, title, q, is_soql, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Dashboard « MinIO / S3 (Varonis) » — gouvernance du stockage objet : QUI a accès à QUEL bucket
@@ -658,20 +785,22 @@ pub(crate) fn seed_kube_rbac_dashboard(conn: &Connection) {
 /// Idempotent par nom. Vue 'Sécurité'.
 pub(crate) fn seed_minio_dashboard(conn: &Connection) {
     // v63 : « MinIO / S3 (Varonis) » -> vue « Accès infra », REPLIÉ (non primaire).
-    let Some(did) = seed_dashboard_head_named(conn, "MinIO / S3 (Varonis)", "Accès infra", true) else { return };
-    let panels: [(&str, &str, &str); 5] = [
-        ("Buckets exposés (PUBLIC)", "search source=minio kind=bucket risk=public | table subject,access", "table"),
-        ("Accès sensible (admin / rw)", "search source=minio kind=user | where severity>=2 | sort -severity | table subject,policy,risk,status", "table"),
-        ("Utilisateurs -> policy", "search source=minio kind=user | table subject,policy,status,risk", "table"),
-        ("Buckets (accès)", "search source=minio kind=bucket | table subject,access,risk", "table"),
-        ("Stockage", "search source=minio kind=store | sort -ts | head 1 | table buckets,objects,versions", "table"),
-    ];
-    for (i, (title, q, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
-            params![did, title, q, viz, i as i64],
-        );
-    }
+    seed_dashboard_head_named(conn, "MinIO / S3 (Varonis)", "Accès infra", true, |conn, did| {
+        let panels: [(&str, &str, &str); 5] = [
+            ("Buckets exposés (PUBLIC)", "search source=minio kind=bucket risk=public | table subject,access", "table"),
+            ("Accès sensible (admin / rw)", "search source=minio kind=user | where severity>=2 | sort -severity | table subject,policy,risk,status", "table"),
+            ("Utilisateurs -> policy", "search source=minio kind=user | table subject,policy,status,risk", "table"),
+            ("Buckets (accès)", "search source=minio kind=bucket | table subject,access,risk", "table"),
+            ("Stockage", "search source=minio kind=store | sort -ts | head 1 | table buckets,objects,versions", "table"),
+        ];
+        for (i, (title, q, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
+                params![did, title, q, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Dashboard « Vault — accès secrets (Varonis) » — QUI accède à QUEL secret (events source=vault-audit
@@ -679,20 +808,22 @@ pub(crate) fn seed_minio_dashboard(conn: &Connection) {
 /// token OIDC) ; Vault HMAC les valeurs -> aucun secret en clair n'est collecté. Idempotent. Vue 'Sécurité'.
 pub(crate) fn seed_vault_dashboard(conn: &Connection) {
     // v63 : « Vault — accès secrets (Varonis) » -> vue « Accès infra », REPLIÉ (non primaire).
-    let Some(did) = seed_dashboard_head_named(conn, "Vault — accès secrets (Varonis)", "Accès infra", true) else { return };
-    let panels: [(&str, &str, &str); 5] = [
-        ("Accès secrets (volume)", "search source=vault-audit vtype=response | timechart count", "line"),
-        ("Top chemins consultés", "search source=vault-audit vtype=response | stats count by path | sort -count | head 20", "table"),
-        ("Par opération", "search source=vault-audit vtype=response | stats count by operation | sort -count", "bar"),
-        ("Qui accède (identités)", "search source=vault-audit vtype=response | stats count by user | sort -count | head 20", "table"),
-        ("Refus / erreurs", "search source=vault-audit | where error!=\"\" | sort -ts | table user,operation,path,error", "table"),
-    ];
-    for (i, (title, q, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
-            params![did, title, q, viz, i as i64],
-        );
-    }
+    seed_dashboard_head_named(conn, "Vault — accès secrets (Varonis)", "Accès infra", true, |conn, did| {
+        let panels: [(&str, &str, &str); 5] = [
+            ("Accès secrets (volume)", "search source=vault-audit vtype=response | timechart count", "line"),
+            ("Top chemins consultés", "search source=vault-audit vtype=response | stats count by path | sort -count | head 20", "table"),
+            ("Par opération", "search source=vault-audit vtype=response | stats count by operation | sort -count", "bar"),
+            ("Qui accède (identités)", "search source=vault-audit vtype=response | stats count by user | sort -count | head 20", "table"),
+            ("Refus / erreurs", "search source=vault-audit | where error!=\"\" | sort -ts | table user,operation,path,error", "table"),
+        ];
+        for (i, (title, q, viz)) in panels.iter().enumerate() {
+            une_ligne_ecrite(conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
+                params![did, title, q, viz, i as i64],
+            )?)?;
+        }
+        Ok(())
+    });
 }
 
 /// Règles de détection egress — flag `seeded_egress_rules`, TOUTES OFF (opt-in : la détection

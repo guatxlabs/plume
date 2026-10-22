@@ -1365,6 +1365,13 @@ pub(crate) fn reponse_de_l_upsert_sla_tracee(recalcul: &RecalculDesEcheances, de
     (StatusCode::OK, Json(corps)).into_response()
 }
 
+/// `P10.29-l` — refus nommés de `sla_policy_upsert` (c'étaient deux `400` sans corps, indiscernables).
+pub(crate) const CAUSE_POLITIQUE_SLA_PRIORITE_HORS_BORNES: &str =
+    "POLITIQUE SLA REFUSÉE : `priority` doit être un entier de 1 à 4. Rien n'est écrit.";
+pub(crate) const CAUSE_POLITIQUE_SLA_CIBLE_NULLE: &str =
+    "POLITIQUE SLA REFUSÉE : `ack_target_s` et `resolve_target_s` doivent être des entiers strictement positifs \
+     (secondes). Rien n'est écrit.";
+
 /// POST /api/sla-policies {name,priority,ack_target_s,resolve_target_s,enabled?} — upsert par priorité. editor+.
 /// Ledgerisé. Recompute les dues des cases ACTIFS de cette priorité (borné). priority hors 1..4 -> 400.
 ///
@@ -1395,14 +1402,14 @@ pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au):
     use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     let priority = b.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
     if !(1..=4).contains(&priority) {
-        return StatusCode::BAD_REQUEST.into_response();
+        return bad_req(CAUSE_POLITIQUE_SLA_PRIORITE_HORS_BORNES);
     }
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     let ack_s = b.get("ack_target_s").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
     let res_s = b.get("resolve_target_s").and_then(|v| v.as_i64()).unwrap_or(0).max(0);
     let enabled = b.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true) as i64;
     if ack_s == 0 || res_s == 0 {
-        return StatusCode::BAD_REQUEST.into_response();
+        return bad_req(CAUSE_POLITIQUE_SLA_CIBLE_NULLE);
     }
     with_write(&st, &au, |conn| {
         let t = now();
@@ -1468,9 +1475,16 @@ pub(crate) const CAUSE_DOSSIERS_NON_DEGOUVERNES: &str =
      jugés en dépassement sur les échéances d'une politique disparue : la suppression est ANNULÉE, la politique \
      GOUVERNE TOUJOURS, le registre n'en porte rien. Réessayez.";
 
+/// `P10.29-l` — refus nommés de `sla_policy_delete` (c'étaient un `403` et un `404` sans corps).
+pub(crate) const CAUSE_SUPPRESSION_DE_POLITIQUE_SLA_RESERVEE: &str =
+    "SUPPRESSION REFUSÉE : supprimer une politique SLA est réservé à l'administrateur. Rien n'est supprimé.";
+pub(crate) const CAUSE_POLITIQUE_SLA_INTROUVABLE: &str =
+    "POLITIQUE SLA INTROUVABLE : aucune politique ne porte cet identifiant (la suppression a abouti sans toucher \
+     aucune ligne). Rien n'est supprimé et le registre n'en porte aucune trace.";
+
 /// DELETE /api/sla-policies/{id} — supprime une politique. ADMIN-ONLY (config gouvernante) : re-check handler.
 ///
-/// `P10.20-w` — le chemin nominal est INCHANGÉ (204 sur suppression, 404 nu sur absence) ; l'écriture
+/// `P10.20-w` — le chemin nominal est INCHANGÉ (204 sur suppression, 404 sur absence, nommé depuis `P10.29-l`) ; l'écriture
 /// RATÉE, qui sortait en 404 — « cette politique n'existe pas » sur une politique bien vivante —, est
 /// nommée par un 503.
 ///
@@ -1494,12 +1508,12 @@ pub(crate) const CAUSE_DOSSIERS_NON_DEGOUVERNES: &str =
 pub(crate) async fn sla_policy_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     if !au.is_admin() {
-        return StatusCode::FORBIDDEN.into_response();
+        return forbidden(CAUSE_SUPPRESSION_DE_POLITIQUE_SLA_RESERVEE);
     }
     with_write(&st, &au, |conn| {
         let issue = jouer_le_geste_garde(conn, "caseops", &format!("suppression de la politique SLA #{id}"), |conn| {
             match conn.execute("DELETE FROM sla_policy WHERE id=?1", params![id]) {
-                Ok(0) => return Err(StatusCode::NOT_FOUND.into_response()),
+                Ok(0) => return Err(not_found(CAUSE_POLITIQUE_SLA_INTROUVABLE)),
                 Ok(_) => {}
                 Err(e) => {
                     return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_POLITIQUE_NON_SUPPRIMEE} ({e})")))
@@ -1568,6 +1582,12 @@ pub(crate) async fn client_cases_list(State(st): State<AppState>, Extension(au):
     Json(res)
 }
 
+/// `P10.29-l` — absence établie d'un dossier client : 404 JSON nommé (c'était le texte `case introuvable`). La phrase
+/// ne dit pas laquelle des trois causes (absent, archivé, fusionné) : le client n'en apprend pas plus qu'avant.
+pub(crate) const CAUSE_DOSSIER_CLIENT_INTROUVABLE: &str =
+    "DOSSIER INTROUVABLE : aucun dossier visible ne porte cet identifiant (absent, archivé ou fusionné ; la lecture a \
+     abouti et n'a trouvé aucune ligne).";
+
 /// GET /api/client/cases/{id} — DÉTAIL client (projection fermée + timeline cycle-de-vie anonymisée). 404 si
 /// absent/archivé/fusionné. Tenant-scopé + masqué (INVARIANT).
 pub(crate) async fn client_case_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -1588,6 +1608,6 @@ pub(crate) async fn client_case_get(State(st): State<AppState>, Extension(au): E
     match res {
         Some(v) if v.get("lecture_non_faite").is_some() => (StatusCode::INTERNAL_SERVER_ERROR, Json(v)).into_response(),
         Some(v) => Json(v).into_response(),
-        None => (StatusCode::NOT_FOUND, "case introuvable").into_response(),
+        None => not_found(CAUSE_DOSSIER_CLIENT_INTROUVABLE),
     }
 }

@@ -44,7 +44,7 @@
 // compte publié ; seule la ligne de journal les distingue. Ces deux fichiers sont hors du périmètre de ce changement.
 // Prix assumé de « rien n'avance » : tant que l'alerte de tir est refusée, la règle est réévaluée à CHAQUE tick (pas à
 // son intervalle), son compte d'abandons n'est pas remis à zéro et une alerte de cécité ouverte le reste. Le jumeau
-// `run_advanced_rules` (`handlers/alerting.rs`, hors périmètre) pose encore `last_run`/`last_value` AVANT ses alertes.
+// `run_advanced_rules` (`handlers/alerting.rs`) pose lui aussi `last_run`/`last_value` APRÈS ses alertes (`P10.32-x`).
 // =====================================================================================
 mod regles_simples_alerte_non_ecrite_comptee {
     use super::*;

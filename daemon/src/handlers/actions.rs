@@ -527,34 +527,85 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
             )
         }
     };
-    // `P10.21-n` (volet démon) — UNE ACTION N'EST REMISE QUE SI SA RÉCLAMATION EST ÉCRITE. Avant :
-    // `let _ = conn.execute(UPDATE … claimed_ts …)` puis la ligne partait dans le TSV quoi qu'il arrive.
-    // Une écriture refusée (base en lecture seule, verrou, déclencheur) remettait l'action SANS la
-    // réclamer : `claimed_ts` restait NULL, donc l'action était re-servie à CHAQUE tour (le filtre
-    // `claimed_ts IS NULL` ci-dessus) et restait prenable par le responder local
-    // (`ACTIONS_A_RECLAMER_ICI`) — la double exécution que `P4.7-f` ferme — et une action non assignée
-    // gardait `host` NULL, que `action_result` (`AND host=?5`) ne peut jamais clore : ban rejoué sans fin.
-    // Le geste : seul `Ok(1)` remet la ligne ; `Err` ou `Ok(0)` (ligne non touchée) la RETIENT ce
-    // tour-ci, avec une ligne de journal qui porte l'identifiant et la cause (jamais la cible). Si
-    // aucune des lignes lues n'a pu être réclamée, la route rend le 503 nommé, comme la file non lue.
+    // `P10.21-n` : la réclamation (écrite ou retenue, condition rejouée) est décrite sur `remettre_les_actions_lues`.
+    match remettre_les_actions_lues(&conn, &rows, &host, now_ts) {
+        Ok(body) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response(),
+        Err(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, cause),
+    }
+}
+
+/// `P10.21-n` — LA CONDITION DE RÉCLAMATION D'UN AGENT, celle du SELECT d'`actions_pending`, mot pour
+/// mot et mêmes paramètres (`?1` = hôte du jeton, `?2` = maintenant, `?3` = délai de péremption) :
+/// l'UPDATE de réclamation et sa relecture la rejouent, `?4` = identifiant de l'action.
+pub(crate) const CONDITION_DE_RECLAMATION_D_AGENT: &str = "(host=?1 OR host IS NULL OR host='') AND status='approved' \
+     AND kind IN ('ban_ip','unban_ip') AND (claimed_ts IS NULL OR ?2-claimed_ts>?3)";
+
+/// Réclame, une à une, les actions LUES par `actions_pending` et rend le TSV de celles qui sont
+/// réclamées ; `Err` porte la cause du 503 quand des actions lues ont été retenues sur anomalie et
+/// qu'aucune n'a été réclamée. Pure sur `&Connection` : le témoin y entrelace une seconde connexion.
+///
+/// `P10.21-n` (volet démon) — UNE ACTION N'EST REMISE QUE SI SA RÉCLAMATION EST ÉCRITE. Avant :
+/// `let _ = conn.execute(UPDATE … claimed_ts …)` puis la ligne partait dans le TSV quoi qu'il arrive.
+/// Une écriture refusée (base en lecture seule, verrou, déclencheur) remettait l'action SANS la
+/// réclamer : `claimed_ts` restait NULL, donc l'action était re-servie à CHAQUE tour (le filtre
+/// `claimed_ts IS NULL`) et restait prenable par le responder local (`ACTIONS_A_RECLAMER_ICI`) — la
+/// double exécution que `P4.7-f` ferme — et une action non assignée gardait `host` NULL, que
+/// `action_result` (`AND host=?5`) ne peut jamais clore : ban rejoué sans fin. Seul `Ok(1)` remet la
+/// ligne ; `Err` ou `Ok(0)` la RETIENT ce tour-ci, avec une ligne de journal qui porte l'identifiant et
+/// la cause (jamais la cible).
+///
+/// `P10.21-n` (reste) — L'UPDATE REJOUE LA CONDITION DE LA LECTURE. Avant : `WHERE id=?1` seul. Entre le
+/// SELECT et l'UPDATE, une autre connexion (annulation par un analyste, responder local, autre agent
+/// sur une action non assignée) pouvait annuler, clore ou réclamer l'action : l'UPDATE la réclamait
+/// quand même (`Ok(1)`), l'ATTRIBUAIT à cet hôte par-dessus la réclamation de l'autre, et elle partait
+/// dans le TSV — ban ou levée exécutés deux fois, ou une riposte annulée exécutée. DÉCISION (par défaut,
+/// la plus sûre) : toutes les clauses du SELECT sont rejouées ; 0 ligne touchée parce que la condition
+/// ne tient plus = l'action n'est PAS remise, comme si elle n'avait pas été lue (rien à réclamer pour
+/// l'agent, aucun registre écrit). Pour séparer ce zéro d'une écriture SANS EFFET (déclencheur
+/// `RAISE(IGNORE)`), la condition est RELUE sur ce seul chemin : encore vraie, ou relecture ratée, c'est
+/// une anomalie qui compte pour le 503 — une erreur du moteur n'est jamais rendue comme « rien à réclamer ».
+pub(crate) fn remettre_les_actions_lues(
+    conn: &Connection,
+    rows: &[(i64, String, String, bool)],
+    host: &str,
+    now_ts: i64,
+) -> Result<String, &'static str> {
+    let reclamer = format!("UPDATE action SET claimed_ts=?2, host=?1 WHERE id=?4 AND {CONDITION_DE_RECLAMATION_D_AGENT}");
+    let relire = format!("SELECT EXISTS(SELECT 1 FROM action WHERE id=?4 AND {CONDITION_DE_RECLAMATION_D_AGENT})");
     let mut body = String::new();
     let mut reclamees = 0usize;
-    for (id, kind, target, dry) in &rows {
+    let mut retenues_sur_anomalie = 0usize;
+    for (id, kind, target, dry) in rows {
         let ligne = format!("{id}\t{kind}\t{target}\t{}\n", if *dry { 1 } else { 0 });
         // assigne l'action à l'hôte réclamant (no-op si déjà ciblée sur lui) -> action_result peut clôturer
-        match conn.execute("UPDATE action SET claimed_ts=?2, host=?3 WHERE id=?1", params![id, now_ts, host]) {
+        match conn.execute(&reclamer, params![host, now_ts, RECLAMATION_PERIMEE_S, id]) {
             Ok(1) => {
                 reclamees += 1;
                 body.push_str(&ligne);
             }
-            Ok(n) => eprintln!("[actions] action {id} NON REMISE ce tour-ci : réclamation sans effet ({n} ligne touchée)"),
-            Err(e) => eprintln!("[actions] action {id} NON REMISE ce tour-ci : réclamation non écrite ({e})"),
+            Ok(n) => match conn.query_row(&relire, params![host, now_ts, RECLAMATION_PERIMEE_S, id], |r| r.get::<_, bool>(0)) {
+                Ok(false) => eprintln!(
+                    "[actions] action {id} NON REMISE ce tour-ci : plus réclamable par cet hôte (annulée, close, réclamée ou réattribuée entre la lecture et la réclamation)"
+                ),
+                Ok(true) => {
+                    retenues_sur_anomalie += 1;
+                    eprintln!("[actions] action {id} NON REMISE ce tour-ci : réclamation sans effet ({n} ligne touchée)");
+                }
+                Err(e) => {
+                    retenues_sur_anomalie += 1;
+                    eprintln!("[actions] action {id} NON REMISE ce tour-ci : réclamation sans effet ({n} ligne touchée), condition non relue ({e})");
+                }
+            },
+            Err(e) => {
+                retenues_sur_anomalie += 1;
+                eprintln!("[actions] action {id} NON REMISE ce tour-ci : réclamation non écrite ({e})");
+            }
         }
     }
-    if !rows.is_empty() && reclamees == 0 {
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REMISE_D_ACTIONS_NON_RECLAMEE);
+    if reclamees == 0 && retenues_sur_anomalie > 0 {
+        return Err(CAUSE_REMISE_D_ACTIONS_NON_RECLAMEE);
     }
-    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
+    Ok(body)
 }
 
 /// `P10.21-n` (volet démon) — des actions approuvées ont été LUES, mais aucune réclamation n'a pu être

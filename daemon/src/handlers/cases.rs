@@ -1307,17 +1307,49 @@ pub(crate) async fn case_unarchive(State(st): State<AppState>, Extension(au): Ex
     })
 }
 
-pub(crate) async fn ack(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+/// `P10.29-l` / `P10.31-u` — l'acquittement d'UNE alerte n'a PAS été écrit : 503 nommé, l'alerte garde son état et le
+/// registre n'atteste rien. La cause du moteur va au journal seul. L'ouverture n'est PAS celle de
+/// `CAUSE_ACQUITTEMENT_NON_ENREGISTRE` : la console lit celle-ci comme « AUCUNE alerte acquittée, file intacte », faux
+/// pour l'acquittement un à un dont les premières alertes sont déjà passées.
+pub(crate) const CAUSE_ACQUITTEMENT_DE_L_ALERTE_NON_ECRIT: &str =
+    "ACQUITTEMENT DE L'ALERTE NON ÉCRIT : la base n'a pas pris l'acquittement, l'alerte garde son état d'avant et le \
+     registre n'en porte aucune trace. Ce n'est PAS « alerte introuvable » : rien n'a été fait. Réessayez.";
+
+/// `P10.29-l` / `P10.31-u` — aucune alerte ne porte cet identifiant : 404 nommé, rien n'est écrit, rien au registre.
+pub(crate) const CAUSE_ALERTE_INTROUVABLE: &str =
+    "ALERTE INTROUVABLE : aucune alerte ne porte cet identifiant (l'écriture a abouti sans toucher aucune ligne). Rien \
+     n'est acquitté et le registre n'en porte aucune trace.";
+
+/// POST /api/alerts/{id}/ack — acquitte UNE alerte. `204` = acquittée ET attestée au registre.
+///
+/// `P10.29-l` / `P10.31-u` — AVANT, `Ok(_)` posait `alert.ack` puis `204` même sur ZÉRO ligne : un identifiant absent
+/// était attesté au registre non purgeable ; l'erreur du moteur sortait en `500` sans corps ; le maillon était jeté.
+/// Décision par défaut (vague AA) : `Ok(0)` -> 404 `CAUSE_ALERTE_INTROUVABLE`, RIEN au registre ; `Err` -> 503
+/// `CAUSE_ACQUITTEMENT_DE_L_ALERTE_NON_ECRIT`, cause au journal seul ; maillon manquant -> `200`
+/// `{"ok":true,"registre_sans_maillon":…}` (le geste a eu lieu, il n'est pas annulé).
+/// LIMITE ÉCRITE : l'`UPDATE` ne filtre aucun statut — une alerte `resolved` repasse `ack` (non jugé ici).
+pub(crate) async fn ack(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
     match conn.execute(
         "UPDATE alert SET status='ack', acked_at=?1, acked_by=?2 WHERE id=?3",
         params![now(), au.name, id],
     ) {
+        Ok(0) => not_found(CAUSE_ALERTE_INTROUVABLE),
         Ok(_) => {
-            ledger_append(&conn, "alert.ack", &format!("#{id} by {}", au.name));
-            StatusCode::NO_CONTENT
+            let maillon = ledger_append(&conn, "alert.ack", &format!("#{id} by {}", au.name));
+            match maillon.cause_de_non_inscription() {
+                None => StatusCode::NO_CONTENT.into_response(),
+                Some(cause) => {
+                    let mut corps = json!({ "ok": true });
+                    corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+                    Json(corps).into_response()
+                }
+            }
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Err(e) => {
+            eprintln!("[alert.ack] WARN acquittement de l'alerte #{id} NON écrit : {e}");
+            err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACQUITTEMENT_DE_L_ALERTE_NON_ECRIT)
+        }
     }
 }
 

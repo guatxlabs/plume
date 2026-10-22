@@ -224,33 +224,36 @@ pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str,
 /// trace un item 'sla' + ledger, et notifie via les notifiers du tenant (min_severity respecté). SKIP les
 /// cases EN PAUSE (sla_paused_since NOT NULL). EARLY-RETURN si `sla_policy` VIDE -> ZÉRO travail mode 0
 /// (miroir de escalate_overdue_cases). Séquentiel + LIMIT (budget 2 Go). Appelé dans la boucle de fond.
-/// Marqueur refusé : notifie QUAND MÊME, sans trace (voir `sla_multilevel_tick_par`).
+/// Marqueur, chronologie ou transaction refusés : notifie QUAND MÊME, sans trace (voir `sla_multilevel_tick_par`).
 pub(crate) fn sla_multilevel_tick(db: &Arc<Mutex<Connection>>) {
     sla_multilevel_tick_par(db, &mut notify_send);
 }
 
-/// `P10.20-w` — fin du `detail` d'une notification de dépassement SLA dont la base a REFUSÉ le marqueur
-/// `ack_breached`/`resolve_breached` : le destinataire apprend que le dépassement n'est pas enregistré et que
-/// l'alerte reviendra au tour suivant.
+/// `P10.20-w` — fin du `detail` d'une notification de dépassement SLA que la base n'a PAS enregistré : marqueur
+/// `ack_breached`/`resolve_breached` refusé, ou (`P10.33-k`) chronologie, `BEGIN` ou `COMMIT` refusés, qui annulent
+/// le marqueur avec eux. Le destinataire apprend que le dépassement n'est pas enregistré et que l'alerte reviendra au
+/// tour suivant.
 pub(crate) const DEPASSEMENT_SLA_NON_ENREGISTRE: &str =
-    "DÉPASSEMENT NON ENREGISTRÉ : la base a refusé le marqueur, ni chronologie ni registre ; cette notification sera renvoyée au prochain tour.";
+    "DÉPASSEMENT NON ENREGISTRÉ : la base a refusé le marqueur, sa chronologie ou leur transaction — ni marqueur, ni chronologie, ni registre ; cette notification sera renvoyée au prochain tour.";
 
 /// `P10.20-w` (rang trois) — LE MARQUEUR DE DÉPASSEMENT EST ÉCRIT ET COMPTÉ AVANT TOUTE TRACE, comme
 /// `escalate_overdue_cases_par`. Avant, la notification partait, puis `UPDATE incident SET {col}=1` était AVALÉ,
 /// puis la chronologie et le registre attestaient le dépassement : sur une écriture refusée, le marqueur restait à 0,
 /// le dossier restait sélectionné, et CHAQUE tick renvoyait la notification ET ajoutait un `case.sla_*_breach` au
-/// registre non purgeable pour un marquage jamais posé. Désormais : une ligne marquée (`AND {col}=0`, un seul
-/// marqueur gagnant) -> envoi, chronologie, registre ; aucune ligne -> déjà marqué (ou disparu), rien ; écriture
-/// refusée -> l'envoi part QUAND MÊME (un SLA réellement dépassé ne se tait pas : renvoyé à chaque tour tant que le
-/// marqueur est refusé, comme avant), son `detail` finit par `DEPASSEMENT_SLA_NON_ENREGISTRE`, mais RIEN n'est inscrit
-/// en chronologie ni au registre ; le refus est compté UNE fois par tour (pas par dossier) au balayage
-/// `sla_multilevel_marqueur` (`/metrics`).
+/// registre non purgeable pour un marquage jamais posé.
+/// L'ORDRE, DEPUIS `P10.33-k` : marqueur (`AND {col}=0`, un seul marqueur gagnant), chronologie comptée et maillon dans
+/// UNE transaction, validée ; PUIS l'envoi. Aucune ligne marquée -> déjà marqué (ou disparu), rien. Transaction validée
+/// -> envoi nominal (un maillon manquant n'annule rien : `P10.31-u`, la primitive l'a dit au journal). Marqueur,
+/// chronologie, `BEGIN` ou `COMMIT` refusés -> rien n'est écrit, l'envoi part QUAND MÊME (un SLA réellement dépassé ne
+/// se tait pas : renvoyé à chaque tour tant que le refus dure), son `detail` finit par `DEPASSEMENT_SLA_NON_ENREGISTRE`,
+/// et le refus est compté UNE fois par tour (pas par dossier) au balayage `sla_multilevel_marqueur` (`/metrics`).
 /// L'envoyeur est injecté pour que les témoins COMPTENT les envois sans réseau ; la production passe `notify_send`.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sla_multilevel_tick_par(
     db: &Arc<Mutex<Connection>>,
     envoyer: &mut dyn FnMut(&str, &str, &Value, i64, &str, &str, &str, i64) -> bool,
 ) {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     let now_i = now();
     let (ack_b, res_b, notifiers): (Vec<(i64, String, i64)>, Vec<(i64, String, i64)>, Vec<(String, String, i64, String)>) = {
         let conn = db.lock();
@@ -310,28 +313,49 @@ pub(crate) fn sla_multilevel_tick_par(
         let sev = match priority { 1 => 4, 2 => 3, 3 => 2, _ => 1 };
         let detail = format!("Case #{id} « {title} » : SLA {what} P{priority} dépassé.");
         // `P10.20-w` — LE MARQUEUR D'ABORD, COMPTÉ : sans lui, l'envoi part avec l'aveu, mais aucune trace (voir l'en-tête).
-        let marque = match db.lock().execute(&format!("UPDATE incident SET {col}=1 WHERE id=?1 AND {col}=0"), params![id]) {
-            Ok(0) => return, // déjà marqué (ou disparu) depuis la sélection : rien à notifier ni à tracer
-            Ok(_) => true,
-            Err(e) => {
+        // `P10.33-k` — la chronologie passait APRÈS l'envoi par `case_add_item`, qui avale : refusée, le
+        // dépassement était marqué et notifié sans aveu, absent de la chronologie, jamais renvoyé. Marqueur, chronologie
+        // comptée (`ajouter_l_element_au_dossier`) et maillon forment UNE transaction (`jouer_le_geste_garde`), validée
+        // AVANT l'envoi (le verrou de la base n'est pas tenu pendant l'envoi) : une chronologie refusée, un `BEGIN` ou un
+        // `COMMIT` refusé annulent le marqueur et suivent le chemin du marqueur refusé — envoi QUAND MÊME avec l'aveu,
+        // rien en chronologie ni au registre, compté au balayage `sla_multilevel_marqueur`, renvoyé au tour suivant.
+        let issue = {
+            let conn = db.lock();
+            jouer_le_geste_garde(&conn, "caseops", &format!("dépassement SLA du dossier #{id}"), |conn| {
+                match conn.execute(&format!("UPDATE incident SET {col}=1 WHERE id=?1 AND {col}=0"), params![id]) {
+                    Ok(0) => return Err(None), // déjà marqué (ou disparu) depuis la sélection : rien à notifier ni à tracer
+                    Ok(_) => {}
+                    Err(e) => return Err(Some(e.to_string())),
+                }
+                ajouter_l_element_au_dossier(conn, id, now_i, "sla", "system", &detail, None).map_err(|cause| Some(format!("chronologie du dépassement : {cause}")))?;
+                Ok(ledger_append(conn, kind, &format!("#{id} P{priority} {what}")))
+            })
+        };
+        let refus = match issue {
+            // `P10.31-u` — pas de surface où avouer un maillon manquant ici : la primitive l'a dit au journal.
+            Issue::Valide(maillon) => {
+                maillon.laisser_a_l_aveu_de_la_primitive();
+                None
+            }
+            Issue::Refuse(None) => return,
+            Issue::Refuse(Some(cause)) => Some(cause),
+            Issue::NonOuvert(e) => Some(format!("transaction non ouverte : {e}")),
+            Issue::NonValide(e) => Some(format!("validation refusée : {e}")),
+        };
+        let detail_envoye = match refus {
+            None => detail.clone(),
+            Some(cause) => {
                 marqueurs_refuses.0 += 1;
-                marqueurs_refuses.1 = e.to_string();
-                false
+                marqueurs_refuses.1 = cause;
+                format!("{detail} {DEPASSEMENT_SLA_NON_ENREGISTRE}")
             }
         };
-        let detail_envoye = if marque { detail.clone() } else { format!("{detail} {DEPASSEMENT_SLA_NON_ENREGISTRE}") };
         for (nk, url, minsev, cfg) in &notifiers {
             if sev >= *minsev {
                 let config: Value = serde_json::from_str(cfg).unwrap_or_else(|_| json!({}));
                 let _ = envoyer(nk, url, &config, sev, &format!("SLA {what} : {title}"), &detail_envoye, "", now_i);
             }
         }
-        if !marque {
-            return;
-        }
-        let conn = db.lock();
-        case_add_item(&conn, id, now_i, "sla", "system", &detail, None);
-        ledger_append(&conn, kind, &format!("#{id} P{priority} {what}"));
     };
     for (id, title, pr) in &ack_b {
         fire(*id, title, *pr, "ack_breached", "case.sla_ack_breach", "acquittement (MTTA)");
@@ -456,8 +480,30 @@ pub(crate) enum IssueDeLaFusion {
     /// (`false` hier), rien n'est écrit ni tracé.
     Refusee,
     /// La base n'a PAS pris l'écriture : la cause est portée, et rien — ni chronologie, ni registre, ni 204 — ne dit
-    /// que le geste a eu lieu.
+    /// que le geste a eu lieu. `P10.33-k` — une chronologie refusée, un `BEGIN` ou un `COMMIT` refusé y
+    /// mènent aussi : le geste entier est annulé (transaction de `jouer_le_geste_garde`).
     NonEcrite(String),
+    /// `P10.31-u` — l'écriture et ses chronologies sont VALIDÉES, mais le maillon du registre n'est pas entré (cause
+    /// portée) : le geste a eu lieu, il n'est pas annulé, et la route l'avoue (`registre_sans_maillon`) au lieu d'un 204.
+    EcriteSansTrace(String),
+}
+
+/// `P10.33-k` / `P10.31-u` — CE QUE REND LE GESTE JOUÉ D'UNE FUSION OU D'UNE DÉFUSION. `with_write` ne
+/// prend que le verrou de l'écrivain (`query_exec.rs`, aucune transaction) : le geste ouvre la sienne par le patron du
+/// fichier (`jouer_le_geste_garde`, comme `sla_policy_upsert`). Le corps rend le maillon ; un refus (jugement, écriture,
+/// chronologie) est déjà une `IssueDeLaFusion` et annule tout ; `BEGIN` ou `COMMIT` refusé -> `NonEcrite`, rien n'est
+/// écrit. Maillon manquant -> `EcriteSansTrace`, le geste validé n'est PAS annulé.
+fn issue_du_geste_de_fusion(issue: crate::handlers::transaction_validee::IssueDuGesteGarde<MaillonDeRegistre, IssueDeLaFusion>) -> IssueDeLaFusion {
+    use crate::handlers::transaction_validee::IssueDuGesteGarde as Issue;
+    match issue {
+        Issue::Valide(maillon) => match maillon.cause_de_non_inscription() {
+            None => IssueDeLaFusion::Ecrite,
+            Some(cause) => IssueDeLaFusion::EcriteSansTrace(cause.to_string()),
+        },
+        Issue::Refuse(refus) => refus,
+        Issue::NonOuvert(e) => IssueDeLaFusion::NonEcrite(format!("transaction non ouverte : {e}")),
+        Issue::NonValide(e) => IssueDeLaFusion::NonEcrite(format!("validation refusée : {e}")),
+    }
 }
 
 /// `P10.20-w` — l'`UPDATE` de la fusion n'a pas été écrit : 503 nommé, rien n'atteste la fusion.
@@ -468,25 +514,35 @@ pub(crate) const CAUSE_FUSION_NON_ECRITE: &str = "FUSION NON ÉCRITE : la base n
 pub(crate) const CAUSE_DEFUSION_NON_ECRITE: &str = "DÉFUSION NON ÉCRITE : la base n'a pas pris l'écriture, donc le \
      dossier est TOUJOURS fusionné — ni la chronologie ni le registre n'en portent rien. Rien n'a été fait. Réessayez.";
 
+/// `P10.33-k` — LES DEUX CHRONOLOGIES FONT PARTIE DE LA FUSION. Elles passaient par `case_add_item`, qui
+/// avale : une chronologie refusée laissait `Ecrite` et 204, fusion sans trace dans les dossiers (MTTA non figé).
+/// Décision par défaut (vague AB) : jugement, `UPDATE`, chronologies (`ajouter_l_element_au_dossier`, comptées) et maillon
+/// dans UNE transaction ; une chronologie refusée annule la fusion (`NonEcrite`, 503 existant). `P10.31-u` — le maillon
+/// est consommé : manquant, il est avoué (`EcriteSansTrace`) sans annuler.
 pub(crate) fn case_merge(conn: &Connection, src_id: i64, dst_id: i64, author: &str) -> IssueDeLaFusion {
-    // `P10.29-b` — les refus sont jugés par `juger_la_fusion` (mêmes faits, désormais nommés par la route).
-    if juger_la_fusion(conn, src_id, dst_id).is_err() {
-        return IssueDeLaFusion::Refusee;
-    }
-    let t = now();
-    // `P10.20-w` — L'ÉCRITURE EST COMPTÉE AVANT TOUTE TRACE : une ligne écrite, ou rien n'est attesté.
-    match conn.execute(
-        "UPDATE incident SET merged_into=?1, status='closed', closed_ts=?2, updated=?2 WHERE id=?3",
-        params![dst_id, t, src_id],
-    ) {
-        Ok(0) => return IssueDeLaFusion::Refusee, // la source a disparu entre le jugement et l'écriture : absence
-        Ok(_) => {}
-        Err(e) => return IssueDeLaFusion::NonEcrite(e.to_string()),
-    }
-    case_add_item(conn, src_id, t, "merge", author, &format!("fusionné dans #{dst_id}"), Some(&format!("case:{dst_id}")));
-    case_add_item(conn, dst_id, t, "merge", author, &format!("#{src_id} fusionné ici (timeline combinée)"), Some(&format!("case:{src_id}")));
-    ledger_append(conn, "case.merge", &format!("#{src_id} -> #{dst_id} by {author}"));
-    IssueDeLaFusion::Ecrite
+    use crate::handlers::transaction_validee::jouer_le_geste_garde;
+    let issue = jouer_le_geste_garde(conn, "caseops", &format!("fusion du dossier #{src_id} dans #{dst_id}"), |conn| {
+        // `P10.29-b` — les refus sont jugés par `juger_la_fusion` (mêmes faits, désormais nommés par la route).
+        if juger_la_fusion(conn, src_id, dst_id).is_err() {
+            return Err(IssueDeLaFusion::Refusee);
+        }
+        let t = now();
+        // `P10.20-w` — L'ÉCRITURE EST COMPTÉE AVANT TOUTE TRACE : une ligne écrite, ou rien n'est attesté.
+        match conn.execute(
+            "UPDATE incident SET merged_into=?1, status='closed', closed_ts=?2, updated=?2 WHERE id=?3",
+            params![dst_id, t, src_id],
+        ) {
+            Ok(0) => return Err(IssueDeLaFusion::Refusee), // la source a disparu entre le jugement et l'écriture : absence
+            Ok(_) => {}
+            Err(e) => return Err(IssueDeLaFusion::NonEcrite(e.to_string())),
+        }
+        ajouter_l_element_au_dossier(conn, src_id, t, "merge", author, &format!("fusionné dans #{dst_id}"), Some(&format!("case:{dst_id}")))
+            .map_err(|cause| IssueDeLaFusion::NonEcrite(format!("chronologie de la source : {cause}")))?;
+        ajouter_l_element_au_dossier(conn, dst_id, t, "merge", author, &format!("#{src_id} fusionné ici (timeline combinée)"), Some(&format!("case:{src_id}")))
+            .map_err(|cause| IssueDeLaFusion::NonEcrite(format!("chronologie de la cible : {cause}")))?;
+        Ok(ledger_append(conn, "case.merge", &format!("#{src_id} -> #{dst_id} by {author}")))
+    });
+    issue_du_geste_de_fusion(issue)
 }
 
 /// RÉVERSIBILITÉ de la fusion : dé-fusionne la source (merged_into=NULL) + la rouvre ('triage'). Trace + ledger.
@@ -502,19 +558,25 @@ pub(crate) fn juger_la_defusion(conn: &Connection, src_id: i64) -> Result<i64, R
     }
 }
 
+/// `P10.33-k` / `P10.31-u` — même geste que `case_merge` : lecture, `UPDATE`, chronologie comptée et maillon
+/// dans UNE transaction ; chronologie refusée -> défusion annulée (`NonEcrite`) ; maillon manquant -> `EcriteSansTrace`.
 pub(crate) fn case_unmerge(conn: &Connection, src_id: i64, author: &str) -> IssueDeLaFusion {
-    let cur: Option<Option<i64>> = conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![src_id], |r| r.get(0)).ok();
-    let Some(Some(dst)) = cur else { return IssueDeLaFusion::Refusee };
-    let t = now();
-    // `P10.20-w` — L'ÉCRITURE EST COMPTÉE AVANT LA CHRONOLOGIE ET LE REGISTRE.
-    match conn.execute("UPDATE incident SET merged_into=NULL, status='triage', closed_ts=NULL, updated=?1 WHERE id=?2", params![t, src_id]) {
-        Ok(0) => return IssueDeLaFusion::Refusee, // le dossier a disparu entre la lecture et l'écriture : absence
-        Ok(_) => {}
-        Err(e) => return IssueDeLaFusion::NonEcrite(e.to_string()),
-    }
-    case_add_item(conn, src_id, t, "merge", author, &format!("dé-fusionné de #{dst} (ré-ouvert)"), None);
-    ledger_append(conn, "case.unmerge", &format!("#{src_id} <- #{dst} by {author}"));
-    IssueDeLaFusion::Ecrite
+    use crate::handlers::transaction_validee::jouer_le_geste_garde;
+    let issue = jouer_le_geste_garde(conn, "caseops", &format!("défusion du dossier #{src_id}"), |conn| {
+        let cur: Option<Option<i64>> = conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![src_id], |r| r.get(0)).ok();
+        let Some(Some(dst)) = cur else { return Err(IssueDeLaFusion::Refusee) };
+        let t = now();
+        // `P10.20-w` — L'ÉCRITURE EST COMPTÉE AVANT LA CHRONOLOGIE ET LE REGISTRE.
+        match conn.execute("UPDATE incident SET merged_into=NULL, status='triage', closed_ts=NULL, updated=?1 WHERE id=?2", params![t, src_id]) {
+            Ok(0) => return Err(IssueDeLaFusion::Refusee), // le dossier a disparu entre la lecture et l'écriture : absence
+            Ok(_) => {}
+            Err(e) => return Err(IssueDeLaFusion::NonEcrite(e.to_string())),
+        }
+        ajouter_l_element_au_dossier(conn, src_id, t, "merge", author, &format!("dé-fusionné de #{dst} (ré-ouvert)"), None)
+            .map_err(|cause| IssueDeLaFusion::NonEcrite(format!("chronologie du dossier : {cause}")))?;
+        Ok(ledger_append(conn, "case.unmerge", &format!("#{src_id} <- #{dst} by {author}")))
+    });
+    issue_du_geste_de_fusion(issue)
 }
 
 /// `P10.20-w` — CE QUE LA POSE D'UN LIEN REND. Le `bool` d'avant portait DEUX zéros sous le même
@@ -536,13 +598,23 @@ pub(crate) enum LienDeDossier {
     /// `P10.29-b` — la lecture qui établit l'existence d'un des deux dossiers n'a pas eu lieu.
     DossierNonLu(String),
     /// L'écriture n'a pas eu lieu : la cause est portée, et rien — ni timeline, ni registre, ni
-    /// réponse — ne doit dire que les deux dossiers sont liés.
+    /// réponse — ne doit dire que les deux dossiers sont liés. `P10.33-k` — une chronologie refusée, un
+    /// `BEGIN` ou un `COMMIT` refusé y mènent aussi : la ligne du lien est annulée avec elles.
     NonPose(String),
+    /// `P10.31-u` — le lien et ses deux chronologies sont VALIDÉS, le maillon du registre n'est pas entré (cause portée) :
+    /// le geste n'est pas annulé, la route l'avoue (`registre_sans_maillon`).
+    PoseSansTrace(String),
 }
 
 /// LIEN NON DESTRUCTIF #39 : associe deux cases (kind ∈ related|duplicate|blocks) sans les fusionner. Dédup par
 /// UNIQUE(src,dst,kind). Trace item 'link' des deux côtés + ledger.
+///
+/// `P10.33-k` / `P10.31-u` — existence, ligne du lien, deux chronologies comptées
+/// (`ajouter_l_element_au_dossier`) et maillon dans UNE transaction (`jouer_le_geste_garde`, `with_write` n'en ouvre
+/// aucune) : une chronologie refusée annule le lien (`NonPose`, 503 existant) ; `BEGIN`/`COMMIT` refusé -> `NonPose` ;
+/// maillon manquant -> `PoseSansTrace`, le lien validé reste.
 pub(crate) fn case_link_add(conn: &Connection, src_id: i64, dst_id: i64, kind: &str, note: &str, author: &str) -> LienDeDossier {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     if src_id == dst_id {
         return LienDeDossier::MemeDossier;
     }
@@ -550,29 +622,41 @@ pub(crate) fn case_link_add(conn: &Connection, src_id: i64, dst_id: i64, kind: &
         "duplicate" | "blocks" | "related" => kind,
         _ => "related",
     };
-    for cid in [src_id, dst_id] {
-        match conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![cid], |_| Ok(())) {
-            Ok(()) => {}
-            Err(rusqlite::Error::QueryReturnedNoRows) => return LienDeDossier::DossierAbsent,
-            Err(e) => return LienDeDossier::DossierNonLu(e.to_string()),
+    let issue = jouer_le_geste_garde(conn, "caseops", &format!("lien des dossiers #{src_id} et #{dst_id}"), |conn| {
+        for cid in [src_id, dst_id] {
+            match conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![cid], |_| Ok(())) {
+                Ok(()) => {}
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Err(LienDeDossier::DossierAbsent),
+                Err(e) => return Err(LienDeDossier::DossierNonLu(e.to_string())),
+            }
         }
+        let t = now();
+        // L'ÉCRITURE EST COMPTÉE AVANT TOUTE TRACE : `OR IGNORE` rend légitimement zéro ligne quand le
+        // lien existe déjà, et c'est le SEUL zéro que cette clause produise — un échec de la base n'en
+        // est pas un.
+        match conn.execute(
+            "INSERT OR IGNORE INTO case_link(src_id,dst_id,kind,note,created,created_by) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![src_id, dst_id, kind, note, t, author],
+        ) {
+            Ok(0) => return Err(LienDeDossier::DejaLie), // déjà lié (idempotent) — pas de double trace, rien à annuler
+            Ok(_) => {}
+            Err(e) => return Err(LienDeDossier::NonPose(e.to_string())),
+        }
+        ajouter_l_element_au_dossier(conn, src_id, t, "link", author, &format!("lié à #{dst_id} ({kind})"), Some(&format!("case:{dst_id}")))
+            .map_err(|cause| LienDeDossier::NonPose(format!("chronologie du premier dossier : {cause}")))?;
+        ajouter_l_element_au_dossier(conn, dst_id, t, "link", author, &format!("lié à #{src_id} ({kind})"), Some(&format!("case:{src_id}")))
+            .map_err(|cause| LienDeDossier::NonPose(format!("chronologie du second dossier : {cause}")))?;
+        Ok(ledger_append(conn, "case.link", &format!("#{src_id} <-{kind}-> #{dst_id} by {author}")))
+    });
+    match issue {
+        Issue::Valide(maillon) => match maillon.cause_de_non_inscription() {
+            None => LienDeDossier::Pose,
+            Some(cause) => LienDeDossier::PoseSansTrace(cause.to_string()),
+        },
+        Issue::Refuse(refus) => refus,
+        Issue::NonOuvert(e) => LienDeDossier::NonPose(format!("transaction non ouverte : {e}")),
+        Issue::NonValide(e) => LienDeDossier::NonPose(format!("validation refusée : {e}")),
     }
-    let t = now();
-    // L'ÉCRITURE EST COMPTÉE AVANT TOUTE TRACE : `OR IGNORE` rend légitimement zéro ligne quand le
-    // lien existe déjà, et c'est le SEUL zéro que cette clause produise — un échec de la base n'en
-    // est pas un.
-    match conn.execute(
-        "INSERT OR IGNORE INTO case_link(src_id,dst_id,kind,note,created,created_by) VALUES(?1,?2,?3,?4,?5,?6)",
-        params![src_id, dst_id, kind, note, t, author],
-    ) {
-        Ok(0) => return LienDeDossier::DejaLie, // déjà lié (idempotent) — pas de double trace
-        Ok(_) => {}
-        Err(e) => return LienDeDossier::NonPose(e.to_string()),
-    }
-    case_add_item(conn, src_id, t, "link", author, &format!("lié à #{dst_id} ({kind})"), Some(&format!("case:{dst_id}")));
-    case_add_item(conn, dst_id, t, "link", author, &format!("lié à #{src_id} ({kind})"), Some(&format!("case:{src_id}")));
-    ledger_append(conn, "case.link", &format!("#{src_id} <-{kind}-> #{dst_id} by {author}"));
-    LienDeDossier::Pose
 }
 
 /// `P10.20-w` — CE QUE LE RETRAIT D'UN LIEN REND. `.unwrap_or(0)` faisait dire « aucun lien ne
@@ -1051,6 +1135,8 @@ fn lecture_des_metriques_non_faite(cause: &'static str) -> Result<Value, &'stati
 ///
 /// `P10.29-b` — chaque refus est nommé (`RefusDeFusion`) : 400 sans cible ou même dossier, 404 source ou cible absente,
 /// 409 déjà fusionnée ou cycle, 503 lecture refusée. Le 204 est inchangé.
+/// `P10.33-k` / `P10.31-u` — chronologie refusée : 503 `CAUSE_FUSION_NON_ECRITE` (fusion annulée) ; maillon manquant :
+/// 200 `{ok, registre_sans_maillon}` (fusion faite). Même règle pour la défusion et la pose d'un lien.
 pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     let into = b.get("into").and_then(|v| v.as_i64()).unwrap_or(0);
     if into <= 0 {
@@ -1062,6 +1148,7 @@ pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au)
         }
         match case_merge(&conn, id, into, &au.name) {
             IssueDeLaFusion::Ecrite => StatusCode::NO_CONTENT.into_response(),
+            IssueDeLaFusion::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
             IssueDeLaFusion::Refusee => RefusDeFusion::NonLu("second jugement de la fusion".into()).reponse(),
             // `P10.20-w` — écriture refusée : 503 nommé (contrat neuf, assumé ; il rendait 204 sur une fusion non faite).
             IssueDeLaFusion::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_FUSION_NON_ECRITE} ({cause})")),
@@ -1078,6 +1165,7 @@ pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(a
         }
         match case_unmerge(&conn, id, &au.name) {
             IssueDeLaFusion::Ecrite => StatusCode::NO_CONTENT.into_response(),
+            IssueDeLaFusion::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
             IssueDeLaFusion::Refusee => crate::handlers::cases::refus_du_dossier_non_lu(&"relecture du dossier fusionné"),
             // `P10.20-w` — écriture refusée : 503 nommé (contrat neuf, assumé ; il rendait 204 sur une défusion non faite).
             IssueDeLaFusion::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DEFUSION_NON_ECRITE} ({cause})")),
@@ -1129,6 +1217,7 @@ pub(crate) async fn case_link_handler(State(st): State<AppState>, Extension(au):
     // dossier, 404 dossier absent (ÉTABLI), 503 lecture refusée ou écriture ratée ; ils rendaient 404 nu (sauf l'écriture).
     with_write(&st, &au, |conn| match case_link_add(conn, id, to, &kind, &note, &au.name) {
         LienDeDossier::Pose | LienDeDossier::DejaLie => StatusCode::NO_CONTENT.into_response(),
+        LienDeDossier::PoseSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
         LienDeDossier::MemeDossier => bad_req(CAUSE_LIEN_AVEC_LE_MEME_DOSSIER),
         LienDeDossier::DossierAbsent => not_found(CAUSE_LIEN_DOSSIER_INTROUVABLE),
         LienDeDossier::DossierNonLu(cause) => crate::handlers::cases::refus_du_dossier_non_lu(&cause),

@@ -205,10 +205,15 @@ pub(crate) fn consigner_abandon(
         eprintln!("[detection] WARN règle #{id} : l'alerte de cécité n'a pas pu être écrite ({e}) — {consecutifs} abandons consécutifs comptés, elle sera reposée au prochain abandon");
         return Some(AbandonConsigne { consecutifs, seuil, alerte_posee: false });
     }
-    let _ = conn.execute(
+    // `P10.33-j` — un rafraîchissement REFUSÉ se DIT (règle + cause du moteur, jamais le détail). Il n'est pas
+    // recompté ici : l'appelant compte déjà CET abandon au bilan du tick (une règle, un abandon), et l'alerte de
+    // cécité reste ouverte (écrite ou déjà là) — `alerte_posee` ne ment donc pas, seul son texte reste celui d'avant.
+    if let Err(e) = conn.execute(
         "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, detail=?3 WHERE dedup=?4 AND status IN ('new','ack')",
         params![now_ts, titre, detail, dedup],
-    );
+    ) {
+        eprintln!("[detection] WARN règle #{id} : le texte de son alerte de cécité n'a pas pu être rafraîchi ({e}) — l'alerte reste ouverte sous son texte précédent, l'abandon est déjà compté au tick");
+    }
     Some(AbandonConsigne { consecutifs, seuil, alerte_posee: true })
 }
 

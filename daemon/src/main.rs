@@ -890,37 +890,42 @@ static INGEST_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// Rétention + rollup (cron horaire) : borne la croissance de la base. Cf. plan données.
 /// Dashboard « Vue d'ensemble (rapide) » — agrégations PRÉ-CALCULÉES depuis `event_rollup` (panneaux
 /// SQL directs, is_soql=0, __FROM__ = fenêtre). Évite de scanner `event` à chaque fois (la requête
-/// `severity>=3 by source` passait de ~1,9 s à quasi instantané). Idempotent par nom. Vue 'Sécurité'.
+/// `severity>=3 by source` passait de ~1,9 s à quasi instantané). Idempotent par nom. Vue 'SOC', repliée.
+///
+/// `P10.28-l` — AVANT : présence lue par `.is_ok()` (une lecture RATÉE valait absence : un second tableau du même nom
+/// était semé), puis en-tête, rattachement en `let _` et chaque panneau en `let _` : un panneau refusé laissait un
+/// tableau PARTIEL que l'idempotence par nom tenait pour semé, jamais réparé. DÉSORMAIS : `seed_dashboard_head_named`
+/// (le tout-ou-rien des semis par nom, `semer_sous_son_drapeau` avec le nom pour point de reprise) — une transaction,
+/// chaque panneau propagé, `Ok(1)` exigé ; un refus annule le tableau entier, est dit et compté, et le démarrage suivant
+/// le sème entier. Littéraux des panneaux inchangés.
 fn seed_rollup_dashboard(conn: &Connection) {
-    if conn.query_row("SELECT 1 FROM dashboard WHERE name='Vue d''ensemble (rapide)'", [], |r| r.get::<_, i64>(0)).is_ok() {
-        return;
-    }
-    if conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('Vue d''ensemble (rapide)', ?1, 'shared')", params![now()]).is_err() {
-        return;
-    }
-    let did = conn.last_insert_rowid();
-    // v63 : « Vue d'ensemble (rapide) » rejoint la vue « SOC » (à côté de « SOC — Vue d'ensemble »), REPLIÉ.
-    if let Some(vid) = find_or_create_view(conn, "SOC") { let _ = conn.execute("UPDATE dashboard SET view_id=?1, collapsed=1 WHERE id=?2", params![vid, did]); }
-    // is_soql=0 -> SQL direct sur event_rollup (pré-agrégé) ; __FROM__/__TO__ remplacés par la fenêtre.
-    // Les panneaux « par src_ip / par host » lisent désormais le PRÉ-AGRÉGÉ (v33) au lieu de scanner event.
-    // Ces panneaux n'utilisent QUE les colonnes du rollup (pas de json_extract) -> robustes aux évolutions
-    // du format `fields`. src_ip<>'' filtre le lump basse-sévérité (cf. borne v33). NB : SQL sur rollup =
-    // is_soql=0, le compilateur soql guatx-core n'y touche pas (event_rollup n'est pas un objet GXQL).
-    let panels: [(&str, &str, &str); 7] = [
-        ("Volume dans le temps", "SELECT bucket, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ GROUP BY bucket ORDER BY bucket", "line"),
-        ("Par source", "SELECT source, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ GROUP BY source ORDER BY n DESC LIMIT 20", "bar"),
-        ("Sévérité >=3 par source", "SELECT source, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND severity>=3 GROUP BY source ORDER BY n DESC LIMIT 20", "bar"),
-        ("Par action (CIM)", "SELECT action, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND action<>'' GROUP BY action ORDER BY n DESC LIMIT 20", "bar"),
-        ("Par sévérité", "SELECT severity, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ GROUP BY severity ORDER BY severity", "bar"),
-        ("Sévérité >=3 par src_ip", "SELECT src_ip, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND severity>=3 AND src_ip<>'' GROUP BY src_ip ORDER BY n DESC LIMIT 20", "bar"),
-        ("Volume par host", "SELECT host, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND host<>'' GROUP BY host ORDER BY n DESC LIMIT 20", "bar"),
-    ];
-    for (i, (title, q, viz)) in panels.iter().enumerate() {
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,0,?4,?5,2)",
-            params![did, title, q, viz, i as i64],
-        );
-    }
+    seed_dashboard_head_named(conn, "Vue d'ensemble (rapide)", "SOC", true, |conn, did| {
+        // is_soql=0 -> SQL direct sur event_rollup (pré-agrégé) ; __FROM__/__TO__ remplacés par la fenêtre.
+        // Les panneaux « par src_ip / par host » lisent désormais le PRÉ-AGRÉGÉ (v33) au lieu de scanner event.
+        // Ces panneaux n'utilisent QUE les colonnes du rollup (pas de json_extract) -> robustes aux évolutions
+        // du format `fields`. src_ip<>'' filtre le lump basse-sévérité (cf. borne v33). NB : SQL sur rollup =
+        // is_soql=0, le compilateur soql guatx-core n'y touche pas (event_rollup n'est pas un objet GXQL).
+        let panels: [(&str, &str, &str); 7] = [
+            ("Volume dans le temps", "SELECT bucket, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ GROUP BY bucket ORDER BY bucket", "line"),
+            ("Par source", "SELECT source, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ GROUP BY source ORDER BY n DESC LIMIT 20", "bar"),
+            ("Sévérité >=3 par source", "SELECT source, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND severity>=3 GROUP BY source ORDER BY n DESC LIMIT 20", "bar"),
+            ("Par action (CIM)", "SELECT action, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND action<>'' GROUP BY action ORDER BY n DESC LIMIT 20", "bar"),
+            ("Par sévérité", "SELECT severity, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ GROUP BY severity ORDER BY severity", "bar"),
+            ("Sévérité >=3 par src_ip", "SELECT src_ip, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND severity>=3 AND src_ip<>'' GROUP BY src_ip ORDER BY n DESC LIMIT 20", "bar"),
+            ("Volume par host", "SELECT host, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND host<>'' GROUP BY host ORDER BY n DESC LIMIT 20", "bar"),
+        ];
+        for (i, (title, q, viz)) in panels.iter().enumerate() {
+            let ecrites = conn.execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,0,?4,?5,2)",
+                params![did, title, q, viz, i as i64],
+            )?;
+            // `Ok(0)` (un `RAISE(IGNORE)`) n'a rien écrit : c'est un refus, le tableau entier est annulé.
+            if ecrites != 1 {
+                return Err(rusqlite::Error::StatementChangedRows(ecrites));
+            }
+        }
+        Ok(())
+    });
 }
 
 

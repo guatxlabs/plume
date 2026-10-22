@@ -105,13 +105,14 @@ pub(crate) fn compter_un_tick_aveugle(balayage: &'static str, cause: &str) {
         consigner_avec_sa_derniere_cause(&mut m, balayage, cause.to_string());
     }
 }
-/// `P10.20-w` — UN TOUR D'ESCALADE SLA DONT LA BASE A REFUSÉ LE MARQUEUR `escalated`, compté UNE fois par tour (pas
-/// par dossier) dans la même ventilation que les ticks aveugles, sous `balayage`. Ce n'est PAS un tour sans geste :
+/// `P10.20-w` — UN TOUR D'ESCALADE SLA DONT LA BASE A REFUSÉ LE MARQUEUR `escalated` (ou, pour le tick multi-niveau,
+/// `P10.33-k` : le marqueur, sa chronologie ou leur transaction), compté UNE fois par tour (pas par dossier) dans la
+/// même ventilation que les ticks aveugles, sous `balayage` ; la cause est dite au journal. Ce n'est PAS un tour sans geste :
 /// la notification est partie quand même (un SLA réellement dépassé ne se tait pas), seuls le marqueur, la chronologie
 /// et le registre manquent — la phrase du journal le dit, au lieu du « aucun geste » de `compter_un_tick_aveugle`.
 pub(crate) fn compter_une_escalade_notifiee_non_enregistree(balayage: &'static str, dossiers: usize, cause: &str) {
     TICKS_AVEUGLES_TOTAL.fetch_add(1, Ordering::Relaxed);
-    eprintln!("[plume] balayage de fond ({balayage}) : {dossiers} escalade(s) NOTIFIÉE(S) mais NON ENREGISTRÉE(S) (marqueur refusé, ni chronologie ni registre), renvoi au tour suivant : {cause}");
+    eprintln!("[plume] balayage de fond ({balayage}) : {dossiers} escalade(s) NOTIFIÉE(S) mais NON ENREGISTRÉE(S) (ni marqueur, ni chronologie, ni registre), renvoi au tour suivant : {cause}");
     if let Ok(mut m) = TICKS_AVEUGLES.lock() {
         consigner_avec_sa_derniere_cause(&mut m, balayage, cause.to_string());
     }

@@ -1327,14 +1327,20 @@ pub(crate) const CAUSE_ALERTE_INTROUVABLE: &str =
 /// Décision par défaut (vague AA) : `Ok(0)` -> 404 `CAUSE_ALERTE_INTROUVABLE`, RIEN au registre ; `Err` -> 503
 /// `CAUSE_ACQUITTEMENT_DE_L_ALERTE_NON_ECRIT`, cause au journal seul ; maillon manquant -> `200`
 /// `{"ok":true,"registre_sans_maillon":…}` (le geste a eu lieu, il n'est pas annulé).
-/// LIMITE ÉCRITE : l'`UPDATE` ne filtre aucun statut — une alerte `resolved` repasse `ack` (non jugé ici).
+///
+/// `P10.31-u` (vague AB) — AVANT, l'`UPDATE` ne filtrait aucun statut : une alerte `resolved` repassait `ack`, et une
+/// alerte déjà acquittée voyait `acked_by`/`acked_at` ÉCRASÉS par l'analyste suivant (attribution d'audit falsifiée,
+/// et un second `alert.ack` au registre). Décision par défaut (vague AB) : n'est acquittée qu'une alerte `new` — le
+/// filtre est DANS le `WHERE`, c'est lui la porte (pas une lecture préalable, qu'une levée concurrente démentirait).
+/// Sur zéro ligne, `refus_de_l_acquittement_sans_ligne` départage sur la même connexion : absente -> 404, présente
+/// mais non `new` (`ack`, `resolved`, ou tout autre statut) -> 409 nommé, lecture ratée -> 503 nommé, jamais 404.
 pub(crate) async fn ack(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
     match conn.execute(
-        "UPDATE alert SET status='ack', acked_at=?1, acked_by=?2 WHERE id=?3",
+        "UPDATE alert SET status='ack', acked_at=?1, acked_by=?2 WHERE id=?3 AND status='new'",
         params![now(), au.name, id],
     ) {
-        Ok(0) => not_found(CAUSE_ALERTE_INTROUVABLE),
+        Ok(0) => refus_de_l_acquittement_sans_ligne(&conn, id),
         Ok(_) => {
             let maillon = ledger_append(&conn, "alert.ack", &format!("#{id} by {}", au.name));
             match maillon.cause_de_non_inscription() {
@@ -1349,6 +1355,39 @@ pub(crate) async fn ack(State(st): State<AppState>, Extension(au): Extension<Aut
         Err(e) => {
             eprintln!("[alert.ack] WARN acquittement de l'alerte #{id} NON écrit : {e}");
             err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACQUITTEMENT_DE_L_ALERTE_NON_ECRIT)
+        }
+    }
+}
+
+/// `P10.31-u` (vague AB) — l'alerte existe mais n'est plus active : 409 nommé, servi `<cause> (statut constaté : « s »)`.
+/// Rien n'est écrit : l'auteur et l'heure de l'acquittement d'origine restent, et le registre n'en porte aucune trace.
+pub(crate) const CAUSE_ALERTE_NON_ACQUITTABLE: &str =
+    "ALERTE NON ACQUITTABLE : cette alerte n'est plus active, seule une alerte nouvelle s'acquitte. Rien n'est écrit : \
+     l'auteur et l'heure d'un acquittement antérieur ne sont pas remplacés, et le registre n'en porte aucune trace.";
+
+/// `P10.31-u` (vague AB) — l'acquittement n'a touché aucune ligne ET le statut de l'alerte n'a pas pu être relu : 503
+/// nommé, cause du moteur au journal seul. Ce n'est ni « introuvable » ni « non acquittable » : rien n'est établi.
+pub(crate) const CAUSE_STATUT_DE_L_ALERTE_NON_LU: &str =
+    "STATUT DE L'ALERTE NON LU : l'acquittement n'a touché aucune ligne et la base n'a pas laissé relire l'alerte. Ce \
+     n'est PAS « alerte introuvable » : rien n'est établi, rien n'est écrit, le registre n'en porte aucune trace. \
+     Réessayez.";
+
+/// Borne du statut constaté recopié dans le 409 : le statut est un mot court du démon, jamais un texte libre.
+const BORNE_DU_STATUT_CONSTATE: usize = 32;
+
+/// `P10.31-u` (vague AB) — l'`UPDATE` filtré n'a touché AUCUNE ligne : une lecture du statut, sur la MÊME connexion,
+/// dit pourquoi. Absente -> 404 `CAUSE_ALERTE_INTROUVABLE` (inchangé) ; présente -> 409 `CAUSE_ALERTE_NON_ACQUITTABLE`
+/// qui dit le statut constaté ; lecture ratée -> 503 `CAUSE_STATUT_DE_L_ALERTE_NON_LU`, cause au journal seul.
+fn refus_de_l_acquittement_sans_ligne(conn: &Connection, id: i64) -> Response {
+    match conn.query_row("SELECT status FROM alert WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
+        Err(rusqlite::Error::QueryReturnedNoRows) => not_found(CAUSE_ALERTE_INTROUVABLE),
+        Ok(statut) => {
+            let constate: String = statut.chars().take(BORNE_DU_STATUT_CONSTATE).collect();
+            err_json(StatusCode::CONFLICT, format!("{CAUSE_ALERTE_NON_ACQUITTABLE} (statut constaté : « {constate} »)"))
+        }
+        Err(e) => {
+            eprintln!("[alert.ack] WARN statut de l'alerte #{id} NON relu après un acquittement sans ligne : {e}");
+            err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_STATUT_DE_L_ALERTE_NON_LU)
         }
     }
 }
@@ -1368,12 +1407,27 @@ pub(crate) const CAUSE_ACQUITTEMENT_NON_ENREGISTRE: &str =
 // attesté sans avoir eu lieu, et un écran qui dit que la file est vide alors qu'elle est pleine.
 // Les deux zéros sont séparés : l'écriture ratée refuse AVANT le registre, l'absence reste un 200 à
 // zéro (et le registre la note, comme avant, parce que le geste a bien été exercé).
+//
+// `P10.31-u` (vague AB) — AVANT, le 503 servait `<cause> ({e})` : la cause du moteur partait au client
+// (la règle est cause au journal seul) ; et le maillon de registre était jeté (appel nu). Désormais le corps est
+// `CAUSE_ACQUITTEMENT_NON_ENREGISTRE` seule (son ouverture, que la console lit, est inchangée), la cause va au journal ;
+// un maillon manquant s'avoue à côté du compte (`registre_sans_maillon`), le geste fait n'est jamais annulé.
 pub(crate) async fn ack_all(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     crate::req_conn!(st, au, conn);
     let n = match conn.execute("UPDATE alert SET status='ack', acked_at=?1, acked_by=?2 WHERE status='new'", params![now(), au.name]) {
         Ok(n) => n,
-        Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ACQUITTEMENT_NON_ENREGISTRE} ({e})")),
+        Err(e) => {
+            eprintln!("[alert.ack_all] WARN acquittement en masse NON écrit : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACQUITTEMENT_NON_ENREGISTRE);
+        }
     };
-    ledger_append(&conn, "alert.ack_all", &format!("{n} alertes by {}", au.name));
-    Json(json!({ "acked": n })).into_response()
+    let maillon = ledger_append(&conn, "alert.ack_all", &format!("{n} alertes by {}", au.name));
+    match maillon.cause_de_non_inscription() {
+        None => Json(json!({ "acked": n })).into_response(),
+        Some(cause) => {
+            let mut corps = json!({ "acked": n });
+            corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+            Json(corps).into_response()
+        }
+    }
 }

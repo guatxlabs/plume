@@ -23,6 +23,11 @@
 mod dossier_et_echeances_comptes {
     use super::*;
 
+    /// `P10.33-k` — les témoins qui lisent le balayage `sla_multilevel_marqueur` (compteur GLOBAL du processus) en
+    /// différence EXACTE se sérialisent ici : sous `cargo test` (un seul processus, plusieurs fils), les témoins `ab3_` du
+    /// tick SLA l'incrémentent aussi. `parking_lot` n'empoisonne pas : un rouge ne gèle pas les voisins.
+    pub(crate) static VERROU_DU_BALAYAGE_SLA_MULTILEVEL_MARQUEUR: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     fn dec_etat(tag: &str) -> (AppState, crate::tmp_possede::TmpDb) {
         let chemin = crate::tmp_possede::TmpDb::neuf(&format!("dec-{tag}"));
         {
@@ -228,6 +233,7 @@ mod dossier_et_echeances_comptes {
     /// vraie accusation) ; (c) compter par dossier dans le bras `Err` -> +4 ; (d) envoyer le `detail` nu -> aveu absent.
     #[test]
     fn dec_un_marqueur_de_depassement_sla_non_ecrit_notifie_quand_meme_en_l_avouant_sans_s_inscrire_au_registre() {
+        let _verrou = VERROU_DU_BALAYAGE_SLA_MULTILEVEL_MARQUEUR.lock();
         let (st, _tmp) = dec_etat("sla");
         let id = {
             let conn = st.db.lock();

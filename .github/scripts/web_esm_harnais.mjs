@@ -16326,7 +16326,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     "`CAUSE_LIEN_NON_POSE` ou `CAUSE_LIEN_NON_RETIRE` n'est plus lisible dans daemon/src/handlers/");
   instrument104(VOISINES104.every((v) => v.length > 60),
     "une des quatre causes VOISINES n'est plus lisible : les verdicts négatifs ci-dessous porteraient sur des chaînes vides");
-  instrument104(/Err\(e\) => return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_ACQUITTEMENT_NON_ENREGISTRE\} \(\{e\}\)"\)\),/.test(HANDLERS104)
+  instrument104(/Err\(e\) => \{\s*eprintln!\([^;]*\);\s*return err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACQUITTEMENT_NON_ENREGISTRE\);\s*\}/.test(HANDLERS104)
+    && !/format!\("\{CAUSE_ACQUITTEMENT_NON_ENREGISTRE\} \(\{e\}\)"\)/.test(HANDLERS104)
     && /Json\(json!\(\{ "acked": n \}\)\)\.into_response\(\)/.test(HANDLERS104),
     "`ack_all` ne sépare plus l'écriture ratée (cinq cent trois nommé) du vrai zéro (`{\"acked\": n}`)");
   instrument104(/DossierOuvert::NonOuvert\(cause\) => \{\s*return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_DOSSIER_NON_OUVERT\} \(\{cause\}\)"\)\)/.test(HANDLERS104),
@@ -16420,14 +16421,16 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
     // ══ (a) L'ACQUITTEMENT EN MASSE ═════════════════════════════════════════════════════════════
     for (const enChaine of [false, true]) {
-      servis104["POST /api/alerts/ack-all"] = { statut: 503, corps: corps503(CAUSE_ACQ104, "disk I/O error", enChaine) };
+      // Vague AB : la cause du moteur va au journal SEUL, le corps ne sert que la cause nommée.
+      const corpsAcq104 = { error: CAUSE_ACQ104, id: "plume-e7-0" };
+      servis104["POST /api/alerts/ack-all"] = { statut: 503, corps: enChaine ? JSON.stringify(corpsAcq104) : corpsAcq104 };
       const g = await geste104(() => modAlertes104.acquitter({ toutes: true, phrase: "Acquitter TOUTES les alertes actives ?" }));
       const dit = g.avis.join(" | ");
       exiger(g.appels.includes("POST /api/alerts/ack-all"),
         `(104a-instrument) le geste n'atteint pas la route d'acquittement en masse : ${JSON.stringify(g.appels)}`);
       exiger(g.rejet === null,
         `(104a) le refus d'acquittement SORT DU GESTE en rejet non traité (corps en ${enChaine ? "chaîne" : "objet"}) : ${g.rejet && g.rejet.message}`);
-      exiger(g.avis.length === 1 && dit.startsWith(motAcq104("acquittement_non_enregistre")) && dit.includes(CAUSE_ACQ104 + " (disk I/O error)"),
+      exiger(g.avis.length === 1 && dit.startsWith(motAcq104("acquittement_non_enregistre")) && dit.includes(CAUSE_ACQ104) && !dit.includes("disk I/O error"),
         `(104a) le cinq cent trois nommé ne se dit pas avec la phrase de la console PUIS la cause servie (corps en ${enChaine ? "chaîne" : "objet"}) : « ${dit.slice(0, 300)} »`);
       exiger(sansCodeNiJson104(dit),
         `(104a) le code, une accolade ou l'identifiant d'incident atteint l'avis : « ${dit.slice(0, 300)} »`);

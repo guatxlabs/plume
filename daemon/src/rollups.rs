@@ -1135,19 +1135,87 @@ pub(crate) const BANPASS_COVERAGE_SQL: &str =
 /// Dashboard « Banni / Pass » — surface les IPs qui ATTAQUENT mais ne sont PAS bannies. Panneaux is_soql=0
 /// (SQL natif : anti-join sur `banned_ip`, hors-portée du compilo GXQL) SWR-cachés (panel_cache_ttl_s>0 ->
 /// calculés EN FOND par cache_refresh_all_panels, servis depuis panel_cache ; JAMAIS de LIVE-sync
-/// timeout-able). Idempotent par nom (comme seed_rollup_dashboard). Vue 'Sécurité'. __FROM__ = fenêtre.
+/// timeout-able). Idempotent par nom (comme seed_rollup_dashboard). Vue 'Détection', repliée. __FROM__ = fenêtre.
 /// GÉNÉRIQUE SUR `SqlExec` (cf. migrate.rs) : `&Connection` depuis le boot (historique inchangé),
 /// `&MigTx` depuis la migration v52 -> écritures SOUS le garde de l'étape.
+///
+/// `P10.28-l` — AVANT : présence lue par `.is_ok()` (une lecture RATÉE valait absence : un second tableau du même nom
+/// était semé), en-tête, rattachement en `let _`, chaque panneau en `let _` : un panneau refusé laissait un tableau
+/// PARTIEL que l'idempotence par nom tenait pour semé, jamais réparé. DÉSORMAIS : en-tête, rattachement et panneaux
+/// sous un `SAVEPOINT` (tout ou rien), chaque écriture propagée, `Ok(1)` exigé ; un refus annule le tableau entier et le
+/// démarrage suivant le sème entier ; une présence non lue n'écrit rien. Pas `semer_sous_son_drapeau` : il exige un
+/// `&Connection` et ouvre un `BEGIN`, impossible sous la transaction d'une étape (`MigTx`) ; le `SAVEPOINT` sert les deux
+/// contextes. Sous `MigTx`, un refus de classe B fait toujours échouer l'étape (le garde le note) ; un refus de classe A
+/// ou un `Ok(0)` laisse l'étape validée SANS ce tableau (avant : partiel), que le démarrage sème ensuite. Le refus est dit
+/// au journal (une ligne), pas compté : le compteur des gestes de fond exige un `&Connection`. Le démarrage n'est jamais
+/// refusé. Littéraux des panneaux inchangés.
 pub(crate) fn seed_banpass_dashboard<C: SqlExec>(conn: &C) {
-    if conn.query_row("SELECT 1 FROM dashboard WHERE name='Banni / Pass'", [], |r| r.get::<_, i64>(0)).is_ok() {
-        return;
+    if let Err(non_seme) = semer_le_banni_pass(conn) {
+        eprintln!("[seed] le tableau de bord « {NOM_DU_BANNI_PASS} » NON semé : {non_seme}");
     }
-    if conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('Banni / Pass', ?1, 'shared')", params![now()]).is_err() {
-        return;
+}
+
+pub(crate) const NOM_DU_BANNI_PASS: &str = "Banni / Pass";
+/// Le point de reprise du semis : la transaction la plus externe au démarrage, un point imbriqué sous `MigTx`.
+pub(crate) const POINT_DU_BANNI_PASS: &str = "semis_banni_pass";
+
+/// Pourquoi « Banni / Pass » n'a pas été semé (rien n'est conservé dans les trois cas).
+enum BanniPassNonSeme {
+    PresenceNonLue(rusqlite::Error),
+    PointDeRepriseNonOuvert(rusqlite::Error),
+    EcritureRefusee { refus: rusqlite::Error, annulation: rusqlite::Result<()> },
+}
+
+impl std::fmt::Display for BanniPassNonSeme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BanniPassNonSeme::PresenceNonLue(e) => {
+                write!(f, "sa présence n'a pas pu être lue ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage")
+            }
+            BanniPassNonSeme::PointDeRepriseNonOuvert(e) => {
+                write!(f, "point de reprise non ouvert ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage")
+            }
+            BanniPassNonSeme::EcritureRefusee { refus, annulation: Ok(()) } => write!(
+                f,
+                "une écriture ou sa validation a été refusée ({refus}) — RIEN n'est conservé, le semis sera retenté au prochain démarrage"
+            ),
+            BanniPassNonSeme::EcritureRefusee { refus, annulation: Err(e) } => {
+                write!(f, "une écriture ou sa validation a été refusée ({refus}) — ANNULATION REFUSÉE ({e})")
+            }
+        }
     }
+}
+
+/// Le semis tout ou rien : `Ok(())` s'il vient d'être écrit et validé, ou s'il était déjà présent.
+fn semer_le_banni_pass<C: SqlExec>(conn: &C) -> Result<(), BanniPassNonSeme> {
+    match conn.query_row("SELECT 1 FROM dashboard WHERE name=?1", params![NOM_DU_BANNI_PASS], |r| r.get::<_, i64>(0)) {
+        Ok(_) => return Ok(()),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(e) => return Err(BanniPassNonSeme::PresenceNonLue(e)),
+    }
+    conn.execute_batch(&format!("SAVEPOINT {POINT_DU_BANNI_PASS}")).map_err(BanniPassNonSeme::PointDeRepriseNonOuvert)?;
+    let ecrit = ecrire_le_banni_pass(conn).and_then(|()| conn.execute_batch(&format!("RELEASE {POINT_DU_BANNI_PASS}")));
+    if let Err(refus) = ecrit {
+        // `ROLLBACK TO` puis `RELEASE` : rien n'est conservé et le point est fermé (au démarrage, la transaction aussi).
+        let annulation = conn.execute_batch(&format!("ROLLBACK TO {POINT_DU_BANNI_PASS}; RELEASE {POINT_DU_BANNI_PASS}"));
+        return Err(BanniPassNonSeme::EcritureRefusee { refus, annulation });
+    }
+    Ok(())
+}
+
+/// `Ok(0)` (un `RAISE(IGNORE)`) n'a rien écrit : c'est un refus, et le semis entier est annulé.
+fn une_seule_ligne_du_banni_pass(ecrites: usize) -> rusqlite::Result<()> {
+    if ecrites == 1 { Ok(()) } else { Err(rusqlite::Error::StatementChangedRows(ecrites)) }
+}
+
+/// En-tête, rattachement à la vue « Détection » (replié) et panneaux, à jouer sous le point de reprise.
+fn ecrire_le_banni_pass<C: SqlExec>(conn: &C) -> rusqlite::Result<()> {
+    une_seule_ligne_du_banni_pass(conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('Banni / Pass', ?1, 'shared')", params![now()])?)?;
     let did = conn.last_insert_rowid();
     // v63 : « Banni / Pass » -> vue « Détection » (à côté de « Sécurité & détection »), REPLIÉ (non primaire).
-    if let Some(vid) = find_or_create_view(conn, "Détection") { let _ = conn.execute("UPDATE dashboard SET view_id=?1, collapsed=1 WHERE id=?2", params![vid, did]); }
+    if let Some(vid) = find_or_create_view(conn, "Détection") {
+        une_seule_ligne_du_banni_pass(conn.execute("UPDATE dashboard SET view_id=?1, collapsed=1 WHERE id=?2", params![vid, did])?)?;
+    }
     // (titre, requête is_soql=0, viz, panel_cache_ttl_s). TOUS les panneaux sont bornés par __FROM__
     // (fenêtre 24 h par défaut ; picker='Tout' -> from=0 -> tout l'historique) + LIMIT + SWR.
     let panels: [(&str, &str, &str, i64); 4] = [
@@ -1165,11 +1233,12 @@ pub(crate) fn seed_banpass_dashboard<C: SqlExec>(conn: &C) {
          "table", 300),
     ];
     for (i, (title, q, viz, ttl)) in panels.iter().enumerate() {
-        let _ = conn.execute(
+        une_seule_ligne_du_banni_pass(conn.execute(
             "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols,panel_cache_ttl_s) VALUES(?1,?2,?3,0,?4,?5,2,?6)",
             params![did, title, q, viz, i as i64, ttl],
-        );
+        )?)?;
     }
+    Ok(())
 }
 
 /// Rafraîchit (best-effort) le cache de résultats des panneaux pour leur FENÊTRE PAR DÉFAUT (24 h

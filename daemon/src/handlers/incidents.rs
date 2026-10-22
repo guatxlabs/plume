@@ -849,9 +849,10 @@ pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Exte
     })
 }
 
-/// `P10.31-u` — CORPS D'UN GESTE FAIT DONT LE MAILLON MANQUE (déclaration d'incident, avancement d'étape) : `200`
-/// `{"ok":true,"registre_sans_maillon":"<CAUSE_GESTE_SANS_TRACE> (<cause>)"}`. Le nominal reste un `204` sans corps.
-fn geste_fait_sans_trace(cause: &str) -> Response {
+/// `P10.31-u` — CORPS D'UN GESTE FAIT DONT LE MAILLON MANQUE (déclaration d'incident, avancement d'étape ; fusion,
+/// défusion et lien de dossier dans `caseops.rs`) : `200` `{"ok":true,"registre_sans_maillon":"<CAUSE_GESTE_SANS_TRACE>
+/// (<cause>)"}`. Le nominal reste un `204` sans corps.
+pub(crate) fn geste_fait_sans_trace(cause: &str) -> Response {
     let mut corps = json!({ "ok": true });
     corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
     Json(corps).into_response()

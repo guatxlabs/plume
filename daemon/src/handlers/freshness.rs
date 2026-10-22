@@ -1085,6 +1085,8 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
 /// (`Inconnu` compris) — elles n'abandonnent rien ; le bilan est chargé par le dead-man's-switch du PARC
 /// quand il se retrouve aveugle, et par chaque alerte de capteur, de parc ou de magasin que la base refuse
 /// d'écrire (`Lue(1)` par alerte refusée, additionnées) : une alerte non écrite n'est jamais un tick calme.
+/// `P10.33-j` — de même une RÉSOLUTION ou un RAFRAÎCHISSEMENT d'imputation refusé (`Lue(1)` par alerte, jamais deux
+/// pour la même alerte) : un épisode resté ouvert tient sa clé et avalerait le suivant.
 pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let conn = db.lock();
@@ -1099,6 +1101,12 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
     let mut capteurs_non_lus: Vec<String> = Vec::new();
     let mut cause_aveugle: Option<&'static str> = None;
     let mut alertes_non_ecrites: u32 = 0;
+    // `P10.33-j` — les RÉSOLUTIONS de capteur refusées : chacune reste COMPTÉE (une alerte, un abandon — une base qui
+    // refuse d'écrire n'est pas calme), mais le JOURNAL les agrège en UNE ligne par tick (nombre + première cause du
+    // moteur) : une base en lecture seule refuse les 23 résolutions, même sur zéro ligne, à chaque tick de 20 s.
+    let mut resolutions_refusees: u32 = 0;
+    // Vide tant qu'aucune résolution n'est refusée : le compte `resolutions_refusees` décide seul de la ligne.
+    let mut premiere_cause_de_resolution_refusee = String::new();
     let pipe_fresh = match pipeline_est_frais(&conn, now_ts) {
         Ok(pf) => Some(pf),
         Err(e) => {
@@ -1172,30 +1180,56 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,sources,basis) VALUES(?1,?2,2,?3,?4,?5,?6,?7)",
                 params![now_ts, format!("heartbeat.{id}"), format!("Capteur muet : {label}"), detail, dedup, sources, crate::fondement::Fondement::BattementDeCoeur.mot()],
             );
-            match ecrite {
-                Ok(_) => {}
+            let insert_refuse = match ecrite {
+                Ok(_) => false,
                 Err(e) => {
                     alertes_non_ecrites += 1;
                     eprintln!(
                         "[plume] battement de cœur : alerte « capteur muet » du capteur {id} NON ÉCRITE ({e}) — comptée abandonnée au bilan du tick, re-tentée au tick suivant"
                     );
+                    true
                 }
-            }
+            };
             // Épisode DÉJÀ ouvert (l'INSERT ci-dessus est un no-op) : l'imputation est tout de même
             // rafraîchie, pour la même raison que côté règles — la liste des sources d'un capteur peut
             // changer entre deux versions du binaire, et une pastille ne doit pas rester accrochée à
             // une imputation périmée pour toute la durée de l'épisode.
-            let _ = conn.execute(
+            // `P10.33-j` — le rafraîchissement REFUSÉ se dit et se compte : UNE alerte par capteur au plus (l'INSERT et
+            // ce rafraîchissement portent la MÊME alerte ; deux refus sur elle restent un abandon, jamais deux).
+            let rafraichie = conn.execute(
                 "UPDATE alert SET sources=?1 WHERE dedup=?2 AND status IN ('new','ack')",
                 params![sources, dedup],
             );
+            if let Err(e) = rafraichie {
+                if !insert_refuse {
+                    alertes_non_ecrites += 1;
+                }
+                eprintln!(
+                    "[plume] battement de cœur : imputation de l'alerte « capteur muet » du capteur {id} NON RAFRAÎCHIE ({e}) — comptée abandonnée au bilan du tick (une fois par capteur), re-tentée au tick suivant"
+                );
+            }
         } else {
             // capteur de nouveau actif (ou jamais vu / pipeline frais) -> résout l'alerte ouverte et libère la clé
-            let _ = conn.execute(
+            // `P10.33-j` — une résolution REFUSÉE laisse l'alerte ouverte ET sa clé tenue : le prochain épisode serait
+            // avalé par l'INSERT OR IGNORE. Le refus se compte (UN abandon) et se dit (capteur + cause du moteur).
+            let resolue = conn.execute(
                 "UPDATE alert SET status='resolved', dedup=NULL WHERE dedup=?1 AND status IN ('new','ack')",
                 params![dedup],
             );
+            if let Err(e) = resolue {
+                alertes_non_ecrites += 1;
+                resolutions_refusees += 1;
+                if premiere_cause_de_resolution_refusee.is_empty() {
+                    premiere_cause_de_resolution_refusee = e.to_string();
+                }
+            }
         }
+    }
+    if resolutions_refusees > 0 {
+        let cause = &premiere_cause_de_resolution_refusee;
+        eprintln!(
+            "[plume] battement de cœur : {resolutions_refusees} alerte(s) « capteur muet » NON RÉSOLUE(S) ce tick (première cause : {cause}) — comptée(s) abandonnée(s) au bilan du tick, une par capteur, re-tentée(s) au tick suivant"
+        );
     }
     // P9.8-a — LE MAGASIN DE SECRETS rejoint le MÊME tick, la MÊME famille d'alertes et le MÊME
     // verrou que les deux dead-man's-switches ci-dessus, parce qu'il est le même genre de fait : un
@@ -1245,15 +1279,24 @@ fn verifier_flotte_muette(conn: &Connection, now_ts: i64) -> crate::bilan_de_tic
     let ouverte = f.cle_dedup();
     // RÉSOLUTION de tout épisode de la famille qui n'est PAS l'ensemble courant. Couvre les deux cas
     // d'un seul geste : plus aucun hôte muet (`ouverte` = None -> tout est résolu), et ensemble CHANGÉ.
-    let _ = conn.execute(
+    // `P10.33-j` — une résolution REFUSÉE laisse l'épisode précédent ouvert : UN abandon (il porte une autre alerte
+    // que l'épisode courant, les deux refus s'additionnent) et une ligne de journal sans nom de machine ni compte.
+    let resolution = conn.execute(
         "UPDATE alert SET status='resolved', dedup=NULL \
          WHERE dedup LIKE ?1 || '%' AND dedup IS NOT ?2 AND status IN ('new','ack')",
         params![DEDUP_FLOTTE_MUETTE, ouverte],
     );
+    let mut resolution_refusee: u32 = 0;
+    if let Err(e) = resolution {
+        resolution_refusee = 1;
+        eprintln!(
+            "[plume] battement de cœur : épisode « flotte muette » précédent NON RÉSOLU ({e}) — compté abandonné au bilan du tick, re-tenté au tick suivant"
+        );
+    }
     // Aucun hôte muet : rien à ouvrir, et c'est un VRAI zéro — le parc a été LU. C'est un fait du parc
     // (`muets == 0`), testé comme tel ; `cle_dedup` n'est `None` que dans ce cas-là.
     if f.muets == 0 {
-        return crate::mesure_environnement::Mesure::Lue(0);
+        return crate::mesure_environnement::Mesure::Lue(resolution_refusee);
     }
     // `Some` par construction dès que `muets > 0` ; un invariant rompu PANIQUE ici, et le planificateur
     // compte la panique comme un tick aveugle — jamais une clé vide posée en silence.
@@ -1279,12 +1322,12 @@ fn verifier_flotte_muette(conn: &Connection, now_ts: i64) -> crate::bilan_de_tic
     // `P10.20-w` — `Ok(0)` = épisode du MÊME ensemble déjà ouvert (légitime) ; `Err` = alerte refusée par la
     // base : UN abandon au bilan et une ligne de journal SANS nom de machine ni compte (cause du moteur seule).
     match ecrite {
-        Ok(_) => crate::mesure_environnement::Mesure::Lue(0),
+        Ok(_) => crate::mesure_environnement::Mesure::Lue(resolution_refusee),
         Err(e) => {
             eprintln!(
                 "[plume] battement de cœur : alerte « flotte muette » NON ÉCRITE ({e}) — comptée abandonnée au bilan du tick, re-tentée au tick suivant"
             );
-            crate::mesure_environnement::Mesure::Lue(1)
+            crate::mesure_environnement::Mesure::Lue(1 + resolution_refusee)
         }
     }
 }

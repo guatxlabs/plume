@@ -303,7 +303,9 @@ pub(crate) fn detail_du_magasin(non_prets: i64, total: Option<i64>, releves: usi
 ///     n'a simplement rapporté. Un aveu ici ferait crier tous les déploiements sans magasin ;
 ///   * observé -> lève ou résout ;
 ///   * observé, mais l'alerte à lever est REFUSÉE par la base -> rien n'est levé, la cause du moteur va au
-///     journal et le refus se compte (`Mesure::Lue(1)`) : une alerte non écrite n'est pas un tick calme.
+///     journal et le refus se compte (`Mesure::Lue(1)`) : une alerte non écrite n'est pas un tick calme ;
+///     `P10.33-j` : une résolution ou un rafraîchissement du texte refusé se compte de même (`Lue(1)`, un seul
+///     pour l'alerte même si l'INSERT et le rafraîchissement sont refusés tous deux).
 pub(crate) fn verifier_le_magasin_de_secrets(conn: &Connection, now_ts: i64) -> Mesure<u32> {
     let Some(etat) = etat_du_magasin(conn, now_ts) else {
         return Mesure::Illisible {
@@ -322,10 +324,18 @@ pub(crate) fn verifier_le_magasin_de_secrets(conn: &Connection, now_ts: i64) -> 
         // Ce ne sont pas des aveux — rien n'a échoué, il n'y a simplement pas de quoi conclure.
         EtatDuMagasin::NonObserve | EtatDuMagasin::Indecis { .. } => {}
         EtatDuMagasin::Sert { .. } => {
-            let _ = conn.execute(
+            // `P10.33-j` — une résolution REFUSÉE laisse l'alerte ouverte ET sa clé tenue (le prochain arrêt serait
+            // avalé par l'INSERT OR IGNORE) : UN abandon au bilan et une ligne de journal (cause du moteur seule).
+            let resolue = conn.execute(
                 "UPDATE alert SET status='resolved', dedup=NULL WHERE dedup=?1 AND status IN ('new','ack')",
                 params![DEDUP_MAGASIN],
             );
+            if let Err(e) = resolue {
+                alerte_non_ecrite = 1;
+                eprintln!(
+                    "[plume] magasin de secrets : alerte NON RÉSOLUE ({e}) — comptée abandonnée au bilan du tick, re-tentée au tick suivant"
+                );
+            }
         }
         EtatDuMagasin::NeSertPlus { non_prets, total, releves, au_moins_depuis_s } => {
             let titre = titre_du_magasin(non_prets, total);
@@ -349,10 +359,18 @@ pub(crate) fn verifier_le_magasin_de_secrets(conn: &Connection, now_ts: i64) -> 
             }
             // Épisode DÉJÀ ouvert : on rafraîchit le texte et l'horodatage SANS toucher `notified`
             // (pas de re-notification à chaque tick), exactement comme `detection_aveugle`.
-            let _ = conn.execute(
+            // `P10.33-j` — un rafraîchissement REFUSÉ se dit et se compte ; c'est la MÊME alerte que l'INSERT : le compte
+            // reste UN (affectation, pas addition), jamais deux pour une alerte.
+            let rafraichie = conn.execute(
                 "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, detail=?3, sources=?4 WHERE dedup=?5 AND status IN ('new','ack')",
                 params![now_ts, titre, detail, sources, DEDUP_MAGASIN],
             );
+            if let Err(e) = rafraichie {
+                alerte_non_ecrite = 1;
+                eprintln!(
+                    "[plume] magasin de secrets : texte de l'alerte NON RAFRAÎCHI ({e}) — compté abandonné au bilan du tick (une fois pour l'alerte), re-tenté au tick suivant"
+                );
+            }
         }
     }
     Mesure::Lue(alerte_non_ecrite)

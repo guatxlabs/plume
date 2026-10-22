@@ -683,22 +683,32 @@ pub(crate) async fn notifier_delete(State(st): State<AppState>, Extension(au): E
         }
     }
 }
+/// `P10.20-b` (rang quatre) — l'essai d'un canal dont la ligne n'a pas pu être lue : ce n'est pas « canal introuvable ».
+pub(crate) const CAUSE_CANAL_NON_ESSAYE_NON_LU: &str = "CANAL NON ESSAYÉ : la base n'a pas rendu ce canal de \
+     notification — ce n'est PAS « canal introuvable », c'est une lecture qui n'a pas eu lieu ; aucun envoi n'est fait. \
+     Réessayez ; si le refus persiste, la table des canaux est illisible.";
+
 /// `P10.20-j` — ses refus portent leur statut (ils étaient servis en deux cents `{error}`) : le rôle par la phrase TEXTE
-/// de `rbac_gate` en 403, comme la création d'un canal (`refus_du_role_sur_un_canal`), et un canal absent en 404. RESTE
-/// ÉCRIT : la lecture du canal rend `None` sur une absence COMME sur une lecture ratée (`.ok()`, entrée de rang quatre de
-/// la garde `P10.20-b`) — le 404 hérite de cette confusion, qu'il ne crée pas.
+/// de `rbac_gate` en 403, comme la création d'un canal (`refus_du_role_sur_un_canal`), et un canal absent en 404.
+/// `P10.20-b` (rang quatre) — la ligne du canal se lit en TROIS issues (`.optional()` au lieu de `.ok()`) : présente, essayée ;
+/// absente, le 404 d'avant ; lecture ratée, 503 `CAUSE_CANAL_NON_ESSAYE_NON_LU`, cause du moteur au journal seul, aucun envoi.
 pub(crate) async fn notifier_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if !au.is_admin() {
         return refus_du_role_sur_un_canal();
     }
     let row = {
+        use rusqlite::OptionalExtension;
         crate::req_conn!(st, au, conn);
         conn.query_row("SELECT kind,url,config FROM notifier WHERE id=?1", params![id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).ok()
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).optional()
     };
     let (kind, url, cfg) = match row {
-        Some(x) => x,
-        None => return not_found("canal introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("canal introuvable"),
+        Err(e) => {
+            eprintln!("[notifiers] WARN canal #{id} NON lu pour l'essai, aucun envoi : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CANAL_NON_ESSAYE_NON_LU);
+        }
     };
     let config: Value = serde_json::from_str(&cfg).unwrap_or_else(|_| json!({}));
     let ts = now();

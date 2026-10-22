@@ -666,8 +666,17 @@ pub(crate) async fn action_result(State(st): State<AppState>, Extension(au): Ext
         Ok(n) => n,
         Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_RESULTAT_NON_ENREGISTRE} ({e})")),
     };
+    // `P10.31-u` — LE MAILLON DU VERDICT D'AGENT EST LU. Le verdict est écrit : un maillon manquant ne
+    // l'annule pas (l'agent ne rejouerait que la remise, et la riposte est close). Il se dit au journal
+    // (identifiant de l'action, jamais l'hôte ni la cible) et à côté de `ok: true`, que l'agent lit seul.
     if n > 0 {
-        ledger_append(&conn, "action.remote", &format!("#{id}@{host} -> {status} : {result}"));
+        let maillon = ledger_append(&conn, "action.remote", &format!("#{id}@{host} -> {status} : {result}"));
+        if let Some(cause) = maillon.cause_de_non_inscription() {
+            eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("actions", &format!("action {id} : verdict `{status}` de l'agent écrit"), "action.remote", cause));
+            let mut corps = json!({ "ok": true });
+            corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+            return Json(corps).into_response();
+        }
     }
     Json(json!({ "ok": n > 0 })).into_response()
 }
@@ -817,8 +826,13 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
         // écritures exotiques VERS celle qui traversait la protection. `ssrf_norm_ip` replie.
         // SAUT FRANC sur l'inanalysable : le repli `unwrap_or_else(raw)` clé le store `net_ban`
         // sur une chaîne que `real_client_ip` ne produira jamais — un ban qui ne bloque personne.
+        // `P10.31-u` — les trois maillons du miroir sont lus : un maillon manquant se dit au journal
+        // (identifiant de l'action, jamais la cible) ; l'approbation et la réponse restent celles d'avant.
         let canon = match ssrf_norm_ip(target.trim()) { Some(i) => i.to_string(), None => {
-            ledger_append(&conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP ({kind}, action {id})"));
+            let maillon = ledger_append(&conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP ({kind}, action {id})"));
+            if let Some(cause) = maillon.cause_de_non_inscription() {
+                eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("actions", &format!("action {id} approuvée : cible inanalysable, aucun miroir HTTP"), "netban.forme", cause));
+            }
             return StatusCode::NO_CONTENT.into_response();
         } };
         if kind == "ban_ip" && !dry && !ip_is_protected(&canon) {
@@ -834,10 +848,16 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
             match netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: action ban_ip", &au.name, "prod") {
                 PoseDeBan::Arme => {}
                 PoseDeBan::RefuseParLePlafond => {
-                    ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (action {id})"));
+                    let maillon = ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (action {id})"));
+                    if let Some(cause) = maillon.cause_de_non_inscription() {
+                        eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("actions", &format!("action {id} approuvée : miroir HTTP refusé par le plafond"), "netban.plafond", cause));
+                    }
                 }
                 PoseDeBan::NonEcrit(cause) => {
-                    ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (action {id}) : {cause}"));
+                    let maillon = ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (action {id}) : {cause}"));
+                    if let Some(manque) = maillon.cause_de_non_inscription() {
+                        eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("actions", &format!("action {id} approuvée : miroir HTTP NON armé"), "netban.non-arme", manque));
+                    }
                     return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_BAN_NON_ARME} ({cause})"));
                 }
             }
@@ -936,6 +956,16 @@ pub(crate) fn aveu_du_responder_sur_la_levee(id: i64, issue: &LeveeDuMiroirHttp)
     }
 }
 
+/// `P10.31-u` — LA LIGNE DE JOURNAL D'UN MAILLON DE RIPOSTE QUI N'EST PAS ENTRÉ. Les maillons de ce
+/// fichier qui étaient posés sans être lus (verdict d'agent, miroir HTTP inanalysable, refusé par le
+/// plafond ou non armé, ban manuel refusé, verdict du responder non écrit ou conservé) sont la SEULE
+/// trace de ce qu'ils disent : manquants, ils se disent ici. La primitive avoue déjà la perte, mais
+/// par son seul genre ; cette ligne ajoute l'action visée (ou le geste) et la cause du moteur, JAMAIS
+/// la cible : le `detail` du registre la nomme, le journal non. Elle n'annule rien.
+pub(crate) fn ligne_d_un_maillon_de_riposte_manquant(sujet: &str, geste: &str, genre: &str, cause: &str) -> String {
+    format!("[{sujet}] WARN {geste} : le registre n'a PAS pris le maillon `{genre}` ({cause})")
+}
+
 /// `P10.31-u` — LE MIROIR HTTP DU RESPONDER, APRÈS UNE RIPOSTE EXÉCUTÉE ET CLOSE. Déplacé de
 /// `respond_run` sans changement de comportement — le `continue` du saut franc devient un retour, et
 /// l'aveu de la levée est RENDU à l'appelant qui l'émet — pour être EXÉCUTÉ par un témoin : la garde
@@ -952,9 +982,13 @@ pub(crate) fn miroir_http_du_responder(conn: &Connection, id: i64, kind: &str, t
         // exécuté avec succès n'écrit plus une ligne `netban.forme` sur son PID ou son nom de
         // service (cf. `action_approve`). Le signal des ripostes d'adresse perdues reste lisible.
         // `P4.7-j` — même canonicaliseur unique qu'`action_approve` ; saut franc sur l'inanalysable.
+        // `P10.31-u` — un maillon manquant du miroir est RENDU à l'appelant, qui l'émet comme l'aveu
+        // de la levée : identifiant de l'action, jamais la cible.
         let canon = match ssrf_norm_ip(target.trim()) { Some(i) => i.to_string(), None => {
-            ledger_append(conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP (responder, {kind}, action {id})"));
-            return None;
+            let maillon = ledger_append(conn, "netban.forme", &format!("{target} : forme non analysable — aucun miroir HTTP (responder, {kind}, action {id})"));
+            return maillon.cause_de_non_inscription().map(|cause| {
+                ligne_d_un_maillon_de_riposte_manquant("responder", &format!("action {id} exécutée : cible inanalysable, aucun miroir HTTP"), "netban.forme", cause)
+            });
         } };
         if kind == "ban_ip" && !ip_is_protected(&canon) {
             // REFUS SUR STORE PLEIN : tracé au ledger. L'enforcement RÉSEAU vient d'aboutir (`done`) —
@@ -966,10 +1000,16 @@ pub(crate) fn miroir_http_du_responder(conn: &Connection, id: i64, kind: &str, t
             match netban_upsert(conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod") {
                 PoseDeBan::Arme => {}
                 PoseDeBan::RefuseParLePlafond => {
-                    ledger_append(conn, "netban.plafond", &format!("{canon} refusé : store live plein (responder, action {id})"));
+                    let maillon = ledger_append(conn, "netban.plafond", &format!("{canon} refusé : store live plein (responder, action {id})"));
+                    return maillon.cause_de_non_inscription().map(|cause| {
+                        ligne_d_un_maillon_de_riposte_manquant("responder", &format!("action {id} exécutée : miroir HTTP refusé par le plafond"), "netban.plafond", cause)
+                    });
                 }
                 PoseDeBan::NonEcrit(cause) => {
-                    ledger_append(conn, "netban.non-arme", &format!("{canon} NON armé (responder, action {id}) : {cause}"));
+                    let maillon = ledger_append(conn, "netban.non-arme", &format!("{canon} NON armé (responder, action {id}) : {cause}"));
+                    return maillon.cause_de_non_inscription().map(|manque| {
+                        ligne_d_un_maillon_de_riposte_manquant("responder", &format!("action {id} exécutée : miroir HTTP NON armé"), "netban.non-arme", manque)
+                    });
                 }
             }
         } else if kind == "unban_ip" {
@@ -1104,15 +1144,23 @@ pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extens
     // cinq cent trois nomme la cause et la distingue du plafond, qui lui reste un cinq cent sept.
     match netban_upsert(&conn, &ip, expires, reason, &au.name, "prod") {
         PoseDeBan::Arme => {}
+        // `P10.31-u` — le maillon du refus est lu : manquant, il se dit au journal (ni l'adresse ni le
+        // compte, que le `detail` porte) ; le refus servi ne change pas.
         PoseDeBan::RefuseParLePlafond => {
-            ledger_append(&conn, "netban.plafond", &format!("{ip} refusé : store live plein by={}", au.name));
+            let maillon = ledger_append(&conn, "netban.plafond", &format!("{ip} refusé : store live plein by={}", au.name));
+            if let Some(cause) = maillon.cause_de_non_inscription() {
+                eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("netban", "ban manuel refusé par le plafond", "netban.plafond", cause));
+            }
             return err_json(
                 StatusCode::INSUFFICIENT_STORAGE,
                 format!("store de bans plein ({NETBAN_CACHE_CAP} IP) — libérer par DELETE /api/netban/{{ip}}, ou bloquer en amont (pare-feu/CDN)"),
             );
         }
         PoseDeBan::NonEcrit(cause) => {
-            ledger_append(&conn, "netban.non-arme", &format!("{ip} NON armé by={} : {cause}", au.name));
+            let maillon = ledger_append(&conn, "netban.non-arme", &format!("{ip} NON armé by={} : {cause}", au.name));
+            if let Some(manque) = maillon.cause_de_non_inscription() {
+                eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("netban", "ban manuel NON armé", "netban.non-arme", manque));
+            }
             return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_BAN_NON_ARME} ({cause})"));
         }
     }
@@ -1761,12 +1809,17 @@ pub(crate) fn respond_run() {
             // `continue` ci-dessous), et la ligne du registre porte son PROPRE genre — elle dit ce qui
             // n'a pas eu lieu, elle n'affirme pas une clôture. L'action reste `approved`, donc le tour
             // suivant la reprendra ; l'effet système, lui, a déjà eu lieu et c'est écrit tel quel.
-            ledger_append(
+            let maillon = ledger_append(
                 &conn,
                 "action.exec.verdict-non-ecrit",
                 &format!("{kind} {target} : {CAUSE_VERDICT_NON_ECRIT} ({cause}) ; ce responder avait obtenu `{status}` ({result})"),
             );
             eprintln!("[responder] action {id} : {CAUSE_VERDICT_NON_ECRIT} ({cause})");
+            // `P10.31-u` — ce maillon est la SEULE trace d'un effet système dont la clôture manque : manquant,
+            // il se dit aussi (identifiant de l'action, jamais la cible).
+            if let Some(manque) = maillon.cause_de_non_inscription() {
+                eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("responder", &format!("action {id} exécutée, verdict NON écrit"), "action.exec.verdict-non-ecrit", manque));
+            }
             continue;
         }
         if matches!(cloture, ClotureDeRiposte::VerdictDejaPose) {
@@ -1779,18 +1832,25 @@ pub(crate) fn respond_run() {
             // conservé » aussi bien quand la ligne avait disparu que quand elle n'avait PAS ÉTÉ LUE,
             // et aucune relecture ne pouvait plus recouper ce verdict vide. Trois issues, distinguées
             // à l'écrit, et l'échec porte son propre `kind` pour être filtrable.
-            let (kind_de_registre, dit) = match verdict_conserve_relu(&conn, id) {
-                VerdictConserve::Lu(v) => ("action.exec.verdict-conserve", format!("verdict `{v}` déjà posé, conservé")),
+            // `P10.31-u` — le troisième terme est ce que dit la ligne de journal si le maillon manque : chaque
+            // issue dit ce qui s'est passé, une ligne disparue ou une relecture ratée n'est pas un verdict conservé.
+            let (kind_de_registre, dit, geste_du_journal) = match verdict_conserve_relu(&conn, id) {
+                VerdictConserve::Lu(v) => ("action.exec.verdict-conserve", format!("verdict `{v}` déjà posé, conservé"), "verdict d'un autre acteur conservé"),
                 VerdictConserve::LigneDisparue => (
                     "action.exec.verdict-conserve",
                     "la ligne a DISPARU de la table entre la clôture et sa relecture — aucun verdict à conserver".to_string(),
+                    "ligne d'action disparue avant la relecture du verdict",
                 ),
                 VerdictConserve::NonRelu(e) => (
                     "action.exec.verdict-non-relu",
                     format!("verdict conservé NON RELU ({e}) — cette trace ne dit PAS lequel a été conservé"),
+                    "verdict conservé NON relu",
                 ),
             };
-            ledger_append(&conn, kind_de_registre, &format!("{kind} {target} : {dit} ; ce responder avait obtenu `{status}` ({result})"));
+            let maillon = ledger_append(&conn, kind_de_registre, &format!("{kind} {target} : {dit} ; ce responder avait obtenu `{status}` ({result})"));
+            if let Some(manque) = maillon.cause_de_non_inscription() {
+                eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("responder", &format!("action {id} exécutée, {geste_du_journal}"), kind_de_registre, manque));
+            }
             continue;
         }
         // `P10.20-v` — LE RESPONDER N'A NI RÉPONSE À SERVIR NI BILAN DE TICK À TENIR : sa seule

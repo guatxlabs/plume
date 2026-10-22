@@ -539,7 +539,10 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # création est refusée avec une cause d'insertion plutôt qu'avec la vraie.
     ("daemon/src/handlers/incidents.rs", "unique_custom_key"): ("is_ok",),
     ("daemon/src/handlers/index_policies.rs", "index_policy_create"): ("is_ok",),
-    ("daemon/src/handlers/notifiers.rs", "notifier_test"): ("ok",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, 2026-10-22) : `notifiers.rs::notifier_test` — `.ok()` sur la ligne du
+    # canal : une lecture ratée rendait 404 « canal introuvable ». Le site PROPAGE désormais (`.optional()`, trois
+    # issues) : absence établie = le 404 d'avant, lecture ratée = 503 `CAUSE_CANAL_NON_ESSAYE_NON_LU`, aucun envoi
+    # (témoins : `refus_nommes_de_la_retention_et_canal_non_lu.rs`).
     # L'état COURANT du panneau non lu -> `None` -> `panel_access` (`dashboards.rs:42`) rend `None` et
     # l'accès est refusé.
     ("daemon/src/handlers/panneau_resolu.rs", "courante"): ("ok",),

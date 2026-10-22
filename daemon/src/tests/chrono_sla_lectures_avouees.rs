@@ -369,14 +369,19 @@ mod chrono_sla_lectures_avouees {
     }
 
     /// BRAS du filtre `refus` / `NonLu` : P3 -> P1 écrite (politique lisible), statut refusé, ligne du dossier illisible
-    /// pour `sla_apply_policy` seulement (`first_response_ts` renommée ; la relecture ne la lit pas) -> la cause porte
+    /// pour `sla_apply_policy` seulement (`first_response_ts` illisible ; la relecture ne la lit pas) -> la cause porte
     /// « NON LU — ligne du dossier » au lieu du générique « (ack_due/resolve_due/pause) ».
     /// MUTATION QUI LE FAIT ROUGIR : `VERIF_MUT=I3C_M27`.
+    /// `P10.21-n` (vague AC) — LA FIXTURE AFFIRMAIT LE DÉFAUT CORRIGÉ : elle RENOMMAIT `first_response_ts`, que la
+    /// chronologie de la priorité écrit (MTTA) ; `case_add_item` avalait ce refus et la priorité restait écrite. La
+    /// chronologie étant désormais comptée dans le geste du champ, la priorité était annulée et le bras visé jamais
+    /// atteint. La colonne garde son nom et porte un texte : l'`UPDATE … WHERE first_response_ts IS NULL` de la
+    /// chronologie ne touche aucune ligne sans erreur, la lecture typée de `sla_apply_policy` échoue — même bras.
     #[tokio::test]
     async fn csl_bras_application_non_lue_nommee_dans_le_rattrapage() {
         let (st, _t) = csl_etat("bras-m27");
         let id = csl_dossier(&st, 3);
-        csl_sql(&st, "ALTER TABLE incident RENAME COLUMN first_response_ts TO csl_reponse_cachee;");
+        csl_sql(&st, &format!("UPDATE incident SET first_response_ts='illisible' WHERE id={id};"));
         csl_refuser(&st, "csl_refus_statut", "status", "csl status");
         let cause = csl_cause(&st, id, json!({ "priority": 1, "status": "in_progress" }), CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE).await;
         csl_forme(

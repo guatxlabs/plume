@@ -25,8 +25,8 @@
 // `meta.key` étant PRIMARY KEY, seul ce départ-ci rend visible une publication non gardée).
 //
 // CE QUE CE TÉMOIN NE TIENT PAS : une lecture ratée par interruption réelle (même branche `Err`) ; la borne jumelle
-// `dim_at_id` du rollup dimensionnel (même idiome `.unwrap_or(0)`, refusée aussi par cet autorisateur, NON traitée : reste
-// de la clé) ; l'horloge reculée (`wm > recent`) : borne non lue, `[recent, wm)` est ré-agrégé sans borne d'identifiant
+// `dim_at_id` du rollup dimensionnel (refusée aussi par cet autorisateur, traitée et témoignée à part :
+// `rollups_dim_et_banned_ip_non_ecrits.rs`) ; l'horloge reculée (`wm > recent`) : borne non lue, `[recent, wm)` est ré-agrégé sans borne d'identifiant
 // sous un watermark laissé en place, double compte des lignes tardives `id > cov` (limite écrite dans `rollups.rs`) ;
 // le plancher `MIN(event.ts)` abaissé par une vieille ligne restée dans `event` (reste de la clé).
 //

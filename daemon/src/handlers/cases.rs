@@ -144,13 +144,14 @@ pub(crate) fn resolve_case_ref_avec_cause(conn: &Connection, rf: &str) -> (Optio
 }
 
 /// Insère un item de timeline horodaté + auteur, bump `incident.updated`, et fige first_response_ts (MTTA) au
-/// 1er item de RÉPONSE analyste (ni 'note', ni 'created', ni 'sla' système). CŒUR COMMUN des mutations de case :
-/// chaque action laisse une trace d'audit datée dans la timeline (#4a).
+/// 1er item de RÉPONSE analyste (ni 'note', ni 'created', ni 'sla' système).
 ///
-/// `P10.21-n` — CETTE FORME AVALE SES ÉCRITURES, et elle reste celle des vingt appelants qui posent un élément EN
-/// PASSANT (statut, assignation, fusion, échéance…) : leur défaut propre est suivi ailleurs (`garde_69` pour ceux
-/// qu'une trace affirme). La route qui n'a pas d'autre geste que l'ajout d'un élément, `case_item_add`, passe par
-/// `ajouter_l_element_au_dossier`, qui COMPTE.
+/// `P10.21-n` / `P10.22-q` (vague AC) — CETTE FORME AVALE SES ÉCRITURES, ET ELLE N'A PLUS AUCUN APPELANT DE
+/// PRODUCTION : elle n'existe que sous `cfg(test)`. Création, assignation, priorité, statut, verdict, escalade,
+/// archivage et désarchivage posent leur élément par `ajouter_l_element_au_dossier`, qui COMPTE, dans le geste
+/// qu'ils tracent ; `case_item_add` y passait déjà. La forme reste, signature inchangée, pour les témoins qui
+/// l'appellent.
+#[cfg(test)]
 pub(crate) fn case_add_item(conn: &Connection, incident_id: i64, t: i64, kind: &str, author: &str, body: &str, rf: Option<&str>) {
     let _ = ajouter_l_element_au_dossier(conn, incident_id, t, kind, author, body, rf);
 }
@@ -234,27 +235,62 @@ pub(crate) enum DossierOuvert {
 /// l'identifiant de la ligne qu'on vient d'écrire et d'aucune autre.
 /// `P10.20-w` (reste) — rend AUSSI ce qu'a fait la pose des échéances multi-niveau (`IssueDuChronoSla`) : elle était
 /// avalée, et `case_create` servait le dossier sans dire qu'une politique active n'avait PAS été appliquée.
-pub(crate) fn case_create_row_et_echeances(conn: &Connection, author: &str, title: &str, sev: i64, summary: &str, assignee: Option<&str>, priority: i64) -> (DossierOuvert, IssueDuChronoSla) {
+/// `P10.21-n` / `P10.22-q` (vague AC) — LA CHRONOLOGIE « créé » FAIT PARTIE DE L'OUVERTURE. Elle passait par
+/// `case_add_item`, qui avale : refusée, le dossier était ouvert sans chronologie. Décision par défaut (vague AC, modèle
+/// de la fusion) : la ligne, sa chronologie comptée (`ajouter_l_element_au_dossier`) et le maillon dans UNE transaction
+/// (`jouer_le_geste_garde`) ; chronologie, `BEGIN` ou `COMMIT` refusés -> `NonOuvert`, rien n'existe (503
+/// `CAUSE_DOSSIER_NON_OUVERT` existant). `P10.31-u` — le troisième membre est la cause d'un maillon `case.create`
+/// manquant : le dossier est ouvert, il n'est pas annulé, la route l'avoue (`registre_sans_maillon`).
+/// Les échéances multi-niveau restent posées APRÈS la validation, comme avant.
+pub(crate) fn case_create_row_echeances_et_maillon(
+    conn: &Connection,
+    author: &str,
+    title: &str,
+    sev: i64,
+    summary: &str,
+    assignee: Option<&str>,
+    priority: i64,
+) -> (DossierOuvert, IssueDuChronoSla, Option<String>) {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     let t = now();
     let pr = priority.clamp(1, 4);
     let sla_due = t + sla_target_s(pr);
-    let id = match conn.execute(
-        "INSERT INTO incident(ts,updated,title,status,severity,owner,summary,priority,assignee,sla_due) \
-         VALUES(?1,?1,?2,'new',?3,?4,?5,?6,?7,?8)",
-        params![t, title, sev, author, summary, pr, assignee, sla_due],
-    ) {
-        Ok(1) => conn.last_insert_rowid(),
-        // Un `INSERT` sans clause de conflit écrit une ligne ou échoue ; la branche existe pour que le
-        // jour où l'énoncé en gagne une, le silence ne soit pas le comportement par défaut.
-        Ok(n) => return (DossierOuvert::NonOuvert(format!("{n} ligne(s) écrite(s) au lieu d'une")), IssueDuChronoSla::RienAFaire),
-        Err(e) => return (DossierOuvert::NonOuvert(e.to_string()), IssueDuChronoSla::RienAFaire),
+    let geste = |conn: &Connection| -> Result<(i64, MaillonDeRegistre), String> {
+        let id = match conn.execute(
+            "INSERT INTO incident(ts,updated,title,status,severity,owner,summary,priority,assignee,sla_due) \
+             VALUES(?1,?1,?2,'new',?3,?4,?5,?6,?7,?8)",
+            params![t, title, sev, author, summary, pr, assignee, sla_due],
+        ) {
+            Ok(1) => conn.last_insert_rowid(),
+            // Un `INSERT` sans clause de conflit écrit une ligne ou échoue ; la branche existe pour que le
+            // jour où l'énoncé en gagne une, le silence ne soit pas le comportement par défaut.
+            Ok(n) => return Err(format!("{n} ligne(s) écrite(s) au lieu d'une")),
+            Err(e) => return Err(e.to_string()),
+        };
+        ajouter_l_element_au_dossier(conn, id, t, "created", author, "Incident créé", None)
+            .map_err(|cause| format!("chronologie de l'ouverture : {cause}"))?;
+        Ok((id, ledger_append(conn, "case.create", &format!("#{id} '{title}' by {author}"))))
     };
-    case_add_item(conn, id, t, "created", author, "Incident créé", None);
-    ledger_append(conn, "case.create", &format!("#{id} '{title}' by {author}"));
+    let (id, maillon) = match jouer_le_geste_garde(conn, "cases", "ouverture d'un dossier", geste) {
+        Issue::Valide(fait) => fait,
+        Issue::Refuse(cause) => return (DossierOuvert::NonOuvert(cause), IssueDuChronoSla::RienAFaire, None),
+        Issue::NonOuvert(e) => {
+            return (DossierOuvert::NonOuvert(format!("transaction non ouverte : {e}")), IssueDuChronoSla::RienAFaire, None)
+        }
+        Issue::NonValide(e) => return (DossierOuvert::NonOuvert(format!("validation refusée : {e}")), IssueDuChronoSla::RienAFaire, None),
+    };
     // #39 — pose les échéances SLA MULTI-NIVEAU (ack_due/resolve_due) si une politique gouverne cette priorité.
     // INERTE si `sla_policy` VIDE (mode 0 : sla_apply_policy retourne sans écrire -> SLA legacy sla_due inchangé).
     let echeances = sla_apply_policy(conn, id);
-    (DossierOuvert::Ouvert(id), echeances)
+    (DossierOuvert::Ouvert(id), echeances, maillon.cause_de_non_inscription().map(str::to_string))
+}
+
+/// Les témoins d'avant : le dossier et ses échéances, sans le maillon (que la primitive avoue au journal). Hors tests,
+/// seul `case_create` ouvre un dossier, par `case_create_row_echeances_et_maillon`.
+#[cfg(test)]
+pub(crate) fn case_create_row_et_echeances(conn: &Connection, author: &str, title: &str, sev: i64, summary: &str, assignee: Option<&str>, priority: i64) -> (DossierOuvert, IssueDuChronoSla) {
+    let (ouverture, echeances, _maillon_avoue_par_la_primitive) = case_create_row_echeances_et_maillon(conn, author, title, sev, summary, assignee, priority);
+    (ouverture, echeances)
 }
 
 /// Semis des témoins : le dossier seul. L'issue des échéances multi-niveau n'y est pas lue — les témoins qui la jugent
@@ -299,9 +335,8 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     // `P10.20-w` (reste) — le statut a-t-il été ÉCRIT par cette demande : le rattrapage multi-niveau rejoue alors la
     // reprise du chrono (`sla_on_status_change`), comme la sortie nominale.
     let mut statut_ecrit = false;
-    // `P10.20-w` — une écriture attestée est comptée : une ligne, ou on sort AVANT la trace. Forme `rattrape` (statut,
-    // verdict) : une priorité déjà écrite voit son échéance recalculée AVANT la sortie, au lieu de garder celle de
-    // l'ancienne priorité.
+    // `P10.20-w` — une écriture comptée : une ligne, ou on sort. (Sa forme `rattrape` est passée aux champs attestés,
+    // `champ_atteste!` ci-dessous : une priorité déjà écrite voit son échéance recalculée AVANT la sortie.)
     macro_rules! ecriture_comptee {
         ($champ:literal, $res:expr) => {
             match $res {
@@ -310,17 +345,34 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
                 Err(e) => return IssueDuDossierModifie::NonEcrite(format!("{}: {e}", $champ)),
             }
         };
-        ($champ:literal, $res:expr, rattrape) => {
-            match $res {
-                Ok(0) => return IssueDuDossierModifie::DossierAbsent,
-                Ok(_) => {}
-                Err(e) => {
-                    let mut cause = format!("{}: {e}", $champ);
+    }
+    // `P10.21-n` / `P10.22-q` / `P10.31-u` (vague AC) — UN CHAMP ATTESTÉ (assignation, priorité, statut, verdict) EST UN
+    // GESTE À LUI : son `UPDATE` compté, sa chronologie comptée et son maillon dans UNE transaction
+    // (`ecrire_un_champ_atteste`). La chronologie passait par `case_add_item`, qui avale : refusée, le champ était
+    // écrit sans chronologie (MTTA non figé) et la route rendait 204. Refusée désormais, le CHAMP est annulé avec elle
+    // -> `NonEcrite` (503 existant, dont la phrase « il n'est PAS modifié » redevient vraie). AUCUNE transaction
+    // n'englobe la demande : le contrat écrit plus haut (« les champs qui le précèdent ont pu être écrits ») tient
+    // toujours. Un maillon manquant n'annule rien : il est retenu ici et avoué en fin de demande (`EcriteSansTrace`).
+    let mut maillons_manquants: Vec<String> = Vec::new();
+    macro_rules! champ_atteste {
+        ($issue:expr) => {
+            match $issue {
+                Err(RefusDuChampAtteste::Absent) => return IssueDuDossierModifie::DossierAbsent,
+                Err(RefusDuChampAtteste::NonEcrit(cause)) => return IssueDuDossierModifie::NonEcrite(cause),
+                Ok(maillon) => maillons_manquants.extend(maillon),
+            }
+        };
+        ($issue:expr, rattrape) => {
+            match $issue {
+                Err(RefusDuChampAtteste::Absent) => return IssueDuDossierModifie::DossierAbsent,
+                Err(RefusDuChampAtteste::NonEcrit(cause)) => {
+                    let mut cause = cause;
                     if priorite_ecrite {
                         cause.push_str(&rattraper_l_echeance(conn, id, cur_priority, &statut_en_base, statut_ecrit, t));
                     }
                     return IssueDuDossierModifie::NonEcrite(cause);
                 }
+                Ok(maillon) => maillons_manquants.extend(maillon),
             }
         };
     }
@@ -343,17 +395,25 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     if let Some(v) = b.get("assignee") {
         let a = v.as_str().unwrap_or("").trim().to_string();
         let stored: Option<String> = if a.is_empty() { None } else { Some(a.clone()) };
-        ecriture_comptee!("assignee", conn.execute("UPDATE incident SET assignee=?1 WHERE id=?2", params![stored, id]));
         let body = if a.is_empty() { "désassigné".to_string() } else { format!("assigné à {a}") };
-        case_add_item(conn, id, t, "assign", author, &body, None);
-        ledger_append(conn, "case.assign", &format!("#{id} -> {} by {author}", if a.is_empty() { "(aucun)" } else { &a }));
+        let detail = format!("#{id} -> {} by {author}", if a.is_empty() { "(aucun)" } else { &a });
+        champ_atteste!(ecrire_un_champ_atteste(
+            conn, id, t, author, "assignee",
+            &|conn: &Connection| conn.execute("UPDATE incident SET assignee=?1 WHERE id=?2", params![stored, id]),
+            ("assign", &body),
+            Some(("case.assign", &detail)),
+        ));
     }
     // PRIORITÉ 1..4 (entier ou libellé) -> item 'priority' ; recalcul sla_due plus bas.
     if let Some(pr) = b.get("priority").and_then(parse_priority) {
         cur_priority = pr;
-        ecriture_comptee!("priority", conn.execute("UPDATE incident SET priority=?1 WHERE id=?2", params![pr, id]));
+        champ_atteste!(ecrire_un_champ_atteste(
+            conn, id, t, author, "priority",
+            &|conn: &Connection| conn.execute("UPDATE incident SET priority=?1 WHERE id=?2", params![pr, id]),
+            ("priority", &format!("priorité -> P{pr} ({})", priority_label(pr))),
+            None,
+        ));
         priorite_ecrite = true;
-        case_add_item(conn, id, t, "priority", author, &format!("priorité -> P{pr} ({})", priority_label(pr)), None);
     }
     // STATUT canonique (+ alias legacy). closed/resolved -> closed_ts=t ; reopen (non terminal) -> closed_ts=NULL.
     let mut new_status: Option<&str> = None;
@@ -361,11 +421,14 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
         if let Some(s) = norm_case_status(v) {
             new_status = Some(s);
             let closed = if matches!(s, "closed" | "resolved") { Some(t) } else { None };
-            ecriture_comptee!("status", conn.execute("UPDATE incident SET status=?1, closed_ts=?2 WHERE id=?3", params![s, closed, id]), rattrape);
+            champ_atteste!(ecrire_un_champ_atteste(
+                conn, id, t, author, "status",
+                &|conn: &Connection| conn.execute("UPDATE incident SET status=?1, closed_ts=?2 WHERE id=?3", params![s, closed, id]),
+                ("status", &format!("statut -> {s}")),
+                Some(("case.status", &format!("#{id} -> {s} by {author}"))),
+            ), rattrape);
             statut_en_base = s.to_string();
             statut_ecrit = true;
-            case_add_item(conn, id, t, "status", author, &format!("statut -> {s}"), None);
-            ledger_append(conn, "case.status", &format!("#{id} -> {s} by {author}"));
         }
     }
     // DISPOSITION (#4a) — VERDICT analyste posé à la clôture (ou changé). Optionnel. Valeur FERMÉE (l'API rejette
@@ -375,19 +438,25 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     if let Some(dv) = b.get("disposition") {
         let d = dv.as_str().unwrap_or("").trim();
         if d.is_empty() {
-            ecriture_comptee!("disposition", conn.execute(
-                "UPDATE incident SET disposition=NULL, disposition_ts=NULL, disposition_by=NULL WHERE id=?1",
-                params![id],
+            champ_atteste!(ecrire_un_champ_atteste(
+                conn, id, t, author, "disposition",
+                &|conn: &Connection| conn.execute(
+                    "UPDATE incident SET disposition=NULL, disposition_ts=NULL, disposition_by=NULL WHERE id=?1",
+                    params![id],
+                ),
+                ("disposition", "verdict effacé"),
+                Some(("case.disposition", &format!("#{id} -> (aucun) by {author}"))),
             ), rattrape);
-            case_add_item(conn, id, t, "disposition", author, "verdict effacé", None);
-            ledger_append(conn, "case.disposition", &format!("#{id} -> (aucun) by {author}"));
         } else if disposition_valid(d) {
-            ecriture_comptee!("disposition", conn.execute(
-                "UPDATE incident SET disposition=?1, disposition_ts=?2, disposition_by=?3 WHERE id=?4",
-                params![d, t, author, id],
+            champ_atteste!(ecrire_un_champ_atteste(
+                conn, id, t, author, "disposition",
+                &|conn: &Connection| conn.execute(
+                    "UPDATE incident SET disposition=?1, disposition_ts=?2, disposition_by=?3 WHERE id=?4",
+                    params![d, t, author, id],
+                ),
+                ("disposition", &format!("verdict -> {d}")),
+                Some(("case.disposition", &format!("#{id} -> {d} by {author}"))),
             ), rattrape);
-            case_add_item(conn, id, t, "disposition", author, &format!("verdict -> {d}"), None);
-            ledger_append(conn, "case.disposition", &format!("#{id} -> {d} by {author}"));
         }
         // valeur non-vide et non-membre : ignorée (fail-closed ; l'API a déjà renvoyé 400).
     }
@@ -453,7 +522,56 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
     // `P10.20-w` (reste) — l'horodatage de mise à jour est compté comme les champs libres : tout ce qui le précède est
     // écrit, et la cause le dit (« les champs qui le précèdent ont pu être écrits »).
     ecriture_comptee!("updated", conn.execute("UPDATE incident SET updated=?1 WHERE id=?2", params![t, id]));
-    IssueDuDossierModifie::Ecrite
+    // `P10.31-u` (vague AC) — un maillon manquant n'annule rien : la demande est écrite, l'aveu est porté.
+    if maillons_manquants.is_empty() {
+        IssueDuDossierModifie::Ecrite
+    } else {
+        IssueDuDossierModifie::EcriteSansTrace(maillons_manquants.join(" ; "))
+    }
+}
+
+/// `P10.21-n` (vague AC) — pourquoi un champ attesté de `case_apply_update` n'est pas écrit : aucune ligne (le dossier a
+/// disparu depuis la lecture : absence, comme avant), ou un refus dont la cause commence par le nom du champ.
+enum RefusDuChampAtteste {
+    Absent,
+    NonEcrit(String),
+}
+
+/// `P10.21-n` / `P10.22-q` / `P10.31-u` (vague AC) — UN CHAMP ATTESTÉ ET SES TRACES, DANS UNE TRANSACTION À LUI
+/// (`jouer_le_geste_garde`, modèle de la fusion) : l'`UPDATE` doit toucher une ligne, la chronologie est comptée
+/// (`ajouter_l_element_au_dossier`), puis le maillon (s'il y en a un). Écriture, chronologie, `BEGIN` ou `COMMIT`
+/// refusés -> `NonEcrit("<champ>: …")`, le champ n'est PAS écrit. `Ok(Some(cause))` : champ et chronologie validés,
+/// maillon manquant (le champ n'est pas annulé).
+#[allow(clippy::too_many_arguments)]
+fn ecrire_un_champ_atteste(
+    conn: &Connection,
+    id: i64,
+    t: i64,
+    author: &str,
+    champ: &str,
+    ecriture: &dyn Fn(&Connection) -> rusqlite::Result<usize>,
+    element: (&str, &str),
+    registre: Option<(&str, &str)>,
+) -> Result<Option<String>, RefusDuChampAtteste> {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
+    let geste = |conn: &Connection| -> Result<Option<MaillonDeRegistre>, RefusDuChampAtteste> {
+        match ecriture(conn) {
+            Ok(0) => return Err(RefusDuChampAtteste::Absent), // disparu depuis la lecture : absence
+            Ok(_) => {}
+            Err(e) => return Err(RefusDuChampAtteste::NonEcrit(format!("{champ}: {e}"))),
+        }
+        let (genre, texte) = element;
+        ajouter_l_element_au_dossier(conn, id, t, genre, author, texte, None)
+            .map_err(|cause| RefusDuChampAtteste::NonEcrit(format!("{champ}: chronologie : {cause}")))?;
+        Ok(registre.map(|(genre, detail)| ledger_append(conn, genre, detail)))
+    };
+    match jouer_le_geste_garde(conn, "cases", &format!("écriture du champ {champ} du dossier #{id}"), geste) {
+        Issue::Valide(None) => Ok(None),
+        Issue::Valide(Some(maillon)) => Ok(maillon.cause_de_non_inscription().map(|cause| format!("{champ}: {cause}"))),
+        Issue::Refuse(refus) => Err(refus),
+        Issue::NonOuvert(e) => Err(RefusDuChampAtteste::NonEcrit(format!("{champ}: transaction non ouverte : {e}"))),
+        Issue::NonValide(e) => Err(RefusDuChampAtteste::NonEcrit(format!("{champ}: validation refusée : {e}"))),
+    }
 }
 
 /// `P10.20-w` (reste) — RATTRAPAGE DE L'ÉCHÉANCE après une priorité écrite puis un statut ou un verdict refusé :
@@ -581,6 +699,29 @@ pub(crate) enum IssueDuDossierModifie {
     /// `P10.20-b` (rang trois) — une LECTURE qui gouverne le chrono SLA multi-niveau (ligne du dossier, politique de sa
     /// priorité) a échoué : pause, reprise ou échéances ne sont PAS posées. Seule `case_apply_update` le rend.
     ChronoSlaNonLu(String),
+    /// `P10.31-u` (vague AC) — les écritures et leurs chronologies sont VALIDÉES, mais un maillon du registre n'est pas
+    /// entré (cause portée) : le geste a eu lieu, il n'est pas annulé, et la route l'avoue (`registre_sans_maillon`, 200)
+    /// au lieu d'un 204.
+    EcriteSansTrace(String),
+}
+
+/// `P10.21-n` / `P10.31-u` (vague AC) — CE QUE REND LE GESTE JOUÉ D'UN ARCHIVAGE OU D'UN DÉSARCHIVAGE (même forme que
+/// `issue_du_geste_de_fusion`, caseops.rs) : le corps rend le maillon ; un refus (écriture, chronologie) est déjà une
+/// `IssueDuDossierModifie` et annule tout ; `BEGIN` ou `COMMIT` refusé -> `NonEcrite`, rien n'est écrit. Maillon
+/// manquant -> `EcriteSansTrace`, le geste validé n'est PAS annulé.
+fn issue_du_geste_de_dossier(
+    issue: crate::handlers::transaction_validee::IssueDuGesteGarde<MaillonDeRegistre, IssueDuDossierModifie>,
+) -> IssueDuDossierModifie {
+    use crate::handlers::transaction_validee::IssueDuGesteGarde as Issue;
+    match issue {
+        Issue::Valide(maillon) => match maillon.cause_de_non_inscription() {
+            None => IssueDuDossierModifie::Ecrite,
+            Some(cause) => IssueDuDossierModifie::EcriteSansTrace(cause.to_string()),
+        },
+        Issue::Refuse(refus) => refus,
+        Issue::NonOuvert(e) => IssueDuDossierModifie::NonEcrite(format!("transaction non ouverte : {e}")),
+        Issue::NonValide(e) => IssueDuDossierModifie::NonEcrite(format!("validation refusée : {e}")),
+    }
 }
 
 /// `P10.20-b` (rang trois) — le chrono SLA multi-niveau n'a pas pu être LU pendant la mise à jour : 503 nommé.
@@ -852,8 +993,9 @@ pub(crate) fn escalate_overdue_cases(db: &Arc<Mutex<Connection>>) {
 
 /// `P10.20-w` — fin du `detail` d'une notification d'escalade dont la base a REFUSÉ le marqueur `escalated` : le
 /// destinataire apprend que l'escalade n'est pas enregistrée et que l'alerte reviendra au tour suivant.
+/// `P10.21-n` (vague AC) — la chronologie et la transaction du marqueur y mènent aussi (le marqueur est alors annulé).
 pub(crate) const ESCALADE_NON_ENREGISTREE: &str =
-    "ESCALADE NON ENREGISTRÉE : la base a refusé le marqueur, ni chronologie ni registre ; cette notification sera renvoyée au prochain tour.";
+    "ESCALADE NON ENREGISTRÉE : la base a refusé le marqueur, sa chronologie ou leur transaction — ni marqueur, ni chronologie, ni registre ; cette notification sera renvoyée au prochain tour.";
 
 /// `P10.20-w` (rang trois) — LE MARQUEUR `escalated` EST ÉCRIT ET COMPTÉ AVANT TOUTE TRACE. Avant, la notification
 /// partait, puis `UPDATE incident SET escalated=1` était AVALÉ, puis la chronologie et le registre attestaient
@@ -870,6 +1012,7 @@ pub(crate) fn escalate_overdue_cases_par(
     db: &Arc<Mutex<Connection>>,
     envoyer: &mut dyn FnMut(&str, &str, &Value, i64, &str, &str, &str, i64) -> bool,
 ) {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     let now_i = now();
     let (cases, notifiers): (Vec<(i64, String, i64, i64)>, Vec<(String, String, i64, String)>) = {
         let conn = db.lock();
@@ -904,28 +1047,52 @@ pub(crate) fn escalate_overdue_cases_par(
         let sev = match *priority { 1 => 4, 2 => 3, 3 => 2, _ => 1 };
         let detail = format!("Case #{id} « {title} » : SLA P{priority} dépassé (échéance {sla_due}).");
         // `P10.20-w` — LE MARQUEUR D'ABORD, COMPTÉ : sans lui, l'envoi part avec l'aveu, mais aucune trace (voir l'en-tête).
-        let marque = match db.lock().execute("UPDATE incident SET escalated=1 WHERE id=?1 AND escalated=0", params![id]) {
-            Ok(0) => continue, // déjà escaladé (ou disparu) depuis la sélection : rien à notifier ni à tracer
-            Ok(_) => true,
-            Err(e) => {
+        // `P10.21-n` / `P10.22-q` / `P10.31-u` (vague AC) — la chronologie passait APRÈS l'envoi par `case_add_item`, qui
+        // avale : refusée, l'escalade était marquée et notifiée sans aveu, absente de la chronologie, jamais renvoyée ; et
+        // le maillon était jeté. Décision par défaut (vague AC, modèle du tick multi-niveau) : marqueur, chronologie
+        // comptée (`ajouter_l_element_au_dossier`) et maillon forment UNE transaction (`jouer_le_geste_garde`), validée
+        // AVANT l'envoi (le verrou de la base n'est pas tenu pendant l'envoi) ; une chronologie refusée, un `BEGIN` ou un
+        // `COMMIT` refusé annulent le marqueur et suivent le chemin du marqueur refusé — envoi QUAND MÊME avec l'aveu, rien
+        // en chronologie ni au registre, compté au balayage `escalate_overdue_marqueur`, renvoyé au tour suivant. Un
+        // maillon manquant n'annule rien (pas de surface ici : la primitive l'a dit au journal).
+        let geste = |conn: &Connection| -> Result<MaillonDeRegistre, Option<String>> {
+            match conn.execute("UPDATE incident SET escalated=1 WHERE id=?1 AND escalated=0", params![id]) {
+                Ok(0) => return Err(None), // déjà escaladé (ou disparu) depuis la sélection : rien à notifier ni à tracer
+                Ok(_) => {}
+                Err(e) => return Err(Some(e.to_string())),
+            }
+            ajouter_l_element_au_dossier(conn, *id, now_i, "sla", "system", &detail, None)
+                .map_err(|cause| Some(format!("chronologie de l'escalade : {cause}")))?;
+            Ok(ledger_append(conn, "case.sla_escalate", &format!("#{id} P{priority} sla_due={sla_due}")))
+        };
+        let issue = {
+            let conn = db.lock();
+            jouer_le_geste_garde(&conn, "cases", &format!("escalade SLA du dossier #{id}"), geste)
+        };
+        let refus = match issue {
+            Issue::Valide(maillon) => {
+                maillon.laisser_a_l_aveu_de_la_primitive();
+                None
+            }
+            Issue::Refuse(None) => continue,
+            Issue::Refuse(Some(cause)) => Some(cause),
+            Issue::NonOuvert(e) => Some(format!("transaction non ouverte : {e}")),
+            Issue::NonValide(e) => Some(format!("validation refusée : {e}")),
+        };
+        let detail_envoye = match refus {
+            None => detail.clone(),
+            Some(cause) => {
                 marqueurs_refuses.0 += 1;
-                marqueurs_refuses.1 = e.to_string();
-                false
+                marqueurs_refuses.1 = cause;
+                format!("{detail} {ESCALADE_NON_ENREGISTREE}")
             }
         };
-        let detail_envoye = if marque { detail.clone() } else { format!("{detail} {ESCALADE_NON_ENREGISTREE}") };
         for (kind, url, minsev, cfg) in &notifiers {
             if sev >= *minsev {
                 let config: Value = serde_json::from_str(cfg).unwrap_or_else(|_| json!({}));
                 let _ = envoyer(kind, url, &config, sev, &format!("SLA dépassé : {title}"), &detail_envoye, "", now_i);
             }
         }
-        if !marque {
-            continue;
-        }
-        let conn = db.lock();
-        case_add_item(&conn, *id, now_i, "sla", "system", &detail, None);
-        ledger_append(&conn, "case.sla_escalate", &format!("#{id} P{priority} sla_due={sla_due}"));
     }
     if marqueurs_refuses.0 > 0 {
         crate::metrics::compter_une_escalade_notifiee_non_enregistree("escalate_overdue_marqueur", marqueurs_refuses.0, &marqueurs_refuses.1);
@@ -1064,7 +1231,7 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
     let assignee = b.get("assignee").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty());
     let priority = b.get("priority").and_then(parse_priority).unwrap_or(3);
     crate::req_conn!(st, au, conn);
-    let (ouverture, echeances) = case_create_row_et_echeances(&conn, &au.name, &title, sev, summary, assignee, priority);
+    let (ouverture, echeances, maillon_manquant) = case_create_row_echeances_et_maillon(&conn, &au.name, &title, sev, summary, assignee, priority);
     let id = match ouverture {
         DossierOuvert::Ouvert(id) => id,
         DossierOuvert::NonOuvert(cause) => {
@@ -1091,6 +1258,11 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
             corps["echeances_multi_niveau_non_lues"] = json!(format!("{CAUSE_ECHEANCES_MULTI_NIVEAU_NON_LUES} ({cause})"));
         }
         IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => {}
+    }
+    // `P10.31-u` (vague AC) — maillon `case.create` manquant : le dossier est ouvert et servi, l'aveu est porté à côté.
+    match maillon_manquant {
+        Some(cause) => corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})")),
+        None => {}
     }
     Json(corps).into_response()
 }
@@ -1149,6 +1321,8 @@ pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Exten
         IssueDuDossierModifie::DossierAbsent => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MISE_A_JOUR_DU_DOSSIER_INTERROMPUE),
         // `P10.20-w` — une écriture attestée refusée : 503 nommé (c'était un 204 sur un champ non écrit).
         IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE} ({cause})")),
+        // `P10.31-u` (vague AC) — mise à jour faite, un maillon manquant : 200 qui l'avoue, jamais un 204 muet.
+        IssueDuDossierModifie::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
         // `P10.20-b` (rang trois) — chrono SLA non lu : 503 nommé (c'était un 204 sur un chrono non tenu).
         IssueDuDossierModifie::ChronoSlaNonLu(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_CHRONO_SLA_NON_LU} ({cause})")),
     }
@@ -1237,29 +1411,40 @@ pub(crate) async fn case_item_delete(State(st): State<AppState>, Extension(au): 
 /// case n'existe pas. La GARDE admin-only est appliquée EN AMONT (rbac_gate + re-check handler).
 /// `P10.20-w` (rang trois) — l'`UPDATE` est COMPTÉ avant la chronologie et le registre : `DossierAbsent` (le `false`
 /// d'avant) sur zéro ligne, `NonEcrite` sur une écriture refusée, et rien n'est tracé dans ces deux cas.
+/// `P10.21-n` / `P10.22-q` / `P10.31-u` (vague AC) — LA CHRONOLOGIE FAIT PARTIE DE L'ARCHIVAGE, LE MAILLON MANQUANT EST
+/// AVOUÉ. La chronologie passait par `case_add_item`, qui avale (dossier archivé sans trace dans sa chronologie), et
+/// le maillon était jeté (appel nu). Décision par défaut (vague AC, modèle de la fusion) : `UPDATE` compté, chronologie
+/// comptée (`ajouter_l_element_au_dossier`) et maillon dans UNE transaction (`jouer_le_geste_garde`) ; chronologie,
+/// `BEGIN` ou `COMMIT` refusés -> `NonEcrite`, l'archivage est annulé (503 existant) ; maillon manquant ->
+/// `EcriteSansTrace` (200 `registre_sans_maillon`), le geste n'est pas annulé. L'existence reste lue AVANT, comme avant.
 pub(crate) fn case_set_archived(conn: &Connection, id: i64, author: &str, archived: bool) -> IssueDuDossierModifie {
+    use crate::handlers::transaction_validee::jouer_le_geste_garde;
     if conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())).is_err() {
         return IssueDuDossierModifie::DossierAbsent;
     }
-    let t = now();
-    let ecrite = if archived {
-        conn.execute("UPDATE incident SET archived=1, archived_ts=?1, archived_by=?2 WHERE id=?3", params![t, author, id])
-    } else {
-        conn.execute("UPDATE incident SET archived=0, archived_ts=NULL, archived_by=NULL WHERE id=?1", params![id])
+    let geste = |conn: &Connection| -> Result<MaillonDeRegistre, IssueDuDossierModifie> {
+        let t = now();
+        let ecrite = if archived {
+            conn.execute("UPDATE incident SET archived=1, archived_ts=?1, archived_by=?2 WHERE id=?3", params![t, author, id])
+        } else {
+            conn.execute("UPDATE incident SET archived=0, archived_ts=NULL, archived_by=NULL WHERE id=?1", params![id])
+        };
+        match ecrite {
+            Ok(0) => return Err(IssueDuDossierModifie::DossierAbsent), // disparu entre la lecture et l'écriture : absence
+            Ok(_) => {}
+            Err(e) => return Err(IssueDuDossierModifie::NonEcrite(e.to_string())),
+        }
+        let (genre, texte, registre) = if archived {
+            ("archive", "Case archivé (masqué de la liste ; historique conservé)", "case.archive")
+        } else {
+            ("unarchive", "Case désarchivé (ré-affiché dans la liste)", "case.unarchive")
+        };
+        ajouter_l_element_au_dossier(conn, id, t, genre, author, texte, None)
+            .map_err(|cause| IssueDuDossierModifie::NonEcrite(format!("chronologie : {cause}")))?;
+        Ok(ledger_append(conn, registre, &format!("#{id} by {author}")))
     };
-    match ecrite {
-        Ok(0) => return IssueDuDossierModifie::DossierAbsent, // disparu entre la lecture et l'écriture : absence
-        Ok(_) => {}
-        Err(e) => return IssueDuDossierModifie::NonEcrite(e.to_string()),
-    }
-    if archived {
-        case_add_item(conn, id, t, "archive", author, "Case archivé (masqué de la liste ; historique conservé)", None);
-        ledger_append(conn, "case.archive", &format!("#{id} by {author}"));
-    } else {
-        case_add_item(conn, id, t, "unarchive", author, "Case désarchivé (ré-affiché dans la liste)", None);
-        ledger_append(conn, "case.unarchive", &format!("#{id} by {author}"));
-    }
-    IssueDuDossierModifie::Ecrite
+    let geste_nomme = if archived { format!("archivage du dossier #{id}") } else { format!("désarchivage du dossier #{id}") };
+    issue_du_geste_de_dossier(jouer_le_geste_garde(conn, "cases", &geste_nomme, geste))
 }
 
 /// POST /api/cases/{id}/archive — ARCHIVE (soft-delete) un case : le MASQUE de la liste par défaut tout en
@@ -1279,6 +1464,8 @@ pub(crate) async fn case_archive(State(st): State<AppState>, Extension(au): Exte
         IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"relecture du dossier"),
         // `P10.20-w` — écriture refusée : 503 nommé (c'était un 204 avec la ligne de registre).
         IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ARCHIVAGE_NON_ECRIT} ({cause})")),
+        // `P10.31-u` (vague AC) — archivage fait, maillon manquant : 200 qui l'avoue, jamais un 204 muet.
+        IssueDuDossierModifie::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
         // `case_set_archived` ne lit pas le chrono : bras exhaustif, servi comme sa cause le dit.
         IssueDuDossierModifie::ChronoSlaNonLu(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_CHRONO_SLA_NON_LU} ({cause})")),
     }
@@ -1301,6 +1488,8 @@ pub(crate) async fn case_unarchive(State(st): State<AppState>, Extension(au): Ex
         IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"relecture du dossier"),
         // `P10.20-w` — écriture refusée : 503 nommé (c'était un 204 avec la ligne de registre).
         IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DESARCHIVAGE_NON_ECRIT} ({cause})")),
+        // `P10.31-u` (vague AC) — désarchivage fait, maillon manquant : 200 qui l'avoue, jamais un 204 muet.
+        IssueDuDossierModifie::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
         // `case_set_archived` ne lit pas le chrono : bras exhaustif, servi comme sa cause le dit.
         IssueDuDossierModifie::ChronoSlaNonLu(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_CHRONO_SLA_NON_LU} ({cause})")),
     }

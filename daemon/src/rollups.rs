@@ -758,28 +758,46 @@ pub(crate) fn rollup_events(conn: &Connection) {
     let up_hi = (band_hi + dim_backfill).min(recent).max(band_hi);
     // La BORNE D'IDENTIFIANT est prise AVANT d'agréger et POUSSÉE DANS la condition : la bande publiée porte
     // alors EXACTEMENT les lignes `id <= dim_at_id`, donc la couverture est vraie par CONSTRUCTION.
-    let dim_at_id: i64 = conn.query_row("SELECT COALESCE(MAX(id),0) FROM event", [], |r| r.get(0)).unwrap_or(0);
-    // RÉTRACTER D'ABORD, RÉPARER ENSUITE : tant que les tranches ne sont pas agrégées, la route doit décliner
-    // (le brut sert, exact) plutôt que lire une table qu'on SAIT en cours de reconstruction.
-    DimRollupCoverage::retract(conn);
-    // Le cap top-N peut faire SORTIR une valeur du top entre deux ticks -> ligne orpheline à PK différente ->
-    // double comptage. Chaque tranche est donc PURGÉE avant d'être ré-agrégée (même règle que la fenêtre chaude).
-    let mut dim_ok = true;
-    let mut dim_slice = |lo: i64, hi: i64| {
-        if hi <= lo {
-            return;
+    // `P10.32-a` — la borne LUE ou NON LUE (décision par défaut, vague AC ; modèle : `new_cov` plus haut). Avant,
+    // `.unwrap_or(0)` : une lecture ratée valait 0, la couverture était rétractée, les tranches purgées puis ré-agrégées
+    // sous `id <= 0` (rien), et la couverture PUBLIÉE sur ces tranches vides — la route servait des dimensions vides au
+    // lieu du brut. Non lue : ni rétractation, ni purge, ni ré-agrégation (tranches ET fenêtre chaude), ni publication ;
+    // la table et la couverture du passage précédent restent telles quelles, reprise au prochain passage. LIMITE : la
+    // bande volatile `[hot_from, ∞)` déjà publiée n'est pas rafraîchie pendant ce passage (fraîcheur d'un tick de plus).
+    let mut dim_borne_lue = true;
+    let dim_at_id: i64 = match conn.query_row("SELECT COALESCE(MAX(id),0) FROM event", [], |r| r.get(0)) {
+        Ok(m) => m,
+        Err(e) => {
+            dim_borne_lue = false;
+            eprintln!("[rollup] WARN borne d'identifiant du rollup par dimension NON lue ({e}) — ni rétractation, ni purge, ni agrégation, ni publication de couverture ; table et couverture laissées telles quelles, reprise au prochain passage");
+            0
         }
-        dim_ok &= conn.execute("DELETE FROM event_dim_rollup WHERE bucket >= ?1 AND bucket < ?2", params![lo, hi]).is_ok();
-        dim_ok &= dim_agg(format!("ts >= {lo} AND ts < {hi} AND id <= {dim_at_id}"));
     };
-    dim_slice(down_lo, band_lo); // le front BAS : vers l'histoire jamais agrégée
-    dim_slice(band_hi, up_hi);   // le front HAUT : vers le présent, sans jamais sauter
-    let _ = conn.execute("DELETE FROM event_dim_rollup WHERE bucket >= ?1", params![recent]); // purge fenêtre chaude (anti-orphelin top-N)
-    dim_ok &= dim_agg(format!("ts >= {recent}"));                       // fenêtre chaude (ré-agrégée à chaque tick)
-    // PUBLICATION — jamais avant, jamais partielle (une seule ligne `meta`), et JAMAIS si une agrégation a
-    // échoué : une couverture qu'on n'a pas prouvée ne s'écrit pas, la route décline, le brut sert.
-    if dim_ok {
-        DimRollupCoverage::publish(conn, down_lo, up_hi, recent, dim_at_id);
+    if dim_borne_lue {
+        // RÉTRACTER D'ABORD, RÉPARER ENSUITE : tant que les tranches ne sont pas agrégées, la route doit décliner
+        // (le brut sert, exact) plutôt que lire une table qu'on SAIT en cours de reconstruction.
+        DimRollupCoverage::retract(conn);
+        // Le cap top-N peut faire SORTIR une valeur du top entre deux ticks -> ligne orpheline à PK différente ->
+        // double comptage. Chaque tranche est donc PURGÉE avant d'être ré-agrégée (même règle que la fenêtre chaude).
+        let mut dim_ok = true;
+        let mut dim_slice = |lo: i64, hi: i64| {
+            if hi <= lo {
+                return;
+            }
+            dim_ok &= conn.execute("DELETE FROM event_dim_rollup WHERE bucket >= ?1 AND bucket < ?2", params![lo, hi]).is_ok();
+            dim_ok &= dim_agg(format!("ts >= {lo} AND ts < {hi} AND id <= {dim_at_id}"));
+        };
+        dim_slice(down_lo, band_lo); // le front BAS : vers l'histoire jamais agrégée
+        dim_slice(band_hi, up_hi);   // le front HAUT : vers le présent, sans jamais sauter
+        // Purge de la fenêtre chaude (anti-orphelin top-N). `P10.32-a` : refusée, elle laissait des orphelins sous une
+        // couverture publiée quand même (double compte) ; elle entre désormais dans `dim_ok` comme celle des tranches.
+        dim_ok &= conn.execute("DELETE FROM event_dim_rollup WHERE bucket >= ?1", params![recent]).is_ok();
+        dim_ok &= dim_agg(format!("ts >= {recent}")); // fenêtre chaude (ré-agrégée à chaque tick)
+        // PUBLICATION — jamais avant, jamais partielle (une seule ligne `meta`), et JAMAIS si une agrégation a
+        // échoué : une couverture qu'on n'a pas prouvée ne s'écrit pas, la route décline, le brut sert.
+        if dim_ok {
+            DimRollupCoverage::publish(conn, down_lo, up_hi, recent, dim_at_id);
+        }
     }
     // Le watermark HISTORIQUE ne doit plus exister : il ne vaut pas couverture, et le laisser là inviterait
     // une lecture future à le reprendre pour telle. C'est précisément l'erreur qu'on ferme.
@@ -1076,17 +1094,34 @@ pub(crate) fn materialize_banned_ip(conn: &Connection) {
     let stored_wm: i64 = conn.query_row("SELECT value FROM meta WHERE key='banned_ip_wm'", [], |r| r.get::<_, String>(0))
         .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
     let wm = stored_wm.max(floor); // cold start / rattrapage BORNÉS à backfill (jamais de scan depuis 0)
-    let upsert = |cond: String| {
+    // `P10.32-a` — chaque upsert est LU (décision par défaut, vague AC). Avant, `let _` puis le watermark avancé à
+    // `recent` quoi qu'il arrive : un upsert refusé sur les heures définitives `[wm, recent)` n'était JAMAIS rejoué, les
+    // bans de la tranche manquaient pour toujours dans `banned_ip` (Banni/Pass, Attaquants non mitigés). Désormais un
+    // refus est compté et dit au journal avec la cause du moteur, et le watermark n'avance que si TOUS ont réussi : la
+    // tranche est rejouée au passage suivant (upsert idempotent via MIN/MAX). LIMITE : un refus qui dure plus que la fenêtre de
+    // rattrapage `backfill` perd la part de la tranche passée sous le plancher `floor`.
+    let upsert = |cond: String| -> usize {
+        let mut refus = 0usize;
         for stmt in banned_ip_upsert_sqls(&cond) {
-            let _ = conn.execute(&stmt, []);
+            match conn.execute(&stmt, []) {
+                Ok(_) => {}
+                Err(e) => {
+                    refus += 1;
+                    eprintln!("[rollup] WARN upsert de banned_ip NON écrit ({e}) — watermark banned_ip_wm non avancé, tranche rejouée au prochain passage");
+                }
+            }
         }
+        refus
     };
+    let mut upserts_refuses = 0usize;
     if recent > wm {
-        upsert(format!("ts >= {wm} AND ts < {recent}")); // heures définitives (bornées à backfill), 1x
+        upserts_refuses += upsert(format!("ts >= {wm} AND ts < {recent}")); // heures définitives (bornées à backfill), 1x
     }
-    upsert(format!("ts >= {recent}")); // fenêtre chaude (ré-UPSERT à chaque tick ; idempotent via MIN/MAX)
-    let _ = conn.execute("DELETE FROM meta WHERE key='banned_ip_wm'", []);
-    let _ = conn.execute("INSERT INTO meta(key,value) VALUES('banned_ip_wm', ?1)", params![recent.to_string()]);
+    upserts_refuses += upsert(format!("ts >= {recent}")); // fenêtre chaude (ré-UPSERT à chaque tick ; idempotent via MIN/MAX)
+    if upserts_refuses == 0 {
+        let _ = conn.execute("DELETE FROM meta WHERE key='banned_ip_wm'", []);
+        let _ = conn.execute("INSERT INTO meta(key,value) VALUES('banned_ip_wm', ?1)", params![recent.to_string()]);
+    }
     // purge OPTIONNELLE des bans expirés (last_seen trop ancien). OFF par défaut (0 -> no-op).
     let retention: i64 = cfg(&conf, "PLUME_BANNED_IP_RETENTION", "0").parse().unwrap_or(0);
     if retention > 0 {

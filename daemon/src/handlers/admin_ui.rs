@@ -76,13 +76,34 @@ pub(crate) const CAUSE_APERCU_DE_RETENTION_NON_LU: &str = "APERÇU NON LU : la b
      pas d'une baisse sur cet aperçu ; réessayez, et si le refus persiste, la table de cette famille est illisible.";
 
 
+/// `P10.29-l` — LES REFUS DE `retention_settings_put` ET DE `retention_preview` SONT DES OBJETS `{error}` NOMMÉS, AUX MÊMES
+/// STATUTS. Avant : 403 et 400 en texte nu, et l'écriture refusée en 500 TEXTE qui servait au client la phrase du moteur
+/// SQLite (`échec transaction audit (aucune modification appliquée): {e}`). La cause du moteur va au journal SEUL.
+/// Le 403 interne reste une revérification : le routeur refuse déjà `/api/retention` à tout non-administrateur.
+pub(crate) const CAUSE_RETENTION_RESERVEE_A_L_ADMINISTRATEUR: &str = "RÉTENTION INCHANGÉE : le réglage de la rétention \
+     est réservé à l'administrateur — rien n'est écrit, la purge applique toujours les durées d'avant.";
+/// `P10.29-l` — l'aperçu de rétention demandé par un compte qui n'administre pas.
+pub(crate) const CAUSE_APERCU_DE_RETENTION_RESERVE_A_L_ADMINISTRATEUR: &str = "APERÇU REFUSÉ : l'aperçu de la rétention \
+     est réservé à l'administrateur — aucun compte n'est fait.";
+/// `P10.29-l` — l'aperçu de rétention demandé pour une clé que le démon ne connaît pas.
+pub(crate) const CAUSE_APERCU_DE_RETENTION_CLE_INCONNUE: &str = "APERÇU REFUSÉ : clé de rétention inconnue — aucun \
+     compte n'est fait ; les clés admises sont celles que sert GET /api/retention, sous `bounds`.";
+/// `P10.29-l` — l'écriture du réglage ou de sa trace d'audit refusée par la base, la transaction annulée. 503 et non
+/// 500 (la base n'a pas pris la demande, un nouvel essai peut aboutir) ; l'ouverture est celle que la console lit déjà
+/// comme « rien n'a changé » (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_RETENTION_INCHANGEE_ECRITURE_NON_PRISE: &str = "RÉTENTION INCHANGÉE : la base n'a pas pris \
+     l'écriture du réglage ou de sa trace d'audit, et la transaction est annulée — RIEN n'est écrit : la purge applique \
+     toujours les durées d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture \
+     seule, pleine ou verrouillée.";
+
+
 /// POST|PUT /api/retention {retention_days?,snapshot_days?,alert_days?,metric_days?,metric_raw_hours?} (i64).
 /// Chaque champ présent est clampé aux planchers (M6) puis écrit dans `setting`, avec double-audit (ledger +
 /// event) DANS UNE TRANSACTION fail-closed (M5). L'« ancienne » valeur auditée = valeur EFFECTIVE résolue (H2).
 /// Une baisse (new<current) = sev 3 (destructif) ; hausse/égal = sev 2. No-op (new==current) ignoré (pas d'audit).
 pub(crate) async fn retention_settings_put(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if !au.is_admin() {
-        return (StatusCode::FORBIDDEN, "réservé à l'administrateur").into_response();
+        return forbidden(CAUSE_RETENTION_RESERVEE_A_L_ADMINISTRATEUR);
     }
     let conf = load_config();
     crate::req_conn!(st, au, conn);
@@ -123,7 +144,9 @@ pub(crate) async fn retention_settings_put(State(st): State<AppState>, Extension
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : mutation NON persistée si l'audit échoue
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification appliquée): {e}")).into_response()
+            // `P10.29-l` — la cause du moteur au journal, la cause nommée au client.
+            eprintln!("[retention] WARN réglage de la rétention NON écrit, transaction annulée : {e}");
+            err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_RETENTION_INCHANGEE_ECRITURE_NON_PRISE)
         }
     }
 }
@@ -134,11 +157,11 @@ pub(crate) async fn retention_settings_put(State(st): State<AppState>, Extension
 /// (H3). Admin only (B9). Le count events est au bucket horaire -> approx=true (afficher « ~N »).
 pub(crate) async fn retention_preview(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
     if !au.is_admin() {
-        return (StatusCode::FORBIDDEN, "réservé à l'administrateur").into_response();
+        return forbidden(CAUSE_APERCU_DE_RETENTION_RESERVE_A_L_ADMINISTRATEUR);
     }
     let key = q.get("key").map(|s| s.as_str()).unwrap_or("");
     let Some((skey, env_key, def, floor, ceil)) = RETENTION_FIELDS.iter().copied().find(|f| f.0 == key) else {
-        return (StatusCode::BAD_REQUEST, "clé de rétention inconnue").into_response();
+        return bad_req(CAUSE_APERCU_DE_RETENTION_CLE_INCONNUE);
     };
     let new_val = q.get("value").and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(def).clamp(floor, ceil);
     let unit_secs = if skey == "metric_raw_hours" { 3600 } else { 86400 };

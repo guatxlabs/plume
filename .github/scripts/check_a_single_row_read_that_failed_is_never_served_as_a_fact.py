@@ -288,10 +288,14 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # jour-là, après le correctif, MESURÉ par cette garde — 39 sites sur 20 fichiers (chacun perd son site, c'étaient les
 # deux derniers d'`ai.rs`, qui SORT du relevé ; le reclassement de `case_runbooks_json` ne change pas la population).
 # Même règle : 39 -> 26 (69 % = 26,91), 20 -> 13 (65 % = 13,0).
-RELEVE_SITES = 39
-RELEVE_FICHIERS = 20
-PLANCHER_SITES = 26
-PLANCHER_FICHIERS = 13
+# RE-DÉRIVÉS le 2026-10-23 (`P10.20-b`, rang quatre : `load_provider`, `ldap_login_post`) : relevé de l'arbre ce jour-là,
+# après le correctif, MESURÉ par cette garde — 34 sites sur 18 fichiers (36 sur 19 avant le correctif : `notifier_test`
+# était déjà sorti à la vague AC sans re-dérivation ; chacun des deux perd son site, c'étaient les deux derniers
+# d'`idp.rs`, qui SORT du relevé). Même règle : 34 -> 23 (69 % = 23,46), 18 -> 11 (65 % = 11,7).
+RELEVE_SITES = 34
+RELEVE_FICHIERS = 18
+PLANCHER_SITES = 23
+PLANCHER_FICHIERS = 11
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -512,15 +516,16 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # sur la DÉSACTIVATION d'urgence ouverte sans le secret des gestes, alors qu'il authentifiait encore. Lus en
     # `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503 `CAUSE_FOURNISSEUR_D_IDENTITE_NON_MODIFIE_NON_LU`
     # ou `…_NON_SUPPRIME_NON_LU`, rien d'écrit (témoins : `gestes_de_retrait_d_acces_lectures_avouees.rs`).
-    # Les lectures d'identité : provider LDAP/OIDC non lu -> « aucun provider activé » (la connexion
-    # échoue). Elles REFUSENT ; aucune n'avoue pourquoi.
+    # DEUX ENTRÉES RETIRÉES PAR `P10.20-b` (rang quatre, 2026-10-23) : `idp.rs::load_provider` et `ldap_login_post`
+    # (`ok.map`) — le fournisseur d'une connexion publique non lu rendait 404 « provider … inconnu ou désactivé » /
+    # « aucun provider LDAP activé » sur les six appelants publics. Lus en `.optional()` puis `?` : absence établie = le
+    # 404 d'avant, lecture ratée = 503 `CAUSE_FOURNISSEUR_DE_CONNEXION_NON_LU`, cause du moteur au journal seul, aucun
+    # échec compté (témoins : `connexions_fournisseur_lu_et_trace_avouee.rs`).
     # TROIS ENTRÉES RETIRÉES PAR `P10.20-b` (2026-10-08, rang quatre, volet MFA de `P10.30-d`) :
     # `login_mfa_post`, `mfa_disable`, `mfa_verify` — le secret MFA non lu rendait « aucune MFA active
     # pour ce compte » (401), « aucune MFA enrôlée » (404), « aucun enrôlement en cours » (400). Elles
     # lisent désormais par `.optional()` et rendent un 503 nommé sur la lecture non faite (témoins :
     # `daemon/src/tests/mfa_lectures_de_rang_quatre_avouees.rs`).
-    ("daemon/src/handlers/idp.rs", "ldap_login_post"): ("ok.map",),
-    ("daemon/src/handlers/idp.rs", "load_provider"): ("ok.map",),
     # VENUE DU RANG TROIS PAR `P10.20-b` (2026-10-14) : `.ok()?` sur la ligne du dossier, la projection entière rend
     # `None`. Relu sur `c78be971` : l'unique appelant de production est `case_runbooks_get` (la citation
     # `incidents.rs:608` de la réserve était périmée), qui ÉTABLIT d'abord l'existence du dossier
@@ -1134,7 +1139,7 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-14 du relevé de ce jour-là : "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-23 du relevé de ce jour-là : "
               f"{RELEVE_SITES} sites sur {RELEVE_FICHIERS} fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "

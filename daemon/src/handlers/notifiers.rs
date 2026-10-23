@@ -311,6 +311,31 @@ pub(crate) fn notifier_kind_needs_url(kind: &str) -> bool {
     matches!(kind, "ntfy" | "webhook" | "email" | "generic")
 }
 
+/// `P10.33-h` — la clé de compte d'un genre de canal refusé : `GENRE_DE_CANAL_INCONNU` pour un genre que `notify_send` ne
+/// connaît pas (texte libre de la création : il ne fait pas monter la cardinalité du compte).
+pub(crate) const GENRE_DE_CANAL_INCONNU: &str = "(genre inconnu)";
+fn genre_de_canal_compte(kind: &str) -> &'static str {
+    match kind {
+        "ntfy" => "ntfy",
+        "webhook" => "webhook",
+        "email" => "email",
+        "slack" => "slack",
+        "pagerduty" => "pagerduty",
+        "generic" => "generic",
+        "lookup" => "lookup",
+        _ => GENRE_DE_CANAL_INCONNU,
+    }
+}
+/// `P10.33-h` — la cause d'un `notify_send` qui rend faux : il ne rend qu'un booléen, la phrase dit donc les causes
+/// possibles sans en choisir une (la ligne curl qui précède, s'il y en a une, la nomme), et jamais l'URL.
+fn cause_d_un_envoi_non_pris(genre: &str) -> &'static str {
+    if genre == GENRE_DE_CANAL_INCONNU {
+        "genre de canal inconnu du démon, rien n'est parti"
+    } else {
+        "envoi refusé : garde d'URL, configuration du canal incomplète ou curl en échec"
+    }
+}
+
 /// Dispatche les alertes non notifiées, puis marque notified=1.
 ///
 /// #48/#53 : le routage passe désormais par `plan_dispatch`. MODE 0 (aucune politique, aucun silence) :
@@ -391,11 +416,21 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
         // env_id non porté par le SELECT (colonne rare en label) : reste vide -> matcher `env` inopérant en mode 0.
         let labels = alert_labels(*sev, mitre, host, source, "");
         let plan = plan_dispatch(&labels, &policies, &silences, &enabled_ids);
+        // `P10.33-h` (reste) — LE VERDICT DE CHAQUE CANAL EST LU. Avant : `let _ =` sur l'écriture du lookup comme sur
+        // `notify_send`, puis le marqueur `notified=1` plus bas : une alerte dont TOUS les canaux avaient refusé était
+        // marquée envoyée sans un mot. Décision par défaut (politique de renvoi non décidée, envoi irréversible côté
+        // PagerDuty/SMS) : chaque refus est compté par genre et journalisé (alerte, canal, genre, cause ; jamais l'URL,
+        // la configuration ni le contenu), l'alerte qu'aucun canal visé n'a prise est comptée UNE fois ; le marqueur
+        // garde son sens, rien n'est renvoyé.
+        let mut canaux_vises = 0usize;
+        let mut envois_pris = 0usize;
         if !plan.silenced {
             for n in &notifiers {
                 if !plan.target_ids.contains(&n.id) || sev < &n.min_severity {
                     continue;
                 }
+                canaux_vises += 1;
+                let genre = genre_de_canal_compte(&n.kind);
                 let config: Value = serde_json::from_str(&n.config).unwrap_or_else(|_| json!({}));
                 if n.kind == "lookup" {
                     // écrit l'alerte dans le lookup configuré (défaut `alerts`, clé = host).
@@ -404,11 +439,19 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
                     let key = match key_field.as_str() { "host" => host.clone(), "source" => source.clone(), "mitre" => mitre.clone(), _ => host.clone() };
                     let fields = json!({ "host": host, "source": source, "mitre": mitre, "severity": sev, "title": title, "ts": ts });
                     let conn = db.lock();
-                    let _ = write_alert_to_lookup(&conn, &name, &key_field, &key, &fields);
+                    match write_alert_to_lookup(&conn, &name, &key_field, &key, &fields) {
+                        Ok(()) => envois_pris += 1,
+                        Err(e) => crate::metrics::compter_un_envoi_d_alerte_refuse(*id, n.id, genre, &e.to_string()),
+                    }
+                } else if notify_send(&n.kind, &n.url, &config, *sev, title, detail, host, *ts) {
+                    envois_pris += 1;
                 } else {
-                    let _ = notify_send(&n.kind, &n.url, &config, *sev, title, detail, host, *ts);
+                    crate::metrics::compter_un_envoi_d_alerte_refuse(*id, n.id, genre, cause_d_un_envoi_non_pris(genre));
                 }
             }
+        }
+        if canaux_vises > 0 && envois_pris == 0 {
+            crate::metrics::compter_une_alerte_sans_aucun_envoi_pris(*id, canaux_vises);
         }
         // `P10.20-w` — LE MARQUEUR EST COMPTÉ. Avant, `let _ =` : un marqueur refusé laissait l'alerte `notified=0`
         // et les vingt alertes du lot repartaient à chaque tour, y compris par des canaux irréversibles. Au PREMIER

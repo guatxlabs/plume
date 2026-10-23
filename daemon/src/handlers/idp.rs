@@ -536,7 +536,13 @@ pub(crate) async fn idp_provider_update(
             Ok(()) => Json(json!({ "ok": true })).into_response(),
             Err(e) => fournisseur_inchange_commit_refuse("modification", &format!("#{id}"), e),
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — la phrase fixe d'avant au client, sans le texte du moteur (aucun module de `web/` ne la lit ; le
+            // témoin `ad1_ecriture_du_fournisseur_refusee_sans_texte_du_moteur` la juge), la cause du moteur au journal seul.
+            eprintln!("[idp] WARN modification du fournisseur d'identité #{id} non écrite, transaction annulée : {e}");
+            server_err("échec transaction audit (aucune modification)")
+        }
     }
 }
 
@@ -584,7 +590,12 @@ pub(crate) async fn idp_provider_delete(State(st): State<AppState>, Extension(au
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(e) => fournisseur_inchange_commit_refuse("suppression", &name, e),
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — même partage : phrase fixe au client, cause du moteur au journal seul.
+            eprintln!("[idp] WARN suppression du fournisseur d'identité #{id} non écrite, transaction annulée : {e}");
+            server_err("échec transaction audit")
+        }
     }
 }
 
@@ -592,16 +603,76 @@ pub(crate) async fn idp_provider_delete(State(st): State<AppState>, Extension(au
 // OIDC login (Authorization-Code + PKCE). Routes PUBLIQUES (auth_guard allowlist).
 // ================================================================================================
 
-/// Charge une ligne provider (config_json, secret) par nom + kind + enabled=1. None si absent/désactivé.
-fn load_provider(st: &AppState, name: &str, kind: &str) -> Option<(Value, String)> {
+/// Un fournisseur de connexion LU : son identifiant interne (le seul nom qu'un journal porte), sa configuration et
+/// son secret (jamais journalisé).
+struct FournisseurDeConnexion {
+    id: i64,
+    config: Value,
+    secret: String,
+}
+
+fn fournisseur_de_la_ligne((id, cj, secret): (i64, String, String)) -> FournisseurDeConnexion {
+    FournisseurDeConnexion { id, config: serde_json::from_str(&cj).unwrap_or_else(|_| json!({})), secret }
+}
+
+/// `P10.20-b` (rang quatre) — LE FOURNISSEUR D'UNE CONNEXION PUBLIQUE SE LIT EN TROIS ISSUES. La forme d'avant
+/// (`.ok()`) rendait une lecture ratée en `None`, que les six appelants servaient en 404 « provider … inconnu ou
+/// désactivé » : une panne de la base se lisait comme une absence de configuration. Désormais `Ok(Some)` = lu,
+/// `Ok(None)` = absent ou désactivé (le 404 d'avant, inchangé), `Err` = lecture NON FAITE, que l'appelant sert par
+/// `refus_du_fournisseur_de_connexion_non_lu` (503 nommé, cause du moteur au journal seul).
+fn load_provider(st: &AppState, name: &str, kind: &str) -> rusqlite::Result<Option<FournisseurDeConnexion>> {
     let conn = st.db.lock();
-    conn.query_row(
-        "SELECT config_json,secret FROM idp_provider WHERE name=?1 AND kind=?2 AND enabled=1",
-        params![name, kind],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-    )
-    .ok()
-    .map(|(cj, sec)| (serde_json::from_str(&cj).unwrap_or_else(|_| json!({})), sec))
+    let lu = conn
+        .query_row(
+            "SELECT id,config_json,secret FROM idp_provider WHERE name=?1 AND kind=?2 AND enabled=1",
+            params![name, kind],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+        )
+        .optional()?;
+    Ok(lu.map(fournisseur_de_la_ligne))
+}
+
+/// `P10.20-b` (rang quatre) — le premier fournisseur LDAP activé (connexion LDAP sans fournisseur nommé), lu dans les
+/// mêmes trois issues que `load_provider`.
+fn premier_fournisseur_ldap(st: &AppState) -> rusqlite::Result<Option<FournisseurDeConnexion>> {
+    let conn = st.db.lock();
+    let lu = conn
+        .query_row(
+            "SELECT id,config_json,secret FROM idp_provider WHERE kind='ldap' AND enabled=1 ORDER BY id LIMIT 1",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+        )
+        .optional()?;
+    Ok(lu.map(fournisseur_de_la_ligne))
+}
+
+/// `P10.20-b` (rang quatre) — le fournisseur d'une connexion publique n'a pas pu être lu : ce n'est PAS « inconnu ou
+/// désactivé » (le 404 d'avant). Aucune ouverture de la console n'est requise : aucun module de `web/` n'appelle ces
+/// routes par `fetch` (navigation de premier niveau ou client tiers).
+pub(crate) const CAUSE_FOURNISSEUR_DE_CONNEXION_NON_LU: &str = "FOURNISSEUR D'IDENTITÉ NON LU, CONNEXION REFUSÉE : \
+     la base n'a pas pu lire le fournisseur de connexion (lecture refusée ou table illisible). Ce n'est PAS « fournisseur \
+     inconnu ou désactivé » — on ne sait pas s'il existe. Aucune session n'est posée et aucun échec n'est compté contre \
+     l'identifiant présenté. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+
+/// Le 503 d'un fournisseur de connexion non lu. Le journal porte la porte et la cause du moteur, JAMAIS le nom de
+/// fournisseur demandé, l'identifiant ni le mot de passe présentés, ni l'adresse du pair.
+fn refus_du_fournisseur_de_connexion_non_lu(porte: &str, e: &rusqlite::Error) -> Response {
+    eprintln!("[idp] WARN connexion {porte} refusée : le fournisseur de connexion n'a pas pu être lu ({e})");
+    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FOURNISSEUR_DE_CONNEXION_NON_LU)
+}
+
+/// `P10.31-u` — LA TRACE D'UNE CONNEXION RÉUSSIE EST LUE. La forme d'avant (`ledger_append` nu, genre `login`) jetait
+/// le maillon : une connexion pouvait ne laisser aucune trace non purgeable sans que rien ne le dise. Un maillon
+/// manquant n'annule PAS la connexion et ne change PAS sa réponse : le contrat de connexion est gardé à l'identique
+/// (redirection et cookie pour OIDC et SAML ; cookie et `{ok, user, role}` pour LDAP et le second facteur local, ce
+/// dernier lu par l'écran de connexion de `web/login.js` qui exige `ok: true`), aucune clé n'y est ajoutée. L'aveu va
+/// au journal SEUL, par `sujet` (porte et identifiant INTERNE du fournisseur) et la cause du moteur, jamais
+/// l'identifiant connecté ni l'adresse. `detail` (qui nomme l'identifiant connecté) ne va qu'au registre.
+fn tracer_la_connexion(conn: &Connection, sujet: &str, detail: &str) {
+    let maillon = ledger_append(conn, "login", detail);
+    if let Some(cause) = maillon.cause_de_non_inscription() {
+        eprintln!("[idp] WARN {sujet} ouverte : le registre n'a PAS pris le maillon `login` ({cause}) — la connexion n'est pas annulée");
+    }
 }
 
 /// Résout les endpoints OIDC : discovery si nécessaire (endpoints non tous overridés). Blocking (rare).
@@ -620,10 +691,12 @@ pub(crate) async fn oidc_start(State(st): State<AppState>, Path(name): Path<Stri
     if !idp_name_ok(&name) {
         return bad_req("nom de provider invalide");
     }
-    let Some((cfg_json, _secret)) = load_provider(&st, &name, "oidc") else {
-        return not_found("provider OIDC inconnu ou désactivé");
+    let fournisseur = match load_provider(&st, &name, "oidc") {
+        Ok(Some(f)) => f,
+        Ok(None) => return not_found("provider OIDC inconnu ou désactivé"),
+        Err(e) => return refus_du_fournisseur_de_connexion_non_lu("OIDC", &e),
     };
-    let cfg = OidcCfg::from_json(&cfg_json);
+    let cfg = OidcCfg::from_json(&fournisseur.config);
     if !cfg.is_usable() {
         return server_err("configuration OIDC incomplète");
     }
@@ -683,10 +756,12 @@ pub(crate) async fn oidc_callback(
         return bad_req("code d'autorisation absent");
     };
     // 3) Provider (re-chargé côté serveur, jamais depuis la requête).
-    let Some((cfg_json, secret)) = load_provider(&st, &provider, "oidc") else {
-        return not_found("provider OIDC inconnu ou désactivé");
+    let fournisseur = match load_provider(&st, &provider, "oidc") {
+        Ok(Some(f)) => f,
+        Ok(None) => return not_found("provider OIDC inconnu ou désactivé"),
+        Err(e) => return refus_du_fournisseur_de_connexion_non_lu("OIDC", &e),
     };
-    let cfg = OidcCfg::from_json(&cfg_json);
+    let cfg = OidcCfg::from_json(&fournisseur.config);
     // Réseau -> spawn_blocking (route publique pré-auth ; jusqu'à 3 appels réseau bloquants = ~30 s -> sinon
     // famine du pool de workers async = DoS pré-auth). Miroir strict de connectors.rs.
     let cfg_disc = cfg.clone();
@@ -696,7 +771,7 @@ pub(crate) async fn oidc_callback(
         Err(_) => return server_err("échec interne (discovery)"),
     };
     // 4) Échange du code -> id_token (le secret ne transite QUE dans ce corps POST). Réseau -> spawn_blocking.
-    let body = oidc_token_body(&cfg, code, &verifier, &secret);
+    let body = oidc_token_body(&cfg, code, &verifier, &fournisseur.secret);
     let token_url = ep.token_endpoint.clone();
     let tok_resp = match tokio::task::spawn_blocking(move || {
         ssrf_guard(&token_url)?; // le token_endpoint (config/discovery) est un égress -> garde SSRF
@@ -746,7 +821,7 @@ pub(crate) async fn oidc_callback(
         let conn = st.db.lock();
         match federer_le_nom(&st, &conn, &username, &role) {
             Ok(()) => {
-                ledger_append(&conn, "login", &format!("login OIDC : '{username}' (rôle {role}) via provider '{provider}'"));
+                tracer_la_connexion(&conn, &format!("connexion OIDC par le fournisseur #{}", fournisseur.id), &format!("login OIDC : '{username}' (rôle {role}) via provider '{provider}'"));
                 None
             }
             Err(refus) => Some(refus),
@@ -778,15 +853,17 @@ pub(crate) async fn saml_start(State(st): State<AppState>, Path(name): Path<Stri
     if !idp_name_ok(&name) {
         return bad_req("nom de provider invalide");
     }
-    let Some((cfg_json, secret)) = load_provider(&st, &name, "saml") else {
-        return not_found("provider SAML inconnu ou désactivé");
+    let fournisseur = match load_provider(&st, &name, "saml") {
+        Ok(Some(f)) => f,
+        Ok(None) => return not_found("provider SAML inconnu ou désactivé"),
+        Err(e) => return refus_du_fournisseur_de_connexion_non_lu("SAML", &e),
     };
-    let cfg = SamlCfg::from_json(&cfg_json);
+    let cfg = SamlCfg::from_json(&fournisseur.config);
     if !cfg.is_usable() {
         return server_err("configuration SAML incomplète (idp_sso_url/idp_entity_id/sp_entity_id/acs_url/idp_x509_cert requis)");
     }
     // Génération PURE (XML + deflate + éventuelle signature RSA) — CPU ms-scale, aucun réseau : inline.
-    let (url, blob) = match saml_build_authn_redirect(&cfg, &name, &secret, st.session_secret.as_slice()) {
+    let (url, blob) = match saml_build_authn_redirect(&cfg, &name, &fournisseur.secret, st.session_secret.as_slice()) {
         Ok(v) => v,
         Err(e) if e.contains("non compilé") => return err_json(StatusCode::NOT_IMPLEMENTED, e),
         Err(e) => return server_err(format!("échec de l'AuthnRequest SAML: {e}")),
@@ -832,10 +909,12 @@ pub(crate) async fn saml_acs(
         }
     }
     // 3) Provider re-chargé côté serveur (jamais depuis la requête).
-    let Some((cfg_json, _secret)) = load_provider(&st, &provider, "saml") else {
-        return not_found("provider SAML inconnu ou désactivé");
+    let fournisseur = match load_provider(&st, &provider, "saml") {
+        Ok(Some(f)) => f,
+        Ok(None) => return not_found("provider SAML inconnu ou désactivé"),
+        Err(e) => return refus_du_fournisseur_de_connexion_non_lu("SAML", &e),
     };
-    let cfg = SamlCfg::from_json(&cfg_json);
+    let cfg = SamlCfg::from_json(&fournisseur.config);
     // 4) VÉRIFICATION + EXTRACTION (feature-gated ; anti-rejeu via le set global borné). Le verrou est tenu
     //    pendant finish_sso (l'adaptateur de rejeu l'utilise) — login peu fréquent, coût négligeable.
     let now_unix = now();
@@ -866,7 +945,7 @@ pub(crate) async fn saml_acs(
         let conn = st.db.lock();
         match federer_le_nom(&st, &conn, &username, &role) {
             Ok(()) => {
-                ledger_append(&conn, "login", &format!("login SAML : '{username}' (rôle {role}) via provider '{provider}'"));
+                tracer_la_connexion(&conn, &format!("connexion SAML par le fournisseur #{}", fournisseur.id), &format!("login SAML : '{username}' (rôle {role}) via provider '{provider}'"));
                 None
             }
             Err(refus) => Some(refus),
@@ -892,10 +971,12 @@ pub(crate) async fn saml_metadata(State(st): State<AppState>, Path(name): Path<S
     if !idp_name_ok(&name) {
         return bad_req("nom de provider invalide");
     }
-    let Some((cfg_json, _)) = load_provider(&st, &name, "saml") else {
-        return not_found("provider SAML inconnu ou désactivé");
+    let fournisseur = match load_provider(&st, &name, "saml") {
+        Ok(Some(f)) => f,
+        Ok(None) => return not_found("provider SAML inconnu ou désactivé"),
+        Err(e) => return refus_du_fournisseur_de_connexion_non_lu("SAML", &e),
     };
-    let cfg = SamlCfg::from_json(&cfg_json);
+    let cfg = SamlCfg::from_json(&fournisseur.config);
     match saml_sp_metadata_xml(&cfg) {
         Ok(xml) => ([(header::CONTENT_TYPE, "application/samlmetadata+xml")], xml).into_response(),
         Err(e) if e.contains("non compilé") => err_json(StatusCode::NOT_IMPLEMENTED, e),
@@ -924,22 +1005,16 @@ pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer
     }
     // provider : nommé, sinon le 1er provider LDAP activé.
     let prov_name = b.trimmed("provider");
-    let row: Option<(Value, String)> = if !prov_name.is_empty() {
-        load_provider(&st, &prov_name, "ldap")
-    } else {
-        let conn = st.db.lock();
-        conn.query_row(
-            "SELECT config_json,secret FROM idp_provider WHERE kind='ldap' AND enabled=1 ORDER BY id LIMIT 1",
-            [],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .ok()
-        .map(|(cj, sec)| (serde_json::from_str(&cj).unwrap_or_else(|_| json!({})), sec))
+    // `P10.20-b` (rang quatre) — trois issues : absent = le 404 d'avant ; lecture ratée = 503 nommé, AVANT tout bind et
+    // sans échec compté (comme le 404 d'avant, l'ordre des vérifications et le frein sont inchangés).
+    let lu = if !prov_name.is_empty() { load_provider(&st, &prov_name, "ldap") } else { premier_fournisseur_ldap(&st) };
+    let fournisseur = match lu {
+        Ok(Some(f)) => f,
+        Ok(None) => return not_found("aucun provider LDAP activé"),
+        Err(e) => return refus_du_fournisseur_de_connexion_non_lu("LDAP", &e),
     };
-    let Some((cfg_json, bind_pw)) = row else {
-        return not_found("aucun provider LDAP activé");
-    };
-    let cfg = LdapCfg::from_json(&cfg_json);
+    let (fournisseur_id, bind_pw) = (fournisseur.id, fournisseur.secret);
+    let cfg = LdapCfg::from_json(&fournisseur.config);
     // Bind bloquant (feature-gated) -> spawn_blocking : route publique pré-auth, ne bloque PAS l'exécuteur
     // async (sinon famine du pool de workers = DoS). Erreur -> échec d'auth (lockout), jamais de détail sensible.
     let (cfg_b, bind_b, user_b, pass_b) = (cfg.clone(), bind_pw.clone(), user.clone(), pass.clone());
@@ -958,7 +1033,7 @@ pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer
                 let conn = st.db.lock();
                 match federer_le_nom(&st, &conn, &user, &role) {
                     Ok(()) => {
-                        ledger_append(&conn, "login", &format!("login LDAP : '{user}' (rôle {role})"));
+                        tracer_la_connexion(&conn, &format!("connexion LDAP par le fournisseur #{fournisseur_id}"), &format!("login LDAP : '{user}' (rôle {role})"));
                         None
                     }
                     Err(refus) => Some(refus),
@@ -1715,7 +1790,8 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
     frein::remettre_a_zero(&st.db.lock(), &user);
     {
         let conn = st.db.lock();
-        ledger_append(&conn, "login", &format!("login local MFA validé pour '{user}'{}", if rec_ok { " (code de secours)" } else { "" }));
+        let detail = format!("login local MFA validé pour '{user}'{}", if rec_ok { " (code de secours)" } else { "" });
+        tracer_la_connexion(&conn, "connexion locale à double authentification", &detail);
     }
     // `P10.23-l` — la session est frappée à l'époque de compte que le ticket vient de prouver : une révocation de ce
     // compte survenue depuis la rend caduque dès la requête suivante.

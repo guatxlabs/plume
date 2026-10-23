@@ -388,7 +388,7 @@ pub(crate) async fn token_delete(State(st): State<AppState>, Extension(au): Exte
                 err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_JETON_NON_REVOQUE_COMMIT_REFUSE)
             }
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); servir_l_echec_de_la_transaction_d_audit("[jetons]", &format!("révocation du jeton '{name}'"), &e) }
     }
 }
 

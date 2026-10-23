@@ -89,6 +89,36 @@ pub(crate) const CAUSE_ENVOI_DU_PUITS_CURSEUR_NON_AVANCE: &str = "MAILLONS EXPOR
      maillon n'y MANQUE. `ledger-verify-export` reconnaît cette tranche répétée à l'identique, l'écarte et la compte \
      dans son verdict ; ces lignes ne sont pas des événements distincts.";
 
+// `P10.20-l` (sites de la famille dans ce fichier) — UNE LECTURE RATÉE N'EST PAS UNE ABSENCE. La levée d'un gel, la
+// suppression et l'envoi d'un puits lisaient leur ligne par `match … { Ok(t) => t, Err(_) => not_found(…) }` : une
+// lecture qui n'avait pas eu lieu (table illisible, colonne qui ne se convertit pas, verrou) se servait « introuvable »,
+// et l'exploitant pouvait conclure qu'un gel toujours actif n'existait pas, ou qu'un puits toujours déclaré était
+// retiré. Décision par défaut (vague AD) : trois issues — présente, le geste suit ; absente, le 404 d'avant ; lecture
+// ratée, 503 nommé, RIEN n'est écrit, la cause du moteur au journal seul. Ces phrases ne nomment ni `BEGIN` ni `COMMIT` :
+// aucune transaction n'a été refusée, c'est la lecture qui manque.
+
+/// `P10.20-l` — la ligne du gel à lever n'a pas été lue : rien n'est levé.
+pub(crate) const CAUSE_GEL_JURIDIQUE_NON_LEVE_NON_LU: &str = "GEL JURIDIQUE NON LEVÉ : la base n'a pas rendu ce gel \
+     juridique — ce n'est PAS « hold introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : s'il \
+     existe, le gel est toujours actif, sa portée n'est pas purgée, et aucune trace n'est écrite. Réessayez ; si le \
+     refus persiste, la table des gels juridiques est illisible.";
+
+/// `P10.20-l` — la ligne du puits à supprimer n'a pas été lue : rien n'est supprimé.
+pub(crate) const CAUSE_PUITS_DU_REGISTRE_INCHANGE_NON_LU: &str = "PUITS D'EXPORT DU REGISTRE INCHANGÉ : la base n'a \
+     pas rendu ce puits — ce n'est PAS « sink introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : \
+     s'il existe, le puits reste déclaré, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des \
+     puits est illisible.";
+
+/// `P10.20-l` — la ligne du puits vers lequel envoyer n'a pas été lue : rien n'est exporté.
+pub(crate) const CAUSE_ENVOI_DU_PUITS_NON_FAIT_NON_LU: &str = "ENVOI VERS LE PUITS NON FAIT : la base n'a pas rendu \
+     ce puits — ce n'est PAS « sink introuvable », c'est une lecture qui n'a pas eu lieu. AUCUN maillon n'est écrit \
+     dans la copie et le curseur ne bouge pas. Réessayez ; si le refus persiste, la table des puits est illisible.";
+
+/// `P10.29-l` (famille « texte du moteur servi ») — l'écriture d'un geste de gouvernance ou de sa trace d'audit refusée :
+/// le statut d'avant (500) et sa phrase, SANS la phrase du moteur SQLite, qui va au journal seul (décision par défaut de
+/// la vague AD : le texte du moteur ne part jamais au client).
+pub(crate) const ECHEC_DE_LA_TRANSACTION_D_AUDIT: &str = "échec transaction audit (aucune modification)";
+
 fn hold_json(id: i64, name: &str, reason: &str, src: &str, s0: i64, s1: i64, active: i64, created: i64, by: &str, rel_ts: i64, rel_by: &str) -> Value {
     json!({
         "id": id, "name": name, "reason": reason,
@@ -175,7 +205,8 @@ pub(crate) async fn legal_hold_create(State(st): State<AppState>, Extension(au):
         },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            eprintln!("[gouvernance] WARN pose du gel juridique '{name}' NON écrite, rien n'est gelé : {e}");
+            server_err(ECHEC_DE_LA_TRANSACTION_D_AUDIT)
         }
     }
 }
@@ -186,11 +217,20 @@ pub(crate) async fn legal_hold_release(State(st): State<AppState>, Extension(au)
     if !au.is_admin() {
         return forbidden("réservé à l'administrateur");
     }
+    use rusqlite::OptionalExtension;
     crate::req_conn!(st, au, conn);
-    let cur = conn.query_row("SELECT name,active FROM legal_hold WHERE id=?1", params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)));
+    // `P10.20-l` — trois issues : présent, la levée suit ; absent, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_GEL_JURIDIQUE_NON_LEVE_NON_LU`, rien n'est levé, la cause du moteur au journal seul.
+    let cur = conn
+        .query_row("SELECT name,active FROM legal_hold WHERE id=?1", params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .optional();
     let (name, active) = match cur {
-        Ok(t) => t,
-        Err(_) => return not_found("hold introuvable"),
+        Ok(Some(t)) => t,
+        Ok(None) => return not_found("hold introuvable"),
+        Err(e) => {
+            eprintln!("[gouvernance] WARN gel juridique #{id} NON lu pour la levée, rien n'est levé : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_GEL_JURIDIQUE_NON_LEVE_NON_LU);
+        }
     };
     if active == 0 {
         return err_json(StatusCode::CONFLICT, "hold déjà levé");
@@ -216,7 +256,8 @@ pub(crate) async fn legal_hold_release(State(st): State<AppState>, Extension(au)
         },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            eprintln!("[gouvernance] WARN levée du gel juridique '{name}' (#{id}) NON écrite, le gel reste actif : {e}");
+            server_err(ECHEC_DE_LA_TRANSACTION_D_AUDIT)
         }
     }
 }
@@ -414,7 +455,8 @@ pub(crate) async fn ledger_sink_create(State(st): State<AppState>, Extension(au)
         },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            eprintln!("[gouvernance] WARN création du puits du registre '{name}' NON écrite, aucun puits créé : {e}");
+            server_err(ECHEC_DE_LA_TRANSACTION_D_AUDIT)
         }
     }
 }
@@ -424,10 +466,17 @@ pub(crate) async fn ledger_sink_delete(State(st): State<AppState>, Extension(au)
     if !au.is_admin() {
         return forbidden("réservé à l'administrateur");
     }
+    use rusqlite::OptionalExtension;
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM ledger_sink WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
-        Ok(n) => n,
-        Err(_) => return not_found("sink introuvable"),
+    // `P10.20-l` — trois issues : présent, la suppression suit ; absent, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_PUITS_DU_REGISTRE_INCHANGE_NON_LU`, rien n'est supprimé, la cause du moteur au journal seul.
+    let name = match conn.query_row("SELECT name FROM ledger_sink WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
+        Ok(Some(n)) => n,
+        Ok(None) => return not_found("sink introuvable"),
+        Err(e) => {
+            eprintln!("[gouvernance] WARN puits du registre #{id} NON lu pour la suppression, rien n'est supprimé : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PUITS_DU_REGISTRE_INCHANGE_NON_LU);
+        }
     };
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "gouvernance", &format!("suppression du puits du registre '{name}' (#{id})"), CAUSE_PUITS_DU_REGISTRE_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -449,7 +498,8 @@ pub(crate) async fn ledger_sink_delete(State(st): State<AppState>, Extension(au)
         },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction: {e}"))
+            eprintln!("[gouvernance] WARN suppression du puits du registre '{name}' (#{id}) NON écrite, le puits reste déclaré : {e}");
+            server_err(ECHEC_DE_LA_TRANSACTION_D_AUDIT)
         }
     }
 }
@@ -480,6 +530,7 @@ pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au):
     if !au.is_admin() {
         return forbidden("réservé à l'administrateur");
     }
+    use rusqlite::OptionalExtension;
     let db_path = req_db_path(&st, &au);
     crate::req_conn!(st, au, conn);
     let geste = format!("envoi vers le puits du registre #{id}");
@@ -490,14 +541,23 @@ pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au):
         Ok(tx) => tx,
         Err(refus) => return refus,
     };
-    let sink = conn.query_row(
-        "SELECT name,kind,target,enabled,last_id FROM ledger_sink WHERE id=?1",
-        params![id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?)),
-    );
+    // `P10.20-l` — trois issues : présent, l'envoi suit ; absent, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_ENVOI_DU_PUITS_NON_FAIT_NON_LU`, rien n'est exporté (le garde annule sa transaction), la cause du moteur au
+    // journal seul.
+    let sink = conn
+        .query_row(
+            "SELECT name,kind,target,enabled,last_id FROM ledger_sink WHERE id=?1",
+            params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?)),
+        )
+        .optional();
     let (name, kind, target, enabled, last_id) = match sink {
-        Ok(t) => t,
-        Err(_) => return not_found("sink introuvable"),
+        Ok(Some(t)) => t,
+        Ok(None) => return not_found("sink introuvable"),
+        Err(e) => {
+            eprintln!("[gouvernance] WARN {geste} NON fait : le puits n'a pas été lu, rien n'est exporté : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENVOI_DU_PUITS_NON_FAIT_NON_LU);
+        }
     };
     if enabled == 0 {
         return err_json(StatusCode::CONFLICT, "sink désactivé");

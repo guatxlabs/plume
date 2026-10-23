@@ -117,6 +117,38 @@ pub(crate) fn compter_une_escalade_notifiee_non_enregistree(balayage: &'static s
         consigner_avec_sa_derniere_cause(&mut m, balayage, cause.to_string());
     }
 }
+/// `P10.33-h` (reste du dispatch) — UN ENVOI D'ALERTE QU'UN CANAL N'A PAS PRIS, COMPTÉ PAR GENRE DE CANAL. Le dispatch
+/// jetait le verdict de chaque canal (`let _ =` sur l'écriture du lookup comme sur `notify_send`) puis marquait l'alerte
+/// notifiée : un envoi refusé (garde d'URL, configuration incomplète, curl en échec, genre inconnu, lookup refusé par la
+/// base) ne laissait aucune trace. Décision par défaut (politique de renvoi NON décidée, `notify_send` est irréversible
+/// côté PagerDuty/SMS) : AVOUER sans renvoyer ni changer le sens du marqueur `notified`. Cardinalité FERMÉE : `genre` est
+/// un littéral du code (un genre libre tombe sous un seul nom). La ligne de journal porte l'identifiant de l'alerte, celui
+/// du canal, le genre et la cause ; JAMAIS l'URL, la configuration, le titre, le détail ni l'hôte. Depuis le démarrage,
+/// jamais persisté.
+pub(crate) static ENVOIS_D_ALERTE_REFUSES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ENVOIS_D_ALERTE_REFUSES: std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+pub(crate) fn compter_un_envoi_d_alerte_refuse(alerte: i64, canal: i64, genre: &'static str, cause: &str) {
+    ENVOIS_D_ALERTE_REFUSES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    eprintln!("[plume] dispatch : alerte {alerte} : envoi NON PRIS par le canal {canal} (genre {genre}), aucun renvoi : {cause}");
+    if let Ok(mut m) = ENVOIS_D_ALERTE_REFUSES.lock() {
+        consigner_avec_sa_derniere_cause(&mut m, genre, cause.to_string());
+    }
+}
+/// `P10.33-h` — UNE ALERTE DONT AUCUN DES CANAUX VISÉS N'A PRIS L'ENVOI, comptée UNE fois par alerte (pas par canal) :
+/// c'est l'alerte de détection qui n'a été remise nulle part. Une alerte qu'au moins un canal a prise n'y entre pas
+/// (ses refus restent comptés par genre) ; une alerte sans canal visé (silencée, sous le seuil de tous) non plus.
+pub(crate) static ALERTES_SANS_AUCUN_ENVOI_PRIS_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) fn compter_une_alerte_sans_aucun_envoi_pris(alerte: i64, canaux_vises: usize) {
+    ALERTES_SANS_AUCUN_ENVOI_PRIS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    eprintln!("[plume] dispatch : alerte {alerte} : AUCUN des {canaux_vises} canal(aux) visé(s) n'a pris l'envoi, alerte remise nulle part ; aucun renvoi n'est tenté (politique non décidée)");
+}
+/// Le compte et la dernière cause d'un genre de canal (`None` = aucun refus depuis le démarrage). Lu par les témoins
+/// seulement : la production sert la table entière par `gather_json`.
+#[cfg(test)]
+pub(crate) fn envoi_d_alerte_refuse_de(genre: &str) -> Option<(u64, String)> {
+    ENVOIS_D_ALERTE_REFUSES.lock().ok().and_then(|m| m.get(genre).cloned())
+}
 /// Le compte et la dernière cause d'un balayage (`None` = jamais aveugle depuis le démarrage).
 pub(crate) fn tick_aveugle_de(balayage: &str) -> Option<(u64, String)> {
     TICKS_AVEUGLES.lock().ok().and_then(|m| m.get(balayage).cloned())
@@ -1027,6 +1059,16 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
             .map(|m| m.iter().map(|(k, (n, c))| (k.clone(), json!({ "n": n, "derniere_cause": c }))).collect::<serde_json::Map<String, Value>>())
             .unwrap_or_default()),
     );
+    // `P10.33-h` — les envois d'alerte qu'un canal n'a pas pris (par genre, dernière cause) et les alertes remises nulle part.
+    scheduler.insert("envois_d_alerte_refuses_total".into(), json!(ENVOIS_D_ALERTE_REFUSES_TOTAL.load(Ordering::Relaxed)));
+    scheduler.insert(
+        "envois_d_alerte_refuses".into(),
+        json!(ENVOIS_D_ALERTE_REFUSES
+            .lock()
+            .map(|m| m.iter().map(|(k, (n, c))| (k.clone(), json!({ "n": n, "derniere_cause": c }))).collect::<serde_json::Map<String, Value>>())
+            .unwrap_or_default()),
+    );
+    scheduler.insert("alertes_sans_aucun_envoi_pris_total".into(), json!(ALERTES_SANS_AUCUN_ENVOI_PRIS_TOTAL.load(Ordering::Relaxed)));
     // `P10.26-d` — les gestes dus des passes de fond que la base n'a pas validés, par geste (tenus par le module qui juge
     // les transactions).
     crate::comptes_de_transaction::poser_les_gestes_de_fond_non_valides(&mut scheduler);
@@ -1185,6 +1227,8 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     g(&mut o, "plume_scheduler_rule_ticks_total", "counter", "Ticks du scheduler de règles", "/scheduler/rule_ticks_total");
     g(&mut o, "plume_scheduler_rollup_ticks_total", "counter", "Ticks de la boucle de rollup", "/scheduler/rollup_ticks_total");
     g(&mut o, "plume_scheduler_ticks_aveugles_total", "counter", "Balayages de fond qui n'ont pas pu lire leur liste de travail et n'ont rien fait ce tour-ci (P10.7-f ; ventilation par balayage avec la dernière cause dans /api/metrics scheduler.ticks_aveugles)", "/scheduler/ticks_aveugles_total");
+    g(&mut o, "plume_scheduler_envois_d_alerte_refuses_total", "counter", "Envois d'alerte qu'un canal de notification n'a pas pris, sans renvoi (P10.33-h ; ventilation par genre de canal avec la dernière cause dans /api/metrics scheduler.envois_d_alerte_refuses)", "/scheduler/envois_d_alerte_refuses_total");
+    g(&mut o, "plume_scheduler_alertes_sans_aucun_envoi_pris_total", "counter", "Alertes dont aucun des canaux visés n'a pris l'envoi, comptées une fois par alerte, sans renvoi (P10.33-h)", "/scheduler/alertes_sans_aucun_envoi_pris_total");
     // `P10.26-d`, `P10.27-h`, `P10.27-y` — LES REFUS DE TRANSACTION, qui n'étaient dits qu'au journal. Rendu par le module
     // qui TIENT les compteurs (nommage, `# HELP` = documentation d'exploitation, cardinalité fermée des causes), dérivé de
     // `j` : la série et la clé JSON ne peuvent pas diverger.

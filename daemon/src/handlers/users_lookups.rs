@@ -72,6 +72,20 @@ pub(crate) fn corps_de_la_liste_des_comptes(
     }
 }
 
+/// `P10.29-l` — la phrase servie au client quand l'écriture ou la trace d'audit d'un geste de compte, de table
+/// d'enrichissement ou de jeton est refusée (transaction annulée, rien de changé). Phrase FIXE : le texte du moteur
+/// SQLite ne part jamais au client, il va au journal seul (règle de la vague AA). Statut 500 inchangé.
+pub(crate) const PHRASE_ECHEC_TRANSACTION_AUDIT: &str = "échec transaction audit (aucune modification)";
+
+/// `P10.29-l` — journalise la cause du moteur (le geste et le nom visé, jamais un mot de passe, un hash, un jeton ni
+/// le contenu d'une table), avec l'identifiant de corrélation servi au client, puis sert la phrase fixe en 500.
+pub(crate) fn servir_l_echec_de_la_transaction_d_audit(journal: &str, geste: &str, e: &rusqlite::Error) -> Response {
+    let (id, r) = crate::err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, PHRASE_ECHEC_TRANSACTION_AUDIT);
+    let id = id.unwrap_or_default();
+    eprintln!("[{id}] {journal} WARN {geste} refusé : transaction d'audit annulée, aucune modification ({e})");
+    r
+}
+
 pub(crate) async fn user_create(
     State(st): State<AppState>,
     secret_des_gestes: crate::secret_des_gestes::SecretDesGestesPresente,
@@ -183,7 +197,7 @@ pub(crate) async fn user_create(
             if es.contains("UNIQUE") || es.contains("constraint") {
                 (StatusCode::CONFLICT, "ce nom de compte existe déjà").into_response()
             } else {
-                server_err(format!("échec transaction audit (aucune modification): {e}"))
+                servir_l_echec_de_la_transaction_d_audit("[comptes]", &format!("création du compte '{name}'"), &e)
             }
         }
     }
@@ -599,7 +613,7 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
             // avait fait des objets ni des jetons du compte).
             Json(compte_rendu).into_response()
         }
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); servir_l_echec_de_la_transaction_d_audit("[comptes]", &format!("suppression du compte '{tname}'"), &e) }
     }
 }
 
@@ -787,7 +801,7 @@ pub(crate) async fn user_update(
             st.auth_cache.lock().clear(); // invalide le cache d'auth (rôle/mdp changés)
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); servir_l_echec_de_la_transaction_d_audit("[comptes]", &format!("modification du compte '{tname}'"), &e) }
     }
 }
 
@@ -927,7 +941,7 @@ pub(crate) async fn lookup_upload(State(st): State<AppState>, Extension(au): Ext
                 err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE)
             }
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); servir_l_echec_de_la_transaction_d_audit("[lookup]", &format!("remplacement de '{name}'"), &e) }
     }
 }
 
@@ -964,6 +978,6 @@ pub(crate) async fn lookup_delete(State(st): State<AppState>, Extension(au): Ext
                 err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE)
             }
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); servir_l_echec_de_la_transaction_d_audit("[lookup]", &format!("suppression de '{name}'"), &e) }
     }
 }

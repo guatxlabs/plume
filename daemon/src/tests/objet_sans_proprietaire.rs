@@ -497,12 +497,12 @@ async fn un_objet_sans_proprietaire_ne_se_supprime_plus_qu_en_admin() {
     // --- LES DEUX IDENTITÉS SONT REFUSÉES, sur les TROIS portes ---
     for (qui, au) in [("alice", &alice), ("bob", &bob)] {
         assert_eq!(
-            dash_delete(State(st.clone()), Extension(au.clone()), Path(seme)).await,
+            dash_delete(State(st.clone()), Extension(au.clone()), Path(seme)).await.status(),
             StatusCode::FORBIDDEN,
             "{qui} supprime le dashboard SEMÉ. AVANT ce lot : 204. {SP_MOTIF_DU_RESSERREMENT}"
         );
         assert_eq!(
-            view_delete(State(st.clone()), Extension(au.clone()), Path(vue)).await,
+            view_delete(State(st.clone()), Extension(au.clone()), Path(vue)).await.status(),
             StatusCode::FORBIDDEN,
             "{qui} supprime la vue SEMÉE. AVANT ce lot : 204. {SP_MOTIF_DU_RESSERREMENT}"
         );
@@ -525,17 +525,17 @@ async fn un_objet_sans_proprietaire_ne_se_supprime_plus_qu_en_admin() {
     let (_, v) = pb_json(view_create(State(st.clone()), Extension(alice.clone()), Json(json!({ "name": "vue d'alice", "visibility": "private" }))).await.into_response()).await;
     let vue_alice = v["id"].as_i64().unwrap();
     assert_eq!(view_update(State(st.clone()), Extension(alice.clone()), Path(vue_alice), Json(json!({ "name": "vue d'alice, renommée" }))).await.status(), StatusCode::NO_CONTENT, "alice renomme SA vue");
-    assert_eq!(view_delete(State(st.clone()), Extension(alice.clone()), Path(vue_alice)).await, StatusCode::NO_CONTENT, "alice supprime SA vue");
-    assert_eq!(dash_delete(State(st.clone()), Extension(alice.clone()), Path(a_alice)).await, StatusCode::NO_CONTENT, "alice supprime SON dashboard");
+    assert_eq!(view_delete(State(st.clone()), Extension(alice.clone()), Path(vue_alice)).await.status(), StatusCode::NO_CONTENT, "alice supprime SA vue");
+    assert_eq!(dash_delete(State(st.clone()), Extension(alice.clone()), Path(a_alice)).await.status(), StatusCode::NO_CONTENT, "alice supprime SON dashboard");
     // …et bob ne dispose pas de ce qui est à alice (le second bras des deux identités).
     let (_, v) = pb_json(view_create(State(st.clone()), Extension(alice.clone()), Json(json!({ "name": "encore à alice", "visibility": "private" }))).await.into_response()).await;
     let vue_alice2 = v["id"].as_i64().unwrap();
-    assert_eq!(view_delete(State(st.clone()), Extension(bob.clone()), Path(vue_alice2)).await, StatusCode::FORBIDDEN, "bob ne supprime pas la vue d'alice");
+    assert_eq!(view_delete(State(st.clone()), Extension(bob.clone()), Path(vue_alice2)).await.status(), StatusCode::FORBIDDEN, "bob ne supprime pas la vue d'alice");
 
     // --- CONTRÔLE POSITIF 2 : l'ADMIN, lui, peut. La capacité est rendue à un rôle, pas détruite. ---
     assert_eq!(view_update(State(st.clone()), Extension(admin.clone()), Path(vue), Json(json!({ "name": "SOC (admin)" }))).await.status(), StatusCode::NO_CONTENT, "l'admin renomme la vue semée");
-    assert_eq!(view_delete(State(st.clone()), Extension(admin.clone()), Path(vue)).await, StatusCode::NO_CONTENT, "l'admin supprime la vue semée");
-    assert_eq!(dash_delete(State(st.clone()), Extension(admin.clone()), Path(seme)).await, StatusCode::NO_CONTENT, "l'admin supprime le dashboard semé");
+    assert_eq!(view_delete(State(st.clone()), Extension(admin.clone()), Path(vue)).await.status(), StatusCode::NO_CONTENT, "l'admin supprime la vue semée");
+    assert_eq!(dash_delete(State(st.clone()), Extension(admin.clone()), Path(seme)).await.status(), StatusCode::NO_CONTENT, "l'admin supprime le dashboard semé");
     {
         let conn = st.db.lock();
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM view WHERE id=?1", params![vue], |r| r.get::<_, i64>(0)).unwrap(), 0, "…et le geste de l'admin a bien PORTÉ");

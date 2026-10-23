@@ -286,6 +286,86 @@ fn tranche_validee_du_registre(db_path: &str, from_id: i64, limit: i64) -> Resul
     })
 }
 
+// `P10.29-l` (famille « texte du moteur servi ») — LES CINQ 500 DE L'EXPORT DU REGISTRE SERVENT UNE PHRASE FIXE PAR GESTE.
+// Avant : `export du ledger impossible : {e}`, `export du journal de contrôle impossible : {e}` (et `… lecture interrompue
+// ({e})`), `export vers le sink '{name}' impossible : {e}`, `écriture sink '{name}': {e}` — le texte du moteur partait au
+// client, et pour l'écriture de la copie c'était le CHEMIN de la cible du puits (`ouverture <chemin>: …`) : l'emplacement
+// de la copie inaltérable, servi et recopié au journal par `err_json`. Décision par défaut de la vague AF : statut 500
+// inchangé, préfixes d'avant GARDÉS (le témoin `cdej_` les cherche), la cause au journal seul avec l'identifiant de
+// corrélation servi, jamais la cible du puits. L'invariant « curseur non avancé » ne bouge pas (le garde `Txn` annule).
+
+/// `P10.29-l` — la tranche du registre n'a pas été lue pour le téléchargement.
+pub(crate) const PHRASE_EXPORT_DU_REGISTRE_NON_LU: &str = "export du ledger impossible : la tranche du registre n'a pas \
+     pu être lue — rien n'est exporté ; le journal du démon nomme la cause sous l'identifiant de cette réponse.";
+/// `P10.29-l` — le plan de contrôle n'a pas été ouvert ou lu pour le téléchargement du journal de contrôle.
+pub(crate) const PHRASE_EXPORT_DU_JOURNAL_DE_CONTROLE_NON_LU: &str = "export du journal de contrôle impossible : le plan \
+     de contrôle n'a pas pu être ouvert ni lu — rien n'est exporté ; le journal du démon nomme la cause sous \
+     l'identifiant de cette réponse.";
+/// `P10.29-l` — la lecture du journal de contrôle, faite hors de l'exécuteur, s'est interrompue avant de rendre.
+pub(crate) const PHRASE_EXPORT_DU_JOURNAL_DE_CONTROLE_INTERROMPU: &str = "export du journal de contrôle impossible : \
+     lecture interrompue — rien n'est exporté ; le journal du démon nomme la cause sous l'identifiant de cette réponse.";
+/// `P10.29-l` — la tranche à envoyer vers un puits n'a pas été lue : rien n'est écrit dans la copie.
+pub(crate) const PHRASE_ENVOI_DU_PUITS_TRANCHE_NON_LUE: &str = "export vers le sink impossible : la tranche du registre \
+     n'a pas pu être lue — rien n'est écrit dans la copie et le curseur du puits n'a pas avancé ; le journal du démon \
+     nomme la cause sous l'identifiant de cette réponse.";
+/// `P10.29-l` — l'écriture de la copie a échoué : le curseur n'a pas avancé, l'envoi suivant reprend la même tranche.
+pub(crate) const PHRASE_ENVOI_DU_PUITS_COPIE_NON_ECRITE: &str = "export vers le sink impossible : l'écriture de la copie \
+     a échoué (elle peut être partielle) — le curseur du puits n'a pas avancé, l'envoi suivant reprend la même \
+     tranche ; le journal du démon nomme la cause sous l'identifiant de cette réponse, sans la cible du puits.";
+/// `P10.29-l` — ce que le journal porte à la place du motif d'une écriture de copie quand ce motif n'est ni un refus à texte
+/// fixe ni une erreur du système : tout autre texte peut porter la cible du puits.
+pub(crate) const MOTIF_TU_IL_PEUT_PORTER_LA_CIBLE: &str =
+    "motif tu : ni refus à texte fixe ni erreur du système, son texte peut porter la cible du puits";
+
+/// `P10.29-l` — sert la phrase fixe en 500 (avec l'identifiant de corrélation) et journalise le sujet et la cause sous
+/// ce même identifiant. Le sujet nomme le geste et l'identifiant interne du puits, jamais une cible ni une clé.
+fn servir_l_export_refuse(phrase: &str, sujet: &str, cause: &str) -> Response {
+    let (id, r) = crate::err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, phrase);
+    eprintln!("[{}] [gouvernance] WARN {sujet} ({cause})", id.unwrap_or_default());
+    r
+}
+
+/// `P10.29-l` — LE MOTIF D'UNE ÉCRITURE DE COPIE RATÉE, SANS LA CIBLE DU PUITS. Une LISTE BLANCHE, pas une recherche du
+/// chemin : une cible peut contenir « : » (`ledger_sink_create` l'accepte), donc couper au « : » ne suffit pas à l'écarter.
+/// Passent, dans cet ordre :
+///  1. un refus à texte fixe (`REFUS_PUITS_A_TEXTE_FIXE`), tel quel ;
+///  2. un refus de la base vivante ou hors de la racine : son DÉBUT fixe seul (la suite nomme un répertoire) ;
+///  3. le segment après le DERNIER « : » s'il a la forme d'une erreur du système (`<texte> (os error <n>)`, sans barre ni
+///     « : ») et que ni la cible ne le contient ni il ne contient le nom de fichier de la cible. `ledger_sink_write` place
+///     le chemin AVANT ce dernier « : » (`ouverture <chemin>: <erreur du système>`) : un chemin à « : » laisse son
+///     morceau dans un segment plus tôt, jamais dans le dernier.
+/// Tout le reste est TU (`MOTIF_TU_IL_PEUT_PORTER_LA_CIBLE`) : un texte qui finirait par un morceau de la cible après
+/// son dernier « : » n'a pas la forme d'une erreur du système.
+pub(crate) fn motif_de_l_ecriture_sans_cible<'a>(e: &'a str, target: &str) -> &'a str {
+    if REFUS_PUITS_A_TEXTE_FIXE.contains(&e) {
+        return e;
+    }
+    for debut in [REFUS_PUITS_SUR_LA_BASE_VIVANTE, REFUS_PUITS_HORS_DE_LA_RACINE] {
+        if e.starts_with(debut) {
+            return debut;
+        }
+    }
+    let segment = e.rsplit_once(": ").map_or(e, |(_, s)| s);
+    let cible = target.trim();
+    let nom = std::path::Path::new(cible).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let porte_la_cible = cible.contains(segment) || (!nom.is_empty() && segment.contains(nom.as_str()));
+    if a_la_forme_d_une_erreur_du_systeme(segment) && !porte_la_cible {
+        return segment;
+    }
+    MOTIF_TU_IL_PEUT_PORTER_LA_CIBLE
+}
+
+/// `<texte> (os error <n>)`, sans barre ni « : » : la forme qu'`std::io::Error` donne à une erreur du système.
+fn a_la_forme_d_une_erreur_du_systeme(segment: &str) -> bool {
+    if segment.contains('/') || segment.contains(':') {
+        return false;
+    }
+    let Some((texte, code)) = segment.strip_suffix(')').and_then(|s| s.rsplit_once(" (os error ")) else {
+        return false;
+    };
+    !texte.trim().is_empty() && !code.is_empty() && code.bytes().all(|o| o.is_ascii_digit())
+}
+
 /// GET /api/ledger/export?from_id=<n>&limit=<n> -> JSONL (text/plain) de la chaîne du ledger (id,ts,kind,
 /// detail,prev_hash,hash) à partir de from_id (exclu), borné. READ-ONLY (aucune mutation). Un vérificateur
 /// hors ligne recompute la chaîne (`ledger-verify-export`, soit `verifier_la_copie_du_registre`). En-têtes :
@@ -303,7 +383,7 @@ pub(crate) async fn ledger_export_get(State(st): State<AppState>, Extension(au):
     // `P10.26-t` — lue sur le pool : seul le validé sort (`tranche_validee_du_registre`).
     let (lines, last_id, last_hash) = match tranche_validee_du_registre(&req_db_path(&st, &au), from_id, limit) {
         Ok(t) => t,
-        Err(e) => return server_err(format!("export du ledger impossible : {e}")),
+        Err(e) => return servir_l_export_refuse(PHRASE_EXPORT_DU_REGISTRE_NON_LU, "export du registre refusé : la tranche n'a pas été lue", &e),
     };
     let body = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
     (
@@ -323,6 +403,22 @@ pub(crate) async fn ledger_export_get(State(st): State<AppState>, Extension(au):
 fn tranche_validee_du_plan_de_controle(chemin: &str, cle: Option<&str>, from_id: i64, limit: i64) -> Result<(Vec<String>, i64, String), String> {
     let conn = crate::state::lecture_validee_du_plan_de_controle(chemin, cle)?;
     crate::governance::control_ledger_export_lines(&conn, from_id, limit)
+}
+
+/// `P10.29-l` — l'issue de la lecture du journal de contrôle faite hors de l'exécuteur : la tranche, ou le 500 à phrase
+/// fixe — plan de contrôle non ouvert ou non lu, lecture interrompue (tâche paniquée ou annulée) —, la cause au journal.
+pub(crate) fn issue_de_la_lecture_du_plan_de_controle(
+    lecture: Result<Result<(Vec<String>, i64, String), String>, tokio::task::JoinError>,
+) -> Result<(Vec<String>, i64, String), Response> {
+    match lecture {
+        Ok(Ok(t)) => Ok(t),
+        Ok(Err(e)) => Err(servir_l_export_refuse(
+            PHRASE_EXPORT_DU_JOURNAL_DE_CONTROLE_NON_LU,
+            "export du journal de contrôle refusé : le plan de contrôle n'a pas été ouvert ou lu",
+            &e,
+        )),
+        Err(e) => Err(servir_l_export_refuse(PHRASE_EXPORT_DU_JOURNAL_DE_CONTROLE_INTERROMPU, "export du journal de contrôle refusé : lecture interrompue", &e.to_string())),
+    }
 }
 
 /// GET /api/control-ledger/export?from_id=<n>&limit=<n> -> JSONL de la chaîne du journal de CONTRÔLE (accès
@@ -350,10 +446,9 @@ pub(crate) async fn control_ledger_export_get(State(st): State<AppState>, Extens
     let limit: i64 = q.get("limit").and_then(|s| s.trim().parse().ok()).unwrap_or(10000).clamp(1, 100000);
     let (chemin, cle) = (String::clone(&cp.db_path), crate::state::control_key());
     let lecture = tokio::task::spawn_blocking(move || tranche_validee_du_plan_de_controle(&chemin, cle.as_deref(), from_id, limit)).await;
-    let (lines, last_id, last_hash) = match lecture {
-        Ok(Ok(t)) => t,
-        Ok(Err(e)) => return server_err(format!("export du journal de contrôle impossible : {e}")),
-        Err(e) => return server_err(format!("export du journal de contrôle impossible : lecture interrompue ({e})")),
+    let (lines, last_id, last_hash) = match issue_de_la_lecture_du_plan_de_controle(lecture) {
+        Ok(t) => t,
+        Err(refus) => return refus,
     };
     let body = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
     (
@@ -551,7 +646,7 @@ pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au):
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?)),
         )
         .optional();
-    let (name, kind, target, enabled, last_id) = match sink {
+    let (_name, kind, target, enabled, last_id) = match sink {
         Ok(Some(t)) => t,
         Ok(None) => return not_found("sink introuvable"),
         Err(e) => {
@@ -570,7 +665,13 @@ pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au):
     // exactement comme « rien de neuf », qui est la confusion que ce lot ferme.
     let (lines, new_last_id, new_last_hash) = match tranche_validee_du_registre(&db_path, last_id, 100000) {
         Ok(t) => t,
-        Err(e) => return server_err(format!("export vers le sink '{name}' impossible : {e}")),
+        Err(e) => {
+            return servir_l_export_refuse(
+                PHRASE_ENVOI_DU_PUITS_TRANCHE_NON_LUE,
+                &format!("{geste} NON fait : la tranche du registre n'a pas été lue, rien n'est écrit dans la copie, le curseur n'a pas avancé"),
+                &e,
+            )
+        }
     };
     if lines.is_empty() {
         return Json(json!({ "ok": true, "exported": 0, "last_id": last_id })).into_response();
@@ -593,7 +694,12 @@ pub(crate) async fn ledger_sink_flush(State(st): State<AppState>, Extension(au):
     // par un lien entre-temps — TOCTOU). Échec -> le garde annule le curseur posé : il n'a jamais été validé.
     let confine = if kind == "file" { Some(ledger_export_root(&load_config())) } else { None };
     if let Err(e) = ledger_sink_write(&kind, &target, &lines, confine.as_deref()) {
-        return server_err(format!("écriture sink '{name}': {e}"));
+        let motif = motif_de_l_ecriture_sans_cible(&e, &target);
+        return servir_l_export_refuse(
+            PHRASE_ENVOI_DU_PUITS_COPIE_NON_ECRITE,
+            &format!("{geste} NON fait : l'écriture de la copie a échoué (puits {kind}), le curseur n'a pas avancé"),
+            motif,
+        );
     }
     let n = lines.len();
     // Le `COMMIT` est JUGÉ : refusé, `Txn::commit` rend `Err` et le garde annule — la tranche est dans la copie, le

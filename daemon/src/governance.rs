@@ -389,7 +389,7 @@ pub(crate) fn ledger_sink_write(kind: &str, target: &str, lines: &[String], conf
         "file" => {
             use std::io::Write;
             if target.trim().is_empty() {
-                return Err("sink file: target (chemin) vide".into());
+                return Err(REFUS_PUITS_CIBLE_VIDE.into());
             }
             // MEDIUN #59 : quand l'écriture vient du SINK WEB-configurable (`confine_root=Some`), la cible est
             // CONFINÉE à la racine d'export (canonicalisée, anti-`..`), l'ouverture est O_NOFOLLOW (jamais suivre
@@ -410,7 +410,7 @@ pub(crate) fn ledger_sink_write(kind: &str, target: &str, lines: &[String], conf
             if confine_root.is_some() {
                 let md = f.metadata().map_err(|e| format!("stat {}: {e}", full.display()))?;
                 if !md.is_file() {
-                    return Err("target: non-fichier-régulier refusé (FIFO/device/socket)".into());
+                    return Err(REFUS_PUITS_NON_REGULIER_A_L_OUVERTURE.into());
                 }
             }
             let mut f = f;
@@ -443,11 +443,11 @@ pub(crate) fn ledger_export_root(conf: &HashMap<String, String>) -> std::path::P
 pub(crate) fn ledger_file_target_validate(root: &std::path::Path, target: &str) -> Result<std::path::PathBuf, String> {
     let target = target.trim();
     if target.is_empty() {
-        return Err("sink file: target (chemin) vide".into());
+        return Err(REFUS_PUITS_CIBLE_VIDE.into());
     }
     let root = root.canonicalize().map_err(|e| format!("racine d'export {} inaccessible: {e}", root.display()))?;
     let p = std::path::Path::new(target);
-    let file_name = p.file_name().ok_or_else(|| "target: nom de fichier requis (pas un répertoire)".to_string())?;
+    let file_name = p.file_name().ok_or_else(|| REFUS_PUITS_NOM_DE_FICHIER_REQUIS.to_string())?;
     let parent = match p.parent() {
         Some(pp) if !pp.as_os_str().is_empty() => pp.to_path_buf(),
         _ => root.clone(),
@@ -456,20 +456,38 @@ pub(crate) fn ledger_file_target_validate(root: &std::path::Path, target: &str) 
         .canonicalize()
         .map_err(|e| format!("répertoire cible {} inaccessible: {e}", parent.display()))?;
     if !parent_canon.starts_with(&root) {
-        return Err(format!("target hors de la racine d'export autorisée {}", root.display()));
+        return Err(format!("{REFUS_PUITS_HORS_DE_LA_RACINE} {}", root.display()));
     }
     let full = parent_canon.join(file_name);
     if let Ok(md) = std::fs::symlink_metadata(&full) {
         if md.file_type().is_symlink() {
-            return Err("target: lien symbolique refusé".into());
+            return Err(REFUS_PUITS_LIEN_SYMBOLIQUE.into());
         }
         if !md.is_file() {
-            return Err("target: non-fichier-régulier refusé (FIFO/device/répertoire)".into());
+            return Err(REFUS_PUITS_NON_REGULIER_EXISTANT.into());
         }
     }
     refuser_une_cible_sur_la_base_vivante(&parent_canon, file_name, &full)?;
     Ok(full)
 }
+
+/// `P10.29-l` — LES REFUS À TEXTE FIXE d'une cible de puits `file` : aucune partie variable, donc jamais la cible. Nommés
+/// ici pour que le motif d'une écriture de copie ratée (`motif_de_l_ecriture_sans_cible`, au journal) les reconnaisse
+/// sans liste recopiée qui dériverait.
+pub(crate) const REFUS_PUITS_CIBLE_VIDE: &str = "sink file: target (chemin) vide";
+pub(crate) const REFUS_PUITS_NOM_DE_FICHIER_REQUIS: &str = "target: nom de fichier requis (pas un répertoire)";
+pub(crate) const REFUS_PUITS_LIEN_SYMBOLIQUE: &str = "target: lien symbolique refusé";
+pub(crate) const REFUS_PUITS_NON_REGULIER_A_L_OUVERTURE: &str = "target: non-fichier-régulier refusé (FIFO/device/socket)";
+pub(crate) const REFUS_PUITS_NON_REGULIER_EXISTANT: &str = "target: non-fichier-régulier refusé (FIFO/device/répertoire)";
+pub(crate) const REFUS_PUITS_A_TEXTE_FIXE: [&str; 5] = [
+    REFUS_PUITS_CIBLE_VIDE,
+    REFUS_PUITS_NOM_DE_FICHIER_REQUIS,
+    REFUS_PUITS_LIEN_SYMBOLIQUE,
+    REFUS_PUITS_NON_REGULIER_A_L_OUVERTURE,
+    REFUS_PUITS_NON_REGULIER_EXISTANT,
+];
+/// `P10.29-l` — début, FIXE, du refus d'une cible hors de la racine d'export (la suite nomme la racine).
+pub(crate) const REFUS_PUITS_HORS_DE_LA_RACINE: &str = "target hors de la racine d'export autorisée";
 
 /// `P10.33-w` — début de TOUTE phrase de refus d'une cible de puits `file` posée sur la base vivante.
 pub(crate) const REFUS_PUITS_SUR_LA_BASE_VIVANTE: &str = "target: la base vivante n'est jamais une cible de puits";

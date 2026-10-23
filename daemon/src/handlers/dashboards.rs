@@ -10,6 +10,7 @@
 //! n'écrit plus une ligne de SQL nommant `panel_cache` (garde de build `cache_de_panneau`).
 use crate::*;
 use rusqlite::OptionalExtension;
+use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apres_validation_du_garde};
 
 // ---------- dashboards (P3) ----------
 // Le compte peut-il modifier ce dashboard (et ses panneaux) ?
@@ -320,28 +321,82 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
     Json(corps).into_response()
 }
 
-pub(crate) async fn dash_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+/// `P10.20-l` (vague AF) — le propriétaire du tableau de bord n'a pas été lu : le droit n'est pas jugé, rien n'est
+/// supprimé. Ne nomme ni `BEGIN` ni `COMMIT` ni une transaction annulée : c'est la lecture qui manque (refus nommé).
+pub(crate) const CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU: &str = "TABLEAU DE BORD NON SUPPRIMÉ : la base n'a pas rendu \
+     ce tableau de bord (son propriétaire) — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et le droit \
+     de le supprimer n'est pas jugé. RIEN n'est supprimé : le tableau de bord et ses panneaux sont intacts. Réessayez ; si \
+     le refus persiste, la table des tableaux de bord est illisible.";
+/// `P10.20-l` (vague AF) — un effacement de la suppression refusé ou sans effet : la transaction est annulée. Ouverture
+/// que la console lit sous « rien n'a changé » (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME: &str = "TABLEAU DE BORD NON SUPPRIMÉ : la base n'a pas pris \
+     l'effacement du tableau de bord ou de ses panneaux, ou n'a effacé aucun tableau, et la transaction est annulée — le \
+     tableau de bord et tous ses panneaux existent toujours. Réessayez ; si le refus persiste, la base est en lecture \
+     seule, pleine ou verrouillée.";
+/// `P10.20-l` (vague AF) — le `BEGIN` de cette suppression refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`).
+pub(crate) const CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &str = "TABLEAU DE BORD NON SUPPRIMÉ : la \
+     base n'a pas pris la transaction de la suppression (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
+     pendante sur l'écrivain) — RIEN n'est écrit : le tableau de bord et ses panneaux sont intacts. Réessayez ; s'il est \
+     refusé encore, l'écrivain est occupé ou bloqué.";
+
+/// `P10.20-l` (vague AF) — un effacement qui doit porter sur la ligne LUE juste avant : une seule, ni zéro (un
+/// déclencheur qui l'ignore) ni plusieurs.
+fn une_ligne_effacee(issue: rusqlite::Result<usize>, quoi: &str) -> Result<(), String> {
+    match issue {
+        Ok(1) => Ok(()),
+        Ok(n) => Err(format!("{quoi} : {}", lignes_ecrites_au_lieu_d_une(n))),
+        Err(e) => Err(format!("{quoi} : {e}")),
+    }
+}
+
+/// `P10.20-l` (vague AF) — un effacement de suppression refusé, sous le garde du geste déjà annulé par l'appelant : le
+/// 503 porte la phrase fixe du geste et l'identifiant de corrélation ; la cause du moteur va au journal seul (jamais
+/// dans le corps), avec le geste et l'identifiant interne de l'objet — aucun nom de compte.
+fn refuser_le_retrait_non_pris(geste: &str, cause: &str, phrase: &'static str) -> Response {
+    let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, phrase);
+    eprintln!("[dashboards] WARN {geste} NON prise, transaction annulée ({}) : {cause}", cid.unwrap_or_default());
+    refus
+}
+
+pub(crate) async fn dash_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    // `P10.20-l` (vague AE) — trois issues : lu, le droit est jugé ; absent, le 404 d'avant ; lecture ratée, 503 — ni
-    // 403 ni suppression sur un propriétaire non lu. 503 SANS CORPS : la signature `StatusCode` est gardée (ses appelants
-    // de test vivent hors de ce fichier), la cause du moteur part au journal seul.
+    // `P10.20-l` (vague AE) — trois issues : lu, le droit est jugé ; absent, le 404 d'avant (sans corps) ; lecture ratée,
+    // 503 — ni 403 ni suppression sur un propriétaire non lu. `P10.20-l` (vague AF) — la route rend une `Response` : le
+    // 503 porte `CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU` en corps (la console lisait un 503 nu, « refus sans cause »),
+    // la cause du moteur au journal seul. 403 et 404 restent sans corps.
     match conn.query_row("SELECT COALESCE(owner,'') FROM dashboard WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
         Ok(Some(owner)) => {
             // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
             // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
             if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
-                return StatusCode::FORBIDDEN;
+                return StatusCode::FORBIDDEN.into_response();
             }
         }
-        Ok(None) => return StatusCode::NOT_FOUND,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
-            eprintln!("[dashboards] WARN tableau de bord #{id} NON lu pour la suppression, rien n'est supprimé : {e}");
-            return StatusCode::SERVICE_UNAVAILABLE;
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU);
+            eprintln!("[dashboards] WARN tableau de bord #{id} NON lu pour la suppression, rien n'est supprimé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
         }
     }
-    let _ = conn.execute("DELETE FROM panel WHERE dashboard_id=?1", params![id]);
-    let _ = conn.execute("DELETE FROM dashboard WHERE id=?1", params![id]);
-    StatusCode::NO_CONTENT
+    // `P10.20-l` (vague AF) — LES DEUX EFFACEMENTS SOUS UN GARDE. La forme d'avant (`let _` puis 204) avalait les deux :
+    // un DELETE du tableau refusé rendait 204 « supprimé » alors que le tableau restait, et — hors transaction — ses
+    // panneaux, déjà effacés, étaient perdus. Ici l'effacement des panneaux (zéro est légitime) puis celui du tableau
+    // (UNE ligne exigée : il vient d'être lu) ; un refus ou un effet nul annule TOUT (Drop -> ROLLBACK), 503 nommé.
+    let geste = format!("suppression du tableau de bord #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    let ecrit: Result<(), String> = (|| {
+        conn.execute("DELETE FROM panel WHERE dashboard_id=?1", params![id]).map_err(|e| format!("effacement des panneaux du tableau : {e}"))?;
+        une_ligne_effacee(conn.execute("DELETE FROM dashboard WHERE id=?1", params![id]), "effacement du tableau de bord")
+    })();
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : les panneaux effacés reviennent avec le tableau.
+        return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME);
+    }
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME, || StatusCode::NO_CONTENT.into_response())
 }
 
 pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
@@ -514,6 +569,17 @@ pub(crate) const CAUSE_PANNEAU_NON_SUPPRIME_NON_LU: &str = "PANNEAU NON SUPPRIM�
      supprimer n'est pas jugé. RIEN n'est supprimé : le panneau et son cache sont intacts. Réessayez ; si le refus \
      persiste, la table des panneaux est illisible.";
 
+/// `P10.20-l` (vague AF) — l'effacement du panneau refusé ou sans effet : la transaction est annulée, le cache n'est pas
+/// purgé (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_PANNEAU_NON_SUPPRIME: &str = "PANNEAU NON SUPPRIMÉ : la base n'a pas pris l'effacement du \
+     panneau ou n'en a effacé aucune ligne, et la transaction est annulée — le panneau et son cache existent toujours. \
+     Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.20-l` (vague AF) — le `BEGIN` de cette suppression refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`).
+pub(crate) const CAUSE_PANNEAU_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &str = "PANNEAU NON SUPPRIMÉ : la base n'a pas \
+     pris la transaction de la suppression (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : le panneau et son cache sont intacts. Réessayez ; s'il est refusé encore, \
+     l'écrivain est occupé ou bloqué.";
+
 pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
     // `P10.20-l` (vague AE) — trois issues : lu, le droit est jugé ; absent, le 404 d'avant (sans corps) ; lecture ratée,
@@ -529,12 +595,25 @@ pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Exte
             return refus;
         }
     }
-    let _ = conn.execute("DELETE FROM panel WHERE id=?1", params![id]);
-    // INVALIDATION : purge le cache du panneau supprimé -> un futur panneau réutilisant ce rowid (panel_id)
-    // ne servira jamais le payload de l'ancien (fuite inter-owners/visibilités). La garde query_fp (v36)
-    // est une 2e barrière, mais on supprime explicitement la ligne ici.
-    panneau_avoue::cache_invalider_panneau(&conn, id);
-    StatusCode::NO_CONTENT.into_response()
+    // `P10.20-l` (vague AF) — L'EFFACEMENT SOUS UN GARDE, UNE LIGNE EXIGÉE (le panneau vient d'être lu). La forme
+    // d'avant (`let _` puis 204) rendait « supprimé » sur un DELETE refusé, et purgeait le cache d'un panneau resté
+    // en place. Refusé ou sans effet : Drop -> ROLLBACK, 503 `CAUSE_PANNEAU_NON_SUPPRIME`, cache NON purgé.
+    let geste = format!("suppression du panneau #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_PANNEAU_NON_SUPPRIME_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    if let Err(cause) = une_ligne_effacee(conn.execute("DELETE FROM panel WHERE id=?1", params![id]), "effacement du panneau") {
+        drop(tx); // Drop -> ROLLBACK : le panneau et son cache restent.
+        return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_PANNEAU_NON_SUPPRIME);
+    }
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_PANNEAU_NON_SUPPRIME, || {
+        // INVALIDATION, SEULEMENT APRÈS LA VALIDATION : purge le cache du panneau supprimé -> un futur panneau
+        // réutilisant ce rowid (panel_id) ne servira jamais le payload de l'ancien (fuite inter-owners/visibilités).
+        // La garde query_fp (v36) est une 2e barrière, mais on supprime explicitement la ligne ici.
+        panneau_avoue::cache_invalider_panneau(&conn, id);
+        StatusCode::NO_CONTENT.into_response()
+    })
 }
 
 // Exécute la requête d'un panneau CÔTÉ SERVEUR (read-only) -> permet la requête « privée »
@@ -1253,27 +1332,63 @@ pub(crate) async fn view_create(State(st): State<AppState>, Extension(au): Exten
     }
 }
 
-pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+/// `P10.20-l` (vague AF) — le propriétaire de la vue n'a pas été lu : le droit n'est pas jugé, rien n'est délié ni
+/// supprimé. Ne nomme ni `BEGIN` ni `COMMIT` ni une transaction annulée : c'est la lecture qui manque (refus nommé).
+pub(crate) const CAUSE_VUE_NON_SUPPRIMEE_NON_LUE: &str = "VUE NON SUPPRIMÉE : la base n'a pas rendu cette vue (son \
+     propriétaire) — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et le droit de la supprimer n'est \
+     pas jugé. RIEN n'est délié ni supprimé : la vue et les tableaux de bord qui y sont rangés sont intacts. Réessayez ; \
+     si le refus persiste, la table des vues est illisible.";
+/// `P10.20-l` (vague AF) — le détachement des tableaux ou l'effacement de la vue refusé, ou aucune vue effacée : la
+/// transaction est annulée (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_VUE_NON_SUPPRIMEE: &str = "VUE NON SUPPRIMÉE : la base n'a pas pris l'effacement de la vue ou le \
+     détachement de ses tableaux de bord, ou n'a effacé aucune vue, et la transaction est annulée — la vue existe \
+     toujours et les tableaux de bord qui y sont rangés y restent rattachés. Réessayez ; si le refus persiste, la base est \
+     en lecture seule, pleine ou verrouillée.";
+/// `P10.20-l` (vague AF) — le `BEGIN` de cette suppression refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`).
+pub(crate) const CAUSE_VUE_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE: &str = "VUE NON SUPPRIMÉE : la base n'a pas pris la \
+     transaction de la suppression (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : la vue et ses rattachements sont intacts. Réessayez ; s'il est refusé encore, \
+     l'écrivain est occupé ou bloqué.";
+
+pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    // `P10.20-l` (vague AE) — même forme que `dash_delete` : lecture ratée, 503 SANS CORPS (signature `StatusCode`
-    // gardée, appelants de test hors de ce fichier), rien n'est délié ni supprimé, la cause du moteur au journal seul.
+    // `P10.20-l` (vague AE) — même forme que `dash_delete` : lecture ratée, 503, rien n'est délié ni supprimé. `P10.20-l`
+    // (vague AF) — la route rend une `Response` : le 503 porte `CAUSE_VUE_NON_SUPPRIMEE_NON_LUE` en corps, la cause du
+    // moteur au journal seul. 403 et 404 restent sans corps.
     match conn.query_row("SELECT COALESCE(owner,'') FROM view WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
         Ok(Some(owner)) => {
             // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
             // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
             if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
-                return StatusCode::FORBIDDEN;
+                return StatusCode::FORBIDDEN.into_response();
             }
         }
-        Ok(None) => return StatusCode::NOT_FOUND,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
-            eprintln!("[dashboards] WARN vue #{id} NON lue pour la suppression, rien n'est délié ni supprimé : {e}");
-            return StatusCode::SERVICE_UNAVAILABLE;
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_VUE_NON_SUPPRIMEE_NON_LUE);
+            eprintln!("[dashboards] WARN vue #{id} NON lue pour la suppression, rien n'est délié ni supprimé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
         }
     }
-    let _ = conn.execute("UPDATE dashboard SET view_id=NULL WHERE view_id=?1", params![id]); // on délie, on ne supprime pas les dashboards
-    let _ = conn.execute("DELETE FROM view WHERE id=?1", params![id]);
-    StatusCode::NO_CONTENT
+    // `P10.20-l` (vague AF) — DÉTACHEMENT ET EFFACEMENT SOUS UN GARDE. La forme d'avant (`let _` puis 204) rendait
+    // « supprimée » sur un DELETE refusé, après avoir délié — hors transaction — les tableaux de la vue restée en place.
+    // Le détachement (zéro tableau est légitime) puis l'effacement (UNE ligne exigée : la vue vient d'être lue) ; un
+    // refus ou un effet nul annule TOUT (Drop -> ROLLBACK), 503 nommé.
+    let geste = format!("suppression de la vue #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_VUE_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    let ecrit: Result<(), String> = (|| {
+        // on délie, on ne supprime pas les dashboards
+        conn.execute("UPDATE dashboard SET view_id=NULL WHERE view_id=?1", params![id]).map_err(|e| format!("détachement des tableaux de bord : {e}"))?;
+        une_ligne_effacee(conn.execute("DELETE FROM view WHERE id=?1", params![id]), "effacement de la vue")
+    })();
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : les tableaux restent rangés dans la vue.
+        return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_VUE_NON_SUPPRIMEE);
+    }
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_VUE_NON_SUPPRIMEE, || StatusCode::NO_CONTENT.into_response())
 }
 
 pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {

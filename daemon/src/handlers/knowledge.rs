@@ -127,7 +127,13 @@ pub(crate) const CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE: &str =
 /// six créations servaient ce numéro ; l'alias d'Alice était servi avec l'identifiant de l'alias de Bob, et la
 /// suppression de « son » alias par cet identifiant retirait celui de Bob (200) ; lu, non mesuré : le registre
 /// recompilé ensuite n'appliquait plus l'alias de Bob à aucune recherche du produit.
-fn ko_commit(st: &AppState, au: &AuthUser, conn: &Connection, outcome: rusqlite::Result<i64>, corps_du_succes: impl FnOnce(i64) -> Value) -> Response {
+///
+/// `P10.29-l` — UNE ÉCRITURE REFUSÉE (geste ou trace d'audit) SERT LA PHRASE FIXE, JAMAIS LE TEXTE DU MOTEUR. La forme
+/// d'avant rendait `500 échec transaction audit (aucune modification): <phrase du moteur SQLite>`. Décision par défaut
+/// (vague AF) : même statut 500, `PHRASE_ECHEC_TRANSACTION_AUDIT` et l'identifiant de corrélation, la cause du moteur au
+/// journal seul avec le `geste` (jamais le nom de l'objet ni celui d'une personne). La branche `UNIQUE` reste un 400
+/// `un objet de savoir porte déjà ce nom` : un doublon est une faute du client, pas une panne.
+fn ko_commit(st: &AppState, au: &AuthUser, conn: &Connection, geste: &str, outcome: rusqlite::Result<i64>, corps_du_succes: impl FnOnce(i64) -> Value) -> Response {
     match outcome {
         Ok(id) => rendre_apres_validation(conn, "knowledge", "écriture d'un objet de savoir", CAUSE_OBJET_DE_SAVOIR_NON_ECRIT, || {
             let dbp = req_db_path(st, au);
@@ -140,7 +146,37 @@ fn ko_commit(st: &AppState, au: &AuthUser, conn: &Connection, outcome: rusqlite:
             if e.to_string().contains("UNIQUE") {
                 return bad_req("un objet de savoir porte déjà ce nom");
             }
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[knowledge]", geste, &e)
+        }
+    }
+}
+
+// `P10.20-l` — UNE LECTURE RATÉE D'UN OBJET DE SAVOIR N'EST PAS UNE ABSENCE. Les six suppressions lisaient le nom de
+// l'objet par `match … { Ok(n) => n, Err(_) => return not_found(…) }` : une ligne qui ne se convertit pas, ou la table
+// retirée, se servait 404 « … introuvable » — un alias, un champ calculé, un type d'événement, une étiquette, une macro
+// ou une recherche automatique toujours appliqué à TOUTES les requêtes de la plateforme se disait inexistant. Décision
+// par défaut (vague AF) : trois issues — lu, le retrait suit ; absent, le 404 d'avant au corps près ; lecture ratée, 503
+// nommé, RIEN n'est écrit (ni supprimé, ni rechargé, ni tracé), la cause du moteur au journal seul avec l'identifiant de
+// l'objet. La phrase ne nomme ni `BEGIN` ni `COMMIT` : aucune transaction n'a été refusée, c'est la lecture qui manque
+// (la console la peint en refus nommé, phrase entière).
+
+/// `P10.20-l` — l'objet de savoir à supprimer n'a pas été lu : rien n'est supprimé.
+pub(crate) const CAUSE_OBJET_DE_SAVOIR_NON_SUPPRIME_NON_LU: &str = "OBJET DE SAVOIR NON SUPPRIMÉ : la base n'a pas \
+     rendu cet objet — ce n'est PAS « introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : s'il \
+     existe, il n'est pas supprimé, les recherches de toute la plateforme l'appliquent toujours, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la table de cet objet de savoir est illisible.";
+
+/// `P10.20-l` — lit, en trois issues, le nom de l'objet de savoir `id` que `geste` va supprimer (`sql` lit UNE colonne
+/// texte par `?1`). Absent : le 404 `introuvable` d'avant. Lecture ratée : 503 `CAUSE_OBJET_DE_SAVOIR_NON_SUPPRIME_NON_LU`,
+/// la cause du moteur au journal avec le geste (qui porte l'identifiant), jamais le nom de l'objet.
+fn nom_de_l_objet_a_supprimer(conn: &Connection, sql: &str, id: i64, introuvable: &str, geste: &str) -> Result<String, Response> {
+    use rusqlite::OptionalExtension;
+    match conn.query_row(sql, params![id], |r| r.get::<_, String>(0)).optional() {
+        Ok(Some(nom)) => Ok(nom),
+        Ok(None) => Err(not_found(introuvable)),
+        Err(e) => {
+            eprintln!("[knowledge] WARN {geste} refusée : l'objet de savoir n'a pas pu être lu ({e})");
+            Err(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_OBJET_DE_SAVOIR_NON_SUPPRIME_NON_LU))
         }
     }
 }
@@ -168,16 +204,19 @@ pub(crate) async fn alias_create(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"create", "kind":"knowledge_alias", "id":id, "canonical":canonical, "source":source, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
+    ko_commit(&st, &au, &conn, "création d'un alias de champ", outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn alias_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let canonical = match conn.query_row("SELECT canonical FROM knowledge_alias WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("alias introuvable"),
+    let geste = format!("suppression de l'alias #{id}");
+    // `P10.20-l` — trois issues (voir `nom_de_l_objet_a_supprimer`) : rien n'est supprimé sur une lecture ratée.
+    let canonical = match nom_de_l_objet_a_supprimer(&conn, "SELECT canonical FROM knowledge_alias WHERE id=?1", id, "alias introuvable", &geste) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression de l'alias #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &geste, CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -188,7 +227,7 @@ pub(crate) async fn alias_delete(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"delete", "kind":"knowledge_alias", "id":id, "canonical":canonical, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, &geste, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -217,16 +256,19 @@ pub(crate) async fn calc_create(State(st): State<AppState>, Extension(au): Exten
             &json!({ "op":"create", "kind":"knowledge_calc", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
+    ko_commit(&st, &au, &conn, "création d'un champ calculé", outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn calc_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM knowledge_calc WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("champ calculé introuvable"),
+    let geste = format!("suppression du champ calculé #{id}");
+    // `P10.20-l` — trois issues (voir `nom_de_l_objet_a_supprimer`) : rien n'est supprimé sur une lecture ratée.
+    let name = match nom_de_l_objet_a_supprimer(&conn, "SELECT name FROM knowledge_calc WHERE id=?1", id, "champ calculé introuvable", &geste) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression du champ calculé #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &geste, CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -237,7 +279,7 @@ pub(crate) async fn calc_delete(State(st): State<AppState>, Extension(au): Exten
             &json!({ "op":"delete", "kind":"knowledge_calc", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, &geste, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -265,16 +307,19 @@ pub(crate) async fn eventtype_create(State(st): State<AppState>, Extension(au): 
             &json!({ "op":"create", "kind":"knowledge_eventtype", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
+    ko_commit(&st, &au, &conn, "création d'un type d'événement", outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn eventtype_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM knowledge_eventtype WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("eventtype introuvable"),
+    let geste = format!("suppression du type d'événement #{id}");
+    // `P10.20-l` — trois issues (voir `nom_de_l_objet_a_supprimer`) : rien n'est supprimé sur une lecture ratée.
+    let name = match nom_de_l_objet_a_supprimer(&conn, "SELECT name FROM knowledge_eventtype WHERE id=?1", id, "eventtype introuvable", &geste) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression du type d'événement #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &geste, CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -285,7 +330,7 @@ pub(crate) async fn eventtype_delete(State(st): State<AppState>, Extension(au): 
             &json!({ "op":"delete", "kind":"knowledge_eventtype", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, &geste, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -312,16 +357,19 @@ pub(crate) async fn tag_create(State(st): State<AppState>, Extension(au): Extens
             &json!({ "op":"create", "kind":"knowledge_tag", "id":id, "label":label, "field":field, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
+    ko_commit(&st, &au, &conn, "création d'une étiquette", outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn tag_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let label = match conn.query_row("SELECT label FROM knowledge_tag WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("tag introuvable"),
+    let geste = format!("suppression de l'étiquette #{id}");
+    // `P10.20-l` — trois issues (voir `nom_de_l_objet_a_supprimer`) : rien n'est supprimé sur une lecture ratée.
+    let label = match nom_de_l_objet_a_supprimer(&conn, "SELECT label FROM knowledge_tag WHERE id=?1", id, "tag introuvable", &geste) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression de l'étiquette #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &geste, CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -332,7 +380,7 @@ pub(crate) async fn tag_delete(State(st): State<AppState>, Extension(au): Extens
             &json!({ "op":"delete", "kind":"knowledge_tag", "id":id, "label":label, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, &geste, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -370,16 +418,19 @@ pub(crate) async fn macro_create(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"create", "kind":"macro", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
+    ko_commit(&st, &au, &conn, "création d'une macro", outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn macro_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM macro_def WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("macro introuvable"),
+    let geste = format!("suppression de la macro #{id}");
+    // `P10.20-l` — trois issues (voir `nom_de_l_objet_a_supprimer`) : rien n'est supprimé sur une lecture ratée.
+    let name = match nom_de_l_objet_a_supprimer(&conn, "SELECT name FROM macro_def WHERE id=?1", id, "macro introuvable", &geste) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression de la macro #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &geste, CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -390,7 +441,7 @@ pub(crate) async fn macro_delete(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"delete", "kind":"macro", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, &geste, outcome, |_| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -428,16 +479,19 @@ pub(crate) async fn auto_lookup_create(State(st): State<AppState>, Extension(au)
             &json!({ "op":"create", "kind":"auto_lookup", "id":id, "name":name, "key_field":key_field, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |id| json!({ "id": id }))
+    ko_commit(&st, &au, &conn, "création d'une recherche automatique", outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn auto_lookup_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM auto_lookup WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("auto-lookup introuvable"),
+    let geste = format!("suppression de la recherche automatique #{id}");
+    // `P10.20-l` — trois issues (voir `nom_de_l_objet_a_supprimer`) : rien n'est supprimé sur une lecture ratée.
+    let name = match nom_de_l_objet_a_supprimer(&conn, "SELECT name FROM auto_lookup WHERE id=?1", id, "auto-lookup introuvable", &geste) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &format!("suppression de la recherche automatique #{id}"), CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "knowledge", &geste, CAUSE_OBJET_DE_SAVOIR_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -448,5 +502,5 @@ pub(crate) async fn auto_lookup_delete(State(st): State<AppState>, Extension(au)
             &json!({ "op":"delete", "kind":"auto_lookup", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    ko_commit(&st, &au, &conn, outcome, |_| json!({ "ok": true }))
+    ko_commit(&st, &au, &conn, &geste, outcome, |_| json!({ "ok": true }))
 }

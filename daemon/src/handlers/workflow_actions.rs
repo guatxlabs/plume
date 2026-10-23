@@ -131,7 +131,8 @@ pub(crate) async fn workflow_action_create(State(st): State<AppState>, Extension
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             if e.to_string().contains("UNIQUE") { return bad_req("une workflow-action porte déjà ce nom"); }
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe, cause du moteur au journal seul (voir `servir_l_echec_de_la_transaction_d_audit`).
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[workflow-actions]", "création d'une workflow-action", &e)
         }
     }
 }
@@ -161,14 +162,41 @@ pub(crate) const CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE: &s
      champs qu'elle vise, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou \
      bloqué.";
 
+// `P10.20-l` — UNE LECTURE RATÉE D'UNE WORKFLOW-ACTION N'EST PAS UNE ABSENCE. La suppression et la résolution lisaient
+// leur ligne par `match … { Ok(x) => x, Err(_) => return not_found(…) }` : une ligne qui ne se convertit pas, ou la table
+// retirée, se servait 404 — une action toujours proposée sur les champs (dont une `response` qui mène à `/api/actions`,
+// la riposte) se disait inexistante ou désactivée. Décision par défaut (vague AF) : trois issues — lue, le geste suit ;
+// absente, le 404 d'avant au corps près ; lecture ratée, 503 nommé, RIEN n'est écrit, supprimé ni résolu, la cause du
+// moteur au journal seul avec l'identifiant de l'action (jamais son nom, sa cible ni la valeur soumise). Ces phrases ne
+// nomment ni `BEGIN` ni `COMMIT` : c'est la lecture qui manque (la console, si elle les sert, les lit en refus nommé).
+
+/// `P10.20-l` — la workflow-action à supprimer n'a pas été lue : rien n'est supprimé.
+pub(crate) const CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE_NON_LUE: &str = "ACTION DE WORKFLOW NON SUPPRIMÉE : la base n'a \
+     pas rendu cette action — ce n'est PAS « introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : \
+     si elle existe, elle est toujours là et toujours proposée sur les champs qu'elle vise, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la table des workflow-actions est illisible.";
+
+/// `P10.20-l` — la workflow-action à résoudre n'a pas été lue : rien n'est résolu.
+pub(crate) const CAUSE_WORKFLOW_ACTION_NON_RESOLUE_NON_LUE: &str = "ACTION DE WORKFLOW NON RÉSOLUE : la base n'a pas \
+     rendu cette action — ce n'est PAS « introuvable ou désactivée », c'est une lecture qui n'a pas eu lieu. Aucune \
+     recherche, adresse ni riposte n'est proposée pour cette valeur. Réessayez ; si le refus persiste, la table des \
+     workflow-actions est illisible.";
+
 /// DELETE /api/workflow-actions/{id} — supprime (editor+, audité).
 pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
+    use rusqlite::OptionalExtension;
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM workflow_action WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("workflow-action introuvable"),
+    let geste = format!("suppression de la workflow-action #{id}");
+    let name = match conn.query_row("SELECT name FROM workflow_action WHERE id=?1", params![id], |r| r.get::<_,String>(0)).optional() {
+        Ok(Some(n)) => n,
+        Ok(None) => return not_found("workflow-action introuvable"),
+        Err(e) => {
+            eprintln!("[workflow-actions] WARN {geste} refusée : l'action n'a pas pu être lue ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE_NON_LUE);
+        }
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "workflow-actions", &format!("suppression de la workflow-action #{id}"), CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "workflow-actions", &geste, CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -183,7 +211,11 @@ pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension
         Ok(_) => rendre_apres_validation(&conn, "workflow-actions", &format!("suppression de la workflow-action #{id}"), CAUSE_WORKFLOW_ACTION_NON_SUPPRIMEE, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — phrase fixe, cause du moteur au journal seul.
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[workflow-actions]", &geste, &e)
+        }
     }
 }
 
@@ -192,12 +224,20 @@ pub(crate) async fn workflow_action_delete(State(st): State<AppState>, Extension
 /// 'response', l'action de l'enum + la valeur (la console la joue via /api/actions -> approbation + ledger).
 /// La valeur est SANITISÉE ; jamais d'exécution ici.
 pub(crate) async fn workflow_action_resolve(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
+    use rusqlite::OptionalExtension;
     let value = b.str_field("value").to_string();
     let __rc = req_db(&st, &au);
+    // `P10.20-l` — trois issues : lue (et active, même lecture), la résolution suit ; absente ou désactivée, le 404
+    // d'avant ; lecture ratée, 503 `CAUSE_WORKFLOW_ACTION_NON_RESOLUE_NON_LUE`, rien n'est résolu.
     let (kind, target): (String, String) = {
         let conn = __rc.lock();
-        match conn.query_row("SELECT kind,target FROM workflow_action WHERE id=?1 AND enabled=1", params![id], |r| Ok((r.get(0)?, r.get(1)?))) {
-            Ok(t) => t, Err(_) => return not_found("workflow-action introuvable ou désactivée"),
+        match conn.query_row("SELECT kind,target FROM workflow_action WHERE id=?1 AND enabled=1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).optional() {
+            Ok(Some(t)) => t,
+            Ok(None) => return not_found("workflow-action introuvable ou désactivée"),
+            Err(e) => {
+                eprintln!("[workflow-actions] WARN résolution de la workflow-action #{id} refusée : l'action n'a pas pu être lue ({e})");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_WORKFLOW_ACTION_NON_RESOLUE_NON_LUE);
+            }
         }
     };
     match kind.as_str() {

@@ -18569,7 +18569,19 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   instrument109(/Json\(json!\(\{ "ok": true, "user": user, "role": live_role \}\)\)/.test(connexionMfa109) && /Json\(json!\(\{ "ok": true, "user": name, "role": role \}\)\)/.test(connexion109),
     "`login_post` ou `login_mfa_post` ne sert plus son succès sous `{ok: true, user, role}` : le succès que l'écran exige ne serait plus celui du démon");
   // LA PRÉMISSE DU CLASSEMENT : le démon ne sert jamais de HTML, ni de cinq cent deux ou quatre sans cause nommée.
-  const passerellesDuDemon109 = textesDuDemon109.flatMap((t) => t.split("\n").filter((l) => /StatusCode::(BAD_GATEWAY|GATEWAY_TIMEOUT)\b/.test(l) && !/err_json\(StatusCode::BAD_GATEWAY/.test(l)));
+  // L'assistant des routes publiques de connexion (`P10.29-l`, vague AF) sert un cinq cent deux NOMMÉ : il est SUIVI,
+  // pas cru — son corps doit appeler `crate::err_json_et_identifiant(statut, phrase)` et rendre la réponse de cet
+  // appel ; corps introuvable ou autre, ce témoin refuse de conclure. Seule une phrase CONSTANTE (`PHRASE_*` /
+  // `CAUSE_*`) passée en deuxième argument est admise : un `format!` ou une variable reste retenu (texte du moteur).
+  const assistantDEtape109 = corpsDeFonction109(IDP109, "pub(crate) fn servir_l_echec_de_l_etape(");
+  const assistantDEtapeNomme109 = assistantDEtape109 !== ""
+    && /\n\s*let \(id, r\) = crate::err_json_et_identifiant\(statut, phrase\);\n/.test(assistantDEtape109)
+    && /\n\s*r\n\}$/.test(assistantDEtape109);
+  instrument109(assistantDEtapeNomme109,
+    "`servir_l_echec_de_l_etape` (daemon/src/handlers/idp.rs) est introuvable, ou ne sert plus la réponse de `crate::err_json_et_identifiant(statut, phrase)` : ses cinq cent deux ne sont plus établis comme nommés");
+  const passerelleDEtapeAdmise109 = (l) => assistantDEtapeNomme109
+    && /servir_l_echec_de_l_etape\(StatusCode::(BAD_GATEWAY|GATEWAY_TIMEOUT), (PHRASE|CAUSE)_[A-Z0-9_]+,/.test(l);
+  const passerellesDuDemon109 = textesDuDemon109.flatMap((t) => t.split("\n").filter((l) => /StatusCode::(BAD_GATEWAY|GATEWAY_TIMEOUT)\b/.test(l) && !/err_json\(StatusCode::BAD_GATEWAY/.test(l) && !passerelleDEtapeAdmise109(l)));
   const htmlDuDemon109 = textesDuDemon109.filter((t) => /text\/html|\bHtml\(/.test(t)).length;
   instrument109(passerellesDuDemon109.length === 0 && htmlDuDemon109 === 0,
     `le démon sert désormais du HTML (${htmlDuDemon109} fichier(s)) ou un cinq cent deux / cinq cent quatre sans cause nommée (${JSON.stringify(passerellesDuDemon109.slice(0, 3))}) : la « page de passerelle » que la console reconnaît pourrait être le démon`);

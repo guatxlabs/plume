@@ -472,8 +472,11 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # lecture visée rendait 404 « introuvable » pour une liste bien vivante. Elles sont lues en `.optional()` :
     # absence établie = le 404 d'avant, lecture ratée = 503 (`CAUSE_LISTE_DE_LECTURE_NON_LUE` au journal,
     # servie en corps par `playlist_delete` seule), rien d'écrit (témoins `ldl_`, `listes_de_lecture_ecrites_ou_refusees.rs`).
-    # `dash_ergonomics.rs` reste au relevé par `library_panel_delete`.
-    ("daemon/src/handlers/dash_ergonomics.rs", "library_panel_delete"): ("is_err",),
+    # `dash_ergonomics.rs` restait au relevé par `library_panel_delete` ; son ENTRÉE EST RETIRÉE PAR `P10.33-l` (vague AF,
+    # 2026-10-23) : l'existence de la définition est lue en `.optional()` — absence établie = le 404 d'avant, lecture
+    # ratée = 503 `CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_NON_LU`, rien n'est détaché ni supprimé (témoins `af4_`,
+    # `ecritures_des_retraits_de_tableaux_de_bord_jugees.rs`). C'était le dernier site de `dash_ergonomics.rs`, qui SORT
+    # du relevé (33 sites sur 17 fichiers, au-dessus des planchers : rien à re-dériver).
     ("daemon/src/handlers/dashboards.rs", "dash_get"): ("ok",),
     # DEUX `.ok()?` dans la porte d'accès aux panneaux : la porte rend `None`, l'appelant refuse. La
     # porte est bien fail-closed ; ce qui manque est la DISTINCTION entre « ce panneau n'existe pas »

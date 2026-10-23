@@ -16,6 +16,10 @@
 // `CAUSE_INSTANTANE_NON_SUPPRIME_NON_LU`, `CAUSE_PANNEAU_NON_SUPPRIME_NON_LU` — `panel_delete` passe de `StatusCode` à
 // `Response`, son seul appelant étant le routeur) ; 503 SANS CORPS pour `dash_delete` et `view_delete`, dont la
 // signature `StatusCode` est gardée parce que leurs appelants de test vivent hors du périmètre du lot.
+// INVERSÉ PAR LA VAGUE AF (`P10.20-l`) : `dash_delete` et `view_delete` rendent une `Response`, et leur 503 de lecture
+// ratée porte `CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU` / `CAUSE_VUE_NON_SUPPRIMEE_NON_LUE` en corps, avec
+// l'identifiant de corrélation — les deux témoins et le journal ci-dessous qui affirmaient le 503 NU l'affirment désormais
+// NOMMÉ, en entier ; leurs écritures sont jugées par `ecritures_des_retraits_de_tableaux_de_bord_jugees.rs`.
 //
 // LA PANNE ÉPROUVÉE : la colonne lue stockée en BLOB (la ligne existe, sa conversion échoue) ; la ligne de journal lue
 // sur le stderr d'un sous-processus.
@@ -216,8 +220,8 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
         assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM dashboard_snapshot WHERE id={sid}")), 0);
     }
 
-    /// CE QU'IL TIENT (suppression d'un tableau de bord) : absent, `404` ; propriétaire illisible, `503` (sans corps :
-    /// signature `StatusCode` gardée) pour la propriétaire et l'admin — ni `403` ni suppression ; le tableau et son panneau
+    /// CE QU'IL TIENT (suppression d'un tableau de bord) : absent, `404` sans corps ; propriétaire illisible, `503` nommé
+    /// `CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU` en entier (vague AF : il était NU) pour la propriétaire et l'admin — ni `403` ni suppression ; le tableau et son panneau
     /// restent. Contrôle : propriétaire relisible, un tiers reçoit `403`, la propriétaire supprime (`204`).
     /// MUTATIONS : `AE4_DASH_LECTURE_EN_404`, `AE4_DASH_ABSENT_EN_503`, `AE4_DASH_LECTURE_FAIT_LE_GESTE`.
     #[tokio::test]
@@ -225,20 +229,24 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // les gestes lisent l'environnement
         let (st, _p) = sp_state("ae4-dash");
         let (alice, bob, adm) = (sp_au("alice", "editor"), sp_au("bob", "editor"), sp_au("adm", "admin"));
-        assert_eq!(dash_delete(State(st.clone()), Extension(alice.clone()), Path(AE4_ABSENT)).await, StatusCode::NOT_FOUND, "contrôle : l'absence établie reste un 404");
+        let (statut, corps, _) = ae4_reponse(dash_delete(State(st.clone()), Extension(alice.clone()), Path(AE4_ABSENT)).await).await;
+        assert_eq!((statut, corps.as_str()), (404, ""), "contrôle : l'absence établie reste le 404 d'avant, sans corps");
 
         let did = ae4_tableau(&st, "d-ae4-dash", "shared");
         let pid = ae4_panneau(&st, did, None);
         ae4_sql(&st, &format!("UPDATE dashboard SET owner=X'00' WHERE id={did};"));
         for (qui, au) in [("propriétaire", &alice), ("admin", &adm)] {
-            assert_eq!(dash_delete(State(st.clone()), Extension(au.clone()), Path(did)).await, StatusCode::SERVICE_UNAVAILABLE, "{qui} : propriétaire illisible, 503");
+            // INVERSÉ (vague AF) : le 503 était nu, il porte sa cause nommée.
+            let r = ae4_reponse(dash_delete(State(st.clone()), Extension(au.clone()), Path(did)).await).await;
+            ae4_juger_503(&format!("propriétaire illisible ({qui})"), &r, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU);
             assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM dashboard WHERE id={did}")), 1, "{qui} : le tableau reste");
             assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM panel WHERE id={pid}")), 1, "{qui} : son panneau reste");
         }
 
         ae4_sql(&st, &format!("UPDATE dashboard SET owner='alice' WHERE id={did};"));
-        assert_eq!(dash_delete(State(st.clone()), Extension(bob.clone()), Path(did)).await, StatusCode::FORBIDDEN, "contrôle : un tiers est refusé");
-        assert_eq!(dash_delete(State(st.clone()), Extension(alice.clone()), Path(did)).await, StatusCode::NO_CONTENT, "contrôle : la propriétaire supprime");
+        let (statut, corps, _) = ae4_reponse(dash_delete(State(st.clone()), Extension(bob.clone()), Path(did)).await).await;
+        assert_eq!((statut, corps.as_str()), (403, ""), "contrôle : un tiers est refusé, sans corps");
+        assert_eq!(dash_delete(State(st.clone()), Extension(alice.clone()), Path(did)).await.status(), StatusCode::NO_CONTENT, "contrôle : la propriétaire supprime");
         assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM dashboard WHERE id={did}")), 0);
     }
 
@@ -278,8 +286,8 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
         assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM panel_cache WHERE panel_id={pid}")), 0, "contrôle : un succès purge le cache");
     }
 
-    /// CE QU'IL TIENT (suppression d'une vue) : absent, `404` ; propriétaire illisible, `503` (sans corps : signature
-    /// `StatusCode` gardée) pour la propriétaire et l'admin — ni `403` ni suppression ; la vue reste, le tableau qui y est
+    /// CE QU'IL TIENT (suppression d'une vue) : absent, `404` sans corps ; propriétaire illisible, `503` nommé
+    /// `CAUSE_VUE_NON_SUPPRIMEE_NON_LUE` en entier (vague AF : il était NU) pour la propriétaire et l'admin — ni `403` ni suppression ; la vue reste, le tableau qui y est
     /// rangé n'est pas délié. Contrôle : propriétaire relisible, un tiers reçoit `403`, la propriétaire supprime (`204`) et
     /// le tableau est délié.
     /// MUTATIONS : `AE4_VUE_LECTURE_EN_404`, `AE4_VUE_ABSENT_EN_503`, `AE4_VUE_LECTURE_FAIT_LE_GESTE`.
@@ -288,26 +296,30 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // les gestes lisent l'environnement
         let (st, _p) = sp_state("ae4-vue");
         let (alice, bob, adm) = (sp_au("alice", "editor"), sp_au("bob", "editor"), sp_au("adm", "admin"));
-        assert_eq!(view_delete(State(st.clone()), Extension(alice.clone()), Path(AE4_ABSENT)).await, StatusCode::NOT_FOUND, "contrôle : l'absence établie reste un 404");
+        let (statut, corps, _) = ae4_reponse(view_delete(State(st.clone()), Extension(alice.clone()), Path(AE4_ABSENT)).await).await;
+        assert_eq!((statut, corps.as_str()), (404, ""), "contrôle : l'absence établie reste le 404 d'avant, sans corps");
 
         let (vue, did) = ae4_vue(&st);
         ae4_sql(&st, &format!("UPDATE view SET owner=X'00' WHERE id={vue};"));
         for (qui, au) in [("propriétaire", &alice), ("admin", &adm)] {
-            assert_eq!(view_delete(State(st.clone()), Extension(au.clone()), Path(vue)).await, StatusCode::SERVICE_UNAVAILABLE, "{qui} : propriétaire illisible, 503");
+            // INVERSÉ (vague AF) : le 503 était nu, il porte sa cause nommée.
+            let r = ae4_reponse(view_delete(State(st.clone()), Extension(au.clone()), Path(vue)).await).await;
+            ae4_juger_503(&format!("propriétaire illisible ({qui})"), &r, CAUSE_VUE_NON_SUPPRIMEE_NON_LUE);
             assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM view WHERE id={vue}")), 1, "{qui} : la vue reste");
             assert_eq!(ae4_compte(&st, &format!("SELECT COALESCE(view_id,0) FROM dashboard WHERE id={did}")), vue, "{qui} : le tableau n'est pas délié");
         }
 
         ae4_sql(&st, &format!("UPDATE view SET owner='alice' WHERE id={vue};"));
-        assert_eq!(view_delete(State(st.clone()), Extension(bob.clone()), Path(vue)).await, StatusCode::FORBIDDEN, "contrôle : un tiers est refusé");
-        assert_eq!(view_delete(State(st.clone()), Extension(alice.clone()), Path(vue)).await, StatusCode::NO_CONTENT, "contrôle : la propriétaire supprime");
+        let (statut, corps, _) = ae4_reponse(view_delete(State(st.clone()), Extension(bob.clone()), Path(vue)).await).await;
+        assert_eq!((statut, corps.as_str()), (403, ""), "contrôle : un tiers est refusé, sans corps");
+        assert_eq!(view_delete(State(st.clone()), Extension(alice.clone()), Path(vue)).await.status(), StatusCode::NO_CONTENT, "contrôle : la propriétaire supprime");
         assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM view WHERE id={vue}")), 0);
         assert_eq!(ae4_compte(&st, &format!("SELECT COALESCE(view_id,0) FROM dashboard WHERE id={did}")), 0, "contrôle : le tableau est délié");
     }
 
     /// LES LIGNES DE JOURNAL, lues sur le stderr d'un sous-processus : chaque lecture ratée écrit UNE ligne
     /// `[dashboards] WARN <objet> #<id> NON lu(e) pour <geste>, rien n'est … : <cause du moteur>` — avec l'identifiant de
-    /// corrélation servi pour les quatre corps nommés ; les six absences et une révocation nominale n'en écrivent aucune.
+    /// corrélation servi pour les six corps nommés (quatre avant la vague AF) ; les six absences et une révocation nominale n'en écrivent aucune.
     /// Chaque ligne est comparée EN ENTIER : un suffixe ajouté (nom du compte, texte de la requête) rougit.
     /// MUTATIONS : `AE4_<L>_SANS_JOURNAL` et `AE4_<L>_JOURNAL_SUFFIXE` pour L ∈ {BIB, CAPT, REVOC, DASH, PANEL, VUE}.
     #[tokio::test]
@@ -342,19 +354,21 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
             eprintln!("{PHASE}dash");
             let ddid = ae4_tableau(&st, "d-ae4-journal-dash", "shared");
             ae4_sql(&st, &format!("UPDATE dashboard SET owner=X'00' WHERE id={ddid};"));
-            println!("AE4-STATUT-DASH:{}:{ddid}", dash_delete(State(st.clone()), Extension(adm.clone()), Path(ddid)).await.as_u16());
+            let r = ae4_reponse(dash_delete(State(st.clone()), Extension(adm.clone()), Path(ddid)).await).await;
+            println!("AE4-STATUT-DASH:{}:{ddid}:{}", r.0, r.2["id"].as_str().unwrap_or(""));
             eprintln!("{PHASE}vue");
             let (vue, _) = ae4_vue(&st);
             ae4_sql(&st, &format!("UPDATE view SET owner=X'00' WHERE id={vue};"));
-            println!("AE4-STATUT-VUE:{}:{vue}", view_delete(State(st.clone()), Extension(adm.clone()), Path(vue)).await.as_u16());
+            let r = ae4_reponse(view_delete(State(st.clone()), Extension(adm.clone()), Path(vue)).await).await;
+            println!("AE4-STATUT-VUE:{}:{vue}:{}", r.0, r.2["id"].as_str().unwrap_or(""));
             eprintln!("{PHASE}calme");
             let (st, _p) = sp_state("ae4-journal-calme");
             let a = ae4_modifier(&st, &adm, AE4_ABSENT, json!({ "title": "x" })).await.0;
             let b = ae4_capturer(&st, &adm, AE4_ABSENT).await.0;
             let c = ae4_revoquer(&st, &adm, AE4_ABSENT).await.0;
             let d = ae4_retirer_le_panneau(&st, &adm, AE4_ABSENT).await.0;
-            let e = dash_delete(State(st.clone()), Extension(adm.clone()), Path(AE4_ABSENT)).await.as_u16();
-            let f = view_delete(State(st.clone()), Extension(adm.clone()), Path(AE4_ABSENT)).await.as_u16();
+            let e = dash_delete(State(st.clone()), Extension(adm.clone()), Path(AE4_ABSENT)).await.status().as_u16();
+            let f = view_delete(State(st.clone()), Extension(adm.clone()), Path(AE4_ABSENT)).await.status().as_u16();
             let sid = ae4_instantane(&st);
             let g = ae4_revoquer(&st, &adm, sid).await.0;
             println!("AE4-STATUT-CALME:{a}:{b}:{c}:{d}:{e}:{f}:{g}");
@@ -392,8 +406,11 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
             ("capt", "AE4-STATUT-CAPT:", "[dashboards] WARN tableau de bord #{} NON lu pour l'instantané, rien n'est capturé (", "name"),
             ("revoc", "AE4-STATUT-REVOC:", "[dashboards] WARN instantané #{} NON lu pour la révocation, rien n'est supprimé (", "COALESCE(created_by,'')"),
             ("panel", "AE4-STATUT-PANEL:", "[dashboards] WARN panneau #{} NON lu pour la suppression, rien n'est supprimé (", "dashboard_id"),
+            // INVERSÉ (vague AF) : ces deux lectures avaient un 503 NU et une ligne sans identifiant de corrélation.
+            ("dash", "AE4-STATUT-DASH:", "[dashboards] WARN tableau de bord #{} NON lu pour la suppression, rien n'est supprimé (", "COALESCE(owner,'')"),
+            ("vue", "AE4-STATUT-VUE:", "[dashboards] WARN vue #{} NON lue pour la suppression, rien n'est délié ni supprimé (", "COALESCE(owner,'')"),
         ];
-        assert!(nommees.len() >= 4, "plancher : les quatre lectures à corps nommé");
+        assert!(nommees.len() >= 6, "plancher : les six lectures à corps nommé");
         for (nom, m, tete, colonne) in &nommees {
             let st = marque(m);
             assert_eq!(st[0], "503", "contrôle : phase {nom}, lecture ratée servie 503 : {st:?}");
@@ -401,18 +418,6 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
             let attendue = format!("{}{}) : {}", tete.replace("{}", &st[1]), st[2], moteur(colonne));
             let lignes = phase(nom);
             assert_eq!(lignes, [attendue], "phase {nom} : une ligne et une seule, en entier (sujet, corrélation servie, cause du moteur)");
-        }
-        let nues = [
-            ("dash", "AE4-STATUT-DASH:", "[dashboards] WARN tableau de bord #{} NON lu pour la suppression, rien n'est supprimé : ", "COALESCE(owner,'')"),
-            ("vue", "AE4-STATUT-VUE:", "[dashboards] WARN vue #{} NON lue pour la suppression, rien n'est délié ni supprimé : ", "COALESCE(owner,'')"),
-        ];
-        assert!(nues.len() >= 2, "plancher : les deux lectures à 503 nu");
-        for (nom, m, tete, colonne) in &nues {
-            let st = marque(m);
-            assert_eq!(st[0], "503", "contrôle : phase {nom}, lecture ratée servie 503 : {st:?}");
-            let attendue = format!("{}{}", tete.replace("{}", &st[1]), moteur(colonne));
-            let lignes = phase(nom);
-            assert_eq!(lignes, [attendue], "phase {nom} : une ligne et une seule, en entier (sujet et cause du moteur)");
         }
         assert_eq!(marque("AE4-STATUT-CALME:"), ["404", "404", "404", "404", "404", "404", "204"], "contrôle : six absences et une révocation nominale");
         assert!(phase("calme").is_empty(), "les absences et le nominal n'écrivent aucune ligne : {:?}", phase("calme"));

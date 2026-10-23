@@ -12,6 +12,7 @@
 //! (pré-agrégé, cheap) — JAMAIS un scan de `event` (doctrine « jamais scanner event par requête au volume »).
 use crate::*;
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
+use rusqlite::OptionalExtension;
 
 /// Estimation d'octets par event pour la taille par index (message+fields+colonnes+index+overhead SQLite).
 /// APPROXIMATIVE et DISPLAY-only (l'UI affiche « ~N ») ; le plafond `max_bytes` réel se mesure ligne-à-ligne
@@ -186,6 +187,18 @@ pub(crate) const CAUSE_POLITIQUE_D_INDEX_INCHANGEE_TRANSACTION_NON_OUVERTE: &str
      base n'a pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre \
      geste pendante sur l'écrivain) — RIEN n'est écrit : la rétention et les plafonds d'avant s'appliquent toujours \
      à la purge, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.20-l` — la politique visée par une modification n'a pas été lue (la forme d'avant : 404 « index introuvable ») :
+/// rien n'est écrit. Ni `BEGIN` ni `COMMIT` : aucune transaction n'a été refusée, la lecture manque.
+pub(crate) const CAUSE_POLITIQUE_D_INDEX_INCHANGEE_NON_LUE: &str = "POLITIQUE D'INDEX INCHANGÉE : la base n'a pas rendu \
+     cette politique — ce n'est PAS « index introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : si \
+     elle existe, la rétention et les plafonds d'avant s'appliquent toujours à la purge, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la table des politiques d'index est illisible.";
+/// `P10.20-l` — la politique visée par une suppression n'a pas été lue (la forme d'avant : 404 « index introuvable ») :
+/// rien n'est supprimé, `delete_managed_row_tx` n'est pas appelé.
+pub(crate) const CAUSE_POLITIQUE_D_INDEX_NON_SUPPRIMEE_NON_LUE: &str = "POLITIQUE D'INDEX NON SUPPRIMÉE : la base n'a pas \
+     rendu cette politique — ce n'est PAS « index introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est \
+     supprimé : si elle existe, sa rétention et ses plafonds s'appliquent toujours à la purge de cet index, et aucune \
+     trace n'est écrite. Réessayez ; si le refus persiste, la table des politiques d'index est illisible.";
 
 
 /// POST /api/index-policies — crée une policy d'index (admin-only). Valide + clampe AVANT insert (fail-closed).
@@ -232,7 +245,8 @@ pub(crate) async fn index_policy_create(State(st): State<AppState>, Extension(au
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe, la cause du moteur au journal seul avec l'identifiant de corrélation servi.
+            servir_l_echec_de_la_transaction_d_audit("[index-policies]", &format!("création de la politique d'index '{name}'"), &e)
         }
     }
 }
@@ -243,14 +257,22 @@ pub(crate) async fn index_policy_update(State(st): State<AppState>, Extension(au
         return (StatusCode::FORBIDDEN, "réservé à l'administrateur").into_response();
     }
     crate::req_conn!(st, au, conn);
-    let cur = conn.query_row(
-        "SELECT name,retention_days,max_rows,max_bytes FROM index_policy WHERE id=?1",
-        params![id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
-    );
+    let cur = conn
+        .query_row(
+            "SELECT name,retention_days,max_rows,max_bytes FROM index_policy WHERE id=?1",
+            params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
+        )
+        .optional();
+    // `P10.20-l` — trois issues : lue, la modification suit ; absente, le 404 d'avant ; lecture ratée, 503 nommé, RIEN
+    // n'est écrit (le régime de purge d'avant n'est pas établi), la cause du moteur au journal seul.
     let (name0, rd0, mr0, mb0) = match cur {
-        Ok(t) => t,
-        Err(_) => return not_found("index introuvable"),
+        Ok(Some(t)) => t,
+        Ok(None) => return not_found("index introuvable"),
+        Err(e) => {
+            eprintln!("[index-policies] WARN politique d'index #{id} NON lue pour la modification, rien n'est écrit : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_POLITIQUE_D_INDEX_INCHANGEE_NON_LUE);
+        }
     };
     // Le NOM (identité env_id) n'est PAS renommable (renommer changerait l'index cible d'une purge) : on
     // fusionne les autres champs et re-valide sur le nom existant.
@@ -291,7 +313,8 @@ pub(crate) async fn index_policy_update(State(st): State<AppState>, Extension(au
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe, la cause du moteur au journal seul avec l'identifiant de corrélation servi.
+            servir_l_echec_de_la_transaction_d_audit("[index-policies]", &format!("modification de la politique d'index #{id}"), &e)
         }
     }
 }
@@ -303,9 +326,15 @@ pub(crate) async fn index_policy_delete(State(st): State<AppState>, Extension(au
         return (StatusCode::FORBIDDEN, "réservé à l'administrateur").into_response();
     }
     crate::req_conn!(st, au, conn);
-    let managed = match conn.query_row("SELECT managed FROM index_policy WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
-        Ok(m) => m,
-        Err(_) => return not_found("index introuvable"),
+    // `P10.20-l` — trois issues : lue, la suppression suit (`delete_managed_row_tx` juge `managed`) ; absente, le 404
+    // d'avant ; lecture ratée, 503 nommé, RIEN n'est supprimé, la cause du moteur au journal seul.
+    let managed = match conn.query_row("SELECT managed FROM index_policy WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional() {
+        Ok(Some(m)) => m,
+        Ok(None) => return not_found("index introuvable"),
+        Err(e) => {
+            eprintln!("[index-policies] WARN politique d'index #{id} NON lue pour la suppression, rien n'est supprimé : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_POLITIQUE_D_INDEX_NON_SUPPRIMEE_NON_LUE);
+        }
     };
     match delete_managed_row_tx(&conn, "index_policy", "config.index_policy", id, managed, &au.name) {
         Ok(body) => Json(body).into_response(),

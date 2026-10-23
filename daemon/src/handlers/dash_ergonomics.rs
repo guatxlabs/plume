@@ -141,6 +141,16 @@ pub(crate) const CAUSE_INSTANTANE_NON_SUPPRIME_NON_LU: &str = "INSTANTANÉ NON S
      instantané (son auteur) — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et le droit de le \
      révoquer n'est pas jugé. RIEN n'est supprimé : s'il existe, l'instantané RESTE LISIBLE par son jeton de partage. \
      Réessayez ; si le refus persiste, la table des instantanés est illisible.";
+/// `P10.33-l` (vague AF) — l'existence de la définition à supprimer n'a pas été lue : rien n'est détaché ni supprimé.
+pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_NON_LU: &str = "PANNEAU DE BIBLIOTHÈQUE NON SUPPRIMÉ : la \
+     base n'a pas rendu ce panneau de bibliothèque — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et \
+     le droit de le supprimer n'est pas jugé. RIEN n'est détaché ni supprimé : la définition et les panneaux qui la \
+     référencent sont intacts. Réessayez ; si le refus persiste, la table des panneaux de bibliothèque est illisible.";
+/// `P10.20-l` (vague AF) — l'instantané demandé par son jeton n'a pas été lu : ce n'est pas une absence (ni une
+/// révocation), rien n'est servi.
+pub(crate) const CAUSE_INSTANTANE_NON_LU: &str = "INSTANTANÉ NON LU : la base n'a pas rendu l'instantané de ce jeton \
+     — ce n'est PAS une absence ni une révocation, c'est une lecture qui n'a pas eu lieu. RIEN n'est servi. Réessayez ; si \
+     le refus persiste, la table des instantanés est illisible.";
 /// `P10.20-w` — la révocation d'un instantané refusée : il reste lisible par son jeton.
 pub(crate) const CAUSE_INSTANTANE_NON_SUPPRIME: &str = "INSTANTANÉ NON SUPPRIMÉ : la base a refusé la suppression (ou \
      n'a supprimé aucune ligne) — l'instantané existe toujours et RESTE LISIBLE par son jeton de partage. Réessayez ; si \
@@ -298,8 +308,18 @@ pub(crate) async fn library_panel_update(State(st): State<AppState>, Extension(a
 
 pub(crate) async fn library_panel_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM library_panel WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return StatusCode::NOT_FOUND.into_response();
+    // `P10.33-l` et `P10.20-l` (vague AF) — trois issues : lue, le geste suit ; absente, le 404 d'avant (sans corps) ;
+    // lecture ratée, 503 `CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_NON_LU` — ni droit jugé, ni détachement, ni
+    // suppression. La forme d'avant (`.is_err()` -> 404) disait « introuvable » une définition illisible.
+    let lecture = conn.query_row("SELECT 1 FROM library_panel WHERE id=?1", params![id], |_| Ok(())).optional();
+    match lecture {
+        Ok(Some(())) => {}
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_NON_LU);
+            eprintln!("[dashboards] WARN panneau de bibliothèque #{id} NON lu pour la suppression, rien n'est détaché ni supprimé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     }
     if let Some(refus) = refus_de_la_porte_d_edition(&conn, &au, "library_panel", id) {
         return refus;
@@ -688,12 +708,18 @@ pub(crate) async fn snapshot_get(State(st): State<AppState>, Extension(au): Exte
         return (StatusCode::NOT_FOUND, "snapshot introuvable").into_response();
     }
     crate::req_conn!(st, au, conn);
-    match conn.query_row(
-        "SELECT name,dashboard_id,data,created,COALESCE(created_by,''),COALESCE(role_at_capture,'') FROM dashboard_snapshot WHERE token=?1",
-        params![token],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?)),
-    ) {
-        Ok((name, did, data, created, by, role)) => {
+    // `P10.20-l` (vague AF) — trois issues : lu, l'instantané est servi ; absent, le 404 d'avant (corps « snapshot
+    // introuvable » à l'identique) ; lecture ratée, 503 `CAUSE_INSTANTANE_NON_LU`. La forme d'avant (`Err(_)` -> 404)
+    // disait « introuvable » un instantané illisible : le destinataire d'un lien de partage le croyait révoqué.
+    let lecture = conn
+        .query_row(
+            "SELECT name,dashboard_id,data,created,COALESCE(created_by,''),COALESCE(role_at_capture,'') FROM dashboard_snapshot WHERE token=?1",
+            params![token],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?)),
+        )
+        .optional();
+    match lecture {
+        Ok(Some((name, did, data, created, by, role))) => {
             let parsed: Value = serde_json::from_str(&data).unwrap_or_else(|_| json!({}));
             Json(json!({
                 "name": name, "dashboard_id": did, "created": created, "created_by": by,
@@ -701,7 +727,13 @@ pub(crate) async fn snapshot_get(State(st): State<AppState>, Extension(au): Exte
             }))
             .into_response()
         }
-        Err(_) => (StatusCode::NOT_FOUND, "snapshot introuvable").into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "snapshot introuvable").into_response(),
+        Err(e) => {
+            // Ni le jeton (un secret de partage) ni rien de la requête au journal : la cause du moteur seule.
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_INSTANTANE_NON_LU);
+            eprintln!("[dashboards] WARN instantané NON lu par son jeton, rien n'est servi ({}) : {e}", cid.unwrap_or_default());
+            refus
+        }
     }
 }
 

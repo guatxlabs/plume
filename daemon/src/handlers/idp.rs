@@ -675,6 +675,55 @@ fn tracer_la_connexion(conn: &Connection, sujet: &str, detail: &str) {
     }
 }
 
+// `P10.29-l` — LES ROUTES PUBLIQUES DE CONNEXION NE SERVENT NI LE TEXTE DU RÉSEAU NI CELUI DE LA BIBLIOTHÈQUE. Mesuré sur
+// 536bda8a : `oidc_start`, `oidc_callback`, `saml_start` et `saml_metadata` (pré-authentification) rendaient à n'importe
+// quel appelant le texte de `ssrf_guard`/`http_call`/`fetch_json` (hôte et port de l'IdP, motif du refus SSRF, délai
+// dépassé), celui de la validation du jeton et celui de la construction SAML ; le callback reflétait aussi le paramètre
+// `error` de la requête. Décision par défaut de la vague AF : une phrase FIXE par étape, statuts 502/401/500 inchangés,
+// préfixes d'avant gardés ; la cause va au journal SEUL, réduite à sa nature (`nature_de_l_echec`), avec l'identifiant
+// INTERNE du fournisseur et l'identifiant de corrélation servi — jamais l'URL, l'hôte, un secret ni le paramètre soumis.
+// Aucun module de `web/` ne lit ces corps (navigation de premier niveau).
+pub(crate) const PHRASE_DECOUVERTE_OIDC_ECHOUEE: &str = "découverte OIDC échouée: le fournisseur d'identité n'a pas pu \
+     être joint, sa cible a été refusée par la garde de sortie, ou sa réponse n'est pas exploitable ; aucune session n'est \
+     posée, la cause est au journal du serveur sous l'identifiant de cette réponse.";
+pub(crate) const PHRASE_ECHANGE_DE_CODE_ECHOUE: &str = "échange de code échoué: le point de jeton du fournisseur \
+     d'identité n'a pas pu être joint ou sa cible a été refusée par la garde de sortie ; aucune session n'est posée, la \
+     cause est au journal du serveur sous l'identifiant de cette réponse.";
+pub(crate) const PHRASE_JWKS_INDISPONIBLE: &str = "JWKS indisponible: les clés de signature du fournisseur d'identité \
+     n'ont pas pu être lues ; aucune session n'est posée, la cause est au journal du serveur sous l'identifiant de cette \
+     réponse.";
+pub(crate) const PHRASE_ID_TOKEN_INVALIDE: &str = "id_token invalide: le jeton d'identité rendu par le fournisseur est \
+     refusé ; aucune session n'est posée, la cause est au journal du serveur.";
+/// Le paramètre `error` renvoyé par l'IdP n'est ni servi ni journalisé (texte libre de la requête).
+pub(crate) const PHRASE_IDP_A_REFUSE_L_AUTHENTIFICATION: &str = "l'IdP a refusé l'authentification : aucune session \
+     n'est posée.";
+pub(crate) const PHRASE_AUTHNREQUEST_SAML_ECHOUEE: &str = "échec de l'AuthnRequest SAML: la demande d'authentification \
+     n'a pas pu être construite à partir de la configuration du fournisseur ; la cause est au journal du serveur sous \
+     l'identifiant de cette réponse.";
+pub(crate) const PHRASE_METADONNEE_SP_ECHOUEE: &str = "génération métadonnée SP échouée: la configuration du fournisseur \
+     ne permet pas de la construire ; la cause est au journal du serveur sous l'identifiant de cette réponse.";
+
+/// La NATURE d'un échec de réseau, de jeton ou de construction SAML, sans sa partie variable : les erreurs de
+/// `ssrf_guard`, `http_call`, `fetch_json`, `oidc_resolve_endpoints`, `oidc_validate_id_token` et de la construction
+/// SAML portent un libellé fixe AVANT leur premier `:`, la partie variable (hôte, adresse, texte d'une bibliothèque,
+/// valeur d'une revendication) APRÈS. Seule exception : `http_request` commence par `connexion <hôte>:<port>`, d'où
+/// sa phrase propre.
+pub(crate) fn nature_de_l_echec(detail: &str) -> &str {
+    if detail.starts_with("connexion ") {
+        return "connexion TCP impossible (refusée, injoignable ou délai dépassé)";
+    }
+    detail.split(':').next().unwrap_or("").trim()
+}
+
+/// AVEU : sert la phrase fixe d'une étape de connexion (`err_json_et_identifiant`) et dit au journal le geste,
+/// l'identifiant INTERNE du fournisseur, l'étape et la nature de l'échec, sous l'identifiant de corrélation d'un 5xx.
+pub(crate) fn servir_l_echec_de_l_etape(statut: StatusCode, phrase: &str, geste: &str, fournisseur_id: i64, etape: &str, detail: &str) -> Response {
+    let (id, r) = crate::err_json_et_identifiant(statut, phrase);
+    let correlation = id.map(|id| format!("[{id}] ")).unwrap_or_default();
+    eprintln!("{correlation}[idp] WARN {geste} (fournisseur #{fournisseur_id}) échouée à l'étape « {etape} » : {}", nature_de_l_echec(detail));
+    r
+}
+
 /// Résout les endpoints OIDC : discovery si nécessaire (endpoints non tous overridés). Blocking (rare).
 fn oidc_endpoints_for(cfg: &OidcCfg) -> Result<OidcEndpoints, String> {
     let need_discovery = cfg.authorization_endpoint.is_empty() || cfg.token_endpoint.is_empty() || cfg.jwks_uri.is_empty();
@@ -705,7 +754,7 @@ pub(crate) async fn oidc_start(State(st): State<AppState>, Path(name): Path<Stri
     let cfg_disc = cfg.clone();
     let ep = match tokio::task::spawn_blocking(move || oidc_endpoints_for(&cfg_disc)).await {
         Ok(Ok(e)) => e,
-        Ok(Err(e)) => return err_json(StatusCode::BAD_GATEWAY, format!("découverte OIDC échouée: {e}")),
+        Ok(Err(e)) => return servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_DECOUVERTE_OIDC_ECHOUEE, "connexion OIDC", fournisseur.id, "découverte", &e),
         Err(_) => return server_err("échec interne (discovery)"),
     };
     let (Some(state), Some(nonce), Some(verifier)) = (rand_url_token(), rand_url_token(), rand_url_token()) else {
@@ -736,8 +785,8 @@ pub(crate) async fn oidc_callback(
         return deny_multitenant();
     }
     // erreur renvoyée par l'IdP (ex access_denied) -> 401, jamais de session.
-    if let Some(e) = q.get("error") {
-        return err_json(StatusCode::UNAUTHORIZED, format!("l'IdP a refusé l'authentification: {e}"));
+    if q.contains_key("error") {
+        return err_json(StatusCode::UNAUTHORIZED, PHRASE_IDP_A_REFUSE_L_AUTHENTIFICATION);
     }
     // 1) State cookie signé -> provider/state/nonce/verifier attendus.
     let cookie_hdr = headers.get(header::COOKIE).and_then(|h| h.to_str().ok()).unwrap_or("");
@@ -767,7 +816,7 @@ pub(crate) async fn oidc_callback(
     let cfg_disc = cfg.clone();
     let ep = match tokio::task::spawn_blocking(move || oidc_endpoints_for(&cfg_disc)).await {
         Ok(Ok(e)) => e,
-        Ok(Err(e)) => return err_json(StatusCode::BAD_GATEWAY, format!("découverte OIDC échouée: {e}")),
+        Ok(Err(e)) => return servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_DECOUVERTE_OIDC_ECHOUEE, "connexion OIDC", fournisseur.id, "découverte", &e),
         Err(_) => return server_err("échec interne (discovery)"),
     };
     // 4) Échange du code -> id_token (le secret ne transite QUE dans ce corps POST). Réseau -> spawn_blocking.
@@ -778,7 +827,7 @@ pub(crate) async fn oidc_callback(
         http_call("POST", &token_url, &[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")], Some(body.as_bytes()))
     }).await {
         Ok(Ok(r)) => r,
-        Ok(Err(e)) => return err_json(StatusCode::BAD_GATEWAY, format!("échange de code échoué: {e}")),
+        Ok(Err(e)) => return servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_ECHANGE_DE_CODE_ECHOUE, "connexion OIDC", fournisseur.id, "échange de code", &e),
         Err(_) => return server_err("échec interne (token)"),
     };
     if !(200..300).contains(&tok_resp.status) {
@@ -795,12 +844,12 @@ pub(crate) async fn oidc_callback(
     let jwks_url = ep.jwks_uri.clone();
     let jwks = match tokio::task::spawn_blocking(move || fetch_json(&jwks_url)).await {
         Ok(Ok(j)) => j,
-        Ok(Err(e)) => return err_json(StatusCode::BAD_GATEWAY, format!("JWKS indisponible: {e}")),
+        Ok(Err(e)) => return servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_JWKS_INDISPONIBLE, "connexion OIDC", fournisseur.id, "JWKS", &e),
         Err(_) => return server_err("échec interne (jwks)"),
     };
     let claims = match oidc_validate_id_token(id_token, &jwks, &cfg.issuer, &cfg.client_id, &nonce) {
         Ok(c) => c,
-        Err(e) => return err_json(StatusCode::UNAUTHORIZED, format!("id_token invalide: {e}")),
+        Err(e) => return servir_l_echec_de_l_etape(StatusCode::UNAUTHORIZED, PHRASE_ID_TOKEN_INVALIDE, "connexion OIDC", fournisseur.id, "id_token", &e),
     };
     // 6) Identité + rôle (mapping groupe->rôle réutilisé ; fail-closed si aucun groupe mappé).
     let username = oidc_username(&claims);
@@ -866,7 +915,7 @@ pub(crate) async fn saml_start(State(st): State<AppState>, Path(name): Path<Stri
     let (url, blob) = match saml_build_authn_redirect(&cfg, &name, &fournisseur.secret, st.session_secret.as_slice()) {
         Ok(v) => v,
         Err(e) if e.contains("non compilé") => return err_json(StatusCode::NOT_IMPLEMENTED, e),
-        Err(e) => return server_err(format!("échec de l'AuthnRequest SAML: {e}")),
+        Err(e) => return servir_l_echec_de_l_etape(StatusCode::INTERNAL_SERVER_ERROR, PHRASE_AUTHNREQUEST_SAML_ECHOUEE, "connexion SAML", fournisseur.id, "AuthnRequest", &e),
     };
     // Cookie de flux Lax = défense en profondeur : peut NE PAS survivre au POST cross-site vers l'ACS
     // (SameSite=Lax exclut les POST cross-site) -> le RelayState signé (echo IdP) reste la SOURCE DE VÉRITÉ.
@@ -980,7 +1029,7 @@ pub(crate) async fn saml_metadata(State(st): State<AppState>, Path(name): Path<S
     match saml_sp_metadata_xml(&cfg) {
         Ok(xml) => ([(header::CONTENT_TYPE, "application/samlmetadata+xml")], xml).into_response(),
         Err(e) if e.contains("non compilé") => err_json(StatusCode::NOT_IMPLEMENTED, e),
-        Err(e) => server_err(format!("génération métadonnée SP échouée: {e}")),
+        Err(e) => servir_l_echec_de_l_etape(StatusCode::INTERNAL_SERVER_ERROR, PHRASE_METADONNEE_SP_ECHOUEE, "métadonnée SP SAML", fournisseur.id, "génération", &e),
     }
 }
 
@@ -1135,6 +1184,18 @@ pub(crate) fn mfa_enabled_for(st: &AppState, user: &str) -> rusqlite::Result<boo
         .unwrap_or(false))
 }
 
+/// `P10.31-u` — LE COMPTE AU JOURNAL PAR SON IDENTIFIANT INTERNE (`user.id`), JAMAIS PAR SON NOM : les lignes `[mfa] WARN`
+/// des échecs nommaient le compte. Lecture pour le journal seul, sur la connexion que le site tient déjà (le verrou n'est
+/// pas réentrant) ; elle ne décide de rien. Trois issues dites telles quelles : lu, compte sans ligne `user` (administrateur
+/// d'installation servi par l'environnement), identifiant non lu.
+pub(crate) fn compte_au_journal(conn: &Connection, nom: &str) -> String {
+    match conn.query_row("SELECT id FROM user WHERE name=?1", params![nom], |r| r.get::<_, i64>(0)).optional() {
+        Ok(Some(id)) => format!("compte #{id}"),
+        Ok(None) => "compte sans ligne `user`".to_string(),
+        Err(_) => "compte (identifiant non lu)".to_string(),
+    }
+}
+
 pub(crate) async fn mfa_status(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
     if st.multi_tenant {
         return deny_multitenant();
@@ -1164,7 +1225,7 @@ pub(crate) async fn mfa_status(State(st): State<AppState>, Extension(au): Extens
         Ok(true) => (json!(true), Value::Null, json!(false)),
         Ok(false) => (json!(false), json!(CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL), json!(row.is_some())),
         Err(e) => {
-            eprintln!("[mfa] WARN compte '{}' NON lu au statut : {e}", au.name);
+            eprintln!("[mfa] WARN {} NON lu au statut : {e}", compte_au_journal(&st.db.lock(), &au.name));
             (Value::Null, json!(CAUSE_COMPTE_NON_LU_AU_STATUT), Value::Null)
         }
     };
@@ -1263,7 +1324,7 @@ pub(crate) async fn mfa_enroll(
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENROLEMENT_NON_ECRIT);
             }
             Err(e) => {
-                eprintln!("[mfa] WARN enrôlement de '{}' NON écrit : {e}", au.name);
+                eprintln!("[mfa] WARN enrôlement du {} NON écrit : {e}", compte_au_journal(&conn, &au.name));
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENROLEMENT_NON_ECRIT);
             }
         }
@@ -1295,7 +1356,7 @@ pub(crate) async fn mfa_verify(
     let row = match row {
         Ok(row) => row,
         Err(e) => {
-            eprintln!("[mfa] WARN second facteur de '{}' NON lu à l'activation : {e}", au.name);
+            eprintln!("[mfa] WARN second facteur du {} NON lu à l'activation : {e}", compte_au_journal(&st.db.lock(), &au.name));
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE);
         }
     };
@@ -1363,7 +1424,7 @@ pub(crate) async fn mfa_verify(
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_ACTIVEE);
             }
             Err(e) => {
-                eprintln!("[mfa] WARN activation de '{}' NON écrite : {e}", au.name);
+                eprintln!("[mfa] WARN activation du {} NON écrite : {e}", compte_au_journal(&conn, &au.name));
                 frein::rendre_l_essai(&st, &conn, &au.name, essai);
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_ACTIVEE);
             }
@@ -1408,7 +1469,7 @@ pub(crate) async fn mfa_disable(
     {
         Ok(enabled) => enabled == Some(1),
         Err(e) => {
-            eprintln!("[mfa] WARN second facteur de '{}' NON lu à la désactivation : {e}", au.name);
+            eprintln!("[mfa] WARN second facteur du {} NON lu à la désactivation : {e}", compte_au_journal(&conn, &au.name));
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE);
         }
     };
@@ -1452,7 +1513,7 @@ pub(crate) async fn mfa_disable(
         Ok(row) => row,
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            eprintln!("[mfa] WARN second facteur de '{}' NON relu dans la transaction de désactivation : {e}", au.name);
+            eprintln!("[mfa] WARN second facteur du {} NON relu dans la transaction de désactivation : {e}", compte_au_journal(&conn, &au.name));
             rendre(&conn);
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE_LECTURE_NON_FAITE);
         }
@@ -1461,7 +1522,7 @@ pub(crate) async fn mfa_disable(
         Ok(()) => {
             if let Err(e) = conn.execute_batch("COMMIT") {
                 let _ = conn.execute_batch("ROLLBACK");
-                eprintln!("[mfa] WARN désactivation de '{}' NON validée : {e}", au.name);
+                eprintln!("[mfa] WARN désactivation du {} NON validée : {e}", compte_au_journal(&conn, &au.name));
                 rendre(&conn);
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE);
             }
@@ -1716,7 +1777,7 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
     let row = match row {
         Ok(row) => row,
         Err(e) => {
-            eprintln!("[mfa] WARN second facteur de '{user}' NON lu à la connexion : {e}");
+            eprintln!("[mfa] WARN second facteur du {} NON lu à la connexion : {e}", compte_au_journal(&st.db.lock(), &user));
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_LUE);
         }
     };

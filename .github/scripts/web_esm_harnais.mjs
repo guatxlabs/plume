@@ -13338,8 +13338,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const ENV98 = mEnv98 ? mEnv98[1] : "";
   const mCorr98 = srcAdv98.match(/"error": format!\("(corrélations NON LUES[^"]*)"\)/);
   const CORR98 = mCorr98 ? mCorr98[1].replace("{e}", "no such table: correlation (témoin)") : "";
-  const mMode98 = srcEngag98.match(/"error": format!\("(mode NON LU[^"]*)"\)/);
-  const MODE98 = mMode98 ? mMode98[1].replace("{e}", "database is locked (témoin)") : "";
+  const mMode98 = srcEngag98.match(/"error": "(mode NON LU[^"]*)"/);
+  const MODE98 = mMode98 ? mMode98[1] : "";
   const mBundle98 = srcSystem98.match(/json!\(format!\(\s*\r?\n?\s*"(bundle PARTIELLEMENT NON LU[\s\S]*?)",/);
   const BUNDLE98 = mBundle98 ? recomposer98(mBundle98[1]).replace("{}", "recent_events, heartbeat_alerts") : "";
   exiger(CAUSE98.includes("NON LUE") && CAUSE98.length > 60,
@@ -18581,7 +18581,19 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     "`servir_l_echec_de_l_etape` (daemon/src/handlers/idp.rs) est introuvable, ou ne sert plus la réponse de `crate::err_json_et_identifiant(statut, phrase)` : ses cinq cent deux ne sont plus établis comme nommés");
   const passerelleDEtapeAdmise109 = (l) => assistantDEtapeNomme109
     && /servir_l_echec_de_l_etape\(StatusCode::(BAD_GATEWAY|GATEWAY_TIMEOUT), (PHRASE|CAUSE)_[A-Z0-9_]+,/.test(l);
-  const passerellesDuDemon109 = textesDuDemon109.flatMap((t) => t.split("\n").filter((l) => /StatusCode::(BAD_GATEWAY|GATEWAY_TIMEOUT)\b/.test(l) && !/err_json\(StatusCode::BAD_GATEWAY/.test(l) && !passerelleDEtapeAdmise109(l)));
+  // `err_json_et_identifiant` lui-même (daemon/src/main.rs, `P10.29-l`, vague AG) est SUIVI de la même façon : sa
+  // branche cinq cents doit servir `{error, id}` en JSON et l'autre `{error}` ; corps introuvable ou autre, ce témoin
+  // refuse de conclure. Appelé directement avec une passerelle, seule une phrase CONSTANTE est admise.
+  const MAIN109 = readFileSync(path.join(SRC_DU_DEMON109, "main.rs"), "utf8");
+  const assistantIdentifie109 = corpsDeFonction109(MAIN109, "\nfn err_json_et_identifiant(");
+  const assistantIdentifieNomme109 = assistantIdentifie109 !== ""
+    && /\n\s*if code\.is_server_error\(\) \{\n[\s\S]*\n\s*return \(Some\(id\.clone\(\)\), \(code, Json\(json!\(\{ "error": msg, "id": id \}\)\)\)\.into_response\(\)\);\n\s*\}\n/.test(assistantIdentifie109)
+    && /\n\s*\(None, \(code, Json\(json!\(\{ "error": msg \}\)\)\)\.into_response\(\)\)\n\}$/.test(assistantIdentifie109);
+  instrument109(assistantIdentifieNomme109,
+    "`err_json_et_identifiant` (daemon/src/main.rs) est introuvable, ou ne sert plus `{error, id}` en JSON sur un cinq cents et `{error}` sinon : ses cinq cent deux ne sont plus établis comme nommés");
+  const passerelleIdentifieeAdmise109 = (l) => assistantIdentifieNomme109
+    && /err_json_et_identifiant\(StatusCode::(BAD_GATEWAY|GATEWAY_TIMEOUT), (PHRASE|CAUSE)_[A-Z0-9_]+\)/.test(l);
+  const passerellesDuDemon109 = textesDuDemon109.flatMap((t) => t.split("\n").filter((l) => /StatusCode::(BAD_GATEWAY|GATEWAY_TIMEOUT)\b/.test(l) && !/err_json\(StatusCode::BAD_GATEWAY/.test(l) && !passerelleDEtapeAdmise109(l) && !passerelleIdentifieeAdmise109(l)));
   const htmlDuDemon109 = textesDuDemon109.filter((t) => /text\/html|\bHtml\(/.test(t)).length;
   instrument109(passerellesDuDemon109.length === 0 && htmlDuDemon109 === 0,
     `le démon sert désormais du HTML (${htmlDuDemon109} fichier(s)) ou un cinq cent deux / cinq cent quatre sans cause nommée (${JSON.stringify(passerellesDuDemon109.slice(0, 3))}) : la « page de passerelle » que la console reconnaît pourrait être le démon`);

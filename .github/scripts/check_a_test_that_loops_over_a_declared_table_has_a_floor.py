@@ -105,7 +105,8 @@ def _analyseur_partage():
         spec.loader.exec_module(module)
     except Exception as e:  # noqa: BLE001 — toute panne d'import est un refus de conclure
         return None, f"la garde du canal est illisible ({e})"
-    manquants = [n for n in ("sans_chaines_ni_commentaires", "fin_de_bloc", "ATTR_TEST", "ASSERTION")
+    manquants = [n for n in ("sans_chaines_ni_commentaires", "fin_de_bloc", "ATTR_TEST", "ASSERTION",
+                             "arguments_de_l_appel")
                  if not hasattr(module, n)]
     if manquants:
         return None, f"la garde du canal ne porte plus {', '.join(manquants)}"
@@ -201,18 +202,15 @@ def analyser(brut, chemin, macro, g):
             f = fin_de_bloc(ouv)
             if f is None:
                 continue
-            prof, cur, bruts = 0, [], []
-            for ch in (c.group(3) or ""):
-                if ch in "([{<":
-                    prof += 1
-                elif ch in ")]}>":
-                    prof -= 1
-                elif ch == "," and prof == 0:
-                    bruts.append("".join(cur))
-                    cur = []
-                    continue
-                cur.append(ch)
-            bruts.append("".join(cur))
+            # `P10.21-k` — LES PARAMÈTRES SONT DÉCOUPÉS PAR LE LECTEUR PARTAGÉ (la liste remise entre
+            # parenthèses, comme `paires` de la garde de l'enveloppe), jamais par une copie. La copie
+            # d'origine comptait `<` et `>` naïvement : le `>` d'une flèche (`pred: &dyn Fn(&str) -> bool,
+            # quoi: &str`) faussait la profondeur et la virgule suivante ne coupait plus — un paramètre
+            # perdu. MESURÉ le 2026-10-23 sur 1011ec9f : 336 closures liées dans les corps de test, trois
+            # portent une flèche dans leurs paramètres, UNE y perdait un paramètre
+            # (`allegations_d_environnement.rs`, `regle`, sans boucle sur le paramètre perdu) ; sortie
+            # de la garde identique avant et après.
+            bruts = g.arguments_de_l_appel("(" + (c.group(3) or "") + ")", 0) or []
             closures.append({"nom": c.group(1), "ouv": ouv, "fin": f,
                              "params": [x.split(":")[0].strip().lstrip("&").strip()
                                         for x in bruts if x.strip()]})
@@ -431,6 +429,20 @@ def temoins(macro, g):
                 check(DOC_UNE, TABLE_DECLAREE, "une");
             }
         """, [("t_indirection", "TABLE_DECLAREE", False)]),
+
+        # `P10.21-k` — une FLÈCHE dans les paramètres (`-> bool`) ne fausse pas leur découpe : le second
+        # paramètre, itéré par la boucle, est résolu à la table du site d'appel.
+        ("POSITIF — paramètre après une flèche, table résolue au site d'appel", """
+            #[test]
+            fn t_fleche_dans_les_parametres() {
+                let check = |pred: &dyn Fn(&str) -> bool, jetons: &[&str]| {
+                    for j in jetons {
+                        assert!(pred(j));
+                    }
+                };
+                check(&|s| !s.is_empty(), TABLE_DECLAREE);
+            }
+        """, [("t_fleche_dans_les_parametres", "TABLE_DECLAREE", False)]),
 
         ("NÉGATIF — même indirection, l'argument routé par le plancher", """
             #[test]

@@ -100,6 +100,24 @@ pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
     crate::mesure_environnement::Mesure::Lue(abandonnes)
 }
 
+/// `P10.27-j` — LE `last_error` D'UN LOT NON ÉCRIT DIT LEQUEL DES DEUX. La forme d'avant écrivait « batch annulé,
+/// rejouable » pour les deux issues de `ingest_events_batch_env`, y compris pour un lot que la base n'avait PAS PRIS
+/// (`BEGIN` refusé : rien n'a été tenté, rien n'est annulé). Deux phrases distinctes ; dans les deux cas rien n'est
+/// écrit, `last_ok`, `last_count` et le watermark ne bougent pas (rejouable). `last_run` et cette phrase sont posés par
+/// un `UPDATE` best-effort : quand le lot n'est pas pris parce que la base refuse l'écriture (verrou tenu par une autre
+/// connexion, `BEGIN IMMEDIATE` refusé), cet `UPDATE` est refusé de la même façon et ni `last_run` ni la phrase ne sont
+/// écrits — l'état du connecteur reste celui du passage précédent (reste non témoigné).
+pub(crate) const ECHEC_D_INGESTION_LOT_NON_PRIS: &str = "échec d'ingestion (lot non pris, rien d'écrit, rejouable)";
+
+/// `P10.27-j` — la phrase de `last_error` pour un lot non écrit, selon son issue : non pris (phrase fixe) ou annulé
+/// après `n` événements traités (le compte, et rien d'autre : ni contenu, ni cause du moteur).
+pub(crate) fn last_error_du_lot_non_ecrit(issue: crate::ingest::LotNonEcrit) -> String {
+    match issue {
+        crate::ingest::LotNonEcrit::NonPris => ECHEC_D_INGESTION_LOT_NON_PRIS.to_string(),
+        crate::ingest::LotNonEcrit::Annule(n) => format!("échec d'ingestion (lot annulé après {n} événement(s), rien d'écrit, rejouable)"),
+    }
+}
+
 /// Traite UN connecteur : pull (poll_defender) -> ingest par lot sous le lock writer (INSERT OR IGNORE sur
 /// dedup, idempotent) -> avance watermark + last_ok/last_count. Échec (réseau/OAuth/parse/429) -> last_error
 /// (message SANS secret) + last_run (anti-martèlement), watermark inchangé. FAIL-SAFE : ne remonte jamais.
@@ -155,12 +173,13 @@ where
                             params![now_ts, inserted as i64, o.watermark, id],
                         );
                     }
-                    Err(_) => {
-                        // Batch ROLLBACK (fail-safe : ingest_events_batch_env a déjà annulé) : watermark NON
-                        // avancé (rejouable au prochain tick), last_error posé, pas de martèlement (last_run).
+                    Err(issue) => {
+                        // Lot non pris ou annulé (fail-safe : ingest_events_batch_env n'a rien laissé d'écrit) : watermark
+                        // NON avancé (rejouable au prochain tick), last_error posé — `P10.27-j` : il dit laquelle des deux
+                        // issues —, pas de martèlement (last_run).
                         let _ = conn.execute(
                             "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3",
-                            params![now_ts, "échec d'ingestion (batch annulé, rejouable)", id],
+                            params![now_ts, last_error_du_lot_non_ecrit(issue), id],
                         );
                     }
                 }
@@ -216,12 +235,13 @@ where
                         params![now_ts, inserted as i64, o.watermark, id],
                     );
                 }
-                Err(_) => {
-                    // Batch ROLLBACK (fail-safe : ingest_events_batch_env a déjà annulé) : watermark NON avancé
-                    // (rejouable au prochain tick), last_error posé, pas de martèlement (last_run).
+                Err(issue) => {
+                    // Lot non pris ou annulé (fail-safe : ingest_events_batch_env n'a rien laissé d'écrit) : watermark NON
+                    // avancé (rejouable au prochain tick), last_error posé — `P10.27-j` : il dit laquelle des deux issues —,
+                    // pas de martèlement (last_run).
                     let _ = conn.execute(
                         "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3",
-                        params![now_ts, "échec d'ingestion (batch annulé, rejouable)", id],
+                        params![now_ts, last_error_du_lot_non_ecrit(issue), id],
                     );
                 }
             }

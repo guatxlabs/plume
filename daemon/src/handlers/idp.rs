@@ -724,6 +724,26 @@ pub(crate) fn servir_l_echec_de_l_etape(statut: StatusCode, phrase: &str, geste:
     r
 }
 
+/// `P10.29-l` (reste AF) — LE POINT DE JETON A RÉPONDU, MAIS PAS 2xx. La forme d'avant servait `échange de code refusé
+/// (HTTP n)` à un appelant NON AUTHENTIFIÉ : le statut rendu par le fournisseur d'identité. Décision par défaut de la
+/// vague AG : 401 d'avant, phrase FIXE (préfixe « échange de code » gardé) ; le statut de l'IdP va au journal SEUL, sans
+/// URL ni corps, avec l'identifiant interne du fournisseur et l'étape. Aucun module de `web/` ne lit ce corps.
+pub(crate) const PHRASE_ECHANGE_DE_CODE_REFUSE: &str = "échange de code refusé : le point de jeton du fournisseur \
+     d'identité n'a pas accepté le code d'autorisation ; aucune session n'est posée, la cause est au journal du serveur.";
+
+/// AVEU : le refus de l'échange de code par le point de jeton (`PHRASE_ECHANGE_DE_CODE_REFUSE`, 401), le statut HTTP de
+/// l'IdP au journal seul (`servir_l_echec_de_l_etape`).
+pub(crate) fn refus_de_l_echange_de_code(fournisseur_id: i64, statut_de_l_idp: u16) -> Response {
+    servir_l_echec_de_l_etape(
+        StatusCode::UNAUTHORIZED,
+        PHRASE_ECHANGE_DE_CODE_REFUSE,
+        "connexion OIDC",
+        fournisseur_id,
+        "échange de code",
+        &format!("HTTP {statut_de_l_idp}"),
+    )
+}
+
 /// Résout les endpoints OIDC : discovery si nécessaire (endpoints non tous overridés). Blocking (rare).
 fn oidc_endpoints_for(cfg: &OidcCfg) -> Result<OidcEndpoints, String> {
     let need_discovery = cfg.authorization_endpoint.is_empty() || cfg.token_endpoint.is_empty() || cfg.jwks_uri.is_empty();
@@ -831,7 +851,7 @@ pub(crate) async fn oidc_callback(
         Err(_) => return server_err("échec interne (token)"),
     };
     if !(200..300).contains(&tok_resp.status) {
-        return err_json(StatusCode::UNAUTHORIZED, format!("échange de code refusé (HTTP {})", tok_resp.status));
+        return refus_de_l_echange_de_code(fournisseur.id, tok_resp.status);
     }
     let tok_json: Value = match serde_json::from_slice(&tok_resp.body) {
         Ok(v) => v,
@@ -1290,7 +1310,7 @@ pub(crate) async fn mfa_enroll(
         }
         PreuveDuPremierFacteur::SansMotDePasseLocal => return err_json(StatusCode::FORBIDDEN, CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL),
         PreuveDuPremierFacteur::CompteNonLu(cause) => {
-            eprintln!("[mfa] WARN compte '{}' NON lu à l'enrôlement : {cause}", au.name);
+            eprintln!("[mfa] WARN {} NON lu à l'enrôlement : {cause}", compte_au_journal(&st.db.lock(), &au.name));
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_LU_A_L_ENROLEMENT);
         }
     }
@@ -1320,7 +1340,7 @@ pub(crate) async fn mfa_enroll(
             // échoué »`, anonyme — ni ce qui reste en place, ni que rien n'a été posé. La graine n'était déjà pas servie
             // (le refus précède la réponse) ; la cause le DIT désormais, et le journal porte celle du moteur.
             Ok(n) => {
-                eprintln!("[mfa] WARN enrôlement de '{}' : {n} ligne(s) écrite(s) au lieu d'une", au.name);
+                eprintln!("[mfa] WARN enrôlement du {} : {n} ligne(s) écrite(s) au lieu d'une", compte_au_journal(&conn, &au.name));
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENROLEMENT_NON_ECRIT);
             }
             Err(e) => {
@@ -1374,9 +1394,13 @@ pub(crate) async fn mfa_verify(
     }
     // `P10.22-y` — L'ESSAI EST COMPTÉ AU FREIN DU COMPTE AVANT D'ÊTRE EXAMINÉ (compte freiné -> 429 ; écriture du frein
     // refusée -> 503 nommé, code non examiné). Voir `handlers/frein_du_second_facteur.rs`.
-    let essai = match frein::reserver_un_essai(&st, &st.db.lock(), &au.name) {
-        Ok(essai) => essai,
-        Err(refus) => return refus.servir(&au.name),
+    // `P10.31-u` — connexion liée : le refus relit l'identifiant du compte sur elle pour le journal (verrou non réentrant).
+    let essai = {
+        let conn = st.db.lock();
+        match frein::reserver_un_essai(&st, &conn, &au.name) {
+            Ok(essai) => essai,
+            Err(refus) => return refus.servir(&conn, &au.name),
+        }
     };
     let ip = peer.ip().to_string();
     // ANTI-REJEU : le pas TOTP matché doit être STRICTEMENT postérieur au dernier pas consommé (last_step=-1
@@ -1419,7 +1443,7 @@ pub(crate) async fn mfa_verify(
                 return err_json(StatusCode::CONFLICT, CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION);
             }
             Ok(n) => {
-                eprintln!("[mfa] WARN activation de '{}' : {n} ligne(s) écrite(s) au lieu d'une", au.name);
+                eprintln!("[mfa] WARN activation du {} : {n} ligne(s) écrite(s) au lieu d'une", compte_au_journal(&conn, &au.name));
                 frein::rendre_l_essai(&st, &conn, &au.name, essai);
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_ACTIVEE);
             }
@@ -1477,8 +1501,9 @@ pub(crate) async fn mfa_disable(
         match frein::reserver_un_essai(&st, &conn, &au.name) {
             Ok(essai) => Some(essai),
             Err(refus) => {
+                let refus = refus.servir(&conn, &au.name);
                 drop(conn);
-                return refus.servir(&au.name);
+                return refus;
             }
         }
     } else {
@@ -1496,7 +1521,7 @@ pub(crate) async fn mfa_disable(
     if let Err(refus) = ouvrir_la_transaction_du_geste(
         &conn,
         "mfa",
-        &format!("désactivation du second facteur de '{}'", au.name),
+        &format!("désactivation du second facteur du {}", compte_au_journal(&conn, &au.name)),
         CAUSE_MFA_NON_DESACTIVEE_TRANSACTION_NON_OUVERTE,
     ) {
         rendre(&conn);
@@ -1551,12 +1576,12 @@ pub(crate) async fn mfa_disable(
                     err_json(StatusCode::CONFLICT, CAUSE_MFA_ACTIVEE_PENDANT_LA_DESACTIVATION)
                 }
                 RefusDeLaDesactivation::CodesDeSecoursIllisibles(cause) => {
-                    eprintln!("[mfa] WARN codes de secours de '{}' NON lus : {cause}", au.name);
+                    eprintln!("[mfa] WARN codes de secours du {} NON lus : {cause}", compte_au_journal(&conn, &au.name));
                     rendre(&conn);
                     err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CODES_DE_SECOURS_ILLISIBLES)
                 }
                 RefusDeLaDesactivation::NonEcrite(cause) => {
-                    eprintln!("[mfa] WARN désactivation de '{}' NON écrite : {cause}", au.name);
+                    eprintln!("[mfa] WARN désactivation du {} NON écrite : {cause}", compte_au_journal(&conn, &au.name));
                     rendre(&conn);
                     err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_DESACTIVEE)
                 }
@@ -1754,14 +1779,18 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
     // passe administrateur) : même refus, même place, rien consommé ni compté. Une époque NON RELUE refuse sous la
     // même phrase (qui le dit) plutôt qu'en cinq cent trois : le porteur recommence par le mot de passe, et c'est
     // cette étape-là, qui la relit pour frapper un ticket neuf, qui nomme la lecture ratée (`mfa_challenge_response`).
-    match epoque_du_compte(&st.db.lock(), &user) {
+    // `P10.31-u` — la connexion est LIÉE : le journal relit l'identifiant du compte sur elle (le verrou n'est pas réentrant),
+    // et elle est tenue tout le `match`, comme la garde temporaire de la forme d'avant.
+    let conn = st.db.lock();
+    match epoque_du_compte(&conn, &user) {
         Ok(epoque) if epoque == epoque_du_ticket => {}
         Ok(_) => return err_json(StatusCode::UNAUTHORIZED, CAUSE_TICKET_MFA_INVALIDE_EXPIRE_OU_REVOQUE),
         Err(cause) => {
-            eprintln!("[mfa] WARN époque du compte '{user}' NON lue, ticket refusé sans examen du code : {cause}");
+            eprintln!("[mfa] WARN époque du {} NON lue, ticket refusé sans examen du code : {cause}", compte_au_journal(&conn, &user));
             return err_json(StatusCode::UNAUTHORIZED, CAUSE_TICKET_MFA_INVALIDE_EXPIRE_OU_REVOQUE);
         }
     }
+    drop(conn);
     if let Some(retry) = auth_lock_check(&st, &user, &ip) {
         return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, retry.to_string())], Json(json!({ "error": "trop d'échecs — réessayez plus tard" }))).into_response();
     }
@@ -1788,9 +1817,13 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
     // refusé comme un faux, sinon le frein ne retiendrait que les mauvaises réponses.
     // `P10.22-y` — ET L'ESSAI Y EST COMPTÉ AVANT D'ÊTRE EXAMINÉ, DANS LA BASE : un redémarrage ne rouvre plus la fenêtre,
     // et une écriture du frein refusée rend un 503 nommé sans examiner le code (voir `handlers/frein_du_second_facteur.rs`).
-    let essai = match frein::reserver_un_essai(&st, &st.db.lock(), &user) {
-        Ok(essai) => essai,
-        Err(refus) => return refus.servir(&user),
+    // `P10.31-u` — connexion liée : le refus relit l'identifiant du compte sur elle pour le journal (verrou non réentrant).
+    let essai = {
+        let conn = st.db.lock();
+        match frein::reserver_un_essai(&st, &conn, &user) {
+            Ok(essai) => essai,
+            Err(refus) => return refus.servir(&conn, &user),
+        }
     };
     // ANTI-REJEU TOTP : un pas matché est « frais » seulement s'il est > last_step (un code capté et rejoué
     // dans sa fenêtre de ~90 s a un pas <= last_step -> refusé). Un code à la forme TOTP n'est JAMAIS traité
@@ -1810,13 +1843,13 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
     };
     match &secours {
         ConsommationDuFacteur::NonEcrite(cause) => {
-            eprintln!("[mfa] WARN code de secours de '{user}' NON consommé : {cause}");
+            eprintln!("[mfa] WARN code de secours du {} NON consommé : {cause}", compte_au_journal(&st.db.lock(), &user));
             frein::rendre_l_essai(&st, &st.db.lock(), &user, essai);
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CODE_DE_SECOURS_NON_CONSOMME);
         }
         // `P10.22-r` — la liste n'a pas été lue : ni acceptation ni accusation, et AUCUN échec compté.
         ConsommationDuFacteur::Illisible(cause) => {
-            eprintln!("[mfa] WARN codes de secours de '{user}' NON lus : {cause}");
+            eprintln!("[mfa] WARN codes de secours du {} NON lus : {cause}", compte_au_journal(&st.db.lock(), &user));
             frein::rendre_l_essai(&st, &st.db.lock(), &user, essai);
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CODES_DE_SECOURS_ILLISIBLES);
         }
@@ -1841,7 +1874,7 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
                 return err_json(StatusCode::UNAUTHORIZED, "code MFA invalide");
             }
             ConsommationDuFacteur::NonEcrite(cause) | ConsommationDuFacteur::Illisible(cause) => {
-                eprintln!("[mfa] WARN pas TOTP de '{user}' NON consommé : {cause}");
+                eprintln!("[mfa] WARN pas TOTP du {} NON consommé : {cause}", compte_au_journal(&st.db.lock(), &user));
                 frein::rendre_l_essai(&st, &st.db.lock(), &user, essai);
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PAS_TOTP_NON_CONSOMME);
             }
@@ -1874,13 +1907,15 @@ pub(crate) async fn login_mfa_post(State(st): State<AppState>, ConnectInfo(peer)
 /// et à l'époque COURANTE du compte (`P10.23-l`) ; celle-ci non lue -> 503 nommé, aucun ticket.
 pub(crate) fn mfa_challenge_response(st: &AppState, user: &str, role: &str) -> Response {
     let epoch = st.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
-    let epoque_du_compte = match epoque_du_compte(&st.db.lock(), user) {
+    let conn = st.db.lock();
+    let epoque_du_compte = match epoque_du_compte(&conn, user) {
         Ok(epoque) => epoque,
         Err(cause) => {
-            eprintln!("[mfa] WARN époque du compte '{user}' NON lue, aucun ticket émis : {cause}");
+            eprintln!("[mfa] WARN époque du {} NON lue, aucun ticket émis : {cause}", compte_au_journal(&conn, user));
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_EPOQUE_DU_COMPTE_NON_LUE);
         }
     };
+    drop(conn);
     let ticket = mfa_ticket_sign(st.session_secret.as_slice(), user, role, 300, epoch, epoque_du_compte);
     Json(json!({ "mfa_required": true, "ticket": ticket })).into_response()
 }

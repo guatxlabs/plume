@@ -666,6 +666,9 @@ pub(crate) enum LienRetire {
     /// Le lien est retiré : au moins une ligne a été effacée, et le registre en porte le COMPTE
     /// exact (l'énoncé vise les deux sens, il peut en effacer plus d'une).
     Retire,
+    /// `P10.31-u` — le lien EST retiré, mais le registre n'a pas pris la ligne qui l'atteste (cause portée).
+    /// Le geste n'est pas annulé (le rejouer ne comblerait pas le trou) : la réponse l'avoue.
+    RetireSansTrace(String),
     /// Aucun lien ne reliait ces deux dossiers : absence ÉTABLIE, rien à défaire.
     AucunLien,
     /// La suppression n'a pas eu lieu : la cause est portée, et le lien EST toujours là.
@@ -685,8 +688,11 @@ pub(crate) fn case_link_remove(conn: &Connection, a: i64, b: i64, author: &str) 
     };
     // Le COMPTE est dit, jamais avalé : l'énoncé vise les deux sens, et savoir combien de lignes il a
     // réellement effacées est ce qui sépare un lien retiré d'un doublon nettoyé au passage.
-    ledger_append(conn, "case.unlink", &format!("#{a} x #{b} retirés={n} by {author}"));
-    LienRetire::Retire
+    // `P10.31-u` — LE MAILLON EST CONSOMMÉ (il était jeté par un appel nu) : un retrait sans trace est dit.
+    match ledger_append(conn, "case.unlink", &format!("#{a} x #{b} retirés={n} by {author}")) {
+        MaillonDeRegistre::Inscrit => LienRetire::Retire,
+        MaillonDeRegistre::NonInscrit(cause) => LienRetire::RetireSansTrace(cause),
+    }
 }
 
 /// Borne des liens d'un dossier (`P11.22-g`) : nommée, rendue avec la liste, lue avec sa ligne excédentaire.
@@ -1228,6 +1234,8 @@ pub(crate) async fn case_link_handler(State(st): State<AppState>, Extension(au):
 pub(crate) async fn case_unlink_handler(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, other)): Path<(i64, i64)>) -> Response {
     with_write(&st, &au, |conn| match case_link_remove(conn, id, other, &au.name) {
         LienRetire::Retire => StatusCode::NO_CONTENT.into_response(),
+        // `P10.31-u` — lien retiré sans trace : 200 `{ok, registre_sans_maillon}`, jamais un 204 muet ; rien n'est annulé.
+        LienRetire::RetireSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
         LienRetire::AucunLien => not_found(CAUSE_AUCUN_LIEN_ENTRE_CES_DOSSIERS),
         LienRetire::NonRetire(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LIEN_NON_RETIRE} ({cause})")),
     })

@@ -39,6 +39,7 @@
 //! jamais l'adresse ni le ticket), et la règle de `P10.22-m` : sans le premier facteur (ticket signé ou session), on
 //! ne l'atteint pas.
 use crate::*;
+use crate::handlers::idp::compte_au_journal;
 use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde};
 use rusqlite::OptionalExtension;
 
@@ -102,11 +103,13 @@ pub(crate) enum EssaiRefuse {
 
 impl EssaiRefuse {
     /// La réponse de la route. Le 429 reprend la cause de `P10.22-m`, telle quelle.
-    pub(crate) fn servir(self, user: &str) -> Response {
+    /// `P10.31-u` — `conn` est la connexion que l'appelant TIENT (le verrou n'est pas réentrant) : le journal y relit
+    /// l'identifiant interne du compte (`compte_au_journal`), jamais son nom.
+    pub(crate) fn servir(self, conn: &Connection, user: &str) -> Response {
         match self {
             EssaiRefuse::Freine(attente) => refus_du_frein_du_second_facteur(attente),
             EssaiRefuse::NonCompte(cause) => {
-                eprintln!("[mfa] WARN essai du second facteur de '{user}' NON compté, code non examiné : {cause}");
+                eprintln!("[mfa] WARN essai du second facteur du {} NON compté, code non examiné : {cause}", compte_au_journal(conn, user));
                 err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ESSAI_DU_SECOND_FACTEUR_NON_COMPTE)
             }
         }
@@ -156,7 +159,7 @@ pub(crate) fn reserver_un_essai(st: &AppState, conn: &Connection, user: &str) ->
     if st.lock_threshold == 0 {
         return Ok(EssaiReserve { ecrit: false, consecutifs: 0, arme_pour_s: None });
     }
-    let issue = jouer_le_geste_garde(conn, "mfa", &format!("réservation d'un essai du second facteur de '{user}'"), |c| {
+    let issue = jouer_le_geste_garde(conn, "mfa", &format!("réservation d'un essai du second facteur du {}", compte_au_journal(conn, user)), |c| {
         let maintenant = now();
         let mut etat = lire_l_etat(c, user).map_err(EssaiRefuse::NonCompte)?.unwrap_or_default();
         if etat.freine_jusqu_a > maintenant {
@@ -191,7 +194,7 @@ pub(crate) fn rendre_l_essai(st: &AppState, conn: &Connection, user: &str, essai
     if !essai.ecrit {
         return;
     }
-    let issue = jouer_le_geste_garde(conn, "mfa", &format!("retour d'un essai du second facteur de '{user}'"), |c| {
+    let issue = jouer_le_geste_garde(conn, "mfa", &format!("retour d'un essai du second facteur du {}", compte_au_journal(conn, user)), |c| {
         let Some(mut etat) = lire_l_etat(c, user)? else { return Ok(()) };
         etat.consecutifs = etat.consecutifs.saturating_sub(1);
         if etat.consecutifs < st.lock_threshold {
@@ -204,9 +207,11 @@ pub(crate) fn rendre_l_essai(st: &AppState, conn: &Connection, user: &str, essai
     });
     match issue {
         IssueDuGesteGarde::Valide(()) => {}
-        IssueDuGesteGarde::Refuse(cause) => eprintln!("[mfa] WARN essai du second facteur de '{user}' NON rendu (un échec de trop reste compté) : {cause}"),
+        IssueDuGesteGarde::Refuse(cause) => {
+            eprintln!("[mfa] WARN essai du second facteur du {} NON rendu (un échec de trop reste compté) : {cause}", compte_au_journal(conn, user))
+        }
         IssueDuGesteGarde::NonOuvert(e) | IssueDuGesteGarde::NonValide(e) => {
-            eprintln!("[mfa] WARN essai du second facteur de '{user}' NON rendu (un échec de trop reste compté) : {e}")
+            eprintln!("[mfa] WARN essai du second facteur du {} NON rendu (un échec de trop reste compté) : {e}", compte_au_journal(conn, user))
         }
     }
 }
@@ -215,7 +220,7 @@ pub(crate) fn rendre_l_essai(st: &AppState, conn: &Connection, user: &str, essai
 /// échecs comptés (sens qui freine), et c'est dit.
 pub(crate) fn remettre_a_zero(conn: &Connection, user: &str) {
     if let Err(e) = oublier_dans_la_transaction(conn, user) {
-        eprintln!("[mfa] WARN frein du second facteur de '{user}' NON remis à zéro (ses échecs restent comptés) : {e}");
+        eprintln!("[mfa] WARN frein du second facteur du {} NON remis à zéro (ses échecs restent comptés) : {e}", compte_au_journal(conn, user));
     }
 }
 

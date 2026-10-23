@@ -559,9 +559,12 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 // compilation est refusée et dont le marqueur n'entre pas serait recompilé — et
                 // recompté — à chaque tour, sans que rien ne le dise. L'abandon est DÉJÀ compté pour
                 // la compilation ; seule la cause du marqueur s'ajoute, sous son propre genre.
+                // `P10.31-u` — l'abandon est DÉJÀ compté (compilation) : un maillon manquant n'en ajoute pas, il reste
+                // à l'aveu de la primitive (sortie d'erreur).
                 if let PassageDuPlaybook::NonMarque(cause) = marquer_le_passage_du_playbook(&c, id, now_ts) {
                     ledger_append(&c, "playbook.marqueur-non-ecrit",
-                        &format!("playbook:{name} (#{id}) : {CAUSE_MARQUEUR_DE_PASSAGE_NON_ECRIT} ({cause})"));
+                        &format!("playbook:{name} (#{id}) : {CAUSE_MARQUEUR_DE_PASSAGE_NON_ECRIT} ({cause})"))
+                        .laisser_a_l_aveu_de_la_primitive();
                 }
                 continue;
             }
@@ -584,15 +587,19 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             PassageDuPlaybook::Marque => {}
             PassageDuPlaybook::PlaybookDisparu => {
                 // Le playbook a été supprimé entre la sélection et la marque : il n'y a plus rien à
-                // exécuter, et rien n'est perdu — l'abandon ne se compte pas, la trace le dit.
+                // exécuter, et rien n'est perdu — l'abandon ne se compte pas, la trace le dit. `P10.31-u` — sans
+                // abandon par conception, son maillon manquant reste à l'aveu de la primitive.
                 ledger_append(&conn, "playbook.disparu",
-                    &format!("playbook:{name} (#{id}) retiré entre la sélection des dus et la pose du marqueur — aucune riposte posée"));
+                    &format!("playbook:{name} (#{id}) retiré entre la sélection des dus et la pose du marqueur — aucune riposte posée"))
+                    .laisser_a_l_aveu_de_la_primitive();
                 continue;
             }
             PassageDuPlaybook::NonMarque(cause) => {
                 abandonnes += 1;
+                // `P10.31-u` — abandon DÉJÀ compté ci-dessus : le maillon manquant reste à l'aveu de la primitive.
                 ledger_append(&conn, "playbook.marqueur-non-ecrit",
-                    &format!("playbook:{name} (#{id}) : {CAUSE_MARQUEUR_DE_PASSAGE_NON_ECRIT} ({cause})"));
+                    &format!("playbook:{name} (#{id}) : {CAUSE_MARQUEUR_DE_PASSAGE_NON_ECRIT} ({cause})"))
+                    .laisser_a_l_aveu_de_la_primitive();
                 continue;
             }
         }
@@ -723,7 +730,9 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                                 abandonnes += u32::from(maillon.cause_de_non_inscription().is_some());
                             }
                             PoseDeBan::NonEcrit(cause) => {
-                                ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (playbook:{name}) : {cause}"));
+                                // `P10.31-u` — l'abandon est compté juste en dessous : le maillon manquant n'en ajoute pas.
+                                ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (playbook:{name}) : {cause}"))
+                                    .laisser_a_l_aveu_de_la_primitive();
                                 abandonnes += 1;
                             }
                         }

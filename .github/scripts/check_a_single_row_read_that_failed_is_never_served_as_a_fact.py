@@ -490,8 +490,11 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # quand il doit réessayer. La forme `unwrap_or_else` a disparu avec les deux autres ; laisser
     # l'entrée ferait rougir « exemption sans objet ». CE QUE L'ÉNONCÉ DE `P10.20-k` N'AVAIT PAS VU :
     # il demandait de rallier `view_update` ET de ne retirer que DEUX entrées — c'en fait trois.
-    ("daemon/src/handlers/datamodels.rs", "field_create"): ("is_err",),
-    ("daemon/src/handlers/datamodels.rs", "object_create"): ("is_err",),
+    # DEUX ENTRÉES RETIRÉES PAR `P10.20-l` (vague AG, 2026-10-23) : `datamodels.rs::object_create` et `field_create`
+    # (`is_err`) — une lecture ratée du modèle ou de l'objet de rattachement rendait 404 « introuvable ». Lus en
+    # `.optional()` (`ligne_visee`) : absence établie = le 404 d'avant, lecture ratée = 503
+    # `CAUSE_MODELE_DE_DONNEES_NON_CREE_RATTACHEMENT_NON_LU`, rien n'est créé (témoins :
+    # `modeles_rapports_et_engagements_lecture_ratee_et_lot_non_pris.rs`).
     # VENUE DU RANG DEUX PAR `P10.20-b` (2026-10-07) : la relecture d'après envoi n'absorbe plus (voir la
     # note de la classe 3). Reste le `.ok()` sur la DÉFINITION de la destination : lecture ratée -> 404
     # « destination introuvable ou désactivée », aucun envoi. Cause fausse, aucun fait inventé.
@@ -555,8 +558,12 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # l'accès est refusé.
     ("daemon/src/handlers/panneau_resolu.rs", "courante"): ("ok",),
     ("daemon/src/handlers/playbooks.rs", "playbook_test"): ("ok",),
-    ("daemon/src/handlers/scheduled_reports.rs", "report_create"): ("is_err", "is_err"),
-    ("daemon/src/handlers/scheduled_reports.rs", "report_run_now"): ("is_err",),
+    # DEUX ENTRÉES RETIRÉES PAR `P10.20-l` (vague AG, 2026-10-23) : `scheduled_reports.rs::report_create` (deux `is_err`
+    # sur le jeu de données et le canal référencés, 400 « introuvable ») et `report_run_now` (`is_err`, 404 « rapport
+    # introuvable » pour un rapport qui part toujours). Lus en `.optional()` (`ligne_du_rapport`) : absence établie =
+    # le refus d'avant, lecture ratée = 503 nommé (`CAUSE_RAPPORT_PLANIFIE_NON_CREE_REFERENCE_NON_LUE`,
+    # `CAUSE_RAPPORT_PLANIFIE_NON_DECLENCHE_NON_LU`), rien n'est écrit ni envoyé (témoins :
+    # `modeles_rapports_et_engagements_lecture_ratee_et_lot_non_pris.rs`).
     # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, 2026-10-13) : `tokens.rs::token_delete` — `COUNT(*) … unwrap_or(0)` :
     # un `COUNT(*)` rend toujours une ligne, ce zéro ne venait que d'une lecture ratée et partait en 404 « jeton
     # introuvable ». Le compte est un `Result` scruté : lu à zéro = le 404 d'avant, lecture ratée = 503

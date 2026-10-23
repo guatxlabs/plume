@@ -14,6 +14,7 @@
 //! portée de l'editor). CRUD ledgerisé (gouvernance).
 use crate::*;
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
+use rusqlite::OptionalExtension;
 
 
 /// Rôle d'exécution valide + PLAFONNÉ au rôle du créateur (anti-escalade). Enum FERMÉ (jamais 'agent').
@@ -58,6 +59,43 @@ pub(crate) async fn reports_list(State(st): State<AppState>, Extension(au): Exte
     }
 }
 
+// `P10.20-l` (vague AG) — UNE LECTURE RATÉE N'EST PAS UNE ABSENCE. `report_delete` et `report_run_now` lisaient le
+// rapport par `Err(_) => not_found(…)` / `.is_err()`, `report_create` le jeu de données et le canal par `.is_err()` :
+// une table hors d'atteinte, une ligne qui ne se lit pas, se servaient « introuvable » — l'administrateur lisait absent
+// un rapport qui PART TOUJOURS vers son canal à chaque échéance. Trois issues : lue, le geste suit ; absente, le refus
+// d'avant au corps près ; lecture ratée, 503 nommé (refus nommé côté console : ni `BEGIN` ni `COMMIT` ni transaction
+// annulée — c'est la lecture qui manque), rien n'est écrit, supprimé ni envoyé, la cause du moteur au journal seul.
+/// `P10.20-l` (vague AG) — le jeu de données ou le canal qu'un rapport à créer référence n'a pas été lu.
+pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_CREE_REFERENCE_NON_LUE: &str = "RAPPORT PLANIFIÉ NON CRÉÉ : la base n'a pas \
+     rendu le jeu de données ou le canal que ce rapport référence — ce n'est PAS « introuvable », c'est une lecture qui \
+     n'a pas eu lieu. RIEN n'est écrit : aucun rapport n'est créé, rien ne partira vers le canal, et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la table des jeux de données ou des canaux est illisible.";
+/// `P10.20-l` (vague AG) — le rapport à supprimer n'a pas été lu : il n'est pas supprimé, et il part toujours.
+pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME_NON_LU: &str = "RAPPORT PLANIFIÉ NON SUPPRIMÉ : la base n'a pas \
+     rendu ce rapport — ce n'est PAS « introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est supprimé : s'il \
+     existe, il est toujours là et PART TOUJOURS à son échéance, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la table des rapports planifiés est illisible.";
+/// `P10.20-l` (vague AG) — le rapport à déclencher n'a pas été lu : rien n'est exécuté ni envoyé.
+pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_DECLENCHE_NON_LU: &str = "RAPPORT PLANIFIÉ NON DÉCLENCHÉ : la base n'a pas \
+     rendu ce rapport — ce n'est PAS « introuvable », c'est une lecture qui n'a pas eu lieu. Rien n'est exécuté ni \
+     envoyé vers le canal, et sa marque d'échéance est inchangée. Réessayez ; si le refus persiste, la table des \
+     rapports planifiés est illisible.";
+
+/// `P10.20-l` (vague AG) — juge, en trois issues, la lecture de la ligne que `geste` vise : lue, sa valeur ; absente,
+/// le refus d'avant (`absente`) ; lecture ratée, 503 `cause` avec l'identifiant de corrélation, la cause du moteur au
+/// journal seul avec le geste (identifiants internes seulement : jamais le nom du rapport, son canal ni sa requête).
+fn ligne_du_rapport<T>(lue: rusqlite::Result<Option<T>>, absente: impl FnOnce() -> Response, geste: &str, cause: &'static str) -> Result<T, Response> {
+    match lue {
+        Ok(Some(v)) => Ok(v),
+        Ok(None) => Err(absente()),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, cause);
+            eprintln!("[rapports] WARN {geste} refusé : la ligne visée n'a pas pu être lue, rien n'est écrit ni envoyé ({}) : {e}", cid.unwrap_or_default());
+            Err(refus)
+        }
+    }
+}
+
 /// POST /api/scheduled-reports — crée un rapport planifié. editor+ ; run_as PLAFONNÉ au rôle du créateur.
 pub(crate) async fn report_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
@@ -69,11 +107,15 @@ pub(crate) async fn report_create(State(st): State<AppState>, Extension(au): Ext
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
     // Le dataset ET le notifier référencés doivent EXISTER (fail-closed : pas de rapport orphelin).
-    if conn.query_row("SELECT 1 FROM dataset WHERE id=?1", params![dataset_id], |_| Ok(())).is_err() {
-        return bad_req("dataset introuvable");
+    // `P10.20-l` (vague AG) — absents, les 400 d'avant ; lecture ratée, 503 nommé, rien d'écrit (pas de rapport orphelin).
+    let geste_des_references = format!("création d'un rapport planifié (jeu de données #{dataset_id}, canal #{notifier_id})");
+    let lu = conn.query_row("SELECT 1 FROM dataset WHERE id=?1", params![dataset_id], |_| Ok(())).optional();
+    if let Err(refus) = ligne_du_rapport(lu, || bad_req("dataset introuvable"), &geste_des_references, CAUSE_RAPPORT_PLANIFIE_NON_CREE_REFERENCE_NON_LUE) {
+        return refus;
     }
-    if conn.query_row("SELECT 1 FROM notifier WHERE id=?1", params![notifier_id], |_| Ok(())).is_err() {
-        return bad_req("notifier introuvable");
+    let lu = conn.query_row("SELECT 1 FROM notifier WHERE id=?1", params![notifier_id], |_| Ok(())).optional();
+    if let Err(refus) = ligne_du_rapport(lu, || bad_req("notifier introuvable"), &geste_des_references, CAUSE_RAPPORT_PLANIFIE_NON_CREE_REFERENCE_NON_LUE) {
+        return refus;
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "rapports", &format!("création du rapport planifié '{name}'"), CAUSE_RAPPORT_PLANIFIE_NON_CREE_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -101,7 +143,8 @@ pub(crate) async fn report_create(State(st): State<AppState>, Extension(au): Ext
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             if e.to_string().contains("UNIQUE") { return bad_req("un rapport porte déjà ce nom"); }
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` (vague AG) — phrase fixe, cause du moteur au journal seul (jamais le nom du rapport).
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[rapports]", &geste_des_references, &e)
         }
     }
 }
@@ -131,8 +174,10 @@ pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &s
 pub(crate) async fn report_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM scheduled_report WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("rapport introuvable"),
+    let lue = conn.query_row("SELECT name FROM scheduled_report WHERE id=?1", params![id], |r| r.get::<_,String>(0)).optional();
+    let name = match ligne_du_rapport(lue, || not_found("rapport introuvable"), &format!("suppression du rapport planifié #{id}"), CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME_NON_LU) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "rapports", &format!("suppression du rapport planifié #{id}"), CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -149,7 +194,11 @@ pub(crate) async fn report_delete(State(st): State<AppState>, Extension(au): Ext
         Ok(_) => rendre_apres_validation(&conn, "rapports", &format!("suppression du rapport planifié #{id}"), CAUSE_RAPPORT_PLANIFIE_NON_SUPPRIME, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` (vague AG) — phrase fixe, cause du moteur au journal seul.
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[rapports]", &format!("suppression du rapport planifié #{id}"), &e)
+        }
     }
 }
 
@@ -162,8 +211,10 @@ pub(crate) async fn report_run_now(State(st): State<AppState>, Extension(au): Ex
     // Vérifie l'existence AVANT de lâcher le lock ; l'exécution se fait via run_query_ex (pool read séparé).
     {
         let conn = __rc.lock();
-        if conn.query_row("SELECT 1 FROM scheduled_report WHERE id=?1", params![id], |_| Ok(())).is_err() {
-            return not_found("rapport introuvable");
+        // `P10.20-l` (vague AG) — absent, le 404 d'avant ; lecture ratée, 503 nommé, rien n'est exécuté ni envoyé.
+        let lu = conn.query_row("SELECT 1 FROM scheduled_report WHERE id=?1", params![id], |_| Ok(())).optional();
+        if let Err(refus) = ligne_du_rapport(lu, || not_found("rapport introuvable"), &format!("déclenchement du rapport planifié #{id}"), CAUSE_RAPPORT_PLANIFIE_NON_DECLENCHE_NON_LU) {
+            return refus;
         }
     }
     let outcome = tokio::task::spawn_blocking(move || deliver_report(&__rc, &db_path, id)).await;

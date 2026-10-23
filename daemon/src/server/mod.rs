@@ -785,7 +785,7 @@ pub(crate) async fn run() {
     {
         let c = load_config();
         let conn = db.lock();
-        ledger_append(&conn, "daemon.start", "démarrage plume-daemon");
+        ledger_append(&conn, "daemon.start", "démarrage plume-daemon").laisser_a_l_aveu_de_la_primitive(); // `P10.31-u` : le démarrage n'a pas de surface
         // `P4.7-i` — L'ÉTENDUE RÉELLEMENT PROTÉGÉE EST INSCRITE AU DÉMARRAGE, ITEM PAR ITEM. Jusqu'au
         // 2026-08-28 un item de `PLUME_OPERATOR_IPS`/`PLUME_PROTECTED_IPS` était traduit en PRÉFIXE
         // TEXTUEL (analyseur du RENDU D'AFFICHAGE) : `172.16.0.0/12` protégeait tout 172/8, `128.0.0.0/1`
@@ -826,7 +826,7 @@ pub(crate) async fn run() {
                      WHERE kind='netban.protege' ORDER BY id DESC LIMIT 1",
                     [], |r| r.get(0)).unwrap_or_default();
                 if dernier != detail {
-                    ledger_append(&conn, "netban.protege", &detail);
+                    ledger_append(&conn, "netban.protege", &detail).laisser_a_l_aveu_de_la_primitive();
                 }
             }
             // `P4.7-j` (REPRISE 2026-08-29) — LE STORE `net_ban` PORTE-T-IL DES ÉCRITURES QUI NE SONT
@@ -848,7 +848,7 @@ pub(crate) async fn run() {
             if !replies.is_empty() {
                 ledger_append(&conn, "netban.recanon", &format!(
                     "{} ligne(s) `net_ban` stockée(s) sous une écriture qui n'est PAS la valeur — REPLIÉE(S) à la lecture (sans réécriture en base) : {}",
-                    replies.len(), replies.join(", ")));
+                    replies.len(), replies.join(", "))).laisser_a_l_aveu_de_la_primitive();
             }
         }
         // v105 (CHANGE 2 / STEP 1 backstop) — CUTOVER VAULT : si le chemin ACTIF de la clé est un Secret
@@ -887,7 +887,7 @@ pub(crate) async fn run() {
                 match std::fs::remove_file(residue) {
                     Ok(()) => {
                         eprintln!("[ledger] résidu legacy '{residue}' retiré (cutover Vault prouvé cohérent : clé identique)");
-                        ledger_append(&conn, "ledger.residue_removed", &format!("résidu legacy {residue} retiré (cutover cohérent, clé identique à {active_key_path})"));
+                        ledger_append(&conn, "ledger.residue_removed", &format!("résidu legacy {residue} retiré (cutover cohérent, clé identique à {active_key_path})")).laisser_a_l_aveu_de_la_primitive();
                     }
                     Err(e) => eprintln!("[ledger] retrait du résidu '{residue}' échoué ({e}) — boot poursuivi (résidu inerte, re-vérifié au prochain boot)"),
                 }

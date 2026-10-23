@@ -76,10 +76,13 @@ pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE_TRANSACTION_NON_OUVERTE:
      autre geste pendante sur l'écrivain) — RIEN n'est écrit. Réessayez ; s'il est refusé encore, l'écrivain est occupé \
      ou bloqué.";
 /// `P10.20-w` — la suppression d'une définition de bibliothèque refusée : la définition reste, ses référents aussi.
+/// `P10.33-l` (vague AG) — la phrase couvre aussi le détachement des référents : refusé, compté sans succès, ou qui en
+/// détache un autre nombre que celui compté dans la même transaction.
 pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME: &str = "PANNEAU DE BIBLIOTHÈQUE NON SUPPRIMÉ : la base n'a \
-     pas pris l'effacement de la définition ou n'en a effacé aucune ligne, et la transaction est annulée — la \
-     définition existe toujours et les panneaux qui la référencent y restent rattachés. Réessayez ; si le refus \
-     persiste, la base est en lecture seule, pleine ou verrouillée.";
+     pas pris l'effacement de la définition ou le détachement de chacun de ses référents, et la transaction est annulée \
+     — elle a refusé une écriture, n'a effacé aucune définition, ou n'a pas compté ou pas détaché tous les panneaux qui la \
+     référencent : la définition existe toujours et ces panneaux y restent rattachés. Réessayez ; si le refus persiste, \
+     la base est en lecture seule, pleine ou verrouillée.";
 /// `P10.20-w` — le `BEGIN` de cette suppression refusé.
 pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &str = "PANNEAU DE BIBLIOTHÈQUE \
      NON SUPPRIMÉ : la base n'a pas pris la transaction de la suppression (BEGIN refusé : verrou tenu, ou transaction \
@@ -333,14 +336,27 @@ pub(crate) async fn library_panel_delete(State(st): State<AppState>, Extension(a
         Ok(t) => t,
         Err(refus) => return refus,
     };
+    // `P10.33-l` (vague AG) — LE DÉTACHEMENT EST COMPTÉ. Le nombre de panneaux référents se lit DANS la transaction (une
+    // lecture refusée annule tout : 503) ; le détachement doit en écrire exactement autant, sinon la transaction est
+    // annulée (Drop -> ROLLBACK) et la route refuse en 503 nommé. La forme d'avant acceptait un détachement sans effet
+    // (un déclencheur qui ignore l'écriture) : la définition partait et ses référents gardaient un `library_panel_id`
+    // orphelin. Zéro référent et zéro ligne détachée est un succès. `P10.29-l` (vague AG) — le corps porte la phrase fixe
+    // et l'identifiant de corrélation ; la cause du moteur va au journal seul (`refuser_le_retrait_non_pris`).
     let ecrit: Result<(), String> = (|| {
-        conn.execute("UPDATE panel SET library_panel_id=NULL WHERE library_panel_id=?1", params![id])
+        let referents: i64 = conn
+            .query_row("SELECT COUNT(*) FROM panel WHERE library_panel_id=?1", params![id], |r| r.get(0))
+            .map_err(|e| format!("comptage des panneaux référents : {e}"))?;
+        let detaches = conn
+            .execute("UPDATE panel SET library_panel_id=NULL WHERE library_panel_id=?1", params![id])
             .map_err(|e| format!("détachement des panneaux référents : {e}"))?;
+        if i64::try_from(detaches).ok() != Some(referents) {
+            return Err(format!("détachement des panneaux référents : {detaches} ligne(s) écrite(s) pour {referents} référent(s) compté(s)"));
+        }
         une_ligne_ecrite(conn.execute("DELETE FROM library_panel WHERE id=?1", params![id]), "suppression de la définition")
     })();
     if let Err(cause) = ecrit {
         drop(tx); // Drop -> ROLLBACK : le détachement est annulé avec la suppression.
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME} ({geste} : {cause})"));
+        return crate::handlers::dashboards::refuser_le_retrait_non_pris(&geste, &cause, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME);
     }
     rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME, || StatusCode::NO_CONTENT.into_response())
 }

@@ -494,6 +494,27 @@ pub(crate) enum RefusDAttache {
     TransactionNonOuverte,
 }
 
+/// `P10.31-u` — CE QU'UNE ATTACHE VALIDÉE PORTE. Le maillon `case.runbook_attach` manquant n'est PAS un refus : les
+/// étapes et la chronologie sont écrites, rien n'est annulé (le rejeu serait refusé : la progression existe). Il
+/// voyageait par l'`Err` de `RefusDAttache` (variante `AttacheeSansTrace`), où un appelant qui lit `.is_err()` comme
+/// « refusé, rien écrit » se trompait ; il voyage désormais dans l'`Ok`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AttacheValidee {
+    /// Étapes écrites ET maillon inscrit.
+    Tracee { etapes: i64 },
+    /// Étapes écrites, maillon NON inscrit (cause du moteur portée) : la route sert `200`
+    /// `{attached, registre_sans_maillon}`.
+    SansTrace { etapes: i64, cause: String },
+}
+
+impl AttacheValidee {
+    pub(crate) fn etapes(&self) -> i64 {
+        match self {
+            AttacheValidee::Tracee { etapes } | AttacheValidee::SansTrace { etapes, .. } => *etapes,
+        }
+    }
+}
+
 impl From<&str> for RefusDAttache {
     fn from(raison: &str) -> Self {
         RefusDAttache::Refuse(raison.to_string())
@@ -538,7 +559,15 @@ impl std::fmt::Display for RefusDAttache {
 /// DÉFINITIVE (mesuré : 2 étapes sur 4 en base, le registre en annonçant 4, le nouvel essai refusé). Les
 /// étapes s'écrivent désormais dans UNE transaction, chacune comptée ; la chronologie et le registre ne
 /// suivent que la validation, et comptent les étapes ÉCRITES.
-pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author: &str, targets: &PrefillTargets) -> Result<i64, RefusDAttache> {
+///
+/// `P10.31-u` — l'attache validée rend `AttacheValidee` : tracée, ou sans maillon (cause portée) — jamais un `Err`.
+pub(crate) fn attach_runbook(
+    conn: &Connection,
+    id: i64,
+    runbook_id: i64,
+    author: &str,
+    targets: &PrefillTargets,
+) -> Result<AttacheValidee, RefusDAttache> {
     // `P10.20-b` (rang deux) — les deux lectures qui JUGENT l'attache sont des `Result` scrutés : l'absence ÉTABLIE
     // (`QueryReturnedNoRows`) garde le refus d'avant, la lecture refusée est un refus NOMMÉ, rien n'est écrit.
     match conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())) {
@@ -626,8 +655,11 @@ pub(crate) fn attach_runbook(conn: &Connection, id: i64, runbook_id: i64, author
     ajouter_l_element_au_dossier(conn, id, now(), "runbook", author, &chronologie, None)
         .map_err(|e| RefusDAttache::EtapesNonEcrites(format!("chronologie : {e}")))?;
     txn.commit().map_err(|e| RefusDAttache::EtapesNonEcrites(format!("validation refusée ({e})")))?;
-    ledger_append(conn, "case.runbook_attach", &format!("#{id} runbook={runbook_id} '{rb_name}' steps={n} by {author}"));
-    Ok(n)
+    // `P10.31-u` — LE MAILLON EST CONSOMMÉ (il était jeté par un appel nu) : une attache validée sans trace est dite.
+    match ledger_append(conn, "case.runbook_attach", &format!("#{id} runbook={runbook_id} '{rb_name}' steps={n} by {author}")) {
+        MaillonDeRegistre::Inscrit => Ok(AttacheValidee::Tracee { etapes: n }),
+        MaillonDeRegistre::NonInscrit(cause) => Ok(AttacheValidee::SansTrace { etapes: n, cause }),
+    }
 }
 
 /// Steps d'un incident + progression (par phase). INTERNE. `{steps, progress, runbook}` ; vide si aucun runbook.
@@ -897,7 +929,13 @@ pub(crate) async fn case_runbook_attach(State(st): State<AppState>, Extension(au
         }
     };
     match attach_runbook(&conn, id, runbook_id, &au.name, &targets) {
-        Ok(n) => Json(json!({ "attached": n })).into_response(),
+        Ok(AttacheValidee::Tracee { etapes: n }) => Json(json!({ "attached": n })).into_response(),
+        // `P10.31-u` — attache validée, maillon manquant : `200` avec l'aveu à côté du compte, rien n'est annulé.
+        Ok(AttacheValidee::SansTrace { etapes, cause }) => {
+            let mut corps = json!({ "attached": etapes });
+            corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
+            Json(corps).into_response()
+        }
         Err(RefusDAttache::Refuse(raison)) => bad_req(raison),
         // `P10.21-t` — une étape non écrite n'est pas une demande invalide : `503`, et rien n'est posé.
         // `P10.20-b` — une lecture qui JUGE l'attache (dossier, progression) n'a pas eu lieu : ni une demande invalide,

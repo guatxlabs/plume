@@ -761,19 +761,35 @@ pub(crate) fn engagement_row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> 
     }))
 }
 
+/// `P10.20-l` (vague AG) — la fiche d'un engagement n'a pas été lue : ce n'est pas une absence. Refus nommé côté
+/// console (ni `BEGIN` ni `COMMIT` : c'est la lecture qui manque).
+pub(crate) const CAUSE_ENGAGEMENT_NON_LU: &str = "ENGAGEMENT NON LU : la base n'a pas rendu la fiche de cet engagement — \
+     ce n'est PAS « introuvable », c'est une lecture qui n'a pas eu lieu : s'il existe, son exemption d'auto-ban et ses \
+     permis courent toujours. Réessayez ; si le refus persiste, la table des engagements est illisible.";
+
 /// GET /api/engagements/{id} — engagement + ses grants (admin). Les grants exposent l'INTENT de provisioning :
 /// un adaptateur de provisioning PULL les 'pending' (émet + écrit le ref), le sweep les passe 'revoked' — MÊME
 /// pattern déclare-vs-applique que /api/engagements/active pour l'enforcer.
 pub(crate) async fn engagement_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<String>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let mut eng = match conn.query_row(
+    // `P10.20-l` (vague AG) — trois issues (`engagement_row_json` compris : une colonne qui ne se lit pas est une
+    // lecture ratée) : absent, le 404 d'avant au corps près ; lecture ratée, 503 nommé, la cause du moteur au journal
+    // seul avec l'identifiant de corrélation — la forme d'avant (`Err(_)`) disait « introuvable » un engagement dont
+    // l'exemption d'auto-ban courait toujours.
+    let lue = conn.query_row(
         "SELECT id,name,box,scope,window_start,window_end,authorizer,reason,status,adapter,created,created_by,ended_ts \
          FROM engagement WHERE id=?1",
         params![id], engagement_row_json,
-    ) {
-        Ok(v) => v,
-        Err(_) => return not_found("engagement introuvable"),
+    ).optional();
+    let mut eng = match lue {
+        Ok(Some(v)) => v,
+        Ok(None) => return not_found("engagement introuvable"),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENGAGEMENT_NON_LU);
+            eprintln!("[engagement] WARN lecture de l'engagement '{id}' refusée : sa fiche n'a pas pu être lue ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     // `P10.7-f` (rang 4, vague b) — LA FICHE PORTE TOUS SES PERMIS, OU ELLE DIT QU'ELLE NE LES A PAS LUS.
     // Avant : `.map(|m| m.flatten().collect()).unwrap_or_default()` et `Err(_) => Vec::new()` — un permis
@@ -971,7 +987,8 @@ pub(crate) async fn engagement_create(
         }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (engagement NON créé): {e}"))
+            // `P10.29-l` (vague AG) — phrase fixe, cause du moteur au journal seul (ni le nom, ni la raison, ni le périmètre).
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[engagement]", "création d'un engagement", &e)
         }
     }
 }
@@ -1104,7 +1121,8 @@ pub(crate) async fn engagement_end(State(st): State<AppState>, Extension(au): Ex
         }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (engagement inchangé): {e}"))
+            // `P10.29-l` (vague AG) — phrase fixe, cause du moteur au journal seul.
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[engagement]", &format!("clôture de l'engagement '{id}'"), &e)
         }
     }
 }
@@ -1117,7 +1135,11 @@ pub(crate) async fn mode_get(State(st): State<AppState>, Extension(au): Extensio
         match conn.query_row::<String, _, _>("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0)) {
             Ok(m) => Json(json!({ "mode": m })),
             Err(rusqlite::Error::QueryReturnedNoRows) => Json(json!({ "mode": "observe" })),
-            Err(e) => Json(json!({ "mode": "observe", "error": format!("mode NON LU : la lecture de plume_mode a échoué ({e}) — « observe » est un repli, pas la valeur enregistrée") })),
+            // `P10.29-l` (vague AG) — la cause du moteur part au journal seul ; le corps garde une phrase fixe.
+            Err(e) => {
+                eprintln!("[engagement] WARN lecture du mode global ratée : « observe » servi en repli ({e})");
+                Json(json!({ "mode": "observe", "error": "mode NON LU : la lecture de plume_mode a échoué — « observe » est un repli, pas la valeur enregistrée" }))
+            }
         }
     })
 }
@@ -1158,7 +1180,8 @@ pub(crate) async fn mode_set(State(st): State<AppState>, Extension(au): Extensio
         },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (mode inchangé): {e}"))
+            // `P10.29-l` (vague AG) — phrase fixe, cause du moteur au journal seul.
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[engagement]", &format!("bascule du mode vers '{m}'"), &e)
         }
     }
 }

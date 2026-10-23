@@ -290,6 +290,25 @@ fn mail_token_ok(s: &str) -> bool {
     !s.is_empty() && s.len() < 256 && s.chars().all(|c| c.is_ascii_alphanumeric() || "._:,=+-@".contains(c))
 }
 
+/// `P10.31-u` — LA LECTURE D'UN CORPS DE COURRIEL QUE LE REGISTRE N'A PAS PU TRACER EST REFUSÉE, et le corps
+/// n'est PAS lu. Même décision que l'accès cross-tenant sans trace (`CAUSE_ACCES_OPERATEUR_SANS_TRACE`,
+/// rbac.rs) : une lecture de boîte sans preuve d'audit serait indétectable après coup. Phrase fixe : elle ne
+/// nomme ni le compte, ni la boîte, ni la cause du moteur (au journal, avec l'identifiant de corrélation).
+pub(crate) const CAUSE_CORPS_DU_COURRIEL_NON_LU_SANS_TRACE: &str =
+    "LECTURE REFUSÉE : la lecture de ce courriel n'a pas pu être tracée — le registre tamper-evident n'a pas \
+     pris la ligne qui l'atteste — et elle est refusée pour cette raison : aucun corps n'a été lu. Réessayez \
+     quand la base accepte de nouveau les écritures, et signalez-le.";
+
+/// `P10.29-l` — la commande de lecture a rendu un échec : phrase FIXE (préfixe `body-fetch` gardé). Sa sortie
+/// d'erreur ne part plus au client ; le journal ne garde que le code de sortie.
+pub(crate) const PHRASE_BODY_FETCH_A_ECHOUE: &str =
+    "body-fetch a echoue : la commande de lecture du corps a rendu un échec (sa sortie d'erreur reste côté serveur)";
+
+/// `P10.29-l` — la commande de lecture n'a pas pu être lancée : phrase FIXE (préfixe `body-fetch` gardé), le
+/// texte de l'erreur d'exécution ne part plus au client ; le journal n'en garde que la nature (`ErrorKind`).
+pub(crate) const PHRASE_BODY_FETCH_NON_LANCE: &str =
+    "body-fetch non lance : la commande de lecture du corps n'a pas pu être exécutée";
+
 /// body-fetch GATE (role=admin) + AUDITE (ledger central + audit agent). Lit le corps COMPLET
 /// d'un message via la commande configuree PLUME_MAIL_BODY_CMD (ex local : ".../plume-collector-mail body",
 /// ex distant : "ssh agent .../plume-collector-mail body"). On ajoute account/id/folder EN ARGUMENTS
@@ -310,6 +329,19 @@ pub(crate) async fn mail_body(State(st): State<AppState>, Extension(au): Extensi
     if cmd.trim().is_empty() {
         return err_json(StatusCode::NOT_IMPLEMENTED, "body-fetch non configure (PLUME_MAIL_BODY_CMD)");
     }
+    // `P10.31-u` — LA TRACE EST ÉCRITE AVANT LA LECTURE, ET SON ISSUE DÉCIDE. Elle était posée APRÈS l'exécution et
+    // son issue jetée : le corps était servi même quand le registre refusait la ligne (lecture de boîte sans preuve
+    // d'audit). Non inscrite : 503 nommé, la commande n'est PAS lancée (décision par défaut de l'orchestrateur, vague AG).
+    let maillon = ledger_append(&req_db(&st, &au).lock(), "mail.body.read", &format!("{account} {folder}/{id} by {}", au.name));
+    match maillon {
+        crate::ledger::MaillonDeRegistre::Inscrit => {}
+        crate::ledger::MaillonDeRegistre::NonInscrit(cause) => {
+            let (correlation, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CORPS_DU_COURRIEL_NON_LU_SANS_TRACE);
+            let correlation = correlation.unwrap_or_default();
+            eprintln!("[{correlation}] [mail] WARN corps du courriel NON lu : trace d'audit non inscrite ({cause})");
+            return refus;
+        }
+    }
     let mut parts = cmd.split_whitespace();
     let prog = parts.next().unwrap_or("");
     let base: Vec<&str> = parts.collect();
@@ -319,14 +351,27 @@ pub(crate) async fn mail_body(State(st): State<AppState>, Extension(au): Extensi
         // Contrat sous-process : on POSE PLUME_ACTOR (qui demande), lu par le binaire externe PLUME_MAIL_BODY_CMD.
         .env("PLUME_ACTOR", &au.name)
         .output();
-    // audit central tamper-evident (en plus de l'event mail-audit cote agent)
-    ledger_append(&req_db(&st, &au).lock(), "mail.body.read", &format!("{account} {folder}/{id} by {}", au.name));
     match out {
         Ok(o) if o.status.success() => match serde_json::from_slice::<Value>(&o.stdout) {
             Ok(j) => Json(j).into_response(),
             Err(_) => err_json(StatusCode::BAD_GATEWAY, "sortie body invalide"),
         },
-        Ok(o) => err_json(StatusCode::BAD_GATEWAY, format!("body-fetch a echoue : {}", String::from_utf8_lossy(&o.stderr).chars().take(300).collect::<String>())),
-        Err(e) => server_err(format!("exec: {e}")),
+        // `P10.29-l` — phrases FIXES : la sortie d'erreur de la commande (qui peut citer un chemin, un compte, un hôte)
+        // et le texte de l'erreur d'exécution ne partent plus au client ; le journal ne garde que le code de sortie
+        // ou la nature de l'erreur, avec l'identifiant de corrélation servi.
+        Ok(o) => {
+            let (correlation, refus) = err_json_et_identifiant(StatusCode::BAD_GATEWAY, PHRASE_BODY_FETCH_A_ECHOUE);
+            let sortie = match o.status.code() {
+                Some(code) => format!("code de sortie {code}"),
+                None => "arrêtée par un signal".to_string(),
+            };
+            eprintln!("[{}] [mail] WARN body-fetch a echoue : {sortie}", correlation.unwrap_or_default());
+            refus
+        }
+        Err(e) => {
+            let (correlation, refus) = err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, PHRASE_BODY_FETCH_NON_LANCE);
+            eprintln!("[{}] [mail] WARN body-fetch non lance : {:?}", correlation.unwrap_or_default(), e.kind());
+            refus
+        }
     }
 }

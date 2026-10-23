@@ -18,17 +18,40 @@ use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apre
 // `shared`, ou propriétaire NOMMÉ). Elle ne dit plus « ownership hérité (legacy/vide) » : une colonne
 // vide n'octroie rien. Le dashboard SEMÉ reste éditable parce qu'il est `shared`, pas parce qu'il est
 // sans propriétaire.
-pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> bool {
+//
+// `P10.20-l` (vague AG) — TROIS ISSUES, ET LA LECTURE RATÉE N'EST PAS UN REFUS DE DROIT. La forme d'avant
+// (`Err(_) => false`) rendait 403 sur un propriétaire illisible — un refus de droit inventé, pour un tableau que le
+// compte a peut-être le droit de modifier — et 403 aussi sur une ligne absente. Chaque appelant tranche désormais les
+// quatre cas : droit établi, refus établi (403 de sa forme d'avant), ligne absente (404), lecture refusée (503
+// `CAUSE_DROIT_D_EDITION_NON_LU`, phrase fixe déjà servie par `dash_ergonomics` ; la cause du moteur au journal seul,
+// avec l'identifiant interne du tableau et l'identifiant de corrélation, jamais un nom de compte).
+pub(crate) enum PorteDuTableau {
+    Ouverte,
+    Refusee,
+    Absent,
+    NonLue(Response),
+}
+
+pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> PorteDuTableau {
     if au.is_admin() {
-        return true;
+        return PorteDuTableau::Ouverte;
     }
-    match conn.query_row(
-        "SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1",
-        params![dash_id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-    ) {
-        Ok((owner, vis)) => panneau_resolu::lisible_par(&owner, &vis, au),
-        Err(_) => false,
+    match conn
+        .query_row(
+            "SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1",
+            params![dash_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+    {
+        Ok(Some((owner, vis))) if panneau_resolu::lisible_par(&owner, &vis, au) => PorteDuTableau::Ouverte,
+        Ok(Some(_)) => PorteDuTableau::Refusee,
+        Ok(None) => PorteDuTableau::Absent,
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, crate::handlers::dash_ergonomics::CAUSE_DROIT_D_EDITION_NON_LU);
+            eprintln!("[dashboards] WARN droit d'édition du tableau de bord #{dash_id} NON lu, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+            PorteDuTableau::NonLue(refus)
+        }
     }
 }
 
@@ -194,8 +217,11 @@ pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Exten
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return panneau_resolu::refus_de_visibilite_non_lue(),
     };
-    if !dash_editable(&conn, &au, id) {
-        return StatusCode::FORBIDDEN.into_response();
+    match dash_editable(&conn, &au, id) {
+        PorteDuTableau::Ouverte => {}
+        PorteDuTableau::Refusee => return StatusCode::FORBIDDEN.into_response(),
+        PorteDuTableau::Absent => return StatusCode::NOT_FOUND.into_response(),
+        PorteDuTableau::NonLue(refus) => return refus,
     }
     // `P11.20-m` — LE GESTE DE PARTAGE EST JUGÉ AVANT TOUTE ÉCRITURE : refusé avec la raison tant
     // qu'un élément du tableau de bord est moins visible ; rien du corps n'est appliqué sur un refus.
@@ -208,34 +234,49 @@ pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Exten
             Err(_) => return panneau_resolu::refus_d_elements_retenant_non_lus(),
         }
     }
-    if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE dashboard SET name=?1 WHERE id=?2", params![name, id]);
-    }
-    if let Some(vis) = b.get("visibility").and_then(|v| v.as_str()) {
-        let vis = if vis == "shared" { "shared" } else { "private" };
-        let _ = conn.execute("UPDATE dashboard SET visibility=?1 WHERE id=?2", params![vis, id]);
-    }
-    if let Some(vv) = b.get("view_id") {
-        if vv.is_null() {
-            let _ = conn.execute("UPDATE dashboard SET view_id=NULL WHERE id=?1", params![id]);
-        } else if let Some(n) = vv.as_i64() {
-            let _ = conn.execute("UPDATE dashboard SET view_id=?1 WHERE id=?2", params![n, id]);
+    // `P10.20-l` (vague AG) — LES ÉCRITURES SOUS UN GARDE, UNE LIGNE EXIGÉE CHACUNE (le tableau vient d'être lu). La forme
+    // d'avant (huit `let _` puis 204) avalait toute écriture refusée : un champ envoyé et refusé — la visibilité comprise —
+    // laissait la réponse dire « modifié ». Un refus ou un effet nul annule TOUT (Drop -> ROLLBACK), 503 nommé.
+    let geste = format!("modification du tableau de bord #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_TABLEAU_DE_BORD_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    let ecrit: Result<(), String> = (|| {
+        if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
+            une_seule_ligne(conn.execute("UPDATE dashboard SET name=?1 WHERE id=?2", params![name, id]), "nom")?;
         }
+        if let Some(vis) = b.get("visibility").and_then(|v| v.as_str()) {
+            let vis = if vis == "shared" { "shared" } else { "private" };
+            une_seule_ligne(conn.execute("UPDATE dashboard SET visibility=?1 WHERE id=?2", params![vis, id]), "visibilité")?;
+        }
+        if let Some(vv) = b.get("view_id") {
+            if vv.is_null() {
+                une_seule_ligne(conn.execute("UPDATE dashboard SET view_id=NULL WHERE id=?1", params![id]), "vue")?;
+            } else if let Some(n) = vv.as_i64() {
+                une_seule_ligne(conn.execute("UPDATE dashboard SET view_id=?1 WHERE id=?2", params![n, id]), "vue")?;
+            }
+        }
+        // layout dans la vue (grille) : largeur en colonnes, hauteur px, ordre, replié
+        if let Some(v) = b.get("cols").and_then(|v| v.as_i64()) {
+            une_seule_ligne(conn.execute("UPDATE dashboard SET cols=?1 WHERE id=?2", params![v.clamp(1, 4), id]), "largeur")?;
+        }
+        if let Some(v) = b.get("height").and_then(|v| v.as_i64()) {
+            une_seule_ligne(conn.execute("UPDATE dashboard SET height=?1 WHERE id=?2", params![v.max(0), id]), "hauteur")?;
+        }
+        if let Some(v) = b.get("collapsed").and_then(|v| v.as_bool()) {
+            une_seule_ligne(conn.execute("UPDATE dashboard SET collapsed=?1 WHERE id=?2", params![v as i64, id]), "repli")?;
+        }
+        if let Some(v) = b.get("position").and_then(|v| v.as_i64()) {
+            une_seule_ligne(conn.execute("UPDATE dashboard SET position=?1 WHERE id=?2", params![v, id]), "position")?;
+        }
+        Ok(())
+    })();
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : chaque champ est celui d'avant.
+        return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_TABLEAU_DE_BORD_INCHANGE);
     }
-    // layout dans la vue (grille) : largeur en colonnes, hauteur px, ordre, replié
-    if let Some(v) = b.get("cols").and_then(|v| v.as_i64()) {
-        let _ = conn.execute("UPDATE dashboard SET cols=?1 WHERE id=?2", params![v.clamp(1, 4), id]);
-    }
-    if let Some(v) = b.get("height").and_then(|v| v.as_i64()) {
-        let _ = conn.execute("UPDATE dashboard SET height=?1 WHERE id=?2", params![v.max(0), id]);
-    }
-    if let Some(v) = b.get("collapsed").and_then(|v| v.as_bool()) {
-        let _ = conn.execute("UPDATE dashboard SET collapsed=?1 WHERE id=?2", params![v as i64, id]);
-    }
-    if let Some(v) = b.get("position").and_then(|v| v.as_i64()) {
-        let _ = conn.execute("UPDATE dashboard SET position=?1 WHERE id=?2", params![v, id]);
-    }
-    StatusCode::NO_CONTENT.into_response()
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_TABLEAU_DE_BORD_INCHANGE, || StatusCode::NO_CONTENT.into_response())
 }
 
 pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
@@ -263,7 +304,11 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
     //     bien commun DÉCLARÉ. C'est une décision d'ERGONOMIE, et elle doit dire la vérité sur la
     //     porte : la vue masquerait sinon un geste que le serveur accepte.
     let owns = portee.est_proprietaire();
-    let editable = dash_editable(&conn, &au, id);
+    // `P10.20-l` (vague AG) — LE DRAPEAU SE DÉCIDE SUR LA LECTURE QUI A DÉJÀ DÉCIDÉ L'ACCÈS (propriétaire et visibilité,
+    // ci-dessus), par la règle de la porte (`dash_editable` : admin, ou `lisible_par`). La forme d'avant relisait la
+    // ligne par `dash_editable`, dont l'échec valait `false` : une seconde lecture refusée servait `editable:false` sur un
+    // tableau que la porte laisse modifier — un drapeau qui ment sur sa porte, et une lecture de plus qui peut manquer.
+    let editable = au.is_admin() || panneau_resolu::lisible_par(&owner, &vis, &au);
     // LIBRARY PANELS (#54) : titre/requête/is_soql/viz/drill AFFICHÉS sont résolus depuis `library_panel`
     // quand le panneau la référence. La résolution est EMPRUNTÉE au coffre `panneau_resolu` (P7.13-a) —
     // elle n'est plus réécrite ici, et `build.rs` refuse de compiler toute réécriture ailleurs.
@@ -321,6 +366,37 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
     Json(corps).into_response()
 }
 
+/// `P10.20-l` (vague AG) — une écriture de la modification d'un tableau de bord refusée ou sans effet : la transaction est
+/// annulée (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_TABLEAU_DE_BORD_INCHANGE: &str = "TABLEAU DE BORD INCHANGÉ : la base n'a pas pris l'écriture de la \
+     modification ou n'en a écrit aucune ligne, et la transaction est annulée — le nom, la visibilité, la vue et la \
+     disposition du tableau de bord sont ceux d'avant (un tableau privé le reste). Réessayez ; si le refus persiste, la \
+     base est en lecture seule, pleine ou verrouillée.";
+/// `P10.20-l` (vague AG) — le `BEGIN` de cette modification refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`).
+pub(crate) const CAUSE_TABLEAU_DE_BORD_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "TABLEAU DE BORD INCHANGÉ : la base n'a \
+     pas pris la transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.20-l` (vague AG) — une écriture de la modification d'un panneau refusée ou sans effet : la transaction est
+/// annulée, le cache n'est pas purgé (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_PANNEAU_INCHANGE: &str = "PANNEAU INCHANGÉ : la base n'a pas pris l'écriture de la modification \
+     ou n'en a écrit aucune ligne, et la transaction est annulée — la requête, sa visualisation, sa fenêtre, sa visibilité, \
+     sa disposition, son rattachement à une définition de bibliothèque et son cache sont ceux d'avant. Réessayez ; si le \
+     refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.20-l` (vague AG) — le `BEGIN` de cette modification refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`).
+pub(crate) const CAUSE_PANNEAU_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "PANNEAU INCHANGÉ : la base n'a pas pris la \
+     transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit : le panneau et son cache sont intacts. Réessayez ; s'il est refusé encore, \
+     l'écrivain est occupé ou bloqué.";
+/// `P10.20-l` (vague AG) — une écriture de la modification d'une vue refusée ou sans effet : la transaction est annulée
+/// (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_VUE_INCHANGEE: &str = "VUE INCHANGÉE : la base n'a pas pris l'écriture de la modification ou n'en a \
+     écrit aucune ligne, et la transaction est annulée — le nom et la visibilité de la vue sont ceux d'avant (une vue \
+     privée le reste). Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.20-l` (vague AG) — le `BEGIN` de cette modification refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`).
+pub(crate) const CAUSE_VUE_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "VUE INCHANGÉE : la base n'a pas pris la \
+     transaction de la modification (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+
 /// `P10.20-l` (vague AF) — le propriétaire du tableau de bord n'a pas été lu : le droit n'est pas jugé, rien n'est
 /// supprimé. Ne nomme ni `BEGIN` ni `COMMIT` ni une transaction annulée : c'est la lecture qui manque (refus nommé).
 pub(crate) const CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU: &str = "TABLEAU DE BORD NON SUPPRIMÉ : la base n'a pas rendu \
@@ -340,8 +416,8 @@ pub(crate) const CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_TRANSACTION_NON_OUVERTE: &st
      refusé encore, l'écrivain est occupé ou bloqué.";
 
 /// `P10.20-l` (vague AF) — un effacement qui doit porter sur la ligne LUE juste avant : une seule, ni zéro (un
-/// déclencheur qui l'ignore) ni plusieurs.
-fn une_ligne_effacee(issue: rusqlite::Result<usize>, quoi: &str) -> Result<(), String> {
+/// déclencheur qui l'ignore) ni plusieurs. (Vague AG : la même règle pour chaque écriture d'une modification.)
+fn une_seule_ligne(issue: rusqlite::Result<usize>, quoi: &str) -> Result<(), String> {
     match issue {
         Ok(1) => Ok(()),
         Ok(n) => Err(format!("{quoi} : {}", lignes_ecrites_au_lieu_d_une(n))),
@@ -352,7 +428,9 @@ fn une_ligne_effacee(issue: rusqlite::Result<usize>, quoi: &str) -> Result<(), S
 /// `P10.20-l` (vague AF) — un effacement de suppression refusé, sous le garde du geste déjà annulé par l'appelant : le
 /// 503 porte la phrase fixe du geste et l'identifiant de corrélation ; la cause du moteur va au journal seul (jamais
 /// dans le corps), avec le geste et l'identifiant interne de l'objet — aucun nom de compte.
-fn refuser_le_retrait_non_pris(geste: &str, cause: &str, phrase: &'static str) -> Response {
+/// (Vague AG : il sert aussi les modifications d'un tableau, d'un panneau et d'une vue, et la suppression d'un panneau de
+/// bibliothèque — `dash_ergonomics`.)
+pub(crate) fn refuser_le_retrait_non_pris(geste: &str, cause: &str, phrase: &'static str) -> Response {
     let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, phrase);
     eprintln!("[dashboards] WARN {geste} NON prise, transaction annulée ({}) : {cause}", cid.unwrap_or_default());
     refus
@@ -388,15 +466,36 @@ pub(crate) async fn dash_delete(State(st): State<AppState>, Extension(au): Exten
         Ok(t) => t,
         Err(refus) => return refus,
     };
-    let ecrit: Result<(), String> = (|| {
-        conn.execute("DELETE FROM panel WHERE dashboard_id=?1", params![id]).map_err(|e| format!("effacement des panneaux du tableau : {e}"))?;
-        une_ligne_effacee(conn.execute("DELETE FROM dashboard WHERE id=?1", params![id]), "effacement du tableau de bord")
+    // `P10.20-l` (vague AG) — LES PANNEAUX EFFACÉS SONT CEUX LUS, ET LEUR CACHE EST PURGÉ APRÈS LA VALIDATION. Leurs
+    // identifiants se lisent dans la transaction, avant l'effacement (une lecture refusée annule tout) ; l'effacement doit
+    // en ôter exactement autant (un déclencheur qui en ignore un laisserait un panneau sans tableau) ; puis, la
+    // suppression validée seulement, le cache de chacun est purgé — la forme d'avant le laissait derrière, la garde
+    // `query_fp` restant la seule barrière contre un rowid réutilisé.
+    let ecrit: Result<Vec<i64>, String> = (|| {
+        let panneaux: Vec<i64> = conn
+            .prepare("SELECT id FROM panel WHERE dashboard_id=?1")
+            .and_then(|mut stmt| stmt.query_map(params![id], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<i64>>>())
+            .map_err(|e| format!("lecture des panneaux du tableau : {e}"))?;
+        let effaces = conn.execute("DELETE FROM panel WHERE dashboard_id=?1", params![id]).map_err(|e| format!("effacement des panneaux du tableau : {e}"))?;
+        if effaces != panneaux.len() {
+            return Err(format!("effacement des panneaux du tableau : {effaces} ligne(s) effacée(s) pour {} panneau(x) lu(s)", panneaux.len()));
+        }
+        une_seule_ligne(conn.execute("DELETE FROM dashboard WHERE id=?1", params![id]), "effacement du tableau de bord")?;
+        Ok(panneaux)
     })();
-    if let Err(cause) = ecrit {
-        drop(tx); // Drop -> ROLLBACK : les panneaux effacés reviennent avec le tableau.
-        return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME);
-    }
-    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME, || StatusCode::NO_CONTENT.into_response())
+    let panneaux = match ecrit {
+        Ok(p) => p,
+        Err(cause) => {
+            drop(tx); // Drop -> ROLLBACK : les panneaux effacés reviennent avec le tableau.
+            return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME);
+        }
+    };
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME, || {
+        for pid in &panneaux {
+            panneau_avoue::cache_invalider_panneau(&conn, *pid);
+        }
+        StatusCode::NO_CONTENT.into_response()
+    })
 }
 
 pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
@@ -416,8 +515,13 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
     let ref_bib = RefBibliotheque::du_corps_a_la_creation(&b);
     let library_panel_id = ref_bib.a_ecrire().flatten();
     crate::req_conn!(st, au, conn);
-    if !dash_editable(&conn, &au, did) {
-        return (StatusCode::FORBIDDEN, "dashboard non modifiable").into_response();
+    // `P10.20-l` (vague AG) — tableau absent : 404 en texte, à la forme du 403 voisin (la forme d'avant disait « non
+    // modifiable » d'un tableau qui n'existe pas) ; droit non lu : 503 nommé, rien n'est créé.
+    match dash_editable(&conn, &au, did) {
+        PorteDuTableau::Ouverte => {}
+        PorteDuTableau::Refusee => return (StatusCode::FORBIDDEN, "dashboard non modifiable").into_response(),
+        PorteDuTableau::Absent => return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response(),
+        PorteDuTableau::NonLue(refus) => return refus,
     }
     // SQL BRUT = ADMIN — un panneau en SQL BRUT (is_soql=false) exécute du SQL arbitraire read-only sur
     // TOUTE la base à chaque refresh (panel_data) : RÉSERVÉ ADMIN, comme les règles et /api/query. Le
@@ -479,8 +583,12 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     // `panel_create` rend le motif du refus, `panel_update` rendait le CODE SEUL — la console peignait
     // « 403 » nu, et le message de `DefinitionExecutee::projetee` (dont le 503 « définition de
     // bibliothèque NON LUE ») était JETÉ sur le sol par un `Err((code, _))`.
-    if !dash_editable(&conn, &au, did) {
-        return forbidden("dashboard non modifiable");
+    // `P10.20-l` (vague AG) — tableau porteur absent : 404 nommé ; droit non lu : 503 nommé ; rien n'est écrit.
+    match dash_editable(&conn, &au, did) {
+        PorteDuTableau::Ouverte => {}
+        PorteDuTableau::Refusee => return forbidden("dashboard non modifiable"),
+        PorteDuTableau::Absent => return not_found("dashboard introuvable"),
+        PorteDuTableau::NonLue(refus) => return refus,
     }
     // `P11.20-m` — le geste de partage d'un panneau est jugé AVANT toute écriture : la définition de
     // bibliothèque privée qu'il exécute le retient, et le refus la nomme avec son propriétaire.
@@ -515,51 +623,65 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     if !def.permise_pour(&au.role) {
         return forbidden("SQL brut réservé à l'administrateur (utilisez GXQL)");
     }
-    if let Some(viz) = b.get("viz").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE panel SET viz=?1 WHERE id=?2", params![viz, id]);
+    // `P10.20-l` (vague AG) — LES ÉCRITURES SOUS UN GARDE, UNE LIGNE EXIGÉE CHACUNE (le panneau vient d'être lu). La forme
+    // d'avant (douze `let _` puis 204) avalait toute écriture refusée — la visibilité, `query_private` et le rattachement
+    // compris — et purgeait le cache d'un panneau resté tel quel. Un refus ou un effet nul annule TOUT (Drop -> ROLLBACK),
+    // 503 nommé, cache NON purgé.
+    let geste = format!("modification du panneau #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_PANNEAU_INCHANGE_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    let ecrit: Result<(), String> = (|| {
+        for (k, col) in [("viz", "viz"), ("title", "title"), ("query", "query")] {
+            if let Some(v) = b.get(k).and_then(|v| v.as_str()) {
+                une_seule_ligne(conn.execute(&format!("UPDATE panel SET {col}=?1 WHERE id=?2"), params![v, id]), col)?;
+            }
+        }
+        if let Some(v) = b.get("is_soql").and_then(|v| v.as_bool()) {
+            une_seule_ligne(conn.execute("UPDATE panel SET is_soql=?1 WHERE id=?2", params![v as i64, id]), "is_soql")?;
+        }
+        if let Some(v) = b.get("window_s").and_then(|v| v.as_i64()) {
+            une_seule_ligne(conn.execute("UPDATE panel SET window_s=?1 WHERE id=?2", params![v, id]), "window_s")?;
+        }
+        if let Some(v) = b.get("visibility").and_then(|v| v.as_str()) {
+            let vv = if v == "private" { "private" } else { "shared" };
+            une_seule_ligne(conn.execute("UPDATE panel SET visibility=?1 WHERE id=?2", params![vv, id]), "visibility")?;
+        }
+        if let Some(v) = b.get("query_private").and_then(|v| v.as_bool()) {
+            une_seule_ligne(conn.execute("UPDATE panel SET query_private=?1 WHERE id=?2", params![v as i64, id]), "query_private")?;
+        }
+        if let Some(v) = b.get("cols").and_then(|v| v.as_i64()) {
+            une_seule_ligne(conn.execute("UPDATE panel SET cols=?1 WHERE id=?2", params![v.clamp(1, 4), id]), "cols")?;
+        }
+        if let Some(v) = b.get("height").and_then(|v| v.as_i64()) {
+            une_seule_ligne(conn.execute("UPDATE panel SET height=?1 WHERE id=?2", params![v.max(0), id]), "height")?;
+        }
+        if let Some(v) = b.get("drill").and_then(|v| v.as_str()) {
+            une_seule_ligne(conn.execute("UPDATE panel SET drill=?1 WHERE id=?2", params![v, id]), "drill")?;
+        }
+        if let Some(v) = b.get("position").and_then(|v| v.as_i64()) {
+            une_seule_ligne(conn.execute("UPDATE panel SET position=?1 WHERE id=?2", params![v, id]), "position")?;
+        }
+        // LIBRARY PANELS (#54) : l'écriture de la référence rejoue EXACTEMENT la décision déjà passée par
+        // la porte (`ref_bib`, lu une seule fois) — jamais une seconde lecture du corps qui pourrait en
+        // différer. 0/null -> panneau autonome (détache).
+        if let Some(v) = ref_bib.a_ecrire() {
+            une_seule_ligne(conn.execute("UPDATE panel SET library_panel_id=?1 WHERE id=?2", params![v, id]), "library_panel_id")?;
+        }
+        Ok(())
+    })();
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : chaque champ est celui d'avant, le cache n'est pas purgé.
+        return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_PANNEAU_INCHANGE);
     }
-    if let Some(title) = b.get("title").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE panel SET title=?1 WHERE id=?2", params![title, id]);
-    }
-    if let Some(v) = b.get("query").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE panel SET query=?1 WHERE id=?2", params![v, id]);
-    }
-    if let Some(v) = b.get("is_soql").and_then(|v| v.as_bool()) {
-        let _ = conn.execute("UPDATE panel SET is_soql=?1 WHERE id=?2", params![v as i64, id]);
-    }
-    if let Some(v) = b.get("window_s").and_then(|v| v.as_i64()) {
-        let _ = conn.execute("UPDATE panel SET window_s=?1 WHERE id=?2", params![v, id]);
-    }
-    if let Some(v) = b.get("visibility").and_then(|v| v.as_str()) {
-        let vv = if v == "private" { "private" } else { "shared" };
-        let _ = conn.execute("UPDATE panel SET visibility=?1 WHERE id=?2", params![vv, id]);
-    }
-    if let Some(v) = b.get("query_private").and_then(|v| v.as_bool()) {
-        let _ = conn.execute("UPDATE panel SET query_private=?1 WHERE id=?2", params![v as i64, id]);
-    }
-    if let Some(v) = b.get("cols").and_then(|v| v.as_i64()) {
-        let _ = conn.execute("UPDATE panel SET cols=?1 WHERE id=?2", params![v.clamp(1, 4), id]);
-    }
-    if let Some(v) = b.get("height").and_then(|v| v.as_i64()) {
-        let _ = conn.execute("UPDATE panel SET height=?1 WHERE id=?2", params![v.max(0), id]);
-    }
-    if let Some(v) = b.get("drill").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE panel SET drill=?1 WHERE id=?2", params![v, id]);
-    }
-    if let Some(v) = b.get("position").and_then(|v| v.as_i64()) {
-        let _ = conn.execute("UPDATE panel SET position=?1 WHERE id=?2", params![v, id]);
-    }
-    // LIBRARY PANELS (#54) : l'écriture de la référence rejoue EXACTEMENT la décision déjà passée par
-    // la porte (`ref_bib`, lu une seule fois) — jamais une seconde lecture du corps qui pourrait en
-    // différer. 0/null -> panneau autonome (détache).
-    if let Some(v) = ref_bib.a_ecrire() {
-        let _ = conn.execute("UPDATE panel SET library_panel_id=?1 WHERE id=?2", params![v, id]);
-    }
-    // INVALIDATION : invalide le cache du panneau à chaque update. On purge sans condition (le coût est nul :
-    // 1 ligne max) -> aucun payload périmé servi après changement de requête/viz/fenêtre/visibilité. La
-    // garde query_fp (v36) couvre déjà le cas requête, ceci couvre aussi viz/window/visibilité d'un coup.
-    panneau_avoue::cache_invalider_panneau(&conn, id);
-    StatusCode::NO_CONTENT.into_response()
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_PANNEAU_INCHANGE, || {
+        // INVALIDATION, SEULEMENT APRÈS LA VALIDATION : purge le cache du panneau à chaque update (1 ligne max) -> aucun
+        // payload périmé servi après changement de requête/viz/fenêtre/visibilité. La garde query_fp (v36) couvre déjà
+        // le cas requête, ceci couvre aussi viz/window/visibilité d'un coup.
+        panneau_avoue::cache_invalider_panneau(&conn, id);
+        StatusCode::NO_CONTENT.into_response()
+    })
 }
 
 /// `P10.20-l` (vague AE) — le tableau de bord qui porte le panneau n'a pas été lu : le droit n'est pas jugé, rien n'est
@@ -586,8 +708,14 @@ pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Exte
     // 503 `CAUSE_PANNEAU_NON_SUPPRIME_NON_LU` — ni 403 ni suppression. La route rend désormais une `Response` (son seul
     // appelant est le routeur) : la cause est servie en corps, celle du moteur au journal seul.
     match conn.query_row("SELECT dashboard_id FROM panel WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional() {
-        Ok(Some(d)) if dash_editable(&conn, &au, d) => {}
-        Ok(Some(_)) => return StatusCode::FORBIDDEN.into_response(),
+        // `P10.20-l` (vague AG) — le droit sur le tableau porteur, en quatre issues : la forme d'avant rendait 403 sur
+        // un droit illisible (`Err(_) => false`) et sur un porteur absent.
+        Ok(Some(d)) => match dash_editable(&conn, &au, d) {
+            PorteDuTableau::Ouverte => {}
+            PorteDuTableau::Refusee => return StatusCode::FORBIDDEN.into_response(),
+            PorteDuTableau::Absent => return StatusCode::NOT_FOUND.into_response(),
+            PorteDuTableau::NonLue(refus) => return refus,
+        },
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PANNEAU_NON_SUPPRIME_NON_LU);
@@ -603,7 +731,7 @@ pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Exte
         Ok(t) => t,
         Err(refus) => return refus,
     };
-    if let Err(cause) = une_ligne_effacee(conn.execute("DELETE FROM panel WHERE id=?1", params![id]), "effacement du panneau") {
+    if let Err(cause) = une_seule_ligne(conn.execute("DELETE FROM panel WHERE id=?1", params![id]), "effacement du panneau") {
         drop(tx); // Drop -> ROLLBACK : le panneau et son cache restent.
         return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_PANNEAU_NON_SUPPRIME);
     }
@@ -1382,7 +1510,7 @@ pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Exten
     let ecrit: Result<(), String> = (|| {
         // on délie, on ne supprime pas les dashboards
         conn.execute("UPDATE dashboard SET view_id=NULL WHERE view_id=?1", params![id]).map_err(|e| format!("détachement des tableaux de bord : {e}"))?;
-        une_ligne_effacee(conn.execute("DELETE FROM view WHERE id=?1", params![id]), "effacement de la vue")
+        une_seule_ligne(conn.execute("DELETE FROM view WHERE id=?1", params![id]), "effacement de la vue")
     })();
     if let Err(cause) = ecrit {
         drop(tx); // Drop -> ROLLBACK : les tableaux restent rangés dans la vue.
@@ -1425,12 +1553,27 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
             Err(_) => return panneau_resolu::refus_d_elements_retenant_non_lus(),
         }
     }
-    if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
-        let _ = conn.execute("UPDATE view SET name=?1 WHERE id=?2", params![name, id]);
+    // `P10.20-l` (vague AG) — les deux écritures sous un garde, une ligne exigée chacune (la vue vient d'être lue) : la
+    // forme d'avant (`let _` puis 204) disait « modifiée » d'un renommage ou d'un partage refusé. Un refus ou un effet nul
+    // annule les deux (Drop -> ROLLBACK), 503 nommé.
+    let geste = format!("modification de la vue #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_VUE_INCHANGEE_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    let ecrit: Result<(), String> = (|| {
+        if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
+            une_seule_ligne(conn.execute("UPDATE view SET name=?1 WHERE id=?2", params![name, id]), "nom")?;
+        }
+        if let Some(vis) = b.get("visibility").and_then(|v| v.as_str()) {
+            let vis = if vis == "shared" { "shared" } else { "private" };
+            une_seule_ligne(conn.execute("UPDATE view SET visibility=?1 WHERE id=?2", params![vis, id]), "visibilité")?;
+        }
+        Ok(())
+    })();
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : le nom et la visibilité sont ceux d'avant.
+        return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_VUE_INCHANGEE);
     }
-    if let Some(vis) = b.get("visibility").and_then(|v| v.as_str()) {
-        let vis = if vis == "shared" { "shared" } else { "private" };
-        let _ = conn.execute("UPDATE view SET visibility=?1 WHERE id=?2", params![vis, id]);
-    }
-    StatusCode::NO_CONTENT.into_response()
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_VUE_INCHANGEE, || StatusCode::NO_CONTENT.into_response())
 }

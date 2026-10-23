@@ -10,6 +10,7 @@
 //! chemin masqué normal -> masquage jamais contourné, denylist de secrets intacte, enum de commandes fermée.
 use crate::*;
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
+use rusqlite::OptionalExtension;
 
 // `P10.25-g` — LE `COMMIT` DES MODÈLES DE DONNÉES EST JUGÉ, une fois, dans le squelette commun des créations et
 // suppressions : la forme d'avant rendait 200 sur une transaction que la base n'avait pas prise, laissée ouverte sur
@@ -35,7 +36,12 @@ pub(crate) const CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE: &str
 /// un événement déjà ingéré) : le modèle d'Alice était servi avec l'identifiant du modèle de Bob, l'objet qu'Alice
 /// rattachait à « son » modèle entrait dans celui de Bob, et la suppression de « son » modèle retirait celui de Bob
 /// — 200, avec ses objets et ses champs.
-fn dm_commit(conn: &Connection, outcome: rusqlite::Result<i64>, corps_du_succes: impl FnOnce(i64) -> Value) -> Response {
+///
+/// `P10.29-l` (vague AG) — UNE ÉCRITURE OU UNE TRACE REFUSÉE SERT LA PHRASE FIXE, JAMAIS LE TEXTE DU MOTEUR. La forme
+/// d'avant servait `échec transaction audit (aucune modification): <moteur>` au client ; le statut 500 et la phrase
+/// restent, la cause du moteur va au journal seul avec le geste (`geste`, qui ne porte que l'identifiant interne) et
+/// l'identifiant de corrélation servi (`servir_l_echec_de_la_transaction_d_audit`). Un doublon reste un 400 nommé.
+fn dm_commit(conn: &Connection, geste: &str, outcome: rusqlite::Result<i64>, corps_du_succes: impl FnOnce(i64) -> Value) -> Response {
     match outcome {
         Ok(id) => rendre_apres_validation(conn, "datamodels", "écriture d'un modèle de données", CAUSE_MODELE_DE_DONNEES_NON_ECRIT, || {
             Json(corps_du_succes(id)).into_response()
@@ -45,7 +51,45 @@ fn dm_commit(conn: &Connection, outcome: rusqlite::Result<i64>, corps_du_succes:
             if e.to_string().contains("UNIQUE") {
                 return bad_req("un objet porte déjà ce nom");
             }
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[datamodels]", geste, &e)
+        }
+    }
+}
+
+// `P10.20-l` (vague AG) — UNE LECTURE RATÉE N'EST PAS UNE ABSENCE. Les quatre suppressions (modèle, objet, champ, jeu
+// de données), les deux créations rattachées (objet sous un modèle, champ sous un objet) et l'exécution d'un jeu de
+// données lisaient leur ligne par `Err(_) => not_found(…)` ou `.is_err()` : une ligne qui ne se lit pas, une table
+// hors d'atteinte, se servaient « introuvable » — un modèle toujours appliqué par les Pivots, un jeu de données
+// toujours rejoué, se disaient inexistants. Trois issues désormais : lue, le geste suit ; absente, le refus d'avant au
+// corps près ; lecture ratée, 503 nommé (refus nommé côté console : ni `BEGIN` ni `COMMIT` ni transaction annulée —
+// c'est la lecture qui manque), RIEN n'est écrit ni supprimé, la cause du moteur au journal seul.
+/// `P10.20-l` (vague AG) — la ligne visée par une suppression n'a pas été lue : rien n'est supprimé.
+pub(crate) const CAUSE_MODELE_DE_DONNEES_NON_SUPPRIME_NON_LU: &str = "MODÈLE DE DONNÉES NON SUPPRIMÉ : la base n'a pas \
+     rendu la ligne visée (modèle, objet, champ ou jeu de données) — ce n'est PAS « introuvable », c'est une lecture qui \
+     n'a pas eu lieu. RIEN n'est supprimé : s'il existe, il est intact avec ce qu'il porte, les Pivots et les jeux de \
+     données qui s'y appuient le lisent toujours, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la \
+     table des modèles de données est illisible.";
+/// `P10.20-l` (vague AG) — le modèle, ou l'objet, auquel une création se rattache n'a pas été lu : rien n'est créé.
+pub(crate) const CAUSE_MODELE_DE_DONNEES_NON_CREE_RATTACHEMENT_NON_LU: &str = "MODÈLE DE DONNÉES NON ÉCRIT : la base \
+     n'a pas rendu le modèle ou l'objet auquel ce geste se rattache — ce n'est PAS « introuvable », c'est une lecture \
+     qui n'a pas eu lieu. RIEN n'est créé, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des \
+     modèles de données est illisible.";
+/// `P10.20-l` (vague AG) — le jeu de données à exécuter (sa requête, son activation) n'a pas été lu : rien n'est exécuté.
+pub(crate) const CAUSE_JEU_DE_DONNEES_NON_EXECUTE_NON_LU: &str = "JEU DE DONNÉES NON EXÉCUTÉ : la base n'a pas rendu ce \
+     jeu de données (sa requête et son activation) — ce n'est PAS « introuvable ou désactivé », c'est une lecture qui \
+     n'a pas eu lieu. Rien n'est exécuté. Réessayez ; si le refus persiste, la table des jeux de données est illisible.";
+
+/// `P10.20-l` (vague AG) — juge, en trois issues, la lecture de la ligne que `geste` vise : lue, sa valeur ; absente,
+/// le refus d'avant (`absente`) ; lecture ratée, 503 `cause` avec l'identifiant de corrélation, la cause du moteur au
+/// journal seul avec le geste (qui ne porte que l'identifiant interne : jamais un nom, une requête ni un compte).
+fn ligne_visee<T>(lue: rusqlite::Result<Option<T>>, absente: impl FnOnce() -> Response, geste: &str, cause: &'static str) -> Result<T, Response> {
+    match lue {
+        Ok(Some(v)) => Ok(v),
+        Ok(None) => Err(absente()),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, cause);
+            eprintln!("[datamodels] WARN {geste} refusé : la ligne visée n'a pas pu être lue, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+            Err(refus)
         }
     }
 }
@@ -137,16 +181,19 @@ pub(crate) async fn model_create(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"create", "kind":"data_model", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, |id| json!({ "id": id }))
+    dm_commit(&conn, "création d'un modèle de données", outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn model_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM data_model WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("data model introuvable"),
+    let geste = format!("suppression du modèle de données #{id}");
+    let lue = conn.query_row("SELECT name FROM data_model WHERE id=?1", params![id], |r| r.get::<_,String>(0)).optional();
+    let name = match ligne_visee(lue, || not_found("data model introuvable"), &geste, CAUSE_MODELE_DE_DONNEES_NON_SUPPRIME_NON_LU) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &format!("suppression du modèle de données #{id}"), CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &geste, CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -160,7 +207,7 @@ pub(crate) async fn model_delete(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"delete", "kind":"data_model", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, |_| json!({ "ok": true }))
+    dm_commit(&conn, &geste, outcome, |_| json!({ "ok": true }))
 }
 
 // =================================================================================================
@@ -176,14 +223,19 @@ pub(crate) async fn object_create(State(st): State<AppState>, Extension(au): Ext
     let enabled = b.bool_field("enabled", true) as i64;
     crate::req_conn!(st, au, conn);
     // Vérifie l'existence du modèle et (si fourni) du parent DANS LE MÊME MODÈLE (pas de hiérarchie cross-modèle).
-    if conn.query_row("SELECT 1 FROM data_model WHERE id=?1", params![model_id], |_| Ok(())).is_err() {
-        return not_found("data model introuvable");
+    // `P10.20-l` (vague AG) — modèle et parent lus en trois issues : absents, le 404 et le 400 d'avant ; lecture ratée,
+    // 503 nommé (jamais « introuvable ») ; un parent d'un autre modèle reste un 400.
+    let geste = format!("création d'un objet sous le modèle de données #{model_id}");
+    let lu = conn.query_row("SELECT 1 FROM data_model WHERE id=?1", params![model_id], |_| Ok(())).optional();
+    if let Err(refus) = ligne_visee(lu, || not_found("data model introuvable"), &geste, CAUSE_MODELE_DE_DONNEES_NON_CREE_RATTACHEMENT_NON_LU) {
+        return refus;
     }
     if let Some(pid) = parent_id {
-        match conn.query_row("SELECT model_id FROM data_model_object WHERE id=?1", params![pid], |r| r.get::<_,i64>(0)) {
+        let lu = conn.query_row("SELECT model_id FROM data_model_object WHERE id=?1", params![pid], |r| r.get::<_,i64>(0)).optional();
+        match ligne_visee(lu, || bad_req("objet parent introuvable"), &geste, CAUSE_MODELE_DE_DONNEES_NON_CREE_RATTACHEMENT_NON_LU) {
             Ok(m) if m == model_id => {}
             Ok(_) => return bad_req("objet parent d'un autre modèle"),
-            Err(_) => return bad_req("objet parent introuvable"),
+            Err(refus) => return refus,
         }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", "création d'un objet de modèle", CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
@@ -199,7 +251,7 @@ pub(crate) async fn object_create(State(st): State<AppState>, Extension(au): Ext
             &json!({ "op":"create", "kind":"data_model_object", "id":id, "model_id":model_id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, |id| json!({ "id": id }))
+    dm_commit(&conn, &geste, outcome, |id| json!({ "id": id }))
 }
 
 /// `P10.20-b` — servie quand la sonde d'enfants d'un objet de modèle n'a pas pu être lue.
@@ -210,18 +262,27 @@ pub(crate) const CAUSE_ENFANTS_DE_L_OBJET_NON_LUS: &str = "OBJET DE MODÈLE NON 
 pub(crate) async fn object_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM data_model_object WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("objet introuvable"),
+    let geste = format!("suppression de l'objet de modèle #{id}");
+    let lue = conn.query_row("SELECT name FROM data_model_object WHERE id=?1", params![id], |r| r.get::<_,String>(0)).optional();
+    let name = match ligne_visee(lue, || not_found("objet introuvable"), &geste, CAUSE_MODELE_DE_DONNEES_NON_SUPPRIME_NON_LU) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
     // Refus si l'objet a des enfants (évite d'orpheliner une hiérarchie ; l'éditeur supprime feuille-à-racine).
     // `P10.20-b` — une lecture ratée de la sonde d'enfants n'est pas « aucun enfant » : avant, `.unwrap_or(false)`
     // laissait la suppression passer la garde qui protège la hiérarchie. Elle refuse désormais, en 503 nommé.
     let has_children: bool = match conn.query_row("SELECT EXISTS(SELECT 1 FROM data_model_object WHERE parent_id=?1)", params![id], |r| r.get::<_,i64>(0)) {
         Ok(n) => n != 0,
-        Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ENFANTS_DE_L_OBJET_NON_LUS} ({e})")),
+        // `P10.29-l` (vague AG) — la cause du moteur ne part plus dans le corps (`({e})`) : journal seul, avec
+        // l'identifiant de corrélation servi.
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENFANTS_DE_L_OBJET_NON_LUS);
+            eprintln!("[datamodels] WARN {geste} refusé : la sonde d'enfants n'a pas pu être lue, rien n'est supprimé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     if has_children { return bad_req("objet parent d'autres objets : supprimez d'abord les enfants"); }
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &format!("suppression de l'objet de modèle #{id}"), CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &geste, CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -233,7 +294,7 @@ pub(crate) async fn object_delete(State(st): State<AppState>, Extension(au): Ext
             &json!({ "op":"delete", "kind":"data_model_object", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, |_| json!({ "ok": true }))
+    dm_commit(&conn, &geste, outcome, |_| json!({ "ok": true }))
 }
 
 // =================================================================================================
@@ -251,8 +312,11 @@ pub(crate) async fn field_create(State(st): State<AppState>, Extension(au): Exte
         if let Err(e) = validate_dm_ident(&expr) { return bad_req(format!("expr : {e}")); }
     }
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM data_model_object WHERE id=?1", params![object_id], |_| Ok(())).is_err() {
-        return not_found("objet introuvable");
+    // `P10.20-l` (vague AG) — l'objet de rattachement lu en trois issues : absent, le 404 d'avant ; lecture ratée, 503.
+    let geste = format!("création d'un champ sous l'objet de modèle #{object_id}");
+    let lu = conn.query_row("SELECT 1 FROM data_model_object WHERE id=?1", params![object_id], |_| Ok(())).optional();
+    if let Err(refus) = ligne_visee(lu, || not_found("objet introuvable"), &geste, CAUSE_MODELE_DE_DONNEES_NON_CREE_RATTACHEMENT_NON_LU) {
+        return refus;
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", "création d'un champ de modèle", CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -267,16 +331,19 @@ pub(crate) async fn field_create(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"create", "kind":"data_model_field", "id":id, "object_id":object_id, "name":name, "type":ftype, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, |id| json!({ "id": id }))
+    dm_commit(&conn, &geste, outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn field_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM data_model_field WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("champ introuvable"),
+    let geste = format!("suppression du champ de modèle #{id}");
+    let lue = conn.query_row("SELECT name FROM data_model_field WHERE id=?1", params![id], |r| r.get::<_,String>(0)).optional();
+    let name = match ligne_visee(lue, || not_found("champ introuvable"), &geste, CAUSE_MODELE_DE_DONNEES_NON_SUPPRIME_NON_LU) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &format!("suppression du champ de modèle #{id}"), CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &geste, CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -287,7 +354,7 @@ pub(crate) async fn field_delete(State(st): State<AppState>, Extension(au): Exte
             &json!({ "op":"delete", "kind":"data_model_field", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, |_| json!({ "ok": true }))
+    dm_commit(&conn, &geste, outcome, |_| json!({ "ok": true }))
 }
 
 // =================================================================================================
@@ -565,16 +632,19 @@ pub(crate) async fn dataset_create(State(st): State<AppState>, Extension(au): Ex
             &json!({ "op":"create", "kind":"dataset", "id":id, "name":name, "dataset_kind":kind, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, |id| json!({ "id": id }))
+    dm_commit(&conn, "création d'un jeu de données", outcome, |id| json!({ "id": id }))
 }
 
 pub(crate) async fn dataset_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_editor(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM dataset WHERE id=?1", params![id], |r| r.get::<_,String>(0)) {
-        Ok(n) => n, Err(_) => return not_found("dataset introuvable"),
+    let geste = format!("suppression du jeu de données #{id}");
+    let lue = conn.query_row("SELECT name FROM dataset WHERE id=?1", params![id], |r| r.get::<_,String>(0)).optional();
+    let name = match ligne_visee(lue, || not_found("dataset introuvable"), &geste, CAUSE_MODELE_DE_DONNEES_NON_SUPPRIME_NON_LU) {
+        Ok(n) => n,
+        Err(refus) => return refus,
     };
-    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &format!("suppression du jeu de données #{id}"), CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
+    if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "datamodels", &geste, CAUSE_MODELE_DE_DONNEES_NON_ECRIT_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
     let outcome: rusqlite::Result<i64> = (|| {
@@ -585,7 +655,7 @@ pub(crate) async fn dataset_delete(State(st): State<AppState>, Extension(au): Ex
             &json!({ "op":"delete", "kind":"dataset", "id":id, "name":name, "actor":au.name }).to_string())?;
         Ok(id)
     })();
-    dm_commit(&conn, outcome, |_| json!({ "ok": true }))
+    dm_commit(&conn, &geste, outcome, |_| json!({ "ok": true }))
 }
 
 /// POST /api/datasets/{id}/run — exécute le GXQL stocké du dataset via le chemin MASQUÉ. viewer+ (readonly_post).
@@ -593,8 +663,12 @@ pub(crate) async fn dataset_run(State(st): State<AppState>, Extension(au): Exten
     let __rc = req_db(&st, &au);
     let soql = {
         let conn = __rc.lock();
-        match conn.query_row("SELECT soql FROM dataset WHERE id=?1 AND enabled=1", params![id], |r| r.get::<_, String>(0)) {
-            Ok(s) => s, Err(_) => return not_found("dataset introuvable ou désactivé"),
+        // `P10.20-l` (vague AG) — trois issues ; `enabled` est jugé DANS la lecture qui rend la requête (même `WHERE`) :
+        // absent ou désactivé, le 404 d'avant ; lecture ratée, 503 nommé, rien n'est exécuté.
+        let lue = conn.query_row("SELECT soql FROM dataset WHERE id=?1 AND enabled=1", params![id], |r| r.get::<_, String>(0)).optional();
+        match ligne_visee(lue, || not_found("dataset introuvable ou désactivé"), &format!("exécution du jeu de données #{id}"), CAUSE_JEU_DE_DONNEES_NON_EXECUTE_NON_LU) {
+            Ok(s) => s,
+            Err(refus) => return refus,
         }
     };
     let from = b.i64_field("from", 0);

@@ -39,6 +39,7 @@
 //! strict (aucun réseau, aucune écriture, zéro coût sur l'ingest).
 use crate::*;
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation, tracer_apres_coup};
+use rusqlite::OptionalExtension;
 
 // ===================================================================================================
 // TYPES DE SINK. syslog | hec | webhook = FAITS. s3 | kafka = DESIGN/STUB (posent last_error explicite,
@@ -716,7 +717,12 @@ pub(crate) async fn destination_create(State(st): State<AppState>, Extension(au)
         Ok(id) => rendre_apres_validation(&conn, "destinations", &format!("création de la destination '{name}'"), CAUSE_DESTINATION_NON_CREEE, || {
             Json(json!({ "id": id, "enabled": enabled != 0 })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        // `P10.29-l` — phrase fixe, cause du moteur au journal seul avec l'identifiant de corrélation : jamais le nom,
+        // l'endpoint ni le secret de la destination.
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[destinations]", "création d'une destination", &e)
+        }
     }
 }
 
@@ -742,6 +748,13 @@ pub(crate) const CAUSE_DESTINATION_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = "DE
      pendante sur l'écrivain) — RIEN n'est écrit : elle garde sa cible, son filtre, son secret et son activation \
      d'avant (une destination que vous désactiviez envoie toujours), et aucune trace n'est écrite. Réessayez ; s'il \
      est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.20-l` — la destination visée par une modification n'a pas été lue (la forme d'avant : 404 « destination
+/// introuvable ») : rien n'est écrit. Ni `BEGIN` ni `COMMIT` : aucune transaction n'a été refusée, la lecture manque.
+pub(crate) const CAUSE_DESTINATION_INCHANGEE_NON_LUE: &str = "DESTINATION INCHANGÉE : la base n'a pas rendu cette \
+     destination — ce n'est PAS « destination introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : \
+     si elle existe, elle garde sa cible, son filtre, son secret et son activation d'avant (une destination que vous \
+     désactiviez envoie toujours), et aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des \
+     destinations est illisible.";
 /// `P10.25-g` — destination non supprimée : le `COMMIT` de ce geste refusé.
 pub(crate) const CAUSE_DESTINATION_NON_SUPPRIMEE: &str = "DESTINATION NON SUPPRIMÉE : la base n'a pas validé la \
      transaction (COMMIT refusé) et l'a annulée — elle est toujours là et ENVOIE TOUJOURS les données hors du \
@@ -778,9 +791,16 @@ pub(crate) async fn destination_update(State(st): State<AppState>, Extension(au)
     // Valide AVANT écriture : type/endpoint/filtre cohérents si fournis. On a besoin du type EFFECTIF
     // (fourni ou existant) pour valider l'endpoint.
     crate::req_conn!(st, au, conn);
-    let cur_type: String = match conn.query_row("SELECT type FROM destination WHERE id=?1", params![id], |r| r.get(0)) {
-        Ok(t) => t,
-        Err(_) => return not_found("destination introuvable"),
+    let lu = conn.query_row("SELECT type FROM destination WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional();
+    // `P10.20-l` — trois issues : lu, la modification suit ; absente, le 404 d'avant ; lecture ratée, 503 nommé, RIEN
+    // n'est écrit (le type, qui juge l'endpoint contre la garde SSRF, n'est pas établi), la cause du moteur au journal seul.
+    let cur_type: String = match lu {
+        Ok(Some(t)) => t,
+        Ok(None) => return not_found("destination introuvable"),
+        Err(e) => {
+            eprintln!("[destinations] WARN modification de la destination #{id} refusée : la destination n'a pas pu être lue ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DESTINATION_INCHANGEE_NON_LUE);
+        }
     };
     let eff_type = b.get("type").and_then(|x| x.as_str()).unwrap_or(&cur_type).to_string();
     if b.get("type").is_some() && !dest_type_ok(&eff_type) {
@@ -849,7 +869,10 @@ pub(crate) async fn destination_update(State(st): State<AppState>, Extension(au)
         Ok(()) => rendre_apres_validation(&conn, "destinations", &format!("modification de la destination #{id}"), CAUSE_DESTINATION_INCHANGEE, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[destinations]", &format!("modification de la destination #{id}"), &e)
+        }
     }
 }
 
@@ -877,7 +900,10 @@ pub(crate) async fn destination_delete(State(st): State<AppState>, Extension(au)
         Ok(()) => rendre_apres_validation(&conn, "destinations", &format!("suppression de la destination #{id}"), CAUSE_DESTINATION_NON_SUPPRIMEE, || {
             StatusCode::NO_CONTENT.into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[destinations]", &format!("suppression de la destination #{id}"), &e)
+        }
     }
 }
 

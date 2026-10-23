@@ -788,6 +788,36 @@ pub(crate) const CAUSE_REFERENCE_UEBA_INCHANGEE_TRANSACTION_NON_OUVERTE: &str = 
      pendante sur l'écrivain) — RIEN n'est écrit : elle garde sa requête, son seuil et son activation d'avant, et \
      aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
+// `P10.20-l` — LA LIGNE QUI ARME LE GARDE-FOU N'A PAS ÉTÉ LUE : CE N'EST PAS UNE ABSENCE. La modification et la
+// suppression d'une corrélation ou d'une référence UEBA lisaient leur ligne (`managed`, étapes, requête, fenêtre) par
+// `match … { Ok(x) => x, Err(_) => not_found(…) }` : une lecture refusée se servait « corrélation introuvable » /
+// « baseline introuvable », et le garde-fou que cette ligne arme (contenu managé réservé à l'administrateur, contenu
+// natif non supprimable) n'était jamais jugé. Décision par défaut (vague AE) : trois issues — lue, le geste suit ;
+// absente, le 404 d'avant à l'identique ; lecture ratée, 503 nommé, RIEN n'est écrit ni supprimé, la cause du moteur
+// au journal seul (jamais les étapes ni la requête : l'identifiant interne seul). Aucune transaction n'est nommée :
+// aucune n'a été ouverte, c'est la lecture qui manque.
+
+/// `P10.20-l` — la corrélation à modifier n'a pas été lue : ni le garde-fou ni le PATCH ne sont jugés.
+pub(crate) const CAUSE_CORRELATION_INCHANGEE_NON_LUE: &str = "CORRÉLATION INCHANGÉE : la base n'a pas rendu cette \
+     corrélation — ce n'est PAS « corrélation introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : \
+     si elle existe, elle garde ses étapes, sa fenêtre et son activation d'avant, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la table des corrélations est illisible.";
+/// `P10.20-l` — la corrélation à supprimer n'a pas été lue : rien n'est supprimé ni désactivé.
+pub(crate) const CAUSE_CORRELATION_NON_SUPPRIMEE_NON_LUE: &str = "CORRÉLATION NON SUPPRIMÉE : la base n'a pas rendu \
+     cette corrélation — ce n'est PAS « corrélation introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est \
+     écrit : si elle existe, elle est toujours là, dans l'état d'activation qu'elle avait, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la table des corrélations est illisible.";
+/// `P10.20-l` — la référence UEBA à modifier n'a pas été lue : ni le garde-fou ni le PATCH ne sont jugés.
+pub(crate) const CAUSE_REFERENCE_UEBA_INCHANGEE_NON_LUE: &str = "RÉFÉRENCE UEBA INCHANGÉE : la base n'a pas rendu \
+     cette référence — ce n'est PAS « baseline introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : \
+     si elle existe, elle garde sa requête, son seuil et son activation d'avant, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la table des références UEBA est illisible.";
+/// `P10.20-l` — la référence UEBA à supprimer n'a pas été lue : rien n'est supprimé, ni elle ni ses observations.
+pub(crate) const CAUSE_REFERENCE_UEBA_NON_SUPPRIMEE_NON_LUE: &str = "RÉFÉRENCE UEBA NON SUPPRIMÉE : la base n'a pas \
+     rendu cette référence — ce n'est PAS « baseline introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est \
+     écrit : si elle existe, elle est toujours là avec ses observations, dans l'état d'activation qu'elle avait, et \
+     aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des références UEBA est illisible.";
+
 pub(crate) async fn correlation_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Corrélation").to_string();
     let key_field = b.get("key_field").and_then(|v| v.as_str()).unwrap_or("src_ip").trim().to_string();
@@ -832,20 +862,31 @@ pub(crate) async fn correlation_create(State(st): State<AppState>, Extension(au)
         Ok(id) => rendre_apres_validation(&conn, "detection", &format!("création de la corrélation '{name}'"), CAUSE_CORRELATION_NON_CREEE, || {
             Json(json!({ "id": id, "managed": 2 })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — phrase fixe au client (statut 500 inchangé), cause du moteur au journal seul.
+            servir_l_echec_de_la_transaction_d_audit("[detection]", "création d'une corrélation", &e)
+        }
     }
 }
 
 pub(crate) async fn correlation_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
+    // `P10.20-l` — trois issues : lue, le geste suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_CORRELATION_INCHANGEE_NON_LUE` AVANT tout jugement (contenu managé), rien n'est écrit, la cause du moteur au
+    // journal seul (jamais les étapes).
     let cur = conn.query_row(
         "SELECT key_field,entity_type,steps,window_s,managed FROM correlation WHERE id=?1",
         params![id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?)),
-    );
+    ).optional();
     let (cur_key, cur_etype, cur_steps, cur_window, cur_managed) = match cur {
-        Ok(x) => x,
-        Err(_) => return not_found("corrélation introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("corrélation introuvable"),
+        Err(e) => {
+            eprintln!("[detection] WARN corrélation #{id} NON lue pour la modification, rien n'est écrit : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CORRELATION_INCHANGEE_NON_LUE);
+        }
     };
     let eff_key = b.get("key_field").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).unwrap_or(cur_key);
     let eff_etype = b.get("entity_type").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).unwrap_or(cur_etype);
@@ -900,15 +941,26 @@ pub(crate) async fn correlation_update(State(st): State<AppState>, Extension(au)
         Ok(()) => rendre_apres_validation(&conn, "detection", &format!("modification de la corrélation #{id}"), CAUSE_CORRELATION_INCHANGEE, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — phrase fixe au client (statut 500 inchangé), cause du moteur au journal seul.
+            servir_l_echec_de_la_transaction_d_audit("[detection]", &format!("modification de la corrélation #{id}"), &e)
+        }
     }
 }
 
 pub(crate) async fn correlation_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    let managed = match conn.query_row("SELECT managed FROM correlation WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
-        Ok(m) => m,
-        Err(_) => return not_found("corrélation introuvable"),
+    // `P10.20-l` — trois issues : lue, le retrait suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_CORRELATION_NON_SUPPRIMEE_NON_LUE`, rien n'est supprimé ni désactivé, la cause du moteur au journal seul.
+    let lue = conn.query_row("SELECT managed FROM correlation WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional();
+    let managed = match lue {
+        Ok(Some(m)) => m,
+        Ok(None) => return not_found("corrélation introuvable"),
+        Err(e) => {
+            eprintln!("[detection] WARN corrélation #{id} NON lue pour la suppression, rien n'est supprimé : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CORRELATION_NON_SUPPRIMEE_NON_LUE);
+        }
     };
     delete_managed_row(&conn, "correlation", "config.correlation", id, managed, &au.name)
 }
@@ -1050,20 +1102,31 @@ pub(crate) async fn baseline_create(State(st): State<AppState>, Extension(au): E
         Ok(id) => rendre_apres_validation(&conn, "detection", &format!("création de la référence UEBA '{name}'"), CAUSE_REFERENCE_UEBA_NON_CREEE, || {
             Json(json!({ "id": id, "managed": 2 })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — phrase fixe au client (statut 500 inchangé), cause du moteur au journal seul.
+            servir_l_echec_de_la_transaction_d_audit("[detection]", "création d'une référence UEBA", &e)
+        }
     }
 }
 
 pub(crate) async fn baseline_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
+    // `P10.20-l` — trois issues : lue, le geste suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_REFERENCE_UEBA_INCHANGEE_NON_LUE` AVANT tout jugement (contenu managé), rien n'est écrit, la cause du moteur
+    // au journal seul (jamais la requête).
     let cur = conn.query_row(
         "SELECT query,entity_field,value_field,entity_type,managed FROM ueba_baseline WHERE id=?1",
         params![id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?)),
-    );
+    ).optional();
     let (cur_q, cur_ef, cur_vf, cur_et, cur_managed) = match cur {
-        Ok(x) => x,
-        Err(_) => return not_found("baseline introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("baseline introuvable"),
+        Err(e) => {
+            eprintln!("[detection] WARN référence UEBA #{id} NON lue pour la modification, rien n'est écrit : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REFERENCE_UEBA_INCHANGEE_NON_LUE);
+        }
     };
     let eff_q = b.get("query").and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or(cur_q);
     let eff_ef = b.get("entity_field").and_then(|x| x.as_str()).map(|s| s.trim().to_string()).unwrap_or(cur_ef);
@@ -1116,15 +1179,27 @@ pub(crate) async fn baseline_update(State(st): State<AppState>, Extension(au): E
         Ok(()) => rendre_apres_validation(&conn, "detection", &format!("modification de la référence UEBA #{id}"), CAUSE_REFERENCE_UEBA_INCHANGEE, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — phrase fixe au client (statut 500 inchangé), cause du moteur au journal seul.
+            servir_l_echec_de_la_transaction_d_audit("[detection]", &format!("modification de la référence UEBA #{id}"), &e)
+        }
     }
 }
 
 pub(crate) async fn baseline_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    let managed = match conn.query_row("SELECT managed FROM ueba_baseline WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
-        Ok(m) => m,
-        Err(_) => return not_found("baseline introuvable"),
+    // `P10.20-l` — trois issues : lue, le retrait suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_REFERENCE_UEBA_NON_SUPPRIMEE_NON_LUE`, rien n'est supprimé (ni ses observations), la cause du moteur au
+    // journal seul.
+    let lue = conn.query_row("SELECT managed FROM ueba_baseline WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional();
+    let managed = match lue {
+        Ok(Some(m)) => m,
+        Ok(None) => return not_found("baseline introuvable"),
+        Err(e) => {
+            eprintln!("[detection] WARN référence UEBA #{id} NON lue pour la suppression, rien n'est supprimé : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REFERENCE_UEBA_NON_SUPPRIMEE_NON_LUE);
+        }
     };
     // Nettoie aussi les observations rattachées (best-effort) avant la suppression gérée.
     if managed == 2 {

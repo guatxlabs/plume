@@ -8,6 +8,7 @@ use crate::handlers::transaction_validee::{
     ouvrir_la_transaction_du_geste, ouvrir_sa_transaction, refuser_le_geste_non_valide, rendre_apres_validation, signaler_une_transaction_ouverte_hors_de_tout_geste, valider_la_transaction,
 };
 use crate::detection_aveugle::AbandonDEvaluation;
+use rusqlite::OptionalExtension;
 
 // ---------- moteur de règles de détection (P4) ----------
 pub(crate) fn cmp_op(a: f64, op: &str, b: f64) -> bool {
@@ -696,6 +697,43 @@ pub(crate) const CAUSE_PARSEUR_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "PARSEUR
      l'écrivain) — RIEN n'est écrit : l'ingestion applique toujours le parseur d'avant, et aucune trace n'est \
      écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
+// `P10.20-l` — LA LIGNE QUI ARME LE GARDE-FOU N'A PAS ÉTÉ LUE : CE N'EST PAS UNE ABSENCE. La bascule d'activation, la
+// modification et la suppression d'une règle ou d'un parseur lisaient leur ligne (`managed`, `is_soql`, `query`,
+// `window_s`, `name`) par `match … { Ok(x) => x, Err(_) => not_found(…) }` : une base qui refusait la lecture (ligne
+// qui ne se convertit pas, table retirée, verrou) se servait « règle introuvable » / « parseur introuvable », et le
+// garde-fou que cette ligne arme (anti-contournement editor -> SQL brut, contenu natif non supprimable) n'était jamais
+// jugé. Décision par défaut (vague AE) : trois issues — lue, le geste suit ; absente, le 404 d'avant à l'identique ;
+// lecture ratée, 503 nommé, RIEN n'est écrit, activé, désactivé ni supprimé, la cause du moteur au journal seul (jamais
+// la requête, le motif ni le nom : l'identifiant interne seul). Ces phrases ne nomment aucune transaction : aucune
+// n'a été ouverte, c'est la lecture qui manque.
+
+/// `P10.20-l` — la ligne du contenu à (dés)activer n'a pas été lue : rien n'est basculé.
+pub(crate) const CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE_NON_LU: &str = "ACTIVATION INCHANGÉE : la base n'a pas rendu \
+     ce contenu de détection — ce n'est PAS « introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : \
+     s'il existe, il garde son état d'avant (ce que vous désactiviez agit toujours, ce que vous activiez n'agit pas), \
+     aucune dérogation n'est retenue pour le prochain démarrage, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, sa table est illisible.";
+/// `P10.20-l` — la règle à modifier n'a pas été lue : ni le garde-fou ni le PATCH ne sont jugés, rien n'est écrit.
+pub(crate) const CAUSE_REGLE_INCHANGEE_NON_LUE: &str = "RÈGLE INCHANGÉE : la base n'a pas rendu cette règle — ce \
+     n'est PAS « règle introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : si elle existe, elle \
+     garde sa requête, son seuil, son activation et son statut d'avant, et aucune trace n'est écrite. Réessayez ; si le \
+     refus persiste, la table des règles est illisible.";
+/// `P10.20-l` — la règle à supprimer n'a pas été lue : rien n'est supprimé ni désactivé.
+pub(crate) const CAUSE_REGLE_NON_SUPPRIMEE_NON_LUE: &str = "RÈGLE NON SUPPRIMÉE : la base n'a pas rendu cette règle \
+     — ce n'est PAS « règle introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : si elle existe, \
+     elle est toujours là, dans l'état d'activation qu'elle avait, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la table des règles est illisible.";
+/// `P10.20-l` — le parseur à modifier n'a pas été lu : ni le garde-fou ni le PATCH ne sont jugés, rien n'est écrit.
+pub(crate) const CAUSE_PARSEUR_INCHANGE_NON_LU: &str = "PARSEUR INCHANGÉ : la base n'a pas rendu ce parseur — ce \
+     n'est PAS « parseur introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : s'il existe, \
+     l'ingestion applique toujours le parseur d'avant, et aucune trace n'est écrite. Réessayez ; si le refus persiste, \
+     la table des parseurs est illisible.";
+/// `P10.20-l` — le parseur à supprimer n'a pas été lu : rien n'est supprimé ni désactivé.
+pub(crate) const CAUSE_PARSEUR_NON_SUPPRIME_NON_LU: &str = "PARSEUR NON SUPPRIMÉ : la base n'a pas rendu ce parseur \
+     — ce n'est PAS « parseur introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : s'il existe, il \
+     est toujours là, dans l'état d'activation qu'il avait, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la table des parseurs est illisible.";
+
 /// #1c garde-fou #4/#6 — suppression MANAGED-AWARE + audit #1b, transactionnelle fail-closed. Politique :
 /// - managed=2 (ad-hoc UI)      -> DELETE réel (destructif, audit sévérité 3) ;
 /// - managed=0 (builtin/seed)   -> enabled=0 (DÉSACTIVÉ, jamais détruit ; durable car les seeds sont one-shot) ;
@@ -911,13 +949,18 @@ pub(crate) fn delete_managed_row(conn: &Connection, table: &str, audit_prefix: &
 /// override ne porte QUE `enabled`, JAMAIS query/is_soql -> impossible d'activer une règle SQL brut d'autrui
 /// ou d'élever quoi que ce soit via cette surface. Le nom vient de la BASE (pas du client) -> injection-safe.
 pub(crate) fn set_content_enabled_tx(conn: &Connection, kind: &str, table: &str, id: i64, enabled: bool, actor: &str) -> Result<Value, (StatusCode, String)> {
-    let (name, managed): (String, i64) = match conn.query_row(
-        &format!("SELECT name,managed FROM {table} WHERE id=?1"),
-        params![id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-    ) {
-        Ok(x) => x,
-        Err(_) => return Err((StatusCode::NOT_FOUND, format!("{kind} introuvable"))),
+    // `P10.20-l` — trois issues : lue, la bascule suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE_NON_LU`, rien n'est basculé ni dérogé, la cause du moteur au journal seul.
+    let lue = conn
+        .query_row(&format!("SELECT name,managed FROM {table} WHERE id=?1"), params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .optional();
+    let (name, managed): (String, i64) = match lue {
+        Ok(Some(x)) => x,
+        Ok(None) => return Err((StatusCode::NOT_FOUND, format!("{kind} introuvable"))),
+        Err(e) => {
+            eprintln!("[detection] WARN {kind} #{id} NON lu pour la bascule d'activation, rien n'est basculé : {e}");
+            return Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE_NON_LU.to_string()));
+        }
     };
     if ouvrir_sa_transaction(conn, "detection", &format!("bascule d'activation de {kind} #{id}")).is_err() {
         return Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE_TRANSACTION_NON_OUVERTE.to_string()));
@@ -995,8 +1038,13 @@ pub(crate) async fn playbook_set_enabled(State(st): State<AppState>, Extension(a
                 }
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {}
-            // La fenêtre n'a pas pu être lue : l'armement n'est pas jugé, il n'est donc pas fait.
-            Err(e) => return server_err(format!("playbook #{id} non activé : sa fenêtre n'a pas pu être lue pour juger le plancher ({e}) — rien n'est écrit")),
+            // La fenêtre n'a pas pu être lue : l'armement n'est pas jugé, il n'est donc pas fait. `P10.29-l` — la phrase
+            // garde son statut 500 et perd le texte du moteur, qui va au journal seul avec l'identifiant de corrélation.
+            Err(e) => {
+                let (corr, r) = crate::err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, format!("playbook #{id} non activé : sa fenêtre n'a pas pu être lue pour juger le plancher — rien n'est écrit"));
+                eprintln!("[{}] [detection] WARN playbook #{id} non activé : sa fenêtre n'a pas pu être lue pour juger le plancher, rien n'est écrit ({e})", corr.unwrap_or_default());
+                return r;
+            }
         }
     }
     match set_content_enabled_tx(&conn, "playbook", "playbook", id, enabled, &au.name) {
@@ -1076,20 +1124,31 @@ pub(crate) async fn rule_create(State(st): State<AppState>, Extension(au): Exten
         Ok(id) => rendre_apres_validation(&conn, "detection", &format!("création de la règle '{name}'"), CAUSE_REGLE_NON_CREEE, || {
             Json(json!({ "id": id, "managed": 2 })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — phrase fixe au client (statut 500 inchangé), cause du moteur au journal seul.
+            servir_l_echec_de_la_transaction_d_audit("[detection]", "création d'une règle de détection", &e)
+        }
     }
 }
 pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
     // État courant (is_soql/query/window/managed) pour calculer l'EFFECTIF post-PATCH et valider.
+    // `P10.20-l` — trois issues : lue, le geste suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_REGLE_INCHANGEE_NON_LUE` AVANT tout jugement : le garde-fou anti-contournement (SQL brut, contenu managé)
+    // reste FERMÉ, rien n'est écrit, la cause du moteur au journal seul (jamais la requête).
     let cur = conn.query_row(
         "SELECT is_soql,query,window_s,managed,name FROM rule WHERE id=?1",
         params![id],
         |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, String>(4)?)),
-    );
+    ).optional();
     let (cur_soql, cur_query, cur_window, cur_managed, cur_name) = match cur {
-        Ok(x) => x,
-        Err(_) => return not_found("règle introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("règle introuvable"),
+        Err(e) => {
+            eprintln!("[detection] WARN règle #{id} NON lue pour la modification, rien n'est écrit : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REGLE_INCHANGEE_NON_LUE);
+        }
     };
     // #1c garde-fous #1/#2 : is_soql/query/window EFFECTIFS après le PATCH (corps si fourni, sinon base).
     // Anti-contournement : un editor ne peut ni basculer en SQL brut ni éditer une règle SQL brut ; la
@@ -1187,7 +1246,11 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
         Ok(()) => rendre_apres_validation(&conn, "detection", &format!("modification de la règle #{id}"), CAUSE_REGLE_INCHANGEE, || {
             Json(reponse_modification_acceptee("Cette règle", "rule", cur_managed)).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — phrase fixe au client (statut 500 inchangé), cause du moteur au journal seul.
+            servir_l_echec_de_la_transaction_d_audit("[detection]", &format!("modification de la règle #{id}"), &e)
+        }
     }
 }
 /// #1c garde-fou #4 : la suppression DESTRUCTIVE est réservée au contenu ad-hoc UI (managed=2). Un builtin
@@ -1195,9 +1258,16 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
 /// (managed=1) est refusé (409) : le fichier config.d le ré-imposerait au boot -> à retirer côté git.
 pub(crate) async fn rule_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    let managed = match conn.query_row("SELECT managed FROM rule WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
-        Ok(m) => m,
-        Err(_) => return not_found("règle introuvable"),
+    // `P10.20-l` — trois issues : lue, le retrait suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_REGLE_NON_SUPPRIMEE_NON_LUE`, rien n'est supprimé ni désactivé, la cause du moteur au journal seul.
+    let lue = conn.query_row("SELECT managed FROM rule WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional();
+    let managed = match lue {
+        Ok(Some(m)) => m,
+        Ok(None) => return not_found("règle introuvable"),
+        Err(e) => {
+            eprintln!("[detection] WARN règle #{id} NON lue pour la suppression, rien n'est supprimé : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REGLE_NON_SUPPRIMEE_NON_LUE);
+        }
     };
     delete_managed_row(&conn, "rule", "config.rule", id, managed, &au.name)
 }
@@ -1257,18 +1327,30 @@ pub(crate) async fn parser_create(State(st): State<AppState>, Extension(au): Ext
             parsers_reload(&conn, req_db_path(&st, &au).as_str());
             Json(json!({ "id": id, "managed": 2 })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — phrase fixe au client (statut 500 inchangé), cause du moteur au journal seul.
+            servir_l_echec_de_la_transaction_d_audit("[detection]", "création d'un parseur", &e)
+        }
     }
 }
 pub(crate) async fn parser_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
     crate::req_conn!(st, au, conn);
-    let (cur_managed, cur_name) = match conn.query_row(
+    // `P10.20-l` — trois issues : lu, le geste suit ; absent, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_PARSEUR_INCHANGE_NON_LU` AVANT tout jugement (contenu managé), rien n'est écrit ni rechargé, la cause du
+    // moteur au journal seul (jamais le motif).
+    let cur = conn.query_row(
         "SELECT managed,name FROM parser WHERE id=?1",
         params![id],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
-    ) {
-        Ok(x) => x,
-        Err(_) => return not_found("parseur introuvable"),
+    ).optional();
+    let (cur_managed, cur_name) = match cur {
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("parseur introuvable"),
+        Err(e) => {
+            eprintln!("[detection] WARN parseur #{id} NON lu pour la modification, rien n'est écrit : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PARSEUR_INCHANGE_NON_LU);
+        }
     };
     // #1c garde-fou #1 : si un motif est fourni, il DOIT compiler (≤1000) -> sinon 400 (avant écriture).
     if let Some(v) = b.get("pattern").and_then(|x| x.as_str()) {
@@ -1322,15 +1404,26 @@ pub(crate) async fn parser_update(State(st): State<AppState>, Extension(au): Ext
             parsers_reload(&conn, req_db_path(&st, &au).as_str());
             Json(reponse_modification_acceptee("Ce parseur", "parser", cur_managed)).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            // `P10.29-l` — phrase fixe au client (statut 500 inchangé), cause du moteur au journal seul.
+            servir_l_echec_de_la_transaction_d_audit("[detection]", &format!("modification du parseur #{id}"), &e)
+        }
     }
 }
 pub(crate) async fn parser_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
     // #1c garde-fou #4 : un builtin parseur (builtin=1) a managed=0 -> traité comme builtin (désactivation).
-    let managed = match conn.query_row("SELECT managed FROM parser WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
-        Ok(m) => m,
-        Err(_) => return not_found("parseur introuvable"),
+    // `P10.20-l` — trois issues : lu, le retrait suit ; absent, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_PARSEUR_NON_SUPPRIME_NON_LU`, rien n'est supprimé, désactivé ni rechargé, la cause du moteur au journal seul.
+    let lue = conn.query_row("SELECT managed FROM parser WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional();
+    let managed = match lue {
+        Ok(Some(m)) => m,
+        Ok(None) => return not_found("parseur introuvable"),
+        Err(e) => {
+            eprintln!("[detection] WARN parseur #{id} NON lu pour la suppression, rien n'est supprimé : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PARSEUR_NON_SUPPRIME_NON_LU);
+        }
     };
     match delete_managed_row_tx(&conn, "parser", "config.parser", id, managed, &au.name) {
         Ok(body) => { parsers_reload(&conn, req_db_path(&st, &au).as_str()); Json(body).into_response() }

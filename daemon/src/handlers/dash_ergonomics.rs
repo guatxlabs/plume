@@ -14,6 +14,7 @@
 //!          -> 403 pour ce tiers, mais `snapshot_create` -> 200 avec la ligne privée figée dedans.
 //! CRUD = editor+ (route_min_role section 7) ; lecture d'un snapshot par token = viewer+ (Read, section 6).
 use crate::*;
+use rusqlite::OptionalExtension;
 use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apres_validation_du_garde};
 
 // ---------- helpers communs ----------
@@ -116,6 +117,30 @@ pub(crate) const CAUSE_LISTE_DE_LECTURE_NON_LUE: &str = "LISTE DE LECTURE NON LU
 pub(crate) const CAUSE_DROIT_D_EDITION_NON_LU: &str = "DROIT D'ÉDITION NON LU : la base a refusé la lecture du \
      propriétaire et de la visibilité de l'objet — ce n'est pas un refus de droit, et RIEN n'est écrit. Réessayez ; si le \
      refus persiste, la base est illisible ou verrouillée.";
+// `P10.20-l` et `P10.33-l` (vague AE) — UNE LECTURE RATÉE N'EST PAS UNE ABSENCE. Trois gestes lisaient leur ligne par
+// `match … { Ok(x) => …, Err(_) => 404 }` : une définition, un tableau de bord ou un instantané ILLISIBLE se disait
+// introuvable. Décision par défaut de la vague AE : trois issues par `.optional()` — lue, le geste suit ; absente, le
+// 404 d'avant à l'identique (corps compris) ; lecture ratée, 503 nommé, RIEN n'est écrit, aucun droit n'est jugé, la
+// cause du moteur au journal seul (jamais dans le corps). Ces phrases ne nomment ni `BEGIN` ni `COMMIT` ni une
+// transaction annulée : aucune transaction n'a été refusée, c'est la lecture qui manque — la console les lit en
+// refus nommé, phrase entière (web/core.js, `refus_nomme`).
+
+/// `P10.33-l` — le mode de requête (GXQL ou SQL brut) d'un panneau de bibliothèque n'a pas été lu : rien n'est écrit,
+/// et le garde-fou editor -> SQL brut reste fermé (aucun mode n'est supposé).
+pub(crate) const CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE_NON_LU: &str = "PANNEAU DE BIBLIOTHÈQUE INCHANGÉ : la base n'a \
+     pas rendu ce panneau de bibliothèque (son mode de requête, GXQL ou SQL brut) — ce n'est PAS une absence, c'est une \
+     lecture qui n'a pas eu lieu. RIEN n'est écrit : la définition, son mode et sa visibilité sont ceux d'avant. \
+     Réessayez ; si le refus persiste, la table des panneaux de bibliothèque est illisible.";
+/// `P10.20-l` — le tableau de bord à capturer n'a pas été lu : rien n'est capturé, aucun jeton n'est émis.
+pub(crate) const CAUSE_INSTANTANE_NON_CREE_TABLEAU_DE_BORD_NON_LU: &str = "INSTANTANÉ NON CRÉÉ : la base n'a pas rendu \
+     ce tableau de bord (nom, propriétaire, visibilité) — ce n'est PAS « dashboard introuvable », c'est une lecture qui \
+     n'a pas eu lieu. RIEN n'est capturé ni partagé : aucun jeton n'est émis. Réessayez ; si le refus persiste, la table \
+     des tableaux de bord est illisible.";
+/// `P10.20-l` — l'auteur de l'instantané à révoquer n'a pas été lu : rien n'est supprimé, le droit n'est pas jugé.
+pub(crate) const CAUSE_INSTANTANE_NON_SUPPRIME_NON_LU: &str = "INSTANTANÉ NON SUPPRIMÉ : la base n'a pas rendu cet \
+     instantané (son auteur) — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et le droit de le \
+     révoquer n'est pas jugé. RIEN n'est supprimé : s'il existe, l'instantané RESTE LISIBLE par son jeton de partage. \
+     Réessayez ; si le refus persiste, la table des instantanés est illisible.";
 /// `P10.20-w` — la révocation d'un instantané refusée : il reste lisible par son jeton.
 pub(crate) const CAUSE_INSTANTANE_NON_SUPPRIME: &str = "INSTANTANÉ NON SUPPRIMÉ : la base a refusé la suppression (ou \
      n'a supprimé aucune ligne) — l'instantané existe toujours et RESTE LISIBLE par son jeton de partage. Réessayez ; si \
@@ -210,9 +235,20 @@ pub(crate) async fn library_panel_update(State(st): State<AppState>, Extension(a
     crate::req_conn!(st, au, conn);
     // is_soql EFFECTIF (corps si fourni, sinon base) -> un editor ne peut NI basculer en SQL brut NI éditer un
     // panneau déjà en SQL brut (miroir panel_update, anti-contournement fail-closed).
-    let cur_soql: bool = match conn.query_row("SELECT COALESCE(is_soql,1) FROM library_panel WHERE id=?1", params![id], |r| r.get::<_, i64>(0).map(|n| n != 0)) {
-        Ok(x) => x,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    // `P10.33-l` — TROIS ISSUES : lu, la porte suit ; absent, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE_NON_LU` — rien n'est écrit et le garde-fou reste FERMÉ (ni GXQL ni SQL brut
+    // n'est supposé). La forme d'avant (`Err(_) => 404`) disait absente une définition illisible.
+    let cur_soql: bool = match conn
+        .query_row("SELECT COALESCE(is_soql,1) FROM library_panel WHERE id=?1", params![id], |r| r.get::<_, i64>(0).map(|n| n != 0))
+        .optional()
+    {
+        Ok(Some(x)) => x,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE_NON_LU);
+            eprintln!("[dashboards] WARN panneau de bibliothèque #{id} NON lu pour la modification, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     if let Some(refus) = refus_de_la_porte_d_edition(&conn, &au, "library_panel", id) {
         return refus;
@@ -539,13 +575,23 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
     // 1) Le créateur peut-il VOIR ce dashboard ? (mêmes règles que dash_get : admin / partagé / propriétaire.)
     let (name, owner, vis): (String, String, String) = {
         crate::req_conn!(st, au, conn);
-        match conn.query_row(
-            "SELECT name,COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1",
-            params![dashboard_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        ) {
-            Ok(x) => x,
-            Err(_) => return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response(),
+        // `P10.20-l` — trois issues : lu, la capture suit ; absent, le 404 d'avant (corps compris) ; lecture ratée, 503
+        // `CAUSE_INSTANTANE_NON_CREE_TABLEAU_DE_BORD_NON_LU`, rien n'est capturé ni partagé.
+        match conn
+            .query_row(
+                "SELECT name,COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1",
+                params![dashboard_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+        {
+            Ok(Some(x)) => x,
+            Ok(None) => return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response(),
+            Err(e) => {
+                let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_INSTANTANE_NON_CREE_TABLEAU_DE_BORD_NON_LU);
+                eprintln!("[dashboards] WARN tableau de bord #{dashboard_id} NON lu pour l'instantané, rien n'est capturé ({}) : {e}", cid.unwrap_or_default());
+                return refus;
+            }
         }
     };
     // `P11.20-n` — MÊME phrase que `dash_get` : un dashboard SANS propriétaire n'est plus « à nous ».
@@ -661,13 +707,20 @@ pub(crate) async fn snapshot_get(State(st): State<AppState>, Extension(au): Exte
 
 pub(crate) async fn snapshot_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    match conn.query_row("SELECT COALESCE(created_by,'') FROM dashboard_snapshot WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
-        Ok(by) => {
+    // `P10.20-l` — trois issues : lu, le droit est jugé ; absent, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_INSTANTANE_NON_SUPPRIME_NON_LU` — ni 403 ni révocation : le droit n'est pas jugé sur un auteur non lu.
+    match conn.query_row("SELECT COALESCE(created_by,'') FROM dashboard_snapshot WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
+        Ok(Some(by)) => {
             if !au.is_admin() && by != au.name {
                 return StatusCode::FORBIDDEN.into_response();
             }
         }
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_INSTANTANE_NON_SUPPRIME_NON_LU);
+            eprintln!("[dashboards] WARN instantané #{id} NON lu pour la révocation, rien n'est supprimé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     }
     // `P10.20-w` (gestes de `dash_ergonomics`) — la révocation n'est affirmée que sur UNE ligne supprimée : la forme
     // d'avant avalait le DELETE et rendait 204, et l'instantané « révoqué » restait servi par son jeton.

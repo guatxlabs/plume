@@ -172,6 +172,26 @@ pub(crate) const CAUSE_MODE_DES_PLAYBOOKS_NON_LU: &str = "MODE NON LU : la base 
      (`plume_mode`) — la liste ne peut pas dire si un playbook actif PROPOSE (observation) ou EXÉCUTE (actif). Ce \
      n'est PAS « observation » : tenez le déploiement pour possiblement ARMÉ tant que le mode n'est pas relu.";
 
+// `P10.20-l` — UNE LECTURE RATÉE D'UN PLAYBOOK N'EST PAS UNE ABSENCE. La modification et la suppression lisaient leur
+// ligne par `match … { Ok(x) => x, Err(_) => return not_found(…) }` : une ligne qui ne se convertit pas, ou la table
+// retirée, se servait 404 « playbook introuvable » — un playbook toujours ARMÉ (riposte `ban_ip`, `kill_pid`…) se disait
+// inexistant. Décision par défaut (vague AE) : trois issues — lue, le geste suit ; absente, le 404 d'avant ; lecture
+// ratée, 503 nommé, RIEN n'est écrit (ni modifié, ni désactivé, ni supprimé, aucune élévation jugée), la cause du moteur
+// au journal seul, avec l'identifiant du playbook — jamais sa requête. Ces phrases ne nomment ni `BEGIN` ni `COMMIT` :
+// aucune transaction n'a été refusée, c'est la lecture qui manque.
+
+/// `P10.20-l` — la ligne du playbook à modifier n'a pas été lue : rien n'est modifié.
+pub(crate) const CAUSE_PLAYBOOK_INCHANGE_NON_LU: &str = "PLAYBOOK INCHANGÉ : la base n'a pas rendu ce playbook — ce \
+     n'est PAS « playbook introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : s'il existe, il garde \
+     sa requête, son action, sa fenêtre et son activation d'avant, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la table des playbooks est illisible.";
+
+/// `P10.20-l` — la ligne du playbook à supprimer n'a pas été lue : rien n'est supprimé ni désactivé.
+pub(crate) const CAUSE_PLAYBOOK_NON_SUPPRIME_NON_LU: &str = "PLAYBOOK NON SUPPRIMÉ : la base n'a pas rendu ce playbook \
+     — ce n'est PAS « playbook introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : s'il existe, il \
+     n'est ni supprimé ni désactivé, ce qu'il arme reste armé, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la table des playbooks est illisible.";
+
 
 pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
@@ -272,19 +292,31 @@ pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): E
         Ok(id) => rendre_apres_validation(&conn, "playbooks", "création d'un playbook", CAUSE_PLAYBOOK_NON_CREE, || {
             Json(json!({ "id": id, "managed": 2 })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul (le geste, jamais la requête ni le nom).
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[playbooks]", "création d'un playbook", &e)
+        }
     }
 }
 pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
+    use rusqlite::OptionalExtension;
     crate::req_conn!(st, au, conn);
+    // `P10.20-l` — trois issues : lue, le geste suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_PLAYBOOK_INCHANGE_NON_LU` AVANT tout jugement (élévation editor -> SQL brut, `managed`, action) : rien n'est
+    // écrit, la cause du moteur au journal seul.
     let cur = conn.query_row(
         "SELECT is_soql,query,window_s,action_kind,managed,name,interval_s,enabled FROM playbook WHERE id=?1",
         params![id],
         |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, String>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)? != 0)),
-    );
+    ).optional();
     let (cur_soql, cur_query, cur_window, cur_kind, cur_managed, cur_name, cur_interval, cur_enabled) = match cur {
-        Ok(x) => x,
-        Err(_) => return not_found("playbook introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("playbook introuvable"),
+        Err(e) => {
+            eprintln!("[playbooks] WARN playbook #{id} NON lu pour la modification, rien n'est modifié : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PLAYBOOK_INCHANGE_NON_LU);
+        }
     };
     // #1c garde-fous #1/#2/#3 : valeurs EFFECTIVES post-PATCH ; anti-contournement editor->SQL brut ; la
     // requête compile ; action_kind effectif ∈ ENUM FERMÉ.
@@ -361,14 +393,25 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
         Ok(()) => rendre_apres_validation(&conn, "playbooks", &format!("modification du playbook #{id}"), CAUSE_PLAYBOOK_INCHANGE, || {
             Json(reponse_modification_acceptee("Ce playbook", "playbook", cur_managed)).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul (le geste et l'identifiant, jamais la requête).
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[playbooks]", &format!("modification du playbook #{id}"), &e)
+        }
     }
 }
 pub(crate) async fn playbook_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
+    use rusqlite::OptionalExtension;
     crate::req_conn!(st, au, conn);
-    let managed = match conn.query_row("SELECT managed FROM playbook WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
-        Ok(m) => m,
-        Err(_) => return not_found("playbook introuvable"),
+    // `P10.20-l` — trois issues : lue, le retrait suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_PLAYBOOK_NON_SUPPRIME_NON_LU` : rien n'est supprimé ni désactivé, la cause du moteur au journal seul.
+    let managed = match conn.query_row("SELECT managed FROM playbook WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional() {
+        Ok(Some(m)) => m,
+        Ok(None) => return not_found("playbook introuvable"),
+        Err(e) => {
+            eprintln!("[playbooks] WARN playbook #{id} NON lu pour la suppression, rien n'est supprimé ni désactivé : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PLAYBOOK_NON_SUPPRIME_NON_LU);
+        }
     };
     delete_managed_row(&conn, "playbook", "config.playbook", id, managed, &au.name)
 }

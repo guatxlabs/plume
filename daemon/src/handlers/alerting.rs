@@ -731,7 +731,12 @@ pub(crate) async fn policy_create(State(st): State<AppState>, Extension(au): Ext
         Ok(id) => rendre_apres_validation(&conn, "alerting", "création d'une politique de notification", CAUSE_POLITIQUE_DE_NOTIFICATION_NON_CREEE, || {
             Json(json!({ "id": id })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        // `P10.29-l` — phrase fixe, cause du moteur au journal seul avec l'identifiant de corrélation : jamais les critères,
+        // les canaux ni la raison.
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[alerting]", "création d'une politique de notification", &e)
+        }
     }
 }
 
@@ -770,7 +775,10 @@ pub(crate) async fn policy_update(State(st): State<AppState>, Extension(au): Ext
         Ok(()) => rendre_apres_validation(&conn, "alerting", &format!("modification de la politique de notification #{id}"), CAUSE_POLITIQUE_DE_NOTIFICATION_INCHANGEE, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[alerting]", &format!("modification de la politique de notification #{id}"), &e)
+        }
     }
 }
 
@@ -802,7 +810,10 @@ pub(crate) async fn policy_delete(State(st): State<AppState>, Extension(au): Ext
         Ok(()) => rendre_apres_validation(&conn, "alerting", &format!("suppression de la politique de notification #{id}"), CAUSE_POLITIQUE_DE_NOTIFICATION_NON_SUPPRIMEE, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[alerting]", &format!("suppression de la politique de notification #{id}"), &e)
+        }
     }
 }
 
@@ -886,7 +897,10 @@ pub(crate) async fn silence_create(State(st): State<AppState>, Extension(au): Ex
         Ok(id) => rendre_apres_validation(&conn, "alerting", "pose d'un silence", CAUSE_SILENCE_NON_POSE, || {
             Json(json!({ "id": id, "expires_at": expires })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[alerting]", "pose d'un silence", &e)
+        }
     }
 }
 
@@ -963,7 +977,10 @@ pub(crate) async fn silence_update(State(st): State<AppState>, Extension(au): Ex
         Ok(()) => rendre_apres_validation(&conn, "alerting", &format!("modification du silence #{id}"), CAUSE_SILENCE_INCHANGE, || {
             Json(json!({ "ok": true, "id": id, "expires_at": expires, "changed": true })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[alerting]", &format!("modification du silence #{id}"), &e)
+        }
     }
 }
 
@@ -996,7 +1013,10 @@ pub(crate) async fn silence_delete(State(st): State<AppState>, Extension(au): Ex
         Ok(()) => rendre_apres_validation(&conn, "alerting", &format!("levée du silence #{id}"), CAUSE_SILENCE_NON_LEVE, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit (aucune modification): {e}")) }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[alerting]", &format!("levée du silence #{id}"), &e)
+        }
     }
 }
 

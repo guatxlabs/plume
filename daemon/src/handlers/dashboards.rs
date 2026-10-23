@@ -322,15 +322,22 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
 
 pub(crate) async fn dash_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
     crate::req_conn!(st, au, conn);
-    match conn.query_row("SELECT COALESCE(owner,'') FROM dashboard WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
-        Ok(owner) => {
+    // `P10.20-l` (vague AE) — trois issues : lu, le droit est jugé ; absent, le 404 d'avant ; lecture ratée, 503 — ni
+    // 403 ni suppression sur un propriétaire non lu. 503 SANS CORPS : la signature `StatusCode` est gardée (ses appelants
+    // de test vivent hors de ce fichier), la cause du moteur part au journal seul.
+    match conn.query_row("SELECT COALESCE(owner,'') FROM dashboard WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
+        Ok(Some(owner)) => {
             // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
             // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
             if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
                 return StatusCode::FORBIDDEN;
             }
         }
-        Err(_) => return StatusCode::NOT_FOUND,
+        Ok(None) => return StatusCode::NOT_FOUND,
+        Err(e) => {
+            eprintln!("[dashboards] WARN tableau de bord #{id} NON lu pour la suppression, rien n'est supprimé : {e}");
+            return StatusCode::SERVICE_UNAVAILABLE;
+        }
     }
     let _ = conn.execute("DELETE FROM panel WHERE dashboard_id=?1", params![id]);
     let _ = conn.execute("DELETE FROM dashboard WHERE id=?1", params![id]);
@@ -500,19 +507,34 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     StatusCode::NO_CONTENT.into_response()
 }
 
-pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
+/// `P10.20-l` (vague AE) — le tableau de bord qui porte le panneau n'a pas été lu : le droit n'est pas jugé, rien n'est
+/// supprimé. Ne nomme ni `BEGIN` ni `COMMIT` ni une transaction annulée : c'est la lecture qui manque (refus nommé).
+pub(crate) const CAUSE_PANNEAU_NON_SUPPRIME_NON_LU: &str = "PANNEAU NON SUPPRIMÉ : la base n'a pas rendu ce panneau (le \
+     tableau de bord qui le porte) — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et le droit de le \
+     supprimer n'est pas jugé. RIEN n'est supprimé : le panneau et son cache sont intacts. Réessayez ; si le refus \
+     persiste, la table des panneaux est illisible.";
+
+pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    match conn.query_row("SELECT dashboard_id FROM panel WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
-        Ok(d) if dash_editable(&conn, &au, d) => {}
-        Ok(_) => return StatusCode::FORBIDDEN,
-        Err(_) => return StatusCode::NOT_FOUND,
+    // `P10.20-l` (vague AE) — trois issues : lu, le droit est jugé ; absent, le 404 d'avant (sans corps) ; lecture ratée,
+    // 503 `CAUSE_PANNEAU_NON_SUPPRIME_NON_LU` — ni 403 ni suppression. La route rend désormais une `Response` (son seul
+    // appelant est le routeur) : la cause est servie en corps, celle du moteur au journal seul.
+    match conn.query_row("SELECT dashboard_id FROM panel WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional() {
+        Ok(Some(d)) if dash_editable(&conn, &au, d) => {}
+        Ok(Some(_)) => return StatusCode::FORBIDDEN.into_response(),
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PANNEAU_NON_SUPPRIME_NON_LU);
+            eprintln!("[dashboards] WARN panneau #{id} NON lu pour la suppression, rien n'est supprimé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     }
     let _ = conn.execute("DELETE FROM panel WHERE id=?1", params![id]);
     // INVALIDATION : purge le cache du panneau supprimé -> un futur panneau réutilisant ce rowid (panel_id)
     // ne servira jamais le payload de l'ancien (fuite inter-owners/visibilités). La garde query_fp (v36)
     // est une 2e barrière, mais on supprime explicitement la ligne ici.
     panneau_avoue::cache_invalider_panneau(&conn, id);
-    StatusCode::NO_CONTENT
+    StatusCode::NO_CONTENT.into_response()
 }
 
 // Exécute la requête d'un panneau CÔTÉ SERVEUR (read-only) -> permet la requête « privée »
@@ -1233,15 +1255,21 @@ pub(crate) async fn view_create(State(st): State<AppState>, Extension(au): Exten
 
 pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> StatusCode {
     crate::req_conn!(st, au, conn);
-    match conn.query_row("SELECT COALESCE(owner,'') FROM view WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
-        Ok(owner) => {
+    // `P10.20-l` (vague AE) — même forme que `dash_delete` : lecture ratée, 503 SANS CORPS (signature `StatusCode`
+    // gardée, appelants de test hors de ce fichier), rien n'est délié ni supprimé, la cause du moteur au journal seul.
+    match conn.query_row("SELECT COALESCE(owner,'') FROM view WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
+        Ok(Some(owner)) => {
             // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
             // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
             if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
                 return StatusCode::FORBIDDEN;
             }
         }
-        Err(_) => return StatusCode::NOT_FOUND,
+        Ok(None) => return StatusCode::NOT_FOUND,
+        Err(e) => {
+            eprintln!("[dashboards] WARN vue #{id} NON lue pour la suppression, rien n'est délié ni supprimé : {e}");
+            return StatusCode::SERVICE_UNAVAILABLE;
+        }
     }
     let _ = conn.execute("UPDATE dashboard SET view_id=NULL WHERE view_id=?1", params![id]); // on délie, on ne supprime pas les dashboards
     let _ = conn.execute("DELETE FROM view WHERE id=?1", params![id]);

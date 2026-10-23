@@ -72,6 +72,24 @@ pub(crate) const CAUSE_REGLE_D_INGESTION_INCHANGEE_TRANSACTION_NON_OUVERTE: &str
      geste pendante sur l'écrivain) — RIEN n'est écrit : l'ingestion applique toujours la règle d'avant, et aucune \
      trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
 
+// `P10.20-l` — UNE LECTURE RATÉE D'UNE RÈGLE D'INGESTION N'EST PAS UNE ABSENCE. La modification et la suppression
+// lisaient leur ligne par `match … { Ok(x) => x, Err(_) => return not_found(…) }` : une ligne qui ne se convertit pas, ou
+// la table retirée, se servait 404 « règle introuvable » — une règle qui rejette ou masque encore les lots entrants se
+// disait inexistante. Décision par défaut (vague AE) : trois issues — lue, le geste suit ; absente, le 404 d'avant ;
+// lecture ratée, 503 nommé, RIEN n'est écrit, le registre chaud n'est pas rechargé, la cause du moteur au journal seul,
+// avec l'identifiant de la règle — jamais son prédicat ni son argument. Ces phrases ne nomment ni `BEGIN` ni `COMMIT`.
+
+/// `P10.20-l` — la ligne de la règle à modifier n'a pas été lue : rien n'est modifié.
+pub(crate) const CAUSE_REGLE_D_INGESTION_INCHANGEE_NON_LU: &str = "RÈGLE D'INGESTION INCHANGÉE : la base n'a pas rendu \
+     cette règle — ce n'est PAS « règle introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : si elle \
+     existe, l'ingestion applique toujours la règle d'avant, et aucune trace n'est écrite. Réessayez ; si le refus \
+     persiste, la table des règles d'ingestion est illisible.";
+
+/// `P10.20-l` — la ligne de la règle à supprimer n'a pas été lue : rien n'est supprimé.
+pub(crate) const CAUSE_REGLE_D_INGESTION_NON_SUPPRIMEE_NON_LU: &str = "RÈGLE D'INGESTION NON SUPPRIMÉE : la base n'a \
+     pas rendu cette règle — ce n'est PAS « règle introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est \
+     écrit : si elle existe, elle n'est pas supprimée et l'ingestion l'applique toujours, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la table des règles d'ingestion est illisible.";
 
 /// POST /api/processors — crée une règle (admin-only). Valide AVANT insert (fail-closed).
 pub(crate) async fn processor_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
@@ -110,25 +128,33 @@ pub(crate) async fn processor_create(State(st): State<AppState>, Extension(au): 
             processors_reload(&conn, req_db_path(&st, &au).as_str());
             Json(json!({ "id": id, "managed": 2 })).into_response()
         }),
+        // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul (le geste, jamais le nom ni le prédicat).
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            servir_l_echec_de_la_transaction_d_audit("[processors]", "création d'une règle d'ingestion", &e)
         }
     }
 }
 
 /// POST /api/processors/{id} — met à jour une règle (admin-only). Re-valide la règle RÉSULTANTE avant écriture.
 pub(crate) async fn processor_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
+    use rusqlite::OptionalExtension;
     crate::req_conn!(st, au, conn);
     // Charge l'existant pour valider la règle FUSIONNÉE (un update partiel ne doit pas produire un état invalide).
+    // `P10.20-l` — trois issues : lue, le geste suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_REGLE_D_INGESTION_INCHANGEE_NON_LU` : rien n'est écrit, la cause du moteur au journal seul.
     let cur = conn.query_row(
         "SELECT match_field,match_op,match_value,action,action_arg FROM ingest_rule WHERE id=?1",
         params![id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?)),
-    );
+    ).optional();
     let (mf0, mo0, mv0, act0, arg0) = match cur {
-        Ok(t) => t,
-        Err(_) => return not_found("règle introuvable"),
+        Ok(Some(t)) => t,
+        Ok(None) => return not_found("règle introuvable"),
+        Err(e) => {
+            eprintln!("[processors] WARN règle d'ingestion #{id} NON lue pour la modification, rien n'est modifié : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REGLE_D_INGESTION_INCHANGEE_NON_LU);
+        }
     };
     let mf = b.get("match_field").and_then(|v| v.as_str()).unwrap_or(&mf0).to_string();
     let mo = b.get("match_op").and_then(|v| v.as_str()).unwrap_or(&mo0).to_string();
@@ -163,19 +189,27 @@ pub(crate) async fn processor_update(State(st): State<AppState>, Extension(au): 
             processors_reload(&conn, req_db_path(&st, &au).as_str());
             Json(json!({ "ok": true })).into_response()
         }),
+        // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul (le geste et l'identifiant).
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            servir_l_echec_de_la_transaction_d_audit("[processors]", &format!("modification de la règle d'ingestion #{id}"), &e)
         }
     }
 }
 
 /// DELETE /api/processors/{id} — supprime une règle (admin-only). managed=2 (ad-hoc) -> suppression réelle.
 pub(crate) async fn processor_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
+    use rusqlite::OptionalExtension;
     crate::req_conn!(st, au, conn);
-    let managed = match conn.query_row("SELECT managed FROM ingest_rule WHERE id=?1", params![id], |r| r.get::<_, i64>(0)) {
-        Ok(m) => m,
-        Err(_) => return not_found("règle introuvable"),
+    // `P10.20-l` — trois issues : lue, le retrait suit ; absente, le 404 d'avant ; lecture ratée, 503
+    // `CAUSE_REGLE_D_INGESTION_NON_SUPPRIMEE_NON_LU` : rien n'est supprimé, le registre chaud n'est pas rechargé.
+    let managed = match conn.query_row("SELECT managed FROM ingest_rule WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional() {
+        Ok(Some(m)) => m,
+        Ok(None) => return not_found("règle introuvable"),
+        Err(e) => {
+            eprintln!("[processors] WARN règle d'ingestion #{id} NON lue pour la suppression, rien n'est supprimé : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REGLE_D_INGESTION_NON_SUPPRIMEE_NON_LU);
+        }
     };
     match delete_managed_row_tx(&conn, "ingest_rule", "config.ingest_rule", id, managed, &au.name) {
         Ok(body) => {

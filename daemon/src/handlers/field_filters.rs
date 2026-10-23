@@ -6,6 +6,7 @@
 //! MATRICE « quels champs sont masqués pour quel rôle » (transparence de la politique PII).
 use crate::*;
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, valider_la_transaction};
+use rusqlite::OptionalExtension;
 
 /// Actions valides à la CRÉATION (rejet explicite d'une action inconnue -> 400 ; au reload, une action
 /// corrompue tombe en DENY = fail-closed, mais on ne LAISSE PAS créer une action illisible).
@@ -142,7 +143,8 @@ pub(crate) async fn field_filter_create(State(st): State<AppState>, Extension(au
             if e.to_string().contains("UNIQUE") {
                 return bad_req("un field-filter porte déjà ce nom");
             }
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe, cause du moteur au journal seul avec l'identifiant de corrélation (ni nom ni champ).
+            servir_l_echec_de_la_transaction_d_audit("[masques]", "pose d'un masque de champ", &e)
         }
     }
 }
@@ -157,10 +159,17 @@ pub(crate) async fn field_filter_update(State(st): State<AppState>, Extension(au
         "SELECT field,action,role FROM field_filter WHERE id=?1",
         params![id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-    );
+    )
+    .optional();
+    // `P10.20-l` — trois issues : lue, la modification suit ; absente, le 404 d'avant ; lecture ratée, 503 nommé, RIEN
+    // n'est écrit et les masques servis restent ceux d'avant, la cause du moteur au journal seul.
     let (field0, act0, role0) = match cur {
-        Ok(t) => t,
-        Err(_) => return not_found("field-filter introuvable"),
+        Ok(Some(t)) => t,
+        Ok(None) => return not_found("field-filter introuvable"),
+        Err(e) => {
+            eprintln!("[masques] WARN modification du masque de champ #{id} refusée : la règle n'a pas pu être lue ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MASQUE_DE_CHAMP_INCHANGE_NON_LU);
+        }
     };
     // Valeurs FUSIONNÉES (un update partiel ne doit pas produire un état invalide).
     let field = match b.get("field").and_then(|v| v.as_str()) {
@@ -209,7 +218,7 @@ pub(crate) async fn field_filter_update(State(st): State<AppState>, Extension(au
             if e.to_string().contains("UNIQUE") {
                 return bad_req("un field-filter porte déjà ce nom");
             }
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            servir_l_echec_de_la_transaction_d_audit("[masques]", &format!("modification du masque de champ #{id}"), &e)
         }
     }
 }
@@ -220,9 +229,16 @@ pub(crate) async fn field_filter_delete(State(st): State<AppState>, Extension(au
         return r;
     }
     crate::req_conn!(st, au, conn);
-    let name = match conn.query_row("SELECT name FROM field_filter WHERE id=?1", params![id], |r| r.get::<_, String>(0)) {
-        Ok(n) => n,
-        Err(_) => return not_found("field-filter introuvable"),
+    let lu = conn.query_row("SELECT name FROM field_filter WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional();
+    // `P10.20-l` — trois issues : lue, le retrait suit ; absente, le 404 d'avant ; lecture ratée, 503 nommé, RIEN n'est
+    // supprimé et le champ reste masqué, la cause du moteur au journal seul.
+    let name = match lu {
+        Ok(Some(n)) => n,
+        Ok(None) => return not_found("field-filter introuvable"),
+        Err(e) => {
+            eprintln!("[masques] WARN retrait du masque de champ #{id} refusé : la règle n'a pas pu être lue ({e})");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MASQUE_DE_CHAMP_NON_RETIRE_NON_LU);
+        }
     };
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "masques", &format!("retrait du masque de champ #{id}"), CAUSE_MASQUE_DE_CHAMP_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -247,7 +263,7 @@ pub(crate) async fn field_filter_delete(State(st): State<AppState>, Extension(au
         }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            servir_l_echec_de_la_transaction_d_audit("[masques]", &format!("retrait du masque de champ #{id}"), &e)
         }
     }
 }
@@ -279,3 +295,20 @@ fn masque_inchange_commit_refuse(geste: &str, regle: &str, refus: rusqlite::Erro
     eprintln!("[masques] WARN {geste} du masque de champ {regle} NON validée : {refus} — registre servi inchangé");
     err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MASQUE_DE_CHAMP_INCHANGE)
 }
+
+// `P10.20-l` — LA RÈGLE DE MASQUAGE VISÉE N'A PAS ÉTÉ LUE : CE N'EST PAS UNE ABSENCE. La forme d'avant
+// (`Err(_) => not_found(…)`) servait « field-filter introuvable » sur une lecture qui n'avait pas eu lieu, au moment même
+// de modifier ou de retirer un masque de confidentialité. Ces phrases ne nomment ni `BEGIN` ni `COMMIT` : aucune
+// transaction n'a été refusée, c'est la lecture qui manque (la console les peint en refus nommé, phrase entière).
+
+/// `P10.20-l` — la règle visée par une modification n'a pas été lue : rien n'est écrit.
+pub(crate) const CAUSE_MASQUE_DE_CHAMP_INCHANGE_NON_LU: &str = "MASQUE DE CHAMP INCHANGÉ : la base n'a pas rendu \
+     cette règle — ce n'est PAS « field-filter introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : \
+     si elle existe, la règle garde son champ, son action et ses rôles d'avant, les masques servis restent ceux d'avant, \
+     et aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des masques de champ est illisible.";
+
+/// `P10.20-l` — la règle visée par un retrait n'a pas été lue : rien n'est supprimé.
+pub(crate) const CAUSE_MASQUE_DE_CHAMP_NON_RETIRE_NON_LU: &str = "MASQUE DE CHAMP NON RETIRÉ : la base n'a pas rendu \
+     cette règle — ce n'est PAS « field-filter introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est \
+     supprimé : si elle existe, le champ reste masqué comme avant pour les rôles visés, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la table des masques de champ est illisible.";

@@ -10,6 +10,7 @@
 //! par `/api/password` et par `/api/users/{id}` quand la cible est l'appelant. `P10.24-b` : `/api/password` change le
 //! mot de passe de l'APPELANT (`ou_vit_le_mot_de_passe_de`), et refuse nommément ce qu'il ne peut pas changer.
 use crate::*;
+use crate::handlers::idp::compte_au_journal;
 use rusqlite::OptionalExtension;
 
 /// `P10.23-l` — CE QUE LA SIGNATURE D'UN JETON AJOUTE POUR L'ÉPOQUE DE SON COMPTE. Rien pour l'époque zéro : le
@@ -132,11 +133,18 @@ pub(crate) fn live_role_si_l_epoque_du_compte_vaut(st: &AppState, user: &str, ep
         Ok(epoque) if epoque == epoque_du_jeton => Some(compte.role),
         Ok(_) => None,
         Err(cause) => {
-            eprintln!("[session] WARN époque du compte '{user}' NON lue, session refusée : {cause}");
+            eprintln!("[session] WARN époque du {COMPTE_NON_RELU_AU_JOURNAL} NON lue, session refusée : {cause}");
             None
         }
     }
 }
+
+/// `P10.31-u` — LE COMPTE AU JOURNAL QUAND IL N'EST PAS RELU. Les lignes `[session] WARN` nommaient le compte (`'{user}'`).
+/// Aux sites où la lecture du compte (ou de son époque) vient d'échouer, ou dont l'appelant peut tenir le verrou de
+/// l'écrivain (non réentrant), cette phrase FIXE remplace le nom, SANS relecture : c'est la troisième issue de
+/// `handlers::idp::compte_au_journal`, au mot près. Là où une connexion est déjà en main (ou le verrou prouvé libre), le
+/// site dit `compte #<id>` par `compte_au_journal`. Jamais le nom, aucune lecture de plus qui déciderait de quoi que ce soit.
+const COMPTE_NON_RELU_AU_JOURNAL: &str = "compte (identifiant non lu)";
 
 /// `P10.23-l` — ce que la résolution LIVE d'un compte rend : son rôle courant et l'époque de son compte. L'époque
 /// voyage en `Result` À CÔTÉ du rôle : `live_role_for` (qui ne juge aucune session) sert le rôle même quand
@@ -183,7 +191,7 @@ fn compte_live(st: &AppState, user: &str) -> Option<CompteLive> {
             // `P10.20-b` — rien n'a pu être lu, même par l'écrivain : le compte est peut-être en table, avec un autre
             // rôle. REFUS, jamais le repli admin de l'assistant ou de configuration sur une lecture ratée.
             LectureDuCompte::NonLu => {
-                eprintln!("[session] WARN compte '{user}' NON lu (read pool et écrivain), identité refusée");
+                eprintln!("[session] WARN {COMPTE_NON_RELU_AU_JOURNAL} NON lu (read pool et écrivain), identité refusée");
                 return None;
             }
         }
@@ -194,7 +202,7 @@ fn compte_live(st: &AppState, user: &str) -> Option<CompteLive> {
             }
             crate::state::LectureDuCompteBasic::Absent => {}
             crate::state::LectureDuCompteBasic::NonLu(cause) => {
-                eprintln!("[session] WARN compte '{user}' NON lu au plan de contrôle, identité refusée : {cause}");
+                eprintln!("[session] WARN {COMPTE_NON_RELU_AU_JOURNAL} NON lu au plan de contrôle, identité refusée : {cause}");
                 return None;
             }
         }
@@ -259,7 +267,8 @@ fn compte_via_l_ecrivain(st: &AppState, user: &str) -> LectureDuCompte {
                 Ok(true) => LectureDuCompte::Trouve { role, epoque },
                 Ok(false) => LectureDuCompte::Absent { epoque },
                 Err(e) => {
-                    eprintln!("[session] WARN fenêtre d'engagement du credential '{user}' NON lue : {e}");
+                    // `c` est le verrou DÉJÀ tenu : le compte au journal se lit dessus (`compte_au_journal`), jamais par un second verrou.
+                    eprintln!("[session] WARN fenêtre d'engagement du credential du {} NON lue : {e}", compte_au_journal(&c, user));
                     LectureDuCompte::NonLu
                 }
             }
@@ -345,7 +354,7 @@ pub(crate) fn frapper_la_session_du_compte(st: &AppState, user: &str, role: &str
     let epoque_du_compte = match epoque_du_compte(&st.db.lock(), user) {
         Ok(epoque) => epoque,
         Err(cause) => {
-            eprintln!("[session] WARN époque du compte '{user}' NON lue, aucune session frappée : {cause}");
+            eprintln!("[session] WARN époque du {COMPTE_NON_RELU_AU_JOURNAL} NON lue, aucune session frappée : {cause}");
             return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_EPOQUE_DU_COMPTE_NON_LUE));
         }
     };
@@ -377,7 +386,7 @@ pub(crate) fn l_epoque_du_compte_vaut(st: &AppState, user: &str, epoque_du_jeton
     match par_le_pool.map_or_else(|| epoque_du_compte(&st.db.lock(), user), Ok) {
         Ok(epoque) => epoque == epoque_du_jeton,
         Err(cause) => {
-            eprintln!("[session] WARN époque du compte '{user}' NON lue, session refusée : {cause}");
+            eprintln!("[session] WARN époque du {COMPTE_NON_RELU_AU_JOURNAL} NON lue, session refusée : {cause}");
             false
         }
     }
@@ -1418,12 +1427,14 @@ pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http:
             };
             return match revoquer_l_epoque_globale_tracee(&st, &admin) {
                 Ok(()) => cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" })),
+                // Le verrou de `revoquer_l_epoque_globale_tracee` est rendu à son retour : le compte au journal se lit sous
+                // une prise neuve, pour la ligne seule (`compte #<id>`, jamais le nom de l'administrateur).
                 Err(RevocationGlobaleRefusee::NonTracee(cause)) => {
-                    eprintln!("[session] WARN déconnexion globale par '{admin}' NON tracée, rien n'est révoqué : {cause}");
+                    eprintln!("[session] WARN déconnexion globale par le {} NON tracée, rien n'est révoqué : {cause}", compte_au_journal(&st.db.lock(), &admin));
                     err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_TRACEE)
                 }
                 Err(RevocationGlobaleRefusee::NonPersistee(cause)) => {
-                    eprintln!("[session] WARN déconnexion globale par '{admin}' : époque NON persistée, rien n'est révoqué : {cause}");
+                    eprintln!("[session] WARN déconnexion globale par le {} : époque NON persistée, rien n'est révoqué : {cause}", compte_au_journal(&st.db.lock(), &admin));
                     err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_PERSISTEE)
                 }
             };
@@ -1437,7 +1448,8 @@ pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http:
     match avancee {
         Ok(_) => cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "compte" })),
         Err(cause) => {
-            eprintln!("[session] WARN déconnexion de '{user}' : époque du compte NON avancée : {cause}");
+            // La prise temporaire de l'avancée est rendue à la fin de son énoncé : une prise neuve pour la ligne seule.
+            eprintln!("[session] WARN déconnexion du {} : époque du compte NON avancée : {cause}", compte_au_journal(&st.db.lock(), &user));
             cookies_effaces(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": CAUSE_REVOCATION_DU_COMPTE_NON_ECRITE }))
         }
     }

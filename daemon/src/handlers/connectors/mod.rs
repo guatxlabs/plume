@@ -104,9 +104,9 @@ pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
 /// rejouable » pour les deux issues de `ingest_events_batch_env`, y compris pour un lot que la base n'avait PAS PRIS
 /// (`BEGIN` refusé : rien n'a été tenté, rien n'est annulé). Deux phrases distinctes ; dans les deux cas rien n'est
 /// écrit, `last_ok`, `last_count` et le watermark ne bougent pas (rejouable). `last_run` et cette phrase sont posés par
-/// un `UPDATE` best-effort : quand le lot n'est pas pris parce que la base refuse l'écriture (verrou tenu par une autre
-/// connexion, `BEGIN IMMEDIATE` refusé), cet `UPDATE` est refusé de la même façon et ni `last_run` ni la phrase ne sont
-/// écrits — l'état du connecteur reste celui du passage précédent (reste non témoigné).
+/// `poser_le_passage_rate` (`P10.34-b`) : quand le lot n'est pas pris parce qu'une autre connexion tient le verrou
+/// d'écriture (`BEGIN IMMEDIATE` refusé), le même verrou peut refuser cet `UPDATE` ; il est alors retenté, puis, s'il
+/// reste refusé, une ligne de journal fixe dit que l'état n'est pas écrit.
 pub(crate) const ECHEC_D_INGESTION_LOT_NON_PRIS: &str = "échec d'ingestion (lot non pris, rien d'écrit, rejouable)";
 
 /// `P10.27-j` — la phrase de `last_error` pour un lot non écrit, selon son issue : non pris (phrase fixe) ou annulé
@@ -115,6 +115,47 @@ pub(crate) fn last_error_du_lot_non_ecrit(issue: crate::ingest::LotNonEcrit) -> 
     match issue {
         crate::ingest::LotNonEcrit::NonPris => ECHEC_D_INGESTION_LOT_NON_PRIS.to_string(),
         crate::ingest::LotNonEcrit::Annule(n) => format!("échec d'ingestion (lot annulé après {n} événement(s), rien d'écrit, rejouable)"),
+    }
+}
+
+/// `P10.34-b` — nombre d'essais de l'`UPDATE` qui pose `last_run` et la phrase d'un lot non écrit. Chaque essai attend
+/// déjà le `busy_timeout` de la connexion d'écriture sur un verrou tenu ailleurs : la borne fixe le temps passé sous le
+/// verrou d'écrivain (au plus deux attentes de plus que le `BEGIN` refusé), jamais une boucle.
+const ESSAIS_DU_PASSAGE_RATE: usize = 2;
+
+/// `P10.34-b` — la NATURE d'un refus de l'`UPDATE` du passage raté, choisie dans une liste fermée (jamais le texte du
+/// moteur, qui peut citer la requête) : un verrou tenu ailleurs passe, un autre refus du moteur demeure.
+const NATURE_VERROU_TENU_AILLEURS: &str = "verrou d'écriture tenu ailleurs";
+const NATURE_REFUS_DU_MOTEUR: &str = "refus du moteur qui n'est pas un verrou";
+
+fn nature_du_refus_du_passage_rate(refus: &rusqlite::Error) -> &'static str {
+    match refus.sqlite_error_code() {
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => NATURE_VERROU_TENU_AILLEURS,
+        _ => NATURE_REFUS_DU_MOTEUR,
+    }
+}
+
+/// `P10.34-b` — LE PASSAGE RATÉ D'UN CONNECTEUR LAISSE UNE TRACE. Pose `last_run` (anti-martèlement) et la phrase du lot
+/// non écrit (`last_error_du_lot_non_ecrit`) ; `last_ok`, `last_count` et le watermark ne sont pas touchés (rejouable).
+/// La forme d'avant (`let _ = conn.execute(..)`) jetait le refus : un lot non pris parce qu'une AUTRE connexion tient le
+/// verrou voyait son `UPDATE` refusé par le même verrou, et le passage ne laissait rien — ni `last_run`, ni phrase, ni
+/// ligne. Ici l'`UPDATE` est essayé `ESSAIS_DU_PASSAGE_RATE` fois ; s'il reste refusé, UNE ligne de journal fixe, avec le
+/// numéro interne du connecteur et la nature du refus — jamais son nom, son URL, sa configuration ni son secret.
+/// Choix : `transaction_validee.rs` (partagé par de nombreux gestes) n'est pas touché. Reste nommé : un `NonPris` peut
+/// aussi venir d'une transaction étrangère PENDANTE sur la même connexion (`dire_la_transaction_non_ouverte` sépare les
+/// deux causes) ; cet `UPDATE` entre alors dans cette transaction et partage son sort (risque antérieur, hors de ce geste).
+fn poser_le_passage_rate(conn: &Connection, db_path: &str, id: i64, now_ts: i64, issue: crate::ingest::LotNonEcrit) {
+    let phrase = last_error_du_lot_non_ecrit(issue);
+    for essai in 1..=ESSAIS_DU_PASSAGE_RATE {
+        match conn.execute("UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, phrase, id]) {
+            Ok(_) => return,
+            Err(refus) if essai == ESSAIS_DU_PASSAGE_RATE => eprintln!(
+                "[connecteurs] WARN connecteur #{id} : passage non pris, état non écrit ({})",
+                nature_du_refus_du_passage_rate(&refus)
+            ),
+            // Entre deux essais : rien en production ; sous `cfg(test)`, le crochet d'un témoin (libérer le verrou).
+            Err(_) => crate::handlers::transaction_validee::point_de_course(&format!("passage-rate-du-connecteur:{db_path}:{id}")),
+        }
     }
 }
 
@@ -176,11 +217,8 @@ where
                     Err(issue) => {
                         // Lot non pris ou annulé (fail-safe : ingest_events_batch_env n'a rien laissé d'écrit) : watermark
                         // NON avancé (rejouable au prochain tick), last_error posé — `P10.27-j` : il dit laquelle des deux
-                        // issues —, pas de martèlement (last_run).
-                        let _ = conn.execute(
-                            "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3",
-                            params![now_ts, last_error_du_lot_non_ecrit(issue), id],
-                        );
+                        // issues —, pas de martèlement (last_run). `P10.34-b` : un refus de cette écriture est retenté puis dit.
+                        poser_le_passage_rate(&conn, db_path, id, now_ts, issue);
                     }
                 }
             }
@@ -238,11 +276,8 @@ where
                 Err(issue) => {
                     // Lot non pris ou annulé (fail-safe : ingest_events_batch_env n'a rien laissé d'écrit) : watermark NON
                     // avancé (rejouable au prochain tick), last_error posé — `P10.27-j` : il dit laquelle des deux issues —,
-                    // pas de martèlement (last_run).
-                    let _ = conn.execute(
-                        "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3",
-                        params![now_ts, last_error_du_lot_non_ecrit(issue), id],
-                    );
+                    // pas de martèlement (last_run). `P10.34-b` : un refus de cette écriture est retenté puis dit.
+                    poser_le_passage_rate(&conn, db_path, id, now_ts, issue);
                 }
             }
         }

@@ -41,7 +41,7 @@
 // est unique, l'écriture rend zéro ou une ligne —, ni le 401 d'`oidc_callback` (point de jeton https joignable exigé, garde
 // SSRF, levier que ce témoin n'écrit pas) : blocs comparés EN ENTIER dans le source, constructeur du 401 joué directement.
 // Les issues « sans ligne `user` » et « identifiant non lu » de `compte_au_journal` sont jouées par les témoins `af1_`.
-// Hors périmètre : les lignes `[session] WARN époque du compte '<nom>'` de `session.rs` nomment encore le compte.
+// Les lignes `[session] WARN` de `session.rs` sont jouées par les témoins `ah1_` (vague AH).
 // =====================================================================================
 mod compte_au_journal_du_second_facteur_et_refus_de_l_echange_de_code {
     use super::*;

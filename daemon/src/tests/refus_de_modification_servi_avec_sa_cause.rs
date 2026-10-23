@@ -162,8 +162,10 @@ mod refus_de_modification_servi_avec_sa_cause {
                 assert_eq!(rmc_lire(&st, &objet.ligne(id)), "avant|shared", "({t}, {voie}) l'objet reste PARTAGÉ, son nom d'avant");
                 assert_eq!(code, 503, "({t}, {voie}) une bascule refusée n'est pas un succès : {v}");
                 let servie = v["error"].as_str().unwrap_or("");
-                assert!(servie.starts_with(objet.cause_ecriture()), "({t}, {voie}) le corps porte la cause nommée : {v}");
-                assert!(servie.contains("visibility"), "({t}, {voie}) et l'écriture refusée : {v}");
+                // `P10.29-l` (vague AH) — ASSERTION INVERSÉE : le corps portait aussi l'écriture refusée et le texte du moteur
+                // (`({geste} : visibility : …)`) ; il ne porte plus que la phrase fixe, la cause va au journal seul.
+                assert_eq!(servie, objet.cause_ecriture(), "({t}, {voie}) le corps porte la cause nommée, seule : {v}");
+                assert!(!servie.contains("visibility"), "({t}, {voie}) l'écriture refusée ne sort plus au client : {v}");
                 assert!(v["id"].as_str().is_some_and(|i| i.starts_with("plume-e")), "({t}, {voie}) avec l'identifiant de corrélation du journal : {v}");
                 assert!(ouverture.is_match(servie), "({t}, {voie}) à l'ouverture « écriture non prise » que la console lit : {servie}");
             }

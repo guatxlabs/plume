@@ -175,12 +175,30 @@ recopié : la recopie est ce qui a fait vivre quatre grammaires divergentes du l
 `temoins_des_lecteurs_de_forme()` sont appelés ici avant tout verdict, comme dans les deux gardes
 sœurs : sans cet appel, un lecteur partagé régressé laisserait cette garde-ci verte à compte amputé.
 
+CE QUE `P10.21-w` ET `P10.22-o` ONT LU EN PLUS (2026-10-23)
+----------------------------------------------------------
+Trois lectures neuves, chacune tenue par ses épreuves et ses mutations (voir `valider_instrument`) :
+  * le `match` MUET (ancien angle mort `a1`) : l'écriture scrutée par un `match` dont le bras `Err` — ou, faute de
+    bras `Err`, le joker — ne fait rien ou ne fait que journaliser (`match_muet`, forme `match muet -> …`) ;
+  * l'atteignabilité APRÈS une boucle (ancien angle mort `a6`) : un `continue`/`break` saute le reste de la boucle
+    qu'il quitte, puis la lecture reprend après elle (`boucle_quittee`) ;
+  * le SUCCÈS LITTÉRAL (`P10.22-o`) : `let _ = …; true`, la forme de `recovery_consume` avant `P10.21-s`.
+POPULATION, avant -> après, sur l'arbre : 0 -> 0 site. AUCUNE accusation neuve, donc rien n'entre dans l'ensemble
+nommé. Ce que chaque lecture aurait accusé sous une forme plus large, mesuré par mutation : sans le saut du reste de
+la boucle, CINQ fausses accusations dans `actions.rs::respond_run` (épreuve `n15`) ; un bras `Err` tenu muet quoi
+qu'il fasse, QUATORZE `match` réels accusés à tort (tous refusent ou produisent une issue) ; le succès littéral lu
+dans l'ancêtre, CINQ écritures de `migrate.rs::migrate_chain` appariées au `true` qui clôt la fonction, dont une
+fausse (voir `faits_dans_la_portee`). CE QUI ÉTAIT PÉRIMÉ dans l'énoncé de `P10.21-w` : « `engagement.rs` avale un
+`COMMIT` puis compte `activated += 1` » — le geste passe par `clore_un_geste_du_cycle` (un `COMMIT` refusé est dit et
+non compté). Et dans celui de `P10.22-o` : « 29 sites pour un plancher de 29 » — population et planchers sont à
+zéro depuis le 2026-10-08 (voir les planchers).
+
 CE QUE CE VERT NE DIRA PAS
 ---------------------------
-La liste complète est dans `ce_qui_n_est_pas_tenu()`, et son premier terme est l'angle mort PARTAGÉ
-avec `P10.20-l` : le `match conn.execute(…) { Ok(_) => …, Err(_) => … }` dont le bras d'erreur SE TAIT
-est la même faute écrite autrement, et cette garde ne le voit pas. Le second est le critère de
-portée lui-même, dont les manques sont MESURÉS et nommés plus bas.
+La liste complète est dans `ce_qui_n_est_pas_tenu()`. Le `match` muet est lu depuis `P10.21-w` ; reste le
+`Result` LIÉ à un nom et jeté plus bas (`a2`), et le bras `Err` qui PRODUIT une valeur confondue avec un succès. Le
+second terme est le critère de portée lui-même, dont les manques sont MESURÉS et nommés plus bas : un fait posé dans
+un bloc CONDITIONNEL de l'ancêtre n'est pas lu (`a7`).
 """
 import os
 import re
@@ -204,6 +222,8 @@ try:
         dans_une_chaine_rust, debut_instruction, fonctions, parcours_des_sources, portee_englobante,
         positions_de_coupe, refuser_sur_aveu, sans_commentaires_rust, spans_de_chaines_rust,
         temoins_des_lecteurs_de_forme, temoins_du_lecteur)
+    # `P10.21-w` — le découpeur de bras PARTAGÉ (celui que `garde_72` importe aussi), pour lire le `match` muet.
+    from check_a_read_that_did_not_happen_is_never_served_as_a_fact import bras_du_match  # noqa: E402
 finally:
     sys.argv = _ARGV
 
@@ -256,7 +276,13 @@ def liaison_sourde(prefixe):
     tete = TETE_DE_LIAISON_SOURDE.match(prefixe)
     if not tete:
         return False
-    chemin = CHEMIN_DE_RECEVEUR.match(prefixe, tete.end())
+    return _receveur_ferme(prefixe, tete.end())
+
+
+def _receveur_ferme(prefixe, debut):
+    """Vrai quand `prefixe[debut:]` est un receveur dont chaque ouvrante se ferme AVANT l'écriture (lecture
+    partagée par `liaison_sourde` et `scrutateur_de_match`)."""
+    chemin = CHEMIN_DE_RECEVEUR.match(prefixe, debut)
     if not chemin:
         return False
     j = chemin.end()
@@ -278,6 +304,60 @@ def liaison_sourde(prefixe):
         return False
     return True
 
+
+# `P10.21-w` — LE `match` MUET (ancien angle mort `a1`, partagé avec `P10.20-l`). `match conn.execute(…) { Ok(_) =>
+# {}, Err(_) => {} }` jette l'échec aussi sûrement que `let _ =` : rien ne sort sur le bras d'erreur, et le fait posé
+# APRÈS le `match` est atteint sur l'écriture ratée. La lecture se fait sur les BRAS (découpeur partagé
+# `bras_du_match`) : sont jugés les bras `Err(…)` — ou, s'il n'y en a aucun, le joker `_`, qui couvre alors l'erreur.
+# Un tel bras est MUET quand son corps est vide (`{}`, `()`, rien) ou ne fait que JOURNALISER (`eprintln!`,
+# `println!`, `tracing::warn!`…). Tout autre corps n'est PAS muet, et c'est voulu : un bras qui sort (`return`,
+# `continue`, `break`, `?`, `panic!`) refuse, et un bras qui PRODUIT une valeur (`Err(e) => NonEcrite(e)`, `Err(_) =>
+# false` face à `Ok(_) => true`) porte l'échec plus loin — décider si cette valeur se confond avec un succès demande
+# de comparer aux bras `Ok`, ce que cette lecture ne fait pas (reste écrit dans `ce_qui_n_est_pas_tenu`).
+TETE_DE_MATCH = re.compile(r"\A\s*(?:(?:let\s+[^=;]*?=|return)\s*)?match\s+[&*\s]*")
+MOTIF_D_ERREUR = re.compile(r"\A\s*Err\b")
+MOTIF_JOKER = re.compile(r"\A\s*_\s*\Z")
+MACRO_DE_JOURNAL = re.compile(r"\s*(?:(?:tracing|log)\s*::\s*)?(?:eprintln|println|eprint|print|warn|error|info|"
+                              r"debug|trace)\s*!\s*\(")
+
+
+def scrutateur_de_match(prefixe):
+    """Vrai quand le préfixe d'instruction qui précède `.execute(` est `[let … =|return] match <receveur>` : l'écriture
+    est le SCRUTATEUR du `match` (même lecture de receveur que `liaison_sourde`)."""
+    tete = TETE_DE_MATCH.match(prefixe)
+    return bool(tete) and _receveur_ferme(prefixe, tete.end())
+
+
+def bras_muet(corps):
+    """Vrai quand le corps d'un bras ne fait RIEN de l'échec : vide, `()`, ou seulement des macros de journal."""
+    c = corps.strip().rstrip(",").strip()
+    if c.startswith("{") and apparier(c, 0) == len(c) - 1:
+        c = c[1:-1]
+    c = c.strip()
+    if c in ("", "()"):
+        return True
+    j = 0
+    while j < len(c):
+        m = MACRO_DE_JOURNAL.match(c, j)
+        if not m:
+            return not c[j:].strip()
+        fin = apparier(c, m.end() - 1)
+        if fin < 0:
+            return False
+        j = fin + 1
+        while j < len(c) and (c[j].isspace() or c[j] == ";"):
+            j += 1
+    return True
+
+
+def match_muet(code, ouvrante):
+    """Vrai quand le `match` dont le corps s'ouvre en `ouvrante` a un bras d'erreur MUET (voir le bandeau)."""
+    bras = bras_du_match(code, ouvrante)
+    erreurs = [corps for motif, corps in bras if MOTIF_D_ERREUR.match(motif)]
+    if not erreurs:
+        erreurs = [corps for motif, corps in bras if MOTIF_JOKER.match(motif)]
+    return any(bras_muet(corps) for corps in erreurs)
+
 # --- LE GESTE, MOITIÉ DEUX : LE FAIT QUI AFFIRME L'ÉCRITURE ---------------------------------------
 # Chacun est nommé parce qu'il pose un fait que personne ne peut plus recouper : une trace non
 # purgeable, un blocage réseau, ou un identifiant rendu au client.
@@ -293,6 +373,18 @@ FAITS_QUI_AFFIRMENT = (
     # ne la prenait pas (le `_` qui précède `ledger` est un caractère de mot, donc pas de frontière).
     ("control_ledger_append", re.compile(r"\bcontrol_ledger_append\s*\(")),
 )
+
+# `P10.22-o` — LE SUCCÈS LITTÉRAL. `let _ = conn.execute(…); true` (forme de `recovery_consume` avant `P10.21-s`) rend
+# « fait » au lieu de le constater : la fonction ELLE-MÊME est le fait, et aucun nom du vocabulaire ne la suit. Deux
+# formes, et seulement elles : `return true` en tête d'instruction, et `true` en QUEUE du corps de la fonction (juste
+# avant son accolade fermante). Pas `Ok(true)`, `Ok(())`, `Some(…)` ni une variante d'énumération : écrits au hasard
+# de l'arbre, ils sont aussi le pied ordinaire de fonctions qui ne prétendent rien (reste écrit). Ce fait ne vaut que
+# hors fermeture (un `return true` dans `|x| { … }` rend pour la fermeture), et il n'entre dans la forme que s'il est
+# le SEUL fait du site : à côté d'un registre ou d'un identifiant le site est déjà accusé, et l'ajouter changerait la
+# forme de chaque entrée sans changer aucun verdict.
+SUCCES_LITTERAL = "succes_litteral"
+RETOUR_VRAI = re.compile(r"\breturn\s+true\b")
+QUEUE_VRAIE = re.compile(r"\btrue\s*\Z")
 
 # --- PLANCHER DE NON-DÉGÉNÉRESCENCE (première écriture, 2026-09-19) -------------------------------
 # Ils ne réclament PAS un volume de code : ils constatent qu'une LECTURE est cassée. Sous eux, rendre
@@ -336,6 +428,10 @@ FAITS_QUI_AFFIRMENT = (
 # refusé, quelle que soit la population) et les épreuves fabriquées de `valider_instrument` (un lecteur qui ne
 # reconnaît plus la forme est refusé). Ce que rien ne sépare : un lecteur qui lit tous les fichiers et manque une
 # forme NEUVE qu'aucune épreuve ne porte.
+# RE-DÉRIVÉS le 2026-10-23 (`P10.21-w`, `P10.22-o`) : le lot élargit la LECTURE (`match` muet, suite d'une boucle
+# quittée, succès littéral) sans fermer ni ouvrir de site. Relevé de ce jour-là sur l'arbre : 0 site sur 0 fichier,
+# AVANT comme APRÈS ; même règle des deux tiers : 0 -> 0, 0 -> 0. Ce que les trois lectures neuves ajoutent à la
+# séparation d'une découverte aveugle passe par leurs épreuves fabriquées, pas par ces planchers.
 PLANCHER_SITES = 0
 PLANCHER_FICHIERS = 0
 # LE PLANCHER QUI TIENT ENCORE, posé le 2026-10-08 (`P10.20-w`, rang six, correction) : sur les FICHIERS LUS, comme
@@ -404,7 +500,9 @@ SITES_REGISTRE_APRES_ECRITURE_AVALEE = {
     # NOMMÉ AVANT la session et le registre, un pas consommé entre-temps par une requête concurrente est un
     # rejeu refusé (401). Mesuré sur la forme d'avant : écriture refusée -> 200, cookie, « login local MFA
     # validé », et le MÊME code ouvrait une seconde session la base revenue ; le code de secours avait le même
-    # geste dans `recovery_consume` (`let _ = …; true`), hors population faute de fait après l'écriture.
+    # geste dans `recovery_consume` (`let _ = …; true`), hors population faute de fait après l'écriture. `P10.22-o`
+    # (2026-10-23) : ce `true` est désormais LU comme un fait (succès littéral, épreuve (28)) ; `recovery_consume`
+    # compte son `UPDATE` par un `match` depuis `P10.21-s`, et n'est donc pas accusé.
     # `mfa_disable` : le `DELETE` est compté, un refus rend un 503 nommé sans « désactivée » au registre.
     # `P10.21-t` — `attach_runbook` et `incident_apply_tier` SONT RETIRÉS. Les étapes s'écrivent dans UNE
     # transaction, chacune comptée, et le registre ne suit que la validation (mesuré sur la forme d'avant :
@@ -602,12 +700,16 @@ def faits_dans_la_portee(code, coupes, spans, depart, fin_fonction):
     PATCH, `scim.user.provision` après le `for` des droits, le registre qui annonce N étapes après la boucle
     qui les insère — n'était jamais apparié (angle mort `a5`). Désormais, quand le bloc de l'écriture se
     ferme, la lecture REMONTE dans son parent, et la montée ne peut accuser que ce que l'écriture ATTEINT :
-      1. RIEN N'EST LU APRÈS UNE SORTIE. Un `return`, `continue` ou `break` au NIVEAU COURANT (pas dans un bloc
-         imbriqué) arrête la lecture : c'est ce qui garde `actions.rs::respond_run` hors de la population,
-         où chaque écriture avalée est suivie d'un `continue` et le registre vit plus bas dans la boucle
-         (les cinq fausses accusations mesurées sous `P10.20-w`, épreuve négative `n15`). L'arrêt est
-         CONSERVATEUR : après un `continue`/`break`, le code qui suit la BOUCLE reste atteignable, et il
-         n'est pas lu (angle mort écrit, épreuve `a6`) ;
+      1. RIEN N'EST LU APRÈS UNE SORTIE, JUSQU'À LA FIN DE CE QU'ELLE QUITTE. Un `return` au NIVEAU COURANT (pas dans
+         un bloc imbriqué) arrête la lecture. Un `continue` ou un `break` au niveau courant SAUTE tout ce qui reste
+         de la boucle qu'il quitte (la plus proche, ou celle de son étiquette `'a`) : c'est ce qui garde
+         `actions.rs::respond_run` hors de la population, où chaque écriture avalée est suivie d'un `continue` et
+         le registre vit plus bas dans la boucle (les cinq fausses accusations mesurées sous `P10.20-w`, épreuve
+         négative `n15`). `P10.21-w` — la lecture REPREND après l'accolade fermante de cette boucle, au niveau de
+         son parent et comme un ancêtre (règle 3) : le code qui suit la boucle est atteignable après un
+         `continue`/`break`, et un fait qui y vit affirme l'écriture (ancien angle mort `a6`, devenu l'épreuve
+         (23)). Une sortie dont la boucle est introuvable (étiquette de bloc, fermeture, corps de fonction sans
+         boucle) arrête la lecture, comme avant ;
       2. LES AUTRES BRAS NE SONT PAS DES SUITES. Quitter un bras de `match` (ou un bloc posé dans un bras)
          saute le reste du `match` : un bras SANS accolades (`None => conn.last_insert_rowid(),`) vit au
          niveau du corps du `match`, et la règle 3 ne le verrait pas (épreuve `n19`). La chaîne `else` d'un
@@ -618,7 +720,12 @@ def faits_dans_la_portee(code, coupes, spans, depart, fin_fonction):
       3. DANS L'ANCÊTRE, SEUL LE NIVEAU COMPTE. Un fait posé dans un bloc CONDITIONNEL ouvert après la
          remontée (un `if` frère, une boucle, une fermeture) n'est pas pris : c'est le bloc FRÈRE de
          `case_apply_update` (épreuve `n3`), qui parle d'autre chose. Seuls le niveau de l'ancêtre et ses
-         blocs nus sont lus.
+         blocs nus sont lus. `P10.21-w` — C'EST UN ANGLE MORT ÉCRIT, ET IL RESTE (épreuve défensive `a7`). MESURÉ
+         le 2026-10-23 en lisant aussi les blocs `if`/`else`/boucle/`match` de l'ancêtre : AUCUN site de l'arbre ne
+         change (les sept fausses accusations du 2026-09-23 sont parties avec leurs fonctions corrigées), mais
+         `n18` (le fait dans un `else`, une ALTERNATIVE) et `n20` (le fait dans un `if` frère) deviennent des
+         accusations : la lecture ne sait pas départager une suite d'une alternative ou d'un bloc qui parle d'un
+         autre objet, donc elle ne le lit pas.
     Une FERMETURE, un bloc `async` et un bloc au genre inconnu (corps de fonction, littéral) restent des
     bornes : leur corps peut ne jamais s'exécuter, ou s'exécuter ailleurs (épreuve `n16`)."""
     ouvrantes, fermantes, parents, ouverts = {}, {}, {}, []
@@ -642,15 +749,40 @@ def faits_dans_la_portee(code, coupes, spans, depart, fin_fonction):
         while k >= 0 and code[k].isspace():
             k -= 1
         if k < 0 or code[k] in ";{}":
-            evenements.append((m.start(), "sortie", m.group(1)))
+            etiquette = re.match(r"\s*'(\w+)\b(?!')", code[m.end():m.end() + 80])
+            evenements.append((m.start(), "sortie", (m.group(1), etiquette.group(1) if etiquette else None)))
     for nom, motif in FAITS_QUI_AFFIRMENT:
         for m in motif.finditer(code, depart, fin_fonction):
             if not dans_une_chaine_rust(spans, m.start()):
                 evenements.append((m.start(), "fait", nom))
-    evenements.sort(key=lambda e: e[0])
+    # `P10.22-o` — le succès littéral : `return true` en tête d'instruction (le fait est posé À LA POSITION du
+    # `return`, et trié AVANT la sortie qui y commence : sinon la sortie couperait la lecture d'abord), et `true`
+    # en queue du corps.
+    for m in RETOUR_VRAI.finditer(code, depart, fin_fonction):
+        k = m.start() - 1
+        while k >= 0 and code[k].isspace():
+            k -= 1
+        if not dans_une_chaine_rust(spans, m.start()) and (k < 0 or code[k] in ";{}" or code[k - 1:k + 1] == "=>"):
+            evenements.append((m.start(), "fait", SUCCES_LITTERAL))
+    queue = QUEUE_VRAIE.search(code, depart, fin_fonction)
+    if queue and not dans_une_chaine_rust(spans, queue.start()):
+        evenements.append((queue.start(), "fait", SUCCES_LITTERAL))
+    evenements.sort(key=lambda e: (e[0], 0 if e[1] == "fait" else 1))
     trouves, pile, dans_l_ancetre, saut = [], [], False, -1
     for position, quoi, nom in evenements:
         if position <= saut:
+            continue
+        if quoi == "sortie" and all(g == "nu" for g in pile) and nom[0] in ("continue", "break"):
+            # `P10.21-w` — on saute ce qui reste de la boucle quittée, et la lecture reprend après elle.
+            boucle = boucle_quittee(code, coupes, parents, fermantes, position, nom[1])
+            if boucle < 0:
+                break
+            # Pas de saut du `match` parent ici, et c'est MESURÉ (2026-10-23) : une boucle dont l'accolade est
+            # DIRECTEMENT dans le corps d'un `match` est un bras sans accolades (`Some(v) => for x in v { … },`), dont
+            # le genre est « inconnu » — `boucle_quittee` rend alors -1 et la lecture s'arrête avant. Ce saut était
+            # une branche morte (mutation équivalente) ; une boucle posée dans un bras À ACCOLADES remonte d'abord
+            # dans ce bras, et c'est la fermante du bras (plus bas) qui saute le reste du `match`.
+            saut, pile, dans_l_ancetre = fermantes[boucle], [], True
             continue
         if quoi == "{":
             pile.append(genre_du_bloc(code, coupes, position))
@@ -672,8 +804,33 @@ def faits_dans_la_portee(code, coupes, spans, depart, fin_fonction):
             if all(g == "nu" for g in pile):
                 break
         elif quoi == "fait" and (not dans_l_ancetre or all(g == "nu" for g in pile)):
+            if nom == SUCCES_LITTERAL and (dans_l_ancetre or "fermeture" in pile or "inconnu" in pile):
+                # Un `return true` de fermeture rend pour la fermeture. Et le succès littéral n'est PAS lu dans
+                # l'ancêtre : MESURÉ le 2026-10-23, la lecture remontante appariait le `true` du pied de
+                # `migrate.rs::migrate_chain` (cent lignes plus bas, il résume toute la chaîne) à cinq écritures
+                # avalées dans des bras `Ok(()) =>`, dont un `CREATE TABLE IF NOT EXISTS host_rollup` dont l'échec
+                # est rattrapé par le `?` du remplissage qui lit cette table — une fausse accusation.
+                continue
             trouves.append((nom, position))
     return trouves
+
+
+def boucle_quittee(code, coupes, parents, fermantes, position, etiquette):
+    """L'accolade ouvrante de la boucle que quitte le `continue`/`break` posé en `position` : la plus proche qui
+    l'englobe, ou celle qui porte `etiquette`. `-1` quand elle est introuvable — une fermeture ou un corps au genre
+    inconnu est franchi avant (le mot ne quitte alors aucune boucle lisible) : l'appelant s'arrête."""
+    dedans = [o for o, f in fermantes.items() if o < position < f]
+    b = max(dedans) if dedans else -1
+    while b >= 0:
+        genre = genre_du_bloc(code, coupes, b)
+        if genre == "boucle":
+            tete = code[debut_instruction(coupes, b):b]
+            if etiquette is None or re.search(r"'" + re.escape(etiquette) + r"\s*:", tete):
+                return b
+        elif genre in ("fermeture", "inconnu"):
+            return -1
+        b = parents.get(b, -1)
+    return -1
 
 
 # ================================================================================================
@@ -783,6 +940,14 @@ def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
             forme_chaine = f"let _.{chaine}" if sourde else chaine
         elif genre == "nu" and sourde:
             forme_chaine = "let _"
+        elif (genre == "nu" and apres < len(code) and code[apres] == "{"
+              and scrutateur_de_match(code[debut:m.start()]) and match_muet(code, apres)):
+            # `P10.21-w` — le `match` muet : la lecture des faits commence APRÈS le `match` (un fait posé dans un
+            # bras `Ok` est conditionné au succès, il n'affirme rien d'une écriture ratée).
+            fin_du_match = apparier(code, apres)
+            if fin_du_match < 0:
+                continue
+            forme_chaine, apres = "match muet", fin_du_match + 1
         else:
             continue
         englobante = portee_englobante(fns, m.start())
@@ -795,6 +960,9 @@ def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
         # `P10.28-e` — une insertion vérifiée qui s'intercale rend la lecture d'identifiant à SA ligne.
         faits = [(n, p) for n, p in faits
                  if n != "last_insert_rowid" or not insertion_verifiee_avant_la_lecture(code, coupes, spans, apres, p)]
+        # `P10.22-o` — le succès littéral n'entre dans la forme que s'il est le SEUL fait (voir `SUCCES_LITTERAL`).
+        if any(n != SUCCES_LITTERAL for n, _p in faits):
+            faits = [(n, p) for n, p in faits if n != SUCCES_LITTERAL]
         if not faits:
             continue
         forme = f"{forme_chaine} -> " + "+".join(sorted({n for n, _p in faits}))
@@ -1109,10 +1277,10 @@ EPREUVES = [
     # fabriquerait une conjonction là où il n'y a qu'une phrase ; sur l'ÉCRITURE, il ajouterait un
     # second site à une fonction qui n'en porte qu'un.
     ("témoin négatif : le nom du FAIT n'est que CITÉ dans un message, après une écriture avalée",
-     'fn n13(conn: &Connection, id: i64) -> bool {\n'
+     'fn n13(conn: &Connection, id: i64) {\n'
      '    let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
      '    eprintln!("le correctif remplacera ledger_append(conn, k, d) par un refus nommé");\n'
-     '    true\n}\n', set()),
+     '}\n', set()),  # sans `-> bool`/`true` depuis `P10.22-o` : la queue `true` serait un fait (succès littéral)
     ("témoin positif ET négatif : une écriture réelle, et une AUTRE seulement citée dans une phrase",
      'fn n14(conn: &Connection, id: i64) -> bool {\n'
      '    let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
@@ -1202,38 +1370,207 @@ EPREUVES = [
      '    let _ = conn.execute("INSERT INTO t(a) VALUES(1)", []);\n'
      '    conn.execute("INSERT INTO u(b) VALUES(1)", []).journaliser();\n'
      '    conn.last_insert_rowid()\n}\n', {"let _ -> last_insert_rowid"}),
-    # --- L'ANGLE MORT EST PROUVÉ, PAS ALLÉGUÉ. Ce témoin est DÉFENSIF dans un seul sens : il rougit
-    # si la garde se met à voir le `match` muet, ce qui veut dire que le paragraphe « ce que ce vert
-    # ne dit pas » doit être réécrit AVANT que le verdict reprenne. Il n'exige jamais qu'un défaut
-    # survive.
-    ("angle mort ÉCRIT, partagé avec `P10.20-l` : le `match` dont le bras `Err` SE TAIT",
-     'fn a1(conn: &Connection, id: i64) -> bool {\n'
+    # --- `P10.21-w` — LE `match` MUET, LU. (23) est l'ancien angle mort `a1`, devenu une accusation ; chaque négatif
+    # est une condition de la lecture des bras, qui rougit si elle est débranchée.
+    ("(23) (`P10.21-w`) le `match` dont le bras `Err` SE TAIT — l'ancien angle mort `a1`",
+     'fn e23(conn: &Connection, id: i64) -> bool {\n'
      '    match conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]) {\n'
      '        Ok(_) => {}\n'
      '        Err(_) => {}\n'
      '    }\n'
      '    ledger_append(conn, "t.maj", &format!("#{id}"));\n'
-     '    true\n}\n', set()),
+     '    true\n}\n', {"match muet -> ledger_append"}),
+    ("(25) (`P10.21-w`) le bras `Err` ne fait que JOURNALISER, et le `match` est lié — il se tait quand même",
+     'fn e25(conn: &Connection, id: i64) {\n'
+     '    let _r = match conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]) {\n'
+     '        Ok(_) => {}\n'
+     '        Err(e) => { eprintln!("écriture refusée : {e}"); tracing::warn!("x"); }\n'
+     '    };\n'
+     '    control_ledger_append(st, "t.maj", "op", "", "");\n}\n', {"match muet -> control_ledger_append"}),
+    ("(26) (`P10.21-w`) aucun bras `Err` : le JOKER muet couvre l'erreur",
+     'fn e26(conn: &Connection, id: i64) {\n'
+     '    match conn.execute("DELETE FROM t WHERE id=?1", params![id]) {\n'
+     '        Ok(1) => eprintln!("une ligne"),\n'
+     '        _ => (),\n'
+     '    }\n'
+     '    ledger_append(conn, "t.suppr", "x");\n}\n', {"match muet -> ledger_append"}),
+    ("témoin négatif (`P10.21-w`) : le bras `Err` journalise PUIS sort — il refuse",
+     'fn n25(conn: &Connection, id: i64) -> Response {\n'
+     '    match conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]) {\n'
+     '        Ok(_) => {}\n'
+     '        Err(e) => { eprintln!("{e}"); return refus("écriture"); }\n'
+     '    }\n'
+     '    ledger_append(conn, "t.maj", "x");\n'
+     '    ok_json()\n}\n', set()),
+    ("témoin négatif (`P10.21-w`) : le bras `Err` PRODUIT une valeur qui porte l'échec plus loin",
+     'fn n26(conn: &Connection, id: i64) -> Issue {\n'
+     '    let issue = match conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]) {\n'
+     '        Ok(1) => Issue::Ecrite,\n'
+     '        Ok(_) => Issue::Absente,\n'
+     '        Err(e) => Issue::NonEcrite(e.to_string()),\n'
+     '    };\n'
+     '    if issue == Issue::Ecrite { ledger_append(conn, "t.maj", "x"); }\n'
+     '    issue\n}\n', set()),
+    ("témoin négatif (`P10.21-w`) : un bras `Err` qui sort existe — le joker muet ne couvre plus l'erreur",
+     'fn n27(conn: &Connection, id: i64) -> Response {\n'
+     '    match conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]) {\n'
+     '        Ok(1) => {}\n'
+     '        Err(_) => return refus("écriture"),\n'
+     '        _ => {}\n'
+     '    }\n'
+     '    ledger_append(conn, "t.maj", "x");\n'
+     '    ok_json()\n}\n', set()),
+    ("témoin négatif (`P10.21-w`) : `match` muet, mais le fait vit DANS le bras `Ok` — conditionné au succès",
+     'fn n28(conn: &Connection, id: i64) {\n'
+     '    match conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]) {\n'
+     '        Ok(_) => { ledger_append(conn, "t.maj", "x"); }\n'
+     '        Err(_) => {}\n'
+     '    }\n}\n', set()),
+    # --- `P10.21-w` — APRÈS UN `continue`/`break`, LA LECTURE REPREND APRÈS LA BOUCLE. (24) est l'ancien angle mort
+    # `a6` ; `n15` (plus haut, la forme de `respond_run`) tient que le reste du corps de la boucle reste sauté.
+    ("(24) (`P10.21-w`) un `continue` saute le reste de la boucle, et le fait APRÈS la boucle est lu — l'ancien `a6`",
+     'fn e24(conn: &Connection, ids: &[i64]) {\n'
+     '    for id in ids {\n'
+     '        if *id > 0 {\n'
+     '            let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '            continue;\n'
+     '        }\n'
+     '        eprintln!("rien");\n'
+     '    }\n'
+     '    ledger_append(conn, "t.maj", "lot");\n}\n', {"let _ -> ledger_append"}),
+    ("(27) (`P10.21-w`) un `break` ÉTIQUETÉ quitte la boucle EXTÉRIEURE : le fait qui suit l'intérieure est sauté, "
+     "celui qui suit l'extérieure est lu",
+     'fn e27(conn: &Connection, ids: &[Vec<i64>]) -> i64 {\n'
+     '    \'ext: for lot in ids {\n'
+     '        while let Some(id) = lot.first() {\n'
+     '            let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '            break \'ext;\n'
+     '        }\n'
+     '        ledger_append(conn, "t.lot", "interieur");\n'
+     '    }\n'
+     '    conn.last_insert_rowid()\n}\n', {"let _ -> last_insert_rowid"}),
+    ("témoin négatif (`P10.21-w`) : après la boucle, le fait vit dans un bloc CONDITIONNEL de l'ancêtre (règle 3)",
+     'fn n29(conn: &Connection, ids: &[i64], b: bool) {\n'
+     '    for id in ids {\n'
+     '        let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '        break;\n'
+     '    }\n'
+     '    for _k in 0..2 {\n'
+     '        if b { ledger_append(conn, "t.autre", "b"); }\n'
+     '    }\n}\n', set()),
+    ("témoin négatif (`P10.21-w`) : `continue` vers une étiquette ABSENTE — la boucle est introuvable, la lecture "
+     "s'arrête",
+     'fn n30(conn: &Connection, ids: &[i64]) {\n'
+     '    for id in ids {\n'
+     '        let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '        continue \'ailleurs;\n'
+     '    }\n'
+     '    ledger_append(conn, "t.maj", "lot");\n}\n', set()),
+    # --- `P10.22-o` — LE SUCCÈS LITTÉRAL. (28) est la forme de `recovery_consume` avant `P10.21-s`.
+    ("(28) (`P10.22-o`) `let _ = conn.execute(…); true` — la fonction ELLE-MÊME affirme l'écriture",
+     'fn e28(conn: &Connection, liste: &str, user: &str) -> bool {\n'
+     '    let _ = conn.execute("UPDATE user_mfa SET recovery=?1 WHERE user=?2", params![liste, user]);\n'
+     '    true\n}\n', {"let _ -> succes_litteral"}),
+    # Le `return true` est au NIVEAU de l'écriture : le fait est trié avant la sortie qui commence au même index.
+    ("(29) (`P10.22-o`) `return true` au niveau de l'écriture avalée, dans un bloc conditionnel",
+     'fn e29(conn: &Connection, id: i64, a: bool) -> bool {\n'
+     '    if a {\n'
+     '        conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]).ok();\n'
+     '        return true;\n'
+     '    }\n'
+     '    false\n}\n', {"ok -> succes_litteral"}),
+    ("témoin négatif (`P10.22-o`) : `return true` dans une FERMETURE rend pour la fermeture",
+     'fn n31(conn: &Connection, ids: &[i64]) -> usize {\n'
+     '    let _ = conn.execute("DELETE FROM t", []);\n'
+     '    ids.iter().filter(|i| { if **i > 0 { return true; } false }).count()\n}\n', set()),
+    ("témoin négatif (`P10.22-o`) : `true` nommé en partie d'expression ou dans une chaîne n'est pas un succès",
+     'fn n32(conn: &Connection, a: bool) -> bool {\n'
+     '    let _ = conn.execute("DELETE FROM t", []);\n'
+     '    eprintln!("return true");\n'
+     '    a == true || a\n}\n', set()),
+    # --- CORRECTION (vérification indépendante du 2026-10-23) : sept conditions de la lecture restaient vertes quand on
+    # les retirait SEULES. Chaque épreuve ci-dessous en tient UNE, et rougit sous sa mutation jouée seule.
+    ("(30) (`P10.21-w`) DEUX bras `Err`, un seul muet : il suffit d'un bras qui se tait pour que l'échec passe",
+     'fn e30(conn: &Connection, id: i64) -> Response {\n'
+     '    match conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]) {\n'
+     '        Ok(_) => {}\n'
+     '        Err(rusqlite::Error::SqliteFailure(_, _)) => {}\n'
+     '        Err(e) => return refus(&e.to_string()),\n'
+     '    }\n'
+     '    ledger_append(conn, "t.maj", "x");\n'
+     '    ok_json()\n}\n', {"match muet -> ledger_append"}),
+    ("(31) (`P10.21-w`) un `continue` CONDITIONNEL ne quitte pas la boucle : le fait qui suit dans la boucle est lu",
+     'fn e31(conn: &Connection, ids: &[i64]) {\n'
+     '    for id in ids {\n'
+     '        let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '        if *id > 9 { continue; }\n'
+     '        ledger_append(conn, "t.maj", "x");\n'
+     '    }\n}\n', {"let _ -> ledger_append"}),
+    ("(32) (`P10.21-w`) un `break` CONDITIONNEL non plus : le fait qui suit dans la boucle est lu",
+     'fn e32(conn: &Connection, ids: &[i64]) {\n'
+     '    for id in ids {\n'
+     '        let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '        if *id > 9 { break; }\n'
+     '        control_ledger_append(st, "t.maj", "op", "", "");\n'
+     '    }\n}\n', {"let _ -> control_ledger_append"}),
+    ("(33) (`P10.22-o`) `=> return true` dans un bras de `match` sans accolades est un succès littéral",
+     'fn e33(conn: &Connection, id: i64, k: Option<i64>) -> bool {\n'
+     '    let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
+     '    match k {\n'
+     '        Some(_) => return true,\n'
+     '        None => {}\n'
+     '    }\n'
+     '    false\n}\n', {"let _ -> succes_litteral"}),
+    ("témoin négatif (`P10.22-o`) : `return true` HORS tête d'instruction (fermeture sans accolades)",
+     'fn n33(conn: &Connection, ids: &[i64]) -> usize {\n'
+     '    let _ = conn.execute("DELETE FROM t", []);\n'
+     '    ids.iter().filter(|_i| return true).count()\n}\n', set()),
+    ("témoin négatif (`P10.22-o`) : `return true` DANS une chaîne, en tête d'instruction apparente (`; return true`)",
+     'fn n34(conn: &Connection) {\n'
+     '    let _ = conn.execute("DELETE FROM t", []);\n'
+     '    eprintln!("refus; return true");\n}\n', set()),
+    ("témoin négatif (`P10.22-o`) : `true` en partie d'expression, sans chaîne qui le masque — la queue est ANCRÉE",
+     'fn n35(conn: &Connection, a: bool) -> bool {\n'
+     '    let _ = conn.execute("DELETE FROM t", []);\n'
+     '    a == true || a\n}\n', set()),
+    ("témoin négatif (`P10.22-o`) : `return true` dans une `fn` IMBRIQUÉE (bloc au genre inconnu) rend pour elle",
+     'fn n36(conn: &Connection) -> usize {\n'
+     '    let _ = conn.execute("DELETE FROM t", []);\n'
+     '    fn interne() -> bool { return true; }\n'
+     '    0\n}\n', set()),
     ("angle mort ÉCRIT : le `Result` LIÉ à un nom, jeté plus bas",
      'fn a2(conn: &Connection, id: i64) -> bool {\n'
      '    let ecrit = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
      '    drop(ecrit);\n'
      '    ledger_append(conn, "t.maj", &format!("#{id}"));\n'
      '    true\n}\n', set()),
-    ("angle mort ÉCRIT (`P10.21-o`) : un `continue` arrête la lecture, même quand le fait suit la BOUCLE",
-     'fn a6(conn: &Connection, ids: &[i64]) {\n'
+    # --- LES ANGLES MORTS QUI RESTENT, PROUVÉS. Comme `a2` et `a3`, chacun est DÉFENSIF dans un seul sens : il rougit
+    # si la garde se met à le voir, et c'est alors le paragraphe « ce qu'elle ne tient pas » qu'il faut réécrire.
+    ("angle mort ÉCRIT (`P10.21-w`) : le fait vit dans un bloc CONDITIONNEL de l'ancêtre — règle 3",
+     'fn a7(conn: &Connection, ids: &[i64]) {\n'
      '    for id in ids {\n'
-     '        if *id > 0 {\n'
-     '            let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
-     '            continue;\n'
-     '        }\n'
+     '        let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
      '    }\n'
-     '    ledger_append(conn, "t.maj", "lot");\n}\n', set()),
+     '    if !ids.is_empty() {\n'
+     '        ledger_append(conn, "t.maj", "lot");\n'
+     '    }\n}\n', set()),
+    ("angle mort ÉCRIT (`P10.22-o`) : le succès littéral n'est pas lu dans l'ancêtre — la forme de `migrate_chain`",
+     'fn a8(conn: &Connection, v: i64) -> bool {\n'
+     '    if v < 3 {\n'
+     '        let _ = conn.execute("UPDATE meta SET value=\'3\' WHERE key=\'schema_version\'", []);\n'
+     '    }\n'
+     '    true\n}\n', set()),
+    ("angle mort ÉCRIT : `if let Err(e) = conn.execute(…) { journal }` puis un fait — l'échec n'est que journalisé",
+     'fn a9(conn: &Connection, id: i64) {\n'
+     '    if let Err(e) = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]) {\n'
+     '        eprintln!("écriture refusée : {e}");\n'
+     '    }\n'
+     '    ledger_append(conn, "t.maj", "x");\n}\n', set()),
     ("angle mort ÉCRIT : le fait est posé par une FONCTION APPELÉE, pas par un jeton connu",
-     'fn a3(conn: &Connection, id: i64) -> bool {\n'
+     'fn a3(conn: &Connection, id: i64) {\n'
      '    let _ = conn.execute("UPDATE t SET a=1 WHERE id=?1", params![id]);\n'
      '    tracer_la_mutation(conn, id);\n'
-     '    true\n}\n', set()),
+     '}\n', set()),  # sans `-> bool`/`true` depuis `P10.22-o` : la queue `true` serait un fait (succès littéral)
 ]
 
 # LA DESCENTE S'ÉPROUVE SUR UN ARBRE FABRIQUÉ, JAMAIS SUR `handlers/connectors/` : l'adosser au
@@ -1375,7 +1712,25 @@ def valider_instrument():
     tomber (17) ; tenir un jeton inconnu pour vérifiant fait tomber (21) ; ne plus écarter l'insertion dont le test
     est jeté (`let _ = ….is_err();`) fait tomber (22). Appliquer la règle à TOUS les faits est une mutation
     ÉQUIVALENTE, mesurée : un registre, un audit, un armement n'ont pas de receveur en queue (`ledger_append(conn, …)`),
-    donc la règle ne les coupe pas même sans son filtre ; (20) tient le cas pour le jour où un fait neuf en aurait un."""
+    donc la règle ne les coupe pas même sans son filtre ; (20) tient le cas pour le jour où un fait neuf en aurait un.
+    Et le 2026-10-23 (`P10.21-w`, `P10.22-o`), seize mutations jouées, chacune rouge : traiter `continue`/`break` comme
+    un arrêt fait tomber (24) et (27) ; ignorer l'étiquette fait tomber (27) et `n30` ; ne pas tenir la suite de la
+    boucle pour un ancêtre fait tomber `n29` ; ne pas sauter le reste de la boucle fait tomber `n15` et (27) (et
+    accuse cinq écritures de `respond_run` sur l'arbre) ; aucun bras muet fait tomber (23), (25), (26) ; tout bras
+    muet fait tomber (2), `n25`, `n26`, `n27` (et accuse quatorze `match` de l'arbre) ; oublier les macros de journal
+    fait tomber (25) ; lire depuis le début du `match` fait tomber `n28` ; lire le joker à côté d'un bras `Err` fait
+    tomber `n27` ; retirer le succès littéral fait tomber (28) et (29) ; l'ajouter à côté d'un autre fait fait tomber
+    (1), (8), (9), (23), `n14` et la descente ; le lire dans une fermeture fait tomber `n31` ; le lire dans l'ancêtre
+    fait tomber `a8` (et accuse cinq écritures de `migrate_chain`) ; trier la sortie avant le fait fait tomber (29) ;
+    lire les blocs conditionnels de l'ancêtre fait tomber `n18`, `n20`, `n29` et `a7` ; accepter `return true` hors
+    tête d'instruction ou dans une chaîne fait tomber `n32`. CORRIGÉ le même jour, après une vérification indépendante qui
+    a joué chaque condition SEULE : sept restaient vertes, et ces phrases-ci ne valaient que pour des mutations
+    combinées. Chacune a désormais son épreuve, et sa mutation jouée seule rougit : exiger que TOUS les bras `Err` se
+    taisent fait tomber (30) ; sauter la boucle sur un `continue`/`break` CONDITIONNEL fait tomber (31) et (32) ;
+    refuser `=> return true` fait tomber (33) ; accepter `return true` hors tête d'instruction fait tomber `n33` ; le
+    lire dans une chaîne fait tomber `n34` ; désancrer la queue `true` fait tomber `n33`, `n35` (et accuse deux sites
+    de l'arbre) ; le lire dans une `fn` imbriquée fait tomber `n36`. Le saut du `match` parent après une boucle quittée
+    est RETIRÉ : branche morte, mutation équivalente (voir `faits_dans_la_portee`)."""
     errs = []
     # LES LECTEURS PARTAGÉS SE VALIDENT AVANT DE SERVIR (`P10.20-d`, `P10.20-r`). Ils sont IMPORTÉS,
     # donc leurs témoins ne tournent pas à l'import : sans ces deux appels, un lecteur amputé de sa
@@ -1500,22 +1855,28 @@ def valider_instrument():
 # ================================================================================================
 def ce_qui_n_est_pas_tenu():
     print(f"\n[{ETIQUETTE}] CE QU'ELLE NE TIENT PAS :\n"
-          "  * LE PLUS LOURD, ET IL EST PARTAGÉ AVEC `P10.20-l` : elle ne lit que la CHAÎNE posée sur "
-          "l'écriture. Un `match conn.execute(…) { Ok(_) => …, Err(_) => … }` dont le bras d'erreur SE "
-          "TAIT est la MÊME faute écrite autrement, et elle ne le voit pas. Deux témoins de ce fichier "
-          "la reproduisent pour que l'angle mort soit prouvé et non allégué. La fermer demanderait de "
-          "lire le BRAS `Err` — décider si son corps propage ou se tait — et tant que ce n'est pas "
-          "fait, un site neuf peut s'écrire en `match` sans rougir. Un `Result` LIÉ à un nom puis "
-          "jeté plus bas est dans le même trou.\n"
-          "  * SON CRITÈRE DE PORTÉE LIT LE BLOC ANCÊTRE DEPUIS `P10.21-o`, ET IL S'ARRÊTE PAR PRUDENCE : "
-          "un `return`, `continue` ou `break` au niveau courant coupe TOUTE la suite, alors que le code "
-          "qui suit la BOUCLE reste atteignable après un `continue`/`break` (épreuve `a6`). Un fait "
-          "posé dans l'ancêtre mais dans un bloc CONDITIONNEL (un `if` frère, une boucle, une fermeture) "
-          "n'est pas lu non plus : c'est ce qui écarte les blocs frères de `case_apply_update`, et c'est "
-          "aussi un manque possible. Mesuré sur l'arbre du 2026-09-23 : sans l'arrêt, CINQ fausses "
-          "accusations dans `actions.rs::respond_run` (chaque écriture est suivie d'un `continue`) ; "
-          "sans la lecture au seul niveau, SEPT (les cinq blocs frères de `case_apply_update`, deux "
-          "bras `COMMIT`/`ROLLBACK` d'`engagement.rs::activate_due_engagements_conn`).\n"
+          "  * LE PLUS LOURD, PARTAGÉ AVEC `P10.20-l`, EST RÉDUIT PAR `P10.21-w` SANS ÊTRE FERMÉ : le `match "
+          "conn.execute(…)` dont le bras `Err` (ou le joker, faute de bras `Err`) est vide ou ne fait que "
+          "journaliser est LU (`match muet`). Restent : un bras `Err` qui PRODUIT une valeur (`Err(_) => 0` "
+          "face à `Ok(n) => n`) que la suite confond avec un succès — le départager demande de comparer aux "
+          "bras `Ok` ; un `if let Ok(_) = conn.execute(…)` sans `else` suivi d'un fait ; et un `Result` LIÉ à "
+          "un nom puis jeté plus bas (épreuve `a2`) ; un `if let Err(e) = conn.execute(…) { eprintln!(…) }` dont le "
+          "corps ne fait que journaliser, suivi d'un fait (épreuve `a9`) — la même faute que le `match` muet, que "
+          "la lecture des bras ne voit pas parce qu'il n'y a pas de `match`.\n"
+          "  * SON CRITÈRE DE PORTÉE LIT LE BLOC ANCÊTRE DEPUIS `P10.21-o`, ET LA SUITE D'UNE BOUCLE QUITTÉE "
+          "DEPUIS `P10.21-w` : un `continue`/`break` saute le reste de sa boucle et la lecture reprend après "
+          "elle ; un `return` coupe tout. Ce qui reste : un `break` d'un bloc ÉTIQUETÉ qui n'est pas une "
+          "boucle (`'b: { … break 'b; }`) arrête la lecture ; et un fait posé dans l'ancêtre mais dans un bloc "
+          "CONDITIONNEL (un `if` frère, une boucle, une fermeture) n'est pas lu (épreuve `a7`). Mesuré le "
+          "2026-10-23 : sans le saut du reste de la boucle, CINQ fausses accusations dans "
+          "`actions.rs::respond_run` (chaque écriture est suivie d'un `continue`, le registre vit plus bas "
+          "dans la boucle) ; en lisant les blocs conditionnels de l'ancêtre, AUCUN site de l'arbre ne change "
+          "mais une alternative `else` et un `if` frère deviennent des accusations (`n18`, `n20`).\n"
+          "  * `P10.22-o` : le SUCCÈS LITTÉRAL n'est lu que sous deux formes, `return true` en tête "
+          "d'instruction et `true` en queue du corps, dans le bloc de l'écriture (jamais dans l'ancêtre : "
+          "cinq écritures de `migrate_chain` y étaient appariées au `true` qui clôt la fonction, dont une "
+          "fausse — épreuve `a8`) et seulement quand aucun autre fait ne suit. `Ok(true)`, `Ok(())`, `Some(…)` "
+          "et les variantes d'énumération ne sont pas lus.\n"
           "  * `P10.28-e` : une INSERTION VÉRIFIÉE qui s'intercale entre l'écriture avalée et la lecture "
           "d'identifiant coupe la conjonction (pour ce seul fait). « Vérifiée » se lit sur la CHAÎNE : un "
           "`if conn.execute(…).is_err() { … }` dont le corps ne sort pas est tenu pour vérifié, par la même "
@@ -1533,7 +1894,7 @@ def ce_qui_n_est_pas_tenu():
           "  * elle ne voit pas un fait posé AVANT l'écriture qu'il atteste puis une écriture avalée : "
           "`emit_operator_access` inscrivait sa ligne de contrôle puis avalait l'événement du tenant — "
           "une perte, pas une conjonction (corrigé par `P10.21-g`, jamais vu d'ici).\n"
-          "  * elle ne reconnaît que SEPT noms de fait. Un fait posé par une fonction intermédiaire — "
+          "  * elle ne reconnaît que SEPT noms de fait (et le succès littéral). Un fait posé par une fonction intermédiaire — "
           "un enrobage qui appelle le registre — n'est pas vu, et un témoin de ce fichier le "
           "reproduit. Élargir le vocabulaire est un geste à MESURER, pas à deviner.\n"
           "  * elle ne dit RIEN du rang. Les six classes de `SITES_ADMIS` portent un rang et une raison "

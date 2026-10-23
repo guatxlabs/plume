@@ -832,11 +832,21 @@ pub(crate) fn read_panel_cost(conn: &Connection, panel_id: i64, q_fp: &str) -> O
 /// après CHAQUE exécution (LIVE à la demande ET refresh de fond) -> AUTO-RECLASSEMENT : un panneau cheap
 /// qui ralentit (coût >= seuil) bascule SWR au prochain accès, et inversement s'il redevient rapide. Stocke
 /// le query_fp courant (le coût ne vaut que pour CETTE requête ; un panel_update le rend « inconnu »).
+///
+/// `P10.20-b` (reste des tableaux de bord) — L'ÉCRITURE DU COÛT EST JUGÉE. La forme d'avant (`let _ = conn.execute(..)`)
+/// jetait un refus sans un mot. Une écriture refusée, ou qui n'écrit aucune ligne (un déclencheur qui l'ignore), laisse
+/// UNE ligne de journal fixe — le numéro interne du panneau, jamais la requête, son empreinte ni le texte du moteur — et
+/// rien ne remonte à la route (signature inchangée, trois appelants : rafraîchissement de fond, exécution à la demande,
+/// boucle de `rollups.rs`). Le panneau dont le coût n'est pas écrit garde sa classe d'avant (SWR ou direct) jusqu'à la
+/// prochaine mesure écrite.
 pub(crate) fn record_panel_cost(conn: &Connection, panel_id: i64, q_fp: &str, cost_ms: f64, now_s: i64) {
-    let _ = conn.execute(
+    let issue = conn.execute(
         "INSERT OR REPLACE INTO panel_cost(panel_id,query_fp,cost_ms,measured_at) VALUES(?1,?2,?3,?4)",
         params![panel_id, q_fp, cost_ms, now_s],
     );
+    if !matches!(issue, Ok(1)) {
+        eprintln!("[dashboards] WARN panneau #{panel_id} : coût mesuré non écrit, le panneau garde sa classe d'avant");
+    }
 }
 
 /// Extrait le coût SQL mesuré (stats.elapsed_ms) d'un résultat run_query, s'il est présent.

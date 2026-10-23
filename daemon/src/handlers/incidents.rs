@@ -126,8 +126,12 @@ pub(crate) enum DeclarationDIncident {
 /// un item de timeline 'incident' + ledger. Un `demote` (tier NULL) N'EFFACE PAS
 /// les steps déjà instanciées ni le type/commander (trace conservée) — il retire seulement la déclaration.
 pub(crate) fn incident_apply_tier(conn: &Connection, id: i64, author: &str, tier: Option<i64>, itype: Option<&str>, commander: Option<&str>) -> DeclarationDIncident {
-    if conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return DeclarationDIncident::DossierIntrouvable;
+    // `P10.20-l` — TROIS ISSUES : la ligne lue, l'absence établie (`DossierIntrouvable`, le `404` d'avant), la lecture
+    // ratée (`NonEcrite`, rien n'est écrit ni attesté). `.is_err()` rendait une lecture ratée « dossier introuvable ».
+    match conn.query_row("SELECT 1 FROM incident WHERE id=?1", params![id], |_| Ok(())).optional() {
+        Ok(Some(())) => {}
+        Ok(None) => return DeclarationDIncident::DossierIntrouvable,
+        Err(e) => return DeclarationDIncident::NonEcrite(format!("dossier non lu ({e})")),
     }
     let t = now();
     // `P10.21-t` — UN SEUL ÉNONCÉ, COMPTÉ, AVANT LA CHRONOLOGIE ET LE REGISTRE. Palier, type et pilote
@@ -864,7 +868,7 @@ pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Exte
     let commander = b.get("commander").and_then(|v| v.as_str());
     with_write(&st, &au, |conn| {
     // `P10.29-b` — l'existence est établie d'abord, sous le verrou du geste : une lecture refusée rendait le même 404 nu
-    // qu'une absence (`incident_apply_tier` lit par `.is_err()`).
+    // qu'une absence (`incident_apply_tier` lisait par `.is_err()` ; `P10.20-l` : il distingue désormais les trois issues).
     if let Err(refus) = crate::handlers::cases::etablir_le_dossier(conn, id) {
         return refus;
     }
@@ -986,7 +990,13 @@ pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Ext
         match conn.query_row("SELECT 1 FROM case_step WHERE id=?1 AND incident_id=?2", params![step_id, id], |_| Ok(())) {
             Ok(()) => {}
             Err(rusqlite::Error::QueryReturnedNoRows) => return not_found(CAUSE_ETAPE_ABSENTE_DE_CE_DOSSIER),
-            Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT} ({e})")),
+            // `P10.29-l` — la phrase seule au client (elle portait le texte du moteur entre parenthèses) ; la cause du moteur
+            // au journal, avec l'identifiant de corrélation servi.
+            Err(e) => {
+                let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT);
+                eprintln!("[incidents] WARN étape #{step_id} du dossier #{id} NON lue, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+                return refus;
+            }
         }
         // `P10.20-w` — causes SÉPARÉES : l'étape non retrouvée au geste et l'écriture refusée (deux 503 nommés).
         match step_advance(&conn, id, step_id, status, &au.name, note) {
@@ -1209,10 +1219,17 @@ pub(crate) const CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES: &str = "ÉTAPES DE RUNBOOK
 
 /// Le statut d'un refus des cœurs `create_custom_runbook` / `update_custom_runbook` / `clone_runbook` : 503 pour
 /// le plafond non lu et pour les étapes non écrites (la base n'a pas répondu — réessayer), 400 pour tout le reste
-/// (saisie, quota atteint, source introuvable, runbook managé). NON TENU dans ces mêmes gestes : un refus de la base
-/// sur la ligne `runbook` elle-même (« insertion runbook », « update », « insertion clone ») et une lecture ratée de
-/// `managed` (lue « runbook introuvable ») rendent encore le 400 d'une saisie, pas un 503.
+/// (saisie, quota atteint, source introuvable, runbook managé). `P10.20-l` : une lecture ratée de `managed` à la
+/// modification (`CAUSE_RUNBOOK_INCHANGE_NON_LU` en tête) rend 503 avec la phrase SEULE, la cause du moteur au journal
+/// avec l'identifiant de corrélation. NON TENU dans ces mêmes gestes : un refus de la base sur la ligne `runbook`
+/// elle-même (« insertion runbook », « update », « insertion clone ») rend encore le 400 d'une saisie, et les deux 503
+/// d'avant (plafond non lu, étapes non écrites) servent encore la cause du moteur (`P10.29-l`).
 fn refus_d_ecriture_de_runbook(e: String) -> Response {
+    if e.starts_with(CAUSE_RUNBOOK_INCHANGE_NON_LU) {
+        let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_RUNBOOK_INCHANGE_NON_LU);
+        eprintln!("[runbooks] WARN modification d'un runbook refusée, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+        return refus;
+    }
     let base_refusee = e.starts_with(CAUSE_QUOTA_DE_RUNBOOKS_NON_LU) || e.starts_with(CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES);
     if base_refusee { err_json(StatusCode::SERVICE_UNAVAILABLE, e) } else { bad_req(e) }
 }
@@ -1254,8 +1271,17 @@ fn insert_steps(conn: &Connection, rb_id: i64, steps: &[NewStep]) -> Result<usiz
 
 /// CŒUR testable — MET À JOUR un runbook CUSTOM en place (remplace name/match/description + toutes les étapes).
 /// REFUSE un runbook managed=1 (baseline git immuable en place). false si introuvable/managé.
+///
+/// `P10.20-l` — LE DRAPEAU QUI ARME LE REFUS DU MANAGÉ EN TROIS ISSUES. `.map_err(|_| "runbook introuvable")` rendait une
+/// lecture ratée de `managed` comme une absence (400). Lu : la porte suit ; absent : `runbook introuvable` (le 400 d'avant) ;
+/// lecture ratée : `CAUSE_RUNBOOK_INCHANGE_NON_LU` en tête, la cause du moteur entre parenthèses — `refus_d_ecriture_de_runbook`
+/// la sert en 503 (phrase seule) et la met au journal ; ni le refus du managé ni l'écriture ne sont joués.
 pub(crate) fn update_custom_runbook(conn: &Connection, rb_id: i64, name: &str, mkind: &str, mkey: &str, desc: &str, steps: &[NewStep]) -> Result<(), String> {
-    let managed: i64 = conn.query_row("SELECT managed FROM runbook WHERE id=?1", params![rb_id], |r| r.get(0)).map_err(|_| "runbook introuvable".to_string())?;
+    let managed: i64 = match conn.query_row("SELECT managed FROM runbook WHERE id=?1", params![rb_id], |r| r.get(0)).optional() {
+        Ok(Some(m)) => m,
+        Ok(None) => return Err("runbook introuvable".to_string()),
+        Err(e) => return Err(format!("{CAUSE_RUNBOOK_INCHANGE_NON_LU} ({e})")),
+    };
     if managed != 0 { return Err("runbook managé (git) : non modifiable en place — clonez pour personnaliser".into()); }
     conn.execute("UPDATE runbook SET name=?1, match_kind=?2, match_key=?3, description=?4 WHERE id=?5 AND managed=0",
         params![name, mkind, mkey, desc, rb_id]).map_err(|e| format!("update: {e}"))?;
@@ -1412,6 +1438,29 @@ pub(crate) const CAUSE_RUNBOOK_NON_CLONE_TRANSACTION_NON_OUVERTE: &str = "RUNBOO
      — RIEN n'est écrit : aucune copie n'est écrite, et aucune trace n'est écrite. Réessayez ; s'il est refusé \
      encore, l'écrivain est occupé ou bloqué.";
 
+// `P10.20-l` — LA LIGNE DU RUNBOOK NON LUE N'EST PAS UN RUNBOOK INTROUVABLE. Modification, suppression et bascule lisaient
+// la ligne (et son drapeau `managed`, qui ARME le refus d'un runbook managé) par `Err(_) => 404` ou
+// `.map_err(|_| "runbook introuvable")`. Trois issues désormais : lu, la porte suit ; absent, le refus d'avant à l'octet ;
+// lecture ratée, l'une de ces causes en 503, la cause du moteur au journal seul. Elles ne nomment ni `BEGIN` ni `COMMIT`
+// ni une transaction annulée : aucune transaction n'a été ouverte, c'est la lecture qui manque (refus nommé, comme
+// `CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU`).
+/// `P10.20-l` — runbook inchangé : sa ligne (son drapeau `managed`) non lue à la modification.
+pub(crate) const CAUSE_RUNBOOK_INCHANGE_NON_LU: &str = "RUNBOOK INCHANGÉ : la base n'a pas rendu ce runbook (son drapeau \
+     `managed`) — ce n'est PAS « runbook introuvable », c'est une lecture qui n'a pas eu lieu, et le refus d'un runbook \
+     managé n'est pas jugé. RIEN n'est écrit : il garde ses étapes et son critère d'attache d'avant, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la table des runbooks est illisible.";
+/// `P10.20-l` — runbook non supprimé : sa ligne (son drapeau `managed`) non lue.
+pub(crate) const CAUSE_RUNBOOK_NON_SUPPRIME_NON_LU: &str = "RUNBOOK NON SUPPRIMÉ : la base n'a pas rendu ce runbook (son \
+     drapeau `managed`) — ce n'est PAS « runbook introuvable », c'est une lecture qui n'a pas eu lieu, et le refus d'un \
+     runbook managé n'est pas jugé. RIEN n'est supprimé : il est toujours là avec ses étapes et s'attache toujours aux \
+     dossiers qu'il vise, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des runbooks est \
+     illisible.";
+/// `P10.20-l` — activation du runbook inchangée : sa ligne non lue.
+pub(crate) const CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE_NON_LUE: &str = "ACTIVATION DU RUNBOOK INCHANGÉE : la base n'a pas \
+     rendu ce runbook — ce n'est PAS « runbook introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : il \
+     garde son état d'avant (désactivé, il s'attache toujours ; activé, il ne s'attache pas), et aucune trace n'est \
+     écrite. Réessayez ; si le refus persiste, la table des runbooks est illisible.";
+
 /// POST /api/runbooks — CRÉE un runbook custom (managed=0). ADMIN. Body : {name, match_kind, match_key?,
 /// description?, active?, steps:[{phase,title,guidance?,step_kind,search_soql?,action_kind?}]}.
 pub(crate) async fn runbook_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
@@ -1465,8 +1514,16 @@ pub(crate) async fn runbook_update_handler(State(st): State<AppState>, Extension
 pub(crate) async fn runbook_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let (name, managed): (String, i64) = match conn.query_row("SELECT name,managed FROM runbook WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))) {
-        Ok(v) => v, Err(_) => return not_found("runbook introuvable"),
+    // `P10.20-l` — trois issues : lu, la porte du managé suit ; absent, le 404 d'avant ; lecture ratée, 503 nommé (ni 400
+    // du managé ni suppression), la cause du moteur au journal avec l'identifiant de corrélation.
+    let (name, managed): (String, i64) = match conn.query_row("SELECT name,managed FROM runbook WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).optional() {
+        Ok(Some(v)) => v,
+        Ok(None) => return not_found("runbook introuvable"),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_RUNBOOK_NON_SUPPRIME_NON_LU);
+            eprintln!("[runbooks] WARN runbook #{id} NON lu pour la suppression, rien n'est supprimé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     if managed != 0 { return bad_req("runbook managé (git) : non supprimable — désactivez-le ou clonez-le"); }
     let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("suppression du runbook '{name}' (#{id})"), CAUSE_RUNBOOK_NON_SUPPRIME_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
@@ -1483,7 +1540,11 @@ pub(crate) async fn runbook_delete(State(st): State<AppState>, Extension(au): Ex
         Ok(()) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("suppression du runbook '{name}' (#{id})"), CAUSE_RUNBOOK_NON_SUPPRIME, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { drop(tx); server_err(format!("échec transaction: {e}")) } // Drop -> ROLLBACK
+        // `P10.29-l` — la phrase fixe d'échec de transaction d'audit (500 inchangé), la cause du moteur au journal seul.
+        Err(e) => {
+            drop(tx); // Drop -> ROLLBACK
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[runbooks]", &format!("suppression du runbook #{id}"), &e)
+        }
     }
 }
 
@@ -1494,8 +1555,16 @@ pub(crate) async fn runbook_set_enabled(State(st): State<AppState>, Extension(au
     if let Err(r) = require_admin(&au) { return r; }
     let enabled = b.bool_field("enabled", true);
     crate::req_conn!(st, au, conn);
-    let (name, managed): (String, i64) = match conn.query_row("SELECT name,managed FROM runbook WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))) {
-        Ok(v) => v, Err(_) => return not_found("runbook introuvable"),
+    // `P10.20-l` — trois issues : lu, la bascule suit ; absent, le 404 d'avant ; lecture ratée, 503 nommé, rien n'est
+    // écrit, la cause du moteur au journal avec l'identifiant de corrélation.
+    let (name, managed): (String, i64) = match conn.query_row("SELECT name,managed FROM runbook WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).optional() {
+        Ok(Some(v)) => v,
+        Ok(None) => return not_found("runbook introuvable"),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE_NON_LUE);
+            eprintln!("[runbooks] WARN runbook #{id} NON lu pour la bascule d'activation, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("bascule d'activation du runbook #{id}"), CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
     let outcome: rusqlite::Result<()> = (|| {
@@ -1510,7 +1579,11 @@ pub(crate) async fn runbook_set_enabled(State(st): State<AppState>, Extension(au
         Ok(()) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("bascule d'activation du runbook #{id}"), CAUSE_ACTIVATION_DU_RUNBOOK_INCHANGEE, || {
             Json(json!({ "ok": true, "enabled": enabled })).into_response()
         }),
-        Err(e) => { drop(tx); server_err(format!("échec transaction: {e}")) } // Drop -> ROLLBACK
+        // `P10.29-l` — la phrase fixe d'échec de transaction d'audit (500 inchangé), la cause du moteur au journal seul.
+        Err(e) => {
+            drop(tx); // Drop -> ROLLBACK
+            crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[runbooks]", &format!("bascule d'activation du runbook #{id}"), &e)
+        }
     }
 }
 

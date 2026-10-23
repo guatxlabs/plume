@@ -27,7 +27,7 @@
 //
 // CE QU'ILS NE TIENNENT PAS : `case_add_item` (posé APRÈS le commit d'`attach_runbook`, il avale encore son écriture ;
 // `attach_runbook` compte déjà chaque INSERT `case_step` en transaction depuis `P10.21-t`) ; un refus de la base sur
-// la ligne `runbook` elle-même ou une lecture ratée de `managed` (encore un 400) ; la face
+// la ligne `runbook` elle-même (une lecture ratée de `managed` sert un 503 nommé depuis la vague AH, témoins `ah1_`) ; la face
 // console (aucun module de `web/` ne lit encore cette cause) ; un refus réel (disque plein, base en lecture seule)
 // plutôt que fabriqué par trigger — le déclenchement en exploitation n'est pas observé.
 // =====================================================================================

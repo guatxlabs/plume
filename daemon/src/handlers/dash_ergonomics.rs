@@ -44,13 +44,19 @@ fn ergo_editable(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> rusq
 /// `P10.33-l` — LA PORTE D'ÉDITION D'UN GESTE, rendue en réponse : `None` le geste peut continuer ; `Some(403)` refus
 /// de droit établi ; `Some(404)` l'objet n'a plus de ligne (l'appelant vient d'en lire l'existence sous le même verrou
 /// d'écrivain : seul un autorisateur à état l'atteint, dans le témoin) ; `Some(503 nommé)` la lecture du droit a été
-/// refusée — la cause du moteur part au journal avec le reste de la phrase, par `err_json`.
+/// refusée. `P10.29-l` (reste des tableaux de bord) : le corps ne porte que la phrase fixe et l'identifiant de corrélation,
+/// la cause du moteur va au journal seul (la forme d'avant la servait au client, `({table} #{id} : {e})`).
 fn refus_de_la_porte_d_edition(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> Option<Response> {
     match ergo_editable(conn, au, table, id) {
         Ok(true) => None,
         Ok(false) => Some(StatusCode::FORBIDDEN.into_response()),
         Err(rusqlite::Error::QueryReturnedNoRows) => Some(StatusCode::NOT_FOUND.into_response()),
-        Err(e) => Some(err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DROIT_D_EDITION_NON_LU} ({table} #{id} : {e})"))),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROIT_D_EDITION_NON_LU);
+            let objet = if table == "library_panel" { "du panneau de bibliothèque" } else { "de la liste de lecture" };
+            eprintln!("[dashboards] WARN droit d'édition {objet} #{id} NON lu, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+            Some(refus)
+        }
     }
 }
 
@@ -300,7 +306,8 @@ pub(crate) async fn library_panel_update(State(st): State<AppState>, Extension(a
     })();
     if let Err(cause) = ecrit {
         drop(tx); // Drop -> ROLLBACK : l'état d'avant, cache compris (rien n'est invalidé).
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE} ({geste} : {cause})"));
+        // `P10.29-l` (reste des tableaux de bord) : phrase fixe et identifiant de corrélation, la cause au journal seul.
+        return crate::handlers::dashboards::refuser_le_retrait_non_pris(&geste, &cause, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE);
     }
     rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_PANNEAU_DE_BIBLIOTHEQUE_INCHANGE, || {
         // Édition d'une bibliothèque -> purge le cache des panneaux qui la référencent (leur requête a pu changer).
@@ -429,12 +436,17 @@ pub(crate) async fn playlist_create(State(st): State<AppState>, Extension(au): E
 /// `P10.33-l` — L'EXISTENCE D'UNE LISTE DE LECTURE, LUE AVANT UN GESTE : `Ok(())` elle existe, `Err(404)` son absence
 /// est ÉTABLIE (aucune ligne), `Err(503 nommé)` la lecture a été refusée — ni absence ni présence ne sont établies.
 /// La forme d'avant (`query_row(..).is_err()`) rendait 404 sur une lecture refusée : « cette liste n'existe pas »,
-/// pour une liste qui existe toujours.
+/// pour une liste qui existe toujours. `P10.29-l` (reste des tableaux de bord) : le 503 ne porte que la phrase fixe et
+/// l'identifiant de corrélation, la cause du moteur va au journal seul.
 fn liste_de_lecture_existe(conn: &Connection, id: i64) -> Result<(), Response> {
     match conn.query_row("SELECT 1 FROM playlist WHERE id=?1", params![id], |_| Ok(())) {
         Ok(()) => Ok(()),
         Err(rusqlite::Error::QueryReturnedNoRows) => Err(StatusCode::NOT_FOUND.into_response()),
-        Err(e) => Err(err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LISTE_DE_LECTURE_NON_LUE} (liste de lecture #{id} : {e})"))),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LISTE_DE_LECTURE_NON_LUE);
+            eprintln!("[dashboards] WARN liste de lecture #{id} NON lue, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+            Err(refus)
+        }
     }
 }
 
@@ -474,7 +486,8 @@ pub(crate) async fn playlist_update(State(st): State<AppState>, Extension(au): E
     })();
     if let Err(cause) = ecrit {
         drop(tx); // Drop -> ROLLBACK : la liste d'avant, visibilité comprise.
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LISTE_DE_LECTURE_INCHANGEE} ({geste} : {cause})"));
+        // `P10.29-l` (reste des tableaux de bord) : phrase fixe et identifiant de corrélation, la cause au journal seul.
+        return crate::handlers::dashboards::refuser_le_retrait_non_pris(&geste, &cause, CAUSE_LISTE_DE_LECTURE_INCHANGEE);
     }
     rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_LISTE_DE_LECTURE_INCHANGEE, || StatusCode::NO_CONTENT.into_response())
 }
@@ -497,7 +510,8 @@ pub(crate) async fn playlist_delete(State(st): State<AppState>, Extension(au): E
     };
     if let Err(cause) = une_ligne_ecrite(conn.execute("DELETE FROM playlist WHERE id=?1", params![id]), "suppression de la liste") {
         drop(tx); // Drop -> ROLLBACK.
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_LISTE_DE_LECTURE_NON_SUPPRIMEE} ({geste} : {cause})"));
+        // `P10.29-l` (reste des tableaux de bord) : phrase fixe et identifiant de corrélation, la cause au journal seul.
+        return crate::handlers::dashboards::refuser_le_retrait_non_pris(&geste, &cause, CAUSE_LISTE_DE_LECTURE_NON_SUPPRIMEE);
     }
     rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_LISTE_DE_LECTURE_NON_SUPPRIMEE, || StatusCode::NO_CONTENT.into_response())
 }
@@ -774,6 +788,12 @@ pub(crate) async fn snapshot_delete(State(st): State<AppState>, Extension(au): E
     // d'avant avalait le DELETE et rendait 204, et l'instantané « révoqué » restait servi par son jeton.
     match une_ligne_ecrite(conn.execute("DELETE FROM dashboard_snapshot WHERE id=?1", params![id]), "suppression de l'instantané") {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_INSTANTANE_NON_SUPPRIME} (instantané #{id} : {cause})")),
+        // `P10.29-l` (reste des tableaux de bord) : phrase fixe et identifiant de corrélation, la cause au journal seul
+        // (aucune transaction ici : la ligne dit « rien n'est supprimé », pas « transaction annulée »).
+        Err(cause) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_INSTANTANE_NON_SUPPRIME);
+            eprintln!("[dashboards] WARN révocation de l'instantané #{id} NON prise, rien n'est supprimé ({}) : {cause}", cid.unwrap_or_default());
+            refus
+        }
     }
 }

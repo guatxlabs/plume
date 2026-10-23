@@ -840,7 +840,7 @@ env:
   # `P10.24-m`, `P10.28-h`, `P10.29-i`, `P10.20-u` (2026-09-29) : +10 — le fichier
   # `secret_des_gestes_demonstration_freinee_et_pose_de_l_administrateur.rs` (`sdg_` six, `dfb_` un, `pla_` un,
   # `rnc_` deux). Aucun derrière un `cfg(feature)` -> le MÊME +10 sur `EXPECTED_COLD_TESTS` (2213 -> 2223), mesuré.
-  EXPECTED_TESTS: "3252"
+  EXPECTED_TESTS: "3255"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1313,7 +1313,7 @@ jobs:
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
           # `P10.24-m` et voisines (2026-09-29) : +10, les MÊMES que sur `EXPECTED_TESTS` — écart INCHANGÉ.
-          EXPECTED_COLD_TESTS: "3515"
+          EXPECTED_COLD_TESTS: "3518"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -2342,6 +2342,15 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_a_ledger_link_is_never_dropped_bare.py
 
+      # `P10.20-l` — UN MATCH NU SUR UNE LECTURE D'UNE LIGNE NE SERT JAMAIS SON ÉCHEC COMME UN FAIT. La garde lit le bras
+      # `Err` d'un `match` direct sur `query_row` sous `handlers/` : un statut de client (tout `StatusCode` hors 5xx) ou une
+      # valeur fabriquée accuse, une propagation ou un aveu nommé non. Ensemble NOMMÉ des bras admis, jugé dans les deux
+      # sens ; planchers dérivés ; épreuves positives et négatives jouées à chaque exécution.
+      - name: Un match nu sur query_row ne sert jamais son echec comme un fait (P10.20-l)
+        id: garde_82
+        continue-on-error: true
+        run: python3 .github/scripts/check_a_bare_chain_match_is_never_served_as_a_fact.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2832,6 +2841,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_79.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_live_sensor_never_reads_as_mute_or_calm.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_80.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_masks_every_local_part_it_emits.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_81.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_ledger_link_is_never_dropped_bare.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_82.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_bare_chain_match_is_never_served_as_a_fact.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
   features:

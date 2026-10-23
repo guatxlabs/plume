@@ -540,7 +540,10 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # un rang deux. Reste une cause approximative — un dossier supprimé entre les deux lectures se lit « non lu » —,
     # d'où le rang quatre et non le retrait.
     ("daemon/src/handlers/incidents.rs", "case_runbooks_json"): ("ok.?",),
-    ("daemon/src/handlers/incidents.rs", "incident_apply_tier"): ("is_err",),
+    # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AH, 2026-10-23) : `incidents.rs::incident_apply_tier` (`is_err`) — une lecture
+    # ratée du dossier rendait `DossierIntrouvable`. Lu en `.optional()` : absence établie = `DossierIntrouvable` (le 404
+    # d'avant), lecture ratée = `NonEcrite`, rien n'est écrit ni attesté (témoins :
+    # `compte_de_session_au_journal_et_runbook_non_lu.rs`).
     # RECLASSÉ PAR LA CLÉ ELLE-MÊME : le classement du matin le rangeait au rang deux (« le runbook
     # DISPARAÎT de la vue d'authoring ») ; la relecture de son unique consommateur a montré un 404
     # « runbook introuvable » sur une procédure qui existe. Cause fausse, aucun fait inventé.

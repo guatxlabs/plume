@@ -8,6 +8,17 @@ ignore = [
   # d'EncryptedAssertion ; les seuls decrypt du tree sont `age`). Pas d'oracle Marvin. Confiné à
   # la feature `saml` (OFF par défaut). Lever dès qu'une version `rsa` patchée paraît.
   "RUSTSEC-2023-0071",
+  # crypto-bigint 0.5 — RUSTSEC-2026-0387 (branches dépendant du secret dans des opérations voulues en
+  # temps constant ; avis du 2026-10-23, entrée posée le 2026-10-24). Seule la 0.7.6 est corrigée : la 0.7 du lock y est montée (via kryptering), la 0.5.5
+  # reste, tirée par elliptic-curve 0.13 (ecdsa) sous bergshamra/samlify, qui exige ^0.5 : aucune montée
+  # possible. Confiné à la feature `saml` (OFF par défaut, absente de l'image stock `ldap,cold_tier`).
+  # Exposition résiduelle UNIQUEMENT si `saml` est compilée ET `sign_authn_requests=true` (défaut false)
+  # ET la clé SP est EC : la signature ECDSA d'AuthnRequest manie alors un scalaire secret. Vérifier une
+  # signature d'IdP n'opère que sur des valeurs publiques. Clé SP RSA recommandée d'ici là. Ignorer cet ID
+  # masquerait aussi une 0.7 vulnérable : la 0.7 du lock doit rester >= 0.7.6 (relire Cargo.lock).
+  # Lever dès qu'une 0.5 corrigée paraît, ou dès que l'arbre saml passe à crypto-bigint 0.7 (elliptic-curve
+  # 0.14 / bergshamra à jour).
+  "RUSTSEC-2026-0387",
   # paste 0.1 — RUSTSEC-2024-0436 (unmaintained). Proc-macro de BUILD, transitif via
   # clickhouse/parquet optionnels. Aucune surface runtime, pas de successeur. Lever si retiré de l'arbre.
   "RUSTSEC-2024-0436",

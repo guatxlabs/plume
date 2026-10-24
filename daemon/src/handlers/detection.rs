@@ -776,7 +776,13 @@ pub(crate) fn delete_managed_row_tx(conn: &Connection, table: &str, audit_prefix
                 Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_SUPPRESSION_DE_CONTENU_NON_VALIDEE.to_string()))
             }
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); Err((StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification): {e}"))) }
+        // `P10.29-l` — phrase fixe au client (l'appelant la sert par `err_json`, avec l'identifiant de corrélation),
+        // cause du moteur au journal seul : geste, table et identifiant de ligne, jamais la requête ni le nom de la règle.
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            eprintln!("[detection] WARN suppression de {table} #{id} refusée : transaction d'audit annulée, aucune modification ({e})");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, PHRASE_ECHEC_TRANSACTION_AUDIT.to_string()))
+        }
     }
 }
 /// P11.5-c — CE QU'UNE MODIFICATION D'OVERLAY NE DIT PAS D'ELLE-MÊME.
@@ -991,7 +997,13 @@ pub(crate) fn set_content_enabled_tx(conn: &Connection, kind: &str, table: &str,
                 Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_ACTIVATION_DE_CONTENU_INCHANGEE.to_string()))
             }
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); Err((StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification): {e}"))) }
+        // `P10.29-l` — phrase fixe au client (l'appelant la sert par `err_json`, avec l'identifiant de corrélation),
+        // cause du moteur au journal seul : geste, genre et identifiant de ligne, jamais la requête ni le nom du contenu.
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            eprintln!("[detection] WARN bascule d'activation de {kind} #{id} refusée : transaction d'audit annulée, aucune modification ({e})");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, PHRASE_ECHEC_TRANSACTION_AUDIT.to_string()))
+        }
     }
 }
 /// Extrait le booléen `enabled` OBLIGATOIRE du corps ({enabled:bool}). Absent/non-booléen -> 400 explicite.

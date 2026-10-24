@@ -292,10 +292,15 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # après le correctif, MESURÉ par cette garde — 34 sites sur 18 fichiers (36 sur 19 avant le correctif : `notifier_test`
 # était déjà sorti à la vague AC sans re-dérivation ; chacun des deux perd son site, c'étaient les deux derniers
 # d'`idp.rs`, qui SORT du relevé). Même règle : 34 -> 23 (69 % = 23,46), 18 -> 11 (65 % = 11,7).
-RELEVE_SITES = 34
-RELEVE_FICHIERS = 18
-PLANCHER_SITES = 23
-PLANCHER_FICHIERS = 11
+# RE-DÉRIVÉS le 2026-10-24 (`P10.20-l`, vague AI : `legal_hold_create`, `ledger_sink_create`, `index_policy_create`,
+# `lookup_delete`, `playbook_test`, `case_apply_update`, `case_set_archived`, `case_unmerge`) : relevé de l'arbre ce
+# jour-là, après le correctif, MESURÉ par cette garde — 19 sites sur 10 fichiers (chacun perd son site ; `governance.rs`,
+# `index_policies.rs`, `users_lookups.rs`, `cases.rs` et `caseops.rs` SORTENT du relevé ; le relevé de 34 sur 18 du
+# 2026-10-23 n'avait pas suivi les sorties des vagues AF à AH). Même règle : 19 -> 13 (69 % = 13,11), 10 -> 6 (65 % = 6,5).
+RELEVE_SITES = 19
+RELEVE_FICHIERS = 10
+PLANCHER_SITES = 13
+PLANCHER_FICHIERS = 6
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -458,9 +463,11 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # pour un dossier bien vivant. `case_unmerge`, `case_apply_update` et `case_set_archived` gardent leur lecture
     # absorbée, mais leurs routes établissent désormais l'existence avant de les appeler (`etablir_le_dossier`,
     # `juger_la_defusion`) : leur `false` ne sert plus d'absence ; les entrées restent tant que la forme reste.
-    ("daemon/src/handlers/caseops.rs", "case_unmerge"): ("ok",),
-    ("daemon/src/handlers/cases.rs", "case_apply_update"): ("ok",),
-    ("daemon/src/handlers/cases.rs", "case_set_archived"): ("is_err",),
+    # TROIS ENTRÉES RETIRÉES PAR `P10.20-l` (vague AI, 2026-10-24) : `caseops.rs::case_unmerge` (`ok`),
+    # `cases.rs::case_apply_update` (`ok`) et `case_set_archived` (`is_err`) — lus en `.optional()` : absence établie =
+    # `Refusee`/`DossierAbsent` d'avant, lecture ratée = `DossierNonLu` (neuve dans les deux issues ; transaction
+    # annulée pour la défusion), rien n'est écrit (témoins : `lectures_d_existence_en_trois_issues.rs`).
+    # C'étaient les derniers sites de `caseops.rs` et de `cases.rs`, qui SORTENT du relevé.
     # VENUE DU RANG DEUX PAR `P10.20-b` (2026-10-07, lot E5) : la relecture d'après poll n'absorbe plus (voir
     # la note de la classe 3). Reste le `.ok()` sur la DÉFINITION du connecteur : lecture ratée -> 404
     # « connecteur introuvable », aucun poll. Cause fausse, aucun fait inventé.
@@ -511,12 +518,13 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # l'engagement à clore : une lecture ratée rendait 404 « introuvable ou déjà clos » alors que l'exemption restait
     # posée. Lu en `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503
     # `CAUSE_ENGAGEMENT_NON_CLOS_ETAT_NON_LU`, rien d'écrit (témoins : `cloture_et_comptes_lectures_avouees.rs`).
-    # `is_ok` sur un nom déjà pris : la lecture ratée fait sauter le 409 explicite, et l'INSERT tombe
-    # sur la contrainte `UNIQUE` de la colonne (vérifié dans `migrate.rs`) — « échec de transaction
-    # opaque », exactement ce que le commentaire du site dit vouloir éviter. Fail-closed par la BASE,
-    # pas par le code.
-    ("daemon/src/handlers/governance.rs", "ledger_sink_create"): ("is_ok",),
-    ("daemon/src/handlers/governance.rs", "legal_hold_create"): ("is_ok",),
+    # TROIS ENTRÉES RETIRÉES PAR `P10.20-l` (vague AI, 2026-10-24) : `governance.rs::ledger_sink_create`,
+    # `legal_hold_create` et `index_policies.rs::index_policy_create` (`is_ok` sur un nom déjà pris) — la lecture ratée
+    # valait « nom libre » et la création passait à l'écriture (l'INSERT ne tombait sur la contrainte `UNIQUE` que si le
+    # nom était pris). Lus en `.optional()` : nom pris = le 409 d'avant, lecture ratée = 503 nommé
+    # (`CAUSE_GEL_JURIDIQUE_NON_POSE_DOUBLON_NON_LU`, `CAUSE_PUITS_DU_REGISTRE_NON_CREE_DOUBLON_NON_LU`,
+    # `CAUSE_POLITIQUE_D_INDEX_NON_CREEE_DOUBLON_NON_LU`) AVANT toute transaction, rien n'est écrit (témoins :
+    # `lectures_d_existence_en_trois_issues.rs`). `governance.rs` et `index_policies.rs` SORTENT du relevé.
     # DEUX ENTRÉES RETIRÉES PAR `P10.20-b` (rang quatre, 2026-10-13) : `idp.rs::idp_provider_delete` (`ok`) et
     # `idp_provider_update` (`is_err`) — une lecture ratée du fournisseur rendait 404 « provider introuvable », y compris
     # sur la DÉSACTIVATION d'urgence ouverte sans le secret des gestes, alors qu'il authentifiait encore. Lus en
@@ -552,7 +560,6 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # `runbook.key` est `TEXT NOT NULL UNIQUE` (vérifié dans `migrate.rs`) : l'insertion échoue, la
     # création est refusée avec une cause d'insertion plutôt qu'avec la vraie.
     ("daemon/src/handlers/incidents.rs", "unique_custom_key"): ("is_ok",),
-    ("daemon/src/handlers/index_policies.rs", "index_policy_create"): ("is_ok",),
     # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, 2026-10-22) : `notifiers.rs::notifier_test` — `.ok()` sur la ligne du
     # canal : une lecture ratée rendait 404 « canal introuvable ». Le site PROPAGE désormais (`.optional()`, trois
     # issues) : absence établie = le 404 d'avant, lecture ratée = 503 `CAUSE_CANAL_NON_ESSAYE_NON_LU`, aucun envoi
@@ -560,7 +567,10 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # L'état COURANT du panneau non lu -> `None` -> `panel_access` (`dashboards.rs:42`) rend `None` et
     # l'accès est refusé.
     ("daemon/src/handlers/panneau_resolu.rs", "courante"): ("ok",),
-    ("daemon/src/handlers/playbooks.rs", "playbook_test"): ("ok",),
+    # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AI, 2026-10-24) : `playbooks.rs::playbook_test` (`ok`) — lecture ratée servie
+    # 404 « playbook introuvable ». Lu en `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503
+    # `CAUSE_PLAYBOOK_NON_ESSAYE_NON_LU`, aucune requête exécutée (témoins : `lectures_d_existence_en_trois_issues.rs`).
+    # `playbooks.rs` reste au relevé par `run_playbooks`.
     # DEUX ENTRÉES RETIRÉES PAR `P10.20-l` (vague AG, 2026-10-23) : `scheduled_reports.rs::report_create` (deux `is_err`
     # sur le jeu de données et le canal référencés, 400 « introuvable ») et `report_run_now` (`is_err`, 404 « rapport
     # introuvable » pour un rapport qui part toujours). Lus en `.optional()` (`ligne_du_rapport`) : absence établie =
@@ -571,7 +581,10 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # un `COUNT(*)` rend toujours une ligne, ce zéro ne venait que d'une lecture ratée et partait en 404 « jeton
     # introuvable ». Le compte est un `Result` scruté : lu à zéro = le 404 d'avant, lecture ratée = 503
     # `CAUSE_JETON_NON_REVOQUE_JETONS_NON_COMPTES`, rien d'écrit (témoins : `gestes_de_retrait_d_acces_lectures_avouees.rs`).
-    ("daemon/src/handlers/users_lookups.rs", "lookup_delete"): ("is_err",),
+    # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AI, 2026-10-24) : `users_lookups.rs::lookup_delete` (`is_err`) — lecture ratée
+    # servie 404 « lookup introuvable ». Lue en `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503
+    # `CAUSE_TABLE_D_ENRICHISSEMENT_NON_SUPPRIMEE_NON_LUE`, rien n'est supprimé (témoins :
+    # `lectures_d_existence_en_trois_issues.rs`). C'était le dernier site d'`users_lookups.rs`, qui SORT du relevé.
     # DEUX ENTRÉES RETIRÉES PAR `P10.20-b` (rang quatre, 2026-10-12) : `users_lookups.rs::user_delete` et
     # `user_update`, deux sites chacun — `ok` sur la cible (404 « compte introuvable ») et `unwrap_or(0)` sur le
     # COMPTE D'ADMINISTRATEURS (zéro `<= 1` : « dernier administrateur » affirmé sur une lecture qui n'avait pas eu
@@ -1152,7 +1165,7 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-23 du relevé de ce jour-là : "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-24 du relevé de ce jour-là : "
               f"{RELEVE_SITES} sites sur {RELEVE_FICHIERS} fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "

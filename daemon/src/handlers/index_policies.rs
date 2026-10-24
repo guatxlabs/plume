@@ -199,6 +199,12 @@ pub(crate) const CAUSE_POLITIQUE_D_INDEX_NON_SUPPRIMEE_NON_LUE: &str = "POLITIQU
      rendu cette politique — ce n'est PAS « index introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est \
      supprimé : si elle existe, sa rétention et ses plafonds s'appliquent toujours à la purge de cet index, et aucune \
      trace n'est écrite. Réessayez ; si le refus persiste, la table des politiques d'index est illisible.";
+/// AVEU `P10.20-l` (vague AI) — le doublon du nom d'une politique à créer n'a pas été lu (la forme d'avant, `.is_ok()`,
+/// le lisait « libre » et passait à l'écriture) : rien n'est créé, aucune transaction n'est ouverte.
+pub(crate) const CAUSE_POLITIQUE_D_INDEX_NON_CREEE_DOUBLON_NON_LU: &str = "POLITIQUE D'INDEX NON CRÉÉE : la base n'a pas \
+     dit si ce nom d'index est déjà pris — c'est une lecture qui n'a pas eu lieu, ni « nom libre » ni « nom déjà pris ». \
+     RIEN n'est écrit : l'index garde la rétention globale, aucune purge ne suit une politique qui n'existe pas, et \
+     aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des politiques d'index est illisible.";
 
 
 /// POST /api/index-policies — crée une policy d'index (admin-only). Valide + clampe AVANT insert (fail-closed).
@@ -217,9 +223,16 @@ pub(crate) async fn index_policy_create(State(st): State<AppState>, Extension(au
         Err(resp) => return resp,
     };
     crate::req_conn!(st, au, conn);
-    // 409 explicite sur nom déjà pris (UNIQUE) plutôt qu'un échec de transaction opaque.
-    if conn.query_row("SELECT 1 FROM index_policy WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).is_ok() {
-        return err_json(StatusCode::CONFLICT, format!("un index nommé '{name}' existe déjà"));
+    // 409 explicite sur nom déjà pris (UNIQUE) plutôt qu'un échec de transaction opaque. `P10.20-l` — trois issues :
+    // libre, la création suit ; pris, le 409 d'avant ; lecture ratée, 503 nommé AVANT la transaction, rien n'est écrit.
+    match conn.query_row("SELECT 1 FROM index_policy WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).optional() {
+        Ok(None) => {}
+        Ok(Some(_)) => return err_json(StatusCode::CONFLICT, format!("un index nommé '{name}' existe déjà")),
+        Err(e) => {
+            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_POLITIQUE_D_INDEX_NON_CREEE_DOUBLON_NON_LU);
+            eprintln!("[index-policies] WARN doublon de la politique d'index à créer NON lu, rien n'est créé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "index-policies", &format!("création de la politique d'index '{name}'"), CAUSE_POLITIQUE_D_INDEX_NON_CREEE_TRANSACTION_NON_OUVERTE) {
         return refus;

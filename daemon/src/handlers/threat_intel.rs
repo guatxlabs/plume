@@ -672,7 +672,8 @@ pub(crate) async fn ioc_add(State(st): State<AppState>, Extension(au): Extension
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul avec l'identifiant servi.
+            servir_l_echec_de_la_transaction_d_audit("[threat-intel]", "ajout d'indicateurs", &e)
         }
     }
 }
@@ -733,7 +734,8 @@ pub(crate) async fn stix_import(State(st): State<AppState>, Extension(au): Exten
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction import (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul avec l'identifiant servi.
+            servir_l_echec_de_la_transaction_d_audit("[threat-intel]", "import STIX", &e)
         }
     }
 }

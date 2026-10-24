@@ -73,7 +73,7 @@
 // =====================================================================================
 mod modeles_rapports_et_engagements_lecture_ratee_et_lot_non_pris {
     use super::*;
-    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
 
     /// Ce que rusqlite écrit quand une colonne n'a pas le type demandé : la cause du moteur d'une lecture ratée.
     const AG4_MOTEUR_LECTURE: &str = "Invalid column type";
@@ -638,7 +638,7 @@ mod modeles_rapports_et_engagements_lecture_ratee_et_lot_non_pris {
     const AG4_WM_DU_PASSAGE_DEFENDER: &str = "2026-06-30T13:30:00Z";
 
     /// Joue un passage du connecteur `ctype` sous l'issue demandée et rend (last_run, last_ok, last_count, watermark,
-    /// last_error, événements du connecteur), lus sur l'écrivain avant toute annulation de la transaction étrangère.
+    /// last_error, événements du connecteur), lus sur l'écrivain.
     fn ag4_passage(ctype: &str, issue: Ag4Issue, now_ts: i64) -> (i64, i64, i64, Option<String>, Option<String>, i64) {
         let db = connector_test_db();
         let (cfg, secret, source) = if ctype == "http_pull" { (ag4_cfg_http(), "", "http:1") } else { (defender_cfg_json(), "supersecret", "defender") };
@@ -650,8 +650,14 @@ mod modeles_rapports_et_engagements_lecture_ratee_et_lot_non_pris {
                 params![ctype, cfg, secret, AG4_WM_ENREGISTRE],
             ).expect("fixture : connecteur");
             match issue {
-                // une transaction étrangère pendante sur l'écrivain : le `BEGIN` du lot est refusé (`NonPris`).
-                Ag4Issue::NonPris => c.execute_batch("BEGIN").expect("fixture : transaction étrangère"),
+                // le `BEGIN` du lot refusé par un autorisateur, écrivain LIBRE (`NonPris`). `P10.34-f` : la forme d'avant
+                // (une transaction étrangère pendante, `BEGIN` à la main) affirmait que l'état du passage s'écrivait DANS
+                // cette transaction, ce que `P10.34-f` corrige (rien n'y est plus essayé, tenu par
+                // `ecritures_d_etat_des_migrations_et_des_connecteurs_consommees.rs`, phases `etrangere-*`).
+                Ag4Issue::NonPris => c.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
+                    AuthAction::Transaction { operation: TransactionOperation::Begin } => Authorization::Deny,
+                    _ => Authorization::Allow,
+                })),
                 // le second événement du lot refusé : `Annule(1)`.
                 Ag4Issue::Annule => c.execute_batch(
                     "CREATE TRIGGER ag4_lot_refuse BEFORE INSERT ON event WHEN (SELECT COUNT(*) FROM event WHERE source=NEW.source) >= 1 \
@@ -671,9 +677,7 @@ mod modeles_rapports_et_engagements_lecture_ratee_et_lot_non_pris {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         ).expect("état du connecteur lisible");
         let n: i64 = c.query_row("SELECT COUNT(*) FROM event WHERE source=?1", params![source], |r| r.get(0)).expect("compte d'événements");
-        if issue == Ag4Issue::NonPris {
-            let _ = c.execute_batch("ROLLBACK");
-        }
+        assert!(c.is_autocommit(), "{ctype} {issue:?} : contrôle, aucune transaction pendante sur l'écrivain");
         (etat.0, etat.1, etat.2, etat.3, etat.4, n)
     }
 

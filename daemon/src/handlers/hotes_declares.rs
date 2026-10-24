@@ -442,7 +442,8 @@ pub(crate) async fn host_settings_put(State(st): State<AppState>, Extension(au):
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification appliquée): {e}")).into_response()
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul avec l'identifiant servi.
+            servir_l_echec_de_la_transaction_d_audit("[hotes]", "déclaration d'hôte", &e)
         }
     }
 }

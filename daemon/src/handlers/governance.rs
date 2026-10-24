@@ -114,6 +114,25 @@ pub(crate) const CAUSE_ENVOI_DU_PUITS_NON_FAIT_NON_LU: &str = "ENVOI VERS LE PUI
      ce puits — ce n'est PAS « sink introuvable », c'est une lecture qui n'a pas eu lieu. AUCUN maillon n'est écrit \
      dans la copie et le curseur ne bouge pas. Réessayez ; si le refus persiste, la table des puits est illisible.";
 
+// `P10.20-l` (vague AI) — LA LECTURE DU DOUBLON D'UNE CRÉATION. La pose d'un gel et la création d'un puits lisaient
+// « ce nom est-il déjà pris ? » par `.is_ok()` : une lecture ratée valait « libre », et la création passait à
+// l'écriture sans que rien n'ait établi l'absence de doublon. Trois issues : libre, la création suit ; pris, le 409
+// d'avant à l'octet ; lecture ratée, 503 nommé AVANT toute transaction, RIEN n'est écrit, la cause du moteur au journal
+// seul avec l'identifiant de corrélation servi.
+
+/// AVEU `P10.20-l` — le doublon du nom d'un gel à poser n'a pas été lu : rien n'est posé.
+pub(crate) const CAUSE_GEL_JURIDIQUE_NON_POSE_DOUBLON_NON_LU: &str = "GEL JURIDIQUE NON POSÉ : la base n'a pas dit si \
+     ce nom de gel est déjà pris — c'est une lecture qui n'a pas eu lieu, ni « nom libre » ni « nom déjà pris ». RIEN \
+     n'est écrit : aucune portée n'est gelée par cette demande, la rétention purge toujours ce qu'elle devait protéger, \
+     et aucune trace n'est écrite. Réessayez AVANT le prochain passage de la rétention ; si le refus persiste, la table \
+     des gels juridiques est illisible.";
+
+/// AVEU `P10.20-l` — le doublon du nom d'un puits à créer n'a pas été lu : rien n'est créé.
+pub(crate) const CAUSE_PUITS_DU_REGISTRE_NON_CREE_DOUBLON_NON_LU: &str = "PUITS D'EXPORT DU REGISTRE NON CRÉÉ : la \
+     base n'a pas dit si ce nom de puits est déjà pris — c'est une lecture qui n'a pas eu lieu, ni « nom libre » ni \
+     « nom déjà pris ». RIEN n'est écrit : aucun puits n'est créé, aucun ne reçoit rien, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la table des puits est illisible.";
+
 /// `P10.29-l` (famille « texte du moteur servi ») — l'écriture d'un geste de gouvernance ou de sa trace d'audit refusée :
 /// le statut d'avant (500) et sa phrase, SANS la phrase du moteur SQLite, qui va au journal seul (décision par défaut de
 /// la vague AD : le texte du moteur ne part jamais au client).
@@ -173,9 +192,17 @@ pub(crate) async fn legal_hold_create(State(st): State<AppState>, Extension(au):
     if s0 > 0 && s1 > 0 && s1 < s0 {
         return err_json(StatusCode::BAD_REQUEST, "scope_end_ts < scope_start_ts");
     }
+    use rusqlite::OptionalExtension;
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM legal_hold WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).is_ok() {
-        return err_json(StatusCode::CONFLICT, format!("un hold nommé '{name}' existe déjà"));
+    // `P10.20-l` — trois issues : libre, la pose suit ; pris, le 409 d'avant ; lecture ratée, 503 nommé, rien n'est écrit.
+    match conn.query_row("SELECT 1 FROM legal_hold WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).optional() {
+        Ok(None) => {}
+        Ok(Some(_)) => return err_json(StatusCode::CONFLICT, format!("un hold nommé '{name}' existe déjà")),
+        Err(e) => {
+            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_GEL_JURIDIQUE_NON_POSE_DOUBLON_NON_LU);
+            eprintln!("[gouvernance] WARN doublon du gel juridique à poser NON lu, rien n'est posé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "gouvernance", &format!("pose du gel juridique '{name}'"), CAUSE_GEL_JURIDIQUE_NON_POSE_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -521,9 +548,18 @@ pub(crate) async fn ledger_sink_create(State(st): State<AppState>, Extension(au)
     if !secret_ref.is_empty() && !(secret_ref.starts_with("env:") || secret_ref.starts_with("file:") || secret_ref.starts_with("vault:")) {
         return err_json(StatusCode::BAD_REQUEST, "secret_ref doit être une référence (env:/file:/vault:), jamais un secret inline");
     }
+    use rusqlite::OptionalExtension;
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM ledger_sink WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).is_ok() {
-        return err_json(StatusCode::CONFLICT, format!("un sink nommé '{name}' existe déjà"));
+    // `P10.20-l` — trois issues : libre, la création suit ; pris, le 409 d'avant ; lecture ratée, 503 nommé, rien n'est
+    // écrit.
+    match conn.query_row("SELECT 1 FROM ledger_sink WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).optional() {
+        Ok(None) => {}
+        Ok(Some(_)) => return err_json(StatusCode::CONFLICT, format!("un sink nommé '{name}' existe déjà")),
+        Err(e) => {
+            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PUITS_DU_REGISTRE_NON_CREE_DOUBLON_NON_LU);
+            eprintln!("[gouvernance] WARN doublon du puits du registre à créer NON lu, rien n'est créé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "gouvernance", &format!("création du puits du registre '{name}'"), CAUSE_PUITS_DU_REGISTRE_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;

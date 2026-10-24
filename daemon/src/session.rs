@@ -1077,7 +1077,8 @@ pub(crate) fn juger_le_mot_de_passe_actuel(
             .into_response()),
         PreuveDuPremierFacteur::SansMotDePasseLocal => Err(err_json(StatusCode::FORBIDDEN, cause_sans_mot_de_passe_local)),
         PreuveDuPremierFacteur::CompteNonLu(cause) => {
-            eprintln!("[password] WARN compte '{user}' NON lu au jugement du mot de passe actuel : {cause}");
+            // `P10.31-u` — la lecture du compte vient d'échouer : la phrase fixe, jamais le nom, aucune relecture.
+            eprintln!("[password] WARN {COMPTE_NON_RELU_AU_JOURNAL} NON lu au jugement du mot de passe actuel : {cause}");
             Err(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_LU_AU_CHANGEMENT))
         }
     }
@@ -1197,7 +1198,8 @@ pub(crate) async fn password_post(
     let classement = match ou_vit_le_mot_de_passe_de(&st, &user) {
         Ok(classement) => classement,
         Err(cause) => {
-            eprintln!("[password] WARN compte '{user}' NON lu au classement de son mot de passe : {cause}");
+            // `P10.31-u` — la lecture du compte vient d'échouer : la phrase fixe, jamais le nom, aucune relecture.
+            eprintln!("[password] WARN {COMPTE_NON_RELU_AU_JOURNAL} NON lu au classement de son mot de passe : {cause}");
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_LU_AU_CHANGEMENT);
         }
     };
@@ -1227,7 +1229,9 @@ pub(crate) async fn password_post(
         // transaction) et on ne certifie rien au registre.
         // `P10.29-i` — le refus est NOMMÉ (503) et sa cause dite au journal.
         if let Err(refus) = poser_l_administrateur(&st, &user, &h, true) {
-            eprintln!("[password] changement du mot de passe de l'administrateur de l'assistant '{user}' REFUSÉ, rien n'est écrit : {}", refus.cause());
+            // `P10.31-u` — le compte par son identifiant interne (`compte_au_journal`), jamais par son nom : aucun verrou
+            // n'est tenu ici (`poser_l_administrateur` a rendu le sien), la prise neuve sert la ligne seule.
+            eprintln!("[password] changement du mot de passe de l'administrateur de l'assistant ({}) REFUSÉ, rien n'est écrit : {}", compte_au_journal(&st.db.lock(), &user), refus.cause());
             return refus.refus(CAUSE_MOT_DE_PASSE_NON_CHANGE_TRANSACTION_NON_OUVERTE, CAUSE_MOT_DE_PASSE_NON_CHANGE_ECRITURE_REFUSEE);
         }
         // `P10.31-u` — le mot de passe est changé et les sessions du compte révoquées ; une trace manquante est avouée
@@ -1261,7 +1265,9 @@ pub(crate) async fn password_post(
         Issue::Refuse(None) => err_json(StatusCode::CONFLICT, CAUSE_MOT_DE_PASSE_CHANGE_ENTRE_TEMPS),
         Issue::NonOuvert(_) => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MOT_DE_PASSE_NON_CHANGE_TRANSACTION_NON_OUVERTE),
         Issue::Refuse(Some(e)) | Issue::NonValide(e) => {
-            eprintln!("[password] WARN changement du mot de passe de '{user}' NON écrit : {e}");
+            // `P10.31-u` — le compte par son identifiant interne, jamais par son nom : le verrou du geste est rendu (le
+            // bloc `issue` l'a lâché), la prise neuve sert la ligne seule.
+            eprintln!("[password] WARN changement du mot de passe du {} NON écrit : {e}", compte_au_journal(&st.db.lock(), &user));
             err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MOT_DE_PASSE_NON_CHANGE_ECRITURE_REFUSEE)
         }
     }

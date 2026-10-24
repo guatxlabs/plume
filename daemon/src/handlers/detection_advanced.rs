@@ -729,6 +729,10 @@ fn corr_row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     }))
 }
 
+// `P10.29-l` — `format!` sans argument est VOULU : l'instrument 98 du harnais console (`web_esm_harnais.mjs`) relit
+// la cause servie dans ce source sous la clé `error`, comme littéral unique d'un `format!` (une constante ne s'y lit
+// pas). Ce commentaire ne recopie pas cette forme : il suffirait à l'instrument même si le corps changeait.
+#[allow(clippy::useless_format)]
 pub(crate) async fn correlations_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
     // `P10.7-g` (lot 107) — une lecture RATÉE de la table des corrélations ne se sert plus comme « aucune
@@ -740,11 +744,17 @@ pub(crate) async fn correlations_list(State(st): State<AppState>, Extension(au):
         .and_then(|mut s| s.query_map([], corr_row_json)?.collect::<rusqlite::Result<Vec<_>>>());
     match lues {
         Ok(rows) => Json(json!({ "correlations": rows })),
-        Err(e) => Json(json!({
-            "correlations": null,
-            "error": format!("corrélations NON LUES : {e}"),
-            "lecture_non_faite": true,
-        })),
+        // `P10.29-l` — la phrase servie est FIXE (elle s'ouvre toujours sur « corrélations NON LUES », que la console peint
+        // après son propre aveu) ; la cause du moteur va au journal seul. Pas d'identifiant de corrélation : c'est un deux
+        // cents, et l'identifiant n'est frappé que pour un 5xx (`err_json_et_identifiant`).
+        Err(e) => {
+            eprintln!("[detection] WARN liste des corrélations NON LUE, aucune liste servie ({e})");
+            Json(json!({
+                "correlations": null,
+                "error": format!("corrélations NON LUES : la base n'a pas rendu la table des corrélations — ce n'est PAS « aucune corrélation », c'est une lecture qui n'a pas eu lieu. Réessayez ; si le refus persiste, la table des corrélations est illisible."),
+                "lecture_non_faite": true,
+            }))
+        }
     }
 }
 

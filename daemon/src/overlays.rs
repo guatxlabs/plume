@@ -790,9 +790,15 @@ pub(crate) async fn config_overlays_prune(State(st): State<AppState>, Extension(
                 "field_filter": o.field_filter, "library_panel": o.library_panel, "notification_policy": o.notification_policy,
                 "dashboard": o.dashboard, "panel": o.panel } })).into_response()
         }),
-        Err(e) => {
+        // `P10.29-l` — l'écriture ou la trace refusée par la base : phrase fixe au client, cause du moteur au journal
+        // seul avec l'identifiant servi. Un adossement illisible garde sa phrase (refus de NOTRE code, pas du moteur).
+        Err(crate::overlays_adossement::RefusDePrune::Base(e)) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction prune (aucune modification): {e}"))
+            servir_l_echec_de_la_transaction_d_audit("[overlays]", "élagage des overlays orphelins", &e)
+        }
+        Err(refus) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            server_err(format!("échec transaction prune (aucune modification): {refus}"))
         }
     }
 }

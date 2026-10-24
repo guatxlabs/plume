@@ -54,10 +54,12 @@ pub(crate) const CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE: &str = "DÉCLARATION D
 /// `P10.21-t` — LE RUNBOOK DONT TOUTES LES ÉTAPES N'ONT PAS ÉTÉ ÉCRITES N'EST PAS ATTACHÉ. L'attache
 /// est idempotente-REFUSANTE (une progression existante n'est jamais écrasée) : une attache amputée
 /// était donc DÉFINITIVE, et le registre l'annonçait entière (`steps={n}` compté sur des `INSERT` avalés).
+/// `P10.29-l` — la phrase se termine à « possible. » : elle portait l'amorce « Cause : » suivie du texte du moteur. La
+/// route sert la phrase SEULE et met la cause au journal ; `Display` rend aussi la phrase seule (aucun texte du moteur).
 pub(crate) const CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES: &str = "RUNBOOK NON ATTACHÉ : la base n'a pas pris \
      l'écriture de toutes ses étapes, donc AUCUNE n'est posée — l'attache est entière ou n'est pas. Le \
      dossier n'a pas de progression, ni la chronologie ni le registre n'en portent trace, et un nouvel \
-     essai reste possible. Cause : ";
+     essai reste possible.";
 
 /// `P10.29-j` — LE `BEGIN` DE L'ATTACHE REFUSÉ. Il servait `CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES` suivie de l'erreur du
 /// moteur (« la base n'a pas pris l'écriture de toutes ses étapes… Cause : transaction refusée (cannot start a transaction
@@ -531,14 +533,23 @@ impl From<String> for RefusDAttache {
     }
 }
 
+impl RefusDAttache {
+    /// `P10.29-l` — LA PHRASE SERVIE AU CLIENT, SANS LE TEXTE DU MOTEUR. La route ne sert que celle-ci et met la cause
+    /// des étapes non écrites au journal ; `Display` rend la même (la forme « phrase Cause : cause » n'avait plus aucun
+    /// consommateur, et un appelant qui servirait `to_string()` ne porte ainsi jamais le texte du moteur au client).
+    pub(crate) fn phrase_servie(&self) -> &str {
+        match self {
+            RefusDAttache::Refuse(raison) => raison,
+            RefusDAttache::EtapesNonEcrites(_) => CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES,
+            RefusDAttache::NonLu(cause) => cause,
+            RefusDAttache::TransactionNonOuverte => CAUSE_RUNBOOK_NON_ATTACHE_TRANSACTION_NON_OUVERTE,
+        }
+    }
+}
+
 impl std::fmt::Display for RefusDAttache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RefusDAttache::Refuse(raison) => f.write_str(raison),
-            RefusDAttache::EtapesNonEcrites(cause) => write!(f, "{CAUSE_ETAPES_DU_RUNBOOK_NON_ECRITES}{cause}"),
-            RefusDAttache::NonLu(cause) => f.write_str(cause),
-            RefusDAttache::TransactionNonOuverte => f.write_str(CAUSE_RUNBOOK_NON_ATTACHE_TRANSACTION_NON_OUVERTE),
-        }
+        f.write_str(self.phrase_servie())
     }
 }
 
@@ -878,8 +889,12 @@ pub(crate) async fn incident_set(State(st): State<AppState>, Extension(au): Exte
         // poserait une seconde déclaration et ne comblerait pas le trou du registre). Contrat : 204 -> 200 sur ce seul cas.
         DeclarationDIncident::PoseeSansTrace(cause) => geste_fait_sans_trace(&cause),
         DeclarationDIncident::DossierIntrouvable => not_found(crate::handlers::cases::CAUSE_DOSSIER_INTROUVABLE),
+        // `P10.29-l` — la phrase seule au client (elle portait le texte du moteur entre parenthèses) ; la cause du moteur au
+        // journal, avec l'identifiant de corrélation servi.
         DeclarationDIncident::NonEcrite(cause) => {
-            err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE} ({cause})"))
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECLARATION_D_INCIDENT_NON_ECRITE);
+            eprintln!("[incidents] WARN déclaration du dossier #{id} NON enregistrée, rien n'a changé ({}) : {cause}", cid.unwrap_or_default());
+            refus
         }
     }
     })
@@ -945,7 +960,18 @@ pub(crate) async fn case_runbook_attach(State(st): State<AppState>, Extension(au
         // `P10.20-b` — une lecture qui JUGE l'attache (dossier, progression) n'a pas eu lieu : ni une demande invalide,
         // ni une absence. Même bras : rien n'est posé non plus, et la face « aucune étape n'est posée » vaut pour les deux.
         // `P10.29-j` — le `BEGIN` refusé : même bras, sa propre cause.
-        Err(refus @ (RefusDAttache::EtapesNonEcrites(_) | RefusDAttache::NonLu(_) | RefusDAttache::TransactionNonOuverte)) => err_json(StatusCode::SERVICE_UNAVAILABLE, refus.to_string()),
+        // `P10.29-l` — la phrase seule au client : les étapes non écrites portaient le texte du moteur à la suite de leur
+        // phrase ; il va au journal, avec l'identifiant de corrélation servi. Les deux autres causes sont constantes.
+        Err(refus @ (RefusDAttache::EtapesNonEcrites(_) | RefusDAttache::NonLu(_) | RefusDAttache::TransactionNonOuverte)) => {
+            let (cid, reponse) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, refus.phrase_servie());
+            match &refus {
+                RefusDAttache::EtapesNonEcrites(cause) => {
+                    eprintln!("[incidents] WARN runbook #{runbook_id} NON attaché au dossier #{id}, aucune étape posée ({}) : {cause}", cid.unwrap_or_default());
+                }
+                RefusDAttache::Refuse(_) | RefusDAttache::NonLu(_) | RefusDAttache::TransactionNonOuverte => {}
+            }
+            reponse
+        }
     }
 }
 
@@ -968,15 +994,16 @@ pub(crate) const CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT: &str = "ÉTAPE NON LUE, GES
      n'a été écrit. Réessayez.";
 /// `P10.20-w` — l'étape a été lue dans ce dossier, puis l'`UPDATE` n'a modifié aucune ligne (ou la relecture du titre
 /// rend `NoRows`) : rien n'est écrit ni tracé, et la cause n'est ni « absente » ni « non lue ». Une relecture en
-/// ERREUR est servie à part (`IssueDeLEtape::NonRelue` → `CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT` avec la cause).
+/// ERREUR est servie à part (`IssueDeLEtape::NonRelue` → `CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT`, la cause au journal).
 pub(crate) const CAUSE_ETAPE_NON_RETROUVEE_AU_GESTE: &str = "ÉTAPE NON RETROUVÉE AU GESTE : l'étape a été lue dans ce \
      dossier, mais le geste ne l'a plus retrouvée (l'écriture n'a modifié aucune ligne) — ni la chronologie ni le registre \
      n'en portent rien. Rien n'a été fait. Réessayez.";
 
 /// POST /api/cases/{id}/steps/{step_id} — `P10.29-b` : 400 statut invalide, 404 dossier ou étape absents (nommés,
 /// distincts), 503 lecture refusée ; ils rendaient tous 404 nu. Le 204 est inchangé. `P10.20-w` ajoute trois 503
-/// nommés au geste : `CAUSE_ETAPE_NON_ECRITE (cause)` (écriture refusée), `CAUSE_ETAPE_NON_RETROUVEE_AU_GESTE`
-/// (aucune ligne modifiée) et `CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT (cause)` (relecture du titre en erreur).
+/// nommés au geste : `CAUSE_ETAPE_NON_ECRITE` (écriture refusée), `CAUSE_ETAPE_NON_RETROUVEE_AU_GESTE`
+/// (aucune ligne modifiée) et `CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT` (relecture du titre en erreur) ; `P10.29-l` : la
+/// phrase seule, la cause du moteur au journal avec l'identifiant de corrélation servi.
 pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, step_id)): Path<(i64, i64)>, Json(b): Json<Value>) -> Response {
     let status = b.str_field("status");
     let note = b.get("note").and_then(|v| v.as_str());
@@ -1006,8 +1033,18 @@ pub(crate) async fn case_step_set(State(st): State<AppState>, Extension(au): Ext
             // L'étape vient d'être lue dans CE dossier : une absence ici est une relecture ratée ou un `UPDATE` qui n'a
             // modifié aucune ligne — jamais « étape absente », jamais « non lue » (elle l'a été).
             IssueDeLEtape::EtapeAbsente => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ETAPE_NON_RETROUVEE_AU_GESTE),
-            IssueDeLEtape::NonRelue(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT} ({cause})")),
-            IssueDeLEtape::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ETAPE_NON_ECRITE} ({cause})")),
+            // `P10.29-l` — la phrase seule au client (elles portaient le texte du moteur entre parenthèses) ; la cause du
+            // moteur au journal, avec l'identifiant de corrélation servi.
+            IssueDeLEtape::NonRelue(cause) => {
+                let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT);
+                eprintln!("[incidents] WARN étape #{step_id} du dossier #{id} NON relue au geste, rien n'est écrit ({}) : {cause}", cid.unwrap_or_default());
+                refus
+            }
+            IssueDeLEtape::NonEcrite(cause) => {
+                let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ETAPE_NON_ECRITE);
+                eprintln!("[incidents] WARN étape #{step_id} du dossier #{id} NON écrite, rien n'est fait ({}) : {cause}", cid.unwrap_or_default());
+                refus
+            }
         }
     })
 }
@@ -1200,10 +1237,10 @@ pub(crate) const CAUSE_QUOTA_DE_RUNBOOKS_NON_LU: &str = "RUNBOOK NON ÉCRIT : le
      pu être lu, donc le plafond anti-abus (200 runbooks custom) ne peut pas être jugé — un plafond non lu n'est pas \
      un plafond à zéro : rien n'est écrit. Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
 
-/// Le compte qui juge `RUNBOOK_MAX_CUSTOM`, ou le refus nommé (`CAUSE_QUOTA_DE_RUNBOOKS_NON_LU` + cause du moteur).
-fn compter_les_runbooks_custom(conn: &Connection) -> Result<i64, String> {
+/// Le compte qui juge `RUNBOOK_MAX_CUSTOM`, ou le refus nommé (`RefusDuRunbook::QuotaNonLu`, cause du moteur portée).
+fn compter_les_runbooks_custom(conn: &Connection) -> Result<i64, RefusDuRunbook> {
     conn.query_row("SELECT COUNT(*) FROM runbook WHERE managed=0", [], |r| r.get(0))
-        .map_err(|e| format!("{CAUSE_QUOTA_DE_RUNBOOKS_NON_LU} ({e})"))
+        .map_err(|e| RefusDuRunbook::QuotaNonLu(e.to_string()))
 }
 
 /// `P10.20-w` — LES ÉTAPES D'UN RUNBOOK SONT ÉCRITES OU LE GESTE EST REFUSÉ. `insert_steps`, le retrait des
@@ -1217,33 +1254,94 @@ pub(crate) const CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES: &str = "ÉTAPES DE RUNBOOK
      runbook créé ni copié, rien tracé. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
 
-/// Le statut d'un refus des cœurs `create_custom_runbook` / `update_custom_runbook` / `clone_runbook` : 503 pour
-/// le plafond non lu et pour les étapes non écrites (la base n'a pas répondu — réessayer), 400 pour tout le reste
-/// (saisie, quota atteint, source introuvable, runbook managé). `P10.20-l` : une lecture ratée de `managed` à la
-/// modification (`CAUSE_RUNBOOK_INCHANGE_NON_LU` en tête) rend 503 avec la phrase SEULE, la cause du moteur au journal
-/// avec l'identifiant de corrélation. NON TENU dans ces mêmes gestes : un refus de la base sur la ligne `runbook`
-/// elle-même (« insertion runbook », « update », « insertion clone ») rend encore le 400 d'une saisie, et les deux 503
-/// d'avant (plafond non lu, étapes non écrites) servent encore la cause du moteur (`P10.29-l`).
-fn refus_d_ecriture_de_runbook(e: String) -> Response {
-    if e.starts_with(CAUSE_RUNBOOK_INCHANGE_NON_LU) {
-        let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_RUNBOOK_INCHANGE_NON_LU);
-        eprintln!("[runbooks] WARN modification d'un runbook refusée, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
-        return refus;
+/// `P10.29-l` — LA LIGNE `runbook` ELLE-MÊME REFUSÉE PAR LA BASE (création, modification, copie). Elle rendait le `400`
+/// d'une saisie avec le texte du moteur (« insertion runbook: … », « update: … », « insertion clone: … ») : ce n'est
+/// pas une demande invalide, et le texte du moteur ne part plus au client. `503`, phrase seule, la cause au journal avec
+/// l'identifiant de corrélation servi ; l'ouverture est celle que la console lit déjà (« la base n'a pas pris
+/// l'écriture …, et la transaction est annulée »).
+pub(crate) const CAUSE_LIGNE_DE_RUNBOOK_NON_ECRITE: &str = "RUNBOOK NON ÉCRIT : la base n'a pas pris l'écriture de la \
+     ligne du runbook, et la transaction est annulée — aucun runbook n'est créé, modifié ni copié, aucune étape n'est \
+     touchée, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
+     verrouillée.";
+
+/// `P10.29-l` — CE QU'UN REFUS DES CŒURS DE RUNBOOK PORTE, PAR GENRE. Les cœurs rendaient une chaîne et la route en
+/// devinait le genre par `starts_with` sur sa tête : une chaîne qui ne commençait par aucune phrase connue — la ligne
+/// `runbook` refusée par la base — tombait dans le `400` d'une saisie avec le texte du moteur, et les deux `503`
+/// (plafond non lu, étapes non écrites) servaient ce texte à la suite de leur phrase. Le genre voyage dans le type ;
+/// `Display` rend la chaîne d'avant, à l'octet, que les cœurs publics (`create_custom_runbook`,
+/// `update_custom_runbook`, `clone_runbook`) rendent encore.
+#[derive(Debug)]
+pub(crate) enum RefusDuRunbook {
+    /// Une phrase de NOTRE code (saisie, quota atteint, runbook introuvable ou managé) : le `400` d'avant, à l'octet.
+    Saisie(String),
+    /// Le compte qui juge le plafond anti-abus n'a pas été lu : la cause du moteur.
+    QuotaNonLu(String),
+    /// Une étape non écrite, le retrait des étapes d'avant ou la copie des étapes refusés : le site et la cause du moteur.
+    EtapesNonEcrites(String),
+    /// Le drapeau `managed` non lu à la modification : la cause du moteur.
+    ManagedNonLu(String),
+    /// La ligne `runbook` refusée par la base : l'écriture (`insertion runbook`, `update`, `insertion clone`) et la
+    /// cause du moteur.
+    LigneNonEcrite(&'static str, String),
+    /// La trace d'audit du geste refusée : la transaction est annulée.
+    Audit(rusqlite::Error),
+}
+
+impl std::fmt::Display for RefusDuRunbook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefusDuRunbook::Saisie(phrase) => f.write_str(phrase),
+            RefusDuRunbook::QuotaNonLu(cause) => write!(f, "{CAUSE_QUOTA_DE_RUNBOOKS_NON_LU} ({cause})"),
+            RefusDuRunbook::EtapesNonEcrites(cause) => write!(f, "{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} ({cause})"),
+            RefusDuRunbook::ManagedNonLu(cause) => write!(f, "{CAUSE_RUNBOOK_INCHANGE_NON_LU} ({cause})"),
+            RefusDuRunbook::LigneNonEcrite(ecriture, cause) => write!(f, "{ecriture}: {cause}"),
+            RefusDuRunbook::Audit(cause) => write!(f, "trace d'audit refusée ({cause})"),
+        }
     }
-    let base_refusee = e.starts_with(CAUSE_QUOTA_DE_RUNBOOKS_NON_LU) || e.starts_with(CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES);
-    if base_refusee { err_json(StatusCode::SERVICE_UNAVAILABLE, e) } else { bad_req(e) }
+}
+
+impl From<&str> for RefusDuRunbook {
+    fn from(phrase: &str) -> Self {
+        RefusDuRunbook::Saisie(phrase.to_string())
+    }
+}
+
+/// Le refus servi pour un cœur de runbook (`P10.29-l`), par genre : une saisie garde son `400` d'avant à l'octet ; la
+/// trace d'audit refusée sert la phrase fixe d'échec de transaction d'audit en `500` (`servir_l_echec_de_la_transaction_d_audit`,
+/// elle servait `échec audit: <texte du moteur>` en `400`) ; la base qui n'a pas répondu ou pas écrit (plafond non lu,
+/// étapes non écrites, `managed` non lu, ligne `runbook` refusée) sert sa phrase SEULE en `503`, la forme entière au
+/// journal avec l'identifiant de corrélation. `geste` nomme le geste au journal (jamais le nom du runbook ni l'acteur).
+fn refus_d_ecriture_de_runbook(refus: RefusDuRunbook, geste: &str) -> Response {
+    let phrase = match &refus {
+        RefusDuRunbook::Saisie(phrase) => return bad_req(phrase.as_str()),
+        RefusDuRunbook::Audit(e) => {
+            return crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit("[runbooks]", geste, e);
+        }
+        RefusDuRunbook::QuotaNonLu(_) => CAUSE_QUOTA_DE_RUNBOOKS_NON_LU,
+        RefusDuRunbook::EtapesNonEcrites(_) => CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES,
+        RefusDuRunbook::ManagedNonLu(_) => CAUSE_RUNBOOK_INCHANGE_NON_LU,
+        RefusDuRunbook::LigneNonEcrite(..) => CAUSE_LIGNE_DE_RUNBOOK_NON_ECRITE,
+    };
+    let (cid, reponse) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, phrase);
+    eprintln!("[runbooks] WARN {geste} refusée, rien n'est écrit ({}) : {refus}", cid.unwrap_or_default());
+    reponse
 }
 
 /// CŒUR testable — CRÉE un runbook CUSTOM (managed=0, active=1). `key` générée (préfixe custom-), steps validées
 /// par l'appelant. Écrit runbook + steps ; renvoie l'id. Borne le NOMBRE de customs (DoS). Pas d'AppState.
 pub(crate) fn create_custom_runbook(conn: &Connection, name: &str, mkind: &str, mkey: &str, desc: &str, steps: &[NewStep], active: bool) -> Result<i64, String> {
+    creer_le_runbook_custom(conn, name, mkind, mkey, desc, steps, active).map_err(|refus| refus.to_string())
+}
+
+/// Le cœur de `create_custom_runbook`, refus typé (`P10.29-l`) : c'est lui que la route appelle.
+fn creer_le_runbook_custom(conn: &Connection, name: &str, mkind: &str, mkey: &str, desc: &str, steps: &[NewStep], active: bool) -> Result<i64, RefusDuRunbook> {
     let cnt: i64 = compter_les_runbooks_custom(conn)?;
-    if cnt >= RUNBOOK_MAX_CUSTOM { return Err(format!("quota de runbooks custom atteint (max {RUNBOOK_MAX_CUSTOM})")); }
+    if cnt >= RUNBOOK_MAX_CUSTOM { return Err(RefusDuRunbook::Saisie(format!("quota de runbooks custom atteint (max {RUNBOOK_MAX_CUSTOM})"))); }
     let key = unique_custom_key(conn, name);
     conn.execute(
         "INSERT INTO runbook(key,name,match_kind,match_key,description,managed,active,created) VALUES(?1,?2,?3,?4,?5,0,?6,?7)",
         params![key, name, mkind, mkey, desc, active as i64, now()],
-    ).map_err(|e| format!("insertion runbook: {e}"))?;
+    ).map_err(|e| RefusDuRunbook::LigneNonEcrite("insertion runbook", e.to_string()))?;
     let rb_id = conn.last_insert_rowid();
     insert_steps(conn, rb_id, steps)?;
     Ok(rb_id)
@@ -1254,7 +1352,7 @@ pub(crate) fn create_custom_runbook(conn: &Connection, name: &str, mkind: &str, 
 /// (`P10.20-w`). Rend le nombre d'étapes écrites — `steps.len()` une fois toutes écrites ; les deux appelants
 /// (`create_custom_runbook`, `update_custom_runbook`) ne lisent que le refus (`?`) et jettent ce nombre : rendre
 /// `Ok(0)` à la place serait invisible (mutation équivalente, dite).
-fn insert_steps(conn: &Connection, rb_id: i64, steps: &[NewStep]) -> Result<usize, String> {
+fn insert_steps(conn: &Connection, rb_id: i64, steps: &[NewStep]) -> Result<usize, RefusDuRunbook> {
     for (i, (phase, title, guidance, kind, soql, act)) in steps.iter().enumerate() {
         match conn.execute(
             "INSERT INTO runbook_step(runbook_id,ordinal,phase,title,guidance,step_kind,search_soql,action_kind) \
@@ -1262,8 +1360,8 @@ fn insert_steps(conn: &Connection, rb_id: i64, steps: &[NewStep]) -> Result<usiz
             params![rb_id, i as i64, phase, title, guidance, kind, soql, act],
         ) {
             Ok(1) => {}
-            Ok(n) => return Err(format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étape {} (ordinal {i}) non écrite : {n} ligne écrite)", i + 1)),
-            Err(e) => return Err(format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étape {} (ordinal {i}) non écrite : {e})", i + 1)),
+            Ok(n) => return Err(RefusDuRunbook::EtapesNonEcrites(format!("étape {} (ordinal {i}) non écrite : {n} ligne écrite", i + 1))),
+            Err(e) => return Err(RefusDuRunbook::EtapesNonEcrites(format!("étape {} (ordinal {i}) non écrite : {e}", i + 1))),
         }
     }
     Ok(steps.len())
@@ -1277,16 +1375,21 @@ fn insert_steps(conn: &Connection, rb_id: i64, steps: &[NewStep]) -> Result<usiz
 /// lecture ratée : `CAUSE_RUNBOOK_INCHANGE_NON_LU` en tête, la cause du moteur entre parenthèses — `refus_d_ecriture_de_runbook`
 /// la sert en 503 (phrase seule) et la met au journal ; ni le refus du managé ni l'écriture ne sont joués.
 pub(crate) fn update_custom_runbook(conn: &Connection, rb_id: i64, name: &str, mkind: &str, mkey: &str, desc: &str, steps: &[NewStep]) -> Result<(), String> {
+    modifier_le_runbook_custom(conn, rb_id, name, mkind, mkey, desc, steps).map_err(|refus| refus.to_string())
+}
+
+/// Le cœur de `update_custom_runbook`, refus typé (`P10.29-l`) : c'est lui que la route appelle.
+fn modifier_le_runbook_custom(conn: &Connection, rb_id: i64, name: &str, mkind: &str, mkey: &str, desc: &str, steps: &[NewStep]) -> Result<(), RefusDuRunbook> {
     let managed: i64 = match conn.query_row("SELECT managed FROM runbook WHERE id=?1", params![rb_id], |r| r.get(0)).optional() {
         Ok(Some(m)) => m,
-        Ok(None) => return Err("runbook introuvable".to_string()),
-        Err(e) => return Err(format!("{CAUSE_RUNBOOK_INCHANGE_NON_LU} ({e})")),
+        Ok(None) => return Err("runbook introuvable".into()),
+        Err(e) => return Err(RefusDuRunbook::ManagedNonLu(e.to_string())),
     };
     if managed != 0 { return Err("runbook managé (git) : non modifiable en place — clonez pour personnaliser".into()); }
     conn.execute("UPDATE runbook SET name=?1, match_kind=?2, match_key=?3, description=?4 WHERE id=?5 AND managed=0",
-        params![name, mkind, mkey, desc, rb_id]).map_err(|e| format!("update: {e}"))?;
+        params![name, mkind, mkey, desc, rb_id]).map_err(|e| RefusDuRunbook::LigneNonEcrite("update", e.to_string()))?;
     conn.execute("DELETE FROM runbook_step WHERE runbook_id=?1", params![rb_id])
-        .map_err(|e| format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étapes d'avant non retirées : {e})"))?;
+        .map_err(|e| RefusDuRunbook::EtapesNonEcrites(format!("étapes d'avant non retirées : {e}")))?;
     insert_steps(conn, rb_id, steps)?;
     Ok(())
 }
@@ -1294,28 +1397,33 @@ pub(crate) fn update_custom_runbook(conn: &Connection, rb_id: i64, name: &str, m
 /// CŒUR testable — CLONE un runbook (managé OU custom) en une COPIE managed=0 que l'admin possède. Copie les
 /// étapes verbatim (source de confiance : managé=seed validé, ou custom=déjà validé). None si source introuvable.
 pub(crate) fn clone_runbook(conn: &Connection, src_id: i64, new_name: Option<&str>) -> Result<i64, String> {
+    cloner_le_runbook(conn, src_id, new_name).map_err(|refus| refus.to_string())
+}
+
+/// Le cœur de `clone_runbook`, refus typé (`P10.29-l`) : c'est lui que la route appelle.
+fn cloner_le_runbook(conn: &Connection, src_id: i64, new_name: Option<&str>) -> Result<i64, RefusDuRunbook> {
     let (sname, mkind, mkey, desc): (String, String, String, String) = conn
         .query_row("SELECT name,match_kind,match_key,description FROM runbook WHERE id=?1", params![src_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-        .map_err(|_| "runbook source introuvable".to_string())?;
+        .map_err(|_| RefusDuRunbook::from("runbook source introuvable"))?;
     let cnt: i64 = compter_les_runbooks_custom(conn)?;
-    if cnt >= RUNBOOK_MAX_CUSTOM { return Err(format!("quota de runbooks custom atteint (max {RUNBOOK_MAX_CUSTOM})")); }
+    if cnt >= RUNBOOK_MAX_CUSTOM { return Err(RefusDuRunbook::Saisie(format!("quota de runbooks custom atteint (max {RUNBOOK_MAX_CUSTOM})"))); }
     let name = new_name.map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string()).unwrap_or_else(|| format!("{sname} (copie)"));
     let name = if name.len() > RUNBOOK_MAX_NAME { name.chars().take(RUNBOOK_MAX_NAME).collect() } else { name };
     let key = unique_custom_key(conn, &name);
     conn.execute("INSERT INTO runbook(key,name,match_kind,match_key,description,managed,active,created) VALUES(?1,?2,?3,?4,?5,0,1,?6)",
-        params![key, name, mkind, mkey, desc, now()]).map_err(|e| format!("insertion clone: {e}"))?;
+        params![key, name, mkind, mkey, desc, now()]).map_err(|e| RefusDuRunbook::LigneNonEcrite("insertion clone", e.to_string()))?;
     let new_id = conn.last_insert_rowid();
     // copie des étapes (ordinal préservé). `P10.20-w` : la copie doit écrire AUTANT de lignes que la source en
     // compte, dans la même transaction — sinon le clone serait rendu amputé (ou vide) avec un identifiant.
     let a_copier: i64 = conn.query_row("SELECT COUNT(*) FROM runbook_step WHERE runbook_id=?1", params![src_id], |r| r.get(0))
-        .map_err(|e| format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étapes de la source non comptées : {e})"))?;
+        .map_err(|e| RefusDuRunbook::EtapesNonEcrites(format!("étapes de la source non comptées : {e}")))?;
     let copiees = conn.execute(
         "INSERT INTO runbook_step(runbook_id,ordinal,phase,title,guidance,step_kind,search_soql,action_kind) \
          SELECT ?1,ordinal,phase,title,guidance,step_kind,search_soql,action_kind FROM runbook_step WHERE runbook_id=?2",
         params![new_id, src_id],
-    ).map_err(|e| format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étapes non copiées : {e})"))?;
+    ).map_err(|e| RefusDuRunbook::EtapesNonEcrites(format!("étapes non copiées : {e}")))?;
     if copiees as i64 != a_copier {
-        return Err(format!("{CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES} (étapes copiées : {copiees} sur {a_copier})"));
+        return Err(RefusDuRunbook::EtapesNonEcrites(format!("étapes copiées : {copiees} sur {a_copier}")));
     }
     Ok(new_id)
 }
@@ -1469,20 +1577,20 @@ pub(crate) async fn runbook_create(State(st): State<AppState>, Extension(au): Ex
     let active = b.bool_field("active", true);
     crate::req_conn!(st, au, conn);
     let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("création du runbook '{name}'"), CAUSE_RUNBOOK_NON_CREE_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
-    let outcome: Result<i64, String> = (|| {
-        let id = create_custom_runbook(&conn, &name, &mkind, &mkey, &desc, &steps, active)?;
+    let outcome: Result<i64, RefusDuRunbook> = (|| {
+        let id = creer_le_runbook_custom(&conn, &name, &mkind, &mkey, &desc, &steps, active)?;
         audit_config_change(&conn, "config.runbook.create",
             &format!("runbook custom '{name}' (#{id}, {} étapes, match {mkind}:{mkey}) par {}", steps.len(), au.name), 2,
             &format!("runbook custom '{name}' créé par {}", au.name),
             &json!({ "op":"create", "kind":"runbook", "id":id, "name":name, "match_kind":mkind, "match_key":mkey, "steps":steps.len(), "actor":au.name }).to_string())
-            .map_err(|e| format!("échec audit: {e}"))?;
+            .map_err(RefusDuRunbook::Audit)?;
         Ok(id)
     })();
     match outcome {
         Ok(id) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("création du runbook '{name}'"), CAUSE_RUNBOOK_NON_CREE, || {
             Json(json!({ "id": id })).into_response()
         }),
-        Err(e) => { drop(tx); refus_d_ecriture_de_runbook(e) } // Drop -> ROLLBACK
+        Err(e) => { drop(tx); refus_d_ecriture_de_runbook(e, "création d'un runbook") } // Drop -> ROLLBACK
     }
 }
 
@@ -1492,20 +1600,20 @@ pub(crate) async fn runbook_update_handler(State(st): State<AppState>, Extension
     let (name, mkind, mkey, desc, steps) = match parse_runbook_payload(&b) { Ok(x) => x, Err(e) => return bad_req(e) };
     crate::req_conn!(st, au, conn);
     let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("modification du runbook #{id}"), CAUSE_RUNBOOK_INCHANGE_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
-    let outcome: Result<(), String> = (|| {
-        update_custom_runbook(&conn, id, &name, &mkind, &mkey, &desc, &steps)?;
+    let outcome: Result<(), RefusDuRunbook> = (|| {
+        modifier_le_runbook_custom(&conn, id, &name, &mkind, &mkey, &desc, &steps)?;
         audit_config_change(&conn, "config.runbook.update",
             &format!("runbook custom '{name}' (#{id}, {} étapes) mis à jour par {}", steps.len(), au.name), 2,
             &format!("runbook custom '{name}' mis à jour par {}", au.name),
             &json!({ "op":"update", "kind":"runbook", "id":id, "name":name, "steps":steps.len(), "actor":au.name }).to_string())
-            .map_err(|e| format!("échec audit: {e}"))?;
+            .map_err(RefusDuRunbook::Audit)?;
         Ok(())
     })();
     match outcome {
         Ok(()) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("modification du runbook #{id}"), CAUSE_RUNBOOK_INCHANGE, || {
             Json(json!({ "ok": true })).into_response()
         }),
-        Err(e) => { drop(tx); refus_d_ecriture_de_runbook(e) } // Drop -> ROLLBACK
+        Err(e) => { drop(tx); refus_d_ecriture_de_runbook(e, "modification d'un runbook") } // Drop -> ROLLBACK
     }
 }
 
@@ -1593,19 +1701,19 @@ pub(crate) async fn runbook_clone_handler(State(st): State<AppState>, Extension(
     let new_name = b.get("name").and_then(|v| v.as_str());
     crate::req_conn!(st, au, conn);
     let tx = match ouvrir_le_garde_du_geste(&conn, "runbooks", &format!("clonage du runbook #{id}"), CAUSE_RUNBOOK_NON_CLONE_TRANSACTION_NON_OUVERTE) { Ok(t) => t, Err(refus) => return refus };
-    let outcome: Result<i64, String> = (|| {
-        let new_id = clone_runbook(&conn, id, new_name)?;
+    let outcome: Result<i64, RefusDuRunbook> = (|| {
+        let new_id = cloner_le_runbook(&conn, id, new_name)?;
         audit_config_change(&conn, "config.runbook.clone",
             &format!("runbook #{id} cloné en custom #{new_id} par {}", au.name), 2,
             &format!("runbook #{id} cloné par {}", au.name),
             &json!({ "op":"clone", "kind":"runbook", "src_id":id, "id":new_id, "actor":au.name }).to_string())
-            .map_err(|e| format!("échec audit: {e}"))?;
+            .map_err(RefusDuRunbook::Audit)?;
         Ok(new_id)
     })();
     match outcome {
         Ok(new_id) => rendre_apres_validation_du_garde(tx, &conn, "runbooks", &format!("clonage du runbook #{id}"), CAUSE_RUNBOOK_NON_CLONE, || {
             Json(json!({ "id": new_id })).into_response()
         }),
-        Err(e) => { drop(tx); refus_d_ecriture_de_runbook(e) } // Drop -> ROLLBACK
+        Err(e) => { drop(tx); refus_d_ecriture_de_runbook(e, "clonage d'un runbook") } // Drop -> ROLLBACK
     }
 }

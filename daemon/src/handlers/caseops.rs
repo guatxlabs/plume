@@ -483,6 +483,11 @@ pub(crate) enum IssueDeLaFusion {
     /// que le geste a eu lieu. `P10.33-k` — une chronologie refusée, un `BEGIN` ou un `COMMIT` refusé y
     /// mènent aussi : le geste entier est annulé (transaction de `jouer_le_geste_garde`).
     NonEcrite(String),
+    /// `P10.20-l` (vague AI) — la lecture qui ouvre le geste, dans sa transaction (second jugement de la fusion,
+    /// relecture du dossier fusionné pour la défusion), n'a PAS eu lieu : aucune écriture n'a été tentée, la
+    /// transaction est annulée, la cause du moteur est portée pour le journal seul. `NonEcrite` ne convenait pas : la
+    /// route la sert « la base n'a pas pris l'écriture », et aucune écriture n'a été tentée.
+    DossierNonLu(String),
     /// `P10.31-u` — l'écriture et ses chronologies sont VALIDÉES, mais le maillon du registre n'est pas entré (cause
     /// portée) : le geste a eu lieu, il n'est pas annulé, et la route l'avoue (`registre_sans_maillon`) au lieu d'un 204.
     EcriteSansTrace(String),
@@ -523,8 +528,11 @@ pub(crate) fn case_merge(conn: &Connection, src_id: i64, dst_id: i64, author: &s
     use crate::handlers::transaction_validee::jouer_le_geste_garde;
     let issue = jouer_le_geste_garde(conn, "caseops", &format!("fusion du dossier #{src_id} dans #{dst_id}"), |conn| {
         // `P10.29-b` — les refus sont jugés par `juger_la_fusion` (mêmes faits, désormais nommés par la route).
-        if juger_la_fusion(conn, src_id, dst_id).is_err() {
-            return Err(IssueDeLaFusion::Refusee);
+        // `P10.20-l` (vague AI) — une lecture du second jugement qui n'a pas eu lieu n'est plus un refus : `DossierNonLu`.
+        match juger_la_fusion(conn, src_id, dst_id) {
+            Ok(()) => {}
+            Err(RefusDeFusion::NonLu(cause)) => return Err(IssueDeLaFusion::DossierNonLu(cause)),
+            Err(_) => return Err(IssueDeLaFusion::Refusee),
         }
         let t = now();
         // `P10.20-w` — L'ÉCRITURE EST COMPTÉE AVANT TOUTE TRACE : une ligne écrite, ou rien n'est attesté.
@@ -562,9 +570,16 @@ pub(crate) fn juger_la_defusion(conn: &Connection, src_id: i64) -> Result<i64, R
 /// dans UNE transaction ; chronologie refusée -> défusion annulée (`NonEcrite`) ; maillon manquant -> `EcriteSansTrace`.
 pub(crate) fn case_unmerge(conn: &Connection, src_id: i64, author: &str) -> IssueDeLaFusion {
     use crate::handlers::transaction_validee::jouer_le_geste_garde;
+    use rusqlite::OptionalExtension;
     let issue = jouer_le_geste_garde(conn, "caseops", &format!("défusion du dossier #{src_id}"), |conn| {
-        let cur: Option<Option<i64>> = conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![src_id], |r| r.get(0)).ok();
-        let Some(Some(dst)) = cur else { return Err(IssueDeLaFusion::Refusee) };
+        // `P10.20-l` (vague AI) — trois issues (`.ok()` rendait `Refusee` sur une lecture ratée) : fusionné, la défusion
+        // suit ; absent ou non fusionné, `Refusee` d'avant ; lecture ratée, `DossierNonLu`, la transaction est annulée,
+        // rien n'est écrit ; la route journalise la cause du moteur avec l'identifiant qu'elle sert.
+        let dst = match conn.query_row("SELECT merged_into FROM incident WHERE id=?1", params![src_id], |r| r.get::<_, Option<i64>>(0)).optional() {
+            Ok(Some(Some(dst))) => dst,
+            Ok(Some(None)) | Ok(None) => return Err(IssueDeLaFusion::Refusee),
+            Err(e) => return Err(IssueDeLaFusion::DossierNonLu(e.to_string())),
+        };
         let t = now();
         // `P10.20-w` — L'ÉCRITURE EST COMPTÉE AVANT LA CHRONOLOGIE ET LE REGISTRE.
         match conn.execute("UPDATE incident SET merged_into=NULL, status='triage', closed_ts=NULL, updated=?1 WHERE id=?2", params![t, src_id]) {
@@ -1156,6 +1171,16 @@ pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au)
             IssueDeLaFusion::Ecrite => StatusCode::NO_CONTENT.into_response(),
             IssueDeLaFusion::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
             IssueDeLaFusion::Refusee => RefusDeFusion::NonLu("second jugement de la fusion".into()).reponse(),
+            // `P10.20-l` (vague AI) — le second jugement non lu : le corps d'avant à l'octet, la cause du moteur au journal
+            // avec l'identifiant servi.
+            IssueDeLaFusion::DossierNonLu(cause) => {
+                let (cid, refus) = err_json_et_identifiant(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("{} (second jugement de la fusion)", crate::handlers::cases::CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT),
+                );
+                eprintln!("[caseops] WARN dossier #{id} NON relu pour la fusion dans #{into}, rien n'est écrit ({}) : {cause}", cid.unwrap_or_default());
+                refus
+            }
             // `P10.20-w` — écriture refusée : 503 nommé (contrat neuf, assumé ; il rendait 204 sur une fusion non faite).
             IssueDeLaFusion::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_FUSION_NON_ECRITE} ({cause})")),
         }
@@ -1173,6 +1198,16 @@ pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(a
             IssueDeLaFusion::Ecrite => StatusCode::NO_CONTENT.into_response(),
             IssueDeLaFusion::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
             IssueDeLaFusion::Refusee => crate::handlers::cases::refus_du_dossier_non_lu(&"relecture du dossier fusionné"),
+            // `P10.20-l` (vague AI) — la relecture du dossier fusionné n'a pas eu lieu, aucune écriture tentée : le corps
+            // d'avant à l'octet (jamais « défusion non écrite »), la cause du moteur au journal avec l'identifiant servi.
+            IssueDeLaFusion::DossierNonLu(cause) => {
+                let (cid, refus) = err_json_et_identifiant(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("{} (relecture du dossier fusionné)", crate::handlers::cases::CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT),
+                );
+                eprintln!("[caseops] WARN dossier #{id} NON relu pour la défusion, rien n'est écrit ({}) : {cause}", cid.unwrap_or_default());
+                refus
+            }
             // `P10.20-w` — écriture refusée : 503 nommé (contrat neuf, assumé ; il rendait 204 sur une défusion non faite).
             IssueDeLaFusion::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DEFUSION_NON_ECRITE} ({cause})")),
         }

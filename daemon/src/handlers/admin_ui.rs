@@ -78,7 +78,7 @@ pub(crate) const CAUSE_APERCU_DE_RETENTION_NON_LU: &str = "APERÇU NON LU : la b
 
 /// `P10.29-l` — LES REFUS DE `retention_settings_put` ET DE `retention_preview` SONT DES OBJETS `{error}` NOMMÉS, AUX MÊMES
 /// STATUTS. Avant : 403 et 400 en texte nu, et l'écriture refusée en 500 TEXTE qui servait au client la phrase du moteur
-/// SQLite (`échec transaction audit (aucune modification appliquée): {e}`). La cause du moteur va au journal SEUL.
+/// SQLite, collée après le préfixe d'échec de transaction. La cause du moteur va au journal SEUL.
 /// Le 403 interne reste une revérification : le routeur refuse déjà `/api/retention` à tout non-administrateur.
 pub(crate) const CAUSE_RETENTION_RESERVEE_A_L_ADMINISTRATEUR: &str = "RÉTENTION INCHANGÉE : le réglage de la rétention \
      est réservé à l'administrateur — rien n'est écrit, la purge applique toujours les durées d'avant.";
@@ -1112,9 +1112,12 @@ pub(crate) fn apply_display_excl_edit(
                 Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE.to_string()))
             }
         },
+        // `P10.29-l` — phrase fixe au client (`suppressions_put` la sert par `err_json`, avec l'identifiant de
+        // corrélation), cause du moteur au journal seul : le geste et le champ, jamais la valeur ni l'acteur.
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
-            Err((StatusCode::INTERNAL_SERVER_ERROR, format!("échec transaction audit (aucune modification): {e}")))
+            eprintln!("[suppressions] WARN exclusion d'affichage {field} refusée : transaction d'audit annulée, aucune modification ({e})");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, PHRASE_ECHEC_TRANSACTION_AUDIT.to_string()))
         }
     }
 }

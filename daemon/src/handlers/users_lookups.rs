@@ -303,6 +303,12 @@ pub(crate) const CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE_TRANSACTION_NON_OUVERTE:
      INCHANGÉE : la base n'a pas pris la transaction de ce geste (BEGIN refusé : verrou tenu, ou transaction d'un \
      autre geste pendante sur l'écrivain) — RIEN n'est écrit : le contenu d'avant est intact et aucune trace n'est \
      écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// AVEU `P10.20-l` (vague AI) — la table d'enrichissement à supprimer n'a pas été lue (la forme d'avant, `.is_err()`,
+/// rendait 404 « lookup introuvable ») : rien n'est supprimé, aucune transaction n'est ouverte.
+pub(crate) const CAUSE_TABLE_D_ENRICHISSEMENT_NON_SUPPRIMEE_NON_LUE: &str = "TABLE D'ENRICHISSEMENT NON SUPPRIMÉE : la \
+     base n'a pas rendu cette table — ce n'est PAS « lookup introuvable », c'est une lecture qui n'a pas eu lieu. RIEN \
+     n'est supprimé : si elle existe, son contenu est intact et l'enrichissement qui la lit continue, et aucune trace \
+     n'est écrite. Réessayez ; si le refus persiste, la table des métadonnées d'enrichissement est illisible.";
 
 /// `P10.24-u` — LES LIGNES HORS OBJETS QUI DONNENT UNE AUTORITÉ À UN NOM : la graine du second facteur (que
 /// `login_post` lit par nom) et les préférences. Ce sont celles que `user_delete` purge avec le compte (`P10.24-c`).
@@ -951,9 +957,16 @@ pub(crate) async fn lookup_delete(State(st): State<AppState>, Extension(au): Ext
         return bad_req("nom de lookup invalide");
     }
     crate::req_conn!(st, au, conn);
-    // existe ? (pour renvoyer 404 sans ouvrir de transaction inutile)
-    if conn.query_row("SELECT 1 FROM lookup_meta WHERE name=?1", params![name], |_| Ok(())).is_err() {
-        return not_found("lookup introuvable");
+    // existe ? (pour renvoyer 404 sans ouvrir de transaction inutile) `P10.20-l` — trois issues : lue, la suppression
+    // suit ; absente, le 404 d'avant ; lecture ratée, 503 nommé, rien n'est supprimé.
+    match conn.query_row("SELECT 1 FROM lookup_meta WHERE name=?1", params![name], |_| Ok(())).optional() {
+        Ok(Some(())) => {}
+        Ok(None) => return not_found("lookup introuvable"),
+        Err(e) => {
+            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TABLE_D_ENRICHISSEMENT_NON_SUPPRIMEE_NON_LUE);
+            eprintln!("[lookup] WARN table d'enrichissement à supprimer NON lue, rien n'est supprimé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "lookup", "suppression d'une table d'enrichissement", CAUSE_TABLE_D_ENRICHISSEMENT_INCHANGEE_TRANSACTION_NON_OUVERTE) {
         return refus;

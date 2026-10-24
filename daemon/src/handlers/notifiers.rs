@@ -625,7 +625,8 @@ pub(crate) async fn notifier_create(State(st): State<AppState>, Extension(au): E
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul avec l'identifiant servi.
+            servir_l_echec_de_la_transaction_d_audit("[notifiers]", &format!("création du canal '{name}'"), &e)
         }
     }
 }
@@ -686,7 +687,8 @@ pub(crate) async fn notifier_update(State(st): State<AppState>, Extension(au): E
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul avec l'identifiant servi.
+            servir_l_echec_de_la_transaction_d_audit("[notifiers]", &format!("modification du canal #{id}"), &e)
         }
     }
 }
@@ -722,7 +724,8 @@ pub(crate) async fn notifier_delete(State(st): State<AppState>, Extension(au): E
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul avec l'identifiant servi.
+            servir_l_echec_de_la_transaction_d_audit("[notifiers]", &format!("suppression du canal #{id}"), &e)
         }
     }
 }

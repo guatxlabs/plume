@@ -615,8 +615,12 @@ SITES_ADMIS = {
         # lecture refusée), puis sert un 503 NOMMÉ (« DOSSIER NON LU, GESTE NON FAIT ») si l'aide rend quand même
         # `false` — aucun fait n'est servi depuis une lecture qui n'a pas eu lieu (témoins `bdrn_`). L'aveu est dans la
         # closure, l'avalement dans l'aide, et cette jambe juge chaque corps à part : d'où l'exemption, avec sa raison.
-        ("daemon/src/handlers/cases.rs", "case_update"): 1,
-        ("daemon/src/handlers/caseops.rs", "case_unmerge_handler"): 1,
+        # LES DEUX ENTRÉES SONT RETIRÉES PAR `P10.20-l` (vague AI, 2026-10-24) : l'avalement a quitté les aides —
+        # `case_apply_update` lit l'état courant en `.optional()` (lecture ratée -> `DossierNonLu`, que `case_update` sert
+        # en 503 « DOSSIER NON LU, GESTE NON FAIT », cause du moteur au journal avec l'identifiant), `case_unmerge` lit
+        # `merged_into` en `.optional()` (lecture ratée -> `NonEcrite` à cause fixe, transaction annulée). Plus rien
+        # n'est absorbé dans la région de ces deux routes : l'ensemble redevient VIDE (témoins :
+        # `lectures_d_existence_en_trois_issues.rs`).
     },
     "Q": {  # cause JETÉE : AUCUNE depuis le lot 102 (`P10.7-g`) — le compte total porte `total_error` à côté de `-1`, et
         # l'union des clés de labels dit qu'elle n'est pas établie quand l'échantillon ne se lit pas. Un site neuf rougit ici.

@@ -24,6 +24,8 @@
 // non comptées ») ; mutations `t7_cause_insert`, `t7_cause_delete`, `t7_cause_copie` (cause retirée du message),
 // `t7_copie_avalee` (erreur de la copie lue comme zéro copiée — la comparaison rendrait le même préfixe),
 // `t7_compte_avale` (lecture du compte de la source ratée lue comme zéro).
+// INVERSÉ PAR `P10.29-l` (vague AI) : le site et la cause du moteur ne sont plus servis au client (phrase seule) ; ces
+// témoins affirment leur ABSENCE du corps, et le témoin `ai1_` lit les mêmes sept refus sur le journal, ligne entière.
 //
 // CE QU'ILS NE TIENNENT PAS : `case_add_item` (posé APRÈS le commit d'`attach_runbook`, il avale encore son écriture ;
 // `attach_runbook` compte déjà chaque INSERT `case_step` en transaction depuis `P10.21-t`) ; un refus de la base sur
@@ -87,7 +89,10 @@ mod etapes_de_runbook_ecrites_ou_refusees {
 
     fn etr_refus_nomme(statut: u16, corps: &Value) {
         assert_eq!(statut, 503, "étape non écrite : 503, jamais un succès ni le 400 d'une saisie : {corps}");
-        assert!(etr_erreur(corps).starts_with(CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES), "cause nommée en tête : {corps}");
+        // `P10.29-l` (vague AI) : la phrase SEULE (elle portait le site et la cause du moteur entre parenthèses, que les
+        // témoins ci-dessous affirmaient servis ; ils l'affirment désormais absents du corps). Site et cause vont au
+        // journal avec l'identifiant de corrélation : lignes capturées en entier par le témoin `ai1_`.
+        assert_eq!(etr_erreur(corps), CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES, "la phrase seule, sans le texte du moteur : {corps}");
     }
 
     /// CE QU'IL TIENT : création, deuxième étape refusée -> 503 nommé, aucun runbook écrit, aucune étape, rien tracé.
@@ -102,8 +107,8 @@ mod etapes_de_runbook_ecrites_ou_refusees {
         etr_lever(&st);
         let (statut, corps) = etr_corps(r).await;
         etr_refus_nomme(statut, &corps);
-        assert!(etr_erreur(&corps).contains("étape 2 (ordinal 1)"), "l'étape refusée est nommée : {corps}");
-        assert!(etr_erreur(&corps).contains("etape refusee"), "la cause du moteur est portée : {corps}");
+        assert!(!etr_erreur(&corps).contains("étape 2 (ordinal 1)"), "INVERSÉ PAR `P10.29-l` (vague AI) — au journal seul (témoin `ai1_`) : l'étape refusée : {corps}");
+        assert!(!etr_erreur(&corps).contains("etape refusee"), "INVERSÉ PAR `P10.29-l` (vague AI) — au journal seul (témoin `ai1_`) : la cause du moteur : {corps}");
         assert_eq!(etr_compte(&st, ETR_CUSTOMS), customs, "aucun runbook écrit");
         assert_eq!(etr_compte(&st, "SELECT COUNT(*) FROM runbook WHERE name='etr-cree'"), 0, "le runbook n'existe pas");
         assert_eq!(etr_compte(&st, ETR_REGISTRE), registre, "rien tracé");
@@ -121,7 +126,7 @@ mod etapes_de_runbook_ecrites_ou_refusees {
         etr_lever(&st);
         let (statut, corps) = etr_corps(r).await;
         etr_refus_nomme(statut, &corps);
-        assert!(etr_erreur(&corps).contains("étape 2 (ordinal 1) non écrite : 0 ligne écrite"), "l'étape sans effet est nommée avec son compte : {corps}");
+        assert!(!etr_erreur(&corps).contains("étape 2 (ordinal 1) non écrite : 0 ligne écrite"), "INVERSÉ PAR `P10.29-l` (vague AI) — au journal seul (témoin `ai1_`) : l'étape sans effet et son compte : {corps}");
         assert_eq!(etr_compte(&st, "SELECT COUNT(*) FROM runbook WHERE name='etr-zero'"), 0, "le runbook n'existe pas");
         assert_eq!(etr_compte(&st, ETR_REGISTRE), registre, "rien tracé");
     }
@@ -139,8 +144,8 @@ mod etapes_de_runbook_ecrites_ou_refusees {
         etr_lever(&st);
         let (statut, corps) = etr_corps(r).await;
         etr_refus_nomme(statut, &corps);
-        assert!(etr_erreur(&corps).contains("étape 2 (ordinal 1) non écrite : ") && etr_erreur(&corps).contains("etape refusee"),
-            "l'étape et la cause du moteur sont portées : {corps}");
+        assert!(!etr_erreur(&corps).contains("étape 2 (ordinal 1) non écrite : ") && !etr_erreur(&corps).contains("etape refusee"),
+            "INVERSÉ PAR `P10.29-l` (vague AI) — au journal seul (témoin `ai1_`) : l'étape et la cause du moteur : {corps}");
         assert_eq!(etr_titres(&st, id), vec!["a", "b"], "les étapes d'avant sont intactes");
         assert_eq!(etr_compte(&st, &format!("SELECT COUNT(*) FROM runbook WHERE id={id} AND name='etr-avant'")), 1, "nom d'avant");
         assert_eq!(etr_compte(&st, ETR_REGISTRE), registre, "rien tracé");
@@ -159,8 +164,8 @@ mod etapes_de_runbook_ecrites_ou_refusees {
         etr_lever(&st);
         let (statut, corps) = etr_corps(r).await;
         etr_refus_nomme(statut, &corps);
-        assert!(etr_erreur(&corps).contains("étapes d'avant non retirées : ") && etr_erreur(&corps).contains("retrait refuse"),
-            "le retrait et la cause du moteur sont portés : {corps}");
+        assert!(!etr_erreur(&corps).contains("étapes d'avant non retirées : ") && !etr_erreur(&corps).contains("retrait refuse"),
+            "INVERSÉ PAR `P10.29-l` (vague AI) — au journal seul (témoin `ai1_`) : le retrait et la cause du moteur : {corps}");
         assert_eq!(etr_titres(&st, id), vec!["a", "b"], "les étapes d'avant sont intactes, rien d'ajouté");
         assert_eq!(etr_compte(&st, ETR_REGISTRE), registre, "rien tracé");
     }
@@ -180,8 +185,8 @@ mod etapes_de_runbook_ecrites_ou_refusees {
         etr_refus_nomme(statut, &corps);
         // Le bras Err de la copie, pas la comparaison : une erreur avalée en « 0 copiée » rendrait le même 503 et le
         // même préfixe (« étapes copiées : 0 sur 3 »), sans la cause du moteur.
-        assert!(etr_erreur(&corps).contains("étapes non copiées : ") && etr_erreur(&corps).contains("copie refusee"),
-            "la copie refusée et la cause du moteur sont portées : {corps}");
+        assert!(!etr_erreur(&corps).contains("étapes non copiées : ") && !etr_erreur(&corps).contains("copie refusee"),
+            "INVERSÉ PAR `P10.29-l` (vague AI) — au journal seul (témoin `ai1_`) : la copie refusée et la cause du moteur : {corps}");
         assert!(!etr_erreur(&corps).contains("sur 3"), "pas le message de la comparaison : {corps}");
         assert_eq!(etr_compte(&st, ETR_CUSTOMS), customs, "aucune copie écrite");
         assert_eq!(etr_compte(&st, ETR_REGISTRE), registre, "rien tracé");
@@ -202,7 +207,7 @@ mod etapes_de_runbook_ecrites_ou_refusees {
         etr_lever(&st);
         let (statut, corps) = etr_corps(r).await;
         etr_refus_nomme(statut, &corps);
-        assert!(etr_erreur(&corps).contains("2 sur 3"), "le compte copié/compté est dit : {corps}");
+        assert!(!etr_erreur(&corps).contains("2 sur 3"), "INVERSÉ PAR `P10.29-l` (vague AI) — au journal seul (témoin `ai1_`) : le compte copié/compté : {corps}");
         assert_eq!(etr_compte(&st, ETR_CUSTOMS), customs, "aucune copie écrite");
         assert_eq!(etr_compte(&st, ETR_REGISTRE), registre, "rien tracé");
     }
@@ -226,8 +231,8 @@ mod etapes_de_runbook_ecrites_ou_refusees {
         st.db.lock().authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
         let (statut, corps) = etr_corps(r).await;
         etr_refus_nomme(statut, &corps);
-        assert!(etr_erreur(&corps).contains("étapes de la source non comptées : ") && etr_erreur(&corps).contains("is prohibited"),
-            "la lecture refusée et la cause du moteur sont portées : {corps}");
+        assert!(!etr_erreur(&corps).contains("étapes de la source non comptées : ") && !etr_erreur(&corps).contains("is prohibited"),
+            "INVERSÉ PAR `P10.29-l` (vague AI) — au journal seul (témoin `ai1_`) : la lecture refusée et la cause du moteur : {corps}");
         assert!(!etr_erreur(&corps).contains("sur 0"), "pas « N copiées sur 0 » : {corps}");
         assert_eq!(etr_compte(&st, ETR_CUSTOMS), customs, "aucune copie écrite");
         assert_eq!(etr_compte(&st, ETR_REGISTRE), registre, "rien tracé");

@@ -80,18 +80,31 @@ pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
     }
     // 2) Chaque connecteur SÉQUENTIELLEMENT, isolé par catch_unwind (fail-safe : jamais de propagation).
     for (id, ctype, cfg_json, secret, env_id, watermark) in due {
+        // `P10.34-f` — l'écrivain est-il libre AVANT le passage ? Un panic après le `BEGIN` du lot laisse la transaction
+        // du passage ouverte (`ingest_events_batch_env` n'annule que sur ses chemins `Err`, `catch_unwind` n'annule rien).
+        let ecrivain_libre_avant = db.lock().is_autocommit();
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // garde SSRF au point d'ÉGRESS RÉEL (le fetch de PRODUCTION `guarded_http_call`) — couvre
             // 1re page, pagination ET l'URL `next` pilotée par la RÉPONSE (link_header/next_path, attaquant-
             // contrôlée), pour http_pull comme pour tout connecteur. En complément du confinement réseau.
             // Le wrap est AU CALL-SITE (pas dans poll_one_connector) pour ne PAS gêner les fetch mockés en test.
+            // Rien en production ; sous `cfg(test)`, le crochet d'un témoin (un panic dans le passage, `P10.34-f`).
+            crate::handlers::transaction_validee::point_de_course(&format!("passage-du-connecteur:{db_path}:{id}"));
             poll_one_connector(db, db_path, id, &ctype, &cfg_json, &secret, &env_id, watermark.as_deref(), now_ts, guarded_http_call);
         }));
         if res.is_err() {
             // Panic capturé -> pose last_run (respect interval_s) + last_error, et CONTINUE avec les autres.
-            abandonnes += 1;
             let conn = db.lock();
-            let _ = conn.execute(
+            // Une transaction ouverte PENDANT le passage est la sienne (une transaction déjà pendante avant lui est celle
+            // d'un autre geste, et `ecrire_l_etat_du_passage` n'y touche pas) : annulée, puis l'état écrit hors d'elle.
+            if ecrivain_libre_avant && !conn.is_autocommit() && conn.execute_batch("ROLLBACK").is_err() {
+                abandonnes += 1; // le passage interrompu, compté dans ce bras comme dans l'autre
+                eprintln!("[connecteurs] WARN connecteur #{id} : {PASSAGE_INTERROMPU}, état non écrit ({NATURE_TRANSACTION_DU_PASSAGE_NON_ANNULEE})");
+                continue;
+            }
+            abandonnes += 1;
+            ecrire_l_etat_du_passage(
+                &conn, db_path, id, PASSAGE_INTERROMPU,
                 "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3",
                 params![now_ts, "panic interne du connecteur (capturé)", id],
             );
@@ -128,10 +141,59 @@ const ESSAIS_DU_PASSAGE_RATE: usize = 2;
 const NATURE_VERROU_TENU_AILLEURS: &str = "verrou d'écriture tenu ailleurs";
 const NATURE_REFUS_DU_MOTEUR: &str = "refus du moteur qui n'est pas un verrou";
 
+/// `P10.34-f` — l'écrivain porte la transaction d'un AUTRE geste : l'`UPDATE` n'est pas essayé (il entrerait dans cette
+/// transaction et partagerait son sort : annulé par son `ROLLBACK`, validé par son `COMMIT`).
+const NATURE_TRANSACTION_ETRANGERE: &str = "transaction d'un autre geste pendante sur l'écrivain, non essayé";
+
+/// `P10.34-f` — un panic a laissé la transaction ouverte par le passage lui-même, et son `ROLLBACK` est refusé : l'état
+/// n'est pas écrit (il entrerait dans cette transaction).
+const NATURE_TRANSACTION_DU_PASSAGE_NON_ANNULEE: &str = "transaction du passage restée ouverte, annulation refusée";
+
 fn nature_du_refus_du_passage_rate(refus: &rusqlite::Error) -> &'static str {
     match refus.sqlite_error_code() {
         Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => NATURE_VERROU_TENU_AILLEURS,
         _ => NATURE_REFUS_DU_MOTEUR,
+    }
+}
+
+/// `P10.34-f` — CE QUE LE PASSAGE A FAIT QUAND SON ÉTAT N'EST PAS ÉCRIT, choisi dans une liste fermée (jamais l'URL, la
+/// configuration, le secret, le nom du connecteur ni son `last_error`, qui peut porter un message du vendeur).
+const PASSAGE_NON_PRIS: &str = "passage non pris";
+/// Le lot (événements, ou indicateurs TAXII) EST écrit ; seuls `last_run`, `last_ok`, `last_count` et le watermark ne le
+/// sont pas : rien n'est annulé, et le lot suivant recouvre celui-ci (`INSERT OR IGNORE` sur `dedup`, upsert des IOC).
+const PASSAGE_LOT_ECRIT: &str = "lot écrit";
+/// Indicateurs TAXII posés alors que l'écrivain portait la transaction d'un autre geste (`ioc_upsert` n'ouvre pas de
+/// transaction) : ils partagent son sort, annulés par son `ROLLBACK` ; « écrit » affirmerait un fait non acquis.
+const PASSAGE_LOT_NON_ACQUIS: &str = "lot posé dans cette transaction, non acquis";
+const PASSAGE_EN_ECHEC: &str = "passage en échec";
+const PASSAGE_TYPE_NON_SUPPORTE: &str = "type non supporté";
+const PASSAGE_INTERROMPU: &str = "passage interrompu (panic capturé)";
+
+/// `P10.34-f` — L'ÉCRITURE D'ÉTAT D'UN PASSAGE EST CONSOMMÉE, aux huit sites qui la jetaient (`let _ = conn.execute(..)` :
+/// panic capturé, succès et échec TAXII, http_pull et Defender, type non supporté) et au passage non pris
+/// (`poser_le_passage_rate`). Trois issues, toutes dites :
+///   - l'écrivain porte une transaction qui n'est pas celle du passage (`is_autocommit` faux : c'est l'état que
+///     `CauseDuBeginRefuse::du_refus` lit pour `TransactionEtrangere`) : RIEN n'est essayé, une ligne le dit. Le refus du
+///     `BEGIN` d'un lot non pris est DÉJÀ compté par `ouvrir_sa_transaction` (`compter_un_begin_refuse`) : le recompter
+///     ici doublerait le compte, d'où la lecture directe de l'écrivain ;
+///   - sinon l'`UPDATE` est essayé au plus `ESSAIS_DU_PASSAGE_RATE` fois (chaque essai attend au plus le `busy_timeout`
+///     de l'écrivain : l'attente est bornée par ce COMPTE, jamais une durée) ; écrit -> rien de plus ;
+///   - toujours refusé -> UNE ligne fixe, numéro interne du connecteur, ce que le passage a fait, nature du refus.
+fn ecrire_l_etat_du_passage(conn: &Connection, db_path: &str, id: i64, passage: &'static str, sql: &str, valeurs: &[&dyn rusqlite::ToSql]) {
+    if !conn.is_autocommit() {
+        eprintln!("[connecteurs] WARN connecteur #{id} : {passage}, état non écrit ({NATURE_TRANSACTION_ETRANGERE})");
+        return;
+    }
+    for essai in 1..=ESSAIS_DU_PASSAGE_RATE {
+        match conn.execute(sql, valeurs) {
+            Ok(_) => return,
+            Err(refus) if essai == ESSAIS_DU_PASSAGE_RATE => eprintln!(
+                "[connecteurs] WARN connecteur #{id} : {passage}, état non écrit ({})",
+                nature_du_refus_du_passage_rate(&refus)
+            ),
+            // Entre deux essais : rien en production ; sous `cfg(test)`, le crochet d'un témoin (libérer le verrou).
+            Err(_) => crate::handlers::transaction_validee::point_de_course(&format!("passage-rate-du-connecteur:{db_path}:{id}")),
+        }
     }
 }
 
@@ -141,22 +203,12 @@ fn nature_du_refus_du_passage_rate(refus: &rusqlite::Error) -> &'static str {
 /// verrou voyait son `UPDATE` refusé par le même verrou, et le passage ne laissait rien — ni `last_run`, ni phrase, ni
 /// ligne. Ici l'`UPDATE` est essayé `ESSAIS_DU_PASSAGE_RATE` fois ; s'il reste refusé, UNE ligne de journal fixe, avec le
 /// numéro interne du connecteur et la nature du refus — jamais son nom, son URL, sa configuration ni son secret.
-/// Choix : `transaction_validee.rs` (partagé par de nombreux gestes) n'est pas touché. Reste nommé : un `NonPris` peut
-/// aussi venir d'une transaction étrangère PENDANTE sur la même connexion (`dire_la_transaction_non_ouverte` sépare les
-/// deux causes) ; cet `UPDATE` entre alors dans cette transaction et partage son sort (risque antérieur, hors de ce geste).
+/// Choix : `transaction_validee.rs` (partagé par de nombreux gestes) n'est pas touché. `P10.34-f` : un `NonPris` dû à
+/// une transaction étrangère PENDANTE sur la même connexion n'écrit plus dans cette transaction
+/// (`ecrire_l_etat_du_passage`, `NATURE_TRANSACTION_ETRANGERE`).
 fn poser_le_passage_rate(conn: &Connection, db_path: &str, id: i64, now_ts: i64, issue: crate::ingest::LotNonEcrit) {
     let phrase = last_error_du_lot_non_ecrit(issue);
-    for essai in 1..=ESSAIS_DU_PASSAGE_RATE {
-        match conn.execute("UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, phrase, id]) {
-            Ok(_) => return,
-            Err(refus) if essai == ESSAIS_DU_PASSAGE_RATE => eprintln!(
-                "[connecteurs] WARN connecteur #{id} : passage non pris, état non écrit ({})",
-                nature_du_refus_du_passage_rate(&refus)
-            ),
-            // Entre deux essais : rien en production ; sous `cfg(test)`, le crochet d'un témoin (libérer le verrou).
-            Err(_) => crate::handlers::transaction_validee::point_de_course(&format!("passage-rate-du-connecteur:{db_path}:{id}")),
-        }
-    }
+    ecrire_l_etat_du_passage(conn, db_path, id, PASSAGE_NON_PRIS, "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, phrase, id]);
 }
 
 /// Traite UN connecteur : pull (poll_defender) -> ingest par lot sous le lock writer (INSERT OR IGNORE sur
@@ -180,15 +232,18 @@ where
         match poll_taxii(&cfg, secret, watermark, fetch, taxii_max_pages()) {
             Ok(o) => {
                 let conn = db.lock();
+                // `P10.34-f` — lu AVANT l'upsert : sous la transaction d'un autre geste, les indicateurs y entrent.
+                let passage = if conn.is_autocommit() { PASSAGE_LOT_ECRIT } else { PASSAGE_LOT_NON_ACQUIS };
                 let count = taxii_upsert_iocs(&conn, &o.iocs, &source, env_id, now_ts);
-                let _ = conn.execute(
+                ecrire_l_etat_du_passage(
+                    &conn, db_path, id, passage,
                     "UPDATE connector SET last_run=?1, last_ok=?1, last_error=NULL, last_count=?2, watermark=COALESCE(?3, watermark) WHERE id=?4",
                     params![now_ts, count, o.watermark, id],
                 );
             }
             Err(e) => {
                 let conn = db.lock();
-                let _ = conn.execute("UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, e, id]);
+                ecrire_l_etat_du_passage(&conn, db_path, id, PASSAGE_EN_ECHEC, "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, e, id]);
             }
         }
         return;
@@ -209,7 +264,8 @@ where
                 let conn = db.lock();
                 match ingest_events_batch_env(&conn, db_path, &o.events, now_ts, None, None, Some(env_id)) {
                     Ok((_processed, inserted)) => {
-                        let _ = conn.execute(
+                        ecrire_l_etat_du_passage(
+                            &conn, db_path, id, PASSAGE_LOT_ECRIT,
                             "UPDATE connector SET last_run=?1, last_ok=?1, last_error=NULL, last_count=?2, watermark=COALESCE(?3, watermark) WHERE id=?4",
                             params![now_ts, inserted as i64, o.watermark, id],
                         );
@@ -224,14 +280,15 @@ where
             }
             Err(e) => {
                 let conn = db.lock();
-                let _ = conn.execute("UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, e, id]);
+                ecrire_l_etat_du_passage(&conn, db_path, id, PASSAGE_EN_ECHEC, "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, e, id]);
             }
         }
         return;
     }
     if ctype != "defender" {
         let conn = db.lock();
-        let _ = conn.execute(
+        ecrire_l_etat_du_passage(
+            &conn, db_path, id, PASSAGE_TYPE_NON_SUPPORTE,
             "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3",
             params![now_ts, format!("type de connecteur non supporté : {ctype}"), id],
         );
@@ -268,7 +325,8 @@ where
             match ingest_events_batch_env(&conn, db_path, &evs, now_ts, None, None, Some(env_id)) {
                 Ok((_processed, inserted)) => {
                     // Avance le watermark (COALESCE : None au cold-start sans résultat -> conserve l'existant).
-                    let _ = conn.execute(
+                    ecrire_l_etat_du_passage(
+                        &conn, db_path, id, PASSAGE_LOT_ECRIT,
                         "UPDATE connector SET last_run=?1, last_ok=?1, last_error=NULL, last_count=?2, watermark=COALESCE(?3, watermark) WHERE id=?4",
                         params![now_ts, inserted as i64, o.watermark, id],
                     );
@@ -284,7 +342,8 @@ where
         Err(e) => {
             let conn = db.lock();
             // e = message SANS secret (statut/motif). last_run posé même en échec -> pas de martèlement.
-            let _ = conn.execute(
+            ecrire_l_etat_du_passage(
+                &conn, db_path, id, PASSAGE_EN_ECHEC,
                 "UPDATE connector SET last_run=?1, last_error=?2 WHERE id=?3",
                 params![now_ts, e, id],
             );

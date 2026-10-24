@@ -24,6 +24,8 @@
 // `F3_OK0_ECRITE` (`Ok(0)` continue comme une écriture faite), `F3_ABSENTE_204` (la route rend 204 sur `EtapeAbsente`),
 // `M_ERR_VIDE` (la cause du moteur n'est pas portée), `M_R_NE_SANSCAUSE` (la route ne la sert pas) et
 // `F3_LECTURE_ABSENTE` (une relecture du titre en ERREUR rend `EtapeAbsente`, la confusion d'avant).
+// INVERSÉ PAR `P10.29-l` (vague AI) : `M_R_NE_SANSCAUSE` affirmait la cause du moteur SERVIE ; la route sert la phrase
+// seule et la cause va au journal (témoin `ai1_`, ligne entière).
 //
 // LA RELECTURE DU TITRE EN ERREUR (autre que `NoRows`) est fabriquée par une vue temporaire `case_step` SANS colonne
 // `title` : la lecture d'appartenance de la route passe (elle ne lit que `id` et `incident_id`), celle de
@@ -128,7 +130,10 @@ mod etape_de_runbook_ecriture_comptee {
         assert_eq!(statut, 503, "étape non écrite : 503 nommé, jamais un 204 : {avoue}");
         assert!(eta_phrase(&avoue).starts_with(CAUSE_ETAPE_NON_ECRITE), "le refus NOMME l'écriture refusée : {avoue}");
         assert!(!eta_phrase(&avoue).starts_with(CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT), "ce n'est pas une relecture ratée : {avoue}");
-        assert_eq!(eta_phrase(&avoue), format!("{CAUSE_ETAPE_NON_ECRITE} ({cause})"), "la route SERT la cause du moteur : {avoue}");
+        // INVERSÉ PAR `P10.29-l` (vague AI) : la route servait `<phrase> (<cause du moteur>)` ; elle sert la phrase SEULE, la
+        // cause du moteur va au journal avec l'identifiant de corrélation (ligne capturée en entier par le témoin `ai1_`).
+        assert_eq!(eta_phrase(&avoue), CAUSE_ETAPE_NON_ECRITE, "la route sert la phrase seule, jamais la cause du moteur : {avoue}");
+        assert!(!avoue.to_string().contains(&cause), "la cause du moteur ne part pas au client : {avoue}");
         assert_eq!(eta_compte(&st, ETA_REGISTRE), registre_avant, "la route n'atteste rien non plus");
         assert_eq!(eta_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='step'"), chronologie_avant);
         assert_eq!(eta_compte(&st, &mtta), 1);
@@ -233,7 +238,9 @@ mod etape_de_runbook_ecriture_comptee {
         assert!(cause.contains("title"), "la cause du MOTEUR est portée (colonne absente) : {cause:?}");
         let (statut, avoue) = eta_avancer(&st, id, sid, json!({ "status": "done" })).await;
         assert_eq!(statut, 503, "relecture en erreur : 503 nommé : {avoue}");
-        assert_eq!(eta_phrase(&avoue), format!("{CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT} ({cause})"), "cause nommée et portée : {avoue}");
+        // INVERSÉ PAR `P10.29-l` (vague AI) : la phrase SEULE, la cause du moteur au journal (témoin `ai1_`).
+        assert_eq!(eta_phrase(&avoue), CAUSE_ETAPE_NON_LUE_GESTE_NON_FAIT, "cause nommée, sans le texte du moteur : {avoue}");
+        assert!(!avoue.to_string().contains(&cause), "la cause du moteur ne part pas au client : {avoue}");
         assert_eq!(eta_compte(&st, ETA_REGISTRE), registre_avant, "rien n'est attesté");
         eta_table_case_step_modifiable(&st);
         assert_eq!(eta_compte(&st, &format!("SELECT COUNT(*) FROM case_step WHERE id={sid} AND status='pending'")), 1, "rien n'a été écrit");

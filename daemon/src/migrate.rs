@@ -718,8 +718,16 @@ fn migrate_chain(conn: &Connection) -> bool {
         match repop {
             Ok(()) => {
                 // watermark obsolète (ancien schéma) -> réinitialisé pour forcer une ré-agrégation propre.
-                let _ = conn.execute("DELETE FROM meta WHERE key='event_rollup_wm'", []);
-                let _ = conn.execute("UPDATE meta SET value='33' WHERE key='schema_version'", []);
+                // `P10.34-c` — les deux écritures sont CONSOMMÉES : un refus suit la sortie du bras `Err` voisin
+                // (version non bumpée, chaîne interrompue, étape re-tentée au prochain démarrage ; DROP/RENAME
+                // idempotents). Un watermark périmé laissé en place fausserait la ré-agrégation : c'est un échec de
+                // l'étape, pas un détail. Ces écritures ne sont dans aucune transaction : la table déjà recréée reste.
+                if let Err(e) = conn.execute("DELETE FROM meta WHERE key='event_rollup_wm'", []) {
+                    return abort_step(conn, 33, &format!("réinitialisation du watermark event_rollup refusée ({e})"));
+                }
+                if let Err(e) = conn.execute("UPDATE meta SET value='33' WHERE key='schema_version'", []) {
+                    return abort_step(conn, 33, &format!("estampille de version refusée ({e})"));
+                }
                 mig_log!("[migration] schéma -> v33 (event_rollup élargi src_ip+host ; src_ip borné sev>={min_sev} + top-{topn}/bucket)");
             }
             Err(e) => {
@@ -841,7 +849,10 @@ fn migrate_chain(conn: &Connection) -> bool {
         })();
         match done {
             Ok(()) => {
-                let _ = conn.execute("UPDATE meta SET value='67' WHERE key='schema_version'", []);
+                // `P10.34-c` — estampille consommée, même sortie que le bras `Err` (recréation rejouable : `col_exists`).
+                if let Err(e) = conn.execute("UPDATE meta SET value='67' WHERE key='schema_version'", []) {
+                    return abort_step(conn, 67, &format!("estampille de version refusée ({e})"));
+                }
                 mig_log!("[migration] schéma -> v67 (env_id sur event_rollup + event_dim_rollup : filtre par environnement cohérent agrégats+raw, #2d)");
             }
             Err(e) => {
@@ -920,7 +931,10 @@ fn migrate_chain(conn: &Connection) -> bool {
         })();
         match backfill {
             Ok(()) => {
-                let _ = conn.execute("UPDATE meta SET value='77' WHERE key='schema_version'", []);
+                // `P10.34-c` — estampille consommée, même sortie que le bras `Err` (DELETE-puis-INSERT rejouable).
+                if let Err(e) = conn.execute("UPDATE meta SET value='77' WHERE key='schema_version'", []) {
+                    return abort_step(conn, 77, &format!("estampille de version refusée ({e})"));
+                }
                 mig_log!("[migration] schéma -> v77 (host_rollup : inventaire flotte pré-agrégé par hôte -> /api/fleet + /api/integrations SANS scan event ; maintenu par rollup_hosts, non pruné, backfill des hôtes existants)");
             }
             Err(e) => {

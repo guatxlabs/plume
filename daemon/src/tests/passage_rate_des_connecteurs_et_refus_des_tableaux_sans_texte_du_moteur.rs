@@ -15,8 +15,8 @@
 //     en entier ;
 //   - verrou libéré entre deux essais (crochet `point_de_course`, appelé une fois) : `last_run` et la phrase écrits,
 //     `last_ok`, `last_count` et le watermark inchangés, aucune ligne ;
-//   - refus du moteur qui n'est pas un verrou (déclencheur sur `connector`, transaction étrangère sur l'écrivain) :
-//     la ligne dit `(refus du moteur qui n'est pas un verrou)` ;
+//   - refus du moteur qui n'est pas un verrou (déclencheur sur `connector`, `BEGIN` du lot refusé par un autorisateur,
+//     écrivain libre) : la ligne dit `(refus du moteur qui n'est pas un verrou)` ;
 //   - aucune ligne ne porte le nom du connecteur, son URL ni son secret.
 // Tableaux de bord : chaque refus sert un corps `{error, id}` EXACT (la phrase fixe seule, l'identifiant de corrélation),
 // sans le texte du moteur ; la ligne de journal, comparée en entier, porte l'identifiant servi et la cause du moteur
@@ -35,12 +35,13 @@
 // AH4_SNAP_CAUSE_EXPOSEE, AH4_SNAP_SANS_JOURNAL, AH4_COUT_OK0_ACCEPTE, AH4_COUT_SANS_JOURNAL.
 //
 // CE QU'ILS NE TIENNENT PAS : un verrou libéré pendant l'attente du `busy_timeout` d'un essai (non déterministe) ; ce que
-// la console des connecteurs affiche de `last_error` (web/ hors périmètre) ; le cas d'un `NonPris` dû à une transaction
-// étrangère pendante sur la même connexion, où l'`UPDATE` entre dans cette transaction et partage son sort (antérieur).
+// la console des connecteurs affiche de `last_error` (web/ hors périmètre). Le `NonPris` dû à une transaction étrangère
+// pendante sur la même connexion (l'`UPDATE` n'y est plus essayé, `P10.34-f`) est tenu par
+// `ecritures_d_etat_des_migrations_et_des_connecteurs_consommees.rs`, phases `etrangere-*`.
 // =====================================================================================
 mod passage_rate_des_connecteurs_et_refus_des_tableaux_sans_texte_du_moteur {
     use super::*;
-    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     const AH4_ENFANT: &str = "PLUME_TEMOIN_AH4_ENFANT";
@@ -153,19 +154,25 @@ mod passage_rate_des_connecteurs_et_refus_des_tableaux_sans_texte_du_moteur {
                 "{ctype} verrou libéré au second essai : last_run et la phrase écrits, last_ok, last_count et watermark inchangés"
             );
 
-            // (3) un refus du moteur qui n'est pas un verrou.
+            // (3) un refus du moteur qui n'est pas un verrou : le `BEGIN` du lot est refusé par un autorisateur (lot non
+            // pris, écrivain LIBRE, `P10.34-f` : une transaction étrangère ferait sauter l'essai), le déclencheur refuse
+            // l'`UPDATE`.
             eprintln!("{AH4_PHASE}moteur-{ctype}");
             let (st, p) = ah4_base_du_connecteur(&format!("ah4-moteur-{ctype}"), ctype);
             st.db
                 .lock()
                 .execute_batch(&format!(
-                    "CREATE TRIGGER ah4_connecteur_refuse BEFORE UPDATE ON connector BEGIN SELECT RAISE(ABORT, '{AH4_REFUS}'); END; BEGIN;"
+                    "CREATE TRIGGER ah4_connecteur_refuse BEFORE UPDATE ON connector BEGIN SELECT RAISE(ABORT, '{AH4_REFUS}'); END;"
                 ))
-                .expect("fixture : déclencheur et transaction étrangère");
+                .expect("fixture : déclencheur");
+            st.db.lock().authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
+                AuthAction::Transaction { operation: TransactionOperation::Begin } => Authorization::Deny,
+                _ => Authorization::Allow,
+            }));
             ah4_passer(&st, &p, ctype, now_ts);
-            let etat = ah4_etat(&st.db.lock());
-            st.db.lock().execute_batch("ROLLBACK").expect("fixture : la transaction étrangère est fermée");
-            assert_eq!(etat, ah4_etat_d_avant(), "{ctype} refus du moteur : rien n'est écrit");
+            st.db.lock().authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
+            assert!(st.db.lock().is_autocommit(), "{ctype} refus du moteur : contrôle, l'écrivain est libre");
+            assert_eq!(ah4_etat(&st.db.lock()), ah4_etat_d_avant(), "{ctype} refus du moteur : rien n'est écrit");
         }
         eprintln!("{AH4_PHASE}fin");
     }
@@ -200,6 +207,8 @@ mod passage_rate_des_connecteurs_et_refus_des_tableaux_sans_texte_du_moteur {
             corps.lines().filter(|l| l.starts_with("[connecteurs] ")).map(str::to_string).collect()
         };
         let verrou = "[connecteurs] WARN connecteur #1 : passage non pris, état non écrit (verrou d'écriture tenu ailleurs)";
+        // `P10.34-f` : la phase `moteur` ne pose plus de transaction étrangère (l'`UPDATE` n'y serait plus essayé) ; son
+        // `BEGIN` est refusé par un autorisateur, l'écrivain reste libre, et la ligne dit toujours la nature du refus.
         let moteur = "[connecteurs] WARN connecteur #1 : passage non pris, état non écrit (refus du moteur qui n'est pas un verrou)";
         let cas = [
             ("verrou-http_pull", vec![verrou]),

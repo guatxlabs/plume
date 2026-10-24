@@ -192,6 +192,12 @@ pub(crate) const CAUSE_PLAYBOOK_NON_SUPPRIME_NON_LU: &str = "PLAYBOOK NON SUPPRI
      n'est ni supprimé ni désactivé, ce qu'il arme reste armé, et aucune trace n'est écrite. Réessayez ; si le refus \
      persiste, la table des playbooks est illisible.";
 
+/// AVEU `P10.20-l` (vague AI) — la ligne du playbook à essayer (dry-run) n'a pas été lue : aucune requête exécutée.
+pub(crate) const CAUSE_PLAYBOOK_NON_ESSAYE_NON_LU: &str = "ESSAI DU PLAYBOOK NON FAIT : la base n'a pas rendu ce \
+     playbook — ce n'est PAS « playbook introuvable », c'est une lecture qui n'a pas eu lieu. Aucune requête n'est \
+     exécutée et aucune cible n'est rendue ; l'essai n'écrit jamais rien. Réessayez ; si le refus persiste, la table \
+     des playbooks est illisible.";
+
 
 pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
@@ -417,17 +423,25 @@ pub(crate) async fn playbook_delete(State(st): State<AppState>, Extension(au): E
 }
 /// `P10.20-j` — ses refus portent leur statut (ils étaient servis en deux cents `{error}`) : un playbook absent en 404,
 /// une requête enregistrée qui ne compile pas pour l'appelant ou ne s'exécute pas en 422 (définition inexploitable), une
-/// tâche interrompue en 500. RESTE ÉCRIT : la lecture du playbook rend `None` sur une absence COMME sur une lecture
-/// ratée (`.ok()`, entrée de rang quatre de la garde `P10.20-b`) — le 404 hérite de cette confusion, qu'il ne crée pas.
+/// tâche interrompue en 500. `P10.20-l` (vague AI) — la lecture du playbook a trois issues (elle rendait `None` sur une
+/// absence COMME sur une lecture ratée, `.ok()`) : lue, l'essai suit ; absente, le 404 d'avant ; lecture ratée, 503
+/// `CAUSE_PLAYBOOK_NON_ESSAYE_NON_LU`, aucune requête exécutée, la cause du moteur au journal seul avec l'identifiant
+/// de corrélation servi — jamais la requête du playbook. L'essai reste en lecture seule, aucun 403 n'est décidé.
 pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
+    use rusqlite::OptionalExtension;
     let row = {
         crate::req_conn!(st, au, conn);
         conn.query_row("SELECT query,is_soql,action_kind,window_s FROM playbook WHERE id=?1", params![id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))).ok()
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))).optional()
     };
     let (query, is_soql, kind, window_s) = match row {
-        Some(x) => x,
-        None => return not_found("playbook introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("playbook introuvable"),
+        Err(e) => {
+            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PLAYBOOK_NON_ESSAYE_NON_LU);
+            eprintln!("[playbooks] WARN playbook #{id} NON lu pour l'essai, aucune requête exécutée ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     // #45 — DRY-RUN = SURFACE D'APPELANT : cette route est EDITOR+ et RENVOIE les CIBLES de la requête
     // (1re colonne) à l'appelant. Compilée par la porte SYSTÈME `rule_sql`, un playbook `search | table

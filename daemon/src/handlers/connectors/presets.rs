@@ -418,7 +418,8 @@ pub(crate) async fn connector_push_source(
         }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction (aucune source push créée, aucune clé mintée): {e}"))
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul avec l'identifiant servi.
+            servir_l_echec_de_la_transaction_d_audit("[connecteurs]", &format!("création de la source push '{name}'"), &e)
         }
     }
 }

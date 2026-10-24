@@ -60,7 +60,8 @@
 //     surfaces sont nommées dans le rapport de la clé, rien n'a été touché sous `web/` ;
 //   * `runbook_admin_json` (`incidents.rs`), classé rang deux, N'EST PAS un fait servi : son unique
 //     consommateur (`runbook_get`) rend un 404 « runbook introuvable ». C'est un refus fail-closed à
-//     cause fausse — la définition du rang QUATRE — et il n'est donc pas corrigé ici ;
+//     cause fausse — la définition du rang QUATRE — et il n'est donc pas corrigé ici (corrigé depuis, vague AK :
+//     trois issues, 503 nommé sur la lecture ratée, témoins `runbook_lu_pour_l_edition_et_aveux_sans_texte_du_moteur.rs`) ;
 //   * dans `compute_freshness`, une préparation ratée sur les flux d'ÉVÉNEMENTS ou d'INSTANTANÉS est
 //     encore avalée par un `if let Ok(mut s) = conn.prepare(..)` qui ne note RIEN : ces deux familles de
 //     flux disparaissent alors sans aveu. C'est la famille `P10.7-f` (un parcours, pas une ligne), elle

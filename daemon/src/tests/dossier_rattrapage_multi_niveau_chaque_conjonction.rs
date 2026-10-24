@@ -55,13 +55,14 @@ mod dossier_rattrapage_multi_niveau_chaque_conjonction {
         dossier_seme(&conn, "alice", "Dossier", 3, "", None, 3)
     }
 
+    /// INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : la cause était lue entre parenthèses dans le 503 de la route, qui sert
+    /// désormais la phrase SEULE ; elle est lue à `case_apply_update`, que la route appelle (`NonEcrite`).
     async fn drc_cause(st: &AppState, id: i64, corps: Value) -> String {
-        let (statut, avoue) = pb_json(case_update(State(st.clone()), Extension(drc_au()), Path(id), Json(corps)).await).await;
-        assert_eq!(statut, 503, "{avoue}");
-        let phrase = avoue["error"].as_str().unwrap_or("").to_string();
-        let prefixe = format!("{CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE} (");
-        assert!(phrase.starts_with(&prefixe) && phrase.ends_with(')'), "{avoue}");
-        phrase[prefixe.len()..phrase.len() - 1].to_string()
+        let au = drc_au();
+        match with_write(st, &au, |c| case_apply_update(c, id, &au.name, &corps)) {
+            IssueDuDossierModifie::NonEcrite(cause) => cause,
+            autre => panic!("`NonEcrite` attendu, pas {autre:?}"),
+        }
     }
 
     // site `politique` (cases.rs:394, argument statut) : sortie de `waiting` + priorité écrite, puis `sla_due` refusé.

@@ -723,6 +723,11 @@ pub(crate) const CAUSE_REGLE_NON_SUPPRIMEE_NON_LUE: &str = "RÈGLE NON SUPPRIMÉ
      — ce n'est PAS « règle introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : si elle existe, \
      elle est toujours là, dans l'état d'activation qu'elle avait, et aucune trace n'est écrite. Réessayez ; si le refus \
      persiste, la table des règles est illisible.";
+/// AVEU `P10.20-l` (vague AK) — la règle à essayer (dry-run) n'a pas été lue : aucune requête exécutée.
+pub(crate) const CAUSE_REGLE_NON_ESSAYEE_NON_LUE: &str = "ESSAI DE LA RÈGLE NON FAIT : la base n'a pas rendu cette \
+     règle — ce n'est PAS « règle introuvable », c'est une lecture qui n'a pas eu lieu. Aucune requête n'est exécutée \
+     et aucune valeur n'est rendue ; l'essai n'écrit jamais rien. Réessayez ; si le refus persiste, la table des \
+     règles est illisible.";
 /// `P10.20-l` — le parseur à modifier n'a pas été lu : ni le garde-fou ni le PATCH ne sont jugés, rien n'est écrit.
 pub(crate) const CAUSE_PARSEUR_INCHANGE_NON_LU: &str = "PARSEUR INCHANGÉ : la base n'a pas rendu ce parseur — ce \
      n'est PAS « parseur introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : s'il existe, \
@@ -1603,9 +1608,10 @@ pub(crate) async fn parser_test(Json(b): Json<Value>) -> Response {
 }
 /// `P10.20-j` — ses refus portent leur statut : une règle absente en 404, une requête enregistrée qui ne compile pas pour
 /// l'appelant en 422 (définition inexploitable). « Évaluation échouée » reste un deux cents FORMÉ — le SQL compilé y est
-/// servi à côté de la cause, et la console le lit (`web/detection_admin.js`). RESTE ÉCRIT : la lecture de la règle rend
-/// `None` sur une absence COMME sur une lecture ratée (`.ok()`, entrée nommée de rang quatre de la garde `P10.20-b`) —
-/// le 404 hérite de cette confusion, qu'il ne crée pas.
+/// servi à côté de la cause, et la console le lit (`web/detection_admin.js`). `P10.20-l` (vague AK) — la lecture de la
+/// règle a trois issues (elle rendait `None` sur une absence COMME sur une lecture ratée, `.ok()`) : lue, l'essai suit ;
+/// absente, le 404 d'avant ; lecture ratée, 503 `CAUSE_REGLE_NON_ESSAYEE_NON_LUE`, aucune requête exécutée, la cause
+/// du moteur au journal seul avec l'identifiant servi — jamais la requête. Aucun 403 n'est décidé.
 pub(crate) async fn rule_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     let row = {
         crate::req_conn!(st, au, conn);
@@ -1613,11 +1619,16 @@ pub(crate) async fn rule_test(State(st): State<AppState>, Extension(au): Extensi
             "SELECT query,is_soql,op,threshold,window_s FROM rule WHERE id=?1",
             params![id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, String>(2)?, r.get::<_, f64>(3)?, r.get::<_, i64>(4)?)),
-        ).ok()
+        ).optional()
     };
     let (query, is_soql, op, threshold, window_s) = match row {
-        Some(x) => x,
-        None => return not_found("règle introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("règle introuvable"),
+        Err(e) => {
+            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REGLE_NON_ESSAYEE_NON_LUE);
+            eprintln!("[detection] WARN règle #{id} NON lue pour l'essai, aucune requête exécutée ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     // #45 : porte de compilation APPELANT (masque du rôle appliqué / prédicat sur champ masqué rejeté).
     let sql = match rule_sql_for_caller(&st, &au, &query, is_soql, window_s) {

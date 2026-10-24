@@ -67,14 +67,18 @@ mod chrono_sla_lectures_avouees {
         pb_json(case_update(State(st.clone()), Extension(csl_au()), Path(id), Json(corps)).await).await
     }
 
-    /// La cause entre parenthèses d'un 503 de mise à jour, sous le préfixe attendu.
+    /// La cause d'un refus de mise à jour, sous la phrase attendue. INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : elle
+    /// était lue entre parenthèses dans le 503 de la route, qui sert désormais la phrase SEULE (`{error, id}`, témoin
+    /// `ak3_corps_mise_a_jour_non_ecrite_et_chrono_non_lu_phrase_seule`) ; elle est lue à `case_apply_update`, que la
+    /// route appelle, et la phrase attendue désigne la variante (`CAUSE_CHRONO_SLA_NON_LU` -> `ChronoSlaNonLu`,
+    /// `CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE` -> `NonEcrite`).
     async fn csl_cause(st: &AppState, id: i64, corps: Value, prefixe: &str) -> String {
-        let (statut, avoue) = csl_patch(st, id, corps).await;
-        assert_eq!(statut, 503, "503 nommé attendu ({avoue})");
-        let phrase = avoue["error"].as_str().unwrap_or("").to_string();
-        let prefixe = format!("{prefixe} (");
-        assert!(phrase.starts_with(&prefixe) && phrase.ends_with(')'), "préfixe `{prefixe}` attendu : {avoue}");
-        phrase[prefixe.len()..phrase.len() - 1].to_string()
+        let au = csl_au();
+        match (with_write(st, &au, |c| case_apply_update(c, id, &au.name, &corps)), prefixe) {
+            (IssueDuDossierModifie::ChronoSlaNonLu(cause), p) if p == CAUSE_CHRONO_SLA_NON_LU => cause,
+            (IssueDuDossierModifie::NonEcrite(cause), p) if p == CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE => cause,
+            (autre, p) => panic!("issue de la phrase `{}…` attendue, pas {autre:?}", p.chars().take(40).collect::<String>()),
+        }
     }
 
     /// CE QU'IL TIENT (`case_create`, `sla_policy_for`) : table `sla_policy` illisible -> le dossier est servi (200,

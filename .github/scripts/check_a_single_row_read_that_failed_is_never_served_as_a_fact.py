@@ -301,10 +301,18 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # `unique_custom_key`) : relevé de l'arbre ce jour-là, après le correctif, MESURÉ par cette garde — 13 sites sur 10
 # fichiers (six sites perdus ; aucun fichier ne sort : `dashboards.rs` garde `excl_display_csv`, `incidents.rs` garde
 # `case_runbooks_json` et `runbook_admin_json`). Même règle : 13 -> 8 (69 % = 8,97), 10 -> 6 (65 % = 6,5).
-RELEVE_SITES = 13
-RELEVE_FICHIERS = 10
-PLANCHER_SITES = 8
-PLANCHER_FICHIERS = 6
+# RE-DÉRIVÉS le 2026-10-24 (`P10.20-l`, vague AK : `run_playbooks`, `destination_flush`, `rule_test`, `correlation_test`) :
+# relevé de l'arbre ce jour-là, après le correctif, MESURÉ par cette garde — 6 sites sur 5 fichiers (quatre sites perdus,
+# et `playbooks.rs`, `destinations.rs`, `detection.rs`, `detection_advanced.rs` SORTENT du relevé ; le relevé de 13 sur
+# 10 de la vague AJ n'était plus celui de l'arbre). Même règle : 6 -> 4 (69 % = 4,14), 5 -> 3 (65 % = 3,25).
+# RE-DÉRIVÉS le 2026-10-24 à la LIVRAISON de la vague AK (les trois lots fusionnés : `courante` de `panneau_resolu.rs`
+# en vague AK1, `runbook_admin_json` d'`incidents.rs` en vague AK4, plus les quatre sites d'AK2 ci-dessus) : relevé de
+# l'arbre fusionné, MESURÉ par cette garde — 4 sites sur 4 fichiers (`panneau_resolu.rs` sort ; `incidents.rs` garde
+# `case_runbooks_json`). Même règle (deux tiers, arrondi bas) : 4 -> 2, 4 -> 2.
+RELEVE_SITES = 4
+RELEVE_FICHIERS = 4
+PLANCHER_SITES = 2
+PLANCHER_FICHIERS = 2
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -436,10 +444,12 @@ DEFAUTS_RANG_3_INTERNE = {
     # lecture ratée, donc le partage passait. `premier` rend `Result<Option<_>>` (les deux lectures propagées) ;
     # `dash_update`, `panel_update` et `view_update` refusent par un 503 nommé
     # (`CAUSE_ELEMENTS_RETENANT_NON_LUS`) avant toute écriture. `panneau_resolu.rs` reste au relevé par `courante`.
-    # Le mode retombe sur `"observe"` : aucune action n'est exécutée. Fail-SAFE, et c'est pour cela
-    # que ce jumeau de `playbooks_list` est au rang trois quand l'autre est au rang deux — celui-ci ne
-    # sert rien, il s'abstient.
-    ("daemon/src/handlers/playbooks.rs", "run_playbooks"): ("unwrap_or_else",),
+    # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AK, 2026-10-24) : `playbooks.rs::run_playbooks` (`unwrap_or_else`) — le mode
+    # retombait sur `"observe"` sans un mot ni un abandon compté, et le tick publiait `Lue(0)`. Lu en `.optional()` :
+    # ligne absente = « observe » établi (comme avant), lecture ratée = tick AVEUGLE (`Mesure::Illisible`, cause de
+    # `cause_sql`, détail `DETAIL_DU_TICK_DE_PLAYBOOKS_MODE_NON_LU`), aucun playbook évalué (témoins :
+    # `essais_a_blanc_et_mode_des_playbooks_en_trois_issues.rs`). C'était le dernier site de `playbooks.rs`, qui SORT du
+    # relevé.
     # ENTRÉE DÉPLACÉE AU RANG QUATRE PAR `P10.20-b` (2026-10-14) : `incidents.rs::case_runbooks_json` (`ok.?`). Sa
     # réserve écrite (« son unique appelant, `incidents.rs:608`, n'a PAS été relu ») est levée par la relecture : voir
     # la classe 5.
@@ -509,12 +519,14 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # `.optional()` (`ligne_visee`) : absence établie = le 404 d'avant, lecture ratée = 503
     # `CAUSE_MODELE_DE_DONNEES_NON_CREE_RATTACHEMENT_NON_LU`, rien n'est créé (témoins :
     # `modeles_rapports_et_engagements_lecture_ratee_et_lot_non_pris.rs`).
-    # VENUE DU RANG DEUX PAR `P10.20-b` (2026-10-07) : la relecture d'après envoi n'absorbe plus (voir la
-    # note de la classe 3). Reste le `.ok()` sur la DÉFINITION de la destination : lecture ratée -> 404
-    # « destination introuvable ou désactivée », aucun envoi. Cause fausse, aucun fait inventé.
-    ("daemon/src/handlers/destinations.rs", "destination_flush"): ("ok",),
-    ("daemon/src/handlers/detection.rs", "rule_test"): ("ok",),
-    ("daemon/src/handlers/detection_advanced.rs", "correlation_test"): ("ok",),
+    # TROIS ENTRÉES RETIRÉES PAR `P10.20-l` (vague AK, 2026-10-24) : `destinations.rs::destination_flush`,
+    # `detection.rs::rule_test` et `detection_advanced.rs::correlation_test` (`ok`) — une lecture ratée de la définition
+    # rendait 404 « destination introuvable ou désactivée » / « règle introuvable » / « corrélation introuvable ». Lus en
+    # `.optional()` : absence établie = le 404 d'avant à l'octet, lecture ratée = 503 nommé
+    # (`CAUSE_ENVOI_MANUEL_NON_FAIT_NON_LU`, `CAUSE_REGLE_NON_ESSAYEE_NON_LUE`, `CAUSE_CORRELATION_NON_ESSAYEE_NON_LUE`),
+    # rien n'est envoyé ni évalué, aucun 403 décidé (le 403 « réservé admin » de l'envoi reste AVANT la lecture)
+    # (témoins : `essais_a_blanc_et_mode_des_playbooks_en_trois_issues.rs`). C'étaient les derniers sites de ces trois
+    # fichiers, qui SORTENT du relevé.
     # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, 2026-10-13) : `engagement.rs::engagement_cred_within_window` —
     # `.map(..).unwrap_or(false)` : une fenêtre non lue valait « hors fenêtre », que les deux appelants rendaient
     # « compte absent », l'absence qui ouvre le repli admin de l'assistant ou de configuration. Lu en
@@ -559,10 +571,12 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # ratée du dossier rendait `DossierIntrouvable`. Lu en `.optional()` : absence établie = `DossierIntrouvable` (le 404
     # d'avant), lecture ratée = `NonEcrite`, rien n'est écrit ni attesté (témoins :
     # `compte_de_session_au_journal_et_runbook_non_lu.rs`).
-    # RECLASSÉ PAR LA CLÉ ELLE-MÊME : le classement du matin le rangeait au rang deux (« le runbook
-    # DISPARAÎT de la vue d'authoring ») ; la relecture de son unique consommateur a montré un 404
-    # « runbook introuvable » sur une procédure qui existe. Cause fausse, aucun fait inventé.
-    ("daemon/src/handlers/incidents.rs", "runbook_admin_json"): ("ok",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, vague AK) : `incidents.rs::runbook_admin_json` (`ok`) — une lecture
+    # ratée de la ligne du runbook rendait 404 « runbook introuvable » à `runbook_get`, la route d'ÉDITION (le formulaire
+    # réenregistre la procédure). Lue en `.optional()` : absence établie = le 404 d'avant à l'octet, lecture ratée = 503
+    # `CAUSE_RUNBOOK_NON_LU_POUR_L_EDITION`, la cause du moteur au journal seul (témoins :
+    # `runbook_lu_pour_l_edition_et_aveux_sans_texte_du_moteur.rs`). `incidents.rs` reste au relevé par
+    # `case_runbooks_json`.
     # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AJ, 2026-10-24) : `incidents.rs::unique_custom_key` (`is_ok`) — une lecture
     # ratée valait « clé libre ». Lue en `.optional()` et propagée : `RefusDuRunbook::CleNonLue`, 503 nommé
     # `CAUSE_CLE_DE_RUNBOOK_NON_LUE`, rien n'est créé ni copié (témoins :
@@ -572,9 +586,11 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # canal : une lecture ratée rendait 404 « canal introuvable ». Le site PROPAGE désormais (`.optional()`, trois
     # issues) : absence établie = le 404 d'avant, lecture ratée = 503 `CAUSE_CANAL_NON_ESSAYE_NON_LU`, aucun envoi
     # (témoins : `refus_nommes_de_la_retention_et_canal_non_lu.rs`).
-    # L'état COURANT du panneau non lu -> `None` -> `panel_access` (`dashboards.rs:42`) rend `None` et
-    # l'accès est refusé.
-    ("daemon/src/handlers/panneau_resolu.rs", "courante"): ("ok",),
+    # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AK, 2026-10-24) : `panneau_resolu.rs::courante` (`ok`) — une définition
+    # exécutée illisible rendait `None`, `panel_access` `Ok(None)` et `panel_data` 403 « panneau inaccessible ». Lue en
+    # `.optional()` et propagée par `panel_access` : 503 `CAUSE_PANNEAU_NON_LU`, rien n'est exécuté (témoins :
+    # `definition_et_ttl_du_panneau_non_lus_creations_sans_texte_du_moteur.rs`). C'était le dernier site de
+    # `panneau_resolu.rs`, qui SORT du relevé.
     # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AI, 2026-10-24) : `playbooks.rs::playbook_test` (`ok`) — lecture ratée servie
     # 404 « playbook introuvable ». Lu en `.optional()` : absence établie = le 404 d'avant, lecture ratée = 503
     # `CAUSE_PLAYBOOK_NON_ESSAYE_NON_LU`, aucune requête exécutée (témoins : `lectures_d_existence_en_trois_issues.rs`).

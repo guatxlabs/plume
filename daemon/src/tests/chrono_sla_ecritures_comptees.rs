@@ -79,14 +79,16 @@ mod chrono_sla_ecritures_comptees {
         pb_json(case_update(State(st.clone()), Extension(cse_au()), Path(id), Json(corps)).await).await
     }
 
-    /// La cause entre parenthèses d'un 503 de mise à jour.
+    /// La cause d'une écriture refusée à la mise à jour. INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : elle était lue entre
+    /// parenthèses dans le 503 de la route, qui sert désormais la phrase SEULE (témoin
+    /// `ak3_corps_mise_a_jour_non_ecrite_et_chrono_non_lu_phrase_seule`) ; elle est lue à `case_apply_update`, que la
+    /// route appelle (`NonEcrite`, l'issue que la route sert en 503).
     async fn cse_cause(st: &AppState, id: i64, corps: Value) -> String {
-        let (statut, avoue) = cse_patch(st, id, corps).await;
-        assert_eq!(statut, 503, "écriture du chrono refusée : 503 attendu ({avoue})");
-        let phrase = avoue["error"].as_str().unwrap_or("").to_string();
-        let prefixe = format!("{CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE} (");
-        assert!(phrase.starts_with(&prefixe) && phrase.ends_with(')'), "{avoue}");
-        phrase[prefixe.len()..phrase.len() - 1].to_string()
+        let au = cse_au();
+        match with_write(st, &au, |c| case_apply_update(c, id, &au.name, &corps)) {
+            IssueDuDossierModifie::NonEcrite(cause) => cause,
+            autre => panic!("écriture du chrono refusée : `NonEcrite` attendu, pas {autre:?}"),
+        }
     }
 
     /// CE QU'IL TIENT (`case_create`) : politique active, échéances refusées par la base -> le dossier est servi (200,

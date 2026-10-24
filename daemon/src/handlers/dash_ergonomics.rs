@@ -245,8 +245,8 @@ pub(crate) async fn library_panel_create(State(st): State<AppState>, Extension(a
     ) {
         // `P10.20-w` (rang quatre) — l'identifiant n'est servi que sur UNE ligne écrite.
         Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
-        Ok(n) => crate::handlers::dashboards::refus_d_un_objet_non_cree("panneau de bibliothèque", crate::handlers::dashboards::lignes_ecrites_au_lieu_d_une(n)),
-        Err(e) => crate::handlers::dashboards::refus_d_un_objet_non_cree("panneau de bibliothèque", e),
+        Ok(n) => crate::handlers::dashboards::refus_d_un_objet_non_cree("panneau de bibliothèque", n),
+        Err(e) => crate::handlers::dashboards::refus_d_un_objet_non_cree_par_le_moteur("panneau de bibliothèque", &e),
     }
 }
 
@@ -428,8 +428,8 @@ pub(crate) async fn playlist_create(State(st): State<AppState>, Extension(au): E
     ) {
         // `P10.20-w` (rang quatre) — l'identifiant n'est servi que sur UNE ligne écrite.
         Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
-        Ok(n) => crate::handlers::dashboards::refus_d_un_objet_non_cree("liste de lecture", crate::handlers::dashboards::lignes_ecrites_au_lieu_d_une(n)),
-        Err(e) => crate::handlers::dashboards::refus_d_un_objet_non_cree("liste de lecture", e),
+        Ok(n) => crate::handlers::dashboards::refus_d_un_objet_non_cree("liste de lecture", n),
+        Err(e) => crate::handlers::dashboards::refus_d_un_objet_non_cree_par_le_moteur("liste de lecture", &e),
     }
 }
 
@@ -667,14 +667,20 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
     // `error` embarqué serait relu par un tiers qui ne peut plus rien recouper. Refuser en nommant la
     // cause laisse la main à l'appelant — il peut réessayer —, et AUCUNE ligne n'entre dans
     // `dashboard_snapshot` : pas de jeton, pas d'artefact partiel partageable.
+    //
+    // `P10.29-l` (vague AK) — LA PHRASE EST FIXE. La forme d'avant glissait `({e})` — le texte d'un `rusqlite::Error` de
+    // `capture_dashboard_data` — dans ce 503 lisible par un editor. Même statut, même phrase sans la cause ; la cause du
+    // moteur va au journal avec l'identifiant de corrélation servi (le numéro du tableau, jamais une requête ni un nom).
     let data = match capture {
         Ok(v) => v,
         Err(e) => {
-            return err_json(
+            let (cid, refus) = crate::err_json_et_identifiant(
                 StatusCode::SERVICE_UNAVAILABLE,
-                format!("instantané REFUSÉ : les panneaux de ce tableau de bord n'ont pas pu être lus ({e}) — \
-                         rien n'a été capturé ni partagé, car une capture amputée serait figée et partagée comme complète. RÉESSAYER"),
+                "instantané REFUSÉ : les panneaux de ce tableau de bord n'ont pas pu être lus — \
+                 rien n'a été capturé ni partagé, car une capture amputée serait figée et partagée comme complète. RÉESSAYER",
             );
+            eprintln!("[dashboards] WARN tableau de bord #{dashboard_id} : panneaux NON lus pour l'instantané, rien n'est capturé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
         }
     };
     let payload = serde_json::to_string(&data).unwrap_or_else(|_| "{}".into());
@@ -692,8 +698,8 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
             params![dashboard_id, snap_name, token, payload, now(), au.name, au.role],
         ) {
             Ok(1) => Json(json!({ "id": conn.last_insert_rowid(), "token": token })).into_response(),
-            Ok(n) => crate::handlers::dashboards::refus_d_un_objet_non_cree("instantané", crate::handlers::dashboards::lignes_ecrites_au_lieu_d_une(n)),
-            Err(e) => crate::handlers::dashboards::refus_d_un_objet_non_cree("instantané", e),
+            Ok(n) => crate::handlers::dashboards::refus_d_un_objet_non_cree("instantané", n),
+            Err(e) => crate::handlers::dashboards::refus_d_un_objet_non_cree_par_le_moteur("instantané", &e),
         }
     }
 }

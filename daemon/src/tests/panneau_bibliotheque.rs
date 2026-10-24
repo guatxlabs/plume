@@ -290,7 +290,7 @@ fn la_porte_juge_exactement_ce_que_l_executeur_resoudra() {
                 conn.execute("UPDATE panel SET is_soql=?1 WHERE id=?2", params![v as i64, pid]).unwrap();
             }
             // …et l'EXÉCUTEUR doit trouver EXACTEMENT ce que la porte avait jugé.
-            let exec = DefinitionExecutee::courante(&conn, pid).expect("panneau présent");
+            let exec = DefinitionExecutee::courante(&conn, pid).expect("définition lue (P10.20-l : trois issues)").expect("panneau présent");
             assert_eq!(
                 (jq.as_str(), js), (exec.query(), exec.is_soql()),
                 "départ={depart:?} demande={etiquette} : la porte a jugé ({jq:?},{js}) et l'exécuteur résout ({:?},{})",
@@ -327,7 +327,7 @@ fn la_resolution_rust_egale_la_resolution_sql_sur_une_famille_derivee() {
             )
             .unwrap();
             let pid = conn.last_insert_rowid();
-            let rust = DefinitionExecutee::courante(&conn, pid).unwrap();
+            let rust = DefinitionExecutee::courante(&conn, pid).expect("définition lue (P10.20-l : trois issues)").expect("panneau présent");
             // La MÊME chose par le chemin PROJETÉ (aucune écriture, `Inchangee`).
             let projete = DefinitionExecutee::projetee(&conn, &adm, bib, &RefBibliotheque::Inchangee, (q.to_string(), s != 0)).unwrap();
             assert_eq!((rust.query(), rust.is_soql()), (projete.query(), projete.is_soql()), "bib={bib:?} panneau=({q:?},{s})");

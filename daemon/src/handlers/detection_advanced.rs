@@ -817,6 +817,11 @@ pub(crate) const CAUSE_CORRELATION_NON_SUPPRIMEE_NON_LUE: &str = "CORRÉLATION N
      cette corrélation — ce n'est PAS « corrélation introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est \
      écrit : si elle existe, elle est toujours là, dans l'état d'activation qu'elle avait, et aucune trace n'est écrite. \
      Réessayez ; si le refus persiste, la table des corrélations est illisible.";
+/// AVEU `P10.20-l` (vague AK) — la corrélation à essayer (dry-run) n'a pas été lue : rien n'est évalué.
+pub(crate) const CAUSE_CORRELATION_NON_ESSAYEE_NON_LUE: &str = "ESSAI DE LA CORRÉLATION NON FAIT : la base n'a pas \
+     rendu cette corrélation — ce n'est PAS « corrélation introuvable », c'est une lecture qui n'a pas eu lieu. Aucune \
+     étape n'est évaluée et aucune entité n'est rendue ; l'essai n'écrit jamais rien. Réessayez ; si le refus persiste, \
+     la table des corrélations est illisible.";
 /// `P10.20-l` — la référence UEBA à modifier n'a pas été lue : ni le garde-fou ni le PATCH ne sont jugés.
 pub(crate) const CAUSE_REFERENCE_UEBA_INCHANGEE_NON_LUE: &str = "RÉFÉRENCE UEBA INCHANGÉE : la base n'a pas rendu \
      cette référence — ce n'est PAS « baseline introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : \
@@ -980,9 +985,11 @@ pub(crate) async fn correlation_delete(State(st): State<AppState>, Extension(au)
 ///
 /// `P10.20-j` — ses refus portent leur statut (ils étaient servis en deux cents `{error}`) : une corrélation absente en
 /// 404, une étape que la porte de masquage refuse ou une évaluation impossible en 422 (définition inexploitable), une
-/// tâche interrompue en 500. RESTES ÉCRITS : la lecture de la corrélation rend `None` sur une absence COMME sur une
-/// lecture ratée (`.ok()`, entrée de rang quatre de la garde `P10.20-b`) ; et `eval_correlation`, partagé avec
-/// l'ordonnanceur, ne rend qu'un booléen — le 422 couvre aussi une étape que le budget a coupée.
+/// tâche interrompue en 500. `P10.20-l` (vague AK) — la lecture de la corrélation a trois issues (elle rendait `None`
+/// sur une absence COMME sur une lecture ratée, `.ok()`) : lue, l'essai suit ; absente, le 404 d'avant ; lecture ratée,
+/// 503 `CAUSE_CORRELATION_NON_ESSAYEE_NON_LUE`, rien n'est évalué, la cause du moteur au journal seul avec l'identifiant
+/// servi — jamais les étapes. Aucun 403 n'est décidé. RESTE ÉCRIT : `eval_correlation`, partagé avec l'ordonnanceur,
+/// ne rend qu'un booléen — le 422 couvre aussi une étape que le budget a coupée.
 pub(crate) async fn correlation_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     let row = {
         crate::req_conn!(st, au, conn);
@@ -990,11 +997,16 @@ pub(crate) async fn correlation_test(State(st): State<AppState>, Extension(au): 
             "SELECT name,key_field,entity_type,steps,window_s,severity,COALESCE(mitre,''),COALESCE(risk_score,0) FROM correlation WHERE id=?1",
             params![id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, String>(6)?, r.get::<_, i64>(7)?)),
-        ).ok()
+        ).optional()
     };
     let (name, key_field, entity_type, steps, window_s, severity, mitre, risk_score) = match row {
-        Some(x) => x,
-        None => return not_found("corrélation introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("corrélation introuvable"),
+        Err(e) => {
+            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CORRELATION_NON_ESSAYEE_NON_LUE);
+            eprintln!("[detection] WARN corrélation #{id} NON lue pour l'essai, rien n'est évalué ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     // #45 — DRY-RUN = SURFACE D'APPELANT : cette route est EDITOR+ et RENVOIE les ENTITÉS (`key_field`)
     // en clair. `eval_correlation` est PARTAGÉ avec l'ordonnanceur et doit rester tenant-wide/non masqué

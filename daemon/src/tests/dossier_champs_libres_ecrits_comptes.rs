@@ -55,8 +55,11 @@ mod dossier_champs_libres_ecrits_comptes {
     }
 
     /// CE QU'IL TIENT : chacun des quatre champs libres refusé (`RAISE(ABORT)`) -> 503 nommé
-    /// `CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE (<champ>: …)`, champ inchangé en base, et l'assignation demandée APRÈS
-    /// lui n'est ni écrite, ni en chronologie, ni au registre ; `updated` refusé -> 503 « (updated: … ».
+    /// `CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE`, champ inchangé en base, et l'assignation demandée APRÈS lui n'est ni
+    /// écrite, ni en chronologie, ni au registre ; `updated` refusé -> 503 nommé. INVERSÉ NOMMÉMENT par `P10.29-l` (vague
+    /// AK) : la route servait `<phrase> (<champ>: <moteur>)` ; elle sert la phrase SEULE (`{error, id}`), et la cause qui
+    /// nomme le champ est lue à `case_apply_update`, que la route appelle (rejouée sous le même refus, rien n'ayant été
+    /// écrit ; sur un dossier jumeau pour `updated`, dont le titre qui précède est écrit).
     /// MUTATION QUI LE FAIT ROUGIR : `VERIF_MUT=G4_AVALE_<champ>` (le `let _` d'avant pour ce champ) — 204.
     #[tokio::test]
     async fn dcl_un_champ_libre_refuse_rend_503_nomme_et_n_ecrit_rien_apres_lui() {
@@ -77,24 +80,34 @@ mod dossier_champs_libres_ecrits_comptes {
             let mut corps = serde_json::Map::new();
             corps.insert(colonne.to_string(), valeur);
             corps.insert("assignee".to_string(), json!("bob"));
-            let (statut, avoue) = dcl_mettre_a_jour(&st, id, Value::Object(corps)).await;
+            let demande = Value::Object(corps);
+            let (statut, avoue) = dcl_mettre_a_jour(&st, id, demande.clone()).await;
             let phrase = avoue["error"].as_str().unwrap_or("");
             assert_eq!(statut, 503, "{colonne} refusé : 503 attendu, pas {statut} ({avoue})");
             assert!(phrase.starts_with(CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE), "{avoue}");
-            assert!(phrase.contains(&format!("({colonne}: ")), "la cause nomme {colonne} : {avoue}");
+            super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule(colonne, statut, &avoue, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
             assert_eq!(dcl_texte(&st, &format!("SELECT {lecture} FROM incident WHERE id={id}")), avant, "{colonne} inchangé en base");
             assert_eq!(dcl_compte(&st, &format!("SELECT COUNT(*) FROM incident WHERE id={id} AND assignee IS NULL")), 1, "l'assignation qui suit {colonne} n'est pas écrite");
             assert_eq!(dcl_compte(&st, &format!("SELECT COUNT(*) FROM incident_item WHERE incident_id={id}")), items, "aucun élément de chronologie posé");
             assert_eq!(dcl_compte(&st, "SELECT COUNT(*) FROM ledger"), maillons, "aucun maillon de registre posé");
+            let issue = { let conn = st.db.lock(); case_apply_update(&conn, id, "analyste", &demande) };
+            match issue {
+                IssueDuDossierModifie::NonEcrite(cause) => assert!(cause.starts_with(&format!("{colonne}: ")), "la cause nomme {colonne} : {cause}"),
+                autre => panic!("{colonne} refusé : `NonEcrite` attendu à la fonction, pas {autre:?}"),
+            }
             dcl_ecrire(&st, "DROP TRIGGER dcl_refus;");
         }
 
         // `updated` refusé : tout ce qui précède est écrit, la cause nomme `updated`.
         let id = { let conn = st.db.lock(); dossier_seme(&conn, "alice", "Dossier", 3, "", None, 3) };
+        let jumeau = { let conn = st.db.lock(); dossier_seme(&conn, "alice", "Dossier", 3, "", None, 3) };
         dcl_ecrire(&st, "CREATE TEMP TRIGGER dcl_refus BEFORE UPDATE OF updated ON incident BEGIN SELECT RAISE(ABORT, 'dcl: updated'); END;");
         let (statut, avoue) = dcl_mettre_a_jour(&st, id, json!({ "title": "Titre écrit" })).await;
-        assert_eq!(statut, 503, "{avoue}");
-        assert!(avoue["error"].as_str().unwrap_or("").contains("(updated: "), "{avoue}");
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("updated", statut, &avoue, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
+        match { let conn = st.db.lock(); case_apply_update(&conn, jumeau, "analyste", &json!({ "title": "Titre écrit" })) } {
+            IssueDuDossierModifie::NonEcrite(cause) => assert!(cause.starts_with("updated: "), "la cause nomme updated : {cause}"),
+            autre => panic!("updated refusé : `NonEcrite` attendu à la fonction, pas {autre:?}"),
+        }
         assert_eq!(dcl_texte(&st, &format!("SELECT title FROM incident WHERE id={id}")), "Titre écrit", "fixture : le titre qui précède est écrit");
         dcl_ecrire(&st, "DROP TRIGGER dcl_refus;");
     }
@@ -104,6 +117,8 @@ mod dossier_champs_libres_ecrits_comptes {
     /// l'acquittement (l'élément « priorité » pose `first_response_ts`) — cette assertion-là tient quelle que soit
     /// l'implémentation, elle documente le figement, elle ne témoigne pas du rattrapage.
     /// MUTATION QUI LE FAIT ROUGIR : `VERIF_MUT=G4_SANS_POLITIQUE` (pas de `sla_apply_policy` au rattrapage) — cibles de P3.
+    /// INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : la route sert la phrase SEULE ; la cause (champ refusé, rattrapage
+    /// dit) est lue à `case_apply_update` sur un dossier JUMEAU, sous le même refus (la priorité du premier est écrite).
     #[tokio::test]
     async fn dcl_une_priorite_ecrite_puis_un_refus_rattrape_les_echeances_multi_niveau() {
         let (st, _tmp) = dcl_etat("multi");
@@ -111,15 +126,20 @@ mod dossier_champs_libres_ecrits_comptes {
                          INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled,created,created_by,updated) VALUES('P3',3,3000,30000,1,0,'root',0);");
         for colonne in ["status", "sla_due"] {
             let id = { let conn = st.db.lock(); dossier_seme(&conn, "alice", "Dossier", 3, "", None, 3) };
+            let jumeau = { let conn = st.db.lock(); dossier_seme(&conn, "alice", "Dossier", 3, "", None, 3) };
             assert_eq!(dcl_compte(&st, &format!("SELECT ack_due - ts FROM incident WHERE id={id}")), 3000, "fixture : ack_due de P3");
             dcl_ecrire(&st, &format!(
                 "CREATE TEMP TRIGGER dcl_refus BEFORE UPDATE OF {colonne} ON incident BEGIN SELECT RAISE(ABORT, 'dcl: {colonne}'); END;"
             ));
             let (statut, avoue) = dcl_mettre_a_jour(&st, id, json!({ "priority": 1, "status": "in_progress" })).await;
-            let phrase = avoue["error"].as_str().unwrap_or("");
-            assert_eq!(statut, 503, "{avoue}");
-            assert!(phrase.contains(&format!("({colonne}: ")), "{avoue}");
-            assert!(phrase.contains("échéances multi-niveau recalculées sur la priorité écrite"), "le rattrapage multi-niveau est dit : {avoue}");
+            super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule(colonne, statut, &avoue, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
+            match { let conn = st.db.lock(); case_apply_update(&conn, jumeau, "analyste", &json!({ "priority": 1, "status": "in_progress" })) } {
+                IssueDuDossierModifie::NonEcrite(cause) => {
+                    assert!(cause.starts_with(&format!("{colonne}: ")), "{cause}");
+                    assert!(cause.contains("échéances multi-niveau recalculées sur la priorité écrite"), "le rattrapage multi-niveau est dit : {cause}");
+                }
+                autre => panic!("{colonne} refusé : `NonEcrite` attendu à la fonction, pas {autre:?}"),
+            }
             assert_eq!(dcl_compte(&st, &format!("SELECT priority FROM incident WHERE id={id}")), 1, "fixture : la priorité est écrite");
             // `ack_due` reste celui de P3 : l'élément « priorité » est la première réponse, l'échéance d'acquittement est
             // figée — exactement comme sur une mise à jour réussie (`sla_apply_policy`, `first_response_ts` posé).

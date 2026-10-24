@@ -124,7 +124,13 @@ mod dossier_et_echeances_comptes {
         let (statut, avoue) = dec_mettre_a_jour(&st, id, json!({ "assignee": "carol", "status": "in_progress" })).await;
         assert_eq!(statut, 503, "mise à jour non écrite : 503 nommé, jamais un 204 : {avoue}");
         assert!(dec_phrase(&avoue).starts_with(CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE), "le refus NOMME sa cause : {avoue}");
-        assert!(dec_phrase(&avoue).contains("(assignee: "), "le refus nomme le PREMIER champ refusé : {avoue}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : le corps portait `(assignee: <moteur>)` ; il porte la phrase seule,
+        // et le premier champ refusé se lit à `case_apply_update`, que la route appelle (rien n'est écrit : table figée).
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("mise à jour non écrite", statut, &avoue, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
+        match { let conn = st.db.lock(); case_apply_update(&conn, id, "analyste", &json!({ "assignee": "carol", "status": "in_progress" })) } {
+            IssueDuDossierModifie::NonEcrite(cause) => assert!(cause.starts_with("assignee: "), "le refus nomme le PREMIER champ refusé : {cause}"),
+            autre => panic!("mise à jour non écrite : `NonEcrite` attendu à la fonction, pas {autre:?}"),
+        }
         assert_eq!(dec_compte(&st, DEC_TRACES), registre_avant, "la route n'atteste rien non plus");
         dec_table_incident_modifiable(&st);
         assert_eq!(

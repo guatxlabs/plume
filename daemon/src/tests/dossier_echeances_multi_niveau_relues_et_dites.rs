@@ -72,13 +72,14 @@ mod dossier_echeances_multi_niveau_relues_et_dites {
         dossier_seme(&conn, "alice", "Dossier", 3, "", None, 3)
     }
 
+    /// INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : la cause était lue entre parenthèses dans le 503 de la route, qui sert
+    /// désormais la phrase SEULE ; elle est lue à `case_apply_update`, que la route appelle (`NonEcrite`).
     async fn dmr_cause(st: &AppState, id: i64, corps: Value) -> String {
-        let (statut, avoue) = pb_json(case_update(State(st.clone()), Extension(dmr_utilisateur()), Path(id), Json(corps)).await).await;
-        assert_eq!(statut, 503, "écriture refusée : 503 attendu ({avoue})");
-        let phrase = avoue["error"].as_str().unwrap_or("").to_string();
-        let prefixe = format!("{CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE} (");
-        assert!(phrase.starts_with(&prefixe) && phrase.ends_with(')'), "{avoue}");
-        phrase[prefixe.len()..phrase.len() - 1].to_string()
+        let au = dmr_utilisateur();
+        match with_write(st, &au, |c| case_apply_update(c, id, &au.name, &corps)) {
+            IssueDuDossierModifie::NonEcrite(cause) => cause,
+            autre => panic!("écriture refusée : `NonEcrite` attendu, pas {autre:?}"),
+        }
     }
 
     /// CE QU'IL TIENT : `sla_apply_policy` refusé par la base au rattrapage (statut refusé après une priorité écrite) ->

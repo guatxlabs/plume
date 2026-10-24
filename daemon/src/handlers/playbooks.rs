@@ -427,14 +427,17 @@ pub(crate) async fn playbook_delete(State(st): State<AppState>, Extension(au): E
 /// absence COMME sur une lecture ratée, `.ok()`) : lue, l'essai suit ; absente, le 404 d'avant ; lecture ratée, 503
 /// `CAUSE_PLAYBOOK_NON_ESSAYE_NON_LU`, aucune requête exécutée, la cause du moteur au journal seul avec l'identifiant
 /// de corrélation servi — jamais la requête du playbook. L'essai reste en lecture seule, aucun 403 n'est décidé.
+/// `P10.31-k` (vague AK) — l'essai compile avec la fenêtre du PASSAGE (`fenetre_de_requete_du_playbook(window_s,
+/// interval_s)`, celle de `run_playbooks`), pas avec `window_s` brut : une ligne armée sous le plancher montrait des
+/// cibles différentes de celles que le passage verrait.
 pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     use rusqlite::OptionalExtension;
     let row = {
         crate::req_conn!(st, au, conn);
-        conn.query_row("SELECT query,is_soql,action_kind,window_s FROM playbook WHERE id=?1", params![id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))).optional()
+        conn.query_row("SELECT query,is_soql,action_kind,window_s,interval_s FROM playbook WHERE id=?1", params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))).optional()
     };
-    let (query, is_soql, kind, window_s) = match row {
+    let (query, is_soql, kind, window_s, interval_s) = match row {
         Ok(Some(x)) => x,
         Ok(None) => return not_found("playbook introuvable"),
         Err(e) => {
@@ -447,7 +450,7 @@ pub(crate) async fn playbook_test(State(st): State<AppState>, Extension(au): Ext
     // (1re colonne) à l'appelant. Compilée par la porte SYSTÈME `rule_sql`, un playbook `search | table
     // src_ip` restituait les valeurs EN CLAIR à un rôle dont src_ip est masqué (exfiltration directe, pas
     // seulement un oracle). On passe donc par la porte APPELANT (masque #45 résolu DANS la porte).
-    let sql = match rule_sql_for_caller(&st, &au, &query, is_soql, window_s) {
+    let sql = match rule_sql_for_caller(&st, &au, &query, is_soql, fenetre_de_requete_du_playbook(window_s, interval_s)) {
         Ok(s) => s,
         Err(e) => return err_json(StatusCode::UNPROCESSABLE_ENTITY, e),
     };
@@ -501,6 +504,11 @@ pub(crate) const CAUSE_MARQUEUR_DE_PASSAGE_NON_ECRIT: &str =
      évaluation, rejouée, en poserait une SECONDE dès que la fenêtre de déduplication du playbook est \
      plus courte que l'écart entre deux tours.";
 
+/// `P10.20-l` (vague AK) — le détail d'un tick de playbooks AVEUGLE parce que le mode (`meta.plume_mode`) n'a pas été
+/// lu : rien n'est évalué, et ce n'est pas « observe ».
+pub(crate) const DETAIL_DU_TICK_DE_PLAYBOOKS_MODE_NON_LU: &str = "playbooks : mode (plume_mode) NON LU — aucun \
+     playbook évalué ni riposte posée ce tick ; ce n'est PAS « observe », les playbooks restent dus";
+
 /// Extrait la cible d'une cellule (1re colonne d'une ligne de playbook) : string ou nombre.
 pub(crate) fn playbook_cell(c: &Value) -> String {
     if let Some(s) = c.as_str() {
@@ -528,9 +536,24 @@ pub(crate) fn playbook_cell(c: &Value) -> String {
 pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnes = 0u32;
+    // `P10.20-l` (vague AK) — LE MODE A TROIS ISSUES. Avant : `.unwrap_or_else(|_| "observe")` — une lecture ratée valait
+    // « observe » sans un mot ni un abandon compté, une décision de riposte prise en silence. Ligne absente = « observe »
+    // ÉTABLI (le défaut d'avant) ; lecture ratée = tick AVEUGLE (cause dérivée par `cause_sql`, comme `tick_aveugle`,
+    // mais le détail nomme le MODE — « liste des éléments dus illisible » serait faux ici) : aucun playbook évalué,
+    // rien d'écrit, jamais un `Lue(0)`. Les playbooks restent dus pour le tick suivant.
     let mode: String = {
+        use rusqlite::OptionalExtension;
         let conn = db.lock();
-        conn.query_row("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get(0)).unwrap_or_else(|_| "observe".into())
+        match conn.query_row("SELECT value FROM meta WHERE key='plume_mode'", [], |r| r.get::<_, String>(0)).optional() {
+            Ok(Some(m)) => m,
+            Ok(None) => "observe".into(),
+            Err(e) => {
+                return crate::mesure_environnement::Mesure::Illisible {
+                    cause: crate::bilan_de_tick::cause_sql(&e),
+                    detail: format!("{DETAIL_DU_TICK_DE_PLAYBOOKS_MODE_NON_LU} ({e})"),
+                };
+            }
+        }
     };
     // DURCISSEMENT : on lit AUSSI `created_by_role` -> seuls les playbooks ADMIN-authored
     // s'auto-approuvent en mode active. Colonne NOT NULL DEFAULT 'admin' -> les seeds/overlays/playbooks

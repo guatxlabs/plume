@@ -68,15 +68,17 @@ mod detachement_d_element_ecrit_ou_refuse {
         dee_corps(case_item_delete(State(st.clone()), Extension(sp_au("alice", "editor")), Path((id, item))).await).await
     }
 
-    /// Juge un refus : 503, la cause nommée (préfixe), la cause du moteur jointe (ou, `moteur_servi` faux, la cause
-    /// seule), l'élément toujours là, aucune note, la transaction fermée.
-    fn dee_juger_refus_selon(st: &AppState, quoi: &str, (statut, corps): &(u16, Value), cause: &str, moteur_servi: bool, id: i64, item: i64) {
+    /// Juge un refus : 503, la cause nommée SEULE, l'élément toujours là, aucune note, la transaction fermée.
+    /// INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : la cause du moteur était jointe entre parenthèses (sauf pour la note
+    /// refusée, jugée par une variante `moteur_servi` retirée) ; aucun refus ne la sert plus, elle va au journal
+    /// (témoin `ak3_journal_des_refus_de_dossier`).
+    fn dee_juger_refus(st: &AppState, quoi: &str, (statut, corps): &(u16, Value), cause: &str, id: i64, item: i64) {
         let phrase = corps["error"].as_str().unwrap_or("");
         let mut manquent = Vec::new();
         for (propriete, tenue) in [
             ("statut 503", *statut == 503),
             ("cause nommée", phrase.starts_with(cause)),
-            ("cause du moteur jointe ou absente selon le cas", (phrase.len() > cause.len() + 3 && phrase.ends_with(')')) == moteur_servi && (moteur_servi || phrase == cause)),
+            ("la phrase seule, sans cause du moteur", phrase == cause),
             ("l'élément est toujours au dossier", dee_element_present(st, id, item)),
             ("aucune note « détaché »", dee_notes_de_detachement(st, id) == 0),
             ("transaction fermée", st.db.lock().is_autocommit()),
@@ -86,10 +88,6 @@ mod detachement_d_element_ecrit_ou_refuse {
             }
         }
         assert!(manquent.is_empty(), "{quoi} : manquent {manquent:?} — servi {statut} {corps}");
-    }
-
-    fn dee_juger_refus(st: &AppState, quoi: &str, r: &(u16, Value), cause: &str, id: i64, item: i64) {
-        dee_juger_refus_selon(st, quoi, r, cause, true, id, item);
     }
 
     #[tokio::test]
@@ -110,7 +108,8 @@ mod detachement_d_element_ecrit_ou_refuse {
         dee_ecrire(&st, "CREATE TRIGGER dee_refus BEFORE DELETE ON incident_item BEGIN SELECT RAISE(ABORT, 'effacement refusé par le témoin'); END;");
         let r = dee_detacher(&st, id, item).await;
         dee_juger_refus(&st, "effacement refusé", &r, CAUSE_ELEMENT_NON_DETACHE, id, item);
-        assert!(r.1["error"].as_str().unwrap_or("").contains("effacement refusé par le témoin"), "la cause du moteur est servie : {}", r.1);
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : la cause du moteur était servie ; elle ne l'est plus.
+        assert!(!r.1["error"].as_str().unwrap_or("").contains("effacement refusé par le témoin"), "la cause du moteur n'est plus servie : {}", r.1);
         dee_ecrire(&st, "DROP TRIGGER dee_refus;");
         assert_eq!(dee_detacher(&st, id, item).await, (204, Value::Null), "contrôle positif : déclencheur retiré, 204");
         assert_eq!(dee_notes_de_detachement(&st, id), 1);
@@ -135,7 +134,7 @@ mod detachement_d_element_ecrit_ou_refuse {
         dee_ecrire(&st, "CREATE TRIGGER dee_note BEFORE INSERT ON incident_item WHEN NEW.kind='note' AND NEW.body LIKE 'détaché%' BEGIN SELECT RAISE(ABORT, 'note refusée par le témoin'); END;");
         let r = dee_detacher(&st, id, item).await;
         // La cause de `ajouter_l_element_au_dossier` est journalisée, jamais servie (son contrat) : U5_NOTE_SERVIE rougit.
-        dee_juger_refus_selon(&st, "note refusée", &r, CAUSE_ELEMENT_NON_DETACHE, false, id, item);
+        dee_juger_refus(&st, "note refusée", &r, CAUSE_ELEMENT_NON_DETACHE, id, item);
         assert!(!r.1["error"].as_str().unwrap_or("").contains("note refusée par le témoin"), "cause de la note non servie : {}", r.1);
     }
 

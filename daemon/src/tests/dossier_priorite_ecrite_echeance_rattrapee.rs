@@ -80,12 +80,12 @@ mod dossier_priorite_ecrite_echeance_rattrapee {
             dpe_ecrire(&st, "DROP TRIGGER dpe_refus;");
         }
 
-        // PAR LA ROUTE : 503 nommé, la cause porte le rattrapage.
+        // PAR LA ROUTE : 503 nommé, l'échéance rattrapée. INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : le corps portait la
+        // cause (rattrapage compris) entre parenthèses ; il porte la phrase seule, la cause est jugée à la fonction plus haut.
         let id = { let conn = st.db.lock(); dossier_seme(&conn, "alice", "Dossier", 3, "", None, 4) };
         dpe_ecrire(&st, "CREATE TEMP TRIGGER dpe_refus BEFORE UPDATE OF status ON incident BEGIN SELECT RAISE(ABORT, 'dpe: status'); END;");
         let (statut, avoue) = dpe_mettre_a_jour(&st, id, json!({ "priority": 1, "status": "in_progress" })).await;
-        assert_eq!(statut, 503, "{avoue}");
-        assert!(avoue["error"].as_str().unwrap_or("").contains("échéance recalculée sur la priorité écrite"), "{avoue}");
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("statut refusé", statut, &avoue, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
         assert_eq!(dpe_echeance_relative(&st, id), sla_target_s(1));
 
         // TERMINAL EN BASE : l'échéance n'est pas recalculée (comme le recalcul d'une mise à jour réussie).

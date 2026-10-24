@@ -737,13 +737,15 @@ fn issue_du_geste_de_dossier(
 }
 
 /// `P10.20-b` (rang trois) — le chrono SLA multi-niveau n'a pas pu être LU pendant la mise à jour : 503 nommé.
+/// `P10.29-l` (vague AK) — la cause n'est plus servie entre parenthèses : elle est au journal, sous l'identifiant servi.
 pub(crate) const CAUSE_CHRONO_SLA_NON_LU: &str = "CHRONO SLA NON LU : la mise à jour s'est arrêtée parce que la base n'a pas rendu \
-     le chrono du dossier ou la politique SLA de sa priorité (cause entre parenthèses) — la pause, la reprise ou les échéances \
+     le chrono du dossier ou la politique SLA de sa priorité (cause au journal du démon, sous l'identifiant servi) — la pause, la reprise ou les échéances \
      multi-niveau ne sont PAS posées, et l'horodatage de mise à jour n'est pas écrit. Les champs qui précèdent dans la \
      demande ont pu être écrits, avec leur chronologie et leur ligne de registre : relisez le dossier avant de réessayer.";
 
-/// `P10.20-w` — une écriture attestée de la mise à jour n'a pas été prise : 503 nommé.
-pub(crate) const CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE: &str = "MISE À JOUR DU DOSSIER NON ÉCRITE : la base a refusé l'écriture du champ nommé entre parenthèses — il n'est PAS modifié, et ni la chronologie ni le registre n'en portent rien, pas plus que des champs attestés qui le suivent. Les champs qui le précèdent dans la demande ont pu être écrits : relisez le dossier avant de réessayer.";
+/// `P10.20-w` — une écriture attestée de la mise à jour n'a pas été prise : 503 nommé. `P10.29-l` (vague AK) — le champ
+/// et la cause du moteur ne sont plus servis entre parenthèses : ils sont au journal, sous l'identifiant servi.
+pub(crate) const CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE: &str = "MISE À JOUR DU DOSSIER NON ÉCRITE : la base a refusé l'écriture d'un champ de la demande (nommé au journal du démon, sous l'identifiant servi) — il n'est PAS modifié, et ni la chronologie ni le registre n'en portent rien, pas plus que des champs attestés qui le suivent. Les champs qui le précèdent dans la demande ont pu être écrits : relisez le dossier avant de réessayer.";
 /// `P10.20-w` (reste) — la mise à jour s'est arrêtée sur un dossier établi : il n'était plus en base à la lecture de son
 /// état courant, ou une écriture n'a touché aucune ligne ; des champs précédents ont pu être écrits (le refus « dossier
 /// non lu, rien n'est écrit » le niait). `P10.20-l` (vague AI) — une lecture RATÉE de l'état courant n'arrive plus ici
@@ -1202,9 +1204,24 @@ pub(crate) fn etablir_le_dossier(conn: &Connection, id: i64) -> Result<(), Respo
     }
 }
 
-/// `P10.29-b` — le 503 d'une lecture de dossier qui n'a pas eu lieu, la cause du moteur jointe.
+/// AVEU : `P10.29-b` — le 503 d'une lecture de dossier qui n'a pas eu lieu. `P10.29-l` (vague AK) — la phrase SEULE
+/// (`{error, id}`) : la cause jointe (texte du moteur, ou l'étape que nomme l'appelant) n'est plus servie, elle va au
+/// journal avec l'identifiant de corrélation servi (`refus_nomme_cause_au_journal`).
 pub(crate) fn refus_du_dossier_non_lu(e: &dyn std::fmt::Display) -> Response {
-    err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT} ({e})"))
+    refus_nomme_cause_au_journal(CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT, "dossier NON lu, geste non fait", e)
+}
+
+/// AVEU : `P10.29-l` (vague AK) — LE 503 NOMMÉ D'UN GESTE DE DOSSIER QUI N'A PAS EU LIEU, SANS LE TEXTE DU MOTEUR. La
+/// forme d'avant servait `<cause> (<moteur>)` : chemins, noms de colonnes et motifs de contrainte partaient dans un 503
+/// lisible par tout rôle qui écrit sur un dossier. Désormais le corps est `{error: <cause>, id}` (même statut, même
+/// ouverture de cause, que la console lit déjà) et la cause du moteur va au journal seul, sur une ligne
+/// `[cases] WARN <geste> (<identifiant>) : <moteur>`. Quand le geste nomme le dossier, c'est par son numéro, jamais par
+/// son titre, son assigné ni la demande ; `refus_du_dossier_non_lu` n'en porte AUCUN (ses appelants ne le lui passent
+/// pas) : sa ligne `dossier NON lu, geste non fait` se relie à la demande par l'identifiant de corrélation seul.
+pub(crate) fn refus_nomme_cause_au_journal(cause: &str, geste: &str, moteur: &dyn std::fmt::Display) -> Response {
+    let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, cause);
+    eprintln!("[cases] WARN {geste} ({}) : {moteur}", cid.unwrap_or_default());
+    refus
 }
 
 /// `P10.20-w` — la ligne du dossier n'a PAS été écrite : 503, et ni registre ni identifiant.
@@ -1247,9 +1264,8 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
     let (ouverture, echeances, maillon_manquant) = case_create_row_echeances_et_maillon(&conn, &au.name, &title, sev, summary, assignee, priority);
     let id = match ouverture {
         DossierOuvert::Ouvert(id) => id,
-        DossierOuvert::NonOuvert(cause) => {
-            return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIER_NON_OUVERT} ({cause})"))
-        }
+        // `P10.29-l` (vague AK) — la phrase seule, la cause du moteur au journal (aucun identifiant de dossier n'existe).
+        DossierOuvert::NonOuvert(cause) => return refus_nomme_cause_au_journal(CAUSE_DOSSIER_NON_OUVERT, "dossier NON ouvert", &cause),
     };
     // `P10.20-b` — L'ÉCHÉANCE EST RELUE, OU LE CORPS DIT QU'ELLE NE L'A PAS ÉTÉ. `.unwrap_or(None)` servait
     // `sla_due: null` sur une relecture ratée — « ce dossier n'a pas d'échéance » là où la ligne n'avait pas été
@@ -1280,6 +1296,21 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
     Json(corps).into_response()
 }
 
+/// `P10.7-g` (lot 93) — la fiche d'un dossier n'a pas pu être lue : ce n'est pas une absence établie.
+pub(crate) const CAUSE_FICHE_DU_DOSSIER_NON_LUE: &str = "dossier NON LU : la lecture a échoué — ce n'est pas une absence établie";
+
+/// AVEU : `P10.29-l` (vague AK) — LE CINQ CENTS DE LA FICHE D'UN DOSSIER, SANS LE TEXTE DU MOTEUR. La forme d'avant
+/// servait `dossier NON LU : la lecture a échoué (<moteur>) — …` à tout lecteur (rôle viewer) : noms de tables et de
+/// colonnes partaient au client. Désormais `{error: CAUSE_FICHE_DU_DOSSIER_NON_LUE, id, lecture_non_faite: true}`
+/// (même statut, même ouverture, même drapeau) et la ligne `[cases] WARN fiche du dossier #<id> NON lue (<identifiant>)
+/// : <moteur>` au journal.
+pub(crate) fn refus_de_la_fiche_non_lue(id: i64, moteur: &dyn std::fmt::Display) -> Response {
+    let (cid, _) = err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, CAUSE_FICHE_DU_DOSSIER_NON_LUE);
+    let cid = cid.unwrap_or_default();
+    eprintln!("[cases] WARN fiche du dossier #{id} NON lue ({cid}) : {moteur}");
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": CAUSE_FICHE_DU_DOSSIER_NON_LUE, "id": cid, "lecture_non_faite": true }))).into_response()
+}
+
 /// GET /api/cases/{id} — métadonnées + timeline (refs résolues) + overdue calculé. Lecture (viewer OK). #4a.
 pub(crate) async fn case_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     // FIELD FILTERS (#45) : la timeline d'un cas résout `event:<id>` -> `event.message` (HORS run_query_ex,
@@ -1289,7 +1320,8 @@ pub(crate) async fn case_get(State(st): State<AppState>, Extension(au): Extensio
     with_write(&st, &au, move |conn| {
     match case_get_lu(&conn, id, now()) {
         // `P10.7-g` (lot 93) — une lecture qui échoue n'est pas une absence : 5xx nommé, jamais « introuvable ».
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("dossier NON LU : la lecture a échoué ({e}) — ce n'est pas une absence établie"), "lecture_non_faite": true }))).into_response(),
+        // `P10.29-l` (vague AK) — la phrase seule, la cause du moteur au journal avec l'identifiant servi.
+        Err(e) => refus_de_la_fiche_non_lue(id, &e),
         Ok(Some(mut c)) => {
             if !masks.is_empty() {
                 if let Some(items) = c.get_mut("items").and_then(|i| i.as_array_mut()) {
@@ -1340,12 +1372,18 @@ pub(crate) async fn case_update(State(st): State<AppState>, Extension(au): Exten
             eprintln!("[cases] WARN dossier #{id} NON lu pour la mise à jour, rien n'est écrit ({}) : {cause}", cid.unwrap_or_default());
             refus
         }
-        // `P10.20-w` — une écriture attestée refusée : 503 nommé (c'était un 204 sur un champ non écrit).
-        IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE} ({cause})")),
+        // `P10.20-w` — une écriture attestée refusée : 503 nommé (c'était un 204 sur un champ non écrit). `P10.29-l` (vague
+        // AK) — la phrase seule, la cause (champ et moteur) au journal avec l'identifiant servi.
+        IssueDuDossierModifie::NonEcrite(cause) => {
+            refus_nomme_cause_au_journal(CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE, &format!("dossier #{id} : mise à jour NON écrite"), &cause)
+        }
         // `P10.31-u` (vague AC) — mise à jour faite, un maillon manquant : 200 qui l'avoue, jamais un 204 muet.
         IssueDuDossierModifie::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
-        // `P10.20-b` (rang trois) — chrono SLA non lu : 503 nommé (c'était un 204 sur un chrono non tenu).
-        IssueDuDossierModifie::ChronoSlaNonLu(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_CHRONO_SLA_NON_LU} ({cause})")),
+        // `P10.20-b` (rang trois) — chrono SLA non lu : 503 nommé (c'était un 204 sur un chrono non tenu). `P10.29-l`
+        // (vague AK) — la phrase seule, la cause du moteur au journal.
+        IssueDuDossierModifie::ChronoSlaNonLu(cause) => {
+            refus_nomme_cause_au_journal(CAUSE_CHRONO_SLA_NON_LU, &format!("dossier #{id} : chrono SLA NON lu, mise à jour non écrite"), &cause)
+        }
     }
     })
 }
@@ -1410,15 +1448,19 @@ pub(crate) async fn case_item_delete(State(st): State<AppState>, Extension(au): 
     match conn.query_row("SELECT 1 FROM incident_item WHERE id=?1 AND incident_id=?2", params![item_id, id], |_| Ok(())) {
         Ok(()) => {}
         Err(rusqlite::Error::QueryReturnedNoRows) => return not_found(CAUSE_ELEMENT_ABSENT_DE_CE_DOSSIER),
-        Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ELEMENT_NON_LU_GESTE_NON_FAIT} ({e})")),
+        // `P10.29-l` (vague AK) — la phrase seule, la cause du moteur au journal.
+        Err(e) => {
+            return refus_nomme_cause_au_journal(CAUSE_ELEMENT_NON_LU_GESTE_NON_FAIT, &format!("élément #{item_id} du dossier #{id} NON lu, rien n'est détaché"), &e)
+        }
     }
     // `P10.33-l` — le 204 n'est rendu qu'après la validation de l'effacement ET de sa note ; refusé, rien n'est écrit.
     match case_detach_item(conn, id, item_id, &au.name) {
         IssueDuDetachement::Detache => StatusCode::NO_CONTENT.into_response(),
         IssueDuDetachement::ElementAbsent => not_found(CAUSE_ELEMENT_ABSENT_DE_CE_DOSSIER),
+        // `P10.29-l` (vague AK) — la cause du moteur allait déjà au journal ; elle n'est plus servie, et sa ligne porte
+        // l'identifiant servi.
         IssueDuDetachement::NonEcrit { cause, moteur: Some(moteur) } => {
-            eprintln!("[cases] WARN élément #{item_id} du dossier #{id} NON détaché : {moteur}");
-            err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{cause} ({moteur})"))
+            refus_nomme_cause_au_journal(cause, &format!("élément #{item_id} du dossier #{id} NON détaché"), &moteur)
         }
         IssueDuDetachement::NonEcrit { cause, moteur: None } => err_json(StatusCode::SERVICE_UNAVAILABLE, cause),
     }
@@ -1473,6 +1515,40 @@ pub(crate) fn case_set_archived(conn: &Connection, id: i64, author: &str, archiv
     issue_du_geste_de_dossier(jouer_le_geste_garde(conn, "cases", &geste_nomme, geste))
 }
 
+/// `P10.29-l` (vague AK) — LA RÉPONSE D'UN ARCHIVAGE (`archive`) OU D'UN DÉSARCHIVAGE, partagée par les deux routes (elles
+/// portaient deux `match` jumeaux). Corps d'avant à l'octet sur les bras `Ecrite`, `DossierNonLu` et `EcriteSansTrace`.
+/// Trois bras servent la phrase seule (`refus_nomme_cause_au_journal`), leur cause au journal avec l'identifiant :
+/// l'écriture refusée et le chrono non lu (texte du moteur), et `DossierAbsent`, qui passe par `refus_du_dossier_non_lu`
+/// — il servait `CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT (relecture du dossier)`, l'étape constante va désormais au journal.
+/// Il diffère donc du bras `DossierNonLu` voisin, qui garde « (relecture du dossier) » au corps (forme de la vague AI :
+/// une étape constante, jamais le moteur).
+pub(crate) fn reponse_du_geste_d_archivage(issue: IssueDuDossierModifie, id: i64, archive: bool) -> Response {
+    let (geste, relecture, non_ecrit) = if archive {
+        ("archivage", "l'archivage", CAUSE_ARCHIVAGE_NON_ECRIT)
+    } else {
+        ("désarchivage", "le désarchivage", CAUSE_DESARCHIVAGE_NON_ECRIT)
+    };
+    match issue {
+        IssueDuDossierModifie::Ecrite => StatusCode::NO_CONTENT.into_response(),
+        IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"relecture du dossier"),
+        // `P10.20-l` (vague AI) — la relecture du dossier n'a pas eu lieu : le corps d'avant à l'octet, la cause du moteur
+        // au journal avec l'identifiant servi.
+        IssueDuDossierModifie::DossierNonLu(cause) => {
+            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT} (relecture du dossier)"));
+            eprintln!("[cases] WARN dossier #{id} NON relu pour {relecture}, rien n'est écrit ({}) : {cause}", cid.unwrap_or_default());
+            refus
+        }
+        // `P10.20-w` — écriture refusée : 503 nommé (c'était un 204 avec la ligne de registre).
+        IssueDuDossierModifie::NonEcrite(cause) => refus_nomme_cause_au_journal(non_ecrit, &format!("dossier #{id} : {geste} NON écrit"), &cause),
+        // `P10.31-u` (vague AC) — geste fait, maillon manquant : 200 qui l'avoue, jamais un 204 muet.
+        IssueDuDossierModifie::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
+        // `case_set_archived` ne lit pas le chrono : bras exhaustif, servi comme sa cause le dit.
+        IssueDuDossierModifie::ChronoSlaNonLu(cause) => {
+            refus_nomme_cause_au_journal(CAUSE_CHRONO_SLA_NON_LU, &format!("dossier #{id} : chrono SLA NON lu, {geste} non écrit"), &cause)
+        }
+    }
+}
+
 /// POST /api/cases/{id}/archive — ARCHIVE (soft-delete) un case : le MASQUE de la liste par défaut tout en
 /// conservant la ligne + sa timeline (append-only). Action DELETE-LIKE => ADMIN-ONLY : gatée au choke-point
 /// (rbac_gate) ET re-vérifiée ICI (défense en profondeur). 403 hors admin ; 404 si le case n'existe pas. #4a-bis.
@@ -1485,23 +1561,7 @@ pub(crate) async fn case_archive(State(st): State<AppState>, Extension(au): Exte
     if let Err(refus) = etablir_le_dossier(conn, id) {
         return refus;
     }
-    match case_set_archived(&conn, id, &au.name, true) {
-        IssueDuDossierModifie::Ecrite => StatusCode::NO_CONTENT.into_response(),
-        IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"relecture du dossier"),
-        // `P10.20-l` (vague AI) — la relecture du dossier n'a pas eu lieu : le corps d'avant à l'octet, la cause du moteur
-        // au journal avec l'identifiant servi.
-        IssueDuDossierModifie::DossierNonLu(cause) => {
-            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT} (relecture du dossier)"));
-            eprintln!("[cases] WARN dossier #{id} NON relu pour l'archivage, rien n'est écrit ({}) : {cause}", cid.unwrap_or_default());
-            refus
-        }
-        // `P10.20-w` — écriture refusée : 503 nommé (c'était un 204 avec la ligne de registre).
-        IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ARCHIVAGE_NON_ECRIT} ({cause})")),
-        // `P10.31-u` (vague AC) — archivage fait, maillon manquant : 200 qui l'avoue, jamais un 204 muet.
-        IssueDuDossierModifie::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
-        // `case_set_archived` ne lit pas le chrono : bras exhaustif, servi comme sa cause le dit.
-        IssueDuDossierModifie::ChronoSlaNonLu(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_CHRONO_SLA_NON_LU} ({cause})")),
-    }
+    reponse_du_geste_d_archivage(case_set_archived(&conn, id, &au.name, true), id, true)
     })
 }
 
@@ -1516,23 +1576,7 @@ pub(crate) async fn case_unarchive(State(st): State<AppState>, Extension(au): Ex
     if let Err(refus) = etablir_le_dossier(conn, id) {
         return refus;
     }
-    match case_set_archived(&conn, id, &au.name, false) {
-        IssueDuDossierModifie::Ecrite => StatusCode::NO_CONTENT.into_response(),
-        IssueDuDossierModifie::DossierAbsent => refus_du_dossier_non_lu(&"relecture du dossier"),
-        // `P10.20-l` (vague AI) — la relecture du dossier n'a pas eu lieu : le corps d'avant à l'octet, la cause du moteur
-        // au journal avec l'identifiant servi.
-        IssueDuDossierModifie::DossierNonLu(cause) => {
-            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIER_NON_LU_GESTE_NON_FAIT} (relecture du dossier)"));
-            eprintln!("[cases] WARN dossier #{id} NON relu pour le désarchivage, rien n'est écrit ({}) : {cause}", cid.unwrap_or_default());
-            refus
-        }
-        // `P10.20-w` — écriture refusée : 503 nommé (c'était un 204 avec la ligne de registre).
-        IssueDuDossierModifie::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DESARCHIVAGE_NON_ECRIT} ({cause})")),
-        // `P10.31-u` (vague AC) — désarchivage fait, maillon manquant : 200 qui l'avoue, jamais un 204 muet.
-        IssueDuDossierModifie::EcriteSansTrace(cause) => crate::handlers::incidents::geste_fait_sans_trace(&cause),
-        // `case_set_archived` ne lit pas le chrono : bras exhaustif, servi comme sa cause le dit.
-        IssueDuDossierModifie::ChronoSlaNonLu(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_CHRONO_SLA_NON_LU} ({cause})")),
-    }
+    reponse_du_geste_d_archivage(case_set_archived(&conn, id, &au.name, false), id, false)
     })
 }
 

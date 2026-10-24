@@ -223,13 +223,19 @@ impl DefinitionExecutee {
     }
 
     /// L'ÉTAT COURANT d'un panneau existant — ce que `panel_access` sert à `panel_data`.
-    pub(crate) fn courante(conn: &Connection, panel_id: i64) -> Option<Self> {
+    ///
+    /// `P10.20-l` (vague AK) — TROIS ISSUES. La forme d'avant (`.ok()`) rendait une définition illisible comme un
+    /// panneau absent : `panel_access` en faisait `Ok(None)` et `panel_data` servait 403 « panneau inaccessible », un
+    /// refus de droit inventé pour un panneau peut-être lisible. `Ok(Some(..))` : définition lue ; `Ok(None)` : aucun
+    /// panneau de ce numéro (le 403 d'avant) ; `Err` : la lecture n'a pas eu lieu — `panel_access` la propage et
+    /// `panel_data` sert le 503 nommé `CAUSE_PANNEAU_NON_LU`, rien n'est exécuté.
+    pub(crate) fn courante(conn: &Connection, panel_id: i64) -> rusqlite::Result<Option<Self>> {
         conn.query_row(
             &format!("SELECT {COL_QUERY},{COL_IS_SOQL} FROM {JOINTURE} WHERE p.id=?1"),
             params![panel_id],
             |r| Ok(Self { query: r.get(0)?, is_soql: r.get::<_, i64>(1)? != 0 }),
         )
-        .ok()
+        .optional()
     }
 
     /// L'ÉTAT PROJETÉ : ce que le panneau EXÉCUTERA une fois l'écriture appliquée. C'est CETTE

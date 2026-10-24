@@ -16330,8 +16330,26 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     && !/format!\("\{CAUSE_ACQUITTEMENT_NON_ENREGISTRE\} \(\{e\}\)"\)/.test(HANDLERS104)
     && /Json\(json!\(\{ "acked": n \}\)\)\.into_response\(\)/.test(HANDLERS104),
     "`ack_all` ne sépare plus l'écriture ratée (cinq cent trois nommé) du vrai zéro (`{\"acked\": n}`)");
-  instrument104(/DossierOuvert::NonOuvert\(cause\) => \{\s*return err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_DOSSIER_NON_OUVERT\} \(\{cause\}\)"\)\)/.test(HANDLERS104),
-    "`case_create` ne refuse plus par `CAUSE_DOSSIER_NON_OUVERT` dans le moule `<cause> (<détail>)`");
+  // `P10.29-l` (vague AK) — LE REFUS D'OUVERTURE SERT LA PHRASE SEULE : `case_create` appelle l'assistant
+  // `refus_nomme_cause_au_journal` (daemon/src/handlers/cases.rs) avec la constante NUE, la cause du moteur va au journal.
+  // L'assistant est SUIVI, pas cru (comme `servir_l_echec_de_l_etape` au témoin 109) : son corps doit rendre la réponse de
+  // `err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, cause)` — la constante reçue, sans un mot du moteur — et
+  // écrire le moteur au journal avec l'identifiant ; et `err_json_et_identifiant` (daemon/src/main.rs) doit servir
+  // `{error, id}` sur un cinq cents. Le moule d'avant `<cause> (<détail>)` ne doit plus exister nulle part.
+  const corpsDeFonction104 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const assistantDuRefus104 = corpsDeFonction104(HANDLERS104, "pub(crate) fn refus_nomme_cause_au_journal(cause: &str, geste: &str, moteur: &dyn std::fmt::Display) -> Response {");
+  const MAIN104 = readFileSync(path.join(RACINE, "daemon", "src", "main.rs"), "utf8");
+  const assistantIdentifie104 = corpsDeFonction104(MAIN104, "\nfn err_json_et_identifiant(");
+  instrument104(assistantDuRefus104 !== ""
+    // corps ANCRÉ en entier : exactement ces deux instructions puis `refus` (une ombre qui sert le moteur rougit).
+    && /^pub\(crate\) fn refus_nomme_cause_au_journal\(cause: &str, geste: &str, moteur: &dyn std::fmt::Display\) -> Response \{\n[ \t]*let \(cid, refus\) = err_json_et_identifiant\(StatusCode::SERVICE_UNAVAILABLE, cause\);\n[ \t]*eprintln!\("\[cases\] WARN \{geste\} \(\{\}\) : \{moteur\}", cid\.unwrap_or_default\(\)\);\n[ \t]*refus\n\}$/.test(assistantDuRefus104)
+    && assistantIdentifie104 !== ""
+    && /\n\s*if code\.is_server_error\(\) \{\n[\s\S]*\n\s*return \(Some\(id\.clone\(\)\), \(code, Json\(json!\(\{ "error": msg, "id": id \}\)\)\)\.into_response\(\)\);\n\s*\}\n/.test(assistantIdentifie104),
+    "`refus_nomme_cause_au_journal` (daemon/src/handlers/cases.rs) est introuvable, ou ne sert plus la réponse de `err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, cause)` en écrivant le moteur au journal avec l'identifiant, ou `err_json_et_identifiant` (daemon/src/main.rs) ne sert plus `{error, id}` sur un cinq cents");
+  const ouvertureDuDossier104 = corpsDeFonction104(HANDLERS104, "pub(crate) async fn case_create(");
+  instrument104(/DossierOuvert::NonOuvert\(cause\) => return refus_nomme_cause_au_journal\(CAUSE_DOSSIER_NON_OUVERT, "[^"]*", &cause\),/.test(ouvertureDuDossier104)
+    && !/format!\("\{CAUSE_DOSSIER_NON_OUVERT\} \(\{cause\}\)"\)/.test(HANDLERS104),
+    "`case_create` ne refuse plus par `refus_nomme_cause_au_journal(CAUSE_DOSSIER_NON_OUVERT, …)` (phrase seule `{error, id}`, moteur au journal), ou le moule d'avant `<cause> (<détail>)` est revenu");
   instrument104(/LienDeDossier::DossierAbsent => not_found\(CAUSE_LIEN_DOSSIER_INTROUVABLE\),/.test(HANDLERS104)
     && /LienDeDossier::MemeDossier => bad_req\(CAUSE_LIEN_AVEC_LE_MEME_DOSSIER\),/.test(HANDLERS104)
     && /LienDeDossier::NonPose\(cause\) => err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_LIEN_NON_POSE\} \(\{cause\}\)"\)\),/.test(HANDLERS104),
@@ -16461,12 +16479,14 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     servis104["GET /api/cases"] = { corps: { cases: [], total: 0 } };
     const navigue104 = (appels) => appels.filter((a) => /^GET \/api\/cases\/\d+$/.test(a) || /\/items$/.test(a));
     for (const enChaine of [false, true]) {
-      servis104["POST /api/cases"] = { statut: 503, corps: corps503(CAUSE_DOSSIER104, "database or disk is full", enChaine) };
+      // `P10.29-l` (vague AK) — le démon sert la phrase seule `{error, id}` (moteur au journal).
+      const corpsDossier104 = { error: CAUSE_DOSSIER104, id: "plume-e7-0" };
+      servis104["POST /api/cases"] = { statut: 503, corps: enChaine ? JSON.stringify(corpsDossier104) : corpsDossier104 };
       S104.caseSelectedId = 4242;
       const g = await geste104(() => modDossiers104.createCase(), { title: "Force brute SSH" });
       exiger(g.appels.includes("POST /api/cases"),
         `(104b-instrument) la création n'atteint pas la route : ${JSON.stringify(g.appels)}`);
-      exiger(g.rejet === null && g.avis.length === 1 && g.avis[0].startsWith(motDossier104("dossier_non_ouvert")) && g.avis[0].includes(CAUSE_DOSSIER104 + " (database or disk is full)") && sansCodeNiJson104(g.avis[0]),
+      exiger(g.rejet === null && g.avis.length === 1 && g.avis[0].startsWith(motDossier104("dossier_non_ouvert")) && g.avis[0].includes(CAUSE_DOSSIER104) && sansCodeNiJson104(g.avis[0]),
         `(104b) le refus d'ouverture ne se dit pas, ou sort du geste en rejet : rejet=${g.rejet && g.rejet.message} avis=${JSON.stringify(g.avis)}`);
       exiger(navigue104(g.appels).length === 0 && S104.caseSelectedId === 4242,
         `(104b-négatif) la console NAVIGUE vers un dossier qui n'existe pas : ${JSON.stringify(g.appels)} / sélection ${S104.caseSelectedId}`);
@@ -27866,8 +27886,24 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const SERVIES137 = [...CAS_RS137.matchAll(/corps\["(echeances_multi_niveau_[a-z_]+)"\] = json!\(format!\("\{(CAUSE_[A-Z_]+)\} \(\{cause\}\)"\)\);/g)].map((m) => [m[1], m[2]]);
   instrument137(SERVIES137.length === 2 && SERVIES137.every(([cle, c]) => c === "CAUSE_" + cle.toUpperCase()),
     `\`case_create\` ne sert plus les deux aveux d'échéances dans le moule \`<cause> (<détail>)\` : ${JSON.stringify(SERVIES137)}`);
-  instrument137(/IssueDuDossierModifie::ChronoSlaNonLu\(cause\) => err_json\(StatusCode::SERVICE_UNAVAILABLE, format!\("\{CAUSE_CHRONO_SLA_NON_LU\} \(\{cause\}\)"\)\)/.test(CAS_RS137),
-    "`case_update` ne sert plus le cinq cent trois nommé `CAUSE_CHRONO_SLA_NON_LU`");
+  // `P10.29-l` (vague AK) — le cinq cent trois du chrono non lu sert la phrase seule `{error, id}` : `case_update` appelle
+  // `refus_nomme_cause_au_journal` avec la constante NUE ; l'assistant est SUIVI (sa réponse est celle de
+  // `err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, cause)`, le moteur au journal avec l'identifiant), et
+  // `err_json_et_identifiant` (daemon/src/main.rs) sert `{error, id}` sur un cinq cents. Le moule d'avant a disparu.
+  const corpsDeFonction137 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const assistantDuRefus137 = corpsDeFonction137(CAS_RS137, "pub(crate) fn refus_nomme_cause_au_journal(cause: &str, geste: &str, moteur: &dyn std::fmt::Display) -> Response {");
+  let MAIN137 = ""; try { MAIN137 = readFileSync(path.join(RACINE, "daemon", "src", "main.rs"), "utf8"); } catch (e) { MAIN137 = ""; }
+  const assistantIdentifie137 = corpsDeFonction137(MAIN137, "\nfn err_json_et_identifiant(");
+  instrument137(assistantDuRefus137 !== ""
+    // corps ANCRÉ en entier : exactement ces deux instructions puis `refus` (une ombre qui sert le moteur rougit).
+    && /^pub\(crate\) fn refus_nomme_cause_au_journal\(cause: &str, geste: &str, moteur: &dyn std::fmt::Display\) -> Response \{\n[ \t]*let \(cid, refus\) = err_json_et_identifiant\(StatusCode::SERVICE_UNAVAILABLE, cause\);\n[ \t]*eprintln!\("\[cases\] WARN \{geste\} \(\{\}\) : \{moteur\}", cid\.unwrap_or_default\(\)\);\n[ \t]*refus\n\}$/.test(assistantDuRefus137)
+    && assistantIdentifie137 !== ""
+    && /\n\s*if code\.is_server_error\(\) \{\n[\s\S]*\n\s*return \(Some\(id\.clone\(\)\), \(code, Json\(json!\(\{ "error": msg, "id": id \}\)\)\)\.into_response\(\)\);\n\s*\}\n/.test(assistantIdentifie137),
+    "`refus_nomme_cause_au_journal` (handlers/cases.rs) est introuvable, ou ne sert plus la réponse de `err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, cause)` en écrivant le moteur au journal avec l'identifiant, ou `err_json_et_identifiant` (daemon/src/main.rs) ne sert plus `{error, id}` sur un cinq cents");
+  const majDuDossier137 = corpsDeFonction137(CAS_RS137, "pub(crate) async fn case_update(");
+  instrument137(/IssueDuDossierModifie::ChronoSlaNonLu\(cause\) => \{\s*refus_nomme_cause_au_journal\(CAUSE_CHRONO_SLA_NON_LU, &format!\("[^"]*"\), &cause\)\s*\}/.test(majDuDossier137)
+    && !/format!\("\{CAUSE_CHRONO_SLA_NON_LU\} \(\{cause\}\)"\)/.test(CAS_RS137),
+    "`case_update` ne sert plus le cinq cent trois nommé par `refus_nomme_cause_au_journal(CAUSE_CHRONO_SLA_NON_LU, …)` (phrase seule `{error, id}`, moteur au journal), ou le moule d'avant `<cause> (<détail>)` est revenu");
   instrument137(FR137.noyau.LANG !== "en" && EN137.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
   const LUES137 = FR137.dossiers.CLES_DES_ECHEANCES_MULTI_NIVEAU_DU_DOSSIER_CREE;
   const servies137 = SERVIES137.map(([cle]) => cle).sort();
@@ -27976,7 +28012,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       exiger(d.appels.includes("POST /api/cases/904/items") && d.montre && d.lignes.length === 1 && nu137(d.lignes[0]).endsWith("« " + serre137(causeD) + " »") && nu137(d.lignes[0]).includes("#904"),
         `(137d) ${L.nom} : « ajouter à un nouveau dossier » n'avoue pas les échéances non posées, ou ne rattache plus l'élément : ${JSON.stringify(d.appels)} « ${nu137(d.puits).slice(0, 200)} »`);
       // ══ (e) LE CINQ CENT TROIS NOMMÉ D'UNE MISE À JOUR — DÉJÀ PEINT, FIGÉ ═════════════════════
-      const causeE = CHRONO137 + " (database is locked)";
+      // `P10.29-l` (vague AK) — le démon sert la phrase seule `{error, id}` (moteur au journal).
+      const causeE = CHRONO137;
       servis137 = { ...LECTURES137, "GET /api/cases/4": { corps: CAS137 }, "POST /api/cases/4": { statut: 503, corps: { error: causeE, id: "plume-e7-0" } } };
       L.S.caseSelectedId = 4;
       const h = detail137(); h.replaceChildren(); L.dossiers.renderCaseDetail(h, CAS137); await laisser137(20);

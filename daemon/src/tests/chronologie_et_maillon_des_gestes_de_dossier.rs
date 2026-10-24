@@ -81,10 +81,6 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
         s.query_map([], |r| r.get::<_, String>(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
     }
 
-    fn ac2_phrase(v: &Value) -> String {
-        v.get("error").and_then(|e| e.as_str()).unwrap_or("").to_string()
-    }
-
     fn ac2_refuser_l_element(st: &AppState, condition: &str, forme: &str) {
         ac2_sql(st, &format!("CREATE TEMP TRIGGER ac2_element BEFORE INSERT ON incident_item WHEN {condition} BEGIN SELECT {forme}; END;"));
     }
@@ -122,6 +118,31 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
         pb_json(case_create(State(st.clone()), Extension(ac2_qui("editor")), Json(json!({ "title": "Dossier ac2", "severity": 3, "priority": 2 }))).await).await
     }
 
+    // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) — les 503 de dossier ne servent plus la cause entre parenthèses (phrase
+    // seule, jugée par `ak3_phrase_seule`) : la cause se lit aux fonctions que les routes appellent, rejouées sous le même
+    // levier (le refus n'a rien écrit : la seconde pose rencontre le même état).
+
+    fn ac2_cause_de_l_ouverture(st: &AppState) -> String {
+        match case_create_row_echeances_et_maillon(&st.db.lock(), "analyste", "Dossier ac2", 3, "", None, 2).0 {
+            DossierOuvert::NonOuvert(cause) => cause,
+            DossierOuvert::Ouvert(id) => panic!("ouverture refusée attendue à la fonction, dossier #{id} ouvert"),
+        }
+    }
+
+    fn ac2_cause_de_l_archivage(st: &AppState, id: i64, archiver: bool) -> String {
+        match case_set_archived(&st.db.lock(), id, "analyste", archiver) {
+            IssueDuDossierModifie::NonEcrite(cause) => cause,
+            autre => panic!("archivage refusé : `NonEcrite` attendu à la fonction, pas {autre:?}"),
+        }
+    }
+
+    fn ac2_cause_de_la_mise_a_jour(st: &AppState, id: i64, demande: &Value) -> String {
+        match case_apply_update(&st.db.lock(), id, "analyste", demande) {
+            IssueDuDossierModifie::NonEcrite(cause) => cause,
+            autre => panic!("mise à jour refusée : `NonEcrite` attendu à la fonction, pas {autre:?}"),
+        }
+    }
+
     /// Un dossier dont `updated` est ramené dans le passé : une écriture annulée se voit à `updated` inchangé.
     fn ac2_dossier(st: &AppState) -> i64 {
         let conn = st.db.lock();
@@ -156,11 +177,11 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
         for forme in [AC2_ABORT, AC2_IGNORE] {
             ac2_refuser_l_element(&st, "NEW.kind='created'", forme);
             let (statut, corps) = ac2_creer(&st).await;
+            let cause = ac2_cause_de_l_ouverture(&st);
             ac2_sql(&st, "DROP TRIGGER ac2_element;");
             assert_eq!(statut, 503, "{forme} : chronologie refusée -> 503, jamais un dossier sans chronologie : {corps}");
-            let phrase = ac2_phrase(&corps);
-            assert!(phrase.starts_with(CAUSE_DOSSIER_NON_OUVERT), "{forme} : le 503 existant : {corps}");
-            assert!(phrase.contains("chronologie de l'ouverture"), "{forme} : la cause nomme la chronologie : {corps}");
+            super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule(forme, statut, &corps, CAUSE_DOSSIER_NON_OUVERT);
+            assert!(cause.contains("chronologie de l'ouverture"), "{forme} : la cause nomme la chronologie : {cause}");
             assert!(!corps["id"].is_i64(), "{forme} : aucun identifiant de dossier servi (l'`id` d'un refus est celui de la requête) : {corps}");
             assert!(st.db.lock().is_autocommit(), "{forme} : aucune transaction laissée ouverte");
             assert_eq!(ac2_compte(&st, "SELECT COUNT(*) FROM incident"), 0, "{forme} : la ligne du dossier est annulée");
@@ -205,17 +226,21 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
         // LU AVANT le ROLLBACK, sur la même connexion : une écriture faite dans la transaction étrangère s'y voit encore.
         let pendant = ac2_compte(&st, "SELECT COUNT(*) FROM incident") + ac2_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='created'")
             + ac2_compte(&st, "SELECT COUNT(*) FROM ledger WHERE kind='case.create'");
+        let cause = ac2_cause_de_l_ouverture(&st);
         ac2_sql(&st, "ROLLBACK;");
         assert_eq!(statut, 503, "BEGIN refusé : 503 : {corps}");
-        assert!(ac2_phrase(&corps).starts_with(CAUSE_DOSSIER_NON_OUVERT) && ac2_phrase(&corps).contains("transaction non ouverte"), "{corps}");
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("BEGIN refusé", statut, &corps, CAUSE_DOSSIER_NON_OUVERT);
+        assert!(cause.contains("transaction non ouverte"), "{cause}");
         assert_eq!(pendant, 0, "BEGIN refusé : rien n'est écrit, pas même dans la transaction étrangère");
 
         ac2_refuser_le_commit(&st);
         let (statut, corps) = ac2_creer(&st).await;
         assert!(st.db.lock().is_autocommit(), "aucune transaction laissée ouverte après le COMMIT refusé");
+        let cause = ac2_cause_de_l_ouverture(&st);
         ac2_lever_le_commit(&st);
         assert_eq!(statut, 503, "COMMIT refusé : 503 : {corps}");
-        assert!(ac2_phrase(&corps).starts_with(CAUSE_DOSSIER_NON_OUVERT) && ac2_phrase(&corps).contains("validation refusée"), "{corps}");
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("COMMIT refusé", statut, &corps, CAUSE_DOSSIER_NON_OUVERT);
+        assert!(cause.contains("validation refusée"), "{cause}");
         assert_eq!(ac2_compte(&st, "SELECT COUNT(*) FROM incident") + ac2_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='created'"), 0);
 
         assert_eq!(ac2_creer(&st).await.0, 200, "contrôle : leviers retirés, le dossier est ouvert");
@@ -258,10 +283,11 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
             for forme in [AC2_ABORT, AC2_IGNORE] {
                 ac2_refuser_l_element(&st, &format!("NEW.kind='{genre}'"), forme);
                 let (statut, corps) = ac2_archiver(&st, id, archiver).await;
+                let cause_du_moteur = ac2_cause_de_l_archivage(&st, id, archiver);
                 ac2_sql(&st, "DROP TRIGGER ac2_element;");
                 assert_eq!(statut, 503, "{genre} {forme} : chronologie refusée -> 503 : {corps}");
-                let phrase = ac2_phrase(&corps);
-                assert!(phrase.starts_with(cause) && phrase.contains("chronologie"), "{genre} {forme} : le 503 existant nomme la chronologie : {corps}");
+                super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule(genre, statut, &corps, cause);
+                assert!(cause_du_moteur.contains("chronologie"), "{genre} {forme} : la cause nomme la chronologie : {cause_du_moteur}");
                 assert!(st.db.lock().is_autocommit(), "{genre} {forme} : aucune transaction laissée ouverte");
                 assert_eq!(ac2_etat_du_dossier(&st, id), avant, "{genre} {forme} : le geste est ANNULÉ");
                 assert_eq!(ac2_compte(&st, &format!("SELECT COUNT(*) FROM incident_item WHERE kind='{genre}'")), 0, "{genre} {forme}");
@@ -305,17 +331,21 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
         let (statut, corps) = ac2_archiver(&st, id, true).await;
         let pendant = ac2_etat_du_dossier(&st, id);
         let traces = ac2_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='archive'") + ac2_compte(&st, "SELECT COUNT(*) FROM ledger WHERE kind='case.archive'");
+        let cause = ac2_cause_de_l_archivage(&st, id, true);
         ac2_sql(&st, "ROLLBACK;");
         assert_eq!(statut, 503, "BEGIN refusé : {corps}");
-        assert!(ac2_phrase(&corps).starts_with(CAUSE_ARCHIVAGE_NON_ECRIT) && ac2_phrase(&corps).contains("transaction non ouverte"), "{corps}");
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("BEGIN refusé", statut, &corps, CAUSE_ARCHIVAGE_NON_ECRIT);
+        assert!(cause.contains("transaction non ouverte"), "{cause}");
         assert_eq!((pendant, traces), (avant.clone(), 0), "BEGIN refusé : rien d'écrit, pas même dans la transaction étrangère");
 
         ac2_refuser_le_commit(&st);
         let (statut, corps) = ac2_archiver(&st, id, true).await;
         assert!(st.db.lock().is_autocommit());
+        let cause = ac2_cause_de_l_archivage(&st, id, true);
         ac2_lever_le_commit(&st);
         assert_eq!(statut, 503, "COMMIT refusé : {corps}");
-        assert!(ac2_phrase(&corps).starts_with(CAUSE_ARCHIVAGE_NON_ECRIT) && ac2_phrase(&corps).contains("validation refusée"), "{corps}");
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("COMMIT refusé", statut, &corps, CAUSE_ARCHIVAGE_NON_ECRIT);
+        assert!(cause.contains("validation refusée"), "{cause}");
         assert_eq!(ac2_etat_du_dossier(&st, id), avant);
         assert_eq!(ac2_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='archive'"), 0);
 
@@ -351,11 +381,11 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
             let avant = ac2_etat_du_dossier(&st, id);
             ac2_refuser_l_element(&st, &format!("NEW.kind='{genre}'"), forme);
             let (statut, corps) = ac2_mettre_a_jour(&st, id, demande.clone()).await;
+            let cause = ac2_cause_de_la_mise_a_jour(&st, id, &demande);
             ac2_sql(&st, "DROP TRIGGER ac2_element;");
             assert_eq!(statut, 503, "{demande} {forme} : chronologie refusée -> 503, jamais un 204 : {corps}");
-            let phrase = ac2_phrase(&corps);
-            assert!(phrase.starts_with(CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE), "{demande} : le 503 existant : {corps}");
-            assert!(phrase.contains(&format!("({champ}: chronologie : ")), "{demande} : la cause nomme le champ et sa chronologie : {corps}");
+            super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule(champ, statut, &corps, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
+            assert!(cause.starts_with(&format!("{champ}: chronologie : ")), "{demande} : la cause nomme le champ et sa chronologie : {cause}");
             assert!(st.db.lock().is_autocommit(), "{demande} : aucune transaction laissée ouverte");
             assert_eq!(ac2_etat_du_dossier(&st, id), avant, "{demande} {forme} : le champ n'est PAS écrit, ni updated ni MTTA");
             assert_eq!(ac2_compte(&st, &format!("SELECT COUNT(*) FROM incident_item WHERE kind='{genre}'")), 0, "{demande}");
@@ -382,15 +412,17 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
     async fn ac2_une_chronologie_de_statut_refusee_apres_une_priorite_ecrite_rattrape_l_echeance() {
         let (st, _tmp) = ac2_etat("maj-rattrapage");
         let id = ac2_dossier(&st);
+        let jumeau = ac2_dossier(&st);
         ac2_refuser_l_element(&st, "NEW.kind='status'", AC2_ABORT);
         let (statut, corps) = ac2_mettre_a_jour(&st, id, json!({ "priority": 1, "status": "in_progress" })).await;
-        assert_eq!(statut, 503, "{corps}");
-        let phrase = ac2_phrase(&corps);
-        assert!(phrase.contains("status: chronologie : ") && phrase.contains("échéance recalculée sur la priorité écrite"), "le rattrapage est dit : {corps}");
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("rattrapage", statut, &corps, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
+        // La cause se lit sur un dossier JUMEAU : la priorité du premier est écrite (contrat non transactionnel).
+        let cause = ac2_cause_de_la_mise_a_jour(&st, jumeau, &json!({ "priority": 1, "status": "in_progress" }));
+        assert!(cause.contains("status: chronologie : ") && cause.contains("échéance recalculée sur la priorité écrite"), "le rattrapage est dit : {cause}");
         let (_, _, _, priorite, statut_en_base, ..) = ac2_etat_du_dossier(&st, id);
         assert_eq!((priorite, statut_en_base.as_str()), (1, "new"), "la priorité précédente reste écrite, le statut ne l'est pas");
         assert_eq!(ac2_compte(&st, &format!("SELECT sla_due - ts FROM incident WHERE id={id}")), sla_target_s(1), "échéance de la priorité écrite");
-        assert_eq!(ac2_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='priority'"), 1);
+        assert_eq!(ac2_compte(&st, &format!("SELECT COUNT(*) FROM incident_item WHERE kind='priority' AND incident_id={id}")), 1);
     }
 
     /// CE QU'IL TIENT (`case_update`) : le maillon `case.status` refusé dans une demande assignation + statut -> 200
@@ -445,17 +477,19 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
         let (statut, corps) = ac2_mettre_a_jour(&st, id, json!({ "assignee": "carol" })).await;
         let pendant = ac2_etat_du_dossier(&st, id);
         let traces = ac2_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='assign'") + ac2_compte(&st, "SELECT COUNT(*) FROM ledger WHERE kind='case.assign'");
+        let cause = ac2_cause_de_la_mise_a_jour(&st, id, &json!({ "assignee": "carol" }));
         ac2_sql(&st, "ROLLBACK;");
-        assert_eq!(statut, 503, "BEGIN refusé : {corps}");
-        assert!(ac2_phrase(&corps).contains("(assignee: transaction non ouverte"), "{corps}");
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("BEGIN refusé", statut, &corps, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
+        assert!(cause.starts_with("assignee: transaction non ouverte"), "{cause}");
         assert_eq!((pendant, traces), (avant.clone(), 0), "BEGIN refusé : rien d'écrit, pas même dans la transaction étrangère");
 
         ac2_refuser_le_commit(&st);
         let (statut, corps) = ac2_mettre_a_jour(&st, id, json!({ "assignee": "carol" })).await;
         assert!(st.db.lock().is_autocommit());
+        let cause = ac2_cause_de_la_mise_a_jour(&st, id, &json!({ "assignee": "carol" }));
         ac2_lever_le_commit(&st);
-        assert_eq!(statut, 503, "COMMIT refusé : {corps}");
-        assert!(ac2_phrase(&corps).contains("(assignee: validation refusée"), "{corps}");
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("COMMIT refusé", statut, &corps, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
+        assert!(cause.starts_with("assignee: validation refusée"), "{cause}");
         assert_eq!(ac2_etat_du_dossier(&st, id), avant);
         assert_eq!(ac2_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='assign'"), 0);
 

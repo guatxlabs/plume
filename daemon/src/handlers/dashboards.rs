@@ -61,7 +61,8 @@ pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> P
 // une lecture ratée rendait `None`, que `panel_data` servait 403 « panneau inaccessible » — un refus de droit inventé
 // pour un panneau peut-être lisible. `Ok(Some(..))` : accès établi ; `Ok(None)` : panneau ou tableau absent, ou refus de
 // droit établi (le 403 d'avant) ; `Err` : une lecture n'a pas eu lieu, aucun droit n'est jugé — `panel_data` sert le 503
-// nommé `CAUSE_PANNEAU_NON_LU`. Reste : `DefinitionExecutee::courante` (`panneau_resolu.rs`) lit encore par `.ok()`.
+// nommé `CAUSE_PANNEAU_NON_LU`. `P10.20-l` (vague AK) : la première lecture, `DefinitionExecutee::courante`
+// (`panneau_resolu.rs`), est elle aussi en trois issues et propagée ici — une définition illisible n'est plus un 403.
 pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> rusqlite::Result<Option<(String, bool, i64, bool)>> {
     // LIBRARY PANELS (#54) : si le panneau RÉFÉRENCE une définition réutilisable (panel.library_panel_id),
     // la requête EXÉCUTÉE et son is_soql viennent de `library_panel` (résolus à la lecture -> éditer la
@@ -70,7 +71,7 @@ pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> r
     // panel_create/panel_update emprunte : la porte ne peut donc pas juger autre chose que ce qui
     // s'exécute ici. Référence NULL (tout l'existant) -> retombe sur p.query/p.is_soql -> RÉSULTAT
     // byte-identique au mode 0. La fenêtre/visibilité restent au panneau.
-    let Some(def) = DefinitionExecutee::courante(conn, panel_id) else {
+    let Some(def) = DefinitionExecutee::courante(conn, panel_id)? else {
         return Ok(None);
     };
     let (query, issoql) = (def.query().to_string(), def.is_soql());
@@ -109,8 +110,10 @@ pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> r
 }
 
 /// `P10.20-l` (vague AJ) — le panneau ou son tableau de bord n'a pas été lu à l'exécution (`panel_data`) : aucun droit
-/// n'est jugé, rien n'est exécuté ni servi. Ne nomme ni `BEGIN` ni `COMMIT` : c'est la lecture qui manque. La console
-/// la peint en lecture refusée avec sa cause (`refusDUneLectureServie`, web/core.js ; carte du panneau, web/dashboards.js).
+/// n'est jugé, rien n'est exécuté ni servi. Vague AK : servie aussi quand la définition exécutée
+/// (`DefinitionExecutee::courante`) ou le TTL du cache du panneau n'est pas lu (même texte, aucune cause neuve).
+/// Ne nomme ni `BEGIN` ni `COMMIT` : c'est la lecture qui manque. La console la peint en lecture refusée avec sa cause
+/// (`refusDUneLectureServie`, web/core.js ; carte du panneau, web/dashboards.js).
 pub(crate) const CAUSE_PANNEAU_NON_LU: &str = "PANNEAU NON LU : la base n'a pas rendu ce panneau ou son tableau de bord \
      (fenêtre, visibilité, propriétaire) — ce n'est PAS « panneau inaccessible », c'est une lecture qui n'a pas eu lieu, \
      et le droit de le voir n'est pas jugé. RIEN n'est exécuté ni servi. Réessayez ; si le refus persiste, la table des \
@@ -200,8 +203,22 @@ pub(crate) const CAUSE_OBJET_NON_CREE: &str =
 /// Le refus commun du rang quatre. Seule la PHRASE voyage : chaque site garde son `INSERT` écrit en
 /// place et lit l'identifiant au pied de son insertion, sous le bras `Ok(1)` (le fabricant partagé
 /// « écriture comptée puis identifiant », qui ferait voyager le SQL comme une donnée, reste refusé).
-pub(crate) fn refus_d_un_objet_non_cree(objet: &str, cause: impl std::fmt::Display) -> Response {
-    err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_OBJET_NON_CREE} Objet : {objet} ({cause})."))
+///
+/// `P10.29-l` (vague AK) — DEUX REFUS, PAR LE TYPE. La forme d'avant prenait `cause: impl Display` et ses six bras
+/// `Err(e)` lui passaient un `rusqlite::Error` : le texte du moteur partait au client dans le 503. Celui-ci ne prend plus
+/// que le COMPTE de lignes écrites (un fait sans texte du moteur, corps d'avant à l'octet) ; une écriture refusée par la
+/// base passe par [`refus_d_un_objet_non_cree_par_le_moteur`].
+pub(crate) fn refus_d_un_objet_non_cree(objet: &str, n: usize) -> Response {
+    err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_OBJET_NON_CREE} Objet : {objet} ({}).", lignes_ecrites_au_lieu_d_une(n)))
+}
+
+/// `P10.29-l` (vague AK) — l'écriture d'une création refusée par la base : la phrase fixe et l'objet, sous l'identifiant de
+/// corrélation servi ; la cause du moteur va au journal avec cet identifiant, jamais au client (ni requête ni nom de
+/// personne au journal : l'objet est un nom de catégorie choisi par le site).
+pub(crate) fn refus_d_un_objet_non_cree_par_le_moteur(objet: &str, e: &rusqlite::Error) -> Response {
+    let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_OBJET_NON_CREE} Objet : {objet}."));
+    eprintln!("[dashboards] WARN {objet} NON créé, aucun identifiant n'est rendu ({}) : {e}", cid.unwrap_or_default());
+    refus
 }
 
 /// La cause d'une écriture qui a « réussi » sans poser exactement UNE ligne (un déclencheur qui
@@ -223,8 +240,8 @@ pub(crate) async fn dash_create(State(st): State<AppState>, Extension(au): Exten
         params![name, now(), au.name, vis, view_id],
     ) {
         Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
-        Ok(n) => refus_d_un_objet_non_cree("tableau de bord", lignes_ecrites_au_lieu_d_une(n)),
-        Err(e) => refus_d_un_objet_non_cree("tableau de bord", e),
+        Ok(n) => refus_d_un_objet_non_cree("tableau de bord", n),
+        Err(e) => refus_d_un_objet_non_cree_par_le_moteur("tableau de bord", &e),
     }
 }
 
@@ -584,8 +601,8 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
         params![did, title, query, is_soql, viz, window_s, visibility, query_private, cols, height, drill, library_panel_id],
     ) {
         Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
-        Ok(n) => refus_d_un_objet_non_cree("panneau", lignes_ecrites_au_lieu_d_une(n)),
-        Err(e) => refus_d_un_objet_non_cree("panneau", e),
+        Ok(n) => refus_d_un_objet_non_cree("panneau", n),
+        Err(e) => refus_d_un_objet_non_cree_par_le_moteur("panneau", &e),
     }
 }
 
@@ -909,17 +926,34 @@ pub(crate) fn measured_cost_ms(v: &Value) -> Option<f64> {
 /// silence, et une charge utile vivait plus longtemps que voulu. Ligne lue : son TTL, ou `ttl_global` si la colonne est
 /// NULL ; ligne absente : `ttl_global` (comme avant) ; lecture ratée : 0, cache COUPÉ pour ce panneau (fail-closed), et
 /// une ligne de journal fixe — le numéro interne du panneau, jamais la requête ni le texte du moteur.
+///
+/// `P10.20-l` (vague AK) — CE REPLI NE DÉCIDE PLUS DE `panel_data`. Un `0` rendu sur une lecture ratée y écartait le
+/// chemin SWR et envoyait le panneau sur l'exécution directe — et, lane de rafraîchissement saturée, sur la branche
+/// « cache off ET lane saturée » qui exécute SANS permis : une charge non bornée ouverte par une lecture qui n'a pas eu
+/// lieu. `panel_data` lit donc le TTL par [`lire_le_ttl_du_cache`] (trois issues) et refuse en 503 nommé. Ce repli reste
+/// pour l'issue d'un rafraîchissement de fond (`consigner_l_issue_du_rafraichissement` et
+/// `memoriser_l_echec_du_rafraichissement`, APRÈS l'exécution : un `0` y veut dire « n'écris pas le cache », fail-closed
+/// sans exécution de plus) et pour les témoins qui le tiennent ; décision écrite : deux appelants, deux sens du `0`.
 pub(crate) fn panel_cache_ttl(conn: &Connection, panel_id: i64, ttl_global: i64) -> i64 {
-    match conn
-        .query_row("SELECT panel_cache_ttl_s FROM panel WHERE id=?1", params![panel_id], |r| r.get::<_, Option<i64>>(0))
-        .optional()
-    {
-        Ok(Some(Some(per))) => per,
-        Ok(Some(None)) | Ok(None) => ttl_global,
+    match lire_le_ttl_du_cache(conn, panel_id, ttl_global) {
+        Ok(ttl) => ttl,
         Err(_) => {
             eprintln!("[dashboards] WARN panneau #{panel_id} : TTL du cache non lu, cache coupé pour ce panneau");
             0
         }
+    }
+}
+
+/// `P10.20-l` (vague AK) — LE TTL D'UN PANNEAU EN TROIS ISSUES, pour `panel_data`. Ligne lue : son TTL, ou `ttl_global`
+/// si la colonne est NULL ; ligne absente : `ttl_global` (comme [`panel_cache_ttl`]) ; lecture ratée : `Err`, que
+/// l'appelant refuse au lieu d'en tirer un « cache coupé » qui décide d'une exécution.
+pub(crate) fn lire_le_ttl_du_cache(conn: &Connection, panel_id: i64, ttl_global: i64) -> rusqlite::Result<i64> {
+    match conn
+        .query_row("SELECT panel_cache_ttl_s FROM panel WHERE id=?1", params![panel_id], |r| r.get::<_, Option<i64>>(0))
+        .optional()?
+    {
+        Some(Some(per)) => Ok(per),
+        Some(None) | None => Ok(ttl_global),
     }
 }
 
@@ -1351,6 +1385,20 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
     // TTL effectif + coût mesuré stocké (par panneau) — 1 prise de lock.
     let (ttl, cost) = {
         crate::req_conn!(st, au, conn);
+        // `P10.20-l` (vague AK) — UN TTL NON LU N'EST PAS UN CACHE COUPÉ. Le repli `0` de `panel_cache_ttl` écartait le
+        // chemin SWR (`ttl > 0` exigé) : le panneau partait en exécution directe, et SANS permis quand la lane de
+        // rafraîchissement était saturée (branche « cache off ET lane saturée », plus bas). Une lecture ratée ouvrait
+        // ainsi une charge non bornée. Elle rend désormais le 503 nommé `CAUSE_PANNEAU_NON_LU`, AVANT toute compilation
+        // ni exécution ; la cause du moteur va au journal avec l'identifiant servi, jamais la requête ni un nom.
+        // Un TTL LÉGITIMEMENT nul (colonne ou global à 0) garde la branche sans permis, conception d'avant.
+        let ttl = match lire_le_ttl_du_cache(&conn, id, ttl_global) {
+            Ok(ttl) => ttl,
+            Err(e) => {
+                let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PANNEAU_NON_LU);
+                eprintln!("[dashboards] WARN panneau #{id} : TTL du cache NON lu, rien n'est exécuté ({}) : {e}", cid.unwrap_or_default());
+                return refus;
+            }
+        };
         let cout = match read_panel_cost(&conn, id, &q_fp) {
             Ok(c) => c,
             Err(_) => {
@@ -1359,7 +1407,7 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
                 None
             }
         };
-        (panel_cache_ttl(&conn, id, ttl_global), cout)
+        (ttl, cout)
     };
     // LOURD = coût CONNU et >= seuil.
     let heavy = matches!(cost, Some(c) if c >= live_threshold as f64);
@@ -1538,8 +1586,8 @@ pub(crate) async fn view_create(State(st): State<AppState>, Extension(au): Exten
     crate::req_conn!(st, au, conn);
     match conn.execute("INSERT INTO view(name,owner,visibility) VALUES(?1,?2,?3)", params![name, au.name, vis]) {
         Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
-        Ok(n) => refus_d_un_objet_non_cree("vue", lignes_ecrites_au_lieu_d_une(n)),
-        Err(e) => refus_d_un_objet_non_cree("vue", e),
+        Ok(n) => refus_d_un_objet_non_cree("vue", n),
+        Err(e) => refus_d_un_objet_non_cree_par_le_moteur("vue", &e),
     }
 }
 

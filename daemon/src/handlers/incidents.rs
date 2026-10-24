@@ -42,6 +42,20 @@ pub(crate) const CAUSE_RUNBOOK_ATTACHE_NON_LU: &str = "RUNBOOK ATTACHÉ NON LU :
      figées de ce dossier a échoué. Ce n'est PAS « aucun runbook attaché » — il y en a peut-être un, et en \
      attacher un second serait refusé. Cause : ";
 
+// `P10.29-l` (reste) — CE QUI SUIT « Cause : » DANS LES TROIS AVEUX DE LA FICHE DE DOSSIER ET DE LA CHECKLIST. Le texte
+// du moteur SQLite y était collé (`{e}`) et partait au client dans un corps deux cents ; il va au journal du démon, avec
+// l'identifiant du dossier, et le corps porte une phrase FIXE. Les clés et leur ouverture (les deux constantes
+// ci-dessus) sont inchangées à l'octet : la console (`web/cases.js`) lit la clé, pas la cause.
+/// `P10.29-l` — un runbook a été retenu pour la recommandation, sa fiche n'a pas été lue.
+pub(crate) const PHRASE_FICHE_DU_RUNBOOK_RETENU_NON_LUE: &str =
+    "un runbook a été retenu, sa fiche n'a pas été lue (la cause est au journal du démon).";
+/// `P10.29-l` — la recherche du runbook à recommander elle-même n'a pas été lue.
+pub(crate) const PHRASE_CHOIX_DU_RUNBOOK_NON_LU: &str =
+    "la base n'a pas rendu le choix du runbook (la cause est au journal du démon).";
+/// `P10.29-l` — le runbook attaché (ou sa fiche) n'a pas été lu, sur la fiche de dossier comme sur la checklist.
+pub(crate) const PHRASE_RUNBOOK_ATTACHE_NON_LU: &str =
+    "la base n'a pas rendu le runbook attaché à ce dossier (la cause est au journal du démon).";
+
 /// `P10.21-t` — LA DÉCLARATION QUE LA BASE N'A PAS PRISE N'EST NI SERVIE NI ATTESTÉE. Le palier, le
 /// type et le pilote s'écrivaient en trois `UPDATE` avalés ; la chronologie NOMMAIT le type et le pilote
 /// et le registre attestait le palier, quoi que la base ait pris. Ils s'écrivent désormais en UN énoncé,
@@ -419,15 +433,17 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
             Ok(Some(rb)) => match runbook_meta_json(conn, rb) {
                 Ok(fiche) => fiche,
                 Err(e) => {
-                    recommandation_non_etablie =
-                        Some(format!("{CAUSE_RECOMMANDATION_NON_ETABLIE}un runbook a été retenu, sa fiche n'a pas été lue : {e}"));
+                    // `P10.29-l` — la phrase seule au client ; la cause du moteur au journal, avec le dossier et le runbook.
+                    eprintln!("[incidents] WARN recommandation de runbook du dossier #{id} non établie : runbook #{rb} retenu, fiche NON lue : {e}");
+                    recommandation_non_etablie = Some(format!("{CAUSE_RECOMMANDATION_NON_ETABLIE}{PHRASE_FICHE_DU_RUNBOOK_RETENU_NON_LUE}"));
                     None
                 }
             },
             // AUCUN runbook actif ne correspond : une absence ÉTABLIE, le cas nominal d'une base sans seed.
             Ok(None) => None,
             Err(e) => {
-                recommandation_non_etablie = Some(format!("{CAUSE_RECOMMANDATION_NON_ETABLIE}{e}"));
+                eprintln!("[incidents] WARN recommandation de runbook du dossier #{id} non établie : choix du runbook NON lu : {e}");
+                recommandation_non_etablie = Some(format!("{CAUSE_RECOMMANDATION_NON_ETABLIE}{PHRASE_CHOIX_DU_RUNBOOK_NON_LU}"));
                 None
             }
         }
@@ -438,7 +454,10 @@ pub(crate) fn case_runbooks_json(conn: &Connection, id: i64) -> Option<Value> {
     // n'est pas cette ligne-là non plus.
     let (attached, attachement_non_lu) = match runbook_attache(conn, id) {
         Ok(rb) => (rb, None),
-        Err(e) => (None, Some(format!("{CAUSE_RUNBOOK_ATTACHE_NON_LU}{e}"))),
+        Err(e) => {
+            eprintln!("[incidents] WARN runbook attaché du dossier #{id} NON lu pour la fiche de dossier : {e}");
+            (None, Some(format!("{CAUSE_RUNBOOK_ATTACHE_NON_LU}{PHRASE_RUNBOOK_ATTACHE_NON_LU}")))
+        }
     };
     let disponibles: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT id,key,name,match_kind,match_key,description,managed FROM runbook WHERE active=1 ORDER BY (match_kind='*'), id")
@@ -717,7 +736,10 @@ pub(crate) fn case_steps_json(conn: &Connection, id: i64) -> Value {
             None => Ok(None),
         }) {
         Ok(fiche) => (fiche, None),
-        Err(e) => (None, Some(format!("{CAUSE_RUNBOOK_ATTACHE_NON_LU}{e}"))),
+        Err(e) => {
+            eprintln!("[incidents] WARN runbook attaché du dossier #{id} NON lu pour la checklist : {e}");
+            (None, Some(format!("{CAUSE_RUNBOOK_ATTACHE_NON_LU}{PHRASE_RUNBOOK_ATTACHE_NON_LU}")))
+        }
     };
     let steps = match lues {
         Ok(v) => v,
@@ -1226,7 +1248,9 @@ fn unique_custom_key(conn: &Connection, name: &str) -> Result<String, RefusDuRun
 }
 
 /// Un runbook (métadonnées + nb d'étapes) pour la vue d'AUTHORING admin. INTERNE (jamais client-read).
-fn runbook_admin_json(conn: &Connection, rb_id: i64) -> Option<Value> {
+/// `P10.20-b` (rang quatre) — trois issues : `Ok(Some)` lu, `Ok(None)` absence établie, `Err` lecture qui n'a pas eu
+/// lieu. Le `.ok()` d'avant versait la lecture ratée dans l'absence, et `runbook_get` la servait « runbook introuvable ».
+fn runbook_admin_json(conn: &Connection, rb_id: i64) -> rusqlite::Result<Option<Value>> {
     conn.query_row(
         "SELECT id,key,name,match_kind,match_key,description,managed,active,created,\
          (SELECT COUNT(*) FROM runbook_step WHERE runbook_id=runbook.id) FROM runbook WHERE id=?1",
@@ -1235,7 +1259,7 @@ fn runbook_admin_json(conn: &Connection, rb_id: i64) -> Option<Value> {
             "match_kind": r.get::<_,String>(3)?, "match_key": r.get::<_,String>(4)?, "description": r.get::<_,String>(5)?,
             "managed": r.get::<_,i64>(6)?, "active": r.get::<_,i64>(7)? != 0, "created": r.get::<_,i64>(8)?,
             "steps": r.get::<_,i64>(9)? })),
-    ).ok()
+    ).optional()
 }
 
 /// `P10.20-b` — LE PLAFOND NON LU N'EST PAS UN PLAFOND À ZÉRO. Le compte des runbooks custom qui juge
@@ -1506,7 +1530,18 @@ pub(crate) async fn runbooks_admin_list(State(st): State<AppState>, Extension(au
 pub(crate) async fn runbook_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     if let Err(r) = require_admin(&au) { return r; }
     crate::req_conn!(st, au, conn);
-    let Some(mut meta) = runbook_admin_json(&conn, id) else { return not_found("runbook introuvable"); };
+    // `P10.20-b` (rang quatre) — TROIS ISSUES. Absent : le 404 d'avant, à l'octet. Lecture ratée : 503 nommé, jamais
+    // « runbook introuvable » — le formulaire d'édition réenregistre la procédure, et un 404 sur une procédure qui
+    // existe se lit « à recréer ». La cause du moteur au journal, avec l'identifiant de corrélation servi.
+    let mut meta = match runbook_admin_json(&conn, id) {
+        Ok(Some(m)) => m,
+        Ok(None) => return not_found("runbook introuvable"),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_RUNBOOK_NON_LU_POUR_L_EDITION);
+            eprintln!("[runbooks] WARN runbook #{id} NON lu pour l'édition, rien n'est servi ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
+    };
     // `P10.7-f` (rang 4, vague b) — UNE PROCÉDURE EST ENTIÈRE, OU ELLE DIT QU'ELLE N'A PAS ÉTÉ LUE. Avant :
     // `.map(|x| x.flatten().collect())` puis `.unwrap_or_default()` — une étape dont la ligne ne se décode
     // pas (`guidance` corrompue, `search_soql`/`action_kind` non textuels) disparaissait de `step_list`,
@@ -1585,6 +1620,14 @@ pub(crate) const CAUSE_RUNBOOK_NON_CLONE_TRANSACTION_NON_OUVERTE: &str = "RUNBOO
      la transaction du clonage (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) \
      — RIEN n'est écrit : aucune copie n'est écrite, et aucune trace n'est écrite. Réessayez ; s'il est refusé \
      encore, l'écrivain est occupé ou bloqué.";
+
+/// `P10.20-b` (rang quatre) — la ligne du runbook non lue pour l'ÉDITION (`runbook_get`). Ne nomme ni `BEGIN` ni
+/// `COMMIT` ni une écriture refusée. La console ne la peint PAS encore en refus nommé : les deux lectures de
+/// `GET /api/runbooks/{id}` (`web/runbooks.js`) avalent l'erreur en avis générique (« chargement échoué », « étapes
+/// indisponibles ») ; ce qui tient est que l'éditeur ne s'ouvre pas sur un refus, donc rien n'est réenregistré.
+pub(crate) const CAUSE_RUNBOOK_NON_LU_POUR_L_EDITION: &str = "RUNBOOK NON LU : la base n'a pas rendu ce runbook — ce \
+     n'est PAS « runbook introuvable », c'est une lecture qui n'a pas eu lieu : ne le recréez pas. Rien n'est servi à \
+     éditer, et rien n'est écrit. Réessayez ; si le refus persiste, la table des runbooks est illisible.";
 
 // `P10.20-l` — LA LIGNE DU RUNBOOK NON LUE N'EST PAS UN RUNBOOK INTROUVABLE. Modification, suppression et bascule lisaient
 // la ligne (et son drapeau `managed`, qui ARME le refus d'un runbook managé) par `Err(_) => 404` ou

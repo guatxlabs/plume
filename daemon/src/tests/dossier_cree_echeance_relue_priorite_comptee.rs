@@ -151,7 +151,9 @@ mod dossier_cree_echeance_relue_priorite_comptee {
             }
             let (statut, avoue) = dcp_mettre_a_jour(&st, id, json!({ "title": "renommé" })).await;
             assert_eq!(statut, 503, "{colonne} non écrit : 503 nommé, jamais 204 : {avoue}");
-            assert!(avoue["error"].as_str().unwrap_or("").contains(&format!("({colonne}: ")), "{avoue}");
+            // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AK) : le corps portait `(<colonne>: <moteur>)` ; il porte la phrase
+            // seule, la cause qui nomme la colonne est jugée à `case_apply_update` ci-dessus.
+            super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule(colonne, statut, &avoue, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE);
             dcp_permettre_l_ecriture_de(&st, colonne);
         }
         assert_eq!(dcp_compte(&st, &format!("SELECT escalated FROM incident WHERE id={id}")), 1, "escalated n'a pas été ré-armé");

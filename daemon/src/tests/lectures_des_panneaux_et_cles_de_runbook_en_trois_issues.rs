@@ -32,8 +32,8 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : ce que la console peint (web/ hors périmètre : le 503 de `dash_get` passe par le
 // `catch` de `loadPanelsInto`, celui de `panel_data` par `refusDUneLectureServie`, ceux des runbooks par
-// `peindreLeRefusDUnGeste` — lus, non joués) ; `DefinitionExecutee::courante` (`panneau_resolu.rs`, `.ok()`, première
-// lecture de `panel_access`) garde sa confusion ; une lecture ratée par verrou ou table retirée (la conversion suffit à
+// `peindreLeRefusDUnGeste` — lus, non joués) ; `DefinitionExecutee::courante` (`panneau_resolu.rs`, première lecture de
+// `panel_access` ; en trois issues depuis la vague AK, témoins `ak1_`) ; une lecture ratée par verrou ou table retirée (la conversion suffit à
 // atteindre le bras) ; le mode multi-tenant.
 // =====================================================================================
 mod lectures_des_panneaux_et_cles_de_runbook_en_trois_issues {

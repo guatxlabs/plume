@@ -765,6 +765,11 @@ pub(crate) const CAUSE_DESTINATION_NON_SUPPRIMEE_TRANSACTION_NON_OUVERTE: &str =
      base n'a pas pris la transaction du retrait (BEGIN refusé : verrou tenu, ou transaction d'un autre geste \
      pendante sur l'écrivain) — RIEN n'est écrit : elle est toujours là et ENVOIE TOUJOURS les données hors du \
      périmètre, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// AVEU `P10.20-l` (vague AK) — la destination à envoyer à la main n'a pas été lue : rien n'est envoyé.
+pub(crate) const CAUSE_ENVOI_MANUEL_NON_FAIT_NON_LU: &str = "ENVOI MANUEL NON FAIT : la base n'a pas rendu cette \
+     destination — ce n'est PAS « destination introuvable ou désactivée », c'est une lecture qui n'a pas eu lieu. RIEN \
+     n'est envoyé : aucun événement ne part vers le puits, son filigrane n'avance pas, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la table des destinations est illisible.";
 /// `P10.26-x` — l'envoi manuel a eu lieu, mais sa trace d'audit n'a pas été écrite (champ `trace_non_ecrite` de la réponse).
 pub(crate) const CAUSE_TRACE_DE_L_ENVOI_MANUEL_NON_ECRITE: &str = "TRACE NON ÉCRITE : l'envoi manuel a eu lieu (ce \
      qui est parti est parti), mais la base n'a pas pris sa trace d'audit — le registre ne dit pas qui l'a déclenché \
@@ -925,11 +930,20 @@ pub(crate) async fn destination_flush(State(st): State<AppState>, Extension(au):
                 r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
             )),
-        ).ok()
+        ).optional()
     };
+    // `P10.20-l` (vague AK) — trois issues (elle rendait `None` sur une absence COMME sur une lecture ratée, `.ok()`) :
+    // lue, l'envoi suit ; absente ou désactivée, le 404 d'avant ; lecture ratée, 503 `CAUSE_ENVOI_MANUEL_NON_FAIT_NON_LU`,
+    // RIEN n'est envoyé (aucun `forward_one_destination`), la cause du moteur au journal seul avec l'identifiant servi —
+    // jamais l'adresse du puits ni sa configuration.
     let (dtype, endpoint, config_json, filter_json, batch_max, watermark) = match row {
-        Some(x) => x,
-        None => return not_found("destination introuvable ou désactivée"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("destination introuvable ou désactivée"),
+        Err(e) => {
+            let (cid, refus) = err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ENVOI_MANUEL_NON_FAIT_NON_LU);
+            eprintln!("[destinations] WARN destination #{id} NON lue pour l'envoi manuel, rien n'est envoyé ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     let db = __rc.clone();
     let now_ts = now();

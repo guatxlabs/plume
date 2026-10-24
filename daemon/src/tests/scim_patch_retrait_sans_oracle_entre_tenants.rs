@@ -25,8 +25,10 @@
 // `VERIF_MUT=Z1_premier_present_seul` (seul le premier membre réel d'une opération est retiré).
 //
 // CE QU'IL NE TIENT PAS : AJOUTER (et l'ensemble servi d'un `replace`, qui s'ajoute) reste jugé sur `platform_user`
-// — un id d'un autre tenant y est accepté et reçoit un droit ici, un inconnu rend `noTarget` : l'oracle reste sur
-// l'ajout (reste de `P10.34-a`, `platform_user` ne porte pas de tenant d'origine). Le temps de réponse n'est pas
+// — un id d'un autre tenant y est accepté et reçoit un droit ici (rattachement : reste de `P10.34-a`, `platform_user`
+// ne porte pas de tenant d'origine), un id jamais servi rend `noTarget`. Ce n'est pas un oracle par `userName` : la
+// chaîne `POST /Users` puis `PATCH add` répond pareil pour un nom partagé et un nom neuf (témoins `saon_`) ; le refus
+// d'un id d'un autre tenant en créerait un. Le temps de réponse n'est pas
 // mesuré (une lecture de plus pour un membre présent). Seuls les ids ABSENTS sont tus : le refus d'un AUTRE id
 // présent — `409` s'il est le dernier administrateur, `503` si son droit est illisible — défait toujours la demande
 // entière, révocations comprises (atomicité RFC 7644 §3.5.2, `P10.21-o`).

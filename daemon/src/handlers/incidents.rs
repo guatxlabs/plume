@@ -1201,18 +1201,28 @@ fn slugify(name: &str) -> String {
 
 /// `key` custom UNIQUE, TOUJOURS préfixée `custom-` (provenance explicite ; NE PEUT collisionner avec une key
 /// managée ni s'y faire passer). Bornée. Fallback horodaté si saturation improbable.
-fn unique_custom_key(conn: &Connection, name: &str) -> String {
+///
+/// `P10.20-l` (vague AJ) — L'OCCUPATION DE LA CLÉ EN TROIS ISSUES. `while … .is_ok()` lisait une lecture ratée comme
+/// « clé libre » : la boucle sortait avec une clé peut-être prise, et l'INSERT tombait sur la contrainte `UNIQUE` avec
+/// une cause d'insertion. Prise : clé suivante ; libre (aucune ligne) : rendue ; lecture ratée : `CleNonLue`, rien n'est
+/// écrit (`CAUSE_CLE_DE_RUNBOOK_NON_LUE`, 503 nommé par `refus_d_ecriture_de_runbook`).
+fn unique_custom_key(conn: &Connection, name: &str) -> Result<String, RefusDuRunbook> {
     let base = slugify(name);
     let mut k = format!("custom-{base}");
     if k.len() > RUNBOOK_MAX_KEY { k.truncate(RUNBOOK_MAX_KEY); }
     let mut n = 1;
-    while conn.query_row("SELECT 1 FROM runbook WHERE key=?1", params![k], |_| Ok(())).is_ok() {
+    while conn
+        .query_row("SELECT 1 FROM runbook WHERE key=?1", params![k], |_| Ok(()))
+        .optional()
+        .map_err(|e| RefusDuRunbook::CleNonLue(e.to_string()))?
+        .is_some()
+    {
         k = format!("custom-{base}-{n}");
         if k.len() > RUNBOOK_MAX_KEY { k = format!("custom-{}-{n}", now()); }
         n += 1;
         if n > 5000 { k = format!("custom-{}", now()); break; }
     }
-    k
+    Ok(k)
 }
 
 /// Un runbook (métadonnées + nb d'étapes) pour la vue d'AUTHORING admin. INTERNE (jamais client-read).
@@ -1264,6 +1274,20 @@ pub(crate) const CAUSE_LIGNE_DE_RUNBOOK_NON_ECRITE: &str = "RUNBOOK NON ÉCRIT :
      touchée, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou \
      verrouillée.";
 
+/// `P10.20-l` (vague AJ) — le runbook SOURCE d'un clonage non lu. Ne nomme ni `BEGIN` ni `COMMIT` ni une écriture
+/// refusée : c'est la lecture qui manque ; la console la peint en refus nommé (`natureDuRefusDUnGeste`, web/core.js).
+pub(crate) const CAUSE_RUNBOOK_NON_CLONE_SOURCE_NON_LUE: &str = "RUNBOOK NON CLONÉ : la base n'a pas rendu le runbook \
+     source — ce n'est PAS « runbook source introuvable », c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : \
+     aucune copie n'est créée, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des runbooks \
+     est illisible.";
+
+/// `P10.20-l` (vague AJ) — l'occupation de la clé `custom-…` dérivée du nom non lue, à la création ou au clonage. Ce
+/// n'est pas une clé libre ; refus nommé côté console (`natureDuRefusDUnGeste`, web/core.js).
+pub(crate) const CAUSE_CLE_DE_RUNBOOK_NON_LUE: &str = "RUNBOOK NON ÉCRIT : la base n'a pas rendu l'occupation de la clé \
+     dérivée de son nom — ce n'est PAS une clé libre, c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : aucun \
+     runbook n'est créé ni copié, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des runbooks \
+     est illisible.";
+
 /// `P10.29-l` — CE QU'UN REFUS DES CŒURS DE RUNBOOK PORTE, PAR GENRE. Les cœurs rendaient une chaîne et la route en
 /// devinait le genre par `starts_with` sur sa tête : une chaîne qui ne commençait par aucune phrase connue — la ligne
 /// `runbook` refusée par la base — tombait dans le `400` d'une saisie avec le texte du moteur, et les deux `503`
@@ -1285,6 +1309,11 @@ pub(crate) enum RefusDuRunbook {
     LigneNonEcrite(&'static str, String),
     /// La trace d'audit du geste refusée : la transaction est annulée.
     Audit(rusqlite::Error),
+    /// `P10.20-l` (vague AJ) — la ligne du runbook SOURCE d'un clonage non lue (ce n'est pas « runbook source
+    /// introuvable ») : la cause du moteur.
+    SourceNonLue(String),
+    /// `P10.20-l` (vague AJ) — l'occupation de la clé `custom-…` non lue (ce n'est pas une clé libre) : la cause du moteur.
+    CleNonLue(String),
 }
 
 impl std::fmt::Display for RefusDuRunbook {
@@ -1296,6 +1325,8 @@ impl std::fmt::Display for RefusDuRunbook {
             RefusDuRunbook::ManagedNonLu(cause) => write!(f, "{CAUSE_RUNBOOK_INCHANGE_NON_LU} ({cause})"),
             RefusDuRunbook::LigneNonEcrite(ecriture, cause) => write!(f, "{ecriture}: {cause}"),
             RefusDuRunbook::Audit(cause) => write!(f, "trace d'audit refusée ({cause})"),
+            RefusDuRunbook::SourceNonLue(cause) => write!(f, "{CAUSE_RUNBOOK_NON_CLONE_SOURCE_NON_LUE} ({cause})"),
+            RefusDuRunbook::CleNonLue(cause) => write!(f, "{CAUSE_CLE_DE_RUNBOOK_NON_LUE} ({cause})"),
         }
     }
 }
@@ -1321,6 +1352,8 @@ fn refus_d_ecriture_de_runbook(refus: RefusDuRunbook, geste: &str) -> Response {
         RefusDuRunbook::EtapesNonEcrites(_) => CAUSE_ETAPES_DE_RUNBOOK_NON_ECRITES,
         RefusDuRunbook::ManagedNonLu(_) => CAUSE_RUNBOOK_INCHANGE_NON_LU,
         RefusDuRunbook::LigneNonEcrite(..) => CAUSE_LIGNE_DE_RUNBOOK_NON_ECRITE,
+        RefusDuRunbook::SourceNonLue(_) => CAUSE_RUNBOOK_NON_CLONE_SOURCE_NON_LUE,
+        RefusDuRunbook::CleNonLue(_) => CAUSE_CLE_DE_RUNBOOK_NON_LUE,
     };
     let (cid, reponse) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, phrase);
     eprintln!("[runbooks] WARN {geste} refusée, rien n'est écrit ({}) : {refus}", cid.unwrap_or_default());
@@ -1337,7 +1370,7 @@ pub(crate) fn create_custom_runbook(conn: &Connection, name: &str, mkind: &str, 
 fn creer_le_runbook_custom(conn: &Connection, name: &str, mkind: &str, mkey: &str, desc: &str, steps: &[NewStep], active: bool) -> Result<i64, RefusDuRunbook> {
     let cnt: i64 = compter_les_runbooks_custom(conn)?;
     if cnt >= RUNBOOK_MAX_CUSTOM { return Err(RefusDuRunbook::Saisie(format!("quota de runbooks custom atteint (max {RUNBOOK_MAX_CUSTOM})"))); }
-    let key = unique_custom_key(conn, name);
+    let key = unique_custom_key(conn, name)?;
     conn.execute(
         "INSERT INTO runbook(key,name,match_kind,match_key,description,managed,active,created) VALUES(?1,?2,?3,?4,?5,0,?6,?7)",
         params![key, name, mkind, mkey, desc, active as i64, now()],
@@ -1402,14 +1435,21 @@ pub(crate) fn clone_runbook(conn: &Connection, src_id: i64, new_name: Option<&st
 
 /// Le cœur de `clone_runbook`, refus typé (`P10.29-l`) : c'est lui que la route appelle.
 fn cloner_le_runbook(conn: &Connection, src_id: i64, new_name: Option<&str>) -> Result<i64, RefusDuRunbook> {
-    let (sname, mkind, mkey, desc): (String, String, String, String) = conn
+    // `P10.20-l` (vague AJ) — trois issues : lue, le clonage suit ; absente, « runbook source introuvable » (le 400
+    // d'avant, à l'octet) ; lecture ratée, `SourceNonLue` (503 nommé), rien n'est écrit.
+    let (sname, mkind, mkey, desc): (String, String, String, String) = match conn
         .query_row("SELECT name,match_kind,match_key,description FROM runbook WHERE id=?1", params![src_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-        .map_err(|_| RefusDuRunbook::from("runbook source introuvable"))?;
+        .optional()
+    {
+        Ok(Some(source)) => source,
+        Ok(None) => return Err(RefusDuRunbook::from("runbook source introuvable")),
+        Err(e) => return Err(RefusDuRunbook::SourceNonLue(e.to_string())),
+    };
     let cnt: i64 = compter_les_runbooks_custom(conn)?;
     if cnt >= RUNBOOK_MAX_CUSTOM { return Err(RefusDuRunbook::Saisie(format!("quota de runbooks custom atteint (max {RUNBOOK_MAX_CUSTOM})"))); }
     let name = new_name.map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string()).unwrap_or_else(|| format!("{sname} (copie)"));
     let name = if name.len() > RUNBOOK_MAX_NAME { name.chars().take(RUNBOOK_MAX_NAME).collect() } else { name };
-    let key = unique_custom_key(conn, &name);
+    let key = unique_custom_key(conn, &name)?;
     conn.execute("INSERT INTO runbook(key,name,match_kind,match_key,description,managed,active,created) VALUES(?1,?2,?3,?4,?5,0,1,?6)",
         params![key, name, mkind, mkey, desc, now()]).map_err(|e| RefusDuRunbook::LigneNonEcrite("insertion clone", e.to_string()))?;
     let new_id = conn.last_insert_rowid();

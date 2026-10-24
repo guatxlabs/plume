@@ -4,7 +4,7 @@
 //! `loki_push`) et garde-fous DoS (`ingest_decompress_capped`, caps INGEST_MAX_*). Statics/consts
 //! avec accesseurs. Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
-use crate::handlers::transaction_validee::{ouvrir_sa_transaction, refuser_le_geste_non_valide, valider_la_transaction};
+use crate::handlers::transaction_validee::{ouvrir_sa_transaction, refuser_le_geste_non_valide};
 
 /// `P10.26-s` — LE LOT D'UN RÉCEPTEUR DE BASE N'EST ACQUITTÉ QUE VALIDÉ DANS SA PROPRE TRANSACTION. Mesuré le 2026-09-24
 /// sur la forme d'avant (transaction d'un autre geste laissée pendante sur l'écrivain, relecture à froid) : le `BEGIN`
@@ -113,6 +113,10 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
     if ouvrir_sa_transaction(conn, "ingest", "lot de métriques Prometheus").is_err() {
         return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LOT_D_INGESTION_NON_ECRIT);
     }
+    // `P10.34-g` — à partir d'ici, tout abandon (refus, `return`, panic) annule la transaction du lot (`TransactionDuLot`,
+    // ingest/mod.rs). Sur une ligne refusée, `annuler_le_lot_a_la_ligne_refusee` annule et le dit ; le `ROLLBACK` du garde
+    // qui suit ne trouve plus de transaction et ne fait rien.
+    let lot = super::TransactionDuLot::ouverte(conn);
     // `P10.27-i` — chaque ligne est COMPTÉE ; une ligne refusée refuse le lot (cf. `CAUSE_LIGNE_DU_LOT_REFUSEE`).
     let mut ecrites = 0usize;
     for (name, labels, value) in &series {
@@ -122,8 +126,11 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
             Ok(k) => ecrites += k,
             Err(refus) => return annuler_le_lot_a_la_ligne_refusee(conn, "lot de métriques Prometheus", &refus),
         }
+        // Rien en production ; sous `cfg(test)`, le crochet d'un témoin (un panic après une écriture du lot, `P10.34-g`).
+        #[cfg(test)]
+        crate::handlers::transaction_validee::point_de_course(&format!("lot-de-metriques-prometheus:{name}"));
     }
-    if let Err(refus) = valider_la_transaction(conn) {
+    if let Err(refus) = lot.valider() {
         return refuser_le_geste_non_valide("ingest", "lot de métriques Prometheus", &refus, CAUSE_LOT_D_INGESTION_NON_ECRIT);
     }
     // `S31` (temps 1) — `ingested` est VRAI (les lignes sont insérées et la transaction est validée) et
@@ -241,6 +248,8 @@ pub(crate) async fn metrics_write(State(st): State<AppState>, Extension(au): Ext
     if ouvrir_sa_transaction(conn, "ingest", "lot remote_write").is_err() {
         return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LOT_D_INGESTION_NON_ECRIT);
     }
+    // `P10.34-g` — même garde que le lot Prometheus ci-dessus : tout abandon, panic compris, annule la transaction du lot.
+    let lot = super::TransactionDuLot::ouverte(conn);
     for (ts, name, labels, host, value) in &rows {
         // Le host des labels est le DÉCLARÉ ; la résolution tranche (jeton lié -> écrasé, relais -> gardé).
         let hote = HoteIngere::resoudre(&au, host.as_deref());
@@ -249,8 +258,11 @@ pub(crate) async fn metrics_write(State(st): State<AppState>, Extension(au): Ext
             Ok(_) => {}
             Err(refus) => return annuler_le_lot_a_la_ligne_refusee(conn, "lot remote_write", &refus),
         }
+        // Rien en production ; sous `cfg(test)`, le crochet d'un témoin (un panic après une écriture du lot, `P10.34-g`).
+        #[cfg(test)]
+        crate::handlers::transaction_validee::point_de_course(&format!("lot-remote-write:{name}"));
     }
-    if let Err(refus) = valider_la_transaction(conn) {
+    if let Err(refus) = lot.valider() {
         return refuser_le_geste_non_valide("ingest", "lot remote_write", &refus, CAUSE_LOT_D_INGESTION_NON_ECRIT);
     }
     // `S31` (temps 1) — ce 204 fait avancer le WAL de l'émetteur (Alloy/Prometheus) et disparaître sa

@@ -796,9 +796,20 @@ pub(crate) async fn config_overlays_prune(State(st): State<AppState>, Extension(
             let _ = conn.execute_batch("ROLLBACK");
             servir_l_echec_de_la_transaction_d_audit("[overlays]", "élagage des overlays orphelins", &e)
         }
-        Err(refus) => {
+        // `P10.29-l` — l'adossement illisible garde sa phrase et sa cause de la liste fermée (`S32`), mais le chemin du
+        // fichier et le texte d'E/S ou d'analyse (`detail`) vont au journal seul, avec l'identifiant servi.
+        Err(crate::overlays_adossement::RefusDePrune::Adossement { cause, detail }) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction prune (aucune modification): {refus}"))
+            let (id, refus) = crate::err_json_et_identifiant(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "échec transaction prune (aucune modification): adossement illisible ({cause}) — élagage REFUSÉ, rien \
+                     n'a été supprimé (un fichier qu'on ne sait pas lire n'est pas un fichier retiré) ; le fichier en cause \
+                     est nommé au journal du démon, sous l'identifiant de ce refus"
+                ),
+            );
+            eprintln!("[{}] [overlays] WARN élagage des overlays orphelins refusé : adossement illisible ({cause}) : {detail}", id.unwrap_or_default());
+            refus
         }
     }
 }

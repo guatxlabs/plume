@@ -106,7 +106,10 @@
                 assert_eq!(*cause, CAUSE_FORME_INCONNUE, "table absente = forme inconnue (même clé que `run_due_rules`) : {detail}");
                 assert!(CAUSES.contains(cause), "la cause reste dans l'ensemble fermé");
                 assert!(detail.contains('2'), "l'aveu dit COMBIEN d'indicateurs sont conservés — sans ce nombre un exploitant ne sait pas si la détection tourne : {detail}");
-                assert!(detail.contains(dbp), "l'aveu nomme la base concernée : {detail}");
+                // `P10.29-l` (vague AJ) — inversé : l'aveu est servi par la couverture TI (lecteur) ; le chemin
+                // de la base et la cause du moteur vont à la ligne `[ti] WARN`, jamais dans la valeur servie.
+                assert!(!detail.contains(dbp), "l'aveu servi ne nomme plus la base : {detail}");
+                assert!(!detail.contains("no such table"), "l'aveu servi ne porte pas le texte du moteur : {detail}");
             }
             Mesure::Lue(n) => panic!("une lecture ratée a rendu un compte ({n}) au lieu d'un aveu — c'est le défaut que cette clé ferme"),
         }

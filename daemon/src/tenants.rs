@@ -804,7 +804,9 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
         Issue::Valide(retrait) => retrait,
         Issue::Refuse(RefusDuRetrait::Inconnu) => return (StatusCode::NOT_FOUND, "grant inconnu").into_response(),
         Issue::Refuse(RefusDuRetrait::DroitNonLu(cause)) => {
-            eprintln!("[tenants] WARN droit de '{user}' sur '{id}' NON lu au retrait : {cause}");
+            // `P10.31-u` — jamais le nom du compte au journal : la lecture de son droit vient d'échouer, la phrase FIXE
+            // le dit sans relire le compte (même forme que `compte_au_journal`, idp.rs). Le tenant n'y sert à rien.
+            eprintln!("[tenants] WARN droit d'un compte (identifiant non lu) NON lu au retrait : {cause}");
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROIT_NON_LU_RETRAIT_NON_FAIT);
         }
         Issue::Refuse(RefusDuRetrait::DernierAdministrateur) => {

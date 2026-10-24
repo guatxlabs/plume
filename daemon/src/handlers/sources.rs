@@ -641,16 +641,48 @@ pub(crate) fn sources_attendues_sans_base() -> Vec<String> {
     out.into_iter().collect()
 }
 
+/// `P10.29-l` — LES TROIS LECTURES TYPÉES DE L'INVENTAIRE, en liste fermée : la cause servie au client se tire d'ici,
+/// jamais du texte du moteur (l'inventaire est lisible par tous les rôles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LectureDeLInventaire {
+    Pipeline,
+    SourcesObservees,
+    Declarations,
+}
+
+impl LectureDeLInventaire {
+    /// Le nom court de la lecture, au journal.
+    pub(crate) fn nom(self) -> &'static str {
+        match self {
+            Self::Pipeline => "pipeline",
+            Self::SourcesObservees => "sources observées",
+            Self::Declarations => "déclarations",
+        }
+    }
+
+    /// La cause servie au client : le nom de la lecture puis ce qui manque, sans le texte du moteur.
+    pub(crate) fn cause(self) -> &'static str {
+        match self {
+            Self::Pipeline => "pipeline : la base n'a pas rendu la fraîcheur du pipeline",
+            Self::SourcesObservees => "sources observées : la base n'a pas rendu les cumuls des sources",
+            Self::Declarations => "déclarations : la base n'a pas rendu les marquages des sources",
+        }
+    }
+}
+
 /// `P10.7-g` (lot 98) — LE CORPS D'UN INVENTAIRE NON LU. `ok: false`, aucune source, et surtout `pipeline_fresh: null` :
 /// avec la fraîcheur aplatie, une lecture ratée valait « pas frais » et la console peignait « Ingestion en panne —
 /// aucune donnée reçue récemment », une panne que personne n'avait observée. La cause est nommée.
-fn corps_inventaire_non_lu(now_ts: i64, cause: &str) -> Json<Value> {
+/// `P10.29-l` — la cause servie vient de la liste fermée `LectureDeLInventaire` ; la cause du moteur va au journal seul
+/// (pas d'identifiant de corrélation : c'est un deux cents, l'identifiant n'est frappé que pour un 5xx).
+fn corps_inventaire_non_lu(now_ts: i64, lecture: LectureDeLInventaire, e: &rusqlite::Error) -> Json<Value> {
+    eprintln!("[sources] WARN inventaire NON LU ({}), aucune source servie ({e})", lecture.nom());
     Json(json!({
         "ok": false,
         "generated": now_ts,
         "pipeline_fresh": Value::Null,
         "sources": [],
-        "error": format!("inventaire NON LU : {cause} — aucune source n'est établie, et l'ingestion n'est pas dite en panne"),
+        "error": format!("inventaire NON LU : {} — aucune source n'est établie, et l'ingestion n'est pas dite en panne", lecture.cause()),
     }))
 }
 
@@ -671,7 +703,7 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
             // et d'une ingestion « en panne » jamais observée.
             let pipe_fresh = match pipeline_est_frais(conn, now_ts) {
                 Ok(b) => b,
-                Err(e) => return corps_inventaire_non_lu(now_ts, &format!("pipeline : {e}")),
+                Err(e) => return corps_inventaire_non_lu(now_ts, LectureDeLInventaire::Pipeline, &e),
             };
             // OBSERVÉ (event_rollup uniquement : ~ms, jamais un scan de `event`). source -> (last_seen, n_24h).
             let observees: Result<Vec<(String, i64, i64)>, rusqlite::Error> = conn
@@ -710,13 +742,13 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
                         obs.insert(src, (last, n));
                     }
                 }
-                Err(e) => return corps_inventaire_non_lu(now_ts, &format!("sources observées : {e}")),
+                Err(e) => return corps_inventaire_non_lu(now_ts, LectureDeLInventaire::SourcesObservees, &e),
             }
             // CE QUE L'EXPLOITANT A DÉCLARÉ (source_settings) : le cinquième déclarant, et la cadence des
             // sources qu'aucune sonde n'observe. Une source déclarée mais dormante reste listée (entry 0,0).
             let meta = match marquages_de_sources_lus(conn) {
                 Ok(m) => m,
-                Err(e) => return corps_inventaire_non_lu(now_ts, &format!("déclarations : {e}")),
+                Err(e) => return corps_inventaire_non_lu(now_ts, LectureDeLInventaire::Declarations, &e),
             };
             for src in meta.keys() {
                 obs.entry(src.clone()).or_insert((0, 0));

@@ -17,8 +17,11 @@
 // g8d_filtre_crochet_final_libre, g8d_externalid_refuse, g8d_value_null_non_filtre, g8d_path_non_rogne,
 // g8d_filtre_sans_guillemets, g8d_filtre_id_vide_admis, g8d_ajout_garde_err_avalee.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : l'oracle d'existence cross-tenant (`noTarget` sur `platform_user` global)
-// reste ouvert sur l'ajout (`P10.34-a` : le retrait d'un absent est un no-op identique, témoins `psoe_`) ; le détail du journal n'est relu que sur le `replace` et le `remove` sans value, pas sur chaque forme ;
+// CE QUE CES TÉMOINS NE TIENNENT PAS : l'ajout reste jugé sur `platform_user` global — un id jamais servi rend
+// `noTarget`, toute identité servie s'ajoute, même porteuse d'un droit dans un autre tenant seulement (aucun oracle par
+// `userName`, témoins `saon_` ; rattachement entre tenants = reste de `P10.34-a`) ; le retrait d'un absent est un
+// no-op identique (témoins `psoe_`) ; le détail du journal n'est relu que sur le `replace` et le `remove` sans value,
+// pas sur chaque forme ;
 // la lecture ratée de la garde d'ajout n'est éprouvée que sur sa PREMIÈRE lecture (le droit actuel du membre), pas sur
 // le compte des administrateurs effectifs.
 // =====================================================================================

@@ -372,6 +372,45 @@ pub(crate) enum LotNonEcrit {
     Annule(usize),
 }
 
+/// `P10.34-g` — LA TRANSACTION D'UN LOT EST ANNULÉE À TOUT ABANDON, PANIC COMPRIS. Les deux cœurs d'ingestion
+/// (`ingest_journal_lines`, `ingest_events_batch_env`) n'écrivaient leur `ROLLBACK` qu'aux chemins `Err` : un panic entre
+/// le `BEGIN` et la fin (parseur, processeur, enrichissement) laissait l'écrivain PARTAGÉ dans la transaction du lot, et
+/// toute écriture suivante échouait à son propre `BEGIN` (« cannot start a transaction within a transaction »). Seuls
+/// les connecteurs le rattrapaient (`P10.34-f`, point de capture) ; le spool (`catch_unwind` par fichier) et les
+/// récepteurs HTTP (`CatchPanicLayer`) n'annulent rien. Ce garde est posé APRÈS le `BEGIN` réussi (un `BEGIN` refusé
+/// reste `NonPris`, rien n'est ouvert), et son `Drop` annule tant qu'il n'est pas consommé par `valider` : un `return`
+/// anticipé et le déroulage d'un panic passent par lui. Local au module : `Txn` (main.rs) ouvre lui-même par un `BEGIN`
+/// nu, alors qu'ici le refus doit rester dit et compté par `ouvrir_sa_transaction`. Les deux lots des récepteurs de
+/// métriques (`metrics_prom`, `metrics_write`, ingest/obs.rs) le posent aussi : ce sont les quatre voies d'ingestion
+/// qui ouvrent leur propre transaction de lot (le lot Loki passe par `ingest_events_batch_env`).
+struct TransactionDuLot<'c> {
+    conn: &'c Connection,
+    armee: bool,
+}
+
+impl<'c> TransactionDuLot<'c> {
+    /// Le garde d'une transaction que `ouvrir_sa_transaction` vient d'ouvrir.
+    fn ouverte(conn: &'c Connection) -> Self {
+        TransactionDuLot { conn, armee: true }
+    }
+
+    /// Le `COMMIT` du lot, jugé par `valider_la_transaction` (qui annule elle-même sur un refus) : le garde est
+    /// consommé, son `Drop` n'annule plus rien.
+    fn valider(mut self) -> rusqlite::Result<()> {
+        self.armee = false;
+        valider_la_transaction(self.conn)
+    }
+}
+
+impl Drop for TransactionDuLot<'_> {
+    fn drop(&mut self) {
+        if self.armee {
+            // Après un refus, l'échec du ROLLBACK n'est pas une information : `is_autocommit()` se relit ensuite.
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
 /// ING-1 : `Ok(n)` = n lignes traitées et COMMITTÉES ; `Err(Annule(n))` = ROLLBACK atomique après un INSERT (ou le
 /// COMMIT) échoué -> l'appelant (`ingest_journal`) remonte le signal pour QUARANTAINER le fichier (rejouable)
 /// au lieu de le supprimer ; `Err(NonPris)` = transaction non ouverte, rien d'écrit (`P10.26-s`). Mirroir STRICT de
@@ -382,6 +421,8 @@ pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &s
     if ouvrir_sa_transaction(conn, "ingest", "lot journald").is_err() {
         return Err(LotNonEcrit::NonPris);
     }
+    // `P10.34-g` — à partir d'ici, tout abandon (refus, `return`, panic) annule la transaction du lot.
+    let lot = TransactionDuLot::ouverte(conn);
     let mut n = 0usize;
     let mut batch_min = i64::MAX;   // plus vieux ts du batch -> plancher de rattrapage host_rollup (buffer journald tardif)
     for line in content.lines() {
@@ -477,9 +518,11 @@ pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &s
         }
         if let Err(e) = store().insert_event(conn, &row) {
             eprintln!("[ingest] journal INSERT échoué -> ROLLBACK du batch ({db_path}) : {e}");
-            let _ = conn.execute_batch("ROLLBACK");
-            return Err(LotNonEcrit::Annule(n));
+            return Err(LotNonEcrit::Annule(n)); // `P10.34-g` : le `Drop` du garde annule la transaction du lot
         }
+        // Rien en production ; sous `cfg(test)`, le crochet d'un témoin (un panic après une écriture du lot, `P10.34-g`).
+        #[cfg(test)]
+        crate::handlers::transaction_validee::point_de_course(&format!("lot-journald:{db_path}"));
         // COMPOSITION RBA (#24) : un match threat-intel CONTRIBUE du risque à son entité (dans la MÊME
         // transaction que l'event -> atomique/cohérent). INERTE en mode 0 (aucun IOC -> ti_hit None).
         if let Some(h) = &ti_hit { ti_risk_contribution(conn, h, ts, "prod"); }
@@ -489,8 +532,8 @@ pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &s
     if batch_min != i64::MAX { note_host_backfill_floor(conn, batch_min); }
     // ING-1 : le COMMIT peut échouer (I/O au flush WAL sous disque plein) -> ROLLBACK + `Err` (quarantaine)
     // au lieu d'avaler l'erreur et de supprimer un fichier dont les events n'ont PAS été durcis.
-    if conn.execute_batch("COMMIT").is_err() {
-        let _ = conn.execute_batch("ROLLBACK");
+    // `P10.34-g` : jugé par `valider_la_transaction`, qui annule sur un refus (et le dit si l'écrivain reste bloqué).
+    if lot.valider().is_err() {
         return Err(LotNonEcrit::Annule(n));
     }
     // #51 DAY-2 OPS : compteur monotone d'events ingérés (voie journald NDJSON), cf. plume_ingest_events_total.
@@ -545,6 +588,8 @@ pub(crate) fn ingest_events_batch_env(
     if ouvrir_sa_transaction(conn, "ingest", "lot d'événements").is_err() {
         return Err(LotNonEcrit::NonPris);
     }
+    // `P10.34-g` — à partir d'ici, tout abandon (refus, `return`, panic) annule la transaction du lot.
+    let lot = TransactionDuLot::ouverte(conn);
     let mut n = 0usize;
     let mut inserted = 0usize;
     let mut batch_min = i64::MAX;   // plus vieux ts du batch -> plancher de rattrapage host_rollup (arrivées tardives)
@@ -702,10 +747,12 @@ pub(crate) fn ingest_events_batch_env(
                 // FAIL-SAFE : erreur mid-batch -> ROLLBACK ATOMIQUE du fichier + log ; le daemon NE tombe
                 // PAS. L'appelant met le fichier en quarantaine (rejouable, aucune perte silencieuse).
                 eprintln!("[ingest] events INSERT échoué -> ROLLBACK du batch ({db_path}) : {e}");
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(LotNonEcrit::Annule(n));
+                return Err(LotNonEcrit::Annule(n)); // `P10.34-g` : le `Drop` du garde annule la transaction du lot
             }
         }
+        // Rien en production ; sous `cfg(test)`, le crochet d'un témoin (un panic après une écriture du lot, `P10.34-g`).
+        #[cfg(test)]
+        crate::handlers::transaction_validee::point_de_course(&format!("lot-d-evenements:{db_path}"));
         // COMPOSITION RBA (#24) : un match threat-intel CONTRIBUE du risque à son entité (MÊME transaction
         // que l'event). INERTE en mode 0 (aucun IOC -> ti_hit None) -> aucun risk_event -> byte-identique.
         // env : `env_id` du connecteur (ou 'prod' par défaut historique) -> RBA scopé au bon environnement.
@@ -718,7 +765,7 @@ pub(crate) fn ingest_events_batch_env(
     if batch_min != i64::MAX { note_host_backfill_floor(conn, batch_min); }
     // `P10.26-s` — le `COMMIT` du lot est JUGÉ : refusé, la transaction est annulée (c'est la sienne) et le lot l'est
     // avec, rien n'est compté comme ingéré. Il était ignoré, et `Ok` partait quoi que la base ait fait.
-    if let Err(e) = valider_la_transaction(conn) {
+    if let Err(e) = lot.valider() {
         eprintln!("[ingest] events COMMIT refusé -> lot annulé ({db_path}) : {e}");
         return Err(LotNonEcrit::Annule(n));
     }

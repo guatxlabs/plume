@@ -962,20 +962,20 @@
             "panel_cost doit exister après migrate()"
         );
         // panneau NOUVEAU (aucun coût) -> None -> l'appelant exécute en LIVE (1re mesure).
-        assert!(read_panel_cost(&conn, 1, "fpA").is_none(), "un panneau inconnu n'a pas de coût (-> LIVE)");
+        assert!(read_panel_cost(&conn, 1, "fpA").unwrap().is_none(), "un panneau inconnu n'a pas de coût (-> LIVE)");
         // 1re mesure CHEAP (< seuil défaut 100) -> classé LIVE.
         record_panel_cost(&conn, 1, "fpA", 12.5, now());
-        assert_eq!(read_panel_cost(&conn, 1, "fpA"), Some(12.5));
+        assert_eq!(read_panel_cost(&conn, 1, "fpA").unwrap(), Some(12.5));
         // AUTO-RECLASSEMENT : le même panneau ralentit (>= seuil) -> OR REPLACE met à jour le coût (-> SWR).
         record_panel_cost(&conn, 1, "fpA", 350.0, now());
-        assert_eq!(read_panel_cost(&conn, 1, "fpA"), Some(350.0), "le coût se met à jour (auto-reclassement)");
+        assert_eq!(read_panel_cost(&conn, 1, "fpA").unwrap(), Some(350.0), "le coût se met à jour (auto-reclassement)");
         let rows: i64 = conn.query_row("SELECT COUNT(*) FROM panel_cost WHERE panel_id=1", [], |r| r.get(0)).unwrap();
         assert_eq!(rows, 1, "1 seule ligne par panneau (PK panel_id, OR REPLACE)");
         // ISOLATION par query_fp : une requête DIFFÉRENTE (panel_update) ne réutilise pas l'ancien coût.
-        assert!(read_panel_cost(&conn, 1, "fpB").is_none(), "un q_fp différent ne sert pas le coût d'une autre requête");
+        assert!(read_panel_cost(&conn, 1, "fpB").unwrap().is_none(), "un q_fp différent ne sert pas le coût d'une autre requête");
         record_panel_cost(&conn, 1, "fpB", 5.0, now());
-        assert!(read_panel_cost(&conn, 1, "fpA").is_none(), "le nouveau fp remplace l'ancien (1 ligne/panneau)");
-        assert_eq!(read_panel_cost(&conn, 1, "fpB"), Some(5.0));
+        assert!(read_panel_cost(&conn, 1, "fpA").unwrap().is_none(), "le nouveau fp remplace l'ancien (1 ligne/panneau)");
+        assert_eq!(read_panel_cost(&conn, 1, "fpB").unwrap(), Some(5.0));
         // measured_cost_ms extrait bien stats.elapsed_ms d'un résultat run_query, None si absent.
         assert_eq!(measured_cost_ms(&json!({"stats": {"elapsed_ms": 7.0}})), Some(7.0));
         assert!(measured_cost_ms(&json!({"columns": [], "rows": []})).is_none());

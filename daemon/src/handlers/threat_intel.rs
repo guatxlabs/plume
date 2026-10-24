@@ -247,6 +247,18 @@ fn lire_iocs_actifs(conn: &Connection, now_ts: i64) -> rusqlite::Result<HashMap<
     Ok(map)
 }
 
+/// `P10.29-l` — LE DÉTAIL SERVI d'un rechargement du cache IOC raté. Il part dans `cache_actifs_detail` de
+/// `/api/threat-intel/coverage` (viewer+), dans le voyant de santé et dans `/api/metrics` : phrase FIXE, seul le
+/// compte d'indicateurs conservé y entre — ni le chemin de la base, ni le texte du moteur (au journal seul).
+pub(crate) fn detail_du_cache_ioc_non_relu(conserves: usize) -> String {
+    format!(
+        "rechargement du cache IOC : la table `ioc` n'a pas pu être lue entièrement — {conserves} indicateur(s) de la \
+         dernière lecture réussie CONSERVÉ(S), la correspondance continue sur ce jeu et la mise à jour est perdue ; \
+         installer un ensemble vide aurait ÉTEINT la correspondance sans qu'aucun corps servi ne le dise ; la cause \
+         est au journal du démon"
+    )
+}
+
 /// Recharge le set d'IOC ACTIFS de CE db_path depuis la table `ioc` (sous le lock writer côté appelant,
 /// ex. rollup loop, ~120 s, plus après chaque mutation admin).
 ///
@@ -265,7 +277,7 @@ fn lire_iocs_actifs(conn: &Connection, now_ts: i64) -> rusqlite::Result<HashMap<
 pub(crate) fn ioc_cache_reload(conn: &Connection, db_path: &str) {
     use crate::mesure_environnement::{Mesure, VERDICT_ILLISIBLE};
     let avant = ioc_reload_etat().read().get(db_path).map(Mesure::verdict);
-    let bilan = match lire_iocs_actifs(conn, now()) {
+    let (bilan, journal) = match lire_iocs_actifs(conn, now()) {
         Ok(map) => {
             let actifs = map.len() as u64;
             // (#30) Reconstruit l'index d'appartenance depuis LE MÊME jeu d'IOC (paires (kind, value)).
@@ -280,29 +292,31 @@ pub(crate) fn ioc_cache_reload(conn: &Connection, db_path: &str) {
             { let mut wi = ioc_index().write();
                 wi.insert(db_path.to_string(), idx); // MT-KEY : index de CE db_path (remplacement atomique)
             }
-            Mesure::Lue(actifs)
+            (Mesure::Lue(actifs), None)
         }
         Err(e) => {
             // LE GESTE : rien n'est écrit. Le set et l'index de CE db_path restent ceux de la dernière
             // lecture entière. Le compte conservé part dans l'aveu — sans lui, un exploitant ne sait pas
             // si la détection tourne encore ni sur combien d'indicateurs.
             let conserves = ioc_set().read().get(db_path).map_or(0, |m| m.len());
-            Mesure::Illisible {
-                cause: crate::bilan_de_tick::cause_sql(&e),
-                detail: format!(
-                    "rechargement du cache IOC de `{db_path}` : la table `ioc` n'a pas pu être lue entièrement \
-                     ({e}) — {conserves} indicateur(s) de la dernière lecture réussie CONSERVÉ(S), la \
-                     correspondance continue sur ce jeu et la mise à jour est perdue ; installer un ensemble \
-                     vide aurait ÉTEINT la correspondance sans qu'aucun corps servi ne le dise"
-                ),
-            }
+            // `P10.29-l` — le `detail` est SERVI (couverture TI, lisible par tous les rôles ; voyant de santé ;
+            // `/api/metrics`) : phrase FIXE, seul le compte conservé y entre. Le chemin de la base et le texte du
+            // moteur vont au journal seul.
+            let journal = format!(
+                "[ti] WARN rechargement du cache IOC de `{db_path}` : table `ioc` non relue ({e}) — {conserves} \
+                 indicateur(s) CONSERVÉ(S), la correspondance continue sur ce jeu"
+            );
+            let detail = detail_du_cache_ioc_non_relu(conserves);
+            (Mesure::Illisible { cause: crate::bilan_de_tick::cause_sql(&e), detail }, Some(journal))
         }
     };
     // LA BASCULE, PAS L'ÉTAT : le chemin nominal reste MUET (aucune ligne de journal sur un `Lue`), et un
     // aveu qui se répète 720 fois par jour cesse d'être lu.
     match (&bilan, avant) {
-        (Mesure::Illisible { detail, .. }, precedent) if precedent != Some(VERDICT_ILLISIBLE) => {
-            eprintln!("[ti] WARN {detail}");
+        (Mesure::Illisible { .. }, precedent) if precedent != Some(VERDICT_ILLISIBLE) => {
+            if let Some(ligne) = &journal {
+                eprintln!("{ligne}");
+            }
         }
         (Mesure::Lue(n), Some(VERDICT_ILLISIBLE)) => {
             eprintln!("[ti] rechargement du cache IOC RÉTABLI pour `{db_path}` : {n} indicateur(s) actif(s)");
@@ -740,6 +754,26 @@ pub(crate) async fn stix_import(State(st): State<AppState>, Extension(au): Exten
     }
 }
 
+/// `P10.29-l` — la ventilation par type non lue, dite sans le texte du moteur (la cause va au journal seul).
+pub(crate) const TI_VENTILATION_PAR_TYPE_NON_LUE: &str = "ventilation par type NON LUE : la base n'a pas rendu la \
+     ventilation des indicateurs actifs par type — ce n'est PAS « aucun type », c'est une lecture qui n'a pas eu lieu.";
+/// `P10.29-l` — la ventilation par source non lue, dite sans le texte du moteur (la cause va au journal seul).
+pub(crate) const TI_VENTILATION_PAR_SOURCE_NON_LUE: &str = "ventilation par source NON LUE : la base n'a pas rendu la \
+     ventilation des indicateurs actifs par source — ce n'est PAS « aucune source », c'est une lecture qui n'a pas eu lieu.";
+
+/// AVEU : un compte du magasin d'indicateurs (`total`, `active`) que la base n'a pas rendu — aucune valeur, le
+/// verdict « illisible » et une phrase FIXE par compte (`P10.7-n`, `P10.29-l`). Ni le SQL ni le texte du moteur : la
+/// couverture est lisible par tous les rôles ; la cause du moteur part au journal chez l'appelant.
+pub(crate) fn compte_du_magasin_non_lu(quoi: &'static str) -> crate::mesure_environnement::Mesure<i64> {
+    crate::mesure_environnement::Mesure::Illisible {
+        cause: crate::mesure_environnement::CAUSE_SOURCE_ILLISIBLE,
+        detail: format!(
+            "{quoi} NON LU : la base n'a pas rendu ce compte du magasin d'indicateurs — ce n'est PAS un zéro, c'est \
+             une lecture qui n'a pas eu lieu"
+        ),
+    }
+}
+
 /// GET /api/threat-intel/coverage — DONNÉES du panneau de couverture threat-intel (viewer+). CHEAP :
 /// ne lit QUE la table `ioc` (petite), JAMAIS un scan de `event`. Renvoie l'état du magasin (total,
 /// actifs/expirés, ventilation par type et par source). Les HITS dans le temps sont servis par le
@@ -750,19 +784,25 @@ pub(crate) async fn stix_import(State(st): State<AppState>, Extension(au): Exten
 /// prouverait que la coupe est CALCULÉE, jamais qu'elle ATTEINT le client. La seule chose que la route
 /// ajoute par-dessus est le relevé du cache de correspondance, qui exige un chemin de base.
 pub(crate) fn ti_coverage_json(conn: &Connection, now_ts: i64) -> Value {
-    use crate::mesure_environnement::{Mesure, CAUSE_SOURCE_ILLISIBLE};
+    use crate::mesure_environnement::Mesure;
     // `P10.7-n` (second reste, fermé le 2026-09-08) : `total` et `active` étaient lus en `unwrap_or(0)`, donc un
     // magasin ILLISIBLE se disait VIDE — le zéro le plus rassurant, à côté d'une détection qui tournait sur un
     // jeu réel. Ils sont désormais des MESURES : lues, elles portent leur valeur (un vrai zéro compris) ; illisibles,
     // la valeur DISPARAÎT et le verdict, la cause et le détail sont posés à côté (S32), comme `cache_actifs`.
-    let compte = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> Mesure<i64> {
+    // `P10.29-l` — le `detail` servi est une PHRASE FIXE par compte (ni le SQL, ni le texte du moteur : ce corps est
+    // lisible par tous les rôles) ; la cause du moteur va au journal seul. Pas d'identifiant de corrélation : c'est un
+    // deux cents, et l'identifiant n'est frappé que pour un 5xx (`err_json_et_identifiant`).
+    let compte = |quoi: &'static str, sql: &str, p: &[&dyn rusqlite::ToSql]| -> Mesure<i64> {
         match conn.query_row(sql, p, |r| r.get::<_, i64>(0)) {
             Ok(n) => Mesure::Lue(n),
-            Err(e) => Mesure::Illisible { cause: CAUSE_SOURCE_ILLISIBLE, detail: format!("{sql} : {e}") },
+            Err(e) => {
+                eprintln!("[threat-intel] WARN couverture : compte `{quoi}` NON lu, aucune valeur servie ({e})");
+                compte_du_magasin_non_lu(quoi)
+            }
         }
     };
-    let total = compte("SELECT COUNT(*) FROM ioc", &[]);
-    let active = compte("SELECT COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1", &[&now_ts]);
+    let total = compte("total", "SELECT COUNT(*) FROM ioc", &[]);
+    let active = compte("active", "SELECT COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1", &[&now_ts]);
     let by_type_lu: rusqlite::Result<Vec<Value>> = conn
         .prepare("SELECT type, COUNT(*) FROM ioc WHERE expires IS NULL OR expires > ?1 GROUP BY type ORDER BY 2 DESC")
         .and_then(|mut s| {
@@ -783,7 +823,10 @@ pub(crate) fn ti_coverage_json(conn: &Connection, now_ts: i64) -> Value {
         });
     let (by_type_v, by_type_err) = match by_type_lu {
         Ok(v) => (json!(v), None),
-        Err(e) => (Value::Null, Some(format!("ventilation par type NON LUE : {e}"))),
+        Err(e) => {
+            eprintln!("[threat-intel] WARN couverture : ventilation par type NON lue, aucune liste servie ({e})");
+            (Value::Null, Some(TI_VENTILATION_PAR_TYPE_NON_LUE.to_string()))
+        }
     };
     let (by_source_v, by_source_window_v, by_source_capped_v, by_source_err) = match lues_lu {
         Ok(lues) => {
@@ -791,7 +834,10 @@ pub(crate) fn ti_coverage_json(conn: &Connection, now_ts: i64) -> Value {
                 crate::handlers::liste_bornee::couper_a_la_borne(lues, TI_COVERAGE_SOURCES_MAX);
             (json!(by_source), json!(TI_COVERAGE_SOURCES_MAX), json!(by_source_capped), None)
         }
-        Err(e) => (Value::Null, Value::Null, Value::Null, Some(format!("ventilation par source NON LUE : {e}"))),
+        Err(e) => {
+            eprintln!("[threat-intel] WARN couverture : ventilation par source NON lue, aucune liste servie ({e})");
+            (Value::Null, Value::Null, Value::Null, Some(TI_VENTILATION_PAR_SOURCE_NON_LUE.to_string()))
+        }
     };
     let mut sortie = json!({
         "by_type": by_type_v,

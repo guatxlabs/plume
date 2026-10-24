@@ -1208,7 +1208,11 @@ pub(crate) async fn netban_delete(State(st): State<AppState>, Extension(au): Ext
         Err(e) => {
             let maillon = ledger_append(&conn, "netban.remove.echec", &format!("{saisie} NON levé by={} : {e}", au.name));
             let trace = mention_d_echec_sans_trace(&maillon);
-            return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban IMPOSSIBLE (store indisponible) : {e} — RÉESSAYER ; le ban est TOUJOURS actif{trace}"));
+            // `P10.29-l` — la phrase servie ne porte plus le texte du store (moteur) : il va au journal seul, avec
+            // l'identifiant servi, sans l'adresse visée.
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban IMPOSSIBLE (store indisponible) — RÉESSAYER ; le ban est TOUJOURS actif{trace}"));
+            eprintln!("[{}] [netban] WARN levée de ban NON faite, store indisponible, le ban reste actif ({e})", cid.unwrap_or_default());
+            return refus;
         }
     };
     if let Some(c) = canon.as_deref() {
@@ -1218,7 +1222,10 @@ pub(crate) async fn netban_delete(State(st): State<AppState>, Extension(au): Ext
                 Err(e) => {
                     let maillon = ledger_append(&conn, "netban.remove.echec", &format!("{c} (canon de {saisie}) NON levé by={} : {e}", au.name));
                     let trace = mention_d_echec_sans_trace(&maillon);
-                    return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban PARTIELLE ({retires} retiré(s)) puis ÉCHEC sur la forme canonique : {e} — RÉESSAYER{trace}"));
+                    // `P10.29-l` — même règle : le texte du store au journal seul, avec l'identifiant servi.
+                    let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, format!("levée de ban PARTIELLE ({retires} retiré(s)) puis ÉCHEC sur la forme canonique — RÉESSAYER{trace}"));
+                    eprintln!("[{}] [netban] WARN levée de ban PARTIELLE ({retires} retiré(s)), forme canonique NON levée ({e})", cid.unwrap_or_default());
+                    return refus;
                 }
             }
         }

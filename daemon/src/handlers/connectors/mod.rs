@@ -6,6 +6,8 @@
 //! Split #35 : Defender / TAXII / http_pull en sous-modules ; runtime partage + re-exports (pure move).
 use crate::*;
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, refuser_le_geste_non_valide, tracer_apres_coup, valider_la_transaction};
+use crate::handlers::users_lookups::servir_l_echec_de_la_transaction_d_audit;
+use rusqlite::OptionalExtension as _;
 
 mod defender;
 mod taxii;
@@ -80,8 +82,9 @@ pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
     }
     // 2) Chaque connecteur SÉQUENTIELLEMENT, isolé par catch_unwind (fail-safe : jamais de propagation).
     for (id, ctype, cfg_json, secret, env_id, watermark) in due {
-        // `P10.34-f` — l'écrivain est-il libre AVANT le passage ? Un panic après le `BEGIN` du lot laisse la transaction
-        // du passage ouverte (`ingest_events_batch_env` n'annule que sur ses chemins `Err`, `catch_unwind` n'annule rien).
+        // `P10.34-f` — l'écrivain est-il libre AVANT le passage ? `catch_unwind` n'annule rien : un panic dans le passage
+        // HORS du lot d'ingestion (le lot lui-même est annulé au déroulage par son garde `TransactionDuLot`, `P10.34-g`)
+        // laisserait une transaction ouverte par un autre chemin, et ce point de capture la referme.
         let ecrivain_libre_avant = db.lock().is_autocommit();
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // garde SSRF au point d'ÉGRESS RÉEL (le fetch de PRODUCTION `guarded_http_call`) — couvre
@@ -149,6 +152,10 @@ const NATURE_TRANSACTION_ETRANGERE: &str = "transaction d'un autre geste pendant
 /// n'est pas écrit (il entrerait dans cette transaction).
 const NATURE_TRANSACTION_DU_PASSAGE_NON_ANNULEE: &str = "transaction du passage restée ouverte, annulation refusée";
 
+/// `P10.34-g` — l'`UPDATE` est pris mais ne touche AUCUNE ligne : le connecteur a été supprimé pendant le passage (son
+/// identifiant n'existe plus). Rien n'est écrit, et ce n'est pas un refus : un nouvel essai ne trouverait rien non plus.
+const NATURE_CONNECTEUR_DISPARU: &str = "connecteur disparu";
+
 fn nature_du_refus_du_passage_rate(refus: &rusqlite::Error) -> &'static str {
     match refus.sqlite_error_code() {
         Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => NATURE_VERROU_TENU_AILLEURS,
@@ -178,7 +185,9 @@ const PASSAGE_INTERROMPU: &str = "passage interrompu (panic capturé)";
 ///     ici doublerait le compte, d'où la lecture directe de l'écrivain ;
 ///   - sinon l'`UPDATE` est essayé au plus `ESSAIS_DU_PASSAGE_RATE` fois (chaque essai attend au plus le `busy_timeout`
 ///     de l'écrivain : l'attente est bornée par ce COMPTE, jamais une durée) ; écrit -> rien de plus ;
-///   - toujours refusé -> UNE ligne fixe, numéro interne du connecteur, ce que le passage a fait, nature du refus.
+///   - toujours refusé -> UNE ligne fixe, numéro interne du connecteur, ce que le passage a fait, nature du refus ;
+///   - `P10.34-g` : pris mais ZÉRO ligne touchée (connecteur supprimé pendant le passage) -> UNE ligne fixe
+///     (`NATURE_CONNECTEUR_DISPARU`), sans nouvel essai. Elle passait pour un succès (`Ok(_)`), et personne ne le savait.
 fn ecrire_l_etat_du_passage(conn: &Connection, db_path: &str, id: i64, passage: &'static str, sql: &str, valeurs: &[&dyn rusqlite::ToSql]) {
     if !conn.is_autocommit() {
         eprintln!("[connecteurs] WARN connecteur #{id} : {passage}, état non écrit ({NATURE_TRANSACTION_ETRANGERE})");
@@ -186,6 +195,10 @@ fn ecrire_l_etat_du_passage(conn: &Connection, db_path: &str, id: i64, passage: 
     }
     for essai in 1..=ESSAIS_DU_PASSAGE_RATE {
         match conn.execute(sql, valeurs) {
+            Ok(0) => {
+                eprintln!("[connecteurs] WARN connecteur #{id} : {passage}, état non écrit ({NATURE_CONNECTEUR_DISPARU})");
+                return;
+            }
             Ok(_) => return,
             Err(refus) if essai == ESSAIS_DU_PASSAGE_RATE => eprintln!(
                 "[connecteurs] WARN connecteur #{id} : {passage}, état non écrit ({})",
@@ -501,7 +514,8 @@ pub(crate) async fn connector_create(State(st): State<AppState>, Extension(au): 
         },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul (avec l'identifiant servi).
+            servir_l_echec_de_la_transaction_d_audit("[connecteurs]", &format!("création d'un connecteur {ctype}"), &e)
         }
     }
 }
@@ -517,8 +531,16 @@ pub(crate) async fn connector_update(State(st): State<AppState>, Extension(au): 
         }
     }
     crate::req_conn!(st, au, conn);
-    if conn.query_row("SELECT 1 FROM connector WHERE id=?1", params![id], |_| Ok(())).is_err() {
-        return not_found("connecteur introuvable");
+    // `P10.20-l` (vague AJ) — trois issues : lu, la modification suit ; absent, le 404 d'avant ; lecture ratée, 503
+    // nommé AVANT toute transaction, rien n'est écrit (la forme d'avant, `.is_err()`, servait la lecture ratée en 404).
+    match conn.query_row("SELECT 1 FROM connector WHERE id=?1", params![id], |_| Ok(())).optional() {
+        Ok(Some(())) => {}
+        Ok(None) => return not_found("connecteur introuvable"),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CONNECTEUR_INCHANGE_NON_LU);
+            eprintln!("[connecteurs] WARN connecteur #{id} NON lu pour la modification, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     }
     // M3 : mutation + audit fail-closed. Le `secret` (rotation client_secret) n'est JAMAIS logué -> l'audit
     // note un booléen `secret_rotated` + les NOMS des champs modifiés (jamais leurs valeurs).
@@ -569,7 +591,8 @@ pub(crate) async fn connector_update(State(st): State<AppState>, Extension(au): 
         },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul (avec l'identifiant servi).
+            servir_l_echec_de_la_transaction_d_audit("[connecteurs]", &format!("modification du connecteur #{id}"), &e)
         }
     }
 }
@@ -621,7 +644,8 @@ pub(crate) async fn connector_delete(State(st): State<AppState>, Extension(au): 
         },
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
-            server_err(format!("échec transaction audit (aucune modification): {e}"))
+            // `P10.29-l` — phrase fixe au client, cause du moteur au journal seul (avec l'identifiant servi).
+            servir_l_echec_de_la_transaction_d_audit("[connecteurs]", &format!("suppression du connecteur #{id}"), &e)
         }
     }
 }
@@ -667,6 +691,22 @@ pub(crate) const CAUSE_CONNECTEUR_INCHANGE_TRANSACTION_NON_OUVERTE: &str = "CONN
      connecteur que vous désactiviez collecte toujours, un secret que vous remplaciez est toujours celui qu'il \
      présente au vendeur, et aucune trace n'est écrite. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou \
      bloqué.";
+/// `P10.20-l` (vague AJ) — l'existence du connecteur à modifier n'a pas été lue : rien n'est écrit. Ne nomme ni `BEGIN`
+/// ni `COMMIT` ni une transaction annulée : c'est la lecture qui manque (refus nommé, `natureDuRefusDUnGeste`, web/core.js).
+pub(crate) const CAUSE_CONNECTEUR_INCHANGE_NON_LU: &str = "CONNECTEUR INCHANGÉ : la base n'a pas rendu ce connecteur — \
+     ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu. RIEN n'est écrit : ni son activation, ni sa \
+     configuration, ni son secret ne changent, et aucune trace n'est écrite. Réessayez ; si le refus persiste, la table \
+     des connecteurs est illisible.";
+/// `P10.20-l` (vague AJ) — la définition du connecteur à essayer n'a pas été lue : aucun essai (refus d'un essai,
+/// `natureDuRefusDUnEssai`, web/core.js).
+pub(crate) const CAUSE_ESSAI_DU_CONNECTEUR_NON_FAIT_NON_LU: &str = "ESSAI NON FAIT : la base n'a pas rendu ce connecteur \
+     — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu. Aucune requête n'est partie vers la source. \
+     Réessayez ; si le refus persiste, la table des connecteurs est illisible.";
+/// `P10.20-l` (vague AJ) — la définition du connecteur à collecter n'a pas été lue : aucun poll, aucune trace (refus
+/// nommé, `natureDuRefusDUnGeste`, web/core.js).
+pub(crate) const CAUSE_POLL_DU_CONNECTEUR_NON_FAIT_NON_LU: &str = "POLL NON FAIT : la base n'a pas rendu ce connecteur — \
+     ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu. Rien n'est collecté, son curseur ne bouge pas, et \
+     aucune trace n'est écrite. Réessayez ; si le refus persiste, la table des connecteurs est illisible.";
 
 /// `P10.26-a` — le `COMMIT` de la suppression d'un connecteur, qui révoque ses clés de livraison, refusé.
 pub(crate) const CAUSE_CONNECTEUR_NON_SUPPRIME: &str = "CONNECTEUR NON SUPPRIMÉ, SES CLÉS DE LIVRAISON NE SONT PAS \
@@ -716,11 +756,18 @@ pub(crate) async fn connector_test(State(st): State<AppState>, Extension(au): Ex
             "SELECT type,config_json,secret,watermark FROM connector WHERE id=?1",
             params![id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?)),
-        ).ok()
+        ).optional()
     };
+    // `P10.20-l` (vague AJ) — trois issues : lu, l'essai suit ; absent, le 404 d'avant ; lecture ratée, 503 nommé, aucun
+    // essai (la forme d'avant, `.ok()`, servait la lecture ratée en 404).
     let (ctype, cfg_json, secret, watermark) = match row {
-        Some(x) => x,
-        None => return not_found("connecteur introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("connecteur introuvable"),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ESSAI_DU_CONNECTEUR_NON_FAIT_NON_LU);
+            eprintln!("[connecteurs] WARN connecteur #{id} NON lu pour l'essai, aucun essai ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     // TAXII 2.1 : DRY-RUN = 1 page d'objets, N'UPSERT PAS ; renvoie le nombre d'IOC traduisibles observés.
     if ctype == "taxii2" {
@@ -793,11 +840,18 @@ pub(crate) async fn connector_poll(State(st): State<AppState>, Extension(au): Ex
                 r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?,
             )),
-        ).ok()
+        ).optional()
     };
+    // `P10.20-l` (vague AJ) — trois issues : lu, le poll suit ; absent, le 404 d'avant ; lecture ratée, 503 nommé, aucun
+    // poll ni trace (la forme d'avant, `.ok()`, servait la lecture ratée en 404).
     let (ctype, cfg_json, secret, env_id, watermark) = match row {
-        Some(x) => x,
-        None => return not_found("connecteur introuvable"),
+        Ok(Some(x)) => x,
+        Ok(None) => return not_found("connecteur introuvable"),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_POLL_DU_CONNECTEUR_NON_FAIT_NON_LU);
+            eprintln!("[connecteurs] WARN connecteur #{id} NON lu pour le poll manuel, aucun poll ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     // RÉUTILISE la logique de poll de fond (#3a) sur la base du tenant. spawn_blocking : le réseau/l'ingest
     // sous lock writer ne bloquent pas l'exécuteur. FAIL-SAFE : poll_one_connector avale ses erreurs (last_error).

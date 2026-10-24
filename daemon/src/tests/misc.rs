@@ -374,18 +374,18 @@
         let p2 = conn.last_insert_rowid();
         let au = ergo_au("admin");
         // les DEUX panneaux (dashboards distincts) résolvent la MÊME requête de bibliothèque.
-        let (q1, s1, _, _) = panel_access(&conn, &au, p1).unwrap();
-        let (q2, _, _, _) = panel_access(&conn, &au, p2).unwrap();
+        let (q1, s1, _, _) = panel_access(&conn, &au, p1).unwrap().unwrap();
+        let (q2, _, _, _) = panel_access(&conn, &au, p2).unwrap().unwrap();
         assert_eq!(q1, "search source=sudo | stats count", "panel 1 -> requête de la bibliothèque");
         assert_eq!(q2, "search source=sudo | stats count", "panel 2 -> requête de la bibliothèque");
         assert!(s1, "is_soql hérité de la bibliothèque");
         // ÉDITION UNIQUE de la bibliothèque -> met à jour la résolution des DEUX panneaux (partout).
         conn.execute("UPDATE library_panel SET query='search source=web | stats count' WHERE id=?1", params![lib]).unwrap();
-        assert_eq!(panel_access(&conn, &au, p1).unwrap().0, "search source=web | stats count");
-        assert_eq!(panel_access(&conn, &au, p2).unwrap().0, "search source=web | stats count");
+        assert_eq!(panel_access(&conn, &au, p1).unwrap().unwrap().0, "search source=web | stats count");
+        assert_eq!(panel_access(&conn, &au, p2).unwrap().unwrap().0, "search source=web | stats count");
         // DÉTACHER (library_panel_id NULL) -> retombe sur la requête LOCALE (mode 0 byte-identique).
         conn.execute("UPDATE panel SET library_panel_id=NULL WHERE id=?1", params![p1]).unwrap();
-        assert_eq!(panel_access(&conn, &au, p1).unwrap().0, "search LOCAL10", "détaché -> requête locale");
+        assert_eq!(panel_access(&conn, &au, p1).unwrap().unwrap().0, "search LOCAL10", "détaché -> requête locale");
     }
 
     #[test]

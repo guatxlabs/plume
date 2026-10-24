@@ -297,9 +297,13 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # jour-là, après le correctif, MESURÉ par cette garde — 19 sites sur 10 fichiers (chacun perd son site ; `governance.rs`,
 # `index_policies.rs`, `users_lookups.rs`, `cases.rs` et `caseops.rs` SORTENT du relevé ; le relevé de 34 sur 18 du
 # 2026-10-23 n'avait pas suivi les sorties des vagues AF à AH). Même règle : 19 -> 13 (69 % = 13,11), 10 -> 6 (65 % = 6,5).
-RELEVE_SITES = 19
+# RE-DÉRIVÉS le 2026-10-24 (`P10.20-l`, vague AJ : `dash_get`, `panel_access` ×2, `read_panel_cost`, `panel_cache_ttl`,
+# `unique_custom_key`) : relevé de l'arbre ce jour-là, après le correctif, MESURÉ par cette garde — 13 sites sur 10
+# fichiers (six sites perdus ; aucun fichier ne sort : `dashboards.rs` garde `excl_display_csv`, `incidents.rs` garde
+# `case_runbooks_json` et `runbook_admin_json`). Même règle : 13 -> 8 (69 % = 8,97), 10 -> 6 (65 % = 6,5).
+RELEVE_SITES = 13
 RELEVE_FICHIERS = 10
-PLANCHER_SITES = 13
+PLANCHER_SITES = 8
 PLANCHER_FICHIERS = 6
 
 # ================================================================================================
@@ -416,10 +420,13 @@ DEFAUTS_RANG_3_INTERNE = {
     # recalcul, « NON LUE » au rattrapage). (La quatrième, `EXISTS(sla_policy)` du tour multi-niveaux,
     # avait quitté l'ensemble au 2026-10-07 : elle PROPAGE, comptée au balayage
     # `sla_multilevel_politique` — `P10.20-w`.)
-    # Coût de panneau recalculé, TTL de cache global, cache de panneau manqué : replis bénins, dits
-    # bénins, et gardés dans l'ensemble pour que leur forme ne change pas en silence.
-    ("daemon/src/handlers/dashboards.rs", "read_panel_cost"): ("ok",),
-    ("daemon/src/handlers/dashboards.rs", "panel_cache_ttl"): ("ok.flatten",),
+    # DEUX ENTRÉES RETIRÉES PAR `P10.20-l` (vague AJ, 2026-10-24) : `dashboards.rs::read_panel_cost` (`ok`) et
+    # `panel_cache_ttl` (`ok.flatten`). Lus en `.optional()` : le coût rend `Result<Option<f64>>`, une lecture ratée est
+    # servie comme un panneau jamais mesuré (comportement d'avant) MAIS dite par une ligne fixe ; le TTL non lu vaut 0
+    # (cache coupé pour ce panneau, fail-closed) avec sa ligne fixe — il retombait sur le TTL global
+    # (témoins : `lectures_des_panneaux_et_cles_de_runbook_en_trois_issues.rs`).
+    # Cache de panneau manqué : repli bénin, dit bénin, et gardé dans l'ensemble pour que sa forme ne change pas
+    # en silence.
     ("daemon/src/handlers/panneau_avoue.rs", "cache_lire"): ("ok",),
     # L'override ADMIN d'affichage retombe sur la variable d'environnement : le réglage posé par
     # l'opérateur est silencieusement remplacé par celui du déploiement.
@@ -468,12 +475,11 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # `Refusee`/`DossierAbsent` d'avant, lecture ratée = `DossierNonLu` (neuve dans les deux issues ; transaction
     # annulée pour la défusion), rien n'est écrit (témoins : `lectures_d_existence_en_trois_issues.rs`).
     # C'étaient les derniers sites de `caseops.rs` et de `cases.rs`, qui SORTENT du relevé.
-    # VENUE DU RANG DEUX PAR `P10.20-b` (2026-10-07, lot E5) : la relecture d'après poll n'absorbe plus (voir
-    # la note de la classe 3). Reste le `.ok()` sur la DÉFINITION du connecteur : lecture ratée -> 404
-    # « connecteur introuvable », aucun poll. Cause fausse, aucun fait inventé.
-    ("daemon/src/handlers/connectors/mod.rs", "connector_poll"): ("ok",),
-    ("daemon/src/handlers/connectors/mod.rs", "connector_test"): ("ok",),
-    ("daemon/src/handlers/connectors/mod.rs", "connector_update"): ("is_err",),
+    # TROIS ENTRÉES RETIRÉES PAR `P10.20-l` (vague AJ, 2026-10-24) : `connectors/mod.rs::connector_poll`,
+    # `connector_test` (`ok`) et `connector_update` (`is_err`) — une lecture ratée de la définition du connecteur
+    # rendait 404 « connecteur introuvable ». Lus en `.optional()` : absence établie = le 404 d'avant, lecture ratée
+    # = 503 nommé (`CAUSE_POLL_DU_CONNECTEUR_NON_FAIT_NON_LU`, `CAUSE_ESSAI_DU_CONNECTEUR_NON_FAIT_NON_LU`,
+    # `CAUSE_CONNECTEUR_INCHANGE_NON_LU`), rien n'est écrit, essayé ni collecté (témoins `aj1_`).
     # `P10.33-l` — DEUX ENTRÉES RETIRÉES (2026-10-16), PARCE QUE LES DEUX SITES SONT CORRIGÉS :
     # `dash_ergonomics.rs::playlist_update` et `playlist_delete` (`is_err`) — une lecture ratée de la liste de
     # lecture visée rendait 404 « introuvable » pour une liste bien vivante. Elles sont lues en `.optional()` :
@@ -484,11 +490,12 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # ratée = 503 `CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_NON_LU`, rien n'est détaché ni supprimé (témoins `af4_`,
     # `ecritures_des_retraits_de_tableaux_de_bord_jugees.rs`). C'était le dernier site de `dash_ergonomics.rs`, qui SORT
     # du relevé (33 sites sur 17 fichiers, au-dessus des planchers : rien à re-dériver).
-    ("daemon/src/handlers/dashboards.rs", "dash_get"): ("ok",),
-    # DEUX `.ok()?` dans la porte d'accès aux panneaux : la porte rend `None`, l'appelant refuse. La
-    # porte est bien fail-closed ; ce qui manque est la DISTINCTION entre « ce panneau n'existe pas »
-    # et « je n'ai pas pu lire s'il existe ».
-    ("daemon/src/handlers/dashboards.rs", "panel_access"): ("ok.?", "ok.?"),
+    # DEUX ENTRÉES RETIRÉES PAR `P10.20-l` (vague AJ, 2026-10-24) : `dashboards.rs::dash_get` (`ok`, 404 « dashboard
+    # introuvable » sur une lecture ratée) et `panel_access` (deux `ok.?`, 403 « panneau inaccessible » sur une lecture
+    # ratée). Lus en `.optional()` : absence établie = le 404/403 d'avant, lecture ratée = 503 nommé
+    # (`CAUSE_TABLEAU_DE_BORD_NON_LU`, `CAUSE_PANNEAU_NON_LU`), aucun droit jugé, rien servi ni exécuté (témoins :
+    # `lectures_des_panneaux_et_cles_de_runbook_en_trois_issues.rs`). `dashboards.rs` reste au relevé par
+    # `excl_display_csv`.
     # `dashboards.rs::view_update` VIVAIT ICI, et son entrée est retirée le 2026-09-16 par `P10.20-k`.
     # Elle disait vrai : son repli `"private"` retombait du BON côté, la porte de partage s'appliquait,
     # et ce site servait de contrôle POSITIF au rang un. Il est pourtant RALLIÉ à la forme de ses deux
@@ -556,10 +563,11 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # DISPARAÎT de la vue d'authoring ») ; la relecture de son unique consommateur a montré un 404
     # « runbook introuvable » sur une procédure qui existe. Cause fausse, aucun fait inventé.
     ("daemon/src/handlers/incidents.rs", "runbook_admin_json"): ("ok",),
-    # `while … .is_ok()` : une lecture ratée fait SORTIR de la boucle avec une clé peut-être prise.
-    # `runbook.key` est `TEXT NOT NULL UNIQUE` (vérifié dans `migrate.rs`) : l'insertion échoue, la
-    # création est refusée avec une cause d'insertion plutôt qu'avec la vraie.
-    ("daemon/src/handlers/incidents.rs", "unique_custom_key"): ("is_ok",),
+    # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AJ, 2026-10-24) : `incidents.rs::unique_custom_key` (`is_ok`) — une lecture
+    # ratée valait « clé libre ». Lue en `.optional()` et propagée : `RefusDuRunbook::CleNonLue`, 503 nommé
+    # `CAUSE_CLE_DE_RUNBOOK_NON_LUE`, rien n'est créé ni copié (témoins :
+    # `lectures_des_panneaux_et_cles_de_runbook_en_trois_issues.rs`). `incidents.rs` reste au relevé par
+    # `case_runbooks_json` et `runbook_admin_json`.
     # ENTRÉE RETIRÉE PAR `P10.20-b` (rang quatre, 2026-10-22) : `notifiers.rs::notifier_test` — `.ok()` sur la ligne du
     # canal : une lecture ratée rendait 404 « canal introuvable ». Le site PROPAGE désormais (`.optional()`, trois
     # issues) : absence établie = le 404 d'avant, lecture ratée = 503 `CAUSE_CANAL_NON_ESSAYE_NON_LU`, aucun envoi

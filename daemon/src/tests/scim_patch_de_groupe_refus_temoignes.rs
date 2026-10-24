@@ -22,8 +22,9 @@
 // g8c_operations_non_liste_vide, g8c_operations_casse_stricte, g8c_urn_refuse.
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : l'oracle d'existence cross-tenant — `P10.34-a` juge désormais un `remove`
-// sur le droit du tenant (inconnu et id d'un autre tenant : même no-op `200`, témoins `psoe_`), l'ajout reste
-// jugé sur `platform_user` GLOBAL ; les autres URN (extension
+// sur le droit du tenant (inconnu et id d'un autre tenant : même no-op `200`, témoins `psoe_`) ; l'ajout reste jugé
+// sur `platform_user`, sans oracle par `userName` (témoins `saon_`), et un tenant peut y rattacher un compte d'un
+// autre tenant (reste nommé de `P10.34-a`) ; les autres URN (extension
 // d'entreprise) restent refusées en `invalidPath` ; `Operations: []` reste admis (aucune opération, `200`).
 // =====================================================================================
 mod scim_patch_de_groupe_refus_temoignes {

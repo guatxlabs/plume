@@ -831,9 +831,15 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
                 // (`409` dernier administrateur, `503`) défont toujours la demande entière, atomique. Une lecture RATÉE du
                 // droit reste un refus nommé (503), jamais un no-op. Le retrait d'un `replace` lit ses porteurs dans le droit
                 // du tenant (déjà borné). AJOUTER (et
-                // l'ensemble servi d'un `replace`, qui s'ajoute) reste jugé sur `platform_user`, `noTarget` pour un inconnu :
-                // `POST /Users` sans groupe crée une identité sans droit, qui doit pouvoir être ajoutée ensuite — l'oracle
-                // restant sur l'ajout est un reste de `P10.34-a`.
+                // l'ensemble servi d'un `replace`, qui s'ajoute) reste jugé sur `platform_user`, À DESSEIN : toute identité
+                // connue de la plateforme s'ajoute (`200`), une inconnue rend `noTarget`. Refuser un id qui porte un droit
+                // dans un AUTRE tenant seulement créerait un oracle par `userName` : `POST /Users` est idempotent par nom
+                // (`ensure_platform_user`) et sert l'id du compte existant, et le PATCH qui suit trahirait alors que ce nom
+                // a un droit ailleurs — tout en cassant le flux standard (`groups` est en lecture seule, RFC 7643
+                // §4.1.2 : `POST /Users` puis `PATCH /Groups`) pour une identité partagée entre deux tenants. Le seul
+                // écart restant oppose un id servi à un id que la plateforme n'a jamais servi (96 bits aléatoires).
+                // Reste nommé de `P10.34-a` : un tenant peut RATTACHER un compte d'un autre tenant (`PATCH add` ou
+                // `POST /Users` avec `groups`) ; le fermer sans oracle exige la provenance des identités par tenant.
                 let juge_dans_le_tenant = matches!(geste, GesteDeGroupeScim::Retirer(_));
                 let mut presents: Vec<&String> = Vec::with_capacity(membres.len());
                 for uid in membres {

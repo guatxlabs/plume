@@ -115,7 +115,7 @@ async fn t3c_compilation_refusee_jamais_mesuree_rend_le_refus_et_n_arme_rien() {
     }
     let (rk, fp, _) = t3c_cle(&st, gxql, from);
     let conn = st.db.lock();
-    assert!(read_panel_cost(&conn, gxql, &fp).is_none(), "aucun coût inventé");
+    assert!(read_panel_cost(&conn, gxql, &fp).unwrap().is_none(), "aucun coût inventé");
     assert!(panneau_avoue::cache_lire(&conn, gxql, &rk, &fp).is_none(), "aucune ligne de cache écrite");
     drop(conn);
     ff_rm(&dbp);
@@ -159,7 +159,7 @@ async fn t3c_calcul_en_echec_est_dit_puis_retente_a_l_expiration_du_cache() {
     assert!(ttl > 0, "précondition : le cache des panneaux est actif");
     {
         let conn = st.db.lock();
-        assert!(read_panel_cost(&conn, panne, &fp).is_none(), "un échec ne classe pas le panneau (aucun coût)");
+        assert!(read_panel_cost(&conn, panne, &fp).unwrap().is_none(), "un échec ne classe pas le panneau (aucun coût)");
         // LA PANNE EST LEVÉE, ET LE CORPS D'ÉCHEC VIEILLIT AU-DELÀ DU TTL (par le coffre, qui possède la table).
         conn.execute("UPDATE t3c_source SET v='{\"a\":7}'", []).unwrap();
         let (payload, calcule_a) = panneau_avoue::cache_lire(&conn, panne, &rk, &fp).expect("le corps d'échec est en cache");
@@ -190,7 +190,7 @@ async fn t3c_calcul_en_echec_est_dit_puis_retente_a_l_expiration_du_cache() {
     assert!(v.get("error").is_none() && v.get("warming").is_none(), "corps nominal : {v}");
     {
         let conn = st.db.lock();
-        assert!(read_panel_cost(&conn, panne, &fp).is_some(), "le succès classe le panneau");
+        assert!(read_panel_cost(&conn, panne, &fp).unwrap().is_some(), "le succès classe le panneau");
     }
     ff_rm(&dbp);
 }
@@ -212,7 +212,7 @@ async fn t3c_contre_epreuve_un_panneau_sain_chauffe_une_fois_puis_sert_ses_ligne
     assert_eq!(v["rows"], json!([[1]]), "corps {v}");
     assert!(v.get("error").is_none() && v.get("warming").is_none(), "corps nominal : {v}");
     let (_rk, fp, _) = t3c_cle(&st, sain, from);
-    assert!(read_panel_cost(&st.db.lock(), sain, &fp).is_some(), "le succès classe le panneau");
+    assert!(read_panel_cost(&st.db.lock(), sain, &fp).unwrap().is_some(), "le succès classe le panneau");
     ff_rm(&dbp);
 }
 
@@ -234,7 +234,7 @@ async fn t3c_panique_du_fil_de_calcul_ecrit_le_corps_d_echec() {
     consigner_l_issue_du_rafraichissement(&st.db, sain, &rk, &fp, now(), from, ttl_global, issue);
     {
         let conn = st.db.lock();
-        assert!(read_panel_cost(&conn, sain, &fp).is_none(), "une panique ne classe pas le panneau");
+        assert!(read_panel_cost(&conn, sain, &fp).unwrap().is_none(), "une panique ne classe pas le panneau");
         assert!(panneau_avoue::cache_lire(&conn, sain, &rk, &fp).is_some(), "AVANT : rien d'écrit, chauffe éternelle");
     }
     let r = panel_data(State(st.clone()), Extension(au.clone()), Path(sain), t3c_q(from)).await;

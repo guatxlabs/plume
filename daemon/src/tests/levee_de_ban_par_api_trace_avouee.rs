@@ -151,7 +151,10 @@ mod levee_de_ban_par_api_trace_avouee {
         r6_ban_actif(&st, ip);
         r6_ecrire(&st, "CREATE TRIGGER r6_levee_refusee BEFORE DELETE ON net_ban BEGIN SELECT RAISE(ABORT, 'levee refusee par le temoin'); END;");
         r6_ecrire(&st, &r6_maillon_refuse("netban.remove.echec"));
-        let phrase_d_avant = "levée de ban IMPOSSIBLE (store indisponible) : levee refusee par le temoin — RÉESSAYER ; le ban est TOUJOURS actif";
+        // `P10.29-l` (vague AJ) — INVERSÉ : la phrase portait le texte du store (`: levee refusee par le temoin`) ; elle
+        // ne le porte plus, le texte va au journal seul (témoin `aj3_` de
+        // `texte_du_moteur_hors_couverture_ti_inventaire_elagage_et_levee_de_ban.rs`).
+        let phrase_d_avant = "levée de ban IMPOSSIBLE (store indisponible) — RÉESSAYER ; le ban est TOUJOURS actif";
 
         let (code, corps) = r6_lever(&st, ip).await;
         assert_eq!(code, 503, "{corps}");
@@ -196,7 +199,8 @@ mod levee_de_ban_par_api_trace_avouee {
                  INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(OLD.ip,'temoin',1000,NULL,'analyste','prod'); END;",
         );
         r6_ecrire(&st, &r6_maillon_refuse("netban.remove.echec"));
-        let phrase_d_avant = "levée de ban PARTIELLE (1 retiré(s)) puis ÉCHEC sur la forme canonique : levee refusee par le temoin — RÉESSAYER";
+        // `P10.29-l` (vague AJ) — INVERSÉ : la phrase ne porte plus le texte du store (journal seul).
+        let phrase_d_avant = "levée de ban PARTIELLE (1 retiré(s)) puis ÉCHEC sur la forme canonique — RÉESSAYER";
 
         let (code, corps) = r6_lever(&st, saisie).await;
         assert_eq!(code, 503, "{corps}");

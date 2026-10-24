@@ -56,7 +56,13 @@ pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> P
 }
 
 // Le compte peut-il VOIR ce panneau, et avec quelle exécution ? -> (query, is_soql, window_s, owns)
-pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> Option<(String, bool, i64, bool)> {
+//
+// `P10.20-l` (vague AJ) — TROIS ISSUES. Les deux lectures du panneau et de son tableau de bord étaient des `.ok()?` :
+// une lecture ratée rendait `None`, que `panel_data` servait 403 « panneau inaccessible » — un refus de droit inventé
+// pour un panneau peut-être lisible. `Ok(Some(..))` : accès établi ; `Ok(None)` : panneau ou tableau absent, ou refus de
+// droit établi (le 403 d'avant) ; `Err` : une lecture n'a pas eu lieu, aucun droit n'est jugé — `panel_data` sert le 503
+// nommé `CAUSE_PANNEAU_NON_LU`. Reste : `DefinitionExecutee::courante` (`panneau_resolu.rs`) lit encore par `.ok()`.
+pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> rusqlite::Result<Option<(String, bool, i64, bool)>> {
     // LIBRARY PANELS (#54) : si le panneau RÉFÉRENCE une définition réutilisable (panel.library_panel_id),
     // la requête EXÉCUTÉE et son is_soql viennent de `library_panel` (résolus à la lecture -> éditer la
     // bibliothèque met à jour partout). Cette résolution vit dans UN SEUL endroit — le coffre
@@ -64,35 +70,59 @@ pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> O
     // panel_create/panel_update emprunte : la porte ne peut donc pas juger autre chose que ce qui
     // s'exécute ici. Référence NULL (tout l'existant) -> retombe sur p.query/p.is_soql -> RÉSULTAT
     // byte-identique au mode 0. La fenêtre/visibilité restent au panneau.
-    let def = DefinitionExecutee::courante(conn, panel_id)?;
+    let Some(def) = DefinitionExecutee::courante(conn, panel_id) else {
+        return Ok(None);
+    };
     let (query, issoql) = (def.query().to_string(), def.is_soql());
-    let (did, window, pvis): (i64, i64, String) = conn
+    let Some((did, window, pvis)): Option<(i64, i64, String)> = conn
         .query_row(
             "SELECT dashboard_id,window_s,COALESCE(visibility,'shared') FROM panel WHERE id=?1",
             params![panel_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
-        .ok()?;
-    let (downer, dvis): (String, String) = conn
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let Some((downer, dvis)): Option<(String, String)> = conn
         .query_row(
             "SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1",
             params![did],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok()?;
+        .optional()?
+    else {
+        return Ok(None);
+    };
     // `P11.20-n` — MÊME phrase que `dash_editable`/`dash_get`, empruntée au coffre.
     let accessible = panneau_resolu::lisible_par(&downer, &dvis, au);
     if !accessible {
-        return None;
+        return Ok(None);
     }
     // P7.13-a : la portée de lecture (et donc « ce panneau privé m'est-il servi ? ») vient du coffre —
     // la MÊME décision que `dash_get` et que la capture de snapshot.
     let portee = PorteeLecture::du_dashboard(au, &downer);
     if !portee.voit(&pvis) {
-        return None; // panneau privé d'un autre
+        return Ok(None); // panneau privé d'un autre
     }
-    Some((query, issoql, window, portee.est_proprietaire()))
+    Ok(Some((query, issoql, window, portee.est_proprietaire())))
 }
+
+/// `P10.20-l` (vague AJ) — le panneau ou son tableau de bord n'a pas été lu à l'exécution (`panel_data`) : aucun droit
+/// n'est jugé, rien n'est exécuté ni servi. Ne nomme ni `BEGIN` ni `COMMIT` : c'est la lecture qui manque. La console
+/// la peint en lecture refusée avec sa cause (`refusDUneLectureServie`, web/core.js ; carte du panneau, web/dashboards.js).
+pub(crate) const CAUSE_PANNEAU_NON_LU: &str = "PANNEAU NON LU : la base n'a pas rendu ce panneau ou son tableau de bord \
+     (fenêtre, visibilité, propriétaire) — ce n'est PAS « panneau inaccessible », c'est une lecture qui n'a pas eu lieu, \
+     et le droit de le voir n'est pas jugé. RIEN n'est exécuté ni servi. Réessayez ; si le refus persiste, la table des \
+     panneaux est illisible.";
+
+/// `P10.20-l` (vague AJ) — le tableau de bord demandé n'a pas été lu (`dash_get`) : ni son droit ni ses panneaux ne
+/// sont jugés, rien n'est servi. La console la peint en lecture refusée avec sa cause (`noeudDuRefusDUneLecture`,
+/// web/core.js ; `loadPanelsInto`, web/dashboards.js).
+pub(crate) const CAUSE_TABLEAU_DE_BORD_NON_LU: &str = "TABLEAU DE BORD NON LU : la base n'a pas rendu ce tableau de bord \
+     (nom, propriétaire, visibilité) — ce n'est PAS « dashboard introuvable », c'est une lecture qui n'a pas eu lieu, et \
+     le droit de le voir n'est pas jugé. RIEN n'est servi. Réessayez ; si le refus persiste, la table des tableaux de \
+     bord est illisible.";
 
 pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
     // filtre optionnel par vue : ?view=<id> ou ?view=none (dashboards sans vue)
@@ -281,13 +311,23 @@ pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Exten
 
 pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    let meta: Option<(String, String, String, Option<i64>)> = conn
+    // `P10.20-l` (vague AJ) — TROIS ISSUES : lu, la porte suit ; absent, le 404 d'avant à l'octet ; lecture ratée, 503
+    // nommé `CAUSE_TABLEAU_DE_BORD_NON_LU` — aucun 403 décidé, rien servi, la cause du moteur au journal seul.
+    let meta: Option<(String, String, String, Option<i64>)> = match conn
         .query_row(
             "SELECT name,COALESCE(owner,''),COALESCE(visibility,'shared'),view_id FROM dashboard WHERE id=?1",
             params![id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
-        .ok();
+        .optional()
+    {
+        Ok(m) => m,
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TABLEAU_DE_BORD_NON_LU);
+            eprintln!("[dashboards] WARN tableau de bord #{id} NON lu pour la lecture, rien n'est servi ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
+    };
     let Some((name, owner, vis, view_id)) = meta else {
         return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response();
     };
@@ -819,13 +859,19 @@ pub(crate) fn panel_serve_cfg_de(conf: &HashMap<String, String>) -> (i64, i64) {
 /// couple (panneau NOUVEAU ou requête modifiée) -> l'appelant exécute en LIVE (mesuré) et se classe seul.
 /// Le filtre query_fp empêche de réutiliser le coût d'une ANCIENNE requête après un panel_update (anti-fuite,
 /// cohérent avec panel_cache.query_fp).
-pub(crate) fn read_panel_cost(conn: &Connection, panel_id: i64, q_fp: &str) -> Option<f64> {
+///
+/// `P10.20-l` (vague AJ) — TROIS ISSUES : `Ok(Some(c))` coût mesuré, `Ok(None)` aucun coût pour ce couple, `Err` lecture
+/// qui n'a pas eu lieu. La forme d'avant (`.ok()`) rendait une lecture ratée comme « jamais mesuré » sans un mot ;
+/// l'appelant (`panel_data`) la sert toujours comme un panneau jamais mesuré, mais l'écrit au journal (ligne fixe).
+/// (La doc d'avant disait « None -> LIVE » : faux depuis FIX #5c, un panneau jamais mesuré part en SWR/chauffe quand il
+/// est cacheable.)
+pub(crate) fn read_panel_cost(conn: &Connection, panel_id: i64, q_fp: &str) -> rusqlite::Result<Option<f64>> {
     conn.query_row(
         "SELECT cost_ms FROM panel_cost WHERE panel_id=?1 AND query_fp=?2",
         params![panel_id, q_fp],
         |r| r.get::<_, f64>(0),
     )
-    .ok()
+    .optional()
 }
 
 /// PHASE 3d — mémorise le coût mesuré d'un panneau (INSERT OR REPLACE -> 1 seule ligne/panneau). Appelé
@@ -857,12 +903,24 @@ pub(crate) fn measured_cost_ms(v: &Value) -> Option<f64> {
 /// TTL effectif du cache d'un panneau : panel.panel_cache_ttl_s (si défini) sinon `ttl_global` (déjà lu
 /// hors lock). 0 (global ou par panneau) = cache désactivé pour ce panneau. NE lit PLUS la config disque
 /// `ttl_global` est fourni par l'appelant (lu avant de prendre le lock).
+///
+/// `P10.20-l` (vague AJ) — TROIS ISSUES. La forme d'avant (`.ok().flatten()`) retombait sur `ttl_global` quand la
+/// lecture ratait : un TTL par panneau posé à 0 (cache coupé pour ce panneau) ou plus court que le global se perdait en
+/// silence, et une charge utile vivait plus longtemps que voulu. Ligne lue : son TTL, ou `ttl_global` si la colonne est
+/// NULL ; ligne absente : `ttl_global` (comme avant) ; lecture ratée : 0, cache COUPÉ pour ce panneau (fail-closed), et
+/// une ligne de journal fixe — le numéro interne du panneau, jamais la requête ni le texte du moteur.
 pub(crate) fn panel_cache_ttl(conn: &Connection, panel_id: i64, ttl_global: i64) -> i64 {
-    let per: Option<i64> = conn
+    match conn
         .query_row("SELECT panel_cache_ttl_s FROM panel WHERE id=?1", params![panel_id], |r| r.get::<_, Option<i64>>(0))
-        .ok()
-        .flatten();
-    per.unwrap_or(ttl_global)
+        .optional()
+    {
+        Ok(Some(Some(per))) => per,
+        Ok(Some(None)) | Ok(None) => ttl_global,
+        Err(_) => {
+            eprintln!("[dashboards] WARN panneau #{panel_id} : TTL du cache non lu, cache coupé pour ce panneau");
+            0
+        }
+    }
 }
 
 // =====================================================================================
@@ -1248,8 +1306,15 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
         crate::req_conn!(st, au, conn);
         panel_access(&conn, &au, id)
     };
-    let Some((query, is_soql, _window, _owns)) = info else {
-        return forbidden("panneau inaccessible");
+    // `P10.20-l` (vague AJ) — une lecture ratée n'est pas un refus de droit : 503 nommé, rien n'est exécuté.
+    let (query, is_soql, _window, _owns) = match info {
+        Ok(Some(acces)) => acces,
+        Ok(None) => return forbidden("panneau inaccessible"),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_PANNEAU_NON_LU);
+            eprintln!("[dashboards] WARN panneau #{id} NON lu pour l'exécution, rien n'est servi ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
     };
     // PHASE 3d — CLASSIFICATION ADAPTATIVE PAR PANNEAU (par COÛT MESURÉ, PAS par vue). panel_data est appelé
     // par panel_id -> le coût stocké (clé panel_id+query_fp) classe le panneau GLOBALEMENT, où qu'il soit
@@ -1286,7 +1351,15 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
     // TTL effectif + coût mesuré stocké (par panneau) — 1 prise de lock.
     let (ttl, cost) = {
         crate::req_conn!(st, au, conn);
-        (panel_cache_ttl(&conn, id, ttl_global), read_panel_cost(&conn, id, &q_fp))
+        let cout = match read_panel_cost(&conn, id, &q_fp) {
+            Ok(c) => c,
+            Err(_) => {
+                // `P10.20-l` (vague AJ) — servi comme un panneau jamais mesuré (le comportement d'avant), mais DIT.
+                eprintln!("[dashboards] WARN panneau #{id} : coût non lu, le panneau est servi comme jamais mesuré");
+                None
+            }
+        };
+        (panel_cache_ttl(&conn, id, ttl_global), cout)
     };
     // LOURD = coût CONNU et >= seuil.
     let heavy = matches!(cost, Some(c) if c >= live_threshold as f64);

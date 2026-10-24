@@ -164,8 +164,11 @@ pub(crate) async fn connector_delivery_key_rotate(
             err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CLE_DE_LIVRAISON_NON_RENOUVELEE_SOURCE_NON_LUE)
         }
         IssueDuGesteGarde::Refuse(RefusDuRenouvellement::EcritureRefusee(e)) => {
-            eprintln!("[connecteurs] WARN {geste} NON fait : écriture refusée ({e}), transaction annulée");
-            server_err(format!("{CAUSE_CLE_DE_LIVRAISON_NON_RENOUVELEE_ECRITURE_REFUSEE} Refus de la base : {e}"))
+            // `P10.29-l` (vague AJ) — la phrase fixe au client, avec l'identifiant servi ; la cause du moteur au journal
+            // seul, sous cet identifiant. Le 500 joignait « Refus de la base : <texte du moteur> » au corps servi.
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, CAUSE_CLE_DE_LIVRAISON_NON_RENOUVELEE_ECRITURE_REFUSEE);
+            eprintln!("[connecteurs] WARN {geste} NON fait : écriture refusée, transaction annulée ({}) : {e}", cid.unwrap_or_default());
+            refus
         }
         IssueDuGesteGarde::NonOuvert(_) => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CLE_DE_LIVRAISON_NON_RENOUVELEE_TRANSACTION_NON_OUVERTE),
         IssueDuGesteGarde::NonValide(e) => {

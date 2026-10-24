@@ -92,6 +92,9 @@ pub(crate) fn ti_risk_contribution(conn: &Connection, hit: &TiHit, ts: i64, env_
 // risk sont EXCLUES de run_due_rules -> elles ne lèvent PAS d'alerte scalaire par tir : « instead of »).
 // ============================================================================================
 
+/// `P10.31-j` — LA REPRISE DE VERROU QUI ÉCRIT dans `run_risk_rules` (phase 3), nommée pour les témoins.
+pub(crate) const SITE_CONTRIBUTIONS_ET_ETAT_DU_RISQUE: &str = "contributions et last_run";
+
 /// Évalue les règles DUES en MODE RISK (risk_score>0) : exécute la requête (attendue en `… | stats count by
 /// <entity>`) et CONTRIBUE risk_score points à CHAQUE entité de la colonne `risk_entity_field`, typée
 /// `risk_entity_type`. Dédup par (règle, entité, bucket-de-fenêtre) -> une contribution par entité/fenêtre.
@@ -102,6 +105,8 @@ pub(crate) fn ti_risk_contribution(conn: &Connection, hit: &TiHit, ts: i64, env_
 /// pu être évaluées (ligne indécodable, sans entité cible, compilation refusée, requête en échec, champ
 /// d'entité absent du résultat). Avant : chacune était sautée en avançant `last_run`, indiscernable
 /// d'une règle évaluée qui ne rapporte rien.
+/// `P10.31-j` — `Illisible` aussi, nommant « règles de risque », si l'écrivain porte une transaction orpheline quand la
+/// phase 3 reprend le verrou : aucune contribution ni `last_run` écrits.
 pub(crate) fn run_risk_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnees = 0u32;
@@ -201,7 +206,11 @@ pub(crate) fn run_risk_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crat
         }
     }
     // Phase 3 : écritures groupées sous un seul verrou (contributions dédupliquées + avance de last_run).
-    let conn = db.lock();
+    // `P10.31-j` — la phase 2 a tourné hors du verrou : sonde reprise avant d'écrire (une orpheline vue = tick aveugle).
+    let conn = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "règles de risque", SITE_CONTRIBUTIONS_ET_ETAT_DU_RISQUE) {
+        Ok(c) => c,
+        Err(aveugle) => return aveugle,
+    };
     for c in &contribs {
         let bucket = if c.window_s > 0 { now_ts / c.window_s } else { now_ts };
         let dedup = format!("risk:rule{}:{}:{}", c.rule_id, c.entity, bucket);

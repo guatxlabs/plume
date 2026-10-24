@@ -117,7 +117,7 @@ mod acquittement_unitaire_et_refus_sla_nommes {
         assert_eq!(v.get("ok"), Some(&json!(true)), "le geste a eu lieu : {v}");
         let aveu = v[CLE_REGISTRE_SANS_MAILLON].as_str().unwrap_or_else(|| panic!("l'aveu est porté : {v}"));
         assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE), "l'aveu d'un GESTE fait sans trace : {aveu}");
-        assert!(aveu.contains(AA2_MOTEUR_REGISTRE), "l'aveu porte la cause du maillon manquant : {aveu}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains(AA2_MOTEUR_REGISTRE), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {aveu}");
         assert_eq!(aa2_statut_de_l_alerte(&st, id).0, "ack", "l'acquittement n'est pas annulé");
         assert_eq!(aa2_compte(&st, AA2_MAILLONS_ACK), 0, "fixture : aucun maillon n'est entré");
     }

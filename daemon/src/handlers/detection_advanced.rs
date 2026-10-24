@@ -233,12 +233,18 @@ fn eval_correlation(
 // ORDONNANCEUR — run_correlations (à côté de run_due_rules dans la boucle de détection).
 // ============================================================================================
 
+/// `P10.31-j` — LES REPRISES DE VERROU QUI ÉCRIVENT des corrélations et des lignes de base (phase 3), nommées pour les témoins.
+pub(crate) const SITE_ECRITURES_DES_CORRELATIONS: &str = "last_run, groupes et contributions";
+pub(crate) const SITE_ECRITURES_DES_LIGNES_DE_BASE: &str = "observations, anomalies et état";
+
 /// Évalue les corrélations DUES (enabled + intervalle écoulé) en parallélisme BORNÉ (detect_concurrency),
 /// puis écrit les finding-groups sous un seul verrou. MODE 0 : `correlation` vide -> `due` vide -> retour
 /// immédiat (0 travail, byte-identique).
 /// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des corrélations
 /// dues n'a pas pu être lue (table absente comprise : une base non migrée n'évalue RIEN, et le dire vaut
 /// mieux qu'un « no-op strict » indiscernable d'un tick calme), `Lue(n)` = corrélations dues abandonnées.
+/// `P10.31-j` — `Illisible` aussi, nommant « corrélations », si l'écrivain porte une transaction orpheline quand la phase 3
+/// reprend le verrou : rien n'est écrit.
 pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnees = 0u32;
@@ -293,7 +299,11 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> cr
         results.extend(chunk_res);
     }
     // Phase 3 : écritures groupées sous verrou.
-    let conn = db.lock();
+    // `P10.31-j` — la phase 2 a tourné hors du verrou : sonde reprise avant d'écrire (une orpheline vue = tick aveugle).
+    let conn = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "corrélations", SITE_ECRITURES_DES_CORRELATIONS) {
+        Ok(c) => c,
+        Err(aveugle) => return aveugle,
+    };
     for ev in results {
         // last_run avance TOUJOURS (même en échec -> re-tentera au prochain intervalle).
         let _ = conn.execute("UPDATE correlation SET last_run=?1 WHERE id=?2", params![now_ts, ev.id]);
@@ -552,6 +562,8 @@ pub(crate) const REPRISE_LIGNE_DE_BASE_S: i64 = 300;
 /// une par ligne de base quel que soit le nombre de ses alertes refusées, reprise au pas `REPRISE_LIGNE_DE_BASE_S`).
 /// Une alerte écartée par la dédup (`INSERT OR IGNORE` qui rend `Ok(0)`, déjà entrée à un passage antérieur) n'est
 /// PAS un refus : elle vaut entrée.
+/// `P10.31-j` — `Illisible` aussi, nommant « lignes de base », si l'écrivain porte une transaction orpheline quand la phase 3
+/// reprend le verrou : rien n'est écrit.
 pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     // Instrument de témoin (`P10.20-b`) : un témoin peut FIXER l'heure du tick sur son fil, pour que le bucket clos ne
@@ -655,7 +667,12 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     // PARTIEL entre deux entités) vaut entrée — seul un `Err` est un refus. Ni à chaque tour (le refus durable relançait la requête toutes les 20 s), ni après
     // `interval_s` entier (le bucket raté serait remplacé par le suivant). L'abandon est COMPTÉ dans `abandonnees`,
     // la cause va au journal seul. Chemin nominal inchangé : mêmes lignes, même `last_run`, même `last_bucket`.
-    let conn = db.lock();
+    // `P10.31-j` — le verrou de l'évaluation est RENDU ci-dessus (et la requête a lu par le pool, hors de lui) : sonde
+    // reprise avant d'écrire (une orpheline vue = tick aveugle).
+    let conn = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "lignes de base", SITE_ECRITURES_DES_LIGNES_DE_BASE) {
+        Ok(c) => c,
+        Err(aveugle) => return aveugle,
+    };
     let mut a_reevaluer: Vec<i64> = Vec::new();
     for ev in evals {
         if !ev.ok {

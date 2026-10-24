@@ -216,7 +216,9 @@ mod dossier_refus_sans_texte_du_moteur {
         let reponse = ak3_reponse(r).await;
         ak3_sql(st, "ALTER TABLE incident RENAME COLUMN ak3_pause_cachee TO sla_pause_accum;");
         assert_eq!(ak3_entier(st, &format!("SELECT resolve_due FROM incident WHERE id={id}")), echeance, "chrono non lu : échéance inchangée");
-        assert!(moteur.contains("sla_pause_accum"), "fixture : le texte du moteur nomme la colonne : {moteur}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause du chrono est la phrase fixe (le moteur part à la ligne
+        // `[caseops] WARN` seule) ; c'est elle que la ligne `[cases]` reprend.
+        assert_eq!(moteur, CHRONO_LIGNE_DU_DOSSIER_NON_LUE, "fixture : la cause du chrono, phrase fixe : {moteur}");
         Ak3Refus { reponse, geste: format!("dossier #{id} : chrono SLA NON lu, mise à jour non écrite"), moteur, phrase: CAUSE_CHRONO_SLA_NON_LU }
     }
 

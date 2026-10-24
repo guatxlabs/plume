@@ -121,7 +121,7 @@ mod traces_ia_et_scope_sans_maillon_avouees {
             .and_then(|x| x.as_str())
             .unwrap_or_else(|| panic!("un appel IA dont le maillon manque l'AVOUE sous `registre_sans_maillon` : {v}"));
         assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE), "l'aveu est la phrase commune du geste sans trace : {aveu}");
-        assert!(aveu.contains("registre hors d atteinte"), "l'aveu porte la cause du moteur : {aveu}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains("registre hors d atteinte"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {aveu}");
         assert!(!aveu.contains("analyste-tisa") && !aveu.contains("deadbeef"), "jamais le détail du maillon : {aveu}");
         assert_eq!(tisa_lignes(&conn, "ai.call", "%"), 0, "aucune ligne `ai.call` n'est entrée");
     }

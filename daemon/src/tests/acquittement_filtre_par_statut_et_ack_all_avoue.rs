@@ -228,7 +228,7 @@ mod acquittement_filtre_par_statut_et_ack_all_avoue {
         assert_eq!(v["acked"], json!(2), "le compte reste servi : {corps}");
         let aveu = v[CLE_REGISTRE_SANS_MAILLON].as_str().unwrap_or_else(|| panic!("l'aveu est porté : {corps}"));
         assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE), "l'aveu d'un GESTE fait sans trace : {aveu}");
-        assert!(aveu.contains(AB1_MOTEUR_REGISTRE), "l'aveu porte la cause du maillon manquant : {aveu}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains(AB1_MOTEUR_REGISTRE), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {aveu}");
         assert_eq!(ab1_compte(&st, "SELECT COUNT(*) FROM alert WHERE status='new'"), 0, "l'acquittement n'est pas annulé");
         assert_eq!(ab1_compte(&st, AB1_MAILLONS_ACK_ALL), 1, "fixture : aucun second maillon n'est entré");
     }

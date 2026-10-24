@@ -66,11 +66,17 @@ fn nature_de_l_echec_du_fournisseur(e: &str) -> String {
     NATURE_NON_RECONNUE.to_string()
 }
 
-/// Traduit une erreur worker en réponse : « non compilé » -> 501 (stub feature-off), sinon 500 à phrase fixe
-/// (`P10.29-l`), la nature de l'échec au journal avec le fournisseur visé et l'identifiant de corrélation servi.
+/// `P10.29-l` — la phrase du 501, celle du stub feature-off (`crate::ai::run_nl2soql` sans la feature `ai`). Le bras
+/// servait le texte du worker tel quel dès qu'il CONTENAIT « non compilé » : un échec du worker qui portait ces mots (un
+/// hôte de fournisseur irrésoluble nommé ainsi, cité par la garde SSRF) partait à tout lecteur de l'assistant, hôte
+/// compris, sous un 501 faux. Seul le texte EXACT du stub est un 501 ; tout autre texte est un échec du worker (500).
+pub(crate) const PHRASE_SUPPORT_IA_NON_COMPILE: &str = "support IA non compilé (recompiler avec --features ai)";
+
+/// Traduit une erreur worker en réponse : le texte exact du stub feature-off -> 501 à phrase fixe, sinon 500 à phrase
+/// fixe (`P10.29-l`), la nature de l'échec au journal avec le fournisseur visé et l'identifiant de corrélation servi.
 pub(crate) fn ai_worker_err(fournisseur: i64, e: String) -> Response {
-    if e.contains("non compilé") {
-        return err_json(StatusCode::NOT_IMPLEMENTED, e);
+    if e == PHRASE_SUPPORT_IA_NON_COMPILE {
+        return err_json(StatusCode::NOT_IMPLEMENTED, PHRASE_SUPPORT_IA_NON_COMPILE);
     }
     let nature = nature_de_l_echec_du_fournisseur(&e);
     let (id, r) = crate::err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, PHRASE_APPEL_DU_FOURNISSEUR_D_IA_ECHOUE);
@@ -149,9 +155,12 @@ pub(crate) fn active_redaction_policy(
             let v = p.version;
             return (p, Mesure::Lue(v));
         }
+        // `P10.29-l` — le détail servi (`stockee_detail`) est une phrase fixe : il portait `({e})`, le texte du moteur.
+        // Le moteur va au journal seul ; la cause (`cause_sql`) reste celle d'avant.
         Err(e) => {
+            eprintln!("[ia] WARN politique de caviardage stockée non lue, défaut v{} appliqué : {e}", p.version);
             let detail = format!(
-                "meta['ai_redaction_policy'] : la politique stockée n'a pas pu être lue ({e}) — le défaut \
+                "meta['ai_redaction_policy'] : la politique stockée n'a pas pu être lue — le défaut \
                  v{} est appliqué ET affiché ; ce qui est à l'écran n'est donc PAS ce qui est stocké, et \
                  le renvoyer par PUT écraserait la politique en place",
                 p.version
@@ -161,9 +170,11 @@ pub(crate) fn active_redaction_policy(
     };
     let v = match serde_json::from_str::<Value>(&raw) {
         Ok(v) => v,
+        // `P10.29-l` — même règle pour le décodage : phrase fixe servie, l'erreur du décodeur au journal seul.
         Err(e) => {
+            eprintln!("[ia] WARN politique de caviardage stockée indécodable, défaut v{} appliqué : {e}", p.version);
             let detail = format!(
-                "meta['ai_redaction_policy'] : une politique EST stockée mais ne se décode pas ({e}) — le \
+                "meta['ai_redaction_policy'] : une politique EST stockée mais ne se décode pas — le \
                  défaut v{} est appliqué ET affiché ; ce qui est à l'écran n'est donc PAS ce qui est \
                  stocké, et le renvoyer par PUT écraserait la politique en place",
                 p.version

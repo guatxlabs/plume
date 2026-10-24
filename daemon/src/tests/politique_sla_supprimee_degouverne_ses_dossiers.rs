@@ -228,7 +228,7 @@ mod politique_sla_supprimee_degouverne_ses_dossiers {
         assert_eq!(statut, 200, "le geste a eu lieu, sa trace manque : avoué : {corps}");
         assert_eq!(corps["degouvernes"], json!(1), "{corps}");
         let aveu = corps[CLE_REGISTRE_SANS_MAILLON].as_str().unwrap_or("");
-        assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE) && aveu.contains("psd registre"), "{corps}");
+        assert_eq!(aveu, format!("{CAUSE_GESTE_SANS_TRACE} ({CAUSE_MAILLON_NON_ECRIT})"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : phrase fixe du maillon non écrit, plus le texte du moteur : {corps}");
         psd_sql(&st, "DROP TRIGGER psd_registre;");
         assert_eq!(psd_entier(&st, "SELECT COUNT(*) FROM sla_policy"), Some(0), "suppression validée");
         assert_eq!(psd_chrono(&st, a), (None, None, None), "effacement validé");

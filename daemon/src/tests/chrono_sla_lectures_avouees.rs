@@ -1,4 +1,8 @@
 // =====================================================================================
+// INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : les causes du chrono ne portent plus le texte du moteur (motif du
+// déclencheur, colonne absente) mais une phrase fixe (`ECRITURE_DU_CHRONO_REFUSEE`, `CHRONO_*`) ; le moteur va à la ligne
+// `[caseops] WARN` seule (témoins `am4_`).
+//
 // `P10.20-b` (rang trois) et `P10.20-w` (reste) — LES LECTURES DU CHRONO SLA MULTI-NIVEAU SONT JUGÉES, ET UNE
 // PRIORITÉ SANS POLITIQUE N'HÉRITE PLUS DE CELLE D'AVANT.
 //
@@ -94,7 +98,8 @@ mod chrono_sla_lectures_avouees {
         assert!(corps["id"].as_i64().is_some(), "identifiant servi : {corps}");
         let aveu = corps.get("echeances_multi_niveau_non_lues").and_then(|v| v.as_str()).unwrap_or("");
         assert!(aveu.starts_with(CAUSE_ECHEANCES_MULTI_NIVEAU_NON_LUES), "l'aveu est porté : {corps}");
-        assert!(aveu.contains("politique de la priorité 1:") && aveu.contains("sla_policy"), "la cause nomme la lecture : {aveu}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portait le texte du moteur ; elle est la phrase fixe, le moteur au journal seul.
+        assert_eq!(aveu, format!("{CAUSE_ECHEANCES_MULTI_NIVEAU_NON_LUES} (politique de la priorité 1 non lue)"), "la cause nomme la lecture, sans le moteur : {aveu}");
         assert!(corps.get("echeances_multi_niveau_non_posees").is_none(), "ce n'est pas un refus d'écriture : {corps}");
         // Pas d'assertion « ack_due/sla_policy_id NULL » ici : sans table lisible, aucune valeur ne PEUT être posée, et
         // l'assertion serait vraie sous n'importe quelle implémentation (assertion vacante relevée par le vérificateur).
@@ -133,12 +138,13 @@ mod chrono_sla_lectures_avouees {
         {
             let conn = st.db.lock();
             match sla_apply_policy(&conn, id) {
-                IssueDuChronoSla::NonLu(cause) => assert!(cause.starts_with("ligne du dossier:") && cause.contains("sla_pause_accum"), "{cause}"),
+                // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portait le texte du moteur ; elle est la phrase fixe, le moteur au journal seul.
+                IssueDuChronoSla::NonLu(cause) => assert_eq!(cause, CHRONO_LIGNE_DU_DOSSIER_NON_LUE),
                 autre => panic!("lecture ratée : NonLu attendu, pas {autre:?}"),
             }
         }
         let cause = csl_cause(&st, id, json!({ "priority": 1 }), CAUSE_CHRONO_SLA_NON_LU).await;
-        assert!(cause.starts_with("ligne du dossier:"), "{cause}");
+        assert_eq!(cause, CHRONO_LIGNE_DU_DOSSIER_NON_LUE, "phrase fixe (P10.29-l, vague AM)");
         assert_eq!(csl_entier(&st, &format!("SELECT resolve_due FROM incident WHERE id={id}")), avant, "rien d'écrit au chrono");
         csl_sql(&st, "ALTER TABLE incident RENAME COLUMN csl_pause_cachee TO sla_pause_accum;");
 
@@ -162,7 +168,8 @@ mod chrono_sla_lectures_avouees {
         let id = csl_dossier(&st, 1);
         csl_sql(&st, "ALTER TABLE incident RENAME COLUMN sla_paused_since TO csl_pause_cachee;");
         let cause = csl_cause(&st, id, json!({ "status": "waiting" }), CAUSE_CHRONO_SLA_NON_LU).await;
-        assert!(cause.starts_with("chrono du dossier:") && cause.contains("sla_paused_since"), "{cause}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portait le texte du moteur ; elle est la phrase fixe, le moteur au journal seul.
+        assert_eq!(cause, CHRONO_DU_DOSSIER_NON_LU);
         csl_sql(&st, "ALTER TABLE incident RENAME COLUMN csl_pause_cachee TO sla_paused_since;");
         {
             let conn = st.db.lock();
@@ -192,7 +199,12 @@ mod chrono_sla_lectures_avouees {
         let r = sla_recalcule_la_priorite_bornee(&conn, 2, 10);
         assert_eq!(r.recalcules, 0, "rien de lu, rien de compté");
         let raison = r.manque.clone().expect("la lecture ratée est dite");
-        assert!(raison.contains("2 échéance(s) NON RECALCULÉE(S) faute de LECTURE") && raison.contains("politique de la priorité 2:"), "{raison}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portait le texte du moteur ; elle est la phrase fixe, le moteur au journal seul.
+        let (a, b): (i64, i64) = conn.query_row("SELECT MIN(id), MAX(id) FROM incident", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(
+            raison,
+            format!("2 échéance(s) NON RECALCULÉE(S) faute de LECTURE (dossier ou politique non lu) — ces cases gardent leur ANCIENNE échéance : #{a} (politique de la priorité 2 non lue), #{b} (politique de la priorité 2 non lue)")
+        );
         assert_eq!(reponse_de_l_upsert_sla(Ok(()), &r).status(), StatusCode::OK, "plus un 204 « tout fait »");
         assert_eq!(conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM incident WHERE resolve_due=77", [], |r| r.get(0)).unwrap(), 2, "rien d'écrit");
         conn.execute_batch("ALTER TABLE csl_politique_cachee RENAME TO sla_policy;").unwrap();
@@ -303,7 +315,9 @@ mod chrono_sla_lectures_avouees {
         let id = csl_dossier(&st, 3);
         csl_sql(&st, "ALTER TABLE incident RENAME COLUMN sla_paused_since TO csl_pause_cachee;");
         let cause = csl_cause(&st, id, json!({ "priority": 1, "status": "in_progress" }), CAUSE_CHRONO_SLA_NON_LU).await;
-        csl_forme(&cause, "chrono du dossier: ", " ; ÉCHÉANCES MULTI-NIVEAU NON RELUES après le rattrapage (");
+        // `P10.29-l` (vague AM) : le préfixe « chrono du dossier: <moteur> » devient la phrase fixe ; la suite (relecture de
+        // cases.rs, hors de ce lot) garde sa forme.
+        csl_forme(&cause, "chrono du dossier non lu ; ÉCHÉANCES MULTI-NIVEAU NON RELUES après le rattrapage (", "sla_paused_since");
         assert_eq!(csl_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(600), "échéance de P1 posée");
     }
 
@@ -318,7 +332,8 @@ mod chrono_sla_lectures_avouees {
         csl_refuser(&st, "csl_refus_verdict", "disposition", "csl verdict");
         let corps = json!({ "priority": 3, "status": "closed", "disposition": "true_positive" });
         let cause = csl_cause(&st, id, corps, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE).await;
-        csl_forme(&cause, "disposition: csl verdict ; REPRISE DU CHRONO SLA NON LUE (chrono du dossier: ", "sla_paused_since");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portait le texte du moteur ; elle est la phrase fixe, le moteur au journal seul.
+        assert_eq!(cause, "disposition: csl verdict ; REPRISE DU CHRONO SLA NON LUE (chrono du dossier non lu)");
     }
 
     /// BRAS `dire_la_reprise` / `NonLu` : P1 -> P2 (sans politique) et `in_progress` écrits, verdict refusé, chrono
@@ -332,10 +347,10 @@ mod chrono_sla_lectures_avouees {
         csl_refuser(&st, "csl_refus_verdict", "disposition", "csl verdict");
         let corps = json!({ "priority": 2, "status": "in_progress", "disposition": "benign" });
         let cause = csl_cause(&st, id, corps, CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE).await;
-        csl_forme(
-            &cause,
-            "disposition: csl verdict ; échéance recalculée sur la priorité écrite, politique de l'ancienne priorité effacée (aucune politique active pour la priorité écrite) ; REPRISE DU CHRONO SLA NON LUE (chrono du dossier: ",
-            "sla_paused_since",
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portait le texte du moteur ; elle est la phrase fixe, le moteur au journal seul.
+        assert_eq!(
+            cause,
+            "disposition: csl verdict ; échéance recalculée sur la priorité écrite, politique de l'ancienne priorité effacée (aucune politique active pour la priorité écrite) ; REPRISE DU CHRONO SLA NON LUE (chrono du dossier non lu)"
         );
         assert_eq!(csl_entier(&st, &format!("SELECT sla_policy_id FROM incident WHERE id={id}")), None, "politique de P1 effacée");
     }
@@ -353,7 +368,8 @@ mod chrono_sla_lectures_avouees {
         let cause = csl_cause(&st, id, json!({ "priority": 2, "status": "in_progress" }), CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE).await;
         assert_eq!(
             cause,
-            "status: csl status ; échéance recalculée sur la priorité écrite ; POLITIQUE DE L'ANCIENNE PRIORITÉ NON EFFACÉE (sla_policy_id/ack_due/resolve_due (effacement): csl politique)"
+            // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portait le texte du moteur ; elle est la phrase fixe, le moteur au journal seul.
+            "status: csl status ; échéance recalculée sur la priorité écrite ; POLITIQUE DE L'ANCIENNE PRIORITÉ NON EFFACÉE (sla_policy_id/ack_due/resolve_due (effacement): écriture refusée par la base)"
         );
         assert!(csl_entier(&st, &format!("SELECT sla_policy_id FROM incident WHERE id={id}")).is_some(), "fixture : politique de P1 gardée");
     }
@@ -368,7 +384,8 @@ mod chrono_sla_lectures_avouees {
         csl_sql(&st, "ALTER TABLE incident RENAME COLUMN sla_pause_accum TO csl_pause_cachee;");
         csl_refuser(&st, "csl_refus_statut", "status", "csl status");
         let cause = csl_cause(&st, id, json!({ "priority": 2, "status": "in_progress" }), CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE).await;
-        csl_forme(&cause, "status: csl status ; échéance recalculée sur la priorité écrite ; ÉCHÉANCES MULTI-NIVEAU NON LUES (ligne du dossier: ", "sla_pause_accum");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portait le texte du moteur ; elle est la phrase fixe, le moteur au journal seul.
+        assert_eq!(cause, "status: csl status ; échéance recalculée sur la priorité écrite ; ÉCHÉANCES MULTI-NIVEAU NON LUES (ligne du dossier non lue)");
         assert!(csl_entier(&st, &format!("SELECT sla_policy_id FROM incident WHERE id={id}")).is_some(), "rien d'effacé sur une ligne non lue");
     }
 
@@ -388,10 +405,10 @@ mod chrono_sla_lectures_avouees {
         csl_sql(&st, &format!("UPDATE incident SET first_response_ts='illisible' WHERE id={id};"));
         csl_refuser(&st, "csl_refus_statut", "status", "csl status");
         let cause = csl_cause(&st, id, json!({ "priority": 1, "status": "in_progress" }), CAUSE_MISE_A_JOUR_DU_DOSSIER_NON_ECRITE).await;
-        csl_forme(
-            &cause,
-            "status: csl status ; échéance recalculée sur la priorité écrite ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (NON LU — ligne du dossier: ",
-            "first_response_ts",
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portait le texte du moteur ; elle est la phrase fixe, le moteur au journal seul.
+        assert_eq!(
+            cause,
+            "status: csl status ; échéance recalculée sur la priorité écrite ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (NON LU — ligne du dossier non lue)"
         );
         assert_eq!(csl_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(30000), "rien d'écrit : échéance de P3");
     }

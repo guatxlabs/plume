@@ -400,8 +400,8 @@ mod connexions_fournisseur_lu_et_trace_avouee {
         let lignes = phase("trace");
         assert_eq!(
             lignes,
-            [format!("[idp] WARN connexion locale à double authentification ouverte : le registre n'a PAS pris le maillon `login` ({AD1_MOTEUR_REGISTRE}) — la connexion n'est pas annulée")],
-            "phase trace : sujet et cause du moteur, ni l'identifiant ni l'adresse"
+            [format!("[idp] WARN connexion locale à double authentification ouverte : le registre n'a PAS pris le maillon `login` ({CAUSE_MAILLON_NON_ECRIT}) — la connexion n'est pas annulée")],
+            "phase trace : sujet et phrase fixe du maillon non écrit (INVERSÉ NOMMÉMENT par P10.29-l, vague AM ; le moteur reste à la ligne `[ledger]`), ni l'identifiant ni l'adresse"
         );
         let lignes = phase("textes");
         let id = &textes[2];

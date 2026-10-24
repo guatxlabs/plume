@@ -382,10 +382,11 @@ mod compte_de_session_au_journal_et_runbook_non_lu {
                     format!("[session] WARN {non_relu} NON lu (read pool et écrivain), identité refusée"),
                 ],
             ),
-            ("s1422", vec![format!("[session] WARN déconnexion globale par le {admin} NON tracée, rien n'est révoqué : {AH1_MOTEUR_REGISTRE}")]),
+            // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause reprise est la phrase fixe du maillon non écrit ; le moteur reste à la ligne `[ledger]`.
+            ("s1422", vec![format!("[session] WARN déconnexion globale par le {admin} NON tracée, rien n'est révoqué : {CAUSE_MAILLON_NON_ECRIT}")]),
             (
                 "s1422_sans_ligne",
-                vec![format!("[session] WARN déconnexion globale par le compte sans ligne `user` NON tracée, rien n'est révoqué : {AH1_MOTEUR_REGISTRE}")],
+                vec![format!("[session] WARN déconnexion globale par le compte sans ligne `user` NON tracée, rien n'est révoqué : {CAUSE_MAILLON_NON_ECRIT}")],
             ),
             (
                 "s1426",

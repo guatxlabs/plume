@@ -93,7 +93,7 @@ mod incident_et_etape_trace_avouee {
     fn iet_aveu_conforme(v: &Value) {
         let aveu = v.get(CLE_REGISTRE_SANS_MAILLON).and_then(|x| x.as_str()).unwrap_or_else(|| panic!("le geste sans trace porte `registre_sans_maillon` : {v}"));
         assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE), "l'aveu d'un GESTE fait sans trace : {aveu}");
-        assert!(aveu.contains("registre hors d atteinte"), "l'aveu porte la cause du moteur : {aveu}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains("registre hors d atteinte"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {aveu}");
         assert_eq!(v.get("ok"), Some(&json!(true)), "le geste a eu lieu : {v}");
     }
 
@@ -114,7 +114,7 @@ mod incident_et_etape_trace_avouee {
             incident_apply_tier(&conn, id, "analyste", Some(1), None, None)
         };
         let DeclarationDIncident::PoseeSansTrace(cause) = issue else { panic!("maillon refusé : `PoseeSansTrace`, pas {issue:?}") };
-        assert!(cause.contains("registre hors d atteinte"), "la cause du moteur est portée : {cause:?}");
+        assert_eq!(cause, CAUSE_MAILLON_NON_ECRIT, "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : la cause portée est la phrase fixe, jamais le texte du moteur");
 
         let (statut, _, v) = iet_declarer(&st, id).await;
         assert_eq!(statut, 200, "déclaration faite sans trace : 200 qui l'avoue, ni 204 ni 503 : {v}");
@@ -163,7 +163,7 @@ mod incident_et_etape_trace_avouee {
             step_advance(&conn, id, sid2, "skipped", "analyste", Some("hors périmètre"))
         };
         let IssueDeLEtape::EcriteSansTrace(cause) = issue else { panic!("maillon refusé : `EcriteSansTrace`, pas {issue:?}") };
-        assert!(cause.contains("registre hors d atteinte"), "la cause du moteur est portée : {cause:?}");
+        assert_eq!(cause, CAUSE_MAILLON_NON_ECRIT, "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : la cause portée est la phrase fixe, jamais le texte du moteur");
 
         let (statut, _, v) = iet_avancer(&st, id, sid).await;
         assert_eq!(statut, 200, "étape faite sans trace : 200 qui l'avoue, ni 204 ni 503 : {v}");

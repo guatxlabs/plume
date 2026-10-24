@@ -76,7 +76,7 @@ mod requetes_sauvegardees_trace_avouee {
     fn rqsta_aveu_conforme(v: &Value) {
         let aveu = rqsta_aveu(v).unwrap_or_else(|| panic!("le geste sans trace porte `registre_sans_maillon` : {v}"));
         assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE), "l'aveu d'un GESTE fait sans trace : {aveu}");
-        assert!(aveu.contains("registre hors d atteinte"), "l'aveu porte la cause du moteur : {aveu}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains("registre hors d atteinte"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {aveu}");
         assert!(!aveu.contains("alice") && !aveu.contains("rqsta-"), "l'aveu ne recopie pas le détail du maillon : {aveu}");
     }
 

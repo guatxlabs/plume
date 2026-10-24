@@ -520,6 +520,10 @@ pub(crate) fn playbook_cell(c: &Value) -> String {
     }
 }
 
+/// `P10.31-j` — LES DEUX REPRISES DE VERROU QUI ÉCRIVENT dans `run_playbooks`, nommées pour les témoins.
+pub(crate) const SITE_MARQUEUR_APRES_COMPILATION_REFUSEE: &str = "marqueur après compilation refusée";
+pub(crate) const SITE_MARQUEUR_ET_RIPOSTES: &str = "marqueur et ripostes";
+
 /// Exécute les playbooks dus : la requête renvoie des CIBLES (1re colonne) -> 1 action par cible.
 /// Mode 'observe' -> pending+dry_run (on voit ce qui SERAIT fait) ; 'active' -> approved+réel (auto).
 /// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des playbooks dus
@@ -533,6 +537,8 @@ pub(crate) fn playbook_cell(c: &Value) -> String {
 /// LE MARQUEUR DE PASSAGE N'A PAS PU ÊTRE ÉCRIT : le tour est refusé pour ce playbook, qui reste dû.
 /// CE QUE `Lue(n)` NE COMPTE PAS, ET C'EST DÉLIBÉRÉ : une cible BIEN FORMÉE que la POLITIQUE refuse
 /// (IP protégée, engagement actif). Ce refus-là est écrit, la détection continue, rien n'est perdu.
+/// `P10.31-j` — `Illisible`, nommant « playbooks », si l'écrivain porte une transaction orpheline à une reprise de verrou
+/// qui écrit (marqueur, ripostes) : rien n'est écrit à cette reprise ni après, le tick s'arrête là.
 pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnes = 0u32;
@@ -591,7 +597,11 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             Ok(s) => s,
             Err(_) => {
                 abandonnes += 1;
-                let c = db.lock();
+                // `P10.31-j` — un tour précédent a pu évaluer hors du verrou : sonde reprise avant d'écrire le marqueur.
+                let c = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "playbooks", SITE_MARQUEUR_APRES_COMPILATION_REFUSEE) {
+                    Ok(c) => c,
+                    Err(aveugle) => return aveugle,
+                };
                 // Le marqueur passe par le MÊME fabricant que le site nominal : un playbook dont la
                 // compilation est refusée et dont le marqueur n'entre pas serait recompilé — et
                 // recompté — à chaque tour, sans que rien ne le dise. L'abandon est DÉJÀ compté pour
@@ -610,7 +620,11 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         // ON + flag READ_ONLY + garde stmt.readonly()) : la requête de sélection des cibles ne peut QUE lire.
         // Les écritures légitimes (table `action`) se font ensuite sur la connexion principale, hors éval.
         let res = run_query(db_path, &sql);
-        let conn = db.lock();
+        // `P10.31-j` — la sélection des cibles a tourné hors du verrou : sonde reprise avant le marqueur et les ripostes.
+        let conn = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "playbooks", SITE_MARQUEUR_ET_RIPOSTES) {
+            Ok(c) => c,
+            Err(aveugle) => return aveugle,
+        };
         // `P10.20-w` — LE MARQUEUR DE PASSAGE EST ÉCRIT AVANT TOUT, ET SON ÉCHEC REFUSE LE TOUR. Ce
         // marqueur n'affirme rien des ripostes qui suivent : il commande la SÉLECTION des playbooks
         // dus. Avalé, il laissait ce playbook dû indéfiniment — donc réévalué à chaque tour, requête

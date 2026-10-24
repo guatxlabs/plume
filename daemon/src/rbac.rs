@@ -677,7 +677,7 @@ pub(crate) fn control_ledger_append(st: &AppState, kind: &str, actor: &str, tena
         Ok(p) => p,
         Err(e) => {
             eprintln!("[control_ledger] WARN maillon '{kind}' NON écrit : hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne");
-            return MaillonDeRegistre::NonInscrit(format!("hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne"));
+            return MaillonDeRegistre::NonInscrit(CAUSE_TETE_DE_CHAINE_ILLISIBLE.to_string());
         }
     };
     let hash = sha256_hex(format!("{prev}|{ts}|{kind}|{actor}|{tenant}|{detail}").as_bytes());
@@ -695,7 +695,7 @@ pub(crate) fn control_ledger_append(st: &AppState, kind: &str, actor: &str, tena
         }
         Err(e) => {
             eprintln!("[control_ledger] WARN maillon '{kind}' NON inscrit : l'écriture n'a pas eu lieu ({e})");
-            MaillonDeRegistre::NonInscrit(e.to_string())
+            MaillonDeRegistre::NonInscrit(CAUSE_MAILLON_NON_ECRIT.to_string())
         }
     }
 }

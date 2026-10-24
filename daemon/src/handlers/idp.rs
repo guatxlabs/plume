@@ -410,11 +410,15 @@ pub(crate) async fn idp_provider_create(
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "idp", "création d'un fournisseur d'identité", CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
+    // `P10.29-l` — le nom déjà pris se lit sur l'`INSERT` lui-même (contrainte UNIQUE de `idp_provider.name`), jamais sur
+    // l'audit qui suit : un refus de la trace d'audit n'est pas un nom pris.
+    let nom_deja_pris = std::cell::Cell::new(false);
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
             "INSERT INTO idp_provider(name,kind,enabled,config_json,secret,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?6)",
             params![name, kind, enabled, config.to_string(), secret, now()],
-        )?;
+        )
+        .inspect_err(|e| nom_deja_pris.set(violation_d_unicite_du_nom(e)))?;
         let id = conn.last_insert_rowid();
         audit_config_change(
             &conn, "config.idp.create",
@@ -430,8 +434,27 @@ pub(crate) async fn idp_provider_create(
             Ok(()) => Json(json!({ "id": id, "enabled": enabled != 0 })).into_response(),
             Err(e) => fournisseur_inchange_commit_refuse("création", &name, e),
         },
-        Err(_) => { let _ = conn.execute_batch("ROLLBACK"); (StatusCode::CONFLICT, "échec de création (nom déjà pris ou audit) — réessayez").into_response() }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            if nom_deja_pris.get() {
+                return err_json(StatusCode::CONFLICT, PHRASE_FOURNISSEUR_D_IDENTITE_NOM_DEJA_PRIS);
+            }
+            // `P10.29-l` — l'audit (ou toute autre écriture de la transaction) refusé : phrase fixe, la cause du moteur au
+            // journal seul avec l'identifiant de corrélation servi (même statut que les autres échecs d'audit).
+            servir_l_echec_de_la_transaction_d_audit("[idp]", &format!("création du fournisseur d'identité '{name}'"), &e)
+        }
     }
+}
+
+/// `P10.29-l` — la phrase servie en 409 quand le nom d'un fournisseur d'identité est déjà pris (la forme d'avant : un
+/// 409 TEXTE « échec de création (nom déjà pris ou audit) » qui confondait ce cas avec un audit refusé, hors JSON).
+pub(crate) const PHRASE_FOURNISSEUR_D_IDENTITE_NOM_DEJA_PRIS: &str = "un fournisseur d'identité porte déjà ce nom : rien \
+     n'est créé, choisissez un autre nom";
+
+/// `P10.29-l` — l'erreur est la violation d'une contrainte UNIQUE (code étendu SQLite, pas une lecture du texte). Locale :
+/// la jumelle d'`ai.rs` est privée et compilée sous la feature `ai` seulement.
+fn violation_d_unicite_du_nom(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
 }
 
 /// `P10.25-e` — le `COMMIT` d'une création, d'une modification ou d'une suppression de fournisseur d'identité refusé.

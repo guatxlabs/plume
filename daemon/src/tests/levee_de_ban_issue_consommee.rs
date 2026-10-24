@@ -280,10 +280,11 @@ mod levee_de_ban_issue_consommee {
         assert!(lbi_phrase(&corps).starts_with(LBI_PHRASE_DU_503), "{corps}");
         assert!(lbi_phrase(&corps).contains("PAS au registre non plus"), "la trace manquante de l'échec est dite : {corps}");
         // Les deux causes sont portées : l'erreur de la levée, puis celle du maillon. MUTATION : `A8`.
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause du maillon est la phrase fixe, plus le texte du moteur.
         assert_eq!(
             lbi_phrase(&corps),
             format!(
-                "{LBI_PHRASE_DU_503} (levee refusee par le temoin) ; cet échec n'est PAS au registre non plus (maillon refuse par le temoin)"
+                "{LBI_PHRASE_DU_503} (levee refusee par le temoin) ; cet échec n'est PAS au registre non plus ({CAUSE_MAILLON_NON_ECRIT})"
             ),
             "{corps}"
         );
@@ -314,7 +315,8 @@ mod levee_de_ban_issue_consommee {
         let aveu = corps.get(CLE_REGISTRE_SANS_MAILLON).and_then(|x| x.as_str()).unwrap_or("");
         assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE), "l'aveu nomme la trace manquante : {corps}");
         // La cause du maillon refusé est portée par `LeveeSansTrace` jusqu'à la réponse. MUTATION : `L9`.
-        assert_eq!(aveu, format!("{CAUSE_GESTE_SANS_TRACE} (maillon refuse par le temoin)"), "{corps}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portée est la phrase fixe du maillon non écrit.
+        assert_eq!(aveu, format!("{CAUSE_GESTE_SANS_TRACE} ({CAUSE_MAILLON_NON_ECRIT})"), "{corps}");
         assert_eq!(lbi_compte(&st, "SELECT COUNT(*) FROM net_ban"), 0, "le ban est levé");
         assert!(!net_ban_is_blocked(ip, now()), "et le cache ne bloque plus");
         assert_eq!(lbi_genre(&st, "netban.remove"), 0, "fixture : le maillon a bien été refusé");
@@ -555,9 +557,10 @@ mod levee_de_ban_issue_consommee {
         assert!(aveu.contains("cet échec n'est PAS au registre non plus ("), "la trace manquante de l'échec est dite : {aveu}");
         // Les deux causes, celle de la levée puis celle du maillon refusé. MUTATIONS : `R8`, `R9`
         // (« non plus () » : la cause de la trace manquante vidée).
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause du maillon est la phrase fixe, plus le texte du moteur.
         assert_eq!(
             aveu,
-            "[responder] WARN action 7 : miroir HTTP NON levé, le ban HTTP est TOUJOURS actif (levee refusee par le temoin) ; cet échec n'est PAS au registre non plus (maillon refuse par le temoin)",
+            format!("[responder] WARN action 7 : miroir HTTP NON levé, le ban HTTP est TOUJOURS actif (levee refusee par le temoin) ; cet échec n'est PAS au registre non plus ({CAUSE_MAILLON_NON_ECRIT})"),
             "l'aveu porte les deux causes"
         );
         assert!(!aveu.contains(ip), "{aveu}");
@@ -568,10 +571,11 @@ mod levee_de_ban_issue_consommee {
         // (b) levée faite, maillon refusé.
         lbi_ecrire(&st, &lbi_maillon_refuse("netban.remove"));
         let issue = lever_le_miroir_http(&st.db.lock(), ip, "auto: responder unban_ip");
-        assert!(matches!(&issue, LeveeDuMiroirHttp::LeveeSansTrace(c) if c == "maillon refuse par le temoin"), "la cause est portée (MUTATION `L9`) : {issue:?}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause portée est la phrase fixe du maillon non écrit.
+        assert!(matches!(&issue, LeveeDuMiroirHttp::LeveeSansTrace(c) if c == CAUSE_MAILLON_NON_ECRIT), "la cause est portée (MUTATION `L9`) : {issue:?}");
         let aveu = aveu_du_responder_sur_la_levee(7, &issue).expect("une trace manquante est avouée");
         assert!(aveu.contains("action 7") && aveu.contains("PAS pris la levée"), "{aveu}");
-        assert!(aveu.ends_with("PAS pris la levée (maillon refuse par le temoin)"), "l'aveu porte la cause : {aveu}");
+        assert!(aveu.ends_with(&format!("PAS pris la levée ({CAUSE_MAILLON_NON_ECRIT})")), "l'aveu porte la cause : {aveu}");
         assert!(!aveu.contains(ip), "{aveu}");
         assert!(!net_ban_is_blocked(ip, now()), "le ban est levé");
         lbi_ecrire(&st, "DROP TRIGGER lbi_maillon_refuse;");

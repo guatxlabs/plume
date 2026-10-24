@@ -116,7 +116,7 @@ mod traces_mfa_sans_maillon_avouees {
         assert_eq!(error, CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT_SANS_TRACE, "la phrase du refus sans trace : {v}");
         let aveu = tmmsa_aveu(&v).unwrap_or_else(|| panic!("le refus sans trace porte `registre_sans_maillon` : {v}"));
         assert!(aveu.starts_with(CAUSE_REFUS_SANS_TRACE), "l'aveu d'un REFUS sans trace : {aveu}");
-        assert!(aveu.contains("registre hors d atteinte"), "l'aveu porte la cause du moteur : {aveu}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains("registre hors d atteinte"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {aveu}");
         assert!(!aveu.contains("'adm'"), "l'aveu ne recopie pas le détail du maillon (nom du compte) : {aveu}");
         assert_eq!(tmmsa_lignes_mfa_au_registre(&st), 0, "fixture : le maillon n'est pas entré");
         assert_eq!(tmmsa_mfa_de_adm(&st).0, 0, "aucune graine n'est posée");
@@ -153,7 +153,7 @@ mod traces_mfa_sans_maillon_avouees {
         assert_eq!(codes, 10, "les codes de secours clairs restent servis sous l'aveu : {v}");
         let aveu = tmmsa_aveu(&v).unwrap_or_else(|| panic!("l'activation sans trace porte `registre_sans_maillon` : {v}"));
         assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE), "l'aveu d'un GESTE fait sans trace : {aveu}");
-        assert!(aveu.contains("registre hors d atteinte"), "l'aveu porte la cause du moteur : {aveu}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains("registre hors d atteinte"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {aveu}");
         assert!(!aveu.contains("'adm'"), "l'aveu ne recopie pas le détail du maillon : {aveu}");
         assert_eq!(tmmsa_mfa_de_adm(&st), (1, 1), "l'activation est écrite et n'est pas annulée");
         assert_eq!(tmmsa_lignes_mfa_au_registre(&st), 0, "fixture : le maillon n'est pas entré");
@@ -185,7 +185,7 @@ mod traces_mfa_sans_maillon_avouees {
         assert_eq!(v.get("ok"), Some(&json!(true)), "{v}");
         let aveu = tmmsa_aveu(&v).unwrap_or_else(|| panic!("la désactivation sans trace porte `registre_sans_maillon` : {v}"));
         assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE), "l'aveu d'un GESTE fait sans trace : {aveu}");
-        assert!(aveu.contains("registre hors d atteinte"), "l'aveu porte la cause du moteur : {aveu}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains("registre hors d atteinte"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {aveu}");
         assert_eq!(tmmsa_mfa_de_adm(&st).0, 0, "la désactivation est validée et n'est pas annulée");
         assert_eq!(tmmsa_lignes_mfa_au_registre(&st), 0, "fixture : le maillon n'est pas entré");
     }

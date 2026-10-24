@@ -143,9 +143,10 @@ mod chronologie_de_fusion_et_de_lien_dans_le_geste {
         ab3_sql(st, "DROP TRIGGER ab3_fk; DROP TABLE ab3_enfant; DROP TABLE ab3_parent; PRAGMA foreign_keys=OFF;");
     }
 
+    // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, plus le texte du moteur.
     fn ab3_maillon_avoue(corps: &Value) -> bool {
         corps.get("ok") == Some(&json!(true))
-            && corps.get(CLE_REGISTRE_SANS_MAILLON).and_then(|v| v.as_str()).is_some_and(|p| p.starts_with(CAUSE_GESTE_SANS_TRACE) && p.contains("ab3 maillon refusé"))
+            && corps.get(CLE_REGISTRE_SANS_MAILLON).and_then(|v| v.as_str()).is_some_and(|p| p == format!("{CAUSE_GESTE_SANS_TRACE} ({CAUSE_MAILLON_NON_ECRIT})"))
     }
 
     /// CE QU'IL TIENT (`case_merge`, par la route) : la chronologie de la SOURCE, puis celle de la CIBLE, refusée -> 503

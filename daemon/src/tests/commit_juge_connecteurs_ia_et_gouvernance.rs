@@ -30,9 +30,9 @@
 // CE QUE L'ÉNONCÉ DE `P10.26-b` DISAIT MAL : la politique de caviardage gouverne les NOMS DE CHAMP du schéma envoyé au
 // modèle, pas des données ; une politique perdue laisse sortir des noms de champ, jamais une valeur d'événement.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : les témoins de `P10.26-b` ne sont compilés que sous `--features ai`, qu'aucun job
-// de la CI ne compile en mode test (`cargo check --features ai` sans `--tests`) — ils ne comptent ni dans
-// `EXPECTED_TESTS` ni dans `EXPECTED_COLD_TESTS` et ont été joués à la main ; les sept chemins qui ignoraient l'échec de
+// CE QUE CES TÉMOINS NE TIENNENT PAS : les témoins de `P10.26-b` ne sont compilés que sous `--features ai` — ils ne
+// comptent ni dans `EXPECTED_TESTS` ni dans `EXPECTED_COLD_TESTS`, mais dans `EXPECTED_AI_TESTS`, que le job `ai` de la
+// CI fait respecter en jouant la suite complète sous cette feature (`P10.26-v`) ; les sept chemins qui ignoraient l'échec de
 // leur `BEGIN` puis validaient (ou annulaient) une transaction ÉTRANGÈRE sont fermés par `P10.26-s` ; le mode
 // multi-tenant (écrivain du tenant) et un `COMMIT` que SQLite annule de lui-même (disque plein, E/S) ne sont pas joués
 // (`P10.26-h`) ; le curseur d'un envoi de puits (`ledger_sink_flush`), qui avançait par une écriture avalée, est

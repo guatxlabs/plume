@@ -840,7 +840,7 @@ env:
   # `P10.24-m`, `P10.28-h`, `P10.29-i`, `P10.20-u` (2026-09-29) : +10 — le fichier
   # `secret_des_gestes_demonstration_freinee_et_pose_de_l_administrateur.rs` (`sdg_` six, `dfb_` un, `pla_` un,
   # `rnc_` deux). Aucun derrière un `cfg(feature)` -> le MÊME +10 sur `EXPECTED_COLD_TESTS` (2213 -> 2223), mesuré.
-  EXPECTED_TESTS: "3331"
+  EXPECTED_TESTS: "3362"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1313,7 +1313,7 @@ jobs:
           # (`les_champs_structurels_de_l_autorite_sont_refuses_comme_objet_de_savoir`) — pas de `cfg(feature)`,
           # écart INCHANGÉ. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
           # `P10.24-m` et voisines (2026-09-29) : +10, les MÊMES que sur `EXPECTED_TESTS` — écart INCHANGÉ.
-          EXPECTED_COLD_TESTS: "3594"
+          EXPECTED_COLD_TESTS: "3625"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1377,6 +1377,98 @@ jobs:
           # regarderait pas le bon répertoire. Le câblage est lui-même gardé
           # (`--verifier-le-cablage`, job `gardes`) : il ne peut plus se défaire en silence.
           "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite cold_tier"
+          [ "$rc_canal" = 0 ] || exit "$rc_canal"
+
+  # ---------------------------------------------------------------------------
+  # ai — LA SUITE COMPLÈTE SOUS `--features ai`, SUR SON PROPRE RUNNER (`P10.26-v`, `P10.29-m`).
+  #
+  # POURQUOI : la feature `ai` est OFF par défaut. Le job `test` ne compile donc PAS les tests qui
+  # vivent derrière `cfg(feature = "ai")`, et le job `features` ne faisait qu'un `cargo check
+  # --features ai` — sans `--tests`, c'est-à-dire sans même compiler ces tests. Les fournisseurs
+  # d'IA, leurs lectures avouées, les traces d'appel, la politique de caviardage et les deux `cjcg_`
+  # ne tournaient qu'à la main : un défaut sur ce chemin restait vert.
+  #
+  # LA SUITE ENTIÈRE, PAS UN FILTRE : les tests gatés n'ont aucun préfixe commun (`ai_`, `cjcg_`,
+  # `tisa_`, `fial_`, `al3_`, `la_politique_…`, `ai::ai_unit_tests`), donc un filtre laisserait
+  # hors du job — et hors du compteur — tout test gaté futur qui ne lui ressemble pas. Jouer la suite
+  # complète sous la feature les prend tous par construction ; le compteur dit combien.
+  #
+  # RUNNER SÉPARÉ, PAS UN PAS DE `features` ni de `test` : `test` affirme le compte du profil par
+  # DÉFAUT (y plier une feature détruirait la mesure), et `features` plafonne à 60 minutes pour
+  # ses vérifications par feature ; lui ajouter une suite complète l'allongerait d'autant. Les tests ne
+  # demandent aucun service réseau : leurs adresses de fixture sont des adresses de documentation
+  # ou privées, ou la boucle locale sur un port fermé, refusées avant toute connexion.
+  # ---------------------------------------------------------------------------
+  ai:
+    name: ai (daemon — cargo test --features ai)
+    runs-on: ubuntu-24.04
+    # Plafond généreux, comme `cold-tier` : un runner lent doit rendre un VRAI échec, pas un délai
+    # ambigu. Il n'est pas réglé sur la durée mesurée.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout plume
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
+        with:
+          toolchain: "1.96.0"
+
+      # Clé propre ("ai-") : la feature lie d'autres artefacts que le profil par défaut ; partager
+      # une clé ferait se chasser les deux jobs du même `target/`.
+      - name: Cache cargo (registry + target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            daemon/target
+          key: cargo-ai-${{ runner.os }}-${{ hashFiles('daemon/Cargo.lock') }}
+          restore-keys: |
+            cargo-ai-${{ runner.os }}-
+
+      # LE COMPTE EST AFFIRMÉ, comme dans `test` et `cold-tier` : même awk, son PROPRE compteur.
+      # EXPECTED_AI_TESTS est le compte de la suite COMPLÈTE sous `--features ai` (tests par défaut +
+      # tests gatés), MESURÉ par `cargo test --locked --features ai -- --list`, jamais dérivé par
+      # addition. Il doit rester STRICTEMENT supérieur à EXPECTED_TESTS : s'ils se rejoignent, la
+      # feature n'ajoute plus de test et ce job est devenu un doublon de `test` — le contrôle
+      # ci-dessous le dit. TMPDIR sur le disque du runner, isolé des autres suites.
+      - name: cargo test (daemon, --features ai) + assert the ai test count
+        working-directory: daemon
+        env:
+          EXPECTED_AI_TESTS: "3383"
+          EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP/plume-tmp-ai"
+          rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+          # Le canal du refus de conclure (`P11.23-b`), armé comme dans `test` : relu après la suite,
+          # son code gardé pour la fin.
+          export PLUME_JOURNAL_DES_REFUS="$RUNNER_TEMP/refus-de-conclure-ai.journal"
+          rm -f "$PLUME_JOURNAL_DES_REFUS"
+          rc_cargo=0
+          cargo test --locked --features ai --verbose 2>&1 | tee /tmp/ai-tests.log || rc_cargo=$?
+          rc_tri=0
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_a_bench_refusal_is_a_distinct_channel.py" \
+            --trier /tmp/ai-tests.log "$rc_cargo" || rc_tri=$?
+          [ "$rc_tri" = 0 ] || exit "$rc_tri"
+          rc_canal=0
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_a_test_that_declines_to_conclude_says_so.py" \
+            --lire || rc_canal=$?
+          total=$(awk '/^test result: ok\. [0-9]+ passed/{s+=$4} END{print s+0}' /tmp/ai-tests.log)
+          echo "ai tests passed: $total (expected $EXPECTED_AI_TESTS)"
+          if [ "$total" != "$EXPECTED_AI_TESTS" ]; then
+            echo "::error::ai suite test count is $total, expected $EXPECTED_AI_TESTS."
+            echo "::error::If the change legitimately adds or removes tests, update EXPECTED_AI_TESTS"
+            echo "::error::HERE, from your own measurement (cargo test --features ai -- --list) — and nowhere else."
+            exit 1
+          fi
+          if [ "$EXPECTED_AI_TESTS" -le "$EXPECTED_DEFAULT_TESTS" ]; then
+            echo "::error::EXPECTED_AI_TESTS ($EXPECTED_AI_TESTS) <= EXPECTED_TESTS ($EXPECTED_DEFAULT_TESTS):"
+            echo "::error::the ai feature is no longer contributing tests — this job has become a no-op."
+            exit 1
+          fi
+          "$GITHUB_WORKSPACE/.github/aucun-temporaire-laisse.sh" "suite ai"
           [ "$rc_canal" = 0 ] || exit "$rc_canal"
 
   # ---------------------------------------------------------------------------
@@ -4225,7 +4317,7 @@ jobs:
   ci-ok:
     name: CI
     if: always() # otherwise a failed upstream job SKIPS this one instead of failing it
-    needs: [test, cold-tier, shell, features, security, lint, collectors]
+    needs: [test, cold-tier, ai, shell, features, security, lint, collectors]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

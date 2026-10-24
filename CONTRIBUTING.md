@@ -184,12 +184,15 @@ The default binary carries none of them.
 | feature | CI coverage |
 |---|---|
 | `cold_tier` | **compiled and tested** (`cold-tier` job, own asserted count) |
-| `duckdb`, `clickhouse`, `clickhouse-ha`, `ldap`, `saml`, `ai` | **`cargo check` only** — type-checked, never executed |
+| `ai` | **compiled and tested** (`ai` job, own asserted count) — the whole suite runs with the feature on |
+| `duckdb`, `clickhouse`, `clickhouse-ha`, `ldap`, `saml` | **`cargo check` only** — type-checked, never executed |
 
-A behaviour regression in SAML assertion validation, the LDAP bind, the AI advisory path or the
-ClickHouse backend **will pass CI green**. Making those real requires suites that run without a
-live IdP / directory / model endpoint / ClickHouse server; that work is not done. If you touch
-one of them, say in the PR how you tested it by hand — CI will not do it for you.
+A behaviour regression in SAML assertion validation, the LDAP bind or the ClickHouse backend
+**will pass CI green**. Making those real requires suites that run without a live IdP /
+directory / ClickHouse server; that work is not done. If you touch one of them, say in the PR how
+you tested it by hand — CI will not do it for you. The AI advisory path is executed by the `ai`
+job without network — its daemon wiring, never a live model endpoint: a provider's real wire
+behaviour is still yours to check by hand.
 
 The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell` job) and a
 *consultative* shellcheck. `bash -n` proves they parse; it proves nothing about behaviour.
@@ -215,9 +218,16 @@ The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell
 3. Include tests. Preserve or improve coverage; keep the default count CONSTANT — the value lives
    in `EXPECTED_TESTS` (`.github/workflows/ci.yml`) and nowhere else, so read it there.
    If you touch `cold_store`, `EXPECTED_COLD_TESTS` is asserted the same way.
+   `EXPECTED_AI_TESTS` is the count of the **whole** suite under `--features ai` — the default
+   tests plus the ai-gated ones — so it moves with **every** test you add to the default profile,
+   not only with ai tests. Re-measure it with
+   `cargo test --manifest-path daemon/Cargo.toml --features ai -- --list` and update it in
+   `ci.yml`, next to the others.
    **Check it in 2 seconds instead of 47 minutes** with `.github/scripts/compter-les-tests.sh`: it
    asks the harness to *list* its tests (`cargo test -- --list`) rather than run them, and compares
-   both counts against `ci.yml` itself — no second copy of the numbers. Install it as a pre-commit
+   both counts against `ci.yml` itself — no second copy of the numbers. It does **not** check
+   `EXPECTED_AI_TESTS` (that would need an `--features ai` build in the hook): measure that one
+   yourself as above. Install it as a pre-commit
    hook with `git config core.hooksPath .githooks` (it stays silent unless the commit touches
    `daemon/`). It does **not** tell you the tests pass — only CI, which actually runs them, does.
    *(Why a local check and not another CI trigger: `ci.yml` already runs on `push` to every branch,

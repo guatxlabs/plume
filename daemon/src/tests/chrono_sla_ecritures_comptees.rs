@@ -1,4 +1,8 @@
 // =====================================================================================
+// INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : les causes du chrono ne portent plus le texte du moteur (motif du
+// déclencheur, colonne absente) mais une phrase fixe (`ECRITURE_DU_CHRONO_REFUSEE`, `CHRONO_*`) ; le moteur va à la ligne
+// `[caseops] WARN` seule (témoins `am4_`).
+//
 // `P10.20-w` (reste) — LES ÉCRITURES INTERNES DU CHRONO SLA MULTI-NIVEAU SONT COMPTÉES ET PROPAGÉES.
 //
 // CE QUI ÉTAIT FAUX, MESURÉ SUR b52f097 : `sla_apply_policy` (deux `UPDATE` : échéances d'acquittement et de
@@ -104,7 +108,7 @@ mod chrono_sla_ecritures_comptees {
         let id = corps["id"].as_i64().expect("identifiant servi");
         let aveu = corps.get("echeances_multi_niveau_non_posees").and_then(|v| v.as_str()).unwrap_or("");
         assert!(aveu.starts_with(CAUSE_ECHEANCES_MULTI_NIVEAU_NON_POSEES), "l'aveu est porté : {corps}");
-        assert!(aveu.contains("sla_policy_id/ack_due/resolve_due: cse ack_due"), "la cause nomme les colonnes : {aveu}");
+        assert!(aveu.contains("sla_policy_id/ack_due/resolve_due: écriture refusée par la base"), "la cause nomme les colonnes : {aveu}");
         assert_eq!(cse_entier(&st, &format!("SELECT ack_due FROM incident WHERE id={id}")), None, "échéance non posée");
         cse_permettre(&st, "ack_due");
 
@@ -138,7 +142,8 @@ mod chrono_sla_ecritures_comptees {
         let r = sla_recalcule_la_priorite_bornee(&conn, 2, 10);
         assert_eq!(r.recalcules, 0, "aucune échéance écrite, aucune comptée");
         let raison = r.manque.clone().expect("le refus est dit");
-        assert!(raison.contains("2 échéance(s) REFUSÉE(S)") && raison.contains("cse resolve_due"), "{raison}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : le refus se nomme par la phrase fixe, plus par le motif du déclencheur.
+        assert!(raison.contains("2 échéance(s) REFUSÉE(S)") && raison.contains("écriture refusée par la base") && !raison.contains("cse resolve_due"), "{raison}");
         assert_eq!(reponse_de_l_upsert_sla(Ok(()), &r).status(), StatusCode::OK, "plus un 204 « tout fait »");
         let restees: i64 = conn.query_row("SELECT COUNT(*) FROM incident WHERE resolve_due=77", [], |x| x.get(0)).unwrap();
         assert_eq!(restees, 2, "l'échéance d'avant est conservée");
@@ -158,7 +163,7 @@ mod chrono_sla_ecritures_comptees {
         assert_eq!(cse_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(30000), "fixture P3");
         cse_refuser(&st, "resolve_due");
         let cause = cse_cause(&st, id, json!({ "priority": 1 })).await;
-        assert_eq!(cause, "sla_policy_id/resolve_due: cse resolve_due");
+        assert_eq!(cause, "sla_policy_id/resolve_due: écriture refusée par la base");
         assert_eq!(cse_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(30000), "échéance d'avant");
         cse_permettre(&st, "resolve_due");
         assert_eq!(cse_patch(&st, id, json!({ "priority": 1 })).await.0, 204, "contrôle nominal");
@@ -174,7 +179,7 @@ mod chrono_sla_ecritures_comptees {
         let id = cse_dossier(&st, 3);
         cse_refuser(&st, "sla_paused_since");
         let cause = cse_cause(&st, id, json!({ "status": "waiting" })).await;
-        assert_eq!(cause, "sla_paused_since: cse sla_paused_since");
+        assert_eq!(cause, "sla_paused_since: écriture refusée par la base");
         assert_eq!(cse_entier(&st, &format!("SELECT sla_paused_since FROM incident WHERE id={id}")), None);
         cse_permettre(&st, "sla_paused_since");
         assert_eq!(cse_patch(&st, id, json!({ "status": "waiting" })).await.0, 204, "contrôle nominal");
@@ -192,7 +197,7 @@ mod chrono_sla_ecritures_comptees {
         cse_en_pause(&st, id);
         cse_refuser(&st, "sla_pause_accum");
         let cause = cse_cause(&st, id, json!({ "status": "open" })).await;
-        assert_eq!(cause, "sla_pause_accum/ack_due/resolve_due: cse sla_pause_accum");
+        assert_eq!(cause, "sla_pause_accum/ack_due/resolve_due: écriture refusée par la base");
         assert_eq!(cse_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(30000), "échéance d'avant");
         assert!(cse_entier(&st, &format!("SELECT sla_paused_since FROM incident WHERE id={id}")).is_some(), "chrono resté en pause");
         cse_permettre(&st, "sla_pause_accum");
@@ -215,11 +220,11 @@ mod chrono_sla_ecritures_comptees {
         cse_en_pause(&st, id);
         let cause = cse_cause(&st, id, json!({ "priority": 1, "status": "in_progress", "disposition": "true_positive" })).await;
         assert!(cause.starts_with("disposition: cse disposition ; échéance recalculée sur la priorité écrite ; "), "{cause}");
-        assert!(cause.contains("ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (sla_pause_accum/ack_due/resolve_due: cse sla_pause_accum)"), "{cause}");
+        assert!(cause.contains("ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (sla_pause_accum/ack_due/resolve_due: écriture refusée par la base)"), "{cause}");
         let id2 = cse_dossier(&st, 3);
         cse_en_pause(&st, id2);
         let cause = cse_cause(&st, id2, json!({ "priority": 1, "status": "closed", "disposition": "true_positive" })).await;
-        assert_eq!(cause, "disposition: cse disposition ; REPRISE DU CHRONO SLA NON ÉCRITE (sla_pause_accum/ack_due/resolve_due: cse sla_pause_accum)");
+        assert_eq!(cause, "disposition: cse disposition ; REPRISE DU CHRONO SLA NON ÉCRITE (sla_pause_accum/ack_due/resolve_due: écriture refusée par la base)");
         assert!(cse_entier(&st, &format!("SELECT sla_paused_since FROM incident WHERE id={id2}")).is_some(), "fixture : reprise refusée");
     }
 
@@ -237,7 +242,7 @@ mod chrono_sla_ecritures_comptees {
         cse_en_pause(&st, id);
         cse_refuser(&st, "sla_pause_accum");
         let cause = cse_cause(&st, id, json!({ "priority": 1, "status": "open" })).await;
-        assert_eq!(cause, "sla_pause_accum/ack_due/resolve_due: cse sla_pause_accum, échéances multi-niveau recalculées sur la priorité écrite");
+        assert_eq!(cause, "sla_pause_accum/ack_due/resolve_due: écriture refusée par la base, échéances multi-niveau recalculées sur la priorité écrite");
         assert_eq!(cse_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(600), "échéance de P1");
         assert_eq!(cse_entier(&st, &format!("SELECT sla_policy_id FROM incident WHERE id={id}")), p1, "politique de P1");
         cse_permettre(&st, "sla_pause_accum");
@@ -245,12 +250,12 @@ mod chrono_sla_ecritures_comptees {
         let id = cse_dossier(&st, 3);
         cse_refuser(&st, "sla_paused_since");
         let cause = cse_cause(&st, id, json!({ "priority": 1, "status": "waiting" })).await;
-        assert_eq!(cause, "sla_paused_since: cse sla_paused_since, échéances multi-niveau recalculées sur la priorité écrite");
+        assert_eq!(cause, "sla_paused_since: écriture refusée par la base, échéances multi-niveau recalculées sur la priorité écrite");
         assert_eq!(cse_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(600), "échéance de P1");
         assert_eq!(cse_entier(&st, &format!("SELECT sla_policy_id FROM incident WHERE id={id}")), p1, "politique de P1");
         // Contrôle : sans priorité écrite, la cause reste nue (aucun rattrapage).
         let id = cse_dossier(&st, 3);
-        assert_eq!(cse_cause(&st, id, json!({ "status": "waiting" })).await, "sla_paused_since: cse sla_paused_since");
+        assert_eq!(cse_cause(&st, id, json!({ "status": "waiting" })).await, "sla_paused_since: écriture refusée par la base");
         assert_eq!(cse_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(30000));
     }
 
@@ -265,7 +270,7 @@ mod chrono_sla_ecritures_comptees {
         cse_refuser(&st, "resolve_due");
         let cause = cse_cause(&st, id, json!({ "priority": 1, "status": "in_progress" })).await;
         assert!(
-            cause.ends_with(" ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (sla_policy_id/resolve_due: cse resolve_due)"),
+            cause.ends_with(" ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (sla_policy_id/resolve_due: écriture refusée par la base)"),
             "{cause}"
         );
     }
@@ -281,7 +286,7 @@ mod chrono_sla_ecritures_comptees {
         cse_refuser(&st, "disposition");
         cse_refuser(&st, "sla_pause_accum");
         let cause = cse_cause(&st, id, json!({ "priority": 2, "status": "open", "disposition": "true_positive" })).await;
-        assert!(cause.ends_with(" ; REPRISE DU CHRONO SLA NON ÉCRITE (sla_pause_accum/ack_due/resolve_due: cse sla_pause_accum)"), "{cause}");
+        assert!(cause.ends_with(" ; REPRISE DU CHRONO SLA NON ÉCRITE (sla_pause_accum/ack_due/resolve_due: écriture refusée par la base)"), "{cause}");
     }
 
     /// CE QU'IL TIENT (bras `Ok(n)` d'`ecriture_du_chrono`) : un déclencheur `RAISE(IGNORE)` fait écrire ZÉRO ligne sans
@@ -327,12 +332,14 @@ mod chrono_sla_ecritures_comptees {
         }
         let raison = sla_recalcule_la_priorite_bornee(&conn, 2, 10).manque.expect("refus dits");
         assert!(raison.starts_with("5 échéance(s) REFUSÉE(S)"), "{raison}");
-        assert_eq!(raison.matches("cse resolve_due").count(), 5, "{raison}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : chaque dossier nommé porte la phrase fixe, jamais le motif du déclencheur.
+        assert_eq!(raison.matches("écriture refusée par la base").count(), 5, "{raison}");
+        assert!(!raison.contains("cse resolve_due"), "{raison}");
         assert!(!raison.contains('…'), "cinq refus, tous nommés : pas d'ellipse : {raison}");
         conn.execute("INSERT INTO incident(ts,updated,title,status,severity,priority) VALUES(2000,2000,'x','new',2,2)", []).unwrap();
         let raison = sla_recalcule_la_priorite_bornee(&conn, 2, 10).manque.expect("refus dits");
         assert!(raison.starts_with("6 échéance(s) REFUSÉE(S)"), "{raison}");
-        assert_eq!(raison.matches("cse resolve_due").count(), 5, "cinq nommés au plus : {raison}");
+        assert_eq!(raison.matches("écriture refusée par la base").count(), 5, "cinq nommés au plus : {raison}");
         assert!(raison.ends_with(", …"), "{raison}");
     }
 
@@ -356,7 +363,8 @@ mod chrono_sla_ecritures_comptees {
         assert_eq!(r.recalcules, 0);
         let raison = r.manque.expect("refus et plafond dits");
         assert!(raison.starts_with("2 échéance(s) REFUSÉE(S)"), "{raison}");
-        assert_eq!(raison.matches("cse resolve_due").count(), 2, "{raison}");
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM).
+        assert_eq!(raison.matches("écriture refusée par la base").count(), 2, "{raison}");
         assert!(raison.contains(" ; plafond de 2 case(s) atteint"), "{raison}");
     }
 }

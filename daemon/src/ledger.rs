@@ -88,6 +88,19 @@ pub(crate) const CAUSE_GESTE_SANS_TRACE: &str =
      qui l'atteste — cet enregistrement-là restera sans preuve d'audit. Refaire le geste ne comble pas \
      ce trou : signalez-le et faites vérifier le journal d'intégrité.";
 
+/// `P10.29-l` — LA CAUSE PORTÉE PAR `NonInscrit` QUAND L'`INSERT` DU MAILLON N'A PAS EU LIEU. Phrase fixe : elle
+/// nourrit les corps `registre_sans_maillon`, les refus et les lignes de journal des appelants, et le texte du
+/// moteur (nom de table, déclencheur, chemin) n'a rien à y faire — il reste sur la ligne de sortie d'erreur de la
+/// primitive, seule à le porter. Elle ne dit pas ILLISIBLE : c'est l'ÉCRITURE qui est tombée, et la voie de la
+/// tête de chaîne (`CAUSE_TETE_DE_CHAINE_ILLISIBLE`) garde ce mot pour qu'on distingue les deux. Partagée par
+/// `rbac::control_ledger_append`, miroir de cette primitive sur le journal de contrôle.
+pub(crate) const CAUSE_MAILLON_NON_ECRIT: &str = "l'écriture du maillon n'a pas eu lieu";
+
+/// `P10.29-l` — LA CAUSE PORTÉE PAR `NonInscrit` QUAND LE HACHAGE PRÉCÉDENT NE SE LIT PAS : on refuse d'écrire
+/// (s'accrocher à une tête inconnue romprait la chaîne). Phrase fixe, sans le texte du moteur (laissé à la ligne
+/// de sortie d'erreur de la primitive) ; elle garde ILLISIBLE, qui la distingue de `CAUSE_MAILLON_NON_ECRIT`.
+pub(crate) const CAUSE_TETE_DE_CHAINE_ILLISIBLE: &str = "hachage précédent ILLISIBLE — l'écrire romprait la chaîne";
+
 /// Ajoute une entrée au journal d'intégrité (chaîne de hash, append-only, tamper-evident).
 ///
 /// `P10.20-v` — L'`INSERT` N'EST PLUS AVALÉ, ET L'ISSUE EST RENDUE. La forme `let _ =
@@ -103,7 +116,7 @@ pub(crate) fn ledger_append(conn: &Connection, kind: &str, detail: &str) -> Mail
         Ok(p) => p,
         Err(e) => {
             eprintln!("[ledger] WARN maillon '{kind}' NON écrit : hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne");
-            return MaillonDeRegistre::NonInscrit(format!("hachage précédent ILLISIBLE ({e}) — l'écrire romprait la chaîne"));
+            return MaillonDeRegistre::NonInscrit(CAUSE_TETE_DE_CHAINE_ILLISIBLE.to_string());
         }
     };
     let hash = sha256_hex(format!("{prev}|{ts}|{kind}|{detail}").as_bytes());
@@ -118,7 +131,7 @@ pub(crate) fn ledger_append(conn: &Connection, kind: &str, detail: &str) -> Mail
         }
         Err(e) => {
             eprintln!("[ledger] WARN maillon '{kind}' NON inscrit : l'écriture n'a pas eu lieu ({e})");
-            MaillonDeRegistre::NonInscrit(e.to_string())
+            MaillonDeRegistre::NonInscrit(CAUSE_MAILLON_NON_ECRIT.to_string())
         }
     }
 }

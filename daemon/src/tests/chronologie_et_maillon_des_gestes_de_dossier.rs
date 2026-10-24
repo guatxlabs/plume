@@ -110,8 +110,12 @@ mod chronologie_et_maillon_des_gestes_de_dossier {
         ac2_sql(st, "DROP TRIGGER ac2_fk; DROP TABLE ac2_enfant; DROP TABLE ac2_parent; PRAGMA foreign_keys=OFF;");
     }
 
+    // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, plus le texte du moteur
+    // (la mise à jour la préfixe du champ attesté : « (status: <phrase fixe>) »).
     fn ac2_maillon_avoue(corps: &Value) -> bool {
-        corps.get(CLE_REGISTRE_SANS_MAILLON).and_then(|v| v.as_str()).is_some_and(|p| p.starts_with(CAUSE_GESTE_SANS_TRACE) && p.contains("ac2 maillon refusé"))
+        corps.get(CLE_REGISTRE_SANS_MAILLON).and_then(|v| v.as_str()).is_some_and(|p| {
+            p.starts_with(&format!("{CAUSE_GESTE_SANS_TRACE} (")) && p.ends_with(&format!("{CAUSE_MAILLON_NON_ECRIT})")) && !p.contains("ac2 maillon refusé")
+        })
     }
 
     async fn ac2_creer(st: &AppState) -> (u16, Value) {

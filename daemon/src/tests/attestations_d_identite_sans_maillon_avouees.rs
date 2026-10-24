@@ -143,7 +143,7 @@ mod attestations_d_identite_sans_maillon_avouees {
         assert_eq!(v.get("setup_token_file_removed"), Some(&json!(true)), "le champ du jeton reste servi : {v}");
         let aveu = aisa_aveu(&v).unwrap_or_else(|| panic!("le maillon manquant est AVOUÉ dans la réponse : {v}"));
         assert!(aveu.starts_with(CAUSE_GESTE_SANS_TRACE), "l'aveu est celui d'un geste fait sans trace : {aveu}");
-        assert!(aveu.contains("registre hors d atteinte"), "l'aveu porte la cause du moteur : {aveu}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains("registre hors d atteinte"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {aveu}");
         assert!(!aveu.contains(AISA_ADMIN), "l'aveu ne porte jamais le détail du maillon (le nom du compte) : {aveu}");
         assert_eq!(st.admin.lock().as_ref().map(|(n, _)| n.clone()).as_deref(), Some(AISA_ADMIN), "geste NON annulé");
         let en_base: i64 =

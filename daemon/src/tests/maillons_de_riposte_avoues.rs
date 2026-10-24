@@ -170,7 +170,7 @@ mod maillons_de_riposte_avoues {
         assert_eq!(statut, 200, "le verdict est écrit : un succès, jamais un refus : {corps}");
         assert_eq!(v["ok"], json!(true), "`ok` reste vrai, l'agent passe à la suivante : {corps}");
         let aveu = v[CLE_REGISTRE_SANS_MAILLON].as_str().unwrap_or_else(|| panic!("l'aveu du maillon manquant est servi : {corps}"));
-        assert_eq!(aveu, format!("{CAUSE_GESTE_SANS_TRACE} ({AC1_MOTEUR_REGISTRE})"), "phrase partagée et cause du moteur");
+        assert_eq!(aveu, format!("{CAUSE_GESTE_SANS_TRACE} ({CAUSE_MAILLON_NON_ECRIT})"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : phrase partagée et phrase fixe du maillon non écrit, plus le texte du moteur");
         assert_eq!(v.as_object().map(|o| o.len()), Some(2), "deux clés, rien d'autre : {corps}");
         assert!(!corps.contains("hote-ac1") && !corps.contains("203.0.113"), "ni l'hôte ni la cible : {corps}");
         {
@@ -272,7 +272,7 @@ mod maillons_de_riposte_avoues {
         ac1_registre_refuse(&st.db.lock(), "netban.forme");
         assert_eq!(
             miroir("pas-une-adresse"),
-            Some(ac1_ligne("responder", "action 31 exécutée : cible inanalysable, aucun miroir HTTP", "netban.forme", AC1_MOTEUR_REGISTRE))
+            Some(ac1_ligne("responder", "action 31 exécutée : cible inanalysable, aucun miroir HTTP", "netban.forme", CAUSE_MAILLON_NON_ECRIT))
         );
         ac1_registre_repare(&st.db.lock());
 
@@ -281,7 +281,7 @@ mod maillons_de_riposte_avoues {
         ac1_registre_refuse(&st.db.lock(), "netban.plafond");
         assert_eq!(
             miroir("203.0.113.48"),
-            Some(ac1_ligne("responder", "action 31 exécutée : miroir HTTP refusé par le plafond", "netban.plafond", AC1_MOTEUR_REGISTRE))
+            Some(ac1_ligne("responder", "action 31 exécutée : miroir HTTP refusé par le plafond", "netban.plafond", CAUSE_MAILLON_NON_ECRIT))
         );
         ac1_registre_repare(&st.db.lock());
         netban_cache().write().clear();
@@ -290,7 +290,7 @@ mod maillons_de_riposte_avoues {
         assert_eq!(miroir("203.0.113.49"), None, "contrôle : maillon `netban.non-arme` entré");
         ac1_registre_refuse(&st.db.lock(), "netban.non-arme");
         let ligne = miroir("203.0.113.50");
-        assert_eq!(ligne, Some(ac1_ligne("responder", "action 31 exécutée : miroir HTTP NON armé", "netban.non-arme", AC1_MOTEUR_REGISTRE)));
+        assert_eq!(ligne, Some(ac1_ligne("responder", "action 31 exécutée : miroir HTTP NON armé", "netban.non-arme", CAUSE_MAILLON_NON_ECRIT)));
         assert!(!ligne.unwrap_or_default().contains("203.0.113"), "jamais la cible");
         let conn = st.db.lock();
         assert_eq!(ac1_compte(&conn, "SELECT COUNT(*) FROM ledger WHERE kind='netban.forme'"), 1, "seul le contrôle est entré");
@@ -498,7 +498,7 @@ mod maillons_de_riposte_avoues {
             assert_eq!(statut, statut_attendu, "phase {phase} : la réponse d'avant");
             let vues = lignes(phase);
             assert_eq!(vues.len(), 1, "phase {phase} : une ligne et une seule : {vues:?}\n{stderr}");
-            assert_eq!(vues[0], ac1_ligne(sujet, &geste.replace("{id}", &id), genre, AC1_MOTEUR_REGISTRE), "phase {phase} : sujet, action et cause du moteur");
+            assert_eq!(vues[0], ac1_ligne(sujet, &geste.replace("{id}", &id), genre, CAUSE_MAILLON_NON_ECRIT), "phase {phase} : sujet, action et phrase fixe du maillon non écrit (INVERSÉ NOMMÉMENT par P10.29-l, vague AM)");
             assert!(!vues[0].contains("203.0.113") && !vues[0].contains("pas-une-adresse") && !vues[0].contains("424"), "phase {phase} : jamais la cible : {}", vues[0]);
             let (statut_calme, _) = marque(&format!("{phase}-calme"));
             assert_eq!(statut_calme, statut_attendu, "phase {phase}-calme : la même réponse, registre sain");

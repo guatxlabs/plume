@@ -353,6 +353,14 @@ fn replanifier_la_regle_avancee_abandonnee(conn: &Connection, id: i64, now_ts: i
     }
 }
 
+/// `P10.31-j` — LES CINQ REPRISES DE VERROU QUI ÉCRIVENT dans `run_advanced_rules`, nommées pour les témoins : chacune passe
+/// par `ecrivain_sonde_avant_les_ecritures`, l'évaluation (compilation, scalaire, lignes) ayant tourné hors du verrou.
+pub(crate) const SITE_REPLANIFICATION_APRES_COMPILATION_REFUSEE: &str = "replanification après compilation refusée";
+pub(crate) const SITE_REPLANIFICATION_APRES_EVALUATION_RATEE: &str = "replanification après évaluation ratée";
+pub(crate) const SITE_RETOUR_SOUS_LE_SEUIL: &str = "état, résolution et purge sous le seuil";
+pub(crate) const SITE_ETAT_APRES_LIGNES_NON_LUES: &str = "état après lignes non lues";
+pub(crate) const SITE_ALERTES_ET_ETAT: &str = "alertes, throttle et état";
+
 /// Évalue les règles « avancées » (fenêtre de suppression / throttle-by-field / per-result) EXCLUES de
 /// `run_due_rules`. INERTE en mode 0 : aucune règle ne porte ces réglages -> le SELECT ne rend 0 ligne ->
 /// retour immédiat (run_due_rules reste byte-identique car son WHERE exclut ces mêmes règles).
@@ -360,6 +368,8 @@ fn replanifier_la_regle_avancee_abandonnee(conn: &Connection, id: i64, now_ts: i
 /// avancées dues n'a pas pu être lue, `Lue(n)` = règles dues abandonnées ce tick (non évaluées, ou dont l'alerte,
 /// l'état, `last_fired`, la résolution ou la purge du throttle a été refusé par le moteur — `P10.32-x`). Le throttle
 /// refusé d'une alerte ENTRÉE est dit au journal sans être compté : l'alerte existe, le refus est bruyant, pas aveugle.
+/// `P10.31-j` — `Illisible` aussi, nommant « règles avancées », si l'écrivain porte une transaction orpheline à une reprise
+/// de verrou qui écrit : rien n'est écrit à cette reprise ni après, le tick s'arrête là.
 pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
     let now_ts = now();
     let mut abandonnees = 0u32;
@@ -400,7 +410,10 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
             Ok(s) => s,
             Err(_) => {
                 abandonnees += 1; // compilation refusée : une règle non évaluée, comptée ; un refus de sa replanification est dit, pas recompté
-                let conn = db.lock();
+                let conn = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "règles avancées", SITE_REPLANIFICATION_APRES_COMPILATION_REFUSEE) {
+                    Ok(c) => c,
+                    Err(aveugle) => return aveugle,
+                };
                 replanifier_la_regle_avancee_abandonnee(&conn, id, now_ts);
                 continue;
             }
@@ -409,7 +422,10 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
         let scalar = eval_value_budget(db_path, &sql, query_budget_interactive_ms());
         let Some(val) = scalar else {
             abandonnees += 1; // évaluation ratée : comptée ; un refus de sa replanification est dit, pas recompté
-            let conn = db.lock();
+            let conn = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "règles avancées", SITE_REPLANIFICATION_APRES_EVALUATION_RATEE) {
+                Ok(c) => c,
+                Err(aveugle) => return aveugle,
+            };
             replanifier_la_regle_avancee_abandonnee(&conn, id, now_ts);
             continue;
         };
@@ -420,7 +436,10 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
         if !cmp_op(val, &op, threshold) {
             // retour sous le seuil -> résout les alertes ouvertes de CETTE règle (préfixe de dédup) et purge le throttle.
             // Comme le jumeau (`consigner_evaluation_reussie`) : l'état d'abord, la résolution ensuite, refus comptés.
-            let conn = db.lock();
+            let conn = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "règles avancées", SITE_RETOUR_SOUS_LE_SEUIL) {
+                Ok(c) => c,
+                Err(aveugle) => return aveugle,
+            };
             let mut ecriture_refusee = !ecrire_l_etat_de_la_regle_avancee(&conn, id, now_ts, val);
             let like = format!("rule-{id}::%");
             if let Err(e) = conn.execute("UPDATE alert SET status='resolved', dedup=NULL WHERE dedup LIKE ?1 AND status IN ('new','ack')", params![like]) {
@@ -450,7 +469,10 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
                     abandonnees += 1; // fail-closed : pas de fabrication d'unités sur éval en erreur — et c'est COMPTÉ
                     // Replanifiée comme avant (`last_run` ET `last_value`, posés avant `P10.32-x`) : un refus est dit
                     // par l'écrivain, et l'abandon est déjà compté (une règle, un abandon).
-                    let conn = db.lock();
+                    let conn = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "règles avancées", SITE_ETAT_APRES_LIGNES_NON_LUES) {
+                        Ok(c) => c,
+                        Err(aveugle) => return aveugle,
+                    };
                     ecrire_l_etat_de_la_regle_avancee(&conn, id, now_ts, val);
                     continue;
                 }
@@ -458,7 +480,10 @@ pub(crate) fn run_advanced_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
         } else {
             plan_fire_units("", false, &[], &[])
         };
-        let conn = db.lock();
+        let conn = match crate::server::boucles_de_fond::ecrivain_sonde_avant_les_ecritures(db, "règles avancées", SITE_ALERTES_ET_ETAT) {
+            Ok(c) => c,
+            Err(aveugle) => return aveugle,
+        };
         // `P10.20-b` (rang trois) — L'ALERTE D'ABORD, L'ÉTAT ENSUITE. Le throttle d'une unité n'est posé que si son
         // alerte est entrée (`INSERT OR IGNORE` réussi : une ligne écrite, ou la dédup d'une alerte encore ouverte).
         // Avant, il l'était sans condition : une alerte refusée par le moteur (verrou, disque, trigger) laissait un

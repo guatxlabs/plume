@@ -112,7 +112,7 @@ mod levee_de_ban_par_api_trace_avouee {
         assert_eq!(r6_genre(&st, "netban.remove"), 0, "fixture : le maillon n'est pas entré");
         let aveu = corps.get(CLE_REGISTRE_SANS_MAILLON).and_then(|v| v.as_str()).unwrap_or("");
         assert!(aveu.starts_with(&format!("{CAUSE_GESTE_SANS_TRACE} (")), "la trace manquante est avouée dans le corps : {corps}");
-        assert!(aveu.contains("maillon refuse par le temoin"), "l'aveu porte la cause du registre : {corps}");
+        assert!(aveu.ends_with(&format!(" ({CAUSE_MAILLON_NON_ECRIT})")) && !aveu.contains("maillon refuse par le temoin"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : l'aveu porte la phrase fixe du maillon non écrit, jamais le texte du moteur : {corps}");
         assert!(!aveu.contains("203.0.113"), "l'aveu ne porte pas l'adresse : {corps}");
         // Le corps privé de l'aveu est le corps nominal, clé pour clé : l'aveu s'ajoute, rien ne change.
         let mut sans_aveu = corps.clone();
@@ -160,7 +160,7 @@ mod levee_de_ban_par_api_trace_avouee {
         assert_eq!(code, 503, "{corps}");
         let phrase = r6_phrase(&corps);
         assert!(phrase.starts_with(&format!("{phrase_d_avant}{R6_MENTION}")), "la phrase d'avant, puis la mention de la trace manquante : {corps}");
-        assert!(phrase.contains("maillon refuse par le temoin"), "la mention porte la cause du registre : {corps}");
+        assert!(phrase.contains(&format!("({CAUSE_MAILLON_NON_ECRIT})")) && !phrase.contains("maillon refuse par le temoin"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : la mention porte la phrase fixe, jamais le texte du moteur : {corps}");
         assert!(!phrase.contains("203.0.113"), "sans adresse : {corps}");
         assert_eq!(r6_genre(&st, "netban.remove.echec"), 0, "fixture : l'échec n'est pas au registre");
         assert_eq!(r6_bans(&st), 1, "la ligne du ban est intacte");
@@ -206,7 +206,7 @@ mod levee_de_ban_par_api_trace_avouee {
         assert_eq!(code, 503, "{corps}");
         let phrase = r6_phrase(&corps);
         assert!(phrase.starts_with(&format!("{phrase_d_avant}{R6_MENTION}")), "la phrase d'avant, puis la mention : {corps}");
-        assert!(phrase.contains("maillon refuse par le temoin"), "{corps}");
+        assert!(phrase.contains(&format!("({CAUSE_MAILLON_NON_ECRIT})")) && !phrase.contains("maillon refuse par le temoin"), "INVERSÉ NOMMÉMENT par P10.29-l (vague AM) : {corps}");
         assert!(!phrase.contains("203.0.113"), "sans adresse : {corps}");
         assert_eq!(r6_genre(&st, "netban.remove.echec"), 0, "fixture : l'échec n'est pas au registre");
         assert_eq!(r6_bans(&st), 1, "la ligne reposée est toujours là");

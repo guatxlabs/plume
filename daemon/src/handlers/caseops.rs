@@ -94,7 +94,7 @@ pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) -> IssueDuChronoSla {
         .optional();
     let row = match lu {
         Ok(v) => v,
-        Err(e) => return IssueDuChronoSla::NonLu(format!("ligne du dossier: {e}")),
+        Err(e) => return chrono_non_lu(id, CHRONO_LIGNE_DU_DOSSIER_NON_LUE.to_string(), &e),
     };
     let Some((ts, priority, status, pause_accum, first_resp)) = row else { return IssueDuChronoSla::RienAFaire };
     if matches!(status.as_str(), "resolved" | "closed" | "contained") {
@@ -102,7 +102,7 @@ pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) -> IssueDuChronoSla {
     }
     let politique = match sla_policy_for(conn, priority) {
         Ok(v) => v,
-        Err(e) => return IssueDuChronoSla::NonLu(format!("politique de la priorité {priority}: {e}")),
+        Err(e) => return chrono_non_lu(id, format!("politique de la priorité {priority} non lue"), &e),
     };
     let Some((pid, ack_s, res_s)) = politique else {
         // pas de politique -> legacy : efface celle d'une ancienne priorité, s'il en porte une.
@@ -111,7 +111,7 @@ pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) -> IssueDuChronoSla {
             params![id],
         ) {
             Ok(0) => IssueDuChronoSla::RienAFaire,
-            res => ecriture_du_chrono("sla_policy_id/ack_due/resolve_due (effacement)", res),
+            res => ecriture_du_chrono(id, "sla_policy_id/ack_due/resolve_due (effacement)", res),
         };
     };
     let resolve_due = ts + res_s + pause_accum;
@@ -120,6 +120,7 @@ pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) -> IssueDuChronoSla {
     if first_resp.is_none() {
         let ack_due = ts + ack_s + pause_accum;
         ecriture_du_chrono(
+            id,
             "sla_policy_id/ack_due/resolve_due",
             conn.execute(
                 "UPDATE incident SET sla_policy_id=?1, ack_due=?2, resolve_due=?3 WHERE id=?4",
@@ -128,6 +129,7 @@ pub(crate) fn sla_apply_policy(conn: &Connection, id: i64) -> IssueDuChronoSla {
         )
     } else {
         ecriture_du_chrono(
+            id,
             "sla_policy_id/resolve_due",
             conn.execute(
                 "UPDATE incident SET sla_policy_id=?1, resolve_due=?2 WHERE id=?3",
@@ -156,12 +158,33 @@ pub(crate) enum IssueDuChronoSla {
 }
 
 /// Compte une écriture du chrono : une ligne, ou le refus nommé par ses colonnes.
-fn ecriture_du_chrono(colonnes: &str, res: rusqlite::Result<usize>) -> IssueDuChronoSla {
+/// `P10.29-l` — le refus de la base est dit par une phrase FIXE (`ECRITURE_DU_CHRONO_REFUSEE`) : le texte du moteur
+/// (noms de tables, motif d'un déclencheur, refus de transaction) partait dans la cause, servie au client par la
+/// création, la mise à jour et le recalcul de l'upsert. Il va au journal seul, avec le dossier et les colonnes.
+fn ecriture_du_chrono(id: i64, colonnes: &str, res: rusqlite::Result<usize>) -> IssueDuChronoSla {
     match res {
         Ok(1) => IssueDuChronoSla::Ecrit,
         Ok(n) => IssueDuChronoSla::Refuse(format!("{colonnes}: {n} ligne(s) écrite(s) au lieu d'une")),
-        Err(e) => IssueDuChronoSla::Refuse(format!("{colonnes}: {e}")),
+        Err(e) => {
+            eprintln!("[caseops] WARN chrono SLA du dossier #{id} : écriture de {colonnes} refusée : {e}");
+            IssueDuChronoSla::Refuse(format!("{colonnes}: {ECRITURE_DU_CHRONO_REFUSEE}"))
+        }
     }
+}
+
+/// `P10.29-l` — ce que dit une cause de chrono quand la base a refusé l'écriture (le moteur au journal seul).
+pub(crate) const ECRITURE_DU_CHRONO_REFUSEE: &str = "écriture refusée par la base";
+/// `P10.29-l` — la ligne du dossier qui gouverne le chrono n'a pas été lue (`sla_apply_policy`).
+pub(crate) const CHRONO_LIGNE_DU_DOSSIER_NON_LUE: &str = "ligne du dossier non lue";
+/// `P10.29-l` — le chrono du dossier (politique portée, pause) n'a pas été lu (`sla_on_status_change`).
+pub(crate) const CHRONO_DU_DOSSIER_NON_LU: &str = "chrono du dossier non lu";
+
+/// `P10.29-l` — une lecture du chrono ratée : la cause servie est la phrase fixe `quoi`, le texte du moteur va au journal
+/// seul avec le dossier (il partait dans la cause : `ligne du dossier: <moteur>`, servi par la création, la mise à jour
+/// et le recalcul de l'upsert).
+fn chrono_non_lu(id: i64, quoi: String, e: &rusqlite::Error) -> IssueDuChronoSla {
+    eprintln!("[caseops] WARN chrono SLA du dossier #{id} : {quoi} : {e}");
+    IssueDuChronoSla::NonLu(quoi)
 }
 
 /// PAUSE/REPRISE du chrono SLA multi-niveau sur transition de statut. INERTE si le case n'est pas gouverné par
@@ -188,7 +211,7 @@ pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str,
         .optional();
     let row = match lu {
         Ok(v) => v,
-        Err(e) => return IssueDuChronoSla::NonLu(format!("chrono du dossier: {e}")),
+        Err(e) => return chrono_non_lu(id, CHRONO_DU_DOSSIER_NON_LU.to_string(), &e),
     };
     let Some((policy_id, paused_since)) = row else { return IssueDuChronoSla::RienAFaire };
     if policy_id.is_none() && paused_since.is_none() {
@@ -198,6 +221,7 @@ pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str,
         (None, true) => {
             // le chrono passe EN PAUSE.
             ecriture_du_chrono(
+                id,
                 "sla_paused_since",
                 conn.execute("UPDATE incident SET sla_paused_since=?1 WHERE id=?2", params![t, id]),
             )
@@ -206,6 +230,7 @@ pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str,
             // REPRISE : cumule la durée de pause + décale les échéances d'autant.
             let delta = (t - since).max(0);
             ecriture_du_chrono(
+                id,
                 "sla_pause_accum/ack_due/resolve_due",
                 conn.execute(
                     "UPDATE incident SET sla_pause_accum = COALESCE(sla_pause_accum,0)+?1, sla_paused_since=NULL, \
@@ -1389,11 +1414,11 @@ fn sla_recalcule_la_priorite_bornee_selon(conn: &Connection, priority: i64, plaf
         // L'ANCIEN `unwrap_or_default()` EST ICI, ET C'EST TOUT CE QU'IL DISAIT : une liste vide. La
         // boucle ne tournait pas, la route répondait « fait », et la politique n'était appliquée à AUCUN
         // case existant — seuls les cases créés ENSUITE l'auraient portée.
+        // `P10.29-l` — la phrase est FIXE (elle portait `({e})`, le texte du moteur servi dans le `reason` du 200 de
+        // l'upsert et dans le corps `registre_sans_maillon`) ; le moteur va au journal seul, avec la priorité.
         Err(e) => {
-            return RecalculDesEcheances {
-                recalcules: 0,
-                manque: Some(format!("liste des cases ILLISIBLE ({e}) — AUCUNE échéance recalculée")),
-            }
+            eprintln!("[caseops] WARN recalcul des échéances de la priorité {priority} : liste des cases illisible, aucune échéance recalculée : {e}");
+            return RecalculDesEcheances { recalcules: 0, manque: Some(LISTE_DES_CASES_ILLISIBLE.to_string()) };
         }
     };
     let depasse = ids.len() as i64 > plafond;
@@ -1444,6 +1469,9 @@ fn sla_recalcule_la_priorite_bornee_selon(conn: &Connection, priority: i64, plaf
     }
     RecalculDesEcheances { recalcules, manque: (!manques.is_empty()).then(|| manques.join(" ; ")) }
 }
+
+/// `P10.29-l` — la liste des dossiers à recalculer n'a pas été lue : rien n'est recalculé (phrase fixe, moteur au journal).
+pub(crate) const LISTE_DES_CASES_ILLISIBLE: &str = "liste des cases ILLISIBLE — AUCUNE échéance recalculée";
 
 /// LA RÉPONSE DE L'UPSERT, ET SON SILENCE. Le chemin NOMINAL — politique écrite, toutes les échéances
 /// recalculées — rend `204 SANS CORPS`, exactement comme avant : un aveu inconditionnel ne vaudrait rien,

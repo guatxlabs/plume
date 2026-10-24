@@ -334,27 +334,33 @@ pub(crate) fn tick_de_detection_d_un_tenant(handle: &Arc<Mutex<Connection>>, db_
     if les_regles_ont_deja_declare_l_orpheline(&b) { return b; }
     // `P10.31-j` — LA SONDE, REPRISE ENTRE DEUX FAMILLES : chaque famille rend le verrou en sortant, un geste a pu
     // laisser une orpheline avant la suivante. La première sonde qui la voit déclare le tick aveugle et RIEN de ce qui
-    // suit n'est évalué ni écrit. Elle garde l'ENTRE-DEUX seulement : règles avancées, risque, corrélations, lignes de
-    // base et playbooks évaluent hors du verrou puis le reprennent pour écrire, et seule `run_due_rules` re-sonde avant
-    // ses écritures ; une orpheline ouverte pendant l'évaluation d'une des cinq autres reçoit encore ses écritures.
+    // suit n'est évalué ni écrit. L'ENTRE-DEUX seulement : règles avancées, risque, corrélations, lignes de base et
+    // playbooks évaluent hors du verrou puis le reprennent pour écrire, et chacune re-sonde à CHAQUE reprise
+    // (`ecrivain_sonde_avant_les_ecritures`) ; celle qui y voit l'orpheline rend le tick aveugle, et le tick s'arrête
+    // derrière elle sans re-sonder (même test qu'après les règles : un seul compte).
     if orpheline_avant_la_famille(handle, "règles avancées", &mut b) { return b; }
     // #48/#53 : règles « avancées » (fenêtre de suppression / throttle-by-field / per-result),
     // EXCLUES de run_due_rules et traitées à part (comme run_risk_rules). INERTE mode 0 (0 ligne due).
     b.absorber(run_advanced_rules(handle, db_path));
+    if les_regles_ont_deja_declare_l_orpheline(&b) { return b; }
     if orpheline_avant_la_famille(handle, "règles de risque", &mut b) { return b; }
     // #24 (RBA) : règles en MODE RISK (risk_score>0, exclues de run_due_rules) -> CONTRIBUENT du
     // risque par entité au lieu de lever une alerte scalaire. INERTE mode 0 (aucune règle risk).
     b.absorber(run_risk_rules(handle, db_path));
+    if les_regles_ont_deja_declare_l_orpheline(&b) { return b; }
     // #37 (DÉTECTION AVANCÉE) : corrélation multi-événements stateful (finding-groups de séquence)
     // + baselining statistique UEBA (déviation z-score par entité). MÊMES garanties fail-closed que
     // run_due_rules (erreur/timeout ne fabrique JAMAIS un « tout clair »). INERTE mode 0 (tables
     // correlation/baseline vides -> 0 ligne due -> retour immédiat, tick byte-identique).
     if orpheline_avant_la_famille(handle, "corrélations", &mut b) { return b; }
     b.absorber(run_correlations(handle, db_path));
+    if les_regles_ont_deja_declare_l_orpheline(&b) { return b; }
     if orpheline_avant_la_famille(handle, "lignes de base", &mut b) { return b; }
     b.absorber(run_baselines(handle, db_path));
+    if les_regles_ont_deja_declare_l_orpheline(&b) { return b; }
     if orpheline_avant_la_famille(handle, "playbooks", &mut b) { return b; }
     b.absorber(run_playbooks(handle, db_path));
+    if les_regles_ont_deja_declare_l_orpheline(&b) { return b; }
     if orpheline_avant_la_famille(handle, "battements des capteurs", &mut b) { return b; }
     b.absorber(check_heartbeats(handle));
     if orpheline_avant_la_famille(handle, "notifications", &mut b) { return b; }
@@ -396,16 +402,38 @@ fn orpheline_avant_la_famille(handle: &Arc<Mutex<Connection>>, famille: &'static
     false
 }
 
-/// `P10.31-j` — LE BILAN PORTE DÉJÀ L'AVEU DE L'ORPHELINE : `run_due_rules` l'a vue (une de ses deux sondes) et a
-/// versé au bilan le tick aveugle nommé, compté. Le tick s'arrête alors sans re-sonder : une seconde sonde compterait
-/// la même orpheline deux fois (deux lignes de journal, « 2 famille(s) » au bilan). Une cécité d'une AUTRE cause (une
-/// liste illisible) ne l'arrête pas : la sonde suivante juge l'écrivain comme d'habitude.
+/// `P10.31-j` — LE BILAN PORTE DÉJÀ L'AVEU DE L'ORPHELINE : `run_due_rules` l'a vue (une de ses deux sondes), ou une
+/// des cinq familles qui re-sondent avant d'écrire (`ecrivain_sonde_avant_les_ecritures`), et a versé au bilan le tick
+/// aveugle nommé, compté. Le tick s'arrête alors sans re-sonder : une seconde sonde compterait la même orpheline deux
+/// fois (deux lignes de journal, « 2 famille(s) » au bilan). Une cécité d'une AUTRE cause (une liste illisible) ne
+/// l'arrête pas : la sonde suivante juge l'écrivain comme d'habitude.
 pub(crate) fn les_regles_ont_deja_declare_l_orpheline(b: &crate::bilan_de_tick::BilanDuPlanificateur) -> bool {
     let aveu = format!("({})", crate::bilan_de_tick::CAUSE_TRANSACTION_ORPHELINE);
     match b.bilan_de_tick() {
         crate::mesure_environnement::Mesure::Illisible { detail, .. } => detail.contains(&aveu),
         crate::mesure_environnement::Mesure::Lue(_) => false,
     }
+}
+
+/// `P10.31-j` — L'ÉCRIVAIN REPRIS POUR LES ÉCRITURES D'UNE FAMILLE, SONDÉ. Règles avancées, risque, corrélations,
+/// lignes de base et playbooks évaluent HORS du verrou (parfois des secondes), puis le reprennent pour écrire : un geste a
+/// pu laisser une orpheline entre-temps, et l'écrire maintenant la remplirait. C'est la sonde reprise de `run_due_rules`
+/// avant ses écritures, à chaque reprise de verrou qui écrit. `Ok` : le verrou, écrivain sans orpheline. `Err` : le tick
+/// aveugle nommé (`famille`), compté sous la boucle des règles avec la cause de l'orpheline ; l'appelant le RETOURNE
+/// sans rien écrire, la transaction n'est pas annulée (décision d'Hugo, 2026-09-29) et le tick s'arrête derrière lui.
+/// Ce que la famille a écrit AVANT (un tour de boucle précédent, validé hors de toute orpheline) reste écrit. `site`
+/// nomme la reprise pour les témoins seuls (crochet appelé juste avant le verrou).
+pub(crate) fn ecrivain_sonde_avant_les_ecritures<'a>(
+    handle: &'a Arc<Mutex<Connection>>,
+    famille: &'static str,
+    site: &'static str,
+) -> Result<parking_lot::MutexGuard<'a, Connection>, crate::bilan_de_tick::BilanDeTick> {
+    crochets_de_la_sonde_par_famille::avant_les_ecritures(handle, famille, site);
+    let conn = handle.lock();
+    if crate::handlers::transaction_validee::signaler_une_transaction_ouverte_hors_de_tout_geste(&conn, "tick de détection (écritures)") {
+        return Err(crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline(crate::bilan_de_tick::BOUCLE_REGLES, famille));
+    }
+    Ok(conn)
 }
 
 /// `P10.20-b` — essais du préchauffage du cache de bans réseau, une pause entre deux (celle que passe le site).
@@ -858,11 +886,15 @@ mod crochets_de_la_sonde_par_famille {
     pub(super) fn avant_la_famille(_db: &Arc<Mutex<Connection>>, _famille: &'static str) {}
     #[inline(always)]
     pub(super) fn famille_admise(_famille: &'static str) {}
+    #[inline(always)]
+    pub(super) fn avant_les_ecritures(_db: &Arc<Mutex<Connection>>, _famille: &'static str, _site: &'static str) {}
 }
 
 /// `P10.31-j` — LES CROCHETS DES TÉMOINS DE LA SONDE PAR FAMILLE, sous les témoins : `AVANT_LA_FAMILLE_DU_TICK` est
 /// appelé juste avant la sonde d'une famille, avec son nom (c'est là qu'un témoin ouvre l'orpheline « entre deux
-/// familles ») ; `FAMILLES_ADMISES_PAR_LA_SONDE` garde, dans l'ordre, les familles que la sonde a laissées passer.
+/// familles ») ; `FAMILLES_ADMISES_PAR_LA_SONDE` garde, dans l'ordre, les familles que la sonde a laissées passer ;
+/// `AVANT_LES_ECRITURES_DE_LA_FAMILLE` est appelé avant chaque reprise de verrou qui écrit (orpheline « pendant
+/// l'évaluation »).
 #[cfg(test)]
 pub(crate) mod crochets_de_la_sonde_par_famille {
     use super::*;
@@ -884,5 +916,19 @@ pub(crate) mod crochets_de_la_sonde_par_famille {
 
     pub(super) fn famille_admise(famille: &'static str) {
         FAMILLES_ADMISES_PAR_LA_SONDE.with(|v| v.borrow_mut().push(famille));
+    }
+
+    /// Le crochet des reprises de verrou qui écrivent, par défaut : ne fait rien.
+    pub(crate) fn sans_crochet_d_ecritures(_db: &Arc<Mutex<Connection>>, _famille: &'static str, _site: &'static str) {}
+
+    thread_local! {
+        /// Appelé juste avant chaque reprise de verrou qui écrit d'une des cinq familles (`ecrivain_sonde_avant_les_ecritures`),
+        /// avec la famille et le site : c'est là qu'un témoin ouvre l'orpheline « pendant l'évaluation ».
+        pub(crate) static AVANT_LES_ECRITURES_DE_LA_FAMILLE: std::cell::Cell<fn(&Arc<Mutex<Connection>>, &'static str, &'static str)> =
+            const { std::cell::Cell::new(sans_crochet_d_ecritures) };
+    }
+
+    pub(super) fn avant_les_ecritures(db: &Arc<Mutex<Connection>>, famille: &'static str, site: &'static str) {
+        AVANT_LES_ECRITURES_DE_LA_FAMILLE.with(|h| (h.get())(db, famille, site));
     }
 }

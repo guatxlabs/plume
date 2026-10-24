@@ -309,8 +309,11 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # en vague AK1, `runbook_admin_json` d'`incidents.rs` en vague AK4, plus les quatre sites d'AK2 ci-dessus) : relevé de
 # l'arbre fusionné, MESURÉ par cette garde — 4 sites sur 4 fichiers (`panneau_resolu.rs` sort ; `incidents.rs` garde
 # `case_runbooks_json`). Même règle (deux tiers, arrondi bas) : 4 -> 2, 4 -> 2.
-RELEVE_SITES = 4
-RELEVE_FICHIERS = 4
+# RE-DÉRIVÉS le 2026-10-24 (`P10.20-l`, vague AL : `excl_display_csv`) : relevé de l'arbre ce jour-là, après le correctif,
+# MESURÉ par cette garde — 3 sites sur 3 fichiers (`dashboards.rs` SORT du relevé). Même règle (deux tiers, arrondi
+# bas) : 3 -> 2, 3 -> 2.
+RELEVE_SITES = 3
+RELEVE_FICHIERS = 3
 PLANCHER_SITES = 2
 PLANCHER_FICHIERS = 2
 
@@ -436,9 +439,13 @@ DEFAUTS_RANG_3_INTERNE = {
     # Cache de panneau manqué : repli bénin, dit bénin, et gardé dans l'ensemble pour que sa forme ne change pas
     # en silence.
     ("daemon/src/handlers/panneau_avoue.rs", "cache_lire"): ("ok",),
-    # L'override ADMIN d'affichage retombe sur la variable d'environnement : le réglage posé par
-    # l'opérateur est silencieusement remplacé par celui du déploiement.
-    ("daemon/src/handlers/dashboards.rs", "excl_display_csv"): ("ok.map.unwrap_or_else",),
+    # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AL, 2026-10-24) : `dashboards.rs::excl_display_csv` (`ok.map.unwrap_or_else`)
+    # — l'override ADMIN d'affichage non lu retombait sur la variable d'environnement, servie au registre comme valeur
+    # active, inscrite au registre d'audit comme ancienne valeur et chargée dans le cache des panneaux. Lu en
+    # `.optional()`, rendu en `rusqlite::Result<String>` : ligne absente = l'environnement (comme avant), lecture ratée =
+    # `Err` ; le rafraîchissement garde le cache d'avant (ligne WARN), l'édition annule sa transaction (503
+    # `CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE_NON_LUE`), le registre sert `PHRASE_OVERRIDE_D_AFFICHAGE_NON_LU` (témoins :
+    # `exclusions_d_affichage_lues_en_trois_issues.rs`). C'était le dernier site de `dashboards.rs`, qui SORT du relevé.
     # ENTRÉE RETIRÉE PAR `P10.20-b` (rang trois, 2026-10-12) : `panneau_resolu.rs::premier`, deux sites — le
     # compte de retenus par `unwrap_or(0)` et la ligne du premier élément par `ok`, « rien ne retient » sur une
     # lecture ratée, donc le partage passait. `premier` rend `Result<Option<_>>` (les deux lectures propagées) ;

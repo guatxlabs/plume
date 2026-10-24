@@ -69,6 +69,16 @@ pub(crate) const CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE_TRANSACTION_NON_OUVERTE: 
 pub(crate) const CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE: &str = "EXCLUSION D'AFFICHAGE INCHANGÉE : la base n'a pas \
      validé la transaction (COMMIT refusé) et l'a annulée — les panneaux gardent l'exclusion d'avant, et aucune \
      trace n'est écrite. Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P10.20-l` — exclusion d'affichage inchangée : la valeur en vigueur (avant l'écriture, ou relue après elle dans la
+/// transaction) n'a pas été lue. La transaction est annulée : rien n'est écrit, aucune trace n'est inscrite avec une
+/// valeur d'environnement prise pour l'ancienne. DISTINCTE de `CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE` : celle-ci
+/// s'ouvre par le `COMMIT` refusé, que la console peint « la base n'a pas validé l'écriture » (`web/core.js`,
+/// `OUVERTURE_DE_L_ECRITURE_NON_VALIDEE`) — faux pour une lecture. Celle-ci est lue en refus nommé, phrase entière
+/// (`peindreLeRefusDUnGeste`, puits du panneau dans `web/suppressions.js`).
+pub(crate) const CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE_NON_LUE: &str = "EXCLUSION D'AFFICHAGE INCHANGÉE : la base n'a pas \
+     rendu la valeur en vigueur de cette exclusion — ce n'est PAS la valeur de l'environnement, c'est une lecture qui \
+     n'a pas eu lieu. RIEN n'est écrit : les panneaux gardent l'exclusion d'avant, et aucune trace n'est écrite. \
+     Réessayez ; si le refus persiste, la table des réglages est illisible.";
 /// `P10.20-b` (rang deux) — l'aperçu de rétention n'a pas pu compter ce que la baisse purgerait. Servi sous
 /// `deleted_non_lu`, suivi de la famille d'objets nommée ; `deleted` et `oldest` valent alors `null`, jamais `0`.
 pub(crate) const CAUSE_APERCU_DE_RETENTION_NON_LU: &str = "APERÇU NON LU : la base n'a pas rendu le compte des \
@@ -631,6 +641,39 @@ impl ExclEntry {
     }
 }
 
+/// `P10.20-l` — ce que le registre sert pour une exclusion d'affichage dont l'override n'a pas été lu : ni la valeur de
+/// l'environnement, ni une exclusion vide. Phrase fixe, aucun texte du moteur.
+pub(crate) const PHRASE_OVERRIDE_D_AFFICHAGE_NON_LU: &str = "OVERRIDE NON LU : la base n'a pas rendu le réglage de cette \
+     exclusion d'affichage — ce n'est PAS la valeur de l'environnement ni une exclusion vide, c'est une lecture qui n'a \
+     pas eu lieu. Les panneaux gardent les clauses chargées avant cet échec. Rechargez ; si l'échec persiste, la table \
+     des réglages est illisible.";
+
+/// `P10.20-l` — `(value, detail, editable)` d'une exclusion d'affichage du registre, depuis UNE lecture de son
+/// override. Non lue : `editable` vaut `false` — la console n'ouvre pas un formulaire d'édition pré-rempli avec la
+/// phrase d'aveu prise pour une valeur CSV (`web/suppressions.js`, bouton d'édition sous `if (e.editable)`), et une
+/// édition serait de toute façon refusée (les deux exclusions sont relues dans la transaction de l'édition).
+fn valeur_d_une_exclusion_d_affichage(
+    conn: &Connection,
+    conf: &HashMap<String, String>,
+    nom: &str,
+    setting_key: &str,
+    env_key: &str,
+    default: &str,
+    champ: &str,
+) -> (String, Value, bool) {
+    match excl_display_csv(conn, conf, setting_key, env_key, default) {
+        Ok(csv) => {
+            let (sql, soql) = ExclClauses::build(champ, &csv);
+            (csv, json!({ "field": champ, "sql": sql, "soql": soql, "substituted_in": "la compilation des panneaux", "never_in": "les règles de détection" }), true)
+        }
+        Err(e) => {
+            eprintln!("[suppressions] WARN override d'affichage {nom} NON lu pour le registre ({e})");
+            let detail = json!({ "field": champ, "override_non_lu": PHRASE_OVERRIDE_D_AFFICHAGE_NON_LU, "substituted_in": "la compilation des panneaux", "never_in": "les règles de détection" });
+            (PHRASE_OVERRIDE_D_AFFICHAGE_NON_LU.to_string(), detail, false)
+        }
+    }
+}
+
 /// Construit le REGISTRE des exclusions DAEMON (A1..A9), valeurs LUES LIVE. Aucun état dupliqué : chaque
 /// entrée lit la même source de vérité que le runtime -> le registre PROUVE ce qui est réellement en vigueur.
 pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, String>) -> Vec<ExclEntry> {
@@ -641,29 +684,36 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
     // ce registre est SERVI à l'exploitant et se dit PREUVE de ce qui est en vigueur ; un nom de fonction y
     // devient faux au premier renommage, sans que rien ne le signale — c'est arrivé le 2026-08-28.
     // SEULE catégorie editable de tout le registre.
-    let op_csv = excl_display_csv(conn, conf, EXCL_OP_SETTING, "PLUME_OPERATOR_IPS", PLUME_OPERATOR_IPS_DEFAULT);
-    let self_csv = excl_display_csv(conn, conf, EXCL_SELF_SETTING, "PLUME_SELF_HOSTS", PLUME_SELF_HOSTS_DEFAULT);
-    let e = ExclClauses::resolve(conn, conf);
+    // `P10.20-l` — LA VALEUR ET SES CLAUSES VIENNENT D'UNE SEULE LECTURE PAR EXCLUSION (avant : deux lectures, et une
+    // lecture ratée servait la valeur de l'ENVIRONNEMENT comme « en vigueur », à la place du réglage de
+    // l'administrateur). Non lue : `value` et `detail.override_non_lu` disent la phrase fixe, sans clause ; la cause du
+    // moteur au journal seul, et l'entrée n'est pas éditable tant qu'elle n'est pas lue.
+    let (op_value, op_detail, op_editable) = valeur_d_une_exclusion_d_affichage(
+        conn, conf, "operator_excl", EXCL_OP_SETTING, "PLUME_OPERATOR_IPS", PLUME_OPERATOR_IPS_DEFAULT, "src_ip",
+    );
     out.push(ExclEntry {
         name: "operator_excl",
         label: "Exclusion opérateur (__OPERATOR_EXCL__)",
         scope: "panneaux menace externe (web top-clients/4xx, Cloudflare 25-29, banpass)",
         etype: ExclType::DisplayOnly,
-        value: op_csv,
-        detail: json!({ "field": "src_ip", "sql": e.op_sql, "soql": e.op_soql, "substituted_in": "la compilation des panneaux", "never_in": "les règles de détection" }),
+        value: op_value,
+        detail: op_detail,
         source: "ExclClauses / PLUME_OPERATOR_IPS (override setting excl_operator_ips)",
-        editable: true,
+        editable: op_editable,
         edit_key: "operator",
     });
+    let (self_value, self_detail, self_editable) = valeur_d_une_exclusion_d_affichage(
+        conn, conf, "self_excl", EXCL_SELF_SETTING, "PLUME_SELF_HOSTS", PLUME_SELF_HOSTS_DEFAULT, "vhost",
+    );
     out.push(ExclEntry {
         name: "self_excl",
         label: "Exclusion self/vhost (__SELF_EXCL__)",
         scope: "mêmes panneaux menace externe (vhost self)",
         etype: ExclType::DisplayOnly,
-        value: self_csv,
-        detail: json!({ "field": "vhost", "sql": e.self_sql, "soql": e.self_soql, "substituted_in": "la compilation des panneaux", "never_in": "les règles de détection" }),
+        value: self_value,
+        detail: self_detail,
         source: "ExclClauses / PLUME_SELF_HOSTS (override setting excl_self_hosts)",
-        editable: true,
+        editable: self_editable,
         edit_key: "self",
     });
     // A3 — sources ATTENDUES PAR CONSTRUCTION (flag d'affichage « inattendu » + sévérité B8 ; ZÉRO effet
@@ -1050,16 +1100,16 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
 /// Recompile le cache d'exclusion (hot-reload) -> effet immédiat sur les panneaux.
 /// Cœur TESTABLE de l'édition d'une exclusion display-only : valide l'action (ENUM FERMÉ operator/self),
 /// écrit/efface le `setting`, audite (ledger + event plume-config sev 3) DANS UNE TRANSACTION fail-closed,
-/// renvoie (edit_key, old_csv, new_csv). Toute autre action (collection-reducing/host, ou inconnue) -> 400 :
-/// le registre est read-only par conception, SEULE cette exclusion display-only est pilotable. N'appelle PAS
-/// `excl_clauses_refresh` (le hot-reload du cache reste à l'appelant, hors transaction).
+/// renvoie (edit_key, old_csv, new_csv, clauses). Toute autre action (collection-reducing/host, ou inconnue) -> 400 :
+/// le registre est read-only par conception, SEULE cette exclusion display-only est pilotable. Ne touche PAS au cache :
+/// les `clauses` (les deux exclusions relues DANS la transaction) sont posées par l'appelant après le `COMMIT`.
 pub(crate) fn apply_display_excl_edit(
     conn: &Connection,
     conf: &HashMap<String, String>,
     action: &str,
     value: &str,
     actor: &str,
-) -> Result<(&'static str, String, String), (StatusCode, String)> {
+) -> Result<(&'static str, String, String, ExclClauses), (StatusCode, String)> {
     let (setting_key, env_key, default, field, is_clear) = match action {
         "set_operator_excl" => (EXCL_OP_SETTING, "PLUME_OPERATOR_IPS", PLUME_OPERATOR_IPS_DEFAULT, "operator", false),
         "clear_operator_excl" => (EXCL_OP_SETTING, "PLUME_OPERATOR_IPS", PLUME_OPERATOR_IPS_DEFAULT, "operator", true),
@@ -1080,19 +1130,29 @@ pub(crate) fn apply_display_excl_edit(
     if ouvrir_sa_transaction(conn, "suppressions", &format!("exclusion d'affichage {field}")).is_err() {
         return Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE_TRANSACTION_NON_OUVERTE.to_string()));
     }
-    let outcome: rusqlite::Result<(String, String)> = (|| {
+    // `P10.20-l` — UNE LECTURE RATÉE N'EST PAS UNE ÉCRITURE REFUSÉE : `NonLue` annule la transaction et rend sa propre
+    // cause (503), `Ecriture` garde le chemin d'avant (500 à phrase fixe).
+    enum EchecDeLEdition {
+        NonLue(rusqlite::Error),
+        Ecriture(rusqlite::Error),
+    }
+    let outcome: Result<(String, String, ExclClauses), EchecDeLEdition> = (|| {
         let ts = now();
-        let old = excl_display_csv(conn, conf, setting_key, env_key, default);
+        let old = excl_display_csv(conn, conf, setting_key, env_key, default).map_err(EchecDeLEdition::NonLue)?;
         if is_clear {
-            conn.execute("DELETE FROM setting WHERE scope='global' AND key=?1", params![setting_key])?;
+            conn.execute("DELETE FROM setting WHERE scope='global' AND key=?1", params![setting_key]).map_err(EchecDeLEdition::Ecriture)?;
         } else {
             conn.execute(
                 "INSERT INTO setting(scope,key,value,updated,updated_by) VALUES('global',?1,?2,?3,?4) \
                  ON CONFLICT(scope,key) DO UPDATE SET value=?2,updated=?3,updated_by=?4",
                 params![setting_key, value, ts, actor],
-            )?;
+            ).map_err(EchecDeLEdition::Ecriture)?;
         }
-        let new = excl_display_csv(conn, conf, setting_key, env_key, default);
+        // Les DEUX exclusions relues dans la transaction : la nouvelle valeur auditée, et les clauses que la route pose
+        // dans le cache après le `COMMIT` (aucune relecture hors transaction, qui pourrait rater après validation).
+        let op_csv = excl_display_csv(conn, conf, EXCL_OP_SETTING, "PLUME_OPERATOR_IPS", PLUME_OPERATOR_IPS_DEFAULT).map_err(EchecDeLEdition::NonLue)?;
+        let self_csv = excl_display_csv(conn, conf, EXCL_SELF_SETTING, "PLUME_SELF_HOSTS", PLUME_SELF_HOSTS_DEFAULT).map_err(EchecDeLEdition::NonLue)?;
+        let new = if setting_key == EXCL_OP_SETTING { op_csv.clone() } else { self_csv.clone() };
         // sev 3 (B8-like) : de-bruitage d'affichage AUDITÉ (ledger + event plume-config SOC-visible dans la durée).
         audit_config_change(
             conn,
@@ -1101,12 +1161,12 @@ pub(crate) fn apply_display_excl_edit(
             3,
             &format!("exclusion d'affichage {field} (display-only): [{old}]->[{new}] par {actor} — panneaux uniquement, collecte/détection inchangées"),
             &json!({ "field": field, "old": old, "new": new, "actor": actor, "type": "display-only", "effect": "la compilation des panneaux SEULEMENT (jamais les règles de détection, jamais le bannissement)" }).to_string(),
-        )?;
-        Ok((old, new))
+        ).map_err(EchecDeLEdition::Ecriture)?;
+        Ok((old, new, ExclClauses::depuis_les_csv(&op_csv, &self_csv)))
     })();
     match outcome {
-        Ok((old, new)) => match valider_la_transaction(conn) {
-            Ok(()) => Ok((field, old, new)),
+        Ok((old, new, clauses)) => match valider_la_transaction(conn) {
+            Ok(()) => Ok((field, old, new, clauses)),
             Err(refus) => {
                 eprintln!("[suppressions] WARN exclusion d'affichage {field} NON validée : {refus}");
                 Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE.to_string()))
@@ -1114,7 +1174,14 @@ pub(crate) fn apply_display_excl_edit(
         },
         // `P10.29-l` — phrase fixe au client (`suppressions_put` la sert par `err_json`, avec l'identifiant de
         // corrélation), cause du moteur au journal seul : le geste et le champ, jamais la valeur ni l'acteur.
-        Err(e) => {
+        // `P10.20-l` — la valeur en vigueur non lue : transaction annulée, 503 nommé, rien d'écrit ; la cause du moteur au
+        // journal seul, avec le champ (jamais la valeur ni l'acteur).
+        Err(EchecDeLEdition::NonLue(e)) => {
+            let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sur une valeur non lue
+            eprintln!("[suppressions] WARN exclusion d'affichage {field} NON lue : transaction annulée, aucune modification ({e})");
+            Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_EXCLUSION_D_AFFICHAGE_INCHANGEE_NON_LUE.to_string()))
+        }
+        Err(EchecDeLEdition::Ecriture(e)) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : rien de persisté sans audit
             eprintln!("[suppressions] WARN exclusion d'affichage {field} refusée : transaction d'audit annulée, aucune modification ({e})");
             Err((StatusCode::INTERNAL_SERVER_ERROR, PHRASE_ECHEC_TRANSACTION_AUDIT.to_string()))
@@ -1138,9 +1205,10 @@ pub(crate) async fn suppressions_put(State(st): State<AppState>, Extension(au): 
     let __rc = st.db.clone();
     let conn = __rc.lock();
     match apply_display_excl_edit(&conn, &conf, action, value, au.name.as_str()) {
-        Ok((field, old, new)) => {
-            // hot-reload du cache d'exclusion DEPUIS la base éditée -> effet immédiat sur les panneaux.
-            excl_clauses_refresh(&conn, &conf);
+        Ok((field, old, new, clauses)) => {
+            // hot-reload du cache d'exclusion DEPUIS les valeurs lues dans la transaction validée -> effet immédiat sur
+            // les panneaux (`P10.20-l` : plus de relecture après le `COMMIT`, qui chargeait le repli sur une lecture ratée).
+            excl_clauses_poser(clauses);
             (StatusCode::OK, Json(json!({ "ok": true, "field": field, "old": old, "new": new }))).into_response()
         }
         // `P10.28-r` — LES REFUS DE CETTE ROUTE SONT SERVIS EN JSON NOMMÉ (`err_json`), comme ceux des autres gestes.

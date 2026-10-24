@@ -1182,7 +1182,10 @@ pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au)
                 refus
             }
             // `P10.20-w` — écriture refusée : 503 nommé (contrat neuf, assumé ; il rendait 204 sur une fusion non faite).
-            IssueDeLaFusion::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_FUSION_NON_ECRITE} ({cause})")),
+            // `P10.29-l` (vague AL) — la phrase seule `{error, id}`, la cause du moteur au journal avec l'identifiant.
+            IssueDeLaFusion::NonEcrite(cause) => {
+                crate::handlers::cases::refus_nomme_cause_au_journal(CAUSE_FUSION_NON_ECRITE, &format!("dossier #{id} : fusion dans #{into} NON écrite"), &cause)
+            }
         }
     })
 }
@@ -1209,7 +1212,10 @@ pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(a
                 refus
             }
             // `P10.20-w` — écriture refusée : 503 nommé (contrat neuf, assumé ; il rendait 204 sur une défusion non faite).
-            IssueDeLaFusion::NonEcrite(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DEFUSION_NON_ECRITE} ({cause})")),
+            // `P10.29-l` (vague AL) — la phrase seule `{error, id}`, la cause du moteur au journal avec l'identifiant.
+            IssueDeLaFusion::NonEcrite(cause) => {
+                crate::handlers::cases::refus_nomme_cause_au_journal(CAUSE_DEFUSION_NON_ECRITE, &format!("dossier #{id} : défusion NON écrite"), &cause)
+            }
         }
     })
 }
@@ -1456,16 +1462,18 @@ fn sla_recalcule_la_priorite_bornee_selon(conn: &Connection, priority: i64, plaf
 /// un remède que personne n'attend aurait satisfait la garde EN LUI MENTANT. Les témoins n'y
 /// perdent rien — ils assèrent le STATUT à chaque site, ce qu'un client lit vraiment, et
 /// l'assertion sur le booléen répétait la ligne juste au-dessus.
+/// `P10.29-l` (vague AL) — LE CINQ CENTS SANS LE TEXTE DU MOTEUR : `reason` servait `politique NON enregistrée (<moteur>)
+/// — …` (noms de tables, motifs de contrainte, refus de transaction) à tout rôle qui écrit une politique. Désormais
+/// `{recomputed: 0, reason: CAUSE_POLITIQUE_SLA_NON_ENREGISTREE, id}` (même statut, même préfixe ; `id` relie la demande
+/// au journal) et la ligne `[caseops] WARN politique SLA NON enregistrée (<identifiant>) : <moteur>` au journal seul.
 pub(crate) fn reponse_de_l_upsert_sla(ecriture: Result<(), String>, recalcul: &RecalculDesEcheances) -> Response {
     match ecriture {
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "recomputed": 0,
-                "reason": format!("politique NON enregistrée ({e}) — rien n'a été appliqué"),
-            })),
-        )
-            .into_response(),
+        Err(e) => {
+            let (cid, _) = err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, CAUSE_POLITIQUE_SLA_NON_ENREGISTREE);
+            let cid = cid.unwrap_or_default();
+            eprintln!("[caseops] WARN politique SLA NON enregistrée ({cid}) : {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "recomputed": 0, "reason": CAUSE_POLITIQUE_SLA_NON_ENREGISTREE, "id": cid }))).into_response()
+        }
         Ok(()) => match &recalcul.manque {
             None => StatusCode::NO_CONTENT.into_response(),
             Some(raison) => (
@@ -1479,6 +1487,9 @@ pub(crate) fn reponse_de_l_upsert_sla(ecriture: Result<(), String>, recalcul: &R
         },
     }
 }
+
+/// `P10.29-l` (vague AL) — la politique n'a PAS été écrite : la phrase fixe du cinq cents de l'upsert (le moteur au journal).
+pub(crate) const CAUSE_POLITIQUE_SLA_NON_ENREGISTREE: &str = "politique NON enregistrée — rien n'a été appliqué";
 
 /// `P10.31-u` / `P10.31-v` — LA RÉPONSE DE L'UPSERT QUAND LA POLITIQUE EST ÉCRITE : `reponse_de_l_upsert_sla` si le
 /// maillon `sla_policy.upsert` est inscrit (204 muet ou 200 + `reason`, contrat INCHANGÉ) ; sinon `200` + corps
@@ -1648,7 +1659,11 @@ pub(crate) async fn sla_policy_delete(State(st): State<AppState>, Extension(au):
                 Ok(0) => return Err(not_found(CAUSE_POLITIQUE_SLA_INTROUVABLE)),
                 Ok(_) => {}
                 Err(e) => {
-                    return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_POLITIQUE_NON_SUPPRIMEE} ({e})")))
+                    return Err(crate::handlers::cases::refus_nomme_cause_au_journal(
+                        CAUSE_POLITIQUE_NON_SUPPRIMEE,
+                        &format!("politique SLA #{id} NON supprimée"),
+                        &e,
+                    ));
                 }
             }
             let degouvernes = match conn.execute(
@@ -1657,7 +1672,11 @@ pub(crate) async fn sla_policy_delete(State(st): State<AppState>, Extension(au):
             ) {
                 Ok(n) => n,
                 Err(e) => {
-                    return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_DOSSIERS_NON_DEGOUVERNES} ({e})")))
+                    return Err(crate::handlers::cases::refus_nomme_cause_au_journal(
+                        CAUSE_DOSSIERS_NON_DEGOUVERNES,
+                        &format!("politique SLA #{id} : dossiers NON dégouvernés, suppression annulée"),
+                        &e,
+                    ));
                 }
             };
             let mut detail = format!("#{id} by {}", au.name);
@@ -1679,7 +1698,7 @@ pub(crate) async fn sla_policy_delete(State(st): State<AppState>, Extension(au):
             },
             Issue::Refuse(reponse) => reponse,
             Issue::NonOuvert(e) | Issue::NonValide(e) => {
-                err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_POLITIQUE_NON_SUPPRIMEE} ({e})"))
+                crate::handlers::cases::refus_nomme_cause_au_journal(CAUSE_POLITIQUE_NON_SUPPRIMEE, &format!("politique SLA #{id} NON supprimée"), &e)
             }
         }
     })
@@ -1730,16 +1749,21 @@ pub(crate) async fn client_case_get(State(st): State<AppState>, Extension(au): E
         let dbp = db_path.clone();
         // `P10.7-g` (lot 92) — une lecture NON FAITE n'est pas une absence : « case introuvable » (404) ne se sert
         // que sur une lecture aboutie qui n'a rien trouvé ; sans connexion, ou tâche interrompue, c'est un 5xx qui le dit.
-        read_with_watchdog(&db_path, Some(json!({ "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION, "lecture_non_faite": true })), move |conn| match client_case_get_lu(conn, &dbp, &masks, id, now_i) {
-            Ok(v) => v,
-            Err(e) => Some(json!({ "error": format!("dossier NON LU : la lecture a échoué ({e}) — ce n'est pas une absence établie"), "lecture_non_faite": true })),
+        // `P10.29-l` (vague AL) — la lecture ratée rend la cause du moteur à part (`Err`), pour le journal seul.
+        read_with_watchdog(&db_path, Ok(Some(json!({ "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION, "lecture_non_faite": true }))), move |conn| {
+            client_case_get_lu(conn, &dbp, &masks, id, now_i).map_err(|e| e.to_string())
         })
     })
     .await
-    .unwrap_or_else(|_| Some(json!({ "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE, "lecture_non_faite": true })));
+    .unwrap_or_else(|_| Ok(Some(json!({ "error": crate::query_exec::LECTURE_NON_FAITE_TACHE_INTERROMPUE, "lecture_non_faite": true }))));
     match res {
-        Some(v) if v.get("lecture_non_faite").is_some() => (StatusCode::INTERNAL_SERVER_ERROR, Json(v)).into_response(),
-        Some(v) => Json(v).into_response(),
-        None => not_found(CAUSE_DOSSIER_CLIENT_INTROUVABLE),
+        // `P10.29-l` (vague AL) — le cinq cents servait `dossier NON LU : la lecture a échoué (<moteur>) — …` au CLIENT
+        // (rôle `client`, jeton externe) : noms de tables et de colonnes partaient hors de l'équipe. Même patron que la
+        // fiche interne (`refus_de_la_fiche_non_lue`) : `{error: CAUSE_FICHE_DU_DOSSIER_NON_LUE, id, lecture_non_faite}`,
+        // même statut, même préfixe, le moteur au journal avec l'identifiant servi.
+        Err(moteur) => crate::handlers::cases::refus_de_la_fiche_non_lue(id, &moteur),
+        Ok(Some(v)) if v.get("lecture_non_faite").is_some() => (StatusCode::INTERNAL_SERVER_ERROR, Json(v)).into_response(),
+        Ok(Some(v)) => Json(v).into_response(),
+        Ok(None) => not_found(CAUSE_DOSSIER_CLIENT_INTROUVABLE),
     }
 }

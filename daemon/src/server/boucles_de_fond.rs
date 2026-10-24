@@ -329,9 +329,19 @@ pub(crate) fn tick_de_detection_d_un_tenant(handle: &Arc<Mutex<Connection>>, db_
     }
     let mut b = crate::bilan_de_tick::BilanDuPlanificateur::default();
     b.absorber(run_due_rules(handle, db_path));
+    // `P10.31-j` — `run_due_rules` a déjà vu l'orpheline (une de ses deux sondes) : le tick est déclaré aveugle
+    // et compté UNE fois ; il s'arrête là, sans re-sonder ni évaluer une autre famille.
+    if les_regles_ont_deja_declare_l_orpheline(&b) { return b; }
+    // `P10.31-j` — LA SONDE, REPRISE ENTRE DEUX FAMILLES : chaque famille rend le verrou en sortant, un geste a pu
+    // laisser une orpheline avant la suivante. La première sonde qui la voit déclare le tick aveugle et RIEN de ce qui
+    // suit n'est évalué ni écrit. Elle garde l'ENTRE-DEUX seulement : règles avancées, risque, corrélations, lignes de
+    // base et playbooks évaluent hors du verrou puis le reprennent pour écrire, et seule `run_due_rules` re-sonde avant
+    // ses écritures ; une orpheline ouverte pendant l'évaluation d'une des cinq autres reçoit encore ses écritures.
+    if orpheline_avant_la_famille(handle, "règles avancées", &mut b) { return b; }
     // #48/#53 : règles « avancées » (fenêtre de suppression / throttle-by-field / per-result),
     // EXCLUES de run_due_rules et traitées à part (comme run_risk_rules). INERTE mode 0 (0 ligne due).
     b.absorber(run_advanced_rules(handle, db_path));
+    if orpheline_avant_la_famille(handle, "règles de risque", &mut b) { return b; }
     // #24 (RBA) : règles en MODE RISK (risk_score>0, exclues de run_due_rules) -> CONTRIBUENT du
     // risque par entité au lieu de lever une alerte scalaire. INERTE mode 0 (aucune règle risk).
     b.absorber(run_risk_rules(handle, db_path));
@@ -339,22 +349,63 @@ pub(crate) fn tick_de_detection_d_un_tenant(handle: &Arc<Mutex<Connection>>, db_
     // + baselining statistique UEBA (déviation z-score par entité). MÊMES garanties fail-closed que
     // run_due_rules (erreur/timeout ne fabrique JAMAIS un « tout clair »). INERTE mode 0 (tables
     // correlation/baseline vides -> 0 ligne due -> retour immédiat, tick byte-identique).
+    if orpheline_avant_la_famille(handle, "corrélations", &mut b) { return b; }
     b.absorber(run_correlations(handle, db_path));
+    if orpheline_avant_la_famille(handle, "lignes de base", &mut b) { return b; }
     b.absorber(run_baselines(handle, db_path));
+    if orpheline_avant_la_famille(handle, "playbooks", &mut b) { return b; }
     b.absorber(run_playbooks(handle, db_path));
+    if orpheline_avant_la_famille(handle, "battements des capteurs", &mut b) { return b; }
     b.absorber(check_heartbeats(handle));
+    if orpheline_avant_la_famille(handle, "notifications", &mut b) { return b; }
     dispatch_notifications(handle);
+    if orpheline_avant_la_famille(handle, "escalade des dossiers en retard", &mut b) { return b; }
     escalate_overdue_cases(handle); // #4a — escalade SLA des cases overdue (INERTE si aucun)
+    if orpheline_avant_la_famille(handle, "SLA multi-niveau", &mut b) { return b; }
     sla_multilevel_tick(handle); // #39 — breach SLA MULTI-NIVEAU (ack/resolve). EARLY-RETURN si 0 politique (mode 0 : ZÉRO travail)
     // v75 (MODE ENGAGEMENT) : auto-expiry des engagements + recompilation de l'index scope actif
     // (tag d'ingest + guard auto-ban). SELF-GATED sur engagement_enabled() -> mode off = 0 travail
-    // (pas de lock, pas de SELECT) = tick byte-identique.
-    expire_due_engagements(handle);
+    // (pas de lock, pas de SELECT) = tick byte-identique. Les deux sondes sont sous le même drapeau : mode off, aucune
+    // n'est prise (`expire_due_engagements` rendait la main avant tout verrou, il n'est plus appelé du tout).
     if engagement_enabled() {
+        if orpheline_avant_la_famille(handle, "expiration des engagements", &mut b) { return b; }
+        expire_due_engagements(handle);
+        if orpheline_avant_la_famille(handle, "rafraîchissement du périmètre des engagements", &mut b) { return b; }
         let c = handle.lock();
         engagement_scope_refresh(db_path, &c);
     }
     b
+}
+
+/// `P10.31-j` — LA SONDE AVANT UNE FAMILLE DU TICK : rend `true` (et verse au bilan le tick aveugle nommé, compté sous
+/// la boucle des règles avec la cause de la transaction orpheline) si l'écrivain porte une transaction ouverte hors de
+/// tout geste ; le tick s'arrête alors, la famille et toutes les suivantes ne sont ni évaluées ni écrites, et la
+/// transaction n'est pas annulée (décision d'Hugo, 2026-09-29). Le verrou est rendu AVANT que la famille ne tourne :
+/// elle le reprend elle-même (le `Mutex` de `parking_lot` n'est pas réentrant).
+fn orpheline_avant_la_famille(handle: &Arc<Mutex<Connection>>, famille: &'static str, b: &mut crate::bilan_de_tick::BilanDuPlanificateur) -> bool {
+    crochets_de_la_sonde_par_famille::avant_la_famille(handle, famille);
+    let orpheline = {
+        let c = handle.lock();
+        crate::handlers::transaction_validee::signaler_une_transaction_ouverte_hors_de_tout_geste(&c, "tick de détection")
+    };
+    if orpheline {
+        b.absorber(crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline(crate::bilan_de_tick::BOUCLE_REGLES, famille));
+        return true;
+    }
+    crochets_de_la_sonde_par_famille::famille_admise(famille);
+    false
+}
+
+/// `P10.31-j` — LE BILAN PORTE DÉJÀ L'AVEU DE L'ORPHELINE : `run_due_rules` l'a vue (une de ses deux sondes) et a
+/// versé au bilan le tick aveugle nommé, compté. Le tick s'arrête alors sans re-sonder : une seconde sonde compterait
+/// la même orpheline deux fois (deux lignes de journal, « 2 famille(s) » au bilan). Une cécité d'une AUTRE cause (une
+/// liste illisible) ne l'arrête pas : la sonde suivante juge l'écrivain comme d'habitude.
+pub(crate) fn les_regles_ont_deja_declare_l_orpheline(b: &crate::bilan_de_tick::BilanDuPlanificateur) -> bool {
+    let aveu = format!("({})", crate::bilan_de_tick::CAUSE_TRANSACTION_ORPHELINE);
+    match b.bilan_de_tick() {
+        crate::mesure_environnement::Mesure::Illisible { detail, .. } => detail.contains(&aveu),
+        crate::mesure_environnement::Mesure::Lue(_) => false,
+    }
 }
 
 /// `P10.20-b` — essais du préchauffage du cache de bans réseau, une pause entre deux (celle que passe le site).
@@ -792,5 +843,46 @@ mod filet_de_l_ancrage {
             "et l'aveu a été REMPLACÉ par le bilan de la passe saine : le canal est un ÉTAT, pas un \
              flux — un incident PERMANENT y reste rouge en permanence, un incident RÉSORBÉ s'efface"
         );
+    }
+}
+
+/// `P10.31-j` — LES CROCHETS DES TÉMOINS DE LA SONDE PAR FAMILLE, hors des témoins : deux fonctions vides, sans état ni
+/// branche. Le module des témoins (plus bas) porte le crochet qu'un témoin pose, appelé juste AVANT la sonde d'une
+/// famille, et la trace des familles admises. Les deux vivent EN FIN DE FICHIER : l'instrument
+/// `aucun_test_n_ecrit_la_fraicheur_ambiante_des_boucles_de_fond` tient pour zone de test tout ce qui suit le premier
+/// attribut de test du fichier, et une écriture de production placée après serait accusée.
+#[cfg(not(test))]
+mod crochets_de_la_sonde_par_famille {
+    use super::*;
+    #[inline(always)]
+    pub(super) fn avant_la_famille(_db: &Arc<Mutex<Connection>>, _famille: &'static str) {}
+    #[inline(always)]
+    pub(super) fn famille_admise(_famille: &'static str) {}
+}
+
+/// `P10.31-j` — LES CROCHETS DES TÉMOINS DE LA SONDE PAR FAMILLE, sous les témoins : `AVANT_LA_FAMILLE_DU_TICK` est
+/// appelé juste avant la sonde d'une famille, avec son nom (c'est là qu'un témoin ouvre l'orpheline « entre deux
+/// familles ») ; `FAMILLES_ADMISES_PAR_LA_SONDE` garde, dans l'ordre, les familles que la sonde a laissées passer.
+#[cfg(test)]
+pub(crate) mod crochets_de_la_sonde_par_famille {
+    use super::*;
+
+    /// Le crochet par défaut : ne fait rien.
+    pub(crate) fn sans_crochet_de_famille(_db: &Arc<Mutex<Connection>>, _famille: &'static str) {}
+
+    thread_local! {
+        pub(crate) static AVANT_LA_FAMILLE_DU_TICK: std::cell::Cell<fn(&Arc<Mutex<Connection>>, &'static str)> =
+            const { std::cell::Cell::new(sans_crochet_de_famille) };
+        /// Les familles que la sonde a laissées passer, dans l'ordre : ce qu'un témoin relit pour dire qu'aucune famille
+        /// n'a tourné après l'orpheline.
+        pub(crate) static FAMILLES_ADMISES_PAR_LA_SONDE: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn avant_la_famille(db: &Arc<Mutex<Connection>>, famille: &'static str) {
+        AVANT_LA_FAMILLE_DU_TICK.with(|h| (h.get())(db, famille));
+    }
+
+    pub(super) fn famille_admise(famille: &'static str) {
+        FAMILLES_ADMISES_PAR_LA_SONDE.with(|v| v.borrow_mut().push(famille));
     }
 }

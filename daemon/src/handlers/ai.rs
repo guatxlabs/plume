@@ -30,13 +30,53 @@ fn ai_deny_multitenant() -> Response {
     err_json(StatusCode::NOT_IMPLEMENTED, "IA via l'UI réservée au mode mono-tenant (control-plane : roadmap #2)")
 }
 
-/// Traduit une erreur worker en réponse : « non compilé » -> 501 (stub feature-off), sinon 500.
-pub(crate) fn ai_worker_err(e: String) -> Response {
-    if e.contains("non compilé") {
-        err_json(StatusCode::NOT_IMPLEMENTED, e)
-    } else {
-        server_err(e)
+/// `P10.29-l` — la phrase servie quand l'appel au fournisseur d'IA a échoué (garde SSRF, réseau, statut d'échec,
+/// réponse illisible). Phrase FIXE, statut 500 inchangé : le texte du worker ne part plus au client.
+pub(crate) const PHRASE_APPEL_DU_FOURNISSEUR_D_IA_ECHOUE: &str = "appel au fournisseur d'IA échoué : aucune \
+     proposition servie (la nature de l'échec est au journal du démon, sous l'identifiant servi)";
+
+// `P10.29-l` — LES NATURES D'ÉCHEC QUI PARTENT AU JOURNAL, PAR LISTE BLANCHE. Le texte du worker (`AiError` de
+// `guatx_core::ai`, enveloppant la garde SSRF de `ledger.rs` ou le client HTTP interne) porte l'hôte du fournisseur, son
+// port et l'adresse interne résolue (« SSRF: 'hôte' résout vers une adresse interne (ip) », « connexion hôte:port : … ») :
+// servi tel quel, il les donnait à tout lecteur de l'assistant. Il ne part plus ni au client ni au journal ; seule sa
+// NATURE, choisie parmi ces constantes, est journalisée. Les préfixes lus sont ceux de l'affichage d'`AiError`
+// (« backend IA : », « réponse IA invalide : ») et de la garde SSRF (« SSRF: ») : un texte d'une autre forme tombe sur
+// la nature non reconnue, jamais sur une coupe de la chaîne.
+const NATURE_GARDE_SSRF: &str = "adresse du fournisseur refusée par la garde SSRF (cible interne, résolution \
+     impossible ou schéma refusé), avant toute connexion";
+const NATURE_STATUT_HTTP: &str = "le fournisseur a répondu un statut d'échec, HTTP";
+const NATURE_REPONSE_INVALIDE: &str = "réponse du fournisseur non JSON ou complétion vide";
+const NATURE_APPEL_RESEAU: &str = "appel au fournisseur échoué (connexion, TLS, écriture ou lecture)";
+const NATURE_NON_RECONNUE: &str = "échec d'une nature non reconnue";
+
+/// La nature journalisée d'un échec du worker : une constante de la liste blanche (le statut HTTP lu comme entier).
+fn nature_de_l_echec_du_fournisseur(e: &str) -> String {
+    if e.starts_with("backend IA : SSRF:") {
+        return NATURE_GARDE_SSRF.to_string();
     }
+    if let Some(statut) = e.strip_prefix("backend IA : HTTP ").and_then(|s| s.parse::<u16>().ok()) {
+        return format!("{NATURE_STATUT_HTTP} {statut}");
+    }
+    if e.starts_with("réponse IA invalide : ") {
+        return NATURE_REPONSE_INVALIDE.to_string();
+    }
+    if e.starts_with("backend IA : ") {
+        return NATURE_APPEL_RESEAU.to_string();
+    }
+    NATURE_NON_RECONNUE.to_string()
+}
+
+/// Traduit une erreur worker en réponse : « non compilé » -> 501 (stub feature-off), sinon 500 à phrase fixe
+/// (`P10.29-l`), la nature de l'échec au journal avec le fournisseur visé et l'identifiant de corrélation servi.
+pub(crate) fn ai_worker_err(fournisseur: i64, e: String) -> Response {
+    if e.contains("non compilé") {
+        return err_json(StatusCode::NOT_IMPLEMENTED, e);
+    }
+    let nature = nature_de_l_echec_du_fournisseur(&e);
+    let (id, r) = crate::err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, PHRASE_APPEL_DU_FOURNISSEUR_D_IA_ECHOUE);
+    let id = id.unwrap_or_default();
+    eprintln!("[{id}] [ia] WARN appel du fournisseur d'IA #{fournisseur} échoué, aucune proposition servie : {nature}");
+    r
 }
 
 /// Construit le DÉTAIL de l'entrée de ledger `ai.call`. NE CONTIENT QUE : purpose, provider, formes,
@@ -210,7 +250,11 @@ pub(crate) async fn ai_redaction_policy_put(State(st): State<AppState>, Extensio
             Ok(()) => Json(json!({ "ok": true, "version": version })).into_response(),
             Err(e) => refuser_le_geste_non_valide("ia", &format!("politique de caviardage v{version}"), &e, CAUSE_POLITIQUE_DE_CAVIARDAGE_INCHANGEE),
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
+        // `P10.29-l` — phrase fixe, statut 500 inchangé, la cause du moteur au journal seul avec l'identifiant servi.
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[ia]", &format!("pose de la politique de caviardage v{version}"), &e)
+        }
     }
 }
 
@@ -255,6 +299,12 @@ pub(crate) const CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE: &str =
      pendante sur l'écrivain) — RIEN n'est écrit : le fournisseur n'est ni créé, ni modifié, ni supprimé : celui qui \
      était actif l'est toujours et reçoit toujours les questions posées à l'assistant, et aucune trace n'est écrite. \
      Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.29-l` — la création d'un fournisseur d'IA dont le nom est déjà pris (violation d'unicité de `ai_provider.name`,
+/// lue sur l'`INSERT` lui-même). Phrase FIXE en 409 JSON ; la forme d'avant servait un 409 en TEXTE qui confondait ce
+/// refus avec l'échec de l'audit. La route est réservée à l'administrateur, qui lit déjà la liste des noms : pas
+/// d'oracle neuf.
+pub(crate) const PHRASE_FOURNISSEUR_D_IA_NOM_DEJA_PRIS: &str = "un fournisseur d'IA porte déjà ce nom : rien n'est \
+     créé, choisissez un autre nom";
 /// `P10.20-b` (rang quatre) — le fournisseur d'IA visé par une modification (désactivation d'urgence comprise) n'a pas
 /// pu être lu (la forme d'avant, `.ok()` : 404 « provider introuvable » pour une ligne qui existe).
 pub(crate) const CAUSE_FOURNISSEUR_D_IA_NON_MODIFIE_NON_LU: &str = "FOURNISSEUR D'IA NON MODIFIÉ, FOURNISSEUR NON \
@@ -363,11 +413,15 @@ pub(crate) async fn ai_provider_create(State(st): State<AppState>, Extension(au)
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "ia", &format!("création du fournisseur d'IA '{name}'"), CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
+    // `P10.29-l` — le nom déjà pris se lit sur l'`INSERT` lui-même (contrainte UNIQUE de `ai_provider.name`), jamais sur
+    // l'audit qui suit : un refus de la trace d'audit n'est pas un nom pris.
+    let nom_deja_pris = std::cell::Cell::new(false);
     let outcome: rusqlite::Result<i64> = (|| {
         conn.execute(
             "INSERT INTO ai_provider(name,vendor,api_shape,endpoint,secret,enabled,config_json,created,updated) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)",
             params![name, vendor, api_shape, endpoint, secret, enabled, config.to_string(), now()],
-        )?;
+        )
+        .inspect_err(|e| nom_deja_pris.set(violation_d_unicite(e)))?;
         let id = conn.last_insert_rowid();
         audit_config_change(
             &conn, "config.ai.provider.create",
@@ -383,8 +437,21 @@ pub(crate) async fn ai_provider_create(State(st): State<AppState>, Extension(au)
             Ok(()) => Json(json!({ "id": id, "enabled": enabled != 0 })).into_response(),
             Err(e) => refuser_le_geste_non_valide("ia", &format!("création du fournisseur d'IA '{name}'"), &e, CAUSE_FOURNISSEUR_D_IA_INCHANGE),
         },
-        Err(_) => { let _ = conn.execute_batch("ROLLBACK"); (StatusCode::CONFLICT, "échec de création (nom déjà pris ou audit) — réessayez").into_response() }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            if nom_deja_pris.get() {
+                return err_json(StatusCode::CONFLICT, PHRASE_FOURNISSEUR_D_IA_NOM_DEJA_PRIS);
+            }
+            // `P10.29-l` — l'audit (ou toute autre écriture de la transaction) refusé : phrase fixe, la cause du moteur au
+            // journal seul avec l'identifiant de corrélation servi.
+            servir_l_echec_de_la_transaction_d_audit("[ia]", &format!("création du fournisseur d'IA '{name}'"), &e)
+        }
     }
+}
+
+/// `P10.29-l` — l'erreur est la violation d'une contrainte UNIQUE (code étendu SQLite, pas une lecture du texte).
+fn violation_d_unicite(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
 }
 
 pub(crate) async fn ai_provider_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
@@ -426,6 +493,12 @@ pub(crate) async fn ai_provider_update(State(st): State<AppState>, Extension(au)
             return err_json(StatusCode::FORBIDDEN, e);
         }
     }
+    // `P10.29-l` — une forme d'API inconnue est un refus du CLIENT, jugé avant la transaction (même phrase et même 400 que la
+    // création). La forme d'avant la jugeait dans la transaction et la rendait par `InvalidQuery` : un 500 « échec
+    // transaction » qui citait le moteur pour une saisie refusée.
+    if b.get("api_shape").and_then(|x| x.as_str()).is_some_and(|v| !ai_api_shape_ok(v)) {
+        return bad_req("api_shape non supporté (openai | ollama-native | anthropic)");
+    }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "ia", &format!("modification du fournisseur d'IA #{id}"), CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
@@ -443,9 +516,6 @@ pub(crate) async fn ai_provider_update(State(st): State<AppState>, Extension(au)
             conn.execute("UPDATE ai_provider SET vendor=?1 WHERE id=?2", params![v, id])?;
         }
         if let Some(v) = b.get("api_shape").and_then(|x| x.as_str()) {
-            if !ai_api_shape_ok(v) {
-                return Err(rusqlite::Error::InvalidQuery);
-            }
             conn.execute("UPDATE ai_provider SET api_shape=?1 WHERE id=?2", params![v, id])?;
         }
         // SECRET : mis à jour UNIQUEMENT si fourni ET non vide (jamais d'écrasement par vide, jamais renvoyé).
@@ -470,7 +540,11 @@ pub(crate) async fn ai_provider_update(State(st): State<AppState>, Extension(au)
             Ok(()) => Json(json!({ "ok": true })).into_response(),
             Err(e) => refuser_le_geste_non_valide("ia", &format!("modification du fournisseur d'IA #{id}"), &e, CAUSE_FOURNISSEUR_D_IA_INCHANGE),
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction (aucune modification): {e}")) }
+        // `P10.29-l` — phrase fixe, statut 500 inchangé, la cause du moteur au journal seul avec l'identifiant servi.
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[ia]", &format!("modification du fournisseur d'IA #{id}"), &e)
+        }
     }
 }
 
@@ -511,7 +585,11 @@ pub(crate) async fn ai_provider_delete(State(st): State<AppState>, Extension(au)
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(e) => refuser_le_geste_non_valide("ia", &format!("suppression du fournisseur d'IA '{name}'"), &e, CAUSE_FOURNISSEUR_D_IA_INCHANGE),
         },
-        Err(e) => { let _ = conn.execute_batch("ROLLBACK"); server_err(format!("échec transaction audit: {e}")) }
+        // `P10.29-l` — phrase fixe, statut 500 inchangé, la cause du moteur au journal seul avec l'identifiant servi.
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            servir_l_echec_de_la_transaction_d_audit("[ia]", &format!("suppression du fournisseur d'IA #{id}"), &e)
+        }
     }
 }
 
@@ -585,22 +663,49 @@ pub(crate) async fn ai_status(State(st): State<AppState>, Extension(_au): Extens
         return Json(json!({ "enabled": false, "reason": "multitenant" })).into_response();
     }
     let runtime = crate::ai::runtime_enabled();
-    let (has_provider, provider) = {
+    // `P10.20-b` — TROIS ISSUES. La forme d'avant (`Err(_) => (false, Null)`) servait une lecture ratée du fournisseur
+    // actif comme « aucun fournisseur » (`has_provider: false`). Aucune ligne : le corps d'avant, à l'octet. Lecture ratée :
+    // `has_provider: null` (on ne sait pas), `enabled: false` (l'assistant ne peut pas servir : `ai_nl2soql` refuse sur la
+    // même lecture), et le champ additif `fournisseur_non_lu` qui le dit ; la cause du moteur au journal seul.
+    let lu = {
         let conn = st.db.lock();
-        match conn.query_row("SELECT name,api_shape FROM ai_provider WHERE enabled=1 ORDER BY id LIMIT 1", [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
-            Ok((n, s)) => (true, json!({ "name": n, "api_shape": s })),
-            Err(_) => (false, Value::Null),
+        conn.query_row("SELECT name,api_shape FROM ai_provider WHERE enabled=1 ORDER BY id LIMIT 1", [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .optional()
+    };
+    let corps_d_etat = |has_provider: Value, provider: Value| {
+        json!({
+            "enabled": runtime && has_provider == json!(true),
+            "runtime": runtime,
+            "has_provider": has_provider,
+            "provider": provider,
+            "cloud_allowed": crate::ai::cloud_allowed(),
+        })
+    };
+    let corps = match lu {
+        Ok(Some((n, s))) => corps_d_etat(json!(true), json!({ "name": n, "api_shape": s })),
+        Ok(None) => corps_d_etat(json!(false), Value::Null),
+        Err(e) => {
+            eprintln!("[ia] WARN état de l'assistant IA servi indisponible : le fournisseur actif n'a pas pu être lu ({e})");
+            let mut corps = corps_d_etat(Value::Null, Value::Null);
+            corps["fournisseur_non_lu"] = json!(CAUSE_FOURNISSEUR_D_IA_ACTIF_NON_LU);
+            corps
         }
     };
-    Json(json!({
-        "enabled": runtime && has_provider,
-        "runtime": runtime,
-        "has_provider": has_provider,
-        "provider": provider,
-        "cloud_allowed": crate::ai::cloud_allowed(),
-    }))
-    .into_response()
+    Json(corps).into_response()
 }
+
+/// `P10.20-b` — l'état de l'assistant n'a pas pu lire le fournisseur actif (champ additif `fournisseur_non_lu`).
+pub(crate) const CAUSE_FOURNISSEUR_D_IA_ACTIF_NON_LU: &str = "FOURNISSEUR D'IA ACTIF NON LU : la base n'a pas pu lire \
+     quel fournisseur d'IA est actif (lecture refusée ou table illisible) — on ne sait pas s'il y en a un, ce n'est PAS « \
+     aucun fournisseur configuré » : l'assistant est tenu pour indisponible tant que la lecture ne se fait pas. \
+     Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+
+/// `P10.20-b` — `ai_nl2soql` n'a pas pu lire le fournisseur actif : 503, aucune question envoyée (la forme d'avant rendait
+/// 409 « aucun provider IA actif », une absence inventée).
+pub(crate) const CAUSE_ASSISTANT_IA_NON_INTERROGE_FOURNISSEUR_NON_LU: &str = "ASSISTANT IA NON INTERROGÉ, FOURNISSEUR \
+     NON LU : la base n'a pas pu lire quel fournisseur d'IA est actif (lecture refusée ou table illisible) — aucune \
+     question n'est partie, aucun appel n'est fait ni compté, et ce n'est PAS « aucun fournisseur configuré ». \
+     Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
 
 /// POST /api/ai/nl2soql — assemble un prompt RÉDIGÉ (noms de champ CIM + question), interroge le provider
 /// actif, passe le GXQL au compilo FERMÉ `soql_to_sql_x`, renvoie GXQL+SQL (ou l'erreur). ZÉRO exécution.
@@ -618,18 +723,30 @@ pub(crate) async fn ai_nl2soql(State(st): State<AppState>, Extension(au): Extens
         return bad_req("question vide ou trop longue (<= 2000)");
     }
     // Provider ACTIF (premier enabled=1). Inerte si aucun.
+    // `P10.20-b` — TROIS ISSUES : aucune ligne = le 409 d'avant, à l'octet ; lecture ratée = 503 nommé, rien d'appelé ni
+    // de compté (la forme d'avant rendait le même 409 « aucun provider » sur une lecture ratée) ; la cause du moteur au
+    // journal seul, avec l'identifiant servi.
     let (pid, api_shape, endpoint, secret_ref, config): (i64, String, String, String, Value) = {
         let conn = st.db.lock();
-        match conn.query_row(
-            "SELECT id,api_shape,endpoint,secret,config_json FROM ai_provider WHERE enabled=1 ORDER BY id LIMIT 1",
-            [],
-            |r| {
-                let cfg: String = r.get(4)?;
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, serde_json::from_str::<Value>(&cfg).unwrap_or_else(|_| json!({}))))
-            },
-        ) {
-            Ok(v) => v,
-            Err(_) => return err_json(StatusCode::CONFLICT, "aucun provider IA actif — configurez-en un (admin)"),
+        match conn
+            .query_row(
+                "SELECT id,api_shape,endpoint,secret,config_json FROM ai_provider WHERE enabled=1 ORDER BY id LIMIT 1",
+                [],
+                |r| {
+                    let cfg: String = r.get(4)?;
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, serde_json::from_str::<Value>(&cfg).unwrap_or_else(|_| json!({}))))
+                },
+            )
+            .optional()
+        {
+            Ok(Some(v)) => v,
+            Ok(None) => return err_json(StatusCode::CONFLICT, "aucun provider IA actif — configurez-en un (admin)"),
+            Err(e) => {
+                let (id, r) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_ASSISTANT_IA_NON_INTERROGE_FOURNISSEUR_NON_LU);
+                let id = id.unwrap_or_default();
+                eprintln!("[{id}] [ia] WARN assistant IA non interrogé : le fournisseur actif n'a pas pu être lu ({e})");
+                return r;
+            }
         }
     };
     let requires_cloud = config.get("requires_cloud").and_then(|x| x.as_bool()).unwrap_or(false);
@@ -698,7 +815,7 @@ pub(crate) async fn ai_nl2soql(State(st): State<AppState>, Extension(au): Extens
             );
             ai_nl2soql_reponse_de_succes(&conn, &detail, &o)
         }
-        Err(e) => ai_worker_err(e),
+        Err(e) => ai_worker_err(pid, e),
     }
 }
 

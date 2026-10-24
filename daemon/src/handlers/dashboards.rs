@@ -1030,6 +1030,7 @@ pub(crate) fn parse_excl_item(raw: &str) -> Option<(String, bool)> {
 /// Clauses d'exclusion compilées (SQL natif + termes soql) pour `src_ip` (opérateur) et `vhost`
 /// (self). Générées UNE fois depuis la conf, mises en cache au boot (lues sur le chemin chaud
 /// sans load_config).
+#[derive(Debug)]
 pub(crate) struct ExclClauses {
     pub(crate) op_sql: String,
     pub(crate) op_soql: String,
@@ -1076,15 +1077,19 @@ impl ExclClauses {
     /// ligne `setting` n'existe (cas prod par défaut : la vraie valeur vient du Secret via l'env, pas d'override).
     /// GARANTIE display-only (§4) : le CSV résolu ici n'alimente QUE ces clauses de PANNEAUX (compile_panneau_avoue) ;
     /// il n'est JAMAIS lu par `protected_ip_matchers` (never-ban HOST) ni par `rule_sql` (détection).
-    pub(crate) fn resolve(conn: &Connection, conf: &HashMap<String, String>) -> Self {
-        let (op_sql, op_soql) = Self::build(
-            "src_ip",
-            &excl_display_csv(conn, conf, EXCL_OP_SETTING, "PLUME_OPERATOR_IPS", PLUME_OPERATOR_IPS_DEFAULT),
-        );
-        let (self_sql, self_soql) = Self::build(
-            "vhost",
-            &excl_display_csv(conn, conf, EXCL_SELF_SETTING, "PLUME_SELF_HOSTS", PLUME_SELF_HOSTS_DEFAULT),
-        );
+    ///
+    /// `P10.20-l` — TROIS ISSUES : un override lu l'emporte, une ligne absente rend le repli sur l'environnement (comme
+    /// avant), une lecture RATÉE remonte en `Err` — jamais le repli, qui remplaçait en silence le réglage de
+    /// l'administrateur par celui du déploiement.
+    pub(crate) fn resolve(conn: &Connection, conf: &HashMap<String, String>) -> rusqlite::Result<Self> {
+        let op_csv = excl_display_csv(conn, conf, EXCL_OP_SETTING, "PLUME_OPERATOR_IPS", PLUME_OPERATOR_IPS_DEFAULT)?;
+        let self_csv = excl_display_csv(conn, conf, EXCL_SELF_SETTING, "PLUME_SELF_HOSTS", PLUME_SELF_HOSTS_DEFAULT)?;
+        Ok(Self::depuis_les_csv(&op_csv, &self_csv))
+    }
+    /// Les clauses de deux CSV déjà lus (opérateur, self) : le même `build` que `from_config` et `resolve`.
+    pub(crate) fn depuis_les_csv(op_csv: &str, self_csv: &str) -> Self {
+        let (op_sql, op_soql) = Self::build("src_ip", op_csv);
+        let (self_sql, self_soql) = Self::build("vhost", self_csv);
         ExclClauses { op_sql, op_soql, self_sql, self_soql }
     }
 }
@@ -1095,12 +1100,21 @@ impl ExclClauses {
 pub(crate) const EXCL_OP_SETTING: &str = "excl_operator_ips";
 pub(crate) const EXCL_SELF_SETTING: &str = "excl_self_hosts";
 /// Résout le CSV COURANT d'une exclusion d'AFFICHAGE : `setting` override (l'admin l'emporte, hot-reload)
-/// sinon env PLUME_* (défaut vide). Repli byte-identique quand aucune ligne `setting` n'existe (ni table).
-pub(crate) fn excl_display_csv(conn: &Connection, conf: &HashMap<String, String>, setting_key: &str, env_key: &str, default: &str) -> String {
-    conn.query_row("SELECT value FROM setting WHERE scope='global' AND key=?1", params![setting_key], |r| r.get::<_, String>(0))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| cfg(conf, env_key, default))
+/// sinon env PLUME_* (défaut vide). Repli byte-identique quand aucune ligne `setting` n'existe.
+///
+/// `P10.20-l` — TROIS ISSUES par `.optional()` : ligne lue = l'override ; ligne ABSENTE = le repli sur l'environnement ;
+/// lecture RATÉE (table illisible, valeur d'une forme inconnue) = `Err`. Avant, `.ok()` confondait les deux derniers :
+/// une lecture ratée de l'override de l'ADMINISTRATEUR retombait en silence sur la valeur du déploiement, servie au
+/// registre comme « en vigueur », inscrite au registre d'audit comme ancienne valeur, et chargée dans le cache des
+/// panneaux. Chaque appelant dit désormais ce qu'il fait d'un `Err` (cache gardé, 503 nommé, aveu au registre).
+pub(crate) fn excl_display_csv(conn: &Connection, conf: &HashMap<String, String>, setting_key: &str, env_key: &str, default: &str) -> rusqlite::Result<String> {
+    let lue = conn
+        .query_row("SELECT value FROM setting WHERE scope='global' AND key=?1", params![setting_key], |r| r.get::<_, String>(0))
+        .optional()?;
+    Ok(match lue {
+        Some(s) => s.trim().to_string(),
+        None => cfg(conf, env_key, default),
+    })
 }
 pub(crate) static EXCL_CLAUSES: std::sync::OnceLock<parking_lot::RwLock<ExclClauses>> = std::sync::OnceLock::new();
 /// Cache process-global des clauses d'exclusion (RwLock : RAFRAÎCHISSABLE après une édition webui audité).
@@ -1108,13 +1122,24 @@ pub(crate) static EXCL_CLAUSES: std::sync::OnceLock<parking_lot::RwLock<ExclClau
 pub(crate) fn excl_clauses_cell() -> &'static parking_lot::RwLock<ExclClauses> {
     EXCL_CLAUSES.get_or_init(|| parking_lot::RwLock::new(ExclClauses::from_config(&load_config())))
 }
-/// Recompile le cache d'exclusion depuis la BDD (`setting` override) + conf. Appelé AU BOOT et après chaque
-/// édition audité de l'exclusion opérateur/self (hot-reload). JAMAIS sur le chemin chaud de requête.
+/// Recompile le cache d'exclusion depuis la BDD (`setting` override) + conf. Appelé AU BOOT. JAMAIS sur le chemin
+/// chaud de requête. (L'édition auditée pose ses clauses par `excl_clauses_poser`, depuis les valeurs lues DANS sa
+/// transaction : aucune relecture après le `COMMIT`.)
+///
+/// `P10.20-l` — UN OVERRIDE NON LU NE CHARGE JAMAIS LE REPLI. La lecture ratée garde le cache d'avant (au boot : les
+/// clauses de l'environnement, initialisées paresseusement) et le dit au journal ; le boot ne refuse pas.
 pub(crate) fn excl_clauses_refresh(conn: &Connection, conf: &HashMap<String, String>) {
-    let fresh = ExclClauses::resolve(conn, conf);
-    { let mut w = excl_clauses_cell().write();
-        *w = fresh;
+    match ExclClauses::resolve(conn, conf) {
+        Ok(fresh) => excl_clauses_poser(fresh),
+        Err(e) => {
+            eprintln!("[exclusion] WARN override d'affichage NON lu : les panneaux gardent les clauses d'avant, jamais le repli sur l'environnement ({e})");
+        }
     }
+}
+/// Pose des clauses déjà établies dans le cache des panneaux (hot-reload).
+pub(crate) fn excl_clauses_poser(fresh: ExclClauses) {
+    let mut w = excl_clauses_cell().write();
+    *w = fresh;
 }
 /// Substitue `__OPERATOR_EXCL__` / `__SELF_EXCL__` dans la cible adaptée (SQL natif vs termes
 /// soql). Fast-path : aucun placeholder -> chaîne renvoyée telle quelle (quasi-totalité des

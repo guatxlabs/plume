@@ -611,7 +611,7 @@ detection:
         let conn = test_db();
         let conf: HashMap<String, String> = HashMap::new(); // env vide -> défauts génériques
         // (a) sans override setting : resolve == from_config, champ par champ (byte-identique).
-        let r = ExclClauses::resolve(&conn, &conf);
+        let r = ExclClauses::resolve(&conn, &conf).expect("override lisible");
         let f = ExclClauses::from_config(&conf);
         assert_eq!(r.op_sql, f.op_sql, "op_sql byte-identique (pur refactor)");
         assert_eq!(r.op_soql, f.op_soql);
@@ -671,10 +671,10 @@ detection:
         let conn = test_db();
         let conf: HashMap<String, String> = HashMap::new();
         // état initial : aucun override -> no-op (byte-identique au défaut générique).
-        assert_eq!(ExclClauses::resolve(&conn, &conf).op_sql, "1=1");
+        assert_eq!(ExclClauses::resolve(&conn, &conf).expect("override lisible").op_sql, "1=1");
         let led0: i64 = conn.query_row("SELECT COUNT(*) FROM ledger", [], |r| r.get(0)).unwrap();
         // ÉDITE via le vrai cœur testable du handler (mêmes statements).
-        let (field, old, new) = apply_display_excl_edit(&conn, &conf, "set_operator_excl", "203.0.113.7,2001:db8::/32", "admin").unwrap();
+        let (field, old, new, _clauses) = apply_display_excl_edit(&conn, &conf, "set_operator_excl", "203.0.113.7,2001:db8::/32", "admin").unwrap();
         assert_eq!(field, "operator");
         assert_eq!(old, "");
         assert_eq!(new, "203.0.113.7,2001:db8::/32");
@@ -689,7 +689,7 @@ detection:
         assert_eq!(cat, "config", "event SOC-visible category=config");
         // DISPLAY-ONLY : la valeur éditée = clause byte-identique au builder canonique.
         let (canon_sql, canon_soql) = ExclClauses::build("src_ip", "203.0.113.7,2001:db8::/32");
-        let resolved = ExclClauses::resolve(&conn, &conf);
+        let resolved = ExclClauses::resolve(&conn, &conf).expect("override lisible");
         assert_eq!(resolved.op_sql, canon_sql);
         assert_eq!(resolved.op_soql, canon_soql);
         // hot-reload -> la porte des panneaux (AFFICHAGE) porte la nouvelle exclusion ; rule_sql (DÉTECTION) JAMAIS.
@@ -705,7 +705,7 @@ detection:
         // l'ENV PLUME_OPERATOR_IPS, pas le setting excl_operator_ips ; env vide en test -> IP publique non protégée).
         assert!(!ip_is_protected("203.0.113.7"), "l'override display ne pilote JAMAIS le never-ban HOST (§4)");
         // CLEAR : révocation auditée -> retour au no-op.
-        let (_, _, after) = apply_display_excl_edit(&conn, &conf, "clear_operator_excl", "", "admin").unwrap();
+        let (_, _, after, _) = apply_display_excl_edit(&conn, &conf, "clear_operator_excl", "", "admin").unwrap();
         assert_eq!(after, "", "clear -> repli sur l'env (vide)");
         // restaure le cache global par défaut (propreté inter-tests).
         excl_clauses_refresh(&conn, &conf);

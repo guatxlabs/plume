@@ -304,10 +304,14 @@ mod politique_sla_desactivee_et_trace_de_l_upsert {
     ) {
         let corps: Value = serde_json::from_slice(corps).unwrap_or(Value::Null);
         assert_eq!(statut, 500, "{motif} : 500, jamais une désactivation annoncée : {corps}");
-        assert!(
-            corps["reason"].as_str().unwrap_or("").starts_with("politique NON enregistrée"),
-            "{motif} : la raison dit que rien n'est enregistré : {corps}"
-        );
+        // `P10.29-l` (vague AL) — INVERSÉ : un `starts_with` laissait passer le texte du moteur à la suite ; le corps ENTIER
+        // `{recomputed: 0, reason: <phrase fixe>, id}`, la cause au journal.
+        let mut cles: Vec<&str> = corps.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+        cles.sort_unstable();
+        assert_eq!(cles, ["id", "reason", "recomputed"], "{motif} : ensemble exact des clés : {corps}");
+        assert_eq!(corps["recomputed"], json!(0), "{motif} : rien recalculé : {corps}");
+        assert_eq!(corps["reason"], json!(crate::handlers::caseops::CAUSE_POLITIQUE_SLA_NON_ENREGISTREE), "{motif} : la phrase seule : {corps}");
+        assert!(corps["id"].as_str().is_some_and(|i| i.starts_with("plume-e")), "{motif} : identifiant servi : {corps}");
         assert_eq!(pde_entier(st, "SELECT enabled FROM sla_policy WHERE priority=1"), Some(1), "{motif} : P1 GOUVERNE toujours");
         assert_eq!(pde_chrono(st, a), avant, "{motif} : le dossier garde son chrono");
         assert!(pde_details(st).is_empty(), "{motif} : rien au registre");

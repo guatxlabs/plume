@@ -49,9 +49,9 @@
 // CE QUE CES TÉMOINS NE TIENNENT PAS : les corps 200 de `case_create` (`sla_due_non_lu`, `echeances_multi_niveau_*`)
 // servent encore `({e})` / `({cause})` (relus mot pour mot par l'instrument 137 du harnais console) ; le bras
 // `DossierAbsent` des archivages et les appelants de caseops.rs / incidents.rs passent par l'assistant (corps changé
-// par lui seul) sans témoin de route propre ; les causes portées par `registre_sans_maillon` (hors vague) ; la fiche
-// d'un dossier vue par le CLIENT (`client_case_get`, caseops.rs) sert encore `dossier NON LU : la lecture a échoué
-// ({e})` (hors lot, comme `LienDeDossier::NonPose` et `LienRetire::NonRetire`).
+// par lui seul) sans témoin de route propre ; les causes portées par `registre_sans_maillon` (hors vague) ;
+// `LienDeDossier::NonPose` et `LienRetire::NonRetire` (caseops.rs). La fiche d'un dossier vue par le CLIENT
+// (`client_case_get`) sert la phrase seule depuis la vague AL (témoins `al1_`, même assistant `refus_de_la_fiche_non_lue`).
 // =====================================================================================
 mod dossier_refus_sans_texte_du_moteur {
     use super::*;

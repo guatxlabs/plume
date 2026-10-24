@@ -149,7 +149,7 @@ mod chronologie_de_fusion_et_de_lien_dans_le_geste {
     }
 
     /// CE QU'IL TIENT (`case_merge`, par la route) : la chronologie de la SOURCE, puis celle de la CIBLE, refusée -> 503
-    /// `CAUSE_FUSION_NON_ECRITE` qui nomme la chronologie, et RIEN n'est écrit : source non fusionnée ni close, `updated`
+    /// `{error: CAUSE_FUSION_NON_ECRITE, id}` seul (la chronologie nommée au journal, `P10.29-l`), et RIEN n'est écrit : source non fusionnée ni close, `updated`
     /// et `first_response_ts` des deux dossiers inchangés, aucun élément `merge` (celui de la source, posé avant le refus
     /// de la cible, est annulé avec le reste), aucun `case.merge`, aucune transaction laissée ouverte. Contrôle positif :
     /// le trigger levé, 204 et les traces d'avant mot pour mot, MTTA figé sur les deux dossiers.
@@ -164,9 +164,11 @@ mod chronologie_de_fusion_et_de_lien_dans_le_geste {
             ab3_refuser_l_element(&st, &format!("NEW.kind='merge' AND NEW.incident_id={refuse}"));
             let (statut, corps) = ab3_fusionner(&st, a, b).await;
             assert_eq!(statut, 503, "{cote} : chronologie refusée -> 503, jamais un 204 : {corps}");
-            let phrase = ab3_phrase(&corps);
-            assert!(phrase.starts_with(CAUSE_FUSION_NON_ECRITE), "{cote} : le 503 existant de la fusion non écrite : {corps}");
-            assert!(phrase.contains(&format!("chronologie de la {cote}")) && phrase.contains("ab3 chronologie refusée"), "{cote} : la cause nomme la chronologie : {corps}");
+            // `P10.29-l` (vague AL) — INVERSÉ : il lisait « chronologie de la <côté> » et le motif du trigger dans le corps ;
+            // le corps ENTIER est la phrase seule `{error, id}`, la cause (côté nommé, motif du moteur) part au journal, lue
+            // ligne entière par `al1_journal_de_la_fusion_non_ecrite_nomme_chronologie_begin_et_commit` (sous-processus).
+            super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule(cote, statut, &corps, CAUSE_FUSION_NON_ECRITE);
+            assert!(!corps.to_string().contains("ab3 chronologie refusée"), "{cote} : le motif du moteur ne sort pas : {corps}");
             assert!(st.db.lock().is_autocommit(), "{cote} : aucune transaction laissée ouverte");
             assert_eq!((ab3_dossier(&st, a), ab3_dossier(&st, b)), avant, "{cote} : la fusion est ANNULÉE (merged_into, statut, updated, MTTA)");
             assert_eq!(ab3_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='merge'"), 0, "{cote} : aucun élément de fusion ne survit");
@@ -203,7 +205,7 @@ mod chronologie_de_fusion_et_de_lien_dans_le_geste {
     }
 
     /// CE QU'IL TIENT (`case_merge`) : `BEGIN` refusé (transaction laissée ouverte sur l'écrivain) puis `COMMIT` refusé
-    /// -> 503 `CAUSE_FUSION_NON_ECRITE` qui nomme le refus, rien d'écrit — après le `BEGIN` refusé, lu AVANT le
+    /// -> 503 `{error: CAUSE_FUSION_NON_ECRITE, id}` seul (le refus nommé au journal, `P10.29-l`), rien d'écrit — après le `BEGIN` refusé, lu AVANT le
     /// `ROLLBACK` du témoin, dans la transaction étrangère elle-même. Contrôle : leviers retirés, 204.
     /// MUTANTS : `ab3_fusion_refus_de_transaction_ecrit`, `M_FUSION_BEGIN_ECRIT`.
     #[tokio::test]
@@ -219,7 +221,10 @@ mod chronologie_de_fusion_et_de_lien_dans_le_geste {
         let traces = ab3_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='merge'") + ab3_compte(&st, "SELECT COUNT(*) FROM ledger WHERE kind='case.merge'");
         ab3_sql(&st, "ROLLBACK;");
         assert_eq!(statut, 503, "BEGIN refusé : 503 : {corps}");
-        assert!(ab3_phrase(&corps).starts_with(CAUSE_FUSION_NON_ECRITE) && ab3_phrase(&corps).contains("transaction non ouverte"), "{corps}");
+        // `P10.29-l` (vague AL) — INVERSÉ : il lisait « transaction non ouverte » dans le corps ; la phrase seule `{error, id}`.
+        // Ce qui distinguait le `BEGIN` refusé du `COMMIT` refusé (libellés « transaction non ouverte » / « validation
+        // refusée ») est lu au journal, ligne entière, par `al1_journal_de_la_fusion_non_ecrite_nomme_chronologie_begin_et_commit`.
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("BEGIN refusé", statut, &corps, CAUSE_FUSION_NON_ECRITE);
         assert_eq!(pendant, avant, "BEGIN refusé : rien n'est écrit, pas même dans la transaction étrangère");
         assert_eq!(traces, 0, "BEGIN refusé : aucune chronologie ni maillon, pas même dans la transaction étrangère");
 
@@ -228,7 +233,8 @@ mod chronologie_de_fusion_et_de_lien_dans_le_geste {
         assert!(st.db.lock().is_autocommit(), "aucune transaction laissée ouverte après le COMMIT refusé");
         ab3_lever_le_commit(&st);
         assert_eq!(statut, 503, "COMMIT refusé : 503 : {corps}");
-        assert!(ab3_phrase(&corps).starts_with(CAUSE_FUSION_NON_ECRITE) && ab3_phrase(&corps).contains("validation refusée"), "{corps}");
+        // `P10.29-l` (vague AL) — INVERSÉ : il lisait « validation refusée » dans le corps ; la phrase seule `{error, id}`.
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("COMMIT refusé", statut, &corps, CAUSE_FUSION_NON_ECRITE);
         assert_eq!((ab3_dossier(&st, a), ab3_dossier(&st, b)), avant);
         assert_eq!(ab3_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE kind='merge'") + ab3_compte(&st, "SELECT COUNT(*) FROM ledger WHERE kind='case.merge'"), 0);
 
@@ -249,7 +255,8 @@ mod chronologie_de_fusion_et_de_lien_dans_le_geste {
         ab3_refuser_l_element(&st, "NEW.body LIKE 'dé-fusionné%'");
         let (statut, corps) = ab3_defusionner(&st, a).await;
         assert_eq!(statut, 503, "chronologie refusée : 503 : {corps}");
-        assert!(ab3_phrase(&corps).starts_with(CAUSE_DEFUSION_NON_ECRITE) && ab3_phrase(&corps).contains("ab3 chronologie refusée"), "{corps}");
+        // `P10.29-l` (vague AL) — INVERSÉ : il lisait le motif du trigger dans le corps ; la phrase seule `{error, id}`.
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("chronologie de la défusion refusée", statut, &corps, CAUSE_DEFUSION_NON_ECRITE);
         assert_eq!(ab3_dossier(&st, a), avant, "le dossier reste fusionné, rien n'a bougé");
         assert_eq!(ab3_compte(&st, "SELECT COUNT(*) FROM incident_item WHERE body LIKE 'dé-fusionné%'"), 0);
         assert_eq!(ab3_compte(&st, "SELECT COUNT(*) FROM ledger WHERE kind='case.unmerge'"), 0);

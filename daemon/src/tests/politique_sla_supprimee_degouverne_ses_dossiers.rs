@@ -201,11 +201,9 @@ mod politique_sla_supprimee_degouverne_ses_dossiers {
         let (statut, corps) = psd_supprimer(&st, p1).await;
         let corps: Value = serde_json::from_slice(&corps).unwrap_or(Value::Null);
         assert_eq!(statut, 503, "effacement refusé : 503 nommé : {corps}");
-        let phrase = corps["error"].as_str().unwrap_or("");
-        assert!(
-            phrase.starts_with(crate::handlers::caseops::CAUSE_DOSSIERS_NON_DEGOUVERNES) && phrase.contains("psd refus"),
-            "le refus nomme sa cause : {corps}"
-        );
+        // `P10.29-l` (vague AL) — INVERSÉ : il lisait le motif du moteur (« psd refus ») dans le corps ; la phrase seule
+        // `{error, id}`, la cause au journal (témoin `al1_journal_des_refus_de_caseops`).
+        super::dossier_refus_sans_texte_du_moteur::ak3_phrase_seule("effacement refusé", statut, &corps, crate::handlers::caseops::CAUSE_DOSSIERS_NON_DEGOUVERNES);
         assert_eq!(psd_entier(&st, &format!("SELECT COUNT(*) FROM sla_policy WHERE id={p1}")), Some(1), "politique CONSERVÉE");
         assert_eq!(psd_chrono(&st, a), avant, "dossier toujours gouverné");
         assert_eq!(psd_entier(&st, "SELECT COUNT(*) FROM ledger WHERE kind='sla_policy.delete'"), Some(0), "rien attesté");

@@ -122,12 +122,6 @@ PLANCHER_FICHIERS = 11
 # accuse en FORME NEUVE, et c'est voulu (une exemption pour un site qu'un lot voisin ferme serait sans objet le jour
 # de l'intégration).
 SITES_ADMIS = {
-    # Une lecture ratée du fournisseur actif est servie « aucun fournisseur » (`enabled: false` de fait) à l'écran
-    # d'état de l'IA ; aucun geste n'en dépend, mais le fait servi est faux.
-    ("daemon/src/handlers/ai.rs", "ai_status"): ("Err => valeur",),
-    # Une lecture ratée du fournisseur actif refuse en 409 « aucun provider IA actif » : la cause servie est fausse,
-    # aucun appel sortant n'est fait (fail-closed).
-    ("daemon/src/handlers/ai.rs", "ai_nl2soql"): ("Err => 409",),
     # FAUX POSITIF ÉCRIT : le compte non lu rend `null` (jamais 0) ET pousse son nom dans `non_lus`, que le corps
     # du diagnostic sert. L'aveu passe par une liste que le lecteur importé ne reconnaît pas.
     ("daemon/src/handlers/system.rs", "diag_bundle_json"): ("Err => valeur",),

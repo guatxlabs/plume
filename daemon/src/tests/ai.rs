@@ -128,8 +128,8 @@ async fn ai_nl2soql_inert_without_enable_or_provider() {
 #[test]
 fn ai_worker_err_maps_501_and_500() {
     use axum::response::IntoResponse;
-    assert_eq!(ai_worker_err("support IA non compilé (recompiler avec --features ai)".into()).into_response().status(), StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(ai_worker_err("backend HTTP 500".into()).into_response().status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(ai_worker_err(0, "support IA non compilé (recompiler avec --features ai)".into()).into_response().status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(ai_worker_err(0, "backend HTTP 500".into()).into_response().status(), StatusCode::INTERNAL_SERVER_ERROR);
     // require_feature() est Ok quand la feature est compilée (le bras non-compilé renvoie le sentinel « non compilé »).
     assert!(crate::ai::require_feature().is_ok());
 }

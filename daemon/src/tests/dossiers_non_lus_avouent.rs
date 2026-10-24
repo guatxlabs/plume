@@ -35,7 +35,8 @@ async fn p10_7g_une_fiche_de_dossier_non_lue_est_un_5xx_nomme_et_une_absence_res
     dn_renommer(&st, &au, "incident_item", "incident_item_hors_d_atteinte");
     let (statut, corps) = dn_corps(case_get(State(st.clone()), Extension(au.clone()), Path(id)).await.into_response()).await;
     assert_eq!(statut, 500, "la fiche existe mais sa ligne de temps est illisible : ce n'est PAS « introuvable » : {corps}");
-    assert!(corps["error"].as_str().unwrap_or("").starts_with("dossier NON LU"), "le 5xx nomme sa cause : {corps}");
+    // `P10.29-l` (vague AL) — RÉ-ANCRÉ : la phrase fixe entière (le `starts_with` laissait passer le texte du moteur).
+    assert_eq!(corps["error"], json!(crate::handlers::cases::CAUSE_FICHE_DU_DOSSIER_NON_LUE), "le 5xx nomme sa cause, sans le moteur : {corps}");
 }
 
 #[tokio::test]

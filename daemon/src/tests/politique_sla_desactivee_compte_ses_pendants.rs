@@ -11,13 +11,19 @@
 // `sla_policy_id` non NULL), posé APRÈS celui de la politique ; son compte entre dans `degouvernes` et dans le détail
 // (« , dont K dossier(s) actif(s) à politique pendante ou étrangère ») ; le recalcul n'est plus rejoué à la désactivation.
 // CE QU'ILS TIENNENT : bords 2, 1 et 0 du compte relus au registre ; le corps sans maillon (`recomputed` 0, pas de double
-// compte) ; fusionné, terminaux, priorité voisine et actif legacy à échéances orphelines INTACTS et non comptés ; second
+// compte) ; priorité voisine et actif legacy à échéances orphelines INTACTS et non comptés (fusionné et terminaux : voir
+// plus bas, inversés en vague AO) ; second
 // effacement refusé, `BEGIN` refusé, `COMMIT` refusé : 500 à corps entier, rien posé ; la ligne de journal du refus, entière,
 // par capture en sous-processus.
 // CE QU'ILS NE TIENNENT PAS : la réactivation ou la modification qui ne regouverne ni les terminaux ni les fusionnés (limite
 // écrite, `sla_apply_policy`) ; les marqueurs `ack_breached`/`resolve_breached` passés (conservés à dessein) ; la console
 // (aucun écran de politiques SLA).
 // Mutants (AN3_*, retirés avant le commit) nommés sur chaque témoin.
+// `P10.31-v` (vague AO) — DEUX TÉMOINS INVERSÉS NOMMÉMENT : la désactivation efface aussi les terminaux et fusionnés à
+// politique pendante ou étrangère, comptés à part des actifs. `pdp_fusionne_a_politique_pendante_intact` devient
+// `pdp_fusionne_a_politique_pendante_degouverne_et_compte_a_part` ; `pdp_terminaux_a_politique_pendante_intacts` devient
+// `pdp_terminaux_a_politique_pendante_degouvernes_et_comptes_a_part` (mutants AO3_*). Les témoins neufs sont dans
+// `politique_sla_desactivee_degouverne_terminaux_et_fusionnes_pendants.rs`.
 // =====================================================================================
 mod politique_sla_desactivee_compte_ses_pendants {
     use super::*;
@@ -117,6 +123,15 @@ mod politique_sla_desactivee_compte_ses_pendants {
         }
         if pendants > 0 {
             d.push_str(&format!(", dont {pendants} dossier(s) actif(s) à politique pendante ou étrangère"));
+        }
+        d
+    }
+
+    /// `pdp_detail` suivi de la mention des terminaux ou fusionnés (vague AO), écrite seulement quand il y en a.
+    fn pdp_detail_terminaux(degouvernes: usize, pendants: usize, terminaux: usize) -> String {
+        let mut d = pdp_detail(degouvernes, pendants);
+        if terminaux > 0 {
+            d.push_str(&format!(", dont {terminaux} dossier(s) terminal(aux) ou fusionné(s) à politique pendante ou étrangère"));
         }
         d
     }
@@ -227,24 +242,30 @@ mod politique_sla_desactivee_compte_ses_pendants {
         assert_eq!(pdp_details(st), vec![pdp_detail(0, 0)], "{nom} : rien compté au registre");
     }
 
-    /// CE QU'IL TIENT : F, FUSIONNÉ (statut actif `triage`, pour isoler la clause de fusion de celle du statut), à
-    /// politique pendante, n'est ni effacé ni compté.
-    /// MUTATION QUI LE FAIT ROUGIR : `AN3_SANS_FUSION` (prédicat sans `merged_into IS NULL`).
+    /// INVERSÉ en vague AO (`P10.31-v`) : il s'appelait `pdp_fusionne_a_politique_pendante_intact` et affirmait F intact
+    /// et non compté. CE QU'IL TIENT désormais : F, FUSIONNÉ (statut actif `triage`, pour isoler la clause de fusion de
+    /// celle du statut), à politique pendante, est effacé dans la transaction et compté À PART des actifs.
+    /// MUTATION QUI LE FAIT ROUGIR : `AO3_FUSION_REVENUE` (troisième `UPDATE` avec `merged_into IS NULL`).
     #[tokio::test]
-    async fn pdp_fusionne_a_politique_pendante_intact() {
+    async fn pdp_fusionne_a_politique_pendante_degouverne_et_compte_a_part() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
         let (st, _t) = pdp_etat("fusion");
         let _p1 = pdp_politique(&st, "P1", 1);
         let x = pdp_dossier(&st, "X", 3, "");
         let f = pdp_gouverne(&st, "F", 1, PDP_PENDANT, &format!(", merged_into={x}, status='triage'"));
-        pdp_intact_apres_desactivation(&st, f, "F fusionné").await;
+        assert_eq!(pdp_chrono(&st, f).0, Some(PDP_PENDANT), "fixture : F porte une politique pendante");
+        let (statut, corps) = pdp_upsert(&st, pdp_desactiver_p1()).await;
+        assert_eq!((statut, corps.as_slice()), (204, &b""[..]), "F fusionné : 204 muet");
+        assert_eq!(pdp_chrono(&st, f), (None, None, None), "F fusionné au régime legacy");
+        assert_eq!(pdp_details(&st), vec![pdp_detail_terminaux(1, 0, 1)], "F compté à part des actifs");
     }
 
-    /// CE QU'IL TIENT : trois TERMINAUX non fusionnés (`resolved`, `closed`, `contained`) à politique pendante, ni effacés
-    /// ni comptés.
-    /// MUTATION QUI LE FAIT ROUGIR : `AN3_SANS_STATUT` (prédicat sans le filtre de statut).
+    /// INVERSÉ en vague AO (`P10.31-v`) : il s'appelait `pdp_terminaux_a_politique_pendante_intacts` et affirmait les trois
+    /// intacts et `pdp_detail(0, 0)`. CE QU'IL TIENT désormais : trois TERMINAUX non fusionnés (`resolved`, `closed`,
+    /// `contained`) à politique pendante, effacés et comptés à part des actifs (« , dont 3 dossier(s) terminal(aux) … »).
+    /// MUTATION QUI LE FAIT ROUGIR : `AO3_STATUT_REVENU` (troisième `UPDATE` avec le filtre de statut d'avant).
     #[tokio::test]
-    async fn pdp_terminaux_a_politique_pendante_intacts() {
+    async fn pdp_terminaux_a_politique_pendante_degouvernes_et_comptes_a_part() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
         let (st, _t) = pdp_etat("terminaux");
         let _p1 = pdp_politique(&st, "P1", 1);
@@ -255,10 +276,10 @@ mod politique_sla_desactivee_compte_ses_pendants {
         assert_eq!((avant_r.0, avant_c.0, avant_k.0), (Some(PDP_PENDANT), Some(PDP_PENDANT), Some(PDP_PENDANT)), "fixture : trois pendants");
         let (statut, corps) = pdp_upsert(&st, pdp_desactiver_p1()).await;
         assert_eq!((statut, corps.as_slice()), (204, &b""[..]));
-        assert_eq!(pdp_chrono(&st, r), avant_r, "resolved, terminal, intact");
-        assert_eq!(pdp_chrono(&st, c), avant_c, "closed, terminal, intact");
-        assert_eq!(pdp_chrono(&st, k), avant_k, "contained, terminal, intact");
-        assert_eq!(pdp_details(&st), vec![pdp_detail(0, 0)], "aucun terminal compté");
+        assert_eq!(pdp_chrono(&st, r), (None, None, None), "resolved, terminal, au régime legacy");
+        assert_eq!(pdp_chrono(&st, c), (None, None, None), "closed, terminal, au régime legacy");
+        assert_eq!(pdp_chrono(&st, k), (None, None, None), "contained, terminal, au régime legacy");
+        assert_eq!(pdp_details(&st), vec![pdp_detail_terminaux(3, 0, 3)], "les trois terminaux comptés à part des actifs");
     }
 
     /// CE QU'IL TIENT : V, actif de priorité 2 à politique pendante, n'est pas touché par la désactivation de P1.

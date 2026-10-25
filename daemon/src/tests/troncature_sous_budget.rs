@@ -118,7 +118,9 @@
             .as_str()
             .unwrap_or_else(|| panic!("préfixe servi comme une page complète — c'est le défaut que cette clé ferme : {corps}"));
         assert!(aveu.starts_with(CAUSE_LISTE_D_ALERTES_TRONQUEE), "l'aveu dit d'abord ce que le corps n'établit PAS : {aveu}");
-        assert!(aveu.contains("interrupted"), "puis il laisse la cause du moteur : {aveu}");
+        // `P10.29-l` (vague AO) — INVERSÉ : la cause du moteur ne voyage plus dans le corps ; la phrase fixe de
+        // l'interruption la remplace (le texte du moteur part à la ligne `[alerts] WARN` du gestionnaire).
+        assert_eq!(aveu, format!("{CAUSE_LISTE_D_ALERTES_TRONQUEE}{}", crate::handlers::alerts::FIN_DE_PARCOURS_INTERROMPUE), "puis la phrase fixe de l'interruption, jamais le texte du moteur");
         assert_eq!(
             corps["alerts"].as_array().map(|a| a.len()),
             Some(servies),
@@ -361,7 +363,9 @@
             .as_str()
             .unwrap_or_else(|| panic!("préfixe de groupes servi comme une page complète : {corps}"));
         assert!(aveu.starts_with(CAUSE_LISTE_DE_GROUPES_TRONQUEE), "l'aveu dit d'abord ce que le corps n'établit PAS : {aveu}");
-        assert!(aveu.contains("interrupted"), "puis il laisse la cause du moteur : {aveu}");
+        // `P10.29-l` (vague AO) — INVERSÉ : la cause du moteur ne voyage plus dans le corps ; la phrase fixe de
+        // l'interruption la remplace (le texte du moteur part à la ligne `[alerts] WARN` du gestionnaire).
+        assert_eq!(aveu, format!("{CAUSE_LISTE_DE_GROUPES_TRONQUEE}{}", crate::handlers::alerts::FIN_DE_PARCOURS_INTERROMPUE), "puis la phrase fixe de l'interruption, jamais le texte du moteur");
         assert_eq!(
             corps["groups"].as_array().map(|a| a.len()), Some(servis),
             "l'aveu s'AJOUTE : il ne retire aucun des groupes réellement lus — {corps}"
@@ -433,7 +437,9 @@
             .as_str()
             .unwrap_or_else(|| panic!("rapport tronqué servi comme complet — les techniques manquantes deviennent des faux `missed` : {corps}"));
         assert!(aveu.starts_with(CAUSE_COUVERTURE_DES_DETECTIONS_TRONQUEE), "l'aveu dit d'abord ce que le rapport n'établit PAS : {aveu}");
-        assert!(aveu.contains("interrupted"), "puis il laisse la cause du moteur : {aveu}");
+        // `P10.29-l` (vague AO) — INVERSÉ : la cause du moteur ne voyage plus dans le corps ; la phrase fixe de
+        // l'interruption la remplace (le texte du moteur part à la ligne `[alerts] WARN` du gestionnaire).
+        assert_eq!(aveu, format!("{CAUSE_COUVERTURE_DES_DETECTIONS_TRONQUEE}{}", crate::handlers::alerts::FIN_DE_PARCOURS_INTERROMPUE), "puis la phrase fixe de l'interruption, jamais le texte du moteur");
         assert_eq!(
             corps["detections"].as_array().map(|a| a.len()), Some(servies),
             "l'aveu s'AJOUTE : il ne retire aucune des techniques réellement lues — {corps}"
@@ -496,7 +502,9 @@
             .as_str()
             .unwrap_or_else(|| panic!("sous-compte servi comme un compte : un `alerts: 0` s'y lit « rien n'a tiré » — {}", matrice["totals"]));
         assert!(aveu.starts_with(CAUSE_COMPTES_D_ALERTES_NON_ETABLIS), "l'aveu dit d'abord ce que la matrice n'établit PAS : {aveu}");
-        assert!(aveu.contains("interrupted"), "puis il laisse la cause du moteur : {aveu}");
+        // `P10.29-l` (vague AO) — INVERSÉ : la cause du moteur ne voyage plus dans le corps ; la phrase fixe de
+        // l'interruption la remplace (le texte du moteur part à la ligne `[alerts] WARN` du gestionnaire).
+        assert_eq!(aveu, format!("{CAUSE_COMPTES_D_ALERTES_NON_ETABLIS}{}", crate::handlers::alerts::FIN_DE_PARCOURS_INTERROMPUE), "puis la phrase fixe de l'interruption, jamais le texte du moteur");
         // CE QUE L'AVEU NE DOIT PAS ACCUSER : la couverture, qui ne vient pas de cette lecture.
         assert_eq!(
             matrice["totals"]["techniques_covered"], matrice_nominale["totals"]["techniques_covered"],

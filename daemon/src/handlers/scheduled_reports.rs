@@ -230,7 +230,17 @@ pub(crate) async fn report_run_now(State(st): State<AppState>, Extension(au): Ex
         Ok(Ok(IssueDuRapport::Echec { erreur, consigne })) => (StatusCode::BAD_REQUEST, Json(json!({
             "error": erreur, "marque_ecrite": consigne,
         }))).into_response(),
-        Ok(Err(e)) => bad_req(e),
+        // `P10.20-l` — absente ou désactivée : la phrase d'avant, à l'octet ; lecture ratée : 503 nommé, rien n'est
+        // exécuté, envoyé ni écrit, la cause du moteur au journal seul avec l'identifiant de corrélation servi.
+        Ok(Err(DefinitionNonPrise::Absente { lecture, .. })) => bad_req(lecture.phrase_d_absence()),
+        Ok(Err(DefinitionNonPrise::NonLue { lecture, moteur })) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, lecture.cause_non_lue());
+            eprintln!(
+                "[rapports] WARN déclenchement du rapport planifié #{id} (tenant '{}') refusé : {}, rien n'est exécuté, envoyé ni écrit ({}) : {moteur}",
+                au.tenant, lecture.constat(), cid.unwrap_or_default()
+            );
+            refus
+        }
         Err(_) => server_err("exécution du rapport échouée"),
     }
 }
@@ -305,6 +315,123 @@ fn envoyer_le_rapport(kind: &str, url: &str, config: &Value, title: &str, detail
 /// l'URL du notificateur (elle peut porter une crédence) ni le contenu du rapport.
 pub(crate) const ENVOI_REFUSE_PAR_LE_NOTIFICATEUR: &str = "envoi refusé par le notificateur";
 
+// `P10.20-l` / `P10.33-h` — LES TROIS LECTURES DE DÉFINITION DE `deliver_report` EN TROIS ISSUES. Avant :
+// `.map_err(|_| "… introuvable ou désactivé")` sur chacune — une table hors d'atteinte, une ligne qui ne se décode pas,
+// se servaient comme une absence (400 de `/run`), et le tick les avalait (`Ok(Err(_)) => {}`) sans compte ni trace.
+// Lue, le rapport suit ; absente ou désactivée, la phrase d'avant à l'octet ; lecture ratée, 503 nommé à la route et
+// abandon compté au tick, rien n'est exécuté, envoyé ni écrit, la cause du moteur au journal seul.
+/// `P10.20-l` — le jeu de données d'un rapport à déclencher n'a pas été lu : rien n'est exécuté ni envoyé.
+pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_DECLENCHE_JEU_DE_DONNEES_NON_LU: &str = "RAPPORT PLANIFIÉ NON DÉCLENCHÉ : \
+     la base n'a pas rendu le jeu de données de ce rapport — ce n'est PAS « introuvable ou désactivé », c'est une \
+     lecture qui n'a pas eu lieu. Rien n'est exécuté ni envoyé vers le canal, et sa marque d'échéance est inchangée. \
+     Réessayez ; si le refus persiste, la table des jeux de données est illisible.";
+/// `P10.20-l` — le canal d'un rapport à déclencher n'a pas été lu : rien n'est exécuté ni envoyé.
+pub(crate) const CAUSE_RAPPORT_PLANIFIE_NON_DECLENCHE_CANAL_NON_LU: &str = "RAPPORT PLANIFIÉ NON DÉCLENCHÉ : la base \
+     n'a pas rendu le canal de ce rapport — ce n'est PAS « introuvable ou désactivé », c'est une lecture qui n'a pas \
+     eu lieu. Rien n'est exécuté ni envoyé vers le canal, et sa marque d'échéance est inchangée. Réessayez ; si le \
+     refus persiste, la table des canaux est illisible.";
+/// `P10.33-h` — `last_error` d'un rapport DÛ dont le jeu de données est introuvable ou désactivé (écrit par le tick :
+/// sans lui, le rapport dû ne laissait aucune trace).
+pub(crate) const RAPPORT_DU_NON_EXECUTE_JEU_DE_DONNEES_ABSENT: &str =
+    "rapport dû non exécuté : dataset introuvable ou désactivé";
+/// `P10.33-h` — `last_error` d'un rapport DÛ dont le canal est introuvable ou désactivé.
+pub(crate) const RAPPORT_DU_NON_EXECUTE_CANAL_ABSENT: &str = "rapport dû non exécuté : notifier introuvable ou désactivé";
+/// `P10.29-l` — `last_error` et 400 de `/run` d'un rapport dont la base a refusé l'exécution : le texte du moteur (qui
+/// peut citer l'énoncé compilé entier) ne part plus au client ni dans la liste des rapports ; il va au journal seul.
+pub(crate) const EXECUTION_DU_RAPPORT_REFUSEE_PAR_LA_BASE: &str = "exécution du rapport refusée par la base : rien \
+     n'est envoyé, la cause est au journal du démon";
+
+/// La lecture de définition que `deliver_report` fait, nommée : chacune a sa phrase d'absence (celle d'avant, à
+/// l'octet), sa cause de lecture ratée et, pour le jeu de données et le canal, sa trace écrite par le tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum LectureDeLaDefinition {
+    Rapport,
+    JeuDeDonnees,
+    Canal,
+}
+
+impl LectureDeLaDefinition {
+    /// La phrase d'avant (400 de `/run`), à l'octet.
+    pub(crate) fn phrase_d_absence(self) -> &'static str {
+        match self {
+            Self::Rapport => "rapport introuvable ou désactivé",
+            Self::JeuDeDonnees => "dataset introuvable ou désactivé",
+            Self::Canal => "notifier introuvable ou désactivé",
+        }
+    }
+    /// La cause du 503 de `/run` quand cette lecture n'a pas eu lieu.
+    pub(crate) fn cause_non_lue(self) -> &'static str {
+        match self {
+            Self::Rapport => CAUSE_RAPPORT_PLANIFIE_NON_DECLENCHE_NON_LU,
+            Self::JeuDeDonnees => CAUSE_RAPPORT_PLANIFIE_NON_DECLENCHE_JEU_DE_DONNEES_NON_LU,
+            Self::Canal => CAUSE_RAPPORT_PLANIFIE_NON_DECLENCHE_CANAL_NON_LU,
+        }
+    }
+    /// Le `last_error` que le tick écrit sur un rapport dû dont la référence est absente ou désactivée. Aucun pour le
+    /// rapport lui-même : absent ou désactivé entre la sélection et la lecture, il n'est plus dû.
+    pub(crate) fn trace_d_absence(self) -> Option<&'static str> {
+        match self {
+            Self::Rapport => None,
+            Self::JeuDeDonnees => Some(RAPPORT_DU_NON_EXECUTE_JEU_DE_DONNEES_ABSENT),
+            Self::Canal => Some(RAPPORT_DU_NON_EXECUTE_CANAL_ABSENT),
+        }
+    }
+    /// Ce qui n'a pas été lu, pour le journal (jamais un nom, un endpoint ni une requête).
+    fn constat(self) -> &'static str {
+        match self {
+            Self::Rapport => "sa définition n'a pas pu être lue",
+            Self::JeuDeDonnees => "son jeu de données n'a pas pu être lu",
+            Self::Canal => "son canal n'a pas pu être lu",
+        }
+    }
+}
+
+/// Une définition que `deliver_report` n'a pas prise : rien n'est exécuté, envoyé ni écrit par lui.
+#[derive(Debug, PartialEq)]
+pub(crate) enum DefinitionNonPrise {
+    /// Absente ou désactivée. `trace_posee` : le `last_error` du rapport porte déjà la trace d'absence de cette
+    /// lecture (relu dans la lecture du rapport) — le tick ne la récrit pas à chaque passage.
+    Absente { lecture: LectureDeLaDefinition, trace_posee: bool },
+    /// Lecture ratée : `moteur` est la cause du moteur, pour le journal SEUL.
+    NonLue { lecture: LectureDeLaDefinition, moteur: String },
+}
+
+/// Juge une lecture de définition en trois issues.
+fn lecture_de_la_definition<T>(lue: rusqlite::Result<Option<T>>, lecture: LectureDeLaDefinition, trace_posee: bool) -> Result<T, DefinitionNonPrise> {
+    match lue {
+        Ok(Some(v)) => Ok(v),
+        Ok(None) => Err(DefinitionNonPrise::Absente { lecture, trace_posee }),
+        Err(e) => Err(DefinitionNonPrise::NonLue { lecture, moteur: e.to_string() }),
+    }
+}
+
+/// Échec du rendu d'un rapport, typé par son auteur : une phrase écrite par plume (compilation GXQL, requête vide,
+/// budget, mémoire, quota), servie telle quelle ; ou le texte du moteur, qui ne va qu'au journal.
+#[derive(Debug, PartialEq)]
+pub(crate) enum EchecDuRendu {
+    Plume(String),
+    Moteur(String),
+}
+
+/// `P10.29-l` — les phrases écrites par plume que `run_query_ex` peut rendre pour une requête sans `qid` (liste
+/// blanche, par ouverture) : interruption par le budget, budget mémoire (plafond appliqué ou non), quota de
+/// déversement. Tout autre texte est celui du moteur.
+const OUVERTURES_DES_PHRASES_DE_PLUME_DE_L_EXECUTION: [&str; 4] = [
+    "requête interrompue (budget ",
+    "budget mémoire dépassé : ",
+    "mémoire épuisée pendant l'exécution (aucun plafond dur",
+    "quota de déversement dépassé : ",
+];
+
+/// Classe l'échec rendu par `run_query_ex` : phrase de plume ou texte du moteur.
+pub(crate) fn classer_l_echec_d_execution(e: String) -> EchecDuRendu {
+    if OUVERTURES_DES_PHRASES_DE_PLUME_DE_L_EXECUTION.iter().any(|o| e.starts_with(o)) {
+        EchecDuRendu::Plume(e)
+    } else {
+        EchecDuRendu::Moteur(e)
+    }
+}
+
 /// EXÉCUTE un rapport (dataset GXQL) MASQUÉ par son `run_as_role` et le LIVRE via son notifier. Coeur partagé
 /// par le tick de fond et /run. Ne PANIQUE jamais (les erreurs remontent en `Err`). Le lock métadonnées n'est
 /// tenu QUE pour lire la définition + écrire le statut ; la requête (`run_query_ex`, pool read séparé) et
@@ -312,7 +439,8 @@ pub(crate) const ENVOI_REFUSE_PAR_LE_NOTIFICATEUR: &str = "envoi refusé par le 
 ///
 /// `P10.20-w` — MARQUE D'ABORD : `last_run` est posé et COMPTÉ (une ligne) AVANT l'envoi. Avant, l'UPDATE venait
 /// après `notify_send` en `let _ =` : refusé, `last_run` n'avançait pas et le rapport repartait vers le
-/// notificateur tiers à chaque tick, sans `last_error` ni bilan. `Err` = définition non lue (rien écrit).
+/// notificateur tiers à chaque tick, sans `last_error` ni bilan. `Err` = définition non prise (absente, désactivée ou
+/// non lue : [`DefinitionNonPrise`]) — rien n'est écrit ni envoyé.
 ///
 /// Ce que « marque d'abord » change, et seulement cela : un processus tué ENTRE la marque et l'envoi perd le
 /// rapport de cet intervalle (`interval_s`) au lieu de le renvoyer au redémarrage. Un envoi rendu `false` ou un
@@ -321,19 +449,26 @@ pub(crate) const ENVOI_REFUSE_PAR_LE_NOTIFICATEUR: &str = "envoi refusé par le 
 /// l'erreur : il pose `last_error` = [`ENVOI_REFUSE_PAR_LE_NOTIFICATEUR`] (jamais l'URL ni le contenu). Avant, le
 /// même UPDATE que le succès écrivait un « dernier succès » et effaçait l'erreur précédente. `delivered` reste rendu
 /// tel quel à /run ; `statut_ecrit` se rapporte à l'écriture faite, quelle que soit l'issue de l'envoi.
-pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64) -> Result<IssueDuRapport, String> {
-    // 1) charge la définition + le dataset GXQL + le notifier (kind/url/config) sous lock, puis relâche.
+pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64) -> Result<IssueDuRapport, DefinitionNonPrise> {
+    // 1) charge la définition + le dataset GXQL + le notifier (kind/url/config) sous lock, puis relâche. Chaque lecture
+    //    en trois issues (`P10.20-l`) ; le `last_error` courant est relu DANS la lecture du rapport, en valeur brute
+    //    (aucun type exigé : une ligne qui se lisait avant se lit encore), pour dire si la trace d'absence est posée.
     let (name, run_as, tenant, soql, nkind, nurl, nconfig): (String, String, String, String, String, String, String) = {
         let conn = db.lock();
-        let (name, dataset_id, notifier_id, run_as, tenant): (String, i64, i64, String, String) = conn.query_row(
-            "SELECT name,dataset_id,notifier_id,run_as_role,tenant FROM scheduled_report WHERE id=?1 AND enabled=1",
-            params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
-            .map_err(|_| "rapport introuvable ou désactivé".to_string())?;
-        let soql: String = conn.query_row("SELECT soql FROM dataset WHERE id=?1 AND enabled=1", params![dataset_id], |r| r.get(0))
-            .map_err(|_| "dataset introuvable ou désactivé".to_string())?;
-        let (nkind, nurl, nconfig): (String, String, String) = conn.query_row(
-            "SELECT kind,url,config FROM notifier WHERE id=?1 AND enabled=1", params![notifier_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .map_err(|_| "notifier introuvable ou désactivé".to_string())?;
+        type LigneDuRapport = (String, i64, i64, String, String, rusqlite::types::Value);
+        let lue: rusqlite::Result<Option<LigneDuRapport>> = conn.query_row(
+            "SELECT name,dataset_id,notifier_id,run_as_role,tenant,last_error FROM scheduled_report WHERE id=?1 AND enabled=1",
+            params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).optional();
+        let (name, dataset_id, notifier_id, run_as, tenant, last_error) = lecture_de_la_definition(lue, LectureDeLaDefinition::Rapport, false)?;
+        let trace_posee = |lecture: LectureDeLaDefinition| {
+            matches!((&last_error, lecture.trace_d_absence()), (rusqlite::types::Value::Text(t), Some(trace)) if t == trace)
+        };
+        let lu = conn.query_row("SELECT soql FROM dataset WHERE id=?1 AND enabled=1", params![dataset_id], |r| r.get::<_, String>(0)).optional();
+        let soql = lecture_de_la_definition(lu, LectureDeLaDefinition::JeuDeDonnees, trace_posee(LectureDeLaDefinition::JeuDeDonnees))?;
+        let lu = conn.query_row(
+            "SELECT kind,url,config FROM notifier WHERE id=?1 AND enabled=1", params![notifier_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).optional();
+        let (nkind, nurl, nconfig) = lecture_de_la_definition(lu, LectureDeLaDefinition::Canal, trace_posee(LectureDeLaDefinition::Canal))?;
         (name, run_as, tenant, soql, nkind, nurl, nconfig)
     };
     // 2) COMPILE+EXÉCUTE MASQUÉ (via render_report_detail) puis LIVRE. Séparé pour que le CONTENU masqué livré
@@ -368,7 +503,17 @@ pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64
             let statut_ecrit = statut_du_rapport_ecrit(id, statut, geste);
             Ok(IssueDuRapport::Envoye { count, delivered, statut_ecrit })
         }
-        Err(e) => {
+        Err(echec) => {
+            // `P10.29-l` — la phrase servie (`last_error`, 400 de `/run`) est celle de plume, ou une constante quand
+            // c'est le moteur qui a refusé ; le texte du moteur va au journal avec l'identifiant du rapport et son
+            // tenant, jamais son nom, son canal ni sa requête.
+            let e = match echec {
+                EchecDuRendu::Plume(phrase) => phrase,
+                EchecDuRendu::Moteur(moteur) => {
+                    eprintln!("[rapports] WARN rapport planifié #{id} (tenant '{tenant}') : exécution refusée par la base, last_error porte une phrase fixe : {moteur}");
+                    EXECUTION_DU_RAPPORT_REFUSEE_PAR_LA_BASE.to_string()
+                }
+            };
             let ecrit = { let conn = db.lock(); conn.execute("UPDATE scheduled_report SET last_run=?1, last_error=?2 WHERE id=?3", params![now_ts, e, id]) };
             let consigne = statut_du_rapport_ecrit(id, ecrit, "échec d'exécution NON CONSIGNÉ (last_run, last_error)");
             Ok(IssueDuRapport::Echec { erreur: e, consigne })
@@ -384,15 +529,17 @@ pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64
 /// `deliver_report` UNIQUEMENT pour rendre le contenu livré OBSERVABLE (test de non-régression du masque tenant).
 /// Borne du détail d'un rapport planifié (`P11.22-g`) : nommée, dite dans le texte livré quand elle mord.
 pub(crate) const REPORT_DETAIL_WINDOW: i64 = 5000;
-pub(crate) fn render_report_detail(db_path: &str, name: &str, run_as: &str, tenant: &str, soql: &str) -> Result<(i64, String), String> {
+/// `P10.29-l` — l'échec est typé ([`EchecDuRendu`]) : la compilation et la requête vide sont des phrases de plume, l'échec
+/// d'exécution est classé par [`classer_l_echec_d_execution`].
+pub(crate) fn render_report_detail(db_path: &str, name: &str, run_as: &str, tenant: &str, soql: &str) -> Result<(i64, String), EchecDuRendu> {
     let masks = effective_masks(db_path, run_as, tenant, None);
     // Choke-point unique : `soql_to_sql_masked_x` (= /api/query) -> denylist de secrets + enum fermée intacts.
-    let compiled = soql_to_sql_masked_x(soql, 0, 0, None, &masks)?;
-    if compiled.is_empty() { return Err("rapport : requête vide".into()); }
+    let compiled = soql_to_sql_masked_x(soql, 0, 0, None, &masks).map_err(EchecDuRendu::Plume)?;
+    if compiled.is_empty() { return Err(EchecDuRendu::Plume("rapport : requête vide".into())); }
     // `P11.22-g` — lue avec sa ligne excédentaire, coupée par la troisième porte du fabricant : le détail livré
     // dit qu'il est coupé, au lieu de se présenter comme le rapport entier.
     let page_sql = format!("SELECT * FROM ({compiled}) LIMIT {}", crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(REPORT_DETAIL_WINDOW));
-    let mut v = run_query_ex(db_path, &page_sql, query_budget_interactive_ms(), None)?;
+    let mut v = run_query_ex(db_path, &page_sql, query_budget_interactive_ms(), None).map_err(classer_l_echec_d_execution)?;
     crate::handlers::liste_bornee::couper_le_corps_a_la_borne(&mut v, "rows", REPORT_DETAIL_WINDOW.max(0) as usize);
     Ok(format_report_detail(name, &v))
 }
@@ -439,7 +586,25 @@ pub(crate) fn run_due_reports(db: &Arc<Mutex<Connection>>, db_path: &str) -> cra
             Ok(Ok(IssueDuRapport::MarqueRefusee)) => abandonnes += 1,
             Ok(Ok(IssueDuRapport::Echec { consigne: true, .. })) => {} // erreur consignée dans last_error
             Ok(Ok(IssueDuRapport::Echec { consigne: false, .. })) => abandonnes += 1,
-            Ok(Err(_)) => {} // définition non lue (rapport, dataset ou notifier désactivé) : rien à envoyer ni à écrire
+            // `P10.20-l` — une définition non lue est un rapport dû abandonné : compté, dit au journal, rien d'écrit.
+            Ok(Err(DefinitionNonPrise::NonLue { lecture, moteur })) => {
+                abandonnes += 1;
+                eprintln!("[rapports] WARN rapport planifié #{id} dû non exécuté : {}, rien n'est envoyé ni écrit, compté abandonné : {moteur}", lecture.constat());
+            }
+            // `P10.33-h` — jeu de données ou canal absent ou désactivé : le rapport dû le dit dans `last_error` (une phrase
+            // fixe, écrite une fois : relue dans la lecture du rapport). Une trace refusée ou sans effet est comptée.
+            Ok(Err(DefinitionNonPrise::Absente { lecture, trace_posee })) => match (lecture.trace_d_absence(), trace_posee) {
+                (Some(trace), false) => {
+                    let ecrit = { let conn = db.lock(); conn.execute("UPDATE scheduled_report SET last_error=?1 WHERE id=?2", params![trace, id]) };
+                    if !statut_du_rapport_ecrit(id, ecrit, "référence introuvable ou désactivée NON CONSIGNÉE (last_error)") {
+                        abandonnes += 1;
+                    }
+                }
+                // Trace déjà posée : rien à récrire.
+                (Some(_), true) => {}
+                // Le rapport lui-même absent ou désactivé depuis la sélection : il n'est plus dû, rien à dire.
+                (None, _) => {}
+            },
             Err(_) => {
                 abandonnes += 1;
                 let ecrit = {

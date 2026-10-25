@@ -200,16 +200,30 @@ fn ecrire_les_donnees_de_demonstration(conn: &Connection) -> rusqlite::Result<()
 ///
 /// `P10.28-l` — un `INSERT` qui rend `Ok(0)` (un déclencheur `RAISE(IGNORE)`) n'a créé aucune vue : `last_insert_rowid`
 /// rendrait alors l'identifiant de la DERNIÈRE ligne insérée par la connexion (souvent le tableau de bord qu'on
-/// rattache), servi comme identifiant de vue. Une seule ligne écrite, ou `None` (le tableau reste hors vue).
+/// rattache), servi comme identifiant de vue. Une seule ligne écrite, ou un refus (`None` ici ; les semis de ce fichier refusent alors le tableau, cf. vague AO).
+///
+/// `P10.28-l` (vague AO) — ENROBAGE de `lire_ou_creer_la_vue` : `None` pour ses deux refus. AVANT, une lecture ratée du
+/// nom valait absence (`.ok()` sur le `SELECT`) et une SECONDE vue du même nom était créée (aucune contrainte `UNIQUE`
+/// sur `view.name`) ; désormais elle rend `None`, sans rien écrire. Signature et appelants (migration v63, Banni / Pass)
+/// inchangés ; les semis de tableaux, eux, appellent l'assistant et REFUSENT le semis (`rattacher_le_tableau_a_sa_vue`).
 pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i64> {
-    conn.query_row("SELECT id FROM view WHERE name=?1", params![name], |r| r.get::<_, i64>(0))
-        .ok()
-        .or_else(|| {
-            if conn.execute("INSERT INTO view(name,visibility) VALUES(?1,'shared')", params![name]).ok()? != 1 {
-                return None;
-            }
-            Some(conn.last_insert_rowid())
-        })
+    lire_ou_creer_la_vue(conn, name).ok()
+}
+
+/// `P10.28-l` (vague AO) — LA VUE DE CE NOM EN TROIS ISSUES : LUE (son identifiant), ABSENTE puis CRÉÉE par un `INSERT`
+/// qui écrit UNE ligne (l'identifiant de cette ligne), ou `Err` — la lecture ratée (jamais prise pour une absence : ce
+/// serait une seconde vue du même nom) comme l'`INSERT` refusé ou qui n'écrit rien (`Ok(0)`, jamais l'identifiant
+/// d'une autre ligne).
+fn lire_ou_creer_la_vue<C: SqlExec>(conn: &C, name: &str) -> rusqlite::Result<i64> {
+    use rusqlite::OptionalExtension as _;
+    let lue = conn.query_row("SELECT id FROM view WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).optional()?;
+    match lue {
+        Some(vid) => Ok(vid),
+        None => {
+            une_ligne_ecrite(conn.execute("INSERT INTO view(name,visibility) VALUES(?1,'shared')", params![name])?)?;
+            Ok(conn.last_insert_rowid())
+        }
+    }
 }
 
 /// `P10.28-e` — UN SEMIS GARDÉ PAR SON DRAPEAU `meta` EST ENTIER OU N'EST PAS, ET LE DRAPEAU EST SA DERNIÈRE ÉCRITURE.
@@ -237,7 +251,8 @@ pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i6
 ///
 /// `P10.28-l` — LE MÊME TOUT-OU-RIEN POUR LES SEMIS PAR NOM (`PointDeReprise`) : sans drapeau, c'est l'existence du nom
 /// qui dit le semis fait ; la transaction rend cette existence entière, et un refus y est en plus COMPTÉ
-/// (`compter_un_geste_de_fond_non_valide`, journal `seed`), une présence non lue comprise.
+/// (`compter_un_geste_de_fond_non_valide`, journal `seed`), une présence non lue comprise. `P10.28-l` (vague AO) — un
+/// refus d'un des quatre tableaux de bord semés sous drapeau (`PointDeReprise::TableauSousDrapeau`) est compté de même.
 fn semer_sous_son_drapeau<'a>(
     conn: &Connection,
     reprise: impl Into<PointDeReprise<'a>>,
@@ -287,6 +302,11 @@ fn semer_sous_son_drapeau<'a>(
 enum PointDeReprise<'a> {
     /// Le drapeau `meta` du semis, écrit en dernier dans sa transaction.
     Drapeau(&'a str),
+    /// `P10.28-l` (vague AO) — le drapeau `meta` d'un TABLEAU DE BORD semé sous drapeau (vue d'ensemble, infra & logs,
+    /// sécurité, réseau sortant) : même reprise que `Drapeau`, mais un refus y est COMPTÉ, comme pour un semis par nom
+    /// (une vue non créable ou un panneau qui n'écrit rien le refuse à chaque démarrage : un refus qui se répète doit se
+    /// voir ailleurs que sur la sortie d'erreur).
+    TableauSousDrapeau(&'a str),
     /// Un tableau de bord de ce nom (`seed_dashboard_head_named`).
     TableauNomme(&'a str),
     /// Une règle de ce nom (`seed_malware_rule`).
@@ -308,7 +328,7 @@ impl<'a> From<&'a String> for PointDeReprise<'a> {
 impl std::fmt::Display for PointDeReprise<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PointDeReprise::Drapeau(drapeau) => write!(f, "`{drapeau}`"),
+            PointDeReprise::Drapeau(drapeau) | PointDeReprise::TableauSousDrapeau(drapeau) => write!(f, "`{drapeau}`"),
             PointDeReprise::TableauNomme(nom) => write!(f, "le tableau de bord « {nom} »"),
             PointDeReprise::RegleNommee(nom) => write!(f, "la règle « {nom} »"),
         }
@@ -321,7 +341,7 @@ impl PointDeReprise<'_> {
     fn deja_seme(&self, conn: &Connection) -> rusqlite::Result<bool> {
         use rusqlite::OptionalExtension as _;
         match self {
-            PointDeReprise::Drapeau(drapeau) => {
+            PointDeReprise::Drapeau(drapeau) | PointDeReprise::TableauSousDrapeau(drapeau) => {
                 Ok(conn.query_row("SELECT value FROM meta WHERE key=?1", params![drapeau], |r| r.get::<_, String>(0)).is_ok())
             }
             PointDeReprise::TableauNomme(nom) => {
@@ -337,18 +357,20 @@ impl PointDeReprise<'_> {
     /// les lignes écrites SONT la marque.
     fn marquer(&self, conn: &Connection) -> rusqlite::Result<()> {
         match self {
-            PointDeReprise::Drapeau(drapeau) => {
+            PointDeReprise::Drapeau(drapeau) | PointDeReprise::TableauSousDrapeau(drapeau) => {
                 conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,'1')", params![drapeau]).and_then(une_ligne_ecrite)
             }
             PointDeReprise::TableauNomme(_) | PointDeReprise::RegleNommee(_) => Ok(()),
         }
     }
 
-    /// Le geste compté quand un semis par nom n'est pas validé (`comptes_de_transaction`, sous `scheduler`) ; `None`
-    /// pour un semis sous drapeau, dont le refus d'écriture reste dit au journal seul, comme avant.
+    /// Le geste compté quand un semis par nom ou un tableau de bord sous drapeau n'est pas validé
+    /// (`comptes_de_transaction`, sous `scheduler`) ; `None` pour les autres semis sous drapeau (règles, playbooks), dont
+    /// le refus d'écriture reste dit au journal seul, comme avant.
     fn geste(&self) -> Option<&'static str> {
         match self {
             PointDeReprise::Drapeau(_) => None,
+            PointDeReprise::TableauSousDrapeau(_) => Some(GESTE_TABLEAU_SEME_SOUS_DRAPEAU),
             PointDeReprise::TableauNomme(_) => Some(GESTE_TABLEAU_SEME_PAR_NOM),
             PointDeReprise::RegleNommee(_) => Some(GESTE_REGLE_SEMEE_PAR_NOM),
         }
@@ -359,6 +381,8 @@ impl PointDeReprise<'_> {
 const JOURNAL_DES_SEMIS: &str = "seed";
 pub(crate) const GESTE_TABLEAU_SEME_PAR_NOM: &str = "tableau de bord semé par nom";
 pub(crate) const GESTE_REGLE_SEMEE_PAR_NOM: &str = "règle semée par nom";
+/// `P10.28-l` (vague AO) — le geste d'un tableau de bord semé sous drapeau (`PointDeReprise::TableauSousDrapeau`).
+pub(crate) const GESTE_TABLEAU_SEME_SOUS_DRAPEAU: &str = "tableau de bord semé sous drapeau";
 /// L'étape : la présence du nom n'a pas pu être lue (rien n'est écrit).
 pub(crate) const ETAPE_PRESENCE_NON_LUE: &str = "présence non lue";
 /// L'étape : une écriture du semis, ou son `COMMIT`, a été refusée (rien n'est conservé).
@@ -386,7 +410,8 @@ pub(crate) fn seed_dashboard_head(
     collapsed: bool,
     panneaux: impl FnOnce(&Connection, i64) -> rusqlite::Result<()>,
 ) {
-    semer_sous_son_drapeau(conn, &format!("seeded_{flag}"), |conn| {
+    let drapeau = format!("seeded_{flag}");
+    semer_sous_son_drapeau(conn, PointDeReprise::TableauSousDrapeau(&drapeau), |conn| {
         une_ligne_ecrite(conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES(?1,?2,'shared')", params![name, now()])?)?;
         let did = conn.last_insert_rowid();
         rattacher_le_tableau_a_sa_vue(conn, did, view, collapsed)?;
@@ -419,25 +444,26 @@ pub(crate) fn seed_dashboard_head_named(
     });
 }
 
-/// `P10.28-e` — le rattachement, écriture PROPAGÉE. Une vue introuvable et non créable (`find_or_create_view` rend
-/// `None`) laisse le tableau hors vue, comme avant ; c'est l'`UPDATE` refusé qui annule le semis. `P10.28-l` — un
-/// `UPDATE` qui rend `Ok(0)` (un déclencheur `RAISE(IGNORE)`) n'a rien rattaché : c'est aussi un refus (avant, le tableau
-/// était validé hors de sa vue, drapeau posé, jamais réparé).
+/// `P10.28-e` — le rattachement, écriture PROPAGÉE. `P10.28-l` — un `UPDATE` qui rend `Ok(0)` (un déclencheur
+/// `RAISE(IGNORE)`) n'a rien rattaché : c'est aussi un refus (avant, le tableau était validé hors de sa vue, drapeau
+/// posé, jamais réparé). `P10.28-l` (vague AO) — UNE VUE NON LUE OU NON CRÉABLE EST LE MÊME REFUS (`lire_ou_creer_la_vue`
+/// rend `Err`) : avant, elle laissait le tableau validé HORS vue, drapeau posé (ou nom présent), jamais réparé — l'état
+/// même que l'`UPDATE` à `Ok(0)` refusait. Le semis est annulé entier, compté et dit (`semer_sous_son_drapeau`), et
+/// retenté au démarrage suivant : sur une base dont la vue reste non créable, il est refusé et compté À CHAQUE
+/// démarrage (un refus visible plutôt qu'un tableau hors vue définitif).
 fn rattacher_le_tableau_a_sa_vue(conn: &Connection, did: i64, view: &str, collapsed: bool) -> rusqlite::Result<()> {
-    if let Some(vid) = find_or_create_view(conn, view) {
-        let sql = if collapsed {
-            "UPDATE dashboard SET view_id=?1, collapsed=1 WHERE id=?2"
-        } else {
-            "UPDATE dashboard SET view_id=?1 WHERE id=?2"
-        };
-        une_ligne_ecrite(conn.execute(sql, params![vid, did])?)?;
-    }
-    Ok(())
+    let vid = lire_ou_creer_la_vue(conn, view)?;
+    let sql = if collapsed {
+        "UPDATE dashboard SET view_id=?1, collapsed=1 WHERE id=?2"
+    } else {
+        "UPDATE dashboard SET view_id=?1 WHERE id=?2"
+    };
+    une_ligne_ecrite(conn.execute(sql, params![vid, did])?)
 }
 
 /// `P10.28-e` — semé ENTIER sous son drapeau `seeded_default`, posé en dernier (`semer_sous_son_drapeau`).
 pub(crate) fn seed_default_dashboard(conn: &Connection) {
-    semer_sous_son_drapeau(conn, "seeded_default", semer_la_vue_d_ensemble);
+    semer_sous_son_drapeau(conn, PointDeReprise::TableauSousDrapeau("seeded_default"), semer_la_vue_d_ensemble);
 }
 
 fn semer_la_vue_d_ensemble(conn: &Connection) -> rusqlite::Result<()> {
@@ -458,10 +484,12 @@ fn semer_la_vue_d_ensemble(conn: &Connection) -> rusqlite::Result<()> {
         ("Température °C", "SELECT ts AS bucket, value FROM metric WHERE name='temp_c' AND ts>=__FROM__ ORDER BY ts", 0, "line"),
     ];
     for (i, (title, q, is_soql, viz)) in panels.iter().enumerate() {
-        conn.execute(
+        // `P10.28-l` (vague AO) — un panneau qui rend `Ok(0)` (un déclencheur `RAISE(IGNORE)`) est un refus : sinon le
+        // tableau était validé à panneau manquant, drapeau posé, jamais rejoué. Même forme aux trois semis suivants.
+        une_ligne_ecrite(conn.execute(
             "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position) VALUES(?1,?2,?3,?4,?5,?6)",
             params![did, title, q, is_soql, viz, i as i64],
-        )?;
+        )?)?;
     }
     Ok(())
 }
@@ -481,10 +509,10 @@ pub(crate) fn seed_security_dashboard(conn: &Connection) {
             ("Mail suspect", "search source=mail | stats count by category | sort -count", "bar"),
         ];
         for (i, (title, q, viz)) in panels.iter().enumerate() {
-            conn.execute(
+            une_ligne_ecrite(conn.execute(
                 "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
                 params![did, title, q, viz, i as i64],
-            )?;
+            )?)?;
         }
         Ok(())
     });
@@ -542,10 +570,10 @@ pub(crate) fn seed_egress_dashboard(conn: &Connection) {
             ("Bande passante envoyée (o/s)", "metric net_tx_bps | timechart avg(value)", "line"),
         ];
         for (i, (title, q, viz)) in panels.iter().enumerate() {
-            conn.execute(
+            une_ligne_ecrite(conn.execute(
                 "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,2)",
                 params![did, title, q, viz, i as i64],
-            )?;
+            )?)?;
         }
         Ok(())
     });
@@ -1470,7 +1498,7 @@ pub(crate) fn seed_ssh_cve_playbook(conn: &Connection) {
 // OBS-4 : dashboard de parité (métriques + logs) — utilise la soql metric/rate/timechart + search.
 /// `P10.28-e` — semé ENTIER sous son drapeau `seeded_obs`, posé en dernier (`semer_sous_son_drapeau`).
 pub(crate) fn seed_obs_dashboard(conn: &Connection) {
-    semer_sous_son_drapeau(conn, "seeded_obs", semer_infra_et_logs);
+    semer_sous_son_drapeau(conn, PointDeReprise::TableauSousDrapeau("seeded_obs"), semer_infra_et_logs);
 }
 
 fn semer_infra_et_logs(conn: &Connection) -> rusqlite::Result<()> {
@@ -1488,10 +1516,10 @@ fn semer_infra_et_logs(conn: &Connection) -> rusqlite::Result<()> {
         ("Top sources de logs", "search | stats count by source | sort -count | head 30", "bar", 1),
     ];
     for (i, (title, q, viz, cols)) in panels.iter().enumerate() {
-        conn.execute(
+        une_ligne_ecrite(conn.execute(
             "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) VALUES(?1,?2,?3,1,?4,?5,?6)",
             params![did, title, q, viz, i as i64, cols],
-        )?;
+        )?)?;
     }
     Ok(())
 }

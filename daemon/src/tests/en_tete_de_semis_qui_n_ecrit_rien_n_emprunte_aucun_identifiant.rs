@@ -15,14 +15,12 @@
 // aucun panneau ni rattachement ; aucun tableau du nom, aucun drapeau, transaction fermée ; base revenue, le semis entier
 // avec SON identifiant ; puis rien de plus. Pour la vue : `None`, jamais l'identifiant d'une autre ligne.
 //
-// CE QU'ILS NE TIENNENT PAS : une base déjà amputée (ou un tableau déjà validé hors vue) n'est pas réparée ; un panneau
-// qui rend `Ok(0)` dans ces quatre semis sous drapeau reste accepté (seeds.rs, les `INSERT INTO panel` de
-// `semer_la_vue_d_ensemble`, `seed_security_dashboard`, `seed_egress_dashboard`, `semer_infra_et_logs`) ; une lecture
-// ratée du nom de vue vaut absence dans `find_or_create_view` (comportement d'avant, hors lot) ; l'aveu au journal n'est
-// pas capturé ; `seed_runbooks` n'est pas touché. Aucune variable d'environnement n'est lue par ces semis.
-// INCOHÉRENCE LAISSÉE : une vue NON CRÉABLE (`find_or_create_view` rend `None`) laisse le tableau validé HORS vue, drapeau
-// posé, jamais réparé (comportement d'avant, `P10.28-e`, tenu par `an1_vue_non_creee_rend_none_et_pas_un_identifiant_emprunte`)
-// — l'état même que le rattachement `Ok(0)` refuse ci-dessous.
+// CE QU'ILS NE TIENNENT PAS : une base déjà amputée (ou un tableau déjà validé hors vue) n'est pas réparée ; l'aveu au
+// journal n'est pas capturé ; `seed_runbooks` n'est pas touché. Aucune variable d'environnement n'est lue par ces semis.
+// VAGUE AO : le panneau à `Ok(0)` des quatre semis sous drapeau, la lecture ratée du nom de vue et la vue non créable
+// sont tenus par `panneau_ou_vue_refuses_annulent_le_semis_sous_drapeau.rs`. La vue NON CRÉABLE, qui laissait ici le
+// tableau validé HORS vue (`an1_vue_non_creee_rend_none_et_pas_un_identifiant_emprunte`, seconde moitié), est désormais
+// un REFUS : ce témoin est INVERSÉ.
 // Les boucles sur `[AN1_…]` itèrent un tableau littéral : aucun compteur d'itérations n'y est affirmé (il serait vrai par
 // construction).
 //
@@ -176,9 +174,9 @@ mod en_tete_de_semis_qui_n_ecrit_rien_n_emprunte_aucun_identifiant {
 
     /// `find_or_create_view` : un `INSERT INTO view` qui rend `Ok(0)` rend `None`, jamais l'identifiant de la dernière
     /// ligne insérée (le leurre ici) ; contrôle positif : base revenue, l'identifiant de la vue créée, puis le même relu.
-    /// Par le semis : « Sécurité & détection » sans sa vue « Détection » (renommée) et la vue non créable — le tableau est
-    /// semé HORS vue (`view_id` NULL, comportement documenté de `rattacher_le_tableau_a_sa_vue`), pas rattaché à son
-    /// propre identifiant pris pour une vue. MUTANT QUI LE ROUGIT : `AN1_vue_ok0`.
+    /// Par le semis : « Sécurité & détection » sans sa vue « Détection » (renommée) et la vue non créable — INVERSÉ en
+    /// vague AO : le semis est REFUSÉ (ni tableau, ni drapeau), plus semé hors vue ; base revenue, il est semé dans sa vue.
+    /// Jamais rattaché à son propre identifiant pris pour une vue. MUTANT QUI LE ROUGIT : `AN1_vue_ok0`.
     #[test]
     fn an1_vue_non_creee_rend_none_et_pas_un_identifiant_emprunte() {
         let conn = test_db();
@@ -202,10 +200,14 @@ mod en_tete_de_semis_qui_n_ecrit_rien_n_emprunte_aucun_identifiant {
             .expect("déclencheur de refus");
         let leurre = an1_leurre(&conn);
         semer(&conn);
-        assert_eq!(an1_etat(&conn, nom, drapeau), (1, n, 1), "vue non créable : le tableau est semé, hors vue");
-        let vue_id: Option<i64> = conn.query_row("SELECT view_id FROM dashboard WHERE name=?1", params![nom], |r| r.get(0)).expect("view_id");
-        assert_eq!(vue_id, None, "hors vue (`view_id` NULL), pas son propre identifiant pris pour une vue");
+        // INVERSÉ (vague AO) : avant, `(1, n, 1)` et `view_id` NULL — le tableau validé hors vue, jamais réparé.
+        assert_eq!(an1_etat(&conn, nom, drapeau), (0, 0, 0), "vue non créable : le semis est refusé, rien n'est conservé");
         assert_eq!(an1_leurre_intact(&conn, leurre), (0, None, 0), "le leurre reste intact");
         assert!(conn.is_autocommit(), "transaction fermée");
+        conn.execute_batch("DROP TRIGGER an1_vue_refusee;").expect("base revenue");
+        semer(&conn);
+        assert_eq!(an1_etat(&conn, nom, drapeau), (1, n, 1), "base revenue : le semis entier");
+        assert_eq!(an1_vue(&conn, nom), (Some("Détection".to_string()), 0), "base revenue : dans sa vue, recréée");
+        assert_eq!(an1_leurre_intact(&conn, leurre), (0, None, 0), "le leurre reste intact au semis rejoué");
     }
 }

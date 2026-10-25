@@ -224,14 +224,43 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
 
 /// `P10.7-f` — CE QUE LA CONSOLE APPREND D'UNE PAGE QUI N'EST PAS LA RÉPONSE.
 ///
-/// La phrase dit ce que le corps N'ÉTABLIT PAS, puis laisse la cause du moteur telle qu'il l'a dite
-/// (`interrupted` quand la garde de budget a coupé). Elle nomme aussi ce qui n'est PAS connu — combien
-/// de lignes manquent — parce qu'un chiffre inventé à cet endroit serait le même défaut d'un cran plus
-/// haut : l'énoncé est tari, personne n'a compté le reste.
+/// La phrase dit ce que le corps N'ÉTABLIT PAS, puis la CLASSE de la fin (`phrase_de_la_fin` : interrompue, ou
+/// refusée par la base) — jamais le texte du moteur, qui part à la ligne `[alerts] WARN` (`P10.29-l`, vague AO).
+/// Elle nomme aussi ce qui n'est PAS connu — combien de lignes manquent — parce qu'un chiffre inventé à cet
+/// endroit serait le même défaut d'un cran plus haut : l'énoncé est tari, personne n'a compté le reste.
 pub(crate) const CAUSE_LISTE_D_ALERTES_TRONQUEE: &str = "LISTE D'ALERTES INCOMPLÈTE : le parcours des \
      lignes n'est pas allé au bout. Ce qui suit est un PRÉFIXE de la page demandée, pas la page — un \
      compte pris dessus, ou l'absence d'une alerte qu'on y cherchait, ne portent sur RIEN. Combien de \
      lignes manquent n'est pas connu. Cause : ";
+
+/// `P10.29-l` (vague AO) — CE QUE LES QUATRE AVEUX DE PARCOURS DISENT APRÈS « Cause : » QUAND LE PARCOURS A ÉTÉ
+/// INTERROMPU (garde de budget de `read_with_watchdog`, ou annulation). Avant, c'était le texte du moteur
+/// (`FinDeParcours::cause()`, un `e.to_string()` de rusqlite) ; un refus de l'autorisateur y citait l'énoncé entier.
+pub(crate) const FIN_DE_PARCOURS_INTERROMPUE: &str = "le parcours a été interrompu avant la fin (garde de budget de lecture ou annulation)";
+/// `P10.29-l` (vague AO) — toute autre fin ratée (énoncé refusé, colonne ou table absente, erreur d'E/S, ligne
+/// illisible) : la phrase fixe ; le texte du moteur part à la ligne `[alerts] WARN` seule.
+pub(crate) const FIN_DE_PARCOURS_REFUSEE_PAR_LA_BASE: &str = "la base n'a pas rendu la lecture";
+
+/// `P10.29-l` (vague AO) — LA CLASSE D'UNE FIN RATÉE, DÉCIDÉE À L'AFFICHAGE. `FinDeParcours` ne garde que le texte du
+/// moteur (`query_exec.rs`) : l'interruption s'y reconnaît à ce que rusqlite écrit pour `SQLITE_INTERRUPT`, le message de
+/// SQLite (« interrupted ») ou, sans message, la description du code. Toute autre cause est un refus de la base.
+pub(crate) fn phrase_de_la_fin(cause: &str) -> &'static str {
+    let sans_message = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT), None).to_string();
+    if cause == "interrupted" || cause == sans_message { FIN_DE_PARCOURS_INTERROMPUE } else { FIN_DE_PARCOURS_REFUSEE_PAR_LA_BASE }
+}
+
+/// `P10.29-l` (vague AO) — LA LIGNE `[alerts] WARN` D'UN PARCOURS QUI N'EST PAS ALLÉ AU BOUT : l'objet parcouru (un
+/// libellé fixe, jamais un texte de l'appelant), la fin nommée, le tenant de l'appelant et le texte du moteur. Les
+/// fonctions de page ne connaissent pas le tenant : ce sont les gestionnaires qui l'appellent, comme
+/// `TotalDeListe::journaliser`. Un parcours complet n'écrit rien.
+pub(crate) fn journaliser_la_fin_de_parcours(objet: &str, tenant: &str, fin: &FinDeParcours) {
+    let (etat, cause) = match fin {
+        FinDeParcours::Complet => return,
+        FinDeParcours::Interrompu { cause, .. } => ("interrompu", cause),
+        FinDeParcours::NonCommence { cause } => ("non commencé", cause),
+    };
+    eprintln!("[alerts] WARN parcours {objet} {etat} (tenant '{tenant}') : {cause}");
+}
 
 /// `P10.29-l` (vague AN) — CE QUE `total_error` DIT D'UN COMPTE INTERROMPU PAR LA GARDE DE BUDGET (ou une annulation) :
 /// une phrase fixe, le texte du moteur au journal seul (`[alerts] WARN`).
@@ -320,7 +349,7 @@ pub(crate) fn corps_de_liste_d_alertes(alertes: Vec<Value>, total: TotalDeListe,
     let mut corps = json!({ "alerts": alertes });
     total.poser_sur(&mut corps);
     if let Some(cause) = fin.cause() {
-        corps["error"] = json!(format!("{CAUSE_LISTE_D_ALERTES_TRONQUEE}{cause}"));
+        corps["error"] = json!(format!("{CAUSE_LISTE_D_ALERTES_TRONQUEE}{}", phrase_de_la_fin(cause)));
     }
     corps
 }
@@ -345,7 +374,7 @@ pub(crate) fn corps_de_liste_de_groupes(groupes: Vec<Value>, total: TotalDeListe
     let mut corps = json!({ "groups": groupes, "group": group_col });
     total.poser_sur(&mut corps);
     if let Some(cause) = fin.cause() {
-        corps["error"] = json!(format!("{CAUSE_LISTE_DE_GROUPES_TRONQUEE}{cause}"));
+        corps["error"] = json!(format!("{CAUSE_LISTE_DE_GROUPES_TRONQUEE}{}", phrase_de_la_fin(cause)));
     }
     corps
 }
@@ -399,6 +428,7 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
         read_with_watchdog(&db_path, json!({ "alerts": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             let (out, total, fin) = alerts_query_page(conn, &filtre, group_col, &gval, limit, offset, paged);
             total.journaliser(&tenant);
+            journaliser_la_fin_de_parcours("de la liste d'alertes", &tenant, &fin);
             corps_de_liste_d_alertes(out, total, &fin)
         })
     })
@@ -523,6 +553,7 @@ pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Exte
         read_with_watchdog(&db_path, json!({ "groups": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             let (groups, total, fin) = alert_groups_query_page(conn, &gc, &filtre, limit, offset);
             total.journaliser(&tenant);
+            journaliser_la_fin_de_parcours(&format!("de la liste de groupes par {gc}"), &tenant, &fin);
             corps_de_liste_de_groupes(groups, total, &gc, &fin)
         })
     })
@@ -670,7 +701,7 @@ pub(crate) fn corps_de_couverture_des_detections(detections: Vec<Value>, portee:
         o.extend(p);
     }
     if let Some(cause) = fin.cause() {
-        corps["error"] = json!(format!("{CAUSE_COUVERTURE_DES_DETECTIONS_TRONQUEE}{cause}"));
+        corps["error"] = json!(format!("{CAUSE_COUVERTURE_DES_DETECTIONS_TRONQUEE}{}", phrase_de_la_fin(cause)));
     }
     corps
 }
@@ -690,6 +721,7 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
         Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "detections": [] }))),
     };
     let db_path = req_db_path(&st, &au);
+    let tenant = au.tenant.clone();
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "detections": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             let row_tuple = |r: &rusqlite::Row| -> rusqlite::Result<(String, i64, i64)> {
@@ -710,12 +742,14 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
                             rusqlite::Error::QueryReturnedNoRows => FinDeParcours::Complet,
                             autre => FinDeParcours::NonCommence { cause: autre.to_string() },
                         };
+                        journaliser_la_fin_de_parcours("de la fenêtre d'un engagement", &tenant, &fin);
                         return corps_de_couverture_des_detections(Vec::new(), Some(json!({ "engagement": id })), &fin);
                     }
                 };
                 // Attribution SCOPÉE (via tag alerte OU présence d'events scopés dans la fenêtre) — cf.
                 // scoped_coverage_detections. RESTREINT l'affichage, ne réduit JAMAIS la détection.
                 let (out, fin) = scoped_coverage_detections(conn, id, since, ws, we);
+                journaliser_la_fin_de_parcours("de la couverture des détections d'un engagement", &tenant, &fin);
                 return corps_de_couverture_des_detections(
                     out,
                     Some(json!({ "engagement": id, "window_start": ws, "window_end": we })),
@@ -727,16 +761,25 @@ pub(crate) async fn coverage_detections(State(st): State<AppState>, Extension(au
                  WHERE mitre IS NOT NULL AND mitre<>'' AND ts>=?1 GROUP BY mitre ORDER BY count DESC, mitre",
             ) {
                 Ok(s) => s,
-                Err(e) => return corps_de_couverture_des_detections(Vec::new(), None, &FinDeParcours::NonCommence { cause: e.to_string() }),
+                Err(e) => {
+                    let fin = FinDeParcours::NonCommence { cause: e.to_string() };
+                    journaliser_la_fin_de_parcours("de la couverture des détections", &tenant, &fin);
+                    return corps_de_couverture_des_detections(Vec::new(), None, &fin);
+                }
             };
             let parcours = match stmt.query_map(params![since], row_tuple) {
                 // `P10.7-f` — mêmes lignes, même ordre que `.flatten()` ; ce qui s'ajoute est le
                 // compte des `Err` que l'idiome jetait sans un mot.
                 Ok(r) => parcourir(r),
-                Err(e) => return corps_de_couverture_des_detections(Vec::new(), None, &FinDeParcours::NonCommence { cause: e.to_string() }),
+                Err(e) => {
+                    let fin = FinDeParcours::NonCommence { cause: e.to_string() };
+                    journaliser_la_fin_de_parcours("de la couverture des détections", &tenant, &fin);
+                    return corps_de_couverture_des_detections(Vec::new(), None, &fin);
+                }
             };
             // ÉCLATEMENT des tags multi-techniques (Sigma) avant de servir : le consommateur purple
             // joint sur des TECHNIQUES, jamais sur une chaîne composée. Cf. explode_detection_rows.
+            journaliser_la_fin_de_parcours("de la couverture des détections", &tenant, &parcours.fin);
             corps_de_couverture_des_detections(explode_detection_rows(parcours.lignes), None, &parcours.fin)
         })
     })
@@ -1017,7 +1060,7 @@ pub(crate) const CAUSE_COMPTES_D_ALERTES_NON_ETABLIS: &str = "COMPTES D'ALERTES 
 /// seulement quand le parcours des alertes a une cause à dire.
 pub(crate) fn corps_de_matrice_attack(mut matrice: Value, fin: &FinDeParcours) -> Value {
     if let Some(cause) = fin.cause() {
-        matrice["error"] = json!(format!("{CAUSE_COMPTES_D_ALERTES_NON_ETABLIS}{cause}"));
+        matrice["error"] = json!(format!("{CAUSE_COMPTES_D_ALERTES_NON_ETABLIS}{}", phrase_de_la_fin(cause)));
     }
     matrice
 }
@@ -1030,6 +1073,7 @@ pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): E
         Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "tactics": [], "totals": {} }))),
     };
     let db_path = req_db_path(&st, &au);
+    let tenant = au.tenant.clone();
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "tactics": [], "totals": {}, "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             // Règles ACTIVÉES portant un tag MITRE, MOINS celles qu'aucun producteur ne peut nourrir
@@ -1042,6 +1086,7 @@ pub(crate) async fn coverage_attack(State(st): State<AppState>, Extension(au): E
             let regles_eteintes = lecture.eteintes;
             // Alertes par technique sur la fenêtre (table `alert`, indexée ; PAS la table event).
             let (alert_counts, fin_des_comptes) = lire_les_alertes_par_technique(conn, since);
+            journaliser_la_fin_de_parcours("des alertes par technique", &tenant, &fin_des_comptes);
             corps_de_matrice_attack(
                 build_attack_matrix(&rule_tags, &lecture.en_attente_de_source, &regles_eteintes, &alert_counts),
                 &fin_des_comptes,

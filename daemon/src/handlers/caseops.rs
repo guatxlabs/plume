@@ -1549,14 +1549,24 @@ pub(crate) const CAUSE_POLITIQUE_SLA_CIBLE_NULLE: &str =
 /// `COMMIT` serait une prévision au registre, pas un fait (refus, plafond, lecture ratée du recalcul). Le recalcul n'est
 /// donc plus rejoué à la désactivation (il ne trouverait plus rien à écrire) : `recomputed` y vaut 0, et aucun plafond ne
 /// borne plus l'effacement (un `UPDATE`, comme celui de la politique).
+/// `P10.31-v` (vague AO) — LES TERMINAUX ET FUSIONNÉS À POLITIQUE PENDANTE OU ÉTRANGÈRE AUSSI. Le second `UPDATE` excluait
+/// `merged_into IS NOT NULL` et les statuts terminaux : un tel dossier gardait les échéances d'une politique supprimée ou
+/// d'une autre priorité, et une fois rouvert par son seul statut ou défusionné (aucun des deux ne rejoue
+/// `sla_apply_policy`), le tour le NOTIFIAIT en dépassement dès qu'une autre politique restait active. Un troisième
+/// `UPDATE`, au prédicat COMPLÉMENTAIRE de celui des actifs (`merged_into IS NOT NULL OR status` terminal, `status` étant
+/// NOT NULL : aucun dossier dans les deux), les efface — même règle que `sla_policy_delete`, qui efface aussi les
+/// terminaux ; son compte entre dans `degouvernes` et, À PART des actifs, dans le détail du maillon (« , dont T dossier(s)
+/// terminal(aux) ou fusionné(s) … »). Le recalcul reste non rejoué à la désactivation.
 /// Écriture de la politique, effacements et maillon sont jugés ensemble (`jouer_le_geste_garde`) : un effacement refusé
 /// annule la désactivation, un `BEGIN` ou un `COMMIT` refusé aussi (500, rien posé).
 /// LIMITES ÉCRITES : marqueurs `ack_breached`/`resolve_breached` conservés et pause en cours conservée (mêmes limites
 /// que `sla_apply_policy` et `sla_policy_delete`) ; RÉACTIVER la politique ne regouverne que les dossiers ACTIFS (le
-/// recalcul), pas les terminaux ni les fusionnés.
+/// recalcul), pas les terminaux ni les fusionnés ; un terminal à politique étrangère sous une politique ACTIVE garde ses
+/// échéances à la réouverture par statut seul (`case_apply_update` ne rejoue `sla_apply_policy` que sur une priorité
+/// écrite), et `case_unmerge` ne la rejoue pas non plus.
 /// `P10.31-u` — LE MAILLON EST CONSOMMÉ : son détail dit `enabled=0|1` (une désactivation n'est plus indiscernable
-/// d'une modification au registre) et le nombre de dossiers dégouvernés, dont ceux à politique pendante ou étrangère ;
-/// manquant, il est avoué
+/// d'une modification au registre) et le nombre de dossiers dégouvernés, dont ceux à politique pendante ou étrangère
+/// (actifs, puis terminaux ou fusionnés) ; manquant, il est avoué
 /// (`reponse_de_l_upsert_sla_tracee`).
 pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
@@ -1584,7 +1594,7 @@ pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au):
                 params![name, priority, ack_s, res_s, enabled, t, au.name],
             )
             .map_err(|e| e.to_string())?;
-            let (degouvernes, pendants) = if enabled == 0 {
+            let (degouvernes, pendants, terminaux) = if enabled == 0 {
                 let de_la_politique = conn
                     .execute(
                         "UPDATE incident SET sla_policy_id=NULL, ack_due=NULL, resolve_due=NULL \
@@ -1593,7 +1603,7 @@ pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au):
                     )
                     .map_err(|e| format!("effacement des échéances des dossiers de la politique désactivée refusé ({e})"))?;
                 // Posé APRÈS l'effacement de la politique : ses dossiers sont déjà à NULL, aucun n'est compté deux fois.
-                // Terminaux et fusionnés à politique pendante ne sont pas touchés (limite écrite, comme le recalcul).
+                // Actifs non fusionnés seulement : terminaux et fusionnés ont leur propre `UPDATE`, compté à part, plus bas.
                 let pendants = conn
                     .execute(
                         "UPDATE incident SET sla_policy_id=NULL, ack_due=NULL, resolve_due=NULL \
@@ -1604,9 +1614,24 @@ pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au):
                     .map_err(|e| {
                         format!("effacement des échéances des dossiers actifs à politique pendante ou étrangère refusé ({e})")
                     })?;
-                (de_la_politique + pendants, pendants)
+                // `P10.31-v` (vague AO) — TERMINAUX ET FUSIONNÉS À POLITIQUE PENDANTE OU ÉTRANGÈRE : le complément exact du
+                // prédicat des actifs (`status` est NOT NULL), donc aucun dossier n'est compté deux fois avec eux ; posé
+                // APRÈS celui de la politique, qui a déjà remis ses propres terminaux à NULL (ils ne sont pas dans ce compte).
+                let terminaux = conn
+                    .execute(
+                        "UPDATE incident SET sla_policy_id=NULL, ack_due=NULL, resolve_due=NULL \
+                         WHERE priority=?1 AND sla_policy_id IS NOT NULL \
+                           AND (merged_into IS NOT NULL OR status IN ('resolved','closed','contained'))",
+                        params![priority],
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "effacement des échéances des dossiers terminaux ou fusionnés à politique pendante ou étrangère refusé ({e})"
+                        )
+                    })?;
+                (de_la_politique + pendants + terminaux, pendants, terminaux)
             } else {
-                (0, 0)
+                (0, 0, 0)
             };
             let mut detail = format!("P{priority} ack={ack_s}s resolve={res_s}s enabled={enabled} by {}", au.name);
             if degouvernes > 0 {
@@ -1617,13 +1642,16 @@ pub(crate) async fn sla_policy_upsert(State(st): State<AppState>, Extension(au):
             if pendants > 0 {
                 detail.push_str(&format!(", dont {pendants} dossier(s) actif(s) à politique pendante ou étrangère"));
             }
+            if terminaux > 0 {
+                detail.push_str(&format!(", dont {terminaux} dossier(s) terminal(aux) ou fusionné(s) à politique pendante ou étrangère"));
+            }
             Ok::<_, String>((degouvernes, ledger_append(conn, "sla_policy.upsert", &detail)))
         });
         match issue {
             Issue::Valide((degouvernes, maillon)) => {
-                // À la désactivation, les deux `UPDATE` de la transaction ont rendu au régime legacy tout ce que le
-                // recalcul aurait effacé (même prédicat) : rien n'est rejoué, `recomputed` vaut 0, tout est dans
-                // `degouvernes` et au registre.
+                // À la désactivation, les trois `UPDATE` de la transaction ont rendu au régime legacy tout ce que le
+                // recalcul aurait effacé (et davantage : terminaux et fusionnés) : rien n'est rejoué, `recomputed` vaut 0,
+                // tout est dans `degouvernes` et au registre.
                 let recalcul = if enabled == 0 { RecalculDesEcheances::default() } else { sla_recalcule_la_priorite(conn, priority) };
                 reponse_de_l_upsert_sla_tracee(&recalcul, degouvernes, &maillon)
             }

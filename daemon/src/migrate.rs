@@ -5007,7 +5007,7 @@ mod s4_round2_tests {
         }
 
         // FORME NON TRAITÉE EXPLICITEMENT : un refus de LECTURE. `find_or_create_view` commence par un
-        // SELECT ; le refuser ne bloque aucune écriture (le code enchaîne sur l'INSERT), mais l'échec
+        // SELECT ; le refuser rend `None` sans INSERT (vague AO : plus de seconde vue), mais l'échec
         // est de classe B et la lecture passe par le garde -> l'étape doit échouer quand même.
         let conn = db_for_helper_step(62);
         conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {

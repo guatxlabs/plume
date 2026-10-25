@@ -28,7 +28,8 @@
 // `dim_at_id` du rollup dimensionnel (refusée aussi par cet autorisateur, traitée et témoignée à part :
 // `rollups_dim_et_banned_ip_non_ecrits.rs`) ; l'horloge reculée (`wm > recent`) : borne non lue, `[recent, wm)` est ré-agrégé sans borne d'identifiant
 // sous un watermark laissé en place, double compte des lignes tardives `id > cov` (limite écrite dans `rollups.rs`) ;
-// le plancher `MIN(event.ts)` abaissé par une vieille ligne restée dans `event` (reste de la clé).
+// le plancher `MIN(event.ts)` abaissé par une vieille ligne restée dans `event` (traité et témoigné à part :
+// `rollups_buckets_resservis_et_retention_illisible.rs`).
 //
 // LES MUTATIONS QUI LE FONT ROUGIR (jouées par variable d'environnement de mutation sous `cfg!(test)`, puis retirées du source) :
 //  * « Y3_BORNE_ZERO » (`.unwrap_or(0)` rétabli, la forme d'avant) : bucket rétracté, watermark avancé, couverture `0` ;

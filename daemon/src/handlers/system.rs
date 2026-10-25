@@ -78,7 +78,18 @@ impl VersionDeSchema {
 
 /// Version de schéma courante (meta) — lecture O(1). `NonEtablie` dès que la lecture ne rend pas un
 /// entier : aucune ligne (base neuve avant `migrate`), valeur non entière, ou lecture NON FAITE.
+/// Lit la base OPÉRATEUR (sonde de vivacité, exposition Prometheus) : `schema_version_de` avec ce libellé.
 pub(crate) fn schema_version(conn: &Connection) -> VersionDeSchema {
+    schema_version_de(conn, BASE_OPERATEUR)
+}
+
+/// `P10.29-l` (vague AQ) — le libellé de journal de la base opérateur (host-wide, sans tenant).
+pub(crate) const BASE_OPERATEUR: &str = "base opérateur";
+
+/// `P10.29-l` (vague AQ) — LA VERSION DE SCHÉMA LUE DANS LA BASE QUE `base` NOMME AU JOURNAL (« base opérateur », ou
+/// « tenant '<id>' »). Une lecture ratée sert la phrase fixe — la sonde de vivacité la rend SANS authentification, et
+/// rendait jusqu'ici le texte du moteur (`La lecture a échoué : {e}.`) ; le moteur part à la ligne `[system] WARN`.
+pub(crate) fn schema_version_de(conn: &Connection, base: &str) -> VersionDeSchema {
     match conn
         .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
         .optional()
@@ -93,9 +104,10 @@ pub(crate) fn schema_version(conn: &Connection) -> VersionDeSchema {
             "{CAUSE_VERSION_DE_SCHEMA_NON_ETABLIE} Aucune ligne `meta.schema_version` : cette base n'a \
              pas encore été estampillée par une migration."
         )),
-        Err(e) => VersionDeSchema::NonEtablie(format!(
-            "{CAUSE_VERSION_DE_SCHEMA_NON_ETABLIE} La lecture a échoué : {e}."
-        )),
+        Err(e) => {
+            eprintln!("[system] WARN version de schéma non lue ({base}) : {e}");
+            VersionDeSchema::NonEtablie(format!("{CAUSE_VERSION_DE_SCHEMA_NON_ETABLIE} La lecture a échoué."))
+        }
     }
 }
 
@@ -182,7 +194,7 @@ pub(crate) async fn system_metrics(State(st): State<AppState>, Extension(au): Ex
     let warn = disk_warn_pct();
     let db = req_db(&st, &au);
     let c = db.lock();
-    let sv = schema_version(&c);
+    let sv = schema_version_de(&c, &format!("tenant '{}'", au.tenant));
     Json(crate::gather_json(&c, &spool, &db_path, &sv, warn))
 }
 
@@ -230,7 +242,9 @@ pub(crate) const DIAG_HEARTBEAT_ALERTS_WINDOW: i64 = 20;
 pub(crate) const DIAG_UNCLASSIFIED_SOURCES_WINDOW: i64 = 20;
 pub(crate) fn diag_bundle_json(conn: &Connection, spool: &str, db_path: &str, warn: u8) -> Value {
     use crate::handlers::liste_bornee as aveu;
-    let sv = schema_version(conn);
+    // `P10.29-l` (vague AQ) : la base du paquet est celle du tenant de l'appelant, que cette fonction ne connaît pas ;
+    // le journal la nomme par sa fonction.
+    let sv = schema_version_de(conn, "base du paquet de diagnostic");
     // Résumé de config : allowlist + garde secretish. Valeur "" pour une clé non posée. Les chemins TLS_CERT/
     // KEY sont des CHEMINS de fichier (pas la clé elle-même) -> sûrs ; mais on émet juste "posé"/"" (booléen)
     // pour ne rien divulguer d'un chemin. TOKEN/PASS/KEY sont exclus par key_is_secretish de toute façon.
@@ -456,14 +470,26 @@ impl BulletinPose {
 
 /// Lit le bulletin courant (setting global). `Aucun` si absent (mode 0 : aucun bandeau) ; `Pose` porte
 /// {message,level,...} ; `NonEtabli` dès que la lecture ne rend pas un bulletin — lecture NON FAITE, ou
-/// valeur stockée non décodable.
+/// valeur stockée non décodable. Appelée par les témoins sur la base opérateur ; la route passe par
+/// `lire_le_bulletin` avec le tenant de l'appelant.
+#[allow(dead_code)] // utilisé uniquement par les tests (la route passe par lire_le_bulletin)
 pub(crate) fn bulletin_read(conn: &Connection) -> BulletinPose {
+    lire_le_bulletin(conn, "default")
+}
+
+/// `P10.29-l` (vague AQ) — LE BULLETIN DU TENANT `tenant`. Les deux voies qui n'établissent rien servent chacune leur
+/// sous-phrase fixe (« La lecture a échoué. », « La ligne existe et ne se décode pas. ») ; le texte du moteur ou du
+/// décodeur part à la ligne `[system] WARN`, qui nomme le tenant. La valeur stockée n'y est jamais écrite.
+pub(crate) fn lire_le_bulletin(conn: &Connection, tenant: &str) -> BulletinPose {
     let brut: Option<String> = match conn
         .query_row("SELECT value FROM setting WHERE scope='global' AND key=?1", params![BULLETIN_KEY], |r| r.get(0))
         .optional()
     {
         Ok(v) => v,
-        Err(e) => return BulletinPose::NonEtabli(format!("{CAUSE_BULLETIN_NON_ETABLI} La lecture a échoué : {e}.")),
+        Err(e) => {
+            eprintln!("[system] WARN bulletin non lu (tenant '{tenant}') : {e}");
+            return BulletinPose::NonEtabli(format!("{CAUSE_BULLETIN_NON_ETABLI} La lecture a échoué."));
+        }
     };
     let Some(brut) = brut else { return BulletinPose::Aucun };
     match serde_json::from_str::<Value>(&brut) {
@@ -475,7 +501,10 @@ pub(crate) fn bulletin_read(conn: &Connection) -> BulletinPose {
         // LA LIGNE EXISTE ET NE SE DÉCODE PAS. Troisième voie, du même esprit que « la ligne existe et ne
         // porte pas un entier » pour la version de schéma : quelqu'un a posé quelque chose, et servir
         // « aucun bandeau » reviendrait à effacer son message en silence.
-        Err(e) => BulletinPose::NonEtabli(format!("{CAUSE_BULLETIN_NON_ETABLI} La ligne existe et ne se décode pas : {e}.")),
+        Err(e) => {
+            eprintln!("[system] WARN bulletin non décodé (tenant '{tenant}') : {e}");
+            BulletinPose::NonEtabli(format!("{CAUSE_BULLETIN_NON_ETABLI} La ligne existe et ne se décode pas."))
+        }
     }
 }
 
@@ -484,7 +513,7 @@ pub(crate) fn bulletin_read(conn: &Connection) -> BulletinPose {
 pub(crate) async fn bulletin_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let db = req_db(&st, &au);
     let c = db.lock();
-    let pose = bulletin_read(&c);
+    let pose = lire_le_bulletin(&c, &au.tenant);
     let mut corps = serde_json::Map::new();
     corps.insert("bulletin".to_string(), pose.en_json());
     pose.poser_l_aveu(&mut corps);

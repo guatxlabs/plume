@@ -1792,7 +1792,7 @@ fn migrate_v109(conn: &MigTx) {
 /// une base fraîche exécute schema.sql PUIS migrate v1..104 -> CREATE IF NOT EXISTS = no-op sur la table déjà
 /// créée). Le SEED du contenu managé (seed_runbooks, managed=1) est SÉPARÉ (comme seed_detection_rules) et
 /// idempotent par flag meta -> il tourne sur base neuve (migrate précède seeds) ET sur base déjà déployée
-/// (tables créées vides par cette migration, flag `seeded_runbooks` absent -> seed insère). Aucun backfill de
+/// (tables créées vides par cette migration, drapeaux `seeded_runbook_<clé>` absents -> seed insère). Aucun backfill de
 /// donnée -> pas de garde d'échec/retry (contrairement à v33/v77). RESTE HORS de la projection client-read
 /// (client_case_*) : aucune colonne/table n'y est ajoutée -> les incidents/runbooks NE FUITENT PAS au MSSP.
 ///

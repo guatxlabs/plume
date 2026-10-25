@@ -52,8 +52,8 @@
 // ligne lue (seuls le préfixe, la règle et la suite sont jugés) ; un refus par verrou, disque plein ou
 // interruption (même `Err`, non fabriqué) ; un refus qui dure au-delà de la clôture du bucket suivant (l'anomalie est
 // alors perdue, mais comptée à chaque reprise) ; l'écriture du throttle elle-même et celle du pas de reprise (`let _`,
-// sens bruyant : nouvel essai dès le tour suivant) ; la voie risque de `run_baselines` (`risk_event_insert`, qui rend `false`
-// pour « déjà posée » comme pour « refusée ») ; le cas `!ev.ok`, qui avance toujours `last_run` ; la phrase de l'écran
+// sens bruyant : nouvel essai dès le tour suivant) ; la voie risque et les observations de `run_baselines` (tenues depuis
+// par `correlations_et_risque_ecrits_avant_l_etat.rs`, avec `run_correlations` et `run_risk_rules`) ; le cas `!ev.ok`, qui avance toujours `last_run` ; la phrase de l'écran
 // santé (« non évalués »), qui reste approximative pour une règle évaluée dont l'alerte a été refusée.
 // =====================================================================================
 mod alertes_ecrites_avant_d_avancer_l_etat {

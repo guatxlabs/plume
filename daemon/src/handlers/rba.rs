@@ -55,21 +55,50 @@ fn risk_ti_bucket_s(conf: &HashMap<String, String>) -> i64 {
 // STORE — insertion d'une contribution de risque (dédup borné via INSERT OR IGNORE).
 // ============================================================================================
 
-/// Insère UNE contribution de risque. `dedup` (Some) -> INSERT OR IGNORE (déjà posée = no-op, borne
-/// l'émission) ; None -> insertion toujours (l'index UNIQUE est PARTIEL WHERE dedup IS NOT NULL). Renvoie
-/// true si une ligne a été écrite. `rule_id` None pour les contributions ti/manuelles.
+/// `P10.20-b` / `P10.32-x` — LES TROIS ISSUES D'UNE CONTRIBUTION DE RISQUE. `risk_event_insert` rend `false` pour
+/// « déjà posée » (dédup, `Ok(0)`) comme pour « refusée » (`Err`) : ses appelants planifiés (corrélations, lignes de
+/// base, règles de risque) jetaient ce booléen puis avançaient leur état, et une contribution refusée était perdue
+/// sans trace. Les trois issues sont distinguées ici ; seule `Refusee` est un refus, la dédup vaut entrée.
+#[derive(Debug)]
+pub(crate) enum IssueDeLaContribution {
+    /// Une ligne écrite.
+    Ecrite,
+    /// Écartée par la dédup (`INSERT OR IGNORE` qui rend `Ok(0)`) : déjà posée à un passage antérieur, elle vaut entrée.
+    DejaPosee,
+    /// Refusée par le moteur (verrou, disque, déclencheur) : la contribution n'existe pas. La cause va au journal seul.
+    Refusee(rusqlite::Error),
+}
+
+/// Insère UNE contribution de risque et rend son issue (`IssueDeLaContribution`). `dedup` (Some) -> INSERT OR IGNORE
+/// (déjà posée = no-op, borne l'émission) ; None -> insertion toujours (l'index UNIQUE est PARTIEL WHERE dedup IS NOT
+/// NULL). `rule_id` None pour les contributions ti/manuelles.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn risk_event_contribuer(
+    conn: &Connection, ts: i64, entity_type: &str, entity: &str, score: i64, source: &str,
+    rule_id: Option<i64>, reason: &str, mitre: &str, severity: i64, env_id: &str, dedup: Option<&str>,
+) -> IssueDeLaContribution {
+    match conn.execute(
+        "INSERT OR IGNORE INTO risk_event(ts,entity_type,entity,risk_score,source,rule_id,reason,mitre,severity,env_id,dedup) \
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![ts, entity_type, entity, score, source, rule_id, reason, mitre, severity, env_id, dedup],
+    ) {
+        Ok(0) => IssueDeLaContribution::DejaPosee,
+        Ok(_) => IssueDeLaContribution::Ecrite,
+        Err(e) => IssueDeLaContribution::Refusee(e),
+    }
+}
+
+/// Insère UNE contribution de risque. Renvoie true si une ligne a été écrite (déjà posée ou refusée : false). Les
+/// voies planifiées passent par `risk_event_contribuer`, qui distingue les deux.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn risk_event_insert(
     conn: &Connection, ts: i64, entity_type: &str, entity: &str, score: i64, source: &str,
     rule_id: Option<i64>, reason: &str, mitre: &str, severity: i64, env_id: &str, dedup: Option<&str>,
 ) -> bool {
-    conn.execute(
-        "INSERT OR IGNORE INTO risk_event(ts,entity_type,entity,risk_score,source,rule_id,reason,mitre,severity,env_id,dedup) \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-        params![ts, entity_type, entity, score, source, rule_id, reason, mitre, severity, env_id, dedup],
+    matches!(
+        risk_event_contribuer(conn, ts, entity_type, entity, score, source, rule_id, reason, mitre, severity, env_id, dedup),
+        IssueDeLaContribution::Ecrite
     )
-    .map(|n| n > 0)
-    .unwrap_or(false)
 }
 
 /// COMPOSITION #23->#24 — un match threat-intel (à l'ingest, sous le lock writer, DANS la transaction du
@@ -104,7 +133,8 @@ pub(crate) const SITE_CONTRIBUTIONS_ET_ETAT_DU_RISQUE: &str = "contributions et 
 /// risque dues n'a pas pu être lue, `Lue(n)` = règles dues qui n'ont PAS contribué ce tick faute d'avoir
 /// pu être évaluées (ligne indécodable, sans entité cible, compilation refusée, requête en échec, champ
 /// d'entité absent du résultat). Avant : chacune était sautée en avançant `last_run`, indiscernable
-/// d'une règle évaluée qui ne rapporte rien.
+/// d'une règle évaluée qui ne rapporte rien. `P10.20-b` : compte aussi une règle dont une contribution au moins a
+/// été refusée par le moteur (une par règle, `last_run` non avancé ; la dédup n'est pas un refus).
 /// `P10.31-j` — `Illisible` aussi, nommant « règles de risque », si l'écrivain porte une transaction orpheline quand la
 /// phase 3 reprend le verrou : aucune contribution ni `last_run` écrits.
 pub(crate) fn run_risk_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
@@ -211,12 +241,28 @@ pub(crate) fn run_risk_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crat
         Ok(c) => c,
         Err(aveugle) => return aveugle,
     };
+    // `P10.20-b` / `P10.32-x` — LA CONTRIBUTION D'ABORD, L'ÉTAT ENSUITE. Avant, l'issue de chaque contribution était jetée
+    // et `last_run` avançait pour toutes les règles évaluées : une contribution refusée par le moteur était perdue pour ce
+    // passage (rejouée seulement si la requête la ramène encore à l'intervalle suivant), sans trace. Une règle dont une
+    // contribution est refusée n'avance plus `last_run` (elle est due dès le tick suivant, sans pas de reprise), compte UN
+    // abandon quel que soit le nombre de ses refus, et dit la cause du moteur sur une ligne de journal (une par règle).
+    // La dédup (`DejaPosee`) vaut entrée : rien à rejouer.
+    let mut refusees: Vec<i64> = Vec::new();
     for c in &contribs {
         let bucket = if c.window_s > 0 { now_ts / c.window_s } else { now_ts };
         let dedup = format!("risk:rule{}:{}:{}", c.rule_id, c.entity, bucket);
-        risk_event_insert(&conn, now_ts, &c.entity_type, &c.entity, c.score, "rule", Some(c.rule_id), &c.reason, &c.mitre, c.severity, "prod", Some(&dedup));
+        match risk_event_contribuer(&conn, now_ts, &c.entity_type, &c.entity, c.score, "rule", Some(c.rule_id), &c.reason, &c.mitre, c.severity, "prod", Some(&dedup)) {
+            IssueDeLaContribution::Refusee(e) => {
+                if !refusees.contains(&c.rule_id) {
+                    eprintln!("[detection] WARN règle de risque #{} : une contribution de risque n'a pas pu être écrite ({e}) — last_run n'avance pas, la règle est due dès le tick suivant", c.rule_id);
+                    refusees.push(c.rule_id);
+                }
+            }
+            IssueDeLaContribution::Ecrite | IssueDeLaContribution::DejaPosee => {}
+        }
     }
-    for id in &ran {
+    abandonnees += u32::try_from(refusees.len()).unwrap_or(u32::MAX);
+    for id in ran.iter().filter(|id| !refusees.contains(id)) {
         let _ = conn.execute("UPDATE rule SET last_run=?1 WHERE id=?2", params![now_ts, id]);
     }
     crate::mesure_environnement::Mesure::Lue(abandonnees)

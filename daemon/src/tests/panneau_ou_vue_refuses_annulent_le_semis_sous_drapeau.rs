@@ -26,8 +26,8 @@
 // rien écrire, l'identifiant relu une fois la lecture rendue.
 //
 // CE QU'ILS NE TIENNENT PAS : une base déjà amputée (tableau validé à panneau manquant ou hors vue AVANT ce correctif)
-// n'est pas réparée ; la ligne `[seed] … NON semé` n'est pas capturée (inchangée, déjà écrite par
-// `semer_sous_son_drapeau`) et dit « une écriture a été refusée » aussi pour une vue NON LUE ; le refus de Banni / Pass
+// n'est pas réparée ; la ligne `[seed] … NON semé` n'est pas capturée ici (elle l'est, vague AQ, par
+// `semis_vue_non_lue_banni_pass_compte_et_gabarits_repares.rs`, et une vue NON LUE y a sa phrase) ; le refus de Banni / Pass
 // (rollups.rs) n'est pas compté ; `seed_runbooks` n'est pas touché. Aucune variable d'environnement n'est lue.
 //
 // MUTANTS JOUÉS (VERIF_MUT, retirés avant le commit), chacun vu ROUGE sur son témoin : `AO1_ensemble_panneau`,
@@ -226,8 +226,9 @@ mod panneau_ou_vue_refuses_annulent_le_semis_sous_drapeau {
     }
 
     /// LA LECTURE DU NOM DE VUE RATÉE (autorisateur sur `view.name` seul), la vue présente : rien d'écrit, aucune seconde
-    /// vue du même nom, refus compté sous « écriture ou COMMIT refusé » (pas sous « présence non lue », qui dit le nom
-    /// du semis) ; lecture rendue -> le tableau entier dans la vue EXISTANTE.
+    /// vue du même nom, refus compté sous « nom de vue non lu » (`P10.28-l`, vague AQ : INVERSÉ, il l'était sous
+    /// « écriture ou COMMIT refusé » ; ni sous « présence non lue », qui dit le nom du semis) ; lecture rendue -> le
+    /// tableau entier dans la vue EXISTANTE.
     /// MUTANTS QUI LE ROUGISSENT : `AO1_vue_lecture_absente` (seconde vue du même nom, tableau validé),
     /// `AO1_vue_none_silencieuse` (tableau validé hors vue).
     #[test]
@@ -245,7 +246,9 @@ mod panneau_ou_vue_refuses_annulent_le_semis_sous_drapeau {
             assert_eq!(ao1_etat(&conn, nom, drapeau), (0, 0, 0), "`{tag}` : vue non lue -> rien n'est conservé");
             assert_eq!(ao1_vues_du_nom(&conn, vue), 1, "`{tag}` : aucune seconde vue du même nom");
             assert!(conn.is_autocommit(), "`{tag}` : la transaction du semis est fermée");
-            assert_eq!(ao1_comptes(&conn, geste), (1, 0), "`{tag}` : compté une fois");
+            assert_eq!(ao1_comptes(&conn, geste), (0, 0), "`{tag}` : ni écriture refusée, ni présence non lue");
+            let nom_non_lu = compte_des_temoins(&conn, &format!("geste de fond non validé seed : {geste} : {ETAPE_NOM_DE_VUE_NON_LU}"));
+            assert_eq!(nom_non_lu, 1, "`{tag}` : compté une fois sous « nom de vue non lu »");
             semer(&conn);
             assert_eq!(ao1_etat(&conn, nom, drapeau), (1, n, i64::from(drapeau.is_some())), "`{tag}` : rejoué entier");
             assert_eq!(ao1_vue(&conn, nom), (Some(vue.to_string()), i64::from(replie)), "`{tag}` : dans sa vue");

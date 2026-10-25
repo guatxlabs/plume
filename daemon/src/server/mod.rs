@@ -587,7 +587,7 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     seed_example_rules(&conn);
     seed_purple_rules(&conn);   // règles ATT&CK purple (flag dédié -> arrivent sur DB déjà seedée)
     seed_detection_rules(&conn);   // règles de détection ciblées (portscan/brute-force/cloudflare, flag dédié)
-    seed_runbooks(&conn);   // #3 incidents Phase 1 : runbooks managés keyés MITRE (flag dédié `seeded_runbooks`)
+    seed_runbooks(&conn);   // #3 incidents Phase 1 : runbooks managés keyés MITRE (un drapeau `seeded_runbook_<clé>` par gabarit, managé amputé réparé : P10.28-k)
     seed_ti_alert_rules(&conn);   // #23 activation : alerte sur match IOC confiance≥80 (managé, inerte tant qu'aucun IOC)
     seed_risk_rules(&conn);       // #24 activation : règles RBA mode risque (brute-force/recon par entité, managé)
     crate::population_de_calibrage::declarer_les_populations(&conn); // P4.12-g : la population de calibrage des règles livrées, lisible par le code (ne remplit que le vide)
@@ -615,7 +615,7 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     seed_vault_dashboard(&conn);
     seed_rollup_dashboard(&conn);
     ensure_rollup_srcip_host_panels(&conn);   // filet idempotent (bases existantes)
-    seed_banpass_dashboard(&conn);   // v52 : dashboard « Banni / Pass » (anti-join banlist, SWR) — idempotent par nom
+    seed_banpass_dashboard_et_compter_son_refus(&conn);   // v52 : dashboard « Banni / Pass » (anti-join banlist, SWR) — idempotent par nom ; refus compté (P10.28-l)
     seed_egress_rules(&conn);
     // PERSONNALISATION PHASE 1 — overlays versionnés (config.d) : APRÈS tous les seed_* (un overlay GAGNE
     // sur le builtin du même nom), AVANT parsers_reload (pour que le cache compilé inclue les overlays).

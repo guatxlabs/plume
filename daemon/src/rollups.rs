@@ -657,18 +657,40 @@ pub(crate) fn rollup_events(conn: &Connection) {
             0
         }
     };
+    // RÉTRACTER D'ABORD, RÉPARER ENSUITE : tant que la ré-agrégation n'a pas fini, la route doit servir
+    // cette bande en BRUT (exact, plus lent) et non depuis un rollup qu'on SAIT incomplet. On efface donc
+    // la couverture avant de toucher quoi que ce soit ; elle sera republiée si et seulement si on finit.
+    // `P10.32-a` — la rétractation est LUE, et faite UNE fois, avant tout geste sur la bande. Avant, son refus était avalé
+    // (`let _`) : la bande était purgée et ré-agrégée sous une couverture ANCIENNE restée publiée (la route ajoutait en brut
+    // des lignes que le rollup portait déjà), puis le watermark avançait et la couverture était republiée sur un INSERT
+    // avalé. Refusée : ni purge, ni agrégation de la bande, ni watermark, ni publication — la paire (watermark, couverture)
+    // du passage précédent reste celle de la base, comme pour une borne non lue ; compté et dit, repris au prochain passage.
+    // Décision de l'orchestrateur, vague AQ.
+    let couverture_retractee = !borne_lue || retracter_la_couverture_d_event_rollup(conn);
+    let bande_tenue = borne_lue && couverture_retractee;
     let mut aggregated = true;
-    if recent > agg_from && borne_lue {
-        // RÉTRACTER D'ABORD, RÉPARER ENSUITE : tant que la ré-agrégation n'a pas fini, la route doit servir
-        // cette bande en BRUT (exact, plus lent) et non depuis un rollup qu'on SAIT incomplet. On efface donc
-        // la couverture avant de toucher quoi que ce soit ; elle sera republiée si et seulement si on finit.
-        let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]);
+    if recent > agg_from && bande_tenue {
         // Buckets recomposés ENTIÈREMENT : le cap top-N src_ip peut laisser une ligne orpheline à PK
         // différente -> double comptage. Même purge-avant-agrégation que la fenêtre chaude ci-dessous.
-        let _ = conn.execute("DELETE FROM event_rollup WHERE bucket >= ?1 AND bucket < ?2", params![agg_from, recent]);
-        aggregated = conn
-            .execute(&rollup_insert_sql(&format!("ts >= {agg_from} AND ts < {recent} AND id <= {new_cov}"), min_sev, topn), [])
-            .is_ok();
+        // `P10.32-a` — SEULS les groupes (bucket, source, env_id) qu'`event` peut resservir sont purgés
+        // (`purge_des_buckets_resservis_sql`) : les lignes de rollup d'une source ou d'un environnement dont `event` ne
+        // porte plus rien dans ce bucket (rétention d'`event` plus courte que celle du rollup, index plafonné, lignes
+        // agées en froid) sont l'histoire que seul le rollup garde, et l'INSERT ci-dessous ne les récrirait pas. Avant,
+        // toute la bande était purgée : une seule vieille ligne restée dans `event` abaissait `agg_from` sous cette
+        // histoire et l'effaçait (mesuré n = 42 -> 0), et une purge par bucket seul l'effaçait encore dès qu'une ligne
+        // d'une AUTRE source ou d'un autre environnement partageait le bucket.
+        // La purge est LUE : refusée, la bande n'est pas ré-agrégée (l'INSERT OR REPLACE laisserait des orphelins
+        // top-N) et la couverture n'est pas publiée — la route sert le brut, le passage suivant reconstruit (couverture
+        // absente). Avant, son refus était avalé (`let _`) et la couverture publiée sur des orphelins.
+        aggregated = match conn.execute(&purge_des_buckets_resservis_sql("event_rollup"), params![agg_from, recent, new_cov]) {
+            Ok(_) => conn
+                .execute(&rollup_insert_sql(&format!("ts >= {agg_from} AND ts < {recent} AND id <= {new_cov}"), min_sev, topn), [])
+                .is_ok(),
+            Err(e) => {
+                eprintln!("[rollup] WARN purge de reconstruction d'event_rollup NON faite ({e}) — bande non ré-agrégée, couverture non publiée (la route sert le brut), reprise au prochain passage");
+                false
+            }
+        };
     }
     // NB : le cap top-N peut faire SORTIR une IP du top entre deux ticks ; un simple OR REPLACE
     // laisserait alors une ligne orpheline (PK différente) -> double comptage. On PURGE d'abord les
@@ -676,7 +698,7 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // qu'une fois et restent stables). Borne = i64 (pas d'injection).
     let _ = conn.execute("DELETE FROM event_rollup WHERE bucket >= ?1", params![recent]);
     let _ = conn.execute(&rollup_insert_sql(&format!("ts >= {recent}"), min_sev, topn), []); // fenêtre chaude
-    if borne_lue {
+    if bande_tenue {
         let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_WM]);
         let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_WM, recent.to_string()]);
     }
@@ -687,10 +709,8 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // reconstruction était demandée (`dirty_lo`) : elle a été sautée. Sans rien de sale, le rattrapage `[wm, recent)` ne
     // dépend pas du plancher et la couverture reste publiée comme avant.
     // Borne NON LUE (`P10.32-a`) : la couverture n'est ni effacée ni republiée, le watermark n'ayant pas bougé.
-    if borne_lue {
-        let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]);
-    }
-    if borne_lue && aggregated && bande_sale_lue && (plancher_lu || dirty_lo.is_none()) {
+    // Rétractation REFUSÉE (`P10.32-a`, plus haut) : de même. La rétractation lue a eu lieu avant tout geste sur la bande.
+    if bande_tenue && aggregated && bande_sale_lue && (plancher_lu || dirty_lo.is_none()) {
         let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_COV_ID, new_cov.to_string()]);
     }
 
@@ -748,12 +768,19 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // Les deux fronts, chacun d'au plus `dim_backfill`. Le bas s'arrête à ce qu'`event` porte ENCORE (sous
     // `MIN(event.ts)` il n'y a rien à agréger : les buckets plus vieux sont l'histoire que SEUL le rollup
     // garde, et les recomposer depuis `event` les effacerait — même règle que `event_rollup`).
-    let dim_event_floor = conn
-        .query_row("SELECT MIN(ts) FROM event", [], |r| r.get::<_, Option<i64>>(0))
-        .ok()
-        .flatten()
-        .map(|t| (t / 3600) * 3600)
-        .unwrap_or(recent);
+    // `P10.32-a` — le plancher LU ou NON LU. Avant, `.ok().flatten().unwrap_or(recent)` taisait la lecture ratée. Non lu,
+    // il vaut toujours `recent` (le front bas ne descend pas ce passage : rien n'est purgé sous la bande) mais c'est DIT.
+    // La purge d'une tranche ne dépend plus de ce plancher pour l'intégrité : elle ne touche que les groupes (bucket,
+    // source, env_id) qu'`event` resservira (`purge_des_buckets_resservis_sql`) ; le plancher ne borne plus que le coût
+    // du balayage.
+    let dim_event_floor = match conn.query_row("SELECT MIN(ts) FROM event", [], |r| r.get::<_, Option<i64>>(0)) {
+        Ok(Some(t)) => (t / 3600) * 3600,
+        Ok(None) => recent, // `event` vide : rien à agréger sous la bande
+        Err(e) => {
+            eprintln!("[rollup] WARN plancher d'event du rollup par dimension NON lu ({e}) — le front bas ne descend pas ce passage, reprise au prochain passage");
+            recent
+        }
+    };
     let down_lo = (band_lo - dim_backfill).max(dim_event_floor).min(band_lo);
     let up_hi = (band_hi + dim_backfill).min(recent).max(band_hi);
     // La BORNE D'IDENTIFIANT est prise AVANT d'agréger et POUSSÉE DANS la condition : la bande publiée porte
@@ -784,7 +811,9 @@ pub(crate) fn rollup_events(conn: &Connection) {
             if hi <= lo {
                 return;
             }
-            dim_ok &= conn.execute("DELETE FROM event_dim_rollup WHERE bucket >= ?1 AND bucket < ?2", params![lo, hi]).is_ok();
+            // `P10.32-a` — seuls les groupes (bucket, source, env_id) qu'`event` resservira sous la borne (même prédicat
+            // qu'`event_rollup`) : une dimension d'une autre source ou d'un autre environnement du même bucket reste.
+            dim_ok &= conn.execute(&purge_des_buckets_resservis_sql("event_dim_rollup"), params![lo, hi, dim_at_id]).is_ok();
             dim_ok &= dim_agg(format!("ts >= {lo} AND ts < {hi} AND id <= {dim_at_id}"));
         };
         dim_slice(down_lo, band_lo); // le front BAS : vers l'histoire jamais agrégée
@@ -952,10 +981,59 @@ fn lire_un_watermark(conn: &Connection, cle: &str) -> LectureDeWatermark {
     }
 }
 
-/// Le journal des deux plis de `rollup_hosts`, et la première moitié de la clé de leurs refus comptés (`P10.26-d`).
+/// Le journal des deux plis de `rollup_hosts`, et la première moitié de la clé de leurs refus comptés (`P10.26-d`) ;
+/// `P10.32-a`, aussi celle de la rétractation refusée de la couverture d'`event_rollup`.
 const JOURNAL_DU_PLI: &str = "rollup";
 const GESTE_PLI_DEFINITIF: &str = "pli définitif de l'inventaire de flotte";
 const GESTE_RATTRAPAGE: &str = "rattrapage de l'inventaire de flotte";
+/// `P10.32-a` — le geste et l'étape comptés quand la base refuse d'effacer la couverture d'`event_rollup` avant la bande.
+const GESTE_COUVERTURE_D_EVENT_ROLLUP: &str = "couverture d'event_rollup";
+const ETAPE_RETRACTATION_REFUSEE: &str = "rétractation refusée";
+
+/// `P10.32-a` — RÉTRACTE la couverture d'`event_rollup` (`meta.event_rollup_cov_id`) avant tout geste sur la bande. Rend
+/// `true` si la base a pris l'effacement (la clé absente compte comme prise : rien n'était publié). Refusé : compté sous
+/// « rollup : couverture d'event_rollup : rétractation refusée », dit au journal avec la cause du moteur, et `false` :
+/// l'appelant ne touche alors ni à la bande, ni au watermark, ni à la couverture.
+fn retracter_la_couverture_d_event_rollup(conn: &Connection) -> bool {
+    match conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]) {
+        Ok(_) => true,
+        Err(e) => {
+            compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_COUVERTURE_D_EVENT_ROLLUP, ETAPE_RETRACTATION_REFUSEE, &e);
+            eprintln!("[rollup] WARN couverture d'event_rollup NON rétractée ({e}) — bande, watermark et couverture laissés tels quels ce passage, reprise au prochain passage");
+            false
+        }
+    }
+}
+
+/// `P10.32-a` — LA PURGE D'UNE RECONSTRUCTION, BORNÉE À CE QU'`event` PEUT RESSERVIR. `?1`/`?2` = la bande `[lo, hi)`,
+/// `?3` = la borne d'identifiant de l'agrégation qui suit. Une ligne de rollup n'est purgée que si `event` porte au moins
+/// une ligne de son GROUPE (bucket, source, env_id) sous la borne — la MÊME découpe horaire (`(ts/3600)*3600`), les mêmes
+/// `COALESCE` et la même condition que l'INSERT de `rollup_insert_sql` / `dim_rollup_insert_sql`, qui récrit donc ce
+/// groupe entièrement (pas d'orphelin top-N : le plafond de `src_ip` et celui des valeurs de dimension changent des clés
+/// À L'INTÉRIEUR d'un groupe, jamais de source ni d'environnement). Un groupe SANS ligne d'`event` reste intact, même si
+/// son bucket porte des lignes d'autres sources ou d'autres environnements : c'est l'histoire que seul le rollup garde
+/// (rétention d'`event` plus courte, index plafonné ou purgé à sa propre fenêtre, lignes agées en froid, événements de
+/// contrôle jamais purgés qui partagent le bucket). La granularité est celle à laquelle la rétention retire des lignes
+/// d'`event` : par environnement (`index_policy`), par source (garde de non-purge, gel juridique). EFFICACITÉ : la
+/// liste des groupes (`g`, DISTINCT) est matérialisée UNE fois par la recherche d'intervalle `idx_event_ts (ts>? AND
+/// ts<?)` — la même bande que l'INSERT, qui lit ces mêmes lignes ; `source`/`env_id` ne sont pas dans l'index, la
+/// lecture n'est donc pas couvrante — puis `CROSS JOIN` (ordre FORCÉ : la liste mène) cherche chaque groupe par la clé
+/// primaire de la table de rollup, menée par `bucket, source`, et la suppression se fait par `rowid`. Une forme
+/// `(bucket, source, env_id) IN (sous-requête)` a été relevée et écartée : SQLite y matérialisait la sous-requête DEUX
+/// fois (liste de l'index sur `bucket`, puis contrôle du tuple), soit deux lectures non couvrantes de la bande. Plan
+/// relevé et témoigné (`rbr_la_purge_des_buckets_resservis_suit_l_index_de_event_ts`). LIMITE (écrite, déjà vraie avant) : un groupe
+/// partiellement purgé côté `event` (frontière de rétention, une ligne de contrôle gardée parmi d'autres retirées de la
+/// même source) est reconstruit sur ce qu'`event` porte encore.
+/// `table` est un littéral interne (jamais une entrée utilisateur).
+pub(crate) fn purge_des_buckets_resservis_sql(table: &str) -> String {
+    format!(
+        "DELETE FROM {table} WHERE rowid IN (SELECT r.rowid FROM \
+         (SELECT DISTINCT (ts/3600)*3600 AS b, COALESCE(source,'') AS s, COALESCE(env_id,'prod') AS e \
+          FROM event WHERE ts >= ?1 AND ts < ?2 AND id <= ?3) g \
+         CROSS JOIN {table} r ON r.bucket = g.b AND r.source = g.s AND r.env_id = g.e \
+         WHERE r.bucket >= ?1 AND r.bucket < ?2)"
+    )
+}
 
 /// `P10.26-s` — la fin d'une transaction que CE geste a ouverte : ses écritures ont réussi -> `COMMIT` jugé
 /// (`valider_la_transaction`, qui annule un refus) ; une écriture a échoué -> `ROLLBACK` de la sienne. Jamais appelée
@@ -1562,6 +1640,38 @@ fn retention_apply_caps(conn: &Connection, p: &IndexPolicy, guard: &str) {
     }
 }
 
+/// `P10.20-b` — LA FENÊTRE D'UNE FAMILLE DE RÉTENTION, OU RIEN. Même chaîne que `retention_effective` (la ligne `setting`
+/// gagne, sinon env/conf/défaut, planchers et plafonds de `RETENTION_FIELDS`), par `setting_days_lu`, dont le troisième
+/// champ n'est plus jeté : une valeur ÉCRITE mais illisible rend `None` — la famille n'est pas purgée ce tour — et non le
+/// repli env/défaut, qui purgerait au-delà de ce que l'admin a fixé. Une clé absente de `RETENTION_FIELDS` (aucun appelant
+/// n'en passe : les cinq sont des littéraux) rend aussi `None` au lieu du zéro de `retention_effective`. Les deux sont
+/// comptés comme tick aveugle sous le nom du réglage (`compter_un_tick_aveugle`, qui dit la ligne au journal).
+pub(crate) fn fenetre_de_retention_lue(conn: &Connection, conf: &HashMap<String, String>, cle: &'static str) -> Option<i64> {
+    let Some((k, env_key, d, floor, ceil)) = RETENTION_FIELDS.into_iter().find(|(k, ..)| *k == cle) else {
+        crate::metrics::compter_un_tick_aveugle(cle, CAUSE_CLE_DE_RETENTION_INCONNUE);
+        return None;
+    };
+    match setting_days_lu(conn, conf, k, env_key, d, floor, ceil) {
+        (_, _, Some(illisible)) => {
+            crate::metrics::compter_un_tick_aveugle(cle, &cause_du_reglage_de_retention_illisible(&illisible));
+            None
+        }
+        (jours, _, None) => Some(jours),
+    }
+}
+
+/// `P10.20-b` — la cause comptée et dite d'une famille de rétention sautée faute de réglage lisible.
+pub(crate) fn cause_du_reglage_de_retention_illisible(moteur: &str) -> String {
+    format!("réglage de rétention écrit NON lu ({moteur}) — famille non purgée ce tour, jamais le repli env/défaut")
+}
+pub(crate) const CAUSE_CLE_DE_RETENTION_INCONNUE: &str = "clé de rétention inconnue — famille non purgée ce tour";
+
+/// `P10.20-b` — le journal, le geste et l'étape comptés quand l'INSERT du pli horaire des métriques est refusé (la purge
+/// des métriques brutes est alors sautée).
+const JOURNAL_DE_LA_RETENTION: &str = "retention";
+const GESTE_PLI_HORAIRE_DES_METRIQUES: &str = "pli horaire des métriques";
+const ETAPE_PLI_REFUSE: &str = "INSERT refusé";
+
 /// Point d'entrée HISTORIQUE (tenant default / mode 0) : db_path vide -> le tier cold (si activé) résout la
 /// racine cold comme AVANT (`PLUME_COLD_DIR` ou `<parent PLUME_DB>/cold`). Comportement inchangé.
 pub(crate) fn retention_run(db: &Arc<Mutex<Connection>>) {
@@ -1588,15 +1698,19 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
         // PLANCHERS DURS (correctifs H1/M6 : event≥7j, alert≥30j...) sont appliqués ICI aussi (défense : une valeur
         // écrite hors bornes, un env trop bas ou une conf agressive ne peut PAS purger sous le plancher). Sans ligne
         // `setting`, comportement historique (env/conf/défaut). Une valeur écrite par l'UI est prise au tick suivant.
+        // `P10.20-b` — UNE VALEUR ÉCRITE ILLISIBLE NE PURGE PAS. Avant, `retention_effective` jetait le troisième champ de
+        // `setting_days_lu` : une ligne `setting` présente mais non lue (valeur BLOB ou non entière, schéma illisible, lecture ratée)
+        // retombait sur env/conf/défaut, et la purge supprimait au-delà de ce que l'admin avait fixé (365 j écrits, 30 j
+        // appliqués). Désormais la famille de ce réglage n'est PAS purgée ce tour (fail-closed vers la CONSERVATION,
+        // décision de l'orchestrateur, vague AQ), compté comme tick aveugle sous le nom du réglage et dit, jamais le repli.
         (
-            retention_effective(&conn, &conf, "retention_days"),
-            retention_effective(&conn, &conf, "snapshot_days"),
-            retention_effective(&conn, &conf, "alert_days"),
-            retention_effective(&conn, &conf, "metric_days"),
-            retention_effective(&conn, &conf, "metric_raw_hours"),
+            fenetre_de_retention_lue(&conn, &conf, "retention_days"),
+            fenetre_de_retention_lue(&conn, &conf, "snapshot_days"),
+            fenetre_de_retention_lue(&conn, &conf, "alert_days"),
+            fenetre_de_retention_lue(&conn, &conf, "metric_days"),
+            fenetre_de_retention_lue(&conn, &conf, "metric_raw_hours"),
         )
     };
-    let cutoff = n - raw_h * 3600;
     // ==========================================================================================
     // `P10.5-h` — L'HORIZON DES MÉTRIQUES EST `metric_days`, PAR CONCEPTION. DÉCIDÉ LE 2026-08-28.
     //
@@ -1640,17 +1754,30 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
     // La table `metric` = jauges TEMPS RÉEL (fenêtre raw_h), PETITE -> une purge NON chunkée ne provoque pas le
     // stall d'ingest qui motivait le chunking des GROSSES tables (event/alert). État FINAL identique à la purge
     // chunkée (même prédicat `ts < cutoff`), seule l'atomicité change.
-    {
+    // `P10.20-b` — `metric_raw_hours` illisible : ni pli ni purge des métriques brutes ce tour (dit et compté plus haut).
+    if let Some(raw_h) = raw_h {
+        let cutoff = n - raw_h * 3600;
         let conn = db.lock();
-        let _ = conn.execute(
+        // `P10.20-b` — la purge n'a lieu qu'APRÈS l'INSERT pris. Avant, ses deux résultats étaient avalés : un INSERT
+        // refusé (disque, verrou, interruption) était suivi de la purge, et les lignes brutes partaient SANS agrégat —
+        // la perte même que l'atomicité ci-dessus promet d'éviter. Refusé : rien n'est purgé, compté et dit, le tick
+        // suivant reprend le pli entier (mêmes lignes, `ts < cutoff`). Décision de l'orchestrateur, vague AQ.
+        match conn.execute(
             "INSERT INTO metric_rollup(ts,name,host,labels,avg,min,max,n) \
              SELECT (ts/3600)*3600, name, host, labels, AVG(value), MIN(value), MAX(value), COUNT(*) \
              FROM metric WHERE ts < ?1 GROUP BY ts/3600, name, host, labels",
             params![cutoff],
-        );
-        // Purge ATOMIQUE (même verrou, même scope) : aucune fenêtre où une ligne <cutoff peut être purgée
-        // sans avoir été rollup-ée. NON chunkée volontairement (table petite -> pas de stall d'ingest).
-        let _ = conn.execute("DELETE FROM metric WHERE ts < ?1", params![cutoff]);
+        ) {
+            Ok(_) => {
+                // Purge ATOMIQUE (même verrou, même scope) : aucune fenêtre où une ligne <cutoff peut être purgée
+                // sans avoir été rollup-ée. NON chunkée volontairement (table petite -> pas de stall d'ingest).
+                let _ = conn.execute("DELETE FROM metric WHERE ts < ?1", params![cutoff]);
+            }
+            Err(e) => {
+                compter_un_geste_de_fond_non_valide(&conn, JOURNAL_DE_LA_RETENTION, GESTE_PLI_HORAIRE_DES_METRIQUES, ETAPE_PLI_REFUSE, &e);
+                eprintln!("[retention] WARN pli horaire des métriques NON écrit ({e}) — métriques brutes NON purgées ce tour, reprise au prochain passage");
+            }
+        }
     }
     // #23 F3 — les re-runs `rollup_events` / `materialize_banned_ip` / `rollup_risk` (ancien « filet horaire »)
     // sont RETIRÉS : la boucle de rollup dédiée (spawn_rollup_loop, cadence `rollup_interval` ~120 s) appelle
@@ -1666,21 +1793,30 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
     // DANS cold_age_run -> retour immédiat si absent). Placé AVANT la purge globale de `event` : la bande
     // agée [now-retention .. now-hot_window] est DISJOINTE de la bande hard-purgée (ts < now-retention) donc
     // l'ordre n'altère PAS l'état final. Feature OFF **ou** flag OFF -> aucun Parquet, aucune suppression cold.
+    // `P10.20-b` — `retention_days` illisible : le vieillissement (qui supprime d'`event` ce qu'il columnarise, et dont la
+    // bande et l'expiration froide dérivent de cette fenêtre) est sauté avec la famille, jamais nourri d'un repli.
     #[cfg(feature = "cold_tier")]
-    crate::cold_store::cold_age_run(db, db_path, &conf, n, ev);
+    if let Some(ev) = ev {
+        crate::cold_store::cold_age_run(db, db_path, &conf, n, ev);
+    }
     #[cfg(not(feature = "cold_tier"))]
     let _ = db_path; // db_path n'est consommé QUE par le tier cold (gate compile) -> inerte sinon.
     let policies = { let conn = db.lock(); load_index_policies(&conn) };
-    let global_cutoff = n - ev * 86400;
+    // `P10.20-b` — `None` = `retention_days` écrit mais illisible : `event`, `event_rollup` et `event_dim_rollup` ne sont
+    // PAS purgés ce tour, y compris leurs fenêtres d'index (`retention_prune_table` porte les deux dans le même appel).
+    // LIMITE : les plafonds par index (`retention_apply_caps`), réglés par `index_policy` et non par ce réglage, tournent.
+    let global_cutoff: Option<i64> = ev.map(|ev| n - ev * 86400);
     // Rollups pré-agrégés (event_rollup / event_dim_rollup) purgés PAR LA MÊME policy -> les stats per-index
     // (compte/oldest lus depuis event_rollup) restent COHÉRENTES avec le brut conservé (un index à rétention
     // plus LONGUE que le global garde ses buckets). Purge chunkée (#23 F3), mêmes lignes finales supprimées.
-    retention_prune_table(db, "event_rollup", "bucket", "", global_cutoff, n, &policies);
-    retention_prune_table(db, "event_dim_rollup", "bucket", "", global_cutoff, n, &policies);
-    // La purge vient de SUPPRIMER des buckets sous le cutoff : la bande publiée ne peut plus en témoigner.
-    // On remonte son plancher (cf. `DimRollupCoverage::raise_floor`) — sinon la couverture affirmerait une
-    // image sur des buckets qu'on vient d'effacer, ce qui est exactement le défaut qu'on ferme.
-    { let conn = db.lock(); DimRollupCoverage::raise_floor(&conn, global_cutoff); }
+    if let Some(global_cutoff) = global_cutoff {
+        retention_prune_table(db, "event_rollup", "bucket", "", global_cutoff, n, &policies);
+        retention_prune_table(db, "event_dim_rollup", "bucket", "", global_cutoff, n, &policies);
+        // La purge vient de SUPPRIMER des buckets sous le cutoff : la bande publiée ne peut plus en témoigner.
+        // On remonte son plancher (cf. `DimRollupCoverage::raise_floor`) — sinon la couverture affirmerait une
+        // image sur des buckets qu'on vient d'effacer, ce qui est exactement le défaut qu'on ferme.
+        { let conn = db.lock(); DimRollupCoverage::raise_floor(&conn, global_cutoff); }
+    }
     // RÉTENTION DE L'AUDIT : NE JAMAIS purger l'audit de config NI les marqueurs d'accès
     // opérateur/tenant-admin (client-visibles). Sinon un admin baisse la rétention, agit, et sous quelques
     // jours TOUTE la trace SOC-visible/alertable de ses changements — y compris l'event « rétention baissée »
@@ -1717,7 +1853,7 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
     // BYTE-IDENTIQUE) + RUNTIME (`PLUME_COLD_TIER` non posé OU knob non posé -> `cold_ret==ev` -> cutoff identique).
     #[cfg(feature = "cold_tier")]
     let global_cutoff = if cfg(&conf, "PLUME_COLD_TIER", "") == "1" {
-        n - crate::cold_store::cold_retention_days(&conf, ev) * 86400
+        ev.map(|ev| n - crate::cold_store::cold_retention_days(&conf, ev) * 86400)
     } else {
         global_cutoff
     };
@@ -1733,14 +1869,17 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
     // hard-purge global INCHANGÉS — seuls les plafonds count/byte sont gatés.
     #[cfg(feature = "cold_tier")]
     let caps_active = cfg(&conf, "PLUME_COLD_TIER", "") != "1";
-    let snap_cutoff = n - snap * 86400;
-    let alert_cutoff = n - alert * 86400;
+    // `P10.20-b` — `None` = réglage écrit illisible : la famille n'est pas purgée ce tour.
+    let snap_cutoff: Option<i64> = snap.map(|snap| n - snap * 86400);
+    let alert_cutoff: Option<i64> = alert.map(|alert| n - alert * 86400);
     let batch = retention_purge_batch();
     // #23 F3 — decision legal-hold lue en verrou COURT ; les purges qui suivent sont chunkées (verrou par-lot).
     let enforce = { let conn = db.lock(); legal_hold_enforcement(&conn) };
     match enforce {
         HoldEnforce::NoHolds => {
-            retention_prune_table(db, "event", "ts", RETENTION_NONPURGE, global_cutoff, n, &policies);
+            if let Some(global_cutoff) = global_cutoff {
+                retention_prune_table(db, "event", "ts", RETENTION_NONPURGE, global_cutoff, n, &policies);
+            }
             for p in &policies {
                 #[cfg(feature = "cold_tier")]
                 if !caps_active { continue; }
@@ -1748,12 +1887,18 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
                 retention_apply_caps(&conn, p, RETENTION_NONPURGE);
             }
             // Même ENSEMBLE FINAL que les littéraux historiques (purge chunkée #23 F3 ; prédicats identiques).
-            chunked_purge(db, "snapshot", "ts < ?1", &[&snap_cutoff], batch);
-            chunked_purge(db, "alert", "status<>'new' AND ts < ?1", &[&alert_cutoff], batch);
+            if let Some(snap_cutoff) = snap_cutoff {
+                chunked_purge(db, "snapshot", "ts < ?1", &[&snap_cutoff], batch);
+            }
+            if let Some(alert_cutoff) = alert_cutoff {
+                chunked_purge(db, "alert", "status<>'new' AND ts < ?1", &[&alert_cutoff], batch);
+            }
         }
         HoldEnforce::Guard(pred) => {
             let guard = format!("{RETENTION_NONPURGE} AND {pred}");
-            retention_prune_table(db, "event", "ts", &guard, global_cutoff, n, &policies);
+            if let Some(global_cutoff) = global_cutoff {
+                retention_prune_table(db, "event", "ts", &guard, global_cutoff, n, &policies);
+            }
             for p in &policies {
                 #[cfg(feature = "cold_tier")]
                 if !caps_active { continue; }
@@ -1762,14 +1907,20 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
             }
             // alert/snapshot : SEUL un hold GLOBAL (scope_source='') les épingle (aucune colonne source).
             let sg = legal_hold_not_held_global("ts");
-            chunked_purge(db, "snapshot", &format!("ts < ?1 AND {sg}"), &[&snap_cutoff], batch);
-            chunked_purge(db, "alert", &format!("status<>'new' AND ts < ?1 AND {sg}"), &[&alert_cutoff], batch);
+            if let Some(snap_cutoff) = snap_cutoff {
+                chunked_purge(db, "snapshot", &format!("ts < ?1 AND {sg}"), &[&snap_cutoff], batch);
+            }
+            if let Some(alert_cutoff) = alert_cutoff {
+                chunked_purge(db, "alert", &format!("status<>'new' AND ts < ?1 AND {sg}"), &[&alert_cutoff], batch);
+            }
         }
         HoldEnforce::FailClosed => {
             eprintln!("[retention] legal-hold indéterminé (legal_hold illisible) -> purge de `event`+`alert`+`snapshot` SUSPENDUE ce tick (fail-closed) ; les agrégats reconstructibles (metric_rollup) poursuivent");
         }
     }
-    chunked_purge(db, "metric_rollup", "ts < ?1", &[&(n - metric * 86400)], batch);
+    if let Some(metric) = metric {
+        chunked_purge(db, "metric_rollup", "ts < ?1", &[&(n - metric * 86400)], batch);
+    }
     // P10.7-b — COMPACTION DE L'INDEX PLEIN-TEXTE, ICI ET PAS AILLEURS.
     //
     // POURQUOI À CET ENDROIT PRÉCIS. Les lignes au-dessus VIENNENT de supprimer des `event`, et c'est

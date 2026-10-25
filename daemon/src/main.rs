@@ -589,10 +589,14 @@ const RETENTION_FIELDS: [(&str, &str, i64, i64, i64); 5] = [
 /// `default`) ET SI LA VALEUR ÉCRITE N'A PAS PU ÊTRE LUE. La valeur rendue est toujours celle que la purge
 /// appliquera (même chaîne) ; ce qui manquait était la provenance, et la différence entre « rien d'écrit » et
 /// « pas pu lire ce qui est écrit ».
+/// `P10.20-b` — UNE VALEUR PRÉSENTE MAIS NON ENTIÈRE (« 365.0 », « », « 30j ») EST ILLISIBLE, pas absente : avant, elle
+/// rendait `Ok(None)` et tombait sur env/conf/défaut sans rien dire — la passe de rétention purgeait au défaut (200 j de
+/// données sous un réglage écrit à 365.0 : purgées à 30 j). Seule l'ABSENCE de ligne rend le repli. La cause ne cite que
+/// l'erreur d'analyse (vocabulaire fermé de la bibliothèque standard), jamais la valeur : elle sert d'étiquette de compte.
 fn setting_days_lu(conn: &Connection, conf: &HashMap<String, String>, skey: &str, env_key: &str, d: i64, floor: i64, ceil: i64) -> (i64, &'static str, Option<String>) {
     let ecrite: Result<Option<i64>, String> =
         match conn.query_row("SELECT value FROM setting WHERE scope='global' AND key=?1", params![skey], |r| r.get::<_, String>(0)) {
-            Ok(s) => Ok(s.trim().parse::<i64>().ok()),
+            Ok(s) => s.trim().parse::<i64>().map(Some).map_err(|e| format!("valeur écrite non entière : {e}")),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.to_string()),
         };

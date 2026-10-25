@@ -237,12 +237,32 @@ fn eval_correlation(
 pub(crate) const SITE_ECRITURES_DES_CORRELATIONS: &str = "last_run, groupes et contributions";
 pub(crate) const SITE_ECRITURES_DES_LIGNES_DE_BASE: &str = "observations, anomalies et état";
 
+/// `P10.20-b` / `P10.32-x` — écrit l'état d'une corrélation ÉVALUÉE dont les alertes (ou contributions) sont toutes
+/// entrées : `last_fired` si elle a tiré, puis `last_run`. Chaque refus du moteur est dit au journal (la cause seule) ;
+/// rend `false` si un refus au moins a eu lieu, et l'appelant compte alors un abandon pour la corrélation.
+fn ecrire_l_etat_de_la_correlation(conn: &Connection, id: i64, now_ts: i64, a_tire: bool) -> bool {
+    let mut ecrit = true;
+    if a_tire {
+        if let Err(e) = conn.execute("UPDATE correlation SET last_fired=?1 WHERE id=?2", params![now_ts, id]) {
+            eprintln!("[detection] WARN corrélation #{id} : son dernier tir n'a pas pu être écrit ({e}) — last_fired reste celui d'avant");
+            ecrit = false;
+        }
+    }
+    if let Err(e) = conn.execute("UPDATE correlation SET last_run=?1 WHERE id=?2", params![now_ts, id]) {
+        eprintln!("[detection] WARN corrélation #{id} : son évaluation n'a pas pu être écrite ({e}) — last_run reste celui d'avant, la corrélation est due dès le tick suivant");
+        ecrit = false;
+    }
+    ecrit
+}
+
 /// Évalue les corrélations DUES (enabled + intervalle écoulé) en parallélisme BORNÉ (detect_concurrency),
 /// puis écrit les finding-groups sous un seul verrou. MODE 0 : `correlation` vide -> `due` vide -> retour
 /// immédiat (0 travail, byte-identique).
 /// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des corrélations
 /// dues n'a pas pu être lue (table absente comprise : une base non migrée n'évalue RIEN, et le dire vaut
-/// mieux qu'un « no-op strict » indiscernable d'un tick calme), `Lue(n)` = corrélations dues abandonnées.
+/// mieux qu'un « no-op strict » indiscernable d'un tick calme), `Lue(n)` = corrélations dues abandonnées : évaluation
+/// ratée, ou (`P10.20-b`) une écriture au moins refusée par le moteur — alerte, contribution de risque, résolution,
+/// `last_fired`, `last_run` —, une par corrélation quel que soit le nombre de ses refus.
 /// `P10.31-j` — `Illisible` aussi, nommant « corrélations », si l'écrivain porte une transaction orpheline quand la phase 3
 /// reprend le verrou : rien n'est écrit.
 pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
@@ -304,25 +324,52 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> cr
         Ok(c) => c,
         Err(aveugle) => return aveugle,
     };
+    // `P10.20-b` / `P10.32-x` (jumeau de `run_advanced_rules`) — L'ALERTE D'ABORD, L'ÉTAT ENSUITE. Avant, `last_run` avançait
+    // en tête (`let _`), l'INSERT de l'alerte et la contribution de risque étaient avalés, puis `last_fired` affirmait un
+    // tir et la résolution des groupes retombés était jouée : une séquence d'attaque appariée dont l'alerte n'entrait pas
+    // n'existait nulle part, et la corrélation n'était réévaluée qu'un intervalle plus tard. Désormais, une corrélation
+    // dont une alerte (ou une contribution) est REFUSÉE par le moteur n'écrit ni la résolution de ses groupes, ni
+    // `last_fired`, ni `last_run` : elle est due dès le tick suivant (pas de pas de reprise), et l'alerte entrée entre-temps
+    // y est écartée par la dédup (`Ok(0)`, qui vaut entrée, jamais un refus). Chaque écriture refusée (alerte,
+    // contribution, résolution, `last_fired`, `last_run`) est dite au journal, la cause du moteur seule, et la corrélation
+    // compte UN abandon quel que soit le nombre de ses refus. Le rafraîchissement d'une alerte ENTRÉE refusé est dit, pas
+    // compté (l'alerte existe ; même règle que le throttle d'une alerte entrée de `run_advanced_rules`). Chemin nominal
+    // inchangé : mêmes lignes, même `last_run`, même `last_fired`.
     for ev in results {
-        // last_run avance TOUJOURS (même en échec -> re-tentera au prochain intervalle).
-        let _ = conn.execute("UPDATE correlation SET last_run=?1 WHERE id=?2", params![now_ts, ev.id]);
         if !ev.ok {
-            // ÉCHEC D'ÉVAL : ne rien écrire, NE PAS résoudre de groupe ouvert (fail-closed) — et COMPTER.
+            // ÉCHEC D'ÉVAL : ne rien écrire, NE PAS résoudre de groupe ouvert (fail-closed) — et COMPTER. `last_run` avance
+            // quand même (re-tentera au prochain intervalle) ; son refus est dit, sans second compte.
             abandonnees += 1;
+            if let Err(e) = conn.execute("UPDATE correlation SET last_run=?1 WHERE id=?2", params![now_ts, ev.id]) {
+                eprintln!("[detection] WARN corrélation #{} : sa replanification après une évaluation ratée n'a pas pu être écrite ({e}) — elle est due dès le tick suivant", ev.id);
+            }
             continue;
         }
-        if !ev.matched.is_empty() {
-            let _ = conn.execute("UPDATE correlation SET last_fired=?1 WHERE id=?2", params![now_ts, ev.id]);
-        }
+        let a_tire = !ev.matched.is_empty();
         if ev.risk_score > 0 {
             // MODE RISK : chaque entité matchée CONTRIBUE au RBA (dédup par bucket-de-fenêtre) — pas d'alerte
             // scalaire directe. L'accumulation/décroissance/alerte est gérée par rollup_risk (#24).
             let bucket = if ev.window_s > 0 { now_ts / ev.window_s } else { now_ts };
+            let mut contributions_refusees = 0u32;
             for (entity, detail) in &ev.matched {
                 let dedup = format!("risk:corr{}:{}:{}", ev.id, entity, bucket);
                 let reason = format!("corrélation « {} » : {}", ev.name, detail);
-                risk_event_insert(&conn, now_ts, &ev.entity_type, entity, ev.risk_score, "correlation", Some(ev.id), &reason, &ev.mitre, ev.severity, "prod", Some(&dedup));
+                match risk_event_contribuer(&conn, now_ts, &ev.entity_type, entity, ev.risk_score, "correlation", Some(ev.id), &reason, &ev.mitre, ev.severity, "prod", Some(&dedup)) {
+                    IssueDeLaContribution::Refusee(e) => {
+                        if contributions_refusees == 0 {
+                            eprintln!("[detection] WARN corrélation #{} : une contribution de risque n'a pas pu être écrite ({e}) — ni last_fired ni last_run ne sont posés : la corrélation est due dès le tick suivant", ev.id);
+                        }
+                        contributions_refusees += 1;
+                    }
+                    IssueDeLaContribution::Ecrite | IssueDeLaContribution::DejaPosee => {}
+                }
+            }
+            if contributions_refusees > 0 {
+                abandonnees += 1; // une corrélation, un abandon
+                continue;
+            }
+            if !ecrire_l_etat_de_la_correlation(&conn, ev.id, now_ts, a_tire) {
+                abandonnees += 1;
             }
             continue;
         }
@@ -333,6 +380,7 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> cr
         // (src_ip/pid/host). Tout autre key_field (user, session…) laisse les colonnes NULL (A2 : `user` différé ;
         // conservateur = NULL plutôt que mislabeler). Re-validée au wizard puis à /api/actions — jamais auto-jouée.
         let mut crossing: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut alertes_refusees = 0u32;
         for (entity, detail) in &ev.matched {
             let dedup = format!("corr-{}-{}", ev.id, entity);
             crossing.insert(dedup.clone());
@@ -344,19 +392,34 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> cr
                 "host" => (None, None, Some(entity.as_str())),
                 _ => (None, None, None),
             };
-            let _ = conn.execute(
+            // `Ok(0)` (déjà ouverte, écartée par la dédup) vaut entrée : seul un `Err` est un refus.
+            if let Err(e) = conn.execute(
                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,src_ip,pid,host,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                 params![now_ts, format!("corr.{}", ev.id), ev.severity, title, detail_full, dedup, ev.mitre, e_src, e_pid, e_host, crate::fondement::Fondement::Regle.mot()],
-            );
-            let _ = conn.execute(
+            ) {
+                if alertes_refusees == 0 {
+                    eprintln!("[detection] WARN corrélation #{} : une alerte n'a pas pu être écrite ({e}) — ni la résolution de ses groupes, ni last_fired, ni last_run ne sont posés : la corrélation est due dès le tick suivant", ev.id);
+                }
+                alertes_refusees += 1;
+                continue;
+            }
+            if let Err(e) = conn.execute(
                 "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, severity=?3, detail=?4 WHERE dedup=?5 AND status IN ('new','ack')",
                 params![now_ts, title, ev.severity, detail_full, dedup],
-            );
+            ) {
+                eprintln!("[detection] WARN corrélation #{} : une alerte entrée n'a pas pu être rafraîchie ({e}) — elle garde son heure et son détail d'avant", ev.id);
+            }
         }
-        // Résolution : SEULEMENT parce que l'éval a RÉUSSI (ok=true) -> les groupes ouverts de CETTE corrélation
-        // dont l'entité n'apparaît plus dans `crossing` sont résolus (retombée). Fail-closed : jamais sur échec.
-        // Les groupes ouverts qu'on ne sait pas LIRE ne sont pas résolus (fail-closed), et chaque lecture
-        // manquée est comptée : une résolution qui n'a pas eu lieu n'est pas un groupe « toujours actif ».
+        if alertes_refusees > 0 {
+            abandonnees += 1; // une corrélation, un abandon
+            continue; // ni résolution, ni last_fired, ni last_run : la corrélation est due dès le tick suivant
+        }
+        // Résolution : SEULEMENT parce que l'éval a RÉUSSI (ok=true) et que toutes ses alertes sont entrées -> les groupes
+        // ouverts de CETTE corrélation dont l'entité n'apparaît plus dans `crossing` sont résolus (retombée). Fail-closed :
+        // jamais sur échec. Les groupes ouverts qu'on ne sait pas LIRE ne sont pas résolus (fail-closed), et la lecture
+        // manquée est comptée (un abandon pour la corrélation) : une résolution qui n'a pas eu lieu n'est pas un groupe
+        // « toujours actif ».
+        let mut abandon = false;
         let open: Vec<String> = {
             let like = format!("corr-{}-%", ev.id);
             match conn.prepare("SELECT dedup FROM alert WHERE dedup LIKE ?1 AND status IN ('new','ack')") {
@@ -365,29 +428,42 @@ pub(crate) fn run_correlations(db: &Arc<Mutex<Connection>>, db_path: &str) -> cr
                         .filter_map(|r| match r {
                             Ok(d) => Some(d),
                             Err(_) => {
-                                abandonnees += 1;
+                                abandon = true;
                                 None
                             }
                         })
                         .collect(),
                     Err(_) => {
-                        abandonnees += 1;
+                        abandon = true;
                         Vec::new()
                     }
                 },
                 Err(_) => {
-                    abandonnees += 1;
+                    abandon = true;
                     Vec::new()
                 }
             }
         };
+        let mut resolution_refusee = false;
         for d in open {
             if !crossing.contains(&d) {
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "UPDATE alert SET status='resolved', dedup=NULL WHERE dedup=?1 AND status IN ('new','ack')",
                     params![d],
-                );
+                ) {
+                    if !resolution_refusee {
+                        eprintln!("[detection] WARN corrélation #{} : un groupe ouvert retombé n'a pas pu être résolu ({e}) — il reste ouvert", ev.id);
+                    }
+                    resolution_refusee = true;
+                    abandon = true;
+                }
             }
+        }
+        if !ecrire_l_etat_de_la_correlation(&conn, ev.id, now_ts, a_tire) {
+            abandon = true;
+        }
+        if abandon {
+            abandonnees += 1; // une corrélation, un abandon
         }
     }
     crate::mesure_environnement::Mesure::Lue(abandonnees)
@@ -558,10 +634,12 @@ pub(crate) const REPRISE_LIGNE_DE_BASE_S: i64 = 300;
 /// REND SON BILAN (`P4.1-r`, même contrat que `run_due_rules`) : `Illisible` si la liste des lignes de
 /// base dues n'a pas pu être lue, `Lue(n)` = lignes de base dues abandonnées ce tick (ligne indécodable,
 /// évaluation en échec, au-delà du plafond de traitement par tick — cette dernière est RE-TENTÉE au
-/// tick suivant mais n'en est pas moins non évaluée ici —, ou alerte d'anomalie refusée par le moteur, `P10.20-b` :
-/// une par ligne de base quel que soit le nombre de ses alertes refusées, reprise au pas `REPRISE_LIGNE_DE_BASE_S`).
-/// Une alerte écartée par la dédup (`INSERT OR IGNORE` qui rend `Ok(0)`, déjà entrée à un passage antérieur) n'est
-/// PAS un refus : elle vaut entrée.
+/// tick suivant mais n'en est pas moins non évaluée ici —, ou alerte d'anomalie, contribution de risque ou observation
+/// refusée par le moteur, `P10.20-b` : une par ligne de base quel que soit le nombre de ses refus, reprise au pas
+/// `REPRISE_LIGNE_DE_BASE_S` ; ou `last_bucket`/`last_run` refusé). Une ligne de base compte UN abandon au plus par
+/// tick, quelles que soient ses causes : un `last_run` refusé ne recompte pas une ligne déjà comptée.
+/// Une alerte ou une contribution écartée par la dédup (`INSERT OR IGNORE` qui rend `Ok(0)`, déjà entrée à un passage
+/// antérieur) n'est PAS un refus : elle vaut entrée.
 /// `P10.31-j` — `Illisible` aussi, nommant « lignes de base », si l'écrivain porte une transaction orpheline quand la phase 3
 /// reprend le verrou : rien n'est écrit.
 pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDeTick {
@@ -571,6 +649,9 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     #[cfg(test)]
     let now_ts = horloge_fixee_des_lignes_de_base::lue().unwrap_or(now_ts);
     let mut abandonnees = 0u32;
+    // `P10.20-b` — LES LIGNES DE BASE DÉJÀ COMPTÉES ce tick (indécodable, au-delà du plafond, évaluation ratée, écriture
+    // refusée, état refusé) : un `last_run` refusé ensuite ne les recompte pas. Une ligne de base, un abandon au plus.
+    let mut deja_comptees: std::collections::HashSet<i64> = std::collections::HashSet::new();
     // Phase 1 : collecte des baselines dues (sous lock — lecture rapide).
     struct Due {
         id: i64, name: String, query: String, entity_field: String, value_field: String, entity_type: String,
@@ -585,13 +666,19 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             Ok(s) => s,
             Err(e) => return crate::bilan_de_tick::tick_aveugle("lignes de base", &e),
         };
+        // L'id (`INTEGER PRIMARY KEY`, toujours décodable) est lu à part : une ligne indécodable reste nommée, pour que son
+        // `last_run` refusé ne la recompte pas.
         let rows = match stmt.query_map(params![now_ts], |r| {
-            Ok((
-                r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?,
-                r.get::<_, f64>(8)?, r.get::<_, i64>(9)?, r.get::<_, i64>(10)?, r.get::<_, String>(11)?,
-                r.get::<_, i64>(12)?, r.get::<_, i64>(13)?,
-            ))
+            let id = r.get::<_, i64>(0)?;
+            let ligne = (|| -> rusqlite::Result<_> {
+                Ok((
+                    id, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?,
+                    r.get::<_, f64>(8)?, r.get::<_, i64>(9)?, r.get::<_, i64>(10)?, r.get::<_, String>(11)?,
+                    r.get::<_, i64>(12)?, r.get::<_, i64>(13)?,
+                ))
+            })();
+            Ok(ligne.map_err(|_| id))
         }) {
             Ok(r) => r,
             Err(e) => return crate::bilan_de_tick::tick_aveugle("lignes de base", &e),
@@ -599,8 +686,13 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         let mut all = Vec::new();
         for r in rows {
             match r {
-                Ok(x) => all.push(x),
-                Err(_) => abandonnees += 1, // ligne indécodable : une ligne de base non évaluée, comptée
+                Ok(Ok(x)) => all.push(x),
+                // ligne indécodable : une ligne de base non évaluée, comptée
+                Ok(Err(id)) => {
+                    abandonnees += 1;
+                    deja_comptees.insert(id);
+                }
+                Err(_) => abandonnees += 1,
             }
         }
         // Filtre : ne traite que si le bucket clos n'a pas déjà été traité (last_bucket < closed).
@@ -642,6 +734,7 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     let cap = detect_concurrency().saturating_mul(4).max(4);
     // Au-delà du plafond : non évaluées CE tick (re-tentées au suivant) — comptées, pas tues.
     abandonnees += u32::try_from(due.len().saturating_sub(cap)).unwrap_or(u32::MAX);
+    deja_comptees.extend(due.iter().skip(cap).map(|d| d.id));
     let mut evals: Vec<BaselineEval> = Vec::new();
     {
         let conn = db.lock();
@@ -674,25 +767,44 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         Err(aveugle) => return aveugle,
     };
     let mut a_reevaluer: Vec<i64> = Vec::new();
+    // `P10.20-b` — une ligne de base dont l'état (`last_bucket`, `last_run`) est refusé compte UN abandon, quel que soit le
+    // nombre de ses refus, et aucun si elle est déjà comptée (`deja_comptees`).
     for ev in evals {
         if !ev.ok {
             abandonnees += 1;
+            deja_comptees.insert(ev.id);
             continue; // fail-closed : n'avance PAS last_bucket, ne persiste rien — et c'est COMPTÉ
         }
-        // Persiste les observations du bucket (INSERT OR IGNORE -> idempotent si le tick rejoue).
+        // Persiste les observations du bucket (INSERT OR IGNORE -> idempotent si le tick rejoue). `P10.20-b` — une
+        // observation refusée par le moteur manquerait aux z-scores des buckets suivants : le bucket n'est pas marqué
+        // traité, la ligne de base est réévaluée au pas de reprise (même traitement qu'une alerte refusée), et le rejeu
+        // réécrit les observations entrées sans doublon.
+        let mut ecriture_refusee = false;
         for (entity, value) in &ev.observations {
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "INSERT OR IGNORE INTO ueba_baseline_obs(baseline_id,entity_type,entity,bucket,value,env_id) VALUES(?1,?2,?3,?4,?5,'prod')",
                 params![ev.id, ev.entity_type, entity, ev.bucket, value],
-            );
+            ) {
+                if !ecriture_refusee {
+                    eprintln!("[detection] WARN ligne de base #{} : une observation du bucket {} n'a pas pu être écrite ({e}) — bucket non marqué traité, réévalué au pas de reprise (au plus {} s, borné par interval_s)", ev.id, ev.bucket, REPRISE_LIGNE_DE_BASE_S);
+                }
+                ecriture_refusee = true;
+            }
         }
         // Anomalies.
-        let mut alerte_refusee = false;
         for hit in &ev.hits {
             let reason = format!("baseline « {} » : {:.1} (z={:.2})", ev.name, hit.value, hit.z);
             if ev.risk_score > 0 {
+                // `P10.20-b` — la contribution de risque suit l'alerte discrète : refusée, le bucket n'est pas marqué
+                // traité ; écartée par la dédup (`DejaPosee`), elle vaut entrée.
                 let dedup = format!("risk:baseline{}:{}:{}", ev.id, hit.entity, ev.bucket);
-                risk_event_insert(&conn, now_ts, &ev.entity_type, &hit.entity, ev.risk_score, "baseline", Some(ev.id), &reason, &ev.mitre, ev.severity, "prod", Some(&dedup));
+                match risk_event_contribuer(&conn, now_ts, &ev.entity_type, &hit.entity, ev.risk_score, "baseline", Some(ev.id), &reason, &ev.mitre, ev.severity, "prod", Some(&dedup)) {
+                    IssueDeLaContribution::Refusee(e) => {
+                        ecriture_refusee = true;
+                        eprintln!("[detection] WARN ligne de base #{} : une contribution de risque n'a pas pu être écrite ({e}) — bucket {} non marqué traité, réévalué au pas de reprise (au plus {} s, borné par interval_s)", ev.id, ev.bucket, REPRISE_LIGNE_DE_BASE_S);
+                    }
+                    IssueDeLaContribution::Ecrite | IssueDeLaContribution::DejaPosee => {}
+                }
             } else {
                 // Alerte discrète PAR BUCKET (dédup inclut le bucket -> une anomalie = un finding, pas de renotif).
                 let dedup = format!("baseline-{}-{}-{}", ev.id, hit.entity, ev.bucket);
@@ -702,21 +814,31 @@ pub(crate) fn run_baselines(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                     "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                     params![now_ts, format!("baseline.{}", ev.id), ev.severity, title, detail, dedup, ev.mitre, crate::fondement::Fondement::Regle.mot()],
                 ) {
-                    alerte_refusee = true;
+                    ecriture_refusee = true;
                     eprintln!("[detection] WARN ligne de base #{} : une alerte d'anomalie n'a pas pu être écrite ({e}) — bucket {} non marqué traité, réévalué au pas de reprise (au plus {} s, borné par interval_s)", ev.id, ev.bucket, REPRISE_LIGNE_DE_BASE_S);
                 }
             }
         }
-        if alerte_refusee {
+        if ecriture_refusee {
             abandonnees += 1;
+            deja_comptees.insert(ev.id);
             a_reevaluer.push(ev.id);
             continue; // N'avance pas last_bucket ; last_run reçoit le pas de reprise ci-dessous.
         }
         // Avance last_bucket + élague les observations hors fenêtre (borne la table).
-        let _ = conn.execute("UPDATE ueba_baseline SET last_bucket=?1 WHERE id=?2", params![ev.bucket, ev.id]);
+        if let Err(e) = conn.execute("UPDATE ueba_baseline SET last_bucket=?1 WHERE id=?2", params![ev.bucket, ev.id]) {
+            eprintln!("[detection] WARN ligne de base #{} : le bucket {} traité n'a pas pu être marqué ({e}) — last_bucket reste celui d'avant", ev.id, ev.bucket);
+            deja_comptees.insert(ev.id); // premier refus d'état de cette ligne de base : `last_run` ne la recomptera pas
+            abandonnees += 1;
+        }
     }
     for id in due_ids_all.iter().filter(|id| !a_reevaluer.contains(id)) {
-        let _ = conn.execute("UPDATE ueba_baseline SET last_run=?1 WHERE id=?2", params![now_ts, id]);
+        if let Err(e) = conn.execute("UPDATE ueba_baseline SET last_run=?1 WHERE id=?2", params![now_ts, id]) {
+            eprintln!("[detection] WARN ligne de base #{id} : son évaluation n'a pas pu être écrite ({e}) — last_run reste celui d'avant, la ligne de base est due dès le tick suivant");
+            if deja_comptees.insert(*id) {
+                abandonnees += 1;
+            }
+        }
     }
     for id in &a_reevaluer {
         let _ = conn.execute(

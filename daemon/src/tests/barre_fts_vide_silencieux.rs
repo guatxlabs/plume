@@ -391,22 +391,24 @@ fn sans_miroir_la_garde_ne_decide_rien() {
 
 #[test]
 fn une_erreur_du_moteur_est_dite_et_distinguee_dune_interruption() {
-    // (a) REFUS : le message BRUT du moteur est remonté, et la réponse porte un `error`.
+    // (a) REFUS : la réponse porte un `error` qui nomme le refus. `P10.29-l` (vague AQ) — INVERSÉ : le message du moteur
+    // était « remonté VERBATIM » ; le corps sert la phrase fixe `RECHERCHE_REJETEE`, le moteur part au journal.
     let conn = test_db();
     let refus = match_rowids(&conn, "10.0.0.1").unwrap_err();
     let e = rusqlite::Error::SqliteFailure(
         rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
         Some(refus.clone()),
     );
-    let v = search_engine_error(&e);
+    let v = search_engine_error(&e, "default");
     assert_eq!(v["results"], json!([]), "la forme reste compatible : `results` existe toujours");
     let msg = v["error"].as_str().expect("un refus DOIT porter un `error`");
     assert!(msg.contains("REFUS"), "le refus est nommé comme tel : {msg}");
-    assert!(msg.contains(&refus), "le message du moteur est remonté VERBATIM, pas résumé : {msg}");
+    assert_eq!(msg, crate::handlers::search::RECHERCHE_REJETEE, "la phrase fixe du refus : {msg}");
+    assert!(!msg.contains(&refus), "le message du moteur ne part plus au client : {msg}");
 
     // (b) INTERRUPTION : autre cause, autre conduite à tenir, et le seuil est LU (jamais recopié).
     let i = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT), None);
-    let vi = search_engine_error(&i);
+    let vi = search_engine_error(&i, "default");
     let mi = vi["error"].as_str().expect("une interruption DOIT porter un `error`");
     assert!(mi.contains("INTERROMPUE"), "« trop long » n'est pas « rien trouvé » : {mi}");
     assert!(mi.contains(&READ_WATCHDOG_BUDGET_MS.to_string()), "le budget affiché doit venir de la constante : {mi}");
@@ -477,7 +479,9 @@ async fn api_search_ne_rend_plus_un_tableau_vide_pour_les_cinq_saisies() {
     assert_eq!(v["results"], json!([]), "aucun résultat servi");
     let err = v["error"].as_str().unwrap_or("");
     assert!(err.contains("REFUS"), "l'échec du moteur est DIT, pas avalé : {v}");
-    assert!(err.contains("regex"), "et il porte le message BRUT du moteur (motif regex invalide) : {v}");
+    // `P10.29-l` (vague AQ) — INVERSÉ : le corps portait « le message BRUT du moteur (motif regex invalide) » ; il sert la
+    // phrase fixe, le motif soumis n'y est plus cité.
+    assert_eq!(err, crate::handlers::search::RECHERCHE_REJETEE, "la phrase fixe du refus, jamais le message du moteur : {v}");
     // TÉMOIN POSITIF : une saisie ordinaire rend des résultats SANS aucune mention de littéralisation.
     let v = get_json(addr, "/api/search?q=sentinelle", &authz).await;
     assert!(v["results"].as_array().map(|a| a.len()).unwrap_or(0) >= 5, "témoin positif : {v}");

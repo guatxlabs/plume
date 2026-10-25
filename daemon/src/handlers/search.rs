@@ -91,8 +91,20 @@ pub(crate) fn search_cold_coverage(conn: &Connection, conf: &HashMap<String, Str
 /// L'INTERRUPTION EST NOMMÉE À PART parce que la conduite à tenir diffère : ce n'est ni une saisie
 /// fautive ni une absence, c'est un budget dépassé — et le seuil est LU (`READ_WATCHDOG_BUDGET_MS`),
 /// jamais recopié dans le texte.
-pub(crate) fn search_engine_error(e: &rusqlite::Error) -> Value {
-    let msg = if matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::OperationInterrupted)) {
+///
+/// `P10.29-l` (vague AQ) — LE REFUS NE SERT PLUS LE TEXTE DU MOTEUR. La branche du refus rendait `{e}` : le message de
+/// SQLite, de FTS5 ou de l'UDF `regexp` (le motif soumis y est cité, avec la position de l'erreur), un nom de colonne
+/// refusé par l'autorisateur. Elle sert la phrase fixe `RECHERCHE_REJETEE` ; l'interruption garde la sienne. Le journal
+/// (`[search] WARN`) nomme la classe, le tenant de l'appelant et la NATURE de l'erreur tirée d'une liste blanche
+/// (`nature_de_l_erreur`) : jamais le message, qui porterait le texte de la recherche.
+pub(crate) fn search_engine_error(e: &rusqlite::Error, tenant: &str) -> Value {
+    let interrompue = matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::OperationInterrupted));
+    eprintln!(
+        "[search] WARN recherche {} (tenant '{tenant}') : {}",
+        if interrompue { "interrompue" } else { "rejetée par le moteur" },
+        nature_de_l_erreur(e)
+    );
+    let msg = if interrompue {
         format!(
             "recherche INTERROMPUE : le budget de lecture de {} ms a été dépassé — ce n'est PAS « aucun \
              résultat », la recherche n'est pas allée au bout. Resserrez la fenêtre (`from`/`to`) ou \
@@ -101,9 +113,24 @@ pub(crate) fn search_engine_error(e: &rusqlite::Error) -> Value {
             READ_WATCHDOG_BUDGET_MS
         )
     } else {
-        format!("le moteur de recherche a REFUSÉ cette requête (ce n'est pas « aucun résultat ») : {e}")
+        RECHERCHE_REJETEE.to_string()
     };
     json!({ "results": [], "error": msg })
+}
+
+/// `P10.29-l` (vague AQ) — CE QU'UN REFUS DU MOTEUR DIT AU CLIENT : une phrase fixe. « Ce n'est pas « aucun résultat » »
+/// reste la moitié qui compte ; le motif fautif n'est plus cité (le texte du moteur part au journal sous sa seule nature).
+pub(crate) const RECHERCHE_REJETEE: &str =
+    "le moteur de recherche a REFUSÉ cette requête (ce n'est pas « aucun résultat ») : motif rejeté par le moteur de recherche";
+
+/// `P10.29-l` (vague AQ) — LA NATURE D'UNE ERREUR DE LA RECHERCHE, PAR LISTE BLANCHE : le code SQLite (étendu, puis son
+/// nom), ou un libellé fixe pour une erreur sans code (ligne qui ne se décode pas). Jamais le message, qui cite le motif
+/// soumis (UDF `regexp`, syntaxe FTS5) ou une colonne.
+fn nature_de_l_erreur(e: &rusqlite::Error) -> String {
+    match e {
+        rusqlite::Error::SqliteFailure(f, _) => format!("code SQLite {} ({:?})", f.extended_code, f.code),
+        _ => "erreur hors du code SQLite (ligne non décodée)".to_string(),
+    }
 }
 
 pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
@@ -223,6 +250,7 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
         }
     }
     let db_path = req_db_path(&st, &au);
+    let tenant = au.tenant.clone();
     let res = tokio::task::spawn_blocking(move || {
         // Le DÉFAUT de `read_with_watchdog` = ce qu'on rend quand la connexion de lecture n'a pas pu
         // être obtenue. Un tableau vide y était indiscernable d'une absence de résultat : il DIT
@@ -261,7 +289,7 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                 let sql = format!("SELECT {COLS} FROM event e WHERE {} ORDER BY e.ts DESC LIMIT ?1", where_extra.join(" AND "));
                 let mut stmt = match conn.prepare(&sql) {
                     Ok(s) => s,
-                    Err(e) => return with_coverage(search_engine_error(&e)),
+                    Err(e) => return with_coverage(search_engine_error(&e, &tenant)),
                 };
                 let rows: Vec<Value> = match stmt.query_map(params![aveu::borne_avec_ligne_excedentaire(limit)], map_row) {
                     // collect en Result : la 1re erreur DEVIENT le résultat, au lieu d'être jetée.
@@ -274,8 +302,11 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                     // prêtait au parcours une reprise du pas qu'il n'a jamais eue.
                     // L'erreur est DITE (cf. `search_engine_error`) : un `regex=` au motif invalide
                     // échoue ICI, et il rendait un tableau vide indiscernable d'une absence.
-                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(e) => return with_coverage(search_engine_error(&e)) },
-                    Err(e) => return with_coverage(search_engine_error(&e)),
+                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(e) => return with_coverage(search_engine_error(&e, &tenant)) },
+                    // HORS D'ATTEINTE : `query_map` ne fait que LIER les paramètres (rusqlite 0.31, `Statement::query`), sans
+                    // aucun pas d'exécution ; leur nombre est fixé par l'énoncé, la seule chaîne liée vient d'une URL bornée
+                    // bien en deçà de SQLITE_LIMIT_LENGTH (non abaissé ici). Tenu par la lecture du source (témoins `aq1_`).
+                    Err(e) => return with_coverage(search_engine_error(&e, &tenant)),
                 };
                 rows
             } else {
@@ -320,7 +351,7 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                 };
                 let mut stmt = match conn.prepare(&sql) {
                     Ok(s) => s,
-                    Err(e) => return with_coverage(search_engine_error(&e)),
+                    Err(e) => return with_coverage(search_engine_error(&e, &tenant)),
                 };
                 let rows: Vec<Value> = match stmt.query_map(params![match_q, aveu::borne_avec_ligne_excedentaire(limit)], map_row) {
                     // collect en Result : la 1re erreur DEVIENT le résultat, au lieu d'être jetée.
@@ -333,8 +364,11 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
                     // prêtait au parcours une reprise du pas qu'il n'a jamais eue.
                     // FILET (c) : même si un jour la garde laissait passer une expression que le moteur
                     // refuse, l'analyste verrait le refus — jamais un tableau vide à sa place.
-                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(e) => return with_coverage(search_engine_error(&e)) },
-                    Err(e) => return with_coverage(search_engine_error(&e)),
+                    Ok(r) => match r.collect::<rusqlite::Result<Vec<Value>>>() { Ok(v) => v, Err(e) => return with_coverage(search_engine_error(&e, &tenant)) },
+                    // HORS D'ATTEINTE : `query_map` ne fait que LIER les paramètres (rusqlite 0.31, `Statement::query`), sans
+                    // aucun pas d'exécution ; leur nombre est fixé par l'énoncé, la seule chaîne liée vient d'une URL bornée
+                    // bien en deçà de SQLITE_LIMIT_LENGTH (non abaissé ici). Tenu par la lecture du source (témoins `aq1_`).
+                    Err(e) => return with_coverage(search_engine_error(&e, &tenant)),
                 };
                 rows
             };

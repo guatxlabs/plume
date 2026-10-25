@@ -30,7 +30,8 @@
 //  * upserts : refus du k-ième `INSERT` préparé sur `banned_ip` (ordre : trois définitifs puis trois chauds).
 //
 // CE QUE CE TÉMOIN NE TIENT PAS : une lecture ratée par interruption réelle (même branche `Err`) ; le plancher
-// `MIN(event.ts)` (reste de la clé) ; un refus d'upsert qui dure plus que la fenêtre de rattrapage de `banned_ip`
+// `MIN(event.ts)` et la purge des tranches bornée aux groupes resservis par `event` (traités et témoignés à part :
+// `rollups_buckets_resservis_et_retention_illisible.rs`) ; un refus d'upsert qui dure plus que la fenêtre de rattrapage de `banned_ip`
 // (limite écrite dans `rollups.rs`) ; la bande volatile non rafraîchie pendant un passage à borne non lue (limite écrite).
 //
 // LES MUTATIONS QUI LE FONT ROUGIR (variable d'environnement de mutation sous `cfg!(test)`, puis retirées du source) :

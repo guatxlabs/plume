@@ -12,8 +12,10 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : les huit autres semis de `P10.28-l` (velero, example_rules, playbooks, ssh_cve,
 // obs_rules, sts_rules, slab, k8s : drapeau toujours posé avant les données) ; un gabarit DÉJÀ amputé sur une base en
-// service n'est pas réparé (sa clé existe : il n'est pas réécrit, seul son drapeau est posé) ; le marqueur
-// d'observabilité `seeded_runbooks` reste écrit avalé (il ne garde rien).
+// service n'était pas réparé (sa clé existait : il n'était pas réécrit, seul son drapeau était posé) et le marqueur
+// d'observabilité `seeded_runbooks` restait écrit avalé — DEPUIS LA VAGUE AQ (`P10.28-k`), un gabarit managé amputé est
+// réparé (ses seuls ordinaux manquants) et le marqueur n'est plus écrit : témoins dans
+// `semis_vue_non_lue_banni_pass_compte_et_gabarits_repares.rs`.
 // Ni l'audit d'extinction qui rend `Ok(0)` (`audit_source_change` n'exige pas `Ok(1)`), ni la famille « Ok(0) puis
 // `last_insert_rowid` » des semis de tableaux (seed_dashboard_head, semer_la_vue_d_ensemble, semer_infra_et_logs,
 // seed_dashboard_head_named).

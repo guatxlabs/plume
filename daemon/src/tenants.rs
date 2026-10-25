@@ -132,7 +132,7 @@ pub(crate) fn seed_tenant_content(conn: &Connection) {
     seed_example_rules(conn);
     seed_purple_rules(conn);
     seed_detection_rules(conn);
-    seed_runbooks(conn);   // #3 incidents Phase 1 : runbooks managés keyés MITRE (flag dédié `seeded_runbooks`)
+    seed_runbooks(conn);   // #3 incidents Phase 1 : runbooks managés keyés MITRE (un drapeau `seeded_runbook_<clé>` par gabarit, managé amputé réparé : P10.28-k)
     seed_ti_alert_rules(conn);   // #23 activation : alerte match IOC (managé, inerte sans IOC)
     seed_risk_rules(conn);       // #24 activation : règles RBA mode risque (managé)
     seed_example_playbooks(conn);
@@ -157,7 +157,7 @@ pub(crate) fn seed_tenant_content(conn: &Connection) {
     seed_vault_dashboard(conn);
     seed_rollup_dashboard(conn);
     ensure_rollup_srcip_host_panels(conn);
-    seed_banpass_dashboard(conn);
+    seed_banpass_dashboard_et_compter_son_refus(conn);
     seed_egress_rules(conn);
 }
 

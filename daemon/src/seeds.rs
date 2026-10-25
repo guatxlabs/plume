@@ -215,15 +215,72 @@ pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i6
 /// qui écrit UNE ligne (l'identifiant de cette ligne), ou `Err` — la lecture ratée (jamais prise pour une absence : ce
 /// serait une seconde vue du même nom) comme l'`INSERT` refusé ou qui n'écrit rien (`Ok(0)`, jamais l'identifiant
 /// d'une autre ligne).
+///
+/// `P10.28-l` (vague AQ) — ENROBAGE de `obtenir_la_vue`, qui distingue la lecture ratée de la création refusée : ici les
+/// deux restent un `Err` du moteur, inchangé pour ses appelants (Banni / Pass, `find_or_create_view`).
 pub(crate) fn lire_ou_creer_la_vue<C: SqlExec>(conn: &C, name: &str) -> rusqlite::Result<i64> {
+    obtenir_la_vue(conn, name).map_err(|refus| match refus {
+        VueNonObtenue::NomNonLu(e) | VueNonObtenue::NonCreee(e) => e,
+    })
+}
+
+/// `P10.28-l` (vague AQ) — pourquoi la vue d'un semis n'a pas été obtenue : sa lecture par le nom a raté (rien n'est
+/// écrit, ce n'est pas une écriture refusée), ou sa création a été refusée ou n'a rien écrit (`Ok(0)`).
+enum VueNonObtenue {
+    NomNonLu(rusqlite::Error),
+    NonCreee(rusqlite::Error),
+}
+
+/// Les trois issues de `lire_ou_creer_la_vue`, la lecture ratée séparée de la création refusée.
+fn obtenir_la_vue<C: SqlExec>(conn: &C, name: &str) -> Result<i64, VueNonObtenue> {
     use rusqlite::OptionalExtension as _;
-    let lue = conn.query_row("SELECT id FROM view WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).optional()?;
+    let lue = conn
+        .query_row("SELECT id FROM view WHERE name=?1", params![name], |r| r.get::<_, i64>(0))
+        .optional()
+        .map_err(VueNonObtenue::NomNonLu)?;
     match lue {
         Some(vid) => Ok(vid),
         None => {
-            une_ligne_ecrite(conn.execute("INSERT INTO view(name,visibility) VALUES(?1,'shared')", params![name])?)?;
+            let ecrites = conn.execute("INSERT INTO view(name,visibility) VALUES(?1,'shared')", params![name]).map_err(VueNonObtenue::NonCreee)?;
+            une_ligne_ecrite(ecrites).map_err(VueNonObtenue::NonCreee)?;
             Ok(conn.last_insert_rowid())
         }
+    }
+}
+
+/// `P10.28-l` (vague AQ) — UNE LECTURE RATÉE DANS LA FERMETURE D'UN SEMIS, PORTÉE PAR L'ERREUR DU SEMIS jusqu'à
+/// `semer_sous_son_drapeau` (dans `rusqlite::Error::UserFunctionError`, qui affiche la cause du moteur telle quelle) avec
+/// l'étape sous laquelle elle est comptée et dite — pas sous « une écriture a été refusée ». Deux étapes la portent :
+/// `ETAPE_NOM_DE_VUE_NON_LU` (le nom de la vue d'un tableau ; avant, vague AO, comptée comme une écriture refusée) et
+/// `ETAPE_PRESENCE_NON_LUE` (`P10.28-k`, correction de la vague AQ : l'état d'un gabarit de runbook relu sous la
+/// transaction quand son drapeau est absent ; avant, compté et dit comme une écriture refusée).
+#[derive(Debug)]
+struct LectureRateeDuSemis {
+    etape: &'static str,
+    cause: rusqlite::Error,
+}
+
+impl LectureRateeDuSemis {
+    /// L'erreur du semis qui porte cette lecture ratée sous son étape.
+    fn sous(etape: &'static str, cause: rusqlite::Error) -> rusqlite::Error {
+        rusqlite::Error::UserFunctionError(Box::new(LectureRateeDuSemis { etape, cause }))
+    }
+}
+
+impl std::fmt::Display for LectureRateeDuSemis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.cause, f)
+    }
+}
+
+impl std::error::Error for LectureRateeDuSemis {}
+
+/// L'étape sous laquelle un refus du semis est compté : celle d'une lecture ratée de la fermeture, ou une écriture
+/// refusée.
+fn etape_du_refus_du_semis(refus: &rusqlite::Error) -> &'static str {
+    match refus {
+        rusqlite::Error::UserFunctionError(cause) => cause.downcast_ref::<LectureRateeDuSemis>().map_or(ETAPE_ECRITURE_REFUSEE, |l| l.etape),
+        _ => ETAPE_ECRITURE_REFUSEE,
     }
 }
 
@@ -284,13 +341,25 @@ fn semer_sous_son_drapeau<'a>(
     };
     let ecrit = semis(conn).and_then(|()| reprise.marquer(conn)).and_then(|()| txn.commit());
     if let Err(e) = ecrit {
+        // `P10.28-l` (vague AQ) — la lecture ratée du nom de vue a son étape et sa phrase : ce n'est pas une écriture.
+        let etape = etape_du_refus_du_semis(&e);
         if let Some(geste) = reprise.geste() {
-            crate::comptes_de_transaction::compter_un_geste_de_fond_non_valide(conn, JOURNAL_DES_SEMIS, geste, ETAPE_ECRITURE_REFUSEE, &e);
+            crate::comptes_de_transaction::compter_un_geste_de_fond_non_valide(conn, JOURNAL_DES_SEMIS, geste, etape, &e);
         }
-        eprintln!(
-            "[seed] {reprise} NON semé : une écriture a été refusée ({e}) — RIEN n'est conservé (ni tableau, ni panneau, ni \
-             règle, ni drapeau), le semis sera retenté au prochain démarrage"
-        );
+        if etape == ETAPE_NOM_DE_VUE_NON_LU {
+            eprintln!(
+                "[seed] {reprise} NON semé : le nom de sa vue n'a pas pu être lu ({e}) — RIEN n'est conservé, le semis sera \
+                 retenté au prochain démarrage"
+            );
+        } else if etape == ETAPE_PRESENCE_NON_LUE {
+            // `P10.28-k` (correction de la vague AQ) — la même phrase que la présence non lue avant la transaction.
+            eprintln!("[seed] {reprise} NON semé : sa présence n'a pas pu être lue ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
+        } else {
+            eprintln!(
+                "[seed] {reprise} NON semé : une écriture a été refusée ({e}) — RIEN n'est conservé (ni tableau, ni panneau, ni \
+                 règle, ni drapeau), le semis sera retenté au prochain démarrage"
+            );
+        }
         return false;
     }
     true
@@ -312,6 +381,10 @@ enum PointDeReprise<'a> {
     TableauNomme(&'a str),
     /// Une règle de ce nom (`seed_malware_rule`).
     RegleNommee(&'a str),
+    /// `P10.28-k` (vague AQ) — le drapeau `meta` d'un GABARIT DE RUNBOOK managé (`seeded_runbook_<clé>`), qui ne vaut
+    /// semis fait que si le gabarit managé de cette clé n'est pas AMPUTÉ (un ordinal de `0..etapes` sans étape) : un
+    /// gabarit amputé en service est rejoué, et sa fermeture n'écrit que les ordinaux manquants (`seed_runbooks`).
+    GabaritDeRunbook { drapeau: &'a str, cle: &'a str, etapes: usize },
 }
 
 impl<'a> From<&'a str> for PointDeReprise<'a> {
@@ -329,7 +402,9 @@ impl<'a> From<&'a String> for PointDeReprise<'a> {
 impl std::fmt::Display for PointDeReprise<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PointDeReprise::Drapeau(drapeau) | PointDeReprise::TableauSousDrapeau(drapeau) => write!(f, "`{drapeau}`"),
+            PointDeReprise::Drapeau(drapeau)
+            | PointDeReprise::TableauSousDrapeau(drapeau)
+            | PointDeReprise::GabaritDeRunbook { drapeau, .. } => write!(f, "`{drapeau}`"),
             PointDeReprise::TableauNomme(nom) => write!(f, "le tableau de bord « {nom} »"),
             PointDeReprise::RegleNommee(nom) => write!(f, "la règle « {nom} »"),
         }
@@ -351,6 +426,15 @@ impl PointDeReprise<'_> {
             PointDeReprise::RegleNommee(nom) => {
                 conn.query_row("SELECT 1 FROM rule WHERE name=?1", params![nom], |r| r.get::<_, i64>(0)).optional().map(|l| l.is_some())
             }
+            // `P10.28-k` (vague AQ) — trois issues pour le drapeau (une lecture ratée n'écrit rien et se compte), puis
+            // l'état du gabarit : un managé amputé n'est pas un semis fait, même drapeau posé.
+            PointDeReprise::GabaritDeRunbook { drapeau, cle, etapes } => {
+                let pose = conn.query_row("SELECT 1 FROM meta WHERE key=?1", params![drapeau], |r| r.get::<_, i64>(0)).optional()?.is_some();
+                if !pose {
+                    return Ok(false);
+                }
+                Ok(!matches!(etat_du_gabarit_de_runbook(conn, cle, *etapes)?, EtatDuGabarit::Manage { ref manquants, .. } if !manquants.is_empty()))
+            }
         }
     }
 
@@ -358,7 +442,9 @@ impl PointDeReprise<'_> {
     /// les lignes écrites SONT la marque.
     fn marquer(&self, conn: &Connection) -> rusqlite::Result<()> {
         match self {
-            PointDeReprise::Drapeau(drapeau) | PointDeReprise::TableauSousDrapeau(drapeau) => {
+            PointDeReprise::Drapeau(drapeau)
+            | PointDeReprise::TableauSousDrapeau(drapeau)
+            | PointDeReprise::GabaritDeRunbook { drapeau, .. } => {
                 conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?1,'1')", params![drapeau]).and_then(une_ligne_ecrite)
             }
             PointDeReprise::TableauNomme(_) | PointDeReprise::RegleNommee(_) => Ok(()),
@@ -374,6 +460,7 @@ impl PointDeReprise<'_> {
             PointDeReprise::TableauSousDrapeau(_) => Some(GESTE_TABLEAU_SEME_SOUS_DRAPEAU),
             PointDeReprise::TableauNomme(_) => Some(GESTE_TABLEAU_SEME_PAR_NOM),
             PointDeReprise::RegleNommee(_) => Some(GESTE_REGLE_SEMEE_PAR_NOM),
+            PointDeReprise::GabaritDeRunbook { .. } => Some(GESTE_GABARIT_DE_RUNBOOK),
         }
     }
 }
@@ -388,6 +475,16 @@ pub(crate) const GESTE_TABLEAU_SEME_SOUS_DRAPEAU: &str = "tableau de bord semé 
 pub(crate) const ETAPE_PRESENCE_NON_LUE: &str = "présence non lue";
 /// L'étape : une écriture du semis, ou son `COMMIT`, a été refusée (rien n'est conservé).
 pub(crate) const ETAPE_ECRITURE_REFUSEE: &str = "écriture ou COMMIT refusé";
+/// `P10.28-l` (vague AQ) — l'étape : la lecture du nom de la vue du tableau a raté (rien n'est conservé). Avant, comptée
+/// sous `ETAPE_ECRITURE_REFUSEE`.
+pub(crate) const ETAPE_NOM_DE_VUE_NON_LU: &str = "nom de vue non lu";
+/// `P10.28-l` (vague AQ) — l'étape de Banni / Pass (`seed_banpass_dashboard_et_compter_son_refus`) : le tableau est absent
+/// APRÈS son semis (refusé ; sa cause exacte est sur la ligne `[seed]` du semis, rollups.rs).
+pub(crate) const ETAPE_ABSENT_APRES_LE_SEMIS: &str = "absent après le semis";
+/// `P10.28-l` (vague AQ) — le geste de Banni / Pass, compté par `seed_banpass_dashboard_et_compter_son_refus`.
+pub(crate) const GESTE_BANNI_PASS: &str = "tableau de bord Banni / Pass";
+/// `P10.28-k` (vague AQ) — le geste d'un gabarit de runbook managé (semis ou réparation), `PointDeReprise::GabaritDeRunbook`.
+pub(crate) const GESTE_GABARIT_DE_RUNBOOK: &str = "gabarit de runbook managé";
 
 /// `P10.20-w` (rang six, correction) — une écriture de semis qui rend `Ok(0)` (un déclencheur `RAISE(IGNORE)`, un
 /// `INSERT OR IGNORE` muet) n'a RIEN écrit : elle est traitée comme un refus, et la transaction du semis est annulée.
@@ -452,8 +549,14 @@ pub(crate) fn seed_dashboard_head_named(
 /// même que l'`UPDATE` à `Ok(0)` refusait. Le semis est annulé entier, compté et dit (`semer_sous_son_drapeau`), et
 /// retenté au démarrage suivant : sur une base dont la vue reste non créable, il est refusé et compté À CHAQUE
 /// démarrage (un refus visible plutôt qu'un tableau hors vue définitif).
+///
+/// `P10.28-l` (vague AQ) — la lecture ratée du nom de vue est portée par `LectureRateeDuSemis` (étape et phrase propres) ; la
+/// création refusée ou à `Ok(0)` reste une écriture refusée.
 fn rattacher_le_tableau_a_sa_vue(conn: &Connection, did: i64, view: &str, collapsed: bool) -> rusqlite::Result<()> {
-    let vid = lire_ou_creer_la_vue(conn, view)?;
+    let vid = obtenir_la_vue(conn, view).map_err(|refus| match refus {
+        VueNonObtenue::NomNonLu(e) => LectureRateeDuSemis::sous(ETAPE_NOM_DE_VUE_NON_LU, e),
+        VueNonObtenue::NonCreee(e) => e,
+    })?;
     let sql = if collapsed {
         "UPDATE dashboard SET view_id=?1, collapsed=1 WHERE id=?2"
     } else {
@@ -1666,11 +1769,12 @@ pub(crate) fn seed_k8s_rules(conn: &Connection) {
 
 /// #3 INCIDENTS Phase 1 — SEED des runbooks MANAGÉS (managed=1), gabarits de réponse guidée keyés sur la
 /// TACTIQUE MITRE que la détection de Plume émet réellement (grep des règles seedées/overlays : recon T1595,
-/// discovery T1046, initial-access T1190, credential-access T1110, execution T1059, impact T1490/T1485). MÊME
-/// mécanique EXACTE que seed_purple_rules/seed_detection_rules : flag meta DÉDIÉ `seeded_runbooks` -> INSERT une
-/// seule fois (base neuve : migrate crée les tables VIDES avant les seeds ; base déjà déployée : migrate_v104
-/// crée les tables vides, le flag est absent -> on insère). managed=1 (baseline git-durable, comme les overlays
-/// config.d) -> git définit le CONTENU. Chaque runbook = une courte checklist PHASÉE (triage -> investigation ->
+/// discovery T1046, initial-access T1190, credential-access T1110, execution T1059, impact T1490/T1485). Chaque
+/// gabarit est semé sous SON drapeau `seeded_runbook_<clé>` (`PointDeReprise::GabaritDeRunbook`), qui ne vaut semis fait
+/// que pour un gabarit managé complet (base neuve : migrate crée les tables VIDES avant les seeds ; base déjà déployée :
+/// migrate_v104 crée les tables vides, les drapeaux sont absents -> on insère ; un managé amputé est réparé). L'ancien
+/// marqueur global `seeded_runbooks` n'est plus écrit (`P10.28-k`, vague AQ). managed=1 (baseline git-durable,
+/// comme les overlays config.d) -> git définit le CONTENU. Chaque runbook = une courte checklist PHASÉE (triage -> investigation ->
 /// containment -> eradication -> recovery) ; une step `response` RÉFÉRENCE l'enum d'action FERMÉ (ban_ip/kill_pid/
 /// stop_service) — elle NE l'exécute PAS (le wizard PRÉSENTE l'action + pré-remplit la cible ; l'exécution reste
 /// /api/actions, avec arm/approbation/admin/ledger/allowlist root INCHANGÉS). Les steps `search` portent un
@@ -1684,8 +1788,8 @@ pub(crate) fn seed_runbooks(conn: &Connection) {
     //  - un managé DÉSACTIVÉ par l'admin (active=0) N'EST JAMAIS ré-inséré -> son état d'activation SURVIT au
     //    re-seed (on ne le ré-active pas) ;
     //  - une PERSONNALISATION admin (clone managed=0) porte une AUTRE key -> jamais touchée.
-    // Le flag `seeded_runbooks` reste écrit comme MARQUEUR (observabilité) mais ne court-circuite plus.
-    let _ = conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('seeded_runbooks','1')", []);
+    // `P10.28-k` (vague AQ) — le marqueur `seeded_runbooks`, écrit avalé à chaque démarrage, est RETIRÉ : rien ne le
+    // lisait (aucune lecture de cette clé dans le code, la console ni les gardes), il ne gardait rien.
     let t = now();
     // (key, name, match_kind, match_key, description). match_kind='tactic' -> le picker choisit par la tactique
     // DOMINANTE des alertes liées (guatx_core::attack::tactic_for_technique) ; '*' = repli générique.
@@ -1857,32 +1961,107 @@ pub(crate) fn seed_runbooks(conn: &Connection) {
     // de lire l'identifiant), drapeau en dernier ; refusé, rien n'est conservé, le refus est dit, et le gabarit est
     // rejoué au démarrage suivant — sans bloquer les autres. L'idempotence PAR CLÉ est gardée : une clé déjà présente
     // (base déjà semée, gabarit désactivé par l'admin) n'est pas réécrite, seul son drapeau est posé.
+    //
+    // `P10.28-k` (vague AQ) — UN GABARIT MANAGÉ DÉJÀ AMPUTÉ EST RÉPARÉ. Avant, une clé présente rendait `Ok(())` sans
+    // regarder ses étapes, et le drapeau posé interdisait tout nouveau passage : un gabarit validé sans étapes (avant
+    // la vague H) ou incomplet le restait pour toujours. Un gabarit managé est immuable en place (la route refuse de le
+    // modifier, ses étapes ne se suppriment pas : `incidents.rs`), donc tout ordinal de `0..n` sans étape est une
+    // amputation, réparable sans écraser un choix d'admin. Désormais le point de reprise (`GabaritDeRunbook`) ne vaut
+    // semis fait que pour un gabarit managé complet ; un amputé est rejoué sous son drapeau, et la fermeture n'écrit
+    // QUE ses ordinaux manquants, dans la même transaction, chacun à une ligne (`Ok(0)` = refus : rien n'est conservé,
+    // compté, retenté au démarrage suivant). Le gabarit lui-même n'est pas réécrit : un managé DÉSACTIVÉ (active=0)
+    // garde son état ; une clé portée par un gabarit non managé (managed<>1) n'est jamais touchée.
     for (key, name, mkind, mkey, desc, steps) in runbooks {
-        semer_sous_son_drapeau(conn, &format!("seeded_runbook_{key}"), |conn| {
-            use rusqlite::OptionalExtension as _;
-            let present = conn
-                .query_row("SELECT 1 FROM runbook WHERE key=?1", params![key], |_| Ok(()))
-                .optional()?
-                .is_some();
-            if present {
-                return Ok(());
-            }
-            let ecrites = conn.execute(
-                "INSERT INTO runbook(key,name,match_kind,match_key,description,managed,active,created) VALUES(?1,?2,?3,?4,?5,1,1,?6)",
-                params![key, name, mkind, mkey, desc, t],
-            )?;
-            une_ligne_ecrite(ecrites)?;
-            let rb_id = conn.last_insert_rowid();
-            for (i, (phase, title, guidance, step_kind, soql, act)) in steps.iter().enumerate() {
+        let drapeau = format!("seeded_runbook_{key}");
+        let reprise = PointDeReprise::GabaritDeRunbook { drapeau: &drapeau, cle: key, etapes: steps.len() };
+        semer_sous_son_drapeau(conn, reprise, |conn| {
+            let ecrire_l_etape = |rb_id: i64, ordinal: usize| -> rusqlite::Result<()> {
+                let (phase, title, guidance, step_kind, soql, act) = steps[ordinal];
                 let issue = conn.execute(
                     "INSERT INTO runbook_step(runbook_id,ordinal,phase,title,guidance,step_kind,search_soql,action_kind) \
                      VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                    params![rb_id, i as i64, phase, title, guidance, step_kind, soql, act],
+                    params![rb_id, ordinal as i64, phase, title, guidance, step_kind, soql, act],
                 );
-                une_ligne_ecrite(issue?)?;
+                une_ligne_ecrite(issue?)
+            };
+            // `P10.28-k` (correction de la vague AQ) — drapeau absent, l'état n'a pas été lu par `deja_seme` : sa lecture
+            // ratée ici est une présence non lue (comptée et dite sous cette étape), pas une écriture refusée.
+            let etat = etat_du_gabarit_de_runbook(conn, key, steps.len()).map_err(|e| LectureRateeDuSemis::sous(ETAPE_PRESENCE_NON_LUE, e))?;
+            match etat {
+                EtatDuGabarit::NonManage => Ok(()),
+                EtatDuGabarit::Manage { id, manquants } => {
+                    for ordinal in manquants {
+                        ecrire_l_etape(id, ordinal)?;
+                    }
+                    Ok(())
+                }
+                EtatDuGabarit::Absent => {
+                    let ecrites = conn.execute(
+                        "INSERT INTO runbook(key,name,match_kind,match_key,description,managed,active,created) VALUES(?1,?2,?3,?4,?5,1,1,?6)",
+                        params![key, name, mkind, mkey, desc, t],
+                    )?;
+                    une_ligne_ecrite(ecrites)?;
+                    let rb_id = conn.last_insert_rowid();
+                    for ordinal in 0..steps.len() {
+                        ecrire_l_etape(rb_id, ordinal)?;
+                    }
+                    Ok(())
+                }
             }
-            Ok(())
         });
+    }
+}
+
+/// `P10.28-k` (vague AQ) — L'ÉTAT D'UN GABARIT DE RUNBOOK PAR SA CLÉ : absent, porté par un gabarit non managé (jamais
+/// touché par le semis), ou managé avec la liste de ses ordinaux de `0..etapes` SANS étape (vide = complet).
+enum EtatDuGabarit {
+    Absent,
+    NonManage,
+    Manage { id: i64, manquants: Vec<usize> },
+}
+
+/// Lu en deux lectures propagées (une lecture ratée n'est jamais prise pour un gabarit complet ni pour une absence) :
+/// sous `deja_seme` (drapeau posé) elle est une présence non lue ; dans la fermeture de `seed_runbooks` (drapeau absent),
+/// portée par `LectureRateeDuSemis` sous la même étape.
+fn etat_du_gabarit_de_runbook(conn: &Connection, cle: &str, etapes: usize) -> rusqlite::Result<EtatDuGabarit> {
+    use rusqlite::OptionalExtension as _;
+    let lu = conn
+        .query_row("SELECT id, managed FROM runbook WHERE key=?1", params![cle], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .optional()?;
+    let Some((id, managed)) = lu else {
+        return Ok(EtatDuGabarit::Absent);
+    };
+    if managed != 1 {
+        return Ok(EtatDuGabarit::NonManage);
+    }
+    let mut st = conn.prepare("SELECT DISTINCT ordinal FROM runbook_step WHERE runbook_id=?1")?;
+    let presents = st.query_map(params![id], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<std::collections::HashSet<i64>>>()?;
+    let manquants = (0..etapes).filter(|ordinal| !presents.contains(&(*ordinal as i64))).collect();
+    Ok(EtatDuGabarit::Manage { id, manquants })
+}
+
+/// `P10.28-l` (vague AQ) — BANNI / PASS AU DÉMARRAGE ET AU PROVISIONNEMENT D'UN TENANT, SON REFUS COMPTÉ. `seed_banpass_dashboard`
+/// (rollups.rs) dit son refus sur la sortie d'erreur et ne rend rien (il sert aussi la migration v52, sous `MigTx`, où
+/// le compteur des gestes de fond n'est pas joignable) ; cet enrobage, appelé par le démarrage (`server/mod.rs`) et par
+/// `seed_tenant_content` (provisionnement d'un tenant), relit la
+/// présence du tableau APRÈS le semis et compte son absence (`ETAPE_ABSENT_APRES_LE_SEMIS` : refusé, la cause exacte
+/// sur la ligne `[seed]`) ou sa présence non lue (`ETAPE_PRESENCE_NON_LUE`), sous `GESTE_BANNI_PASS`, journal `seed`.
+/// Un tableau présent ne compte rien. HORS DE CE COMPTE : la migration v52 (`migrate.rs`, sous sa transaction d'étape).
+pub(crate) fn seed_banpass_dashboard_et_compter_son_refus(conn: &Connection) {
+    use rusqlite::OptionalExtension as _;
+    seed_banpass_dashboard(conn);
+    let relu = conn.query_row("SELECT 1 FROM dashboard WHERE name=?1", params![NOM_DU_BANNI_PASS], |r| r.get::<_, i64>(0)).optional();
+    match relu {
+        Ok(Some(_)) => {}
+        // `P10.28-l` (correction de la vague AQ) — aucune erreur du moteur ici (la lecture a réussi) : la dernière cause
+        // servie est l'étape seule, jamais une erreur inventée ; la cause exacte est sur la ligne `[seed]` du semis.
+        Ok(None) => crate::comptes_de_transaction::compter_un_geste_de_fond_non_valide_sans_cause_du_moteur(
+            conn,
+            JOURNAL_DES_SEMIS,
+            GESTE_BANNI_PASS,
+            ETAPE_ABSENT_APRES_LE_SEMIS,
+        ),
+        Err(e) => crate::comptes_de_transaction::compter_un_geste_de_fond_non_valide(conn, JOURNAL_DES_SEMIS, GESTE_BANNI_PASS, ETAPE_PRESENCE_NON_LUE, &e),
     }
 }
 

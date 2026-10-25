@@ -47,7 +47,7 @@
 
     /// LE ROLLUP DE POSTURE. ① la lecture aboutit -> la synthèse est servie et RIEN n'est avoué ;
     /// ② la même route, la même identité, la même requête, mais la lecture ne peut plus aboutir ->
-    /// la FORME attendue est servie INTACTE et la cause du moteur est DITE, sans être réécrite.
+    /// la FORME attendue est servie INTACTE et la classe de la fin est DITE (`P10.29-l`, vague AQ : plus le texte du moteur).
     #[tokio::test]
     async fn une_posture_non_lue_ne_se_sert_pas_comme_une_couverture_nulle() {
         let coffre = cnl_base("p107e-posture");
@@ -76,10 +76,14 @@
             aveu.contains(crate::handlers::compliance::CAUSE_POSTURE_NON_LUE),
             "l'aveu dit ce que le corps n'établit PAS : {aveu}"
         );
-        assert!(
-            aveu.contains("no such table"),
-            "la cause du MOTEUR est conservée telle quelle, jamais remplacée par la nôtre : {aveu}"
+        // `P10.29-l` (vague AQ) — INVERSÉ : la cause du moteur était « conservée telle quelle » (`no such table`) ; le corps
+        // sert désormais la classe de la fin (refusée par la base), le texte du moteur part au journal `[compliance] WARN`.
+        assert_eq!(
+            aveu,
+            format!("{}{}", crate::handlers::compliance::CAUSE_POSTURE_NON_LUE, crate::handlers::alerts::FIN_DE_PARCOURS_REFUSEE_PAR_LA_BASE),
+            "l'aveu sert la classe de la fin, jamais le texte du moteur : {aveu}"
         );
+        assert!(!aveu.contains("no such table"), "le texte du moteur ne part plus au client : {aveu}");
         assert!(
             refuse.get("summary").is_some() && refuse.get("frameworks").is_some(),
             "la FORME attendue par le consommateur reste servie : l'aveu s'AJOUTE, il ne retire rien — {refuse}"
@@ -113,7 +117,13 @@
             .as_str()
             .unwrap_or_else(|| panic!("journal NON LU servi comme un journal vierge : {ev}"));
         assert!(aveu.contains(crate::handlers::compliance::CAUSE_ANCRAGE_NON_LU), "l'aveu dit ce que le corps n'établit PAS : {aveu}");
-        assert!(aveu.contains("no such table"), "la cause du moteur est conservée : {aveu}");
+        // `P10.29-l` (vague AQ) — INVERSÉ : la classe de la fin, plus le texte du moteur.
+        assert_eq!(
+            aveu,
+            format!("{}{}", crate::handlers::compliance::CAUSE_ANCRAGE_NON_LU, crate::handlers::alerts::FIN_DE_PARCOURS_REFUSEE_PAR_LA_BASE),
+            "l'aveu sert la classe de la fin : {aveu}"
+        );
+        assert!(!aveu.contains("no such table"), "le texte du moteur ne part plus au client : {aveu}");
         assert!(
             ev.get("ledger_entries").is_none(),
             "un compte servi à côté de l'aveu se relirait comme une mesure : {ev}"

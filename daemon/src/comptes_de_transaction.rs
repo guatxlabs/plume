@@ -122,9 +122,26 @@ pub(crate) fn compter_un_geste_de_fond_non_valide(
     etape: &'static str,
     refus: &rusqlite::Error,
 ) {
+    consigner_un_geste_de_fond_non_valide(conn, journal, geste, etape, format!("{etape} : {refus}"));
+}
+
+/// `P10.28-l` (correction de la vague AQ) — LE MÊME COMPTE, SANS CAUSE DU MOTEUR : pour un refus constaté APRÈS coup (un
+/// tableau absent après son semis, `seeds::seed_banpass_dashboard_et_compter_son_refus`), dont la cause exacte est sur
+/// la ligne `[seed]` du semis et n'est pas joignable ici. La dernière cause servie est l'étape seule — jamais une erreur
+/// inventée (avant : `QueryReturnedNoRows`, servie « absent après le semis : Query returned no rows »).
+pub(crate) fn compter_un_geste_de_fond_non_valide_sans_cause_du_moteur(
+    conn: &Connection,
+    journal: &'static str,
+    geste: &'static str,
+    etape: &'static str,
+) {
+    consigner_un_geste_de_fond_non_valide(conn, journal, geste, etape, etape.to_string());
+}
+
+fn consigner_un_geste_de_fond_non_valide(conn: &Connection, journal: &'static str, geste: &'static str, etape: &'static str, derniere_cause: String) {
     GESTES_DE_FOND_NON_VALIDES_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let cle = format!("{journal} : {geste}");
-    crate::metrics::consigner_avec_sa_derniere_cause(&mut GESTES_DE_FOND_NON_VALIDES.lock(), &cle, format!("{etape} : {refus}"));
+    crate::metrics::consigner_avec_sa_derniere_cause(&mut GESTES_DE_FOND_NON_VALIDES.lock(), &cle, derniere_cause);
     #[cfg(test)]
     noter_pour_les_temoins(conn, format!("geste de fond non validé {cle} : {etape}"));
     #[cfg(not(test))]
@@ -175,10 +192,13 @@ pub(crate) fn poser_les_gestes_de_fond_non_valides(scheduler: &mut serde_json::M
 
 /// Le `# HELP` de `plume_scheduler_gestes_de_fond_non_valides_total` : la documentation d'exploitation de la série.
 const AIDE_GESTES_DE_FOND_NON_VALIDES: &str = "Gestes d'écriture DUS d'une passe de fond (balayages du cycle de vie des \
-     engagements : activation, expiration ; pli définitif et rattrapage de l'inventaire de flotte) que la base n'a PAS \
-     validés — BEGIN, écriture ou COMMIT refusé : rien n'est écrit, le geste reste dû et le passage suivant le reprend ; \
-     une hausse continue dit un geste refusé tour après tour (P10.26-d ; ventilation par geste avec l'étape et la \
-     dernière cause dans /api/system/metrics scheduler.gestes_de_fond_non_valides)";
+     engagements : activation, expiration ; pli définitif et rattrapage de l'inventaire de flotte ; semis du démarrage et \
+     du provisionnement d'un tenant, journal seed : tableaux de bord semés par nom ou sous drapeau, règles semées par \
+     nom, tableau de bord Banni / Pass, gabarits de runbook managés semés ou réparés) que la base n'a PAS validés — \
+     présence non lue, nom de vue non lu, BEGIN, écriture ou COMMIT refusé, ou tableau absent après son semis : rien \
+     n'est écrit, le geste reste dû et le passage suivant (le démarrage suivant pour un semis) le reprend ; une hausse \
+     continue dit un geste refusé tour après tour (P10.26-d, P10.28-l, P10.28-k ; ventilation par geste avec l'étape et \
+     la dernière cause dans /api/system/metrics scheduler.gestes_de_fond_non_valides)";
 
 /// Le `# HELP` de `plume_transaction_begin_refuses_total`.
 const AIDE_BEGIN_REFUSES: &str = "BEGIN refusés sur l'écrivain partagé (routes, spool, passes de fond, gestes \

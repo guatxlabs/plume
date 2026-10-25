@@ -103,6 +103,9 @@ pub(crate) struct FlotteLue {
     /// « traité comme non enrôlé / non déclaré (sens sûr) », ce qui serait faux ici — il n'y a pas de sens
     /// sûr à choisir, la valeur est simplement absente.
     pub(crate) pipeline_non_lu: Option<String>,
+    /// `P10.29-l` (vague AQ) — le texte du moteur de la santé du pipeline non lue, pour la ligne `[fleet] WARN` du
+    /// gestionnaire (qui connaît le tenant) ; jamais servi. `pipeline_non_lu` ne porte plus que la constante.
+    pub(crate) moteur_du_pipeline: Option<String>,
 }
 
 impl FlotteLue {
@@ -115,6 +118,7 @@ impl FlotteLue {
             hotes_lus: false,
             non_lus: vec!["hôtes"],
             pipeline_non_lu: Some(format!("{CAUSE_SANTE_DU_PIPELINE_NON_LUE} Cause : {}", crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION)),
+            moteur_du_pipeline: None,
         }
     }
     /// Tout a été lu : la seule flotte qu'on met en cache. Une santé de pipeline non lue GATE le cache au
@@ -126,9 +130,11 @@ impl FlotteLue {
 }
 
 pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> FlotteLue {
-    let (pipeline_fresh, pipeline_non_lu) = match pipeline_est_frais(conn, now_ts) {
-        Ok(b) => (Some(b), None),
-        Err(e) => (None, Some(format!("{CAUSE_SANTE_DU_PIPELINE_NON_LUE} Cause : {e}"))),
+    // `P10.29-l` (vague AQ) — la cause servie est la constante seule ; le texte du moteur (« no such table: … ») partait
+    // dans `pipeline_fresh_non_lu` et `non_lus` d'un corps lisible par un lecteur. Il va à la ligne `[fleet] WARN`.
+    let (pipeline_fresh, pipeline_non_lu, moteur_du_pipeline) = match pipeline_est_frais(conn, now_ts) {
+        Ok(b) => (Some(b), None, None),
+        Err(e) => (None, Some(CAUSE_SANTE_DU_PIPELINE_NON_LUE.to_string()), Some(e.to_string())),
     };
     // ENRÔLEMENT (best-effort, mode 0) : host -> (name, created, last_used). token_hash JAMAIS lu (l'authorizer
     // read-pool le refuserait de toute façon). ORDER BY created DESC + or_insert -> on garde l'enrôlement le
@@ -221,7 +227,7 @@ pub(crate) fn fleet_scan_all(conn: &Connection, now_ts: i64) -> FlotteLue {
             }
         }
     }
-    FlotteLue { hosts, pipeline_fresh, hotes_lus, non_lus, pipeline_non_lu }
+    FlotteLue { hosts, pipeline_fresh, hotes_lus, non_lus, pipeline_non_lu, moteur_du_pipeline }
 }
 
 /// P11.10-a — LES PARTS, ET ELLES S'ADDITIONNENT. Calculée sur la liste COMPLÈTE (jamais sur la page
@@ -343,8 +349,9 @@ pub(crate) fn fleet_response(hosts_full: &[Value], pipeline_fresh: Option<bool>,
     let mut corps = json!({ "hosts": page, "total": total, "repartition": repartition, "pipeline_fresh": pipeline_fresh, "now": now_ts });
     // `P10.20-g` — LE `null` NE VOYAGE JAMAIS SEUL. La phrase invariante est posée ICI, à côté du champ
     // qu'elle explique, pour que TOUT chemin qui sert un `pipeline_fresh` non lu le dise — y compris ceux
-    // qui n'ont pas la cause du moteur sous la main. Le gestionnaire la complète avec la cause exacte
-    // quand il l'a. Rien n'est posé sur le chemin nominal : le corps y est byte-identique.
+    // qui n'ont pas la cause du moteur sous la main. Le gestionnaire y repose sa cause (`P10.29-l`, vague AQ :
+    // la même constante, le texte du moteur au journal seul). Rien n'est posé sur le chemin nominal : le corps y
+    // est byte-identique.
     if pipeline_fresh.is_none() {
         corps["pipeline_fresh_non_lu"] = json!(CAUSE_SANTE_DU_PIPELINE_NON_LUE);
     }
@@ -407,6 +414,9 @@ pub(crate) async fn fleet(State(st): State<AppState>, Extension(au): Extension<A
     .await;
     match scan {
         Ok(f) => {
+            if let Some(moteur) = &f.moteur_du_pipeline {
+                eprintln!("[fleet] WARN santé du pipeline non lue (tenant '{}') : {moteur}", au.tenant);
+            }
             if f.lue() {
                 fleet_map().lock().insert(ckey, (Instant::now(), (f.hosts.clone(), f.pipeline_fresh)));
             }

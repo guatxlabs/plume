@@ -86,6 +86,27 @@ pub(crate) fn tick_aveugle_par_transaction_orpheline(boucle: &'static str, famil
     }
 }
 
+/// `P10.31-j` — LE MÊME AVEU, VU EN REPRENANT LE VERROU POUR ÉCRIRE (`ecrivain_sonde_avant_les_ecritures`, phase 3 de
+/// `run_due_rules`). La phrase de `tick_aveugle_par_transaction_orpheline` (« rien n'est évalué ni écrit ») est vraie
+/// devant une famille, fausse ici : la famille a déjà compilé ou évalué (hors du verrou, ou sous un verrou rendu depuis),
+/// et une reprise précédente de ce tick (un tour de boucle, une famille d'avant) a pu écrire, validé hors de toute
+/// orpheline. Ce qui est vrai : rien n'est écrit à CETTE reprise, ce qui l'a été avant reste écrit, la transaction n'est
+/// pas annulée. Tout le reste est commun aux deux : même cause publiée (`source_illisible`, ensemble fermé), même
+/// compteur, même sous-chaîne « (cause nommée) » que lit `les_regles_ont_deja_declare_l_orpheline`, même préfixe
+/// « famille : aveugle, » (le bilan du planificateur ne fait que concaténer le détail ; seuls les témoins découpent ce
+/// préfixe).
+pub(crate) fn tick_aveugle_par_transaction_orpheline_aux_ecritures(boucle: &'static str, famille: &str) -> BilanDeTick {
+    crate::metrics::compter_un_tick_aveugle(boucle, CAUSE_TRANSACTION_ORPHELINE);
+    Mesure::Illisible {
+        cause: CAUSE_SOURCE_ILLISIBLE,
+        detail: format!(
+            "{famille} : aveugle, l'écrivain porte une transaction orpheline ({CAUSE_TRANSACTION_ORPHELINE}) — vue en \
+             reprenant le verrou pour écrire, après la compilation ou l'évaluation : rien n'est écrit par {famille} à \
+             cette reprise, ce qu'une reprise précédente de ce tick a écrit reste écrit, la transaction n'est pas annulée"
+        ),
+    }
+}
+
 /// LE BILAN D'UN TICK DU PLANIFICATEUR, toutes familles et tous tenants confondus. Additif : chaque
 /// famille y verse son bilan, et le résultat reste ILLISIBLE dès qu'une seule l'a été — la première
 /// cause est conservée, le détail accumule les familles aveugles.

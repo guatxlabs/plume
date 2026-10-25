@@ -96,7 +96,8 @@ mod dossier_cree_echeance_relue_priorite_comptee {
         assert_eq!(dcp_compte(&st, &format!("SELECT COUNT(*) FROM incident WHERE id={id} AND sla_due IS NOT NULL")), 1, "fixture : l'échéance existe");
         assert!(corps["sla_due"].is_null(), "échéance non lue : null : {corps}");
         let aveu = corps.get("sla_due_non_lu").and_then(|v| v.as_str()).unwrap_or("");
-        assert!(aveu.starts_with(CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE), "le null est AVOUÉ non lu, jamais « sans échéance » : {corps}");
+        // `P10.29-l` (vague AN) — l'égalité, plus le préfixe : la phrase seule, sans le texte du moteur entre parenthèses.
+        assert_eq!(aveu, CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE, "le null est AVOUÉ non lu, jamais « sans échéance », sans texte du moteur : {corps}");
 
         // CONTRÔLE POSITIF — le corps d'avant, champ pour champ.
         let (statut, corps) = dcp_creer(&st).await;

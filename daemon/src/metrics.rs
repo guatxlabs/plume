@@ -98,6 +98,7 @@ pub(crate) static TICKS_AVEUGLES_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TICKS_AVEUGLES: std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 pub(crate) fn compter_un_tick_aveugle(balayage: &'static str, cause: &str) {
     TICKS_AVEUGLES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    ticks_aveugles_de_ce_fil::noter(balayage, cause);
     // `P10.27-z` — la phrase vaut pour TOUTES les causes : une liste non lue comme une transaction orpheline sur l'écrivain
     // (où la liste a pu être lue, mais rien n'est écrit) ; seul le geste de CE balayage est suspendu, pas ses voisins.
     eprintln!("[plume] balayage de fond AVEUGLE ({balayage}) : aucun geste de ce balayage ce tour-ci : {cause}");
@@ -1357,3 +1358,32 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     o
 }
 
+/// `P10.31-j` — LE COMPTE DES TICKS AVEUGLES DU FIL QUI LES DÉCLARE, pour les témoins seuls. Hors des témoins : une
+/// fonction vide, sans état ni branche. Sous les témoins (module suivant), chaque `compter_un_tick_aveugle` est aussi
+/// noté dans un compte PAR FIL : `TICKS_AVEUGLES` est un compte de processus que les témoins parallèles de `cargo test`
+/// font bouger ensemble, si bien qu'un témoin ne pouvait y lire que « monte » ; un tick joué sur le fil du témoin s'y
+/// lit « +1 », et un double compte s'y voit. Les deux modules vivent EN FIN DE FICHIER (l'instrument de fraîcheur tient
+/// pour zone de test tout ce qui suit le premier attribut de test du fichier).
+#[cfg(not(test))]
+mod ticks_aveugles_de_ce_fil {
+    #[inline(always)]
+    pub(super) fn noter(_balayage: &'static str, _cause: &str) {}
+}
+
+/// `P10.31-j` — le compte par fil, sous les témoins : (balayage, cause) -> nombre de ticks aveugles déclarés par CE fil.
+#[cfg(test)]
+pub(crate) mod ticks_aveugles_de_ce_fil {
+    thread_local! {
+        static COMPTE_DE_CE_FIL: std::cell::RefCell<std::collections::BTreeMap<(&'static str, String), u64>> =
+            const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    }
+
+    pub(crate) fn noter(balayage: &'static str, cause: &str) {
+        COMPTE_DE_CE_FIL.with(|m| *m.borrow_mut().entry((balayage, cause.to_string())).or_insert(0) += 1);
+    }
+
+    /// Les ticks aveugles que CE fil a déclarés sous (balayage, cause) depuis son départ.
+    pub(crate) fn compte(balayage: &'static str, cause: &str) -> u64 {
+        COMPTE_DE_CE_FIL.with(|m| m.borrow().get(&(balayage, cause.to_string())).copied().unwrap_or(0))
+    }
+}

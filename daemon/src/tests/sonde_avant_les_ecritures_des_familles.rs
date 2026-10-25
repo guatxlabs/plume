@@ -32,15 +32,18 @@
 // ONCE_PC, ONCE_PR (la reprise sondée à sa première visite seulement : verrou pris nu ensuite, crochet gardé) ;
 // ONCE_AV_PARTAGE et ONCE_PB_PARTAGE (une seule sonde par appel de la famille, toutes reprises confondues).
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : le compteur GLOBAL des ticks aveugles est lu « monte » et non « +1 ». Il n'est
-// pas isolable : `TICKS_AVEUGLES` est un compte de processus par balayage (ni par tenant ni par base), et les autres
-// témoins qui versent sous `regles` (`tick_aveugle_sur_transaction_orpheline.rs`, `sonde_avant_chaque_famille_du_tick.rs`)
-// ne prennent aucun verrou commun avec ceux-ci sous `cargo test` (fils parallèles). Un double compte qui ne passerait
-// que par ce compteur resterait donc vert ; l'exactitude est tenue par la note « orpheline vue » de CETTE base (une
-// seule) et par le bilan (« 1 famille(s) »). La phrase du bilan reste celle de
-// `tick_aveugle_par_transaction_orpheline` (« rien n'est évalué ni écrit par <famille> ») alors qu'à ces sites
-// l'évaluation a eu lieu et qu'un tour de boucle précédent a pu écrire (validé, hors de toute orpheline). Et la cause
-// servie reste `CAUSE_SOURCE_ILLISIBLE` : aucune cause dédiée à l'orpheline n'est traduite par la console.
+// INVERSÉ LE 2026-10-25 (vague AN). La phrase du bilan à ces sites était celle de `tick_aveugle_par_transaction_orpheline`
+// (« rien n'est évalué ni écrit par <famille> ce tick »), fausse : l'évaluation (ou la compilation) a eu lieu, et un
+// tour de boucle précédent a pu écrire, validé hors de toute orpheline. Elle est désormais celle de
+// `tick_aveugle_par_transaction_orpheline_aux_ecritures` (« vue en reprenant le verrou pour écrire… rien n'est écrit par
+// <famille> à cette reprise, ce qu'une reprise précédente de ce tick a écrit reste écrit »), jugée en égalité par
+// `saef_detail` ; la sonde de PHASE 1 de `run_due_rules`, AVANT toute évaluation, garde l'ancienne (`saef_detail_avant`).
+// Et le compteur des ticks aveugles n'est plus lu « monte » : le compte PAR FIL (`metrics::ticks_aveugles_de_ce_fil`)
+// est jugé « +1 » exactement, ce que permet le fait que la famille ou le tick joué tourne sur le fil du témoin (le
+// crochet `AVANT_LES_ECRITURES_DE_LA_FAMILLE`, local au fil, est appelé dans le même appel que la sonde qui compte).
+// Le compte de processus (`TICKS_AVEUGLES`) reste lu « monte » pour la cause publiée, faute d'isolement entre témoins.
+// CE QUE CES TÉMOINS NE TIENNENT PAS : la cause servie reste `CAUSE_SOURCE_ILLISIBLE` ; aucune cause dédiée à
+// l'orpheline n'est traduite par la console.
 // =====================================================================================
 mod sonde_avant_les_ecritures_des_familles {
     use super::*;
@@ -195,6 +198,9 @@ mod sonde_avant_les_ecritures_des_familles {
         orphelines_vues: u64,
         compteur_avant: u64,
         compteur_apres: Option<(u64, String)>,
+        /// Ticks aveugles déclarés par CE fil sous (`regles`, orpheline), avant et après l'appel.
+        fil_avant: u64,
+        fil_apres: u64,
     }
 
     /// Joue `jouer` (la famille, ou le tick), l'orpheline ouverte devant `cible` à sa PREMIÈRE visite, puis ferme l'orpheline.
@@ -220,10 +226,12 @@ mod sonde_avant_les_ecritures_des_familles {
         SAEF_VISITES_DE_LA_CIBLE.with(|n| n.set(0));
         FAMILLES_ADMISES_PAR_LA_SONDE.with(|v| v.borrow_mut().clear());
         let compteur_avant = crate::metrics::tick_aveugle_de(BOUCLE_REGLES).map(|(n, _)| n).unwrap_or(0);
+        let fil_avant = crate::metrics::ticks_aveugles_de_ce_fil::compte(BOUCLE_REGLES, CAUSE_TRANSACTION_ORPHELINE);
         AVANT_LES_ECRITURES_DE_LA_FAMILLE.with(|h| h.set(crochet));
         let bilan = jouer();
         AVANT_LES_ECRITURES_DE_LA_FAMILLE.with(|h| h.set(sans_crochet_d_ecritures));
         let compteur_apres = crate::metrics::tick_aveugle_de(BOUCLE_REGLES);
+        let fil_apres = crate::metrics::ticks_aveugles_de_ce_fil::compte(BOUCLE_REGLES, CAUSE_TRANSACTION_ORPHELINE);
         let issue = {
             let c = db.lock();
             SaefIssue {
@@ -237,6 +245,8 @@ mod sonde_avant_les_ecritures_des_familles {
                 orphelines_vues: crate::comptes_de_transaction::compte_des_temoins(&c, "orpheline vue"),
                 compteur_avant,
                 compteur_apres,
+                fil_avant,
+                fil_apres,
             }
         };
         if !issue.autocommit {
@@ -245,8 +255,19 @@ mod sonde_avant_les_ecritures_des_familles {
         issue
     }
 
-    /// Le détail exact du tick aveugle d'une famille.
+    /// Le détail exact du tick aveugle d'une famille vu EN REPRENANT LE VERROU POUR ÉCRIRE (les dix reprises de
+    /// `ecrivain_sonde_avant_les_ecritures`) : la compilation ou l'évaluation a eu lieu, rien n'est écrit à cette reprise.
     fn saef_detail(famille: &str) -> String {
+        format!(
+            "{famille} : aveugle, l'écrivain porte une transaction orpheline ({CAUSE_TRANSACTION_ORPHELINE}) — vue en \
+             reprenant le verrou pour écrire, après la compilation ou l'évaluation : rien n'est écrit par {famille} à \
+             cette reprise, ce qu'une reprise précédente de ce tick a écrit reste écrit, la transaction n'est pas annulée"
+        )
+    }
+
+    /// Le détail exact du tick aveugle vu AVANT toute évaluation (sonde de phase 1 de `run_due_rules`) : la phrase
+    /// d'origine, vraie là.
+    fn saef_detail_avant(famille: &str) -> String {
         format!(
             "{famille} : aveugle, l'écrivain porte une transaction orpheline ({CAUSE_TRANSACTION_ORPHELINE}) — rien n'est \
              évalué ni écrit par {famille} ce tick, la transaction n'est pas annulée"
@@ -265,6 +286,11 @@ mod sonde_avant_les_ecritures_des_familles {
         let (n, cause) = issue.compteur_apres.clone().expect("le tick aveugle est compté sous `regles`");
         assert!(n > issue.compteur_avant, "« {famille} / {site} » : le compteur des ticks aveugles monte ({} -> {n})", issue.compteur_avant);
         assert_eq!(cause, CAUSE_TRANSACTION_ORPHELINE);
+        assert_eq!(
+            issue.fil_apres,
+            issue.fil_avant + 1,
+            "« {famille} / {site} » : UN tick aveugle compté sur ce fil, sous la cause de l'orpheline"
+        );
     }
 
     /// Une famille jouée SEULE, l'orpheline ouverte devant (famille, site) : bilan aveugle exact, rien d'écrit après.
@@ -766,7 +792,7 @@ mod sonde_avant_les_ecritures_des_familles {
         if !autocommit {
             db2.lock().execute_batch("ROLLBACK").expect("fixture : fermeture de l'orpheline");
         }
-        assert_eq!(bilan, Mesure::Illisible { cause: CAUSE_SOURCE_ILLISIBLE, detail: saef_detail("règles") }, "les règles se déclarent aveugles");
+        assert_eq!(bilan, Mesure::Illisible { cause: CAUSE_SOURCE_ILLISIBLE, detail: saef_detail_avant("règles") }, "les règles se déclarent aveugles");
         assert_eq!(atteinte, 0, "la sonde de phase 1 arrête AVANT l'évaluation : le crochet des écritures n'est pas atteint");
         assert_eq!(changements, injection, "rien n'est écrit après l'orpheline");
         assert_eq!((autocommit, marque, vues), (false, 1, 1), "l'orpheline est intacte et vue une fois");

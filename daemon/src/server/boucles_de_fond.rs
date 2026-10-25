@@ -419,10 +419,12 @@ pub(crate) fn les_regles_ont_deja_declare_l_orpheline(b: &crate::bilan_de_tick::
 /// lignes de base et playbooks évaluent HORS du verrou (parfois des secondes), puis le reprennent pour écrire : un geste a
 /// pu laisser une orpheline entre-temps, et l'écrire maintenant la remplirait. C'est la sonde reprise de `run_due_rules`
 /// avant ses écritures, à chaque reprise de verrou qui écrit. `Ok` : le verrou, écrivain sans orpheline. `Err` : le tick
-/// aveugle nommé (`famille`), compté sous la boucle des règles avec la cause de l'orpheline ; l'appelant le RETOURNE
-/// sans rien écrire, la transaction n'est pas annulée (décision d'Hugo, 2026-09-29) et le tick s'arrête derrière lui.
-/// Ce que la famille a écrit AVANT (un tour de boucle précédent, validé hors de toute orpheline) reste écrit. `site`
-/// nomme la reprise pour les témoins seuls (crochet appelé juste avant le verrou).
+/// aveugle nommé (`famille`) dit par la phrase de la REPRISE (`tick_aveugle_par_transaction_orpheline_aux_ecritures` :
+/// compilation ou évaluation faite, rien d'écrit à cette reprise), compté sous la boucle des règles avec la cause de
+/// l'orpheline ; l'appelant le RETOURNE sans rien écrire, la transaction n'est pas annulée (décision d'Hugo,
+/// 2026-09-29) et le tick s'arrête derrière lui. Ce que la famille a écrit AVANT (un tour de boucle précédent, validé
+/// hors de toute orpheline) reste écrit. `site` nomme la reprise pour les témoins seuls (crochet appelé juste avant le
+/// verrou).
 pub(crate) fn ecrivain_sonde_avant_les_ecritures<'a>(
     handle: &'a Arc<Mutex<Connection>>,
     famille: &'static str,
@@ -431,7 +433,7 @@ pub(crate) fn ecrivain_sonde_avant_les_ecritures<'a>(
     crochets_de_la_sonde_par_famille::avant_les_ecritures(handle, famille, site);
     let conn = handle.lock();
     if crate::handlers::transaction_validee::signaler_une_transaction_ouverte_hors_de_tout_geste(&conn, "tick de détection (écritures)") {
-        return Err(crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline(crate::bilan_de_tick::BOUCLE_REGLES, famille));
+        return Err(crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline_aux_ecritures(crate::bilan_de_tick::BOUCLE_REGLES, famille));
     }
     Ok(conn)
 }

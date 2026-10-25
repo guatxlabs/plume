@@ -190,18 +190,24 @@ fn ecrire_les_donnees_de_demonstration(conn: &Connection) -> rusqlite::Result<()
     Ok(())
 }
 /// Trouve une vue partagée par son nom, ou la crée (INSERT INTO view(name) seulement si absente) ->
-/// renvoie son id (None si l'INSERT échoue). DRY entre les seeds `seed_*_dashboard` (parité PVC neuf)
+/// renvoie son id (None si l'INSERT échoue ou n'écrit rien). DRY entre les seeds `seed_*_dashboard` (parité PVC neuf)
 /// et la migration v63 (split de la vue « Sécurité » en vues focalisées). Idempotent PAR NOM.
 ///
 /// GÉNÉRIQUE SUR `SqlExec` (cf. migrate.rs) — le SQL est le même dans les deux contextes : appelé
 /// depuis un seed de boot il reçoit le `&Connection` (comportement historique), appelé depuis la
 /// migration v63 il reçoit le `&MigTx` et ses écritures sont alors SOUS le garde de l'étape (un échec
 /// de classe B ici fait échouer la migration au lieu de l'estampiller sans ses vues).
+///
+/// `P10.28-l` — un `INSERT` qui rend `Ok(0)` (un déclencheur `RAISE(IGNORE)`) n'a créé aucune vue : `last_insert_rowid`
+/// rendrait alors l'identifiant de la DERNIÈRE ligne insérée par la connexion (souvent le tableau de bord qu'on
+/// rattache), servi comme identifiant de vue. Une seule ligne écrite, ou `None` (le tableau reste hors vue).
 pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i64> {
     conn.query_row("SELECT id FROM view WHERE name=?1", params![name], |r| r.get::<_, i64>(0))
         .ok()
         .or_else(|| {
-            conn.execute("INSERT INTO view(name,visibility) VALUES(?1,'shared')", params![name]).ok()?;
+            if conn.execute("INSERT INTO view(name,visibility) VALUES(?1,'shared')", params![name]).ok()? != 1 {
+                return None;
+            }
             Some(conn.last_insert_rowid())
         })
 }
@@ -381,7 +387,7 @@ pub(crate) fn seed_dashboard_head(
     panneaux: impl FnOnce(&Connection, i64) -> rusqlite::Result<()>,
 ) {
     semer_sous_son_drapeau(conn, &format!("seeded_{flag}"), |conn| {
-        conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES(?1,?2,'shared')", params![name, now()])?;
+        une_ligne_ecrite(conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES(?1,?2,'shared')", params![name, now()])?)?;
         let did = conn.last_insert_rowid();
         rattacher_le_tableau_a_sa_vue(conn, did, view, collapsed)?;
         panneaux(conn, did)
@@ -414,7 +420,9 @@ pub(crate) fn seed_dashboard_head_named(
 }
 
 /// `P10.28-e` — le rattachement, écriture PROPAGÉE. Une vue introuvable et non créable (`find_or_create_view` rend
-/// `None`) laisse le tableau hors vue, comme avant ; c'est l'`UPDATE` refusé qui annule le semis.
+/// `None`) laisse le tableau hors vue, comme avant ; c'est l'`UPDATE` refusé qui annule le semis. `P10.28-l` — un
+/// `UPDATE` qui rend `Ok(0)` (un déclencheur `RAISE(IGNORE)`) n'a rien rattaché : c'est aussi un refus (avant, le tableau
+/// était validé hors de sa vue, drapeau posé, jamais réparé).
 fn rattacher_le_tableau_a_sa_vue(conn: &Connection, did: i64, view: &str, collapsed: bool) -> rusqlite::Result<()> {
     if let Some(vid) = find_or_create_view(conn, view) {
         let sql = if collapsed {
@@ -422,7 +430,7 @@ fn rattacher_le_tableau_a_sa_vue(conn: &Connection, did: i64, view: &str, collap
         } else {
             "UPDATE dashboard SET view_id=?1 WHERE id=?2"
         };
-        conn.execute(sql, params![vid, did])?;
+        une_ligne_ecrite(conn.execute(sql, params![vid, did])?)?;
     }
     Ok(())
 }
@@ -433,7 +441,9 @@ pub(crate) fn seed_default_dashboard(conn: &Connection) {
 }
 
 fn semer_la_vue_d_ensemble(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute("INSERT INTO dashboard(name,created) VALUES('SOC — Vue d''ensemble', ?1)", params![now()])?;
+    // `P10.28-l` — `Ok(0)` (un déclencheur `RAISE(IGNORE)`) est un refus : sinon l'identifiant lu ensuite serait celui de
+    // la dernière ligne insérée par la connexion, et les panneaux comme le rattachement iraient à un AUTRE tableau.
+    une_ligne_ecrite(conn.execute("INSERT INTO dashboard(name,created) VALUES('SOC — Vue d''ensemble', ?1)", params![now()])?)?;
     let did = conn.last_insert_rowid();
     // vue par défaut « SOC » (anchor du SOC) — find_or_create PARTAGÉ avec la migration v63 et
     // seed_rollup_dashboard, pour que « Vue d'ensemble (rapide) » rejoigne CETTE même vue (parité live).
@@ -1464,7 +1474,8 @@ pub(crate) fn seed_obs_dashboard(conn: &Connection) {
 }
 
 fn semer_infra_et_logs(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('Infra & logs (OBS)', ?1, 'shared')", params![now()])?;
+    // `P10.28-l` — `Ok(0)` est un refus (même raison que `semer_la_vue_d_ensemble`).
+    une_ligne_ecrite(conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('Infra & logs (OBS)', ?1, 'shared')", params![now()])?)?;
     let did = conn.last_insert_rowid();
     // v63 : ce dashboard (jadis orphelin, view_id NULL) rejoint la vue dédiée « Infra & logs » (primaire/déplié).
     rattacher_le_tableau_a_sa_vue(conn, did, "Infra & logs", false)?;

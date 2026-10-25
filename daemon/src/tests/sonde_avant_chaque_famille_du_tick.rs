@@ -249,6 +249,26 @@ mod sonde_avant_chaque_famille_du_tick {
         }
     }
 
+    /// `P10.31-j` (inversé le 2026-10-25, vague AN) — le bilan d'un tick arrêté par l'orpheline vue À LA REPRISE des
+    /// écritures des règles (phase 3 de `run_due_rules`, après l'évaluation) : la phrase de la reprise
+    /// (`tick_aveugle_par_transaction_orpheline_aux_ecritures`), non celle d'avant la famille (`saft_juger_le_bilan`,
+    /// vraie devant chaque famille). Même forme : « 1 famille(s) », le détail, puis un entier.
+    fn saft_juger_le_bilan_de_la_reprise(famille: &str, bilan: &crate::bilan_de_tick::BilanDeTick) {
+        match bilan {
+            Mesure::Illisible { detail, .. } => {
+                let tete = format!(
+                    "1 famille(s) aveugle(s) ce tick — {famille} : aveugle, l'écrivain porte une transaction orpheline \
+                     ({CAUSE_TRANSACTION_ORPHELINE}) — vue en reprenant le verrou pour écrire, après la compilation ou \
+                     l'évaluation : rien n'est écrit par {famille} à cette reprise, ce qu'une reprise précédente de ce tick a \
+                     écrit reste écrit, la transaction n'est pas annulée ; abandons comptés par ailleurs : "
+                );
+                let reste = detail.strip_prefix(tete.as_str()).unwrap_or_else(|| panic!("orpheline à la reprise de « {famille} » : bilan inattendu : {detail}"));
+                assert!(!reste.is_empty() && reste.bytes().all(|o| o.is_ascii_digit()), "orpheline à la reprise de « {famille} » : bilan inattendu : {detail}");
+            }
+            Mesure::Lue(n) => panic!("orpheline à la reprise de « {famille} » : le tick se dit lu ({n} abandon(s))"),
+        }
+    }
+
     /// Les assertions communes à une orpheline ouverte devant `familles[k]`.
     fn saft_juger_l_orpheline(familles: &[&'static str], k: usize, issue: &SaftIssue) {
         let cible = familles[k];
@@ -375,7 +395,7 @@ mod sonde_avant_chaque_famille_du_tick {
         crate::handlers::detection::AVANT_LES_ECRITURES_DU_TICK.with(|h| h.set(saft_orpheline_pendant_les_regles));
         let issue = saft_jouer(&db, &p, "");
         crate::handlers::detection::AVANT_LES_ECRITURES_DU_TICK.with(|h| h.set(crate::handlers::detection::sans_crochet));
-        saft_juger_le_bilan("règles", &issue.bilan);
+        saft_juger_le_bilan_de_la_reprise("règles", &issue.bilan);
         assert_eq!(issue.marques, Vec::<(&str, i64)>::new(), "aucune famille suivante n'est sondée");
         assert_eq!(issue.admises, Vec::<&str>::new(), "aucune famille suivante n'est admise");
         let injection = issue.injection.expect("instrument : le crochet des règles ne s'est pas déclenché");

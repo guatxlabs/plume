@@ -133,7 +133,7 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
         let csql = format!("SELECT COUNT(*) FROM alert{where_clause}");
         match conn.query_row(&csql, binds.as_slice(), |r| r.get::<_, i64>(0)) {
             Ok(n) => TotalDeListe::Compte(n),
-            Err(e) => TotalDeListe::NonEtabli(e.to_string()),
+            Err(e) => TotalDeListe::non_etabli("de la liste d'alertes", &e),
         }
     } else {
         TotalDeListe::NonDemande
@@ -233,26 +233,64 @@ pub(crate) const CAUSE_LISTE_D_ALERTES_TRONQUEE: &str = "LISTE D'ALERTES INCOMPL
      compte pris dessus, ou l'absence d'une alerte qu'on y cherchait, ne portent sur RIEN. Combien de \
      lignes manquent n'est pas connu. Cause : ";
 
+/// `P10.29-l` (vague AN) — CE QUE `total_error` DIT D'UN COMPTE INTERROMPU PAR LA GARDE DE BUDGET (ou une annulation) :
+/// une phrase fixe, le texte du moteur au journal seul (`[alerts] WARN`).
+pub(crate) const TOTAL_D_ALERTES_INTERROMPU: &str = "le compte a été interrompu avant la fin (garde de budget de lecture)";
+/// `P10.29-l` (vague AN) — tout autre refus du moteur sur le compte (lecture refusée, table ou colonne absente) : la
+/// phrase fixe ; le texte du moteur (nom de table, de colonne, motif) partait sous `total_error` dans un corps 200 lisible
+/// par un lecteur.
+pub(crate) const TOTAL_D_ALERTES_REFUSE_PAR_LA_BASE: &str = "la base n'a pas rendu le compte";
+
 /// `P10.7-g` (lot 96) — LE TOTAL D'UNE LISTE D'ALERTES EST LU, NON DEMANDÉ, OU NON ÉTABLI — jamais un `None` qui
-/// confondrait les deux derniers. `NonEtabli` porte la cause du moteur ; le corps la sert sous `total_error` avec
+/// confondrait les deux derniers. `NonEtabli` porte une phrase fixe par cause (`P10.29-l`, vague AN : le texte du
+/// moteur ne va qu'au journal) ; le corps sert la phrase sous `total_error` avec
 /// `total: null`, et la console, qui ne tient un total que s'il est un nombre, lit déjà ce `null` comme
 /// « reste indéterminable » (`web/alerts.js`, `motDeLAcquittement`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TotalDeListe {
     NonDemande,
     Compte(i64),
-    NonEtabli(String),
+    NonEtabli(CompteNonEtabli),
+}
+
+/// `P10.29-l` (vague AN) — UN COMPTE RATÉ : la phrase fixe servie au client, et ce qui ne part qu'au journal (la liste
+/// visée et le texte du moteur). La fonction de page ne connaît pas le tenant : c'est le gestionnaire, qui le connaît,
+/// qui écrit la ligne (`TotalDeListe::journaliser`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompteNonEtabli {
+    pub(crate) phrase: &'static str,
+    liste: String,
+    moteur: String,
 }
 
 impl TotalDeListe {
+    /// `P10.29-l` (vague AN) — un compte raté : la phrase fixe de sa cause (interrompu, ou refusé par la base) ; la liste
+    /// visée (`liste` : un libellé fixe et la colonne whitelistée du groupe) et le texte du moteur sont gardés pour le
+    /// journal seul. Seul le code `SQLITE_INTERRUPT` est une interruption : toute autre erreur du moteur (E/S, base
+    /// corrompue, verrou, mémoire, refus de l'autorisateur) est un refus de la base.
+    pub(crate) fn non_etabli(liste: &str, e: &rusqlite::Error) -> Self {
+        let interrompu = matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::OperationInterrupted);
+        let phrase = if interrompu { TOTAL_D_ALERTES_INTERROMPU } else { TOTAL_D_ALERTES_REFUSE_PAR_LA_BASE };
+        TotalDeListe::NonEtabli(CompteNonEtabli { phrase, liste: liste.to_string(), moteur: e.to_string() })
+    }
+
+    /// `P10.29-l` (vague AN) — la ligne `[alerts] WARN` d'un compte raté : la liste visée, le tenant de l'appelant et le
+    /// texte du moteur. Un compte établi ou non demandé n'écrit rien.
+    pub(crate) fn journaliser(&self, tenant: &str) {
+        match self {
+            TotalDeListe::NonEtabli(c) => eprintln!("[alerts] WARN total {} non établi (tenant '{tenant}') : {}", c.liste, c.moteur),
+            TotalDeListe::Compte(_) | TotalDeListe::NonDemande => {}
+        }
+    }
+
     /// Pose le total sur un corps : un compte est un nombre, un compte non établi est `null` AVEC sa cause,
     /// un total non demandé n'écrit rien (le corps reste byte-identique à celui d'avant cette clé).
     fn poser_sur(self, corps: &mut Value) {
         match self {
             TotalDeListe::Compte(t) => corps["total"] = json!(t),
-            TotalDeListe::NonEtabli(cause) => {
+            TotalDeListe::NonEtabli(c) => {
                 corps["total"] = Value::Null;
-                corps["total_error"] = json!(format!("total NON ÉTABLI : {cause} — la page est servie, la population de la liste ne l'est pas"));
+                corps["total_error"] = json!(format!("total NON ÉTABLI : {} — la page est servie, la population de la liste ne l'est pas", c.phrase));
             }
             TotalDeListe::NonDemande => {}
         }
@@ -356,9 +394,11 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
     };
     let db_path = req_db_path(&st, &au);
     let gval = gval.to_string();
+    let tenant = au.tenant.clone();
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "alerts": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             let (out, total, fin) = alerts_query_page(conn, &filtre, group_col, &gval, limit, offset, paged);
+            total.journaliser(&tenant);
             corps_de_liste_d_alertes(out, total, &fin)
         })
     })
@@ -401,7 +441,7 @@ pub(crate) fn alert_groups_query_page(conn: &Connection, group_col: &str, f: &Fi
     // `P10.7-g` (lot 96) — même contrat que la liste plate : un COUNT DISTINCT interrompu est NON ÉTABLI, nommé.
     let total = match conn.query_row(&csql, binds.as_slice(), |r| r.get::<_, i64>(0)) {
         Ok(n) => TotalDeListe::Compte(n),
-        Err(e) => TotalDeListe::NonEtabli(e.to_string()),
+        Err(e) => TotalDeListe::non_etabli(&format!("de la liste de groupes par {group_col}"), &e),
     };
     // COHÉRENCE D'APERÇU — l'aperçu échantillon est RE-SCOPÉ au MÊME filtre (statut/mitre/uncased/source)
     // que le groupe. Sinon en scope « Actives » un groupe dont la plus récente TOUS statuts est 'closed'
@@ -478,9 +518,11 @@ pub(crate) async fn alert_groups(State(st): State<AppState>, Extension(au): Exte
     };
     let db_path = req_db_path(&st, &au);
     let gc = group_col.to_string();
+    let tenant = au.tenant.clone();
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "groups": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
             let (groups, total, fin) = alert_groups_query_page(conn, &gc, &filtre, limit, offset);
+            total.journaliser(&tenant);
             corps_de_liste_de_groupes(groups, total, &gc, &fin)
         })
     })

@@ -35,6 +35,14 @@ async fn p10_7g_un_echantillon_de_labels_non_lu_ne_se_sert_pas_comme_lunion_etab
     with_write(&st, &au, |conn| conn.execute_batch("ALTER TABLE metric RENAME TO metric_hors_d_atteinte;").expect("la fixture peut renommer la table"));
     let apres = lire(prom_labels(State(st.clone()), Extension(au.clone())).await.into_response()).await;
     let avert = apres["warnings"].as_array().cloned().unwrap_or_default();
-    assert!(avert.iter().any(|w| w.as_str().unwrap_or("").contains("échantillon de labels NON LU")), "l'union non établie est dite : {apres}");
+    // `P10.29-l` (vague AN) — l'avertissement ENTIER, plus un `contains` : la phrase fixe, sans « no such table » du moteur.
+    assert_eq!(
+        avert,
+        vec![json!(format!(
+            "{} — seules les clés fixes (__name__, host) sont servies, l'union des clés n'est pas établie",
+            crate::handlers::datasource::ECHANTILLON_DE_LABELS_NON_LU
+        ))],
+        "l'union non établie est dite, par la phrase fixe seule : {apres}"
+    );
     assert!(apres["data"].as_array().map(|a| a.iter().any(|x| x == "__name__")).unwrap_or(false), "les clés fixes restent servies : {apres}");
 }

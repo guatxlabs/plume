@@ -461,7 +461,13 @@ pub(crate) async fn prom_label_values(State(st): State<AppState>, Extension(au):
     // `P11.22-g` — les trois énoncés ont lu la borne plus une ; la coupe est mesurée ICI, dans la fonction qui
     // porte les énoncés, et DITE dans `warnings` : un exploitant qui ne trouve pas son étiquette sait qu'elle
     // peut exister au-delà de la borne.
-    let (lues, coupe_du_moteur) = match prom_distinct_col(&st, &db_path, &sql).await { Ok(v) => v, Err(refus) => return refus };
+    // `P10.29-l` (vague AN) — l'objet nommé au journal est un libellé FIXE (jamais le nom de label du client).
+    let objet = match label.as_str() {
+        "__name__" => "valeurs distinctes de __name__",
+        "host" => "valeurs distinctes de host",
+        _ => "valeurs distinctes d'un label JSON",
+    };
+    let (lues, coupe_du_moteur) = match prom_distinct_col(&st, &db_path, &sql, objet, &au.tenant).await { Ok(v) => v, Err(refus) => return refus };
     let borne = PROM_LABEL_VALUES_WINDOW.max(0) as usize;
     let (data, coupee) = crate::handlers::liste_bornee::couper_a_la_borne(lues, borne);
     prom_ok_borne(data, borne, coupee || coupe_du_moteur, format!(
@@ -471,8 +477,10 @@ pub(crate) async fn prom_label_values(State(st): State<AppState>, Extension(au):
 /// Exécute un SELECT d'UNE colonne et rend les valeurs LUES (chaînes), la ligne excédentaire comprise, et le
 /// drapeau de coupe du MOTEUR (`stats.truncated`, sa propre borne `PLUME_QUERY_MAX`) — la coupe et
 /// l'avertissement appartiennent à l'appelant qui porte l'énoncé (`prom_label_values`, `P11.22-g`). `Err` porte
-/// la réponse de refus toute faite (permis fermé, exécution échouée).
-async fn prom_distinct_col(st: &AppState, db_path: &str, sql: &str) -> Result<(Vec<Value>, bool), Response> {
+/// la réponse de refus toute faite (permis fermé, exécution échouée). `P10.29-l` (vague AN) : un refus du moteur sert
+/// la phrase fixe `VALEURS_DE_LABEL_NON_LUES` ; son texte part à la ligne `[datasource] WARN` avec l'objet (libellé
+/// fixe) et le tenant.
+async fn prom_distinct_col(st: &AppState, db_path: &str, sql: &str, objet: &'static str, tenant: &str) -> Result<(Vec<Value>, bool), Response> {
     let _permit = match acquire_query_permit(&st.query_sem).await {
         Ok((p, _wait)) => p,
         Err(_) => return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible")),
@@ -487,8 +495,58 @@ async fn prom_distinct_col(st: &AppState, db_path: &str, sql: &str) -> Result<(V
             let coupe_du_moteur = v["stats"]["truncated"].as_bool().unwrap_or(false);
             Ok((v.get("rows").and_then(|r| r.as_array()).unwrap_or(&empty).iter().filter_map(|row| row.as_array().and_then(|a| a.first()).cloned()).filter(|x| !x.is_null()).collect(), coupe_du_moteur))
         }
-        Ok(Err(e)) => Err(prom_err(e)),
+        Ok(Err(e)) => {
+            eprintln!("[datasource] WARN {objet} non lues (tenant '{tenant}') : {e}");
+            Err(prom_err(VALEURS_DE_LABEL_NON_LUES))
+        }
         Err(_) => Err(prom_err("exécution échouée")),
+    }
+}
+
+/// `P10.29-l` (vague AN) — les valeurs distinctes d'un label n'ont pas été lues (moteur refusé, budget, base non
+/// ouverte) : la phrase servie dans le 400 (statut et forme d'avant), le texte du moteur au journal seul.
+pub(crate) const VALEURS_DE_LABEL_NON_LUES: &str = "valeurs du label NON LUES : la base n'a pas rendu la liste";
+
+/// `P10.29-l` (vague AN) — l'échantillon de labels n'a pas été lu (moteur refusé, budget, base non ouverte) : la phrase
+/// servie dans `warnings`, le texte du moteur au journal seul (`[datasource] WARN`).
+pub(crate) const ECHANTILLON_DE_LABELS_NON_LU: &str = "échantillon de labels NON LU : la base n'a pas rendu l'échantillon";
+/// `P10.29-l` (vague AN) — la tâche de lecture de l'échantillon ne s'est pas terminée (sa sortie va au journal seul).
+pub(crate) const ECHANTILLON_DE_LABELS_TACHE_INTERROMPUE: &str = "échantillon de labels NON LU : la tâche de lecture ne s'est pas terminée";
+
+/// `P10.29-l` (vague AN) — L'ISSUE DE LA LECTURE DE L'ÉCHANTILLON DE LABELS, jugée hors de la route pour que chaque bras
+/// (lu, refusé par le moteur, tâche non terminée) se joue par un appel réel. Reçoit l'échantillon DÉJÀ COUPÉ par
+/// `prom_labels` et son drapeau de coupe (`P11.22-g` : la route lit l'échantillon avec sa ligne excédentaire et le coupe
+/// elle-même, ou le moteur dit sa propre coupe). Rend l'union des clés (les clés fixes `__name__` et `host` toujours),
+/// le drapeau tel que reçu et, pour un échantillon NON LU (`P10.7-g`, lot 102), la phrase fixe de sa cause : le texte
+/// du moteur ou la sortie de la tâche part à la ligne `[datasource] WARN` avec le tenant, jamais au client.
+pub(crate) fn union_des_cles_de_labels(
+    issue: Result<Result<(Vec<Value>, bool), String>, tokio::task::JoinError>,
+    tenant: &str,
+) -> (std::collections::BTreeSet<String>, bool, Option<&'static str>) {
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    keys.insert("__name__".into());
+    keys.insert("host".into());
+    match issue {
+        Ok(Ok((blobs, echantillon_coupe))) => {
+            for row in blobs.iter() {
+                if let Some(blob) = row.as_array().and_then(|a| a.first()).and_then(|x| x.as_str()) {
+                    if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(blob) {
+                        for k in m.keys() {
+                            keys.insert(k.clone());
+                        }
+                    }
+                }
+            }
+            (keys, echantillon_coupe, None)
+        }
+        Ok(Err(e)) => {
+            eprintln!("[datasource] WARN échantillon de labels non lu (tenant '{tenant}') : {e}");
+            (keys, false, Some(ECHANTILLON_DE_LABELS_NON_LU))
+        }
+        Err(e) => {
+            eprintln!("[datasource] WARN échantillon de labels non lu (tenant '{tenant}') : la tâche ne s'est pas terminée : {e}");
+            (keys, false, Some(ECHANTILLON_DE_LABELS_TACHE_INTERROMPUE))
+        }
     }
 }
 
@@ -505,34 +563,15 @@ pub(crate) async fn prom_labels(State(st): State<AppState>, Extension(au): Exten
     // échantillon borné des blobs de labels récents -> union des clés.
     let sql = format!("SELECT DISTINCT labels FROM metric ORDER BY ts DESC LIMIT {}", crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(PROM_LABELS_SAMPLE_WINDOW));
     let res = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &sql, query_budget_ms(), None)).await;
-    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    keys.insert("__name__".into());
-    keys.insert("host".into());
-    // `P11.22-g` — l'échantillon est lu avec sa ligne excédentaire : si elle existe, l'union des clés n'a vu
-    // que les blobs les plus RÉCENTS, et la réponse le dit (`warnings`) au lieu de présenter l'union comme totale.
-    let mut echantillon_coupe = false;
-    // `P10.7-g` (lot 102) — un échantillon NON LU (moteur refusé, budget, tâche interrompue) ne se sert plus comme
-    // l'union des clés : les clés fixes restent servies, et l'avertissement dit que l'union n'est pas établie.
-    let mut echantillon_non_lu: Option<String> = None;
-    match res {
-        Ok(Ok(v)) => {
-            let empty: Vec<Value> = Vec::new();
-            let blobs: Vec<Value> = v.get("rows").and_then(|r| r.as_array()).unwrap_or(&empty).clone();
+    // `P11.22-g` — la coupe se mesure ICI, sur la ligne excédentaire lue ; le moteur peut aussi dire la sienne.
+    let issue = res.map(|lu| {
+        lu.map(|v| {
+            let blobs: Vec<Value> = v.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default();
             let (blobs, coupee) = crate::handlers::liste_bornee::couper_a_la_borne(blobs, PROM_LABELS_SAMPLE_WINDOW.max(0) as usize);
-            echantillon_coupe = coupee || v["stats"]["truncated"].as_bool().unwrap_or(false);
-            for row in blobs.iter() {
-                if let Some(blob) = row.as_array().and_then(|a| a.first()).and_then(|x| x.as_str()) {
-                    if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(blob) {
-                        for k in m.keys() {
-                            keys.insert(k.clone());
-                        }
-                    }
-                }
-            }
-        }
-        Ok(Err(e)) => echantillon_non_lu = Some(format!("échantillon de labels NON LU : {e}")),
-        Err(e) => echantillon_non_lu = Some(format!("échantillon de labels NON LU : la tâche ne s'est pas terminée ({e})")),
-    }
+            (blobs, coupee || v["stats"]["truncated"].as_bool().unwrap_or(false))
+        })
+    });
+    let (keys, echantillon_coupe, echantillon_non_lu) = union_des_cles_de_labels(issue, &au.tenant);
     // retire les clés masquées pour l'appelant (fail-closed : jamais exposer un champ masqué comme label).
     let data: Vec<Value> = keys.into_iter().filter(|k| k == "__name__" || masks.get(if k == "host" { "host" } else { k.as_str() }).is_none()).map(Value::String).collect();
     if let Some(cause) = echantillon_non_lu {

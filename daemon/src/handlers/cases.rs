@@ -1275,7 +1275,12 @@ pub(crate) async fn case_create(State(st): State<AppState>, Extension(au): Exten
     let mut corps = json!({ "id": id, "status": "new", "priority": priority, "priority_label": priority_label(priority), "sla_due": null });
     match relue {
         Ok(sla_due) => corps["sla_due"] = json!(sla_due),
-        Err(e) => corps["sla_due_non_lu"] = json!(format!("{CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE} ({e})")),
+        // `P10.29-l` (vague AN) — la phrase seule : le texte du moteur (« access to incident.sla_due is prohibited »,
+        // noms de colonnes) part au journal avec le numéro du dossier, plus dans le corps 200.
+        Err(e) => {
+            eprintln!("[cases] WARN échéance du dossier #{id} non relue : {e}");
+            corps["sla_due_non_lu"] = json!(CAUSE_ECHEANCE_DU_DOSSIER_CREE_NON_RELUE);
+        }
     }
     // `P10.20-w` (reste) — échéances multi-niveau refusées : le dossier est servi (il existe), l'aveu est porté.
     match echeances {

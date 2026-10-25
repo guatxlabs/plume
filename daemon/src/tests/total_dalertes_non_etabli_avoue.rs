@@ -14,6 +14,15 @@ fn tdn_total_non_etabli(r: &(Vec<Value>, crate::handlers::alerts::TotalDeListe, 
     matches!(r.1, crate::handlers::alerts::TotalDeListe::NonEtabli(_))
 }
 
+/// `P10.29-l` (vague AN) — le `total_error` ENTIER d'un compte interrompu (le tir du rappel de progression rend
+/// `SQLITE_INTERRUPT`, le code de la garde de budget).
+fn tdn_total_interrompu() -> String {
+    format!(
+        "total NON ÉTABLI : {} — la page est servie, la population de la liste ne l'est pas",
+        crate::handlers::alerts::TOTAL_D_ALERTES_INTERROMPU
+    )
+}
+
 #[test]
 fn p10_7g_un_total_dalertes_non_etabli_est_nomme_jamais_tu() {
     const N: i64 = 60;
@@ -40,7 +49,8 @@ fn p10_7g_un_total_dalertes_non_etabli_est_nomme_jamais_tu() {
     assert!(fin.cause().is_none(), "instrument : la page est entière, seul le COUNT a été coupé");
     let corps = corps_de_liste_d_alertes(page, total, &fin);
     assert_eq!(corps["total"], Value::Null, "un compte interrompu rend `null`, jamais un chiffre ni une absence de demande : {corps}");
-    assert!(corps["total_error"].as_str().unwrap_or("").starts_with("total NON ÉTABLI"), "la cause est nommée : {corps}");
+    // `P10.29-l` (vague AN) — l'égalité, plus le préfixe : la phrase fixe de l'interruption, sans « interrupted » du moteur.
+    assert_eq!(corps["total_error"], json!(tdn_total_interrompu()), "la cause est nommée par sa phrase fixe : {corps}");
     assert_eq!(corps["alerts"].as_array().map(|a| a.len() as i64), Some(N), "la page entière reste servie : {corps}");
 }
 
@@ -67,5 +77,5 @@ fn p10_7g_un_total_de_groupes_non_etabli_est_nomme_jamais_tu() {
     let (groupes, total, fin) = coupe.expect("instrument : aucun tir n'a coupé le COUNT DISTINCT en laissant les groupes aboutir — le témoin ne conclut pas");
     let corps = corps_de_liste_de_groupes(groupes, total, "rule", &fin);
     assert_eq!(corps["total"], Value::Null, "un compte interrompu rend `null` : {corps}");
-    assert!(corps["total_error"].as_str().unwrap_or("").starts_with("total NON ÉTABLI"), "la cause est nommée : {corps}");
+    assert_eq!(corps["total_error"], json!(tdn_total_interrompu()), "la cause est nommée par sa phrase fixe : {corps}");
 }

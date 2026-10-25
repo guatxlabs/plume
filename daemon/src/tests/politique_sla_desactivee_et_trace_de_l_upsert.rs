@@ -14,13 +14,22 @@
 // Correction (vérification indépendante) : bords 1 et 0 du compte relus au registre ; BEGIN et COMMIT refusés (500, rien
 // posé) ; recalcul rejoué dans les deux sens — désactivation (actif à politique pendante rendu au legacy, forme de
 // 2e4fe6eb) et modification (échéance recalculée) ; `reason` gardé quand le maillon manque.
-// Seconde correction : `recomputed` non nul dans le corps tracé (pendant compté, gouverné pas deux fois) ; état du refus
+// Seconde correction : `recomputed` non nul dans le corps tracé (pendant compté, gouverné pas deux fois — INVERSÉ en vague
+// AN, voir plus bas) ; état du refus
 // de BEGIN lu AVANT le ROLLBACK de l'étrangère ; au plafond, la désactivation ne dit plus « ancienne échéance » d'une
 // population déjà effacée, et le vrai plafond (pendants) reste dit.
 // CE QU'ILS NE TIENNENT PAS : la console (`web/`, aucun écran de politiques SLA) ; la réactivation qui ne regouverne
 // pas les terminaux ni les fusionnés (limite écrite) ; les marqueurs `ack_breached`/`resolve_breached` passés, conservés
 // à dessein ; la route HTTP de défusion et celle du changement de statut (appelées par leurs fonctions).
 // Mutants (VERIF_MUT=L8_*, retirés avant le commit) nommés sur chaque témoin.
+// `P10.31-v` (vague AN) — TROIS TÉMOINS INVERSÉS : les actifs à politique PENDANTE ou ÉTRANGÈRE sont désormais effacés dans
+// la transaction de la désactivation et comptés au registre et dans `degouvernes` ; le recalcul n'est plus rejoué à la
+// désactivation (`recomputed` 0). Inversés nommément : `pde_desactivation_rejoue_le_recalcul_sur_un_actif_a_politique_pendante`
+// (devenu `pde_desactivation_degouverne_un_actif_a_politique_pendante_dans_la_transaction`, détail du registre),
+// `pde_desactivation_sans_maillon_compte_le_pendant_dans_recomputed` (devenu
+// `pde_desactivation_sans_maillon_compte_le_pendant_dans_degouvernes`), et la partie contrôle de
+// `pde_plafond_a_la_desactivation_sans_fausse_alerte`. Les témoins neufs sont dans
+// `politique_sla_desactivee_compte_ses_pendants.rs` (mutants AN3_*).
 // =====================================================================================
 mod politique_sla_desactivee_et_trace_de_l_upsert {
     use super::*;
@@ -367,13 +376,14 @@ mod politique_sla_desactivee_et_trace_de_l_upsert {
     }
 
     /// CE QU'IL TIENT (sens « désactivation ») : un dossier ACTIF de P1 portant un `sla_policy_id` PENDANT (999 : politique
-    /// supprimée avant `P10.31-v`, aucune clé étrangère), échu. Désactiver P1 -> 204, le recalcul rejoué le rend au régime
-    /// legacy (None, None, None) et le tour ne le notifie pas, alors qu'il notifie B, échu sous P2 active. Sur 2e4fe6e le
-    /// recalcul l'effaçait déjà ; le registre ne le compte pas (il n'était pas gouverné par P1).
-    /// MUTATION QUI LE FAIT ROUGIR : `L8C_RECALC_SAUTE_SI_DESACTIVEE` (forme d'e62fd8ae : recalcul sauté à `enabled=0`,
-    /// D garde ses échéances et le tour le notifie).
+    /// supprimée avant `P10.31-v`, aucune clé étrangère), échu. Désactiver P1 -> 204, il est rendu au régime legacy (None,
+    /// None, None) et le tour ne le notifie pas, alors qu'il notifie B, échu sous P2 active.
+    /// INVERSÉ (vague AN) : il s'appelait `pde_desactivation_rejoue_le_recalcul_sur_un_actif_a_politique_pendante` et
+    /// affirmait que le registre ne le comptait PAS (effacé par le recalcul rejoué après le `COMMIT`) ; il est désormais
+    /// effacé dans la transaction et compté : « 1 dossier(s) dégouverné(s) …, dont 1 … ».
+    /// MUTATIONS QUI LE FONT ROUGIR : `AN3_DETAIL_OMIS`, `AN3_DEGOUVERNES_SANS_PENDANTS` (registre).
     #[tokio::test]
-    async fn pde_desactivation_rejoue_le_recalcul_sur_un_actif_a_politique_pendante() {
+    async fn pde_desactivation_degouverne_un_actif_a_politique_pendante_dans_la_transaction() {
         let (st, _t) = pde_etat("pendant");
         let _p1 = pde_politique(&st, "P1", 1);
         let p2 = pde_politique(&st, "P2", 2);
@@ -389,7 +399,14 @@ mod politique_sla_desactivee_et_trace_de_l_upsert {
         let envois = pde_tick(&st);
         assert!(!envois.iter().any(|x| x.starts_with(&format!("Case #{d} "))), "D n'est pas notifié : {envois:?}");
         assert!(envois.iter().any(|x| x.starts_with(&format!("Case #{b} "))), "contrôle : B est notifié : {envois:?}");
-        assert_eq!(pde_details(&st), vec!["P1 ack=60s resolve=600s enabled=0 by redacteur".to_string()], "D n'était pas gouverné par P1");
+        assert_eq!(
+            pde_details(&st),
+            vec![
+                "P1 ack=60s resolve=600s enabled=0 by redacteur ; 1 dossier(s) dégouverné(s) : sla_policy_id, ack_due et resolve_due effacés (régime legacy), dont 1 dossier(s) actif(s) à politique pendante ou étrangère"
+                    .to_string()
+            ],
+            "D, pendant, effacé par la désactivation : compté au registre"
+        );
     }
 
     /// CE QU'IL TIENT (sens « modification ») : modifier P1 (120 s / 1200 s) recalcule l'échéance de son dossier ACTIF A
@@ -430,14 +447,15 @@ mod politique_sla_desactivee_et_trace_de_l_upsert {
         assert_eq!(pde_entier(&st, "SELECT ack_target_s FROM sla_policy WHERE priority=1"), Some(180), "la politique est écrite");
     }
 
-    /// CE QU'IL TIENT (corps tracé, champ `recomputed` non nul) : maillon refusé ; A gouverné par P1 (dégouverné dans la
-    /// transaction), D actif de priorité 1 à politique PENDANTE (999, rendu au legacy par le recalcul rejoué). Désactiver
-    /// P1 -> 200, `degouvernes` = 1 (A), `recomputed` = 1 (D seul : A, déjà effacé, n'est pas compté une seconde fois),
-    /// pas de `reason` ; les deux à (None, None, None).
-    /// MUTATIONS QUI LE FONT ROUGIR : `L8D_RECOMPUTED_ZERO` (`recomputed` servi à 0), `L8D_DOUBLE_COMPTE` (`recomputed`
-    /// = recalculés + dégouvernés).
+    /// CE QU'IL TIENT (corps tracé) : maillon refusé ; A gouverné par P1, D actif de priorité 1 à politique PENDANTE (999).
+    /// Désactiver P1 -> 200, `degouvernes` = 2 (A et D, effacés dans la transaction), `recomputed` = 0 (aucun recalcul
+    /// rejoué, D n'est pas compté deux fois), pas de `reason` ; les deux à (None, None, None).
+    /// INVERSÉ (vague AN) : il s'appelait `pde_desactivation_sans_maillon_compte_le_pendant_dans_recomputed` et affirmait le
+    /// défaut — « degouvernes = 1 (A seul), recomputed = 1 (D seul) » : D effacé hors du compte du registre.
+    /// MUTATIONS QUI LE FONT ROUGIR : `AN3_DOUBLE_COMPTE` (D compté dans la transaction puis par le recalcul rejoué),
+    /// `AN3_DEGOUVERNES_SANS_PENDANTS` (`degouvernes` 1).
     #[tokio::test]
-    async fn pde_desactivation_sans_maillon_compte_le_pendant_dans_recomputed() {
+    async fn pde_desactivation_sans_maillon_compte_le_pendant_dans_degouvernes() {
         let (st, _t) = pde_etat("compte");
         let p1 = pde_politique(&st, "P1", 1);
         let n0 = now();
@@ -449,8 +467,8 @@ mod politique_sla_desactivee_et_trace_de_l_upsert {
         let v: Value = serde_json::from_slice(&corps).unwrap_or(Value::Null);
         assert_eq!(statut, 200, "maillon manquant : 200 ({v})");
         assert!(v[CLE_REGISTRE_SANS_MAILLON].as_str().unwrap_or("").starts_with(CAUSE_GESTE_SANS_TRACE), "trace manquante avouée : {v}");
-        assert_eq!(v["degouvernes"], json!(1), "A, gouverné par P1, dégouverné dans la transaction : {v}");
-        assert_eq!(v["recomputed"], json!(1), "D seul, rendu au legacy par le recalcul ; A pas compté deux fois : {v}");
+        assert_eq!(v["degouvernes"], json!(2), "A (gouverné par P1) et D (pendant), dégouvernés dans la transaction : {v}");
+        assert_eq!(v["recomputed"], json!(0), "aucun recalcul rejoué à la désactivation : D pas compté deux fois : {v}");
         assert!(v.get("reason").is_none(), "recalcul complet : {v}");
         for (nom, id) in [("A", a), ("D", d)] {
             assert_eq!(pde_chrono(&st, id), (None, None, None), "{nom} au régime legacy");
@@ -461,11 +479,12 @@ mod politique_sla_desactivee_et_trace_de_l_upsert {
     /// -> 204 muet : tous effacés dans la transaction, le recalcul ne relit que les actifs à `sla_policy_id` non NULL et
     /// ne dit plus « … gardent leur ANCIENNE échéance » d'une population déjà rendue au legacy (fausse alerte mesurée
     /// avant ce correctif : 200 + `reason` plafond, `recomputed` 0). Registre : `SLA_RECOMPUTE_CAP` + 1 dégouvernés.
-    /// CONTRÔLE (le vrai plafond reste dit) : les mêmes dossiers reprennent une politique PENDANTE (999) et des
-    /// échéances ; désactiver à nouveau -> 200, `reason` plafond, `recomputed` = `SLA_RECOMPUTE_CAP`, et un dossier,
-    /// au-delà, garde réellement son ancienne échéance.
-    /// MUTATIONS QUI LE FONT ROUGIR : `L8D_FILTRE_OMIS` (recalcul de désactivation non filtré : la fausse alerte revient),
-    /// `L8D_FILTRE_INVERSE` (`sla_policy_id IS NULL` : le vrai plafond est tu).
+    /// CONTRÔLE INVERSÉ (vague AN) : les mêmes dossiers reprennent une politique PENDANTE (999) et des échéances ; il
+    /// affirmait « désactiver à nouveau -> 200, `reason` plafond, `recomputed` = `SLA_RECOMPUTE_CAP`, un dossier au-delà
+    /// garde son ancienne échéance » (le recalcul rejoué, borné, effaçait les pendants). Désormais l'effacement des
+    /// pendants est un `UPDATE` de la transaction, sans plafond : 204 muet, aucun ne garde son échéance, et le registre
+    /// les compte tous (`SLA_RECOMPUTE_CAP` + 1, dont autant de pendants).
+    /// Les mutants `L8D_FILTRE_*` visaient `sla_recalcule_la_priorite_desactivee`, retiré avec le recalcul de désactivation.
     #[tokio::test]
     async fn pde_plafond_a_la_desactivation_sans_fausse_alerte() {
         let (st, _t) = pde_etat("plafond");
@@ -508,17 +527,27 @@ mod politique_sla_desactivee_et_trace_de_l_upsert {
             "le registre compte la population entière"
         );
 
-        // Contrôle : PLAFOND + 1 actifs à politique PENDANTE -> le plafond mord réellement, et il est dit.
+        // Contrôle (INVERSÉ, vague AN) : PLAFOND + 1 actifs à politique PENDANTE -> tous effacés dans la transaction, sans
+        // plafond, et comptés au registre.
         pde_sql(&st, &format!("UPDATE incident SET sla_policy_id=999, ack_due={}, resolve_due={}", n0 - 100, n0 - 100));
         let (statut, corps) = pde_upsert(&st, pde_desactiver_p1()).await;
-        let v: Value = serde_json::from_slice(&corps).unwrap_or(Value::Null);
-        assert_eq!(statut, 200, "le vrai plafond est avoué ({v})");
-        assert!(v["reason"].as_str().unwrap_or("").contains(&format!("plafond de {cap} case(s) atteint")), "{v}");
-        assert_eq!(v["recomputed"], json!(cap), "{v}");
         assert_eq!(
-            pde_entier(&st, "SELECT COUNT(*) FROM incident WHERE sla_policy_id=999"),
-            Some(1),
-            "un dossier, au-delà du plafond, garde réellement son ancienne échéance"
+            (statut, String::from_utf8_lossy(&corps).to_string()),
+            (204, String::new()),
+            "les pendants sont effacés dans la transaction : 204 muet, aucun aveu de plafond"
+        );
+        assert_eq!(
+            pde_entier(&st, "SELECT COUNT(*) FROM incident WHERE sla_policy_id IS NOT NULL OR ack_due IS NOT NULL OR resolve_due IS NOT NULL"),
+            Some(0),
+            "aucun dossier, même au-delà de PLAFOND, ne garde son ancienne échéance"
+        );
+        assert_eq!(
+            pde_details(&st).last().cloned(),
+            Some(format!(
+                "P1 ack=60s resolve=600s enabled=0 by redacteur ; {n} dossier(s) dégouverné(s) : sla_policy_id, ack_due et resolve_due effacés (régime legacy), dont {n} dossier(s) actif(s) à politique pendante ou étrangère",
+                n = cap + 1
+            )),
+            "le registre compte tous les pendants"
         );
     }
 

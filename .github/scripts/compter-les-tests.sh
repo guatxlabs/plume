@@ -21,10 +21,21 @@
 #     un fichier de `daemon/src/` touché  : 17 s pour `--defaut`, 34 s pour les deux suites
 #     `target/` froid (clone frais)       : une CONSTRUCTION COMPLÈTE — non mesurée ici, mais c'est
 #                                           l'ordre de grandeur d'un `cargo build` de zéro.
+# RE-MESURÉ LE 2026-10-25 AVEC LA TROISIÈME SUITE (`P10.26-v`, `--features ai`), sur une machine
+# de compilation à 6 cœurs, arbre synchronisé à distance : la synchronisation de l'arbre est COMPRISE
+# dans les durées, d'où un plancher de quelques secondes même quand rien ne change :
+#     rien n'a changé dans l'arbre        : 6 s pour les TROIS suites
+#     un fichier de `daemon/src/` touché  : 35 s pour `--defaut`, 100 s pour les trois suites
+#                                           (~33 s par suite : chaque jeu de features recompile)
+#     artefacts `cold_tier` et `ai` absents : 12 min 26 s pour les trois (défaut incrémental) —
+#                                           l'ordre de grandeur de deux constructions complètes.
+# Les chiffres du 2026-08-27 ci-dessus (poste local, 12 cœurs, deux suites) ne sont pas comparables
+# terme à terme à ceux-ci ; ce qui se transpose, c'est le RAPPORT : une suite de plus, un tiers de
+# coût de plus sur le cas courant du crochet.
 # LE CHIFFRE QUI CIRCULAIT — « 2 s » — EST MESURÉ DANS L'ÉTAT OÙ LE CROCHET DE PRÉ-COMMIT NE TOMBE
 # PRESQUE JAMAIS : le crochet ne se déclenche QUE si le commit touche `daemon/src/`, `daemon/Cargo.*`
 # ou le compteur dans `ci.yml`. Des trois, seul le dernier laisse `target/` intact. Le cas courant du
-# crochet est donc 17 s ou 34 s, pas 2 s.
+# crochet est donc un fichier touché et TROIS suites (100 s mesurées ci-dessus), pas 2 s.
 # RÉFUTÉ le 2026-08-27, et c'était écrit ici : « les deux profils se chassent mutuellement du même
 # target/ ». Ils ne se chassent pas — cargo garde une empreinte et des artefacts DISTINCTS par jeu de
 # features, et les deux énumérations se sont enchaînées en 1 s au total sur un arbre inchangé. Le
@@ -81,11 +92,17 @@
 # script PREND pour rendre sa propre construction visible aux autres outils du dépôt — et ce script
 # refuse sur les trois.
 #
-# SOURCE UNIQUE : les deux attentes sont LUES dans `.github/workflows/ci.yml`. Les recopier ici
+# SOURCE UNIQUE : les trois attentes sont LUES dans `.github/workflows/ci.yml`. Les recopier ici
 # aurait recréé exactement le défaut que `ci.yml` a fermé en n'écrivant `EXPECTED_TESTS` qu'une fois.
 #
+# LA TROISIÈME SUITE, `--features ai` (`P10.26-v`). Le job `ai` de `ci.yml` affirme
+# `EXPECTED_AI_TESTS` (suite complète sous la feature : tests par défaut + tests gatés) et refuse
+# qu'il soit inférieur ou égal à `EXPECTED_TESTS`. Ce script ne la lisait pas : un test gaté ajouté
+# ou retiré n'était vu que par la CI. Il énumère désormais cette suite avec les deux autres, et
+# reproduit le contrôle d'ordre de `ci.yml` (sans construire : deux nombres lus).
+#
 # Usage :
-#   .github/scripts/compter-les-tests.sh              # les deux suites
+#   .github/scripts/compter-les-tests.sh              # les trois suites (défaut, cold_tier, ai)
 #   .github/scripts/compter-les-tests.sh --defaut     # la suite par défaut seule (le cas rapide)
 #   .github/scripts/compter-les-tests.sh --attendre   # attendre que la machine se libère au lieu
 #                                                     # de refuser (plafond : COMPTER_ATTENTE_MAX,
@@ -108,7 +125,7 @@ racine="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 ci="$racine/.github/workflows/ci.yml"
 [ -f "$ci" ] || { echo "compter-les-tests : $ci introuvable" >&2; exit 2; }
 
-les_deux_suites=1
+toutes_les_suites=1
 # LA PORTE D'ENVIRONNEMENT EXISTE PARCE QUE LE CROCHET NE PEUT PAS PASSER D'ARGUMENT. Git n'en
 # passe aucun à un `pre-commit`, et le crochet appelle ce script par `exec` sans `"$@"` : la ligne
 # « « --attendre » attend à la place » qu'il imprimait ne désignait donc AUCUN geste faisable
@@ -119,7 +136,7 @@ attendre=0
 if [ "${COMPTER_ATTENDRE:-0}" = 1 ]; then attendre=1; fi
 for arg in "$@"; do
     case "$arg" in
-        --defaut)   les_deux_suites=0 ;;
+        --defaut)   toutes_les_suites=0 ;;
         --attendre) attendre=1 ;;
         -h|--aide|--help)
             sed -n 's/^# \{0,1\}//p' "${BASH_SOURCE[0]}" | sed -n '/^Usage :/,/^ *3 /p'
@@ -133,7 +150,9 @@ attendu_defaut="$(sed -n 's/^ *EXPECTED_TESTS: *"\([0-9]\+\)".*/\1/p' "$ci" | he
 attendu_cold="$(sed -n 's/^ *EXPECTED_COLD_TESTS: *"\([0-9]\+\)".*/\1/p' "$ci" | head -1)"
 # VALIDATION DE L'INSTRUMENT DE LECTURE : un filtre qui ne rend rien se lit « je n'ai pas mesuré ».
 [ -n "$attendu_defaut" ] || { echo "compter-les-tests : EXPECTED_TESTS introuvable dans $ci — le format a changé, ce script mentirait" >&2; exit 2; }
+attendu_ai="$(sed -n 's/^ *EXPECTED_AI_TESTS: *"\([0-9]\+\)".*/\1/p' "$ci" | head -1)"
 [ -n "$attendu_cold" ]   || { echo "compter-les-tests : EXPECTED_COLD_TESTS introuvable dans $ci — le format a changé, ce script mentirait" >&2; exit 2; }
+[ -n "$attendu_ai" ]     || { echo "compter-les-tests : EXPECTED_AI_TESTS introuvable dans $ci — le format a changé, ce script mentirait" >&2; exit 2; }
 
 # --- LA SONDE : « LA MACHINE EST-ELLE DÉJÀ PRISE ? » SOURCÉE, PAS RECOPIÉE ---------------------
 # ELLE VIVAIT ICI ; ELLE VIT MAINTENANT À CÔTÉ, ET C'EST LA MÊME. Le corps de la sonde de verrou —
@@ -257,19 +276,35 @@ verdict() {
     fi
 }
 
+# LE CONTRÔLE D'ORDRE DU JOB `ai` DE `ci.yml`, REPRODUIT (`P10.26-v`) : aucune construction, deux
+# nombres lus. Égaux ou inversés, la feature n'ajoute plus de test et le job `ai` est devenu un
+# doublon de `test` — la CI le refuse. Joué dans TOUS les modes, `--defaut` compris, puisqu'il ne
+# coûte rien ; la mesure continue pour que l'écart soit chiffré.
+if [ "$attendu_ai" -gt "$attendu_defaut" ]; then
+    echo "  EXPECTED_AI_TESTS ($attendu_ai) > EXPECTED_TESTS ($attendu_defaut) — OK"
+else
+    echo "  EXPECTED_AI_TESTS ($attendu_ai) <= EXPECTED_TESTS ($attendu_defaut) — la feature ai n'ajoute plus"
+    echo "      de test : le job ai de .github/workflows/ci.yml le refuse (contrôle d'ordre)."
+    ecart=1
+fi
+
 # CE QU'IL FAIT, DIT AVANT DE LE FAIRE — pas après, et pas seulement dans l'en-tête.
 echo "compter-les-tests : CE SCRIPT CONSTRUIT. Aucun test n'est EXÉCUTÉ, mais les ÉNUMÉRER demande à"
 echo "                    cargo de compiler le harnais : verrou du répertoire d'artefacts pris, cœurs"
-echo "                    et mémoire consommés. Mesuré le 2026-08-27 (12 cœurs) : 1 s si rien n'a"
-echo "                    changé, 17 s après un fichier de daemon/src/ touché (--defaut), 34 s pour"
-echo "                    les deux suites ; sur un target/ froid, une construction complète."
+echo "                    et mémoire consommés. Mesuré le 2026-10-25 (6 cœurs, synchro comprise) :"
+echo "                    6 s si rien n'a changé, 35 s après un fichier de daemon/src/ touché"
+echo "                    (--defaut), 100 s pour les trois suites (défaut, cold_tier, ai) ; sans"
+echo "                    artefacts cold_tier et ai, 12 min ; sur un target/ froid, une construction"
+echo "                    complète par jeu de features."
 echo "compte de tests DÉCLARÉS :"
 n="$(compter "défaut" )" || exit 2
 verdict "défaut   " "$n" "$attendu_defaut" "EXPECTED_TESTS"
 
-if [ "$les_deux_suites" -eq 1 ]; then
+if [ "$toutes_les_suites" -eq 1 ]; then
     n="$(compter "cold_tier" --features cold_tier)" || exit 2
     verdict "cold_tier" "$n" "$attendu_cold" "EXPECTED_COLD_TESTS"
+    n="$(compter "ai" --features ai)" || exit 2
+    verdict "ai       " "$n" "$attendu_ai" "EXPECTED_AI_TESTS"
 fi
 
 if [ "$ecart" -ne 0 ]; then

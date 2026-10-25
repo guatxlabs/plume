@@ -223,16 +223,25 @@ The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell
    not only with ai tests. Re-measure it with
    `cargo test --manifest-path daemon/Cargo.toml --features ai -- --list` and update it in
    `ci.yml`, next to the others.
-   **Check it in 2 seconds instead of 47 minutes** with `.github/scripts/compter-les-tests.sh`: it
-   asks the harness to *list* its tests (`cargo test -- --list`) rather than run them, and compares
-   both counts against `ci.yml` itself — no second copy of the numbers. It does **not** check
-   `EXPECTED_AI_TESTS` (that would need an `--features ai` build in the hook): measure that one
-   yourself as above. Install it as a pre-commit
+   **Check it in seconds to a couple of minutes instead of 47 minutes** with
+   `.github/scripts/compter-les-tests.sh`: it asks the harness to *list* its tests
+   (`cargo test -- --list`) rather than run them, and compares all **three** counts — default
+   (`EXPECTED_TESTS`), `--features cold_tier` (`EXPECTED_COLD_TESTS`) and `--features ai`
+   (`EXPECTED_AI_TESTS`) — against `ci.yml` itself, no second copy of the numbers. It also replays
+   the order check of the `ai` job: `EXPECTED_AI_TESTS` must stay **greater** than `EXPECTED_TESTS`,
+   otherwise the feature no longer adds a test and CI refuses it. `--defaut` lists the default suite
+   only (the order check still runs, it reads two numbers and builds nothing).
+   Listing still **compiles** the harness, once per feature set. Measured 2026-10-25 on a 6-core
+   machine with a warm `target/`: a few seconds when nothing changed; after touching one file under
+   `daemon/src/`, about 35 s for `--defaut` and about 100 s for the three suites (each feature set
+   recompiles); with no `cold_tier` and `ai` artefacts yet, about 12 min; on a cold `target/`, a full
+   build per feature set. Install it as a pre-commit
    hook with `git config core.hooksPath .githooks` (it stays silent unless the commit touches
-   `daemon/`). It does **not** tell you the tests pass — only CI, which actually runs them, does.
+   `daemon/src/`, `daemon/Cargo.*` or `ci.yml`, and then lists the three suites). It does **not** tell you the tests pass — only CI,
+   which actually runs them, does.
    *(Why a local check and not another CI trigger: `ci.yml` already runs on `push` to every branch,
    and has since the file was created. The 937 → 945 drift of 2026-08-07 was caught by CI on the
-   push and simply not read. Measured 2026-08-09: listing both suites ≈ 2 s warm; running them = 187 s + 2627 s ≈ 47 min.)*
+   push and simply not read. Measured 2026-08-09: running the default and `cold_tier` suites = 187 s + 2627 s ≈ 47 min.)*
    <!-- Ces deux lignes ont porté « 758 » et « 949 » jusqu'au 2026-08-02, quand les compteurs vivants
         valaient 866 et 1061 : 108 et 112 de retard, dans le fichier même qui INTERDIT de recopier la
         valeur. La garde `check_no_duplicated_test_count.py` restait verte — c'est son résidu

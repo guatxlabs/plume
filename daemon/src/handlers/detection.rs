@@ -402,8 +402,9 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     let conn = db.lock();
     // `P10.27-z` — LA SONDE, REPRISE : l'évaluation (phase 2) a tourné hors du verrou, parfois des secondes ; un geste a
     // pu y laisser une transaction orpheline. Écrire maintenant la remplirait — même déclaration que la phase 1.
+    // `P10.31-j` — l'aveu de la REPRISE (évaluation faite, rien d'écrit à cette reprise), pas celui de la phase 1.
     if signaler_une_transaction_ouverte_hors_de_tout_geste(&conn, "tick de détection (écritures)") {
-        return crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline(crate::bilan_de_tick::BOUCLE_REGLES, "règles");
+        return crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline_aux_ecritures(crate::bilan_de_tick::BOUCLE_REGLES, "règles");
     }
     for (id, name, op, threshold, severity, _window_s, query, mitre, verdict) in results {
         let val = match verdict {

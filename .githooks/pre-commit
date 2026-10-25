@@ -12,14 +12,17 @@ _r="$(git rev-parse --show-toplevel)"
 # CE QU'IL COÛTE — ET IL COÛTE UNE COMPILATION (P8.9-e). Le script délégué n'EXÉCUTE aucun test,
 # mais pour les ÉNUMÉRER il fait CONSTRUIRE le harnais par cargo. Un commit qui déclenche ce hook
 # paie donc une compilation, prend le verrou du répertoire d'artefacts, et entre en concurrence
-# avec toute construction déjà en cours. RE-MESURÉ LE 2026-08-27 (12 cœurs, `target/` peuplé) :
-#     commit ne touchant QUE le compteur dans `ci.yml`  : 1 s  (rien à reconstruire)
-#     commit touchant UN fichier de `daemon/src/`       : 34 s (les deux suites ; 17 s en `--defaut`)
-#     `target/` froid (clone frais)                     : une construction complète
-# Contre ~47 min pour EXÉCUTER les deux suites. Le chiffre « ~2 s » qui figurait ici datait du
-# 2026-08-09 et décrivait un arbre INCHANGÉ — or ce hook ne se déclenche QUE quand le démon ou son
-# compteur a changé, donc presque jamais dans cet état-là. Il ne se déclenche pas du tout sur un
-# commit de ROADMAP ou de manifeste : celui-là ne paie rien.
+# avec toute construction déjà en cours. RE-MESURÉ LE 2026-10-25 AVEC LES TROIS SUITES (défaut,
+# `cold_tier`, `ai` — `P10.26-v`), 6 cœurs, `target/` peuplé :
+#     commit ne touchant QUE le compteur dans `ci.yml`  : quelques secondes (rien à reconstruire)
+#     commit touchant UN fichier de `daemon/src/`       : ~100 s (les trois suites ; ~35 s en `--defaut`)
+#     artefacts `cold_tier` et `ai` absents             : ~12 min (deux constructions complètes)
+#     `target/` froid (clone frais)                     : une construction complète par jeu de features
+# Le relevé du 2026-08-27 (12 cœurs, deux suites) donnait 1 s et 34 s : chaque suite de plus ajoute
+# sa recompilation. Contre ~47 min pour EXÉCUTER les suites défaut et `cold_tier`. Le chiffre
+# « ~2 s » qui figurait ici datait du 2026-08-09 et décrivait un arbre INCHANGÉ — or ce hook ne se
+# déclenche QUE quand le démon ou son compteur a changé, donc presque jamais dans cet état-là. Il ne
+# se déclenche pas du tout sur un commit de ROADMAP ou de manifeste : celui-là ne paie rien.
 #
 # UNE SEULE CONSTRUCTION À LA FOIS, ET RIEN PENDANT UNE SUITE : le script sonde le répertoire
 # d'artefacts et REFUSE (code 3) si une construction tourne déjà, plutôt que d'en mettre une seconde
@@ -90,7 +93,8 @@ racine="$(git rev-parse --show-toplevel)"
 #
 # CE QUI EST CORRIGÉ, ET CE QUI NE PEUT PAS L'ÊTRE ICI. La portée est désormais DÉRIVÉE : toute
 # caisse découverte (`<caisse>/Cargo.toml` + `<caisse>/src/`) et tout workflow qui PORTE un compteur.
-# Mais le script délégué (`compter-les-tests.sh`) ne sait énumérer que les deux suites du démon —
+# Mais le script délégué (`compter-les-tests.sh`) ne sait énumérer que les trois suites du démon
+# (défaut, `cold_tier`, `ai`) —
 # ce n'est pas une liste à corriger ici, c'est la portée d'un autre fichier. Faire tourner ce
 # délégué sur un commit de collecteur rendrait un VERT qui ne mesure rien : un aveu trop OPTIMISTE
 # est bien pire qu'un aveu trop prudent. Ce crochet AVOUE donc, nommément, ce qu'il ne compte pas,

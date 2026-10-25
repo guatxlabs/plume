@@ -9,7 +9,8 @@ ignore = [
   # la feature `saml` (OFF par défaut). Lever dès qu'une version `rsa` patchée paraît.
   "RUSTSEC-2023-0071",
   # crypto-bigint 0.5 — RUSTSEC-2026-0387 (branches dépendant du secret dans des opérations voulues en
-  # temps constant ; avis du 2026-10-23, entrée posée le 2026-10-24). Seule la 0.7.6 est corrigée : la 0.7 du lock y est montée (via kryptering), la 0.5.5
+  # temps constant ; avis du 2026-10-23, entrée posée le 2026-10-24). Corrigé en >= 0.7.6 seulement ; 0.7.6 à 0.7.8 retirées
+  # le 2026-10-25 (rupture amont #1373), la 0.7 du lock est en 0.7.9 (via kryptering), la 0.5.5
   # reste, tirée par elliptic-curve 0.13 (ecdsa) sous bergshamra/samlify, qui exige ^0.5 : aucune montée
   # possible. Confiné à la feature `saml` (OFF par défaut, absente de l'image stock `ldap,cold_tier`).
   # Exposition résiduelle UNIQUEMENT si `saml` est compilée ET `sign_authn_requests=true` (défaut false)

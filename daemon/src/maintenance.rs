@@ -827,7 +827,16 @@ pub(crate) fn ensure_host_rollup_scan_indexes_background(db: &Arc<Mutex<Connecti
 /// doublon, et ne touche pas les dashboards utilisateurs. Réutilisable (migration v37 + filet au boot).
 /// GÉNÉRIQUE SUR `SqlExec` (cf. migrate.rs) : `&Connection` depuis le boot (historique inchangé),
 /// `&MigTx` depuis la migration v37 -> écritures SOUS le garde de l'étape.
+///
+/// `P10.28-l` (vague AP) — AVANT : la présence du panneau lue par `.is_ok()` (une lecture RATÉE valait absence : le
+/// panneau était écrit EN DOUBLE) puis l'`INSERT` en `let _` (refusé, ou `Ok(0)` d'un `RAISE(IGNORE)` : rien n'était
+/// dit). DÉSORMAIS : présence en trois issues (`.optional()`) — présent, absent, non lu ; non lu n'écrit rien et le dit ;
+/// l'`INSERT` doit écrire UNE ligne (`une_ligne_ecrite`), sinon le refus est dit. Une ligne de journal par panneau non
+/// ajouté ; le démarrage suivant (filet de `server/mod.rs`, `seed_tenant_content`) le retente. Sous `MigTx` (v37), un
+/// refus de classe B fait toujours échouer l'étape (le garde le note) ; les autres laissent l'étape validée sans ce
+/// panneau, comme avant, mais dits.
 pub(crate) fn ensure_rollup_srcip_host_panels<C: SqlExec>(conn: &C) {
+    use rusqlite::OptionalExtension as _;
     let did: i64 = match conn.query_row(
         "SELECT id FROM dashboard WHERE name='Vue d''ensemble (rapide)'",
         [],
@@ -841,17 +850,27 @@ pub(crate) fn ensure_rollup_srcip_host_panels<C: SqlExec>(conn: &C) {
         ("Volume par host", "SELECT host, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND host<>'' GROUP BY host ORDER BY n DESC LIMIT 20", "bar"),
     ];
     for (title, q, viz) in extra {
-        let exists: bool = conn
+        let present = conn
             .query_row("SELECT 1 FROM panel WHERE dashboard_id=?1 AND title=?2", params![did, title], |_| Ok(()))
-            .is_ok();
-        if exists {
-            continue;
+            .optional();
+        match present {
+            Ok(Some(())) => continue,
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("[seed] panneau « {title} » de « Vue d'ensemble (rapide) » NON ajouté : sa présence n'a pas pu être lue ({e}) — rien n'est écrit, retenté au prochain démarrage");
+                continue;
+            }
         }
-        let _ = conn.execute(
-            "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) \
-             VALUES(?1,?2,?3,0,?4,(SELECT COALESCE(MAX(position),-1)+1 FROM panel WHERE dashboard_id=?1),2)",
-            params![did, title, q, viz],
-        );
+        let ecrit = conn
+            .execute(
+                "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,position,cols) \
+                 VALUES(?1,?2,?3,0,?4,(SELECT COALESCE(MAX(position),-1)+1 FROM panel WHERE dashboard_id=?1),2)",
+                params![did, title, q, viz],
+            )
+            .and_then(une_ligne_ecrite);
+        if let Err(e) = ecrit {
+            eprintln!("[seed] panneau « {title} » de « Vue d'ensemble (rapide) » NON ajouté : son écriture a été refusée ({e}) — retenté au prochain démarrage");
+        }
     }
 }
 

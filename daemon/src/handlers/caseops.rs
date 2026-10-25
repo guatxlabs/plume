@@ -62,7 +62,8 @@ pub(crate) fn sla_policy_for(conn: &Connection, priority: i64) -> rusqlite::Resu
 /// acquitté : first_response_ts NULL), `resolve_due`, à partir du `ts` IMMUABLE + cibles + cumul de pause.
 /// INERTE si aucune politique pour la priorité courante ET aucune politique portée (mode 0 : dues restent NULL ->
 /// SLA legacy). Ne touche JAMAIS un case terminal (resolved/closed). Idempotent. Appelée à la création, sur
-/// changement de priorité et au recalcul de l'upsert.
+/// changement de priorité, au recalcul de l'upsert et — `P10.31-v` (vague AP) — à la réouverture par le statut
+/// (`case_apply_update`) et à la défusion (`case_unmerge`, dans sa transaction).
 /// `P10.20-w` (reste) — L'ÉCRITURE EST COMPTÉE ET RENDUE (`IssueDuChronoSla`) : les deux `UPDATE` étaient avalés et
 /// la fonction rendait `()`, donc la création, la mise à jour et le recalcul de l'upsert ne savaient pas si l'échéance
 /// avait été posée — le recalcul comptait « recalculé » un dossier dont la base avait refusé l'échéance.
@@ -511,8 +512,14 @@ pub(crate) enum IssueDeLaFusion {
     /// `P10.20-l` (vague AI) — la lecture qui ouvre le geste, dans sa transaction (second jugement de la fusion,
     /// relecture du dossier fusionné pour la défusion), n'a PAS eu lieu : aucune écriture n'a été tentée, la
     /// transaction est annulée, la cause du moteur est portée pour le journal seul. `NonEcrite` ne convenait pas : la
-    /// route la sert « la base n'a pas pris l'écriture », et aucune écriture n'a été tentée.
+    /// route la sert « la base n'a pas pris l'écriture », et aucune écriture n'a été tentée. `P10.31-v` (vague AP) — la
+    /// politique SLA non lue pendant la défusion n'est PAS ce cas (le dossier a été lu et l'`UPDATE` joué) : `ChronoSlaNonLu`.
     DossierNonLu(String),
+    /// `P10.31-v` (vague AP, correction) — défusion seule : le dossier a été relu et son `UPDATE` joué, puis
+    /// `sla_apply_policy` n'a pas pu lire ce qui gouverne le chrono (ligne du dossier ou politique de sa priorité) : la
+    /// transaction est annulée (toujours fusionné), la cause est portée pour le journal seul. Ni `DossierNonLu` (qui dit
+    /// « aucune écriture tentée ») ni `NonEcrite` (« la base n'a pas pris l'écriture »).
+    ChronoSlaNonLu(String),
     /// `P10.31-u` — l'écriture et ses chronologies sont VALIDÉES, mais le maillon du registre n'est pas entré (cause
     /// portée) : le geste a eu lieu, il n'est pas annulé, et la route l'avoue (`registre_sans_maillon`) au lieu d'un 204.
     EcriteSansTrace(String),
@@ -543,6 +550,13 @@ pub(crate) const CAUSE_FUSION_NON_ECRITE: &str = "FUSION NON ÉCRITE : la base n
 /// `P10.20-w` — l'`UPDATE` de la défusion n'a pas été écrit : 503 nommé, le dossier reste fusionné.
 pub(crate) const CAUSE_DEFUSION_NON_ECRITE: &str = "DÉFUSION NON ÉCRITE : la base n'a pas pris l'écriture, donc le \
      dossier est TOUJOURS fusionné — ni la chronologie ni le registre n'en portent rien. Rien n'a été fait. Réessayez.";
+
+/// `P10.31-v` (vague AP, correction) — la défusion rejoue la politique SLA dans sa transaction ; la lecture qui la gouverne
+/// a échoué : 503 nommé, défusion annulée. `CAUSE_CHRONO_SLA_NON_LU` (cases.rs) ne convenait pas : elle parle d'une mise à
+/// jour dont « les champs qui précèdent ont pu être écrits » et d'un horodatage non écrit, et rien n'est écrit ici.
+pub(crate) const CAUSE_DEFUSION_CHRONO_SLA_NON_LU: &str = "CHRONO SLA NON LU : la défusion est annulée parce que la base n'a \
+     pas rendu la ligne du dossier ou la politique SLA de sa priorité (cause au journal du démon, sous l'identifiant servi) — \
+     le dossier est TOUJOURS fusionné, ni la chronologie ni le registre n'en portent rien. Rien n'a été fait. Réessayez.";
 
 /// `P10.33-k` — LES DEUX CHRONOLOGIES FONT PARTIE DE LA FUSION. Elles passaient par `case_add_item`, qui
 /// avale : une chronologie refusée laissait `Ecrite` et 204, fusion sans trace dans les dossiers (MTTA non figé).
@@ -593,6 +607,8 @@ pub(crate) fn juger_la_defusion(conn: &Connection, src_id: i64) -> Result<i64, R
 
 /// `P10.33-k` / `P10.31-u` — même geste que `case_merge` : lecture, `UPDATE`, chronologie comptée et maillon
 /// dans UNE transaction ; chronologie refusée -> défusion annulée (`NonEcrite`) ; maillon manquant -> `EcriteSansTrace`.
+/// `P10.31-v` (vague AP) — la politique SLA est rejouée dans la même transaction (refus ou lecture ratée : défusion
+/// annulée). LIMITE ÉCRITE : `sla_due` (legacy) n'est pas recalculé à la défusion ; le tour multi-niveau ne le lit pas.
 pub(crate) fn case_unmerge(conn: &Connection, src_id: i64, author: &str) -> IssueDeLaFusion {
     use crate::handlers::transaction_validee::jouer_le_geste_garde;
     use rusqlite::OptionalExtension;
@@ -611,6 +627,16 @@ pub(crate) fn case_unmerge(conn: &Connection, src_id: i64, author: &str) -> Issu
             Ok(0) => return Err(IssueDeLaFusion::Refusee), // le dossier a disparu entre la lecture et l'écriture : absence
             Ok(_) => {}
             Err(e) => return Err(IssueDeLaFusion::NonEcrite(e.to_string())),
+        }
+        // `P10.31-v` (vague AP) — LA DÉFUSION REJOUE LA POLITIQUE : le dossier rouvert gardait le `sla_policy_id` et les
+        // échéances d'avant sa fusion (politique supprimée, désactivée ou d'une autre priorité), et le tour le jugeait sur
+        // elles. Même règle qu'à la réouverture (`case_apply_update`) et qu'à la création (`ts` immuable) ; refus
+        // d'écriture -> `NonEcrite`, lecture du chrono ratée -> `ChronoSlaNonLu` : la défusion entière est annulée (le
+        // dossier reste fusionné). La cause du moteur est déjà au journal (`[caseops] WARN chrono SLA …`).
+        match sla_apply_policy(conn, src_id) {
+            IssueDuChronoSla::Refuse(cause) => return Err(IssueDeLaFusion::NonEcrite(cause)),
+            IssueDuChronoSla::NonLu(cause) => return Err(IssueDeLaFusion::ChronoSlaNonLu(cause)),
+            IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => {}
         }
         ajouter_l_element_au_dossier(conn, src_id, t, "merge", author, &format!("dé-fusionné de #{dst} (ré-ouvert)"), None)
             .map_err(|cause| IssueDeLaFusion::NonEcrite(format!("chronologie du dossier : {cause}")))?;
@@ -1208,7 +1234,9 @@ pub(crate) async fn case_merge_handler(State(st): State<AppState>, Extension(au)
             }
             // `P10.20-w` — écriture refusée : 503 nommé (contrat neuf, assumé ; il rendait 204 sur une fusion non faite).
             // `P10.29-l` (vague AL) — la phrase seule `{error, id}`, la cause du moteur au journal avec l'identifiant.
-            IssueDeLaFusion::NonEcrite(cause) => {
+            // `case_merge` ne lit pas le chrono (`ChronoSlaNonLu` est propre à la défusion) : bras exhaustif, servi comme
+            // la fusion annulée qu'il serait.
+            IssueDeLaFusion::NonEcrite(cause) | IssueDeLaFusion::ChronoSlaNonLu(cause) => {
                 crate::handlers::cases::refus_nomme_cause_au_journal(CAUSE_FUSION_NON_ECRITE, &format!("dossier #{id} : fusion dans #{into} NON écrite"), &cause)
             }
         }
@@ -1241,6 +1269,13 @@ pub(crate) async fn case_unmerge_handler(State(st): State<AppState>, Extension(a
             IssueDeLaFusion::NonEcrite(cause) => {
                 crate::handlers::cases::refus_nomme_cause_au_journal(CAUSE_DEFUSION_NON_ECRITE, &format!("dossier #{id} : défusion NON écrite"), &cause)
             }
+            // `P10.31-v` (vague AP, correction) — la politique SLA rejouée n'a pas été lue : défusion annulée, phrase à
+            // elle (elle servait « DOSSIER NON LU … (relecture du dossier fusionné) », alors que le dossier avait été lu).
+            IssueDeLaFusion::ChronoSlaNonLu(cause) => crate::handlers::cases::refus_nomme_cause_au_journal(
+                CAUSE_DEFUSION_CHRONO_SLA_NON_LU,
+                &format!("dossier #{id} : chrono SLA NON lu, défusion annulée"),
+                &cause,
+            ),
         }
     })
 }
@@ -1536,7 +1571,7 @@ pub(crate) const CAUSE_POLITIQUE_SLA_CIBLE_NULLE: &str =
 /// parcourt que les dossiers ACTIFS non fusionnés de la priorité : un dossier TERMINAL ou FUSIONNÉ gardait
 /// `sla_policy_id`, `ack_due` et `resolve_due` d'une politique désactivée, et une fois rouvert (le changement de statut
 /// ne rejoue pas `sla_apply_policy`) ou défusionné (`case_unmerge` non plus), le tour le marquait et le NOTIFIAIT en
-/// dépassement dès qu'une autre politique restait active. Même règle que `sla_policy_delete` : `enabled=0` efface les
+/// dépassement dès qu'une autre politique restait active (vague AP : la réouverture et `case_unmerge` la rejouent désormais). Même règle que `sla_policy_delete` : `enabled=0` efface les
 /// trois colonnes de chaque dossier gouverné par CETTE politique, quel que soit son état.
 /// `P10.31-v` (vague AN) — LES ACTIFS À POLITIQUE PENDANTE OU ÉTRANGÈRE SONT EFFACÉS DANS LA MÊME TRANSACTION, ET COMPTÉS.
 /// Un dossier ACTIF non fusionné de la priorité qui porte un `sla_policy_id` pendant (politique supprimée avant

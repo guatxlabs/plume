@@ -336,6 +336,9 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
         Err(e) => return IssueDuDossierModifie::DossierNonLu(e.to_string()),
     };
     let t = now();
+    // `P10.31-v` (vague AP) — le dossier était-il TERMINAL avant la demande : une réouverture (terminal -> actif) rejoue
+    // la politique SLA de sa priorité plus bas, comme un changement de priorité.
+    let etait_terminal = matches!(cur_status.as_str(), "resolved" | "closed" | "contained");
     // `P10.20-w` (reste) — le statut EN BASE et la priorité ÉCRITE, que lit le rattrapage de l'échéance.
     let mut statut_en_base: String = cur_status.clone();
     let mut priorite_ecrite = false;
@@ -519,10 +522,35 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
             IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => {}
         }
     }
-    if b.get("priority").and_then(parse_priority).is_some() {
+    // `P10.31-v` (vague AP) — UNE RÉOUVERTURE REJOUE LA POLITIQUE : un dossier terminal rouvert par son seul statut gardait
+    // le `sla_policy_id` et les échéances d'AVANT sa clôture (politique supprimée, désactivée, d'une autre priorité, ou
+    // priorité changée pendant qu'il était clos — `sla_apply_policy` ne touche pas un terminal), et le tour le jugeait sur
+    // elles. Statut en base terminal ET statut effectif non terminal -> même appel, mêmes bras que le changement de
+    // priorité. Règle de la création : échéances tirées du `ts` IMMUABLE (+ cumul de pause) ; un dossier ANCIEN rouvert
+    // sous une politique active est donc en dépassement dès le tour suivant (ASSUMÉ, comme un changement de priorité).
+    // `ack_due` n'est pas reposé : l'élément de chronologie du statut a déjà figé `first_response_ts`. Un statut actif ->
+    // actif, ou une demande sans statut ni priorité, ne rejoue rien ; terminal -> terminal : rien ne change
+    // (`sla_apply_policy` laisse un terminal intact).
+    let rouvert = etait_terminal && !matches!(effective_status.as_str(), "resolved" | "closed" | "contained");
+    if b.get("priority").and_then(parse_priority).is_some() || rouvert {
         match sla_apply_policy(conn, id) {
             IssueDuChronoSla::Refuse(cause) => return IssueDuDossierModifie::NonEcrite(cause),
             IssueDuChronoSla::NonLu(cause) => return IssueDuDossierModifie::ChronoSlaNonLu(cause),
+            // `P10.31-v` (vague AP, correction) — UN DOSSIER EN ATTENTE QUE LA POLITIQUE VIENT DE GOUVERNER EST MIS EN
+            // PAUSE. La pause (`sla_on_status_change`, plus haut) passe AVANT la politique : sur un dossier qui n'en
+            // portait aucune, elle ne pose rien (mode 0). Un terminal non gouverné rouvert directement en `waiting`, ou un
+            // dossier legacy en attente passé à une priorité gouvernée, sortait donc gouverné SANS pause, et le tour le
+            // notifiait en dépassement pendant l'attente. La pause est rejouée ici, après la politique, sur le statut
+            // effectif : idempotente (déjà en pause -> rien), inerte hors `waiting` et sur un dossier redevenu legacy.
+            // L'ordre pause-puis-politique d'au-dessus est gardé : le rattrapage des échéances
+            // (`rattraper_les_echeances_multi_niveau`) est bâti sur lui.
+            IssueDuChronoSla::Ecrit if effective_status == "waiting" => {
+                match sla_on_status_change(conn, id, &effective_status, t) {
+                    IssueDuChronoSla::Refuse(cause) => return IssueDuDossierModifie::NonEcrite(cause),
+                    IssueDuChronoSla::NonLu(cause) => return IssueDuDossierModifie::ChronoSlaNonLu(cause),
+                    IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => {}
+                }
+            }
             IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => {}
         }
     }

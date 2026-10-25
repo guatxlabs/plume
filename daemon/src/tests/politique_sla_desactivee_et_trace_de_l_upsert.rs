@@ -3,7 +3,8 @@
 //
 // CE QUI MANQUAIT, MESURÉ SUR 2e4fe6eb : `enabled=false` ne passait que par le recalcul, qui ne parcourt que les dossiers
 // ACTIFS non fusionnés de la priorité. Un dossier TERMINAL ou FUSIONNÉ gardait `sla_policy_id`, `ack_due` et `resolve_due`
-// d'une politique désactivée ; rouvert ou défusionné (aucun des deux ne rejoue `sla_apply_policy`), le tour le NOTIFIAIT en
+// d'une politique désactivée ; rouvert ou défusionné (aucun des deux ne rejouait `sla_apply_policy` — ils la rejouent depuis
+// la vague AP, `P10.31-v`, témoins `prr_`), le tour le NOTIFIAIT en
 // dépassement dès qu'une autre politique restait active. Le registre écrivait « P1 ack=… resolve=… by … » sans `enabled` :
 // une désactivation y était indiscernable d'une modification, et son maillon était jeté (204 muet sans trace).
 // CE QU'ILS TIENNENT : la population entière de la politique désactivée (actif, acquitté, en dépassement, en pause,
@@ -20,7 +21,8 @@
 // population déjà effacée, et le vrai plafond (pendants) reste dit.
 // CE QU'ILS NE TIENNENT PAS : la console (`web/`, aucun écran de politiques SLA) ; la réactivation qui ne regouverne
 // pas les terminaux ni les fusionnés (limite écrite) ; les marqueurs `ack_breached`/`resolve_breached` passés, conservés
-// à dessein ; la route HTTP de défusion et celle du changement de statut (appelées par leurs fonctions).
+// à dessein ; la route HTTP de défusion et celle du changement de statut (appelées par leurs fonctions ; jouées par le
+// routeur depuis la vague AP, témoins `prr_`).
 // Mutants (VERIF_MUT=L8_*, retirés avant le commit) nommés sur chaque témoin.
 // `P10.31-v` (vague AN) — TROIS TÉMOINS INVERSÉS : les actifs à politique PENDANTE ou ÉTRANGÈRE sont désormais effacés dans
 // la transaction de la désactivation et comptés au registre et dans `degouvernes` ; le recalcul n'est plus rejoué à la
@@ -183,7 +185,9 @@ mod politique_sla_desactivee_et_trace_de_l_upsert {
             "le registre dit la DÉSACTIVATION et le compte exact"
         );
 
-        // Réouverture, reprise, défusion : aucune ne rejoue `sla_apply_policy`.
+        // Réouverture par `UPDATE` direct et reprise : aucune ne rejoue `sla_apply_policy`. INVERSÉ NOMMÉMENT (`P10.31-v`,
+        // vague AP) : `case_unmerge` la rejoue désormais (P1 désactivée : `RienAFaire` sur F déjà effacé) ; la route de
+        // réouverture aussi (témoins `prr_`), ce témoin ne la joue pas.
         pde_sql(&st, &format!("UPDATE incident SET status='triage', closed_ts=NULL WHERE id={t}"));
         {
             let conn = st.db.lock();

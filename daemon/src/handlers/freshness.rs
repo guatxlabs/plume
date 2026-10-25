@@ -3,6 +3,7 @@
 //! par-source `compute_freshness`, et alerte capteur muet `check_heartbeats`.
 //! Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
+use crate::handlers::alerts::phrase_de_la_fin;
 
 /// Santé du pipeline d'ingestion : la donnée la PLUS récente, TOUTES sources confondues, est-elle fraîche
 /// (< 10 min) ? Sert à la logique ÉVÉNEMENTIELLE des capteurs (un hôte calme n'est pas « muet » tant que
@@ -452,12 +453,13 @@ pub(crate) async fn freshness(State(st): State<AppState>, Extension(au): Extensi
             let ck = ckey_owned.clone();
             let envc = env_owned.clone();
             let sem = st.refresh_sem.clone();
+            let tenant = au.tenant.clone(); // `P10.29-l` : nommé à la ligne `[freshness] WARN`
             tokio::spawn(async move {
                 // try_acquire (PAS await) : lane refresh saturée -> on renonce (le périmé reste servi).
                 if let Ok(_permit) = sem.try_acquire_owned() {
                     let db2 = db.clone();
                     let env2 = envc.clone();
-                    if let Ok(nv) = tokio::task::spawn_blocking(move || compute_freshness(&db2, env2.as_deref())).await {
+                    if let Ok(nv) = tokio::task::spawn_blocking(move || compute_freshness_du_tenant(&db2, env2.as_deref(), &tenant)).await {
                         freshness_map().lock().insert(ck, (Instant::now(), nv)); // MT-KEY : entrée de CE (db_path, env)
                     }
                 }
@@ -478,12 +480,13 @@ pub(crate) async fn freshness(State(st): State<AppState>, Extension(au): Extensi
         let ck = ckey_owned.clone();
         let envc = env_owned.clone();
         let sem = st.refresh_sem.clone();
+        let tenant = au.tenant.clone(); // `P10.29-l` : nommé à la ligne `[freshness] WARN`
         tokio::spawn(async move {
             // try_acquire (PAS await) : lane refresh saturée -> on renonce ; un prochain appel relancera.
             if let Ok(_permit) = sem.try_acquire_owned() {
                 let db2 = db.clone();
                 let env2 = envc.clone();
-                if let Ok(nv) = tokio::task::spawn_blocking(move || compute_freshness(&db2, env2.as_deref())).await {
+                if let Ok(nv) = tokio::task::spawn_blocking(move || compute_freshness_du_tenant(&db2, env2.as_deref(), &tenant)).await {
                     freshness_map().lock().insert(ck, (Instant::now(), nv)); // MT-KEY : entrée de CE (db_path, env)
                 }
             }
@@ -641,13 +644,30 @@ const PARCOURS_IMPUTATION: &str = "le partage des alertes actives";
 #[derive(Default)]
 pub(crate) struct ParcoursDeFraicheur {
     manquants: Vec<(&'static str, String)>,
+    /// `P10.29-l` (vague AP) — le tenant dont la base est lue, nommé à la ligne `[freshness] WARN`.
+    tenant: String,
 }
 impl ParcoursDeFraicheur {
-    /// Note ce qu'un parcours alimentait, et la cause du moteur telle qu'il l'a dite. Ne note RIEN
-    /// quand le parcours est allé au bout.
+    /// Le relevé des parcours de la base du tenant `tenant`.
+    pub(crate) fn du_tenant(tenant: &str) -> Self {
+        Self { manquants: Vec::new(), tenant: tenant.to_string() }
+    }
+    /// Note ce qu'un parcours alimentait, et la CLASSE de sa fin (`phrase_de_la_fin` : interrompue, ou refusée par
+    /// la base). Ne note RIEN quand le parcours est allé au bout.
+    ///
+    /// `P10.29-l` (vague AP) — le relevé gardait le texte du moteur (`FinDeParcours::cause()`, un `e.to_string()` de
+    /// rusqlite), servi ensuite dans `error` et `imputation_des_alertes.error` d'un corps 200 lisible par un
+    /// lecteur : nom de table ou de colonne refusé, énoncé interne entier quand l'autorisateur refuse une fonction.
+    /// Le corps porte désormais la phrase fixe ; le moteur part à une ligne `[freshness] WARN` qui nomme le parcours
+    /// (libellé fixe), la fin et le tenant dont la base est lue, jamais le chemin de cette base.
     pub(crate) fn noter(&mut self, quoi: &'static str, fin: &FinDeParcours) {
         if let Some(cause) = fin.cause() {
-            self.manquants.push((quoi, cause.to_string()));
+            let etat = match fin {
+                FinDeParcours::NonCommence { .. } => "non commencé",
+                _ => "interrompu",
+            };
+            eprintln!("[freshness] WARN parcours {quoi} {etat} (tenant '{}') : {cause}", self.tenant);
+            self.manquants.push((quoi, phrase_de_la_fin(cause).to_string()));
         }
     }
     /// La phrase de racine, ou `None` si tout est allé au bout.
@@ -730,10 +750,18 @@ pub(crate) fn lire_l_imputation_des_alertes(conn: &Connection, envp: &str) -> (I
     (out, fin)
 }
 
+/// La fraîcheur de la base PAR DÉFAUT (pré-chauffage de démarrage, témoins mode 0) : son tenant est `default`.
+pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
+    compute_freshness_du_tenant(db_path, env, "default")
+}
+
 /// Calcul (LOURD, borné par read_with_watchdog 5 s) de la fraîcheur des sources. Mis en cache SWR par
 /// le handler `freshness` ci-dessus — ne PAS appeler directement depuis le chemin requête.
-pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
+/// `P10.29-l` (vague AP) — `tenant` est celui dont `db_path` est la base : il n'est écrit qu'à la ligne
+/// `[freshness] WARN` d'un parcours qui n'est pas allé au bout, jamais dans le corps.
+pub(crate) fn compute_freshness_du_tenant(db_path: &str, env: Option<&str>, tenant: &str) -> Value {
     let now_ts = now();
+    let tenant = tenant.to_string();
     // FILTRE ENVIRONNEMENT (#2d) : None (mode 0 / all) -> prédicats VIDES -> SQL byte-identique (cache
     // tous-env inchangé). Some("<env>") -> chaque feed est filtré `env_id='<env>'` (event_rollup/snapshot/
     // metric portent env_id v66/v67). Valeur validée (env_slug_ok) + échappée (soql_esc) -> anti-injection.
@@ -744,7 +772,7 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         let cut7 = now_ts - FENETRE_INVENTAIRE_S; // ne liste que les feeds vus dans la fenêtre de l'inventaire
         let mut feeds: Vec<Value> = Vec::new();
         // `P10.7-f` — CE QUI, DANS CE CORPS, NE SERA PAS ALLÉ AU BOUT. Vide sur le chemin nominal.
-        let mut releve = ParcoursDeFraicheur::default();
+        let mut releve = ParcoursDeFraicheur::du_tenant(&tenant);
         // SANTÉ DU PIPELINE : la donnée la PLUS récente, TOUTES sources confondues. Tant qu'au moins une
         // source arrive (<10 min), l'ingestion fonctionne. Si même la plus fraîche est vieille -> ingestion
         // en panne (réseau / corruption / collecte arrêtée) = le SEUL cas où on alerte ("muet"). Sinon l'âge
@@ -904,7 +932,9 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
         // rendu un PRÉFIXE : des flux SONT listés, et c'est l'aveu de racine de `P10.7-f` qui dit qu'il en
         // manque. Confondre les deux ferait apparaître une ligne « famille non lue » à côté de flux
         // parfaitement lus — un aveu qui ment dans l'autre sens.
+        // `P10.29-l` (vague AP) — l'entrée de famille porte la classe de la fin, jamais le texte du moteur (journal seul).
         if let FinDeParcours::NonCommence { cause } = &fin {
+            let cause = phrase_de_la_fin(cause);
             feeds.push(flux_de_famille_non_lue("event", "flux d'événements", cause));
         }
         releve.noter("les flux d'événements", &fin);
@@ -934,6 +964,7 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
             Err(e) => FinDeParcours::NonCommence { cause: e.to_string() },
         };
         if let FinDeParcours::NonCommence { cause } = &fin {
+            let cause = phrase_de_la_fin(cause);
             feeds.push(flux_de_famille_non_lue("snapshot", "flux d'instantanés", cause));
         }
         releve.noter("les flux d'instantanés", &fin);
@@ -1014,6 +1045,7 @@ pub(crate) fn compute_freshness(db_path: &str, env: Option<&str>) -> Value {
             if let Some(o) = mf.as_object_mut() {
                 match &fin {
                     FinDeParcours::NonCommence { cause } => {
+                        let cause = phrase_de_la_fin(cause);
                         o.insert("series".into(), Value::Null);
                         o.insert("series_non_lues".into(), json!(format!("{CAUSE_FAMILLE_DE_FLUX_NON_LUE}{cause}")));
                     }

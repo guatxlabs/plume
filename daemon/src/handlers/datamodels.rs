@@ -360,19 +360,45 @@ pub(crate) async fn field_delete(State(st): State<AppState>, Extension(au): Exte
 // =================================================================================================
 // RÉSOLUTION objet -> (chaîne de contraintes héritées, allowlist de champs source)
 // =================================================================================================
+/// `P10.20-l` (vague AP) — l'objet d'un Pivot, ou un objet parent de sa chaîne de contraintes, n'a pas été lu : rien
+/// n'est compilé. L'allowlist n'est pas établie non plus (sa lecture vient après) : la phrase le dit, dans les mots que
+/// la vue du Pivot reconnaît déjà comme une lecture qui n'a pas eu lieu (`web/datamodels.js`,
+/// `OUVERTURE_DU_REFUS_D_ALLOWLIST_NON_LUE`), au lieu de « le démon refuse le corps reçu ».
+pub(crate) const CAUSE_OBJET_DU_PIVOT_NON_LU: &str = "OBJET DU PIVOT NON LU : la base n'a pas rendu l'objet visé ou un \
+     objet parent de sa chaîne de contraintes — ce n'est PAS « objet introuvable ou désactivé », c'est une lecture qui \
+     n'a pas eu lieu, et l'allowlist n'est pas établie (champs déclarés de l'objet NON LUS). Rien n'est compilé, exécuté \
+     ni enregistré. Réessayez ; si le refus persiste, la table des objets de modèle de données est illisible.";
+
 /// Chaîne de contraintes de la RACINE vers l'objet (parent d'abord -> l'enfant hérite). Bornée (cap 16) contre
 /// un cycle accidentel de `parent_id`. Chaque fragment a été compile-vérifié à la création.
-fn object_constraint_chain(conn: &Connection, object_id: i64) -> Result<Vec<String>, String> {
+///
+/// `P10.20-l` (vague AP) — UNE LECTURE RATÉE N'EST PAS « OBJET INTROUVABLE OU DÉSACTIVÉ ». La forme d'avant lisait
+/// chaque maillon par `.map_err(|_| "objet introuvable ou désactivé")?` : une ligne illisible, une table hors
+/// d'atteinte, se servaient 400 — un défaut du CORPS reçu, que l'appelant corrige sans fin. Trois issues par
+/// maillon (objet de départ ET chaque parent) : lu, la chaîne suit ; absent ou désactivé, le 400 d'avant à l'octet ;
+/// lecture ratée, 503 `CAUSE_OBJET_DU_PIVOT_NON_LU`, la cause du moteur au journal seul avec l'identifiant interne de
+/// l'objet. Le code voyage avec la phrase (`(StatusCode, String)`, comme l'allowlist) : les trois appelants de
+/// `pivot_soql_from_body` le reversent sans édition. LIMITE : la ligne de journal ne porte pas l'identifiant de
+/// corrélation, qui naît chez l'appelant (`err_json`) ; la trace `HTTP 503` de cet identifiant suit la ligne.
+fn object_constraint_chain(conn: &Connection, object_id: i64) -> Result<Vec<String>, (StatusCode, String)> {
     let mut chain_rev: Vec<String> = Vec::new();
     let mut cur = Some(object_id);
     let mut guard = 0;
     while let Some(oid) = cur {
-        if guard > 16 { return Err("hiérarchie d'objets trop profonde (cycle ?)".into()); }
+        if guard > 16 { return Err((StatusCode::BAD_REQUEST, "hiérarchie d'objets trop profonde (cycle ?)".into())); }
         guard += 1;
-        let (constraint, parent): (String, Option<i64>) = conn
+        let (constraint, parent): (String, Option<i64>) = match conn
             .query_row("SELECT constraint_soql, parent_id FROM data_model_object WHERE id=?1 AND enabled=1", params![oid],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)))
-            .map_err(|_| "objet introuvable ou désactivé".to_string())?;
+            .optional()
+        {
+            Ok(Some(maillon)) => maillon,
+            Ok(None) => return Err((StatusCode::BAD_REQUEST, "objet introuvable ou désactivé".to_string())),
+            Err(e) => {
+                eprintln!("[datamodels] WARN objet #{oid} de la chaîne d'un Pivot NON lu, rien n'est compilé : {e}");
+                return Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_OBJET_DU_PIVOT_NON_LU.to_string()));
+            }
+        };
         chain_rev.push(constraint);
         cur = parent;
     }
@@ -434,10 +460,12 @@ fn parse_pivot_spec(b: &Value) -> PivotSpec {
 /// `P10.20-p` — L'ERREUR PORTE SON CODE. Tout ce qui est refusé ici est un défaut du CORPS reçu (400),
 /// SAUF un : l'allowlist non lue, qui n'est le défaut de personne et se réessaie (503). Servir ce
 /// refus-là en 400 apprendrait à l'appelant que sa demande est malformée — il la corrigerait sans fin.
+/// `P10.20-l` (vague AP) — et un second : un maillon de la chaîne de l'objet non lu (`object_constraint_chain`), même
+/// raison, même code ; l'objet absent ou désactivé reste le 400 d'avant.
 fn pivot_soql_from_body(conn: &Connection, b: &Value) -> Result<String, (StatusCode, String)> {
     let mauvais = |e: String| (StatusCode::BAD_REQUEST, e);
     let object_id = b.get("object_id").and_then(|v| v.as_i64()).ok_or_else(|| mauvais("object_id requis".to_string()))?;
-    let constraints = object_constraint_chain(conn, object_id).map_err(mauvais)?;
+    let constraints = object_constraint_chain(conn, object_id)?;
     let allowed = object_field_allow(conn, object_id).map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     let spec = parse_pivot_spec(b);
     pivot_to_soql(&constraints, &allowed, &spec).map_err(mauvais)

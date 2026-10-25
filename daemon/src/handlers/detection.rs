@@ -1486,6 +1486,7 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
     const CAP: usize = 50000;
     let db = req_db(&st, &au);
     let db_path = req_db_path(&st, &au); // MT-KEY : parseurs de CE db_path pour le reparse
+    let tenant = au.tenant.clone(); // nommé à la ligne `[reparse] WARN` d'un scan qui n'est pas allé au bout
     // `P10.26-s` — `Err` = la transaction du reparse n'a pas été prise (BEGIN, COMMIT ou un UPDATE refusé) : rien n'est écrit.
     let out = tokio::task::spawn_blocking(move || -> rusqlite::Result<(i64, i64, i64, String, Option<String>)> {
         let conn = db.lock();
@@ -1544,9 +1545,18 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
                 }),
             };
         }
-        // `P10.7-f` — un scan interrompu par le budget ne sert plus `scanned`/`matched` comme un total :
-        // la cause du moteur est conservée telle qu'il l'a dite, jamais un nombre de lignes manquantes inventé.
-        let cause_scan = fin.cause().map(|c| format!("{CAUSE_REPARSE_INCOMPLET}{c}"));
+        // `P10.7-f` — un scan interrompu par le budget ne sert plus `scanned`/`matched` comme un total, jamais un
+        // nombre de lignes manquantes inventé. `P10.29-l` (vague AP) — `cause_scan` porte la CLASSE de la fin
+        // (`phrase_de_la_fin`), plus le texte du moteur ; celui-ci part à la ligne `[reparse] WARN` avec le tenant et le
+        // nombre de lignes lues, jamais la source demandée (un texte de l'appelant) ni la fenêtre.
+        let cause_scan = fin.cause().map(|c| {
+            let etat = match &fin {
+                crate::query_exec::FinDeParcours::NonCommence { .. } => "non commencé",
+                _ => "interrompu",
+            };
+            eprintln!("[reparse] WARN parcours des events {etat} (tenant '{tenant}') après {scanned} ligne(s) lue(s) : {c}");
+            format!("{CAUSE_REPARSE_INCOMPLET}{}", crate::handlers::alerts::phrase_de_la_fin(c))
+        });
         if dry { return Ok((scanned, would, 0, String::new(), cause_scan)); }
         ouvrir_sa_transaction(&conn, "reparse", "reparse rétroactif des events")?;
         // `P10.27-i` — chaque `UPDATE` est jugé et compté : `updated` = EVENTS dont au moins une colonne a réellement

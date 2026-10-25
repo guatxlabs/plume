@@ -56,9 +56,9 @@
 // suppression par son toast (le 503 nommé y est un refus nommé, aucune ouverture « rien n'a changé » ne reconnaissant
 // une lecture manquée) ; aucun écran n'appelle `/api/scheduled-reports` ; la fiche d'engagement et la colonne
 // `last_error` des connecteurs ne sont pas lues côté console ici. Restent hors de ce lot, et donc non témoignés :
-// `object_constraint_chain` (le Pivot et la création d'un jeu de données `pivot` rendent encore 400 « objet introuvable
-// ou désactivé » sur une lecture ratée), les trois lectures de définition de `deliver_report` (400 via
-// `report_run_now`), les écritures `let _ = conn.execute(UPDATE connector …)` voisines. Une lecture ratée par verrou
+// `object_constraint_chain` (une lecture ratée y rendait 400 « objet introuvable ou désactivé » ; 503 nommé depuis la
+// vague AP, témoins `chaine_du_pivot_et_etape_de_recherche_en_trois_issues.rs`), les trois lectures de définition de
+// `deliver_report` (400 via `report_run_now`), les écritures `let _ = conn.execute(UPDATE connector …)` voisines. Une lecture ratée par verrou
 // et le mode multi-tenant ne sont pas joués.
 //
 // CORRECTION (après vérification). `mode_get` (engagement.rs) servait encore, dans un corps 200, `mode NON LU : … (<moteur>)` :

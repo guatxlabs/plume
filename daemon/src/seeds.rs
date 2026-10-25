@@ -204,8 +204,9 @@ fn ecrire_les_donnees_de_demonstration(conn: &Connection) -> rusqlite::Result<()
 ///
 /// `P10.28-l` (vague AO) — ENROBAGE de `lire_ou_creer_la_vue` : `None` pour ses deux refus. AVANT, une lecture ratée du
 /// nom valait absence (`.ok()` sur le `SELECT`) et une SECONDE vue du même nom était créée (aucune contrainte `UNIQUE`
-/// sur `view.name`) ; désormais elle rend `None`, sans rien écrire. Signature et appelants (migration v63, Banni / Pass)
-/// inchangés ; les semis de tableaux, eux, appellent l'assistant et REFUSENT le semis (`rattacher_le_tableau_a_sa_vue`).
+/// sur `view.name`) ; désormais elle rend `None`, sans rien écrire. Signature et appelant (migration v63) inchangés ; les
+/// semis de tableaux, eux, appellent l'assistant et REFUSENT le semis (`rattacher_le_tableau_a_sa_vue`, et Banni / Pass
+/// dans rollups.rs depuis la vague AP).
 pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i64> {
     lire_ou_creer_la_vue(conn, name).ok()
 }
@@ -214,7 +215,7 @@ pub(crate) fn find_or_create_view<C: SqlExec>(conn: &C, name: &str) -> Option<i6
 /// qui écrit UNE ligne (l'identifiant de cette ligne), ou `Err` — la lecture ratée (jamais prise pour une absence : ce
 /// serait une seconde vue du même nom) comme l'`INSERT` refusé ou qui n'écrit rien (`Ok(0)`, jamais l'identifiant
 /// d'une autre ligne).
-fn lire_ou_creer_la_vue<C: SqlExec>(conn: &C, name: &str) -> rusqlite::Result<i64> {
+pub(crate) fn lire_ou_creer_la_vue<C: SqlExec>(conn: &C, name: &str) -> rusqlite::Result<i64> {
     use rusqlite::OptionalExtension as _;
     let lue = conn.query_row("SELECT id FROM view WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).optional()?;
     match lue {
@@ -392,7 +393,7 @@ pub(crate) const ETAPE_ECRITURE_REFUSEE: &str = "écriture ou COMMIT refusé";
 /// `INSERT OR IGNORE` muet) n'a RIEN écrit : elle est traitée comme un refus, et la transaction du semis est annulée.
 /// Sans elle, un semis de règles était validé PARTIEL, drapeau posé et jamais retenté, ou un drapeau ignoré laissait le
 /// semis se rejouer — et s'auditer — à chaque démarrage.
-fn une_ligne_ecrite(ecrites: usize) -> rusqlite::Result<()> {
+pub(crate) fn une_ligne_ecrite(ecrites: usize) -> rusqlite::Result<()> {
     if ecrites == 1 { Ok(()) } else { Err(rusqlite::Error::StatementChangedRows(ecrites)) }
 }
 

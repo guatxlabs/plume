@@ -40,8 +40,9 @@
 // CE QUE CE LOT NE TIENT PAS, ET IL FAUT LE LIRE ICI : `rows.flatten()` de `object_field_allow` RESTE —
 // c'est l'arbitrage assumé nommé dans `SITES_ASSUMES` de la garde de famille (une ligne illisible ampute
 // l'allowlist, le champ correspondant est REFUSÉ, jamais inventé), et le témoin l'ASSERTE au lieu de le
-// taire. `object_constraint_chain`, deux lignes plus haut, confond toujours « objet introuvable ou
-// désactivé » et « pas lu » (famille `P10.20-b`, non traitée ici). Et aucun module de `web/` ne lit les
+// taire. `object_constraint_chain`, deux lignes plus haut, ne confond plus « objet introuvable ou
+// désactivé » et « pas lu » depuis la vague AP (`P10.20-l` : 503 `CAUSE_OBJET_DU_PIVOT_NON_LU`, témoins
+// `chaine_du_pivot_et_etape_de_recherche_en_trois_issues.rs`). Et aucun module de `web/` ne lit les
 // aveux neufs.
 // =====================================================================================
 
@@ -137,8 +138,9 @@ async fn pma_pivot(st: &AppState, au: &AuthUser, corps: Value) -> (u16, Value) {
 /// LIGNE illisible ampute l'allowlist et le champ perdu est REFUSÉ, jamais inventé.
 ///
 /// CE QU'IL NE TIENT PAS : il ne referme pas cet arbitrage (`rows.flatten()`, entrée `object_field_allow`
-/// de `SITES_ASSUMES`), et il ne juge pas `object_constraint_chain`, qui confond toujours une lecture
-/// ratée avec « objet introuvable ou désactivé ».
+/// de `SITES_ASSUMES`), et il ne juge pas `object_constraint_chain`, dont la lecture ratée (503, distincte
+/// de « objet introuvable ou désactivé » depuis la vague AP) est jugée par
+/// `chaine_du_pivot_et_etape_de_recherche_en_trois_issues.rs`.
 ///
 /// LA MUTATION QUI LE FERAIT ROUGIR : rétablir `if let Ok(mut s) = conn.prepare(..)` et le type
 /// `HashSet` — le bloc de la table retirée retrouve un 400 « champ split-by non déclaré dans l'objet »,

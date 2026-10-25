@@ -582,7 +582,10 @@
         let mut releve = ParcoursDeFraicheur::default();
         releve.noter("le partage des alertes actives", &fin);
         let cause = releve.cause_de_l_imputation().expect("partage tronqué rendu SANS cause : c'est le défaut");
-        assert!(cause.contains("interrupted"), "la cause vient du moteur, jamais réécrite : {cause}");
+        // `P10.29-l` (vague AP) — INVERSÉ : le relevé ne garde plus le texte du moteur (« interrupted »), servi dans
+        // `imputation_des_alertes.error` d'un corps 200 ; il garde la phrase fixe de l'interruption, le moteur part à la
+        // ligne `[freshness] WARN` (témoins `ap1_`).
+        assert_eq!(cause, crate::handlers::alerts::FIN_DE_PARCOURS_INTERROMPUE, "la classe de la fin, jamais le texte du moteur : {cause}");
         let aveu = releve.aveu().expect("le relevé doit porter une phrase de racine dès qu'un parcours a été coupé");
         assert!(aveu.starts_with(CAUSE_FRAICHEUR_INCOMPLETE), "l'aveu dit d'abord ce que le relevé n'établit PAS : {aveu}");
         assert!(aveu.contains("le partage des alertes actives"), "et il NOMME le parcours coupé : {aveu}");

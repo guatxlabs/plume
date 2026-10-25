@@ -1184,6 +1184,14 @@ pub(crate) const BANPASS_COVERAGE_SQL: &str =
 /// ou un `Ok(0)` laisse l'étape validée SANS ce tableau (avant : partiel), que le démarrage sème ensuite. Le refus est dit
 /// au journal (une ligne), pas compté : le compteur des gestes de fond exige un `&Connection`. Le démarrage n'est jamais
 /// refusé. Littéraux des panneaux inchangés.
+///
+/// `P10.28-l` (vague AP) — LA VUE « DÉTECTION » NON LUE OU NON CRÉABLE REFUSE LE SEMIS. AVANT : `if let Some(vid) =
+/// find_or_create_view(..)` sautait le rattachement sur `None`, et le tableau était validé HORS vue, nom présent : jamais
+/// réparé (l'idempotence par nom le tenait pour semé, la migration v63 ne rejoue pas sur une base à jour). DÉSORMAIS :
+/// `lire_ou_creer_la_vue` (lue, créée par un `INSERT` à une ligne, ou `Err`) puis le rattachement à une ligne
+/// (`Ok(0)` = refus), le patron de `rattacher_le_tableau_a_sa_vue` (seeds.rs) ; un refus annule le point de reprise
+/// (rien n'est conservé), est dit au journal sous sa propre phrase (`VueNonObtenue`) et le démarrage suivant reprend le
+/// semis entier.
 pub(crate) fn seed_banpass_dashboard<C: SqlExec>(conn: &C) {
     if let Err(non_seme) = semer_le_banni_pass(conn) {
         eprintln!("[seed] le tableau de bord « {NOM_DU_BANNI_PASS} » NON semé : {non_seme}");
@@ -1198,7 +1206,22 @@ pub(crate) const POINT_DU_BANNI_PASS: &str = "semis_banni_pass";
 enum BanniPassNonSeme {
     PresenceNonLue(rusqlite::Error),
     PointDeRepriseNonOuvert(rusqlite::Error),
+    /// `P10.28-l` (vague AP) — la vue « Détection » n'a pas été obtenue : sa lecture a raté, ou sa création a été refusée
+    /// ou n'a rien écrit. Une phrase distincte de l'écriture refusée (une lecture ratée n'est pas une écriture refusée).
+    VueNonObtenue { refus: rusqlite::Error, annulation: rusqlite::Result<()> },
     EcritureRefusee { refus: rusqlite::Error, annulation: rusqlite::Result<()> },
+}
+
+/// Ce qui a été refusé sous le point de reprise : la vue « Détection » (lue ou créée), ou une écriture ou la validation.
+enum RefusSousLePoint {
+    Vue(rusqlite::Error),
+    Ecriture(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for RefusSousLePoint {
+    fn from(refus: rusqlite::Error) -> Self {
+        RefusSousLePoint::Ecriture(refus)
+    }
 }
 
 impl std::fmt::Display for BanniPassNonSeme {
@@ -1209,6 +1232,13 @@ impl std::fmt::Display for BanniPassNonSeme {
             }
             BanniPassNonSeme::PointDeRepriseNonOuvert(e) => {
                 write!(f, "point de reprise non ouvert ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage")
+            }
+            BanniPassNonSeme::VueNonObtenue { refus, annulation: Ok(()) } => write!(
+                f,
+                "la vue « Détection » n'a pas été obtenue, lecture ratée ou création refusée ({refus}) — RIEN n'est conservé, le semis sera retenté au prochain démarrage"
+            ),
+            BanniPassNonSeme::VueNonObtenue { refus, annulation: Err(e) } => {
+                write!(f, "la vue « Détection » n'a pas été obtenue, lecture ratée ou création refusée ({refus}) — ANNULATION REFUSÉE ({e})")
             }
             BanniPassNonSeme::EcritureRefusee { refus, annulation: Ok(()) } => write!(
                 f,
@@ -1229,11 +1259,14 @@ fn semer_le_banni_pass<C: SqlExec>(conn: &C) -> Result<(), BanniPassNonSeme> {
         Err(e) => return Err(BanniPassNonSeme::PresenceNonLue(e)),
     }
     conn.execute_batch(&format!("SAVEPOINT {POINT_DU_BANNI_PASS}")).map_err(BanniPassNonSeme::PointDeRepriseNonOuvert)?;
-    let ecrit = ecrire_le_banni_pass(conn).and_then(|()| conn.execute_batch(&format!("RELEASE {POINT_DU_BANNI_PASS}")));
+    let ecrit = ecrire_le_banni_pass(conn).and_then(|()| conn.execute_batch(&format!("RELEASE {POINT_DU_BANNI_PASS}")).map_err(RefusSousLePoint::Ecriture));
     if let Err(refus) = ecrit {
         // `ROLLBACK TO` puis `RELEASE` : rien n'est conservé et le point est fermé (au démarrage, la transaction aussi).
         let annulation = conn.execute_batch(&format!("ROLLBACK TO {POINT_DU_BANNI_PASS}; RELEASE {POINT_DU_BANNI_PASS}"));
-        return Err(BanniPassNonSeme::EcritureRefusee { refus, annulation });
+        return Err(match refus {
+            RefusSousLePoint::Vue(refus) => BanniPassNonSeme::VueNonObtenue { refus, annulation },
+            RefusSousLePoint::Ecriture(refus) => BanniPassNonSeme::EcritureRefusee { refus, annulation },
+        });
     }
     Ok(())
 }
@@ -1244,13 +1277,13 @@ fn une_seule_ligne_du_banni_pass(ecrites: usize) -> rusqlite::Result<()> {
 }
 
 /// En-tête, rattachement à la vue « Détection » (replié) et panneaux, à jouer sous le point de reprise.
-fn ecrire_le_banni_pass<C: SqlExec>(conn: &C) -> rusqlite::Result<()> {
+fn ecrire_le_banni_pass<C: SqlExec>(conn: &C) -> Result<(), RefusSousLePoint> {
     une_seule_ligne_du_banni_pass(conn.execute("INSERT INTO dashboard(name,created,visibility) VALUES('Banni / Pass', ?1, 'shared')", params![now()])?)?;
     let did = conn.last_insert_rowid();
     // v63 : « Banni / Pass » -> vue « Détection » (à côté de « Sécurité & détection »), REPLIÉ (non primaire).
-    if let Some(vid) = find_or_create_view(conn, "Détection") {
-        une_seule_ligne_du_banni_pass(conn.execute("UPDATE dashboard SET view_id=?1, collapsed=1 WHERE id=?2", params![vid, did])?)?;
-    }
+    // `P10.28-l` (vague AP) — la vue non lue ou non créable est un refus (avant : tableau validé hors vue, jamais réparé).
+    let vid = lire_ou_creer_la_vue(conn, "Détection").map_err(RefusSousLePoint::Vue)?;
+    une_seule_ligne_du_banni_pass(conn.execute("UPDATE dashboard SET view_id=?1, collapsed=1 WHERE id=?2", params![vid, did])?)?;
     // (titre, requête is_soql=0, viz, panel_cache_ttl_s). TOUS les panneaux sont bornés par __FROM__
     // (fenêtre 24 h par défaut ; picker='Tout' -> from=0 -> tout l'historique) + LIMIT + SWR.
     let panels: [(&str, &str, &str, i64); 4] = [

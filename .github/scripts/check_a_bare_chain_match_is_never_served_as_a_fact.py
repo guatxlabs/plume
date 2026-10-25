@@ -48,6 +48,27 @@ accusation hors ensemble est une FORME NEUVE (rouge), une entrée qui n'est plus
 
 DÉCISIONS DU LOT (2026-10-23) : instrument pur, aucun fichier de `daemon/src/` modifié, aucun site corrigé ;
 lecteurs importés, jamais recopiés ; seule la jambe `match` DIRECTE est jugée (voir `ce_qui_n_est_pas_tenu()`).
+
+LA SECONDE JAMBE — `map_err` QUI JETTE LA CAUSE (`P10.20-l`, vague AP, 2026-10-25)
+---------------------------------------------------------------------------------
+La même faute s'écrit aussi SANS `match` et SANS absorbant : `conn.query_row(..).map_err(|_| "objet introuvable")?`.
+La garde sœur lit `map_err` comme traversant et `?` comme propagateur (verdict `propage`) ; la jambe `match` ne la voit
+pas (la chaîne n'est pas nue). Pourtant la fermeture JETTE l'erreur (`|_|`, `|_e|`) : « aucune ligne » et « lecture
+non faite » repartent sous la même phrase d'absence. POPULATION : un `.query_row(` du même corpus dont la chaîne porte
+un `map_err` précédé de seuls traversants sans `.optional()`, et suivi d'un `?` (traversants seuls entre les deux).
+ACCUSÉ : la fermeture jette sa cause ET rend un LITTÉRAL (chaîne, `String::from`/`format!` d'une chaîne seule, une
+constante `MAJUSCULE`, suffixes `.to_string()`/`.to_owned()`/`.into()`, bloc d'une seule expression) — forme
+`map_err(|_|)? => littéral` — ou un statut de client (même lecteur que la jambe `match`) — forme
+`map_err(|_|)? => <code>`. Les deux jambes s'excluent (une chaîne qui porte `?` n'est jamais nue) : un site n'est
+compté qu'une fois. MESURÉ le 2026-10-25 sur `ac1f43b8` par ce lecteur : 4 lectures dans la population
+(`library_panel_delete`, `object_constraint_chain`, `resolve_step_search`, `cloner_le_runbook`), 2 accusées
+(`object_constraint_chain`, `resolve_step_search`), corrigées par le même lot — aucune entrée dans `SITES_ADMIS`.
+VARIANTE D'UN LITTÉRAL (relevée par la vérification du même lot) : une fois la fonction passée à un type de refus, le
+retour le plus probable à la forme d'avant s'écrit `.map_err(|_| Refus::Refusee("étape introuvable".to_string()))?` —
+la phrase d'absence sous un constructeur nommé. Un constructeur en `CamelCase` (chemin toléré) dont l'UNIQUE champ est
+un littéral au sens ci-dessus (ou une telle variante) est accusé, forme `map_err(|_|)? => variante(littéral)`, quel que
+soit son nom : la garde ne lit pas le sens d'une variante. Remesuré sur l'arbre du lot : population de la jambe 2,
+aucune accusée, aucun faux positif.
 """
 import os
 import re
@@ -101,6 +122,18 @@ CODE_DU_STATUT = {"NOT_FOUND": "404", "FORBIDDEN": "403", "BAD_REQUEST": "400", 
 JET_DE_LA_CAUSE = re.compile(r"(?<![\w.])(?:std\s*::\s*mem\s*::\s*)?drop\s*\(\s*[a-z_]\w*\s*\)\s*;?"
                              r"|\blet\s+_\s*=\s*[a-z_]\w*\s*;")
 MACRO_DE_JOURNAL = re.compile(r"(?<![\w])(?:eprintln|println|eprint|print|log::\w+|tracing::\w+)\s*!\s*\(")
+# La SECONDE JAMBE (`map_err` qui jette la cause). Une fermeture qui JETTE son argument : `|_|`, `|_e|`, typée ou non,
+# `move` toléré. Ce qu'elle rend est lu par `corps_litteral` / `statut_de_client`.
+FERMETURE_QUI_JETTE = re.compile(r"\s*(?:move\s+)?\|\s*_\w*\s*(?::[^|]*)?\|", re.S)
+SUFFIXE_DE_CONVERSION = re.compile(r"\s*\.\s*(?:to_string|to_owned|into)\s*\(\s*\)\s*$")
+ENVELOPPE_D_UNE_CHAINE = re.compile(r"(?:String\s*::\s*from|format\s*!)\s*\((.*)\)", re.S)
+LITTERAL_SEUL = re.compile(r'"(?:[^"\\]|\\.)*"|r(#*)".*?"\1|(?:[a-z_]\w*\s*::\s*)*[A-Z][A-Z0-9_]*', re.S)
+JAMBE_MAP_ERR = "map_err(|_|)? => "
+# Un constructeur en `CamelCase` (variante d'énumération ou struct-tuple, chemin `a::B::` toléré) à UN champ :
+# `Refus::Refusee("…".to_string())`. Le champ est relu par `corps_litteral` (ou, récursivement, par cette même forme).
+# Une fonction (`bad_req(..)`, `String::from(..)`, `Box::new(..)`) n'a pas de dernier segment en `CamelCase`.
+VARIANTE_D_UN_CHAMP = re.compile(r"(?:[A-Za-z_]\w*\s*::\s*)*[A-Z]\w*[a-z]\w*\s*\((.*)\)", re.S)
+FORME_VARIANTE_D_UN_LITTERAL = JAMBE_MAP_ERR + "variante(littéral)"
 
 # --- PLANCHERS DE NON-DÉGÉNÉRESCENCE (première écriture, 2026-10-23) --------------------------------------------
 # Relevé de l'arbre ce jour-là (base `1287fb98`), MESURÉ par cette garde : 76 `match` directs sur un `query_row` sous
@@ -134,6 +167,60 @@ SITES_ADMIS = {
 def chaine_nue(jetons):
     """La chaîne laisse-t-elle le `Result` à DEUX états (vide, ou seuls traversants hors `optional`, sans `?`) ?"""
     return all(nom in TRAVERSANTS_NUS for nom, _i, _a1, _a2 in jetons)
+
+
+def depouiller(corps):
+    """Le corps sans son bloc d'une seule expression ni ses suffixes de conversion."""
+    c = corps.strip()
+    if c.startswith("{") and c.endswith("}"):
+        c = c[1:-1].strip()
+    while SUFFIXE_DE_CONVERSION.search(c):
+        c = SUFFIXE_DE_CONVERSION.sub("", c).strip()
+    return c
+
+
+def corps_litteral(corps):
+    """Le corps d'une fermeture n'est-il qu'un LITTÉRAL (chaîne, constante), éventuellement converti ou enveloppé ?"""
+    c = depouiller(corps)
+    m = ENVELOPPE_D_UNE_CHAINE.fullmatch(c)
+    if m:
+        c = m.group(1).strip()
+    return bool(LITTERAL_SEUL.fullmatch(c))
+
+
+def variante_d_un_litteral(corps):
+    """Le corps n'est-il qu'un constructeur en `CamelCase` dont l'unique champ est un littéral (ou une telle variante) ?
+    `Refus::Refusee("étape introuvable".to_string())` : la phrase d'absence sous un type nommé."""
+    m = VARIANTE_D_UN_CHAMP.fullmatch(depouiller(corps))
+    return bool(m) and (corps_litteral(m.group(1)) or variante_d_un_litteral(m.group(1)))
+
+
+def jambe_map_err(code, jetons):
+    """`(dans_la_population, forme_accusée_ou_None)` pour la chaîne d'une lecture : un `map_err` précédé de seuls
+    traversants sans `optional`, suivi d'un `?` (traversants seuls entre les deux) ; accusé quand sa fermeture jette la
+    cause et rend un littéral ou un statut de client."""
+    for k, (nom, _i, a1, a2) in enumerate(jetons):
+        if nom != "map_err":
+            if nom not in TRAVERSANTS_NUS:
+                return False, None
+            continue
+        suite = [n for n, _j, _b1, _b2 in jetons[k + 1:]]
+        if "?" not in suite or not all(n in TRAVERSANTS_NUS for n in suite[:suite.index("?")]):
+            return False, None
+        if a1 < 0:
+            return True, None
+        argument = code[a1:a2]
+        f = FERMETURE_QUI_JETTE.match(argument)
+        if not f:
+            return True, None
+        corps = argument[f.end():]
+        if corps_litteral(corps):
+            return True, JAMBE_MAP_ERR + "littéral"
+        if variante_d_un_litteral(corps):
+            return True, FORME_VARIANTE_D_UN_LITTERAL
+        statut = statut_de_client(corps)
+        return True, (JAMBE_MAP_ERR + statut) if statut else None
+    return False, None
 
 
 def sans_macros_de_journal(corps):
@@ -208,9 +295,10 @@ def verdict_du_bras(motif, corps, constructeurs, portee):
     return "Err => valeur"
 
 
-def analyser(chemin_relatif, texte, journal, constructeurs, aveux_du_lecteur=None):
+def analyser(chemin_relatif, texte, journal, constructeurs, aveux_du_lecteur=None, compteurs=None):
     """(sites, population) pour UN fichier : sites = [(chemin, ligne, fonction, forme, extrait)], population = le
-    nombre de `match` à chaîne nue lus (accusés ou non)."""
+    nombre de `match` à chaîne nue lus (accusés ou non). `compteurs["map_err"]` reçoit la population de la seconde
+    jambe (lectures `… .map_err(..)?` sans `.optional()`, accusées ou non)."""
     journal_du_lecteur = []
     brut = sans_commentaires_rust(texte, journal_du_lecteur)
     if journal_du_lecteur and aveux_du_lecteur is not None:
@@ -231,6 +319,19 @@ def analyser(chemin_relatif, texte, journal, constructeurs, aveux_du_lecteur=Non
                            "unique : le lecteur a perdu la fin de l'expression")
             continue
         jetons, apres = chaine_detaillee(code, fin)
+        dans_la_jambe, forme_map_err = jambe_map_err(code, jetons)
+        if dans_la_jambe:
+            if compteurs is not None:
+                compteurs["map_err"] = compteurs.get("map_err", 0) + 1
+            if forme_map_err:
+                englobante = portee_englobante(fns, m.start())
+                if not englobante:
+                    journal.append(f"{chemin_relatif}:{ligne} — `map_err` qui jette la cause HORS de toute fonction : "
+                                   "un site sans fonction ne peut pas entrer dans l'ensemble")
+                else:
+                    extrait = " ".join(code[debut_instruction(coupes, m.start()):apres].split())[:140]
+                    sites.append((chemin_relatif, ligne, englobante[0], forme_map_err, extrait))
+            continue  # une chaîne qui porte `?` n'est jamais nue : la jambe `match` ne la reverrait pas
         if not chaine_nue(jetons) or not scrutateur_est_la_lecture(code, m.start()):
             continue
         i = apres
@@ -261,14 +362,14 @@ def constructeurs_du_demon(racine_demon=None):
     return constructeurs_d_aveu(definitions(src), src)
 
 
-def decouvrir(racine=None):
+def decouvrir(racine=None, compteurs=None):
     sites, journal, aveux_du_lecteur, population, fichiers = [], [], {}, 0, set()
     constructeurs = constructeurs_du_demon(None if racine is None else racine)
     for chemin in fichiers_du_corpus(racine):
         with open(chemin, encoding="utf-8", errors="replace") as fh:
             texte = fh.read()
         rel = os.path.relpath(chemin, RACINE).replace(os.sep, "/")
-        s, n = analyser(rel, texte, journal, constructeurs, aveux_du_lecteur)
+        s, n = analyser(rel, texte, journal, constructeurs, aveux_du_lecteur, compteurs)
         sites += s
         population += n
         if n:
@@ -394,6 +495,60 @@ EPREUVES = [
     ("n17 `drop` d'AUTRE CHOSE, cause portée", _m('        Err(e) => {\n            drop(verrou);\n            return Err(e);\n'
                                                   '        }'), set(), 1),
 ]
+
+
+# --- `P10.20-l` (vague AP) : LA SECONDE JAMBE, `map_err` qui jette la cause. Le cinquième terme est la population de
+# la jambe (0 par défaut pour les épreuves de la jambe `match` : aucune n'y entre).
+def _e(chaine, suite="    ok(v)"):
+    return _f('    let v = conn.query_row("SELECT 1 FROM t WHERE id=?1", [id], |r| r.get::<_, i64>(0))' + chaine
+              + ';\n' + suite)
+
+
+LITTERAL_ACCUSE = {JAMBE_MAP_ERR + "littéral"}
+EPREUVES += [
+    ("p14 `.map_err(|_| \"…\".to_string())?`", _e('.map_err(|_| "objet introuvable".to_string())?'), LITTERAL_ACCUSE, 0, 1),
+    ("p15 constante rendue `.map_err(|_| ABSENT)?`", _e('.map_err(|_| ABSENT)?'), LITTERAL_ACCUSE, 0, 1),
+    ("p16 statut de client `.map_err(|_| not_found(..))?`", _e('.map_err(|_| not_found("x"))?'),
+     {JAMBE_MAP_ERR + "404"}, 0, 1),
+    ("p17 `|_e|` et `String::from(..)`", _e('.map_err(|_e| String::from("x"))?'), LITTERAL_ACCUSE, 0, 1),
+    ("p18 coupé par rustfmt, bloc d'une expression, `.into()`",
+     _f('    let v = conn\n        .query_row("SELECT 1", [], |r| r.get::<_, i64>(0))\n        .map_err(|_| {\n'
+        '            "x".into()\n        })?;\n    ok(v)'), LITTERAL_ACCUSE, 0, 1),
+    ("p19 traversant avant `map_err`", _e('.map(|v| v + 1).map_err(|_| "x")?'), LITTERAL_ACCUSE, 0, 1),
+    ("p20 `format!` d'une chaîne seule", _e('.map_err(|_| format!("x"))?'), LITTERAL_ACCUSE, 0, 1),
+    ("p21 fermeture typée `|_: rusqlite::Error|`", _e('.map_err(|_: rusqlite::Error| "x")?'), LITTERAL_ACCUSE, 0, 1),
+    ("p22 statut nommé `(StatusCode::BAD_REQUEST, ..)`", _e('.map_err(|_| (StatusCode::BAD_REQUEST, "x".to_string()))?'),
+     {JAMBE_MAP_ERR + "400"}, 0, 1),
+    ("p23 constante d'un module, `.to_owned()`", _e('.map_err(|_| erreurs::ABSENT.to_owned())?'), LITTERAL_ACCUSE, 0, 1),
+    ("n19 trois issues `.optional().map_err(|_| ..)?` (hors jambe)", _e('.optional().map_err(|_| "x")?'), set(), 0, 0),
+    ("n20 cause portée `.map_err(|e| format!(\"… {e}\"))?`", _e('.map_err(|e| format!("x : {e}"))?'), set(), 0, 1),
+    ("n21 sans `?` (le `Result` est rendu : hors jambe, limite écrite)", _e('.map_err(|_| "x")', '    v'), set(), 0, 0),
+    ("n22 variante UNITAIRE, aucun littéral (non jugée : limite écrite)", _e('.map_err(|_| Refus::NonLu)?'), set(), 0, 1),
+    ("n23 échec serveur `.map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, ..))?`",
+     _e('.map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, CAUSE))?'), set(), 0, 1),
+    ("n24 `format!` qui porte un argument", _e('.map_err(|_| format!("x {}", id))?'), set(), 0, 1),
+    ("n25 cité dans un littéral",
+     _f('    let doc = "conn.query_row(q, [], f).map_err(|_| \\"x\\")?";\n    rendre(doc)'), set(), 0, 0),
+    ("n26 module de test coupé", _f('    ok()') + '#[cfg(test)]\nmod tests {\n' + _e('.map_err(|_| "x")?') + '}\n',
+     set(), 0, 0),
+    ("n27 `?` séparé par un absorbant (hors jambe)", _e('.map_err(|_| "x").ok()?'), set(), 0, 0),
+]
+# La VARIANTE D'UN LITTÉRAL (vérification du lot) : le retour probable à la forme d'avant sous un type de refus.
+VARIANTE_ACCUSEE = {FORME_VARIANTE_D_UN_LITTERAL}
+EPREUVES += [
+    ("p24 variante d'un littéral `|_| Refus::Refusee(\"…\".to_string())`",
+     _e('.map_err(|_| Refus::Refusee("étape introuvable".to_string()))?'), VARIANTE_ACCUSEE, 0, 1),
+    ("p25 chemin de module et `String::from` dans la variante",
+     _e('.map_err(|_| crate::erreurs::Refus::Absent(String::from("x")))?'), VARIANTE_ACCUSEE, 0, 1),
+    ("p26 bloc rustfmt, constante convertie, `.into()` sur la variante",
+     _f('    let v = conn\n        .query_row("SELECT 1", [], |r| r.get::<_, i64>(0))\n        .map_err(|_| {\n'
+        '            Refus::Refusee(ABSENT.into()).into()\n        })?;\n    ok(v)'), VARIANTE_ACCUSEE, 0, 1),
+    ("p27 variante dans une variante", _e('.map_err(|_| Refus::Client(Motif::Absent("x")))?'), VARIANTE_ACCUSEE, 0, 1),
+    ("n28 variante d'un `format!` qui porte un argument", _e('.map_err(|_| Refus::Refusee(format!("x {}", id)))?'),
+     set(), 0, 1),
+    ("n29 variante à deux champs (limite écrite)", _e('.map_err(|_| Refus::Refusee("x", id))?'), set(), 0, 1),
+    ("n30 fonction en minuscules (pas un constructeur)", _e('.map_err(|_| refuser("x"))?'), set(), 0, 1),
+]
 # Chaque statut de client de la table, et chaque 5xx exclu, a son épreuve : perdre une entrée (ou un 5xx de
 # l'exclusion) fait rougir la sienne. Le lecteur sœur prend tout `StatusCode` pour un aveu : sans ces épreuves, perdre
 # `NOT_FOUND` laissait passer `Err(_) => StatusCode::NOT_FOUND.into_response()`. L'étiquette attendue est ÉCRITE ici,
@@ -475,7 +630,22 @@ def valider_instrument():
     « toutes » (p10) ; garde d'un motif à alternatives ignorée (n18) ; jet non retiré (p11, p12), `drop` puis `let _ = e`
     oubliés un par un (p11, p12). Sur une copie mutée du démon (`incidents.rs::case_step_set`) : `StatusCode::NOT_FOUND`,
     `(StatusCode::OK, …)`, `StatusCode::ACCEPTED`, `Err(QueryReturnedNoRows) | Err(_)` et `drop(e)` puis valeur sont
-    accusés. Population et accusations de l'arbre inchangées (avec et sans le lot voisin qui corrige `runbook_*`)."""
+    accusés. Population et accusations de l'arbre inchangées (avec et sans le lot voisin qui corrige `runbook_*`).
+
+    SECONDE JAMBE (`P10.20-l`, vague AP, 2026-10-25) — épreuves `p14`-`p23` et `n19`-`n27`, population de la jambe
+    jugée sur chacune (cinquième terme), doublon d'accusation refusé. Mutants joués sur une copie de cette garde, chacun
+    en sortie 2 : la jambe retirée ; `optional` accepté avant `map_err` (n19) ; `?` non exigé (n21) ; un absorbant
+    accepté entre `map_err` et `?` (n27) ; `|_e|` non reconnu (p17) ; fermeture typée non reconnue (p21) ; suffixes de
+    conversion ignorés (p14) ; bloc non dépouillé (p18) ; enveloppe `String::from`/`format!` ignorée (p17, p20) ;
+    constante non reconnue (p15) ; statut de client ignoré (p16, p22) ; population non comptée (p14). Le `continue` qui
+    suit la jambe est une ceinture (une chaîne qui porte `?` n'est jamais nue) : son retrait est un mutant équivalent.
+    Sur une copie de l'arbre `ac1f43b8` (les deux sites d'avant le correctif) :
+    sortie 1, `object_constraint_chain` et `resolve_step_search` accusés en FORME NEUVE ; sur l'arbre corrigé : 0.
+    VARIANTE D'UN LITTÉRAL (vérification du lot) — épreuves `p24`-`p27` et `n28`-`n30` ; mutants joués sur une copie,
+    chacun en sortie 2 : la branche retirée de `jambe_map_err` (p24) ; dernier segment en `CamelCase` non exigé (n30) ;
+    récursion retirée (p27) ; dépouillement retiré (p26) ; chemin de module non toléré (p25). Sur une copie de l'arbre
+    du lot où `resolve_step_search` est remis en `.map_err(|_| RefusDeLaRechercheDEtape::Refusee("étape
+    introuvable".to_string()))?` : sortie 1, FORME NEUVE `variante(littéral)` ; arbre du lot : 0, population inchangée."""
     errs = []
     try:
         temoins_du_lecteur()
@@ -490,10 +660,15 @@ def valider_instrument():
                     f"{sorted(set(CODE_DU_STATUT) ^ {n for n, _c in STATUTS_EPROUVES})} sans son épreuve ou sans entrée")
     if "optional" in TRAVERSANTS_NUS or "map" not in TRAVERSANTS_NUS:
         errs.append("vocabulaire des traversants importé faux : `.optional()` compté nu, ou `.map(..)` hors chaîne nue")
-    for nom, src, attendues, pop_attendue in EPREUVES:
-        journal = []
+    for nom, src, attendues, pop_attendue, *jambe in EPREUVES:
+        journal, compteurs = [], {}
         constructeurs = constructeurs_d_aveu(definitions([("/epreuve.rs", src)]), [("/epreuve.rs", src)])
-        sites, population = analyser("/epreuve.rs", src, journal, constructeurs)
+        sites, population = analyser("/epreuve.rs", src, journal, constructeurs, compteurs=compteurs)
+        if len(sites) != len({(c, l, fn) for c, l, fn, _f2, _x in sites}):
+            errs.append(f"épreuve « {nom} » : une même lecture accusée deux fois")
+        if compteurs.get("map_err", 0) != (jambe[0] if jambe else 0):
+            errs.append(f"épreuve « {nom} » : population de la jambe `map_err` {compteurs.get('map_err', 0)}, attendu "
+                        f"{jambe[0] if jambe else 0}")
         vues = {f for _c, _l, _fn, f, _x in sites}
         if journal:
             errs.append(f"épreuve « {nom} » : le lecteur avoue avoir perdu quelque chose ({journal[0]})")
@@ -530,6 +705,13 @@ def ce_qui_n_est_pas_tenu():
           "plus bas) et 6 rendus ou passés en argument — c'est la suite de `P10.20-l`. Hors `handlers/` (dont "
           "l'authentification, `state.rs`, `scim.rs`), ni cette garde ni sa sœur ne lisent : 27 `match` directs, 26 "
           "liés, 7 `if let` directs, 15 autres, à chaîne nue.\n"
+          "  * seconde jambe (`map_err` qui jette la cause, vague AP) : seule la fermeture `|_|`/`|_e|` suivie d'un `?` est "
+          "jugée, et seul un corps LITTÉRAL, une variante d'UN littéral ou un statut de client y est accusé ; la variante est "
+          "accusée quel que soit son nom (une variante « non lu » qui porterait un littéral le serait aussi : elle entre "
+          "alors dans SITES_ADMIS avec sa raison). Une variante unitaire (`|_| Refus::NonLu`) ou à plusieurs champs, "
+          "un 5xx (`|_| (StatusCode::SERVICE_UNAVAILABLE, ..)`, l'absence servie en lecture ratée), un `format!` qui porte "
+          "un argument, une fermeture `|e|` qui ne se sert pas de `e`, ou un `Result` rendu sans `?` passent sans "
+          "jugement ; aucun plancher : la population de l'arbre est petite et sa santé est zéro accusation.\n"
           "  * un `match` en trois issues (`.optional()`) sort de la population : son bras `Err` porte l'échec seul, et "
           "un bras qui y fabrique (journal puis `None`) n'est pas jugé ici.\n"
           "  * un bras dont le corps NOMME `QueryReturnedNoRows` est cru : il distingue l'absence lui-même ; un corps qui "
@@ -562,7 +744,8 @@ def main():
               "CONCLURE.")
         ce_qui_n_est_pas_tenu()
         return 2
-    sites, journal, aveux_du_lecteur, population, fichiers = decouvrir()
+    compteurs = {}
+    sites, journal, aveux_du_lecteur, population, fichiers = decouvrir(compteurs=compteurs)
     if aveux_du_lecteur and refuser_sur_aveu(ETIQUETTE, aveux_du_lecteur, "Rust"):
         ce_qui_n_est_pas_tenu()
         return 2
@@ -584,7 +767,8 @@ def main():
               f"`{extrait}`")
     ecarts = juger_contre_l_ensemble(sites, SITES_ADMIS)
     print(f"\n[{ETIQUETTE}] POPULATION du jour : {population} `match` à chaîne nue sur {len(fichiers)} fichier(s) de "
-          f"daemon/src/handlers ; {len(sites)} bras d'échec qui fabriquent, "
+          f"daemon/src/handlers, et {compteurs.get('map_err', 0)} lecture(s) `… .map_err(..)?` sans `.optional()` "
+          f"(seconde jambe) ; {len(sites)} site(s) qui fabriquent, "
           f"{sum(len(v) for v in SITES_ADMIS.values())} admis par l'ensemble nommé.")
     if ecarts:
         for _g, chemin, phrase in ecarts:

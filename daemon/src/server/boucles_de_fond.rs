@@ -654,7 +654,7 @@ fn spawn_rollup_loop(tenants: TenantDbManager, rollup_interval: u64, disk_warn_p
                 // P4.1-r — les incidents de risque sont une DÉTECTION qui tourne dans cette boucle-ci :
                 // leur bilan est publié à part, et la surface « détection » le lit avec celui des règles.
                 let mut bilan_risque = crate::bilan_de_tick::BilanDuPlanificateur::default();
-                for_each_active_tenant(&tenants, |_tid, handle, db_path| {
+                for_each_active_tenant(&tenants, |tid, handle, db_path| {
                     {
                         let c = handle.lock();
                         rollup_events(&c);
@@ -678,7 +678,7 @@ fn spawn_rollup_loop(tenants: TenantDbManager, rollup_interval: u64, disk_warn_p
                     if warm_freshness {
                         // pré-chauffage TOUS-ENV (#2d) : clé = db_path (env_range_key(None,..)) ; les vues
                         // par-env sont calculées à la demande dans le handler freshness.
-                        let nv = compute_freshness(db_path, None);
+                        let nv = compute_freshness_du_tenant(db_path, None, tid); // `P10.29-l` : tenant nommé au journal
                         freshness_map().lock().insert(db_path.to_string(), (Instant::now(), nv));
                     }
                 });

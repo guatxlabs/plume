@@ -6,6 +6,8 @@
 // `status NOT IN ('resolved','closed','contained')`, à `sla_paused_since IS NULL` ou à `merged_into IS NULL` restait vert,
 // alors qu'un dossier rouvert (le changement de statut ne rejoue pas `sla_apply_policy`), repris de pause ou défusionné
 // (`case_unmerge` ne le rejoue pas non plus) garde alors les échéances d'une politique disparue et le tour le NOTIFIE.
+// (INVERSÉ NOMMÉMENT, `P10.31-v` vague AP : la réouverture par la route et `case_unmerge` rejouent désormais la politique,
+// témoins `prr_` ; la reprise de pause, non.)
 // Le code du lot était juste ; ce sont ses témoins qui ne le tenaient pas.
 //
 // CE QU'ILS TIENNENT : un dossier terminal, un en pause, un fusionné sous P1 -> (None, None, None) chacun et
@@ -150,7 +152,9 @@ mod politique_sla_supprimee_terminaux_pause_fusion {
             "le compte exact : les trois dossiers sautés par le tour, pas N, pas B"
         );
 
-        // Réouverture, reprise, défusion : aucune ne rejoue `sla_apply_policy`.
+        // Réouverture par `UPDATE` direct et reprise : aucune ne rejoue `sla_apply_policy`. INVERSÉ NOMMÉMENT (`P10.31-v`,
+        // vague AP) : `case_unmerge` la rejoue désormais (P1 supprimée, aucune politique pour la priorité 1 : `RienAFaire`
+        // sur F déjà effacé) ; la route de réouverture aussi (témoins `prr_`), ce témoin ne la joue pas.
         pst_sql(&st, &format!("UPDATE incident SET status='triage', closed_ts=NULL WHERE id={t}"));
         {
             let conn = st.db.lock();

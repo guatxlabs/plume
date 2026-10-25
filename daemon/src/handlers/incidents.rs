@@ -847,10 +847,45 @@ pub(crate) fn step_advance(conn: &Connection, id: i64, step_id: i64, status: &st
 /// comme workflow_action_resolve `search` : substitution `$target$` -> valeur SANITISÉE (scalaire), puis
 /// RECOMPILATION par le compilateur FERMÉ (jamais de SQL brut ; l'enum/masque s'appliquent à l'exécution via
 /// /api/query). Renvoie le GXQL de navigation. Err si step absente/non-search/valeur interdite/GXQL invalide.
-pub(crate) fn resolve_step_search(conn: &Connection, id: i64, step_id: i64, value_override: Option<&str>) -> Result<String, String> {
-    let (kind, soql, target): (String, Option<String>, Option<String>) = conn
+///
+/// `P10.20-l` (vague AP) — L'ÉTAPE NON LUE N'EST PLUS « ÉTAPE INTROUVABLE ». La forme d'avant lisait l'étape par
+/// `.map_err(|_| "étape introuvable")?`, servi 400 par la route : une ligne illisible, une table hors d'atteinte, se
+/// disaient absentes. Trois issues par `.optional()` : lue, le gabarit est résolu ; absente (ou d'un autre dossier),
+/// `Refusee("étape introuvable")`, le 400 d'avant à l'octet ; lecture ratée, `EtapeNonLue` (la cause du moteur, que
+/// la route journalise seule et ne sert jamais).
+pub(crate) fn resolve_step_search(conn: &Connection, id: i64, step_id: i64, value_override: Option<&str>) -> Result<String, RefusDeLaRechercheDEtape> {
+    let (kind, soql, target): (String, Option<String>, Option<String>) = match conn
         .query_row("SELECT step_kind,search_soql,target FROM case_step WHERE id=?1 AND incident_id=?2", params![step_id, id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map_err(|_| "étape introuvable".to_string())?;
+        .optional()
+    {
+        Ok(Some(etape)) => etape,
+        Ok(None) => return Err(RefusDeLaRechercheDEtape::Refusee("étape introuvable".to_string())),
+        Err(e) => return Err(RefusDeLaRechercheDEtape::EtapeNonLue(e.to_string())),
+    };
+    resoudre_le_gabarit_de_l_etape(kind, soql, target, value_override).map_err(RefusDeLaRechercheDEtape::Refusee)
+}
+
+/// `P10.20-l` (vague AP) — les deux refus de `resolve_step_search`, qui ne se servent pas pareil.
+#[derive(Debug)]
+pub(crate) enum RefusDeLaRechercheDEtape {
+    /// Un défaut de la demande ou de l'étape (absente de ce dossier, pas une recherche, sans gabarit, valeur interdite,
+    /// GXQL invalide) : 400, la phrase d'avant.
+    Refusee(String),
+    /// L'étape n'a pas été lue (lecture refusée, table illisible) : la cause du moteur, pour le journal seul ; la route
+    /// sert `CAUSE_RECHERCHE_DE_L_ETAPE_NON_RESOLUE_NON_LUE` en 503.
+    EtapeNonLue(String),
+}
+
+/// `P10.20-l` (vague AP) — l'étape d'une recherche n'a pas été lue : aucun GXQL n'est rendu. Lue par la console comme
+/// le refus nommé d'une lecture (`web/cases.js`, `runStepSearch` → `phraseDuRefusDUneLecture`, web/core.js : toute
+/// cause nommée y est `lecture_refusee`, « LECTURE NON SERVIE … le démon en nomme la cause »).
+pub(crate) const CAUSE_RECHERCHE_DE_L_ETAPE_NON_RESOLUE_NON_LUE: &str = "RECHERCHE DE L'ÉTAPE NON RÉSOLUE : la base n'a \
+     pas rendu cette étape (lecture refusée ou table illisible) — ce n'est PAS « étape introuvable », c'est une lecture \
+     qui n'a pas eu lieu. Aucun GXQL n'est rendu, rien n'est exécuté. Réessayez ; si le refus persiste, la table des \
+     étapes de dossier est illisible.";
+
+/// Le gabarit d'une étape LUE, résolu pour une valeur : la suite de `resolve_step_search`, inchangée.
+fn resoudre_le_gabarit_de_l_etape(kind: String, soql: Option<String>, target: Option<String>, value_override: Option<&str>) -> Result<String, String> {
     if kind != "search" {
         return Err("cette étape n'est pas une recherche".into());
     }
@@ -1078,7 +1113,13 @@ pub(crate) async fn case_step_search(State(st): State<AppState>, Extension(au): 
     crate::req_conn!(st, au, conn);
     match resolve_step_search(&conn, id, step_id, value) {
         Ok(soql) => Json(json!({ "kind": "search", "soql": soql })).into_response(),
-        Err(e) => bad_req(e),
+        Err(RefusDeLaRechercheDEtape::Refusee(e)) => bad_req(e),
+        // `P10.20-l` (vague AP) — la phrase seule au client ; la cause du moteur au journal, avec l'identifiant servi.
+        Err(RefusDeLaRechercheDEtape::EtapeNonLue(cause)) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_RECHERCHE_DE_L_ETAPE_NON_RESOLUE_NON_LUE);
+            eprintln!("[incidents] WARN étape #{step_id} du dossier #{id} NON lue, aucune recherche n'est résolue ({}) : {cause}", cid.unwrap_or_default());
+            refus
+        }
     }
 }
 

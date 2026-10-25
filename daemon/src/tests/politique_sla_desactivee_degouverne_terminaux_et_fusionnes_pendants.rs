@@ -19,9 +19,11 @@
 // fin de chaîne : un terminal rouvert PAR LA ROUTE du dossier et un fusionné défusionné PAR SA ROUTE ne sont pas notifiés,
 // un dossier échu d'une politique active l'est.
 // CE QU'ILS NE TIENNENT PAS : la réactivation ou la modification d'une politique (ne regouverne ni terminaux ni
-// fusionnés) ; un terminal à politique étrangère sous une politique ACTIVE rouvert par son statut seul (cases.rs, la
-// réouverture ne rejoue pas `sla_apply_policy`) ; `case_unmerge` qui ne rejoue pas la politique ; les marqueurs
-// `ack_breached`/`resolve_breached` passés ; la console.
+// fusionnés NON rouverts) ; les marqueurs `ack_breached`/`resolve_breached` passés ; la console.
+// INVERSÉ NOMMÉMENT (`P10.31-v`, vague AP) : la réouverture par le statut seul et `case_unmerge` REJOUENT désormais
+// `sla_apply_policy` (témoins `prr_`, politique_sla_rejouee_a_la_reouverture_et_a_la_defusion.rs) ; les deux restes
+// « la réouverture ne rejoue pas » et « `case_unmerge` qui ne rejoue pas la politique » sont retirés d'ici, et la fin de
+// chaîne `ptf_fin_de_chaine_…` est désormais tenue par deux voies (voir son en-tête).
 // Mutants (AO3_*, retirés avant le commit) nommés sur chaque témoin.
 // =====================================================================================
 mod politique_sla_desactivee_degouverne_terminaux_et_fusionnes_pendants {
@@ -438,10 +440,14 @@ mod politique_sla_desactivee_degouverne_terminaux_et_fusionnes_pendants {
     /// Désactiver P1 ; rouvrir T PAR LA ROUTE du dossier (`case_update`, statut seul : 204) ; défusionner F PAR SA ROUTE
     /// (`case_unmerge_handler` : 204). Le tour `sla_multilevel_tick_par` ne notifie ni T ni F, ne leur marque aucun
     /// dépassement, et notifie B (contrôle : le tour tourne et juge).
-    /// MUTATIONS QUI LE FONT ROUGIR : `AO3_STATUT_REVENU` (T et F gardent leurs échéances et sont notifiés une fois rouverts
-    /// ou défusionnés : le comportement d'avant), `AO3_FUSION_REVENUE` sous sa forme `merged_into IS NULL` (F notifié) ;
-    /// retirer seulement la clause de fusion laisse ce test vert (F est aussi `closed`), elle est tenue par `ptf_bord_deux`
-    /// et `pdp_fusionne`.
+    /// INVERSÉ NOMMÉMENT (`P10.31-v`, vague AP) : il disait « MUTATIONS QUI LE FONT ROUGIR : `AO3_STATUT_REVENU` (T et F
+    /// gardent leurs échéances et sont notifiés une fois rouverts ou défusionnés), `AO3_FUSION_REVENUE` sous sa forme
+    /// `merged_into IS NULL` ». Ce n'est plus vrai : la réouverture par le statut et la défusion rejouent `sla_apply_policy`,
+    /// qui, P1 désactivée, efface la pendante ou l'étrangère d'un dossier redevenu actif — T et F reviennent au régime legacy
+    /// MÊME si la désactivation les avait laissés. La fin de chaîne est tenue par DEUX voies (désactivation, puis rejeu) ;
+    /// le troisième `UPDATE` de la désactivation est tenu par `ptf_bord_deux`, `ptf_bord_un`, `ptf_bord_zero` et
+    /// `pdp_fusionne` (relus avant toute réouverture), et le rejeu par les témoins `prr_` (mutants `AP3_*`). Le chrono de T
+    /// et F, relu après la réouverture et la défusion, est (None, None, None).
     #[tokio::test]
     async fn ptf_fin_de_chaine_terminal_rouvert_et_fusionne_defusionne_non_notifies() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
@@ -473,6 +479,9 @@ mod politique_sla_desactivee_degouverne_terminaux_et_fusionnes_pendants {
             Some(2),
             "contrôle : T et F sont ACTIFS et non fusionnés, donc à la portée du tour"
         );
+        for (nom, id) in [("T rouvert", t), ("F défusionné", f)] {
+            assert_eq!(ptf_chrono(&st, id), (None, None, None), "{nom} : régime legacy (désactivation, puis rejeu de la politique)");
+        }
 
         let mut envois: Vec<String> = Vec::new();
         sla_multilevel_tick_par(&st.db, &mut |_k: &str, _u: &str, _c: &Value, _s: i64, _ti: &str, detail: &str, _h: &str, _n: i64| {

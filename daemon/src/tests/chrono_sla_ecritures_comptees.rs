@@ -246,11 +246,14 @@ mod chrono_sla_ecritures_comptees {
         assert_eq!(cse_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(600), "échéance de P1");
         assert_eq!(cse_entier(&st, &format!("SELECT sla_policy_id FROM incident WHERE id={id}")), p1, "politique de P1");
         cse_permettre(&st, "sla_pause_accum");
-        // Pause refusée (entrée en `waiting`).
+        // Pause refusée (entrée en `waiting`). INVERSÉ NOMMÉMENT par `P10.31-v` (reste vague AS) : la cause disait
+        // « échéances multi-niveau recalculées » sur un dossier en attente gouverné SANS pause ; le rattrapage rejoue la
+        // pause après la politique, refusée à nouveau, et la cause le dit au lieu de « recalculées ».
         let id = cse_dossier(&st, 3);
         cse_refuser(&st, "sla_paused_since");
         let cause = cse_cause(&st, id, json!({ "priority": 1, "status": "waiting" })).await;
-        assert_eq!(cause, "sla_paused_since: écriture refusée par la base, échéances multi-niveau recalculées sur la priorité écrite");
+        assert_eq!(cause, "sla_paused_since: écriture refusée par la base ; PAUSE DU CHRONO SLA NON ÉCRITE : le dossier en attente que la politique de la priorité écrite gouverne n'est PAS en pause (sla_paused_since: écriture refusée par la base)");
+        assert_eq!(cse_entier(&st, &format!("SELECT sla_paused_since FROM incident WHERE id={id}")), None, "pause refusée : aucune pause");
         assert_eq!(cse_entier(&st, &format!("SELECT resolve_due - ts FROM incident WHERE id={id}")), Some(600), "échéance de P1");
         assert_eq!(cse_entier(&st, &format!("SELECT sla_policy_id FROM incident WHERE id={id}")), p1, "politique de P1");
         // Contrôle : sans priorité écrite, la cause reste nue (aucun rattrapage).

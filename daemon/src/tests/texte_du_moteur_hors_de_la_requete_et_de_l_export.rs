@@ -34,7 +34,9 @@
 //     vectorisé (`served_from` « hot+cold-vectorized-keyset », part chaude armée) et la fusion vectorisée
 //     (« cold-vectorized-merge », part chaude `hot_partial` armée), chacun nominal puis support, base occupée,
 //     produit et moteur ; puis la part froide du keyset vectorisé rendue illisible (fichiers froids écrasés) :
-//     400 à phrase fixe, texte de la lecture froide au journal seulement ;
+//     503 de la base illisible, ni le texte ni le chemin de la lecture froide dans la réponse, le texte entier au
+//     journal seulement (`P10.29-l`, INVERSÉ : ce témoin affirmait le 400 « moteur » ; la classe de la voie froide
+//     est décidée par `en_classant_la_voie_froide`) ;
 // (4) témoins du producteur : chaque classe par son code (`ar2_classes_au_producteur`, base occupée et motifs
 //     refusés compris, note du motif remise à zéro et retenue à texte égal), l'ouverture ratée
 //     (`ar2_ouverture_ratee_est_du_support`), la note du fil (`ar2_en_classant_ne_retient_que_sa_note`), l'égalité
@@ -45,9 +47,9 @@
 // point de passage (`run_on_conn`), compte de pagination épargné ; la demande retirée dit qu'elle a servi.
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : la voie vectorisée pur-froide (`cold_vectorized_try`) n'a pas de connexion
-// SQLite à armer — son échec n'a pas de classe notée et sort en phrase fixe (bloc tenu par (5)) ; une erreur de
-// l'hydratation froide (fichier corrompu) est rangée « moteur » (400) et non « support » (503) : sa classe se décide
-// dans `cold_store`, hors de ce lot.
+// SQLite à armer — son échec n'a pas de classe notée (bloc tenu par (5)). La limite écrite ici jusqu'à la vague AT
+// (« une erreur de l'hydratation froide est rangée moteur, 400, et non support, 503 ») est LEVÉE : une erreur de la
+// voie froide sans note est du support (503), témoins par voie dans `couverture_keyset_et_classe_de_la_voie_froide.rs`.
 // =====================================================================================
 mod ar2_texte_du_moteur_hors_de_la_requete {
     use super::*;
@@ -589,6 +591,10 @@ mod ar2_texte_du_moteur_hors_de_la_requete {
     const AR2_SOQL_FROID: &str = "search source=froid message=~\"ligne\"";
     #[cfg(feature = "cold_tier")]
     const AR2_SOQL_FROID_COMPTE: &str = "search source=froid message=~\"ligne\" | stats count";
+    /// La nature fixe d'un échec du tier froid sans note (`query_exec::NATURE_DE_LA_LECTURE_FROIDE`), recopiée ici.
+    #[cfg(feature = "cold_tier")]
+    const AR2_NATURE_DE_LA_LECTURE_FROIDE: &str =
+        "lecture du tier froid non faite (ouverture, horizon de lecture, hydratation ou décodage d'un fichier), hors du cœur d'exécution";
 
     #[cfg(feature = "cold_tier")]
     #[tokio::test]
@@ -714,14 +720,13 @@ mod ar2_texte_du_moteur_hors_de_la_requete {
             );
             attendu_journal.push(ar2_ligne_moteur("/api/query", "default", &erreur_udf));
         }
+        // `P10.29-l` (vague AT) — INVERSÉ NOMMÉMENT : ce bloc affirmait un 400 `REQUETE_REJETEE_PAR_LE_MOTEUR` et le texte
+        // de la lecture froide au journal. La part froide illisible est une base illisible : 503 du support ; la ligne
+        // porte la nature fixe ET le texte de la lecture froide (la cause, chemin du fichier compris), jamais la réponse.
         let (c, b, brut) = rendu("keyset_vectorise", "froid_illisible");
-        assert_eq!(
-            (c, serde_json::from_str::<Value>(&b).unwrap_or(Value::Null)),
-            (400, json!({ "error": REQUETE_REJETEE_PAR_LE_MOTEUR })),
-            "keyset_vectorise/froid_illisible : la phrase fixe, jamais le texte de la lecture froide"
-        );
+        let id = ar2_refus_du_support("keyset_vectorise/froid_illisible", c, &b);
         assert!(!brut.contains(&texte_froid), "keyset_vectorise/froid_illisible : la réponse porte le texte de la lecture froide : {brut}");
-        attendu_journal.push(format!("[query] WARN requête rejetée par le moteur (/api/query, tenant 'default') : {NATURE_HORS_DU_COEUR} : {texte_froid:?}"));
+        attendu_journal.push(format!("[query] WARN requête non servie, erreur du support de la base (/api/query, tenant 'default', {id}) : {AR2_NATURE_DE_LA_LECTURE_FROIDE} : {texte_froid:?}"));
         assert_eq!(ar2_journal(&stderr), attendu_journal, "les voies vectorisées journalisent comme les autres sites :\n{stderr}");
     }
 
@@ -912,7 +917,7 @@ mod ar2_texte_du_moteur_hors_de_la_requete {
         "            Err(e) => return Err(IssueKeysetVectorise::Erreur(e)),",
         "                        Ok(Err(IssueKeysetVectorise::Erreur(e))) => return refus_de_requete(e, \"/api/query\", &au.tenant),",
         "                let res = tokio::task::spawn_blocking(move || {
-                    crate::query_exec::en_classant(|| {
+                    crate::query_exec::en_classant_la_voie_froide(|| {
                         if pure_cold {
                             crate::cold_store::cold_vectorized_try(&dbp, &conf, env_s.as_deref(), from, to, boundary, &rsoql, true, budget_ms, &preds)
                         } else {
@@ -939,7 +944,7 @@ mod ar2_texte_du_moteur_hors_de_la_requete {
                 fautes.push(format!("bloc {k} absent ou doublé"));
             }
         }
-        for (forme, attendu) in [(AR2_REFUS_QUERY, 7), (AR2_REFUS_EXPORT, 3), ("crate::query_exec::en_classant(", 11)] {
+        for (forme, attendu) in [(AR2_REFUS_QUERY, 7), (AR2_REFUS_EXPORT, 3), ("crate::query_exec::en_classant(", 6), ("crate::query_exec::en_classant_la_voie_froide(", 5)] {
             let n = src.matches(forme).count();
             if n != attendu {
                 fautes.push(format!("{forme} : {n} au lieu de {attendu}"));
@@ -970,7 +975,7 @@ mod ar2_texte_du_moteur_hors_de_la_requete {
             }
         }
         assert_eq!(hostiles, 10, "plancher : les dix sites rendus un par un");
-        let sans_classe = src.replacen("                    crate::query_exec::en_classant(|| {\n                        if pure_cold {", "                    (|| {\n                        if pure_cold {", 1);
+        let sans_classe = src.replacen("                    crate::query_exec::en_classant_la_voie_froide(|| {\n                        if pure_cold {", "                    (|| {\n                        if pure_cold {", 1);
         assert_ne!(sans_classe, src, "contrôle : la forme vectorisée existe");
         assert!(!ar2_fautes_du_source(&sans_classe).is_empty(), "l'instrument ne voit pas la voie vectorisée non classée");
         let bras_avant = src.replacen(

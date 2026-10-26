@@ -4520,6 +4520,17 @@ fn keyset(items: &[String]) -> HashSet<String> {
     items.iter().cloned().collect()
 }
 
+/// L'instant des plans de ces témoins : les jours scellés y vont de 100 à 200, la rétention par défaut (30 j, aucun
+/// réglage écrit, aucune politique) n'en expire aucun à 120 (dernier jour expiré : 89). Le plan est borné par la
+/// rétention depuis `P10.34-k` : à l'heure réelle, ces jours de 1970 seraient tous écartés.
+const CBP_N: i64 = 120 * SECS_PER_DAY;
+
+/// Configuration vide : la rétention vient du défaut (l'environnement décide s'il porte la clé ; ces témoins lisent
+/// sous `VERROU_ENV_PROCESSUS.read()`).
+fn cbp_conf() -> HashMap<String, String> {
+    HashMap::new()
+}
+
 /// La clé objet ATTENDUE (préfixe "default") pour (env, day, seq) — reflète le schéma de `cold_backup_plan`.
 fn exp_key(env: &str, day: i64, seq: i64) -> String {
     format!("cold/default/{env}/{}-{:04}.parquet", ymd_from_day(day), seq)
@@ -4528,6 +4539,7 @@ fn exp_key(env: &str, day: i64, seq: i64) -> String {
 /// (1) DELTA — les fichiers scellés ABSENTS de `remote_keys` sont émis ; ceux DÉJÀ présents sont SKIP.
 #[test]
 fn cold_backup_plan_emits_unbacked_skips_present() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // la rétention du plan lit l'environnement (`P10.34-k`)
     let root = tmp_root("cbp-delta");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -4541,7 +4553,7 @@ fn cold_backup_plan_emits_unbacked_skips_present() {
     // Le remote a DÉJÀ (prod,100,0).
     let present = exp_key("prod", 100, 0);
     let remote = keyset(&[present.clone()]);
-    let plan = { let c = db.lock(); cold_backup_plan(&c, &cold, "default", &remote) };
+    let plan = { let c = db.lock(); cold_backup_plan(&c, &cbp_conf(), CBP_N, &cold, "default", &remote).items };
     let keys: Vec<String> = plan.iter().map(|i| i.key.clone()).collect();
     assert!(!keys.contains(&present), "la clé DÉJÀ au remote doit être SKIP");
     assert_eq!(keys.len(), 2, "seuls les 2 fichiers non-escrowés sont émis");
@@ -4558,6 +4570,7 @@ fn cold_backup_plan_emits_unbacked_skips_present() {
 /// `remote_keys` -> plan VIDE (miroir de l'invariant idempotent de `backup_prune_plan`).
 #[test]
 fn cold_backup_plan_idempotent_after_backup() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // la rétention du plan lit l'environnement (`P10.34-k`)
     let root = tmp_root("cbp-idem");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -4568,13 +4581,13 @@ fn cold_backup_plan_idempotent_after_backup() {
     touch_cold_file(&cold, "prod", 101, 0);
     touch_cold_file(&cold, "staging", 100, 0);
     // Run 1 : remote vide -> tout émis.
-    let plan1 = { let c = db.lock(); cold_backup_plan(&c, &cold, "default", &HashSet::new()) };
+    let plan1 = { let c = db.lock(); cold_backup_plan(&c, &cbp_conf(), CBP_N, &cold, "default", &HashSet::new()).items };
     assert_eq!(plan1.len(), 3, "run initial émet les 3 fichiers scellés");
     // Simule le `mc cp` du sidecar : ajoute les clés émises au remote.
     let mut remote2 = HashSet::new();
     for it in &plan1 { remote2.insert(it.key.clone()); }
     // Run 2 : plan VIDE (rien de neuf à escrower).
-    let plan2 = { let c = db.lock(); cold_backup_plan(&c, &cold, "default", &remote2) };
+    let plan2 = { let c = db.lock(); cold_backup_plan(&c, &cbp_conf(), CBP_N, &cold, "default", &remote2).items };
     assert!(plan2.is_empty(), "rejouer avec les clés copiées -> plan VIDE (idempotence GFS)");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -4583,13 +4596,14 @@ fn cold_backup_plan_idempotent_after_backup() {
 /// expire/backup) N'EST PAS émis -> jamais d'émission FANTÔME d'un chemin inexistant.
 #[test]
 fn cold_backup_plan_skips_missing_local() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // la rétention du plan lit l'environnement (`P10.34-k`)
     let root = tmp_root("cbp-missing");
     let cold = root.join("cold");
     let db = mkdb(&root);
     seal0_k(&db, "prod", 100, 5, 1, 5);   // seal présent...
     seal0_k(&db, "prod", 101, 4, 1, 4);
     touch_cold_file(&cold, "prod", 101, 0); // ...mais SEUL (prod,101,0) a son fichier local (100 « vient d'expirer »).
-    let plan = { let c = db.lock(); cold_backup_plan(&c, &cold, "default", &HashSet::new()) };
+    let plan = { let c = db.lock(); cold_backup_plan(&c, &cbp_conf(), CBP_N, &cold, "default", &HashSet::new()).items };
     let keys: Vec<String> = plan.iter().map(|i| i.key.clone()).collect();
     assert_eq!(keys, vec![exp_key("prod", 101, 0)], "seul le fichier local PRÉSENT est émis (pas de fantôme)");
     let _ = std::fs::remove_dir_all(&root);
@@ -4599,6 +4613,7 @@ fn cold_backup_plan_skips_missing_local() {
 /// STABLE entre deux exécutions.
 #[test]
 fn cold_backup_plan_deterministic_order() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // la rétention du plan lit l'environnement (`P10.34-k`)
     let root = tmp_root("cbp-order");
     let cold = root.join("cold");
     let db = mkdb(&root);
@@ -4613,7 +4628,7 @@ fn cold_backup_plan_deterministic_order() {
     touch_cold_file(&cold, "alpha", 200, 0);
     let run = || -> Vec<String> {
         let c = db.lock();
-        cold_backup_plan(&c, &cold, "default", &HashSet::new()).iter().map(|i| i.key.clone()).collect()
+        cold_backup_plan(&c, &cbp_conf(), CBP_N, &cold, "default", &HashSet::new()).items.iter().map(|i| i.key.clone()).collect()
     };
     let expected = vec![
         exp_key("alpha", 200, 0),
@@ -4630,13 +4645,14 @@ fn cold_backup_plan_deterministic_order() {
 /// (segment `<YYYY-MM-DD>-<NNNN>.parquet`, `seq` zéro-paddé sur 4) ; le chemin local == `file_path`.
 #[test]
 fn cold_backup_plan_key_matches_on_disk_naming() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // la rétention du plan lit l'environnement (`P10.34-k`)
     let root = tmp_root("cbp-key");
     let cold = root.join("cold");
     let db = mkdb(&root);
     // seq=7 -> exerce le zéro-padding %04 (0007), identique à file_path.
     seal_row(&db, "prod", 100, 7, 3, 1, 9, 0, 0, 0, 0, 9, 1);
     touch_cold_file(&cold, "prod", 100, 7);
-    let plan = { let c = db.lock(); cold_backup_plan(&c, &cold, "default", &HashSet::new()) };
+    let plan = { let c = db.lock(); cold_backup_plan(&c, &cbp_conf(), CBP_N, &cold, "default", &HashSet::new()).items };
     assert_eq!(plan.len(), 1);
     let item = &plan[0];
     // Chemin local == file_path EXACT.
@@ -11672,6 +11688,7 @@ fn le_rapport_ne_publie_aucune_duree_sans_dire_de_quel_cache_elle_vient() {
 /// le seul copié au tour suivant. Aucun état à part : ce que la destination porte est ce qui est à l'abri.
 #[test]
 fn p7_20f_l_escrow_local_copie_verbatim_et_ne_recopie_jamais() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // la rétention du plan lit l'environnement (`P10.34-k`)
     let root = tmp_root("p7-20f-copie");
     let cold = root.join("cold");
     let destination = root.join("backups");
@@ -11681,20 +11698,20 @@ fn p7_20f_l_escrow_local_copie_verbatim_et_ne_recopie_jamais() {
     touch_cold_file(&cold, "prod", 100, 0);
     touch_cold_file(&cold, "prod", 101, 0);
     std::fs::write(file_path(&cold, "prod", 101, 0), b"contenu du jour 101, verbatim").unwrap();
-    let r1 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    let r1 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cbp_conf(), CBP_N, &cold, "default", &destination) };
     assert_eq!((r1.deja_a_l_abri, r1.a_copier, r1.copies), (0, 2, 2), "{}", r1.phrase());
     assert!(r1.echecs.is_empty() && r1.entrees_illisibles == 0, "{}", r1.phrase());
     let copie = destination.join(exp_key("prod", 101, 0));
     assert_eq!(std::fs::read(&copie).unwrap(), b"contenu du jour 101, verbatim", "copie VERBATIM sous la clé du plan");
     assert!(destination.join(exp_key("prod", 100, 0)).exists());
     // Rejouer : la destination est la mémoire — rien à copier, les deux clés sont vues.
-    let r2 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    let r2 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cbp_conf(), CBP_N, &cold, "default", &destination) };
     assert_eq!((r2.deja_a_l_abri, r2.a_copier, r2.copies), (2, 0, 0), "{}", r2.phrase());
     assert!(!r2.a_quelque_chose_a_dire(), "un cycle sans jour neuf n'a rien à dire : {}", r2.phrase());
     // Un troisième jour scellé : lui seul est copié.
     seal0_k(&db, "staging", 100, 2, 1, 2);
     touch_cold_file(&cold, "staging", 100, 0);
-    let r3 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    let r3 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cbp_conf(), CBP_N, &cold, "default", &destination) };
     assert_eq!((r3.deja_a_l_abri, r3.a_copier, r3.copies), (2, 1, 1), "{}", r3.phrase());
     assert!(destination.join(exp_key("staging", 100, 0)).exists());
     let _ = std::fs::remove_dir_all(&root);
@@ -11705,6 +11722,7 @@ fn p7_20f_l_escrow_local_copie_verbatim_et_ne_recopie_jamais() {
 /// NOMMÉ (clé et cause), sans déclarer de succès.
 #[test]
 fn p7_20f_l_escrow_local_ne_supprime_rien_et_compte_ses_echecs() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // la rétention du plan lit l'environnement (`P10.34-k`)
     let root = tmp_root("p7-20f-echec");
     let cold = root.join("cold");
     let destination = root.join("backups");
@@ -11714,13 +11732,13 @@ fn p7_20f_l_escrow_local_ne_supprime_rien_et_compte_ses_echecs() {
     std::fs::create_dir_all(destination.join("cold/default/prod")).unwrap();
     let etranger = destination.join("cold/default/prod/etranger.bin");
     std::fs::write(&etranger, b"pas au plan").unwrap();
-    let r = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    let r = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cbp_conf(), CBP_N, &cold, "default", &destination) };
     assert_eq!((r.deja_a_l_abri, r.copies), (1, 1), "{}", r.phrase());
     assert!(etranger.exists(), "rien n'est jamais supprimé sous la destination");
     let destination2 = root.join("backups2");
     std::fs::create_dir_all(&destination2).unwrap();
     std::fs::write(destination2.join("cold"), b"un fichier, pas un repertoire").unwrap();
-    let r2 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination2) };
+    let r2 = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cbp_conf(), CBP_N, &cold, "default", &destination2) };
     assert_eq!((r2.a_copier, r2.copies, r2.echecs.len()), (1, 0, 1), "{}", r2.phrase());
     assert!(r2.echecs[0].contains(&exp_key("prod", 100, 0)), "l'échec nomme la clé : {}", r2.phrase());
     assert!(r2.phrase().contains("ÉCHEC"), "{}", r2.phrase());
@@ -11732,6 +11750,7 @@ fn p7_20f_l_escrow_local_ne_supprime_rien_et_compte_ses_echecs() {
 /// relevé, le jour est copié quand même, et le relevé suivant porte la clé publiée.
 #[test]
 fn p7_20f_un_temporaire_de_copie_interrompue_n_est_pas_une_cle() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // la rétention du plan lit l'environnement (`P10.34-k`)
     let root = tmp_root("p7-20f-tmp");
     let cold = root.join("cold");
     let destination = root.join("backups");
@@ -11743,7 +11762,7 @@ fn p7_20f_un_temporaire_de_copie_interrompue_n_est_pas_une_cle() {
     std::fs::write(repertoire.join(".copie-interrompue.parquet.tmp.999"), b"moitie").unwrap();
     let (cles, illisibles) = escrow_local::cles_deja_a_l_abri(&destination);
     assert!(cles.is_empty() && illisibles == 0, "un temporaire caché n'est pas une clé : {cles:?}");
-    let r = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cold, "default", &destination) };
+    let r = { let c = db.lock(); escrow_local::mettre_a_l_abri_les_jours_froids(&c, &cbp_conf(), CBP_N, &cold, "default", &destination) };
     assert_eq!((r.a_copier, r.copies), (1, 1), "{}", r.phrase());
     let (cles, _) = escrow_local::cles_deja_a_l_abri(&destination);
     assert!(cles.contains(&exp_key("prod", 100, 0)), "{cles:?}");
@@ -11821,3 +11840,6 @@ fn p10_7g_une_couverture_froide_non_lue_est_declaree_jamais_tue() {
 
 // `P10.34-j` — l'expiration froide ne supprime la ligne `cold_seal` qu'avec son fichier (témoins en sous-processus).
 mod expiration_garde_la_ligne;
+
+// `P10.34-k` — le plan d'escrow froid est borné par la rétention, avoue ce qu'il n'a pas lu, et ses copies sont durables.
+mod escrow_borne_par_la_retention;

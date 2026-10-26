@@ -1937,27 +1937,38 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
             eprintln!("[cold-backup-plan] base illisible (clé PLUME_DB_KEY incorrecte ?) : {e}");
             std::process::exit(1);
         }
-        let plan = cold_store::cold_backup_plan(&conn, &cold_dir, tenant_prefix, &remote_keys);
+        // Borné par la rétention à l'heure courante, comme la passe de vieillissement ; ce que le plan n'a pas pu
+        // établir (index non lu, rétention illisible) ou a écarté (jours expirés) est dit sur STDERR, une ligne par
+        // fait, et un index non lu sort en 1 : un STDOUT vide n'y vaut pas « rien à copier ».
+        let plan = cold_store::cold_backup_plan(&conn, &conf, now(), &cold_dir, tenant_prefix, &remote_keys);
         eprintln!(
             "[cold-backup-plan] remote_keys={} à_copier={}  cold_dir={}  tenant_prefix={tenant_prefix}",
-            remote_keys.len(), plan.len(), cold_dir.display());
+            remote_keys.len(), plan.items.len(), cold_dir.display());
+        for aveu in plan.etat.aveux() {
+            eprintln!("[cold-backup-plan] {aveu}");
+        }
         // STDOUT = SEULEMENT `<chemin local>\t<clé objet>` par fichier à copier (contrat : rien d'autre sur stdout).
         let mut out = String::new();
-        for item in &plan {
+        for item in &plan.items {
             out.push_str(&item.local.to_string_lossy());
             out.push('\t');
             out.push_str(&item.key);
             out.push('\n');
         }
         print!("{out}");
+        let code = plan.code_de_sortie();
+        if code != 0 {
+            std::process::exit(code);
+        }
         return;
     }
     // `P7.20-f` — L'EXÉCUTANT du plan d'escrow froid, pour le mode HÔTE : `plume-backup.timer` joue
     // `cold-escrow <destination>` après la sauvegarde de la base (`collectors/backup.sh`) et met les
     // jours-files scellés à l'abri sous `<destination>/cold/…` — copie verbatim incrémentale, jamais de
     // suppression. MÊME exécutant que le planificateur natif après chaque cycle (`server::sauvegarde_planifiee`) :
-    // un seul code, deux moments. Sortie 2 sans destination, 1 si au moins une copie a échoué (l'unité système
-    // le voit), 0 sinon — y compris quand il n'y a rien à copier, ce qui est dit sur la sortie d'erreur.
+    // un seul code, deux moments. Sortie 2 sans destination, 1 si au moins une copie a échoué ou si l'index
+    // cold_seal n'a pas été lu (l'unité système le voit), 0 sinon — y compris quand il n'y a rien à copier, ce
+    // qui est dit sur la sortie d'erreur. Les jours au-delà de la rétention sont écartés et comptés.
     // Même ouverture SANS contrat que `cold-backup-plan`, pour la même raison : refuser une base au schéma
     // inattendu ferait sauter l'escrow au moment exact où la base va mal.
     #[cfg(feature = "cold_tier")]
@@ -1977,10 +1988,11 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
             eprintln!("[cold-escrow] base illisible (clé PLUME_DB_KEY incorrecte ?) : {e}");
             std::process::exit(1);
         }
-        let rendu = cold_store::mettre_a_l_abri_les_jours_froids(&conn, &cold_dir, "default", std::path::Path::new(&destination));
+        let rendu = cold_store::mettre_a_l_abri_les_jours_froids(&conn, &conf, now(), &cold_dir, "default", std::path::Path::new(&destination));
         eprintln!("[cold-escrow] {}  cold_dir={}  destination={destination}", rendu.phrase(), cold_dir.display());
-        if !rendu.echecs.is_empty() {
-            std::process::exit(1);
+        let code = rendu.code_de_sortie();
+        if code != 0 {
+            std::process::exit(code);
         }
         return;
     }

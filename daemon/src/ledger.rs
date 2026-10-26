@@ -327,13 +327,15 @@ pub(crate) fn emit_ledger_key_mismatch(conn: &Connection, now_ts: i64, active_pa
 }
 
 /// Cœur TESTABLE (aucun env) : lit la clé Ed25519 (32 o hex) à `path`. Si absente :
-///  - `allow_generate` (chemin legacy on-PVC) -> génère+persiste 0600 (comportement historique) ;
+///  - `allow_generate` (chemin legacy on-PVC) -> génère et persiste, créée en 0600 DÈS la création et
+///    synchronisée (`poser_un_secret_neuf_ou_rien`). Écriture REFUSÉE (entrée existante illisible, répertoire
+///    en lecture seule, disque plein) -> `None` et une ligne qui le dit : la clé engendrée N'EST PAS utilisée,
+///    car le démarrage suivant ne la relirait pas (même règle que la clé divergente ci-dessous) ;
 ///  - sinon (Secret monté attendu) -> FAIL-CLOSED : `None` + log clair, JAMAIS de nouvelle clé silencieuse
 ///    (une clé divergente rendrait les checkpoints invérifiables sans le dire). Les appelants
 ///    (`sign_checkpoint` via `if let Some(k)`) sautent simplement la signature -> dégradation SÛRE.
 ///  - `path` présent mais VIDE (Secret pas encore peuplé par ESO) suit la MÊME règle que l'absence.
 pub(crate) fn ledger_key_load(path: &str, allow_generate: bool) -> Option<ed25519_dalek::SigningKey> {
-    use std::os::unix::fs::PermissionsExt;
     match std::fs::read_to_string(path) {
         // clé PRÉSENTE et non vide : lecture normale (inchangée) — legacy comme Secret.
         Ok(hex) if !hex.trim().is_empty() => {
@@ -365,9 +367,17 @@ pub(crate) fn ledger_key_load(path: &str, allow_generate: bool) -> Option<ed2551
             use std::io::Read;
             let mut b = [0u8; 32];
             std::fs::File::open("/dev/urandom").ok()?.read_exact(&mut b).ok()?;
-            let _ = std::fs::write(path, hex_encode(&b));
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-            Some(ed25519_dalek::SigningKey::from_bytes(&b))
+            match crate::poser_un_secret_neuf_ou_rien(path, hex_encode(&b).as_bytes()) {
+                Ok(()) => Some(ed25519_dalek::SigningKey::from_bytes(&b)),
+                Err(cause) => {
+                    eprintln!(
+                        "[ledger] clé NON écrite à '{path}' ({cause}) : la clé engendrée N'EST PAS utilisée — le \
+                         démarrage suivant ne la relirait pas et les checkpoints qu'elle aurait signés seraient \
+                         invérifiables. Checkpoints NON signés jusqu'à ce que cet emplacement accepte la clé."
+                    );
+                    None
+                }
+            }
         }
     }
 }

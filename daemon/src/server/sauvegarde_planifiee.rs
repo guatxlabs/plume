@@ -401,12 +401,15 @@ fn run_scheduled_backup_objet(db_path: &str, staging: &str, keep: usize, cible: 
 /// de l'archive de la base. La base s'ouvre par la même porte que les signaux, avec la clé de l'environnement
 /// comme le cycle lui-même. Le journal ne parle que s'il y a eu quelque chose à copier, un échec ou une entrée
 /// illisible : un cycle sans jour froid neuf reste silencieux. Un contrat non satisfait ne joue rien et le DIT.
+/// Le plan est borné par la rétention à l'heure courante (configuration relue ici, même source que la passe) ;
+/// un index non lu, une rétention illisible ou des jours expirés écartés font parler le journal.
 #[cfg(feature = "cold_tier")]
 fn mettre_a_l_abri_les_jours_froids_apres_le_cycle(db_path: &str, cold_dir: &std::path::Path, dest_dir: &str) -> Option<crate::cold_store::EscrowFroidRendu> {
         let key = db_key();
         match PreparedDb::open_keyed_with_prelude(db_path, key.as_deref(), |c| { let _ = c.busy_timeout(Duration::from_secs(5)); }) {
             Ok(conn) => {
-                let rendu = crate::cold_store::mettre_a_l_abri_les_jours_froids(&conn, cold_dir, "default", std::path::Path::new(dest_dir));
+                let conf = crate::load_config();
+                let rendu = crate::cold_store::mettre_a_l_abri_les_jours_froids(&conn, &conf, now(), cold_dir, "default", std::path::Path::new(dest_dir));
                 if rendu.a_quelque_chose_a_dire() {
                     eprintln!("[backup-sched] escrow froid : {}", rendu.phrase());
                 }

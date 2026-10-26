@@ -699,6 +699,20 @@ pub(crate) struct InstallationAuDemarrage {
     pub(crate) ouverte: bool,
 }
 
+/// Le temporaire du jeton d'installation, voisin de `setup-token.txt` : le jeton y est posé en 0600 puis publié par un
+/// rename (le fichier est réécrit à chaque démarrage ouvert, une création exclusive directe échouerait).
+pub(crate) fn temporaire_du_jeton_d_installation(tp: &std::path::Path) -> std::path::PathBuf {
+    tp.with_file_name("setup-token.txt.en-cours")
+}
+
+/// Écrit le jeton d'installation par `remplacer_par_un_secret_neuf` : temporaire créé en 0600 et synchronisé, puis rename
+/// sur `setup-token.txt`. Le fichier publié n'a jamais été lisible par autrui, et un ancien `setup-token.txt` aux droits
+/// larges est REMPLACÉ (nouvel inode), pas réécrit en place. Un temporaire laissé par une coupure (il porte le jeton d'un
+/// démarrage précédent) est retiré d'abord. `Err` porte la cause, jamais le jeton.
+fn publier_le_jeton_d_installation(tp: &std::path::Path, jeton: &str) -> Result<(), String> {
+    crate::remplacer_par_un_secret_neuf(tp, &temporaire_du_jeton_d_installation(tp), jeton.as_bytes())
+}
+
 /// L'installation au démarrage. `Err` = état illisible : l'appelant refuse de démarrer, aucun jeton n'est fabriqué.
 pub(crate) fn installation_au_demarrage(
     c: &Connection,
@@ -714,15 +728,18 @@ pub(crate) fn installation_au_demarrage(
     match lire_l_etat_d_administration(c, mot_de_passe_de_configuration_pose) {
         EtatDAdministrationAuDemarrage::Illisible(cause) => Err(cause),
         EtatDAdministrationAuDemarrage::Ouverte => {
-            use std::os::unix::fs::PermissionsExt;
             // Le token d'installation ouvre le compte ADMIN à un anonyme : il n'est FABRIQUÉ qu'à partir
             // d'entropie réelle (cf. `setup_token_from_entropy`). Aucune entropie -> aucun token -> `/api/setup`
             // refuse tout (fail-closed) et on le DIT, au lieu de servir un secret énumérable.
             let jeton = match setup_token_from_entropy(setup_token_entropy()) {
                 Some(tok) => {
-                    let _ = std::fs::write(&tp, &tok);
-                    let _ = std::fs::set_permissions(&tp, std::fs::Permissions::from_mode(0o600));
-                    eprintln!("\n===== SETUP MODE — token d'installation (usage unique) =====\n  {tok}\n  -> ouvre la page, ⚙️ Réglages : colle ce token + définis tes identifiants.\n  (aussi dans : {})\n===========================================================\n", tp.display());
+                    let ecrit = publier_le_jeton_d_installation(&tp, &tok);
+                    // L'échec est dit SUR la ligne qui annonce le jeton : ce journal en est alors la seule copie.
+                    let ou = match ecrit {
+                        Ok(()) => format!("aussi dans : {}", tp.display()),
+                        Err(cause) => format!("NON écrit sur le disque : {cause} — ce journal en est la seule copie"),
+                    };
+                    eprintln!("\n===== SETUP MODE — token d'installation (usage unique) =====\n  {tok}\n  -> ouvre la page, ⚙️ Réglages : colle ce token + définis tes identifiants.\n  ({ou})\n===========================================================\n");
                     tok
                 }
                 None => {
@@ -745,9 +762,12 @@ pub(crate) fn installation_au_demarrage(
             // F4 — plus en mode setup (un admin existe / pass défini) : on efface tout `setup-token.txt`
             // RÉSIDUEL d'un premier boot (inerte car la route setup est gated sur le mode installation, mais c'est
             // un token en clair token-shaped sur /data). shred (écrasement best-effort) + unlink. Idempotent.
-            if tp.exists() {
-                shred_file(&tp.to_string_lossy());
-                eprintln!("[setup] token d'installation résiduel effacé ({})", tp.display());
+            // Le temporaire aussi : une coupure entre sa création et son rename y laisse un jeton.
+            for residu in [tp.clone(), temporaire_du_jeton_d_installation(&tp)] {
+                if residu.exists() {
+                    shred_file(&residu.to_string_lossy());
+                    eprintln!("[setup] token d'installation résiduel effacé ({})", residu.display());
+                }
             }
             Ok(InstallationAuDemarrage { administrateur_de_l_assistant: admin0, jeton: String::new(), ouverte: false })
         }

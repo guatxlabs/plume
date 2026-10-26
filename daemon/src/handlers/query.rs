@@ -619,8 +619,14 @@ pub(crate) fn keyset_projection_augment_selon(soql: &str, savoir: impl FnOnce() 
 /// est PROPRE (`stats.cold`, `apply_rollup_stats`) AVANT d'appeler cette sortie ; ce qui est commun à
 /// toute page keyset — retrait des colonnes d'aide, découpage des temps, SQL compilé — vit ici.
 /// ORDRE : le retrait vient APRÈS `keyset_finalize`, qui a besoin de `ts`/`id` pour former le curseur.
+/// `P10.20-b` — L'AVEU D'HORIZON EST COMMUN À TOUTE PAGE KEYSET, IL EST DONC POSÉ ICI. Les trois retours keyset
+/// (voie colonnaire, oracle d'union, chemin chaud) rendaient leur page sans `stats.coverage` alors que `couverture`
+/// était déjà calculée par le handler et posée sur toutes les autres voies (`avec_couverture`) : une page lue sous
+/// l'horizon de rétention ou sous la frontière froide se lisait comme complète. Le paramètre est obligatoire : un
+/// quatrième retour keyset ne peut pas l'oublier.
 #[allow(clippy::needless_pass_by_value)]
-fn keyset_reponse(mut v: Value, trim: usize, timings: &QueryTimings, compiled: &str) -> Response {
+fn keyset_reponse(v: Value, trim: usize, timings: &QueryTimings, compiled: &str, couverture: &Value) -> Response {
+    let mut v = avec_couverture(v, couverture);
     keyset_trim_helper_cols(&mut v, trim);
     timings.stamp(&mut v);
     v["compiled_sql"] = json!(compiled);
@@ -985,7 +991,7 @@ pub(crate) fn cold_keyset_vectorized_page(
     let cold_limit = if pure_cold { n } else { (n - hot_count).max(0) };
     let cold_cursor = if pure_cold { cursor } else { None };
     let (cold_cols, cold_rows) = if cold_limit > 0 {
-        match crate::query_exec::en_classant(|| {
+        match crate::query_exec::en_classant_la_voie_froide(|| {
             crate::cold_store::cold_keyset_page(db_path, conf, env, from, to, boundary, soql, true, cold_cursor, cold_limit as usize, preds)
         })
         .map_err(IssueKeysetVectorise::Erreur)?
@@ -1095,22 +1101,32 @@ pub(crate) fn avec_aveu_froid(mut v: Value, aveu: Option<&Value>) -> Value {
 ///    refusé par `regex_de_requete`) -> 400,
 ///    à l'octet, comme avant : la console les reconnaît (`showQError`, `web/viz.js`) ;
 ///  * tout autre texte du moteur -> 400, `REQUETE_REJETEE_PAR_LE_MOTEUR`.
+/// `P10.29-l` — les cinq sites des voies froides classent par `query_exec::en_classant_la_voie_froide` : un échec du
+/// tier froid lui-même (fichier illisible ou corrompu, horizon de lecture non lu, ouverture) est du SUPPORT (503), le
+/// SQL de l'appelant refusé par le moteur sur l'union garde son 400, un refus du produit aussi.
 /// Le texte du moteur part à UNE ligne `[query] WARN` (route, tenant de l'appelant, nature du code, texte échappé
 /// sur une ligne) ; le producteur ne connaît que le chemin de la base, c'est donc la route qui nomme le tenant. La
 /// ligne du support ne porte que la nature et l'identifiant servi : le texte d'une ouverture ratée cite le chemin de
 /// la base, et `sqlite_plafond::message_erreur` journalise déjà la description d'un échec du support au pas
-/// (ligne `[sqlite]`). La phrase du produit ne journalise rien : elle est servie entière.
-/// La console lit la cause entière d'un 503 nommé : `web/viz.js:945-947` lit le corps quel que soit le statut et
+/// (ligne `[sqlite]`). SAUF l'échec du tier froid (`NATURE_DE_LA_LECTURE_FROIDE`) : aucune ligne `[sqlite]` ni
+/// `[cold]` ne le relaie, sa ligne porte donc AUSSI le texte échappé (fichier froid fautif et son chemin, ou le
+/// réglage d'horizon non lu), comme la ligne du moteur le portait avant `P10.29-l` ; jamais dans la réponse.
+/// La phrase du produit ne journalise rien : elle est servie entière.
+/// La console lit la cause entière d'un 503 nommé : `web/viz.js:946-948` lit le corps quel que soit le statut et
 /// `web/viz.js:3058`/`:3264` le passent à `showQError` ; l'export lit `refusDUneLectureServie` (`web/app.js:174`,
 /// `web/core.js:1281-1287`), qui garde la cause nommée d'un 503 au lieu de la phrase de passerelle.
 pub(crate) fn refus_de_requete(echec: crate::query_exec::EchecDeRequete, route: &str, tenant: &str) -> Response {
     use crate::query_exec::EchecDeRequete as Echec;
     match echec {
         Echec::Produit(phrase) => bad_req(phrase),
-        Echec::Support { nature, .. } => {
+        Echec::Support { nature, texte } => {
             let (id, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE);
             let id = id.unwrap_or_default();
-            eprintln!("[query] WARN requête non servie, erreur du support de la base ({route}, tenant '{tenant}', {id}) : {nature}");
+            if nature == crate::query_exec::NATURE_DE_LA_LECTURE_FROIDE {
+                eprintln!("[query] WARN requête non servie, erreur du support de la base ({route}, tenant '{tenant}', {id}) : {nature} : {texte:?}");
+            } else {
+                eprintln!("[query] WARN requête non servie, erreur du support de la base ({route}, tenant '{tenant}', {id}) : {nature}");
+            }
             refus
         }
         Echec::Occupee { nature, .. } => {
@@ -1570,7 +1586,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                             // « le bras froid a-t-il été interrogé ? » est connu (cf. `parts_lues`). Le reste
                             // — retrait des colonnes d'aide compris — passe par la SORTIE UNIQUE : c'est
                             // exactement ce retrait que ce chemin-ci oubliait (cf. `keyset_reponse`).
-                            return keyset_reponse(v, keyset_trim, &timings, &sql_for_resp);
+                            return keyset_reponse(v, keyset_trim, &timings, &sql_for_resp, &couverture);
                         }
                         Ok(Ok(None)) => { /* non routable -> FALLBACK cold_union_query ci-dessous */ }
                         // `P10.5-g` (b) — l'issue est TYPÉE : un refus déterministe sort en 422 nommé (le client
@@ -1586,7 +1602,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
             let dbp = db_path.clone();
             let qid = qid_owned.clone();
             let res = tokio::task::spawn_blocking(move || {
-                crate::query_exec::en_classant(|| {
+                crate::query_exec::en_classant_la_voie_froide(|| {
                     crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ks_page, None, budget_ms, qid.as_deref(), &preds)
                 })
             })
@@ -1634,7 +1650,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     // route pré-agrégée ANNULE `cold_boundary`, cf. le site qui l'écrit) -> `served_from`
                     // vaut `raw`, ce qui est exactement l'aveu attendu : brut, donc exact.
                     apply_rollup_stats(&mut v, &rollup_meta);
-                    keyset_reponse(v, keyset_trim, &timings, &sql_for_resp)
+                    keyset_reponse(v, keyset_trim, &timings, &sql_for_resp, &couverture)
                 }
                 Ok(Err(e)) => refus_de_requete(e, "/api/query", &au.tenant),
                 Err(_) => server_err("exécution échouée"),
@@ -1656,7 +1672,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     Ok(mut v) => {
                         keyset_finalize(&mut v, keyset_lim, None);
                         apply_rollup_stats(&mut v, &rollup_meta); // rollup_meta = None ici (keyset désactive la route) -> served_from=raw
-                        keyset_reponse(avec_aveu_froid(v, aveu_froid_non_lu.as_ref()), keyset_trim, &timings, &sql_for_resp)
+                        keyset_reponse(avec_aveu_froid(v, aveu_froid_non_lu.as_ref()), keyset_trim, &timings, &sql_for_resp, &couverture)
                     }
                     Err(e) => refus_de_requete(e, "/api/query", &au.tenant),
                 }
@@ -1694,7 +1710,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                 // résultat routé == cold_union_query (harnais de parité p4a_* / p4b_*).
                 let pure_cold = to > 0 && to < boundary;
                 let res = tokio::task::spawn_blocking(move || {
-                    crate::query_exec::en_classant(|| {
+                    crate::query_exec::en_classant_la_voie_froide(|| {
                         if pure_cold {
                             crate::cold_store::cold_vectorized_try(&dbp, &conf, env_s.as_deref(), from, to, boundary, &rsoql, true, budget_ms, &preds)
                         } else {
@@ -1736,7 +1752,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // #45), le MÊME jeu que le chemin vectorisé ci-dessus -> parité par construction + gate cap cohérent.
         let preds = cold_dim_preds;
         let res = tokio::task::spawn_blocking(move || {
-            crate::query_exec::en_classant(|| {
+            crate::query_exec::en_classant_la_voie_froide(|| {
                 crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &cold_page, count_sql.as_deref(), budget_ms, qid.as_deref(), &preds)
             })
         })
@@ -2173,7 +2189,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         // #28 PHASE B — extrait du SQL COMPILÉ (`sql`, post-masquage #45), le MÊME qui s'exécute sur l'union.
         let preds = crate::cold_store::extract_cold_dim_preds(&sql);
         let res = tokio::task::spawn_blocking(move || {
-            crate::query_exec::en_classant(|| crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ps, None, budget, None, &preds))
+            crate::query_exec::en_classant_la_voie_froide(|| crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ps, None, budget, None, &preds))
         })
         .await;
         // #18 — un export est un fichier qu'on archive et qu'on cite : y écrire un agrégat calculé sur un

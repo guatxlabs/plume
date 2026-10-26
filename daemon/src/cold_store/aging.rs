@@ -874,8 +874,8 @@ fn phase2_delete(db: &Arc<Mutex<Connection>>, cold_dir: &Path, env_id: &str, day
 /// Le refus nomme l'index (`env_id`, déjà validé dans cette branche) : plusieurs index peuvent porter le même
 /// (jour, seq). Une ligne gardée N'EST PAS SERVIE : le lecteur froid écarte les jours que ce même calcul dit
 /// expirés (`Bande::dernier_jour_expire`, `reader::HorizonDeLecture`).
-/// LIMITE (dite, hors de ce site) : une ligne gardée reste visible du plan d'escrow (`backup.rs`) tant que le
-/// fichier n'a pas pu être retiré.
+/// Le plan d'escrow (`backup.rs`, `cold_backup_plan`) l'écarte aussi, par la même borne, et compte les jours écartés
+/// (`P10.34-k`) : une ligne gardée n'est ni servie ni copiée vers la destination de sauvegarde.
 fn expire_cold_days(db: &Arc<Mutex<Connection>>, cold_dir: &Path, n: i64, bande: &Bande) {
     // On lit TOUS les seals par-FICHIER (petite table) : (env_id, day, seq). Un jour = plusieurs lignes (une/seq).
     let lus = { let conn = db.lock(); all_sealed_files(&conn) };

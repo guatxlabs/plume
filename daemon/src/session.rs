@@ -554,21 +554,29 @@ pub(crate) fn poser_l_attribut_secure(entetes: &mut axum::http::HeaderMap, suffi
 }
 
 /// Secret de signature des sessions : env/conf PLUME_SESSION_SECRET (matière à clé brute) -> sinon
-/// clé persistée 0600 (générée au 1er boot, comme la clé du ledger). JAMAIS de secret en dur.
+/// clé persistée (générée au 1er boot, comme la clé du ledger), créée en 0600 DÈS la création et
+/// synchronisée. JAMAIS de secret en dur.
+///
+/// Un fichier LU qui ne porte pas de clé (vide ou blanc, hex invalide, moins de 32 octets — coupure, troncature)
+/// est REMPLACÉ, comme avant, mais par un temporaire 0600 renommé dessus (`remplacer_par_un_secret_neuf`), et
+/// c'est DIT. Une entrée qu'on ne peut pas LIRE (non UTF-8, droits, répertoire) n'est JAMAIS écrasée. Écriture
+/// refusée -> la clé engendrée est gardée EN MÉMOIRE et c'est DIT : le service démarre, mais les sessions
+/// ouvertes ne survivront pas au redémarrage.
 pub(crate) fn load_session_secret(conf: &HashMap<String, String>) -> Vec<u8> {
     let env_secret = cfg(conf, "PLUME_SESSION_SECRET", "");
     if !env_secret.trim().is_empty() {
         return env_secret.trim().as_bytes().to_vec();
     }
-    use std::os::unix::fs::PermissionsExt;
     let path = cfg(conf, "PLUME_SESSION_KEY", "/var/lib/plume/db/session.key");
-    if let Ok(hex) = std::fs::read_to_string(&path) {
-        if let Some(b) = hex_decode(hex.trim()) {
-            if b.len() >= 32 {
-                return b;
-            }
-        }
-    }
+    // `true` : un contenu a été LU et n'est pas une clé — il sera remplacé. Une lecture en échec (absent,
+    // illisible) passe par la création exclusive, qui n'écrase jamais rien.
+    let contenu_lu_invalide = match std::fs::read_to_string(&path) {
+        Ok(hex) => match hex_decode(hex.trim()) {
+            Some(b) if b.len() >= 32 => return b,
+            _ => true,
+        },
+        Err(_) => false,
+    };
     // MÊME DOCTRINE QUE LE TOKEN D'INSTALLATION, et pour la même raison : cette clé SIGNE les cookies de
     // session. Le « dernier recours » qui vivait ici la dérivait de l'horloge de boot
     // (`sha256("plume-session-fallback-{now}")`) — qui devine la seconde de démarrage FORGE une session
@@ -582,8 +590,33 @@ pub(crate) fn load_session_secret(conf: &HashMap<String, String>) -> Vec<u8> {
         );
         std::process::exit(78);
     };
-    let _ = std::fs::write(&path, hex_encode(&b));
-    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    if contenu_lu_invalide {
+        let en_cours = format!("{path}.en-cours");
+        match crate::remplacer_par_un_secret_neuf(
+            std::path::Path::new(&path),
+            std::path::Path::new(&en_cours),
+            hex_encode(&b).as_bytes(),
+        ) {
+            Ok(()) => eprintln!(
+                "[session] clé de signature à '{path}' invalide (vide, hex invalide ou moins de 32 octets) : \
+                 REMPLACÉE par une clé neuve en 0600 — les sessions ouvertes avant ce démarrage sont perdues."
+            ),
+            Err(cause) => eprintln!(
+                "[session] clé de signature à '{path}' invalide et NON remplacée ({cause}) : la clé neuve est \
+                 gardée EN MÉMOIRE — les sessions ouvertes ne survivront pas au prochain redémarrage. Rends \
+                 l'emplacement inscriptible, ou pose PLUME_SESSION_SECRET."
+            ),
+        }
+        return b.to_vec();
+    }
+    match crate::poser_un_secret_neuf_ou_rien(&path, hex_encode(&b).as_bytes()) {
+        Ok(()) => {}
+        Err(cause) => eprintln!(
+            "[session] clé de signature NON écrite ({cause}) : elle est gardée EN MÉMOIRE — les sessions \
+             ouvertes ne survivront pas au prochain redémarrage. Une entrée présente qu'on ne peut pas lire \
+             n'est jamais écrasée : retire-la ou rends l'emplacement inscriptible, ou pose PLUME_SESSION_SECRET."
+        ),
+    }
     b.to_vec()
 }
 

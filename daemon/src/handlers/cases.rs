@@ -479,7 +479,7 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
         let politique = |cause: String| -> IssueDuDossierModifie {
             let mut cause = cause;
             if priorite_ecrite {
-                cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, statut_ecrit.then_some((statut_en_base.as_str(), t))));
+                cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, &statut_en_base, t, statut_ecrit.then_some((statut_en_base.as_str(), t))));
             }
             IssueDuDossierModifie::NonEcrite(cause)
         };
@@ -508,14 +508,14 @@ pub(crate) fn case_apply_update(conn: &Connection, id: i64, author: &str, b: &Va
             IssueDuChronoSla::Refuse(cause) => {
                 let mut cause = cause;
                 if priorite_ecrite {
-                    cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, None));
+                    cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, &statut_en_base, t, None));
                 }
                 return IssueDuDossierModifie::NonEcrite(cause);
             }
             IssueDuChronoSla::NonLu(cause) => {
                 let mut cause = cause;
                 if priorite_ecrite {
-                    cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, None));
+                    cause.push_str(&rattraper_les_echeances_multi_niveau(conn, id, cur_priority, &statut_en_base, t, None));
                 }
                 return IssueDuDossierModifie::ChronoSlaNonLu(cause);
             }
@@ -633,7 +633,7 @@ fn rattraper_l_echeance(conn: &Connection, id: i64, priorite: i64, statut_en_bas
         }
         return String::new();
     }
-    let multi_niveau = rattraper_les_echeances_multi_niveau(conn, id, priorite, statut_ecrit.then_some((statut_en_base, t)));
+    let multi_niveau = rattraper_les_echeances_multi_niveau(conn, id, priorite, statut_en_base, t, statut_ecrit.then_some((statut_en_base, t)));
     match conn.execute("UPDATE incident SET sla_due = ts + ?1 WHERE id=?2", params![sla_target_s(priorite), id]) {
         Ok(0) => return format!(" ; ÉCHÉANCE NON RECALCULÉE sur la priorité écrite (sla_due: aucune ligne écrite){multi_niveau}"),
         Ok(_) => {}
@@ -655,7 +655,14 @@ fn rattraper_l_echeance(conn: &Connection, id: i64, priorite: i64, statut_en_bas
 /// `P10.20-w` (reste) — la VALEUR DE RETOUR des deux écritures du chrono est lue d'abord : un refus est dit avec sa
 /// cause (« NON RECALCULÉES »), même quand la relecture aurait trouvé la base conforme ; la relecture reste le juge de
 /// tout le reste (et d'une relecture impossible).
-fn rattraper_les_echeances_multi_niveau(conn: &Connection, id: i64, priorite: i64, statut_ecrit: Option<(&str, i64)>) -> String {
+/// `P10.31-v` (reste vague AS) — `statut_en_base` (statut du dossier en base au moment du rattrapage) et `t` : un dossier
+/// EN ATTENTE que la politique de la priorité écrite vient de gouverner est mis en pause APRÈS la politique, comme le
+/// chemin nominal (`IssueDuChronoSla::Ecrit if effective_status == "waiting"`, `case_apply_update`). La pause d'avant
+/// la politique (`statut_ecrit`) est inerte sur un dossier qui n'en portait aucune : un legacy en attente passé à une
+/// priorité gouvernée, puis un champ suivant refusé, sortait gouverné SANS pause (notifié en dépassement pendant
+/// l'attente) pendant que la cause disait « recalculées ». Pause refusée ou non lue : dite par sa phrase, jamais
+/// « recalculées ». L'ordre pause-puis-politique d'avant est gardé.
+fn rattraper_les_echeances_multi_niveau(conn: &Connection, id: i64, priorite: i64, statut_en_base: &str, t: i64, statut_ecrit: Option<(&str, i64)>) -> String {
     let reprise = match statut_ecrit {
         Some((statut, t)) => sla_on_status_change(conn, id, statut, t),
         None => IssueDuChronoSla::RienAFaire,
@@ -686,6 +693,17 @@ fn rattraper_les_echeances_multi_niveau(conn: &Connection, id: i64, priorite: i6
         return format!("{effacement}{}", dire_la_reprise(&reprise));
     };
     let application = sla_apply_policy(conn, id);
+    // Même patron que la sortie nominale : la politique ÉCRITE sur un dossier en attente -> la pause, idempotente (déjà en
+    // pause -> rien), inerte hors `waiting`.
+    let pause = match &application {
+        IssueDuChronoSla::Ecrit if statut_en_base == "waiting" => sla_on_status_change(conn, id, statut_en_base, t),
+        _ => IssueDuChronoSla::RienAFaire,
+    };
+    let dire_la_pause = match pause {
+        IssueDuChronoSla::Refuse(cause) => format!(" ; {PAUSE_DU_RATTRAPAGE_NON_ECRITE} ({cause})"),
+        IssueDuChronoSla::NonLu(cause) => format!(" ; {PAUSE_DU_RATTRAPAGE_NON_LUE} ({cause})"),
+        _ => String::new(),
+    };
     let refus: Vec<String> = [reprise, application]
         .into_iter()
         .filter_map(|i| match i {
@@ -700,21 +718,34 @@ fn rattraper_les_echeances_multi_niveau(conn: &Connection, id: i64, priorite: i6
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
     );
     let reprise_due = |statut: &str, en_pause: Option<i64>| statut_ecrit.is_none() || statut == "waiting" || en_pause.is_none();
+    // `P10.31-v` (reste vague AS) — gouverné et en attente : le chrono est EN PAUSE, ou rien n'est dit « recalculé ».
+    let pause_due = |statut: &str, en_pause: Option<i64>| statut != "waiting" || en_pause.is_some();
     let relu = match relu {
-        Err(e) => return format!(" ; ÉCHÉANCES MULTI-NIVEAU NON RELUES après le rattrapage ({e})"),
+        Err(e) => return format!(" ; ÉCHÉANCES MULTI-NIVEAU NON RELUES après le rattrapage ({e}){dire_la_pause}"),
         Ok(v) => v,
     };
     if !refus.is_empty() {
-        return format!(" ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite ({})", refus.join(" ; "));
+        return format!(" ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite ({}){dire_la_pause}", refus.join(" ; "));
+    }
+    if !dire_la_pause.is_empty() {
+        return dire_la_pause;
     }
     match relu {
         (_, _, _, _, statut, _) if matches!(statut.as_str(), "resolved" | "closed" | "contained") => String::new(),
-        (Some(p), Some(due), ts, pause, statut, en_pause) if p == pid && due == ts + res_s + pause && reprise_due(&statut, en_pause) => {
+        (Some(p), Some(due), ts, pause, statut, en_pause) if p == pid && due == ts + res_s + pause && reprise_due(&statut, en_pause) && pause_due(&statut, en_pause) => {
             ", échéances multi-niveau recalculées sur la priorité écrite".to_string()
         }
         _ => " ; ÉCHÉANCES MULTI-NIVEAU NON RECALCULÉES sur la priorité écrite (ack_due/resolve_due/pause)".to_string(),
     }
 }
+
+/// `P10.31-v` (reste vague AS) — fin de la cause du rattrapage quand la pause du dossier en attente, rejouée après la
+/// politique de la priorité écrite, est refusée par la base : le dossier est gouverné SANS pause.
+const PAUSE_DU_RATTRAPAGE_NON_ECRITE: &str =
+    "PAUSE DU CHRONO SLA NON ÉCRITE : le dossier en attente que la politique de la priorité écrite gouverne n'est PAS en pause";
+/// `P10.31-v` (reste vague AS) — même place, quand le chrono du dossier n'a pas été lu : la pause n'a pas été tentée.
+const PAUSE_DU_RATTRAPAGE_NON_LUE: &str =
+    "PAUSE DU CHRONO SLA NON LUE : le dossier en attente que la politique de la priorité écrite gouverne n'a PAS été mis en pause";
 
 /// `P10.20-w` (rang trois) — CE QUE REND UNE MODIFICATION DE DOSSIER ATTESTÉE AU REGISTRE (`case_apply_update`,
 /// `case_set_archived`). Le `bool` d'avant rendait `true` après un `UPDATE` AVALÉ : une assignation, un statut, un

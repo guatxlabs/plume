@@ -1377,6 +1377,45 @@ pub(crate) fn en_classant<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T,
     })
 }
 
+/// `P10.29-l` — la nature d'un échec de la voie froide qu'aucune note ne classe : la lecture du tier froid n'a pas été
+/// faite. Liste blanche : jamais le texte rendu (il cite le chemin d'un fichier froid).
+pub(crate) const NATURE_DE_LA_LECTURE_FROIDE: &str =
+    "lecture du tier froid non faite (ouverture, horizon de lecture, hydratation ou décodage d'un fichier), hors du cœur d'exécution";
+
+/// `P10.29-l` — les DEUX refus du produit que les voies froides rendent en `Err(String)` sans note, reconnus par leur
+/// ouverture fixe : le plafond de groupes d'un agrégat froid (`refuse_group_explosion`, `cold_store/planner.rs`) et la
+/// troncature impossible d'une part chaude (`ColdAnswer::expect_exact`, appelé par `hot_partial`). Ni l'un ni l'autre
+/// n'est une base illisible : ils restent rangés comme avant (`Moteur`, phrase fixe en 400).
+#[cfg_attr(not(feature = "cold_tier"), allow(dead_code))]
+pub(crate) const REFUS_DU_PRODUIT_DANS_LE_FROID: [&str; 2] = [
+    "refus de rendre un agrégat INCOMPLET : ce group-by dépasse ",
+    "P4b hot_partial: troncature INATTENDUE sur un chemin sans hydratation froide (",
+];
+
+/// `P10.29-l` — `en_classant` POUR UNE VOIE FROIDE (`cold_union_query`, `cold_keyset_page`, `cold_vectorized_try`,
+/// `cold_vectorized_merge_try`). Une note du fil dont le texte est celui de l'échec garde sa classe : le SQL de
+/// l'appelant exécuté sur l'union par `run_on_conn` (refus du moteur en 400, support, base occupée, produit). Un refus
+/// du produit (`REFUS_DU_PRODUIT_DANS_LE_FROID`) reste `Moteur` sous `NATURE_HORS_DU_COEUR`, comme `en_classant` le
+/// rangeait. Tout autre échec sans note vient du tier froid lui-même — ouverture de la base, réglage de rétention non
+/// lu (`HORIZON_FROID_NON_LU`), fichier sélectionné illisible, corrompu ou d'une autre identité, décodage colonnaire —
+/// et devient `Support` : la route sert le 503 de la base illisible, plus un 400 qui accusait la requête.
+/// HORS D'ATTEINTE, et rangé `Support` s'il arrivait : le refus du compilateur dans `hot_partial` (`planner.rs:1706` ;
+/// le GXQL entier a déjà été compilé par la route, `hot_partial` n'en recompile que les deux premiers étages
+/// (`planner.rs:1854`), que `map_soql` a acceptés (`planner.rs:1764`)) et les deux gardes défensives de l'hydratation froide
+/// (environnement non conforme, écarté par `env_id_ok` avant l'appel, `reader.rs:1188` ; colonne hors `PARQUET_COLS`,
+/// que `open_cold_union_avec` ne demande jamais, `reader.rs:1137`).
+#[cfg_attr(not(feature = "cold_tier"), allow(dead_code))]
+pub(crate) fn en_classant_la_voie_froide<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, EchecDeRequete> {
+    DERNIER_ECHEC_DU_FIL.with(|d| *d.borrow_mut() = None);
+    f().map_err(|texte| match DERNIER_ECHEC_DU_FIL.with(|d| d.borrow_mut().take()) {
+        Some(note) if note.texte() == texte => note,
+        _ if REFUS_DU_PRODUIT_DANS_LE_FROID.iter().any(|ouverture| texte.starts_with(ouverture)) => {
+            EchecDeRequete::Moteur { nature: NATURE_HORS_DU_COEUR.to_string(), texte }
+        }
+        _ => EchecDeRequete::Support { nature: NATURE_DE_LA_LECTURE_FROIDE.to_string(), texte },
+    })
+}
+
 // Instrument de TEST seulement (`P10.31-y`) : un point d'arrêt juste avant la préparation, sur le fil
 // appelant. Il place une annulation ou une échéance AVANT la préparation de façon déterministe.
 #[cfg(test)]

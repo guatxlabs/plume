@@ -592,40 +592,118 @@ pub(crate) fn decision_at_rest(
 ///      qui suit sa création laisserait une base chiffrée sans clé, c'est-à-dire la perte totale que
 ///      ce lot existe pour éviter.
 pub(crate) fn cle_auto_engendrer(chemin: &str) -> Result<String, String> {
-    use std::io::{Read, Write};
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::io::Read;
     let mut octets = [0u8; 32];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut octets))
         .map_err(|e| format!("aucune source d'aléa (/dev/urandom) : {e}"))?;
     let hex = hex_encode(&octets);
+    // Les deux issues rendent la même phrase qu'avant l'extraction : un fichier inachevé reste ici
+    // sur le disque, exactement comme avant (ce lot ne change rien pour les appelants de la clé auto).
+    poser_un_secret_neuf_en_0600(chemin, hex.as_bytes()).map_err(|refus| match refus {
+        PoseDeSecretRefusee::Refusee(cause) | PoseDeSecretRefusee::Inachevee(cause) => cause,
+    })?;
+    Ok(hex)
+}
+
+/// Pourquoi la pose d'un secret neuf n'a pas abouti, et ce qu'elle laisse sur le disque.
+#[derive(Debug)]
+enum PoseDeSecretRefusee {
+    /// Rien ne reste à ce chemin du fait de la pose : l'entrée existait déjà (fichier, répertoire,
+    /// lien — jamais écrasée), le répertoire a refusé la création, ou le fichier a été retiré parce
+    /// que ses droits relus n'étaient pas 600.
+    Refusee(String),
+    /// Le fichier a été CRÉÉ (0600), puis l'écriture ou sa synchronisation a échoué : il reste,
+    /// inachevé (vide ou tronqué), à ce chemin.
+    Inachevee(String),
+}
+
+/// LES TROIS PROPRIÉTÉS de `cle_auto_engendrer`, pour tout secret neuf : `create_new` (jamais
+/// d'écrasement), `mode(0o600)` à la création (jamais lisible par autrui, pas même l'instant d'un
+/// `chmod` d'après coup), `sync_all` du fichier puis de son répertoire ; droits relus, fichier
+/// retiré s'ils ne valent pas 600.
+fn poser_un_secret_neuf_en_0600(chemin: &str, contenu: &[u8]) -> Result<(), PoseDeSecretRefusee> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(chemin)
-        .map_err(|e| format!("création de {chemin} impossible ({e})"))?;
-    f.write_all(hex.as_bytes()).map_err(|e| format!("écriture de {chemin} : {e}"))?;
-    f.sync_all().map_err(|e| format!("synchronisation de {chemin} : {e}"))?;
+        .map_err(|e| PoseDeSecretRefusee::Refusee(format!("création de {chemin} impossible ({e})")))?;
+    f.write_all(contenu).map_err(|e| PoseDeSecretRefusee::Inachevee(format!("écriture de {chemin} : {e}")))?;
+    f.sync_all().map_err(|e| PoseDeSecretRefusee::Inachevee(format!("synchronisation de {chemin} : {e}")))?;
     drop(f);
     // Les droits sont RELUS : `mode()` est une DEMANDE au système de fichiers, pas une garantie.
     let mode = std::fs::metadata(chemin)
-        .map_err(|e| format!("relecture des droits de {chemin} : {e}"))?
+        .map_err(|e| PoseDeSecretRefusee::Inachevee(format!("relecture des droits de {chemin} : {e}")))?
         .permissions()
         .mode()
         & 0o777;
     if mode != 0o600 {
         let _ = std::fs::remove_file(chemin);
-        return Err(format!(
+        return Err(PoseDeSecretRefusee::Refusee(format!(
             "les droits de {chemin} valent {mode:o} et non 600 — ce système de fichiers ne porte pas \
              les droits POSIX ; la clé a été RETIRÉE plutôt que laissée lisible"
-        ));
+        )));
     }
     // Le répertoire aussi : sans cela, l'entrée de répertoire peut ne pas survivre à une coupure.
     if let Some(parent) = std::path::Path::new(chemin).parent() {
         let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
     }
-    Ok(hex)
+    Ok(())
+}
+
+/// POSE UN SECRET NEUF, OU RIEN. Même discipline que `cle_auto_engendrer` (création exclusive en
+/// 0600, synchronisée), plus une règle : un fichier créé puis inachevé (écriture ou synchronisation
+/// refusée — disque plein, quota) est RETIRÉ. Laissé, il serait relu au démarrage suivant comme un
+/// fichier VIDE ou tronqué, que les lecteurs de clés refusent pour toujours sans le réécrire.
+/// `Err` porte la cause, chemin compris, jamais le contenu.
+pub(crate) fn poser_un_secret_neuf_ou_rien(chemin: &str, contenu: &[u8]) -> Result<(), String> {
+    match poser_un_secret_neuf_en_0600(chemin, contenu) {
+        Ok(()) => Ok(()),
+        Err(PoseDeSecretRefusee::Refusee(cause)) => Err(cause),
+        // Le retrait refusé demande que le répertoire perde son droit d'écriture ENTRE la création et
+        // l'écriture du même processus : aucune fixture ne reproduit cette course de façon sûre.
+        Err(PoseDeSecretRefusee::Inachevee(cause)) => match std::fs::remove_file(chemin) {
+            Ok(()) => Err(format!("{cause} ; le fichier inachevé a été retiré")),
+            Err(e) => Err(format!("{cause} ; le fichier inachevé n'a PAS pu être retiré ({e})")),
+        },
+    }
+}
+
+/// REMPLACE `cible` PAR UN SECRET NEUF : `temporaire` (voisin de `cible`) est créé en 0600 et synchronisé
+/// (`poser_un_secret_neuf_ou_rien`), puis renommé sur `cible`, puis le répertoire est synchronisé. Le fichier
+/// publié n'a jamais été lisible par autrui, et une ancienne `cible` aux droits larges est REMPLACÉE (nouvel
+/// inode), jamais réécrite en place. Un temporaire laissé par une coupure est retiré d'abord. `Err` porte la
+/// cause, chemins compris, jamais le contenu.
+pub(crate) fn remplacer_par_un_secret_neuf(
+    cible: &std::path::Path,
+    temporaire: &std::path::Path,
+    contenu: &[u8],
+) -> Result<(), String> {
+    match std::fs::remove_file(temporaire) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("temporaire {} non retiré ({e})", temporaire.display())),
+    }
+    poser_un_secret_neuf_ou_rien(&temporaire.to_string_lossy(), contenu)?;
+    if let Err(e) = std::fs::rename(temporaire, cible) {
+        // Le retrait refusé demande que le répertoire perde son droit d'écriture entre la création du
+        // temporaire et le rename du même processus : aucune fixture ne reproduit cette course de façon sûre.
+        return Err(match std::fs::remove_file(temporaire) {
+            Ok(()) => format!("publication de {} impossible ({e}) ; temporaire retiré", cible.display()),
+            Err(r) => format!(
+                "publication de {} impossible ({e}) ; temporaire {} NON retiré ({r})",
+                cible.display(),
+                temporaire.display()
+            ),
+        });
+    }
+    if let Some(parent) = cible.parent() {
+        let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
+    }
+    Ok(())
 }
 
 /// LE MESSAGE DE NAISSANCE. Il dit les trois choses qu'un exploitant ne peut pas deviner : que cette

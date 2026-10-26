@@ -19,7 +19,7 @@
 // AS3_ILLISIBLE_AVALEE (ligne illisible jetée sans compte), AS3_DELETE_TU (suppression refusée muette),
 // AS3_ARRET_EN_ILLISIBLE (une erreur du moteur en cours de lecture comptée comme ligne illisible).
 // Puis, pour les témoins (6) à (10), chacun vu ROUGE : VB1 (lecture ratée du plan d'escrow -> panique), VB2 (plan
-// lisible rendu vide), ENV_TU (refus d'unlink sans `env_id`), UNION_SANS_BORNE (voie d'union sans horizon),
+// lisible rendu vide ; (7) inversé depuis par `P10.34-k`, voir `escrow_borne_par_la_retention.rs`), ENV_TU (refus d'unlink sans `env_id`), UNION_SANS_BORNE (voie d'union sans horizon),
 // VEC_SANS_BORNE (voie vectorisée sans horizon), BORD_MOINS / BORD_PLUS (premier jour servi décalé d'un jour),
 // SANS_FENETRE (instant de la requête pris à la frontière, sans la fenêtre chaude), ILLISIBLE_REPLI (réglage
 // illisible remplacé par le défaut).
@@ -329,24 +329,35 @@ fn as3_le_refus_d_unlink_nomme_son_index() {
     );
 }
 
-/// (7) LE PLAN D'ESCROW SUR UN INDEX NON LU RESTE VIDE, SANS PANIQUE : base sans table `cold_seal` (tier froid jamais
-/// allumé) et table au schéma inattendu (sans `seq`). Contrôle : un index lisible rend son fichier.
+/// (7) LE PLAN D'ESCROW SUR UN INDEX NON LU, SANS PANIQUE. INVERSÉ par `P10.34-k` : ce témoin affirmait « plan vide »
+/// pour les deux bases, c'est-à-dire « rien à copier » sur une lecture qui n'a pas eu lieu. Désormais : base sans table
+/// `cold_seal` (tier froid jamais allumé) -> plan vide, AUCUN aveu, code 0 (fait établi par le schéma) ; table au
+/// schéma inattendu (sans `seq`) -> plan vide ET index non lu avec sa nature, code 1. Contrôle : un index lisible rend
+/// son fichier (jour dans la rétention à `n_now()`).
 #[test]
 fn as3_plan_d_escrow_sur_index_non_lu_vide_sans_panique() {
+    let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // la rétention du plan lit l'environnement
     let keys = std::collections::HashSet::new();
+    let conf = HashMap::new();
     let root = tmp_root("as3-escrow");
     let cold_dir = root.join("cold");
     let cold = cold_dir.as_path();
     let sans_table = Connection::open_in_memory().unwrap();
-    assert!(cold_backup_plan(&sans_table, cold, "t", &keys).is_empty(), "base sans cold_seal : plan vide");
+    let plan = cold_backup_plan(&sans_table, &conf, n_now(), cold, "t", &keys);
+    assert!(plan.items.is_empty(), "base sans cold_seal : plan vide");
+    assert_eq!(plan.etat, super::super::backup::EtatDuPlan::default(), "base sans cold_seal : rien à avouer");
+    assert_eq!(plan.code_de_sortie(), 0, "base sans cold_seal : sortie 0");
     let sans_seq = Connection::open_in_memory().unwrap();
     sans_seq.execute_batch("CREATE TABLE cold_seal(env_id TEXT NOT NULL, day INTEGER NOT NULL); INSERT INTO cold_seal VALUES('prod', 19000)").unwrap();
-    assert!(cold_backup_plan(&sans_seq, cold, "t", &keys).is_empty(), "cold_seal sans seq : plan vide");
+    let plan = cold_backup_plan(&sans_seq, &conf, n_now(), cold, "t", &keys);
+    assert!(plan.items.is_empty(), "cold_seal sans seq : plan vide");
+    assert_eq!(plan.etat.index_non_lu.as_deref(), Some("code SQLite 1 (Unknown)"), "cold_seal sans seq : index non lu, avec sa nature");
+    assert_eq!(plan.code_de_sortie(), 1, "cold_seal sans seq : sortie non nulle");
     let db = mkdb(&root);
-    as3_seal(&db, "prod", M - 40, 0);
-    as3_fichier(&file_path(cold, "prod", M - 40, 0)); // le plan n'émet que les fichiers présents
-    let plan = cold_backup_plan(&db.lock(), cold, "t", &keys);
-    assert_eq!(plan.iter().map(|i| i.key.clone()).collect::<Vec<_>>(), vec![format!("cold/t/prod/{}-0000.parquet", ymd_from_day(M - 40))], "contrôle : index lisible");
+    as3_seal(&db, "prod", M - 20, 0);
+    as3_fichier(&file_path(cold, "prod", M - 20, 0)); // le plan n'émet que les fichiers présents
+    let plan = cold_backup_plan(&db.lock(), &conf, n_now(), cold, "t", &keys);
+    assert_eq!(plan.items.iter().map(|i| i.key.clone()).collect::<Vec<_>>(), vec![format!("cold/t/prod/{}-0000.parquet", ymd_from_day(M - 20))], "contrôle : index lisible");
 }
 
 // ---- (8) à (10) : LE LECTEUR FROID NE SERT AUCUN JOUR QUE L'EXPIRATION DIT EXPIRÉ -------------------------------

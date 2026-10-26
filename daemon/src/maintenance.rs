@@ -837,13 +837,19 @@ pub(crate) fn ensure_host_rollup_scan_indexes_background(db: &Arc<Mutex<Connecti
 /// panneau, comme avant, mais dits.
 pub(crate) fn ensure_rollup_srcip_host_panels<C: SqlExec>(conn: &C) {
     use rusqlite::OptionalExtension as _;
-    let did: i64 = match conn.query_row(
-        "SELECT id FROM dashboard WHERE name='Vue d''ensemble (rapide)'",
-        [],
-        |r| r.get(0),
-    ) {
-        Ok(d) => d,
-        Err(_) => return, // dashboard absent (install pré-seed) -> seed_rollup_dashboard s'en chargera
+    // `P10.28-l` (vague AR) — LE TABLEAU EN TROIS ISSUES. Avant : `Err(_) => return` confondait « absent » (install
+    // pré-semis : `seed_rollup_dashboard` s'en charge, silence légitime) et « lecture ratée » (retour muet : les deux
+    // panneaux n'étaient ni vérifiés ni ajoutés, et rien ne le disait). Non lu : rien n'est écrit, une ligne `[seed]`.
+    let did: i64 = match conn
+        .query_row("SELECT id FROM dashboard WHERE name='Vue d''ensemble (rapide)'", [], |r| r.get(0))
+        .optional()
+    {
+        Ok(Some(d)) => d,
+        Ok(None) => return, // dashboard absent (install pré-seed) -> seed_rollup_dashboard s'en chargera
+        Err(e) => {
+            eprintln!("[seed] panneaux rapides de « Vue d'ensemble (rapide) » NON vérifiés : le tableau n'a pas pu être lu ({e}) — rien n'est écrit, retenté au prochain démarrage");
+            return;
+        }
     };
     let extra: [(&str, &str, &str); 2] = [
         ("Sévérité >=3 par src_ip", "SELECT src_ip, SUM(n) AS n FROM event_rollup WHERE bucket>=__FROM__ AND severity>=3 AND src_ip<>'' GROUP BY src_ip ORDER BY n DESC LIMIT 20", "bar"),

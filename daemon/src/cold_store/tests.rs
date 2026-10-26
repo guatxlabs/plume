@@ -74,6 +74,14 @@ fn mkdb(root: &Path) -> Arc<Mutex<Connection>> {
     // chaîne de migrations). Sans elle, la lecture rendrait `None` à chaque passe et la CADENCE ne
     // serait jamais exercée : les tests passeraient tous, en ne prouvant rien de ce qui a changé.
     conn.execute_batch("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)").unwrap();
+    // `P10.20-b` (vague AR) — la table des réglages, MIROIR du live (`db/schema.sql`). La fenêtre chaude du reparse et
+    // la sonde lisent `retention_days` en trois issues : sans la table, la lecture est RATÉE (jamais le repli), et le
+    // reparse comme le plan sont refusés — une base de production a toujours cette table.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS setting(scope TEXT NOT NULL DEFAULT 'global', key TEXT NOT NULL, value TEXT NOT NULL, \
+           updated INTEGER, updated_by TEXT, PRIMARY KEY(scope, key))",
+    )
+    .unwrap();
     Arc::new(Mutex::new(conn))
 }
 
@@ -1006,19 +1014,19 @@ fn h2_reparse_lower_bound_clamps_only_when_cold_on() {
     let mut off = HashMap::new();
     off.insert("PLUME_COLD_HOT_WINDOW_DAYS".to_string(), HOT_WIN.to_string());
     let c = db.lock();
-    assert_eq!(reparse_lower_bound(&c, &off, n, requested_old), requested_old, "cold off -> inchangé");
+    assert_eq!(reparse_lower_bound(&c, &off, n, requested_old).expect("rétention lue"), requested_old, "cold off -> inchangé");
 
     // Cold ON -> clamp à hot_cutoff (= n - HOT_WIN j) quand la demande est plus ancienne.
     let on = conf_on(&cold_dir, HOT_WIN);
     let hot_cutoff = n - HOT_WIN * SECS_PER_DAY;
     assert_eq!(
-        reparse_lower_bound(&c, &on, n, requested_old),
+        reparse_lower_bound(&c, &on, n, requested_old).expect("rétention lue"),
         hot_cutoff,
         "cold on -> borne remontée à hot_cutoff (aucune ligne cold-éligible mutée)"
     );
     // Une demande DÉJÀ dans la fenêtre chaude est laissée intacte (max ne remonte pas).
     assert_eq!(
-        reparse_lower_bound(&c, &on, n, requested_hot),
+        reparse_lower_bound(&c, &on, n, requested_hot).expect("rétention lue"),
         requested_hot,
         "cold on + demande déjà hot -> inchangée"
     );
@@ -1051,7 +1059,7 @@ fn h2_reparse_update_spares_aged_rows_when_cold_on() {
     // COLD ON : borne clampée -> l'UPDATE (mimant parser_reparse) épargne la ligne agée.
     {
         let c = db.lock();
-        let cut = reparse_lower_bound(&c, &on, n, requested);
+        let cut = reparse_lower_bound(&c, &on, n, requested).expect("rétention lue");
         c.execute("UPDATE event SET fields='NEW' WHERE ts>=?1", params![cut]).unwrap();
     }
     let aged_fields: String = db
@@ -1071,7 +1079,7 @@ fn h2_reparse_update_spares_aged_rows_when_cold_on() {
     off.insert("PLUME_COLD_HOT_WINDOW_DAYS".to_string(), HOT_WIN.to_string());
     {
         let c = db.lock();
-        let cut = reparse_lower_bound(&c, &off, n, requested);
+        let cut = reparse_lower_bound(&c, &off, n, requested).expect("rétention lue");
         c.execute("UPDATE event SET fields='NEW' WHERE ts>=?1", params![cut]).unwrap();
     }
     let aged_off: String = db

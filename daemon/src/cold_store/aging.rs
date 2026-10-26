@@ -158,13 +158,30 @@ pub(crate) fn cold_hot_window_days(conn: &Connection, conf: &HashMap<String, Str
 /// perte silencieuse de fidélité de contenu. On CLAMP donc la borne basse à `max(requested_cut, hot_cutoff)` :
 /// le reparse ne mute QUE des lignes encore hot. GATE RUNTIME `PLUME_COLD_TIER` ICI : cold OFF -> `requested_cut`
 /// renvoyé INCHANGÉ (comportement byte-identique). Le GATE COMPILE est chez l'appelant (feature `cold_tier`).
-pub(crate) fn reparse_lower_bound(conn: &Connection, conf: &HashMap<String, String>, n: i64, requested_cut: i64) -> i64 {
+///
+/// `P10.20-b` (vague AR) — FAIL-CLOSED SUR UN RÉGLAGE ILLISIBLE. La fenêtre chaude dérive de `retention_days` ; une ligne
+/// `setting` écrite et illisible ne la fait plus calculer sur le repli env/défaut (une fenêtre plus large que la vraie
+/// laisserait le reparse muter des jours déjà columnarisés). `Err(cause servie)` : le reparse est REFUSÉ, rien n'est lu
+/// ni modifié ; la cause du moteur va au journal seul (`[reparse] WARN`).
+pub(crate) fn reparse_lower_bound(conn: &Connection, conf: &HashMap<String, String>, n: i64, requested_cut: i64) -> Result<i64, &'static str> {
     if cfg(conf, "PLUME_COLD_TIER", "") != "1" {
-        return requested_cut; // cold runtime OFF -> reparse inchangé (mute toute la fenêtre demandée).
+        return Ok(requested_cut); // cold runtime OFF -> reparse inchangé (mute toute la fenêtre demandée).
     }
-    let retention_days = retention_effective(conn, conf, "retention_days");
-    requested_cut.max(cold_hot_cutoff(conn, conf, n, retention_days))
+    let retention_days = match retention_effective_lue(conn, conf, "retention_days") {
+        Ok(jours) => jours,
+        Err(moteur) => {
+            eprintln!("[reparse] WARN reparse REFUSÉ : le réglage `retention_days` écrit n'a pas pu être lu ({moteur}) — aucun event n'est lu ni modifié");
+            return Err(CAUSE_REPARSE_REFUSE_RETENTION_NON_LUE);
+        }
+    };
+    Ok(requested_cut.max(cold_hot_cutoff(conn, conf, n, retention_days)))
 }
+
+/// `P10.20-b` (vague AR) — la cause servie (503) d'un reparse refusé parce que la fenêtre chaude n'a pas pu être établie.
+pub(crate) const CAUSE_REPARSE_REFUSE_RETENTION_NON_LUE: &str = "REPARSE REFUSÉ : le réglage de rétention écrit \
+     (`retention_days`) n'a pas pu être lu, donc la fenêtre chaude — la seule que le reparse a le droit de modifier quand \
+     le tier froid est actif — n'est pas établie. AUCUN event n'a été lu ni modifié ; réécrivez le réglage \
+     (PUT /api/retention), puis relancez le reparse.";
 
 /// Supprime (chunké, verrou relâché entre lots) les lignes hot d'UN FICHIER scellé (#18 P2b) — prédicat IDENTITÉ
 /// borné à EXACTEMENT la tranche que CE fichier a archivée : `id <= max_id` (FIX #1, borne globale du jour) +

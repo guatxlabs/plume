@@ -60,7 +60,10 @@ impl ReadPool {
 }
 static READ_POOL: std::sync::OnceLock<Mutex<ReadPool>> = std::sync::OnceLock::new();
 fn read_conn_open(db_path: &str) -> Result<Connection, String> {
-    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+    // `P10.29-l` (vague AR) — le texte rendu reste `e.to_string()` ; la CLASSE (support ou moteur, par le code) est
+    // notée pour `en_classant`.
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| EchecDeRequete::par_le_code(&e, e.to_string()).noter())?;
     apply_key_for(&conn, db_path);   // #2a-3 : clé DU TENANT (registre keyé db_path), pas db_key() global.
                                      // SQLCipher : la clé doit précéder toute requête. Non enregistré -> db_key() (mode 0).
     // Le BUDGET MÉMOIRE (temp_store/cache_size/mmap_size) est décidé par `sqlite_plafond` et NULLE PART
@@ -86,7 +89,7 @@ pub(crate) fn install_query_udfs(conn: &Connection) {
     // REGEXP : moteur regex de Rust (temps LINEAIRE garanti -> pas de ReDoS). Longueur, taille du programme et
     // nombre de motifs gardés : `crate::regex_de_requete` (le MÊME constructeur que le tier froid).
     // Le watchdog 3 s de run_query est un garde-fou supplementaire (defense en profondeur).
-    use crate::regex_de_requete::{motif_admissible, CacheDeMotifs, MotifRefuse};
+    use crate::regex_de_requete::{motif_admissible, CacheDeMotifs};
     use rusqlite::functions::FunctionFlags;
     let cache = std::cell::RefCell::new(CacheDeMotifs::new());
     let _ = conn.create_scalar_function(
@@ -95,13 +98,13 @@ pub(crate) fn install_query_udfs(conn: &Connection) {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         move |ctx| {
             let pat = ctx.get::<String>(0)?;
-            motif_admissible(&pat).map_err(MotifRefuse::en_erreur_udf)?;
+            motif_admissible(&pat).map_err(refus_du_motif_note)?;
             let hay = match ctx.get_raw(1) {
                 rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
                 _ => return Ok(false), // NULL / non-texte -> pas de correspondance
             };
             let mut c = cache.borrow_mut();
-            let re = c.motif(&pat).map_err(MotifRefuse::en_erreur_udf)?;
+            let re = c.motif(&pat).map_err(refus_du_motif_note)?;
             Ok(re.correspond(&hay))
         },
     );
@@ -117,13 +120,23 @@ pub(crate) fn install_query_udfs(conn: &Connection) {
                 _ => return Ok(None::<String>),
             };
             let pat = ctx.get::<String>(1)?;
-            motif_admissible(&pat).map_err(MotifRefuse::en_erreur_udf)?;
+            motif_admissible(&pat).map_err(refus_du_motif_note)?;
             let grp = ctx.get::<String>(2)?;
             let mut c = cap_cache.borrow_mut();
-            let re = c.motif(&pat).map_err(MotifRefuse::en_erreur_udf)?;
+            let re = c.motif(&pat).map_err(refus_du_motif_note)?;
             Ok(re.capture(&hay, &grp))
         },
     );
+}
+
+/// `P10.29-l` (vague AR) — LE REFUS D'UN MOTIF EST UNE PHRASE DU DÉMON (`regex_de_requete` : longueur, ou erreur de
+/// la bibliothèque `regex` sur la saisie de l'analyste), pas un texte du moteur. L'UDF le rend à SQLite, qui ne le
+/// classe pas (`SQLITE_ERROR`) : sa phrase exacte est donc notée ICI, sur le fil qui exécute, pour que le classeur
+/// (`EchecDeRequete::du_moteur`) la range au PRODUIT quand l'échec rendu porte exactement ce texte.
+fn refus_du_motif_note(refus: crate::regex_de_requete::MotifRefuse) -> rusqlite::Error {
+    let e = refus.en_erreur_udf();
+    PHRASE_DU_MOTIF_REFUSE.with(|p| *p.borrow_mut() = Some(e.to_string()));
+    e
 }
 
 /// #18 P3 — HASH de masquage (#45) : fonction scalaire déterministe salée `plume_fmask_hash(v)` (émise par le
@@ -1211,8 +1224,15 @@ fn classer_l_echec<T>(e: &rusqlite::Error, cancelled: &std::sync::atomic::Atomic
     if !interruption {
         // Le franchissement du budget MÉMOIRE tombe ici (`SQLITE_NOMEM`) : refus d'exploitant, sinon
         // le texte du moteur tel quel.
-        return Err(sqlite_plafond::message_erreur(e));
+        return Err(EchecDeRequete::du_moteur(e).noter());
     }
+    // `P10.29-l` (vague AR) — les trois phrases d'une interruption sont du PRODUIT.
+    phrase_de_l_interruption(cancelled, budget).map_err(|phrase| EchecDeRequete::Produit(phrase).noter())
+}
+
+/// Les trois phrases d'une interruption (quota, annulation, budget), écrites telles que le harnais console les lit.
+#[allow(clippy::needless_return)]
+fn phrase_de_l_interruption<T>(cancelled: &std::sync::atomic::AtomicBool, budget: u64) -> Result<T, String> {
     // P10.1-b — TROIS CAUSES RENDENT LE MÊME CODE. Le franchissement du quota de déversement arrête
     // l'instruction par le rappel de progression, donc par une interruption ; il est reconnu D'ABORD
     // parce qu'il est le seul à laisser une note disant CE QUI a été mesuré. Sans lui, un volume qu'on
@@ -1225,6 +1245,136 @@ fn classer_l_echec<T>(e: &rusqlite::Error, cancelled: &std::sync::atomic::Atomic
         return Err("requête annulée par l'utilisateur".into());
     }
     return Err(format!("requête interrompue (budget {} s dépassé)", budget / 1000));
+}
+
+/// `P10.29-l` (vague AR) — LA CLASSE D'UN ÉCHEC D'EXÉCUTION, DÉCIDÉE AU PRODUCTEUR ET PAR LE CODE DU MOTEUR.
+///
+/// `run_query_ex` et `run_on_conn` rendent un `String` à tous leurs appelants (rapports planifiés, alertes,
+/// panneaux, sources de données) et ce texte ne change pas. Mais `/api/query` et `/api/export` servaient ce
+/// texte TEL QUEL au client, au rôle lecteur : le refus de l'autorisateur cite l'énoncé compilé, l'UDF `regexp`
+/// cite le motif, une erreur d'E/S se lisait comme une faute de l'analyste. La route a besoin de la CLASSE, et
+/// le texte ne la porte pas : elle est décidée ICI, là où le code rusqlite est encore en main, et posée dans
+/// `DERNIER_ECHEC_DU_FIL` (le fil de la tâche bloquante, celui qui exécute) ; la route la relit par
+/// `en_classant`, sur le même fil.
+///
+/// TROIS CLASSES, ET RIEN D'AUTRE :
+///  * `Support` — le code accuse le support de la base (`code_du_support`) : la route sert un 503 à phrase fixe ;
+///  * `Occupee` — la base est occupée (`SQLITE_BUSY`, `SQLITE_LOCKED`, codes primaires) : ni le support ni la
+///    requête ne sont en faute, la route sert un 503 à phrase fixe distincte (réessayer) ;
+///  * `Produit` — une phrase écrite par le démon, par LISTE BLANCHE de ses producteurs : annulation, budget de
+///    temps, lecture seule, refus du budget mémoire (`SQLITE_NOMEM` traduit par `sqlite_plafond`), quota de
+///    déversement, refus d'un motif (`refus_du_motif_note` : trop long, ou invalide). Servie à l'octet ;
+///  * `Moteur` — tout autre texte du moteur (syntaxe, colonne, autorisateur, motif, décodage d'une ligne), et
+///    tout échec dont la classe n'a pas été notée (`en_classant`) : la route sert une phrase fixe.
+///
+/// `nature` est le code SQLite (étendu, puis son nom), jamais le message ; `texte` est le texte d'avant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EchecDeRequete {
+    Support { nature: String, texte: String },
+    Occupee { nature: String, texte: String },
+    Produit(String),
+    Moteur { nature: String, texte: String },
+}
+
+impl EchecDeRequete {
+    /// Le texte que `run_query_ex` rend, INCHANGÉ, à ses autres appelants.
+    pub(crate) fn texte(&self) -> &str {
+        match self {
+            EchecDeRequete::Support { texte, .. } | EchecDeRequete::Occupee { texte, .. } | EchecDeRequete::Moteur { texte, .. } => texte,
+            EchecDeRequete::Produit(phrase) => phrase,
+        }
+    }
+
+    /// Une erreur du moteur hors interruption, traduite par `sqlite_plafond::message_erreur` (texte d'avant) :
+    /// le refus du budget mémoire et le refus d'un motif noté sur ce fil (texte ÉGAL) sont des phrases du produit,
+    /// le reste est classé par son code.
+    pub(crate) fn du_moteur(e: &rusqlite::Error) -> Self {
+        let texte = sqlite_plafond::message_erreur(e);
+        if matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::OutOfMemory)) {
+            return EchecDeRequete::Produit(texte);
+        }
+        let motif_refuse = PHRASE_DU_MOTIF_REFUSE.with(|p| p.borrow_mut().take());
+        if motif_refuse.as_deref() == Some(texte.as_str()) {
+            return EchecDeRequete::Produit(texte);
+        }
+        Self::par_le_code(e, texte)
+    }
+
+    /// Le support ou le moteur, par le CODE seul ; `texte` est celui que le site rendait.
+    fn par_le_code(e: &rusqlite::Error, texte: String) -> Self {
+        let nature = nature_de_l_echec(e);
+        match code_de_l_echec(e) {
+            Some(f) if code_du_support(f.code) => EchecDeRequete::Support { nature, texte },
+            Some(f) if code_de_base_occupee(f.code) => EchecDeRequete::Occupee { nature, texte },
+            _ => EchecDeRequete::Moteur { nature, texte },
+        }
+    }
+
+    /// Pose la classe sur le fil courant pour `en_classant`, et rend le texte d'avant.
+    fn noter(self) -> String {
+        let texte = self.texte().to_string();
+        DERNIER_ECHEC_DU_FIL.with(|d| *d.borrow_mut() = Some(self));
+        texte
+    }
+}
+
+thread_local! {
+    /// Le dernier échec classé par le cœur d'exécution SUR CE FIL (`EchecDeRequete::noter`).
+    static DERNIER_ECHEC_DU_FIL: std::cell::RefCell<Option<EchecDeRequete>> = const { std::cell::RefCell::new(None) };
+    /// La phrase du dernier motif refusé par une UDF SUR CE FIL (`refus_du_motif_note`), remise à zéro à chaque
+    /// énoncé (`run_on_conn`) et consommée par le classeur.
+    static PHRASE_DU_MOTIF_REFUSE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `P10.29-l` (vague AR) — LES CODES D'UNE BASE OCCUPÉE (verrou tenu par un autre lecteur ou écrivain, au-delà du
+/// délai d'attente) : un état passager, ni une faute de la requête ni une panne du support.
+pub(crate) fn code_de_base_occupee(code: rusqlite::ErrorCode) -> bool {
+    matches!(code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+}
+
+/// `P10.29-l` (vague AR) — LES CODES QUI ACCUSENT LE SUPPORT DE LA BASE : E/S, ouverture, disque plein,
+/// corruption, fichier qui n'est pas une base, protocole de verrou. MÊME ensemble que `est_erreur_du_support`
+/// (`sqlite_plafond.rs`, privée) ; l'égalité des deux est jugée par un témoin qui lit la ligne `[sqlite]` que
+/// celle-ci fait écrire, code par code.
+pub(crate) fn code_du_support(code: rusqlite::ErrorCode) -> bool {
+    use rusqlite::ErrorCode as C;
+    matches!(
+        code,
+        C::SystemIoFailure | C::CannotOpen | C::DiskFull | C::DatabaseCorrupt | C::NotADatabase | C::FileLockingProtocolFailed
+    )
+}
+
+/// La NATURE d'un échec, par liste blanche : le code SQLite (étendu, puis son nom) — celui d'un échec du moteur comme
+/// celui d'une erreur de saisie (`SqlInputError`, dont le texte recopie l'énoncé) —, ou un libellé fixe pour une
+/// erreur sans code. Jamais le message.
+fn nature_de_l_echec(e: &rusqlite::Error) -> String {
+    match code_de_l_echec(e) {
+        Some(f) => format!("code SQLite {} ({:?})", f.extended_code, f.code),
+        None => "erreur hors du code SQLite".to_string(),
+    }
+}
+
+/// Le code SQLite d'un échec : celui d'un `SqliteFailure`, ou celui que porte une erreur de saisie (`SqlInputError`,
+/// rendue à la préparation quand le moteur situe le jeton fautif), que `sqlite_error_code()` ne voit pas.
+fn code_de_l_echec(e: &rusqlite::Error) -> Option<&rusqlite::ffi::Error> {
+    e.sqlite_error().or_else(|| std::error::Error::source(e).and_then(|s| s.downcast_ref::<rusqlite::ffi::Error>()))
+}
+
+/// La nature d'un échec dont aucune classe n'a été notée sur le fil : il vient d'ailleurs que du cœur
+/// d'exécution (hydratation du tier froid, noyaux vectorisés).
+pub(crate) const NATURE_HORS_DU_COEUR: &str = "erreur hors du cœur d'exécution";
+
+/// `P10.29-l` (vague AR) — EXÉCUTE `f` (un appel de `run_query_ex`, de `run_on_conn` ou d'une voie froide qui
+/// l'emprunte) et rend la CLASSE de son échec. À appeler DANS la tâche bloquante, sur le fil qui exécute. La note
+/// du fil est effacée AVANT l'appel ; elle n'est retenue que si son texte est EXACTEMENT celui de l'échec rendu
+/// (sinon l'échec vient d'un autre producteur, après une note qu'il a ignorée). Toute autre issue est `Moteur`
+/// sous `NATURE_HORS_DU_COEUR` : jamais servie telle quelle.
+pub(crate) fn en_classant<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, EchecDeRequete> {
+    DERNIER_ECHEC_DU_FIL.with(|d| *d.borrow_mut() = None);
+    f().map_err(|texte| match DERNIER_ECHEC_DU_FIL.with(|d| d.borrow_mut().take()) {
+        Some(note) if note.texte() == texte => note,
+        _ => EchecDeRequete::Moteur { nature: NATURE_HORS_DU_COEUR.to_string(), texte },
+    })
 }
 
 // Instrument de TEST seulement (`P10.31-y`) : un point d'arrêt juste avant la préparation, sur le fil
@@ -1285,6 +1435,9 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
     // ferait passer une annulation client ou un dépassement de budget pour un franchissement de quota,
     // c'est-à-dire un refus qui nomme la mauvaise cause.
     sqlite_plafond::oublier_refus_de_quota();
+    // `P10.29-l` (vague AR) — même règle pour la phrase d'un motif refusé : une note laissée par un énoncé
+    // précédent ne classe pas l'échec de celui-ci.
+    PHRASE_DU_MOTIF_REFUSE.with(|p| *p.borrow_mut() = None);
 
     let result = (|| -> Result<Value, String> {
         let t0 = Instant::now();
@@ -1298,13 +1451,15 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
                 f()
             }
         });
+        #[cfg(test)]
+        panne_de_test_au_coeur::armer_si_demandee(conn, db_path, sql);
         // `P10.31-y` — une interruption pendant l'analyse est CLASSÉE (annulation, quota ou budget).
         let mut stmt = match conn.prepare(sql) {
             Ok(stmt) => stmt,
             Err(e) => return classer_l_echec(&e, &cancelled, budget),
         };
         if !stmt.readonly() {
-            return Err("seules les requêtes en lecture (SELECT/WITH) sont autorisées".into());
+            return Err(EchecDeRequete::Produit("seules les requêtes en lecture (SELECT/WITH) sont autorisées".into()).noter());
         }
         let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let ncol = cols.len();
@@ -1327,7 +1482,11 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
                     }
                     let mut r = Vec::with_capacity(ncol);
                     for i in 0..ncol {
-                        let v = match row.get_ref(i).map_err(|e| sqlite_plafond::message_erreur(&e))? {
+                        // `P10.29-l` (vague AR) : même classeur qu'aux trois autres sites (une colonne n'est jamais
+                        // interrompue : le texte rendu est celui de `message_erreur`, comme avant). HORS D'ATTEINTE :
+                        // `get_ref` (rusqlite 0.31) n'échoue que sur un indice hors bornes, et `i < ncol`, le nombre
+                        // de colonnes de CET énoncé (`stmt.column_names()` ci-dessus) ; aucun témoin ne peut l'armer.
+                        let v = match row.get_ref(i).or_else(|e| classer_l_echec(&e, &cancelled, budget))? {
                             rusqlite::types::ValueRef::Null => Value::Null,
                             rusqlite::types::ValueRef::Integer(n) => json!(n),
                             rusqlite::types::ValueRef::Real(f) => json!(f),
@@ -1368,4 +1527,86 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
     // Droppés ICI, dans l'ordre inverse de déclaration : d'abord `_cancel_guard` (entrée retirée du
     // registre, même en erreur/timeout : plus aucune annulation ne vise cette connexion), puis la garde
     // (signal + join -> l'interruption ne peut plus tomber sur cette connexion).
+}
+
+/// Instrument de TEST seulement (`P10.29-l`, vague AR) : arme la connexion d'exécution d'une base, au point de
+/// passage de toute lecture (`run_on_conn`, connexion du pool comme connexion d'union du tier froid). Le compte de
+/// pagination (`SELECT COUNT(*) AS n FROM (SELECT 1 FROM (…`) n'est pas visé : la panne tombe sur la PAGE, celle
+/// dont la route sert l'échec. La demande est retirée quand elle arme (`encore_demandee` dit si elle a servi) ; la
+/// connexion armée le reste : le témoin vide ensuite les connexions au repos de la base.
+#[cfg(test)]
+pub(crate) mod panne_de_test_au_coeur {
+    use super::*;
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    /// Le message que l'UDF `regexp` armée par `ErreurDuMoteur` écrit (il ne doit jamais atteindre un client).
+    pub(crate) const MESSAGE_DE_LA_PANNE_DU_MOTEUR: &str = "panne de test du moteur";
+
+    /// Une panne par classe : refus de l'autorisateur sur `event.message` (moteur), interruption par le rappel de
+    /// progression (produit : budget de temps), erreur d'E/S rendue au pas par l'UDF `regexp` (support), base
+    /// occupée rendue au pas par l'UDF `regexp` (`SQLITE_BUSY`), message d'erreur écrit par l'UDF `regexp` (moteur).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(crate) enum PanneAuCoeur {
+        RefusDeLAutorisateur,
+        Interruption,
+        ErreurDuSupport,
+        BaseOccupee,
+        #[cfg_attr(not(feature = "cold_tier"), allow(dead_code))]
+        ErreurDuMoteur,
+    }
+
+    static DEMANDES: std::sync::OnceLock<Mutex<HashMap<String, PanneAuCoeur>>> = std::sync::OnceLock::new();
+
+    fn demandes() -> &'static Mutex<HashMap<String, PanneAuCoeur>> {
+        DEMANDES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub(crate) fn demander(db_path: &str, panne: PanneAuCoeur) {
+        demandes().lock().insert(db_path.to_string(), panne);
+    }
+
+    pub(crate) fn encore_demandee(db_path: &str) -> bool {
+        demandes().lock().contains_key(db_path)
+    }
+
+    pub(crate) fn retirer(db_path: &str) {
+        demandes().lock().remove(db_path);
+    }
+
+    pub(super) fn armer_si_demandee(conn: &Connection, db_path: &str, sql: &str) {
+        if sql.starts_with("SELECT COUNT(*) AS n FROM (SELECT 1 FROM (") {
+            return;
+        }
+        let Some(panne) = demandes().lock().remove(db_path) else {
+            return;
+        };
+        let utf8 = rusqlite::functions::FunctionFlags::SQLITE_UTF8;
+        match panne {
+            PanneAuCoeur::RefusDeLAutorisateur => {
+                conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
+                    AuthAction::Read { table_name, column_name } if table_name == "event" && column_name == "message" => Authorization::Deny,
+                    _ => Authorization::Allow,
+                }));
+            }
+            PanneAuCoeur::Interruption => {
+                conn.progress_handler(1, Some(|| true));
+            }
+            PanneAuCoeur::ErreurDuSupport => {
+                // Sans message : un message ferait rabattre le code sur SQLITE_ERROR (`sqlite3_result_error`).
+                let _ = conn.create_scalar_function("regexp", 2, utf8, |_ctx| -> rusqlite::Result<bool> {
+                    Err(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR_READ), None))
+                });
+            }
+            PanneAuCoeur::BaseOccupee => {
+                let _ = conn.create_scalar_function("regexp", 2, utf8, |_ctx| -> rusqlite::Result<bool> {
+                    Err(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY), None))
+                });
+            }
+            PanneAuCoeur::ErreurDuMoteur => {
+                let _ = conn.create_scalar_function("regexp", 2, utf8, |_ctx| -> rusqlite::Result<bool> {
+                    Err(rusqlite::Error::UserFunctionError(MESSAGE_DE_LA_PANNE_DU_MOTEUR.into()))
+                });
+            }
+        }
+    }
 }

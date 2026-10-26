@@ -291,17 +291,22 @@ fn sql_nomme(sql: &str, ident: &str) -> bool {
 /// columnarise que cette table (`P10.5-h` — il n'existe aucun miroir froid de `metric`), et un panneau
 /// qui lit `event_rollup` n'a jamais eu accès au pré-agrégé froid. L'appliquer à une autre famille
 /// annoncerait un horizon PLUS RÉCENT que le vrai : un aveu faux, pas un aveu prudent.
+///
+/// `P10.20-b` (vague AR) — `Err(clé)` : le réglage de rétention dont la frontière dérive est écrit et illisible. Aucune
+/// frontière n'est fabriquée sur le repli env/défaut ; l'horizon le dit (`RAISON_HORIZON_NON_MESURE`, `reglage_non_lu`).
 #[cfg(feature = "cold_tier")]
-fn borne_froide(conn: &Connection, conf: &HashMap<String, String>, now_s: i64, nomme_event: bool) -> Option<i64> {
+fn borne_froide(conn: &Connection, conf: &HashMap<String, String>, now_s: i64, nomme_event: bool) -> Result<Option<i64>, &'static str> {
     if !nomme_event || !crate::cold_store::cold_tier_runtime_on(conf) {
-        return None;
+        return Ok(None);
     }
-    let rd = retention_effective(conn, conf, "retention_days");
-    Some(crate::cold_store::cold_query_boundary(conn, conf, now_s, rd))
+    let Ok(rd) = retention_effective_lue(conn, conf, "retention_days") else {
+        return Err("retention_days");
+    };
+    Ok(Some(crate::cold_store::cold_query_boundary(conn, conf, now_s, rd)))
 }
 #[cfg(not(feature = "cold_tier"))]
-fn borne_froide(_conn: &Connection, _conf: &HashMap<String, String>, _now_s: i64, _nomme_event: bool) -> Option<i64> {
-    None
+fn borne_froide(_conn: &Connection, _conf: &HashMap<String, String>, _now_s: i64, _nomme_event: bool) -> Result<Option<i64>, &'static str> {
+    Ok(None)
 }
 
 /// L'HORIZON D'UNE RÉPONSE DE PANNEAU. REND TOUJOURS UN OBJET — un aveu conditionnel serait
@@ -346,13 +351,23 @@ pub(crate) fn horizon_et_frontiere_du_sql(db_path: &str, conf: &HashMap<String, 
     // UNE SEULE prise du pool de LECTURE (jamais le mutex d'écriture partagé). DÉFAUT EXPLICITE : pool
     // indisponible -> `None`, et l'aveu le dit SANS horizon_ts. Un plancher calculé hors base serait
     // indiscernable d'un plancher mesuré.
-    let (mesure, frontiere): (Option<(i64, &'static str)>, Option<i64>) = read_with(db_path, (None, None), |c| {
+    // `P10.20-b` (vague AR) — UN RÉGLAGE ÉCRIT ILLISIBLE NE FABRIQUE NI PLANCHER NI FRONTIÈRE. Avant, `retention_effective`
+    // rendait le repli env/défaut et l'horizon était publié comme mesuré sur une valeur que l'admin n'a pas écrite. La
+    // première clé non lue est gardée (`non_lue`) et l'aveu dit « non établi », sans `horizon_ts`.
+    let (mesure, frontiere, non_lue): (Option<(i64, &'static str)>, Option<i64>, Option<&'static str>) = read_with(db_path, (None, None, None), |c| {
         let mut haut: Option<(i64, &'static str)> = None;
+        let mut non_lue: Option<&'static str> = None;
         for (cle, unite) in &cles {
             // UNE CLÉ INCONNUE DE `RETENTION_FIELDS` REND 0, ET UN 0 ICI SERAIT INDISCERNABLE D'UN POOL
             // INDISPONIBLE : le témoin `chaque_famille_de_retention_nomme_une_cle_reelle_avec_sa_vraie_unite`
             // interdit cet état EN AMONT, sur la table des familles, plutôt que de le rattraper ici.
-            let valeur = retention_effective(c, conf, cle);
+            let valeur = match retention_effective_lue(c, conf, cle) {
+                Ok(valeur) => valeur,
+                Err(_) => {
+                    non_lue.get_or_insert(*cle);
+                    continue;
+                }
+            };
             if valeur <= 0 {
                 continue;
             }
@@ -363,14 +378,30 @@ pub(crate) fn horizon_et_frontiere_du_sql(db_path: &str, conf: &HashMap<String, 
                 haut = Some((ts, RAISON_RETENTION));
             }
         }
-        let frontiere = borne_froide(c, conf, now_s, nomme_event);
+        let frontiere = match borne_froide(c, conf, now_s, nomme_event) {
+            Ok(frontiere) => frontiere,
+            Err(cle) => {
+                non_lue.get_or_insert(cle);
+                None
+            }
+        };
         if let Some(b) = frontiere {
             if haut.map(|(h, _)| b > h).unwrap_or(true) {
                 haut = Some((b, RAISON_COLD));
             }
         }
-        (haut, frontiere)
+        (haut, frontiere, non_lue)
     });
+    if let Some(cle) = non_lue {
+        cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
+        cov["reglage_non_lu"] = json!(cle);
+        cov["notice"] = json!(format!(
+            "l'horizon de conservation de ce panneau n'est PAS établi : le réglage de rétention écrit `{cle}` n'a pas pu \
+             être lu (valeur non entière, ou lecture refusée), et aucun horizon n'est calculé sur l'environnement ou le \
+             défaut. Cette réponse ne dit donc RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas."
+        ));
+        return (cov, frontiere);
+    }
     let Some((horizon_ts, raison)) = mesure else {
         cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
         cov["notice"] = json!(

@@ -395,10 +395,14 @@ pub(crate) fn ledger_sink_write(kind: &str, target: &str, lines: &[String], conf
             // CONFINÉE à la racine d'export (canonicalisée, anti-`..`), l'ouverture est O_NOFOLLOW (jamais suivre
             // un lien substitué — anti-TOCTOU) et on RE-vérifie sur le FD ouvert que c'est un fichier RÉGULIER
             // (pas de FIFO/-device -> pas de hang/blocage/remplissage arbitraire). Le chemin CLI opérateur
-            // (`confine_root=None`, shell de confiance) garde le comportement libre historique.
+            // (`confine_root=None`, shell de confiance) reste LIBRE, sauf la base vivante : `P10.33-w` (reste),
+            // `refuser_une_cible_libre_sur_la_base_vivante`.
             let full: std::path::PathBuf = match confine_root {
                 Some(root) => ledger_file_target_validate(root, target)?,
-                None => std::path::PathBuf::from(target),
+                None => {
+                    refuser_une_cible_libre_sur_la_base_vivante(std::path::Path::new(target))?;
+                    std::path::PathBuf::from(target)
+                }
             };
             let mut oo = std::fs::OpenOptions::new();
             oo.create(true).append(true);
@@ -558,6 +562,90 @@ fn refuser_une_cible_sur_la_base_vivante(
                         nom.to_string_lossy()
                     ));
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `P10.33-w` (reste) — suite du refus d'une cible LIBRE (ligne de commande) déjà là : elle est, par `stat`, le même
+/// fichier (périphérique, inode) qu'un fichier de base, nommé à la suite.
+pub(crate) const CIBLE_LIBRE_EST_UN_FICHIER_DE_BASE: &str =
+    "la cible de la ligne de commande est le même fichier (périphérique et inode, par chemin, lien dur ou lien symbolique) que";
+/// `P10.33-w` (reste) — suite du refus d'une cible LIBRE pas encore là : la créer revient à créer, dans le répertoire de
+/// la base, le fichier de base nommé à la suite (`-wal`, `-shm` ou `-journal` absents d'une base fermée).
+pub(crate) const CIBLE_LIBRE_CREERAIT_UN_FICHIER_DE_BASE: &str =
+    "la cible de la ligne de commande créerait, dans le répertoire de la base, le fichier de base";
+
+/// Le chemin au bout des liens symboliques de `cible`, lus par `readlink` (aucun descripteur ouvert) ; s'arrête sur ce qui
+/// n'est pas un lien (absent compris) et après 40 sauts (au-delà, l'ouverture rend elle-même `ELOOP`). Un lien PENDANT
+/// vers un compagnon absent se juge ainsi sur ce que l'ouverture en création ferait naître.
+fn cible_au_bout_des_liens(cible: &std::path::Path) -> std::path::PathBuf {
+    let mut chemin = cible.to_path_buf();
+    for _ in 0..40 {
+        let Ok(md) = std::fs::symlink_metadata(&chemin) else { break };
+        if !md.file_type().is_symlink() {
+            break;
+        }
+        let Ok(destination) = std::fs::read_link(&chemin) else { break };
+        chemin = if destination.is_absolute() {
+            destination
+        } else {
+            chemin.parent().unwrap_or_else(|| std::path::Path::new(".")).join(destination)
+        };
+    }
+    chemin
+}
+
+/// `P10.33-w` (reste) — LA CIBLE LIBRE DE `ledger-export --out` N'EST JAMAIS LA BASE VIVANTE. Le chemin de la ligne de
+/// commande n'est pas confiné (shell de confiance) et ne l'est toujours pas : un chemin hors base reste accepté, y compris
+/// dans le répertoire de la base. Refusés, pour la base de `PLUME_DB` et celle du plan de contrôle, chacune avec ses
+/// compagnons `-wal`, `-shm`, `-journal` :
+///  1. une cible DÉJÀ LÀ qui est le même fichier (périphérique, inode, par `stat` qui suit les liens) qu'un fichier de
+///     base : la base nommée par son chemin, un lien dur, un lien symbolique, un montage lié ;
+///  2. une cible PAS ENCORE LÀ (au bout de ses liens symboliques) qui porte le nom d'un fichier de base dans le
+///     répertoire de la base (même périphérique et inode de répertoire) : l'ouverture en création ferait naître un `-wal`
+///     ou un `-journal` de JSONL à côté de la base.
+/// Aucune ouverture : `std::fs::metadata`, `symlink_metadata` et `read_link` seuls (`P10.33-u`). Le refus commence par
+/// `REFUS_PUITS_SUR_LA_BASE_VIVANTE` ; `main` l'écrit sur stderr et sort en 2 (bras `ledger-export`).
+fn refuser_une_cible_libre_sur_la_base_vivante(cible: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let conf = load_config();
+    let base = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
+    let controle = crate::state::control_db_path(&conf, &base);
+    let meme_inode = |a: &std::fs::Metadata, b: &std::fs::Metadata| a.dev() == b.dev() && a.ino() == b.ino();
+    let effective = cible_au_bout_des_liens(cible);
+    let md_cible = std::fs::metadata(&effective).ok();
+    let md_parent_de_la_cible = match effective.parent() {
+        Some(d) if !d.as_os_str().is_empty() => std::fs::metadata(d).ok(),
+        _ => std::fs::metadata(".").ok(),
+    };
+    for chemin in [base.as_str(), controle.as_str()] {
+        let chemin = std::path::Path::new(chemin);
+        let Some(nom_de_base) = chemin.file_name() else { continue };
+        let dossier = match chemin.parent() {
+            Some(d) if !d.as_os_str().is_empty() => d,
+            _ => std::path::Path::new("."),
+        };
+        let md_dossier = std::fs::metadata(dossier).ok();
+        for suffixe in SUFFIXES_DES_FICHIERS_DE_BASE {
+            let mut nom = nom_de_base.to_os_string();
+            nom.push(suffixe);
+            let fichier = dossier.join(&nom);
+            if let Some(md) = md_cible.as_ref() {
+                if std::fs::metadata(&fichier).map(|f| meme_inode(&f, md)).unwrap_or(false) {
+                    return Err(format!(
+                        "{REFUS_PUITS_SUR_LA_BASE_VIVANTE} : {CIBLE_LIBRE_EST_UN_FICHIER_DE_BASE} {} ; écrire l'export ailleurs",
+                        nom.to_string_lossy()
+                    ));
+                }
+            } else if effective.file_name() == Some(nom.as_os_str())
+                && matches!((md_parent_de_la_cible.as_ref(), md_dossier.as_ref()), (Some(a), Some(b)) if meme_inode(a, b))
+            {
+                return Err(format!(
+                    "{REFUS_PUITS_SUR_LA_BASE_VIVANTE} : {CIBLE_LIBRE_CREERAIT_UN_FICHIER_DE_BASE} {} ; écrire l'export ailleurs",
+                    nom.to_string_lossy()
+                ));
             }
         }
     }

@@ -71,6 +71,10 @@ pub(crate) enum EtatTierFroid {
     Inactif,
     /// (3) Compilée ET active : les nombres qui suivent sont ceux que le processus applique.
     Actif { racine: PathBuf, fenetre_chaude_jours: i64, retention_jours: i64, inventaire: Inventaire },
+    /// (3 bis) `P10.20-b` (vague AR) — compilée ET active, mais le réglage `retention_days` écrit n'a pas pu être lu : la
+    /// fenêtre chaude et la rétention cold en dérivent, aucune n'est annoncée (jamais le repli env/défaut). La passe de
+    /// vieillissement saute ce tour sur le même réglage (`rollups.rs`, `fenetre_de_retention_lue`).
+    ActifReglageNonLu { racine: PathBuf, inventaire: Inventaire },
 }
 
 /// CE QU'IL Y A SUR LE DISQUE — et, quand ce n'est pas mesurable, le fait qu'on ne l'a PAS mesuré.
@@ -158,6 +162,13 @@ pub(crate) fn banniere(etat: EtatTierFroid) -> String {
         EtatTierFroid::Actif { racine, fenetre_chaude_jours, retention_jours, inventaire } => format!(
             "tier froid ACTIF — racine {}, fenêtre chaude {fenetre_chaude_jours} j (au-delà, un jour \
              révolu part en Parquet et quitte le hot), rétention cold {retention_jours} j, {}",
+            racine.display(),
+            inventaire.phrase()
+        ),
+        EtatTierFroid::ActifReglageNonLu { racine, inventaire } => format!(
+            "tier froid ACTIF — racine {}, fenêtre chaude et rétention cold NON LUES : le réglage de rétention écrit \
+             (`retention_days`) n'a pas pu être lu, aucune des deux n'est annoncée (jamais le repli env/défaut) et la \
+             passe de vieillissement saute tant qu'il n'est pas réécrit, {}",
             racine.display(),
             inventaire.phrase()
         ),
@@ -277,9 +288,12 @@ pub(crate) fn etat(conn: &Connection, conf: &HashMap<String, String>, db_path: &
     if !cold_store::cold_tier_runtime_on(conf) {
         return EtatTierFroid::Inactif; // gate fermé -> on ne touche NI la base NI le disque.
     }
-    let retention_globale = retention_effective(conn, conf, "retention_days");
     let racine = cold_store::cold_root(conf, db_path);
     let inv = inventaire(&racine, PLAFOND_ENTREES);
+    // `P10.20-b` (vague AR) — un réglage écrit illisible n'annonce pas des nombres calculés sur le repli.
+    let Ok(retention_globale) = retention_effective_lue(conn, conf, "retention_days") else {
+        return EtatTierFroid::ActifReglageNonLu { racine, inventaire: inv };
+    };
     EtatTierFroid::Actif {
         fenetre_chaude_jours: cold_store::cold_hot_window_days(conn, conf, retention_globale),
         retention_jours: cold_store::cold_retention_days(conf, retention_globale),

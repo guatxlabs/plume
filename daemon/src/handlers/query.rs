@@ -762,15 +762,17 @@ pub(crate) fn keyset_finalize(v: &mut Value, lim: i64, espace_froid: Option<(&st
 /// peut plus être servi tel quel — sa marque le dit fabriqué par cette voie alors qu'il est remonté au-dessus
 /// de la frontière (fenêtre chaude élargie par l'exploitant), ou sa voie ne sert plus cette page (second
 /// environnement scellé entre deux pages, garde de gate) — et il sort en 422 nommé, avec sa cause machine et
-/// l'ordre de reprendre sans curseur, comme les autres refus de curseur du handler. Une ERREUR est ce qui
-/// peut réussir à la prochaine tentative (bras chaud sous budget, lecture froide qui échoue) et sort en 5xx.
+/// l'ordre de reprendre sans curseur, comme les autres refus de curseur du handler. Une ERREUR est l'échec du
+/// bras chaud ou de la lecture froide, CLASSÉ comme aux autres sites d'`/api/query` (`P10.29-l`, vague AR :
+/// `refus_de_requete`) : 503 à phrase fixe pour le support ou une base occupée, phrase du produit à l'octet,
+/// phrase fixe en 400 pour le moteur — jamais son texte, ni dans un 500.
 /// Avant : les deux formes sortaient en erreur serveur nue, et le site d'appel déclarait retriable ce qui ne
 /// l'était pas — le client rejouait un curseur mort jusqu'à ce qu'un humain lise l'incident.
 #[cfg(feature = "cold_tier")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IssueKeysetVectorise {
     Refus { reason: &'static str, message: String },
-    Erreur(String),
+    Erreur(crate::query_exec::EchecDeRequete),
 }
 
 /// Les deux lecteurs qui servent aux TÉMOINS à juger une issue sur sa cause machine et sur ce qu'elle
@@ -781,7 +783,7 @@ impl IssueKeysetVectorise {
     pub(crate) fn texte(&self) -> &str {
         match self {
             IssueKeysetVectorise::Refus { message, .. } => message,
-            IssueKeysetVectorise::Erreur(e) => e,
+            IssueKeysetVectorise::Erreur(e) => e.texte(),
         }
     }
     /// La cause machine d'un refus, `None` pour une erreur : c'est ce que le client reçoit dans `reason`.
@@ -960,7 +962,8 @@ pub(crate) fn cold_keyset_vectorized_page(
     let (hot_cols, mut rows): (Vec<Value>, Vec<Value>) = {
         let hot_sql = format!("SELECT * FROM ({sql}) WHERE ts >= {boundary}");
         let hot_page = page_sql(&hot_sql, keyset_plan(cursor, 0), hot_n);
-        match run_query_ex(db_path, &hot_page, budget_ms, qid) {
+        // `P10.29-l` (vague AR) — classé ICI, sur le fil de la tâche bloquante qui exécute (`en_classant`).
+        match crate::query_exec::en_classant(|| run_query_ex(db_path, &hot_page, budget_ms, qid)) {
             Ok(hv) => {
                 let cols = hv.get("columns").and_then(|c| c.as_array()).cloned().unwrap_or_default();
                 let rws = hv.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default();
@@ -974,7 +977,7 @@ pub(crate) fn cold_keyset_vectorized_page(
             // Le fallback légitime = formes JAMAIS routables (curseur oracle dès la page 1) via les `Ok(None)` plus bas.
             // La sonde `LIMIT 0` du cas pur-froid emprunte le MÊME refus : une référence qu'on n'a pas pu
             // dériver ne se remplace pas par « aucune comparaison ».
-            Err(e) => return Err(IssueKeysetVectorise::Erreur(format!("hot keyset (fail-closed, cohérence espace-id): {e}"))),
+            Err(e) => return Err(IssueKeysetVectorise::Erreur(e)),
         }
     };
     let hot_count = rows.len() as i64;
@@ -982,8 +985,10 @@ pub(crate) fn cold_keyset_vectorized_page(
     let cold_limit = if pure_cold { n } else { (n - hot_count).max(0) };
     let cold_cursor = if pure_cold { cursor } else { None };
     let (cold_cols, cold_rows) = if cold_limit > 0 {
-        match crate::cold_store::cold_keyset_page(db_path, conf, env, from, to, boundary, soql, true, cold_cursor, cold_limit as usize, preds)
-            .map_err(IssueKeysetVectorise::Erreur)?
+        match crate::query_exec::en_classant(|| {
+            crate::cold_store::cold_keyset_page(db_path, conf, env, from, to, boundary, soql, true, cold_cursor, cold_limit as usize, preds)
+        })
+        .map_err(IssueKeysetVectorise::Erreur)?
         {
             Some(x) => x,
             // Part froide non routable (garde de gate, masque, forme, multi-env non scopé) -> repli
@@ -1065,6 +1070,64 @@ pub(crate) fn avec_couverture(mut v: Value, cov: &Value) -> Value {
     }
     v
 }
+
+/// `P10.29-l` (vague AR) — CE QUE `/api/query` ET `/api/export` SERVENT QUAND LE MOTEUR N'A PAS RENDU LA
+/// REQUÊTE. Les neuf sites servaient `bad_req(e)`, `e` étant le texte de `run_query_ex` (ou d'une voie froide qui
+/// l'emprunte), et le keyset vectorisé du tier froid (`cold_keyset_vectorized_page`) le servait dans un 500
+/// (`server_err`) : au rôle lecteur, le refus de l'autorisateur citait l'énoncé compilé, l'UDF `regexp` le motif,
+/// l'hydratation froide le chemin d'un fichier, et une erreur d'E/S se lisait comme une faute de l'analyste. La
+/// classe vient du producteur (`query_exec::en_classant`, décidée par le CODE rusqlite, jamais par le texte) :
+///  * erreur du SUPPORT de la base -> 503, `CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE`, identifiant de corrélation ;
+///  * base OCCUPÉE (`SQLITE_BUSY`, `SQLITE_LOCKED`) -> 503, `CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE`, identifiant ;
+///  * phrase du PRODUIT (annulation, budget de temps, lecture seule, budget mémoire, quota de déversement, motif
+///    refusé par `regex_de_requete`) -> 400,
+///    à l'octet, comme avant : la console les reconnaît (`showQError`, `web/viz.js`) ;
+///  * tout autre texte du moteur -> 400, `REQUETE_REJETEE_PAR_LE_MOTEUR`.
+/// Le texte du moteur part à UNE ligne `[query] WARN` (route, tenant de l'appelant, nature du code, texte échappé
+/// sur une ligne) ; le producteur ne connaît que le chemin de la base, c'est donc la route qui nomme le tenant. La
+/// ligne du support ne porte que la nature et l'identifiant servi : le texte d'une ouverture ratée cite le chemin de
+/// la base, et `sqlite_plafond::message_erreur` journalise déjà la description d'un échec du support au pas
+/// (ligne `[sqlite]`). La phrase du produit ne journalise rien : elle est servie entière.
+/// La console lit la cause entière d'un 503 nommé : `web/viz.js:945-947` lit le corps quel que soit le statut et
+/// `web/viz.js:3058`/`:3264` le passent à `showQError` ; l'export lit `refusDUneLectureServie` (`web/app.js:174`,
+/// `web/core.js:1281-1287`), qui garde la cause nommée d'un 503 au lieu de la phrase de passerelle.
+pub(crate) fn refus_de_requete(echec: crate::query_exec::EchecDeRequete, route: &str, tenant: &str) -> Response {
+    use crate::query_exec::EchecDeRequete as Echec;
+    match echec {
+        Echec::Produit(phrase) => bad_req(phrase),
+        Echec::Support { nature, .. } => {
+            let (id, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE);
+            let id = id.unwrap_or_default();
+            eprintln!("[query] WARN requête non servie, erreur du support de la base ({route}, tenant '{tenant}', {id}) : {nature}");
+            refus
+        }
+        Echec::Occupee { nature, .. } => {
+            let (id, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE);
+            let id = id.unwrap_or_default();
+            eprintln!("[query] WARN requête non servie, base occupée ({route}, tenant '{tenant}', {id}) : {nature}");
+            refus
+        }
+        Echec::Moteur { nature, texte } => {
+            eprintln!("[query] WARN requête rejetée par le moteur ({route}, tenant '{tenant}') : {nature} : {texte:?}");
+            bad_req(REQUETE_REJETEE_PAR_LE_MOTEUR)
+        }
+    }
+}
+
+/// `P10.29-l` (vague AR) — la requête n'a pas été servie parce que la base n'a pas pu être lue : ce n'est ni un
+/// résultat vide ni une faute de la requête.
+pub(crate) const CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE: &str = "REQUÊTE NON SERVIE : la base n'a pas pu être lue \
+     (erreur du support : entrée-sortie, disque, fichier illisible ou corrompu) — ce n'est PAS un résultat vide, et rien \
+     n'est rendu. Réessayez ; si le refus persiste, la base est illisible : l'exploitant en trouve le code au journal.";
+
+/// `P10.29-l` (vague AR) — la base est occupée par un autre lecteur ou écrivain : ce n'est ni une faute de la requête
+/// ni une base illisible.
+pub(crate) const CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE: &str = "REQUÊTE NON SERVIE : la base est occupée (verrou tenu \
+     par une autre opération) — ce n'est PAS un résultat vide, et rien n'est rendu. Réessayez dans un instant.";
+
+/// `P10.29-l` (vague AR) — le moteur a refusé la requête : la phrase ne cite ni l'énoncé, ni le motif, ni la colonne.
+pub(crate) const REQUETE_REJETEE_PAR_LE_MOTEUR: &str = "requête REFUSÉE par le moteur (ce n'est pas un résultat vide) : \
+     syntaxe, champ, motif ou accès rejeté — rien n'est rendu ; le détail est au journal de l'exploitant.";
 
 pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(body): Json<Value>) -> Response {
     let _mt = crate::search_timer(); // #51 DAY-2 OPS : latence recherche (p50/p95) enregistrée à la sortie (Drop)
@@ -1490,10 +1553,10 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                         }
                         Ok(Ok(None)) => { /* non routable -> FALLBACK cold_union_query ci-dessous */ }
                         // `P10.5-g` (b) — l'issue est TYPÉE : un refus déterministe sort en 422 nommé (le client
-                        // reprend sans curseur), une erreur (corruption froide, bras chaud transitoire) en 5xx
-                        // retriable — le client re-tente et reste sur le chemin vectorisé.
+                        // reprend sans curseur) ; une erreur (bras chaud, lecture froide) est CLASSÉE comme aux
+                        // autres sites (`P10.29-l`, vague AR) — jamais le texte du moteur, ni dans un 500.
                         Ok(Err(IssueKeysetVectorise::Refus { reason, message })) => return refuse_curseur_nomme(reason, message),
-                        Ok(Err(IssueKeysetVectorise::Erreur(e))) => return server_err(e),
+                        Ok(Err(IssueKeysetVectorise::Erreur(e))) => return refus_de_requete(e, "/api/query", &au.tenant),
                         Err(_) => return server_err("exécution échouée"),
                     }
                 }
@@ -1502,7 +1565,9 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
             let dbp = db_path.clone();
             let qid = qid_owned.clone();
             let res = tokio::task::spawn_blocking(move || {
-                crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ks_page, None, budget_ms, qid.as_deref(), &preds)
+                crate::query_exec::en_classant(|| {
+                    crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ks_page, None, budget_ms, qid.as_deref(), &preds)
+                })
             })
             .await;
             // #18 — la FORME de la réponse est DÉRIVÉE du GXQL, jamais affirmée ici : `render` refuse
@@ -1550,7 +1615,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     apply_rollup_stats(&mut v, &rollup_meta);
                     keyset_reponse(v, keyset_trim, &timings, &sql_for_resp)
                 }
-                Ok(Err(e)) => bad_req(e),
+                Ok(Err(e)) => refus_de_requete(e, "/api/query", &au.tenant),
                 Err(_) => server_err("exécution échouée"),
             };
         }
@@ -1563,7 +1628,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         let ks_page = page_sql(&sql, keyset_plan(cursor, offset), keyset_lim);
         let dbp = db_path.clone();
         let qid = qid_owned.clone();
-        let res = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &ks_page, budget_ms, qid.as_deref())).await;
+        let res = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&dbp, &ks_page, budget_ms, qid.as_deref()))).await;
         return match res {
             Ok(inner) => {
                 match inner {
@@ -1572,7 +1637,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                         apply_rollup_stats(&mut v, &rollup_meta); // rollup_meta = None ici (keyset désactive la route) -> served_from=raw
                         keyset_reponse(v, keyset_trim, &timings, &sql_for_resp)
                     }
-                    Err(e) => bad_req(e),
+                    Err(e) => refus_de_requete(e, "/api/query", &au.tenant),
                 }
             }
             Err(_) => server_err("exécution échouée"),
@@ -1608,11 +1673,13 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                 // résultat routé == cold_union_query (harnais de parité p4a_* / p4b_*).
                 let pure_cold = to > 0 && to < boundary;
                 let res = tokio::task::spawn_blocking(move || {
-                    if pure_cold {
-                        crate::cold_store::cold_vectorized_try(&dbp, &conf, env_s.as_deref(), from, to, boundary, &rsoql, true, budget_ms, &preds)
-                    } else {
-                        crate::cold_store::cold_vectorized_merge_try(&dbp, &conf, env_s.as_deref(), from, to, boundary, &rsoql, true, budget_ms, qidv.as_deref(), &preds)
-                    }
+                    crate::query_exec::en_classant(|| {
+                        if pure_cold {
+                            crate::cold_store::cold_vectorized_try(&dbp, &conf, env_s.as_deref(), from, to, boundary, &rsoql, true, budget_ms, &preds)
+                        } else {
+                            crate::cold_store::cold_vectorized_merge_try(&dbp, &conf, env_s.as_deref(), from, to, boundary, &rsoql, true, budget_ms, qidv.as_deref(), &preds)
+                        }
+                    })
                 })
                 .await;
                 match res {
@@ -1626,7 +1693,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                         return Json(avec_couverture(v, &couverture)).into_response();
                     }
                     Ok(Ok(None)) => { /* non vectorisable / non routable -> fallback cold_union_query ci-dessous */ }
-                    Ok(Err(e)) => return bad_req(e), // corruption cold -> fail-closed (comme l'oracle)
+                    Ok(Err(e)) => return refus_de_requete(e, "/api/query", &au.tenant), // corruption cold -> fail-closed (comme l'oracle)
                     Err(_) => return server_err("exécution échouée"),
                 }
             }
@@ -1648,7 +1715,9 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // #45), le MÊME jeu que le chemin vectorisé ci-dessus -> parité par construction + gate cap cohérent.
         let preds = cold_dim_preds;
         let res = tokio::task::spawn_blocking(move || {
-            crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &cold_page, count_sql.as_deref(), budget_ms, qid.as_deref(), &preds)
+            crate::query_exec::en_classant(|| {
+                crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &cold_page, count_sql.as_deref(), budget_ms, qid.as_deref(), &preds)
+            })
         })
         .await;
         // #18 — FORME DÉRIVÉE du GXQL. C'est ICI que le défaut mordait : `search source=auditd severity>=2 |
@@ -1697,7 +1766,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                 }
                 Json(avec_couverture(value, &couverture)).into_response()
             }
-            Ok(Err(e)) => bad_req(e),
+            Ok(Err(e)) => refus_de_requete(e, "/api/query", &au.tenant),
             Err(_) => server_err("exécution échouée"),
         };
     }
@@ -1718,7 +1787,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         let qid1 = qid_owned.clone();
         let qid2 = qid_owned.clone();
         let count_fut = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &count_sql, budget_ms, qid1.as_deref()));
-        let page_fut = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &off_page, budget_ms, qid2.as_deref()));
+        let page_fut = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&db_path, &off_page, budget_ms, qid2.as_deref())));
         let (count_res, page) = tokio::join!(count_fut, page_fut);
         // total best-effort : si le COUNT dépasse le watchdog (requête énorme), -1 -> UI ◀ ▶ sans numéros.
         let (raw_total, cause_total) = total_lu(count_res);
@@ -1744,14 +1813,14 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                         }
                         Json(avec_couverture(v, &couverture)).into_response()
                     }
-                    Err(e) => bad_req(e),
+                    Err(e) => refus_de_requete(e, "/api/query", &au.tenant),
                 }
             }
             Err(_) => server_err("exécution échouée"),
         };
     }
     let qid_c = qid_owned.clone();
-    let res = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &sql, budget_ms, qid_c.as_deref())).await;
+    let res = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&db_path, &sql, budget_ms, qid_c.as_deref()))).await;
     match res {
         Ok(inner) => {
             match inner {
@@ -1763,7 +1832,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     }
                     Json(avec_couverture(v, &couverture)).into_response()
                 }
-                Err(e) => bad_req(e),
+                Err(e) => refus_de_requete(e, "/api/query", &au.tenant),
             }
         }
         Err(_) => server_err("exécution échouée"),
@@ -2072,7 +2141,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         // #28 PHASE B — extrait du SQL COMPILÉ (`sql`, post-masquage #45), le MÊME qui s'exécute sur l'union.
         let preds = crate::cold_store::extract_cold_dim_preds(&sql);
         let res = tokio::task::spawn_blocking(move || {
-            crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ps, None, budget, None, &preds)
+            crate::query_exec::en_classant(|| crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ps, None, budget, None, &preds))
         })
         .await;
         // #18 — un export est un fichier qu'on archive et qu'on cite : y écrire un agrégat calculé sur un
@@ -2090,24 +2159,24 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
                 }
                 Err(t) => return refuse_truncated_aggregate(t),
             },
-            Ok(Err(e)) => return bad_req(e),
+            Ok(Err(e)) => return refus_de_requete(e, "/api/export", &au.tenant),
             Err(_) => return server_err("exécution échouée"),
         }
     } else {
         let dbp = db_path.clone();
         let ps = export_sql.clone();
-        match tokio::task::spawn_blocking(move || run_query_ex(&dbp, &ps, budget, None)).await {
+        match tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&dbp, &ps, budget, None))).await {
             Ok(Ok(v)) => v,
-            Ok(Err(e)) => return bad_req(e),
+            Ok(Err(e)) => return refus_de_requete(e, "/api/export", &au.tenant),
             Err(_) => return server_err("exécution échouée"),
         }
     };
     #[cfg(not(feature = "cold_tier"))]
     let v = {
-        let res = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &export_sql, budget, None)).await;
+        let res = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&db_path, &export_sql, budget, None))).await;
         match res {
             Ok(Ok(v)) => v,
-            Ok(Err(e)) => return bad_req(e),
+            Ok(Err(e)) => return refus_de_requete(e, "/api/export", &au.tenant),
             Err(_) => return server_err("exécution échouée"),
         }
     };

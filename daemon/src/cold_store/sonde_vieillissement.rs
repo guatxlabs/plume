@@ -460,7 +460,16 @@ pub(crate) fn cold_aging_plan(conf: &HashMap<String, String>, db_path: &str) -> 
     let n = now();
     // MÊME résolution que `retention_run` (table `setting` > env/conf > défaut, planchers durs compris) :
     // une autre valeur donnerait d'autres bornes, donc un autre plan que celui de la passe.
-    let retention_days = retention_effective(&conn, conf, "retention_days");
+    // `P10.20-b` (vague AR) — un réglage écrit illisible : la passe saute le vieillissement ce tour (`rollups.rs`,
+    // `fenetre_de_retention_lue`), donc aucun plan n'est calculé sur le repli env/défaut — il décrirait un travail qui
+    // n'a pas lieu, sur des bornes que l'admin n'a pas écrites. FAIL-CLOSED comme une base illisible (code 2).
+    let retention_days = retention_effective_lue(&conn, conf, "retention_days").map_err(|moteur| {
+        format!(
+            "réglage de rétention `retention_days` écrit NON LU ({moteur}) : la passe de vieillissement saute ce tour, \
+             jamais sur le repli env/défaut — AUCUN plan n'est publié (il décrirait un travail qui n'a pas lieu). \
+             Réécrire le réglage (PUT /api/retention), puis relancer."
+        )
+    })?;
     let bande = Bande::calculer(&conn, conf, n, retention_days);
 
     let mut out = String::new();

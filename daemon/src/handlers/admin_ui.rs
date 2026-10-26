@@ -85,6 +85,16 @@ pub(crate) const CAUSE_APERCU_DE_RETENTION_NON_LU: &str = "APERÇU NON LU : la b
      lignes que ce réglage purgerait — ce n'est PAS « rien à purger », c'est un compte qui n'a pas eu lieu. Ne décidez \
      pas d'une baisse sur cet aperçu ; réessayez, et si le refus persiste, la table de cette famille est illisible.";
 
+/// `P10.20-b` (vague AR) — la valeur en vigueur d'un réglage de rétention n'a pas été lue (ligne `setting` présente et
+/// illisible : valeur non entière, BLOB, lecture refusée). Servie sous `current_non_lu` (aperçu), `effective_non_lue`
+/// (registre des exclusions) et `global_retention_non_lue` (politiques d'index), la valeur valant alors `null`.
+pub(crate) const CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE: &str = "valeur en vigueur NON LUE : la valeur écrite de \
+     ce réglage de rétention n'a pas pu être lue (valeur non entière, ou lecture refusée) — rien n'est servi à sa place, \
+     ni l'environnement, ni la configuration, ni le défaut, et une baisse ne peut pas être jugée. La purge saute cette \
+     famille tant que le réglage n'est pas réécrit (PUT /api/retention répare la ligne).";
+/// `P10.20-b` (vague AR) — ce que l'audit d'une réparation inscrit à la place de l'ancienne valeur, qui n'a pas été lue :
+/// jamais un nombre (le repli env/défaut n'est pas ce que la ligne portait).
+pub(crate) const ANCIENNE_VALEUR_DE_RETENTION_NON_LUE: &str = "(ancienne valeur non lue)";
 
 /// `P10.29-l` — LES REFUS DE `retention_settings_put` ET DE `retention_preview` SONT DES OBJETS `{error}` NOMMÉS, AUX MÊMES
 /// STATUTS. Avant : 403 et 400 en texte nu, et l'écriture refusée en 500 TEXTE qui servait au client la phrase du moteur
@@ -120,13 +130,20 @@ pub(crate) async fn retention_settings_put(State(st): State<AppState>, Extension
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "retention", "réglage de la rétention", CAUSE_RETENTION_INCHANGEE_TRANSACTION_NON_OUVERTE) {
         return refus;
     }
-    let outcome: rusqlite::Result<Vec<(String, i64, i64)>> = (|| {
-        let mut changes: Vec<(String, i64, i64)> = Vec::new();
+    // `P10.20-b` (vague AR) — L'ANCIENNE VALEUR EST LUE EN TROIS ISSUES. Avant : `setting_days` jetait l'illisible et
+    // rendait le repli env/conf/défaut ; une ligne écrite illisible (« 365.0 », BLOB) dont la nouvelle valeur ÉGALAIT ce
+    // repli était classée no-op — la réparation demandée par l'admin n'était pas écrite, et la purge restait suspendue
+    // sur cette famille — et l'audit inscrivait le repli comme « ancienne valeur ». Désormais : valeur LUE égale = no-op
+    // (comme avant) ; valeur NON LUE = la nouvelle valeur est TOUJOURS écrite, auditée « ancienne valeur non lue », sans
+    // nombre inventé ni « destructif » affirmé (sévérité haute : une baisse ne peut pas être exclue).
+    let outcome: rusqlite::Result<Vec<(String, Option<i64>, i64)>> = (|| {
+        let mut changes: Vec<(String, Option<i64>, i64)> = Vec::new();
         for (skey, env_key, def, floor, ceil) in RETENTION_FIELDS {
             let Some(v) = b.get(skey).and_then(|x| x.as_i64()) else { continue };
-            let cur = setting_days(&conn, &conf, skey, env_key, def, floor, ceil); // valeur EFFECTIVE (H2)
+            let (effective, _, illisible) = setting_days_lu(&conn, &conf, skey, env_key, def, floor, ceil); // MÊME chaîne (H2)
+            let cur: Option<i64> = if illisible.is_none() { Some(effective) } else { None };
             let n = v.clamp(floor, ceil); // plancher/plafond DURS (M6)
-            if n == cur {
+            if cur == Some(n) {
                 continue; // no-op : ni écriture ni audit
             }
             conn.execute(
@@ -134,15 +151,30 @@ pub(crate) async fn retention_settings_put(State(st): State<AppState>, Extension
                  ON CONFLICT(scope,key) DO UPDATE SET value=?2,updated=?3,updated_by=?4",
                 params![skey, n.to_string(), now(), au.name.as_str()],
             )?;
-            let sev = if n < cur { 3 } else { 2 }; // baisse = destructif -> audit bruyant (H3)
-            audit_config_change(
-                &conn,
-                &format!("config.retention.{skey}"),
-                &format!("{cur}->{n} par {}", au.name),
-                sev,
-                &format!("rétention {skey}: {cur}->{n} par {}", au.name),
-                &json!({ "key": skey, "old": cur, "new": n, "actor": au.name, "destructive": n < cur }).to_string(),
-            )?;
+            match cur {
+                Some(cur) => {
+                    let sev = if n < cur { 3 } else { 2 }; // baisse = destructif -> audit bruyant (H3)
+                    audit_config_change(
+                        &conn,
+                        &format!("config.retention.{skey}"),
+                        &format!("{cur}->{n} par {}", au.name),
+                        sev,
+                        &format!("rétention {skey}: {cur}->{n} par {}", au.name),
+                        &json!({ "key": skey, "old": cur, "new": n, "actor": au.name, "destructive": n < cur }).to_string(),
+                    )?;
+                }
+                None => {
+                    audit_config_change(
+                        &conn,
+                        &format!("config.retention.{skey}"),
+                        &format!("{ANCIENNE_VALEUR_DE_RETENTION_NON_LUE}->{n} par {}", au.name),
+                        3,
+                        &format!("rétention {skey}: {ANCIENNE_VALEUR_DE_RETENTION_NON_LUE}->{n} par {}", au.name),
+                        &json!({ "key": skey, "old": Value::Null, "old_non_lue": true, "new": n, "actor": au.name, "destructive": Value::Null })
+                            .to_string(),
+                    )?;
+                }
+            }
             changes.push((skey.to_string(), cur, n));
         }
         Ok(changes)
@@ -150,7 +182,12 @@ pub(crate) async fn retention_settings_put(State(st): State<AppState>, Extension
     match outcome {
         Ok(changes) => rendre_apres_validation(&conn, "retention", "réglage de la rétention", CAUSE_RETENTION_INCHANGEE, || {
             let applied: serde_json::Map<String, Value> = changes.iter().map(|(k, _, n)| (k.clone(), json!(n))).collect();
-            (StatusCode::OK, Json(json!({ "ok": true, "changed": changes.len(), "applied": applied }))).into_response()
+            let mut corps = json!({ "ok": true, "changed": changes.len(), "applied": applied });
+            let reparees: Vec<&str> = changes.iter().filter(|(_, cur, _)| cur.is_none()).map(|(k, _, _)| k.as_str()).collect();
+            if !reparees.is_empty() {
+                corps["ancienne_valeur_non_lue"] = json!(reparees);
+            }
+            (StatusCode::OK, Json(corps)).into_response()
         }),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK"); // fail-closed : mutation NON persistée si l'audit échoue
@@ -178,7 +215,10 @@ pub(crate) async fn retention_preview(State(st): State<AppState>, Extension(au):
     let conf = load_config();
     let n = now();
     crate::req_conn!(st, au, conn);
-    let cur = setting_days(&conn, &conf, skey, env_key, def, floor, ceil); // MÊME résolveur que l'application (H2)
+    // `P10.20-b` (vague AR) — la valeur en vigueur LUE, ou rien : une ligne illisible ne sert plus le repli env/défaut
+    // comme `current`, et `destructive` n'est pas affirmé sur une comparaison qui n'a pas eu lieu (`current_non_lu`).
+    let (effective, _, illisible) = setting_days_lu(&conn, &conf, skey, env_key, def, floor, ceil); // MÊME résolveur (H2)
+    let cur: Option<i64> = if illisible.is_none() { Some(effective) } else { None };
     let cutoff = n - new_val * unit_secs; // tout ce qui est < cutoff serait purgé au prochain tick
     // `P10.20-b` (rang deux) — CHAQUE COMPTE EST UN `Result`, ET UN COMPTE QUI N'A PAS EU LIEU N'EST PAS ZÉRO.
     // Avant : `.unwrap_or((0i64, None))` sur les cinq lectures — une table illisible se lisait « rien à purger »,
@@ -215,7 +255,7 @@ pub(crate) async fn retention_preview(State(st): State<AppState>, Extension(au):
         "unit": if skey == "metric_raw_hours" { "hours" } else { "days" },
         "current": cur,
         "new": new_val,
-        "destructive": new_val < cur,
+        "destructive": cur.map(|cur| new_val < cur),
         "deleted": deleted,
         "deleted_kind": kind,
         "oldest": oldest,
@@ -223,6 +263,9 @@ pub(crate) async fn retention_preview(State(st): State<AppState>, Extension(au):
     });
     if let Some(cause) = deleted_non_lu {
         corps["deleted_non_lu"] = json!(cause);
+    }
+    if cur.is_none() {
+        corps["current_non_lu"] = json!(CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE);
     }
     Json(corps).into_response()
 }
@@ -748,7 +791,17 @@ pub(crate) fn daemon_excl_registry(conn: &Connection, conf: &HashMap<String, Str
                 .filter(|(_, cle, _)| *cle == k)
                 .map(|(table, _, _)| *table)
                 .collect();
-            json!({ "key": k, "effective": retention_effective(conn, conf, k), "floor": floor, "ceil": ceil, "default": d, "env": env_key, "tables": tables })
+            // `P10.20-b` (vague AR) — une valeur écrite illisible ne s'affiche pas sous le repli : `effective` vaut `null`
+            // et `effective_non_lue` dit pourquoi (la purge saute cette famille tant que la ligne n'est pas réécrite).
+            match retention_effective_lue(conn, conf, k) {
+                Ok(effective) => {
+                    json!({ "key": k, "effective": effective, "floor": floor, "ceil": ceil, "default": d, "env": env_key, "tables": tables })
+                }
+                Err(_) => json!({
+                    "key": k, "effective": Value::Null, "effective_non_lue": CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE,
+                    "floor": floor, "ceil": ceil, "default": d, "env": env_key, "tables": tables
+                }),
+            }
         })
         .collect();
     out.push(ExclEntry {

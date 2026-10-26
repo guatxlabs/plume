@@ -79,6 +79,21 @@ pub(crate) fn search_cold_coverage(conn: &Connection, conf: &HashMap<String, Str
     }))
 }
 
+/// `P10.20-b` (vague AR) — LA COUVERTURE FROIDE QUAND LE RÉGLAGE DE RÉTENTION N'EST PAS LU. La frontière chaud/froid
+/// dérive de `retention_days` ; une ligne `setting` écrite et illisible ne la fait plus calculer sur le repli env/défaut.
+/// Même raison que l'index des jours scellés illisible (`cold_coverage_unread`), sans `searched_from` ni
+/// `cold_boundary_ts` : aucune frontière n'est établie.
+#[cfg(feature = "cold_tier")]
+pub(crate) fn couverture_froide_sans_reglage_lu() -> Value {
+    json!({
+        "reason": "cold_coverage_unread",
+        "notice": "couverture froide NON ÉTABLIE : le réglage de rétention écrit (`retention_days`) n'a pas pu être lu — \
+                   la frontière entre la fenêtre chaude et l'historique columnarisé n'est pas calculée sur un repli ; la \
+                   barre plein-texte n'a cherché que la fenêtre chaude et ne peut pas dire si un historique plus ancien \
+                   existe ; `/api/query` en GXQL lit le froid",
+    })
+}
+
 /// (c) LE FILET — une erreur du MOTEUR ne devient JAMAIS `{"results": []}`.
 ///
 /// Les six sites d'erreur de ce handler (`prepare`, `query_map`, la collecte des lignes, sur la
@@ -236,8 +251,10 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
     // #18 — FRONTIÈRE chaud/froid, dérivée EXACTEMENT comme dans /api/query (`cold_query_boundary` sur la
     // même `cold_hot_cutoff` que l'aging) : jamais réinventée ici. Feature/flag OFF -> `None` -> aucune
     // note, aucun coût, /api/search byte-identique (mode 0).
+    // `P10.20-b` (vague AR) — `Some(Err(()))` : le réglage `retention_days` écrit n'a pas été lu ; aucune frontière n'est
+    // fabriquée sur le repli env/défaut, la couverture le dit (`couverture_froide_sans_reglage_lu`).
     #[allow(unused_mut)]
-    let mut cold_boundary: Option<i64> = None;
+    let mut cold_boundary: Option<Result<i64, ()>> = None;
     #[cfg(feature = "cold_tier")]
     {
         let conf = load_config();
@@ -245,8 +262,11 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
             let rc = req_db(&st, &au);
             // VERROU PARTAGÉ CHRONOMÉTRÉ : publié en `stats.db_lock_wait_ms`, comme /api/query.
             let c = timings.db().lock(&rc);
-            let rd = retention_effective(&c, &conf, "retention_days");
-            cold_boundary = Some(crate::cold_store::cold_query_boundary(&c, &conf, now(), rd));
+            cold_boundary = Some(
+                retention_effective_lue(&c, &conf, "retention_days")
+                    .map(|rd| crate::cold_store::cold_query_boundary(&c, &conf, now(), rd))
+                    .map_err(|_| ()),
+            );
         }
     }
     let db_path = req_db_path(&st, &au);
@@ -261,8 +281,10 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
             #[allow(unused_mut)]
             let mut coverage: Option<Value> = None;
             #[cfg(feature = "cold_tier")]
-            if let Some(b) = cold_boundary {
-                coverage = search_cold_coverage(conn, &load_config(), b, q_from);
+            match cold_boundary {
+                Some(Ok(b)) => coverage = search_cold_coverage(conn, &load_config(), b, q_from),
+                Some(Err(())) => coverage = Some(couverture_froide_sans_reglage_lu()),
+                None => {}
             }
             let with_coverage = |mut v: Value| -> Value {
                 if let Some(c) = coverage.clone() {

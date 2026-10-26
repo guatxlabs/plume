@@ -1135,6 +1135,7 @@
     /// AUCUN plaintext en clair ne doit subsister.
     #[test]
     fn backup_dropguard_reaps_temp_and_journal_on_error_path() {
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // `plain_temp_path` lit `PLUME_BACKUP_STAGING_DIR`, qu'un test POSE
         let _tmpg17 = crate::tmp_possede::TmpPossede::neuf("dropguard");
         let dir = _tmpg17.racine().chemin().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
@@ -1617,11 +1618,12 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// F2 — sans `PLUME_BACKUP_STAGING_DIR` (défaut, aucun test ne le pose), le staging du plaintext retombe
+    /// F2 — sans `PLUME_BACKUP_STAGING_DIR` (défaut ; le seul test qui la pose, `backup_streaming_survives_an_unusable_staging_dir`, tient le verrou d'écriture), le staging du plaintext retombe
     /// sur le répertoire de `dest` (compat) et le temp porte le marqueur `.plain.tmp.` (cible RAII+balayage).
     /// L'orientation vers un emptyDir ÉPHÉMÈRE est un choix de MANIFEST (env) — ici on prouve la sémantique.
     #[test]
     fn f2_staging_dir_default_is_dest_parent() {
+        let _reglages = VERROU_ENV_PROCESSUS.read(); // lit `PLUME_BACKUP_STAGING_DIR`, qu'un test POSE
         let sd = crate::backup::staging_dir("/data/.backup-staging/plume-x.db.age");
         assert_eq!(sd, std::path::PathBuf::from("/data/.backup-staging"));
         let p = crate::backup::plain_temp_path("/data/.backup-staging/plume-x.db.age");

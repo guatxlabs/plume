@@ -1502,8 +1502,12 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
         // `age_one_day`) : aged/cold = IMMUABLE. Élargir la fenêtre de reparse au-delà de `hot_cutoff` quand le cold
         // est ON muterait une ligne DÉJÀ columnarisée puis la supprimerait du hot = perte de fidélité. Le clamp
         // ci-dessous est l'UNIQUE point de couplage reparse↔cold_store de ce sous-système (à préserver au refactor).
+        // `P10.20-b` (vague AR) — fenêtre chaude non établie (réglage de rétention illisible) : 503 nommé, rien n'est lu.
         #[cfg(feature = "cold_tier")]
-        let cut = crate::cold_store::reparse_lower_bound(&conn, &load_config(), now(), cut);
+        let cut = match crate::cold_store::reparse_lower_bound(&conn, &load_config(), now(), cut) {
+            Ok(cut) => cut,
+            Err(cause) => return Ok((0, 0, 0, cause.to_string(), None)),
+        };
         let mut changes: Vec<(i64, Option<String>, Option<String>, Option<String>)> = Vec::new();
         let (mut scanned, mut would) = (0i64, 0i64);
         // `P10.7-f` — le scan DISTINGUE la fin normale de l'interruption de budget. L'idiome aplati jetait

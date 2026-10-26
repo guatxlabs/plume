@@ -29,8 +29,8 @@
 //
 // CE QU'ILS NE TIENNENT PAS : une base déjà amputée (Banni / Pass validé hors vue AVANT ce correctif) n'est pas
 // réparée ; le refus de Banni / Pass n'est pas compté (le compteur exige un `&Connection`) ; la lecture ratée du
-// tableau « Vue d'ensemble (rapide) » dans `ensure_rollup_srcip_host_panels` reste un retour muet (rien n'est écrit) ;
-// la migration v63 (`migrate.rs`) garde `if let Some(vid)` ; `seed_runbooks`. Aucune variable d'environnement n'est
+// tableau « Vue d'ensemble (rapide) » dans `ensure_rollup_srcip_host_panels` n'est plus un retour muet depuis la vague
+// AR (trois issues, une ligne `[seed]`, témoins `retention_lue_hors_de_la_passe.rs`) ; la migration v63 (`migrate.rs`) garde `if let Some(vid)` ; `seed_runbooks`. Aucune variable d'environnement n'est
 // lue par ces semis.
 //
 // MUTANTS JOUÉS (VERIF_MUT, retirés avant le commit), chacun vu ROUGE : `AP4_bp_if_let_some` (forme d'avant),

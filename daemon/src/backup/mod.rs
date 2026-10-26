@@ -956,7 +956,10 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
              hors-cluster, ou posez PLUME_BACKUP_REQUIRE_ASYMMETRIC=1 pour refuser ce repli."
         );
     }
-    // 2) STREAM : plaintext -> zstd -> age -> dest (chaîne de writers, buffers 1 MiB).
+    // 2) STREAM : plaintext -> zstd -> age -> dest (chaîne de writers, buffers 1 MiB). `dest` est le TEMPORAIRE
+    // de `backup_compressed` (`<destination>.sauvegarde-en-cours`), seul appelant : la destination publiée n'est
+    // touchée que par son `rename`, une fois l'archive complète, et ce temporaire est retiré sur toute erreur.
+    // Le retrait ci-dessous n'efface donc qu'un temporaire résiduel, jamais la dernière bonne archive.
     let _ = std::fs::remove_file(dest);
     let out = std::fs::File::create(dest).map_err(|e| format!("création dest : {e}"))?;
     let out = std::io::BufWriter::with_capacity(BACKUP_BUF, out);
@@ -972,15 +975,30 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
         stream_copy(&mut r, &mut z).map_err(|e| format!("flux zstd : {e}"))?;
     }
     let age_w = z.finish().map_err(|e| format!("finalisation zstd : {e}"))?;       // flush frame zstd
-    age_w.finish().map_err(|e| format!("finalisation age : {e}"))?;                 // finalise le stream age
+    let out = age_w.finish().map_err(|e| format!("finalisation age : {e}"))?;       // finalise le stream age
+    clore_le_fichier_de_l_archive(out)?;
 
     let dest_bytes = taille_sur_disque(std::path::Path::new(dest));
     // tmp_guard est droppé ici -> efface le plaintext temporaire.
     Ok(BackupStats { plaintext_bytes, dest_bytes, wrote_plaintext_to_disk: true })
 }
 
+/// CLÔT LE FICHIER D'UNE ARCHIVE, erreurs JUGÉES : vide le tampon puis synchronise le fichier sur disque.
+/// `age::stream::StreamWriter::finish` écrit le dernier bloc dans l'écrivain interne et le rend SANS le
+/// vider : le dernier vidage du tampon (1 Mio, donc toute une petite archive) se faisait dans son `Drop`,
+/// qui avale l'erreur. Disque plein, quota ou limite de taille : la sauvegarde rendait `Ok`, et le `rename`
+/// de `backup_compressed` publiait une archive TRONQUÉE à la place de la dernière bonne. Désormais l'échec
+/// est rendu, et `backup_compressed` retire le temporaire sans toucher la destination. Les deux chemins
+/// (B1 et legacy) passent par ici.
+fn clore_le_fichier_de_l_archive(out: std::io::BufWriter<std::fs::File>) -> Result<(), String> {
+    let fichier = out.into_inner().map_err(|e| format!("vidage final de l'archive : {}", e.error()))?;
+    fichier.sync_all().map_err(|e| format!("synchronisation de l'archive sur disque : {e}"))
+}
+
 mod dump_restauration; // LA CHARGE : dump typé B1 streaming, dispatch `backup_compressed` (repli legacy), restauration
 pub(crate) use dump_restauration::{backup_compressed, restore_compressed};
+#[cfg(test)]
+pub(crate) use dump_restauration::{SUFFIXE_RESTAURATION_EN_COURS, SUFFIXE_SAUVEGARDE_EN_COURS};
 use dump_restauration::quote_ident; // consommé par `verification` (inventaire) via `use super::*`
 
 mod retention; // RÉTENTION : classification des noms + GFS + plan de purge + helpers purs de l'ordonnanceur natif

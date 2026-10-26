@@ -623,6 +623,23 @@ fn retention_effective(conn: &Connection, conf: &HashMap<String, String>, skey: 
     0
 }
 
+/// `P10.20-b` (vague AR) — LA VALEUR EFFECTIVE, OU LA CAUSE QUI DIT QU'ELLE N'A PAS ÉTÉ LUE. Même chaîne que
+/// `retention_effective` (même `setting_days_lu`), mais le troisième champ n'est plus jeté : une ligne `setting` présente
+/// et illisible (valeur non entière, BLOB, lecture refusée) rend `Err(cause)` au lieu du repli env/conf/défaut. Les
+/// lecteurs hors de la passe (routes, bannière, sonde, reparse) ne fabriquent donc plus une borne sur une valeur que
+/// l'admin n'a pas écrite. Une clé absente de `RETENTION_FIELDS` rend `Ok(0)`, exactement comme `retention_effective`.
+fn retention_effective_lue(conn: &Connection, conf: &HashMap<String, String>, skey: &str) -> Result<i64, String> {
+    for (k, env_key, d, floor, ceil) in RETENTION_FIELDS {
+        if k == skey {
+            return match setting_days_lu(conn, conf, k, env_key, d, floor, ceil) {
+                (_, _, Some(illisible)) => Err(illisible),
+                (jours, _, None) => Ok(jours),
+            };
+        }
+    }
+    Ok(0)
+}
+
 // Sources attendues par construction : DÉRIVÉES dans `handlers/sources.rs` (P11.3-a) — la liste
 // énumérée `KNOWN_EXTRA_SOURCES` qui vivait ici est retirée (six sources livrées par ce dépôt y manquaient).
 

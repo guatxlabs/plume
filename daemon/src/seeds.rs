@@ -25,7 +25,18 @@ pub(crate) fn seed_demo(conn: &Connection) {
 /// nouveau semis. Désormais : UNE transaction, le drapeau dedans, chaque écriture propagée ; la moindre
 /// écriture refusée annule tout, le dit, et le semis est retenté au démarrage suivant.
 pub(crate) fn semer_la_demonstration(conn: &Connection) {
-    if conn.query_row("SELECT value FROM meta WHERE key='seeded_demo'", [], |r| r.get::<_, String>(0)).is_ok() { return; }
+    use rusqlite::OptionalExtension as _;
+    // `P10.28-l` (vague AR) — le drapeau en trois issues : lu présent, rien à faire ; absent, le semis ; lecture ratée,
+    // rien n'est écrit et c'est dit (avant : `.is_ok()`, une lecture ratée valait absence et le semis était rejoué).
+    // Chemin de démonstration : un aveu sur la sortie d'erreur, pas un compteur (comme le reste de cette fonction).
+    match conn.query_row("SELECT 1 FROM meta WHERE key='seeded_demo'", [], |r| r.get::<_, i64>(0)).optional() {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("[demo] données de démo NON semées : le drapeau `seeded_demo` n'a pas pu être lu ({e}) — rien n'est écrit, le semis sera retenté au prochain démarrage");
+            return;
+        }
+    }
     let txn = match Txn::begin(conn) {
         Ok(txn) => txn,
         Err(e) => {
@@ -412,13 +423,17 @@ impl std::fmt::Display for PointDeReprise<'_> {
 }
 
 impl PointDeReprise<'_> {
-    /// `Ok(true)` : déjà semé. Pour un drapeau, la lecture d'avant est gardée telle quelle (une lecture ratée vaut
-    /// absence ; hors du périmètre de `P10.28-l`, dit dans les restes). Pour un nom, les trois issues sont distinctes.
+    /// `Ok(true)` : déjà semé. Trois issues distinctes, pour un drapeau comme pour un nom.
+    /// `P10.28-l` (vague AR) — le drapeau n'était lu que par `.is_ok()` : une lecture ratée valait absence, et le semis
+    /// était rejoué sur une base qui l'avait (un second tableau de bord du même nom pour un semis sous drapeau). Il est
+    /// lu en trois issues comme le gabarit de runbook : la PRÉSENCE de la clé (`SELECT 1`, la valeur n'a jamais compté),
+    /// et une lecture ratée prend la branche « présence non lue » de `semer_sous_son_drapeau` (rien d'écrit, dit,
+    /// compté pour les gestes comptés comme le reste de ce fichier).
     fn deja_seme(&self, conn: &Connection) -> rusqlite::Result<bool> {
         use rusqlite::OptionalExtension as _;
         match self {
             PointDeReprise::Drapeau(drapeau) | PointDeReprise::TableauSousDrapeau(drapeau) => {
-                Ok(conn.query_row("SELECT value FROM meta WHERE key=?1", params![drapeau], |r| r.get::<_, String>(0)).is_ok())
+                conn.query_row("SELECT 1 FROM meta WHERE key=?1", params![drapeau], |r| r.get::<_, i64>(0)).optional().map(|l| l.is_some())
             }
             PointDeReprise::TableauNomme(nom) => {
                 conn.query_row("SELECT 1 FROM dashboard WHERE name=?1", params![nom], |r| r.get::<_, i64>(0)).optional().map(|l| l.is_some())

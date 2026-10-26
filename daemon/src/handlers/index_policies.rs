@@ -94,7 +94,12 @@ pub(crate) async fn index_policies_list(State(st): State<AppState>, Extension(au
     }
     let conf = load_config();
     crate::req_conn!(st, au, conn);
-    let global_days = retention_effective(&conn, &conf, "retention_days");
+    // `P10.20-b` (vague AR) — la rétention globale LUE, ou `null` avec sa cause (`global_retention_non_lue`) : une ligne
+    // `setting` illisible n'affiche plus le repli env/défaut comme la valeur dont un index sans politique hérite.
+    let (global_days, global_non_lue): (Value, Option<&str>) = match retention_effective_lue(&conn, &conf, "retention_days") {
+        Ok(jours) => (json!(jours), None),
+        Err(_) => (Value::Null, Some(crate::handlers::admin_ui::CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE)),
+    };
     // `P10.7-f` (rang 3) — LES DEUX LECTURES QUI ALIMENTENT `indexes` SONT ENTIÈRES OU AVOUÉES. La
     // seconde était aplatie comme la première : une politique dont le mappeur échoue (blob dans
     // `index_policy.name`, colonne absente de la connexion qui sert) sortait de `policies`, donc de
@@ -126,11 +131,11 @@ pub(crate) async fn index_policies_list(State(st): State<AppState>, Extension(au
         // rang 1. `global_retention_days` et `bounds` viennent d'ailleurs et restent servis.
         Err(_) => {
             return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(
-                json!({
+                avec_la_retention_globale_non_lue(json!({
                     "ok": false,
                     "global_retention_days": global_days,
                     "bounds": { "retention_days": { "min_when_set": 7, "max": 3650, "inherit": 0 } },
-                }),
+                }), global_non_lue),
                 "indexes",
             ))
             .into_response()
@@ -144,12 +149,21 @@ pub(crate) async fn index_policies_list(State(st): State<AppState>, Extension(au
     for name in unmanaged.into_iter().take(MAX_UNMANAGED_SHOWN) {
         out.push(index_json(name, None, stats.get(name)));
     }
-    Json(json!({
+    Json(avec_la_retention_globale_non_lue(json!({
         "ok": true,
         "global_retention_days": global_days,
         "bounds": { "retention_days": { "min_when_set": 7, "max": 3650, "inherit": 0 } },
         "indexes": out,
-    })).into_response()
+    }), global_non_lue)).into_response()
+}
+
+/// `P10.20-b` (vague AR) — pose `global_retention_non_lue` quand la rétention globale n'a pas été lue ; le corps lisible
+/// reste celui d'avant à l'octet.
+fn avec_la_retention_globale_non_lue(mut corps: Value, non_lue: Option<&str>) -> Value {
+    if let Some(cause) = non_lue {
+        corps["global_retention_non_lue"] = json!(cause);
+    }
+    corps
 }
 
 /// Valide les champs d'une policy proposée. `retention_days` : 0 (hérite) ou [7,3650] (clampé). `max_*` >= 0.

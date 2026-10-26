@@ -427,6 +427,7 @@ fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Op
 
     let plan = collect_dump_plan(&conn)?; // Unsupported -> repli AVANT toute écriture (rien créé).
 
+    // `dest` est le TEMPORAIRE de `backup_compressed` : ce retrait n'efface qu'un temporaire résiduel.
     let _ = std::fs::remove_file(dest);
     let out = std::fs::File::create(dest).map_err(|e| PlanErr::Fatal(format!("création dest : {e}")))?;
     let out = std::io::BufWriter::with_capacity(BACKUP_BUF, out);
@@ -444,7 +445,8 @@ fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Op
         cw.count
     };
     let age_w = z.finish().map_err(|e| PlanErr::Fatal(format!("finalisation zstd : {e}")))?;
-    age_w.finish().map_err(|e| PlanErr::Fatal(format!("finalisation age : {e}")))?;
+    let out = age_w.finish().map_err(|e| PlanErr::Fatal(format!("finalisation age : {e}")))?;
+    clore_le_fichier_de_l_archive(out).map_err(PlanErr::Fatal)?;
     // `P10.25-g` — fin du snapshot (lecture seule), JUGÉE : la connexion est privée et fermée au retour, mais un refus se
     // dit au lieu de se taire (la sauvegarde écrite est complète : rien n'a été écrit dans la base).
     crate::handlers::transaction_validee::fermer_l_instantane_de_lecture(&conn, "backup", "sauvegarde en flux");
@@ -458,7 +460,102 @@ fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Op
 /// représentables en dump typé (FTS contentless/régulière...). Format de sortie IDENTIQUE dans les
 /// deux cas : age(zstd(<charge>)) ; le restore distingue via le marqueur de tête. Requiert une clé non
 /// vide. Renvoie {plaintext_bytes, dest_bytes, wrote_plaintext_to_disk}.
+///
+/// L'ARCHIVE S'ÉCRIT À CÔTÉ, PUIS PREND SA PLACE PAR UN SEUL `rename`. Les deux chemins effaçaient `dest`
+/// AVANT d'avoir une archive neuve, et l'effaçaient encore sur échec : rejouée sous un nom fixe
+/// (`backup --compress <dest>`), une sauvegarde ratée détruisait la dernière bonne archive. Désormais la
+/// charge s'écrit dans `<dest>.sauvegarde-en-cours` (même répertoire, donc même système de fichiers :
+/// le `rename` est atomique) ; `dest` n'est touché que par ce `rename`, une fois l'archive complète. Tout
+/// échec retire le temporaire et laisse `dest` tel qu'il était.
+///
+/// UNE DESTINATION QUI DÉSIGNE LA BASE VIVANTE EST REFUSÉE avant tout geste
+/// (`refuser_une_destination_qui_designe_la_base`) : le `rename` final la remplacerait par l'archive.
 pub(crate) fn backup_compressed(db_path: &str, dest: &str, key: Option<&str>, recipient: Option<&str>) -> Result<BackupStats, String> {
+    refuser_une_destination_qui_designe_la_base(db_path, dest)?;
+    let en_cours = format!("{dest}{SUFFIXE_SAUVEGARDE_EN_COURS}");
+    match ecrire_l_archive(db_path, &en_cours, key, recipient) {
+        Ok(st) => {
+            if let Err(e) = std::fs::rename(&en_cours, dest) {
+                let _ = std::fs::remove_file(&en_cours);
+                return Err(format!(
+                    "backup : l'archive complète n'a pas pu prendre la place de {dest} ({e}) ; le temporaire \
+                     {en_cours} a été retiré et {dest} n'a pas été remplacée."));
+            }
+            Ok(st)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&en_cours); // pas d'archive partielle/trompeuse.
+            Err(e)
+        }
+    }
+}
+
+/// Le suffixe du fichier où une archive s'écrit avant de prendre la place de sa destination. Un nom que
+/// la rétention ne classe pas (`classify_backup_name` = `Unparseable`) : ni servi ni purgé.
+pub(crate) const SUFFIXE_SAUVEGARDE_EN_COURS: &str = ".sauvegarde-en-cours";
+
+/// Les noms de la base vivante qu'une archive ne doit jamais remplacer : le fichier lui-même et ses
+/// compagnons SQLite.
+const NOMS_DE_LA_BASE_VIVANTE: [&str; 4] = ["", "-wal", "-shm", "-journal"];
+
+/// REFUSE une destination de sauvegarde qui désigne la base vivante ou un de ses compagnons. Deux
+/// comparaisons, ni l'une ni l'autre n'ouvre un fichier (leçon `P10.33-u` : fermer un second descripteur
+/// sur la base lâche les verrous POSIX du processus) :
+///  - même fichier, par `stat` (périphérique + inode) : un lien dur, un lien symbolique, un chemin
+///    écrit autrement ;
+///  - même nom dans le même répertoire canonique : un compagnon qui n'existe pas encore (`-journal`
+///    d'une base en mode WAL), que `stat` ne peut pas voir.
+fn refuser_une_destination_qui_designe_la_base(db_path: &str, dest: &str) -> Result<(), String> {
+    let cible = std::path::Path::new(dest);
+    for sfx in NOMS_DE_LA_BASE_VIVANTE {
+        let vivant = format!("{db_path}{sfx}");
+        let vivant = std::path::Path::new(&vivant);
+        let meme_fichier = meme_fichier_par_stat(cible, vivant);
+        let meme_nom = meme_nom_dans_le_meme_repertoire(cible, vivant);
+        if meme_fichier || meme_nom {
+            let quoi = if sfx.is_empty() {
+                String::from("la base vivante elle-même")
+            } else {
+                format!("le compagnon {sfx} de la base vivante")
+            };
+            return Err(format!(
+                "backup REFUSÉ : la destination {dest} désigne {quoi} — y écrire l'archive détruirait la base. \
+                 Choisissez un chemin hors de la base et de ses compagnons (-wal, -shm, -journal)."));
+        }
+    }
+    Ok(())
+}
+
+/// Même périphérique et même inode, lus par `stat` (`std::fs::metadata`, qui suit les liens
+/// symboliques) : aucun descripteur ouvert. Un des deux chemins absent -> pas le même fichier.
+fn meme_fichier_par_stat(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+        _ => false,
+    }
+}
+
+/// Même nom de fichier dans le même répertoire, une fois les deux répertoires rendus canoniques
+/// (`canonicalize` résout par `stat`/`readlink`, sans ouvrir). Un répertoire introuvable ne porte pas la
+/// base : la comparaison rend `false`, et la sauvegarde échouera d'elle-même à l'ouverture.
+fn meme_nom_dans_le_meme_repertoire(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.file_name(), b.file_name()) {
+        (Some(na), Some(nb)) if na == nb => {}
+        _ => return false,
+    }
+    let parent = |p: &std::path::Path| -> std::path::PathBuf {
+        p.parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."))
+    };
+    match (std::fs::canonicalize(parent(a)), std::fs::canonicalize(parent(b))) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// L'écriture de l'archive dans `dest` (le temporaire de `backup_compressed`) : gates, balayage, puis B1
+/// ou le legacy.
+fn ecrire_l_archive(db_path: &str, dest: &str, key: Option<&str>, recipient: Option<&str>) -> Result<BackupStats, String> {
     let pass = match key {
         Some(k) if !k.is_empty() => k.to_string(),
         _ => return Err("backup --compress : PLUME_DB_KEY requis (passphrase age)".into()),
@@ -504,10 +601,9 @@ pub(crate) fn backup_compressed(db_path: &str, dest: &str, key: Option<&str>, re
             eprintln!("[backup] schéma non-B1 ({why}) -> repli sur l'export legacy (plaintext temporaire éphémère)");
             backup_compressed_legacy(db_path, dest, key, recipient)
         }
-        Err(PlanErr::Fatal(e)) => {
-            let _ = std::fs::remove_file(dest); // pas de backup partiel/trompeur.
-            Err(e)
-        }
+        // `dest` est ici le temporaire : `backup_compressed` le retire sur toute erreur, et la destination
+        // publiée n'a pas été touchée.
+        Err(PlanErr::Fatal(e)) => Err(e),
     }
 }
 
@@ -575,13 +671,77 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
     Ok(())
 }
 
+/// Le suffixe du fichier où une restauration s'écrit avant de prendre la place de la destination. Même
+/// répertoire que la destination (donc même système de fichiers : le `rename` final est atomique), et un
+/// nom que le démon n'ouvre jamais.
+pub(crate) const SUFFIXE_RESTAURATION_EN_COURS: &str = ".restauration-en-cours";
+
+/// Le temporaire de restauration et les compagnons qu'une connexion SQLite peut lui laisser. Le `-journal`
+/// du temporaire est retiré par précaution, mais l'oublier serait bénin : la connexion de restauration est
+/// fermée avant tout retrait, et une transaction inachevée y est annulée, ce qui efface son journal (mode
+/// `DELETE`) ; un journal resté d'un arrêt brutal est retiré avant la tentative suivante, et même laissé, il
+/// voisinerait un temporaire recréé VIDE, et SQLite efface le journal chaud d'une base de taille nulle au
+/// lieu de le rejouer (`pager.c`, `hasHotJournal`). Le `-journal` de la DESTINATION, lui, n'est pas bénin
+/// (voir `COMPAGNONS_DE_LA_DESTINATION`).
+const COMPAGNONS_DU_TEMPORAIRE: [&str; 4] = ["", "-journal", "-wal", "-shm"];
+
+/// Les compagnons de l'ANCIENNE base, retirés juste avant que la base restaurée prenne sa place. Le
+/// `-journal` en fait partie : un journal CHAUD (arrêt brutal en mode rollback) laissé à côté d'une base
+/// COMPLÈTE serait rejoué par SQLite dès la première ouverture, et la base publiée relirait l'ancien
+/// contenu sans aucun signal. (L'ancien code créait la base neuve VIDE : SQLite efface le journal chaud
+/// d'une base vide, ce danger n'existait pas.)
+const COMPAGNONS_DE_LA_DESTINATION: [&str; 3] = ["-wal", "-shm", "-journal"];
+
+fn retirer_le_temporaire_de_restauration(en_cours: &str) {
+    for sfx in COMPAGNONS_DU_TEMPORAIRE {
+        let _ = std::fs::remove_file(format!("{en_cours}{sfx}"));
+    }
+}
+
+/// RESTAURE À CÔTÉ, PUIS PUBLIE. `restaurer` écrit la base complète dans `<dest_db>.restauration-en-cours`
+/// (sentinelle de fin et `COMMIT` jugés à l'intérieur) ; la destination n'est touchée qu'ENSUITE : ses
+/// compagnons `-wal`/`-shm`/`-journal` (qui décrivent l'ancienne base) sont retirés, puis UN SEUL `rename` met la
+/// base restaurée à sa place. Avant, la destination et ses compagnons étaient effacés AVANT la lecture du
+/// flux : un flux tronqué, une sentinelle absente ou un `COMMIT` refusé laissait une base vide ou partielle
+/// à la place d'une base saine (`restore <src> --force`, destination par défaut = `PLUME_DB`).
+///
+/// L'ORDRE « compagnons puis `rename` » est celui qui survit à un arrêt brutal : arrêté entre les deux, il
+/// laisse l'ancienne base sans son WAL ni son journal, et le temporaire (retiré à la tentative suivante) ;
+/// l'ordre inverse laisserait la base RESTAURÉE à côté du WAL ou du journal de l'ancienne, que SQLite
+/// rejouerait dessus.
+///
+/// Toute erreur avant la publication retire le temporaire et laisse la destination INTACTE, octet pour
+/// octet, compagnons compris. Un temporaire laissé par une tentative précédente (arrêt brutal) est
+/// retiré avant de commencer. Aucun descripteur n'est ouvert sur la destination (leçon `P10.33-u`) : elle
+/// n'est manipulée que par `remove_file` et `rename`.
+fn restaurer_a_cote_puis_publier(dest_db: &str, restaurer: impl FnOnce(&str) -> Result<(), String>) -> Result<(), String> {
+    let en_cours = format!("{dest_db}{SUFFIXE_RESTAURATION_EN_COURS}");
+    retirer_le_temporaire_de_restauration(&en_cours);
+    if let Err(e) = restaurer(&en_cours) {
+        retirer_le_temporaire_de_restauration(&en_cours);
+        return Err(format!(
+            "{e} — la destination {dest_db} est INTACTE : la restauration s'écrivait dans {en_cours}, qui a été retiré."));
+    }
+    for ext in COMPAGNONS_DE_LA_DESTINATION { let _ = std::fs::remove_file(format!("{dest_db}{ext}")); }
+    if let Err(e) = std::fs::rename(&en_cours, dest_db) {
+        retirer_le_temporaire_de_restauration(&en_cours);
+        return Err(format!(
+            "restore : la base restaurée n'a pas pu prendre la place de {dest_db} ({e}) ; le temporaire {en_cours} \
+             a été retiré. {dest_db} n'a pas été remplacée, mais ses compagnons -wal, -shm et -journal avaient déjà \
+             été retirés."));
+    }
+    Ok(())
+}
+
 /// RESTAURATION (rejouabilité) — gère les DEUX formats via le MARQUEUR de tête de la charge décompressée :
 ///  - B1 (`DUMP_MAGIC`)     : rejoue le dump typé dans une DB SQLCipher NEUVE en STREAMING. ZÉRO clair
 ///    sur disque (`restore_stream`).
 ///  - LEGACY (`SQLite ...`) : age décrypte -> zstd décode -> DB SQLite EN CLAIR temporaire, puis
-///    `sqlcipher_export` -> `<dest_db>` chiffré (garde RAII efface le temporaire).
+///    `sqlcipher_export` -> base chiffrée (garde RAII efface le temporaire en clair).
 /// Dans les deux cas : age auto-détecte le stanza (scrypt/passphrase = anciens backups symétriques ;
-/// x25519 = identité PRIVÉE escrow si fournie). REFUSE d'écraser `<dest_db>` sauf `overwrite=true`.
+/// x25519 = identité PRIVÉE escrow si fournie). REFUSE d'écraser `<dest_db>` sauf `overwrite=true`. La
+/// base s'écrit À CÔTÉ de `<dest_db>` et ne prend sa place qu'une fois complète
+/// (`restaurer_a_cote_puis_publier`).
 pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, overwrite: bool, identity: Option<&age::x25519::Identity>) -> Result<(), String> {
     use std::io::Read;
     let pass = match key {
@@ -623,9 +783,9 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
     zd.read_exact(&mut magic).map_err(|e| format!("lecture marqueur de format (charge trop courte / corrompue ?) : {e}"))?;
 
     if &magic == DUMP_MAGIC {
-        // --- FORMAT B1 (dump typé streaming) : rejoue dans une DB SQLCipher NEUVE. AUCUN clair sur disque.
-        for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{dest_db}{ext}")); }
-        restore_stream(&mut zd, dest_db, &pass)
+        // --- FORMAT B1 (dump typé streaming) : rejoue dans une DB SQLCipher NEUVE, à côté de la destination.
+        // AUCUN clair sur disque.
+        restaurer_a_cote_puis_publier(dest_db, |en_cours| restore_stream(&mut zd, en_cours, &pass))
     } else if magic.starts_with(b"SQLite") {
         // --- FORMAT LEGACY (age(zstd(fichier SQLite clair))) : plaintext temporaire + sqlcipher_export.
         let tmp_guard = PlaintextTempGuard(plain_temp_path(dest_db));
@@ -639,17 +799,17 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
             stream_copy(&mut zd, &mut out).map_err(|e| format!("flux unzstd : {e}"))?;
             std::io::Write::flush(&mut out).map_err(|e| format!("flush plaintext : {e}"))?;
         }
-        for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{dest_db}{ext}")); }
-        {
+        // Le re-chiffrement vise le temporaire de restauration ; la connexion (et la base attachée) est
+        // fermée en sortie de la fermeture, AVANT la publication ou le retrait du temporaire.
+        restaurer_a_cote_puis_publier(dest_db, |en_cours| {
             let conn = open_db_keyed_without_schema_contract(&tmp_plain, None).map_err(|e| format!("ouverture plaintext : {e}"))?;
             conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
                 .map_err(|e| format!("plaintext illisible (passphrase invalide ?) : {e}"))?;
             let sql = format!(
                 "ATTACH DATABASE '{}' AS enc KEY '{}'; SELECT sqlcipher_export('enc'); DETACH DATABASE enc;",
-                dest_db.replace('\'', "''"), pass.replace('\'', "''"));
-            conn.execute_batch(&sql).map_err(|e| format!("re-chiffrement (sqlcipher_export) : {e}"))?;
-        }
-        Ok(())
+                en_cours.replace('\'', "''"), pass.replace('\'', "''"));
+            conn.execute_batch(&sql).map_err(|e| format!("re-chiffrement (sqlcipher_export) : {e}"))
+        })
     } else {
         Err(format!("restore : format de charge inconnu (ni dump B1 ni fichier SQLite) — backup corrompu ? tête={magic:?}"))
     }

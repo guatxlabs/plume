@@ -19,10 +19,12 @@
     // tests (`open_db_keyed`, `backup_compressed`, `restore_compressed`, `migrate`,
     // `backup_payload_head`) : tous les fichiers de `tests/` sont inclus dans le MÊME module.
     //
-    // AUCUN de ces tests ne pose `PLUME_BACKUP_STAGING_DIR`, et c'est délibéré : ils s'appuient sur la
-    // résolution PAR DÉFAUT du staging (le répertoire de `dest`), qui est celle des déploiements
-    // host/Docker — et ils ne peuvent donc pas faire rougir `f2_staging_dir_default_is_dest_parent`,
-    // qui lit précisément l'ABSENCE de cette variable.
+    // UN SEUL de ces tests pose `PLUME_BACKUP_STAGING_DIR` : `backup_streaming_survives_an_unusable_staging_dir`,
+    // sous le verrou d'écriture `VERROU_ENV_PROCESSUS` et par le garde `ReglageBackupPose` (valeur antérieure
+    // restaurée même sous panic), parce que la sauvegarde crée désormais son temporaire chiffré à côté de sa
+    // destination et qu'un staging non inscriptible doit donc en être distinct. Les autres s'appuient sur la
+    // résolution PAR DÉFAUT du staging (le répertoire de `dest`), qui est celle des déploiements host/Docker ;
+    // `f2_staging_dir_default_is_dest_parent`, qui lit l'ABSENCE de cette variable, prend le verrou en lecture.
     // ============================================================================================
 
     // LE VERROU DES RÉGLAGES DE SAUVEGARDE vit désormais dans `common.rs` (`VERROU_ENV_PROCESSUS`), avec le
@@ -378,8 +380,19 @@
         // ce que le cycle DÉCLARE doit coïncider avec ce que la sonde OBSERVE — sinon le log opérateur ment.
         assert!(!st.wrote_plaintext_to_disk, "le cycle streaming ne doit PAS se déclarer écrivain de clair");
         assert!(samples >= 200, "la sonde doit avoir RÉELLEMENT échantillonné (n={samples}) — sinon « rien vu » ne veut rien dire");
-        assert_eq!(seen, vec!["plume-x.db.age".to_string()],
-            "seul le fichier de destination doit apparaître pendant la sauvegarde streaming ; vu : {seen:?}");
+        // L'archive s'écrit dans `<dest>.sauvegarde-en-cours` (CHIFFRÉ : la même enveloppe age que la destination)
+        // et ne prend le nom de la destination qu'au `rename` final : ce temporaire est le seul nom qui vit pendant
+        // le dump, la destination n'apparaît qu'à la toute fin (et peut donc échapper à l'échantillonnage). Rien
+        // d'autre ne doit être vu — en particulier aucun `.plain.tmp.`.
+        let en_cours = format!("plume-x.db.age{}", crate::backup::SUFFIXE_SAUVEGARDE_EN_COURS);
+        assert!(seen.contains(&en_cours),
+            "le temporaire chiffré doit avoir été vu pendant le dump (sinon la sonde n'a rien observé) ; vu : {seen:?}");
+        assert!(seen.iter().all(|n| n == "plume-x.db.age" || *n == en_cours),
+            "seuls la destination et son temporaire chiffré doivent apparaître pendant la sauvegarde streaming ; vu : {seen:?}");
+        let restant_stream: Vec<String> = std::fs::read_dir(&d_stream).unwrap()
+            .flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(restant_stream, vec!["plume-x.db.age".to_string()],
+            "à la sortie, seule la destination reste (le temporaire a pris sa place) ; reste : {restant_stream:?}");
         // et le chemin effectivement pris sur le SCHÉMA RÉEL est bien le dump streaming (pas le repli).
         assert!(backup_payload_head(&dest, key).starts_with(b"PLUMEDUMP1\n"),
             "sur le schéma RÉEL de plume (event_fts à contenu externe), le chemin pris doit être le streaming");
@@ -408,15 +421,22 @@
 
     /// LA MÊME GARDE, SANS COURSE — par CONSTRUCTION plutôt que par échantillonnage. Le répertoire de
     /// staging est rendu NON-INSCRIPTIBLE (mode 0555) : plus AUCUN fichier neuf n'y est créable, même une
-    /// nanoseconde. Seule la destination, PRÉ-CRÉÉE, reste ouvrable en écriture (droit porté par le
-    /// FICHIER, pas par le répertoire) — c'est ce qui isole la propriété testée : « aucun fichier NOUVEAU ».
-    /// La sauvegarde streaming réussit quand même et se restaure fidèlement -> elle n'a donc créé aucun
-    /// clair. Le contrôle inverse (chemin historique forcé) ÉCHOUE dans la même configuration : lui, il lui
-    /// FAUT créer son temporaire. C'est la différence entre « on n'a rien vu » et « rien ne pouvait exister ».
+    /// nanoseconde. La sauvegarde streaming réussit quand même et se restaure fidèlement -> elle n'a donc
+    /// créé aucun clair. Le contrôle inverse (chemin historique forcé) ÉCHOUE dans la même configuration :
+    /// lui, il lui FAUT créer son temporaire en clair. C'est la différence entre « on n'a rien vu » et « rien
+    /// ne pouvait exister ».
+    ///
+    /// LE STAGING EST ICI UN RÉPERTOIRE DISTINCT DE CELUI DE LA DESTINATION (`PLUME_BACKUP_STAGING_DIR`, la
+    /// résolution des déploiements conteneurisés). Il était auparavant le répertoire de la destination, dont
+    /// seule la destination PRÉ-CRÉÉE restait inscriptible ; depuis que l'archive s'écrit dans
+    /// `<dest>.sauvegarde-en-cours` puis prend sa place par un `rename` (la dernière bonne archive survit à un
+    /// échec), la sauvegarde DOIT créer un fichier — chiffré — à côté de sa destination, et un répertoire de
+    /// destination non inscriptible la fait refuser. La propriété éprouvée est inchangée : rien n'est créé
+    /// dans le STAGING, là où le chemin historique pose son clair.
     #[test]
     fn backup_streaming_survives_an_unusable_staging_dir() {
         use std::os::unix::fs::PermissionsExt;
-        let _reglages = VERROU_ENV_PROCESSUS.write(); // ce test POSE un réglage -> exclut les lecteurs
+        let _reglages = VERROU_ENV_PROCESSUS.write(); // ce test POSE des réglages -> exclut les lecteurs
         let _tmpg = crate::tmp_possede::TmpPossede::neuf("bkst-ro");
         let root = _tmpg.racine().chemin().to_path_buf();
         let key = "staging-non-inscriptible-passphrase";
@@ -429,13 +449,12 @@
 
         let stage = root.join("staging-non-inscriptible");
         std::fs::create_dir_all(&stage).unwrap();
-        let dest = stage.join("plume-x.db.age").to_string_lossy().into_owned();
-        let dest_hist = stage.join("plume-historique.db.age").to_string_lossy().into_owned();
-        // les DEUX destinations sont pré-créées : le contrôle doit échouer sur SON TEMPORAIRE, pas sur sa
-        // destination — sinon il ne prouverait rien de plus que « le répertoire est en lecture seule ».
-        std::fs::write(&dest, b"").unwrap();
-        std::fs::write(&dest_hist, b"").unwrap();
+        let sortie = root.join("sortie");
+        std::fs::create_dir_all(&sortie).unwrap();
+        let dest = sortie.join("plume-x.db.age").to_string_lossy().into_owned();
+        let dest_hist = sortie.join("plume-historique.db.age").to_string_lossy().into_owned();
         std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let _staging = ReglageBackupPose::neuf(crate::backup::CLE_BACKUP_STAGING_DIR, &stage.to_string_lossy());
 
         // (1) STREAMING : réussit, et la restauration rend la base à l'identique.
         let st = backup_compressed(&src, &dest, Some(key), None).expect("le streaming ne crée aucun fichier dans le staging");
@@ -447,20 +466,23 @@
             let n: i64 = c.query_row("SELECT count(*) FROM event", [], |r| r.get(0)).unwrap();
             assert_eq!(n, orig_events, "base restaurée complète alors qu'aucun fichier neuf n'était créable dans le staging");
         }
-        // le staging ne contient QUE les deux destinations pré-créées : rien n'y est né.
-        let mut restant: Vec<String> = std::fs::read_dir(&stage).unwrap()
+        // le staging est VIDE : rien n'y est né ; la sortie ne porte que l'archive publiée.
+        let restant: Vec<String> = std::fs::read_dir(&stage).unwrap()
             .flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        restant.sort();
-        assert_eq!(restant, vec!["plume-historique.db.age".to_string(), "plume-x.db.age".to_string()],
-            "aucun fichier NOUVEAU dans le staging ; trouvé : {restant:?}");
+        assert!(restant.is_empty(), "aucun fichier NOUVEAU dans le staging ; trouvé : {restant:?}");
+        let publie: Vec<String> = std::fs::read_dir(&sortie).unwrap()
+            .flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(publie, vec!["plume-x.db.age".to_string()], "seule l'archive publiée reste dans la sortie ; trouvé : {publie:?}");
 
-        // (2) CONTRÔLE : le chemin historique, lui, ÉCHOUE — il ne peut pas créer son clair.
+        // (2) CONTRÔLE : le chemin historique, lui, ÉCHOUE — il ne peut pas créer son clair dans le staging, alors
+        //     que la sortie, elle, est inscriptible (l'échec vient donc bien du staging).
         let hist = {
             let _force = ReglageBackupPose::neuf(crate::backup::CLE_BACKUP_FORCE_PLAINTEXT_EXPORT, "1");
             backup_compressed(&src, &dest_hist, Some(key), None)
         };
         assert!(hist.is_err(),
             "le chemin historique DOIT échouer quand son temporaire n'est pas créable — sinon le test ne prouve rien du streaming");
+        assert!(!std::path::Path::new(&dest_hist).exists(), "le contrôle raté ne publie rien");
 
         // rend le répertoire effaçable par le garde de la fixture (Drop de TmpPossede).
         std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o755)).unwrap();

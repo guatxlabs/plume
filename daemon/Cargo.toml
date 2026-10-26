@@ -54,7 +54,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 # zstd : compression du PLAINTEXT (la DB SQLCipher chiffrée est incompressible) -> ~5-10x plus petit.
 # age  : chiffrement STREAMING par passphrase (scrypt), crypto auditée, pure-Rust (pas de hand-rolled).
 # Les deux streament en flux borné (buffer ~1 MiB) -> tient sous la limite RAM 2 GiB du pod.
-zstd = "0.13"
+zstd = "0.14"
 age = "0.11"
 # Importeur Sigma (Slice #7, pièce 3) : les règles Sigma sont du YAML. `yaml-rust` est un parseur YAML
 # 100 % Rust, sans dépendance système (linked-hash-map uniquement), déjà présent dans le cache cargo.
@@ -117,9 +117,9 @@ samlify = { version = "0.3", optional = true }
 # (kernels de calcul + arrow-array/-buffer/... ; on décode colonne->bind SQLite en P2, on n'a AUCUN besoin
 # des compute kernels). Chaîne native = `zstd-sys` (compilateur C `cc`, DÉJÀ requis par le sqlcipher vendoré)
 # — AUCUN C++/`cc1plus`/bindgen NOUVEAU (contrairement à duckdb bundled). `thrift` (métadonnées Parquet) est
-# 100 % Rust. Aligné sur arrow 58.x DÉJÀ résolu dans le lock (via `duckdb`, off) -> pas de 2e version d'arrow.
+# 100 % Rust. Sans la feature `arrow`, `parquet` ne tire aucun crate arrow-* (celui du lock vient de `duckdb`, off).
 # Activer : `cargo build --features cold_tier` (tier froid d'un déploiement rétention-longue ; jamais requis).
-parquet = { version = "58", default-features = false, features = ["zstd", "snap"], optional = true }
+parquet = { version = "60", default-features = false, features = ["zstd", "snap"], optional = true }
 # COLD tier CHIFFREMENT AT-REST (#18 Phase 1, durcissement confidentialité) — le tier froid DOIT égaler le
 # chiffrement at-rest du hot (SQLCipher) : modèle de menace « ne pas faire confiance au disque ». On RÉUTILISE
 # la pile crypto DÉJÀ en arbre : `age` (STREAM AEAD ChaCha20-Poly1305, nonce par-fichier aléatoire + compteur

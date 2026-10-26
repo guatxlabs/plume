@@ -5859,8 +5859,8 @@ fn adv_data_pages(path: &Path, rg: usize, col_idx: usize) -> usize {
     let bytes = cold_decrypt_to_bytes(path, &tpass()).unwrap();
     let opts = ReadOptionsBuilder::new().with_page_index().build();
     let rdr = SerializedFileReader::new_with_options(bytes, opts).unwrap();
-    let oi = rdr.metadata().offset_index().expect("offset index présent (writer par défaut)");
-    oi[rg][col_idx].page_locations().len()
+    let pi = rdr.metadata().page_index().expect("offset index présent (writer par défaut)");
+    pi.offset_index(rg, col_idx).expect("offset index présent pour ce groupe et cette colonne").page_locations().len()
 }
 
 /// ATTAQUE #1 (truncature multi-pages) + #5 (append) + #6 (transpose) : UN SEUL row-group dont les colonnes
@@ -7122,7 +7122,7 @@ fn p3_rowgroup_prune_bench() {
 // (résultat), + la valeur PRÉSENTE est bien comptée. Un écart => SUR-ÉLAGAGE (fausse détection SOC).
 // ====================================================================================================
 
-/// MICRO-TEST : comportement RÉEL de troncature des stats string (parquet 58, défaut `statistics_truncate_length=64`).
+/// MICRO-TEST : comportement RÉEL de troncature des stats string (parquet 58 puis 60, défaut `statistics_truncate_length=64`).
 /// Établit empiriquement : MAX tronqué INCRÉMENTÉ (>= vrai max) ; MIN tronqué (<= vrai min) -> bornes VALIDES.
 #[test]
 #[cfg(feature = "cold_tier")]

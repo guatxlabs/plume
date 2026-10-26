@@ -10515,7 +10515,7 @@ fn search_declares_what_it_did_not_search_only_when_cold_history_exists() {
     {
         let c = db.lock();
         assert!(
-            crate::handlers::search::search_cold_coverage(&c, &conf, b0, 0).is_none(),
+            crate::handlers::search::search_cold_coverage(&c, &conf, b0, 0, n_now()).is_none(),
             "sans histoire froide, la barre couvre tout ce qui existe -> RIEN à déclarer"
         );
     }
@@ -10529,7 +10529,7 @@ fn search_declares_what_it_did_not_search_only_when_cold_history_exists() {
     cold_age_run(&db, &dbp_s, &conf, n_now(), RET_DAYS);
     let b = union_boundary(&db, &conf);
     let c = db.lock();
-    let cov = crate::handlers::search::search_cold_coverage(&c, &conf, b, 0)
+    let cov = crate::handlers::search::search_cold_coverage(&c, &conf, b, 0, n_now())
         .expect("fenêtre non bornée + froid présent -> DÉCLARÉ");
     assert_eq!(cov["searched_from"].as_i64(), Some(b), "la note dit À PARTIR D'OÙ elle a cherché");
     assert_eq!(cov["reason"].as_str(), Some("fts_hot_only"), "la note NOMME la cause, pas seulement l'effet");
@@ -10538,18 +10538,18 @@ fn search_declares_what_it_did_not_search_only_when_cold_history_exists() {
         "la note propose la voie EXACTE (celle qui, elle, lit le froid) — sinon c'est un mur"
     );
     assert!(
-        crate::handlers::search::search_cold_coverage(&c, &conf, b, base).is_some(),
+        crate::handlers::search::search_cold_coverage(&c, &conf, b, base, n_now()).is_some(),
         "fenêtre atteignant SOUS la frontière -> DÉCLARÉ"
     );
     assert!(
-        crate::handlers::search::search_cold_coverage(&c, &conf, b, b).is_none(),
+        crate::handlers::search::search_cold_coverage(&c, &conf, b, b, n_now()).is_none(),
         "fenêtre entièrement CHAUDE -> rien à déclarer (la barre a tout couvert)"
     );
     // (c) Tier froid éteint -> jamais de note (mode 0 : /api/search byte-identique).
     let mut off = conf.clone();
     off.insert("PLUME_COLD_TIER".to_string(), "0".to_string());
     assert!(
-        crate::handlers::search::search_cold_coverage(&c, &off, b, 0).is_none(),
+        crate::handlers::search::search_cold_coverage(&c, &off, b, 0, n_now()).is_none(),
         "tier froid OFF -> aucune note, aucun coût"
     );
     drop(c);
@@ -11812,7 +11812,7 @@ fn p10_7g_une_couverture_froide_non_lue_est_declaree_jamais_tue() {
     {
         let c = db.lock();
         assert!(
-            crate::handlers::search::search_cold_coverage(&c, &conf, b0, 0).is_none(),
+            crate::handlers::search::search_cold_coverage(&c, &conf, b0, 0, n_now()).is_none(),
             "instrument : sans histoire froide (table absente), rien à déclarer"
         );
     }
@@ -11826,12 +11826,12 @@ fn p10_7g_une_couverture_froide_non_lue_est_declaree_jamais_tue() {
     cold_age_run(&db, &dbp_s, &conf, n_now(), RET_DAYS);
     let b = union_boundary(&db, &conf);
     let c = db.lock();
-    let lisible = crate::handlers::search::search_cold_coverage(&c, &conf, b, 0).expect("instrument : froid présent et lisible -> note « chaud seulement »");
+    let lisible = crate::handlers::search::search_cold_coverage(&c, &conf, b, 0, n_now()).expect("instrument : froid présent et lisible -> note « chaud seulement »");
     assert_eq!(lisible["reason"].as_str(), Some("fts_hot_only"), "instrument : {lisible}");
     // (c) La lecture est COUPÉE en vol (rappel de progression qui interrompt chaque énoncé) : la forme qu'a un garde
     //     de budget ou une annulation. Ce n'est plus un silence.
     c.progress_handler(1, Some(|| true));
-    let cov = crate::handlers::search::search_cold_coverage(&c, &conf, b, 0).expect("lecture coupée -> DÉCLARÉ, jamais tu");
+    let cov = crate::handlers::search::search_cold_coverage(&c, &conf, b, 0, n_now()).expect("lecture coupée -> DÉCLARÉ, jamais tu");
     c.progress_handler(1, None::<fn() -> bool>);
     assert_eq!(cov["reason"].as_str(), Some("cold_coverage_unread"), "la note NOMME la cause : {cov}");
     assert!(cov["notice"].as_str().unwrap_or("").contains("/api/query"), "la note propose la voie qui lit le froid : {cov}");
@@ -11843,3 +11843,6 @@ mod expiration_garde_la_ligne;
 
 // `P10.34-k` — le plan d'escrow froid est borné par la rétention, avoue ce qu'il n'a pas lu, et ses copies sont durables.
 mod escrow_borne_par_la_retention;
+
+// `P10.34-k` — la couverture déclarée de la recherche est bornée par la rétention ; le refus de purge du tier froid ne l'est pas, et le dit.
+mod couverture_de_la_recherche_bornee_par_la_retention;

@@ -54,7 +54,7 @@
 //! (ou dims non sealées / colonne déniée) -> pas d'élagage -> sélection ts-only, conservatrice, inchangée.
 
 use super::*;
-use super::reader::{cold_hydrate_row_cap, cold_read_parallelism, cold_union_query, distinct_seal_envs, HorizonDeLecture, PARQUET_COLS};
+use super::reader::{cold_hydrate_row_cap, cold_read_parallelism, cold_union_query, distinct_seal_envs, plus_ancien_jour_scelle, HorizonDeLecture, PARQUET_COLS};
 use super::vectorized::{
     can_vectorize, vec_count, vec_group_count, vec_materialize, vec_materialize_keyset, GroupKey, IntOp, MatRow, Pred,
 };
@@ -649,7 +649,7 @@ fn plan_scan(
     let conn = open_seal_conn(db_path)?;
     let envs: Vec<String> = match env_filter {
         Some(e) if !e.trim().is_empty() => vec![e.to_string()],
-        _ => distinct_seal_envs(&conn, lo, hi),
+        _ => distinct_seal_envs(&conn, lo, hi)?,
     };
     let mut files: Vec<(String, Sel)> = Vec::new();
     let mut pruned = 0usize;
@@ -775,15 +775,8 @@ pub(crate) fn cold_vectorized_try(
     // basse = q_from si bornée, sinon le plus vieux jour scellé.
     let hi = q_to; // gate: 0 < q_to < boundary
     let conn = open_seal_conn(db_path)?;
-    let lo = if q_from > 0 {
-        q_from
-    } else {
-        conn.query_row("SELECT MIN(day) FROM cold_seal", [], |r| r.get::<_, Option<i64>>(0))
-            .ok()
-            .flatten()
-            .map(|d| d * SECS_PER_DAY)
-            .unwrap_or(hi)
-    };
+    // `P10.20-b` — une lecture ratée du plus vieux jour scellé est une erreur (jamais `lo = hi`), cf. `plus_ancien_jour_scelle`.
+    let lo = if q_from > 0 { q_from } else { plus_ancien_jour_scelle(&conn)?.unwrap_or(hi) };
     drop(conn);
 
     // Deny-set du tenant (mirror open_cold_union) — VIDE quand masks_empty en production ; le harnais peut le
@@ -970,18 +963,11 @@ fn ks_merge_desc(a: Vec<(i64, i64, MatRow)>, b: Vec<(i64, i64, MatRow)>, limit: 
 /// Borne haute = `min(q_to, B-1)` (`q_to<=0` = fenêtre non bornée) ; borne basse = `q_from` si bornée,
 /// sinon le plus vieux jour scellé. Le CURSEUR n'entre pas ici : c'est ce qui rend cette fenêtre
 /// identique à la page 1 et à la page k, donc utilisable comme sujet d'une garde de traversee.
-fn fenetre_froide_de_la_traversee(conn: &Connection, q_from: i64, q_to: i64, boundary: i64) -> (i64, i64) {
+/// `P10.20-b` — une lecture ratée du plus vieux jour scellé rend `Err` (jamais `lo = hi`), cf. `plus_ancien_jour_scelle`.
+fn fenetre_froide_de_la_traversee(conn: &Connection, q_from: i64, q_to: i64, boundary: i64) -> Result<(i64, i64), String> {
     let hi = if q_to > 0 { q_to.min(boundary - 1) } else { boundary - 1 };
-    let lo = if q_from > 0 {
-        q_from
-    } else {
-        conn.query_row("SELECT MIN(day) FROM cold_seal", [], |r| r.get::<_, Option<i64>>(0))
-            .ok()
-            .flatten()
-            .map(|d| d * SECS_PER_DAY)
-            .unwrap_or(hi)
-    };
-    (lo, hi)
+    let lo = if q_from > 0 { q_from } else { plus_ancien_jour_scelle(conn)?.unwrap_or(hi) };
+    Ok((lo, hi))
 }
 
 /// GATE MONO-ENV. `cold_synth_id = seq*COLD_FILE_MAX_ROWS + position` intègre `seq`+`position` mais PAS
@@ -1000,19 +986,22 @@ fn fenetre_froide_de_la_traversee(conn: &Connection, q_from: i64, q_to: i64, bou
 /// dans le sens que le lot précédent n'avait pas regardé. Jugée sur la fenêtre, la garde rend le MÊME
 /// verdict à toutes les pages, à données égales. C'est un RESSERREMENT : `hi_fenetre >= hi_page`, donc
 /// l'ensemble d'envs examiné ne peut que GRANDIR, et la garde ne peut que refuser PLUS souvent.
-fn mono_env_sur_la_fenetre(conn: &Connection, env_filter: Option<&str>, lo: i64, hi: i64) -> bool {
+///
+/// `P10.20-b` — la liste des envs non lue est une ERREUR (`Err`), jamais « un seul env » : avant, une lecture ratée
+/// rendait une liste vide, la garde acceptait, et le parcours se faisait sur une fenêtre dont les envs étaient tus.
+fn mono_env_sur_la_fenetre(conn: &Connection, env_filter: Option<&str>, lo: i64, hi: i64) -> Result<bool, String> {
     if env_filter.is_some() {
-        return true;
+        return Ok(true);
     }
-    let envs = distinct_seal_envs(conn, lo, hi);
+    let envs = distinct_seal_envs(conn, lo, hi)?;
     if envs.len() > 1 {
         eprintln!(
             "[cold] keyset: fallback cap\u{e9} (multi-env non-scop\u{e9}, {} envs dans [{lo},{hi}]) \u{2014} raw-completeness servie via oracle cold_union_query",
             envs.len()
         );
-        return false;
+        return Ok(false);
     }
-    true
+    Ok(true)
 }
 
 // LA ROUTABILITÉ D'UNE TRAVERSÉE A ÉTÉ **SUPPRIMÉE** ICI (`P10.5-g`, 2026-08-28), ET C'EST LE CŒUR DU
@@ -1093,8 +1082,8 @@ pub(crate) fn cold_keyset_page(
 
     // Fenêtre froide de la TRAVERSÉE (indépendante du curseur) puis GATE MONO-ENV sur CETTE fenêtre.
     let conn = open_seal_conn(db_path)?;
-    let (lo, hi_fenetre) = fenetre_froide_de_la_traversee(&conn, q_from, q_to, boundary);
-    if !mono_env_sur_la_fenetre(&conn, env_filter, lo, hi_fenetre) {
+    let (lo, hi_fenetre) = fenetre_froide_de_la_traversee(&conn, q_from, q_to, boundary)?;
+    if !mono_env_sur_la_fenetre(&conn, env_filter, lo, hi_fenetre)? {
         drop(conn);
         return Ok(None);
     }
@@ -1782,15 +1771,8 @@ pub(crate) fn cold_vectorized_merge_try(
     // borne basse = q_from si bornée, sinon le plus vieux jour scellé.
     let hi = boundary - 1;
     let conn = open_seal_conn(db_path)?;
-    let lo = if q_from > 0 {
-        q_from
-    } else {
-        conn.query_row("SELECT MIN(day) FROM cold_seal", [], |r| r.get::<_, Option<i64>>(0))
-            .ok()
-            .flatten()
-            .map(|d| d * SECS_PER_DAY)
-            .unwrap_or(hi)
-    };
+    // `P10.20-b` — une lecture ratée du plus vieux jour scellé est une erreur (jamais `lo = hi`), cf. `plus_ancien_jour_scelle`.
+    let lo = if q_from > 0 { q_from } else { plus_ancien_jour_scelle(&conn)?.unwrap_or(hi) };
     drop(conn);
 
     // Deny-set du tenant (mirror open_cold_union / P4a) — VIDE quand masks_empty en production ; le harnais

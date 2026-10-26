@@ -29,6 +29,9 @@
 // temporaire 0600 renommé dessus, et c'est dit. Mutants joués, chacun vu ROUGE : AT3C_SESSION_CLE_CONSTANTE,
 // AT3C_LEDGER_ILLISIBLE_ECRASE, AT3C_SESSION_ILLISIBLE_ECRASE, AT3C_REMPLACER_EN_PLACE, AT3C_SESSION_INVALIDE_GARDE,
 // AT3C_SESSION_TRONQUEE_GARDE, AT3C_SESSION_FS_WRITE, AT3C_SESSION_REMPLACEE_MUETTE, AT3C_SESSION_REMPLACEMENT_MUET.
+//
+// INVERSÉ (vague AU) : les deux lignes « gardée EN MÉMOIRE » nomment désormais la voie du fichier monté en lecture seule
+// au lieu de la variable ; témoins de la provenance dans cle_de_session_montee_et_provenance_dite.rs.
 // =====================================================================================
 
 mod secrets_poses_en_0600_des_la_creation {
@@ -120,7 +123,8 @@ mod secrets_poses_en_0600_des_la_creation {
 
     /// Instrument : le témoin d'une clé de session ne conclut rien si l'environnement en pose une.
     fn environnement_sans_cle_de_session() {
-        assert!(std::env::var("PLUME_SESSION_SECRET").is_err() && std::env::var("PLUME_SESSION_KEY").is_err(),
+        assert!(std::env::var("PLUME_SESSION_SECRET").is_err() && std::env::var("PLUME_SESSION_KEY").is_err()
+            && std::env::var("PLUME_SESSION_SECRET_FILE").is_err() && std::env::var("PLUME_SESSION_SECRET_REF").is_err(),
             "instrument : l'environnement pose une clé de session, ce témoin REFUSE DE CONCLURE");
     }
 
@@ -160,6 +164,8 @@ mod secrets_poses_en_0600_des_la_creation {
             .env(ENFANT, format!("session-tue|{tmp}"))
             .env_remove("PLUME_SESSION_SECRET")
             .env_remove("PLUME_SESSION_KEY")
+            .env_remove("PLUME_SESSION_SECRET_FILE")
+            .env_remove("PLUME_SESSION_SECRET_REF")
             .output()
             .expect("relance du binaire de test");
         tue_a_l_ecriture(&sortie);
@@ -336,6 +342,8 @@ mod secrets_poses_en_0600_des_la_creation {
             .env(ENFANT, format!("session-blanche|{tmp}"))
             .env_remove("PLUME_SESSION_SECRET")
             .env_remove("PLUME_SESSION_KEY")
+            .env_remove("PLUME_SESSION_SECRET_FILE")
+            .env_remove("PLUME_SESSION_SECRET_REF")
             .output()
             .expect("relance du binaire de test");
         joue_jusqu_au_bout(&sortie);
@@ -364,6 +372,8 @@ mod secrets_poses_en_0600_des_la_creation {
             .env(ENFANT, format!("session-non-remplacee|{tmp}"))
             .env_remove("PLUME_SESSION_SECRET")
             .env_remove("PLUME_SESSION_KEY")
+            .env_remove("PLUME_SESSION_SECRET_FILE")
+            .env_remove("PLUME_SESSION_SECRET_REF")
             .output()
             .expect("relance du binaire de test");
         joue_jusqu_au_bout(&sortie);
@@ -372,7 +382,7 @@ mod secrets_poses_en_0600_des_la_creation {
         assert_eq!(lignes(&sortie, "[session]"), vec![format!(
             "[session] clé de signature à '{p}' invalide et NON remplacée (temporaire {p}.en-cours non retiré (Is a directory \
              (os error 21))) : la clé neuve est gardée EN MÉMOIRE — les sessions ouvertes ne survivront pas au prochain \
-             redémarrage. Rends l'emplacement inscriptible, ou pose PLUME_SESSION_SECRET."
+             redémarrage. Rends l'emplacement inscriptible, ou monte-la en fichier en lecture seule par PLUME_SESSION_SECRET_FILE."
         )], "{}", tout(&sortie));
     }
 
@@ -422,6 +432,8 @@ mod secrets_poses_en_0600_des_la_creation {
             .env(ENFANT, format!("session-repertoire|{tmp}"))
             .env_remove("PLUME_SESSION_SECRET")
             .env_remove("PLUME_SESSION_KEY")
+            .env_remove("PLUME_SESSION_SECRET_FILE")
+            .env_remove("PLUME_SESSION_SECRET_REF")
             .output()
             .expect("relance du binaire de test");
         joue_jusqu_au_bout(&sortie);
@@ -429,7 +441,8 @@ mod secrets_poses_en_0600_des_la_creation {
         assert_eq!(lignes(&sortie, "[session]"), vec![format!(
             "[session] clé de signature NON écrite (création de {p} impossible (File exists (os error 17))) : elle est \
              gardée EN MÉMOIRE — les sessions ouvertes ne survivront pas au prochain redémarrage. Une entrée présente qu'on \
-             ne peut pas lire n'est jamais écrasée : retire-la ou rends l'emplacement inscriptible, ou pose PLUME_SESSION_SECRET."
+             ne peut pas lire n'est jamais écrasée : retire-la ou rends l'emplacement inscriptible, ou monte-la en fichier en \
+             lecture seule par PLUME_SESSION_SECRET_FILE."
         )], "{}", tout(&sortie));
     }
 

@@ -91,16 +91,56 @@ pub(crate) fn statut_du_refus_de_purge(e: &PurgeRefusal) -> StatusCode {
     }
 }
 
+/// Phrase SERVIE pour une lecture de la base non faite qui porte un texte du moteur (`plan_row_unread`,
+/// `legal_hold_unread` : deux SITES de lecture). Fixe : le texte du moteur part au journal `[purge]`, jamais au client.
+pub(crate) const PHRASE_PURGE_LECTURE_DE_LA_BASE_NON_FAITE: &str = "REFUS — lecture de la base NON FAITE : la purge \
+     n'a rien décidé, aucune ligne supprimée. La cause est écrite au journal du démon.";
+
+/// Phrase SERVIE pour `db`. NEUTRE : `db` porte des lectures (plan, relecture dans la transaction) ET des écritures
+/// refusées de l'exécution (inscription au registre, `DELETE`, reconstruction des rollups, `COMMIT`) ; la phrase ne dit
+/// ni lecture ni écriture, la nature exacte est au journal. « aucune ligne supprimée » est VRAI pour chaque site : une
+/// lecture du plan n'écrit rien ; une écriture refusée et un `COMMIT` refusé sortent de `purge_apply` après le
+/// `ROLLBACK` de toute la transaction (registre compris), et un `COMMIT` refusé ne rend rien durable (commit atomique
+/// du moteur). Reste NON tenu : si ce `ROLLBACK` est lui-même refusé, la transaction reste pendante sur l'écrivain,
+/// non validée ; aucun `COMMIT` ne la suit (tout geste ouvre par `BEGIN`, refusé tant qu'elle pend).
+pub(crate) const PHRASE_PURGE_REFUS_DE_LA_BASE: &str = "REFUS — la base a refusé l'opération : la purge n'est pas faite, \
+     aucune ligne supprimée. La cause est écrite au journal du démon, sous l'identifiant servi.";
+
 /// La RÉPONSE servie par les deux routes pour un refus : le statut est celui de `statut_du_refus_de_purge`
 /// (seul juge de la nature), le corps nomme le code machine. `pub(crate)` pour qu'un témoin juge ce que la
 /// route SERT, pas seulement la table des statuts (`P10.31-x`).
+///
+/// `P10.29-l` — TEXTE DU MOTEUR HORS DU CORPS. `db`, `plan_row_unread` et `legal_hold_unread` portent le texte
+/// rendu par SQLite (et, pour certains `db`, une phrase du produit qui l'enveloppe) : le corps servi prend une phrase
+/// fixe (`PHRASE_PURGE_REFUS_DE_LA_BASE` pour `db`, neutre entre lecture et écriture ; `PHRASE_PURGE_LECTURE_DE_LA_BASE_NON_FAITE`
+/// pour les deux sites de lecture) et un champ `id`, l'identifiant de corrélation tiré de la séquence de `err_json`.
+/// Le texte part à UNE ligne `[<id>] [purge] WARN` (même identifiant, code machine, site de la lecture pour
+/// `plan_row_unread`, texte échappé sur une ligne), sans la phrase du refus. Le tenant n'y est pas nommé : la fabrique
+/// ne le reçoit pas, l'identifiant relie la ligne au ticket. Statuts inchangés. Les autres refus (décisions lues, entrée
+/// manquante, transaction non ouverte, `legal_hold_undetermined`) gardent leur corps à l'octet, sans `id` : leur texte
+/// ne cite pas le moteur. Le `Display` de `PurgeRefusal` reste celui de la CLI (l'opérateur y détient déjà la clé de la
+/// base). La console ne lit pas `/api/purge`.
 pub(crate) fn purge_refusal_response(e: PurgeRefusal) -> Response {
     let code = statut_du_refus_de_purge(&e);
-    (
-        code,
-        Json(json!({ "ok": false, "refusal": purge_refusal_code(&e), "message": e.to_string() })),
-    )
-        .into_response()
+    let refusal = purge_refusal_code(&e);
+    let texte_du_moteur = match &e {
+        PurgeRefusal::Db(texte) => Some((format!("refus de la base ({refusal})"), PHRASE_PURGE_REFUS_DE_LA_BASE, texte)),
+        PurgeRefusal::LegalHoldUnread(texte) => {
+            Some((format!("lecture de la base non faite ({refusal})"), PHRASE_PURGE_LECTURE_DE_LA_BASE_NON_FAITE, texte))
+        }
+        PurgeRefusal::PlanRowUnread { site, cause } => {
+            Some((format!("lecture de la base non faite ({refusal}, {site})"), PHRASE_PURGE_LECTURE_DE_LA_BASE_NON_FAITE, cause))
+        }
+        _ => None,
+    };
+    match texte_du_moteur {
+        Some((nature, phrase, texte)) => {
+            let id = crate::identifiant_de_correlation();
+            eprintln!("[{id}] [purge] WARN refus servi, {nature} : {texte:?}");
+            (code, Json(json!({ "ok": false, "refusal": refusal, "message": phrase, "id": id }))).into_response()
+        }
+        None => (code, Json(json!({ "ok": false, "refusal": refusal, "message": e.to_string() }))).into_response(),
+    }
 }
 
 /// POST /api/purge/plan — TEMPS 1 : SIMULE. Aucune écriture (que des SELECT). Rend le compte EXACT, la

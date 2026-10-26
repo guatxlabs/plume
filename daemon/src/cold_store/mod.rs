@@ -82,7 +82,7 @@ use enonces::*;
 use aging::*;
 // `reader` et `backup` ne sont référencés par AUCUN sibling en build de production (leaf-consumers) : leur seule
 // surface non-façade (hydrate_cold, PARQUET_COLS, …) est consommée par le module `tests` -> glob gaté `#[cfg(test)]`
-// (backup n'expose que `cold_backup_plan`, déjà dans la façade -> pas de glob du tout).
+// (backup n'expose que ce que la façade ré-exporte -> pas de glob du tout).
 #[cfg(test)]
 use reader::*;
 // `P10.5-c` — le type qui porte « cette réponse a-t-elle pu lire le bras froid ? » est importé ICI en
@@ -98,7 +98,7 @@ use vectorized::*;
 // via `crate::cold_store::X`. Re-exporte EXACTEMENT les symboles que les call-sites importent (grep), rien de plus.
 pub(crate) use aging::{cold_age_run, cold_hot_window_days, cold_retention_days, reparse_lower_bound};
 pub(crate) use paths::cold_root;
-pub(crate) use backup::cold_backup_plan;
+pub(crate) use backup::{cold_backup_plan, histoire_froide_sous_la_frontiere, HistoireFroideSousLaFrontiere};
 // `P7.20-f` — l'exécutant du plan, consommé par `server::sauvegarde_planifiee` et le dispatch `cold-escrow` de `main`.
 pub(crate) use escrow_local::{mettre_a_l_abri_les_jours_froids, EscrowFroidRendu};
 // `P10.13-a` — la sonde de lecture seule, consommée par le dispatch `cold-aging-plan` de `main`.

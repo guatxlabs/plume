@@ -36,8 +36,15 @@ pub(crate) fn search_bar_exact_pred(col: &str, v: &str) -> String {
 /// `/api/query` en GXQL. Une erreur vaut mieux qu'une réponse fausse ; un silence ne vaut rien.
 ///
 /// `None` = rien à déclarer (tier froid inactif, aucune donnée froide, ou fenêtre entièrement chaude).
+///
+/// BORNÉE PAR LA RÉTENTION. « Histoire froide » = un jour scellé sous la frontière ET dans la rétention de son index
+/// à l'instant `n` (`cold_store::histoire_froide_sous_la_frontiere`, même borne que le vieillissement et le lecteur
+/// froid). Une ligne `cold_seal` gardée par un retrait de fichier refusé, pour un jour expiré, ne fait plus sortir la
+/// note : ce jour n'est servi par aucune voie. Rétention illisible : la note sort (côté prudent) et dit qu'elle n'est
+/// pas bornée. `n` est l'instant auquel l'appelant a calculé `boundary`.
 #[cfg(feature = "cold_tier")]
-pub(crate) fn search_cold_coverage(conn: &Connection, conf: &HashMap<String, String>, boundary: i64, from: i64) -> Option<Value> {
+pub(crate) fn search_cold_coverage(conn: &Connection, conf: &HashMap<String, String>, boundary: i64, from: i64, n: i64) -> Option<Value> {
+    use crate::cold_store::HistoireFroideSousLaFrontiere as Histoire;
     if !crate::cold_store::cold_tier_runtime_on(conf) {
         return None;
     }
@@ -49,35 +56,46 @@ pub(crate) fn search_cold_coverage(conn: &Connection, conf: &HashMap<String, Str
     // note serait du bruit. `P10.7-g` (lot 101) — une lecture RATÉE de l'index des jours scellés n'est plus un
     // silence : une incertitude se DÉCLARE (`cold_coverage_unread`), parce que « rien à déclarer » se lirait
     // comme « tout a été cherché ». MESURÉ en route : une base jamais vieillie n'a PAS encore la table — cette
-    // absence-là (forme inconnue) est « aucun jour scellé », pas une incertitude, et reste un silence.
-    let has_cold: bool = match conn.query_row("SELECT EXISTS(SELECT 1 FROM cold_seal WHERE day < ?1)", params![boundary / 86_400], |r| r.get::<_, i64>(0)) {
-        Ok(n) => n == 1,
-        Err(e) if crate::bilan_de_tick::cause_sql(&e) == crate::mesure_environnement::CAUSE_FORME_INCONNUE => false,
-        Err(e) => {
-            return Some(json!({
-                "searched_from": boundary,
-                "cold_boundary_ts": boundary,
-                "reason": "cold_coverage_unread",
-                "notice": format!("couverture froide NON ÉTABLIE : l'index des jours scellés (`cold_seal`) ne se lit pas ({e}) — la barre plein-texte \
-                                   n'a cherché que la fenêtre chaude et ne peut pas dire si un historique columnarisé plus ancien existe ; \
-                                   `/api/query` en GXQL lit le froid"),
-            }));
-        }
+    // absence-là (table absente du schéma) est « aucun jour scellé », pas une incertitude, et reste un silence.
+    // La cause servie est la NATURE de l'échec (code SQLite), jamais le message du moteur.
+    let non_etablie = |cause: String| {
+        json!({
+            "searched_from": boundary,
+            "cold_boundary_ts": boundary,
+            "reason": "cold_coverage_unread",
+            "notice": format!("couverture froide NON ÉTABLIE : l'index des jours scellés (`cold_seal`) ne se lit pas ({cause}) — la barre plein-texte \
+                               n'a cherché que la fenêtre chaude et ne peut pas dire si un historique columnarisé plus ancien existe ; \
+                               `/api/query` en GXQL lit le froid"),
+        })
     };
-    if !has_cold {
-        return None;
-    }
+    let notice = match crate::cold_store::histoire_froide_sous_la_frontiere(conn, conf, n, boundary) {
+        Histoire::Aucune => return None,
+        Histoire::IndexNonLu(nature) => return Some(non_etablie(nature)),
+        Histoire::LignesIllisibles(lignes) => return Some(non_etablie(format!("{lignes} ligne(s) illisible(s)"))),
+        Histoire::Presente => NOTICE_FTS_CHAUD_SEUL.to_string(),
+        Histoire::PresenteRetentionNonLue => format!("{NOTICE_FTS_CHAUD_SEUL} {NOTICE_RETENTION_NON_LUE}"),
+    };
     Some(json!({
         "searched_from": boundary,
         "cold_boundary_ts": boundary,
         "reason": "fts_hot_only",
-        "notice": "recherche INCOMPLÈTE : la barre plein-texte n'interroge que l'index FTS5, qui n'existe \
+        "notice": notice
+    }))
+}
+
+/// La note « chaud seulement » de la barre plein-texte.
+#[cfg(feature = "cold_tier")]
+pub(crate) const NOTICE_FTS_CHAUD_SEUL: &str = "recherche INCOMPLÈTE : la barre plein-texte n'interroge que l'index FTS5, qui n'existe \
                    que sur la fenêtre chaude — l'historique columnarisé plus ancien n'a PAS été cherché \
                    (ce n'est donc pas « aucun résultat »). Voie EXACTE sur tout l'historique : /api/query \
                    en GXQL, qui lit le tier froid (p. ex. `search message=~<motif>` ou `search \
-                   <champ>=<valeur>`)."
-    }))
-}
+                   <champ>=<valeur>`).";
+
+/// Ce que la note ajoute quand le réglage de rétention n'a pas été lu : elle n'est pas bornée.
+#[cfg(feature = "cold_tier")]
+pub(crate) const NOTICE_RETENTION_NON_LUE: &str = "Le réglage de rétention (`retention_days`) n'a pas pu être lu : cette note n'est pas \
+                   bornée par la rétention, et des jours au-delà de celle-ci, dont la ligne `cold_seal` est restée, peuvent \
+                   suffire à la faire sortir — aucune borne n'est fabriquée.";
 
 /// `P10.20-b` (vague AR) — LA COUVERTURE FROIDE QUAND LE RÉGLAGE DE RÉTENTION N'EST PAS LU. La frontière chaud/froid
 /// dérive de `retention_days` ; une ligne `setting` écrite et illisible ne la fait plus calculer sur le repli env/défaut.
@@ -253,8 +271,11 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
     // note, aucun coût, /api/search byte-identique (mode 0).
     // `P10.20-b` (vague AR) — `Some(Err(()))` : le réglage `retention_days` écrit n'a pas été lu ; aucune frontière n'est
     // fabriquée sur le repli env/défaut, la couverture le dit (`couverture_froide_sans_reglage_lu`).
+    // L'instant de la frontière est AUSSI celui de la borne de rétention de la couverture (`search_cold_coverage`).
     #[allow(unused_mut)]
     let mut cold_boundary: Option<Result<i64, ()>> = None;
+    #[cfg(feature = "cold_tier")]
+    let instant_de_la_frontiere = now();
     #[cfg(feature = "cold_tier")]
     {
         let conf = load_config();
@@ -264,7 +285,7 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
             let c = timings.db().lock(&rc);
             cold_boundary = Some(
                 retention_effective_lue(&c, &conf, "retention_days")
-                    .map(|rd| crate::cold_store::cold_query_boundary(&c, &conf, now(), rd))
+                    .map(|rd| crate::cold_store::cold_query_boundary(&c, &conf, instant_de_la_frontiere, rd))
                     .map_err(|_| ()),
             );
         }
@@ -282,7 +303,7 @@ pub(crate) async fn search(State(st): State<AppState>, Extension(au): Extension<
             let mut coverage: Option<Value> = None;
             #[cfg(feature = "cold_tier")]
             match cold_boundary {
-                Some(Ok(b)) => coverage = search_cold_coverage(conn, &load_config(), b, q_from),
+                Some(Ok(b)) => coverage = search_cold_coverage(conn, &load_config(), b, q_from, instant_de_la_frontiere),
                 Some(Err(())) => coverage = Some(couverture_froide_sans_reglage_lu()),
                 None => {}
             }

@@ -982,13 +982,19 @@ static ERR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 fn err_json(code: StatusCode, msg: impl Into<String>) -> Response {
     err_json_et_identifiant(code, msg).1
 }
+/// `P10.29-l` — UN identifiant de corrélation `plume-e<pid>-<n>`, tiré de la MÊME séquence que celui de `err_json` :
+/// un site qui sert un 5xx sous un corps de forme propre (refus de purge `{ok, refusal, message}`) le rend au client
+/// et le pose sur sa ligne de journal, sans dupliquer le format ni ouvrir une seconde séquence.
+fn identifiant_de_correlation() -> String {
+    let n = ERR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("plume-e{}-{n}", std::process::id())
+}
 /// `P10.29-l` — `err_json` qui rend AUSSI l'identifiant de corrélation servi (`Some` pour un 5xx, `None` sinon), pour
 /// qu'un site qui journalise une cause à part puisse la relier au ticket du client. Corps et trace inchangés.
 fn err_json_et_identifiant(code: StatusCode, msg: impl Into<String>) -> (Option<String>, Response) {
     let msg = msg.into();
     if code.is_server_error() {
-        let n = ERR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let id = format!("plume-e{}-{n}", std::process::id());
+        let id = identifiant_de_correlation();
         // La SEULE trace serveur d'un 5xx. `eprintln!` (stderr -> journald/conteneur), comme le reste
         // du diagnostic du daemon : aucune dépendance de journalisation ajoutée.
         eprintln!("[{id}] HTTP {} : {msg}", code.as_u16());

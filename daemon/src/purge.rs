@@ -360,7 +360,9 @@ impl std::fmt::Display for PurgeRefusal {
                  fenêtre. Ces copies columnarisées resteraient INTERROGEABLES après le vidage de `event` : \
                  « purgé » serait faux. La purge ne sait pas réécrire un Parquet scellé — elle refuse au lieu \
                  de mentir. Contournement : attendre l'expiration cold (cold_retention_days) ou restreindre la \
-                 fenêtre aux jours encore chauds."
+                 fenêtre aux jours encore chauds. Ce compte n'est PAS borné par la rétention : un fichier d'un jour \
+                 déjà expiré dont le retrait a été refusé reste sur le disque, il est compté et il refuse tant qu'il \
+                 n'est pas retiré."
             ),
             PurgeRefusal::CitedByCase { ids, total } => write!(
                 f,
@@ -652,6 +654,10 @@ fn holds_covering(conn: &Connection, scope: &PurgeScope) -> Result<Vec<String>, 
 /// et refuse — sans quoi le build par défaut purgerait allègrement `event` en laissant les Parquet lisibles
 /// par un binaire qui, lui, a la feature. Table absente -> aucun tier froid n'a jamais tourné sur cette base.
 /// Table présente mais illisible -> REFUS (fail-closed).
+/// NON BORNÉ PAR LA RÉTENTION, À DESSEIN, et la phrase du refus (`PurgeRefusal::ColdTier`) le dit. L'expiration
+/// froide garde la ligne `cold_seal` d'un fichier qu'elle n'a pas pu retirer : ce fichier, au-delà de sa rétention,
+/// est encore sur le disque. Le lecteur froid ne le sert plus, mais le fichier existe : l'écarter ici ferait purger
+/// `event` en laissant une copie columnarisée de la fenêtre. Le refus tient donc tant que la ligne est là.
 fn cold_overlap(conn: &Connection, w: PurgeWindow) -> Result<(), PurgeRefusal> {
     if !table_exists_purge(conn, "cold_seal")? {
         return Ok(());

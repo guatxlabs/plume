@@ -11,7 +11,8 @@
 //  - la RÉPONSE (statut ET corps) de `purge_refusal_response` pour CHAQUE variante de `PurgeRefusal` : 500 pour
 //    `db`, `plan_row_unread`, `legal_hold_undetermined`, `legal_hold_unread` ; 400 pour `reason_required` ; 409
 //    pour les décisions lues. Le corps porte `ok:false`, le code machine du SITE (pas `db` pour tous) et le
-//    texte du refus. La table attendue est écrite ici, pas relue dans `statut_du_refus_de_purge` : un témoin
+//    texte du refus — SAUF, depuis `P10.29-l`, pour `db`, `plan_row_unread` et `legal_hold_unread`, servis sous une
+//    phrase fixe sans le texte du moteur (témoin inversé nommément : `prs_juger`). La table attendue est écrite ici, pas relue dans `statut_du_refus_de_purge` : un témoin
 //    qui recopierait la fonction jugée ne jugerait rien ;
 //  - des refus PRODUITS par le moteur, pas fabriqués : `plan_row_unread` et `db` atteints par un balayage
 //    d'interruptions de `purge_plan` (qui atteint aussi `legal_hold_undetermined`), `legal_hold_unread` par un
@@ -50,15 +51,62 @@ async fn prs_servir(e: PurgeRefusal) -> (u16, serde_json::Value) {
     (statut, serde_json::from_slice(&octets).expect("corps JSON"))
 }
 
-/// Juge une réponse servie : statut attendu, `ok:false`, code machine du site, texte du refus.
+/// `P10.29-l` — phrase servie pour une lecture non faite qui porte un texte du moteur, écrite ICI (pas relue dans
+/// la constante de production).
+const PRS_PHRASE_LECTURE_NON_FAITE: &str = "REFUS — lecture de la base NON FAITE : la purge n'a rien décidé, aucune \
+     ligne supprimée. La cause est écrite au journal du démon.";
+
+/// Phrase servie pour `db`, NEUTRE entre lecture et écriture (`db` porte aussi les écritures refusées de l'exécution),
+/// écrite ICI.
+const PRS_PHRASE_REFUS_DE_LA_BASE: &str = "REFUS — la base a refusé l'opération : la purge n'est pas faite, aucune ligne \
+     supprimée. La cause est écrite au journal du démon, sous l'identifiant servi.";
+
+/// Retire et rend le champ `id` d'un corps servi, après avoir jugé sa forme `plume-e<pid>-<n>`.
+fn prs_retirer_l_identifiant(corps: &mut serde_json::Value, origine: &str) -> String {
+    let id = corps.as_object_mut().and_then(|o| o.remove("id")).unwrap_or_else(|| panic!("{origine} : champ `id` servi : {corps}"));
+    let id = id.as_str().unwrap_or_else(|| panic!("{origine} : `id` est une chaîne")).to_string();
+    let reste = id.strip_prefix(&format!("plume-e{}-", std::process::id())).unwrap_or_else(|| panic!("{origine} : forme de `{id}`"));
+    assert!(!reste.is_empty() && reste.bytes().all(|b| b.is_ascii_digit()), "{origine} : forme de `{id}`");
+    id
+}
+
+/// Texte du moteur porté par le refus (`db`, `plan_row_unread`, `legal_hold_unread`), `None` pour les autres.
+fn prs_texte_du_moteur(e: &PurgeRefusal) -> Option<String> {
+    match e {
+        PurgeRefusal::Db(t) | PurgeRefusal::LegalHoldUnread(t) => Some(t.clone()),
+        PurgeRefusal::PlanRowUnread { cause, .. } => Some(cause.clone()),
+        _ => None,
+    }
+}
+
+/// Juge une réponse servie : statut attendu et corps ENTIER (`ok:false`, code machine du site, message).
+/// INVERSÉ par `P10.29-l` : pour `db`, `plan_row_unread` et `legal_hold_unread`, le message n'est plus le texte du
+/// refus (qui embarquait le texte du moteur) mais une phrase fixe (neutre pour `db`), le corps porte un `id` de
+/// corrélation, et le texte du moteur est absent de TOUT le corps ; les autres variantes gardent leur corps à l'octet.
 async fn prs_juger(e: PurgeRefusal, attendu: u16, origine: &str) {
     let code = purge_refusal_code(&e);
     let texte = e.to_string();
-    let (statut, corps) = prs_servir(e).await;
+    let moteur = prs_texte_du_moteur(&e);
+    let est_db = matches!(e, PurgeRefusal::Db(_));
+    let (statut, mut corps) = prs_servir(e).await;
     assert_eq!(statut, attendu, "{origine} : `{code}` servi en {statut}, attendu {attendu} — corps {corps}");
-    assert_eq!(corps["ok"], serde_json::json!(false), "{origine} : `{code}` : ok:false");
-    assert_eq!(corps["refusal"], serde_json::json!(code), "{origine} : le corps nomme le site `{code}` : {corps}");
-    assert_eq!(corps["message"], serde_json::json!(texte), "{origine} : `{code}` : le texte du refus");
+    let message = match &moteur {
+        Some(_) if est_db => PRS_PHRASE_REFUS_DE_LA_BASE.to_string(),
+        Some(_) => PRS_PHRASE_LECTURE_NON_FAITE.to_string(),
+        None => texte,
+    };
+    if moteur.is_some() {
+        prs_retirer_l_identifiant(&mut corps, origine);
+    }
+    assert_eq!(
+        corps,
+        serde_json::json!({ "ok": false, "refusal": code, "message": message }),
+        "{origine} : `{code}` : corps entier servi"
+    );
+    if let Some(m) = moteur {
+        assert!(!m.is_empty(), "{origine} : instrument — le refus `{code}` porte un texte du moteur");
+        assert!(!corps.to_string().contains(&m), "{origine} : `{code}` : le texte du moteur `{m}` hors du corps : {corps}");
+    }
 }
 
 /// CHAQUE VARIANTE, SA RÉPONSE SERVIE. Le `match` exhaustif sans joker oblige à ranger ici toute variante
@@ -68,7 +116,7 @@ async fn prs_chaque_refus_est_servi_avec_sa_nature() {
     let variantes = vec![
         PurgeRefusal::LegalHold(vec!["litige".into()]),
         PurgeRefusal::LegalHoldUndetermined,
-        PurgeRefusal::LegalHoldUnread("cause".into()),
+        PurgeRefusal::LegalHoldUnread("texte-du-moteur-hold".into()),
         PurgeRefusal::ColdTier { files: 1, days: 1 },
         PurgeRefusal::CitedByCase { ids: vec![1], total: 1 },
         PurgeRefusal::FtsDesync,
@@ -80,6 +128,7 @@ async fn prs_chaque_refus_est_servi_avec_sa_nature() {
         PurgeRefusal::Db("interrupted".into()),
     ];
     let mut lecture_non_faite = 0;
+    let mut moteur_hors_du_corps = 0;
     for e in variantes {
         let attendu = match &e {
             PurgeRefusal::Db(_)
@@ -99,9 +148,13 @@ async fn prs_chaque_refus_est_servi_avec_sa_nature() {
             | PurgeRefusal::StaleToken { .. }
             | PurgeRefusal::CountMismatch { .. } => 409,
         };
+        if prs_texte_du_moteur(&e).is_some() {
+            moteur_hors_du_corps += 1;
+        }
         prs_juger(e, attendu, "variante").await;
     }
     assert_eq!(lecture_non_faite, 4, "instrument : les quatre formes de lecture non faite sont jugées");
+    assert_eq!(moteur_hors_du_corps, 3, "instrument : les trois classes qui portent un texte du moteur sont jugées");
 }
 
 /// DES REFUS PRODUITS PAR LE MOTEUR, SERVIS EN 500 : balayage d'interruptions de `purge_plan` sur une base

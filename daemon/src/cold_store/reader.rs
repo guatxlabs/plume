@@ -1009,17 +1009,49 @@ pub(super) fn union_proj(deny: &std::collections::HashSet<String>) -> String {
 
 /// env_id DISTINCTS ayant AU MOINS un seal dans la plage de jours `[lo_ts, hi_ts]`. Sert quand la requête ne
 /// filtre PAS l'environnement (mode 0 -> `{prod}` ; super-admin cross-env mode 1 -> tous) : on hydrate CHAQUE
-/// env présent en cold. Table absente / aucune -> vide. Lu sur la base du TENANT (cold_seal chiffré at-rest).
-pub(super) fn distinct_seal_envs(conn: &Connection, lo_ts: i64, hi_ts: i64) -> Vec<String> {
+/// env présent en cold. Lu sur la base du TENANT (cold_seal chiffré at-rest).
+///
+/// `P10.20-b` — TROIS ISSUES, PLUS DEUX. Table absente (base jamais vieillie) -> `Ok(vide)` : aucun froid. Aucune
+/// ligne dans la plage -> `Ok(vide)`. Une lecture RATÉE (préparation, pas de parcours, ligne illisible) -> `Err` :
+/// avant, `if let Ok(..)` et `rows.flatten()` rendaient une liste vide ou écourtée, et le froid de l'environnement
+/// tu était sauté sans un mot, la réponse servie comme complète. La base occupée est notée `Occupee` par
+/// `texte_de_la_voie_froide` ; tout le reste est rangé au support par `en_classant_la_voie_froide`.
+pub(super) fn distinct_seal_envs(conn: &Connection, lo_ts: i64, hi_ts: i64) -> Result<Vec<String>, String> {
     let lo_day = lo_ts.div_euclid(SECS_PER_DAY);
     let hi_day = hi_ts.div_euclid(SECS_PER_DAY);
-    let mut out = Vec::new();
-    if let Ok(mut st) = conn.prepare("SELECT DISTINCT env_id FROM cold_seal WHERE day>=?1 AND day<=?2 ORDER BY env_id") {
-        if let Ok(rows) = st.query_map(params![lo_day, hi_day], |r| r.get::<_, String>(0)) {
-            out = rows.flatten().collect();
-        }
+    let mut st = match conn.prepare("SELECT DISTINCT env_id FROM cold_seal WHERE day>=?1 AND day<=?2 ORDER BY env_id") {
+        Ok(st) => st,
+        Err(e) if table_de_seal_absente(&e) => return Ok(Vec::new()),
+        Err(e) => return Err(crate::query_exec::texte_de_la_voie_froide(e)),
+    };
+    let rows = st.query_map(params![lo_day, hi_day], |r| r.get::<_, String>(0)).map_err(crate::query_exec::texte_de_la_voie_froide)?;
+    rows.collect::<Result<Vec<String>, _>>().map_err(crate::query_exec::texte_de_la_voie_froide)
+}
+
+/// `P10.20-b` — LA TABLE DES SCEAUX N'EXISTE PAS ENCORE : une base jamais vieillie ne la porte pas (elle naît au premier
+/// vieillissement, `ensure_cold_seal_table`). C'est la SEULE erreur qui vaut « aucun froid » ; le message est celui que
+/// SQLite rend pour cette table, sous les deux formes que rusqlite construit (avec ou sans position du jeton).
+fn table_de_seal_absente(e: &rusqlite::Error) -> bool {
+    let message = match e {
+        rusqlite::Error::SqliteFailure(_, Some(m)) => m.as_str(),
+        rusqlite::Error::SqlInputError { msg, .. } => msg.as_str(),
+        _ => return false,
+    };
+    message == "no such table: cold_seal"
+}
+
+/// `P10.20-b` — LE PLUS ANCIEN JOUR SCELLÉ, EN SECONDES, borne basse d'une fenêtre froide non bornée (`q_from <= 0`).
+/// `Ok(None)` : table absente (aucun froid) ou table vide (`MIN` rend NULL). `Err` : la lecture n'a pas été faite
+/// (base occupée notée `Occupee`, ligne illisible, E/S). Les quatre sites lisaient
+/// `query_row(..).ok().flatten().map(..).unwrap_or(hi)` : une lecture ratée posait `lo = hi`, une fenêtre froide d'UNE
+/// seconde servie comme la réponse entière d'une fenêtre « tout ». Ils lisent désormais cette fonction et propagent
+/// l'erreur ; seul `Ok(None)` garde le repli `hi` (fenêtre froide vide, ce qui est vrai quand rien n'est scellé).
+pub(super) fn plus_ancien_jour_scelle(conn: &Connection) -> Result<Option<i64>, String> {
+    match conn.query_row("SELECT MIN(day) FROM cold_seal", [], |r| r.get::<_, Option<i64>>(0)) {
+        Ok(jour) => Ok(jour.map(|d| d * SECS_PER_DAY)),
+        Err(e) if table_de_seal_absente(&e) => Ok(None),
+        Err(e) => Err(crate::query_exec::texte_de_la_voie_froide(e)),
     }
-    out
 }
 
 /// `P10.34-j` — LA CAUSE, FIXE, D'UNE LECTURE FROIDE REFUSÉE FAUTE D'HORIZON DE RÉTENTION LISIBLE.
@@ -1064,6 +1096,37 @@ impl HorizonDeLecture {
     /// Borne basse `ts` de la lecture froide de `env_id` : `lo`, relevée au début du premier jour servi.
     pub(super) fn borne_basse(&self, env_id: &str, lo: i64) -> i64 {
         lo.max(self.premier_jour_servi(env_id) * SECS_PER_DAY)
+    }
+
+    /// `P10.34-n` — LE PREMIER JOUR SERVI DE LA PORTÉE D'UNE LECTURE. Un index nommé (`env_filter`) : le sien. Aucun
+    /// index nommé : la lecture hydrate CHAQUE index scellé, donc le jour retenu est le plus TARDIF de tous ceux qu'elle
+    /// peut servir — l'index de chaque politique chargée et la bande globale étendue d'un index sans politique (une
+    /// politique sans durée, `retention_days = 0`, y retombe déjà par `Bande::eff_ret`). La bande globale se lit sous un
+    /// nom que `env_id_ok` refuse : `load_index_policies` écarte ces noms, aucune politique ne peut donc le porter, et
+    /// `Bande::eff_ret` y rend `cold_ret` (même formule, jamais recopiée).
+    pub(super) fn premier_jour_de_la_portee(&self, env_filter: Option<&str>) -> i64 {
+        match env_filter {
+            Some(e) if !e.trim().is_empty() => self.premier_jour_servi(e),
+            _ => {
+                let global = self.premier_jour_servi("");
+                self.bande.policies.iter().map(|p| self.premier_jour_servi(&p.name)).fold(global, i64::max)
+            }
+        }
+    }
+}
+
+impl ColdUnionMeta {
+    /// `P10.34-n` — L'INSTANT SOUS LEQUEL UNE LECTURE FROIDE N'A RIEN SERVI : le début du premier jour servi de sa
+    /// portée (`HorizonDeLecture::premier_jour_de_la_portee`), sur la MÊME bande et au MÊME instant que le lecteur froid
+    /// (`HorizonDeLecture::lire`, porté par la frontière de la requête). C'est l'horizon de couverture d'une réponse de
+    /// `/api/query` dont le bras froid a été lu (`panneau_avoue::horizon_de_la_voie_froide_lue`) : la frontière chaude
+    /// n'y est pas un horizon, puisque le froid sous elle a été lu. `Err` : uniquement `HORIZON_FROID_NON_LU`, le réglage
+    /// de rétention écrit et illisible (la seule erreur de `HorizonDeLecture::lire`).
+    /// Fonction associée au type de COUVERTURE de l'union, déjà ré-exporté par `cold_store` : toutes les voies froides
+    /// (union, keyset colonnaire, vectorisées) lisent sous ce même horizon, et le module de lecture reste privé.
+    pub(crate) fn premier_instant_servi(conn: &Connection, conf: &HashMap<String, String>, boundary: i64, env_filter: Option<&str>) -> Result<i64, String> {
+        let horizon = HorizonDeLecture::lire(conn, conf, boundary)?;
+        Ok(horizon.premier_jour_de_la_portee(env_filter) * SECS_PER_DAY)
     }
 }
 
@@ -1143,24 +1206,19 @@ fn open_cold_union_avec(
     // (3) Fenêtre COLD : cold = `ts < B` ; borne haute = min(to, B-1) (to<=0 = non borné -> B-1). Borne basse =
     // `from` si borné, sinon le plus VIEUX jour scellé (évite d'itérer les jours depuis l'epoch pour from=0).
     let hi = if q_to > 0 { q_to.min(boundary - 1) } else { boundary - 1 };
-    let lo = if q_from > 0 {
-        q_from
-    } else {
-        conn.query_row("SELECT MIN(day) FROM cold_seal", [], |r| r.get::<_, Option<i64>>(0))
-            .ok()
-            .flatten()
-            .map(|d| d * SECS_PER_DAY)
-            .unwrap_or(hi)
-    };
+    let lo = if q_from > 0 { q_from } else { plus_ancien_jour_scelle(&conn)?.unwrap_or(hi) };
 
-    // (4) TABLE TEMP cold_event (schéma == event live).
+    // (4) TABLE TEMP cold_event (schéma == event live). `P10.29-w` — premier énoncé sur la base quand la fenêtre est
+    // bornée : une base occupée y est notée `Occupee` (`texte_de_la_voie_froide`). Les énoncés suivants sur `main`
+    // (préparation de l'insertion, vue d'union) restent sur `pe` : une occupation n'y survient qu'entre deux énoncés
+    // d'une connexion qui a déjà lu le schéma, ce qu'aucun témoin ne produit sans un point d'arrêt dans ce code.
     let temp_ddl = COLD_EVENT_DDL.replacen("CREATE TABLE", "CREATE TEMP TABLE", 1);
-    conn.execute_batch(&temp_ddl).map_err(pe)?;
+    conn.execute_batch(&temp_ddl).map_err(crate::query_exec::texte_de_la_voie_froide)?;
 
     // (5) HYDRATE chaque env (bornée) + copie dans la table temp, plafonnée globalement.
     let envs: Vec<String> = match env_filter {
         Some(e) if !e.trim().is_empty() => vec![e.to_string()],
-        _ => distinct_seal_envs(&conn, lo, hi),
+        _ => distinct_seal_envs(&conn, lo, hi)?,
     };
     let cap = cold_hydrate_row_cap();
     let cols_csv = UNION_COLS.join(",");

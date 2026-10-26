@@ -557,22 +557,61 @@ pub(crate) fn poser_l_attribut_secure(entetes: &mut axum::http::HeaderMap, suffi
 /// clé persistée (générée au 1er boot, comme la clé du ledger), créée en 0600 DÈS la création et
 /// synchronisée. JAMAIS de secret en dur.
 ///
+/// La matière à clé se lit par `cfg_secret` : un secret MONTÉ (fichier en lecture seule, ou référence de secret)
+/// GAGNE sur la variable, et une source montée posée mais absente, vide ou illisible refuse le démarrage (exit 78,
+/// le fail-closed de `cfg_secret`). Une source montée qui ne porte que du blanc refuse AUSSI : elle ne retombe jamais
+/// sur la clé persistée ni sur une clé en mémoire. Sans source montée, rien ne change. UNE ligne au démarrage dit
+/// d'où vient la clé (configuration, secret monté, fichier persisté lu ou engendré, mémoire seule) — jamais la clé,
+/// jamais le chemin du secret monté.
+///
+/// Plancher de longueur (`LONGUEUR_MINIMALE_DE_LA_CLE_DE_SESSION`, en octets, mesuré APRÈS rognage du blanc) : une
+/// source montée plus courte refuse le démarrage (ligne FATAL nommée, exit 78, sans repli sur la clé persistée ni la
+/// mémoire). La variable nue plus courte n'est PAS refusée (rétrocompatibilité) : une ligne WARN le dit, nomme la
+/// voie du fichier monté, et la clé sert comme avant. Aucune de ces lignes ne porte la clé, le chemin monté ni la
+/// longueur mesurée.
+///
 /// Un fichier LU qui ne porte pas de clé (vide ou blanc, hex invalide, moins de 32 octets — coupure, troncature)
 /// est REMPLACÉ, comme avant, mais par un temporaire 0600 renommé dessus (`remplacer_par_un_secret_neuf`), et
 /// c'est DIT. Une entrée qu'on ne peut pas LIRE (non UTF-8, droits, répertoire) n'est JAMAIS écrasée. Écriture
 /// refusée -> la clé engendrée est gardée EN MÉMOIRE et c'est DIT : le service démarre, mais les sessions
 /// ouvertes ne survivront pas au redémarrage.
 pub(crate) fn load_session_secret(conf: &HashMap<String, String>) -> Vec<u8> {
-    let env_secret = cfg(conf, "PLUME_SESSION_SECRET", "");
-    if !env_secret.trim().is_empty() {
-        return env_secret.trim().as_bytes().to_vec();
+    // Le MÊME prédicat que `cfg_secret` (une variante non vide est posée) : c'est lui qui décide la provenance dite
+    // et le refus d'une source montée blanche.
+    let monte = !cfg(conf, SECRET_DE_SESSION_EN_REFERENCE, "").is_empty()
+        || !cfg(conf, SECRET_DE_SESSION_EN_FICHIER, "").is_empty();
+    let env_secret = cfg_secret(conf, "PLUME_SESSION_SECRET");
+    let matiere = env_secret.trim();
+    // Le plancher se mesure en octets, sur la matière rognée : celle qui signera.
+    let courte = matiere.as_bytes().len() < LONGUEUR_MINIMALE_DE_LA_CLE_DE_SESSION;
+    if !matiere.is_empty() {
+        if monte {
+            if courte {
+                eprintln!("{LIGNE_CLE_DE_SESSION_MONTEE_COURTE}");
+                std::process::exit(78);
+            }
+            eprintln!("{LIGNE_CLE_DE_SESSION_MONTEE}");
+        } else {
+            eprintln!("{LIGNE_CLE_DE_SESSION_DE_LA_CONFIGURATION}");
+            if courte {
+                eprintln!("{AVERTISSEMENT_CLE_DE_SESSION_COURTE}{VOIE_DU_SECRET_MONTE}");
+            }
+        }
+        return matiere.as_bytes().to_vec();
+    }
+    if monte {
+        eprintln!("{LIGNE_CLE_DE_SESSION_MONTEE_BLANCHE}");
+        std::process::exit(78);
     }
     let path = cfg(conf, "PLUME_SESSION_KEY", "/var/lib/plume/db/session.key");
     // `true` : un contenu a été LU et n'est pas une clé — il sera remplacé. Une lecture en échec (absent,
     // illisible) passe par la création exclusive, qui n'écrase jamais rien.
     let contenu_lu_invalide = match std::fs::read_to_string(&path) {
         Ok(hex) => match hex_decode(hex.trim()) {
-            Some(b) if b.len() >= 32 => return b,
+            Some(b) if b.len() >= 32 => {
+                eprintln!("[session] clé de signature des sessions : lue du fichier persisté '{path}'.");
+                return b;
+            }
             _ => true,
         },
         Err(_) => false,
@@ -604,21 +643,54 @@ pub(crate) fn load_session_secret(conf: &HashMap<String, String>) -> Vec<u8> {
             Err(cause) => eprintln!(
                 "[session] clé de signature à '{path}' invalide et NON remplacée ({cause}) : la clé neuve est \
                  gardée EN MÉMOIRE — les sessions ouvertes ne survivront pas au prochain redémarrage. Rends \
-                 l'emplacement inscriptible, ou pose PLUME_SESSION_SECRET."
+                 l'emplacement inscriptible, ou {VOIE_DU_SECRET_MONTE}"
             ),
         }
         return b.to_vec();
     }
     match crate::poser_un_secret_neuf_ou_rien(&path, hex_encode(&b).as_bytes()) {
-        Ok(()) => {}
+        Ok(()) => eprintln!("[session] clé de signature des sessions : engendrée et persistée en 0600 à '{path}'."),
         Err(cause) => eprintln!(
             "[session] clé de signature NON écrite ({cause}) : elle est gardée EN MÉMOIRE — les sessions \
              ouvertes ne survivront pas au prochain redémarrage. Une entrée présente qu'on ne peut pas lire \
-             n'est jamais écrasée : retire-la ou rends l'emplacement inscriptible, ou pose PLUME_SESSION_SECRET."
+             n'est jamais écrasée : retire-la ou rends l'emplacement inscriptible, ou {VOIE_DU_SECRET_MONTE}"
         ),
     }
     b.to_vec()
 }
+
+/// Les deux variantes montées de la matière à clé des sessions, résolues par `cfg_secret` ; lues aussi par
+/// `load_session_secret` pour dire la provenance et refuser une source montée blanche.
+const SECRET_DE_SESSION_EN_FICHIER: &str = "PLUME_SESSION_SECRET_FILE";
+const SECRET_DE_SESSION_EN_REFERENCE: &str = "PLUME_SESSION_SECRET_REF";
+
+/// La voie que nomment les lignes « mémoire seule » : un fichier monté en lecture seule, qu'aucun accès au volume de
+/// données ne réécrit.
+const VOIE_DU_SECRET_MONTE: &str = "monte-la en fichier en lecture seule par PLUME_SESSION_SECRET_FILE.";
+
+/// Lignes de provenance au démarrage : ni la clé, ni le chemin du secret monté.
+const LIGNE_CLE_DE_SESSION_DE_LA_CONFIGURATION: &str =
+    "[session] clé de signature des sessions : lue de la configuration (variable d'environnement ou fichier de configuration).";
+const LIGNE_CLE_DE_SESSION_MONTEE: &str =
+    "[session] clé de signature des sessions : lue d'un secret monté (fichier ou référence de secret).";
+const LIGNE_CLE_DE_SESSION_MONTEE_BLANCHE: &str = "[session] FATAL : le secret monté de la clé de signature des \
+     sessions ne porte que du blanc — refus de démarrer (fail-closed ; ne retombe ni sur une clé persistée ni sur une \
+     clé en mémoire).";
+
+/// Plancher de longueur de la matière à clé des sessions, en octets, mesuré après rognage du blanc.
+const LONGUEUR_MINIMALE_DE_LA_CLE_DE_SESSION: usize = 32;
+// Les deux lignes ci-dessous écrivent ce plancher en toutes lettres : elles suivent la constante.
+const _: () = assert!(LONGUEUR_MINIMALE_DE_LA_CLE_DE_SESSION == 32);
+
+/// Refus d'une source montée sous le plancher : ni la clé, ni le chemin monté, ni la longueur mesurée.
+const LIGNE_CLE_DE_SESSION_MONTEE_COURTE: &str = "[session] FATAL : le secret monté de la clé de signature des \
+     sessions porte moins de 32 octets (blanc rogné) — refus de démarrer (fail-closed ; ne retombe ni sur une clé \
+     persistée ni sur une clé en mémoire).";
+
+/// Avertissement de la variable nue sous le plancher (suivi de `VOIE_DU_SECRET_MONTE`) : le démarrage continue.
+const AVERTISSEMENT_CLE_DE_SESSION_COURTE: &str = "[session] WARN : la clé de signature des sessions lue de la \
+     configuration porte moins de 32 octets (blanc rogné) — le démarrage continue avec elle. Remplace-la par une clé \
+     plus longue et ";
 
 // ---------- wizard / admin (auth modifiable depuis l'UI) ----------
 

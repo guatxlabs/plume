@@ -1089,6 +1089,39 @@ pub(crate) fn avec_aveu_froid(mut v: Value, aveu: Option<&Value>) -> Value {
     v
 }
 
+/// L'aveu d'horizon d'une tâche de mesure qui ne s'est pas terminée : rien n'est dit de ce que la réponse a pu voir.
+/// Partagé par la mesure de l'horizon du panneau et celle de l'horizon froid (`couverture_de_la_voie`).
+fn couverture_de_tache_interrompue() -> Value {
+    json!({ "reason": "horizon_non_mesure", "notice": "l'horizon n'a PAS été mesuré (tâche interrompue) ; cette réponse ne dit rien de ce qu'elle a pu voir." })
+}
+
+/// `P10.34-n` — LA COUVERTURE QU'UNE VOIE FROIDE DE `/api/query` POSE SOUS `stats.coverage`. `couverture` (calculée
+/// par le handler avant l'aiguillage, `horizon_du_sql`) prend la frontière chaude pour horizon de `event` et dit « aucun
+/// chemin pour les lire » : c'est vrai d'une voie qui n'a PAS lu le bras froid, qui la garde à l'octet. Une voie qui l'a
+/// LU (`bras_froid_lu`, décidé par la voie elle-même : `ColdUnionMeta::bras_froid_lu`, la page colonnaire qui a
+/// interrogé le froid, les deux voies vectorisées qui ne lisent que lui ou le fusionnent) pose l'horizon du lecteur
+/// froid (`panneau_avoue::horizon_de_la_voie_froide_lue`), mesuré sur la base de l'appelant et pour son index.
+#[cfg(feature = "cold_tier")]
+async fn couverture_de_la_voie(bras_froid_lu: bool, couverture: &Value, db_path: &str, sql: &str, from: i64, boundary: i64, env: Option<&str>) -> Value {
+    if !bras_froid_lu {
+        return couverture.clone();
+    }
+    let (cdbp, csql, cenv) = (db_path.to_string(), sql.to_string(), env.map(str::to_string));
+    tokio::task::spawn_blocking(move || {
+        crate::panneau_avoue::horizon_de_la_voie_froide_lue(&cdbp, &crate::load_config(), &csql, from, crate::now(), boundary, cenv.as_deref())
+    })
+    .await
+    .unwrap_or_else(|_| couverture_de_tache_interrompue())
+}
+
+/// `P10.34-n` — LA PAGE DU BROWSE COLONNAIRE A-T-ELLE INTERROGÉ LE BRAS FROID ? Lu sur la provenance que
+/// `cold_keyset_vectorized_page` pose elle-même depuis le fait (`parts_lues(cold_limit > 0)`), à l'égalité exacte :
+/// une page que la part chaude a remplie seule n'a pas lu le froid et garde la couverture d'avant.
+#[cfg(feature = "cold_tier")]
+fn page_colonnaire_a_lu_le_froid(v: &Value) -> bool {
+    v["stats"]["cold"]["served_from"] == json!(format!("{}-vectorized-keyset", crate::cold_store::parts_lues(true)))
+}
+
 /// `P10.29-l` (vague AR) — CE QUE `/api/query` ET `/api/export` SERVENT QUAND LE MOTEUR N'A PAS RENDU LA
 /// REQUÊTE. Les neuf sites servaient `bad_req(e)`, `e` étant le texte de `run_query_ex` (ou d'une voie froide qui
 /// l'emprunte), et le keyset vectorisé du tier froid (`cold_keyset_vectorized_page`) le servait dans un 500
@@ -1453,7 +1486,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         let csql = sql.clone();
         tokio::task::spawn_blocking(move || crate::panneau_avoue::horizon_du_sql(&cdbp, &crate::load_config(), &csql, from, crate::now()))
             .await
-            .unwrap_or_else(|_| json!({ "reason": "horizon_non_mesure", "notice": "l'horizon n'a PAS été mesuré (tâche interrompue) ; cette réponse ne dit rien de ce qu'elle a pu voir." }))
+            .unwrap_or_else(|_| couverture_de_tache_interrompue())
     };
     // PAGINATION SERVEUR : si `limit` fourni ET pas de LIMIT déjà dans le SQL (raw search), on renvoie
     // UNE page (LIMIT/OFFSET) + le total (COUNT) -> le navigateur ne tient jamais qu'une page (scale 1M+).
@@ -1586,7 +1619,9 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                             // « le bras froid a-t-il été interrogé ? » est connu (cf. `parts_lues`). Le reste
                             // — retrait des colonnes d'aide compris — passe par la SORTIE UNIQUE : c'est
                             // exactement ce retrait que ce chemin-ci oubliait (cf. `keyset_reponse`).
-                            return keyset_reponse(v, keyset_trim, &timings, &sql_for_resp, &couverture);
+                            let lu = page_colonnaire_a_lu_le_froid(&v);
+                            let cov = couverture_de_la_voie(lu, &couverture, &db_path, &sql, from, boundary, au.env_filter()).await;
+                            return keyset_reponse(v, keyset_trim, &timings, &sql_for_resp, &cov);
                         }
                         Ok(Ok(None)) => { /* non routable -> FALLBACK cold_union_query ci-dessous */ }
                         // `P10.5-g` (b) — l'issue est TYPÉE : un refus déterministe sort en 422 nommé (le client
@@ -1650,7 +1685,8 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     // route pré-agrégée ANNULE `cold_boundary`, cf. le site qui l'écrit) -> `served_from`
                     // vaut `raw`, ce qui est exactement l'aveu attendu : brut, donc exact.
                     apply_rollup_stats(&mut v, &rollup_meta);
-                    keyset_reponse(v, keyset_trim, &timings, &sql_for_resp, &couverture)
+                    let cov = couverture_de_la_voie(meta.bras_froid_lu, &couverture, &db_path, &sql, from, boundary, au.env_filter()).await;
+                    keyset_reponse(v, keyset_trim, &timings, &sql_for_resp, &cov)
                 }
                 Ok(Err(e)) => refus_de_requete(e, "/api/query", &au.tenant),
                 Err(_) => server_err("exécution échouée"),
@@ -1727,7 +1763,9 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                         v["stats"]["served_from"] = json!(mode);
                         // TRANSPARENCE : servi par le moteur colonnaire (pur-froid) ou le merge hot∪cold vectorisé.
                         v["stats"]["cold"] = json!({ "served_from": mode, "boundary_ts": boundary });
-                        return Json(avec_couverture(v, &couverture)).into_response();
+                        // Les deux voies vectorisées lisent le froid par construction (`[from, boundary-1]`, pur-froid ou fusionné).
+                        let cov = couverture_de_la_voie(true, &couverture, &db_path, &sql, from, boundary, au.env_filter()).await;
+                        return Json(avec_couverture(v, &cov)).into_response();
                     }
                     Ok(Ok(None)) => { /* non vectorisable / non routable -> fallback cold_union_query ci-dessous */ }
                     Ok(Err(e)) => return refus_de_requete(e, "/api/query", &au.tenant), // corruption cold -> fail-closed (comme l'oracle)
@@ -1801,7 +1839,8 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     v["offset"] = json!(offset);
                     v["limit"] = json!(lim);
                 }
-                Json(avec_couverture(value, &couverture)).into_response()
+                let cov = couverture_de_la_voie(meta.bras_froid_lu, &couverture, &db_path, &sql, from, boundary, au.env_filter()).await;
+                Json(avec_couverture(value, &cov)).into_response()
             }
             Ok(Err(e)) => refus_de_requete(e, "/api/query", &au.tenant),
             Err(_) => server_err("exécution échouée"),

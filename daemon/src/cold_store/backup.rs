@@ -163,6 +163,68 @@ pub(crate) fn cold_backup_plan(
     PlanFroid { items: out, etat }
 }
 
+/// Ce que l'index `cold_seal` dit de l'histoire froide SOUS une frontière chaud/froid, bornée par la rétention.
+/// Consommé par la couverture déclarée de la barre de recherche (`handlers/search.rs`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HistoireFroideSousLaFrontiere {
+    /// Aucun jour froid à déclarer : table `cold_seal` absente (tier froid jamais allumé), aucune ligne sous la
+    /// frontière, ou seulement des lignes de jours EXPIRÉS (gardées par un retrait de fichier refusé).
+    Aucune,
+    /// Au moins un jour sous la frontière ET dans la rétention de son index.
+    Presente,
+    /// Des jours sous la frontière, réglage de rétention illisible : NON bornés (aucune borne fabriquée), et
+    /// l'appelant le dit.
+    PresenteRetentionNonLue,
+    /// Index présent mais NON LU (nature : le code SQLite, jamais le message).
+    IndexNonLu(String),
+    /// Aucun jour retenu parmi les lignes lues, mais des lignes dont une colonne ne se décode pas : leur jour
+    /// n'est pas établi, « aucune histoire » ne l'est donc pas non plus.
+    LignesIllisibles(usize),
+}
+
+/// L'HISTOIRE FROIDE SOUS LA FRONTIÈRE `boundary` (ts), BORNÉE COMME LE VIEILLISSEMENT. Même lecture que le plan
+/// d'escrow (`all_sealed_files`), même borne : rétention lue par `retention_effective_lue`, `Bande::calculer`
+/// (politiques par index, rétention froide étendue), un jour n'est retenu que s'il est STRICTEMENT après
+/// `Bande::dernier_jour_expire` de son index à l'instant `n` (l'appelant passe l'instant de sa frontière). Un jour
+/// expiré dont la ligne `cold_seal` est restée n'est donc pas « de l'histoire plus ancienne » : le lecteur froid ne
+/// le sert pas et l'expiration le retirera.
+/// Rétention illisible : les jours sous la frontière comptent tous (côté prudent), et c'est rendu
+/// (`PresenteRetentionNonLue`). Index non lu : `IndexNonLu`, sauf table ABSENTE (`Aucune`, établi par le schéma).
+/// Aucune écriture, aucun énoncé neuf : la lecture est celle de `all_sealed_files`.
+pub(crate) fn histoire_froide_sous_la_frontiere(
+    conn: &Connection,
+    conf: &HashMap<String, String>,
+    n: i64,
+    boundary: i64,
+) -> HistoireFroideSousLaFrontiere {
+    let lus = match all_sealed_files(conn) {
+        Ok(lus) => lus,
+        Err(nature) => {
+            if table_cold_seal_absente(conn) {
+                return HistoireFroideSousLaFrontiere::Aucune; // tier froid jamais allumé : aucun jour scellé.
+            }
+            return HistoireFroideSousLaFrontiere::IndexNonLu(nature);
+        }
+    };
+    let jour_frontiere = boundary.div_euclid(SECS_PER_DAY);
+    let sous: Vec<(String, i64)> = lus.seals.into_iter().filter(|(_, day, _)| *day < jour_frontiere).map(|(env, day, _)| (env, day)).collect();
+    if !sous.is_empty() {
+        match retention_effective_lue(conn, conf, "retention_days") {
+            Ok(rd) => {
+                let bande = Bande::calculer(conn, conf, n, rd);
+                if sous.iter().any(|(env, day)| *day > bande.dernier_jour_expire(env, n)) {
+                    return HistoireFroideSousLaFrontiere::Presente;
+                }
+            }
+            Err(_) => return HistoireFroideSousLaFrontiere::PresenteRetentionNonLue,
+        }
+    }
+    if lus.illisibles > 0 {
+        return HistoireFroideSousLaFrontiere::LignesIllisibles(lus.illisibles);
+    }
+    HistoireFroideSousLaFrontiere::Aucune
+}
+
 /// LA TABLE `cold_seal` EST-ELLE ABSENTE ? Lu sur le SCHÉMA (`PRAGMA table_info`, aucune donnée du tenant), et
 /// seulement après une lecture ratée de l'index : absente, le tier froid n'a jamais tourné sur cette base et
 /// « rien à copier » est vrai ; présente, ou schéma lui-même illisible, la lecture ratée reste un aveu.

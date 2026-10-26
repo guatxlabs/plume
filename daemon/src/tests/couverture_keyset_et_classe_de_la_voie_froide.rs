@@ -26,7 +26,10 @@
 // (2) `at1_keyset_chaud_deux_tenants` : mode 1, deux tenants réels aux rétentions différentes, même fenêtre : l'aveu
 //     suit la base de l'appelant (dans l'horizon pour l'un, dessous pour l'autre) ;
 // (3) `cold_tier` — `at1_keyset_froid_porte_la_couverture_par_la_route` : la voie colonnaire (armée) et l'oracle
-//     d'union (voie désarmée), fenêtre sous la frontière froide puis fenêtre non bornée ;
+//     d'union (voie désarmée), fenêtre sous la frontière froide puis fenêtre non bornée. INVERSÉ par `P10.34-n` : il
+//     attendait l'horizon de la frontière chaude (`cold_boundary`, « aucun chemin pour les lire ») sur une page dont le
+//     bras froid avait été lu ; il attend désormais l'horizon de la rétention froide (`retention_floor`) — témoins
+//     complets dans `couverture_froide_lue_et_base_froide_occupee.rs` ;
 // (4) `cold_tier` — `at1_voie_froide_illisible_sert_le_503_par_la_route` : sous-processus, routeur réel, jeton lecteur,
 //     les six voies froides (union paginée, keyset par l'oracle, export, keyset colonnaire, fusion vectorisée,
 //     vectorisée pur-froide), chacune nominale (voie contrôlée) puis fichiers froids ÉCRASÉS puis RETIRÉS : 503
@@ -56,8 +59,8 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : la couverture des voies froides n'est jouée qu'au tenant par défaut (elle est
 // calculée une fois, avant l'aiguillage, et (2) la joue avec deux tenants) ; une base froide OCCUPÉE à l'ouverture
-// rend un texte sans code (`cold_store` rend `String`) et sert donc la phrase de la base illisible, pas celle de la
-// base occupée ; trois causes (horizon non lu, fichier corrompu, fichier absent) partagent la NATURE et ne se
+// rendait un texte sans code (`cold_store` rend `String`) et servait donc la phrase de la base illisible, pas celle de
+// la base occupée (levé par `P10.29-w` aux énoncés qui ouvrent la lecture froide : `couverture_froide_lue_et_base_froide_occupee.rs`) ; trois causes (horizon non lu, fichier corrompu, fichier absent) partagent la NATURE et ne se
 // distinguent qu'au texte de la ligne (seuls l'horizon et le fichier écrasé sont jugés distincts par (9)) ; le refus du compilateur
 // dans `hot_partial` est hors d'atteinte (commentaire au classeur) ; la console n'affiche pas `stats.coverage` dans
 // l'Explore (`renderQBadge`, `web/viz.js:792`, ne lit que la provenance, la troncature et la part froide).
@@ -82,13 +85,10 @@ mod at1_couverture_keyset_et_voie_froide {
     const AT1_OUVERTURE_PLAFOND_DE_GROUPES: &str = "refus de rendre un agrégat INCOMPLET : ce group-by dépasse ";
     const AT1_OUVERTURE_TRONCATURE_INATTENDUE: &str = "P4b hot_partial: troncature INATTENDUE sur un chemin sans hydratation froide (";
     #[cfg(feature = "cold_tier")]
-    const AT1_RAISON_COLD: &str = "cold_boundary";
-    #[cfg(feature = "cold_tier")]
     const AT1_RAISON_NON_BORNEE: &str = "fenetre_non_bornee";
+    /// `P10.34-n` — la phrase de la fenêtre non bornée sous l'horizon de conservation (`notice_d_horizon`), recopiée.
     #[cfg(feature = "cold_tier")]
-    const AT1_NOTICE_FROID_DEHORS: &str = "PORTÉE INCOMPLÈTE : la fenêtre demandée descend SOUS la frontière du vieillissement froid : sous elle, les lignes ont quitté la base vive et ce panneau n'a aucun chemin pour les lire. La part antérieure à cet horizon est hors de portée — un creux ou une courbe qui s'y arrête n'établit donc PAS une absence. Ce n'est pas non plus l'affirmation qu'il manque quelque chose : sur une base plus jeune que cet horizon, il se peut que rien n'ait jamais été supprimé.";
-    #[cfg(feature = "cold_tier")]
-    const AT1_NOTICE_FROID_NON_BORNEE: &str = "fenêtre non bornée : tout ce que la base porte encore a été cherché. la frontière du vieillissement froid : sous elle, les lignes ont quitté la base vive et ce panneau n'a aucun chemin pour les lire — ce panneau ne voit rien au-delà, quelle que soit la fenêtre demandée.";
+    const AT1_NOTICE_RETENTION_NON_BORNEE: &str = "fenêtre non bornée : tout ce que la base porte encore a été cherché. l'horizon de conservation : sous lui, la rétention peut avoir supprimé les lignes, et ce panneau n'est assuré d'en voir aucune — ce panneau ne voit rien au-delà, quelle que soit la fenêtre demandée.";
     /// `CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE` et `REQUETE_REJETEE_PAR_LE_MOTEUR` (`handlers/query.rs`), recopiées.
     #[cfg(feature = "cold_tier")]
     const AT1_CAUSE_BASE_ILLISIBLE: &str = "REQUÊTE NON SERVIE : la base n'a pas pu être lue (erreur du support : entrée-sortie, disque, fichier illisible ou corrompu) — ce n'est PAS un résultat vide, et rien n'est rendu. Réessayez ; si le refus persiste, la base est illisible : l'exploitant en trouve le code au journal.";
@@ -234,7 +234,9 @@ mod at1_couverture_keyset_et_voie_froide {
         assert_eq!(joues, 2, "contrôle : deux tenants joués");
     }
 
-    /// (3) LES DEUX SORTIES KEYSET FROIDES : voie colonnaire (armée) et oracle d'union (désarmée).
+    /// (3) LES DEUX SORTIES KEYSET FROIDES : voie colonnaire (armée) et oracle d'union (désarmée). `P10.34-n` (inversé) :
+    /// la page a lu le bras froid, son horizon est le premier jour que la rétention froide sert (rétention posée à trente
+    /// jours, fenêtre chaude du banc de deux jours : `frontière + 2 j - 30 j`), plus la frontière chaude.
     #[cfg(feature = "cold_tier")]
     #[tokio::test]
     async fn at1_keyset_froid_porte_la_couverture_par_la_route() {
@@ -243,6 +245,7 @@ mod at1_couverture_keyset_et_voie_froide {
         for (vectorise, voie) in [(true, "hot+cold-vectorized-keyset"), (false, "hot+cold")] {
             let banc = BancFroidSurLaRoute::monter(if vectorise { "at1-cov-colonnaire" } else { "at1-cov-oracle" }, vectorise).await;
             banc.vieillir();
+            at1_poser_la_retention(&banc.st.db.lock(), "30");
             for depuis in [banc.base_froide - 60, 0] {
                 let corps = json!({ "soql": AT1_SOQL_FROID, "from": depuis, "to": banc.maintenant + 60, "limit": 10, "keyset": true });
                 let (code, b, _) = at1_envoi(banc.addr, "/api/query", &banc.authz, &corps).await;
@@ -252,10 +255,11 @@ mod at1_couverture_keyset_et_voie_froide {
                 assert_eq!(v["stats"]["cold"]["served_from"], json!(voie), "contrôle : la page est servie par la voie visée : {b}");
                 let frontiere = v["stats"]["cold"]["boundary_ts"].as_i64().unwrap_or_else(|| panic!("contrôle : frontière publiée : {b}"));
                 let calcule_a = v["stats"]["coverage"]["calcule_a"].as_i64().unwrap_or_else(|| panic!("{voie} depuis {depuis} : pas de `stats.coverage` : {b}"));
+                let horizon_froid = frontiere + 2 * AT1_JOUR - 30 * AT1_JOUR;
                 let attendu = if depuis > 0 {
-                    at1_couverture_attendue(depuis, calcule_a, frontiere, true, AT1_RAISON_COLD, AT1_NOTICE_FROID_DEHORS)
+                    at1_couverture_attendue(depuis, calcule_a, horizon_froid, false, AT1_RAISON_RETENTION, AT1_NOTICE_RETENTION_DEDANS)
                 } else {
-                    at1_couverture_attendue(0, calcule_a, frontiere, false, AT1_RAISON_NON_BORNEE, AT1_NOTICE_FROID_NON_BORNEE)
+                    at1_couverture_attendue(0, calcule_a, horizon_froid, false, AT1_RAISON_NON_BORNEE, AT1_NOTICE_RETENTION_NON_BORNEE)
                 };
                 assert_eq!(v["stats"]["coverage"], attendu, "{voie} depuis {depuis} : l'aveu d'horizon entier");
                 joues += 1;

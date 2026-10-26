@@ -395,19 +395,12 @@ pub(crate) fn horizon_et_frontiere_du_sql(db_path: &str, conf: &HashMap<String, 
     if let Some(cle) = non_lue {
         cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
         cov["reglage_non_lu"] = json!(cle);
-        cov["notice"] = json!(format!(
-            "l'horizon de conservation de ce panneau n'est PAS établi : le réglage de rétention écrit `{cle}` n'a pas pu \
-             être lu (valeur non entière, ou lecture refusée), et aucun horizon n'est calculé sur l'environnement ou le \
-             défaut. Cette réponse ne dit donc RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas."
-        ));
+        cov["notice"] = json!(notice_de_reglage_non_lu(cle));
         return (cov, frontiere);
     }
     let Some((horizon_ts, raison)) = mesure else {
         cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
-        cov["notice"] = json!(
-            "le pool de lecture n'a pas pu être pris ; l'horizon n'a PAS été mesuré. Cette réponse ne \
-             dit donc RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas."
-        );
+        cov["notice"] = json!(NOTICE_POOL_NON_PRIS);
         return (cov, frontiere);
     };
     cov["horizon_ts"] = json!(horizon_ts);
@@ -416,6 +409,95 @@ pub(crate) fn horizon_et_frontiere_du_sql(db_path: &str, conf: &HashMap<String, 
     cov["reason"] = json!(if from <= 0 { RAISON_FENETRE_NON_BORNEE } else { raison });
     cov["notice"] = json!(notice_d_horizon(raison, dehors, from));
     (cov, frontiere)
+}
+
+/// L'aveu d'un horizon NON ÉTABLI parce que le réglage de rétention écrit `cle` n'a pas été lu. Partagé par
+/// `horizon_et_frontiere_du_sql` et `horizon_de_la_voie_froide_lue` : une seule écriture de la phrase.
+fn notice_de_reglage_non_lu(cle: &str) -> String {
+    format!(
+        "l'horizon de conservation de ce panneau n'est PAS établi : le réglage de rétention écrit `{cle}` n'a pas pu \
+         être lu (valeur non entière, ou lecture refusée), et aucun horizon n'est calculé sur l'environnement ou le \
+         défaut. Cette réponse ne dit donc RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas."
+    )
+}
+
+/// L'aveu d'un horizon NON MESURÉ parce que le pool de lecture n'a pas pu être pris (mêmes deux appelants).
+const NOTICE_POOL_NON_PRIS: &str = "le pool de lecture n'a pas pu être pris ; l'horizon n'a PAS été mesuré. Cette réponse ne \
+     dit donc RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas.";
+
+/// `P10.34-n` — L'HORIZON D'UNE RÉPONSE DE `/api/query` DONT LE BRAS FROID A ÉTÉ LU.
+///
+/// LE DÉFAUT. `horizon_et_frontiere_du_sql` est calculé AVANT l'aiguillage, pour un panneau qui ne lit jamais la bande
+/// froide : il prend pour horizon de `event` le plus haut du plancher de rétention et de la frontière chaude
+/// (`RAISON_COLD`), et sa phrase dit « ce panneau n'a aucun chemin pour les lire ». Posé tel quel sur une voie froide de
+/// `/api/query` (union, keyset colonnaire ou oracle, vectorisées), il disait hors fenêtre — et sans chemin — ce que
+/// `stats.cold.served_from` disait lu.
+///
+/// ICI, L'HORIZON DE `event` EST CELUI DU LECTEUR FROID : le premier instant que la lecture froide a pu servir, par
+/// index (`ColdUnionMeta::premier_instant_servi`, qui lit la même `Bande` et le même instant que `HorizonDeLecture`).
+/// Les autres familles que le SQL nomme gardent leur plancher de rétention (elles n'ont aucun miroir froid) ; le plus
+/// haut l'emporte, comme dans l'horizon du panneau. La raison est `RAISON_RETENTION` (sous l'horizon, la rétention —
+/// froide ou chaude — peut avoir supprimé les lignes) et la phrase est celle de l'horizon de conservation : aucune ne
+/// parle plus d'un chemin absent. Les cinq clés de `FAMILLES_DE_RETENTION` ont un plancher strictement positif
+/// (`RETENTION_FIELDS`, `main.rs`) : aucune valeur nulle ne s'y lit, d'où l'absence du `valeur <= 0` de l'horizon du
+/// panneau. Une voie qui n'a PAS lu le froid n'appelle pas cette fonction : sa couverture reste l'octet d'avant.
+/// Un SQL qui ne nomme aucune famille rend l'aveu de l'horizon du panneau (portée non dérivable), à l'octet.
+#[cfg(feature = "cold_tier")]
+pub(crate) fn horizon_de_la_voie_froide_lue(
+    db_path: &str,
+    conf: &HashMap<String, String>,
+    sql: &str,
+    from: i64,
+    now_s: i64,
+    boundary: i64,
+    env_filter: Option<&str>,
+) -> Value {
+    let familles: Vec<&(&str, &str, i64)> = FAMILLES_DE_RETENTION.iter().filter(|(table, _, _)| sql_nomme(sql, table)).collect();
+    if familles.is_empty() {
+        return horizon_du_sql(db_path, conf, sql, from, now_s);
+    }
+    let mut cov = json!({ "searched_from": from, "calcule_a": now_s });
+    let (haut, non_lue): (Option<i64>, Option<&'static str>) = read_with(db_path, (None, None), |c| {
+        let mut haut: Option<i64> = None;
+        let mut non_lue: Option<&'static str> = None;
+        for (table, cle, unite) in &familles {
+            let plancher: Result<i64, &'static str> = if *table == "event" {
+                crate::cold_store::ColdUnionMeta::premier_instant_servi(c, conf, boundary, env_filter).map_err(|_| "retention_days")
+            } else {
+                retention_effective_lue(c, conf, cle).map(|valeur| now_s - valeur * unite).map_err(|_| *cle)
+            };
+            match plancher {
+                Ok(ts) => {
+                    if haut.map(|h| ts > h).unwrap_or(true) {
+                        haut = Some(ts);
+                    }
+                }
+                Err(cle) => {
+                    non_lue.get_or_insert(cle);
+                }
+            }
+        }
+        (haut, non_lue)
+    });
+    match (non_lue, haut) {
+        (Some(cle), _) => {
+            cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
+            cov["reglage_non_lu"] = json!(cle);
+            cov["notice"] = json!(notice_de_reglage_non_lu(cle));
+        }
+        (None, None) => {
+            cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
+            cov["notice"] = json!(NOTICE_POOL_NON_PRIS);
+        }
+        (None, Some(horizon_ts)) => {
+            let dehors = from > 0 && from + CACHE_BUCKET_S < horizon_ts;
+            cov["horizon_ts"] = json!(horizon_ts);
+            cov["older_outside_window"] = json!(dehors);
+            cov["reason"] = json!(if from <= 0 { RAISON_FENETRE_NON_BORNEE } else { RAISON_RETENTION });
+            cov["notice"] = json!(notice_d_horizon(RAISON_RETENTION, dehors, from));
+        }
+    }
+    cov
 }
 
 /// LA PHRASE. Elle dit ce que le corps de la réponse n'établit PAS — sans quoi une courbe écourtée se

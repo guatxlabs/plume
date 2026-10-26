@@ -1416,6 +1416,24 @@ pub(crate) fn en_classant_la_voie_froide<T>(f: impl FnOnce() -> Result<T, String
     })
 }
 
+/// `P10.29-w` — LE TEXTE D'UNE ERREUR SQLITE DE LA VOIE FROIDE (celui que `cold_store::pe` rendait), ET SA CLASSE
+/// QUAND LA BASE EST OCCUPÉE. Les producteurs froids rendent `Err(String)` : le code de l'erreur était perdu, et
+/// `en_classant_la_voie_froide` servait une base occupée (verrou tenu par un autre écrivain au-delà du délai d'attente)
+/// sous le 503 de la base ILLISIBLE, qui dit « si le refus persiste, la base est illisible ». Ici la classe `Occupee`
+/// est notée sur le fil, décidée par le CODE (`code_de_base_occupee`, jamais par le texte), et `en_classant_la_voie_froide`
+/// la garde parce que le texte rendu est EXACTEMENT celui de la note. Toute autre erreur reste sans note : le classeur la
+/// range au support, comme avant. `Moteur` n'est jamais noté ici : ces énoncés sont ceux du tier froid, pas le SQL de
+/// l'appelant, et un 400 accuserait la requête. À appeler sur le fil qui exécute la voie froide, et seulement là où
+/// l'erreur remonte TELLE QUELLE jusqu'au classeur (aucun `format!` entre les deux, sinon la note ne correspond plus).
+#[cfg_attr(not(feature = "cold_tier"), allow(dead_code))]
+pub(crate) fn texte_de_la_voie_froide(e: rusqlite::Error) -> String {
+    let texte = e.to_string();
+    match code_de_l_echec(&e) {
+        Some(f) if code_de_base_occupee(f.code) => EchecDeRequete::Occupee { nature: nature_de_l_echec(&e), texte }.noter(),
+        _ => texte,
+    }
+}
+
 // Instrument de TEST seulement (`P10.31-y`) : un point d'arrêt juste avant la préparation, sur le fil
 // appelant. Il place une annulation ou une échéance AVANT la préparation de façon déterministe.
 #[cfg(test)]

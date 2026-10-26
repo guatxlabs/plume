@@ -37,7 +37,7 @@
 // cold_tier` (témoin (p) : vieillissement et horizon étendu sautés sur `retention_days` illisible), pas son expiration
 // des fichiers Parquet, qui ne tourne que dans la passe de vieillissement. Les lectures de la rétention HORS de la
 // passe (`cold_store/aging.rs`, sonde, bannière, routes) ne gardent plus le repli depuis la vague AR (témoins
-// `retention_lue_hors_de_la_passe.rs`), sauf `query.rs` et `datamodels.rs`.
+// `retention_lue_hors_de_la_passe.rs`), ni `query.rs` et `datamodels.rs` depuis la vague AS (`frontiere_froide_non_lue_et_ecritures_avouees.rs`).
 //
 // LES MUTATIONS QUI LES FONT ROUGIR (variable d'environnement de mutation sous `cfg!(test)`, puis retirées du source) :
 //  * « AQ4_ER_TOUTE_LA_BANDE » (purge d'`event_rollup` sans le prédicat, la forme d'avant le lot) : (a), (d), (j) ;

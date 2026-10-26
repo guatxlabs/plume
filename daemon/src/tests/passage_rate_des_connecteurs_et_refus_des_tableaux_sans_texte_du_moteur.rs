@@ -403,7 +403,7 @@ mod passage_rate_des_connecteurs_et_refus_des_tableaux_sans_texte_du_moteur {
         eprintln!("{AH4_PHASE}cout-refus");
         ah4_sql(&st, &format!("CREATE TRIGGER ah4_cout BEFORE INSERT ON panel_cost BEGIN SELECT RAISE(ABORT, '{AH4_REFUS}'); END;"));
         record_panel_cost(&st.db.lock(), 4242, AH4_EMPREINTE, 12.5, now());
-        consigner_l_issue_du_rafraichissement(&st.db, 4243, "1h", AH4_EMPREINTE, now(), 0, 0, mesure());
+        consigner_l_issue_du_rafraichissement(&st.db, "default", 4243, "1h", AH4_EMPREINTE, now(), 0, 0, mesure());
         ah4_sql(&st, "DROP TRIGGER ah4_cout;");
         ah4_attendue("cout-refus", "[dashboards] WARN panneau #4242 : coût mesuré non écrit, le panneau garde sa classe d'avant".into());
         ah4_attendue("cout-refus", "[dashboards] WARN panneau #4243 : coût mesuré non écrit, le panneau garde sa classe d'avant".into());
@@ -416,7 +416,7 @@ mod passage_rate_des_connecteurs_et_refus_des_tableaux_sans_texte_du_moteur {
         assert_eq!(compte_cout(4244), 0, "cout-ignore : aucune ligne");
         eprintln!("{AH4_PHASE}cout-ok");
         record_panel_cost(&st.db.lock(), 4245, AH4_EMPREINTE, 12.5, now());
-        consigner_l_issue_du_rafraichissement(&st.db, 4246, "1h", AH4_EMPREINTE, now(), 0, 0, mesure());
+        consigner_l_issue_du_rafraichissement(&st.db, "default", 4246, "1h", AH4_EMPREINTE, now(), 0, 0, mesure());
         assert_eq!((compte_cout(4245), compte_cout(4246)), (1, 1), "cout-ok : contrôle, le coût est écrit");
 
         // Nominal : chaque geste réussit, aucune ligne.

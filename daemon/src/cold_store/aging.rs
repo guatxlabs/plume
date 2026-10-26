@@ -858,29 +858,82 @@ fn phase2_delete(db: &Arc<Mutex<Connection>>, cold_dir: &Path, env_id: &str, day
 /// LEUR index (FIX #4 : day_end <= now - eff_ret(env_id), jamais au seul cutoff GLOBAL). Tous les fichiers d'un
 /// jour partagent le MÊME (env_id, day) -> UN index -> rétention effective NETTE. Un index à rétention plus LONGUE
 /// que la globale n'est donc JAMAIS expiré prématurément (pas de perte) ; un index plus COURT n'est pas sur-retenu.
-/// Bon marché (unlink par fichier). Best-effort ; une erreur d'unlink est journalisée, pas fatale.
+/// Bon marché (unlink par fichier).
+///
+/// `P10.34-j` — LA LIGNE `cold_seal` NE PART QU'AVEC SON FICHIER. Un `remove_file` refusé pour une autre raison
+/// que « absent » (volume en lecture seule, droits, entrée remplacée par un répertoire) supprimait QUAND MÊME la
+/// ligne : le fichier restait sur le disque après sa rétention, sans plus rien pour le retrouver ni le purger.
+/// Désormais :
+///  - unlink réussi OU fichier déjà absent (`NotFound`) -> la ligne part ;
+///  - unlink refusé autrement -> la ligne RESTE, le tour suivant retente ; chaque refus est dit (seq, jour, nature
+///    de l'erreur — jamais le chemin) et le tour dit leur COMPTE ;
+///  - `env_id` non conforme (anti-traversée : aucun chemin construit) -> la ligne part sans unlink, et c'est dit ;
+///  - suppression de la ligne refusée -> dite, retentée au tour suivant (le fichier est déjà parti : `NotFound`) ;
+///  - lecture de l'index ratée -> l'expiration du tour est SAUTÉE et c'est dit, jamais « rien à expirer » ; une
+///    ligne illisible n'est pas expirée, et leur nombre est dit.
+/// Le refus nomme l'index (`env_id`, déjà validé dans cette branche) : plusieurs index peuvent porter le même
+/// (jour, seq). Une ligne gardée N'EST PAS SERVIE : le lecteur froid écarte les jours que ce même calcul dit
+/// expirés (`Bande::dernier_jour_expire`, `reader::HorizonDeLecture`).
+/// LIMITE (dite, hors de ce site) : une ligne gardée reste visible du plan d'escrow (`backup.rs`) tant que le
+/// fichier n'a pas pu être retiré.
 fn expire_cold_days(db: &Arc<Mutex<Connection>>, cold_dir: &Path, n: i64, bande: &Bande) {
     // On lit TOUS les seals par-FICHIER (petite table) : (env_id, day, seq). Un jour = plusieurs lignes (une/seq).
-    let all: Vec<(String, i64, i64)> = { let conn = db.lock(); all_sealed_files(&conn) };
-    for (env_id, day, seq) in all {
-        let r = bande.eff_ret(&env_id);
+    let lus = { let conn = db.lock(); all_sealed_files(&conn) };
+    let lus = match lus {
+        Ok(lus) => lus,
+        Err(nature) => {
+            eprintln!(
+                "[cold] expiration du tour SAUTÉE : index cold_seal non lu ({nature}) — aucun fichier retiré, rien n'est dit expiré ; retentée au tour suivant"
+            );
+            return;
+        }
+    };
+    if lus.illisibles > 0 {
+        eprintln!(
+            "[cold] expiration : {} ligne(s) cold_seal illisible(s) — leurs fichiers ne sont pas expirés ce tour",
+            lus.illisibles
+        );
+    }
+    let mut refus = 0usize;
+    for (env_id, day, seq) in lus.seals {
         // Expire seulement quand le jour est ENTIÈREMENT au-delà de la rétention de son index :
         // (day+1)*SECS_PER_DAY <= n - r*SECS_PER_DAY  <=>  day <= (n - r*SECS_PER_DAY)/SECS_PER_DAY - 1.
-        let max_expire_day = (n - r * SECS_PER_DAY).div_euclid(SECS_PER_DAY) - 1;
+        // Le MÊME calcul borne le lecteur froid (`Bande::dernier_jour_expire`, `reader::HorizonDeLecture`).
+        let max_expire_day = bande.dernier_jour_expire(&env_id, n);
         if day > max_expire_day {
             continue; // encore dans la rétention de son index -> on GARDE (jamais de suppression prématurée).
         }
+        let jour = ymd_from_day(day);
         if env_id_ok(&env_id) {
             let p = file_path(cold_dir, &env_id, day, seq);
-            if let Err(e) = std::fs::remove_file(&p) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!("[cold] unlink {} échoué: {e}", p.display());
+            match std::fs::remove_file(&p) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // déjà parti : la ligne peut partir.
+                Err(e) => {
+                    refus += 1;
+                    eprintln!(
+                        "[cold] expiration {env_id} seq {seq} du jour {jour} : fichier non retiré ({:?}) — ligne cold_seal gardée, retentée au tour suivant",
+                        e.kind()
+                    );
+                    continue;
                 }
             }
+        } else {
+            eprintln!(
+                "[cold] expiration seq {seq} du jour {jour} : env_id non conforme, aucun chemin construit — ligne cold_seal retirée sans unlink"
+            );
         }
         // Supprime la ligne seal DE CE FICHIER (par-seq) -> quand tous les seq d'un jour expiré sont traités, le
         // jour n'a plus aucun seal (detect_aging_stall/lecteur ne le voient plus). Idempotent (un seq déjà retiré).
         let conn = db.lock();
-        let _ = conn.execute("DELETE FROM cold_seal WHERE env_id=?1 AND day=?2 AND seq=?3", params![env_id, day, seq]);
+        if let Err(e) = conn.execute("DELETE FROM cold_seal WHERE env_id=?1 AND day=?2 AND seq=?3", params![env_id, day, seq]) {
+            eprintln!(
+                "[cold] expiration seq {seq} du jour {jour} : ligne cold_seal non supprimée ({}) — retentée au tour suivant",
+                nature_de_l_echec_sur_l_index(&e)
+            );
+        }
+    }
+    if refus > 0 {
+        eprintln!("[cold] expiration : {refus} fichier(s) non retiré(s) ce tour — lignes cold_seal gardées, retentées au tour suivant");
     }
 }

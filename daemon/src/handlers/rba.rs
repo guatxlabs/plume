@@ -88,22 +88,18 @@ pub(crate) fn risk_event_contribuer(
     }
 }
 
-/// Insère UNE contribution de risque. Renvoie true si une ligne a été écrite (déjà posée ou refusée : false). Les
-/// voies planifiées passent par `risk_event_contribuer`, qui distingue les deux.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn risk_event_insert(
-    conn: &Connection, ts: i64, entity_type: &str, entity: &str, score: i64, source: &str,
-    rule_id: Option<i64>, reason: &str, mitre: &str, severity: i64, env_id: &str, dedup: Option<&str>,
-) -> bool {
-    matches!(
-        risk_event_contribuer(conn, ts, entity_type, entity, score, source, rule_id, reason, mitre, severity, env_id, dedup),
-        IssueDeLaContribution::Ecrite
-    )
-}
-
 /// COMPOSITION #23->#24 — un match threat-intel (à l'ingest, sous le lock writer, DANS la transaction du
 /// batch) CONTRIBUE du risque à l'entité de l'IOC. Dédup par (entity, bucket horaire) -> émission bornée.
 /// INERTE en mode 0 : jamais appelée (aucun IOC -> aucun hit). `PLUME_RISK_TI_SCORE=0` désactive la compo.
+///
+/// `P10.20-b` (vague AS) — LE REFUS EST DIT. Le booléen de `risk_event_insert` était jeté : une contribution refusée par
+/// le moteur (verrou, disque, déclencheur) se perdait sans trace. L'issue de `risk_event_contribuer` est lue : `Ecrite`
+/// et `DejaPosee` (dédup du bucket) se taisent comme avant ; `Refusee` écrit UNE ligne `[risk] WARN` à phrase fixe, la
+/// cause du moteur seule — ni l'entité, ni l'indicateur, ni la source du flux. La ligne n'affirme rien qu'elle n'ait
+/// relu : un refus d'énoncé (déclencheur, contrainte) laisse la transaction du lot ouverte, mais sur `SQLITE_FULL`,
+/// `IOERR`, `NOMEM` ou un `RAISE(ROLLBACK)` le moteur peut l'avoir annulée de lui-même. L'état est donc relu par
+/// `is_autocommit()` (avant l'écriture, puis après le refus) et la phrase dit lequel des trois cas : transaction
+/// englobante encore ouverte, transaction englobante annulée par le moteur, aucune transaction englobante.
 pub(crate) fn ti_risk_contribution(conn: &Connection, hit: &TiHit, ts: i64, env_id: &str) {
     let conf = load_config();
     let score = risk_ti_score(&conf);
@@ -113,7 +109,18 @@ pub(crate) fn ti_risk_contribution(conn: &Connection, hit: &TiHit, ts: i64, env_
     let bucket = ts / risk_ti_bucket_s(&conf);
     let dedup = format!("risk:ti:{}:{}:{}", hit.entity_type, hit.entity, bucket);
     let reason = format!("threat-intel match ({})", hit.source);
-    risk_event_insert(conn, ts, &hit.entity_type, &hit.entity, score, "ti", None, &reason, "", hit.severity, env_id, Some(&dedup));
+    let en_transaction = !conn.is_autocommit();
+    match risk_event_contribuer(conn, ts, &hit.entity_type, &hit.entity, score, "ti", None, &reason, "", hit.severity, env_id, Some(&dedup)) {
+        IssueDeLaContribution::Ecrite | IssueDeLaContribution::DejaPosee => {}
+        IssueDeLaContribution::Refusee(e) => {
+            let transaction = match (en_transaction, conn.is_autocommit()) {
+                (true, false) => "la transaction englobante reste ouverte",
+                (true, true) => "la transaction englobante a été ANNULÉE par le moteur",
+                (false, _) => "aucune transaction englobante",
+            };
+            eprintln!("[risk] WARN contribution de risque threat-intel NON écrite : refusée par le moteur ({e}) — l'entité ne reçoit pas ce score ; {transaction}");
+        }
+    }
 }
 
 // ============================================================================================
@@ -929,4 +936,19 @@ pub(crate) async fn risk_entity_timeline(
         }
     }
     Json(corps)
+}
+
+/// Insère UNE contribution de risque. Renvoie true si une ligne a été écrite (déjà posée ou refusée : false).
+/// `P10.20-b` (vague AS) — AIDE DES TÉMOINS SEULEMENT : son dernier appelant de production (`ti_risk_contribution`) lit
+/// désormais l'issue de `risk_event_contribuer`, qui distingue « déjà posée » de « refusée » ; ce booléen les confond.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn risk_event_insert(
+    conn: &Connection, ts: i64, entity_type: &str, entity: &str, score: i64, source: &str,
+    rule_id: Option<i64>, reason: &str, mitre: &str, severity: i64, env_id: &str, dedup: Option<&str>,
+) -> bool {
+    matches!(
+        risk_event_contribuer(conn, ts, entity_type, entity, score, source, rule_id, reason, mitre, severity, env_id, dedup),
+        IssueDeLaContribution::Ecrite
+    )
 }

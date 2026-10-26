@@ -54,7 +54,7 @@
 //! (ou dims non sealées / colonne déniée) -> pas d'élagage -> sélection ts-only, conservatrice, inchangée.
 
 use super::*;
-use super::reader::{cold_hydrate_row_cap, cold_read_parallelism, cold_union_query, distinct_seal_envs, PARQUET_COLS};
+use super::reader::{cold_hydrate_row_cap, cold_read_parallelism, cold_union_query, distinct_seal_envs, HorizonDeLecture, PARQUET_COLS};
 use super::vectorized::{
     can_vectorize, vec_count, vec_group_count, vec_materialize, vec_materialize_keyset, GroupKey, IntOp, MatRow, Pred,
 };
@@ -629,12 +629,16 @@ struct ColdScan {
     pruned: usize,             // #28 P3.5 — fichiers ÉLAGUÉS (chevauchant la fenêtre mais sautés par le seal)
 }
 
+/// `P10.34-j` — `boundary` porte l'instant de la requête : un jour que l'expiration dit expiré n'est pas
+/// sélectionné, même quand sa ligne `cold_seal` reste (MÊME horizon que l'oracle, `reader::HorizonDeLecture`).
+/// Horizon illisible -> `Err` (la lecture froide est refusée, comme dans l'oracle).
 fn plan_scan(
     db_path: &str,
     conf: &HashMap<String, String>,
     env_filter: Option<&str>,
     lo: i64,
     hi: i64,
+    boundary: i64,
     dim_preds: &[DimEq],
 ) -> Result<Option<ColdScan>, String> {
     let pass = match cold_aead_passphrase(conf, db_path) {
@@ -649,11 +653,13 @@ fn plan_scan(
     };
     let mut files: Vec<(String, Sel)> = Vec::new();
     let mut pruned = 0usize;
+    let horizon = if envs.is_empty() { None } else { Some(HorizonDeLecture::lire(&conn, conf, boundary)?) };
     for env in envs {
         if !env_id_ok(&env) {
             continue; // anti-traversée (mirror open_cold_union)
         }
-        for s in select_files(&conn, &env, lo, hi, dim_preds, &mut pruned) {
+        let lo_env = horizon.as_ref().map_or(lo, |h| h.borne_basse(&env, lo));
+        for s in select_files(&conn, &env, lo_env, hi, dim_preds, &mut pruned) {
             files.push((env.clone(), s));
         }
     }
@@ -807,7 +813,7 @@ pub(crate) fn cold_vectorized_try(
         Pred::Int { col: "ts", op: IntOp::Le, val: hi },
     ]);
 
-    let scan = match plan_scan(db_path, conf, env_filter, lo, hi, &eff_preds)? {
+    let scan = match plan_scan(db_path, conf, env_filter, lo, hi, boundary, &eff_preds)? {
         Some(s) => s,
         None => {
             // Pas de clé cold -> ensemble vide == l'oracle (hydrate renvoie table vide). Résultat "vide" routé.
@@ -1114,7 +1120,7 @@ pub(crate) fn cold_keyset_page(
         other => Pred::And(vec![other, ts_pred]),
     };
 
-    let scan = match plan_scan(db_path, conf, env_filter, lo, hi, &eff_preds)? {
+    let scan = match plan_scan(db_path, conf, env_filter, lo, hi, boundary, &eff_preds)? {
         Some(s) => s,
         None => return Ok(Some((columns, Vec::new()))), // pas de clé cold -> vide == oracle (hydrate vide)
     };
@@ -1804,7 +1810,7 @@ pub(crate) fn cold_vectorized_merge_try(
             .collect()
     };
 
-    let scan = match plan_scan(db_path, conf, env_filter, lo, hi, &eff_preds)? {
+    let scan = match plan_scan(db_path, conf, env_filter, lo, hi, boundary, &eff_preds)? {
         Some(s) => s,
         None => {
             // Pas de clé cold lisible -> partie froide VIDE ; le résultat == la SEULE partie hot (l'oracle

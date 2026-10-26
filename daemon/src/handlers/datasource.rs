@@ -45,8 +45,10 @@ fn ds_row_cap(requested: Option<i64>) -> i64 {
 // ================================================================================================
 
 /// CŒUR TESTABLE du levier GXQL-HTTP : compile le GXQL via le chemin MASQUÉ du rôle (choke-point unique #45)
-/// puis exécute en lecture seule. `masks` VIDE -> STRICTEMENT identique à /api/query mode 0. C'est la fonction
-/// exacte que le handler appelle avec l'AuthUser résolu -> la preuve d'héritage du masque tient ICI.
+/// puis exécute en lecture seule. `masks` VIDE -> STRICTEMENT identique à /api/query mode 0. Rend le texte du
+/// compilateur ou celui du moteur, mêlés : la route sert [`ds_soql_exec_classe`], qui les sépare. Compilée pour les
+/// seuls tests (la route ne l'appelle plus) : aucune voie de production ne peut la reprendre et servir le texte mêlé.
+#[cfg(test)]
 pub(crate) fn ds_soql_exec(
     db_path: &str,
     role: &str,
@@ -58,15 +60,45 @@ pub(crate) fn ds_soql_exec(
     limit: Option<i64>,
     budget_ms: u64,
 ) -> Result<Value, String> {
+    ds_soql_exec_classe(db_path, role, tenant, env, soql, from, to, limit, budget_ms).map_err(|refus| match refus {
+        RefusDsSoql::Compilation(texte) => texte,
+        RefusDsSoql::Execution(echec) => echec.texte().to_string(),
+    })
+}
+
+/// `P10.29-l` (vague AS) — LES DEUX REFUS DU LEVIER GXQL-HTTP, SÉPARÉS. Le refus du COMPILATEUR porte sur la
+/// requête de l'appelant (champ masqué, syntaxe GXQL) : il reste servi à l'octet en 400. L'échec de l'EXÉCUTION
+/// est classé par le producteur (`query_exec::en_classant`) et servi par `refus_de_requete`, comme `/api/query` :
+/// un texte du compilateur ne tombe jamais sous la classe « moteur ».
+#[derive(Debug)]
+pub(crate) enum RefusDsSoql {
+    Compilation(String),
+    Execution(crate::query_exec::EchecDeRequete),
+}
+
+/// Le cœur de `ds_soql_exec` (témoins), refus séparés. C'est la fonction exacte que le handler appelle avec l'AuthUser
+/// résolu -> la preuve d'héritage du masque tient ICI. À appeler DANS la tâche bloquante : la classe de l'échec
+/// d'exécution est relue sur le fil qui exécute.
+pub(crate) fn ds_soql_exec_classe(
+    db_path: &str,
+    role: &str,
+    tenant: &str,
+    env: Option<&str>,
+    soql: &str,
+    from: i64,
+    to: i64,
+    limit: Option<i64>,
+    budget_ms: u64,
+) -> Result<Value, RefusDsSoql> {
     // FIELD FILTERS (#45) : masques du RÔLE/TENANT/ENV de l'appelant, injectés DANS le SQL avant agrégation.
     let masks = effective_masks(db_path, role, tenant, env);
-    let base = soql_to_sql_masked_x(soql, from, to, env, &masks)?;
+    let base = soql_to_sql_masked_x(soql, from, to, env, &masks).map_err(RefusDsSoql::Compilation)?;
     // pagination/plafond par WRAP (marche même si {base} a déjà un LIMIT : l'inner cape, l'outer borne).
     let cap = ds_row_cap(limit);
     // `P11.22-g` — la borne est LUE avec sa ligne excédentaire et la coupe est DITE (`served`, `window`,
     // `truncated`) : une datasource qui reçoit pile `cap` lignes apprend s'il en existait davantage.
     let sql = format!("SELECT * FROM ({base}) LIMIT {}", crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(cap));
-    let mut v = run_query_ex(db_path, &sql, budget_ms, None)?;
+    let mut v = crate::query_exec::en_classant(|| run_query_ex(db_path, &sql, budget_ms, None)).map_err(RefusDsSoql::Execution)?;
     crate::handlers::liste_bornee::couper_le_corps_a_la_borne(&mut v, "rows", cap.max(0) as usize);
     Ok(v)
 }
@@ -126,15 +158,21 @@ async fn ds_soql_run(st: AppState, au: AuthUser, soql: String, from: i64, to: i6
     // budget AUTO (5 s) : borne une requête externe folle (pas le budget interactif 60 s de l'UI).
     let budget = query_budget_ms();
     let res = tokio::task::spawn_blocking(move || {
-        ds_soql_exec(&db_path, &role, &tenant, env.as_deref(), &soql, from, to, limit, budget)
+        ds_soql_exec_classe(&db_path, &role, &tenant, env.as_deref(), &soql, from, to, limit, budget)
     })
     .await;
     match res {
         Ok(Ok(v)) => ds_reponse_avec_aveu_de_coupe(&v, &format),
-        Ok(Err(e)) => bad_req(e),
+        // La requête de l'appelant, refusée par le compilateur : son texte, à l'octet, comme avant.
+        Ok(Err(RefusDsSoql::Compilation(e))) => bad_req(e),
+        // `P10.29-l` (vague AS) — l'exécution : la phrase de la classe, jamais le texte du moteur.
+        Ok(Err(RefusDsSoql::Execution(e))) => crate::handlers::query::refus_de_requete(e, ROUTE_DS_QUERY, &au.tenant),
         Err(_) => server_err("exécution échouée"),
     }
 }
+
+/// La route du levier GXQL-HTTP, nommée par les lignes de journal de ses refus.
+pub(crate) const ROUTE_DS_QUERY: &str = "/api/ds/query";
 
 /// GET /api/ds/query?soql=...&from=..&to=..&limit=..&format=records|table
 pub(crate) async fn ds_query_get(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Response {
@@ -368,7 +406,7 @@ pub(crate) fn prom_rows_to_series(v: &Value, db_path: &str, name: &str, masks: &
 
 /// Extraction commune du sélecteur + fenêtre + exécution masquée. `instant` -> ne garde que le DERNIER
 /// échantillon (<= to) par série (vecteur) ; sinon toute la fenêtre (matrice).
-async fn prom_run(st: AppState, au: AuthUser, query: String, from: i64, to: i64) -> Result<Vec<(serde_json::Map<String, Value>, Vec<(i64, String)>)>, Response> {
+async fn prom_run(st: AppState, au: AuthUser, route: &'static str, query: String, from: i64, to: i64) -> Result<Vec<(serde_json::Map<String, Value>, Vec<(i64, String)>)>, Response> {
     let (name, matchers) = prom_parse_selector(&query).map_err(prom_err)?;
     let masks = caller_masks(&st, &au);
     if let Err(field) = prom_matcher_guard(&matchers, &masks) {
@@ -379,13 +417,51 @@ async fn prom_run(st: AppState, au: AuthUser, query: String, from: i64, to: i64)
     let db_path = req_db_path(&st, &au);
     let dbp = db_path.clone();
     let budget = query_budget_ms();
-    let res = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &sql, budget, None)).await;
+    let res = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&dbp, &sql, budget, None))).await;
     let v = match res {
         Ok(Ok(v)) => v,
-        Ok(Err(e)) => return Err(prom_err(e)),
+        Ok(Err(e)) => return Err(refus_prometheus(e, route, &au.tenant)),
         Err(_) => return Err(prom_err("exécution échouée")),
     };
     Ok(prom_rows_to_series(&v, &db_path, &name, &masks))
+}
+
+/// `P10.29-l` (vague AS) — CE QUE LES ROUTES PROMETHEUS SERVENT QUAND LE MOTEUR N'A PAS RENDU LA SÉRIE. Avant :
+/// `prom_err(e)`, le texte du moteur — le refus de l'autorisateur cite l'énoncé, donc les valeurs des matchers.
+/// Même classement que `/api/query` (`handlers::query::refus_de_requete`), forme Prometheus gardée
+/// (`{status, errorType, error}`) :
+///  * phrase du PRODUIT (budget, annulation, mémoire) -> 400 `bad_data`, à l'octet ;
+///  * tout autre texte du moteur -> 400 `bad_data`, `REQUETE_REJETEE_PAR_LE_MOTEUR` ;
+///  * support de la base, base occupée -> 503 `unavailable`, la phrase fixe de `/api/query` et l'identifiant de
+///    corrélation (`id`).
+///
+/// Le texte du moteur part à UNE ligne `[datasource] WARN` (route, tenant de l'appelant, nature du code) ; la ligne
+/// du support et de la base occupée ne porte que la nature et l'identifiant servi.
+fn refus_prometheus(echec: crate::query_exec::EchecDeRequete, route: &str, tenant: &str) -> Response {
+    use crate::handlers::query::{CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE, CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE, REQUETE_REJETEE_PAR_LE_MOTEUR};
+    use crate::query_exec::EchecDeRequete as Echec;
+    let indisponible = |cause: &'static str| -> (String, Response) {
+        let id = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, cause).0.unwrap_or_default();
+        let corps = json!({ "status": "error", "errorType": "unavailable", "error": cause, "id": id });
+        (id, (StatusCode::SERVICE_UNAVAILABLE, Json(corps)).into_response())
+    };
+    match echec {
+        Echec::Produit(phrase) => prom_err(phrase),
+        Echec::Support { nature, .. } => {
+            let (id, refus) = indisponible(CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE);
+            eprintln!("[datasource] WARN série non servie, erreur du support de la base ({route}, tenant '{tenant}', {id}) : {nature}");
+            refus
+        }
+        Echec::Occupee { nature, .. } => {
+            let (id, refus) = indisponible(CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE);
+            eprintln!("[datasource] WARN série non servie, base occupée ({route}, tenant '{tenant}', {id}) : {nature}");
+            refus
+        }
+        Echec::Moteur { nature, texte } => {
+            eprintln!("[datasource] WARN série rejetée par le moteur ({route}, tenant '{tenant}') : {nature} : {texte:?}");
+            prom_err(REQUETE_REJETEE_PAR_LE_MOTEUR)
+        }
+    }
 }
 
 /// Parse un timestamp Prometheus (secondes unix, float ou int). Défaut = `now()`.
@@ -399,7 +475,7 @@ pub(crate) async fn prom_query(State(st): State<AppState>, Extension(au): Extens
     let time = prom_time(&q, "time", now());
     // fenêtre de lookback bornée pour retrouver le dernier point (évite un full-scan) : 1 h par défaut.
     let lookback: i64 = std::env::var("PLUME_PROM_LOOKBACK_S").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(3600);
-    let series = match prom_run(st, au, query, time - lookback, time).await {
+    let series = match prom_run(st, au, "/api/v1/query", query, time - lookback, time).await {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -419,7 +495,7 @@ pub(crate) async fn prom_query_range(State(st): State<AppState>, Extension(au): 
     let query = q.get("query").cloned().unwrap_or_default();
     let end = prom_time(&q, "end", now());
     let start = prom_time(&q, "start", end - 3600);
-    let series = match prom_run(st, au, query, start, end).await {
+    let series = match prom_run(st, au, "/api/v1/query_range", query, start, end).await {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -590,7 +666,7 @@ pub(crate) async fn prom_series(State(st): State<AppState>, Extension(au): Exten
     }
     let end = prom_time(&q, "end", now());
     let start = prom_time(&q, "start", end - 3600);
-    let series = match prom_run(st, au, query, start, end).await {
+    let series = match prom_run(st, au, "/api/v1/series", query, start, end).await {
         Ok(s) => s,
         Err(r) => return r,
     };

@@ -1707,7 +1707,15 @@ pub(crate) fn seed_sts_rules(conn: &Connection) {
 /// PLUME_NOTIFY_NTFY_URL (+ PLUME_NOTIFY_NTFY_TOKEN via Vault/ESO, PLUME_NOTIFY_MIN_SEV, défaut 3).
 /// Upsert par nom 'ntfy (env)' -> pas de doublon au redémarrage ; URL vide => ne touche à rien
 /// (les canaux créés à la main dans l'UI sont préservés).
+///
+/// `P10.20-b` (vague AS) — TROIS ISSUES, PLUS UN DOUBLON SUR UNE LECTURE RATÉE. L'existant était lu par `.ok()` :
+/// une lecture refusée valait absence, et l'INSERT posait un SECOND canal `ntfy (env)` (aucun index UNIQUE sur
+/// `notifier.name`) — deux envois par alerte à chaque démarrage raté. Absent : INSERT comme avant ; présent : UPDATE ;
+/// non lu : RIEN n'est écrit, une ligne `[seed]` le dit. Les deux écritures étaient en `let _` : un refus (`Err`) ou une
+/// écriture sans effet (`Ok(n)`, n != 1) est dit à son tour, jamais tu. Aucune ligne ne porte l'URL ni le jeton ; la
+/// fonction n'est pas comptée (le démarrage continue), comme les autres semis non comptés de ce fichier.
 pub(crate) fn seed_env_notifier(conn: &Connection, conf: &HashMap<String, String>) {
+    use rusqlite::OptionalExtension as _;
     let url = cfg(conf, "PLUME_NOTIFY_NTFY_URL", "");
     if url.trim().is_empty() {
         return;
@@ -1717,19 +1725,33 @@ pub(crate) fn seed_env_notifier(conn: &Connection, conf: &HashMap<String, String
     let token = cfg_secret(conf, "PLUME_NOTIFY_NTFY_TOKEN");
     let minsev: i64 = cfg(conf, "PLUME_NOTIFY_MIN_SEV", "3").parse().unwrap_or(3);
     let config = if token.is_empty() { "{}".to_string() } else { json!({ "token": token }).to_string() };
-    let existing: Option<i64> = conn.query_row("SELECT id FROM notifier WHERE name='ntfy (env)'", [], |r| r.get(0)).ok();
+    let existing: Option<i64> = match conn.query_row("SELECT id FROM notifier WHERE name='ntfy (env)'", [], |r| r.get(0)).optional() {
+        Ok(lu) => lu,
+        Err(e) => {
+            eprintln!("[seed] canal `ntfy (env)` NON semé : sa présence n'a pas pu être lue ({e}) — rien n'est écrit (aucun second canal), retenté au prochain démarrage");
+            return;
+        }
+    };
     match existing {
         Some(id) => {
-            let _ = conn.execute(
+            match conn.execute(
                 "UPDATE notifier SET kind='ntfy', enabled=1, url=?1, min_severity=?2, config=?3 WHERE id=?4",
                 params![url, minsev, config, id],
-            );
+            ) {
+                Ok(1) => {}
+                Ok(n) => eprintln!("[seed] canal `ntfy (env)` NON mis à jour : écriture sans effet ({n} ligne au lieu d'une) — le canal garde sa configuration précédente, retenté au prochain démarrage"),
+                Err(e) => eprintln!("[seed] canal `ntfy (env)` NON mis à jour : écriture refusée ({e}) — le canal garde sa configuration précédente, retenté au prochain démarrage"),
+            }
         }
         None => {
-            let _ = conn.execute(
+            match conn.execute(
                 "INSERT INTO notifier(name,kind,enabled,url,min_severity,config) VALUES('ntfy (env)','ntfy',1,?1,?2,?3)",
                 params![url, minsev, config],
-            );
+            ) {
+                Ok(1) => {}
+                Ok(n) => eprintln!("[seed] canal `ntfy (env)` NON semé : écriture sans effet ({n} ligne au lieu d'une) — aucun canal n'est créé, retenté au prochain démarrage"),
+                Err(e) => eprintln!("[seed] canal `ntfy (env)` NON semé : écriture refusée ({e}) — aucun canal n'est créé, retenté au prochain démarrage"),
+            }
         }
     }
 }

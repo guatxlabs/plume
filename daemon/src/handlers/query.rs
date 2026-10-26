@@ -1071,6 +1071,18 @@ pub(crate) fn avec_couverture(mut v: Value, cov: &Value) -> Value {
     v
 }
 
+/// `P10.20-b` (vague AS) — POSE L'AVEU DE COUVERTURE FROIDE NON ÉTABLIE (`aveu_de_bande_froide_frontiere_non_lue`) dans
+/// `stats.cold` d'une réponse servie par une voie CHAUDE parce que le réglage `retention_days` écrit n'a pas été lu.
+/// `None` (tier froid éteint, réglage lu) : la réponse est rendue telle quelle, à l'octet. Appelé sur CHAQUE voie de
+/// succès que la requête peut prendre sans frontière (compte seul, keyset chaud, page, requête entière).
+pub(crate) fn avec_aveu_froid(mut v: Value, aveu: Option<&Value>) -> Value {
+    let Some(a) = aveu else {
+        return v;
+    };
+    v["stats"]["cold"] = a.clone();
+    v
+}
+
 /// `P10.29-l` (vague AR) — CE QUE `/api/query` ET `/api/export` SERVENT QUAND LE MOTEUR N'A PAS RENDU LA
 /// REQUÊTE. Les neuf sites servaient `bad_req(e)`, `e` étant le texte de `run_query_ex` (ou d'une voie froide qui
 /// l'emprunte), et le keyset vectorisé du tier froid (`cold_keyset_vectorized_page`) le servait dans un 500
@@ -1179,6 +1191,11 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // HOT byte-identique. Posé dans la branche GXQL ci-dessous (sous gate compile+runtime).
     #[allow(unused_mut)]
     let mut cold_boundary: Option<i64> = None;
+    // `P10.20-b` (vague AS) — `Some(aveu)` : le tier froid est actif mais le réglage `retention_days` écrit n'a pas été
+    // lu ; aucune frontière n'est fabriquée sur le repli env/défaut (`cold_boundary` reste None), la réponse est
+    // CHAUDE seule et porte l'aveu dans `stats.cold` (`avec_aveu_froid`, sur chaque voie de succès chaude).
+    #[allow(unused_mut)]
+    let mut aveu_froid_non_lu: Option<Value> = None;
     // #18 P4a — GXQL post-exclusion capturé pour le ROUTEUR VECTORISÉ (pur-froid + vectorisable). Posé UNIQUEMENT
     // quand masques VIDES et hors keyset (gate #3) ; None sinon -> le routeur n'est jamais tenté (fallback
     // = chemin actuel cold_union_query inchangé). Mode 0 / sans feature : variable absente.
@@ -1237,11 +1254,15 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     // `lock()` fait ATTENDRE part dans `stats.db_lock_wait_ms`, jamais fondu dans
                     // une attente de sémaphore.
                     let c = clock.db().lock(&rc);
-                    let rd = retention_effective(&c, &conf, "retention_days");
-                    crate::cold_store::cold_query_boundary(&c, &conf, now(), rd)
+                    retention_effective_lue(&c, &conf, "retention_days").map(|rd| crate::cold_store::cold_query_boundary(&c, &conf, now(), rd))
                 };
-                if from < b {
-                    cold_boundary = Some(b);
+                match b {
+                    Ok(b) => {
+                        if from < b {
+                            cold_boundary = Some(b);
+                        }
+                    }
+                    Err(_) => aveu_froid_non_lu = Some(crate::handlers::datamodels::aveu_de_bande_froide_frontiere_non_lue("/api/query")),
                 }
             }
         }
@@ -1436,7 +1457,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         if let Some(c) = cause {
             corps["total_error"] = json!(c);
         }
-        return Json(avec_couverture(corps, &couverture)).into_response();
+        return Json(avec_aveu_froid(avec_couverture(corps, &couverture), aveu_froid_non_lu.as_ref())).into_response();
     }
     // KEYSET (#28) — chemin browse par CURSEUR (parcours intégral, ZÉRO plafond de comptage). N'est actif que
     // sur le chemin GXQL (`from_soql` : la clé de tri `id` n'existe que via la compilation cursor_id). `cursor`
@@ -1635,7 +1656,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                     Ok(mut v) => {
                         keyset_finalize(&mut v, keyset_lim, None);
                         apply_rollup_stats(&mut v, &rollup_meta); // rollup_meta = None ici (keyset désactive la route) -> served_from=raw
-                        keyset_reponse(v, keyset_trim, &timings, &sql_for_resp)
+                        keyset_reponse(avec_aveu_froid(v, aveu_froid_non_lu.as_ref()), keyset_trim, &timings, &sql_for_resp)
                     }
                     Err(e) => refus_de_requete(e, "/api/query", &au.tenant),
                 }
@@ -1811,7 +1832,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                             v["compiled_sql"] = json!(sql_for_resp);
                             apply_rollup_stats(&mut v, &rollup_meta); // served_from/approx/truncated (transparence)
                         }
-                        Json(avec_couverture(v, &couverture)).into_response()
+                        Json(avec_aveu_froid(avec_couverture(v, &couverture), aveu_froid_non_lu.as_ref())).into_response()
                     }
                     Err(e) => refus_de_requete(e, "/api/query", &au.tenant),
                 }
@@ -1830,7 +1851,7 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
                         v["compiled_sql"] = json!(sql_for_resp);
                         apply_rollup_stats(&mut v, &rollup_meta); // served_from/approx/truncated (transparence)
                     }
-                    Json(avec_couverture(v, &couverture)).into_response()
+                    Json(avec_aveu_froid(avec_couverture(v, &couverture), aveu_froid_non_lu.as_ref())).into_response()
                 }
                 Err(e) => refus_de_requete(e, "/api/query", &au.tenant),
             }
@@ -2012,6 +2033,13 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     // #18 P3 — comme /api/query : union hot∪cold quand la fenêtre atteint sous la frontière jour (sinon None).
     #[allow(unused_mut)]
     let mut cold_boundary: Option<i64> = None;
+    // `P10.20-b` (vague AS) — `true` : le tier froid est actif mais le réglage `retention_days` écrit n'a pas été lu.
+    // Aucune frontière n'est fabriquée sur le repli env/défaut : l'export est CHAUD seul, et le fichier le dit — il est
+    // marqué incomplet d'ampleur inconnue (`x-plume-truncated: 1`, nom `-TRONQUE-ampleur-inconnue`, que la console
+    // reprend : `web/app.js:176-184`, même quand la route pré-agrégée chaude a chiffré SA part : aucun
+    // `x-plume-truncated-ecartes`) et l'en-tête `x-plume-cold-coverage: cold_coverage_unread` nomme la cause.
+    #[allow(unused_mut)]
+    let mut froid_non_lu = false;
     // P7.3 — AMPLEUR du plafond top-N de la route rollup (même triplet qu'en /api/query). Portée
     // FONCTION : la sonde est prise à la compilation, mais elle n'est rendue qu'après l'exécution.
     let mut rollup_meta: Option<(bool, CapMesure, Option<String>)> = None;
@@ -2042,11 +2070,15 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
                 let rc = req_db(&st, &au);
                 let b = {
                     let c = rc.lock();
-                    let rd = retention_effective(&c, &conf, "retention_days");
-                    crate::cold_store::cold_query_boundary(&c, &conf, now(), rd)
+                    retention_effective_lue(&c, &conf, "retention_days").map(|rd| crate::cold_store::cold_query_boundary(&c, &conf, now(), rd))
                 };
-                if from < b {
-                    cold_boundary = Some(b);
+                match b {
+                    Ok(b) => {
+                        if from < b {
+                            cold_boundary = Some(b);
+                        }
+                    }
+                    Err(_) => froid_non_lu = true,
                 }
             }
         }
@@ -2188,8 +2220,15 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     // AUDIT : audite l'export SI le volume dépasse le seuil (exfiltration potentielle).
     let nrows = v.get("rows").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0);
     audit_bulk_read(&st, &au, "export", nrows);
-    let truncated = v.get("stats").and_then(|s| s.get("truncated")).and_then(|t| t.as_bool()).unwrap_or(false) || cold_extra_truncated;
-    let ecartes = v.get("stats").and_then(|s| s.get("topn_ecartes")).and_then(|x| x.as_i64());
+    let truncated = v.get("stats").and_then(|s| s.get("truncated")).and_then(|t| t.as_bool()).unwrap_or(false) || cold_extra_truncated || froid_non_lu;
+    // `P10.20-b` (vague AS) — frontière non lue : la sonde top-N de la route pré-agrégée chaude ne chiffre que la part
+    // CHAUDE ; la part froide non lue est d'ampleur inconnue. Aucun nombre n'est donc publié, ni dans le nom du fichier
+    // (`-TRONQUE-ampleur-inconnue`, jamais `-TRONQUE-{n}-lignes-manquantes`) ni en `x-plume-truncated-ecartes`.
+    let ecartes = if froid_non_lu {
+        None
+    } else {
+        v.get("stats").and_then(|s| s.get("topn_ecartes")).and_then(|x| x.as_i64())
+    };
     let (ct, ext, body_str): (&'static str, &str, String) = if format == "csv" {
         ("text/csv; charset=utf-8", "csv", result_to_csv(&v))
     } else {
@@ -2237,6 +2276,9 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         if let Ok(hv) = axum::http::HeaderValue::from_str(&n.to_string()) {
             h.insert(axum::http::HeaderName::from_static("x-plume-truncated-ecartes"), hv);
         }
+    }
+    if froid_non_lu {
+        h.insert(axum::http::HeaderName::from_static("x-plume-cold-coverage"), axum::http::HeaderValue::from_static("cold_coverage_unread"));
     }
     resp
 }

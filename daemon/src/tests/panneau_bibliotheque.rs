@@ -149,9 +149,14 @@ async fn meme_un_admin_en_sql_brut_ne_lit_pas_les_condensats_de_secrets() {
             "dashboard_id": did, "title": "x", "query": "", "is_soql": false, "library_panel_id": lib
         }))).await).await;
         let np = v.get("id").and_then(|x| x.as_i64()).unwrap();
+        // LE REFUS EST CELUI DE L'AUTORISATEUR, lu au cœur d'exécution (la route ne le sert plus).
+        let refus = crate::query_exec::run_query(dbp.as_str(), sql).expect_err("précondition : la lecture est refusée au cœur");
+        assert_eq!(refus, format!("access to {colonne} is prohibited"), "précondition : l'autorisateur refuse {colonne}");
         let (cs, vs) = pb_json(panel_data(State(st.clone()), Extension(adm.clone()), Path(np), pb_q()).await).await;
         assert_eq!(cs, 400, "lecture de {colonne} refusée MÊME à l'admin");
-        assert_eq!(vs.get("error"), Some(&json!(format!("access to {colonne} is prohibited"))));
+        // `P10.29-l` (vague AS) — INVERSÉ : la route sert la phrase fixe du moteur, plus le texte de l'autorisateur
+        // (qui part au journal `[query] WARN` avec la route et le tenant).
+        assert_eq!(vs, json!({ "error": crate::handlers::query::REQUETE_REJETEE_PAR_LE_MOTEUR }), "la phrase fixe, jamais le texte du moteur");
     }
     ff_rm(&dbp);
 }

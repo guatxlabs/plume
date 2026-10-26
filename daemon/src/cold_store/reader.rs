@@ -1022,6 +1022,51 @@ pub(super) fn distinct_seal_envs(conn: &Connection, lo_ts: i64, hi_ts: i64) -> V
     out
 }
 
+/// `P10.34-j` — LA CAUSE, FIXE, D'UNE LECTURE FROIDE REFUSÉE FAUTE D'HORIZON DE RÉTENTION LISIBLE.
+pub(super) const HORIZON_FROID_NON_LU: &str =
+    "lecture froide refusée : réglage retention_days écrit mais non lu — l'horizon de rétention froide est inconnu, aucun jour froid n'est servi";
+
+/// `P10.34-j` — L'HORIZON DE RÉTENTION FROIDE DU LECTEUR : aucun jour que l'expiration dit expiré n'est servi.
+///
+/// LE FAIT QUI L'OBLIGE. L'expiration (`expire_cold_days`) garde la ligne `cold_seal` d'un fichier qu'elle n'a
+/// pas pu retirer (volume en lecture seule, droits) et retente au tour suivant. Sans borne côté lecture, ce jour
+/// était SERVI au-delà de sa rétention — `hydrate_cold` et la voie vectorisée lisent les seals de tous les jours
+/// spannés, et la borne basse d'une fenêtre non bornée part de `MIN(day)` de l'index.
+///
+/// MÊME SOURCE, MÊME CALCUL QUE L'EXPIRATION. La rétention globale est lue par `retention_effective_lue` — la
+/// même chaîne (`RETENTION_FIELDS` puis `setting_days_lu`) que la passe de rétention, sans repli sur une valeur
+/// écrite illisible ; la bande est `Bande::calculer` (policies par index, rétention froide étendue) ; le jour est
+/// `Bande::dernier_jour_expire`. L'instant est celui de la REQUÊTE, porté par sa frontière : `boundary` vaut
+/// `(floor(n/86400) - fenêtre_chaude) * 86400` (`cold_query_boundary`, fenêtre lue par `cold_hot_window_days` sur
+/// la même rétention), donc `boundary/86400 + fenêtre_chaude` est EXACTEMENT `floor(n/86400)` — le seul terme
+/// dont `dernier_jour_expire` dépend.
+///
+/// RÉTENTION ILLISIBLE : `Err(HORIZON_FROID_NON_LU)`, la lecture froide est refusée en entier (aucun jour n'est
+/// jugé servable sur un horizon inconnu). Les routes lisent la même valeur AVANT de monter l'union et ne
+/// fabriquent alors aucune frontière ; ce refus couvre la lecture qui se ferait quand même.
+pub(super) struct HorizonDeLecture {
+    bande: Bande,
+    n: i64,
+}
+
+impl HorizonDeLecture {
+    pub(super) fn lire(conn: &Connection, conf: &HashMap<String, String>, boundary: i64) -> Result<HorizonDeLecture, String> {
+        let rd = crate::retention_effective_lue(conn, conf, "retention_days").map_err(|_| HORIZON_FROID_NON_LU.to_string())?;
+        let n = (boundary.div_euclid(SECS_PER_DAY) + cold_hot_window_days(conn, conf, rd)) * SECS_PER_DAY;
+        Ok(HorizonDeLecture { bande: Bande::calculer(conn, conf, n, rd), n })
+    }
+
+    /// Premier jour SERVI (inclus) de l'index `env_id` : le lendemain de son dernier jour expiré.
+    pub(super) fn premier_jour_servi(&self, env_id: &str) -> i64 {
+        self.bande.dernier_jour_expire(env_id, self.n) + 1
+    }
+
+    /// Borne basse `ts` de la lecture froide de `env_id` : `lo`, relevée au début du premier jour servi.
+    pub(super) fn borne_basse(&self, env_id: &str, lo: i64) -> i64 {
+        lo.max(self.premier_jour_servi(env_id) * SECS_PER_DAY)
+    }
+}
+
 /// #18 P3 — CONSTRUIT la connexion d'UNION hot∪cold masquée (cf. doc de section). Ouvre la base HOT en RO+clé
 /// tenant, HYDRATE la sous-fenêtre cold `[from, min(to,B-1)]` (bornée), copie les lignes (≤ cap) dans une TABLE
 /// TEMP `cold_event`, monte la VUE TEMP `event` = union masquée-parité SHADOWANT `main.event`, puis installe le
@@ -1135,12 +1180,15 @@ fn open_cold_union_avec(
     }
     // `P10.5-j` : sans hydratation, la boucle est sautée entière — aucun fichier sélectionné, ouvert ni
     // décodé ; les compteurs restent à zéro et disent ce qui s'est passé.
-    if hi >= lo && hydrater {
+    if hi >= lo && hydrater && !envs.is_empty() {
+        // `P10.34-j` — un jour que l'expiration dit expiré n'est pas servi, même quand sa ligne `cold_seal` reste
+        // (fichier que l'expiration n'a pas pu retirer). Horizon illisible -> la lecture froide est refusée.
+        let horizon = HorizonDeLecture::lire(&conn, conf, boundary)?;
         for env in &envs {
             if !env_id_ok(env) {
                 continue; // fail-safe (anti-traversée) — jamais de chemin arbitraire.
             }
-            let hy = hydrate_cold(&conn, conf, db_path, env, lo, hi, &needed, dim_preds)?;
+            let hy = hydrate_cold(&conn, conf, db_path, env, horizon.borne_basse(env, lo), hi, &needed, dim_preds)?;
             // L'EMPREINTE DE L'UNION CHAÎNE CELLES DES ENVS, DANS L'ORDRE DE LA BOUCLE — c'est cet ordre
             // qui décide des rangs quand plusieurs envs sont hydratés (`P10.5-g`). Le NOM de l'env y
             // entre aussi : deux envs qui échangeraient leurs fichiers numéroteraient autrement.

@@ -165,6 +165,44 @@ pub(crate) const CAUSE_INSTANTANE_NON_SUPPRIME: &str = "INSTANTANÉ NON SUPPRIM�
      n'a supprimé aucune ligne) — l'instantané existe toujours et RESTE LISIBLE par son jeton de partage. Réessayez ; si \
      le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
 
+/// `P10.29-l` (vague AS) — la route qui capture un instantané, nommée par la ligne de journal d'un panneau en échec.
+pub(crate) const ROUTE_DE_CREATION_D_INSTANTANE: &str = "/api/dashboard-snapshots";
+/// `P10.29-l` (vague AS) — les classes qu'une capture courante écrit sous `classe_d_echec` dans un panneau en échec :
+/// celles du cache des panneaux (sans « tache » : la capture n'a pas de fil à elle) et « compilation », dont le texte
+/// est celui du compilateur, servi à l'octet comme sur la voie live.
+pub(crate) const CLASSES_D_ECHEC_D_UN_INSTANTANE: [&str; 5] = ["support", "occupee", "produit", "moteur", "compilation"];
+/// `P10.29-l` (vague AS) — la phrase servie à la place de l'`error` d'un panneau figé par une version antérieure (sans
+/// classe reconnue) : ce texte peut être celui du moteur, figé et partagé par jeton.
+pub(crate) const ECHEC_D_UN_PANNEAU_FIGE_PAR_UNE_VERSION_ANTERIEURE: &str = "calcul du panneau en échec à la capture — \
+     cause non servie : cet instantané a été figé par une version antérieure";
+
+/// `P10.29-l` (vague AS) — CE QUE `snapshot_get` SERT D'UN PANNEAU EN ÉCHEC. Classe reconnue : la classe est retirée,
+/// le corps garde sa forme (`title`, `viz`, `error`). Sans classe reconnue (instantané figé par une version qui y
+/// rangeait le texte du moteur) : `error` devient [`ECHEC_D_UN_PANNEAU_FIGE_PAR_UNE_VERSION_ANTERIEURE`]. L'instantané
+/// stocké n'est pas réécrit : le filtre est au service.
+pub(crate) fn servir_les_panneaux_d_un_instantane(data: &mut Value) {
+    let cle = crate::handlers::dashboards::MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC;
+    let Some(panneaux) = data.get_mut("panels").and_then(|p| p.as_array_mut()) else { return };
+    for panneau in panneaux.iter_mut().filter_map(|p| p.as_object_mut()) {
+        let reconnue = panneau.get(cle).and_then(|c| c.as_str()).is_some_and(|c| CLASSES_D_ECHEC_D_UN_INSTANTANE.contains(&c));
+        // Réécriture de l'`error` DÉJÀ figé dans CE panneau (jamais un refus neuf, jamais au niveau du corps) : la
+        // console le lit par panneau (`p.error`, web/dashboards.js, aperçu de l'instantané).
+        let Some(erreur_figee) = panneau.get_mut("error") else { continue };
+        if !reconnue {
+            *erreur_figee = json!(ECHEC_D_UN_PANNEAU_FIGE_PAR_UNE_VERSION_ANTERIEURE);
+        }
+        panneau.remove(cle);
+    }
+}
+
+/// `P10.29-l` (vague AS) — pose le marqueur interne de classe sur le panneau que la capture vient de ranger (retiré au
+/// service par [`servir_les_panneaux_d_un_instantane`]).
+fn marquer_la_classe_du_dernier_panneau(panneaux: &mut [Value], cle: &str, classe: &str) {
+    if let Some(panneau) = panneaux.last_mut() {
+        panneau[cle] = json!(classe);
+    }
+}
+
 fn vis_of(b: &Value) -> &'static str {
     if b.get("visibility").and_then(|v| v.as_str()) == Some("private") { "private" } else { "shared" }
 }
@@ -554,10 +592,17 @@ pub(crate) fn gen_snapshot_token() -> Option<String> {
 /// `.map(|it| it.flatten().collect()).unwrap_or_default()` faisait disparaître un panneau dont le
 /// mappeur échoue, sans un mot, dans un artefact que personne ne pourra plus recouper. `snapshot_create`
 /// REFUSE désormais la capture avec sa cause, et n'écrit RIEN : aucun instantané partiel n'est partagé.
+///
+/// `P10.29-l` (vague AS) — UN PANNEAU EN ÉCHEC FIGE LA PHRASE DE SA CLASSE, PAS LE TEXTE DU MOTEUR. L'exécution est
+/// classée sur le fil qui exécute (`query_exec::en_classant`) ; l'`error` figé est la phrase du cache des panneaux
+/// (`EchecMisEnCache`), la classe est rangée sous `classe_d_echec` (retirée au service par
+/// [`servir_les_panneaux_d_un_instantane`]) ; la cause part au journal avec la route et le `tenant` du créateur, jamais
+/// la requête. Un refus du COMPILATEUR reste figé à l'octet (classe « compilation »), comme la voie live le sert.
 pub(crate) fn capture_dashboard_data(
     db_path: &str, conn: &Connection, conf: &HashMap<String, String>, dashboard_id: i64, dash_name: &str, from: i64, to: i64,
-    env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet, portee: &PorteeLecture,
+    env: Option<&str>, masks: &guatx_core::soql::FieldMaskSet, portee: &PorteeLecture, tenant: &str,
 ) -> rusqlite::Result<Value> {
+    let cle_de_la_classe = crate::handlers::dashboards::MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC;
     let mut panels_out: Vec<Value> = Vec::new();
     let rows: Vec<(String, String, bool, String, String, String)> = conn
         .prepare(&format!(
@@ -590,11 +635,17 @@ pub(crate) fn capture_dashboard_data(
         };
         let pc = match compiled {
             Ok(pc) => pc,
-            Err(e) => { panels_out.push(json!({ "title": title, "viz": viz, "error": e })); continue; }
+            Err(e) => {
+                // Forme épinglée par l'instrument 121 du harnais console (la cause d'un panneau non capturé sous `error`) ;
+                // le marqueur interne de classe est posé à part, sur le panneau qu'on vient de ranger.
+                panels_out.push(json!({ "title": title, "viz": viz, "error": e }));
+                marquer_la_classe_du_dernier_panneau(&mut panels_out, cle_de_la_classe, "compilation");
+                continue;
+            }
         };
         // SQL brut opaque : masquage POST-requête par nom de colonne (le masque ne s'injecte pas).
         let post_mask = !is_soql && !masks.is_empty();
-        match panneau_avoue::executer(db_path, conf, pc, from) {
+        match crate::query_exec::en_classant(|| panneau_avoue::executer(db_path, conf, pc, from)) {
             Ok(mut v) => {
                 if post_mask {
                     mask_query_result(db_path, masks, &mut v);
@@ -609,7 +660,16 @@ pub(crate) fn capture_dashboard_data(
                     "stats": v.get("stats").cloned().unwrap_or_else(|| json!({})),
                 }));
             }
-            Err(e) => panels_out.push(json!({ "title": title, "viz": viz, "error": e })),
+            Err(e) => {
+                let echec = crate::handlers::dashboards::EchecMisEnCache::de_la_requete(e);
+                eprintln!(
+                    "[dashboards] WARN instantané du tableau de bord #{dashboard_id} : panneau en échec à la capture ({}) — {ROUTE_DE_CREATION_D_INSTANTANE}, tenant '{tenant}' — phrase de la classe figée",
+                    echec.au_journal()
+                );
+                let e = echec.servie();
+                panels_out.push(json!({ "title": title, "viz": viz, "error": e }));
+                marquer_la_classe_du_dernier_panneau(&mut panels_out, cle_de_la_classe, echec.classe());
+            }
         }
     }
     Ok(json!({ "dashboard_id": dashboard_id, "name": dash_name, "captured_at": now(), "panels": panels_out }))
@@ -660,7 +720,7 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
     let conf = load_config();
     let capture = {
         crate::req_conn!(st, au, conn);
-        capture_dashboard_data(&db_path, &conn, &conf, dashboard_id, &name, from, to, env, &masks, &portee)
+        capture_dashboard_data(&db_path, &conn, &conf, dashboard_id, &name, from, to, env, &masks, &portee, &au.tenant)
     };
     // `P10.7-f` (rang 4) — UNE CAPTURE DONT UNE LECTURE A ÉCHOUÉ N'EST JAMAIS FIGÉE. La porte est ICI et
     // pas dans le corps : ce que cette route écrit part vivre sa vie derrière un jeton de partage, et un
@@ -756,7 +816,9 @@ pub(crate) async fn snapshot_get(State(st): State<AppState>, Extension(au): Exte
         .optional();
     match lecture {
         Ok(Some((name, did, data, created, by, role))) => {
-            let parsed: Value = serde_json::from_str(&data).unwrap_or_else(|_| json!({}));
+            let mut parsed: Value = serde_json::from_str(&data).unwrap_or_else(|_| json!({}));
+            // `P10.29-l` (vague AS) — un panneau en échec figé par une version antérieure ne sert plus son texte.
+            servir_les_panneaux_d_un_instantane(&mut parsed);
             Json(json!({
                 "name": name, "dashboard_id": did, "created": created, "created_by": by,
                 "role_at_capture": role, "readonly": true, "data": parsed

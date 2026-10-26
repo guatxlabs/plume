@@ -140,20 +140,54 @@ pub(super) fn event_table_max_id(conn: &Connection) -> Result<i64, String> {
     conn.query_row(SQL_MAX_ID_DE_LA_TABLE, [], |r| r.get::<_, i64>(0)).map_err(pe)
 }
 
+/// Ce que la lecture de l'index `cold_seal` a RENDU : les fichiers lus `(env_id, day, seq)`, et le nombre de
+/// lignes présentes mais ILLISIBLES (une colonne qui ne se décode pas). Une ligne illisible n'est ni un fichier
+/// absent ni un fichier lu : elle est comptée, jamais jetée sans trace (`P10.34-j`).
+pub(super) struct SealsLus {
+    pub(super) seals: Vec<(String, i64, i64)>,
+    pub(super) illisibles: usize,
+}
+
 /// Énumère TOUS les fichiers scellés de l'index `cold_seal` (une ligne PAR fichier séquencé) : `(env_id, day, seq)`.
 /// Un seal ⟹ le fichier `file_path(cold_dir, env, day, seq)` est FINAL + IMMUABLE (scellé durablement). Requête PURE
 /// sur la petite table `cold_seal` (base SQLCipher chiffrée at-rest -> aucune clé de DÉCHIFFREMENT cold requise :
 /// on lit des métadonnées, jamais un fichier Parquet). Ordre SQL non spécifié (les appelants qui exigent un ordre
-/// TRIENT eux-mêmes). Table absente / requête en échec -> `Vec` vide (fail-safe). PARTAGÉE par `expire_cold_days`
-/// (élagage) et `cold_backup_plan` (tier froid 2-tier #18) — source unique de « quels fichiers cold existent ».
-pub(super) fn all_sealed_files(conn: &Connection) -> Vec<(String, i64, i64)> {
-    let mut out = Vec::new();
-    if let Ok(mut st) = conn.prepare(SQL_TOUS_LES_SEALS) {
-        if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) {
-            out = rows.flatten().collect();
+/// TRIENT eux-mêmes). PARTAGÉE par `expire_cold_days` (élagage) et `cold_backup_plan` (tier froid 2-tier #18) —
+/// source unique de « quels fichiers cold existent ».
+///
+/// `P10.34-j` — TROIS ISSUES, plus une seule. Une lecture RATÉE (préparation ou exécution refusée) rendait un `Vec`
+/// vide : pour l'expiration, c'était « rien à expirer », un fait que personne n'avait mesuré. Elle rend désormais
+/// `Err(nature)` — le code SQLite, jamais le message (qui peut citer l'énoncé). Une ligne illisible est COMPTÉE
+/// dans `illisibles` au lieu d'être avalée par `flatten()` ; une erreur du MOTEUR en cours de lecture (la suite
+/// n'est pas lue) est une lecture ratée, pas une ligne illisible. Chaque appelant décide de ce qu'il en dit.
+pub(super) fn all_sealed_files(conn: &Connection) -> Result<SealsLus, String> {
+    let mut st = conn.prepare(SQL_TOUS_LES_SEALS).map_err(|e| nature_de_l_echec_sur_l_index(&e))?;
+    let rows = st
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+        .map_err(|e| nature_de_l_echec_sur_l_index(&e))?;
+    let mut lus = SealsLus { seals: Vec::new(), illisibles: 0 };
+    for ligne in rows {
+        match ligne {
+            Ok(s) => lus.seals.push(s),
+            // Le MOTEUR a refusé de continuer (interruption, E/S, corruption) : la suite n'est pas lue — c'est une
+            // lecture ratée, pas une ligne illisible. `rusqlite` clôt l'itération après une erreur d'exécution.
+            Err(e) if e.sqlite_error().is_some() => return Err(nature_de_l_echec_sur_l_index(&e)),
+            // La ligne est là mais une colonne ne se décode pas (type inattendu) : comptée, la lecture continue.
+            Err(_) => lus.illisibles += 1,
         }
     }
-    out
+    Ok(lus)
+}
+
+/// La NATURE d'un échec sur l'index `cold_seal` (lecture ou suppression), par liste blanche : le code SQLite (étendu, puis son nom) — celui
+/// d'un échec du moteur comme celui d'une erreur de saisie (`SqlInputError`, dont le texte recopie l'énoncé) —, ou
+/// un libellé fixe pour une erreur sans code. Jamais le message.
+pub(super) fn nature_de_l_echec_sur_l_index(e: &rusqlite::Error) -> String {
+    let code = e.sqlite_error().or_else(|| std::error::Error::source(e).and_then(|s| s.downcast_ref::<rusqlite::ffi::Error>()));
+    match code {
+        Some(f) => format!("code SQLite {} ({:?})", f.extended_code, f.code),
+        None => "erreur hors du code SQLite".to_string(),
+    }
 }
 
 // ====================================================================================================

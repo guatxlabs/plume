@@ -11818,3 +11818,6 @@ fn p10_7g_une_couverture_froide_non_lue_est_declaree_jamais_tue() {
     assert!(cov["notice"].as_str().unwrap_or("").contains("/api/query"), "la note propose la voie qui lit le froid : {cov}");
     assert_eq!(cov["searched_from"].as_i64(), Some(b), "la note dit à partir d'où la barre a cherché : {cov}");
 }
+
+// `P10.34-j` — l'expiration froide ne supprime la ligne `cold_seal` qu'avec son fichier (témoins en sous-processus).
+mod expiration_garde_la_ligne;

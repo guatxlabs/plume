@@ -1403,6 +1403,8 @@ pub(crate) fn sla_recalcule_la_priorite(conn: &Connection, priority: i64) -> Rec
 ///   · UNE de ses lignes ne se DÉCODE pas (`P10.7-f` rang 3) -> même issue, et pour la même raison : un
 ///     dossier qu'on n'a pas su lire ne se distingue pas d'un dossier qui n'existe pas ;
 ///   · elle se lit mais DÉPASSE `plafond` -> les cases au-delà gardent leur ancienne échéance.
+/// `P10.31-v` (vague AS) — un dossier EN ATTENTE gouverné par le recalcul est mis en pause après sa politique ; une pause
+/// refusée ou non lue est une quatrième façon de ne pas tout faire, nommée dans `manque`, jamais comptée.
 ///
 /// Le `plafond` est un paramètre pour que le témoin joue la borne sur trois lignes au lieu de cinq mille :
 /// la propriété testée est « la borne mord et le dit », pas la valeur 5000.
@@ -1417,13 +1419,14 @@ pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64,
     // échéance pendant que la route rendait `204` = « tout recalculé » — le mensonge exact que
     // `RecalculDesEcheances` existe pour rendre impossible. Un dossier qu'on n'a pas su LIRE ne se
     // distingue pas d'un dossier qui n'existe pas : on ne recalcule donc RIEN, et on le dit.
-    let lecture: rusqlite::Result<Vec<i64>> = conn
+    // `P10.31-v` (vague AS) — le STATUT est lu avec l'identifiant, dans la même lecture : il décide de la pause (plus bas).
+    let lecture: rusqlite::Result<Vec<(i64, String)>> = conn
         .prepare(
-            "SELECT id FROM incident WHERE priority=?1 AND merged_into IS NULL \
+            "SELECT id, status FROM incident WHERE priority=?1 AND merged_into IS NULL \
                AND status NOT IN ('resolved','closed','contained') ORDER BY id LIMIT ?2",
         )
         .and_then(|mut s| {
-            s.query_map(params![priority, plafond.max(0) + 1], |r| r.get(0))?
+            s.query_map(params![priority, plafond.max(0) + 1], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()
         });
     let ids = match lecture {
@@ -1446,8 +1449,37 @@ pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64,
     let mut nb_refuses = 0usize;
     let mut non_lus: Vec<String> = Vec::new();
     let mut nb_non_lus = 0usize;
-    for cid in ids.into_iter().take(plafond.max(0) as usize) {
+    let mut pauses_refusees: Vec<String> = Vec::new();
+    let mut nb_pauses_refusees = 0usize;
+    let mut pauses_non_lues: Vec<String> = Vec::new();
+    let mut nb_pauses_non_lues = 0usize;
+    let t = now();
+    for (cid, statut) in ids.into_iter().take(plafond.max(0) as usize) {
         match sla_apply_policy(conn, cid) {
+            // `P10.31-v` (vague AS) — UN DOSSIER EN ATTENTE QUE LA POLITIQUE VIENT DE GOUVERNER EST MIS EN PAUSE, comme à la
+            // mise à jour (`case_apply_update`, cases.rs, même ordre : politique PUIS pause). Un dossier legacy (ou non
+            // gouverné jusque-là) en `waiting` sortait du recalcul gouverné SANS `sla_paused_since`, et le tour multi-niveau
+            // (`sla_paused_since IS NULL`) le marquait et le NOTIFIAIT en dépassement pendant l'attente. La pause est
+            // idempotente (déjà en pause -> `RienAFaire`, compté recalculé) et inerte hors `waiting`. Une pause refusée ou
+            // non lue n'est JAMAIS comptée dans `recalcules` : le dossier a sa nouvelle échéance mais pas sa pause, et
+            // `manque` le nomme sous sa propre phrase (refus et lecture ratée distincts).
+            IssueDuChronoSla::Ecrit if statut == "waiting" => {
+                match sla_on_status_change(conn, cid, "waiting", t) {
+                    IssueDuChronoSla::Ecrit | IssueDuChronoSla::RienAFaire => recalcules += 1,
+                    IssueDuChronoSla::Refuse(cause) => {
+                        nb_pauses_refusees += 1;
+                        if pauses_refusees.len() < 5 {
+                            pauses_refusees.push(format!("#{cid} ({cause})"));
+                        }
+                    }
+                    IssueDuChronoSla::NonLu(cause) => {
+                        nb_pauses_non_lues += 1;
+                        if pauses_non_lues.len() < 5 {
+                            pauses_non_lues.push(format!("#{cid} ({cause})"));
+                        }
+                    }
+                }
+            }
             IssueDuChronoSla::Ecrit => recalcules += 1,
             IssueDuChronoSla::RienAFaire => {}
             IssueDuChronoSla::Refuse(cause) => {
@@ -1479,6 +1511,20 @@ pub(crate) fn sla_recalcule_la_priorite_bornee(conn: &Connection, priority: i64,
             "{nb_non_lus} échéance(s) NON RECALCULÉE(S) faute de LECTURE (dossier ou politique non lu) — ces cases gardent leur ANCIENNE échéance : {}{}",
             non_lus.join(", "),
             if nb_non_lus > non_lus.len() { ", …" } else { "" }
+        ));
+    }
+    if nb_pauses_refusees > 0 {
+        manques.push(format!(
+            "{nb_pauses_refusees} pause(s) REFUSÉE(S) par la base — ces cases EN ATTENTE ont leur nouvelle échéance mais leur chrono n'est PAS en pause, le tour peut les juger en dépassement pendant l'attente : {}{}",
+            pauses_refusees.join(", "),
+            if nb_pauses_refusees > pauses_refusees.len() { ", …" } else { "" }
+        ));
+    }
+    if nb_pauses_non_lues > 0 {
+        manques.push(format!(
+            "{nb_pauses_non_lues} pause(s) NON POSÉE(S) faute de LECTURE du chrono — ces cases EN ATTENTE ont leur nouvelle échéance mais leur chrono n'est PAS en pause, le tour peut les juger en dépassement pendant l'attente : {}{}",
+            pauses_non_lues.join(", "),
+            if nb_pauses_non_lues > pauses_non_lues.len() { ", …" } else { "" }
         ));
     }
     if depasse {

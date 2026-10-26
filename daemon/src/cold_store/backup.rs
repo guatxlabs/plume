@@ -45,7 +45,16 @@ pub(crate) fn cold_backup_plan(
     tenant_prefix: &str,
     remote_keys: &std::collections::HashSet<String>,
 ) -> Vec<ColdBackupItem> {
-    let mut seals = all_sealed_files(conn);
+    // `P10.34-j` — COMPORTEMENT GARDÉ, ET DIT ICI : une lecture ratée de `cold_seal` rend un plan VIDE, une ligne
+    // illisible en est absente, comme avant (seule différence : une erreur du moteur EN COURS de lecture, qui rendait
+    // un plan partiel, rend désormais un plan vide). Ce n'est pas un fait mesuré : sur une installation
+    // dont le tier froid n'a jamais tourné, la table n'existe pas et « rien à copier » est vrai, alors qu'ailleurs
+    // c'est une lecture qui n'a pas eu lieu. Les deux appelants (sous-commande `cold-backup-plan`, escrow local)
+    // ne savent pas encore les distinguer : reste nommé de `P10.34-j`.
+    let mut seals = match all_sealed_files(conn) {
+        Ok(lus) => lus.seals,
+        Err(_) => Vec::new(),
+    };
     // Ordre DÉTERMINISTE (env_id, day, seq) — l'ordre de retour SQL n'est pas spécifié.
     seals.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     let mut out = Vec::new();

@@ -146,7 +146,10 @@ async fn t3c_calcul_en_echec_est_dit_puis_retente_a_l_expiration_du_cache() {
         let (code, v) = t3c_json(r).await;
         assert_eq!(code, 200, "passage {passage} : corps {v}");
         assert!(v.get("warming").is_none(), "passage {passage} : AVANT correctif `warming` pour toujours ; corps {v}");
-        assert_eq!(v["error"], json!(cause), "passage {passage} : la cause du moteur est servie, telle quelle");
+        // `P10.29-l` (vague AS) — INVERSÉ : la cause du moteur n'est plus servie ; la phrase de sa classe l'est.
+        assert_eq!(v["error"], json!(crate::handlers::query::REQUETE_REJETEE_PAR_LE_MOTEUR), "passage {passage} : la phrase fixe, jamais le texte du moteur ; corps {v}");
+        assert!(!v.to_string().contains(&cause), "passage {passage} : le texte du moteur n'est pas servi : {v}");
+        assert!(v.get(MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC).is_none(), "passage {passage} : la classe mise en cache n'est pas servie : {v}");
         assert_eq!(v["stats"]["coverage"]["reason"], json!(panneau_avoue::RAISON_CALCUL_ECHOUE));
         assert_eq!(v["rows"], json!([]), "aucune ligne inventée");
         // LA NOTICE EST CELLE DE L'ÉCHEC, pas celle d'une charge utile illisible (repli de `coverage_synthetique`).
@@ -170,7 +173,8 @@ async fn t3c_calcul_en_echec_est_dit_puis_retente_a_l_expiration_du_cache() {
     let r = panel_data(State(st.clone()), Extension(au.clone()), Path(panne), t3c_q(from)).await;
     assert!(!t3c_rien_en_vol(&st), "échec périmé : la nouvelle tentative DOIT être armée");
     let (code, v) = t3c_json(r).await;
-    assert_eq!((code, v["error"].clone()), (200, json!(cause)), "le périmé reste servi pendant la tentative ; corps {v}");
+    // `P10.29-l` (vague AS) — INVERSÉ : la phrase fixe de la classe, pas la cause du moteur.
+    assert_eq!((code, v["error"].clone()), (200, json!(crate::handlers::query::REQUETE_REJETEE_PAR_LE_MOTEUR)), "le périmé reste servi pendant la tentative ; corps {v}");
     t3c_attendre_la_tache(&st).await;
     {
         // LA TENTATIVE RÉUSSIE A ÉCRASÉ L'ÉCHEC DANS LE CACHE — lu ICI, avant la 5e interrogation : le
@@ -229,9 +233,9 @@ async fn t3c_panique_du_fil_de_calcul_ecrit_le_corps_d_echec() {
     let (rk, fp, ttl) = t3c_cle(&st, sain, from);
     assert!(ttl > 0, "précondition : le cache des panneaux est actif");
     let (ttl_global, _) = panel_serve_cfg_de(&load_config());
-    let issue = tokio::task::spawn_blocking(|| -> Result<Value, String> { panic!("t3c : panique injectée dans le fil de calcul") }).await;
+    let issue = tokio::task::spawn_blocking(|| -> Result<Value, crate::query_exec::EchecDeRequete> { panic!("t3c : panique injectée dans le fil de calcul") }).await;
     assert!(issue.is_err(), "précondition : l'issue est bien un JoinError");
-    consigner_l_issue_du_rafraichissement(&st.db, sain, &rk, &fp, now(), from, ttl_global, issue);
+    consigner_l_issue_du_rafraichissement(&st.db, "default", sain, &rk, &fp, now(), from, ttl_global, issue);
     {
         let conn = st.db.lock();
         assert!(read_panel_cost(&conn, sain, &fp).unwrap().is_none(), "une panique ne classe pas le panneau");
@@ -261,19 +265,27 @@ async fn t3c_un_echec_neuf_remplace_l_echec_precedent_et_son_instant() {
     let (ttl_global, _) = panel_serve_cfg_de(&load_config());
     let t1 = now() - 2 * ttl - 10;
     let t2 = t1 + ttl + 5; // le premier corps d'échec est périmé : une nouvelle tentative a eu lieu
-    consigner_l_issue_du_rafraichissement(&st.db, panne, &rk, &fp, t1, from, ttl_global, Ok(Err("t3c cause une".to_string())));
+    // `P10.29-l` (vague AS) — INVERSÉ : les deux échecs sont de classes différentes (moteur puis base occupée), car la
+    // cause du moteur n'est plus écrite dans le cache : c'est la phrase de la DERNIÈRE classe qui doit y être.
+    let une = crate::query_exec::EchecDeRequete::Moteur { nature: "t3c nature".into(), texte: "t3c cause une".into() };
+    let deux = crate::query_exec::EchecDeRequete::Occupee { nature: "t3c nature".into(), texte: "t3c cause deux".into() };
+    consigner_l_issue_du_rafraichissement(&st.db, "default", panne, &rk, &fp, t1, from, ttl_global, Ok(Err(une)));
     {
         let conn = st.db.lock();
         let (payload, calcule_a) = panneau_avoue::cache_lire(&conn, panne, &rk, &fp).expect("1er échec écrit");
         assert_eq!(calcule_a, t1, "contrôle positif : le premier échec est écrit à son instant : {payload}");
-        assert!(payload.contains("t3c cause une"), "contrôle positif : sa cause : {payload}");
+        let v: Value = serde_json::from_str(&payload).expect("corps d'échec lisible");
+        assert_eq!(v["error"], json!(crate::handlers::query::REQUETE_REJETEE_PAR_LE_MOTEUR), "contrôle positif : la phrase de sa classe : {payload}");
+        assert!(!payload.contains("t3c cause une"), "le texte du moteur n'est pas écrit dans le cache : {payload}");
     }
-    consigner_l_issue_du_rafraichissement(&st.db, panne, &rk, &fp, t2, from, ttl_global, Ok(Err("t3c cause deux".to_string())));
+    consigner_l_issue_du_rafraichissement(&st.db, "default", panne, &rk, &fp, t2, from, ttl_global, Ok(Err(deux)));
     {
         let conn = st.db.lock();
         let (payload, calcule_a) = panneau_avoue::cache_lire(&conn, panne, &rk, &fp).expect("2e échec écrit");
         assert_eq!(calcule_a, t2, "l'échec neuf remplace le précédent et porte son instant (sinon : retenté à chaque interrogation) : {payload}");
-        assert!(payload.contains("t3c cause deux") && !payload.contains("t3c cause une"), "la cause servie est la dernière : {payload}");
+        let v: Value = serde_json::from_str(&payload).expect("corps d'échec lisible");
+        assert_eq!(v["error"], json!(crate::handlers::query::CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE), "la phrase servie est celle du dernier échec : {payload}");
+        assert!(!payload.contains("t3c cause"), "aucun texte du moteur dans le cache : {payload}");
     }
     ff_rm(&dbp);
 }
@@ -357,7 +369,8 @@ async fn t3c_journaux_d_echec_disent_l_identifiant_la_cause_et_le_geste_jamais_l
             .execute_batch("CREATE TRIGGER t3c_refus BEFORE INSERT ON panel_cache BEGIN SELECT RAISE(ABORT,'cache refuse par le temoin'); END;")
             .unwrap();
         eprintln!("{T3C_PHASE}refus");
-        consigner_l_issue_du_rafraichissement(&st.db, panne, &rk, &fp, now(), from, ttl_global, Ok(Err(cause.clone())));
+        let echec = crate::query_exec::EchecDeRequete::Moteur { nature: "t3c nature".into(), texte: cause.clone() };
+        consigner_l_issue_du_rafraichissement(&st.db, "default", panne, &rk, &fp, now(), from, ttl_global, Ok(Err(echec)));
         assert!(panneau_avoue::cache_lire(&st.db.lock(), panne, &rk, &fp).is_none(), "précondition : rien d'écrit");
         ff_rm(&dbp);
         // pré-chauffage.

@@ -514,7 +514,27 @@ pub(crate) fn aveu_de_bande_froide_du_chemin(from: i64, frontiere: Option<i64>, 
     }))
 }
 
-async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64, to: i64, limit: i64) -> Response {
+/// `P10.20-b` (vague AS) — L'AVEU QUAND LA FRONTIÈRE N'A PAS ÉTÉ LUE. La frontière chaud/froid dérive de
+/// `retention_days` ; une ligne `setting` écrite et illisible (BLOB, « 365.0 », lecture refusée) ne la fait plus
+/// calculer sur le repli env/défaut. La réponse est la fenêtre chaude seule, et la même case `stats.cold` le dit :
+/// `served_from: "hot"` et `aveu` (lus par `web/viz.js` `coldShareBadge`, bras « bande non lue », et par
+/// `web/datamodels.js`), `reason: "cold_coverage_unread"` (la raison de `/api/search` sur le même défaut), la clé
+/// non lue nommée ; JAMAIS de `boundary_ts` : aucune frontière n'est établie. `chemin` nomme la route qui sert.
+#[cfg(feature = "cold_tier")]
+pub(crate) fn aveu_de_bande_froide_frontiere_non_lue(chemin: &str) -> Value {
+    json!({
+        "served_from": "hot",
+        "reason": "cold_coverage_unread",
+        "reglage_non_lu": "retention_days",
+        "aveu": format!("bande froide NON établie, frontière non lue : le réglage de rétention écrit (`retention_days`) n'a \
+                 pas pu être lu, aucune frontière n'est calculée sur un repli ; ce chemin ({chemin}) n'a lu que la fenêtre \
+                 chaude, des lignes plus anciennes existent peut-être dans le tier froid et ne sont pas comptées"),
+    })
+}
+
+/// `route` : la route qui sert (`/api/pivot/run` ou `/api/datasets/{id}/run`), nommée à la ligne `[query] WARN` d'un
+/// refus du moteur et dans l'aveu d'une frontière non lue.
+async fn run_generated_soql(st: &AppState, au: &AuthUser, route: &str, soql: &str, from: i64, to: i64, limit: i64) -> Response {
     let env = au.env_filter();
     let masks = effective_masks(req_db_path(st, au).as_str(), &au.role, &au.tenant, env);
     // Masque non vide -> rollup-route DÉSACTIVÉ (les tables event_rollup portent src_ip/host en clair) ; sinon
@@ -540,18 +560,27 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
     // La frontière froide est lue avec les MÊMES primitives que `/api/query` (gate de compilation `cold_tier`
     // + gate d'exécution `PLUME_COLD_TIER`) ; sans elles, aucune frontière et donc aucun aveu — ce qui est vrai :
     // sans tier froid, la fenêtre chaude est toute la donnée.
+    // `P10.20-b` (vague AS) — le réglage est lu par `retention_effective_lue` : illisible, AUCUNE frontière n'est
+    // fabriquée sur le repli env/défaut (`frontiere_non_lue`), la réponse reste chaude et l'aveu dit « frontière non lue ».
     #[allow(unused_mut)]
     let mut frontiere_froide: Option<i64> = None;
+    #[cfg(feature = "cold_tier")]
+    let mut frontiere_non_lue = false;
     #[cfg(feature = "cold_tier")]
     {
         let conf = load_config();
         if crate::cold_store::cold_tier_runtime_on(&conf) {
             let rc = req_db(st, au);
             let c = rc.lock();
-            let rd = retention_effective(&c, &conf, "retention_days");
-            frontiere_froide = Some(crate::cold_store::cold_query_boundary(&c, &conf, now(), rd));
+            match retention_effective_lue(&c, &conf, "retention_days") {
+                Ok(rd) => frontiere_froide = Some(crate::cold_store::cold_query_boundary(&c, &conf, now(), rd)),
+                Err(_) => frontiere_non_lue = true,
+            }
         }
     }
+    #[cfg(feature = "cold_tier")]
+    let aveu_froid = if frontiere_non_lue { Some(aveu_de_bande_froide_frontiere_non_lue(route)) } else { aveu_de_bande_froide(from, frontiere_froide) };
+    #[cfg(not(feature = "cold_tier"))]
     let aveu_froid = aveu_de_bande_froide(from, frontiere_froide);
     let lim = limit.clamp(1, 10_000);
     // `P11.22-g` — la requête compilée est lue avec sa ligne excédentaire ; la troisième porte du fabricant coupe
@@ -559,7 +588,10 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
     let page_sql = format!("SELECT * FROM ({compiled}) LIMIT {}", crate::handlers::liste_bornee::borne_avec_ligne_excedentaire(lim));
     let budget = query_budget_interactive_ms();
     let soql_echo = compiled.clone();
-    let res = tokio::task::spawn_blocking(move || run_query_ex(&db_path, &page_sql, budget, None)).await;
+    // `P10.29-l` (vague AS) — l'échec est CLASSÉ chez le producteur (`query_exec::en_classant`, par le code SQLite) et
+    // servi par `refus_de_requete`, comme `/api/query` : panne du support ou base occupée en 503 nommé, phrase du produit
+    // à l'octet en 400, tout autre texte du moteur en 400 à phrase fixe, le texte au journal seul (route, tenant).
+    let res = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&db_path, &page_sql, budget, None))).await;
     match res {
         Ok(Ok(mut v)) => {
             crate::handlers::liste_bornee::couper_le_corps_a_la_borne(&mut v, "rows", lim.max(0) as usize);
@@ -571,7 +603,7 @@ async fn run_generated_soql(st: &AppState, au: &AuthUser, soql: &str, from: i64,
             }
             Json(v).into_response()
         }
-        Ok(Err(e)) => bad_req(e),
+        Ok(Err(e)) => crate::handlers::query::refus_de_requete(e, route, &au.tenant),
         Err(_) => server_err("exécution échouée"),
     }
 }
@@ -586,7 +618,7 @@ pub(crate) async fn pivot_run(State(st): State<AppState>, Extension(au): Extensi
     let from = b.i64_field("from", 0);
     let to = b.i64_field("to", 0);
     let limit = b.get("limit").and_then(|v| v.as_i64()).unwrap_or(1000);
-    run_generated_soql(&st, &au, &soql, from, to, limit).await
+    run_generated_soql(&st, &au, "/api/pivot/run", &soql, from, to, limit).await
 }
 
 // =================================================================================================
@@ -702,5 +734,5 @@ pub(crate) async fn dataset_run(State(st): State<AppState>, Extension(au): Exten
     let from = b.i64_field("from", 0);
     let to = b.i64_field("to", 0);
     let limit = b.get("limit").and_then(|v| v.as_i64()).unwrap_or(1000);
-    run_generated_soql(&st, &au, &soql, from, to, limit).await
+    run_generated_soql(&st, &au, "/api/datasets/{id}/run", &soql, from, to, limit).await
 }

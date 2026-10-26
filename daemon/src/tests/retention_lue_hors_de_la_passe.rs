@@ -29,10 +29,11 @@
 // autorisateur SQLite refusant la lecture de `dashboard.name` ou de `meta.key` seule ; la table `index_policy` renommée
 // (bras d'échec de l'inventaire). Journal lu sur le stderr d'un sous-processus, lignes ENTIÈRES.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : `query.rs` (vers :1177 et :1976) et `datamodels.rs` (vers :551) lisent encore la
-// frontière froide par `retention_effective` (hors de ce lot) ; une réponse de panneau servie depuis le cache garde
-// l'horizon mesuré à l'écriture quand le réglage devient illisible ensuite (`horizon_perime` ne se pose pas) ; la
-// console (`web/index_policies.js`) affiche `global_retention_days: null` comme un nombre (zone d'une autre session).
+// CE QUE CES TÉMOINS NE TIENNENT PAS : la frontière froide de `query.rs` (`/api/query`, `/api/export`) et du pivot
+// (`datamodels.rs`), tenue depuis la vague AS par `frontiere_froide_non_lue_et_ecritures_avouees.rs` ; une réponse
+// de panneau servie depuis le cache garde l'horizon mesuré à l'écriture quand le réglage devient illisible ensuite
+// (`horizon_perime` ne se pose pas) ; la console (`web/index_policies.js`) affiche `global_retention_days: null` comme
+// un nombre (zone d'une autre session).
 //
 // LES MUTATIONS QUI LES FONT ROUGIR (variable de mutation sous `cfg!(test)`, retirées du source avant le commit) : voir chaque
 // témoin (`AR1_*`).
@@ -70,8 +71,10 @@ mod retention_lue_hors_de_la_passe {
     }
 
     /// Le repli env/conf/défaut que la forme d'avant aurait servi pour `retention_days` (même chaîne que les routes).
+    /// `P10.20-b` (vague AS) : `retention_effective` est retirée (plus d'appelant de production) ; le repli est le premier
+    /// champ de `setting_days_lu` pour l'entrée `retention_days` de `RETENTION_FIELDS`, exactement ce qu'elle rendait.
     fn ar1_repli(conn: &Connection) -> i64 {
-        crate::retention_effective(conn, &load_config(), AR1_CLE)
+        crate::setting_days_lu(conn, &load_config(), AR1_CLE, "PLUME_RETENTION_DAYS", 30, 7, 3650).0
     }
 
     fn ar1_dernier_audit(conn: &Connection) -> (String, i64, String, Value) {

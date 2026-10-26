@@ -291,6 +291,14 @@ impl Bande {
             .unwrap_or(self.cold_ret)
     }
 
+    /// `P10.34-j` — LE DERNIER JOUR EXPIRÉ (inclus) d'un index à l'instant `n` : un jour `<=` celui-ci est
+    /// ENTIÈREMENT au-delà de la rétention de son index, `(day+1)*SECS_PER_DAY <= n - r*SECS_PER_DAY`. UNE seule
+    /// écriture, lue par l'expiration (`expire_cold_days`) ET par le lecteur froid (`reader::HorizonDeLecture`) :
+    /// un jour que l'expiration retirerait n'est pas servi, même quand son fichier n'a pas encore pu partir.
+    pub(super) fn dernier_jour_expire(&self, env: &str, n: i64) -> i64 {
+        (n - self.eff_ret(env) * SECS_PER_DAY).div_euclid(SECS_PER_DAY) - 1
+    }
+
     /// UN CANDIDAT EST-IL RETENU POUR TRAITEMENT ? Deux refus, un seul verdict : `env_id` non conforme
     /// (fail-safe, pas de composant de chemin) OU jour au-delà de la rétention de SON index (laissé au
     /// hard-purge / à l'expiry, jamais columnarisé pour être supprimé aussitôt). PARTAGÉ par la boucle de

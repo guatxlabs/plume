@@ -1199,6 +1199,7 @@ pub(crate) fn enqueue_panel_refresh(
     }
     let db = req_db(st, au);            // #2a-2b : cache/refresh du panneau sur la base du tenant COURANT
     let db_path = req_db_path(st, au);
+    let tenant = au.tenant.clone();
     let refresh_sem = st.refresh_sem.clone(); // CHANGEMENT 1 : sémaphore refresh SÉPARÉ (jamais query_sem)
     let inflight = st.panel_refresh_inflight.clone();
     tokio::spawn(async move {
@@ -1207,8 +1208,12 @@ pub(crate) fn enqueue_panel_refresh(
             let now_s = now();
             // `P10.32-o` — L'ÉCHEC N'EST PLUS JETÉ : un `Err` du moteur (budget, SQL) ou une panique du fil
             // laissait la ligne de cache ABSENTE, donc un `warming` servi à chaque interrogation, pour toujours.
-            let issue = tokio::task::spawn_blocking(move || panneau_avoue::executer(&db_path, &conf, pc, from)).await;
-            consigner_l_issue_du_rafraichissement(&db, id, &range_key, &q_fp, now_s, from, ttl_global, issue);
+            // `P10.29-l` (vague AS) — la classe de l'échec est relue SUR LE FIL qui exécute (`en_classant`).
+            let issue = tokio::task::spawn_blocking(move || {
+                crate::query_exec::en_classant(|| panneau_avoue::executer(&db_path, &conf, pc, from))
+            })
+            .await;
+            consigner_l_issue_du_rafraichissement(&db, &tenant, id, &range_key, &q_fp, now_s, from, ttl_global, issue);
         }
         // retrait du set in-flight (succès, abandon ou erreur) -> un futur refresh pourra repartir.
         { let mut g = inflight.lock();
@@ -1218,11 +1223,12 @@ pub(crate) fn enqueue_panel_refresh(
 }
 
 /// `P10.32-o` — L'ISSUE D'UN RAFRAÎCHISSEMENT, telle que rendue par le fil bloquant : succès (coût +
-/// cache), `Err` du moteur (cause du moteur) ou panique du fil (`JoinError`, cause « exécution échouée »).
-/// Séparée de la tâche pour que chaque bras — panique comprise — se joue sur une issue fabriquée.
+/// cache), échec CLASSÉ du moteur (`query_exec::en_classant`) ou panique du fil (`JoinError`, cause « exécution
+/// échouée »). Séparée de la tâche pour que chaque bras — panique comprise — se joue sur une issue fabriquée.
+/// `tenant` est celui de l'appelant qui a armé le rafraîchissement : il n'est lu que par le journal.
 pub(crate) fn consigner_l_issue_du_rafraichissement(
-    db: &Arc<Mutex<Connection>>, id: i64, range_key: &str, q_fp: &str, now_s: i64, from: i64, ttl_global: i64,
-    issue: Result<Result<Value, String>, tokio::task::JoinError>,
+    db: &Arc<Mutex<Connection>>, tenant: &str, id: i64, range_key: &str, q_fp: &str, now_s: i64, from: i64, ttl_global: i64,
+    issue: Result<Result<Value, crate::query_exec::EchecDeRequete>, tokio::task::JoinError>,
 ) {
     match issue {
         Ok(Ok(v)) => {
@@ -1239,40 +1245,119 @@ pub(crate) fn consigner_l_issue_du_rafraichissement(
                 }
             }
         }
-        Ok(Err(cause)) => memoriser_l_echec_du_rafraichissement(db, id, range_key, q_fp, now_s, from, ttl_global, &cause),
-        Err(_) => memoriser_l_echec_du_rafraichissement(db, id, range_key, q_fp, now_s, from, ttl_global, "exécution échouée"),
+        Ok(Err(echec)) => {
+            let echec = EchecMisEnCache::de_la_requete(echec);
+            memoriser_l_echec_du_rafraichissement(db, tenant, id, range_key, q_fp, now_s, from, ttl_global, &echec)
+        }
+        Err(_) => memoriser_l_echec_du_rafraichissement(db, tenant, id, range_key, q_fp, now_s, from, ttl_global, &EchecMisEnCache::tache()),
+    }
+}
+
+/// La route des données d'un panneau, nommée par les lignes de journal de ses refus (gabarit du routeur).
+pub(crate) const ROUTE_DES_DONNEES_DE_PANNEAU: &str = "/api/panels/{id}/data";
+
+/// `P10.29-l` (vague AS) — la clé qui porte, dans un corps d'échec mis en cache, la CLASSE de l'échec. Elle est
+/// écrite par `memoriser_l_echec_du_rafraichissement` et retirée au HIT avant de servir (`serve_swr`) : le corps
+/// servi garde sa forme d'avant. Un corps d'échec SANS elle a été écrit par une version qui servait le texte du
+/// moteur : il n'est plus servi (`corps_d_echec_d_une_version_anterieure`). MARQUEUR INTERNE, JAMAIS SERVI (retiré
+/// aussi par `servir_les_panneaux_d_un_instantane`) : ce n'est pas une clé d'aveu (`CLE_*`) que la console lirait.
+pub(crate) const MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC: &str = "classe_d_echec";
+
+/// Les classes qu'une version courante écrit sous [`MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC`].
+pub(crate) const CLASSES_D_ECHEC_MISES_EN_CACHE: [&str; 5] = ["support", "occupee", "produit", "moteur", "tache"];
+
+/// `P10.29-l` (vague AS) — CE QU'UN RAFRAÎCHISSEMENT EN ÉCHEC ÉCRIT DANS `panel_cache`, ET CE QU'IL JOURNALISE.
+/// Le `panel_cache` est RÔLE-AGNOSTIQUE et persistant : le corps d'échec est servi à tout lecteur du panneau
+/// jusqu'au succès suivant. Avant, `error` y portait le texte du moteur (le refus de l'autorisateur cite l'énoncé
+/// compilé, une erreur d'ouverture le chemin de la base). La phrase servie est celle de `/api/query`
+/// (`handlers::query::refus_de_requete`) : support et base occupée par leurs phrases fixes, phrase du produit à
+/// l'octet, tout autre texte du moteur sous `REQUETE_REJETEE_PAR_LE_MOTEUR`. Le journal garde la cause : le
+/// texte du moteur ou la phrase du produit, la seule nature du code pour le support et la base occupée (le texte
+/// d'une ouverture ratée cite le chemin de la base).
+pub(crate) struct EchecMisEnCache {
+    classe: &'static str,
+    servie: String,
+    au_journal: String,
+}
+
+impl EchecMisEnCache {
+    pub(crate) fn de_la_requete(echec: crate::query_exec::EchecDeRequete) -> Self {
+        use crate::handlers::query::{CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE, CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE, REQUETE_REJETEE_PAR_LE_MOTEUR};
+        use crate::query_exec::EchecDeRequete as Echec;
+        match echec {
+            Echec::Support { nature, .. } => Self { classe: "support", servie: CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE.to_string(), au_journal: nature },
+            Echec::Occupee { nature, .. } => Self { classe: "occupee", servie: CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE.to_string(), au_journal: nature },
+            Echec::Produit(phrase) => Self { classe: "produit", servie: phrase.clone(), au_journal: phrase },
+            Echec::Moteur { texte, .. } => Self { classe: "moteur", servie: REQUETE_REJETEE_PAR_LE_MOTEUR.to_string(), au_journal: texte },
+        }
+    }
+
+    fn tache() -> Self {
+        Self { classe: "tache", servie: "exécution échouée".to_string(), au_journal: "exécution échouée".to_string() }
+    }
+
+    /// La classe, écrite sous [`MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC`] (cache des panneaux, instantanés).
+    pub(crate) fn classe(&self) -> &'static str {
+        self.classe
+    }
+
+    /// La phrase servie au client.
+    pub(crate) fn servie(&self) -> &str {
+        &self.servie
+    }
+
+    /// La cause, pour le journal seul.
+    pub(crate) fn au_journal(&self) -> &str {
+        &self.au_journal
+    }
+}
+
+/// `P10.29-l` (vague AS) — un corps d'échec écrit par une version ANTÉRIEURE : un objet qui porte `error` sans
+/// classe reconnue. Son `error` peut être le texte du moteur ; `serve_swr` le traite comme une absence (corps
+/// `warming`, rafraîchissement armé) et le prochain échec l'écrase (`charge_valide` le tient pour un échec).
+pub(crate) fn corps_d_echec_d_une_version_anterieure(payload: &str) -> bool {
+    match serde_json::from_str::<Value>(payload) {
+        Ok(v) => {
+            v.get("error").is_some()
+                && !v.get(MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC).and_then(|c| c.as_str()).is_some_and(|c| CLASSES_D_ECHEC_MISES_EN_CACHE.contains(&c))
+        }
+        Err(_) => false,
     }
 }
 
 /// `P10.32-o` — L'ÉCHEC D'UN RAFRAÎCHISSEMENT EST ÉCRIT, À LA PLACE D'UNE ABSENCE. Le corps d'échec
-/// (`panneau_avoue::corps_d_echec` : `error` = cause du moteur, aucun `warming`) est servi par la
+/// (`panneau_avoue::corps_d_echec` : `error` = phrase de la classe, aucun `warming`) est servi par la
 /// prochaine interrogation, et la nouvelle tentative revient par le mécanisme ordinaire du cache périmé
 /// (`now_s - computed_at > ttl`). Un succès ultérieur l'écrase. Le coût n'est PAS enregistré : un échec
 /// ne classe pas le panneau.
 /// UNE CHARGE UTILE VALIDE DÉJÀ EN CACHE N'EST PAS ÉCRASÉE (lisible, sans `error`) : périmée, elle reste
 /// servie et la tentative suivante revient à la prochaine interrogation — comme au pré-chauffage, qui
 /// garde le périmé quand il échoue. Le corps d'échec ne remplace qu'une ABSENCE (ou un échec précédent).
-/// Journal : l'identifiant, la cause et le geste RÉELLEMENT fait (écrit, conservé, refusé, cache coupé),
-/// jamais la requête.
+/// Journal : l'identifiant, la cause, la route, le tenant de l'appelant et le geste RÉELLEMENT fait (écrit,
+/// conservé, refusé, cache coupé), jamais la requête.
 fn memoriser_l_echec_du_rafraichissement(
-    db: &Arc<Mutex<Connection>>, id: i64, range_key: &str, q_fp: &str, now_s: i64, from: i64, ttl_global: i64, cause: &str,
+    db: &Arc<Mutex<Connection>>, tenant: &str, id: i64, range_key: &str, q_fp: &str, now_s: i64, from: i64, ttl_global: i64,
+    echec: &EchecMisEnCache,
 ) {
+    let cause = &echec.au_journal;
+    let tete = format!("[panel] WARN rafraîchissement du panneau {id} en échec ({cause}) — {ROUTE_DES_DONNEES_DE_PANNEAU}, tenant '{tenant}'");
     let conn = db.lock();
     if panel_cache_ttl(&conn, id, ttl_global) <= 0 {
-        eprintln!("[panel] WARN rafraîchissement du panneau {id} en échec ({cause}) — cache des panneaux coupé, rien d'écrit");
+        eprintln!("{tete} — cache des panneaux coupé, rien d'écrit");
         return;
     }
     let charge_valide = panneau_avoue::cache_lire(&conn, id, range_key, q_fp)
         .and_then(|(payload, _)| serde_json::from_str::<Value>(&payload).ok())
         .is_some_and(|v| v.is_object() && v.get("error").is_none());
     if charge_valide {
-        eprintln!("[panel] WARN rafraîchissement du panneau {id} en échec ({cause}) — charge utile précédente conservée (périmée), nouvelle tentative à la prochaine interrogation");
+        eprintln!("{tete} — charge utile précédente conservée (périmée), nouvelle tentative à la prochaine interrogation");
         return;
     }
-    let corps = panneau_avoue::corps_d_echec(cause, from, now_s).to_string();
-    match panneau_avoue::cache_ecrire_dit(&conn, id, range_key, q_fp, now_s, &corps) {
-        Ok(()) => eprintln!("[panel] WARN rafraîchissement du panneau {id} en échec ({cause}) — corps d'échec servi, nouvelle tentative à l'expiration du cache"),
-        Err(e) => eprintln!("[panel] WARN rafraîchissement du panneau {id} en échec ({cause}) — corps d'échec NON ÉCRIT ({e}), le panneau reste sans charge utile"),
+    let mut corps = panneau_avoue::corps_d_echec(&echec.servie, from, now_s);
+    corps[MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC] = json!(echec.classe);
+    match panneau_avoue::cache_ecrire_dit(&conn, id, range_key, q_fp, now_s, &corps.to_string()) {
+        Ok(()) => eprintln!("{tete} — corps d'échec servi, nouvelle tentative à l'expiration du cache"),
+        Err(e) => eprintln!("{tete} — corps d'échec NON ÉCRIT ({e}), le panneau reste sans charge utile"),
     }
 }
 
@@ -1298,6 +1383,10 @@ pub(crate) fn serve_swr(
         let conn = __rc.lock();
         panneau_avoue::cache_lire(&conn, id, range_key, q_fp)
     };
+    // `P10.29-l` (vague AS) — UN CORPS D'ÉCHEC D'UNE VERSION ANTÉRIEURE N'EST PLUS SERVI : son `error` peut porter le
+    // texte du moteur, et le cache est rôle-agnostique. Il est traité comme une absence (MISS : `warming`, puis un
+    // rafraîchissement qui écrit la phrase de sa classe).
+    let cached = cached.filter(|(payload, _)| !corps_d_echec_d_une_version_anterieure(payload));
     // COMPILÉ UNE SEULE FOIS, POUR LES DEUX BRANCHES. La compilation est PURE (aucune lecture disque) ;
     // elle sert (a) à re-confronter l'horizon du payload servi — la portée n'est écrite QUE dans le SQL
     // — et (b) à armer le rafraîchissement. Compilation en erreur -> `None` : on ne re-estampe rien (ce
@@ -1320,6 +1409,10 @@ pub(crate) fn serve_swr(
             // HIT (frais OU périmé) -> service IMMÉDIAT. Si périmé : refresh async (hors query_sem).
             let v = match serde_json::from_str::<Value>(&payload) {
                 Ok(mut v) => {
+                    // La classe d'un corps d'échec sert au tri ci-dessus, pas au client : le corps servi garde sa forme.
+                    if let Some(o) = v.as_object_mut() {
+                        o.remove(MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC);
+                    }
                     panneau_avoue::cache_reestamper(&mut v, &db_path, conf, pc.as_ref(), computed_at, now_s);
                     v
                 }
@@ -1461,7 +1554,7 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
         Ok(permit) => {
             let db_path = req_db_path(&st, &au);
             let conf_live = conf.clone();
-            let res = tokio::task::spawn_blocking(move || panneau_avoue::executer(&db_path, &conf_live, pc, from)).await;
+            let res = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| panneau_avoue::executer(&db_path, &conf_live, pc, from))).await;
             drop(permit); // relâche la lane refresh dès la requête finie (avant l'écriture coût/cache)
             match res {
                 Ok(Ok(v)) => {
@@ -1481,7 +1574,8 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
                     }
                     Json(v).into_response()
                 }
-                Ok(Err(e)) => bad_req(e),
+                // `P10.29-l` (vague AS) — la phrase de la classe, jamais le texte du moteur (même refus que `/api/query`).
+                Ok(Err(e)) => crate::handlers::query::refus_de_requete(e, ROUTE_DES_DONNEES_DE_PANNEAU, &au.tenant),
                 Err(_) => server_err("exécution échouée"),
             }
         }
@@ -1495,9 +1589,9 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
                 // `P10.5-i` : ce QUATRIÈME point d'exécution passe lui aussi par le coffre — c'est celui que
                 // le cadrage avait manqué, et une garde taillée pour trois l'aurait laissé dehors.
                 let db_path = req_db_path(&st, &au);
-                match tokio::task::spawn_blocking(move || panneau_avoue::executer(&db_path, &conf, pc, from)).await {
+                match tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| panneau_avoue::executer(&db_path, &conf, pc, from))).await {
                     Ok(Ok(v)) => Json(v).into_response(),
-                    Ok(Err(e)) => bad_req(e),
+                    Ok(Err(e)) => crate::handlers::query::refus_de_requete(e, ROUTE_DES_DONNEES_DE_PANNEAU, &au.tenant),
                     Err(_) => server_err("exécution échouée"),
                 }
             }
@@ -1549,7 +1643,7 @@ async fn panel_data_masked_live(
     let post_mask = !is_soql; // GXQL déjà masqué dans le SQL ; SQL brut -> masquage post-requête (idempotence).
     let dbp2 = db_path.clone();
     let conf2 = conf.clone();
-    let run = tokio::task::spawn_blocking(move || panneau_avoue::executer(&dbp2, &conf2, pc, from)).await;
+    let run = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| panneau_avoue::executer(&dbp2, &conf2, pc, from))).await;
     match run {
         Ok(Ok(mut v)) => {
             // `mask_query_result` ne mute que `v["rows"]` : l'aveu posé dans `stats` lui survit — et c'est
@@ -1559,7 +1653,7 @@ async fn panel_data_masked_live(
             }
             Json(v).into_response()
         }
-        Ok(Err(e)) => bad_req(e),
+        Ok(Err(e)) => crate::handlers::query::refus_de_requete(e, ROUTE_DES_DONNEES_DE_PANNEAU, &au.tenant),
         Err(_) => server_err("exécution échouée"),
     }
 }

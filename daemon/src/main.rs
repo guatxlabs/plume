@@ -609,25 +609,13 @@ fn setting_days_lu(conn: &Connection, conf: &HashMap<String, String>, skey: &str
     (brut.clamp(floor, ceil), provenance, illisible)
 }
 
-fn setting_days(conn: &Connection, conf: &HashMap<String, String>, skey: &str, env_key: &str, d: i64, floor: i64, ceil: i64) -> i64 {
-    setting_days_lu(conn, conf, skey, env_key, d, floor, ceil).0
-}
-
-/// Valeur effective d'une clé de rétention (via RETENTION_FIELDS + setting_days). 0 si clé inconnue.
-fn retention_effective(conn: &Connection, conf: &HashMap<String, String>, skey: &str) -> i64 {
-    for (k, env_key, d, floor, ceil) in RETENTION_FIELDS {
-        if k == skey {
-            return setting_days(conn, conf, k, env_key, d, floor, ceil);
-        }
-    }
-    0
-}
-
-/// `P10.20-b` (vague AR) — LA VALEUR EFFECTIVE, OU LA CAUSE QUI DIT QU'ELLE N'A PAS ÉTÉ LUE. Même chaîne que
-/// `retention_effective` (même `setting_days_lu`), mais le troisième champ n'est plus jeté : une ligne `setting` présente
-/// et illisible (valeur non entière, BLOB, lecture refusée) rend `Err(cause)` au lieu du repli env/conf/défaut. Les
-/// lecteurs hors de la passe (routes, bannière, sonde, reparse) ne fabriquent donc plus une borne sur une valeur que
-/// l'admin n'a pas écrite. Une clé absente de `RETENTION_FIELDS` rend `Ok(0)`, exactement comme `retention_effective`.
+/// `P10.20-b` (vague AR) — LA VALEUR EFFECTIVE, OU LA CAUSE QUI DIT QU'ELLE N'A PAS ÉTÉ LUE. Même chaîne
+/// (`RETENTION_FIELDS` puis `setting_days_lu`) que l'ancienne `retention_effective`, mais le troisième champ n'est plus
+/// jeté : une ligne `setting` présente et illisible (valeur non entière, BLOB, lecture refusée) rend `Err(cause)` au lieu
+/// du repli env/conf/défaut. Les lecteurs hors de la passe (routes, bannière, sonde, reparse) ne fabriquent donc plus une
+/// borne sur une valeur que l'admin n'a pas écrite. Une clé absente de `RETENTION_FIELDS` rend `Ok(0)`.
+/// `P10.20-b` (vague AS) — `retention_effective` (et `setting_days`, qui ne servait qu'elle) sont RETIRÉES : leurs trois
+/// derniers appelants (frontière froide de `/api/query`, de `/api/export` et du pivot) lisent par cette fonction.
 fn retention_effective_lue(conn: &Connection, conf: &HashMap<String, String>, skey: &str) -> Result<i64, String> {
     for (k, env_key, d, floor, ceil) in RETENTION_FIELDS {
         if k == skey {

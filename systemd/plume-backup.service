@@ -16,6 +16,9 @@ ExecStart=/usr/local/lib/plume/collectors/backup.sh
 
 NoNewPrivileges=true
 ProtectSystem=strict
+# `P10.34-p` — les répertoires de configuration et d'état de k3s restent invisibles à ce compte de service, qui
+# n'en a pas besoin (aucun appel au cluster). Le `-` tolère leur absence : hôte sans k3s, Docker.
+InaccessiblePaths=-/etc/rancher -/var/lib/rancher
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/plume/db /var/lib/plume/backups

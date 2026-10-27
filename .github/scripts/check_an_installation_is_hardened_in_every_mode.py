@@ -906,6 +906,33 @@ def lecteurs_soc_de_plume_conf():
         refuser("aucune unité non-root trouvée : le relevé des lecteurs de plume.conf ne mesure rien")
 
 
+# `P10.34-p` — les répertoires de k3s, chacun préfixé de `-` : sans lui, une unité refuse de démarrer sur un hôte sans k3s.
+REPERTOIRES_DE_K3S_INACCESSIBLES = ("-/etc/rancher", "-/var/lib/rancher")
+
+
+def juger_comptes_de_service_sans_k3s():
+    """`P10.34-p` — toute unité `User=` non-root rend inaccessibles les répertoires de k3s (`InaccessiblePaths=`)."""
+    sysd = os.path.join(RACINE_DEPOT, "systemd")
+    vus = 0
+    for n in sorted(os.listdir(sysd)):
+        if not n.endswith(".service"):
+            continue
+        t = lire(os.path.join(sysd, n))
+        u = re.search(r"^User=(\S+)", t, re.M)
+        if not u or u.group(1) == "root":
+            continue
+        vus += 1
+        declares = set()
+        for ligne in re.findall(r"^InaccessiblePaths=(.*)$", t, re.M):
+            declares.update(ligne.split())
+        manquants = [r for r in REPERTOIRES_DE_K3S_INACCESSIBLES if r not in declares]
+        if manquants:
+            faute(f"systemd/{n} tourne sous `{u.group(1)}` sans InaccessiblePaths={' '.join(manquants)} : les répertoires "
+                  f"de k3s lui restent visibles (le `-` est exigé, sinon l'unité ne démarre pas sur un hôte sans k3s)")
+    if vus == 0:
+        refuser("aucune unité non-root trouvée : le relevé des répertoires de k3s ne mesure rien")
+
+
 def fichiers_environnement():
     out = set()
     for n in os.listdir(os.path.join(RACINE_DEPOT, "systemd")):
@@ -1751,6 +1778,7 @@ def main():
               "déclarent moins. Chaque unité porte la sienne (`P10.33-d`).")
     juger_familles_derivees()
     lecteurs_soc_de_plume_conf()
+    juger_comptes_de_service_sans_k3s()
     juger_un_seul_chargeur()
     juger_pod_logs()
     juger_docs()

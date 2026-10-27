@@ -35,6 +35,9 @@ NoNewPrivileges=true
 
 # Durcissement : n'ecrit QUE le spool, ne lit rien de sensible, reseau IP + UNIX seulement.
 ProtectSystem=strict
+# `P10.34-p` — les répertoires de configuration et d'état de k3s restent invisibles à ce compte de service, qui
+# n'en a pas besoin (aucun appel au cluster). Le `-` tolère leur absence : hôte sans k3s, Docker.
+InaccessiblePaths=-/etc/rancher -/var/lib/rancher
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true

@@ -705,7 +705,7 @@ personne ne nommait (`P4.1-u`). La colonne de droite est le texte d'aide du bina
 | `secret-des-gestes` | empreinte argon2id du secret des gestes pour `PLUME_GESTURE_SECRET_FILE` (secret lu sur stdin, ou `--generer` : engendré et affiché une fois sur stderr) — voir `docs/TROIS-MODES.md` §3.11 |
 | `respond` | boucle du moteur de réponse (service séparé) |
 | `verify` | vérifie la chaîne d'intégrité du ledger |
-| `verify-control` | vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) ; 0 = intègre, 1 = rupture nommée, 2 = AUCUN verdict |
+| `verify-control` | `[--export <f> [--prev <hash>]]` — vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) et son ancre (points de contrôle signés, clé publique épinglée `PLUME_LEDGER_PUBKEY`), dans la base ou dans une copie exportée ; 0 = intègre et ancrée, ou journal vierge, 1 = rupture ou réécriture nommée, 2 = AUCUN verdict. Une chaîne intègre sort en **2** sans `PLUME_LEDGER_PUBKEY`, ou tant qu'un maillon n'a pas son propre point de contrôle (base antérieure à l'ancre, clé de signature absente à l'écriture) : un script qui alerte sur un code non nul le verra |
 | `ledger-export` | export JSONL du ledger |
 | `ledger-verify-export` | vérifie un export hors-ligne (une tranche répétée à l'identique est écartée et dite, une fourche accusée) |
 | `scim-token` | génère/affiche le jeton SCIM |

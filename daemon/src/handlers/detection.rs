@@ -263,7 +263,9 @@ fn imputations_des_regles_qui_tirent(
 /// REND SON BILAN (`P4.1-r`) : `Illisible` si la liste des règles dues n'a pas pu être lue — le tick
 /// est alors AVEUGLE et le planificateur le publie, au lieu de marquer un tick « vert » qui n'a rien
 /// évalué ; `Lue(n)` sinon, `n` étant le nombre de règles dues ABANDONNÉES (ligne indécodable,
-/// compilation refusée, évaluation en échec). Chacune est re-tentée au prochain intervalle, comme
+/// compilation refusée, évaluation en échec) ou évaluées sans que tout ce qui suit soit écrit (alerte de
+/// tir refusée, écriture d'état refusée : `P10.32-x`, une règle, un abandon). Chacune est re-tentée au
+/// prochain intervalle (dès le tick suivant quand son alerte de tir a été refusée), comme
 /// avant ; ce qui change est qu'elle est comptée — et, depuis `P3.9-a`, CONSIGNÉE PAR RÈGLE avec sa
 /// cause (`detection_aveugle`) : au seuil dérivé de son intervalle, une règle abandonnée à répétition
 /// lève une alerte de cécité, résolue à sa première évaluation réussie.
@@ -413,7 +415,13 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 // `P3.9-a` — COMPTÉ pour le bilan du tick (`P4.1-r`), et CONSIGNÉ par règle : re-planifiée
                 // comme avant, son compte consécutif incrémenté, et l'alerte de cécité posée au seuil.
                 abandonnees += 1;
-                let _ = crate::detection_aveugle::consigner_abandon(&conn, id, &name, severity, now_ts, &abandon);
+                // `P10.32-x` — L'ISSUE DE LA CONSIGNATION EST LUE. Avant : `let _ =` — un compte refusé ou non relu, une
+                // alerte de cécité non écrite au seuil (`alerte_posee: false`) ne laissaient de trace qu'au journal ; la
+                // détection était éteinte ET la sentinelle qui devait le dire aussi. Chaque défaut est compté par genre
+                // (`metrics::compter_les_defauts_de_la_sentinelle_de_cecite`, servi sous `/api/metrics` et en Prometheus) ;
+                // la règle reste UN abandon au bilan du tick (déjà compté ci-dessus), une règle disparue n'est pas un défaut.
+                let issue = crate::detection_aveugle::issue_de_consigner_abandon(&conn, id, &name, severity, now_ts, &abandon);
+                crate::metrics::compter_les_defauts_de_la_sentinelle_de_cecite(issue.defaut_de_la_sentinelle());
                 continue;
             }
         };
@@ -459,9 +467,18 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 abandonnees += 1; // une règle, un abandon
                 continue;
             }
-            let refusee = !crate::detection_aveugle::consigner_evaluation_reussie(&conn, id, now_ts, val);
-            let _ = conn.execute("UPDATE rule SET population_vue=?1 WHERE id=?2", params![hors_population.join(","), id]);
-            let _ = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]);
+            let mut refusee = !crate::detection_aveugle::consigner_evaluation_reussie(&conn, id, now_ts, val);
+            // `P10.32-x` — LES ÉCRITURES D'APRÈS L'ALERTE SONT LUES, comme celles du jumeau `run_advanced_rules` : chacune est
+            // tentée, chaque refus est dit (règle et cause du moteur ; ni valeur, ni requête, ni source) et la règle compte
+            // UN abandon au bilan, quel que soit le nombre de refus. L'alerte de tir, elle, est écrite.
+            if let Err(e) = conn.execute("UPDATE rule SET population_vue=?1 WHERE id=?2", params![hors_population.join(","), id]) {
+                eprintln!("[detection] WARN règle #{id} : les sources vues hors de sa population n'ont pas pu être écrites ({e}) — l'alerte de son tir est écrite, la règle est comptée abandonnée");
+                refusee = true;
+            }
+            if let Err(e) = conn.execute("UPDATE rule SET last_fired=?1 WHERE id=?2", params![now_ts, id]) {
+                eprintln!("[detection] WARN règle #{id} : l'instant de son tir (last_fired) n'a pas pu être écrit ({e}) — l'alerte de son tir est écrite, la règle est comptée abandonnée");
+                refusee = true;
+            }
             // rafraîchit l'affichage (ts/valeur/sévérité — utile pour les gauges type CPU dont la valeur bouge).
             // `P4.12-h` : l'instant d'OUVERTURE est gardé (`opened_at` prend l'ancien `ts` une fois, puis
             // ne bouge plus — SQLite évalue les membres droits sur la ligne AVANT la mise à jour), et
@@ -469,20 +486,28 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             // un état stable ne re-notifie pas, un épisode qui change de nature si. S7 : l'imputation est
             // RAFRAÎCHIE ici aussi — sur un épisode déjà ouvert (l'INSERT ci-dessus est un no-op), une
             // SECONDE source devenue muette doit faire basculer SA pastille sans attendre la résolution.
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, severity=?3, sources=?5, current_value=?6, \
                  notified=CASE WHEN notified=1 AND notified_value IS NOT NULL AND ?6 >= ?7 * notified_value THEN 0 ELSE notified END \
                  WHERE dedup=?4 AND status IN ('new','ack')",
                 params![now_ts, title, severity, dedup, sources, val, FACTEUR_DE_RENOTIFICATION],
-            );
+            ) {
+                eprintln!("[detection] WARN règle #{id} : son alerte ouverte n'a pas pu être rafraîchie ({e}) — valeur, sévérité, imputation et re-notification restent celles d'avant, la règle est comptée abandonnée");
+                refusee = true;
+            }
             refusee
         } else {
-            let refusee = !crate::detection_aveugle::consigner_evaluation_reussie(&conn, id, now_ts, val);
+            let mut refusee = !crate::detection_aveugle::consigner_evaluation_reussie(&conn, id, now_ts, val);
             // retour SOUS le seuil -> résout l'alerte ouverte et libère la clé (ré-arme un futur épisode)
-            let _ = conn.execute(
+            // `P10.32-x` — une résolution REFUSÉE se dit et compte la règle (une alerte de tir reste ouverte sur une règle
+            // revenue sous son seuil, et sa clé n'est pas libérée).
+            if let Err(e) = conn.execute(
                 "UPDATE alert SET status='resolved', dedup=NULL WHERE dedup=?1 AND status IN ('new','ack')",
                 params![dedup],
-            );
+            ) {
+                eprintln!("[detection] WARN règle #{id} : son alerte n'a pas pu être résolue au retour sous le seuil ({e}) — elle reste ouverte et sa clé n'est pas libérée, la règle est comptée abandonnée");
+                refusee = true;
+            }
             refusee
         };
         if ecriture_refusee {

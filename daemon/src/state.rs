@@ -268,6 +268,26 @@ pub(crate) fn migrate_control(conn: &Connection) {
            hash TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', \
            created INTEGER, last_used INTEGER);",
     );
+    crate::rbac::migrate_control_provenance_scim(conn);
+    migrate_control_points_de_controle(conn);
+}
+
+/// `P10.7-r` — LES POINTS DE CONTRÔLE SIGNÉS DU JOURNAL DE CONTRÔLE : l'ancre HORS du fichier. Le chaînage de
+/// `control_ledger` prouve sa cohérence interne, jamais l'absence de réécriture — supprimer des maillons puis
+/// re-chaîner le reste le laissait VERT. Chaque maillon inscrit reçoit ici un point de contrôle signé par la clé du
+/// registre (`control_ledger_append`), vérifié contre la clé publique épinglée hors bande, comme le journal voisin.
+/// MIGRATION À SENS UNIQUE, décidée par l'exploitant : la table est ajoutée, rien n'est réécrit ni retiré. Le plan
+/// de contrôle n'est pas versionné (aucun `meta.schema_version`) : `CREATE TABLE IF NOT EXISTS`, idempotent, et
+/// aucune base tenant ne bouge. `ledger_id` = le maillon dont `ledger_hash` est le hachage au moment de la
+/// signature ; la signature porte les deux (`rbac::message_du_point_de_controle`). L'index sur `ledger_id` sert l'export,
+/// qui lit les points des maillons d'une tranche (`governance::control_ledger_export_lines_ancree`).
+pub(crate) fn migrate_control_points_de_controle(conn: &Connection) {
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS control_checkpoint(\
+           id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, ledger_id INTEGER NOT NULL, \
+           ledger_hash TEXT NOT NULL, sig TEXT NOT NULL, pubkey TEXT NOT NULL);\
+         CREATE INDEX IF NOT EXISTS control_checkpoint_par_maillon ON control_checkpoint(ledger_id);",
+    );
 }
 
 /// Ouvre + initialise (LAZY) le control-plane. Appelé UNIQUEMENT en mode 1. Garantit idempotemment la
@@ -284,6 +304,9 @@ pub(crate) fn init_control_plane(conf: &HashMap<String, String>, main_db_path: &
     let conn = open_db_keyed_without_schema_contract(&path, control_key().as_deref()).map_err(|e| e.to_string())?;
     let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
     migrate_control(&conn);
+    // `P10.7-r` — la clé qui signe les points de contrôle de CE plan de contrôle : celle du registre, résolue comme
+    // le journal voisin la résout. Absente -> aucun point de contrôle, et chaque maillon inscrit le dit.
+    crate::rbac::armer_la_signature_du_journal_de_controle(&path, crate::ledger::ledger_key(conf));
     // Catalogue minimal : le tenant `default` pointe vers la base tenant actuelle. key_ref='env:PLUME_DB_KEY'
     // -> rétrocompat mono (la clé actuelle reste valable). INSERT OR IGNORE = idempotent (re-boot sans effet).
     let _ = conn.execute(

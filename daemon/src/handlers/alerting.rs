@@ -84,17 +84,38 @@ pub(crate) fn render_template(tmpl: &str, sev: i64, title: &str, detail: &str, h
 /// Écrit UNE alerte dans le lookup `name` (réutilise `lookup_kv`/`lookup_meta` de #36) sous la clé `key`
 /// (valeur du champ-clé, ex `host`/`src_ip`). Le `val` est le JSON des champs de l'alerte -> une détection
 /// ultérieure peut faire `... | lookup <name> <keyfield>` pour s'enrichir. Idempotent (INSERT OR REPLACE).
+///
+/// `P10.33-h` — TOUT OU RIEN. Les deux écritures étaient faites hors transaction : une ligne `lookup_kv` écrite puis un
+/// `lookup_meta` refusé laissaient une MOITIÉ d'enrichissement (la valeur sans la déclaration de son champ-clé et de ses
+/// colonnes) pendant que le dispatch comptait le canal comme refusé. Elles vivent désormais sous un SAVEPOINT : sur un
+/// écrivain libre il ouvre la transaction, sur un écrivain qui en porte déjà une il n'annule QUE ses propres écritures
+/// (`ROLLBACK TO` + `RELEASE`, jamais le `ROLLBACK` de la transaction d'un autre — même forme que la reconstruction du
+/// rollup de risque). Chaque écriture doit écrire SA ligne : un `Ok(0)` (déclencheur `RAISE(IGNORE)`) n'a rien écrit,
+/// c'est un refus, et tout est annulé. Rend la cause de la première écriture refusée ; le canal est alors compté refusé.
 pub(crate) fn write_alert_to_lookup(conn: &Connection, name: &str, key_field: &str, key: &str, fields: &Value) -> rusqlite::Result<()> {
+    const POINT: &str = "ecriture_d_alerte_au_lookup";
     let cols = fields.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
-    conn.execute(
-        "INSERT OR REPLACE INTO lookup_kv(name,\"key\",val) VALUES(?1,?2,?3)",
-        params![name, key, fields.to_string()],
-    )?;
-    conn.execute(
-        "INSERT OR REPLACE INTO lookup_meta(name,key_field,cols,updated) VALUES(?1,?2,?3,?4)",
-        params![name, key_field, json!(cols).to_string(), now()],
-    )?;
-    Ok(())
+    let une_ligne = |n: usize| if n == 1 { Ok(()) } else { Err(rusqlite::Error::StatementChangedRows(n)) };
+    conn.execute_batch(&format!("SAVEPOINT {POINT}"))?;
+    let ecrire = || -> rusqlite::Result<()> {
+        une_ligne(conn.execute(
+            "INSERT OR REPLACE INTO lookup_kv(name,\"key\",val) VALUES(?1,?2,?3)",
+            params![name, key, fields.to_string()],
+        )?)?;
+        une_ligne(conn.execute(
+            "INSERT OR REPLACE INTO lookup_meta(name,key_field,cols,updated) VALUES(?1,?2,?3,?4)",
+            params![name, key_field, json!(cols).to_string(), now()],
+        )?)?;
+        conn.execute_batch(&format!("RELEASE {POINT}"))
+    };
+    let ecrit = ecrire();
+    if ecrit.is_err() {
+        // Annule les SEULES écritures de ce point et le ferme ; la cause rendue reste celle du premier refus. Une
+        // annulation refusée elle-même laisserait le point ouvert : la sonde des transactions orphelines du tick suivant
+        // le voit et le dit (`signaler_une_transaction_ouverte_hors_de_tout_geste`).
+        let _ = conn.execute_batch(&format!("ROLLBACK TO {POINT}; RELEASE {POINT}"));
+    }
+    ecrit
 }
 
 // ======================================================================================

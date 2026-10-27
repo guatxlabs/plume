@@ -375,7 +375,8 @@ fn scim_retrait_du_role_viderait_le_dernier_admin(conn: &Connection, tenant: &st
     Ok(effective_admin_grant_count_conn(conn, tenant)? <= 1)
 }
 
-/// POST /scim/v2/Users — PROVISIONNE un user (idempotent par userName). Crée le platform_user
+/// POST /scim/v2/Users — PROVISIONNE un user (idempotent par userName pour une identité que ce tenant peut rattacher ;
+/// un nom pris hors du tenant rend `409 uniqueness`, `P10.34-h`). Crée le platform_user
 /// (is_superadmin=0 IMPOSÉ) et, si le body porte des `roles`/`groups` mappables, applique les grants dans le
 /// tenant du token (via valid_grant_role). N'accorde JAMAIS le super-admin.
 pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx): Extension<ScimCtx>, Json(b): Json<Value>) -> Response {
@@ -414,15 +415,33 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
             ),
         );
     }
-    // ensure_platform_user : crée (is_superadmin=0) OU récupère l'existant — jamais ne modifie is_superadmin.
-    let Some(id) = ensure_platform_user(cp, &username) else {
-        return scim_err(StatusCode::INTERNAL_SERVER_ERROR, "création platform_user échouée");
+    // `P10.34-h` — L'IDENTITÉ EST CELLE DU TENANT APPELANT. `ensure_platform_user` retrouvait par son nom (`UNIQUE` sur
+    // toute la plateforme) le compte d'un AUTRE tenant, servait son id et lui posait le droit demandé ici.
+    // `poser_l_identite_scim` sert l'existante seulement si elle est rattachable (droit ici, provisionnée par ce
+    // tenant, ou sans droit ni provenance nulle part), sinon crée une identité neuve dont la provenance est ce tenant
+    // (is_superadmin=0, jamais un compte existant modifié). Un nom pris par une identité ÉTRANGÈRE rend `409`
+    // `uniqueness` (RFC 7644 §3.3), sans son id ni rien d'écrit : l'oracle par `userName` qui en découle est accepté
+    // par l'exploitant (2026-10-26). Une lecture ratée est un `503` (ni présence ni absence affirmée), jamais une
+    // création ni un rattachement.
+    let id = match poser_l_identite_scim(cp, &ctx.tenant, &username) {
+        Ok(id) => id,
+        Err(IdentiteScimNonPosee::Etrangere) => return scim_refuser_l_unicite(PHRASE_SCIM_NOM_PRIS_HORS_DU_TENANT),
+        Err(IdentiteScimNonPosee::Illisible(e)) => {
+            return scim_refuser_a_rejouer("scim.user.provision", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string())
+        }
+        Err(IdentiteScimNonPosee::NonCreee(cause)) => {
+            eprintln!("[scim] WARN geste 'scim.user.provision' : identité NON créée (500), rien n'est attesté : {cause}");
+            return scim_err(StatusCode::INTERNAL_SERVER_ERROR, "création platform_user échouée");
+        }
     };
+    // `P10.34-h` — le lieu où un geste concurrent d'un autre tenant peut s'intercaler : le jugement ci-dessus a relâché
+    // son verrou, la transaction des droits ne l'a pas encore pris (sans effet hors `cfg(test)`).
+    crate::handlers::transaction_validee::point_de_course(&format!("scim-identite-avant-ses-droits:{}", cp.db_path));
     // Grants optionnels : le body peut porter des groups (value=role). On applique via valid_grant_role
     // (enum fermé + rôles composables définis) dans le tenant du token. Un rôle inconnu est IGNORÉ (default-deny).
     // `P10.21-l` — un droit n'entre dans `applied` (donc au journal de contrôle) que s'il est ÉCRIT ; un
     // refus de la base rend le `503` avant toute trace. L'utilisateur, lui, reste créé : le rejeu du même
-    // POST le retrouve par son nom (`ensure_platform_user`) et repose les droits (upsert).
+    // POST le retrouve par son nom (`poser_l_identite_scim` : provenance de ce tenant) et repose les droits (upsert).
     //
     // `P10.21-r` — LES DROITS DE LA DEMANDE S'ÉCRIVENT DANS UNE TRANSACTION (forme commune `jouer_le_geste_garde`), et un
     // droit qui écraserait le rôle du DERNIER administrateur effectif du tenant est refusé (409, aucun droit de la
@@ -435,6 +454,18 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
         let issue = {
             let conn = cp.conn.lock();
             jouer_le_geste_garde(&conn, "scim", "droits d'un utilisateur SCIM provisionné", |conn| -> Result<Vec<String>, Response> {
+                // `P10.34-h` — LE RATTACHEMENT EST REJUGÉ ICI, sous le verrou et dans la transaction qui écrit les droits.
+                // `poser_l_identite_scim` l'a jugé sous un AUTRE verrou, relâché depuis : entre les deux, un `PATCH add`
+                // d'un autre tenant peut avoir posé un droit chez lui à une identité sans droit ni provenance, et écrire
+                // ici sans rejuger laisserait des droits dans deux tenants, ce qu'aucun ordre en série n'autorise.
+                // Étrangère désormais : le `409` d'un nom pris hors du tenant, rien d'écrit ; l'identité disparue : le
+                // `500` d'une identité non créée ; lecture ratée : le `503` nommé.
+                match rattachement_scim_conn(conn, &ctx.tenant, &id) {
+                    Ok(Some(RattachementScim::Rattachable)) => {}
+                    Ok(Some(RattachementScim::Etrangere)) => return Err(scim_refuser_l_unicite(PHRASE_SCIM_NOM_PRIS_HORS_DU_TENANT)),
+                    Ok(None) => return Err(scim_err(StatusCode::INTERNAL_SERVER_ERROR, "création platform_user échouée")),
+                    Err(e) => return Err(scim_refuser_a_rejouer("scim.user.provision", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string())),
+                }
                 let mut ecrits = Vec::new();
                 for role in &demandes {
                     match le_geste_retirerait_le_dernier_administrateur(conn, &ctx.tenant, &id, Some(role)) {
@@ -595,8 +626,8 @@ pub(crate) async fn scim_groups_list(State(st): State<AppState>, Extension(_ctx)
 //    d'attribut que ce dépôt sache remplacer) ;
 //  * `path` = `displayName` ou `externalId` : accepté, ignoré (renommage par l'IdP).
 // Refus : `op` inconnue -> `invalidSyntax` ; `path` inconnu -> `invalidPath` ; filtre illisible ->
-// `invalidFilter` ; `value` mal formée -> `invalidValue` ; `remove` sans `path` ni `value`, ou membre qui n'est
-// pas une identité connue -> `noTarget`.
+// `invalidFilter` ; `value` mal formée -> `invalidValue` ; `remove` sans `path` ni `value`, ou membre ajouté qui
+// n'est pas une identité connue de ce tenant (inconnue, ou étrangère : `P10.34-h`) -> `noTarget`.
 
 /// Le geste d'une opération de groupe, JUGÉ : la liste des membres visés, ou rien (attribut ignoré).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -607,6 +638,22 @@ enum GesteDeGroupeScim {
     Remplacer(Vec<String>),
     /// Un attribut de groupe sans effet sur les droits (`displayName`, `externalId`) : rien n'est écrit.
     Aucun,
+}
+
+/// `P10.34-h` — le détail du `409` d'un `userName` pris par une identité que ce tenant ne peut pas rattacher. Il ne
+/// dit ni où ni pourquoi (droit ailleurs ou provenance), ni l'id du compte.
+pub(crate) const PHRASE_SCIM_NOM_PRIS_HORS_DU_TENANT: &str =
+    "userName déjà pris sur la plateforme par une identité que ce tenant ne peut pas rattacher : l'utilisateur n'est \
+     ni créé ni modifié, aucun droit n'est posé";
+
+/// `P10.34-h` — un `409` SCIM 2.0 `uniqueness` (RFC 7644 §3.3, §3.12) : rien n'est créé ni modifié.
+fn scim_refuser_l_unicite(detail: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        [(header::CONTENT_TYPE, "application/scim+json")],
+        json!({ "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"], "scimType": "uniqueness", "detail": detail, "status": "409" }).to_string(),
+    )
+        .into_response()
 }
 
 /// Un `400` SCIM 2.0 avec son `scimType` (RFC 7644 §3.12) : la demande est refusée ENTIÈRE.
@@ -830,36 +877,34 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
                 // retiré est le cas courant ; un refus bloquerait la révocation des autres). Les refus d'un AUTRE id présent
                 // (`409` dernier administrateur, `503`) défont toujours la demande entière, atomique. Une lecture RATÉE du
                 // droit reste un refus nommé (503), jamais un no-op. Le retrait d'un `replace` lit ses porteurs dans le droit
-                // du tenant (déjà borné). AJOUTER (et
-                // l'ensemble servi d'un `replace`, qui s'ajoute) reste jugé sur `platform_user`, À DESSEIN : toute identité
-                // connue de la plateforme s'ajoute (`200`), une inconnue rend `noTarget`. Refuser un id qui porte un droit
-                // dans un AUTRE tenant seulement créerait un oracle par `userName` : `POST /Users` est idempotent par nom
-                // (`ensure_platform_user`) et sert l'id du compte existant, et le PATCH qui suit trahirait alors que ce nom
-                // a un droit ailleurs — tout en cassant le flux standard (`groups` est en lecture seule, RFC 7643
-                // §4.1.2 : `POST /Users` puis `PATCH /Groups`) pour une identité partagée entre deux tenants. Le seul
-                // écart restant oppose un id servi à un id que la plateforme n'a jamais servi (96 bits aléatoires).
-                // Reste nommé de `P10.34-a` : un tenant peut RATTACHER un compte d'un autre tenant (`PATCH add` ou
-                // `POST /Users` avec `groups`) ; le fermer sans oracle exige la provenance des identités par tenant.
+                // du tenant (déjà borné).
+                // `P10.34-h` — AJOUTER (et l'ensemble servi d'un `replace`, qui s'ajoute) juge le RATTACHEMENT au tenant
+                // appelant (`rattachement_scim_conn`), plus `platform_user` global : un jeton SCIM d'un tenant ne rattache
+                // JAMAIS un compte d'un autre tenant (décision de l'exploitant, 2026-10-26). Une identité qui ne porte de
+                // droit que dans un autre tenant, ou créée par le `POST /Users` d'un autre tenant, rend le MÊME `noTarget`
+                // qu'un id inconnu (même statut, même corps) : la demande entière est refusée, rien n'est écrit. Ce n'est
+                // plus un oracle par `userName` : `POST /Users` d'un nom pris hors du tenant rend `409 uniqueness` sans
+                // servir l'id étranger (cet oracle-là, par nom, est accepté par l'exploitant) ; un id étranger ne se lit
+                // qu'ailleurs, et il répond ici comme un id que la plateforme n'a jamais servi. Un membre du tenant (même
+                // porteur d'un droit ailleurs), une identité provisionnée par ce tenant, ou une identité sans droit ni
+                // provenance nulle part (née avant la provenance : rétrocompat) s'ajoute.
                 let juge_dans_le_tenant = matches!(geste, GesteDeGroupeScim::Retirer(_));
                 let mut presents: Vec<&String> = Vec::with_capacity(membres.len());
                 for uid in membres {
                     let lu = if juge_dans_le_tenant {
                         scim_nom_dans_le_tenant_sur(conn, &ctx.tenant, uid).map(|nom| nom.is_some())
                     } else {
-                        match conn.query_row("SELECT 1 FROM platform_user WHERE id=?1", params![uid], |r| r.get::<_, i64>(0)) {
-                            Ok(_) => Ok(true),
-                            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
-                            Err(e) => Err(e),
-                        }
+                        rattachement_scim_conn(conn, &ctx.tenant, uid).map(|lu| lu == Some(RattachementScim::Rattachable))
                     };
                     match lu {
                         Ok(true) => presents.push(uid),
                         // Absent du groupe du tenant : no-op silencieux, identique pour un inconnu et un id d'un autre tenant.
                         Ok(false) if juge_dans_le_tenant => {}
+                        // `P10.34-h` — inconnu de la plateforme OU étranger au tenant : un seul refus, une seule phrase.
                         Ok(false) => {
                             return Err(scim_refuser_la_demande(
                                 "noTarget",
-                                &format!("opération n°{} : un membre visé n'est pas une identité connue", i + 1),
+                                &format!("opération n°{} : un membre visé n'est pas une identité connue de ce tenant", i + 1),
                             ))
                         }
                         Err(e) => return Err(scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string())),

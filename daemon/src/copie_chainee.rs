@@ -141,9 +141,20 @@ impl<'a> LignesRetenues<'a> {
 /// `last_hash` du curseur pour un export incrémental, "" pour un export complet). Renvoie ce que la copie porte, ou
 /// `Err` à la première rupture, nommée par son rang dans la copie et l'identifiant de l'entrée.
 pub(crate) fn verifier_une_copie_chainee(lines: &[String], expect_prev: &str, recette: &RecetteDeChaine) -> Result<CopieChaineeVerifiee, String> {
+    verifier_des_lignes_numerotees(lines.iter().map(String::as_str).enumerate(), expect_prev, recette)
+}
+
+/// La même vérification, sur des lignes qui portent leur RANG dans la copie : une copie dont certaines lignes ne sont
+/// pas des maillons (les points de contrôle du journal de contrôle, `P10.7-r`) nomme ses ruptures par le rang de la
+/// ligne dans la copie entière, et non dans la liste des maillons qu'on en a extraite.
+pub(crate) fn verifier_des_lignes_numerotees<'a>(
+    lines: impl IntoIterator<Item = (usize, &'a str)>,
+    expect_prev: &str,
+    recette: &RecetteDeChaine,
+) -> Result<CopieChaineeVerifiee, String> {
     let mut prev = expect_prev.to_string();
     let mut retenues = LignesRetenues::neuves();
-    for (i, line) in lines.iter().enumerate() {
+    for (i, line) in lines {
         let v: Value = serde_json::from_str(line).map_err(|e| format!("ligne {i}: JSON invalide: {e}"))?;
         let id = v.get("id").and_then(|x| x.as_i64()).ok_or_else(|| format!("ligne {i}: id manquant"))?;
         let ts = v.get("ts").and_then(|x| x.as_i64()).ok_or_else(|| format!("ligne {i}: ts manquant"))?;

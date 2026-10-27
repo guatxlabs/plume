@@ -149,42 +149,96 @@ pub(crate) struct AbandonConsigne {
     pub(crate) alerte_posee: bool,
 }
 
+/// `P10.32-x` — CE QUE LA CONSIGNATION D'UN ABANDON A RENDU, issue par issue. La forme d'avant rendait `None` pour
+/// trois faits que rien ne séparait : la règle a disparu entre l'évaluation et l'écriture (RIEN à poser, ce n'est pas
+/// une panne), l'incrément du compte a été refusé ou est resté sans effet, la relecture du compte a échoué (`.ok()?`,
+/// sans une ligne de journal). Et son seul appelant (`run_due_rules`) jetait l'issue (`let _ =`), si bien qu'une
+/// alerte de cécité non posée au seuil (`alerte_posee: false`) ne laissait aucune trace hors du journal.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum IssueDeConsignation {
+    /// Le compte est écrit et relu ; `alerte_posee` dit si l'alerte de cécité est écrite ou déjà ouverte.
+    Consigne(AbandonConsigne),
+    /// La règle n'existe plus (relecture sans ligne) : rien n'est consigné ni posé, et ce n'est pas un défaut.
+    RegleAbsente,
+    /// L'incrément du compte a été refusé par le moteur, ou n'a écrit aucune ligne sur une règle présente.
+    CompteNonEcrit,
+    /// Le compte a été écrit mais n'a pas pu être relu : aucune alerte n'est posée sur un compte inconnu.
+    CompteNonRelu,
+}
+
+/// Les genres d'un défaut de la sentinelle — ensemble FERMÉ, clés du compteur de `metrics`.
+pub(crate) const DEFAUT_COMPTE_NON_ECRIT: &str = "compte_non_ecrit";
+pub(crate) const DEFAUT_COMPTE_NON_RELU: &str = "compte_non_relu";
+pub(crate) const DEFAUT_ALERTE_DE_CECITE_NON_ECRITE: &str = "alerte_de_cecite_non_ecrite";
+
+impl IssueDeConsignation {
+    /// Le genre du DÉFAUT de la sentinelle, ou `None` quand elle a fait ce qu'elle devait : compte consigné sous le
+    /// seuil, alerte de cécité écrite ou déjà ouverte au seuil, règle disparue (rien à poser).
+    pub(crate) fn defaut_de_la_sentinelle(&self) -> Option<&'static str> {
+        match self {
+            Self::Consigne(c) if c.consecutifs >= c.seuil && !c.alerte_posee => Some(DEFAUT_ALERTE_DE_CECITE_NON_ECRITE),
+            Self::Consigne(_) | Self::RegleAbsente => None,
+            Self::CompteNonEcrit => Some(DEFAUT_COMPTE_NON_ECRIT),
+            Self::CompteNonRelu => Some(DEFAUT_COMPTE_NON_RELU),
+        }
+    }
+}
+
 /// CONSIGNE UN ABANDON : re-planifie la règle (`last_run`), incrémente son compte consécutif, et dès
 /// que ce compte atteint le seuil dérivé de son intervalle, pose l'alerte de cécité — `INSERT OR
 /// IGNORE` sur la clé stable (no-op si l'épisode est déjà ouvert) puis rafraîchissement du titre, de
 /// l'horodatage et du détail SANS toucher `notified` (pas de re-notification à chaque intervalle).
 ///
-/// `None` si la règle n'a pas pu être relue après l'écriture : rien n'est posé, et l'abandon reste
-/// compté par l'appelant (`P4.1-r`) — une alerte sur un compte qu'on n'a pas lu serait inventée.
+/// `P10.20-b` (rang trois, famille Q3) — les écritures sont JUGÉES : `alerte_posee` ne vaut `true` que si l'alerte de
+/// cécité est écrite (`Ok(1)`) ou déjà ouverte sous sa clé (`Ok(0)`) — jamais sur un INSERT refusé. Chaque refus
+/// laisse une ligne de journal avec la cause du moteur.
 ///
-/// `P10.20-b` (rang trois, famille Q3) — les écritures sont JUGÉES : un incrément du compte que le moteur
-/// refuse rend `None` (rien n'est posé sur un compte non écrit ; l'abandon reste compté par l'appelant), et
-/// `alerte_posee` ne vaut `true` que si l'alerte de cécité est écrite (`Ok(1)`) ou déjà ouverte sous sa clé
-/// (`Ok(0)`) — jamais sur un INSERT refusé. Chaque refus laisse une ligne de journal avec la cause du moteur.
-pub(crate) fn consigner_abandon(
+/// `P10.32-x` — rend son ISSUE (`IssueDeConsignation`) : règle disparue, compte non écrit (refusé, ou aucune ligne
+/// écrite sur une règle présente), compte non relu (dit au journal), ou consigné. Dans chaque cas sauf le dernier,
+/// rien n'est posé — une alerte sur un compte qu'on n'a pas écrit ou pas lu serait inventée — et l'abandon reste
+/// compté par l'appelant (`P4.1-r`). C'est la porte que l'ordonnanceur appelle.
+pub(crate) fn issue_de_consigner_abandon(
     conn: &Connection,
     id: i64,
     nom: &str,
     severity: i64,
     now_ts: i64,
     abandon: &AbandonDEvaluation,
-) -> Option<AbandonConsigne> {
-    if let Err(e) = conn.execute(
+) -> IssueDeConsignation {
+    let ecrites = match conn.execute(
         "UPDATE rule SET last_run=?1, abandons_consecutifs=abandons_consecutifs+1 WHERE id=?2",
         params![now_ts, id],
     ) {
-        eprintln!("[detection] WARN règle #{id} : le compte de ses abandons consécutifs n'a pas pu être écrit ({e}) — aucune alerte de cécité posée sur un compte non écrit");
-        return None;
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[detection] WARN règle #{id} : le compte de ses abandons consécutifs n'a pas pu être écrit ({e}) — aucune alerte de cécité posée sur un compte non écrit");
+            return IssueDeConsignation::CompteNonEcrit;
+        }
+    };
+    // La relecture dit d'abord si la règle EXISTE : sans ligne, elle a été supprimée entre l'évaluation et l'écriture
+    // (l'incrément n'a rien écrit, ou un geste l'a retirée depuis) — rien à poser, et ce n'est pas une panne.
+    let relu = rusqlite::OptionalExtension::optional(conn.query_row(
+        "SELECT abandons_consecutifs, interval_s FROM rule WHERE id=?1",
+        params![id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    ));
+    let (consecutifs, interval_s): (u32, i64) = match relu {
+        Ok(Some((n, i))) => (u32::try_from(n).unwrap_or(u32::MAX), i),
+        Ok(None) => return IssueDeConsignation::RegleAbsente,
+        Err(e) => {
+            eprintln!("[detection] WARN règle #{id} : le compte de ses abandons consécutifs n'a pas pu être relu ({e}) — aucune alerte de cécité posée sur un compte non lu");
+            return IssueDeConsignation::CompteNonRelu;
+        }
+    };
+    // Présente, mais l'incrément n'a écrit aucune ligne (un déclencheur `RAISE(IGNORE)`) : le compte relu est celui
+    // d'AVANT, et poser l'alerte dessus la poserait sur un compte que la base n'a pas pris.
+    if ecrites != 1 {
+        eprintln!("[detection] WARN règle #{id} : le compte de ses abandons consécutifs n'a pas été écrit ({ecrites} ligne(s) écrite(s) au lieu d'une) — aucune alerte de cécité posée sur un compte non écrit");
+        return IssueDeConsignation::CompteNonEcrit;
     }
-    let (consecutifs, interval_s): (u32, i64) = conn
-        .query_row("SELECT abandons_consecutifs, interval_s FROM rule WHERE id=?1", params![id], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-        })
-        .ok()
-        .map(|(n, i)| (u32::try_from(n).unwrap_or(u32::MAX), i))?;
     let seuil = seuil_d_abandons_consecutifs(interval_s);
     if consecutifs < seuil {
-        return Some(AbandonConsigne { consecutifs, seuil, alerte_posee: false });
+        return IssueDeConsignation::Consigne(AbandonConsigne { consecutifs, seuil, alerte_posee: false });
     }
     let dedup = cle_dedup(id);
     let titre = titre(nom, abandon.cause, consecutifs);
@@ -203,7 +257,7 @@ pub(crate) fn consigner_abandon(
         params![now_ts, format!("{FAMILLE_ALERTE}.{id}"), severity, titre, detail, dedup, sources, crate::fondement::Fondement::Capteur.mot()],
     ) {
         eprintln!("[detection] WARN règle #{id} : l'alerte de cécité n'a pas pu être écrite ({e}) — {consecutifs} abandons consécutifs comptés, elle sera reposée au prochain abandon");
-        return Some(AbandonConsigne { consecutifs, seuil, alerte_posee: false });
+        return IssueDeConsignation::Consigne(AbandonConsigne { consecutifs, seuil, alerte_posee: false });
     }
     // `P10.33-j` — un rafraîchissement REFUSÉ se DIT (règle + cause du moteur, jamais le détail). Il n'est pas
     // recompté ici : l'appelant compte déjà CET abandon au bilan du tick (une règle, un abandon), et l'alerte de
@@ -214,7 +268,7 @@ pub(crate) fn consigner_abandon(
     ) {
         eprintln!("[detection] WARN règle #{id} : le texte de son alerte de cécité n'a pas pu être rafraîchi ({e}) — l'alerte reste ouverte sous son texte précédent, l'abandon est déjà compté au tick");
     }
-    Some(AbandonConsigne { consecutifs, seuil, alerte_posee: true })
+    IssueDeConsignation::Consigne(AbandonConsigne { consecutifs, seuil, alerte_posee: true })
 }
 
 /// CONSIGNE UNE ÉVALUATION RÉUSSIE : `last_run` et `last_value` comme avant, le compte consécutif
@@ -632,3 +686,20 @@ pub(crate) fn lire_la_couverture_des_regles(conn: &Connection) -> LectureDeCouve
     lecture
 }
 
+/// LA PROJECTION D'AVANT `P10.32-x`, gardée pour les témoins qui jugent la consignation par son compte et son alerte :
+/// `Some` quand le compte est consigné, `None` pour les trois autres issues (règle disparue, compte non écrit, compte
+/// non relu). La production appelle `issue_de_consigner_abandon`, qui les sépare.
+#[cfg(test)]
+pub(crate) fn consigner_abandon(
+    conn: &Connection,
+    id: i64,
+    nom: &str,
+    severity: i64,
+    now_ts: i64,
+    abandon: &AbandonDEvaluation,
+) -> Option<AbandonConsigne> {
+    match issue_de_consigner_abandon(conn, id, nom, severity, now_ts, abandon) {
+        IssueDeConsignation::Consigne(c) => Some(c),
+        IssueDeConsignation::RegleAbsente | IssueDeConsignation::CompteNonEcrit | IssueDeConsignation::CompteNonRelu => None,
+    }
+}

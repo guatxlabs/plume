@@ -42,15 +42,86 @@ const EXPR_INDEX_FIELDS: &[&str] = HOT_FIELDS;
 /// témoins : elle NOMME la cause au lieu de laisser lire un orphelin qui survit.
 const PREFIXE_INDEX_CHAMP_CHAUD: &str = "idx_ev_f_";
 
+/// `P10.20-b` (tranche entretien) — CE QU'UNE TÂCHE D'ENTRETIEN A DIT, RENDU À SON APPELANT.
+///
+/// AVANT : les gestes de cette passe (DDL du kill-switch, présences au catalogue, `ANALYZE`, jalons, watermark du
+/// backfill) lisaient par `.ok()`, `.is_ok()`, `unwrap_or(0)` ou écrivaient en `let _` : une lecture RATÉE valait
+/// « absent » ou « zéro » — elle déclenchait un geste lourd (un `ANALYZE` complet, un backfill entier) ou en sautait un
+/// (un `DROP` différé sans raison dite), et une écriture REFUSÉE était suivie de la ligne de succès. DÉSORMAIS : absent,
+/// non lu et zéro sont trois issues distinctes ; une lecture ratée ne déclenche ni ne saute aucun geste en silence (le
+/// geste est différé au démarrage suivant, et la ligne le dit) ; une écriture refusée est dite et comptée, jamais suivie
+/// de la ligne de succès.
+///
+/// Les lignes sont CELLES qui partent sur la sortie d'erreur (même valeur, imprimée par `dire`), de sorte qu'un témoin
+/// juge la ligne imprimée et non une reconstruction voisine. Les appelants de fond (`server/travaux_sur_la_base.rs`)
+/// n'ont rien à en faire de plus : la ligne est déjà au journal, et la tâche sera rejouée au démarrage suivant.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct CompteRenduDEntretien {
+    /// Les lignes parties sur la sortie d'erreur, dans l'ordre.
+    pub(crate) lignes: Vec<String>,
+    /// Les lectures RATÉES (moteur en erreur, valeur illisible) : chacune a différé le geste qu'elle décidait.
+    pub(crate) lectures_non_faites: usize,
+    /// Les écritures (DDL, `ANALYZE`, jalon, watermark) que le moteur a refusées ou qui n'ont rien écrit.
+    pub(crate) ecritures_refusees: usize,
+}
+
+impl CompteRenduDEntretien {
+    /// Une ligne au journal, sans compte : un fait établi (succès, absence légitime).
+    fn dire(&mut self, ligne: String) {
+        eprintln!("{ligne}");
+        self.lignes.push(ligne);
+    }
+
+    /// Une lecture ratée : comptée, puis dite.
+    fn lecture_non_faite(&mut self, ligne: String) {
+        self.lectures_non_faites += 1;
+        self.dire(ligne);
+    }
+
+    /// Une écriture refusée : comptée, puis dite.
+    fn ecriture_refusee(&mut self, ligne: String) {
+        self.ecritures_refusees += 1;
+        self.dire(ligne);
+    }
+
+    /// Verse le compte rendu d'une sous-tâche dans celui-ci (lignes dans l'ordre, comptes additionnés).
+    fn verser(&mut self, autre: CompteRenduDEntretien) {
+        self.lignes.extend(autre.lignes);
+        self.lectures_non_faites += autre.lectures_non_faites;
+        self.ecritures_refusees += autre.ecritures_refusees;
+    }
+}
+
+/// `P10.20-b` (tranche entretien) — LA PRÉSENCE D'UN OBJET AU CATALOGUE, EN TROIS ISSUES : `Ok(true)` présent,
+/// `Ok(false)` absent, `Err` NON LU. Remplace les `.is_ok()` qui rangeaient une lecture ratée sous « absent » (un
+/// `CREATE` tenté ou un `DROP` sauté sans un mot).
+fn objet_present_au_catalogue(conn: &Connection, genre: &str, nom: &str) -> rusqlite::Result<bool> {
+    use rusqlite::OptionalExtension as _;
+    conn.query_row("SELECT 1 FROM sqlite_master WHERE type=?1 AND name=?2", params![genre, nom], |_| Ok(()))
+        .optional()
+        .map(|vu| vu.is_some())
+}
+
+/// La présence d'un INDEX (`type='index'`), en trois issues (`objet_present_au_catalogue`).
+fn index_present_au_catalogue(conn: &Connection, nom: &str) -> rusqlite::Result<bool> {
+    objet_present_au_catalogue(conn, "index", nom)
+}
+
 /// Version d'exécution réelle de la SQLite liée (SQLCipher vendoré). On la lit au lieu
 /// de supposer : le crate `libsqlite3-sys` 0.28 vendore SQLite 3.39.4 (< 3.43) -> `contentless_delete=1`
 /// (ajouté en 3.43) N'EST PAS disponible. On vérifie donc à l'exécution et on documente le chemin pris.
-fn sqlite_runtime_version(conn: &Connection) -> (i64, i64, i64) {
-    let v: String = conn
-        .query_row("SELECT sqlite_version()", [], |r| r.get(0))
-        .unwrap_or_else(|_| "0.0.0".into());
-    let mut it = v.split('.').map(|p| p.parse::<i64>().unwrap_or(0));
-    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+///
+/// `P10.20-b` (tranche entretien) — AVANT : une lecture ratée valait « 0.0.0 » (et un morceau non numérique, 0), et la
+/// ligne de succès FTS ON affichait « SQLite 0.0 », une version inventée. DÉSORMAIS une lecture ratée ou une forme
+/// inattendue rend `Err` avec la cause, et la ligne dit « version SQLite non lue (<cause>) ». Elle n'est PAS comptée
+/// dans `lectures_non_faites` : la version ne décide d'aucun geste, elle n'est qu'une information du journal.
+fn sqlite_runtime_version(conn: &Connection) -> Result<(i64, i64, i64), String> {
+    let v: String = conn.query_row("SELECT sqlite_version()", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let mut it = v.split('.').map(|p| p.parse::<i64>().ok());
+    match (it.next().flatten(), it.next().flatten(), it.next().flatten(), it.next()) {
+        (Some(maj), Some(min), Some(rev), None) => Ok((maj, min, rev)),
+        _ => Err(format!("forme inattendue « {v} »")),
+    }
 }
 
 /// DDL de la vtable FTS5 contentless sur les valeurs aplaties de `fields` (1 colonne `v`). Inchangé
@@ -89,25 +160,68 @@ const FTS_FIELDS_AD_TRIGGER_DDL: &str = "CREATE TRIGGER IF NOT EXISTS event_ff_a
 /// PLUME_FTS_FIELDS=1 -> s'assure que vtable+triggers existent (CREATE IF NOT EXISTS) ;
 /// =0 -> DROP triggers PUIS vtable (kill-switch dur : supprime le coût ingest ET la fuite H1).
 /// Instantané (DDL pur, aucun scan) -> sûr au boot synchrone. Idempotent.
-fn reconcile_fts_fields(conn: &Connection, conf: &HashMap<String, String>) {
+///
+/// `P10.20-b` (tranche entretien) — AVANT : chaque DDL en `let _`, puis la ligne « présents » ou « DROPPÉS (kill-switch
+/// appliqué) » quoi qu'il arrive. Un trigger AD non recréé rouvre la fuite disque de `retention_run`, un DROP refusé
+/// laisse le coût d'ingestion que le levier prétend retirer : les deux étaient annoncés comme faits. DÉSORMAIS chaque
+/// DDL refusé est dit et compté, tous les DDL sont tentés (aucun n'est sauté parce qu'un précédent a échoué), et la
+/// ligne de succès n'est imprimée que si AUCUN n'a été refusé ; sinon la ligne dit « INCOMPLET » avec le compte.
+fn reconcile_fts_fields(conn: &Connection, conf: &HashMap<String, String>) -> CompteRenduDEntretien {
+    let mut cr = CompteRenduDEntretien::default();
     if cfg(conf, "PLUME_FTS_FIELDS", "0") == "1" {
-        let (maj, min, _) = sqlite_runtime_version(conn);
-        let _ = conn.execute(FTS_FIELDS_VTABLE_DDL, []);
-        let _ = conn.execute(FTS_FIELDS_AI_TRIGGER_DDL, []);
-        // Le trigger AD a CHANGÉ -> on le RECRÉE inconditionnellement pour remplacer
+        let version = match sqlite_runtime_version(conn) {
+            Ok((maj, min, _)) => format!("SQLite {maj}.{min}"),
+            Err(cause) => format!("version SQLite non lue ({cause})"),
+        };
+        // Le trigger AD a CHANGÉ -> on le RECRÉE inconditionnellement (DROP puis CREATE) pour remplacer
         // l'ancienne forme buggée ('delete',id,'') qui aurait pu être posée par un boot antérieur.
-        let _ = conn.execute("DROP TRIGGER IF EXISTS event_ff_ad", []);
-        let _ = conn.execute(FTS_FIELDS_AD_TRIGGER_DDL, []);
-        eprintln!(
-            "[reconcile] FTS-fields ON : event_fields_fts + triggers présents (SQLite {maj}.{min} ; delete FTS par reconstruction des tokens — pas de fuite disque)"
-        );
+        let gestes: [(&str, &str); 4] = [
+            ("CREATE de la vtable event_fields_fts", FTS_FIELDS_VTABLE_DDL),
+            ("CREATE du trigger event_ff_ai", FTS_FIELDS_AI_TRIGGER_DDL),
+            ("DROP du trigger event_ff_ad", "DROP TRIGGER IF EXISTS event_ff_ad"),
+            ("CREATE du trigger event_ff_ad", FTS_FIELDS_AD_TRIGGER_DDL),
+        ];
+        let mut refus = 0usize;
+        for (quoi, ddl) in gestes {
+            if let Err(e) = conn.execute(ddl, []) {
+                refus += 1;
+                cr.ecriture_refusee(format!("[reconcile] FTS-fields ON : {quoi} REFUSÉ ({e}) — retry au prochain boot"));
+            }
+        }
+        if refus > 0 {
+            cr.dire(format!(
+                "[reconcile] FTS-fields ON INCOMPLET : {refus} DDL refusé(s) sur {} — event_fields_fts et ses triggers ne sont PAS tous en place ; retry au prochain boot",
+                gestes.len()
+            ));
+        } else {
+            cr.dire(format!(
+                "[reconcile] FTS-fields ON : event_fields_fts + triggers présents ({version} ; delete FTS par reconstruction des tokens — pas de fuite disque)"
+            ));
+        }
     } else {
         // OFF : kill-switch effectif. DROP triggers d'abord (dépendent de la vtable) puis la vtable.
-        let _ = conn.execute("DROP TRIGGER IF EXISTS event_ff_ai", []);
-        let _ = conn.execute("DROP TRIGGER IF EXISTS event_ff_ad", []);
-        let _ = conn.execute("DROP TABLE IF EXISTS event_fields_fts", []);
-        eprintln!("[reconcile] FTS-fields OFF (PLUME_FTS_FIELDS!=1) : vtable + triggers DROPPÉS (kill-switch appliqué)");
+        let gestes: [(&str, &str); 3] = [
+            ("DROP du trigger event_ff_ai", "DROP TRIGGER IF EXISTS event_ff_ai"),
+            ("DROP du trigger event_ff_ad", "DROP TRIGGER IF EXISTS event_ff_ad"),
+            ("DROP de la vtable event_fields_fts", "DROP TABLE IF EXISTS event_fields_fts"),
+        ];
+        let mut refus = 0usize;
+        for (quoi, ddl) in gestes {
+            if let Err(e) = conn.execute(ddl, []) {
+                refus += 1;
+                cr.ecriture_refusee(format!("[reconcile] FTS-fields OFF : {quoi} REFUSÉ ({e}) — retry au prochain boot"));
+            }
+        }
+        if refus > 0 {
+            cr.dire(format!(
+                "[reconcile] FTS-fields OFF INCOMPLET (PLUME_FTS_FIELDS!=1) : {refus} DROP refusé(s) sur {} — kill-switch NON appliqué en entier ; retry au prochain boot",
+                gestes.len()
+            ));
+        } else {
+            cr.dire("[reconcile] FTS-fields OFF (PLUME_FTS_FIELDS!=1) : vtable + triggers DROPPÉS (kill-switch appliqué)".to_string());
+        }
     }
+    cr
 }
 
 /// LA TABLE QUE CES INDEX COUVRENT. Elle n'était nulle part hors de la DDL qui crée, et c'est ce qui
@@ -134,6 +248,10 @@ enum ConstatAuCatalogue {
     /// Un objet de type index porte ce nom, mais sa DÉFINITION n'est pas celle attendue. Porte de quoi
     /// le dire à l'exploitant : ce n'est pas « manquant », c'est « occupé par autre chose ».
     MalPose(String),
+    /// `P10.20-b` (tranche entretien) — le catalogue n'a PAS PU être lu pour ce nom (cause du moteur portée). Ni
+    /// présent ni absent : la passe tente la création (sens sûr, `IF NOT EXISTS`), et le compte rendu le NOMME à part
+    /// au lieu de le ranger sous « manquent ».
+    NonLu(String),
 }
 
 /// LE CONSTAT D'UN CHAMP, LU DANS LA DÉFINITION ET PAS DANS L'ÉTIQUETTE (`P6.8-g`).
@@ -160,20 +278,24 @@ enum ConstatAuCatalogue {
 ///   * elle ne dit RIEN de l'état de l'index (à jour, utilisable par le planner) : c'est une lecture
 ///     de catalogue, pas une vérification de contenu.
 ///
-/// UNE ERREUR DE LECTURE COMPTE COMME ABSENT, et c'est le sens SÛR : la passe tentera la création, qui
-/// est idempotente (`IF NOT EXISTS`). Compter présent ce qu'on n'a pas su lire serait le défaut même.
+/// UNE ERREUR DE LECTURE N'EST NI PRÉSENT NI ABSENT (`P10.20-b`, tranche entretien) : elle rend `NonLu`, qui
+/// n'entre jamais dans les présents — la passe tentera donc la création, idempotente (`IF NOT EXISTS`), le sens
+/// SÛR —, et le compte rendu la nomme sous son propre marqueur. AVANT, elle était rangée sous `Absent` par `.ok()` :
+/// le compte rendu accusait « manquent » un index qu'il n'avait pas su lire.
 fn constat_au_catalogue(conn: &Connection, champ: &str) -> ConstatAuCatalogue {
+    use rusqlite::OptionalExtension as _;
     let nom = format!("{PREFIXE_INDEX_CHAMP_CHAUD}{champ}");
-    let lu: Option<(String, Option<String>)> = conn
+    let lu: rusqlite::Result<Option<(String, Option<String>)>> = conn
         .query_row(
             "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?1",
             params![nom],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok();
+        .optional();
     let (table, definition) = match lu {
-        None => return ConstatAuCatalogue::Absent,
-        Some((table, definition)) => (table, definition),
+        Ok(None) => return ConstatAuCatalogue::Absent,
+        Ok(Some((table, definition))) => (table, definition),
+        Err(e) => return ConstatAuCatalogue::NonLu(format!("{nom} ({e})")),
     };
     if table != TABLE_DES_INDEX_DE_CHAMP_CHAUD {
         return ConstatAuCatalogue::MalPose(format!(
@@ -213,23 +335,26 @@ struct ConstatDesIndex {
     absents: Vec<&'static str>,
     /// Les champs dont le nom attendu est OCCUPÉ par un index qui n'est pas le leur, avec la raison.
     mal_poses: Vec<String>,
+    /// `P10.20-b` — les noms dont le catalogue n'a pas pu être lu, avec la cause du moteur.
+    non_lus: Vec<String>,
 }
 
 impl ConstatDesIndex {
     /// Tous les champs déclarés ont leur index CONFORME. C'est la condition du court-circuit : un
-    /// homonyme mal posé ne l'ouvre plus.
+    /// homonyme mal posé ne l'ouvre plus, une présence non lue non plus.
     fn complet(&self) -> bool {
-        self.absents.is_empty() && self.mal_poses.is_empty()
+        self.absents.is_empty() && self.mal_poses.is_empty() && self.non_lus.is_empty()
     }
 }
 
 fn expr_indexes_constates(conn: &Connection) -> ConstatDesIndex {
-    let mut c = ConstatDesIndex { presents: Vec::new(), absents: Vec::new(), mal_poses: Vec::new() };
+    let mut c = ConstatDesIndex { presents: Vec::new(), absents: Vec::new(), mal_poses: Vec::new(), non_lus: Vec::new() };
     for champ in EXPR_INDEX_FIELDS {
         match constat_au_catalogue(conn, champ) {
             ConstatAuCatalogue::Fidele => c.presents.push(*champ),
             ConstatAuCatalogue::Absent => c.absents.push(*champ),
             ConstatAuCatalogue::MalPose(raison) => c.mal_poses.push(raison),
+            ConstatAuCatalogue::NonLu(cause) => c.non_lus.push(cause),
         }
     }
     c
@@ -251,6 +376,11 @@ pub(crate) const MARQUEUR_INDEX_MANQUANTS: &str = "MANQUENT :";
 /// la forme de la phrase. Il est DISTINCT de `MARQUEUR_INDEX_MANQUANTS` et n'en contient pas le texte —
 /// sans quoi la lecture de l'un attraperait la liste de l'autre.
 pub(crate) const MARQUEUR_INDEX_MAL_POSES: &str = "POSÉS SUR AUTRE CHOSE :";
+
+/// `P10.20-b` (tranche entretien) — le marqueur qui introduit la liste des noms dont le catalogue n'a PAS PU être
+/// lu. Distinct des deux autres et n'en contient pas le texte ; son accusation précède les deux autres, pour que la
+/// liste de `MARQUEUR_INDEX_MANQUANTS` reste la fin de la ligne.
+pub(crate) const MARQUEUR_INDEX_NON_LUS: &str = "NON LUS AU CATALOGUE :";
 
 /// LE COMPTE RENDU DE LA PASSE — CONSTATÉ AU CATALOGUE, JAMAIS DÉDUIT DE LA DÉCLARATION (`P6.8-f`).
 ///
@@ -281,6 +411,9 @@ fn compte_rendu_de_la_passe(conn: &Connection) -> String {
         );
     }
     let mut accusations = Vec::new();
+    if !c.non_lus.is_empty() {
+        accusations.push(format!("{MARQUEUR_INDEX_NON_LUS} {}", c.non_lus.join(" ; ")));
+    }
     if !c.mal_poses.is_empty() {
         accusations.push(format!("{MARQUEUR_INDEX_MAL_POSES} {}", c.mal_poses.join(" ; ")));
     }
@@ -298,24 +431,43 @@ fn compte_rendu_de_la_passe(conn: &Connection) -> String {
 /// PLUME_EXPRINDEX=0 -> DROP tous (instantané, kill-switch dur). PLUME_EXPRINDEX=1 -> NE crée RIEN ici
 /// (un CREATE INDEX sur une table volumineuse bloquerait le bind) ; la création est faite EN FOND par
 /// reconcile_expr_indexes_background après le bind. Idempotent.
-fn reconcile_expr_indexes_fast(conn: &Connection, conf: &HashMap<String, String>) {
+///
+/// `P10.20-b` (tranche entretien) — AVANT : chaque `DROP` en `let _`, puis « {n} index DROPPÉS (kill-switch appliqué) »
+/// avec `n` = la longueur de la DÉCLARATION. DÉSORMAIS un `DROP` refusé est dit et compté, les suivants sont tentés, et
+/// la ligne de succès n'est imprimée que si aucun n'a été refusé.
+fn reconcile_expr_indexes_fast(conn: &Connection, conf: &HashMap<String, String>) -> CompteRenduDEntretien {
+    let mut cr = CompteRenduDEntretien::default();
     if cfg(conf, "PLUME_EXPRINDEX", "1") == "1" {
         // ON : on ne crée pas ici (anti-crashloop M1). Le background s'en charge. No-op synchrone.
     } else {
+        let mut refus = 0usize;
         for c in EXPR_INDEX_FIELDS {
-            let _ = conn.execute(&format!("DROP INDEX IF EXISTS idx_ev_f_{c}"), []);
+            if let Err(e) = conn.execute(&format!("DROP INDEX IF EXISTS idx_ev_f_{c}"), []) {
+                refus += 1;
+                cr.ecriture_refusee(format!("[reconcile] index expression OFF : DROP INDEX idx_ev_f_{c} REFUSÉ ({e}) — retry au prochain boot"));
+            }
         }
-        eprintln!("[reconcile] index expression OFF (PLUME_EXPRINDEX!=1) : {} index DROPPÉS (kill-switch appliqué ; full-scan json_extract)", EXPR_INDEX_FIELDS.len());
+        if refus > 0 {
+            cr.dire(format!(
+                "[reconcile] index expression OFF INCOMPLET (PLUME_EXPRINDEX!=1) : {refus} DROP refusé(s) sur {} — kill-switch NON appliqué en entier ; retry au prochain boot",
+                EXPR_INDEX_FIELDS.len()
+            ));
+        } else {
+            cr.dire(format!("[reconcile] index expression OFF (PLUME_EXPRINDEX!=1) : {} index DROPPÉS (kill-switch appliqué ; full-scan json_extract)", EXPR_INDEX_FIELDS.len()));
+        }
     }
+    cr
 }
 
 /// Point d'entrée IDEMPOTENT appelé à CHAQUE boot APRÈS migrate(), AVANT le bind.
 /// Ne contient QUE des opérations INSTANTANÉES (DDL pur, aucun scan de table) -> ne retarde pas le bind.
 /// Le travail LOURD (CREATE INDEX sur l'historique) est délégué à reconcile_expr_indexes_background,
 /// lancé en tâche de fond après le bind. C'est le vrai kill-switch : toggle env + redeploy => effet réel.
-pub(crate) fn reconcile_index_state(conn: &Connection, conf: &HashMap<String, String>) {
-    reconcile_fts_fields(conn, conf);
-    reconcile_expr_indexes_fast(conn, conf);
+/// Rend le compte rendu des deux étapes (`P10.20-b`), dans l'ordre : FTS-fields puis index d'expression.
+pub(crate) fn reconcile_index_state(conn: &Connection, conf: &HashMap<String, String>) -> CompteRenduDEntretien {
+    let mut cr = reconcile_fts_fields(conn, conf);
+    cr.verser(reconcile_expr_indexes_fast(conn, conf));
+    cr
 }
 
 /// CREATE des index expression (EXPR_INDEX_FIELDS) EN TÂCHE DE FOND (jamais au boot synchrone). Modèle
@@ -417,22 +569,46 @@ pub(crate) fn reconcile_expr_indexes_background(db: &Arc<Mutex<Connection>>) -> 
 /// sans LIRE ni DÉCHIFFRER `event` (cf. `drop_subsumed_index`). Idempotent — au démarrage suivant il
 /// n'y a plus rien à voir — et non fatal : un échec est NOMMÉ et retenté au boot suivant.
 pub(crate) fn drop_orphan_expr_field_indexes(conn: &Connection) -> Vec<String> {
+    retirer_les_index_de_champ_chaud_orphelins(conn).retires
+}
+
+/// `P10.20-b` (tranche entretien) — CE QUE LE RETRAIT DES ORPHELINS A FAIT, ET CE QU'IL A DIT.
+pub(crate) struct RetraitDesOrphelins {
+    /// Les noms effectivement retirés.
+    pub(crate) retires: Vec<String>,
+    /// Les lignes dites (retraits, refus, énumération non faite) et leurs comptes. Hors test, seule la sortie
+    /// d'erreur les porte : l'appelant de fond (`drop_orphan_expr_field_indexes`) ne rend que les noms retirés.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) compte_rendu: CompteRenduDEntretien,
+}
+
+/// `P10.20-b` (tranche entretien) — LES NOMS D'UNE FAMILLE D'INDEX, LUS AU CATALOGUE EN ENTIER OU PAS DU TOUT.
+/// AVANT : `rows.flatten()` laissait tomber une ligne en erreur (pas interrompu, ligne illisible) et rendait une
+/// liste PLUS COURTE prise pour complète — l'orphelin non lu restait sans un mot. DÉSORMAIS la première erreur
+/// (préparation, liaison ou pas) rend `Err`, et l'appelant ne retire RIEN ce démarrage, en le disant.
+fn noms_lus_au_catalogue<P: rusqlite::Params>(conn: &Connection, sql: &str, p: P) -> rusqlite::Result<Vec<String>> {
+    let mut st = conn.prepare(sql)?;
+    let rows = st.query_map(p, |r| r.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Le corps de `drop_orphan_expr_field_indexes`, qui rend aussi ce qu'il a dit (`P10.20-b`).
+pub(crate) fn retirer_les_index_de_champ_chaud_orphelins(conn: &Connection) -> RetraitDesOrphelins {
+    let mut cr = CompteRenduDEntretien::default();
     // `ESCAPE '\'` n'est pas décoratif : dans un motif LIKE, `_` signifie « un caractère quelconque »
     // — sans échappement le motif attraperait aussi des noms d'AUTRES familles.
     let motif = format!("{}%", PREFIXE_INDEX_CHAMP_CHAUD.replace('_', "\\_"));
-    let famille: Vec<String> = match conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE ?1 ESCAPE '\\' ORDER BY name")
-    {
-        Ok(mut st) => match st.query_map(params![motif], |r| r.get::<_, String>(0)) {
-            Ok(rows) => rows.flatten().collect(),
-            Err(e) => {
-                eprintln!("[reconcile-bg] énumération des index de champ chaud ÉCHEC ({e}) — retry au prochain boot");
-                return Vec::new();
-            }
-        },
+    let famille: Vec<String> = match noms_lus_au_catalogue(
+        conn,
+        "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE ?1 ESCAPE '\\' ORDER BY name",
+        params![motif],
+    ) {
+        Ok(noms) => noms,
         Err(e) => {
-            eprintln!("[reconcile-bg] énumération des index de champ chaud ÉCHEC ({e}) — retry au prochain boot");
-            return Vec::new();
+            cr.lecture_non_faite(format!(
+                "[reconcile-bg] énumération des index de champ chaud ÉCHEC ({e}) — aucun retrait ce boot, retry au prochain boot"
+            ));
+            return RetraitDesOrphelins { retires: Vec::new(), compte_rendu: cr };
         }
     };
     let mut retires = Vec::new();
@@ -453,17 +629,17 @@ pub(crate) fn drop_orphan_expr_field_indexes(conn: &Connection) -> Vec<String> {
         }
         match conn.execute(&format!("DROP INDEX IF EXISTS {nom}"), []) {
             Ok(_) => {
-                eprintln!(
+                cr.dire(format!(
                     "[reconcile-bg] {nom} DROPPÉ (index de champ chaud ORPHELIN : « {champ} » n'est \
                      plus dans la liste chaude, plus rien ne savait le nommer — ni le kill-switch, ni \
                      la purge voisine ; P6.8-e)"
-                );
+                ));
                 retires.push(nom);
             }
-            Err(e) => eprintln!("[reconcile-bg] DROP INDEX {nom} ÉCHEC ({e}) — retry au prochain boot"),
+            Err(e) => cr.ecriture_refusee(format!("[reconcile-bg] DROP INDEX {nom} ÉCHEC ({e}) — retry au prochain boot")),
         }
     }
-    retires
+    RetraitDesOrphelins { retires, compte_rendu: cr }
 }
 
 /// Crée l'index MANQUANT idx_event_category EN TÂCHE DE FOND (jamais synchrone au boot :
@@ -472,22 +648,35 @@ pub(crate) fn drop_orphan_expr_field_indexes(conn: &Connection) -> Vec<String> {
 /// sinon UN CREATE one-shot sous lock writer borné (one-time). IF NOT EXISTS -> idempotent (no-op au boot
 /// suivant). L'index sert le filtre courant `category=auth` (sinon full-scan déchiffré). Le re-ANALYZE
 /// (analyze_full_background, ré-armé par le bump v47) fait connaître l'index au planner.
-pub(crate) fn ensure_event_category_index_background(db: &Arc<Mutex<Connection>>) {
+///
+/// `P10.20-b` (tranche entretien) — la présence se lit en trois issues : non lue, le `CREATE` n'est PAS tenté ce
+/// démarrage et la ligne le dit (avant : `.is_ok()` la rangeait sous « absent ») ; un `CREATE` refusé est compté.
+pub(crate) fn ensure_event_category_index_background(db: &Arc<Mutex<Connection>>) -> CompteRenduDEntretien {
+    let mut cr = CompteRenduDEntretien::default();
     // court-circuit : déjà là -> on évite même de prendre le lock writer.
     {
         let conn = db.lock();
-        if conn
-            .query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_event_category'", [], |_| Ok(()))
-            .is_ok()
-        {
-            return;
+        match index_present_au_catalogue(&conn, "idx_event_category") {
+            Ok(true) => return cr,
+            Ok(false) => {}
+            Err(e) => {
+                cr.lecture_non_faite(phrase_presence_non_lue("idx_event_category", &e));
+                return cr;
+            }
         }
     }
     let conn = db.lock();
     match conn.execute("CREATE INDEX IF NOT EXISTS idx_event_category ON event(category)", []) {
-        Ok(_) => eprintln!("[reconcile-bg] idx_event_category créé en fond (filtre category=... ne full-scanne plus ; boot non bloqué)"),
-        Err(e) => eprintln!("[reconcile-bg] CREATE INDEX idx_event_category ÉCHEC ({e}) — retry au prochain boot"),
+        Ok(_) => cr.dire("[reconcile-bg] idx_event_category créé en fond (filtre category=... ne full-scanne plus ; boot non bloqué)".to_string()),
+        Err(e) => cr.ecriture_refusee(format!("[reconcile-bg] CREATE INDEX idx_event_category ÉCHEC ({e}) — retry au prochain boot")),
     }
+    cr
+}
+
+/// `P10.20-b` (tranche entretien) — LA PHRASE D'UNE PRÉSENCE D'INDEX NON LUE, écrite une fois pour les tâches qui
+/// CRÉENT : le geste n'est ni tenté ni tenu pour inutile, il est différé.
+fn phrase_presence_non_lue(nom: &str, e: &rusqlite::Error) -> String {
+    format!("[reconcile-bg] présence de {nom} NON LUE au catalogue ({e}) — CREATE non tenté ce boot, retry au prochain boot")
 }
 
 /// v110 (ALLÈGEMENT INDEX HOT — P5) — DROP EN TÂCHE DE FOND des deux index REDONDANTS de `event`, sur la base
@@ -506,12 +695,14 @@ pub(crate) fn ensure_event_category_index_background(db: &Arc<Mutex<Connection>>
 ///      est CONFIRMÉ présent (jamais avant que son remplaçant existe -> ZÉRO fenêtre de scan ; si src_ts pas
 ///      encore créé par ensure_event_src_ts_index_background, on laisse source-seul et on retentera au boot
 ///      suivant). idx_event_src_srcip(source, src_ip) reste un filet supplémentaire de toute façon.
-pub(crate) fn drop_redundant_event_indexes_background(db: &Arc<Mutex<Connection>>) {
+pub(crate) fn drop_redundant_event_indexes_background(db: &Arc<Mutex<Connection>>) -> CompteRenduDEntretien {
     let conn = db.lock();
+    let mut cr = CompteRenduDEntretien::default();
     // 1) severity-seul : subsumé INCONDITIONNELLEMENT par le composite (severity, src_ip) [v31].
-    drop_subsumed_index(&conn, "idx_event_sev", Subsumant::ParConstruction("idx_event_sev_srcip(severity, src_ip) [v31]"), "P5 v110");
+    drop_subsumed_index(&conn, "idx_event_sev", Subsumant::ParConstruction("idx_event_sev_srcip(severity, src_ip) [v31]"), "P5 v110", &mut cr);
     // 2) source-seul : droppé SEULEMENT si le remplaçant (source, ts) existe -> zéro fenêtre de scan.
-    drop_subsumed_index(&conn, "idx_event_src", Subsumant::Explicite("idx_event_src_ts"), "P5 v110");
+    drop_subsumed_index(&conn, "idx_event_src", Subsumant::Explicite("idx_event_src_ts"), "P5 v110", &mut cr);
+    cr
 }
 
 /// CE QUI SUBSUME un index redondant — et, par là, CE QU'IL FAUT VÉRIFIER AVANT DE LE DROPPER. La
@@ -547,30 +738,45 @@ enum Subsumant<'a> {
 ///
 /// Idempotent : court-circuit si l'index n'est plus là (aucune prise du writer inutile), `IF EXISTS` sinon.
 /// Un échec n'est jamais fatal — il est NOMMÉ et retenté au boot suivant.
-fn drop_subsumed_index(conn: &Connection, redondant: &str, subsumant: Subsumant<'_>, origine: &str) {
-    let present = |name: &str| -> bool {
-        conn.query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1", params![name], |_| Ok(()))
-            .is_ok()
-    };
-    if !present(redondant) {
-        return; // déjà droppé (ou base neuve : plus aucune migration ne le crée) -> rien à faire
+///
+/// `P10.20-b` (tranche entretien) — les deux présences se lisent en trois issues. AVANT, `.is_ok()` : une lecture
+/// ratée du redondant valait « déjà droppé » (retour muet), une lecture ratée du subsumant valait « pas encore
+/// présent » (la ligne affirmait une absence qu'elle n'avait pas lue). DÉSORMAIS une présence non lue CONSERVE le
+/// redondant ce démarrage (zéro fenêtre de scan tenue) et le dit sous sa propre phrase ; un `DROP` refusé est compté.
+fn drop_subsumed_index(conn: &Connection, redondant: &str, subsumant: Subsumant<'_>, origine: &str, cr: &mut CompteRenduDEntretien) {
+    match index_present_au_catalogue(conn, redondant) {
+        Ok(true) => {}
+        Ok(false) => return, // déjà droppé (ou base neuve : plus aucune migration ne le crée) -> rien à faire
+        Err(e) => {
+            cr.lecture_non_faite(format!(
+                "[reconcile-bg] présence de {redondant} NON LUE au catalogue ({e}) — DROP non tenté ce boot, retry au prochain boot"
+            ));
+            return;
+        }
     }
     let quoi = match subsumant {
         Subsumant::ParConstruction(desc) => desc,
-        Subsumant::Explicite(nom) => {
-            if !present(nom) {
-                eprintln!(
+        Subsumant::Explicite(nom) => match index_present_au_catalogue(conn, nom) {
+            Ok(true) => nom,
+            Ok(false) => {
+                cr.dire(format!(
                     "[reconcile-bg] {redondant} CONSERVÉ ce boot : son subsumant {nom} n'est pas encore \
                      présent (drop différé -> zéro fenêtre de scan ; retry au prochain boot)"
-                );
+                ));
                 return;
             }
-            nom
-        }
+            Err(e) => {
+                cr.lecture_non_faite(format!(
+                    "[reconcile-bg] {redondant} CONSERVÉ ce boot : la présence de son subsumant {nom} n'a PAS pu être \
+                     lue ({e}) (drop différé -> zéro fenêtre de scan ; retry au prochain boot)"
+                ));
+                return;
+            }
+        },
     };
     match conn.execute(&format!("DROP INDEX IF EXISTS {redondant}"), []) {
-        Ok(_) => eprintln!("[reconcile-bg] {redondant} DROPPÉ (subsumé par {quoi} ; seek préservé sur la colonne de tête ; {origine})"),
-        Err(e) => eprintln!("[reconcile-bg] DROP INDEX {redondant} ÉCHEC ({e}) — retry au prochain boot"),
+        Ok(_) => cr.dire(format!("[reconcile-bg] {redondant} DROPPÉ (subsumé par {quoi} ; seek préservé sur la colonne de tête ; {origine})")),
+        Err(e) => cr.ecriture_refusee(format!("[reconcile-bg] DROP INDEX {redondant} ÉCHEC ({e}) — retry au prochain boot")),
     }
 }
 
@@ -615,8 +821,9 @@ fn drop_subsumed_index(conn: &Connection, redondant: &str, subsumant: Subsumant<
 /// `idx_incident_active`, `idx_incident_notmerged`). Un index partiel n'est JAMAIS subsumé par un index plein
 /// de mêmes colonnes de tête — il est plus petit et sert un prédicat que l'autre ne porte pas. La garde dérivée
 /// (`tests/index_redondance.rs`) les EXCLUT par la colonne `partial` de `PRAGMA index_list`, pour la même raison.
-pub(crate) fn drop_prefix_subsumed_indexes_background(db: &Arc<Mutex<Connection>>) {
+pub(crate) fn drop_prefix_subsumed_indexes_background(db: &Arc<Mutex<Connection>>) -> CompteRenduDEntretien {
     let conn = db.lock();
+    let mut cr = CompteRenduDEntretien::default();
     for (redondant, contrainte) in [
         ("idx_dashboard_snapshot_tok", "l'auto-index de UNIQUE(token) de dashboard_snapshot"),
         ("idx_baseline_obs", "l'auto-index de PRIMARY KEY(baseline_id, entity, bucket) de ueba_baseline_obs"),
@@ -627,10 +834,11 @@ pub(crate) fn drop_prefix_subsumed_indexes_background(db: &Arc<Mutex<Connection>
         ("idx_event_rollup", "l'auto-index de PRIMARY KEY(bucket, source, severity, action, src_ip, host, env_id) de event_rollup"),
         ("idx_net_ban_ip", "l'auto-index de PRIMARY KEY(ip, env_id) de net_ban"),
     ] {
-        drop_subsumed_index(&conn, redondant, Subsumant::ParConstruction(contrainte), "P10.2-d");
+        drop_subsumed_index(&conn, redondant, Subsumant::ParConstruction(contrainte), "P10.2-d", &mut cr);
     }
     // Le SEUL dont le subsumant est un index EXPLICITE (v72) et non un auto-index -> garde obligatoire.
-    drop_subsumed_index(&conn, "idx_alert_mitre", Subsumant::Explicite("idx_alert_mitre_ts"), "P10.2-d");
+    drop_subsumed_index(&conn, "idx_alert_mitre", Subsumant::Explicite("idx_alert_mitre_ts"), "P10.2-d", &mut cr);
+    cr
 }
 
 /// P6.8-b — DROP EN TÂCHE DE FOND des index `idx_ev_auto_*` ORPHELINS laissés par le mécanisme
@@ -672,21 +880,23 @@ pub(crate) fn drop_prefix_subsumed_indexes_background(db: &Arc<Mutex<Connection>
 /// LÀ. `ESCAPE '\'` n'est pas décoratif : dans un motif LIKE, `_` signifie « un caractère quelconque » —
 /// sans échappement le motif attraperait aussi `idxXevXautoX…`, donc des index d'AUTRES familles.
 /// Idempotent (au boot suivant il n'y a plus rien à voir), non fatal, retenté à chaque boot.
-pub(crate) fn drop_orphan_auto_field_indexes_background(db: &Arc<Mutex<Connection>>) {
+///
+/// `P10.20-b` (tranche entretien) — l'énumération se lit en entier ou pas du tout (`noms_lus_au_catalogue`) : avant,
+/// `rows.flatten()` laissait tomber une ligne en erreur et l'orphelin non lu restait sans un mot.
+pub(crate) fn drop_orphan_auto_field_indexes_background(db: &Arc<Mutex<Connection>>) -> CompteRenduDEntretien {
     let conn = db.lock();
-    let orphelins: Vec<String> = match conn.prepare(
+    let mut cr = CompteRenduDEntretien::default();
+    let orphelins: Vec<String> = match noms_lus_au_catalogue(
+        &conn,
         "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx\\_ev\\_auto\\_%' ESCAPE '\\'",
+        [],
     ) {
-        Ok(mut st) => match st.query_map([], |r| r.get::<_, String>(0)) {
-            Ok(rows) => rows.flatten().collect(),
-            Err(e) => {
-                eprintln!("[reconcile-bg] énumération des idx_ev_auto_* ÉCHEC ({e}) — retry au prochain boot");
-                return;
-            }
-        },
+        Ok(noms) => noms,
         Err(e) => {
-            eprintln!("[reconcile-bg] énumération des idx_ev_auto_* ÉCHEC ({e}) — retry au prochain boot");
-            return;
+            cr.lecture_non_faite(format!(
+                "[reconcile-bg] énumération des idx_ev_auto_* ÉCHEC ({e}) — aucun retrait ce boot, retry au prochain boot"
+            ));
+            return cr;
         }
     };
     for nom in &orphelins {
@@ -696,13 +906,14 @@ pub(crate) fn drop_orphan_auto_field_indexes_background(db: &Arc<Mutex<Connectio
             continue;
         }
         match conn.execute(&format!("DROP INDEX IF EXISTS {nom}"), []) {
-            Ok(_) => eprintln!(
+            Ok(_) => cr.dire(format!(
                 "[reconcile-bg] {nom} DROPPÉ (orphelin du mécanisme d'auto-index adaptatif retiré ; plus \
                  aucun code ne le maintenait ni ne pouvait le retirer ; P6.8-b)"
-            ),
-            Err(e) => eprintln!("[reconcile-bg] DROP INDEX {nom} ÉCHEC ({e}) — retry au prochain boot"),
+            )),
+            Err(e) => cr.ecriture_refusee(format!("[reconcile-bg] DROP INDEX {nom} ÉCHEC ({e}) — retry au prochain boot")),
         }
     }
+    cr
 }
 
 /// v108 (PERF recherche raw haut-volume) — crée l'index COMPOSITE MANQUANT idx_event_src_ts(source, ts) EN
@@ -717,22 +928,28 @@ pub(crate) fn drop_orphan_auto_field_indexes_background(db: &Arc<Mutex<Connectio
 /// le trou. Modèle EXACT de ensure_event_source_index_background : court-circuit si présent, sinon UN CREATE
 /// one-shot IF NOT EXISTS (idempotent). Le re-ANALYZE (bump v108) fait connaître l'index au planner. `source` =
 /// TEXT faible cardinalité (~35) -> btree petit, disque, RAM négligeable (budget 2 Go). PURE optimisation.
-pub(crate) fn ensure_event_src_ts_index_background(db: &Arc<Mutex<Connection>>) {
+///
+/// `P10.20-b` (tranche entretien) — présence en trois issues (non lue : `CREATE` différé et dit), refus compté.
+pub(crate) fn ensure_event_src_ts_index_background(db: &Arc<Mutex<Connection>>) -> CompteRenduDEntretien {
+    let mut cr = CompteRenduDEntretien::default();
     // court-circuit : déjà là (base neuve via schema.sql, ou déjà créé) -> on évite même de prendre le lock writer.
     {
         let conn = db.lock();
-        if conn
-            .query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_event_src_ts'", [], |_| Ok(()))
-            .is_ok()
-        {
-            return;
+        match index_present_au_catalogue(&conn, "idx_event_src_ts") {
+            Ok(true) => return cr,
+            Ok(false) => {}
+            Err(e) => {
+                cr.lecture_non_faite(phrase_presence_non_lue("idx_event_src_ts", &e));
+                return cr;
+            }
         }
     }
     let conn = db.lock();
     match conn.execute("CREATE INDEX IF NOT EXISTS idx_event_src_ts ON event(source, ts)", []) {
-        Ok(_) => eprintln!("[reconcile-bg] idx_event_src_ts(source,ts) créé en fond (recherche raw source=X sur fenêtre longue : COUNT pagination index-only borné + page range-prune ts ; boot non bloqué, v108)"),
-        Err(e) => eprintln!("[reconcile-bg] CREATE INDEX idx_event_src_ts ÉCHEC ({e}) — retry au prochain boot"),
+        Ok(_) => cr.dire(format!("[reconcile-bg] idx_event_src_ts(source,ts) créé en fond (recherche raw source=X sur fenêtre longue : COUNT pagination index-only borné + page range-prune ts ; boot non bloqué, v108)")),
+        Err(e) => cr.ecriture_refusee(format!("[reconcile-bg] CREATE INDEX idx_event_src_ts ÉCHEC ({e}) — retry au prochain boot")),
     }
+    cr
 }
 
 /// P3.7-a (PERF INGEST — les sondes dead-man's-switch rendaient l'ingestion quadratique) — crée EN TÂCHE
@@ -767,25 +984,31 @@ pub(crate) fn ensure_event_src_ts_index_background(db: &Arc<Mutex<Connection>>) 
 /// double). Le re-ANALYZE (bump v114) fait connaître l'index au planner. La DDL n'est PAS réécrite ici :
 /// elle vient de `sondes::DDL_IDX_BATTEMENT_SANTE`, à côté des sondes qui en dépendent (zéro dérive).
 /// ADDITIF, mode 0 byte-identique : l'index ne change AUCUNE valeur rendue, seulement le chemin d'accès.
-pub(crate) fn ensure_event_health_beat_index_background(db: &Arc<Mutex<Connection>>) {
+///
+/// `P10.20-b` (tranche entretien) — présence en trois issues (non lue : `CREATE` différé et dit), refus compté.
+pub(crate) fn ensure_event_health_beat_index_background(db: &Arc<Mutex<Connection>>) -> CompteRenduDEntretien {
+    let mut cr = CompteRenduDEntretien::default();
     // court-circuit : déjà là -> on évite même de prendre le lock writer.
     {
         let conn = db.lock();
-        if conn
-            .query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1", params![IDX_BATTEMENT_SANTE], |_| Ok(()))
-            .is_ok()
-        {
-            return;
+        match index_present_au_catalogue(&conn, IDX_BATTEMENT_SANTE) {
+            Ok(true) => return cr,
+            Ok(false) => {}
+            Err(e) => {
+                cr.lecture_non_faite(phrase_presence_non_lue(IDX_BATTEMENT_SANTE, &e));
+                return cr;
+            }
         }
     }
     let conn = db.lock();
     match conn.execute(DDL_IDX_BATTEMENT_SANTE, []) {
-        Ok(_) => eprintln!(
+        Ok(_) => cr.dire(format!(
             "[reconcile-bg] {IDX_BATTEMENT_SANTE}(source,ts) WHERE category='health' créé en fond \
              (les 8 sondes dead-man's-switch cessent de remonter la plage de leur source sous le verrou d'écriture ; P3.7-a)"
-        ),
-        Err(e) => eprintln!("[reconcile-bg] CREATE INDEX {IDX_BATTEMENT_SANTE} ÉCHEC ({e}) — retry au prochain boot"),
+        )),
+        Err(e) => cr.ecriture_refusee(format!("[reconcile-bg] CREATE INDEX {IDX_BATTEMENT_SANTE} ÉCHEC ({e}) — retry au prochain boot")),
     }
+    cr
 }
 
 /// ANTI FULL-SCAN (rollup_hosts sur metric/snapshot) — crée EN TÂCHE DE FOND les index ts-leading
@@ -798,7 +1021,11 @@ pub(crate) fn ensure_event_health_beat_index_background(db: &Arc<Mutex<Connectio
 /// lignes metric chiffrées bloquerait le bind -> liveness k8s -> CrashLoopBackOff (cf. idx_event_category). One-shot,
 /// idempotent (IF NOT EXISTS + court-circuit), 1 index à la fois, lock writer pris/relâché PAR index (l'ingest
 /// respire entre deux). PURE optimisation (aucune sémantique changée) — « optimiser, pas augmenter les ressources ».
-pub(crate) fn ensure_host_rollup_scan_indexes_background(db: &Arc<Mutex<Connection>>) {
+///
+/// `P10.20-b` (tranche entretien) — présence en trois issues PAR INDEX : une présence non lue diffère CET index (dit)
+/// et la boucle passe au suivant ; un refus est compté.
+pub(crate) fn ensure_host_rollup_scan_indexes_background(db: &Arc<Mutex<Connection>>) -> CompteRenduDEntretien {
+    let mut cr = CompteRenduDEntretien::default();
     for (name, ddl) in [
         ("idx_metric_ts",   "CREATE INDEX IF NOT EXISTS idx_metric_ts ON metric(ts)"),
         ("idx_snapshot_ts", "CREATE INDEX IF NOT EXISTS idx_snapshot_ts ON snapshot(ts)"),
@@ -806,20 +1033,26 @@ pub(crate) fn ensure_host_rollup_scan_indexes_background(db: &Arc<Mutex<Connecti
         // court-circuit : déjà là -> on évite même de prendre le lock writer.
         {
             let conn = db.lock();
-            if conn.query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1", params![name], |_| Ok(())).is_ok() {
-                continue;
+            match index_present_au_catalogue(&conn, name) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => {
+                    cr.lecture_non_faite(phrase_presence_non_lue(name, &e));
+                    continue;
+                }
             }
         }
         {
             let conn = db.lock();
             match conn.execute(ddl, []) {
-                Ok(_) => eprintln!("[reconcile-bg] {name} créé en fond (rollup_hosts range-prune metric/snapshot au lieu de full-scan ; MAX(ts) freshness = max indexé ; boot non bloqué)"),
-                Err(e) => eprintln!("[reconcile-bg] CREATE INDEX {name} ÉCHEC ({e}) — retry au prochain boot"),
+                Ok(_) => cr.dire(format!("[reconcile-bg] {name} créé en fond (rollup_hosts range-prune metric/snapshot au lieu de full-scan ; MAX(ts) freshness = max indexé ; boot non bloqué)")),
+                Err(e) => cr.ecriture_refusee(format!("[reconcile-bg] CREATE INDEX {name} ÉCHEC ({e}) — retry au prochain boot")),
             }
         }
         // respiration entre deux index : laisse l'ingest et les lectures passer (anti-famine writer).
         std::thread::sleep(Duration::from_millis(200));
     }
+    cr
 }
 
 /// Ajoute (idempotent) les panneaux « Sévérité >=3 par src_ip » et « Volume par host » au dashboard
@@ -928,9 +1161,12 @@ pub(crate) fn la_passe_d_analyse_complete_est_a_refaire(
 /// que compter balaie — et sous SQLCipher déchiffre — la table entière à CHAQUE démarrage, quand
 /// l'identifiant monotone se lit en une descente d'arbre et borne par le haut le nombre de lignes
 /// jamais insérées.
-pub(crate) fn taille_de_la_table_des_evenements(conn: &Connection) -> i64 {
+///
+/// `P10.20-b` (tranche entretien) — rend `Result` : `Ok(0)` est une table VIDE (fait établi), `Err` une lecture
+/// ratée. Avant, `unwrap_or(0)` rendait la seconde comme la première, et la passe écrivait un jalon `<version>@0`
+/// mesuré sur rien (ou sautait une passe due sans un mot).
+pub(crate) fn taille_de_la_table_des_evenements(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COALESCE(MAX(id),0) FROM event", [], |r| r.get(0))
-        .unwrap_or(0)
 }
 
 /// ANALYZE COMPLET (analysis_limit=0) EN TÂCHE DE FOND : déchiffre toute la table `event`
@@ -941,25 +1177,66 @@ pub(crate) fn taille_de_la_table_des_evenements(conn: &Connection) -> i64 {
 /// seuil et grandi du facteur depuis la passe (`P7.19-h` : une passe prise sur une base VIDE à
 /// l'installation ne fige plus ses zéros pour toute la vie du schéma). On prend le lock writer (ANALYZE
 /// écrit sqlite_stat1), mais brièvement comparé au bind, et hors du chemin de démarrage.
-pub(crate) fn analyze_full_background(db: &Arc<Mutex<Connection>>) {
+///
+/// `P10.20-b` (tranche entretien) — AVANT : version lue en `unwrap_or_else("0")`, jalon en `.ok()`, taille en
+/// `unwrap_or(0)`, `ANALYZE` et jalon en `let _`. Une version non lue valait « 0 » (passe refaite, jalon `0@N` écrit,
+/// donc refaite encore au démarrage suivant) ; un jalon non lu valait « jamais analysée » (un `ANALYZE` COMPLET, minutes
+/// de verrou d'écriture, lancé sur une lecture ratée) ; une taille non lue valait une table vide (jalon `@0` écrit sur
+/// rien, ou passe due sautée) ; un `ANALYZE` refusé posait quand même son jalon, et la ligne disait « terminé ».
+/// DÉSORMAIS : une lecture ratée (ou une version ABSENTE) ne lance ni ne saute la passe en silence — rien n'est fait,
+/// rien n'est écrit, la ligne le dit, le démarrage suivant reprend ; un `ANALYZE` refusé n'écrit pas de jalon ; un jalon
+/// refusé (ou à zéro ligne) est dit, jamais suivi de « terminé ».
+pub(crate) fn analyze_full_background(db: &Arc<Mutex<Connection>>) -> CompteRenduDEntretien {
+    use rusqlite::OptionalExtension as _;
     let conn = db.lock();
-    let ver: String = conn
+    let mut cr = CompteRenduDEntretien::default();
+    let ver: String = match conn
         .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0))
-        .unwrap_or_else(|_| "0".into());
-    let done: Option<String> = conn
+        .optional()
+    {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            cr.dire("[analyze] ANALYZE complet NON tenté : la version de schéma est ABSENTE de meta — aucun jalon écrit, retry au prochain boot".to_string());
+            return cr;
+        }
+        Err(e) => {
+            cr.lecture_non_faite(format!("[analyze] ANALYZE complet NON tenté : la version de schéma n'a pas pu être lue ({e}) — aucun jalon écrit, retry au prochain boot"));
+            return cr;
+        }
+    };
+    let done: Option<String> = match conn
         .query_row("SELECT value FROM meta WHERE key='analyze_full_done'", [], |r| r.get(0))
-        .ok();
-    let lignes = taille_de_la_table_des_evenements(&conn);
+        .optional()
+    {
+        Ok(d) => d,
+        Err(e) => {
+            cr.lecture_non_faite(format!("[analyze] ANALYZE complet NON tenté : le jalon analyze_full_done n'a pas pu être lu ({e}) — ni refait ni tenu pour fait, retry au prochain boot"));
+            return cr;
+        }
+    };
+    let lignes = match taille_de_la_table_des_evenements(&conn) {
+        Ok(n) => n,
+        Err(e) => {
+            cr.lecture_non_faite(format!("[analyze] ANALYZE complet NON tenté : la taille de la table event n'a pas pu être lue ({e}) — aucun jalon écrit, retry au prochain boot"));
+            return cr;
+        }
+    };
     if !la_passe_d_analyse_complete_est_a_refaire(done.as_deref(), &ver, lignes) {
-        return; // déjà fait pour ce schéma, sur une table de taille comparable
+        return cr; // déjà fait pour ce schéma, sur une table de taille comparable
     }
-    let _ = conn.execute_batch("PRAGMA analysis_limit=0; ANALYZE;");
+    if let Err(e) = conn.execute_batch("PRAGMA analysis_limit=0; ANALYZE;") {
+        cr.ecriture_refusee(format!("[analyze] ANALYZE complet ÉCHEC ({e}) — jalon NON écrit, la passe sera retentée au prochain boot"));
+        return cr;
+    }
     let jalon = jalon_d_analyse_complete(&ver, lignes);
-    let _ = conn.execute(
-        "INSERT OR REPLACE INTO meta(key,value) VALUES('analyze_full_done', ?1)",
-        params![jalon],
-    );
-    eprintln!("[analyze] ANALYZE complet terminé (tâche de fond, jalon {jalon}) -> stats exactes pour les index composés");
+    let ecrit = conn
+        .execute("INSERT OR REPLACE INTO meta(key,value) VALUES('analyze_full_done', ?1)", params![jalon])
+        .and_then(une_ligne_ecrite);
+    match ecrit {
+        Ok(()) => cr.dire(format!("[analyze] ANALYZE complet terminé (tâche de fond, jalon {jalon}) -> stats exactes pour les index composés")),
+        Err(e) => cr.ecriture_refusee(format!("[analyze] ANALYZE complet fait, mais son jalon {jalon} n'a PAS été écrit ({e}) — la passe sera refaite au prochain boot")),
+    }
+    cr
 }
 
 /// PHASE 1 — BACKFILL EN FOND de `event_fields_fts` pour les 1,24M lignes existantes. Modèle
@@ -971,10 +1248,22 @@ pub(crate) fn analyze_full_background(db: &Arc<Mutex<Connection>>) {
 /// au lot suivant (le watermark survit). Borné par lot sous lock writer COURT (modèle ingest batch)
 /// + respiration entre lots (ne famine ni l'ingest ni les lectures). RAM bornée (INSERT...SELECT
 /// streame, pas d'accumulation -> respecte <100Mo). Gardé final par meta 'fts_fields_backfill_done'.
-pub(crate) fn fts_backfill_background(db: &Arc<Mutex<Connection>>) {
+///
+/// `P10.20-b` (tranche entretien) — AVANT : présence de la vtable en `.is_ok()`, jalon et watermark en `.ok()`,
+/// `MAX(id)+1` en `unwrap_or(0)`, watermark et jalon final écrits en `let _`. Une lecture ratée du jalon ou du
+/// watermark relançait le backfill ENTIER sans un mot ; un `MAX(id)` non lu (ou un watermark non entier, que
+/// `CAST(… AS INTEGER)` rendait 0) donnait `lo = 0` : la boucle ne tournait pas, le jalon `done` était ÉCRIT et la
+/// ligne disait « TERMINÉ » — un backfill déclaré fait sans avoir rien indexé ; un watermark ou un jalon refusé était
+/// suivi de « TERMINÉ ». DÉSORMAIS : chaque lecture a trois issues (absent, lu, non lu ; une valeur illisible est non
+/// lue, jamais zéro) ; une lecture ratée arrête la tâche sans rien écrire et le dit ; un watermark refusé arrête la
+/// tâche (reprise au dernier watermark écrit : les lots déjà indexés ne sont pas doublés, `NOT EXISTS`) ; un jalon
+/// final refusé est dit, et « TERMINÉ » n'est imprimé que s'il est écrit.
+pub(crate) fn fts_backfill_background(db: &Arc<Mutex<Connection>>) -> CompteRenduDEntretien {
+    use rusqlite::OptionalExtension as _;
+    let mut cr = CompteRenduDEntretien::default();
     let conf = load_config();
     if cfg(&conf, "PLUME_FTS_FIELDS", "0") != "1" || cfg(&conf, "PLUME_FTS_FIELDS_BACKFILL", "1") != "1" {
-        return; // Phase 1 OFF ou backfill historique désactivé -> rien (les triggers indexent le neuf).
+        return cr; // Phase 1 OFF ou backfill historique désactivé -> rien (les triggers indexent le neuf).
     }
     let batch: i64 = cfg(&conf, "PLUME_FTS_BACKFILL_BATCH", "5000").parse().unwrap_or(5000).clamp(100, 100_000);
     let sleep_ms: u64 = cfg(&conf, "PLUME_FTS_BACKFILL_SLEEP_MS", "200").parse().unwrap_or(200);
@@ -984,36 +1273,64 @@ pub(crate) fn fts_backfill_background(db: &Arc<Mutex<Connection>>) {
     {
         let conn = db.lock();
         // L'infra doit exister (PLUME_FTS_FIELDS=1 a créé la vtable en v40) ; sinon on s'abstient.
-        let has_vtable: bool = conn
-            .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name='event_fields_fts'", [], |_| Ok(()))
-            .is_ok();
-        if !has_vtable {
-            return;
+        match objet_present_au_catalogue(&conn, "table", "event_fields_fts") {
+            Ok(true) => {}
+            Ok(false) => return cr,
+            Err(e) => {
+                cr.lecture_non_faite(format!("[fts-backfill] backfill NON tenté : la présence de event_fields_fts n'a pas pu être lue ({e}) — retry au prochain boot"));
+                return cr;
+            }
         }
-        let done: Option<String> = conn
+        let done: Option<String> = match conn
             .query_row("SELECT value FROM meta WHERE key='fts_fields_backfill_done'", [], |r| r.get(0))
-            .ok();
+            .optional()
+        {
+            Ok(d) => d,
+            Err(e) => {
+                cr.lecture_non_faite(format!("[fts-backfill] backfill NON tenté : le jalon fts_fields_backfill_done n'a pas pu être lu ({e}) — ni refait ni tenu pour fait, retry au prochain boot"));
+                return cr;
+            }
+        };
         if done.as_deref() == Some(done_tag) {
-            return;
+            return cr;
         }
     }
 
     // lo = watermark (plus petit id NON encore traité). Init = MAX(id)+1 (tout l'historique restant).
     let mut lo: i64 = {
         let conn = db.lock();
-        let wm: Option<i64> = conn
-            .query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key='fts_fields_backfill_hi'", [], |r| r.get(0))
-            .ok();
+        let wm: Option<rusqlite::types::Value> = match conn
+            .query_row("SELECT value FROM meta WHERE key='fts_fields_backfill_hi'", [], |r| r.get(0))
+            .optional()
+        {
+            Ok(v) => v,
+            Err(e) => {
+                cr.lecture_non_faite(format!("[fts-backfill] backfill NON tenté : le watermark fts_fields_backfill_hi n'a pas pu être lu ({e}) — retry au prochain boot"));
+                return cr;
+            }
+        };
         match wm {
-            Some(v) => v,
-            None => conn.query_row("SELECT COALESCE(MAX(id),0)+1 FROM event", [], |r| r.get(0)).unwrap_or(0),
+            Some(v) => match watermark_entier(&v) {
+                Ok(n) => n,
+                Err(genre) => {
+                    cr.lecture_non_faite(format!("[fts-backfill] backfill NON tenté : le watermark fts_fields_backfill_hi est illisible ({genre}) — ni repris à zéro ni recommencé, retry au prochain boot"));
+                    return cr;
+                }
+            },
+            None => match conn.query_row("SELECT COALESCE(MAX(id),0)+1 FROM event", [], |r| r.get(0)) {
+                Ok(n) => n,
+                Err(e) => {
+                    cr.lecture_non_faite(format!("[fts-backfill] backfill NON tenté : MAX(id) de event n'a pas pu être lu ({e}) — retry au prochain boot"));
+                    return cr;
+                }
+            },
         }
     };
 
-    eprintln!("[fts-backfill] démarrage backfill event_fields_fts (watermark id<{lo}, lot {batch})");
+    cr.dire(format!("[fts-backfill] démarrage backfill event_fields_fts (watermark id<{lo}, lot {batch})"));
     while lo > 0 {
         let next = (lo - batch).max(0);
-        let inserted: i64 = {
+        {
             let conn = db.lock();
             // Transaction bornée (modèle ingest batch). INSERT...SELECT streame (RAM bornée).
             // NOT EXISTS rend chaque lot ré-insérable sans doublon (idempotent même si le watermark
@@ -1028,36 +1345,73 @@ pub(crate) fn fts_backfill_background(db: &Arc<Mutex<Connection>>) {
                     AND NOT EXISTS (SELECT 1 FROM event_fields_fts WHERE rowid = e.id)",
                 params![next, lo],
             );
-            match r {
-                Ok(n) => n as i64,
-                Err(e) => {
-                    eprintln!("[fts-backfill] lot [{next},{lo}) ÉCHEC ({e}) — réessai au prochain boot");
-                    return; // watermark inchangé -> reprise au même endroit au prochain démarrage
-                }
+            if let Err(e) = r {
+                cr.ecriture_refusee(format!("[fts-backfill] lot [{next},{lo}) ÉCHEC ({e}) — réessai au prochain boot"));
+                return cr; // watermark inchangé -> reprise au même endroit au prochain démarrage
             }
-        };
+        }
         // avance + persiste le watermark APRÈS le COMMIT du lot (reprise exacte). Lock writer relâché.
-        lo = next;
         {
             let conn = db.lock();
-            let _ = conn.execute(
-                "INSERT OR REPLACE INTO meta(key,value) VALUES('fts_fields_backfill_hi', ?1)",
-                params![lo.to_string()],
-            );
+            let ecrit = conn
+                .execute(
+                    "INSERT OR REPLACE INTO meta(key,value) VALUES('fts_fields_backfill_hi', ?1)",
+                    params![next.to_string()],
+                )
+                .and_then(une_ligne_ecrite);
+            if let Err(e) = ecrit {
+                cr.ecriture_refusee(format!("[fts-backfill] lot [{next},{lo}) indexé, mais le watermark id<{next} n'a PAS été écrit ({e}) — backfill arrêté, reprise au dernier watermark écrit au prochain boot (sans doublon : NOT EXISTS)"));
+                return cr;
+            }
         }
-        let _ = inserted;
+        lo = next;
         if lo > 0 {
             std::thread::sleep(Duration::from_millis(sleep_ms)); // respiration : laisse ingest + lectures passer
         }
     }
     {
         let conn = db.lock();
-        let _ = conn.execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES('fts_fields_backfill_done', ?1)",
-            params![done_tag],
-        );
+        let ecrit = conn
+            .execute(
+                "INSERT OR REPLACE INTO meta(key,value) VALUES('fts_fields_backfill_done', ?1)",
+                params![done_tag],
+            )
+            .and_then(une_ligne_ecrite);
+        if let Err(e) = ecrit {
+            cr.ecriture_refusee(format!("[fts-backfill] historique indexé, mais le jalon fts_fields_backfill_done n'a PAS été écrit ({e}) — le backfill se rejouera au prochain boot (sans doublon : NOT EXISTS)"));
+            return cr;
+        }
     }
-    eprintln!("[fts-backfill] backfill event_fields_fts TERMINÉ (historique indexé)");
+    cr.dire("[fts-backfill] backfill event_fields_fts TERMINÉ (historique indexé)".to_string());
+    cr
+}
+
+/// `P10.20-b` (tranche entretien) — LE WATERMARK DU BACKFILL, LU STRICTEMENT : un entier SQLite POSITIF OU NUL, ou un
+/// texte qui est EXACTEMENT l'écriture décimale d'un tel entier (la forme qu'écrit `fts_backfill_background` :
+/// `next.to_string()`, jamais négatif puisque `next = (lo - batch).max(0)`). « Exactement » se juge par l'ALLER-RETOUR :
+/// le texte doit être égal à l'écriture de l'entier lu, ce qui refuse les espaces, le signe `+`, les zéros de tête et
+/// les formes réelles (`7.0`). Tout le reste est ILLISIBLE, et l'erreur rend le GENRE de la valeur pour la ligne de
+/// journal (jamais la valeur elle-même) — jamais 0, que `CAST(… AS INTEGER)` rendait et qui faisait déclarer le backfill
+/// terminé.
+///
+/// UN WATERMARK NÉGATIF EST ILLISIBLE, ET C'EST LA MÊME FAUTE : `lo <= 0`, la boucle `while lo > 0` ne tourne pas, le
+/// jalon `done` est écrit et la ligne dit « TERMINÉ » sans rien indexer. Le produit ne l'écrit jamais ; il ne peut venir
+/// que d'une corruption, et une corruption ne déclare pas un travail fait.
+fn watermark_entier(v: &rusqlite::types::Value) -> Result<i64, &'static str> {
+    let n = match v {
+        rusqlite::types::Value::Integer(n) => *n,
+        rusqlite::types::Value::Text(t) => match t.parse::<i64>() {
+            Ok(n) if n.to_string() == *t => n,
+            _ => return Err("texte non entier"),
+        },
+        rusqlite::types::Value::Null => return Err("NULL"),
+        rusqlite::types::Value::Real(_) => return Err("réel"),
+        rusqlite::types::Value::Blob(_) => return Err("BLOB"),
+    };
+    if n < 0 {
+        return Err("entier négatif");
+    }
+    Ok(n)
 }
 
 /// L'IDENTITÉ DE CET HÔTE, LUE OU AVOUÉE (`S33`) — /etc/hostname, sinon $HOSTNAME, sinon un AVEU.

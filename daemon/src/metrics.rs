@@ -99,11 +99,29 @@ pub(crate) static TICKS_AVEUGLES: std::sync::Mutex<std::collections::BTreeMap<St
 pub(crate) fn compter_un_tick_aveugle(balayage: &'static str, cause: &str) {
     TICKS_AVEUGLES_TOTAL.fetch_add(1, Ordering::Relaxed);
     ticks_aveugles_de_ce_fil::noter(balayage, cause);
-    // `P10.27-z` — la phrase vaut pour TOUTES les causes : une liste non lue comme une transaction orpheline sur l'écrivain
-    // (où la liste a pu être lue, mais rien n'est écrit) ; seul le geste de CE balayage est suspendu, pas ses voisins.
-    eprintln!("[plume] balayage de fond AVEUGLE ({balayage}) : aucun geste de ce balayage ce tour-ci : {cause}");
+    eprintln!("{}", phrase_d_un_tick_aveugle(balayage, cause));
     if let Ok(mut m) = TICKS_AVEUGLES.lock() {
         consigner_avec_sa_derniere_cause(&mut m, balayage, cause.to_string());
+    }
+}
+/// `P10.33-h` — LE BALAYAGE DU MARQUEUR `notified` DU DISPATCH (`handlers::notifiers::dispatch_notifications`). Il est
+/// compté avec les ticks aveugles, sous ce nom, mais ce n'est PAS un tour sans geste : il s'arrête APRÈS qu'une alerte a
+/// été traitée — envoyée à ses canaux, ou silencée — parce que la base n'a pas pris son marqueur. Les alertes d'avant
+/// sont envoyées et marquées, celle-ci est partie sans marque (elle repartira au tour suivant), les suivantes attendent.
+pub(crate) const BALAYAGE_DU_MARQUEUR_DE_DISPATCH: &str = "dispatch_marqueur";
+/// La ligne de journal d'un tick aveugle, selon le balayage. `P10.27-z` — la phrase commune vaut pour TOUTES les causes :
+/// une liste non lue comme une transaction orpheline sur l'écrivain (où la liste a pu être lue, mais rien n'est écrit) ;
+/// seul le geste de CE balayage est suspendu, pas ses voisins. `P10.33-h` — elle était FAUSSE pour le marqueur du
+/// dispatch (« aucun geste de ce balayage ce tour-ci » alors que l'alerte était partie) : ce balayage a sa phrase.
+pub(crate) fn phrase_d_un_tick_aveugle(balayage: &str, cause: &str) -> String {
+    if balayage == BALAYAGE_DU_MARQUEUR_DE_DISPATCH {
+        format!(
+            "[plume] balayage de fond INTERROMPU ({balayage}) : l'alerte en cours est traitée (envoyée ou silencée) mais \
+             son marqueur n'est pas écrit, elle repartira au tour suivant ; les alertes déjà marquées de ce tour restent \
+             marquées, les suivantes attendent le tour suivant : {cause}"
+        )
+    } else {
+        format!("[plume] balayage de fond AVEUGLE ({balayage}) : aucun geste de ce balayage ce tour-ci : {cause}")
     }
 }
 /// `P10.20-w` — UN TOUR D'ESCALADE SLA DONT LA BASE A REFUSÉ LE MARQUEUR `escalated` (ou, pour le tick multi-niveau,
@@ -143,6 +161,27 @@ pub(crate) static ALERTES_SANS_AUCUN_ENVOI_PRIS_TOTAL: AtomicU64 = AtomicU64::ne
 pub(crate) fn compter_une_alerte_sans_aucun_envoi_pris(alerte: i64, canaux_vises: usize) {
     ALERTES_SANS_AUCUN_ENVOI_PRIS_TOTAL.fetch_add(1, Ordering::Relaxed);
     eprintln!("[plume] dispatch : alerte {alerte} : AUCUN des {canaux_vises} canal(aux) visé(s) n'a pris l'envoi, alerte remise nulle part ; aucun renvoi n'est tenté (politique non décidée)");
+}
+/// `P10.32-x` — LA SENTINELLE DES RÈGLES ÉTEINTES EN DÉFAUT, comptée par genre. Quand une règle simple est abandonnée,
+/// `run_due_rules` la consigne (`detection_aveugle::issue_de_consigner_abandon`) pour qu'au seuil une alerte de cécité
+/// dise que cette détection est éteinte. Si le compte n'est pas écrit, pas relu, ou si l'alerte de cécité n'est pas
+/// écrite au seuil, la détection est éteinte ET la sentinelle qui devait le dire aussi : l'issue était jetée
+/// (`let _ =`), la seule trace était au journal. Genres FERMÉS (`detection_aveugle::DEFAUT_*`) ; aucune cause du moteur
+/// ici (elle est au journal, avec la règle). Depuis le démarrage, jamais persisté.
+pub(crate) static DEFAUTS_DE_LA_SENTINELLE_DE_CECITE_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DEFAUTS_DE_LA_SENTINELLE_DE_CECITE: std::sync::Mutex<std::collections::BTreeMap<String, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+pub(crate) fn compter_les_defauts_de_la_sentinelle_de_cecite(genres: impl IntoIterator<Item = &'static str>) {
+    for genre in genres {
+        DEFAUTS_DE_LA_SENTINELLE_DE_CECITE_TOTAL.fetch_add(1, Ordering::Relaxed);
+        *DEFAUTS_DE_LA_SENTINELLE_DE_CECITE.lock().unwrap_or_else(|e| e.into_inner()).entry(genre.to_string()).or_insert(0) += 1;
+    }
+}
+/// Le compte d'un genre de défaut de la sentinelle (0 = aucun depuis le démarrage). Lu par les témoins seulement : la
+/// production sert la table entière par `gather_json`.
+#[cfg(test)]
+pub(crate) fn defaut_de_la_sentinelle_de_cecite_de(genre: &str) -> u64 {
+    DEFAUTS_DE_LA_SENTINELLE_DE_CECITE.lock().unwrap_or_else(|e| e.into_inner()).get(genre).copied().unwrap_or(0)
 }
 /// Le compte et la dernière cause d'un genre de canal (`None` = aucun refus depuis le démarrage). Lu par les témoins
 /// seulement : la production sert la table entière par `gather_json`.
@@ -1070,6 +1109,15 @@ pub(crate) fn gather_json(conn: &Connection, spool: &str, db_path: &str, schema_
             .unwrap_or_default()),
     );
     scheduler.insert("alertes_sans_aucun_envoi_pris_total".into(), json!(ALERTES_SANS_AUCUN_ENVOI_PRIS_TOTAL.load(Ordering::Relaxed)));
+    // `P10.32-x` — la sentinelle des règles éteintes en défaut (compte non écrit, non relu, alerte de cécité non écrite).
+    scheduler.insert(
+        "defauts_de_la_sentinelle_de_cecite_total".into(),
+        json!(DEFAUTS_DE_LA_SENTINELLE_DE_CECITE_TOTAL.load(Ordering::Relaxed)),
+    );
+    scheduler.insert(
+        "defauts_de_la_sentinelle_de_cecite".into(),
+        json!(DEFAUTS_DE_LA_SENTINELLE_DE_CECITE.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+    );
     // `P10.26-d` — les gestes dus des passes de fond que la base n'a pas validés, par geste (tenus par le module qui juge
     // les transactions).
     crate::comptes_de_transaction::poser_les_gestes_de_fond_non_valides(&mut scheduler);
@@ -1227,9 +1275,10 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     o.push_str(&format!("plume_search_latency_ms{{quantile=\"0.95\"}} {p95}\n"));
     g(&mut o, "plume_scheduler_rule_ticks_total", "counter", "Ticks du scheduler de règles", "/scheduler/rule_ticks_total");
     g(&mut o, "plume_scheduler_rollup_ticks_total", "counter", "Ticks de la boucle de rollup", "/scheduler/rollup_ticks_total");
-    g(&mut o, "plume_scheduler_ticks_aveugles_total", "counter", "Balayages de fond qui n'ont pas pu lire leur liste de travail et n'ont rien fait ce tour-ci (P10.7-f ; ventilation par balayage avec la dernière cause dans /api/metrics scheduler.ticks_aveugles)", "/scheduler/ticks_aveugles_total");
+    g(&mut o, "plume_scheduler_ticks_aveugles_total", "counter", "Tours de balayage de fond suspendus ou interrompus : liste de travail non lue (rien fait ce tour-ci), ou marqueur refusé après le geste (escalade notifiée, alerte traitée : le tour s'arrête là) (P10.7-f, P10.33-h ; ventilation par balayage avec la dernière cause dans /api/metrics scheduler.ticks_aveugles)", "/scheduler/ticks_aveugles_total");
     g(&mut o, "plume_scheduler_envois_d_alerte_refuses_total", "counter", "Envois d'alerte qu'un canal de notification n'a pas pris, sans renvoi (P10.33-h ; ventilation par genre de canal avec la dernière cause dans /api/metrics scheduler.envois_d_alerte_refuses)", "/scheduler/envois_d_alerte_refuses_total");
     g(&mut o, "plume_scheduler_alertes_sans_aucun_envoi_pris_total", "counter", "Alertes dont aucun des canaux visés n'a pris l'envoi, comptées une fois par alerte, sans renvoi (P10.33-h)", "/scheduler/alertes_sans_aucun_envoi_pris_total");
+    g(&mut o, "plume_scheduler_defauts_de_la_sentinelle_de_cecite_total", "counter", "Règles abandonnées dont la sentinelle n'a pas pu consigner l'abandon ou poser l'alerte de cécité au seuil (P10.32-x ; ventilation par genre dans /api/metrics scheduler.defauts_de_la_sentinelle_de_cecite)", "/scheduler/defauts_de_la_sentinelle_de_cecite_total");
     // `P10.26-d`, `P10.27-h`, `P10.27-y` — LES REFUS DE TRANSACTION, qui n'étaient dits qu'au journal. Rendu par le module
     // qui TIENT les compteurs (nommage, `# HELP` = documentation d'exploitation, cardinalité fermée des causes), dérivé de
     // `j` : la série et la clé JSON ne peuvent pas diverger.
@@ -1251,7 +1300,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
             &mut o,
             &format!("plume_scheduler_{serie}_abandons"),
             "gauge",
-            &format!("Éléments dus ABANDONNÉS (non évalués) au dernier passage de « {passe} »"),
+            &format!("Éléments dus ABANDONNÉS au dernier passage de « {passe} » (non évalués, ou évalués sans que leur alerte ou leur état soit écrit)"),
             &format!("/scheduler/{jeton}_abandons"),
         );
         lisible(

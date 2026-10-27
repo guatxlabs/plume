@@ -705,7 +705,9 @@ pub(crate) fn sign_checkpoint(conn: &Connection, key: &ed25519_dalek::SigningKey
 /// stderr, donc un `plume-daemon verify > journal.txt` rendait un fichier VIDE — un refus de conclure
 /// qu'on ne peut pas lire ne vaut pas mieux qu'un verdict faux. Rien dans l'arbre (unité systemd,
 /// manifeste k3s, sonde, script de bootstrap, tâche CI, documentation) ne lit ce flux ni ce code : la
-/// SEULE ligne d'aide qui énonce des codes est celle de `verify-control`, et elle est inchangée.
+/// SEULE ligne d'aide qui énonce des codes est celle de `verify-control`, et elle est inchangée par ce
+/// changement-ci (`P10.7-r` l'a modifiée depuis : elle nomme l'ancre et `--export`, et une chaîne intègre non
+/// ancrée y sort en 2).
 pub(crate) fn verify_run() {
     let conf = load_config();
     let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
@@ -736,7 +738,8 @@ pub(crate) fn verify_run() {
             // exploitant a besoin de la phrase qui dit « ceci n'est pas un verdict » — mais ramenée à ce
             // qui est VRAI des quatre causes. Aucun manifeste, unité, sonde ni script ne lit ce flux
             // (revérifié le 2026-08-31 : la seule ligne d'aide qui énonce des codes est celle de
-            // `verify-control`, et elle est inchangée).
+            // `verify-control`, et elle est inchangée ; `P10.7-r` l'a modifiée depuis, pour l'ancre du journal de
+            // contrôle, sans toucher à ce flux-ci).
             println!("VERDICT IMPOSSIBLE : {e} — aucun verdict n'est rendu sur ce que la vérification n'a pas pu établir");
             std::process::exit(2);
         }

@@ -426,10 +426,12 @@ pub(crate) async fn ledger_export_get(State(st): State<AppState>, Extension(au):
 }
 
 /// `P10.27-l` — la tranche VALIDÉE du journal de contrôle : une connexion de lecture dédiée (`lecture_validee_du_plan_de_controle`),
-/// la clé passée par l'appelant, jamais l'écrivain du plan de contrôle.
+/// la clé passée par l'appelant, jamais l'écrivain du plan de contrôle. `P10.7-r` : la tranche porte en dernière ligne le
+/// point de contrôle signé de son maillon le plus récent (`control_ledger_export_lines_ancree`), pour qu'une copie se
+/// vérifie hors ligne contre la clé épinglée (`verify-control --export`) ; les en-têtes de curseur sont inchangés.
 fn tranche_validee_du_plan_de_controle(chemin: &str, cle: Option<&str>, from_id: i64, limit: i64) -> Result<(Vec<String>, i64, String), String> {
     let conn = crate::state::lecture_validee_du_plan_de_controle(chemin, cle)?;
-    crate::governance::control_ledger_export_lines(&conn, from_id, limit)
+    crate::governance::control_ledger_export_lines_ancree(&conn, from_id, limit)
 }
 
 /// `P10.29-l` — l'issue de la lecture du journal de contrôle faite hors de l'exécuteur : la tranche, ou le 500 à phrase

@@ -288,13 +288,54 @@ pub(crate) fn control_ledger_export_lines(conn: &Connection, from_id: i64, limit
     Ok((out, last_id, last_hash))
 }
 
+/// `P10.7-r` — LE CHAMP QUI DISTINGUE, DANS UNE COPIE DU JOURNAL DE CONTRÔLE, LA LIGNE DU POINT DE CONTRÔLE DES LIGNES
+/// DE MAILLON. Une ligne de maillon ne le porte jamais.
+pub(crate) const CHAMP_DU_POINT_DE_CONTROLE_EXPORTE: &str = "point_de_controle";
+
+/// `P10.7-r` — L'EXPORT DU JOURNAL DE CONTRÔLE PORTE SES POINTS DE CONTRÔLE. Jusque-là la copie téléchargée ne portait
+/// que la chaîne : un tiers vérifiait sa cohérence interne, jamais qu'elle était celle que la clé du registre avait
+/// signée — une copie tirée d'un journal réécrit puis re-chaîné se vérifiait intègre. La tranche reçoit, après ses
+/// maillons, une ligne par point de contrôle signé d'un maillon QU'ELLE CONTIENT (`from_id < ledger_id <= last_id`),
+/// dans l'ordre d'écriture : un point hors de la tranche ne serait pas vérifiable contre elle, et le juge exige un
+/// point PAR maillon — le seul point du maillon le plus récent laissait passer une tranche dont les maillons
+/// antérieurs avaient été réécrits avant une écriture légitime. Lus APRÈS la tranche : un point de contrôle est écrit
+/// après son maillon, donc chacun désigne un maillon que la tranche a déjà lu. Tranche vide, ou aucun point dans la
+/// tranche (clé absente à l'écriture) -> aucune ligne ajoutée, et la vérification hors ligne le dira. Point de
+/// contrôle illisible -> `Err`, AUCUN export (même contrat que la tranche).
+pub(crate) fn control_ledger_export_lines_ancree(conn: &Connection, from_id: i64, limit: i64) -> Result<(Vec<String>, i64, String), String> {
+    let (mut lignes, last_id, last_hash) = control_ledger_export_lines(conn, from_id, limit)?;
+    // Une tranche vide rend `last_id == from_id` : l'intervalle est vide, aucun point n'est ajouté.
+    lignes.extend(points_de_controle_de_la_tranche(conn, from_id, last_id)?);
+    Ok((lignes, last_id, last_hash))
+}
+
+fn points_de_controle_de_la_tranche(conn: &Connection, from_id: i64, last_id: i64) -> Result<Vec<String>, String> {
+    let illisible = |e: rusqlite::Error| format!("point de contrôle de la tranche ILLISIBLE ({e}) — AUCUN export, et le curseur NE bouge PAS");
+    let mut stmt = conn
+        .prepare("SELECT ledger_id,ledger_hash,sig,pubkey,ts FROM control_checkpoint WHERE ledger_id>?1 AND ledger_id<=?2 ORDER BY id")
+        .map_err(illisible)?;
+    let lignes = stmt
+        .query_map(params![from_id, last_id], |r| {
+            Ok(json!({ CHAMP_DU_POINT_DE_CONTROLE_EXPORTE: {
+                "ledger_id": r.get::<_, i64>(0)?,
+                "ledger_hash": r.get::<_, String>(1)?,
+                "sig": r.get::<_, String>(2)?,
+                "pubkey": r.get::<_, String>(3)?,
+                "ts": r.get::<_, i64>(4)?,
+            } })
+            .to_string())
+        })
+        .and_then(|it| it.collect::<rusqlite::Result<Vec<_>>>())
+        .map_err(illisible)?;
+    Ok(lignes)
+}
+
 /// `P10.27-k` — la vérification hors ligne d'une copie vit dans `copie_chainee` (la règle de répétition exacte, les deux
 /// ancrages, la lecture des lignes) ; ce module n'y apporte que la recette de hachage de chacun de ses deux journaux.
 pub(crate) use crate::copie_chainee::CopieChaineeVerifiee;
-use crate::copie_chainee::{champ_texte, verifier_une_copie_chainee, RecetteDeChaine};
+use crate::copie_chainee::{champ_texte, verifier_des_lignes_numerotees, verifier_une_copie_chainee, RecetteDeChaine};
 
 /// La recette de `control_ledger_append` : `prev|ts|kind|actor|tenant|detail`.
-#[cfg(test)]
 fn texte_hache_du_journal_de_controle(prev: &str, ts: i64, v: &Value) -> String {
     format!("{prev}|{ts}|{}|{}|{}|{}", champ_texte(v, "kind"), champ_texte(v, "actor"), champ_texte(v, "tenant"), champ_texte(v, "detail"))
 }
@@ -307,21 +348,66 @@ fn texte_hache_du_registre(prev: &str, ts: i64, v: &Value) -> String {
 /// Vérification HORS LIGNE d'une copie exportée du journal de contrôle : même recette de hachage que
 /// `control_ledger_append`, mêmes ancrages et même règle de répétition exacte que la copie du registre. Aucun puits
 /// n'exporte ce journal ; des téléchargements recouvrants mis bout à bout produisent pourtant des répétitions, et la
-/// règle ne vit qu'à un endroit. `cfg(test)`, avec sa recette et `control_ledger_verify_export` : aucune sous-commande ne
-/// vérifie encore une copie de ce journal, et ces trois fonctions n'ont que des témoins pour appelants — le binaire ne
-/// les porte pas (la forme de `ledger_verify_export`), plutôt qu'un `allow(dead_code)` qui laissait l'avertissement sur
-/// l'appelant.
-#[cfg(test)]
+/// règle ne vit qu'à un endroit. Depuis `P10.7-r`, `verify-control --export` vérifie une copie de ce journal (par
+/// `verdict_hors_ligne_de_la_copie_du_journal_de_controle`) : la recette et cette fonction ne sont plus réservées aux
+/// témoins ; `control_ledger_verify_export` l'est toujours.
 pub(crate) fn verifier_la_copie_du_journal_de_controle(lines: &[String], expect_prev: &str) -> Result<CopieChaineeVerifiee, String> {
-    let recette = RecetteDeChaine { texte_hache: texte_hache_du_journal_de_controle, alteration: "hachage recalculé différent — maillon altéré" };
-    verifier_une_copie_chainee(lines, expect_prev, &recette)
+    verifier_une_copie_chainee(lines, expect_prev, &RECETTE_DU_JOURNAL_DE_CONTROLE)
 }
+
+const RECETTE_DU_JOURNAL_DE_CONTROLE: RecetteDeChaine =
+    RecetteDeChaine { texte_hache: texte_hache_du_journal_de_controle, alteration: "hachage recalculé différent — maillon altéré" };
 
 /// Le nombre de maillons DISTINCTS d'une copie du journal de contrôle qui se vérifie ; les répétitions exactes sont
 /// rendues à part par `verifier_la_copie_du_journal_de_controle`.
 #[cfg(test)]
 pub(crate) fn control_ledger_verify_export(lines: &[String], expect_prev: &str) -> Result<usize, String> {
     verifier_la_copie_du_journal_de_controle(lines, expect_prev).map(|c| c.maillons)
+}
+
+/// `P10.7-r` — LA COPIE EXPORTÉE DU JOURNAL DE CONTRÔLE, VÉRIFIÉE HORS LIGNE CONTRE SON POINT DE CONTRÔLE. Les lignes
+/// qui portent `point_de_controle` sont mises à part ; les autres passent par la vérification de chaîne (mêmes
+/// ancrages, même règle de répétition exacte) ; puis l'ancre est jugée par le MÊME juge que la base
+/// (`juger_l_ancrage_du_journal_de_controle`), contre la clé épinglée. Une ligne de point de contrôle incomplète, ou
+/// une chaîne rompue -> `Err`.
+pub(crate) fn verifier_la_copie_ancree_du_journal_de_controle(
+    lines: &[String],
+    expect_prev: &str,
+    epinglee: Option<&[u8; 32]>,
+) -> Result<(CopieChaineeVerifiee, crate::rbac::AncrageDuJournalDeControle), String> {
+    // (rang dans la copie, ligne) : la chaîne nomme ses ruptures par le rang D'ORIGINE, comme les points — dans une
+    // copie mise bout à bout, chaque ligne de point intercalée décalerait sinon d'un cran les rangs qui la suivent.
+    let mut maillons_lus: Vec<(usize, &str)> = Vec::new();
+    let mut maillons: Vec<(i64, String)> = Vec::new();
+    let mut points: Vec<crate::rbac::PointDeControleDuJournal> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let v: Value = serde_json::from_str(line).map_err(|e| format!("ligne {i}: JSON invalide: {e}"))?;
+        let Some(p) = v.get(CHAMP_DU_POINT_DE_CONTROLE_EXPORTE) else {
+            // Un maillon sans `id` lisible n'entre pas dans la table du juge : la vérification de chaîne, juste en
+            // dessous, le refuse (« id manquant ») avant que le juge ne soit appelé. Une répétition exacte entre
+            // deux fois : le juge indexe par identifiant.
+            maillons.extend(v.get("id").and_then(|x| x.as_i64()).map(|id| (id, champ_texte(&v, "hash").to_string())));
+            maillons_lus.push((i, line.as_str()));
+            continue;
+        };
+        let (ledger_id, ledger_hash, sig) = (p.get("ledger_id").and_then(|x| x.as_i64()), p.get("ledger_hash").and_then(|x| x.as_str()), p.get("sig").and_then(|x| x.as_str()));
+        let (Some(ledger_id), Some(ledger_hash), Some(sig)) = (ledger_id, ledger_hash, sig) else {
+            return Err(format!("ligne {i}: point de contrôle incomplet (ledger_id, ledger_hash et sig requis)"));
+        };
+        points.push(crate::rbac::PointDeControleDuJournal { nom: format!("de la ligne {i}"), ledger_id, ledger_hash: ledger_hash.to_string(), sig: sig.to_string() });
+    }
+    let copie = verifier_des_lignes_numerotees(maillons_lus, expect_prev, &RECETTE_DU_JOURNAL_DE_CONTROLE)?;
+    Ok((copie, crate::rbac::juger_l_ancrage_du_journal_de_controle(&maillons, &points, epinglee)))
+}
+
+/// `P10.7-r` — CE QUE `verify-control --export` REND : un code et UNE phrase. `0` = copie intègre ET ancrée par la clé
+/// épinglée · `1` = copie compromise (rupture, ligne malformée, point de contrôle non signé ou discordant) · `2` =
+/// AUCUN verdict d'ancrage (clé non épinglée, maillon de la copie sans son point de contrôle).
+pub(crate) fn verdict_hors_ligne_de_la_copie_du_journal_de_controle(lines: &[String], expect_prev: &str, epinglee: Option<&[u8; 32]>) -> (i32, String) {
+    match verifier_la_copie_ancree_du_journal_de_controle(lines, expect_prev, epinglee) {
+        Err(e) => (1, format!("EXPORT COMPROMIS : {e}")),
+        Ok((copie, ancrage)) => crate::rbac::phrase_de_l_ancrage(copie.maillons, &ancrage, "export OK", "EXPORT COMPROMIS"),
+    }
 }
 
 /// VÉRIFICATION HORS LIGNE d'une copie exportée du registre des tenants — ce que `ledger-verify-export` exécute. Pour

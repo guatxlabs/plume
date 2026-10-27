@@ -8,10 +8,9 @@
 // LA MUTATION QUI LE FAIT ROUGIR : `VERIF_MUT=V2_remplacer_non_verifie` (un `continue` pour Remplacer avant le
 // `SELECT 1 FROM platform_user`) — `200`, la ligne fantôme écrite dans `grant`.
 //
-// CE QU'IL NE TIENT PAS : le rattachement entre tenants — une identité connue de la plateforme, même porteuse d'un
-// droit dans un AUTRE tenant seulement, est une cible valide d'ajout (à dessein : la refuser ferait un oracle par
-// `userName`, témoins `saon_` ; reste nommé de `P10.34-a`) ; le RETRAIT d'un absent est un no-op identique
-// (témoins `psoe_`).
+// CE QU'IL NE TIENT PAS : le rattachement entre tenants — depuis `P10.34-h`, une identité qui ne porte de droit que
+// dans un AUTRE tenant, ou créée par le `POST /Users` d'un autre tenant, rend le même `noTarget` qu'un inconnu
+// (témoins `sret_`, `srtc_` et `saon_`) ; le RETRAIT d'un absent est un no-op identique (témoins `psoe_`).
 // =====================================================================================
 mod scim_patch_replace_d_un_membre_inconnu {
     use super::*;

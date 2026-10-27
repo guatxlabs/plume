@@ -18,17 +18,26 @@
 //! rassurante. Donc :
 //!   * `Mesure::Illisible { cause, detail }` quand la liste des dus n'a pas pu être lue. Le tick est
 //!     AVEUGLE pour cette famille, et `cause` est une clé de l'ensemble fermé `CAUSES` ;
-//!   * `Mesure::Lue(n)` quand la liste a été lue, `n` étant le nombre d'éléments dus qui n'ont PAS été
-//!     évalués (compilation refusée, évaluation en échec, ligne indécodable). Un `Lue(0)` est un VRAI
-//!     zéro : tout ce qui était dû a été évalué.
+//!   * `Mesure::Lue(n)` quand la liste a été lue, `n` étant le nombre d'éléments dus ABANDONNÉS : ceux qui
+//!     n'ont PAS été évalués (compilation refusée, évaluation en échec, ligne indécodable), ET ceux qui ont
+//!     été évalués ou traités sans que tout ce qui devait suivre soit écrit (alerte de tir refusée, état de
+//!     la règle refusé, marque d'un envoi refusée — `P10.20-b`, `P10.32-x`, `P10.20-w`). Un élément compte
+//!     UNE fois, quel que soit le nombre de ses écritures refusées. Un `Lue(0)` est un VRAI zéro : tout ce
+//!     qui était dû a été évalué, et tout ce qui devait en suivre a été écrit.
+//!
+//! `P10.32-x` — CE CONTRAT A ÉTÉ RÉALIGNÉ SUR CE QUE LES ÉVALUATEURS COMPTENT DÉJÀ. Il disait « n'ont PAS été
+//! évalués » ; or `run_due_rules`, `run_advanced_rules`, les corrélations, les lignes de base et le forwarder
+//! comptaient aussi, sous le même nombre, un élément évalué dont l'alerte ou l'état n'a pas pu être écrit. Les
+//! deux causes sortent sous le même compte publié ; la ligne de journal de chaque évaluateur dit laquelle.
 //!
 //! LE PLANIFICATEUR ABSORBE les bilans de toutes les familles et de tous les tenants d'un même tick, et
 //! PUBLIE le résultat : la somme des abandons, ou l'aveu dès qu'UNE famille a été aveugle (un compte
 //! partiel serait plus petit que la réalité). La surface d'état (`metrics::component_health`) lit ce
 //! bilan et ne peut plus dire « détection : verte » sur un tick qui n'a rien évalué.
 //!
-//! CE QUE CE MODULE NE DÉCIDE PAS : quoi faire d'une règle abandonnée. Elle est re-tentée au prochain
-//! intervalle, comme avant ; ce qui change est qu'elle est COMPTÉE, et que le compte est visible.
+//! CE QUE CE MODULE NE DÉCIDE PAS : quoi faire d'une règle abandonnée. Elle est re-tentée à sa prochaine
+//! échéance (le prochain intervalle, ou dès le tick suivant quand l'évaluateur n'a pas avancé son état),
+//! comme avant ; ce qui change est qu'elle est COMPTÉE, et que le compte est visible.
 use crate::mesure_environnement::{Mesure, CAUSE_FORME_INCONNUE, CAUSE_SOURCE_ILLISIBLE};
 
 /// Ce qu'un évaluateur périodique rend à son planificateur.
@@ -356,7 +365,7 @@ pub(crate) fn etat_des_passes_orphelines(bilans: &[(&'static str, Mesure<u64>)])
         return (
             "yellow",
             format!(
-                "élément(s) dû(s) ABANDONNÉ(S) au dernier passage ({}) — non traités, re-tentés au suivant",
+                "élément(s) dû(s) ABANDONNÉ(S) au dernier passage ({}) — {SENS_D_UN_ABANDON}",
                 abandons.join(" ; ")
             ),
         );
@@ -396,6 +405,11 @@ pub(crate) fn etat_de_surface_jeu_conserve(
     }
 }
 
+/// `P10.32-x` — CE QU'UN ABANDON RECOUVRE, dit par la surface d'état : le contrat de `Mesure::Lue` (en tête de ce
+/// module), pas seulement sa moitié « non évalués » — une règle évaluée dont l'alerte a été refusée y entre aussi.
+pub(crate) const SENS_D_UN_ABANDON: &str =
+    "non évalués, ou évalués sans que leur alerte ou leur état soit écrit ; re-tentés à leur prochaine échéance";
+
 /// CE QUE LA SURFACE D'ÉTAT DIT D'UN BILAN, et ce que ça change à l'état du composant. Un tick AVEUGLE
 /// est ROUGE : rien n'a été évalué, c'est l'état d'un planificateur bloqué, pas d'un planificateur
 /// calme — et c'est précisément ce que le tick marqué « à l'heure » laissait passer pour vert. Des
@@ -411,7 +425,7 @@ pub(crate) fn etat_de_surface(
         Some(Mesure::Lue(0)) => (etat, detail),
         Some(Mesure::Lue(n)) => (
             crate::metrics::pire_des_deux(etat, "yellow"),
-            format!("{detail} ; {n} élément(s) dû(s) ABANDONNÉ(S) au dernier tick (non évalués, re-tentés au suivant)"),
+            format!("{detail} ; {n} élément(s) dû(s) ABANDONNÉ(S) au dernier tick ({SENS_D_UN_ABANDON})"),
         ),
         Some(Mesure::Illisible { detail: pourquoi, .. }) => (
             "red",

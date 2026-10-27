@@ -1061,7 +1061,7 @@ const SUBCOMMANDS: [(&str, &str); 24] = [
     ("secret-des-gestes", "secret-des-gestes [--generer] — empreinte argon2id du secret des gestes (secret lu sur stdin, ou engendré et affiché une fois sur stderr) pour PLUME_GESTURE_SECRET_FILE"),
     ("respond", "respond — boucle du moteur de réponse (service séparé)"),
     ("verify", "verify — vérifie la chaîne d'intégrité du ledger"),
-    ("verify-control", "verify-control — vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) ; 0 = intègre, 1 = rupture nommée, 2 = AUCUN verdict"),
+    ("verify-control", "verify-control [--export <f> [--prev <hash>]] — vérifie la chaîne d'intégrité du journal du PLAN DE CONTRÔLE (accès superadmin, ouvertures d'urgence) et son ancre (points de contrôle signés, clé publique épinglée PLUME_LEDGER_PUBKEY), dans la base ou dans une copie exportée ; 0 = intègre et ancrée, ou journal vierge, 1 = rupture ou réécriture nommée, 2 = AUCUN verdict"),
     ("ledger-export", "ledger-export [--from <id>] [--out <f>] — export JSONL du ledger"),
     ("ledger-verify-export", "ledger-verify-export <f> — vérifie un export hors-ligne (une tranche répétée à l'identique est écartée et dite, une fourche accusée)"),
     ("scim-token", "scim-token — génère/affiche le jeton SCIM"),
@@ -1253,26 +1253,19 @@ fn main() {
     // Ce dernier existe parce que le vérificateur du journal voisin, lui, RETIRE silencieusement du scan
     // toute ligne illisible et rend « aucune rupture » sur une chaîne amputée — mesuré le 2026-08-31.
     // Celui-ci ne le fait pas : une ligne illisible lui fait rendre une erreur, et l'exploitant l'apprend.
+    //
+    // `P10.7-r` — ET L'ANCRE. Une chaîne intègre n'est plus un « OK » à elle seule : supprimer des maillons puis
+    // re-chaîner le reste la laissait intègre. Le verdict (`verdict_de_verify_control`) juge ensuite les points de
+    // contrôle signés contre la clé publique ÉPINGLÉE ; sans épingle, ou tête non couverte, il le DIT et sort en 2.
+    // `--export <f>` juge de même une copie téléchargée, hors ligne, sans la base.
     if args.get(1).map(String::as_str) == Some("verify-control") {
         let conf = load_config();
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
         let chemin = crate::state::control_db_path(&conf, &db_path);
-        match crate::db_open::open_db_keyed_without_schema_contract(&chemin, crate::state::control_key().as_deref()) {
-            Err(e) => {
-                println!("VERDICT IMPOSSIBLE : le plan de contrôle ne s'ouvre pas ({chemin}) : {e}");
-                std::process::exit(2);
-            }
-            Ok(conn) => match crate::rbac::control_ledger_verify_conn(&conn) {
-                Err(e) => {
-                    println!("VERDICT IMPOSSIBLE : la chaîne du plan de contrôle n'a pas pu être lue ENTIÈREMENT ({e}) — aucun verdict n'est rendu sur une chaîne partiellement lue");
-                    std::process::exit(2);
-                }
-                Ok((n, Some(id))) => {
-                    println!("INTÉGRITÉ COMPROMISE : rupture de chaîne du plan de contrôle à l'entrée #{id} ({n} entrée(s) intègres avant elle)");
-                    std::process::exit(1);
-                }
-                Ok((n, None)) => println!("control_ledger OK : {n} entrée(s) chaînées intègres, chaîne lue entièrement"),
-            },
+        let (code, phrase) = crate::rbac::commande_verify_control(&args, &chemin, crate::state::control_key().as_deref(), crate::ledger::ledger_pinned_pubkey().as_ref());
+        println!("{phrase}");
+        if code != 0 {
+            std::process::exit(code);
         }
         return;
     }

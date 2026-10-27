@@ -4,7 +4,8 @@
 //! marqueur opérateur cross-tenant (`OPERATOR_ACCESS_*`/`operator_access_should_emit`/`DecisionDeFenetre`/`emit_operator_access`/`TraceDAccesOperateur`/
 //! `control_ledger_prev_hash`/`control_ledger_append`/`control_ledger_verify_conn`), garde de gestion tenant (`mgmt_*`/`tenant_mgmt_gate`/`can_manage_grants`/
 //! `valid_grant_role`/`platform_user_name_ok`/`gen_control_id`/`ensure_platform_user`/`ensure_platform_user_conn`/
-//! `le_geste_retirerait_le_dernier_administrateur` — `P10.21-r`, lue dans la transaction du geste)
+//! `le_geste_retirerait_le_dernier_administrateur` — `P10.21-r`, lue dans la transaction du geste ;
+//! `poser_l_identite_scim`/`rattachement_scim_conn`/`migrate_control_provenance_scim` — `P10.34-h`, provenance SCIM)
 //! et l'audit (`audit_tenant_event`/`tenant_db_path`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
@@ -688,7 +689,14 @@ pub(crate) fn control_ledger_append(st: &AppState, kind: &str, actor: &str, tena
         "INSERT INTO control_ledger(ts,kind,actor,tenant,detail,prev_hash,hash) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         params![ts, kind, actor, tenant, detail, prev, hash],
     ) {
-        Ok(1) => MaillonDeRegistre::Inscrit,
+        Ok(1) => {
+            // `P10.7-r` — LE MAILLON INSCRIT EST ANCRÉ À L'INSTANT, sous le même verrou : un par écriture, jamais
+            // une boucle de rattrapage. Un point de contrôle qui ne se pose pas ne retire pas le maillon (il est
+            // écrit, la chaîne le porte) : il le DIT, et la vérification dira la tête non ancrée.
+            let ledger_id = conn.last_insert_rowid();
+            ancrer_le_maillon_de_controle(&conn, &cp.db_path, kind, ledger_id, &hash);
+            MaillonDeRegistre::Inscrit
+        }
         Ok(n) => {
             eprintln!("[control_ledger] WARN maillon '{kind}' NON inscrit : {n} ligne(s) écrite(s) au lieu d'une");
             MaillonDeRegistre::NonInscrit(format!("{n} ligne(s) écrite(s) au lieu d'une"))
@@ -781,9 +789,10 @@ pub(crate) fn refuser_le_geste_non_ecrit(cause_du_geste: &str, cause_du_moteur: 
 ///  - la PRÉIMAGE porte SIX champs et non quatre : le control-plane journalise `actor` et `tenant`, que
 ///    le journal tenant n'a pas. La FORME du chaînage, elle, est identique (colonnes `prev_hash`/`hash`,
 ///    parcours `ORDER BY id`, origine accrochée à la chaîne vide) ;
-///  - AUCUNE vérification de signature : `migrate_control` ne crée pas de table `checkpoint`, il n'y a
-///    donc pas de checkpoint Ed25519 à vérifier sur cette base. Rendre un compteur de signatures
-///    toujours nul serait un aveu FAUX ;
+///  - AUCUNE vérification de signature DANS CE CŒUR : depuis `P10.7-r` les points de contrôle signés de
+///    ce journal vivent dans leur propre table (`control_checkpoint`) et sont jugés À PART, par
+///    `verifier_l_ancrage_du_journal_de_controle`, une fois la chaîne lue intègre. Ce cœur garde son
+///    contrat (cohérence interne) et ses appelants ; c'est `verdict_de_verify_control` qui assemble ;
 ///  - UN MAILLON ILLISIBLE N'EST PAS UN MAILLON ABSENT, et c'est le point où transposer verbatim aurait
 ///    importé un défaut. Le vérificateur voisin aplatit ses lignes : une ligne dont une colonne ne se
 ///    convertit pas est SILENCIEUSEMENT retirée du scan. Mesuré le 2026-08-31 sur la table `ledger` —
@@ -839,6 +848,279 @@ pub(crate) fn control_ledger_verify_conn(conn: &Connection) -> Result<(usize, Op
         prev = hash;
     }
     Ok((intacts, None))
+}
+
+// =====================================================================================
+// `P10.7-r` — L'ANCRE HORS FICHIER DU JOURNAL DE CONTRÔLE
+// =====================================================================================
+//
+// CE QUI MANQUAIT, MESURÉ AVANT D'ÉCRIRE : supprimer des maillons de `control_ledger` puis RE-CHAÎNER le reste
+// (recalculer `prev_hash`/`hash` de chaque maillon suivant) rendait `verify-control` VERT — le chaînage prouve la
+// cohérence interne, jamais l'absence de réécriture. Le journal voisin a la parade : des points de contrôle SIGNÉS
+// par la clé du registre, vérifiés contre la clé publique ÉPINGLÉE hors bande (`PLUME_LEDGER_PUBKEY`). C'est le
+// MÊME mécanisme, réutilisé tel quel — même clé (`ledger::ledger_key`), même épingle
+// (`ledger::ledger_pinned_pubkey`) — et AUCUN levier neuf.
+//
+// UN POINT PAR MAILLON, ET LE JUGE L'EXIGE. Chaque append pose le point de SON maillon : un maillon sans point propre
+// n'est jamais « couvert » par un point plus récent. La règle plus lâche — un maillon couvert par n'importe quel point
+// postérieur — laissait blanchir une réécriture : supprimer un maillon, re-chaîner la suite, retirer les points de la
+// queue, puis attendre l'écriture légitime suivante, que le démon signe sur la tête RÉÉCRITE ; le dernier point
+// concordait, et le verdict rendait 0. Sous la règle stricte, les maillons re-chaînés n'ont plus de point propre que
+// leur empreinte neuve vérifie : code 2, nommé (`MaillonsNonAncres`).
+//
+// CE QUE L'ANCRE NE PEUT PAS FAIRE, ET C'EST DIT PLUTÔT QUE PROMIS : la table des points de contrôle vit dans le même
+// fichier. Qui y écrit peut retirer la QUEUE du journal ET les points de contrôle qui la couvrent : chaque maillon
+// restant garde son point. Cette troncature-là ne se voit que contre une COPIE extérieure — d'où l'export qui porte les
+// points de contrôle de sa tranche, et sa vérification hors ligne. Et un maillon écrit SANS point (base antérieure à
+// la table, clé absente à l'écriture, point refusé par la base) ne sera jamais ancré : la vérification de cette base
+// rend 2 tant qu'il y figure — il n'existe aucun moyen de distinguer, dans le fichier, un tel maillon d'un maillon
+// réécrit dont le point a été retiré.
+
+/// Les clés de signature, par chemin de plan de contrôle. Posées par `init_control_plane` (clé du registre, ou
+/// rien) ; un plan de contrôle sans entrée n'a pas de clé, et chaque maillon inscrit le DIT. Un registre par chemin
+/// plutôt qu'un champ de `ControlPlane` : la structure est construite en littéral par de nombreux témoins.
+static SIGNATAIRES_DU_JOURNAL_DE_CONTROLE: std::sync::OnceLock<Mutex<HashMap<String, ed25519_dalek::SigningKey>>> = std::sync::OnceLock::new();
+
+fn signataires_du_journal_de_controle() -> &'static Mutex<HashMap<String, ed25519_dalek::SigningKey>> {
+    SIGNATAIRES_DU_JOURNAL_DE_CONTROLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Pose (ou retire, sur `None`) la clé qui signe les points de contrôle du plan de contrôle situé à `chemin`.
+pub(crate) fn armer_la_signature_du_journal_de_controle(chemin: &str, cle: Option<ed25519_dalek::SigningKey>) {
+    let mut signataires = signataires_du_journal_de_controle().lock();
+    match cle {
+        Some(cle) => {
+            signataires.insert(chemin.to_string(), cle);
+        }
+        None => {
+            signataires.remove(chemin);
+        }
+    }
+}
+
+/// Le domaine du message signé : une signature d'un point de contrôle de CE journal ne se rejoue pas comme celle
+/// d'un point de contrôle du journal voisin (même clé, qui y signe une tête nue).
+pub(crate) const DOMAINE_DU_POINT_DE_CONTROLE_DE_CONTROLE: &str = "plume-control-ledger-checkpoint-v1";
+
+/// CE QUE SIGNE UN POINT DE CONTRÔLE : le domaine, l'identifiant du maillon et son hachage. L'identifiant y est pour
+/// qu'un point de contrôle valide ne puisse pas être DÉPLACÉ sur un autre maillon.
+pub(crate) fn message_du_point_de_controle(ledger_id: i64, ledger_hash: &str) -> String {
+    format!("{DOMAINE_DU_POINT_DE_CONTROLE_DE_CONTROLE}|{ledger_id}|{ledger_hash}")
+}
+
+/// Pose le point de contrôle signé du maillon que `control_ledger_append` vient d'inscrire. Trois issues dites, et
+/// aucune ne retire le maillon : sans clé, ou si la base ne prend pas la ligne, le maillon reste écrit SANS ancre — la
+/// sortie d'erreur le dit par le seul `kind` (vocabulaire fermé, comme l'aveu de la primitive), et la vérification
+/// dira la tête de chaîne non ancrée.
+fn ancrer_le_maillon_de_controle(conn: &Connection, chemin: &str, kind: &str, ledger_id: i64, ledger_hash: &str) {
+    use ed25519_dalek::Signer;
+    let Some(cle) = signataires_du_journal_de_controle().lock().get(chemin).cloned() else {
+        eprintln!("[control_ledger] WARN point de contrôle NON posé après le maillon '{kind}' : aucune clé de signature du registre — la vérification dira la tête de chaîne NON ANCRÉE");
+        return;
+    };
+    let sig = cle.sign(message_du_point_de_controle(ledger_id, ledger_hash).as_bytes());
+    match conn.execute(
+        "INSERT INTO control_checkpoint(ts,ledger_id,ledger_hash,sig,pubkey) VALUES(?1,?2,?3,?4,?5)",
+        params![now(), ledger_id, ledger_hash, hex_encode(&sig.to_bytes()), hex_encode(cle.verifying_key().as_bytes())],
+    ) {
+        Ok(1) => {}
+        Ok(n) => eprintln!("[control_ledger] WARN point de contrôle NON posé après le maillon '{kind}' : {n} ligne(s) écrite(s) au lieu d'une — la vérification dira la tête de chaîne NON ANCRÉE"),
+        Err(e) => eprintln!("[control_ledger] WARN point de contrôle NON posé après le maillon '{kind}' : l'écriture n'a pas eu lieu ({e}) — la vérification dira la tête de chaîne NON ANCRÉE"),
+    }
+}
+
+/// Un point de contrôle tel qu'il est lu — dans la base ou dans une copie exportée. `nom` le désigne dans une phrase
+/// (`#3` pour une ligne de la base, `de la ligne 7` pour une ligne de copie).
+#[derive(Debug, Clone)]
+pub(crate) struct PointDeControleDuJournal {
+    pub(crate) nom: String,
+    pub(crate) ledger_id: i64,
+    pub(crate) ledger_hash: String,
+    pub(crate) sig: String,
+}
+
+/// CE QUE L'ANCRE DIT D'UNE CHAÎNE DÉJÀ LUE INTÈGRE. Six issues, chacune sa phrase et son code de sortie
+/// (`phrase_de_l_ancrage`) ; aucune n'est un « intègre » par défaut.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AncrageDuJournalDeControle {
+    /// Aucun maillon, aucun point de contrôle : il n'y a rien à ancrer.
+    RienAAncrer,
+    /// Chaque point de contrôle est signé par la clé épinglée et concorde avec la chaîne, et CHAQUE maillon a le sien.
+    Ancree { points: usize },
+    /// Aucune clé publique épinglée : une signature ne prouverait rien (qui réécrit peut re-signer de SA clé).
+    CleNonEpinglee,
+    /// Les points de contrôle concordent, mais les derniers maillons — tous postérieurs au dernier maillon attesté —
+    /// n'ont pas de point.
+    TeteNonAncree { dernier_ancre: Option<i64>, non_couverts: usize },
+    /// Les points de contrôle concordent, mais des maillons ANTÉRIEURS au dernier maillon attesté n'ont pas leur propre
+    /// point : la forme que laisse une réécriture blanchie par une écriture légitime (cf. l'en-tête de cette section).
+    MaillonsNonAncres { premier: i64, non_couverts: usize, dernier_ancre: i64 },
+    /// Un point de contrôle n'est pas signé par la clé épinglée, ou contredit la chaîne : réécriture.
+    Reecrit(String),
+}
+
+fn signe_par_la_cle_epinglee(point: &PointDeControleDuJournal, epinglee: &[u8; 32]) -> bool {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let Some(octets) = hex_decode(&point.sig) else { return false };
+    let Ok(sig) = <[u8; 64]>::try_from(octets) else { return false };
+    let Ok(cle) = VerifyingKey::from_bytes(epinglee) else { return false };
+    cle.verify(message_du_point_de_controle(point.ledger_id, &point.ledger_hash).as_bytes(), &Signature::from_bytes(&sig)).is_ok()
+}
+
+/// LE JUGEMENT, PUR : `maillons` = (id, hash) de la chaîne déjà lue intègre, `points` = les points de contrôle lus,
+/// `epinglee` = la clé publique de confiance. La signature est vérifiée contre la clé ÉPINGLÉE et elle seule — la
+/// clé publique écrite à côté de la signature n'est jamais crue. Un point de contrôle qui atteste un maillon absent,
+/// ou une empreinte que ce maillon ne porte plus, accuse une réécriture faite APRÈS sa signature.
+pub(crate) fn juger_l_ancrage_du_journal_de_controle(
+    maillons: &[(i64, String)],
+    points: &[PointDeControleDuJournal],
+    epinglee: Option<&[u8; 32]>,
+) -> AncrageDuJournalDeControle {
+    if maillons.is_empty() && points.is_empty() {
+        return AncrageDuJournalDeControle::RienAAncrer;
+    }
+    let Some(epinglee) = epinglee else {
+        return AncrageDuJournalDeControle::CleNonEpinglee;
+    };
+    let par_id: HashMap<i64, &str> = maillons.iter().map(|(id, h)| (*id, h.as_str())).collect();
+    let mut dernier_ancre: Option<i64> = None;
+    for point in points {
+        if !signe_par_la_cle_epinglee(point, epinglee) {
+            return AncrageDuJournalDeControle::Reecrit(format!("le point de contrôle {} n'est pas signé par la clé épinglée", point.nom));
+        }
+        match par_id.get(&point.ledger_id) {
+            None => {
+                return AncrageDuJournalDeControle::Reecrit(format!(
+                    "le point de contrôle signé {} atteste le maillon #{}, que la chaîne vérifiée ne porte pas",
+                    point.nom, point.ledger_id
+                ))
+            }
+            Some(hash) if *hash != point.ledger_hash => {
+                return AncrageDuJournalDeControle::Reecrit(format!(
+                    "le point de contrôle signé {} atteste pour le maillon #{} une empreinte que la chaîne vérifiée ne porte plus",
+                    point.nom, point.ledger_id
+                ))
+            }
+            Some(_) => {}
+        }
+        dernier_ancre = Some(dernier_ancre.map_or(point.ledger_id, |d| d.max(point.ledger_id)));
+    }
+    // UN POINT PAR MAILLON : un maillon n'est attesté que par SON point, jamais par un point plus récent. Compté sur les
+    // identifiants DISTINCTS : une copie qui répète une tranche à l'identique ne double pas ses maillons non ancrés.
+    let attestes: std::collections::HashSet<i64> = points.iter().map(|p| p.ledger_id).collect();
+    let sans_point: Vec<i64> = par_id.keys().copied().filter(|id| !attestes.contains(id)).collect();
+    let Some(&premier) = sans_point.iter().min() else {
+        return AncrageDuJournalDeControle::Ancree { points: points.len() };
+    };
+    let non_couverts = sans_point.len();
+    match dernier_ancre {
+        Some(dernier_ancre) if premier < dernier_ancre => AncrageDuJournalDeControle::MaillonsNonAncres { premier, non_couverts, dernier_ancre },
+        _ => AncrageDuJournalDeControle::TeteNonAncree { dernier_ancre, non_couverts },
+    }
+}
+
+/// L'ANCRE LUE SUR LA BASE. Les points de contrôle sont lus AVANT les maillons, et l'ordre compte : un point de
+/// contrôle est écrit après son maillon, donc tout point lu désigne un maillon déjà écrit, que la seconde lecture
+/// verra — une écriture concurrente ne peut produire qu'une tête non ancrée, jamais une fausse accusation. Toute
+/// ligne que la lecture ne rend pas -> `Err` : AUCUN verdict.
+pub(crate) fn verifier_l_ancrage_du_journal_de_controle(conn: &Connection, epinglee: Option<&[u8; 32]>) -> Result<AncrageDuJournalDeControle, String> {
+    let mut stmt = conn
+        .prepare("SELECT id,ledger_id,ledger_hash,sig FROM control_checkpoint ORDER BY id")
+        .map_err(|e| format!("lecture des points de contrôle du journal de contrôle : {e}"))?;
+    let points = stmt
+        .query_map([], |r| {
+            Ok(PointDeControleDuJournal { nom: format!("#{}", r.get::<_, i64>(0)?), ledger_id: r.get(1)?, ledger_hash: r.get(2)?, sig: r.get(3)? })
+        })
+        .and_then(|it| it.collect::<rusqlite::Result<Vec<_>>>())
+        .map_err(|e| format!("point de contrôle ILLISIBLE ({e}) — les points de contrôle n'ont pas pu être lus entièrement"))?;
+    let mut stmt = conn
+        .prepare("SELECT id,hash FROM control_ledger ORDER BY id")
+        .map_err(|e| format!("lecture du journal de contrôle : {e}"))?;
+    let maillons = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .and_then(|it| it.collect::<rusqlite::Result<Vec<_>>>())
+        .map_err(|e| format!("maillon ILLISIBLE ({e}) — la chaîne n'a pas pu être relue entièrement"))?;
+    Ok(juger_l_ancrage_du_journal_de_controle(&maillons, &points, epinglee))
+}
+
+/// LA PHRASE ET LE CODE DE SORTIE D'UNE ANCRE, pour la base comme pour une copie. `0` = intègre ET ancrée (ou rien à
+/// ancrer) · `1` = réécriture nommée · `2` = AUCUN verdict d'ancrage (clé non épinglée, maillon sans son point).
+/// `ok` et `compromis` sont les préfixes du sujet (« control_ledger OK » / « INTÉGRITÉ COMPROMISE » pour la base).
+pub(crate) fn phrase_de_l_ancrage(n: usize, ancrage: &AncrageDuJournalDeControle, ok: &str, compromis: &str) -> (i32, String) {
+    match ancrage {
+        AncrageDuJournalDeControle::RienAAncrer => (0, format!("{ok} : {n} entrée(s) chaînées intègres, chaîne lue entièrement ; journal vierge, rien à ancrer")),
+        AncrageDuJournalDeControle::Ancree { points } => (
+            0,
+            format!("{ok} : {n} entrée(s) chaînées intègres, chaîne lue entièrement ; tête ancrée, {points} point(s) de contrôle signés par la clé épinglée"),
+        ),
+        AncrageDuJournalDeControle::CleNonEpinglee => (
+            2,
+            format!(
+                "ANCRE NON VÉRIFIÉE : {n} entrée(s) chaînées intègres, mais aucune clé publique n'est épinglée (PLUME_LEDGER_PUBKEY) — \
+                 sans elle, une chaîne réécrite puis re-signée se lirait intègre : aucun verdict d'ancrage n'est rendu"
+            ),
+        ),
+        AncrageDuJournalDeControle::TeteNonAncree { dernier_ancre, non_couverts } => {
+            let depuis = match dernier_ancre {
+                Some(id) => format!("après le maillon #{id}"),
+                None => "depuis l'origine".to_string(),
+            };
+            (
+                2,
+                format!(
+                    "TÊTE NON ANCRÉE : {n} entrée(s) chaînées intègres, mais {non_couverts} maillon(s) {depuis} ne sont couverts par aucun \
+                     point de contrôle signé — une suppression suivie d'un re-chaînage n'y serait pas vue : aucun verdict d'ancrage n'est rendu"
+                ),
+            )
+        }
+        AncrageDuJournalDeControle::MaillonsNonAncres { premier, non_couverts, dernier_ancre } => (
+            2,
+            format!(
+                "MAILLONS NON ANCRÉS : {n} entrée(s) chaînées intègres, mais {non_couverts} maillon(s), dès le maillon #{premier}, n'ont pas \
+                 leur propre point de contrôle signé alors que le maillon #{dernier_ancre} en a un — une suppression suivie d'un re-chaînage \
+                 puis d'une écriture légitime y serait blanchie : aucun verdict d'ancrage n'est rendu"
+            ),
+        ),
+        AncrageDuJournalDeControle::Reecrit(raison) => (1, format!("{compromis} : {raison} — la chaîne a été réécrite après sa signature")),
+    }
+}
+
+/// CE QUE `verify-control` REND : un code de sortie et UNE phrase, calculés ici pour être éprouvés sans lancer le
+/// binaire. La chaîne d'abord (contrat de `control_ledger_verify_conn`, phrases d'avant à l'octet pour la lecture
+/// impossible et la rupture), l'ancre ensuite — une rupture NOMMÉE reste le verdict le plus fort et passe toujours.
+pub(crate) fn verdict_de_verify_control(conn: &Connection, epinglee: Option<&[u8; 32]>) -> (i32, String) {
+    match control_ledger_verify_conn(conn) {
+        Err(e) => (
+            2,
+            format!("VERDICT IMPOSSIBLE : la chaîne du plan de contrôle n'a pas pu être lue ENTIÈREMENT ({e}) — aucun verdict n'est rendu sur une chaîne partiellement lue"),
+        ),
+        Ok((n, Some(id))) => (1, format!("INTÉGRITÉ COMPROMISE : rupture de chaîne du plan de contrôle à l'entrée #{id} ({n} entrée(s) intègres avant elle)")),
+        Ok((n, None)) => match verifier_l_ancrage_du_journal_de_controle(conn, epinglee) {
+            Err(e) => (2, format!("VERDICT IMPOSSIBLE : {n} entrée(s) chaînées intègres, mais l'ancre n'a pas pu être lue ({e}) — aucun verdict d'ancrage n'est rendu")),
+            Ok(ancrage) => phrase_de_l_ancrage(n, &ancrage, "control_ledger OK", "INTÉGRITÉ COMPROMISE"),
+        },
+    }
+}
+
+/// LA SOUS-COMMANDE `verify-control`, hors de `main` pour être jouée par ses témoins : `main` lui passe le chemin du
+/// plan de contrôle, sa clé et la clé publique épinglée, imprime la phrase et sort sur le code. Sans `--export`, la
+/// base (ouverture impossible : phrase d'avant à l'octet) ; avec `--export <f> [--prev <hash>]`, une copie téléchargée,
+/// hors ligne, sans ouvrir la base (lignes vides écartées, comme `ledger-verify-export`).
+pub(crate) fn commande_verify_control(args: &[String], chemin: &str, cle: Option<&str>, epinglee: Option<&[u8; 32]>) -> (i32, String) {
+    if let Some(copie) = crate::flag_val(args, "--export") {
+        return match std::fs::read_to_string(&copie) {
+            Err(e) => (2, format!("VERDICT IMPOSSIBLE : la copie ne se lit pas ({copie}) : {e}")),
+            Ok(contenu) => {
+                let lignes: Vec<String> = contenu.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
+                let prev = crate::flag_val(args, "--prev").unwrap_or_default();
+                crate::governance::verdict_hors_ligne_de_la_copie_du_journal_de_controle(&lignes, &prev, epinglee)
+            }
+        };
+    }
+    match crate::db_open::open_db_keyed_without_schema_contract(chemin, cle) {
+        Err(e) => (2, format!("VERDICT IMPOSSIBLE : le plan de contrôle ne s'ouvre pas ({chemin}) : {e}")),
+        Ok(conn) => verdict_de_verify_control(&conn, epinglee),
+    }
 }
 
 /// #2b (D3/R9) — ÉMISSION STRUCTURELLE du marqueur d'accès opérateur cross-tenant (appelée par auth_guard,
@@ -1090,6 +1372,118 @@ pub(crate) fn ensure_platform_user_conn(conn: &Connection, name: &str) -> Option
     )
     .ok()?;
     Some(id)
+}
+
+// `P10.34-h` — UN JETON SCIM D'UN TENANT NE RATTACHE JAMAIS UN COMPTE D'UN AUTRE TENANT (décision de l'exploitant,
+// 2026-10-26 ; l'oracle par `userName` qui en découle est ACCEPTÉ). `platform_user` est global et son `name` est
+// `UNIQUE` sur toute la plateforme : `POST /Users` retrouvait par son nom le compte d'un autre tenant et lui posait
+// le droit demandé, et `PATCH /Groups` (ajout, ensemble servi d'un `replace`) admettait toute identité connue de la
+// plateforme. Le jugement est désormais celui du TENANT APPELANT :
+//  * l'identité porte un droit dans ce tenant -> rattachable (membre déjà là, même si elle a aussi un droit ailleurs) ;
+//  * sinon, elle a été CRÉÉE par le `POST /Users` de ce tenant (`scim_provenance`) -> rattachable, même si un droit
+//    lui a été posé depuis dans un autre tenant (par `grant_set`, hors SCIM) : l'identité reste celle de ce tenant ;
+//  * sinon, elle porte un droit dans un AUTRE tenant -> étrangère ;
+//  * sinon, elle a été CRÉÉE par le `POST /Users` d'un autre tenant -> étrangère ;
+//  * sinon -> rattachable : née avant la provenance (ou par une autre voie que SCIM : `grant_set`, création de
+//    tenant) et sans aucun droit nulle part, compte déprovisionné partout compris — rétrocompat, rien ne dit à qui
+//    elle appartient. LIMITE NOMMÉE : cette classe reste rattachable par TOUT tenant SCIM, et `POST /Users` de son
+//    nom sert son id ; le premier tenant qui lui pose un droit la rend étrangère aux autres.
+
+/// `P10.34-h` — la table de provenance des identités SCIM, dans la base de CONTRÔLE (jamais une base tenant).
+/// Idempotente (`CREATE TABLE IF NOT EXISTS`), appelée par `migrate_control` : aucun changement de version de schéma.
+/// Une ligne par identité CRÉÉE par `POST /Users` : le tenant dont le jeton l'a créée. Un échec est DIT sur la
+/// sortie d'erreur : la table absente, chaque lecture de la provenance échoue et le geste SCIM refuse (fail-closed).
+pub(crate) fn migrate_control_provenance_scim(conn: &Connection) {
+    if let Err(e) = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS scim_provenance(\
+           user_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, created INTEGER);",
+    ) {
+        eprintln!("[rbac] WARN table de provenance SCIM non créée : les gestes SCIM qui la lisent refuseront : {e}");
+    }
+}
+
+/// `P10.34-h` — ce qu'un tenant peut faire d'une identité CONNUE de la plateforme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RattachementScim {
+    /// Membre du tenant, provisionnée par lui, ou sans droit ni provenance nulle part.
+    Rattachable,
+    /// Ni droit ici ni provenance de ce tenant, et un droit dans un autre tenant ou la provenance d'un autre tenant.
+    Etrangere,
+}
+
+/// `P10.34-h` — UNE SEULE LECTURE : l'identité visée (`filtre`, constante du code : `p.id=?1` ou `p.name=?1`) et,
+/// pour elle, droit ici, droit ailleurs et tenant créateur. `Ok(None)` : aucune identité (inconnue de la plateforme) ;
+/// `Err` : lecture ratée, jamais servie comme une absence ni comme un rattachement. Ne lit pas `"grant".role`.
+fn lire_le_rattachement_scim(conn: &Connection, tenant: &str, filtre: &'static str, valeur: &str) -> rusqlite::Result<Option<(String, RattachementScim)>> {
+    use rusqlite::OptionalExtension as _;
+    let lu: Option<(String, i64, i64, Option<String>)> = conn
+        .query_row(
+            &format!(
+                "SELECT p.id, \
+                   EXISTS(SELECT 1 FROM \"grant\" g WHERE g.user_id=p.id AND g.tenant_id=?2), \
+                   EXISTS(SELECT 1 FROM \"grant\" g WHERE g.user_id=p.id AND g.tenant_id<>?2), \
+                   (SELECT s.tenant_id FROM scim_provenance s WHERE s.user_id=p.id) \
+                 FROM platform_user p WHERE {filtre}"
+            ),
+            params![valeur, tenant],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    Ok(lu.map(|(id, ici, ailleurs, createur)| {
+        let rattachement = if ici != 0 {
+            RattachementScim::Rattachable
+        } else if createur.as_deref() == Some(tenant) {
+            RattachementScim::Rattachable
+        } else if ailleurs != 0 {
+            RattachementScim::Etrangere
+        } else if createur.is_some() {
+            RattachementScim::Etrangere
+        } else {
+            RattachementScim::Rattachable
+        };
+        (id, rattachement)
+    }))
+}
+
+/// `P10.34-h` — le rattachement de l'identité `uid` au tenant `tenant`, sur une connexion DÉJÀ tenue (celle de la
+/// transaction du `PATCH /Groups`). `Ok(None)` : `uid` n'est pas une identité de la plateforme.
+pub(crate) fn rattachement_scim_conn(conn: &Connection, tenant: &str, uid: &str) -> rusqlite::Result<Option<RattachementScim>> {
+    Ok(lire_le_rattachement_scim(conn, tenant, "p.id=?1", uid)?.map(|(_, r)| r))
+}
+
+/// `P10.34-h` — pourquoi `POST /Users` n'a pas d'identité à servir.
+#[derive(Debug)]
+pub(crate) enum IdentiteScimNonPosee {
+    /// Le nom est pris par une identité que ce tenant ne peut pas rattacher : rien n'est créé ni modifié.
+    Etrangere,
+    /// La lecture du nom (ou de son rattachement) a échoué : ni présence ni absence affirmée, rien d'écrit.
+    Illisible(rusqlite::Error),
+    /// Pas d'entropie, ou la base n'a pas pris l'écriture de la provenance ou de l'identité (cause du moteur, pour
+    /// la sortie d'erreur du démon seulement).
+    NonCreee(String),
+}
+
+/// `P10.34-h` — l'identité que `POST /Users` du tenant `tenant` sert pour `name` : l'existante si elle est
+/// rattachable, sinon une identité NEUVE dont la provenance est ce tenant. La provenance s'écrit AVANT l'identité :
+/// refusée, rien n'est créé (une identité sans provenance serait rattachable par tous) ; l'identité refusée après
+/// elle, il reste une ligne de provenance sur un identifiant jamais servi (96 bits aléatoires), inerte.
+/// Ne modifie JAMAIS `is_superadmin` ni un compte existant.
+pub(crate) fn poser_l_identite_scim(cp: &ControlPlane, tenant: &str, name: &str) -> Result<String, IdentiteScimNonPosee> {
+    let conn = cp.conn.lock();
+    match lire_le_rattachement_scim(&conn, tenant, "p.name=?1", name).map_err(IdentiteScimNonPosee::Illisible)? {
+        Some((id, RattachementScim::Rattachable)) => return Ok(id),
+        Some((_, RattachementScim::Etrangere)) => return Err(IdentiteScimNonPosee::Etrangere),
+        None => {}
+    }
+    let id = gen_control_id("pu_").ok_or_else(|| IdentiteScimNonPosee::NonCreee("aucune entropie de l'OS".to_string()))?;
+    conn.execute("INSERT INTO scim_provenance(user_id,tenant_id,created) VALUES(?1,?2,?3)", params![id, tenant, now()])
+        .map_err(|e| IdentiteScimNonPosee::NonCreee(e.to_string()))?;
+    conn.execute(
+        "INSERT INTO platform_user(id,name,hash,is_superadmin,created) VALUES(?1,?2,NULL,0,?3)",
+        params![id, name, now()],
+    )
+    .map_err(|e| IdentiteScimNonPosee::NonCreee(e.to_string()))?;
+    Ok(id)
 }
 
 /// (#64) Compte les grants à AUTORITÉ ADMIN EFFECTIVE d'un tenant sur une connexion DÉJÀ tenue : littéral

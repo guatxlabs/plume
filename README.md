@@ -864,7 +864,7 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 |---|---|---|
 | `PLUME_DB` | fichier SQLite | `/var/lib/plume/db/plume.db` |
 | `PLUME_SPOOL` | spool d'expédition côté agent | `/var/lib/plume/spool` |
-| `PLUME_SPOOL_MAX_FILES` | plafond du spool de l'hôte (fichiers) : au-delà, `ship.sh` évince les PLUS ANCIENS, l'avoue au central par une enveloppe de disponibilité qui porte le compte (`spool-full`) — la perte n'est jamais silencieuse ; un refus permanent (400/413/415/422) part dans `$STATE/refuses/` et est avoué (`ingest-refused`) | `5000` |
+| `PLUME_SPOOL_MAX_FILES` | plafond du spool de l'hôte (fichiers) : au-delà, `ship.sh` évince les PLUS ANCIENS, l'avoue au central par une enveloppe de disponibilité qui porte le compte (`spool-full`) — la perte n'est jamais silencieuse ; un refus permanent (400/413/415/422) part dans `$STATE/refuses/` et est avoué (`ingest-refused`). Chaque fichier est RENOMMÉ dans `$STATE/envoi/` (privé, `PLUME_STATE` doit être inscriptible, sinon refus nommé, code 2, spool conservé) et lu de là seulement : un nom du spool remplacé pendant le passage (lien symbolique, tube ; lien dur quand spool et état sont sur le même volume ; entre deux volumes `mv` recopie et seul `fs.protected_hardlinks=1` borne : sans lui, `ship.sh` dit `ATTENTION` à chaque passage) n'est jamais lu, il part dans `$STATE/refuses/` et est avoué (`spool-substitue`) ; un fichier gardé pour réessai revient au spool, et si un répertoire occupe son nom il reste dans `$STATE/envoi/` (dit sur stderr) et repart au passage suivant | `5000` |
 | `PLUME_STATE` | filigranes des collecteurs | `/var/lib/plume/state` |
 | `PLUME_CONFIG_DIR` | overlays `config.d` (parsers, règles, playbooks) | `/usr/local/share/plume/config.d` |
 | `PLUME_WEB` | racine de la PWA servie | `/usr/local/share/plume/web` |
@@ -1054,6 +1054,17 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 > `PLUME_PROTECTED_IPS`. Les deux lecteurs refusent le masque, mais **pas au même endroit** : l'agent
 > le classe `forme_inconnue` et désarme tout ban ; le démon en lit la **tête** (`2001:db8::`) et
 > refuse la liste — c'est aussi ce qu'il fait d'une zone `%eth0`.
+
+**Confidentialité des capteurs mail et syslog** — posés sur l'agent (`/etc/plume/mail.conf`,
+`/etc/plume/syslog.conf`) ; détail dans [`deploy/MAIL.md`](deploy/MAIL.md) et
+[`deploy/SYSLOG.md`](deploy/SYSLOG.md).
+
+| Variable | Effet | Défaut |
+|---|---|---|
+| `PLUME_MAIL_EMIT_SUBJECT` | `1` = `plume-collector-mail` émet l'objet d'un courriel signalé, tronqué à 80 caractères. Absent, vide ou `0` : l'objet n'est pas émis (`[objet non emis]`), et toute autre valeur arrête le passage. Quoi qu'il vaille, une URL sort sans sa requête ni son fragment, et l'expéditeur sort sous la forme `*@domaine` | non posé (objet non émis) |
+| `PLUME_SYSLOG_ALLOW` | liste d'autorisation de `plume-collector-syslog` (CIDR ou IP séparés par des virgules ; toute source s'écrit `0.0.0.0/0,::/0`). Vide alors qu'une écoute sort de la boucle locale : le récepteur **refuse de démarrer** (code 2, `collector-syslog: ARRET. PLUME_SYSLOG_ALLOW est vide et le recepteur ecoute HORS de la boucle locale (…)`). Posée et illisible : refus de démarrer aussi | vide |
+| `PLUME_SYSLOG_UDP` | écoute UDP du récepteur syslog. Absente : `0.0.0.0:514` (donc refus sans `PLUME_SYSLOG_ALLOW`) ; posée vide : transport coupé. `bootstrap-agent.sh` écrit `127.0.0.1:514` | `0.0.0.0:514` |
+| `PLUME_SYSLOG_TCP` | écoute TCP, même lecture que `PLUME_SYSLOG_UDP` | `0.0.0.0:514` |
 
 **Démonstration**
 

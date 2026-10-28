@@ -11846,3 +11846,6 @@ mod escrow_borne_par_la_retention;
 
 // `P10.34-k` — la couverture déclarée de la recherche est bornée par la rétention ; le refus de purge du tier froid ne l'est pas, et le dit.
 mod couverture_de_la_recherche_bornee_par_la_retention;
+
+// `P10.20-b` — une ligne `cold_seal` illisible n'est jamais un fichier absent ; le vieillissement dit ce qu'il n'a pas lu ni écrit.
+mod seals_illisibles_jamais_absents;

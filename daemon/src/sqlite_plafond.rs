@@ -398,9 +398,7 @@ pub(crate) fn message_erreur(e: &rusqlite::Error) -> String {
     // SE DIT AU JOURNAL AVEC SON CODE ÉTENDU. Le texte du moteur est le même pour trente causes
     // (« disk I/O error » couvre `IOERR_READ`, `IOERR_SHMSIZE`, `IOERR_SHMMAP`, `IOERR_LOCK`…) : sans le
     // code, un incident de démarrage ne se tranche pas. Le TEXTE rendu au client ne change pas.
-    if est_erreur_du_support(e) {
-        eprintln!("[sqlite] erreur du support de la base : {}", decrire_l_erreur(e));
-    }
+    journaliser_si_erreur_du_support(e);
     if est_manque_de_memoire(e) {
         return refus_budget_pour(&plafond_courant());
     }
@@ -445,6 +443,26 @@ fn est_erreur_du_support(e: &rusqlite::Error) -> bool {
         C::SystemIoFailure | C::CannotOpen | C::DiskFull | C::DatabaseCorrupt | C::NotADatabase
             | C::FileLockingProtocolFailed
     ))
+}
+
+/// `P10.33-r` — LA LIGNE « [sqlite] erreur du support de la base », ÉCRITE EN UN SEUL LIEU pour tous ceux qui la
+/// doivent : `message_erreur`, le refus de `/api/search` (`search_engine_error`) et l'échec d'ouverture d'une
+/// connexion de lecture (`journaliser_l_echec_d_ouverture`). Rien pour une erreur de la requête.
+pub(crate) fn journaliser_si_erreur_du_support(e: &rusqlite::Error) {
+    if est_erreur_du_support(e) {
+        eprintln!("[sqlite] erreur du support de la base : {}", decrire_l_erreur(e));
+    }
+}
+
+/// `P10.33-r` — L'ÉCHEC D'OUVERTURE D'UNE CONNEXION DE LECTURE SE DIT AU JOURNAL AVEC SON CODE ÉTENDU, SANS LE TEXTE.
+/// rusqlite colle le CHEMIN de la base au texte d'un refus d'ouverture (`inner_connection.rs`, `open_with_flags` :
+/// « unable to open database file: <chemin> », ou le chemin seul quand SQLite n'a pas rendu de poignée) : le texte
+/// est retiré, le code reste, et la description retombe sur le libellé fixe du code (`Error code N: …`). Une erreur
+/// sans code SQLite (chemin qui porte un octet nul) n'a rien à dire de plus ici : elle n'accuse pas le support.
+pub(crate) fn journaliser_l_echec_d_ouverture(e: &rusqlite::Error) {
+    if let rusqlite::Error::SqliteFailure(f, _) = e {
+        journaliser_si_erreur_du_support(&rusqlite::Error::SqliteFailure(*f, None));
+    }
 }
 
 /// Les codes étendus de la famille `SQLITE_IOERR` (code primaire 10), indexés par leur rang étendu

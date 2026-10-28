@@ -448,7 +448,7 @@ fn balayer(
                 Ok(Journee::Differee) => compte.jours_differes += 1,
                 Err(e) => {
                     compte.jours_echoues += 1;
-                    eprintln!("[cold] aging {env_id}/{} échoué (lignes conservées hot): {e}", ymd_from_day(day));
+                    eprintln!("[cold] aging {env_id}/{} échoué (lignes non retirées conservées hot): {e}", ymd_from_day(day));
                 }
             }
         }
@@ -466,7 +466,10 @@ fn balayer(
     // APRÈS expire_cold_days pour que les seals hors-rétention (retirés par l'expiry) ne soient PAS faux-flaggés.
     // NON gaté sur `cold_ret > retention_days` (un fichier scellé corrompu bloque phase2 indépendamment de
     // l'extension) — mais DANS cold_age_run qui retourne tôt si PLUME_COLD_TIER != "1" -> gate cold-on.
-    detect_cold_seal_stuck(db, n);
+    // `P10.20-b` — LE VERDICT RENDU N'EST PAS PUBLIÉ : la série de la passe ne porte pas ce détecteur (ni avant ce lot,
+    // ni maintenant). « Aucun verdict » n'est donc dit que par le journal `[cold] détecteur de seal BLOQUÉ inopérant` ;
+    // la valeur rendue sert aux témoins. La porter dans la série demanderait un nom de série neuf.
+    let _verdict_dit_par_le_journal_seulement = detect_cold_seal_stuck(db, n);
 
     // #18 P1.5 — DEAD-MAN'S-SWITCH « aging cold en RETARD ». Repousser le hard-purge hot à `cold_ret` fait que,
     // SI l'aging cesse silencieusement de drainer le hot (clé absente chaque tick, verify en échec, ingest
@@ -604,7 +607,13 @@ pub(super) fn detect_aging_stall(db: &Arc<Mutex<Connection>>, bande: &Bande, n: 
         params![META_DERNIER_TIR_DU_RETARD, n.to_string()],
     );
     if lingering > 0 {
-        emit_cold_aging_stall(&conn, n, lingering, bande.hot_window, bande.cold_ret);
+        // `P10.20-b` — un signal REFUSÉ n'est pas un signal dédupliqué : il est dit ici (le retard mesuré, lui, part
+        // dans la série quoi qu'il arrive).
+        if let Err(nature) = emit_cold_aging_stall(&conn, n, lingering, bande.hot_window, bande.cold_ret) {
+            eprintln!(
+                "[cold] signal de santé « aging cold en RETARD » NON ÉCRIT ({nature}) — {lingering} ligne(s) en retard, dites seulement par ce journal et la série ce tick"
+            );
+        }
     }
     Retard::Mesure(lingering)
 }
@@ -614,8 +623,8 @@ pub(super) fn detect_aging_stall(db: &Arc<Mutex<Connection>>, bande: &Bande, n: 
 /// `origin='daemon'` + `category='health'` -> NON-PURGEABLE (RETENTION_NONPURGE), SOC-visible/alertable, et
 /// NON-FATAL (c'est un signal, jamais un arrêt). DÉDUP HORAIRE (dedup UNIQUE `plume-cold-aging-stall-<bucket>`)
 /// -> au plus 1 signal/heure malgré des ticks retention_run plus fréquents (anti-tempête, miroir exact des
-/// autres emit_*). Sévérité 3. Renvoie true si une ligne a été écrite.
-fn emit_cold_aging_stall(conn: &Connection, now_ts: i64, lingering: i64, hot_window: i64, cold_ret: i64) -> bool {
+/// autres emit_*). Sévérité 3. `Ok(true)` : ligne écrite ; `Ok(false)` : déjà émis cette heure (dédup) ; `Err(nature)` : écriture refusée (`P10.20-b`, jamais confondue avec la dédup).
+fn emit_cold_aging_stall(conn: &Connection, now_ts: i64, lingering: i64, hot_window: i64, cold_ret: i64) -> Result<bool, String> {
     let bucket = now_ts / 3600; // dedup HORAIRE -> 1 signal/heure max
     let dedup = format!("plume-cold-aging-stall-{bucket}");
     let msg = format!(
@@ -650,41 +659,74 @@ fn emit_cold_aging_stall(conn: &Connection, now_ts: i64, lingering: i64, hot_win
             origin: "daemon".into(), // marqueur DAEMON -> exclut de la purge (un forgeur porte origin='')
             env_id: None,
         })
-        .unwrap_or(0)
-        > 0
+        .map(|ecrites| ecrites > 0)
+        .map_err(|e| nature_de_l_echec_sur_l_index(&e))
 }
 
 /// #18 — DÉTECTE un seal cold BLOQUÉ (delete-side stall) et émet (si besoin) le signal de santé. Non-fatal ;
 /// best-effort. Un jour scellé mais JAMAIS purgé (purged=0) dont le sealed_ts est plus vieux que la grâce =
-/// phase2 coincée (VERIFY échoue en boucle sur un fichier corrompu -> la slice cold est illisible ET le hot
-/// n'est jamais purgé). LIT UNIQUEMENT la petite table `cold_seal` -> AUCUNE clé de déchiffrement requise.
-pub(super) fn detect_cold_seal_stuck(db: &Arc<Mutex<Connection>>, n: i64) {
+/// phase2 coincée : VERIFY échoue en boucle sur un fichier corrompu (la slice cold est illisible ET le hot
+/// n'est jamais purgé), ou le marquage `purged=1` a été refusé après le retrait des lignes chaudes (fichier
+/// vérifié ; `P10.20-b`, le signal nomme les deux causes). LIT UNIQUEMENT la petite table `cold_seal` -> AUCUNE clé de déchiffrement requise.
+///
+/// `P10.20-b` — UN DÉTECTEUR QUI N'A PAS LU NE DIT PAS « RIEN DE BLOQUÉ ». Le `.ok()` d'avant rendait une lecture
+/// ratée de `cold_seal` sous la forme « aucun seal bloqué » : le dead-man's-switch se taisait parce qu'il était
+/// aveugle. Une lecture ratée est dite (nature, jamais le message) et rend `NonMesure` ; un signal dont l'écriture
+/// est refusée est dit aussi (jamais confondu avec la dédup horaire). `MIN(sealed_ts)` est sous `COALESCE` : le cas
+/// sain (aucun seal bloqué) est une lecture réussie, pas un NULL.
+pub(super) fn detect_cold_seal_stuck(db: &Arc<Mutex<Connection>>, n: i64) -> SealBloque {
     let conn = db.lock();
     let cutoff = n - COLD_SEAL_STUCK_GRACE_S;
     // COUNT(*) = fichiers-seals bloqués ; COUNT(DISTINCT env/day) = jours distincts ; MIN(sealed_ts) = le plus
     // ancien seal coincé. Requête sur la PETITE table cold_seal, bornée par purged=0 (rare en régime sain).
-    let row: Option<(i64, i64, i64)> = conn
-        .query_row(SQL_SEAL_BLOQUE, params![cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .ok();
-    if let Some((files, days, oldest_ts)) = row {
-        if files > 0 {
-            emit_cold_seal_stuck(&conn, n, files, days, oldest_ts);
+    let (files, days, oldest_ts): (i64, i64, i64) =
+        match conn.query_row(SQL_SEAL_BLOQUE, params![cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) {
+            Ok(lu) => lu,
+            Err(e) => {
+                eprintln!(
+                    "[cold] détecteur de seal BLOQUÉ inopérant ce tick — index cold_seal non lu ({}) ; aucun verdict rendu (ni « bloqué », ni « sain »)",
+                    nature_de_l_echec_sur_l_index(&e)
+                );
+                return SealBloque::NonMesure;
+            }
+        };
+    if files > 0 {
+        if let Err(nature) = emit_cold_seal_stuck(&conn, n, files, days, oldest_ts) {
+            eprintln!(
+                "[cold] signal de santé « seal cold BLOQUÉ » NON ÉCRIT ({nature}) — {files} fichier(s) bloqué(s) sur {days} jour(s), dits seulement par ce journal ce tick"
+            );
         }
     }
+    SealBloque::Mesure(files)
+}
+
+/// `P10.20-b` — CE QUE LE DÉTECTEUR DE SEAL BLOQUÉ A RENDU : le nombre de fichiers bloqués lu (0 = aucun), ou
+/// aucun verdict quand l'index n'a pas été lu.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SealBloque {
+    Mesure(i64),
+    NonMesure,
 }
 
 /// #18 — SIGNAL DE SANTÉ « seal cold BLOQUÉ » (delete-side stall). MIROIR EXACT de emit_cold_aging_stall :
 /// même canal (event `source='plume-config'` + `origin='daemon'` + `category='health'`) -> NON-PURGEABLE
 /// (RETENTION_NONPURGE), SOC-visible/alertable, NON-FATAL. DÉDUP HORAIRE (dedup UNIQUE
-/// `plume-cold-seal-stuck-<bucket>`) -> au plus 1 signal/heure via INSERT-OR-IGNORE. Sévérité 4. Renvoie true
-/// si une ligne a été écrite.
-fn emit_cold_seal_stuck(conn: &Connection, now_ts: i64, files: i64, days: i64, oldest_ts: i64) -> bool {
+/// `plume-cold-seal-stuck-<bucket>`) -> au plus 1 signal/heure via INSERT-OR-IGNORE. Sévérité 4.
+/// `Ok(true)` si une ligne a été écrite, `Ok(false)` si déjà émis cette heure, `Err(nature)` si l'écriture est refusée (`P10.20-b`).
+fn emit_cold_seal_stuck(conn: &Connection, now_ts: i64, files: i64, days: i64, oldest_ts: i64) -> Result<bool, String> {
     let bucket = now_ts / 3600; // dedup HORAIRE -> 1 signal/heure max
     let dedup = format!("plume-cold-seal-stuck-{bucket}");
+    // `P10.20-b` — DEUX CAUSES, ET LE SIGNAL NE SAIT PAS LAQUELLE : il lit `cold_seal` seul. L'ancien texte n'en
+    // nommait qu'une (VERIFY en boucle, fichier illisible) ; un marquage `purged=1` refusé après le retrait des lignes
+    // chaudes laisse AUSSI le seal à `purged=0` — fichier vérifié et lisible — et, s'il ne reste plus de ligne chaude
+    // au jour, la passe (qui découvre les jours par leurs lignes chaudes) ne le reprend plus. Le journal `[cold] aging`
+    // du tour fautif dit laquelle.
     let msg = format!(
         "SEAL COLD BLOQUÉ : {files} fichier(s) scellé(s) sur {days} jour(s) restent NON PURGÉS (phase-2 \
-         bloquée) — VERIFY échoue en boucle -> la slice cold est ILLISIBLE et le hot n'est jamais purgé. \
-         Vérifier les journaux [cold] et l'intégrité disque."
+         bloquée). Deux causes possibles, nommées par les journaux [cold] aging : VERIFY du fichier en échec à \
+         chaque tour (fichier illisible, ses lignes chaudes ne sont jamais purgées), ou marquage purged=1 refusé \
+         après le retrait des lignes chaudes (fichier vérifié et lisible ; s'il ne reste aucune ligne chaude au \
+         jour, la passe ne le reprend plus). Vérifier les journaux [cold] et l'intégrité disque."
     );
     let fields = json!({
         "subsystem": "cold-tier",
@@ -711,8 +753,8 @@ fn emit_cold_seal_stuck(conn: &Connection, now_ts: i64, files: i64, days: i64, o
             origin: "daemon".into(), // marqueur DAEMON -> exclut de la purge (un forgeur porte origin='')
             env_id: None,
         })
-        .unwrap_or(0)
-        > 0
+        .map(|ecrites| ecrites > 0)
+        .map_err(|e| nature_de_l_echec_sur_l_index(&e))
 }
 
 /// CE QU'UN JOUR EST DEVENU — TROIS issues SANS erreur, qui ne doivent pas se confondre dans la série.
@@ -764,7 +806,9 @@ impl Journee {
 #[allow(clippy::too_many_arguments)]
 fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_id: &str, day: i64, file_cap: usize, rg_rows: usize, pass: &str, compte: &mut Compte) -> Result<Journee, String> {
     let avant = *compte; // la PHOTO d'entrée : tout le verdict « columnarisé ou non » en dérive.
-    let seals = { let conn = db.lock(); file_seals(&conn, env_id, day) };
+    // `P10.20-b` — un index illisible n'est pas un jour FRAIS : le reprendre comme tel réécrirait le seq 0 par-dessus
+    // un fichier scellé. Le jour est suspendu (échoué), hot intact.
+    let seals = { let conn = db.lock(); seals_du_jour(&conn, env_id, day) }.map_err(|e| seals_du_jour_non_lus(&e))?;
     let write_done = seals.iter().any(|s| s.last_file);
 
     if !write_done {
@@ -832,7 +876,7 @@ fn age_one_day(db: &Arc<Mutex<Connection>>, db_path: &str, cold_dir: &Path, env_
 /// profondeur), puis borne le delete `id<=max_id` (FIX #1) + fenêtre keyset. Après un futur découpage en modules,
 /// le compilateur n'imposera plus verify-avant-delete par-delà les frontières : ce contrat doit rester écrit.
 fn phase2_delete(db: &Arc<Mutex<Connection>>, cold_dir: &Path, env_id: &str, day: i64, pass: &str, compte: &mut Compte) -> Result<(), String> {
-    let seals = { let conn = db.lock(); file_seals(&conn, env_id, day) };
+    let seals = { let conn = db.lock(); seals_du_jour(&conn, env_id, day) }.map_err(|e| seals_du_jour_non_lus(&e))?;
     for f in seals {
         if f.purged {
             continue; // déjà supprimé du hot (idempotent ; les stragglers id>max_id restent hot).
@@ -844,14 +888,38 @@ fn phase2_delete(db: &Arc<Mutex<Connection>>, cold_dir: &Path, env_id: &str, day
         // COMPTE (`P10.5-a`) : le chiffre publié est celui que le DELETE a RENDU, jamais `f.expected` — un
         // re-run idempotent supprime zéro ligne pour un seal qui en annonce des milliers.
         compte.lignes_retirees += delete_file_rows(db, env_id, day, f.max_id, f.lo_ts, f.lo_id, f.ts_max, f.hi_id);
-        compte.fichiers_purges += 1;
-        let conn = db.lock();
-        let _ = conn.execute(
-            "UPDATE cold_seal SET purged=1 WHERE env_id=?1 AND day=?2 AND seq=?3",
-            params![env_id, day, f.seq],
-        );
+        // `P10.20-b` — LE FICHIER N'EST COMPTÉ PURGÉ QUE S'IL EST MARQUÉ. Un `let _` jetait le refus de l'UPDATE après
+        // avoir déjà compté le fichier : la série disait « purgé » pour un seal resté `purged=0`. Refus ou ligne non
+        // marquée -> le jour s'arrête en échec (compté `echoue`, dit par le journal de la passe) ; les lignes retirées
+        // sont dans le fichier vérifié ci-dessus. Le marquage est repris au prochain tour où le jour reste candidat (lignes
+        // chaudes restantes) ; sinon le seal reste `purged=0` et `detect_cold_seal_stuck` le signale passé la grâce.
+        let marque = {
+            let conn = db.lock();
+            conn.execute("UPDATE cold_seal SET purged=1 WHERE env_id=?1 AND day=?2 AND seq=?3", params![env_id, day, f.seq])
+        };
+        match marque {
+            Ok(1) => compte.fichiers_purges += 1,
+            Ok(n) => {
+                return Err(format!(
+                    "fichier scellé seq {} : lignes chaudes retirées mais seal non marqué purgé ({n} ligne(s) marquée(s)) — non compté purgé, seal laissé purged=0 (repris au prochain tour où le jour est candidat, sinon signalé « seal BLOQUÉ » passé la grâce)",
+                    f.seq
+                ))
+            }
+            Err(e) => {
+                return Err(format!(
+                    "fichier scellé seq {} : lignes chaudes retirées mais marquage purged=1 refusé ({}) — non compté purgé, seal laissé purged=0 (repris au prochain tour où le jour est candidat, sinon signalé « seal BLOQUÉ » passé la grâce)",
+                    f.seq,
+                    nature_de_l_echec_sur_l_index(&e)
+                ))
+            }
+        }
     }
     Ok(())
+}
+
+/// `P10.20-b` — la phrase d'un jour dont l'index `cold_seal` n'a pas été lu : la nature, jamais le message du moteur.
+fn seals_du_jour_non_lus(e: &SealsNonLus) -> String {
+    format!("index cold_seal du jour non lu ({}) — jour SUSPENDU, aucun fichier tenu pour absent", e.nature())
 }
 
 /// Supprime les jours-Parquet (TOUS leurs fichiers séquencés + leurs marqueurs seal) au-delà de la rétention de

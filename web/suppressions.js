@@ -22,6 +22,24 @@ const RELEVE_DES_COLLECTEURS_MOTS = {
   sous_titre_interrompu_sans_ligne: { fr: 'relevé INTERROMPU avant toute ligne — on ignore combien il en manque', en: 'survey INTERRUPTED before any row — how many are missing is unknown' },
 };
 const motDuReleveDesCollecteurs = (cle) => (LANG === 'en' ? RELEVE_DES_COLLECTEURS_MOTS[cle].en : RELEVE_DES_COLLECTEURS_MOTS[cle].fr);
+// `P10.20-b` — LES MOTS DE L'ÉTAT DU PARE-FEU NON LU, même grammaire que le relevé des collecteurs. `suppressions_get`
+// (daemon/src/handlers/admin_ui.rs) sert `firewall_etat` : `non_commence` (rien lu : `firewall` nul n'est pas l'absence
+// d'instantané) ou `interrompu` (les machines lues sont dans `firewall_hosts`, le dénominateur `firewall_n_hosts` est nul).
+// Le corps ne porte aucun texte du moteur : le second nœud de l'aveu est la fin servie, telle quelle.
+const MOTS_DE_L_ETAT_DU_PARE_FEU = {
+  non_commence: {
+    fr: "État du pare-feu NON LU : le démon n'a rendu le dernier instantané d'aucune machine — rien n'est établi sur le pare-feu du parc, et ce n'est pas l'absence d'instantané. Fin servie par le démon —",
+    en: "Firewall state NOT READ: the daemon returned no machine's latest snapshot — nothing is established about the fleet's firewall, and it is not the absence of a snapshot. End served by the daemon —" },
+  interrompu: {
+    fr: "État du pare-feu : parc NON LU entièrement — la lecture a été interrompue, {lues} machine(s) lue(s), on ignore combien il en manque. Fin servie par le démon —",
+    en: 'Firewall state: fleet NOT fully read — the read was interrupted, {lues} machine(s) read, how many are missing is unknown. End served by the daemon —' },
+  interrompu_sans_ligne: {
+    fr: "État du pare-feu : parc NON LU entièrement — la lecture a été interrompue avant toute machine rendue, on ignore combien il en manque. Fin servie par le démon —",
+    en: 'Firewall state: fleet NOT fully read — the read was interrupted before any machine was returned, how many are missing is unknown. End served by the daemon —' },
+  sous_titre_non_commence: { fr: 'NON LU — aucune machine lue', en: 'NOT READ — no machine read' },
+  sous_titre_interrompu: { fr: 'parc NON LU entièrement — {lues} machine(s) lue(s), on ignore combien il en manque', en: 'fleet NOT fully read — {lues} machine(s) read, how many are missing is unknown' },
+  sous_titre_interrompu_sans_ligne: { fr: 'parc NON LU entièrement — aucune machine rendue', en: 'fleet NOT fully read — no machine returned' },
+};
 // L'aveu à deux nœuds (grammaire de `P10.7-f`) : la phrase est posée AU PUITS par l'appelant
 // (`dit.textContent = …`) — c'est là que `i18nWalk` la voit —, la cause SERVIE est collée dans un SECOND
 // nœud, jamais dans le même littéral, un nœud texte ne s'égalant à une clé que s'il est ENTIER.
@@ -331,12 +349,33 @@ async function loadSuppressions() {
     pagedList(ct, { mode: 'client', pageSize: 50, rows: collecteurs, columns: ccols, emptyText: 'aucun', storeKey: 'soc_collector_suppressions', recherche: true });
   }
   // ---- (3) ÉTAT FIREWALL (hôte) ----
-  if (d.firewall && d.firewall.data != null) {
+  // `P10.20-b` — LA FIN SERVIE DÉCIDE (`firewall_etat` ∈ interrompu / non_commence). Une autre valeur servie, ou un
+  // dénominateur `firewall_n_hosts` NUL, se lit comme une lecture interrompue (refus par défaut, comme `parcLuEnPartie`
+  // de web/app.js) : la face d'avant lirait ce nul comme zéro. Démon ancien (ni l'un ni l'autre) : la face d'avant, la
+  // section n'est peinte que sur un instantané servi.
+  const etatFw = !d ? '' : d.firewall_etat === 'non_commence' ? 'non_commence'
+    : (d.firewall_etat != null || d.firewall_n_hosts === null) ? 'interrompu' : '';
+  const fwServi = !!(d.firewall && d.firewall.data != null);
+  if (etatFw) {
+    const lues = Array.isArray(d.firewall_hosts) ? d.firewall_hosts.length : 0;
+    // Le compte des machines LUES décide « sans ligne », pas l'instantané affiché : une charge indécodable sert `data` nul
+    // alors que la machine a bien été lue.
+    const fin = etatFw === 'non_commence' ? 'non_commence' : (lues ? 'interrompu' : 'interrompu_sans_ligne');
+    wrap.appendChild(suppSectionTitle('État firewall (hôte)', (fwServi ? 'snapshot' + (d.firewall.host ? ' · ' + d.firewall.host : '') + ' · ' : '')
+      + faceDansLaLangue(MOTS_DE_L_ETAT_DU_PARE_FEU['sous_titre_' + fin], { lues })));
+    const { aveu, dit } = boiteDAveuDeSuppressions();
+    aveu.dataset.finDeLEtatDuPareFeu = fin;
+    dit.textContent = faceDansLaLangue(MOTS_DE_L_ETAT_DU_PARE_FEU[fin], { lues });
+    aveu.append(' « ' + (d.firewall_etat != null ? String(d.firewall_etat) : etatFw) + ' »');
+    wrap.appendChild(aveu);
+  } else if (fwServi) {
     // DÉNOMINATEUR EXPLICITE : cette section montrait l'état d'UNE machine sans jamais dire combien il y
     // en avait (mesuré : 1 hôte rendu pour un parc de 50). `firewall_n_hosts` est le dénominateur.
     const nfw = d.firewall_n_hosts || 0;
     wrap.appendChild(suppSectionTitle('État firewall (hôte)', 'snapshot' + (d.firewall.host ? ' · ' + d.firewall.host : '')
       + (nfw > 1 ? ` · 1 machine sur ${nfw} (voir Flotte pour les autres)` : '')));
+  }
+  if (fwServi) {
     const fw = document.createElement('pre'); fw.style.cssText = 'font-family:var(--font-mono);font-size:11px;overflow:auto;max-height:220px;background:var(--card);border:1px solid var(--bd);padding:8px;border-radius:6px;margin:0'; // P11.4-c : variables de thème réelles (`--bg2`/`--mono` n'existaient pas)
     try { fw.textContent = JSON.stringify(d.firewall.data, null, 2); } catch { fw.textContent = String(d.firewall.data); }
     wrap.appendChild(fw);

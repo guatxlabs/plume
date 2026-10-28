@@ -3,7 +3,7 @@ import {
   setSocTZ,
   socIsAdmin, formMsg,
   confirmWithConsequence, disclosure, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, faceDansLaLangue,
-  avecLeSecretDesGestes, phraseDuRefusDUneLecture, refusDUneLectureServie,
+  avecLeSecretDesGestes, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture, refusDUneLectureServie,
   aveuDUneTraceManquante, causeDeLaTraceManquante
 } from './core.js';
 import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
@@ -271,14 +271,47 @@ function refresh(opts) {
 // DÉNOMINATEUR EXPLICITE (règle des surfaces réconciliées) — un panneau d'INSTANTANÉ montre l'état d'UNE
 // machine ; tant qu'il ne dit pas laquelle ni combien il y en a, il AFFIRME une complétude qu'il n'a pas.
 // L'API rend désormais `host` + `hosts[]` + `n_hosts` (cf. handlers/overview.rs::panel).
+// `P10.20-b` — UNE LECTURE PARTIELLE DU PARC SE DIT. `panel` sert `hosts_etat` (`interrompu`) et `n_hosts` NUL quand le
+// parcours des derniers instantanés a été coupé : les machines LUES restent dans `hosts[]`, le dénominateur n'est pas
+// établi. `r.n_hosts || 0` lisait ce nul comme zéro, et le panneau disait « hôte X » comme sur un parc d'une machine.
+// Rien lu du tout = cinq cent trois nommé (`CAUSE_INSTANTANES_DU_PARC_NON_LUS`), peint dans le corps par l'appelant.
+// Un démon ancien (ni `hosts_etat` ni `n_hosts` nul) garde la face d'avant.
+const MOTS_DES_INSTANTANES_DU_PARC = {
+  partiel: {
+    fr: 'hôte {hote} — <b>parc NON LU entièrement</b> : lecture interrompue, {lues} machine(s) lue(s), on ignore combien il en manque',
+    en: 'host {hote} — <b>fleet NOT fully read</b>: read interrupted, {lues} machine(s) read, how many are missing is unknown' },
+  partiel_sans_machine: {
+    fr: 'parc NON LU entièrement : lecture interrompue avant toute machine rendue, on ignore combien il en manque',
+    en: 'fleet NOT fully read: read interrupted before any machine was returned, how many are missing is unknown' },
+  total_lu: {
+    fr: ' · machines LUES (pas le parc) : {parc} manquant(s) sur {en_defaut}/{lues} machine(s) lue(s)',
+    en: ' · machines READ (not the fleet): {parc} missing on {en_defaut}/{lues} machine(s) read' },
+  objet_firewall: { fr: 'Instantanés du pare-feu du parc', en: 'Fleet firewall snapshots' },
+  objet_controls: { fr: 'Instantanés des contrôles du parc', en: 'Fleet control snapshots' },
+};
+const parcLuEnPartie = (r) => !!r && (r.hosts_etat != null || r.n_hosts === null);
 function snapScope(r) {
+  if (parcLuEnPartie(r)) {
+    const lues = Array.isArray(r.hosts) ? r.hosts.length : 0;
+    return faceDansLaLangue(MOTS_DES_INSTANTANES_DU_PARC.partiel, { hote: esc(r.host || '?'), lues });
+  }
   const n = r.n_hosts || 0;
   if (n <= 1) return r.host ? `hôte ${esc(r.host)}` : '';
   return `hôte ${esc(r.host || '?')} — <b>1 machine sur ${n}</b>`;
 }
+// Le corps d'un panneau d'instantané dont la lecture n'est pas servie (un cinq cent trois nommé, un refus) : la peinture
+// d'AVANT ne reste pas sous l'aveu du pied de page — elle se lirait comme l'état présent. L'erreur est relancée : c'est
+// `lancerLesCharges` (web/navigation.js) qui écrit l'aveu de `#status`.
+async function lirePanneauDInstantane(b, kind, objet) {
+  try { return await api('/panel/' + kind); }
+  catch (e) { if (b) b.replaceChildren(noeudDuRefusDUneLecture(e, faceDansLaLangue(MOTS_DES_INSTANTANES_DU_PARC[objet]))); throw e; }
+}
+// Une lecture interrompue AVANT toute machine rendue n'est pas « aucune donnée » : elle a commencé, rien n'en est montré.
+const parcNonLuSansMachine = () => `<div class="bad">${esc(faceDansLaLangue(MOTS_DES_INSTANTANES_DU_PARC.partiel_sans_machine))}</div>`;
 async function renderFirewall() {
-  const r = await api('/panel/firewall');
   const b = $('#firewall .body');
+  const r = await lirePanneauDInstantane(b, 'firewall', 'objet_firewall');
+  if (!r.data && parcLuEnPartie(r)) { b.innerHTML = parcNonLuSansMachine(); return; }
   if (!r.data) { b.innerHTML = '<div class="muted">aucune donnée (le capteur tourne toutes les 2 min)</div>'; return; }
   const c = r.data.control_docker_lockdown;   // omis hors hôte laptop (wlan0) -> n/a, pas un faux ABSENT
   const lockdown = c
@@ -290,8 +323,8 @@ async function renderFirewall() {
   b.innerHTML = lockdown + `<div class="muted">ruleset ${esc((r.data.ruleset_sha256 || '').slice(0, 12))}... - ${fmtTs(r.ts)}${sc ? ' · ' + sc : ''}</div>`;
 }
 async function renderControls() {
-  const r = await api('/panel/controls');
   const b = $('#controls .body');
+  const r = await lirePanneauDInstantane(b, 'controls', 'objet_controls');
   // `P11.18-i` — UN CATALOGUE VIDE N'EST PAS « 0 MANQUANT ». Trois cas, pas deux, et le tableau
   // JavaScript vide est le piège : il est *truthy*, donc `!r.data.controls` le laissait passer, `map()`
   // rendait la chaîne vide, et le panneau affichait « 0 manquant(s) » — un tableau de bord RASSURANT là
@@ -303,6 +336,7 @@ async function renderControls() {
   // ou contrôles tous désactivés y tombent de la même façon, donc l'invariant tiendra encore quand la
   // console saura désactiver un contrôle.
   const liste = r.data && Array.isArray(r.data.controls) ? r.data.controls : null;
+  if (!r.data && parcLuEnPartie(r)) { b.innerHTML = parcNonLuSansMachine(); return; }
   if (!r.data || liste === null) { b.innerHTML = '<div class="muted">en attente du capteur (5 min)...</div>'; return; }
   if (liste.length === 0) {
     b.innerHTML = `<div class="bad">${esc(LANG === 'en'
@@ -316,7 +350,10 @@ async function renderControls() {
   const parc = hs.reduce((a, h) => a + ((h.data && h.data.failed) || 0), 0);
   const enDefaut = hs.filter(h => h.data && h.data.failed > 0).length;
   const sc = snapScope(r);
-  const total = hs.length > 1
+  // `P10.20-b` — sous une lecture PARTIELLE, `hs.length` est le compte des machines LUES, pas le parc : le total le dit.
+  const total = parcLuEnPartie(r)
+    ? faceDansLaLangue(MOTS_DES_INSTANTANES_DU_PARC.total_lu, { parc, en_defaut: enDefaut, lues: hs.length })
+    : hs.length > 1
     ? ` · parc : ${parc} manquant(s) sur ${enDefaut}/${hs.length} machine(s)`
     : '';
   // S36 — TROIS VERDICTS, PAS DEUX. `ok === null` veut dire « la sonde n'a pas pu conclure » (verrou

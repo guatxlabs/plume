@@ -47,7 +47,7 @@ mod rollups_borne_d_identifiant_non_lue {
     use std::sync::Arc;
 
     fn rbil_recent() -> i64 {
-        ((now() / 3600) * 3600 - 3600).max(0)
+        heure_ronde_precedente_hors_de_la_fin_d_heure()
     }
 
     fn rbil_meta(conn: &rusqlite::Connection, cle: &str) -> Option<String> {

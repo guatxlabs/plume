@@ -131,6 +131,9 @@ pub(crate) fn couverture_froide_sans_reglage_lu() -> Value {
 /// (`[search] WARN`) nomme la classe, le tenant de l'appelant et la NATURE de l'erreur tirée d'une liste blanche
 /// (`nature_de_l_erreur`) : jamais le message, qui porterait le texte de la recherche.
 pub(crate) fn search_engine_error(e: &rusqlite::Error, tenant: &str) -> Value {
+    // `P10.33-r` — une erreur du SUPPORT de la base (E/S, ouverture, disque plein, corruption, verrou) se dit AUSSI par
+    // la ligne `[sqlite]`, avec le NOM de son code étendu (`decrire_l_erreur`) ; le corps rendu au client ne change pas.
+    crate::sqlite_plafond::journaliser_si_erreur_du_support(e);
     let interrompue = matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::OperationInterrupted));
     eprintln!(
         "[search] WARN recherche {} (tenant '{tenant}') : {}",

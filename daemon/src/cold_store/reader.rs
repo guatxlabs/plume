@@ -699,7 +699,9 @@ pub(crate) fn hydrate_cold(
     let mut selected: Vec<SelFile> = Vec::new();
     let mut pruned = 0usize;
     for day in lo_day..=hi_day {
-        for s in file_seals(conn, env_id, day) {
+        // `P10.20-b` — index du jour non lu ou ligne illisible -> la lecture froide est refusée, jamais un fichier
+        // sauté sans un mot (la réponse aurait été servie comme complète).
+        for s in seals_du_jour(conn, env_id, day).map_err(SealsNonLus::pour_la_voie_froide)? {
             // CHEVAUCHEMENT d'intervalles [ts_min,ts_max] vs [q_start,q_end] (inclusif) — décidé UNIQUEMENT sur
             // l'index seal (dans la base chiffrée), JAMAIS en ouvrant un Parquet.
             if s.ts_min <= q_end_ts && s.ts_max >= q_start_ts {
@@ -1026,18 +1028,6 @@ pub(super) fn distinct_seal_envs(conn: &Connection, lo_ts: i64, hi_ts: i64) -> R
     };
     let rows = st.query_map(params![lo_day, hi_day], |r| r.get::<_, String>(0)).map_err(crate::query_exec::texte_de_la_voie_froide)?;
     rows.collect::<Result<Vec<String>, _>>().map_err(crate::query_exec::texte_de_la_voie_froide)
-}
-
-/// `P10.20-b` — LA TABLE DES SCEAUX N'EXISTE PAS ENCORE : une base jamais vieillie ne la porte pas (elle naît au premier
-/// vieillissement, `ensure_cold_seal_table`). C'est la SEULE erreur qui vaut « aucun froid » ; le message est celui que
-/// SQLite rend pour cette table, sous les deux formes que rusqlite construit (avec ou sans position du jeton).
-fn table_de_seal_absente(e: &rusqlite::Error) -> bool {
-    let message = match e {
-        rusqlite::Error::SqliteFailure(_, Some(m)) => m.as_str(),
-        rusqlite::Error::SqlInputError { msg, .. } => msg.as_str(),
-        _ => return false,
-    };
-    message == "no such table: cold_seal"
 }
 
 /// `P10.20-b` — LE PLUS ANCIEN JOUR SCELLÉ, EN SECONDES, borne basse d'une fenêtre froide non bornée (`q_from <= 0`).

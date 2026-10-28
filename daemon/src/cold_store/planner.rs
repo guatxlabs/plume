@@ -44,7 +44,7 @@
 //!      C'est LA correction ; le reste du fichier en découle.
 //!
 //! SÉLECTION DE FICHIERS : RÉUTILISE EXACTEMENT la sélection de `hydrate_cold`/`open_cold_union` (jours spannés ×
-//! `file_seals` dont `[ts_min,ts_max]` chevauche la fenêtre, ordre canonique (day, seq)) + le MÊME
+//! `seals_du_jour` dont `[ts_min,ts_max]` chevauche la fenêtre, ordre canonique (day, seq)) + le MÊME
 //! `verify_parquet_rows` fail-closed + le MÊME ÉLAGAGE DIMENSIONNEL SEAL (#28 P3.5, `DimStats::excluded_by`, les
 //! mêmes `dim_preds` que le chemin oracle) : un fichier dont le seal PROUVE 0 match (min/max hors bornes OU bloom
 //! certain-absent) est SAUTÉ sans le déchiffrer -> c'est LE levier ×10-100 des requêtes sélectives longue-portée.
@@ -578,17 +578,19 @@ fn open_seal_conn(db_path: &str) -> Result<Connection, String> {
 }
 
 /// Sélectionne les fichiers cold d'`env` chevauchant `[lo, hi]`, ORDRE CANONIQUE (day, seq) — RÉUTILISE la
-/// MÊME logique que `hydrate_cold`/`open_cold_union` (jours spannés × `file_seals` × chevauchement `[ts_min,ts_max]`),
+/// MÊME logique que `hydrate_cold`/`open_cold_union` (jours spannés × `seals_du_jour` × chevauchement `[ts_min,ts_max]`),
 /// PUIS #28 P3.5 : élague dimensionnellement via le seal (min/max/bloom) SANS déchiffrer — le MÊME primitif
 /// `DimStats::excluded_by` et la MÊME condition que le chemin oracle (`hydrate_cold`, reader.rs) -> parité PAR
 /// CONSTRUCTION. `pruned` est INCRÉMENTÉ pour chaque fichier sauté (chevauchant la fenêtre mais prouvé sans match).
 /// INVARIANT : on ne saute QUE si `dim_stats` PROUVE 0 match (dim_stats=None -> gardé ; faux positif bloom -> gardé).
-fn select_files(conn: &Connection, env: &str, lo: i64, hi: i64, dim_preds: &[DimEq], pruned: &mut usize) -> Vec<Sel> {
+/// `P10.20-b` — index d'un jour non lu ou ligne illisible -> `Err` (la lecture froide est refusée), jamais un fichier
+/// tenu pour absent.
+fn select_files(conn: &Connection, env: &str, lo: i64, hi: i64, dim_preds: &[DimEq], pruned: &mut usize) -> Result<Vec<Sel>, String> {
     let lo_day = lo.div_euclid(SECS_PER_DAY);
     let hi_day = hi.div_euclid(SECS_PER_DAY);
     let mut out: Vec<Sel> = Vec::new();
     for day in lo_day..=hi_day {
-        for s in file_seals(conn, env, day) {
+        for s in seals_du_jour(conn, env, day).map_err(SealsNonLus::pour_la_voie_froide)? {
             if s.ts_min <= hi && s.ts_max >= lo {
                 // #28 P3.5 — ÉLAGAGE DIMENSIONNEL (encore SANS déchiffrer), IDENTIQUE à `hydrate_cold` : si la
                 // requête porte des égalités sur des dims universelles ET que le seal de CE fichier PROUVE
@@ -608,7 +610,7 @@ fn select_files(conn: &Connection, env: &str, lo: i64, hi: i64, dim_preds: &[Dim
         }
     }
     out.sort_by(|a, b| a.day.cmp(&b.day).then(a.seq.cmp(&b.seq)));
-    out
+    Ok(out)
 }
 
 /// Ouvre+VÉRIFIE (fail-closed, identité liée) UN fichier cold puis renvoie son reader parquet déchiffré.
@@ -659,7 +661,7 @@ fn plan_scan(
             continue; // anti-traversée (mirror open_cold_union)
         }
         let lo_env = horizon.as_ref().map_or(lo, |h| h.borne_basse(&env, lo));
-        for s in select_files(&conn, &env, lo_env, hi, dim_preds, &mut pruned) {
+        for s in select_files(&conn, &env, lo_env, hi, dim_preds, &mut pruned)? {
             files.push((env.clone(), s));
         }
     }

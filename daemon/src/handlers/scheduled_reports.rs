@@ -287,13 +287,14 @@ pub(crate) enum IssueDuRapport {
 }
 
 /// Écriture de statut d'un rapport : `true` sur UNE ligne écrite ; sinon la ligne de journal (identifiant du
-/// rapport + cause du moteur — jamais le nom, l'endpoint du notificateur ni le contenu) et `false`.
+/// rapport, tenant du tour de fond s'il est posé (`P10.33-h`) + cause du moteur — jamais le nom, l'endpoint du
+/// notificateur ni le contenu) et `false`.
 fn statut_du_rapport_ecrit(id: i64, ecrit: rusqlite::Result<usize>, geste: &str) -> bool {
     match ecrit {
         Ok(1) => true,
         autre => {
             let cause = match autre { Err(e) => e.to_string(), Ok(n) => format!("{n} ligne(s) écrite(s) au lieu d'une") };
-            eprintln!("[plume] rapport planifié {id} : {geste} : {cause}");
+            eprintln!("[plume] rapport planifié {id}{} : {geste} : {cause}", crate::metrics::mention_du_tenant_du_tour());
             false
         }
     }
@@ -589,7 +590,7 @@ pub(crate) fn run_due_reports(db: &Arc<Mutex<Connection>>, db_path: &str) -> cra
             // `P10.20-l` — une définition non lue est un rapport dû abandonné : compté, dit au journal, rien d'écrit.
             Ok(Err(DefinitionNonPrise::NonLue { lecture, moteur })) => {
                 abandonnes += 1;
-                eprintln!("[rapports] WARN rapport planifié #{id} dû non exécuté : {}, rien n'est envoyé ni écrit, compté abandonné : {moteur}", lecture.constat());
+                eprintln!("[rapports] WARN rapport planifié #{id}{} dû non exécuté : {}, rien n'est envoyé ni écrit, compté abandonné : {moteur}", crate::metrics::mention_du_tenant_du_tour(), lecture.constat());
             }
             // `P10.33-h` — jeu de données ou canal absent ou désactivé : le rapport dû le dit dans `last_error` (une phrase
             // fixe, écrite une fois : relue dans la lecture du rapport). Une trace refusée ou sans effet est comptée.

@@ -410,12 +410,14 @@
             let conn = st.db.lock();
             snap_parc(&conn, "firewall", 50, now_ts - 7200, now_ts - 5);
         }
-        let Json(v) = panel(State(st.clone()), Extension(mk_admin()), Path("firewall".to_string())).await;
+        // `P10.20-b` — `panel` rend une `Response` (cinq cent trois quand rien n'est lu) : le corps se lit par la réponse.
+        let corps_de = |r: Response| async move { serde_json::from_slice::<Value>(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap() };
+        let v = corps_de(panel(State(st.clone()), Extension(mk_admin()), Path("firewall".to_string())).await).await;
         assert_eq!(v["n_hosts"], 50, "le panneau DIT combien de machines il agrège (avant : rien du tout)");
         assert_eq!(v["host"], "srv00", "et QUELLE machine il montre en tête");
         assert_eq!(v["hosts"].as_array().unwrap().len(), 50, "la ventilation complète est disponible");
         // kind inconnu -> forme vide EXPLICITE (pas d'absence de champ qui se lirait « une machine »).
-        let Json(vide) = panel(State(st), Extension(mk_admin()), Path("jamais-vu".to_string())).await;
+        let vide = corps_de(panel(State(st), Extension(mk_admin()), Path("jamais-vu".to_string())).await).await;
         assert_eq!(vide["n_hosts"], 0);
     }
 

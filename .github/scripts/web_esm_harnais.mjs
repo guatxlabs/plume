@@ -23695,7 +23695,11 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // `P10.32-s` — les tables que le témoin 149 pose : les trois portes d'un dormant, et le fait borné de la dernière collecte.
       "sources.js › MOTS_DU_DORMANT", "sources.js › MOTS_DU_DERNIER_VU_BORNE",
       // `P10.33-n` (reste console) — les tables que le témoin 151 pose : le résultat de l'essai d'un canal, et l'accusé servi.
-      "detection_admin.js › MOTS_DE_L_ACCUSE_D_UN_CANAL", "detection_admin.js › MOTS_DE_L_ESSAI_D_UN_CANAL"];
+      "detection_admin.js › MOTS_DE_L_ACCUSE_D_UN_CANAL", "detection_admin.js › MOTS_DE_L_ESSAI_D_UN_CANAL",
+      // `P10.20-b` (console) — la table que le témoin 152 pose : le parc lu en partie des panneaux d'instantanés.
+      "app.js › MOTS_DES_INSTANTANES_DU_PARC",
+      // `P10.20-b` (console) — la table que le témoin 152 pose aussi : l'état du pare-feu non lu de la section des suppressions.
+      "suppressions.js › MOTS_DE_L_ETAT_DU_PARE_FEU"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -29562,6 +29566,200 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvant151) console.log(`(151) EN ÉCHEC — ${echecs.length - echecsAvant151} écart(s), dits ci-dessus`);
   else console.log("(151) OK — `P10.33-n` (reste console) : dans les deux langues, l'essai d'un canal dit la remise au service seulement quand le démon la sert — lue sur \`remis_au_service\` seul, \`ok\` divergent joué dans les deux sens —, l'échec sinon, « aucun essai » pour un canal local et « genre de canal inconnu du démon » pour un genre inconnu sur la réponse que le démon leur sert (ni échec d'URL / curl, ni remise), aucun « accusé : » sur un code vide, et l'accusé servi (lecture non vérifiable, local vérifiable sur place, sans objet — codes relus dans le démon ET dans la table de la console quelle que soit leur écriture, égalité jugée), jamais « lu », « reçu » ni « envoyé » ; la phrase de remise est en infobulle et retirée par un essai raté sur la même ligne ; une réponse d'un démon antérieur garde « envoyé » / l'échec d'avant ; la liste des canaux dit l'accusé, et rien sans le champ ; un accusé ou une phrase balisés sont rendus en texte. Ce qu'il NE tient PAS : l'exécution de la route (témoins Rust), la phrase de remise reste française sous LANG='en', la mise en page.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (152) `P10.20-b` (console) — LES PANNEAUX D'INSTANTANÉS DU PARC ET LA SECTION PARE-FEU DISENT UN PARC LU EN PARTIE.
+//
+// CE QUE LE DÉMON SERT (RELU dans son arbre, pas recopié) : `panel` (daemon/src/handlers/overview.rs) sert, sur une lecture
+// PARTIELLE des derniers instantanés par machine (fin `interrompu`), un deux cents avec `hosts_etat` et `n_hosts` NUL (les
+// machines lues restent dans `hosts[]`) ; rien lu (fin `non_commence`) = cinq cent trois `CAUSE_INSTANTANES_DU_PARC_NON_LUS`.
+// `suppressions_get` (daemon/src/handlers/admin_ui.rs) sert `firewall_etat` (`interrompu` | `non_commence` | nul),
+// `firewall_incomplets` et `firewall_n_hosts` NUL hors lecture complète ; `non_commence` laisse `firewall` nul.
+//
+// CE QUE LA CONSOLE EN FAISAIT AVANT CE LOT, MESURÉ (4a2a4b91) : `snapScope` (web/app.js) lisait `r.n_hosts || 0` — le nul
+// devenait zéro, le panneau disait « hôte X » comme sur un parc d'une machine ; le total des contrôles disait « parc : … sur
+// 1/2 machine(s) » en prenant les machines LUES pour le parc ; un cinq cent trois jetait sans toucher au corps, qui gardait
+// sa peinture d'avant ; la section « État firewall (hôte) » (web/suppressions.js) lisait `firewall_n_hosts || 0` et, sur
+// `non_commence`, n'était pas peinte du tout — un état du pare-feu non lu se lisait comme l'absence d'instantané.
+//
+// JUGÉ, DANS LES DEUX LANGUES (instances française et `?plume-lang=en`, par les charges réelles du registre `CHARGES_POSEES`
+// et `loadSuppressions`) : (a) pare-feu partiel (servi par `hosts_etat`, et par `n_hosts` nul seul), partiel sans machine,
+// complet multi-machines, mono-machine, démon ancien (sans `n_hosts`) ; (b) contrôles partiels : le total dit les machines
+// LUES, jamais « parc : » ; complets : le total d'avant ; (c) cinq cent trois nommé sur les deux panneaux : le corps ne garde
+// pas sa peinture d'avant, il dit le refus et sa cause, et l'erreur est relancée ; (d) section pare-feu : complet, interrompu
+// avec et sans machine, non commencé (aveu à deux nœuds), démon ancien avec et sans instantané ; (faces) fr ≠ en.
+// CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; la lecture juste du démon est tenue par ses témoins Rust ;
+// la cause du cinq cent trois reste française sous LANG='en' (le démon ne la sert que dans cette langue) ; la mise en page.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant152 = echecs.length;
+  const url152 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const FICHIERS152 = { noyau: "core.js", etat: "state.js", registres: "registres.js", supp: "suppressions.js" };
+  const importer152 = async (adresse) => { await import(adresse("app.js")); const L = {}; for (const [cle, f] of Object.entries(FICHIERS152)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr152 = await importer152(url152);
+  const langueOrigine152 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn152 = await importer152((f) => adresseSousLaLangue(f));
+  if (langueOrigine152 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine152);
+  const FR152 = { nom: "fr", ...modsFr152, HOTE: "hôte", PARTIEL: "parc NON LU entièrement", LUES: (n) => `${n} machine(s) lue(s)`, NON_LU: "État du pare-feu NON LU",
+    TOTAL_LU: "machines LUES (pas le parc) : 3 manquant(s) sur 1/2 machine(s) lue(s)", SANS_MACHINE: "avant toute machine rendue",
+    OBJET: { firewall: "Instantanés du pare-feu du parc", controls: "Instantanés des contrôles du parc" },
+    SOUS_TITRE_LUES: (n) => `parc NON LU entièrement — ${n} machine(s) lue(s), on ignore combien il en manque` };
+  const EN152 = { nom: "en", ...modsEn152, HOTE: "host", PARTIEL: "fleet NOT fully read", LUES: (n) => `${n} machine(s) read`, NON_LU: "Firewall state NOT READ",
+    TOTAL_LU: "machines READ (not the fleet): 3 missing on 1/2 machine(s) read", SANS_MACHINE: "before any machine was returned",
+    OBJET: { firewall: "Fleet firewall snapshots", controls: "Fleet control snapshots" },
+    SOUS_TITRE_LUES: (n) => `fleet NOT fully read — ${n} machine(s) read, how many are missing is unknown` };
+  const instrument152 = (vrai, quoi) => exiger(vrai, `(152-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic152 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser152 = async (n = 30) => { for (let i = 0; i < n; i++) await tic152(); };
+  const nu152 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir152 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir152(c, pred, acc)); return acc; };
+  const parAttribut152 = (hote, a) => cueillir152(hote, (e) => typeof e.getAttribute === "function" && e.getAttribute(a) !== null);
+  const lireLeDemon152 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const corpsDeFonction152 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const constante152 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+
+  // ══ (0) CE QUE LE DÉMON SERT, RELU DANS SON ARBRE ════════════════════════════════════════════════
+  const OV152 = lireLeDemon152("handlers/overview.rs");
+  const panel152 = corpsDeFonction152(OV152, "pub(crate) async fn panel(");
+  instrument152(/if let Some\(etat\) = par_hote\.fin\.etat\(\) \{[\s\S]*?corps\["hosts_etat"\] = json!\(etat\);\s*corps\["n_hosts"\] = Value::Null;/.test(panel152),
+    "`panel` (daemon/src/handlers/overview.rs) ne sert plus `hosts_etat` et `n_hosts` nul sur une lecture partielle");
+  instrument152(/FinDeParcours::NonCommence \{ cause \} => \{[\s\S]*?return err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_INSTANTANES_DU_PARC_NON_LUS\);/.test(panel152),
+    "`panel` ne sert plus le cinq cent trois `CAUSE_INSTANTANES_DU_PARC_NON_LUS` sur une lecture non commencée");
+  const CAUSE152 = constante152(OV152, "CAUSE_INSTANTANES_DU_PARC_NON_LUS");
+  instrument152(CAUSE152.startsWith("INSTANTANÉS DU PARC NON LUS"), `la phrase \`CAUSE_INSTANTANES_DU_PARC_NON_LUS\` n'est plus lisible dans overview.rs (« ${CAUSE152.slice(0, 60)} »)`);
+  const supp152 = corpsDeFonction152(lireLeDemon152("handlers/admin_ui.rs"), "pub(crate) async fn suppressions_get(");
+  instrument152(/"firewall_etat": fw_par_hote\.fin\.etat\(\)/.test(supp152)
+    && /"firewall_n_hosts": if fw_par_hote\.fin\.etat\(\)\.is_some\(\) \{ Value::Null \} else \{ json!\(fw_json\.len\(\)\) \}/.test(supp152)
+    && /"firewall_incomplets": fw_par_hote\.fin\.etat\(\)\.is_some\(\)/.test(supp152),
+    "`suppressions_get` (daemon/src/handlers/admin_ui.rs) ne sert plus `firewall_etat`, `firewall_incomplets` et `firewall_n_hosts` nul hors lecture complète");
+  const QE152 = lireLeDemon152("query_exec.rs");
+  instrument152(/FinDeParcours::Interrompu \{ \.\. \} => Some\("interrompu"\)/.test(QE152) && /FinDeParcours::NonCommence \{ \.\. \} => Some\("non_commence"\)/.test(QE152),
+    "`FinDeParcours::etat` (daemon/src/query_exec.rs) ne nomme plus ses fins `interrompu` / `non_commence`");
+  instrument152(FR152.noyau.LANG !== "en" && EN152.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+  for (const L of [FR152, EN152]) instrument152(typeof L.registres.CHARGES_POSEES.get("firewall") === "function" && typeof L.registres.CHARGES_POSEES.get("controls") === "function" && typeof L.supp.loadSuppressions === "function",
+    `${L.nom} : les charges \`firewall\` / \`controls\` ou \`loadSuppressions\` ne sont plus posées`);
+
+  const qsOrigine152 = document.querySelector, fetchOrigine152 = globalThis.fetch, minuterieOrigine152 = globalThis.setTimeout;
+  const etatOrigine152 = [FR152, EN152].map((L) => ({ S: L.etat.S, admin: L.etat.S.isAdmin }));
+  const hoteFw152 = new Element("div"), hoteCtl152 = new Element("div"), hoteSupp152 = new Element("div");
+  document.querySelector = (sel) => (sel === "#firewall .body" ? hoteFw152 : sel === "#controls .body" ? hoteCtl152 : sel === "#suppressions-body" ? hoteSupp152 : new Element("div"));
+  // Les réessais d'`api()` sur un cinq cent trois (400 puis 800 ms) sont RACCOURCIS, jamais retirés.
+  globalThis.setTimeout = (fn, ms, ...a) => minuterieOrigine152(fn, ms >= 400 ? 0 : ms, ...a);
+  let servi152 = {};
+  globalThis.fetch = async (u) => {
+    const c = String(u).split("?")[0];
+    const r = servi152[c] || { status: 200, corps: c === "/api/silences" ? { silences: [] } : {} };
+    return { ok: r.status >= 200 && r.status < 300, status: r.status, headers: { get: () => null }, text: async () => JSON.stringify(r.corps) };
+  };
+  const ecarts152 = [];
+  const faces152 = {};
+  try {
+    const peindre152 = async (L, cible, hote, statut, corps) => {
+      servi152 = { [`/api/panel/${cible}`]: { status: statut, corps } };
+      const avant = document.createElement("div"); avant.className = "peinture-d-avant-152"; avant.textContent = "PEINTURE-D-AVANT-152"; hote.replaceChildren(avant);
+      let jete = null;
+      try { await L.registres.CHARGES_POSEES.get(cible)(); } catch (e) { jete = e; }
+      await laisser152();
+      return { texte: nu152(hote), jete, hote };
+    };
+    const FWD = { ruleset_sha256: "abcdef0123456789" };
+    const hf = (h) => ({ host: h, ts: 1000, hash: "h", data: FWD });
+    const fw = (hosts, extra = {}) => ({ kind: "firewall", ts: 1000, hash: "h", host: hosts[0] ? hosts[0].host : undefined, data: hosts[0] ? FWD : null, hosts, n_hosts: hosts.length, ...extra });
+    const CTD = { controls: [{ id: "c1", ok: false }], failed: 1 };
+    const hc = (h, failed) => ({ host: h, ts: 1000, hash: "h", data: { failed } });
+    const ctl = (hosts, extra = {}) => ({ kind: "controls", ts: 1000, hash: "h", host: "ctl-a", data: CTD, hosts, n_hosts: hosts.length, ...extra });
+    for (const L of [FR152, EN152]) {
+      // (a) pare-feu.
+      const a1 = await peindre152(L, "firewall", hoteFw152, 200, fw([hf("fw-01"), hf("fw-02")], { n_hosts: null, hosts_etat: "interrompu" }));
+      if (!a1.texte.includes(L.PARTIEL) || !a1.texte.includes(L.LUES(2)) || !a1.texte.includes(`${L.HOTE} fw-01 — ${L.PARTIEL}`) || /1 machine sur/.test(a1.texte) || a1.jete) ecarts152.push(`${L.nom}/pare-feu partiel (hosts_etat) : « ${a1.texte} »`);
+      // La face partielle passe par `faceDansLaLangue`, qui n'échappe RIEN, puis par `innerHTML` : seul `esc()` tient l'hôte servi.
+      const XSS152 = "<img src=x onerror=alert(152)>";
+      const ah = await peindre152(L, "firewall", hoteFw152, 200, fw([hf(XSS152), hf("fw-02")], { n_hosts: null, hosts_etat: "interrompu" }));
+      if (cueillir152(ah.hote, (e) => e.tagName === "IMG").length || !ah.texte.includes(`${L.HOTE} ${XSS152} — ${L.PARTIEL}`)) ecarts152.push(`${L.nom}/pare-feu partiel, hôte hostile : non échappé ou non dit — « ${ah.texte} »`);
+      faces152[L.nom] = a1.texte.split(" · ").slice(1).join(" · ");
+      const a1b = await peindre152(L, "firewall", hoteFw152, 200, fw([hf("fw-01"), hf("fw-02")], { n_hosts: 2, hosts_etat: "interrompu" }));
+      if (!a1b.texte.includes(L.PARTIEL) || !a1b.texte.includes(L.LUES(2)) || /1 machine sur/.test(a1b.texte)) ecarts152.push(`${L.nom}/pare-feu partiel (hosts_etat seul, n_hosts non nul) : « ${a1b.texte} »`);
+      const a2 = await peindre152(L, "firewall", hoteFw152, 200, fw([hf("fw-01")], { n_hosts: null }));
+      if (!a2.texte.includes(L.PARTIEL) || !a2.texte.includes(L.LUES(1))) ecarts152.push(`${L.nom}/pare-feu partiel (n_hosts nul seul) : « ${a2.texte} »`);
+      const a3 = await peindre152(L, "firewall", hoteFw152, 200, fw([], { n_hosts: null, hosts_etat: "interrompu" }));
+      if (!a3.texte.includes(L.PARTIEL) || !a3.texte.includes(L.SANS_MACHINE) || /aucune donnée/.test(a3.texte)) ecarts152.push(`${L.nom}/pare-feu partiel sans machine : « ${a3.texte} »`);
+      const a4 = await peindre152(L, "firewall", hoteFw152, 200, fw([hf("fw-01"), hf("fw-02"), hf("fw-03")]));
+      if (!a4.texte.includes("hôte fw-01 — 1 machine sur 3") || a4.texte.includes(L.PARTIEL)) ecarts152.push(`${L.nom}/pare-feu complet (3) : « ${a4.texte} »`);
+      const a5 = await peindre152(L, "firewall", hoteFw152, 200, fw([hf("fw-01")]));
+      if (!a5.texte.endsWith("hôte fw-01") || a5.texte.includes(L.PARTIEL)) ecarts152.push(`${L.nom}/pare-feu mono-machine : « ${a5.texte} »`);
+      const ancien = fw([hf("fw-01")]); delete ancien.n_hosts; delete ancien.hosts;
+      const a6 = await peindre152(L, "firewall", hoteFw152, 200, ancien);
+      if (!a6.texte.endsWith("hôte fw-01") || a6.texte.includes(L.PARTIEL)) ecarts152.push(`${L.nom}/pare-feu démon ancien (sans n_hosts) : « ${a6.texte} »`);
+      const a7 = await peindre152(L, "firewall", hoteFw152, 200, fw([]));
+      if (!/aucune donnée/.test(a7.texte) || a7.texte.includes(L.PARTIEL)) ecarts152.push(`${L.nom}/pare-feu complet vide : « ${a7.texte} »`);
+      // (b) contrôles.
+      const b1 = await peindre152(L, "controls", hoteCtl152, 200, ctl([hc("ctl-a", 3), hc("ctl-b", 0)], { n_hosts: null, hosts_etat: "interrompu" }));
+      if (!b1.texte.includes(L.TOTAL_LU) || / · parc : /.test(b1.texte) || !b1.texte.includes(L.PARTIEL)) ecarts152.push(`${L.nom}/contrôles partiels : « ${b1.texte} »`);
+      const b2 = await peindre152(L, "controls", hoteCtl152, 200, ctl([hc("ctl-a", 3), hc("ctl-b", 0)]));
+      if (!b2.texte.includes("parc : 3 manquant(s) sur 1/2 machine(s)") || b2.texte.includes(L.TOTAL_LU) || b2.texte.includes(L.PARTIEL)) ecarts152.push(`${L.nom}/contrôles complets : « ${b2.texte} »`);
+      const b3 = await peindre152(L, "controls", hoteCtl152, 200, { kind: "controls", data: null, hosts: [], n_hosts: null, hosts_etat: "interrompu" });
+      if (!b3.texte.includes(L.SANS_MACHINE) || /en attente du capteur/.test(b3.texte)) ecarts152.push(`${L.nom}/contrôles partiels sans machine : « ${b3.texte} »`);
+      // (c) cinq cent trois nommé : le corps ne garde pas sa peinture d'avant ; l'erreur est relancée.
+      for (const [cible, hote] of [["firewall", hoteFw152], ["controls", hoteCtl152]]) {
+        const c = await peindre152(L, cible, hote, 503, { error: CAUSE152 });
+        const refus = parAttribut152(c.hote, "data-refus-d-une-lecture");
+        const refusDit = refus.length === 1 && refus[0].children && refus[0].children[0] ? nu152(refus[0].children[0]) : "";
+        if (!c.jete || c.jete.statutDuRefus !== 503 || c.jete.causeDuDemon !== CAUSE152 || !refusDit.startsWith(L.OBJET[cible] + " — ") || cueillir152(c.hote, (e) => e.classList && e.classList.contains("peinture-d-avant-152")).length || c.texte.includes("PEINTURE-D-AVANT-152")
+          || refus.length !== 1 || refus[0].getAttribute("data-refus-d-une-lecture") !== "lecture_refusee" || !c.texte.includes("INSTANTANÉS DU PARC NON LUS"))
+          ecarts152.push(`${L.nom}/${cible} en 503 : jeté=${!!c.jete} (statut ${c.jete && c.jete.statutDuRefus}, cause « ${c.jete && c.jete.causeDuDemon} »), dit « ${refusDit} », refus=${refus.map((r) => r.getAttribute("data-refus-d-une-lecture"))} — « ${c.texte.slice(0, 260)} »`);
+      }
+      // (d) section pare-feu de `loadSuppressions`.
+      L.etat.S.isAdmin = true;
+      const rendreSupp = async (corps) => {
+        servi152 = { "/api/suppressions": { status: 200, corps } };
+        hoteSupp152.replaceChildren(); await L.supp.loadSuppressions(); await laisser152();
+        const aveu = parAttribut152(hoteSupp152, "data-fin-de-l-etat-du-pare-feu")[0];
+        const pre = cueillir152(hoteSupp152, (e) => e.tagName === "PRE")[0];
+        const dit = aveu && aveu.children[0] ? nu152(aveu.children[0]) : "";
+        return { texte: nu152(hoteSupp152), fin: aveu ? aveu.getAttribute("data-fin-de-l-etat-du-pare-feu") : "", aveu, dit, pre: pre ? nu152(pre) : "" };
+      };
+      const fh = (h) => ({ ts: 1000, host: h, data: { ruleset: "rs-" + h } });
+      const base = { ok: true, generated: 1758000100, daemon: [], collectors: [], collectors_incomplets: false, collectors_cause: null, collectors_etat: null };
+      const d1 = await rendreSupp({ ...base, firewall: fh("fw-01"), firewall_hosts: [fh("fw-01"), fh("fw-02"), fh("fw-03")], firewall_n_hosts: 3, firewall_incomplets: false, firewall_etat: null });
+      if (!d1.texte.includes("1 machine sur 3") || d1.fin || !d1.pre.includes("rs-fw-01")) ecarts152.push(`${L.nom}/suppressions complet : fin « ${d1.fin} » — « ${d1.texte.slice(-300)} »`);
+      const d2 = await rendreSupp({ ...base, firewall: fh("fw-01"), firewall_hosts: [fh("fw-01"), fh("fw-02")], firewall_n_hosts: null, firewall_incomplets: true, firewall_etat: "interrompu" });
+      const sections152 = (r) => cueillir152(hoteSupp152, (e) => e.tagName === "B" && /firewall/i.test(nu152(e))).length;
+      if (sections152(d2) !== 1) ecarts152.push(`${L.nom}/suppressions interrompu : ${sections152(d2)} titre(s) de section pare-feu, un seul attendu (la face d'avant est peinte à côté de l'aveu ?)`);
+      if (d2.fin !== "interrompu" || !d2.texte.includes(L.PARTIEL) || !d2.dit.includes(L.LUES(2)) || !d2.texte.includes("snapshot · fw-01 · " + L.SOUS_TITRE_LUES(2)) || /1 machine sur/.test(d2.texte) || !d2.pre.includes("rs-fw-01")) ecarts152.push(`${L.nom}/suppressions interrompu : fin « ${d2.fin} » — « ${d2.texte.slice(-400)} »`);
+      const d3 = await rendreSupp({ ...base, firewall: null, firewall_hosts: [], firewall_n_hosts: null, firewall_incomplets: true, firewall_etat: "interrompu" });
+      if (sections152(d3) !== 1) ecarts152.push(`${L.nom}/suppressions interrompu sans machine : ${sections152(d3)} titre(s) de section pare-feu`);
+      if (d3.fin !== "interrompu_sans_ligne" || !d3.texte.includes(L.PARTIEL) || !d3.texte.includes(L.SANS_MACHINE)) ecarts152.push(`${L.nom}/suppressions interrompu sans machine : fin « ${d3.fin} » — « ${d3.texte.slice(-400)} »`);
+      const d4 = await rendreSupp({ ...base, firewall: null, firewall_hosts: [], firewall_n_hosts: null, firewall_incomplets: true, firewall_etat: "non_commence" });
+      const dit4 = d4.aveu && d4.aveu.children[0];
+      if (d4.fin !== "non_commence" || !d4.texte.includes(L.NON_LU) || !nu152(d4.aveu).endsWith("« non_commence »")
+        || !dit4 || nu152(dit4).includes("non_commence") || !nu152(dit4).includes(L.NON_LU) || d4.pre) ecarts152.push(`${L.nom}/suppressions non commencé : fin « ${d4.fin} » — « ${d4.texte.slice(-400)} »`);
+      faces152[L.nom + "/non_commence"] = dit4 ? nu152(dit4) : "";
+      if (sections152(d4) !== 1) ecarts152.push(`${L.nom}/suppressions non commencé : ${sections152(d4)} titre(s) de section pare-feu`);
+      // Une fin servie hors des deux valeurs, ou un dénominateur nul seul : lecture interrompue, jamais la face d'avant qui lirait le nul comme zéro.
+      const d7 = await rendreSupp({ ...base, firewall: fh("fw-01"), firewall_hosts: [fh("fw-01"), fh("fw-02")], firewall_n_hosts: null, firewall_incomplets: true, firewall_etat: "autre-fin-152" });
+      if (d7.fin !== "interrompu" || !nu152(d7.aveu).endsWith("« autre-fin-152 »") || sections152(d7) !== 1) ecarts152.push(`${L.nom}/suppressions fin inconnue : fin « ${d7.fin} » — « ${d7.texte.slice(-300)} »`);
+      const d7b = await rendreSupp({ ...base, firewall: fh("fw-01"), firewall_hosts: [fh("fw-01"), fh("fw-02")], firewall_n_hosts: null });
+      if (d7b.fin !== "interrompu" || sections152(d7b) !== 1) ecarts152.push(`${L.nom}/suppressions dénominateur nul seul : fin « ${d7b.fin} » — « ${d7b.texte.slice(-300)} »`);
+      // Une charge indécodable (`data` nul) d'une machine LUE : interrompu, pas « avant toute machine rendue ».
+      const d8 = await rendreSupp({ ...base, firewall: { ts: 1000, host: "fw-01", data: null }, firewall_hosts: [{ ts: 1000, host: "fw-01", data: null }], firewall_n_hosts: null, firewall_incomplets: true, firewall_etat: "interrompu" });
+      if (d8.fin !== "interrompu" || !d8.dit.includes(L.LUES(1)) || d8.pre) ecarts152.push(`${L.nom}/suppressions interrompu, charge indécodable : fin « ${d8.fin} » — « ${d8.texte.slice(-300)} »`);
+      const d5 = await rendreSupp({ ...base, firewall: fh("fw-01"), firewall_hosts: [fh("fw-01"), fh("fw-02")], firewall_n_hosts: 2 });
+      if (!d5.texte.includes("1 machine sur 2") || d5.fin || d5.texte.includes(L.PARTIEL)) ecarts152.push(`${L.nom}/suppressions démon ancien : « ${d5.texte.slice(-300)} »`);
+      const d6 = await rendreSupp({ ...base, firewall: null, firewall_hosts: [], firewall_n_hosts: 0 });
+      if (d6.texte.includes("État firewall") || d6.fin) ecarts152.push(`${L.nom}/suppressions démon ancien sans instantané : une section est peinte — « ${d6.texte.slice(-300)} »`);
+      if (L === EN152 && [a1, a3, b1].some((r) => /NON LU|lue\(s\)|LUES/.test(r.texte))) ecarts152.push(`en : une face française reste sous LANG='en' : « ${a1.texte} » / « ${b1.texte} »`);
+    }
+    exiger(faces152.fr && faces152.en && faces152.fr !== faces152.en && faces152["fr/non_commence"] && faces152["fr/non_commence"] !== faces152["en/non_commence"],
+      `(152-faces) les deux langues ne rendent pas chacune leur face : ${JSON.stringify(faces152)}`);
+  } finally {
+    document.querySelector = qsOrigine152; globalThis.fetch = fetchOrigine152; globalThis.setTimeout = minuterieOrigine152;
+    for (const o of etatOrigine152) o.S.isAdmin = o.admin;
+  }
+  exiger(ecarts152.length === 0, `(152) \`P10.20-b\` (console) — UN PARC LU EN PARTIE OU NON LU SE PEINT COMME UN PARC ENTIER, OU UN PANNEAU EN 503 GARDE SA PEINTURE D'AVANT : ${JSON.stringify(ecarts152)}`);
+  if (echecs.length !== echecsAvant152) console.log(`(152) EN ÉCHEC — ${echecs.length - echecsAvant152} écart(s), dits ci-dessus`);
+  else console.log("(152) OK — `P10.20-b` (console) : dans les deux langues, les panneaux pare-feu et contrôles disent « parc non lu entièrement » sur `hosts_etat` ou `n_hosts` nul (machines lues comptées, on ignore combien il en manque), le total des contrôles dit les machines LUES et non le parc, une lecture interrompue sans machine n'est pas « aucune donnée » ; un cinq cent trois nommé remplace la peinture d'avant par le refus et sa cause, et l'erreur est relancée ; la section pare-feu des suppressions suit `firewall_etat` (interrompu avec et sans machine, non commencé en aveu à deux nœuds) ; complet et démon ancien gardent la face d'avant ; les champs sont relus dans overview.rs, admin_ui.rs et query_exec.rs. Ce qu'il NE tient PAS : la route (témoins Rust), la cause du cinq cent trois reste française sous LANG='en', la mise en page.");
 }
 
 // ---------------------------------------------------------------------------------------------

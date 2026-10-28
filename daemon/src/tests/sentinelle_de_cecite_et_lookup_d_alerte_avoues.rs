@@ -28,7 +28,7 @@
 // MUTANTS (posés sous cfg!(test) par variable de mutation, retirés avant le commit), chacun rouge sur son témoin : AV7_RELU_OK, AV7_RELU_MUET,
 // AV7_ABSENTE_DEFAUT, AV7_SANS_EFFET, AV7_SEUIL_STRICT, AV7_SEUIL_IGNORE (`detection_aveugle`) ; AV7_ISSUE_JETEE,
 // AV7_POPVUE_MUETTE, AV7_POPVUE_SANS_LIGNE, AV7_LASTFIRED_MUET, AV7_RAFRAICHI_MUET, AV7_RESOLUTION_MUETTE,
-// AV7_DOUBLE_COMPTE (`run_due_rules`) ; AV7_PHRASE_COMMUNE, AV7_PHRASE_TOUJOURS, AV7_SENTINELLE_NON_SERVIE
+// AV7_DOUBLE_COMPTE (`run_due_rules`) ; AV7_PHRASE_COMMUNE, AV7_PHRASE_TOUJOURS (sans objet depuis P10.33-h), AV7_SENTINELLE_NON_SERVIE
 // (`metrics`) ; AV7_SENS_ANCIEN, AV7_SENS_ANCIEN_PASSES (`bilan_de_tick`) ; AV7_LOOKUP_SANS_POINT, AV7_LOOKUP_OK0,
 // AV7_LOOKUP_ROLLBACK_TOTAL, AV7_LOOKUP_SANS_RELEASE (`write_alert_to_lookup`).
 //
@@ -475,21 +475,29 @@ mod sentinelle_de_cecite_et_lookup_d_alerte_avoues {
     // ---------------------------------------------------------------- `P10.33-h` : le marqueur du dispatch et les `# HELP`
 
     const AV7_ENFANT_DISPATCH: &str = "AV7_ENFANT_PHRASE_DU_MARQUEUR";
-    const AV7_PHRASE_MARQUEUR: &str = "[plume] balayage de fond INTERROMPU (dispatch_marqueur) : l'alerte en cours est traitée \
-         (envoyée ou silencée) mais son marqueur n'est pas écrit, elle repartira au tour suivant ; les alertes déjà marquées \
-         de ce tour restent marquées, les suivantes attendent le tour suivant : marqueur refusé av7";
+    /// INVERSÉ par `P10.33-h` (vague AW) : la phrase disait « l'alerte en cours est traitée (envoyée ou silencée) […] les
+    /// suivantes attendent le tour suivant » ; le marqueur est désormais écrit avant tout envoi, et les suivantes sont
+    /// traitées.
+    const AV7_ALERTE_DU_MARQUEUR: i64 = 7741;
+    const AV7_PHRASE_MARQUEUR: &str = "[plume] dispatch : alerte 7741 : marqueur `notified` NON ÉCRIT, rien n'est envoyé pour \
+         elle ce tour-ci ; elle reste à notifier et sera retentée au tour suivant, les alertes suivantes de ce tour sont \
+         traitées : marqueur refusé av7";
     const AV7_PHRASE_AVEUGLE: &str = "[plume] balayage de fond AVEUGLE (dispatch_alerts) : aucun geste de ce balayage ce tour-ci : liste refusée av7";
     const AV7_AIDES: [&str; 2] = [
         "# HELP plume_scheduler_ticks_aveugles_total Tours de balayage de fond suspendus ou interrompus : liste de travail non lue \
-         (rien fait ce tour-ci), ou marqueur refusé après le geste (escalade notifiée, alerte traitée : le tour s'arrête là) \
-         (P10.7-f, P10.33-h ; ventilation par balayage avec la dernière cause dans /api/metrics scheduler.ticks_aveugles)",
+         (rien fait ce tour-ci), marqueur d'escalade refusé après la notification (le tour s'arrête là), ou marqueur d'alerte \
+         refusé avant tout envoi (rien n'est envoyé pour elle, les suivantes sont traitées) (P10.7-f, P10.33-h ; ventilation \
+         par balayage avec la dernière cause dans /api/metrics scheduler.ticks_aveugles)",
         "# HELP plume_scheduler_av7_passe_abandons Éléments dus ABANDONNÉS au dernier passage de « av7_passe » (non évalués, \
          ou évalués sans que leur alerte ou leur état soit écrit)",
     ];
 
-    /// Dans un sous-processus : le marqueur `notified` refusé après un envoi pris dit sa phrase (l'alerte est partie),
-    /// jamais « aucun geste » ; un autre balayage garde la phrase commune ; les `# HELP` réécrits sont servis tels quels.
-    /// MUTATIONS : `AV7_PHRASE_COMMUNE`, `AV7_PHRASE_TOUJOURS`.
+    /// Dans un sous-processus : le marqueur `notified` refusé dit sa phrase (rien n'est parti : `P10.33-h`, vague AW, le
+    /// marqueur précède les envois — INVERSÉ, l'alerte partait avant), jamais « aucun geste de ce balayage » ; un autre
+    /// balayage garde la phrase commune ; les `# HELP` réécrits sont servis tels quels.
+    /// MUTATIONS de la vague AV (`AV7_PHRASE_COMMUNE`, `AV7_PHRASE_TOUJOURS`) : sans objet depuis `P10.33-h` (vague AW), le
+    /// marqueur a sa propre fonction et la branche qui choisissait la phrase est supprimée ; les mutants du marqueur sont
+    /// ceux de `dispatch_marqueur_avant_envoi_et_tenant_du_tour` (MENTION_MARQUEUR, MARQUEUR_MUET…).
     #[test]
     fn av7_le_marqueur_du_dispatch_refuse_ne_se_dit_pas_sans_geste() {
         let _env = VERROU_ENV_PROCESSUS.read();
@@ -498,8 +506,8 @@ mod sentinelle_de_cecite_et_lookup_d_alerte_avoues {
             let conn = test_db();
             conn.execute_batch("DELETE FROM alert; DELETE FROM notifier;").unwrap();
             conn.execute(
-                "INSERT INTO alert(ts,rule,severity,title,detail,status,mitre,sources,host) VALUES(?1,'r.av7',3,'A','','new','','','192.0.2.41')",
-                params![now()],
+                "INSERT INTO alert(id,ts,rule,severity,title,detail,status,mitre,sources,host) VALUES(?1,?2,'r.av7',3,'A','','new','','','192.0.2.41')",
+                params![AV7_ALERTE_DU_MARQUEUR, now()],
             )
             .unwrap();
             conn.execute(
@@ -538,13 +546,13 @@ mod sentinelle_de_cecite_et_lookup_d_alerte_avoues {
         let stdout = String::from_utf8_lossy(&sortie.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&sortie.stderr).into_owned();
         assert_eq!(sortie.status.code(), Some(0), "contrôle : l'enfant sort en 0 : {stdout}\n{stderr}");
-        assert!(stdout.contains("AV7-PRIS:1"), "fixture : l'alerte a été envoyée au lookup avant le marqueur refusé : {stdout}");
+        assert!(stdout.contains("AV7-PRIS:0"), "marqueur refusé : l'alerte n'est PAS envoyée au lookup (INVERSÉ, vague AW) : {stdout}");
         let phase = |nom: &str| -> Vec<String> {
             let debut = stderr.split_once(&format!("{AV7_PHASE}{nom}\n")).unwrap_or_else(|| panic!("contrôle : phase {nom} : {stderr}")).1;
             let corps = debut.split_once(AV7_PHASE).map(|(c, _)| c).unwrap_or(debut);
-            corps.lines().filter(|l| l.starts_with("[plume] balayage de fond")).map(str::to_string).collect()
+            corps.lines().filter(|l| l.starts_with("[plume] balayage de fond") || l.starts_with("[plume] dispatch")).map(str::to_string).collect()
         };
-        assert_eq!(phase("marqueur"), vec![AV7_PHRASE_MARQUEUR.to_string()], "le marqueur refusé après l'envoi : sa phrase, entière");
+        assert_eq!(phase("marqueur"), vec![AV7_PHRASE_MARQUEUR.to_string()], "le marqueur refusé avant l'envoi : sa phrase, entière, seule");
         assert_eq!(phase("autre"), vec![AV7_PHRASE_AVEUGLE.to_string()], "un autre balayage garde la phrase commune");
         let aides: Vec<&str> = stdout.lines().filter_map(|l| l.strip_prefix("AV7-AIDE:")).collect();
         assert_eq!(aides, AV7_AIDES.to_vec(), "les deux `# HELP` réécrits, servis tels quels : {stdout}");

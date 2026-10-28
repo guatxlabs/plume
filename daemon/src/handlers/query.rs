@@ -1481,12 +1481,17 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
     // pour l'immense majorité ; une lecture MIN indexée sinon. Posé sous `stats.coverage` sur chaque voie de
     // succès par `avec_couverture` -> une courbe Explore sous l'horizon dit qu'elle s'arrête là (viz.js le lit
     // déjà), là où elle rendait une courbe vide indiscernable d'une réponse complète.
+    // `P10.5-p` — l'environnement que ce SQL filtre (GXQL compilé avec un environnement non vide, même règle que les
+    // panneaux) : l'horizon y lit la politique par index applicable, au lieu de la plus courte de toutes.
     let couverture: Value = {
         let cdbp = db_path.clone();
         let csql = sql.clone();
-        tokio::task::spawn_blocking(move || crate::panneau_avoue::horizon_du_sql(&cdbp, &crate::load_config(), &csql, from, crate::now()))
-            .await
-            .unwrap_or_else(|_| couverture_de_tache_interrompue())
+        let cenv = crate::panneau_avoue::environnement_lu(from_soql, au.env_filter());
+        tokio::task::spawn_blocking(move || {
+            crate::panneau_avoue::horizon_et_frontiere_selon_l_index(&cdbp, &crate::load_config(), &csql, cenv.as_deref(), from, crate::now()).0
+        })
+        .await
+        .unwrap_or_else(|_| couverture_de_tache_interrompue())
     };
     // PAGINATION SERVEUR : si `limit` fourni ET pas de LIMIT déjà dans le SQL (raw search), on renvoie
     // UNE page (LIMIT/OFFSET) + le total (COUNT) -> le navigateur ne tient jamais qu'une page (scale 1M+).

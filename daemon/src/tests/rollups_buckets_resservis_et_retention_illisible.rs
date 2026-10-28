@@ -73,7 +73,7 @@ mod rollups_buckets_resservis_et_retention_illisible {
     const JOUR: i64 = 86400;
 
     fn rbr_recent() -> i64 {
-        ((now() / 3600) * 3600 - 3600).max(0)
+        heure_ronde_precedente_hors_de_la_fin_d_heure()
     }
 
     fn rbr_meta(conn: &rusqlite::Connection, cle: &str) -> Option<String> {

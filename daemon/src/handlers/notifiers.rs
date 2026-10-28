@@ -336,7 +336,7 @@ fn cause_d_un_envoi_non_pris(genre: &str) -> &'static str {
     }
 }
 
-/// Dispatche les alertes non notifiées, puis marque notified=1.
+/// Dispatche les alertes non notifiées : pour chacune, marque notified=1 PUIS envoie (`P10.33-h` : marqueur refusé, rien ne part).
 ///
 /// #48/#53 : le routage passe désormais par `plan_dispatch`. MODE 0 (aucune politique, aucun silence) :
 ///  - `plan_dispatch` renvoie `silenced=false` et `target_ids` = TOUS les canaux enabled -> la boucle d'envoi
@@ -416,17 +416,47 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
         // env_id non porté par le SELECT (colonne rare en label) : reste vide -> matcher `env` inopérant en mode 0.
         let labels = alert_labels(*sev, mitre, host, source, "");
         let plan = plan_dispatch(&labels, &policies, &silences, &enabled_ids);
+        // `P10.20-w`, `P10.33-h` — LE MARQUEUR D'ABORD, LES ENVOIS ENSUITE. Avant : les envois, PUIS le marqueur, et au
+        // premier marqueur refusé le tour s'arrêtait — l'alerte, déjà partie, restait `notified=0` et REPARTAIT à chaque
+        // tour vers ses canaux (PagerDuty, SMS : irréversibles), et un refus propre à une ligne bloquait la file en tête,
+        // les suivantes n'étant jamais traitées. Désormais le marqueur est écrit avant tout envoi : refusé ou sans effet,
+        // RIEN ne part pour cette alerte (aucun canal ne l'a reçue, aucun ne la recevra deux fois), le refus est compté
+        // et dit une fois pour elle (`compter_un_marqueur_de_dispatch_non_ecrit`), elle reste à notifier pour le tour
+        // suivant (une tentative de marqueur par alerte et par tour), et les alertes SUIVANTES sont traitées. Prix dit :
+        // si le processus meurt entre le marqueur et les envois, cette alerte n'est pas notifiée (au plus une fois, le
+        // choix fait pour l'échéance des rapports planifiés).
+        // Limite assumée : la file lue est la fenêtre `ORDER BY ts LIMIT 20` ci-dessus. Vingt alertes de tête dont le
+        // marqueur est refusé DURABLEMENT occupent toute la fenêtre à chaque tour : les suivantes attendent, et un refus
+        // global coûte vingt lignes et vingt comptes par tour. Avec moins de vingt refus durables, la file avance
+        // (témoins `ax4_` de `statut_de_rapport_fenetre_de_dispatch_et_regle_effacee.rs`).
+        let marque = {
+            let conn = db.lock();
+            conn.execute("UPDATE alert SET notified=1, notified_value=current_value WHERE id=?1", params![id]) // `P4.12-h` : la barre de re-notification est reposée ici
+        };
+        match marque {
+            Ok(1) => {}
+            autre => {
+                let cause = match autre { Err(e) => e.to_string(), Ok(n) => format!("{n} ligne(s) écrite(s) au lieu d'une") };
+                crate::metrics::compter_un_marqueur_de_dispatch_non_ecrit(*id, &cause);
+                continue;
+            }
+        }
         // `P10.33-h` (reste) — LE VERDICT DE CHAQUE CANAL EST LU. Avant : `let _ =` sur l'écriture du lookup comme sur
-        // `notify_send`, puis le marqueur `notified=1` plus bas : une alerte dont TOUS les canaux avaient refusé était
-        // marquée envoyée sans un mot. Décision par défaut (politique de renvoi non décidée, envoi irréversible côté
-        // PagerDuty/SMS) : chaque refus est compté par genre et journalisé (alerte, canal, genre, cause ; jamais l'URL,
-        // la configuration ni le contenu), l'alerte qu'aucun canal visé n'a prise est comptée UNE fois ; le marqueur
-        // garde son sens, rien n'est renvoyé.
+        // `notify_send` : une alerte dont TOUS les canaux avaient refusé était marquée envoyée sans un mot. Décision par
+        // défaut (politique de renvoi non décidée, envoi irréversible côté PagerDuty/SMS) : chaque refus est compté par
+        // genre et journalisé (alerte, canal, genre, cause ; jamais l'URL, la configuration ni le contenu), l'alerte
+        // qu'aucun canal visé n'a prise est comptée UNE fois, celle qu'aucun canal ne visait aussi (par raison) ; rien
+        // n'est renvoyé.
+        let mut canaux_routes = 0usize;
         let mut canaux_vises = 0usize;
         let mut envois_pris = 0usize;
         if !plan.silenced {
             for n in &notifiers {
-                if !plan.target_ids.contains(&n.id) || sev < &n.min_severity {
+                if !plan.target_ids.contains(&n.id) {
+                    continue;
+                }
+                canaux_routes += 1;
+                if sev < &n.min_severity {
                     continue;
                 }
                 canaux_vises += 1;
@@ -453,22 +483,21 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
         if canaux_vises > 0 && envois_pris == 0 {
             crate::metrics::compter_une_alerte_sans_aucun_envoi_pris(*id, canaux_vises);
         }
-        // `P10.20-w` — LE MARQUEUR EST COMPTÉ. Avant, `let _ =` : un marqueur refusé laissait l'alerte `notified=0`
-        // et les vingt alertes du lot repartaient à chaque tour, y compris par des canaux irréversibles. Au PREMIER
-        // refus (ou écriture sans effet), le tour s'ARRÊTE : les alertes suivantes attendent le tour suivant au lieu
-        // de repartir en boucle derrière une marque perdue, et le tour est compté sous `dispatch_marqueur` avec la
-        // cause du moteur. L'alerte en cours (envoyée, ou silencée) y repassera si elle existe encore.
-        let conn = db.lock();
-        let marque = conn.execute("UPDATE alert SET notified=1, notified_value=current_value WHERE id=?1", params![id]); // `P4.12-h` : la barre de re-notification est reposée ici
-        match marque {
-            Ok(1) => {}
-            autre => {
-                let cause = match autre { Err(e) => e.to_string(), Ok(n) => format!("{n} ligne(s) écrite(s) au lieu d'une") };
-                eprintln!("[plume] dispatch : alerte {id} traitée (envoyée ou silencée) mais marqueur `notified` NON ÉCRIT, tour arrêté avant les alertes suivantes, renvoyées au tour suivant (celle-ci aussi, si elle existe encore)");
-                crate::metrics::compter_un_tick_aveugle("dispatch_marqueur", &cause);
-                return;
-            }
+        if !plan.silenced && canaux_vises == 0 {
+            crate::metrics::compter_une_alerte_hors_de_tout_canal(raison_d_une_alerte_hors_de_tout_canal(notifiers.len(), canaux_routes));
         }
+    }
+}
+
+/// `P10.33-h` — pourquoi une alerte non silencée n'avait AUCUN canal visé : aucun canal activé, aucun routé (politiques),
+/// sinon des canaux routés tous au-dessus de sa sévérité.
+fn raison_d_une_alerte_hors_de_tout_canal(canaux_actifs: usize, canaux_routes: usize) -> &'static str {
+    if canaux_actifs == 0 {
+        crate::metrics::RAISON_AUCUN_CANAL_ACTIF
+    } else if canaux_routes == 0 {
+        crate::metrics::RAISON_AUCUN_CANAL_ROUTE
+    } else {
+        crate::metrics::RAISON_SOUS_LE_SEUIL_DE_TOUS
     }
 }
 

@@ -487,7 +487,7 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
     }
     let host = au.name.clone();
     let now_ts = now();
-    const STALE: i64 = RECLAMATION_PERIMEE_S; // re-remise si réclamée sans résultat depuis > 5 min (agent planté) — la MÊME fenêtre que le responder local (P4.7-f)
+    const STALE: i64 = RECLAMATION_PERIMEE_S; // re-remise si réclamée sans résultat depuis PLUS de `RECLAMATION_PERIMEE_S` (agent planté) — la MÊME fenêtre que le responder local (P4.7-f)
     crate::req_conn!(st, au, conn);
     // host=?1 : actions ciblant CET hôte. host NULL/'' : actions non assignées (créées depuis l'UI sans
     // cible explicite) -> réclamables par n'importe quel agent ; à la réclamation on les ASSIGNE à l'hôte
@@ -508,11 +508,11 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
     // laisse l'agent REVENIR au tour suivant : aucune action n'est réclamée ni marquée `claimed_ts`, donc
     // rien n'est perdu ni exécuté à moitié. 503 nomme l'indisponibilité de la lecture, pas une faute de
     // la requête de l'agent.
+    // `P10.21-n` — la condition est CELLE de l'UPDATE de réclamation (`CONDITION_DE_RECLAMATION_D_AGENT`),
+    // pas une recopie : une seule écriture, la fenêtre comprise.
+    let enonce = format!("SELECT id,kind,target,dry_run FROM action WHERE {CONDITION_DE_RECLAMATION_D_AGENT} ORDER BY id LIMIT 100");
     let lues: rusqlite::Result<Vec<(i64, String, String, bool)>> = conn
-        .prepare(
-            "SELECT id,kind,target,dry_run FROM action WHERE (host=?1 OR host IS NULL OR host='') AND status='approved' \
-             AND kind IN ('ban_ip','unban_ip') AND (claimed_ts IS NULL OR ?2-claimed_ts>?3) ORDER BY id LIMIT 100",
-        )
+        .prepare(&enonce)
         .and_then(|mut s| {
             s.query_map(params![host, now_ts, STALE], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))?
                 .collect::<rusqlite::Result<Vec<_>>>()
@@ -534,11 +534,26 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
     }
 }
 
-/// `P10.21-n` — LA CONDITION DE RÉCLAMATION D'UN AGENT, celle du SELECT d'`actions_pending`, mot pour
-/// mot et mêmes paramètres (`?1` = hôte du jeton, `?2` = maintenant, `?3` = délai de péremption) :
-/// l'UPDATE de réclamation et sa relecture la rejouent, `?4` = identifiant de l'action.
-pub(crate) const CONDITION_DE_RECLAMATION_D_AGENT: &str = "(host=?1 OR host IS NULL OR host='') AND status='approved' \
-     AND kind IN ('ban_ip','unban_ip') AND (claimed_ts IS NULL OR ?2-claimed_ts>?3)";
+/// `P10.21-n` — LA FENÊTRE DE RÉCLAMATION, ÉCRITE UNE FOIS. Une action est réclamable si personne ne
+/// l'a réclamée, ou si sa réclamation date de PLUS de `RECLAMATION_PERIMEE_S` secondes (comparaison
+/// stricte : à la borne exacte, la réclamation tient encore). Les deux arguments sont les marqueurs de
+/// paramètre de l'énoncé hôte (maintenant, délai), qui diffèrent d'un énoncé à l'autre. Avant : trois
+/// écritures de cette clause (SELECT d'`actions_pending`, UPDATE de réclamation, responder local),
+/// tenues ensemble par un test d'équivalence et non par construction.
+macro_rules! reclamation_libre_ou_perimee {
+    ($maintenant:literal, $delai:literal) => {
+        concat!("(claimed_ts IS NULL OR ", $maintenant, "-claimed_ts>", $delai, ")")
+    };
+}
+pub(crate) use reclamation_libre_ou_perimee;
+
+/// `P10.21-n` — LA CONDITION DE RÉCLAMATION D'UN AGENT, la seule écriture : le SELECT d'`actions_pending`
+/// en dérive, l'UPDATE de réclamation et sa relecture la rejouent (`?1` = hôte du jeton, `?2` =
+/// maintenant, `?3` = délai de péremption, `?4` = identifiant de l'action pour l'UPDATE).
+pub(crate) const CONDITION_DE_RECLAMATION_D_AGENT: &str = concat!(
+    "(host=?1 OR host IS NULL OR host='') AND status='approved' AND kind IN ('ban_ip','unban_ip') AND ",
+    reclamation_libre_ou_perimee!("?2", "?3")
+);
 
 /// Réclame, une à une, les actions LUES par `actions_pending` et rend le TSV de celles qui sont
 /// réclamées ; `Err` porte la cause du 503 quand des actions lues ont été retenues sur anomalie et
@@ -1551,9 +1566,14 @@ pub(crate) const RECLAMATION_PERIMEE_S: i64 = 300;
 /// aucun agent n'a réclamées récemment (`P4.7-f`) : le central ne double plus un agent qui tient déjà
 /// le dossier, lui qui lit la liste d'épargne que le central n'a pas. Paramètres : ?1 = identité,
 /// ?2 = identité lue (0/1), ?3 = maintenant, ?4 = délai de péremption d'une réclamation.
-pub(crate) const ACTIONS_A_RECLAMER_ICI: &str = "SELECT id,kind,target,dry_run FROM action \
-     WHERE status='approved' AND (host IS NULL OR host='' OR (?2 = 1 AND host = ?1)) \
-       AND (claimed_ts IS NULL OR ?3 - claimed_ts > ?4)";
+/// `P10.21-n` — la fenêtre est celle de l'agent (`reclamation_libre_ou_perimee!`), écrite une fois ;
+/// hôte et genre diffèrent À DESSEIN : ce responder exécute tout le vocabulaire fermé, l'agent ne
+/// réclame que ban et levée, et la clause d'hôte suit l'identité lue (`S33`).
+pub(crate) const ACTIONS_A_RECLAMER_ICI: &str = concat!(
+    "SELECT id,kind,target,dry_run FROM action \
+     WHERE status='approved' AND (host IS NULL OR host='' OR (?2 = 1 AND host = ?1)) AND ",
+    reclamation_libre_ou_perimee!("?3", "?4")
+);
 
 /// `P4.7-f` — LA CLÔTURE D'UNE ACTION NE REMPLACE JAMAIS UN VERDICT DÉJÀ POSÉ : elle n'écrit que sur une
 /// action encore `approved`. Un agent qui a posté « adresse épargnée » a le dernier mot ; le responder

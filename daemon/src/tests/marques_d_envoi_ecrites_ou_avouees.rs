@@ -97,10 +97,16 @@ mod marques_d_envoi_ecrites_ou_avouees {
     }
 
     /// Refus (`RAISE(ABORT)`) PUIS écriture sans effet (`RAISE(IGNORE)`, `Ok(0)`) enchaînés dans UN SEUL test : le
-    /// compte `dispatch_marqueur` est une statique de processus, deux tests parallèles qui assertent chacun `avant+1`
-    /// se marcheraient dessus. Aucun autre test ne compte sous ce nom.
+    /// compte `dispatch_marqueur` est une statique de processus, deux tests parallèles qui assertent chacun `avant+N`
+    /// se marcheraient dessus. Aucun autre test ne compte sous ce nom dans ce processus (les témoins `aw6_` le font dans
+    /// un sous-processus).
+    ///
+    /// INVERSÉ par `P10.33-h` (vague AW) : ce témoin affirmait « au premier marqueur refusé, le tour s'arrête : UNE seule
+    /// alerte traitée » — l'alerte était envoyée AVANT son marqueur, puis renvoyée à chaque tour. Le marqueur est
+    /// désormais écrit avant tout envoi : refusé, RIEN ne part pour l'alerte, le refus est compté pour CHACUNE, et les
+    /// suivantes sont tentées (ici toutes refusées par le même déclencheur).
     #[test]
-    fn p10_20w_marqueur_refuse_ou_sans_effet_arrete_le_tour_a_la_premiere_alerte() {
+    fn p10_20w_marqueur_refuse_ou_sans_effet_rien_ne_part_et_chaque_alerte_est_comptee() {
         let db = mew_base_notifications();
         db.lock()
             .execute_batch(
@@ -110,13 +116,12 @@ mod marques_d_envoi_ecrites_ou_avouees {
             .unwrap();
         let avant = crate::metrics::tick_aveugle_de("dispatch_marqueur").map(|(n, _)| n).unwrap_or(0);
         dispatch_notifications(&db);
-        assert_eq!(mew_traitees(&db), 1, "au premier marqueur refusé, le tour s'arrête : UNE seule alerte traitée");
-        let (n, cause) = crate::metrics::tick_aveugle_de("dispatch_marqueur").expect("le tour est compté sous son nom");
-        assert_eq!(n, avant + 1, "un tour arrêté = un compte de plus");
+        assert_eq!(mew_traitees(&db), 0, "marqueur refusé : rien n'est envoyé, pour aucune des trois alertes");
+        let (n, cause) = crate::metrics::tick_aveugle_de("dispatch_marqueur").expect("le refus est compté sous son nom");
+        assert_eq!(n, avant + 3, "un compte par alerte dont le marqueur est refusé, les trois sont tentées");
         assert!(cause.contains("marqueur refuse par le temoin"), "la cause est celle du moteur : {cause}");
 
-        // Second cas : l'UPDATE réussit sans toucher de ligne. La même (plus ancienne) alerte repasse, même clé
-        // `host` dans le lookup : si `Ok(0)` valait nominal, les deux suivantes seraient traitées (3 clés).
+        // Second cas : l'UPDATE réussit sans toucher de ligne. Si `Ok(0)` valait nominal, les trois alertes partiraient.
         db.lock()
             .execute_batch(
                 "DROP TRIGGER mew_refus_notif; CREATE TRIGGER mew_muet_notif BEFORE UPDATE OF notified ON alert \
@@ -124,9 +129,9 @@ mod marques_d_envoi_ecrites_ou_avouees {
             )
             .unwrap();
         dispatch_notifications(&db);
-        assert_eq!(mew_traitees(&db), 1, "marqueur sans effet : le tour s'arrête aussi à la première alerte");
+        assert_eq!(mew_traitees(&db), 0, "marqueur sans effet : rien n'est envoyé non plus");
         let (n2, cause2) = crate::metrics::tick_aveugle_de("dispatch_marqueur").expect("compté sous son nom");
-        assert_eq!(n2, avant + 2, "le tour sans effet est compté lui aussi");
+        assert_eq!(n2, avant + 6, "les marqueurs sans effet sont comptés eux aussi, un par alerte");
         assert!(cause2.contains("0 ligne(s)"), "la cause dit zéro ligne écrite : {cause2}");
         let non_marquees: i64 =
             db.lock().query_row("SELECT COUNT(*) FROM alert WHERE rule='r.mew' AND notified=0", [], |r| r.get(0)).unwrap();
@@ -135,7 +140,8 @@ mod marques_d_envoi_ecrites_ou_avouees {
 
     /// La LIGNE DE JOURNAL, lue sur le stderr d'un sous-processus : filigrane refusé -> identifiant + cause du moteur,
     /// ni l'endpoint (qui peut porter une crédence) ni un événement ; zéro ligne -> identifiant + « 0 ligne(s) » ;
-    /// chemin nominal muet. Marqueur refusé -> « traitée (envoyée ou silencée) », sans prétendre la seule ré-envoyée.
+    /// chemin nominal muet. Marqueur refusé -> une ligne par alerte, « rien n'est envoyé pour elle » (INVERSÉ par
+    /// `P10.33-h`, vague AW : la ligne disait « traitée (envoyée ou silencée) », le marqueur précédant désormais l'envoi).
     #[test]
     fn p10_20w_ligne_de_journal_cause_et_identifiant_sans_endpoint() {
         const ENFANT: &str = "MEW_S8_ENFANT_JOURNAL";
@@ -207,9 +213,11 @@ mod marques_d_envoi_ecrites_ou_avouees {
         assert!(phase("nominal").is_empty(), "chemin nominal muet : {:?}", phase("nominal"));
         let marqueur = phase("marqueur");
         let dispatch: Vec<&String> = marqueur.iter().filter(|l| l.starts_with("[plume] dispatch :")).collect();
-        assert_eq!(dispatch.len(), 1, "une ligne pour le marqueur refusé : {marqueur:?}");
-        assert!(dispatch[0].contains("traitée (envoyée ou silencée)"), "ne prétend pas « envoyée » : {}", dispatch[0]);
-        assert!(!dispatch[0].contains("elle seule"), "ne prétend pas qu'elle seule repartira : {}", dispatch[0]);
+        assert_eq!(dispatch.len(), 3, "une ligne par alerte dont le marqueur est refusé : {marqueur:?}");
+        for l in &dispatch {
+            assert!(l.contains("marqueur `notified` NON ÉCRIT, rien n'est envoyé pour elle ce tour-ci"), "rien n'est parti : {l}");
+            assert!(!l.contains("traitée (envoyée ou silencée)"), "l'ancienne phrase ne revient pas : {l}");
+        }
     }
 
     #[test]

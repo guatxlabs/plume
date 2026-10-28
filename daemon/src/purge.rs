@@ -328,6 +328,15 @@ pub(crate) enum PurgeRefusal {
     /// supprimé. La cause du moteur va au JOURNAL (`dire_la_transaction_non_ouverte`, comptée par cause), pas dans le
     /// corps servi : la réponse dit ce qui n'a pas eu lieu, pas l'état interne de la base. Servie en 503.
     TransactionNotOpened,
+    /// `P10.29-l` — l'exécution a été refusée (écriture refusée, décision relue dans la transaction, `COMMIT` refusé) PUIS
+    /// le `ROLLBACK` qui devait l'annuler a été refusé à son tour, et la connexion est RESTÉE en transaction. Rien n'est
+    /// validé, mais la transaction pend sur l'écrivain : les gestes suivants voient leur `BEGIN` refusé jusqu'à sa
+    /// fermeture ou au redémarrage (la sonde `signaler_une_transaction_ouverte_hors_de_tout_geste` la voit). `etape` nomme
+    /// l'échec d'origine par un littéral du code (`COMMIT refusé`, ou le code machine du refus d'exécution) ; les deux
+    /// textes du moteur (échec d'origine, `ROLLBACK`) vont à UNE ligne `[<id>] [purge] ERREUR` sous l'identifiant `id`,
+    /// jamais dans la variante. Avant : le refus de `ROLLBACK` était jeté (`let _`) et la réponse disait « aucune ligne
+    /// supprimée » sur un écrivain bloqué, sans un mot au journal ni un compte.
+    TransactionLeftOpen { id: String, etape: &'static str },
     /// Erreur base (verrou, schéma, I/O). Aucune ligne supprimée.
     Db(String),
 }
@@ -404,6 +413,14 @@ impl std::fmt::Display for PurgeRefusal {
                  aucune ligne supprimée. Le même jeton peut être rejoué : il reste valide tant que le périmètre n'a \
                  pas changé."
             ),
+            PurgeRefusal::TransactionLeftOpen { id, etape } => write!(
+                f,
+                "REFUS — PURGE NON VALIDÉE, TRANSACTION RESTÉE OUVERTE : {etape}, puis la base a refusé le ROLLBACK qui \
+                 devait l'annuler. Rien n'est validé, mais la connexion reste en transaction jusqu'à sa fermeture ou \
+                 à la fin du processus (fin de la CLI, redémarrage du démon) : un geste qui ouvre sa propre transaction \
+                 est refusé, une écriture faite sans transaction propre y est prise puis perdue à la fermeture. Les \
+                 causes sont écrites au journal sous l'identifiant {id}."
+            ),
             PurgeRefusal::Db(e) => write!(f, "REFUS — base : {e} (aucune ligne supprimée)"),
         }
     }
@@ -423,6 +440,7 @@ pub(crate) fn purge_refusal_code(r: &PurgeRefusal) -> &'static str {
         PurgeRefusal::CountMismatch { .. } => "count_mismatch",
         PurgeRefusal::PlanRowUnread { .. } => "plan_row_unread",
         PurgeRefusal::TransactionNotOpened => "transaction_not_opened",
+        PurgeRefusal::TransactionLeftOpen { .. } => "transaction_left_open",
         PurgeRefusal::Db(_) => "db",
     }
 }
@@ -1297,16 +1315,56 @@ pub(crate) fn purge_apply(conn: &Connection, c: ConfirmedPurge) -> Result<PurgeR
     match outcome {
         Ok(r) => {
             if let Err(e) = conn.execute_batch("COMMIT") {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(PurgeRefusal::Db(format!("COMMIT refusé : {e}")));
+                let origine = PurgeRefusal::Db(format!("COMMIT refusé : {e}"));
+                return Err(annuler_la_purge(conn, "COMMIT refusé", origine));
             }
             Ok(r)
         }
         Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(e)
+            let etape = purge_refusal_code(&e);
+            Err(annuler_la_purge(conn, etape, e))
         }
     }
+}
+
+/// `P10.29-l` — LES `ROLLBACK` REFUSÉS DE LA PURGE, depuis le démarrage (compte de processus, jamais persisté) : seuls ceux
+/// qui ont LAISSÉ la connexion en transaction. Le rang courant est écrit sur la ligne `[purge]` qui dit le refus ; il n'est
+/// pas (encore) servi sous `/api/system/metrics`.
+static ROLLBACKS_DE_PURGE_REFUSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `P10.29-l` — ANNULE L'EXÉCUTION REFUSÉE D'UNE PURGE, ET LIT SON `ROLLBACK` (forme de `transaction_validee` : l'état de
+/// la connexion après l'annulation décide). Trois issues :
+///  - `ROLLBACK` pris : le refus d'origine sort tel quel ;
+///  - `ROLLBACK` refusé, connexion revenue en autocommit (le moteur avait déjà annulé, ex. `RAISE(ROLLBACK)` d'un
+///    déclencheur, ou un `COMMIT` refusé qu'il a annulé de lui-même) : ce refus n'est pas une information, le refus
+///    d'origine sort tel quel (sa cause, pas celle du `ROLLBACK` : le `Display` de la CLI et la ligne `WARN` de la route
+///    la recopient) ;
+///  - `ROLLBACK` refusé, connexion RESTÉE en transaction : dit à UNE ligne de journal (identifiant de corrélation, étape,
+///    texte du moteur de l'échec d'origine et du `ROLLBACK`, rang du compte), compté, et rendu sous `TransactionLeftOpen` qui porte
+///    l'identifiant de la ligne — la réponse ne dit plus « aucune ligne supprimée » sur un écrivain resté en transaction
+///    (un `BEGIN` y est refusé ; une écriture sans `BEGIN`, ex. l'état d'une règle d'alerte, y est prise puis perdue). La purge ne
+///    rejoue pas l'annulation : un second `ROLLBACK` passe par le même refus.
+fn annuler_la_purge(conn: &Connection, etape: &'static str, origine: PurgeRefusal) -> PurgeRefusal {
+    let refus = match conn.execute_batch("ROLLBACK") {
+        Ok(()) => return origine,
+        Err(refus) => refus,
+    };
+    if conn.is_autocommit() {
+        return origine;
+    }
+    let rang = ROLLBACKS_DE_PURGE_REFUSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    #[cfg(test)]
+    crate::comptes_de_transaction::noter_pour_les_temoins(conn, "rollback de purge refusé".to_string());
+    let id = crate::identifiant_de_correlation();
+    let origine = origine.to_string();
+    let rollback = refus.to_string();
+    eprintln!(
+        "[{id}] [purge] ERREUR purge confirmée : transaction toujours OUVERTE après « {etape} » puis un ROLLBACK refusé \
+         ({rollback:?}) ; refus d'origine : {origine:?} — rien n'est validé, l'écrivain reste en transaction jusqu'à sa \
+         fermeture (BEGIN refusés, écritures sans BEGIN prises puis perdues ; ROLLBACK de purge refusé n° {rang} depuis \
+         le démarrage)"
+    );
+    PurgeRefusal::TransactionLeftOpen { id, etape }
 }
 
 /// SIMULER PUIS CONFIRMER PUIS EXÉCUTER, en un appel — la forme qu'utilisent la CLI et l'API. La re-simulation

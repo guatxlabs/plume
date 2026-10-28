@@ -141,6 +141,9 @@ async fn prs_chaque_refus_est_servi_avec_sa_nature() {
             PurgeRefusal::ReasonRequired => 400,
             // `P10.29-h` — transaction de la purge non ouverte : 503, comme une route dont le `BEGIN` est refusé.
             PurgeRefusal::TransactionNotOpened => 503,
+            // `P10.29-l` — absente de `variantes` : son corps porte l'identifiant de la ligne de journal écrite au site de
+            // l'annulation ; il est jugé en entier, par la route, dans `purge_rollback_refuse_dit_et_compte.rs`.
+            PurgeRefusal::TransactionLeftOpen { .. } => unreachable!("transaction_left_open n'est pas dans `variantes`"),
             PurgeRefusal::LegalHold(_)
             | PurgeRefusal::ColdTier { .. }
             | PurgeRefusal::CitedByCase { .. }

@@ -12,7 +12,7 @@ mod analyse_complete_rearmee_sur_la_taille {
     #[test]
     fn un_jalon_ancien_sans_taille_vaut_une_base_vide_et_se_refait_au_seuil() {
         let seuil = SEUIL_DE_LIGNES_DE_REARMEMENT_DE_L_ANALYSE;
-        assert_eq!(lire_le_jalon_d_analyse_complete("119"), ("119", 0));
+        assert_eq!(lire_le_jalon_d_analyse_complete("119"), ("119", crate::maintenance::TailleDuJalon::Absente));
         assert!(!la_passe_d_analyse_complete_est_a_refaire(Some("119"), "119", 0), "vide et restée vide : rien à relancer");
         assert!(!la_passe_d_analyse_complete_est_a_refaire(Some("119"), "119", seuil - 1));
         assert!(la_passe_d_analyse_complete_est_a_refaire(Some("119"), "119", seuil), "au seuil, la passe prise sur le vide est refaite");
@@ -28,7 +28,8 @@ mod analyse_complete_rearmee_sur_la_taille {
         assert!(!la_passe_d_analyse_complete_est_a_refaire(Some("119@1000000"), "119", 1_200_000), "20 % de plus : statistiques encore justes");
         assert!(!la_passe_d_analyse_complete_est_a_refaire(Some("119@1000000"), "119", 1_000_000 * facteur - 1));
         assert!(la_passe_d_analyse_complete_est_a_refaire(Some("119@1000000"), "119", 1_000_000 * facteur));
-        assert!(!la_passe_d_analyse_complete_est_a_refaire(Some("119@abc"), "119", 999), "un jalon illisible vaut base vide, pas une boucle");
+        // `P10.20-b` — INVERSÉ : un jalon illisible ne vaut plus base vide ; la passe est refaite et son jalon réécrit la répare.
+        assert!(la_passe_d_analyse_complete_est_a_refaire(Some("119@abc"), "119", 999), "un jalon illisible se refait, jamais lu comme base vide");
         assert!(la_passe_d_analyse_complete_est_a_refaire(Some("119@abc"), "119", 1_000));
     }
 

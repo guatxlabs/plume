@@ -304,9 +304,10 @@ pub(crate) fn init_control_plane(conf: &HashMap<String, String>, main_db_path: &
     let conn = open_db_keyed_without_schema_contract(&path, control_key().as_deref()).map_err(|e| e.to_string())?;
     let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
     migrate_control(&conn);
-    // `P10.7-r` — la clé qui signe les points de contrôle de CE plan de contrôle : celle du registre, résolue comme
-    // le journal voisin la résout. Absente -> aucun point de contrôle, et chaque maillon inscrit le dit.
-    crate::rbac::armer_la_signature_du_journal_de_controle(&path, crate::ledger::ledger_key(conf));
+    // `P10.7-r` — L'OUVERTURE N'ARME PAS LA SIGNATURE du journal de contrôle : la sous-commande `scim-token` ouvre aussi
+    // le plan de contrôle par ici, et résoudre la clé du registre (`ledger::ledger_key`) peut ENGENDRER son fichier sur
+    // l'emplacement historique — depuis une commande qui n'écrit jamais au journal. Le serveur arme la signature après
+    // cette ouverture (`armer_la_signature_du_plan_de_controle`).
     // Catalogue minimal : le tenant `default` pointe vers la base tenant actuelle. key_ref='env:PLUME_DB_KEY'
     // -> rétrocompat mono (la clé actuelle reste valable). INSERT OR IGNORE = idempotent (re-boot sans effet).
     let _ = conn.execute(
@@ -315,6 +316,15 @@ pub(crate) fn init_control_plane(conf: &HashMap<String, String>, main_db_path: &
         params![main_db_path, now()],
     );
     Ok(ControlPlane { conn: Arc::new(Mutex::new(conn)), db_path: Arc::new(path) })
+}
+
+/// `P10.7-r` — ARME LA SIGNATURE des points de contrôle du journal de ce plan de contrôle : la clé du registre, résolue
+/// comme le journal voisin la résout (`ledger::ledger_key`, qui l'engendre sur l'emplacement historique si elle manque).
+/// Absente -> aucun point de contrôle, et chaque maillon inscrit le dit. Appelée par le SERVEUR seul, après
+/// `init_control_plane` : c'est lui qui écrit au journal de contrôle ; la sous-commande `scim-token` n'y écrit jamais et
+/// ne doit pas faire naître de fichier de clé.
+pub(crate) fn armer_la_signature_du_plan_de_controle(conf: &HashMap<String, String>, cp: &ControlPlane) {
+    crate::rbac::armer_la_signature_du_journal_de_controle(cp.db_path.as_str(), crate::ledger::ledger_key(conf));
 }
 
 /// Résout un `tenant.key_ref` -> passphrase SQLCipher effective (#2a-3 : câblage réel de la clé PAR
@@ -1113,6 +1123,10 @@ pub(crate) fn for_each_active_tenant<F: FnMut(&str, &Arc<Mutex<Connection>>, &st
                 continue;
             }
         };
+        // `P10.33-h` — le nom du tenant est posé pour la durée de SON corps : les lignes des ticks aveugles, du dispatch
+        // et du tick des rapports, appelées sans tenant, le disent (`metrics::mention_du_tenant_du_tour`). Mode 0 : rien
+        // n'est posé, leurs lignes restent celles d'avant, à l'octet.
+        let _tenant_du_tour = crate::metrics::nommer_le_tenant_du_tour(&tid);
         body(&tid, &w.handle(), w.path().as_str());
     }
 }

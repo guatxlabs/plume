@@ -64,7 +64,7 @@ mod rollups_watermarks_non_lus {
         "geste de fond non validé rollup : pli définitif de l'inventaire de flotte : watermark non lu";
 
     fn rwnl_recent() -> i64 {
-        ((now() / 3600) * 3600 - 3600).max(0)
+        heure_ronde_precedente_hors_de_la_fin_d_heure()
     }
 
     fn rwnl_sig_total(conn: &rusqlite::Connection, host: &str) -> i64 {

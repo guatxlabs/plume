@@ -459,18 +459,26 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             // lire), ni `last_run`/`last_value`/compte d'abandons/résolution de cécité, ni `population_vue` ; la règle
             // est comptée abandonnée, une ligne de journal dit la cause du moteur (ni valeur ni requête), et elle reste
             // due : réévaluée dès le tick suivant, jusqu'à ce que son alerte entre.
-            if let Err(e) = conn.execute(
+            let alerte_ecrite_a_ce_tir = match conn.execute(
                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,mitre,sources,current_value,basis) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 params![now_ts, format!("rule.{id}"), severity, title, query, dedup, mitre, sources, val, crate::fondement::Fondement::Regle.mot()],
             ) {
-                eprintln!("[detection] WARN règle #{id} : l'alerte de son tir n'a pas pu être écrite ({e}) — la règle est comptée abandonnée ; ni last_fired, ni last_run, ni son compte d'abandons ne sont posés : elle est due dès le tick suivant");
-                abandonnees += 1; // une règle, un abandon
-                continue;
-            }
+                Ok(n) => n > 0,
+                Err(e) => {
+                    eprintln!("[detection] WARN règle #{id} : l'alerte de son tir n'a pas pu être écrite ({e}) — la règle est comptée abandonnée ; ni last_fired, ni last_run, ni son compte d'abandons ne sont posés : elle est due dès le tick suivant");
+                    abandonnees += 1; // une règle, un abandon
+                    continue;
+                }
+            };
             let mut refusee = !crate::detection_aveugle::consigner_evaluation_reussie(&conn, id, now_ts, val);
             // `P10.32-x` — LES ÉCRITURES D'APRÈS L'ALERTE SONT LUES, comme celles du jumeau `run_advanced_rules` : chacune est
             // tentée, chaque refus est dit (règle et cause du moteur ; ni valeur, ni requête, ni source) et la règle compte
             // UN abandon au bilan, quel que soit le nombre de refus. L'alerte de tir, elle, est écrite.
+            // Un `Ok(0)` sur ces deux écritures : la règle n'existe plus, effacée entre la sélection et les écritures (le
+            // verrou est relâché pendant l'évaluation, phase 2) ; rien à écrire, pas un défaut, non compté (même lecture
+            // que `RegleAbsente` dans `issue_de_consigner_abandon`). Limite assumée : un déclencheur qui ignore l'écriture
+            // (`RAISE(IGNORE)`) rend le même `Ok(0)`, il n'est ni distingué ni compté (témoins `ax4_` de
+            // `statut_de_rapport_fenetre_de_dispatch_et_regle_effacee.rs`).
             if let Err(e) = conn.execute("UPDATE rule SET population_vue=?1 WHERE id=?2", params![hors_population.join(","), id]) {
                 eprintln!("[detection] WARN règle #{id} : les sources vues hors de sa population n'ont pas pu être écrites ({e}) — l'alerte de son tir est écrite, la règle est comptée abandonnée");
                 refusee = true;
@@ -486,14 +494,30 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             // un état stable ne re-notifie pas, un épisode qui change de nature si. S7 : l'imputation est
             // RAFRAÎCHIE ici aussi — sur un épisode déjà ouvert (l'INSERT ci-dessus est un no-op), une
             // SECONDE source devenue muette doit faire basculer SA pastille sans attendre la résolution.
-            if let Err(e) = conn.execute(
+            // `P10.33-h` — UN RAFRAÎCHISSEMENT QUI NE TOUCHE AUCUNE LIGNE EST JUGÉ. `INSERT OR IGNORE` rend `Ok(0)` pour un
+            // épisode déjà ouvert, mais aussi quand la clé est tenue par une alerte qui n'est ni nouvelle ni prise en compte
+            // (statut hors de `new`/`ack` sans clé libérée) ou quand la base ignore l'écriture : si le rafraîchissement ne
+            // touche alors aucune ligne non plus, le tir n'est vu nulle part, et il passait pour un épisode rafraîchi.
+            // Chaque bras dit ce que l'INSERT a rendu ; la règle compte UN abandon comme pour un refus.
+            match conn.execute(
                 "UPDATE alert SET opened_at=COALESCE(opened_at, ts), ts=?1, title=?2, severity=?3, sources=?5, current_value=?6, \
                  notified=CASE WHEN notified=1 AND notified_value IS NOT NULL AND ?6 >= ?7 * notified_value THEN 0 ELSE notified END \
                  WHERE dedup=?4 AND status IN ('new','ack')",
                 params![now_ts, title, severity, dedup, sources, val, FACTEUR_DE_RENOTIFICATION],
             ) {
-                eprintln!("[detection] WARN règle #{id} : son alerte ouverte n'a pas pu être rafraîchie ({e}) — valeur, sévérité, imputation et re-notification restent celles d'avant, la règle est comptée abandonnée");
-                refusee = true;
+                Ok(0) if alerte_ecrite_a_ce_tir => {
+                    eprintln!("[detection] WARN règle #{id} : l'alerte de son tir est écrite mais son rafraîchissement n'a touché aucune ligne — instant d'ouverture et re-notification ne sont pas posés, la règle est comptée abandonnée");
+                    refusee = true;
+                }
+                Ok(0) => {
+                    eprintln!("[detection] WARN règle #{id} : l'alerte de son tir n'est pas écrite (clé déjà tenue, ou écriture ignorée par la base) et aucune alerte ouverte sous sa clé n'a pris le rafraîchissement — ce tir peut n'être vu nulle part, la règle est comptée abandonnée");
+                    refusee = true;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[detection] WARN règle #{id} : son alerte ouverte n'a pas pu être rafraîchie ({e}) — valeur, sévérité, imputation et re-notification restent celles d'avant, la règle est comptée abandonnée");
+                    refusee = true;
+                }
             }
             refusee
         } else {

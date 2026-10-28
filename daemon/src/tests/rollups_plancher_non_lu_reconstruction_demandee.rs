@@ -51,7 +51,7 @@ mod rollups_plancher_non_lu_reconstruction_demandee {
         "geste de fond non validé rollup : rattrapage de l'inventaire de flotte : plancher de rattrapage non lu";
 
     fn rpnl_recent() -> i64 {
-        ((now() / 3600) * 3600 - 3600).max(0)
+        heure_ronde_precedente_hors_de_la_fin_d_heure()
     }
 
     fn rpnl_meta(conn: &rusqlite::Connection, cle: &str) -> Option<(String, String)> {

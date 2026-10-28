@@ -62,8 +62,13 @@ static READ_POOL: std::sync::OnceLock<Mutex<ReadPool>> = std::sync::OnceLock::ne
 fn read_conn_open(db_path: &str) -> Result<Connection, String> {
     // `P10.29-l` (vague AR) — le texte rendu reste `e.to_string()` ; la CLASSE (support ou moteur, par le code) est
     // notée pour `en_classant`.
-    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| EchecDeRequete::par_le_code(&e, e.to_string()).noter())?;
+    // `P10.33-r` — L'ÉCHEC D'OUVERTURE SE DIT AU JOURNAL, AVEC SON CODE ÉTENDU. Sans `SQLITE_OPEN_EXRESCODE`,
+    // `sqlite3_open_v2` rend le code PRIMAIRE seul (`openDatabase` masque par `errMask` = 0xff tant que les codes étendus
+    // ne sont pas allumés, ce que rusqlite ne fait qu'APRÈS l'ouverture) ; le texte rendu (le message) ne change pas.
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_EXRESCODE).map_err(|e| {
+        sqlite_plafond::journaliser_l_echec_d_ouverture(&e);
+        EchecDeRequete::par_le_code(&e, e.to_string()).noter()
+    })?;
     apply_key_for(&conn, db_path);   // #2a-3 : clé DU TENANT (registre keyé db_path), pas db_key() global.
                                      // SQLCipher : la clé doit précéder toute requête. Non enregistré -> db_key() (mode 0).
     // Le BUDGET MÉMOIRE (temp_store/cache_size/mmap_size) est décidé par `sqlite_plafond` et NULLE PART

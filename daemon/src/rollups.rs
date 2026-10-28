@@ -696,12 +696,46 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // laisserait alors une ligne orpheline (PK différente) -> double comptage. On PURGE d'abord les
     // buckets de la fenêtre chaude avant la ré-agrégation (les buckets définitifs <recent ne sont écrits
     // qu'une fois et restent stables). Borne = i64 (pas d'injection).
-    let _ = conn.execute("DELETE FROM event_rollup WHERE bucket >= ?1", params![recent]);
-    let _ = conn.execute(&rollup_insert_sql(&format!("ts >= {recent}"), min_sev, topn), []); // fenêtre chaude
-    if bande_tenue {
-        let _ = conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_WM]);
-        let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_WM, recent.to_string()]);
+    // `P10.32-a` — la purge et l'agrégation de la fenêtre chaude sont LUES. Avant, deux `let _` : une purge refusée était
+    // suivie de l'INSERT OR REPLACE (orphelins top-N à côté des lignes neuves : double compte servi par les panneaux qui
+    // lisent `event_rollup` au-dessus de `recent`, et par la sonde de débit), un INSERT refusé laissait la fenêtre VIDE,
+    // sans un mot. Purge refusée : rien n'est ré-agrégé ce passage (la fenêtre garde les lignes du passage précédent) ;
+    // l'un ou l'autre refus est compté et dit. Ni le watermark ni la couverture n'en dépendent : la couverture publiée
+    // vaut pour `ts < recent`, et la fenêtre chaude, au-dessus, n'y entre pas (la bande `[recent, …)` est reconstruite
+    // par groupes au passage où elle devient définitive).
+    match conn.execute("DELETE FROM event_rollup WHERE bucket >= ?1", params![recent]) {
+        Ok(_) => {
+            if let Err(e) = conn.execute(&rollup_insert_sql(&format!("ts >= {recent}"), min_sev, topn), []) {
+                compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_FENETRE_CHAUDE_D_EVENT_ROLLUP, ETAPE_INSERT_REFUSE, &e);
+                eprintln!("[rollup] WARN agrégation de la fenêtre chaude d'event_rollup NON écrite ({e}) — fenêtre chaude vide jusqu'au prochain passage");
+            }
+        }
+        Err(e) => {
+            compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_FENETRE_CHAUDE_D_EVENT_ROLLUP, ETAPE_PURGE_REFUSEE, &e);
+            eprintln!("[rollup] WARN purge de la fenêtre chaude d'event_rollup NON faite ({e}) — fenêtre chaude non ré-agrégée, lignes du passage précédent gardées, reprise au prochain passage");
+        }
     }
+    // `P10.32-a` — le watermark est ÉCRIT ou NON ÉCRIT, et la couverture n'est publiée qu'avec lui. Avant, deux `let _` puis
+    // la publication de la couverture quoi qu'il arrive : la paire n'était plus « écrite ensemble » (`rollup_coverage`), et
+    // rien ne le disait. Effacement refusé : l'ancien watermark reste, rien n'est inséré ; INSERT refusé : le watermark
+    // est ABSENT, et le passage suivant reconstruit depuis le plancher d'`event` (purge bornée aux groupes resservis).
+    // Dans les deux cas la couverture n'est pas publiée (la route sert le brut), le refus est compté et dit.
+    let watermark_ecrit = bande_tenue
+        && match conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_WM]) {
+            Err(e) => {
+                compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_WATERMARK_D_EVENT_ROLLUP, ETAPE_EFFACEMENT_REFUSE, &e);
+                eprintln!("[rollup] WARN watermark d'event_rollup NON effacé ({e}) — ancien watermark gardé, couverture non publiée (la route sert le brut), reprise au prochain passage");
+                false
+            }
+            Ok(_) => match conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_WM, recent.to_string()]) {
+                Ok(_) => true,
+                Err(e) => {
+                    compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_WATERMARK_D_EVENT_ROLLUP, ETAPE_ECRITURE_REFUSEE, &e);
+                    eprintln!("[rollup] WARN watermark d'event_rollup NON écrit ({e}) — watermark absent, couverture non publiée (la route sert le brut), reconstruction depuis le plus vieil event au prochain passage");
+                    false
+                }
+            },
+        };
     // PUBLICATION DE LA COUVERTURE — jamais avant, jamais seule. Si l'agrégation a échoué (base occupée,
     // interruption, disque), on N'ANNONCE RIEN : la clé reste absente, la route décline, le brut sert.
     // FAIL-CLOSED : une couverture qu'on n'a pas prouvée ne s'écrit pas. Une bande sale NON LUE (`P10.20-b`) n'est pas
@@ -710,8 +744,13 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // dépend pas du plancher et la couverture reste publiée comme avant.
     // Borne NON LUE (`P10.32-a`) : la couverture n'est ni effacée ni republiée, le watermark n'ayant pas bougé.
     // Rétractation REFUSÉE (`P10.32-a`, plus haut) : de même. La rétractation lue a eu lieu avant tout geste sur la bande.
-    if bande_tenue && aggregated && bande_sale_lue && (plancher_lu || dirty_lo.is_none()) {
-        let _ = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_COV_ID, new_cov.to_string()]);
+    // Watermark NON écrit (`P10.32-a`, ci-dessus) : non publiée. La publication elle-même est lue : refusée, la clé reste
+    // absente (la route sert le brut, le passage suivant reconstruit), compté et dit.
+    if bande_tenue && aggregated && bande_sale_lue && (plancher_lu || dirty_lo.is_none()) && watermark_ecrit {
+        if let Err(e) = conn.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![META_ROLLUP_COV_ID, new_cov.to_string()]) {
+            compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_COUVERTURE_D_EVENT_ROLLUP, ETAPE_PUBLICATION_REFUSEE, &e);
+            eprintln!("[rollup] WARN couverture d'event_rollup NON publiée ({e}) — la route sert le brut, reconstruction au prochain passage");
+        }
     }
 
     // ---- PHASE 3a : event_dim_rollup (pré-agrégation par DIMENSION) ----
@@ -989,6 +1028,18 @@ const GESTE_RATTRAPAGE: &str = "rattrapage de l'inventaire de flotte";
 /// `P10.32-a` — le geste et l'étape comptés quand la base refuse d'effacer la couverture d'`event_rollup` avant la bande.
 const GESTE_COUVERTURE_D_EVENT_ROLLUP: &str = "couverture d'event_rollup";
 const ETAPE_RETRACTATION_REFUSEE: &str = "rétractation refusée";
+/// `P10.32-a` — les gestes et les étapes comptés quand la base refuse la purge ou l'agrégation de la fenêtre chaude
+/// d'`event_rollup`, l'effacement ou l'écriture de son watermark, la publication de sa couverture, ou la lecture et
+/// l'écriture du watermark de `banned_ip`.
+const GESTE_FENETRE_CHAUDE_D_EVENT_ROLLUP: &str = "fenêtre chaude d'event_rollup";
+const GESTE_WATERMARK_D_EVENT_ROLLUP: &str = "watermark d'event_rollup";
+const GESTE_WATERMARK_DE_BANNED_IP: &str = "watermark de banned_ip";
+const ETAPE_PURGE_REFUSEE: &str = "purge refusée";
+const ETAPE_INSERT_REFUSE: &str = "INSERT refusé";
+const ETAPE_EFFACEMENT_REFUSE: &str = "effacement refusé";
+const ETAPE_ECRITURE_REFUSEE: &str = "écriture refusée";
+const ETAPE_PUBLICATION_REFUSEE: &str = "publication refusée";
+const ETAPE_LECTURE_NON_FAITE: &str = "lecture non faite";
 
 /// `P10.32-a` — RÉTRACTE la couverture d'`event_rollup` (`meta.event_rollup_cov_id`) avant tout geste sur la bande. Rend
 /// `true` si la base a pris l'effacement (la clé absente compte comme prise : rien n'était publié). Refusé : compté sous
@@ -1169,8 +1220,20 @@ pub(crate) fn materialize_banned_ip(conn: &Connection) {
     let conf = load_config();
     let backfill: i64 = cfg(&conf, "PLUME_BANNED_IP_BACKFILL", "604800").parse().unwrap_or(604800).max(3600);
     let floor = (recent - backfill).max(0);
-    let stored_wm: i64 = conn.query_row("SELECT value FROM meta WHERE key='banned_ip_wm'", [], |r| r.get::<_, String>(0))
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    // `P10.32-a` — le watermark en TROIS issues. Absent (premier passage) ou NON LU (lecture ratée, valeur non entière), le
+    // rattrapage part du plancher `floor` : c'est le plus large que la fenêtre de rattrapage permette, et l'upsert est
+    // idempotent, donc rien n'est perdu ni compté deux fois. Avant, `.ok()…unwrap_or(0)` rendait les deux cas identiques et
+    // muets : un watermark illisible faisait rebalayer toute la fenêtre de rattrapage à chaque passage, sans un mot.
+    // Non lu : compté et dit, puis réécrit à `recent` si les upserts passent.
+    let stored_wm: i64 = match lire_un_watermark(conn, "banned_ip_wm") {
+        LectureDeWatermark::Lu(w) => w,
+        LectureDeWatermark::Absent => 0,
+        LectureDeWatermark::NonLu(e) => {
+            compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_WATERMARK_DE_BANNED_IP, ETAPE_LECTURE_NON_FAITE, &e);
+            eprintln!("[rollup] WARN watermark banned_ip_wm NON lu ({e}) — rattrapage depuis le début de la fenêtre de rattrapage, watermark réécrit si les upserts passent");
+            0
+        }
+    };
     let wm = stored_wm.max(floor); // cold start / rattrapage BORNÉS à backfill (jamais de scan depuis 0)
     // `P10.32-a` — chaque upsert est LU (décision par défaut, vague AC). Avant, `let _` puis le watermark avancé à
     // `recent` quoi qu'il arrive : un upsert refusé sur les heures définitives `[wm, recent)` n'était JAMAIS rejoué, les
@@ -1196,9 +1259,22 @@ pub(crate) fn materialize_banned_ip(conn: &Connection) {
         upserts_refuses += upsert(format!("ts >= {wm} AND ts < {recent}")); // heures définitives (bornées à backfill), 1x
     }
     upserts_refuses += upsert(format!("ts >= {recent}")); // fenêtre chaude (ré-UPSERT à chaque tick ; idempotent via MIN/MAX)
+    // `P10.32-a` — l'avancée du watermark est LUE. Avant, deux `let _` : un effacement refusé laissait l'ancien watermark
+    // (tranche rebalayée), un INSERT refusé le laissait ABSENT (rattrapage depuis le plancher), sans un mot. Aucun ban n'est
+    // perdu dans les deux cas (upsert idempotent, plancher borné) ; le refus est compté et dit.
     if upserts_refuses == 0 {
-        let _ = conn.execute("DELETE FROM meta WHERE key='banned_ip_wm'", []);
-        let _ = conn.execute("INSERT INTO meta(key,value) VALUES('banned_ip_wm', ?1)", params![recent.to_string()]);
+        match conn.execute("DELETE FROM meta WHERE key='banned_ip_wm'", []) {
+            Err(e) => {
+                compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_WATERMARK_DE_BANNED_IP, ETAPE_EFFACEMENT_REFUSE, &e);
+                eprintln!("[rollup] WARN watermark banned_ip_wm NON effacé ({e}) — ancien watermark gardé, tranche rejouée au prochain passage");
+            }
+            Ok(_) => {
+                if let Err(e) = conn.execute("INSERT INTO meta(key,value) VALUES('banned_ip_wm', ?1)", params![recent.to_string()]) {
+                    compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_WATERMARK_DE_BANNED_IP, ETAPE_ECRITURE_REFUSEE, &e);
+                    eprintln!("[rollup] WARN watermark banned_ip_wm NON écrit ({e}) — watermark absent, rattrapage depuis le début de la fenêtre de rattrapage au prochain passage");
+                }
+            }
+        }
     }
     // purge OPTIONNELLE des bans expirés (last_seen trop ancien). OFF par défaut (0 -> no-op).
     let retention: i64 = cfg(&conf, "PLUME_BANNED_IP_RETENTION", "0").parse().unwrap_or(0);
@@ -1441,25 +1517,48 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
         // tick de pré-chauffage (jamais de permis pris à l'interactif ; le panneau reste servi du cache).
         let permit = match refresh_sem.try_acquire() { Ok(p) => p, Err(_) => break };
         // `P10.32-o` — l'échec n'est plus jeté sans un mot : il est JOURNALISÉ (identifiant + cause, jamais
-        // la requête). Rien d'autre : le chemin à la demande écrit, lui, le corps d'échec que la console lit.
-        let execution = panneau_avoue::executer(db_path, &conf, pc, from_default);
-        if let Err(e) = &execution {
-            eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({e}) — rien d'écrit, le chemin à la demande retentera");
+        // la requête). Sur une ABSENCE, rien d'autre : le chemin à la demande écrit, lui, le corps d'échec que la console
+        // lit. Sur une charge utile VALIDE déjà en cache, l'échec y est joint (`stats.rafraichissement_en_echec`, phrase de
+        // la classe relue sur ce fil par `en_classant`), comme au rafraîchissement à la demande.
+        let execution = crate::query_exec::en_classant(|| panneau_avoue::executer(db_path, &conf, pc, from_default));
+        if let Err(echec) = &execution {
+            // Au journal, la cause de `EchecMisEnCache::au_journal` (la seule nature pour le support et la base occupée :
+            // le texte d'une ouverture ratée cite le chemin de la base), comme au rafraîchissement à la demande.
+            let echec = crate::handlers::dashboards::EchecMisEnCache::de_la_requete(echec.clone());
+            let cause = echec.au_journal().to_string();
+            let issue = crate::handlers::dashboards::joindre_l_echec_a_la_charge_valide(&db.lock(), id, &range_key, &q_fp, now_s, &echec);
+            match issue {
+                crate::handlers::dashboards::IssueDeLaChargeValide::Aucune => {
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — rien d'écrit, le chemin à la demande retentera")
+                }
+                crate::handlers::dashboards::IssueDeLaChargeValide::Jointe => {
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — charge utile précédente conservée, échec joint au corps servi")
+                }
+                crate::handlers::dashboards::IssueDeLaChargeValide::NonJointe(e) => {
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — charge utile précédente conservée, échec NON joint au corps servi ({e})")
+                }
+                crate::handlers::dashboards::IssueDeLaChargeValide::PlusRecenteQueLaTentative => {
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — charge utile calculée après cette tentative conservée, rien d'écrit")
+                }
+            }
         }
         if let Ok(v) = execution {
             let cost_ms = measured_cost_ms(&v); // PHASE 3d : pré-classe les panneaux dès le pré-chauffage
-            if let Ok(payload) = serde_json::to_string(&v) {
-                { let conn = db.lock();
-                    // PHASE 3d : mémorise le coût (le 1er user ne paie plus la 1re mesure d'un panneau lourd).
-                    if let Some(c) = cost_ms {
-                        record_panel_cost(&conn, id, &q_fp, c, now_s);
-                    }
-                    // 1 ligne / (panel, range_key) sur PK composite : le pré-chauffage 24 h
-                    // coexiste avec les plages zoom/preset (plus d'éviction mutuelle). computed_at = now_s
-                    // (lu une fois, cohérent avec range_key).
-                    // écriture + même cap anti-explosion que panel_data : le coffre POSSÈDE la table.
-                    panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &payload);
+            // `P10.32-o` — la charge utile est rendue par `Value::to_string`, qui ne peut pas échouer et rend les mêmes octets
+            // que `serde_json::to_string` : il n'y a plus de branche où le cache serait sauté sans un mot (avant,
+            // `if let Ok(payload) = serde_json::to_string(&v)`, sans `else`).
+            let payload = v.to_string();
+            {
+                let conn = db.lock();
+                // PHASE 3d : mémorise le coût (le 1er user ne paie plus la 1re mesure d'un panneau lourd).
+                if let Some(c) = cost_ms {
+                    record_panel_cost(&conn, id, &q_fp, c, now_s);
                 }
+                // 1 ligne / (panel, range_key) sur PK composite : le pré-chauffage 24 h
+                // coexiste avec les plages zoom/preset (plus d'éviction mutuelle). computed_at = now_s
+                // (lu une fois, cohérent avec range_key).
+                // écriture + même cap anti-explosion que panel_data : le coffre POSSÈDE la table.
+                panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &payload);
             }
         }
         drop(permit); // relâche le permit avant le panneau suivant (concurrence bornée, pas monopolisée)
@@ -1561,14 +1660,64 @@ pub(crate) fn load_index_policies(conn: &Connection) -> Vec<IndexPolicy> {
     }) else {
         return out;
     };
-    for (name, rdays, max_rows, max_bytes) in rows.flatten() {
-        if !env_id_ok(&name) {
-            continue; // fail-safe : nom invalide -> ignoré (l'index reste purgé par le global, jamais sur-purgé)
-        }
-        let retention_days = if rdays > 0 { rdays.clamp(INDEX_RETENTION_FLOOR_DAYS, INDEX_RETENTION_CEIL_DAYS) } else { 0 };
-        out.push(IndexPolicy { name, retention_days, max_rows: max_rows.max(0), max_bytes: max_bytes.max(0) });
-    }
+    // Une ligne illisible est ÉCARTÉE, les autres gardées : cet environnement retombe sur la purge globale (le repli de la
+    // purge, voulu). L'horizon des panneaux ne lit PAS ce lecteur : il prend `lire_les_politiques_d_index`, où une seule
+    // ligne illisible rend toute la lecture non faite.
+    out.extend(rows.flatten().filter_map(politique_validee));
     out
+}
+
+/// La ligne lue d'`index_policy`, VALIDÉE comme la purge l'applique : nom hors allowlist écarté, durée planchée et
+/// plafonnée, plafonds négatifs ramenés à 0. Partagée par les deux lecteurs : la purge et l'horizon voient les MÊMES
+/// politiques quand la lecture réussit.
+fn politique_validee((name, rdays, max_rows, max_bytes): (String, i64, i64, i64)) -> Option<IndexPolicy> {
+    if !env_id_ok(&name) {
+        return None; // fail-safe : nom invalide -> ignoré (l'index reste purgé par le global, jamais sur-purgé)
+    }
+    let retention_days = if rdays > 0 { rdays.clamp(INDEX_RETENTION_FLOOR_DAYS, INDEX_RETENTION_CEIL_DAYS) } else { 0 };
+    Some(IndexPolicy { name, retention_days, max_rows: max_rows.max(0), max_bytes: max_bytes.max(0) })
+}
+
+/// `P10.5-p` — LES POLITIQUES PAR INDEX, LUES OU NON LUES, pour qui publie un horizon (`panneau_avoue`). Le lecteur de
+/// la purge (`load_index_policies`) rend une liste vide sur un énoncé refusé et écarte une ligne illisible : c'est un
+/// repli sûr pour la purge (l'environnement retombe sur la globale), mais un horizon publié sur cette liste serait
+/// présenté comme MESURÉ alors que la politique n'a pas été lue. Ici : table ABSENTE (base d'avant v91, relevé dans
+/// `sqlite_master`) = aucune politique, comme la purge la voit ; énoncé refusé sur une table présente, ou UNE ligne
+/// illisible = `Err`, jamais une liste partielle.
+pub(crate) fn lire_les_politiques_d_index(conn: &Connection) -> rusqlite::Result<Vec<IndexPolicy>> {
+    let mut st = match conn.prepare("SELECT name, retention_days, max_rows, max_bytes FROM index_policy WHERE enabled=1") {
+        Ok(st) => st,
+        Err(e) => {
+            // Seule une absence RELEVÉE vaut « aucune politique » ; une présence, ou un relevé lui-même refusé, rend le refus.
+            let presente = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='index_policy'", [], |r| r.get::<_, i64>(0));
+            return match presente {
+                Ok(0) => Ok(Vec::new()),
+                _ => Err(e),
+            };
+        }
+    };
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)))?;
+    let mut out = Vec::new();
+    for ligne in rows {
+        out.extend(politique_validee(ligne?));
+    }
+    Ok(out)
+}
+
+/// `P10.5-p` — LES PLAFONDS `max_rows`/`max_bytes` DES POLITIQUES PAR INDEX TOURNENT-ILS ? Non sous le tier froid
+/// actif (`cold_tier` compilé ET `PLUME_COLD_TIER=1` : `retention_run` les saute, #18 NO-LOSS) ; oui sinon. Une seule
+/// écriture du prédicat : la purge le lit, et l'horizon des panneaux (`panneau_avoue`) aussi — un plafond qui ne tourne
+/// pas ne rend aucun horizon non mesuré.
+pub(crate) fn plafonds_d_index_actifs(conf: &HashMap<String, String>) -> bool {
+    #[cfg(feature = "cold_tier")]
+    {
+        cfg(conf, "PLUME_COLD_TIER", "") != "1"
+    }
+    #[cfg(not(feature = "cold_tier"))]
+    {
+        let _ = conf;
+        true
+    }
 }
 
 /// Purge de rétention PAR-INDEX pour UNE table portant `env_id` + une colonne temporelle `tscol`. `table`,
@@ -1868,7 +2017,7 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
     // -> les plafonds tournent comme aujourd'hui). Rétention TEMPS per-index (retention_prune_table) et
     // hard-purge global INCHANGÉS — seuls les plafonds count/byte sont gatés.
     #[cfg(feature = "cold_tier")]
-    let caps_active = cfg(&conf, "PLUME_COLD_TIER", "") != "1";
+    let caps_active = plafonds_d_index_actifs(&conf);
     // `P10.20-b` — `None` = réglage écrit illisible : la famille n'est pas purgée ce tour.
     let snap_cutoff: Option<i64> = snap.map(|snap| n - snap * 86400);
     let alert_cutoff: Option<i64> = alert.map(|alert| n - alert * 86400);

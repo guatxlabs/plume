@@ -1131,27 +1131,49 @@ pub(crate) fn jalon_d_analyse_complete(version: &str, lignes: i64) -> String {
     format!("{version}@{lignes}")
 }
 
-/// Décompose un jalon en (version de schéma, lignes analysées) ; un jalon sans taille rend 0 lignes.
-pub(crate) fn lire_le_jalon_d_analyse_complete(jalon: &str) -> (&str, i64) {
+/// `P10.20-b` (tranche entretien) — LA TAILLE PORTÉE PAR UN JALON, EN TROIS ISSUES. `Mesuree(n)` : `<version>@<n>`,
+/// `n` entier positif ou nul. `Absente` : un jalon ancien `<version>` seul, écrit avant que la taille n'y soit portée —
+/// taille INCONNUE, tenue pour base vide à dessein (la passe se refait une fois au seuil). `Illisible` : un `@` suivi
+/// d'autre chose qu'un entier positif ou nul (`@abc`, `@365.0`, `@`, `@-5`) — ce n'est PAS une base vide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TailleDuJalon {
+    Mesuree(i64),
+    Absente,
+    Illisible,
+}
+
+/// Décompose un jalon en (version de schéma, taille analysée). Avant, `lignes.parse().unwrap_or(0)` lisait un jalon
+/// `<version>@<illisible>` comme une passe prise sur ZÉRO ligne : la passe due n'était refaite qu'au seuil, sans un mot.
+pub(crate) fn lire_le_jalon_d_analyse_complete(jalon: &str) -> (&str, TailleDuJalon) {
     match jalon.split_once('@') {
-        Some((version, lignes)) => (version, lignes.parse().unwrap_or(0)),
-        None => (jalon, 0),
+        Some((version, lignes)) => match lignes.parse::<i64>() {
+            Ok(n) if n >= 0 => (version, TailleDuJalon::Mesuree(n)),
+            _ => (version, TailleDuJalon::Illisible),
+        },
+        None => (jalon, TailleDuJalon::Absente),
     }
 }
 
 /// La passe est à refaire quand la version de schéma du jalon n'est plus la courante (un bump
 /// d'index l'a désynchronisé, à dessein), OU quand la table a franchi le seuil ET grandi du facteur
 /// depuis la passe. `None` = jamais analysée. Une base vide qui reste vide ne relance rien.
+/// `P10.20-b` — une taille ILLISIBLE ne dit pas sur quelle table la passe a été prise : la passe est refaite, et le jalon
+/// qu'elle réécrit (`<version>@<lignes>`, lisible) la répare — une fois, pas une boucle.
 pub(crate) fn la_passe_d_analyse_complete_est_a_refaire(
     jalon: Option<&str>,
     version: &str,
     lignes_maintenant: i64,
 ) -> bool {
     let Some(jalon) = jalon else { return true };
-    let (version_du_jalon, lignes_du_jalon) = lire_le_jalon_d_analyse_complete(jalon);
+    let (version_du_jalon, taille) = lire_le_jalon_d_analyse_complete(jalon);
     if version_du_jalon != version {
         return true;
     }
+    let lignes_du_jalon = match taille {
+        TailleDuJalon::Mesuree(n) => n,
+        TailleDuJalon::Absente => 0,
+        TailleDuJalon::Illisible => return true,
+    };
     let plancher = SEUIL_DE_LIGNES_DE_REARMEMENT_DE_L_ANALYSE
         .max(lignes_du_jalon.saturating_mul(FACTEUR_DE_CROISSANCE_DE_REARMEMENT_DE_L_ANALYSE));
     lignes_maintenant >= plancher
@@ -1223,6 +1245,18 @@ pub(crate) fn analyze_full_background(db: &Arc<Mutex<Connection>>) -> CompteRend
     };
     if !la_passe_d_analyse_complete_est_a_refaire(done.as_deref(), &ver, lignes) {
         return cr; // déjà fait pour ce schéma, sur une table de taille comparable
+    }
+    // `P10.20-b` — un jalon de la version courante dont la taille est illisible est DIT avant la passe qu'il relance : ni
+    // lu comme une base vide, ni refait en silence. Le jalon lui-même n'est pas recopié au journal.
+    let taille_du_jalon_illisible = matches!(
+        done.as_deref().map(lire_le_jalon_d_analyse_complete),
+        Some((version_du_jalon, TailleDuJalon::Illisible)) if version_du_jalon == ver
+    );
+    if taille_du_jalon_illisible {
+        cr.dire(format!(
+            "[analyze] jalon analyze_full_done de la version {ver} : taille illisible (ni un entier positif ni absente) — \
+             la taille de la passe précédente n'est pas établie, ANALYZE complet refait et jalon réécrit"
+        ));
     }
     if let Err(e) = conn.execute_batch("PRAGMA analysis_limit=0; ANALYZE;") {
         cr.ecriture_refusee(format!("[analyze] ANALYZE complet ÉCHEC ({e}) — jalon NON écrit, la passe sera retentée au prochain boot"));

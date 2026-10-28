@@ -244,9 +244,11 @@ pub(crate) fn ledger_export_lines(conn: &Connection, from_id: i64, limit: i64) -
 /// LE JOURNAL DE CONTRÔLE S'EXPORTE COMME LE JOURNAL DES TENANTS (`P10.7-r`, 2026-09-09). Mesuré la veille :
 /// `verify-control` rejoue toute la chaîne hors ligne, mais aucune route ne LISAIT `control_ledger` — donc
 /// aucune copie hors de la machine, et une réécriture complète re-chaînée restait invisible. Une ligne par
-/// maillon, avec TOUT ce que le hachage couvre (`prev|ts|kind|actor|tenant|detail`) : une copie exportée se
-/// vérifie sans la base, par `control_ledger_verify_export`. Même contrat de tranche que le voisin : une
-/// tranche illisible ne rend RIEN et ne bouge pas le curseur.
+/// maillon, avec TOUT ce que le hachage couvre (`prev|ts|kind|actor|tenant|detail`). Cette fonction rend la seule
+/// chaîne ; la route sert `control_ledger_export_lines_ancree`, qui y ajoute les points de contrôle signés de la
+/// tranche, et `verify-control --export` vérifie une copie sans la base, chaîne ET ancre
+/// (`verdict_hors_ligne_de_la_copie_du_journal_de_controle`) — la chaîne seule ne voyait pas une réécriture re-chaînée.
+/// Même contrat de tranche que le voisin : une tranche illisible ne rend RIEN et ne bouge pas le curseur.
 pub(crate) fn control_ledger_export_line(id: i64, ts: i64, kind: &str, actor: &str, tenant: &str, detail: &str, prev_hash: &str, hash: &str) -> String {
     json!({ "id": id, "ts": ts, "kind": kind, "actor": actor, "tenant": tenant, "detail": detail, "prev_hash": prev_hash, "hash": hash }).to_string()
 }
@@ -348,9 +350,10 @@ fn texte_hache_du_registre(prev: &str, ts: i64, v: &Value) -> String {
 /// Vérification HORS LIGNE d'une copie exportée du journal de contrôle : même recette de hachage que
 /// `control_ledger_append`, mêmes ancrages et même règle de répétition exacte que la copie du registre. Aucun puits
 /// n'exporte ce journal ; des téléchargements recouvrants mis bout à bout produisent pourtant des répétitions, et la
-/// règle ne vit qu'à un endroit. Depuis `P10.7-r`, `verify-control --export` vérifie une copie de ce journal (par
-/// `verdict_hors_ligne_de_la_copie_du_journal_de_controle`) : la recette et cette fonction ne sont plus réservées aux
-/// témoins ; `control_ledger_verify_export` l'est toujours.
+/// règle ne vit qu'à un endroit. Depuis `P10.7-r`, `verify-control --export` vérifie une copie de ce journal par
+/// `verdict_hors_ligne_de_la_copie_du_journal_de_controle`, qui emploie la MÊME recette sur les seules lignes de maillon
+/// (`verifier_des_lignes_numerotees`, rangs d'origine) puis juge l'ancre ; cette fonction-ci, qui ne connaît pas les
+/// lignes de point de contrôle, ne sert plus que les témoins et `control_ledger_verify_export` (témoins seulement).
 pub(crate) fn verifier_la_copie_du_journal_de_controle(lines: &[String], expect_prev: &str) -> Result<CopieChaineeVerifiee, String> {
     verifier_une_copie_chainee(lines, expect_prev, &RECETTE_DU_JOURNAL_DE_CONTROLE)
 }
@@ -365,7 +368,7 @@ pub(crate) fn control_ledger_verify_export(lines: &[String], expect_prev: &str) 
     verifier_la_copie_du_journal_de_controle(lines, expect_prev).map(|c| c.maillons)
 }
 
-/// `P10.7-r` — LA COPIE EXPORTÉE DU JOURNAL DE CONTRÔLE, VÉRIFIÉE HORS LIGNE CONTRE SON POINT DE CONTRÔLE. Les lignes
+/// `P10.7-r` — LA COPIE EXPORTÉE DU JOURNAL DE CONTRÔLE, VÉRIFIÉE HORS LIGNE CONTRE SES POINTS DE CONTRÔLE. Les lignes
 /// qui portent `point_de_controle` sont mises à part ; les autres passent par la vérification de chaîne (mêmes
 /// ancrages, même règle de répétition exacte) ; puis l'ancre est jugée par le MÊME juge que la base
 /// (`juger_l_ancrage_du_journal_de_controle`), contre la clé épinglée. Une ligne de point de contrôle incomplète, ou

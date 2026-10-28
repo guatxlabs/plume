@@ -682,29 +682,110 @@ pub(crate) fn control_ledger_append(st: &AppState, kind: &str, actor: &str, tena
         }
     };
     let hash = sha256_hex(format!("{prev}|{ts}|{kind}|{actor}|{tenant}|{detail}").as_bytes());
-    // L'ÉCRITURE EST COMPTÉE, comme celle du journal voisin : l'énoncé n'a aucune clause de conflit, il
-    // pose UNE ligne ou il échoue. Le bras du compte inattendu existe pour que le silence ne redevienne
-    // pas le comportement par défaut le jour où l'énoncé en gagnerait une.
+    // `P10.7-r` — LE MAILLON ET SON POINT DE CONTRÔLE SONT ÉCRITS ENSEMBLE OU PAS DU TOUT, sous un point de reprise
+    // (`SAVEPOINT`) : un arrêt du processus entre les deux, ou un point que la base refuse, ne laisse plus un maillon
+    // sans point — forme que le juge ne distingue pas d'une réécriture dont on a retiré le point, et qui tenait la
+    // vérification en 2 pour toujours. Un point de reprise et non `BEGIN` : il s'imbrique dans une transaction déjà
+    // ouverte sur cette connexion (il ne valide alors rien, la transaction englobante décide). La tête de chaîne est lue
+    // AVANT de l'ouvrir : le premier énoncé sous le point de reprise est l'`INSERT`, qui prend le verrou d'écriture en
+    // attendant comme avant, sans transaction de lecture préalable qu'une écriture concurrente rendrait périmée.
+    if let Err(e) = conn.execute_batch(&format!("SAVEPOINT {POINT_DU_MAILLON_DE_CONTROLE}")) {
+        eprintln!("[control_ledger] WARN maillon '{kind}' NON inscrit : la transaction qui doit porter le maillon et son point de contrôle ne s'ouvre pas ({e})");
+        return MaillonDeRegistre::NonInscrit(CAUSE_MAILLON_NON_ECRIT.to_string());
+    }
+    let Err(non_ecrit) = ecrire_le_maillon_et_son_point(&conn, &cp.db_path, kind, ts, actor, tenant, detail, &prev, &hash) else {
+        return MaillonDeRegistre::Inscrit;
+    };
+    // `ROLLBACK TO` puis `RELEASE` : ni le maillon ni son point ne sont conservés, et le point de reprise est fermé.
+    let annulation = conn.execute_batch(&format!("ROLLBACK TO {POINT_DU_MAILLON_DE_CONTROLE}; RELEASE {POINT_DU_MAILLON_DE_CONTROLE}"));
+    let (ligne, cause) = non_ecrit.ligne_et_cause();
+    // L'ÉTAT APRÈS UN `ROLLBACK TO` REFUSÉ SE RELIT, IL NE SE SUPPOSE PAS. Sur une base pleine (`SQLITE_FULL`), une
+    // erreur d'E/S ou un `RAISE(ROLLBACK)`, SQLite peut avoir déjà annulé TOUTE la transaction — le point de reprise et
+    // une transaction englobante avec lui : `ROLLBACK TO` échoue alors (« no such savepoint ») et la connexion est
+    // revenue en autocommit. Dire « le point de reprise reste ouvert » serait faux. Seule une connexion encore hors
+    // autocommit porte un point de reprise ouvert (témoigné par un autorisateur de test qui refuse `ROLLBACK TO`).
+    let toute_la_transaction_annulee = conn.is_autocommit();
+    match annulation {
+        Ok(()) => eprintln!("[control_ledger] WARN maillon '{kind}' NON inscrit : {ligne}"),
+        Err(_) if toute_la_transaction_annulee => eprintln!(
+            "[control_ledger] WARN maillon '{kind}' NON inscrit : {ligne} — la base a déjà annulé toute la transaction (englobante comprise) : ni le maillon ni son point ne sont écrits, aucun point de reprise ne reste ouvert"
+        ),
+        Err(e) => eprintln!(
+            "[control_ledger] WARN maillon '{kind}' NON inscrit : {ligne} — ANNULATION REFUSÉE ({e}) : le point de reprise {POINT_DU_MAILLON_DE_CONTROLE} reste ouvert"
+        ),
+    }
+    MaillonDeRegistre::NonInscrit(cause)
+}
+
+/// `P10.7-r` — le nom du point de reprise sous lequel un maillon du journal de contrôle et son point de contrôle sont
+/// écrits ensemble.
+pub(crate) const POINT_DU_MAILLON_DE_CONTROLE: &str = "maillon_du_journal_de_controle";
+
+/// `P10.7-r` — LA CAUSE D'UN MAILLON ANNULÉ PARCE QUE SON POINT DE CONTRÔLE N'A PAS ÉTÉ POSÉ. Portée par l'aveu
+/// `registre_sans_maillon` des gestes et par le compte des accès opérateur non tracés ; phrase fixe, sans texte du
+/// moteur.
+pub(crate) const CAUSE_POINT_DE_CONTROLE_NON_POSE: &str =
+    "le point de contrôle signé du maillon n'a pas été posé : le maillon est annulé avec lui";
+
+/// `P10.7-r` — pourquoi un maillon n'est pas inscrit, sous le point de reprise ouvert. Chaque issue garde sa ligne de
+/// journal et sa cause ; l'annulation est faite par l'appelant, une seule fois, pour toutes.
+enum MaillonNonEcrit {
+    /// L'`INSERT` du maillon a écrit un autre nombre de lignes qu'une.
+    Compte(usize),
+    /// L'`INSERT` du maillon a été refusé.
+    Refuse(rusqlite::Error),
+    /// Le point de contrôle du maillon n'a pas été posé (le détail dit pourquoi) : le maillon ne reste pas sans lui.
+    PointNonPose(String),
+    /// La validation (`RELEASE`) du point de reprise a été refusée.
+    NonValide(rusqlite::Error),
+}
+
+impl MaillonNonEcrit {
+    /// La fin de la ligne de journal (après « NON inscrit : ») et la cause que porte l'issue. Les deux premières lignes
+    /// sont celles d'avant, à l'octet.
+    fn ligne_et_cause(self) -> (String, String) {
+        match self {
+            Self::Compte(n) => (format!("{n} ligne(s) écrite(s) au lieu d'une"), format!("{n} ligne(s) écrite(s) au lieu d'une")),
+            Self::Refuse(e) => (format!("l'écriture n'a pas eu lieu ({e})"), CAUSE_MAILLON_NON_ECRIT.to_string()),
+            Self::PointNonPose(detail) => (
+                format!("son point de contrôle n'a pas été posé ({detail}) — le maillon est annulé avec lui"),
+                CAUSE_POINT_DE_CONTROLE_NON_POSE.to_string(),
+            ),
+            Self::NonValide(e) => (
+                format!("la transaction qui porte le maillon et son point de contrôle n'a pas été validée ({e}) — ni l'un ni l'autre n'est écrit"),
+                CAUSE_MAILLON_NON_ECRIT.to_string(),
+            ),
+        }
+    }
+}
+
+/// `P10.7-r` — sous le point de reprise déjà ouvert : l'`INSERT` du maillon, son point de contrôle, puis la validation.
+/// L'ÉCRITURE EST COMPTÉE, comme celle du journal voisin : l'énoncé n'a aucune clause de conflit, il pose UNE ligne ou
+/// il échoue. Le bras du compte inattendu existe pour que le silence ne redevienne pas le comportement par défaut le jour
+/// où l'énoncé en gagnerait une.
+#[allow(clippy::too_many_arguments)]
+fn ecrire_le_maillon_et_son_point(
+    conn: &Connection,
+    chemin: &str,
+    kind: &str,
+    ts: i64,
+    actor: &str,
+    tenant: &str,
+    detail: &str,
+    prev: &str,
+    hash: &str,
+) -> Result<(), MaillonNonEcrit> {
     match conn.execute(
         "INSERT INTO control_ledger(ts,kind,actor,tenant,detail,prev_hash,hash) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         params![ts, kind, actor, tenant, detail, prev, hash],
     ) {
         Ok(1) => {
-            // `P10.7-r` — LE MAILLON INSCRIT EST ANCRÉ À L'INSTANT, sous le même verrou : un par écriture, jamais
-            // une boucle de rattrapage. Un point de contrôle qui ne se pose pas ne retire pas le maillon (il est
-            // écrit, la chaîne le porte) : il le DIT, et la vérification dira la tête non ancrée.
             let ledger_id = conn.last_insert_rowid();
-            ancrer_le_maillon_de_controle(&conn, &cp.db_path, kind, ledger_id, &hash);
-            MaillonDeRegistre::Inscrit
+            ancrer_le_maillon_de_controle(conn, chemin, kind, ledger_id, hash)?;
+            conn.execute_batch(&format!("RELEASE {POINT_DU_MAILLON_DE_CONTROLE}")).map_err(MaillonNonEcrit::NonValide)
         }
-        Ok(n) => {
-            eprintln!("[control_ledger] WARN maillon '{kind}' NON inscrit : {n} ligne(s) écrite(s) au lieu d'une");
-            MaillonDeRegistre::NonInscrit(format!("{n} ligne(s) écrite(s) au lieu d'une"))
-        }
-        Err(e) => {
-            eprintln!("[control_ledger] WARN maillon '{kind}' NON inscrit : l'écriture n'a pas eu lieu ({e})");
-            MaillonDeRegistre::NonInscrit(CAUSE_MAILLON_NON_ECRIT.to_string())
-        }
+        Ok(n) => Err(MaillonNonEcrit::Compte(n)),
+        Err(e) => Err(MaillonNonEcrit::Refuse(e)),
     }
 }
 
@@ -872,12 +953,15 @@ pub(crate) fn control_ledger_verify_conn(conn: &Connection) -> Result<(usize, Op
 // fichier. Qui y écrit peut retirer la QUEUE du journal ET les points de contrôle qui la couvrent : chaque maillon
 // restant garde son point. Cette troncature-là ne se voit que contre une COPIE extérieure — d'où l'export qui porte les
 // points de contrôle de sa tranche, et sa vérification hors ligne. Et un maillon écrit SANS point (base antérieure à
-// la table, clé absente à l'écriture, point refusé par la base) ne sera jamais ancré : la vérification de cette base
-// rend 2 tant qu'il y figure — il n'existe aucun moyen de distinguer, dans le fichier, un tel maillon d'un maillon
-// réécrit dont le point a été retiré.
+// la table, clé absente à l'écriture) ne sera jamais ancré : la vérification de cette base rend 2 tant qu'il y figure
+// — il n'existe aucun moyen de distinguer, dans le fichier, un tel maillon d'un maillon réécrit dont le point a été
+// retiré. Un point que la base REFUSE, ou un arrêt du processus entre le maillon et son point, n'en laisse plus : les
+// deux sont écrits sous un même point de reprise (`control_ledger_append`), et le maillon est annulé avec son point.
 
-/// Les clés de signature, par chemin de plan de contrôle. Posées par `init_control_plane` (clé du registre, ou
-/// rien) ; un plan de contrôle sans entrée n'a pas de clé, et chaque maillon inscrit le DIT. Un registre par chemin
+/// Les clés de signature, par chemin de plan de contrôle. Posées par le serveur après l'ouverture du plan de contrôle
+/// (`state::armer_la_signature_du_plan_de_controle` : clé du registre, ou rien) — jamais par l'ouverture elle-même, que
+/// la sous-commande `scim-token` emprunte aussi ; un plan de contrôle sans entrée n'a pas de clé, et chaque maillon
+/// inscrit le DIT. Un registre par chemin
 /// plutôt qu'un champ de `ControlPlane` : la structure est construite en littéral par de nombreux témoins.
 static SIGNATAIRES_DU_JOURNAL_DE_CONTROLE: std::sync::OnceLock<Mutex<HashMap<String, ed25519_dalek::SigningKey>>> = std::sync::OnceLock::new();
 
@@ -908,24 +992,28 @@ pub(crate) fn message_du_point_de_controle(ledger_id: i64, ledger_hash: &str) ->
     format!("{DOMAINE_DU_POINT_DE_CONTROLE_DE_CONTROLE}|{ledger_id}|{ledger_hash}")
 }
 
-/// Pose le point de contrôle signé du maillon que `control_ledger_append` vient d'inscrire. Trois issues dites, et
-/// aucune ne retire le maillon : sans clé, ou si la base ne prend pas la ligne, le maillon reste écrit SANS ancre — la
-/// sortie d'erreur le dit par le seul `kind` (vocabulaire fermé, comme l'aveu de la primitive), et la vérification
-/// dira la tête de chaîne non ancrée.
-fn ancrer_le_maillon_de_controle(conn: &Connection, chemin: &str, kind: &str, ledger_id: i64, ledger_hash: &str) {
+/// Pose le point de contrôle signé du maillon que `control_ledger_append` vient d'écrire, sous le même point de reprise.
+/// Trois issues dites :
+///  - posé : le maillon et son point seront validés ensemble ;
+///  - AUCUNE CLÉ de signature : le maillon reste écrit SANS ancre — décision inchangée de `P10.7-r` (un plan de contrôle
+///    sans clé du registre garde son journal) ; la sortie d'erreur le dit par le seul `kind` (vocabulaire fermé, comme
+///    l'aveu de la primitive), et la vérification dira la tête de chaîne non ancrée ;
+///  - la base NE PREND PAS la ligne (refus, ou aucune ligne écrite) : `Err`, et le maillon est ANNULÉ avec son point —
+///    un maillon sans point serait indiscernable, pour le juge, d'une réécriture dont on a retiré le point.
+fn ancrer_le_maillon_de_controle(conn: &Connection, chemin: &str, kind: &str, ledger_id: i64, ledger_hash: &str) -> Result<(), MaillonNonEcrit> {
     use ed25519_dalek::Signer;
     let Some(cle) = signataires_du_journal_de_controle().lock().get(chemin).cloned() else {
         eprintln!("[control_ledger] WARN point de contrôle NON posé après le maillon '{kind}' : aucune clé de signature du registre — la vérification dira la tête de chaîne NON ANCRÉE");
-        return;
+        return Ok(());
     };
     let sig = cle.sign(message_du_point_de_controle(ledger_id, ledger_hash).as_bytes());
     match conn.execute(
         "INSERT INTO control_checkpoint(ts,ledger_id,ledger_hash,sig,pubkey) VALUES(?1,?2,?3,?4,?5)",
         params![now(), ledger_id, ledger_hash, hex_encode(&sig.to_bytes()), hex_encode(cle.verifying_key().as_bytes())],
     ) {
-        Ok(1) => {}
-        Ok(n) => eprintln!("[control_ledger] WARN point de contrôle NON posé après le maillon '{kind}' : {n} ligne(s) écrite(s) au lieu d'une — la vérification dira la tête de chaîne NON ANCRÉE"),
-        Err(e) => eprintln!("[control_ledger] WARN point de contrôle NON posé après le maillon '{kind}' : l'écriture n'a pas eu lieu ({e}) — la vérification dira la tête de chaîne NON ANCRÉE"),
+        Ok(1) => Ok(()),
+        Ok(n) => Err(MaillonNonEcrit::PointNonPose(format!("{n} ligne(s) écrite(s) au lieu d'une"))),
+        Err(e) => Err(MaillonNonEcrit::PointNonPose(format!("l'écriture n'a pas eu lieu ({e})"))),
     }
 }
 
@@ -1103,23 +1191,67 @@ pub(crate) fn verdict_de_verify_control(conn: &Connection, epinglee: Option<&[u8
 }
 
 /// LA SOUS-COMMANDE `verify-control`, hors de `main` pour être jouée par ses témoins : `main` lui passe le chemin du
-/// plan de contrôle, sa clé et la clé publique épinglée, imprime la phrase et sort sur le code. Sans `--export`, la
-/// base (ouverture impossible : phrase d'avant à l'octet) ; avec `--export <f> [--prev <hash>]`, une copie téléchargée,
-/// hors ligne, sans ouvrir la base (lignes vides écartées, comme `ledger-verify-export`).
+/// plan de contrôle, sa clé et la clé publique épinglée, imprime la phrase et sort sur le code. Sans argument, la base
+/// (ouverture impossible : phrase d'avant à l'octet) ; avec `--export <f> [--prev <hash>]`, une copie téléchargée, hors
+/// ligne, sans ouvrir la base (lignes vides écartées, comme `ledger-verify-export`). Des arguments qu'elle ne comprend
+/// pas sortent en 2 avec l'usage, SANS rien vérifier (`lire_la_cible_de_verify_control`).
 pub(crate) fn commande_verify_control(args: &[String], chemin: &str, cle: Option<&str>, epinglee: Option<&[u8; 32]>) -> (i32, String) {
-    if let Some(copie) = crate::flag_val(args, "--export") {
-        return match std::fs::read_to_string(&copie) {
-            Err(e) => (2, format!("VERDICT IMPOSSIBLE : la copie ne se lit pas ({copie}) : {e}")),
+    match lire_la_cible_de_verify_control(args) {
+        Err(raison) => (2, format!("{USAGE_DE_VERIFY_CONTROL} — {raison} : aucun verdict")),
+        Ok(CibleDeVerifyControl::Copie { fichier, prev }) => match std::fs::read_to_string(&fichier) {
+            Err(e) => (2, format!("VERDICT IMPOSSIBLE : la copie ne se lit pas ({fichier}) : {e}")),
             Ok(contenu) => {
                 let lignes: Vec<String> = contenu.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
-                let prev = crate::flag_val(args, "--prev").unwrap_or_default();
                 crate::governance::verdict_hors_ligne_de_la_copie_du_journal_de_controle(&lignes, &prev, epinglee)
             }
-        };
+        },
+        Ok(CibleDeVerifyControl::Base) => match crate::db_open::open_db_keyed_without_schema_contract(chemin, cle) {
+            Err(e) => (2, format!("VERDICT IMPOSSIBLE : le plan de contrôle ne s'ouvre pas ({chemin}) : {e}")),
+            Ok(conn) => verdict_de_verify_control(&conn, epinglee),
+        },
     }
-    match crate::db_open::open_db_keyed_without_schema_contract(chemin, cle) {
-        Err(e) => (2, format!("VERDICT IMPOSSIBLE : le plan de contrôle ne s'ouvre pas ({chemin}) : {e}")),
-        Ok(conn) => verdict_de_verify_control(&conn, epinglee),
+}
+
+/// `P10.7-r` — l'usage de `verify-control`, rendu (code 2) quand ses arguments ne se comprennent pas.
+pub(crate) const USAGE_DE_VERIFY_CONTROL: &str = "usage : plume-daemon verify-control [--export <fichier> [--prev <hash>]]";
+
+/// Ce que `verify-control` vérifie, lu sur ses arguments.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CibleDeVerifyControl {
+    /// Aucun argument : la base du plan de contrôle.
+    Base,
+    /// `--export <fichier> [--prev <hash>]` : une copie exportée (`prev` vide = la copie part de l'origine).
+    Copie { fichier: String, prev: String },
+}
+
+/// `P10.7-r` — LES ARGUMENTS DE `verify-control`, LUS EN ENTIER. La lecture d'avant (`flag_val`) rendait « absent » pour
+/// un `--export` sans valeur, et prenait le drapeau suivant pour sa valeur : la sous-commande vérifiait alors la BASE à
+/// la place de la copie demandée et pouvait sortir en 0 — un script qui ne lit que le code croyait la copie vérifiée,
+/// alors qu'elle est le seul moyen de voir une troncature de queue. Comme `ledger-verify-export` : `--export` sans
+/// fichier ou suivi d'un drapeau, `--prev` sans hachage ou sans `--export`, un drapeau répété, et tout autre argument
+/// (un chemin nu, un drapeau inconnu) sont refusés, avec leur raison.
+pub(crate) fn lire_la_cible_de_verify_control(args: &[String]) -> Result<CibleDeVerifyControl, String> {
+    let mut fichier: Option<String> = None;
+    let mut prev: Option<String> = None;
+    let mut reste = args.iter().skip(2);
+    while let Some(argument) = reste.next() {
+        let (place, attendu) = match argument.as_str() {
+            "--export" => (&mut fichier, "un fichier"),
+            "--prev" => (&mut prev, "un hachage"),
+            _ => return Err(format!("argument non compris « {argument} »")),
+        };
+        if place.is_some() {
+            return Err(format!("« {argument} » donné deux fois"));
+        }
+        match reste.next() {
+            Some(valeur) if !valeur.starts_with('-') => *place = Some(valeur.clone()),
+            _ => return Err(format!("« {argument} » attend {attendu}")),
+        }
+    }
+    match (fichier, prev) {
+        (None, None) => Ok(CibleDeVerifyControl::Base),
+        (None, Some(_)) => Err("« --prev » ne s'emploie qu'avec « --export »".to_string()),
+        (Some(fichier), prev) => Ok(CibleDeVerifyControl::Copie { fichier, prev: prev.unwrap_or_default() }),
     }
 }
 

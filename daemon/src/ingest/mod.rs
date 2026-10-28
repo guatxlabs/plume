@@ -1136,7 +1136,25 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                     // point d'écriture de la voie snapshot : la comparaison d'état, le heartbeat ET les clés
                     // d'alerte ci-dessous en DÉRIVENT, donc aucune des trois ne peut confondre deux machines.
                     let serie = SnapshotSeries::new(&kind, host);
-                    let last: Option<String> = serie.dernier_hash(&conn);
+                    // `P10.20-b` — UNE EMPREINTE NON LUE N'EST PAS « AUCUNE LIGNE » : elle est DITE au journal, puis
+                    // l'instantané est inscrit comme un état neuf. Le `.ok()` d'avant faisait le même geste en
+                    // silence. Inscrire plutôt que laisser le lot au spool : une cellule illisible de la dernière
+                    // ligne bloquerait sinon chaque rapport de cette machine, alors qu'une ligne neuve, lisible,
+                    // devient la dernière de la série et la répare ; le prix est une ligne de plus, jamais une perte.
+                    // LIMITE : la réparation suppose un `ts` entrant PLUS RÉCENT que la ligne illisible (`ORDER BY ts
+                    // DESC`) ; un rapport daté avant elle la laisse dernière, et chaque rapport suivant de ce genre
+                    // rejoue l'aveu et ajoute une ligne, jusqu'à ce qu'un rapport plus récent arrive.
+                    let last: Option<String> = match serie.dernier_hash(&conn) {
+                        Ok(last) => last,
+                        Err(e) => {
+                            eprintln!(
+                                "[ingest] WARN instantané du spool : la dernière empreinte de sa série n'a pas été lue ({}) — \
+                                 l'instantané est inscrit comme un état neuf, pas comme un battement",
+                                crate::bilan_de_tick::cause_sql(&e)
+                            );
+                            None
+                        }
+                    };
                     if hash.is_empty() || last.as_deref() != Some(hash.as_str()) {
                         // COUTURE STORE (data-plane). kind/hash CLONÉS (réutilisés dans la branche else = heartbeat).
                         if store().insert_snapshot(&conn, &SnapshotRow { ts, kind: kind.clone(), hash: hash.clone(), data: data.to_string(), host: host.map(|s| s.to_string()) }).is_err() { ok = false; }

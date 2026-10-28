@@ -21,14 +21,16 @@
 //  (2) sans clé épinglée, le verdict le DIT (code 2), jamais un vert muet ; journal vierge : rien à ancrer ;
 //  (3) la signature posée à l'append, au point d'entrée des accès superadmin (`emit_operator_access`) : le message
 //      signé, comparé à un littéral du témoin, et la clé publique ;
-//  (4) la ligne de journal de l'append qui n'ancre pas (clé absente, aucune ligne prise, écriture refusée), lue
-//      ENTIÈRE sur le stderr d'un sous-processus ; chemin nominal muet ;
+//  (4) la ligne de journal de l'append qui n'ancre pas (clé absente : maillon gardé sans point ; aucune ligne prise,
+//      écriture refusée : maillon ANNULÉ avec son point depuis la vague AW), lue ENTIÈRE sur le stderr d'un
+//      sous-processus ; chemin nominal muet ;
 //  (5) l'export par la route : les lignes des points de contrôle, la copie vérifiée hors ligne (0/1/2), les bornes de
 //      la tranche une par une, le point illisible servi en 500 nommé, la réécriture blanchie vue sur la copie entière
 //      comme sur une tranche, les rangs d'origine dans une copie mise bout à bout ;
 //  (6) la sous-commande `verify-control` (`commande_verify_control`) : base, copie, `--prev`, lignes vides, fichier
 //      illisible, plan de contrôle qui ne s'ouvre pas ; et le bras de `main`, lu en ENTIER sur le texte ;
-//  (7) `init_control_plane` arme la clé du registre, et la désarmer la retire ; mode 0 : contrôle de non-régression
+//  (7) le serveur arme la clé du registre après `init_control_plane` (`armer_la_signature_du_plan_de_controle`, vague
+//      AW : l'ouverture seule n'arme plus rien), et la désarmer la retire ; mode 0 : contrôle de non-régression
 //      seulement (les deux chemins sortent AVANT le code de `P10.7-r`, ce témoin ne peut pas rougir par lui).
 //
 // CE QU'ILS NE TIENNENT PAS : l'ordre des deux lectures de l'ancre (points puis maillons, ce qui exclut une fausse
@@ -336,29 +338,31 @@ mod journal_de_controle_ancre_hors_fichier {
         let stdout = String::from_utf8_lossy(&sortie.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&sortie.stderr).into_owned();
         assert_eq!(sortie.status.code(), Some(0), "contrôle : l'enfant sort en 0 : {stdout}\n{stderr}");
+        // INVERSÉ NOMMÉMENT (vague AW, `P10.7-r`) : un point ignoré ou refusé n'est plus suivi d'un maillon inscrit —
+        // le maillon est annulé avec son point (`ISSUE:false`). Seul le maillon sans clé reste écrit sans point.
         for attendu in [
             "JCAH-ISSUE-jcah.sans_cle:true",
             "JCAH-POINTS-jcah.sans_cle:0",
             "JCAH-VERDICT-SANS-CLE:2",
-            "JCAH-ISSUE-jcah.ignore:true",
+            "JCAH-ISSUE-jcah.ignore:false",
             "JCAH-POINTS-jcah.ignore:0",
-            "JCAH-ISSUE-jcah.refus:true",
+            "JCAH-ISSUE-jcah.refus:false",
             "JCAH-POINTS-jcah.refus:0",
             "JCAH-ISSUE-jcah.nominal:true",
             "JCAH-POINTS-jcah.nominal:1",
         ] {
             // Un jeton par marque : la première partage sa ligne avec l'en-tête du harnais de test.
-            assert!(stdout.split(['\n', ' ']).any(|t| t == attendu), "le maillon reste inscrit, l'ancre suit : {attendu} : {stdout}");
+            assert!(stdout.split(['\n', ' ']).any(|t| t == attendu), "sans clé le maillon reste inscrit ; point refusé, il est annulé : {attendu} : {stdout}");
         }
-        let lignes: Vec<&str> = stderr.lines().filter(|l| l.starts_with("[control_ledger] WARN point de contrôle")).collect();
+        let lignes: Vec<&str> = stderr.lines().filter(|l| l.starts_with("[control_ledger] WARN")).collect();
         assert_eq!(
             lignes,
             vec![
                 "[control_ledger] WARN point de contrôle NON posé après le maillon 'jcah.sans_cle' : aucune clé de signature du registre — la vérification dira la tête de chaîne NON ANCRÉE",
-                "[control_ledger] WARN point de contrôle NON posé après le maillon 'jcah.ignore' : 0 ligne(s) écrite(s) au lieu d'une — la vérification dira la tête de chaîne NON ANCRÉE",
-                "[control_ledger] WARN point de contrôle NON posé après le maillon 'jcah.refus' : l'écriture n'a pas eu lieu (jcah refus du point) — la vérification dira la tête de chaîne NON ANCRÉE",
+                "[control_ledger] WARN maillon 'jcah.ignore' NON inscrit : son point de contrôle n'a pas été posé (0 ligne(s) écrite(s) au lieu d'une) — le maillon est annulé avec lui",
+                "[control_ledger] WARN maillon 'jcah.refus' NON inscrit : son point de contrôle n'a pas été posé (l'écriture n'a pas eu lieu (jcah refus du point)) — le maillon est annulé avec lui",
             ],
-            "trois lignes entières, aucune pour le chemin nominal, ni acteur, ni cible, ni détail : {stderr}"
+            "trois lignes entières (INVERSÉES NOMMÉMENT en vague AW pour les deux refus), aucune pour le chemin nominal, ni acteur, ni cible, ni détail : {stderr}"
         );
     }
 
@@ -606,8 +610,10 @@ mod journal_de_controle_ancre_hors_fichier {
     // (7) L'ARMEMENT PAR `init_control_plane`, ET LE MODE 0
     // -------------------------------------------------------------------------------------
 
+    /// INVERSÉ NOMMÉMENT (vague AW, `P10.7-r`) : `init_control_plane` n'arme plus la clé (la sous-commande `scim-token`
+    /// l'emprunte aussi) ; le serveur l'arme après lui, par `armer_la_signature_du_plan_de_controle`.
     #[test]
-    fn jcah_init_control_plane_arme_la_cle_du_registre() {
+    fn jcah_le_serveur_arme_la_cle_du_registre_apres_l_ouverture() {
         let _env = VERROU_ENV_PROCESSUS.read();
         let dossier = crate::tmp_possede::TmpPossede::neuf("jcah-init");
         let fichier_de_cle = dossier.sous("signature.key").as_str().to_owned();
@@ -615,6 +621,7 @@ mod journal_de_controle_ancre_hors_fichier {
         let base = dossier.sous("plume.db").as_str().to_owned();
         let conf: HashMap<String, String> = [("PLUME_LEDGER_KEY_PATH".to_string(), fichier_de_cle.clone())].into_iter().collect();
         let cp = init_control_plane(&conf, &base).expect("plan de contrôle");
+        crate::state::armer_la_signature_du_plan_de_controle(&conf, &cp);
         let st = tenant_test_state("jcah-adm", "jcah-edi", "jcah-sa", Some(cp));
         jcah_ecrire(&st, 1);
         let pubkey: String = st.tenants.control.as_ref().expect("mode 1").conn.lock().query_row("SELECT pubkey FROM control_checkpoint", [], |r| r.get(0)).expect("un point signé");

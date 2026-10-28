@@ -940,6 +940,9 @@ pub(crate) async fn run() {
     let control = if multi_tenant {
         match init_control_plane(&conf, &db_path) {
             Ok(cp) => {
+                // `P10.7-r` — la signature des points de contrôle est armée ICI, par le serveur qui écrit au journal de
+                // contrôle, et non par l'ouverture (que la sous-commande `scim-token` emprunte aussi).
+                crate::state::armer_la_signature_du_plan_de_controle(&conf, &cp);
                 eprintln!(
                     "[multi-tenant] PLUME_MULTI_TENANT=1 : control-plane {} initialisé (IDENTITÉ+CATALOGUE) — \
                      data-isolation par tenant PENDING #2a-2b, NE PAS activer en prod",

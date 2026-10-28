@@ -1233,16 +1233,17 @@ pub(crate) fn consigner_l_issue_du_rafraichissement(
     match issue {
         Ok(Ok(v)) => {
             let cost_ms = measured_cost_ms(&v); // PHASE 3d : mesure du refresh -> classe le panneau
-            if let Ok(payload) = serde_json::to_string(&v) {
-                let conn = db.lock();
-                // PHASE 3d : mémorise le coût (auto-reclassement) même si le cache est off ensuite.
-                if let Some(c) = cost_ms {
-                    record_panel_cost(&conn, id, q_fp, c, now_s);
-                }
-                if panel_cache_ttl(&conn, id, ttl_global) > 0 {
-                    // écriture + cap anti-explosion : le coffre POSSÈDE la table (garde de build).
-                    panneau_avoue::cache_ecrire(&conn, id, range_key, q_fp, now_s, &payload);
-                }
+            // `P10.32-o` — `Value::to_string` ne peut pas échouer et rend les mêmes octets que `serde_json::to_string` : plus
+            // de branche où le succès serait jeté sans un mot (avant, `if let Ok(payload) = serde_json::to_string(&v)`).
+            let payload = v.to_string();
+            let conn = db.lock();
+            // PHASE 3d : mémorise le coût (auto-reclassement) même si le cache est off ensuite.
+            if let Some(c) = cost_ms {
+                record_panel_cost(&conn, id, q_fp, c, now_s);
+            }
+            if panel_cache_ttl(&conn, id, ttl_global) > 0 {
+                // écriture + cap anti-explosion : le coffre POSSÈDE la table (garde de build).
+                panneau_avoue::cache_ecrire(&conn, id, range_key, q_fp, now_s, &payload);
             }
         }
         Ok(Err(echec)) => {
@@ -1325,6 +1326,64 @@ pub(crate) fn corps_d_echec_d_une_version_anterieure(payload: &str) -> bool {
     }
 }
 
+/// `P10.32-o` — le champ de `stats` qui, sur une charge utile VALIDE servie périmée, dit que son dernier rafraîchissement
+/// a échoué : `{ "cause": <phrase de la classe, jamais le texte du moteur>, "echoue_a": <instant de l'échec> }`. Écrit
+/// par [`joindre_l_echec_a_la_charge_valide`], retiré par le succès suivant (qui réécrit toute la ligne).
+pub(crate) const CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC: &str = "rafraichissement_en_echec";
+
+/// Ce que [`joindre_l_echec_a_la_charge_valide`] a trouvé et fait.
+pub(crate) enum IssueDeLaChargeValide {
+    /// Aucune charge utile valide en cache (absence, corps d'échec, ligne illisible) : rien n'est écrit ici.
+    Aucune,
+    /// La charge utile valide est réécrite telle quelle, `stats.rafraichissement_en_echec` en plus, instant de calcul
+    /// INCHANGÉ (elle reste périmée : la tentative suivante revient à la prochaine interrogation).
+    Jointe,
+    /// La charge utile valide est restée en cache, mais l'échec n'a pas pu y être joint (cause).
+    NonJointe(String),
+    /// La charge utile valide en cache a été CALCULÉE APRÈS la tentative en échec (un succès concurrent l'a écrite
+    /// pendant cette tentative : `calcule_a > echoue_a`). Elle n'est pas en échec : rien n'est écrit, ni aveu ni corps
+    /// d'échec.
+    PlusRecenteQueLaTentative,
+}
+
+/// `P10.32-o` — UNE CHARGE UTILE VALIDE SERVIE PÉRIMÉE DIT QUE SON RAFRAÎCHISSEMENT A ÉCHOUÉ. Avant, l'échec n'était dit
+/// qu'au journal : le corps périmé était servi comme si rien ne s'était passé. La charge utile n'est jamais remplacée
+/// par un échec (ses lignes restent servies) ; seul `stats.rafraichissement_en_echec` est posé, avec la phrase de la
+/// classe (`EchecMisEnCache::servie`) et l'instant ; un échec neuf remplace le précédent. Partagée par le rafraîchissement
+/// à la demande et par le pré-chauffage (`rollups::cache_refresh_all_panels`) : la présence de l'aveu ne dépend pas de
+/// qui a tenté le calcul.
+pub(crate) fn joindre_l_echec_a_la_charge_valide(
+    conn: &Connection, id: i64, range_key: &str, q_fp: &str, now_s: i64, echec: &EchecMisEnCache,
+) -> IssueDeLaChargeValide {
+    let valide = panneau_avoue::cache_lire(conn, id, range_key, q_fp).and_then(|(payload, calcule_a)| {
+        serde_json::from_str::<Value>(&payload).ok().filter(|v| v.is_object() && v.get("error").is_none()).map(|v| (v, calcule_a))
+    });
+    let Some((mut v, calcule_a)) = valide else {
+        return IssueDeLaChargeValide::Aucune;
+    };
+    // Un aveu ne se joint qu'à une charge calculée AU PLUS TARD à l'instant de la tentative (`echoue_a >= calcule_a`) :
+    // `now_s` est pris avant l'exécution (en tête du tick au pré-chauffage, avant `spawn_blocking` à la demande), et un
+    // succès concurrent a pu réécrire la ligne entre-temps.
+    if calcule_a > now_s {
+        return IssueDeLaChargeValide::PlusRecenteQueLaTentative;
+    }
+    let aveu = json!({ "cause": echec.servie(), "echoue_a": now_s });
+    let pose = match v.as_object_mut().map(|o| o.entry("stats").or_insert_with(|| json!({}))) {
+        Some(Value::Object(stats)) => {
+            stats.insert(CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC.to_string(), aveu);
+            true
+        }
+        _ => false,
+    };
+    if !pose {
+        return IssueDeLaChargeValide::NonJointe("`stats` de la charge utile n'est pas un objet".to_string());
+    }
+    match panneau_avoue::cache_ecrire_dit(conn, id, range_key, q_fp, calcule_a, &v.to_string()) {
+        Ok(()) => IssueDeLaChargeValide::Jointe,
+        Err(e) => IssueDeLaChargeValide::NonJointe(e),
+    }
+}
+
 /// `P10.32-o` — L'ÉCHEC D'UN RAFRAÎCHISSEMENT EST ÉCRIT, À LA PLACE D'UNE ABSENCE. Le corps d'échec
 /// (`panneau_avoue::corps_d_echec` : `error` = phrase de la classe, aucun `warming`) est servi par la
 /// prochaine interrogation, et la nouvelle tentative revient par le mécanisme ordinaire du cache périmé
@@ -1346,12 +1405,20 @@ fn memoriser_l_echec_du_rafraichissement(
         eprintln!("{tete} — cache des panneaux coupé, rien d'écrit");
         return;
     }
-    let charge_valide = panneau_avoue::cache_lire(&conn, id, range_key, q_fp)
-        .and_then(|(payload, _)| serde_json::from_str::<Value>(&payload).ok())
-        .is_some_and(|v| v.is_object() && v.get("error").is_none());
-    if charge_valide {
-        eprintln!("{tete} — charge utile précédente conservée (périmée), nouvelle tentative à la prochaine interrogation");
-        return;
+    match joindre_l_echec_a_la_charge_valide(&conn, id, range_key, q_fp, now_s, echec) {
+        IssueDeLaChargeValide::Jointe => {
+            eprintln!("{tete} — charge utile précédente conservée (périmée), nouvelle tentative à la prochaine interrogation");
+            return;
+        }
+        IssueDeLaChargeValide::NonJointe(e) => {
+            eprintln!("{tete} — charge utile précédente conservée (périmée), échec NON joint au corps servi ({e}), nouvelle tentative à la prochaine interrogation");
+            return;
+        }
+        IssueDeLaChargeValide::PlusRecenteQueLaTentative => {
+            eprintln!("{tete} — charge utile calculée après cette tentative conservée, rien d'écrit");
+            return;
+        }
+        IssueDeLaChargeValide::Aucune => {}
     }
     let mut corps = panneau_avoue::corps_d_echec(&echec.servie, from, now_s);
     corps[MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC] = json!(echec.classe);
@@ -1566,10 +1633,9 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
                             record_panel_cost(&conn, id, &q_fp, c, now_s);
                         }
                         // peuple aussi le cache rendu -> un futur fallback (lane saturée) sert du frais récent.
+                        // `P10.32-o` — `Value::to_string`, infaillible, mêmes octets : le cache n'est plus sauté sans un mot.
                         if cacheable && ttl > 0 {
-                            if let Ok(payload) = serde_json::to_string(&v) {
-                                panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &payload);
-                            }
+                            panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &v.to_string());
                         }
                     }
                     Json(v).into_response()

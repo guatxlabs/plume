@@ -129,7 +129,11 @@ pub(crate) async fn snapshot_par_genre_et_machine(
     Path((kind, host)): Path<(String, String)>,
 ) -> Response {
     crate::req_conn!(st, au, conn);
-    match crate::ingest::store::dernier_instantane_de(&conn, &kind, &host) {
+    let lu = match crate::ingest::store::dernier_instantane_de(&conn, &kind, &host) {
+        Ok(lu) => lu,
+        Err(e) => return refuser_l_instantane_non_lu(&kind, &host, &e),
+    };
+    match lu {
         Some((ts, hash, data)) => Json(json!({
             "kind": kind, "host": host, "ts": ts, "hash": hash,
             "data": serde_json::from_str::<Value>(&data).unwrap_or(Value::Null)
@@ -139,9 +143,46 @@ pub(crate) async fn snapshot_par_genre_et_machine(
     }
 }
 
-pub(crate) async fn panel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(kind): Path<String>) -> Json<Value> {
+/// `P10.20-b` — le cinq cent trois de `snapshot_par_genre_et_machine` : la classe et le texte du moteur vont au JOURNAL de
+/// l'exploitant, jamais au corps servi. Le genre et la machine viennent du chemin : écrits échappés (`{:?}`), une saisie
+/// ne forge pas de ligne de journal.
+fn refuser_l_instantane_non_lu(kind: &str, host: &str, e: &rusqlite::Error) -> Response {
+    eprintln!(
+        "[snapshot] WARN dernier instantané {kind:?} de la machine {host:?} NON lu ({}) — servi 503 : {e}",
+        crate::bilan_de_tick::cause_sql(e)
+    );
+    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_INSTANTANE_DE_LA_MACHINE_NON_LU)
+}
+
+/// `P10.20-b` — la cause du cinq cent trois de `snapshot_par_genre_et_machine` quand la lecture n'a pas abouti. Le
+/// quatre cent quatre nu reste réservé à l'absence établie de la série (la console le lit ainsi, `alerts.js`).
+pub(crate) const CAUSE_INSTANTANE_DE_LA_MACHINE_NON_LU: &str = "INSTANTANÉ NON LU : la base n'a pas rendu le dernier \
+     instantané de cette machine — rien n'est établi sur son état, et ce n'est pas l'absence d'un instantané";
+
+/// `P10.20-b` — la cause du cinq cent trois de `panel` quand RIEN n'a été lu (fin `non_commence` : préparation ou
+/// liaison refusée). Le corps d'avant (`data: null`, `hosts: [], n_hosts: 0`) se lisait « aucune donnée » sur une lecture
+/// refusée. La lecture PARTIELLE (fin `interrompu`) garde son deux cents et sa forme : elle ne porte pas `error` (un corps
+/// de succès qui porte une cause se lit comme un succès), mais `hosts_etat` et un dénominateur `n_hosts` nul.
+pub(crate) const CAUSE_INSTANTANES_DU_PARC_NON_LUS: &str = "INSTANTANÉS DU PARC NON LUS : la base n'a pas rendu le dernier \
+     instantané des machines de ce genre — rien n'est établi sur le parc, et ce n'est pas l'absence d'instantané";
+
+pub(crate) async fn panel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(kind): Path<String>) -> Response {
     crate::req_conn!(st, au, conn);
     let par_hote = crate::ingest::store::dernier_instantane_par_hote(&conn, &kind, 500);
+    // `P10.20-b` — le texte du moteur au JOURNAL (le corps ne porte que la phrase fixe ou la fin nommée) ; `kind` vient du
+    // chemin, écrit échappé. Le compte d'une interruption est celui des ERREURS du parcours : une interruption de `step()`
+    // en vaut une et coupe un reste de taille inconnue (`FinDeParcours::erreurs`), ce n'est jamais un nombre de lignes.
+    match &par_hote.fin {
+        crate::query_exec::FinDeParcours::Complet => {}
+        crate::query_exec::FinDeParcours::NonCommence { cause } => {
+            eprintln!("[panel] WARN instantanés {kind:?} par machine : lecture non commencée, rien n'est lu — servi 503 : {cause}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_INSTANTANES_DU_PARC_NON_LUS);
+        }
+        crate::query_exec::FinDeParcours::Interrompu { erreurs, cause } => eprintln!(
+            "[panel] WARN instantanés {kind:?} par machine : lecture interrompue ({erreurs} erreur(s) de parcours, pas un nombre \
+             de lignes) — servi avec hosts_etat et n_hosts nul : {cause}"
+        ),
+    }
     let jhosts: Vec<Value> = par_hote
         .iter()
         .map(|(h, ts, hash, data)| json!({
@@ -149,14 +190,20 @@ pub(crate) async fn panel(State(st): State<AppState>, Extension(au): Extension<A
             "data": serde_json::from_str::<Value>(data).unwrap_or_else(|_| json!({}))
         }))
         .collect();
-    match par_hote.first() {
-        Some((h, ts, hash, data)) => Json(json!({
+    let mut corps = match par_hote.first() {
+        Some((h, ts, hash, data)) => json!({
             "kind": kind, "ts": ts, "hash": hash, "host": h,
             "data": serde_json::from_str::<Value>(data).unwrap_or_else(|_| json!({})),
             "hosts": jhosts, "n_hosts": jhosts.len()
-        })),
-        None => Json(json!({ "kind": kind, "data": Value::Null, "hosts": [], "n_hosts": 0 })),
+        }),
+        None => json!({ "kind": kind, "data": Value::Null, "hosts": [], "n_hosts": 0 }),
+    };
+    if let Some(etat) = par_hote.fin.etat() {
+        // Lecture PARTIELLE : les machines lues restent listées ; la fin est nommée et le dénominateur n'est pas établi.
+        corps["hosts_etat"] = json!(etat);
+        corps["n_hosts"] = Value::Null;
     }
+    Json(corps).into_response()
 }
 
 /// label de sévérité -> entier (info..critical) ; accepte aussi directement le nombre.

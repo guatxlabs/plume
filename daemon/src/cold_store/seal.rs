@@ -71,12 +71,55 @@ fn cold_seal_has_col(conn: &Connection, col: &str) -> bool {
     conn.prepare(SQL_COLONNE_DE_SEAL).and_then(|mut s| s.exists(params![col])).unwrap_or(false)
 }
 
+/// `P10.20-b` — CE QUE LA LECTURE DES SEALS D'UN JOUR N'A PAS PU RENDRE. Deux classes, jamais confondues avec « aucun
+/// fichier » : le MOTEUR a refusé (préparation, parcours, exécution interrompue — la suite n'est pas lue), ou des
+/// lignes sont là mais ILLISIBLES (une colonne qui ne se décode pas). Avant, `if let Ok(..)` puis `flatten()`
+/// rendaient une liste vide ou écourtée : un fichier scellé disparaissait sans un mot de la lecture froide (servie
+/// comme complète) et du vieillissement (un jour à seal illisible était repris comme FRAIS).
+pub(super) enum SealsNonLus {
+    Moteur(rusqlite::Error),
+    Illisibles(usize),
+}
+
+impl SealsNonLus {
+    /// La NATURE, par liste blanche (code SQLite ou nombre de lignes), jamais le message du moteur : pour le journal
+    /// du vieillissement.
+    pub(super) fn nature(&self) -> String {
+        match self {
+            SealsNonLus::Moteur(e) => nature_de_l_echec_sur_l_index(e),
+            SealsNonLus::Illisibles(n) => format!("{n} ligne(s) illisible(s)"),
+        }
+    }
+
+    /// L'erreur de la VOIE FROIDE (lecteur, planificateur) : une base occupée est notée `Occupee` par
+    /// `texte_de_la_voie_froide` ; tout le reste est rangé au support par `en_classant_la_voie_froide` (503 de la
+    /// base illisible), jamais une lecture servie sans le fichier.
+    pub(super) fn pour_la_voie_froide(self) -> String {
+        match self {
+            SealsNonLus::Moteur(e) => crate::query_exec::texte_de_la_voie_froide(e),
+            SealsNonLus::Illisibles(n) => format!("{SEALS_DU_JOUR_ILLISIBLES} ({n} ligne(s))"),
+        }
+    }
+}
+
+/// `P10.20-b` — la cause FIXE d'une lecture froide refusée sur une ligne de seal illisible.
+pub(super) const SEALS_DU_JOUR_ILLISIBLES: &str =
+    "lecture froide refusée : index cold_seal illisible — un fichier scellé de la fenêtre ne se lit pas dans l'index, aucun fichier n'est tenu pour absent";
+
 /// Toutes les lignes de seal d'un (env_id, day), TRIÉES par `seq` croissant (prefixe de fichiers scellés).
-pub(super) fn file_seals(conn: &Connection, env_id: &str, day: i64) -> Vec<FileSeal> {
-    let mut out = Vec::new();
-    if let Ok(mut st) = conn.prepare(SQL_SEALS_DU_JOUR) {
-        if let Ok(rows) = st.query_map(params![env_id, day], |r| {
-            // dim_stats : BLOB nullable (Phase B). NULL / blob illisible -> None (« pas d'élagage possible »).
+///
+/// `P10.20-b` — TROIS ISSUES. Table absente (base jamais vieillie) -> `Ok(vide)` : aucun froid. Lignes lues ->
+/// `Ok`. Lecture ratée ou ligne illisible -> `Err` (`SealsNonLus`) : aucun fichier n'est tenu pour absent. Une
+/// erreur du MOTEUR en cours de parcours l'emporte sur les lignes illisibles déjà comptées (la suite n'est pas lue).
+pub(super) fn seals_du_jour(conn: &Connection, env_id: &str, day: i64) -> Result<Vec<FileSeal>, SealsNonLus> {
+    let mut st = match conn.prepare(SQL_SEALS_DU_JOUR) {
+        Ok(st) => st,
+        Err(e) if table_de_seal_absente(&e) => return Ok(Vec::new()),
+        Err(e) => return Err(SealsNonLus::Moteur(e)),
+    };
+    let rows = st
+        .query_map(params![env_id, day], |r| {
+            // dim_stats : BLOB nullable (Phase B). NULL / blob indécodable -> None (« pas d'élagage possible »).
             let dim_stats = r.get::<_, Option<Vec<u8>>>(10)?.as_deref().and_then(DimStats::decode);
             Ok(FileSeal {
                 seq: r.get(0)?,
@@ -91,18 +134,50 @@ pub(super) fn file_seals(conn: &Connection, env_id: &str, day: i64) -> Vec<FileS
                 last_file: r.get::<_, i64>(9)? != 0,
                 dim_stats,
             })
-        }) {
-            out = rows.flatten().collect();
+        })
+        .map_err(SealsNonLus::Moteur)?;
+    let mut out = Vec::new();
+    let mut illisibles = 0usize;
+    for ligne in rows {
+        match ligne {
+            Ok(s) => out.push(s),
+            Err(e) if e.sqlite_error().is_some() => return Err(SealsNonLus::Moteur(e)),
+            Err(_) => illisibles += 1,
         }
     }
-    out
+    if illisibles > 0 {
+        return Err(SealsNonLus::Illisibles(illisibles));
+    }
+    Ok(out)
+}
+
+/// `P10.20-b` — LA TABLE DES SCEAUX N'EXISTE PAS ENCORE : une base jamais vieillie ne la porte pas (elle naît au premier
+/// vieillissement, `ensure_cold_seal_table`). C'est la SEULE erreur qui vaut « aucun froid » ; le message est celui que
+/// SQLite rend pour cette table, sous les deux formes que rusqlite construit (avec ou sans position du jeton).
+pub(super) fn table_de_seal_absente(e: &rusqlite::Error) -> bool {
+    let message = match e {
+        rusqlite::Error::SqliteFailure(_, Some(m)) => m.as_str(),
+        rusqlite::Error::SqlInputError { msg, .. } => msg.as_str(),
+        _ => return false,
+    };
+    message == "no such table: cold_seal"
+}
+
+/// Forme d'AVANT `P10.20-b` gardée pour les TESTS seulement (`seal_state`, `file_seal_rows`) : une lecture ratée y
+/// fait PANIQUER le test, jamais rendre une liste vide. La production lit `seals_du_jour`.
+#[cfg(test)]
+pub(super) fn file_seals(conn: &Connection, env_id: &str, day: i64) -> Vec<FileSeal> {
+    match seals_du_jour(conn, env_id, day) {
+        Ok(seals) => seals,
+        Err(e) => panic!("seals du jour non lus ({})", e.nature()),
+    }
 }
 
 /// RÉSUMÉ AGRÉGÉ par-JOUR (compat des call-sites/tests d'avant le split) : `None` si aucun fichier scellé ;
 /// sinon `(expected_total, all_purged, max_id)`. `expected_total` = Σ des lignes des fichiers du jour ;
 /// `all_purged` = VRAI seulement si TOUS les fichiers ont `purged=1` (jour entièrement drainé du hot) ;
 /// `max_id` = borne d'identité GLOBALE du jour (identique sur tous les fichiers). Utilisé par les TESTS
-/// (la production lit directement `file_seals`) -> gaté `#[cfg(test)]` (aucun code mort en build cold_tier).
+/// (la production lit directement `seals_du_jour`) -> gaté `#[cfg(test)]` (aucun code mort en build cold_tier).
 #[cfg(test)]
 pub(super) fn seal_state(conn: &Connection, env_id: &str, day: i64) -> Option<(i64, bool, i64)> {
     let seals = file_seals(conn, env_id, day);

@@ -1119,6 +1119,20 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
         }))
         .collect();
     let firewall = fw_json.first().cloned();
+    // `P10.20-b` — la fin non complète de la ventilation est dite au JOURNAL avec le texte du moteur, que le corps ne porte pas.
+    // Le compte d'une interruption est celui des ERREURS du parcours (`FinDeParcours::erreurs`) : une interruption de
+    // `step()` en vaut une et coupe un reste de taille inconnue, ce n'est jamais un nombre de lignes.
+    match &fw_par_hote.fin {
+        crate::query_exec::FinDeParcours::Complet => {}
+        crate::query_exec::FinDeParcours::NonCommence { cause } => eprintln!(
+            "[suppressions] WARN état du pare-feu par machine : lecture non commencée, rien n'est lu — servi avec firewall_etat \
+             et firewall_n_hosts nul : {cause}"
+        ),
+        crate::query_exec::FinDeParcours::Interrompu { erreurs, cause } => eprintln!(
+            "[suppressions] WARN état du pare-feu par machine : lecture interrompue ({erreurs} erreur(s) de parcours, pas un \
+             nombre de lignes) — servi avec firewall_etat et firewall_n_hosts nul : {cause}"
+        ),
+    }
     Json(json!({
         "ok": true,
         "generated": now(),
@@ -1133,7 +1147,13 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
         "collectors_etat": coll_fin.etat(),
         "firewall": firewall,
         "firewall_hosts": fw_json,
-        "firewall_n_hosts": fw_json.len(),
+        // `P10.20-b` — LA VENTILATION DU PARE-FEU DIT AUSSI SA FIN, sous la même forme que les collecteurs : `firewall_etat`
+        // vaut `interrompu` (une ligne au moins n'a pas été rendue : la liste est partielle, le dénominateur aussi) ou
+        // `non_commence` (rien n'a été lu : `firewall` nul n'est pas l'absence d'instantané), `null` si complet. Aucun
+        // texte du moteur n'y part. Un dénominateur non établi est `null`, jamais le compte des seules lignes lues.
+        "firewall_n_hosts": if fw_par_hote.fin.etat().is_some() { Value::Null } else { json!(fw_json.len()) },
+        "firewall_incomplets": fw_par_hote.fin.etat().is_some(),
+        "firewall_etat": fw_par_hote.fin.etat(),
         "legend": {
             "display-only": "de-bruite un PANNEAU seul — jamais retiré du stockage ni de la détection (rule_sql). Operator/self = ÉDITABLE+audité.",
             "collection-reducing": "réduit ce qui est INGÉRÉ/STOCKÉ — READ-ONLY ici, contrôle à la frontière hôte.",

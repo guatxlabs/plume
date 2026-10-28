@@ -58,6 +58,12 @@ pub(crate) enum Provenance {
 pub(crate) struct PanneauCompile {
     sql: String,
     provenance: Provenance,
+    /// `P10.5-p` — L'ENVIRONNEMENT (`env_id`) QUE CE SQL LIT, QUAND IL EST DÉTERMINÉ : `Some` seulement si le
+    /// compilateur GXQL a reçu un environnement non vide, donc injecté `env_id = '<env>'` (même condition que
+    /// `table_base` du compilateur et `merge_env_cond` de la route de pré-agrégat). Un SQL brut (opaque) n'est
+    /// jamais filtré par environnement ici : `None`, même si l'appelant en a un. Sert à l'horizon seul, qui y
+    /// lit la politique par index applicable.
+    env_lu: Option<String>,
 }
 
 impl PanneauCompile {
@@ -88,6 +94,7 @@ impl PanneauCompile {
 /// adjacente), ce qui est voulu : le masqué n'atteint pas le compilateur non masqué.
 pub(crate) fn compile_panneau_avoue(query: &str, is_soql: bool, from: i64, to: i64, env: Option<&str>) -> Result<PanneauCompile, String> {
     let query = apply_excl_placeholders(query.trim(), is_soql);
+    let env_lu = environnement_lu(is_soql, env);
     if is_soql {
         // Router les PANNEAUX vers le rollup comme /api/query : « … | stats count by source »
         // lit event_rollup (qq ms) au lieu de scanner event (timeout 5 s -> cache figé/périmé).
@@ -100,15 +107,29 @@ pub(crate) fn compile_panneau_avoue(query: &str, is_soql: bool, from: i64, to: i
         // compilo brut (exact, plus lent) ; les ROUTES A/B single-dim, qui n'ont jamais dépendu de la couverture,
         // sont inchangées — et aucun panneau LIVRÉ n'est multi-dim (seeds.rs : tous `count by <une dim>`).
         if let Some(rr) = try_rollup_route(&query, from, to, env, RollupCoverage::unproven(), DimRollupCoverage::unproven()) {
-            return Ok(PanneauCompile { sql: rr.sql, provenance: Provenance::RouteePreagrege(rr.approx, rr.cap, rr.note) });
+            return Ok(PanneauCompile { sql: rr.sql, provenance: Provenance::RouteePreagrege(rr.approx, rr.cap, rr.note), env_lu });
         }
-        soql_to_sql_x(&query, from, to, env).map(|sql| PanneauCompile { sql, provenance: Provenance::CompilateurBrut })
+        soql_to_sql_x(&query, from, to, env).map(|sql| PanneauCompile { sql, provenance: Provenance::CompilateurBrut, env_lu })
     } else {
         Ok(PanneauCompile {
             sql: substituer_les_marqueurs_de_fenetre(&query, from, to),
             provenance: Provenance::Opaque,
+            env_lu,
         })
     }
+}
+
+/// `P10.5-p` — L'environnement que le SQL compilé filtre : celui de l'appelant si (et seulement si) la requête est
+/// GXQL et l'environnement non vide — les deux conditions sous lesquelles le compilateur injecte `env_id = '<env>'`.
+pub(crate) fn environnement_lu(is_soql: bool, env: Option<&str>) -> Option<String> {
+    if !is_soql {
+        return None;
+    }
+    // Un environnement VIDE n'atteint pas cette fonction depuis une route : l'authentification le rend `None`
+    // (`auth.rs`, `.filter(|e| !e.is_empty())` sur l'en-tête d'environnement) et le pré-chauffage passe `None`. Le
+    // filtre suit la condition du compilateur (qui n'injecte rien pour un vide) pour un appel direct : il est témoigné
+    // sur ce contrat-là (`av3_opaque_et_environnement_vide_ne_sont_pas_determines`), pas par une route.
+    env.filter(|e| !e.is_empty()).map(str::to_string)
 }
 
 /// LA MÊME PORTE, POUR UN APPELANT AVEC MASQUES ACTIFS. GXQL -> compilation MASQUÉE (masque émis dans
@@ -126,7 +147,7 @@ pub(crate) fn compile_panneau_avoue_masque(
     } else {
         substituer_les_marqueurs_de_fenetre(&q2, from, to)
     };
-    Ok(PanneauCompile { sql, provenance: Provenance::Opaque })
+    Ok(PanneauCompile { sql, provenance: Provenance::Opaque, env_lu: environnement_lu(is_soql, env) })
 }
 
 /// LE SQL COMPILÉ, POUR LES TÉMOINS SEULEMENT (`#[cfg(test)]`) — la même porte que
@@ -326,7 +347,7 @@ pub(crate) fn horizon(db_path: &str, conf: &HashMap<String, String>, pc: &Pannea
 /// dans une comparaison ; `executer` en a besoin pour dire, dans `stats.cold`, que cette lecture n'a pas
 /// vu la bande froide — la même case et la même phrase que le pivot et les jeux de données.
 pub(crate) fn horizon_et_frontiere(db_path: &str, conf: &HashMap<String, String>, pc: &PanneauCompile, from: i64) -> (Value, Option<i64>) {
-    horizon_et_frontiere_du_sql(db_path, conf, &pc.sql, from, now())
+    horizon_et_frontiere_selon_l_index(db_path, conf, &pc.sql, pc.env_lu.as_deref(), from, now())
 }
 
 /// Cœur testable de `horizon` : `now_s` injecté (aucune horloge murale dans les témoins).
@@ -334,8 +355,102 @@ pub(crate) fn horizon_du_sql(db_path: &str, conf: &HashMap<String, String>, sql:
     horizon_et_frontiere_du_sql(db_path, conf, sql, from, now_s).0
 }
 
-/// `horizon_du_sql` qui rend AUSSI la frontière froide mesurée (cf. `horizon_et_frontiere`).
+/// `horizon_du_sql` qui rend AUSSI la frontière froide mesurée (cf. `horizon_et_frontiere`). Sans panneau compilé,
+/// l'environnement lu n'est pas connu : `None`, donc l'horizon prend la fenêtre la plus courte des politiques par index
+/// et de la globale (`P10.5-p`).
 pub(crate) fn horizon_et_frontiere_du_sql(db_path: &str, conf: &HashMap<String, String>, sql: &str, from: i64, now_s: i64) -> (Value, Option<i64>) {
+    horizon_et_frontiere_selon_l_index(db_path, conf, sql, None, from, now_s)
+}
+
+/// `P10.5-p` — LA CLÉ DE RÉTENTION QUE LES POLITIQUES PAR INDEX REMPLACENT. Une `index_policy` purge `event`,
+/// `event_rollup` et `event_dim_rollup` à SA fenêtre et les exclut de la purge globale (`retention_prune_table`,
+/// `rollups.rs`) : ce sont exactement les trois familles de `FAMILLES_DE_RETENTION` qui portent cette clé.
+const RETENTION_REMPLACEE_PAR_LES_POLITIQUES: &str = "retention_days";
+
+/// `P10.5-p` — L'aveu d'un horizon NON MESURÉ parce qu'un plafond par index qui tourne peut couper ce que ce panneau
+/// lit et que l'environnement qu'il lit n'est pas déterminé. Une politique de DURÉE seule ne le rend jamais : la plus
+/// courte des fenêtres reste un plancher sûr (`PolitiqueDeLIndex::LaPlusCourte`).
+pub(crate) const NOTICE_POLITIQUE_PAR_INDEX_ENVIRONNEMENT_NON_DETERMINE: &str = "l'horizon de conservation de ce panneau \
+     n'est PAS établi : un plafond de lignes ou d'octets propre à un environnement est actif, et l'environnement que \
+     ce panneau lit n'est pas déterminé — aucune fenêtre de rétention n'est donc un plancher sûr pour ce qu'il lit. \
+     Cette réponse ne dit RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas.";
+
+/// `P10.5-p` — L'aveu d'un horizon NON MESURÉ parce que l'environnement lu porte un plafond de lignes ou d'octets sur
+/// `event` (`retention_apply_caps`, `rollups.rs`) QUI TOURNE (`plafonds_d_index_actifs` : jamais sous le tier froid
+/// actif) : il supprime les plus anciennes au-delà du plafond, à un instant qu'aucune durée ne permet de dériver.
+pub(crate) const NOTICE_POLITIQUE_PAR_INDEX_PLAFONNEE: &str = "l'horizon de conservation de ce panneau n'est PAS établi : \
+     l'environnement qu'il lit porte un plafond de lignes ou d'octets, qui supprime les événements les plus anciens \
+     au-delà du plafond, plus récents peut-être que toute fenêtre de rétention. Cette réponse ne dit RIEN de ce qu'elle \
+     a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas.";
+
+/// `P10.5-p` — L'aveu d'un horizon NON MESURÉ parce que les politiques par index n'ont pas pu être lues (énoncé refusé
+/// sur une table présente, ou une ligne illisible : `rollups::lire_les_politiques_d_index`). La purge, elle, retombe
+/// alors sur la rétention globale pour ce qu'elle n'a pas lu ; publier la globale comme horizon MESURÉ serait certifier
+/// une fenêtre que la lecture n'a pas établie.
+pub(crate) const NOTICE_POLITIQUE_PAR_INDEX_NON_LUE: &str = "l'horizon de conservation de ce panneau n'est PAS établi : les \
+     politiques de rétention par environnement n'ont pas pu être lues, et aucune fenêtre n'est calculée sur la seule \
+     rétention globale. Cette réponse ne dit RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas.";
+
+/// `P10.5-p` — CE QUE LES POLITIQUES PAR INDEX FONT À L'HORIZON DES FAMILLES `retention_days`.
+enum PolitiqueDeLIndex {
+    /// Aucune politique ne mord sur ce que ce panneau lit : la rétention globale reste le plancher (octet d'avant).
+    Globale,
+    /// L'environnement lu a SA fenêtre, en jours, déjà bornée comme la purge la borne (`politique_validee`, partagée par ses deux lecteurs).
+    /// Plus longue que la globale, elle est aussi la vraie : la purge globale exclut cet environnement.
+    Propre(i64),
+    /// Environnement lu non déterminé, politiques de DURÉE seules : la plus courte fenêtre (en jours) des politiques ;
+    /// l'horizon prend la plus courte d'elle et de la globale — le plancher sous lequel au moins un index a pu être
+    /// purgé, comme la lecture froide sans index nommé (`premier_jour_de_la_portee`).
+    LaPlusCourte(i64),
+    /// Un plafond qui tourne peut couper ce que ce panneau lit, et l'environnement lu n'est pas déterminé.
+    EnvironnementNonDetermine,
+    /// L'environnement lu porte un plafond qui tourne sur `event`, et ce panneau lit `event`.
+    Plafonnee,
+    /// Les politiques n'ont pas pu être lues (`rollups::lire_les_politiques_d_index` en `Err`) : rien n'est dérivé.
+    NonLue,
+}
+
+/// `P10.5-p` — La politique applicable, dérivée des politiques lues comme la PURGE les valide (`politique_validee`,
+/// `rollups.rs` : même plancher, même plafond, mêmes noms écartés). `plafonds_mordent` : le SQL lit `event` (les plafonds ne
+/// coupent que lui) ET les plafonds tournent (`plafonds_d_index_actifs`).
+fn politique_de_l_index(politiques: &[IndexPolicy], env: Option<&str>, plafonds_mordent: bool) -> PolitiqueDeLIndex {
+    let plafonnee = |p: &IndexPolicy| plafonds_mordent && (p.max_rows > 0 || p.max_bytes > 0);
+    match env {
+        Some(e) => match politiques.iter().find(|p| p.name == e) {
+            None => PolitiqueDeLIndex::Globale,
+            Some(p) if plafonnee(p) => PolitiqueDeLIndex::Plafonnee,
+            Some(p) if p.retention_days > 0 => PolitiqueDeLIndex::Propre(p.retention_days),
+            Some(_) => PolitiqueDeLIndex::Globale,
+        },
+        None => {
+            if politiques.iter().any(plafonnee) {
+                return PolitiqueDeLIndex::EnvironnementNonDetermine;
+            }
+            match politiques.iter().filter(|p| p.retention_days > 0).map(|p| p.retention_days).min() {
+                Some(jours) => PolitiqueDeLIndex::LaPlusCourte(jours),
+                None => PolitiqueDeLIndex::Globale,
+            }
+        }
+    }
+}
+
+/// `P10.5-p` — Lit la politique applicable, seulement si le SQL nomme une famille que les politiques gouvernent : sinon
+/// aucune clé ne la consulterait (seule la clé `retention_days` la consulte, au chemin chaud comme dans la voie froide).
+/// Lecture non faite : `NonLue`, jamais la globale (le repli de la purge n'est pas un horizon mesuré).
+fn politique_lue(c: &Connection, nomme_une_famille_des_politiques: bool, env: Option<&str>, plafonds_mordent: bool) -> PolitiqueDeLIndex {
+    if !nomme_une_famille_des_politiques {
+        return PolitiqueDeLIndex::Globale;
+    }
+    match crate::rollups::lire_les_politiques_d_index(c) {
+        Ok(politiques) => politique_de_l_index(&politiques, env, plafonds_mordent),
+        Err(_) => PolitiqueDeLIndex::NonLue,
+    }
+}
+
+/// Le cœur de l'horizon d'un panneau : `env` = l'environnement que son SQL lit, quand il est déterminé (`P10.5-p`).
+pub(crate) fn horizon_et_frontiere_selon_l_index(
+    db_path: &str, conf: &HashMap<String, String>, sql: &str, env: Option<&str>, from: i64, now_s: i64,
+) -> (Value, Option<i64>) {
     let mut cov = json!({ "searched_from": from, "calcule_a": now_s });
     let cles = cles_de_retention_du_sql(sql);
     if cles.is_empty() {
@@ -354,9 +469,15 @@ pub(crate) fn horizon_et_frontiere_du_sql(db_path: &str, conf: &HashMap<String, 
     // `P10.20-b` (vague AR) — UN RÉGLAGE ÉCRIT ILLISIBLE NE FABRIQUE NI PLANCHER NI FRONTIÈRE. Avant, `retention_effective`
     // rendait le repli env/défaut et l'horizon était publié comme mesuré sur une valeur que l'admin n'a pas écrite. La
     // première clé non lue est gardée (`non_lue`) et l'aveu dit « non établi », sans `horizon_ts`.
-    let (mesure, frontiere, non_lue): (Option<(i64, &'static str)>, Option<i64>, Option<&'static str>) = read_with(db_path, (None, None, None), |c| {
+    // `P10.5-p` — LA POLITIQUE PAR INDEX APPLICABLE remplace la rétention globale des familles qu'elle gouverne ; si
+    // elle ne peut pas être dérivée (environnement non déterminé, plafond), l'horizon n'est PAS publié (`politique_muette`).
+    type Lu = (Option<(i64, &'static str)>, Option<i64>, Option<&'static str>, Option<&'static str>);
+    let (mesure, frontiere, non_lue, politique_muette): Lu = read_with(db_path, (None, None, None, None), |c| {
         let mut haut: Option<(i64, &'static str)> = None;
         let mut non_lue: Option<&'static str> = None;
+        let mut politique_muette: Option<&'static str> = None;
+        let gouvernee = cles.iter().any(|(cle, _)| *cle == RETENTION_REMPLACEE_PAR_LES_POLITIQUES);
+        let politique = politique_lue(c, gouvernee, env, nomme_event && plafonds_d_index_actifs(conf));
         for (cle, unite) in &cles {
             // UNE CLÉ INCONNUE DE `RETENTION_FIELDS` REND 0, ET UN 0 ICI SERAIT INDISCERNABLE D'UN POOL
             // INDISPONIBLE : le témoin `chaque_famille_de_retention_nomme_une_cle_reelle_avec_sa_vraie_unite`
@@ -367,6 +488,27 @@ pub(crate) fn horizon_et_frontiere_du_sql(db_path: &str, conf: &HashMap<String, 
                     non_lue.get_or_insert(*cle);
                     continue;
                 }
+            };
+            let valeur = if *cle == RETENTION_REMPLACEE_PAR_LES_POLITIQUES {
+                match politique {
+                    PolitiqueDeLIndex::Globale => valeur,
+                    PolitiqueDeLIndex::Propre(jours) => jours,
+                    PolitiqueDeLIndex::LaPlusCourte(jours) => valeur.min(jours),
+                    PolitiqueDeLIndex::EnvironnementNonDetermine => {
+                        politique_muette = Some(NOTICE_POLITIQUE_PAR_INDEX_ENVIRONNEMENT_NON_DETERMINE);
+                        continue;
+                    }
+                    PolitiqueDeLIndex::Plafonnee => {
+                        politique_muette = Some(NOTICE_POLITIQUE_PAR_INDEX_PLAFONNEE);
+                        continue;
+                    }
+                    PolitiqueDeLIndex::NonLue => {
+                        politique_muette = Some(NOTICE_POLITIQUE_PAR_INDEX_NON_LUE);
+                        continue;
+                    }
+                }
+            } else {
+                valeur
             };
             if valeur <= 0 {
                 continue;
@@ -390,12 +532,17 @@ pub(crate) fn horizon_et_frontiere_du_sql(db_path: &str, conf: &HashMap<String, 
                 haut = Some((b, RAISON_COLD));
             }
         }
-        (haut, frontiere, non_lue)
+        (haut, frontiere, non_lue, politique_muette)
     });
     if let Some(cle) = non_lue {
         cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
         cov["reglage_non_lu"] = json!(cle);
         cov["notice"] = json!(notice_de_reglage_non_lu(cle));
+        return (cov, frontiere);
+    }
+    if let Some(notice) = politique_muette {
+        cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
+        cov["notice"] = json!(notice);
         return (cov, frontiere);
     }
     let Some((horizon_ts, raison)) = mesure else {
@@ -457,14 +604,43 @@ pub(crate) fn horizon_de_la_voie_froide_lue(
         return horizon_du_sql(db_path, conf, sql, from, now_s);
     }
     let mut cov = json!({ "searched_from": from, "calcule_a": now_s });
-    let (haut, non_lue): (Option<i64>, Option<&'static str>) = read_with(db_path, (None, None), |c| {
+    let env = env_filter.filter(|e| !e.is_empty());
+    // `P10.5-p` — `event` suit déjà les politiques par index par le lecteur froid (`premier_instant_servi`). Ses plafonds
+    // ne tournent pas ici : cette voie n'existe que sous le tier froid actif, où `retention_run` les saute
+    // (`plafonds_d_index_actifs`). `event_rollup` et `event_dim_rollup` prenaient la rétention globale : ils prennent la
+    // politique applicable (la plus courte fenêtre sans environnement déterminé).
+    type Lu = (Option<i64>, Option<&'static str>, Option<&'static str>);
+    let (haut, non_lue, politique_muette): Lu = read_with(db_path, (None, None, None), |c| {
         let mut haut: Option<i64> = None;
         let mut non_lue: Option<&'static str> = None;
+        let mut politique_muette: Option<&'static str> = None;
+        let gouvernee = familles.iter().any(|(_, cle, _)| *cle == RETENTION_REMPLACEE_PAR_LES_POLITIQUES);
+        // `plafonds_mordent = false` : ici le tier froid est actif, aucun plafond ne tourne, et les pré-agrégés n'en
+        // portent jamais ; `Plafonnee` et `EnvironnementNonDetermine` sont donc HORS D'ATTEINTE. Lecture des politiques
+        // non faite : `NonLue`, pour TOUTES les familles qu'elles gouvernent, `event` compris (le lecteur froid lit les
+        // politiques par le lecteur de la purge, qui avale un refus).
+        let politique = politique_lue(c, gouvernee, env, false);
         for (table, cle, unite) in &familles {
+            if *cle == RETENTION_REMPLACEE_PAR_LES_POLITIQUES && matches!(politique, PolitiqueDeLIndex::NonLue) {
+                politique_muette.get_or_insert(NOTICE_POLITIQUE_PAR_INDEX_NON_LUE);
+                continue;
+            }
             let plancher: Result<i64, &'static str> = if *table == "event" {
                 crate::cold_store::ColdUnionMeta::premier_instant_servi(c, conf, boundary, env_filter).map_err(|_| "retention_days")
             } else {
-                retention_effective_lue(c, conf, cle).map(|valeur| now_s - valeur * unite).map_err(|_| *cle)
+                let valeur = retention_effective_lue(c, conf, cle).map_err(|_| *cle);
+                match (*cle == RETENTION_REMPLACEE_PAR_LES_POLITIQUES, &politique, valeur) {
+                    (_, _, Err(cle)) => Err(cle),
+                    (false, _, Ok(valeur)) | (true, PolitiqueDeLIndex::Globale, Ok(valeur)) => Ok(now_s - valeur * unite),
+                    (true, PolitiqueDeLIndex::Propre(jours), Ok(_)) => Ok(now_s - jours * unite),
+                    (true, PolitiqueDeLIndex::LaPlusCourte(jours), Ok(valeur)) => Ok(now_s - valeur.min(*jours) * unite),
+                    // HORS D'ATTEINTE : `politique_lue(.., false)` ne rend jamais ces deux variantes (`politique_de_l_index`,
+                    // `plafonnee` faux), et `NonLue` est servie avant ce `match` (garde de tête de boucle).
+                    (true, PolitiqueDeLIndex::EnvironnementNonDetermine | PolitiqueDeLIndex::Plafonnee | PolitiqueDeLIndex::NonLue, Ok(_)) => {
+                        politique_muette.get_or_insert(NOTICE_POLITIQUE_PAR_INDEX_ENVIRONNEMENT_NON_DETERMINE);
+                        continue;
+                    }
+                }
             };
             match plancher {
                 Ok(ts) => {
@@ -477,19 +653,23 @@ pub(crate) fn horizon_de_la_voie_froide_lue(
                 }
             }
         }
-        (haut, non_lue)
+        (haut, non_lue, politique_muette)
     });
-    match (non_lue, haut) {
-        (Some(cle), _) => {
+    match (non_lue, politique_muette, haut) {
+        (Some(cle), _, _) => {
             cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
             cov["reglage_non_lu"] = json!(cle);
             cov["notice"] = json!(notice_de_reglage_non_lu(cle));
         }
-        (None, None) => {
+        (None, Some(notice), _) => {
+            cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
+            cov["notice"] = json!(notice);
+        }
+        (None, None, None) => {
             cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
             cov["notice"] = json!(NOTICE_POOL_NON_PRIS);
         }
-        (None, Some(horizon_ts)) => {
+        (None, None, Some(horizon_ts)) => {
             let dehors = from > 0 && from + CACHE_BUCKET_S < horizon_ts;
             cov["horizon_ts"] = json!(horizon_ts);
             cov["older_outside_window"] = json!(dehors);
@@ -580,7 +760,7 @@ pub(crate) fn executer(db_path: &str, conf: &HashMap<String, String>, pc: Pannea
     if let Some(aveu) = crate::handlers::datamodels::aveu_de_bande_froide_du_chemin(from, frontiere, CHEMIN_DU_COFFRE_DES_PANNEAUX) {
         v["stats"]["cold"] = aveu;
     }
-    let PanneauCompile { sql, provenance } = pc;
+    let PanneauCompile { sql, provenance, .. } = pc;
     match provenance {
         Provenance::RouteePreagrege(approx, cap, note) => {
             // MESURE DU PLAFOND sur le pool de LECTURE, avec son AVEU par défaut (`sans_base`) : un
@@ -694,7 +874,28 @@ pub(crate) fn cache_reestamper(
         return;
     };
     let Some(pc) = pc else { return }; // la portée n'est pas dérivable ici : on ne touche pas à ce qui a été mesuré
-    let courant = horizon_du_sql(db_path, conf, &pc.sql, cov["searched_from"].as_i64().unwrap_or(0), now_s);
+    let (courant, _) =
+        horizon_et_frontiere_selon_l_index(db_path, conf, &pc.sql, pc.env_lu.as_deref(), cov["searched_from"].as_i64().unwrap_or(0), now_s);
+    // `P10.5-p` — UNE POLITIQUE PAR INDEX REND DÉSORMAIS L'HORIZON NON DÉRIVABLE : l'horizon stocké (écrit sous la seule
+    // rétention globale) n'est plus re-servi ; la couverture servie est celle d'un horizon non mesuré, sur la fenêtre et
+    // l'instant de calcul STOCKÉS. Un corps stocké SANS horizon (échec `calcul_echoue`, …) n'a rien à retirer : il
+    // garde sa raison, comme avant.
+    let notice_courante = courant["notice"].as_str().unwrap_or_default();
+    // Politiques NON LUES au re-service : l'horizon stocké n'est pas re-servi non plus (rien ne dit que la politique qui
+    // l'a laissé tel est encore celle de la base).
+    let politique_muette = notice_courante == NOTICE_POLITIQUE_PAR_INDEX_ENVIRONNEMENT_NON_DETERMINE
+        || notice_courante == NOTICE_POLITIQUE_PAR_INDEX_PLAFONNEE
+        || notice_courante == NOTICE_POLITIQUE_PAR_INDEX_NON_LUE;
+    if politique_muette && cov.get("horizon_ts").is_some() {
+        let non_mesure = json!({
+            "searched_from": cov["searched_from"].clone(),
+            "calcule_a": cov["calcule_a"].clone(),
+            "reason": RAISON_HORIZON_NON_MESURE,
+            "notice": notice_courante,
+        });
+        poser_coverage(v, non_mesure);
+        return;
+    }
     let (Some(stocke_ts), Some(courant_ts)) = (cov["horizon_ts"].as_i64(), courant["horizon_ts"].as_i64()) else {
         return;
     };

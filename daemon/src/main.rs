@@ -1560,6 +1560,14 @@ fn main() {
         // lance la sauvegarde à la main ne doit pas la découvrir par un refus (cf. backup/mod.rs).
         annoncer_bascule_sauvegarde(&conf);
         let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
+        // `P10.34-r` — UNE BASE ABSENTE NE SE SAUVEGARDE PAS. Avant cette garde, les deux modes ouvraient le chemin
+        // (`Connection::open` le crée) : un fichier de base de 0 octet restait derrière, et la sortie 0 annonçait
+        // réussie l'archive d'une base vide. Refus avant toute ouverture, comme les autres sous-commandes : rien n'est
+        // créé, ni base ni archive.
+        if let Err(e) = refuser_une_base_absente(&db_path, "backup") {
+            eprintln!("{e} — AUCUNE sauvegarde produite. Arrêt propre.");
+            std::process::exit(1);
+        }
         // `backup --compress [dest]` -> enveloppe age(zstd(charge)) ; la CHARGE est un dump typé streaming
         // (défaut, aucun clair sur disque) ou une copie SQLite complète (chemin historique) — cf. backup/dump_restauration.rs.
         // `backup [dest]`            -> mode HISTORIQUE : VACUUM INTO (copie SQLCipher chiffrée, incompressible).
@@ -1585,9 +1593,11 @@ fn main() {
                     // Ce signal ÉCRIT (un événement SOC) -> il passe par la porte. Best-effort DANS LES
                     // DEUX SENS : un contrat non satisfait ne casse pas le backup DÉJÀ produit, mais il
                     // n'écrit rien non plus — il le DIT, au lieu d'écrire sur un schéma inconnu.
-                    // `P10.33-g` — garde DÉFENSIVE : on n'arrive ici qu'après `backup_compressed`, qui
-                    // exige `PLUME_DB_KEY` ; sur une base absente la porte la créerait donc chiffrée,
-                    // pas en clair. Le refus garde la règle unique : une sous-commande ne crée pas la base.
+                    // `P10.33-g` — garde DÉFENSIVE depuis `P10.34-r` : la garde d'entrée de `backup` (plus haut)
+                    // refuse déjà une base absente ou vide, avant toute sauvegarde. Celle-ci ne refuse plus que si
+                    // la base disparaît PENDANT la sauvegarde — une course, sans témoin déterministe en refus. Elle
+                    // reste pour que la règle unique tienne aussi là : une sous-commande ne crée pas la base. Son
+                    // passage (base existante, signal émis) est exécuté par sous_commandes_executees_sur_base_absente.rs ③.
                     if let Err(e) = refuser_une_base_absente(&db_path, "signal de posture post-sauvegarde") {
                         eprintln!("{e} — signal de posture NON émis.");
                     } else {

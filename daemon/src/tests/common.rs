@@ -132,6 +132,18 @@
         conn
     }
 
+    /// L'HEURE RONDE PRÉCÉDENTE, prise hors des deux dernières minutes de l'heure. Les fixtures de rollup figent ce
+    /// seau, puis `rollup_events` recalcule le sien depuis `now()` : une suite qui franchit une heure pile entre les
+    /// deux lit un watermark d'une heure plus tard (porte de déploiement du 2026-10-28, 10:00Z, deux témoins `rbr_`
+    /// rouges). À moins de deux minutes de la fin de l'heure, on attend l'heure suivante avant de figer le seau.
+    fn heure_ronde_precedente_hors_de_la_fin_d_heure() -> i64 {
+        let reste = 3600 - now().rem_euclid(3600);
+        if reste <= 120 {
+            std::thread::sleep(std::time::Duration::from_secs(reste as u64 + 1));
+        }
+        ((now() / 3600) * 3600 - 3600).max(0)
+    }
+
     /// SÈME UN DOSSIER POUR UN TÉMOIN, et rend son identifiant (`P10.20-w`).
     ///
     /// `case_create_row` rend désormais `DossierOuvert` : l'identifiant n'existe que si la ligne a

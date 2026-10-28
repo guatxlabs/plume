@@ -84,6 +84,7 @@ pub(crate) fn statut_du_refus_de_purge(e: &PurgeRefusal) -> StatusCode {
         PurgeRefusal::ReasonRequired => StatusCode::BAD_REQUEST,
         PurgeRefusal::TransactionNotOpened => StatusCode::SERVICE_UNAVAILABLE,
         PurgeRefusal::Db(_)
+        | PurgeRefusal::TransactionLeftOpen { .. }
         | PurgeRefusal::PlanRowUnread { .. }
         | PurgeRefusal::LegalHoldUndetermined
         | PurgeRefusal::LegalHoldUnread(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -101,10 +102,23 @@ pub(crate) const PHRASE_PURGE_LECTURE_DE_LA_BASE_NON_FAITE: &str = "REFUS — le
 /// ni lecture ni écriture, la nature exacte est au journal. « aucune ligne supprimée » est VRAI pour chaque site : une
 /// lecture du plan n'écrit rien ; une écriture refusée et un `COMMIT` refusé sortent de `purge_apply` après le
 /// `ROLLBACK` de toute la transaction (registre compris), et un `COMMIT` refusé ne rend rien durable (commit atomique
-/// du moteur). Reste NON tenu : si ce `ROLLBACK` est lui-même refusé, la transaction reste pendante sur l'écrivain,
-/// non validée ; aucun `COMMIT` ne la suit (tout geste ouvre par `BEGIN`, refusé tant qu'elle pend).
+/// du moteur). Si ce `ROLLBACK` est lui-même refusé et que la connexion reste en transaction, ce n'est plus `db` qui
+/// sort mais `transaction_left_open` (`PHRASE_PURGE_TRANSACTION_RESTEE_OUVERTE`, `P10.29-l`) : la phrase de `db` ne
+/// couvre que les refus annulés.
 pub(crate) const PHRASE_PURGE_REFUS_DE_LA_BASE: &str = "REFUS — la base a refusé l'opération : la purge n'est pas faite, \
      aucune ligne supprimée. La cause est écrite au journal du démon, sous l'identifiant servi.";
+
+/// Phrase SERVIE pour `transaction_left_open` (`P10.29-l`) : l'exécution refusée n'a pas pu être annulée, la connexion est
+/// restée en transaction. Fixe : l'étape et les deux textes du moteur sont sur la ligne `[<id>] [purge] ERREUR` écrite par
+/// `purge::annuler_la_purge`, sous l'identifiant servi. Elle ne dit PAS « aucune ligne supprimée » : rien n'est validé,
+/// mais l'état de l'écrivain n'est pas celui d'un refus propre. Elle ne dit PAS non plus « les écritures suivantes sont
+/// refusées » : vrai pour un geste qui ouvre par `BEGIN`, faux pour une écriture en autocommit sur l'écrivain (ex.
+/// `handlers/alerting.rs`, état d'une règle avancée, sous `db.lock()` sans `BEGIN`), acceptée dans la transaction pendante puis
+/// perdue à la fermeture.
+pub(crate) const PHRASE_PURGE_TRANSACTION_RESTEE_OUVERTE: &str = "REFUS — la base a refusé l'opération, puis l'annulation \
+     de la transaction : la purge n'est pas validée, mais la transaction reste ouverte jusqu'à sa fermeture ou au \
+     redémarrage du démon : un geste qui ouvre sa propre transaction est refusé, une écriture faite sans transaction propre \
+     y est prise puis perdue à la fermeture. La cause est écrite au journal du démon, sous l'identifiant servi.";
 
 /// La RÉPONSE servie par les deux routes pour un refus : le statut est celui de `statut_du_refus_de_purge`
 /// (seul juge de la nature), le corps nomme le code machine. `pub(crate)` pour qu'un témoin juge ce que la
@@ -133,6 +147,12 @@ pub(crate) fn purge_refusal_response(e: PurgeRefusal) -> Response {
         }
         _ => None,
     };
+    // `P10.29-l` — la ligne de journal est déjà écrite au site de l'annulation, sous l'identifiant porté par la variante :
+    // la réponse le reprend tel quel, sans seconde ligne ni second identifiant.
+    if let PurgeRefusal::TransactionLeftOpen { id, .. } = &e {
+        return (code, Json(json!({ "ok": false, "refusal": refusal, "message": PHRASE_PURGE_TRANSACTION_RESTEE_OUVERTE, "id": id })))
+            .into_response();
+    }
     match texte_du_moteur {
         Some((nature, phrase, texte)) => {
             let id = crate::identifiant_de_correlation();

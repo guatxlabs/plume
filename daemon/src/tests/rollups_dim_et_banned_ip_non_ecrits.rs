@@ -57,7 +57,7 @@ mod rollups_dim_et_banned_ip_non_ecrits {
     const RDBI_IP_BANNIE: &str = "192.0.2.10";
 
     fn rdbi_recent() -> i64 {
-        ((now() / 3600) * 3600 - 3600).max(0)
+        heure_ronde_precedente_hors_de_la_fin_d_heure()
     }
 
     fn rdbi_meta(conn: &rusqlite::Connection, cle: &str) -> Option<String> {

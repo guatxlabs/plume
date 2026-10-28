@@ -446,13 +446,18 @@ impl<'a> SnapshotSeries<'a> {
     /// `IS NOT DISTINCT FROM`, donc la série `(kind, NULL)` se sélectionne elle-même au lieu de ne
     /// jamais rien matcher (avec `=`, un NULL ne s'égale pas lui-même -> on aurait remplacé la
     /// confusion d'hôtes par une réécriture à CHAQUE rapport des instantanés sans hôte).
-    pub(crate) fn dernier_hash(&self, conn: &Connection) -> Option<String> {
+    ///
+    /// `P10.20-b` — TROIS ISSUES, PAS DEUX : `Ok(None)` = la série n'a encore aucune ligne, `Ok(Some(h))` =
+    /// empreinte lue, `Err(_)` = la lecture n'a pas abouti (cellule illisible, table abîmée). Le `.ok()`
+    /// d'avant rangeait la troisième sous la première : l'appelant ne pouvait pas dire qu'il n'avait pas lu.
+    pub(crate) fn dernier_hash(&self, conn: &Connection) -> rusqlite::Result<Option<String>> {
+        use rusqlite::OptionalExtension as _;
         conn.query_row(
             "SELECT hash FROM snapshot WHERE kind=?1 AND host IS ?2 ORDER BY ts DESC LIMIT 1",
             params![self.kind, self.host],
             |r| r.get(0),
         )
-        .ok()
+        .optional()
     }
 
     /// HEARTBEAT (état INCHANGÉ) — avance le `ts` du dernier instantané DE CETTE SÉRIE. Sans le filtre
@@ -484,6 +489,20 @@ impl<'a> SnapshotSeries<'a> {
 /// Un instantané au sens de la LECTURE : `(host, ts, hash, data)`.
 pub(crate) type InstantaneLu = (Option<String>, i64, String, String);
 
+/// `P10.20-b` — CE QUE REND `dernier_instantane_par_hote` : les lignes lues ET la fin du parcours. Le déréférencement
+/// donne les lignes lues (lecture de tranche : `len`, index, `iter`) ; il ne dit pas si elles sont TOUTES les lignes —
+/// une surface servie juge `fin` avant de publier un état ou un dénominateur.
+pub(crate) struct InstantanesParHote {
+    pub(crate) lignes: Vec<InstantaneLu>,
+    pub(crate) fin: crate::query_exec::FinDeParcours,
+}
+impl std::ops::Deref for InstantanesParHote {
+    type Target = [InstantaneLu];
+    fn deref(&self) -> &[InstantaneLu] {
+        &self.lignes
+    }
+}
+
 /// LE DERNIER INSTANTANÉ **DE CHAQUE MACHINE** pour un `kind`, la plus fraîche d'abord.
 ///
 /// POURQUOI CE POINT D'ACCÈS UNIQUE. Les surfaces de LECTURE faisaient toutes
@@ -496,31 +515,63 @@ pub(crate) type InstantaneLu = (Option<String>, i64, String, String);
 /// d'insérer — donc le `GROUP BY host` porte sur la cardinalité de la FLOTTE, pas sur l'historique.
 /// `s.host IS j.host` (et non `=`) pour que la série sans hôte se joigne à elle-même. `max` borne la
 /// réponse ; les doublons (host, ts) exacts sont réduits au premier vu.
-pub(crate) fn dernier_instantane_par_hote(conn: &Connection, kind: &str, max: usize) -> Vec<InstantaneLu> {
-    let Ok(mut s) = conn.prepare(
+///
+/// `P10.20-b` — LA FIN DU PARCOURS EST RENDUE AVEC LES LIGNES. Avant, une préparation refusée rendait
+/// `Vec::new()` (« aucune machine ») et une ligne illisible disparaissait par `.flatten()` (« une machine
+/// de moins ») : les deux surfaces de lecture servaient alors une absence ou un parc plus petit comme un
+/// fait. `fin` vaut `NonCommence` quand rien n'a été lu, `Interrompu` quand au moins une ligne n'a pas
+/// été rendue, `Complet` sinon ; l'appelant décide de la forme de l'aveu. Atteindre `max` n'est pas un
+/// échec de lecture : la boucle s'arrête comme avant et la fin reste celle des lignes réellement lues.
+///
+/// CE QUE LA FIN NE DIT PAS. (1) Une liste coupée par `max` rend `Complet` : ses appelants (borne 500) servent alors
+/// `len()` comme nombre de machines, alors que le parc peut être plus grand — limite antérieure, gardée telle quelle.
+///
+/// LIAISON REFUSÉE. La branche `Err` de `query_map` est celle d'une liaison refusée du seul `&str` (par exemple un
+/// `kind` plus long que `SQLITE_LIMIT_LENGTH` de la connexion) : elle rend `NonCommence` avec le texte de la liaison,
+/// jamais `Complet`. Témoin sous une limite abaissée par `sqlite3_limit` :
+/// `tests/liaison_refusee_du_parcours_des_instantanes.rs`.
+pub(crate) fn dernier_instantane_par_hote(conn: &Connection, kind: &str, max: usize) -> InstantanesParHote {
+    use crate::query_exec::FinDeParcours;
+    let mut s = match conn.prepare(
         "SELECT s.host, s.ts, COALESCE(s.hash,''), COALESCE(s.data,'') FROM snapshot s \
          JOIN (SELECT host, MAX(ts) AS mts FROM snapshot WHERE kind=?1 GROUP BY host) j \
            ON s.host IS j.host AND s.ts = j.mts \
          WHERE s.kind=?1 ORDER BY s.ts DESC",
-    ) else {
-        return Vec::new();
+    ) {
+        Ok(s) => s,
+        Err(e) => return InstantanesParHote { lignes: Vec::new(), fin: FinDeParcours::NonCommence { cause: e.to_string() } },
     };
-    let Ok(rows) = s.query_map(params![kind], |r| {
+    let rows = match s.query_map(params![kind], |r| {
         Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
-    }) else {
-        return Vec::new();
+    }) {
+        Ok(rows) => rows,
+        Err(e) => return InstantanesParHote { lignes: Vec::new(), fin: FinDeParcours::NonCommence { cause: e.to_string() } },
     };
     let mut vus: std::collections::HashSet<Option<String>> = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for row in rows.flatten() {
-        if vus.insert(row.0.clone()) {
-            out.push(row);
-            if out.len() >= max {
-                break;
+    let mut erreurs = 0usize;
+    let mut premiere_cause: Option<String> = None;
+    for lu in rows {
+        match lu {
+            Ok(row) => {
+                if vus.insert(row.0.clone()) {
+                    out.push(row);
+                    if out.len() >= max {
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                erreurs += 1;
+                premiere_cause.get_or_insert_with(|| e.to_string());
             }
         }
     }
-    out
+    let fin = match premiere_cause {
+        None => FinDeParcours::Complet,
+        Some(cause) => FinDeParcours::Interrompu { erreurs, cause },
+    };
+    InstantanesParHote { lignes: out, fin }
 }
 
 /// UNIQUE implémentation du SPI : SQLite/SQLCipher, exactement le comportement historique de Plume.
@@ -691,11 +742,16 @@ impl guatx_core::store::EventStore for SqlcipherStore {
 /// `P11.14-h` — LE DERNIER INSTANTANÉ D'UN GENRE POUR UNE MACHINE : la destination d'une alerte fondée
 /// sur un instantané. Rend `(ts, empreinte, charge)` de la ligne la plus récente de la série
 /// `(kind, host)`, et rien d'une autre machine.
-pub(crate) fn dernier_instantane_de(conn: &Connection, kind: &str, host: &str) -> Option<(i64, String, String)> {
+///
+/// `P10.20-b` — `Ok(None)` = cette série n'existe pas ; `Err(_)` = la lecture n'a pas abouti. Le `.ok()`
+/// d'avant confondait les deux, et la route servait un quatre cent quatre (« pas d'instantané ») sur une
+/// lecture ratée.
+pub(crate) fn dernier_instantane_de(conn: &Connection, kind: &str, host: &str) -> rusqlite::Result<Option<(i64, String, String)>> {
+    use rusqlite::OptionalExtension as _;
     conn.query_row(
         "SELECT ts, COALESCE(hash,''), COALESCE(data,'') FROM snapshot WHERE kind=?1 AND host=?2 ORDER BY ts DESC LIMIT 1",
         params![kind, host],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
-    .ok()
+    .optional()
 }

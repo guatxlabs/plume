@@ -242,9 +242,30 @@ function Flush-Events {
   $envelope = [ordered]@{ ts = $NowEpoch; host = $HostName; kind = 'events'; events = @($script:Events) }
   $body = $envelope | ConvertTo-Json -Depth 6 -Compress
   $n = $script:Events.Count
+  # P10.33-i — AUCUNE REDIRECTION N'EST SUIVIE. La porte du transport juge l'adresse ÉCRITE, pas celle où
+  # une réponse 3xx renverrait : `Invoke-RestMethod` suit jusqu'à cinq redirections par défaut. MESURÉ le
+  # 2026-10-27 sous pwsh 7.6.3, central admis (`http://127.0.0.1`) qui répond 307 ou 308 vers un AUTRE
+  # hôte en `http://` : le corps (tous les événements) y part EN CLAIR, et la réponse de cet hôte vaut
+  # acquittement ; sur 302, la requête y repart en GET sans corps, l'hôte répond 200, et le lot est
+  # compté LIVRÉ alors qu'il n'est arrivé nulle part (filigrane commis, événements perdus). Avec
+  # `-MaximumRedirection 0`, aucune n'est suivie : le corps ne part jamais vers un hôte que la porte n'a pas
+  # jugé, sous 5.1 comme sous 7 (`AllowAutoRedirect = false`).
+  # L'ACQUITTEMENT SE JUGE AU CORPS, PAS À L'ABSENCE D'EXCEPTION. pwsh 7 lève sur toute réponse 3xx refusée ;
+  # Windows PowerShell 5.1, celui que lance la tâche planifiée, ne lève que sur 301 et 302 (source du
+  # cmdlet .NET Framework, `MaximumRedirectExceeded` pour Found/Moved/MovedPermanently seulement) : un 303,
+  # 307 ou 308 y revient comme une réponse NORMALE, au corps vide. Sans ce jugement, un frontal qui réécrit
+  # le chemin d'un POST (307/308) faisait vider le tampon et commettre les filigranes : lot perdu, tâche
+  # verte. Le central acquitte `/api/ingest` par `202 {"queued":true,…}` (`ingest_post`, depuis la première
+  # publication) ; toute autre réponse — corps vide, page HTML d'un mandataire en 200, JSON étranger — est
+  # un envoi NON acquitté. NON EXÉCUTÉ SOUS 5.1 : le harnais joue sous pwsh 7 la réponse que 5.1 rend.
   try {
-    Invoke-RestMethod -Uri "$Central/api/ingest" -Method Post -TimeoutSec 20 `
-      -Headers @{ Authorization = "Bearer $Token" } -ContentType 'application/json' -Body $body | Out-Null
+    $reponse = Invoke-RestMethod -Uri "$Central/api/ingest" -Method Post -TimeoutSec 20 -MaximumRedirection 0 `
+      -Headers @{ Authorization = "Bearer $Token" } -ContentType 'application/json' -Body $body
+    $acquitte = ($null -ne $reponse) -and ($null -ne $reponse.PSObject.Properties['queued']) -and
+                ($reponse.queued -is [bool]) -and $reponse.queued
+    if (-not $acquitte) {
+      throw "le central n'a pas acquitté (réponse sans `"queued`":true — redirection non suivie, mandataire ou autre service à cette adresse)"
+    }
   } catch {
     $script:DeliveryFailed = $true
     throw "POST /api/ingest a échoué ($n événement(s) NON livrés — aucun filigrane ne sera commis, le run suivant relira) : $($_.Exception.Message)"

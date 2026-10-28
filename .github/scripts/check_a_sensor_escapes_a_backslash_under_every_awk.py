@@ -31,10 +31,16 @@ CE QUE LA GARDE FAIT
    Traefik, `mc`, `find`, journal d'audit, `kubectl`, journal mail), sous chaque awk, avec les mêmes
    valeurs dans le champ que la source rend réellement : chaque enveloppe publiée est du JSON, aucune
    enveloppe cachée ne reste dans le spool, et chaque valeur ressort EXACTE, une fois.
-Les valeurs d'un canal JSON (journal Traefik, `mc --json`) sont attendues sous la forme que le capteur
-LIT : le texte encodé par la source, coupé au premier guillemet (le capteur ne décode pas le JSON
-qu'il lit ; voir plus bas). Un guillemet dans un User-Agent y devient un antislash FINAL : c'est la
-forme qui rendait l'enveloppe illisible, envoyable par n'importe quel client HTTP.
+Les valeurs d'un canal JSON (journal Traefik, `mc --json`) sont attendues DÉCODÉES (`P10.23-x`) : la
+valeur que la source a encodée, exacte. Elles y sont écrites deux fois, comme Go les écrit — texte brut
+hors échappement, et tout en `\\uXXXX` avec `<`, `>`, `&` échappés (ce que fait `encoding/json`) —, plus
+`\\/`, une paire de substitution et U+2028 (`VALEURS_ENCODEES`).
+4. LE DÉCODEUR LIVRÉ (`_PLUME_AWK_DECODAGE_JSON`, `jstr`), lu en sourçant `lib.sh`, joué sous chaque awk
+   sur chaque valeur des deux encodages : `jesc(jstr(…))` rend la valeur exacte. Et, par la forme : `jstr`
+   définie une fois, dans `lib.sh` ; tout appelant inclut la variable ; `web.sh` et `minio.sh` en sont.
+   Plus `CAS_DU_DECODEUR` (`\\n` `\\b` `\\f`, NUL, substituts isolés, échappements invalides gardés, chaîne
+   tronquée) et un COÛT borné : 600000 échappements décodés sous 10 s (la première version était quadratique).
+   Dans `web.sh`, la méthode et le protocole portent les valeurs aussi : décodés, ils doivent être échappés.
 
 LE JUGE SE VALIDE AVANT DE JUGER
 --------------------------------
@@ -51,9 +57,8 @@ CE QUE LA GARDE NE TIENT PAS, DIT FRANCHEMENT
 Elle éprouve les capteurs du dépôt, pas ceux de l'hôte (famille de `P10.22-i`) ; la version d'awk de
 l'hôte n'est pas connue du dépôt. Elle ne joue que les awk présents (gawk, mawk) : l'image
 d'intégration n'a pas mawk 20200120, d'où la partie 1 (`P10.23-k`). Elle tient l'ÉCHAPPEMENT, pas la
-LECTURE : `web.sh` et `minio.sh` lisent un texte JSON sans le décoder — une valeur y est stockée
-encodée (`\\\\` pour un antislash, `\\u003c` pour `<`) et coupée à son premier guillemet échappé
-(`P10.23-x`). Les noms que `auditd` écrit en hexadécimal (espace, guillemet, contrôle, non-ASCII), eux,
+LECTURE des autres capteurs : seuls `web.sh` et `minio.sh` lisent un texte JSON, et c'est par `jstr`
+(`P10.23-x`) ; la garde ne voit pas un capteur neuf qui lirait du JSON par une expression régulière. Les noms que `auditd` écrit en hexadécimal (espace, guillemet, contrôle, non-ASCII), eux,
 SONT décodés par `dataaccess.sh` (`P10.23-z`) : son banc les écrit comme `auditd` et rejoue en plus
 `collectors/dataaccess-hex.corpus` (octet nul, contrôles 0x09/0x1B/0x1F, DEL, octet non UTF-8, bornes
 de l'UTF-8 strict — surlongs E0/F0, substitut ED, F4 au-delà de 8F, tête F5, octet de suite invalide, plus
@@ -78,6 +83,8 @@ RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
 CAPTEURS = os.path.join(RACINE, "collectors")
 LIB = os.path.join(CAPTEURS, "lib.sh")
 VARIABLE = "_PLUME_AWK_ECHAPPEMENT_JSON"
+VARIABLE_DECODAGE = "_PLUME_AWK_DECODAGE_JSON"
+LECTEURS_JSON_EXIGES = {"web.sh", "minio.sh"}   # P10.23-x : les capteurs qui lisent un texte JSON
 ETIQUETTE = "P10.23-e"
 AWK_EXERCES = ("gawk", "mawk")
 COMMANDES_REQUISES = ("sh", "find", "grep", "sort", "tail", "mktemp", "cksum", "head", "cut")
@@ -107,16 +114,72 @@ PIEGES_EXIGES = {
 }
 ATTENDUS_MINIMUM_PAR_BANC = 5
 
+# P10.23-x — valeurs que Go (`encoding/json` : Traefik, `mc`) écrit ÉCHAPPÉES même sans antislash ni guillemet.
+VALEURS_ENCODEES = [
+    ("balise (`\\u003c` `\\u003e` `\\u0026`)", "<script>alert(1)&x</script>"),
+    ("non-ASCII deux et trois octets", "été 日本"),
+    ("hors du plan de base (paire de substitution)", "\U0001F600 fin"),
+    ("U+2028 (que Go échappe)", "a\u2028b"),
+    ("barre oblique (`\\/`)", "a/b/c"),
+]
+
+# P10.23-x — ce que le décodeur rend pour ce que les tables ci-dessus n'écrivent pas : (nom, LIGNE entière, attendu
+# après `jesc`). Un contrôle décodé ressort en espace (`jesc`) ; il doit être DÉCODÉ (un `\n` gardé ressortirait
+# `\n`). Un substitut isolé rend U+FFFD ; un échappement invalide est gardé tel quel ; une chaîne sans guillemet
+# fermant rend ce qui a été lu.
+CAS_DU_DECODEUR = [
+    ("saut de ligne `\\n`", '{"a":1,"k":"a\\nb","z":"fin"}', "a b"),
+    ("retour arrière `\\b`", '{"a":1,"k":"a\\bb","z":"fin"}', "a b"),
+    ("saut de page `\\f`", '{"a":1,"k":"a\\fb","z":"fin"}', "a b"),
+    ("NUL `\\u0000` (rendu en espace)", '{"a":1,"k":"a\\u0000b","z":"fin"}', "a b"),
+    ("substitut haut isolé", '{"a":1,"k":"a\\ud800b","z":"fin"}', "a\ufffdb"),
+    ("substitut haut suivi d'un non-substitut", '{"a":1,"k":"\\ud83d\\u0041","z":"fin"}', "\ufffdA"),
+    ("substitut bas isolé", '{"a":1,"k":"a\\udc00b","z":"fin"}', "a\ufffdb"),
+    ("échappement invalide `\\q` gardé", '{"a":1,"k":"a\\qb","z":"fin"}', "a\\qb"),
+    ("`\\uZZZZ` invalide gardé", '{"a":1,"k":"a\\uZZZZb","z":"fin"}', "a\\uZZZZb"),
+    ("`\\u` court devant le guillemet", '{"a":1,"k":"a\\u00","z":"fin"}', "a\\u00"),
+    ("chaîne tronquée (pas de guillemet fermant)", '{"a":1,"k":"tronque\\u0041', "tronqueA"),
+    ("chaîne tronquée sur un antislash", '{"a":1,"k":"fin\\', "fin\\"),
+    ("clé absente", '{"a":1,"z":"fin"}', ""),
+    ("antislash échappé puis guillemet fermant", '{"a":1,"k":"x\\\\","z":"fin"}', "x\\"),
+    # Bords épinglés après vérification (un mutant de chacun laissait la garde verte) : chemin rapide d'une
+    # chaîne tronquée SANS antislash, paire de substituts NON contiguë, deux substituts bas, bornes de
+    # l'UTF-8 à deux et trois octets (U+0400, U+07FF, U+0800 : pas de forme surlongue), hexadécimal en
+    # majuscules, clé dont le nom finit comme celle qu'on cherche.
+    ("chaîne tronquée sans antislash (chemin rapide)", '{"a":1,"k":"tronque', "tronque"),
+    ("paire de substituts séparée par un caractère", '{"a":1,"k":"\\ud83dX\\ude00","z":"fin"}', "\ufffdX\ufffd"),
+    ("deux substituts bas", '{"a":1,"k":"\\udc00\\udc00","z":"fin"}', "\ufffd\ufffd"),
+    ("bornes UTF-8 deux et trois octets", '{"a":1,"k":"\\u0400\\u07ff\\u0800","z":"fin"}', "\u0400\u07ff\u0800"),
+    ("hexadécimal en majuscules", '{"a":1,"k":"\\u003C","z":"fin"}', "<"),
+    ("clé au nom suffixe de la cherchée", '{"xk":"faux","k":"bon"}', "bon"),
+]
+# P10.23-x — LE COÛT : la première version recopiait le reste de la ligne et la sortie à chaque échappement,
+# un temps QUADRATIQUE (64000 `\u003c` : 2,3 s sous mawk ; tout client choisit son chemin). Une valeur de
+# ECHAPPEMENTS_DU_COUT échappements doit être décodée sous BUDGET_DU_COUT_S secondes. Mesuré sur le VPS de
+# compilation (2026-10-27) : découpe + jointure par paires 1,7 s (mawk) et 2,9 s (gawk 5.2.1) ; la même découpe
+# jointe par `o = o …` ~36 s sous mawk (qui n'a pas l'ajout en place de gawk), la première version au-delà.
+ECHAPPEMENTS_DU_COUT = 600000
+BUDGET_DU_COUT_S = 10
+
+
+def encode_comme_go(v, ascii_seul):
+    """Le texte JSON (sans guillemets) qu'un encodeur écrit pour `v` : brut hors échappement, ou tout en
+    `\\uXXXX` avec `<`, `>`, `&` échappés comme `encoding/json` et `/` en `\\/` (permis, écrit par d'autres)."""
+    e = json.dumps(v, ensure_ascii=ascii_seul)[1:-1]
+    if ascii_seul:
+        e = e.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026").replace("/", "\\/")
+    return e
+
+
+def valeurs_encodees():
+    """[(nom, texte encodé, valeur attendue)] : chaque valeur des deux tables, sous les deux encodages."""
+    return [(f"{nom} ({'ascii' if a else 'brut'})", encode_comme_go(v, a), v)
+            for nom, v in VALEURS + VALEURS_ENCODEES for a in (False, True)]
+
 
 def refus(msg):
     print(f"::error::{ETIQUETTE} : {msg} — la garde REFUSE DE CONCLURE, rien n'a été mesuré.")
     sys.exit(2)
-
-
-def lu_depuis_json(v):
-    """Ce qu'un capteur LIT d'une valeur écrite par un encodeur JSON (Go : Traefik, `mc`) : le texte
-    encodé, jusqu'au premier guillemet — celui d'un `\\"` quand la valeur en porte un."""
-    return json.dumps(v, ensure_ascii=False)[1:-1].split('"')[0]
 
 
 # --- 1. LA FORME --------------------------------------------------------------------------------
@@ -127,6 +190,9 @@ QUATRE_ANTISLASHS = "\\" * 4
 DEFINITION = re.compile(r"\bfunction\s+jesc\s*\(")
 APPEL = re.compile(r"(?<![A-Za-z0-9_])jesc\(")
 INCLUSION = '"$' + VARIABLE + '"'
+DEFINITION_DECODAGE = re.compile(r"\bfunction\s+jstr\s*\(")
+APPEL_DECODAGE = re.compile(r"(?<![A-Za-z0-9_])jstr\(")
+INCLUSION_DECODAGE = '"$' + VARIABLE_DECODAGE + '"'
 
 
 def idiomes_non_portables(texte):
@@ -153,6 +219,20 @@ def lire_la_forme(fichiers):
                       f"{', '.join(definitions) or 'aucune'}")
     if VARIABLE not in fichiers.get("lib.sh", ""):
         fautes.append(f"`lib.sh` ne définit pas `{VARIABLE}`")
+    # P10.23-x — le décodeur, même règle : une définition, dans lib.sh ; tout appelant l'inclut ; les lecteurs
+    # de JSON en sont.
+    lecteurs, defs = set(), []
+    for nom, texte in sorted(fichiers.items()):
+        defs += [nom] * len(DEFINITION_DECODAGE.findall(texte))
+        if nom != "lib.sh" and APPEL_DECODAGE.search(DEFINITION_DECODAGE.sub("", texte)):
+            lecteurs.add(nom)
+            if INCLUSION_DECODAGE not in texte:
+                fautes.append(f"collectors/{nom} : appelle `jstr(` sans placer {INCLUSION_DECODAGE} en tête de son programme awk")
+    if defs != ["lib.sh"]:
+        fautes.append(f"`function jstr(` doit être définie UNE fois, dans `lib.sh` ; définitions vues : {', '.join(defs) or 'aucune'}")
+    for nom in sorted(LECTEURS_JSON_EXIGES - lecteurs):
+        fautes.append(f"collectors/{nom} lit un texte JSON sans `jstr` : une valeur y reste encodée et coupée "
+                      "à son premier guillemet échappé (P10.23-x)")
     return fautes, appelants
 
 
@@ -163,20 +243,27 @@ def epreuve_de_la_forme():
         return "l'idiome fautif n'est pas vu"
     if idiomes_non_portables(juste):
         return "`\"&&\"`, l'échappement du guillemet ou une suppression sont pris pour l'idiome fautif"
-    lib = f"{VARIABLE}='{juste}'\n"
+    dec = "function jstr(s, k){ return s }\n"
+    lib = f"{VARIABLE}='{juste}'\n{VARIABLE_DECODAGE}='{dec}'\n"
     appel = f'awk "${VARIABLE}"\'{{ print jesc($0) }}\'\n'
-    if lire_la_forme({"lib.sh": lib, "a.sh": appel})[0]:
-        return f"une forme CONFORME est accusée : {lire_la_forme({'lib.sh': lib, 'a.sh': appel})[0]}"
+    lecteur = f'awk "${VARIABLE}""${VARIABLE_DECODAGE}"\'{{ print jesc(jstr($0, "k")) }}\'\n'
+    conforme = dict({"lib.sh": lib, "a.sh": appel}, **{n: lecteur for n in LECTEURS_JSON_EXIGES})
+    if lire_la_forme(conforme)[0]:
+        return f"une forme CONFORME est accusée : {lire_la_forme(conforme)[0]}"
+    un_lecteur = sorted(LECTEURS_JSON_EXIGES)[0]
     ecarts = {
-        "une seconde définition": {"lib.sh": lib, "a.sh": appel + juste},
-        "un appel sans inclusion": {"lib.sh": lib, "a.sh": "awk '{ print jesc($0) }'\n"},
-        "l'idiome fautif dans la lib": {"lib.sh": f"{VARIABLE}='{fausse}'\n", "a.sh": appel},
-        "une lib sans la variable": {"lib.sh": juste, "a.sh": appel},
+        "une seconde définition": dict(conforme, **{"a.sh": appel + juste}),
+        "un appel sans inclusion": dict(conforme, **{"a.sh": "awk '{ print jesc($0) }'\n"}),
+        "l'idiome fautif dans la lib": dict(conforme, **{"lib.sh": f"{VARIABLE}='{fausse}'\n{VARIABLE_DECODAGE}='{dec}'\n"}),
+        "une lib sans la variable": dict(conforme, **{"lib.sh": juste + dec}),
+        "un lecteur de JSON sans jstr": dict(conforme, **{un_lecteur: appel}),
+        "jstr sans inclusion": dict(conforme, **{un_lecteur: f'awk "${VARIABLE}"\'{{ print jesc(jstr($0, "k")) }}\'\n'}),
+        "une seconde définition de jstr": dict(conforme, **{"a.sh": appel + dec}),
     }
     for nom, fichiers in ecarts.items():
         if not lire_la_forme(fichiers)[0]:
             return f"« {nom} » n'est pas accusé"
-    if lire_la_forme({"lib.sh": lib, "a.sh": appel})[1] != {"a.sh"}:
+    if lire_la_forme(conforme)[1] != {"a.sh"} | LECTEURS_JSON_EXIGES:
         return "l'ensemble des appelants n'est pas lu"
     return None
 
@@ -251,14 +338,15 @@ def _ecrire(chemin, texte, executable=False):
 
 def banc_web(bac, env):
     lignes, attendus = [], []
-    for i, (_, v) in enumerate(VALEURS):
-        e = json.dumps(v, ensure_ascii=False)[1:-1]
+    for i, (_, e, v) in enumerate(valeurs_encodees()):
         lignes.append(
             '{"ClientHost":"192.0.2.%d","DownstreamContentSize":12,"DownstreamStatus":200,"Duration":1500000,'
-            '"RequestHost":"h%d.example.test","RequestMethod":"GET","RequestPath":"/q?x=%s","RequestProtocol":"HTTP/1.1",'
+            '"RequestHost":"h%d.example.test","RequestMethod":"GET%s","RequestPath":"/q?x=%s","RequestProtocol":"HTTP/1.1%s",'
             '"RouterName":"site@kubernetescrd","StartUTC":"2026-09-23T19:40:%02d.123456789Z","level":"info",'
-            '"request_User-Agent":"%s","time":"2026-09-23T21:40:%02d+02:00"}' % (10 + i, i, e, i, e, i))
-        attendus.append({"ua": lu_depuis_json(v), "path": "/q?x=" + lu_depuis_json(v)})
+            '"request_User-Agent":"%s","time":"2026-09-23T21:40:%02d+02:00"}' % (10 + i % 200, i, e, e, e, i % 60, e, i % 60))
+        # P10.23-x : la méthode et le protocole sont DÉCODÉS comme le reste, donc échappés à l'écriture : un
+        # `\"` décodé y fermait la chaîne (champ injecté), un `\\` y rendait l'enveloppe entière illisible.
+        attendus.append({"ua": v, "path": "/q?x=" + v, "method": "GET" + v, "proto": "HTTP/1.1" + v})
     _ecrire(os.path.join(bac, "access.log"), "\n".join(lignes) + "\n")
     env.update(PLUME_WEB_SRC="file", PLUME_WEB_LOG=os.path.join(bac, "access.log"), PLUME_WEB_MAX="1000")
     return attendus
@@ -266,10 +354,9 @@ def banc_web(bac, env):
 
 def banc_minio(bac, env):
     lignes, attendus = [], []
-    for _, v in VALEURS:
-        lignes.append('{"status":"success","accessKey":"%s","policyName":"readonly","userStatus":"enabled"}'
-                      % json.dumps(v, ensure_ascii=False)[1:-1])
-        attendus.append({"subject": lu_depuis_json(v)})
+    for _, e, v in valeurs_encodees():
+        lignes.append('{"status":"success","accessKey":"%s","policyName":"readonly","userStatus":"enabled"}' % e)
+        attendus.append({"subject": v})
     _ecrire(os.path.join(bac, "mc-utilisateurs"), "\n".join(lignes) + "\n")
     _ecrire(os.path.join(bac, "bin", "mc"), """#!/bin/sh
 # `mc` simulé : les quatre lectures du capteur, et rien d'autre.
@@ -400,7 +487,8 @@ def _champ(nom):
 
 # capteur -> (banc, sélection des événements jugés, champs jugés)
 BANCS = {
-    "web.sh": (banc_web, lambda ev: True, {"ua": _champ("ua"), "path": _champ("path")}),
+    "web.sh": (banc_web, lambda ev: True, {"ua": _champ("ua"), "path": _champ("path"), "method": _champ("method"),
+                                           "proto": _champ("proto")}),
     "minio.sh": (banc_minio, lambda ev: _champ("kind")(ev) == "user", {"subject": _champ("subject")}),
     "dataacl.sh": (banc_dataacl, lambda ev: "/arbre/" in (_champ("path")(ev) or ""), {"path": _champ("path")}),
     "dataaccess.sh": (banc_dataaccess, lambda ev: True, {"path": _champ("path"), "comm": _champ("comm"),
@@ -464,6 +552,57 @@ def epreuve_de_la_fonction(chemin_awk, fonction, quoi):
     return fautes
 
 
+def decodeur_livre():
+    """Le texte de `_PLUME_AWK_DECODAGE_JSON`, lu en SOURÇANT `lib.sh`."""
+    r = subprocess.run(["sh", "-c", '. "$1" && printf "%s" "${' + VARIABLE_DECODAGE + ':-}"', "sh", LIB],
+                       capture_output=True, text=True, timeout=60)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def epreuve_du_decodeur(chemin_awk, fonction, decodeur, quoi):
+    """P10.23-x — `jesc(jstr(…))` sur chaque valeur, sous ses deux encodages : la valeur exacte ressort."""
+    table = [(nom, '{"a":1,"k":"%s","z":"fin"}' % e, v) for nom, e, v in valeurs_encodees()]
+    table += [(f"{nom} ({'ascii' if a else 'brut'})", '{"a":1,"k":"%s","z":"fin"}' % encode_comme_go(v, a), v)
+              for nom, v in VALEURS_DE_CONTROLE for a in (False, True)]
+    table += CAS_DU_DECODEUR
+    with tempfile.TemporaryDirectory(prefix="garde-jstr-") as bac:
+        cas = os.path.join(bac, "cas")
+        _ecrire(cas, "".join(ligne + "\n" for _, ligne, _ in table))
+        r = subprocess.run([chemin_awk, fonction + decodeur + '\n{ print "{\\"v\\":\\"" jesc(jstr($0, "k")) "\\"}" }', cas],
+                           capture_output=True, timeout=60)
+    if r.returncode != 0:
+        return [f"{quoi} : le décodeur livré ne tourne pas : {r.stderr.decode('utf-8', 'replace').strip()[:300]}"]
+    fautes = []
+    for (nom, e, v), ligne in zip(table, r.stdout.decode("utf-8", "surrogateescape").split("\n")):
+        voulu = CONTROLE.sub(" ", v)
+        try:
+            obtenu = json.loads(ligne)["v"]
+        except (ValueError, KeyError) as x:
+            fautes.append(f"{quoi} : {nom} {e!r} -> {ligne!r}, illisible comme JSON ({x})")
+            continue
+        if obtenu != voulu:
+            fautes.append(f"{quoi} : {nom} {e!r} -> décodé {obtenu!r} au lieu de {voulu!r}")
+    return fautes
+
+
+def epreuve_du_cout(chemin_awk, fonction, decodeur, quoi):
+    """P10.23-x — une valeur de ECHAPPEMENTS_DU_COUT échappements (`\\u003c` et `\\"` alternés) décodée sous budget."""
+    n = ECHAPPEMENTS_DU_COUT // 2
+    with tempfile.TemporaryDirectory(prefix="garde-jstr-cout-") as bac:
+        cas = os.path.join(bac, "cas")
+        _ecrire(cas, '{"a":1,"k":"%s","z":"fin"}\n' % ('\\u003c\\"' * n))
+        try:
+            r = subprocess.run([chemin_awk, fonction + decodeur + '\n{ x = jstr($0, "k"); print length(x) }', cas],
+                               capture_output=True, timeout=BUDGET_DU_COUT_S)
+        except subprocess.TimeoutExpired:
+            return [f"{quoi} : {ECHAPPEMENTS_DU_COUT} échappements non décodés en {BUDGET_DU_COUT_S} s — un coût "
+                    "qui croît plus vite que la valeur, à la main de tout client (chemin, User-Agent)"]
+    if r.returncode != 0 or r.stdout.decode().strip() != str(2 * n):
+        return [f"{quoi} : {ECHAPPEMENTS_DU_COUT} échappements décodés en {r.stdout.decode().strip()!r} caractère(s) "
+                f"au lieu de {2 * n} (rc={r.returncode})"]
+    return []
+
+
 def implementations_awk():
     trouvees, chemins = [], set()
     for nom in AWK_EXERCES:
@@ -518,9 +657,17 @@ def main():
     fonction = fonction_livree()
     if not fonction:
         fautes.append(f"`{VARIABLE}` introuvable en sourçant `lib.sh` : la fonction livrée n'est pas jouée")
+    decodeur = decodeur_livre()
+    if not decodeur:
+        fautes.append(f"`{VARIABLE_DECODAGE}` introuvable en sourçant `lib.sh` : le décodeur livré n'est pas joué")
     for version, chemin in awks:
         if fonction:
             fautes += epreuve_de_la_fonction(chemin, fonction, f"fonction ({version})")
+        if fonction and decodeur:
+            f = epreuve_du_decodeur(chemin, fonction, decodeur, f"décodeur ({version})")
+            f += epreuve_du_cout(chemin, fonction, decodeur, f"coût du décodeur ({version})")
+            print(f"{ETIQUETTE} : décodeur jstr  {version:<22} " + ("tenu" if not f else f"{len(f)} défaut(s) — {f[0][:160]}"))
+            fautes += f
         for capteur in BANCS:
             f = jouer(capteur, chemin, f"{capteur} ({version})")
             print(f"{ETIQUETTE} : {capteur:<14} {version:<22} "
@@ -534,7 +681,8 @@ def main():
         sys.exit(1)
     print(f"{ETIQUETTE} : l'échappement JSON vit une fois (`{VARIABLE}`, lib.sh), sans l'idiome à quatre "
           f"antislashs ; les {len(BANCS)} capteurs qui l'appellent publient une enveloppe lisible et rendent "
-          f"les {len(VALEURS)} valeurs à antislash exactes, sous : {exerces}.")
+          f"les {len(VALEURS)} valeurs à antislash exactes ; `web.sh` et `minio.sh` rendent DÉCODÉES les "
+          f"{len(valeurs_encodees())} valeurs encodées comme Go (P10.23-x), sous : {exerces}.")
     sys.exit(0)
 
 

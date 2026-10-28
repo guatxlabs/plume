@@ -16,6 +16,12 @@ LES DÉFAUTS QUE CETTE GARDE REND NON-ÉCRIVABLES
     éviction parcourait `for f in $(ls …)` : un nom à espace éclatait en deux mots dont l'un, relatif,
     était supprimé HORS du spool ; un lien symbolique du spool était expédié (le contenu de sa cible
     partait au central).
+(d') `ship.sh` jugeait un nom du spool (`[ -f ] && [ ! -L ]`) puis curl ouvrait ce NOM un instant plus
+    tard. Le spool est 2770 root:soc (le relais MinIO y écrit sous `User=soc`) et `ship.sh` tourne en
+    root : un membre de `soc` qui remplaçait le nom par un lien dans cette fenêtre faisait poster au
+    central, en root, n'importe quel fichier de l'hôte. Rejoué avec un faux curl qui substitue au
+    démarrage : le secret partait. Le fichier est désormais renommé dans `$STATE/envoi/` (privé) et
+    jugé là (`find -type f -links 1`) ; un objet substitué est mis à l'écart, compté, avoué.
 (e) `minio-audit-relay.py` avec un jeton vide, absent ou illisible était OUVERT (un avertissement), et
     comparait le jeton par `!=`.
 (f) `P10.33-a` — `respond.sh`, `prom-scrape.sh` et `engagement-adapter.sh` parlaient au même
@@ -40,6 +46,19 @@ capteurs sont joués sous CHAQUE awk présent (gawk, mawk), lié en `awk` dans l
     (adresse et id) : chaque enveloppe se lit en JSON
     STRICT (une clé dupliquée est une faute), `severity` et `category` sont celles du capteur, `dedup`
     décodée porte le nom tel quel ;
+  · bans avec un fail2ban lisible ET un cscli sans jq : battement SANS `active_bans`, aveu de lecture
+    partielle qui nomme CrowdSec, ban fail2ban publié ;
+  · ship, substitution : (1) un faux curl remplace `$SPOOL/<nom posté>` par un lien vers un secret à
+    l'instant où il démarre, puis lit le chemin reçu en suivant les liens — le secret ne doit jamais
+    partir, le vrai corps si ; (2) un faux `mv` remplace le nom par un lien, un lien dur ou un tube juste
+    avant sa mise à l'abri — rien n'est lu, l'objet est dans `refuses/`, un aveu `spool-substitue` porte
+    le compte 1, le second fichier (sain) part ; un fichier laissé dans l'abri est repris, un réessai
+    rend le fichier au spool, un LIEN laissé dans l'abri n'est ni lu ni rendu ni `chmod` (mode de sa
+    cible inchangé), un `PLUME_STATE` impossible à créer donne code 2 sans appel ; un nom seulement
+    SUPPRIMÉ avant sa mise à l'abri n'est pas avoué comme substitué ; un VRAI répertoire posé au nom
+    libéré pendant l'envoi ne reçoit rien, le fichier reste dans l'abri, l'échec est dit, le passage
+    suivant le reprend ; spool et abri sur deux volumes (faux `stat`) avec `fs.protected_hardlinks`
+    autre que 1 (`PLUME_PROC_ROOT`) : ATTENTION dite, et muette sur un seul volume ou avec le sysctl à 1 ;
   · bans sans backend, et avec un cscli sans jq : un aveu `unavailable`/`missing-dependency` de la
     source `fail2ban`, AUCUN battement ; bans avec fail2ban hôte, fail2ban du conteneur mail
     (`PLUME_MAIL_F2B`) ou CrowdSec : événement et battement OCTET POUR OCTET dans la forme livrée ;
@@ -51,7 +70,10 @@ capteurs sont joués sous CHAQUE awk présent (gawk, mawk), lié en `awk` dans l
     expédie avec un avertissement, et le succès ne nomme le central que par schéma et hôte (ni en
     clair, ni en `https://`) ; boucle locale (127.0.0.1, ::1, localhost, LOCALHOST, identité devant
     127.0.0.1) et `https://` expédient sans un mot ; un lien symbolique n'est ni expédié ni supprimé,
-    un répertoire est ignoré (jamais passé à `--data-binary`, passage en code 0), un nom à espace part, un spool dont le CHEMIN porte un espace est
+    un répertoire est ignoré (jamais passé à `--data-binary`, passage en code 0), un nom à espace part ; deux liens laissés
+    dans l'abri, dont un pendant, sont écartés et avoués avec le compte 2, l'abri trouvé en 0755 est
+    ramené à 0700, une remise au spool ne suit pas un lien posé vers un répertoire, un refus permanent
+    non écartable revient au spool, et `systemd/plume-ship.service` déclare l'état inscriptible ; un spool dont le CHEMIN porte un espace est
     expédié et évincé entier ; l'éviction ne supprime rien hors du spool, n'évince ni un lien, ni une
     FIFO nommée en `.json`, ni un fichier hors motif, et l'aveu porte le compte RÉEL (pas le surplus prévu) ;
   · transport des trois autres (`P10.33-a`) : le MÊME corpus d'URL refusées que `ship.sh` est joué sur
@@ -105,8 +127,13 @@ CE QU'ELLE NE TIENT PAS
 -----------------------
 · Les modes k3s des capteurs (`k3s kubectl`) ne sont pas joués : seul `kubectl` l'est, la commande
   est la même.
-· Un `cscli` présent SANS jq à côté d'un fail2ban lisible garde la forme livrée (le battement compte
-  les seuls bans fail2ban) : ce sous-total n'est pas avoué, et cette garde ne le juge pas.
+· La substitution est rejouée par des outils truqués qui frappent à un instant FIXÉ, pas par un vrai
+  concours de vitesse. Le refus d'un LIEN DUR ne tient que si spool et état sont sur le MÊME volume
+  (les installeurs les posent tous deux sous /var/lib/plume) : entre deux volumes, `mv` recopie, et un
+  lien dur posé dans le spool devient dans l'abri un fichier à un seul lien, qui est EXPÉDIÉ. La portée
+  est alors bornée par `fs.protected_hardlinks` (un membre de `soc` ne lie qu'un fichier qu'il possède
+  ou peut déjà lire et écrire), non par le script ; non joué ici (un second volume manque au bac).
+  Un lien SYMBOLIQUE, lui, n'est jamais suivi dans ce cas (`mv` de coreutils recopie le lien lui-même).
 · Le transport n'est jugé que par son schéma et son hôte : la validité du certificat `https://` est
   l'affaire de curl et de `PLUME_TLS_CACERT`.
 · LA PORTE DU TRANSPORT EXISTE EN TROIS TEXTES : `lib.sh` (`ship.sh`, `prom-scrape.sh`) et une copie dans
@@ -933,6 +960,392 @@ def scen_ship(base):
         faute(scen, f"l'aveu spool-full ne porte pas le compte réel 1 (surplus prévu 3) : {[a[:200] for a in av]}")
 
 
+# --- (d') ship : le fichier expédié est celui qui a été jugé (substitution pendant le passage) ----------
+# Le spool est 2770 root:soc et `ship.sh` tourne en root : un membre de `soc` peut REMPLACER un nom du
+# spool entre l'instant où le parcours le juge et celui où il est lu. Deux fenêtres, deux attaquants
+# simulés de façon déterministe (un vrai concours de vitesse ne rougirait qu'une fois sur N) :
+#   · CURL_ATTAQUANT — à l'instant où curl démarre, le nom `$SPOOL/<nom posté>` devient un lien vers un
+#     secret ; curl lit ensuite le chemin qu'on lui a passé, en suivant les liens comme le vrai. Une
+#     lecture EN PLACE poste le secret ; une lecture du fichier mis à l'abri poste le vrai corps.
+#   · MV_ATTAQUANT — juste avant le renommage d'un fichier du spool, le nom est remplacé par un lien
+#     symbolique, un lien dur ou un tube : rien ne doit être lu, l'objet est mis à l'écart, compté, avoué.
+SECRET_SUBSTITUTION = "SECRET-SUBSTITUE-DE-GARDE"
+
+CURL_ATTAQUANT = r"""#!/bin/sh
+cat >/dev/null
+url=""; fichier=""; prec=""
+for a; do
+  [ "$prec" = "--data-binary" ] && fichier=${a#@}
+  prec=$a; url=$a
+done
+printf '%s\n' "$url" >> "$FAKE_DIR/curl.urls"
+printf '%s\n' "$fichier" >> "$FAKE_DIR/curl.fichiers"
+n=${fichier##*/}
+@RM@ -f "$SPOOL_ATTAQUE/$n"
+@LN@ -s "$SECRET_ATTAQUE" "$SPOOL_ATTAQUE/$n"
+if [ -f "$fichier" ]; then cat "$fichier" >> "$FAKE_DIR/curl.corps"; printf '\n' >> "$FAKE_DIR/curl.corps"; fi
+cat "$FAKE_DIR/code"
+"""
+
+# CURL_REPERTOIRE — pendant l'envoi, le nom libéré du spool devient un VRAI répertoire (non vide) de
+# l'attaquant : la remise au spool doit échouer sans rien y déposer, et le fichier rester dans l'abri.
+CURL_REPERTOIRE = r"""#!/bin/sh
+cat >/dev/null
+fichier=""; prec=""
+for a; do [ "$prec" = "--data-binary" ] && fichier=${a#@}; prec=$a; done
+printf '%s\n' "$fichier" >> "$FAKE_DIR/curl.fichiers"
+if [ -f "$fichier" ]; then cat "$fichier" >> "$FAKE_DIR/curl.corps"; printf '\n' >> "$FAKE_DIR/curl.corps"; fi
+if [ -n "${SPOOL_ATTAQUE:-}" ]; then
+  n=${fichier##*/}
+  @MKDIR@ "$SPOOL_ATTAQUE/$n" && : > "$SPOOL_ATTAQUE/$n/garde-attaquant"
+fi
+cat "$FAKE_DIR/code"
+"""
+
+# STAT_DEUX_VOLUMES — `stat -c %d` rend un autre volume pour l'abri `…/envoi` que pour le spool.
+STAT_DEUX_VOLUMES = r"""#!/bin/sh
+for a; do d=$a; done
+case "$d" in */envoi) echo 2 ;; *) echo 1 ;; esac
+"""
+
+# STAT_LIEN_VERS_AUTRE_VOLUME — le spool est un lien symbolique : sans `-L`, `stat` rend le volume du LIEN
+# (ici celui de l'abri : faux « même volume ») ; avec `-L`, celui de sa cible (un autre volume).
+STAT_LIEN_VERS_AUTRE_VOLUME = r"""#!/bin/sh
+suivre=0
+for a; do d=$a; [ "$a" = -L ] && suivre=1; done
+if [ -L "$d" ] && [ "$suivre" = 0 ]; then echo 2; exit 0; fi
+case "$d" in */envoi) echo 2 ;; *) echo 1 ;; esac
+"""
+
+MV_ATTAQUANT = r"""#!/bin/sh
+# dernier argument = destination ; avant-dernier = source (forme `mv -f src dst` de ship.sh)
+src=""; prec=""
+for a; do src=$prec; prec=$a; done
+case "$src" in
+  "$SPOOL_ATTAQUE"/*)
+    case "$prec" in
+      */envoi/*)
+        # une seule substitution par passage : le second fichier, sain, doit partir
+        if [ ! -e "$FAKE_DIR/journal" ]; then
+          echo appel >> "$FAKE_DIR/journal"
+          @RM@ -f "$src"
+          case "$GENRE_ATTAQUE" in
+            lien) @LN@ -s "$SECRET_ATTAQUE" "$src" ;;
+            lien-dur) @LN@ "$SECRET_ATTAQUE" "$src" ;;
+            tube) @MKFIFO@ "$src" ;;
+            disparu) : ;;   # le nom est seulement SUPPRIMÉ : le renommage échoue, rien n'a été substitué
+          esac
+        fi ;;
+    esac ;;
+esac
+exec @MV@ "$@"
+"""
+
+
+def remplacer_outil(bac, nom, texte):
+    """Remplace l'outil `nom` du bac par un script. Le lien vers le VRAI outil est retiré d'abord :
+    écrire à travers lui réécrirait le binaire du système."""
+    p = os.path.join(bac.bin, nom)
+    if os.path.lexists(p):
+        os.remove(p)
+    reels = {k: shutil.which(k) for k in ("rm", "ln", "mv", "mkfifo", "mkdir")}
+    if not all(reels.values()):
+        refus(f"[ship-substitution] outil réel manquant : {[k for k, v in reels.items() if not v]}")
+    for k, v in reels.items():
+        texte = texte.replace(f"@{k.upper()}@", v)
+    bac.outil(nom, texte)
+
+
+def scen_ship_substitution(base):
+    env_base = {"PLUME_TOKEN": "jeton-de-garde", "PLUME_CENTRAL": "https://central.invalid"}
+
+    # fenêtre 1 : le nom est remplacé à l'instant où curl démarre
+    scen = "ship-substitution-a-la-lecture"
+    bac = bac_ship(base)
+    secret = os.path.join(bac.d, "secret-de-l-hote")
+    open(secret, "w").write(SECRET_SUBSTITUTION)
+    remplacer_outil(bac, "curl", CURL_ATTAQUANT)
+    open(os.path.join(bac.spool, "a.json"), "w").write('{"vrai":"corps-a"}')
+    r = bac.jouer("ship.sh", dict(env_base, SPOOL_ATTAQUE=bac.spool, SECRET_ATTAQUE=secret))
+    corps = corps_curl(bac)
+    if fichiers_postes(bac) != ["a.json"]:
+        refus(f"[{scen}] le curl attaquant n'a pas été appelé sur a.json : {fichiers_postes(bac)!r}")
+    if SECRET_SUBSTITUTION in corps:
+        faute(scen, "un nom du spool remplacé par un lien PENDANT l'envoi a fait poster sa cible au central "
+                    "(le fichier est lu EN PLACE, après son examen)")
+    if '"corps-a"' not in corps:
+        faute(scen, f"le vrai corps n'est pas expédié : {corps[:200]!r} rc={r.returncode} {r.stderr[:200]!r}")
+    if r.returncode != 0:
+        faute(scen, f"rc={r.returncode} {r.stderr[:200]!r}")
+    if open(secret).read() != SECRET_SUBSTITUTION:
+        faute(scen, "la cible du lien a été modifiée")
+
+    # fenêtre 2 : le nom est remplacé juste avant sa mise à l'abri
+    for genre in ("lien", "lien-dur", "tube"):
+        scen = f"ship-substitution-avant-abri[{genre}]"
+        bac = bac_ship(base)
+        secret = os.path.join(bac.d, "secret-de-l-hote")
+        open(secret, "w").write(SECRET_SUBSTITUTION)
+        remplacer_outil(bac, "mv", MV_ATTAQUANT)
+        open(os.path.join(bac.spool, "a.json"), "w").write('{"vrai":"corps-a"}')
+        open(os.path.join(bac.spool, "b.json"), "w").write('{"vrai":"corps-b"}')
+        envs = dict(env_base, SPOOL_ATTAQUE=bac.spool, SECRET_ATTAQUE=secret, GENRE_ATTAQUE=genre)
+        r = bac.jouer("ship.sh", envs)
+        if bac.appels() == 0:
+            # le script n'a jamais renommé un fichier du spool vers un abri : rien n'a été mis à l'abri
+            faute(scen, "aucun fichier du spool n'est mis à l'abri avant d'être lu (aucun renommage vers "
+                        f"`envoi/`) : postés {fichiers_postes(bac)!r}")
+            continue
+        corps = corps_curl(bac)
+        if SECRET_SUBSTITUTION in corps:
+            faute(scen, "l'objet substitué a été lu et expédié au central")
+        postes = fichiers_postes(bac)
+        if len(postes) != 1:
+            faute(scen, f"un seul fichier sain devait partir (l'autre est substitué) : postés {postes!r}")
+        if r.returncode != 0:
+            faute(scen, f"rc={r.returncode} {r.stderr[:200]!r}")
+        if not os.path.exists(secret) or open(secret).read() != SECRET_SUBSTITUTION:
+            faute(scen, "la cible de la substitution a été supprimée ou modifiée")
+        ecartes = os.listdir(os.path.join(bac.etat, "refuses")) if os.path.isdir(os.path.join(bac.etat, "refuses")) else []
+        if len(ecartes) != 1:
+            faute(scen, f"l'objet substitué n'est pas mis à l'écart dans refuses/ : {ecartes!r}")
+        av = [t for _, _, t, _ in enveloppes(bac.spool) if "spool-substitue" in t]
+        if not av or "1 fichier(s) du spool remplacés" not in av[0]:
+            faute(scen, f"aucun aveu `spool-substitue` portant le compte 1 : {[a[:200] for a in av]}")
+        if "REMPLACE" not in r.stderr:
+            faute(scen, f"la substitution n'est pas dite sur stderr : {r.stderr[:200]!r}")
+
+    # un nom SEULEMENT DISPARU avant sa mise à l'abri (supprimé par un autre, pas remplacé) : le renommage
+    # échoue, et ce n'est PAS une substitution — l'avouer « SPOOL ALTÉRÉ » confondrait deux causes
+    scen = "ship-disparu-avant-abri"
+    bac = bac_ship(base)
+    secret = os.path.join(bac.d, "secret-de-l-hote")
+    open(secret, "w").write(SECRET_SUBSTITUTION)
+    remplacer_outil(bac, "mv", MV_ATTAQUANT)
+    open(os.path.join(bac.spool, "a.json"), "w").write('{"vrai":"corps-a"}')
+    open(os.path.join(bac.spool, "b.json"), "w").write('{"vrai":"corps-b"}')
+    r = bac.jouer("ship.sh", dict(env_base, SPOOL_ATTAQUE=bac.spool, SECRET_ATTAQUE=secret, GENRE_ATTAQUE="disparu"))
+    if bac.appels() != 1:
+        faute(scen, f"aucun fichier du spool n'est renommé vers `envoi/` (le faux mv n'a rien fait disparaître) : "
+                    f"{bac.appels()} appel(s), postés {fichiers_postes(bac)!r}")
+    av = [t for _, _, t, _ in enveloppes(bac.spool) if "spool-substitue" in t]
+    if av or "REMPLACE" in r.stderr:
+        faute(scen, f"un fichier seulement DISPARU avant sa mise à l'abri est avoué comme SUBSTITUÉ (l'échec du "
+                    f"renommage n'arrête pas le traitement) : {[a[:160] for a in av]} {r.stderr[:200]!r}")
+    refuses_d = os.path.join(bac.etat, "refuses")
+    if os.path.isdir(refuses_d) and os.listdir(refuses_d):
+        faute(scen, f"un fichier disparu laisse un objet dans refuses/ : {os.listdir(refuses_d)!r}")
+    if len(fichiers_postes(bac)) != 1 or '"corps-b"' not in corps_curl(bac) or r.returncode != 0:
+        faute(scen, f"le fichier sain resté au spool ne part pas : postés {fichiers_postes(bac)!r} rc={r.returncode}")
+
+    # un envoi interrompu (fichier laissé dans l'abri par une coupure) est repris
+    scen = "ship-envoi-interrompu-repris"
+    bac = bac_ship(base)
+    abri = os.path.join(bac.etat, "envoi")
+    os.makedirs(abri)
+    open(os.path.join(abri, "reste.json"), "w").write('{"vrai":"reste"}')
+    r = bac.jouer("ship.sh", env_base)
+    if '"reste"' not in corps_curl(bac) or os.path.exists(os.path.join(abri, "reste.json")):
+        faute(scen, f"un fichier laissé dans l'abri n'est pas repris : postés {fichiers_postes(bac)!r} rc={r.returncode}")
+
+    # DEUX liens laissés dans l'abri (coupure avant le jugement), dont un PENDANT (sa cible n'existe pas :
+    # `[ -e ]` le dit absent) : ni lus, ni rendus au spool, ni `chmod` (qui suivrait le lien et changerait
+    # le mode de sa cible) — tous deux mis à l'écart, et l'aveu porte le compte 2 (un compte figé à 1 ou
+    # un lien pendant ignoré passeraient pour tenus avec un seul objet)
+    scen = "ship-envoi-interrompu-lien"
+    bac = bac_ship(base)
+    secret = os.path.join(bac.d, "secret-de-l-hote")
+    open(secret, "w").write(SECRET_SUBSTITUTION)
+    os.chmod(secret, 0o600)
+    abri = os.path.join(bac.etat, "envoi")
+    os.makedirs(abri)
+    os.symlink(secret, os.path.join(abri, "lien.json"))
+    os.symlink(os.path.join(bac.d, "cible-absente"), os.path.join(abri, "pendant.json"))
+    r = bac.jouer("ship.sh", env_base)
+    if SECRET_SUBSTITUTION in corps_curl(bac) or os.path.lexists(os.path.join(bac.spool, "lien.json")) \
+            or os.path.lexists(os.path.join(bac.spool, "pendant.json")):
+        faute(scen, f"un lien laissé dans l'abri est lu ou rendu au spool : postés {fichiers_postes(bac)!r}")
+    if stat.S_IMODE(os.stat(secret).st_mode) != 0o600:
+        faute(scen, f"le mode de la cible d'un lien laissé dans l'abri a changé : {oct(os.stat(secret).st_mode)}")
+    restes = sorted(os.listdir(abri)) if os.path.isdir(abri) else []
+    if restes:
+        faute(scen, f"un lien laissé dans l'abri y reste (un lien PENDANT est ignoré ?) : {restes!r}")
+    av = [t for _, _, t, _ in enveloppes(bac.spool) if "spool-substitue" in t]
+    if not av or "2 fichier(s) du spool remplacés" not in av[0]:
+        faute(scen, f"aucun aveu `spool-substitue` portant le compte 2 (deux liens laissés dans l'abri) : "
+                    f"{[a[:200] for a in av]}")
+
+    # l'abri est PRIVÉ : un `envoi/` trouvé en 0755 est ramené à 0700 (sinon sa privauté ne tiendrait qu'au
+    # mode de `$STATE`, posé par l'installeur)
+    scen = "ship-abri-prive"
+    bac = bac_ship(base)
+    abri = os.path.join(bac.etat, "envoi")
+    os.makedirs(abri)
+    os.chmod(abri, 0o755)
+    open(os.path.join(bac.spool, "a.json"), "w").write("{}")
+    r = bac.jouer("ship.sh", env_base)
+    if stat.S_IMODE(os.stat(abri).st_mode) != 0o700:
+        faute(scen, f"l'abri d'envoi n'est pas privé : mode {oct(stat.S_IMODE(os.stat(abri).st_mode))} rc={r.returncode}")
+
+    # RÉESSAI SOUS ATTAQUE : pendant l'envoi, le nom libéré du spool devient un lien vers un RÉPERTOIRE.
+    # La remise au spool ne doit pas suivre ce lien (`mv` sans `-T` dépose le fichier, nom et contenu de
+    # l'attaquant, DANS ce répertoire, en écrasant le fichier de même nom).
+    scen = "ship-remise-lien-vers-repertoire"
+    bac = bac_ship(base, code="503")
+    cible = os.path.join(bac.d, "repertoire-cible")
+    os.makedirs(cible)
+    open(os.path.join(cible, "a.json"), "w").write("ORIGINAL-DE-LA-CIBLE")
+    remplacer_outil(bac, "curl", CURL_ATTAQUANT)
+    open(os.path.join(bac.spool, "a.json"), "w").write('{"contenu":"ATTAQUANT"}')
+    mode_cible = stat.S_IMODE(os.stat(cible).st_mode)
+    r = bac.jouer("ship.sh", dict(env_base, SPOOL_ATTAQUE=bac.spool, SECRET_ATTAQUE=cible))
+    if fichiers_postes(bac) != ["a.json"]:
+        refus(f"[{scen}] le curl attaquant n'a pas été appelé sur a.json : {fichiers_postes(bac)!r}")
+    if stat.S_IMODE(os.stat(cible).st_mode) != mode_cible:
+        # un `chmod` du spool a suivi le lien : le fichier est traité EN PLACE (jamais mis à l'abri)
+        faute(scen, f"la remise au spool a suivi un lien vers un répertoire et en a changé le mode "
+                    f"({oct(mode_cible)} -> {oct(stat.S_IMODE(os.stat(cible).st_mode))}) : le fichier est "
+                    "traité EN PLACE dans le spool, pas depuis l'abri")
+        os.chmod(cible, mode_cible)   # rendu lisible : la suite du jugement nomme le reste
+    if sorted(os.listdir(cible)) != ["a.json"] or open(os.path.join(cible, "a.json")).read() != "ORIGINAL-DE-LA-CIBLE":
+        faute(scen, "la remise au spool a suivi un lien vers un répertoire et y a déposé le fichier : "
+                    f"{sorted(os.listdir(cible))!r} {open(os.path.join(cible, 'a.json')).read()[:80]!r}")
+    remis = os.path.join(bac.spool, "a.json")
+    if os.path.islink(remis) or not os.path.isfile(remis) or open(remis).read() != '{"contenu":"ATTAQUANT"}':
+        faute(scen, f"le fichier gardé pour réessai n'est pas revenu au spool sous son nom : lien={os.path.islink(remis)}")
+
+    # RÉESSAI SOUS ATTAQUE, VRAI RÉPERTOIRE : le nom libéré devient un répertoire de l'attaquant. `mv -T`
+    # échoue (on ne remplace pas un répertoire par un fichier) : rien n'est déposé DEDANS, le fichier reste
+    # dans l'abri, l'échec est dit, et le passage suivant le reprend une fois le nom libre.
+    scen = "ship-remise-repertoire-reel"
+    bac = bac_ship(base, code="503")
+    remplacer_outil(bac, "curl", CURL_REPERTOIRE)
+    open(os.path.join(bac.spool, "a.json"), "w").write('{"vrai":"corps-a"}')
+    r = bac.jouer("ship.sh", dict(env_base, SPOOL_ATTAQUE=bac.spool))
+    pose = os.path.join(bac.spool, "a.json")
+    abri = os.path.join(bac.etat, "envoi")
+    if fichiers_postes(bac) != ["a.json"] or not os.path.isdir(pose):
+        # le nom n'était pas LIBRE pendant l'envoi : le fichier n'a pas quitté le spool avant d'être lu
+        faute(scen, f"le nom du fichier envoyé n'est pas libre dans le spool pendant l'envoi (lu EN PLACE, pas "
+                    f"depuis l'abri) : postés {fichiers_postes(bac)!r}")
+    else:
+        if sorted(os.listdir(pose)) != ["garde-attaquant"]:
+            faute(scen, f"la remise au spool a déposé le fichier DANS le répertoire posé à son nom : {sorted(os.listdir(pose))!r}")
+        garde = os.path.join(abri, "a.json")
+        if not os.path.isfile(garde) or open(garde).read() != '{"vrai":"corps-a"}':
+            faute(scen, f"le fichier gardé pour réessai n'est plus dans l'abri (perdu ou déposé ailleurs) : "
+                        f"abri={sorted(os.listdir(abri)) if os.path.isdir(abri) else None}")
+        if "remise au spool impossible" not in r.stderr or r.returncode != 0:
+            faute(scen, f"l'échec de la remise au spool n'est pas dit : rc={r.returncode} {r.stderr[:300]!r}")
+        shutil.rmtree(pose)
+        bac.poser("code", "202")
+        open(os.path.join(bac.fake, "curl.corps"), "w").close()
+        r = bac.jouer("ship.sh", env_base)
+        if '"corps-a"' not in corps_curl(bac) or os.path.lexists(garde) or visibles(bac.spool):
+            faute(scen, f"le fichier resté dans l'abri n'est pas repris au passage suivant : corps={corps_curl(bac)[:120]!r} "
+                        f"spool={visibles(bac.spool)} rc={r.returncode}")
+
+    # DEUX VOLUMES : `mv` recopie, `-links 1` ne voit plus le lien dur ; sans fs.protected_hardlinks=1 la
+    # défense est ouverte et ship le dit à chaque passage. Témoins inverses : même volume, ou sysctl à 1.
+    # Le sysctl s'écrit aussi SANS saut de ligne (`read` y rend 1 après avoir lu, comme dash sur le vrai /proc),
+    # et ABSENT (`valeur` None : lecture ratée, dite « inconnu », jamais prise pour une protection).
+    for nom, deux_volumes, valeur, fin, attendu in (
+            ("ship-lien-dur-deux-volumes-sans-protection", True, "0", "\n", True),
+            ("ship-lien-dur-deux-volumes-protege", True, "1", "\n", False),
+            ("ship-lien-dur-deux-volumes-protege-sans-saut-de-ligne", True, "1", "", False),
+            ("ship-lien-dur-deux-volumes-sysctl-illisible", True, None, "", True),
+            ("ship-lien-dur-spool-lien-vers-autre-volume", "lien", "0", "\n", True),
+            ("ship-lien-dur-meme-volume", False, "0", "\n", False)):
+        bac = bac_ship(base)
+        if deux_volumes == "lien":
+            remplacer_outil(bac, "stat", STAT_LIEN_VERS_AUTRE_VOLUME)
+        elif deux_volumes:
+            remplacer_outil(bac, "stat", STAT_DEUX_VOLUMES)
+        proc = os.path.join(bac.d, "proc")
+        os.makedirs(os.path.join(proc, "sys", "fs"))
+        if valeur is not None:
+            open(os.path.join(proc, "sys", "fs", "protected_hardlinks"), "w").write(valeur + fin)
+        env_cas = dict(env_base, PLUME_PROC_ROOT=proc)
+        if deux_volumes == "lien":
+            reel = bac.spool + "-reel"
+            os.rename(bac.spool, reel)
+            os.symlink(reel, bac.spool)
+        open(os.path.join(bac.spool, "a.json"), "w").write("{}")
+        r = bac.jouer("ship.sh", env_cas)
+        dit = ("ATTENTION" in r.stderr and f"fs.protected_hardlinks={valeur or 'inconnu'}" in r.stderr
+               and "deux volumes" in r.stderr)
+        if dit != attendu or r.returncode != 0 or fichiers_postes(bac) != ["a.json"]:
+            faute(nom, f"lien dur entre volumes : avertissement {'attendu' if attendu else 'NON attendu'}, "
+                       f"dit={dit} rc={r.returncode} postés={fichiers_postes(bac)!r} {r.stderr[:200]!r}")
+
+    # REFUS PERMANENT dont la mise à l'écart est impossible (`refuses` n'est pas un répertoire) : le fichier
+    # revient au spool, il ne reste pas dans l'abri
+    scen = "ship-refus-permanent-sans-ecart"
+    bac = bac_ship(base, code="400")
+    open(os.path.join(bac.etat, "refuses"), "w").write("pas un répertoire")
+    open(os.path.join(bac.spool, "a.json"), "w").write("{}")
+    r = bac.jouer("ship.sh", env_base)
+    abri = os.path.join(bac.etat, "envoi")
+    dans_l_abri = os.listdir(abri) if os.path.isdir(abri) else []
+    if visibles(bac.spool) != ["a.json"] or dans_l_abri or "mise à l'écart impossible" not in r.stderr:
+        faute(scen, f"un refus permanent non écartable n'est pas rendu au spool : spool={visibles(bac.spool)} "
+                    f"abri={dans_l_abri} {r.stderr[:200]!r}")
+
+    # l'unité livrée déclare l'état inscriptible elle-même (sans lui, ship refuse tout en code 2) : le drop-in
+    # commun ne la couvre que si elle est posée par `install_collector`
+    scen = "ship-unite-etat-inscriptible"
+    unite = open(os.path.join(RACINE, "systemd", "plume-ship.service"), encoding="utf-8").read()
+    rw = [m for l in unite.splitlines() if l.startswith("ReadWritePaths=") for m in l.split("=", 1)[1].split()]
+    if "/var/lib/plume/state" not in rw:
+        faute(scen, f"systemd/plume-ship.service ne déclare pas /var/lib/plume/state inscriptible : {rw!r}")
+
+    # réessai : le fichier conservé revient au spool
+    scen = "ship-reessai-revient-au-spool"
+    bac = bac_ship(base, code="503")
+    open(os.path.join(bac.spool, "a.json"), "w").write("{}")
+    r = bac.jouer("ship.sh", env_base)
+    abri = os.path.join(bac.etat, "envoi")
+    dans_l_abri = os.listdir(abri) if os.path.isdir(abri) else []
+    if visibles(bac.spool) != ["a.json"] or dans_l_abri:
+        faute(scen, f"un fichier conservé pour réessai n'est pas rendu au spool : spool={visibles(bac.spool)} "
+                    f"abri={dans_l_abri}")
+
+    # sans abri possible : refus nommé, code 2, rien d'expédié, spool conservé
+    scen = "ship-sans-abri"
+    bac = bac_ship(base)
+    pas_un_rep = os.path.join(bac.d, "etat-est-un-fichier")
+    open(pas_un_rep, "w").write("x")
+    open(os.path.join(bac.spool, "a.json"), "w").write("{}")
+    r = bac.jouer("ship.sh", dict(env_base, PLUME_STATE=pas_un_rep))
+    if r.returncode != 2 or appels_curl(bac) or visibles(bac.spool) != ["a.json"] or "REFUS" not in r.stderr:
+        faute(scen, f"sans répertoire privé, ship doit refuser en code 2 sans rien expédier : rc={r.returncode} "
+                    f"curl={appels_curl(bac)} spool={visibles(bac.spool)} {r.stderr[:200]!r}")
+
+
+def scen_bans_cscli_sans_jq_a_cote(base, awk, tag):
+    """fail2ban lisible + cscli PRÉSENT sans jq : le battement ne publie pas un sous-total comme total."""
+    scen = f"bans-f2b-et-cscli-sans-jq/{tag}"
+    bac = Bac(base, awk, faux=("fail2ban-client", "cscli"), sans=("jq",))
+    bac.poser("f2b/status", F2B_STATUS)
+    bac.poser("f2b/jail.sshd", f2b_jail(["192.0.2.1"]))
+    bac.poser("decisions.json", json.dumps([{"decisions": [{"value": "192.0.2.50", "scenario": "s"}]}]))
+    r = bac.jouer("bans.sh", {"PLUME_CSCLI": os.path.join(bac.bin, "cscli")})
+    exiger_appel(scen, bac)
+    if r.returncode != 0:
+        faute(scen, f"sortie {r.returncode} : {r.stderr[:300]}")
+    evs, _ = evenements(scen, bac.spool)
+    bt = battements(evs)
+    if len(bt) != 1:
+        faute(scen, f"un battement attendu (le capteur reste vivant) : {bt}")
+    if any("active_bans" in (e.get("fields") or {}) for e in evs):
+        faute(scen, "`active_bans` publié alors que CrowdSec, présent, n'a pas été lu : un sous-total passe pour le total")
+    av = [a for a in aveux_indispo(evs, "fail2ban") if "crowdsec" in (a.get("fields") or {}).get("detail", "")]
+    if not av:
+        faute(scen, f"aucun aveu nommant CrowdSec non lu : {aveux_indispo(evs, 'fail2ban')}")
+    if sorted(e.get("src_ip") for e in evs if e.get("category") == "ban") != ["192.0.2.1"]:
+        faute(scen, "le ban fail2ban lisible n'est plus publié")
+
+
 # --- (f) le transport des trois autres scripts qui parlent au central (`P10.33-a`) ----------------------
 # Un faux central : il journalise CHAQUE appel (URL, présence de `-K`, ce que `-K -` a reçu), sert une
 # action de ban sur `/api/actions/pending`, une liste vide d'engagements, accepte les métriques et les
@@ -1679,9 +2092,11 @@ def main():
             scen_imgdrift(base, awk, tag)
             scen_bans_sans_backend(base, awk, tag)
             scen_bans_presents(base, awk, tag)
+            scen_bans_cscli_sans_jq_a_cote(base, awk, tag)
             scen_crowdsec_alertes(base, awk, tag)
         tpl_joue = scen_vuln_template_reel(base)
         scen_ship(base)
+        scen_ship_substitution(base)
         scen_transport_des_autres(base)
         scen_kube_audit(base)
         scen_relais(base)

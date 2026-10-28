@@ -131,8 +131,12 @@ CE QUE LA PARTIE JOUÉE NE TIENT PAS
   CE QUE L'ANALYSE STATIQUE NE PROUVE PAS : le COMPORTEMENT de .NET Framework 4.x à l'exécution — la
   normalisation de l'hôte par `[System.Uri]` (la porte juge `Host`/`HostNameType`, que .NET Framework
   peut lire autrement que .NET 10 pour `127.1`, `0x7f.1`, `loopback`), la façon dont
-  `Invoke-RestMethod` 5.1 lit et suit une URL (redirections, proxy système, négociation TLS par
-  `ServicePointManager`), les différences de SÉMANTIQUE d'une cmdlet de même nom et mêmes paramètres
+  `Invoke-RestMethod` 5.1 lit une URL (proxy système, négociation TLS par `ServicePointManager`) — les
+  REDIRECTIONS, elles, ne sont plus suivies par construction : `-MaximumRedirection 0` est exigé ÉCRIT sur
+  chaque `Invoke-RestMethod` (site `envoi:redirection`), et `jouer_la_redirection` joue 301/302/303/307/308
+  par le vrai cmdlet sous pwsh 7 ; 5.1 ne lève que sur 301/302 et rend les autres comme une réponse au corps
+  vide, que le collecteur refuse d'acquitter (jugement au corps `"queued":true`, joué sous pwsh 7 par un 200
+  sans corps ou étranger ; 5.1 lui-même non exécuté), les différences de SÉMANTIQUE d'une cmdlet de même nom et mêmes paramètres
   entre 5.1 et 7 (encodage par défaut de `Set-Content`/`Out-File`, `ConvertTo-Json`) ; une SURCHARGE de
   méthode d'instance absente de .NET Framework (`'abc'.Contains('a', [StringComparison]::Ordinal)` : le
   type de l'objet n'est pas connu statiquement) ; la page de code d'un poste dont l'ANSI n'est pas
@@ -467,9 +471,16 @@ CMDS_ADMIS = {
 # Pas de `-ComputerName`, `-CimSession`, `-Session`, `-ComObject`, `-Proxy`.
 PARAMS_ADMIS = {
     "body", "compress", "contenttype", "depth", "erroraction", "filterhashtable", "force", "headers",
-    "itemtype", "maxevents", "method", "nonewline", "path", "raw", "state", "timeoutsec", "uri", "value",
-    "version",
+    "itemtype", "maximumredirection", "maxevents", "method", "nonewline", "path", "raw", "state",
+    "timeoutsec", "uri", "value", "version",
 }
+# P10.33-i — L'ENVOI NE SUIT AUCUNE REDIRECTION. La porte du transport juge l'adresse ÉCRITE ; une réponse
+# 3xx enverrait ailleurs. Mesuré le 2026-10-27 sous pwsh 7.6.3 (cf. `jouer_la_redirection`) : sans
+# `-MaximumRedirection 0`, un central admis qui répond 307/308 vers un autre hôte en `http://` y fait
+# partir le corps EN CLAIR, et sur 302 le lot est compté livré sans être arrivé. Chaque `Invoke-RestMethod`
+# compté doit donc porter ce paramètre ÉCRIT, valeur littérale `0` (variable, autre valeur, splatting
+# seul : refusé).
+PARAM_REDIRECTION = "maximumredirection"
 # Types NOMMÉS (chaque composant d'un nom générique ou tableau), et type passé à `New-Object`. Pas de
 # `[scriptblock]`, `[type]`, `[Activator]`, `[powershell]`, `[ipaddress]`, ni rien de `System.Net.*`
 # hors des deux réglages TLS (qui n'envoient rien).
@@ -570,6 +581,12 @@ def envois_hors_du_central_simule(d: dict) -> list:
         for prm in c.get("params", []):
             if prm.lower() not in PARAMS_ADMIS:
                 vus.append((c["line"], "parametre", f"paramètre `-{prm}` de `{c['name']}` hors de PARAMS_ADMIS"))
+        if n == NET_CMD_COUNTED and not any(
+                a["parametre"].lower() == PARAM_REDIRECTION and a["kind"] in ("autre", "chaine")
+                and a["valeur"].strip() == "0" for a in c.get("arguments", [])):
+            vus.append((c["line"], "redirection", f"`{c['name']}` sans `-MaximumRedirection 0` écrit : il suivrait "
+                        f"une réponse 3xx vers un hôte que la porte du transport n'a pas jugé (corps en clair, "
+                        f"ou lot compté livré sans être arrivé)"))
         # SPLATTING : `@p` vaut les clés de la table LITTÉRALE affectée à `$p`, jugées comme des paramètres.
         # Table introuvable, calculée ou modifiée après coup : refusé (ses paramètres ne sont pas écrits).
         for a in c.get("arguments", []):
@@ -626,17 +643,24 @@ param([Parameter(Mandatory)][string]$Collecteur, [Parameter(Mandatory)][string]$
 $ErrorActionPreference = 'Stop'
 # Le lecteur C: du collecteur (plume.conf, répertoire d'état) est un répertoire temporaire.
 New-PSDrive -Name C -PSProvider FileSystem -Root $Racine -Scope Global | Out-Null
-# CENTRAL SIMULÉ : compte chaque appel. Mêmes paramètres que l'appel du collecteur ; lève en panne.
+# CENTRAL SIMULÉ : compte chaque appel. Mêmes paramètres que l'appel du collecteur ; lève en panne ;
+# sinon rend l'acquittement du vrai central (`202 {"queued":true,"durable":true}`, `ingest_post`).
+# `PLUME_HARNAIS_CENTRAL_REEL=1` : l'appel, compté, part ENSUITE par le VRAI cmdlet avec les paramètres
+# reçus, vers un central local qui répond ce que le cas veut (redirection, cf. `jouer_la_redirection`).
 function global:Invoke-RestMethod {
   [CmdletBinding()]
-  param([Parameter(Mandatory)][uri]$Uri, [string]$Method, [int]$TimeoutSec, [hashtable]$Headers,
-        [string]$ContentType, $Body)
+  param([Parameter(Mandatory)][uri]$Uri, [string]$Method, [int]$TimeoutSec, [int]$MaximumRedirection,
+        [hashtable]$Headers, [string]$ContentType, $Body)
   $jeton = 'sans-jeton'
   if ($Headers -and $Headers.ContainsKey('Authorization')) { $jeton = 'bearer' }
   Add-Content -LiteralPath $env:PLUME_HARNAIS_JOURNAL -Value "APPEL $($Uri.AbsoluteUri) $jeton"
   if ($env:PLUME_HARNAIS_CENTRAL_EN_PANNE -eq '1') {
     throw [System.Net.Http.HttpRequestException]::new('central simule injoignable')
   }
+  if ($env:PLUME_HARNAIS_CENTRAL_REEL -eq '1') {
+    return (Microsoft.PowerShell.Utility\Invoke-RestMethod @PSBoundParameters)
+  }
+  [pscustomobject]@{ queued = $true; durable = $true }
 }
 # JOURNAL WINDOWS SIMULÉ : compte chaque lecture, ne rend rien.
 function global:Get-WinEvent {
@@ -707,6 +731,40 @@ TRANSPORT_CASES = [
 ]
 
 
+def executer_le_harnais(pwsh: str, base: Path, tag: str, nom: str, central, env_plus: dict, conf: list):
+    """Joue le collecteur TEL QUEL sous le harnais, dans un lecteur `C:` neuf (`base/tag`) ; rend
+    (processus, appels au central, lectures de journal, filigranes écrits, répertoire d'état)."""
+    harnais = base / "harnais.ps1"
+    if not harnais.exists():
+        harnais.write_text(HARNAIS_PS1, encoding="utf-8")
+    racine = base / tag
+    (racine / "ProgramData" / "plume").mkdir(parents=True)
+    journal = base / f"journal-{tag}.txt"
+    journal.write_text("", encoding="utf-8")
+    if conf:
+        (racine / "ProgramData" / "plume" / "plume.conf").write_text("\n".join(conf) + "\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PLUME_") and k != "COMPUTERNAME"}
+    env.update({"COMPUTERNAME": "HARNAIS", "PLUME_HARNAIS_JOURNAL": str(journal)})
+    if central is not None:
+        env["PLUME_CENTRAL"] = central
+        env["PLUME_TOKEN"] = "jeton-temoin"
+    env.update(env_plus)
+    try:
+        p = subprocess.run(
+            [pwsh, "-NoProfile", "-NonInteractive", "-File", str(harnais),
+             "-Collecteur", str(Path(COLLECTOR).resolve()), "-Racine", str(racine)],
+            capture_output=True, text=True, env=env, cwd=str(base), timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"::error::cas « {nom} » : pwsh n'a pas rendu la main en 120 s — la garde REFUSE DE CONCLURE.")
+        sys.exit(CODE_INSTRUMENT)
+    lignes = journal.read_text(encoding="utf-8").splitlines()
+    etat = racine / "ProgramData" / "plume" / "state"
+    filigranes = sorted(etat.glob("*.watermark")) if etat.is_dir() else []
+    return (p, [ln for ln in lignes if ln.startswith("APPEL ")], [ln for ln in lignes if ln.startswith("LECTURE ")],
+            filigranes, etat)
+
+
 def jouer_le_transport(errs: list, envois_hors_irm: int) -> int:
     """Joue chaque cas sur le collecteur tel quel ; rend le nombre de cas joués.
 
@@ -718,42 +776,12 @@ def jouer_le_transport(errs: list, envois_hors_irm: int) -> int:
         sys.exit(CODE_INSTRUMENT)
     if envois_hors_irm:
         return 0
-    collecteur = str(Path(COLLECTOR).resolve())
     joues = 0
     with tempfile.TemporaryDirectory(prefix="plume-harnais-windows-") as base:
-        harnais = Path(base) / "harnais.ps1"
-        harnais.write_text(HARNAIS_PS1, encoding="utf-8")
         for i, (nom, central, env_plus, conf, attendu, exige, interdit) in enumerate(TRANSPORT_CASES):
-            racine = Path(base) / f"cas{i}"
-            (racine / "ProgramData" / "plume").mkdir(parents=True)
-            journal = Path(base) / f"journal{i}.txt"
-            journal.write_text("", encoding="utf-8")
-            if conf:
-                (racine / "ProgramData" / "plume" / "plume.conf").write_text(
-                    "\n".join(conf) + "\n", encoding="utf-8")
-            env = {k: v for k, v in os.environ.items()
-                   if not k.startswith("PLUME_") and k != "COMPUTERNAME"}
-            env.update({"COMPUTERNAME": "HARNAIS", "PLUME_HARNAIS_JOURNAL": str(journal)})
-            if central is not None:
-                env["PLUME_CENTRAL"] = central
-                env["PLUME_TOKEN"] = "jeton-temoin"
-            env.update(env_plus)
-            try:
-                p = subprocess.run(
-                    [pwsh, "-NoProfile", "-NonInteractive", "-File", str(harnais),
-                     "-Collecteur", collecteur, "-Racine", str(racine)],
-                    capture_output=True, text=True, env=env, cwd=base, timeout=120,
-                )
-            except subprocess.TimeoutExpired:
-                print(f"::error::cas « {nom} » : pwsh n'a pas rendu la main en 120 s — la garde "
-                      f"REFUSE DE CONCLURE.")
-                sys.exit(CODE_INSTRUMENT)
+            p, appels, lectures, filigranes, etat = executer_le_harnais(
+                pwsh, Path(base), f"cas{i}", nom, central, env_plus, conf)
             joues += 1
-            lignes = journal.read_text(encoding="utf-8").splitlines()
-            appels = [ln for ln in lignes if ln.startswith("APPEL ")]
-            lectures = [ln for ln in lignes if ln.startswith("LECTURE ")]
-            etat = racine / "ProgramData" / "plume" / "state"
-            filigranes = sorted(etat.glob("*.watermark")) if etat.is_dir() else []
             vu = (f"code {p.returncode}, {len(appels)} appel(s) au central, {len(lectures)} lecture(s) "
                   f"de journal, {len(filigranes)} filigrane(s), etat {'cree' if etat.exists() else 'absent'}"
                   f" ; stderr : {p.stderr.strip()[:300]!r}")
@@ -798,6 +826,137 @@ def jouer_le_transport(errs: list, envois_hors_irm: int) -> int:
             for df in defauts:
                 errs.append(f"{COLLECTOR}: transport, cas « {nom} » ({central or 'plume.conf'}) : {df}. VU : {vu}")
             print(f"  transport · {nom:<62} {'OK' if not defauts else 'ROUGE'} · {vu[:110]}")
+    return joues
+
+
+# P10.33-i — LA REDIRECTION, JOUÉE PAR LE VRAI CMDLET. Le central simulé ne suit rien : il ne pouvait pas
+# voir qu'`Invoke-RestMethod` suit une réponse 3xx vers un hôte que la porte n'a jamais jugé. Ici l'appel
+# compté part ENSUITE par le vrai cmdlet (`PLUME_HARNAIS_CENTRAL_REEL=1`), vers un central local ADMIS
+# (`http://127.0.0.1:<port>`) qui répond le code du cas avec `Location:` vers un SECOND serveur local, qui
+# figure l'hôte hors porte et compte ce qu'il reçoit. Mesuré le 2026-10-27 sous pwsh 7.6.3 sans
+# `-MaximumRedirection 0` : sur 307/308, ce second serveur reçoit le corps ; sur 301/302, il reçoit un GET
+# sans corps, répond 200, et le collecteur commet ses filigranes — lot compté livré, arrivé nulle part.
+# Attendu : toute redirection = PANNE (code 1, rien reçu hors porte, aucun filigrane) ; 200 qui acquitte
+# comme le central (`{"queued":true,…}`) = ADMIS (le cas qui prouve que le vrai cmdlet est branché).
+# WINDOWS POWERSHELL 5.1 NE LÈVE PAS SUR 303/307/308 (vérificateur du 2026-10-27, source du cmdlet .NET
+# Framework : `MaximumRedirectExceeded` pour Found/Moved/MovedPermanently seulement ; un 3xx sous
+# `AllowAutoRedirect = false` y est une réponse NORMALE). Ce que 5.1 rend alors au collecteur est la
+# réponse elle-même, au corps vide : on la joue ici sous pwsh 7 par un 200 sans corps, puis par un 200 au
+# corps étranger (page d'un mandataire, autre service) — le collecteur juge l'acquittement à son CONTENU,
+# donc ces cas sont des PANNES. CE QUE CES CAS NE TIENNENT PAS : Windows PowerShell 5.1 n'est pas exécuté
+# (sa réponse est reproduite, pas observée) ; une redirection https -> http n'est pas jouée (aucun
+# certificat ici ; pwsh 7.4+ la refuse de lui-même, `-MaximumRedirection 0` la refuse sous les deux).
+# (code rendu par le central admis, corps d'un 200 (None pour un 3xx), verdict, libellé)
+ACQUITTEMENT_DU_CENTRAL = b'{"queued":true,"durable":true}'
+REDIRECTION_CASES = [
+    (307, None, "panne", "repond 307"), (308, None, "panne", "repond 308"),
+    (303, None, "panne", "repond 303"), (302, None, "panne", "repond 302"), (301, None, "panne", "repond 301"),
+    (200, b"", "panne", "repond 200 sans corps (le 3xx vu par 5.1)"),
+    (200, b'{"ok":true}', "panne", "repond 200 au JSON etranger"),
+    (200, b"<html>connexion</html>", "panne", "repond 200 en HTML (mandataire)"),
+    # `queued` présent mais faux, ou vrai sans être un booléen : chacun des deux termes de la condition
+    # d'acquittement (`$reponse.queued`, `-is [bool]`) a son cas, sans quoi le retirer laisse la garde verte.
+    (200, b'{"queued":false}', "panne", "repond 200 queued:false"),
+    (200, b'{"queued":"true"}', "panne", "repond 200 queued en chaine"),
+    (200, ACQUITTEMENT_DU_CENTRAL, "admis", "acquitte comme le central (202 queued)"),
+]
+
+
+def jouer_la_redirection(errs: list, envois_hors_irm: int) -> int:
+    """Joue chaque code de REDIRECTION_CASES sur le collecteur tel quel ; rend le nombre de cas joués."""
+    import http.server
+    import threading
+    pwsh = shutil.which("pwsh") or shutil.which("powershell")
+    if not pwsh:
+        sys.exit(CODE_INSTRUMENT)
+    if envois_hors_irm:
+        return 0
+    hors_porte: list = []
+
+    class HorsPorte(http.server.BaseHTTPRequestHandler):
+        def _recu(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            hors_porte.append((self.command, n, self.headers.get("Authorization") is not None))
+            if n:
+                self.rfile.read(n)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+        do_POST = do_GET = _recu
+
+        def log_message(self, *a):
+            pass
+
+    hp = http.server.ThreadingHTTPServer(("127.0.0.1", 0), HorsPorte)
+    threading.Thread(target=hp.serve_forever, daemon=True).start()
+    joues = 0
+    try:
+        with tempfile.TemporaryDirectory(prefix="plume-harnais-redirection-") as base:
+            for i, (code, corps, attendu, libelle) in enumerate(REDIRECTION_CASES):
+                recus_central: list = []
+
+                class Central(http.server.BaseHTTPRequestHandler):
+                    def do_POST(self, code=code, corps=corps):
+                        n = int(self.headers.get("Content-Length") or 0)
+                        recus_central.append(n)
+                        if n:
+                            self.rfile.read(n)
+                        if corps is not None:
+                            # L'acquittement réel est un 202 ; les corps étrangers, un 200 quelconque.
+                            self.send_response(202 if corps == ACQUITTEMENT_DU_CENTRAL else code)
+                            ct = "text/html" if corps.startswith(b"<") else "application/json"
+                            self.send_header("Content-Type", ct)
+                            self.send_header("Content-Length", str(len(corps)))
+                            self.end_headers()
+                            self.wfile.write(corps)
+                            return
+                        self.send_response(code)
+                        self.send_header("Location", f"http://127.0.0.1:{hp.server_address[1]}/api/ingest")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+
+                    def log_message(self, *a):
+                        pass
+
+                srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Central)
+                threading.Thread(target=srv.serve_forever, daemon=True).start()
+                hors_porte.clear()
+                nom = f"central admis qui {libelle}"
+                try:
+                    p, appels, _lectures, filigranes, _etat = executer_le_harnais(
+                        pwsh, Path(base), f"redir{i}", nom, f"http://127.0.0.1:{srv.server_address[1]}",
+                        {"PLUME_HARNAIS_CENTRAL_REEL": "1"}, [])
+                finally:
+                    srv.shutdown()
+                    srv.server_close()
+                joues += 1
+                vu = (f"code {p.returncode}, {len(appels)} appel(s) compté(s), {len(recus_central)} requête(s) au "
+                      f"central, {len(hors_porte)} hors porte {hors_porte}, {len(filigranes)} filigrane(s) ; "
+                      f"stderr : {p.stderr.strip()[-200:]!r}")
+                defauts = []
+                if not appels or not recus_central:
+                    defauts.append("au moins un appel au central attendu (le vrai cmdlet est-il branché ?)")
+                if hors_porte:
+                    defauts.append("RIEN ne doit arriver à l'hôte vers lequel le central redirige : la porte du "
+                                   "transport ne l'a pas jugé")
+                if attendu == "panne":
+                    if p.returncode != 1:
+                        defauts.append("code 1 attendu : une redirection, ou une réponse sans "
+                                       "`\"queued\":true`, est un envoi NON acquitté")
+                    if filigranes:
+                        defauts.append("aucun filigrane ne doit être commis : le lot n'est pas arrivé au central")
+                else:
+                    if p.returncode != 0:
+                        defauts.append("code 0 attendu (central qui acquitte)")
+                    if not filigranes:
+                        defauts.append("des filigranes commis attendus après un envoi acquitté")
+                for df in defauts:
+                    errs.append(f"{COLLECTOR}: redirection, cas « {nom} » : {df}. VU : {vu}")
+                print(f"  redirection · {nom:<70} {'OK' if not defauts else 'ROUGE'} · {vu[:140]}")
+    finally:
+        hp.shutdown()
+        hp.server_close()
     return joues
 
 
@@ -887,6 +1046,11 @@ $r2 = 'a1' -replace '\d', { $_.Value }
 ([xml]'<a/>') | ForEach-Object -MemberName:Load
 $p6 = @{ Path = 'x' }; $p6.ComputerName = 'h'; Get-Content @p6
 $ok = "``e"
+Invoke-RestMethod -Uri 'https://example.org'
+Invoke-RestMethod -Uri 'https://example.org' -MaximumRedirection 1
+$n9 = 0; Invoke-RestMethod -Uri 'https://example.org' -MaximumRedirection $n9
+Invoke-RestMethod -Uri 'https://example.org' -MaximumRedirection 0
+Invoke-RestMethod -Uri 'https://example.org' -MaximumRedirection:0
 """
 TEMOIN_51_ATTENDU = {   # jambe -> lignes qui DOIVENT sortir par le puits
     "PSUseCompatibleSyntax": {3, 4},
@@ -910,10 +1074,13 @@ TEMOIN_51_ATTENDU = {   # jambe -> lignes qui DOIVENT sortir par le puits
     "envoi:unc": {24, 40, 41, 42, 43, 44},
     "envoi:chaine-net": {25},
     "envoi:using": {1},
+    # 57-59 : `Invoke-RestMethod` nu sans `-MaximumRedirection 0` écrit (absent, autre valeur, variable).
+    "envoi:redirection": {57, 58, 59},
 }
-# Lignes qu'AUCUNE jambe ne doit signaler : `[System.Uri]` (le collecteur l'emploie), et un accent grave
-# ÉCHAPPÉ suivi de « e » (``e n'est pas l'échappement `e).
-TEMOIN_51_NEUTRES = {9, 56}
+# Lignes qu'AUCUNE jambe ne doit signaler : `[System.Uri]` (le collecteur l'emploie), un accent grave
+# ÉCHAPPÉ suivi de « e » (``e n'est pas l'échappement `e), et `-MaximumRedirection 0` sous ses deux
+# écritures (séparée, collée par `:`).
+TEMOIN_51_NEUTRES = {9, 56, 60, 61}
 # Noms de types que le PARSEUR traite lui-même (pas des accélérateurs du profil).
 TYPES_DU_PARSEUR = {"ordered"}
 
@@ -1050,6 +1217,9 @@ def diagnostics_statiques(octets: bytes, d: dict, pssa: list, profils: list) -> 
         out.append((ligne, "ast-membres",
                     f"membre statique `{quoi}` absent de Windows PowerShell 5.1 (profils {manquants})."))
     for ligne, site, quoi in envois_hors_du_central_simule(d):
+        if site == "redirection":
+            out.append((ligne, f"envoi:{site}", f"{quoi}. Écrivez `-MaximumRedirection 0` sur l'appel."))
+            continue
         out.append((ligne, f"envoi:{site}",
                     f"{quoi} — hors du central simulé (`Invoke-RestMethod` nu) : le compte d'appels du harnais "
                     f"serait aveugle à cet envoi. Envoyez par `Invoke-RestMethod`, ou lisez l'entrée et "
@@ -1102,7 +1272,7 @@ def juger_statiquement(errs: list) -> dict:
                      if encodage_illisible_par_51(octets)]
     if muettes or fausses or profils_muets or encodage_faux:
         print(f"::error::témoin du jugement statique : jambes MUETTES {muettes}, jambes qui signalent "
-              f"une ligne neutre (`[System.Uri]`, ``e) {fausses}, plateformes 5.1 non jugées {profils_muets}, encodage refusé à tort "
+              f"une ligne neutre (`[System.Uri]`, ``e, `-MaximumRedirection 0`) {fausses}, plateformes 5.1 non jugées {profils_muets}, encodage refusé à tort "
               f"{encodage_faux} (vu : { {j: sorted(v) for j, v in vu.items()} }) — l'instrument ne juge pas "
               f"ce qu'il prétend, la garde REFUSE DE CONCLURE.")
         sys.exit(CODE_INSTRUMENT)
@@ -1185,7 +1355,7 @@ def main() -> int:
     total_catches = 0
     for f in files:
         total_catches += check(f, errs)
-    joues = 0
+    joues = joues_redirection = 0
     bilan = None   # posé par juger_statiquement : le verdict en est TIRÉ, jamais écrit en dur
     if COLLECTOR in files:
         bilan = juger_statiquement(errs)
@@ -1193,6 +1363,7 @@ def main() -> int:
         errs.append(f"{COLLECTOR} introuvable parmi les fichiers suivis : la porte du transport n'est pas jouée.")
     if bilan is not None:
         joues = jouer_le_transport(errs, bilan["envois_collecteur"])
+        joues_redirection = jouer_la_redirection(errs, bilan["envois_collecteur"])
         juger_la_doc(errs)
     if len(files) < MIN_FILES:
         errs.append(
@@ -1215,17 +1386,24 @@ def main() -> int:
         print(f"::error::{joues} cas de transport joués sur {len(TRANSPORT_CASES)} : la porte du clair n'a pas "
               f"été jouée sur le collecteur — la garde REFUSE DE CONCLURE.")
         return CODE_INSTRUMENT
+    if joues_redirection < len(REDIRECTION_CASES):
+        print(f"::error::{joues_redirection} cas de redirection joués sur {len(REDIRECTION_CASES)} : le suivi des "
+              f"réponses 3xx n'a pas été joué sur le collecteur — la garde REFUSE DE CONCLURE.")
+        return CODE_INSTRUMENT
     print(
         f"{len(files)} collecteur(s) PowerShell, {total_catches} `catch` : toute erreur est classée "
         f"(incapacité / désactivé / rien de neuf) ou relevée, et aucun filigrane ne s'écrit avant un "
         f"envoi acquitté ; {joues}/{len(TRANSPORT_CASES)} cas de transport joués sur le collecteur tel quel (http distant "
         f"refusé en code 2 sans appel ni lecture, opt-in, https et boucle locale admis) ; "
+        f"{joues_redirection}/{len(REDIRECTION_CASES)} cas de redirection et "
+        f"d'acquittement joués par le vrai cmdlet (3xx et réponse sans `queued` = panne, rien reçu hors porte, "
+        f"aucun filigrane) ; "
         f"la doc Windows ne contredit pas le script (clés de plume.conf, `action`, spool, jeton) ; "
         f"{bilan['commandes']} commandes, {bilan['types']} types nommés et {bilan['methodes']} appels de "
         f"méthode du collecteur, tous dans les listes fermées (aucun envoi hors d'`Invoke-RestMethod` nu "
         f"ÉCRIT dans le source) ; source en {bilan['encodage']}, jugé contre {bilan['profils']} profils "
         f"Windows PowerShell 5.1 Desktop par PSScriptAnalyzer {bilan['version']} et par l'AST ; témoin : "
-        f"{bilan['jambes_temoin']} jambes rouges sur {bilan['lignes_temoin']} lignes, aucune sur ses {len(TEMOIN_51_NEUTRES)} lignes neutres (`[System.Uri]`, ``e)."
+        f"{bilan['jambes_temoin']} jambes rouges sur {bilan['lignes_temoin']} lignes, aucune sur ses {len(TEMOIN_51_NEUTRES)} lignes neutres (`[System.Uri]`, ``e, `-MaximumRedirection 0`)."
     )
     return 0
 

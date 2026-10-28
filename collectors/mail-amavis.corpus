@@ -167,3 +167,9 @@ panne-av	-	-	sources-amavis	dedup=(empreinte)	2026-09-24T11:05:02.123456+02:00 m
 # `(!!)AV: ALL VIRUS SCANNERS FAILED` suit toujours le WARN ci-dessus dans le même passage (`virus_scan`) :
 # non lu, pour ne pas compter deux fois la même panne.
 aucun	-	-	sources-amavis	-	2026-09-24T11:05:03.123456+02:00 mailserver amavis[4127]: (04127-01) (!!)AV: ALL VIRUS SCANNERS FAILED
+# --- L'adresse `PLUME_MAIL_SKIP_IP` (192.0.2.70, le passage d'épargne de la garde) ---------------------
+# SKIP_IP n'écarte de `mailflow` que la panne du serveur (`server_error`) : l'entrée amavis à l'adresse du
+# relais épargné reste émise. Son sujet, écrit par l'expéditeur, porte trois parties locales hors des valeurs
+# lues : un `nom=` hors du vocabulaire des étiquettes (masqué entier), un mot du vocabulaire entre chevrons
+# (masqué entier) et un mot du vocabulaire après un `;` collé (gardé). Ligne fabriquée.
+flux-passe	b@example.test	192.0.2.70	client-amavis	verdict=Passed CLEAN;sender=a@example.net;rcpt=b@example.test;score=-1.1;size=2345;dedup=mail-AbCdEfGh0170-Passed-CLEAN	2026-09-24T11:05:04.123456+02:00 mailserver amavis[4170]: (04170-01) Passed CLEAN {RelayedInbound}, [192.0.2.70]:40170 [192.0.2.70] <a@example.net> -> <b@example.test>, Queue-ID: 4ABCDEF170, Message-ID: <m170@example.net>, mail_id: AbCdEfGh0170, Hits: -1.1, size: 2345, queued_as: 4BCDEF3170, Subject: "re jean_dupont=x@example.net <sasl_sender=y@example.net> re;sasl_sender=z@example.net", 120 ms

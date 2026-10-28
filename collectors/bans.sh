@@ -129,6 +129,13 @@ if [ "$CSCLI_PRESENT" -eq 1 ] && command -v jq >/dev/null 2>&1; then
     while IFS="$TAB" read -r ip scen; do [ -n "$ip" ] && emit crowdsec "$ip" "$scen"; done < "$tmpf"
   fi
   rm -f "$tmpf" "$_cs_json"
+elif [ "$CSCLI_PRESENT" -eq 1 ]; then
+  # P10.32-i — UN CSCLI PRESENT SANS jq EST UN BACKEND PRESENT NON LU, PAS UN BACKEND ABSENT. Ses
+  # decisions ne se lisent qu'avec jq ; le bloc ci-dessus etait simplement saute, et a cote d'un
+  # fail2ban lisible le battement publiait `active_bans` = les seuls bans fail2ban, un SOUS-TOTAL
+  # presente comme le total. Il est compte parmi les non-lus : battement sans compteur, aveu nomme.
+  # Seul (aucun autre backend), c'est l'aveu « aucun backend lisible » plus bas, inchange.
+  _bans_ko="$_bans_ko crowdsec(jq-absent)"
 fi
 
 # DEAD-MAN'S-SWITCH (calque crowdsec.sh/pod-logs.sh) : battement de SANTÉ à CHAQUE run MÊME quand 0 ban actif.

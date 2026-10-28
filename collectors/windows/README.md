@@ -32,7 +32,8 @@ métadonnées d'événements.
    `` `u{…} ``, `` `e ``, `-replace` avec un bloc de script écrit, `$IsWindows` et ses pareils, tout type
    absent d'un seul de ces profils et tout membre statique qui y manque. Ce jugement ne prouve pas le
    **comportement** de .NET Framework : la lecture d'une adresse par `[System.Uri]` et par
-   `Invoke-RestMethod` 5.1 (redirections, proxy, TLS) n'est jouée que sous PowerShell 7.
+   `Invoke-RestMethod` 5.1 (proxy, TLS) n'est jouée que sous PowerShell 7. Les redirections ne sont
+   suivies sous aucune des deux versions : l'envoi porte `-MaximumRedirection 0` (voir plus bas).
    **Le fichier est en UTF-8 avec BOM, et doit le rester** : sans BOM, Windows PowerShell 5.1 lit un
    script dans la page de code ANSI, et le collecteur ne parsait plus (un « — » y devient un guillemet
    fermant). Un éditeur qui réenregistre sans BOM casse la tâche planifiée ; la garde le refuse.
@@ -144,6 +145,23 @@ et environnement hérité par chaque processus), ce qui défait les droits du fi
 > Windows PowerShell 5.1 n'est pas joué) : `http://127.0.0.1.example.org`, `http://localhost.example.org`
 > ou `http://127.0.0.1@example.org` visent un hôte distant et sont refusés. Tout autre schéma est refusé,
 > opt-in ou non.
+>
+> **Aucune redirection n'est suivie.** La porte juge l'adresse écrite dans `PLUME_CENTRAL`, pas celle
+> vers laquelle une réponse `3xx` renverrait. Sans `-MaximumRedirection 0`, un central admis qui
+> répondait `307`/`308` vers un autre hôte en `http://` y faisait partir tous les événements en clair, et
+> sur `301`/`302` le lot était compté livré alors qu'il n'était arrivé nulle part (mesuré sous
+> PowerShell 7.6.3). Désormais aucune redirection n'est suivie (`-MaximumRedirection 0`), sous 5.1 comme
+> sous 7, et une redirection est un **échec d'envoi** : code de sortie 1, aucun filigrane n'avance, le
+> run suivant relit. Ce n'est pas l'exception qui le décide : Windows PowerShell 5.1, celui que lance la
+> tâche planifiée, ne lève que sur `301`/`302` et rend un `303`, `307` ou `308` comme une réponse normale
+> au corps vide. Le collecteur ne tient donc un lot pour livré que si la réponse porte
+> `"queued":true`, l'accusé du central (`202`) ; une réponse vide, une page HTML de mandataire ou le JSON
+> d'un autre service sont des échecs d'envoi. Joué sous PowerShell 7 (y compris la réponse au corps vide
+> que rend 5.1) ; Windows PowerShell 5.1 lui-même n'est pas exécuté. **Effet sur un poste déjà installé** : si `PLUME_CENTRAL`
+> désigne une adresse qui redirige (un `http://` qu'un frontal renvoie vers `https://`, un chemin que le
+> frontal réécrit, une page de connexion d'un mandataire d'authentification), la tâche planifiée passe
+> en échec (`LastTaskResult` = 1) au lieu de perdre le lot en silence : posez dans `PLUME_CENTRAL`
+> l'adresse finale, celle qui répond sans redirection.
 >
 > `PLUME_SHIP_ALLOW_PLAINTEXT=1` (variable d'environnement ou `plume.conf`, même lecture que
 > `PLUME_CENTRAL`) accepte le clair, avec un avertissement à chaque run. **Le risque est entier** :

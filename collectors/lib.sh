@@ -126,10 +126,16 @@ spool_write() {
 # The temp file MUST already live in $SPOOL (same filesystem — a rename across filesystems is a
 # copy, hence no longer atomic) and MUST be a dotfile (ship.sh must not pick it up mid-write).
 # `.github/scripts/check_publication_is_durable.py` refuses any new inline publication.
+# P10.32-i — `-T` : la destination est TOUJOURS ce nom, jamais un répertoire dans lequel déposer. Le
+# spool est inscriptible par le groupe `soc` ; sans `-T`, un lien posé à `$SPOOL/<nom>` vers un
+# répertoire faisait déposer le fichier, en root, DANS ce répertoire (rejoué : `ship.sh` remettant un
+# fichier au spool écrasait `$STATE/<nom>`). Avec `-T`, rename(2) remplace le lien lui-même ; un vrai
+# répertoire à ce nom fait échouer la publication. Un `mv` qui ne connaîtrait pas `-T` échoue aussi :
+# la publication échoue alors bruyamment, elle ne dépose jamais ailleurs.
 spool_publish_file() {
   chmod 0640 "$1"
   plume_sync_path "$1"       # le CONTENU est sur le disque AVANT que le nom n'existe
-  mv -f "$1" "$SPOOL/$2"
+  mv -fT "$1" "$SPOOL/$2"
   plume_sync_path "$SPOOL"   # l'ENTRÉE DE RÉPERTOIRE l'est APRÈS le renommage
 }
 
@@ -371,10 +377,83 @@ json_escape() {
 # Les contrôles C0 sont rendus en ESPACE (JSON interdit un contrôle brut ; auditd joint ses clés
 # multiples par \x1d, que l'espace garde séparées) — là où `json_escape` les SUPPRIME : les deux
 # formes divergent, et c'est nommé ici. `jesc` n'est pas un décodeur : une valeur lue dans un texte
-# JSON (journal Traefik, `mc --json`) garde ses échappements, et son décodé est le texte lu.
+# JSON (journal Traefik, `mc --json`) se lit par `jstr` (`_PLUME_AWK_DECODAGE_JSON`, ci-dessous).
 # Témoin : `.github/scripts/check_a_sensor_escapes_a_backslash_under_every_awk.py`, qui joue chaque
 # capteur appelant sous chaque awk présent et refuse une seconde définition.
 _PLUME_AWK_ECHAPPEMENT_JSON='function jesc(s){ gsub(/\\/,"&&",s); gsub(/"/,"\\\"",s); gsub(/[\001-\037]/," ",s); return s }'
+
+# _PLUME_AWK_DECODAGE_JSON — la fonction awk `jstr(s, k)` : la valeur DÉCODÉE de la chaîne de clé `k` dans le
+# texte JSON `s` (une ligne du journal d'accès Traefik, une ligne de `mc --json`), "" si la clé manque ou ne porte
+# pas une chaîne. Elle se place en tête du programme, À CÔTÉ de `_PLUME_AWK_ECHAPPEMENT_JSON` (`jesc` réécrit ce
+# que `jstr` a décodé) :
+#     awk "$_PLUME_AWK_ECHAPPEMENT_JSON""$_PLUME_AWK_DECODAGE_JSON"'{ print jesc(jstr($0, "RequestPath")) }'
+# P10.23-x — CE QUI ÉTAIT FAUX, MESURÉ le 2026-09-24 (lot 188) : `web.sh` et `minio.sh` lisaient une valeur par
+# `"<clé>":"[^"]*"`, c'est-à-dire jusqu'au PREMIER guillemet, échappé ou non, et gardaient le texte ENCODÉ. Un
+# User-Agent `curl "x"` (écrit `curl \"x\"` par Traefik) était stocké `curl \` ; `/q?x=<script>` (écrit
+# `\u003cscript\u003e` : Go échappe `<`, `>`, `&`) était stocké avec ses `\u003c` — la recherche d'un `<script>`
+# ne le trouvait pas. N'importe quel client HTTP choisit son User-Agent : la coupure était à sa main.
+# CE QUE LA FONCTION FAIT : elle lit la chaîne jusqu'à son guillemet NON échappé et décode `\"` `\\` `\/` `\b`
+# `\f` `\n` `\r` `\t` et `\uXXXX` (paire de substitution recomposée ; substitut isolé rendu U+FFFD ; `\u0000`
+# rendu en espace, qu'awk ne sait pas porter partout), en UTF-8 OCTET PAR OCTET : les octets 0x80-0xFF viennent
+# d'une table écrite en octal (et non de `sprintf("%c")`, qui sous gawk en locale UTF-8 rend un CARACTÈRE de deux
+# octets). Un échappement invalide (`\q`, `\uZZZZ`) est gardé tel quel ; une chaîne sans guillemet fermant (ligne
+# tronquée) rend ce qui a été lu. COÛT LINÉAIRE (P10.23-x, mesuré sur la première version) : une boucle qui
+# recopiait le reste de la ligne (`r = substr(r, …)`) et la sortie (`o = o …`) à chaque échappement coûtait un
+# temps QUADRATIQUE — 64000 `\u003c` (un chemin que tout client choisit) : 2,3 s sous mawk, contre 0,04 s pour
+# l'ancienne lecture. La valeur est donc découpée UNE fois sur l'antislash (`split`), chaque morceau décodé seul,
+# et les morceaux joints par paires (`_jd_join`, O(L log n)) ; un `\uXXXX` déjà rendu est relu dans `_JDU`
+# (hors substituts) ; une valeur sans antislash avant son guillemet ne passe pas par là. La clé est cherchée sous la forme compacte `"<clé>":"` qu'écrivent Go
+# (`encoding/json`) et `mc` ; une valeur ne peut pas la contrefaire, puisque son guillemet y serait échappé.
+# POURQUOI PAS `jq` : ces deux capteurs n'en dépendent pas aujourd'hui (`crowdsec.sh` l'exige, eux non), et la
+# lecture vit dans le programme awk qui compte, filtre et borne le passage ; un second chemin `jq` avec un repli
+# awk aurait donné deux décodages à tenir égaux. Celui-ci est le seul, et il est joué sous chaque awk.
+# Témoin : `.github/scripts/check_a_sensor_escapes_a_backslash_under_every_awk.py` (la fonction sur une table de
+# valeurs encodées comme Go les encode, puis `web.sh` et `minio.sh` joués dans un bac : la valeur EXACTE ressort).
+_PLUME_AWK_DECODAGE_JSON='
+function _jd_init(   t, i, n){ n = split("\200|\201|\202|\203|\204|\205|\206|\207|\210|\211|\212|\213|\214|\215|\216|\217|\220|\221|\222|\223|\224|\225|\226|\227|\230|\231|\232|\233|\234|\235|\236|\237|\240|\241|\242|\243|\244|\245|\246|\247|\250|\251|\252|\253|\254|\255|\256|\257|\260|\261|\262|\263|\264|\265|\266|\267|\270|\271|\272|\273|\274|\275|\276|\277|\300|\301|\302|\303|\304|\305|\306|\307|\310|\311|\312|\313|\314|\315|\316|\317|\320|\321|\322|\323|\324|\325|\326|\327|\330|\331|\332|\333|\334|\335|\336|\337|\340|\341|\342|\343|\344|\345|\346|\347|\350|\351|\352|\353|\354|\355|\356|\357|\360|\361|\362|\363|\364|\365|\366|\367|\370|\371|\372|\373|\374|\375|\376|\377", t, "|"); for (i = 1; i <= n; i++) _JDO[127 + i] = t[i]; _JDP = 1 }
+function _jd_hex(h,   i, c, v){ if (length(h) < 4) return -1; v = 0; for (i = 1; i <= 4; i++) { c = index("0123456789abcdef", tolower(substr(h, i, 1))); if (!c) return -1; v = v * 16 + c - 1 } return v }
+function _jd_utf8(c){
+  if (c == 0) return " "
+  if (c < 128) return sprintf("%c", c)
+  if (!_JDP) _jd_init()
+  if (c < 2048) return _JDO[192 + int(c / 64)] _JDO[128 + c % 64]
+  if (c < 65536) return _JDO[224 + int(c / 4096)] _JDO[128 + int(c / 64) % 64] _JDO[128 + c % 64]
+  return _JDO[240 + int(c / 262144)] _JDO[128 + int(c / 4096) % 64] _JDO[128 + int(c / 64) % 64] _JDO[128 + c % 64] }
+function _jd_join(A, n,   B, i, m){
+  while (n > 1) { m = 0; for (i = 1; i <= n; i += 2) B[++m] = (i < n) ? A[i] A[i + 1] : A[i]; for (i = 1; i <= m; i++) A[i] = B[i]; n = m }
+  return n ? A[1] : "" }
+function jstr(s, k,   p, r, q, b, P, n, i, D, d, lit, t, e, h, v, w){
+  p = index(s, "\"" k "\":\""); if (!p) return ""
+  r = substr(s, p + length(k) + 4); q = index(r, "\""); b = index(r, "\\")
+  if (!b || (q && q < b)) return q ? substr(r, 1, q - 1) : r
+  n = split(r, P, /\\/); d = 0; lit = 1
+  for (i = 1; i <= n; i++) {
+    t = P[i]
+    if (lit) lit = 0
+    else if (t == "") { D[++d] = "\\"; lit = 1; continue }
+    else {
+      e = substr(t, 1, 1); t = substr(t, 2)
+      if (e == "u") {
+        h = substr(t, 1, 4); t = substr(t, 5)
+        if (h in _JDU) D[++d] = _JDU[h]
+        else if ((v = _jd_hex(h)) < 0) { D[++d] = "\\u"; t = h t }
+        else if (v < 55296 || v >= 57344) D[++d] = _JDU[h] = _jd_utf8(v)
+        else {
+          if (v < 56320 && t == "" && i < n && substr(P[i + 1], 1, 1) == "u") { w = _jd_hex(substr(P[i + 1], 2, 4)); if (w >= 56320 && w < 57344) { v = 65536 + (v - 55296) * 1024 + (w - 56320); i++; t = substr(P[i], 6) } }
+          if (v < 65536) v = 65533
+          D[++d] = _jd_utf8(v)
+        }
+      }
+      else if (e == "n") D[++d] = "\n"; else if (e == "t") D[++d] = "\t"; else if (e == "r") D[++d] = "\r"
+      else if (e == "b") D[++d] = "\b"; else if (e == "f") D[++d] = "\f"
+      else if (e == "\"" || e == "/") D[++d] = e
+      else D[++d] = "\\" e
+    }
+    q = index(t, "\""); if (q) { D[++d] = substr(t, 1, q - 1); return _jd_join(D, d) }
+    D[++d] = t
+  }
+  return _jd_join(D, d) }
+'
 
 # emit_event <events-fragment>
 # Build the standard kind:events envelope around one-or-more already-built event

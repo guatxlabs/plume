@@ -315,9 +315,10 @@ tmp=$(mktemp "$SPOOL/.web.XXXXXX")
 w_par_wm=1; w_relu=0
 if [ "$WEBSRC" = file ]; then w_relu=1; [ "$w_par_offset" -eq 1 ] && w_par_wm=0; fi
 w_k3s=0; [ "$WEBSRC" = k3s ] && w_k3s=1
-newwm=$(TZ=UTC awk -v last="$last" -v parwm="$w_par_wm" -v relu="$w_relu" -v k3s="$w_k3s" -v podsout="$w_brut.p" -v host="$host" -v now="$now" -v out="$tmp" -v skiphost="$SKIP_HOST" -v skippath="$SKIP_PATH" -v skiprouter="$SKIP_ROUTER" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
+newwm=$(TZ=UTC awk -v last="$last" -v parwm="$w_par_wm" -v relu="$w_relu" -v k3s="$w_k3s" -v podsout="$w_brut.p" -v host="$host" -v now="$now" -v out="$tmp" -v skiphost="$SKIP_HOST" -v skippath="$SKIP_PATH" -v skiprouter="$SKIP_ROUTER" "$_PLUME_AWK_ECHAPPEMENT_JSON""$_PLUME_AWK_DECODAGE_JSON"'
 # jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
-function sval(name,   re,v){ re="\"" name "\":\"[^\"]*\""; if(match($0,re)){ v=substr($0,RSTART,RLENGTH); sub(/^"[^"]*":"/,"",v); sub(/"$/,"",v); return v } return "" }
+# sval() : la valeur DECODEE (P10.23-x : `curl \"x\"` se lit `curl "x"`, `\u003c` se lit `<`) — jstr() de collectors/lib.sh.
+function sval(name){ return jstr($0, name) }
 function nval(name,   re,v){ re="\"" name "\":-?[0-9]+"; if(match($0,re)){ v=substr($0,RSTART,RLENGTH); sub(/^"[^"]*":/,"",v); return v } return "" }
 # rt() : horodatage du runtime que `kubectl logs --timestamps` met en tete de ligne, `Z` retire : RFC3339Nano retire
 # les zeros de queue de la fraction, et `10.5Z` se classerait APRES `10.50001Z` (Z apres 0) ; sans lui, l ordre des
@@ -360,7 +361,7 @@ BEGIN{ n=0; buf=""; maxts=last+0; nfil=0; nvu=0; nautre=0; nreport=0; nperdu=0; 
   sev=1; if(status+0>=400) sev=2; if(status+0>=500) sev=3
   s=status+0; act=(s<400)?"success":"failure"; if(s==401||s==403||s==429) act="blocked"   # action normalise (CIM)
   m="web " method " " hostr path " -> " status
-  ev="{\"ts\":" et ",\"source\":\"web\",\"category\":\"web\",\"severity\":" sev ",\"src_ip\":\"" jesc(ip) "\",\"message\":\"" jesc(m) "\",\"dedup\":\"web-" jesc(su) "\",\"fields\":{\"src_ip\":\"" jesc(ip) "\",\"vhost\":\"" jesc(hostr) "\",\"scope\":\"" sc "\",\"path\":\"" jesc(path) "\",\"method\":\"" method "\",\"status\":\"" status "\",\"action\":\"" act "\",\"bytes\":\"" bytes "\",\"dur_ms\":\"" durms "\",\"proto\":\"" proto "\",\"router\":\"" jesc(router) "\",\"ua\":\"" jesc(ua) "\",\"dir\":\"inbound\"}}"
+  ev="{\"ts\":" et ",\"source\":\"web\",\"category\":\"web\",\"severity\":" sev ",\"src_ip\":\"" jesc(ip) "\",\"message\":\"" jesc(m) "\",\"dedup\":\"web-" jesc(su) "\",\"fields\":{\"src_ip\":\"" jesc(ip) "\",\"vhost\":\"" jesc(hostr) "\",\"scope\":\"" sc "\",\"path\":\"" jesc(path) "\",\"method\":\"" jesc(method) "\",\"status\":\"" status "\",\"action\":\"" act "\",\"bytes\":\"" bytes "\",\"dur_ms\":\"" durms "\",\"proto\":\"" jesc(proto) "\",\"router\":\"" jesc(router) "\",\"ua\":\"" jesc(ua) "\",\"dir\":\"inbound\"}}"
   if(n>0) buf=buf ","; buf=buf ev; n++
 }
 END{ if(n>0) printf "{\"ts\":%d,\"host\":\"%s\",\"kind\":\"events\",\"events\":[%s]}\n", now, host, buf > out

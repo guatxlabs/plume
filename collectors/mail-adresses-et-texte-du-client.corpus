@@ -41,12 +41,19 @@
 #   attribuée à l'adresse de ce crochet. Elle est désormais comptée, jamais attribuée.
 #   `P10.24-h` — même mesure : deux échecs de la même adresse dans la même seconde portaient la même
 #   clé de dédoublonnage ; le second était écarté à l'ingestion.
+#   `P10.24-k` — mesuré le 2026-10-27 sur le capteur d'avant : tout rejet était `reject`/`blocked`,
+#   la panne du serveur (DSN 4.3.x, postscreen `all server ports busy`) comme le report temporaire
+#   (greylisting `451 4.7.1`) ; `all screening ports busy` n'était pas lu. La classe se lit dans la
+#   réponse que le SERVEUR écrit juste après le client ; la garde la relit et refuse une classe déclarée
+#   qui la contredit.
 # Les lignes amavis ont leur corpus : `collectors/mail-amavis.corpus` (`P10.23-w`).
 #
 # FORMAT : `verdict <TAB> user <TAB> src_ip <TAB> provenance <TAB> ligne`. `#` en colonne zéro =
 # commentaire, ligne vide ignorée.
 #   verdict    : `succes` -> `auth`/`success` ; `echec` -> `auth`/`failure` ; `rejet` ->
-#                `reject`/`blocked` ; `postscreen` -> `postscreen`/`blocked` ; `aucun` -> AUCUN
+#                `reject`/`blocked` (réponse 5xx, ou aucune) ; `report` -> `reject`/`deferred` (4xx hors
+#                4.3, `P10.24-k`) ; `panne` -> `mailflow`/`server_error` (DSN 4.3.x : le SERVEUR est en
+#                panne, `P10.24-k`) ; `postscreen` -> `postscreen`/`blocked` ; `aucun` -> AUCUN
 #                événement pour cette ligne ; `sans-adresse` -> aucun événement, mais la ligne est
 #                COMPTÉE dans l'aveu `collect_status=partial` / `reason=unreadable-address` du passage
 #   user       : le champ `user` attendu (`-` = vide). Le capteur lit un utilisateur dans un message
@@ -172,11 +179,11 @@ aucun	-	-	sources-postfix	2026-09-23T19:31:12.123456+02:00 mailserver postfix/po
 # pas la catégorie (le capteur d'avant rendait `postscreen` pour un `helo` qui écrit un blocage).
 rejet	-	192.0.2.97	sources-postfix	2026-09-23T19:31:13.123456+02:00 mailserver postfix/postscreen[2042]: NOQUEUE: reject: RCPT from [192.0.2.97]:40023: 550 5.7.1 Service unavailable; client [192.0.2.97] blocked using zen.example.net; from=<a@example.test>, to=<b@example.test>, proto=ESMTP, helo=<mx.example.test>
 rejet	-	192.0.2.107	client-postfix	2026-09-23T19:31:14.123456+02:00 mailserver postfix/postscreen[2043]: NOQUEUE: reject: RCPT from [192.0.2.107]:40027: 550 5.7.1 Service unavailable; client [192.0.2.107] blocked using zen.example.net; from=<a@example.test>, to=<b@example.test>, proto=ESMTP, helo=<DNSBL rank 9 for [198.51.100.15]:1>
-rejet	-	192.0.2.98	sources-postfix	2026-09-23T19:31:15.123456+02:00 mailserver postfix/postscreen[2044]: NOQUEUE: reject: CONNECT from [192.0.2.98]:40024: too many connections
+report	-	192.0.2.98	sources-postfix	2026-09-23T19:31:15.123456+02:00 mailserver postfix/postscreen[2044]: NOQUEUE: reject: CONNECT from [192.0.2.98]:40024: too many connections
 # Les rejets smtpd que l'ancien motif lisait : sous identifiant de file, à la connexion, par un milter.
 rejet	-	192.0.2.100	sources-postfix	2026-09-23T19:31:16.123456+02:00 mailserver postfix/smtpd[2045]: 4ABCDEF123: reject: RCPT from mail.example.test[192.0.2.100]: 550 5.1.1 <c@example.test>: Recipient address rejected: User unknown in virtual mailbox table; from=<a@example.net> to=<c@example.test> proto=ESMTP helo=<mail.example.test>
 rejet	-	192.0.2.101	sources-postfix	2026-09-23T19:31:17.123456+02:00 mailserver postfix/smtpd[2046]: NOQUEUE: reject: CONNECT from unknown[192.0.2.101]: 554 5.7.1 <unknown[192.0.2.101]>: Client host rejected: Access denied; proto=SMTP
-rejet	-	192.0.2.109	sources-postfix	2026-09-23T19:31:23.123456+02:00 mailserver postfix/smtpd[2051]: NOQUEUE: milter-reject: RCPT from unknown[192.0.2.109]: 451 4.7.1 Try again later; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<mx.example.test>
+report	-	192.0.2.109	sources-postfix	2026-09-23T19:31:23.123456+02:00 mailserver postfix/smtpd[2051]: NOQUEUE: milter-reject: RCPT from unknown[192.0.2.109]: 451 4.7.1 Try again later; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<mx.example.test>
 # Les mots de postscreen et de rejet écrits par le CLIENT ne sont jamais un verdict (mesuré sur le
 # capteur d'avant : blocage postscreen, rejet, blocage, blocage).
 rejet	-	192.0.2.102	client-postfix	2026-09-23T19:31:18.123456+02:00 mailserver postfix/smtpd[2047]: NOQUEUE: reject: RCPT from unknown[192.0.2.102]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<postscreen PREGREET>
@@ -196,7 +203,7 @@ postscreen	-	2001:db8::152	sources-postfix	2026-09-24T11:20:03.123456+02:00 mail
 rejet	-	192.0.2.153	sources-postfix	2026-09-24T11:20:04.123456+02:00 mailserver postfix/smtpd[3113]: 4ABCDEF301: reject: DATA from mail.example.net[192.0.2.153]: 550 5.5.1 <DATA>: Data command rejected: Multi-recipient bounce; from=<> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
 rejet	-	192.0.2.154	sources-postfix	2026-09-24T11:20:05.123456+02:00 mailserver postfix/smtpd[3114]: 4ABCDEF302: reject: END-OF-MESSAGE from mail.example.net[192.0.2.154]: bare <LF> received; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
 rejet	-	192.0.2.155	sources-postfix	2026-09-24T11:20:06.123456+02:00 mailserver postfix/smtpd[3115]: 4ABCDEF303: milter-reject: END-OF-MESSAGE from mail.example.net[192.0.2.155]: 554 5.7.1 Spam message rejected; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
-rejet	-	192.0.2.156	sources-postfix	2026-09-24T11:20:07.123456+02:00 mailserver postfix/smtpd[3116]: NOQUEUE: milter-reject: CONNECT from unknown[192.0.2.156]: 421 4.7.0 Server closing connection; proto=SMTP
+report	-	192.0.2.156	sources-postfix	2026-09-24T11:20:07.123456+02:00 mailserver postfix/smtpd[3116]: NOQUEUE: milter-reject: CONNECT from unknown[192.0.2.156]: 421 4.7.0 Server closing connection; proto=SMTP
 # Les mêmes mots écrits par le CLIENT ne sont jamais un verdict.
 aucun	-	-	client-postfix	2026-09-24T11:20:08.123456+02:00 mailserver postfix/submission/smtpd[3117]: warning: non-SMTP command from unknown[192.0.2.157]: GET /4ABCDEF304: reject: DATA from x HTTP/1.1
 aucun	-	-	client-postfix	2026-09-24T11:20:09.123456+02:00 mailserver postfix/submission/smtpd[3118]: improper command pipelining after CONNECT from unknown[192.0.2.158]: DATA without valid RCPT from [198.51.100.17]:1\r\n
@@ -216,3 +223,52 @@ sans-adresse	-	-	client-postfix	2026-09-24T11:21:02.123456+02:00 mailserver post
 # deux FABRIQUÉES (voir leurs provenances) : sans elles, `auth=` et `postscreen=` valaient toujours 0.
 sans-adresse	ghost@example.test	-	fabriquee-dovecot-sans-rip	2026-09-24T11:21:03.123456+02:00 mailserver dovecot: imap-login: Disconnected: Connection closed (auth failed, 3 attempts in 12 secs): user=<ghost@example.test>, method=PLAIN, session=<Zml4dHVyZVNB>
 sans-adresse	-	-	fabriquee-postscreen-sans-adresse	2026-09-24T11:21:04.123456+02:00 mailserver postfix/postscreen[3122]: PREGREET 11 after 0.07 from [unknown]:0: EHLO x\r\n
+
+# --- P10.24-k : panne du serveur, rejet de politique, report temporaire --------------------------------
+# Formes lues le 2026-10-27 dans les sources Postfix (branche principale) : `smtpd_check.c`
+# (`reject_dict_retry` 451 4.3.0, `reject_server_error` 451 4.3.5, `check_queue_space` 452 4.3.1,
+# `smtpd_policy_service_default_action` 451 4.3.5 Server configuration problem), `smtpd.c` (réponse d'un
+# milter, `milter-reject`, et le défaut `421 4.3.5`), `milter8.c` (réponses par défaut d'un milter en
+# échec), `postscreen.c` (`all server ports busy` 421 4.3.2, `too many connections` 421 4.7.0, `all
+# screening ports busy` 421 4.3.2 sans `NOQUEUE:`), `postscreen_smtpd.c` (rejet RCPT). NON MESURÉES.
+# La panne : le serveur ne peut pas répondre, le client n'y est pour rien.
+panne	-	192.0.2.160	sources-postfix	2026-10-27T09:00:01.123456+01:00 mailserver postfix/smtpd[4101]: NOQUEUE: reject: RCPT from mail.example.net[192.0.2.160]: 451 4.3.0 <b@example.test>: Temporary lookup failure; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
+panne	-	192.0.2.161	sources-postfix	2026-10-27T09:00:02.123456+01:00 mailserver postfix/smtpd[4102]: NOQUEUE: reject: RCPT from unknown[192.0.2.161]: 451 4.3.5 Server configuration error; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mx.example.net>
+panne	-	192.0.2.162	sources-postfix	2026-10-27T09:00:03.123456+01:00 mailserver postfix/smtpd[4103]: NOQUEUE: reject: MAIL from mail.example.net[192.0.2.162]: 452 4.3.1 Insufficient system storage; from=<a@example.net> proto=ESMTP helo=<mail.example.net>
+panne	-	2001:db8::163	sources-postfix	2026-10-27T09:00:04.123456+01:00 mailserver postfix/smtpd[4104]: NOQUEUE: reject: RCPT from unknown[2001:db8::163]: 451 4.3.5 Server configuration problem; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mx.example.net>
+panne	-	192.0.2.164	sources-postfix	2026-10-27T09:00:05.123456+01:00 mailserver postfix/smtpd[4105]: 4ABCDEF401: milter-reject: END-OF-MESSAGE from mail.example.net[192.0.2.164]: 451 4.3.5 Server configuration problem - try again later; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
+panne	-	192.0.2.165	sources-postfix	2026-10-27T09:00:06.123456+01:00 mailserver postfix/smtpd[4106]: NOQUEUE: reject: CONNECT from unknown[192.0.2.165]:41000: 421 4.3.5 Server configuration error; proto=SMTP
+panne	-	192.0.2.166	sources-postfix	2026-10-27T09:00:07.123456+01:00 mailserver postfix/postscreen[4107]: NOQUEUE: reject: CONNECT from [192.0.2.166]:41001: all server ports busy
+panne	-	192.0.2.167	sources-postfix	2026-10-27T09:00:08.123456+01:00 mailserver postfix/postscreen[4108]: reject: connect from [192.0.2.167]:41002: all screening ports busy
+# Une panne n'a pas de client à blâmer : émise même quand le client n'est pas une adresse (jamais comptée).
+panne	-	-	sources-postfix	2026-10-27T09:00:09.123456+01:00 mailserver postfix/smtpd[4109]: NOQUEUE: reject: RCPT from unknown[unknown]: 451 4.3.0 <b@example.test>: Temporary lookup failure; from=<a@example.net> to=<b@example.test> proto=ESMTP
+# Le report : la politique demande au client de revenir plus tard (greylisting d'un milter, domaine
+# introuvable, client sans nom inverse, rejet RCPT de postscreen adouci par `soft_bounce`). LIMITE DITE :
+# un milter injoignable sous `milter_default_action = tempfail` répond la même chose qu'un milter qui
+# reporte (`451 4.7.1 Service unavailable - try again later`, `milter8.c`) : lu `report`.
+report	-	192.0.2.170	sources-postfix	2026-10-27T09:00:10.123456+01:00 mailserver postfix/smtpd[4110]: 4ABCDEF402: milter-reject: END-OF-MESSAGE from mail.example.net[192.0.2.170]: 451 4.7.1 Try again later; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
+report	-	192.0.2.171	sources-postfix	2026-10-27T09:00:11.123456+01:00 mailserver postfix/smtpd[4111]: NOQUEUE: reject: RCPT from unknown[192.0.2.171]: 450 4.1.8 <a@nx.example.net>: Sender address rejected: Domain not found; from=<a@nx.example.net> to=<b@example.test> proto=ESMTP helo=<mx.example.net>
+report	-	192.0.2.172	sources-postfix	2026-10-27T09:00:12.123456+01:00 mailserver postfix/postscreen[4112]: NOQUEUE: reject: RCPT from [192.0.2.172]:41003: 450 4.7.1 Service unavailable; client [192.0.2.172] blocked using zen.example.net; from=<a@example.test>, to=<b@example.test>, proto=ESMTP, helo=<mx.example.test>
+report	-	192.0.2.173	sources-postfix	2026-10-27T09:00:13.123456+01:00 mailserver postfix/smtpd[4113]: NOQUEUE: milter-reject: RCPT from unknown[192.0.2.173]: 451 4.7.1 Service unavailable - try again later; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mx.example.net>
+report	-	2001:db8::174	sources-postfix	2026-10-27T09:00:14.123456+01:00 mailserver postfix/smtpd[4114]: NOQUEUE: reject: RCPT from unknown[2001:db8::174]:41004: 450 4.7.25 Client host rejected: cannot find your hostname, [2001:db8::174]; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mx.example.net>
+# Un report reste un rejet du client : sans adresse lisible, il est COMPTÉ sous `reject`, comme avant.
+sans-adresse	-	-	sources-postfix	2026-10-27T09:00:15.123456+01:00 mailserver postfix/smtpd[4115]: NOQUEUE: milter-reject: RCPT from unknown[unknown]: 451 4.7.1 Try again later; from=<a@example.net> to=<b@example.test> proto=ESMTP
+# La réponse est lue JUSTE APRÈS le client : un DSN ou un mot de panne écrit par le CLIENT ne change pas la
+# classe d'un rejet 5xx, et le même mot hors d'un rejet n'est rien.
+rejet	-	192.0.2.175	client-postfix	2026-10-27T09:00:16.123456+01:00 mailserver postfix/smtpd[4116]: NOQUEUE: reject: RCPT from unknown[192.0.2.175]: 554 5.7.1 <b@example.test>: Relay access denied; from=<a@example.test> to=<b@example.test> proto=ESMTP helo=<451 4.3.0 x>
+rejet	-	192.0.2.176	client-postfix	2026-10-27T09:00:17.123456+01:00 mailserver postfix/postscreen[4117]: NOQUEUE: reject: RCPT from [192.0.2.176]:41005: 550 5.7.1 Service unavailable; client [192.0.2.176] blocked using zen.example.net; from=<a@example.test>, to=<b@example.test>, proto=ESMTP, helo=<x: all server ports busy>
+aucun	-	-	client-postfix	2026-10-27T09:00:18.123456+01:00 mailserver postfix/submission/smtpd[4118]: warning: non-SMTP command from unknown[192.0.2.177]: GET /reject: connect from [198.51.100.20]:1: all screening ports busy HTTP/1.1
+# Le DSN 4.3.2 a deux auteurs (sources Postfix relues le 2026-10-27). Chez smtpd, la seule source est la
+# restriction `defer` posée par l'exploitant (`smtpd_check.c`, `DEFER_ALL`, classe `MAIL_ERROR_POLICY`) : une
+# politique, un `report`. Chez postscreen, `421 4.3.2 No system resources` (`postscreen_send.c`, rendu au rejet
+# RCPT par `postscreen_smtpd.c`) : le serveur n'a pas pu passer la connexion à smtpd, une `panne`.
+report	-	192.0.2.178	sources-postfix	2026-10-27T09:00:19.123456+01:00 mailserver postfix/smtpd[4119]: NOQUEUE: reject: RCPT from unknown[192.0.2.178]: 450 4.3.2 <b@example.test>: Recipient address rejected: Try again later; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mx.example.net>
+panne	-	192.0.2.179	sources-postfix	2026-10-27T09:00:20.123456+01:00 mailserver postfix/postscreen[4120]: NOQUEUE: reject: RCPT from [192.0.2.179]:41006: 421 4.3.2 No system resources; from=<a@example.test>, to=<b@example.test>, proto=ESMTP, helo=<mx.example.test>
+# `4.3.4` n'est jamais une panne : Postfix ne l'écrit qu'en `552 5.3.4 Message size exceeds fixed limit`
+# (`smtpd_check.c`, classe `MAIL_ERROR_POLICY`), journalisé `452 4.3.4` sous `soft_bounce = yes`
+# (`smtpd_check_reject`) : la limite de taille, une politique, un `report`.
+report	-	192.0.2.180	sources-postfix	2026-10-27T09:00:23.123456+01:00 mailserver postfix/smtpd[4123]: NOQUEUE: reject: MAIL from mail.example.net[192.0.2.180]: 452 4.3.4 Message size exceeds fixed limit; from=<a@example.net> proto=ESMTP helo=<mail.example.net>
+# Une panne vue par l'adresse `PLUME_MAIL_SKIP_IP` (192.0.2.70, le passage d'épargne de la garde) est écartée
+# comme le rejet qu'elle était avant d'être lue `mailflow` : smtpd et la file pleine de postscreen.
+panne	-	192.0.2.70	sources-postfix	2026-10-27T09:00:21.123456+01:00 mailserver postfix/smtpd[4121]: NOQUEUE: reject: RCPT from mail.example.net[192.0.2.70]: 451 4.3.0 <b@example.test>: Temporary lookup failure; from=<a@example.net> to=<b@example.test> proto=ESMTP helo=<mail.example.net>
+panne	-	192.0.2.70	sources-postfix	2026-10-27T09:00:22.123456+01:00 mailserver postfix/postscreen[4122]: reject: connect from [192.0.2.70]:41007: all screening ports busy

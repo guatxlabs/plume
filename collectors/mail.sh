@@ -393,9 +393,14 @@ function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
 # `(` n’est pas une borne d’étiquette : Dovecot écrit le compte juste après (`imap(jean@d)`), et `imap(a_b=c@d)`
 # garderait `a_b=`. BATV HORS CHEVRONS (`envelope-from=prvs=0123abcd=jean@d`) : seule l’étiquette du champ sort,
 # l’étiquette `prvs=`, la signature et la partie locale sont masquées ensemble (`envelope-from=*@d`) ; sans
-# étiquette de champ devant (` prvs=0123abcd=jean@d`), `prvs=` est pris pour une étiquette et le reste masqué.
-# CE QUI FUIT ENCORE, DIT : une partie locale qui contient `=`, écrite HORS chevrons et SANS étiquette devant
-# (` jean_dupont=x@d` rend ` jean_dupont=*@d`) — aucune borne lisible ne la sépare d’une étiquette.
+# étiquette de champ devant (` prvs=0123abcd=jean@d`), `prvs=` n’est pas du vocabulaire : tout est masqué (` *@d`).
+# P10.32-l — L’ÉTIQUETTE EST UN MOT DU VOCABULAIRE FERMÉ `ETIQUETTES_DE_CHAMP` (ci-dessous), et aucun autre. Le
+# préfixe `nom=` était gardé QUEL QU’IL SOIT : une partie locale qui contient `=`, écrite HORS chevrons et sans
+# étiquette devant (` jean_dupont=x@d`), rendait ` jean_dupont=*@d` — la partie locale sortait. Un `nom=` hors du
+# vocabulaire est désormais masqué avec la partie locale (` *@d`) ; BATV sans étiquette de champ devant
+# (` prvs=0123abcd=jean@d`) rend ` *@d`. Le mot se compare ENTIER, borné d’espaces : ` rom=jean@d`, sous-chaîne
+# de `from=`, rend ` *@d`. Ce que le vocabulaire laisse, dit : un mot du vocabulaire qui serait le DÉBUT d’une
+# partie locale (` sasl_sender=jean@d` rend ` sasl_sender=*@d`) — un nom de champ, jamais un nom de personne.
 function masquer_adresses(s,   r, t, e, p, q, c){
   gsub(/"([^"\\]|\\.)*"@/, "*@", s)
   r = ""
@@ -404,8 +409,11 @@ function masquer_adresses(s,   r, t, e, p, q, c){
     # Le caractère qui précède le morceau : celui de la ligne, ou le `@` du morceau précédent.
     if (p > 1) c = substr(s, p - 1, 1); else if (r != "") c = "@"; else c = ""
     if (c != "<" && c != "@") {
-      if (match(t, /^[A-Za-z_-]+=/)) e = substr(t, 1, RLENGTH)
-      else if (match(t, /[,;][A-Za-z_-]+=/)) e = substr(t, 1, RSTART + RLENGTH - 1)
+      if (match(t, /^[A-Za-z_-]+=/)) { e = substr(t, 1, RLENGTH); if (index(ETIQUETTES_DE_CHAMP, " " e " ") == 0) e = "" }
+      else if (match(t, /[,;][A-Za-z_-]+=/)) {
+        e = substr(t, 1, RSTART + RLENGTH - 1)
+        if (index(ETIQUETTES_DE_CHAMP, " " substr(t, RSTART + 1, RLENGTH - 1) " ") == 0) e = ""
+      }
     }
     r = r substr(s, 1, p - 1) e "*@"
     s = substr(s, p + q)
@@ -582,6 +590,48 @@ function lire_qmgr(m,   s, f, sz, nr){
     emit("mailflow","expired",2,"","","qmgr",",\"sender\":\"" jesc(masquer_compte(f)) "\"")
   }
 }
+# P10.24-k — UN REJET N’EST PAS UNE PANNE, ET UN REPORT N’EST PAS UN REFUS. Tout `reject:` de smtpd ou de
+# postscreen sortait `reject`/`blocked` : une panne du SERVEUR (`451 4.3.0 Temporary lookup error`,
+# `451 4.3.5 Server configuration error`, `452 4.3.1 Insufficient system storage`, postscreen `all server ports
+# busy`) passait pour un client refusé, et un greylisting (`451 4.7.1 Try again later` d’un milter) pour un
+# rejet de politique. La réponse se lit là où le SERVEUR l’écrit : juste après le client, `<file|NOQUEUE>:
+# (milter-)reject: <étape> from <nom>[<adresse>](:<port>)?: <code> <dsn> ` (`log_whatsup` de `smtpd_check.c`,
+# `milter-reject` de `smtpd.c`, rejet RCPT de `postscreen_smtpd.c`) — le nom est validé par Postfix (ou
+# `unknown`), le texte du client (`from=`, `to=`, `helo=`) ne vient qu’APRÈS, il ne peut pas choisir la classe.
+# Le code et le DSN doivent être de la même classe (`4xx 4.x.x`, `5xx 5.x.x`). Trois issues :
+#   panne du serveur  : DSN `4.3.x` (statut du système de messagerie, RFC 3463) -> `mailflow`/`server_error`, 3 ;
+#   report temporaire : tout autre `4xx` (greylisting `4.7.1`, `421 4.7.0 Server closing connection`, domaine
+#                       introuvable `4.1.8`…) -> `reject`/`deferred`, 2 (un report, cf. l’en-tête) ;
+#   rejet de politique : `5xx`, ou aucune réponse lisible (`bare <LF> received`) -> `reject`/`blocked`, 2.
+# Le DSN lu est le champ `dsn` (vide s’il n’y en a pas). Postscreen écrit deux connexions refusées SANS code
+# (`postscreen.c`) : `all server ports busy` (`421 4.3.2`, panne) et `too many connections` (`421 4.7.0`, report).
+# DEUX DSN `4.3.x` qui ne sont pas des pannes, lus `deferred` :
+#   `4.3.2` écrit par smtpd : Postfix ne l’écrit que pour la restriction `defer` de l’exploitant
+#     (`smtpd_check.c`, `DEFER_ALL`, classe `MAIL_ERROR_POLICY`, `450 4.3.2 <…>: … rejected: Try again later`) ;
+#     un milter peut aussi le rendre (`milter-reject: … 451 4.3.2 …`, texte choisi par le milter) — deux
+#     décisions de politique. Chez postscreen, `4.3.2` reste une panne (`421 4.3.2 No system resources` au rejet
+#     RCPT, `postscreen_send.c` ; `all server ports busy`).
+#   `4.3.4` (message trop gros) : Postfix ne l’écrit qu’en `552 5.3.4` (`Message size exceeds fixed limit`,
+#     `smtpd_check.c`, classe `MAIL_ERROR_POLICY` ; `Message file too big`, `milter8.c`) ; sous `soft_bounce =
+#     yes`, `smtpd_check_reject` le journalise `452 4.3.4` — la limite de taille, une politique, pas une panne.
+# CE QUI RESTE, DIT : un milter injoignable sous `milter_default_action = tempfail` répond `451 4.7.1 Service
+# unavailable - try again later` (`milter8.c`), la même réponse qu’un milter qui reporte de lui-même : lue
+# `deferred`. Seul l’avertissement `warning: milter …` qui la précède dit la panne, et il n’est pas lu ici.
+# `soft_bounce = yes` change un `5xx` en `4xx` (`5.x.x` en `4.x.x`) : le rejet est alors un report, et il est
+# lu ainsi — SAUF un `5.3.x` que l’exploitant écrit lui-même dans une table d’accès (`550 5.3.0 …`) : journalisé
+# `450 4.3.0`, il est lu panne, indiscernable d’une vraie erreur de recherche (`451 4.3.0`).
+function lire_rejet(m,   r, ds){
+  ds = ""
+  if (match(m, /^[0-9A-Za-z]+: (milter-)?reject: [A-Za-z-]+( content)? from [A-Za-z0-9._-]*\[[0-9A-Za-z:.]+\](:[0-9]+)?: /)) {
+    r = substr(m, RSTART + RLENGTH)
+    if (match(r, /^4[0-9][0-9] 4[.][0-9]+[.][0-9]+ /) || match(r, /^5[0-9][0-9] 5[.][0-9]+[.][0-9]+ /)) ds = substr(r, 5, RLENGTH - 5)
+  }
+  if (ds == "" && m ~ /^NOQUEUE: reject: CONNECT from \[[0-9A-Fa-f:.]+\]:[0-9]+: all server ports busy$/) ds = "4.3.2"
+  else if (ds == "" && m ~ /^NOQUEUE: reject: CONNECT from \[[0-9A-Fa-f:.]+\]:[0-9]+: too many connections$/) ds = "4.7.0"
+  if (ds ~ /^4[.]3[.]/ && ds != "4.3.4" && !(ds == "4.3.2" && pss == "")) emit("mailflow","server_error",3,ip,usr,svc,",\"dsn\":\"" ds "\"")
+  else if (ds ~ /^4[.]/) emit("reject","deferred",2,ip,usr,svc,",\"dsn\":\"" ds "\"")
+  else emit("reject","blocked",2,ip,usr,svc,",\"dsn\":\"" ds "\"")
+}
 function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   # malware/banned/av_error/mailflow = signaux amavis/clamav : emis MEME sans src_ip (le verdict
   # amavis ne porte pas toujours une IP relais) ; les autres exigent une src_ip (respect de skipip).
@@ -591,11 +641,14 @@ function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   # reste hors du compte.
   # P10.32-f — `mail` (verdicts DKIM/DMARC/SPF), `mailflow` (sortant, file) et `update` (journal ClamAV) n’ont pas de
   # client à attribuer : émis sans adresse, comme amavis. Un verdict SPF porte l’adresse du client
-  # (`client-ip=`) : l’adresse SKIP_IP y est écartée comme ailleurs.
+  # (`client-ip=`) : l’adresse SKIP_IP y est écartée comme ailleurs. P10.24-k — une panne du serveur
+  # (`mailflow`/`server_error`) porte l’adresse du client qui l’a vue : écartée de même (avant elle sortait
+  # `reject`, que SKIP_IP écartait déjà). Le reste de `mailflow` n’est pas touché : le sortant et la file n’ont
+  # pas d’adresse, et l’entrée amavis (`Passed CLEAN`, à l’adresse du relais) ignore SKIP_IP, comme avant.
   if(cat!="malware" && cat!="banned" && cat!="av_error" && cat!="mailflow" && cat!="mail" && cat!="update") {
     if (ip=="") { sans_adresse++; sans_adresse_par[cat]++; return }
     if (ip==skipip) return
-  } else if (cat=="mail" && ip!="" && ip==skipip) return
+  } else if ((cat=="mail" || (cat=="mailflow" && act=="server_error")) && ip!="" && ip==skipip) return
   # P10.24-h — la clé de repli était `mail-<seconde>-<adresse>-<action>` pour TOUT événement sans clé
   # propre (auth, postscreen, rejet, entrée amavis sans identifiant, panne) : deux échecs de la même
   # adresse dans la même seconde, même sur deux comptes, portaient la même clé, et l’ingestion
@@ -611,6 +664,14 @@ function emit(cat,act,sev,ip,usr,svc,extra,dk,   dd){
   if(n>0) buf=buf ","; buf=buf ev; n++
 }
 BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
+  # P10.32-l — les ÉTIQUETTES qu’un démon écrit HORS chevrons JUSTE devant une adresse (`masquer_adresses`),
+  # bornées d’espaces, et elles seules : Postfix (`sasl_username=`, `sasl_sender=`, `smtpd.c`) et policyd-spf
+  # (`envelope-from=`). Les autres noms de champ n’y sont pas, et c’est voulu : Postfix écrit `from=`, `to=`,
+  # `orig_to=`, `helo=` entre chevrons, Dovecot `user=<…>` (après un `<`, l’étiquette n’est jamais lue) ;
+  # policyd-spf écrit `identity=` (`mailfrom`, `helo`), `client-ip=` (une adresse IP), `receiver=` (le nom de
+  # l’hôte) et `helo=` (le HELO du client) — jamais une adresse de messagerie. Un mot de trop ne masquerait
+  # pas moins, mais un `<mot>…@d` écrit par un tiers garderait `<mot>` (la limite de `masquer_adresses`).
+  ETIQUETTES_DE_CHAMP = " sasl_username= sasl_sender= envelope-from= "
   # `Hits: <score>, size: <taille>` : les deux champs qu’amavis écrit TOUJOURS, côte à côte, dans ses deux
   # gabarits ; score `-`, `-1.1`, `3` ou `2.1..5.3` (`macro_score`).
   SUITE_HITS_SIZE = ", Hits: (-|-?[0-9]+([.][0-9]+)?([.][.]-?[0-9]+([.][0-9]+)?)?), size: [0-9]+"
@@ -692,7 +753,10 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
   # accepté (`DATA`, `END-OF-MESSAGE`, `bare <LF> received`…) et le rejet d’un milter à la fin du message
   # n’étaient pas lus ; seule l’étape RCPT l’était.
   else if (pss ~ /^(PREGREET [0-9]+ after |DNSBL rank [0-9]+ for |(BLACK|DENY)LISTED \[|COMMAND (PIPELINING|TIME LIMIT|COUNT LIMIT|LENGTH LIMIT) from |BARE NEWLINE from |NON-SMTP COMMAND from |(DATA|BDAT) without valid RCPT from )/) emit("postscreen","blocked",2,ip,usr,"postscreen")
-  else if (pss ~ /^NOQUEUE: reject: / || psd ~ /^NOQUEUE: reject: / || psd ~ /^[0-9A-Za-z]+: (milter-)?reject: (CONNECT|HELO|EHLO|STARTTLS|AUTH|MAIL|RCPT|DATA|DATA content|BDAT|BDAT content|END-OF-MESSAGE|RSET|NOOP|VRFY|ETRN|QUIT|XCLIENT|XFORWARD|UNKNOWN|HELP) from /) emit("reject","blocked",2,ip,usr,svc)
+  else if (pss ~ /^NOQUEUE: reject: / || psd ~ /^NOQUEUE: reject: / || psd ~ /^[0-9A-Za-z]+: (milter-)?reject: (CONNECT|HELO|EHLO|STARTTLS|AUTH|MAIL|RCPT|DATA|DATA content|BDAT|BDAT content|END-OF-MESSAGE|RSET|NOOP|VRFY|ETRN|QUIT|XCLIENT|XFORWARD|UNKNOWN|HELP) from /) lire_rejet((pss != "") ? pss : psd)
+  # P10.24-k — la file d’attente de postscreen pleine : `reject: connect from [<adresse>]:<port>: all screening
+  # ports busy` (`postscreen.c`, réponse `421 4.3.2`), sans `NOQUEUE:` devant. Une panne de capacité du serveur.
+  else if (pss ~ /^reject: connect from \[[0-9A-Fa-f:.]+\]:[0-9]+: all screening ports busy$/) emit("mailflow","server_error",3,ip,usr,svc,",\"dsn\":\"4.3.2\"")
   # P10.23-w — AMAVIS, SOUS SON ÉTIQUETTE `amavis[pid]:` ET EN TÊTE DE SON MESSAGE. Cherché partout, le
   # verdict se lisait dans une commande HTTP envoyée au port de soumission (`GET /amavis[1]: Blocked
   # INFECTED (…)` : alerte malware de sévérité quatre, virus au choix, à l’adresse du client), dans un

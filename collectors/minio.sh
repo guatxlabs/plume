@@ -14,7 +14,11 @@ ALIAS="${PLUME_MINIO_ALIAS:-}"        # natif : nom d'alias mc deja configure su
 plume_init
 
 # --- Resoudre comment lancer `mc` : hote natif (alias fourni) sinon kubectl exec dans le pod ---
-if [ -n "$ALIAS" ] && command -v mc >/dev/null 2>&1; then
+# P10.32-k — UN ALIAS POSE SANS `mc` NE BASCULE PLUS EN SILENCE VERS kubectl. PLUME_MINIO_ALIAS dit le mode
+# hote natif ; `mc` absent, le capteur cherchait un pod MinIO a la place et, sans lui, conseillait de poser
+# l'alias deja pose. La cause est la dependance manquante, et elle se dit.
+if [ -n "$ALIAS" ]; then
+  command -v mc >/dev/null 2>&1 || plume_unavailable minio missing-dependency "PLUME_MINIO_ALIAS=$ALIAS est pose (mode hote natif) mais \`mc\` est introuvable dans le PATH du capteur : ni utilisateur ni bucket ne peuvent etre lus"
   A="$ALIAS"; mc(){ command mc "$@"; }
 else
   KC="kubectl"; command -v kubectl >/dev/null 2>&1 || KC="k3s kubectl"
@@ -31,28 +35,49 @@ else
   A="local"; mc(){ $KC -n "$NS" exec "$POD" -- mc "$@"; }
 fi
 
-USERS=$(mc --json admin user list "$A" 2>/dev/null || true)
-BKTS=$(mc --json ls "$A" 2>/dev/null || true)
-INFO=$(mc --json admin info "$A" 2>/dev/null || true)
-[ -z "$USERS$BKTS" ] && plume_exit_nodata
-
-# Etat anonyme (public/prive) par bucket -> une ligne "<bucket>\t<texte mc anonymous>".
+# P10.32-k — UNE LECTURE `mc` QUI ECHOUE N'EST PAS UN STOCKAGE VIDE. `|| true` remplacait le code de retour par
+# un succes : alias faux, identifiants revoques, serveur arrete ou `exec` refuse rendaient trois sorties vides, et
+# `plume_exit_nodata` les rangeait en « rien de neuf ». Les trois echecs se disent `unreachable` ; un echec
+# partiel part par `plume_lecture_partielle` et le capteur publie ce qu'il a lu (inventaire seul compris). Ce capteur ne tient aucun
+# marqueur : rien n'avance, la lecture est simplement refaite au passage suivant.
+_mko=""
+USERS=$(mc --json admin user list "$A" 2>/dev/null) || { USERS=""; _mko="$_mko utilisateurs(admin user list)"; }
+BKTS=$(mc --json ls "$A" 2>/dev/null) || { BKTS=""; _mko="$_mko buckets(ls)"; }
+INFO=$(mc --json admin info "$A" 2>/dev/null) || { INFO=""; _mko="$_mko inventaire(admin info)"; }
+# Etat anonyme (public/prive) par bucket -> une ligne "<bucket>\t<texte mc anonymous>". P10.32-k — une politique
+# ILLISIBLE n'est pas « inconnue » : publiee `access: unknown`, elle changeait la cle de deduplication du bucket sans
+# rien dire. Le bucket est alors tu ce passage, et le compte des politiques non lues part dans l'aveu partiel.
 blist=$(printf '%s\n' "$BKTS" | grep -oE '"key":"[^"]+"' | sed 's/"key":"//; s/"//; s#/$##')
-ANON=""
+ANON=""; _anon_ko=0
 for b in $blist; do
   [ -z "$b" ] && continue
-  a=$(mc anonymous get "$A/$b" 2>/dev/null || true)
-  ANON="$ANON$b	$a
+  if a=$(mc anonymous get "$A/$b" 2>/dev/null); then
+    ANON="$ANON$b	$a
 "
+  else
+    _anon_ko=$((_anon_ko + 1))
+  fi
 done
+[ "$_anon_ko" -gt 0 ] && _mko="$_mko politique_anonyme(anonymous get : $_anon_ko bucket(s))"
+case "$_mko" in
+  *utilisateurs*buckets*inventaire*)
+    plume_unavailable minio unreachable "les trois lectures \`mc\` ont echoue sur l'alias $A (alias ou identifiants faux, droits insuffisants, serveur MinIO arrete) : ni utilisateur ni bucket ne sont lus, l'absence de changement ne peut PAS en etre conclue" ;;
+  ?*)
+    plume_lecture_partielle minio source_illisible "lecture(s) \`mc\` en echec sur l'alias $A :$_mko. Ce qu'elles portent n'est PAS observe ce passage." ;;
+esac
+# Rien a publier seulement si TOUT a ete lu et rien rendu : une lecture partielle publie ce qu'elle a lu, l'inventaire
+# (`admin info`) compris quand utilisateurs et buckets ont echoue.
+[ -z "$USERS$BKTS" ] && [ -z "$_mko" ] && plume_exit_nodata
 
 umask 027
 tmp=$(mktemp "$SPOOL/.minio.XXXXXX")
 { printf '==USERS==\n%s\n==ANON==\n%s\n==INFO==\n%s\n' "$USERS" "$ANON" "$INFO"; } \
-| awk -v ts="$ts" -v host="$host" -v out="$tmp" "$_PLUME_AWK_ECHAPPEMENT_JSON"'
+| awk -v ts="$ts" -v host="$host" -v out="$tmp" "$_PLUME_AWK_ECHAPPEMENT_JSON""$_PLUME_AWK_DECODAGE_JSON"'
 # jesc() : l’échappement JSON de collectors/lib.sh (_PLUME_AWK_ECHAPPEMENT_JSON, P10.23-e), placé en tête de ce programme.
+# jval() : une chaine est rendue DECODEE par jstr() de collectors/lib.sh (P10.23-x : elle etait coupee a son premier
+# guillemet echappe et gardee encodee) ; un nombre ou un booleen, tel quel.
 function jval(s,k,  r){ r=s
-  if(match(r,"\""k"\":\"")){ r=substr(r,RSTART+length(k)+4); sub(/".*/,"",r); return r }
+  if(index(r,"\""k"\":\"")) return jstr(r,k)
   if(match(r,"\""k"\":")){ r=substr(r,RSTART+length(k)+3); sub(/[,}].*/,"",r); return r }
   return "" }
 function num(s,k,  r){ r=s; if(match(r,"\""k"\":\\{\"count\":[0-9]+")){ r=substr(r,RSTART,RLENGTH); sub(/.*"count":/,"",r); return r } return "" }

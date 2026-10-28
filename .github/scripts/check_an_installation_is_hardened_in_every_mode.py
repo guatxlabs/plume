@@ -25,6 +25,13 @@ k3s. (f) Ingress sans TLS et servi aussi en HTTP, pas de profil seccomp, jeton d
 monté sans usage, entrée réseau ouverte depuis tout namespace.
 Docker. (g) Aucun `cap_drop`, et PLUME_TLS_CERT/PLUME_TLS_KEY jamais transmis au conteneur ;
 PLUME_TLS_TERMINATED_UPSTREAM pareil (`P10.32-t`), et absent du Deployment k3s derrière un Ingress HTTPS seul.
+Central. (i) `bootstrap.sh` créait `/etc/plume/prom.conf` (le jeton du scrape, souvent `--relais`, ou un
+mot de passe) et `/etc/plume/prom-targets` en 0640 root:soc, sous l'umask 027 laissé par la pose de
+soc.conf, alors que leur seul lecteur est root (`EnvironmentFile=`, lu par PID 1 ; `prom-scrape.sh` sous
+une unité sans `User=`). Ils finissent 0600, jamais confiés à `soc`, créés sous umask 077, resserrés au
+re-passage sans que leur contenu change. Et la table « Où vivent les secrets » du guide d'installation
+(§3) ne les nommait pas : chaque conf lue par root seul que `bootstrap.sh` pose y a sa ligne, en
+`0600 root:root` (liste TIRÉE du bac, pas écrite ici).
 
 CE QUE LA GARDE FAIT
 --------------------
@@ -994,8 +1001,99 @@ def scenario_central(commun, env_files):
                 if "auditd ABSENT" not in bac.sortie:
                     faute(f"{nom} : l'installeur ne dit pas que auditd est absent")
             juger_confs_engendrees(bac, nom, env_files)
+            posees_root_seul = juger_confs_root_seul(bac, nom, env_files, creee=True)
+            if not posees_root_seul:
+                refuser(f"{nom} : aucune conf lue par root seul posée — le relevé de leurs modes ne mesure rien")
+            juger_table_des_secrets(nom, posees_root_seul)
         finally:
             bac.nettoyer()
+
+
+# `P10.32-j` (i), suite — la table des secrets du guide d'installation nomme ce que l'installeur pose.
+GUIDE_INSTALLATION = "docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md"
+TABLE_DES_SECRETS = ("## 3. Où vivent les secrets", "\n## 4. ")
+
+
+def juger_table_des_secrets(nom, chemins):
+    """Chaque conf de `chemins` (lue par root seul, posée par l'installeur dans le bac) a sa ligne dans la table §3,
+    chemin écrit entre accents graves dans la colonne « Où » et `0600 root:root` dans la colonne « Droits »."""
+    brut = lire(os.path.join(RACINE_DEPOT, GUIDE_INSTALLATION))
+    a = brut.find(TABLE_DES_SECRETS[0])
+    b = brut.find(TABLE_DES_SECRETS[1], a + 1)
+    if a < 0 or b < 0:
+        refuser(f"{GUIDE_INSTALLATION} : tranche {TABLE_DES_SECRETS!r} introuvable — la table des secrets n'est pas jugée")
+        return
+    lignes = [[c.strip() for c in ln.strip().strip("|").split("|")]
+              for ln in brut[a:b].splitlines() if ln.lstrip().startswith("|")]
+    lignes = [c for c in lignes if len(c) >= 4 and not set(c[0]) <= set("-: ")]
+    if len(lignes) < 2:
+        refuser(f"{GUIDE_INSTALLATION} : table des secrets illisible ({len(lignes)} ligne(s)) — rien n'est jugé")
+        return
+    for chemin in chemins:
+        ou = [c for c in lignes if f"`{chemin}`" in c[1]]
+        if not ou:
+            faute(f"{nom} : {chemin} est posé par l'installeur, lu par root seul, et absent de la table « Où vivent "
+                  f"les secrets » de {GUIDE_INSTALLATION}")
+        elif not any("0600 root:root" in c[2] for c in ou):
+            faute(f"{nom} : {GUIDE_INSTALLATION}, table des secrets : {chemin} n'y est pas dit `0600 root:root` "
+                  f"(vu : {[c[2] for c in ou]})")
+
+
+# `P10.32-j` (i) — fichiers de /etc/plume lus par un script root et NON par PID 1 (qui lit seul les
+# `EnvironmentFile=`) : chemin -> (unité qui lance le lecteur, script lecteur). L'unité doit rester sans `User=`.
+LUS_PAR_UN_SCRIPT_ROOT = {"/etc/plume/prom-targets": ("plume-prom-scrape.service", "collectors/prom-scrape.sh")}
+
+
+def confs_lues_par_root_seul(env_files):
+    """Les `EnvironmentFile=` (PID 1 les lit en root, quel que soit `User=`) qui ne sont le `PLUME_CONFIG` d'aucune
+    unité non-root, plus LUS_PAR_UN_SCRIPT_ROOT : aucun processus sous `soc` ne les ouvre."""
+    sysd = os.path.join(RACINE_DEPOT, "systemd")
+    configs_non_root = set()
+    for n in sorted(os.listdir(sysd)):
+        if not n.endswith(".service"):
+            continue
+        t = lire(os.path.join(sysd, n))
+        u = re.search(r"^User=(\S+)", t, re.M)
+        if u and u.group(1) != "root":
+            configs_non_root.update(re.findall(r"^Environment=\"?PLUME_CONFIG=([^\"\s]+)", t, re.M))
+    for chemin, (unite, script) in LUS_PAR_UN_SCRIPT_ROOT.items():
+        t = lire(os.path.join(sysd, unite))
+        if re.search(r"^User=(?!root\s*$)", t, re.M):
+            faute(f"systemd/{unite} tourne sous un compte non-root : {chemin} (0600 root) lui serait illisible")
+        if os.path.basename(chemin) not in lire(os.path.join(RACINE_DEPOT, script)):
+            refuser(f"{script} ne cite plus {chemin} : LUS_PAR_UN_SCRIPT_ROOT est périmée")
+    return sorted((set(env_files) | set(LUS_PAR_UN_SCRIPT_ROOT)) - configs_non_root)
+
+
+def juger_confs_root_seul(bac, nom, env_files, creee):
+    """Chaque conf lue par root seul que l'installeur a posée finit 0600, jamais confiée à `soc` ; rend leur liste."""
+    jugees = [c for c in confs_lues_par_root_seul(env_files) if os.path.isfile(bac.r(c))]
+    for chemin in jugees:
+        juger_jeton(bac, nom, chemin, creee)
+    return jugees
+
+
+def scenario_central_confs_existantes(env_files):
+    """Re-passage de bootstrap.sh sur des confs du scrape DÉJÀ posées en 0640 : contenu gardé, mode resserré."""
+    nom = "bootstrap.sh (re-passage, prom.conf et prom-targets 0640 existants)"
+    posees = {"/etc/plume/prom.conf": "PLUME_CENTRAL=https://soc.example.org:7000\nPLUME_TOKEN=jeton-existant\n",
+              "/etc/plume/prom-targets": "http://192.0.2.10:9100/metrics\n"}
+    bac = Bac("central-reprise")
+    try:
+        for chemin, contenu in posees.items():
+            bac.poser(chemin.lstrip("/"), contenu, 0o640)
+        bac.jouer("bootstrap.sh", {"PLUME_PASS_HASH": ""})
+        if bac.rc != 0:
+            refuser(f"{nom} a échoué dans le bac (code {bac.rc}) :\n{bac.sortie[-3000:]}")
+            return
+        for chemin, contenu in posees.items():
+            if lire(bac.r(chemin)) != contenu:
+                faute(f"{nom} : {chemin} réécrit — une conf existante se garde octet pour octet")
+        jugees = juger_confs_root_seul(bac, nom, env_files, creee=False)
+        if set(posees) - set(jugees):
+            refuser(f"{nom} : {sorted(set(posees) - set(jugees))} non jugés (relevé des confs root seul)")
+    finally:
+        bac.nettoyer()
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1767,6 +1865,7 @@ def main():
     env_files = fichiers_environnement()
     if not refus:
         scenario_central(commun, env_files)
+        scenario_central_confs_existantes(env_files)
         scenario_central_audit()
         scenario_agent(commun, env_files)
         juger_chargeur_audit()

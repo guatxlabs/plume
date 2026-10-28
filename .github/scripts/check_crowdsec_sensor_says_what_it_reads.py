@@ -21,6 +21,8 @@ répertoire temporaire. Les scénarios, chacun en un ou deux passages qui partag
                        `lit` avec les compteurs et différences EXACTS par source et au total (valeurs
                        toutes distinctes : deux compteurs permutés rougissent), la source figée
                        nommée dans `acq_frozen_sources`, sévérité 0, aucun aveu d'acquisition ;
+  · premier passage, une source à zéro — aucune ligne lue depuis le démarrage de l'agent alors que les
+                       autres lisent : nommée dans `acq_frozen_sources` dès le premier passage, sans refus ;
   · figé             — même lecture, une source neuve encore vide : `aucune_lecture`, sévérité >= 3,
                        aveu de cause `source_absente`, état NON avancé (l'état avancé porterait la
                        source neuve : la comparaison est discriminante) ;
@@ -136,6 +138,12 @@ M_ZERO = acq({S_A: {"reads": 0, "parsed": 0, "unparsed": 0, "whitelisted": 0}})
 M1_NEUVE_VIDE = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 88},
                      S_OLD: {"reads": 50, "parsed": 40, "unparsed": 10, "whitelisted": 4},
                      S_NEW: {"reads": 0}})
+# La borne `reads == 0` du premier passage : une source qui a lu UNE ligne depuis le démarrage de l'agent lit,
+# elle n'est pas figée (un `<= 1` à sa place passait vert faute d'une telle source).
+S_UNE = "file:/var/log/containers/web-une-ligne.log"
+M1_NEUVE_VIDE_ET_UNE_LIGNE = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 88},
+                                  S_UNE: {"reads": 1, "parsed": 1},
+                                  S_NEW: {"reads": 0}})
 M_NON_ANALYSE1 = acq({S_A: {"reads": 500, "unparsed": 500}})
 M_NON_ANALYSE2 = acq({S_A: {"reads": 800, "unparsed": 800}})
 M_A_ANALYSE = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 88}})
@@ -537,8 +545,39 @@ def main():
             if len(fz) != 100 or source_p(149) in fz:
                 faute(s, f"acq_frozen_sources : {len(fz)} entrées (borne attendue 100, sans la source qui lit)")
 
+        # 3 septies) P10.32-g — AU PREMIER PASSAGE, cent cinquante sources dont SEULE la 150e a lu : les 149 à zéro
+        # sont nommées, BORNÉES à 100, sans celle qui lit (la borne du premier passage, sur sa propre branche).
+        s = "premier_passage/cent_cinquante_a_zero"
+        d = bac.scenario()
+        r, evs = bac.passage(d, acq({source_p(i): ({"reads": 10, "parsed": 7, "unparsed": 3} if i == 149 else {"reads": 0})
+                                     for i in range(150)}))
+        hb = battement(s, r, evs, declares)
+        if hb:
+            attendre_sans_refus(s, hb, evs, "premier_passage")
+            fz = hb["fields"].get("acq_frozen_sources") or []
+            if len(fz) != 100 or source_p(149) in fz or len(set(fz)) != 100:
+                faute(s, f"acq_frozen_sources : {len(fz)} entrées (borne attendue 100, distinctes, sans la source qui lit)")
+
         # 3 sexies) une source lit sans rien analyser, une autre analyse : `lit`, et la première
         # n'est PAS nommée figée — elle lit ; son parseur cassé se voit dans son détail.
+        # 3 sexies a) P10.32-g — AU PREMIER PASSAGE, une source qui n'a lu AUCUNE ligne depuis le démarrage de
+        # l'agent, parmi d'autres qui lisent, est nommée (elle était tue jusqu'au passage suivant), sans refus.
+        s = "premier_passage/source_a_zero"
+        d = bac.scenario()
+        r, evs = bac.passage(d, M1_NEUVE_VIDE)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            attendre_sans_refus(s, hb, evs, "premier_passage")
+            egal(s, hb["fields"], "acq_frozen_sources", [S_NEW])
+
+        s = "premier_passage/source_a_une_ligne"
+        d = bac.scenario()
+        r, evs = bac.passage(d, M1_NEUVE_VIDE_ET_UNE_LIGNE)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            attendre_sans_refus(s, hb, evs, "premier_passage")
+            egal(s, hb["fields"], "acq_frozen_sources", [S_NEW])
+
         s = "une_source_lit_sans_analyse"
         d = bac.scenario()
         bac.passage(d, M_DEUX_SOURCES1)

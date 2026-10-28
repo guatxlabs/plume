@@ -262,6 +262,9 @@ def masquer_compte(v):
 # Une ÉTIQUETTE de champ (`sasl_username=`) : au début du morceau ou après un `,` ou un `;`, et jamais quand le
 # morceau suit un `<` ou un autre `@` — là, tout jusqu'au `@` est la partie locale (`to=<a_b=c@d>` -> `to=<*@d>`).
 ETIQUETTE_DE_CHAMP = re.compile(r"(?:^|[,;])[A-Za-z_-]+=")
+# P10.32-l — et seulement un mot du vocabulaire FERMÉ (`ETIQUETTES_DE_CHAMP` de `collectors/mail.sh`) : un autre
+# `nom=` hors chevrons est une partie locale, masquée entière.
+ETIQUETTES_DE_CHAMP = frozenset(("sasl_username=", "sasl_sender=", "envelope-from="))
 
 
 def _etiquette(m):
@@ -270,7 +273,9 @@ def _etiquette(m):
     if avant in ("<", "@"):
         return ""
     e = ETIQUETTE_DE_CHAMP.search(m.group(0)[:-1])
-    return m.group(0)[:e.end()] if e else ""
+    if not e or e.group(0).lstrip(",;") not in ETIQUETTES_DE_CHAMP:
+        return ""
+    return m.group(0)[:e.end()]
 
 
 def _partie_locale_masquee(m):

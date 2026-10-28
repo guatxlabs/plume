@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Le capteur mail classe les connexions Dovecot 2.3 ET 2.4, lit l'adresse source ENTIÈRE, et ne prend jamais un texte du client pour un verdict — garde de CI (`P10.22-j`, `P10.22-s`, `P10.22-v`, `P10.23-f`, `P10.23-g`, `P10.23-h`, `P10.23-i`, `P10.23-w`, `P10.23-y`, `P10.24-h`, `P10.24-i`, `P10.24-j`).
+"""Le capteur mail classe les connexions Dovecot 2.3 ET 2.4, lit l'adresse source ENTIÈRE, et ne prend jamais un texte du client pour un verdict — garde de CI (`P10.22-j`, `P10.22-s`, `P10.22-v`, `P10.23-f`, `P10.23-g`, `P10.23-h`, `P10.23-i`, `P10.23-w`, `P10.23-y`, `P10.24-h`, `P10.24-i`, `P10.24-j`, `P10.24-k`).
 
 LES DÉFAUTS QUE CETTE GARDE REND NON-ÉCRIVABLES
 -----------------------------------------------
@@ -52,6 +52,18 @@ même clé, et l'ingestion (`INSERT OR IGNORE`) écartait le second.
 `P10.24-i` — une entrée amavis coupée à 980 octets était émise champs tus, sans le dire.
 `P10.24-j` — `Passed …` et `Blocked …` d'un même message (les deux blocs de `$log_short_templ`,
 développés ensemble : amavis `lib/Amavis.pm`, commit 7d473b22) portaient la même clé `mail-<id>`.
+`P10.24-k` — mesuré le 2026-10-27 sur le capteur d'avant : tout `reject:` de smtpd ou de postscreen sortait
+`reject`/`blocked`. Une panne du SERVEUR (`451 4.3.0 Temporary lookup failure`, `451 4.3.5 Server
+configuration error`, `452 4.3.1 Insufficient system storage`, postscreen `all server ports busy`) passait
+pour un client refusé, et un greylisting (`451 4.7.1 Try again later`) pour un rejet de politique ;
+`all screening ports busy` (postscreen, sans `NOQUEUE:`) n'était pas lu. Le corpus déclare désormais
+`rejet` (5xx ou aucune réponse), `report` (4xx hors 4.3, le `450 4.3.2` de la restriction `defer` de
+smtpd, une politique, et le `452 4.3.4` d'une limite de taille sous `soft_bounce`) et `panne` (4.3.x) ; une
+panne à l'adresse `PLUME_MAIL_SKIP_IP` est écartée comme le rejet qu'elle était, une entrée amavis à la même
+adresse reste émise (passage d'épargne, qui joue au moins un échec, une panne et une entrée amavis) ; la
+classe déclarée est
+VÉRIFIÉE contre la réponse que le serveur écrit juste après le client (`classe_du_rejet`, écrite ici une
+seconde fois), et le champ `dsn` émis est jugé.
 
 CE QUE LA GARDE FAIT
 --------------------
@@ -175,19 +187,32 @@ LIB = os.path.join(RACINE, "collectors", "lib.sh")
 CORPUS_DOVECOT = os.path.join(RACINE, "collectors", "mail-connexions-dovecot.corpus")
 CORPUS_CLIENT = os.path.join(RACINE, "collectors", "mail-adresses-et-texte-du-client.corpus")
 CORPUS_AMAVIS = os.path.join(RACINE, "collectors", "mail-amavis.corpus")
-ETIQUETTE = "P10.22-j/s/v, P10.23-f/g/h/i/w/y, P10.24-h/i/j"
+ETIQUETTE = "P10.22-j/s/v, P10.23-f/g/h/i/w/y, P10.24-h/i/j/k"
 
 # `sans-adresse` (P10.23-i) : aucun événement, comme `aucun`, mais la ligne est COMPTÉE dans l'aveu.
 CLASSE_DU_VERDICT = {"succes": ("auth", "success"), "echec": ("auth", "failure"),
                      "rejet": ("reject", "blocked"), "postscreen": ("postscreen", "blocked"),
+                     "report": ("reject", "deferred"), "panne": ("mailflow", "server_error"),
                      "malware": ("malware", "infected"), "banni": ("banned", "banned"),
                      "flux-passe": ("mailflow", "pass"), "flux-spam": ("mailflow", "spam"),
                      "flux-bloque": ("mailflow", "blocked"), "panne-av": ("av_error", "error"),
                      "aucun": None, "sans-adresse": None}
 # P10.23-w — la sévérité fait partie du verdict : le constat est une alerte de sévérité QUATRE.
-SEVERITE_DU_VERDICT = {"succes": 1, "echec": 2, "rejet": 2, "postscreen": 2, "malware": 4, "banni": 3,
+SEVERITE_DU_VERDICT = {"succes": 1, "echec": 2, "rejet": 2, "postscreen": 2, "report": 2, "panne": 3,
+                       "malware": 4, "banni": 3,
                        "flux-passe": 1, "flux-spam": 2, "flux-bloque": 2, "panne-av": 3}
 VERDICTS_AMAVIS = ("malware", "banni", "flux-passe", "flux-spam", "flux-bloque", "panne-av")
+# P10.24-k — les trois issues d'un rejet de smtpd ou de postscreen, et le DSN qui les sépare.
+VERDICTS_DE_REJET = ("rejet", "report", "panne")
+# La tête que le SERVEUR écrit (`log_whatsup` de `smtpd_check.c`, `milter-reject` de `smtpd.c`, le rejet RCPT
+# de `postscreen_smtpd.c`), puis la réponse `<code> <dsn> ` de même classe.
+TETE_DE_REJET = re.compile(r"^[0-9A-Za-z]+: (?:milter-)?reject: [A-Za-z-]+(?: content)? from "
+                           r"[A-Za-z0-9._-]*\[[0-9A-Za-z:.]+\](?::[0-9]+)?: ")
+REPONSE_DE_REJET = re.compile(r"^(?:4[0-9][0-9] (4\.[0-9]+\.[0-9]+)|5[0-9][0-9] (5\.[0-9]+\.[0-9]+)) ")
+# Les deux connexions que postscreen refuse SANS code (`postscreen.c`), et leur réponse.
+POSTSCREEN_SANS_CODE = [(re.compile(r"^NOQUEUE: reject: CONNECT from \[[0-9A-Fa-f:.]+\]:[0-9]+: all server ports busy$"), "4.3.2"),
+                        (re.compile(r"^NOQUEUE: reject: CONNECT from \[[0-9A-Fa-f:.]+\]:[0-9]+: too many connections$"), "4.7.0")]
+FILE_DE_POSTSCREEN_PLEINE = re.compile(r"^reject: connect from \[[0-9A-Fa-f:.]+\]:[0-9]+: all screening ports busy$")
 # Les champs qu'une entrée amavis porte, et que le juge compare un à un (`dedup` à part). `truncated`
 # (P10.24-i) n'est porté que par une entrée COUPÉE.
 CHAMPS_AMAVIS = ("verdict", "virus", "sender", "rcpt", "score", "size", "truncated")
@@ -225,6 +250,9 @@ def masquer_compte(v):
 # Une ÉTIQUETTE de champ (`sasl_username=`) : au début du morceau ou après un `,` ou un `;`, et jamais quand le
 # morceau suit un `<` ou un autre `@` — là, tout jusqu'au `@` est la partie locale (`to=<a_b=c@d>` -> `to=<*@d>`).
 ETIQUETTE_DE_CHAMP = re.compile(r"(?:^|[,;])[A-Za-z_-]+=")
+# Et seulement un mot du vocabulaire FERMÉ (`ETIQUETTES_DE_CHAMP` de `collectors/mail.sh`) : un autre `nom=`
+# hors chevrons est une partie locale, masquée entière.
+ETIQUETTES_DE_CHAMP = frozenset(("sasl_username=", "sasl_sender=", "envelope-from="))
 
 
 def _etiquette(m):
@@ -233,7 +261,9 @@ def _etiquette(m):
     if avant in ("<", "@"):
         return ""
     e = ETIQUETTE_DE_CHAMP.search(m.group(0)[:-1])
-    return m.group(0)[:e.end()] if e else ""
+    if not e or e.group(0).lstrip(",;") not in ETIQUETTES_DE_CHAMP:
+        return ""
+    return m.group(0)[:e.end()]
 
 
 def _partie_locale_masquee(m):
@@ -312,6 +342,31 @@ def premier_crochet(message):
     o = message.find("[")
     f = message.find("]", o + 1) if o >= 0 else -1
     return message[o + 1:f] if f >= 0 else None
+
+
+def dsn_du_rejet(message):
+    """P10.24-k — le DSN qu'un rejet de smtpd ou de postscreen porte, lu là où le SERVEUR l'écrit, ou `""`."""
+    t = TETE_DE_REJET.match(message)
+    if t:
+        r = REPONSE_DE_REJET.match(message[t.end():])
+        if r:
+            return r.group(1) or r.group(2)
+    for motif, dsn in POSTSCREEN_SANS_CODE:
+        if motif.match(message):
+            return dsn
+    return "4.3.2" if FILE_DE_POSTSCREEN_PLEINE.match(message) else ""
+
+
+def classe_du_rejet(message, famille):
+    """P10.24-k — `panne` (DSN 4.3.x), `report` (tout autre 4.x.x), `rejet` (5.x.x ou aucune réponse). SAUF
+    `4.3.2` écrit par smtpd : la restriction `defer` de l'exploitant (`smtpd_check.c`, `DEFER_ALL`, classe
+    `MAIL_ERROR_POLICY`) ou la réponse d'un milter — un `report` ; chez postscreen, une panne. Et SAUF `4.3.4` :
+    Postfix ne l'écrit qu'en `552 5.3.4` (limite de taille, `smtpd_check.c`, `milter8.c`), journalisé `452 4.3.4`
+    sous `soft_bounce` — un `report`."""
+    d = dsn_du_rejet(message)
+    if (d == "4.3.2" and famille == "smtpd") or d == "4.3.4":
+        return "report"
+    return "panne" if d.startswith("4.3.") else "report" if d.startswith("4.") else "rejet"
 # Chaque corpus : ses verdicts, son nombre de colonnes, et pour chaque provenance le GROUPE
 # d'étiquettes qu'elle exige (`dovecot`, `postfix` — smtpd, smtp, postscreen —, `amavis`).
 SPEC_DOVECOT = dict(
@@ -322,7 +377,7 @@ SPEC_DOVECOT = dict(
 )
 SPEC_CLIENT = dict(
     nom="mail-adresses-et-texte-du-client.corpus", colonnes=5,
-    verdicts=("succes", "echec", "rejet", "postscreen", "sans-adresse", "aucun"),
+    verdicts=("succes", "echec", "rejet", "report", "panne", "postscreen", "sans-adresse", "aucun"),
     provenances={"sources-2.3.19.1": "dovecot", "sources-2.4.1": "dovecot", "fabriquee-2.4": "dovecot",
                  "enonce-P10.22-s": "dovecot", "fabriquee-2.3": "dovecot", "fabriquee-dovecot-sans-rip": "dovecot",
                  "sources-postfix": "postfix", "sources-postfix-sans-sasl-username": "postfix",
@@ -515,7 +570,7 @@ def analyser_ligne(n, texte, spec):
     # P10.23-f et P10.23-w — la catégorie suit l'ÉTIQUETTE : seul postscreen bloque, seuls smtpd et
     # postscreen rejettent, seul amavis rend un verdict antivirus.
     if famille is not None and ((verdict == "postscreen" and famille != "postscreen")
-                                or (verdict == "rejet" and famille not in ("smtpd", "postscreen"))
+                                or (verdict in VERDICTS_DE_REJET and famille not in ("smtpd", "postscreen"))
                                 or (verdict in VERDICTS_AMAVIS and famille != "amavis")):
         fautes.append(f"ligne {n} : une ligne `{famille}` déclarée `{verdict}` — le corpus légitimerait le défaut qu'il garde")
     if "FORGED" in user or "FORGED" in ip or any("FORGED" in v for v in champs.values()):
@@ -565,6 +620,12 @@ def analyser_ligne(n, texte, spec):
                 fautes.append(f"ligne {n} : `sans-adresse` sur une ligne `{famille}` — seules Dovecot, smtpd et postscreen y sont jugées")
     elif ip == "-" and famille == "amavis":
         pass  # amavis : une entrée sans adresse relais lisible (ou une panne) n'a pas d'adresse source
+    elif ip == "-" and verdict == "panne":
+        # P10.24-k — une panne est émise sans client à blâmer (`mailflow`) : sans adresse, seulement si le
+        # premier crochet n'en est pas une.
+        crochet = premier_crochet(message)
+        if crochet is None or _adresse_ou_rien(crochet) is not None:
+            fautes.append(f"ligne {n} : `panne` attendue sans adresse alors que le premier crochet `[{crochet}]` en est une (ou absent)")
     else:
         a = _adresse_ou_rien(ip)
         if a is None:
@@ -579,6 +640,13 @@ def analyser_ligne(n, texte, spec):
             # P10.23-i — le client est le PREMIER crochet du message ; plus loin, c'est le client qui écrit.
             fautes.append(f"ligne {n} : `src_ip` attendu `{ip}` n'est pas le premier crochet du message "
                           f"(`[{premier_crochet(message)}]`) — l'attendre légitimerait un crochet écrit par le client")
+    # P10.24-k — la classe déclarée d'un rejet est celle de la réponse du SERVEUR ; une ligne comptée sans
+    # adresse n'est pas une panne (une panne est émise, adresse ou non).
+    if famille in ("smtpd", "postscreen") and verdict in VERDICTS_DE_REJET and classe_du_rejet(message, famille) != verdict:
+        fautes.append(f"ligne {n} : `{verdict}` déclaré, la réponse du serveur (`{dsn_du_rejet(message) or 'aucune'}`) dit "
+                      f"`{classe_du_rejet(message, famille)}` — le corpus légitimerait le défaut qu'il garde")
+    if famille in ("smtpd", "postscreen") and verdict == "sans-adresse" and classe_du_rejet(message, famille) == "panne":
+        fautes.append(f"ligne {n} : `sans-adresse` sur une panne — une panne est émise sans adresse, jamais comptée")
     adresses, illisibles = adresses_de_la_ligne(ligne)
     for q in illisibles:
         fautes.append(f"ligne {n} : `{q}` n'est pas une adresse")
@@ -591,6 +659,7 @@ def analyser_ligne(n, texte, spec):
                   provenance=provenance, champs=champs, epoch=epoch_de_la_ligne(ligne),
                   version=("2.4" if "2.4" in provenance else "2.3" if "2.3" in provenance else None),
                   famille=famille, service=service,
+                  dsn=(dsn_du_rejet(message) if verdict in VERDICTS_DE_REJET else None),
                   login=(s_.group(1) if s_ else None), message=message, ligne=ligne)
     return entree, fautes
 
@@ -733,7 +802,7 @@ EXIGENCES_CLIENT = [
     ("P10.23-f : un rejet smtpd à la connexion (`NOQUEUE: reject: CONNECT`)",
      lambda e: e["famille"] == "smtpd" and e["verdict"] == "rejet" and e["message"].startswith("NOQUEUE: reject: CONNECT from ")),
     ("P10.23-f : un rejet de milter à l'étape RCPT (parité avec l'ancien motif)",
-     lambda e: e["famille"] == "smtpd" and e["verdict"] == "rejet" and "milter-reject: RCPT from " in e["message"]),
+     lambda e: e["famille"] == "smtpd" and e["verdict"] in VERDICTS_DE_REJET and "milter-reject: RCPT from " in e["message"]),
     ("P10.23-f : `postscreen PREGREET` écrit par le client dans un rejet smtpd",
      lambda e: _client(e, "postscreen PREGREET") and e["famille"] == "smtpd" and e["verdict"] == "rejet"),
     # Les deux suivantes portent la forme COMPLÈTE, deux-points compris : c'est elle qui distingue un
@@ -757,13 +826,52 @@ EXIGENCES_CLIENT = [
     for action, etape in (("reject", "DATA"), ("reject", "END-OF-MESSAGE"), ("milter-reject", "END-OF-MESSAGE"))
 ] + [
     ("P10.23-y : un rejet de milter hors de l'étape RCPT sans file (`NOQUEUE: milter-reject: CONNECT`)",
-     lambda e: e["famille"] == "smtpd" and e["verdict"] == "rejet" and e["message"].startswith("NOQUEUE: milter-reject: CONNECT from ")),
+     lambda e: e["famille"] == "smtpd" and e["verdict"] in VERDICTS_DE_REJET and e["message"].startswith("NOQUEUE: milter-reject: CONNECT from ")),
     ("P10.23-y : un rejet sous identifiant de file écrit par le client hors d'un rejet",
      lambda e: _client(e, ": reject: DATA from") and e["famille"] == "smtpd" and e["verdict"] == "aucun"),
     ("P10.23-y : `DATA without valid RCPT` écrit par le client dans une ligne smtpd",
      lambda e: _client(e, "DATA without valid RCPT") and e["famille"] == "smtpd" and e["verdict"] == "aucun"),
     ("P10.23-y : `COMMAND LENGTH LIMIT` écrit par le client dans le `helo` du rejet de postscreen",
      lambda e: _client(e, "helo=<COMMAND LENGTH LIMIT from [") and e["famille"] == "postscreen" and e["verdict"] == "rejet"),
+] + [
+    # P10.24-k — chaque panne et chaque report que le capteur d'avant rendait en rejet de politique.
+    (f"P10.24-k : une panne smtpd `{dsn}`", lambda e, dsn=dsn: e["famille"] == "smtpd" and e["verdict"] == "panne" and e["dsn"] == dsn)
+    for dsn in ("4.3.0", "4.3.1", "4.3.5")
+] + [
+    ("P10.24-k : une panne d'un milter en fin de message (`milter-reject: END-OF-MESSAGE`, 4.3.5)",
+     lambda e: e["famille"] == "smtpd" and e["verdict"] == "panne" and ": milter-reject: END-OF-MESSAGE from " in e["message"]),
+    ("P10.24-k : postscreen `all server ports busy`, une panne",
+     lambda e: e["famille"] == "postscreen" and e["verdict"] == "panne" and e["message"].endswith(": all server ports busy")),
+    ("P10.24-k : postscreen `all screening ports busy` (sans `NOQUEUE:`), une panne",
+     lambda e: e["famille"] == "postscreen" and e["verdict"] == "panne" and e["message"].endswith(": all screening ports busy")),
+    ("P10.24-k : une panne dont le client n'est pas une adresse, émise sans adresse",
+     lambda e: e["verdict"] == "panne" and not e["ip"]),
+    ("P10.24-k : un greylisting de milter `451 4.7.1` en fin de message, un report",
+     lambda e: e["famille"] == "smtpd" and e["verdict"] == "report" and e["dsn"] == "4.7.1" and "END-OF-MESSAGE" in e["message"]),
+    ("P10.24-k : un report de smtpd hors 4.7 (`450 4.1.8`)",
+     lambda e: e["famille"] == "smtpd" and e["verdict"] == "report" and e["dsn"] == "4.1.8"),
+    ("P10.24-k : un report du rejet RCPT de postscreen (`450 4.7.1`)",
+     lambda e: e["famille"] == "postscreen" and e["verdict"] == "report" and e["message"].startswith("NOQUEUE: reject: RCPT from [")),
+    ("P10.24-k : postscreen `too many connections`, un report",
+     lambda e: e["famille"] == "postscreen" and e["verdict"] == "report" and e["message"].endswith(": too many connections")),
+    ("P10.24-k : un report compté sans adresse sous `reject`",
+     lambda e: e["verdict"] == "sans-adresse" and classe_du_rejet(e["message"], e["famille"]) == "report"),
+    ("P10.24-k : un DSN 4.3 écrit par le client dans un rejet 5xx, un rejet",
+     lambda e: _client(e, "helo=<451 4.3.") and e["verdict"] == "rejet"),
+    ("P10.24-k : `all server ports busy` écrit par le client dans le rejet de postscreen, un rejet",
+     lambda e: _client(e, "all server ports busy>") and e["famille"] == "postscreen" and e["verdict"] == "rejet"),
+    ("P10.24-k : la restriction `defer` de smtpd (`450 4.3.2`), un report et non une panne",
+     lambda e: e["famille"] == "smtpd" and e["verdict"] == "report" and e["dsn"] == "4.3.2"),
+    ("P10.24-k : la limite de taille sous `soft_bounce` (`452 4.3.4`), un report et non une panne",
+     lambda e: e["famille"] == "smtpd" and e["verdict"] == "report" and e["dsn"] == "4.3.4"),
+    ("P10.24-k : postscreen `421 4.3.2 No system resources` au rejet RCPT, une panne",
+     lambda e: e["famille"] == "postscreen" and e["verdict"] == "panne" and e["dsn"] == "4.3.2"
+     and e["message"].startswith("NOQUEUE: reject: RCPT from [")),
+    ("P10.24-k : une panne smtpd à l'adresse épargnée (`PLUME_MAIL_SKIP_IP`, passage d'épargne)",
+     lambda e: e["famille"] == "smtpd" and e["verdict"] == "panne" and e["ip"] == ADRESSE_EPARGNEE),
+    ("P10.24-k : `all screening ports busy` à l'adresse épargnée (`PLUME_MAIL_SKIP_IP`, passage d'épargne)",
+     lambda e: e["famille"] == "postscreen" and e["verdict"] == "panne" and e["ip"] == ADRESSE_EPARGNEE
+     and e["message"].endswith(": all screening ports busy")),
 ]
 
 
@@ -937,6 +1045,20 @@ def epreuve_de_la_validation():
             "sans-adresse\t-\t-\tfabriquee-2.3\t" + tete + "dovecot: imap-login: ID sent: name=x, user=<>, lip=192.0.2.1"),
         "une ligne `sans-adresse` Dovecot dont le `rip=` du serveur est une adresse": dovecot_sans_rip.replace(
             ", session=", ", rip=192.0.2.9, lip=192.0.2.1, session="),
+        # P10.24-k — la classe déclarée est celle de la réponse du serveur, jamais celle d'un texte du client.
+        "une panne 4.3 déclarée `rejet`": conforme.replace("554 5.7.1 <b@example.test>: Relay access denied",
+                                                           "451 4.3.0 <b@example.test>: Temporary lookup failure"),
+        "un report 4.7.1 déclaré `rejet`": conforme.replace("554 5.7.1 <b@example.test>: Relay access denied", "451 4.7.1 Try again later"),
+        "un rejet 5xx déclaré `panne` sur un DSN écrit par le client": conforme.replace("rejet\t", "panne\t", 1).replace(
+            "helo=<auth failed>", "helo=<451 4.3.0 x>"),
+        "un rejet 5xx déclaré `report`": conforme.replace("rejet\t", "report\t", 1),
+        "une ligne Dovecot déclarée `panne`": ("panne\t-\t192.0.2.105\tfabriquee-2.3\t" + tete + "dovecot: imap-login: ID sent: "
+                                              "name=NOQUEUE: reject: RCPT from x[192.0.2.105]: 451 4.3.0 x, rip=192.0.2.105, lip=192.0.2.1"),
+        "une panne sans adresse dont le client est une adresse": conforme.replace("rejet\t-\t2001:db8::7\t", "panne\t-\t-\t").replace(
+            "554 5.7.1 <b@example.test>: Relay access denied", "451 4.3.5 Server configuration error"),
+        "une panne comptée `sans-adresse`": conforme.replace("rejet\t-\t2001:db8::7\t", "sans-adresse\t-\t-\t").replace(
+            "unknown[2001:db8::7]", "unknown[unknown]").replace("554 5.7.1 <b@example.test>: Relay access denied",
+                                                                "451 4.3.5 Server configuration error"),
         "une ligne `sans-adresse` du relais sortant (`smtp`)": (
             "sans-adresse\t-\t-\tsources-postfix\t" + tete + "postfix/smtp[2]: 4ABCDEF123: to=<c@example.net>, "
             "relay=none, delay=1, status=deferred (SASL authentication failed; server unknown[unknown] said: 535)"),
@@ -1053,6 +1175,9 @@ def juger(entrees, evenements):
             fautes.append(f"{quoi} : `service` = `{champs.get('service')}` au lieu de `{e['service']}`")
         if ev.get("severity") != SEVERITE_DU_VERDICT[e["verdict"]]:
             fautes.append(f"{quoi} : sévérité {ev.get('severity')} au lieu de {SEVERITE_DU_VERDICT[e['verdict']]}")
+        # P10.24-k — le DSN d'un rejet, d'un report ou d'une panne, et lui seul.
+        if e.get("dsn") is not None and champs.get("dsn") != e["dsn"]:
+            fautes.append(f"{quoi} : `dsn` = `{champs.get('dsn')}` au lieu de `{e['dsn']}`")
         # P10.23-w — chaque champ amavis attendu, et aucun autre ; la clé de dédoublonnage.
         attendus = e.get("champs") or {}
         for cle in CHAMPS_AMAVIS:
@@ -1092,8 +1217,9 @@ ADRESSE_EPARGNEE = "192.0.2.70"
 
 
 def _classee_hors_amavis(e):
-    """Une ligne auth, postscreen ou rejet : celles que `PLUME_MAIL_SKIP_IP` écarte (amavis l'ignore)."""
-    return e["verdict"] in ("succes", "echec", "rejet", "postscreen")
+    """Une ligne auth, postscreen, rejet ou panne : celles que `PLUME_MAIL_SKIP_IP` écarte (amavis l'ignore).
+    P10.24-k — la panne y est : avant d'être lue `mailflow`, elle sortait `reject`, que SKIP_IP écartait."""
+    return e["verdict"] in ("succes", "echec", "rejet", "report", "postscreen", "panne")
 
 
 def categorie_sans_adresse(e):
@@ -1170,6 +1296,8 @@ def epreuve_du_juge():
         entree(5, "malware", "b@example.test", "192.0.2.5", "amavis", "L5", champs_l5),
         entree(6, "flux-passe", "", "192.0.2.6", "amavis", "L6", champs_l6),
         entree(7, "echec", "c@example.test", "192.0.2.2", "postfix", "L7"),
+        dict(entree(11, "panne", "", "192.0.2.11", "postfix", "L11"), dsn="4.3.0"),
+        dict(entree(12, "report", "", "192.0.2.12", "postfix", "L12"), dsn="4.7.1"),
     ]
     am5 = dict(verdict="Blocked INFECTED", virus="V", sender="a@example.net", rcpt="b@example.test", score="", size="1")
     am6 = dict(verdict="Passed CLEAN", sender="", rcpt="", score="", size="", truncated="1")
@@ -1180,7 +1308,9 @@ def epreuve_du_juge():
              ev("L4", "reject", "blocked", "", "2001:db8::4", "postfix", 2, repli("L4", "2001:db8::4", "blocked")),
              ev("L5", "malware", "infected", "b@example.test", "192.0.2.5", "amavis", 4, "mail-X-Blocked-INFECTED", **am5),
              ev("L6", "mailflow", "pass", "", "192.0.2.6", "amavis", 1, repli("L6", "192.0.2.6", "pass"), **am6),
-             ev("L7", "auth", "failure", "c@example.test", "192.0.2.2", "postfix", 2, repli("L7", "192.0.2.2", "failure"))]
+             ev("L7", "auth", "failure", "c@example.test", "192.0.2.2", "postfix", 2, repli("L7", "192.0.2.2", "failure")),
+             ev("L11", "mailflow", "server_error", "", "192.0.2.11", "postfix", 3, repli("L11", "192.0.2.11", "server_error"), dsn="4.3.0"),
+             ev("L12", "reject", "deferred", "", "192.0.2.12", "postfix", 2, repli("L12", "192.0.2.12", "deferred"), dsn="4.7.1")]
     if juger(corpus, exact):
         return f"le juge accuse le résultat EXACT : {juger(corpus, exact)}"
     def remplace(i, e):
@@ -1206,6 +1336,14 @@ def epreuve_du_juge():
                                                                **{k: v for k, v in am6.items() if k != "truncated"})),
         "champ amavis non attendu": remplace(4, ev("L6", "mailflow", "pass", "", "192.0.2.6", "amavis", 1, r6, **dict(am6, virus="V"))),
         "événement inventé": exact + [ev("L9", "auth", "success", "a@example.test", "192.0.2.1", "dovecot", 1, "mail-L9")],
+        # P10.24-k — une panne rendue en rejet, un report rendu en rejet, un DSN faux ou absent.
+        "panne rendue en rejet": remplace(6, ev("L11", "reject", "blocked", "", "192.0.2.11", "postfix", 2,
+                                                repli("L11", "192.0.2.11", "blocked"), dsn="4.3.0")),
+        "report rendu en rejet": remplace(7, ev("L12", "reject", "blocked", "", "192.0.2.12", "postfix", 2,
+                                                repli("L12", "192.0.2.12", "blocked"), dsn="4.7.1")),
+        "`dsn` faux": remplace(6, ev("L11", "mailflow", "server_error", "", "192.0.2.11", "postfix", 3,
+                                     repli("L11", "192.0.2.11", "server_error"), dsn="4.3.5")),
+        "`dsn` absent": remplace(7, ev("L12", "reject", "deferred", "", "192.0.2.12", "postfix", 2, repli("L12", "192.0.2.12", "deferred"))),
     }
     for nom, evenements in ecarts.items():
         if not juger(corpus, evenements):
@@ -1336,10 +1474,30 @@ def lancer(chemin_awk, entrees, epargnee=None):
 
 def passage_d_epargne(entrees):
     """`(journal, attendues)` : les lignes classées à l'adresse épargnée — attendues SANS événement et HORS de
-    l'aveu (l'enveloppe `collection-reducing` les déclare) — et une ligne classée d'une autre adresse, émise."""
+    l'aveu (l'enveloppe `collection-reducing` les déclare) —, les entrées amavis à la MÊME adresse, attendues
+    émises (P10.24-k : SKIP_IP n'écarte de `mailflow` que la panne, `server_error`), et une ligne classée d'une
+    autre adresse, émise."""
     epargnees = [e for e in entrees if e["ip"] == ADRESSE_EPARGNEE and _classee_hors_amavis(e)]
+    amavis = [e for e in entrees if e["ip"] == ADRESSE_EPARGNEE and e["famille"] == "amavis"
+              and e["verdict"] in VERDICTS_AMAVIS]
     autre = [e for e in entrees if e["ip"] and e["ip"] != ADRESSE_EPARGNEE and _classee_hors_amavis(e)][:1]
-    return epargnees + autre, [dict(e, verdict="aucun") for e in epargnees] + autre
+    return epargnees + amavis + autre, [dict(e, verdict="aucun") for e in epargnees] + amavis + autre
+
+
+def plancher_d_epargne(entrees):
+    """Le passage d'épargne JOUE ce qu'il prétend juger : au moins un échec et une panne écartés, une entrée
+    amavis émise, une autre adresse émise. Sans quoi un écart oublié (la panne hors du passage) resterait vert."""
+    journal, _ = passage_d_epargne(entrees)
+    a_l_adresse = [e for e in journal if e["ip"] == ADRESSE_EPARGNEE]
+    exigences = (
+        ("un échec d'authentification à l'adresse épargnée, écarté", lambda e: e["verdict"] == "echec"),
+        ("une panne (`mailflow`/`server_error`) à l'adresse épargnée, écartée", lambda e: e["verdict"] == "panne"),
+        ("une entrée amavis à l'adresse épargnée, émise", lambda e: e["famille"] == "amavis"),
+    )
+    manques = [f"passage d'épargne : {quoi}" for quoi, vrai in exigences if not any(vrai(e) for e in a_l_adresse)]
+    if not any(e["ip"] != ADRESSE_EPARGNEE for e in journal):
+        manques.append("passage d'épargne : une ligne classée d'une autre adresse, émise")
+    return manques
 
 
 def jouer(chemin_awk, entrees):
@@ -1378,6 +1536,7 @@ def main():
     manques = [f"{SPEC_DOVECOT['nom']} : {m}" for m in plancher_dovecot(dovecot)] + \
               [f"{SPEC_CLIENT['nom']} : {m}" for m in plancher_client(client)] + \
               [f"{SPEC_AMAVIS['nom']} : {m}" for m in plancher_amavis(amavis)]
+    manques += plancher_d_epargne(dovecot + client + amavis)
     if manques:
         refus("corpus sous son plancher : " + " ; ".join(manques))
     entrees = dovecot + client + amavis

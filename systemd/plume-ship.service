@@ -12,7 +12,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/plume/spool
+# P10.32-i : ship.sh lit chaque fichier depuis un abri privé, /var/lib/plume/state/envoi, et refuse
+# en code 2 sans lui. L'unité déclare donc l'état elle-même, sans dépendre du drop-in commun.
+ReadWritePaths=/var/lib/plume/spool /var/lib/plume/state
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
 MemoryMax=64M

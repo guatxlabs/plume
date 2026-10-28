@@ -163,7 +163,9 @@ fi
 # (`plume_lecture_partielle`, donc `de-collector-unavailable`), relèvent la sévérité du battement à 3,
 # et n'avancent PAS l'état. Une source isolée figée alors que d'autres lisent — typiquement le fichier
 # d'un ancien pod, que l'agent garde jusqu'à son redémarrage — est NOMMÉE dans `acq_frozen_sources`,
-# sans alerte : elle n'aveugle pas le moteur.
+# sans alerte : elle n'aveugle pas le moteur. AU PREMIER PASSAGE AUSSI : faute d'état, il n'y a pas de
+# différence, mais une source qui n'a lu AUCUNE ligne depuis le démarrage de l'agent alors que d'autres lisent
+# est la même acquisition à zéro ligne — elle était tue jusqu'au passage suivant (`P10.32-g`), elle est nommée.
 # `aucune_analyse` : des lignes lues, mais AUCUNE analysée ni écartée par liste blanche sur l'intervalle
 # (au premier passage : depuis le démarrage) — parseur cassé, format de journal changé. Rien n'atteint
 # les scénarios : c'est le même aveuglement que l'absence de lecture. LIMITE DITE : le jugement porte
@@ -252,7 +254,9 @@ if acq_raw=$(cscli_agent metrics show acquisition -o json 2>/dev/null) || acq_ra
                     elif $b.whitelisted > 0 and $hors_lb <= 0 and $b.pour == 0 then "tout_en_liste_blanche"
                     elif $part >= $seuil then "surtout_liste_blanche"
                     else $v0 end),
-          frozen: (if $has and $dtot.reads > 0 then [ $src[] | select(.d.reads == 0) | .source ][:100] else [] end),
+          frozen: (if $has and $dtot.reads > 0 then [ $src[] | select(.d.reads == 0) | .source ][:100]
+                   elif ($has | not) and $tot.reads > 0 then [ $src[] | select(.c.reads == 0) | .source ][:100]
+                   else [] end),
           detail: [ $src[:100][] | {source} + .c + (.d | with_entries(.key += "_delta")) ],
           etat: (reduce $src[] as $x ({}; .[$x.source] = $x.c)) }' 2>/dev/null); then
     # Chaque morceau est RE-VALIDÉ avant d'entrer dans le battement : un `jq` qui rend 0 sans rien

@@ -21,9 +21,12 @@ sous CHAQUE awk présent parmi `gawk` et `mawk`, sur deux journaux :
     sortant, expéditeur de la file active et expirée, expéditeur et destinataire d'amavis). Chaque ligne doit donner EXACTEMENT un événement (un
     capteur muet ne passe pas), aucun marqueur ne doit figurer dans l'événement (message, champs, clé),
     les champs `user`, `sender`, `rcpt` valent la forme masquée attendue, et l'étiquette `clé=` collée à
-    une partie locale reste lisible (`sasl_username=*@…`, `envelope-from=*@…`) — une ÉTIQUETTE seulement :
-    un `nom=` entre chevrons (`to=<a_b=c@…>`), après `(`, ou la signature BATV (`envelope-from=prvs=…=x@…`)
-    est masqué avec la partie locale ;
+    une partie locale reste lisible (`sasl_username=*@…`, `envelope-from=*@…`) — une ÉTIQUETTE seulement, un
+    mot du vocabulaire fermé `ETIQUETTES_DE_CHAMP` : un `nom=` entre chevrons (`to=<a_b=c@…>`), après `(`, la
+    signature BATV (`envelope-from=prvs=…=x@…`) ou un `nom=` hors du vocabulaire écrit HORS chevrons
+    (` marqx_dupont=y@…`, ` prvs=…=x@…`, un nom de champ que Postfix n'écrit qu'entre chevrons ` from=x@…`, ou
+    une SOUS-CHAÎNE d'un mot du vocabulaire, ` rom=x@…`, `;sender=x@…`) est masqué avec la partie locale, un mot
+    du vocabulaire après un `,` ou un `;` collé reste lisible (`rcpt;sasl_sender=*@…`) ;
   * toutes les lignes des corpus mail livrés (`collectors/mail-*.corpus`, hors ClamAV) : dans chaque
     événement émis, aucune partie locale autre que `*` devant un `@` du message, et `user`, `sender`,
     `rcpt` vides, `*` ou `*@<domaine>`.
@@ -39,10 +42,10 @@ awk, capteur en échec, corpus ou règle illisibles) — rien n'a été mesuré.
 CE QU'ELLE NE TIENT PAS, DIT
 ----------------------------
 Une partie locale à espace que le capteur ne LIT pas (texte libre d'un serveur distant, `<jean dupont@d>`
-hors de la valeur lue) sort encore `<jean *@d>` : aucune borne lisible ne la sépare du texte. De même une
-partie locale qui contient `=`, HORS chevrons et sans étiquette devant (` jean_dupont=x@d` rend
-` jean_dupont=*@d`) : rien ne la distingue d'une étiquette de champ. Le domaine
-est gardé à dessein. Le compte d'une entrée `LOCAL` est l'adresse que le client authentifié a donnée
+hors de la valeur lue) sort encore `<jean *@d>` : aucune borne lisible ne la sépare du texte. Une partie
+locale qui COMMENCE par un mot du vocabulaire (` sasl_sender=jean@d`) garde ce mot (` sasl_sender=*@d`) : un nom de champ,
+pas un nom de personne. (Jusqu'au 2026-10-27, tout `nom=` hors chevrons était gardé : ` jean_dupont=x@d`
+rendait ` jean_dupont=*@d`, la partie locale sortait.) Le domaine est gardé à dessein. Le compte d'une entrée `LOCAL` est l'adresse que le client authentifié a donnée
 (une banque de politique nommée `LOCAL` sans le drapeau `%l` serait lue comme originaire). Les lignes
 fabriquées ne sont pas relevées dans un journal réel ; leurs formes sont celles des corpus livrés.
 
@@ -90,6 +93,10 @@ CORPUS_CLAMAV = ("mail-clamd.corpus", "mail-freshclam.corpus")
 # ou un `@`) — `*` après masquage, ou rien. `to=<jean_dupont=*@d>` est donc une partie locale restante.
 PARTIE_LOCALE_RESTANTE = re.compile(r"[^ <@]+@")
 ETIQUETTE_DE_CHAMP = re.compile(r"(?:^|[,;])[A-Za-z_-]+=")
+# Le vocabulaire FERMÉ des étiquettes gardées, écrit ICI une seconde fois (`ETIQUETTES_DE_CHAMP` de
+# `collectors/mail.sh`) : les seuls mots que Postfix et policyd-spf écrivent HORS chevrons juste devant une
+# adresse. Un autre `nom=` est une partie locale, `from=` compris (Postfix l'écrit entre chevrons).
+ETIQUETTES_DE_CHAMP = frozenset(("sasl_username=", "sasl_sender=", "envelope-from="))
 FORME_MASQUEE = re.compile(r"^(|\*|\*@[^@ ]*)$")
 AMAVIS_ORIGINAIRE = re.compile(r"[{][A-Za-z,]*[}], (?:[A-Za-z0-9_./-]+ )?LOCAL \[[0-9A-Fa-f:.]+\]:[0-9]+ ")
 COMPTE_LOCAL = "comptelocal@example.test"
@@ -164,6 +171,53 @@ FABRIQUEES = [
               "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
               "550 5.1.1 (marqw_x=y@example.org) unknown user (in reply to RCPT TO command))",
      {"user": "", "rcpt_domain": "example.org"}, ["to=<*@example.org>", "550 5.1.1 *@example.org) unknown user"]),
+    # P10.32-l — un `nom=` HORS chevrons et hors du vocabulaire des étiquettes est une partie locale : masqué
+    # entier (le capteur d'avant rendait `marqx_dupont=*@…`, et BATV sans étiquette `prvs=*@…`).
+    (_h(18) + "postfix/smtp[3012]: 4A1B2C3D4EE: to=<marqy@example.org>, relay=mx.example.org[198.51.100.6]:25, "
+              "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
+              "550 5.1.1 marqx_dupont=y@example.org unknown user (in reply to RCPT TO command))",
+     {"user": "", "rcpt_domain": "example.org"}, ["to=<*@example.org>", "550 5.1.1 *@example.org unknown user"]),
+    (_h(19) + "postfix/smtp[3013]: 4A1B2C3D4EF: to=<marqz@example.org>, relay=mx.example.org[198.51.100.6]:25, "
+              "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
+              "550 5.1.1 prvs=0123abcd=marqw@example.org unknown user (in reply to RCPT TO command))",
+     {"user": "", "rcpt_domain": "example.org"}, ["to=<*@example.org>", "550 5.1.1 *@example.org unknown user"]),
+    # Après un `;` collé, la même règle : un `nom=` hors vocabulaire n'est pas une étiquette.
+    (_h(20) + "postfix/smtp[3014]: 4A1B2C3D4F0: to=<marqs@example.org>, relay=mx.example.org[198.51.100.6]:25, "
+              "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
+              "550 5.1.1 rcpt;marqt_x=y@example.org unknown user (in reply to RCPT TO command))",
+     {"user": "", "rcpt_domain": "example.org"}, ["to=<*@example.org>", "550 5.1.1 *@example.org unknown user"]),
+    # Le vocabulaire est FERMÉ et se compare MOT ENTIER : chaque nom de champ qu'aucun démon n'écrit hors chevrons
+    # devant une adresse (`from=`… `receiver=`) et chaque SOUS-CHAÎNE d'un mot du vocabulaire (`from=` et `rom=` de
+    # `envelope-from=`, `sender=` de `sasl_sender=`, `name=` de `sasl_username=`) est masqué avec la partie locale.
+    (_h(21) + "postfix/smtp[3015]: 4A1B2C3D4F1: to=<marqq@example.org>, relay=mx.example.org[198.51.100.6]:25, "
+              "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
+              "550 5.1.1 from=marqfa@example.org to=marqfb@example.org orig_to=marqfc@example.org "
+              "helo=marqfd@example.org user=marqfe@example.org identity=marqff@example.org "
+              "client-ip=marqfg@example.org receiver=marqfh@example.org sender=marqfi@example.org "
+              "rom=marqfj@example.org name=marqfk@example.org unknown user (in reply to RCPT TO command))",
+     {"user": "", "rcpt_domain": "example.org"},
+     ["to=<*@example.org>", "550 5.1.1 " + "*@example.org " * 11 + "unknown user"]),
+    (_h(22) + "postfix/smtp[3016]: 4A1B2C3D4F2: to=<marqq@example.org>, relay=mx.example.org[198.51.100.6]:25, "
+              "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
+              "550 5.1.1 rcpt;sender=marqga@example.org rcpt,from=marqgb@example.org rcpt;name=marqgc@example.org "
+              "unknown user (in reply to RCPT TO command))",
+     {"user": "", "rcpt_domain": "example.org"},
+     ["to=<*@example.org>", "550 5.1.1 *@example.org *@example.org *@example.org unknown user"]),
+    # Un mot du vocabulaire après un `,` ou un `;` collé EST une étiquette, gardée avec ce qui la précède
+    # (`rcpt;sasl_sender=*@…`) ; entre chevrons, il ne l'est pas (`<*@…>`).
+    (_h(23) + "postfix/smtp[3017]: 4A1B2C3D4F3: to=<marqq@example.org>, relay=mx.example.org[198.51.100.6]:25, "
+              "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
+              "550 5.1.1 rcpt;sasl_sender=marqgd@example.org rcpt,envelope-from=marqge@example.org "
+              "<sasl_sender=marqgf@example.org> unknown user (in reply to RCPT TO command))",
+     {"user": "", "rcpt_domain": "example.org"},
+     ["to=<*@example.org>", "550 5.1.1 rcpt;sasl_sender=*@example.org rcpt,envelope-from=*@example.org "
+      "<*@example.org> unknown user"]),
+    # Un morceau qui COMMENCE par un `nom=` hors vocabulaire se masque en entier, même si un mot du vocabulaire
+    # suit plus loin après un `;` : la partie qui précède ce mot n'est pas une étiquette et ne se garde pas.
+    (_h(24) + "postfix/smtp[3018]: 4A1B2C3D4F4: to=<marqq@example.org>, relay=mx.example.org[198.51.100.6]:25, "
+              "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
+              "550 5.1.1 marqb_dupont=a;sasl_sender=marqgh@example.org unknown user (in reply to RCPT TO command))",
+     {"user": "", "rcpt_domain": "example.org"}, ["to=<*@example.org>", "550 5.1.1 *@example.org unknown user"]),
 ]
 MARQUEUR = re.compile(r"marq[a-z]")
 
@@ -318,7 +372,9 @@ def _etiquette(m):
     if avant in ("<", "@"):
         return ""
     e = ETIQUETTE_DE_CHAMP.search(m.group(0)[:-1])
-    return m.group(0)[:e.end()] if e else ""
+    if not e or e.group(0).lstrip(",;") not in ETIQUETTES_DE_CHAMP:
+        return ""
+    return m.group(0)[:e.end()]
 
 
 def originaire(ev):
@@ -406,6 +462,8 @@ def epreuve_du_juge():
         "une partie locale restante": {"message": "to=<jean:*@example.org>", "fields": {}},
         "un `nom=` entre chevrons pris pour une étiquette": {"message": "to=<jean_dupont=*@example.org>", "fields": {}},
         "un `nom=` après `(` pris pour une étiquette": {"message": "imap(a_b=*@example.org)", "fields": {}},
+        "un `nom=` hors vocabulaire pris pour une étiquette": {"message": "said: 550 jean_dupont=*@example.org", "fields": {}},
+        "un `nom=` hors vocabulaire après `;` pris pour une étiquette": {"message": "x;jean_dupont=*@example.org", "fields": {}},
         "un `user` en clair": {"message": "x", "fields": {"user": "jean@example.org"}},
         "un `sender` en clair hors entrée originaire": {"message": "x", "fields": {"sender": "jean@example.org", "service": "amavis"}},
         "un `rcpt` sans arobase en clair": {"message": "x", "fields": {"rcpt": "jean"}},

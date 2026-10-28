@@ -95,7 +95,9 @@ d'outils (les vrais, liés, plus des FAUX exécutables — `date` à heure fixe,
      le seuil est ATTEINT à 90 % exactement (89 % : `lit`) ; la forme de comptage disjointe (`reads` =
      `parsed` + `unparsed` + `whitelisted`) est départagée par `reads` : 100 analysées hors liste blanche non
      versées ne sont pas un refus (50 %), 0 analysée hors liste blanche en est un.
-  E. minio : API qui échoue -> `unreachable` ; aucun pod en marche -> `subsystem-absent`.
+  E. minio : API qui échoue -> `unreachable` ; aucun pod en marche -> `subsystem-absent` ; en hôte natif
+     (PLUME_MINIO_ALIAS), `mc` absent -> `missing-dependency` (pas de bascule muette vers kubectl), les trois
+     lectures `mc` en échec -> `unreachable`, une seule -> lecture partielle avouée et le reste publié.
   F. dataaccess : seules les clés /etc chargées -> battement PARTIEL et aveu (clé de dédoublonnage stable,
      texte qui ne promet aucune relecture) ; `plume_data` OU `plume_creds` chargée -> actif, sans aveu ; une
      clé au nom voisin (`plume_data_archive`) ne compte pas. `auditctl` absent ou en échec — toujours, sous
@@ -1914,6 +1916,49 @@ def banc_minio(awk):
             evs = evenements(q, res, "minio.sh")
             if len(aveux(evs, "minio", "unavailable", raison)) != 1:
                 faute(q, f"cible absente non avouée par `{raison}` : {[e.get('message') for e in evs]}")
+        # P10.32-k — MODE HÔTE NATIF (PLUME_MINIO_ALIAS). Le faux `kubectl` reste en place, sans pod : un capteur
+        # qui basculerait vers lui dirait `subsystem-absent`, pas la dépendance manquante.
+        alias = {"PLUME_MINIO_ALIAS": "stock"}
+        q = "minio/alias_sans_mc"
+        evs = evenements(q, bac.jouer("minio.sh", alias), "minio.sh")
+        av = aveux(evs, "minio", "unavailable", "missing-dependency")
+        if len(av) != 1 or "PLUME_MINIO_ALIAS" not in str((av[0].get("fields") or {}).get("detail")):
+            faute(q, f"alias posé sans `mc` non avoué par `missing-dependency` nommant PLUME_MINIO_ALIAS : "
+                     f"{[e.get('message') for e in evs]}")
+        # `mc` simulé : chaque lecture échoue si son drapeau est posé dans FAUX.
+        bac.outil("mc", '#!/bin/sh\ncase "$*" in\n'
+                        '  "--json admin user list stock") [ -f "$FAUX/mc_u_ko" ] && exit 1; '
+                        'echo \'{"status":"success","accessKey":"lecteur","policyName":"readonly","userStatus":"enabled"}\' ;;\n'
+                        '  "--json ls stock") [ -f "$FAUX/mc_b_ko" ] && exit 1; echo \'{"status":"success","key":"seau/"}\' ;;\n'
+                        '  "--json admin info stock") [ -f "$FAUX/mc_i_ko" ] && exit 1; '
+                        'echo \'{"info":{"buckets":{"count":1},"objects":{"count":0},"versions":{"count":0}}}\' ;;\n'
+                        '  "anonymous get stock/seau") [ -f "$FAUX/mc_a_ko" ] && exit 1; '
+                        'echo "Access permission for \\`stock/seau\\` is \\`private\\`" ;;\n'
+                        '  *) exit 1 ;;\nesac\n')
+        for q, ko, raison, sujets in (("minio/mc_lit", (), None, {"lecteur", "seau"}),
+                                       ("minio/mc_en_echec", ("u", "b", "i"), "unreachable", set()),
+                                       ("minio/mc_utilisateurs_en_echec", ("u",), "missing-source", {"seau"}),
+                                       # l'inventaire SEUL lu : avoué partiel ET publié (il partait en `exit_nodata`).
+                                       ("minio/mc_inventaire_seul_lu", ("u", "b"), "missing-source", {"minio"}),
+                                       # la politique d'un bucket illisible : avouée, et le bucket TU (pas `unknown`).
+                                       ("minio/mc_politique_en_echec", ("a",), "missing-source", {"lecteur", "minio"})):
+            for x in "ubia":
+                f = os.path.join(bac.faux, f"mc_{x}_ko")
+                if x in ko:
+                    ecrire(f, "")
+                elif os.path.exists(f):
+                    os.remove(f)
+            evs = evenements(q, bac.jouer("minio.sh", alias), "minio.sh")
+            av = aveux(evs, "minio")
+            vus = {(e.get("fields") or {}).get("subject") for e in evs if e.get("category") == "data"}
+            if raison is None and av:
+                faute(q, f"aveu sur une lecture complète : {[e.get('message') for e in av]}")
+            if raison is not None and len(aveux(evs, "minio", "unavailable", raison)) != 1:
+                faute(q, f"lecture `mc` en échec non avouée par `{raison}` : {[e.get('message') for e in evs]}")
+            if "a" in ko and "seau" in vus:
+                faute(q, f"bucket publié alors que sa politique n'a pas été lue : {[e.get('message') for e in evs]}")
+            if not sujets <= vus or (not sujets and vus - {"minio"}):
+                faute(q, f"sujets publiés {sorted(map(str, vus))}, attendus {sorted(sujets)}")
     finally:
         bac.nettoyer()
 

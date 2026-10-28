@@ -198,23 +198,31 @@ if [ ! -f /etc/plume/responder.allow ]; then
 fi
 
 # OBS-1 : cibles de scrape Prometheus + conf (opt-in, le timer reste désactivé tant que non configuré)
+# `P10.32-j` — LUS PAR ROOT SEUL, DONC 0600 root:root. `prom.conf` porte le jeton du scrape (un jeton
+# `--relais`, qui laisse usurper n'importe quel hôte) ou un mot de passe, et `prom-targets` des URL dont
+# un paramètre peut authentifier une cible. Le seul lecteur est `plume-prom-scrape.service`, qui tourne
+# en root (`EnvironmentFile=`, aucun `User=`) : le groupe `soc`, celui du démon, n'avait rien à y lire.
+# Ils étaient créés 0640 root:soc. Créés sous umask 077 (jamais plus ouverts que 0600, même avant le
+# chmod) ; un fichier DÉJÀ posé garde son contenu et voit son mode resserré à chaque passage.
 if [ ! -f /etc/plume/prom-targets ]; then
-  cat > /etc/plume/prom-targets <<'PT'
+  ( umask 077; cat > /etc/plume/prom-targets <<'PT'
 # 1 URL /metrics par ligne (# = commentaire). Exemples :
 # http://127.0.0.1:9100/metrics    # node_exporter
 # http://127.0.0.1:8080/metrics    # kube-state-metrics (via port-forward)
 PT
-  chgrp soc /etc/plume/prom-targets && chmod 0640 /etc/plume/prom-targets
+  )
 fi
+chown root:root /etc/plume/prom-targets && chmod 0600 /etc/plume/prom-targets
 if [ ! -f /etc/plume/prom.conf ]; then
-  cat > /etc/plume/prom.conf <<'PC'
+  ( umask 077; cat > /etc/plume/prom.conf <<'PC'
 # plume-prom-scrape : PLUME_CENTRAL = ou pousser (def http://127.0.0.1:7000).
 # Auth : PLUME_TOKEN (Bearer, via 'plume-daemon token prom') OU PLUME_USER+PLUME_PASS (basic).
 #PLUME_CENTRAL=http://127.0.0.1:7000
 #PLUME_TOKEN=
 PC
-  chgrp soc /etc/plume/prom.conf && chmod 0640 /etc/plume/prom.conf
+  )
 fi
+chown root:root /etc/plume/prom.conf && chmod 0600 /etc/plume/prom.conf
 
 # règles auditd (Varonis-like + anti-blindspot #8 svc_exec) : persistées dans /etc/audit/rules.d
 # (survivent au reboot) PUIS chargées via augenrules — c'est CE qui arme le collecteur auditd.sh

@@ -1,7 +1,7 @@
 //! cold_store::exactness — L'INVARIANT DE CORRECTION DU TIER FROID, RENDU NON REPRÉSENTABLE.
 //!
 //! LE DÉFAUT QU'IL FERME. Le chemin d'union hot∪cold (`reader::open_cold_union`) hydrate le froid
-//! dans SQLite BORNÉ à `cold_hydrate_row_cap` (= `PLUME_QUERY_MAX`, défaut 5 000) puis exécute le SQL
+//! dans SQLite BORNÉ à `cold_hydrate_row_cap` (= `PLUME_QUERY_MAX`, défaut 5 000 ; sous un export, le plus grand de `PLUME_QUERY_MAX` et de sa borne plus une ligne sonde) puis exécute le SQL
 //! compilé SUR CET ÉCHANTILLON. Mesuré (banc du 31/07, même requête, même fenêtre, même binaire) :
 //!
 //!     sans tier froid : search source=auditd severity>=2 | stats count -> 58 747
@@ -243,12 +243,42 @@ impl LectureDuBrasFroid {
 pub(crate) struct TruncatedAggregate {
     pub(crate) rows_hydrated: usize,
     pub(crate) cap: usize,
+    /// `P10.32-r` — la borne de l'export complet sous laquelle la lecture froide s'est arrêtée (`None` : lecture
+    /// interactive, plafond `PLUME_QUERY_MAX`). Le message nomme le plafond réellement appliqué.
+    borne_de_l_export: Option<usize>,
     /// L'ÉTAGE qui a rendu la réponse dérivée (`None` = forme non analysable). C'est la FAMILLE de
     /// question refusée, et c'est de lui que le message tire son motif.
     etage: Option<String>,
 }
 
 impl TruncatedAggregate {
+    /// `P10.32-r` — le refus est servi par l'export complet, dont la lecture froide s'arrête au plus grand de
+    /// `PLUME_QUERY_MAX` et de SA borne plus la ligne sonde (`query_exec::plafond_d_hydratation_froide_de_ce_fil`) : le
+    /// message nommera celui des deux qui s'est appliqué. Posé par l'appelant qui connaît la borne
+    /// (`handlers::query::export`).
+    pub(crate) fn sous_la_borne_de_l_export(mut self, borne: usize) -> Self {
+        self.borne_de_l_export = Some(borne);
+        self
+    }
+
+    /// `P10.32-r` — LE PLAFOND QUI A RÉELLEMENT ARRÊTÉ LA LECTURE FROIDE. Sous un export dont la borne plus une ligne
+    /// dépasse `PLUME_QUERY_MAX`, c'est la borne de l'export (plus la ligne qui détecte la coupure), et nommer
+    /// `PLUME_QUERY_MAX` enverrait l'exploitant relever un réglage sans effet ; sinon c'est `PLUME_QUERY_MAX`.
+    fn plafond_applique(&self) -> String {
+        match self.borne_de_l_export {
+            // Sous un export plus étroit que `PLUME_QUERY_MAX`, l'hydratation froide lit jusqu'à `PLUME_QUERY_MAX`
+            // (`query_exec::plafond_d_hydratation_froide_de_ce_fil`) : c'est lui qui a arrêté la lecture, d'où le
+            // dernier bras.
+            Some(borne) if self.cap == borne + 1 => format!(
+                "plafond de l'export : sa borne de {borne} lignes (PLUME_EXPORT_MAX, ou le `limit` de la demande s'il est \
+                 plus petit) et une ligne de plus qui détecte la coupure, soit {} lignes, au-dessus de \
+                 PLUME_QUERY_MAX",
+                self.cap
+            ),
+            _ => format!("plafond RAM PLUME_QUERY_MAX={}", self.cap),
+        }
+    }
+
     /// CE QUE L'ÉTAGE FAIT DE L'ENSEMBLE — LA PHRASE QUI VARIE (`P10.5-b`).
     ///
     /// LE DÉFAUT QU'ELLE FERME, MESURÉ. Le motif était UNIQUE : « cette requête calcule une valeur
@@ -398,7 +428,7 @@ impl TruncatedAggregate {
     pub(crate) fn message(&self) -> String {
         format!(
             "refus de rendre un résultat FAUX : {} — mais la lecture froide a dû s'arrêter à {} lignes \
-             (plafond RAM PLUME_QUERY_MAX={}). CE QUI ÉCHAPPE À CE PLAFOND, ET CE QUE CHAQUE VOIE REND \
+             ({}). CE QUI ÉCHAPPE À CE PLAFOND, ET CE QUE CHAQUE VOIE REND \
              VRAIMENT : (a) restreindre la fenêtre jusqu'à ce que la lecture froide tienne sous le \
              plafond — l'ensemble lu redevient COMPLET, donc plus aucune valeur n'est dérivée d'un \
              échantillon ; c'est la seule voie qui vaille pour TOUTE forme, y compris celles qu'aucun \
@@ -435,7 +465,7 @@ impl TruncatedAggregate {
              parcours-là qui le sert. <colonnes> se prend dans {}.{}",
             self.famille(),
             self.rows_hydrated,
-            self.cap,
+            self.plafond_applique(),
             super::planner::phys_proj_cols().join("/"),
             caveat_des_colonnes_sans_dimension()
         )
@@ -536,7 +566,7 @@ impl ColdAnswer {
                     // pagination, lui, reste écarté (c'est un COUNT, donc dérivé).
                     Ok(Rendered { value, total: None, truncated: true })
                 } else {
-                    Err(TruncatedAggregate { rows_hydrated, cap, etage: shape.etage_derivant() })
+                    Err(TruncatedAggregate { rows_hydrated, cap, borne_de_l_export: None, etage: shape.etage_derivant() })
                 }
             }
         }
@@ -585,7 +615,7 @@ impl ColdAnswer {
 #[cfg(test)]
 mod aveu_dexactitude_decidable {
     fn message_de_refus() -> String {
-        super::TruncatedAggregate { rows_hydrated: 5000, cap: 5000, etage: Some("stats".to_string()) }.message()
+        super::TruncatedAggregate { rows_hydrated: 5000, cap: 5000, borne_de_l_export: None, etage: Some("stats".to_string()) }.message()
     }
 
     /// ① LA MESURE : l'ensemble publié est MIXTE — il porte des dimensions ET des colonnes à

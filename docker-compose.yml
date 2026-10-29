@@ -100,6 +100,15 @@ services:
       PLUME_USER: "${PLUME_USER:-admin}"
       PLUME_PASS_HASH: "${PLUME_PASS_HASH:-}"   # vide -> mode SETUP (assistant web au 1er lancement) ; en démo publique PLUME_PUBLIC_DEMO=1 suffit
       PLUME_HOST: "${PLUME_HOST:-soc.localhost}"
+      # --- GARDE DES SORTIES ET HÔTE STRICT — `P7.20-a` : SANS CES LIGNES, `.env` NE LES FAIT PAS ARRIVER ---
+      # Ce service ÉNUMÈRE ses variables (`P4.1-p`). VIDES (défaut) = ABSENTES pour le démon, donc le
+      # défaut sûr : adresse privée (10/8, 172.16/12, 192.168/16) refusée pour un canal, une destination
+      # ou un connecteur saisi par l'API ; aucune exemption ; hôte non strict (les agents qui visent
+      # 127.0.0.1:7000 restent servis). Jamais de valeur par défaut ici (`:-0` admettrait le privé
+      # partout, sans que `.env` le dise). Voisin de compose légitime : PLUME_SSRF_ALLOW=<hôte ou CIDR>.
+      PLUME_SSRF_BLOCK_PRIVATE: "${PLUME_SSRF_BLOCK_PRIVATE:-}"
+      PLUME_SSRF_ALLOW: "${PLUME_SSRF_ALLOW:-}"
+      PLUME_HOST_STRICT: "${PLUME_HOST_STRICT:-}"
       PLUME_ADDR: "0.0.0.0:7000"
       PLUME_CONFIG: "/nonexistent"
       PLUME_DEMO: "${PLUME_DEMO:-0}"   # 1 = peuple une instance fraîche avec des données de démo (à voir vivante sans agent)

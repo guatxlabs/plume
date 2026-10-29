@@ -1392,7 +1392,7 @@ pub(crate) fn ip_is_rfc1918(ip: std::net::IpAddr) -> bool {
 /// PROTECTION BAN (anti self-DoS) : une IP loopback / link-local / unspecified / RFC1918 / ULA (IPv4-mapped
 /// IPv6 incluse) + les préfixes opérateur/self configurés ne sont JAMAIS bannissables. NB : ici RFC1918 reste
 /// TOUJOURS protégé (bannir sa passerelle interne = auto-DoS) — la garde SSRF, elle, a sa PROPRE politique où
-/// RFC1918 est opt-in (cf. `ssrf_ipaddr_blocked`) : ne PAS confondre les deux usages.
+/// RFC1918 dépend de l'origine de la cible (cf. `prive_bloque_pour`) : ne PAS confondre les deux usages.
 pub(crate) fn ip_is_protected(ip: &str) -> bool {
     ip_is_protected_ctx(ip, protected_ip_matchers())
 }
@@ -1437,26 +1437,211 @@ pub(crate) fn ip_is_protected_ctx(ip: &str, protected: &[(std::net::IpAddr, u32)
 }
 
 // ---------- garde SSRF applicative (défense en profondeur au-dessus du confinement réseau) ----------
-/// Politique de blocage RFC1918 en SSRF : OPT-IN via `PLUME_SSRF_BLOCK_PRIVATE=1` (défaut OFF). RATIONALE
-/// (produit) : un SOC ON-PREM cible LÉGITIMEMENT des ressources internes en 10/172.16/192.168 — relais SMTP
-/// interne pour les notifiers email, webhook/ntfy/SIEM on-prem, endpoint OIDC d'un IdP interne. Bloquer TOUT
-/// le RFC1918 par défaut casserait ces configs out-of-the-box. Un opérateur CLOUD durcit avec le flag ; le
-/// never-egress (loopback/link-local=metadata/unspecified/ULA) reste TOUJOURS bloqué (jamais une cible légitime).
-static SSRF_BLOCK_PRIVATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-fn ssrf_block_private() -> bool {
-    *SSRF_BLOCK_PRIVATE.get_or_init(|| {
-        let conf = load_config();
-        matches!(cfg(&conf, "PLUME_SSRF_BLOCK_PRIVATE", "").trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
-    })
+/// `P7.20-a` — LECTURE DU RÉGLAGE `PLUME_SSRF_BLOCK_PRIVATE`, ET CE QU'UNE VALEUR EXPLICITE GARDE. Décision de
+/// l'exploitant (2026-10-26) : la confidentialité est active par défaut, l'option sert à DÉSACTIVER. Avant, le
+/// réglage absent laissait passer le RFC1918 vers TOUTE cible ; désormais l'absence le bloque pour une cible venue
+/// de l'API et l'admet pour une cible déclarée par la configuration de l'exploitant (`OrigineDeLaCible`).
+/// Une valeur explicite reconnue garde le sens qu'elle avait : `1`/`true`/`yes`/`on` bloque partout,
+/// `0`/`false`/`no`/`off` admet partout. Une valeur vide, ou NON RECONNUE (`oui`, `enabled`…), vaut absence : une
+/// faute de frappe ne donne jamais MOINS de protection que le réglage absent (elle est dite au premier usage).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PolitiqueDesAdressesPrivees {
+    /// Réglage absent ou vide : bloquées pour une cible venue de l'API, admises pour une cible de configuration.
+    ParDefaut,
+    /// Valeur explicite `1`/`true`/`yes`/`on`.
+    BloqueesPartout,
+    /// Valeur explicite `0`/`false`/`no`/`off`.
+    AdmisesPartout,
+}
+/// D'où vient la cible d'un égress (`P7.20-a`). DE CONFIGURATION : une cible INSCRITE POUR L'OBJET QUI ÉMET — le canal
+/// semé par `PLUME_NOTIFY_NTFY_URL` (son URL exacte, `remplacer_le_canal_de_l_environnement`), un objet d'une surcouche
+/// `config.d` VALIDÉ puis écrit (ses propres cibles, `remplacer_les_cibles_de_surcouche`) — et les fournisseurs d'identité
+/// OIDC et d'IA selon `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`. DE L'API : tout le reste, et TOUJOURS un canal
+/// (`url`, `webhook_url` d'un slack), une destination ou un connecteur créés ou modifiés par l'API
+/// (`ssrf_guard_d_une_saisie_de_l_api`, `refusee_pour_sa_seule_adresse_privee`). Jamais décidé par l'hôte et le port, ni
+/// par une URL trouvée dans le registre d'un AUTRE objet : la recherche est bornée à la base, à la famille et à
+/// l'identifiant de l'objet qui émet, et rendue seulement si sa ligne porte encore les cibles inscrites
+/// (`ssrf_cibles_de_l_objet_inchange`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OrigineDeLaCible { Api, Configuration }
+/// `P7.20-a` — DÉCISION EN ATTENTE DE L'EXPLOITANT, ISOLÉE EN CE SEUL SITE : un fournisseur d'identité OIDC ou d'IA,
+/// même créé par l'API (réservé à l'administrateur), est jugé DE CONFIGURATION (limite `P5.8-a`) — une installation sur
+/// site dont l'IdP ou la side-box d'inférence est sur un réseau privé garde sa connexion. Le renversement tient en une
+/// ligne : `OrigineDeLaCible::Api` ici (une adresse privée y serait alors refusée par défaut). Seuls l'adresse écrite
+/// par l'administrateur (`discovery_url` dérivée de l'issuer, endpoints posés dans la configuration du fournisseur) et
+/// un endpoint de découverte qui partage son hôte et son port relèvent de cette origine
+/// (daemon/src/handlers/idp.rs, `origine_d_un_endpoint_oidc`) ; un endpoint de découverte ailleurs est jugé de l'API.
+pub(crate) const ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA: OrigineDeLaCible = OrigineDeLaCible::Configuration;
+/// Lecture PURE du réglage (testable sans environnement).
+pub(crate) fn politique_des_adresses_privees(valeur: &str) -> PolitiqueDesAdressesPrivees {
+    let v = valeur.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "1" | "true" | "yes" | "on" => PolitiqueDesAdressesPrivees::BloqueesPartout,
+        "0" | "false" | "no" | "off" => PolitiqueDesAdressesPrivees::AdmisesPartout,
+        _ => PolitiqueDesAdressesPrivees::ParDefaut,
+    }
+}
+/// La valeur posée est-elle non vide ET hors des formes reconnues ? (elle vaut alors absence, et le premier usage le dit.)
+pub(crate) fn valeur_des_adresses_privees_non_reconnue(valeur: &str) -> bool {
+    let v = valeur.trim().to_ascii_lowercase();
+    !v.is_empty() && !matches!(v.as_str(), "1" | "true" | "yes" | "on" | "0" | "false" | "no" | "off")
+}
+/// Le RFC1918 est-il refusé pour cette origine sous cette politique ? (le never-egress l'est toujours, ailleurs.)
+pub(crate) fn prive_bloque_pour(politique: PolitiqueDesAdressesPrivees, origine: OrigineDeLaCible) -> bool {
+    match politique {
+        PolitiqueDesAdressesPrivees::ParDefaut => origine == OrigineDeLaCible::Api,
+        PolitiqueDesAdressesPrivees::BloqueesPartout => true,
+        PolitiqueDesAdressesPrivees::AdmisesPartout => false,
+    }
+}
+static SSRF_POLITIQUE_DU_PRIVE: std::sync::OnceLock<PolitiqueDesAdressesPrivees> = std::sync::OnceLock::new();
+pub(crate) fn ssrf_politique_du_prive() -> PolitiqueDesAdressesPrivees {
+    *SSRF_POLITIQUE_DU_PRIVE.get_or_init(|| politique_lue_de(&load_config()))
+}
+/// La politique lue d'une carte de configuration (PUR : la carte est injectée ; `cfg` lit l'environnement, puis le
+/// fichier `PLUME_CONFIG` — le seul levier du mode natif). Une valeur non reconnue est dite sur la sortie d'erreur.
+pub(crate) fn politique_lue_de(conf: &std::collections::HashMap<String, String>) -> PolitiqueDesAdressesPrivees {
+    let valeur = cfg(conf, "PLUME_SSRF_BLOCK_PRIVATE", "");
+    if valeur_des_adresses_privees_non_reconnue(&valeur) {
+        eprintln!("[ssrf] PLUME_SSRF_BLOCK_PRIVATE : valeur non reconnue, traitée comme absente (adresses privées refusées pour une cible venue de l'API) ; formes admises : 1/true/yes/on, 0/false/no/off");
+    }
+    politique_des_adresses_privees(&valeur)
+}
+/// `P7.20-a` — LA LIGNE QUE LE DÉMARRAGE ÉCRIT SUR LA GARDE D'ÉGRESS (PUR), une par politique : ce qui est refusé, ce
+/// qui est admis — dont les fournisseurs d'identité et d'IA, jugés de configuration —, et le réglage qui change l'un
+/// ou l'autre. Écrite par `dire_l_egress_au_demarrage` (daemon/src/overlays_oac.rs).
+pub(crate) fn ligne_de_la_politique_des_adresses_privees(politique: PolitiqueDesAdressesPrivees) -> String {
+    // Les fournisseurs ne sont dits « admis » par défaut que si leur origine est la configuration (site unique,
+    // `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`) : la ligne suit la décision sans seconde édition.
+    let fournisseurs = if ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA == OrigineDeLaCible::Configuration {
+        " et les fournisseurs d'identité et d'IA (réservés à l'administrateur)"
+    } else {
+        ""
+    };
+    match politique {
+        PolitiqueDesAdressesPrivees::ParDefaut => format!("[ssrf] adresses privées (10/8, 172.16/12, 192.168/16) : REFUSÉES pour un canal, une \
+destination ou un connecteur saisi par l'API ; ADMISES pour le canal semé par PLUME_NOTIFY_NTFY_URL (son URL exacte), les objets \
+écrits en surcouche config.d (leurs propres cibles){fournisseurs} — PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les \
+refuse partout, PLUME_SSRF_ALLOW exempte un hôte ou un CIDR"),
+        PolitiqueDesAdressesPrivees::BloqueesPartout => "[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 1 : adresses privées (10/8, \
+172.16/12, 192.168/16) REFUSÉES pour toute cible, configuration, surcouches et fournisseurs d'identité et d'IA compris — \
+PLUME_SSRF_ALLOW exempte un hôte ou un CIDR".to_string(),
+        PolitiqueDesAdressesPrivees::AdmisesPartout => "[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 0 : adresses privées (10/8, \
+172.16/12, 192.168/16) ADMISES pour toute cible, y compris un canal, une destination ou un connecteur saisi par l'API".to_string(),
+    }
 }
 /// Politique SSRF EXPLICITE (testable sans env) : never-egress INCONDITIONNEL + RFC1918 SELON `block_private`.
 pub(crate) fn ssrf_blocked_policy(ip: std::net::IpAddr, block_private: bool) -> bool {
     ip_never_egress(ip) || (block_private && ip_is_rfc1918(ip))
 }
-/// Cible interdite pour un ÉGRESS SSRF (applique le flag env). Distinct de `ip_is_protected` : le ban protège
-/// TOUJOURS le RFC1918, l'égress non par défaut.
-pub(crate) fn ssrf_ipaddr_blocked(ip: std::net::IpAddr) -> bool {
-    ssrf_blocked_policy(ip, ssrf_block_private())
+/// Une cible de configuration INSCRITE : une URL, comparée À L'OCTET près (blancs de bord retirés). `requete_admise` :
+/// la même URL suivie d'une requête (`?…`, ou `&…` si la cible en porte déjà une) en relève aussi — c'est la forme des
+/// pages d'un connecteur (`httppull_page_url`, `taxii_objects_url` : la base suivie de ses paramètres), jamais un
+/// autre chemin. L'autorité d'une URL s'arrête au premier `/`, `?` ou `#` (`ssrf_hote_et_port_d_une_url`) : une suite
+/// qui commence par `?` ne change donc ni l'hôte ni le port jugés.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CibleDeConfiguration {
+    pub(crate) url: String,
+    pub(crate) requete_admise: bool,
+}
+impl CibleDeConfiguration {
+    pub(crate) fn exacte(url: &str) -> CibleDeConfiguration {
+        CibleDeConfiguration { url: url.trim().to_string(), requete_admise: false }
+    }
+    pub(crate) fn suivie_d_une_requete(base: &str) -> CibleDeConfiguration {
+        CibleDeConfiguration { url: base.trim().to_string(), requete_admise: true }
+    }
+}
+/// L'URL d'égress relève-t-elle de cette cible inscrite ? (PUR)
+pub(crate) fn url_relevant_de(url: &str, cible: &CibleDeConfiguration) -> bool {
+    let (u, c) = (url.trim(), cible.url.as_str());
+    if c.is_empty() {
+        return false;
+    }
+    if u == c {
+        return true;
+    }
+    let separateur = if c.contains('?') { '&' } else { '?' };
+    cible.requete_admise && u.strip_prefix(c).is_some_and(|suite| suite.starts_with(separateur))
+}
+/// Origine d'une URL d'égress au regard des cibles inscrites INJECTÉES (PUR).
+pub(crate) fn origine_de_l_url(url: &str, cibles: &[CibleDeConfiguration]) -> OrigineDeLaCible {
+    if cibles.iter().any(|c| url_relevant_de(url, c)) { OrigineDeLaCible::Configuration } else { OrigineDeLaCible::Api }
+}
+/// Famille de l'objet qui émet, dont les cibles inscrites sont cherchées (`ssrf_cibles_de_l_objet`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FamilleDeSurcouche { Canaux, Destinations, Connecteurs }
+/// Qui a posé une inscription : le chargeur d'une famille de surcouches, ou le canal semé par l'environnement. Chaque
+/// source REMPLACE les siennes, jamais celles d'une autre.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceDInscription { Surcouche(FamilleDeSurcouche), CanalDeLEnvironnement }
+/// Une inscription : les cibles d'UN objet (base, famille, identifiant), posées par une source.
+#[derive(Clone, Debug)]
+struct Inscription {
+    base: String,
+    source: SourceDInscription,
+    famille: FamilleDeSurcouche,
+    id: i64,
+    cible: CibleDeConfiguration,
+}
+/// Le registre des cibles de configuration, par objet. REMPLACÉ par source à chaque chargement, jamais complété : une
+/// surcouche retirée, devenue invalide, ou dont l'écriture a été refusée, perd son inscription au chargement suivant ;
+/// une ligne réécrite par l'API entre deux chargements la perd à l'envoi (`ssrf_cibles_de_l_objet_inchange`).
+static SSRF_INSCRIPTIONS: std::sync::RwLock<Vec<Inscription>> = std::sync::RwLock::new(Vec::new());
+/// La base d'une connexion, telle que SQLite la nomme (`conn.path()`) : la même chaîne au chargement et à l'envoi, pour
+/// toute connexion ouverte sur le même fichier. Une base en mémoire vaut la chaîne vide.
+pub(crate) fn base_de(conn: &rusqlite::Connection) -> String {
+    conn.path().unwrap_or("").to_string()
+}
+fn remplacer_les_inscriptions(base: &str, source: SourceDInscription, famille: FamilleDeSurcouche, cibles: Vec<(i64, CibleDeConfiguration)>) {
+    let mut inscrites = SSRF_INSCRIPTIONS.write().unwrap_or_else(|e| e.into_inner());
+    inscrites.retain(|i| !(i.base == base && i.source == source));
+    inscrites.extend(cibles.into_iter().map(|(id, cible)| Inscription { base: base.to_string(), source, famille, id, cible }));
+}
+/// Remplace les cibles inscrites d'une famille de surcouches de cette base par celles que le chargeur vient de VALIDER ET
+/// D'ÉCRIRE, chacune sous l'identifiant de la ligne écrite.
+pub(crate) fn remplacer_les_cibles_de_surcouche(base: &str, famille: FamilleDeSurcouche, cibles: Vec<(i64, CibleDeConfiguration)>) {
+    remplacer_les_inscriptions(base, SourceDInscription::Surcouche(famille), famille, cibles);
+}
+/// Remplace l'inscription du canal semé par `PLUME_NOTIFY_NTFY_URL` dans cette base : son identifiant et son URL exacte,
+/// ou rien.
+pub(crate) fn remplacer_le_canal_de_l_environnement(base: &str, canal: Option<(i64, CibleDeConfiguration)>) {
+    remplacer_les_inscriptions(base, SourceDInscription::CanalDeLEnvironnement, FamilleDeSurcouche::Canaux, canal.into_iter().collect());
+}
+/// Les cibles inscrites pour CET objet — base, famille et identifiant —, et pour lui seul.
+pub(crate) fn ssrf_cibles_de_l_objet(base: &str, famille: FamilleDeSurcouche, id: i64) -> Vec<CibleDeConfiguration> {
+    let inscrites = SSRF_INSCRIPTIONS.read().unwrap_or_else(|e| e.into_inner());
+    inscrites.iter().filter(|i| i.base == base && i.famille == famille && i.id == id).map(|i| i.cible.clone()).collect()
+}
+/// Les cibles inscrites pour CET objet, rendues SEULEMENT si la ligne qui émet porte encore exactement ces cibles
+/// (`courantes`, tirées de la ligne même qui sert l'envoi). L'inscription date du chargement des surcouches, au
+/// démarrage : une ligne réécrite depuis par l'API, ou un identifiant repris par une autre ligne, n'a plus les cibles
+/// inscrites et ne garde AUCUNE origine de configuration — sans quoi une URL de l'ancienne surcouche (une page
+/// suivante rendue par la réponse, par exemple) serait admise pour une configuration saisie par l'API.
+pub(crate) fn ssrf_cibles_de_l_objet_inchange(base: &str, famille: FamilleDeSurcouche, id: i64, courantes: &[CibleDeConfiguration]) -> Vec<CibleDeConfiguration> {
+    let inscrites = ssrf_cibles_de_l_objet(base, famille, id);
+    let ensemble = |cibles: &[CibleDeConfiguration]| {
+        let mut v: Vec<(String, bool)> = cibles.iter().map(|c| (c.url.clone(), c.requete_admise)).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    if !inscrites.is_empty() && ensemble(&inscrites) == ensemble(courantes) { inscrites } else { Vec::new() }
+}
+/// La garde d'une URL émise par un objet, au regard des seules cibles inscrites pour lui (`ssrf_cibles_de_l_objet`).
+pub(crate) fn ssrf_guard_pour_l_objet(url: &str, cibles: &[CibleDeConfiguration]) -> Result<(), String> {
+    ssrf_guard_selon_l_origine(url, origine_de_l_url(url, cibles))
+}
+/// `P7.20-a` — l'appel réseau d'un égress DÉJÀ JUGÉ par la garde. Sous `cfg(test)`, un témoin du fil courant peut
+/// l'intercepter (aucun réseau) ; en production, `http_call`.
+pub(crate) fn appel_reseau_apres_la_garde(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>) -> Result<HttpResp, String> {
+    #[cfg(test)]
+    {
+        if let Some(reponse) = temoin_de_l_egress::intercepter(method, url) {
+            return reponse;
+        }
+    }
+    http_call(method, url, headers, body)
 }
 
 /// Entrée d'allowlist SSRF : hôte exact (nom DNS), ou réseau IP/CIDR (une IP nue = /32|/128).
@@ -1539,8 +1724,10 @@ fn ssrf_split_authority(authority: &str, default_port: u16) -> (String, u16) {
 ///  - un schéma hors `http(s)`/`smtp(s)` (donc `file://`, `gopher://`, `-flag`…) ;
 ///  - un hôte NEVER-EGRESS : loopback (127/8, ::1), link-local (169.254/16 = metadata cloud, fe80::/10),
 ///    unspecified (0.0.0.0, ::), ULA IPv6 (fc00::/7) — l'IPv4-mapped IPv6 (`::ffff:x.x.x.x`) est NORMALISÉE
-///    d'abord (ferme `[::ffff:169.254.169.254]`). RFC1918 en SUS UNIQUEMENT si `PLUME_SSRF_BLOCK_PRIVATE=1`
-///    (défaut OFF : on-prem cible ses ressources internes légitimement — cf. `ssrf_block_private`) ;
+///    d'abord (ferme `[::ffff:169.254.169.254]`). RFC1918 EN SUS selon `PLUME_SSRF_BLOCK_PRIVATE` et l'ORIGINE
+///    de la cible (`P7.20-a`, `prive_bloque_pour`) : par défaut REFUSÉ pour une cible de l'API, ADMIS pour une cible
+///    de configuration (`OrigineDeLaCible`). Ici, sans objet nommé, l'origine est TOUJOURS l'API : une cible de
+///    configuration ne se reconnaît que pour l'objet qui émet (`ssrf_guard_pour_l_objet`) ;
 ///  - un HÔTE dont la RÉSOLUTION DNS pointe vers une de ces plages (on re-vérifie CHAQUE IP résolue).
 /// FAIL-CLOSED : hôte vide, schéma interdit, ou résolution DNS impossible -> `Err` (deny sur l'incertitude).
 /// Échappatoire : `PLUME_SSRF_ALLOW` (hôtes exacts ET/OU CIDR). Cette garde s'applique aux URL d'égress
@@ -1550,6 +1737,39 @@ fn ssrf_split_authority(authority: &str, default_port: u16) -> (String, u16) {
 /// substitut au confinement réseau : en déploiement sans politique réseau, restreignez l'égress du service
 /// au strict nécessaire (politique de sortie / pare-feu de votre plateforme).
 pub(crate) fn ssrf_guard(url: &str) -> Result<(), String> {
+    ssrf_guard_selon_l_origine(url, OrigineDeLaCible::Api)
+}
+/// `P7.20-a` — la garde pour une URL SAISIE PAR L'API (création ou modification d'un canal, d'une destination) :
+/// jugée de l'API sans consulter les cibles inscrites, même quand l'URL est celle d'une cible déclarée.
+pub(crate) fn ssrf_guard_d_une_saisie_de_l_api(url: &str) -> Result<(), String> {
+    ssrf_guard(url)
+}
+/// `P7.20-a` — la garde d'un fournisseur d'identité OIDC (daemon/src/handlers/idp.rs) ou d'IA (daemon/src/ai/mod.rs),
+/// pour l'adresse écrite par l'administrateur : l'origine est celle que fixe le site unique
+/// `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`.
+#[cfg_attr(not(feature = "ai"), allow(dead_code))] // seul appelant : l'égress d'IA, compilé avec la feature `ai`
+pub(crate) fn ssrf_guard_d_un_fournisseur(url: &str) -> Result<(), String> {
+    ssrf_guard_selon_l_origine(url, ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA)
+}
+/// La garde d'une URL pour une origine DÉCIDÉE par l'appelant.
+pub(crate) fn ssrf_guard_selon_l_origine(url: &str, origine: OrigineDeLaCible) -> Result<(), String> {
+    let (host, port) = ssrf_hote_et_port_d_une_url(url)?;
+    ssrf_check_host(&host, port, origine)
+}
+/// L'URL n'est-elle refusée QUE parce que sa cible est une adresse privée ? (refusée pour cette origine, admise si le
+/// privé était admis.) Sert à nommer, dans un refus servi, le réglage qui le lève.
+pub(crate) fn refusee_pour_sa_seule_adresse_privee(url: &str, origine: OrigineDeLaCible) -> bool {
+    match ssrf_hote_et_port_d_une_url(url) {
+        Ok((host, port)) => hote_refuse_pour_sa_seule_adresse_privee(&host, port, origine),
+        Err(_) => false,
+    }
+}
+/// Même question sur un couple (hôte, port) (syslog `tcp://`).
+pub(crate) fn hote_refuse_pour_sa_seule_adresse_privee(host: &str, port: u16, origine: OrigineDeLaCible) -> bool {
+    ssrf_check_host(host, port, origine).is_err() && ssrf_check_host_selon(host, port, false).is_ok()
+}
+/// Schéma admis, puis (hôte, port) de l'autorité d'une URL — la lecture que `ssrf_guard` juge.
+pub(crate) fn ssrf_hote_et_port_d_une_url(url: &str) -> Result<(String, u16), String> {
     let low = url.trim().to_ascii_lowercase();
     let (rest, default_port) = if let Some(r) = low.strip_prefix("https://") {
         (r, 443u16)
@@ -1566,12 +1786,22 @@ pub(crate) fn ssrf_guard(url: &str) -> Result<(), String> {
     if authority.is_empty() {
         return Err("SSRF: hôte d'URL vide".into());
     }
-    let (host, port) = ssrf_split_authority(authority, default_port);
-    ssrf_check_host(&host, port)
+    Ok(ssrf_split_authority(authority, default_port))
 }
 /// Cœur réutilisable de la garde SSRF sur un couple (host, port) — permet aux transports NON-URL (le syslog
-/// `tcp://` des destinations #50) de partager EXACTEMENT la même politique. Voir `ssrf_guard`.
-pub(crate) fn ssrf_check_host(host: &str, port: u16) -> Result<(), String> {
+/// `tcp://` des destinations #50) de partager EXACTEMENT la même politique. Voir `ssrf_guard`. `P7.20-a` : l'origine
+/// (décidée par l'appelant : URL inscrite, saisie de l'API, cible de configuration) et le réglage lu décident du RFC1918.
+pub(crate) fn ssrf_check_host(host: &str, port: u16, origine: OrigineDeLaCible) -> Result<(), String> {
+    ssrf_check_host_selon(host, port, prive_bloque_pour(ssrf_politique_du_prive(), origine))
+}
+/// `P7.20-a` — début du refus d'une adresse privée (10/8, 172.16/12, 192.168/16), distinct du never-egress.
+pub(crate) const PREFIXE_DU_REFUS_D_ADRESSE_PRIVEE: &str = "SSRF: adresse privée refusée";
+/// `P7.20-a` — les réglages qui lèvent ce refus, nommés dans le refus lui-même.
+pub(crate) const LEVIERS_DU_REFUS_D_ADRESSE_PRIVEE: &str =
+    "PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet toute adresse privée";
+/// Le même jugement, RFC1918 refusé ou non selon `prive_bloque` (injecté : testable sans environnement). Le never-egress
+/// (loopback, link-local, unspecified, ULA) garde son refus d'avant ; une adresse privée refusée nomme ses leviers.
+pub(crate) fn ssrf_check_host_selon(host: &str, port: u16, prive_bloque: bool) -> Result<(), String> {
     use std::net::ToSocketAddrs;
     let host = host.trim().to_ascii_lowercase();
     if host.is_empty() {
@@ -1583,8 +1813,11 @@ pub(crate) fn ssrf_check_host(host: &str, port: u16) -> Result<(), String> {
     }
     // littéral IP interne ? (rejet immédiat, avant toute résolution ; IPv4-mapped normalisée)
     if let Some(ip) = ssrf_norm_ip(&host) {
-        if ssrf_ipaddr_blocked(ip) {
+        if ip_never_egress(ip) {
             return Err(format!("SSRF: cible interne interdite ({host})"));
+        }
+        if ssrf_blocked_policy(ip, prive_bloque) {
+            return Err(format!("{PREFIXE_DU_REFUS_D_ADRESSE_PRIVEE} ({host}) — {LEVIERS_DU_REFUS_D_ADRESSE_PRIVEE}"));
         }
     }
     // résolution DNS + re-check de CHAQUE IP ; échec de résolution -> deny (fail-closed)
@@ -1595,12 +1828,56 @@ pub(crate) fn ssrf_check_host(host: &str, port: u16) -> Result<(), String> {
         resolved += 1;
         let ip = a.ip();
         if ssrf_ip_allowed(ip) { continue; } // CIDR/IP opérateur : exempte cette IP résolue
-        if ssrf_ipaddr_blocked(ip) {
+        if ip_never_egress(ip) {
             return Err(format!("SSRF: '{host}' résout vers une adresse interne ({ip}) — refus"));
+        }
+        if ssrf_blocked_policy(ip, prive_bloque) {
+            return Err(format!("{PREFIXE_DU_REFUS_D_ADRESSE_PRIVEE} : '{host}' résout vers {ip} — {LEVIERS_DU_REFUS_D_ADRESSE_PRIVEE}"));
         }
     }
     if resolved == 0 {
         return Err(format!("SSRF: aucune IP résolue pour '{host}' (deny)"));
     }
     Ok(())
+}
+
+/// `P7.20-a` — LE TÉMOIN DE L'ÉGRESS : intercepte l'appel réseau d'un égress DÉJÀ JUGÉ par la garde
+/// (`appel_reseau_apres_la_garde`, envoi syslog d'une destination), note la méthode et l'URL, et rend la réponse que la
+/// fonction armée donne pour elles. Armé pour TOUT le processus (les routes envoient depuis `spawn_blocking`) : seuls
+/// les sous-processus d'un témoin l'arment ; désarmé, il ne fait rien. Absent du binaire livré.
+#[cfg(test)]
+pub(crate) mod temoin_de_l_egress {
+    use crate::HttpResp;
+    type Repondre = Box<dyn Fn(&str, &str) -> Result<HttpResp, String> + Send>;
+    static ARME: std::sync::Mutex<Option<(Vec<(String, String)>, Repondre)>> = std::sync::Mutex::new(None);
+    /// Tant que ce gardien vit, le processus est armé ; lâché, il est désarmé.
+    #[must_use = "le témoin n'est armé que tant que ce gardien vit"]
+    pub(crate) struct Arme;
+    impl Drop for Arme {
+        fn drop(&mut self) {
+            *ARME.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+    pub(crate) fn armer(repondre: impl Fn(&str, &str) -> Result<HttpResp, String> + Send + 'static) -> Arme {
+        *ARME.lock().unwrap_or_else(|e| e.into_inner()) = Some((Vec::new(), Box::new(repondre)));
+        Arme
+    }
+    pub(crate) fn intercepter(methode: &str, url: &str) -> Option<Result<HttpResp, String>> {
+        let mut arme = ARME.lock().unwrap_or_else(|e| e.into_inner());
+        let (vus, repondre) = arme.as_mut()?;
+        vus.push((methode.to_string(), url.to_string()));
+        Some(repondre(methode, url))
+    }
+    /// (méthode, URL) de chaque appel intercepté depuis l'armement, dans l'ordre.
+    pub(crate) fn vus() -> Vec<(String, String)> {
+        ARME.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(vus, _)| vus.clone()).unwrap_or_default()
+    }
+    /// Une réponse du témoin : statut, en-têtes, corps.
+    pub(crate) fn reponse(status: u16, headers: &[(&str, &str)], body: &str) -> HttpResp {
+        HttpResp {
+            status,
+            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body: body.as_bytes().to_vec(),
+        }
+    }
 }

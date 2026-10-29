@@ -5,7 +5,7 @@
 //! `control_ledger_prev_hash`/`control_ledger_append`/`control_ledger_verify_conn`), garde de gestion tenant (`mgmt_*`/`tenant_mgmt_gate`/`can_manage_grants`/
 //! `valid_grant_role`/`platform_user_name_ok`/`gen_control_id`/`ensure_platform_user`/`ensure_platform_user_conn`/
 //! `le_geste_retirerait_le_dernier_administrateur` — `P10.21-r`, lue dans la transaction du geste ;
-//! `poser_l_identite_scim`/`rattachement_scim_conn`/`migrate_control_provenance_scim` — `P10.34-h`, provenance SCIM)
+//! `poser_l_identite_scim_conn`/`rattachement_scim_conn`/`migrate_control_provenance_scim` — `P10.34-h`, provenance SCIM)
 //! et l'audit (`audit_tenant_event`/`tenant_db_path`). Extrait de main.rs (refactor split #25 — byte-identique).
 use crate::*;
 
@@ -1515,11 +1515,16 @@ pub(crate) fn ensure_platform_user_conn(conn: &Connection, name: &str) -> Option
 //  * sinon, elle a été CRÉÉE par le `POST /Users` de ce tenant (`scim_provenance`) -> rattachable, même si un droit
 //    lui a été posé depuis dans un autre tenant (par `grant_set`, hors SCIM) : l'identité reste celle de ce tenant ;
 //  * sinon, elle porte un droit dans un AUTRE tenant -> étrangère ;
-//  * sinon, elle a été CRÉÉE par le `POST /Users` d'un autre tenant -> étrangère ;
+//  * sinon, elle a été CRÉÉE par le `POST /Users` d'un autre tenant -> étrangère ; celles d'un tenant DÉTRUIT
+//    gardent une provenance scellée sur `(tenant détruit)` (`tenants::tenant_destroy`, et `tenants::tenant_provision`
+//    pour une provenance restée sous l'identifiant d'un tenant créé), qu'aucun tenant ne porte : étrangères à tous, au
+//    tenant recréé sous le même identifiant compris. LIMITE NOMMÉE : leur nom reste pris, `POST /Users` de ce nom rend
+//    `409` à tout tenant, au tenant recréé compris (décision voisine de l'exploitant) ;
 //  * sinon -> rattachable : née avant la provenance (ou par une autre voie que SCIM : `grant_set`, création de
 //    tenant) et sans aucun droit nulle part, compte déprovisionné partout compris — rétrocompat, rien ne dit à qui
-//    elle appartient. LIMITE NOMMÉE : cette classe reste rattachable par TOUT tenant SCIM, et `POST /Users` de son
-//    nom sert son id ; le premier tenant qui lui pose un droit la rend étrangère aux autres.
+//    elle appartient. LIMITE NOMMÉE, NON TRANCHÉE (l'exploitant doit décider, reste de `P10.34-h` dans la feuille de
+//    route ; aucune décision rendue ne la couvre) : cette classe reste rattachable par TOUT tenant SCIM, et `POST /Users`
+//    de son nom sert son id ; le premier tenant qui lui pose un droit la rend étrangère aux autres.
 
 /// `P10.34-h` — la table de provenance des identités SCIM, dans la base de CONTRÔLE (jamais une base tenant).
 /// Idempotente (`CREATE TABLE IF NOT EXISTS`), appelée par `migrate_control` : aucun changement de version de schéma.
@@ -1600,9 +1605,12 @@ pub(crate) enum IdentiteScimNonPosee {
 /// refusée, rien n'est créé (une identité sans provenance serait rattachable par tous) ; l'identité refusée après
 /// elle, il reste une ligne de provenance sur un identifiant jamais servi (96 bits aléatoires), inerte.
 /// Ne modifie JAMAIS `is_superadmin` ni un compte existant.
-pub(crate) fn poser_l_identite_scim(cp: &ControlPlane, tenant: &str, name: &str) -> Result<String, IdentiteScimNonPosee> {
-    let conn = cp.conn.lock();
-    match lire_le_rattachement_scim(&conn, tenant, "p.name=?1", name).map_err(IdentiteScimNonPosee::Illisible)? {
+///
+/// `P10.34-q` — SUR UNE CONNEXION DÉJÀ TENUE : celle sous laquelle `POST /Users` vient de relire le jeton de la demande
+/// (`scim::scim_exiger_le_jeton_sur`), pour qu'aucune destruction ni recréation du tenant ne tombe entre cette relecture et
+/// la pose de l'identité.
+pub(crate) fn poser_l_identite_scim_conn(conn: &Connection, tenant: &str, name: &str) -> Result<String, IdentiteScimNonPosee> {
+    match lire_le_rattachement_scim(conn, tenant, "p.name=?1", name).map_err(IdentiteScimNonPosee::Illisible)? {
         Some((id, RattachementScim::Rattachable)) => return Ok(id),
         Some((_, RattachementScim::Etrangere)) => return Err(IdentiteScimNonPosee::Etrangere),
         None => {}

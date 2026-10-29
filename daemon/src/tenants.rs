@@ -37,29 +37,129 @@ pub(crate) fn tenant_key_from_entropy(raw: Option<[u8; TENANT_KEY_BYTES]>) -> Op
     raw.map(|b| hex_encode(&b))
 }
 
+/// `P10.34-h` — POURQUOI `tenant_provision` N'A RIEN CRÉÉ. Le jeter serait taire un refus.
+#[must_use]
+#[derive(Debug)]
+pub(crate) enum ProvisionNonFaite {
+    /// Mode 0, slug invalide, clé non résoluble, tenant existant, base non créée : la phrase d'avant, servie comme avant
+    /// (`409` pour « existe déjà », `400` sinon).
+    Refusee(String),
+    /// La base du plan de contrôle n'a pas pris la transaction de la création (`BEGIN`, un effacement de ce qui restait
+    /// sous l'identifiant, l'inscription de la ligne du tenant, ou le `COMMIT`) : l'étape refusée, servie par sa phrase
+    /// fixe (`refuser_la_creation_non_prise`) ; le texte du moteur est dit au journal, jamais servi.
+    NonPrise(EtapeDeLaCreationNonPrise),
+}
+
+/// Les refus d'avant (`&str`, `String`) restent des `Refusee`, à la même phrase.
+impl From<&str> for ProvisionNonFaite {
+    fn from(phrase: &str) -> Self {
+        ProvisionNonFaite::Refusee(phrase.to_string())
+    }
+}
+impl From<String> for ProvisionNonFaite {
+    fn from(phrase: String) -> Self {
+        ProvisionNonFaite::Refusee(phrase)
+    }
+}
+
+/// `P10.34-h` — l'étape de la transaction de la création que la base n'a pas prise ; chacune a sa phrase
+/// `CAUSE_TENANT_NON_CREE_*`, servie par sa constante.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EtapeDeLaCreationNonPrise {
+    TransactionNonOuverte,
+    RestesNonEffaces,
+    LigneNonInscrite,
+    NonValidee,
+}
+
+/// `P10.34-h` — le 503 d'une création non prise : la phrase fixe de l'étape, par sa constante.
+fn refuser_la_creation_non_prise(etape: EtapeDeLaCreationNonPrise) -> Response {
+    match etape {
+        EtapeDeLaCreationNonPrise::TransactionNonOuverte => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_CREE_TRANSACTION_NON_OUVERTE),
+        EtapeDeLaCreationNonPrise::RestesNonEffaces => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_CREE_EFFACEMENT_NON_PRIS),
+        EtapeDeLaCreationNonPrise::LigneNonInscrite => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_CREE_LIGNE_NON_INSCRITE),
+        EtapeDeLaCreationNonPrise::NonValidee => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_CREE_NON_VALIDE),
+    }
+}
+
+/// `P10.34-h` — le `BEGIN` de la création refusé (forme `OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_TENANT_NON_CREE_TRANSACTION_NON_OUVERTE: &str = "TENANT NON CRÉÉ : la base n'a pas pris la \
+     transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) — \
+     RIEN n'est créé : ni ligne au catalogue, ni base chiffrée. Réessayez ; s'il est refusé encore, l'écrivain est occupé \
+     ou bloqué.";
+
+/// `P10.34-h` — un effacement de ce qui restait sous l'identifiant refusé : la transaction est annulée (forme
+/// `OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_TENANT_NON_CREE_EFFACEMENT_NON_PRIS: &str = "TENANT NON CRÉÉ : la base n'a pas pris \
+     l'effacement de ce qui restait sous cet identifiant, et la transaction est annulée — RIEN n'est créé : ni ligne au \
+     catalogue, ni base chiffrée. Réessayez ; si le refus persiste, la base du plan de contrôle est en lecture seule, \
+     pleine ou verrouillée.";
+
+/// `P10.34-h` — l'inscription de la ligne du tenant refusée : la transaction est annulée (forme
+/// `OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js). Avant, ce refus servait en `400` « insert tenant : » suivi du texte
+/// du moteur.
+pub(crate) const CAUSE_TENANT_NON_CREE_LIGNE_NON_INSCRITE: &str = "TENANT NON CRÉÉ : la base n'a pas pris l'écriture de \
+     la ligne du tenant au catalogue, et la transaction est annulée — RIEN n'est créé : ni ligne au catalogue, ni base \
+     chiffrée. Réessayez ; si le refus persiste, la base du plan de contrôle est en lecture seule, pleine ou verrouillée.";
+
+/// `P10.34-h` — le `COMMIT` de la création refusé (forme `OUVERTURE_DE_L_ECRITURE_NON_VALIDEE`, web/core.js).
+pub(crate) const CAUSE_TENANT_NON_CREE_NON_VALIDE: &str = "TENANT NON CRÉÉ : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — RIEN n'est créé : ni ligne au catalogue, ni base chiffrée. Réessayez une fois le \
+     plan de contrôle de nouveau écrivable.";
+
 /// ONBOARDING : crée l'entrée control-plane `tenant` (id, name, key_ref, db_path) PUIS la base tenant vide
 /// CHIFFRÉE avec SA clé (schéma + migrations + seed minimal). FAIL-CLOSED : si `key_ref` ne résout pas
 /// (ex. vault: injoignable), RIEN n'est créé. Enregistre la clé (registre read-pool) -> frontière crypto
 /// immédiatement effective. La clé n'apparaît JAMAIS dans un message d'erreur/log.
+///
+/// `P10.34-h` — UN TENANT NAÎT SANS JETON, SANS DROIT ET SANS PROVENANCE SCIM. Dans la transaction qui inscrit sa
+/// ligne, la création retire ce qui restait sous son identifiant (`RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT` : jetons SCIM et
+/// d'agent effacés, droits effacés, provenance scellée) : un jeton d'un tenant recréé est refusé, et ni un droit ni une
+/// identité laissés sous cet identifiant ne passent au tenant recréé. Un refus (`BEGIN`, un effacement, l'inscription de
+/// la ligne, `COMMIT`) rend `NonPrise` et rien n'est créé — ni ligne, ni base.
 #[allow(dead_code)]
-pub(crate) fn tenant_provision(mgr: &TenantDbManager, id: &str, name: &str, db_path: &str, key_ref: &str) -> Result<(), String> {
+pub(crate) fn tenant_provision(mgr: &TenantDbManager, id: &str, name: &str, db_path: &str, key_ref: &str) -> Result<(), ProvisionNonFaite> {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     let cp = mgr.control.as_ref().ok_or("multi-tenant désactivé (mode 0) : provisioning indisponible")?;
     if !tenant_slug_ok(id) {
         return Err("slug tenant invalide (alphanumérique + '_'/'-', ≤ 64)".into());
     }
     // 1) Résout la clé AVANT toute création (fail-closed : jamais de tenant à moitié provisionné).
     let key = resolve_tenant_key(key_ref).map_err(|e| format!("key_ref non résoluble : {e}"))?;
-    // 2) Entrée catalogue — refuse d'écraser un tenant existant (pas de perte silencieuse).
+    // 2) Entrée catalogue — refuse d'écraser un tenant existant (pas de perte silencieuse). `P10.34-h` : dans UNE
+    //    transaction avec l'effacement de ce qui restait sous l'identifiant ; « existe déjà » annule avant tout effacement.
     {
         let conn = cp.conn.lock();
-        let exists = conn.query_row("SELECT 1 FROM tenant WHERE id=?1", params![id], |_| Ok(())).is_ok();
-        if exists {
-            return Err(format!("tenant '{id}' existe déjà"));
+        let issue = jouer_le_geste_garde(&conn, "tenants", "création du tenant", |conn| -> Result<(), ProvisionNonFaite> {
+            let exists = conn.query_row("SELECT 1 FROM tenant WHERE id=?1", params![id], |_| Ok(())).is_ok();
+            if exists {
+                return Err(ProvisionNonFaite::Refusee(format!("tenant '{id}' existe déjà")));
+            }
+            for (quoi, sql) in RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT {
+                if let Err(e) = conn.execute(sql, params![id]) {
+                    eprintln!("[tenants] WARN création du tenant NON faite, rien n'est créé (effacement refusé : {quoi}) : {e}");
+                    return Err(ProvisionNonFaite::NonPrise(EtapeDeLaCreationNonPrise::RestesNonEffaces));
+                }
+            }
+            if let Err(e) = conn.execute(
+                "INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES(?1,?2,?3,?4,?5,0)",
+                params![id, name, key_ref, db_path, now()],
+            ) {
+                eprintln!("[tenants] WARN création du tenant NON faite, rien n'est créé (ligne du tenant non inscrite) : {e}");
+                return Err(ProvisionNonFaite::NonPrise(EtapeDeLaCreationNonPrise::LigneNonInscrite));
+            }
+            Ok(())
+        });
+        match issue {
+            Issue::Valide(()) => {}
+            Issue::Refuse(refus) => return Err(refus),
+            // Le `BEGIN` refusé est déjà dit au journal par `ouvrir_sa_transaction`.
+            Issue::NonOuvert(_) => return Err(ProvisionNonFaite::NonPrise(EtapeDeLaCreationNonPrise::TransactionNonOuverte)),
+            Issue::NonValide(e) => {
+                eprintln!("[tenants] WARN création du tenant NON faite, rien n'est créé (COMMIT refusé) : {e}");
+                return Err(ProvisionNonFaite::NonPrise(EtapeDeLaCreationNonPrise::NonValidee));
+            }
         }
-        conn.execute(
-            "INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES(?1,?2,?3,?4,?5,0)",
-            params![id, name, key_ref, db_path, now()],
-        ).map_err(|e| format!("insert tenant : {e}"))?;
     }
     // 3) Base tenant vide CHIFFRÉE avec SA clé (le FICHIER est le tenant). Parent créé au besoin.
     if let Some(parent) = std::path::Path::new(db_path).parent() {
@@ -86,34 +186,170 @@ pub(crate) fn tenant_provision(mgr: &TenantDbManager, id: &str, name: &str, db_p
     Ok(())
 }
 
-/// DESTRUCTION CRYPTO (RGPD) : OUBLIE la clé (supprime l'entrée control-plane `tenant` + ses grants/tokens
-/// + purge les caches de clé) et SUPPRIME le fichier chiffré (+ WAL/SHM). Après cela, la donnée est
-/// cryptographiquement irrécupérable. Évince aussi le writer mémoïsé. Le tenant `default` est protégé.
-#[allow(dead_code)]
-pub(crate) fn tenant_destroy(mgr: &TenantDbManager, id: &str) -> Result<(), String> {
-    let cp = mgr.control.as_ref().ok_or("multi-tenant désactivé (mode 0) : destruction indisponible")?;
-    if id == "default" {
-        return Err("refus : le tenant 'default' ne peut pas être détruit".into());
+/// `P10.34-h` — POURQUOI `tenant_destroy` N'A RIEN DÉTRUIT. Le jeter serait taire un refus.
+#[must_use]
+#[derive(Debug)]
+pub(crate) enum DestructionNonFaite {
+    /// Mode 0, tenant `default` ou tenant inconnu : la phrase d'avant, servie comme avant.
+    Refusee(String),
+    /// La base du plan de contrôle n'a pas pris la transaction de la destruction (`BEGIN`, lecture de la ligne du
+    /// tenant, un effacement ou le `COMMIT`) : l'étape refusée, servie par sa phrase fixe
+    /// (`refuser_la_destruction_non_prise`). Le texte du moteur est dit au journal par la voie qui l'a rencontré, jamais
+    /// servi.
+    NonPrise(EtapeDeLaDestructionNonPrise),
+}
+
+/// `P10.34-h` — l'étape de la transaction de la destruction que la base n'a pas prise ; chacune a sa phrase
+/// `CAUSE_TENANT_NON_DETRUIT_*`, servie par sa constante (la garde `check_web_reads_every_verdict` la dérive ainsi et
+/// exige que la console en reconnaisse l'ouverture).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EtapeDeLaDestructionNonPrise {
+    TransactionNonOuverte,
+    LigneNonLue,
+    EffacementNonPris,
+    NonValidee,
+}
+
+/// `P10.34-h` — le 503 d'une destruction non prise : la phrase fixe de l'étape, par sa constante.
+fn refuser_la_destruction_non_prise(etape: EtapeDeLaDestructionNonPrise) -> Response {
+    match etape {
+        EtapeDeLaDestructionNonPrise::TransactionNonOuverte => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_DETRUIT_TRANSACTION_NON_OUVERTE),
+        EtapeDeLaDestructionNonPrise::LigneNonLue => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_DETRUIT_NON_LU),
+        EtapeDeLaDestructionNonPrise::EffacementNonPris => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_DETRUIT_EFFACEMENT_NON_PRIS),
+        EtapeDeLaDestructionNonPrise::NonValidee => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_DETRUIT_NON_VALIDE),
     }
-    let (db_path, key_ref) = {
+}
+
+/// `P10.34-h` — le `BEGIN` de la destruction refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_TENANT_NON_DETRUIT_TRANSACTION_NON_OUVERTE: &str = "TENANT NON DÉTRUIT : la base n'a pas pris la \
+     transaction de la destruction (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) \
+     — RIEN n'est détruit : le tenant, sa base, sa clé, ses droits et ses jetons, SCIM compris, sont intacts ; la ligne du \
+     journal de contrôle qui annonce cette destruction est déjà écrite. Réessayez ; s'il est refusé encore, l'écrivain est \
+     occupé ou bloqué.";
+
+/// `P10.34-h` — un effacement de la destruction refusé : la transaction est annulée (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`,
+/// web/core.js).
+pub(crate) const CAUSE_TENANT_NON_DETRUIT_EFFACEMENT_NON_PRIS: &str = "TENANT NON DÉTRUIT : la base n'a pas pris \
+     l'effacement de ce qui le rattache au plan de contrôle, et la transaction est annulée — RIEN n'est détruit : le \
+     tenant, sa base, sa clé, ses droits et ses jetons, SCIM compris, sont intacts ; la ligne du journal de contrôle qui \
+     annonce cette destruction est déjà écrite. Réessayez ; si le refus persiste, la base du plan de contrôle est en \
+     lecture seule, pleine ou verrouillée.";
+
+/// `P10.34-h` — le `COMMIT` de la destruction refusé (`OUVERTURE_DE_L_ECRITURE_NON_VALIDEE`, web/core.js).
+pub(crate) const CAUSE_TENANT_NON_DETRUIT_NON_VALIDE: &str = "TENANT NON DÉTRUIT : la base n'a pas validé la transaction \
+     (COMMIT refusé) et l'a annulée — RIEN n'est détruit : le tenant, sa base, sa clé, ses droits et ses jetons, SCIM \
+     compris, sont intacts ; la ligne du journal de contrôle qui annonce cette destruction est déjà écrite. Réessayez une \
+     fois le plan de contrôle de nouveau écrivable.";
+
+/// `P10.34-h` — la ligne du tenant non relue au début de la destruction : ce n'est pas « tenant inconnu ».
+pub(crate) const CAUSE_TENANT_NON_DETRUIT_NON_LU: &str = "TENANT NON DÉTRUIT : la base du plan de contrôle n'a pas pu \
+     relire la ligne du tenant au début de la destruction — ce n'est PAS « tenant inconnu », son existence n'est ni \
+     affirmée ni niée. RIEN n'est détruit : le tenant, sa base, sa clé, ses droits et ses jetons, SCIM compris, sont \
+     intacts ; la ligne du journal de contrôle qui annonce cette destruction est déjà écrite. Réessayez une fois le plan \
+     de contrôle de nouveau lisible.";
+
+/// `P10.34-h` — ce qu'un identifiant de tenant porte dans le plan de contrôle hors de sa ligne : ses jetons SCIM, la
+/// provenance des identités que son SCIM a créées (SCELLÉE, voir `EFFACEMENTS_DE_LA_DESTRUCTION`), ses jetons d'agent et
+/// ses droits — les quatre tables à colonne `tenant_id` (`state::migrate_control`, `rbac::migrate_control_provenance_scim`).
+/// La destruction les retire ; la création aussi, avant d'inscrire la ligne du tenant (`tenant_provision`), pour ce qui
+/// serait resté sous l'identifiant : une destruction d'une version antérieure, un jeton posé sur un identifiant non
+/// catalogué par une version antérieure de `scim-token` (qui le refuse désormais), une écriture tombée sous l'identifiant
+/// après la destruction (une écriture SCIM relit son jeton dans sa transaction, `scim::scim_exiger_le_jeton_sur`). Le
+/// premier élément nomme l'effacement au journal.
+pub(crate) const RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT: [(&str, &str); 4] = [
+    ("jetons SCIM", "DELETE FROM scim_token WHERE tenant_id=?1"),
+    ("provenance SCIM", "UPDATE scim_provenance SET tenant_id='(tenant détruit)' WHERE tenant_id=?1"),
+    ("jetons d'agent", "DELETE FROM token WHERE tenant_id=?1"),
+    ("droits", "DELETE FROM \"grant\" WHERE tenant_id=?1"),
+];
+
+/// `P10.34-h` — ce que la destruction efface dans le plan de contrôle, dans cet ordre et dans UNE transaction : les
+/// jetons SCIM du tenant, la provenance de ses identités SCIM (SCELLÉE, voir plus bas), ses jetons d'agent, ses
+/// droits, puis sa ligne (le `key_ref` disparaît : plus aucune référence à la clé). Le premier élément nomme
+/// l'effacement au journal (constante, jamais le texte d'une demande).
+///
+/// LA PROVENANCE N'EST PAS EFFACÉE, ELLE EST SCELLÉE sur le tenant `(tenant détruit)`, qu'aucun tenant ne peut porter
+/// (`tenant_slug_ok` refuse l'espace et les parenthèses). Effacée, une identité créée par le SCIM du tenant détruit et
+/// sans droit ailleurs devenait « sans droit ni provenance », donc RATTACHABLE PAR TOUT TENANT SCIM
+/// (`rbac::lire_le_rattachement_scim`) : `POST /Users` de son nom servait son id, `PATCH add` lui posait un droit.
+/// Laissée telle quelle, un tenant recréé sous le même identifiant en héritait. Scellée, elle est étrangère à tous —
+/// au tenant recréé compris — tant qu'aucun droit ne lui est posé hors SCIM.
+///
+/// LIMITE NOMMÉE (décision voisine de l'exploitant, `P10.34-h`) : une identité scellée garde sa ligne `platform_user` et
+/// son nom ; aucun tenant ne peut plus la rattacher, si bien que `POST /Users` de ce nom rend `409`, au tenant recréé
+/// compris : le nom est pris tant que l'identité n'est pas retirée hors SCIM.
+pub(crate) const EFFACEMENTS_DE_LA_DESTRUCTION: [(&str, &str); 5] = [
+    RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT[0],
+    RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT[1],
+    RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT[2],
+    RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT[3],
+    ("ligne du tenant", "DELETE FROM tenant WHERE id=?1"),
+];
+
+/// DESTRUCTION CRYPTO (RGPD) : OUBLIE la clé (supprime l'entrée control-plane `tenant` + ses grants/tokens, ses jetons
+/// SCIM, scelle la provenance de ses identités SCIM + purge les caches de clé) et SUPPRIME le fichier chiffré (+ WAL/SHM).
+/// Après cela, la donnée est cryptographiquement irrécupérable. Évince aussi le writer mémoïsé. Le tenant `default`
+/// est protégé.
+///
+/// `P10.34-h` — TOUT OU RIEN DANS LE PLAN DE CONTRÔLE, PUIS LE FICHIER. Les effacements étaient jetés un par un
+/// (`let _ =`) : un refus laissait le tenant à moitié oublié, et le fichier chiffré était supprimé quand même. La ligne
+/// du tenant est relue et les cinq effacements faits dans UNE transaction (`jouer_le_geste_garde`) ; un refus (`BEGIN`,
+/// lecture, effacement, `COMMIT`) rend `NonPrise` et RIEN n'est détruit — ni ligne, ni cache (écrivain mémoïsé, registre
+/// des clés, cache Vault), ni fichier. Les caches et le fichier ne sont touchés qu'après le `COMMIT`.
+#[allow(dead_code)]
+pub(crate) fn tenant_destroy(mgr: &TenantDbManager, id: &str) -> Result<(), DestructionNonFaite> {
+    use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
+    use rusqlite::OptionalExtension as _;
+    let cp = mgr
+        .control
+        .as_ref()
+        .ok_or_else(|| DestructionNonFaite::Refusee("multi-tenant désactivé (mode 0) : destruction indisponible".into()))?;
+    if id == "default" {
+        return Err(DestructionNonFaite::Refusee("refus : le tenant 'default' ne peut pas être détruit".into()));
+    }
+    let issue = {
         let conn = cp.conn.lock();
-        let row = conn.query_row(
-            "SELECT db_path, key_ref FROM tenant WHERE id=?1",
-            params![id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        ).ok();
-        let (p, kr) = row.ok_or_else(|| format!("tenant '{id}' inconnu"))?;
-        // Oublie la clé + les identités liées (le key_ref disparaît -> plus aucune référence à la clé).
-        let _ = conn.execute("DELETE FROM token WHERE tenant_id=?1", params![id]);
-        let _ = conn.execute("DELETE FROM \"grant\" WHERE tenant_id=?1", params![id]);
-        let _ = conn.execute("DELETE FROM tenant WHERE id=?1", params![id]);
-        (p, kr)
+        jouer_le_geste_garde(&conn, "tenants", "destruction du tenant", |conn| -> Result<(String, String), DestructionNonFaite> {
+            let row = conn
+                .query_row("SELECT db_path, key_ref FROM tenant WHERE id=?1", params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .optional();
+            let (p, kr) = match row {
+                Ok(Some(lu)) => lu,
+                Ok(None) => return Err(DestructionNonFaite::Refusee(format!("tenant '{id}' inconnu"))),
+                Err(e) => {
+                    eprintln!("[tenants] WARN destruction du tenant NON faite, rien n'est détruit (ligne du tenant non relue) : {e}");
+                    return Err(DestructionNonFaite::NonPrise(EtapeDeLaDestructionNonPrise::LigneNonLue));
+                }
+            };
+            for (quoi, sql) in EFFACEMENTS_DE_LA_DESTRUCTION {
+                if let Err(e) = conn.execute(sql, params![id]) {
+                    eprintln!("[tenants] WARN destruction du tenant NON faite, rien n'est détruit (effacement refusé : {quoi}) : {e}");
+                    return Err(DestructionNonFaite::NonPrise(EtapeDeLaDestructionNonPrise::EffacementNonPris));
+                }
+            }
+            Ok((p, kr))
+        })
+    };
+    let (db_path, key_ref) = match issue {
+        Issue::Valide(lu) => lu,
+        Issue::Refuse(refus) => return Err(refus),
+        // Le `BEGIN` refusé est déjà dit au journal par `ouvrir_sa_transaction`.
+        Issue::NonOuvert(_) => return Err(DestructionNonFaite::NonPrise(EtapeDeLaDestructionNonPrise::TransactionNonOuverte)),
+        Issue::NonValide(e) => {
+            eprintln!("[tenants] WARN destruction du tenant NON faite, rien n'est détruit (COMMIT refusé) : {e}");
+            return Err(DestructionNonFaite::NonPrise(EtapeDeLaDestructionNonPrise::NonValidee));
+        }
     };
     // Évince le writer chaud + purge les caches de clé (registre read-pool + cache Vault).
     mgr.writers.lock().remove(id);
     unregister_db_key(&db_path);
-    if let Some(vp) = key_ref.strip_prefix("vault:") {
-        vault_key_cache_forget(vp);
+    // `P10.34-h` — le cache Vault est rangé sous `chemin#champ` (`resolve_vault_key_field`, champ `key` par défaut) : la
+    // clé d'oubli est relue par la même grammaire que la résolution (`resolve_tenant_key`), sinon une référence
+    // `vault:chemin` sans champ laissait la clé du tenant détruit en mémoire.
+    let reference = guatx_core::secret::SecretRef::parse(key_ref.trim());
+    if reference.scheme() == "vault" {
+        let (chemin, champ) = reference.vault_path_field();
+        vault_key_cache_forget(&format!("{chemin}#{champ}"));
     }
     // Supprime le fichier chiffré + journaux (destruction crypto : sans la clé, le contenu est illisible).
     let _ = std::fs::remove_file(&db_path);
@@ -312,11 +548,16 @@ pub(crate) async fn tenant_create(
     let (pid, pname, pdb, pkey) = (id.clone(), name.clone(), db_path.clone(), key_ref.clone());
     let provision = tokio::task::spawn_blocking(move || tenant_provision(&mgr, &pid, &pname, &pdb, &pkey))
         .await
-        .unwrap_or_else(|e| Err(format!("tâche de provisioning interrompue: {e}")));
-    if let Err(e) = provision {
-        // "existe déjà" -> 409 ; sinon échec de provisioning (clé/FS) -> 400 (fail-closed, rien créé).
-        let code = if e.contains("existe déjà") { StatusCode::CONFLICT } else { StatusCode::BAD_REQUEST };
-        return (code, e).into_response();
+        .unwrap_or_else(|e| Err(ProvisionNonFaite::Refusee(format!("tâche de provisioning interrompue: {e}"))));
+    match provision {
+        Ok(()) => {}
+        // `P10.34-h` — la transaction de la création non prise : 503 à phrase fixe, rien n'est créé, rejouable.
+        Err(ProvisionNonFaite::NonPrise(etape)) => return refuser_la_creation_non_prise(etape),
+        Err(ProvisionNonFaite::Refusee(e)) => {
+            // "existe déjà" -> 409 ; sinon échec de provisioning (clé/FS) -> 400 (fail-closed, rien créé).
+            let code = if e.contains("existe déjà") { StatusCode::CONFLICT } else { StatusCode::BAD_REQUEST };
+            return (code, e).into_response();
+        }
     }
     // 1er grant admin OPTIONNEL : matérialise le platform_user + grant admin sur le nouveau tenant.
     // `P10.21-g` — le grant est COMPTÉ avant que le journal de contrôle ou la réponse ne le nomment.
@@ -556,10 +797,12 @@ pub(crate) async fn tenant_delete(State(st): State<AppState>, Extension(au): Ext
     let tid = id.clone();
     let destroy = tokio::task::spawn_blocking(move || tenant_destroy(&mgr, &tid))
         .await
-        .unwrap_or_else(|e| Err(format!("tâche de destruction interrompue: {e}")));
+        .unwrap_or_else(|e| Err(DestructionNonFaite::Refusee(format!("tâche de destruction interrompue: {e}"))));
+    // `P10.34-h` — la transaction de la destruction non prise : 503 à phrase fixe, rien n'est détruit, rejouable.
     match destroy {
         Ok(()) => Json(json!({ "ok": true, "id": id, "destroyed": true })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(DestructionNonFaite::NonPrise(etape)) => refuser_la_destruction_non_prise(etape),
+        Err(DestructionNonFaite::Refusee(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 

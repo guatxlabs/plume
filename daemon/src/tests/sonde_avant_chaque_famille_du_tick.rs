@@ -130,12 +130,16 @@ mod sonde_avant_chaque_famille_du_tick {
             )
             .unwrap();
             // `escalate_overdue_cases` (échéance passée) puis `sla_multilevel_tick` (acquittement dû, politique P2).
+            // `P10.31-v` (vague AZ) — FIXTURE INVERSÉE : le dossier portait `ack_due` sans `sla_policy_id` (aucune
+            // politique ne le gouvernait) et le tour le marquait ; il ne juge plus que les échéances d'une politique ACTIVE
+            // (`GOUVERNE_PAR_UNE_POLITIQUE_ACTIVE`, caseops.rs). La politique est donc posée d'abord, et le dossier la porte.
+            conn.execute("INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled) VALUES('saft',2,60,3600,1)", []).unwrap();
             conn.execute(
-                "INSERT INTO incident(ts,updated,title,status,priority,sla_due,ack_due) VALUES(?1,?1,'saft','open',2,?2,?2)",
+                "INSERT INTO incident(ts,updated,title,status,priority,sla_due,ack_due,sla_policy_id) \
+                 VALUES(?1,?1,'saft','open',2,?2,?2,(SELECT id FROM sla_policy WHERE priority=2))",
                 params![maintenant - 7200, maintenant - 60],
             )
             .unwrap();
-            conn.execute("INSERT INTO sla_policy(name,priority,ack_target_s,resolve_target_s,enabled) VALUES('saft',2,60,3600,1)", []).unwrap();
             // Mode engagement seulement : l'un expire, l'autre est chargé dans la carte du périmètre.
             conn.execute(
                 "INSERT INTO engagement(id,name,scope,window_start,window_end,status) VALUES('saft-expire','saft','[\"192.0.2.0/24\"]',?1,?2,'active')",

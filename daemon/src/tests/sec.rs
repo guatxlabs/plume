@@ -244,9 +244,11 @@ fn sec2_ssrf_guard_blocks_internal_allows_public() {
     for bad in ["file:///etc/passwd", "gopher://x/", "ftp://host/", "-oProxyCommand=x"] {
         assert!(ssrf_guard(bad).is_err(), "SSRF doit REFUSER le schéma de {bad}");
     }
-    // FIX #3 (on-prem) — RFC1918 AUTORISÉ PAR DÉFAUT (relais SMTP interne / webhook / IdP OIDC on-prem légitimes).
+    // `P7.20-a` (INVERSÉ : ce témoin affirmait « RFC1918 AUTORISÉ PAR DÉFAUT ») — sans réglage, une cible RFC1918 venue de
+    // l'API est REFUSÉE ; la destination écrite par l'exploitant et la valeur explicite se jugent dans
+    // `cibles_privees_selon_leur_origine_et_hote_dit_au_demarrage.rs`.
     for onprem in ["http://10.1.2.3/api", "http://172.16.9.9/", "http://192.168.1.10/hook", "smtp://10.0.0.25:25"] {
-        assert!(ssrf_guard(onprem).is_ok(), "SSRF doit AUTORISER le RFC1918 on-prem par défaut : {onprem}");
+        assert!(ssrf_guard(onprem).is_err(), "SSRF doit REFUSER par défaut le RFC1918 d'une cible venue de l'API : {onprem}");
     }
     // hôtes PUBLICS (IP littérale -> pas de DNS requis en test) = OK.
     for ok in ["http://93.184.216.34/", "https://93.184.216.34:8443/x", "smtp://93.184.216.34:587"] {
@@ -256,7 +258,7 @@ fn sec2_ssrf_guard_blocks_internal_allows_public() {
     assert!(!egress_url_ok("http://169.254.169.254/"), "notifier egress metadata -> refus");
     assert!(!egress_url_ok("http://[::ffff:169.254.169.254]/"), "notifier egress metadata mapped-v6 -> refus");
     assert!(egress_url_ok("https://93.184.216.34/"), "notifier egress public -> ok");
-    assert!(egress_url_ok("http://10.20.30.40/hook"), "notifier egress RFC1918 on-prem -> ok par défaut");
+    assert!(!egress_url_ok("http://10.20.30.40/hook"), "notifier egress RFC1918 venu de l'API -> refus par défaut (P7.20-a, inversé)");
     // USERINFO (`utilisateur:secret@`) — trou de corpus comblé le 2026-08-29 sous `P11.13-i`. Le
     // comportement était LU dans `ssrf_split_authority`, jamais JOUÉ : ce couple le joue, et il
     // DISCRIMINE. ① Le userinfo ne fait pas passer un hôte interne : la garde juge l'HÔTE, et c'est
@@ -281,9 +283,9 @@ fn sec2_ssrf_ip_policy_and_cidr_allow() {
         assert!(ssrf_blocked_policy(ip(s), false), "{s} never-egress -> bloqué (block_private off)");
         assert!(ssrf_blocked_policy(ip(s), true),  "{s} never-egress -> bloqué (block_private on)");
     }
-    // RFC1918 : autorisé par défaut, bloqué si opt-in.
+    // RFC1918 : le drapeau décide (`P7.20-a` : levé pour une cible de configuration par défaut, posé pour l'API).
     for s in ["10.1.2.3", "172.16.0.9", "172.31.255.254", "192.168.1.10"] {
-        assert!(!ssrf_blocked_policy(ip(s), false), "{s} RFC1918 -> AUTORISÉ par défaut");
+        assert!(!ssrf_blocked_policy(ip(s), false), "{s} RFC1918 -> AUTORISÉ drapeau levé");
         assert!(ssrf_blocked_policy(ip(s), true),   "{s} RFC1918 -> bloqué si PLUME_SSRF_BLOCK_PRIVATE=1");
     }
     // public -> jamais bloqué.
@@ -425,7 +427,8 @@ async fn sec1_scim_put_delete_tenant_scoped() {
 // ------------------------------------------------------------------------------------------------
 // FIX #1 (deploy-blocker) — les DESTINATIONS #50 (forward de la donnée SOC COMPLÈTE non masquée) sont
 // gardées SSRF À LA CRÉATION (dest_endpoint_ok) ET AU POINT D'ÉGRESS (dest_transport). Une destination
-// loopback/metadata/mapped/unspecified ne peut ni être créée ni jamais égresser ; RFC1918 on-prem passe.
+// loopback/metadata/mapped/unspecified ne peut ni être créée ni jamais égresser ; `P7.20-a` : une adresse RFC1918
+// saisie par l'API est refusée par défaut (une destination écrite en surcouche config.d est admise).
 // ------------------------------------------------------------------------------------------------
 #[test]
 fn sec_dest_ssrf_rejects_internal_endpoints() {
@@ -439,10 +442,10 @@ fn sec_dest_ssrf_rejects_internal_endpoints() {
     for bad in ["tcp://127.0.0.1:514", "tcp://169.254.169.254:514"] {
         assert!(!dest_endpoint_ok("syslog", bad), "syslog interne refusé : {bad}");
     }
-    // public OK ; RFC1918 on-prem OK par défaut (parité notifiers, fix #3).
+    // public OK ; RFC1918 venu de l'API REFUSÉ par défaut (parité notifiers ; `P7.20-a`, inversé).
     assert!(dest_endpoint_ok("webhook", "https://93.184.216.34/hook"), "webhook public OK");
-    assert!(dest_endpoint_ok("webhook", "http://10.0.0.9/hook"), "webhook RFC1918 on-prem OK par défaut");
-    assert!(dest_endpoint_ok("syslog", "tcp://10.0.0.9:514"), "syslog RFC1918 on-prem OK par défaut");
+    assert!(!dest_endpoint_ok("webhook", "http://10.0.0.9/hook"), "webhook RFC1918 venu de l'API refusé par défaut");
+    assert!(!dest_endpoint_ok("syslog", "tcp://10.0.0.9:514"), "syslog RFC1918 venu de l'API refusé par défaut");
     // ÉGRESS (dest_transport) : choke-point non contournable même si la ligne fut posée hors create/update.
     let wh = Wire::Http { method: "POST".into(), url: "http://169.254.169.254/".into(), headers: vec![], body: b"{}".to_vec() };
     assert!(dest_transport(&wh).is_err(), "égress webhook vers metadata bloqué au transport");
@@ -452,7 +455,8 @@ fn sec_dest_ssrf_rejects_internal_endpoints() {
 
 // ------------------------------------------------------------------------------------------------
 // FIX #4 — notifier_create/update valident l'ÉGRESS (schéma + SSRF) : une cible interne (never-egress) est
-// REFUSÉE IMMÉDIATEMENT (plus d'échec d'envoi silencieux) ; un endpoint RFC1918 on-prem légitime est accepté.
+// REFUSÉE IMMÉDIATEMENT (plus d'échec d'envoi silencieux) ; `P7.20-a` : un endpoint RFC1918 saisi par l'API est
+// refusé par défaut (le canal semé par PLUME_NOTIFY_NTFY_URL ou écrit en surcouche config.d est admis).
 // ------------------------------------------------------------------------------------------------
 #[tokio::test]
 async fn sec_notifier_create_update_egress_guarded() {
@@ -472,10 +476,13 @@ async fn sec_notifier_create_update_egress_guarded() {
             Json(json!({ "kind": "webhook", "url": bad }))).await).await;
         assert!(code == StatusCode::BAD_REQUEST && v.get("error").is_some() && v.get("id").is_none(), "notifier interne {bad} refusé à la création : {code} {v}");
     }
-    // FIX #3 — endpoint RFC1918 on-prem légitime accepté PAR DÉFAUT.
-    let (_, v) = corps(notifier_create(State(st.clone()), Extension(admin.clone()),
+    // `P7.20-a` (INVERSÉ : ce témoin affirmait l'endpoint RFC1918 accepté PAR DÉFAUT) — refusé à la création, sans id.
+    let (code, v) = corps(notifier_create(State(st.clone()), Extension(admin.clone()),
         Json(json!({ "kind": "webhook", "url": "http://10.0.0.9/ntfy" }))).await).await;
-    let id = v.get("id").and_then(|x| x.as_i64()).expect("RFC1918 on-prem accepté par défaut");
+    assert!(code == StatusCode::BAD_REQUEST && v.get("id").is_none(), "RFC1918 venu de l'API refusé par défaut : {code} {v}");
+    let (_, v) = corps(notifier_create(State(st.clone()), Extension(admin.clone()),
+        Json(json!({ "kind": "webhook", "url": "http://192.0.2.9/ntfy" }))).await).await;
+    let id = v.get("id").and_then(|x| x.as_i64()).expect("cible publique (RFC 5737) acceptée");
     // UPDATE ré-pointant vers la metadata -> 400 (pas de re-cible interne silencieuse).
     let (code, v) = corps(notifier_update(State(st.clone()), Extension(admin.clone()),
         axum::extract::Path(id), Json(json!({ "url": "http://169.254.169.254/" }))).await).await;

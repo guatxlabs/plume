@@ -261,27 +261,27 @@ mod ecritures_de_controle_comptees {
     // (4) LE PREMIER ADMINISTRATEUR — le tenant créé, l'administrateur demandé nommé seulement s'il est posé.
     // -------------------------------------------------------------------------------------
 
-    /// CE QU'IL TIENT : sous la vue temporaire sur `"grant"`, puis sous la table retirée, `POST
-    /// /api/tenants` avec `admin` rend 201 (le tenant EXISTE), `first_admin: null` et l'aveu
-    /// `premier_administrateur_non_pose` ; aucun droit n'est écrit ; la ligne `tenant.create` du journal
-    /// de contrôle ne nomme aucun administrateur et porte `first_admin_non_pose`. Un nom invalide suit la
-    /// même voie (il était ignoré sans un mot). Contrôle positif : la table remise, l'administrateur est
-    /// posé, nommé, sans aveu, et le détail de contrôle ne porte pas la clé neuve.
+    /// La phrase servie quand la création ne peut pas effacer les droits restés sous l'identifiant, RECOPIÉE.
+    const ECC_PHRASE_CREATION_EFFACEMENT: &str = "TENANT NON CRÉÉ : la base n'a pas pris l'effacement de ce qui restait sous cet identifiant, et la transaction est annulée — RIEN n'est créé : ni ligne au catalogue, ni base chiffrée. Réessayez ; si le refus persiste, la base du plan de contrôle est en lecture seule, pleine ou verrouillée.";
+
+    /// INVERSÉ NOMMÉMENT (vague AY, `P10.34-h`) — ce test s'appelait `ecc_un_premier_administrateur_que_la_base_refuse_n_est_pas_nomme`
+    /// et attendait, sous la vue temporaire sur `"grant"` puis sous la table retirée, `201` et le premier administrateur
+    /// avoué non posé. Depuis que la création d'un tenant efface, dans sa transaction, les droits restés sous son
+    /// identifiant (`tenants::RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT`), ces deux fixtures rendent aussi cet effacement
+    /// impossible. CHOIX DE SÉCURITÉ : un tenant qui ne peut pas effacer les droits restés sous son identifiant ne naît
+    /// pas — né quand même, il hériterait de ces droits (un administrateur de l'ancien tenant administrerait le nouveau).
+    /// Le contrat « premier administrateur avoué non posé » est tenu par le test suivant, où SEULE la pose du premier
+    /// administrateur est refusée.
     ///
-    /// CE QU'IL NE TIENT PAS : ce que la console peint de l'aveu.
+    /// CE QU'IL TIENT : sous chacune des deux fixtures, `POST /api/tenants` avec `admin` rend le `503` à phrase fixe (corps
+    /// EXACT : `error` et l'identifiant de corrélation), rien n'est créé (ni ligne au catalogue, ni base, ni ligne
+    /// `tenant.create`, ni droit) ; la fixture levée, la MÊME demande crée le tenant et pose l'administrateur.
     ///
-    /// LA MUTATION QUI LE FERAIT ROUGIR : remettre `let _ =` sur l'`INSERT OR REPLACE` suivi de
-    /// `Pose(…)` — la réponse et le journal nomment un administrateur qui n'existe pas.
+    /// LA MUTATION QUI LE FAIT ROUGIR : retirer les droits de `RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT` (201).
     #[tokio::test]
-    async fn ecc_un_premier_administrateur_que_la_base_refuse_n_est_pas_nomme() {
+    async fn ecc_une_creation_qui_ne_peut_effacer_les_droits_restes_ne_cree_pas_le_tenant() {
         let (st, _dir) = mk_mode1_state();
         let sa = ecc_super_admin();
-        let detail_de = |st: &AppState, tenant: &str| -> Value {
-            let texte: String = st.tenants.control.as_ref().expect("mode 1").conn.lock()
-                .query_row("SELECT detail FROM control_ledger WHERE kind='tenant.create' AND tenant=?1", params![tenant], |r| r.get(0))
-                .expect("la création est au journal de contrôle");
-            serde_json::from_str(&texte).expect("le détail est du JSON")
-        };
         for (voie, pose, remise, tenant) in [
             ("vue temporaire", ecc_vue_sur("grant"), ecc_vue_retiree("grant"), "ecc-adm-vue"),
             (
@@ -291,21 +291,72 @@ mod ecritures_de_controle_comptees {
                 "ecc-adm-sans",
             ),
         ] {
+            let maillons = ecc_maillons(&st, "tenant.create");
             ecc_plan_de_controle(&st, &pose);
             let (statut, v) = pb_json(
                 tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": tenant, "name": tenant, "admin": "frank" }))).await,
             )
             .await;
             ecc_plan_de_controle(&st, &remise);
-            assert_eq!(statut, 201, "{voie} : le tenant EST créé : {v}");
-            assert!(v.get("first_admin").is_some_and(Value::is_null), "{voie} : aucun administrateur n'est nommé : {v}");
-            let aveu = v.get(CLE_PREMIER_ADMINISTRATEUR_NON_POSE).and_then(|x| x.as_str()).unwrap_or("");
-            assert!(aveu.starts_with(CAUSE_PREMIER_ADMINISTRATEUR_NON_POSE), "{voie} : la réponse DIT le manque : {v}");
+            assert_eq!(statut, 503, "{voie} : le tenant N'EST PAS créé : {v}");
+            let cles: std::collections::BTreeSet<&str> = v.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+            assert_eq!(cles, ["error", "id"].into_iter().collect(), "{voie} : le corps exact : {v}");
+            assert_eq!(v["error"], json!(ECC_PHRASE_CREATION_EFFACEMENT), "{voie} : la phrase fixe : {v}");
+            assert!(v["id"].as_str().is_some_and(|id| id.starts_with("plume-e")), "{voie} : l'identifiant de corrélation : {v}");
+            assert_eq!(ecc_compte_de_controle(&st, &format!("SELECT COUNT(*) FROM tenant WHERE id='{tenant}'")), 0, "ÉTAT RELU ({voie}) : aucune ligne au catalogue");
+            assert!(!std::path::Path::new(&tenant_db_path(&st, tenant)).exists(), "ÉTAT RELU ({voie}) : aucune base créée");
+            assert_eq!(ecc_maillons(&st, "tenant.create"), maillons, "JOURNAL DE CONTRÔLE ({voie}) : aucune création attestée");
             assert_eq!(count_grant(&st, tenant, "frank"), 0, "ÉTAT RELU ({voie}) : aucun droit n'est écrit");
-            let detail = detail_de(&st, tenant);
-            assert!(detail["first_admin"].is_null(), "JOURNAL DE CONTRÔLE ({voie}) : aucun administrateur attesté : {detail}");
-            assert_eq!(detail["first_admin_non_pose"], json!(true), "et le manque y est écrit : {detail}");
+
+            // La fixture levée, la même demande crée le tenant et pose l'administrateur.
+            let (statut, v) = pb_json(
+                tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": tenant, "name": tenant, "admin": "frank" }))).await,
+            )
+            .await;
+            assert_eq!(statut, 201, "{voie} : contrôle positif : {v}");
+            assert_eq!(count_grant(&st, tenant, "frank"), 1, "{voie} : contrôle positif : le droit est écrit");
         }
+    }
+
+    /// CE QU'IL TIENT : un déclencheur temporaire refuse SEULEMENT l'insertion dans `"grant"` (l'effacement des droits
+    /// restés passe) : `POST /api/tenants` avec `admin` rend 201 (le tenant EXISTE), `first_admin: null` et l'aveu
+    /// `premier_administrateur_non_pose` ; aucun droit n'est écrit ; la ligne `tenant.create` du journal de contrôle ne
+    /// nomme aucun administrateur et porte `first_admin_non_pose`. Un nom invalide suit la même voie (il était ignoré
+    /// sans un mot). Contrôle positif : le déclencheur retiré, l'administrateur est posé, nommé, sans aveu, et le détail
+    /// de contrôle ne porte pas la clé neuve.
+    ///
+    /// CE QU'IL NE TIENT PAS : ce que la console peint de l'aveu.
+    ///
+    /// LA MUTATION QUI LE FERAIT ROUGIR : remettre `let _ =` sur l'`INSERT OR REPLACE` suivi de
+    /// `Pose(…)` — la réponse et le journal nomment un administrateur qui n'existe pas.
+    #[tokio::test]
+    async fn ecc_un_premier_administrateur_que_la_base_refuse_seul_n_est_pas_nomme() {
+        let (st, _dir) = mk_mode1_state();
+        let sa = ecc_super_admin();
+        let detail_de = |st: &AppState, tenant: &str| -> Value {
+            let texte: String = st.tenants.control.as_ref().expect("mode 1").conn.lock()
+                .query_row("SELECT detail FROM control_ledger WHERE kind='tenant.create' AND tenant=?1", params![tenant], |r| r.get(0))
+                .expect("la création est au journal de contrôle");
+            serde_json::from_str(&texte).expect("le détail est du JSON")
+        };
+        let tenant = "ecc-adm-refuse";
+        ecc_plan_de_controle(
+            &st,
+            "CREATE TEMP TRIGGER ecc_premier_administrateur_refuse BEFORE INSERT ON \"grant\" BEGIN SELECT RAISE(ABORT, 'ecc : pose du premier administrateur refusee'); END;",
+        );
+        let (statut, v) = pb_json(
+            tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": tenant, "name": tenant, "admin": "frank" }))).await,
+        )
+        .await;
+        ecc_plan_de_controle(&st, "DROP TRIGGER ecc_premier_administrateur_refuse;");
+        assert_eq!(statut, 201, "le tenant EST créé (l'effacement des droits restés est passé) : {v}");
+        assert!(v.get("first_admin").is_some_and(Value::is_null), "aucun administrateur n'est nommé : {v}");
+        let aveu = v.get(CLE_PREMIER_ADMINISTRATEUR_NON_POSE).and_then(|x| x.as_str()).unwrap_or("");
+        assert!(aveu.starts_with(CAUSE_PREMIER_ADMINISTRATEUR_NON_POSE), "la réponse DIT le manque : {v}");
+        assert_eq!(count_grant(&st, tenant, "frank"), 0, "ÉTAT RELU : aucun droit n'est écrit");
+        let detail = detail_de(&st, tenant);
+        assert!(detail["first_admin"].is_null(), "JOURNAL DE CONTRÔLE : aucun administrateur attesté : {detail}");
+        assert_eq!(detail["first_admin_non_pose"], json!(true), "et le manque y est écrit : {detail}");
 
         // UN NOM INVALIDE — ignoré sans un mot jusque-là, il suit la même voie.
         let (statut, v) = pb_json(
@@ -315,7 +366,7 @@ mod ecritures_de_controle_comptees {
         assert_eq!(statut, 201, "{v}");
         assert!(v.get(CLE_PREMIER_ADMINISTRATEUR_NON_POSE).is_some(), "le nom invalide est dit : {v}");
 
-        // CONTRÔLE POSITIF — la table en place : posé, nommé, sans aveu, détail de contrôle inchangé.
+        // CONTRÔLE POSITIF — le déclencheur retiré : posé, nommé, sans aveu, détail de contrôle inchangé.
         let (statut, v) = pb_json(
             tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Json(json!({ "id": "ecc-adm-ok", "name": "ok", "admin": "frank" }))).await,
         )

@@ -1778,6 +1778,12 @@ def juger_compose(yaml):
     # sur un déploiement qui ne l'a pas demandé (accès direct en http privé de son cookie).
     if str(env.get("PLUME_TLS_TERMINATED_UPSTREAM", "")) != "${PLUME_TLS_TERMINATED_UPSTREAM:-}":
         faute(f"docker-compose.yml : PLUME_TLS_TERMINATED_UPSTREAM n'est pas vide par défaut ({env.get('PLUME_TLS_TERMINATED_UPSTREAM')!r})")
+    # `P7.20-a` — la garde des sorties et l'hôte strict ARRIVENT depuis `.env` (sinon une ligne posée y est sans
+    # effet), et VIDES par défaut : le démon lit le vide comme absent (défaut sûr) ; un `:-0` admettrait le privé
+    # partout sans que `.env` le dise.
+    for cle in ("PLUME_SSRF_BLOCK_PRIVATE", "PLUME_SSRF_ALLOW", "PLUME_HOST_STRICT"):
+        if str(env.get(cle, "")) != "${" + cle + ":-}":
+            faute(f"docker-compose.yml : {cle} n'est pas relayé depuis `.env`, vide par défaut ({env.get(cle)!r})")
 
 
 def juger_docs_audit():

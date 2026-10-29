@@ -25920,8 +25920,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       if (/alice/.test(nu122(resultatMdp122)) || !/sans que le démon nomme|without the daemon naming/.test(nu122(resultatMdp122))) ecartsM122.push(`mot de passe/${L.nom}/succès sans nom servi : « ${nu122(resultatMdp122)} »`);
       nouveauMdp122.value = ""; actuelMdp122.value = ""; resultatMdp122.textContent = ""; fermerLesFenetres122();
     }
-    // (m8) LE PROVISIONNEMENT D'UN TENANT dit son refus par la forme partagée, plus par la cause nue.
-    if (!/catch \(err\) \{ if \(res\) \{ res\.textContent = ''; res\.className = 'muted'; \} peindreLeRefusDUnGeste\(puits, err\); return; \}/.test(srcDe122("app.js")) || /res\.textContent = phraseDuRefusDuDemon\(err\)/.test(srcDe122("app.js")))
+    // (m8) LE PROVISIONNEMENT D'UN TENANT dit son refus par la forme partagée, plus par la cause nue. `P10.34-h` : la création
+    // que la base n'a pas prise a sa face nommée (`peindreLeProvisionnementRefuse`, jugée au témoin 153), la forme partagée sinon.
+    if (!/catch \(err\) \{ if \(res\) \{ res\.textContent = ''; res\.className = 'muted'; \} (?:if \(!peindreLeProvisionnementRefuse\(puits, err\)\) )?peindreLeRefusDUnGeste\(puits, err\); return; \}/.test(srcDe122("app.js")) || /res\.textContent = phraseDuRefusDuDemon\(err\)/.test(srcDe122("app.js")))
       ecartsM122.push("le provisionnement d'un tenant colle encore la cause nue dans sa ligne de résultat");
     console.log(`[122m] ${mesureM122.join(" | ")}`);
     exiger(ecartsM122.length === 0, `(122m) UN RESTE DE LA FAMILLE \`P10.30-m\` SE ROUVRE (intégrations : refus nommé, rien de compté ni d'absent sur une lecture non faite ; partage d'une vue ; \`fetch\` directs recensés dans les deux sens ; cadres recensés par usage, raisons tenues ; \`showQError\` sur les phrases exactes du démon ; essai et collecte de connecteur sans résultat ; formulaire de mot de passe qui nomme son compte et dit l'annuaire d'avance ; provisionnement d'un tenant) : ${JSON.stringify(ecartsM122)}`);
@@ -30231,6 +30232,308 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvantWeb) console.log(`(web) EN ÉCHEC — ${echecs.length - echecsAvantWeb} écart(s), dits ci-dessus`);
   else console.log("(web) OK — `P10.30-d` (volet console) : la suspension, la réactivation, le provisionnement, la pose et le retrait d'un droit lisent l'aveu `evenement_du_tenant_non_ecrit` : présent, il se dit à DEUX nœuds — la phrase de la console, la phrase fixe servie — à côté d'un succès qui reste dit, distinct de la trace manquante ; absent (geste entier ou démon antérieur), rien ne s'ajoute. Le retrait lit ses deux succès — deux cent quatre nu, deux cents avec un aveu, deux aveux ou aucun — sans jamais dire « échec ». Un aveu servi sans phrase se dit encore ; sans puits du panneau, il part à l'avis. Les cinq cent trois nommés (bascule d'un tenant non lu, pose non écrite ou sur un tenant non lu, retrait d'un droit non lu, anti-verrouillage non lu à la pose et au retrait) se disent comme des REFUS avec leur cause, sans avis de succès, l'accès toujours listé ; deux retraits refusés de suite ne laissent que le dernier aveu ; le quatre cent quatre garde « tenant inconnu ». Les cinq ouvertures nues ne reconnaissent aucune autre phrase du démon que la sœur SCIM nommée ; les faces existent en français et en anglais. Par clé : chaque refus nommé affiché (sept, trois gestes) dit SA conséquence et celle d'aucune autre, en français et en anglais ; le provisionnement dit chacun de ses trois aveux dans les huit combinaisons, aucun n'en taisant un autre.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (153) `P10.34-h` (console) — LA CRÉATION ET LA DESTRUCTION D'UN TENANT QUE LA BASE N'A PAS PRISES ONT CHACUNE LEUR FACE.
+//
+// CE QUE LE DÉMON SERT (RELU ci-dessous dans daemon/src/tenants.rs) : huit cinq cent trois à phrase fixe, quatre par geste —
+// `CAUSE_TENANT_NON_CREE_*` (ouverture « TENANT NON CRÉÉ ») et `CAUSE_TENANT_NON_DETRUIT_*` (« TENANT NON DÉTRUIT »).
+// MESURÉ SUR LA BASE : `check_web_reads_every_verdict.py` rougissait sur les deux ouvertures ; la destruction refusée partait
+// à l'avis générique « Destruction du tenant REFUSÉE », le provisionnement refusé à la forme partagée d'un geste.
+// JUGÉ, sur les chargeurs réels (instance française) et sur les fonctions exportées de l'instance anglaise, avec le VRAI
+// `apiSend` et un transport simulé : chacune des huit causes donne la face nommée de SON geste, en français et en anglais,
+// la phrase servie présente en texte littéral ; la phrase de l'autre geste ne prend pas la face nommée (création servie à la
+// destruction, destruction servie au provisionnement) ; une phrase non reconnue garde la face générique ; une phrase hostile
+// (`<img …>`), reconnue ou non, ne crée aucun élément IMG. (f) La garde du provisionnement : un refus du secret des gestes et
+// une demande qui n'aboutit pas, dont la phrase s'ouvre sur « TENANT NON CRÉÉ », gardent leur forme. (g) `#tenant-list`
+// détaché : la destruction refusée part à l'avis avec SA face (non détruit / sans trace), puis la phrase servie.
+// CE QU'IL NE TIENT PAS : aucune route du démon n'est rejouée ; la phrase servie reste française sous LANG='en'.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant153 = echecs.length;
+  const url153 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modFr153 = await import(url153("multitenant.js"));
+  const coeurFr153 = await import(url153("core.js"));
+  const { S: SFr153 } = await import(url153("state.js"));
+  await import(url153("app.js"));
+  const langueOrigine153 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modEn153 = await import(adresseSousLaLangue("multitenant.js"));
+  const coeurEn153 = await import(adresseSousLaLangue("core.js"));
+  if (langueOrigine153 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine153);
+  const tic153 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser153 = async (n = 30) => { for (let i = 0; i < n; i++) await tic153(); };
+  const nu153 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ");
+  const cueillir153 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir153(c, pred, acc)); return acc; };
+  const avis153 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent).replace(/\s+/g, " "));
+  const instrument153 = (vrai, quoi) => exiger(vrai, `(153-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  let TENANTS153 = "";
+  try { TENANTS153 = readFileSync(path.join(RACINE, "daemon", "src", "tenants.rs"), "utf8"); } catch { /* jugé ci-dessous */ }
+  const litteral153 = (nom) => { const m = TENANTS153.match(new RegExp("\\b" + nom + ': &str =\\s*"([\\s\\S]*?)";')); return m ? String(m[1]).replace(/\\\r?\n\s*/g, "") : ""; };
+  const CREE153 = ["TRANSACTION_NON_OUVERTE", "EFFACEMENT_NON_PRIS", "LIGNE_NON_INSCRITE", "NON_VALIDE"].map((s) => ["CAUSE_TENANT_NON_CREE_" + s, litteral153("CAUSE_TENANT_NON_CREE_" + s)]);
+  const DETRUIT153 = ["TRANSACTION_NON_OUVERTE", "NON_LU", "EFFACEMENT_NON_PRIS", "NON_VALIDE"].map((s) => ["CAUSE_TENANT_NON_DETRUIT_" + s, litteral153("CAUSE_TENANT_NON_DETRUIT_" + s)]);
+  for (const [nom, c] of CREE153) instrument153(c.startsWith("TENANT NON CRÉÉ : ") && new RegExp("err_json\\(StatusCode::SERVICE_UNAVAILABLE, " + nom + "\\)").test(TENANTS153), `\`${nom}\` n'est plus servie en cinq cent trois par daemon/src/tenants.rs`);
+  for (const [nom, c] of DETRUIT153) instrument153(c.startsWith("TENANT NON DÉTRUIT : ") && new RegExp("err_json\\(StatusCode::SERVICE_UNAVAILABLE, " + nom + "\\)").test(TENANTS153), `\`${nom}\` n'est plus servie en cinq cent trois par daemon/src/tenants.rs`);
+  // Les fragments propres à chaque face, écrits ICI (jamais relus de la table jugée).
+  const FRAGMENTS153 = {
+    tenant_non_cree: { fr: ["Tenant NON CRÉÉ", "RIEN n'est créé", "peut être rejoué"], en: ["Tenant NOT CREATED", "NOTHING is created", "can be replayed"] },
+    tenant_non_detruit: { fr: ["Tenant NON DÉTRUIT", "le tenant est INTACT", "déjà écrite", "peut être rejoué"], en: ["Tenant NOT DESTROYED", "the tenant is INTACT", "already written", "can be replayed"] },
+  };
+  const mod153 = { fr: modFr153, en: modEn153 }, coeur153 = { fr: coeurFr153, en: coeurEn153 };
+  const face153 = (l, k) => { try { return mod153[l].motDuPlanDeControle(k); } catch { return ""; } };
+  for (const l of ["fr", "en"]) for (const [k, fr] of Object.entries(FRAGMENTS153)) {
+    const f = face153(l, k);
+    exiger(fr[l].every((x) => f.includes(x)) && f !== face153(l === "fr" ? "en" : "fr", k) && f !== face153(l, "destruction_sans_trace"),
+      `(153-face) la face ${l} de « ${k} » ne dit pas ${JSON.stringify(fr[l])}, ou est celle de l'autre langue ou de la destruction sans trace : « ${f.slice(0, 200)} »`);
+  }
+
+  const fetchOrigine153 = globalThis.fetch, minuterieOrigine153 = globalThis.setTimeout;
+  const etatOrigine153 = { admin: SFr153.isAdmin, auth: SFr153.AUTH, mes: SFr153.MY_TENANTS, courant: SFr153.CURRENT_TENANT };
+  const servis153 = {}, appels153 = [];
+  globalThis.fetch = async (u, init) => {
+    const chemin = String(u).split("?")[0], methode = ((init && init.method) || "GET").toUpperCase();
+    appels153.push(methode + " " + chemin);
+    const r = servis153[methode + " " + chemin];
+    if (!r) return { ok: true, status: 200, headers: { get: () => null }, text: async () => "{}", json: async () => ({}) };
+    if (r.jeter) throw new TypeError(r.jeter);   // une demande qui n'aboutit pas : `fetch` rejette, aucun statut
+    const texte = JSON.stringify(r.corps === undefined ? {} : r.corps);
+    return { ok: (r.statut || 200) < 400, status: r.statut || 200, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
+  };
+  globalThis.setTimeout = (fn, ms) => { if (ms >= 1000) return 0; if (ms >= 100) return minuterieOrigine153(fn, 0); return minuterieOrigine153(fn, ms); };
+  const fenetre153 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const valider153 = async (champs = {}) => {
+    const ov = fenetre153();
+    const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    if (form) for (const el of form.querySelectorAll("[data-n]")) if (Object.prototype.hasOwnProperty.call(champs, el.dataset.n)) el.value = champs[el.dataset.n];
+    if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    await laisser153();
+  };
+  const geste153 = async (lancer, champs) => {
+    const avant = avis153().length;
+    const p = Promise.resolve().then(lancer).then(() => {}, () => {});
+    await laisser153(); await valider153(champs); await repondreAuSecretDesGestes("secret-des-gestes-153", () => laisser153()); await p; await laisser153(40);
+    return avis153().slice(avant);
+  };
+  const panneau153 = () => document.querySelector("#tenants-panel");
+  const refusDuPanneau153 = () => cueillir153(panneau153(), (e) => e.getAttribute && !!e.getAttribute("data-refus-du-plan-de-controle")).filter((e) => !cueillir153(document.querySelector("#tenant-list"), (x) => x === e).length);
+  const vider153 = () => cueillir153(panneau153(), (e) => e.getAttribute && (e.getAttribute("data-refus-du-plan-de-controle") || e.getAttribute("data-trace-manquante"))).forEach((e) => e.remove());
+  const XSS153 = "<img src=x onerror=alert(153)>";
+  const imgAvant153 = cueillir153(document.body, (e) => e.tagName === "IMG").length;
+  const sansImg153 = () => cueillir153(document.body, (e) => e.tagName === "IMG").length === imgAvant153;
+  // L'erreur du VRAI `apiSend` de l'instance jouée, sur un cinq cent trois `{error, id}`.
+  const erreur153 = async (l, phrase) => {
+    servis153["DELETE /api/x153"] = { statut: 503, corps: { error: phrase, id: "plume-e153-1" } };
+    try { await coeur153[l].apiSend("/x153", "DELETE", {}); } catch (e) { return e; }
+    return null;
+  };
+  // Le jugement d'un aveu nommé : un seul nœud, la face de SA clé au premier enfant, la phrase servie littérale à côté.
+  const aveuJuste153 = (noeuds, l, cle, phrase) => noeuds.length === 1 && noeuds[0].getAttribute("data-refus-du-plan-de-controle") === cle
+    && nu153(noeuds[0].children[0]) === face153(l, cle) && String(noeuds[0].textContent).includes("« " + phrase + " »");
+
+  try {
+    instrument153(!!panneau153() && !!document.querySelector("#tenant-list") && !!document.querySelector("#tenant-form"), "`#tenants-panel`, `#tenant-list` ou `#tenant-form` est absent d'index.html");
+    for (const S of [SFr153]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin", is_superadmin: true, tenant: "default" }; S.MY_TENANTS = [{ id: "default" }, { id: "acme", name: "Acme" }]; }
+    const form153 = document.querySelector("#tenant-form");
+    const ecouteurs153 = ((form153 && form153._ecouteurs) || []).filter((e) => e.type === "submit");
+    instrument153(ecouteurs153.length >= 1, "`#tenant-form` ne porte aucun écouteur de soumission");
+    const puitsDuFormulaire153 = () => cueillir153(form153, (e) => e.getAttribute && e.getAttribute("data-puits-du-refus-d-un-geste") === "provisionnement_de_tenant")[0] || null;
+    const refusDuPuits153 = () => cueillir153(puitsDuFormulaire153(), (e) => e.getAttribute && !!e.getAttribute("data-refus-du-plan-de-controle"));
+    // ── (a) LA DESTRUCTION, PAR LE BOUTON RÉEL (fr) ───────────────────────────────────────────────
+    const detruireFr153 = async (phrase) => {
+      vider153();
+      servis153["GET /api/tenants"] = { corps: { tenants: [{ id: "acme", name: "Acme", suspended: false, created: 1, nb_users: 1 }] } };
+      await modFr153.loadTenantsView(); await laisser153();
+      const bouton = cueillir153(document.querySelector("#tenant-list"), (e) => e.tagName === "BUTTON" && nu153(e).trim() === "Supprimer")[0];
+      instrument153(!!bouton, "le chargeur réel ne rend pas le bouton « Supprimer »");
+      servis153["DELETE /api/tenants/acme"] = { statut: 503, corps: { error: phrase, id: "plume-e153-2" } };
+      const appelsAvant = appels153.length;
+      const avis = await geste153(() => bouton && bouton.onclick(), { confirm: "Acme" });
+      instrument153(appels153.slice(appelsAvant).includes("DELETE /api/tenants/acme"), "la destruction n'atteint pas sa route");
+      return avis;
+    };
+    // ── (b) LE PROVISIONNEMENT, PAR LE FORMULAIRE RÉEL (fr) ─────────────────────────────────────────
+    const provisionnerFr153 = async (phrase) => {
+      document.querySelector("#tf-id").value = "globex";
+      servis153["POST /api/tenants"] = { statut: 503, corps: { error: phrase, id: "plume-e153-3" } };
+      const appelsAvant = appels153.length;
+      await geste153(() => ecouteurs153[0].rappel({ preventDefault() {}, target: form153, type: "submit" }));
+      instrument153(appels153.slice(appelsAvant).includes("POST /api/tenants"), "le provisionnement n'atteint pas sa route");
+      return puitsDuFormulaire153();
+    };
+    // (en) : les fonctions exportées de l'instance anglaise, sur l'erreur du vrai `apiSend` anglais.
+    const detruireEn153 = async (phrase) => { vider153(); const avant = avis153().length; const e = await erreur153("en", phrase); instrument153(!!e, "`apiSend` ne rejette plus un cinq cent trois"); modEn153.direLaDestructionRefusee(e); await laisser153(); return avis153().slice(avant); };
+    const provisionnerEn153 = async (phrase) => {
+      const hote = document.createElement("div"), puits = coeurEn153.puitsDuRefusDUnGeste(hote, "provisionnement_de_tenant", null);
+      const e = await erreur153("en", phrase);
+      if (!modEn153.peindreLeProvisionnementRefuse(puits, e)) coeurEn153.peindreLeRefusDUnGeste(puits, e);
+      return puits;
+    };
+    const DETRUIRE = { fr: detruireFr153, en: detruireEn153 }, PROVISIONNER = { fr: provisionnerFr153, en: provisionnerEn153 };
+    const refusNommes153 = (puits) => cueillir153(puits, (e) => e.getAttribute && !!e.getAttribute("data-refus-du-plan-de-controle"));
+    for (const l of ["fr", "en"]) {
+      const generiqueDestruction = face153(l, "destruction_refusee");
+      for (const [nom, cause] of DETRUIT153) {
+        const avis = await DETRUIRE[l](cause);
+        const r = refusDuPanneau153();
+        exiger(aveuJuste153(r, l, "tenant_non_detruit", cause) && !avis.some((a) => a.startsWith(generiqueDestruction)),
+          `(153-a) destruction refusée \`${nom}\` (${l}) : pas UN aveu « tenant_non_detruit » au puits du panneau avec sa face et la phrase servie, ou l'avis générique part encore : « ${r.map(nu153).join(" | ").slice(0, 300)} » ${JSON.stringify(avis).slice(0, 200)}`);
+      }
+      for (const [nom, cause] of CREE153) {
+        const puits = await PROVISIONNER[l](cause);
+        const r = refusNommes153(puits);
+        exiger(!!puits && !puits.hidden && aveuJuste153(r, l, "tenant_non_cree", cause) && puits.getAttribute("data-refus-d-un-geste") === "tenant_non_cree",
+          `(153-b) provisionnement refusé \`${nom}\` (${l}) : pas UN aveu « tenant_non_cree » visible au puits du formulaire avec sa face et la phrase servie : « ${nu153(puits).slice(0, 300)} »`);
+        // (c) LA PHRASE DE LA CRÉATION SERVIE À LA DESTRUCTION : aucune face nommée, l'avis générique avec la phrase.
+        const avis = await DETRUIRE[l](cause);
+        exiger(refusDuPanneau153().length === 0 && avis.some((a) => a.startsWith(generiqueDestruction) && a.includes(cause)),
+          `(153-c) la phrase de création \`${nom}\` servie à la DESTRUCTION (${l}) prend une face nommée, ou perd l'avis générique : « ${refusDuPanneau153().map(nu153).join(" | ").slice(0, 200)} » ${JSON.stringify(avis).slice(0, 200)}`);
+      }
+      for (const [nom, cause] of DETRUIT153) {
+        const puits = await PROVISIONNER[l](cause);
+        exiger(!!puits && !puits.hidden && refusNommes153(puits).length === 0 && puits.getAttribute("data-refus-d-un-geste") !== "tenant_non_cree" && nu153(puits).includes(cause),
+          `(153-c) la phrase de destruction \`${nom}\` servie au PROVISIONNEMENT (${l}) prend une face nommée, ou perd la forme partagée : « ${nu153(puits).slice(0, 300)} »`);
+      }
+      // (d) NON RECONNUE : la face générique de chaque geste. (e) HOSTILE, reconnue ou non : aucun IMG, le texte littéral.
+      for (const phrase of ["TENANT NON CRÉÉS : x", "tenant non créé : x", "x TENANT NON CRÉÉ : x", "x TENANT NON DÉTRUIT : x", "tenant non détruit : x", "TENANT NON DÉTRUITE : x", XSS153]) {
+        const avis = await DETRUIRE[l](phrase);
+        const puits = await PROVISIONNER[l](phrase);
+        exiger(refusDuPanneau153().length === 0 && avis.some((a) => a.startsWith(generiqueDestruction)) && refusNommes153(puits).length === 0 && sansImg153(),
+          `(153-d) la phrase non reconnue « ${phrase} » (${l}) prend une face nommée, perd la face générique, ou crée un IMG`);
+      }
+      for (const [cle, phrase, jouer] of [["tenant_non_detruit", "TENANT NON DÉTRUIT : " + XSS153, "d"], ["tenant_non_cree", "TENANT NON CRÉÉ : " + XSS153, "p"]]) {
+        let noeuds;
+        if (jouer === "d") { await DETRUIRE[l](phrase); noeuds = refusDuPanneau153(); } else { noeuds = refusNommes153(await PROVISIONNER[l](phrase)); }
+        exiger(aveuJuste153(noeuds, l, cle, phrase) && sansImg153(),
+          `(153-e) la phrase hostile reconnue « ${cle} » (${l}) crée un IMG ou perd son texte littéral : « ${noeuds.map(nu153).join(" | ").slice(0, 200)} »`);
+      }
+      // (f) LA GARDE DU PROVISIONNEMENT : un refus du secret des gestes (quatre cent trois, `cause` du secret) et une demande qui
+      // n'aboutit pas gardent LEUR forme, même quand leur phrase s'ouvre sur « TENANT NON CRÉÉ » : aucune face nommée, la
+      // fonction rend `false`, la forme partagée peint la face du secret ou de la demande non aboutie.
+      for (const [nom, servi, faceAttendue] of [
+        ["refus du secret des gestes", { statut: 403, corps: { error: "TENANT NON CRÉÉ : secret faux", cause: "secret_des_gestes_faux", id: "plume-e153-4" } }, (e) => coeur153[l].phraseDuRefusDuSecretDesGestes(e)],
+        ["demande non aboutie", { jeter: "TENANT NON CRÉÉ : réseau coupé" }, (e) => coeur153[l].phraseDUneReponseQuiNeVientPasDuDemon(e)],
+      ]) {
+        servis153["DELETE /api/x153"] = servi;
+        let e = null;
+        try { await coeur153[l].apiSend("/x153", "DELETE", {}); } catch (x) { e = x; }
+        const attendue = e ? String(faceAttendue(e) || "") : "";
+        instrument153(!!e && attendue.length > 0, `(153-f) « ${nom} » (${l}) : \`apiSend\` ne rend plus ce refus reconnu par sa garde`);
+        const hote = document.createElement("div"), puits = coeur153[l].puitsDuRefusDUnGeste(hote, "provisionnement_de_tenant", null);
+        const pris = mod153[l].peindreLeProvisionnementRefuse(puits, e);
+        if (!pris) coeur153[l].peindreLeRefusDUnGeste(puits, e);
+        exiger(pris === false && refusNommes153(puits).length === 0 && puits.getAttribute("data-refus-d-un-geste") !== "tenant_non_cree" && !nu153(puits).includes(face153(l, "tenant_non_cree")),
+          `(153-f) « ${nom} » (${l}) dont la phrase s'ouvre sur « TENANT NON CRÉÉ » prend la face de la création non prise au lieu de SA forme : rendu ${pris}, « ${nu153(puits).slice(0, 300)} »`);
+      }
+      // (g) SANS PUITS (`#tenant-list` détaché) : la destruction non prise part à l'avis avec SA face puis la phrase servie, et la
+      // destruction sans trace avec la sienne — jamais la face de l'autre.
+      for (const [cle, phrase] of [["tenant_non_detruit", DETRUIT153[0][1]], ["destruction_sans_trace", "DESTRUCTION REFUSÉE, RIEN N'EST DÉTRUIT : x"]]) {
+        if (!phrase) continue;
+        const e = await erreur153(l, phrase);
+        instrument153(!!e, "`apiSend` ne rejette plus un cinq cent trois");
+        const liste = document.querySelector("#tenant-list"), parent = liste.parentNode, suivant = parent.children[parent.children.indexOf(liste) + 1] || null;
+        const avant = avis153().length;
+        vider153();
+        liste.remove();
+        try { mod153[l].direLaDestructionRefusee(e); await laisser153(); }
+        finally { parent.insertBefore(liste, suivant); }
+        const avis = avis153().slice(avant);
+        const autre = cle === "tenant_non_detruit" ? "destruction_sans_trace" : "tenant_non_detruit";
+        exiger(avis.length === 1 && avis[0] === nu153({ textContent: face153(l, cle) + " « " + phrase + " »" }) && !avis[0].includes(face153(l, autre)) && refusDuPanneau153().length === 0,
+          `(153-g) sans puits du panneau, la destruction refusée « ${cle} » (${l}) ne part plus à l'avis avec SA face puis la phrase servie : ${JSON.stringify(avis).slice(0, 300)}`);
+      }
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine153;
+    globalThis.setTimeout = minuterieOrigine153;
+    SFr153.isAdmin = etatOrigine153.admin; SFr153.AUTH = etatOrigine153.auth; SFr153.MY_TENANTS = etatOrigine153.mes; SFr153.CURRENT_TENANT = etatOrigine153.courant;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+    vider153();
+  }
+  if (echecs.length !== echecsAvant153) console.log(`(153) EN ÉCHEC — ${echecs.length - echecsAvant153} écart(s), dits ci-dessus`);
+  else console.log("(153) OK — `P10.34-h` (console) : les huit cinq cent trois de la création et de la destruction non prises (relus dans tenants.rs) donnent chacun la face nommée de SON geste, en français et en anglais — destruction : tenant INTACT, ligne du journal déjà écrite, rejouable, au puits du panneau ; création : rien n'est créé, rejouable, au puits du formulaire — la phrase servie en texte littéral ; la phrase de l'autre geste et une phrase non reconnue gardent la face générique ; une phrase hostile ne crée aucun IMG ; un refus du secret des gestes ou une demande non aboutie ouverts sur « TENANT NON CRÉÉ » gardent leur forme ; sans puits du panneau, la destruction refusée part à l'avis avec SA face. Ce qu'il NE tient PAS : la route (témoins Rust), la phrase servie reste française sous LANG='en'.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (154) `P10.32-r` (console) — L'EXPORT ARRÊTÉ À SA BORNE LE DIT, AVEC LA BORNE SERVIE, ET NE FABRIQUE AUCUN CHIFFRE.
+//
+// CE QUE LE DÉMON SERT (RELU ci-dessous dans daemon/src/handlers/query.rs) : `x-plume-export-borne: <borne appliquée>` quand
+// l'export complet s'arrête à SA borne (PLUME_EXPORT_MAX ou le `limit` demandé), à côté de `x-plume-truncated: 1`.
+// MESURÉ SUR LA BASE : sans `x-plume-truncated-ecartes`, la console disait « ampleur non mesurée par le serveur (plafond de
+// lignes) », borne servie ou non, et le fichier portait `-TRONQUE-ampleur-inconnue`.
+// JUGÉ, sur `exploreExport` des instances française et anglaise avec un transport simulé : borne 5 → la face de la borne,
+// qui porte 5, et le nom de fichier `-TRONQUE-borne-5` ; borne absente, « abc », « 0 », « -3 », « 5abc » → « ampleur non
+// mesurée » et `-TRONQUE-ampleur-inconnue` ; écartés mesurés (avec ou sans borne) → l'ampleur mesurée ; non tronqué → rien.
+// Une borne de seize chiffres au-delà des entiers sûrs (9007199254740993, qui se lirait 9007199254740992) → « ampleur non
+// mesurée », aucun chiffre fabriqué. `x-plume-cold-coverage: cold_coverage_unread` (`P10.20-b`, posé indépendamment de la borne)
+// → la face de la couverture froide non lue, ni la borne ni un écart, et `-TRONQUE-ampleur-inconnue`.
+// CE QU'IL NE TIENT PAS : la route du démon (témoins Rust).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant154 = echecs.length;
+  const appFr154 = await import(pathToFileURL(path.join(WEB, "app.js")).href);
+  const langueOrigine154 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const appEn154 = await import(adresseSousLaLangue("app.js"));
+  if (langueOrigine154 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine154);
+  let QUERY154 = "";
+  try { QUERY154 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "query.rs"), "utf8"); } catch { /* jugé ci-dessous */ }
+  exiger(/pub\(crate\) const ENTETE_BORNE_DE_L_EXPORT_TOUCHEE: &str = "x-plume-export-borne";/.test(QUERY154) && /HeaderName::from_static\(ENTETE_BORNE_DE_L_EXPORT_TOUCHEE\)/.test(QUERY154),
+    "(154-instrument) `x-plume-export-borne` n'est plus posé par daemon/src/handlers/query.rs : ce témoin REFUSE DE CONCLURE");
+  exiger(/HeaderName::from_static\("x-plume-cold-coverage"\), axum::http::HeaderValue::from_static\("cold_coverage_unread"\)/.test(QUERY154),
+    "(154-instrument) `x-plume-cold-coverage: cold_coverage_unread` n'est plus posé par daemon/src/handlers/query.rs : ce témoin REFUSE DE CONCLURE");
+  const sql154 = document.querySelector("#sql");
+  exiger(!!sql154, "(154-instrument) `#sql` est absent d'index.html : ce témoin REFUSE DE CONCLURE");
+  const valeurSql154 = sql154 ? sql154.value : "";
+  const fetchOrigine154 = globalThis.fetch, creerOrigine154 = document.createElement;
+  const ancres154 = [];
+  const tic154 = () => new Promise((r) => setTimeout(r, 0));
+  const avis154 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent).replace(/\s+/g, " "));
+  const FACES154 = {
+    fr: { borne: (n) => `coupé à sa borne de ${n} ligne(s)`, nonMesuree: "ampleur non mesurée par le serveur", mesuree: (n) => `${n} ligne(s) manquante(s)`, tronque: "TRONQUÉ", froid: ["couverture froide NON LUE", "seule la part chaude est exportée", "ampleur inconnue"] },
+    en: { borne: (n) => `cut at its cap of ${n} row(s)`, nonMesuree: "extent not measured by the server", mesuree: (n) => `${n} missing row(s)`, tronque: "TRUNCATED", froid: ["cold coverage NOT READ", "only the hot part is exported", "extent unknown"] },
+  };
+  try {
+    if (sql154) sql154.value = "search sshd";
+    document.createElement = function (t) { const el = creerOrigine154.call(this, t); if (String(t).toLowerCase() === "a") ancres154.push(el); return el; };
+    const exporter154 = async (app, entetes) => {
+      globalThis.fetch = async () => ({ ok: true, status: 200, headers: { get: (n) => (Object.prototype.hasOwnProperty.call(entetes, String(n).toLowerCase()) ? entetes[String(n).toLowerCase()] : null) }, text: async () => "a,b\n1,2\n" });
+      const avant = avis154().length, ancresAvant = ancres154.length;
+      await app.exploreExport("csv");
+      for (let i = 0; i < 10; i++) await tic154();
+      const fichier = ancres154.slice(ancresAvant).map((a) => String(a.download || "")).filter(Boolean).pop() || "";
+      return { avis: avis154().slice(avant).join(" | "), fichier };
+    };
+    const T = "x-plume-truncated", E = "x-plume-truncated-ecartes", B = "x-plume-export-borne", C = "x-plume-cold-coverage";
+    for (const [l, app] of [["fr", appFr154], ["en", appEn154]]) {
+      const F = FACES154[l];
+      const cas = [
+        ["borne 5", { [T]: "1", [B]: "5" }, (r) => r.avis.includes(F.borne(5)) && !r.avis.includes(F.nonMesuree) && r.avis.includes(F.tronque) && /-TRONQUE-borne-5\.csv$/.test(r.fichier)],
+        ["borne 50000", { [T]: "1", [B]: " 50000 " }, (r) => r.avis.includes(F.borne(50000)) && /-TRONQUE-borne-50000\.csv$/.test(r.fichier)],
+        // `P10.20-b` — couverture froide non lue : la borne servie ne mesure que la part chaude ; ni elle ni un écart ne sont dits,
+        // la face nomme la part froide manquante et le fichier reste `-TRONQUE-ampleur-inconnue` (le nom du démon).
+        ...[["froid non lu + borne 5", { [T]: "1", [B]: "5", [C]: "cold_coverage_unread" }], ["froid non lu seul", { [T]: "1", [C]: "cold_coverage_unread" }],
+          ["froid non lu + écartés 12 + borne 5", { [T]: "1", [E]: "12", [B]: "5", [C]: " cold_coverage_unread " }]].map(([nom, entetes]) => [nom, entetes,
+          (r) => F.froid.every((x) => r.avis.includes(x)) && r.avis.includes(F.tronque) && !r.avis.includes(F.borne(5)) && !r.avis.includes(F.mesuree(12)) && !r.avis.includes(F.nonMesuree) && /-TRONQUE-ampleur-inconnue\.csv$/.test(r.fichier)]),
+        ["couverture froide inconnue « autre », borne 5", { [T]: "1", [B]: "5", [C]: "autre" }, (r) => r.avis.includes(F.borne(5)) && !r.avis.includes(F.froid[0]) && /-TRONQUE-borne-5\.csv$/.test(r.fichier)],
+        ...[["absente", undefined], ["« abc »", "abc"], ["« 0 »", "0"], ["« -3 »", "-3"], ["« 5abc »", "5abc"], ["« 5.5 »", "5.5"], ["vide", ""], ["« 9007199254740993 » (au-delà des entiers sûrs)", "9007199254740993"]].map(([nom, v]) => [`borne ${nom}`, v === undefined ? { [T]: "1" } : { [T]: "1", [B]: v },
+          (r) => r.avis.includes(F.nonMesuree) && !r.avis.includes(F.borne("").split(" ").slice(0, 4).join(" ")) && /-TRONQUE-ampleur-inconnue\.csv$/.test(r.fichier)]),
+        ["écartés 12 sans borne", { [T]: "1", [E]: "12" }, (r) => r.avis.includes(F.mesuree(12)) && !r.avis.includes(F.nonMesuree) && /-TRONQUE-12-lignes-manquantes\.csv$/.test(r.fichier)],
+        ["écartés 12 et borne 5", { [T]: "1", [E]: "12", [B]: "5" }, (r) => r.avis.includes(F.mesuree(12)) && !r.avis.includes(F.borne(5)) && /-TRONQUE-12-lignes-manquantes\.csv$/.test(r.fichier)],
+        ["non tronqué, borne servie", { [B]: "5" }, (r) => !r.avis.includes(F.tronque) && !r.avis.includes(F.borne(5)) && !/TRONQUE/.test(r.fichier) && /\.csv$/.test(r.fichier)],
+      ];
+      for (const [nom, entetes, juste] of cas) {
+        const r = await exporter154(app, entetes);
+        exiger(juste(r), `(154) export ${nom} (${l}) : avis ou nom de fichier faux — avis « ${r.avis.slice(0, 300)} », fichier « ${r.fichier} »`);
+      }
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine154;
+    document.createElement = creerOrigine154;
+    if (sql154) sql154.value = valeurSql154;
+  }
+  if (echecs.length !== echecsAvant154) console.log(`(154) EN ÉCHEC — ${echecs.length - echecsAvant154} écart(s), dits ci-dessus`);
+  else console.log("(154) OK — `P10.32-r` (console) : l'export coupé à SA borne (`x-plume-export-borne`, relu dans query.rs) dit la borne servie, en français et en anglais, et le fichier porte `-TRONQUE-borne-<n>` ; une borne absente, nulle, négative, décimale, illisible ou au-delà des entiers sûrs retombe sur « ampleur non mesurée » sans chiffre fabriqué ; la couverture froide non lue passe avant la borne et l'écart (face nommée, `-TRONQUE-ampleur-inconnue`) ; l'ampleur mesurée reste prioritaire ; un export entier ne dit rien. Ce qu'il NE tient PAS : la route du démon.");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

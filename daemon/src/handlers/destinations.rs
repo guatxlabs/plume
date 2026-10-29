@@ -13,7 +13,7 @@
 //!     webhook) et on NE RENVOIE JAMAIS la réponse du sink à l'appelant (statut/motif seul en last_error,
 //!     jamais le corps — invariant du client HTTP). Endpoint validé par la MÊME garde SSRF que les notifiers
 //!     (`ssrf_guard`/`ssrf_check_host`) — À LA CRÉATION *et* AU POINT D'ÉGRESS : loopback/link-local=metadata/
-//!     unspecified/IPv4-mapped-v6 REFUSÉS (RFC1918 opt-in), avec re-check DNS. Une destination interne ne
+//!     unspecified/IPv4-mapped-v6 REFUSÉS (RFC1918 selon `P7.20-a`, `prive_bloque_pour`), avec re-check DNS. Une destination interne ne
 //!     peut ni être créée ni jamais égresser.
 //!   - GOUVERNANCE : create/enable/delete d'une destination est LEDGERISÉ (audit_config_change,
 //!     fail-closed transactionnel, source non-purgeable `plume-config`) — ET LE FLUSH MANUEL AVEC EUX
@@ -145,10 +145,41 @@ impl DestFilter {
 // VALIDATION D'ENDPOINT (send-only, anti-SSRF). webhook/hec -> http(s):// ; syslog -> tcp://. SEC-FIX #50 :
 // la donnée SOC COMPLÈTE (non masquée) sort en continu vers cet endpoint admin-configuré -> on applique la
 // MÊME garde SSRF que les notifiers (`ssrf_guard`/`ssrf_check_host` : loopback/link-local=metadata/unspecified/
-// mapped-v6 REFUSÉS ; RFC1918 opt-in ; re-check DNS). Rejet À LA CRÉATION -> jamais d'égress vers une cible interne.
+// mapped-v6 REFUSÉS ; RFC1918 selon `prive_bloque_pour` ; re-check DNS). Rejet À LA CRÉATION -> jamais d'égress vers une cible interne.
 // ===================================================================================================
 /// Endpoint valide pour ce type de sink ? Schéma correct ET garde SSRF (cible interne refusée à la création).
+/// `P7.20-a` : un endpoint SAISI PAR L'API (création, modification) est jugé de l'API, même s'il est celui d'une cible
+/// déclarée — une adresse privée y est refusée par défaut.
 pub(crate) fn dest_endpoint_ok(dtype: &str, endpoint: &str) -> bool {
+    dest_endpoint_ok_selon(dtype, endpoint, OrigineDeLaCible::Api)
+}
+/// `P7.20-a` — le refus d'un endpoint saisi par l'API, quand il tient à sa SEULE adresse privée : il nomme les
+/// réglages qui le lèvent (`LEVIERS_DU_REFUS_D_ADRESSE_PRIVEE`).
+pub(crate) const PHRASE_ADRESSE_PRIVEE_D_UNE_DESTINATION: &str = "endpoint refusé : adresse privée (10/8, 172.16/12, \
+192.168/16) pour une destination saisie par l'API — PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet \
+toute adresse privée ; une destination écrite en surcouche config.d est admise";
+/// Le refus de cet endpoint saisi par l'API tient-il à sa seule adresse privée ?
+fn endpoint_refuse_pour_sa_seule_adresse_privee(dtype: &str, endpoint: &str) -> bool {
+    let e = endpoint.trim();
+    match dtype {
+        "webhook" | "hec" => refusee_pour_sa_seule_adresse_privee(e, OrigineDeLaCible::Api),
+        "syslog" => match hote_et_port_syslog(e) {
+            Some((h, port)) => hote_refuse_pour_sa_seule_adresse_privee(&h, port, OrigineDeLaCible::Api),
+            None => false,
+        },
+        _ => false,
+    }
+}
+/// Le refus servi pour un endpoint saisi par l'API : la phrase d'avant, ou celle de l'adresse privée.
+fn refus_d_un_endpoint(phrase_d_avant: &'static str, dtype: &str, endpoint: &str) -> Response {
+    if endpoint_refuse_pour_sa_seule_adresse_privee(dtype, endpoint) {
+        bad_req(PHRASE_ADRESSE_PRIVEE_D_UNE_DESTINATION)
+    } else {
+        bad_req(phrase_d_avant)
+    }
+}
+/// Le même jugement pour une origine décidée par l'appelant (une surcouche `config.d` est de configuration).
+pub(crate) fn dest_endpoint_ok_selon(dtype: &str, endpoint: &str, origine: OrigineDeLaCible) -> bool {
     let e = endpoint.trim();
     match dtype {
         "webhook" | "hec" => {
@@ -157,7 +188,7 @@ pub(crate) fn dest_endpoint_ok(dtype: &str, endpoint: &str) -> bool {
                 return false;
             }
             // garde SSRF complète (host + résolution DNS) — même choke-point que egress_url_ok des notifiers.
-            ssrf_guard(e).is_ok()
+            ssrf_guard_selon_l_origine(e, origine).is_ok()
         }
         "syslog" => {
             let rest = match e.to_ascii_lowercase().strip_prefix("tcp://") {
@@ -167,7 +198,7 @@ pub(crate) fn dest_endpoint_ok(dtype: &str, endpoint: &str) -> bool {
             let hostport = rest.split('/').next().unwrap_or("");
             match hostport.rsplit_once(':') {
                 Some((h, p)) => match p.parse::<u16>() {
-                    Ok(port) => !h.is_empty() && ssrf_check_host(h, port).is_ok(),
+                    Ok(port) => !h.is_empty() && ssrf_check_host(h, port, origine).is_ok(),
                     Err(_) => false,
                 },
                 None => false,
@@ -220,7 +251,7 @@ pub(crate) fn row_to_fwd(
 
 // ===================================================================================================
 // WIRE : forme réseau prête à émettre (construite HORS lock, testable sans socket). Le transport réel
-// (`dest_transport`) OU un mock (tests) la consomme. Http renvoie un statut (2xx=ok) ; Tcp renvoie 0=ok.
+// (`dest_transport_pour_l_objet`) OU un mock (tests) la consomme. Http renvoie un statut (2xx=ok) ; Tcp renvoie 0=ok.
 // ===================================================================================================
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Wire {
@@ -245,6 +276,43 @@ fn rfc5424_line(ev: &FwdEvent) -> String {
     // MSG = JSON compact de l'event (structured payload machine), neutralisé CR/LF pour le framing.
     let msg = oneline_out(&ev.json.to_string());
     format!("<{pri}>1 {ts} {host} plume - - - {msg}")
+}
+
+/// `P7.20-a` — L'URL D'ÉMISSION d'une destination, telle que `build_wire` la présente à la garde : l'`endpoint` d'un
+/// webhook, `<endpoint>/services/collector/event` d'un HEC, `tcp://hôte:port` d'un syslog. None : type sans émission ou
+/// endpoint illisible. Inscrite pour une surcouche, jugée par l'inventaire du démarrage (daemon/src/overlays_oac.rs).
+pub(crate) fn cible_d_emission(dtype: &str, endpoint: &str) -> Option<String> {
+    match dtype {
+        "webhook" => Some(endpoint.to_string()),
+        "hec" => Some(url_hec_d_emission(endpoint)),
+        "syslog" => hote_et_port_syslog(endpoint).map(|(h, p)| forme_tcp_d_un_syslog(&h, p)),
+        _ => None,
+    }
+}
+/// URL de collecte d'un HEC : `<endpoint>/services/collector/event`.
+fn url_hec_d_emission(endpoint: &str) -> String {
+    format!("{}/services/collector/event", endpoint.trim_end_matches('/'))
+}
+/// (hôte, port) d'un endpoint syslog `tcp://hôte:port[/…]` — la lecture de `build_wire`.
+pub(crate) fn hote_et_port_syslog(endpoint: &str) -> Option<(String, u16)> {
+    let rest = endpoint.trim().splitn(2, "://").nth(1).unwrap_or("");
+    let hostport = rest.split('/').next().unwrap_or("");
+    hostport.rsplit_once(':').and_then(|(h, p)| p.parse::<u16>().ok().map(|p| (h.to_string(), p)))
+}
+/// La forme sous laquelle un envoi syslog est jugé par la garde (`dest_transport_pour_l_objet`) et inscrit
+/// (`cible_d_emission`).
+fn forme_tcp_d_un_syslog(host: &str, port: u16) -> String {
+    format!("tcp://{host}:{port}")
+}
+/// `P7.20-a` — la garde d'un envoi syslog : l'origine est celle de la forme `tcp://hôte:port` au regard des seules
+/// cibles inscrites pour CETTE destination (une destination syslog écrite en surcouche y est de configuration).
+pub(crate) fn garde_d_un_envoi_syslog(host: &str, port: u16, cibles: &[crate::ledger::CibleDeConfiguration]) -> Result<(), String> {
+    ssrf_check_host(host, port, crate::ledger::origine_de_l_url(&forme_tcp_d_un_syslog(host, port), cibles))
+}
+/// Les cibles de configuration de la destination `id` dans la base de `conn`, pour la ligne qui émet (`dtype`,
+/// `endpoint` tels que lus pour l'envoi) : celles inscrites pour elle, si elle les porte encore.
+pub(crate) fn cibles_inscrites_de_la_destination(conn: &Connection, id: i64, dtype: &str, endpoint: &str) -> Vec<crate::ledger::CibleDeConfiguration> {
+    crate::overlays_oac::cibles_de_configuration_d_une_destination(&crate::ledger::base_de(conn), id, dtype, endpoint)
 }
 
 /// Construit la forme WIRE pour un lot d'events selon le type de sink. PURE (aucun socket) -> testable.
@@ -284,8 +352,7 @@ pub(crate) fn build_wire(dtype: &str, endpoint: &str, config: &Value, events: &[
                 body.push_str(&env.to_string());
                 body.push('\n');
             }
-            let base = endpoint.trim_end_matches('/');
-            let url = format!("{base}/services/collector/event");
+            let url = url_hec_d_emission(endpoint);
             let headers = vec![
                 ("Content-Type".to_string(), "application/json".to_string()),
                 ("Authorization".to_string(), format!("Splunk {}", oneline_out(token))),
@@ -294,10 +361,7 @@ pub(crate) fn build_wire(dtype: &str, endpoint: &str, config: &Value, events: &[
         }
         // SYSLOG : RFC5424 sur TCP nu, 1 ligne \n par event (framing par ligne). Endpoint tcp://host:port.
         "syslog" => {
-            let rest = endpoint.trim().splitn(2, "://").nth(1).unwrap_or("");
-            let hostport = rest.split('/').next().unwrap_or("");
-            let (host, port) = hostport.rsplit_once(':')
-                .and_then(|(h, p)| p.parse::<u16>().ok().map(|p| (h.to_string(), p)))
+            let (host, port) = hote_et_port_syslog(endpoint)
                 .ok_or_else(|| "endpoint syslog invalide (tcp://host:port)".to_string())?;
             let mut body = String::new();
             for e in events {
@@ -310,23 +374,31 @@ pub(crate) fn build_wire(dtype: &str, endpoint: &str, config: &Value, events: &[
     }
 }
 
-/// TRANSPORT RÉEL (send-only). Http via le client minimal (jamais le corps de réponse en erreur) ;
-/// Tcp via socket nu borné 10 s. À appeler HORS lock writer (le réseau ne bloque JAMAIS l'ingest).
-pub(crate) fn dest_transport(w: &Wire) -> Result<u16, String> {
+/// TRANSPORT RÉEL (send-only) d'une destination dont les cibles inscrites sont `cibles` (`P7.20-a` : seules les siennes,
+/// `cibles_inscrites_de_la_destination`). Http via le client minimal (jamais le corps de réponse en erreur) ; Tcp via
+/// socket nu borné 10 s. À appeler HORS lock writer (le réseau ne bloque JAMAIS l'ingest).
+pub(crate) fn dest_transport_pour_l_objet(w: &Wire, cibles: &[crate::ledger::CibleDeConfiguration]) -> Result<u16, String> {
     match w {
         Wire::Http { method, url, headers, body } => {
             // SEC-FIX #50 : garde SSRF AU POINT D'ÉGRESS (choke-point non contournable, y compris si la ligne
             // a été insérée hors du chemin create/update). Cible interne -> Err (last_error, watermark gelé).
-            ssrf_guard(url)?;
+            crate::ledger::ssrf_guard_pour_l_objet(url, cibles)?;
             let hdr: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             // http_call ne met JAMAIS le corps dans une erreur (invariant #3a) -> statut/motif seul remonte.
-            let resp = http_call(method, url, &hdr, Some(body))?;
+            let resp = crate::ledger::appel_reseau_apres_la_garde(method, url, &hdr, Some(body))?;
             Ok(resp.status)
         }
         Wire::Tcp { host, port, body } => {
             use std::io::Write;
             // SEC-FIX #50 : même garde SSRF pour le syslog tcp:// (never-egress interne refusé au point d'envoi).
-            ssrf_check_host(host, *port)?;
+            garde_d_un_envoi_syslog(host, *port, cibles)?;
+            // Sous `cfg(test)`, un témoin du fil courant peut intercepter l'envoi déjà jugé (aucun réseau).
+            #[cfg(test)]
+            {
+                if let Some(reponse) = crate::ledger::temoin_de_l_egress::intercepter("TCP", &forme_tcp_d_un_syslog(host, *port)) {
+                    return reponse.map(|_| 0);
+                }
+            }
             let mut sock = std::net::TcpStream::connect((host.as_str(), *port))
                 .map_err(|e| format!("connexion syslog {host}:{port} : {e}"))?;
             let _ = sock.set_write_timeout(Some(Duration::from_secs(10)));
@@ -350,7 +422,7 @@ pub(crate) const FILIGRANE_NON_ECRIT_APRES_ENVOI: &str =
 // FORWARDER (cœur). Miroir SORTIE de poll_one_connector : lit un lot borné, envoie HORS lock, avance le
 // watermark UNIQUEMENT sur succès. FAIL-SAFE : ne remonte jamais (toute erreur -> last_error).
 // ===================================================================================================
-/// Forwarde UN lot pour la destination `id`. `transport` injectable (mock en test, `dest_transport` en
+/// Forwarde UN lot pour la destination `id`. `transport` injectable (mock en test, `dest_transport_pour_l_objet` en
 /// prod). `now_ts` figé par l'appelant. Ne panique jamais (l'appelant l'enrobe en catch_unwind malgré tout).
 ///
 /// REND SON BILAN (`P4.1-r`) : `Illisible` si le lot d'événements n'a pas pu être lu — la destination n'a
@@ -549,8 +621,10 @@ pub(crate) fn run_due_destinations(db: &Arc<Mutex<Connection>>, _db_path: &str) 
         due
     };
     for (id, dtype, endpoint, config_json, filter_json, batch_max, watermark) in due {
+        // `P7.20-a` — les cibles inscrites pour CETTE destination (surcouche `config.d`).
+        let cibles = cibles_inscrites_de_la_destination(&db.lock(), id, &dtype, &endpoint);
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            forward_one_destination(db, id, &dtype, &endpoint, &config_json, &filter_json, batch_max, watermark, now_ts, dest_transport)
+            forward_one_destination(db, id, &dtype, &endpoint, &config_json, &filter_json, batch_max, watermark, now_ts, |w: &Wire| dest_transport_pour_l_objet(w, &cibles))
         }));
         match res {
             Ok(b) => bilan.absorber(b),
@@ -659,7 +733,7 @@ pub(crate) async fn destination_create(State(st): State<AppState>, Extension(au)
     }
     let endpoint = b.get("endpoint").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
     if !dest_endpoint_ok(&dtype, &endpoint) {
-        return bad_req("endpoint invalide (webhook/hec: http(s):// ; syslog: tcp://host:port ; cible métadonnées interdite)");
+        return refus_d_un_endpoint("endpoint invalide (webhook/hec: http(s):// ; syslog: tcp://host:port ; cible métadonnées interdite)", &dtype, &endpoint);
     }
     // FILTRE : valide AVANT persistance (fail-closed). Vide -> {} = tous les events (feed complet).
     let filter_v = b.get("filter").cloned().unwrap_or_else(|| json!({}));
@@ -813,7 +887,7 @@ pub(crate) async fn destination_update(State(st): State<AppState>, Extension(au)
     }
     if let Some(ep) = b.get("endpoint").and_then(|x| x.as_str()) {
         if !dest_endpoint_ok(&eff_type, ep.trim()) {
-            return bad_req("endpoint invalide pour ce type de sink");
+            return refus_d_un_endpoint("endpoint invalide pour ce type de sink", &eff_type, ep);
         }
     }
     if let Some(f) = b.get("filter") {
@@ -921,16 +995,19 @@ pub(crate) async fn destination_flush(State(st): State<AppState>, Extension(au):
         return forbidden("réservé admin");
     }
     let __rc = req_db(&st, &au);
-    let row = {
+    let (row, cibles) = {
         let conn = __rc.lock();
-        conn.query_row(
+        let row = conn.query_row(
             "SELECT type,endpoint,config,filter,batch_max,watermark FROM destination WHERE id=?1 AND enabled=1",
             params![id],
             |r| Ok((
                 r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
             )),
-        ).optional()
+        ).optional();
+        // `P7.20-a` : les cibles inscrites pour CETTE destination, si la ligne lue les porte encore
+        let cibles = match &row { Ok(Some((t, e, ..))) => cibles_inscrites_de_la_destination(&conn, id, t, e), _ => Vec::new() };
+        (row, cibles)
     };
     // `P10.20-l` (vague AK) — trois issues (elle rendait `None` sur une absence COMME sur une lecture ratée, `.ok()`) :
     // lue, l'envoi suit ; absente ou désactivée, le 404 d'avant ; lecture ratée, 503 `CAUSE_ENVOI_MANUEL_NON_FAIT_NON_LU`,
@@ -951,7 +1028,7 @@ pub(crate) async fn destination_flush(State(st): State<AppState>, Extension(au):
     // nommer. C'est une chaîne allowlistée par `dest_type_ok` (≤ 7 octets), pas une valeur libre.
     let dtype_audite = dtype.clone();
     let _ = tokio::task::spawn_blocking(move || {
-        forward_one_destination(&db, id, &dtype, &endpoint, &config_json, &filter_json, batch_max, watermark, now_ts, dest_transport);
+        forward_one_destination(&db, id, &dtype, &endpoint, &config_json, &filter_json, batch_max, watermark, now_ts, |w: &Wire| dest_transport_pour_l_objet(w, &cibles));
     }).await;
     // Relit l'état APRÈS coup (jamais la réponse du sink).
     // `P10.20-b` (rang deux) — LA RELECTURE EST UN `Result`. Avant : `.unwrap_or((watermark, 0, None))` — une relecture
@@ -1041,4 +1118,11 @@ pub(crate) async fn destination_flush(State(st): State<AppState>, Extension(au):
         corps["trace_non_ecrite"] = json!(cause);
     }
     Json(corps).into_response()
+}
+
+/// TRANSPORT RÉEL SANS OBJET : aucune cible inscrite, tout est jugé de l'API — la forme qu'un témoin appelle sur un
+/// `Wire` écrit à la main. Absent du binaire livré.
+#[cfg(test)]
+pub(crate) fn dest_transport(w: &Wire) -> Result<u16, String> {
+    dest_transport_pour_l_objet(w, &[])
 }

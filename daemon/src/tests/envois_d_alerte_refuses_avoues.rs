@@ -27,7 +27,7 @@ mod envois_d_alerte_refuses_avoues {
     const AD3_PHASE: &str = "AD3-PHASE:";
     const AD3_COMPTE: &str = "AD3-COMPTE:";
     /// Adresse de BOUCLAGE : la garde d'URL de `notify_send` la refuse avant tout réseau, quel que soit
-    /// `PLUME_SSRF_BLOCK_PRIVATE` (une adresse RFC1918 comme `10.0.0.9` PASSE la garde par défaut : la version
+    /// `PLUME_SSRF_BLOCK_PRIVATE` (une adresse RFC1918 comme `10.0.0.9` PASSAIT la garde par défaut avant `P7.20-a` : la version
     /// précédente de ce témoin lançait donc un vrai curl vers elle, refusé par l'expiration de `--max-time` et non par
     /// la garde ; le compte d'appels du faux curl le rend désormais visible). Porte un identifiant et un
     /// chemin reconnaissables, que la ligne de journal ne doit jamais contenir.

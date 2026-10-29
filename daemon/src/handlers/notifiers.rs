@@ -95,20 +95,88 @@ pub(crate) fn safe_url(url: &str) -> bool {
     let u = url.to_ascii_lowercase();
     ["http://", "https://", "smtp://", "smtps://"].iter().any(|p| u.starts_with(p))
 }
-/// URL d'ÉGRESS notifier VALIDE : schéma autorisé (`safe_url`) ET garde SSRF (`ssrf_guard` :
-/// rejette loopback/link-local/RFC1918 + re-vérifie l'IP résolue, anti-rebind). Utilisée à la CRÉATION/MAJ
-/// (retour d'erreur admin) ET au point d'ÉGRESS réel `notify_send` (choke-point non contournable, y compris
-/// une `webhook_url` slack posée directement en config). `safe_url` NU reste pour la validation de GABARIT
-/// (workflow_actions) où l'URL porte des placeholders `$field$` non encore résolus.
-pub(crate) fn egress_url_ok(url: &str) -> bool {
-    safe_url(url) && ssrf_guard(url).is_ok()
+/// URL d'ÉGRESS notifier VALIDE : schéma autorisé (`safe_url`) ET garde SSRF (rejette loopback/link-local + RFC1918 par
+/// défaut, re-vérifie l'IP résolue, anti-rebind). `safe_url` NU reste pour la validation de GABARIT (workflow_actions)
+/// où l'URL porte des placeholders `$field$` non encore résolus.
+/// `P7.20-a` — URL d'ÉGRESS d'un canal dont les cibles inscrites sont `cibles` (le canal semé par
+/// `PLUME_NOTIFY_NTFY_URL`, un canal de surcouche `config.d` : `cibles_inscrites_du_canal`) — et les siennes seules.
+pub(crate) fn egress_url_ok_pour_l_objet(url: &str, cibles: &[crate::ledger::CibleDeConfiguration]) -> bool {
+    safe_url(url) && crate::ledger::ssrf_guard_pour_l_objet(url, cibles).is_ok()
+}
+thread_local! {
+    /// `P7.20-a` — les cibles inscrites du canal qu'un tick de dossier (escalade SLA, multi-niveau) s'apprête à faire
+    /// émettre : posées par `canal_qui_emet` juste avant l'envoi, lues par `notify_send_du_canal_qui_emet`.
+    static CIBLES_DU_CANAL_QUI_EMET: std::cell::RefCell<Vec<crate::ledger::CibleDeConfiguration>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+/// Tant que ce gardien vit, `notify_send_du_canal_qui_emet` juge avec les cibles posées ; lâché, celles d'avant reviennent.
+#[must_use = "les cibles du canal ne sont posées que tant que ce gardien vit"]
+pub(crate) struct CanalQuiEmet(Vec<crate::ledger::CibleDeConfiguration>);
+impl Drop for CanalQuiEmet {
+    fn drop(&mut self) {
+        let precedentes = std::mem::take(&mut self.0);
+        CIBLES_DU_CANAL_QUI_EMET.with(|c| *c.borrow_mut() = precedentes);
+    }
+}
+/// `P7.20-a` — pose, sur le fil courant, les cibles inscrites du canal qui va émettre (les envois de dossier passent par
+/// un `FnMut` à signature fixe, sans identifiant de canal).
+pub(crate) fn canal_qui_emet(cibles: Vec<crate::ledger::CibleDeConfiguration>) -> CanalQuiEmet {
+    CanalQuiEmet(CIBLES_DU_CANAL_QUI_EMET.with(|c| std::mem::replace(&mut *c.borrow_mut(), cibles)))
+}
+/// Les cibles posées par `canal_qui_emet` sur le fil courant (aucune hors d'un envoi de dossier : tout est alors de l'API).
+pub(crate) fn cibles_du_canal_qui_emet() -> Vec<crate::ledger::CibleDeConfiguration> {
+    CIBLES_DU_CANAL_QUI_EMET.with(|c| c.borrow().clone())
+}
+/// `P7.20-a` — l'envoi d'un tick de dossier (escalade SLA, multi-niveau) : jugé avec les cibles du canal posé par
+/// `canal_qui_emet`, et les siennes seules.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn notify_send_du_canal_qui_emet(kind: &str, url: &str, config: &Value, sev: i64, title: &str, detail: &str, host: &str, ts: i64) -> bool {
+    notify_send_pour_l_objet(&cibles_du_canal_qui_emet(), kind, url, config, sev, title, detail, host, ts)
+}
+/// Les cibles de configuration du canal `id` dans la base de `conn`, pour la ligne qui émet (`kind`, `url`, `config`
+/// tels que lus pour l'envoi) : celles inscrites pour lui, s'il les porte encore (`cibles_de_configuration_d_un_canal`).
+pub(crate) fn cibles_inscrites_du_canal(conn: &Connection, id: i64, kind: &str, url: &str, config: &str) -> Vec<crate::ledger::CibleDeConfiguration> {
+    let config: Value = serde_json::from_str(config).unwrap_or_else(|_| json!({}));
+    crate::overlays_oac::cibles_de_configuration_d_un_canal(&crate::ledger::base_de(conn), id, kind, url, &config)
+}
+/// `P7.20-a` — URL d'un canal SAISIE PAR L'API (création, modification) : schéma admis ET garde jugée de l'API, même
+/// quand l'URL est celle d'une cible déclarée par l'exploitant (au point d'envoi, seules les cibles inscrites pour le
+/// canal qui émet sont de configuration).
+pub(crate) fn egress_url_ok_pour_une_saisie_de_l_api(url: &str) -> bool {
+    safe_url(url) && ssrf_guard_d_une_saisie_de_l_api(url).is_ok()
+}
+/// `P7.20-a` — le refus d'une URL de canal saisie par l'API, quand il tient à sa SEULE adresse privée : il nomme les
+/// réglages qui le lèvent.
+pub(crate) const PHRASE_ADRESSE_PRIVEE_D_UN_CANAL: &str = "URL refusée : adresse privée (10/8, 172.16/12, 192.168/16) \
+pour un canal saisi par l'API — PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet toute adresse \
+privée ; un canal écrit en surcouche config.d est admis";
+/// Le refus servi pour une URL de canal saisie par l'API : la phrase d'avant, ou celle de l'adresse privée.
+fn refus_d_une_url_de_canal(phrase_d_avant: &'static str, url: &str) -> Response {
+    if safe_url(url) && refusee_pour_sa_seule_adresse_privee(url, OrigineDeLaCible::Api) {
+        bad_req(PHRASE_ADRESSE_PRIVEE_D_UN_CANAL)
+    } else {
+        bad_req(phrase_d_avant)
+    }
+}
+/// `P7.20-a` — la `webhook_url` d'un slack SAISIE PAR L'API (champ de `config`, chaîne JSON) est jugée de l'API, même
+/// quand elle est celle d'une cible déclarée : refusée à la saisie quand sa cible est une adresse privée, avec la phrase
+/// qui nomme les leviers. Ce qui ne tient pas à la seule adresse privée (schéma, never-egress, nom non résolu) garde le
+/// traitement d'avant : jugé au point d'envoi (`notify_send_pour_l_objet`).
+fn webhook_slack_saisi_refuse_pour_son_adresse_privee(config: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(config) else { return false };
+    let webhook = v.str_field("webhook_url").trim();
+    !webhook.is_empty() && refusee_pour_sa_seule_adresse_privee(webhook, OrigineDeLaCible::Api)
 }
 
 /// Envoie une notification via `curl` (https/SMTP sans dépendance Rust). Args directs + `--` = pas d'injection.
-pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title: &str, detail: &str, host: &str, ts: i64) -> bool {
+/// `P7.20-a` : chaque URL d'égress est jugée au regard des seules `cibles` inscrites pour le canal qui émet
+/// (`cibles_inscrites_du_canal`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn notify_send_pour_l_objet(
+    cibles: &[crate::ledger::CibleDeConfiguration], kind: &str, url: &str, config: &Value, sev: i64, title: &str, detail: &str, host: &str, ts: i64,
+) -> bool {
     match kind {
         "ntfy" => {
-            if !egress_url_ok(url) { return false; } // garde SSRF au point d'égress (couvre aussi le bypass config direct)
+            if !egress_url_ok_pour_l_objet(url, cibles) { return false; } // garde SSRF au point d'égress (couvre aussi le bypass config direct)
             let prio = match sev { 4 => "5", 3 => "4", 2 => "3", 1 => "2", _ => "1" };
             let g = |k: &str| config.str_field(k);
             // `P10.33-s` (sécurité) — `--data-raw`, jamais `-d` : `-d @chemin` fait LIRE à curl un fichier local
@@ -135,7 +203,7 @@ pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title
             curl_send(&args, &secret_cfg)
         }
         "webhook" => {
-            if !egress_url_ok(url) { return false; } // garde SSRF au point d'égress
+            if !egress_url_ok_pour_l_objet(url, cibles) { return false; } // garde SSRF au point d'égress
             let body = json!({ "ts": ts, "severity": sev, "title": title, "detail": detail, "host": host }).to_string();
             // `P10.33-n` : par `curl_send` comme les autres genres — la réponse du service ne va pas au journal.
             let args: Vec<String> = [
@@ -159,7 +227,7 @@ pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title
                 crate::tmp_possede::racine_systeme().join(format!("plume-mail-{ts}-{seq}.eml")),
             );
             let p = garde.path().to_path_buf();
-            if !egress_url_ok(url) { // garde SSRF (smtp) au point d'égress
+            if !egress_url_ok_pour_l_objet(url, cibles) { // garde SSRF (smtp) au point d'égress
                 return false;
             }
             let body = format!("From: {}\r\nTo: {}\r\nSubject: [Plume] {}\r\n\r\n{detail}\r\n[{host}]\r\n", oneline(from), oneline(to), oneline(title));
@@ -186,7 +254,7 @@ pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title
         // (jamais projetée), PAS dans `url` (affiché). Payload « blocks » + fallback texte.
         "slack" => {
             let wh = config.str_field("webhook_url");
-            if !egress_url_ok(wh) { // la webhook_url slack est un égress -> garde SSRF
+            if !egress_url_ok_pour_l_objet(wh, cibles) { // la webhook_url slack est un égress -> garde SSRF
                 return false;
             }
             let body = slack_payload(sev, title, detail, host, ts).to_string();
@@ -217,7 +285,7 @@ pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title
         // substitution de placeholders CONNUS uniquement (pas de commande, pas de SSRF hors `url`). En-tête
         // d'auth optionnel `config.auth_header` (secret, ex `Authorization: Bearer x`), neutralisé CR/LF.
         "generic" => {
-            if !egress_url_ok(url) { // garde SSRF au point d'égress
+            if !egress_url_ok_pour_l_objet(url, cibles) { // garde SSRF au point d'égress
                 return false;
             }
             let tmpl = config.str_field("template");
@@ -412,6 +480,8 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
         (alerts, notifiers, policies, silences)
     };
     let enabled_ids: Vec<i64> = notifiers.iter().map(|n| n.id).collect();
+    // `P7.20-a` — la base, pour chercher les cibles inscrites de chaque canal (verrou relâché avant tout envoi).
+    let base = crate::ledger::base_de(&db.lock());
     for (id, ts, sev, title, detail, host, mitre, source) in &alerts {
         // env_id non porté par le SELECT (colonne rare en label) : reste vide -> matcher `env` inopérant en mode 0.
         let labels = alert_labels(*sev, mitre, host, source, "");
@@ -473,7 +543,10 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
                         Ok(()) => envois_pris += 1,
                         Err(e) => crate::metrics::compter_un_envoi_d_alerte_refuse(*id, n.id, genre, &e.to_string()),
                     }
-                } else if notify_send(&n.kind, &n.url, &config, *sev, title, detail, host, *ts) {
+                } else if notify_send_pour_l_objet(
+                    &crate::overlays_oac::cibles_de_configuration_d_un_canal(&base, n.id, &n.kind, &n.url, &config),
+                    &n.kind, &n.url, &config, *sev, title, detail, host, *ts,
+                ) {
                     envois_pris += 1;
                 } else {
                     crate::metrics::compter_un_envoi_d_alerte_refuse(*id, n.id, genre, cause_d_un_envoi_non_pris(genre));
@@ -608,13 +681,17 @@ pub(crate) async fn notifier_create(State(st): State<AppState>, Extension(au): E
     // les autres canaux exigent une `url` valide. SEC-FIX : on valide DÈS LA CRÉATION avec `egress_url_ok`
     // (= schéma autorisé ET garde SSRF) — pas seulement `safe_url` — sinon un notifier ciblant une adresse
     // interne (loopback/metadata) était accepté puis ÉCHOUAIT SILENCIEUSEMENT à chaque envoi (aucun last_error).
-    // L'admin obtient un refus IMMÉDIAT explicite. NB (fix on-prem) : un relais SMTP interne en RFC1918 PASSE
-    // par défaut (RFC1918 opt-in via PLUME_SSRF_BLOCK_PRIVATE) — seul le never-egress est refusé d'office.
-    if notifier_kind_needs_url(&kind) && !egress_url_ok(url) {
-        return bad_req("URL invalide : http(s):// (ntfy/webhook/generic) ou smtp(s):// (email) requis, et cible non-interne (SSRF)");
+    // L'admin obtient un refus IMMÉDIAT explicite. `P7.20-a` : une adresse privée (relais SMTP interne compris) est
+    // REFUSÉE par défaut pour un canal saisi par l'API, et le refus nomme le réglage qui la lève ; un canal écrit en
+    // surcouche `config.d` ou semé par `PLUME_NOTIFY_NTFY_URL` est une cible de configuration, admise.
+    if notifier_kind_needs_url(&kind) && !egress_url_ok_pour_une_saisie_de_l_api(url) {
+        return refus_d_une_url_de_canal("URL invalide : http(s):// (ntfy/webhook/generic) ou smtp(s):// (email) requis, et cible non-interne (SSRF)", url);
     }
-    if !url.is_empty() && !egress_url_ok(url) {
-        return bad_req("URL invalide : schéma non autorisé ou cible interne refusée (SSRF)");
+    if !url.is_empty() && !egress_url_ok_pour_une_saisie_de_l_api(url) {
+        return refus_d_une_url_de_canal("URL invalide : schéma non autorisé ou cible interne refusée (SSRF)", url);
+    }
+    if webhook_slack_saisi_refuse_pour_son_adresse_privee(b.get("config").and_then(|v| v.as_str()).unwrap_or("")) {
+        return bad_req(PHRASE_ADRESSE_PRIVEE_D_UN_CANAL);
     }
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Canal").to_string();
     let enabled = b.bool_field("enabled", true) as i64;
@@ -676,9 +753,12 @@ pub(crate) async fn notifier_update(State(st): State<AppState>, Extension(au): E
     if let Some(v) = b.get("url").and_then(|x| x.as_str()) {
         // SEC-FIX : validation d'ÉGRESS complète (schéma + SSRF) à la MAJ, pas seulement le schéma -> pas de
         // notifier ré-pointé vers une cible interne qui échouerait ensuite en silence.
-        if !egress_url_ok(v) {
-            return bad_req("URL invalide : schéma non autorisé ou cible interne refusée (SSRF)");
+        if !egress_url_ok_pour_une_saisie_de_l_api(v) {
+            return refus_d_une_url_de_canal("URL invalide : schéma non autorisé ou cible interne refusée (SSRF)", v);
         }
+    }
+    if webhook_slack_saisi_refuse_pour_son_adresse_privee(b.get("config").and_then(|x| x.as_str()).unwrap_or("")) {
+        return bad_req(PHRASE_ADRESSE_PRIVEE_D_UN_CANAL);
     }
     crate::req_conn!(st, au, conn);
     // M3 : mutation + audit fail-closed. Le champ `config`/`url` peut porter un secret -> l'audit note QUELS
@@ -771,11 +851,14 @@ pub(crate) async fn notifier_test(State(st): State<AppState>, Extension(au): Ext
     if !au.is_admin() {
         return refus_du_role_sur_un_canal();
     }
-    let row = {
+    let (row, cibles) = {
         use rusqlite::OptionalExtension;
         crate::req_conn!(st, au, conn);
-        conn.query_row("SELECT kind,url,config FROM notifier WHERE id=?1", params![id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).optional()
+        let row = conn.query_row("SELECT kind,url,config FROM notifier WHERE id=?1", params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).optional();
+        // `P7.20-a` : les cibles inscrites pour CE canal, si la ligne lue les porte encore
+        let cibles = match &row { Ok(Some((k, u, c))) => cibles_inscrites_du_canal(&conn, id, k, u, c), _ => Vec::new() };
+        (row, cibles)
     };
     let (kind, url, cfg) = match row {
         Ok(Some(x)) => x,
@@ -788,7 +871,7 @@ pub(crate) async fn notifier_test(State(st): State<AppState>, Extension(au): Ext
     let config: Value = serde_json::from_str(&cfg).unwrap_or_else(|_| json!({}));
     let ts = now();
     let accuse = accuse_du_canal(&kind);
-    let ok = tokio::task::spawn_blocking(move || notify_send(&kind, &url, &config, 3, "Test Plume", "Notification de test depuis Plume.", "", ts))
+    let ok = tokio::task::spawn_blocking(move || notify_send_pour_l_objet(&cibles, &kind, &url, &config, 3, "Test Plume", "Notification de test depuis Plume.", "", ts))
         .await.unwrap_or(false);
     // `P10.33-n` — `ok` reste tel quel (la console le lit) ; s'y ajoute ce qu'il établit. Un succès d'un canal
     // réseau est une REMISE AU SERVICE, sans accusé de lecture : la phrase le dit, et elle n'est servie que sur un
@@ -799,4 +882,19 @@ pub(crate) async fn notifier_test(State(st): State<AppState>, Extension(au): Ext
         corps["remise"] = json!(PHRASE_REMIS_AU_SERVICE_SANS_ACCUSE_DE_LECTURE);
     }
     Json(corps).into_response()
+}
+
+/// L'envoi SANS OBJET : aucune cible inscrite, toute URL est jugée de l'API — la forme qu'appellent les témoins de
+/// l'envoi (`notify_send_pour_l_objet`). Absent du binaire livré.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn notify_send(kind: &str, url: &str, config: &Value, sev: i64, title: &str, detail: &str, host: &str, ts: i64) -> bool {
+    notify_send_pour_l_objet(&[], kind, url, config, sev, title, detail, host, ts)
+}
+
+/// URL d'ÉGRESS notifier SANS OBJET : aucune cible inscrite, jugée de l'API — la forme qu'appellent les témoins de la
+/// garde (`egress_url_ok_pour_l_objet`). Absent du binaire livré.
+#[cfg(test)]
+pub(crate) fn egress_url_ok(url: &str) -> bool {
+    egress_url_ok_pour_l_objet(url, &[])
 }

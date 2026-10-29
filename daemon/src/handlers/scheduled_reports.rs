@@ -302,14 +302,15 @@ fn statut_du_rapport_ecrit(id: i64, ecrit: rusqlite::Result<usize>, geste: &str)
 
 /// Transmet le rapport au notificateur. Point unique d'envoi du tick ET de /run ; en test, un témoin du fil
 /// courant peut l'intercepter (compter les envois, refuser, paniquer) — aucun réseau.
-fn envoyer_le_rapport(kind: &str, url: &str, config: &Value, title: &str, detail: &str, ts: i64) -> bool {
+/// `P7.20-a` : `cibles` = les cibles inscrites du canal visé (`cibles_inscrites_du_canal`), et les siennes seules.
+fn envoyer_le_rapport(cibles: &[crate::ledger::CibleDeConfiguration], kind: &str, url: &str, config: &Value, title: &str, detail: &str, ts: i64) -> bool {
     #[cfg(test)]
     {
         if let Some(verdict) = temoin_d_envoi::intercepter(kind, title, detail) {
             return verdict;
         }
     }
-    notify_send(kind, url, config, 2, title, detail, "", ts)
+    notify_send_pour_l_objet(cibles, kind, url, config, 2, title, detail, "", ts)
 }
 
 /// `last_error` d'un rapport dont l'envoi a été refusé par le notificateur (`P10.33-h`) : constante nommée, sans
@@ -454,7 +455,8 @@ pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64
     // 1) charge la définition + le dataset GXQL + le notifier (kind/url/config) sous lock, puis relâche. Chaque lecture
     //    en trois issues (`P10.20-l`) ; le `last_error` courant est relu DANS la lecture du rapport, en valeur brute
     //    (aucun type exigé : une ligne qui se lisait avant se lit encore), pour dire si la trace d'absence est posée.
-    let (name, run_as, tenant, soql, nkind, nurl, nconfig): (String, String, String, String, String, String, String) = {
+    #[allow(clippy::type_complexity)]
+    let (name, run_as, tenant, soql, nkind, nurl, nconfig, ncibles): (String, String, String, String, String, String, String, Vec<crate::ledger::CibleDeConfiguration>) = {
         let conn = db.lock();
         type LigneDuRapport = (String, i64, i64, String, String, rusqlite::types::Value);
         let lue: rusqlite::Result<Option<LigneDuRapport>> = conn.query_row(
@@ -470,7 +472,8 @@ pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64
             "SELECT kind,url,config FROM notifier WHERE id=?1 AND enabled=1", params![notifier_id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).optional();
         let (nkind, nurl, nconfig) = lecture_de_la_definition(lu, LectureDeLaDefinition::Canal, trace_posee(LectureDeLaDefinition::Canal))?;
-        (name, run_as, tenant, soql, nkind, nurl, nconfig)
+        let ncibles = crate::handlers::notifiers::cibles_inscrites_du_canal(&conn, notifier_id, &nkind, &nurl, &nconfig); // `P7.20-a` : les cibles inscrites du canal visé, s'il les porte encore
+        (name, run_as, tenant, soql, nkind, nurl, nconfig, ncibles)
     };
     // 2) COMPILE+EXÉCUTE MASQUÉ (via render_report_detail) puis LIVRE. Séparé pour que le CONTENU masqué livré
     //    soit OBSERVABLE en test.
@@ -485,7 +488,7 @@ pub(crate) fn deliver_report(db: &Arc<Mutex<Connection>>, db_path: &str, id: i64
                 return Ok(IssueDuRapport::MarqueRefusee);
             }
             // 2b) l'envoi, une fois la marque posée.
-            let delivered = envoyer_le_rapport(&nkind, &nurl, &config, &title, &detail, now_ts);
+            let delivered = envoyer_le_rapport(&ncibles, &nkind, &nurl, &config, &title, &detail, now_ts);
             // 2c) le statut d'après envoi, compté — un refus est dit et compté, jamais un second envoi.
             //     `P10.33-h` — un envoi refusé n'est pas un succès : `last_error` seul, `last_ok`/`last_count` intacts.
             let statut = {

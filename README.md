@@ -740,6 +740,11 @@ il n'est pas lisible via `/proc/<pid>/environ`.
 > ⚠️ En Docker, le service `soc` du `docker-compose.yml` **énumère** ses variables : une variable que
 > vous ajoutez à `.env` **sans l'ajouter au bloc `environment:`** n'atteint jamais le conteneur. Le
 > réglage semble posé et ne mord pas.
+>
+> Les trois réglages de la garde des sorties et de l'hôte strict (`PLUME_SSRF_BLOCK_PRIVATE`,
+> `PLUME_SSRF_ALLOW`, `PLUME_HOST_STRICT`) y sont relayés depuis `.env`, vides par défaut (lus comme
+> absents). Hôte natif : `/etc/plume/soc.conf` ; k3s : `env:` du `Deployment` (`deploy/k3s.yaml` ne les
+> pose pas, le défaut s'applique).
 
 ### Ce que ce document couvre, et ce qu'il ne couvre pas
 
@@ -836,7 +841,9 @@ viennent d'une constante — la commande `c` ci‑dessus la donne.
 |---|---|---|
 | `PLUME_ADDR` | interface et port d'écoute | `127.0.0.1:7000` |
 | `PLUME_HOST` | hôte attendu — **garde anti‑DNS‑rebinding**, un écart rend `421` | `plume.localhost` |
-| `PLUME_HOST_STRICT` | `1` = n'accepte plus le *loopback* d'office, seulement les FQDN de `PLUME_HOST` | `0` |
+| `PLUME_HOST_STRICT` | `1` = n'accepte plus le *loopback* d'office, seulement les FQDN de `PLUME_HOST` ; vide ou `0` = non stricte (FQDN de `PLUME_HOST` et *loopback* acceptés), toute autre valeur aussi, et le démarrage le dit. Non strict par défaut parce qu'un client en boucle locale (`curl http://127.0.0.1:7000`, agent poussé vers `127.0.0.1:7000` en Docker) recevrait `421` | `0` |
+| `PLUME_SSRF_BLOCK_PRIVATE` | garde des sorties (connecteurs, destinations, canaux) envers les adresses privées `10/8`, `172.16/12`, `192.168/16`. **Vide (défaut)** : refusées pour une cible saisie par l'API, admises pour une cible de configuration (canal semé par `PLUME_NOTIFY_NTFY_URL`, objets d'une surcouche `config.d`, fournisseurs d'identité et d'IA) ; `0`/`false`/`no`/`off` = admises partout ; `1`/`true`/`yes`/`on` = refusées partout, configuration comprise ; une valeur non reconnue vaut le défaut et est dite. Loopback, link-local (dont `169.254.169.254`) et ULA IPv6 restent refusés quelle que soit cette valeur ; seule une cible listée dans `PLUME_SSRF_ALLOW` y échappe. La ligne `[ssrf]` du démarrage dit la politique retenue (détail : [docs/CONNECTOR-PRESETS.md](docs/CONNECTOR-PRESETS.md)) | vide |
+| `PLUME_SSRF_ALLOW` | exemptions de la garde des sorties : hôtes **exacts** et/ou IP ou CIDR séparés par des virgules (ex. `10.20.0.0/16,192.0.2.10`). **Toute** la garde est levée pour ces cibles, pas seulement le privé : n'y mettre qu'un réseau que vous tenez | vide |
 | `PLUME_USER` / `PLUME_PASS_HASH` | compte admin ; le hash vient de `plume-daemon hashpw`. Hash vide → **mode SETUP** | `admin` / vide |
 | `PLUME_TRUSTED_PROXIES` | reverse proxies dont on accepte l'IP réelle. Liste explicite non vide : un pair de la liste qui envoie `X-Forwarded-Proto: https` (chaque valeur de chaque ligne à `https`) fait aussi poser `Secure` et HSTS, en repli de `PLUME_TLS_TERMINATED_UPSTREAM` (prioritaire) ; liste vide : l'en-tête n'est jamais lu pour cela | vide |
 | `PLUME_TLS_TERMINATED_UPSTREAM` | `1` = le reverse proxy sert le HTTPS et parle au démon en clair : cookie `Secure` et HSTS posés comme avec le TLS natif (un accès direct en http au démon perd alors son cookie). Posé à `1` dans `deploy/k3s.yaml`, dont l'Ingress ne sert que du HTTPS | vide |

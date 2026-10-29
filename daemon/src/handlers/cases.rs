@@ -1060,9 +1060,9 @@ pub(crate) fn case_detach_item(conn: &Connection, id: i64, item_id: i64, author:
 /// escalated=1 (anti re-notif), PUIS notifie (via les notifiers du tenant, min_severity respecté) et trace un item
 /// 'sla' + ledger ; marqueur refusé : notifie QUAND MÊME, sans trace (voir `escalate_overdue_cases_par`).
 /// Appelée dans la boucle de fond PAR-TENANT (à côté de dispatch_notifications). INERTE tant qu'aucun case
-/// overdue (0 ligne -> 0 réseau, 0 écriture). Séquentiel + LIMIT (budget 2 Go). Réutilise notify_send tel quel.
+/// overdue (0 ligne -> 0 réseau, 0 écriture). Séquentiel + LIMIT (budget 2 Go). Envoie par `notify_send_du_canal_qui_emet` (`P7.20-a`).
 pub(crate) fn escalate_overdue_cases(db: &Arc<Mutex<Connection>>) {
-    escalate_overdue_cases_par(db, &mut notify_send);
+    escalate_overdue_cases_par(db, &mut notify_send_du_canal_qui_emet);
 }
 
 /// `P10.20-w` — fin du `detail` d'une notification d'escalade dont la base a REFUSÉ le marqueur `escalated` : le
@@ -1080,7 +1080,7 @@ pub(crate) const ESCALADE_NON_ENREGISTREE: &str =
 /// chaque tour tant que le marqueur est refusé, comme avant), son `detail` finit par `ESCALADE_NON_ENREGISTREE`, mais
 /// RIEN n'est inscrit en chronologie ni au registre ; le refus est compté UNE fois par tour (pas par dossier) au
 /// balayage `escalate_overdue_marqueur` (`/metrics`).
-/// L'envoyeur est injecté pour que les témoins COMPTENT les envois sans réseau ; la production passe `notify_send`.
+/// L'envoyeur est injecté pour que les témoins COMPTENT les envois sans réseau ; la production passe `notify_send_du_canal_qui_emet` (`P7.20-a`).
 #[allow(clippy::type_complexity)]
 pub(crate) fn escalate_overdue_cases_par(
     db: &Arc<Mutex<Connection>>,
@@ -1088,7 +1088,8 @@ pub(crate) fn escalate_overdue_cases_par(
 ) {
     use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     let now_i = now();
-    let (cases, notifiers): (Vec<(i64, String, i64, i64)>, Vec<(String, String, i64, String)>) = {
+    #[allow(clippy::type_complexity)]
+    let (cases, notifiers, base): (Vec<(i64, String, i64, i64)>, Vec<(i64, String, String, i64, String)>, String) = {
         let conn = db.lock();
         let cases: Vec<(i64, String, i64, i64)> = match conn.prepare(
             "SELECT id,COALESCE(title,''),priority,sla_due FROM incident \
@@ -1105,14 +1106,15 @@ pub(crate) fn escalate_overdue_cases_par(
         if cases.is_empty() {
             return;
         }
-        let notifiers: Vec<(String, String, i64, String)> = match conn
-            .prepare("SELECT kind,url,min_severity,config FROM notifier WHERE enabled=1")
-            .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+        // `P7.20-a` — l'identifiant de chaque canal et la base : ses cibles inscrites sont posées avant chaque envoi.
+        let notifiers: Vec<(i64, String, String, i64, String)> = match conn
+            .prepare("SELECT id,kind,url,min_severity,config FROM notifier WHERE enabled=1")
+            .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<Vec<_>>>())
         {
             Ok(v) => v,
             Err(e) => { crate::metrics::compter_un_tick_aveugle("escalate_overdue", &e.to_string()); return; }
         };
-        (cases, notifiers)
+        (cases, notifiers, crate::ledger::base_de(&conn))
     };
     // `P10.20-w` — marqueurs refusés CE tour-ci : (nombre de dossiers, dernière cause), comptés une fois après la boucle.
     let mut marqueurs_refuses: (usize, String) = (0, String::new());
@@ -1161,9 +1163,10 @@ pub(crate) fn escalate_overdue_cases_par(
                 format!("{detail} {ESCALADE_NON_ENREGISTREE}")
             }
         };
-        for (kind, url, minsev, cfg) in &notifiers {
+        for (nid, kind, url, minsev, cfg) in &notifiers {
             if sev >= *minsev {
                 let config: Value = serde_json::from_str(cfg).unwrap_or_else(|_| json!({}));
+                let _canal = crate::handlers::notifiers::canal_qui_emet(crate::overlays_oac::cibles_de_configuration_d_un_canal(&base, *nid, kind, url, &config));
                 let _ = envoyer(kind, url, &config, sev, &format!("SLA dépassé : {title}"), &detail_envoye, "", now_i);
             }
         }

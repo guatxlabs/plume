@@ -21,7 +21,9 @@
 // `AucuneLigne` (jeton retiré entre la lecture et l'écriture) est provoquée sans second écrivain par un déclencheur
 // TEMPORAIRE `RAISE(IGNORE)`.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : le DELETE concurrent lui-même (aucun `DELETE FROM scim_token` dans le dépôt) ;
+// CE QUE CES TÉMOINS NE TIENNENT PAS : le DELETE concurrent lui-même (le seul `DELETE FROM scim_token` du dépôt,
+// `tenants::RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT`, est joué par la destruction et par la création d'un tenant, que ces
+// témoins ne jouent pas en course) ;
 // la série `/metrics` est lue sur `gather_prom`, pas au travers de la route HTTP.
 // =====================================================================================
 mod scim_post_users_plusieurs_groupes_refuse {

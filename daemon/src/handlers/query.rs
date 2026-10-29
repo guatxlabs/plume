@@ -1944,21 +1944,29 @@ pub(crate) async fn cancel(State(st): State<AppState>, Extension(au): Extension<
 // UNIQUEMENT le format de sortie. Même compilation (GXQL ouvert à tous ; champ `sql` BRUT réservé admin via
 // raw_sql_allowed), même exécuteur run_query_ex -> donc MÊME authorizer read-pool qui DENY user.hash /
 // token.token_hash / connector.secret au prepare() (non contournable, même en SQL brut admin), MÊME budget/
-// watchdog, MÊME plafond de lignes. Un export ne peut donc PAS voir une colonne que /api/query ne verrait
+// watchdog. SEUL le plafond de lignes diffère (`P10.32-r`) : l'export obéit à SA borne (`export_max_rows`), pas à
+// PLUME_QUERY_MAX, et le dit quand il la touche. Un export ne peut donc PAS voir une colonne que /api/query ne verrait
 // pas, ni contourner le gate admin, ni produire un dump brut non caviardé. Aucun accès à st.db (sans
 // authorizer) : tout passe par req_db_path + run_query_ex (read pool). Mode 0 / data-plane inchangés.
 // ================================================================================================
 
 /// Plafond de lignes d'un export (borne la taille du fichier). Réglable via PLUME_EXPORT_MAX, borné dur à
-/// 100k (= plafond dur de run_query_ex). run_query_ex applique DE TOUTE FAÇON son propre max_rows
-/// (PLUME_QUERY_MAX) -> l'export ne dépasse jamais le plafond de lecture existant (pas d'exfiltration massive).
+/// 100k (`query_exec::PLAFOND_DUR_DES_LIGNES_RENDUES`) ; hors bornes ou illisible -> défaut 50 000. `P10.32-r` :
+/// c'est la SEULE borne de lignes de l'export complet — `PLUME_QUERY_MAX`, plafond des lectures interactives, ne
+/// s'y applique pas (`query_exec::sous_le_plafond_de_l_export`), ni au cœur ni à l'hydratation froide
+/// (`cold_store::reader::cold_hydrate_row_cap` hydrate la borne plus une ligne sonde, pour que le cœur voie la coupure
+/// d'une fenêtre entièrement froide). L'exfiltration de masse reste tenue par ce plafond
+/// dur, le gate de rôle (SQL brut réservé admin), l'authorizer du pool de lecture et l'audit `bulk_read`.
 pub(crate) fn export_max_rows() -> i64 {
     std::env::var("PLUME_EXPORT_MAX")
         .ok()
         .and_then(|v| v.parse().ok())
-        .filter(|&n| n > 0 && n <= 100_000)
+        .filter(|&n| n > 0 && n <= crate::query_exec::PLAFOND_DUR_DES_LIGNES_RENDUES as i64)
         .unwrap_or(50_000)
 }
+
+/// `P10.32-r` — en-tête posé quand l'export a touché SA borne : sa valeur est la borne appliquée (lignes rendues).
+pub(crate) const ENTETE_BORNE_DE_L_EXPORT_TOUCHEE: &str = "x-plume-export-borne";
 
 /// Seuil de lignes au-delà duquel un EXPORT est audité (exfiltration potentielle).
 /// Réglable via PLUME_AUDIT_BULK_ROWS (défaut 10 000). L'/api/query interactif est paginé (≤ 10k/page) -> le
@@ -2203,14 +2211,16 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     if sql.is_empty() {
         return bad_req("requête vide");
     }
-    // borne d'export : wrap LIMIT (marche même si {sql} a déjà un LIMIT — l'inner cape). run_query_ex applique
-    // EN PLUS son propre plafond (max_rows) -> jamais au-delà du plafond de lecture existant.
+    // borne d'export (`P10.32-r`) : la SEULE qui s'applique. Le cœur la reçoit en plafond de lignes à la place de
+    // PLUME_QUERY_MAX (`sous_le_plafond_de_l_export`) ; le LIMIT enveloppant laisse passer UNE ligne de plus, que le
+    // cœur ne rend pas mais qui lui fait poser `stats.truncated` : un export coupé à sa borne le DIT.
     let limit = body
         .get("limit")
         .and_then(|v| v.as_i64())
         .filter(|&n| n > 0)
         .unwrap_or_else(export_max_rows)
         .min(export_max_rows());
+    let plafond_de_l_export = limit as usize;
     // backpressure : MÊME sémaphore que /api/query (borne les déchiffrements concurrents ; anti-OOM).
     // `P10.32-q` : budget interactif accordé plus bas -> requête LOURDE, porte jumelle (couloir d'abord).
     let _permit = match acquire_query_permit_lourd(&st.query_sem).await {
@@ -2218,7 +2228,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, "service indisponible"),
     };
     let db_path = req_db_path(&st, &au); // #2a : base du tenant courant (jamais st.db, jamais une autre base)
-    let export_sql = format!("SELECT * FROM ({sql}) LIMIT {limit}");
+    let export_sql = format!("SELECT * FROM ({sql}) LIMIT {}", limit + 1);
     let budget = query_budget_interactive_ms(); // export = action délibérée -> budget interactif (comme /api/query interactive)
     // #18 P3 — INCOMPLÉTUDE : un export cold-tronqué DOIT le signaler (X-Plume-Truncated) -> jamais un CSV/JSON
     // partiel présenté comme complet. `cold_extra_truncated` OR-e la troncature cold au flag `stats.truncated`.
@@ -2233,7 +2243,11 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
         // #28 PHASE B — extrait du SQL COMPILÉ (`sql`, post-masquage #45), le MÊME qui s'exécute sur l'union.
         let preds = crate::cold_store::extract_cold_dim_preds(&sql);
         let res = tokio::task::spawn_blocking(move || {
-            crate::query_exec::en_classant_la_voie_froide(|| crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ps, None, budget, None, &preds))
+            crate::query_exec::en_classant_la_voie_froide(|| {
+                crate::query_exec::sous_le_plafond_de_l_export(plafond_de_l_export, || {
+                    crate::cold_store::cold_union_query(&dbp, &conf, env_s.as_deref(), from, to, boundary, &ps, None, budget, None, &preds)
+                })
+            })
         })
         .await;
         // #18 — un export est un fichier qu'on archive et qu'on cite : y écrire un agrégat calculé sur un
@@ -2249,7 +2263,8 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
                     cold_extra_truncated = r.truncated;
                     r.value
                 }
-                Err(t) => return refuse_truncated_aggregate(t),
+                // `P10.32-r` — le refus nomme la borne de l'export, seul plafond qui s'appliquait à sa lecture froide.
+                Err(t) => return refuse_truncated_aggregate(t.sous_la_borne_de_l_export(plafond_de_l_export)),
             },
             Ok(Err(e)) => return refus_de_requete(e, "/api/export", &au.tenant),
             Err(_) => return server_err("exécution échouée"),
@@ -2257,7 +2272,7 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     } else {
         let dbp = db_path.clone();
         let ps = export_sql.clone();
-        match tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&dbp, &ps, budget, None))).await {
+        match tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| crate::query_exec::sous_le_plafond_de_l_export(plafond_de_l_export, || run_query_ex(&dbp, &ps, budget, None)))).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return refus_de_requete(e, "/api/export", &au.tenant),
             Err(_) => return server_err("exécution échouée"),
@@ -2265,7 +2280,10 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     };
     #[cfg(not(feature = "cold_tier"))]
     let v = {
-        let res = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&db_path, &export_sql, budget, None))).await;
+        let res = tokio::task::spawn_blocking(move || {
+            crate::query_exec::en_classant(|| crate::query_exec::sous_le_plafond_de_l_export(plafond_de_l_export, || run_query_ex(&db_path, &export_sql, budget, None)))
+        })
+        .await;
         match res {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return refus_de_requete(e, "/api/export", &au.tenant),
@@ -2276,6 +2294,9 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     // /api/query : `stats.truncated` devient `prev || cap.tronque()`, et `topn_ecartes/servis/total`
     // n'apparaissent QUE si la sonde a pu mesurer — case absente = non mesuré, jamais un zéro).
     let mut v = v;
+    // `P10.32-r` — lu AVANT `apply_rollup_stats` : à ce point, `stats.truncated` n'est posé que par le cœur, quand la
+    // ligne sonde (LIMIT borne + 1) existait, c'est-à-dire quand l'export a touché SA borne.
+    let borne_de_l_export_touchee = v.get("stats").and_then(|s| s.get("truncated")).and_then(|t| t.as_bool()).unwrap_or(false);
     apply_rollup_stats(&mut v, &rollup_meta);
     // AUDIT : audite l'export SI le volume dépasse le seuil (exfiltration potentielle).
     let nrows = v.get("rows").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0);
@@ -2339,6 +2360,11 @@ pub(crate) async fn export(State(st): State<AppState>, Extension(au): Extension<
     }
     if froid_non_lu {
         h.insert(axum::http::HeaderName::from_static("x-plume-cold-coverage"), axum::http::HeaderValue::from_static("cold_coverage_unread"));
+    }
+    // `P10.32-r` — l'export a touché SA borne : la valeur est cette borne (le fichier porte déjà `-TRONQUE-…` et
+    // `x-plume-truncated: 1`, que `stats.truncated` a posés plus haut).
+    if borne_de_l_export_touchee {
+        h.insert(axum::http::HeaderName::from_static(ENTETE_BORNE_DE_L_EXPORT_TOUCHEE), axum::http::HeaderValue::from(limit));
     }
     resp
 }

@@ -10,10 +10,124 @@
 //! Le SECRET du bearer se provisionne hors-git (CLI `scim-token`, stocké HASHÉ sha256) — jamais inline.
 use crate::*;
 
-/// Contexte SCIM injecté par auth_guard après validation du bearer : le tenant que ce token provisionne.
+/// Contexte SCIM injecté par auth_guard après validation du bearer : le tenant que ce token provisionne, et l'empreinte
+/// du jeton qui l'a authentifié (`TenantDuJetonScim`).
 #[derive(Clone)]
 pub(crate) struct ScimCtx {
-    pub(crate) tenant: String,
+    pub(crate) tenant: TenantDuJetonScim,
+}
+
+/// `P10.34-h` — LE TENANT D'UNE DEMANDE SCIM ET LE JETON QUI L'A ADMISE. Un jeton d'un tenant absent, détruit ou recréé
+/// est refusé, y compris pour une demande déjà admise : chaque transaction d'écriture SCIM relit, sous son verrou, que CE
+/// jeton existe encore sous CE tenant catalogué (`scim_exiger_le_jeton_sur`). Se lit comme le nom du tenant
+/// (`Deref<Target = str>`).
+///
+/// En production, la seule fabrique est `scim_authentifier_la_demande` : un contexte sans empreinte n'y existe pas. Les
+/// témoins qui appellent un gestionnaire directement (`ScimCtx { tenant: "t".into() }`) prennent la variante
+/// `TemoinDirect`, compilée sous `cfg(test)` seulement, qui ne relit aucun jeton.
+#[derive(Clone)]
+pub(crate) struct TenantDuJetonScim {
+    tenant: String,
+    jeton: JetonDeLaDemandeScim,
+}
+
+#[derive(Clone)]
+enum JetonDeLaDemandeScim {
+    /// L'empreinte sha256 du bearer admis par `scim_authenticate` (la clé primaire de `scim_token`).
+    Empreinte(String),
+    /// TÉMOINS SEULEMENT — un gestionnaire appelé sans passer par l'authentification.
+    #[cfg(test)]
+    TemoinDirect,
+}
+
+impl std::ops::Deref for TenantDuJetonScim {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.tenant
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for TenantDuJetonScim {
+    fn from(tenant: &str) -> Self {
+        TenantDuJetonScim { tenant: tenant.to_string(), jeton: JetonDeLaDemandeScim::TemoinDirect }
+    }
+}
+
+#[cfg(test)]
+impl From<String> for TenantDuJetonScim {
+    fn from(tenant: String) -> Self {
+        TenantDuJetonScim { tenant, jeton: JetonDeLaDemandeScim::TemoinDirect }
+    }
+}
+
+/// L'empreinte du bearer SCIM d'un en-tête `Authorization`, ou `None` (absent, vide). La même lecture pour l'admission
+/// (`scim_authenticate`) et pour le contexte qui la porte (`scim_authentifier_la_demande`).
+fn scim_empreinte_du_bearer(authz: &str) -> Option<String> {
+    let tok = authz.strip_prefix("Bearer ").map(str::trim)?;
+    (!tok.is_empty()).then(|| sha256_hex(tok.as_bytes()))
+}
+
+/// `P10.34-h` — l'admission d'une demande SCIM par `auth_guard` : `scim_authenticate` (mêmes trois issues), et le
+/// contexte qui porte le tenant ET l'empreinte du jeton admis.
+pub(crate) fn scim_authentifier_la_demande(cp: &ControlPlane, authz: &str) -> Result<Option<ScimCtx>, String> {
+    let Some(empreinte) = scim_empreinte_du_bearer(authz) else { return Ok(None) };
+    Ok(scim_authenticate(cp, authz)?
+        .map(|tenant| ScimCtx { tenant: TenantDuJetonScim { tenant, jeton: JetonDeLaDemandeScim::Empreinte(empreinte) } }))
+}
+
+/// Le refus d'un bearer SCIM absent, inconnu ou qui n'est plus valide : `401`, le même statut et le même corps à
+/// l'entrée (`auth_guard`) et au moment d'écrire (`scim_exiger_le_jeton_sur`) — un jeton retiré pendant la demande ne se
+/// distingue pas d'un jeton inconnu.
+pub(crate) fn scim_refuser_le_bearer_invalide() -> Response {
+    (StatusCode::UNAUTHORIZED, "SCIM : bearer invalide").into_response()
+}
+
+/// `P10.34-h` — le jeton de la demande n'a pas pu être RELU au moment de la servir (dans la transaction d'écriture, avant
+/// la pose d'une identité, ou sous le verrou d'une lecture, `P10.34-q`) : ni valide ni retiré n'est affirmé, et l'étape
+/// ne lit ni n'écrit rien du tenant.
+pub(crate) const CAUSE_SCIM_JETON_NON_RELU: &str =
+    "JETON NON REVÉRIFIÉ : la base du plan de contrôle n'a pas pu relire le jeton SCIM de cette demande au moment \
+     de la servir — sa validité n'est ni affirmée ni niée. Rien n'est lu ni écrit par cette étape : aucun droit n'est \
+     posé ni retiré, les accès en place restent en place. Rien n'est attesté ; la même demande peut être rejouée telle \
+     quelle.";
+
+/// `P10.34-h` — LE JETON DE LA DEMANDE TIENT-IL ENCORE ? Lu sous le verrou du plan de contrôle, sur la connexion du geste
+/// (dans sa transaction d'écriture, ou juste avant la pose d'une identité par `POST /Users`) : l'empreinte admise à
+/// l'entrée existe encore dans `scim_token`, sous le tenant de la demande, et ce tenant est au catalogue. La destruction
+/// d'un tenant efface ses jetons, sa recréation efface ceux restés sous son identifiant
+/// (`tenants::RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT`) : une demande admise avant l'une ou l'autre est refusée ici, même si
+/// le tenant recréé porte un jeton neuf. `Ok(())` ; sinon la réponse du refus : `401` (celui de l'entrée),
+/// ou `503` nommé si la lecture a échoué. Rien n'est écrit dans aucun des refus (l'appelant annule sa transaction).
+fn scim_exiger_le_jeton_sur(conn: &Connection, ctx: &ScimCtx, genre: &str) -> Result<(), Response> {
+    let empreinte = match &ctx.tenant.jeton {
+        JetonDeLaDemandeScim::Empreinte(empreinte) => empreinte,
+        #[cfg(test)]
+        JetonDeLaDemandeScim::TemoinDirect => return Ok(()),
+    };
+    match conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM scim_token s JOIN tenant t ON t.id=s.tenant_id WHERE s.hash=?1 AND s.tenant_id=?2)",
+        params![empreinte, ctx.tenant.tenant],
+        |r| r.get::<_, bool>(0),
+    ) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(scim_refuser_le_bearer_invalide()),
+        Err(e) => Err(scim_refuser_a_rejouer(genre, CAUSE_SCIM_JETON_NON_RELU, &e.to_string())),
+    }
+}
+
+/// `P10.34-q` — UNE LECTURE SCIM SERVIE SEULEMENT SI LE JETON DE LA DEMANDE TIENT ENCORE, SOUS LE MÊME VERROU
+/// (`GET /Users`, `GET /Users/{id}`, `PUT /Users/{id}` `active=true`) : un jeton d'un tenant absent, détruit ou recréé
+/// est refusé, y compris pour une demande déjà admise. Le jeton est relu
+/// (`scim_exiger_le_jeton_sur`) puis `lire` joue sur la MÊME connexion, sans relâcher le verrou : retiré, le `401` de
+/// l'entrée et rien n'est lu ; non relu, le `503` nommé. Le point de course de production
+/// `scim-jeton-relu-avant-la-lecture` est entre les deux, SOUS ce verrou : une destruction qui s'y présente attend la fin
+/// de la lecture.
+fn scim_lire_pour_la_demande<T>(cp: &ControlPlane, ctx: &ScimCtx, genre: &str, lire: impl FnOnce(&Connection) -> Result<T, Response>) -> Result<T, Response> {
+    let conn = cp.conn.lock();
+    scim_exiger_le_jeton_sur(&conn, ctx, genre)?;
+    crate::handlers::transaction_validee::point_de_course(&format!("scim-jeton-relu-avant-la-lecture:{}", cp.db_path));
+    lire(&conn)
 }
 
 /// Valide un bearer SCIM (`Authorization: Bearer <tok>`) contre `scim_token` (hash sha256) et rend le
@@ -25,16 +139,17 @@ pub(crate) struct ScimCtx {
 /// 2026-09-28 sur la forme d'avant (`.ok()`, lecture refusée) : `None`, donc `401 « bearer invalide »` sur un jeton
 /// valide — qu'un fournisseur d'identité lit comme un jeton révoqué, et qui arrête son provisionnement jusqu'à ce
 /// qu'un humain regarde, là où un `503` se rejoue.
+///
+/// `P10.34-h` — LE JETON N'AUTHENTIFIE QUE POUR UN TENANT CATALOGUÉ : la lecture joint `tenant`. Un jeton dont le
+/// tenant n'est pas au catalogue rend `Ok(None)`, le `401` d'un jeton inconnu (même statut, même corps). La jointure ne
+/// suffit pas seule : la création d'un tenant efface, dans sa transaction, les jetons restés sous son identifiant
+/// (`tenants::tenant_provision`), si bien qu'un jeton d'un tenant recréé est refusé aussi.
 pub(crate) fn scim_authenticate(cp: &ControlPlane, authz: &str) -> Result<Option<String>, String> {
-    let Some(tok) = authz.strip_prefix("Bearer ").map(str::trim) else { return Ok(None) };
-    if tok.is_empty() {
-        return Ok(None);
-    }
+    let Some(h) = scim_empreinte_du_bearer(authz) else { return Ok(None) };
     use rusqlite::OptionalExtension as _;
-    let h = sha256_hex(tok.as_bytes());
     let conn = cp.conn.lock();
     let tenant: Option<String> = conn
-        .query_row("SELECT tenant_id FROM scim_token WHERE hash=?1", params![h], |r| r.get(0))
+        .query_row("SELECT s.tenant_id FROM scim_token s JOIN tenant t ON t.id=s.tenant_id WHERE s.hash=?1", params![h], |r| r.get(0))
         .optional()
         .map_err(|e| e.to_string())?;
     if tenant.is_some() {
@@ -176,12 +291,10 @@ fn scim_avouer_la_representation_non_relue(genre: &str, cause_du_moteur: &str) -
 /// `P7.19-i` — `LIMIT 1` sans ordre, et sans arbitraire : `"grant"` a pour clé primaire
 /// `(user_id, tenant_id)` et `platform_user.id` est clé primaire, donc ce prédicat lié sur les DEUX
 /// colonnes de la clé ne peut joindre qu'AU PLUS UNE ligne. Le singleton vient du SCHÉMA.
-fn scim_nom_dans_le_tenant(cp: &ControlPlane, tenant: &str, id: &str) -> rusqlite::Result<Option<String>> {
-    scim_nom_dans_le_tenant_sur(&cp.conn.lock(), tenant, id)
-}
-
-/// `scim_nom_dans_le_tenant` sur une connexion DÉJÀ tenue (le PATCH de groupe lit dans sa transaction : le
-/// verrou du plan de contrôle n'est pas réentrant). Même prédicat, mêmes trois issues.
+///
+/// Sur une connexion DÉJÀ tenue (le verrou du plan de contrôle n'est pas réentrant) : la transaction du PATCH de groupe
+/// ou du déprovisionnement, ou le verrou sous lequel le jeton de la demande vient d'être relu (`P10.34-q`,
+/// `scim_lire_pour_la_demande`).
 fn scim_nom_dans_le_tenant_sur(conn: &Connection, tenant: &str, id: &str) -> rusqlite::Result<Option<String>> {
     use rusqlite::OptionalExtension as _;
     conn.query_row(
@@ -214,12 +327,13 @@ fn scim_user_representation(id: &str, name: &str, groups: Vec<Value>) -> Value {
 /// à l'IdP comme désactivé, et un IdP qui réconcilie peut agir sur ce faux état. `Err` = rien d'établi ;
 /// chaque appelant le dit selon ce que SON geste a déjà fait (`503` s'il n'a rien fait, `500` sinon).
 fn scim_user_resource(cp: &ControlPlane, tenant: &str, id: &str, name: &str) -> rusqlite::Result<Value> {
-    let roles: Vec<String> = {
-        let conn = cp.conn.lock();
-        let mut s = conn.prepare("SELECT role FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2")?;
-        let lus = s.query_map(params![id, tenant], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
-        lus
-    };
+    scim_user_resource_sur(&cp.conn.lock(), tenant, id, name)
+}
+
+/// `scim_user_resource` sur une connexion DÉJÀ tenue (`P10.34-q` : celle sous laquelle le jeton vient d'être relu).
+fn scim_user_resource_sur(conn: &Connection, tenant: &str, id: &str, name: &str) -> rusqlite::Result<Value> {
+    let mut s = conn.prepare("SELECT role FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2")?;
+    let roles = s.query_map(params![id, tenant], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
     let groups = roles.into_iter().map(|role| json!({ "value": role, "type": "direct" })).collect();
     Ok(scim_user_representation(id, name, groups))
 }
@@ -229,8 +343,7 @@ fn scim_user_resource(cp: &ControlPlane, tenant: &str, id: &str, name: &str) -> 
 /// dans CE tenant sont visibles (fuite cross-tenant fermée). DISTINCT : un user peut avoir plusieurs grants.
 /// `P10.21-o` — la liste est lue EN BLOC : une ligne illisible fait échouer la lecture, jamais disparaître
 /// un utilisateur (`.flatten()` l'aurait retiré en silence).
-fn scim_utilisateurs_du_tenant(cp: &ControlPlane, tenant: &str) -> rusqlite::Result<Vec<(String, String)>> {
-    let conn = cp.conn.lock();
+fn scim_utilisateurs_du_tenant_sur(conn: &Connection, tenant: &str) -> rusqlite::Result<Vec<(String, String)>> {
     let mut s = conn.prepare(
         "SELECT DISTINCT p.id, p.name FROM platform_user p \
          JOIN \"grant\" g ON g.user_id=p.id WHERE g.tenant_id=?1 ORDER BY p.name",
@@ -252,17 +365,20 @@ pub(crate) async fn scim_users_list(State(st): State<AppState>, Extension(ctx): 
     // `P10.21-o` — LA LISTE EST ENTIÈRE OU ELLE N'EST PAS SERVIE : la liste des utilisateurs ET les droits de
     // chacun. Le refus est le `503` SCIM des refus voisins, parce que le contrat `ListResponse` n'a aucun
     // champ où porter un aveu (voir `CAUSE_SCIM_LISTE_DES_UTILISATEURS_ILLISIBLE`).
-    let ids = match scim_utilisateurs_du_tenant(cp, &ctx.tenant) {
-        Ok(ids) => ids,
-        Err(e) => return scim_refuser_a_rejouer("scim.users.list", CAUSE_SCIM_LISTE_DES_UTILISATEURS_ILLISIBLE, &e.to_string()),
-    };
-    let mut resources: Vec<Value> = Vec::new();
-    for (id, name) in ids.into_iter().filter(|(_, name)| filter_name.as_ref().map(|f| f == name).unwrap_or(true)) {
-        match scim_user_resource(cp, &ctx.tenant, &id, &name) {
-            Ok(r) => resources.push(r),
-            Err(e) => return scim_refuser_a_rejouer("scim.users.list", CAUSE_SCIM_LISTE_DES_UTILISATEURS_ILLISIBLE, &e.to_string()),
+    // `P10.34-q` — le jeton relu, puis la liste et les droits de chacun, sous UN verrou (`scim_lire_pour_la_demande`).
+    let lus = scim_lire_pour_la_demande(cp, &ctx, "scim.users.list", |conn| {
+        let illisible = |e: rusqlite::Error| scim_refuser_a_rejouer("scim.users.list", CAUSE_SCIM_LISTE_DES_UTILISATEURS_ILLISIBLE, &e.to_string());
+        let ids = scim_utilisateurs_du_tenant_sur(conn, &ctx.tenant).map_err(illisible)?;
+        let mut resources: Vec<Value> = Vec::new();
+        for (id, name) in ids.into_iter().filter(|(_, name)| filter_name.as_ref().map(|f| f == name).unwrap_or(true)) {
+            resources.push(scim_user_resource_sur(conn, &ctx.tenant, &id, &name).map_err(illisible)?);
         }
-    }
+        Ok(resources)
+    });
+    let resources = match lus {
+        Ok(resources) => resources,
+        Err(refus) => return refus,
+    };
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/scim+json")],
@@ -283,14 +399,21 @@ pub(crate) async fn scim_user_get(State(st): State<AppState>, Extension(ctx): Ex
     };
     // HIGH #59 — TENANT-SCOPING : un GET pour un id qui n'a AUCUN grant dans le tenant du token -> 404
     // (identité d'un autre tenant JAMAIS révélée), même si le platform_user existe globalement.
-    match scim_nom_dans_le_tenant(cp, &ctx.tenant, &id) {
-        Ok(Some(n)) => match scim_user_resource(cp, &ctx.tenant, &id, &n) {
-            Ok(r) => (StatusCode::OK, [(header::CONTENT_TYPE, "application/scim+json")], r.to_string()).into_response(),
-            // `P10.21-o` — présent, mais ses droits n'ont pas pu être lus : ni actif, ni désactivé.
-            Err(e) => scim_refuser_a_rejouer("scim.user.get", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string()),
-        },
-        Ok(None) => scim_err(StatusCode::NOT_FOUND, "User introuvable"),
-        Err(e) => scim_refuser_a_rejouer("scim.user.get", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string()),
+    // `P10.34-q` — le jeton relu, puis le membre et ses droits, sous UN verrou (`scim_lire_pour_la_demande`).
+    match scim_lire_pour_la_demande(cp, &ctx, "scim.user.get", |conn| scim_membre_et_ses_droits_sur(conn, &ctx.tenant, &id, "scim.user.get")) {
+        Ok(r) => (StatusCode::OK, [(header::CONTENT_TYPE, "application/scim+json")], r.to_string()).into_response(),
+        Err(refus) => refus,
+    }
+}
+
+/// La représentation SCIM du membre `id` du tenant, sur une connexion DÉJÀ tenue : absent du tenant, le `404` de la
+/// RFC 7644 §3.6 ; nom ou droits illisibles, le `503` d'un utilisateur illisible (`P10.21-o` : présent mais droits non lus,
+/// ni actif ni désactivé). Partagée par `GET /Users/{id}` et `PUT /Users/{id}` `active=true`.
+fn scim_membre_et_ses_droits_sur(conn: &Connection, tenant: &str, id: &str, genre: &str) -> Result<Value, Response> {
+    match scim_nom_dans_le_tenant_sur(conn, tenant, id) {
+        Ok(Some(n)) => scim_user_resource_sur(conn, tenant, id, &n).map_err(|e| scim_refuser_a_rejouer(genre, CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string())),
+        Ok(None) => Err(scim_err(StatusCode::NOT_FOUND, "User introuvable")),
+        Err(e) => Err(scim_refuser_a_rejouer(genre, CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string())),
     }
 }
 
@@ -314,11 +437,16 @@ pub(crate) fn scim_would_orphan_last_admin(conn: &Connection, tenant: &str, uid:
 /// `P10.21-r` — POURQUOI UN DÉPROVISIONNEMENT SCIM (`PUT active=false`, `DELETE`) N'A PAS EU LIEU. Rien n'est écrit
 /// ni attesté dans aucun des cas : la transaction du geste est annulée.
 enum RefusDuDeprovisionnement {
+    /// `P10.34-h` — le jeton de la demande n'existe plus sous ce tenant (401) ou n'a pas pu être relu (503) : la réponse
+    /// de `scim_exiger_le_jeton_sur`.
+    JetonNonTenu(Response),
+    /// `P10.34-q` — le nom du membre dans le tenant n'a pas pu être lu (503, utilisateur illisible).
+    Illisible(String),
     /// Il retirerait au tenant son dernier administrateur (409).
     DernierAdministrateur,
     /// L'anti-verrouillage n'a pas pu lire (503).
     NonEtabli(String),
-    /// Présent à la lecture d'existence, plus de droit à retirer : déprovisionné entre-temps (404).
+    /// Aucun droit dans le tenant (404) : jamais membre, ou déjà déprovisionné.
     Introuvable,
     /// La base n'a pas pris le retrait (503).
     NonEcrit(String),
@@ -326,12 +454,25 @@ enum RefusDuDeprovisionnement {
 
 /// `P10.21-r` — LE DÉPROVISIONNEMENT, GARDE ET RETRAIT DANS UNE TRANSACTION : l'anti-verrouillage est lu sur la
 /// connexion du geste, puis le `DELETE` des droits est écrit et compté (`P10.21-l`), sans que le verrou soit relâché
-/// entre les deux. `Ok(())` : validé ; sinon la réponse SCIM du refus (rien d'écrit, rien d'attesté).
-fn scim_deprovisionner(cp: &ControlPlane, tenant: &str, id: &str, genre: &str, refus_409: &str) -> Result<(), Response> {
+/// entre les deux. `Ok(nom du membre)` : validé ; sinon la réponse SCIM du refus (rien d'écrit, rien d'attesté).
+///
+/// `P10.34-q` — L'EXISTENCE DU MEMBRE (#59, tenant-scopée) EST LUE ICI, APRÈS LA RELECTURE DU JETON ET DANS LA MÊME
+/// TRANSACTION (`PUT active=false`, `DELETE`) : un jeton d'un tenant absent, détruit ou recréé est refusé (`401`), y
+/// compris pour une demande déjà admise. Absent : le `404` ; illisible :
+/// le `503` d'un utilisateur illisible, jamais ce `404` (`P10.21-l` : un IdP lit un `404` comme « déjà déprovisionné »).
+fn scim_deprovisionner(cp: &ControlPlane, ctx: &ScimCtx, id: &str, genre: &str, refus_409: &str) -> Result<String, Response> {
     use crate::handlers::transaction_validee::{jouer_le_geste_garde, point_de_course, IssueDuGesteGarde as Issue};
+    let tenant: &str = &ctx.tenant;
     let issue = {
         let conn = cp.conn.lock();
         jouer_le_geste_garde(&conn, "scim", "déprovisionnement SCIM", |conn| {
+            // `P10.34-h` — le jeton de la demande est relu AVANT toute lecture ou écriture du geste.
+            scim_exiger_le_jeton_sur(conn, ctx, genre).map_err(RefusDuDeprovisionnement::JetonNonTenu)?;
+            let nom = match scim_nom_dans_le_tenant_sur(conn, tenant, id) {
+                Ok(Some(nom)) => nom,
+                Ok(None) => return Err(RefusDuDeprovisionnement::Introuvable),
+                Err(e) => return Err(RefusDuDeprovisionnement::Illisible(e.to_string())),
+            };
             match scim_would_orphan_last_admin(conn, tenant, id) {
                 Ok(false) => {}
                 Ok(true) => return Err(RefusDuDeprovisionnement::DernierAdministrateur),
@@ -339,20 +480,22 @@ fn scim_deprovisionner(cp: &ControlPlane, tenant: &str, id: &str, genre: &str, r
             }
             point_de_course(&cp.db_path);
             match EcritureDuPlanDeControle::from(conn.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![id, tenant])) {
-                EcritureDuPlanDeControle::Ecrite => Ok(()),
+                EcritureDuPlanDeControle::Ecrite => Ok(nom),
                 EcritureDuPlanDeControle::AucuneLigne => Err(RefusDuDeprovisionnement::Introuvable),
                 EcritureDuPlanDeControle::Refusee(cause) => Err(RefusDuDeprovisionnement::NonEcrit(cause)),
             }
         })
     };
     match issue {
-        Issue::Valide(()) => Ok(()),
+        Issue::Valide(nom) => Ok(nom),
+        Issue::Refuse(RefusDuDeprovisionnement::JetonNonTenu(refus)) => Err(refus),
+        Issue::Refuse(RefusDuDeprovisionnement::Illisible(cause)) => Err(scim_refuser_a_rejouer(genre, CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &cause)),
         Issue::Refuse(RefusDuDeprovisionnement::DernierAdministrateur) => Err(scim_err(StatusCode::CONFLICT, refus_409)),
         Issue::Refuse(RefusDuDeprovisionnement::NonEtabli(cause)) => {
             Err(scim_refuser_a_rejouer(genre, CAUSE_SCIM_DERNIER_ADMINISTRATEUR_NON_ETABLI, &cause))
         }
-        // Présent à la lecture, absent à l'écriture : déprovisionné entre-temps. Rien n'est retiré par CE geste, rien
-        // n'est attesté ; la RFC 7644 §3.6 veut un 404 sur une ressource déjà supprimée.
+        // Aucun droit dans ce tenant (jamais membre, ou déjà déprovisionné). Rien n'est retiré par CE geste, rien n'est
+        // attesté ; la RFC 7644 §3.6 veut un 404 sur une ressource déjà supprimée.
         Issue::Refuse(RefusDuDeprovisionnement::Introuvable) => Err(scim_err(StatusCode::NOT_FOUND, "User introuvable")),
         Issue::Refuse(RefusDuDeprovisionnement::NonEcrit(cause)) => Err(scim_refuser_a_rejouer(genre, CAUSE_SCIM_RETRAIT_DES_DROITS_NON_ECRIT, &cause)),
         Issue::NonOuvert(e) | Issue::NonValide(e) => Err(scim_refuser_a_rejouer(genre, CAUSE_SCIM_RETRAIT_DES_DROITS_NON_ECRIT, &e.to_string())),
@@ -417,13 +560,30 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
     }
     // `P10.34-h` — L'IDENTITÉ EST CELLE DU TENANT APPELANT. `ensure_platform_user` retrouvait par son nom (`UNIQUE` sur
     // toute la plateforme) le compte d'un AUTRE tenant, servait son id et lui posait le droit demandé ici.
-    // `poser_l_identite_scim` sert l'existante seulement si elle est rattachable (droit ici, provisionnée par ce
+    // `poser_l_identite_scim_conn` sert l'existante seulement si elle est rattachable (droit ici, provisionnée par ce
     // tenant, ou sans droit ni provenance nulle part), sinon crée une identité neuve dont la provenance est ce tenant
     // (is_superadmin=0, jamais un compte existant modifié). Un nom pris par une identité ÉTRANGÈRE rend `409`
     // `uniqueness` (RFC 7644 §3.3), sans son id ni rien d'écrit : l'oracle par `userName` qui en découle est accepté
     // par l'exploitant (2026-10-26). Une lecture ratée est un `503` (ni présence ni absence affirmée), jamais une
     // création ni un rattachement.
-    let id = match poser_l_identite_scim(cp, &ctx.tenant, &username) {
+    //
+    // `P10.34-h` — LE JETON EST RELU AVANT LA POSE DE L'IDENTITÉ : une demande déjà admise dont le tenant a été détruit, ou
+    // détruit puis recréé, est refusée ici (`401`), avant toute écriture.
+    //
+    // `P10.34-q` — RELECTURE ET POSE SOUS LE MÊME VERROU (`poser_l_identite_scim_conn` sur la connexion de la relecture) :
+    // aucune destruction ni recréation ne s'intercale entre les deux. Le point de course de production
+    // `scim-jeton-avant-l-identite` est AVANT ce verrou, `scim-jeton-relu-avant-l-identite` entre la relecture et la
+    // pose, SOUS ce verrou : une destruction qui s'y présente attend que l'identité soit posée.
+    crate::handlers::transaction_validee::point_de_course(&format!("scim-jeton-avant-l-identite:{}", cp.db_path));
+    let posee = {
+        let conn = cp.conn.lock();
+        if let Err(refus) = scim_exiger_le_jeton_sur(&conn, &ctx, "scim.user.provision") {
+            return refus;
+        }
+        crate::handlers::transaction_validee::point_de_course(&format!("scim-jeton-relu-avant-l-identite:{}", cp.db_path));
+        poser_l_identite_scim_conn(&conn, &ctx.tenant, &username)
+    };
+    let id = match posee {
         Ok(id) => id,
         Err(IdentiteScimNonPosee::Etrangere) => return scim_refuser_l_unicite(PHRASE_SCIM_NOM_PRIS_HORS_DU_TENANT),
         Err(IdentiteScimNonPosee::Illisible(e)) => {
@@ -441,7 +601,7 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
     // (enum fermé + rôles composables définis) dans le tenant du token. Un rôle inconnu est IGNORÉ (default-deny).
     // `P10.21-l` — un droit n'entre dans `applied` (donc au journal de contrôle) que s'il est ÉCRIT ; un
     // refus de la base rend le `503` avant toute trace. L'utilisateur, lui, reste créé : le rejeu du même
-    // POST le retrouve par son nom (`poser_l_identite_scim` : provenance de ce tenant) et repose les droits (upsert).
+    // POST le retrouve par son nom (`poser_l_identite_scim_conn` : provenance de ce tenant) et repose les droits (upsert).
     //
     // `P10.21-r` — LES DROITS DE LA DEMANDE S'ÉCRIVENT DANS UNE TRANSACTION (forme commune `jouer_le_geste_garde`), et un
     // droit qui écraserait le rôle du DERNIER administrateur effectif du tenant est refusé (409, aucun droit de la
@@ -454,8 +614,10 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
         let issue = {
             let conn = cp.conn.lock();
             jouer_le_geste_garde(&conn, "scim", "droits d'un utilisateur SCIM provisionné", |conn| -> Result<Vec<String>, Response> {
+                // `P10.34-h` — le jeton de la demande est relu AVANT le rattachement et tout droit (voir plus haut).
+                scim_exiger_le_jeton_sur(conn, &ctx, "scim.user.provision")?;
                 // `P10.34-h` — LE RATTACHEMENT EST REJUGÉ ICI, sous le verrou et dans la transaction qui écrit les droits.
-                // `poser_l_identite_scim` l'a jugé sous un AUTRE verrou, relâché depuis : entre les deux, un `PATCH add`
+                // `poser_l_identite_scim_conn` l'a jugé sous un AUTRE verrou, relâché depuis : entre les deux, un `PATCH add`
                 // d'un autre tenant peut avoir posé un droit chez lui à une identité sans droit ni provenance, et écrire
                 // ici sans rejuger laisserait des droits dans deux tenants, ce qu'aucun ordre en série n'autorise.
                 // Étrangère désormais : le `409` d'un nom pris hors du tenant, rien d'écrit ; l'identité disparue : le
@@ -482,7 +644,7 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
                     match EcritureDuPlanDeControle::from(conn.execute(
                         "INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3) \
                          ON CONFLICT(user_id,tenant_id) DO UPDATE SET role=excluded.role",
-                        params![id, ctx.tenant, role],
+                        params![id, &*ctx.tenant, role],
                     )) {
                         EcritureDuPlanDeControle::Ecrite => ecrits.push(role.clone()),
                         EcritureDuPlanDeControle::AucuneLigne => {}
@@ -523,26 +685,24 @@ pub(crate) async fn scim_user_replace(State(st): State<AppState>, Extension(ctx)
     };
     // #59 — TENANT-SCOPING de l'existence (mirroir du GET) : un id sans AUCUN grant dans le tenant
     // du token -> 404, même si le platform_user existe globalement (pas d'oracle d'existence cross-tenant).
-    let name = match scim_nom_dans_le_tenant(cp, &ctx.tenant, &id) {
-        Ok(Some(n)) => n,
-        Ok(None) => return scim_err(StatusCode::NOT_FOUND, "User introuvable"),
-        Err(e) => return scim_refuser_a_rejouer("scim.user.replace", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string()),
-    };
+    // `P10.34-q` — l'existence est lue APRÈS la relecture du jeton, sous le même verrou : dans la transaction du
+    // déprovisionnement (`active=false`), par `scim_lire_pour_la_demande` sinon.
     let active = b.get("active").and_then(|v| v.as_bool()).unwrap_or(true);
     if !active {
         // ANTI-LOCKOUT (HIGH #59) : désactiver retire TOUS les grants du user dans ce tenant. Refuser si cela
         // viderait le dernier admin (l'IdP ne doit jamais orpheliner un tenant sans admin). `P10.21-o` — une
         // lecture ratée REFUSE (503), elle ne permet plus. `P10.21-l` — LE RETRAIT EST COMPTÉ AVANT D'ÊTRE ATTESTÉ.
         // `P10.21-r` — garde et retrait dans UNE transaction, sous un seul verrou (`scim_deprovisionner`).
-        if let Err(refus) = scim_deprovisionner(
+        let name = match scim_deprovisionner(
             cp,
-            &ctx.tenant,
+            &ctx,
             &id,
             "scim.user.deprovision",
             "dernier administrateur du tenant — désactivation refusée (anti-lockout)",
         ) {
-            return refus;
-        }
+            Ok(name) => name,
+            Err(refus) => return refus,
+        };
         control_ledger_append(&st, "scim.user.deprovision", "scim", &ctx.tenant, &format!("user '{name}' (id={id}) désactivé -> grants retirés"))
             .laisser_a_l_aveu_de_la_primitive();
         // `P10.21-o` — L'ÉTAT RENDU EST CELUI QUE LE GESTE VIENT D'ÉTABLIR : le `DELETE` a retiré TOUS les
@@ -552,9 +712,9 @@ pub(crate) async fn scim_user_replace(State(st): State<AppState>, Extension(ctx)
             .into_response();
     }
     // `P10.21-o` — rien n'a été modifié : une relecture ratée est le `503` d'un utilisateur illisible.
-    match scim_user_resource(cp, &ctx.tenant, &id, &name) {
+    match scim_lire_pour_la_demande(cp, &ctx, "scim.user.replace", |conn| scim_membre_et_ses_droits_sur(conn, &ctx.tenant, &id, "scim.user.replace")) {
         Ok(r) => (StatusCode::OK, [(header::CONTENT_TYPE, "application/scim+json")], r.to_string()).into_response(),
-        Err(e) => scim_refuser_a_rejouer("scim.user.replace", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string()),
+        Err(refus) => refus,
     }
 }
 
@@ -566,17 +726,13 @@ pub(crate) async fn scim_user_delete(State(st): State<AppState>, Extension(ctx):
         return scim_err(StatusCode::NOT_FOUND, "SCIM indisponible");
     };
     // #59 — existence TENANT-SCOPÉE (mirroir du GET/PUT) : id sans grant dans ce tenant -> 404. `P10.21-l` —
-    // une lecture RATÉE n'est plus ce 404 : l'IdP lit un 404 sur un DELETE comme « déjà déprovisionné ».
-    match scim_nom_dans_le_tenant(cp, &ctx.tenant, &id) {
-        Ok(Some(_)) => {}
-        Ok(None) => return scim_err(StatusCode::NOT_FOUND, "User introuvable"),
-        Err(e) => return scim_refuser_a_rejouer("scim.user.delete", CAUSE_SCIM_UTILISATEUR_ILLISIBLE, &e.to_string()),
-    }
+    // une lecture RATÉE n'est plus ce 404 : l'IdP lit un 404 sur un DELETE comme « déjà déprovisionné ». `P10.34-q` —
+    // lue dans la transaction du déprovisionnement, après la relecture du jeton (`scim_deprovisionner`).
     // ANTI-LOCKOUT (HIGH #59) : le DELETE retire les grants du user dans ce tenant — refuser s'il viderait le
     // dernier admin (mirroir de tenants.rs/grant_delete). `P10.21-o` — une lecture ratée REFUSE (503), elle ne permet
     // plus. `P10.21-l` — même comptage que le PUT `active=false`. `P10.21-r` — garde et retrait dans UNE transaction.
     if let Err(refus) =
-        scim_deprovisionner(cp, &ctx.tenant, &id, "scim.user.deprovision", "dernier administrateur du tenant — deprovisioning refusé (anti-lockout)")
+        scim_deprovisionner(cp, &ctx, &id, "scim.user.deprovision", "dernier administrateur du tenant — deprovisioning refusé (anti-lockout)")
     {
         return refus;
     }
@@ -861,6 +1017,8 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
     let issue = {
         let conn = cp.conn.lock();
         jouer_le_geste_garde(&conn, "scim", "opérations de groupe SCIM", |conn| -> Result<(i64, i64), Response> {
+            // `P10.34-h` — le jeton de la demande est relu AVANT toute opération : retiré ou non relu, rien n'est appliqué.
+            scim_exiger_le_jeton_sur(conn, &ctx, "scim.group.patch")?;
             let (mut added, mut removed) = (0i64, 0i64);
             for (i, geste) in gestes.iter().enumerate() {
                 let membres = match geste {
@@ -930,7 +1088,7 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
                 if let GesteDeGroupeScim::Remplacer(servis) = geste {
                     let porteurs: Vec<String> = (|| -> rusqlite::Result<Vec<String>> {
                         let mut s = conn.prepare("SELECT user_id FROM \"grant\" WHERE tenant_id=?1 AND role=?2")?;
-                        let lus = s.query_map(params![ctx.tenant, role], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+                        let lus = s.query_map(params![&*ctx.tenant, role], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
                         Ok(lus)
                     })()
                     .map_err(|e| scim_refuser_a_rejouer("scim.group.patch", CAUSE_SCIM_PORTEURS_DU_ROLE_ILLISIBLES, &e.to_string()))?;

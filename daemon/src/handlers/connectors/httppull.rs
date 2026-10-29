@@ -152,6 +152,10 @@ impl HttpPullCfg {
     /// JSONPath du tableau d'enregistrements (P-HEC : le récepteur push l'utilise pour APLATIR une enveloppe
     /// CloudTrail `{"Records":[...]}` via `httppull_records`, exactement comme la voie poll). Champ sinon privé.
     pub(crate) fn records_path(&self) -> &str { &self.records_path }
+    /// `P7.20-a` — la base des pages (`url`, ou `api_root`+`path`), que `httppull_page_url` suit de ses paramètres.
+    pub(crate) fn url_de_base(&self) -> &str { &self.url }
+    /// `P7.20-a` — le point de jeton OAuth2 (`auth.token_url`), appelé tel quel par `httppull_oauth2_token`.
+    pub(crate) fn url_du_jeton(&self) -> &str { &self.auth.token_url }
     pub(crate) fn from_json(v: &Value) -> HttpPullCfg {
         let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
         // url : explicite, sinon api_root (slash final normalisé) + path.

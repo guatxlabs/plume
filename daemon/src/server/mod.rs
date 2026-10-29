@@ -57,9 +57,28 @@ pub(crate) fn etat_tls_au_demarrage() -> (bool, bool) {
 }
 
 /// `P10.32-t` — lecture du réglage `PLUME_TLS_TERMINATED_UPSTREAM` : « 1 » seul l'active ; absent, vide, « 0 »,
-/// « true », « yes »… = off. Même convention que `PLUME_HOST_STRICT`.
+/// « true », « yes »… = off.
 pub(crate) fn tls_termine_en_amont_demande(conf: &std::collections::HashMap<String, String>) -> bool {
     cfg(conf, "PLUME_TLS_TERMINATED_UPSTREAM", "0") == "1"
+}
+
+/// `P7.20-a` — L'ALLOWLIST D'HÔTE STRICTE, DÉCIDÉE AU DÉMARRAGE, ET LA LIGNE QUI LA DIT. Le défaut reste celui
+/// d'avant (non stricte : boucle locale acceptée en plus des FQDN de `PLUME_HOST`) : le rendre strict dès que
+/// `PLUME_HOST` est déclaré refuserait (421) les clients documentés qui passent par la boucle locale — preuve
+/// d'installation `curl http://127.0.0.1:7000`, agents poussés vers `127.0.0.1:7000` en Docker, et en production
+/// l'outil de déclaration des sources et le tunnel forge —, et les deux installateurs déclarent toujours `PLUME_HOST`.
+/// Ce renversement attend la mesure sur la production que la feuille de route demande. Ce qui change : l'état
+/// retenu est TOUJOURS dit au démarrage, avec le geste qui l'active. « 1 » seul active (inchangé) ; une autre valeur
+/// posée est dite comme telle. Rend (stricte, ligne de démarrage) ; la ligne ne cite que des réglages et `PLUME_HOST`.
+pub(crate) fn hote_strict_au_demarrage(conf: &HashMap<String, String>, host: &str) -> (bool, String) {
+    let strict = cfg(conf, "PLUME_HOST_STRICT", "0");
+    if strict == "1" {
+        (true, format!("[host] PLUME_HOST_STRICT=1 : allowlist Host restreinte aux FQDN de PLUME_HOST ({host}) — loopback NON auto-accepté"))
+    } else if strict.trim().is_empty() || strict == "0" {
+        (false, format!("[host] allowlist Host stricte INACTIVE : FQDN de PLUME_HOST ({host}) et loopback acceptés ; PLUME_HOST_STRICT=1 la restreint aux FQDN de PLUME_HOST"))
+    } else {
+        (false, format!("[host] PLUME_HOST_STRICT posé à une valeur autre que 1 : allowlist Host stricte INACTIVE — FQDN de PLUME_HOST ({host}) et loopback acceptés ; seule la valeur 1 l'active"))
+    }
 }
 
 /// `P10.32-t` — valeur de l'en-tête HSTS rendu (None = en-tête absent). PURE : seule source de `security_headers`.
@@ -332,9 +351,10 @@ fn boot_config() -> BootConfig {
     let pass = cfg_secret_optional(&conf, "PLUME_PASS_HASH");
     let webdir = cfg(&conf, "PLUME_WEB", "/usr/local/share/plume/web");
     let host = cfg(&conf, "PLUME_HOST", "plume.localhost");
-    // DURCISSEMENT STANDALONE — allowlist Host stricte (config-gated). DÉFAUT 0 = inchangé (loopback OK).
-    let host_strict = cfg(&conf, "PLUME_HOST_STRICT", "0") == "1";
-    if host_strict { eprintln!("[host] PLUME_HOST_STRICT=1 : allowlist Host restreinte aux FQDN de PLUME_HOST ({host}) — loopback NON auto-accepté"); }
+    // DURCISSEMENT STANDALONE — allowlist Host stricte (PLUME_HOST_STRICT=1, défaut inchangé). `P7.20-a` : l'état
+    // retenu est TOUJOURS dit au démarrage (`hote_strict_au_demarrage`).
+    let (host_strict, ligne_de_l_hote) = hote_strict_au_demarrage(&conf, &host);
+    eprintln!("{ligne_de_l_hote}");
     // SECRET-PROVIDER PHASE 1 — secret trusted-header SSO lu depuis `PLUME_SSO_HEADER_SECRET_FILE` (mount RO)
     // si posé, sinon repli env `PLUME_SSO_HEADER_SECRET` (v116). Fail-closed si le fichier configuré manque/vide
     // (ne PAS retomber en silence sur env absent -> SSO ne doit jamais s'ouvrir par défaut de secret manquant).
@@ -627,6 +647,10 @@ fn open_and_migrate_db(db_path: String, spool: String, conf: HashMap<String, Str
     knowledge_reload(&conn, &db_path); // #46 : registre des KNOWLEDGE OBJECTS (tables knowledge_*) de CE db_path (VIDE en mode 0 -> compilation GXQL byte-identique)
     knowledge_activate(&db_path); // #46 : ACTIVE ce db_path (tenant primaire) pour la compilation GXQL db-agnostique (VIDE -> byte-identique)
     seed_env_notifier(&conn, &conf);
+    // `P7.20-a` — le canal semé, inscrit sous son identifiant ; puis, APRÈS les surcouches (cibles inscrites) et lui : la
+    // politique de la garde d'égress, et les objets stockés dont la cible privée sera refusée (fil à part, non attendu).
+    crate::overlays_oac::inscrire_le_canal_de_l_environnement(&conn, &conf);
+    let _inventaire_d_egress = crate::overlays_oac::dire_l_egress_au_demarrage(&conn);
     conn
 }
 
@@ -1106,5 +1130,15 @@ pub(crate) async fn run() {
         READY.store(true, std::sync::atomic::Ordering::Relaxed); // #51 DAY-2 : migrations faites + port bindé -> /readyz 200 // #32 : listener bindé (k8s 0.0.0.0:7000) -> débloque le ANALYZE de fond
         println!("plume-daemon: bind {addr}  (host autorisé: {host})  db={db_path}");
         let _ = axum::serve(l, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await;
+    }
+}
+
+/// `P7.20-a` — l'allowlist d'hôte que le démarrage RÉEL (`boot_config`) remet à l'état, rejouée par un témoin dans un
+/// sous-processus de test. Absent du binaire livré.
+#[cfg(test)]
+pub(crate) mod temoin_de_l_hote_strict {
+    pub(crate) fn hote_retenu_par_le_demarrage() -> (bool, String) {
+        let boot = super::boot_config();
+        (boot.host_strict, boot.host)
     }
 }

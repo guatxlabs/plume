@@ -168,6 +168,8 @@ pub(crate) async fn acquerir_par_la_voie(
             Ok(j) => j,
             Err(_) => {
                 file_depuis = Some(Instant::now());
+                #[cfg(test)]
+                let _en_file = crate::semaphore_interactif::EnFileAuCouloir::entrer();
                 c.acquire_owned().await?
             }
         }),

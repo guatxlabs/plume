@@ -246,6 +246,254 @@ fn overlay_name(v: &Value) -> Option<String> {
 }
 
 // =====================================================================================================
+// `P7.20-a` — LES CIBLES D'ÉGRESS D'UN OBJET, ET CE QUE LE DÉMARRAGE EN DIT.
+// Une surcouche `config.d` est de la configuration : ses cibles sont inscrites APRÈS validation
+// et écriture comptée (`remplacer_les_cibles_de_surcouche`, la liste de la famille REMPLACÉE à chaque chargement), et la garde d'égress les
+// admet même privées sauf `PLUME_SSRF_BLOCK_PRIVATE` explicite à 1. Les mêmes fonctions disent, pour un objet stocké,
+// les URL que ses envois présenteront à la garde : l'inventaire du démarrage juge exactement celles-là.
+// =====================================================================================================
+
+fn non_vide(valeur: &str) -> Option<&str> {
+    let v = valeur.trim();
+    if v.is_empty() { None } else { Some(v) }
+}
+
+/// Cibles d'un canal (champ, cible) : `url` d'un ntfy, webhook, email ou générique ; `config.webhook_url` d'un slack
+/// (daemon/src/handlers/notifiers.rs, `notify_send`). PUR.
+pub(crate) fn cibles_d_egress_d_un_canal(kind: &str, url: &str, config: &Value) -> Vec<(&'static str, crate::ledger::CibleDeConfiguration)> {
+    use crate::ledger::CibleDeConfiguration;
+    match kind {
+        "ntfy" | "webhook" | "email" | "generic" => non_vide(url).map(|u| ("url", CibleDeConfiguration::exacte(u))).into_iter().collect(),
+        "slack" => non_vide(config.str_field("webhook_url")).map(|u| ("webhook_url", CibleDeConfiguration::exacte(u))).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Cible d'une destination : l'URL d'émission que `build_wire` présente à la garde (`cible_d_emission`). PUR.
+pub(crate) fn cibles_d_egress_d_une_destination(dtype: &str, endpoint: &str) -> Vec<(&'static str, crate::ledger::CibleDeConfiguration)> {
+    crate::handlers::destinations::cible_d_emission(dtype, endpoint.trim())
+        .and_then(|u| non_vide(&u).map(crate::ledger::CibleDeConfiguration::exacte))
+        .map(|cible| ("endpoint", cible))
+        .into_iter()
+        .collect()
+}
+
+/// Cibles d'un connecteur : la base des pages d'un `http_pull` (`url`, ou `api_root`+`path`), suivie de ses paramètres,
+/// et son point de jeton OAuth2 (`auth.token_url`) tel quel ; la base des objets d'une collection `taxii2`
+/// (`api_root`/collections/…/objects/), suivie de ses paramètres — jamais la première page entière, dont `added_after`
+/// change à chaque passage ; le point de jeton (`login_host`) tel quel et la base Graph (`graph_host`) suivie de ses
+/// paramètres d'un `defender`. PUR.
+pub(crate) fn cibles_d_egress_d_un_connecteur(ctype: &str, config: &Value) -> Vec<(&'static str, crate::ledger::CibleDeConfiguration)> {
+    use crate::ledger::CibleDeConfiguration;
+    match ctype {
+        "http_pull" => {
+            let cfg = crate::handlers::connectors::HttpPullCfg::from_json(config);
+            let mut cibles = Vec::new();
+            cibles.extend(non_vide(cfg.url_de_base()).map(|u| ("url", CibleDeConfiguration::suivie_d_une_requete(u))));
+            cibles.extend(non_vide(cfg.url_du_jeton()).map(|u| ("auth.token_url", CibleDeConfiguration::exacte(u))));
+            cibles
+        }
+        "taxii2" => {
+            let page = crate::handlers::connectors::taxii_objects_url(&crate::handlers::connectors::TaxiiCfg::from_json(config), None, None);
+            let base = page.split('?').next().unwrap_or("");
+            non_vide(base).map(|b| ("api_root", CibleDeConfiguration::suivie_d_une_requete(b))).into_iter().collect()
+        }
+        "defender" => {
+            let cfg = crate::handlers::connectors::DefenderCfg::from_json(config);
+            vec![
+                ("login_host", CibleDeConfiguration::exacte(&crate::handlers::connectors::defender_token_url(&cfg))),
+                ("graph_host", CibleDeConfiguration::suivie_d_une_requete(&crate::handlers::connectors::graph_base_url(&cfg))),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn sans_champ(cibles: Vec<(&'static str, crate::ledger::CibleDeConfiguration)>) -> Vec<crate::ledger::CibleDeConfiguration> {
+    cibles.into_iter().map(|(_, cible)| cible).collect()
+}
+
+/// `P7.20-a` — LES CIBLES DE CONFIGURATION D'UN CANAL AU MOMENT DE SON ENVOI : celles inscrites pour lui dans la base
+/// `base`, si la ligne qui émet (`kind`, `url`, `config`) les porte encore toutes et elles seules
+/// (`ssrf_cibles_de_l_objet_inchange`) ; sinon aucune, et tout est de l'API.
+pub(crate) fn cibles_de_configuration_d_un_canal(base: &str, id: i64, kind: &str, url: &str, config: &Value) -> Vec<crate::ledger::CibleDeConfiguration> {
+    crate::ledger::ssrf_cibles_de_l_objet_inchange(base, crate::ledger::FamilleDeSurcouche::Canaux, id, &sans_champ(cibles_d_egress_d_un_canal(kind, url, config)))
+}
+
+/// `P7.20-a` — les cibles de configuration d'une destination au moment de son envoi (même règle que pour un canal).
+pub(crate) fn cibles_de_configuration_d_une_destination(base: &str, id: i64, dtype: &str, endpoint: &str) -> Vec<crate::ledger::CibleDeConfiguration> {
+    crate::ledger::ssrf_cibles_de_l_objet_inchange(base, crate::ledger::FamilleDeSurcouche::Destinations, id, &sans_champ(cibles_d_egress_d_une_destination(dtype, endpoint)))
+}
+
+/// `P7.20-a` — les cibles de configuration d'un connecteur au moment de son passage (même règle que pour un canal).
+pub(crate) fn cibles_de_configuration_d_un_connecteur(base: &str, id: i64, ctype: &str, config: &Value) -> Vec<crate::ledger::CibleDeConfiguration> {
+    crate::ledger::ssrf_cibles_de_l_objet_inchange(base, crate::ledger::FamilleDeSurcouche::Connecteurs, id, &sans_champ(cibles_d_egress_d_un_connecteur(ctype, config)))
+}
+
+/// Une cible d'égress d'un objet STOCKÉ en base, lue pour l'inventaire du démarrage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CibleStockee {
+    pub(crate) genre: &'static str,
+    pub(crate) famille: crate::ledger::FamilleDeSurcouche,
+    pub(crate) id: i64,
+    pub(crate) champ: &'static str,
+    pub(crate) url: String,
+    pub(crate) requete_admise: bool,
+}
+
+/// Les trois tables lues par l'inventaire : (genre dit au journal, famille de ses inscriptions, table, lecture).
+const TABLES_DE_L_INVENTAIRE_D_EGRESS: [(&str, crate::ledger::FamilleDeSurcouche, &str, &str); 3] = [
+    ("canal", crate::ledger::FamilleDeSurcouche::Canaux, "notifier", "SELECT id, kind, COALESCE(url,''), COALESCE(config,'') FROM notifier ORDER BY id"),
+    ("destination", crate::ledger::FamilleDeSurcouche::Destinations, "destination", "SELECT id, type, COALESCE(endpoint,''), '' FROM destination ORDER BY id"),
+    ("connecteur", crate::ledger::FamilleDeSurcouche::Connecteurs, "connector", "SELECT id, type, '', COALESCE(config_json,'') FROM connector ORDER BY id"),
+];
+
+/// (lignes lues, lignes illisibles) d'une lecture de l'inventaire ; Err : la lecture n'a pas été faite en entier.
+fn lire_une_table_de_l_inventaire(conn: &Connection, sql: &str) -> rusqlite::Result<(Vec<(i64, String, String, String)>, u64)> {
+    let mut st = conn.prepare(sql)?;
+    let mut rangees = st.query([])?;
+    let mut lues = Vec::new();
+    let mut illisibles = 0u64;
+    while let Some(r) = rangees.next()? {
+        match (r.get::<_, i64>(0), r.get::<_, String>(1), r.get::<_, String>(2), r.get::<_, String>(3)) {
+            (Ok(id), Ok(sorte), Ok(url), Ok(config)) => lues.push((id, sorte, url, config)),
+            _ => illisibles += 1,
+        }
+    }
+    Ok((lues, illisibles))
+}
+
+/// Les cibles d'égress des canaux, destinations et connecteurs stockés, et les aveux de ce qui n'a pas été lu (une
+/// table refusée, des lignes ou une configuration illisibles) : ce qui n'est pas lu n'est pas jugé, et c'est dit.
+pub(crate) fn lire_les_cibles_stockees(conn: &Connection) -> (Vec<CibleStockee>, Vec<String>) {
+    let mut cibles = Vec::new();
+    let mut aveux = Vec::new();
+    for (genre, famille, table, sql) in TABLES_DE_L_INVENTAIRE_D_EGRESS {
+        let (lues, mut illisibles) = match lire_une_table_de_l_inventaire(conn, sql) {
+            Ok(lu) => lu,
+            Err(e) => {
+                aveux.push(format!("[ssrf] inventaire des cibles privées incomplet : la table {table} n'a pas pu être lue en entier ({e}) — aucun de ses objets n'est jugé"));
+                continue;
+            }
+        };
+        for (id, sorte, url, config_brute) in lues {
+            let config: Value = if config_brute.trim().is_empty() {
+                json!({})
+            } else {
+                match serde_json::from_str(&config_brute) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        illisibles += 1;
+                        continue;
+                    }
+                }
+            };
+            let de_l_objet = match famille {
+                crate::ledger::FamilleDeSurcouche::Canaux => cibles_d_egress_d_un_canal(&sorte, &url, &config),
+                crate::ledger::FamilleDeSurcouche::Destinations => cibles_d_egress_d_une_destination(&sorte, &url),
+                crate::ledger::FamilleDeSurcouche::Connecteurs => cibles_d_egress_d_un_connecteur(&sorte, &config),
+            };
+            cibles.extend(de_l_objet.into_iter().map(|(champ, cible)| CibleStockee { genre, famille, id, champ, url: cible.url, requete_admise: cible.requete_admise }));
+        }
+        if illisibles > 0 {
+            aveux.push(format!("[ssrf] inventaire des cibles privées incomplet : {illisibles} ligne(s) de {table} illisible(s), non jugée(s)"));
+        }
+    }
+    (cibles, aveux)
+}
+
+/// (hôte, port) d'une cible d'égress : `tcp://hôte:port` d'un syslog, sinon l'autorité d'une URL (même lecture que la
+/// garde). None : la garde refuse cette forme d'office (schéma), ce n'est pas un refus d'adresse privée.
+fn hote_et_port_d_une_cible_d_egress(url: &str) -> Option<(String, u16)> {
+    if url.trim().to_ascii_lowercase().starts_with("tcp://") {
+        crate::handlers::destinations::hote_et_port_syslog(url)
+    } else {
+        crate::ledger::ssrf_hote_et_port_d_une_url(url).ok()
+    }
+}
+
+/// Une ligne par cible stockée que la garde d'égress refusera pour sa SEULE adresse privée — genre, id, champ et hôte,
+/// jamais l'URL entière (elle peut porter un secret). L'origine de chaque cible est celle que l'envoi lui donnera : au
+/// regard des seules cibles inscrites pour SON objet dans la base `base`, si la ligne les porte encore toutes
+/// (`ssrf_cibles_de_l_objet_inchange`). Résout les noms : se joue hors du chemin du démarrage.
+pub(crate) fn lignes_des_cibles_privees_refusees(base: &str, cibles: &[CibleStockee]) -> Vec<String> {
+    let mut lignes = Vec::new();
+    for c in cibles {
+        let (hote, port) = match hote_et_port_d_une_cible_d_egress(&c.url) {
+            Some(hp) => hp,
+            None => continue, // refusée d'office par la garde, pour son schéma : hors de cet inventaire
+        };
+        let de_la_ligne: Vec<crate::ledger::CibleDeConfiguration> = cibles
+            .iter()
+            .filter(|autre| autre.famille == c.famille && autre.id == c.id)
+            .map(|autre| crate::ledger::CibleDeConfiguration { url: autre.url.clone(), requete_admise: autre.requete_admise })
+            .collect();
+        let inscrites = crate::ledger::ssrf_cibles_de_l_objet_inchange(base, c.famille, c.id, &de_la_ligne);
+        if crate::ledger::hote_refuse_pour_sa_seule_adresse_privee(&hote, port, crate::ledger::origine_de_l_url(&c.url, &inscrites)) {
+            lignes.push(format!(
+                "[ssrf] cible privée refusée à l'envoi : {} #{} ({}) vers l'hôte {:?} — {}",
+                c.genre, c.id, c.champ, hote, crate::ledger::LEVIERS_DU_REFUS_D_ADRESSE_PRIVEE
+            ));
+        }
+    }
+    lignes
+}
+
+/// `P7.20-a` — LA LIGNE DE JOURNAL d'un canal semé par l'environnement dont la ligne n'a pas pu être lue : rien n'est
+/// inscrit, et ses envois vers une adresse privée seront refusés jusqu'au démarrage suivant.
+pub(crate) const LIGNE_CANAL_DE_L_ENVIRONNEMENT_NON_INSCRIT: &str = "[ssrf] canal semé par PLUME_NOTIFY_NTFY_URL NON inscrit : \
+sa ligne n'a pas pu être lue — ses envois vers une adresse privée seront refusés jusqu'au prochain démarrage";
+
+/// `P7.20-a` — LE CANAL SEMÉ PAR `PLUME_NOTIFY_NTFY_URL`, INSCRIT SOUS SON IDENTIFIANT (appelé APRÈS `seed_env_notifier`,
+/// daemon/src/server/mod.rs). Son URL exacte est de configuration pour CE canal seul : la ligne `ntfy (env)` que le semis
+/// vient de poser ou de remettre (la même lecture que `seed_env_notifier`, daemon/src/seeds.rs) ; une autre URL émise par
+/// cette ligne reste de l'API. Réglage vide, ou aucune telle ligne : rien d'inscrit (une inscription d'avant est
+/// retirée). Lecture refusée : rien d'inscrit, et c'est dit (`LIGNE_CANAL_DE_L_ENVIRONNEMENT_NON_INSCRIT`, la cause
+/// du moteur à la suite).
+pub(crate) fn inscrire_le_canal_de_l_environnement(conn: &Connection, conf: &HashMap<String, String>) {
+    use rusqlite::OptionalExtension as _;
+    let base = crate::ledger::base_de(conn);
+    let url = cfg(conf, "PLUME_NOTIFY_NTFY_URL", "");
+    if url.trim().is_empty() {
+        crate::ledger::remplacer_le_canal_de_l_environnement(&base, None);
+        return;
+    }
+    let lu = conn
+        .query_row(
+            "SELECT id FROM notifier WHERE name='ntfy (env)'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional();
+    match lu {
+        Ok(Some(id)) => crate::ledger::remplacer_le_canal_de_l_environnement(&base, Some((id, crate::ledger::CibleDeConfiguration::exacte(&url)))),
+        Ok(None) => crate::ledger::remplacer_le_canal_de_l_environnement(&base, None),
+        Err(e) => {
+            crate::ledger::remplacer_le_canal_de_l_environnement(&base, None);
+            eprintln!("{LIGNE_CANAL_DE_L_ENVIRONNEMENT_NON_INSCRIT} ({e})");
+        }
+    }
+}
+
+/// `P7.20-a` — CE QUE LE DÉMARRAGE DIT DE LA GARDE D'ÉGRESS, appelé APRÈS les surcouches et le canal semé par
+/// l'environnement (daemon/src/server/mod.rs, `open_and_migrate_db`) : la politique retenue (une ligne), les aveux de
+/// lecture, puis — sur un fil à part, parce que juger un nom le résout — une ligne par objet stocké dont la cible
+/// privée sera refusée. Rend le fil (le démarrage ne l'attend pas).
+pub(crate) fn dire_l_egress_au_demarrage(conn: &Connection) -> std::thread::JoinHandle<()> {
+    eprintln!("{}", crate::ledger::ligne_de_la_politique_des_adresses_privees(crate::ledger::ssrf_politique_du_prive()));
+    let (cibles, aveux) = lire_les_cibles_stockees(conn);
+    for aveu in &aveux {
+        eprintln!("{aveu}");
+    }
+    let base = crate::ledger::base_de(conn);
+    std::thread::spawn(move || {
+        for ligne in lignes_des_cibles_privees_refusees(&base, &cibles) {
+            eprintln!("{ligne}");
+        }
+    })
+}
+
+// =====================================================================================================
 // LOADERS par type d'objet. Chacun : lit config.d/<sous-dossier>/*.json, valide (MÊMES validateurs que
 // l'API), UPSERT override-safe managed=1. Renvoie le nombre d'objets posés.
 // =====================================================================================================
@@ -255,6 +503,7 @@ fn overlay_name(v: &Value) -> Option<String> {
 pub(crate) fn load_overlay_notifiers(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
     const KINDS: &[&str] = &["ntfy", "webhook", "email", "slack", "pagerduty", "generic", "lookup"];
     let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    let mut inscrites: Vec<(i64, crate::ledger::CibleDeConfiguration)> = Vec::new(); // `P7.20-a` : inscrites APRÈS l'écriture comptée, sous l'id de la ligne écrite
     for path in fichiers {
         let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
         let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN notifier {} sans 'name' — ignoré", path.display()); ch.ignores += 1; continue } };
@@ -291,13 +540,23 @@ pub(crate) fn load_overlay_notifiers(conn: &Connection, dir: &std::path::Path) -
             ch.ignores += 1;
             continue;
         };
+        let id_du_plan = match &plan { UpsertPlan::Update(id) => Some(*id), _ => None }; // `P7.20-a` : l'id de la ligne qui sera écrite
+        let mut id_insere = 0i64; // `P7.20-a` : lu au pied de l'insertion, retenu seulement sur une écriture comptée
         let ecrit = match plan {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN notifier '{name}' : un canal UI (managed=2) du même nom existe — overlay ignoré (renommez l'un des deux)"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => conn.execute("UPDATE notifier SET kind=?1, enabled=?2, url=?3, min_severity=?4, config=?5, managed=1 WHERE id=?6", params![kind, enabled, url, min_sev, config_s, id]),
-            UpsertPlan::Insert => conn.execute("INSERT INTO notifier(name,kind,enabled,url,min_severity,config,managed) VALUES(?1,?2,?3,?4,?5,?6,1)", params![name, kind, enabled, url, min_sev, config_s]),
+            UpsertPlan::Insert => {
+                let ecrit = conn.execute("INSERT INTO notifier(name,kind,enabled,url,min_severity,config,managed) VALUES(?1,?2,?3,?4,?5,?6,1)", params![name, kind, enabled, url, min_sev, config_s]);
+                id_insere = conn.last_insert_rowid();
+                ecrit
+            }
         };
-        compter_l_ecriture_oac("notifier", &name, &path, ecrit, &mut ch);
+        if compter_l_ecriture_oac("notifier", &name, &path, ecrit, &mut ch) {
+            let id = id_du_plan.unwrap_or(id_insere); // `P7.20-a` : la ligne mise à jour, ou celle que l'insertion a rendue
+            inscrites.extend(cibles_d_egress_d_un_canal(&kind, &url, &config).into_iter().map(|(_, cible)| (id, cible)));
+        }
     }
+    crate::ledger::remplacer_les_cibles_de_surcouche(&crate::ledger::base_de(conn), crate::ledger::FamilleDeSurcouche::Canaux, inscrites);
     ch
 }
 
@@ -305,6 +564,7 @@ pub(crate) fn load_overlay_notifiers(conn: &Connection, dir: &std::path::Path) -
 /// `endpoint`/`endpoint_ref` non-secret (validé schéma+anti-metadata). `filter` = sélecteur allowlisté.
 pub(crate) fn load_overlay_destinations(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
     let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    let mut inscrites: Vec<(i64, crate::ledger::CibleDeConfiguration)> = Vec::new(); // `P7.20-a` : inscrites APRÈS l'écriture comptée, sous l'id de la ligne écrite
     for path in fichiers {
         let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
         let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN destination {} sans 'name' — ignorée", path.display()); ch.ignores += 1; continue } };
@@ -314,7 +574,9 @@ pub(crate) fn load_overlay_destinations(conn: &Connection, dir: &std::path::Path
             Some(r) => match resolve_secret_ref(r) { Ok(u) => u, Err(e) => { eprintln!("[oac] WARN destination '{name}' : endpoint_ref — {e} — ignorée"); ch.ignores += 1; continue } },
             None => v.get("endpoint").and_then(|x| x.as_str()).unwrap_or("").trim().to_string(),
         };
-        if !dest_endpoint_ok(&dtype, &endpoint) { eprintln!("[oac] WARN destination '{name}' : endpoint invalide pour type '{dtype}' — ignorée"); ch.ignores += 1; continue; }
+        // `P7.20-a` — une surcouche est de la configuration : son endpoint est jugé comme tel (adresse privée admise
+        // sauf `PLUME_SSRF_BLOCK_PRIVATE` explicite à 1), puis inscrit APRÈS l'écriture.
+        if !dest_endpoint_ok_selon(&dtype, &endpoint, crate::ledger::OrigineDeLaCible::Configuration) { eprintln!("[oac] WARN destination '{name}' : endpoint invalide pour type '{dtype}' — ignorée"); ch.ignores += 1; continue; }
         let filter_v = v.get("filter").cloned().unwrap_or_else(|| json!({}));
         if let Err(e) = DestFilter::from_json(&filter_v).validate() { eprintln!("[oac] WARN destination '{name}' : filtre invalide ({e}) — ignorée"); ch.ignores += 1; continue; }
         let mut config = v.get("config").cloned().unwrap_or_else(|| json!({}));
@@ -327,13 +589,23 @@ pub(crate) fn load_overlay_destinations(conn: &Connection, dir: &std::path::Path
             ch.ignores += 1;
             continue;
         };
+        let id_du_plan = match &plan { UpsertPlan::Update(id) => Some(*id), _ => None }; // `P7.20-a` : l'id de la ligne qui sera écrite
+        let mut id_insere = 0i64; // `P7.20-a` : lu au pied de l'insertion, retenu seulement sur une écriture comptée
         let ecrit = match plan {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN destination '{name}' : une destination UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => conn.execute("UPDATE destination SET type=?1, enabled=?2, endpoint=?3, config=?4, filter=?5, batch_max=?6, interval_s=?7, managed=1 WHERE id=?8", params![dtype, enabled, endpoint, config_s, filter_s, batch_max, interval_s, id]),
-            UpsertPlan::Insert => conn.execute("INSERT INTO destination(type,name,enabled,endpoint,config,filter,batch_max,interval_s,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9)", params![dtype, name, enabled, endpoint, config_s, filter_s, batch_max, interval_s, now()]),
+            UpsertPlan::Insert => {
+                let ecrit = conn.execute("INSERT INTO destination(type,name,enabled,endpoint,config,filter,batch_max,interval_s,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9)", params![dtype, name, enabled, endpoint, config_s, filter_s, batch_max, interval_s, now()]);
+                id_insere = conn.last_insert_rowid();
+                ecrit
+            }
         };
-        compter_l_ecriture_oac("destination", &name, &path, ecrit, &mut ch);
+        if compter_l_ecriture_oac("destination", &name, &path, ecrit, &mut ch) {
+            let id = id_du_plan.unwrap_or(id_insere); // `P7.20-a` : la ligne mise à jour, ou celle que l'insertion a rendue
+            inscrites.extend(cibles_d_egress_d_une_destination(&dtype, &endpoint).into_iter().map(|(_, cible)| (id, cible)));
+        }
     }
+    crate::ledger::remplacer_les_cibles_de_surcouche(&crate::ledger::base_de(conn), crate::ledger::FamilleDeSurcouche::Destinations, inscrites);
     ch
 }
 
@@ -342,6 +614,7 @@ pub(crate) fn load_overlay_destinations(conn: &Connection, dir: &std::path::Path
 pub(crate) fn load_overlay_connectors(conn: &Connection, dir: &std::path::Path) -> crate::overlays_adossement::Chargement {
     const TYPES: &[&str] = &["defender", "taxii2", "http_pull"];
     let (fichiers, mut ch) = crate::overlays_adossement::Chargement::ouvrir(dir, crate::overlays_adossement::est_json);
+    let mut inscrites: Vec<(i64, crate::ledger::CibleDeConfiguration)> = Vec::new(); // `P7.20-a` : inscrites APRÈS l'écriture comptée, sous l'id de la ligne écrite
     for path in fichiers {
         let v = match overlay_read_json(&path) { Some(v) => v, None => { ch.ignores += 1; continue; } };
         let name = match overlay_name(&v) { Some(n) => n, None => { eprintln!("[oac] WARN connecteur {} sans 'name' — ignoré", path.display()); ch.ignores += 1; continue } };
@@ -385,13 +658,23 @@ pub(crate) fn load_overlay_connectors(conn: &Connection, dir: &std::path::Path) 
             ch.ignores += 1;
             continue;
         };
+        let id_du_plan = match &plan { UpsertPlan::Update(id) => Some(*id), _ => None }; // `P7.20-a` : l'id de la ligne qui sera écrite
+        let mut id_insere = 0i64; // `P7.20-a` : lu au pied de l'insertion, retenu seulement sur une écriture comptée
         let ecrit = match plan {
             UpsertPlan::SkipUser => { eprintln!("[oac] WARN connecteur '{name}' : un connecteur UI (managed=2) du même nom existe — overlay ignoré"); ch.ignores += 1; continue; }
             UpsertPlan::Update(id) => conn.execute("UPDATE connector SET type=?1, enabled=?2, config_json=?3, secret=?4, interval_s=?5, env_id=?6, managed=1 WHERE id=?7", params![ctype, enabled, config_s, secret, interval_s, env_id, id]),
-            UpsertPlan::Insert => conn.execute("INSERT INTO connector(type,name,enabled,config_json,secret,interval_s,env_id,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8)", params![ctype, name, enabled, config_s, secret, interval_s, env_id, now()]),
+            UpsertPlan::Insert => {
+                let ecrit = conn.execute("INSERT INTO connector(type,name,enabled,config_json,secret,interval_s,env_id,managed,created) VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8)", params![ctype, name, enabled, config_s, secret, interval_s, env_id, now()]);
+                id_insere = conn.last_insert_rowid();
+                ecrit
+            }
         };
-        compter_l_ecriture_oac("connecteur", &name, &path, ecrit, &mut ch);
+        if compter_l_ecriture_oac("connecteur", &name, &path, ecrit, &mut ch) {
+            let id = id_du_plan.unwrap_or(id_insere); // `P7.20-a` : la ligne mise à jour, ou celle que l'insertion a rendue
+            inscrites.extend(cibles_d_egress_d_un_connecteur(&ctype, &config).into_iter().map(|(_, cible)| (id, cible)));
+        }
     }
+    crate::ledger::remplacer_les_cibles_de_surcouche(&crate::ledger::base_de(conn), crate::ledger::FamilleDeSurcouche::Connecteurs, inscrites);
     ch
 }
 

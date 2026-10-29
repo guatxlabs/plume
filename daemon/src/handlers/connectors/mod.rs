@@ -20,17 +20,32 @@ pub(crate) use httppull::*;
 pub(crate) use presets::*;
 pub(crate) use cle_de_livraison::*;
 
-/// FETCH de PRODUCTION GARDÉ SSRF : `ssrf_guard(url)` AVANT tout egress RÉEL (`http_call`),
-/// au CHOKE-POINT UNIQUE partagé par TOUS les chemins réseau des connecteurs — poll de fond
-/// (`run_due_connectors`), dry-run test (`connector_test` TAXII/Defender/http_pull) et poll manuel admin
-/// (`connector_poll`). Rejette une URL admin-configurée pointant une ClusterIP interne / metadata cloud /
-/// service d'un autre tenant AVANT la requête (défense en profondeur en SUS de la NetworkPolicy egress).
-/// Passé PAR VALEUR (fn-pointer) AU CALL-SITE : n'est JAMAIS interposé dans `poll_one_connector`/`poll_*`, donc
-/// ne gêne PAS les fetch MOCKÉS injectés en test (qui restent passés directement). Un hôte vendeur externe
-/// normal (https public) reste autorisé — voir `ssrf_guard`.
-pub(crate) fn guarded_http_call(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>) -> Result<HttpResp, String> {
-    ssrf_guard(url)?;
-    http_call(method, url, headers, body)
+/// FETCH de PRODUCTION GARDÉ SSRF : la garde AVANT tout egress RÉEL, au CHOKE-POINT UNIQUE partagé par TOUS les
+/// chemins réseau des connecteurs — poll de fond (`run_due_connectors`), dry-run test (`connector_test`
+/// TAXII/Defender/http_pull) et poll manuel admin (`connector_poll`). Rejette une URL admin-configurée pointant une
+/// ClusterIP interne / metadata cloud / service d'un autre tenant AVANT la requête (défense en profondeur en SUS de la
+/// NetworkPolicy egress). `P7.20-a` : chaque URL — 1re page, pages suivantes, `next` rendu par la réponse, point de
+/// jeton — est jugée au regard des seules cibles inscrites pour CE connecteur (`ssrf_cibles_de_l_objet` : base,
+/// famille, identifiant) ; sans inscription, de l'API. Passé AU CALL-SITE : n'est JAMAIS interposé dans
+/// `poll_one_connector`/`poll_*`, donc ne gêne PAS les fetch MOCKÉS injectés en test. Un hôte vendeur externe normal
+/// (https public) reste autorisé — voir `ssrf_guard`.
+pub(crate) fn appel_garde_d_un_connecteur(
+    cibles: &[crate::ledger::CibleDeConfiguration], method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>,
+) -> Result<HttpResp, String> {
+    crate::ledger::ssrf_guard_pour_l_objet(url, cibles)?;
+    crate::ledger::appel_reseau_apres_la_garde(method, url, headers, body)
+}
+/// Le fetch gardé de production pour un connecteur dont les cibles inscrites sont `cibles`.
+pub(crate) fn fetch_garde_de_l_objet(
+    cibles: Vec<crate::ledger::CibleDeConfiguration>,
+) -> impl Fn(&str, &str, &[(&str, &str)], Option<&[u8]>) -> Result<HttpResp, String> {
+    move |method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>| appel_garde_d_un_connecteur(&cibles, method, url, headers, body)
+}
+/// Les cibles de configuration du connecteur `id` dans la base de `conn`, pour la ligne qui passe (`ctype`,
+/// `config_json` tels que lus pour le passage) : celles inscrites pour lui, s'il les porte encore.
+pub(crate) fn cibles_inscrites_du_connecteur(conn: &Connection, id: i64, ctype: &str, config_json: &str) -> Vec<crate::ledger::CibleDeConfiguration> {
+    let config: Value = serde_json::from_str(config_json).unwrap_or_else(|_| json!({}));
+    crate::overlays_oac::cibles_de_configuration_d_un_connecteur(&crate::ledger::base_de(conn), id, ctype, &config)
 }
 
 /// POLL LOOP PAR-TENANT (#3a) — modèle de run_due_rules. Sélectionne les connecteurs DUS (enabled=1 et
@@ -85,15 +100,19 @@ pub(crate) fn run_due_connectors(db: &Arc<Mutex<Connection>>, db_path: &str) -> 
         // `P10.34-f` — l'écrivain est-il libre AVANT le passage ? `catch_unwind` n'annule rien : un panic dans le passage
         // HORS du lot d'ingestion (le lot lui-même est annulé au déroulage par son garde `TransactionDuLot`, `P10.34-g`)
         // laisserait une transaction ouverte par un autre chemin, et ce point de capture la referme.
-        let ecrivain_libre_avant = db.lock().is_autocommit();
+        // `P7.20-a` — les cibles inscrites pour CE connecteur (surcouche `config.d`), lues avec l'état de l'écrivain.
+        let (ecrivain_libre_avant, cibles) = {
+            let conn = db.lock();
+            (conn.is_autocommit(), cibles_inscrites_du_connecteur(&conn, id, &ctype, &cfg_json))
+        };
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // garde SSRF au point d'ÉGRESS RÉEL (le fetch de PRODUCTION `guarded_http_call`) — couvre
+            // garde SSRF au point d'ÉGRESS RÉEL (le fetch de PRODUCTION `fetch_garde_de_l_objet`) — couvre
             // 1re page, pagination ET l'URL `next` pilotée par la RÉPONSE (link_header/next_path, attaquant-
             // contrôlée), pour http_pull comme pour tout connecteur. En complément du confinement réseau.
             // Le wrap est AU CALL-SITE (pas dans poll_one_connector) pour ne PAS gêner les fetch mockés en test.
             // Rien en production ; sous `cfg(test)`, le crochet d'un témoin (un panic dans le passage, `P10.34-f`).
             crate::handlers::transaction_validee::point_de_course(&format!("passage-du-connecteur:{db_path}:{id}"));
-            poll_one_connector(db, db_path, id, &ctype, &cfg_json, &secret, &env_id, watermark.as_deref(), now_ts, guarded_http_call);
+            poll_one_connector(db, db_path, id, &ctype, &cfg_json, &secret, &env_id, watermark.as_deref(), now_ts, fetch_garde_de_l_objet(cibles));
         }));
         if res.is_err() {
             // Panic capturé -> pose last_run (respect interval_s) + last_error, et CONTINUE avec les autres.
@@ -435,6 +454,23 @@ pub(crate) async fn connectors_list(State(st): State<AppState>, Extension(au): E
     }
 }
 
+/// `P7.20-a` — le refus d'un connecteur SAISI PAR L'API (création, modification de `config`) dont une cible d'égress
+/// est une adresse privée : il nomme les réglages qui le lèvent.
+pub(crate) const PHRASE_ADRESSE_PRIVEE_D_UN_CONNECTEUR: &str = "connecteur refusé : adresse privée (10/8, 172.16/12, \
+192.168/16) pour un connecteur saisi par l'API — PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet \
+toute adresse privée ; un connecteur écrit en surcouche config.d est admis";
+/// `P7.20-a` — un connecteur saisi par l'API est jugé de l'API, même quand sa cible est celle d'une surcouche `config.d`
+/// (au point d'égress, seules les cibles inscrites pour CE connecteur sont admises : une ligne de l'API n'en a pas, sauf
+/// si une surcouche du même nom l'a reprise). Ses cibles sont celles que l'inventaire du démarrage juge
+/// (`cibles_d_egress_d_un_connecteur` : base des pages et point de jeton d'un `http_pull`, base des objets d'un
+/// `taxii2`, point de jeton et base Graph d'un `defender`). Ce qui ne tient pas à la seule adresse privée (schéma,
+/// never-egress, nom non résolu) reste jugé au point d'égress.
+fn connecteur_saisi_refuse_pour_son_adresse_privee(ctype: &str, config: &Value) -> bool {
+    crate::overlays_oac::cibles_d_egress_d_un_connecteur(ctype, config)
+        .iter()
+        .any(|(_, cible)| crate::ledger::refusee_pour_sa_seule_adresse_privee(&cible.url, crate::ledger::OrigineDeLaCible::Api))
+}
+
 pub(crate) async fn connector_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if !au.is_admin() {
         return forbidden("réservé admin");
@@ -472,6 +508,9 @@ pub(crate) async fn connector_create(State(st): State<AppState>, Extension(au): 
         if azure_tenant.is_empty() || client_id.is_empty() {
             return bad_req("config.azure_tenant et config.client_id requis");
         }
+    }
+    if connecteur_saisi_refuse_pour_son_adresse_privee(&ctype, &config) {
+        return bad_req(PHRASE_ADRESSE_PRIVEE_D_UN_CONNECTEUR);
     }
     let env_id = b.get("env_id").and_then(|x| x.as_str()).unwrap_or("prod").to_string();
     if !env_slug_ok(&env_id) {
@@ -533,13 +572,19 @@ pub(crate) async fn connector_update(State(st): State<AppState>, Extension(au): 
     crate::req_conn!(st, au, conn);
     // `P10.20-l` (vague AJ) — trois issues : lu, la modification suit ; absent, le 404 d'avant ; lecture ratée, 503
     // nommé AVANT toute transaction, rien n'est écrit (la forme d'avant, `.is_err()`, servait la lecture ratée en 404).
-    match conn.query_row("SELECT 1 FROM connector WHERE id=?1", params![id], |_| Ok(())).optional() {
-        Ok(Some(())) => {}
+    // `P7.20-a` — le type lu sert à juger une `config` modifiée (cibles d'égress du connecteur).
+    let ctype = match conn.query_row("SELECT type FROM connector WHERE id=?1", params![id], |r| r.get::<_, Option<String>>(0)).optional() {
+        Ok(Some(t)) => t.unwrap_or_default(),
         Ok(None) => return not_found("connecteur introuvable"),
         Err(e) => {
             let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CONNECTEUR_INCHANGE_NON_LU);
             eprintln!("[connecteurs] WARN connecteur #{id} NON lu pour la modification, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
             return refus;
+        }
+    };
+    if let Some(v) = b.get("config") {
+        if connecteur_saisi_refuse_pour_son_adresse_privee(&ctype, v) {
+            return bad_req(PHRASE_ADRESSE_PRIVEE_D_UN_CONNECTEUR);
         }
     }
     // M3 : mutation + audit fail-closed. Le `secret` (rotation client_secret) n'est JAMAIS logué -> l'audit
@@ -750,13 +795,16 @@ pub(crate) async fn connector_test(State(st): State<AppState>, Extension(au): Ex
     if !au.is_admin() {
         return forbidden("réservé admin");
     }
-    let row = {
+    let (row, cibles) = {
         crate::req_conn!(st, au, conn);
-        conn.query_row(
+        let row = conn.query_row(
             "SELECT type,config_json,secret,watermark FROM connector WHERE id=?1",
             params![id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?)),
-        ).optional()
+        ).optional();
+        // `P7.20-a` : les cibles inscrites pour CE connecteur, si la ligne lue les porte encore
+        let cibles = match &row { Ok(Some((t, c, ..))) => cibles_inscrites_du_connecteur(&conn, id, t, c), _ => Vec::new() };
+        (row, cibles)
     };
     // `P10.20-l` (vague AJ) — trois issues : lu, l'essai suit ; absent, le 404 d'avant ; lecture ratée, 503 nommé, aucun
     // essai (la forme d'avant, `.ok()`, servait la lecture ratée en 404).
@@ -775,7 +823,7 @@ pub(crate) async fn connector_test(State(st): State<AppState>, Extension(au): Ex
         let res = tokio::task::spawn_blocking(move || {
             // DRY-RUN TAXII gardé SSRF au point d'égress (même choke-point que la collecte) :
             // un `api_root` admin-configuré pointant une cible interne est refusé AVANT la requête.
-            poll_taxii(&cfg, &secret, watermark.as_deref(), guarded_http_call, 1)
+            poll_taxii(&cfg, &secret, watermark.as_deref(), fetch_garde_de_l_objet(cibles), 1)
         })
         .await
         .unwrap_or_else(|_| Err("échec interne du test".to_string()));
@@ -790,7 +838,7 @@ pub(crate) async fn connector_test(State(st): State<AppState>, Extension(au): Ex
         let cfg = HttpPullCfg::from_json(&serde_json::from_str::<Value>(&cfg_json).unwrap_or_else(|_| json!({})));
         let res = tokio::task::spawn_blocking(move || {
             // DRY-RUN aussi gardé SSRF au point d'égress (même choke-point que la collecte).
-            poll_http_pull(&cfg, &secret, watermark.as_deref(), id, guarded_http_call, 1)
+            poll_http_pull(&cfg, &secret, watermark.as_deref(), id, fetch_garde_de_l_objet(cibles), 1)
         })
         .await
         .unwrap_or_else(|_| Err("échec interne du test".to_string()));
@@ -810,7 +858,7 @@ pub(crate) async fn connector_test(State(st): State<AppState>, Extension(au): Ex
     let res = tokio::task::spawn_blocking(move || {
         // DRY-RUN Defender gardé SSRF au point d'égress (choke-point partagé) : un
         // `azure_tenant`/endpoint admin-configuré résolvant vers une cible interne est refusé AVANT la requête.
-        poll_defender(&cfg, &secret, watermark.as_deref(), id, guarded_http_call, 1)
+        poll_defender(&cfg, &secret, watermark.as_deref(), id, fetch_garde_de_l_objet(cibles), 1)
     })
     .await
     .unwrap_or_else(|_| Err("échec interne du test".to_string()));
@@ -831,16 +879,19 @@ pub(crate) async fn connector_poll(State(st): State<AppState>, Extension(au): Ex
         return forbidden("réservé admin");
     }
     // Existence dans la base du TENANT courant (req_db) — 404 sinon (jamais de poll d'un id d'un autre tenant).
-    let row = {
+    let (row, cibles) = {
         crate::req_conn!(st, au, conn);
-        conn.query_row(
+        let row = conn.query_row(
             "SELECT type,config_json,secret,env_id,watermark FROM connector WHERE id=?1",
             params![id],
             |r| Ok((
                 r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?,
             )),
-        ).optional()
+        ).optional();
+        // `P7.20-a` : les cibles inscrites pour CE connecteur, si la ligne lue les porte encore
+        let cibles = match &row { Ok(Some((t, c, ..))) => cibles_inscrites_du_connecteur(&conn, id, t, c), _ => Vec::new() };
+        (row, cibles)
     };
     // `P10.20-l` (vague AJ) — trois issues : lu, le poll suit ; absent, le 404 d'avant ; lecture ratée, 503 nommé, aucun
     // poll ni trace (la forme d'avant, `.ok()`, servait la lecture ratée en 404).
@@ -859,10 +910,10 @@ pub(crate) async fn connector_poll(State(st): State<AppState>, Extension(au): Ex
     let db_path = req_db_path(&st, &au); // registre parsers + cache IOC du tenant courant (chemin d'enrichissement http_pull)
     let now_ts = now();
     let _ = tokio::task::spawn_blocking(move || {
-        // POLL MANUEL admin gardé SSRF au point d'égress RÉEL (`guarded_http_call`), MÊME
+        // POLL MANUEL admin gardé SSRF au point d'égress RÉEL (`fetch_garde_de_l_objet`), MÊME
         // choke-point que le poll de fond : un connecteur admin-configuré vers une ClusterIP/metadata/autre-tenant
         // est refusé AVANT la requête (last_error SSRF, aucun egress). Cf. run_due_connectors.
-        poll_one_connector(&rc, &db_path, id, &ctype, &cfg_json, &secret, &env_id, watermark.as_deref(), now_ts, guarded_http_call);
+        poll_one_connector(&rc, &db_path, id, &ctype, &cfg_json, &secret, &env_id, watermark.as_deref(), now_ts, fetch_garde_de_l_objet(cibles));
     })
     .await;
     // Relit last_count/last_error écrits par poll_one_connector -> feedback (jamais le secret ni le corps HTTP).
@@ -928,4 +979,11 @@ pub(crate) async fn connector_poll(State(st): State<AppState>, Extension(au): Ex
         corps["trace_non_ecrite"] = json!(cause);
     }
     Json(corps).into_response()
+}
+
+/// Le fetch gardé SANS objet : aucune cible inscrite, tout est jugé de l'API — la forme qu'un témoin passe en
+/// pointeur de fonction (`poll_one_connector`, `poll_*`). Absent du binaire livré.
+#[cfg(test)]
+pub(crate) fn guarded_http_call(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&[u8]>) -> Result<HttpResp, String> {
+    appel_garde_d_un_connecteur(&[], method, url, headers, body)
 }

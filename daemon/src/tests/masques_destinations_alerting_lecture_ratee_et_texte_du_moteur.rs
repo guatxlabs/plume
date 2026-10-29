@@ -39,7 +39,7 @@ mod masques_destinations_alerting_lecture_ratee_et_texte_du_moteur {
     const AE3_MOTEUR_ECRITURE: &str = "registre hors d atteinte (temoin AE3)";
     const AE3_ABSENT: i64 = 987_654;
     /// L'endpoint d'une destination de fixture (adresse privée) : il ne doit paraître dans aucune ligne de ce lot.
-    const AE3_ENDPOINT: &str = "http://10.0.0.9/ae3-sortie";
+    const AE3_ENDPOINT: &str = "http://192.0.2.9/ae3-sortie";
     /// L'hôte des critères de politique et de silence : il ne doit paraître dans aucune ligne de ce lot.
     const AE3_HOTE: &str = "web-ae3-critere";
 
@@ -426,7 +426,7 @@ mod masques_destinations_alerting_lecture_ratee_et_texte_du_moteur {
             assert_eq!(ligne, &attendue, "phase ecritures : identifiant servi, geste et cause du moteur");
         }
         let toutes: Vec<String> = stderr.lines().filter(|l| est_de_ce_lot(l)).map(str::to_string).collect();
-        assert!(toutes.iter().all(|l| !l.contains(AE3_ENDPOINT) && !l.contains("10.0.0.9") && !l.contains(AE3_HOTE) && !l.contains("ae3-journal-")),
+        assert!(toutes.iter().all(|l| !l.contains(AE3_ENDPOINT) && !l.contains("192.0.2.9") && !l.contains(AE3_HOTE) && !l.contains("ae3-journal-")),
             "aucune ligne ne porte l'endpoint, les critères ni un nom : {toutes:?}");
         assert!(phase("calme").is_empty(), "le nominal et les absences n'écrivent aucune ligne : {:?}", phase("calme"));
     }

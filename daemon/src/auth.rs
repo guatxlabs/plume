@@ -118,11 +118,11 @@ pub(crate) async fn host_guard(State(st): State<AppState>, req: Request, next: N
             // PLUME_HOST peut lister plusieurs hôtes (virgule) : ex "plume.example.com,plume-ingest.example.com"
             // (chemin navigateur + chemin agent mTLS sur un SNI dédié, déclaré dans votre ingress).
             let fqdn_ok = st.host.split(',').any(|x| hp == x.trim());
-            // DURCISSEMENT STANDALONE — allowlist Host STRICTE (config-gated, PLUME_HOST_STRICT=1) :
-            // restreint l'allowlist EXACTEMENT aux FQDN de PLUME_HOST (retire l'auto-allow loopback).
-            // DÉFAUT (PLUME_HOST_STRICT=0) = comportement ACTUEL : loopback (127.0.0.1/::1/localhost)
-            // accepté en plus -> k3s + vérifs `Host: 127.0.0.1`/ClusterIP NE cassent PAS. Le mode strict
-            // est réservé au déploiement standalone exposé (un seul FQDN public attendu).
+            // DURCISSEMENT STANDALONE — allowlist Host STRICTE : restreint l'allowlist EXACTEMENT aux FQDN
+            // de PLUME_HOST (retire l'auto-allow loopback). Décidée au démarrage par `hote_strict_au_demarrage`
+            // (daemon/src/server/mod.rs, `P7.20-a` : l'état est dit au démarrage) — PLUME_HOST_STRICT=1 l'active.
+            // DÉFAUT = non stricte : loopback (127.0.0.1/::1/localhost) accepté en plus -> k3s + vérifs
+            // `Host: 127.0.0.1`/ClusterIP NE cassent PAS. Les sondes exemptées plus haut ne passent jamais par ce choix.
             if st.host_strict {
                 fqdn_ok
             } else {
@@ -2025,19 +2025,20 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     let authz = req.headers().get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
     // #59 SCIM 2.0 — provisioning IdP, auth par bearer DÉDIÉ (scim_token, control-plane), HORS du flux de
     // session. Mode 0 (control=None) -> 404 : l'endpoint n'existe PAS fonctionnellement -> mode 0 byte-
-    // identique (aucune route SCIM active sans mode 1). Bearer valide -> injecte ScimCtx{tenant} et poursuit ;
+    // identique (aucune route SCIM active sans mode 1). Bearer valide -> injecte ScimCtx (tenant + empreinte) et poursuit ;
     // invalide -> 401. Le gate rôle->permission n'est jamais contourné (SCIM mappe vers grant/valid_grant_role).
     if path.starts_with("/scim/v2/") {
         let Some(cp) = st.tenants.control.as_ref() else {
             return (StatusCode::NOT_FOUND, "SCIM indisponible (mode mono-tenant)").into_response();
         };
         // `P10.21-u` — une lecture ratée des jetons n'est pas un bearer invalide : 503 nommé, rejouable.
-        match scim_authenticate(cp, &authz) {
-            Ok(Some(tenant)) => {
-                req.extensions_mut().insert(ScimCtx { tenant });
+        // `P10.34-h` — le contexte porte l'empreinte du jeton admis : chaque transaction d'écriture SCIM la relit.
+        match crate::scim::scim_authentifier_la_demande(cp, &authz) {
+            Ok(Some(ctx)) => {
+                req.extensions_mut().insert(ctx);
                 return next.run(req).await;
             }
-            Ok(None) => return (StatusCode::UNAUTHORIZED, "SCIM : bearer invalide").into_response(),
+            Ok(None) => return crate::scim::scim_refuser_le_bearer_invalide(),
             Err(cause) => return crate::scim::scim_refuser_le_jeton_non_lu(&cause),
         }
     }

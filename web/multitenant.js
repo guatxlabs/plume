@@ -305,6 +305,16 @@ const MOTS_DU_PLAN_DE_CONTROLE = {
   dernier_administrateur_non_etabli: {
     fr: "Accès INCHANGÉ : le plan de contrôle n'a pas pu LIRE les droits d'administration de ce tenant, et ce geste pouvait lui retirer son dernier administrateur — il est REFUSÉ, rien n'a changé. Le geste peut être rejoué. Le démon en nomme la cause —",
     en: "Access UNCHANGED: the control plane could not READ this tenant's administration grants, and this gesture could have removed its last administrator — it is REFUSED, nothing changed. The gesture can be replayed. The daemon names the cause —" },
+  // `P10.34-h` (servi par le démon, lu ici) — LA CRÉATION ET LA DESTRUCTION QUE LA BASE N'A PAS PRISES. Quatre étapes chacune
+  // (`CAUSE_TENANT_NON_CREE_*`, `CAUSE_TENANT_NON_DETRUIT_*`, daemon/src/tenants.rs), refusées en cinq cent trois, transaction
+  // annulée. Une création refusée ne laisse RIEN ; une destruction refusée laisse le tenant ENTIER, alors que la ligne du
+  // journal qui l'annonce est déjà écrite : elle ne prouve pas que la destruction a eu lieu.
+  tenant_non_cree: {
+    fr: "Tenant NON CRÉÉ : la base n'a pas pris la création et l'a annulée, RIEN n'est créé — ni ligne au catalogue, ni base chiffrée. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Tenant NOT CREATED: the database did not take the creation and rolled it back, NOTHING is created — no catalogue row, no encrypted database. The gesture can be replayed. The daemon names the cause —' },
+  tenant_non_detruit: {
+    fr: "Tenant NON DÉTRUIT : la base n'a pas pris la destruction et l'a annulée, le tenant est INTACT — sa base, sa clé, ses droits et ses jetons restent en place. La ligne du journal de contrôle qui annonce cette destruction est déjà écrite : elle n'atteste pas qu'elle a eu lieu. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Tenant NOT DESTROYED: the database did not take the destruction and rolled it back, the tenant is INTACT — its database, key, grants and tokens remain in place. The control-plane ledger line announcing this destruction is already written: it does not attest that it happened. The gesture can be replayed. The daemon names the cause —' },
 };
 const motDuPlanDeControle = (cle) => (LANG === 'en' ? MOTS_DU_PLAN_DE_CONTROLE[cle].en : MOTS_DU_PLAN_DE_CONTROLE[cle].fr);
 // LE DISCRIMINANT de la destruction refusée, ancré sur l'OUVERTURE du littéral du démon
@@ -327,10 +337,17 @@ const OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT = /^DROIT NON LU, RETRAIT NON F
 // pose et au retrait d'un droit. Sa sœur SCIM (`CAUSE_SCIM_DERNIER_ADMINISTRATEUR_NON_ETABLI`) ouvre pareil et dit la même
 // chose ; elle n'est servie qu'à un fournisseur d'identité, jamais à cette console.
 const OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI = /^DERNIER ADMINISTRATEUR NON ÉTABLI(?![\p{L}\p{N}])/u;
+// `P10.34-h` — la création et la destruction non prises (`CAUSE_TENANT_NON_CREE_*`, `CAUSE_TENANT_NON_DETRUIT_*`,
+// daemon/src/tenants.rs) : une ouverture par geste, chacune commune à ses quatre étapes. Le cœur reconnaît aussi leur suite
+// (« la base n'a pas pris la transaction … ») comme une écriture refusée quelconque ; l'ouverture dit, elle, ce qui RESTE.
+const OUVERTURE_DU_TENANT_NON_CREE = /^TENANT NON CRÉÉ(?![\p{L}\p{N}])/u;
+const OUVERTURE_DU_TENANT_NON_DETRUIT = /^TENANT NON DÉTRUIT(?![\p{L}\p{N}])/u;
 // L'AIGUILLAGE D'UN REFUS PAR GESTE : la phrase servie choisit au plus une face ; aucune ne reconnaît la phrase d'un
 // autre geste, et un refus qu'aucune ne reconnaît garde la phrase du geste refusé (`phraseDuGesteRefuse`).
 const REFUS_NOMMES_DE_LA_BASCULE = [[OUVERTURE_DE_LA_BASCULE_NON_ECRITE, 'bascule_non_ecrite'], [OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE, 'tenant_non_lu_bascule']];
 const REFUS_NOMMES_DE_LA_POSE_DE_DROIT = [[OUVERTURE_DU_DROIT_NON_POSE, 'droit_non_pose'], [OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE, 'tenant_non_lu_droit'], [OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI, 'dernier_administrateur_non_etabli']];
+const REFUS_NOMMES_DE_LA_DESTRUCTION = [[OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE, 'destruction_sans_trace'], [OUVERTURE_DU_TENANT_NON_DETRUIT, 'tenant_non_detruit']];
+const REFUS_NOMMES_DU_PROVISIONNEMENT = [[OUVERTURE_DU_TENANT_NON_CREE, 'tenant_non_cree']];
 const REFUS_NOMMES_DU_RETRAIT_DE_DROIT = [[OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT, 'retrait_de_droit_non_ecrit'], [OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT, 'droit_non_lu_retrait'], [OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI, 'dernier_administrateur_non_etabli']];
 function refusNommeDuPlanDeControle(phrase, refusNommes) {
   const trouve = refusNommes.find(([ouverture]) => ouverture.test(phrase));
@@ -404,6 +421,20 @@ function avouerLeProvisionnement(j) {
   const evenement = phraseDeLEvenementDuTenantNonEcrit(j);   // `P10.30-d`
   if (evenement !== null) aveux.push(paireDeLEvenementDuTenantNonEcrit(evenement));
   poserLesAveuxDuPanneauDesTenants(aveux);
+}
+// `P10.34-h` — LE PROVISIONNEMENT REFUSÉ PARCE QUE LA BASE N'A PAS PRIS LA CRÉATION, peint dans le puits du formulaire
+// (`puitsDuRefusDUnGeste`, web/core.js) par l'aveu à deux nœuds : la face de la console, la phrase servie en texte. Rend
+// `false` sans rien peindre pour tout autre refus — l'appelant garde alors la forme partagée d'un geste refusé.
+function peindreLeProvisionnementRefuse(puits, e) {
+  if (!puits || phraseDuRefusDuSecretDesGestes(e) || phraseDUneReponseQuiNeVientPasDuDemon(e)) return false;
+  const phrase = phraseDuRefusDuDemon(e);
+  const refus = refusNommeDuPlanDeControle(phrase, REFUS_NOMMES_DU_PROVISIONNEMENT);
+  if (!refus) return false;
+  puits.replaceChildren(aveuDuRefusDuPlanDeControle(refus, phrase));
+  delete puits.dataset.refusDUnEssai;
+  puits.dataset.refusDUnGeste = refus;
+  puits.hidden = false;
+  return true;
 }
 // Un refus qui n'est pas celui de la destruction sans trace : l'avis cite ce que le démon a répondu.
 // `P10.23-q` — « Geste REFUSÉ par le démon, rien n'a changé » affirmait, sur une page de passerelle ou une demande qui n'aboutit
@@ -547,11 +578,13 @@ function direLaDestructionRefusee(e) {
   const horsDuDemon = phraseDUneReponseQuiNeVientPasDuDemon(e);   // `P10.23-q` : ni « REFUSÉE » ni « le démon a répondu — »
   if (horsDuDemon) { toast(horsDuDemon, 'bad', 9000); return; }
   const phrase = phraseDuRefusDuDemon(e);
-  if (!OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE.test(phrase)) {
+  // `P10.34-h` — la destruction que la base n'a pas prise se dit au même puits : le tenant est intact, le geste rejouable.
+  const refus = refusNommeDuPlanDeControle(phrase, REFUS_NOMMES_DE_LA_DESTRUCTION);
+  if (!refus) {
     toast(motDuPlanDeControle('destruction_refusee') + ' « ' + phrase + ' »', 'bad', 9000);
     return;
   }
-  poserLesAveuxDuPanneauDesTenants([[aveuDuRefusDuPlanDeControle('destruction_sans_trace', phrase), motDuPlanDeControle('destruction_sans_trace') + ' « ' + phrase + ' »']]);
+  poserLesAveuxDuPanneauDesTenants([[aveuDuRefusDuPlanDeControle(refus, phrase), motDuPlanDeControle(refus) + ' « ' + phrase + ' »']]);
 }
 
 // --- gestion des grants d'un tenant (super-admin : tous ; admin de tenant : le sien) — le serveur enforce ---
@@ -666,6 +699,6 @@ async function loadOperatorAudit() {
 
 
 // `P10.23-q` — la phrase d'un geste refusé et la destruction refusée, jouées par le témoin 121 sur une réponse hors du démon.
-export { phraseDuGesteRefuse, direLaDestructionRefusee };
+export { phraseDuGesteRefuse, direLaDestructionRefusee, peindreLeProvisionnementRefuse, OUVERTURE_DU_TENANT_NON_CREE, OUVERTURE_DU_TENANT_NON_DETRUIT };
 export { CLE_DE_L_EVENEMENT_DU_TENANT_NON_ECRIT, OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE, OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE, OUVERTURE_DU_DROIT_NON_POSE, OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT, OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI };
 export { CLE_DU_PREMIER_ADMINISTRATEUR_NON_POSE, OUVERTURE_DE_LA_BASCULE_NON_ECRITE, OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE, OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT, avouerLeProvisionnement, initEnvironments, initTenants, loadOperatorAudit, loadTenantsView, motDuPlanDeControle, multiTenantMode, uiIsAdmin };

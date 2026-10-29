@@ -328,7 +328,7 @@ mod commit_juge_des_derniers_sites_et_sonde_de_transaction_ouverte {
     async fn cjds_canaux_de_notification_sous_commit_refuse() {
         let (st, p) = sp_state("cjds-canaux");
         let adm = cjds_adm();
-        let canal = json!({ "kind": "webhook", "url": "http://10.0.0.9/cjds", "name": "cjds-canal" });
+        let canal = json!({ "kind": "webhook", "url": "http://192.0.2.9/cjds", "name": "cjds-canal" });
         let r = cjds_sous_commit_refuse(&st, async { notifier_create(State(st.clone()), Extension(adm.clone()), Json(canal.clone())).await.into_response() }).await;
         let [a, b] = cjds_refus_nomme(&r, CAUSE_CANAL_DE_NOTIFICATION_NON_CREE);
         cjds_juger("création de canal", &r, &[a, b,
@@ -368,7 +368,7 @@ mod commit_juge_des_derniers_sites_et_sonde_de_transaction_ouverte {
     async fn cjds_destinations_et_trace_de_l_envoi_manuel_sous_commit_refuse() {
         let (st, p) = sp_state("cjds-destinations");
         let adm = cjds_adm();
-        let sortie = json!({ "type": "webhook", "name": "cjds-sortie", "endpoint": "http://10.0.0.9/cjds", "enabled": true });
+        let sortie = json!({ "type": "webhook", "name": "cjds-sortie", "endpoint": "http://192.0.2.9/cjds", "enabled": true });
         let r = cjds_sous_commit_refuse(&st, destination_create(State(st.clone()), Extension(adm.clone()), Json(sortie.clone()))).await;
         let [a, b] = cjds_refus_nomme(&r, CAUSE_DESTINATION_NON_CREEE);
         cjds_juger("création de destination", &r, &[a, b,

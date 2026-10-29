@@ -248,12 +248,81 @@ pub(crate) fn sla_on_status_change(conn: &Connection, id: i64, new_status: &str,
 /// #39 — TICK SLA MULTI-NIVEAU : marque les breach d'ACQUITTEMENT (now>ack_due, pas encore acquitté) et de
 /// RÉSOLUTION (now>resolve_due, non terminal), une seule fois (ack_breached/resolve_breached anti re-notif),
 /// trace un item 'sla' + ledger, et notifie via les notifiers du tenant (min_severity respecté). SKIP les
-/// cases EN PAUSE (sla_paused_since NOT NULL). EARLY-RETURN si `sla_policy` VIDE -> ZÉRO travail mode 0
+/// cases EN PAUSE (sla_paused_since NOT NULL). EARLY-RETURN si aucune politique active, après UNE lecture (la porte,
+/// qui dit aussi s'il reste des échéances d'une politique inactive, alors effacées) : en mode 0, aucune écriture
 /// (miroir de escalate_overdue_cases). Séquentiel + LIMIT (budget 2 Go). Appelé dans la boucle de fond.
 /// Marqueur, chronologie ou transaction refusés : notifie QUAND MÊME, sans trace (voir `sla_multilevel_tick_par`).
 pub(crate) fn sla_multilevel_tick(db: &Arc<Mutex<Connection>>) {
-    sla_multilevel_tick_par(db, &mut notify_send);
+    sla_multilevel_tick_par(db, &mut notify_send_du_canal_qui_emet);
 }
+
+/// `P10.31-v` (vague AZ) — LE TOUR NE JUGE QUE LES ÉCHÉANCES D'UNE POLITIQUE ACTIVE. `sla_multilevel_tick_par` lisait
+/// `ack_due`/`resolve_due` d'`incident` sans joindre `sla_policy` : un dossier dont la politique est désactivée
+/// (`enabled=0`) ou supprimée (identifiant pendant) mais qui garde ses échéances — état laissé par une version antérieure
+/// aux effacements de `sla_policy_upsert`/`sla_policy_delete`, ou politique désactivée entre la sélection et le marqueur —
+/// était marqué et notifié en dépassement dès qu'une AUTRE politique restait active. Ce prédicat, posé dans les deux
+/// sélections ET dans l'écriture du marqueur, l'exclut : aucun dossier n'est marqué au nom d'une politique désactivée.
+/// LIMITE : les marqueurs `ack_breached`/`resolve_breached` déjà posés restent (un dépassement passé reste un fait).
+/// Depuis la vague BA, ces échéances sont aussi EFFACÉES en tête du tour (`ECHEANCES_D_UNE_POLITIQUE_INACTIVE`).
+pub(crate) const GOUVERNE_PAR_UNE_POLITIQUE_ACTIVE: &str =
+    "EXISTS(SELECT 1 FROM sla_policy p WHERE p.id=incident.sla_policy_id AND p.enabled=1)";
+
+/// `P10.31-v` (vague BA) — ÉCHÉANCES D'UNE POLITIQUE INACTIVE : un dossier qui porte encore `ack_due` ou `resolve_due`
+/// alors qu'aucune politique ACTIVE ne le gouverne (sa politique est désactivée, supprimée, ou il n'en porte aucune).
+/// Négation exacte de `GOUVERNE_PAR_UNE_POLITIQUE_ACTIVE`, restreinte aux dossiers qui portent une échéance. Les
+/// effacements de `sla_policy_upsert` et `sla_policy_delete` n'en laissent aucun : seul l'état laissé par une version
+/// antérieure à ces effacements (ou une désactivation écrite hors de la route) en produit.
+pub(crate) const ECHEANCES_D_UNE_POLITIQUE_INACTIVE: &str = "(ack_due IS NOT NULL OR resolve_due IS NOT NULL) \
+     AND NOT EXISTS(SELECT 1 FROM sla_policy p WHERE p.id=incident.sla_policy_id AND p.enabled=1)";
+
+/// `P10.31-v` (vague BA) — L'ÉTAT ANCIEN EST EFFACÉ, PAS SEULEMENT TU. Le tour ne jugeait plus ces échéances (vague AZ),
+/// mais elles restaient en base : la fiche du dossier les servait comme un SLA en cours et les files par assigné les
+/// comptaient en `ack_pending`. Les AVOUER aurait demandé à chaque lecteur (fiche, files, console) de rejouer la
+/// gouvernance ; les EFFACER applique la règle déjà tenue par la désactivation et la suppression d'une politique
+/// (`sla_policy_id`, `ack_due`, `resolve_due` à NULL, régime legacy ; `sla_due` intact) et rend tous les lecteurs
+/// justes d'un coup. Les marqueurs `ack_breached`/`resolve_breached` déjà posés restent (un dépassement passé est un
+/// fait). Un seul `UPDATE`, hors de toute transaction : sur un écrivain qui porte déjà la transaction d'un autre geste,
+/// rien n'est écrit (l'effacement y entrerait et suivrait son sort) ; refusé, rien n'est effacé ce tour-ci, la cause
+/// est rendue et le tour suivant réessaie. Rend le nombre de dossiers effacés.
+pub(crate) fn effacer_les_echeances_d_une_politique_inactive(conn: &Connection) -> Result<usize, String> {
+    if !conn.is_autocommit() {
+        return Err("transaction d'un autre geste pendante sur l'écrivain".to_string());
+    }
+    conn.execute(
+        &format!("UPDATE incident SET sla_policy_id=NULL, ack_due=NULL, resolve_due=NULL WHERE {}", ECHEANCES_D_UNE_POLITIQUE_INACTIVE),
+        [],
+    )
+    .map_err(|e| format!("effacement refusé : {e}"))
+}
+
+/// `P10.31-v` (vague BA) — ligne de journal de l'effacement : le nombre de dossiers et le tenant du tour, jamais un
+/// identifiant ni un titre de dossier.
+pub(crate) fn ligne_des_echeances_inactives_effacees(effaces: usize) -> String {
+    format!(
+        "[plume] chrono SLA{} : {effaces} dossier(s) portaient les échéances d'une politique désactivée ou disparue : sla_policy_id, ack_due et resolve_due effacés (régime legacy), marqueurs de dépassement conservés",
+        crate::metrics::mention_du_tenant_du_tour()
+    )
+}
+
+/// `P10.31-v` (vague BA) — ligne de journal d'un effacement refusé : le tour ne juge toujours pas ces échéances, les
+/// files par assigné ne les comptent pas, mais la fiche du dossier les montre encore jusqu'au prochain essai.
+pub(crate) fn ligne_des_echeances_inactives_non_effacees(cause: &str) -> String {
+    format!(
+        "[plume] chrono SLA{} : échéances d'une politique désactivée ou disparue NON EFFACÉES ce tour-ci (la fiche du dossier les montre encore ; nouvel essai au tour suivant) : {cause}",
+        crate::metrics::mention_du_tenant_du_tour()
+    )
+}
+
+/// `P10.31-v` (vague AZ, correction) — ÉCHÉANCE D'ACQUITTEMENT ÉCHUE À L'INSTANT `?1`, prédicat COMPLET de la sélection,
+/// relu tel quel par l'écriture du marqueur (voir `RESOLUTION_SLA_ECHUE` et le marqueur dans `sla_multilevel_tick_par`).
+pub(crate) const ACQUITTEMENT_SLA_ECHU: &str = "ack_due IS NOT NULL AND ack_breached=0 AND first_response_ts IS NULL \
+     AND sla_paused_since IS NULL AND merged_into IS NULL \
+     AND status NOT IN ('resolved','closed','contained') AND ?1 > ack_due";
+
+/// `P10.31-v` (vague AZ, correction) — ÉCHÉANCE DE RÉSOLUTION ÉCHUE À L'INSTANT `?1`, même usage.
+pub(crate) const RESOLUTION_SLA_ECHUE: &str = "resolve_due IS NOT NULL AND resolve_breached=0 \
+     AND sla_paused_since IS NULL AND merged_into IS NULL \
+     AND status NOT IN ('resolved','closed','contained') AND ?1 > resolve_due";
 
 /// `P10.20-w` — fin du `detail` d'une notification de dépassement SLA que la base n'a PAS enregistré : marqueur
 /// `ack_breached`/`resolve_breached` refusé, ou (`P10.33-k`) chronologie, `BEGIN` ou `COMMIT` refusés, qui annulent
@@ -273,7 +342,7 @@ pub(crate) const DEPASSEMENT_SLA_NON_ENREGISTRE: &str =
 /// chronologie, `BEGIN` ou `COMMIT` refusés -> rien n'est écrit, l'envoi part QUAND MÊME (un SLA réellement dépassé ne
 /// se tait pas : renvoyé à chaque tour tant que le refus dure), son `detail` finit par `DEPASSEMENT_SLA_NON_ENREGISTRE`,
 /// et le refus est compté UNE fois par tour (pas par dossier) au balayage `sla_multilevel_marqueur` (`/metrics`).
-/// L'envoyeur est injecté pour que les témoins COMPTENT les envois sans réseau ; la production passe `notify_send`.
+/// L'envoyeur est injecté pour que les témoins COMPTENT les envois sans réseau ; la production passe `notify_send_du_canal_qui_emet` (`P7.20-a`).
 #[allow(clippy::type_complexity)]
 pub(crate) fn sla_multilevel_tick_par(
     db: &Arc<Mutex<Connection>>,
@@ -281,26 +350,48 @@ pub(crate) fn sla_multilevel_tick_par(
 ) {
     use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
     let now_i = now();
-    let (ack_b, res_b, notifiers): (Vec<(i64, String, i64)>, Vec<(i64, String, i64)>, Vec<(String, String, i64, String)>) = {
+    #[allow(clippy::type_complexity)]
+    let (ack_b, res_b, notifiers, base): (Vec<(i64, String, i64)>, Vec<(i64, String, i64)>, Vec<(i64, String, String, i64, String)>, String) = {
         let conn = db.lock();
         // GATE : aucune politique -> on ne fait RIEN (pas même un scan de la table incident).
         // `P10.20-w` — une porte NON LUE n'est pas « aucune politique » : le tour est sauté, mais COMPTÉ (balayage
         // `sla_multilevel_politique`, `/metrics`), sinon des SLA réellement échus se taisent sans trace.
-        let has_policy: i64 = match conn.query_row("SELECT EXISTS(SELECT 1 FROM sla_policy WHERE enabled=1)", [], |r| r.get(0)) {
+        // `P10.31-v` (vague BA) — la MÊME lecture dit aussi s'il reste des échéances d'une politique inactive (état
+        // ancien) : sans elles, aucune écriture n'est tentée (mode 0 compris, où aucun dossier ne porte d'échéance).
+        let (has_policy, echeances_inactives): (i64, i64) = match conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM sla_policy WHERE enabled=1), EXISTS(SELECT 1 FROM incident WHERE {})",
+                ECHEANCES_D_UNE_POLITIQUE_INACTIVE
+            ),
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ) {
             Ok(v) => v,
             Err(e) => { crate::metrics::compter_un_tick_aveugle("sla_multilevel_politique", &e.to_string()); return; }
         };
+        // `P10.31-v` (vague BA) — EFFACÉES AVANT LA PORTE : une base dont TOUTES les politiques sont désactivées ou
+        // supprimées n'entre jamais plus loin, et c'est précisément là que l'état ancien survivrait.
+        if echeances_inactives != 0 {
+            match effacer_les_echeances_d_une_politique_inactive(&conn) {
+                Ok(effaces) => {
+                    if effaces > 0 {
+                        eprintln!("{}", ligne_des_echeances_inactives_effacees(effaces));
+                    }
+                }
+                Err(cause) => eprintln!("{}", ligne_des_echeances_inactives_non_effacees(&cause)),
+            }
+        }
         if has_policy == 0 {
             return;
         }
+        // `P10.31-v` (vague AZ) — SEULS LES DOSSIERS QU'UNE POLITIQUE ACTIVE GOUVERNE ENTRENT DANS LA FENÊTRE (voir
+        // `GOUVERNE_PAR_UNE_POLITIQUE_ACTIVE`) : sans ce filtre, vingt dossiers à politique désactivée ou disparue plus
+        // anciens occupaient les vingt places, le marqueur les refusait, et un dépassement réel ne sortait jamais.
         let ack_b: Vec<(i64, String, i64)> = match conn
-            .prepare(
-                "SELECT id,COALESCE(title,''),priority FROM incident \
-                 WHERE ack_due IS NOT NULL AND ack_breached=0 AND first_response_ts IS NULL \
-                   AND sla_paused_since IS NULL AND merged_into IS NULL \
-                   AND status NOT IN ('resolved','closed','contained') AND ?1 > ack_due \
-                 ORDER BY ack_due LIMIT 20",
-            )
+            .prepare(&format!(
+                "SELECT id,COALESCE(title,''),priority FROM incident WHERE {} AND {} ORDER BY ack_due LIMIT 20",
+                ACQUITTEMENT_SLA_ECHU, GOUVERNE_PAR_UNE_POLITIQUE_ACTIVE
+            ))
             .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>())
         {
             Ok(v) => v,
@@ -308,13 +399,10 @@ pub(crate) fn sla_multilevel_tick_par(
             Err(e) => { crate::metrics::compter_un_tick_aveugle("sla_multilevel", &e.to_string()); return; }
         };
         let res_b: Vec<(i64, String, i64)> = match conn
-            .prepare(
-                "SELECT id,COALESCE(title,''),priority FROM incident \
-                 WHERE resolve_due IS NOT NULL AND resolve_breached=0 \
-                   AND sla_paused_since IS NULL AND merged_into IS NULL \
-                   AND status NOT IN ('resolved','closed','contained') AND ?1 > resolve_due \
-                 ORDER BY resolve_due LIMIT 20",
-            )
+            .prepare(&format!(
+                "SELECT id,COALESCE(title,''),priority FROM incident WHERE {} AND {} ORDER BY resolve_due LIMIT 20",
+                RESOLUTION_SLA_ECHUE, GOUVERNE_PAR_UNE_POLITIQUE_ACTIVE
+            ))
             .and_then(|mut s| s.query_map(params![now_i], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>())
         {
             Ok(v) => v,
@@ -324,18 +412,19 @@ pub(crate) fn sla_multilevel_tick_par(
         if ack_b.is_empty() && res_b.is_empty() {
             return;
         }
-        let notifiers: Vec<(String, String, i64, String)> = match conn
-            .prepare("SELECT kind,url,min_severity,config FROM notifier WHERE enabled=1")
-            .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<Vec<_>>>())
+        // `P7.20-a` — l'identifiant de chaque canal et la base : ses cibles inscrites sont posées avant chaque envoi.
+        let notifiers: Vec<(i64, String, String, i64, String)> = match conn
+            .prepare("SELECT id,kind,url,min_severity,config FROM notifier WHERE enabled=1")
+            .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<Vec<_>>>())
         {
             Ok(v) => v,
             Err(e) => { crate::metrics::compter_un_tick_aveugle("sla_multilevel", &e.to_string()); return; }
         };
-        (ack_b, res_b, notifiers)
+        (ack_b, res_b, notifiers, crate::ledger::base_de(&conn))
     };
     // `P10.20-w` — marqueurs refusés CE tour-ci : (nombre de dossiers, dernière cause), comptés une fois après les boucles.
     let mut marqueurs_refuses: (usize, String) = (0, String::new());
-    let mut fire = |id: i64, title: &str, priority: i64, col: &str, kind: &str, what: &str| {
+    let mut fire = |id: i64, title: &str, priority: i64, col: &str, echu: &str, kind: &str, what: &str| {
         let sev = match priority { 1 => 4, 2 => 3, 3 => 2, _ => 1 };
         let detail = format!("Case #{id} « {title} » : SLA {what} P{priority} dépassé.");
         // `P10.20-w` — LE MARQUEUR D'ABORD, COMPTÉ : sans lui, l'envoi part avec l'aveu, mais aucune trace (voir l'en-tête).
@@ -348,8 +437,19 @@ pub(crate) fn sla_multilevel_tick_par(
         let issue = {
             let conn = db.lock();
             jouer_le_geste_garde(&conn, "caseops", &format!("dépassement SLA du dossier #{id}"), |conn| {
-                match conn.execute(&format!("UPDATE incident SET {col}=1 WHERE id=?1 AND {col}=0"), params![id]) {
-                    Ok(0) => return Err(None), // déjà marqué (ou disparu) depuis la sélection : rien à notifier ni à tracer
+                // `P10.31-v` (vague AZ) — LA SÉLECTION ENTIÈRE EST RELUE DANS L'ÉCRITURE DU MARQUEUR. La sélection est faite
+                // plus haut sous un verrou RELÂCHÉ avant les marqueurs, et chaque envoi (réseau) passe entre deux dossiers.
+                // Dans cet intervalle : une politique désactivée ou supprimée (échéances effacées dans sa transaction), une
+                // politique modifiée par la route (échéances recalculées dans le futur), un dossier résolu, acquitté, mis en
+                // pause ou fusionné laissaient le dossier déjà sélectionné marqué et NOTIFIÉ en dépassement. Le marqueur
+                // relit donc l'échéance échue au MÊME instant que la sélection (`echu`, `?1`) ET la gouvernance.
+                match conn.execute(
+                    &format!("UPDATE incident SET {col}=1 WHERE id=?2 AND {echu} AND {}", GOUVERNE_PAR_UNE_POLITIQUE_ACTIVE),
+                    params![now_i, id],
+                ) {
+                    // déjà marqué, disparu, plus échu ou plus gouverné par une politique active depuis la sélection : rien à
+                    // notifier ni à tracer.
+                    Ok(0) => return Err(None),
                     Ok(_) => {}
                     Err(e) => return Err(Some(e.to_string())),
                 }
@@ -376,18 +476,19 @@ pub(crate) fn sla_multilevel_tick_par(
                 format!("{detail} {DEPASSEMENT_SLA_NON_ENREGISTRE}")
             }
         };
-        for (nk, url, minsev, cfg) in &notifiers {
+        for (nid, nk, url, minsev, cfg) in &notifiers {
             if sev >= *minsev {
                 let config: Value = serde_json::from_str(cfg).unwrap_or_else(|_| json!({}));
+                let _canal = crate::handlers::notifiers::canal_qui_emet(crate::overlays_oac::cibles_de_configuration_d_un_canal(&base, *nid, nk, url, &config));
                 let _ = envoyer(nk, url, &config, sev, &format!("SLA {what} : {title}"), &detail_envoye, "", now_i);
             }
         }
     };
     for (id, title, pr) in &ack_b {
-        fire(*id, title, *pr, "ack_breached", "case.sla_ack_breach", "acquittement (MTTA)");
+        fire(*id, title, *pr, "ack_breached", ACQUITTEMENT_SLA_ECHU, "case.sla_ack_breach", "acquittement (MTTA)");
     }
     for (id, title, pr) in &res_b {
-        fire(*id, title, *pr, "resolve_breached", "case.sla_resolve_breach", "résolution (MTTR)");
+        fire(*id, title, *pr, "resolve_breached", RESOLUTION_SLA_ECHUE, "case.sla_resolve_breach", "résolution (MTTR)");
     }
     if marqueurs_refuses.0 > 0 {
         crate::metrics::compter_une_escalade_notifiee_non_enregistree("sla_multilevel_marqueur", marqueurs_refuses.0, &marqueurs_refuses.1);
@@ -808,12 +909,17 @@ pub(crate) fn case_links_json(conn: &Connection, id: i64) -> Value {
 /// multi-niveau : ack_due dépassé, pas acquitté), breach (ack/resolve breach), waiting (en pause). Un bucket
 /// `(none)` agrège les non-assignés. Lecture pure agrégée (GROUP BY) sur `incident` (human-scale). #39.
 /// Borne des files par assigné (`P11.22-g`) : nommée, rendue, lue avec sa ligne excédentaire.
+/// `P10.31-v` (vague BA) — `ack_pending` ne compte qu'une échéance qu'une politique ACTIVE gouverne (même prédicat que
+/// `GOUVERNE_PAR_UNE_POLITIQUE_ACTIVE`, lu par le tour) : une échéance d'une politique désactivée ou disparue, que le
+/// tour ne juge pas et qu'il efface (`effacer_les_echeances_d_une_politique_inactive`), n'y entre plus, y compris
+/// avant son effacement ou quand celui-ci est refusé.
 pub(crate) const CASE_QUEUES_WINDOW: i64 = 500;
 pub(crate) fn case_queues_json(conn: &Connection, now_i: i64) -> Value {
     let sql = "SELECT COALESCE(NULLIF(assignee,''),'(none)') AS who, \
                COUNT(*) AS open, \
                SUM(CASE WHEN sla_due IS NOT NULL AND ?1>sla_due THEN 1 ELSE 0 END) AS overdue, \
-               SUM(CASE WHEN ack_due IS NOT NULL AND ?1>ack_due AND first_response_ts IS NULL AND sla_paused_since IS NULL THEN 1 ELSE 0 END) AS ack_pending, \
+               SUM(CASE WHEN ack_due IS NOT NULL AND ?1>ack_due AND first_response_ts IS NULL AND sla_paused_since IS NULL \
+                        AND EXISTS(SELECT 1 FROM sla_policy p WHERE p.id=incident.sla_policy_id AND p.enabled=1) THEN 1 ELSE 0 END) AS ack_pending, \
                SUM(CASE WHEN ack_breached=1 OR resolve_breached=1 THEN 1 ELSE 0 END) AS breach, \
                SUM(CASE WHEN status='waiting' THEN 1 ELSE 0 END) AS waiting \
                FROM incident \

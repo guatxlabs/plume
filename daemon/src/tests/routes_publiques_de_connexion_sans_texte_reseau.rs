@@ -306,7 +306,7 @@ mod routes_publiques_de_connexion_sans_texte_reseau {
         (
             "798",
             "pub(crate) async fn oidc_callback(",
-            "let jwks = match tokio::task::spawn_blocking(move || fetch_json(&jwks_url)).await {
+            "let jwks = match tokio::task::spawn_blocking(move || jwks_du_fournisseur(&cfg_jwks, &jwks_url)).await {
                 Ok(Ok(j)) => j,
                 Ok(Err(e)) => return servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_JWKS_INDISPONIBLE, \"connexion OIDC\", fournisseur.id, \"JWKS\", &e),
                 Err(_) => return server_err(\"échec interne (jwks)\"),

@@ -202,14 +202,48 @@ fn deny_multitenant() -> Response {
     err_json(StatusCode::NOT_IMPLEMENTED, "IdP/MFA via l'UI réservé au mode mono-tenant (control-plane : voir la roadmap #2)")
 }
 
-/// GET JSON via le client HTTP interne (rustls/ring). Corps jamais mis dans une erreur.
-fn fetch_json(url: &str) -> Result<Value, String> {
-    ssrf_guard(url)?; // discovery OIDC + jwks_uri sont pilotés par la config IdP -> garde SSRF (anti 169.254/interne/rebind)
-    let resp = http_call("GET", url, &[("Accept", "application/json")], None)?;
+/// GET JSON via le client HTTP interne (rustls/ring). Corps jamais mis dans une erreur. `P7.20-a` : la garde SSRF
+/// (anti 169.254/interne/rebind) juge l'URL selon l'ORIGINE que l'appelant a décidée — celle d'un fournisseur pour la
+/// découverte (`discovery_url`, dérivée de l'issuer écrit par l'administrateur), `origine_d_un_endpoint_oidc` pour les
+/// JWKS.
+fn fetch_json(url: &str, origine: crate::ledger::OrigineDeLaCible) -> Result<Value, String> {
+    crate::ledger::ssrf_guard_selon_l_origine(url, origine)?;
+    let resp = crate::ledger::appel_reseau_apres_la_garde("GET", url, &[("Accept", "application/json")], None)?;
     if !(200..300).contains(&resp.status) {
         return Err(format!("HTTP {} (discovery/jwks)", resp.status));
     }
     serde_json::from_slice(&resp.body).map_err(|_| "réponse non-JSON".to_string())
+}
+
+/// `P7.20-a` (revue de sécurité) — L'ORIGINE D'UN ENDPOINT OIDC QUE LE DÉMON APPELLE (JWKS, point de jeton). Seule
+/// l'adresse ÉCRITE par l'administrateur est de la configuration : l'endpoint posé dans la configuration du fournisseur
+/// (`ecrit`, non vide et identique à l'endpoint résolu). Un endpoint rendu par le DOCUMENT DE DÉCOUVERTE — une réponse
+/// réseau, pas une saisie — n'en relève que s'il partage l'hôte et le port de `discovery_url` ; ailleurs il est jugé
+/// comme une saisie de l'API (une adresse privée y est refusée par défaut). L'origine d'un fournisseur est celle du
+/// site unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` (daemon/src/ledger.rs).
+pub(crate) fn origine_d_un_endpoint_oidc(ecrit: &str, resolu: &str, discovery_url: &str) -> crate::ledger::OrigineDeLaCible {
+    use crate::ledger::{ssrf_hote_et_port_d_une_url, OrigineDeLaCible, ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA};
+    if !ecrit.trim().is_empty() && ecrit.trim() == resolu.trim() {
+        return ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA;
+    }
+    match (ssrf_hote_et_port_d_une_url(resolu), ssrf_hote_et_port_d_une_url(discovery_url)) {
+        (Ok(endpoint), Ok(decouverte)) if endpoint == decouverte => ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA,
+        _ => OrigineDeLaCible::Api,
+    }
+}
+
+/// `P7.20-a` — les JWKS du fournisseur, jugés selon l'origine de leur endpoint (`origine_d_un_endpoint_oidc`).
+pub(crate) fn jwks_du_fournisseur(cfg: &OidcCfg, jwks_url: &str) -> Result<Value, String> {
+    fetch_json(jwks_url, origine_d_un_endpoint_oidc(&cfg.jwks_uri, jwks_url, &cfg.discovery_url()))
+}
+
+/// `P7.20-a` — l'échange du code au point de jeton (le secret ne transite QUE dans ce corps POST), jugé selon l'origine
+/// de l'endpoint (`origine_d_un_endpoint_oidc`).
+pub(crate) fn echange_au_point_de_jeton(cfg: &OidcCfg, token_url: &str, body: &str) -> Result<HttpResp, String> {
+    crate::ledger::ssrf_guard_selon_l_origine(token_url, origine_d_un_endpoint_oidc(&cfg.token_endpoint, token_url, &cfg.discovery_url()))?;
+    crate::ledger::appel_reseau_apres_la_garde(
+        "POST", token_url, &[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")], Some(body.as_bytes()),
+    )
 }
 
 /// Pose les cookies de session (plume_session HttpOnly + plume_csrf) sur une réponse — MÊME construction
@@ -768,9 +802,11 @@ pub(crate) fn refus_de_l_echange_de_code(fournisseur_id: i64, statut_de_l_idp: u
 }
 
 /// Résout les endpoints OIDC : discovery si nécessaire (endpoints non tous overridés). Blocking (rare).
-fn oidc_endpoints_for(cfg: &OidcCfg) -> Result<OidcEndpoints, String> {
+pub(crate) fn oidc_endpoints_for(cfg: &OidcCfg) -> Result<OidcEndpoints, String> {
     let need_discovery = cfg.authorization_endpoint.is_empty() || cfg.token_endpoint.is_empty() || cfg.jwks_uri.is_empty();
-    let discovery = if need_discovery { Some(fetch_json(&cfg.discovery_url())?) } else { None };
+    // `P7.20-a` — la découverte vise `discovery_url`, dérivée de l'issuer écrit par l'administrateur : l'origine d'un
+    // fournisseur (site unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`).
+    let discovery = if need_discovery { Some(fetch_json(&cfg.discovery_url(), crate::ledger::ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA)?) } else { None };
     oidc_resolve_endpoints(cfg, discovery.as_ref())
 }
 
@@ -865,10 +901,8 @@ pub(crate) async fn oidc_callback(
     // 4) Échange du code -> id_token (le secret ne transite QUE dans ce corps POST). Réseau -> spawn_blocking.
     let body = oidc_token_body(&cfg, code, &verifier, &fournisseur.secret);
     let token_url = ep.token_endpoint.clone();
-    let tok_resp = match tokio::task::spawn_blocking(move || {
-        ssrf_guard(&token_url)?; // le token_endpoint (config/discovery) est un égress -> garde SSRF
-        http_call("POST", &token_url, &[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")], Some(body.as_bytes()))
-    }).await {
+    let cfg_jeton = cfg.clone();
+    let tok_resp = match tokio::task::spawn_blocking(move || echange_au_point_de_jeton(&cfg_jeton, &token_url, &body)).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => return servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_ECHANGE_DE_CODE_ECHOUE, "connexion OIDC", fournisseur.id, "échange de code", &e),
         Err(_) => return server_err("échec interne (token)"),
@@ -885,7 +919,8 @@ pub(crate) async fn oidc_callback(
     };
     // 5) JWKS + validation signature/iss/aud/exp/nonce (fail-closed). Réseau -> spawn_blocking.
     let jwks_url = ep.jwks_uri.clone();
-    let jwks = match tokio::task::spawn_blocking(move || fetch_json(&jwks_url)).await {
+    let cfg_jwks = cfg.clone();
+    let jwks = match tokio::task::spawn_blocking(move || jwks_du_fournisseur(&cfg_jwks, &jwks_url)).await {
         Ok(Ok(j)) => j,
         Ok(Err(e)) => return servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_JWKS_INDISPONIBLE, "connexion OIDC", fournisseur.id, "JWKS", &e),
         Err(_) => return server_err("échec interne (jwks)"),

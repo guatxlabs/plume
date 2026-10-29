@@ -266,7 +266,7 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
         let (st, p) = sp_state("bdrn-canaux");
         let adm = bdrn_adm();
         let ed = sp_au("alice", "editor");
-        let canal = json!({ "kind": "webhook", "url": "http://10.0.0.9/bdrn", "name": "bdrn-canal" });
+        let canal = json!({ "kind": "webhook", "url": "http://192.0.2.9/bdrn", "name": "bdrn-canal" });
         let mut manquent: Vec<String> = Vec::new();
 
         // Le rôle.
@@ -656,7 +656,7 @@ mod begin_des_routes_nomme_refus_nommes_et_federation_tracee {
             "steps": [{ "name": "s1", "query": "search source=auth outcome=fail", "min_count": 3 },
                       { "name": "s2", "query": "search source=auth outcome=success", "min_count": 1 }] });
         let reference = json!({ "name": "bdrn-base", "query": "search source=auth | stats count by host", "entity_field": "host", "entity_type": "host" });
-        let sortie = json!({ "type": "webhook", "name": "bdrn-sortie", "endpoint": "http://10.0.0.9/bdrn", "enabled": true });
+        let sortie = json!({ "type": "webhook", "name": "bdrn-sortie", "endpoint": "http://192.0.2.9/bdrn", "enabled": true });
 
         let rid = bdrn_creer("la règle", rule_create(State(st.clone()), Extension(adm.clone()), Json(regle.clone())).await).await;
         let pid = bdrn_creer("le parseur", parser_create(State(st.clone()), Extension(adm.clone()), Json(parseur.clone())).await).await;

@@ -155,7 +155,7 @@ where
     if cfg.azure_tenant.is_empty() || cfg.client_id.is_empty() {
         return Err("config Defender incomplète (azure_tenant/client_id)".into());
     }
-    let url = format!("https://{}/{}/oauth2/v2.0/token", cfg.login_host, cfg.azure_tenant);
+    let url = defender_token_url(cfg);
     let body = format!(
         "grant_type=client_credentials&client_id={}&client_secret={}&scope=https%3A%2F%2Fgraph.microsoft.com%2F.default",
         url_encode(&cfg.client_id), url_encode(secret)
@@ -172,20 +172,28 @@ where
         .ok_or_else(|| "access_token absent de la réponse".to_string())
 }
 
+/// `P7.20-a` — le point de jeton OAuth2 que `defender_token` appelle (`login_host`, `azure_tenant`).
+pub(crate) fn defender_token_url(cfg: &DefenderCfg) -> String {
+    format!("https://{}/{}/oauth2/v2.0/token", cfg.login_host, cfg.azure_tenant)
+}
+
+/// `P7.20-a` — la base Graph des pages (`graph_host`, ressource) : `graph_first_url` la suit de sa requête, et
+/// `@odata.nextLink` en est la suite quand Graph pagine sur la même ressource.
+pub(crate) fn graph_base_url(cfg: &DefenderCfg) -> String {
+    let resource_path = if cfg.resource == "incidents" { "incidents" } else { "alerts_v2" };
+    format!("https://{}/v1.0/security/{resource_path}", cfg.graph_host)
+}
+
 /// URL Graph du 1er page (borne watermark). Cold-start (watermark None) -> now - lookback_days. La valeur du
 /// $filter est percent-encodée (espaces/`:` -> pas de request-line cassée) ; les pages suivantes réutilisent
 /// `@odata.nextLink` tel quel.
 pub(crate) fn graph_first_url(cfg: &DefenderCfg, watermark: Option<&str>) -> String {
-    let resource_path = if cfg.resource == "incidents" { "incidents" } else { "alerts_v2" };
     let wm = match watermark {
         Some(w) if !w.is_empty() => w.to_string(),
         _ => epoch_to_iso8601(now() - cfg.lookback_days * 86400),
     };
     let filter = format!("lastUpdateDateTime gt {wm}");
-    format!(
-        "https://{}/v1.0/security/{resource_path}?$filter={}&$orderby=lastUpdateDateTime&$top=100",
-        cfg.graph_host, url_encode(&filter)
-    )
+    format!("{}?$filter={}&$orderby=lastUpdateDateTime&$top=100", graph_base_url(cfg), url_encode(&filter))
 }
 
 /// Borne dure de pages par tick (budget mémoire/CPU) — le reste est repris au tick suivant (watermark avancé).

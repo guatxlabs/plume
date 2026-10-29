@@ -101,7 +101,7 @@ pub(crate) fn read_day_parquet(path: &Path, pass: &str) -> Result<Vec<ColdRow>, 
 //
 // BORNE RAM (budget 2 Gio) : ≈ degré × (UN fichier déchiffré ~32 Mio + ses lignes en-fenêtre matérialisées, <=
 // COLD_FILE_MAX_ROWS) + buffer de réordonnancement (<= degré fichiers) + le plafond hydraté (`cold_hydrate_row_cap`,
-// = PLUME_QUERY_MAX). Degré défaut CONSERVATEUR (`min(available_parallelism-2, 4)` clampé >= 1) -> le plancher
+// = PLUME_QUERY_MAX, ou la borne de l'export plus une ligne sonde, plafond dur 100 000 plus une). Degré défaut CONSERVATEUR (`min(available_parallelism-2, 4)` clampé >= 1) -> le plancher
 // 2 Gio tient. Un « gros jour » ne fait PAS exploser la RAM : il fait PLUS de fichiers bornés, pas de fichiers
 // plus gros (invariant writer P2b), donc chaque unité par-fichier reste bornée.
 
@@ -123,12 +123,17 @@ const COLD_EVENT_DDL: &str = "CREATE TABLE cold_event(\
      message TEXT, fields TEXT, dedup TEXT, env_id TEXT, origin TEXT, engagement_id TEXT, \
      src_ip TEXT, dst_ip TEXT, url TEXT, xff TEXT)";
 
-/// PLAFOND de lignes HYDRATÉES (fail-safe) = MÊME budget que le row-cap des requêtes HOT interactives
-/// (`PLUME_QUERY_MAX` dans query_exec : défaut 5000, borné ]0, 100000]). Au-delà -> TRONCATURE + signal
-/// (`ColdHydrate.truncated=true`), JAMAIS une réponse incomplète silencieuse. SOURCE unique dupliquée VOLONTAI-
-/// REMENT (query_exec n'expose pas d'accesseur) ; garder les deux synchronisés.
+/// PLAFOND de lignes HYDRATÉES (fail-safe) = le plafond de lignes de la lecture qui s'exécute sur CE fil, lu à la
+/// MÊME source que le cœur (`query_exec::plafond_de_lignes_de_ce_fil`) : `PLUME_QUERY_MAX` pour une lecture
+/// interactive (défaut 5000, borné ]0, 100000]) ; sous `sous_le_plafond_de_l_export`, le plus grand de
+/// `PLUME_QUERY_MAX` et de la borne de l'export PLUS UNE ligne sonde (`P10.32-r`,
+/// `query_exec::plafond_d_hydratation_froide_de_ce_fil`) : la borne seule ne laissait jamais voir au cœur qu'il
+/// restait une ligne, et la borne ne descend jamais sous `PLUME_QUERY_MAX`, car elle limite les lignes rendues, pas
+/// les lignes lues. La borne RAM reste celle du plafond dur de 100 000 lignes, plus une. Au-delà -> TRONCATURE
+/// + signal (`ColdHydrate.truncated=true`), JAMAIS une réponse incomplète silencieuse. Appelée sur le fil de
+/// l'appelant (hors des décodeurs du pool).
 pub(super) fn cold_hydrate_row_cap() -> usize {
-    std::env::var("PLUME_QUERY_MAX").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0 && n <= 100_000).unwrap_or(5000)
+    crate::query_exec::plafond_d_hydratation_froide_de_ce_fil()
 }
 
 /// Degré de parallélisme du LECTEUR cold (#18 P2b, PARTAGÉ avec le décode vectorisé P6) — knob
@@ -885,7 +890,7 @@ pub(crate) fn hydrate_cold(
 // le rollup-route dès que la fenêtre atteint sous `B` -> l'agrégat est calculé sur le BRUT hot∪cold (cold_event)
 // = COMPLET, jamais un résultat tronqué à la seule fenêtre couverte par les rollups.
 //
-// BORNE RAM (budget 2 Gio) : l'ensemble cold hydraté est PLAFONNÉ (`cold_hydrate_row_cap` = PLUME_QUERY_MAX) et
+// BORNE RAM (budget 2 Gio) : l'ensemble cold hydraté est PLAFONNÉ (`cold_hydrate_row_cap` = PLUME_QUERY_MAX ou borne de l'export) et
 // copié dans une TABLE TEMP -> l'union tourne sur (event HOT indexé par ts) ∪ (table temp bornée) sous le budget
 // interactif existant. Le support des objets TEMP et du trieur est celui décidé par `sqlite_plafond` — et ce
 // support est la RAM AU DÉFAUT (`temp_store=MEMORY`, cf. `mot_temp_store`) : ce n'est donc PAS lui qui borne
@@ -1199,9 +1204,16 @@ fn open_cold_union_avec(
     let lo = if q_from > 0 { q_from } else { plus_ancien_jour_scelle(&conn)?.unwrap_or(hi) };
 
     // (4) TABLE TEMP cold_event (schéma == event live). `P10.29-w` — premier énoncé sur la base quand la fenêtre est
-    // bornée : une base occupée y est notée `Occupee` (`texte_de_la_voie_froide`). Les énoncés suivants sur `main`
-    // (préparation de l'insertion, vue d'union) restent sur `pe` : une occupation n'y survient qu'entre deux énoncés
-    // d'une connexion qui a déjà lu le schéma, ce qu'aucun témoin ne produit sans un point d'arrêt dans ce code.
+    // bornée : une base occupée y est notée `Occupee` (`texte_de_la_voie_froide`). HORS D'ATTEINTE pour une occupation,
+    // et laissés sur `pe` : la préparation de l'insertion et l'insertion dans `cold_event`, puis la vue d'union (étapes
+    // (5) et (6)). Ces énoncés n'écrivent que la base TEMPORAIRE, privée à cette connexion, et le schéma de `main` est
+    // déjà chargé par cette DDL : ils ne prennent aucun verrou sur la base partagée, donc un autre écrivain ne peut pas
+    // les faire échouer en base occupée (aucune connexion du démon n'ouvre de cache partagé, seule source de LOCKED
+    // entre connexions). Une base prise entre deux énoncés se rencontre au premier énoncé suivant qui lit `main` : la
+    // requête de l'appelant, classée `Occupee` par le cœur (`EchecDeRequete::du_moteur`). Témoin : un écrivain prend la
+    // base en verrou EXCLUSIF au point exact de chacune de ces étapes, sur une base en journal de rollback (où ce verrou
+    // bloque tout lecteur : une sonde le constate) ; l'union se monte et la route sert le 503 de la base OCCUPÉE, jamais
+    // celui de la base illisible (`tests/export_froid_coupe_a_sa_borne_et_union_occupee.rs`).
     let temp_ddl = COLD_EVENT_DDL.replacen("CREATE TABLE", "CREATE TEMP TABLE", 1);
     conn.execute_batch(&temp_ddl).map_err(crate::query_exec::texte_de_la_voie_froide)?;
 
@@ -1246,6 +1258,8 @@ fn open_cold_union_avec(
             truncated |= hy.truncated;
             // Copie hy.conn.cold_event -> conn.cold_event (temp), plafond GLOBAL (multi-env borné au même cap).
             let mut sel = hy.conn.prepare(&format!("SELECT {cols_csv} FROM cold_event ORDER BY id")).map_err(pe)?;
+            #[cfg(test)]
+            crate::query_exec::crochet_de_l_union_froide::passer(db_path, crate::query_exec::crochet_de_l_union_froide::Etape::AvantLInsertion);
             let mut ins = conn.prepare(&format!("INSERT INTO cold_event({cols_csv}) VALUES({placeholders})")).map_err(pe)?;
             let mut rows = sel.query([]).map_err(pe)?;
             while let Some(r) = rows.next().map_err(pe)? {
@@ -1266,6 +1280,8 @@ fn open_cold_union_avec(
     // (6) VUE TEMP `event` = union masquée-parité, SHADOWANT `main.event`. `boundary` est un i64 interne
     // (jamais d'entrée utilisateur) -> inliné sans risque d'injection.
     let proj = union_proj(&deny);
+    #[cfg(test)]
+    crate::query_exec::crochet_de_l_union_froide::passer(db_path, crate::query_exec::crochet_de_l_union_froide::Etape::AvantLaVue);
     let view_sql = format!(
         "CREATE TEMP VIEW {UNION_SHADOWED_TABLE} AS \
            SELECT {proj} FROM main.{UNION_SHADOWED_TABLE} WHERE ts >= {boundary} \

@@ -442,10 +442,10 @@ mod compte_au_journal_du_second_facteur_et_refus_de_l_echange_de_code {
     }
 
     /// Tout ce qui va de l'appel au point de jeton à la lecture de sa réponse, dans `oidc_callback`, EN ENTIER.
-    const AG1_ECHANGE_JUSQU_A_SA_LECTURE: &str = "let tok_resp = match tokio::task::spawn_blocking(move || { \
-         ssrf_guard(&token_url)?; // le token_endpoint (config/discovery) est un égress -> garde SSRF \
-         http_call(\"POST\", &token_url, &[(\"Content-Type\", \"application/x-www-form-urlencoded\"), (\"Accept\", \"application/json\")], Some(body.as_bytes())) \
-         }).await { Ok(Ok(r)) => r, \
+    /// `P7.20-a` (vague AZ) : la garde et l'appel au point de jeton sont dans `echange_au_point_de_jeton`, qui juge
+    /// l'origine de l'endpoint (un endpoint de découverte hors de l'hôte de l'issuer est jugé de l'API) ; le bloc suit.
+    const AG1_ECHANGE_JUSQU_A_SA_LECTURE: &str = "let tok_resp = match tokio::task::spawn_blocking(move || \
+         echange_au_point_de_jeton(&cfg_jeton, &token_url, &body)).await { Ok(Ok(r)) => r, \
          Ok(Err(e)) => return servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_ECHANGE_DE_CODE_ECHOUE, \"connexion OIDC\", fournisseur.id, \"échange de code\", &e), \
          Err(_) => return server_err(\"échec interne (token)\"), }; \
          if !(200..300).contains(&tok_resp.status) { return refus_de_l_echange_de_code(fournisseur.id, tok_resp.status); }";

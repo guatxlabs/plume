@@ -369,8 +369,9 @@ les statistiques de la réponse, et la console le dit. Sans tier froid, il ne to
 
 **Avec le tier froid actif** (binaire construit avec `cold_tier`, `PLUME_COLD_TIER=1`) et une fenêtre
 qui descend dans le froid, la première puce ne tient plus toujours. Un des chemins de lecture recopie
-les lignes froides de la fenêtre dans une table temporaire, **au plus `PLUME_QUERY_MAX` lignes**, puis
-exécute la requête sur cette copie. Quand la recopie a atteint ce plafond :
+les lignes froides de la fenêtre dans une table temporaire, **au plus `PLUME_QUERY_MAX` lignes** (pour
+l'export complet, `/api/export` : au plus `PLUME_QUERY_MAX` ou sa borne et une ligne de plus, le plus grand
+des deux, voir la fin de cette section), puis exécute la requête sur cette copie. Quand la recopie a atteint ce plafond :
 
 - une requête dont **chaque étage est par événement** — `where`, `head`, `limit`, `eval`, `rex`,
   `rename`, `table`, `fields`, et rien d'autre — rend des lignes vraies, en nombre incomplet, avec
@@ -390,7 +391,9 @@ d'abord ; le message du refus les détaille. Pour obtenir une réponse là où l
 - **resserrer la fenêtre** jusqu'à ce que la recopie tienne sous le plafond — l'ensemble lu redevient
   complet ;
 - **relever `PLUME_QUERY_MAX`**, jusqu'à `100000` et pas au-delà (ci-dessus) : les lignes recopiées
-  sont tenues en mémoire, c'est donc la mémoire du démon qui paie.
+  sont tenues en mémoire, c'est donc la mémoire du démon qui paie. Un export recopie au moins autant
+  de lignes, et davantage quand sa borne (`PLUME_EXPORT_MAX`, ou le `limit` de la demande) plus une
+  ligne dépasse `PLUME_QUERY_MAX` ; le message du refus nomme le plafond qui s'est appliqué.
 
 **Parcourir toutes les lignes par curseur.** Le premier appel porte `"keyset": true` ; la réponse rend
 `next_cursor` (et `has_more`) ; l'appel suivant renvoie ce `next_cursor` **tel quel** dans le champ
@@ -410,8 +413,16 @@ curl -sS -u admin -H 'Content-Type: application/json' https://soc.example.org/ap
 secondes depuis l'époque Unix.
 
 `PLUME_QUERY_MAX` est lu dans l'**environnement** du démon seul, pas dans le fichier de configuration :
-sur un hôte, il se pose par un drop-in de `plume-daemon.service`. L'export complet ne devrait obéir qu'à
-sa propre borne ; qu'il subisse aussi celle-ci est ouvert sous `P10.32-r`.
+sur un hôte, il se pose par un drop-in de `plume-daemon.service`.
+
+**L'export complet** (`/api/export`) n'obéit pas à `PLUME_QUERY_MAX` : il n'obéit qu'à sa propre borne,
+`PLUME_EXPORT_MAX` (lu dans l'environnement aussi ; défaut `50000`, et une valeur hors de `1` à `100000` rend ce défaut), ou le `limit`
+de la demande s'il est plus petit, tier froid compris. Quand l'export s'arrête à cette borne, la réponse
+le dit : `x-plume-truncated: 1`, un nom de fichier qui porte `-TRONQUE-`, et `x-plume-export-borne`, qui
+vaut la borne appliquée. Sans `x-plume-export-borne`, une coupure dite par `x-plume-truncated` vient
+d'ailleurs : plafond du pré-agrégé ; recopie froide arrêtée à son plafond quand un filtre ou un `head`
+appliqué après la recopie laisse moins de lignes que la borne ; froid non lu, que dit aussi
+`x-plume-cold-coverage: cold_coverage_unread`.
 
 ---
 

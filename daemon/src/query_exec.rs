@@ -1450,6 +1450,74 @@ pub(crate) fn avant_la_preparation_de_ce_fil(f: Option<Box<dyn FnMut()>>) {
     AVANT_LA_PREPARATION.with(|h| *h.borrow_mut() = f);
 }
 
+/// Plafond DUR de lignes rendues par une lecture : ni `PLUME_QUERY_MAX` ni la borne de l'export ne le franchissent
+/// (garde-fou mémoire et transfert).
+pub(crate) const PLAFOND_DUR_DES_LIGNES_RENDUES: usize = 100_000;
+
+thread_local! {
+    /// `P10.32-r` — borne de l'export complet, posée par `sous_le_plafond_de_l_export` pour la durée de son exécution
+    /// sur CE fil. `None` : le plafond des lectures interactives (`PLUME_QUERY_MAX`) s'applique.
+    static PLAFOND_DE_L_EXPORT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// `P10.32-r` — exécute `f` sous la borne de l'export complet : le cœur (`run_on_conn`, chemin chaud comme union
+/// chaud∪froid, qui s'exécutent sur le fil de l'appelant) plafonne alors les lignes à `plafond`, borné par
+/// `PLAFOND_DUR_DES_LIGNES_RENDUES`, et non plus à `PLUME_QUERY_MAX`. La borne précédente du fil est remise à la
+/// sortie, panique comprise : un fil bloquant réutilisé ne garde jamais la borne d'un export pour la lecture suivante.
+pub(crate) fn sous_le_plafond_de_l_export<T>(plafond: usize, f: impl FnOnce() -> T) -> T {
+    struct Remise(Option<usize>);
+    impl Drop for Remise {
+        fn drop(&mut self) {
+            let precedente = self.0;
+            PLAFOND_DE_L_EXPORT.with(|c| c.set(precedente));
+        }
+    }
+    let plafond = plafond.min(PLAFOND_DUR_DES_LIGNES_RENDUES);
+    let _remise = Remise(PLAFOND_DE_L_EXPORT.with(|c| c.replace(Some(plafond))));
+    f()
+}
+
+/// Le plafond de lignes de la lecture qui s'exécute sur CE fil : la borne de l'export si elle est posée, sinon
+/// `PLUME_QUERY_MAX` (défaut 5000, borné à ]0, `PLAFOND_DUR_DES_LIGNES_RENDUES`]). Lu par le cœur (`run_on_conn`) ET par
+/// l'hydratation froide (`cold_store::reader::cold_hydrate_row_cap`) : sous un export, le froid se lit jusqu'à la borne
+/// de l'export, pas jusqu'à `PLUME_QUERY_MAX`.
+pub(crate) fn plafond_de_lignes_de_ce_fil() -> usize {
+    borne_de_l_export_de_ce_fil().unwrap_or_else(plafond_interactif_des_lignes)
+}
+
+/// `PLUME_QUERY_MAX` (défaut 5000, borné à ]0, `PLAFOND_DUR_DES_LIGNES_RENDUES`]), plafond d'une lecture interactive.
+fn plafond_interactif_des_lignes() -> usize {
+    // Forme d'une INSTRUCTION terminée par `.unwrap_or(<défaut>);` : l'instrument 143 du harnais console y lit le défaut
+    // de `PLUME_QUERY_MAX` pour le comparer à celui que la console écrit.
+    let plafond_interactif: usize =
+        std::env::var("PLUME_QUERY_MAX").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0 && n <= PLAFOND_DUR_DES_LIGNES_RENDUES).unwrap_or(5000);
+    plafond_interactif
+}
+
+/// `P10.32-r` — la borne de l'export complet posée sur CE fil par `sous_le_plafond_de_l_export` (déjà bornée par
+/// `PLAFOND_DUR_DES_LIGNES_RENDUES`), `None` hors d'un export.
+pub(crate) fn borne_de_l_export_de_ce_fil() -> Option<usize> {
+    PLAFOND_DE_L_EXPORT.with(|c| c.get())
+}
+
+/// `P10.32-r` — le plafond de l'HYDRATATION FROIDE sur CE fil, c'est-à-dire des lignes LUES en entrée. Hors d'un
+/// export : `PLUME_QUERY_MAX`. Sous un export : le plus grand de `PLUME_QUERY_MAX` et de la borne PLUS UNE ligne, borné
+/// par le plafond dur plus une ligne.
+///  * La ligne de plus : le cœur ne dit l'export coupé à sa borne (`stats.truncated`, d'où `x-plume-export-borne`) que
+///    s'il voit la ligne sonde du `LIMIT borne+1` ; une union froide hydratée à la borne seule ne la porte jamais.
+///  * Jamais sous `PLUME_QUERY_MAX` : la borne limite les lignes RENDUES, pas les lignes lues. Hydraté à la borne
+///    seule, un export plus étroit que `PLUME_QUERY_MAX` refusait en 422 un agrégat que `/api/query` sert, et un export
+///    filtré (`| where`, appliqué après la recopie) rendait moins de lignes vraies, jusqu'à zéro.
+/// Les lignes en trop ne sont jamais rendues : le `LIMIT borne+1` de l'export et le cœur s'arrêtent à la borne.
+#[cfg_attr(not(feature = "cold_tier"), allow(dead_code))]
+pub(crate) fn plafond_d_hydratation_froide_de_ce_fil() -> usize {
+    let plafond_interactif = plafond_interactif_des_lignes();
+    match borne_de_l_export_de_ce_fil() {
+        Some(borne) => plafond_interactif.max(borne + 1).min(PLAFOND_DUR_DES_LIGNES_RENDUES + 1),
+        None => plafond_interactif,
+    }
+}
+
 pub(crate) fn run_query(db_path: &str, sql: &str) -> Result<Value, String> {
     // budget AUTO par défaut (panneaux/pagination/refresh/règles) + aucune annulation client (pas de qid).
     run_query_ex(db_path, sql, query_budget_ms(), None)
@@ -1527,7 +1595,9 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
         let ncol = cols.len();
         // plafond anti-DoS, CONFIGURABLE (PLUME_QUERY_MAX) -> "voir jusqu'où on peut". La pagination UI
         // affiche par tranches, donc le DOM tient même à 5000. Borné à 100k (garde-fou mémoire/transfert).
-        let max_rows: usize = std::env::var("PLUME_QUERY_MAX").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0 && n <= 100_000).unwrap_or(5000);
+        // `P10.32-r` : l'export complet remplace ce plafond par SA borne, le temps de son exécution, sur CE fil
+        // (`sous_le_plafond_de_l_export`) ; toute autre lecture garde PLUME_QUERY_MAX.
+        let max_rows: usize = plafond_de_lignes_de_ce_fil();
         let mut out: Vec<Value> = Vec::new();
         let mut truncated = false;
         // `stmt.query` ne fait que LIER (rusqlite 0.31 : aucun pas) ; classé quand même, par uniformité.
@@ -1669,6 +1739,47 @@ pub(crate) mod panne_de_test_au_coeur {
                     Err(rusqlite::Error::UserFunctionError(MESSAGE_DE_LA_PANNE_DU_MOTEUR.into()))
                 });
             }
+        }
+    }
+}
+
+// Instrument de TEST seulement (`P10.29-w`) : un point d'arrêt dans le montage de l'union chaud∪froid
+// (`cold_store::reader::open_cold_union_avec`), juste avant la préparation de l'insertion dans la table temporaire
+// et juste avant la vue d'union. GLOBAL et non par fil : la route exécute l'union sur un fil bloquant qu'un témoin
+// ne tient pas ; il ne se déclenche donc que pour le chemin de base armé, et une seule fois (il se retire en
+// passant). Il permet à un témoin de prendre un verrou exclusif EXACTEMENT entre deux énoncés de l'union.
+#[cfg(test)]
+#[cfg_attr(not(feature = "cold_tier"), allow(dead_code))]
+pub(crate) mod crochet_de_l_union_froide {
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) enum Etape {
+        AvantLInsertion,
+        AvantLaVue,
+    }
+
+    type Crochet = Box<dyn FnOnce() + Send>;
+
+    static ARME: std::sync::Mutex<Option<(String, Etape, Crochet)>> = std::sync::Mutex::new(None);
+
+    pub(crate) fn armer(db_path: &str, etape: Etape, f: Crochet) {
+        *ARME.lock().unwrap_or_else(|e| e.into_inner()) = Some((db_path.to_string(), etape, f));
+    }
+
+    /// Rend vrai si le crochet armé n'a pas été passé (le témoin le retire ainsi à la sortie).
+    pub(crate) fn desarmer() -> bool {
+        ARME.lock().unwrap_or_else(|e| e.into_inner()).take().is_some()
+    }
+
+    pub(crate) fn passer(db_path: &str, etape: Etape) {
+        let pris = {
+            let mut arme = ARME.lock().unwrap_or_else(|e| e.into_inner());
+            match arme.as_ref() {
+                Some((chemin, e, _)) if chemin == db_path && *e == etape => arme.take(),
+                _ => None,
+            }
+        };
+        if let Some((_, _, f)) = pris {
+            f();
         }
     }
 }

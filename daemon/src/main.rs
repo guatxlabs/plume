@@ -1333,10 +1333,21 @@ fn main() {
             std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).expect("urandom");
         }
         let token = hex_encode(&b);
-        {
+        // `P10.34-h` — UN JETON NE NAÎT QUE POUR UN TENANT AU CATALOGUE. Frappé sous un identifiant absent, il était annoncé
+        // « créé » alors que l'authentification le refuse (jointure avec `tenant`) et que la création d'un tenant sous cet
+        // identifiant l'efface : l'insertion est conditionnée, dans le même énoncé, à la présence du tenant ; sinon rien
+        // n'est inscrit, aucun jeton n'est affiché, et la sortie est non nulle.
+        let inscrits = {
             let conn = cp.conn.lock();
-            conn.execute("INSERT INTO scim_token(hash,tenant_id,description,created) VALUES(?1,?2,?3,?4)", params![sha256_hex(token.as_bytes()), tenant, desc, now()])
-                .expect("insert scim_token");
+            conn.execute(
+                "INSERT INTO scim_token(hash,tenant_id,description,created) SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM tenant WHERE id=?2)",
+                params![sha256_hex(token.as_bytes()), tenant, desc, now()],
+            )
+            .expect("insert scim_token")
+        };
+        if inscrits == 0 {
+            eprintln!("scim-token : REFUS — le tenant '{tenant}' n'est pas au catalogue du plan de contrôle : aucun jeton n'est créé.");
+            std::process::exit(2);
         }
         println!("{token}");
         eprintln!("jeton SCIM pour le tenant '{tenant}' créé (Authorization: Bearer <token>) — affiché une seule fois.");

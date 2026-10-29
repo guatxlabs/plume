@@ -1687,13 +1687,13 @@
         let _ = std::fs::remove_file(&p);
     }
 
-    /// VALIDATION : endpoint (schéma https/tcp + garde SSRF complète : cible interne refusée, RFC1918 opt-in),
+    /// VALIDATION : endpoint (schéma https/tcp + garde SSRF complète : cible interne refusée, RFC1918 venu de l'API refusé par défaut — P7.20-a),
     /// type, filtre (bornes), et la forme bound-param de la clause WHERE (injection-safe). NB : la garde SSRF
     /// est fail-closed sur DNS -> on teste avec des IP LITTÉRALES (aucune résolution réseau requise).
     #[test]
     fn dest_endpoint_type_filter_validation() {
         assert!(dest_endpoint_ok("webhook", "https://93.184.216.34/in"));               // public OK
-        assert!(dest_endpoint_ok("webhook", "http://10.0.0.5:8080/in"));                 // RFC1918 on-prem OK par défaut
+        assert!(!dest_endpoint_ok("webhook", "http://10.0.0.5:8080/in"));                // RFC1918 venu de l'API refusé par défaut (P7.20-a, inversé)
         assert!(!dest_endpoint_ok("webhook", "ftp://x"));
         assert!(!dest_endpoint_ok("webhook", "https://169.254.169.254/latest"), "cible métadonnées cloud interdite");
         assert!(!dest_endpoint_ok("webhook", "http://127.0.0.1/in"), "loopback interdit (never-egress)");

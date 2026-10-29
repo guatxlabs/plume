@@ -64,6 +64,18 @@
 //! réserve effective est 0 (sinon aucune lourde ne passerait jamais) et la jauge
 //! `plume_query_permits_reserved` le dit. Hors démarrage (outil CLI, essais) aucun couloir n'est posé :
 //! comportement d'avant.
+//!
+//! LIMITE NOMMÉE — LES LÉGÈRES ENTRE ELLES (`P10.32-q`, délibéré). La réserve protège les légères des LOURDES,
+//! pas des autres légères : `N` requêtes au budget automatique peuvent tenir les `N` jetons, et une légère ou une
+//! lourde arrivée ensuite attend. Aucune part n'est réservée À L'INTÉRIEUR des légères, pour deux raisons : le
+//! sémaphore EST la borne mémoire (un jeton de plus pour une sous-classe serait une requête concurrente de plus,
+//! pas une réserve), et une réserve demande une classe LUE AU SITE — or toutes les légères reçoivent le même
+//! budget automatique, rien ne les distingue que le client ne puisse déclarer. Ce qui est TENU, et témoigné
+//! (`tests/export_et_pivot_prennent_le_couloir_lourd_par_la_route.rs`) : aucune famine entre légères, la file est
+//! dans l'ordre d'arrivée — une légère en file reçoit le jeton libéré avant toute requête arrivée après elle (la
+//! porte tente `try_acquire_owned`, qui ne double pas une requête déjà en file, puis attend dans la file du
+//! sémaphore). Ce qui ne l'est PAS : la DURÉE de cette attente, qui dépend du travail des requêtes placées devant
+//! (une horloge, que ce dépôt refuse aux témoins).
 
 use crate::*;
 use parking_lot::RwLock;
@@ -493,4 +505,36 @@ pub(crate) fn exposition_prom() -> String {
     o.push_str("# TYPE plume_query_permit_routes_tronque gauge\n");
     o.push_str(&format!("plume_query_permit_routes_tronque {}\n", u8::from(tronque)));
     o
+}
+
+// TEST-ONLY — `P10.32-q` : nombre de requêtes lourdes EN FILE AU COULOIR à l'instant présent. Posé par la porte
+// (`query_timing::acquerir_par_la_voie`, bras du couloir plein) le temps de l'attente, rendu à l'admission ou à
+// l'abandon de la future. Il sert au témoin PAR LA ROUTE (`tests/export_et_pivot_prennent_le_couloir_lourd_par_la_route.rs`)
+// à savoir, sans horloge, qu'un export ou un Pivot a ATTEINT la porte et attend au couloir. Absent du binaire livré.
+#[cfg(test)]
+static EN_FILE_AU_COULOIR: AtomicU64 = AtomicU64::new(0);
+
+/// TEST-ONLY — la présence d'une requête en file au couloir, rendue à sa libération (admission ou abandon).
+#[cfg(test)]
+pub(crate) struct EnFileAuCouloir(());
+
+#[cfg(test)]
+impl EnFileAuCouloir {
+    pub(crate) fn entrer() -> Self {
+        EN_FILE_AU_COULOIR.fetch_add(1, Ordering::SeqCst);
+        EnFileAuCouloir(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for EnFileAuCouloir {
+    fn drop(&mut self) {
+        EN_FILE_AU_COULOIR.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// TEST-ONLY — requêtes lourdes en file au couloir à l'instant présent (tout le processus).
+#[cfg(test)]
+pub(crate) fn en_file_au_couloir() -> u64 {
+    EN_FILE_AU_COULOIR.load(Ordering::SeqCst)
 }

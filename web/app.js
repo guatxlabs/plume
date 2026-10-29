@@ -29,7 +29,7 @@ import { loadDetAdv } from './detadv.js';
 import { loadAttackMatrix } from './attack.js';
 import { poserLesRepresentations } from './representations.js'; // `P11.20-d` : l'éditeur offre les neuf représentations, depuis la liste unique
 import { initSigmaImport } from './sigmaimport.js';
-import { avouerLeProvisionnement, loadOperatorAudit, loadTenantsView } from './multitenant.js';
+import { avouerLeProvisionnement, loadOperatorAudit, loadTenantsView, peindreLeProvisionnementRefuse } from './multitenant.js';
 import { addToCase, canEditCases, createCase, loadCases, openCase } from './cases.js';
 import { prefGet, prefSet, prefsReady } from './prefs.js'; // #62 — préférences utilisateur self-scoped (favoris, réglages par vue, plage par défaut)
 import { initKeyboardNav } from './keys.js'; // #62 — navigation clavier (/, g+touche, j/k, ?) non-intrusive
@@ -148,6 +148,11 @@ const MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT = {
   export_tronque: { fr: 'Export {format} téléchargé (TRONQUÉ{ampleur})', en: 'Export {format} downloaded (TRUNCATED{ampleur})' },
   ampleur_mesuree: { fr: ' — {n} ligne(s) manquante(s)', en: ' — {n} missing row(s)' },
   ampleur_non_mesuree: { fr: ' — ampleur non mesurée par le serveur (plafond de lignes) : resserrez la fenêtre pour un export complet', en: ' — extent not measured by the server (row cap): narrow the window for a complete export' },
+  // `P10.32-r` — l'export arrêté à SA borne (`x-plume-export-borne`, la borne appliquée) : PLUME_EXPORT_MAX ou le `limit` demandé.
+  // `P10.32-r` / `P10.20-b` — la couverture froide non lue (`x-plume-cold-coverage: cold_coverage_unread`) : l'export est chaud
+  // seul, la part froide manque et personne n'en connaît l'ampleur ; la borne éventuellement touchée ne mesure que la part chaude.
+  couverture_froide_non_lue: { fr: " — couverture froide NON LUE par le serveur (cold_coverage_unread) : seule la part chaude est exportée, la part froide manque, ampleur inconnue", en: ' — cold coverage NOT READ by the server (cold_coverage_unread): only the hot part is exported, the cold part is missing, extent unknown' },
+  borne_de_l_export: { fr: ' — export coupé à sa borne de {n} ligne(s) (PLUME_EXPORT_MAX ou le limit demandé) : les lignes au-delà ne sont pas exportées, resserrez la fenêtre pour un export complet', en: ' — export cut at its cap of {n} row(s) (PLUME_EXPORT_MAX or the requested limit): rows beyond it are not exported, narrow the window for a complete export' },
   tenant_provisionne: { fr: 'tenant « {nom} » provisionné', en: 'tenant “{nom}” provisioned' },
   tenant_cree_avec_admin: { fr: 'tenant créé — 1er admin : {admin}', en: 'tenant created — first admin: {admin}' },
   tenant_cree: { fr: 'tenant créé', en: 'tenant created' },
@@ -161,6 +166,12 @@ const MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT = {
 // la face d'une lecture non servie, la cause nommée ou le texte brut entier, une page de passerelle par sa phrase.
 // EXPORT EXPLORE : re-exécute la requête courante côté serveur (/api/export) pour le JEU COMPLET borné,
 // puis télécharge. Même dérivation GXQL/SQL-brut que runQuery (le SQL brut non-admin est refusé côté serveur).
+const bornePositiveDeLExport = (brut) => {
+  const t = String(brut == null ? '' : brut).trim();
+  if (!/^[1-9][0-9]{0,15}$/.test(t)) return 0;
+  const n = Number(t);
+  return Number.isSafeInteger(n) ? n : 0;
+};
 async function exploreExport(format) {
   const q = ($('#sql') && $('#sql').value.trim()) || '';
   if (!q) { toast('Aucune requête à exporter', 'info'); return; }
@@ -181,9 +192,19 @@ async function exploreExport(format) {
   // P7.3-c — avec son AMPLEUR quand le serveur a su la mesurer, « ampleur inconnue » sinon : on ne
   // fabrique pas un chiffre qu'on n'a pas.
   const ecartes = parseInt(r.headers.get('x-plume-truncated-ecartes') || '', 10);
-  const marque = !trunc ? '' : (Number.isFinite(ecartes) && ecartes > 0 ? `-TRONQUE-${ecartes}-lignes-manquantes` : '-TRONQUE-ampleur-inconnue');
+  // `P10.32-r` — la borne touchée, lue seulement si c'est un entier positif écrit en chiffres : une valeur absente, nulle ou
+  // illisible retombe sur « ampleur non mesurée », jamais sur un chiffre fabriqué. L'ampleur mesurée reste prioritaire.
+  // `P10.20-b` — la couverture froide non lue passe AVANT tout chiffre : la borne servie (et un écart) ne compte que la part
+  // chaude ; le fichier reste `-TRONQUE-ampleur-inconnue`, comme le nom que le démon pose (daemon/src/handlers/query.rs).
+  const froidNonLu = String(r.headers.get('x-plume-cold-coverage') || '').trim() === 'cold_coverage_unread';
+  const borne = froidNonLu ? 0 : bornePositiveDeLExport(r.headers.get('x-plume-export-borne'));
+  const mesuree = !froidNonLu && Number.isFinite(ecartes) && ecartes > 0;
+  const marque = !trunc ? '' : (mesuree ? `-TRONQUE-${ecartes}-lignes-manquantes` : borne ? `-TRONQUE-borne-${borne}` : '-TRONQUE-ampleur-inconnue');
   downloadText(`plume-explore-${tsSlug()}${marque}.${format}`, format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json', text);
-  const ampleur = Number.isFinite(ecartes) && ecartes > 0 ? faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.ampleur_mesuree, { n: ecartes }) : faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.ampleur_non_mesuree);
+  const ampleur = mesuree ? faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.ampleur_mesuree, { n: ecartes })
+    : borne ? faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.borne_de_l_export, { n: borne })
+    : froidNonLu ? faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.couverture_froide_non_lue)
+    : faceDansLaLangue(MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.ampleur_non_mesuree);
   toast(faceDansLaLangue(trunc ? MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.export_tronque : MOTS_DES_AVIS_D_EXPORT_ET_DE_TENANT.export_telecharge, { format: format.toUpperCase(), ampleur }), trunc ? 'info' : 'ok');
 }
 
@@ -771,7 +792,8 @@ if ($('#tenant-form')) $('#tenant-form').addEventListener('submit', async e => {
   // `P10.24-m` — nommer un premier administrateur pose un droit persistant : secret des gestes avant l'envoi ; sans lui,
   // la création ne pose aucun accès et part sans secret.
   try { out = await avecLeSecretDesGestes('provisionner_un_tenant_et_son_administrateur', (entetes) => apiSend('/tenants', 'POST', body, entetes), { dEmblee: !!body.admin }); }
-  catch (err) { if (res) { res.textContent = ''; res.className = 'muted'; } peindreLeRefusDUnGeste(puits, err); return; }
+  // `P10.34-h` — la création que la base n'a pas prise (« TENANT NON CRÉÉ ») a sa face : rien n'est créé, le geste est rejouable.
+  catch (err) { if (res) { res.textContent = ''; res.className = 'muted'; } if (!peindreLeProvisionnementRefuse(puits, err)) peindreLeRefusDUnGeste(puits, err); return; }
   out = out || {};
   // `P10.21-h` — le succès peut porter DEUX aveux : la ligne manquante au journal de contrôle
   // (`registre_sans_maillon`) et le premier administrateur demandé mais non posé (`P10.21-g`). Le tenant

@@ -128,7 +128,7 @@ mod echec_de_transaction_sans_texte_du_moteur_canaux_indicateurs_sigma_detection
     async fn ai3_fixture(tag: &str) -> (AppState, crate::tmp_possede::TmpDb, i64, i64) {
         let (st, p) = sp_state(tag);
         let adm = sp_au("adm", "admin");
-        let (s, c) = ai3_corps(notifier_create(State(st.clone()), Extension(adm), Json(json!({ "kind": "webhook", "url": "http://10.0.0.9/ai3", "name": "ai3-canal" }))).await).await;
+        let (s, c) = ai3_corps(notifier_create(State(st.clone()), Extension(adm), Json(json!({ "kind": "webhook", "url": "http://192.0.2.9/ai3", "name": "ai3-canal" }))).await).await;
         assert_eq!(s, 200, "fixture : canal créé : {c}");
         let nid = c["id"].as_i64().unwrap_or_else(|| panic!("fixture : identifiant du canal : {c}"));
         let rid = {
@@ -169,7 +169,7 @@ mod echec_de_transaction_sans_texte_du_moteur_canaux_indicateurs_sigma_detection
             }};
         }
         jouer!("création du canal", ai3_refuser_l_ecriture(st, "notifier"),
-            notifier_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "kind": "webhook", "url": "http://10.0.0.9/ai3-neuf", "name": "ai3-neuf" }))));
+            notifier_create(State(st.clone()), Extension(adm.clone()), Json(json!({ "kind": "webhook", "url": "http://192.0.2.9/ai3-neuf", "name": "ai3-neuf" }))));
         jouer!("modification du canal", ai3_refuser_l_ecriture(st, "notifier"),
             notifier_update(State(st.clone()), Extension(adm.clone()), Path(nid), Json(json!({ "name": "ai3-renomme" }))));
         jouer!("suppression du canal", ai3_refuser_l_ecriture(st, "notifier"),

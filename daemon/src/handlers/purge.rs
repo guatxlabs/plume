@@ -83,12 +83,12 @@ pub(crate) fn statut_du_refus_de_purge(e: &PurgeRefusal) -> StatusCode {
     match e {
         PurgeRefusal::ReasonRequired => StatusCode::BAD_REQUEST,
         PurgeRefusal::TransactionNotOpened => StatusCode::SERVICE_UNAVAILABLE,
-        PurgeRefusal::Db(_)
-        | PurgeRefusal::TransactionLeftOpen { .. }
-        | PurgeRefusal::PlanRowUnread { .. }
-        | PurgeRefusal::LegalHoldUndetermined
-        | PurgeRefusal::LegalHoldUnread(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::CONFLICT,
+        // `P10.29-l` — LA LOI DES DÉCISIONS N'EST ÉCRITE QU'UNE FOIS, dans `purge::est_une_decision` (match exhaustif) : une
+        // décision du produit, et une décision dont l'annulation a été refusée (`TransactionLeftOpen::decision`), garde le
+        // 409 ; le corps de la seconde dit EN PLUS l'annulation refusée (`purge_refusal_response`). Tout le reste est une
+        // lecture ou une écriture de la base non faite : 500 (une variante neuve non décidée y tombe, jamais en 409).
+        autre if crate::purge::est_une_decision(autre) => StatusCode::CONFLICT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -98,7 +98,7 @@ pub(crate) const PHRASE_PURGE_LECTURE_DE_LA_BASE_NON_FAITE: &str = "REFUS — le
      n'a rien décidé, aucune ligne supprimée. La cause est écrite au journal du démon.";
 
 /// Phrase SERVIE pour `db`. NEUTRE : `db` porte des lectures (plan, relecture dans la transaction) ET des écritures
-/// refusées de l'exécution (inscription au registre, `DELETE`, reconstruction des rollups, `COMMIT`) ; la phrase ne dit
+/// refusées de l'exécution (inscription au registre, `DELETE`, reconstruction des rollups, vidage du cache rendu, `COMMIT`) ; la phrase ne dit
 /// ni lecture ni écriture, la nature exacte est au journal. « aucune ligne supprimée » est VRAI pour chaque site : une
 /// lecture du plan n'écrit rien ; une écriture refusée et un `COMMIT` refusé sortent de `purge_apply` après le
 /// `ROLLBACK` de toute la transaction (registre compris), et un `COMMIT` refusé ne rend rien durable (commit atomique
@@ -119,6 +119,17 @@ pub(crate) const PHRASE_PURGE_TRANSACTION_RESTEE_OUVERTE: &str = "REFUS — la b
      de la transaction : la purge n'est pas validée, mais la transaction reste ouverte jusqu'à sa fermeture ou au \
      redémarrage du démon : un geste qui ouvre sa propre transaction est refusé, une écriture faite sans transaction propre \
      y est prise puis perdue à la fermeture. La cause est écrite au journal du démon, sous l'identifiant servi.";
+
+/// Phrase SERVIE quand une DÉCISION du produit (`count_mismatch`, `stale_token`, `cold_tier`, `cited_by_case`,
+/// `fts_desync`, `legal_hold` : `purge::est_une_decision`) a refusé la purge PUIS que la base a refusé
+/// l'annulation de sa transaction (`P10.29-l`). Le corps garde le code de la décision dans `refusal` et le statut 409 ; la
+/// phrase et `annulation_refusee` disent l'annulation refusée. Le détail de la décision (comptes, jeton) et la cause du
+/// refus d'annulation sont sur la ligne `[<id>] [purge] ERREUR` écrite par `purge::annuler_la_purge`.
+pub(crate) const PHRASE_PURGE_DECISION_PUIS_ANNULATION_REFUSEE: &str = "REFUS — l'état lu s'oppose à la purge (code \
+     `refusal`), puis la base a refusé l'annulation de la transaction : la purge n'est pas validée, mais la transaction \
+     reste ouverte jusqu'à sa fermeture ou au redémarrage du démon : un geste qui ouvre sa propre transaction est refusé, \
+     une écriture faite sans transaction propre y est prise puis perdue à la fermeture. Le détail de la décision et la \
+     cause du refus d'annulation sont écrits au journal du démon, sous l'identifiant servi.";
 
 /// La RÉPONSE servie par les deux routes pour un refus : le statut est celui de `statut_du_refus_de_purge`
 /// (seul juge de la nature), le corps nomme le code machine. `pub(crate)` pour qu'un témoin juge ce que la
@@ -149,7 +160,17 @@ pub(crate) fn purge_refusal_response(e: PurgeRefusal) -> Response {
     };
     // `P10.29-l` — la ligne de journal est déjà écrite au site de l'annulation, sous l'identifiant porté par la variante :
     // la réponse le reprend tel quel, sans seconde ligne ni second identifiant.
-    if let PurgeRefusal::TransactionLeftOpen { id, .. } = &e {
+    if let PurgeRefusal::TransactionLeftOpen { id, decision, .. } = &e {
+        if *decision {
+            let corps = json!({
+                "ok": false,
+                "refusal": crate::purge::code_de_refus_servi(&e),
+                "message": PHRASE_PURGE_DECISION_PUIS_ANNULATION_REFUSEE,
+                "annulation_refusee": true,
+                "id": id,
+            });
+            return (code, Json(corps)).into_response();
+        }
         return (code, Json(json!({ "ok": false, "refusal": refusal, "message": PHRASE_PURGE_TRANSACTION_RESTEE_OUVERTE, "id": id })))
             .into_response();
     }

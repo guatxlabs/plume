@@ -348,6 +348,9 @@ fn session_routes() -> Router<AppState> {
         // FORM-LOGIN (cookie de session signé + CSRF) — 4e méthode d'auth, ADDITIVE :
         .route("/api/login", post(login_post))     // {user,pass} -> pose plume_session + plume_csrf
         .route("/api/logout", post(logout_post))   // efface les cookies
+        // `P10.31-i` (volet 2) — la révocation GLOBALE des sessions pour un administrateur sans cookie (SSO d'en-têtes,
+        // Basic) : administrateur par le refus par défaut de `route_min_role`, super-administrateur en mode 1, nommée et tracée.
+        .route("/api/sessions/revocation-globale", post(revocation_globale_post))
         .route("/api/me", get(me))                 // {user,role,auth_method,csrf_token} pour le SPA
 }
 

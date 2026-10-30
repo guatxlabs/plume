@@ -1517,6 +1517,11 @@ pub(crate) const CAUSE_REPARSE_INCOMPLET: &str = "REPARSE INCOMPLET : le parcour
 pub(crate) const CAUSE_REPARSE_NON_APPLIQUE: &str = "REPARSE NON APPLIQUÉ : la base n'a pas pris la transaction du \
      reparse (BEGIN ou COMMIT refusé, ou mise à jour d'un event refusée : verrou tenu, transaction d'un autre geste \
      pendante, base en lecture seule ou pleine, déclencheur qui refuse) — AUCUN event n'a été modifié. Relancez le reparse ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P10.29-l` (vague BE) — la préparation du parcours des events a été refusée par la base : rien n'a été lu ni écrit.
+/// Remplace le `prepare: <texte du moteur>` servi dans ce 503 ; le texte du moteur part au journal `[reparse]`.
+pub(crate) const CAUSE_REPARSE_NON_PREPARE: &str = "REPARSE NON COMMENCÉ : la base a refusé de préparer le parcours des \
+     events — rien n'a été lu ni écrit. Relancez le reparse ; si le refus persiste, la cause rendue par la base est au \
+     journal du démon.";
 /// Réapplique les parsers ACTIFS aux events DÉJÀ stockés (rétroactif). RÉSERVÉ ADMIN.
 /// `dry_run:true` = compte seulement (validation UI avant d'écrire) ; `source`/`days` = portée
 /// (défaut : toutes sources, 30 j). Mono-connexion : on COLLECTE d'abord (curseur lecture ouvert),
@@ -1567,7 +1572,15 @@ pub(crate) async fn parser_reparse(State(st): State<AppState>, Extension(au): Ex
         {
             let mut stmt = match conn.prepare(
                 "SELECT id,source,message,fields,src_ip,dst_ip FROM event WHERE ts>=?1 AND (?2 IS NULL OR source=?2) ORDER BY id"
-            ) { Ok(s) => s, Err(e) => return Ok((0, 0, 0, format!("prepare: {e}"), None)) };
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    // `P10.29-l` (vague BE) — la préparation refusée sert `CAUSE_REPARSE_NON_PREPARE` (phrase fixe) ; le
+                    // texte du moteur part à la ligne `[reparse] WARN` avec le tenant, jamais la source demandée.
+                    eprintln!("[reparse] WARN parcours des events NON préparé, rien n'est lu ni écrit (tenant '{tenant}') : {:?}", e.to_string());
+                    return Ok((0, 0, 0, CAUSE_REPARSE_NON_PREPARE.to_string(), None));
+                }
+            };
             let rows = stmt.query_map(params![cut, source], |r| Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?,
@@ -1737,7 +1750,7 @@ pub(crate) async fn rule_test_adhoc(State(st): State<AppState>, Extension(au): E
     };
     let db_path = req_db_path(&st, &au);
     let sql2 = sql.clone();
-    match tokio::task::spawn_blocking(move || run_query(&db_path, &sql2)).await {
+    match tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query(&db_path, &sql2))).await {
         Ok(Ok(v)) => {
             let val = v.get("rows").and_then(|r| r.as_array()).and_then(|a| a.first())
                 .and_then(|r| r.as_array()).and_then(|r| r.last())
@@ -1747,7 +1760,30 @@ pub(crate) async fn rule_test_adhoc(State(st): State<AppState>, Extension(au): E
                 None => Json(json!({ "error": "la requête ne renvoie pas de nombre (attendu : 1 ligne, dernière colonne numérique)", "sql": sql })).into_response(),
             }
         }
-        Ok(Err(e)) => Json(json!({ "error": e, "sql": sql })).into_response(),
+        Ok(Err(echec)) => Json(json!({ "error": cause_d_un_essai_non_execute(echec, &au.tenant), "sql": sql })).into_response(),
         Err(_) => server_err("exécution échouée"),
     }
+}
+
+/// AVEU : `P10.29-l` (vague BE) — LA CAUSE QU'UN ESSAI DE RÈGLE AD HOC SERT QUAND LE MOTEUR N'A PAS RENDU SA REQUÊTE.
+/// `/api/rule-test` servait le texte de `run_query` tel quel sous `error` (énoncé cité par l'autorisateur, motif, nom de
+/// table, erreur d'E/S lue comme une faute de la requête). La classe vient du producteur (`query_exec::en_classant`,
+/// décidée par le CODE du moteur) et prend la phrase que sert `/api/query` pour la même classe : phrase du produit
+/// (annulation, budget, lecture seule, mémoire, motif refusé) à l'octet ; support de la base
+/// `CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE` ; base occupée `CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE` ; tout autre refus
+/// du moteur `REQUETE_REJETEE_PAR_LE_MOTEUR`. Le corps reste un deux cents `{error, sql}` (la console le lit par
+/// `unRefusServiEnDeuxCents`, `web/detection_admin.js`). Hors phrase du produit, une ligne `[detection] WARN` nomme la
+/// classe, le tenant de l'appelant et la NATURE de l'échec (code SQLite), jamais son texte : il peut citer la requête,
+/// donc une valeur cherchée (un nom de compte).
+fn cause_d_un_essai_non_execute(echec: crate::query_exec::EchecDeRequete, tenant: &str) -> String {
+    use crate::handlers::query::{CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE, CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE, REQUETE_REJETEE_PAR_LE_MOTEUR};
+    use crate::query_exec::EchecDeRequete as Echec;
+    let (classe, nature, phrase) = match echec {
+        Echec::Produit(phrase) => return phrase,
+        Echec::Support { nature, .. } => ("erreur du support de la base", nature, CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE),
+        Echec::Occupee { nature, .. } => ("base occupée", nature, CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE),
+        Echec::Moteur { nature, .. } => ("requête rejetée par le moteur", nature, REQUETE_REJETEE_PAR_LE_MOTEUR),
+    };
+    eprintln!("[detection] WARN essai de règle non exécuté, {classe} (/api/rule-test, tenant '{tenant}') : {nature}");
+    phrase.to_string()
 }

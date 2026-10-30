@@ -1952,10 +1952,12 @@ pub(crate) async fn cancel(State(st): State<AppState>, Extension(au): Extension<
 
 /// Plafond de lignes d'un export (borne la taille du fichier). Réglable via PLUME_EXPORT_MAX, borné dur à
 /// 100k (`query_exec::PLAFOND_DUR_DES_LIGNES_RENDUES`) ; hors bornes ou illisible -> défaut 50 000. `P10.32-r` :
-/// c'est la SEULE borne de lignes de l'export complet — `PLUME_QUERY_MAX`, plafond des lectures interactives, ne
-/// s'y applique pas (`query_exec::sous_le_plafond_de_l_export`), ni au cœur ni à l'hydratation froide
-/// (`cold_store::reader::cold_hydrate_row_cap` hydrate la borne plus une ligne sonde, pour que le cœur voie la coupure
-/// d'une fenêtre entièrement froide). L'exfiltration de masse reste tenue par ce plafond
+/// c'est la SEULE borne de lignes RENDUES par l'export complet — `PLUME_QUERY_MAX`, plafond des lectures interactives,
+/// ne borne pas ce que le cœur rend sous un export (`query_exec::sous_le_plafond_de_l_export`). L'hydratation froide, elle,
+/// LIT le plus grand de `PLUME_QUERY_MAX` et de la borne plus une ligne sonde (`cold_store::reader::cold_hydrate_row_cap`,
+/// `query_exec::plafond_d_hydratation_froide_de_ce_fil` : la ligne sonde fait voir au cœur la coupure d'une fenêtre
+/// entièrement froide), et le refus 422 d'un agrégat froid tronqué nomme `PLUME_QUERY_MAX` quand c'est lui qui a arrêté
+/// la lecture (`cold_store::exactness`). L'exfiltration de masse reste tenue par ce plafond
 /// dur, le gate de rôle (SQL brut réservé admin), l'authorizer du pool de lecture et l'audit `bulk_read`.
 pub(crate) fn export_max_rows() -> i64 {
     std::env::var("PLUME_EXPORT_MAX")

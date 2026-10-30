@@ -33,8 +33,10 @@ mod instantanes_non_lus_se_disent {
 
     const INL_ENFANT: &str = "PLUME_TEST_INL_ENFANT";
     const INL_PHASE: &str = "INL-PHASE:";
-    const LIGNE_EMPREINTE_NON_LUE: &str = "[ingest] WARN instantané du spool : la dernière empreinte de sa série n'a pas été lue \
-         (forme_inconnue) — l'instantané est inscrit comme un état neuf, pas comme un battement";
+    // `P10.20-b` (vague BD) — INVERSÉ : la ligne nomme désormais le genre et la machine de la série, échappés (témoins
+    // `ein_` de `empreinte_illisible_nomme_sa_serie.rs`).
+    const LIGNE_EMPREINTE_NON_LUE: &str = "[ingest] WARN instantané \"firewall\" du spool de la machine \"web01\" : la dernière \
+         empreinte de sa série n'a pas été lue (forme_inconnue) — l'instantané est inscrit comme un état neuf, pas comme un battement";
     const CAUSE_MACHINE: &str = "INSTANTANÉ NON LU : la base n'a pas rendu le dernier instantané de cette machine — rien \
          n'est établi sur son état, et ce n'est pas l'absence d'un instantané";
     // `P10.20-b` (reprise) — INVERSÉ : la cause n'est plus posée sous `error` dans un deux cents ; c'est celle du cinq cent

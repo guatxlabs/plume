@@ -517,6 +517,12 @@ const MOTS_DE_L_ENROLEMENT_MFA = {
   enrolement_non_ecrit: {
     fr: "Enrôlement NON ENREGISTRÉ : la base n'a pas pris l'écriture — aucune graine n'est posée ni montrée, l'état d'avant est intact, et ton mot de passe, vérifié, n'est pas compté contre toi. Réessaie. Le démon en nomme la cause —",
     en: 'Enrollment NOT RECORDED: the database did not take the write — no seed is set or shown, the previous state is intact, and your password, verified, is not counted against you. Try again. The daemon names the cause —' },
+  // `P10.30-d` (démon) — le noyau n'a fourni aucune entropie pour engendrer la graine : rien n'est écrit, l'état d'avant est
+  // intact. Servi en cinq cents aujourd'hui (`server_err`), reconnu aussi en cinq cent trois ; sur tout autre statut, la
+  // face générique. Ce n'est pas la base qui a refusé : la face ne le dit pas.
+  enrolement_sans_entropie: {
+    fr: "Enrôlement NON FAIT : le démon n'a obtenu aucune entropie de l'hôte pour engendrer la graine — aucune graine n'est posée ni montrée, l'état d'avant est intact (double authentification absente, ou enrôlement en attente avec sa graine). Réessaie ; si le refus persiste, la source d'entropie de l'hôte est à réparer. Le démon en nomme la cause —",
+    en: "Enrollment NOT DONE: the daemon obtained no entropy from the host to generate the seed — no seed is set or shown, the previous state is intact (two-factor authentication absent, or an enrollment pending with its seed). Try again; if the refusal persists, the host's entropy source needs repair. The daemon names the cause —" },
   deja_active: {
     fr: "Rien n'est enrôlé : la double authentification est DÉJÀ ACTIVE sur ce compte (elle a pu l'être pendant l'enrôlement). Son statut, relu, est affiché ci-dessus. Le démon a répondu —",
     en: 'Nothing is enrolled: two-factor authentication is ALREADY ACTIVE on this account (it may have become so during the enrollment). Its status, read again, is shown above. The daemon answered —' },
@@ -535,6 +541,7 @@ function cleDuRefusDEnrolement(e) {
   if (statut === 503 && nature === 'statut_mfa_non_lu') return 'statut_mfa_non_lu';
   if (statut === 503 && nature === 'compte_non_lu') return 'compte_non_lu';
   if (statut === 503 && nature === 'enrolement_non_ecrit') return 'enrolement_non_ecrit';   // `P10.22-y` (démon)
+  if ((statut === 500 || statut === 503) && nature === 'enrolement_sans_entropie') return 'enrolement_sans_entropie';   // `P10.30-d` (démon)
   if (statut === 403 && nature === 'mot_de_passe_exige') return 'mot_de_passe_exige';
   if (statut === 403 && nature === 'mot_de_passe_refuse') return 'mot_de_passe_refuse';
   if (statut === 403 && nature === 'sans_mot_de_passe_local') return 'sans_mot_de_passe_local';

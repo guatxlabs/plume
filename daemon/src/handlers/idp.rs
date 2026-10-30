@@ -99,6 +99,34 @@ pub(crate) const CAUSE_MFA_NON_ACTIVEE: &str = "DOUBLE AUTHENTIFICATION NON ACTI
      l'écriture qui active le second facteur. Le compte reste SANS second facteur, aucun code de secours \
      n'est servi (aucun n'a été enregistré), et le registre n'atteste aucune activation. Réessayez.";
 
+/// `P10.30-d` — L'ENTROPIE DU NOYAU INDISPONIBLE N'EST PLUS UN 500 ANONYME. Les trois routes qui tirent une valeur
+/// secrète (la graine, les codes de secours, l'état du flux OIDC) rendaient `500 « entropie noyau indisponible »` :
+/// ni ce qui n'avait pas eu lieu, ni ce qui restait en place. Elles rendent une phrase nommée — en 503 pour
+/// l'activation et le départ OIDC, sous le cinq cents d'avant pour l'enrôlement (ci-dessous) ; aucune valeur dérivée
+/// d'une horloge ne remplace le tirage. L'activation garde l'ouverture de `CAUSE_MFA_NON_ACTIVEE` : ce qu'en dit la console
+/// (le code n'est pas en cause, le compte reste sans second facteur, aucun code de secours) est vrai ici aussi.
+pub(crate) const CAUSE_MFA_NON_ACTIVEE_SANS_ENTROPIE: &str = "DOUBLE AUTHENTIFICATION NON ACTIVÉE : le noyau n'a \
+     fourni aucune entropie pour engendrer les codes de secours. Le code présenté n'est pas en cause ; le compte reste \
+     SANS second facteur, aucun code de secours n'est servi ni enregistré, et le registre n'atteste aucune activation. \
+     Réessayez ; si le refus persiste, la source d'entropie de l'hôte est à réparer.";
+
+/// `P10.30-d` — l'enrôlement sans entropie : aucune graine. NOMMÉ, MAIS SERVI SOUS LE CINQ CENTS D'AVANT, PAS EN 503.
+/// Les ouvertures que la console lit pour l'enrôlement disent une lecture ou une écriture de la base
+/// (`compte_non_lu`, `enrolement_non_ecrit`, `web/idp.js` `MOTS_DE_L_ENROLEMENT_MFA`) : aucune n'a échoué ici, les
+/// emprunter mentirait. Et chaque 503 de `mfa_enroll` doit avoir SA face dans la console (le témoin 109e du harnais
+/// les dérive de ce gestionnaire) : une ouverture neuve en 503 y est un refus sans face. Ce cinq cents rend donc sa
+/// phrase entière à la face générique du panneau (« Enrôlement REFUSÉ … Il a répondu — »), qui est vraie. LIMITE
+/// ÉCRITE : le passage en 503 attend une face `enrolement_sans_entropie` dans `web/idp.js` et `web/core.js`.
+pub(crate) const CAUSE_ENROLEMENT_SANS_ENTROPIE: &str = "ENRÔLEMENT NON FAIT, AUCUNE GRAINE : le noyau n'a fourni \
+     aucune entropie pour engendrer la graine. Aucune graine n'est posée ni montrée ; l'état d'avant est intact (MFA \
+     absente, ou enrôlement en attente avec SA graine). Réessayez ; si le refus persiste, la source d'entropie de \
+     l'hôte est à réparer.";
+
+/// `P10.30-d` — le départ d'une connexion OIDC sans entropie : ni état, ni nonce, ni vérificateur PKCE.
+pub(crate) const CAUSE_CONNEXION_OIDC_SANS_ENTROPIE: &str = "CONNEXION OIDC NON ENGAGÉE : le noyau n'a fourni aucune \
+     entropie pour l'état, le nonce et le vérificateur PKCE de ce flux. Aucun cookie n'est posé et aucune redirection \
+     vers le fournisseur n'est émise. Réessayez ; si le refus persiste, la source d'entropie de l'hôte est à réparer.";
+
 /// `P10.22-l` — DEUX ACTIVATIONS NE SE RECOUVRENT PAS. La lecture de l'enrôlement et l'écriture qui l'active
 /// n'étaient pas liées : entre les deux, une autre requête a activé ce même enrôlement, ou l'a remplacé par
 /// une graine neuve, ou l'a supprimé. Cette requête n'active RIEN et ne sert aucun code.
@@ -836,8 +864,8 @@ pub(crate) async fn oidc_start(State(st): State<AppState>, Path(name): Path<Stri
         Ok(Err(e)) => return servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_DECOUVERTE_OIDC_ECHOUEE, "connexion OIDC", fournisseur.id, "découverte", &e),
         Err(_) => return server_err("échec interne (discovery)"),
     };
-    let (Some(state), Some(nonce), Some(verifier)) = (rand_url_token(), rand_url_token(), rand_url_token()) else {
-        return server_err("entropie noyau indisponible");
+    let (Some(state), Some(nonce), Some(verifier)) = (tirer_l_entropie(rand_url_token), tirer_l_entropie(rand_url_token), tirer_l_entropie(rand_url_token)) else {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_CONNEXION_OIDC_SANS_ENTROPIE);
     };
     let challenge = pkce_challenge_s256(&verifier);
     let blob = oidc_state_sign(st.session_secret.as_slice(), &name, &state, &nonce, &verifier, 600);
@@ -1246,6 +1274,17 @@ pub(crate) fn second_facteur_freine(st: &AppState, user: &str) -> Option<u64> {
     frein::attente_du_frein(st, user)
 }
 
+/// `P10.30-d` — LE TIRAGE D'ENTROPIE DES TROIS ROUTES (`oidc_start`, `mfa_enroll`, `mfa_verify`). En production, le
+/// tirage lui-même. Sous `cfg(test)`, un témoin peut le rendre indisponible SUR SON FIL (`crochet_d_entropie`, en fin
+/// de fichier) : `/dev/urandom` ne se coupe pas sans démonter l'hôte.
+fn tirer_l_entropie<T>(tirage: impl FnOnce() -> Option<T>) -> Option<T> {
+    #[cfg(test)]
+    if crochet_d_entropie::coupee() {
+        return None;
+    }
+    tirage()
+}
+
 /// `P10.20-b` — CE COMPTE EXIGE-T-IL UN SECOND FACTEUR ? TROIS ISSUES, JAMAIS DEUX.
 ///
 /// `Ok(true)` : MFA ACTIVE (`enabled` non nul). `Ok(false)` : AUCUNE ligne, ou une ligne à `enabled=0`
@@ -1372,8 +1411,8 @@ pub(crate) async fn mfa_enroll(
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_LU_A_L_ENROLEMENT);
         }
     }
-    let Some(seed) = rand_bytes(20) else {
-        return server_err("entropie noyau indisponible");
+    let Some(seed) = tirer_l_entropie(|| rand_bytes(20)) else {
+        return server_err(CAUSE_ENROLEMENT_SANS_ENTROPIE);
     };
     let secret_b32 = base32_encode(&seed);
     {
@@ -1471,9 +1510,9 @@ pub(crate) async fn mfa_verify(
         frein::tracer_l_echec(&st, &au.name, &ip, RouteDuSecondFacteur::Activation, &essai);
         return err_json(StatusCode::UNAUTHORIZED, "code TOTP déjà utilisé (anti-rejeu)");
     }
-    let Some((clear, hashes)) = gen_recovery_codes(10) else {
+    let Some((clear, hashes)) = tirer_l_entropie(|| gen_recovery_codes(10)) else {
         frein::rendre_l_essai(&st, &st.db.lock(), &au.name, essai);
-        return server_err("entropie noyau indisponible");
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_MFA_NON_ACTIVEE_SANS_ENTROPIE);
     };
     let maillon = {
         let conn = st.db.lock();
@@ -2033,5 +2072,29 @@ mod tests {
         assert!(!idp_name_ok(""));
         assert!(!idp_name_ok("bad/slash"));
         assert!(!idp_name_ok("space bar"));
+    }
+}
+
+/// `P10.30-d` — TÉMOINS SEULEMENT : l'entropie rendue indisponible au tirage des trois routes, SUR LE FIL COURANT
+/// (une garde ; rendue, le tirage revient). Un `#[tokio::test]` joue le gestionnaire sur son propre fil : un voisin
+/// de la suite n'est jamais touché. Hors `cfg(test)`, ce module n'existe pas.
+#[cfg(test)]
+pub(crate) mod crochet_d_entropie {
+    use std::cell::Cell;
+    thread_local! {
+        static COUPEE: Cell<bool> = const { Cell::new(false) };
+    }
+    pub(crate) struct EntropieCoupee;
+    pub(crate) fn couper() -> EntropieCoupee {
+        COUPEE.with(|c| c.set(true));
+        EntropieCoupee
+    }
+    impl Drop for EntropieCoupee {
+        fn drop(&mut self) {
+            COUPEE.with(|c| c.set(false));
+        }
+    }
+    pub(crate) fn coupee() -> bool {
+        COUPEE.with(Cell::get)
     }
 }

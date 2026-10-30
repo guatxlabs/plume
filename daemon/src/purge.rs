@@ -335,8 +335,10 @@ pub(crate) enum PurgeRefusal {
     /// l'échec d'origine par un littéral du code (`COMMIT refusé`, ou le code machine du refus d'exécution) ; les deux
     /// textes du moteur (échec d'origine, `ROLLBACK`) vont à UNE ligne `[<id>] [purge] ERREUR` sous l'identifiant `id`,
     /// jamais dans la variante. Avant : le refus de `ROLLBACK` était jeté (`let _`) et la réponse disait « aucune ligne
-    /// supprimée » sur un écrivain bloqué, sans un mot au journal ni un compte.
-    TransactionLeftOpen { id: String, etape: &'static str },
+    /// supprimée » sur un écrivain bloqué, sans un mot au journal ni un compte. `decision` dit si l'échec d'origine était
+    /// une DÉCISION du produit (`est_une_decision`, lue sur la variante d'origine au site de l'annulation) : la route garde
+    /// alors le 409 et le code de la décision.
+    TransactionLeftOpen { id: String, etape: &'static str, decision: bool },
     /// Erreur base (verrou, schéma, I/O). Aucune ligne supprimée.
     Db(String),
 }
@@ -397,7 +399,8 @@ impl std::fmt::Display for PurgeRefusal {
             PurgeRefusal::CountMismatch { declared, deleted } => write!(
                 f,
                 "REFUS — INCOHÉRENCE registre/base : {declared} ligne(s) inscrite(s), {deleted} supprimée(s). \
-                 Transaction ANNULÉE en entier (le registre ne peut pas affirmer autre chose que la réalité)."
+                 Rien n'est validé, inscription au registre comprise (le registre ne peut pas affirmer autre chose \
+                 que la réalité)."
             ),
             PurgeRefusal::PlanRowUnread { site, cause } => write!(
                 f,
@@ -413,7 +416,7 @@ impl std::fmt::Display for PurgeRefusal {
                  aucune ligne supprimée. Le même jeton peut être rejoué : il reste valide tant que le périmètre n'a \
                  pas changé."
             ),
-            PurgeRefusal::TransactionLeftOpen { id, etape } => write!(
+            PurgeRefusal::TransactionLeftOpen { id, etape, .. } => write!(
                 f,
                 "REFUS — PURGE NON VALIDÉE, TRANSACTION RESTÉE OUVERTE : {etape}, puis la base a refusé le ROLLBACK qui \
                  devait l'annuler. Rien n'est validé, mais la connexion reste en transaction jusqu'à sa fermeture ou \
@@ -442,6 +445,54 @@ pub(crate) fn purge_refusal_code(r: &PurgeRefusal) -> &'static str {
         PurgeRefusal::TransactionNotOpened => "transaction_not_opened",
         PurgeRefusal::TransactionLeftOpen { .. } => "transaction_left_open",
         PurgeRefusal::Db(_) => "db",
+    }
+}
+
+/// `P10.29-l` — LE CODE DE REFUS SERVI, le même sur la route (`handlers::purge::purge_refusal_response`) et sur la CLI
+/// (`purge_refusal_cli_json`) : après une DÉCISION dont l'annulation est refusée, le code de la décision (`etape`, posé par
+/// `purge_apply` depuis `purge_refusal_code` du refus d'origine) ; sinon `purge_refusal_code`.
+pub(crate) fn code_de_refus_servi(r: &PurgeRefusal) -> &'static str {
+    match r {
+        PurgeRefusal::TransactionLeftOpen { etape, decision: true, .. } => etape,
+        _ => purge_refusal_code(r),
+    }
+}
+
+/// `P10.29-l` — le corps JSON d'un refus rendu par la CLI (`plume purge … --json`, sortie 3) : le code de
+/// `code_de_refus_servi`, le `Display` du refus ; sur une transaction restée ouverte, l'identifiant de la ligne de journal
+/// et, après une décision, `annulation_refusee` — les clés que sert la route.
+pub(crate) fn purge_refusal_cli_json(e: &PurgeRefusal) -> serde_json::Value {
+    let mut corps = json!({ "ok": false, "refusal": code_de_refus_servi(e), "message": e.to_string() });
+    if let PurgeRefusal::TransactionLeftOpen { id, decision, .. } = e {
+        corps["id"] = json!(id);
+        if *decision {
+            corps["annulation_refusee"] = json!(true);
+        }
+    }
+    corps
+}
+
+/// `P10.29-l` — LE REFUS EST-IL UNE DÉCISION DU PRODUIT (l'état LU s'y oppose, servie en 409) ? SEULE source de la loi :
+/// `handlers::purge::statut_du_refus_de_purge` la lit pour le 409, `annuler_la_purge` la lit sur le refus d'origine pour
+/// `TransactionLeftOpen::decision`. Le `match` est EXHAUSTIF, sans bras par défaut : une variante neuve ne compile pas
+/// tant qu'elle n'est pas classée ici. `legal_hold` n'atteint pas l'annulation : il n'est rendu que par `purge_plan`
+/// (hors transaction) ; dans la transaction, un hold posé entre-temps passe par `NOT held` puis `count_mismatch`
+/// (`purge_delete_rows`, relecture de `hold_guard`).
+pub(crate) fn est_une_decision(r: &PurgeRefusal) -> bool {
+    match r {
+        PurgeRefusal::LegalHold(_)
+        | PurgeRefusal::ColdTier { .. }
+        | PurgeRefusal::CitedByCase { .. }
+        | PurgeRefusal::FtsDesync
+        | PurgeRefusal::StaleToken { .. }
+        | PurgeRefusal::CountMismatch { .. } => true,
+        PurgeRefusal::TransactionLeftOpen { decision, .. } => *decision,
+        PurgeRefusal::LegalHoldUndetermined
+        | PurgeRefusal::LegalHoldUnread(_)
+        | PurgeRefusal::ReasonRequired
+        | PurgeRefusal::PlanRowUnread { .. }
+        | PurgeRefusal::TransactionNotOpened
+        | PurgeRefusal::Db(_) => false,
     }
 }
 
@@ -1184,7 +1235,14 @@ fn purge_delete_rows(
 
     let (b0, b1) = purge_rollup_band(c.scope.window);
     let rollup_reaggregated = purge_rebuild_rollups(conn, b0, b1)?;
-    let panel_cache_cleared = panneau_avoue::cache_vider(conn) as i64;
+    // `P10.29-l` — LE VIDAGE DU CACHE RENDU EST LU : les charges utiles portent du contenu purgé. Refusé, la purge
+    // refuse (`db`, l'appelant ROLLBACK, registre compris) au lieu de rendre « 0 entrée vidée » sur un cache resté plein.
+    let panel_cache_cleared = panneau_avoue::cache_vider_dit(conn).map_err(|e| {
+        PurgeRefusal::Db(format!(
+            "cache de panneaux NON VIDÉ ({}) — ses charges utiles portent le contenu purgé, purge refusée",
+            crate::sqlite_plafond::decrire_l_erreur(&e)
+        ))
+    })? as i64;
 
     Ok(PurgeReceipt {
         rows_deleted: deleted,
@@ -1356,6 +1414,7 @@ fn annuler_la_purge(conn: &Connection, etape: &'static str, origine: PurgeRefusa
     #[cfg(test)]
     crate::comptes_de_transaction::noter_pour_les_temoins(conn, "rollback de purge refusé".to_string());
     let id = crate::identifiant_de_correlation();
+    let decision = est_une_decision(&origine);
     let origine = origine.to_string();
     let rollback = refus.to_string();
     eprintln!(
@@ -1364,7 +1423,7 @@ fn annuler_la_purge(conn: &Connection, etape: &'static str, origine: PurgeRefusa
          fermeture (BEGIN refusés, écritures sans BEGIN prises puis perdues ; ROLLBACK de purge refusé n° {rang} depuis \
          le démarrage)"
     );
-    PurgeRefusal::TransactionLeftOpen { id, etape }
+    PurgeRefusal::TransactionLeftOpen { id, etape, decision }
 }
 
 /// SIMULER PUIS CONFIRMER PUIS EXÉCUTER, en un appel — la forme qu'utilisent la CLI et l'API. La re-simulation
@@ -1680,41 +1739,68 @@ pub(crate) fn purge_cli(args: &[String]) {
 
     let confirm = flag("--confirm");
     let reason = flag("--reason").unwrap_or_default();
-    let result = match &confirm {
+    let sortie = purge_cli_sur(&conn, scope, confirm.as_deref(), &reason, &purge_cli_actor(), json_out);
+    print!("{}", sortie.stdout);
+    eprint!("{}", sortie.stderr);
+    if sortie.code != 0 {
+        std::process::exit(sortie.code);
+    }
+}
+
+/// `P10.29-l` — CE QUE REND LA SOUS-COMMANDE `purge` sur une base ouverte : sortie standard, sortie d'erreur et code de
+/// sortie (0 = simulation rendue ou purge exécutée ; 3 = refus motivé). `purge_cli` écrit les deux sorties telles quelles
+/// puis sort avec ce code.
+pub(crate) struct SortieDeLaPurgeCli {
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) code: i32,
+}
+
+/// `P10.29-l` — LA FIN DE `purge_cli`, sur une connexion déjà ouverte par la porte : simulation (sans `confirm`), ou
+/// re-simulation, confirmation au jeton et exécution ; puis le rendu (JSON avec `--json`, texte sinon). Un refus sort en 3
+/// avec, en JSON, le corps de `purge_refusal_cli_json` (le code que sert la route, `id` et `annulation_refusee` d'une
+/// transaction restée ouverte).
+pub(crate) fn purge_cli_sur(
+    conn: &Connection,
+    scope: PurgeScope,
+    confirm: Option<&str>,
+    reason: &str,
+    actor: &str,
+    json_out: bool,
+) -> SortieDeLaPurgeCli {
+    let mut sortie = SortieDeLaPurgeCli { stdout: String::new(), stderr: String::new(), code: 0 };
+    let result = match confirm {
         // TEMPS 1 — simulation seule (aucune écriture).
-        None => match purge_plan(&conn, scope) {
+        None => match purge_plan(conn, scope) {
             Ok(p) => {
                 if json_out {
-                    println!("{}", serde_json::to_string_pretty(&purge_plan_json(&p)).unwrap_or_default());
+                    sortie.stdout = format!("{}\n", serde_json::to_string_pretty(&purge_plan_json(&p)).unwrap_or_default());
                 } else {
-                    print!("{}", purge_plan_text(&p));
+                    sortie.stdout = purge_plan_text(&p);
                 }
-                return;
+                return sortie;
             }
             Err(e) => Err(e),
         },
         // TEMPS 2 — re-simulation + comparaison du jeton + exécution.
-        Some(tok) => purge_confirm_and_apply(&conn, scope, tok, &purge_cli_actor(), &reason).map(Some),
+        Some(tok) => purge_confirm_and_apply(conn, scope, tok, actor, reason),
     };
     match result {
-        Ok(Some(r)) => {
+        Ok(r) => {
             if json_out {
-                println!("{}", serde_json::to_string_pretty(&purge_receipt_json(&r)).unwrap_or_default());
+                sortie.stdout = format!("{}\n", serde_json::to_string_pretty(&purge_receipt_json(&r)).unwrap_or_default());
             } else {
-                print!("{}", purge_receipt_text(&r));
+                sortie.stdout = purge_receipt_text(&r);
             }
         }
-        Ok(None) => {}
         Err(e) => {
             if json_out {
-                println!(
-                    "{}",
-                    json!({ "ok": false, "refusal": purge_refusal_code(&e), "message": e.to_string() })
-                );
+                sortie.stdout = format!("{}\n", purge_refusal_cli_json(&e));
             } else {
-                eprintln!("{e}");
+                sortie.stderr = format!("{e}\n");
             }
-            std::process::exit(3);
+            sortie.code = 3;
         }
     }
+    sortie
 }

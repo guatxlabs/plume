@@ -28,7 +28,10 @@
 //! le trace) ; code juste accepté -> `remettre_a_zero` (aussi le retrait d'un enrôlement EN ATTENTE par `mfa_disable`,
 //! qui n'examine aucun code : la graine contre laquelle les échecs ont été comptés disparaît avec eux) ; refus nommé qui ne juge pas le code (liste illisible, pas
 //! non consommé, enrôlement changé, écriture refusée) -> `rendre_l_essai`, qui retire l'échec réservé. Un `rendre`
-//! ou une remise à zéro refusés laissent un échec DE TROP — le sens qui freine, jamais celui qui ouvre — et le disent.
+//! ou une remise à zéro refusés laissent un échec DE TROP — le sens qui freine, jamais celui qui ouvre — et le disent
+//! au journal du démon (`rendre_l_essai`, `remettre_a_zero`). LIMITE ASSUMÉE (`P10.30-d`) : la base qui vient de refuser
+//! cette écriture n'en prendrait pas une seconde, et retirer l'échec ailleurs qu'en base rouvrirait la fenêtre de
+//! devinette d'un redémarrage ; rien de ceci n'est servi au client.
 //!
 //! L'HORLOGE EST CELLE DU MUR (`now()`), pas l'horloge monotone : c'est ce qui se persiste. Un saut d'horloge en
 //! arrière prolonge un frein (sens sûr) ; un saut en avant l'écourte (au plus `lock_max_s`, écrit ici). Elle rend aussi
@@ -267,9 +270,21 @@ pub(crate) fn tracer_l_echec(st: &AppState, user: &str, ip: &str, route: RouteDu
         ecrire_l_evenement(st, "failure", 3, user, ip, route, essai.consecutifs, None);
     }
     if let Some(secondes) = essai.arme_pour_s {
+        // `P10.30-d` — compté quelle que soit l'issue de l'écriture de l'événement : c'est ce qui le distingue de
+        // l'événement, qu'une base qui refuse l'écriture fait disparaître.
+        DECLENCHEMENTS_DU_FREIN_DU_SECOND_FACTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         ecrire_l_evenement(st, "lockout", 4, user, ip, route, essai.consecutifs, Some(secondes));
     }
 }
+
+/// `P10.30-d` — LES DÉCLENCHEMENTS DU FREIN DU SECOND FACTEUR, COMPTÉS PAR LE PROCESSUS ET SERVIS SUR `/metrics`
+/// (`plume_frein_du_second_facteur_declenchements_total`, `metrics::gather_prom`). Seul l'événement SIEM `lockout` les
+/// portait : un tableau de bord qui ne lit que `/metrics` ne les voyait pas, et une base qui refuse l'écriture de
+/// l'événement les effaçait (perte comptée à part, sous `plume_ingest_evenements_d_acces_non_ecrits_total`, sans dire
+/// qu'il s'agissait d'un frein). Un par code faux qui POSE le délai, sur les trois routes ; aucun pendant le délai
+/// (aucun code n'y est examiné), aucun pour un code juste présenté à l'essai qui l'aurait posé. Depuis le démarrage,
+/// jamais persisté.
+pub(crate) static DECLENCHEMENTS_DU_FREIN_DU_SECOND_FACTEUR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[allow(clippy::too_many_arguments)]
 fn ecrire_l_evenement(st: &AppState, action: &'static str, sev: i64, user: &str, ip: &str, route: RouteDuSecondFacteur, echecs: u32, freine_s: Option<u64>) {

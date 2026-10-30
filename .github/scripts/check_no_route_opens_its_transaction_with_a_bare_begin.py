@@ -113,6 +113,14 @@ SITES_HORS_ROUTE = {
     ("daemon/src/backup/dump_restauration.rs", "restore_stream"): ("BEGIN littéral",),
     # Le tier froid (feature `cold_tier`) : l'écriture d'un jour-fichier par la boucle de vieillissement, refus propagé.
     ("daemon/src/cold_store/writer.rs", "write_day_files"): ("BEGIN littéral",),
+    # Le tier froid, lecture (`P10.29-w`) : l'horizon de lecture (`HorizonDeLecture::lire`) se lit sous un `SAVEPOINT`
+    # (imbriqué si l'appelant tient une transaction), libéré sur le succès comme sur l'échec ; son refus remonte par
+    # `?` jusqu'au classeur des voies froides (`en_classant_la_voie_froide`) ou à la couverture, jamais une réponse seule.
+    ("daemon/src/cold_store/reader.rs", "lire"): ("BEGIN littéral",),
+    # Le réglage de rétention d'une famille chaude sous la voie froide lue (`P10.29-w`, vague BC) : un `SAVEPOINT` dont
+    # la sonde classe l'échec par son code (occupée / non prise), libéré sur le succès comme sur l'échec ; son refus
+    # remonte en notice de couverture (`horizon_de_la_voie_froide_lue`), jamais une réponse seule.
+    ("daemon/src/handlers/panneau_avoue.rs", "retention_de_la_famille_lue"): ("BEGIN littéral",),
     # La ventilation de la base : un instantané de lecture (`BEGIN DEFERRED`), jugé et dit par son propre `match`.
     ("daemon/src/ventilation_serie.rs", "mesurer_une_fois"): ("BEGIN littéral",),
     # Les balayages de fond des engagements (expiration, activation) : chaque refus dit par

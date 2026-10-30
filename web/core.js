@@ -612,6 +612,10 @@ const OUVERTURES_DES_REFUS_DU_SECOND_FACTEUR = [
   // n'a pas pris l'écriture (aucune graine posée ni montrée, rien compté).
   ['essai_non_compte', /^SECOND FACTEUR NON EXAMINÉ(?![\p{L}\p{N}])/u],
   ['enrolement_non_ecrit', /^ENRÔLEMENT NON ENREGISTRÉ, AUCUNE GRAINE(?![\p{L}\p{N}])/u],
+  // `P10.30-d` (démon) — l'enrôlement sans entropie (`CAUSE_ENROLEMENT_SANS_ENTROPIE`, daemon/src/handlers/idp.rs) : le noyau
+  // n'a fourni aucune entropie pour la graine. Aucune lecture ni écriture de la base n'a échoué : ce n'est pas
+  // `enrolement_non_ecrit`. Servi en cinq cents, et lu aussi en cinq cent trois (le passage annoncé par le démon).
+  ['enrolement_sans_entropie', /^ENRÔLEMENT NON FAIT, AUCUNE GRAINE(?![\p{L}\p{N}])/u],
 ];
 // Rend la nature du refus, ou '' quand la phrase n'ouvre sur aucune cause connue — l'appelant retombe alors
 // sur son refus générique, qui colle la phrase sans rien en affirmer.

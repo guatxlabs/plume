@@ -163,7 +163,7 @@ mod purge_rollback_refuse_dit_et_compte {
             Err(e) => panic!("transaction_left_open attendu après un COMMIT refusé, rendu `{e}`"),
             Ok(_) => panic!("la clé différée violée refuse le COMMIT"),
         };
-        let PurgeRefusal::TransactionLeftOpen { id, etape } = &e else { unreachable!() };
+        let PurgeRefusal::TransactionLeftOpen { id, etape, .. } = &e else { unreachable!() };
         assert_eq!(*etape, "COMMIT refusé");
         // Le `Display` est ce que la CLI écrit (sortie d'erreur et champ `message` du JSON) : phrase ENTIÈRE, écrite ICI.
         assert_eq!(

@@ -53,8 +53,8 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : la console n'affiche pas encore `stats.rafraichissement_en_echec` (web/ hors
 // périmètre) ; la nouvelle tentative sur un périmé revient à chaque interrogation tant que l'échec dure (bornée par
-// l'ensemble en vol et `refresh_sem`, délibéré) ; la purge optionnelle des bans expirés (`PLUME_BANNED_IP_RETENTION`,
-// éteinte par défaut) reste en `let _`.
+// l'ensemble en vol et `refresh_sem`, délibéré). (La purge optionnelle des bans expirés, `PLUME_BANNED_IP_RETENTION`, est
+// lue depuis : `rollups_groupe_partiellement_purge_et_bans_expires.rs`.)
 // =====================================================================================
 mod av8_fenetre_chaude_watermarks_et_perime_avoue {
     use super::*;

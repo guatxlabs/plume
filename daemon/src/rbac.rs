@@ -80,13 +80,22 @@ pub(crate) fn sso_grants(st: &AppState, groups: &str) -> (HashMap<String, String
 
 /// #2b — un `platform_user` est-il super-admin plateforme ? Mode 0 (control=None) -> false.
 pub(crate) fn platform_user_is_superadmin(st: &AppState, user: &str) -> bool {
+    platform_user_superadmin_lu(st, user).unwrap_or(false)
+}
+
+/// `P10.31-i` — la même lecture, l'échec de lecture DISTINGUÉ de « pas super-administrateur » : compte absent ou mode 0
+/// -> `Ok(false)` ; `platform_user` illisible -> `Err(constat)`, pour un appelant qui doit le nommer (503) au lieu de
+/// servir un refus de droit dont la cause serait fausse.
+pub(crate) fn platform_user_superadmin_lu(st: &AppState, user: &str) -> Result<bool, String> {
     let Some(cp) = st.tenants.control.as_ref() else {
-        return false;
+        return Ok(false);
     };
+    use rusqlite::OptionalExtension as _;
     let conn = cp.conn.lock();
     conn.query_row("SELECT is_superadmin FROM platform_user WHERE name=?1", params![user], |r| r.get::<_, i64>(0))
-        .map(|v| v != 0)
-        .unwrap_or(false)
+        .optional()
+        .map(|v| v.is_some_and(|v| v != 0))
+        .map_err(|e| e.to_string())
 }
 
 /// #2b — rôle de `user` POUR `tenant`. SSO : la map LIVE fait foi (révocation instantanée d'un groupe) ;
@@ -1739,14 +1748,17 @@ pub(crate) fn audit_tenant_event_sur(handle: &Mutex<Connection>, action: &str, s
 }
 
 /// `P10.21-m` — CE QUE L'ÉVÉNEMENT D'AUDIT POSÉ DANS LA BASE D'UN TENANT A FAIT.
-#[must_use = "un événement de tenant PERDU doit être avoué par l'appelant qui affirme le geste (`avouer_l_evenement_du_tenant_non_ecrit`)"]
+#[must_use = "un événement de tenant PERDU ou SANS BASE SERVIE doit être avoué par l'appelant qui affirme le geste (`avouer_l_evenement_du_tenant_non_ecrit`)"]
 #[derive(Debug)]
 pub(crate) enum EvenementDAuditDuTenant {
     /// La ligne est écrite dans la base du tenant.
     Ecrit,
     /// La base du tenant n'est pas servie (tenant suspendu, détruit, clé non résoluble) : l'événement n'a pas de
-    /// destinataire. LIMITE ÉCRITE, pas une perte d'écriture : rien n'est avoué (le geste sur un tenant suspendu
-    /// ne peut rien lui montrer tant qu'il l'est) — c'est la forme d'avant ce lot, inchangée.
+    /// destinataire. Ce n'est pas une écriture refusée, et c'est avoué quand même (`P10.30-d`) : chaque geste de
+    /// `tenants.rs` qui l'obtient (création, suspension, réactivation, pose et retrait d'un droit) pose à côté de son
+    /// succès `CLE_EVENEMENT_DU_TENANT_NON_ECRIT` sous la phrase `tenants::CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE`
+    /// (`avouer_l_evenement_du_tenant_non_ecrit`) — le tenant ne verra pas ce geste parmi ses événements, même servi
+    /// de nouveau.
     SansBaseServie,
     /// La base du tenant n'a pas pris l'événement. La cause du moteur est écrite au journal du démon, jamais
     /// dans un corps de réponse.
@@ -1771,11 +1783,16 @@ pub(crate) const CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT: &str =
      pris l'événement d'audit qui le lui montre — ce tenant ne verra pas ce changement parmi ses propres \
      événements. Refaire le geste ne le comble pas : signalez-le.";
 
-/// `P10.21-m` — POSE L'AVEU D'UN ÉVÉNEMENT DE TENANT PERDU À CÔTÉ D'UN SUCCÈS. Rien sur le chemin nominal, rien
-/// non plus pour une base non servie (`SansBaseServie`, limite écrite).
+/// `P10.21-m` — POSE L'AVEU D'UN ÉVÉNEMENT DE TENANT PERDU À CÔTÉ D'UN SUCCÈS. Rien sur le chemin nominal (`Ecrit`).
+/// `P10.30-d` — une base NON SERVIE (`SansBaseServie`) est avouée sous la même clé, par sa phrase à elle
+/// (`tenants::CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE` : ce n'est pas une écriture refusée). Les deux issues
+/// s'excluent : une seule phrase est posée. C'est ici, et non à chaque geste, pour que la création d'un tenant
+/// l'avoue sans changer la forme de son corps `201`, que le harnais de la console relit.
 pub(crate) fn avouer_l_evenement_du_tenant_non_ecrit(corps: &mut Value, evenement: &EvenementDAuditDuTenant) {
     if evenement.est_perdu() {
         corps[CLE_EVENEMENT_DU_TENANT_NON_ECRIT] = json!(CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT);
+    } else if matches!(evenement, EvenementDAuditDuTenant::SansBaseServie) {
+        corps[CLE_EVENEMENT_DU_TENANT_NON_ECRIT] = json!(crate::tenants::CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE);
     }
 }
 

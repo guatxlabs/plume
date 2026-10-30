@@ -285,9 +285,14 @@ const MOTS_DU_PLAN_DE_CONTROLE = {
   // l'événement d'audit qui le lui montre : le succès le dit sous `evenement_du_tenant_non_ecrit`. Et une lecture ratée du
   // tenant ou du droit visé, ou une pose de droit que le plan de contrôle n'a pas prise, est REFUSÉE en cinq cent trois
   // nommé : rien n'a changé, ce n'est ni « inconnu » ni un succès.
+  // `P10.30-d` — LA FACE EST NEUTRE ENTRE LES DEUX PHRASES QUE LE DÉMON SERT SOUS CETTE CLÉ : la perte d'écriture
+  // (`CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT`, daemon/src/rbac.rs : la base du tenant a refusé l'événement) et la base non servie
+  // (`CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE`, daemon/src/tenants.rs : un tenant suspendu, « ce n'est pas une écriture
+  // refusée »). Mesuré sur la base : la face disait « sa base n'a pas pris l'événement », faux pour la seconde. C'est la
+  // phrase servie, peinte à côté, qui dit laquelle.
   evenement_non_ecrit: {
-    fr: "Le geste a bien eu lieu, mais CE TENANT NE LE VERRA PAS parmi ses propres événements : sa base n'a pas pris l'événement d'audit qui le lui montre. Le refaire ne comblerait rien. Le démon le dit —",
-    en: 'The gesture did happen, but THIS TENANT WILL NOT SEE IT among its own events: its database did not take the audit event that shows it. Doing it again would fill nothing. The daemon says —' },
+    fr: "Le geste a bien eu lieu, mais l'événement d'audit qui le montre n'est pas écrit dans la base de ce tenant — refusé par elle, ou base non servie (tenant suspendu) : le démon dit laquelle. Ce tenant ne verra pas ce changement parmi ses propres événements, et le refaire ne comblerait rien. Le démon le dit —",
+    en: "The gesture did happen, but the audit event that shows it is not written in this tenant's database — refused by it, or database not served (suspended tenant): the daemon says which. This tenant will not see this change among its own events, and doing it again would fill nothing. The daemon says —" },
   tenant_non_lu_bascule: {
     fr: "Tenant INCHANGÉ : le plan de contrôle n'a pas pu LIRE ce tenant, la bascule n'a PAS été faite — ce n'est pas « tenant inconnu ». Le geste peut être rejoué. Le démon en nomme la cause —",
     en: 'Tenant UNCHANGED: the control plane could not READ this tenant, the switch was NOT made — this is not "unknown tenant". The gesture can be replayed. The daemon names the cause —' },

@@ -353,7 +353,10 @@ pub(crate) fn sla_multilevel_tick_par(
     #[allow(clippy::type_complexity)]
     let (ack_b, res_b, notifiers, base): (Vec<(i64, String, i64)>, Vec<(i64, String, i64)>, Vec<(i64, String, String, i64, String)>, String) = {
         let conn = db.lock();
-        // GATE : aucune politique -> on ne fait RIEN (pas même un scan de la table incident).
+        // PORTE : une lecture d'`incident` et de `sla_policy`, toujours faite. Sans politique active, le tour efface
+        // quand même les échéances d'une politique inactive (ci-dessous, avant le `return`), puis s'arrête avant les
+        // sélections (témoins : `epi_sans_aucune_politique_active_l_effacement_a_lieu_quand_meme` pour l'effacement,
+        // `pas_sans_politique_active_le_tour_efface_puis_ne_prepare_aucune_selection` pour l'arrêt).
         // `P10.20-w` — une porte NON LUE n'est pas « aucune politique » : le tour est sauté, mais COMPTÉ (balayage
         // `sla_multilevel_politique`, `/metrics`), sinon des SLA réellement échus se taisent sans trace.
         // `P10.31-v` (vague BA) — la MÊME lecture dit aussi s'il reste des échéances d'une politique inactive (état
@@ -374,6 +377,18 @@ pub(crate) fn sla_multilevel_tick_par(
         if echeances_inactives != 0 {
             match effacer_les_echeances_d_une_politique_inactive(&conn) {
                 Ok(effaces) => {
+                    // HORS D'ATTEINTE AVEC LE SCHÉMA LIVRÉ, le bras `effaces == 0` : la porte vient de lire
+                    // `echeances_inactives != 0` sur la MÊME connexion, sous le MÊME verrou de l'écrivain (`db.lock()`
+                    // plus haut, tenu jusqu'à la fin du bloc), sans énoncé entre les deux ; l'UPDATE pose le MÊME
+                    // prédicat, sans instant (`?1`) ; une transaction pendante rend `Err`, pas `Ok(0)`
+                    // (`effacer_les_echeances_d_une_politique_inactive`).
+                    // Y mènent, hors du produit livré : un écrivain d'un AUTRE processus sur le même fichier qui vide
+                    // l'ensemble entre les deux, ou un déclencheur `BEFORE UPDATE` sur `incident` qui rend
+                    // `RAISE(IGNORE)` (la ligne est sautée sans erreur : `Ok(0)`). Le schéma livré n'en pose aucun sur
+                    // `incident` (ses seuls déclencheurs portent sur `event` : db/schema.sql:88,92,
+                    // maintenance.rs:135,151). Dans ces cas rien n'est effacé et ne rien journaliser est juste.
+                    // La garde reste pour ne jamais écrire « 0 dossier(s) » (témoin
+                    // `pas_un_declencheur_raise_ignore_rend_zero_efface_et_le_tour_ne_journalise_rien`).
                     if effaces > 0 {
                         eprintln!("{}", ligne_des_echeances_inactives_effacees(effaces));
                     }

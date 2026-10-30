@@ -30,15 +30,25 @@
 //!   retour arrière borné (`visited_capacity`, 256 Kio par défaut), et le cache du PikeVM, proportionnel au
 //!   nombre d'états du programme.
 //! Par connexion de lecture, deux UDF de `MOTIFS_EN_CACHE` motifs chacune multiplient ces deux parts par
-//! `2 × MOTIFS_EN_CACHE`.
+//! `2 × MOTIFS_EN_CACHE`. Ces caches appartiennent à la CONNEXION (posés par `install_query_udfs` à son ouverture)
+//! et la suivent au pool : une connexion rendue garde ses motifs et les sert à la requête suivante qui la prend.
+//! LE PIRE CAS DU PROCESSUS multiplie donc encore par le nombre de connexions de lecture VIVANTES à la fois :
+//! `(READ_POOL_CAP + connexions en cours) × 2 × MOTIFS_EN_CACHE × (part compilée + caches de recherche)`.
+//! `READ_POOL_CAP` (`query_exec.rs`) ne borne que les connexions AU REPOS : une prise sur pool vide OUVRE au lieu
+//! d'attendre, et aucun plafond du pool ne borne les connexions en cours (voir `read_with_watchdog`). Toute lecture en
+//! vol en compte une, quelle qu'elle soit, puisqu'une connexion reprise du pool porte les motifs de ses requêtes
+//! passées ; la connexion d'union du tier froid (`cold_store/reader.rs`) pose aussi `install_query_udfs`. Le second
+//! terme n'a donc pas de borne fermée dans ce module. Témoin : `tests/memoire_des_motifs_par_connexion_vivante.rs`
+//! (une compilation par connexion vivante et par UDF, `regexp` comme `re_cap`, au-delà de `READ_POOL_CAP` ; motifs
+//! gardés au pool d'une requête à l'autre).
 //!
 //! POURQUOI PAR RÉFÉRENCE. `Clone` de `regex::Regex` ne recompile pas, mais `regex_automata::meta::Regex`
 //! se clone avec un `Pool` NEUF : le cache du DFA paresseux repart vide au premier appel. Cloner à chaque
 //! ligne, c'était reconstruire ce cache à chaque ligne. `MotifCompile` n'implémente donc PAS `Clone` et garde
 //! son expression privée : le cache ne peut que la PRÊTER.
 //!
-//! CE QUE CE MODULE NE TIENT PAS : la famine du sémaphore interactif (`query_timing::acquire_query_permit`,
-//! politique de file non écrite) ; le coût de recherche d'un motif admis à la limite ; la valeur parcourue
+//! CE QUE CE MODULE NE TIENT PAS : la famine de l'API interactive (tenue hors de ce module : couloir des requêtes
+//! lourdes et file des légères servie dans l'ordre d'arrivée, `semaphore_interactif.rs`) ; le coût de recherche d'un motif admis à la limite ; la valeur parcourue
 //! recopiée en `String` à chaque ligne par les UDF ; les autres compilations de motifs d'utilisateur
 //! (`handlers/detection.rs`, `processors.rs`).
 

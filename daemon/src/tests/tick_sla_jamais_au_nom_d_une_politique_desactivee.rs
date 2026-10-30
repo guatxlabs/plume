@@ -149,10 +149,15 @@ mod tick_sla_jamais_au_nom_d_une_politique_desactivee {
     /// politique NON active : dix gouvernés par P2 puis P2 désactivée par un `UPDATE` brut (la forme d'avant les
     /// effacements, échéances laissées), dix à politique disparue (identifiant pendant). Le tour notifie A (acquittement
     /// et résolution, détails entiers), ne marque que A, n'inscrit que les deux dépassements de A.
-    /// MUTATIONS QUI LE FONT ROUGIR : `AZ4_SELECTION_ACK` (filtre retiré de la sélection des acquittements : les vingt
-    /// occupent la fenêtre, A n'est pas notifié en acquittement), `AZ4_SELECTION_RES` (idem en résolution),
-    /// `AZ4_ENABLED_OMIS` (`p.enabled=1` retiré : les dix de P2 marqués et notifiés), `AZ4_TOUJOURS_FAUX` (plus rien ne
-    /// sort, A compris).
+    /// DEPUIS LA VAGUE BA, CE QU'IL TIENT ENCORE : le RÉSULTAT de bout en bout sur l'état ancien, quelle que soit la
+    /// couche qui le donne. Le tour efface d'abord les échéances des vingt (`effacer_les_echeances_d_une_politique_inactive`,
+    /// avant les sélections) : retirer seul le filtre de gouvernance d'une sélection (`AZ4_SELECTION_ACK`,
+    /// `AZ4_SELECTION_RES`) ou seul `p.enabled=1` de ce filtre (`AZ4_ENABLED_OMIS`) le laisse VERT, car les vingt n'ont
+    /// plus d'échéance ; retirer seul l'effacement le laisse vert aussi, le filtre suffisant. Il ne rougit que si les DEUX
+    /// couches cèdent ensemble (effacement retiré ET filtre retiré d'une sélection : les vingt occupent la fenêtre), ou
+    /// si plus rien ne sort (`AZ4_TOUJOURS_FAUX`, A compris). Chaque couche seule a son témoin, dans
+    /// `echeances_d_une_politique_inactive_effacees.rs` : le filtre par `epi_effacement_refuse_le_filtre_des_selections_…`,
+    /// l'effacement par `epi_etat_ancien_efface_au_tour_…`.
     #[test]
     fn tpd_etat_ancien_a_politique_desactivee_ou_disparue_jamais_marque_et_ne_masque_pas_un_vrai_depassement() {
         let (st, _t) = tpd_etat("ancien");
@@ -312,8 +317,12 @@ mod tick_sla_jamais_au_nom_d_une_politique_desactivee {
     /// contrôle. Le tour notifie et marque E seul ; D n'est ni notifié ni marqué. La fixture `tpd_etat_ancien` ne le
     /// tenait pas : ses dossiers pendants étaient en P2 désactivée, « politique disparue » et « aucune politique active
     /// pour la priorité » y étaient indiscernables.
-    /// MUTATION QUI LE FAIT ROUGIR : `AZ4C_PRIORITE` (la gouvernance juge « une politique active de la même priorité » au
-    /// lieu de la politique du dossier : D notifié et marqué).
+    /// DEPUIS LA VAGUE BA, CE QU'IL TIENT ENCORE : le RÉSULTAT de bout en bout, quelle que soit la couche qui le donne.
+    /// Le tour efface d'abord les échéances de D (identifiant pendant, `effacer_les_echeances_d_une_politique_inactive`,
+    /// avant les sélections) : juger « une politique active de la même priorité » au lieu de la politique du dossier
+    /// (`AZ4C_PRIORITE`, rejoué en `BB5C_GOUVERNANCE_PAR_PRIORITE`) le laisse VERT, car D n'a plus d'échéance. Il ne
+    /// rougit que si l'effacement cède AUSSI (effacement retiré ET gouvernance par priorité : D notifié et marqué). La
+    /// gouvernance seule a son témoin, à effacement REFUSÉ, dans `gouvernance_par_la_politique_du_dossier_effacement_refuse.rs`.
     #[test]
     fn tpd_identifiant_pendant_sous_une_politique_active_de_meme_priorite_n_est_pas_juge() {
         let (st, _t) = tpd_etat("pendante-active");

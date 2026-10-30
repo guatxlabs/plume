@@ -182,7 +182,9 @@ mod corps_a_cause_seule_rendus_en_statut {
         ccs_ecrire(&st, "ALTER TABLE event RENAME TO event_hors_d_atteinte;");
         let (statut, corps, _) = ccs_reponse(parser_reparse(State(st.clone()), Extension(adm), Json(json!({ "dry_run": true }))).await).await;
         assert_eq!(statut, 503, "un parcours qui n'a pas pu commencer n'est pas un succès : {corps}");
-        assert!(ccs_cause(&corps).starts_with("prepare:"), "la cause du moteur est servie telle quelle : {corps}");
+        // `P10.29-l` (vague BE) — INVERSÉ : la cause du moteur (`prepare: …`) n'est plus servie ; le 503 porte la phrase fixe
+        // `CAUSE_REPARSE_NON_PREPARE`, le texte du moteur part au journal `[reparse]`.
+        assert_eq!(ccs_cause(&corps), crate::handlers::detection::CAUSE_REPARSE_NON_PREPARE, "la phrase fixe, sans texte du moteur : {corps}");
         assert!(corps.get("scanned").is_none(), "aucun compte n'est servi sur un parcours non commencé : {corps}");
     }
 

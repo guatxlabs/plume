@@ -443,10 +443,23 @@ Deux points à ne pas confondre :
 
 - **`/api/search` n'est pas du GXQL.** C'est une barre de recherche à analyseur ad-hoc, adossée à
   l'index plein texte, qui accepte quelques jetons (`limite`, expression régulière, `champ:valeur`
-  avec joker). Elle rend **toujours `200`**, même sur une erreur de moteur, qu'elle place dans un
-  champ `error` de la réponse.
+  avec joker). Elle rend **toujours `200`**, même sur une erreur de moteur : le champ `error` de la
+  réponse porte alors une phrase fixe, jamais le texte du moteur.
 - **`/api/soql/validate` ne touche pas la base.** Il compile et rend son verdict — pas de handle,
   pas d'exécution. C'est l'appel que fait la console pendant la frappe.
+
+**Ce que porte `error` quand une requête n'est pas servie.** Deux sources, à ne pas confondre :
+
+- **le refus du compilateur GXQL** (commande, fonction ou champ inconnu, champ masqué, borne
+  dépassée) : `400`, et `error` porte le message du compilateur, tel quel. Ce message ne cite que la
+  requête **de l'appelant** (le nom fautif qu'il a écrit) et le vocabulaire fermé du langage ; il ne
+  lit pas la base. C'est voulu : sans lui, une faute de frappe serait indiagnosticable ;
+- **l'échec à l'exécution** : la classe est décidée par le code du moteur, et `error` porte une
+  phrase fixe par classe — support de la base illisible ou base occupée en `503`, refus du moteur
+  (syntaxe du SQL compilé, autorisateur, motif) en `400`, phrase du produit (annulation, budget,
+  lecture seule, mémoire, motif refusé) à l'octet en `400`. Le texte du moteur ne part jamais au
+  client ; l'exploitant trouve la classe et le code au journal du démon (`[query] WARN`).
+  `/api/rule-test` (essai d'une règle) sert les mêmes phrases, mais garde son `200` `{error, sql}`.
 
 **Le SQL brut** (`{"sql": …}` sur `/api/query`) est réservé aux administrateurs, et il reste soumis
 à l'autorisateur : voir la note du [`README`](../README.md#sécurité-intégrée).

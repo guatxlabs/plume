@@ -1212,6 +1212,18 @@ pub(crate) fn ou_vit_le_mot_de_passe_de(st: &AppState, user: &str) -> rusqlite::
     let de_l_assistant = st.admin.lock().as_ref().is_some_and(|(nom, _)| nom == user);
     let de_configuration = !st.pass_hash.is_empty() && st.user.as_str() == user;
     if st.multi_tenant {
+        // `P10.24-e` — AVEC UN PLAN DE CONTRÔLE, LE COMPTE DE PLATEFORME QUI PORTE UN MOT DE PASSE FAIT AUTORITÉ SUR LE NOM,
+        // comme dans `authenticate` (`state::lookup_basic_ident_lu` : la ligne `platform_user` d'abord, l'administrateur de
+        // l'assistant seulement à défaut). Mesuré sur la forme d'avant : un compte de plateforme homonyme de l'administrateur
+        // de l'assistant prouvait son mot de passe de PLATEFORME comme « mot de passe actuel », et la route remplaçait la
+        // crédence de l'ASSISTANT. Une lecture ratée de `platform_user` est un `Err` : rien n'est conclu.
+        if let Some(plan) = st.tenants.control.as_ref() {
+            let hachage_de_plateforme: Option<Option<String>> =
+                plan.conn.lock().query_row("SELECT hash FROM platform_user WHERE name=?1", params![user], |r| r.get(0)).optional()?;
+            if matches!(hachage_de_plateforme, Some(Some(_))) {
+                return Ok(MotDePasseDeLAppelant::DePlateforme);
+            }
+        }
         return Ok(if de_l_assistant {
             MotDePasseDeLAppelant::DeLAssistant
         } else if de_configuration {
@@ -1479,6 +1491,12 @@ pub(crate) const CAUSE_DECONNEXION_GLOBALE_RESERVEE_A_UN_ADMIN: &str = "DÉCONNE
      `admin`. Rien n'est révoqué, aucun cookie n'est effacé. Une déconnexion sans en-tête de portée révoque le seul \
      compte de la session.";
 
+/// `P10.31-i` — l'autorité de l'appelant n'a pas pu être relue (mode multi-tenant, `platform_user` illisible). Servie
+/// par les deux portes de la révocation globale : `logout_post` (portée `globale`) et `revocation_globale_post`.
+pub(crate) const CAUSE_DECONNEXION_GLOBALE_AUTORITE_NON_LUE: &str = "DÉCONNEXION GLOBALE NON JUGÉE, RIEN N'EST \
+     RÉVOQUÉ : le plan de contrôle n'a pas pu être lu pour établir que l'appelant est un super-administrateur de la \
+     plateforme. Aucun cookie n'est effacé, rien n'est inscrit au registre. Réessayez.";
+
 /// `P10.23-o` — portée inconnue : ni `compte` ni `globale`.
 pub(crate) const CAUSE_PORTEE_DE_DECONNEXION_INCONNUE: &str = "PORTÉE DE DÉCONNEXION INCONNUE : l'en-tête \
      `x-plume-portee-de-deconnexion` vaut `compte` (le défaut : le seul compte de la session) ou `globale` \
@@ -1500,15 +1518,25 @@ pub(crate) const CAUSE_REVOCATION_DU_COMPTE_NON_ECRITE: &str = "RÉVOCATION DU C
      cookie vaudrait encore jusqu'à son expiration. Reconnectez-vous puis déconnectez-vous à nouveau.";
 
 /// `P10.23-o` — le compte d'une session valide dont le rôle COURANT est `admin`. Mode 0 : rôle relu LIVE à l'époque
-/// du compte (comme `resolve_identity`), jamais celui figé dans le jeton. Mode 1 : rôle du jeton (le plancher que
-/// la résolution d'identité du mode 1 accorde au cookie), à l'époque de son compte (`P10.31-i`).
-fn admin_de_la_session(st: &AppState, jeton: &str) -> Option<String> {
+/// du compte (comme `resolve_identity`), jamais celui figé dans le jeton. Mode 1 AVEC plan de contrôle (`P10.31-i`) :
+/// le SUPER-ADMINISTRATEUR de la plateforme, relu dans `platform_user` à la requête — la même autorité que
+/// `revocation_globale_post`, l'autre porte de la révocation globale. Mesuré sur la forme d'avant : le rôle porté par le
+/// jeton (`admin` si super-administrateur À LA CONNEXION, `state::lookup_basic_ident_lu`) faisait foi jusqu'à
+/// l'expiration du cookie, et un super-administrateur rétrogradé révoquait encore tout le monde. Mode 1 SANS plan de
+/// contrôle (aucun `platform_user` à relire) : le rôle du jeton, à l'époque de son compte, comme avant.
+///
+/// `Ok(None)` : pas un administrateur (ou aucune session ouverte). `Err(constat)` : `platform_user` n'a pas pu être lu —
+/// l'autorité n'est PAS jugée, et l'appelant le nomme (503) au lieu de servir à un super-administrateur un refus de droit
+/// dont la cause serait fausse. Rien n'est révoqué dans les deux cas.
+fn admin_de_la_session(st: &AppState, jeton: &str) -> Result<Option<String>, String> {
     if st.multi_tenant {
-        return compte_de_la_session_ouverte(st, jeton).filter(|(_, role)| role == "admin").map(|(user, _)| user);
+        let Some((user, role)) = compte_de_la_session_ouverte(st, jeton) else { return Ok(None) };
+        let autorite = if st.tenants.control.is_some() { crate::rbac::platform_user_superadmin_lu(st, &user)? } else { role == "admin" };
+        return Ok(autorite.then_some(user));
     }
     let epoch = st.session_epoch.load(std::sync::atomic::Ordering::Relaxed);
-    let (user, _, epoque_du_jeton) = verify_session_du_compte(st.session_secret.as_slice(), jeton, epoch)?;
-    (live_role_si_l_epoque_du_compte_vaut(st, &user, epoque_du_jeton)? == "admin").then_some(user)
+    let Some((user, _, epoque_du_jeton)) = verify_session_du_compte(st.session_secret.as_slice(), jeton, epoch) else { return Ok(None) };
+    Ok(live_role_si_l_epoque_du_compte_vaut(st, &user, epoque_du_jeton).filter(|r| r == "admin").map(|_| user))
 }
 
 fn cookies_effaces(statut: StatusCode, corps: Value) -> Response {
@@ -1533,22 +1561,19 @@ pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http:
     match portee.as_deref() {
         None | Some("compte") => {}
         Some("globale") => {
-            let Some(admin) = jeton.as_deref().and_then(|tok| admin_de_la_session(&st, tok)) else {
-                return err_json(StatusCode::FORBIDDEN, CAUSE_DECONNEXION_GLOBALE_RESERVEE_A_UN_ADMIN);
+            let jugee = match jeton.as_deref() {
+                Some(tok) => admin_de_la_session(&st, tok),
+                None => Ok(None),
             };
-            return match revoquer_l_epoque_globale_tracee(&st, &admin) {
-                Ok(()) => cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" })),
-                // Le verrou de `revoquer_l_epoque_globale_tracee` est rendu à son retour : le compte au journal se lit sous
-                // une prise neuve, pour la ligne seule (`compte #<id>`, jamais le nom de l'administrateur).
-                Err(RevocationGlobaleRefusee::NonTracee(cause)) => {
-                    eprintln!("[session] WARN déconnexion globale par le {} NON tracée, rien n'est révoqué : {cause}", compte_au_journal(&st.db.lock(), &admin));
-                    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_TRACEE)
-                }
-                Err(RevocationGlobaleRefusee::NonPersistee(cause)) => {
-                    eprintln!("[session] WARN déconnexion globale par le {} : époque NON persistée, rien n'est révoqué : {cause}", compte_au_journal(&st.db.lock(), &admin));
-                    err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_PERSISTEE)
+            let admin = match jugee {
+                Ok(Some(admin)) => admin,
+                Ok(None) => return err_json(StatusCode::FORBIDDEN, CAUSE_DECONNEXION_GLOBALE_RESERVEE_A_UN_ADMIN),
+                Err(constat) => {
+                    eprintln!("[session] WARN déconnexion globale refusée : le super-administrateur n'a pas pu être relu dans le plan de contrôle ({constat})");
+                    return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_AUTORITE_NON_LUE);
                 }
             };
+            return servir_la_revocation_globale(&st, &admin);
         }
         Some(_) => return err_json(StatusCode::BAD_REQUEST, CAUSE_PORTEE_DE_DECONNEXION_INCONNUE),
     }
@@ -1564,6 +1589,92 @@ pub(crate) async fn logout_post(State(st): State<AppState>, headers: axum::http:
             cookies_effaces(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": CAUSE_REVOCATION_DU_COMPTE_NON_ECRITE }))
         }
     }
+}
+
+/// `P10.20-b` / `P10.23-o` — CE QUE SERT UNE RÉVOCATION GLOBALE ADMISE, pour ses deux portes (`logout_post` sous la portée
+/// `globale`, `revocation_globale_post`) : `200` et les cookies de ce navigateur effacés (sa session est révoquée avec les
+/// autres), ou le `503` qui nomme ce qui n'a pas eu lieu. Jamais `200` sans l'époque persistée ET tracée.
+fn servir_la_revocation_globale(st: &AppState, admin: &str) -> Response {
+    match revoquer_l_epoque_globale_tracee(st, admin) {
+        Ok(()) => cookies_effaces(StatusCode::OK, json!({ "ok": true, "portee": "globale" })),
+        // Le verrou de `revoquer_l_epoque_globale_tracee` est rendu à son retour : le compte au journal se lit sous
+        // une prise neuve, pour la ligne seule (`compte #<id>`, jamais le nom de l'administrateur).
+        Err(RevocationGlobaleRefusee::NonTracee(cause)) => {
+            eprintln!("[session] WARN déconnexion globale par le {} NON tracée, rien n'est révoqué : {cause}", compte_au_journal(&st.db.lock(), admin));
+            err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_TRACEE)
+        }
+        Err(RevocationGlobaleRefusee::NonPersistee(cause)) => {
+            eprintln!("[session] WARN déconnexion globale par le {} : époque NON persistée, rien n'est révoqué : {cause}", compte_au_journal(&st.db.lock(), admin));
+            err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_PERSISTEE)
+        }
+    }
+}
+
+/// `P10.31-i` (volet 2) — refus de `POST /api/sessions/revocation-globale` : l'appelant n'a pas l'autorité qui couvre
+/// TOUS les comptes.
+pub(crate) const CAUSE_REVOCATION_GLOBALE_RESERVEE: &str = "RÉVOCATION GLOBALE RÉSERVÉE : révoquer les sessions de \
+     TOUS les comptes exige le rôle `admin` ; en mode multi-tenant, un super-administrateur de la plateforme (un \
+     administrateur de tenant ne révoque pas les sessions des autres tenants), qui agit dans un tenant dont il est \
+     administrateur, ou par bris de glace (`X-Plume-Breakglass`) dans un tenant dont il n'est pas membre. Rien n'est \
+     révoqué ni inscrit au registre.";
+
+// `P10.31-i` (volet 2) — POST /api/sessions/revocation-globale : LA RÉVOCATION GLOBALE SANS COOKIE DE SESSION.
+//
+// LE DÉFAUT, MESURÉ SUR LA FORME D'AVANT : la seule porte de la révocation globale était `logout_post` sous l'en-tête de
+// portée `globale`, qui exige un cookie `plume_session` d'administrateur. Un administrateur servi par le SSO d'en-têtes
+// (forward-auth, aucun cookie plume) ou par Basic recevait `403` : il n'avait AUCUN geste de révocation globale. Le
+// bouton de la console qui appelle cette route est de la zone console (`web/`), peint à part : tant qu'il n'y est pas,
+// l'administrateur SSO a la route, pas l'écran.
+//
+// CETTE ROUTE : une route d'administration ordinaire, derrière `auth_guard` (Basic, SSO d'en-têtes, ou cookie avec son
+// jeton CSRF — les gardes de `apply_gates`), classée administrateur par le refus par défaut de `route_min_role`
+// (mutation non déclarée). RÉSERVE re-jugée ici : mode 0, le rôle effectif `admin` ; mode multi-tenant, le
+// SUPER-ADMINISTRATEUR de la plateforme (relu à chaque requête, `resolve_tenant_access`) — l'époque est globale au
+// processus, et l'administrateur d'UN tenant ne révoque pas les sessions des autres. EN MODE MULTI-TENANT, LA RÉSERVE
+// RÉELLE EST PLUS ÉTROITE, ET C'EST JOUÉ (`rgsc_mode_1_la_reserve_reelle_du_super_administrateur`) : `rbac_gate` juge
+// le rôle PAR TENANT avant ce gestionnaire, donc le super-administrateur doit être administrateur du tenant choisi, ou
+// écrire par bris de glace dans un tenant dont il n'est pas membre ; lecteur ou éditeur de son tenant, il reçoit le
+// `403` de la porte. Enfin la révocation tracée (`revoquer_l_epoque_globale_tracee` : époque persistée ET maillon
+// `auth.deconnexion.globale`, dans une transaction), servie par `servir_la_revocation_globale`, la même que la portée
+// `globale` de `logout_post`.
+//
+// PAS DE SECRET DES GESTES, COMME `logout_post` SOUS LA PORTÉE `globale` — les deux portes ont la même autorité. Le
+// secret de `P10.24-m` garde les gestes qui POSENT un accès persistant (créer ou promouvoir un administrateur,
+// réinitialiser un autre compte, frapper un jeton) ; celui-ci en RETIRE à tous, et la décision de l'exploitant sur
+// `P10.23-o` (2026-09-29) le veut « réservé à un administrateur, nommé, tracé ». L'exiger ici seulement laissait la
+// seconde porte sans lui (une session d'administrateur volée révoquait tout le monde par `logout_post`), et sans
+// secret configuré privait l'administrateur SSO du seul geste que cette route lui donne.
+pub(crate) async fn revocation_globale_post(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
+    // Mode 0 : HORS D'ATTEINTE par la route pour un non-administrateur — `rbac::route_min_role` (refus par défaut,
+    // `MinRole::Admin`) le refuse avant le gestionnaire ; le bras reste, défense en profondeur, témoigné par appel direct
+    // (`rgsc_un_non_administrateur_est_refuse`). Mode multi-tenant : atteint par l'administrateur d'un tenant.
+    // Jugé sur `multi_tenant` et NON sur le plan de contrôle, À DESSEIN : en mode multi-tenant dégradé (plan de contrôle
+    // non initialisé, `server/mod.rs`), chaque tenant ouvert par les groupes SSO est la base unique
+    // (`TenantDbManager::handle_for`) ; l'administrateur d'un tenant y révoquerait les sessions de tous
+    // (`rgsc_mode_degrade_la_revocation_globale_reste_au_super_administrateur`).
+    let autorite_sur_tous_les_comptes = if st.multi_tenant { au.is_superadmin } else { au.is_admin() };
+    // `P10.31-i` (correction) — UN `false` QUI VIENT D'UNE LECTURE RATÉE N'EST PAS UN REFUS DE DROIT. Pour Basic et cookie,
+    // `au.is_superadmin` vient de `rbac::platform_user_is_superadmin`, qui rend `false` quand `platform_user` est illisible.
+    // L'autre porte (`logout_post`, portée `globale`, `admin_de_la_session`) sert alors le `503` AUTORITÉ NON LUE ; celle-ci
+    // servait le `403` de la réserve à un super-administrateur dont la valeur ne se lisait pas — la cause fausse que l'autre
+    // porte ne sert plus. La valeur est relue ici, et la lecture ratée nommée de la même phrase. Le SSO d'en-têtes juge
+    // par les groupes, et sans plan de contrôle il n'y a rien à relire : `au.is_superadmin` y fait foi.
+    let autorite_sur_tous_les_comptes = if autorite_sur_tous_les_comptes || !st.multi_tenant || st.tenants.control.is_none() || !matches!(au.method.as_str(), "basic" | "cookie") {
+        autorite_sur_tous_les_comptes
+    } else {
+        // La relecture ne fait que NOMMER l'échec : lue, elle laisse l'autorité jugée par `auth_guard` (aucune élévation ici).
+        match crate::rbac::platform_user_superadmin_lu(&st, &au.name) {
+            Ok(_) => false,
+            Err(constat) => {
+                eprintln!("[session] WARN révocation globale refusée : le super-administrateur n'a pas pu être relu dans le plan de contrôle ({constat})");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_AUTORITE_NON_LUE);
+            }
+        }
+    };
+    if !autorite_sur_tous_les_comptes {
+        return err_json(StatusCode::FORBIDDEN, CAUSE_REVOCATION_GLOBALE_RESERVEE);
+    }
+    servir_la_revocation_globale(&st, &au.name)
 }
 
 // GET /api/me -> état d'auth pour le SPA : {user, role, auth_method, csrf_token}. csrf_token non vide

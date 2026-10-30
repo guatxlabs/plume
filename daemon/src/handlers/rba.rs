@@ -879,10 +879,16 @@ pub(crate) async fn risk_entity_timeline(
         .optional();
     let (summary, summary_error) = match synthese {
         Ok(v) => (v, None),
-        Err(e) => (None, Some(format!("synthèse de risque NON LUE : {e} — ce n'est PAS « aucun risque cumulé » pour cette entité"))),
+        Err(e) => {
+            // `P10.29-l` (vague BE) — `e` est la cause laissée au journal (phrase fixe), plus le texte du moteur ; la ligne
+            // `[rba] WARN` ne nomme ni l'entité ni son type (un nom d'entité peut être un compte).
+            let e = crate::handlers::actions::laisser_la_cause_au_journal("rba", "synthèse de risque NON LUE", &au.tenant, &e);
+            (None, Some(format!("synthèse de risque NON LUE : {e} — ce n'est PAS « aucun risque cumulé » pour cette entité")))
+        }
     };
     // `P10.7-g` (lot 107) — timeline et contributions lues EN BLOC : une lecture ratée n'est plus une liste
-    // vide muette, elle est rendue `null` avec sa cause (`timeline_error` / `contributions_error`).
+    // vide muette, elle est rendue `null` avec sa cause (`timeline_error` / `contributions_error`). `P10.29-l` (vague BE) :
+    // cette cause est la phrase fixe `CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL`, le texte du moteur part à la ligne `[rba] WARN`.
     let timeline_lue: rusqlite::Result<Vec<Value>> = conn
         .prepare(
             "SELECT (ts/3600)*3600 AS bucket, SUM(risk_score), COUNT(*) FROM risk_event \
@@ -911,7 +917,10 @@ pub(crate) async fn risk_entity_timeline(
         });
     let (timeline, timeline_error) = match timeline_lue {
         Ok(v) => (Value::Array(v), None),
-        Err(e) => (Value::Null, Some(format!("ligne de temps du risque NON LUE : {e}"))),
+        Err(e) => {
+            let e = crate::handlers::actions::laisser_la_cause_au_journal("rba", "ligne de temps du risque NON LUE", &au.tenant, &e);
+            (Value::Null, Some(format!("ligne de temps du risque NON LUE : {e}")))
+        }
     };
     let mut corps = json!({ "entity_type": etype, "entity": entity, "summary": summary, "timeline": timeline, "contributions": [] });
     if let Some(obj) = corps.as_object_mut() {
@@ -930,6 +939,7 @@ pub(crate) async fn risk_entity_timeline(
             Err(e) => {
                 // Contributions NON LUES : `null` avec sa cause, jamais une sous-liste vide qui se lit « aucune ».
                 obj.insert("contributions".into(), Value::Null);
+                let e = crate::handlers::actions::laisser_la_cause_au_journal("rba", "contributions du risque NON LUES", &au.tenant, &e);
                 obj.insert("contributions_error".into(), json!(format!("contributions du risque NON LUES : {e}")));
                 obj.insert("lecture_non_faite".into(), json!(true));
             }

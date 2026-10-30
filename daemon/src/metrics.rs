@@ -1323,6 +1323,9 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     // `P10.30-d` (reste `scim_token.last_used`) — lu à l'atomique, comme les comptes du ban natif : un scrape ne coûte
     // rien à la base. Toujours servi (0 en mode 0 : aucun jeton SCIM n'y est lu).
     prom_line(&mut o, "plume_scim_last_used_non_ecrits_total", "counter", "Écritures de la date d'usage d'un jeton SCIM (scim_token.last_used) que la base n'a PAS prises depuis le démarrage ; l'authentification a été servie, seule la date d'usage est périmée (P10.30-d)", crate::scim::SCIM_LAST_USED_NON_ECRITS.load(Ordering::Relaxed).to_string());
+    // `P10.30-d` (reste du frein du second facteur) — lu à l'atomique, comme le compte ci-dessus. Toujours servi (0 tant
+    // qu'aucun frein n'a été posé depuis le démarrage).
+    prom_line(&mut o, "plume_frein_du_second_facteur_declenchements_total", "counter", "Déclenchements du frein par compte du second facteur depuis le démarrage : un code faux qui atteint le seuil pose un délai (connexion, activation ou désactivation) ; compté même quand l'événement plume-auth lockout qui le porte n'est pas écrit (P10.30-d)", crate::handlers::frein_du_second_facteur::DECLENCHEMENTS_DU_FREIN_DU_SECOND_FACTEUR.load(Ordering::Relaxed).to_string());
     g(&mut o, "plume_spool_barriere_fichier_total", "counter", "Barrières fsync(fichier) prises avant le renommage du spool", "/ingest/spool_barriere_fichier_total");
     g(&mut o, "plume_spool_barriere_repertoire_total", "counter", "Barrières fsync(répertoire) prises après le renommage du spool", "/ingest/spool_barriere_repertoire_total");
     g(&mut o, "plume_spool_barriere_echec_total", "counter", "Barrières de durabilité du spool REFUSÉES par le noyau", "/ingest/spool_barriere_echec_total");

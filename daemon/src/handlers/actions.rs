@@ -639,11 +639,40 @@ pub(crate) const CAUSE_REMISE_D_ACTIONS_NON_RECLAMEE: &str =
 /// Distinct du zéro d'absence (`ok: false`, 200) : là, la base a répondu et AUCUNE ligne ne correspondait
 /// — riposte déjà close, ou ciblée sur un autre hôte. Ici, la base n'a rien pris, et la riposte reste
 /// OUVERTE : l'agent doit revenir, alors que `ok: false` lui dit de passer à la suivante.
+///
+/// `P10.29-l` (vague BE) — les parenthèses de ce 503 (et de `CAUSE_RIPOSTE_NON_LUE`,
+/// `CAUSE_APPROBATION_NON_ENREGISTREE`, `CAUSE_ANNULATION_NON_ENREGISTREE`) portaient le texte du moteur SQLite ;
+/// elles portent désormais `CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL`, le texte part au journal (`laisser_la_cause_au_journal`).
 pub(crate) const CAUSE_RESULTAT_NON_ENREGISTRE: &str =
     "RÉSULTAT NON ENREGISTRÉ : le verdict remonté par l'agent n'a pas pu être écrit, donc la riposte \
      reste OUVERTE — ni statut, ni horodatage de clôture, et le registre n'en porte AUCUNE trace. Ce \
      n'est PAS « cette riposte était déjà close, ou ciblée sur un autre hôte » : rien n'a été fait. \
      Réessayez.";
+
+/// `P10.29-l` (vague BE) — CE QUE LES PARENTHÈSES D'UN REFUS SERVENT À LA PLACE DU TEXTE DU MOTEUR. Le texte rendu par
+/// SQLite (nom de table, de colonne, message d'un déclencheur, type d'une valeur illisible) ne part plus au client.
+pub(crate) const CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL: &str = "la cause rendue par la base est au journal du démon";
+
+/// AVEU : `P10.29-l` (vague BE) — la cause d'un refus dont le texte du moteur est resté au journal. Son affichage est
+/// la phrase fixe `CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL`, jamais le texte du moteur.
+pub(crate) struct CauseLaisseeAuJournal;
+
+impl std::fmt::Display for CauseLaisseeAuJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL)
+    }
+}
+
+/// AVEU : `P10.29-l` (vague BE) — ÉCRIT LE TEXTE DU MOTEUR À UNE LIGNE `[<journal>] WARN <geste> (tenant '<tenant>') :
+/// "<moteur>"` et rend la cause à servir à sa place. Le texte est rendu par `{:?}` (une seule ligne : retour à la ligne,
+/// retour chariot et guillemet échappés). Le geste nomme la riposte par son numéro, jamais par sa cible, son hôte
+/// ni un compte ; le tenant est celui de l'appelant. Les sites gardent leur forme `Err(e) => … format!("{CAUSE_X}
+/// ({e})")`, celle que lisent les instruments 101 et 103 du harnais console et `check_enforcer_lists_fail_closed.py` :
+/// `e` y est cette cause, plus l'erreur du moteur.
+pub(crate) fn laisser_la_cause_au_journal(journal: &str, geste: &str, tenant: &str, moteur: &dyn std::fmt::Display) -> CauseLaisseeAuJournal {
+    eprintln!("[{journal}] WARN {geste} (tenant '{tenant}') : {:?}", moteur.to_string());
+    CauseLaisseeAuJournal
+}
 
 pub(crate) async fn action_result(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if au.role != "agent" || au.name.is_empty() {
@@ -677,7 +706,7 @@ pub(crate) async fn action_result(State(st): State<AppState>, Extension(au): Ext
     let n = match conn.execute(
         "UPDATE action SET status=?2, result=?3, done_ts=?4 WHERE id=?1 AND status='approved' AND host=?5",
         params![id, status, result, now(), host],
-    ) {
+    ).map_err(|e| laisser_la_cause_au_journal("actions", &format!("verdict de l'agent NON écrit, riposte #{id} restée ouverte"), &au.tenant, &e)) {
         Ok(n) => n,
         Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_RESULTAT_NON_ENREGISTRE} ({e})")),
     };
@@ -791,13 +820,17 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
             },
         )
         .optional()
+        .map_err(|e| laisser_la_cause_au_journal("actions", &format!("riposte #{id} NON relue, rien n'est approuvé"), &au.tenant, &e))
     {
         Ok(Some(lue)) => lue,
         Ok(None) => return err_json(StatusCode::NOT_FOUND, CAUSE_RIPOSTE_INTROUVABLE),
         Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_RIPOSTE_NON_LUE} ({e})")),
     };
     // L'ÉCRITURE DU STATUT N'EST PLUS AVALÉE : un échec refuse AVANT la ligne de registre.
-    let approuvee_ici = match conn.execute("UPDATE action SET status='approved' WHERE id=?1 AND status='pending'", params![id]) {
+    let approuvee_ici = match conn
+        .execute("UPDATE action SET status='approved' WHERE id=?1 AND status='pending'", params![id])
+        .map_err(|e| laisser_la_cause_au_journal("actions", &format!("approbation de la riposte #{id} NON écrite"), &au.tenant, &e))
+    {
         Ok(n) => n == 1,
         Err(e) => return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_APPROBATION_NON_ENREGISTREE} ({e})")),
     };
@@ -1289,7 +1322,10 @@ pub(crate) const CAUSE_RIPOSTE_NON_ANNULABLE: &str =
 /// enveloppe ce geste d'un `catch`).
 pub(crate) async fn action_cancel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     crate::req_conn!(st, au, conn);
-    match conn.execute("UPDATE action SET status='cancelled' WHERE id=?1 AND status IN ('pending','approved')", params![id]) {
+    match conn
+        .execute("UPDATE action SET status='cancelled' WHERE id=?1 AND status IN ('pending','approved')", params![id])
+        .map_err(|e| laisser_la_cause_au_journal("actions", &format!("annulation de la riposte #{id} NON écrite"), &au.tenant, &e))
+    {
         Ok(0) => err_json(StatusCode::NOT_FOUND, CAUSE_RIPOSTE_NON_ANNULABLE),
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_ANNULATION_NON_ENREGISTREE} ({e})")),

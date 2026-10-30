@@ -32,8 +32,12 @@
 // juridique actif sur une AUTRE source (branche `HoldEnforce::Guard`, qui ne retient pas les lignes de la fixture). Journal
 // lu sur le stderr d'un sous-processus, lignes ENTIÈRES, causes du moteur sondées dans l'enfant.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : un groupe partiellement purgé côté `event` (frontière de rétention) reste
-// reconstruit sur ce qui reste (limite écrite dans `rollups.rs`) ; le tier froid n'est joué que sous `--features
+// INVERSÉ NOMMÉMENT (`P10.32-a`, groupe partiellement purgé) : les lignes PÉRIMÉES des fixtures (a), (c), (e), (o) portaient
+// un compte PLUS GRAND que les lignes d'`event` de leur groupe (7 pour 2, 99 pour 1, 7 pour 1) ; c'est exactement la forme
+// d'un groupe partiellement purgé côté `event`, désormais GARDÉ (témoins `rollups_groupe_partiellement_purge_et_bans_expires.rs`).
+// Leur compte est ramené à celui d'`event` (2, 1, 1 ; en (e) la ligne d'`event` agrégée devient la ligne périmée) : un groupe
+// resservi à compte égal est recomposé, ce que ces témoins jugent.
+// CE QUE CES TÉMOINS NE TIENNENT PAS : le tier froid n'est joué que sous `--features
 // cold_tier` (témoin (p) : vieillissement et horizon étendu sautés sur `retention_days` illisible), pas son expiration
 // des fichiers Parquet, qui ne tourne que dans la passe de vieillissement. Les lectures de la rétention HORS de la
 // passe (`cold_store/aging.rs`, sonde, bannière, routes) ne gardent plus le repli depuis la vague AR (témoins
@@ -146,8 +150,8 @@ mod rollups_buckets_resservis_et_retention_illisible {
     /// (`rbr-autre`, prod) et un autre environnement (sshd, staging), 42 chacun — qu'`event` ne porte plus.
     fn rbr_rollup_d_avant(conn: &rusqlite::Connection, i: &Rbr) {
         rbr_rollup(conn, i.b_hist, "rbr-histoire", 42);
-        rbr_rollup_g(conn, i.b_vivant, "sshd", "rbr-perime", "prod", 7);
-        rbr_rollup_g(conn, i.b_vieux, "sshd", "rbr-perime", "prod", 99);
+        rbr_rollup_g(conn, i.b_vivant, "sshd", "rbr-perime", "prod", 2);
+        rbr_rollup_g(conn, i.b_vieux, "sshd", "rbr-perime", "prod", 1);
         rbr_rollup_g(conn, i.b_vieux, "rbr-autre", "", "prod", 42);
         rbr_rollup_g(conn, i.b_vieux, "sshd", "", "staging", 42);
     }
@@ -276,7 +280,7 @@ mod rollups_buckets_resservis_et_retention_illisible {
             params![b_hist + 11],
         )
         .unwrap();
-        for (bucket, val, n) in [(b_hist, "418", 42), (b_vieux, "999", 7)] {
+        for (bucket, val, n) in [(b_hist, "418", 42), (b_vieux, "999", 1)] {
             conn.execute("INSERT INTO event_dim_rollup(bucket,source,dim,val,n,env_id) VALUES(?1,'web','status',?2,?3,'prod')", params![bucket, val, n])
                 .unwrap();
         }
@@ -362,7 +366,7 @@ mod rollups_buckets_resservis_et_retention_illisible {
         rollup_events(conn);
         rbr_event(conn, now() - 10);
         conn.execute("UPDATE meta SET value=?1 WHERE key=?2", params![b.to_string(), META_ROLLUP_WM]).unwrap();
-        rbr_rollup_g(conn, b, "sshd", "rbr-perime", "prod", 7);
+        conn.execute("UPDATE event_rollup SET host='rbr-perime' WHERE bucket=?1 AND source='sshd'", params![b]).unwrap();
         if !avec_couverture {
             conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]).unwrap();
         }
@@ -398,7 +402,7 @@ mod rollups_buckets_resservis_et_retention_illisible {
             rollup_events(&conn);
             conn.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
             assert_eq!(refus.load(Ordering::Relaxed), 1, "prémisse ({avec_couverture}) : la rétractation est refusée une fois");
-            assert_eq!(rbr_n_perime(&conn, b), 7, "({avec_couverture}) rétractation refusée : la bande n'est ni purgée ni ré-agrégée");
+            assert_eq!(rbr_n_perime(&conn, b), 1, "({avec_couverture}) rétractation refusée : la bande n'est ni purgée ni ré-agrégée");
             assert_eq!(rbr_meta(&conn, META_ROLLUP_WM), Some(b.to_string()), "({avec_couverture}) rétractation refusée : le watermark n'avance pas");
             assert_eq!(rbr_meta(&conn, META_ROLLUP_COV_ID), cov_avant, "({avec_couverture}) rétractation refusée : la couverture n'est pas republiée");
             assert!(rbr_n(&conn, bucket_chaud) >= 1, "({avec_couverture}) la fenêtre chaude reste servie");
@@ -665,7 +669,9 @@ mod rollups_buckets_resservis_et_retention_illisible {
                 rollup_events(&conn);
                 conn.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
                 println!("RBR-REFUS-DIM:{}", refus.load(Ordering::Relaxed));
-                println!("RBR-PLANCHER-LU:{}", rbr_n_groupe(&conn, i.b_vieux, "sshd", "prod"));
+                // Le groupe RECOMPOSÉ (lignes non périmées) : 1 si le plancher d'`event_rollup` a été lu (la ligne périmée
+                // porte le même compte que la ligne d'`event`, inversion `P10.32-a` ci-dessus : seul `host` les distingue).
+                println!("RBR-PLANCHER-LU:{}", rbr_n_groupe(&conn, i.b_vieux, "sshd", "prod") - rbr_n_perime(&conn, i.b_vieux));
             }
             eprintln!("{PHASE}purge");
             {
@@ -1025,7 +1031,7 @@ mod rollups_buckets_resservis_et_retention_illisible {
             if let Some(refus) = refus {
                 assert_eq!(refus.load(Ordering::Relaxed), 1, "prémisse : la purge de reconstruction est refusée une fois");
                 assert_eq!(rbr_meta(&conn, META_ROLLUP_COV_ID), None, "purge refusée : aucune couverture publiée");
-                assert_eq!(rbr_n_perime(&conn, i.b_vivant), 7, "purge refusée : la bande n'est pas ré-agrégée par-dessus");
+                assert_eq!(rbr_n_perime(&conn, i.b_vivant), 2, "purge refusée : la bande n'est pas ré-agrégée par-dessus");
             } else {
                 assert_eq!(rbr_meta(&conn, META_ROLLUP_COV_ID), Some(rbr_max_id(&conn).to_string()), "contrôle : couverture publiée");
                 assert_eq!(rbr_n_perime(&conn, i.b_vivant), 0, "contrôle : la bande est recomposée");

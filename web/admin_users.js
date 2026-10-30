@@ -3,11 +3,13 @@
 // PURE MOVE : corps de fonctions IDENTIQUES au monolithe, seuls les import/export sont ajoutes.
 // Le cycle app<->module est benin : les fonctions importees d'app.js ne sont appelees qu'a
 // l'EXECUTION (handlers/async apres await), jamais a l'evaluation du module.
-import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmWithConsequence, disclosure, laDemandeNAPasAbouti, leRefusEstCeluiDuRole, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, toast, pagedList, closeModals, faceDansLaLangue, avecLeSecretDesGestes, peindreLeRefusDuSecretDesGestes } from './core.js';
+import { $, LANG, esc, fmtTs, ic, muted, api, apiSend, confirmModal, confirmWithConsequence, unDeuxCentsSansCorpsLisible, disclosure, laDemandeNAPasAbouti, leRefusEstCeluiDuRole, phraseDuRefusDuDemon, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, toast, pagedList, closeModals, faceDansLaLangue, avecLeSecretDesGestes, peindreLeRefusDuSecretDesGestes } from './core.js';
 import { S } from './state.js';
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
 import { boutonDeCopie } from './copie_et_selection.js';
 import { route } from './app.js';
+// `P10.31-i` — la détection du mode multi-tenant, pour la visibilité du geste de révocation globale (appelée à l'exécution).
+import { multiTenantMode } from './multitenant.js';
 
 // --- Comptes & accès (réservé admin ; vit sous Réglages : la VISIBILITE est pilotee par le routeur) ---
 const ROLE_LABEL = { admin: 'admin', editor: 'editor', viewer: 'viewer' };
@@ -391,11 +393,12 @@ async function loadUsers() {
   let d;
   try { d = await api('/users'); }
   catch (e) {
-    if (leRefusEstCeluiDuRole(e) || (e && e.statutDuRefus === 401)) { S.isAdmin = false; route(); return; }
+    if (leRefusEstCeluiDuRole(e) || (e && e.statutDuRefus === 401)) { S.isAdmin = false; route(); poserLeGesteDeLaRevocationGlobale(); return; }
     peindreLaLectureDesComptesRefusee(list, e);
     return;
   }
   S.isAdmin = true; route(); // ne PAS forcer hidden ici : laisser le routeur n'afficher #users que sous Reglages
+  poserLeGesteDeLaRevocationGlobale();   // `P10.31-i`
   const { users, me } = d;
   renderAcces(d);   // P11.5-c : QUI A ACCÈS — l'inventaire des comptes VUS, à côté des comptes gérés ici ; `P10.20-b` : ou son aveu
   list.replaceChildren();
@@ -553,6 +556,138 @@ function renderAcces(d) {
   });
 }
 
+// `P10.31-i` (volet 2, console) — LA RÉVOCATION GLOBALE DES SESSIONS A SON GESTE, POUR L'ADMINISTRATEUR SANS COOKIE.
+// CE QUE LE DÉMON SERT, RELU DANS daemon/src/session.rs (`revocation_globale_post`, `servir_la_revocation_globale`) :
+// `POST /api/sessions/revocation-globale`, sans corps, derrière `auth_guard` (SSO d'en-têtes, Basic, ou cookie avec son
+// jeton CSRF, posé par l'enveloppe du transport). Réservé au rôle `admin` en mode 0 ; en mode multi-tenant, au
+// super-administrateur de la plateforme (`is_superadmin` de `/api/me`), qui agit dans un tenant dont il est
+// administrateur, ou par bris de glace. Succès : `200 {"ok":true,"portee":"globale"}`, et les cookies de ce navigateur
+// effacés — la session de l'appelant est révoquée avec les autres. Refus nommés (JSON `{error}`) :
+//   · 403 `CAUSE_REVOCATION_GLOBALE_RESERVEE` — l'appelant n'a pas l'autorité qui couvre tous les comptes ;
+//   · 503 `CAUSE_DECONNEXION_GLOBALE_AUTORITE_NON_LUE` — le plan de contrôle n'a pas pu être lu pour juger l'appelant ;
+//   · 503 `CAUSE_DECONNEXION_GLOBALE_NON_TRACEE` — la trace n'a pas pu être écrite, le geste n'a pas lieu ;
+//   · 503 `CAUSE_DECONNEXION_GLOBALE_NON_PERSISTEE` — l'époque n'a pas pu être écrite, le geste n'a pas lieu.
+// Sur chacun, RIEN N'EST RÉVOQUÉ et aucun cookie n'est effacé : la console reste ouverte, sans rechargement. Un autre
+// quatre cent trois (le refus du rôle par `rbac_gate`, texte brut) ou une phrase inconnue garde la face générique, qui
+// colle la phrase servie sans rien en affirmer. Un deux cents qui ne porte pas `portee: "globale"` n'est PAS un succès :
+// rien ici n'établit que les sessions sont révoquées, la console ne se recharge pas et le dit.
+// OÙ : dans la carte des comptes, et non à côté de la déconnexion. La carte n'est peinte qu'à un administrateur
+// (`S.isAdmin`, établi par `GET /api/users`) ; en mode multi-tenant, c'est l'administrateur du tenant courant — la
+// réserve réelle de la route, que `rbac_gate` juge par tenant avant le gestionnaire. Le bouton de déconnexion est offert
+// à TOUT compte : un geste qui ferme les sessions de tous ne se pose pas à côté du geste quotidien qui ne ferme que la sienne.
+// LA VISIBILITÉ (`peutRevoquerToutesLesSessions`) : mode 0, le rôle `admin` ; mode multi-tenant, `is_superadmin` seul — un
+// administrateur de tenant qui n'est pas super-administrateur ne voit pas le bouton (le démon le lui refuserait).
+// La vraie garde reste celle du démon : le bouton n'est qu'un chemin, jamais une autorisation.
+const OUVERTURES_DES_REFUS_DE_LA_REVOCATION_GLOBALE = [
+  ['reservee', 403, /^RÉVOCATION GLOBALE RÉSERVÉE(?![\p{L}\p{N}])/u],
+  ['autorite_non_lue', 503, /^DÉCONNEXION GLOBALE NON JUGÉE, RIEN N'EST RÉVOQUÉ(?![\p{L}\p{N}])/u],
+  ['non_tracee', 503, /^DÉCONNEXION GLOBALE NON TRACÉE, RIEN N'EST RÉVOQUÉ(?![\p{L}\p{N}])/u],
+  ['non_persistee', 503, /^DÉCONNEXION GLOBALE NON PERSISTÉE, RIEN N'EST RÉVOQUÉ(?![\p{L}\p{N}])/u],
+];
+// La nature d'un refus jeté par `apiSend` : le STATUT et l'OUVERTURE ensemble. Rend '' pour tout le reste.
+function natureDuRefusDeLaRevocationGlobale(e) {
+  if (!e || e.reponseHorsDemon) return '';
+  const phrase = String(e.causeDuDemon || '').trim();
+  const trouvee = OUVERTURES_DES_REFUS_DE_LA_REVOCATION_GLOBALE.find(([, statut, ouverture]) => statut === e.statutDuRefus && ouverture.test(phrase));
+  return trouvee ? trouvee[0] : '';
+}
+const MOTS_DE_LA_REVOCATION_GLOBALE = {
+  bouton: { fr: 'Révoquer toutes les sessions', en: 'Revoke all sessions' },
+  titre: { fr: 'Révoquer les sessions de TOUS les comptes', en: 'Revoke the sessions of ALL accounts' },
+  confirmation: {
+    fr: "Toutes les sessions ouvertes de TOUS les comptes sont révoquées, celle de ce navigateur comprise : l'appelant est déconnecté aussi, et chaque compte devra se reconnecter. Le geste est tracé au registre. Sous un SSO d'en-têtes, la console se rechargera sous l'identité que présente l'annuaire.",
+    en: 'Every open session of ALL accounts is revoked, the one of this browser included: the caller is signed out too, and every account will have to sign in again. The action is recorded in the ledger. Under header SSO, the console will reload under the identity the directory presents.' },
+  ok: { fr: 'Tout révoquer', en: 'Revoke all' },
+  reservee: {
+    fr: "Sessions NON révoquées : le démon réserve ce geste à l'autorité qui couvre tous les comptes — le rôle administrateur, ou en mode multi-tenant un super-administrateur de la plateforme qui administre ce tenant (ou y agit par bris de glace). Rien n'est révoqué, la session de ce navigateur reste ouverte. Le démon en nomme la cause —",
+    en: 'Sessions NOT revoked: the daemon reserves this action to the authority that covers every account — the administrator role, or in multi-tenant mode a platform super-administrator who administers this tenant (or acts in it by break-glass). Nothing is revoked, the session of this browser stays open. The daemon names the cause —' },
+  autorite_non_lue: {
+    fr: "Sessions NON révoquées : le démon n'a pas pu lire le plan de contrôle pour juger l'autorité de ce compte, et ne révoque rien sur une autorité non jugée. Rien n'est révoqué ni inscrit au registre, la session de ce navigateur reste ouverte. Réessayer. Le démon en nomme la cause —",
+    en: 'Sessions NOT revoked: the daemon could not read the control plane to judge the authority of this account, and revokes nothing on an unjudged authority. Nothing is revoked or recorded, the session of this browser stays open. Try again. The daemon names the cause —' },
+  non_tracee: {
+    fr: "Sessions NON révoquées : la trace du geste n'a pas pu être écrite au registre, et un geste qui révoque tous les comptes n'a pas lieu sans elle. Rien n'est révoqué, la session de ce navigateur reste ouverte. Réessayer. Le démon en nomme la cause —",
+    en: 'Sessions NOT revoked: the trace of the action could not be written to the ledger, and an action that revokes every account does not happen without it. Nothing is revoked, the session of this browser stays open. Try again. The daemon names the cause —' },
+  non_persistee: {
+    fr: "Sessions NON révoquées : l'époque de révocation n'a pas pu être écrite dans la base, et une révocation qui ne survivrait pas au redémarrage n'a pas lieu. Rien n'est révoqué ni inscrit au registre, la session de ce navigateur reste ouverte. Réessayer. Le démon en nomme la cause —",
+    en: 'Sessions NOT revoked: the revocation epoch could not be written to the database, and a revocation that would not survive a restart does not happen. Nothing is revoked or recorded, the session of this browser stays open. Try again. The daemon names the cause —' },
+  refus_nomme: {
+    fr: "Révocation globale NON CONFIRMÉE : le démon ne l'a pas faite pour cette demande et en nomme la cause —",
+    en: 'Global revocation NOT CONFIRMED: the daemon did not carry it out for this request and names the cause —' },
+  revocation_non_etablie: {
+    fr: "Révocation globale NON ÉTABLIE : la réponse ne dit pas que les sessions de tous les comptes sont révoquées, et rien ici ne l'établit. La console ne se recharge pas ; si elle demande ensuite de se reconnecter, la révocation a eu lieu.",
+    en: 'Global revocation NOT ESTABLISHED: the answer does not say that the sessions of every account are revoked, and nothing here establishes it. The console does not reload; if it then asks to sign in again, the revocation took place.' },
+  demande_non_aboutie: {
+    fr: "Révocation globale NON confirmée : la demande n'a pas abouti, et rien ici n'établit si les sessions ont été révoquées — si la console demande ensuite de se reconnecter, elles l'ont été. Cause —",
+    en: 'Global revocation NOT confirmed: the request did not complete, and nothing here establishes whether the sessions were revoked — if the console then asks to sign in again, they were. Cause —' },
+};
+const motDeLaRevocationGlobale = (cle) => faceDansLaLangue(MOTS_DE_LA_REVOCATION_GLOBALE[cle]);
+// Qui voit le bouton : mode 0, le rôle `admin` de `/api/me`, ou un compte à qui le démon vient de servir `/api/users`
+// (`S.isAdmin`, posé par `loadUsers`) ; mode multi-tenant, le seul super-administrateur.
+// Le démon juge le mode 0 sur `is_admin()`, c'est-à-dire le rôle de BASE effectif (state.rs) : un rôle composable bâti
+// sur `admin` n'est pas `admin` dans `/api/me`, qui sert le NOM du rôle. `/api/users` est réservé à la même autorité
+// de base (`route_min_role`), d'où le second signal. CE QUI RESTE INDISCERNABLE ICI, DEUX CAS où `/api/me` et
+// `/api/my-tenants` ont la forme du mode 0 (tenant « default », une seule entrée `{id, role}` sans `name` ni
+// `suspended`, tenants.rs `my_tenants`) : le mode multi-tenant dégradé (plan de contrôle non initialisé), et, plan de
+// contrôle présent, l'administrateur NON super-administrateur du tenant « default » dont le droit vient du SSO sans
+// être matérialisé dans `grant` (seule l'entrée du tenant courant est listée). Dans les deux, il voit le bouton et
+// reçoit le `403` nommé de la réserve (face `reservee`) : le démon garde la route, rien n'est révoqué.
+function peutRevoquerToutesLesSessions() {
+  const a = S.AUTH;
+  if (!a || !a.user) return false;
+  if (a.is_superadmin === true) return true;
+  return !multiTenantMode() && (a.role === 'admin' || S.isAdmin === true);
+}
+function puitsDeLaRevocationGlobale() {
+  const sec = $('#users'), list = $('#user-list');
+  return sec && list ? puitsDuRefusDUnGeste(list.parentNode, 'revocation_globale', list) : null;
+}
+// Le refus, ou la réponse non établie (`e === null`), peint au puits : la face dans un nœud texte, la phrase servie ENTIÈRE
+// dans un second (jamais interprétée comme du HTML). Rend la clé peinte. La session reste ouverte : AUCUN rechargement ici.
+function peindreLaRevocationGlobaleNonFaite(puits, e) {
+  if (!puits) return '';
+  let cle, cause = '';
+  if (e === null) { cle = 'revocation_non_etablie'; }
+  else if (e && e.reponseHorsDemon) { cle = 'reponse_hors_demon'; }
+  else if (laDemandeNAPasAbouti(e)) { cle = 'demande_non_aboutie'; cause = String((e && e.message) || e); }
+  else { cle = natureDuRefusDeLaRevocationGlobale(e) || 'refus_nomme'; cause = phraseDuRefusDuDemon(e); }
+  const dit = document.createElement('span');
+  dit.textContent = cle === 'reponse_hors_demon' ? String(e.message || '') : motDeLaRevocationGlobale(cle);
+  puits.replaceChildren(dit);
+  if (cause && String(cause).trim()) puits.appendChild(document.createTextNode(' « ' + String(cause).trim() + ' »'));
+  puits.dataset.refusDeLaRevocationGlobale = cle;
+  puits.hidden = false;
+  return cle;
+}
+async function revoquerToutesLesSessions() {
+  if (!peutRevoquerToutesLesSessions()) { poserLeGesteDeLaRevocationGlobale(); return; }
+  if (!await confirmModal(motDeLaRevocationGlobale('confirmation'), { title: motDeLaRevocationGlobale('titre'), okText: motDeLaRevocationGlobale('ok'), danger: true })) return;
+  const puits = puitsDeLaRevocationGlobale(); effacerLeRefusDUnGeste(puits);
+  if (puits) delete puits.dataset.refusDeLaRevocationGlobale;
+  let r;
+  try { r = await apiSend('/sessions/revocation-globale', 'POST'); }
+  // Un deux cents au corps illisible n'est ni un refus ni un succès : la face « non établie », comme un succès sans portée.
+  catch (e) { peindreLaRevocationGlobaleNonFaite(puits, unDeuxCentsSansCorpsLisible(e) ? null : e); return; }
+  if (!(r && r.ok === true && r.portee === 'globale')) { peindreLaRevocationGlobaleNonFaite(puits, null); return; }
+  // Les sessions de tous, la sienne comprise, sont révoquées : le rechargement ramène l'écran de connexion (cookie
+  // effacé) ; sous un SSO d'en-têtes, `/api/me` reste servi et la console se recharge, comme après `doLogout`.
+  S.AUTH = null;
+  location.reload();
+}
+// Pose (ou retire) le bouton dans l'en-tête de la carte des comptes, selon `peutRevoquerToutesLesSessions`.
+function poserLeGesteDeLaRevocationGlobale() {
+  const sec = $('#users'); if (!sec) return null;
+  const tete = sec.querySelector('.panelhead');
+  let b = sec.querySelector('#sessions-revocation-globale');
+  if (!peutRevoquerToutesLesSessions()) { if (b) b.remove(); return null; }
+  if (!b && tete) {
+    b = document.createElement('button'); b.type = 'button'; b.id = 'sessions-revocation-globale'; b.className = 'btn btn-danger';
+    b.onclick = revoquerToutesLesSessions;
+    tete.appendChild(b);
+  }
+  if (b) { b.textContent = motDeLaRevocationGlobale('bouton'); b.title = motDeLaRevocationGlobale('titre'); }
+  return b;
+}
+
 // `P10.25-i` — LES REFUS DE LA CRÉATION D'UN COMPTE ONT LEURS FACES, ET CE QUE LE NOM TIENT EST LU.
 // CE QUE LE DÉMON SERT, RELU DANS `user_create` (daemon/src/handlers/users_lookups.rs, `P10.24-u` et `P10.24-x`) :
 //   · 409 JSON `CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION` — le nom de l'administrateur que pose la configuration ;
@@ -584,6 +719,9 @@ const OUVERTURES_DES_REFUS_DE_CREATION_DE_COMPTE = [
   // ce lot (témoin 113 sur l'arbre du démon qui la sert), aucune ouverture ne la reconnaissait et le témoin refusait de
   // conclure ; elle tombait sous la face générique. Sa face dit ce qui est vrai : la transaction n'a pas été ouverte.
   ['transaction_non_prise', /^COMPTE NON CRÉÉ : la base n'a pas pris la transaction de la création \(BEGIN refusé(?![\p{L}\p{N}])/u],
+  // `P10.24-e` — mode multi-tenant : la connexion lit le compte de la PLATEFORME, une ligne de tenant ne se connecterait pas
+  // (`CAUSE_COMPTE_NON_CREE_IDENTITE_DE_PLATEFORME`, `409`).
+  ['identite_de_plateforme', /^COMPTE NON CRÉÉ, LES COMPTES SONT CEUX DE LA PLATEFORME(?![\p{L}\p{N}])/u],
 ];
 function natureDuRefusDeCreationDeCompte(phrase) {
   const p = String(phrase || '').trim();
@@ -613,6 +751,9 @@ const MOTS_DE_LA_CREATION_DE_COMPTE = {
   transaction_non_prise: {
     fr: "Compte NON créé : la base n'a pas pris la transaction de la création — rien n'est écrit, ni le compte ni sa trace d'audit. Réessayer. Le démon en nomme la cause —",
     en: 'Account NOT created: the database did not take the creation transaction — nothing is written, neither the account nor its audit trace. Try again. The daemon names the cause —' },
+  identite_de_plateforme: {
+    fr: "Compte NON créé : en mode multi-tenant, les comptes sont ceux de la plateforme — un compte posé dans ce tenant ne se connecterait pas. Rien n'est écrit ; un compte entre dans ce tenant par un droit, depuis la carte des tenants. Le démon en nomme la cause —",
+    en: 'Account NOT created: in multi-tenant mode, accounts are those of the platform — an account set in this tenant would not sign in. Nothing is written; an account enters this tenant through a grant, from the tenants card. The daemon names the cause —' },
   // Une demande qui n'a pas abouti (réseau coupé, requête abandonnée) : le démon n'a rien refusé, et rien ici ne dit
   // s'il a créé le compte avant que la réponse ne se perde.
   demande_non_aboutie: {
@@ -952,4 +1093,6 @@ if ($('#token-new')) $('#token-new').onclick = newTokenFlow;
 // `P10.27-a` — les faces de la lecture des jetons refusée (témoin 116).
 // `P10.26-g` — la face d'une clé de livraison conservée dans le compte rendu, et le rendu du compte rendu lui-même, que le
 // témoin 125 joue sur des clés de livraison conservées.
+// `P10.31-i` — le geste de révocation globale, sa visibilité, la nature d'un refus et ses faces (témoin 155).
+export { revoquerToutesLesSessions, poserLeGesteDeLaRevocationGlobale, peutRevoquerToutesLesSessions, natureDuRefusDeLaRevocationGlobale, motDeLaRevocationGlobale };
 export { ROLE_LABEL, CLE_DE_L_INVENTAIRE_DES_ACCES_NON_LU, motDeLInventaireDesAcces, loadUsers, loadTokens, newTokenFlow, motDeLaModificationDeCompte, motDeLaSuppressionDeCompte, creerLeCompteDuFormulaire, natureDuRefusDeCreationDeCompte, motDeLaCreationDeCompte, motDUneLigneTenueParUnNom, motDuCompteRendu, motDUneConfirmationDeCompte, motDeLaLectureDesComptes, motDeLaLectureDesJetons, motDeLaCleDeLivraisonConservee, noeudDuCompteRenduDeSuppression };

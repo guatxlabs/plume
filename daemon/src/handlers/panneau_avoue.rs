@@ -228,6 +228,14 @@ pub(crate) const RAISON_PAYE_UTILE_ANTERIEURE: &str = "paye_utile_anterieure";
 pub(crate) const RAISON_PAYE_UTILE_ILLISIBLE: &str = "paye_utile_illisible";
 /// Aucun payload n'existe encore pour cette plage : la mesure est en cours (chemin `warming`).
 pub(crate) const RAISON_MESURE_EN_COURS: &str = "mesure_en_cours";
+/// `P10.32-o` — LA LIGNE DE CACHE DE CETTE PLAGE N'A PAS PU ÊTRE LUE (lecture refusée par la base,
+/// `LectureDeCache::NonLue`) : le corps servi est un MISS, mais ce n'est PAS une mesure en cours — on ne sait pas ce que
+/// la ligne porte. Posée par [`dire_la_ligne_de_cache_non_lue`].
+pub(crate) const RAISON_LIGNE_DE_CACHE_NON_LUE: &str = "cache_non_lu";
+/// La notice de [`RAISON_LIGNE_DE_CACHE_NON_LUE`] (texte du produit, jamais la cause du moteur, qui va au journal).
+pub(crate) const NOTICE_LIGNE_DE_CACHE_NON_LUE: &str = "la ligne de cache de ce panneau n'a pas pu être lue (lecture \
+     refusée par la base) : aucune ligne n'est servie, et ce n'est pas une mesure en cours. Ce corps vide n'établit PAS \
+     une absence ; le détail est au journal de l'exploitant.";
 /// `P10.32-o` — LE CALCUL DU PANNEAU A ÉCHOUÉ (erreur du moteur, budget dépassé, panique du fil) : le
 /// corps servi porte la cause dans `error` et n'établit PAS une absence. Il est écrit dans le cache à la
 /// place du résultat, donc re-servi jusqu'à l'expiration du ttl, puis retenté — jamais une chauffe
@@ -438,13 +446,18 @@ fn politique_de_l_index(politiques: &[IndexPolicy], env: Option<&str>, plafonds_
 /// aucune clé ne la consulterait (seule la clé `retention_days` la consulte, au chemin chaud comme dans la voie froide).
 /// Lecture non faite : `NonLue`, jamais la globale (le repli de la purge n'est pas un horizon mesuré).
 fn politique_lue(c: &Connection, nomme_une_famille_des_politiques: bool, env: Option<&str>, plafonds_mordent: bool) -> PolitiqueDeLIndex {
+    politique_lue_ou_refus(c, nomme_une_famille_des_politiques, env, plafonds_mordent).unwrap_or(PolitiqueDeLIndex::NonLue)
+}
+
+/// `politique_lue`, le refus de la lecture rendu tel quel (avec son code SQLite) : la voie froide lue en tire la classe
+/// occupée (`politique_de_la_voie_froide_lue`) ; l'horizon du panneau le range en `NonLue`.
+fn politique_lue_ou_refus(
+    c: &Connection, nomme_une_famille_des_politiques: bool, env: Option<&str>, plafonds_mordent: bool,
+) -> rusqlite::Result<PolitiqueDeLIndex> {
     if !nomme_une_famille_des_politiques {
-        return PolitiqueDeLIndex::Globale;
+        return Ok(PolitiqueDeLIndex::Globale);
     }
-    match crate::rollups::lire_les_politiques_d_index(c) {
-        Ok(politiques) => politique_de_l_index(&politiques, env, plafonds_mordent),
-        Err(_) => PolitiqueDeLIndex::NonLue,
-    }
+    crate::rollups::lire_les_politiques_d_index(c).map(|politiques| politique_de_l_index(&politiques, env, plafonds_mordent))
 }
 
 /// Le cœur de l'horizon d'un panneau : `env` = l'environnement que son SQL lit, quand il est déterminé (`P10.5-p`).
@@ -572,6 +585,103 @@ fn notice_de_reglage_non_lu(cle: &str) -> String {
 const NOTICE_POOL_NON_PRIS: &str = "le pool de lecture n'a pas pu être pris ; l'horizon n'a PAS été mesuré. Cette réponse ne \
      dit donc RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas.";
 
+/// `P10.29-w` — L'aveu d'un horizon NON MESURÉ, sur une réponse dont le bras froid a été lu, parce que la base était
+/// OCCUPÉE (verrou tenu par une autre opération) quand l'horizon d'une famille se lisait — `event` par le lecteur froid
+/// (`plancher_de_l_horizon_froid`) ou une famille chaude (`retention_de_la_famille_lue`) : ce n'est pas un réglage
+/// illisible, réessayer suffit.
+#[cfg(feature = "cold_tier")]
+pub(crate) const NOTICE_HORIZON_FROID_BASE_OCCUPEE: &str = "la base est occupée (verrou tenu par une autre opération) : \
+     l'horizon de conservation de cette lecture n'a PAS été mesuré, réessayez dans un instant. Cette réponse ne dit donc \
+     RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas.";
+
+/// `P10.29-w` — L'aveu d'un horizon NON MESURÉ, sur une réponse dont le bras froid a été lu, parce que la lecture de
+/// l'horizon d'une famille n'a pas été prise (refus du moteur au point de sauvegarde, à la sonde ou à la libération, hors
+/// occupation) : aucun réglage n'est en cause.
+#[cfg(feature = "cold_tier")]
+pub(crate) const NOTICE_HORIZON_FROID_NON_PRIS: &str = "la lecture de l'horizon de conservation n'a pas pu être prise \
+     (refus de la base) ; l'horizon n'a PAS été mesuré. Cette réponse ne dit donc RIEN de ce qu'elle a pu voir — ni \
+     qu'elle est complète, ni qu'elle ne l'est pas.";
+
+/// `P10.29-w` — LE PLANCHER DE `event` SOUS LA VOIE FROIDE LUE, ET LA CLASSE DE SON ÉCHEC. Avant, tout échec de
+/// `ColdUnionMeta::premier_instant_servi` était rangé sous « retention_days » : une base occupée se lisait « réglage de
+/// rétention écrit non lu ». La classe vient du classeur des voies froides (`en_classant_la_voie_froide`, code SQLite
+/// noté par `texte_de_la_voie_froide`), jamais du texte, sauf la cause FIXE du réglage illisible.
+/// `Err(Ok(cle))` : réglage non lu ; `Err(Err(notice))` : horizon non mesuré pour une autre raison, dite.
+#[cfg(feature = "cold_tier")]
+pub(crate) fn plancher_de_l_horizon_froid(
+    c: &rusqlite::Connection,
+    conf: &HashMap<String, String>,
+    boundary: i64,
+    env_filter: Option<&str>,
+) -> Result<i64, Result<&'static str, &'static str>> {
+    use crate::query_exec::EchecDeRequete;
+    crate::query_exec::en_classant_la_voie_froide(|| crate::cold_store::ColdUnionMeta::premier_instant_servi(c, conf, boundary, env_filter))
+        .map_err(|echec| match echec {
+            EchecDeRequete::Occupee { .. } => Err(NOTICE_HORIZON_FROID_BASE_OCCUPEE),
+            e if crate::cold_store::ColdUnionMeta::est_le_reglage_non_lu(e.texte()) => Ok("retention_days"),
+            _ => Err(NOTICE_HORIZON_FROID_NON_PRIS),
+        })
+}
+
+/// `P10.29-w` (vague BD) — LES POLITIQUES PAR INDEX SOUS LA VOIE FROIDE LUE, ET LA CLASSE DE LEUR REFUS. Avant,
+/// `politique_lue` rangeait tout refus en `NonLue` : sur une base occupée AVANT l'appel (pool chaud), `SELECT ts FROM
+/// event` rendait « les politiques de rétention par environnement n'ont pas pu être lues », alors que réessayer suffit.
+/// `Err(notice)` : la lecture a rencontré une base occupée (code BUSY ou LOCKED, `code_de_base_occupee`, jamais le
+/// texte) ; tout autre refus (ligne illisible, table refusée) reste `NonLue`.
+#[cfg(feature = "cold_tier")]
+fn politique_de_la_voie_froide_lue(c: &Connection, gouvernee: bool, env: Option<&str>) -> Result<PolitiqueDeLIndex, &'static str> {
+    match politique_lue_ou_refus(c, gouvernee, env, false) {
+        Ok(politique) => Ok(politique),
+        Err(e) if e.sqlite_error_code().map(crate::query_exec::code_de_base_occupee).unwrap_or(false) => Err(NOTICE_HORIZON_FROID_BASE_OCCUPEE),
+        Err(_) => Ok(PolitiqueDeLIndex::NonLue),
+    }
+}
+
+/// `P10.29-w` (vague BC) — la sonde qui PREND la lecture de `main` avant le réglage de rétention d'une famille chaude :
+/// elle lit le schéma (aucune donnée), et c'est son échec, avec son CODE, qui dit une base occupée.
+#[cfg(feature = "cold_tier")]
+const SONDE_DE_LA_RETENTION_DE_LA_FAMILLE: &str = "SELECT count(*) FROM main.sqlite_master";
+
+/// `P10.29-w` (vague BC) — la classe de l'échec d'un énoncé de PRISE (point de sauvegarde, sonde, libération), par son
+/// CODE SQLite : occupée (`code_de_base_occupee`), sinon lecture non prise. Jamais un réglage non lu.
+#[cfg(feature = "cold_tier")]
+fn classe_de_la_prise(e: rusqlite::Error) -> &'static str {
+    let occupee = e.sqlite_error_code().map(crate::query_exec::code_de_base_occupee).unwrap_or(false);
+    if occupee { NOTICE_HORIZON_FROID_BASE_OCCUPEE } else { NOTICE_HORIZON_FROID_NON_PRIS }
+}
+
+/// `P10.29-w` (vague BC) — LE RÉGLAGE DE RÉTENTION D'UNE FAMILLE CHAUDE SOUS LA VOIE FROIDE LUE, ET LA CLASSE DE SON
+/// ÉCHEC. `retention_effective_lue` rend un texte sans code : sur une base occupée, la couverture disait « réglage
+/// `metric_raw_hours` (ou un autre) non lu ». Même patron que `HorizonDeLecture::lire` (`cold_store/reader.rs`) : un
+/// point de sauvegarde dont le PREMIER énoncé est la sonde, classée par son code (`classe_de_la_prise`) ; sonde passée,
+/// la lecture de `main` est TENUE jusqu'à la libération, et le réglage se lit sans pouvoir rencontrer le verrou d'un
+/// autre écrivain. Seul un réglage écrit et illisible rend `Err(Ok(cle))`. Le point est libéré sur le succès comme sur
+/// l'échec ; l'échec de la libération est rendu quand la lecture avait réussi, et ne masque jamais celui de la lecture.
+/// HORS D'ATTEINTE : l'échec du `RELEASE` lui-même (même preuve qu'au site de `HorizonDeLecture::lire` : le point est
+/// posé ici, rien entre les deux ne termine une transaction, `retention_effective_lue` ne fait qu'un `SELECT`).
+#[cfg(feature = "cold_tier")]
+pub(crate) fn retention_de_la_famille_lue(
+    c: &rusqlite::Connection,
+    conf: &HashMap<String, String>,
+    cle: &'static str,
+) -> Result<i64, Result<&'static str, &'static str>> {
+    #[cfg(test)]
+    let chemin_du_crochet = c.path().unwrap_or_default().to_string();
+    c.execute_batch("SAVEPOINT retention_de_la_famille").map_err(|e| Err(classe_de_la_prise(e)))?;
+    let lu = (|| {
+        c.query_row(SONDE_DE_LA_RETENTION_DE_LA_FAMILLE, [], |r| r.get::<_, i64>(0)).map_err(|e| Err(classe_de_la_prise(e)))?;
+        #[cfg(test)]
+        crate::query_exec::crochet_de_l_union_froide::passer(&chemin_du_crochet, crate::query_exec::crochet_de_l_union_froide::Etape::ApresLaPriseDeLaRetentionDeLaFamille);
+        retention_effective_lue(c, conf, cle).map_err(|_| Ok(cle))
+    })();
+    let libere = c.execute_batch("RELEASE retention_de_la_famille").map_err(|e| Err(classe_de_la_prise(e)));
+    match (lu, libere) {
+        (Err(e), _) => Err(e),
+        (Ok(_), Err(e)) => Err(e),
+        (Ok(v), Ok(())) => Ok(v),
+    }
+}
+
 /// `P10.34-n` — L'HORIZON D'UNE RÉPONSE DE `/api/query` DONT LE BRAS FROID A ÉTÉ LU.
 ///
 /// LE DÉFAUT. `horizon_et_frontiere_du_sql` est calculé AVANT l'aiguillage, pour un panneau qui ne lit jamais la bande
@@ -609,34 +719,66 @@ pub(crate) fn horizon_de_la_voie_froide_lue(
     // ne tournent pas ici : cette voie n'existe que sous le tier froid actif, où `retention_run` les saute
     // (`plafonds_d_index_actifs`). `event_rollup` et `event_dim_rollup` prenaient la rétention globale : ils prennent la
     // politique applicable (la plus courte fenêtre sans environnement déterminé).
-    type Lu = (Option<i64>, Option<&'static str>, Option<&'static str>);
-    let (haut, non_lue, politique_muette): Lu = read_with(db_path, (None, None, None), |c| {
+    type Lu = (Option<i64>, Option<&'static str>, Option<&'static str>, Option<&'static str>);
+    let (haut, non_lue, horizon_froid_non_mesure, politique_muette): Lu = read_with(db_path, (None, None, None, None), |c| {
         let mut haut: Option<i64> = None;
         let mut non_lue: Option<&'static str> = None;
+        let mut horizon_froid_non_mesure: Option<&'static str> = None;
         let mut politique_muette: Option<&'static str> = None;
         let gouvernee = familles.iter().any(|(_, cle, _)| *cle == RETENTION_REMPLACEE_PAR_LES_POLITIQUES);
         // `plafonds_mordent = false` : ici le tier froid est actif, aucun plafond ne tourne, et les pré-agrégés n'en
         // portent jamais ; `Plafonnee` et `EnvironnementNonDetermine` sont donc HORS D'ATTEINTE. Lecture des politiques
         // non faite : `NonLue`, pour TOUTES les familles qu'elles gouvernent, `event` compris (le lecteur froid lit les
         // politiques par le lecteur de la purge, qui avale un refus).
-        let politique = politique_lue(c, gouvernee, env, false);
+        // `P10.29-w` (vague BD) — une base occupée à la lecture des politiques n'est pas une politique non lue : elle
+        // rejoint l'aveu de l'horizon non mesuré, pour toutes les familles que les politiques gouvernent.
+        let politique = politique_de_la_voie_froide_lue(c, gouvernee, env);
+        #[cfg(test)]
+        crate::query_exec::crochet_de_l_union_froide::passer(db_path, crate::query_exec::crochet_de_l_union_froide::Etape::ApresLesPolitiquesDeLaVoieFroide);
         for (table, cle, unite) in &familles {
-            if *cle == RETENTION_REMPLACEE_PAR_LES_POLITIQUES && matches!(politique, PolitiqueDeLIndex::NonLue) {
-                politique_muette.get_or_insert(NOTICE_POLITIQUE_PAR_INDEX_NON_LUE);
-                continue;
+            if *cle == RETENTION_REMPLACEE_PAR_LES_POLITIQUES {
+                match &politique {
+                    Err(notice) => {
+                        horizon_froid_non_mesure.get_or_insert(*notice);
+                        continue;
+                    }
+                    Ok(PolitiqueDeLIndex::NonLue) => {
+                        politique_muette.get_or_insert(NOTICE_POLITIQUE_PAR_INDEX_NON_LUE);
+                        continue;
+                    }
+                    Ok(_) => {}
+                }
             }
             let plancher: Result<i64, &'static str> = if *table == "event" {
-                crate::cold_store::ColdUnionMeta::premier_instant_servi(c, conf, boundary, env_filter).map_err(|_| "retention_days")
+                match plancher_de_l_horizon_froid(c, conf, boundary, env_filter) {
+                    Ok(ts) => Ok(ts),
+                    Err(Ok(cle)) => Err(cle),
+                    Err(Err(notice)) => {
+                        horizon_froid_non_mesure.get_or_insert(notice);
+                        continue;
+                    }
+                }
             } else {
-                let valeur = retention_effective_lue(c, conf, cle).map_err(|_| *cle);
+                // `P10.29-w` (vague BC) — le réglage de la famille chaude se lit sous la lecture tenue, et une base
+                // occupée (ou une lecture non prise) n'y est pas un réglage non lu : elle rejoint l'aveu de l'horizon non
+                // mesuré, comme `event`.
+                let valeur = match retention_de_la_famille_lue(c, conf, *cle) {
+                    Ok(v) => Ok(v),
+                    Err(Ok(cle)) => Err(cle),
+                    Err(Err(notice)) => {
+                        horizon_froid_non_mesure.get_or_insert(notice);
+                        continue;
+                    }
+                };
                 match (*cle == RETENTION_REMPLACEE_PAR_LES_POLITIQUES, &politique, valeur) {
                     (_, _, Err(cle)) => Err(cle),
-                    (false, _, Ok(valeur)) | (true, PolitiqueDeLIndex::Globale, Ok(valeur)) => Ok(now_s - valeur * unite),
-                    (true, PolitiqueDeLIndex::Propre(jours), Ok(_)) => Ok(now_s - jours * unite),
-                    (true, PolitiqueDeLIndex::LaPlusCourte(jours), Ok(valeur)) => Ok(now_s - valeur.min(*jours) * unite),
-                    // HORS D'ATTEINTE : `politique_lue(.., false)` ne rend jamais ces deux variantes (`politique_de_l_index`,
-                    // `plafonnee` faux), et `NonLue` est servie avant ce `match` (garde de tête de boucle).
-                    (true, PolitiqueDeLIndex::EnvironnementNonDetermine | PolitiqueDeLIndex::Plafonnee | PolitiqueDeLIndex::NonLue, Ok(_)) => {
+                    (false, _, Ok(valeur)) | (true, Ok(PolitiqueDeLIndex::Globale), Ok(valeur)) => Ok(now_s - valeur * unite),
+                    (true, Ok(PolitiqueDeLIndex::Propre(jours)), Ok(_)) => Ok(now_s - jours * unite),
+                    (true, Ok(PolitiqueDeLIndex::LaPlusCourte(jours)), Ok(valeur)) => Ok(now_s - valeur.min(*jours) * unite),
+                    // HORS D'ATTEINTE : `politique_lue_ou_refus(.., false)` ne rend jamais les deux premières variantes
+                    // (`politique_de_l_index`, `plafonnee` faux), et `NonLue` comme le refus occupé sont servis avant ce
+                    // `match` (garde de tête de boucle).
+                    (true, Ok(PolitiqueDeLIndex::EnvironnementNonDetermine | PolitiqueDeLIndex::Plafonnee | PolitiqueDeLIndex::NonLue) | Err(_), Ok(_)) => {
                         politique_muette.get_or_insert(NOTICE_POLITIQUE_PAR_INDEX_ENVIRONNEMENT_NON_DETERMINE);
                         continue;
                     }
@@ -653,8 +795,9 @@ pub(crate) fn horizon_de_la_voie_froide_lue(
                 }
             }
         }
-        (haut, non_lue, politique_muette)
+        (haut, non_lue, horizon_froid_non_mesure, politique_muette)
     });
+    let politique_muette = horizon_froid_non_mesure.or(politique_muette);
     match (non_lue, politique_muette, haut) {
         (Some(cle), _, _) => {
             cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
@@ -824,15 +967,73 @@ pub(crate) fn cache_ecrire_dit(conn: &Connection, id: i64, range_key: &str, q_fp
     ecrit
 }
 
-/// Lit un payload SANS prédicat de fraîcheur : rend (payload, computed_at) quel que soit l'âge.
-pub(crate) fn cache_lire(conn: &Connection, id: i64, range_key: &str, q_fp: &str) -> Option<(String, i64)> {
-    conn.query_row(SQL_LIRE, params![id, range_key, q_fp], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-        .ok()
+/// `P10.32-o` — LES LECTURES DE LIGNE DE CACHE REFUSÉES OU ILLISIBLES, depuis le démarrage (compte de processus, jamais
+/// persisté). Le rang courant est porté par la cause de `cache_lire_dit`, que chaque appelant écrit à sa ligne de
+/// journal ; il n'est pas servi sous `/api/system/metrics`.
+static LECTURES_DE_CACHE_REFUSEES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Valeur courante de `LECTURES_DE_CACHE_REFUSEES` (lue par les témoins seuls : c'est le compte de production, non servi).
+#[cfg(test)]
+pub(crate) fn lectures_de_cache_refusees() -> u64 {
+    LECTURES_DE_CACHE_REFUSEES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Vide tout le cache rendu ; rend le nombre de lignes supprimées (0 si l'ordre échoue).
-pub(crate) fn cache_vider(conn: &Connection) -> usize {
-    conn.execute(SQL_VIDE_TOUT_LE_CACHE, []).unwrap_or(0)
+/// `P10.32-o` — CE QUE LA LECTURE D'UNE LIGNE DE CACHE A RENDU. Une lecture refusée n'est pas une absence : un appelant qui
+/// écrit sur une absence (le corps d'échec de `dashboards::memoriser_l_echec_du_rafraichissement`) écraserait une charge
+/// utile VALIDE qu'il n'a simplement pas pu lire.
+#[derive(Debug, PartialEq)]
+pub(crate) enum LectureDeCache {
+    /// Ligne lue : (payload, computed_at).
+    Lue(String, i64),
+    /// Aucune ligne (`.optional()` : `Ok(None)`).
+    Absente,
+    /// Une ligne EXISTE, la lecture a été faite, mais sa valeur ne se décode pas (type inattendu, conversion impossible,
+    /// valeur hors plage : les formes de `bilan_de_tick::cause_sql`). Elle ne porte aucune charge utile valide : un corps
+    /// d'échec peut la remplacer, comme une charge qui n'est pas du JSON. La cause porte le rang du compte.
+    Illisible(String),
+    /// Lecture REFUSÉE par le moteur (autorisateur, verrou, I/O…) : on ne sait pas ce que la ligne porte. Rien ne doit
+    /// être écrit sur la foi de cette lecture. La cause porte le rang du compte.
+    NonLue(String),
+}
+
+/// Lit un payload SANS prédicat de fraîcheur, en QUATRE issues (`LectureDeCache`). Les deux issues ratées sont comptées
+/// (`LECTURES_DE_CACHE_REFUSEES`) ; la cause rendue nomme l'erreur (texte et code étendu du moteur : l'énoncé lu est la
+/// constante `SQL_LIRE`, jamais la requête du panneau) et le rang du compte. Aucune ligne de journal ICI : chaque
+/// appelant dit, à SA ligne, ce qu'il fait réellement de l'issue (servir comme un MISS, ne rien écrire, remplacer).
+pub(crate) fn cache_lire_dit(conn: &Connection, id: i64, range_key: &str, q_fp: &str) -> LectureDeCache {
+    use rusqlite::OptionalExtension;
+    match conn.query_row(SQL_LIRE, params![id, range_key, q_fp], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).optional() {
+        Ok(Some((payload, calcule_a))) => LectureDeCache::Lue(payload, calcule_a),
+        Ok(None) => LectureDeCache::Absente,
+        Err(e) => {
+            let rang = LECTURES_DE_CACHE_REFUSEES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let cause = format!(
+                "{} (lecture de cache ratée n° {rang} depuis le démarrage)",
+                crate::sqlite_plafond::decrire_l_erreur(&e)
+            );
+            match e {
+                rusqlite::Error::InvalidColumnType(..)
+                | rusqlite::Error::FromSqlConversionFailure(..)
+                | rusqlite::Error::IntegralValueOutOfRange(..) => LectureDeCache::Illisible(cause),
+                _ => LectureDeCache::NonLue(cause),
+            }
+        }
+    }
+}
+
+/// Forme `Option` de `cache_lire_dit`, pour les témoins seuls (les sites de production lisent les quatre issues).
+#[cfg(test)]
+pub(crate) fn cache_lire(conn: &Connection, id: i64, range_key: &str, q_fp: &str) -> Option<(String, i64)> {
+    match cache_lire_dit(conn, id, range_key, q_fp) {
+        LectureDeCache::Lue(payload, calcule_a) => Some((payload, calcule_a)),
+        LectureDeCache::Absente | LectureDeCache::Illisible(_) | LectureDeCache::NonLue(_) => None,
+    }
+}
+
+/// `P10.29-l` — Vide tout le cache rendu et DIT si l'ordre a été pris : nombre de lignes supprimées, ou l'erreur du
+/// moteur. La purge (`purge::purge_delete_rows`) refuse sur l'erreur : les charges utiles portent le contenu purgé.
+pub(crate) fn cache_vider_dit(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(SQL_VIDE_TOUT_LE_CACHE, [])
 }
 
 /// Invalide le cache d'un panneau (édition / suppression).
@@ -957,6 +1158,13 @@ pub(crate) fn coverage_synthetique(raison: &str, from: i64, now_s: i64, horizon_
     cov
 }
 
+/// `P10.32-o` — sur une couverture synthétique `mesure_en_cours` (corps `warming`), dit que la ligne de cache n'a PAS été
+/// lue : raison et notice remplacées, horizon mesuré et instants gardés tels quels.
+pub(crate) fn dire_la_ligne_de_cache_non_lue(cov: &mut Value) {
+    cov["reason"] = json!(RAISON_LIGNE_DE_CACHE_NON_LUE);
+    cov["notice"] = json!(NOTICE_LIGNE_DE_CACHE_NON_LUE);
+}
+
 /// `P10.32-o` — LE CORPS D'UN RAFRAÎCHISSEMENT EN ÉCHEC : la cause du moteur dans `error` (la console
 /// le lit déjà comme un refus nommé), aucun `warming`, un aveu `calcul_echoue`. L'horizon n'est pas
 /// publié : le panneau compilé a été consommé par l'exécution qui a échoué, et un champ absent est un
@@ -965,4 +1173,11 @@ pub(crate) fn corps_d_echec(cause: &str, from: i64, now_s: i64) -> Value {
     let mut v = json!({ "columns": [], "rows": [], "error": cause });
     v["stats"]["coverage"] = coverage_synthetique(RAISON_CALCUL_ECHOUE, from, now_s, None);
     v
+}
+
+/// Vide tout le cache rendu ; rend le nombre de lignes supprimées (0 si l'ordre échoue). Plus appelée en production
+/// depuis `P10.29-l` (la purge lit `cache_vider_dit`) : gardée pour le témoin du plancher de `tests/panneau_avoue.rs`.
+#[cfg(test)]
+pub(crate) fn cache_vider(conn: &Connection) -> usize {
+    cache_vider_dit(conn).unwrap_or(0)
 }

@@ -436,9 +436,11 @@ DEFAUTS_RANG_3_INTERNE = {
     # servie comme un panneau jamais mesuré (comportement d'avant) MAIS dite par une ligne fixe ; le TTL non lu vaut 0
     # (cache coupé pour ce panneau, fail-closed) avec sa ligne fixe — il retombait sur le TTL global
     # (témoins : `lectures_des_panneaux_et_cles_de_runbook_en_trois_issues.rs`).
-    # Cache de panneau manqué : repli bénin, dit bénin, et gardé dans l'ensemble pour que sa forme ne change pas
-    # en silence.
-    ("daemon/src/handlers/panneau_avoue.rs", "cache_lire"): ("ok",),
+    # ENTRÉE RETIRÉE PAR `P10.32-o` (vague BA, 2026-10-29) : `panneau_avoue.rs::cache_lire` (`ok`). Le site PROPAGE
+    # désormais : la lecture de la ligne de cache passe par `cache_lire_dit`, en `.optional()` puis `match`, en quatre
+    # issues (`Lue`, `Absente`, `Illisible` — ligne lue mais non décodable, remplaçable —, `NonLue` — refus du moteur,
+    # rien n'est écrit sur sa foi, servi `cache_non_lu`) ; `cache_lire` n'est plus qu'une forme `Option` `#[cfg(test)]`
+    # (témoins : `ligne_de_cache_illisible_remplacee_et_non_lue_dite.rs`).
     # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AL, 2026-10-24) : `dashboards.rs::excl_display_csv` (`ok.map.unwrap_or_else`)
     # — l'override ADMIN d'affichage non lu retombait sur la variable d'environnement, servie au registre comme valeur
     # active, inscrite au registre d'audit comme ancienne valeur et chargée dans le cache des panneaux. Lu en

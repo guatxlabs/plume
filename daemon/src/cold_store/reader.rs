@@ -1076,11 +1076,49 @@ pub(super) struct HorizonDeLecture {
     n: i64,
 }
 
+/// `P10.29-w` (vague BA) — la sonde qui PREND la lecture de `main` avant le réglage de rétention : elle lit le schéma
+/// (aucune donnée), et c'est son échec, avec son CODE, qui dit une base occupée.
+const SONDE_DE_LA_LECTURE_DE_L_HORIZON: &str = "SELECT count(*) FROM main.sqlite_master";
+
 impl HorizonDeLecture {
+    /// `P10.29-w` (vague BA) — UNE BASE OCCUPÉE N'EST PAS UNE RÉTENTION ILLISIBLE. `retention_effective_lue` rend un
+    /// texte sans code : une occupation y devenait `HORIZON_FROID_NON_LU`, servi « illisible ». L'horizon se lit donc
+    /// sous un point de sauvegarde (transaction différée, ou imbriquée si l'appelant en tient une) dont le PREMIER énoncé
+    /// est la sonde : une base prise par un autre écrivain la fait échouer, notée `Occupee` par son code
+    /// (`texte_de_la_voie_froide`). Sonde passée, la lecture de `main` est TENUE jusqu'à la libération : le réglage, la
+    /// fenêtre chaude et les politiques se lisent sans pouvoir rencontrer le verrou d'un autre écrivain, et sur le même
+    /// état de la base. Seul un réglage écrit et illisible rend encore `HORIZON_FROID_NON_LU`.
     pub(super) fn lire(conn: &Connection, conf: &HashMap<String, String>, boundary: i64) -> Result<HorizonDeLecture, String> {
-        let rd = crate::retention_effective_lue(conn, conf, "retention_days").map_err(|_| HORIZON_FROID_NON_LU.to_string())?;
-        let n = (boundary.div_euclid(SECS_PER_DAY) + cold_hot_window_days(conn, conf, rd)) * SECS_PER_DAY;
-        Ok(HorizonDeLecture { bande: Bande::calculer(conn, conf, n, rd), n })
+        #[cfg(test)]
+        let chemin_du_crochet = conn.path().unwrap_or_default().to_string();
+        #[cfg(test)]
+        crate::query_exec::crochet_de_l_union_froide::passer(&chemin_du_crochet, crate::query_exec::crochet_de_l_union_froide::Etape::AvantLaPriseDeLHorizon);
+        conn.execute_batch("SAVEPOINT horizon_de_lecture").map_err(crate::query_exec::texte_de_la_voie_froide)?;
+        let lu = (|| {
+            conn.query_row(SONDE_DE_LA_LECTURE_DE_L_HORIZON, [], |r| r.get::<_, i64>(0)).map_err(crate::query_exec::texte_de_la_voie_froide)?;
+            #[cfg(test)]
+            crate::query_exec::crochet_de_l_union_froide::passer(&chemin_du_crochet, crate::query_exec::crochet_de_l_union_froide::Etape::ApresLaPriseDeLHorizon);
+            let rd = crate::retention_effective_lue(conn, conf, "retention_days").map_err(|_| HORIZON_FROID_NON_LU.to_string())?;
+            let n = (boundary.div_euclid(SECS_PER_DAY) + cold_hot_window_days(conn, conf, rd)) * SECS_PER_DAY;
+            let bande = Bande::calculer(conn, conf, n, rd);
+            // Dernier point AVANT la libération : la fenêtre chaude et les politiques (`load_index_policies`, qui avale
+            // un refus et rend alors des politiques vides) ont été lues sous la lecture tenue ; un témoin y vérifie
+            // qu'un autre écrivain se voit encore refuser la base.
+            #[cfg(test)]
+            crate::query_exec::crochet_de_l_union_froide::passer(&chemin_du_crochet, crate::query_exec::crochet_de_l_union_froide::Etape::AvantLaLiberationDeLHorizon);
+            Ok(HorizonDeLecture { bande, n })
+        })();
+        // L'échec de la libération est rendu quand la lecture avait réussi, et ne masque jamais l'échec de la lecture.
+        // HORS D'ATTEINTE : `RELEASE` n'échoue que sur un nom de point de sauvegarde inconnu ou sur un commit refusé ; le
+        // point est posé ci-dessus et rien entre les deux ne termine une transaction (la fermeture ne fait que des
+        // `SELECT` : `retention_effective_lue`, `load_index_policies`), et une transaction qui n'a rien écrit n'a rien à
+        // valider.
+        let libere = conn.execute_batch("RELEASE horizon_de_lecture").map_err(crate::query_exec::texte_de_la_voie_froide);
+        match (lu, libere) {
+            (Err(e), _) => Err(e),
+            (Ok(_), Err(e)) => Err(e),
+            (Ok(h), Ok(())) => Ok(h),
+        }
     }
 
     /// Premier jour SERVI (inclus) de l'index `env_id` : le lendemain de son dernier jour expiré.
@@ -1115,13 +1153,22 @@ impl ColdUnionMeta {
     /// portée (`HorizonDeLecture::premier_jour_de_la_portee`), sur la MÊME bande et au MÊME instant que le lecteur froid
     /// (`HorizonDeLecture::lire`, porté par la frontière de la requête). C'est l'horizon de couverture d'une réponse de
     /// `/api/query` dont le bras froid a été lu (`panneau_avoue::horizon_de_la_voie_froide_lue`) : la frontière chaude
-    /// n'y est pas un horizon, puisque le froid sous elle a été lu. `Err` : uniquement `HORIZON_FROID_NON_LU`, le réglage
-    /// de rétention écrit et illisible (la seule erreur de `HorizonDeLecture::lire`).
+    /// n'y est pas un horizon, puisque le froid sous elle a été lu. `Err` : les erreurs de `HorizonDeLecture::lire` —
+    /// `HORIZON_FROID_NON_LU` (réglage de rétention écrit et illisible), ou l'échec de la prise de la lecture (point de
+    /// sauvegarde, sonde, libération) en texte du moteur, noté `Occupee` s'il porte un code d'occupation
+    /// (`texte_de_la_voie_froide`). La couverture (`panneau_avoue::plancher_de_l_horizon_froid`) les distingue : seul
+    /// `HORIZON_FROID_NON_LU` y est dit « réglage retention_days non lu » (`est_le_reglage_non_lu`).
     /// Fonction associée au type de COUVERTURE de l'union, déjà ré-exporté par `cold_store` : toutes les voies froides
     /// (union, keyset colonnaire, vectorisées) lisent sous ce même horizon, et le module de lecture reste privé.
     pub(crate) fn premier_instant_servi(conn: &Connection, conf: &HashMap<String, String>, boundary: i64, env_filter: Option<&str>) -> Result<i64, String> {
         let horizon = HorizonDeLecture::lire(conn, conf, boundary)?;
         Ok(horizon.premier_jour_de_la_portee(env_filter) * SECS_PER_DAY)
+    }
+
+    /// `P10.29-w` — VRAI si l'échec de `premier_instant_servi` est celui du réglage de rétention écrit et illisible
+    /// (`HORIZON_FROID_NON_LU`), et lui seul : une base occupée ou une lecture non prise ne sont pas un réglage non lu.
+    pub(crate) fn est_le_reglage_non_lu(texte: &str) -> bool {
+        texte == HORIZON_FROID_NON_LU
     }
 }
 
@@ -1209,8 +1256,11 @@ fn open_cold_union_avec(
     // (5) et (6)). Ces énoncés n'écrivent que la base TEMPORAIRE, privée à cette connexion, et le schéma de `main` est
     // déjà chargé par cette DDL : ils ne prennent aucun verrou sur la base partagée, donc un autre écrivain ne peut pas
     // les faire échouer en base occupée (aucune connexion du démon n'ouvre de cache partagé, seule source de LOCKED
-    // entre connexions). Une base prise entre deux énoncés se rencontre au premier énoncé suivant qui lit `main` : la
-    // requête de l'appelant, classée `Occupee` par le cœur (`EchecDeRequete::du_moteur`). Témoin : un écrivain prend la
+    // entre connexions). Une base prise entre deux énoncés se rencontre au premier énoncé suivant qui lit `main`. Après
+    // la vue (6), c'est la lecture du sel de masquage par `install_fmask_udf` (étape (7)) : elle échoue après le délai
+    // d'attente, sans faire échouer le montage, et le journal le dit « sel de hachage NON LU, base OCCUPÉE », jamais
+    // « ILLISIBLE » (`query_exec::install_fmask_udf`, vague BA) ; puis la requête de l'appelant rencontre le même verrou,
+    // classée `Occupee` par le cœur (`EchecDeRequete::du_moteur`). Témoin : un écrivain prend la
     // base en verrou EXCLUSIF au point exact de chacune de ces étapes, sur une base en journal de rollback (où ce verrou
     // bloque tout lecteur : une sonde le constate) ; l'union se monte et la route sert le 503 de la base OCCUPÉE, jamais
     // celui de la base illisible (`tests/export_froid_coupe_a_sa_borne_et_union_occupee.rs`).

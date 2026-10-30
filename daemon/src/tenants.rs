@@ -574,6 +574,10 @@ pub(crate) async fn tenant_create(
     }
     let maillon = control_ledger_append(&st, "tenant.create", &au.name, &id, &detail.to_string());
     // `P10.21-m` — l'événement du tenant rend son issue ; perdu, il est avoué à côté du deux cent un.
+    // `P10.30-d` — une base NON SERVIE (`SansBaseServie`) aussi, par le même appel (`avouer_l_evenement_du_tenant_non_ecrit`,
+    // rbac.rs) : la base vient d'être provisionnée, elle ne manque que si le tenant est suspendu, ou son ouverture
+    // refusée, entre le provisionnement et cet événement. La forme du corps ci-dessous est relue telle quelle par le
+    // harnais de la console (`web_esm_harnais.mjs`, provisionnement (b)) : l'aveu passe par l'appel existant.
     let evenement = audit_tenant_event(
         &st,
         &id,
@@ -920,11 +924,10 @@ pub(crate) async fn grant_set(
             return (StatusCode::BAD_REQUEST, "dernier administrateur du tenant — rétrogradation refusée").into_response()
         }
         Issue::Refuse(RefusDuDroit::NonEtabli(cause)) => return refuser_le_geste_sans_anti_verrouillage_lu(&cause),
-        // `P10.30-d` — LIMITE ÉCRITE : ce refus reste un 500 à phrase fixe (sans cause du moteur, mais ni 503 ni
-        // nommé) — `ensure_platform_user_conn` perd la cause par `.ok()?` avant ce gestionnaire.
-        Issue::Refuse(RefusDuDroit::Materialisation) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "échec de matérialisation du compte plateforme").into_response()
-        }
+        // `P10.30-d` — LE COMPTE DE PLATEFORME NON ÉTABLI EST LE 503 NOMMÉ DE LA POSE NON PRISE (c'était un 500 à phrase
+        // fixe) : la transaction du geste est annulée, rien n'a changé. La cause du moteur n'atteint pas ce gestionnaire
+        // (`ensure_platform_user_conn`, rbac.rs, rend `None` par `.ok()?`) : le journal dit le fait, sans elle.
+        Issue::Refuse(RefusDuDroit::Materialisation) => return refuser_le_droit_non_pose(&id, MOTIF_AU_JOURNAL_COMPTE_DE_PLATEFORME_NON_ETABLI),
         // `P10.30-d` — LE DROIT NON ÉCRIT EST UN 503 NOMMÉ, la cause du moteur au journal du démon seul. Un 500
         // `échec du grant: <cause du moteur>` la servait au client, sans dire que rien n'avait changé.
         Issue::Refuse(RefusDuDroit::NonEcrit(cause)) => return refuser_le_droit_non_pose(&id, &cause),
@@ -960,6 +963,22 @@ fn refuser_le_droit_non_pose(tenant: &str, cause_du_moteur: &str) -> Response {
     eprintln!("[tenants] WARN droit NON posé sur '{tenant}' : {cause_du_moteur}");
     err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROIT_NON_POSE)
 }
+
+/// `P10.30-d` — ce que le journal dit d'une pose refusée faute de compte de plateforme (aucune cause du moteur ne
+/// parvient jusqu'ici). Jamais servi : le client reçoit `CAUSE_DROIT_NON_POSE`.
+const MOTIF_AU_JOURNAL_COMPTE_DE_PLATEFORME_NON_ETABLI: &str = "compte de plateforme ni retrouvé ni créé (cause non rendue)";
+
+/// `P10.30-d` — CE QU'UN SUCCÈS DIT QUAND LA BASE DU TENANT N'EST PAS SERVIE (`EvenementDAuditDuTenant::SansBaseServie`) :
+/// le geste est fait au plan de contrôle, mais l'événement qui le montre au tenant n'a pas de destinataire. C'était
+/// une limite écrite, rien n'était avoué : un tenant suspendu à qui l'on pose ou retire un droit ne le voit jamais
+/// parmi ses événements, même réactivé. Même clé que la perte d'écriture (`CLE_EVENEMENT_DU_TENANT_NON_ECRIT`, lue par
+/// la console), phrase distincte : ce n'est pas une écriture refusée. Posée par `avouer_l_evenement_du_tenant_non_ecrit`
+/// (rbac.rs), sur les cinq gestes qui écrivent un événement de tenant : création, suspension, réactivation, pose et
+/// retrait d'un droit.
+pub(crate) const CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE: &str =
+    "ÉVÉNEMENT DU TENANT NON ÉCRIT : le geste d'administration a bien eu lieu, mais la base de ce tenant n'est pas \
+     servie (un tenant suspendu ne l'est pas) — l'événement d'audit qui le lui montre n'y est pas écrit, et ce tenant ne \
+     verra pas ce changement parmi ses propres événements, même une fois servi de nouveau.";
 
 /// `P10.21-g` — LE RETRAIT DE DROIT QUE LA BASE N'A PAS PRIS EST REFUSÉ : 503, et l'accès N'EST PAS
 /// retiré. La phrase le dit en tête, parce que c'est la lecture qui compte pour un retrait d'accès.
@@ -1077,8 +1096,10 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
     // aveu : quand la ligne manque au journal de contrôle, la réponse devient un 200 dont le corps DIT le
     // retrait ET le trou. Refuser serait faux : le grant est déjà retiré.
     // `P10.21-m` — un événement du tenant PERDU force aussi le deux cents : le 204 ne peut pas l'avouer.
+    // `P10.30-d` — une base du tenant NON SERVIE aussi (tenant suspendu) : l'événement n'y est pas écrit, c'est dit.
     if evenement.est_perdu() {
         // Le corps qui avoue est posé plus bas, sous la même forme que l'aveu du maillon.
+    } else if matches!(evenement, EvenementDAuditDuTenant::SansBaseServie) {
     } else if maillon.cause_de_non_inscription().is_none() {
         return StatusCode::NO_CONTENT.into_response();
     }

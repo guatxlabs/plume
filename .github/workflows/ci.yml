@@ -847,7 +847,7 @@ env:
   # `EXPECTED_AI_TESTS` (3769 -> 3850) ; +88 sur `EXPECTED_COLD_TESTS` (4091 -> 4179) : les sept de plus sont les
   # modules `froid` (`#[cfg(feature = "cold_tier")]`) des témoins de `P10.5-p`
   # (`horizon_des_panneaux_suit_les_politiques_par_index.rs` quatre, `politiques_non_lues_et_echec_anterieur_a_la_charge.rs` trois).
-  EXPECTED_TESTS: "3923"
+  EXPECTED_TESTS: "4017"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -1323,7 +1323,7 @@ jobs:
           # `P10.33-i` (2026-10-28) : +1, le MÊME que sur `EXPECTED_TESTS` — écart INCHANGÉ.
           # Vagues AW, AX et AY (2026-10-28) : +88, soit les +81 d'`EXPECTED_TESTS` et sept témoins froids de `P10.5-p` —
           # écart 343 -> 350. La dérivation est écrite auprès d'`EXPECTED_TESTS`, une seule fois.
-          EXPECTED_COLD_TESTS: "4280"
+          EXPECTED_COLD_TESTS: "4403"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail
@@ -1446,7 +1446,7 @@ jobs:
       - name: cargo test (daemon, --features ai) + assert the ai test count
         working-directory: daemon
         env:
-          EXPECTED_AI_TESTS: "3944"
+          EXPECTED_AI_TESTS: "4038"
           EXPECTED_DEFAULT_TESTS: ${{ env.EXPECTED_TESTS }}
         run: |
           set -euo pipefail

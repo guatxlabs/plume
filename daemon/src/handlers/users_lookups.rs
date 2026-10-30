@@ -138,6 +138,18 @@ pub(crate) async fn user_create(
     if pw.chars().count() < PASSWORD_MIN_CHARS {
         return (StatusCode::BAD_REQUEST, format!("mot de passe trop court (≥ {PASSWORD_MIN_CHARS} caractères)")).into_response();
     }
+    // `P10.24-e` — L'IDENTITÉ VIT DANS LE PLAN DE CONTRÔLE : la ligne de tenant que cette route poserait porterait un
+    // mot de passe qu'aucune connexion ne lit (`state::lookup_basic_ident_lu` lit `platform_user`), la même crédence
+    // inerte que `user_update` refuse (sa cause du mot de passe non posé, identité de plateforme). Mesuré sur la forme
+    // d'avant (mutant « BA6C_UC_SANS_REFUS ») : `200`, la ligne posée avec son haché, et la connexion de ce nom par ce
+    // mot de passe rend `401`. Jugé après la
+    // validation du corps (ses refus gardent leur ordre) et AVANT le secret des gestes et le hachage : rien n'est
+    // essayé, haché, écrit ni inscrit. Sans plan de contrôle — mode 0, et mode multi-tenant DÉGRADÉ (initialisation du
+    // plan échouée, `server/mod.rs`) — l'identité est la base unique : la création y reste admise
+    // (`rgsc_mode_degrade_les_gestes_de_compte_suivent_le_mode_0`).
+    if st.tenants.control.is_some() {
+        return err_json(StatusCode::CONFLICT, CAUSE_COMPTE_NON_CREE_IDENTITE_DE_PLATEFORME);
+    }
     // `P10.24-m` — CRÉER UN COMPTE POSE UN ACCÈS QUI SURVIT À LA SESSION : le droit (route réservée administrateur) ET le
     // secret des gestes, jugé après la validation du corps (un corps irrecevable n'engage aucun essai) et avant toute
     // écriture. TOUT RÔLE, et non le seul administrateur : un compte `viewer` lit toute la télémétrie de sécurité
@@ -387,6 +399,22 @@ pub(crate) const CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE: &str = "COMPTE NON
      configuration, le démon repartirait en mode installation, tous les comptes refusés. Pour lui retirer l'accès, \
      réinitialisez son mot de passe : ses sessions tombent. Rien n'est écrit.";
 
+/// `P10.24-e` — LE REMÈDE DES DEUX REFUS DU COMPTE DE L'ASSISTANT, QUAND L'IDENTITÉ VIT DANS LE PLAN DE CONTRÔLE. Le
+/// remède du mode 0 (« réinitialisez son mot de passe : ses sessions tombent ») y est IMPOSSIBLE : `user_update` refuse
+/// ce geste en `409` (`CAUSE_MOT_DE_PASSE_NON_POSE_IDENTITE_DE_PLATEFORME`), et la crédence de l'assistant est
+/// `st.admin`, que la ligne du tenant `default` ne porte pas. Ce qui retire l'accès : ses droits de tenant (la
+/// résolution du mode multi-tenant, `rbac::resolve_tenant_access`, n'ouvre un tenant qu'à un droit) ; sa crédence
+/// d'installation ne se change que par lui-même (`/api/password`, `session::ou_vit_le_mot_de_passe_de`). Même constat
+/// que la cause du mode 0, mot pour mot ; seule la phrase du remède change.
+pub(crate) const CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE_SOUS_PLAN_DE_CONTROLE: &str = "COMPTE NON SUPPRIMÉ, C'EST \
+     L'ADMINISTRATEUR DE L'INSTALLATION : ce compte a été posé par l'assistant d'installation, et le démon garde sa \
+     crédence hors de la table des comptes. Supprimé, il se reconnecterait en administrateur par son mot de passe \
+     d'installation — même réinitialisé, même rétrogradé — jusqu'au redémarrage ; et au redémarrage, sans mot de passe \
+     de configuration, le démon repartirait en mode installation, tous les comptes refusés. Pour lui retirer l'accès en \
+     mode multi-tenant, retirez ses droits de tenant (`/api/tenants/{id}/grants`) ; réinitialiser cette ligne n'y \
+     ferait rien (la connexion lit le compte de la plateforme, jamais la ligne du tenant), et sa crédence \
+     d'installation ne se change que par lui-même (`/api/password`). Rien n'est écrit.";
+
 /// `P10.24-s` — LE COMPTE DE L'ADMINISTRATEUR DE L'ASSISTANT NE SE RÉTROGRADE PAS.
 ///
 /// MESURÉ LE 2026-09-25 SUR LA FORME D'AVANT (témoins `mpra_`) : `adm` rétrograde `viewer` le compte `wiz3` posé par
@@ -404,6 +432,23 @@ pub(crate) const CAUSE_COMPTE_DE_L_ASSISTANT_NON_RETROGRADABLE: &str = "RÔLE NO
      s'il est administrateur. Rétrogradé, il ne serait plus rechargé : sans mot de passe de configuration, le démon \
      repartirait en mode installation, tous les comptes refusés. Pour lui retirer l'accès, réinitialisez son mot de \
      passe : ses sessions tombent. Rien n'est écrit.";
+
+/// `P10.24-e` — même refus sous un plan de contrôle, au remède qui y tient (voir
+/// `CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE_SOUS_PLAN_DE_CONTROLE`).
+pub(crate) const CAUSE_COMPTE_DE_L_ASSISTANT_NON_RETROGRADABLE_SOUS_PLAN_DE_CONTROLE: &str = "RÔLE NON CHANGÉ, C'EST \
+     L'ADMINISTRATEUR DE L'INSTALLATION : ce compte a été posé par l'assistant d'installation, et le démon ne le \
+     recharge au démarrage que s'il est administrateur. Rétrogradé, il ne serait plus rechargé : sans mot de passe de \
+     configuration, le démon repartirait en mode installation, tous les comptes refusés. Pour lui retirer l'accès en \
+     mode multi-tenant, retirez ses droits de tenant (`/api/tenants/{id}/grants`) ; réinitialiser cette ligne n'y \
+     ferait rien (la connexion lit le compte de la plateforme, jamais la ligne du tenant), et sa crédence \
+     d'installation ne se change que par lui-même (`/api/password`). Rien n'est écrit.";
+
+/// `P10.24-e` — les refus du compte de l'assistant servent-ils le remède du plan de contrôle ? Jugé sur le plan, non sur
+/// `multi_tenant` : en mode multi-tenant dégradé (plan non initialisé), les routes des droits de tenant exigent le plan
+/// absent, et la réinitialisation du mode 0 tient (`rgsc_mode_degrade_les_gestes_de_compte_suivent_le_mode_0`).
+fn remede_du_plan_de_controle(st: &AppState) -> bool {
+    st.tenants.control.is_some()
+}
 
 /// `P10.24-p` — LES OBJETS QU'UN COMPTE POSSÈDE PAR SON NOM ET QUI PASSENT À L'AUTEUR DE SA SUPPRESSION (colonne
 /// `owner`). Liste FERMÉE, jamais lue d'un corps : les noms entrent tels quels dans l'énoncé.
@@ -491,10 +536,105 @@ impl ObjetsDuCompteSupprime {
     }
 }
 
+/// `P10.24-n` / `P10.24-s` — LA BASE DE LA REQUÊTE PORTE-T-ELLE LE COMPTE DE L'ADMINISTRATEUR DE L'ASSISTANT ? Mode 0, et
+/// mode multi-tenant sans plan de contrôle : la poignée de la requête EST `st.db`. `P10.24-e` — avec un plan de contrôle,
+/// la poignée du tenant `default` est une connexion DISTINCTE (`TenantDbManager::ready`), au fichier de `st.db` : la
+/// comparaison des poignées ne la reconnaissait jamais, et les deux refus ne jouaient sur aucun tenant. Le tenant
+/// `default` s'y reconnaît par son nom ; un homonyme dans un autre tenant n'est toujours pas cette crédence.
+fn la_base_porte_le_compte_de_l_assistant(st: &AppState, au: &AuthUser) -> bool {
+    Arc::ptr_eq(&req_db(st, au), &st.db) || (st.tenants.control.is_some() && au.tenant == "default")
+}
+
+/// `P10.24-e` — `POST /api/users/{id}` avec un mot de passe, quand l'identité vit dans le plan de contrôle (mode
+/// multi-tenant) : la connexion lit le compte de la PLATEFORME, jamais la ligne du tenant.
+pub(crate) const CAUSE_MOT_DE_PASSE_NON_POSE_IDENTITE_DE_PLATEFORME: &str = "MOT DE PASSE NON POSÉ, LES COMPTES SONT \
+     CEUX DE LA PLATEFORME : en mode multi-tenant, la connexion lit le compte de la plateforme (plan de contrôle), \
+     jamais la ligne de ce tenant — un mot de passe posé ici ne serait lu par aucune connexion et ne révoquerait aucune \
+     session. L'accès d'un compte à ce tenant se retire par ses droits (`/api/tenants/{id}/grants`). Rien n'est écrit, \
+     pas même le rôle demandé dans le même corps ; aucun mot de passe actuel n'est examiné ni compté.";
+
+/// `P10.24-e` — `POST /api/users/{id}` avec un rôle, dans un tenant autre que `default`, quand l'identité vit dans le
+/// plan de contrôle : le rôle d'un compte dans un tenant est celui de son droit, jamais celui de la ligne.
+pub(crate) const CAUSE_ROLE_NON_CHANGE_IDENTITE_DE_PLATEFORME: &str = "RÔLE NON CHANGÉ, LES DROITS SONT CEUX DE LA \
+     PLATEFORME : en mode multi-tenant, le rôle d'un compte dans ce tenant est celui de son droit (plan de contrôle ou \
+     groupes du SSO), jamais celui de la ligne de ce tenant — un rôle posé ici ne serait lu par aucune résolution, il \
+     n'accorderait ni ne retirerait aucun accès. Le rôle d'un compte dans ce tenant se change par ses droits \
+     (`/api/tenants/{id}/grants`). Rien n'est écrit ni inscrit, aucun secret des gestes n'est examiné.";
+
+/// `P10.24-e` — `POST /api/users/{id}` avec un rôle, dans le tenant `default`, quand l'identité vit dans le plan de
+/// contrôle et que le changement ne touche aucun des deux faits que le démarrage lit dans cette base
+/// (`refus_du_role_d_une_ligne_de_default_sans_effet`). Même famille que `CAUSE_ROLE_NON_CHANGE_IDENTITE_DE_PLATEFORME`,
+/// phrase distincte : la base de `default` est lue au démarrage, et certains changements y ont un effet.
+pub(crate) const CAUSE_ROLE_NON_CHANGE_LIGNE_DE_DEFAULT_SANS_EFFET: &str = "RÔLE NON CHANGÉ, LES DROITS SONT CEUX DE LA \
+     PLATEFORME : en mode multi-tenant, le rôle d'un compte dans le tenant `default` est celui de son droit (plan de \
+     contrôle ou groupes du SSO) : aucune résolution de droit ne lit le rôle de la ligne de ce tenant, seul le \
+     démarrage le lit, pour deux faits : l'administrateur de l'assistant est-il administrateur, et reste-t-il un \
+     administrateur. Ce changement ne touche ni l'un ni l'autre : il n'accorderait ni ne retirerait aucun accès. Le rôle \
+     d'un compte dans ce tenant se change par ses droits (`/api/tenants/{id}/grants`). Rien n'est écrit ni inscrit, \
+     aucun secret des gestes n'est examiné.";
+
+/// `P10.24-e` — les deux faits du démarrage qui donnent un effet au rôle d'une ligne de `default` sous un plan de
+/// contrôle n'ont pas pu être lus : ni effet ni absence d'effet n'est affirmé.
+pub(crate) const CAUSE_COMPTE_NON_MODIFIE_EFFET_DU_ROLE_NON_ETABLI: &str = "COMPTE NON MODIFIÉ, EFFET DU RÔLE NON \
+     ÉTABLI : la base du tenant `default` n'a pas pu lire l'administrateur de l'assistant ni compter ses \
+     administrateurs (lecture refusée ou table illisible) — on ne sait pas si ce changement de rôle serait lu au \
+     démarrage, et rien n'est changé : ni son rôle, aucun secret des gestes n'est examiné, rien n'est attesté. \
+     Réessayez ; si le refus persiste, la base est illisible ou verrouillée.";
+
+/// `P10.24-e` — L'ÉNONCÉ UNIQUE des deux faits du démarrage (`server::lire_l_etat_d_administration`) : le nom de
+/// l'administrateur de l'assistant (`meta.admin_user`, NULL s'il n'y en a pas) et le nombre de lignes `admin`. Deux
+/// sous-requêtes scalaires : une ligne toujours, un seul échec possible.
+pub(crate) const ENONCE_DES_FAITS_DU_DEMARRAGE: &str =
+    "SELECT (SELECT value FROM meta WHERE key='admin_user'), (SELECT COUNT(*) FROM user WHERE role='admin')";
+
+/// `P10.24-e` — LE RÔLE D'UNE LIGNE DU TENANT `default` SOUS UN PLAN DE CONTRÔLE N'A D'EFFET QUE PAR LE DÉMARRAGE.
+/// Le droit effectif est celui du `grant` (`rbac::resolve_tenant_access`) ; la base de `default` est lue au démarrage
+/// par `server::lire_l_etat_d_administration`, qui n'y regarde que deux faits : la ligne de l'administrateur de
+/// l'assistant est-elle `admin` (il est rechargé ou non), et existe-t-il au moins une ligne `admin` (l'installation se
+/// rouvre à zéro, sans assistant ni mot de passe de configuration). Un changement a donc un effet SEULEMENT s'il fait
+/// passer la ligne de `admin` à un autre rôle ou l'inverse, ET que la ligne est celle de l'administrateur de
+/// l'assistant (nommée par `st.admin` ou par `meta.admin_user`) ou qu'aucune ligne n'est `admin` (une promotion ferme
+/// alors qu'elle reste fermée au démarrage ; une rétrogradation qui la rouvrirait a reçu le refus anti-verrouillage). Tout autre
+/// changement est refusé `409` (`CAUSE_ROLE_NON_CHANGE_LIGNE_DE_DEFAULT_SANS_EFFET`) : il était servi `204` sans effet sur
+/// le droit. Appelée sous le verrou de la base, après la lecture de la cible, la validation du rôle et
+/// l'anti-verrouillage, avant le secret des gestes. `None` : le changement est admis.
+fn refus_du_role_d_une_ligne_de_default_sans_effet(st: &AppState, conn: &Connection, id: i64, tname: &str, trole: &str, role: &str) -> Option<Response> {
+    if st.tenants.control.is_none() {
+        // Sans plan de contrôle (mode 0, mode multi-tenant dégradé), la ligne EST le compte qui se connecte.
+        return None;
+    }
+    if (trole == "admin") == (role == "admin") {
+        return Some(err_json(StatusCode::CONFLICT, CAUSE_ROLE_NON_CHANGE_LIGNE_DE_DEFAULT_SANS_EFFET));
+    }
+    if st.admin.lock().as_ref().is_some_and(|(nom, _)| nom == tname) {
+        return None;
+    }
+    let lu = conn.query_row(ENONCE_DES_FAITS_DU_DEMARRAGE, [], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)));
+    let (assistant, admins) = match lu {
+        Ok(faits) => faits,
+        Err(e) => {
+            eprintln!("[comptes] WARN modification du compte {id} refusée : l'effet de son rôle n'a pas pu être établi ({e})");
+            return Some(err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_MODIFIE_EFFET_DU_ROLE_NON_ETABLI));
+        }
+    };
+    if assistant.as_deref() == Some(tname) || admins == 0 {
+        return None;
+    }
+    Some(err_json(StatusCode::CONFLICT, CAUSE_ROLE_NON_CHANGE_LIGNE_DE_DEFAULT_SANS_EFFET))
+}
+
+/// `P10.24-e` — `POST /api/users` quand l'identité vit dans le plan de contrôle (mode multi-tenant) : un compte s'y
+/// crée sur la plateforme et entre dans un tenant par un droit.
+pub(crate) const CAUSE_COMPTE_NON_CREE_IDENTITE_DE_PLATEFORME: &str = "COMPTE NON CRÉÉ, LES COMPTES SONT CEUX DE LA \
+     PLATEFORME : en mode multi-tenant, la connexion lit le compte de la plateforme (plan de contrôle), jamais une \
+     ligne de ce tenant — un compte créé ici ne se connecterait pas, et son mot de passe ne serait lu par personne. \
+     Un compte entre dans ce tenant par un droit (`/api/tenants/{id}/grants`). Rien n'est écrit ni inscrit, aucun \
+     secret des gestes n'est examiné.";
+
 pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>) -> Response {
     // `P10.24-n` — la base visée est-elle celle qui porte le compte de l'assistant ? Toujours en mode 0 ; en mode
     // multi-tenant, seulement pour le tenant `default` (un homonyme dans un autre tenant n'est pas cette crédence).
-    let base_de_l_assistant = Arc::ptr_eq(&req_db(&st, &au), &st.db);
+    let base_de_l_assistant = la_base_porte_le_compte_de_l_assistant(&st, &au);
     crate::req_conn!(st, au, conn);
     // `P10.20-b` (rang quatre) — la cible NON LUE n'est pas un compte « introuvable » (la forme d'avant, `.ok()`, le
     // disait) : absence établie = le 404 d'avant, lecture ratée = 503 nommé, l'erreur du moteur au journal seulement.
@@ -529,9 +669,14 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
     // l'installation appartient au porteur du jeton. C'est l'installation sans administrateur que l'anti-
     // verrouillage ci-dessous interdit pour le DERNIER administrateur ; ce refus en est le pendant pour le compte
     // dont dépend l'état installé, jugé par NOM (une rétrogradation préalable ne le contourne pas). Le retrait d'accès reste possible : la
-    // réinitialisation du mot de passe par un autre administrateur, qui révoque ses sessions (`P10.23-l`).
+    // réinitialisation du mot de passe par un autre administrateur, qui révoque ses sessions (`P10.23-l`) ; sous un plan
+    // de contrôle, où ce geste est refusé (`P10.24-e`), le retrait de ses droits de tenant.
     let compte_de_l_assistant = st.admin.lock().as_ref().is_some_and(|(nom, _)| *nom == tname);
     if base_de_l_assistant && compte_de_l_assistant {
+        // `P10.24-e` — sous un plan de contrôle, le remède du mode 0 est impossible : la cause dit celui qui tient.
+        if remede_du_plan_de_controle(&st) {
+            return err_json(StatusCode::BAD_REQUEST, CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE_SOUS_PLAN_DE_CONTROLE);
+        }
         return err_json(StatusCode::BAD_REQUEST, CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE);
     }
     if trole == "admin" {
@@ -577,7 +722,13 @@ pub(crate) async fn user_delete(State(st): State<AppState>, Extension(au): Exten
         // `P10.24-w` — les jetons qu'il a frappés, dans CETTE transaction : révoqués ou conservés selon la décision
         // écrite dans `handlers/tokens.rs` (`DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME`), et nommés ci-dessous.
         let jetons = crate::handlers::tokens::JetonsDuCompteSupprime::traiter(&conn, &tname)?;
-        avancer_l_epoque_du_compte(&conn, &tname)?;
+        // `P10.24-e` — avec un plan de contrôle, une ligne de tenant ne porte aucune session (l'identité est celle de la
+        // plateforme, `state::lookup_basic_ident_lu`) : avancer `session_epoch:<nom>` dans la base du tenant `default`
+        // révoquait le compte de PLATEFORME homonyme, qui n'est pas celui qu'on supprime. Sans plan de contrôle (mode 0,
+        // et mode multi-tenant dégradé), la ligne EST le compte qui se connecte : son époque avance.
+        if st.tenants.control.is_none() {
+            avancer_l_epoque_du_compte(&conn, &tname)?;
+        }
         let compte_rendu = json!({
             "action": "config.user.delete", "kind": "user", "target": tname, "role": trole, "actor": au.name,
             "second_facteur_retire": seconds_facteurs_retires > 0,
@@ -652,8 +803,28 @@ pub(crate) async fn user_update(
 ) -> Response {
     let new_pw = b.get("password").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty());
     let new_role = b.get("role").and_then(|v| v.as_str());
+    // `P10.24-e` — L'IDENTITÉ VIT DANS LE PLAN DE CONTRÔLE : aucun mot de passe d'une ligne de tenant n'est posé, et aucun
+    // mot de passe actuel n'est jugé. Voir `CAUSE_MOT_DE_PASSE_NON_POSE_IDENTITE_DE_PLATEFORME`. Jugé AVANT toute lecture :
+    // le corps entier est refusé (rôle compris), rien n'est écrit, compté ni inscrit.
+    if new_pw.is_some() && st.tenants.control.is_some() {
+        return err_json(StatusCode::CONFLICT, CAUSE_MOT_DE_PASSE_NON_POSE_IDENTITE_DE_PLATEFORME);
+    }
+    // `P10.24-e` — LE RÔLE D'UNE LIGNE DE TENANT N'EST LU PAR AUCUNE RÉSOLUTION SOUS UN PLAN DE CONTRÔLE : le rôle effectif
+    // d'un compte dans un tenant est celui de son droit (`rbac::resolve_tenant_access` -> `grant_role_for` : groupes du
+    // SSO ou table `grant` du plan), et la session du mode multi-tenant lit le compte de la plateforme
+    // (`session::compte_live` -> `state::lookup_basic_ident_lu`). Rétrograder la ligne était servi `204` : l'administrateur
+    // croyait avoir retiré un droit que rien ne touchait. Refus nommé, de la famille du mot de passe, jugé au même point
+    // (avant toute lecture : ni le `404` d'une cible absente ni le `400` d'un rôle invalide, ni secret des gestes examiné).
+    // LE TENANT `default` EST JUGÉ À PART, LIGNE PAR LIGNE, APRÈS LA LECTURE : sa base est celle du démarrage, et
+    // `server::lire_l_etat_d_administration` y lit deux faits qui donnent un effet à certains changements de rôle
+    // (`refus_du_role_d_une_ligne_de_default_sans_effet`, plus bas : tout autre changement y est refusé `409`). Sans plan
+    // de contrôle, l'identité est la base unique : admis. Un corps SANS rôle (ni mot de passe) n'est pas concerné : il
+    // garde la lecture (le `404` d'une cible absente) et son `204` sans effet.
+    if new_role.is_some() && st.tenants.control.is_some() && au.tenant != "default" {
+        return err_json(StatusCode::CONFLICT, CAUSE_ROLE_NON_CHANGE_IDENTITE_DE_PLATEFORME);
+    }
     // `P10.24-s` — même borne que le refus de suppression de `P10.24-n` : la base qui porte le compte de l'assistant.
-    let base_de_l_assistant = Arc::ptr_eq(&req_db(&st, &au), &st.db);
+    let base_de_l_assistant = la_base_porte_le_compte_de_l_assistant(&st, &au);
     // LECTURE ET VALIDATION sous le verrou de la base, RELÂCHÉ avant la preuve : en mode 0 la base de la requête est
     // celle que la preuve relit (`prouver_le_premier_facteur` la verrouille à son tour).
     let (tname, trole, role_change) = {
@@ -679,6 +850,9 @@ pub(crate) async fn user_update(
             // preuve du mot de passe (un corps refusé n'engage aucun essai). La promotion vers `admin` reste permise :
             // elle répare un compte d'assistant rétrogradé avant ce refus.
             if role != "admin" && base_de_l_assistant && st.admin.lock().as_ref().is_some_and(|(nom, _)| *nom == tname) {
+                if remede_du_plan_de_controle(&st) {
+                    return err_json(StatusCode::BAD_REQUEST, CAUSE_COMPTE_DE_L_ASSISTANT_NON_RETROGRADABLE_SOUS_PLAN_DE_CONTROLE);
+                }
                 return err_json(StatusCode::BAD_REQUEST, CAUSE_COMPTE_DE_L_ASSISTANT_NON_RETROGRADABLE);
             }
             // anti-lockout : ne pas rétrograder le DERNIER admin. `P10.21-r` — lecture ANTICIPÉE (avant la preuve du
@@ -696,6 +870,11 @@ pub(crate) async fn user_update(
                     }
                 };
                 if admins <= 1 { return (StatusCode::BAD_REQUEST, "dernier administrateur — rétrogradation refusée").into_response(); }
+            }
+            // `P10.24-e` — sous un plan de contrôle, le tenant `default` (les autres ont reçu leur `409` avant toute
+            // lecture) : un changement sans effet au démarrage est refusé, avant le secret des gestes.
+            if let Some(refus) = refus_du_role_d_une_ligne_de_default_sans_effet(&st, &conn, id, &tname, &trole, role) {
+                return refus;
             }
             Some(role)
         } else { None };

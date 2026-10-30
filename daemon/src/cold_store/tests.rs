@@ -11849,3 +11849,6 @@ mod couverture_de_la_recherche_bornee_par_la_retention;
 
 // `P10.20-b` — une ligne `cold_seal` illisible n'est jamais un fichier absent ; le vieillissement dit ce qu'il n'a pas lu ni écrit.
 mod seals_illisibles_jamais_absents;
+
+// `P10.29-w` (vague BB) — `HorizonDeLecture::lire` libère son point de sauvegarde sur chaque issue, échecs compris.
+mod horizon_libere_sur_l_echec;

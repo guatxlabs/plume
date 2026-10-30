@@ -1147,9 +1147,17 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                     let last: Option<String> = match serie.dernier_hash(&conn) {
                         Ok(last) => last,
                         Err(e) => {
+                            // La ligne NOMME la série (genre et machine) : sans eux, l'exploitant ne sait pas quelle
+                            // série relire. Les deux viennent du fichier déposé (enveloppe, ou marqueur de machine
+                            // liée) : écrits échappés (`{:?}`), une saisie ne forge pas de ligne de journal.
+                            let genre = format!("{kind:?}");
+                            let machine = match host {
+                                Some(h) => format!("de la machine {h:?}"),
+                                None => "sans machine".to_string(),
+                            };
                             eprintln!(
-                                "[ingest] WARN instantané du spool : la dernière empreinte de sa série n'a pas été lue ({}) — \
-                                 l'instantané est inscrit comme un état neuf, pas comme un battement",
+                                "[ingest] WARN instantané {genre} du spool {machine} : la dernière empreinte de sa série n'a pas \
+                                 été lue ({}) — l'instantané est inscrit comme un état neuf, pas comme un battement",
                                 crate::bilan_de_tick::cause_sql(&e)
                             );
                             None

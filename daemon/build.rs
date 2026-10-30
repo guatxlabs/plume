@@ -171,8 +171,8 @@ fn garde_cache_de_panneau() {
              \x20 un écrivain de plus, et l'aveu devient un champ dont la présence dépend de QUI a rempli\n\
              \x20 la ligne.\n\n\
              \x20   écrire une réponse   -> panneau_avoue::cache_ecrire(..)\n\
-             \x20   lire une réponse     -> panneau_avoue::cache_lire(..)\n\
-             \x20   invalider / vider    -> panneau_avoue::cache_invalider_panneau / _bibliotheque / cache_vider\n\
+             \x20   lire une réponse     -> panneau_avoue::cache_lire_dit(..) (Lue / Absente / Illisible / NonLue)\n\
+             \x20   invalider / vider    -> panneau_avoue::cache_invalider_panneau / _bibliotheque / cache_vider_dit\n\
              \x20   depuis un MigTx      -> panneau_avoue::SQL_VIDE_TOUT_LE_CACHE / SQL_INVALIDE_UN_PANNEAU\n\n\
              \x20 Seul {COFFRE_CACHE_PANNEAU} peut nommer cette table dans un accès. Le DDL, lui, reste au\n\
              \x20 moteur de migration : posséder les ACCÈS n'est pas posséder le SCHÉMA.\n",

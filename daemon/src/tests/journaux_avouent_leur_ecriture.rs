@@ -221,7 +221,13 @@ mod journaux_avouent_leur_ecriture {
         );
 
         // CONTRÔLE POSITIF — la vue retirée, les gestes inverses n'avouent rien et inscrivent leur maillon.
+        // `P10.30-d` — INVERSÉ : la réactivation passe AVANT la pose et le retrait de `dave`. Joués sur le tenant encore
+        // suspendu, ils rendaient le retrait en 204 nu alors que l'événement du tenant n'avait aucune base où s'écrire ;
+        // ce silence est désormais avoué (deux cents, `evenement_du_tenant_non_ecrit`, témoin `rfet_`), et le chemin
+        // nominal du 204 se juge sur un tenant servi.
         jae_plan_de_controle(&st, JAE_VUE_RETIREE);
+        let (statut, v) = pb_json(tenant_unsuspend(State(st.clone()), Extension(sa.clone()), Path("jae-acme".into())).await).await;
+        assert_eq!((statut, jae_aveu(&v)), (200, None), "{v}");
         let (statut, v) = pb_json(
             grant_set(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(sa.clone()), Path("jae-acme".into()), Json(json!({ "user": "dave", "role": "viewer" }))).await,
         )
@@ -229,8 +235,6 @@ mod journaux_avouent_leur_ecriture {
         assert_eq!((statut, jae_aveu(&v)), (200, None), "{v}");
         let r = grant_delete(State(st.clone()), Extension(sa.clone()), Path(("jae-acme".into(), "dave".into()))).await;
         assert_eq!(r.status(), StatusCode::NO_CONTENT, "le chemin nominal du retrait reste un 204 SANS corps");
-        let (statut, v) = pb_json(tenant_unsuspend(State(st.clone()), Extension(sa.clone()), Path("jae-acme".into())).await).await;
-        assert_eq!((statut, jae_aveu(&v)), (200, None), "{v}");
         let (statut, v) = pb_json(role_delete(State(st.clone()), Extension(sa.clone()), Path("jae-role".into())).await).await;
         assert_eq!((statut, jae_aveu(&v)), (200, None), "{v}");
         assert_eq!(

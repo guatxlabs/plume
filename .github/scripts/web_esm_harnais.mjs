@@ -18754,7 +18754,9 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       return [...code.matchAll(/unDeuxCentsSansCorpsLisible\(/g)].filter((m) => !/import \{[^}]*$/.test(code.slice(Math.max(0, m.index - 400), m.index)))
         .map((m) => { const avant = [...code.slice(0, m.index).matchAll(/apiSend\('([^']+)'/g)].pop(); return f + ":" + (avant ? avant[1] : "?"); });
     }).sort();
-    exiger(gestesDuPredicat109.join(",") === "cases.js:/actions,cases.js:/cases/,detection_admin.js:/actions,idp.js:/mfa/disable,idp.js:/mfa/enroll,idp.js:/mfa/verify,viz.js:/actions",
+    // `P10.31-i` — la révocation globale des sessions lit son corps de succès (`portee: "globale"`) : un deux cents
+    // illisible y est « non établie », jamais un succès (témoin 155).
+    exiger(gestesDuPredicat109.join(",") === "admin_users.js:/sessions/revocation-globale,cases.js:/actions,cases.js:/cases/,detection_admin.js:/actions,idp.js:/mfa/disable,idp.js:/mfa/enroll,idp.js:/mfa/verify,viz.js:/actions",
       `(109a) l'ensemble des gestes qui prennent un deux cents sans corps lisible pour une ABSENCE n'est plus celui que ce lot a relevé : ${JSON.stringify(gestesDuPredicat109)}`);
 
     // ══ (b) LES SURFACES RÉELLES ══════════════════════════════════════════════════════════════════
@@ -20294,17 +20296,28 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     commit_refuse: constante113(COMPTES113, "CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE"),
     // `P10.29-k` — la sixième cause, le `BEGIN` refusé de la création (`P10.28-d`), servie par le lot du démon du 2026-09-25.
     transaction_non_prise: constante113(COMPTES113, "CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE"),
+    // `P10.24-e` — la septième cause : sous un plan de contrôle, une ligne de tenant ne se connecterait pas (lot BA6).
+    identite_de_plateforme: constante113(COMPTES113, "CAUSE_COMPTE_NON_CREE_IDENTITE_DE_PLATEFORME"),
   };
-  const STATUTS113 = { nom_de_l_administrateur_de_configuration: 409, nom_de_l_identite_de_la_demonstration: 409, nom_tenu_par_une_identite_sans_compte: 409, nom_non_verifie: 503, commit_refuse: 503, transaction_non_prise: 503 };
+  const FRONTIERES113 = {
+    nom_de_l_administrateur_de_configuration: "NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATION",
+    nom_de_l_identite_de_la_demonstration: "NOM RÉSERVÉ, C'EST L'IDENTITÉ DE LA DÉMONSTRATION PUBLIQUE",
+    nom_tenu_par_une_identite_sans_compte: "NOM TENU PAR UNE IDENTITÉ SANS COMPTE LOCAL",
+    nom_non_verifie: "COMPTE NON CRÉÉ, NOM NON VÉRIFIÉ",
+    transaction_non_prise: "COMPTE NON CRÉÉ : la base n'a pas pris la transaction de la création (BEGIN refusé",
+    identite_de_plateforme: "COMPTE NON CRÉÉ, LES COMPTES SONT CEUX DE LA PLATEFORME",
+  };
+  const STATUTS113 = { nom_de_l_administrateur_de_configuration: 409, nom_de_l_identite_de_la_demonstration: 409, nom_tenu_par_une_identite_sans_compte: 409, nom_non_verifie: 503, commit_refuse: 503, transaction_non_prise: 503, identite_de_plateforme: 409 };
   const causesCitees113 = [...new Set([...creation113.matchAll(/\bCAUSE_[A-Z_]+\b/g)].map((m) => m[0]))].sort().join(",");
-  instrument113(causesCitees113 === "CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE,CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE,CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION,CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION,CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE,CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE",
-    `\`user_create\` ne sert plus exactement les six causes nommées jugées ici (${causesCitees113}) : une cause neuve doit recevoir sa face, ou être dite générique`);
+  instrument113(causesCitees113 === "CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE,CAUSE_COMPTE_NON_CREE_IDENTITE_DE_PLATEFORME,CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE,CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION,CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION,CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE,CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE",
+    `\`user_create\` ne sert plus exactement les sept causes nommées jugées ici (${causesCitees113}) : une cause neuve doit recevoir sa face, ou être dite générique`);
   instrument113(Object.values(CAUSES_DE_CREATION113).every((c) => c.length > 200)
     && /err_json\(StatusCode::CONFLICT, CAUSE_NOM_DE_L_ADMINISTRATEUR_DE_CONFIGURATION\)/.test(creation113)
     && /err_json\(StatusCode::CONFLICT, CAUSE_NOM_DE_L_IDENTITE_DE_LA_DEMONSTRATION\)/.test(creation113)
     && /\(StatusCode::CONFLICT, Json\(json!\(\{ "error": CAUSE_NOM_TENU_PAR_UNE_IDENTITE_SANS_COMPTE, "ce_que_le_nom_tient": tenue \}\)\)\)/.test(creation113)
     && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_NOM_NON_VERIFIE_COMPTE_NON_CREE\)/.test(creation113)
     && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_COMPTE_NON_CREE_COMMIT_REFUSE\)/.test(creation113)
+    && /err_json\(StatusCode::CONFLICT, CAUSE_COMPTE_NON_CREE_IDENTITE_DE_PLATEFORME\)/.test(creation113)
     && /ouvrir_la_transaction_du_geste\(&conn, "comptes", "création d'un compte", CAUSE_COMPTE_NON_CREE_TRANSACTION_NON_OUVERTE\)/.test(creation113)
     && /err_json\(StatusCode::SERVICE_UNAVAILABLE, cause\)/.test(corpsDeFonction113(readFileSync(path.join(RACINE, "daemon", "src", "handlers", "transaction_validee.rs"), "utf8"), "pub(crate) fn ouvrir_la_transaction_du_geste("))
     && /\(StatusCode::CONFLICT, "ce nom de compte existe déjà"\)\.into_response\(\)/.test(creation113),
@@ -20339,7 +20352,22 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     if (lue !== cle) ecartsI0113.push(`${cle} lue « ${lue} »`);
   }
   const etrangeres113 = [CAUSE_SUPPRESSION113, CAUSE_MODIFICATION113, constante113(COMPTES113, "CAUSE_COMPTE_DE_L_ASSISTANT_NON_SUPPRIMABLE"), "ce nom de compte existe déjà",
-    "COMPTE NON CRÉÉ : autre cause", "NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATIONS", "NOM RÉSERVÉ, C'EST L'IDENTITÉ DE LA DÉMONSTRATION PUBLIQUES", "", "nom invalide (alphanumérique, . _ - uniquement)"];
+    "COMPTE NON CRÉÉ : autre cause", "NOM RÉSERVÉ, C'EST L'ADMINISTRATEUR DE CONFIGURATIONS", "NOM RÉSERVÉ, C'EST L'IDENTITÉ DE LA DÉMONSTRATION PUBLIQUES", "", "nom invalide (alphanumérique, . _ - uniquement)",
+    // `P10.31-i` (trou ancien) — L'ANCRAGE ET LA FRONTIÈRE DE CHACUNE DES SEPT OUVERTURES. MESURÉ SUR LA BASE : aucune phrase
+    // de cette liste ne commençait par autre chose que l'ouverture, ni ne prolongeait celle de la plateforme ; le `^` ou la borne
+    // `(?![\p{L}\p{N}])` retirés de l'ouverture `identite_de_plateforme` (web/admin_users.js) laissaient le témoin vert. Pour
+    // chaque cause servie : « x <ouverture> : x » (l'ouverture est la tête de la phrase SERVIE, avant « : »), puis la phrase
+    // servie entière précédée de « x » (les deux ouvertures qui se prolongent au-delà de « : ») ; et la frontière de la
+    // plateforme, lettre accolée.
+    ...Object.values(CAUSES_DE_CREATION113).flatMap((c) => ["x " + c.split(" :")[0] + " : x", "x " + c]),
+    "COMPTE NON CRÉÉ, LES COMPTES SONT CEUX DE LA PLATEFORMES : en mode multi-tenant, x",
+    // La FRONTIÈRE de chacune des six ouvertures bornées (toutes sauf `commit_refuse`, qui finit sur « ) ») : la cause SERVIE,
+    // une lettre puis un chiffre accolés juste après l'ouverture. Les ouvertures sont écrites ICI, jamais relues de la table jugée.
+    ...Object.entries(FRONTIERES113).flatMap(([cle, ouverture]) => {
+      const c = CAUSES_DE_CREATION113[cle] || "";
+      instrument113(c.startsWith(ouverture), `la cause servie « ${cle} » ne commence plus par l'ouverture écrite ici (${ouverture})`);
+      return ["S", "2"].map((x) => ouverture + x + c.slice(ouverture.length));
+    })];
   etrangeres113.forEach((c) => { const lue = modComptes113.natureDuRefusDeCreationDeCompte(c); if (lue) ecartsI0113.push(`une cause étrangère est lue « ${lue} » : « ${String(c).slice(0, 60)} »`); });
   exiger(ecartsI0113.length === 0,
     `(113i0) LA NATURE D'UN REFUS DE CRÉATION N'EST PAS RECONNUE À LA CAUSE SERVIE, ou une cause étrangère est prise pour une autre : ${JSON.stringify(ecartsI0113)}`);
@@ -20663,7 +20691,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     };
     // `P10.28-u` — onze entrées : la face du nom de la démonstration publique s'y ajoute. `P10.29-k` — douze : la
     // transaction de la création que la base n'a pas prise (`BEGIN` refusé, cinq cent trois nommé depuis `P10.29-a`).
-    const tablesFautives113 = [[srcComptes113, "MOTS_DE_LA_CREATION_DE_COMPTE", 12], [srcDe113("viz.js"), "MOTS_DE_L_INFOBULLE_D_UNE_LIGNE", 1], [srcDe113("viz.js"), "MOTS_DE_LA_PAGE_VIDE", 1]]
+    // `P10.24-e` — treize : la ligne de tenant refusée sous un plan de contrôle (`CAUSE_COMPTE_NON_CREE_IDENTITE_DE_PLATEFORME`).
+    const tablesFautives113 = [[srcComptes113, "MOTS_DE_LA_CREATION_DE_COMPTE", 13], [srcDe113("viz.js"), "MOTS_DE_L_INFOBULLE_D_UNE_LIGNE", 1], [srcDe113("viz.js"), "MOTS_DE_LA_PAGE_VIDE", 1]]
       .filter(([src, nom, n]) => { const e = entreesDe113(src, nom); return e.length !== n || e.some((x) => x.fr === x.en || ACCENTS113.test(x.en)); }).map(([, nom]) => nom);
     const finDuResultat113 = (srcDe113("core.js").match(/const MOTS_DE_LA_FIN_DU_RESULTAT = \{\n {2}fr: (.+),\n {2}en: (.+),\n\};/) || []);
     exiger(tablesFautives113.length === 0 && finDuResultat113.length === 3 && finDuResultat113[1] !== finDuResultat113[2] && !ACCENTS113.test(finDuResultat113[2])
@@ -21079,7 +21108,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const partitionX114 = [new TypeError("Failed to fetch"), null, { statutDuRefus: 503 }, { statutDuRefus: 502, reponseHorsDemon: "page_de_passerelle" }, { statutDuRefus: 200, reponseHorsDemon: "corps_illisible" }, { message: "409 x" }]
       .map((e) => appeler114(modNoyau114, "laDemandeNAPasAbouti", e)).join(",");
     const srcComptes114 = srcDe114("admin_users.js").replace(/\/\/[^\n]*/g, "");
-    exiger(partitionX114 === "true,true,false,false,false,true" && (srcComptes114.match(/\blaDemandeNAPasAbouti\(/g) || []).length === 5 && !/statutDuRefus === 'number'/.test(srcComptes114),
+    // `P10.31-i` — la révocation globale des sessions en est le SIXIÈME (témoin 155).
+    exiger(partitionX114 === "true,true,false,false,false,true" && (srcComptes114.match(/\blaDemandeNAPasAbouti\(/g) || []).length === 6 && !/statutDuRefus === 'number'/.test(srcComptes114),
       `(114x) la demande non aboutie n'est plus reconnue au seul statut absent, ou un geste des comptes la juge à sa façon : ${partitionX114} ; ${(srcComptes114.match(/\blaDemandeNAPasAbouti\(/g) || []).length} lecture(s) du prédicat partagé`);
 
     // ══ (y) `P10.25-y` — LES CONFIRMATIONS DES COMPTES, DANS LES DEUX LANGUES ═══════════════════════════════════
@@ -23699,7 +23729,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // `P10.20-b` (console) — la table que le témoin 152 pose : le parc lu en partie des panneaux d'instantanés.
       "app.js › MOTS_DES_INSTANTANES_DU_PARC",
       // `P10.20-b` (console) — la table que le témoin 152 pose aussi : l'état du pare-feu non lu de la section des suppressions.
-      "suppressions.js › MOTS_DE_L_ETAT_DU_PARE_FEU"];
+      "suppressions.js › MOTS_DE_L_ETAT_DU_PARE_FEU",
+      // `P10.31-i` (console) — la table que le témoin 155 pose : le geste de révocation globale des sessions, ses refus nommés.
+      "admin_users.js › MOTS_DE_LA_REVOCATION_GLOBALE"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -29895,7 +29927,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     dernier_administrateur_non_etabli: { fr: "pouvait lui retirer son dernier administrateur", en: "could have removed its last administrator" },
     premier_administrateur_non_pose: { fr: "Tenant CRÉÉ, mais SANS ADMINISTRATEUR", en: "Tenant CREATED, but WITHOUT AN ADMINISTRATOR" },
     provisionnement: { fr: "Tenant PROVISIONNÉ, mais SANS TRACE", en: "Tenant PROVISIONED, but WITHOUT A TRACE" },
-    evenement_non_ecrit: { fr: "CE TENANT NE LE VERRA PAS", en: "THIS TENANT WILL NOT SEE IT" },
+    // `P10.30-d` — la face neutre entre la perte d'écriture et la base non servie (témoin 157).
+    evenement_non_ecrit: { fr: "n'est pas écrit dans la base de ce tenant — refusé par elle, ou base non servie", en: "is not written in this tenant's database — refused by it, or database not served" },
   };
   const faceW = (langue, k) => { try { return (langue === "en" ? modTEnW : modTW).motDuPlanDeControle(k); } catch { return ""; } };
   // Les fragments d'AUTRES clés que porte un texte affiché (le sien exclu).
@@ -30535,6 +30568,423 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   if (echecs.length !== echecsAvant154) console.log(`(154) EN ÉCHEC — ${echecs.length - echecsAvant154} écart(s), dits ci-dessus`);
   else console.log("(154) OK — `P10.32-r` (console) : l'export coupé à SA borne (`x-plume-export-borne`, relu dans query.rs) dit la borne servie, en français et en anglais, et le fichier porte `-TRONQUE-borne-<n>` ; une borne absente, nulle, négative, décimale, illisible ou au-delà des entiers sûrs retombe sur « ampleur non mesurée » sans chiffre fabriqué ; la couverture froide non lue passe avant la borne et l'écart (face nommée, `-TRONQUE-ampleur-inconnue`) ; l'ampleur mesurée reste prioritaire ; un export entier ne dit rien. Ce qu'il NE tient PAS : la route du démon.");
 }
+
+// ---------------------------------------------------------------------------------------------
+// (155) `P10.31-i` (volet 2, console) — LA RÉVOCATION GLOBALE DES SESSIONS A SON GESTE, SES REFUS NOMMÉS, ET RIEN NE SE
+// RECHARGE QUAND RIEN N'EST RÉVOQUÉ.
+//
+// CE QUE LE DÉMON SERT (RELU ci-dessous dans daemon/src/session.rs et daemon/src/server/groupes_de_routes.rs) : la route
+// `POST /api/sessions/revocation-globale`, `200 {"ok":true,"portee":"globale"}` et cookies effacés ; 403
+// `CAUSE_REVOCATION_GLOBALE_RESERVEE` ; 503 `CAUSE_DECONNEXION_GLOBALE_AUTORITE_NON_LUE`, `…_NON_TRACEE`, `…_NON_PERSISTEE`.
+// MESURÉ SUR LA BASE : aucun module de web/ n'appelait cette route — l'administrateur SSO ou Basic avait la route, pas l'écran.
+// JUGÉ, sur web/admin_users.js des instances française et anglaise, transport simulé : la visibilité du bouton (mode 0 :
+// admin oui, editor et viewer non ; mode multi-tenant : super-administrateur oui, administrateur de tenant non) ; la
+// confirmation, danger, qui dit TOUS les comptes et l'appelant compris ; chaque refus nommé sous sa face (fragment écrit
+// ICI, dans les deux langues), phrase servie entière, AUCUN rechargement et la session gardée ; l'ancrage (« x <ouverture> :
+// x »), la casse, la frontière de mot et le statut faux gardent la face générique ; un 403 de `rbac_gate` en texte brut
+// aussi ; un deux cents sans `portee: "globale"` n'est pas un succès ; une phrase hostile ne pose aucun IMG ; le succès
+// vide `S.AUTH` et recharge une fois.
+// CE QU'IL NE TIENT PAS : la route du démon (témoins Rust `rgsc_`) ; la réserve réelle par tenant (`rbac_gate`).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant155 = echecs.length;
+  const url155 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modFr155 = await import(url155("admin_users.js"));
+  const { S: SFr155 } = await import(url155("state.js"));
+  const langueOrigine155 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modEn155 = await import(adresseSousLaLangue("admin_users.js"));
+  const { S: SEn155 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine155 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine155);
+  const instrument155 = (vrai, quoi) => exiger(vrai, `(155-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu155 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const tic155 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser155 = async (n = 30) => { for (let i = 0; i < n; i++) await tic155(); };
+  const cueillir155 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir155(c, pred, acc)); return acc; };
+  const valeurRust155 = (brut) => brut.replace(/\\\n\s*/g, "").replace(/\\"/g, "\"");
+  const constante155 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? valeurRust155(m[1]) : ""; };
+  const corpsDeFonction155 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+  const lire155 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+
+  // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT ─────────────────────────────────────────────────────
+  const SESSION155 = lire155("session.rs");
+  const ROUTES155 = lire155("server/groupes_de_routes.rs");
+  const porte155 = corpsDeFonction155(SESSION155, "pub(crate) async fn revocation_globale_post(");
+  const service155 = corpsDeFonction155(SESSION155, "fn servir_la_revocation_globale(");
+  const CAUSES155 = {
+    reservee: [403, constante155(SESSION155, "CAUSE_REVOCATION_GLOBALE_RESERVEE")],
+    autorite_non_lue: [503, constante155(SESSION155, "CAUSE_DECONNEXION_GLOBALE_AUTORITE_NON_LUE")],
+    non_tracee: [503, constante155(SESSION155, "CAUSE_DECONNEXION_GLOBALE_NON_TRACEE")],
+    non_persistee: [503, constante155(SESSION155, "CAUSE_DECONNEXION_GLOBALE_NON_PERSISTEE")],
+  };
+  instrument155(/\.route\("\/api\/sessions\/revocation-globale", post\(revocation_globale_post\)\)/.test(ROUTES155),
+    "la route `POST /api/sessions/revocation-globale` n'est plus déclarée dans daemon/src/server/groupes_de_routes.rs");
+  instrument155(/err_json\(StatusCode::FORBIDDEN, CAUSE_REVOCATION_GLOBALE_RESERVEE\)/.test(porte155)
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_AUTORITE_NON_LUE\)/.test(porte155)
+    && /servir_la_revocation_globale\(&st, &au\.name\)/.test(porte155)
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_TRACEE\)/.test(service155)
+    && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DECONNEXION_GLOBALE_NON_PERSISTEE\)/.test(service155)
+    && /cookies_effaces\(StatusCode::OK, json!\(\{ "ok": true, "portee": "globale" \}\)\)/.test(service155),
+    "`revocation_globale_post` ou `servir_la_revocation_globale` ne servent plus les statuts et le succès jugés ici");
+  instrument155(Object.values(CAUSES155).every(([, c]) => c.length > 100 && c.includes(" : ")), "une des quatre phrases n'est plus lisible dans daemon/src/session.rs");
+  const symboles155 = [modFr155, modEn155].every((m) => ["revoquerToutesLesSessions", "poserLeGesteDeLaRevocationGlobale", "peutRevoquerToutesLesSessions", "natureDuRefusDeLaRevocationGlobale", "motDeLaRevocationGlobale"].every((n) => typeof m[n] === "function"));
+  instrument155(symboles155, "un des symboles jugés ici n'est plus exporté par web/admin_users.js (aucun geste de révocation globale dans la console)");
+  // Fragments DISTINCTIFS, écrits ICI (jamais relus de la table jugée).
+  const FRAGMENTS155 = {
+    reservee: { fr: "réserve ce geste", en: "reserves this action" },
+    autorite_non_lue: { fr: "n'a pas pu lire le plan de contrôle", en: "could not read the control plane" },
+    non_tracee: { fr: "la trace du geste n'a pas pu être écrite", en: "the trace of the action could not be written" },
+    non_persistee: { fr: "l'époque de révocation n'a pas pu être écrite", en: "the revocation epoch could not be written" },
+    refus_nomme: { fr: "Révocation globale NON CONFIRMÉE", en: "Global revocation NOT CONFIRMED" },
+    revocation_non_etablie: { fr: "Révocation globale NON ÉTABLIE", en: "Global revocation NOT ESTABLISHED" },
+  };
+  const RIEN155 = { fr: "Rien n'est révoqué", en: "Nothing is revoked" };
+  const RESTE155 = { fr: "la session de ce navigateur reste ouverte", en: "the session of this browser stays open" };
+
+  // ── LE SIMULACRE ────────────────────────────────────────────────────────────────────────────────
+  const fetchOrigine155 = globalThis.fetch, rechargementOrigine155 = globalThis.location.reload, minuterieOrigine155 = globalThis.setTimeout;
+  const etat155 = [SFr155, SEn155].map((S) => ({ S, auth: S.AUTH, mes: S.MY_TENANTS, admin: S.isAdmin }));
+  let rechargements155 = 0, reponse155 = null, appels155 = 0, reseauCoupe155 = false;
+  const sec155 = document.querySelector("#users"), liste155 = document.querySelector("#user-list");
+  instrument155(!!sec155 && !!liste155 && !!sec155.querySelector(".panelhead"), "`#users`, sa `.panelhead` ou `#user-list` n'est plus dans `index.html`");
+  const bouton155 = () => (sec155 ? sec155.querySelector("#sessions-revocation-globale") : null);
+  const puits155 = () => (liste155 && liste155.parentNode ? [...liste155.parentNode.children].find((n) => n.getAttribute && n.getAttribute("data-puits-du-refus-d-un-geste") === "revocation_globale") || null : null);
+  const fenetre155 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+  const MODE0_ADMIN155 = { auth: { user: "hugo", role: "admin", tenant: "default", is_superadmin: false, auth_method: "sso" }, mes: [{ id: "default", role: "admin" }] };
+  const jouer155 = async (mod, S, reponse, { accepter = true } = {}) => {
+    S.AUTH = Object.assign({}, MODE0_ADMIN155.auth); S.MY_TENANTS = MODE0_ADMIN155.mes.slice();
+    reponse155 = reponse; const appelsAvant = appels155, rechAvant = rechargements155;
+    const p = mod.revoquerToutesLesSessions(); await laisser155();
+    const ov = fenetre155(); const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+    const modale = { texte: nu155(ov), danger: !!(ov && ov.children[0] && ov.children[0].classList.contains("danger")) };
+    if (form && accepter && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+    else if (form) { const b = form.querySelector(".m-cancel"); if (b && typeof b.onclick === "function") b.onclick(); }
+    await p; await laisser155(40);
+    const pu = puits155();
+    return { modale, appels: appels155 - appelsAvant, rechargements: rechargements155 - rechAvant, auth: S.AUTH, puits: pu && !pu.hidden ? pu : null,
+      cle: pu && !pu.hidden ? pu.getAttribute("data-refus-de-la-revocation-globale") : null, tete: pu && pu.children[0] ? nu155(pu.children[0]) : "", texte: nu155(pu) };
+  };
+  if (symboles155) try {
+    globalThis.location.reload = () => { rechargements155++; };
+    globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine155(fn, ms >= 100 ? 0 : ms));
+    globalThis.fetch = async (u, init) => {
+      const chemin = String(u).split("?")[0], methode = ((init && init.method) || "GET").toUpperCase();
+      if (methode + " " + chemin !== "POST /api/sessions/revocation-globale") return { ok: true, status: 200, headers: { get: () => null }, text: async () => "{}" };
+      appels155++;
+      if (reseauCoupe155) throw new TypeError("Failed to fetch");
+      if (init && init.body !== undefined) exiger(false, "(155) la révocation globale envoie un corps : la route n'en prend aucun");
+      const r = reponse155 || {};
+      const texte = typeof r.corps === "string" ? r.corps : JSON.stringify(r.corps === undefined ? {} : r.corps);
+      const statut = r.statut || 200;
+      return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte };
+    };
+
+    // ── (a) LA VISIBILITÉ DU BOUTON ─────────────────────────────────────────────────────────────────
+    const VISIBILITES155 = [
+      ["mode 0 admin", { user: "hugo", role: "admin", tenant: "default", is_superadmin: false }, [{ id: "default", role: "admin" }], true],
+      ["mode 0 editor", { user: "ed", role: "editor", tenant: "default", is_superadmin: false }, [{ id: "default", role: "editor" }], false],
+      ["mode 0 viewer", { user: "vi", role: "viewer", tenant: "default", is_superadmin: false }, [{ id: "default", role: "viewer" }], false],
+      ["mode 1 administrateur de tenant, non super-administrateur", { user: "ta", role: "admin", tenant: "acme", is_superadmin: false }, [{ id: "acme", name: "Acme", role: "admin", suspended: false }], false],
+      ["mode 1 administrateur du tenant « default », non super-administrateur", { user: "ta", role: "admin", tenant: "default", is_superadmin: false }, [{ id: "default", name: "Défaut", role: "admin", suspended: false }, { id: "acme", name: "Acme", role: "viewer" }], false],
+      ["mode 1 super-administrateur", { user: "root", role: "admin", tenant: "acme", is_superadmin: true }, [{ id: "acme", name: "Acme", role: "admin" }], true],
+      ["aucune session", null, [], false],
+      // Le démon juge le mode 0 sur le rôle de BASE effectif (`is_admin`) : un rôle composable bâti sur `admin` porte son NOM
+      // dans `/api/me` ; le signal est `/api/users` servi (`S.isAdmin`). Refusé, ou en mode multi-tenant, il ne suffit pas.
+      ["mode 0 rôle composable bâti sur admin, `/api/users` servi", { user: "gov", role: "gov-admin", tenant: "default", is_superadmin: false }, [{ id: "default", role: "gov-admin" }], true, true],
+      ["mode 0 rôle composable, `/api/users` refusé", { user: "gov", role: "gov-editor", tenant: "default", is_superadmin: false }, [{ id: "default", role: "gov-editor" }], false, false],
+      ["mode 1 administrateur de tenant, `/api/users` servi", { user: "ta", role: "admin", tenant: "acme", is_superadmin: false }, [{ id: "acme", name: "Acme", role: "admin", suspended: false }], false, true],
+    ];
+    for (const [l, mod, S] of [["fr", modFr155, SFr155], ["en", modEn155, SEn155]]) {
+      for (const [nom, auth, mes, visible, servi = false] of VISIBILITES155) {
+        S.AUTH = auth; S.MY_TENANTS = mes; S.isAdmin = servi;
+        mod.poserLeGesteDeLaRevocationGlobale();
+        const b = bouton155();
+        exiger(!!b === visible && (!b || (b.classList.contains("btn-danger") && typeof b.onclick === "function" && nu155(b) === mod.motDeLaRevocationGlobale("bouton"))),
+          `(155a) ${nom} (${l}) : bouton ${b ? "posé" : "absent"}, attendu ${visible ? "posé (habillé, câblé, libellé de la langue)" : "absent"}`);
+        // Le CLIC RÉEL sur le bouton posé ouvre la confirmation « danger » du geste ; annulée, rien ne part.
+        if (b && typeof b.onclick === "function") {
+          const avant = appels155; const p = b.onclick(); await laisser155();
+          const ouverte = fenetre155(); const form = ouverte && ouverte.children[0] ? ouverte.children[0].children[0] : null;
+          const danger = !!(ouverte && ouverte.children[0] && ouverte.children[0].classList.contains("danger"));
+          const dit = nu155(ouverte);
+          if (form) { const c = form.querySelector(".m-cancel"); if (c && typeof c.onclick === "function") c.onclick(); }
+          await p; await laisser155();
+          exiger(!!form && danger && dit.includes(mod.motDeLaRevocationGlobale("titre")) && appels155 === avant,
+            `(155a) ${nom} (${l}) : le clic sur le bouton n'ouvre pas la confirmation « danger » de la révocation globale (fenêtre ${form ? "ouverte" : "ABSENTE"}, requêtes ${appels155 - avant})`);
+        }
+        // Le geste lui-même refuse de partir pour qui ne peut pas : aucune requête, aucune fenêtre.
+        if (!visible) {
+          const avant = appels155; const p = mod.revoquerToutesLesSessions(); await laisser155();
+          const ouverte = fenetre155(); const form = ouverte && ouverte.children[0] ? ouverte.children[0].children[0] : null;
+          if (form) { const c = form.querySelector(".m-cancel"); if (c && typeof c.onclick === "function") c.onclick(); }
+          await p; await laisser155();
+          exiger(appels155 === avant && !ouverte, `(155a) ${nom} (${l}) : le geste part (requête ou confirmation) pour un compte qui ne peut pas le faire`);
+        }
+      }
+    }
+    exiger(modFr155.motDeLaRevocationGlobale("bouton") !== modEn155.motDeLaRevocationGlobale("bouton"), "(155a) le libellé du bouton est le même dans les deux langues");
+
+    // ── (b) LA CONFIRMATION, PUIS CHAQUE ISSUE ─────────────────────────────────────────────────────
+    const CONFIRMATION155 = { fr: ["TOUS les comptes", "celle de ce navigateur comprise", "l'appelant est déconnecté aussi"], en: ["ALL accounts", "the one of this browser included", "the caller is signed out too"] };
+    for (const [l, mod, S] of [["fr", modFr155, SFr155], ["en", modEn155, SEn155]]) {
+      const face = (cle) => mod.motDeLaRevocationGlobale(cle);
+      // Annulée : rien ne part.
+      const annulee = await jouer155(mod, S, { statut: 200, corps: { ok: true, portee: "globale" } }, { accepter: false });
+      exiger(annulee.appels === 0 && annulee.rechargements === 0 && annulee.auth && annulee.modale.danger && CONFIRMATION155[l].every((f) => annulee.modale.texte.includes(f)),
+        `(155b) confirmation (${l}) : annulée, la requête part ou la fenêtre n'est pas « danger » / ne dit pas TOUS les comptes et l'appelant compris — « ${annulee.modale.texte.slice(0, 300)} »`);
+      // Les quatre refus nommés.
+      for (const [cle, [statut, phrase]] of Object.entries(CAUSES155)) {
+        const r = await jouer155(mod, S, { statut, corps: { error: phrase } });
+        exiger(r.appels === 1 && r.rechargements === 0 && !!r.auth && r.auth.user === "hugo" && r.cle === cle && r.tete === face(cle)
+          && face(cle).includes(FRAGMENTS155[cle][l]) && face(cle).includes(RIEN155[l]) && face(cle).includes(RESTE155[l]) && r.texte.includes("« " + phrase + " »"),
+          `(155b) ${statut} ${cle} (${l}) : clé « ${r.cle} », rechargements ${r.rechargements}, session ${r.auth ? "gardée" : "VIDÉE"} — « ${r.texte.slice(0, 240)} »`);
+        // Aucune face nommée ne porte le fragment d'une autre.
+        const etrangers = Object.keys(FRAGMENTS155).filter((k) => k !== cle && face(cle).includes(FRAGMENTS155[k][l]));
+        exiger(etrangers.length === 0, `(155b) la face ${l} de « ${cle} » porte le fragment de ${etrangers.join(", ")}`);
+      }
+      exiger(Object.keys(FRAGMENTS155).every((k) => face(k) !== modFr155.motDeLaRevocationGlobale(k) || l === "fr"), `(155b) une face anglaise est la française`);
+      // L'ancrage, la casse, la frontière de mot, le statut faux, le refus du rôle et la phrase inconnue : la face générique.
+      const generiques = [];
+      for (const [cle, [statut, phrase]] of Object.entries(CAUSES155)) {
+        const tete = phrase.split(" :")[0];
+        generiques.push([`${cle} non ancrée`, statut, { error: "x " + tete + " : x" }]);
+        generiques.push([`${cle} citée après une autre`, statut, { error: "x " + phrase }]);
+        generiques.push([`${cle} en minuscules`, statut, { error: tete.toLowerCase() + " : x" }]);
+        generiques.push([`${cle} lettre accolée`, statut, { error: tete + "S : x" }]);
+        generiques.push([`${cle} chiffre accolé`, statut, { error: tete + "2 : x" }]);
+        generiques.push([`${cle} sous un statut faux`, statut === 403 ? 503 : 403, { error: phrase }]);
+      }
+      generiques.push(["refus du rôle de `rbac_gate` (texte brut)", 403, "réservé à l'administrateur"]);
+      generiques.push(["phrase inconnue", 503, { error: "AUTRE CHOSE, RIEN N'EST RÉVOQUÉ : x" }]);
+      for (const [nom, statut, corps] of generiques) {
+        const r = await jouer155(mod, S, { statut, corps });
+        const servie = typeof corps === "string" ? corps : corps.error;
+        exiger(r.cle === "refus_nomme" && r.tete === face("refus_nomme") && r.texte.includes("« " + servie + " »") && r.rechargements === 0 && !!r.auth,
+          `(155c) ${nom} (${l}) : lue « ${r.cle} » (attendu la face générique, la phrase servie, aucun rechargement) — « ${r.texte.slice(0, 200)} »`);
+      }
+      // Un deux cents sans la portée globale n'est pas un succès.
+      for (const [nom, corps] of [["{ok:true}", { ok: true }], ["portée « compte »", { ok: true, portee: "compte" }], ["portée « Globale »", { ok: true, portee: "Globale" }], ["corps vide", ""], ["ok faux", { ok: false, portee: "globale" }],
+        // Un deux cents au corps ILLISIBLE (page HTML, JSON tronqué) : `apiSend` le jette (`reponseHorsDemon`), le `catch` le lit
+        // par `unDeuxCentsSansCorpsLisible` — ni refus du démon, ni succès : la face « non établie ».
+        ["page HTML", "<!DOCTYPE html><html><head><title>OK</title></head><body>portail</body></html>"], ["JSON tronqué", "{\"ok\":true,\"portee\":\"glo"]]) {
+        const r = await jouer155(mod, S, { statut: 200, corps });
+        exiger(r.rechargements === 0 && !!r.auth && r.cle === "revocation_non_etablie" && r.tete === face("revocation_non_etablie") && face("revocation_non_etablie").includes(FRAGMENTS155.revocation_non_etablie[l]),
+          `(155d) deux cents ${nom} (${l}) : pris pour un succès ou mal dit (clé « ${r.cle} », rechargements ${r.rechargements})`);
+      }
+      // Une passerelle et une demande qui n'aboutit pas : ni refus du démon ni succès, aucun rechargement.
+      const passerelle = await jouer155(mod, S, { statut: 502, corps: "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>" });
+      exiger(passerelle.cle === "reponse_hors_demon" && passerelle.rechargements === 0 && !!passerelle.auth && !passerelle.texte.includes("NON CONFIRMÉE") && !passerelle.texte.includes("NOT CONFIRMED") && !/<html|nginx/.test(passerelle.texte),
+        `(155g) page de passerelle (${l}) : lue « ${passerelle.cle} » — « ${passerelle.texte.slice(0, 200)} »`);
+      reseauCoupe155 = true;
+      const coupee = await jouer155(mod, S, { statut: 200, corps: { ok: true, portee: "globale" } });
+      reseauCoupe155 = false;
+      exiger(coupee.cle === "demande_non_aboutie" && coupee.rechargements === 0 && !!coupee.auth && coupee.tete === face("demande_non_aboutie"),
+        `(155g) demande non aboutie (${l}) : lue « ${coupee.cle} », rechargements ${coupee.rechargements}`);
+      // Une phrase hostile : du texte, jamais un élément.
+      const HOSTILE155 = "DÉCONNEXION GLOBALE NON TRACÉE, RIEN N'EST RÉVOQUÉ : <img src=x onerror=alert(155)>";
+      const h = await jouer155(mod, S, { statut: 503, corps: { error: HOSTILE155 } });
+      exiger(h.cle === "non_tracee" && !!h.puits && cueillir155(h.puits, (e) => e.tagName === "IMG").length === 0 && h.texte.includes("<img src=x onerror=alert(155)>") && h.rechargements === 0,
+        `(155e) phrase hostile (${l}) : un élément est posé, ou la phrase n'est pas rendue en texte (clé « ${h.cle} »)`);
+      // (h) LA POSE EN USAGE RÉEL : `loadUsers` (le chargeur de la carte des comptes) pose le bouton quand le démon sert
+      // `/api/users`, et le retire quand il refuse le rôle — sans appel direct de la pose.
+      {
+        const fetchDuGeste = globalThis.fetch;
+        let reponseDesComptes = null;
+        globalThis.fetch = async (u, init) => {
+          const chemin = String(u).split("?")[0], methode = ((init && init.method) || "GET").toUpperCase();
+          if (methode + " " + chemin === "GET /api/users" && reponseDesComptes) {
+            const [statut, corps] = reponseDesComptes;
+            return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => (typeof corps === "string" ? corps : JSON.stringify(corps)) };
+          }
+          return fetchDuGeste(u, init);
+        };
+        try {
+          for (const [nom, auth, statut, corps, visible] of [
+            ["admin, `/api/users` servi", { user: "hugo", role: "admin", tenant: "default", is_superadmin: false }, 200, { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }], me: "hugo", acces: [] }, true],
+            ["rôle composable bâti sur admin, `/api/users` servi", { user: "gov", role: "gov-admin", tenant: "default", is_superadmin: false }, 200, { users: [{ id: 1, name: "gov", role: "gov-admin", created: 1 }], me: "gov", acces: [] }, true],
+            ["éditeur, `/api/users` refusé au rôle", { user: "ed", role: "editor", tenant: "default", is_superadmin: false }, 403, "réservé à l'administrateur", false],
+          ]) {
+            const b0 = bouton155(); if (b0) b0.remove();
+            S.AUTH = auth; S.MY_TENANTS = [{ id: "default", role: auth.role }]; S.isAdmin = false;
+            if (!visible) { S.isAdmin = true; S.AUTH = Object.assign({}, auth, { role: "admin" }); mod.poserLeGesteDeLaRevocationGlobale(); S.AUTH = auth; }
+            reponseDesComptes = [statut, corps];
+            try { await mod.loadUsers(); } catch (e) { /* la pose est jugée, pas le rendu de la liste */ }
+            await laisser155();
+            const b = bouton155();
+            exiger(!!b === visible && (!b || typeof b.onclick === "function"),
+              `(155h) ${nom} (${l}) : après \`loadUsers\`, bouton ${b ? "posé" : "absent"}, attendu ${visible ? "posé" : "retiré"}`);
+          }
+        } finally { globalThis.fetch = fetchDuGeste; S.isAdmin = false; const b = bouton155(); if (b) b.remove(); }
+      }
+      // Le succès : la session est vidée, la console se recharge une fois, et rien n'est peint au puits.
+      const ok = await jouer155(mod, S, { statut: 200, corps: { ok: true, portee: "globale" } });
+      exiger(ok.appels === 1 && ok.rechargements === 1 && ok.auth === null && ok.cle === null,
+        `(155f) succès (${l}) : appels ${ok.appels}, rechargements ${ok.rechargements}, session ${ok.auth === null ? "vidée" : "GARDÉE"}, puits « ${ok.cle} »`);
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine155; globalThis.location.reload = rechargementOrigine155; globalThis.setTimeout = minuterieOrigine155;
+    for (const e of etat155) { e.S.AUTH = e.auth; e.S.MY_TENANTS = e.mes; e.S.isAdmin = e.admin; }
+    const b = bouton155(); if (b) b.remove();
+    const pu = puits155(); if (pu) pu.remove();
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  if (echecs.length !== echecsAvant155) console.log(`(155) EN ÉCHEC — ${echecs.length - echecsAvant155} écart(s), dits ci-dessus`);
+  else console.log("(155) OK — `P10.31-i` (console) : le geste de révocation globale (`POST /api/sessions/revocation-globale`, relu dans session.rs) n'est offert qu'à l'administrateur en mode 0 et au seul super-administrateur en mode multi-tenant ; sa confirmation « danger » dit TOUS les comptes et l'appelant compris ; ses quatre refus nommés ont chacun leur face (fr/en), la phrase servie entière en texte, sans rechargement ni session vidée ; ancrage, casse, frontière, statut faux, refus du rôle et phrase inconnue gardent la face générique ; un deux cents sans `portee: \"globale\"`, ou au corps illisible, n'est pas un succès ; le clic réel sur le bouton ouvre la confirmation ; `loadUsers` pose le bouton quand `/api/users` est servi (rôle composable bâti sur admin compris) et le retire sur le refus du rôle ; le succès vide la session et recharge. Ce qu'il NE tient PAS : la route du démon, la réserve par tenant, le mode multi-tenant dégradé (indiscernable du mode 0 pour la console).");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (156) `P10.30-d` (console) — L'ENRÔLEMENT SANS ENTROPIE A SA FACE, EN CINQ CENTS COMME EN CINQ CENT TROIS.
+//
+// CE QUE LE DÉMON SERT (RELU dans daemon/src/handlers/idp.rs) : `CAUSE_ENROLEMENT_SANS_ENTROPIE`, « ENRÔLEMENT NON FAIT,
+// AUCUNE GRAINE », servie par `mfa_enroll` sous `server_err` (cinq cents) quand le noyau ne fournit aucune entropie ; le
+// démon annonce un passage en cinq cent trois. MESURÉ SUR LA BASE : aucune ouverture ne la reconnaissait, elle tombait
+// sous la face générique « Enrôlement REFUSÉ » — qui ne dit ni que l'état d'avant est intact, ni quoi réparer.
+// JUGÉ, sous les deux instances de langue : la nature au point commun ; la clé du panneau en 500 et en 503, la face
+// générique sur tout autre statut ; la face (fragments écrits ICI) ; le geste réel `startEnroll` qui la peint, phrase
+// servie entière ; la cause voisine `enrolement_non_ecrit` (« ENRÔLEMENT NON ENREGISTRÉ ») n'est pas confondue.
+// CE QU'IL NE TIENT PAS : la route du démon.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant156 = echecs.length;
+  const url156 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modNoyau156 = await import(url156("core.js"));
+  const modIdp156 = await import(url156("idp.js"));
+  const langueOrigine156 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modIdpEn156 = await import(adresseSousLaLangue("idp.js"));
+  if (langueOrigine156 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine156);
+  const instrument156 = (vrai, quoi) => exiger(vrai, `(156-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu156 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const tic156 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser156 = async (n = 30) => { for (let i = 0; i < n; i++) await tic156(); };
+  const constante156 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const IDP156 = (() => { try { return readFileSync(path.join(RACINE, "daemon", "src", "handlers", "idp.rs"), "utf8"); } catch (e) { return ""; } })();
+  const SANS_ENTROPIE156 = constante156(IDP156, "CAUSE_ENROLEMENT_SANS_ENTROPIE"), NON_ECRIT156 = constante156(IDP156, "CAUSE_ENROLEMENT_NON_ECRIT");
+  instrument156(SANS_ENTROPIE156.startsWith("ENRÔLEMENT NON FAIT, AUCUNE GRAINE : ") && NON_ECRIT156.startsWith("ENRÔLEMENT NON ENREGISTRÉ, AUCUNE GRAINE")
+    && /return server_err\(CAUSE_ENROLEMENT_SANS_ENTROPIE\);/.test(IDP156),
+    "`CAUSE_ENROLEMENT_SANS_ENTROPIE` n'est plus lisible, n'ouvre plus pareil, ou n'est plus servie par `mfa_enroll`");
+  instrument156([modIdp156.cleDuRefusDEnrolement, modIdp156.motDeLEnrolementMfa, modIdpEn156.motDeLEnrolementMfa, modIdp156.startEnroll, modIdp156.loadMfa, modNoyau156.natureDuRefusDuSecondFacteur].every((f) => typeof f === "function"),
+    "un des symboles jugés ici n'est plus exporté (web/idp.js, web/core.js)");
+  const refus156 = (statut, phrase) => Object.assign(new Error(statut + " " + phrase), { statutDuRefus: statut, causeDuDemon: phrase });
+  const FRAGMENTS156 = {
+    fr: ["Enrôlement NON FAIT", "aucune entropie", "aucune graine n'est posée ni montrée", "l'état d'avant est intact", "Réessaie", "source d'entropie de l'hôte est à réparer"],
+    en: ["Enrollment NOT DONE", "no entropy", "no seed is set or shown", "previous state is intact", "Try again", "entropy source needs repair"],
+  };
+  const INTERDITS156 = { fr: ["la base", "NON ENREGISTRÉ", "REFUSÉ"], en: ["database", "NOT RECORDED", "REFUSED"] };
+  exiger(modNoyau156.natureDuRefusDuSecondFacteur(SANS_ENTROPIE156) === "enrolement_sans_entropie" && modNoyau156.natureDuRefusDuSecondFacteur(NON_ECRIT156) === "enrolement_non_ecrit"
+    && ["x " + SANS_ENTROPIE156, "enrôlement non fait, aucune graine : x", "ENRÔLEMENT NON FAIT, AUCUNE GRAINES : x", "ENRÔLEMENT NON FAIT : x"].every((t) => modNoyau156.natureDuRefusDuSecondFacteur(t) === ""),
+    `(156a) la nature au point commun : sans entropie « ${modNoyau156.natureDuRefusDuSecondFacteur(SANS_ENTROPIE156)} », non écrit « ${modNoyau156.natureDuRefusDuSecondFacteur(NON_ECRIT156)} » (ou une phrase non ancrée, en minuscules, prolongée est reconnue)`);
+  for (const statut of [500, 503]) exiger(modIdp156.cleDuRefusDEnrolement(refus156(statut, SANS_ENTROPIE156)) === "enrolement_sans_entropie", `(156b) en ${statut}, la clé du panneau est « ${modIdp156.cleDuRefusDEnrolement(refus156(statut, SANS_ENTROPIE156))} »`);
+  for (const statut of [400, 403, 429, 502]) exiger(modIdp156.cleDuRefusDEnrolement(refus156(statut, SANS_ENTROPIE156)) === "enrolement_refuse", `(156b) en ${statut}, la clé du panneau est « ${modIdp156.cleDuRefusDEnrolement(refus156(statut, SANS_ENTROPIE156))} » (attendu la face générique)`);
+  exiger(modIdp156.cleDuRefusDEnrolement(refus156(503, NON_ECRIT156)) === "enrolement_non_ecrit" && modIdp156.cleDuRefusDEnrolement(refus156(500, NON_ECRIT156)) === "enrolement_refuse",
+    "(156b) l'enrôlement NON ENREGISTRÉ est confondu avec l'enrôlement sans entropie");
+  for (const [l, mod] of [["fr", modIdp156], ["en", modIdpEn156]]) {
+    let face = ""; try { face = mod.motDeLEnrolementMfa("enrolement_sans_entropie", 0); } catch (e) { face = ""; }
+    exiger(FRAGMENTS156[l].every((f) => face.includes(f)) && INTERDITS156[l].every((f) => !face.includes(f)),
+      `(156c) la face ${l} de l'enrôlement sans entropie ne dit pas ce qui est vrai, ou dit une écriture refusée : « ${face.slice(0, 240)} »`);
+  }
+  // Le geste réel : la face peinte au puits du panneau, la phrase servie entière à côté, aucune carte de graine.
+  const fetchOrigine156 = globalThis.fetch, minuterieOrigine156 = globalThis.setTimeout;
+  const enrolement156 = document.querySelector("#mfa-enroll");
+  instrument156(!!enrolement156, "`#mfa-enroll` n'est plus dans `index.html`");
+  let reponse156 = null;
+  try {
+    globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine156(fn, ms >= 100 ? 0 : ms));
+    globalThis.fetch = async (u, init) => {
+      const k = ((init && init.method) || "GET").toUpperCase() + " " + String(u).split("?")[0];
+      const r = k === "GET /api/mfa/status" ? { corps: { enrolled: false, enabled: false } } : k === "POST /api/mfa/enroll" ? reponse156 : null;
+      if (!r) return { ok: true, status: 200, headers: { get: () => null }, text: async () => "{}" };
+      const texte = JSON.stringify(r.corps), statut = r.statut || 200;
+      return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte };
+    };
+    for (const [l, mod] of [["fr", modIdp156], ["en", modIdpEn156]]) {
+      for (const statut of [500, 503]) {
+        reponse156 = { statut, corps: { error: SANS_ENTROPIE156, id: "plume-e-156" } };
+        await mod.loadMfa(); await laisser156();
+        const p = mod.startEnroll(); await laisser156();
+        const ov = document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
+        const form = ov && ov.children[0] ? ov.children[0].children[0] : null;
+        const champ = form ? form.querySelector("input[type=password]") : null;
+        if (champ) champ.value = "motdepasse-156";
+        if (form && typeof form.onsubmit === "function") form.onsubmit({ preventDefault() {} });
+        await p; await laisser156(40);
+        const aveu = enrolement156 ? [...enrolement156.children].find((n) => n.getAttribute && n.getAttribute("data-refus-d-enrolement")) : null;
+        exiger(!!aveu && aveu.getAttribute("data-refus-d-enrolement") === "enrolement_sans_entropie" && nu156(aveu).startsWith(mod.motDeLEnrolementMfa("enrolement_sans_entropie", 0))
+          && nu156(aveu).includes("« " + SANS_ENTROPIE156 + " »") && !document.querySelector("#mfa-code"),
+          `(156d) ${statut} (${l}) : le panneau ne peint pas la face de l'enrôlement sans entropie avec la phrase servie — « ${nu156(enrolement156).slice(0, 240)} »`);
+        if (enrolement156) { enrolement156.hidden = true; enrolement156.replaceChildren(); }
+      }
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine156; globalThis.setTimeout = minuterieOrigine156;
+    document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  }
+  if (echecs.length !== echecsAvant156) console.log(`(156) EN ÉCHEC — ${echecs.length - echecsAvant156} écart(s), dits ci-dessus`);
+  else console.log("(156) OK — `P10.30-d` (console) : l'enrôlement sans entropie (`CAUSE_ENROLEMENT_SANS_ENTROPIE`, relue dans idp.rs) a sa nature au point commun et sa face dans le panneau, en cinq cents comme en cinq cent trois (générique sur tout autre statut), fr et en : aucune graine posée ni montrée, état d'avant intact, réessayer, source d'entropie à réparer — sans la confondre avec l'enrôlement NON ENREGISTRÉ. Ce qu'il NE tient PAS : la route du démon.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (157) `P10.30-d` (console) — LA FACE DE L'ÉVÉNEMENT DU TENANT NON ÉCRIT EST VRAIE POUR LES DEUX PHRASES DU DÉMON.
+//
+// CE QUE LE DÉMON SERT SOUS `evenement_du_tenant_non_ecrit` (RELU ci-dessous) : `CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT`
+// (daemon/src/rbac.rs, la base du tenant a refusé l'événement) et `CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE`
+// (daemon/src/tenants.rs, la base n'est pas servie — « ce n'est pas une écriture refusée »). MESURÉ SUR LA BASE : la face
+// disait « sa base n'a pas pris l'événement d'audit », fausse pour la seconde.
+// JUGÉ, sur `avouerLeProvisionnement` des deux instances de langue : chaque phrase servie donne la face NEUTRE (fragment
+// écrit ICI), suivie de la phrase entière ; la face ne dit plus que la base a refusé.
+// CE QU'IL NE TIENT PAS : quel geste sert quelle phrase (témoins Rust).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant157 = echecs.length;
+  const url157 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modT157 = await import(url157("multitenant.js"));
+  const langueOrigine157 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modTEn157 = await import(adresseSousLaLangue("multitenant.js"));
+  if (langueOrigine157 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine157);
+  const instrument157 = (vrai, quoi) => exiger(vrai, `(157-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu157 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const litteral157 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str =\\s*\"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const lire157 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const RBAC157 = lire157("rbac.rs"), TENANTS157 = lire157("tenants.rs");
+  const PHRASES157 = { perte_d_ecriture: litteral157(RBAC157, "CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT"), base_non_servie: litteral157(TENANTS157, "CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE") };
+  instrument157(PHRASES157.perte_d_ecriture.length > 100 && PHRASES157.base_non_servie.length > 100 && PHRASES157.perte_d_ecriture !== PHRASES157.base_non_servie
+    && /corps\[CLE_EVENEMENT_DU_TENANT_NON_ECRIT\] = json!\(CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT\);/.test(RBAC157)
+    // La pose de la base non servie se relit dans l'un OU l'autre fichier (BE3 l'a portée dans l'aide commune de rbac.rs,
+    // sous le chemin `crate::tenants::`) ; la constante, elle, reste dans tenants.rs.
+    && /corps\[CLE_EVENEMENT_DU_TENANT_NON_ECRIT\] = json!\((?:crate::tenants::)?CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE\);/.test(RBAC157 + "\n" + TENANTS157)
+    && /servie/.test(PHRASES157.base_non_servie),
+    "les deux phrases servies sous `evenement_du_tenant_non_ecrit` ne se relisent plus dans rbac.rs et tenants.rs");
+  instrument157(modT157.CLE_DE_L_EVENEMENT_DU_TENANT_NON_ECRIT === "evenement_du_tenant_non_ecrit" && typeof modT157.avouerLeProvisionnement === "function" && typeof modTEn157.avouerLeProvisionnement === "function",
+    "web/multitenant.js n'exporte plus la clé ou `avouerLeProvisionnement`");
+  const NEUTRE157 = {
+    fr: ["Le geste a bien eu lieu", "n'est pas écrit dans la base de ce tenant", "refusé par elle, ou base non servie (tenant suspendu)", "le démon dit laquelle", "le refaire ne comblerait rien"],
+    en: ["The gesture did happen", "is not written in this tenant's database", "refused by it, or database not served (suspended tenant)", "the daemon says which", "doing it again would fill nothing"],
+  };
+  const FAUX157 = { fr: ["sa base n'a pas pris"], en: ["its database did not take"] };
+  const liste157 = document.querySelector("#tenant-list");
+  instrument157(!!liste157 && !!liste157.parentNode, "`#tenant-list` n'est plus dans `index.html`");
+  const aveux157 = () => (liste157 && liste157.parentNode ? [...liste157.parentNode.children].filter((n) => n.getAttribute && n.getAttribute("data-evenement-du-tenant-non-ecrit") === "1") : []);
+  try {
+    for (const [l, mod] of [["fr", modT157], ["en", modTEn157]]) {
+      let face = ""; try { face = mod.motDuPlanDeControle("evenement_non_ecrit"); } catch (e) { face = ""; }
+      exiger(NEUTRE157[l].every((f) => face.includes(f)) && FAUX157[l].every((f) => !face.includes(f)),
+        `(157a) la face ${l} de « evenement_non_ecrit » n'est pas neutre entre la perte d'écriture et la base non servie : « ${face.slice(0, 240)} »`);
+      for (const [nom, phrase] of Object.entries(PHRASES157)) {
+        mod.avouerLeProvisionnement({ ok: true, id: "globex", evenement_du_tenant_non_ecrit: phrase });
+        const a = aveux157();
+        exiger(a.length === 1 && nu157(a[0].children[0]) === face && nu157(a[0]) === face + " « " + phrase + " »",
+          `(157b) ${nom} (${l}) : l'aveu n'est pas la face neutre suivie de la phrase entière — ${a.length} aveu(x), « ${nu157(a[0]).slice(0, 300)} »`);
+      }
+      mod.avouerLeProvisionnement({ ok: true, id: "globex" });
+    }
+  } finally {
+    aveux157().forEach((a) => a.remove());
+  }
+  if (echecs.length !== echecsAvant157) console.log(`(157) EN ÉCHEC — ${echecs.length - echecsAvant157} écart(s), dits ci-dessus`);
+  else console.log("(157) OK — `P10.30-d` (console) : sous `evenement_du_tenant_non_ecrit`, la perte d'écriture (rbac.rs) et la base non servie (tenants.rs) donnent la même face NEUTRE — le geste a eu lieu, l'événement n'est pas écrit dans la base du tenant, refusé ou base non servie, le démon dit laquelle — suivie de la phrase servie entière, fr et en. Ce qu'il NE tient PAS : quel geste sert quelle phrase.");
+}
+
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;

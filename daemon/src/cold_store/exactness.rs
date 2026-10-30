@@ -246,6 +246,9 @@ pub(crate) struct TruncatedAggregate {
     /// `P10.32-r` — la borne de l'export complet sous laquelle la lecture froide s'est arrêtée (`None` : lecture
     /// interactive, plafond `PLUME_QUERY_MAX`). Le message nomme le plafond réellement appliqué.
     borne_de_l_export: Option<usize>,
+    /// `P10.32-r` (vague BA) — `PLUME_QUERY_MAX` lu quand la route d'export pose sa borne sur le refus
+    /// (`None` hors d'un export) : quand il vaut aussi la borne plus une ligne, le message ne dit pas la borne « au-dessus » de lui.
+    plafond_interactif: Option<usize>,
     /// L'ÉTAGE qui a rendu la réponse dérivée (`None` = forme non analysable). C'est la FAMILLE de
     /// question refusée, et c'est de lui que le message tire son motif.
     etage: Option<String>,
@@ -258,6 +261,7 @@ impl TruncatedAggregate {
     /// (`handlers::query::export`).
     pub(crate) fn sous_la_borne_de_l_export(mut self, borne: usize) -> Self {
         self.borne_de_l_export = Some(borne);
+        self.plafond_interactif = Some(crate::query_exec::plafond_interactif_des_lignes());
         self
     }
 
@@ -268,7 +272,14 @@ impl TruncatedAggregate {
         match self.borne_de_l_export {
             // Sous un export plus étroit que `PLUME_QUERY_MAX`, l'hydratation froide lit jusqu'à `PLUME_QUERY_MAX`
             // (`query_exec::plafond_d_hydratation_froide_de_ce_fil`) : c'est lui qui a arrêté la lecture, d'où le
-            // dernier bras.
+            // dernier bras. Quand les deux sont ÉGAUX (borne plus une ligne = `PLUME_QUERY_MAX`), le plafond est l'un
+            // et l'autre à la fois : relever l'un OU l'autre élargit la lecture, et le message nomme les deux.
+            Some(borne) if self.cap == borne + 1 && self.plafond_interactif == Some(self.cap) => format!(
+                "plafond de l'export : sa borne de {borne} lignes (PLUME_EXPORT_MAX, ou le `limit` de la demande s'il est \
+                 plus petit) et une ligne de plus qui détecte la coupure, soit {} lignes, ÉGAL à PLUME_QUERY_MAX={} : \
+                 relever l'un ou l'autre élargit la lecture",
+                self.cap, self.cap
+            ),
             Some(borne) if self.cap == borne + 1 => format!(
                 "plafond de l'export : sa borne de {borne} lignes (PLUME_EXPORT_MAX, ou le `limit` de la demande s'il est \
                  plus petit) et une ligne de plus qui détecte la coupure, soit {} lignes, au-dessus de \
@@ -566,7 +577,7 @@ impl ColdAnswer {
                     // pagination, lui, reste écarté (c'est un COUNT, donc dérivé).
                     Ok(Rendered { value, total: None, truncated: true })
                 } else {
-                    Err(TruncatedAggregate { rows_hydrated, cap, borne_de_l_export: None, etage: shape.etage_derivant() })
+                    Err(TruncatedAggregate { rows_hydrated, cap, borne_de_l_export: None, plafond_interactif: None, etage: shape.etage_derivant() })
                 }
             }
         }
@@ -615,7 +626,7 @@ impl ColdAnswer {
 #[cfg(test)]
 mod aveu_dexactitude_decidable {
     fn message_de_refus() -> String {
-        super::TruncatedAggregate { rows_hydrated: 5000, cap: 5000, borne_de_l_export: None, etage: Some("stats".to_string()) }.message()
+        super::TruncatedAggregate { rows_hydrated: 5000, cap: 5000, borne_de_l_export: None, plafond_interactif: None, etage: Some("stats".to_string()) }.message()
     }
 
     /// ① LA MESURE : l'ensemble publié est MIXTE — il porte des dimensions ET des colonnes à

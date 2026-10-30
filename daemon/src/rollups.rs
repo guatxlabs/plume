@@ -682,9 +682,18 @@ pub(crate) fn rollup_events(conn: &Connection) {
         // La purge est LUE : refusée, la bande n'est pas ré-agrégée (l'INSERT OR REPLACE laisserait des orphelins
         // top-N) et la couverture n'est pas publiée — la route sert le brut, le passage suivant reconstruit (couverture
         // absente). Avant, son refus était avalé (`let _`) et la couverture publiée sur des orphelins.
+        // Un groupe que la purge GARDE (`event` en porte moins que le rollup : partiellement purgé côté `event`) est
+        // épargné par l'INSERT (`hors_des_groupes_gardes_d_event_rollup`) : avant, il était récrit sur ce qui restait.
         aggregated = match conn.execute(&purge_des_buckets_resservis_sql("event_rollup"), params![agg_from, recent, new_cov]) {
             Ok(_) => conn
-                .execute(&rollup_insert_sql(&format!("ts >= {agg_from} AND ts < {recent} AND id <= {new_cov}"), min_sev, topn), [])
+                .execute(
+                    &rollup_insert_sql(
+                        &format!("ts >= {agg_from} AND ts < {recent} AND id <= {new_cov} AND {}", hors_des_groupes_gardes_d_event_rollup()),
+                        min_sev,
+                        topn,
+                    ),
+                    [],
+                )
                 .is_ok(),
             Err(e) => {
                 eprintln!("[rollup] WARN purge de reconstruction d'event_rollup NON faite ({e}) — bande non ré-agrégée, couverture non publiée (la route sert le brut), reprise au prochain passage");
@@ -775,10 +784,13 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // val = COALESCE(json_extract(fields,'$.<dim>'),'') : aucune distinction core/extrait, toute dim est
     // lue depuis le JSON `fields` (ns/pod/level vivent tous dans `fields`, pas en colonne réelle).
     // Renvoie false si UNE seule des agrégations a échoué -> fail-closed : on ne publiera RIEN.
-    let dim_agg = |cond: String| -> bool {
+    // `P10.32-a` — `reconstruction` : une tranche purgée par groupes resservis ; chaque INSERT épargne alors les groupes
+    // que la purge a GARDÉS (`hors_des_groupes_gardes_d_une_dimension`). La fenêtre chaude, purgée en entier, non.
+    let dim_agg = |cond: String, reconstruction: bool| -> bool {
         let mut ok = true;
         for (source, dims) in dim_rollup_specs().iter() {
             for dim in dims.iter() {
+                let cond = if reconstruction { format!("{cond} AND {}", hors_des_groupes_gardes_d_une_dimension(source, dim)) } else { cond.clone() };
                 ok &= conn.execute(&dim_rollup_insert_sql(source, dim, &cond, dim_topn), []).is_ok();
             }
         }
@@ -851,16 +863,17 @@ pub(crate) fn rollup_events(conn: &Connection) {
                 return;
             }
             // `P10.32-a` — seuls les groupes (bucket, source, env_id) qu'`event` resservira sous la borne (même prédicat
-            // qu'`event_rollup`) : une dimension d'une autre source ou d'un autre environnement du même bucket reste.
+            // qu'`event_rollup`) : une dimension d'une autre source ou d'un autre environnement du même bucket reste, et un
+            // groupe partiellement purgé côté `event` est gardé (purge ET INSERT l'épargnent).
             dim_ok &= conn.execute(&purge_des_buckets_resservis_sql("event_dim_rollup"), params![lo, hi, dim_at_id]).is_ok();
-            dim_ok &= dim_agg(format!("ts >= {lo} AND ts < {hi} AND id <= {dim_at_id}"));
+            dim_ok &= dim_agg(format!("ts >= {lo} AND ts < {hi} AND id <= {dim_at_id}"), true);
         };
         dim_slice(down_lo, band_lo); // le front BAS : vers l'histoire jamais agrégée
         dim_slice(band_hi, up_hi);   // le front HAUT : vers le présent, sans jamais sauter
         // Purge de la fenêtre chaude (anti-orphelin top-N). `P10.32-a` : refusée, elle laissait des orphelins sous une
         // couverture publiée quand même (double compte) ; elle entre désormais dans `dim_ok` comme celle des tranches.
         dim_ok &= conn.execute("DELETE FROM event_dim_rollup WHERE bucket >= ?1", params![recent]).is_ok();
-        dim_ok &= dim_agg(format!("ts >= {recent}")); // fenêtre chaude (ré-agrégée à chaque tick)
+        dim_ok &= dim_agg(format!("ts >= {recent}"), false); // fenêtre chaude (ré-agrégée à chaque tick)
         // PUBLICATION — jamais avant, jamais partielle (une seule ligne `meta`), et JAMAIS si une agrégation a
         // échoué : une couverture qu'on n'a pas prouvée ne s'écrit pas, la route décline, le brut sert.
         if dim_ok {
@@ -1034,6 +1047,8 @@ const ETAPE_RETRACTATION_REFUSEE: &str = "rétractation refusée";
 const GESTE_FENETRE_CHAUDE_D_EVENT_ROLLUP: &str = "fenêtre chaude d'event_rollup";
 const GESTE_WATERMARK_D_EVENT_ROLLUP: &str = "watermark d'event_rollup";
 const GESTE_WATERMARK_DE_BANNED_IP: &str = "watermark de banned_ip";
+/// `P10.32-a` — le geste compté quand la base refuse la purge optionnelle des bans expirés (`PLUME_BANNED_IP_RETENTION`).
+const GESTE_PURGE_DES_BANS_EXPIRES: &str = "purge des bans expirés de banned_ip";
 const ETAPE_PURGE_REFUSEE: &str = "purge refusée";
 const ETAPE_INSERT_REFUSE: &str = "INSERT refusé";
 const ETAPE_EFFACEMENT_REFUSE: &str = "effacement refusé";
@@ -1072,17 +1087,64 @@ fn retracter_la_couverture_d_event_rollup(conn: &Connection) -> bool {
 /// primaire de la table de rollup, menée par `bucket, source`, et la suppression se fait par `rowid`. Une forme
 /// `(bucket, source, env_id) IN (sous-requête)` a été relevée et écartée : SQLite y matérialisait la sous-requête DEUX
 /// fois (liste de l'index sur `bucket`, puis contrôle du tuple), soit deux lectures non couvrantes de la bande. Plan
-/// relevé et témoigné (`rbr_la_purge_des_buckets_resservis_suit_l_index_de_event_ts`). LIMITE (écrite, déjà vraie avant) : un groupe
-/// partiellement purgé côté `event` (frontière de rétention, une ligne de contrôle gardée parmi d'autres retirées de la
-/// même source) est reconstruit sur ce qu'`event` porte encore.
+/// relevé et témoigné (`rbr_la_purge_des_buckets_resservis_suit_l_index_de_event_ts`).
+/// `P10.32-a` — UN GROUPE PARTIELLEMENT PURGÉ CÔTÉ `event` EST GARDÉ TEL QUE LE ROLLUP LE PORTE. Un groupe n'est purgé que
+/// si `event` en porte, sous la borne, AU MOINS autant de lignes que le rollup n'en compte (`c >= SUM(n)`) : le rollup
+/// d'un groupe est, à son écriture, l'image exacte de ses lignes (le plafond top-N ne fait que regrouper `src_ip` sous
+/// `''`, et le reste d'une dimension est porté par sa ligne `!<dim>` : la somme est conservée), et `event` ne fait ensuite
+/// que GAGNER des lignes (arrivées tardives) — sauf purge asymétrique (plafonds `max_rows`/`max_bytes` d'un index qui ne
+/// purgent que `event`, lignes agées en froid, ligne de contrôle gardée parmi d'autres retirées). Moins de lignes dans
+/// `event` que dans le rollup dit donc qu'une partie de l'histoire de ce groupe n'est plus que dans le rollup : le
+/// reconstruire sur ce qui reste la réécrirait plus petite. GARDER plutôt que refuser : un refus bloquerait la
+/// reconstruction de toute la bande à chaque passage (la condition ne disparaît pas d'elle-même), alors que garder ne
+/// coûte que ce groupe, et l'INSERT qui suit l'épargne (`hors_des_groupes_gardes_*`). Pour `event_dim_rollup`, le compte
+/// d'un groupe se lit par dimension (`<dim>` et son reste `!<dim>` ensemble) : une seule dimension en excédent suffit.
+/// LIMITE (écrite) : une ligne tardive arrivée dans un groupe gardé n'y est pas ajoutée (le groupe n'est pas récrit), et
+/// la couverture publiée la tient pour agrégée. LIMITE (écrite) — COMPENSATION : la garde ne voit qu'un compte ; un groupe
+/// partiellement purgé puis complété par des lignes tardives jusqu'à `c >= SUM(n)` n'est plus gardé, et se recompose sur
+/// ce qui reste : le rollup ne descend jamais sous sa valeur, mais l'histoire purgée est perdue (5, plafond qui en laisse
+/// 2, trois tardives : 5, et non 8).
 /// `table` est un littéral interne (jamais une entrée utilisateur).
 pub(crate) fn purge_des_buckets_resservis_sql(table: &str) -> String {
+    let garde = groupe_garde_sql(table);
     format!(
         "DELETE FROM {table} WHERE rowid IN (SELECT r.rowid FROM \
-         (SELECT DISTINCT (ts/3600)*3600 AS b, COALESCE(source,'') AS s, COALESCE(env_id,'prod') AS e \
-          FROM event WHERE ts >= ?1 AND ts < ?2 AND id <= ?3) g \
+         (SELECT (ts/3600)*3600 AS b, COALESCE(source,'') AS s, COALESCE(env_id,'prod') AS e, COUNT(*) AS c \
+          FROM event WHERE ts >= ?1 AND ts < ?2 AND id <= ?3 GROUP BY 1, 2, 3) g \
          CROSS JOIN {table} r ON r.bucket = g.b AND r.source = g.s AND r.env_id = g.e \
-         WHERE r.bucket >= ?1 AND r.bucket < ?2)"
+         WHERE r.bucket >= ?1 AND r.bucket < ?2 AND NOT EXISTS ({garde}))"
+    )
+}
+
+/// `P10.32-a` — le groupe `g` (bucket, source, env_id, compte `c` d'`event` sous la borne) est-il GARDÉ ? Oui si le rollup
+/// en compte plus que `c` : par dimension pour `event_dim_rollup` (`<dim>` et `!<dim>` regroupés par `ltrim`), en somme
+/// pour `event_rollup`. Corrélée à `g` ; cherchée par la clé primaire de la table (menée par `bucket, source`).
+fn groupe_garde_sql(table: &str) -> String {
+    if table == "event_dim_rollup" {
+        "SELECT 1 FROM event_dim_rollup u WHERE u.bucket = g.b AND u.source = g.s AND u.env_id = g.e \
+         GROUP BY ltrim(u.dim, '!') HAVING SUM(u.n) > g.c"
+            .to_string()
+    } else {
+        format!("SELECT 1 FROM {table} u WHERE u.bucket = g.b AND u.source = g.s AND u.env_id = g.e GROUP BY u.bucket HAVING SUM(u.n) > g.c")
+    }
+}
+
+/// `P10.32-a` — la clause de l'INSERT de reconstruction d'`event_rollup` qui épargne les groupes GARDÉS par la purge
+/// (`purge_des_buckets_resservis_sql`) : jouée APRÈS elle, une ligne d'`event` n'est agrégée que si son groupe n'a plus
+/// aucune ligne dans le rollup — un groupe resservi vient d'être purgé, un groupe gardé ne l'a pas été.
+fn hors_des_groupes_gardes_d_event_rollup() -> &'static str {
+    "NOT EXISTS (SELECT 1 FROM event_rollup u WHERE u.bucket = (event.ts/3600)*3600 \
+     AND u.source = COALESCE(event.source,'') AND u.env_id = COALESCE(event.env_id,'prod'))"
+}
+
+/// `P10.32-a` — la même clause pour UNE dimension d'`event_dim_rollup` : seules les lignes de CETTE dimension (et de son
+/// reste) comptent, les INSERT des dimensions d'un même groupe se suivant (la première écrite ne doit pas faire épargner
+/// les suivantes). `source`/`dim` sont des littéraux internes validés (`DIM_ROLLUP_SPECS`, `merge_rollup_dims`).
+fn hors_des_groupes_gardes_d_une_dimension(source: &str, dim: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM event_dim_rollup u WHERE u.bucket = (event.ts/3600)*3600 \
+         AND u.source = '{source}' AND u.env_id = COALESCE(event.env_id,'prod') AND u.dim IN ('{dim}', '{}'))",
+        reste_dim(dim)
     )
 }
 
@@ -1277,9 +1339,15 @@ pub(crate) fn materialize_banned_ip(conn: &Connection) {
         }
     }
     // purge OPTIONNELLE des bans expirés (last_seen trop ancien). OFF par défaut (0 -> no-op).
+    // `P10.32-a` — son issue est LUE. Avant, `let _` : un refus laissait les bans expirés dans `banned_ip` sans un mot.
+    // Refusée : le ban expiré reste, le refus est compté sous « rollup : purge des bans expirés de banned_ip : purge
+    // refusée » (/api/system/metrics) et dit au journal avec la cause du moteur.
     let retention: i64 = cfg(&conf, "PLUME_BANNED_IP_RETENTION", "0").parse().unwrap_or(0);
     if retention > 0 {
-        let _ = conn.execute("DELETE FROM banned_ip WHERE last_seen < ?1", params![n - retention]);
+        if let Err(e) = conn.execute("DELETE FROM banned_ip WHERE last_seen < ?1", params![n - retention]) {
+            compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_PURGE_DES_BANS_EXPIRES, ETAPE_PURGE_REFUSEE, &e);
+            eprintln!("[rollup] WARN purge des bans expirés de banned_ip NON faite ({e}) — bans expirés gardés, purge reprise au prochain passage");
+        }
     }
 }
 
@@ -1539,6 +1607,12 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
                 }
                 crate::handlers::dashboards::IssueDeLaChargeValide::PlusRecenteQueLaTentative => {
                     eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — charge utile calculée après cette tentative conservée, rien d'écrit")
+                }
+                crate::handlers::dashboards::IssueDeLaChargeValide::NonLue(e) => {
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — ligne de cache NON LUE : {e} — rien d'écrit")
+                }
+                crate::handlers::dashboards::IssueDeLaChargeValide::Illisible(e) => {
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — ligne de cache ILLISIBLE (lue, non décodable) : {e} — rien d'écrit, le chemin à la demande la remplacera")
                 }
             }
         }

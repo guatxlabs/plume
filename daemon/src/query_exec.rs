@@ -157,25 +157,40 @@ fn refus_du_motif_note(refus: crate::regex_de_requete::MotifRefuse) -> rusqlite:
 /// relecture par instruction) ; un succès est gardé pour la vie de la connexion (un sel effacé ensuite ne
 /// change pas le hash : la corrélation tient). Absent, vide ou illisible DURABLEMENT : refus à chaque
 /// appel, comme avant.
+///
+/// `P10.33-r` / `P10.29-w` (vague BA) — UNE BASE OCCUPÉE N'EST PAS UN SEL ILLISIBLE. La lecture de l'installation passe
+/// par la MÊME relecture que l'appel (`relire_le_sel_sur`), qui garde le CODE : sous un verrou tenu par un autre
+/// écrivain (BUSY, LOCKED), le journal dit « NON LU, base OCCUPÉE », jamais « ILLISIBLE ». C'est le cas de la connexion
+/// d'union froide (`cold_store::reader::open_cold_union_avec`, étape (7)) : la lecture du sel y est le premier énoncé
+/// qui lit `main` après la vue d'union. Une interruption de cette lecture a aussi sa ligne.
 pub(crate) fn install_fmask_udf(conn: &Connection) {
     use rusqlite::functions::FunctionFlags;
+    // SAFETY : l'adresse de la connexion sur laquelle la fonction est enregistrée. SQLite n'appelle la
+    // fonction que sur CETTE connexion, ouverte (il la détruit à la fermeture) : la poignée est valide à
+    // chaque appel. Elle n'est jamais fermée ni partagée par ce code. Lue ici aussi, sur le fil de l'appelant,
+    // pendant que `conn` est empruntée : la relecture de l'installation passe par elle.
+    let poignee = PoigneeDeLaConnexion(unsafe { conn.handle() });
     // `P10.20-b` : un sel ABSENT ou ILLISIBLE n'est jamais "" — la fonction rend alors une ERREUR (la requête
     // HASH échoue fermé) au lieu d'un hash non salé de "\0"+valeur, attaquable au dictionnaire.
-    let mut sel_etabli: Option<String> = match crate::read_field_mask_salt(conn) {
+    let mut sel_etabli: Option<String> = match relire_le_sel_sur(&poignee) {
         Ok(Some(salt)) => Some(salt),
         Ok(None) => {
             eprintln!("[field_filter] sel de hachage ABSENT (meta.field_mask_salt) sur cette connexion — plume_fmask_hash le relira à chaque appel, et refusera tant qu'il manque");
             None
         }
-        Err(e) => {
+        Err(EchecDeRelecture::Illisible(e)) => {
             eprintln!("[field_filter] sel de hachage ILLISIBLE sur cette connexion : {e} — plume_fmask_hash le relira à chaque appel, et refusera tant qu'il est illisible");
             None
         }
+        Err(EchecDeRelecture::Occupee(e)) => {
+            eprintln!("[field_filter] sel de hachage NON LU, base OCCUPÉE sur cette connexion : {e} — plume_fmask_hash le relira à chaque appel");
+            None
+        }
+        Err(EchecDeRelecture::Interrompue) => {
+            eprintln!("[field_filter] sel de hachage NON LU, lecture interrompue sur cette connexion — plume_fmask_hash le relira à chaque appel");
+            None
+        }
     };
-    // SAFETY : l'adresse de la connexion sur laquelle la fonction est enregistrée. SQLite n'appelle la
-    // fonction que sur CETTE connexion, ouverte (il la détruit à la fermeture) : la poignée est valide à
-    // chaque appel. Elle n'est jamais fermée ni partagée par ce code.
-    let poignee = PoigneeDeLaConnexion(unsafe { conn.handle() });
     let _ = conn.create_scalar_function(
         "plume_fmask_hash",
         1,
@@ -206,6 +221,14 @@ pub(crate) fn install_fmask_udf(conn: &Connection) {
                             None,
                         ))
                     }
+                    // Une base OCCUPÉE pendant la relecture : l'instruction échoue sous le CODE d'occupation, sans
+                    // message (un message rabattrait le code sur `SQLITE_ERROR`), que le classeur range par son code
+                    // (`code_de_base_occupee`), jamais sous un sel illisible ni avec le texte du moteur. Joué par une
+                    // instruction qui ne lit aucune table de `main` pendant qu'un autre écrivain tient la base.
+                    Err(EchecDeRelecture::Occupee(e)) => {
+                        eprintln!("[field_filter] sel de hachage NON LU à la relecture, base OCCUPÉE : {e} — HASH refusé pour cette instruction");
+                        return Err(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY), None));
+                    }
                     Err(EchecDeRelecture::Illisible(e)) => {
                         // Le journal de l'hôte le dit aussi, avec le code étendu : le message rendu au
                         // client ne suffit pas à trancher un incident (au plus une ligne par instruction).
@@ -234,17 +257,19 @@ struct PoigneeDeLaConnexion(*mut rusqlite::ffi::sqlite3);
 unsafe impl Send for PoigneeDeLaConnexion {}
 
 /// Pourquoi la relecture du sel n'a rien rendu : une interruption de l'instruction (elle sera classée
-/// comme telle), ou une lecture ratée (le texte, avec le code étendu).
+/// comme telle), une base occupée (BUSY, LOCKED : décidé par le CODE, avec le texte et le code étendu), ou une
+/// lecture ratée (le texte, avec le code étendu).
 enum EchecDeRelecture {
     Interrompue,
+    Occupee(String),
     Illisible(String),
 }
 
 /// `P10.33-r` — RELIT `meta.field_mask_salt` SUR LA CONNEXION MÊME, depuis l'intérieur de la fonction
 /// scalaire (SQLite admet qu'une fonction prépare et exécute une instruction sur sa propre connexion ;
-/// l'authorizer et le rappel de progression de la connexion s'y appliquent). Mêmes issues que
-/// `read_field_mask_salt` : `Ok(None)` = absent ou vide, `Err` = interruption ou lecture ratée (avec le code
-/// étendu).
+/// l'authorizer et le rappel de progression de la connexion s'y appliquent), et à l'installation (vague BA).
+/// Mêmes issues que `read_field_mask_salt` : `Ok(None)` = absent ou vide, `Err` = interruption, base occupée
+/// ou lecture ratée (avec le code étendu).
 ///
 /// PAS `Context::get_connection` : en rusqlite 0.31, la `ConnectionRef` qu'elle rend, en tombant, passe par
 /// `InnerConnection::close`, qui appelle `remove_hooks()` AVANT de tester `owned` — elle EFFACERAIT
@@ -267,10 +292,17 @@ fn relire_le_sel_sur(poignee: &PoigneeDeLaConnexion) -> Result<Option<String>, E
         };
         let etendu = unsafe { ffi::sqlite3_extended_errcode(db) };
         let code = if etendu & 0xff == rc & 0xff { etendu } else { rc };
-        EchecDeRelecture::Illisible(crate::sqlite_plafond::decrire_l_erreur(&rusqlite::Error::SqliteFailure(
-            ffi::Error::new(code),
-            message,
-        )))
+        let erreur = ffi::Error::new(code);
+        // `DatabaseLocked` y est HORS D'ATTEINTE (aucune connexion du démon n'ouvre de cache partagé, et cette lecture
+        // ne rencontre pas un énoncé de sa propre connexion) : il reste classé par l'ensemble commun, jugé par les
+        // témoins `au1_`, pour ne pas tenir deux listes des codes d'occupation.
+        let occupee = code_de_base_occupee(erreur.code);
+        let texte = crate::sqlite_plafond::decrire_l_erreur(&rusqlite::Error::SqliteFailure(erreur, message));
+        if occupee {
+            EchecDeRelecture::Occupee(texte)
+        } else {
+            EchecDeRelecture::Illisible(texte)
+        }
     };
     let mut st: *mut ffi::sqlite3_stmt = std::ptr::null_mut();
     // SAFETY : `db` est ouverte (cf. ci-dessus) ; `SQL` est terminée par NUL ; `st` est finalisée sur
@@ -1477,16 +1509,16 @@ pub(crate) fn sous_le_plafond_de_l_export<T>(plafond: usize, f: impl FnOnce() ->
     f()
 }
 
-/// Le plafond de lignes de la lecture qui s'exécute sur CE fil : la borne de l'export si elle est posée, sinon
-/// `PLUME_QUERY_MAX` (défaut 5000, borné à ]0, `PLAFOND_DUR_DES_LIGNES_RENDUES`]). Lu par le cœur (`run_on_conn`) ET par
-/// l'hydratation froide (`cold_store::reader::cold_hydrate_row_cap`) : sous un export, le froid se lit jusqu'à la borne
-/// de l'export, pas jusqu'à `PLUME_QUERY_MAX`.
+/// Le plafond de lignes RENDUES par la lecture qui s'exécute sur CE fil : la borne de l'export si elle est posée, sinon
+/// `PLUME_QUERY_MAX` (défaut 5000, borné à ]0, `PLAFOND_DUR_DES_LIGNES_RENDUES`]). Lu par le cœur (`run_on_conn`).
+/// L'hydratation froide ne le lit PAS : elle lit `plafond_d_hydratation_froide_de_ce_fil`, qui sous un export vaut le plus
+/// grand de `PLUME_QUERY_MAX` et de la borne plus une ligne (les lignes LUES ne descendent jamais sous `PLUME_QUERY_MAX`).
 pub(crate) fn plafond_de_lignes_de_ce_fil() -> usize {
     borne_de_l_export_de_ce_fil().unwrap_or_else(plafond_interactif_des_lignes)
 }
 
 /// `PLUME_QUERY_MAX` (défaut 5000, borné à ]0, `PLAFOND_DUR_DES_LIGNES_RENDUES`]), plafond d'une lecture interactive.
-fn plafond_interactif_des_lignes() -> usize {
+pub(crate) fn plafond_interactif_des_lignes() -> usize {
     // Forme d'une INSTRUCTION terminée par `.unwrap_or(<défaut>);` : l'instrument 143 du harnais console y lit le défaut
     // de `PLUME_QUERY_MAX` pour le comparer à celui que la console écrit.
     let plafond_interactif: usize =
@@ -1755,6 +1787,19 @@ pub(crate) mod crochet_de_l_union_froide {
     pub(crate) enum Etape {
         AvantLInsertion,
         AvantLaVue,
+        /// `P10.29-w` (vague BA) — dans `cold_store::reader::HorizonDeLecture::lire`, avant la prise de la lecture.
+        AvantLaPriseDeLHorizon,
+        /// `P10.29-w` (vague BA) — dans `HorizonDeLecture::lire`, juste après la prise de la lecture, avant le réglage.
+        ApresLaPriseDeLHorizon,
+        /// `P10.29-w` (vague BA) — dans `HorizonDeLecture::lire`, après la fenêtre chaude et les politiques, juste avant
+        /// la libération.
+        AvantLaLiberationDeLHorizon,
+        /// `P10.29-w` (vague BC) — dans `handlers::panneau_avoue::retention_de_la_famille_lue`, juste après la sonde, avant
+        /// le réglage de rétention de la famille chaude.
+        ApresLaPriseDeLaRetentionDeLaFamille,
+        /// `P10.29-w` (vague BD) — dans `handlers::panneau_avoue::horizon_de_la_voie_froide_lue`, juste après la lecture
+        /// des politiques par index, avant l'horizon de la première famille.
+        ApresLesPolitiquesDeLaVoieFroide,
     }
 
     type Crochet = Box<dyn FnOnce() + Send>;

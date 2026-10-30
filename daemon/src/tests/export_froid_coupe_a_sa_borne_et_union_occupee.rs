@@ -21,6 +21,8 @@
 // rollback, où ce verrou bloque tout lecteur, ce que la sonde constate) ne les fait pas échouer : l'union se
 // monte, la requête de l'appelant rencontre le verrou, le cœur la classe `Occupee`, la route sert le 503 de la base
 // OCCUPÉE. Les sites sont donc dits HORS D'ATTEINTE au site (`reader.rs`, étape (4)), sans changement de leur `pe`.
+// (Vague BA : après la vue, le premier énoncé qui lit `main` n'est pas la requête de l'appelant mais la lecture du sel
+// par `install_fmask_udf` ; son journal sous ce verrou est jugé par `occupee_n_est_pas_illisible_ba3.rs`.)
 //
 // MUTANTS (variable VERIF_MUT sous `cfg!(test)`, retirés avant le commit), chacun vu ROUGE :
 //  AZ3_SONDE_FROIDE (hydratation sous un export plafonnée à la borne, sans la ligne sonde) (1) ;
@@ -29,9 +31,9 @@
 //  AZ3_SANS_BORNE_NOMMEE (la route d'export ne pose pas sa borne sur le refus) (2) ;
 //  AZ3W_INSERT_LIT_MAIN, AZ3W_VUE_LIT_MAIN (un énoncé sur `main` sous `pe` au point de l'étape : servi illisible) (3).
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS (reste de `P10.29-w`) : une occupation pendant la lecture du réglage de rétention
-// (`HorizonDeLecture::lire`, `cold_store/reader.rs`, par `retention_effective_lue`, texte sans code) reste servie
-// « illisible ».
+// CE QUE CES TÉMOINS NE TENAIENT PAS (reste de `P10.29-w`, repris en vague BA par `occupee_n_est_pas_illisible_ba3.rs`) :
+// une occupation pendant la lecture du réglage de rétention (`HorizonDeLecture::lire`, `cold_store/reader.rs`, par
+// `retention_effective_lue`, texte sans code) était servie « illisible ».
 // =====================================================================================
 #[cfg(feature = "cold_tier")]
 mod az3_export_froid_coupe_a_sa_borne_et_union_occupee {
@@ -198,10 +200,9 @@ mod az3_export_froid_coupe_a_sa_borne_et_union_occupee {
     async fn az3w_base_prise_pendant_le_montage_de_l_union_est_servie_occupee() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.write();
         let _leviers = Az3Env::poser(&[]);
-        let etapes = [(Etape::AvantLInsertion, "az3w-insertion"), (Etape::AvantLaVue, "az3w-vue")];
-        assert!(etapes.len() >= 2, "plancher : deux étapes");
-        let mut jouees = 0;
-        for (etape, etiquette) in etapes {
+        // Les deux étapes sont écrites dans la boucle même (vague BA : le plancher sur ce tableau littéral et le compte
+        // d'une boucle sans `continue` étaient vrais par construction, retirés).
+        for (etape, etiquette) in [(Etape::AvantLInsertion, "az3w-insertion"), (Etape::AvantLaVue, "az3w-vue")] {
             let banc = BancFroidSurLaRoute::monter(etiquette, false).await;
             banc.vieillir();
             let chemin = banc.chemin_base.clone();
@@ -252,8 +253,6 @@ mod az3_export_froid_coupe_a_sa_borne_et_union_occupee {
             let c = az3_envoyer(banc.addr, "/api/export", &banc.authz, &corps).await;
             assert_eq!(c.code, 200, "{etiquette} : contrôle, verrou rendu : servi : {}", c.resume());
             assert_eq!(c.lignes(), LIGNES_FROIDES as usize, "{etiquette} : contrôle : toutes les froides : {}", c.resume());
-            jouees += 1;
         }
-        assert_eq!(jouees, 2, "contrôle : deux étapes jouées");
     }
 }

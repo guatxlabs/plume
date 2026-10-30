@@ -1333,8 +1333,16 @@ pub(crate) const CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC: &str = "rafraichissement_en
 
 /// Ce que [`joindre_l_echec_a_la_charge_valide`] a trouvé et fait.
 pub(crate) enum IssueDeLaChargeValide {
-    /// Aucune charge utile valide en cache (absence, corps d'échec, ligne illisible) : rien n'est écrit ici.
+    /// Aucune charge utile valide en cache (absence, corps d'échec, charge qui n'est pas du JSON) : rien n'est écrit ici.
     Aucune,
+    /// `P10.32-o` — une ligne de cache EXISTE et a été lue, mais sa valeur ne se décode pas
+    /// (`panneau_avoue::LectureDeCache::Illisible`, cause portée) : elle ne porte aucune charge utile valide. Rien n'est
+    /// écrit ici ; l'appelant à la demande la REMPLACE par le corps d'échec, le pré-chauffage la laisse à ce chemin.
+    Illisible(String),
+    /// `P10.32-o` — la ligne de cache n'a PAS été lue (lecture refusée par le moteur, cause de
+    /// `panneau_avoue::cache_lire_dit`) : une charge utile valide peut s'y trouver. Rien n'est écrit, ni aveu ni corps
+    /// d'échec, ici ni par l'appelant.
+    NonLue(String),
     /// La charge utile valide est réécrite telle quelle, `stats.rafraichissement_en_echec` en plus, instant de calcul
     /// INCHANGÉ (elle reste périmée : la tentative suivante revient à la prochaine interrogation).
     Jointe,
@@ -1355,7 +1363,15 @@ pub(crate) enum IssueDeLaChargeValide {
 pub(crate) fn joindre_l_echec_a_la_charge_valide(
     conn: &Connection, id: i64, range_key: &str, q_fp: &str, now_s: i64, echec: &EchecMisEnCache,
 ) -> IssueDeLaChargeValide {
-    let valide = panneau_avoue::cache_lire(conn, id, range_key, q_fp).and_then(|(payload, calcule_a)| {
+    let lue = match panneau_avoue::cache_lire_dit(conn, id, range_key, q_fp) {
+        panneau_avoue::LectureDeCache::Lue(payload, calcule_a) => Some((payload, calcule_a)),
+        panneau_avoue::LectureDeCache::Absente => None,
+        // `P10.32-o` — une ligne lue mais non décodable ne porte aucune charge valide : elle peut être remplacée.
+        panneau_avoue::LectureDeCache::Illisible(cause) => return IssueDeLaChargeValide::Illisible(cause),
+        // `P10.32-o` — une lecture REFUSÉE n'est pas une absence : la charge valide qu'elle cache n'est pas écrasée.
+        panneau_avoue::LectureDeCache::NonLue(cause) => return IssueDeLaChargeValide::NonLue(cause),
+    };
+    let valide = lue.and_then(|(payload, calcule_a)| {
         serde_json::from_str::<Value>(&payload).ok().filter(|v| v.is_object() && v.get("error").is_none()).map(|v| (v, calcule_a))
     });
     let Some((mut v, calcule_a)) = valide else {
@@ -1389,9 +1405,11 @@ pub(crate) fn joindre_l_echec_a_la_charge_valide(
 /// prochaine interrogation, et la nouvelle tentative revient par le mécanisme ordinaire du cache périmé
 /// (`now_s - computed_at > ttl`). Un succès ultérieur l'écrase. Le coût n'est PAS enregistré : un échec
 /// ne classe pas le panneau.
-/// UNE CHARGE UTILE VALIDE DÉJÀ EN CACHE N'EST PAS ÉCRASÉE (lisible, sans `error`) : périmée, elle reste
+/// UNE CHARGE UTILE VALIDE DÉJÀ EN CACHE N'EST PAS ÉCRASÉE (lisible, sans `error`), ni une ligne dont la lecture est
+/// REFUSÉE (`IssueDeLaChargeValide::NonLue` : elle peut porter une charge valide) : périmée, elle reste
 /// servie et la tentative suivante revient à la prochaine interrogation — comme au pré-chauffage, qui
-/// garde le périmé quand il échoue. Le corps d'échec ne remplace qu'une ABSENCE (ou un échec précédent).
+/// garde le périmé quand il échoue. Le corps d'échec ne remplace qu'une ABSENCE, un échec précédent, ou une ligne lue
+/// mais non décodable (`IssueDeLaChargeValide::Illisible`, dite à sa ligne de journal : « ligne de cache ILLISIBLE »).
 /// Journal : l'identifiant, la cause, la route, le tenant de l'appelant et le geste RÉELLEMENT fait (écrit,
 /// conservé, refusé, cache coupé), jamais la requête.
 fn memoriser_l_echec_du_rafraichissement(
@@ -1417,6 +1435,13 @@ fn memoriser_l_echec_du_rafraichissement(
         IssueDeLaChargeValide::PlusRecenteQueLaTentative => {
             eprintln!("{tete} — charge utile calculée après cette tentative conservée, rien d'écrit");
             return;
+        }
+        IssueDeLaChargeValide::NonLue(e) => {
+            eprintln!("{tete} — ligne de cache NON LUE : {e} — rien d'écrit, une charge utile précédente y reste intacte");
+            return;
+        }
+        IssueDeLaChargeValide::Illisible(e) => {
+            eprintln!("{tete} — ligne de cache ILLISIBLE (lue, non décodable) : {e} — remplacée par le corps d'échec");
         }
         IssueDeLaChargeValide::Aucune => {}
     }
@@ -1448,7 +1473,31 @@ pub(crate) fn serve_swr(
         // lecture cache SANS prédicat de fraîcheur : on récupère payload + computed_at quel que soit l'âge.
         let __rc = req_db(st, au);
         let conn = __rc.lock();
-        panneau_avoue::cache_lire(&conn, id, range_key, q_fp)
+        panneau_avoue::cache_lire_dit(&conn, id, range_key, q_fp)
+    };
+    // `P10.32-o` — une ligne NON LUE ou ILLISIBLE n'a rien à servir : elle est servie comme un MISS (corps `warming`,
+    // rafraîchissement armé si le panneau compile, refus du compilateur sinon), et chacune le dit à SA ligne de journal :
+    // une ligne ILLISIBLE a été lue (le rafraîchissement la remplacera), une ligne NON LUE ne l'a pas été (rien ne sera
+    // écrit par-dessus sur la foi de cette lecture, et le corps servi le dit par sa raison `cache_non_lu`).
+    let mut ligne_non_lue = false;
+    let cached = match cached {
+        panneau_avoue::LectureDeCache::Lue(payload, calcule_a) => Some((payload, calcule_a)),
+        panneau_avoue::LectureDeCache::Absente => None,
+        panneau_avoue::LectureDeCache::Illisible(cause) => {
+            eprintln!(
+                "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id} : {cause} — servie comme un \
+                 MISS (corps `warming`, rafraîchissement armé si le panneau compile, qui la remplacera)"
+            );
+            None
+        }
+        panneau_avoue::LectureDeCache::NonLue(cause) => {
+            eprintln!(
+                "[panel] WARN ligne de cache NON LUE, panneau #{id} : {cause} — servie comme un MISS (corps `warming`, \
+                 rafraîchissement armé si le panneau compile)"
+            );
+            ligne_non_lue = true;
+            None
+        }
     };
     // `P10.29-l` (vague AS) — UN CORPS D'ÉCHEC D'UNE VERSION ANTÉRIEURE N'EST PLUS SERVI : son `error` peut porter le
     // texte du moteur, et le cache est rôle-agnostique. Il est traité comme une absence (MISS : `warming`, puis un
@@ -1510,6 +1559,12 @@ pub(crate) fn serve_swr(
             v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
                 panneau_avoue::RAISON_MESURE_EN_COURS, from, now_s, horizon_courant(pc.as_ref()),
             );
+            // `P10.32-o` — UNE LIGNE NON LUE N'EST PAS UNE MESURE EN COURS : on ne sait pas ce qu'elle porte. Le corps le dit
+            // par sa raison (`cache_non_lu`) et sa notice, que la console affiche sous un corps sans ligne
+            // (`noeudDeLaNoticeDeCouverture`, web/viz.js) ; `warming` reste posé, le rafraîchissement est armé ci-dessous.
+            if ligne_non_lue {
+                panneau_avoue::dire_la_ligne_de_cache_non_lue(&mut v["stats"]["coverage"]);
+            }
             if let Some(pc) = pc {
                 enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
             }

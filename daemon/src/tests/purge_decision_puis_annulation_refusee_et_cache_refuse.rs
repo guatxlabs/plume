@@ -195,7 +195,7 @@ mod purge_decision_puis_annulation_refusee_et_cache_refuse {
             Ok(_) => panic!("le déclencheur `event_ad` est retiré : refus attendu"),
         };
         assert!(!autocommit, "fait constaté : la connexion est restée en transaction");
-        let (statut, corps) = pcr_lire(purge_refusal_response(e)).await;
+        let (statut, corps) = pcr_lire(purge_refusal_response(e, "default")).await;
         assert_eq!(statut, 409, "fts_desync garde son 409 : {corps}");
         let id = dar_id(&corps);
         assert_eq!(
@@ -281,7 +281,7 @@ mod purge_decision_puis_annulation_refusee_et_cache_refuse {
             let (_, attendu) = dar_loi_attendue(origine);
             let etape = purge_refusal_code(origine);
             let restee = PurgeRefusal::TransactionLeftOpen { id: "dar-id".into(), etape, decision: crate::purge::est_une_decision(origine) };
-            let (statut, corps) = pcr_lire(purge_refusal_response(restee)).await;
+            let (statut, corps) = pcr_lire(purge_refusal_response(restee, "default")).await;
             if attendu {
                 assert_eq!(statut, 409, "étape `{etape}` : {corps}");
                 assert_eq!(
@@ -303,7 +303,7 @@ mod purge_decision_puis_annulation_refusee_et_cache_refuse {
             id: "dar-id".into(),
             etape: "COMMIT refusé",
             decision: false,
-        }))
+        }, "default"))
         .await;
         assert_eq!(statut, 500, "COMMIT refusé");
     }
@@ -395,11 +395,14 @@ mod purge_decision_puis_annulation_refusee_et_cache_refuse {
              transaction jusqu'à sa fermeture (BEGIN refusés, écritures sans BEGIN prises puis perdues ; ROLLBACK de purge \
              refusé n° 1 depuis le démarrage)"
         );
+        // `P10.29-l` (vague BF) — inversé nommément : la réponse écrit une ligne qui relie l'identifiant de l'ERREUR au
+        // tenant de l'appelant, et la ligne WARN du refus `db` nomme ce tenant.
+        let liaison = format!("[{id}] [purge] WARN refus servi, transaction restée ouverte, tenant 'default'");
         let warn = format!(
-            "[{id2}] [purge] WARN refus servi, refus de la base (db) : \"cache de panneaux NON VIDÉ (dar-cache [code étendu \
+            "[{id2}] [purge] WARN refus servi, refus de la base (db), tenant 'default' : \"cache de panneaux NON VIDÉ (dar-cache [code étendu \
              1811]) — ses charges utiles portent le contenu purgé, purge refusée\""
         );
-        assert_eq!(lignes, vec![erreur.as_str(), warn.as_str()], "deux lignes [purge], entières : {fenetre}");
+        assert_eq!(lignes, vec![erreur.as_str(), liaison.as_str(), warn.as_str()], "trois lignes [purge], entières : {fenetre}");
     }
 
     /// `cache_lire_dit` : absence, ligne valide, ligne illisible, lecture refusée ; compte de PRODUCTION, dans un

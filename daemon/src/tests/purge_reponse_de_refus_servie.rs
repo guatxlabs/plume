@@ -45,7 +45,7 @@ fn prs_scope() -> PurgeScope {
 
 /// Statut et corps JSON de la réponse servie pour `e`.
 async fn prs_servir(e: PurgeRefusal) -> (u16, serde_json::Value) {
-    let r = purge_refusal_response(e);
+    let r = purge_refusal_response(e, "default");
     let statut = r.status().as_u16();
     let octets = axum::body::to_bytes(r.into_body(), usize::MAX).await.expect("corps lisible");
     (statut, serde_json::from_slice(&octets).expect("corps JSON"))
@@ -230,7 +230,7 @@ fn prs_les_deux_routes_servent_par_la_fabrique_de_reponse() {
             .unwrap_or(reste.len());
         let corps = &reste[..fin];
         assert!(
-            corps.contains("Err(e) => purge_refusal_response(e)"),
+            corps.contains("Err(e) => purge_refusal_response(e, &au.tenant)"),
             "`{route}` rend ses refus par `purge_refusal_response`"
         );
         assert!(!corps.contains("CONFLICT"), "`{route}` ne fabrique aucun 409 en ligne");

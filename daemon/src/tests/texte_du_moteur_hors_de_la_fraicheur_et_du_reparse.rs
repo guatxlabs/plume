@@ -43,11 +43,12 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : les lectures d'une seule ligne de `compute_freshness` (`{e}` des lignes non lues,
 // du flux des métriques et de ses comptes, épinglées par l'instrument 97 du harnais console), la dernière collecte non
-// établie (texte composé par `sondes.rs`), les `non_lus` de `compute_integrations`, le 503 `prepare: {e}` du reparse,
+// établie (texte composé par `sondes.rs`), les `non_lus` de `compute_integrations`,
 // `collectors_cause` = `FinDeParcours::cause()` d'`admin_ui.rs` (vers :1078, épinglé par l'instrument 100 du harnais
 // console) ; le tenant passé par la boucle de rollup (`boucles_de_fond.rs`, pré-chauffage de chaque tenant) n'est pas
 // joué (boucle en fil dédié) ; le pré-chauffage de démarrage lit la seule base par défaut (tenant `default`).
-// Restes nommés au rapport.
+// Restes nommés au rapport. Le 503 du reparse non préparé (`prepare: {e}` à l'époque) sert depuis la vague BE une
+// phrase fixe (`CAUSE_REPARSE_NON_PREPARE`), tenue par `texte_du_moteur_hors_des_ripostes_du_risque_et_des_essais.rs`.
 // =====================================================================================
 mod ap1_fraicheur_et_reparse_sans_texte_du_moteur {
     use super::*;

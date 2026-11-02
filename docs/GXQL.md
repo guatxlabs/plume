@@ -451,9 +451,12 @@ Deux points à ne pas confondre :
 **Ce que porte `error` quand une requête n'est pas servie.** Deux sources, à ne pas confondre :
 
 - **le refus du compilateur GXQL** (commande, fonction ou champ inconnu, champ masqué, borne
-  dépassée) : `400`, et `error` porte le message du compilateur, tel quel. Ce message ne cite que la
-  requête **de l'appelant** (le nom fautif qu'il a écrit) et le vocabulaire fermé du langage ; il ne
-  lit pas la base. C'est voulu : sans lui, une faute de frappe serait indiagnosticable ;
+  dépassée) : `400`, et `error` porte le message du compilateur, tel quel. Le compilateur
+  n'exécute rien et ne lit aucun événement, mais il détend les macros **avant** d'analyser la
+  requête : son message cite la requête de l'appelant (le nom fautif qu'il a écrit), le
+  vocabulaire fermé du langage et, quand la requête appelle une macro, un extrait du **corps de
+  cette macro** (un objet de savoir, lisible par `GET /api/knowledge`). C'est voulu : sans lui,
+  une faute de frappe serait indiagnosticable ;
 - **l'échec à l'exécution** : la classe est décidée par le code du moteur, et `error` porte une
   phrase fixe par classe — support de la base illisible ou base occupée en `503`, refus du moteur
   (syntaxe du SQL compilé, autorisateur, motif) en `400`, phrase du produit (annulation, budget,

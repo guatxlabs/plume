@@ -196,7 +196,8 @@ mod ar2_texte_du_moteur_hors_de_la_requete {
     }
 
     fn ar2_ligne_moteur(route: &str, tenant: &str, e: &rusqlite::Error) -> String {
-        format!("[query] WARN requête rejetée par le moteur ({route}, tenant '{tenant}') : {} : {:?}", ar2_nature(e), e.to_string())
+        // `P10.29-l` (vague BF) — inversé nommément : la ligne du refus du moteur ne porte plus le texte du moteur (il cite l'énoncé).
+        format!("[query] WARN requête rejetée par le moteur ({route}, tenant '{tenant}') : {}", ar2_nature(e))
     }
 
     fn ar2_semer(conn: &Connection, ts: i64) {
@@ -944,7 +945,9 @@ mod ar2_texte_du_moteur_hors_de_la_requete {
                 fautes.push(format!("bloc {k} absent ou doublé"));
             }
         }
-        for (forme, attendu) in [(AR2_REFUS_QUERY, 7), (AR2_REFUS_EXPORT, 3), ("crate::query_exec::en_classant(", 6), ("crate::query_exec::en_classant_la_voie_froide(", 5)] {
+        // `P10.29-l` (vague BF) — inversé nommément : les deux comptages de `/api/query` (compte seul, compte de la page)
+        // sont classés aussi (`total_lu`), d'où huit `en_classant(` au lieu de six.
+        for (forme, attendu) in [(AR2_REFUS_QUERY, 7), (AR2_REFUS_EXPORT, 3), ("crate::query_exec::en_classant(", 8), ("crate::query_exec::en_classant_la_voie_froide(", 5)] {
             let n = src.matches(forme).count();
             if n != attendu {
                 fautes.push(format!("{forme} : {n} au lieu de {attendu}"));

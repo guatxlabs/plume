@@ -1453,6 +1453,23 @@ fn memoriser_l_echec_du_rafraichissement(
     }
 }
 
+/// `P10.32-o` — ce que la lecture de la ligne de cache a rendu quand elle n'a rien à servir : jugé par `serve_swr` avant
+/// le refus du compilateur (une absence reste un MISS ; une ligne illisible ou non lue n'est jamais une chauffe).
+enum LigneDeCacheRatee {
+    Aucune,
+    Illisible,
+    /// L'identifiant de corrélation servi et écrit à la ligne de journal.
+    NonLue(String),
+}
+
+/// `P10.32-o` — la ligne de cache de ce panneau n'a pas pu être lue (lecture refusée par la base) : servie en 503 par
+/// `serve_swr`, jamais comme une chauffe. La console la peint en lecture refusée avec sa cause (`j.error`, carte du
+/// panneau, web/dashboards.js ; `causeNommeeParLeDemon`, web/core.js). Ne nomme ni `BEGIN` ni `COMMIT`.
+pub(crate) const CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE: &str = "LIGNE DE CACHE NON LUE : la base n'a pas rendu la ligne \
+     de cache de ce panneau — ce n'est PAS une mesure en cours ni une absence, c'est une lecture qui n'a pas eu lieu. RIEN \
+     n'est servi ; un rafraîchissement est armé si le panneau compile. Réessayez ; si le refus persiste, la table du cache \
+     des panneaux est illisible.";
+
 /// PHASE 3d — sert un panneau en SWR (stale-while-revalidate), logique EXACTE de 3c : HIT cache (frais OU
 /// périmé) -> service IMMÉDIAT + refresh ASYNC borné (refresh_sem, JAMAIS query_sem) si périmé ; MISS ->
 /// enqueue refresh + JSON VALIDE « warming » non bloquant. Utilisé par (a) le chemin LOURD (coût >= seuil)
@@ -1463,8 +1480,9 @@ fn memoriser_l_echec_du_rafraichissement(
 /// DURÉE quantifiée : un payload calculé à T0 sur [T0−24 h, T0] est LÉGITIMEMENT servi à T0+n. On NE
 /// recalcule donc PAS `coverage.searched_from` sur le `from` courant — ce serait le seul champ frais
 /// d'une réponse périmée, et il se lit comme un certificat. Seul l'horizon est re-confronté, et il le
-/// DIT (`horizon_perime`). Les DEUX corps synthétiques (repli de parsing, MISS `warming`) reçoivent eux
-/// aussi un `stats.coverage` : un corps sans lignes qui ne dit rien se relit comme une absence établie.
+/// DIT (`horizon_perime`). Les corps synthétiques (repli de parsing, ligne de cache illisible, ligne de cache non lue
+/// servie en 503, MISS `warming`) reçoivent eux aussi un `stats.coverage` : un corps sans lignes qui ne dit rien se
+/// relit comme une absence établie.
 pub(crate) fn serve_swr(
     st: &AppState, au: &AuthUser, conf: &HashMap<String, String>, id: i64, query: &str, is_soql: bool, from: i64, to: i64,
     range_key: &str, q_fp: &str, ttl: i64, ttl_global: i64, now_s: i64, env: Option<&str>,
@@ -1475,27 +1493,36 @@ pub(crate) fn serve_swr(
         let conn = __rc.lock();
         panneau_avoue::cache_lire_dit(&conn, id, range_key, q_fp)
     };
-    // `P10.32-o` — une ligne NON LUE ou ILLISIBLE n'a rien à servir : elle est servie comme un MISS (corps `warming`,
-    // rafraîchissement armé si le panneau compile, refus du compilateur sinon), et chacune le dit à SA ligne de journal :
-    // une ligne ILLISIBLE a été lue (le rafraîchissement la remplacera), une ligne NON LUE ne l'a pas été (rien ne sera
-    // écrit par-dessus sur la foi de cette lecture, et le corps servi le dit par sa raison `cache_non_lu`).
-    let mut ligne_non_lue = false;
+    // `P10.32-o` — UNE LIGNE NON LUE OU ILLISIBLE N'EST JAMAIS SERVIE COMME UNE CHAUFFE. Avant, toutes deux partaient en MISS
+    // (corps `warming`) : la console affichait « mesure en cours » sous une notice qui disait le contraire. Désormais :
+    //  * ILLISIBLE (lue, non décodable) : le corps synthétique d'une charge utile illisible (`paye_utile_illisible`, comme
+    //    la charge qui n'est pas du JSON), sans `warming`, et le rafraîchissement armé si le panneau compile la remplacera ;
+    //  * NON LUE (lecture refusée) : un refus de lecture nommé en 503 (`CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE`, avec
+    //    l'identifiant de corrélation, la raison `cache_non_lu` et sa notice), rafraîchissement armé si le panneau compile.
+    // Les deux sont jugées AVANT le refus du compilateur : celui-ci n'est rendu que sur une vraie absence (le MISS qui,
+    // sans lui, chaufferait sans fin). Chaque ligne de journal nomme le tenant de l'appelant (`{:?}`), jamais la requête.
+    let mut ligne_ratee = LigneDeCacheRatee::Aucune;
     let cached = match cached {
         panneau_avoue::LectureDeCache::Lue(payload, calcule_a) => Some((payload, calcule_a)),
         panneau_avoue::LectureDeCache::Absente => None,
         panneau_avoue::LectureDeCache::Illisible(cause) => {
             eprintln!(
-                "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id} : {cause} — servie comme un \
-                 MISS (corps `warming`, rafraîchissement armé si le panneau compile, qui la remplacera)"
+                "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — servie comme \
+                 une charge utile illisible (corps synthétique `paye_utile_illisible`, sans `warming`), rafraîchissement armé si \
+                 le panneau compile, qui la remplacera",
+                au.tenant
             );
+            ligne_ratee = LigneDeCacheRatee::Illisible;
             None
         }
         panneau_avoue::LectureDeCache::NonLue(cause) => {
+            let cid = crate::identifiant_de_correlation();
             eprintln!(
-                "[panel] WARN ligne de cache NON LUE, panneau #{id} : {cause} — servie comme un MISS (corps `warming`, \
-                 rafraîchissement armé si le panneau compile)"
+                "[{cid}] [panel] WARN ligne de cache NON LUE, panneau #{id}, tenant {:?} : {cause} — refus de lecture nommé \
+                 servi en 503 (sans `warming`), rafraîchissement armé si le panneau compile",
+                au.tenant
             );
-            ligne_non_lue = true;
+            ligne_ratee = LigneDeCacheRatee::NonLue(cid);
             None
         }
     };
@@ -1548,6 +1575,30 @@ pub(crate) fn serve_swr(
             Json(v).into_response()
         }
         None => {
+            match ligne_ratee {
+                LigneDeCacheRatee::NonLue(cid) => {
+                    let mut v = json!({ "columns": [], "rows": [], "error": CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE, "id": cid });
+                    v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
+                        panneau_avoue::RAISON_LIGNE_DE_CACHE_NON_LUE, from, now_s, horizon_courant(pc.as_ref()),
+                    );
+                    panneau_avoue::dire_la_ligne_de_cache_non_lue(&mut v["stats"]["coverage"]);
+                    if let Some(pc) = pc {
+                        enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
+                    }
+                    return (StatusCode::SERVICE_UNAVAILABLE, Json(v)).into_response();
+                }
+                LigneDeCacheRatee::Illisible => {
+                    let mut v = json!({ "columns": [], "rows": [] });
+                    v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
+                        panneau_avoue::RAISON_PAYE_UTILE_ILLISIBLE, from, now_s, horizon_courant(pc.as_ref()),
+                    );
+                    if let Some(pc) = pc {
+                        enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
+                    }
+                    return Json(v).into_response();
+                }
+                LigneDeCacheRatee::Aucune => {}
+            }
             // `P10.32-o` : le MÊME refus que le chemin live, avec la cause du compilateur.
             if let Some(e) = refus_de_compilation {
                 return bad_req(e);
@@ -1559,12 +1610,6 @@ pub(crate) fn serve_swr(
             v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
                 panneau_avoue::RAISON_MESURE_EN_COURS, from, now_s, horizon_courant(pc.as_ref()),
             );
-            // `P10.32-o` — UNE LIGNE NON LUE N'EST PAS UNE MESURE EN COURS : on ne sait pas ce qu'elle porte. Le corps le dit
-            // par sa raison (`cache_non_lu`) et sa notice, que la console affiche sous un corps sans ligne
-            // (`noeudDeLaNoticeDeCouverture`, web/viz.js) ; `warming` reste posé, le rafraîchissement est armé ci-dessous.
-            if ligne_non_lue {
-                panneau_avoue::dire_la_ligne_de_cache_non_lue(&mut v["stats"]["coverage"]);
-            }
             if let Some(pc) = pc {
                 enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
             }

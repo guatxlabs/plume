@@ -121,6 +121,10 @@ SITES_HORS_ROUTE = {
     # la sonde classe l'échec par son code (occupée / non prise), libéré sur le succès comme sur l'échec ; son refus
     # remonte en notice de couverture (`horizon_de_la_voie_froide_lue`), jamais une réponse seule.
     ("daemon/src/handlers/panneau_avoue.rs", "retention_de_la_famille_lue"): ("BEGIN littéral",),
+    # L'horizon d'un panneau hors voie froide (`P10.29-w`, vague BE) : un `SAVEPOINT` dont la sonde classe l'échec par
+    # son code (occupée / non prise), libéré sur le succès comme sur l'échec ; son refus (prise ou libération) remonte en
+    # notice de couverture (`horizon_et_frontiere_selon_l_index`), jamais une réponse seule.
+    ("daemon/src/handlers/panneau_avoue.rs", "sous_la_lecture_de_l_horizon_du_panneau"): ("BEGIN littéral",),
     # La ventilation de la base : un instantané de lecture (`BEGIN DEFERRED`), jugé et dit par son propre `match`.
     ("daemon/src/ventilation_serie.rs", "mesurer_une_fois"): ("BEGIN littéral",),
     # Les balayages de fond des engagements (expiration, activation) : chaque refus dit par

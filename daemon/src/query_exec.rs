@@ -491,6 +491,8 @@ pub(crate) fn install_field_authorizer(conn: &Connection, db_path: &str) {
     }));
 }
 pub(crate) fn read_conn_get(db_path: &str) -> Result<Connection, String> {
+    #[cfg(test)]
+    panne_de_test_au_coeur::oublier_l_armement_de_ce_fil();
     let pool = READ_POOL.get_or_init(|| Mutex::new(ReadPool::new()));
     if let Some(c) = pool.lock().take(db_path) {
         return Ok(c); // MT-KEY : uniquement une connexion ouverte sur CE db_path (jamais d'une autre base)
@@ -509,6 +511,13 @@ pub(crate) fn read_conn_get(db_path: &str) -> Result<Connection, String> {
 /// désormais fermée (`drop`, qui annule l'instantané) avant même de prendre le verrou du pool, et le journal le dit :
 /// c'est le geste qui l'a rendue ainsi qui est en faute, et rien d'autre ne le signalerait.
 pub(crate) fn read_conn_put(db_path: &str, conn: Connection) {
+    // Instrument de TEST (`P10.29-l`, vague BF) : la connexion armée par `panne_de_test_au_coeur` est fermée, jamais
+    // remise au pool (voir le module).
+    #[cfg(test)]
+    if panne_de_test_au_coeur::armee_sur_ce_fil(&conn) {
+        drop(conn);
+        return;
+    }
     if !conn.is_autocommit() {
         eprintln!(
             "[lecture] ERREUR une connexion de lecture revient au pool EN TRANSACTION (un instantané que son geste n'a pas \
@@ -1696,8 +1705,16 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
 /// Instrument de TEST seulement (`P10.29-l`, vague AR) : arme la connexion d'exécution d'une base, au point de
 /// passage de toute lecture (`run_on_conn`, connexion du pool comme connexion d'union du tier froid). Le compte de
 /// pagination (`SELECT COUNT(*) AS n FROM (SELECT 1 FROM (…`) n'est pas visé : la panne tombe sur la PAGE, celle
-/// dont la route sert l'échec. La demande est retirée quand elle arme (`encore_demandee` dit si elle a servi) ; la
-/// connexion armée le reste : le témoin vide ensuite les connexions au repos de la base.
+/// dont la route sert l'échec. La demande est retirée quand elle arme (`encore_demandee` dit si elle a servi).
+///
+/// `P10.29-l` (vague BF) — LA CONNEXION ARMÉE N'EST JAMAIS REMISE AU POOL : `read_conn_put` la ferme. L'armement est
+/// durable (autorisateur, rappel de progression, UDF `regexp` remplacée) ; remise au pool, elle servait la lecture
+/// suivante de la base, et le comptage de la voie paginée, lancé en même temps que la page, la reprenait quand il
+/// démarrait après le retour de la page : il échouait à son tour, et la route écrivait une ligne `[query] WARN total
+/// non établi` que le témoin n'avait pas demandée (rouge intermittent des témoins `ar2_`, reproduit à coup sûr en
+/// retardant le comptage). La connexion armée est reconnue par sa poignée SQLite, notée sur le fil qui l'arme : la
+/// lecture du pool rend la connexion sur le fil qui l'a exécutée (`run_query_ex`, `read_with`). La note est effacée
+/// à la prise suivante d'une connexion sur ce fil (une connexion d'union du tier froid, armée, n'est jamais rendue).
 #[cfg(test)]
 pub(crate) mod panne_de_test_au_coeur {
     use super::*;
@@ -1737,6 +1754,33 @@ pub(crate) mod panne_de_test_au_coeur {
         demandes().lock().remove(db_path);
     }
 
+    thread_local! {
+        /// La poignée SQLite de la connexion armée sur ce fil (0 : aucune).
+        static CONNEXION_ARMEE_SUR_CE_FIL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn poignee(conn: &Connection) -> usize {
+        // SAFETY : la poignée n'est que lue et comparée, jamais déréférencée.
+        unsafe { conn.handle() as usize }
+    }
+
+    /// Vrai (une fois) si `conn` est la connexion armée sur ce fil : `read_conn_put` la ferme.
+    pub(crate) fn armee_sur_ce_fil(conn: &Connection) -> bool {
+        let p = poignee(conn);
+        CONNEXION_ARMEE_SUR_CE_FIL.with(|c| {
+            let armee = p != 0 && c.get() == p;
+            if armee {
+                c.set(0);
+            }
+            armee
+        })
+    }
+
+    /// Efface la note de ce fil (prise d'une connexion du pool).
+    pub(crate) fn oublier_l_armement_de_ce_fil() {
+        CONNEXION_ARMEE_SUR_CE_FIL.with(|c| c.set(0));
+    }
+
     pub(super) fn armer_si_demandee(conn: &Connection, db_path: &str, sql: &str) {
         if sql.starts_with("SELECT COUNT(*) AS n FROM (SELECT 1 FROM (") {
             return;
@@ -1744,6 +1788,7 @@ pub(crate) mod panne_de_test_au_coeur {
         let Some(panne) = demandes().lock().remove(db_path) else {
             return;
         };
+        CONNEXION_ARMEE_SUR_CE_FIL.with(|c| c.set(poignee(conn)));
         let utf8 = rusqlite::functions::FunctionFlags::SQLITE_UTF8;
         match panne {
             PanneAuCoeur::RefusDeLAutorisateur => {
@@ -1800,6 +1845,9 @@ pub(crate) mod crochet_de_l_union_froide {
         /// `P10.29-w` (vague BD) — dans `handlers::panneau_avoue::horizon_de_la_voie_froide_lue`, juste après la lecture
         /// des politiques par index, avant l'horizon de la première famille.
         ApresLesPolitiquesDeLaVoieFroide,
+        /// `P10.29-w` (vague BE) — dans `handlers::panneau_avoue::horizon_et_frontiere_selon_l_index`, juste après la sonde
+        /// qui prend la lecture de l'horizon du panneau, avant les politiques par index et les réglages de rétention.
+        ApresLaPriseDeLHorizonDuPanneau,
     }
 
     type Crochet = Box<dyn FnOnce() + Send>;

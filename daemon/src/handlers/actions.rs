@@ -345,7 +345,8 @@ pub(crate) fn action_kind_destructive(kind: &str) -> bool {
     matches!(kind, "ban_ip" | "unban_ip" | "kill_pid" | "stop_service")
 }
 
-/// La ligne de la riposte n'a PAS été écrite — 503, et ni registre ni identifiant.
+/// La ligne de la riposte n'a PAS été écrite — 503, et ni registre ni identifiant. `P10.29-l` (vague BF) : ses
+/// parenthèses portent `CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL`, et non plus le texte du moteur.
 pub(crate) const CAUSE_RIPOSTE_NON_MISE_EN_FILE: &str =
     "RIPOSTE NON MISE EN FILE : la ligne n'a pas pu être écrite, donc AUCUNE riposte n'attend \
      d'approbation, le registre n'en porte AUCUNE trace, et aucun identifiant n'est rendu — celui \
@@ -373,8 +374,14 @@ pub(crate) async fn action_create(State(st): State<AppState>, Extension(au): Ext
     // ou `0` — et la ligne `action.queued` partait quand même : la trace non purgeable attestait une
     // riposte qui n'existait pas, et la console affichait cet identifiant à l'analyste. Un refus
     // nommé remplace les deux, et il est posé AVANT le registre.
+    //
+    // `P10.29-l` (vague BF) — la cause servie entre parenthèses n'est plus le texte du moteur : la mise en file refusée
+    // passe d'abord par `riposte_dont_la_cause_reste_au_journal`, qui écrit ce texte au journal `[actions]` (tenant de
+    // l'appelant) et ne laisse dans `NonEcrite` que la phrase fixe `CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL`. Le bras du refus
+    // garde sa forme, celle que lisent les instruments 101 et 102 du harnais console.
     use crate::handlers::mise_en_file_de_riposte::{mettre_une_riposte_en_file, RiposteMiseEnFile};
-    let id = match mettre_une_riposte_en_file(&conn, now(), &kind, &target, "pending", dry, alert_id, reason, host) {
+    let issue = mettre_une_riposte_en_file(&conn, now(), &kind, &target, "pending", dry, alert_id, reason, host);
+    let id = match riposte_dont_la_cause_reste_au_journal(issue, &au.tenant) {
         RiposteMiseEnFile::Posee(id) => id,
         RiposteMiseEnFile::NonEcrite(cause) => {
             return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_RIPOSTE_NON_MISE_EN_FILE} ({cause})"))
@@ -390,6 +397,24 @@ pub(crate) async fn action_create(State(st): State<AppState>, Extension(au): Ext
         corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
     }
     Json(corps).into_response()
+}
+
+/// AVEU : `P10.29-l` (vague BF) — LA MISE EN FILE REFUSÉE LAISSE LE TEXTE DU MOTEUR AU JOURNAL. `NonEcrite` porte le texte
+/// rendu par SQLite (message d'un déclencheur, nom de table) ; il part à une ligne `[actions] WARN riposte NON mise en
+/// file, aucune ligne écrite (tenant '<tenant>') : "<moteur>"` (`laisser_la_cause_au_journal`), et la variante rendue ne
+/// porte plus que `CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL`. La ligne ne nomme ni la cible, ni l'hôte, ni le compte. `Posee`
+/// passe telle quelle.
+fn riposte_dont_la_cause_reste_au_journal(
+    issue: crate::handlers::mise_en_file_de_riposte::RiposteMiseEnFile,
+    tenant: &str,
+) -> crate::handlers::mise_en_file_de_riposte::RiposteMiseEnFile {
+    use crate::handlers::mise_en_file_de_riposte::RiposteMiseEnFile;
+    match issue {
+        RiposteMiseEnFile::NonEcrite(moteur) => RiposteMiseEnFile::NonEcrite(
+            laisser_la_cause_au_journal("actions", "riposte NON mise en file, aucune ligne écrite", tenant, &moteur).to_string(),
+        ),
+        posee => posee,
+    }
 }
 // =================================================================================================
 // `P11.17-e` — LA FILE DE RIPOSTE DIT CE QU'ELLE SERT, ET CE QU'ELLE NE SERT PAS.
@@ -787,7 +812,9 @@ pub(crate) const CAUSE_APPROBATION_SANS_TRACE: &str =
      pas pris la ligne qui dit QUI l'a approuvée — rien n'a donc été armé. Approuver de nouveau cette \
      riposte ne la réécrit pas : le geste réinscrit la trace puis arme. Réessayez.";
 
-/// `P10.20-v` — la ligne du ban n'a pas pu être écrite : 503, et aucun blocage n'existe.
+/// `P10.20-v` — la ligne du ban n'a pas pu être écrite : 503, et aucun blocage n'existe. `P10.29-l` (vague BF) : sur
+/// l'approbation comme sur `netban_add`, ses parenthèses portent `CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL`, et non plus le texte du
+/// moteur ; le registre (`netban.non-arme`, lu par l'administrateur) garde ce texte.
 pub(crate) const CAUSE_BAN_NON_ARME: &str =
     "BAN NON ARMÉ : la ligne du blocage HTTP n'a pas pu être écrite, donc AUCUNE adresse n'est \
      bloquée et le store n'en porte aucune trace. Ce n'est PAS « le store est plein » : rien n'a été \
@@ -901,11 +928,14 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
                         eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("actions", &format!("action {id} approuvée : miroir HTTP refusé par le plafond"), "netban.plafond", cause));
                     }
                 }
-                PoseDeBan::NonEcrit(cause) => {
-                    let maillon = ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (action {id}) : {cause}"));
+                PoseDeBan::NonEcrit(moteur) => {
+                    let maillon = ledger_append(&conn, "netban.non-arme", &format!("{canon} NON armé (action {id}) : {moteur}"));
                     if let Some(manque) = maillon.cause_de_non_inscription() {
                         eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("actions", &format!("action {id} approuvée : miroir HTTP NON armé"), "netban.non-arme", manque));
                     }
+                    // `P10.29-l` (vague BF) — le texte du moteur reste au journal (et au registre, lu par l'administrateur
+                    // seul) ; la réponse sert la phrase fixe entre parenthèses, sous la forme que lit l'instrument 102.
+                    let cause = laisser_la_cause_au_journal("actions", &format!("ban de la riposte #{id} NON armé"), &au.tenant, &moteur);
                     return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_BAN_NON_ARME} ({cause})"));
                 }
             }
@@ -1204,11 +1234,14 @@ pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extens
                 format!("store de bans plein ({NETBAN_CACHE_CAP} IP) — libérer par DELETE /api/netban/{{ip}}, ou bloquer en amont (pare-feu/CDN)"),
             );
         }
-        PoseDeBan::NonEcrit(cause) => {
-            let maillon = ledger_append(&conn, "netban.non-arme", &format!("{ip} NON armé by={} : {cause}", au.name));
+        PoseDeBan::NonEcrit(moteur) => {
+            let maillon = ledger_append(&conn, "netban.non-arme", &format!("{ip} NON armé by={} : {moteur}", au.name));
             if let Some(manque) = maillon.cause_de_non_inscription() {
                 eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("netban", "ban manuel NON armé", "netban.non-arme", manque));
             }
+            // `P10.29-l` (vague BF) — même geste que l'approbation : le texte du moteur au journal `[netban]` (ni l'adresse
+            // ni le compte), la phrase fixe dans la réponse.
+            let cause = laisser_la_cause_au_journal("netban", "ban manuel NON armé", &au.tenant, &moteur);
             return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_BAN_NON_ARME} ({cause})"));
         }
     }

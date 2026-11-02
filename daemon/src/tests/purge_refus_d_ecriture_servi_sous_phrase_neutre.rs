@@ -159,7 +159,8 @@ mod purge_refus_d_ecriture_servi_sous_phrase_neutre {
             .unwrap_or_else(|| panic!("contrôle : fenêtre de journal : {stderr}"));
         let lignes: Vec<&str> = fenetre.lines().filter(|l| l.contains("[purge] WARN refus servi")).collect();
         assert_eq!(lignes.len(), 1, "une ligne `[purge]` pour le refus : {fenetre}");
-        let attendu = format!("[{id}] [purge] WARN refus servi, refus de la base (db) : ");
+        // `P10.29-l` (vague BF) — inversé nommément : la ligne nomme le tenant de l'appelant avant le texte du moteur.
+        let attendu = format!("[{id}] [purge] WARN refus servi, refus de la base (db), tenant 'default' : ");
         assert!(lignes[0].starts_with(&attendu), "ligne `{}` : attendu le préfixe `{attendu}`", lignes[0]);
         assert!(lignes[0].contains("prde-moteur"), "le texte du moteur part au journal : {}", lignes[0]);
         assert!(!lignes[0].contains("lecture"), "la ligne de `db` ne dit pas « lecture » : {}", lignes[0]);

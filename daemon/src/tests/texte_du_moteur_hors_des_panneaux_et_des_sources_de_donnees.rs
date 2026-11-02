@@ -239,7 +239,8 @@ mod as1_texte_du_moteur_hors_des_panneaux_et_des_sources {
             "occupee" => format!("[query] WARN requête non servie, base occupée ({route}, tenant '{tenant}', {id}) : {}", as1_nature_occupee()),
             "moteur" => {
                 let e = as1_refus_de_lecture("event", "message");
-                format!("[query] WARN requête rejetée par le moteur ({route}, tenant '{tenant}') : {} : {:?}", as1_nature(&e), e.to_string())
+                // `P10.29-l` (vague BF) — inversé nommément : la ligne du refus du moteur ne porte plus le texte du moteur (il cite l'énoncé).
+                format!("[query] WARN requête rejetée par le moteur ({route}, tenant '{tenant}') : {}", as1_nature(&e))
             }
             autre => panic!("instrument : aucune ligne pour {autre}"),
         }
@@ -251,7 +252,8 @@ mod as1_texte_du_moteur_hors_des_panneaux_et_des_sources {
             "occupee" => format!("[datasource] WARN série non servie, base occupée ({route}, tenant '{tenant}', {id}) : {}", as1_nature_occupee()),
             "moteur" => {
                 let e = as1_refus_de_lecture("metric", "labels");
-                format!("[datasource] WARN série rejetée par le moteur ({route}, tenant '{tenant}') : {} : {:?}", as1_nature(&e), e.to_string())
+                // `P10.29-l` (vague BF) — inversé nommément : la ligne du refus du moteur ne porte plus le texte du moteur.
+                format!("[datasource] WARN série rejetée par le moteur ({route}, tenant '{tenant}') : {}", as1_nature(&e))
             }
             autre => panic!("instrument : aucune ligne pour {autre}"),
         }

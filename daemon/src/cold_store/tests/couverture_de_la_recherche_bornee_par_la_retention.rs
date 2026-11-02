@@ -272,7 +272,7 @@ async fn au2_purge_un_sceau_expire_refuse_et_le_refus_le_dit() {
         Ok(_) => panic!("un sceau d'un jour expiré recouvre la fenêtre : la simulation doit refuser"),
     };
     assert!(matches!(refus, crate::PurgeRefusal::ColdTier { files: 1, days: 1 }), "{refus}");
-    let r = crate::purge_refusal_response(refus);
+    let r = crate::purge_refusal_response(refus, "default");
     assert_eq!(r.status().as_u16(), 409);
     let octets = axum::body::to_bytes(r.into_body(), usize::MAX).await.expect("corps lisible");
     let corps: Value = serde_json::from_slice(&octets).expect("corps JSON");

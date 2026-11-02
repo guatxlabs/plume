@@ -53,7 +53,7 @@ mod ligne_de_cache_texte_invalide_et_code_de_refus_de_la_cli {
         assert_eq!(corps["annulation_refusee"], json!(true), "{corps}");
         assert_eq!(corps["id"], json!("corr-1"), "{corps}");
         // La route sert le même code.
-        let rep = purge_refusal_response(PurgeRefusal::TransactionLeftOpen { id: "corr-1".into(), etape: "count_mismatch", decision: true });
+        let rep = purge_refusal_response(PurgeRefusal::TransactionLeftOpen { id: "corr-1".into(), etape: "count_mismatch", decision: true }, "default");
         let octets = axum::body::to_bytes(rep.into_body(), usize::MAX).await.unwrap();
         let route: Value = serde_json::from_slice(&octets).unwrap();
         assert_eq!(route["refusal"], corps["refusal"], "route et CLI divergent : route {route} / CLI {corps}");

@@ -209,7 +209,8 @@ mod as2_frontiere_froide_non_lue_et_ecritures_avouees {
 
     fn as2_ligne_moteur(route: &str, tenant: &str) -> String {
         let e = as2_refus_de_message();
-        format!("[query] WARN requête rejetée par le moteur ({route}, tenant '{tenant}') : {} : {:?}", as2_nature(&e), e.to_string())
+        // `P10.29-l` (vague BF) — inversé nommément : la ligne du refus du moteur ne porte plus le texte du moteur (il cite l'énoncé).
+        format!("[query] WARN requête rejetée par le moteur ({route}, tenant '{tenant}') : {}", as2_nature(&e))
     }
 
     /// Un 503 nommé : `{error, id}` EXACTEMENT, la phrase attendue, et l'identifiant rendu.

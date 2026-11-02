@@ -11,25 +11,26 @@
 // LE CORRECTIF : `IssueDeLaChargeValide::Illisible` (cause portée) ; à la demande, `memoriser_l_echec_du_rafraichissement`
 // la remplace par le corps d'échec et le dit (« ligne de cache ILLISIBLE (lue, non décodable) : … — remplacée par le
 // corps d'échec ») ; au pré-chauffage, rien d'écrit, phrase ILLISIBLE propre ; `serve_swr` a deux lignes distinctes
-// (ILLISIBLE, NON LUE) ; sur NON LUE, le corps `warming` porte la raison `cache_non_lu` et sa notice.
+// (ILLISIBLE, NON LUE) ; sur NON LUE, le corps servi porte la raison `cache_non_lu` et sa notice (vague BF : en 503 nommé,
+// sans `warming` ; sur ILLISIBLE, le corps synthétique `paye_utile_illisible`, sans `warming`).
 //
 // CE QUE CE TÉMOIN JUGE, dans UN sous-processus (compte de PRODUCTION par processus, journal capturé), sur une ligne de
 // cache dont la charge utile est un BLOB (`r.get::<String>` -> `InvalidColumnType`, issue `Illisible`) :
-//  (1) par la ROUTE `panel_data` : corps `warming`, raison `mesure_en_cours` ; ligne `[panel] WARN ligne de cache
-//      ILLISIBLE …` ENTIÈRE ; le rafraîchissement armé (panneau en panne) REMPLACE la ligne par le corps d'échec, et le dit
+//  (1) par la ROUTE `panel_data` : corps synthétique sans `warming`, raison `paye_utile_illisible` (INVERSÉ par la vague
+//      BF : avant, `warming` et `mesure_en_cours`) ; ligne `[panel] WARN ligne de cache ILLISIBLE …` ENTIÈRE ; le rafraîchissement armé (panneau en panne) REMPLACE la ligne par le corps d'échec, et le dit
 //      (ligne ILLISIBLE puis « corps d'échec servi ») ;
 //  (2) la même route sert alors le corps d'échec (raison `calcul_echoue`, `error`, aucun `warming`) : la chauffe finit ;
 //  (3) au pré-chauffage, sur une ligne BLOB reposée : ligne `[cache] WARN … ligne de cache ILLISIBLE …`, rien d'écrit ;
-//  (4) lecture REFUSÉE par l'autorisateur : par la route, corps `warming` de raison `cache_non_lu` et sa notice (texte du
-//      témoin), mêmes clés de couverture que (1) ; ligne `[panel] WARN ligne de cache NON LUE …` ENTIÈRE ;
+//  (4) lecture REFUSÉE par l'autorisateur : par la route, refus nommé en 503 sans `warming` (INVERSÉ par la vague BF :
+//      avant, un corps `warming`), raison `cache_non_lu` et sa notice (texte du témoin), mêmes clés de couverture que
+//      (1) ; ligne `[<id>] [panel] WARN ligne de cache NON LUE …` ENTIÈRE ;
 //  compte : rangs 1 à 7 portés par les causes (les relectures du témoin comptent aussi).
 // MUTANTS JOUÉS (variable de mutation sous `cfg!(test)`, retirés avant le commit), chacun vu ROUGE :
 // `LCI_JOINDRE_ILLISIBLE_NONLUE` (M26 du vérificateur), `LCI_SWR_ILLISIBLE_MUET` (M29), `LCI_SWR_ILLISIBLE_PHRASE_NONLUE`
 // (la phrase NON LUE pour une ligne illisible), `LCI_MEMO_ILLISIBLE_MUET`, `LCI_PRECH_ILLISIBLE_PHRASE`,
 // `LCI_NONLUE_RAISON_MESURE` (lecture refusée servie `mesure_en_cours`), `LCI_ILLISIBLE_RAISON_NONLUE`.
-// CE QUE CE TÉMOIN NE TIENT PAS : une lecture refusée qui persiste reste servie `warming` (raison `cache_non_lu`) à chaque
-// interrogation, et la console garde son texte « chargement (mesure en cours) » jusqu'à sa borne de chauffe
-// (web/dashboards.js, `prochaineRelanceDeLaChauffe`) ; la notice du démon s'affiche sous le corps sans ligne.
+// CE QUE CE TÉMOIN NE TIENT PAS : le tenant de la ligne de la route est celui du mode 0 (`"default"`) ; deux tenants
+// réels sont joués par `ligne_de_cache_non_lue_jamais_servie_en_chauffe.rs`.
 // =====================================================================================
 mod ligne_de_cache_illisible_remplacee_et_non_lue_dite {
     use super::*;
@@ -138,12 +139,13 @@ mod ligne_de_cache_illisible_remplacee_et_non_lue_dite {
         assert!(!id.is_empty(), "contrôle : panneau nommé : {stdout}");
         assert_eq!(lire("LCI-AVANT:"), "Illisible", "fixture : la ligne BLOB se lit Illisible : {stdout}");
 
-        // (1) MISS servi, raison `mesure_en_cours` (un rafraîchissement est armé, qui remplacera la ligne).
+        // (1) INVERSÉ par la vague BF (`P10.32-o`) : une ligne illisible n'est plus servie comme une chauffe, mais comme
+        // une charge utile illisible (un rafraîchissement est armé, qui remplacera la ligne).
         let (code1, corps1) = route("LCI-ROUTE1:");
         assert_eq!(code1, "200", "route (1) : {corps1}");
-        assert_eq!(corps1["warming"], json!(true), "(1) servi comme un MISS : {corps1}");
+        assert!(corps1.get("warming").is_none(), "(1) jamais servi comme une chauffe : {corps1}");
         assert_eq!(corps1["rows"], json!([]), "(1) aucune ligne : {corps1}");
-        assert_eq!(corps1["stats"]["coverage"]["reason"], json!("mesure_en_cours"), "(1) ligne illisible : mesure en cours : {corps1}");
+        assert_eq!(corps1["stats"]["coverage"]["reason"], json!("paye_utile_illisible"), "(1) ligne illisible : {corps1}");
         // La ligne a été REMPLACÉE par le corps d'échec.
         let apres1 = lire("LCI-APRES1:");
         let charge = apres1.strip_prefix("Lue:").unwrap_or_else(|| panic!("(1) la ligne illisible est remplacée : {apres1}"));
@@ -162,9 +164,9 @@ mod ligne_de_cache_illisible_remplacee_et_non_lue_dite {
         let illisibles: Vec<&str> = f1.lines().filter(|l| l.contains("ILLISIBLE")).collect();
         assert_eq!(illisibles.len(), 2, "(1) deux lignes ILLISIBLE (route, rafraîchissement) : {f1}");
         let swr = format!(
-            "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id} : {LCI_ILLISIBLE} (lecture de cache \
-             ratée n° 2 depuis le démarrage) — servie comme un MISS (corps `warming`, rafraîchissement armé si le panneau \
-             compile, qui la remplacera)"
+            "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant \"default\" : {LCI_ILLISIBLE} \
+             (lecture de cache ratée n° 2 depuis le démarrage) — servie comme une charge utile illisible (corps synthétique \
+             `paye_utile_illisible`, sans `warming`), rafraîchissement armé si le panneau compile, qui la remplacera"
         );
         assert_eq!(illisibles[0], swr, "(1) ligne de la route, entière");
         let tete = format!("[panel] WARN rafraîchissement du panneau {id} en échec (");
@@ -190,8 +192,10 @@ mod ligne_de_cache_illisible_remplacee_et_non_lue_dite {
 
         // (4) lecture refusée : raison `cache_non_lu` et sa notice, mêmes clés de couverture que (1).
         let (code4, corps4) = route("LCI-ROUTE4:");
-        assert_eq!(code4, "200", "route (4) : {corps4}");
-        assert_eq!(corps4["warming"], json!(true), "(4) servi comme un MISS : {corps4}");
+        // INVERSÉ par la vague BF (`P10.32-o`) : refus de lecture nommé en 503, jamais une chauffe.
+        assert_eq!(code4, "503", "route (4) : {corps4}");
+        assert!(corps4.get("warming").is_none(), "(4) jamais servi comme une chauffe : {corps4}");
+        let cid4 = corps4["id"].as_str().unwrap_or_else(|| panic!("(4) identifiant de corrélation servi : {corps4}")).to_string();
         assert_eq!(corps4["rows"], json!([]), "(4) aucune ligne : {corps4}");
         assert_eq!(corps4["stats"]["coverage"]["reason"], json!("cache_non_lu"), "(4) lecture refusée : pas une mesure en cours : {corps4}");
         assert_eq!(corps4["stats"]["coverage"]["notice"], json!(LCI_NOTICE_NON_LUE), "(4) notice : {corps4}");
@@ -204,10 +208,11 @@ mod ligne_de_cache_illisible_remplacee_et_non_lue_dite {
         let f4 = fenetre("LCI-DEBUT-4", "LCI-FIN-4");
         assert!(!f4.contains("ILLISIBLE"), "(4) aucune phrase ILLISIBLE pour une lecture refusée : {f4}");
         let non_lue = format!(
-            "[panel] WARN ligne de cache NON LUE, panneau #{id} : {LCI_REFUS} (lecture de cache ratée n° 6 depuis le \
-             démarrage) — servie comme un MISS (corps `warming`, rafraîchissement armé si le panneau compile)"
+            "[{cid4}] [panel] WARN ligne de cache NON LUE, panneau #{id}, tenant \"default\" : {LCI_REFUS} (lecture de cache \
+             ratée n° 6 depuis le démarrage) — refus de lecture nommé servi en 503 (sans `warming`), rafraîchissement armé \
+             si le panneau compile"
         );
-        let route4: Vec<&str> = f4.lines().filter(|l| l.starts_with("[panel] WARN ligne de cache")).collect();
+        let route4: Vec<&str> = f4.lines().filter(|l| l.contains("[panel] WARN ligne de cache")).collect();
         assert_eq!(route4, vec![non_lue.as_str()], "(4) ligne de la route, entière : {f4}");
         // Rangs : 1 la fixture (`lci_issue`), 2 la route, 3 le rafraîchissement, 4 le pré-chauffage, 5 la relecture après lui,
         // 6 la route sous refus, 7 son rafraîchissement armé.

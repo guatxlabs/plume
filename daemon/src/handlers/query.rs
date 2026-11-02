@@ -1045,18 +1045,60 @@ pub(crate) fn cold_keyset_vectorized_page(
 // SQL BRUT = ADMIN : `au` sert à réserver le champ `sql` BRUT (is_soql=false) à l'admin ;
 // le chemin GXQL/search reste OUVERT à TOUS les rôles (viewer inclus).
 /// `P10.7-g` (lot 102) — LE COMPTE EST LU OU NON ÉTABLI, ET LA CAUSE VOYAGE. `-1` reste le mot du contrat (le SPA rend
-/// « ? » et un pager sans numéros), mais la cause du moteur — budget dépassé, annulation, SQL refusé, tâche interrompue —
-/// est servie sous `total_error` au lieu d'être jetée : « ? » sans cause se lisait comme « trop grand pour compter ».
-pub(crate) fn total_lu(res: Result<Result<Value, String>, tokio::task::JoinError>) -> (i64, Option<String>) {
-    match res {
-        Ok(Ok(v)) => match v.get("rows").and_then(|r| r.get(0)).and_then(|r0| r0.get(0)).and_then(|x| x.as_i64()) {
-            Some(n) => (n, None),
-            None => (-1, Some("total NON ÉTABLI : le compte n'a rendu aucune ligne — « -1 » n'est pas un compte".to_string())),
-        },
-        Ok(Err(e)) => (-1, Some(format!("total NON ÉTABLI : {e} — « -1 » n'est pas un compte"))),
-        Err(e) => (-1, Some(format!("total NON ÉTABLI : la tâche de comptage ne s'est pas terminée ({e}) — « -1 » n'est pas un compte"))),
-    }
+/// « ? » et un pager sans numéros), et la cause est servie sous `total_error` au lieu d'être jetée : « ? » sans cause se
+/// lisait comme « trop grand pour compter ».
+///
+/// `P10.29-l` (vague BF) — LA CAUSE SERVIE EST CELLE DE LA CLASSE, JAMAIS LE TEXTE DU MOTEUR. `total_error` servait
+/// `run_query_ex` tel quel au rôle lecteur (refus de l'autorisateur qui cite l'énoncé, erreur d'E/S) et l'affichage
+/// d'une tâche interrompue (le message d'une panique y est recopié). Le comptage est désormais classé au producteur
+/// (`query_exec::en_classant`, par le code), comme la page :
+///  * phrase du PRODUIT (budget de temps, annulation, lecture seule, mémoire, motif refusé) : servie à l'octet, sans
+///    ligne de journal ;
+///  * SUPPORT de la base, base OCCUPÉE, refus du MOTEUR : une phrase fixe par classe (`TOTAL_NON_ETABLI_*`), et une ligne
+///    `[query] WARN total non établi, <classe> (<route>, tenant '<tenant>') : <nature>` (le code SQLite, jamais le texte) ;
+///  * tâche de comptage interrompue : phrase fixe, et une ligne qui dit panique ou annulation, sans le message ;
+///  * compte sans ligne : la phrase d'avant, sans journal.
+pub(crate) fn total_lu(
+    res: Result<Result<Value, crate::query_exec::EchecDeRequete>, tokio::task::JoinError>,
+    route: &str,
+    tenant: &str,
+) -> (i64, Option<String>) {
+    use crate::query_exec::EchecDeRequete as Echec;
+    let (classe, nature, phrase) = match res {
+        Ok(Ok(v)) => {
+            return match v.get("rows").and_then(|r| r.get(0)).and_then(|r0| r0.get(0)).and_then(|x| x.as_i64()) {
+                Some(n) => (n, None),
+                None => (-1, Some("total NON ÉTABLI : le compte n'a rendu aucune ligne — « -1 » n'est pas un compte".to_string())),
+            }
+        }
+        Ok(Err(Echec::Produit(phrase))) => return (-1, Some(format!("total NON ÉTABLI : {phrase} — « -1 » n'est pas un compte"))),
+        Ok(Err(Echec::Support { nature, .. })) => ("erreur du support de la base", nature, TOTAL_NON_ETABLI_BASE_ILLISIBLE),
+        Ok(Err(Echec::Occupee { nature, .. })) => ("base occupée", nature, TOTAL_NON_ETABLI_BASE_OCCUPEE),
+        Ok(Err(Echec::Moteur { nature, .. })) => ("comptage rejeté par le moteur", nature, TOTAL_NON_ETABLI_REJETE_PAR_LE_MOTEUR),
+        Err(e) => {
+            let fin = if e.is_panic() { "panique" } else { "annulation" };
+            ("tâche de comptage interrompue", fin.to_string(), TOTAL_NON_ETABLI_TACHE_INTERROMPUE)
+        }
+    };
+    eprintln!("[query] WARN total non établi, {classe} ({route}, tenant '{tenant}') : {nature}");
+    (-1, Some(phrase.to_string()))
 }
+
+/// `P10.29-l` (vague BF) — le comptage n'a pas pu lire la base (erreur du support).
+pub(crate) const TOTAL_NON_ETABLI_BASE_ILLISIBLE: &str = "total NON ÉTABLI : la base n'a pas pu être lue (erreur du \
+     support) — « -1 » n'est pas un compte ; l'exploitant en trouve le code au journal.";
+
+/// `P10.29-l` (vague BF) — le comptage a trouvé la base occupée.
+pub(crate) const TOTAL_NON_ETABLI_BASE_OCCUPEE: &str = "total NON ÉTABLI : la base est occupée (verrou tenu par une \
+     autre opération) — « -1 » n'est pas un compte ; réessayez dans un instant.";
+
+/// `P10.29-l` (vague BF) — le moteur a refusé le comptage : la phrase ne cite ni l'énoncé, ni le motif, ni la colonne.
+pub(crate) const TOTAL_NON_ETABLI_REJETE_PAR_LE_MOTEUR: &str = "total NON ÉTABLI : le moteur a refusé le comptage \
+     — « -1 » n'est pas un compte ; l'exploitant en trouve le code au journal.";
+
+/// `P10.29-l` (vague BF) — la tâche de comptage s'est arrêtée avant de rendre (panique ou annulation).
+pub(crate) const TOTAL_NON_ETABLI_TACHE_INTERROMPUE: &str =
+    "total NON ÉTABLI : la tâche de comptage ne s'est pas terminée — « -1 » n'est pas un compte";
 
 /// `P10.5-s` — ATTACHE L'AVEU D'HORIZON À UNE RÉPONSE D'`/api/query`, comme les panneaux le portent déjà
 /// (`panneau_avoue::horizon_du_sql`, lu par `viz.js` `coverageBadge`). Une fenêtre plus ancienne que
@@ -1137,13 +1179,16 @@ fn page_colonnaire_a_lu_le_froid(v: &Value) -> bool {
 /// `P10.29-l` — les cinq sites des voies froides classent par `query_exec::en_classant_la_voie_froide` : un échec du
 /// tier froid lui-même (fichier illisible ou corrompu, horizon de lecture non lu, ouverture) est du SUPPORT (503), le
 /// SQL de l'appelant refusé par le moteur sur l'union garde son 400, un refus du produit aussi.
-/// Le texte du moteur part à UNE ligne `[query] WARN` (route, tenant de l'appelant, nature du code, texte échappé
-/// sur une ligne) ; le producteur ne connaît que le chemin de la base, c'est donc la route qui nomme le tenant. La
-/// ligne du support ne porte que la nature et l'identifiant servi : le texte d'une ouverture ratée cite le chemin de
-/// la base, et `sqlite_plafond::message_erreur` journalise déjà la description d'un échec du support au pas
-/// (ligne `[sqlite]`). SAUF l'échec du tier froid (`NATURE_DE_LA_LECTURE_FROIDE`) : aucune ligne `[sqlite]` ni
+/// L'échec part à UNE ligne `[query] WARN` (route, tenant de l'appelant, nature du code) ; le producteur ne connaît
+/// que le chemin de la base, c'est donc la route qui nomme le tenant. `P10.29-l` (vague BF) : la ligne du refus du
+/// moteur ne porte plus le texte du moteur — il cite l'énoncé (jeton fautif d'une erreur de syntaxe, colonne refusée
+/// par l'autorisateur, motif), donc il peut nommer une valeur cherchée ; elle garde la classe, la nature (code SQLite)
+/// et le tenant. La ligne du support ne porte que la nature et l'identifiant servi : le texte d'une ouverture ratée
+/// cite le chemin de la base, et `sqlite_plafond::message_erreur` journalise déjà la description d'un échec du support
+/// au pas (ligne `[sqlite]`). SAUF l'échec du tier froid (`NATURE_DE_LA_LECTURE_FROIDE`) : aucune ligne `[sqlite]` ni
 /// `[cold]` ne le relaie, sa ligne porte donc AUSSI le texte échappé (fichier froid fautif et son chemin, ou le
-/// réglage d'horizon non lu), comme la ligne du moteur le portait avant `P10.29-l` ; jamais dans la réponse.
+/// réglage d'horizon non lu) ; jamais dans la réponse. Ce texte ne vient pas de l'énoncé : le SQL de l'appelant refusé
+/// sur l'union est noté au cœur d'exécution et sort par la ligne du moteur (`en_classant_la_voie_froide`).
 /// La phrase du produit ne journalise rien : elle est servie entière.
 /// La console lit la cause entière d'un 503 nommé : `web/viz.js:946-948` lit le corps quel que soit le statut et
 /// `web/viz.js:3058`/`:3264` le passent à `showQError` ; l'export lit `refusDUneLectureServie` (`web/app.js:174`,
@@ -1168,8 +1213,8 @@ pub(crate) fn refus_de_requete(echec: crate::query_exec::EchecDeRequete, route: 
             eprintln!("[query] WARN requête non servie, base occupée ({route}, tenant '{tenant}', {id}) : {nature}");
             refus
         }
-        Echec::Moteur { nature, texte } => {
-            eprintln!("[query] WARN requête rejetée par le moteur ({route}, tenant '{tenant}') : {nature} : {texte:?}");
+        Echec::Moteur { nature, .. } => {
+            eprintln!("[query] WARN requête rejetée par le moteur ({route}, tenant '{tenant}') : {nature}");
             bad_req(REQUETE_REJETEE_PAR_LE_MOTEUR)
         }
     }
@@ -1506,7 +1551,11 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         let count_sql = format!("SELECT COUNT(*) AS n FROM (SELECT 1 FROM ({sql}))");
         let dbp = db_path.clone();
         let qidc = qid_owned.clone();
-        let (total, cause) = total_lu(tokio::task::spawn_blocking(move || run_query_ex(&dbp, &count_sql, budget_ms, qidc.as_deref())).await);
+        let compte = tokio::task::spawn_blocking(move || {
+            crate::query_exec::en_classant(|| run_query_ex(&dbp, &count_sql, budget_ms, qidc.as_deref()))
+        })
+        .await;
+        let (total, cause) = total_lu(compte, "/api/query", &au.tenant);
         let mut corps = json!({ "count_only": true, "total": total });
         if let Some(c) = cause {
             corps["total_error"] = json!(c);
@@ -1867,11 +1916,11 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         // enregistrés sous le qid -> /api/cancel interrompt les deux (sinon le join! attendrait le count).
         let qid1 = qid_owned.clone();
         let qid2 = qid_owned.clone();
-        let count_fut = tokio::task::spawn_blocking(move || run_query_ex(&dbp, &count_sql, budget_ms, qid1.as_deref()));
+        let count_fut = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&dbp, &count_sql, budget_ms, qid1.as_deref())));
         let page_fut = tokio::task::spawn_blocking(move || crate::query_exec::en_classant(|| run_query_ex(&db_path, &off_page, budget_ms, qid2.as_deref())));
         let (count_res, page) = tokio::join!(count_fut, page_fut);
         // total best-effort : si le COUNT dépasse le watchdog (requête énorme), -1 -> UI ◀ ▶ sans numéros.
-        let (raw_total, cause_total) = total_lu(count_res);
+        let (raw_total, cause_total) = total_lu(count_res, "/api/query", &au.tenant);
         // COUNT BORNÉ : raw_total = min(vrai_total, CAP+1). > CAP -> capé (on renvoie CAP + total_capped) ; sinon
         // EXACT (petits résultats : dernière page + numéros justes). -1 (watchdog) N'est jamais > CAP -> intact.
         let total_capped = raw_total > PAGINATION_COUNT_CAP;

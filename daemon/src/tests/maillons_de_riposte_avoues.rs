@@ -46,6 +46,8 @@ mod maillons_de_riposte_avoues {
     const AC1_MOTEUR_POSE: &str = "pose refusee (temoin AC1)";
     const AC1_MOTEUR_CLOTURE: &str = "cloture refusee (temoin AC1)";
     const AC1_TETE_DE_LIGNE: &str = "le registre n'a PAS pris le maillon";
+    /// `P10.29-l` (vague BF) — la phrase servie entre parenthèses à la place du texte du moteur (littéral).
+    const AC1_CAUSE_AU_JOURNAL: &str = "la cause rendue par la base est au journal du démon";
 
     fn ac1_etat(tag: &str) -> (AppState, crate::tmp_possede::TmpDb) {
         let chemin = crate::tmp_possede::TmpDb::neuf(&format!("ac1-{tag}"));
@@ -191,7 +193,8 @@ mod maillons_de_riposte_avoues {
     }
 
     /// CE QU'IL TIENT : sur l'approbation, un maillon de miroir manquant ne change pas la réponse — 204
-    /// pour la cible inanalysable et pour le plafond, 503 `CAUSE_BAN_NON_ARME (<moteur de la pose>)` exact
+    /// pour la cible inanalysable et pour le plafond, 503 `CAUSE_BAN_NON_ARME (<phrase fixe du journal>)` exact (`P10.29-l`,
+    /// vague BF : inversé nommément, le texte du moteur de la pose n'est plus servi)
     /// et sans `registre_sans_maillon` pour la pose non écrite —, et la riposte reste `approved`. Sur
     /// `netban_add`, le 507 du plafond et le 503 de la pose non écrite gardent leur corps exact. Chaque refus
     /// est jugé en entier : exactement `{error, id}` (l'identifiant de `err_json`), rien d'autre.
@@ -234,11 +237,13 @@ mod maillons_de_riposte_avoues {
         ac1_pose_refusee(&st.db.lock());
         let (statut, corps, v) = ac1_approuver(&st, non_arme).await;
         assert_eq!(statut, 503, "pose non écrite : le 503 d'avant : {corps}");
-        assert_eq!(v["error"].as_str(), Some(format!("{CAUSE_BAN_NON_ARME} ({AC1_MOTEUR_POSE})").as_str()), "corps exact : {corps}");
+        assert_eq!(v["error"].as_str(), Some(format!("{CAUSE_BAN_NON_ARME} ({AC1_CAUSE_AU_JOURNAL})").as_str()), "corps exact : {corps}");
+        assert!(!corps.contains(AC1_MOTEUR_POSE), "le texte du moteur de la pose n'est pas servi : {corps}");
         assert_eq!(ac1_cles(&v), ["error", "id"], "le 503 de l'approbation entier, sans l'aveu : {corps}");
         let (statut, corps, v) = ac1_ban_manuel(&st, "203.0.113.46").await;
         assert_eq!(statut, 503, "ban manuel non écrit : le 503 d'avant : {corps}");
-        assert_eq!(v["error"].as_str(), Some(format!("{CAUSE_BAN_NON_ARME} ({AC1_MOTEUR_POSE})").as_str()), "corps exact : {corps}");
+        assert_eq!(v["error"].as_str(), Some(format!("{CAUSE_BAN_NON_ARME} ({AC1_CAUSE_AU_JOURNAL})").as_str()), "corps exact : {corps}");
+        assert!(!corps.contains(AC1_MOTEUR_POSE), "le texte du moteur de la pose n'est pas servi : {corps}");
         assert_eq!(ac1_cles(&v), ["error", "id"], "le 503 du ban manuel entier, sans l'aveu : {corps}");
         let conn = st.db.lock();
         assert_eq!(

@@ -992,6 +992,10 @@ pub(crate) fn hotes_par_source(
     Mesure::Lue(par_source)
 }
 
+/// `P10.20-b` — la borne de la ventilation du pare-feu par machine (`firewall_hosts`) de `suppressions_get` : au-delà,
+/// la liste est coupée et le corps le dit (`firewall_hosts_borne`), `firewall_n_hosts` restant le nombre de machines.
+pub(crate) const BORNE_DES_MACHINES_DU_PARE_FEU: usize = 500;
+
 /// GET /api/suppressions — PANNEAU read-only agrégeant TOUTES les suppressions/whitelists/filtres, quel que
 /// soit leur périmètre : (1) registre DAEMON A1..A9 (lu live) ; (2) filtres des COLLECTEURS hôte, auto-reportés
 /// via un event `category='config'` par source (B/C) ; (3) état FIREWALL (snapshot kind=firewall). Chaque
@@ -1109,7 +1113,7 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
     // sur les auto-reports collecteurs ci-dessus — plusieurs machines revendiquant la même chose DOIT
     // devenir visible. `firewall` reste la plus fraîche (mono-hôte -> réponse inchangée) ; `firewall_hosts`
     // porte la ventilation et `firewall_n_hosts` le dénominateur.
-    let fw_par_hote = crate::ingest::store::dernier_instantane_par_hote(&conn, "firewall", 500);
+    let fw_par_hote = crate::ingest::store::dernier_instantane_par_hote(&conn, "firewall", BORNE_DES_MACHINES_DU_PARE_FEU);
     let fw_json: Vec<Value> = fw_par_hote
         .iter()
         .map(|(h, ts, _, data)| json!({
@@ -1133,7 +1137,7 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
              nombre de lignes) — servi avec firewall_etat et firewall_n_hosts nul : {cause}"
         ),
     }
-    Json(json!({
+    let mut corps = json!({
         "ok": true,
         "generated": now(),
         "daemon": daemon,
@@ -1151,6 +1155,7 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
         // vaut `interrompu` (une ligne au moins n'a pas été rendue : la liste est partielle, le dénominateur aussi) ou
         // `non_commence` (rien n'a été lu : `firewall` nul n'est pas l'absence d'instantané), `null` si complet. Aucun
         // texte du moteur n'y part. Un dénominateur non établi est `null`, jamais le compte des seules lignes lues.
+        // La liste COUPÉE à sa borne corrige ce dénominateur sous le corps (taille du parc, `firewall_hosts_borne`).
         "firewall_n_hosts": if fw_par_hote.fin.etat().is_some() { Value::Null } else { json!(fw_json.len()) },
         "firewall_incomplets": fw_par_hote.fin.etat().is_some(),
         "firewall_etat": fw_par_hote.fin.etat(),
@@ -1160,8 +1165,16 @@ pub(crate) async fn suppressions_get(State(st): State<AppState>, Extension(au): 
             "host": "état firewall/enforcement à la frontière hôte — READ-ONLY, visibilité seule.",
             "provenance": "auto-report collecteur : `attested`=host lié à un token agent (non-forgeable) ; sinon host auto-déclaré (non attesté). `contested`=plusieurs hôtes revendiquent la même source. Le `type` est DÉCLARÉ par le collecteur — un report non attesté/contesté/périmé NE fait PAS foi.",
         },
-    }))
-    .into_response()
+    });
+    // `P10.20-b` — LA TAILLE DU PARC N'EST PAS LA LONGUEUR D'UNE LISTE COUPÉE. Coupée à sa borne, `firewall_hosts` rend
+    // `BORNE_DES_MACHINES_DU_PARE_FEU` machines : `firewall_n_hosts` prend le nombre de machines du genre (compté par la
+    // même requête ; nul si la fin n'est pas complète) et `firewall_hosts_borne` dit la borne. Liste entière : la clé est
+    // absente et le dénominateur ci-dessus reste celui d'avant.
+    if fw_par_hote.coupee_a_la_borne() {
+        corps["firewall_n_hosts"] = json!(fw_par_hote.taille_du_parc());
+        corps["firewall_hosts_borne"] = json!(BORNE_DES_MACHINES_DU_PARE_FEU);
+    }
+    Json(corps).into_response()
 }
 
 /// POST|PUT /api/suppressions {action, value?} — édite l'UNIQUE exclusion display-only PROUVÉE (operator/self).

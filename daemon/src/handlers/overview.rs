@@ -166,9 +166,13 @@ pub(crate) const CAUSE_INSTANTANE_DE_LA_MACHINE_NON_LU: &str = "INSTANTANÉ NON 
 pub(crate) const CAUSE_INSTANTANES_DU_PARC_NON_LUS: &str = "INSTANTANÉS DU PARC NON LUS : la base n'a pas rendu le dernier \
      instantané des machines de ce genre — rien n'est établi sur le parc, et ce n'est pas l'absence d'instantané";
 
+/// `P10.20-b` — la borne de la ventilation par machine de `panel` : au-delà, la liste est coupée et le corps le dit
+/// (`hosts_borne`), `n_hosts` restant le nombre de machines du genre.
+pub(crate) const BORNE_DES_MACHINES_DU_PANNEAU: usize = 500;
+
 pub(crate) async fn panel(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(kind): Path<String>) -> Response {
     crate::req_conn!(st, au, conn);
-    let par_hote = crate::ingest::store::dernier_instantane_par_hote(&conn, &kind, 500);
+    let par_hote = crate::ingest::store::dernier_instantane_par_hote(&conn, &kind, BORNE_DES_MACHINES_DU_PANNEAU);
     // `P10.20-b` — le texte du moteur au JOURNAL (le corps ne porte que la phrase fixe ou la fin nommée) ; `kind` vient du
     // chemin, écrit échappé. Le compte d'une interruption est celui des ERREURS du parcours : une interruption de `step()`
     // en vaut une et coupe un reste de taille inconnue (`FinDeParcours::erreurs`), ce n'est jamais un nombre de lignes.
@@ -190,14 +194,21 @@ pub(crate) async fn panel(State(st): State<AppState>, Extension(au): Extension<A
             "data": serde_json::from_str::<Value>(data).unwrap_or_else(|_| json!({}))
         }))
         .collect();
+    // `P10.20-b` — LA TAILLE DU PARC N'EST PAS LA LONGUEUR D'UNE LISTE COUPÉE. Coupée à sa borne, la liste rend
+    // `BORNE_DES_MACHINES_DU_PANNEAU` machines et `n_hosts` vaut le nombre de machines du genre (compté par la même
+    // requête) ; la coupe est dite par `hosts_borne` (la borne), absente quand la liste est entière.
+    let n_hosts = json!(par_hote.taille_du_parc());
     let mut corps = match par_hote.first() {
         Some((h, ts, hash, data)) => json!({
             "kind": kind, "ts": ts, "hash": hash, "host": h,
             "data": serde_json::from_str::<Value>(data).unwrap_or_else(|_| json!({})),
-            "hosts": jhosts, "n_hosts": jhosts.len()
+            "hosts": jhosts, "n_hosts": n_hosts
         }),
         None => json!({ "kind": kind, "data": Value::Null, "hosts": [], "n_hosts": 0 }),
     };
+    if par_hote.coupee_a_la_borne() {
+        corps["hosts_borne"] = json!(BORNE_DES_MACHINES_DU_PANNEAU);
+    }
     if let Some(etat) = par_hote.fin.etat() {
         // Lecture PARTIELLE : les machines lues restent listées ; la fin est nommée et le dénominateur n'est pas établi.
         corps["hosts_etat"] = json!(etat);

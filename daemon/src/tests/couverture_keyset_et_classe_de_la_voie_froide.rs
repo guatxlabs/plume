@@ -521,8 +521,9 @@ mod at1_couverture_keyset_et_voie_froide {
         assert!(!brut.contains(AT1_OUVERTURE_PLAFOND_DE_GROUPES), "la réponse ne porte pas le texte du refus : {brut}");
         assert_eq!(
             at1_journal(&stderr),
-            vec![format!("[query] WARN requête rejetée par le moteur (/api/query, tenant 'default') : {AT1_NATURE_HORS_DU_COEUR} : {texte:?}")],
-            "la ligne `[query]` d'avant, entière :\n{stderr}"
+            // `P10.29-l` (vague BF) — inversé nommément : la ligne du refus du moteur ne porte plus le texte (il peut citer l'énoncé).
+            vec![format!("[query] WARN requête rejetée par le moteur (/api/query, tenant 'default') : {AT1_NATURE_HORS_DU_COEUR}")],
+            "la ligne `[query]` du refus, entière, sans le texte :\n{stderr}"
         );
     }
 

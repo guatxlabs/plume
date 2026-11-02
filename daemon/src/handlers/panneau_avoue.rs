@@ -450,7 +450,8 @@ fn politique_lue(c: &Connection, nomme_une_famille_des_politiques: bool, env: Op
 }
 
 /// `politique_lue`, le refus de la lecture rendu tel quel (avec son code SQLite) : la voie froide lue en tire la classe
-/// occupée (`politique_de_la_voie_froide_lue`) ; l'horizon du panneau le range en `NonLue`.
+/// occupée (`politique_de_la_voie_froide_lue`) ; l'horizon du panneau le range en `NonLue`, parce qu'il lit sous une
+/// lecture tenue (`sous_la_lecture_de_l_horizon_du_panneau`) où l'occupation est déjà jugée par la sonde.
 fn politique_lue_ou_refus(
     c: &Connection, nomme_une_famille_des_politiques: bool, env: Option<&str>, plafonds_mordent: bool,
 ) -> rusqlite::Result<PolitiqueDeLIndex> {
@@ -458,6 +459,35 @@ fn politique_lue_ou_refus(
         return Ok(PolitiqueDeLIndex::Globale);
     }
     crate::rollups::lire_les_politiques_d_index(c).map(|politiques| politique_de_l_index(&politiques, env, plafonds_mordent))
+}
+
+/// `P10.29-w` (vague BE) — la sonde qui PREND la lecture de l'horizon d'un panneau : elle lit le schéma (aucune donnée),
+/// et c'est son échec, avec son CODE, qui dit une base occupée.
+const SONDE_DE_L_HORIZON_DU_PANNEAU: &str = "SELECT count(*) FROM main.sqlite_master";
+
+/// `P10.29-w` (vague BE) — L'HORIZON D'UN PANNEAU SE LIT SOUS UNE LECTURE TENUE. Avant, `horizon_et_frontiere_selon_l_index`
+/// lisait les politiques par index (`politique_lue`, qui range tout refus en `NonLue`) puis chaque réglage de rétention
+/// (`retention_effective_lue`, texte sans code), chacun en autocommit : sur une base occupée, la couverture disait « les
+/// politiques de rétention par environnement n'ont pas pu être lues » ou « réglage `metric_raw_hours` non lu ». Même
+/// patron que `HorizonDeLecture::lire` (`cold_store/reader.rs`) et `retention_de_la_famille_lue` : un point de sauvegarde
+/// dont le PREMIER énoncé est la sonde, classée par son code (`classe_de_la_prise`) ; sonde passée, la lecture de `main`
+/// est TENUE jusqu'à la libération, et `lire` (politiques, réglages, frontière froide) ne peut plus rencontrer le verrou
+/// d'un autre écrivain. Le point est libéré sur le succès comme sur l'échec de la sonde : le pool ferme une connexion
+/// rendue en transaction (`read_conn_put`). L'échec du `RELEASE` n'est pas avalé : il est rendu, classé comme la sonde,
+/// et un horizon lu n'est alors PAS servi comme mesuré (témoin `be5_` (5)). En production il ne survient que si SQLite a
+/// annulé la transaction d'office pendant `lire` (IOERR, NOMEM, FULL : le `RELEASE` ne trouve plus son point) ; les
+/// témoins ne fabriquent pas ce retour d'office, ils refusent le `RELEASE` par un autorisateur. Quand la sonde ET le
+/// `RELEASE` échouent, c'est la classe de la sonde qui est servie (témoin (8) : base prise, `RELEASE` refusé, dite
+/// occupée). Un `SAVEPOINT` refusé est rendu tel quel, et `lire` n'est alors pas exécutée (témoin (6)).
+fn sous_la_lecture_de_l_horizon_du_panneau<T>(c: &Connection, lire: impl FnOnce() -> T) -> Result<T, &'static str> {
+    c.execute_batch("SAVEPOINT horizon_du_panneau").map_err(classe_de_la_prise)?;
+    let lu = c.query_row(SONDE_DE_L_HORIZON_DU_PANNEAU, [], |r| r.get::<_, i64>(0)).map_err(classe_de_la_prise).map(|_| lire());
+    let libere = c.execute_batch("RELEASE horizon_du_panneau").map_err(classe_de_la_prise);
+    match (lu, libere) {
+        (Err(e), _) => Err(e),
+        (Ok(_), Err(e)) => Err(e),
+        (Ok(v), Ok(())) => Ok(v),
+    }
 }
 
 /// Le cœur de l'horizon d'un panneau : `env` = l'environnement que son SQL lit, quand il est déterminé (`P10.5-p`).
@@ -484,8 +514,15 @@ pub(crate) fn horizon_et_frontiere_selon_l_index(
     // première clé non lue est gardée (`non_lue`) et l'aveu dit « non établi », sans `horizon_ts`.
     // `P10.5-p` — LA POLITIQUE PAR INDEX APPLICABLE remplace la rétention globale des familles qu'elle gouverne ; si
     // elle ne peut pas être dérivée (environnement non déterminé, plafond), l'horizon n'est PAS publié (`politique_muette`).
+    // `P10.29-w` (vague BE) — LA LECTURE EST PRISE PUIS TENUE (`sous_la_lecture_de_l_horizon_du_panneau`) : une base
+    // occupée à la prise est dite occupée (`NOTICE_HORIZON_FROID_BASE_OCCUPEE`), une prise refusée hors occupation est
+    // dite non prise ; ni l'une ni l'autre n'est plus servie « politiques non lues » ni « réglage non lu ». Pool non pris
+    // (connexion de lecture non ouverte, par exemple un chemin absent : ouverture en lecture seule refusée) : `None`, servi
+    // sous l'aveu d'avant, `NOTICE_POOL_NON_PRIS`, distinct de la lecture non prise (témoin `be5_` (7)).
     type Lu = (Option<(i64, &'static str)>, Option<i64>, Option<&'static str>, Option<&'static str>);
-    let (mesure, frontiere, non_lue, politique_muette): Lu = read_with(db_path, (None, None, None, None), |c| {
+    let lu: Option<Result<Lu, &'static str>> = read_with(db_path, None, |c| Some(sous_la_lecture_de_l_horizon_du_panneau(c, || {
+        #[cfg(test)]
+        crate::query_exec::crochet_de_l_union_froide::passer(db_path, crate::query_exec::crochet_de_l_union_froide::Etape::ApresLaPriseDeLHorizonDuPanneau);
         let mut haut: Option<(i64, &'static str)> = None;
         let mut non_lue: Option<&'static str> = None;
         let mut politique_muette: Option<&'static str> = None;
@@ -546,7 +583,16 @@ pub(crate) fn horizon_et_frontiere_selon_l_index(
             }
         }
         (haut, frontiere, non_lue, politique_muette)
-    });
+    })));
+    let (mesure, frontiere, non_lue, politique_muette): Lu = match lu {
+        None => (None, None, None, None),
+        Some(Ok(lu)) => lu,
+        Some(Err(notice)) => {
+            cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
+            cov["notice"] = json!(notice);
+            return (cov, None);
+        }
+    };
     if let Some(cle) = non_lue {
         cov["reason"] = json!(RAISON_HORIZON_NON_MESURE);
         cov["reglage_non_lu"] = json!(cle);
@@ -585,19 +631,18 @@ fn notice_de_reglage_non_lu(cle: &str) -> String {
 const NOTICE_POOL_NON_PRIS: &str = "le pool de lecture n'a pas pu être pris ; l'horizon n'a PAS été mesuré. Cette réponse ne \
      dit donc RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas.";
 
-/// `P10.29-w` — L'aveu d'un horizon NON MESURÉ, sur une réponse dont le bras froid a été lu, parce que la base était
-/// OCCUPÉE (verrou tenu par une autre opération) quand l'horizon d'une famille se lisait — `event` par le lecteur froid
-/// (`plancher_de_l_horizon_froid`) ou une famille chaude (`retention_de_la_famille_lue`) : ce n'est pas un réglage
-/// illisible, réessayer suffit.
-#[cfg(feature = "cold_tier")]
+/// `P10.29-w` — L'aveu d'un horizon NON MESURÉ parce que la base était OCCUPÉE (verrou tenu par une autre opération)
+/// quand l'horizon se lisait : sur une réponse dont le bras froid a été lu, `event` par le lecteur froid
+/// (`plancher_de_l_horizon_froid`) ou une famille chaude (`retention_de_la_famille_lue`) ; sur l'horizon d'un panneau
+/// (vague BE), la prise de sa lecture (`sous_la_lecture_de_l_horizon_du_panneau`). Ce n'est ni un réglage illisible ni des
+/// politiques non lues, réessayer suffit.
 pub(crate) const NOTICE_HORIZON_FROID_BASE_OCCUPEE: &str = "la base est occupée (verrou tenu par une autre opération) : \
      l'horizon de conservation de cette lecture n'a PAS été mesuré, réessayez dans un instant. Cette réponse ne dit donc \
      RIEN de ce qu'elle a pu voir — ni qu'elle est complète, ni qu'elle ne l'est pas.";
 
-/// `P10.29-w` — L'aveu d'un horizon NON MESURÉ, sur une réponse dont le bras froid a été lu, parce que la lecture de
-/// l'horizon d'une famille n'a pas été prise (refus du moteur au point de sauvegarde, à la sonde ou à la libération, hors
+/// `P10.29-w` — L'aveu d'un horizon NON MESURÉ parce que la lecture de l'horizon (d'une famille sous la voie froide lue,
+/// ou d'un panneau) n'a pas été prise (refus du moteur au point de sauvegarde, à la sonde ou à la libération, hors
 /// occupation) : aucun réglage n'est en cause.
-#[cfg(feature = "cold_tier")]
 pub(crate) const NOTICE_HORIZON_FROID_NON_PRIS: &str = "la lecture de l'horizon de conservation n'a pas pu être prise \
      (refus de la base) ; l'horizon n'a PAS été mesuré. Cette réponse ne dit donc RIEN de ce qu'elle a pu voir — ni \
      qu'elle est complète, ni qu'elle ne l'est pas.";
@@ -643,8 +688,8 @@ fn politique_de_la_voie_froide_lue(c: &Connection, gouvernee: bool, env: Option<
 const SONDE_DE_LA_RETENTION_DE_LA_FAMILLE: &str = "SELECT count(*) FROM main.sqlite_master";
 
 /// `P10.29-w` (vague BC) — la classe de l'échec d'un énoncé de PRISE (point de sauvegarde, sonde, libération), par son
-/// CODE SQLite : occupée (`code_de_base_occupee`), sinon lecture non prise. Jamais un réglage non lu.
-#[cfg(feature = "cold_tier")]
+/// CODE SQLite : occupée (`code_de_base_occupee`), sinon lecture non prise. Jamais un réglage non lu. Partagée par la voie
+/// froide lue (`retention_de_la_famille_lue`) et l'horizon d'un panneau (`sous_la_lecture_de_l_horizon_du_panneau`).
 fn classe_de_la_prise(e: rusqlite::Error) -> &'static str {
     let occupee = e.sqlite_error_code().map(crate::query_exec::code_de_base_occupee).unwrap_or(false);
     if occupee { NOTICE_HORIZON_FROID_BASE_OCCUPEE } else { NOTICE_HORIZON_FROID_NON_PRIS }
@@ -657,8 +702,9 @@ fn classe_de_la_prise(e: rusqlite::Error) -> &'static str {
 /// la lecture de `main` est TENUE jusqu'à la libération, et le réglage se lit sans pouvoir rencontrer le verrou d'un
 /// autre écrivain. Seul un réglage écrit et illisible rend `Err(Ok(cle))`. Le point est libéré sur le succès comme sur
 /// l'échec ; l'échec de la libération est rendu quand la lecture avait réussi, et ne masque jamais celui de la lecture.
-/// HORS D'ATTEINTE : l'échec du `RELEASE` lui-même (même preuve qu'au site de `HorizonDeLecture::lire` : le point est
-/// posé ici, rien entre les deux ne termine une transaction, `retention_effective_lue` ne fait qu'un `SELECT`).
+/// Même régime que `sous_la_lecture_de_l_horizon_du_panneau` : l'échec du `RELEASE` n'est pas avalé, classé comme la
+/// sonde ; en production il ne survient que si SQLite a annulé la transaction d'office pendant la lecture (IOERR, NOMEM,
+/// FULL), et le témoin `be5_` (9) le provoque par un autorisateur (un réglage lu n'est alors pas servi comme mesuré).
 #[cfg(feature = "cold_tier")]
 pub(crate) fn retention_de_la_famille_lue(
     c: &rusqlite::Connection,

@@ -22,13 +22,16 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : ils éprouvent un déclencheur et un objet non modifiable, pas une base
 // réellement pleine ou en lecture seule (le chemin refusé est le même) ; le `COMMIT` refusé de la pose de
-// droit n'est pas joué (il partage son bras avec le `BEGIN` refusé, qui l'est) ; une base de tenant NON
-// SERVIE (tenant suspendu, clé non résoluble) n'est pas avouée — limite écrite dans
-// `EvenementDAuditDuTenant::SansBaseServie`, forme d'avant inchangée ; la console ne lit pas encore la clé
-// `evenement_du_tenant_non_ecrit` (web/ hors de ce lot) ; le refus `Materialisation` de `grant_set` (compte
-// plateforme non créé, `ensure_platform_user_conn` rend `None` par `.ok()?`) reste un 500 à phrase fixe
-// « échec de matérialisation du compte plateforme » — sans cause du moteur, mais ni 503 ni nommé, et non
-// témoigné : LIMITE ÉCRITE, la cause du moteur y est perdue avant le gestionnaire.
+// droit n'est pas joué (il partage son bras avec le `BEGIN` refusé, qui l'est) ; la base de tenant NON
+// SERVIE (tenant suspendu, clé non résoluble) — elle est avouée depuis, sous la même clé et la phrase
+// `tenants::CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE` (`EvenementDAuditDuTenant::SansBaseServie`,
+// `avouer_l_evenement_du_tenant_non_ecrit`) : suspension, réactivation, pose et retrait d'un droit dans
+// `restes_du_frein_de_l_entropie_et_des_tenants.rs`, création dans
+// `role_de_default_sous_plan_et_aveu_de_la_creation_sans_base.rs` ; ce que la console peint de la clé
+// `evenement_du_tenant_non_ecrit` (hors de ces témoins) ; le refus `Materialisation`
+// de `grant_set` (compte de plateforme ni retrouvé ni créé, `ensure_platform_user_conn` rend `None`) — il sert
+// depuis le 503 nommé `CAUSE_DROIT_NON_POSE`, témoigné dans `restes_du_frein_de_l_entropie_et_des_tenants.rs` ;
+// la cause du moteur y reste perdue avant le gestionnaire (le journal dit qu'elle n'est pas rendue).
 // =====================================================================================
 mod audit_tenant_ecriture_comptee_et_suspension_trois_issues {
     use super::*;

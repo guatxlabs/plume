@@ -140,12 +140,18 @@ pub(crate) const PHRASE_PURGE_DECISION_PUIS_ANNULATION_REFUSEE: &str = "REFUS �
 /// fixe (`PHRASE_PURGE_REFUS_DE_LA_BASE` pour `db`, neutre entre lecture et écriture ; `PHRASE_PURGE_LECTURE_DE_LA_BASE_NON_FAITE`
 /// pour les deux sites de lecture) et un champ `id`, l'identifiant de corrélation tiré de la séquence de `err_json`.
 /// Le texte part à UNE ligne `[<id>] [purge] WARN` (même identifiant, code machine, site de la lecture pour
-/// `plan_row_unread`, texte échappé sur une ligne), sans la phrase du refus. Le tenant n'y est pas nommé : la fabrique
-/// ne le reçoit pas, l'identifiant relie la ligne au ticket. Statuts inchangés. Les autres refus (décisions lues, entrée
+/// `plan_row_unread`, texte échappé sur une ligne), sans la phrase du refus. `P10.29-l` (vague BF) : la ligne nomme le
+/// tenant de l'appelant, que les deux routes passent (`au.tenant`). Statuts inchangés. Les autres refus (décisions lues, entrée
 /// manquante, transaction non ouverte, `legal_hold_undetermined`) gardent leur corps à l'octet, sans `id` : leur texte
 /// ne cite pas le moteur. Le `Display` de `PurgeRefusal` reste celui de la CLI (l'opérateur y détient déjà la clé de la
 /// base). La console ne lit pas `/api/purge`.
-pub(crate) fn purge_refusal_response(e: PurgeRefusal) -> Response {
+///
+/// `P10.29-l` (vague BF) — `transaction_left_open` : la ligne `[<id>] [purge] ERREUR` est écrite par
+/// `purge::annuler_la_purge`, qui ne connaît pas le tenant (il faudrait le passer à `purge_apply` et à
+/// `purge_confirm_and_apply`, que la CLI et les témoins appellent directement). La réponse écrit donc à côté une ligne
+/// `[<id>] [purge] WARN refus servi, transaction restée ouverte, tenant '<tenant>'` sous le MÊME identifiant : elle relie
+/// la ligne d'erreur au tenant, sans rien en répéter.
+pub(crate) fn purge_refusal_response(e: PurgeRefusal, tenant: &str) -> Response {
     let code = statut_du_refus_de_purge(&e);
     let refusal = purge_refusal_code(&e);
     let texte_du_moteur = match &e {
@@ -159,8 +165,9 @@ pub(crate) fn purge_refusal_response(e: PurgeRefusal) -> Response {
         _ => None,
     };
     // `P10.29-l` — la ligne de journal est déjà écrite au site de l'annulation, sous l'identifiant porté par la variante :
-    // la réponse le reprend tel quel, sans seconde ligne ni second identifiant.
+    // la réponse le reprend tel quel, sans second identifiant ; la seule ligne ajoutée nomme le tenant (vague BF).
     if let PurgeRefusal::TransactionLeftOpen { id, decision, .. } = &e {
+        eprintln!("[{id}] [purge] WARN refus servi, transaction restée ouverte, tenant '{tenant}'");
         if *decision {
             let corps = json!({
                 "ok": false,
@@ -177,7 +184,7 @@ pub(crate) fn purge_refusal_response(e: PurgeRefusal) -> Response {
     match texte_du_moteur {
         Some((nature, phrase, texte)) => {
             let id = crate::identifiant_de_correlation();
-            eprintln!("[{id}] [purge] WARN refus servi, {nature} : {texte:?}");
+            eprintln!("[{id}] [purge] WARN refus servi, {nature}, tenant '{tenant}' : {texte:?}");
             (code, Json(json!({ "ok": false, "refusal": refusal, "message": phrase, "id": id }))).into_response()
         }
         None => (code, Json(json!({ "ok": false, "refusal": refusal, "message": e.to_string() }))).into_response(),
@@ -204,7 +211,7 @@ pub(crate) async fn purge_plan_route(
     crate::req_conn!(st, au, conn);
     match purge_plan(&conn, scope) {
         Ok(p) => Json(purge_plan_json(&p)).into_response(),
-        Err(e) => purge_refusal_response(e),
+        Err(e) => purge_refusal_response(e, &au.tenant),
     }
 }
 
@@ -239,7 +246,7 @@ pub(crate) async fn purge_apply_route(
     crate::req_conn!(st, au, conn);
     match purge_confirm_and_apply(&conn, scope, &token, &actor, &reason) {
         Ok(r) => Json(purge_receipt_json(&r)).into_response(),
-        Err(e) => purge_refusal_response(e),
+        Err(e) => purge_refusal_response(e, &au.tenant),
     }
 }
 

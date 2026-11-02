@@ -293,9 +293,8 @@ mod be6_texte_du_moteur_hors_des_ripostes_du_risque_et_des_essais {
         let r = be6_envoyer(addr, "POST", "/api/rule-test", &editeur, &be6_corps_de_l_essai().to_string()).await;
         assert_eq!(r.0, 200, "contrôle : essai nominal : {}", r.2);
         assert_eq!(r.1["value"].as_f64(), Some(1.0), "contrôle : l'event semé est compté : {}", r.2);
-        let classes = be6_classes_de_l_essai();
-        assert!(classes.len() >= 4, "plancher : quatre classes");
-        for (issue, panne, phrase) in classes {
+        // `P10.29-l` (vague BF) — le plancher sur ce vecteur littéral (vrai par construction) est retiré.
+        for (issue, panne, phrase) in be6_classes_de_l_essai() {
             be6_vider_le_pool(&chemin);
             demander(&chemin, panne);
             let r = be6_envoyer(addr, "POST", "/api/rule-test", &editeur, &be6_corps_de_l_essai().to_string()).await;
@@ -433,7 +432,6 @@ mod be6_texte_du_moteur_hors_des_ripostes_du_risque_et_des_essais {
         assert!(stdout.contains(&format!("{BE6_FIN} 24")), "contrôle : douze refus joués par tenant : {stdout}\n{stderr}");
         let mut attendu = be6_lignes_attendues(BE6_ALPHA);
         attendu.extend(be6_lignes_attendues(BE6_BETA));
-        assert!(attendu.len() >= 22, "plancher : onze lignes par tenant ({})", attendu.len());
         assert_eq!(be6_journal(&stderr), attendu, "une ligne EXACTE par refus, tenant de l'appelant, aucune pour la phrase du produit :\n{stderr}");
     }
 }

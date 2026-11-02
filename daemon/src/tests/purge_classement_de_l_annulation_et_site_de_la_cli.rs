@@ -147,7 +147,7 @@ mod purge_classement_de_l_annulation_et_site_de_la_cli {
     }
 
     async fn bb1_corps_servi(e: PurgeRefusal, id: &str) {
-        let (statut, corps) = pcr_lire(purge_refusal_response(e)).await;
+        let (statut, corps) = pcr_lire(purge_refusal_response(e, "default")).await;
         assert_eq!(statut, 500, "lecture non faite puis ROLLBACK refusé : jamais 409 : {corps}");
         assert_eq!(
             corps,

@@ -7,17 +7,25 @@
 // se lisait pas. La cause voyage : `total_error` à côté de `-1`, et un avertissement qui dit l'union non établie.
 // =====================================================================================
 
+// `P10.29-l` (vague BF) — inversé nommément : le comptage est classé au producteur, une phrase du PRODUIT (budget,
+// annulation) voyage à l'octet, et un texte du MOTEUR n'est plus servi (phrase fixe de la classe). Les quatre classes,
+// la tâche interrompue et le journal sont jugés par `texte_du_moteur_hors_des_bans_du_total_et_tenant_de_la_purge.rs`.
 #[test]
 fn p10_7g_un_total_non_etabli_porte_sa_cause_et_moins_un_reste_le_mot_du_contrat() {
     use crate::handlers::query::total_lu;
-    let (n, cause) = total_lu(Ok(Ok(json!({ "rows": [[42]] }))));
+    use crate::query_exec::EchecDeRequete;
+    let (n, cause) = total_lu(Ok(Ok(json!({ "rows": [[42]] }))), "/api/query", "default");
     assert_eq!((n, cause), (42, None), "un compte lu est un nombre, sans cause");
-    let (n, cause) = total_lu(Ok(Ok(json!({ "rows": [] }))));
+    let (n, cause) = total_lu(Ok(Ok(json!({ "rows": [] }))), "/api/query", "default");
     assert_eq!(n, -1);
     assert!(cause.as_deref().unwrap_or("").starts_with("total NON ÉTABLI"), "un compte sans ligne est dit non établi : {cause:?}");
-    let (n, cause) = total_lu(Ok(Err("budget dépassé".to_string())));
+    let (n, cause) = total_lu(Ok(Err(EchecDeRequete::Produit("budget dépassé".to_string()))), "/api/query", "default");
     assert_eq!(n, -1, "« -1 » reste le mot du contrat");
-    assert!(cause.as_deref().unwrap_or("").contains("budget dépassé"), "la cause du moteur voyage : {cause:?}");
+    assert!(cause.as_deref().unwrap_or("").contains("budget dépassé"), "la phrase du produit voyage : {cause:?}");
+    let moteur = EchecDeRequete::Moteur { nature: "code SQLite 1 (Unknown)".to_string(), texte: "no such column: p10_7g_secret".to_string() };
+    let (n, cause) = total_lu(Ok(Err(moteur)), "/api/query", "default");
+    assert_eq!(n, -1, "« -1 » reste le mot du contrat");
+    assert!(!cause.as_deref().unwrap_or("").contains("p10_7g_secret"), "le texte du moteur ne voyage plus : {cause:?}");
 }
 
 #[tokio::test]

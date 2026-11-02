@@ -495,6 +495,46 @@ pub(crate) type InstantaneLu = (Option<String>, i64, String, String);
 pub(crate) struct InstantanesParHote {
     pub(crate) lignes: Vec<InstantaneLu>,
     pub(crate) fin: crate::query_exec::FinDeParcours,
+    /// `P10.20-b` — LE NOMBRE DE MACHINES DU GENRE, compté par la MÊME requête que les lignes (`COUNT(*) OVER ()` sur
+    /// les groupes par hôte du seul genre `kind` : un instantané illisible y compte, sa cellule n'est pas lue ; la série
+    /// SANS HÔTE (`host` NULL) y compte pour une machine, comme dans la liste — `GROUP BY` en fait un groupe, la jointure
+    /// `IS` la rejoint et `vus` la réduit à une entrée). `None` quand aucune ligne n'a été rendue (rien lu, ou genre sans
+    /// instantané).
+    pub(crate) machines_du_genre: Option<usize>,
+    /// La borne `max` demandée par l'appelant : la liste n'en rend jamais plus.
+    pub(crate) borne: usize,
+}
+impl InstantanesParHote {
+    /// `P10.20-b` — LA LISTE EST COUPÉE À SA BORNE : elle rend `borne` machines et le genre en compte davantage que
+    /// celles que le parcours a VUES (rendues, plus les lignes illisibles sautées avant la borne). Un plafond atteint
+    /// n'est pas une lecture ratée (`fin` n'en dit rien) : c'est un fait borné, que l'appelant dit comme tel. Une liste
+    /// qui porte PILE la borne n'est pas coupée ; une liste qui atteint sa borne après avoir sauté une ligne illisible,
+    /// sans machine au-delà, ne l'est pas non plus (aucune machine n'est restée hors du parcours).
+    ///
+    /// Sous la borne atteinte, chaque erreur de `fin` est une ligne illisible sautée : la boucle s'est arrêtée sur `max`,
+    /// et une erreur de `step()` aurait clos le parcours avant (rusqlite remet l'énoncé à zéro), la borne n'aurait pas été
+    /// atteinte. LIMITE : une ligne illisible qui double exactement `(host, ts)` d'une machine déjà vue compte deux fois
+    /// parmi les vues et une fois parmi les machines — la coupe peut alors être tue (lecture interrompue, `n_hosts` déjà
+    /// nul) ; témoin `pcb_la_lecture_tait_la_coupe_sur_un_doublon_illisible`.
+    pub(crate) fn coupee_a_la_borne(&self) -> bool {
+        let rendues = self.lignes.len();
+        let illisibles = match &self.fin {
+            crate::query_exec::FinDeParcours::Interrompu { erreurs, .. } => *erreurs,
+            _ => 0,
+        };
+        rendues >= self.borne && self.machines_du_genre.is_some_and(|n| n > rendues + illisibles)
+    }
+    /// `P10.20-b` — LA TAILLE DU PARC À SERVIR : `None` si la fin n'est pas complète (dénominateur non établi), le
+    /// nombre de machines du genre si la liste est coupée à sa borne, la longueur de la liste sinon.
+    pub(crate) fn taille_du_parc(&self) -> Option<usize> {
+        if self.fin.etat().is_some() {
+            return None;
+        }
+        if self.coupee_a_la_borne() {
+            return self.machines_du_genre;
+        }
+        Some(self.lignes.len())
+    }
 }
 impl std::ops::Deref for InstantanesParHote {
     type Target = [InstantaneLu];
@@ -523,8 +563,11 @@ impl std::ops::Deref for InstantanesParHote {
 /// été rendue, `Complet` sinon ; l'appelant décide de la forme de l'aveu. Atteindre `max` n'est pas un
 /// échec de lecture : la boucle s'arrête comme avant et la fin reste celle des lignes réellement lues.
 ///
-/// CE QUE LA FIN NE DIT PAS. (1) Une liste coupée par `max` rend `Complet` : ses appelants (borne 500) servent alors
-/// `len()` comme nombre de machines, alors que le parc peut être plus grand — limite antérieure, gardée telle quelle.
+/// LA BORNE SE DIT À CÔTÉ DE LA FIN. Une liste coupée par `max` garde la fin de ses lignes (`Complet` si toutes ont été
+/// lues) : la coupe se lit par `coupee_a_la_borne` (borne atteinte ET des machines du genre restées hors du parcours —
+/// une ligne illisible sautée a été vue, elle ne fait pas une coupe), et le nombre de machines du genre (`machines_du_genre`) vient de la
+/// même requête — `COUNT(*) OVER ()` dans la sous-requête groupée par hôte, donc la même image de la base que les lignes.
+/// Les appelants (borne 500) servent ce nombre comme taille du parc, jamais la longueur d'une liste coupée.
 ///
 /// LIAISON REFUSÉE. La branche `Err` de `query_map` est celle d'une liaison refusée du seul `&str` (par exemple un
 /// `kind` plus long que `SQLITE_LIMIT_LENGTH` de la connexion) : elle rend `NonCommence` avec le texte de la liaison,
@@ -533,32 +576,52 @@ impl std::ops::Deref for InstantanesParHote {
 pub(crate) fn dernier_instantane_par_hote(conn: &Connection, kind: &str, max: usize) -> InstantanesParHote {
     use crate::query_exec::FinDeParcours;
     let mut s = match conn.prepare(
-        "SELECT s.host, s.ts, COALESCE(s.hash,''), COALESCE(s.data,'') FROM snapshot s \
-         JOIN (SELECT host, MAX(ts) AS mts FROM snapshot WHERE kind=?1 GROUP BY host) j \
+        "SELECT s.host, s.ts, COALESCE(s.hash,''), COALESCE(s.data,''), j.n FROM snapshot s \
+         JOIN (SELECT host, MAX(ts) AS mts, COUNT(*) OVER () AS n FROM snapshot WHERE kind=?1 GROUP BY host) j \
            ON s.host IS j.host AND s.ts = j.mts \
          WHERE s.kind=?1 ORDER BY s.ts DESC",
     ) {
         Ok(s) => s,
-        Err(e) => return InstantanesParHote { lignes: Vec::new(), fin: FinDeParcours::NonCommence { cause: e.to_string() } },
+        Err(e) => {
+            return InstantanesParHote {
+                lignes: Vec::new(),
+                fin: FinDeParcours::NonCommence { cause: e.to_string() },
+                machines_du_genre: None,
+                borne: max,
+            }
+        }
     };
     let rows = match s.query_map(params![kind], |r| {
-        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+        Ok((
+            (r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?),
+            r.get::<_, usize>(4)?,
+        ))
     }) {
         Ok(rows) => rows,
-        Err(e) => return InstantanesParHote { lignes: Vec::new(), fin: FinDeParcours::NonCommence { cause: e.to_string() } },
+        Err(e) => {
+            return InstantanesParHote {
+                lignes: Vec::new(),
+                fin: FinDeParcours::NonCommence { cause: e.to_string() },
+                machines_du_genre: None,
+                borne: max,
+            }
+        }
     };
     let mut vus: std::collections::HashSet<Option<String>> = std::collections::HashSet::new();
     let mut out = Vec::new();
     let mut erreurs = 0usize;
     let mut premiere_cause: Option<String> = None;
+    let mut machines_du_genre: Option<usize> = None;
     for lu in rows {
         match lu {
-            Ok(row) => {
+            Ok((row, n)) => {
+                machines_du_genre.get_or_insert(n);
                 if vus.insert(row.0.clone()) {
                     out.push(row);
                     if out.len() >= max {
                         break;
                     }
+                    interrompre_le_parcours_des_instantanes_si_arme(conn, out.len());
                 }
             }
             Err(e) => {
@@ -571,7 +634,7 @@ pub(crate) fn dernier_instantane_par_hote(conn: &Connection, kind: &str, max: us
         None => FinDeParcours::Complet,
         Some(cause) => FinDeParcours::Interrompu { erreurs, cause },
     };
-    InstantanesParHote { lignes: out, fin }
+    InstantanesParHote { lignes: out, fin, machines_du_genre, borne: max }
 }
 
 /// UNIQUE implémentation du SPI : SQLite/SQLCipher, exactement le comportement historique de Plume.
@@ -755,3 +818,37 @@ pub(crate) fn dernier_instantane_de(conn: &Connection, kind: &str, host: &str) -
     )
     .optional()
 }
+
+/// `P10.20-b` — hors des tests, le crochet d'interruption du parcours des instantanés est vide (rien n'est lu ni posé).
+#[cfg(not(test))]
+#[inline(always)]
+fn interrompre_le_parcours_des_instantanes_si_arme(_conn: &Connection, _rendues: usize) {}
+
+/// `P10.20-b` — CROCHET DE TEST SEUL : un point d'appel du parcours de `dernier_instantane_par_hote`, après chaque
+/// machine rendue sous la borne. Ce module ne fait que porter la fonction ENREGISTRÉE par un test ; il n'arme aucune
+/// interruption lui-même — la garde `budget_guard_is_the_only_way_to_arm_an_interrupt` (`tests/query_verify.rs`) refuse
+/// tout armement d'`InterruptHandle` hors de `src/tests/`. Le test qui l'enregistre (`tests/parc_coupe_a_sa_borne_dit_sa_taille.rs`)
+/// y interrompt la connexion : la `step()` suivante échoue, c'est la fin `Interrompu` d'une erreur de `step()` (le
+/// parcours s'arrête là, sous la borne), qu'aucune donnée de fixture ne produit.
+#[cfg(test)]
+pub(crate) mod crochet_d_interruption_des_instantanes {
+    use rusqlite::Connection;
+
+    /// La fonction enregistrée : `(connexion, machines rendues)`.
+    pub(crate) type Crochet = fn(&Connection, usize);
+
+    static CROCHET: std::sync::OnceLock<Crochet> = std::sync::OnceLock::new();
+
+    /// Enregistre la fonction appelée à chaque passage (la première enregistrée reste : un seul module de test l'enregistre).
+    pub(crate) fn enregistrer(f: Crochet) {
+        let _ = CROCHET.set(f);
+    }
+
+    pub(crate) fn jouer(conn: &Connection, rendues: usize) {
+        if let Some(f) = CROCHET.get() {
+            f(conn, rendues);
+        }
+    }
+}
+#[cfg(test)]
+use crochet_d_interruption_des_instantanes::jouer as interrompre_le_parcours_des_instantanes_si_arme;

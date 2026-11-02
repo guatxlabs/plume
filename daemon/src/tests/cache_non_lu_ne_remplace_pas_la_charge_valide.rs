@@ -17,8 +17,9 @@
 // connexion de l'écrivain :
 //  (A) à la demande, `consigner_l_issue_du_rafraichissement(Ok(Err(Moteur)))` sur une charge valide périmée : charge
 //      INTACTE à l'octet, instant de calcul inchangé ; ligne `[panel] WARN … ligne de cache NON LUE : … — rien d'écrit` ;
-//  (B) par la ROUTE `panel_data` : corps `warming` sans ligne, ligne `[panel] WARN ligne de cache NON LUE, panneau #… —
-//      servie comme un MISS …` ; le rafraîchissement armé échoue (panneau en panne) et n'écrit rien non plus ;
+//  (B) par la ROUTE `panel_data` : refus nommé en 503 sans `warming` ni ligne (INVERSÉ par la vague BF : avant, un corps
+//      `warming`), ligne `[<id>] [panel] WARN ligne de cache NON LUE, panneau #…, tenant "default" — refus de lecture
+//      nommé servi en 503 …` ; le rafraîchissement armé échoue (panneau en panne) et n'écrit rien non plus ;
 //  (C) au pré-chauffage : ligne `[cache] WARN pré-chauffage … ligne de cache NON LUE : … — rien d'écrit`, charge intacte ;
 //  contrôle : autorisateur retiré, le même échec à la demande JOINT l'aveu à la charge (le chemin n'est pas inerte) ;
 //  compte : 0 puis 1, 2, 3, 4 après chaque lecture refusée.
@@ -27,8 +28,9 @@
 // `Illisible`), `CNL_MEMO_PHRASE` (phrase d'avant au site de l'échec), `CNL_SWR_MUET` (MISS servi sans ligne),
 // `CNL_PRECH_MUET` (pré-chauffage sans ligne).
 // CE QUE CES TÉMOINS NE TIENNENT PAS : une charge valide présente derrière une lecture refusée n'est pas servie (on ne
-// peut pas la lire) : la route sert `warming` tant que la lecture est refusée ; le tenant n'est pas nommé par les lignes
-// `[panel] … panneau #` et `[cache]` (ni `serve_swr` ni le pré-chauffage ne l'écrivent à ce site).
+// peut pas la lire) : la route sert son 503 nommé tant que la lecture est refusée ; le tenant n'est pas nommé par la
+// ligne `[cache]` (le pré-chauffage ne le reçoit pas). La ligne de la route le nomme : deux tenants réels dans
+// `ligne_de_cache_non_lue_jamais_servie_en_chauffe.rs`.
 // =====================================================================================
 mod cache_non_lu_ne_remplace_pas_la_charge_valide {
     use super::*;
@@ -121,10 +123,13 @@ mod cache_non_lu_ne_remplace_pas_la_charge_valide {
         // (B) le corps servi : un MISS.
         let route = lire("CNL-ROUTE:");
         let (code, corps) = route.split_once('|').unwrap_or_else(|| panic!("contrôle : route : {stdout}"));
-        assert_eq!(code, "200", "route : {route}");
+        // INVERSÉ par la vague BF (`P10.32-o`) : une lecture refusée n'est plus servie comme une chauffe (`warming`), mais
+        // en refus de lecture nommé (503).
+        assert_eq!(code, "503", "route : {route}");
         let corps: Value = serde_json::from_str(corps).unwrap_or_else(|_| panic!("contrôle : corps JSON : {route}"));
-        assert_eq!(corps["warming"], json!(true), "servi comme un MISS : {corps}");
+        assert!(corps.get("warming").is_none(), "jamais servi comme une chauffe : {corps}");
         assert_eq!(corps["rows"], json!([]), "aucune ligne servie : {corps}");
+        let cid = corps["id"].as_str().unwrap_or_else(|| panic!("identifiant de corrélation servi : {corps}")).to_string();
         // Contrôle : lecture permise, l'aveu est joint à la charge.
         let attendu_controle = json!({
             "columns": ["a"],
@@ -155,8 +160,9 @@ mod cache_non_lu_ne_remplace_pas_la_charge_valide {
         );
         assert_eq!(lignes[0], a, "(A) ligne entière");
         let b = format!(
-            "[panel] WARN ligne de cache NON LUE, panneau #{id} : {CNL_REFUS} (lecture de cache ratée n° 2 depuis le \
-             démarrage) — servie comme un MISS (corps `warming`, rafraîchissement armé si le panneau compile)"
+            "[{cid}] [panel] WARN ligne de cache NON LUE, panneau #{id}, tenant \"default\" : {CNL_REFUS} (lecture de cache \
+             ratée n° 2 depuis le démarrage) — refus de lecture nommé servi en 503 (sans `warming`), rafraîchissement armé \
+             si le panneau compile"
         );
         assert_eq!(lignes[1], b, "(B) ligne de la route, entière");
         let b2_debut = format!("[panel] WARN rafraîchissement du panneau {id} en échec (");

@@ -435,8 +435,9 @@ async fn prom_run(st: AppState, au: AuthUser, route: &'static str, query: String
 ///  * support de la base, base occupée -> 503 `unavailable`, la phrase fixe de `/api/query` et l'identifiant de
 ///    corrélation (`id`).
 ///
-/// Le texte du moteur part à UNE ligne `[datasource] WARN` (route, tenant de l'appelant, nature du code) ; la ligne
-/// du support et de la base occupée ne porte que la nature et l'identifiant servi.
+/// Le refus du moteur part à UNE ligne `[datasource] WARN` (route, tenant de l'appelant, nature du code ; `P10.29-l`,
+/// vague BF : sans le texte du moteur, qui cite l'énoncé) ; la ligne du support et de la base occupée ne porte que la
+/// nature et l'identifiant servi.
 fn refus_prometheus(echec: crate::query_exec::EchecDeRequete, route: &str, tenant: &str) -> Response {
     use crate::handlers::query::{CAUSE_REQUETE_NON_SERVIE_BASE_ILLISIBLE, CAUSE_REQUETE_NON_SERVIE_BASE_OCCUPEE, REQUETE_REJETEE_PAR_LE_MOTEUR};
     use crate::query_exec::EchecDeRequete as Echec;
@@ -457,8 +458,10 @@ fn refus_prometheus(echec: crate::query_exec::EchecDeRequete, route: &str, tenan
             eprintln!("[datasource] WARN série non servie, base occupée ({route}, tenant '{tenant}', {id}) : {nature}");
             refus
         }
-        Echec::Moteur { nature, texte } => {
-            eprintln!("[datasource] WARN série rejetée par le moteur ({route}, tenant '{tenant}') : {nature} : {texte:?}");
+        // `P10.29-l` (vague BF) — la nature seule, comme la ligne `[query]` : le texte du moteur peut citer l'énoncé
+        // (donc une valeur cherchée).
+        Echec::Moteur { nature, .. } => {
+            eprintln!("[datasource] WARN série rejetée par le moteur ({route}, tenant '{tenant}') : {nature}");
             prom_err(REQUETE_REJETEE_PAR_LE_MOTEUR)
         }
     }

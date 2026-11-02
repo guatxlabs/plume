@@ -27,9 +27,10 @@
 // CORRECTION (même clé) : `db` porte aussi des écritures refusées ; il reçoit une phrase NEUTRE (ni lecture ni
 // écriture), jugée ici et dans `purge_refus_d_ecriture_servi_sous_phrase_neutre.rs`. Les trois classes servent un `id`
 // de corrélation, le même que celui de la ligne `[<id>] [purge]`.
-// CE QUE CES TÉMOINS NE TIENNENT PAS : la CLI (`Display` inchangé, l'opérateur y détient la clé) ; le tenant n'est pas
-// nommé sur la ligne (la fabrique ne le connaît pas) ; un texte du moteur qui citerait l'énoncé SQL part tel quel au
-// journal.
+// `P10.29-l` (vague BF) : la ligne nomme le tenant passé à la fabrique (`default` ici, en mode 0) ; les deux tenants
+// réels du mode 1 sont joués par `texte_du_moteur_hors_des_bans_du_total_et_tenant_de_la_purge.rs`.
+// CE QUE CES TÉMOINS NE TIENNENT PAS : la CLI (`Display` inchangé, l'opérateur y détient la clé) ; un texte du moteur
+// qui citerait l'énoncé SQL part tel quel au journal.
 // =====================================================================================
 mod purge_lecture_non_faite_servie_sans_texte_du_moteur {
     use super::*;
@@ -183,15 +184,15 @@ mod purge_lecture_non_faite_servie_sans_texte_du_moteur {
                 serde_json::from_slice::<Value>(&octets).expect("corps JSON")["id"].as_str().unwrap_or_default().to_string()
             };
             eprintln!("{PHASE}id");
-            println!("PLNF-ID-DB:{}", id_servi(purge_refusal_response(PurgeRefusal::Db(PLNF_MOTEUR_DB.into()))).await);
+            println!("PLNF-ID-DB:{}", id_servi(purge_refusal_response(PurgeRefusal::Db(PLNF_MOTEUR_DB.into()), "default")).await);
             eprintln!("{PHASE}db");
-            println!("PLNF-STATUT-DB:{}", statut(purge_refusal_response(PurgeRefusal::Db(PLNF_MOTEUR_DB.into()))));
+            println!("PLNF-STATUT-DB:{}", statut(purge_refusal_response(PurgeRefusal::Db(PLNF_MOTEUR_DB.into()), "default")));
             eprintln!("{PHASE}ligne");
             let ligne = PurgeRefusal::PlanRowUnread { site: "échantillon", cause: PLNF_MOTEUR_LIGNE.into() };
-            println!("PLNF-STATUT-LIGNE:{}", statut(purge_refusal_response(ligne)));
+            println!("PLNF-STATUT-LIGNE:{}", statut(purge_refusal_response(ligne, "default")));
             eprintln!("{PHASE}hold");
             let hold = PurgeRefusal::LegalHoldUnread(PLNF_MOTEUR_HOLD.into());
-            println!("PLNF-STATUT-HOLD:{}", statut(purge_refusal_response(hold)));
+            println!("PLNF-STATUT-HOLD:{}", statut(purge_refusal_response(hold, "default")));
             eprintln!("{PHASE}route");
             let (st, _p) = pcr_etat("plnf-journal-route");
             let au = pcr_admin();
@@ -201,9 +202,9 @@ mod purge_lecture_non_faite_servie_sans_texte_du_moteur {
             println!("PLNF-STATUT-ROUTE:{}", pcr_plan(&st, &au).await.0);
             eprintln!("{PHASE}muets");
             let muets = [
-                purge_refusal_response(PurgeRefusal::ColdTier { files: 1, days: 1 }),
-                purge_refusal_response(PurgeRefusal::LegalHoldUndetermined),
-                purge_refusal_response(PurgeRefusal::TransactionNotOpened),
+                purge_refusal_response(PurgeRefusal::ColdTier { files: 1, days: 1 }, "default"),
+                purge_refusal_response(PurgeRefusal::LegalHoldUndetermined, "default"),
+                purge_refusal_response(PurgeRefusal::TransactionNotOpened, "default"),
             ];
             println!("PLNF-STATUT-MUETS:{}", muets.into_iter().map(|r| statut(r).to_string()).collect::<Vec<_>>().join(":"));
             eprintln!("{PHASE}fin");
@@ -265,22 +266,22 @@ mod purge_lecture_non_faite_servie_sans_texte_du_moteur {
         );
         assert_eq!(
             phase("db"),
-            [r#"[purge] WARN refus servi, refus de la base (db) : "disk I/O error \"plnf\"\nseconde ligne""#],
+            [r#"[purge] WARN refus servi, refus de la base (db), tenant 'default' : "disk I/O error \"plnf\"\nseconde ligne""#],
             "db : ligne entière, neutre (ni lecture ni écriture), texte échappé sur une ligne"
         );
         assert_eq!(
             phase("ligne"),
-            [r#"[purge] WARN refus servi, lecture de la base non faite (plan_row_unread, échantillon) : "interrupted (plnf)""#],
+            [r#"[purge] WARN refus servi, lecture de la base non faite (plan_row_unread, échantillon), tenant 'default' : "interrupted (plnf)""#],
             "plan_row_unread : ligne entière, site nommé"
         );
         assert_eq!(
             phase("hold"),
-            [r#"[purge] WARN refus servi, lecture de la base non faite (legal_hold_unread) : "lecture d'une ligne de `legal_hold` non faite : blob (plnf)""#],
+            [r#"[purge] WARN refus servi, lecture de la base non faite (legal_hold_unread), tenant 'default' : "lecture d'une ligne de `legal_hold` non faite : blob (plnf)""#],
             "legal_hold_unread : ligne entière"
         );
         assert_eq!(
             phase("route"),
-            [format!("[purge] WARN refus servi, lecture de la base non faite (legal_hold_unread) : {cause_route:?}")],
+            [format!("[purge] WARN refus servi, lecture de la base non faite (legal_hold_unread), tenant 'default' : {cause_route:?}")],
             "route : ligne entière, texte du moteur produit"
         );
         assert_eq!(phase("muets"), Vec::<String>::new(), "aucune ligne `[purge]` pour les refus qui gardent leur texte");

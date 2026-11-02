@@ -1109,10 +1109,11 @@ impl HorizonDeLecture {
             Ok(HorizonDeLecture { bande, n })
         })();
         // L'échec de la libération est rendu quand la lecture avait réussi, et ne masque jamais l'échec de la lecture.
-        // HORS D'ATTEINTE : `RELEASE` n'échoue que sur un nom de point de sauvegarde inconnu ou sur un commit refusé ; le
-        // point est posé ci-dessus et rien entre les deux ne termine une transaction (la fermeture ne fait que des
-        // `SELECT` : `retention_effective_lue`, `load_index_policies`), et une transaction qui n'a rien écrit n'a rien à
-        // valider.
+        // `RELEASE` n'échoue que sur un nom de point de sauvegarde inconnu ou sur un commit refusé. La fermeture ne fait
+        // que des `SELECT` (`retention_effective_lue`, `load_index_policies`) et une transaction qui n'a rien écrit n'a
+        // rien à valider ; le point ne disparaît donc que si SQLite a annulé la transaction d'office pendant la lecture
+        // (IOERR, NOMEM, FULL). Ce retour d'office n'est pas fabriqué par les témoins : le témoin `be5_` (10) refuse le
+        // `RELEASE` par un autorisateur posé sur la connexion du pool, et l'horizon n'est alors pas servi comme mesuré.
         let libere = conn.execute_batch("RELEASE horizon_de_lecture").map_err(crate::query_exec::texte_de_la_voie_froide);
         match (lu, libere) {
             (Err(e), _) => Err(e),

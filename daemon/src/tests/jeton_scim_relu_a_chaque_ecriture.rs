@@ -43,12 +43,14 @@ mod jeton_scim_relu_a_chaque_ecriture {
     pub(super) const JSRE_JETON_A_RECREE: &str = "jsre-jeton-de-test-a-recree";
     pub(super) const JSRE_JETON_B: &str = "jsre-jeton-de-test-b";
     const JSRE_JETON_INCONNU: &str = "jsre-jeton-de-test-jamais-pose";
-    /// Premier administrateur de A (sans provenance : rattachable par la création de tenant), puis du A recréé.
+    /// Premier administrateur de A (sans provenance : rattachable par le droit que la création de tenant lui pose), puis
+    /// du A recréé.
     pub(super) const JSRE_X: &str = "jsre-x";
     /// Second administrateur du A recréé : le déprovisionnement de X n'est pas celui du dernier administrateur.
     pub(super) const JSRE_Y: &str = "jsre-y";
     pub(super) const JSRE_UID_Y: &str = "pu_jsre_y";
-    /// Une identité sans droit ni provenance (rattachable par tout tenant SCIM) : la cible d'un `PATCH add`.
+    /// Une identité sans droit ni provenance (étrangère à tout tenant SCIM depuis la décision de l'exploitant du
+    /// 2026-11-03) : la cible d'un `PATCH add`, après un droit posé hors SCIM dans le tenant qui l'ajoute.
     pub(super) const JSRE_W: &str = "jsre-w";
     pub(super) const JSRE_UID_W: &str = "pu_jsre_w";
     const JSRE_ADMIN_B: &str = "jsre-adm-b";
@@ -167,8 +169,8 @@ mod jeton_scim_relu_a_chaque_ecriture {
         (st, dir)
     }
 
-    /// A détruit puis recréé par la route (premier administrateur X, qui n'a plus aucun droit ni provenance et redevient
-    /// donc rattachable), Y second administrateur, et le jeton NEUF du A recréé ; l'ancien jeton est effacé (lu).
+    /// A détruit puis recréé par la route (premier administrateur X, sans provenance : la recréation lui repose un droit,
+    /// c'est ce droit qui le rend rattachable par le A recréé), Y second administrateur, et le jeton NEUF du A recréé ; l'ancien jeton est effacé (lu).
     pub(super) async fn jsre_detruire_et_recreer_a(st: &AppState) {
         assert!(tenant_destroy(&st.tenants, JSRE_A).is_ok(), "fixture : A détruit");
         let (statut, v) = jsre_creer(st, json!({ "id": JSRE_A, "name": JSRE_A, "admin": JSRE_X })).await;
@@ -291,7 +293,10 @@ mod jeton_scim_relu_a_chaque_ecriture {
     }
 
     /// CE QU'IL TIENT : `PATCH /Groups/admin` (`add` W) admis par l'ancien jeton de A, achevé après la recréation : le
-    /// `401` en entier ; W n'a aucun droit (état identique). Contrôle positif : le jeton neuf ajoute W.
+    /// `401` en entier ; W garde son seul droit `viewer` (état identique). Contrôle positif : le jeton neuf ajoute W.
+    /// W reçoit d'abord un droit `viewer` dans le A recréé, hors SCIM (la ligne que `grant_set` écrit) : sans droit ni
+    /// provenance, il serait étranger au A recréé depuis la décision de l'exploitant du 2026-11-03, et le contrôle
+    /// positif rendrait `noTarget`.
     /// LA MUTATION QUI LE FAIT ROUGIR : `AY1_tx_patch_sans_jeton` (200, W administrateur du A recréé).
     #[tokio::test]
     async fn jsre_patch_de_groupe_admis_avant_la_recreation_est_refuse() {
@@ -301,9 +306,10 @@ mod jeton_scim_relu_a_chaque_ecriture {
         let corps = format!(r#"{{"Operations":[{{"op":"add","value":[{{"value":"{JSRE_UID_W}"}}]}}]}}"#);
         let s = jsre_entetes_admis(&st, adresse, "PATCH", "/scim/v2/Groups/admin", JSRE_JETON_A, &corps).await;
         jsre_detruire_et_recreer_a(&st).await;
+        jsre_sql(&st, &format!("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES('{JSRE_UID_W}','{JSRE_A}','viewer');"));
         let avant = jsre_instantane(&st);
         assert_eq!(jsre_corps_envoye(s, &corps).await, (401, JSRE_CORPS_401.to_string()), "le 401 de l'entrée, en entier");
-        assert_eq!(jsre_instantane(&st), avant, "rien n'est écrit : W n'a aucun droit");
+        assert_eq!(jsre_instantane(&st), avant, "rien n'est écrit : W garde son seul droit viewer");
 
         let (statut, v) = jsre_envoi(adresse, "PATCH", "/scim/v2/Groups/admin", JSRE_JETON_A_RECREE, &corps).await;
         assert_eq!(statut, 200, "contrôle positif : le jeton neuf ajoute W : {v}");

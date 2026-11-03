@@ -17,18 +17,19 @@
 //    rien au journal, une ligne de provenance inerte sur un id jamais servi ;
 //  * gina (provenance du tenant 1, droit posé dans le tenant 2) : rattachable par le tenant 1 (`PATCH add` `200`,
 //    `POST /Users` `201` avec son id) ; bert (droit dans le tenant 2 seulement, sans provenance) reste étranger ;
-//  * au point de course de `POST /Users` (`point_de_course`, entre le jugement et la transaction des droits) : un droit
-//    posé ailleurs rend `409` sans rien écrire ici ; l'identité supprimée rend `500` sans droit fantôme ; la relecture
-//    ratée rend le `503` nommé sans droit, et le rejeu aboutit.
+//  * au point de course de `POST /Users` (`point_de_course`, entre le jugement et la transaction des droits) : le droit
+//    ici de membre (sans provenance) retiré et posé ailleurs rend `409` sans rien écrire ici ; l'identité supprimée rend
+//    `500` sans droit fantôme ; la relecture ratée rend le `503` nommé sans droit, et le rejeu aboutit.
+//    (Décision de l'exploitant du 2026-11-03 : ces deux courses visaient vieux, sans droit ni provenance, alors jugé
+//    rattachable ; il est désormais étranger dès le premier jugement, et la course vise membre, membre du tenant 1.)
 //
 // MUTANTS (VERIF_MUT sous `cfg!(test)`, retirés avant le commit), chacun vu ROUGE : AV1C_identite_refusee_avalee,
 // AV1C_ordre_ancien, AV1C_sans_rejugement, AV1C_rejugement_illisible_admis, AV1C_identite_disparue_admise ; et
 // AV1C_demande_non_atomique pour `saon_un_inconnu_dans_une_demande_mixte_defait_la_demande_entiere`.
 //
-// CE QU'ILS NE TIENNENT PAS : une identité sans aucun droit ni provenance (née avant la provenance, ou déprovisionnée
-// partout) reste rattachable par tout tenant SCIM (rétrocompat, `sret_compte_d_avant_la_provenance_admis`) ; sans
-// `groups`, `POST /Users` n'écrit aucun droit et ne rejuge donc rien après son premier jugement. Le temps de réponse
-// n'est pas mesuré.
+// CE QU'ILS NE TIENNENT PAS : sans `groups`, `POST /Users` n'écrit aucun droit et ne rejuge donc rien après son premier
+// jugement. Le temps de réponse n'est pas mesuré. (Une identité sans droit ni provenance est étrangère à tous : témoins
+// `sret_compte_d_avant_la_provenance_etranger_a_chaque_tenant` et `scim_identite_sans_droit_ni_provenance_etrangere_a_tous.rs`.)
 // =====================================================================================
 mod scim_rattachement_tenant_appelant_et_course {
     use super::*;
@@ -41,7 +42,7 @@ mod scim_rattachement_tenant_appelant_et_course {
 
     struct SrtcIds {
         bert_ailleurs: String,
-        vieux_sans_provenance: String,
+        membre_sans_provenance: String,
     }
 
     /// Le `409 uniqueness`, EN ENTIER, phrase recopiée (jamais lue de la production).
@@ -72,8 +73,8 @@ mod scim_rattachement_tenant_appelant_et_course {
         json!({ "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"], "id": role, "displayName": role })
     }
 
-    /// Deux tenants catalogués. anne admin ICI ; bert editor dans l'AUTRE tenant seulement ; vieux posé par
-    /// `ensure_platform_user` (aucune provenance), sans droit.
+    /// Deux tenants catalogués. anne admin ICI ; bert editor dans l'AUTRE tenant seulement ; membre posé par
+    /// `ensure_platform_user` (aucune provenance), editor ICI (la ligne que `grant_set` écrit).
     fn srtc_etat() -> (AppState, crate::tmp_possede::TmpDb, SrtcIds) {
         let (cp, tmp) = mk_test_control();
         for (id, nom) in [(SRTC_TENANT, "SRTC1"), (SRTC_AUTRE_TENANT, "SRTC2")] {
@@ -84,12 +85,12 @@ mod scim_rattachement_tenant_appelant_et_course {
         }
         let anne = ensure_platform_user(&cp, "srtc-anne").expect("fixture");
         let bert_ailleurs = ensure_platform_user(&cp, "srtc-bert").expect("fixture");
-        let vieux_sans_provenance = ensure_platform_user(&cp, "srtc-vieux").expect("fixture");
-        for (id, tenant, role) in [(&anne, SRTC_TENANT, "admin"), (&bert_ailleurs, SRTC_AUTRE_TENANT, "editor")] {
+        let membre_sans_provenance = ensure_platform_user(&cp, "srtc-membre").expect("fixture");
+        for (id, tenant, role) in [(&anne, SRTC_TENANT, "admin"), (&bert_ailleurs, SRTC_AUTRE_TENANT, "editor"), (&membre_sans_provenance, SRTC_TENANT, "editor")] {
             cp.conn.lock().execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3)", params![id, tenant, role]).expect("fixture : droit");
         }
         let st = tenant_test_state("admins", "editors", "supers", Some(cp));
-        (st, tmp, SrtcIds { bert_ailleurs, vieux_sans_provenance })
+        (st, tmp, SrtcIds { bert_ailleurs, membre_sans_provenance })
     }
 
     fn srtc_plan(st: &AppState) -> &ControlPlane {
@@ -244,48 +245,54 @@ mod scim_rattachement_tenant_appelant_et_course {
     }
 
     /// CE QU'IL TIENT : au point de course de `POST /Users` (jugement fait, verrou relâché, droits pas encore écrits),
-    /// un geste concurrent pose à vieux (sans droit ni provenance, donc jugé rattachable) un droit dans le tenant 2 —
-    /// ce qu'un `PATCH add` du tenant 2 écrit. Le `POST /Users` du tenant 1 avec `groups` rend alors le `409` EN ENTIER,
-    /// sans l'id de vieux : vieux n'a que son droit du tenant 2, rien au journal. Contrôle sur un état neuf, sans geste
-    /// concurrent : `201`, son id, son droit ici.
+    /// membre (sans provenance, editor ici, donc jugé rattachable) perd son droit ici et en reçoit un dans le tenant 2 —
+    /// un retrait par le tenant 1 et un `grant_set` dans le tenant 2. Le `POST /Users` du tenant 1 avec `groups` rend
+    /// alors le `409` EN ENTIER, sans l'id de membre : membre n'a que son droit du tenant 2, rien au journal. Contrôle sur
+    /// un état neuf, sans geste concurrent : `201`, son id, son droit ici remplacé par `viewer`.
+    /// INVERSÉ NOMMÉMENT (décision de l'exploitant du 2026-11-03) : ce témoin était
+    /// `srtc_droit_pose_ailleurs_pendant_le_provisionnement_rend_409_sans_rien_ecrire` et visait vieux, sans droit ni
+    /// provenance, rattachable avant la décision ; un droit posé ailleurs seul ne change plus le jugement d'un membre.
     /// LA MUTATION QUI LE FAIT ROUGIR : `AV1C_sans_rejugement` (`201`, droits dans les deux tenants).
     #[tokio::test]
-    async fn srtc_droit_pose_ailleurs_pendant_le_provisionnement_rend_409_sans_rien_ecrire() {
+    async fn srtc_droit_deplace_ailleurs_pendant_le_provisionnement_rend_409_sans_rien_ecrire() {
         let (st, _tmp, ids) = srtc_etat();
-        let (plan, vieux) = (srtc_plan(&st).clone(), ids.vieux_sans_provenance.clone());
+        let (plan, membre) = (srtc_plan(&st).clone(), ids.membre_sans_provenance.clone());
         poser_un_crochet_de_course(&srtc_cle_de_course(&st), move || {
-            plan.conn
-                .lock()
-                .execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'editor')", params![vieux, SRTC_AUTRE_TENANT])
-                .expect("crochet : droit posé par le tenant 2");
+            let c = plan.conn.lock();
+            let n = c.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![membre, SRTC_TENANT]).expect("crochet : droit retiré ici");
+            assert_eq!(n, 1, "crochet : un droit retiré ici");
+            c.execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'editor')", params![membre, SRTC_AUTRE_TENANT])
+                .expect("crochet : droit posé dans le tenant 2");
         });
         let maillons = srtc_maillons(&st);
-        let (statut, corps) = srtc_post(&st, SRTC_TENANT, json!({ "userName": "srtc-vieux", "groups": [{ "value": "viewer" }] })).await;
+        let (statut, corps) = srtc_post(&st, SRTC_TENANT, json!({ "userName": "srtc-membre", "groups": [{ "value": "viewer" }] })).await;
         assert_eq!((statut, srtc_json(&corps)), (StatusCode::CONFLICT, srtc_unicite()), "le 409 EN ENTIER");
-        assert!(!corps.contains(&ids.vieux_sans_provenance), "l'id n'est pas servi : {corps}");
-        assert_eq!(srtc_droits_de(&st, &ids.vieux_sans_provenance), vec![(SRTC_AUTRE_TENANT.to_string(), "editor".to_string())], "rien ici");
+        assert!(!corps.contains(&ids.membre_sans_provenance), "l'id n'est pas servi : {corps}");
+        assert_eq!(srtc_droits_de(&st, &ids.membre_sans_provenance), vec![(SRTC_AUTRE_TENANT.to_string(), "editor".to_string())], "rien ici");
         assert_eq!(srtc_maillons(&st), maillons, "rien n'est attesté");
 
         let (st, _tmp2, ids) = srtc_etat();
-        let (statut, corps) = srtc_post(&st, SRTC_TENANT, json!({ "userName": "srtc-vieux", "groups": [{ "value": "viewer" }] })).await;
+        let (statut, corps) = srtc_post(&st, SRTC_TENANT, json!({ "userName": "srtc-membre", "groups": [{ "value": "viewer" }] })).await;
         assert_eq!(statut, StatusCode::CREATED, "contrôle sans geste concurrent : {corps}");
-        assert_eq!(srtc_json(&corps)["id"].as_str(), Some(ids.vieux_sans_provenance.as_str()), "{corps}");
-        assert_eq!(srtc_droits_de(&st, &ids.vieux_sans_provenance), vec![(SRTC_TENANT.to_string(), "viewer".to_string())]);
+        assert_eq!(srtc_json(&corps)["id"].as_str(), Some(ids.membre_sans_provenance.as_str()), "{corps}");
+        assert_eq!(srtc_droits_de(&st, &ids.membre_sans_provenance), vec![(SRTC_TENANT.to_string(), "viewer".to_string())]);
     }
 
-    /// CE QU'IL TIENT : au point de course, l'identité servie est supprimée (geste d'un administrateur) : le `500` EN
-    /// ENTIER, aucun droit fantôme écrit, rien au journal.
+    /// CE QU'IL TIENT : au point de course, l'identité servie (membre, editor ici) est supprimée (geste d'un
+    /// administrateur) : le `500` EN ENTIER, aucun droit fantôme écrit (son droit `editor` n'est pas remplacé par le
+    /// `viewer` demandé), rien au journal. (Visait vieux, sans droit ni provenance, avant la décision de l'exploitant du
+    /// 2026-11-03 : il est désormais refusé dès le premier jugement.)
     /// LA MUTATION QUI LE FAIT ROUGIR : `AV1C_identite_disparue_admise` (l'identité absente admise : droit fantôme).
     #[tokio::test]
     async fn srtc_identite_supprimee_pendant_le_provisionnement_rend_500_sans_droit_fantome() {
         let (st, _tmp, ids) = srtc_etat();
-        let (plan, vieux) = (srtc_plan(&st).clone(), ids.vieux_sans_provenance.clone());
+        let (plan, membre) = (srtc_plan(&st).clone(), ids.membre_sans_provenance.clone());
         poser_un_crochet_de_course(&srtc_cle_de_course(&st), move || {
-            let n = plan.conn.lock().execute("DELETE FROM platform_user WHERE id=?1", params![vieux]).expect("crochet : identité supprimée");
+            let n = plan.conn.lock().execute("DELETE FROM platform_user WHERE id=?1", params![membre]).expect("crochet : identité supprimée");
             assert_eq!(n, 1, "crochet : une identité supprimée");
         });
         let (droits, maillons) = (srtc_droits(&st), srtc_maillons(&st));
-        let (statut, corps) = srtc_post(&st, SRTC_TENANT, json!({ "userName": "srtc-vieux", "groups": [{ "value": "viewer" }] })).await;
+        let (statut, corps) = srtc_post(&st, SRTC_TENANT, json!({ "userName": "srtc-membre", "groups": [{ "value": "viewer" }] })).await;
         assert_eq!((statut, srtc_json(&corps)), (StatusCode::INTERNAL_SERVER_ERROR, srtc_non_creee()), "le 500 EN ENTIER");
         assert_eq!(srtc_droits(&st), droits, "aucun droit fantôme");
         assert_eq!(srtc_maillons(&st), maillons, "rien n'est attesté");

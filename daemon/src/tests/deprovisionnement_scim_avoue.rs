@@ -243,6 +243,12 @@ mod deprovisionnement_scim_avoue {
         let ctx = ScimCtx { tenant: DSA_TENANT.into() };
         let (pose, remise) = (dsa_voies()[0].1, dsa_voies()[0].2);
         let nouvel = ensure_platform_user(dsa_plan(&st), "dsa-ajout").expect("fixture");
+        // (décision de l'exploitant du 2026-11-03 : sans droit ni provenance, elle serait étrangère à tout tenant SCIM)
+        dsa_plan(&st)
+            .conn
+            .lock()
+            .execute("INSERT INTO scim_provenance(user_id,tenant_id,created) VALUES(?1,?2,0)", params![nouvel, DSA_TENANT])
+            .expect("fixture : provisionné par le SCIM de ce tenant");
 
         dsa_executer(&st, pose);
         let (statut, v) = tok_resp_json(

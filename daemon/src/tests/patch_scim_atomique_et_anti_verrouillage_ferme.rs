@@ -41,7 +41,9 @@ mod patch_scim_atomique_et_anti_verrouillage_ferme {
     const PAFV_TENANT: &str = "pafv-t1";
 
     /// Un plan de contrôle, le tenant catalogué (sans lui `resolve_tenant_access` ne résout rien), et un
-    /// utilisateur par `(nom, rôle)` — rôle `None` : une identité sans droit dans le tenant, à AJOUTER.
+    /// utilisateur par `(nom, rôle)` — rôle `None` : une identité sans droit dans le tenant, à AJOUTER, provisionnée par
+    /// le SCIM de ce tenant (sans droit ni provenance, elle serait étrangère à tout tenant : décision de l'exploitant du
+    /// 2026-11-03).
     fn pafv_etat(membres: &[(&str, Option<&str>)]) -> (AppState, crate::tmp_possede::TmpDb, Vec<String>) {
         let (cp, tmp) = mk_test_control();
         cp.conn
@@ -59,6 +61,11 @@ mod patch_scim_atomique_et_anti_verrouillage_ferme {
                     .lock()
                     .execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3)", params![id, PAFV_TENANT, role])
                     .expect("fixture : droit posé");
+            } else {
+                cp.conn
+                    .lock()
+                    .execute("INSERT INTO scim_provenance(user_id,tenant_id,created) VALUES(?1,?2,0)", params![id, PAFV_TENANT])
+                    .expect("fixture : provisionnée par le SCIM de ce tenant");
             }
             ids.push(id);
         }

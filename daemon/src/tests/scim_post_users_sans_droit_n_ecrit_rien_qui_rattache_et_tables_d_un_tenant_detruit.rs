@@ -27,11 +27,13 @@
 //  * `POST /Users` du tenant 1, sans `groups` et avec un `groups` sans rôle connu, d'un nom étranger de chaque classe
 //    (bert : droit dans le tenant 2 ; eve : créée par le SCIM du tenant 2 ; scellee : provenance scellée) : le `409` EN
 //    ENTIER, et le plan de contrôle (identités, provenance, droits, journal de contrôle) identique avant et après ;
-//  * d'une identité rattachable (vieux : d'avant la provenance ; fred : créé par le SCIM du tenant 1) : `201`, la
-//    représentation EN ENTIER, identités, provenance et droits identiques, un seul maillon de plus, exact ;
-//  * un droit posé à vieux dans le tenant 2 au point de course (ce que son `PATCH add` écrit) : rien n'est écrit qui
-//    rattache vieux au tenant 1 (droits, provenance), et son `PATCH add` par le tenant 1 rend la réponse d'un id inconnu,
-//    à l'octet — exactement l'état et les réponses de l'ordre en série, joué en contrôle ;
+//  * d'une identité rattachable (membre : editor du tenant 1, sans provenance ; fred : créé par le SCIM du tenant 1) :
+//    `201`, la représentation EN ENTIER, identités, provenance et droits identiques, un seul maillon de plus, exact ;
+//  * au point de course, le droit de membre dans le tenant 1 retiré et un droit posé dans le tenant 2 : rien n'est écrit
+//    qui rattache membre au tenant 1 (droits, provenance), et son `PATCH add` par le tenant 1 rend la réponse d'un id
+//    inconnu, à l'octet — exactement l'état et les réponses de l'ordre en série, joué en contrôle. (Ces deux témoins
+//    visaient vieux, sans droit ni provenance, rattachable avant la décision de l'exploitant du 2026-11-03 ; il est
+//    désormais étranger à tous, et seul un droit ici ou la provenance d'ici rattache sans écrire.)
 //  * chaque table du plan de contrôle qui porte un tenant, LUE DU SCHÉMA (jamais une liste du témoin), semée sous A et
 //    sous B : après la destruction de A par la route, seules les lignes de A du journal de contrôle restent, chaque
 //    ligne de B reste À L'IDENTIQUE — y compris celles des identités PARTAGÉES (un droit dans A et un dans B ; une
@@ -51,11 +53,9 @@
 // (il scelle aussi la provenance, d'un autre tenant, des membres de A), BG5_creation_sans_jetons_d_agent
 // (`tenants::tenant_provision` saute celui des jetons d'agent).
 //
-// CE QU'ILS NE TIENNENT PAS (NON TRANCHÉ, décision de l'exploitant attendue, `P10.34-h`) : une identité sans droit ni
-// provenance (née avant la provenance, par `grant_set` ou la création d'un tenant, ou déprovisionnée partout) reste
-// rattachable par TOUT tenant SCIM, et `POST /Users` de son nom sert son id (`rbac::lire_le_rattachement_scim`, dernier
-// bras) — rien n'y est changé, et c'est par elle que le tenant appelant apprend l'id de vieux dans la course ci-dessus.
-// Le temps de réponse n'est pas mesuré.
+// CE QU'ILS NE TIENNENT PAS : le temps de réponse n'est pas mesuré. (Une identité sans droit ni provenance, laissée
+// rattachable par le dernier bras de `rbac::lire_le_rattachement_scim` jusqu'à la décision de l'exploitant du
+// 2026-11-03, est désormais étrangère à tous : `scim_identite_sans_droit_ni_provenance_etrangere_a_tous.rs`.)
 // =====================================================================================
 mod scim_post_users_sans_droit_n_ecrit_rien_qui_rattache_et_tables_d_un_tenant_detruit {
     use super::*;
@@ -99,13 +99,26 @@ mod scim_post_users_sans_droit_n_ecrit_rien_qui_rattache_et_tables_d_un_tenant_d
         })
     }
 
+    /// La représentation d'une identité qui porte `groups` dans le tenant, EN ENTIER (`active` : un droit au moins).
+    fn spsr_representation(id: &str, nom: &str, groups: Value) -> Value {
+        let active = groups.as_array().is_some_and(|g| !g.is_empty());
+        json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "id": id,
+            "userName": nom,
+            "active": active,
+            "groups": groups,
+            "meta": { "resourceType": "User" }
+        })
+    }
+
     struct SpsrIds {
-        vieux: String,
+        membre: String,
         fred: String,
     }
 
-    /// Deux tenants catalogués. anne admin du tenant 1 ; bert editor du tenant 2 seulement ; vieux posé par
-    /// `ensure_platform_user` (aucune provenance), sans droit ; eve créée par le `POST /Users` du tenant 2, sans droit ;
+    /// Deux tenants catalogués. anne admin du tenant 1 ; bert editor du tenant 2 seulement ; membre posé par
+    /// `ensure_platform_user` (aucune provenance), editor du tenant 1 (la ligne que `grant_set` écrit) ; eve créée par le `POST /Users` du tenant 2, sans droit ;
     /// fred créé par le `POST /Users` du tenant 1, sans droit ; scellee : provenance scellée d'un tenant détruit.
     async fn spsr_etat() -> (AppState, crate::tmp_possede::TmpDb, SpsrIds) {
         let (cp, tmp) = mk_test_control();
@@ -117,12 +130,13 @@ mod scim_post_users_sans_droit_n_ecrit_rien_qui_rattache_et_tables_d_un_tenant_d
         }
         let anne = ensure_platform_user(&cp, "spsr-anne").expect("fixture");
         let bert = ensure_platform_user(&cp, "spsr-bert").expect("fixture");
-        let vieux = ensure_platform_user(&cp, "spsr-vieux").expect("fixture");
+        let membre = ensure_platform_user(&cp, "spsr-membre").expect("fixture");
         let scellee = ensure_platform_user(&cp, "spsr-scellee").expect("fixture");
         {
             let c = cp.conn.lock();
             c.execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'admin')", params![anne, SPSR_TENANT]).expect("fixture : droit");
             c.execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'editor')", params![bert, SPSR_AUTRE_TENANT]).expect("fixture : droit");
+            c.execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'editor')", params![membre, SPSR_TENANT]).expect("fixture : droit");
             c.execute("INSERT INTO scim_provenance(user_id,tenant_id,created) VALUES(?1,?2,0)", params![scellee, SPSR_TOMBE]).expect("fixture : provenance scellée");
         }
         let st = tenant_test_state("admins", "editors", "supers", Some(cp));
@@ -131,7 +145,7 @@ mod scim_post_users_sans_droit_n_ecrit_rien_qui_rattache_et_tables_d_un_tenant_d
         let (statut, corps) = spsr_post(&st, SPSR_TENANT, json!({ "userName": "spsr-fred" })).await;
         assert_eq!(statut, StatusCode::CREATED, "fixture : fred créé par le tenant 1 : {corps}");
         let fred = spsr_json(&corps)["id"].as_str().expect("id servi").to_string();
-        (st, tmp, SpsrIds { vieux, fred })
+        (st, tmp, SpsrIds { membre, fred })
     }
 
     fn spsr_plan(st: &AppState) -> &ControlPlane {
@@ -215,75 +229,78 @@ mod scim_post_users_sans_droit_n_ecrit_rien_qui_rattache_et_tables_d_un_tenant_d
     }
 
     /// `POST /Users` du tenant 1 d'une identité rattachable existante, sans droit demandé : `201`, la représentation EN
-    /// ENTIER avec son id, rattachements identiques, un seul maillon de plus, exact.
-    async fn spsr_jouer_une_identite_rattachable(st: &AppState, quoi: &str, id: &str, nom: &str) {
+    /// ENTIER avec son id (et les `groups` qu'elle porte déjà ici), rattachements identiques, un seul maillon de plus, exact.
+    async fn spsr_jouer_une_identite_rattachable(st: &AppState, quoi: &str, id: &str, nom: &str, groups: Value) {
         let (avant, journal) = (spsr_rattachements(st), spsr_journal(st));
         let (statut, rendu) = spsr_post(st, SPSR_TENANT, json!({ "userName": nom })).await;
-        assert_eq!((statut, spsr_json(&rendu)), (StatusCode::CREATED, spsr_representation_sans_droit(id, nom)), "{quoi} : 201 EN ENTIER");
+        assert_eq!((statut, spsr_json(&rendu)), (StatusCode::CREATED, spsr_representation(id, nom, groups)), "{quoi} : 201 EN ENTIER");
         assert_eq!(spsr_rattachements(st), avant, "{quoi} : ni identité, ni provenance, ni droit écrit");
         let mut attendu = journal;
         attendu.push(format!("scim.user.provision|{SPSR_TENANT}|user '{nom}' (id={id}) grants=[]"));
         assert_eq!(spsr_journal(st), attendu, "{quoi} : un seul maillon de plus, exact");
     }
 
-    /// CE QU'IL TIENT : `POST /Users` du tenant 1 sans `groups` de vieux (d'avant la provenance, sans droit) et de fred
-    /// (créé par le SCIM du tenant 1) : servi, et RIEN n'est écrit qui les rattache — ni droit, ni provenance.
-    /// LA MUTATION QUI LE FAIT ROUGIR : `BG5_revendique` (vieux reçoit la provenance du tenant 1).
+    /// CE QU'IL TIENT : `POST /Users` du tenant 1 sans `groups` de membre (editor du tenant 1, sans provenance) et de
+    /// fred (créé par le SCIM du tenant 1) : servi, et RIEN n'est écrit qui les rattache — ni droit, ni provenance.
+    /// (Visait vieux, sans droit ni provenance, avant la décision de l'exploitant du 2026-11-03 : il est désormais
+    /// étranger, `409`.)
+    /// LA MUTATION QUI LE FAIT ROUGIR : `BG5_revendique` (membre reçoit la provenance du tenant 1).
     #[tokio::test]
     async fn spsr_post_sans_droit_d_une_identite_rattachable_n_ecrit_rien_qui_la_rattache() {
         let (st, _tmp, ids) = spsr_etat().await;
-        spsr_jouer_une_identite_rattachable(&st, "vieux", &ids.vieux, "spsr-vieux").await;
-        spsr_jouer_une_identite_rattachable(&st, "fred", &ids.fred, "spsr-fred").await;
+        spsr_jouer_une_identite_rattachable(&st, "membre", &ids.membre, "spsr-membre", json!([{ "value": "editor", "type": "direct" }])).await;
+        spsr_jouer_une_identite_rattachable(&st, "fred", &ids.fred, "spsr-fred", json!([])).await;
     }
 
-    /// CE QU'IL TIENT : au point de course de `POST /Users` sans droit demandé (jugement fait, verrou relâché), le droit
-    /// que le `PATCH add` du tenant 2 écrit est posé à vieux. Le `POST` du tenant 1 rend `201` (son jugement précède ce
-    /// droit), mais rien n'est écrit qui rattache vieux au tenant 1 : son seul droit est celui du tenant 2, aucune
-    /// provenance ; le `PATCH add` de vieux par le tenant 1 rend la réponse d'un id inconnu, à l'octet. CONTRÔLE : l'ordre
-    /// en série (`POST`, puis le droit du tenant 2, puis le `PATCH add`) sur un état neuf donne les mêmes réponses et le
-    /// même état.
-    /// LA MUTATION QUI LE FAIT ROUGIR : `BG5_revendique` (vieux reçoit la provenance du tenant 1 : le `PATCH add` du tenant
-    /// 1 rend `200`, droits dans les deux tenants).
+    /// CE QU'IL TIENT : au point de course de `POST /Users` sans droit demandé (jugement fait, verrou relâché), le droit de
+    /// membre dans le tenant 1 est retiré et un droit lui est posé dans le tenant 2 (un retrait par le tenant 1, un
+    /// `grant_set` dans le tenant 2). Le `POST` du tenant 1 rend `201` (son jugement précède ce geste ; la représentation,
+    /// relue après, ne porte plus de groupe), mais rien n'est écrit qui rattache membre au tenant 1 : son seul droit est
+    /// celui du tenant 2, aucune provenance ; le `PATCH add` de membre par le tenant 1 rend la réponse d'un id inconnu, à
+    /// l'octet. CONTRÔLE : l'ordre en série (`POST`, puis le même geste, puis le `PATCH add`) sur un état neuf donne le
+    /// même `PATCH` et le même état.
+    /// INVERSÉ NOMMÉMENT (décision de l'exploitant du 2026-11-03) : ce témoin était
+    /// `spsr_droit_pose_ailleurs_pendant_un_post_sans_droit_ne_rattache_rien_comme_en_serie` et visait vieux, sans droit ni
+    /// provenance, rattachable avant la décision.
+    /// LA MUTATION QUI LE FAIT ROUGIR : `BG5_revendique` (membre reçoit la provenance du tenant 1 : le `PATCH add` du
+    /// tenant 1 rend `200`, droits dans les deux tenants).
     #[tokio::test]
-    async fn spsr_droit_pose_ailleurs_pendant_un_post_sans_droit_ne_rattache_rien_comme_en_serie() {
+    async fn spsr_droit_deplace_ailleurs_pendant_un_post_sans_droit_ne_rattache_rien_comme_en_serie() {
+        fn deplacer(plan: &ControlPlane, membre: &str) {
+            let c = plan.conn.lock();
+            let n = c.execute("DELETE FROM \"grant\" WHERE user_id=?1 AND tenant_id=?2", params![membre, SPSR_TENANT]).expect("fixture : droit retiré ici");
+            assert_eq!(n, 1, "fixture : un droit retiré ici");
+            c.execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'editor')", params![membre, SPSR_AUTRE_TENANT]).expect("fixture : droit posé dans le tenant 2");
+        }
         let (st, _tmp, ids) = spsr_etat().await;
-        let (plan, cible) = (spsr_plan(&st).clone(), ids.vieux.clone());
-        poser_un_crochet_de_course(&spsr_cle_de_course(&st), move || {
-            plan.conn
-                .lock()
-                .execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'editor')", params![cible, SPSR_AUTRE_TENANT])
-                .expect("crochet : droit posé par le tenant 2");
-        });
-        let post_en_course = spsr_post(&st, SPSR_TENANT, json!({ "userName": "spsr-vieux" })).await;
-        assert_eq!((post_en_course.0, spsr_json(&post_en_course.1)), (StatusCode::CREATED, spsr_representation_sans_droit(&ids.vieux, "spsr-vieux")), "course : le POST");
-        assert_eq!(spsr_droits_de(&st, &ids.vieux), vec![format!("{}|{SPSR_AUTRE_TENANT}|editor", ids.vieux)], "course : son seul droit est celui du tenant 2");
-        assert_eq!(spsr_provenance_de(&st, &ids.vieux), Vec::<String>::new(), "course : aucune provenance");
+        let (plan, cible) = (spsr_plan(&st).clone(), ids.membre.clone());
+        poser_un_crochet_de_course(&spsr_cle_de_course(&st), move || deplacer(&plan, &cible));
+        let post_en_course = spsr_post(&st, SPSR_TENANT, json!({ "userName": "spsr-membre" })).await;
+        assert_eq!((post_en_course.0, spsr_json(&post_en_course.1)), (StatusCode::CREATED, spsr_representation_sans_droit(&ids.membre, "spsr-membre")), "course : le POST");
+        assert_eq!(spsr_droits_de(&st, &ids.membre), vec![format!("{}|{SPSR_AUTRE_TENANT}|editor", ids.membre)], "course : son seul droit est celui du tenant 2");
+        assert_eq!(spsr_provenance_de(&st, &ids.membre), Vec::<String>::new(), "course : aucune provenance");
         let inconnu = spsr_patch_add(&st, SPSR_TENANT, SPSR_INCONNU).await;
         assert_eq!(inconnu.0, StatusCode::BAD_REQUEST, "contrôle : l'id inconnu : {inconnu:?}");
-        let patch_en_course = spsr_patch_add(&st, SPSR_TENANT, &ids.vieux).await;
-        assert_eq!(patch_en_course, inconnu, "course : le PATCH add de vieux par le tenant 1 rend la réponse d'un id inconnu");
-        assert_eq!(spsr_droits_de(&st, &ids.vieux), vec![format!("{}|{SPSR_AUTRE_TENANT}|editor", ids.vieux)], "course : toujours rien ici");
-        let etat_en_course = (spsr_droits_de(&st, &ids.vieux), spsr_provenance_de(&st, &ids.vieux));
+        let patch_en_course = spsr_patch_add(&st, SPSR_TENANT, &ids.membre).await;
+        assert_eq!(patch_en_course, inconnu, "course : le PATCH add de membre par le tenant 1 rend la réponse d'un id inconnu");
+        assert_eq!(spsr_droits_de(&st, &ids.membre), vec![format!("{}|{SPSR_AUTRE_TENANT}|editor", ids.membre)], "course : toujours rien ici");
+        let etat_en_course = (spsr_droits_de(&st, &ids.membre), spsr_provenance_de(&st, &ids.membre));
 
         let (st, _tmp2, ids2) = spsr_etat().await;
-        let post_en_serie = spsr_post(&st, SPSR_TENANT, json!({ "userName": "spsr-vieux" })).await;
-        spsr_plan(&st)
-            .conn
-            .lock()
-            .execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,'editor')", params![ids2.vieux, SPSR_AUTRE_TENANT])
-            .expect("contrôle : droit posé par le tenant 2");
-        let patch_en_serie = spsr_patch_add(&st, SPSR_TENANT, &ids2.vieux).await;
+        let post_en_serie = spsr_post(&st, SPSR_TENANT, json!({ "userName": "spsr-membre" })).await;
+        deplacer(spsr_plan(&st), &ids2.membre);
+        let patch_en_serie = spsr_patch_add(&st, SPSR_TENANT, &ids2.membre).await;
         assert_eq!(
             (post_en_serie.0, spsr_json(&post_en_serie.1)),
-            (StatusCode::CREATED, spsr_representation_sans_droit(&ids2.vieux, "spsr-vieux")),
-            "contrôle en série : le POST"
+            (StatusCode::CREATED, spsr_representation(&ids2.membre, "spsr-membre", json!([{ "value": "editor", "type": "direct" }]))),
+            "contrôle en série : le POST (membre du tenant 1 à cet instant)"
         );
         assert_eq!(patch_en_serie, spsr_patch_add(&st, SPSR_TENANT, SPSR_INCONNU).await, "contrôle en série : le PATCH add rend la réponse d'un inconnu");
-        let etat_en_serie = (spsr_droits_de(&st, &ids2.vieux), spsr_provenance_de(&st, &ids2.vieux));
+        let etat_en_serie = (spsr_droits_de(&st, &ids2.membre), spsr_provenance_de(&st, &ids2.membre));
         let renomme = |(d, p): (Vec<String>, Vec<String>), id: &str| -> (Vec<String>, Vec<String>) {
-            (d.into_iter().map(|l| l.replacen(id, "<vieux>", 1)).collect(), p.into_iter().map(|l| l.replacen(id, "<vieux>", 1)).collect())
+            (d.into_iter().map(|l| l.replacen(id, "<membre>", 1)).collect(), p.into_iter().map(|l| l.replacen(id, "<membre>", 1)).collect())
         };
-        assert_eq!(renomme(etat_en_course, &ids.vieux), renomme(etat_en_serie, &ids2.vieux), "la course laisse l'état de l'ordre en série");
+        assert_eq!(renomme(etat_en_course, &ids.membre), renomme(etat_en_serie, &ids2.membre), "la course laisse l'état de l'ordre en série");
     }
 
     // ------------------------------------------------------------------ destruction et création, contre le schéma

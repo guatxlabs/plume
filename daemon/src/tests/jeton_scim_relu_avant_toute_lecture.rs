@@ -177,29 +177,36 @@ mod jeton_scim_relu_avant_toute_lecture {
         }
     }
 
-    /// CE QU'IL TIENT : `POST /Users` de W (sans droit ni provenance, rattachable) avec le groupe `admin`, admis par
-    /// l'ancien jeton ; A détruit puis recréé (jeton neuf) au point de course `scim-identite-avant-ses-droits`, après la
-    /// pose de l'identité et avant la transaction des droits : le `401`, en entier ; W n'a aucun droit nulle part,
-    /// aucune ligne `scim.user.provision`. La relecture d'avant l'identité ne peut pas le voir (A existait) : c'est celle
-    /// de la transaction des droits qui tient.
+    /// CE QU'IL TIENT : `POST /Users` de W (membre `viewer` de A, sans provenance : rattachable) avec le groupe `admin`,
+    /// admis par l'ancien jeton ; A détruit puis recréé (jeton neuf, et un droit `viewer` reposé à W hors SCIM dans le A
+    /// recréé) au point de course `scim-identite-avant-ses-droits`, après la pose de l'identité et avant la transaction
+    /// des droits : le `401`, en entier ; W n'a que son droit `viewer` du A recréé, aucune ligne `scim.user.provision`.
+    /// La relecture d'avant l'identité ne peut pas le voir (A existait) : c'est celle de la transaction des droits qui
+    /// tient. (Avant la décision de l'exploitant du 2026-11-03, W était sans droit ni provenance et rattachable ; il est
+    /// désormais étranger à tous, d'où son droit dans A, puis dans le A recréé, pour que le rejugement l'admette sous le
+    /// mutant.)
     /// LA MUTATION QUI LE FAIT ROUGIR : `AY1_tx_post_sans_jeton` (201, W administrateur du A recréé).
     #[tokio::test]
     async fn jsrl_post_avec_groupes_detruit_entre_l_identite_et_ses_droits_ne_pose_aucun_droit() {
         let _env = VERROU_ENV_PROCESSUS.read();
         let (st, _dir) = jsre_deux_tenants().await;
+        let w_viewer_dans_a = format!("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES('{JSRE_UID_W}','{JSRE_A}','viewer');");
+        jsre_sql(&st, &w_viewer_dans_a);
         let st_course = st.clone();
         crate::handlers::transaction_validee::poser_un_crochet_de_course(&format!("scim-identite-avant-ses-droits:{}", jsre_plan(&st).db_path), move || {
             assert!(tenant_destroy(&st_course.tenants, JSRE_A).is_ok(), "fixture : A détruit pendant la demande");
             let chemin = format!("{}.jsrl-droits", jsre_plan(&st_course).db_path);
             assert!(tenant_provision(&st_course.tenants, JSRE_A, JSRE_A, &chemin, "").is_ok(), "fixture : A recréé pendant la demande");
             jsre_poser_le_jeton(&st_course, JSRE_JETON_A_RECREE, JSRE_A);
+            jsre_sql(&st_course, &w_viewer_dans_a);
         });
         let adresse = router_serve(st.clone()).await;
         let corps = format!(r#"{{"userName":"{JSRE_W}","groups":[{{"value":"admin"}}]}}"#);
         let servi = jsre_envoi(adresse, "POST", "/scim/v2/Users", JSRE_JETON_A, &corps).await;
         assert_eq!(jsre_compter(&st, "SELECT COUNT(*) FROM scim_token WHERE hash=?1", &sha256_hex(JSRE_JETON_A_RECREE.as_bytes())), 1, "fixture : la course a eu lieu");
         assert_eq!(servi, (401, JSRE_CORPS_401.to_string()), "le 401 de l'entrée, en entier");
-        assert_eq!(jsre_compter(&st, "SELECT COUNT(*) FROM \"grant\" WHERE user_id=?1", JSRE_UID_W), 0, "W n'a aucun droit nulle part");
+        assert_eq!(jsre_droits(&st, JSRE_A), vec![format!("{JSRE_W}:viewer")], "W n'a que son droit viewer du A recréé, pas admin");
+        assert_eq!(jsre_compter(&st, "SELECT COUNT(*) FROM \"grant\" WHERE user_id=?1", JSRE_UID_W), 1, "W n'a aucun autre droit");
         assert_eq!(jsre_compter(&st, "SELECT COUNT(*) FROM control_ledger WHERE kind=?1", "scim.user.provision"), 0, "aucune ligne de contrôle");
     }
 

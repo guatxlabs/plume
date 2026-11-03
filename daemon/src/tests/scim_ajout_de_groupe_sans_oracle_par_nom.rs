@@ -349,7 +349,8 @@ mod scim_ajout_de_groupe_sans_oracle_par_nom {
         saon_plan(st).conn.lock().authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
     }
 
-    /// CE QU'IL TIENT : la lecture de `platform_user` refusée, l'ajout d'une identité sans droit, d'un id d'un autre
+    /// CE QU'IL TIENT : la lecture de `platform_user` refusée, l'ajout d'une identité sans droit (provisionnée par ce
+    /// tenant), d'un id d'un autre
     /// tenant et d'un inconnu rend le `503` SCIM `CAUSE_SCIM_UTILISATEUR_ILLISIBLE`, corps EN ENTIER — jamais le
     /// `noTarget` d'une absence ; aucun droit écrit, rien au journal. La lecture revenue, l'identité sans droit
     /// s'ajoute (contrôle positif).
@@ -358,6 +359,13 @@ mod scim_ajout_de_groupe_sans_oracle_par_nom {
     async fn saon_une_lecture_ratee_a_l_ajout_est_un_503_jamais_un_no_target() {
         let (st, _tmp, ids) = saon_etat();
         let orpheline = ensure_platform_user(saon_plan(&st), "saon-orpheline").expect("fixture : identité sans droit");
+        // Provisionnée par le SCIM de ce tenant : sans droit ni provenance, elle serait étrangère à tout tenant SCIM
+        // (décision de l'exploitant du 2026-11-03) et le contrôle positif rendrait `noTarget`.
+        saon_plan(&st)
+            .conn
+            .lock()
+            .execute("INSERT INTO scim_provenance(user_id,tenant_id,created) VALUES(?1,?2,0)", params![orpheline, SAON_TENANT])
+            .expect("fixture : provisionnée par le SCIM de ce tenant");
         let avant = saon_droits(&st);
         let attendu = json!({
             "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],

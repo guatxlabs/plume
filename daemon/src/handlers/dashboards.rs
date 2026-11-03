@@ -1706,12 +1706,17 @@ pub(crate) fn serve_swr(
                             return bad_req(e.clone());
                         }
                         Some(e) if perimee => {
-                            eprintln!(
-                                "[panel] WARN panneau #{id}, tenant {:?} : charge utile périmée servie, le panneau ne compile \
-                                 plus — refus du compilateur joint au corps (`stats.{CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC}`), aucun \
-                                 calcul armé",
-                                au.tenant
-                            );
+                            // `P10.32-o` (vague BK) — LA LIGNE EST BORNÉE : au plus une par panneau de cette base et par
+                            // durée du cache du panneau (`dire_la_peremption_non_compilable`, registre de processus borné),
+                            // comme le pré-chauffage qui se tait pour ce panneau. Le corps servi ne change pas.
+                            if panneau_avoue::dire_la_peremption_non_compilable(&req_db(st, au).lock(), id, now_s, ttl) {
+                                eprintln!(
+                                    "[panel] WARN panneau #{id}, tenant {:?} : charge utile périmée servie, le panneau ne compile \
+                                     plus — refus du compilateur joint au corps (`stats.{CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC}`), aucun \
+                                     calcul armé",
+                                    au.tenant
+                                );
+                            }
                             poser_l_aveu_au_service(&mut v, e, now_s);
                             true
                         }

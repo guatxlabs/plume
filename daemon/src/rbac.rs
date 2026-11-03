@@ -1529,11 +1529,16 @@ pub(crate) fn ensure_platform_user_conn(conn: &Connection, name: &str) -> Option
 //    pour une provenance restée sous l'identifiant d'un tenant créé), qu'aucun tenant ne porte : étrangères à tous, au
 //    tenant recréé sous le même identifiant compris. LIMITE NOMMÉE : leur nom reste pris, `POST /Users` de ce nom rend
 //    `409` à tout tenant, au tenant recréé compris (décision voisine de l'exploitant) ;
-//  * sinon -> rattachable : née avant la provenance (ou par une autre voie que SCIM : `grant_set`, création de
-//    tenant) et sans aucun droit nulle part, compte déprovisionné partout compris — rétrocompat, rien ne dit à qui
-//    elle appartient. LIMITE NOMMÉE, NON TRANCHÉE (l'exploitant doit décider, reste de `P10.34-h` dans la feuille de
-//    route ; aucune décision rendue ne la couvre) : cette classe reste rattachable par TOUT tenant SCIM, et `POST /Users`
-//    de son nom sert son id ; le premier tenant qui lui pose un droit la rend étrangère aux autres.
+//  * sinon -> étrangère : SANS DROIT NI PROVENANCE nulle part — née avant la provenance, ou par une autre voie que
+//    SCIM (`grant_set`, création de tenant), ou rendue telle par la destruction du seul tenant où elle avait un droit,
+//    compte déprovisionné partout compris. DÉCISION DE L'EXPLOITANT RENDUE LE 2026-11-03 : rien ne dit à qui elle
+//    appartient, donc AUCUN jeton SCIM ne la rattache — `POST /Users` de son nom rend le `409` d'un nom pris hors du
+//    tenant (sans son id, rien d'écrit), `PATCH /Groups` (ajout et ensemble servi d'un `replace`) le `noTarget` d'un id
+//    inconnu, pour CHAQUE tenant, au tenant recréé sous l'identifiant d'un tenant détruit compris. Elle était
+//    rattachable par tout tenant (rétrocompat) et `POST /Users` de son nom servait son id. LA SORTIE DE CETTE CLASSE :
+//    un droit posé dans un tenant par un administrateur, HORS SCIM (`tenants::grant_set`, qui écrit `"grant"`), la rend
+//    membre de ce tenant (rattachable par lui, première branche) et étrangère aux autres. Le SSO n'est pas un chemin
+//    SCIM : aucun chemin d'en-têtes ni de session n'appelle ce jugement (seul `scim.rs` le lit).
 
 /// `P10.34-h` — la table de provenance des identités SCIM, dans la base de CONTRÔLE (jamais une base tenant).
 /// Idempotente (`CREATE TABLE IF NOT EXISTS`), appelée par `migrate_control` : aucun changement de version de schéma.
@@ -1551,41 +1556,37 @@ pub(crate) fn migrate_control_provenance_scim(conn: &Connection) {
 /// `P10.34-h` — ce qu'un tenant peut faire d'une identité CONNUE de la plateforme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RattachementScim {
-    /// Membre du tenant, provisionnée par lui, ou sans droit ni provenance nulle part.
+    /// Membre du tenant (un droit ici), ou provisionnée par lui (`scim_provenance`).
     Rattachable,
-    /// Ni droit ici ni provenance de ce tenant, et un droit dans un autre tenant ou la provenance d'un autre tenant.
+    /// Ni droit ici ni provenance de ce tenant : un droit dans un autre tenant, la provenance d'un autre tenant (détruit
+    /// compris), ou ni droit ni provenance nulle part (décision de l'exploitant du 2026-11-03).
     Etrangere,
 }
 
 /// `P10.34-h` — UNE SEULE LECTURE : l'identité visée (`filtre`, constante du code : `p.id=?1` ou `p.name=?1`) et,
-/// pour elle, droit ici, droit ailleurs et tenant créateur. `Ok(None)` : aucune identité (inconnue de la plateforme) ;
-/// `Err` : lecture ratée, jamais servie comme une absence ni comme un rattachement. Ne lit pas `"grant".role`.
+/// pour elle, droit ici et tenant créateur. `Ok(None)` : aucune identité (inconnue de la plateforme) ; `Err` : lecture
+/// ratée, jamais servie comme une absence ni comme un rattachement. Ne lit pas `"grant".role`. Rattachable SEULEMENT
+/// par un droit ici ou la provenance de ce tenant ; tout le reste (droit ailleurs, provenance d'un autre tenant, ni droit
+/// ni provenance nulle part) est étranger : le droit dans un autre tenant n'est plus lu, aucune issue n'en dépend.
 fn lire_le_rattachement_scim(conn: &Connection, tenant: &str, filtre: &'static str, valeur: &str) -> rusqlite::Result<Option<(String, RattachementScim)>> {
     use rusqlite::OptionalExtension as _;
-    let lu: Option<(String, i64, i64, Option<String>)> = conn
+    let lu: Option<(String, i64, Option<String>)> = conn
         .query_row(
             &format!(
                 "SELECT p.id, \
                    EXISTS(SELECT 1 FROM \"grant\" g WHERE g.user_id=p.id AND g.tenant_id=?2), \
-                   EXISTS(SELECT 1 FROM \"grant\" g WHERE g.user_id=p.id AND g.tenant_id<>?2), \
                    (SELECT s.tenant_id FROM scim_provenance s WHERE s.user_id=p.id) \
                  FROM platform_user p WHERE {filtre}"
             ),
             params![valeur, tenant],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    Ok(lu.map(|(id, ici, ailleurs, createur)| {
-        let rattachement = if ici != 0 {
+    Ok(lu.map(|(id, ici, createur)| {
+        let rattachement = if ici != 0 || createur.as_deref() == Some(tenant) {
             RattachementScim::Rattachable
-        } else if createur.as_deref() == Some(tenant) {
-            RattachementScim::Rattachable
-        } else if ailleurs != 0 {
-            RattachementScim::Etrangere
-        } else if createur.is_some() {
-            RattachementScim::Etrangere
         } else {
-            RattachementScim::Rattachable
+            RattachementScim::Etrangere
         };
         (id, rattachement)
     }))
@@ -1611,7 +1612,9 @@ pub(crate) enum IdentiteScimNonPosee {
 
 /// `P10.34-h` — l'identité que `POST /Users` du tenant `tenant` sert pour `name` : l'existante si elle est
 /// rattachable, sinon une identité NEUVE dont la provenance est ce tenant. La provenance s'écrit AVANT l'identité :
-/// refusée, rien n'est créé (une identité sans provenance serait rattachable par tous) ; l'identité refusée après
+/// refusée, rien n'est créé (une identité sans provenance ne serait rattachable par aucun tenant, celui-ci compris, et
+/// son nom serait pris pour tous) ; un nom pris par une identité étrangère — sans droit ni provenance nulle part
+/// comprise — rend `Etrangere`, jamais son id ; l'identité refusée après
 /// elle, il reste une ligne de provenance sur un identifiant jamais servi (96 bits aléatoires), inerte.
 /// Ne modifie JAMAIS `is_superadmin` ni un compte existant.
 ///

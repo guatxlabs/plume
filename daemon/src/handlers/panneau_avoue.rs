@@ -1075,10 +1075,13 @@ pub(crate) struct RefusDEcritureDeCache {
 pub(crate) type CleDEcritureDeCache = (String, i64, String, String);
 
 /// `P10.32-o` (vague BH) — LES ÉCRITURES DE CACHE REFUSÉES PAR LA BASE (disque plein, base en lecture seule), depuis le
-/// démarrage : clé -> instant du dernier refus. Avant, `cache_ecrire` jetait le refus : un panneau jamais mis en cache
-/// servait `warming` / `mesure_en_cours` à chaque interrogation et réarmait un calcul qui réussissait, sans fin et sans un
-/// mot. État de PROCESSUS, jamais persisté (la base refuse justement d'écrire), borné par
-/// [`BORNE_DES_ECRITURES_DE_CACHE_REFUSEES`].
+/// démarrage : clé -> dernier refus noté ([`RefusDEcritureDeCache`] : l'instant de la tentative refusée ET ce que
+/// l'écriture refusée portait, résultat d'un calcul réussi ou phrase servie de l'échec d'un calcul). Avant, `cache_ecrire`
+/// jetait le refus : un panneau jamais mis en cache servait `warming` / `mesure_en_cours` à chaque interrogation et
+/// réarmait un calcul qui réussissait, sans fin et sans un mot. État de PROCESSUS, jamais persisté (la base refuse
+/// justement d'écrire), borné par [`BORNE_DES_ECRITURES_DE_CACHE_REFUSEES`]. Les entrées d'une base sont effacées à la
+/// destruction de son tenant ([`oublier_les_registres_d_une_base_detruite`], appelée par `tenants::tenant_destroy`) : un
+/// tenant recréé au même chemin n'hérite d'aucun refus.
 static ECRITURES_DE_CACHE_REFUSEES: std::sync::OnceLock<parking_lot::Mutex<HashMap<CleDEcritureDeCache, RefusDEcritureDeCache>>> =
     std::sync::OnceLock::new();
 
@@ -1112,6 +1115,80 @@ pub(crate) fn retenir_un_refus_d_ecriture(
         registre.retain(|c, _| Some(c) != plus_ancien.as_ref());
     }
     registre.insert(cle, refus);
+}
+
+/// `P10.32-o` (vague BK) — LA LIGNE `[panel]` D'UNE CHARGE PÉRIMÉE SERVIE POUR UN PANNEAU QUI NE COMPILE PLUS EST BORNÉE :
+/// au plus une par panneau (clé : base de la connexion telle que SQLite la nomme, panneau) et par durée du cache du
+/// panneau. Avant, `serve_swr` l'écrivait à CHAQUE interrogation, sans borne, alors que le pré-chauffage se tait exprès
+/// pour ce panneau. Valeur : l'instant de la dernière ligne ÉCRITE (une ligne tue ne le repousse pas, sinon un panneau
+/// interrogé plus souvent que sa durée du cache ne serait plus jamais dit). État de PROCESSUS, borné par
+/// [`BORNE_DES_PEREMPTIONS_NON_COMPILABLES_DITES`], effacé pour une base à la destruction de son tenant.
+static PEREMPTIONS_NON_COMPILABLES_DITES: std::sync::OnceLock<parking_lot::Mutex<HashMap<CleDeLigneDite, i64>>> =
+    std::sync::OnceLock::new();
+
+/// La clé d'une ligne dite : (base de la connexion telle que SQLite la nomme, panneau). Deux tenants ont chacun leur `#1`.
+pub(crate) type CleDeLigneDite = (String, i64);
+
+/// Au-delà, l'entrée la plus ANCIENNE (instant le plus petit) est retirée avant d'en noter une neuve : la mémoire ne
+/// suit pas le nombre de panneaux interrogés. Un panneau dont l'entrée est retirée sera dit une fois de plus.
+pub(crate) const BORNE_DES_PEREMPTIONS_NON_COMPILABLES_DITES: usize = 4096;
+
+/// Rend `true` si la ligne de journal de ce panneau doit être écrite maintenant (aucune ligne dite, ou la dernière dite
+/// il y a PLUS d'une durée du cache), et note alors `now_s`. `false` : la ligne est tue, l'instant noté ne bouge pas.
+pub(crate) fn dire_la_peremption_non_compilable(conn: &Connection, id: i64, now_s: i64, ttl: i64) -> bool {
+    let cle = (conn.path().unwrap_or("").to_string(), id);
+    let mut registre = PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock();
+    noter_une_ligne_dite(&mut registre, cle, now_s, ttl)
+}
+
+/// La décision et la borne de [`dire_la_peremption_non_compilable`], sur le type du registre de production (les témoins
+/// la jouent sur un registre local). Clé connue : écrite seulement si `now_s - dite_a > ttl`, mise à jour sans rien
+/// retirer. Clé neuve, registre plein : l'entrée la plus ancienne est retirée d'abord.
+pub(crate) fn noter_une_ligne_dite(registre: &mut HashMap<CleDeLigneDite, i64>, cle: CleDeLigneDite, now_s: i64, ttl: i64) -> bool {
+    match registre.get(&cle) {
+        Some(&dite_a) if now_s - dite_a <= ttl => false,
+        Some(_) => {
+            registre.insert(cle, now_s);
+            true
+        }
+        None => {
+            if registre.len() >= BORNE_DES_PEREMPTIONS_NON_COMPILABLES_DITES {
+                let plus_ancienne = registre.iter().min_by_key(|(_, &a)| a).map(|(c, _)| c.clone());
+                registre.retain(|c, _| Some(c) != plus_ancienne.as_ref());
+            }
+            registre.insert(cle, now_s);
+            true
+        }
+    }
+}
+
+/// Antidate la dernière ligne dite d'un panneau (témoins seuls : la durée du cache ne s'attend pas, elle se simule).
+#[cfg(test)]
+pub(crate) fn antidater_la_peremption_dite(conn: &Connection, id: i64, dite_a: i64) {
+    let cle = (conn.path().unwrap_or("").to_string(), id);
+    PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().insert(cle, dite_a);
+}
+
+/// L'instant de la dernière ligne dite d'un panneau, `None` si aucune (témoins seuls).
+#[cfg(test)]
+pub(crate) fn peremption_dite_a(conn: &Connection, id: i64) -> Option<i64> {
+    let cle = (conn.path().unwrap_or("").to_string(), id);
+    PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().get(&cle).copied()
+}
+
+/// `P10.32-o` (vague BK) — À LA DESTRUCTION D'UN TENANT, les entrées de sa base sont effacées des deux registres de
+/// processus indexés par le chemin de la base (refus d'écriture du cache, lignes de péremption dites) : un tenant DÉTRUIT
+/// puis recréé au même chemin n'hérite ni d'un refus (503 `cache_non_ecrit` sans calcul armé jusqu'à une durée du cache)
+/// ni d'une ligne tue. La clé est le chemin tel que SQLite le nomme (`conn.path()`, absolu, liens résolus selon la version)
+/// alors que `tenant_destroy` lit le chemin écrit dans le plan de contrôle : les formes comparées sont ce chemin tel quel
+/// et sa forme résolue (`canonicalize` : `..` et liens résolus, un appel `realpath` sans descripteur ouvert sur la base),
+/// d'où l'appel AVANT la suppression du fichier (un fichier absent n'a plus de forme résolue, seul le chemin tel quel
+/// reste comparé). Les entrées des autres bases restent.
+pub(crate) fn oublier_les_registres_d_une_base_detruite(db_path: &str) {
+    let mut formes: Vec<String> = vec![db_path.to_string()];
+    formes.extend(std::fs::canonicalize(db_path).ok().map(|c| c.to_string_lossy().into_owned()));
+    ECRITURES_DE_CACHE_REFUSEES.get_or_init(Default::default).lock().retain(|(base, ..), _| !formes.contains(base));
+    PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().retain(|(base, _), _| !formes.contains(base));
 }
 
 /// `P10.32-o` (vague BH) — l'instant du dernier refus d'écriture de cette ligne de cache, si la dernière écriture tentée a

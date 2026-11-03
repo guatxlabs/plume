@@ -11,22 +11,22 @@
 // CE QUE CES TÉMOINS TIENNENT, en mode multi-tenant avec DEUX tenants réels (catalogués) et des identités de chaque
 // classe : bert (droit dans l'autre tenant seulement), eve (créée par le `POST /Users` de l'autre tenant, sans droit),
 // fred (créé par le `POST /Users` du tenant appelant, sans droit), dora (droit ici ET ailleurs), vieux (né avant la
-// provenance, sans droit nulle part) :
+// provenance, sans droit nulle part, étranger à tous depuis la décision de l'exploitant du 2026-11-03) :
 //  * `POST /Users` (avec et sans `groups`) d'un nom étranger : `409 uniqueness` EN ENTIER, sans l'id, rien d'écrit ;
 //  * `PATCH add` et `replace` d'un id étranger : le `noTarget` d'un id inconnu, à l'octet, rien d'écrit ;
-//  * fred, dora, vieux et un nom neuf : admis (`201`, `200`), droit posé ICI seulement ;
+//  * fred, dora et un nom neuf : admis (`201`, `200`), droit posé ICI seulement ; vieux : le `noTarget` d'un inconnu et
+//    le `409`, depuis chaque tenant (`sret_compte_d_avant_la_provenance_etranger_a_chaque_tenant`, inversé) ;
 //  * chaque lecture rendue illisible SEULE (`platform_user`, `"grant"`, `scim_provenance`) : `503` nommé, rien d'écrit ;
 //  * la provenance écrite AVANT l'identité, et ses deux lignes de journal neuves, capturées en sous-processus ;
 //  * la table de provenance posée par `migrate_control`, idempotente.
 //
 // MUTANTS (VERIF_MUT sous `cfg!(test)`, retirés avant le commit), chacun vu ROUGE : AV1_ici_ignore, AV1_ailleurs_ignore,
-// AV1_provenance_ignoree, AV1_provenance_tous, AV1_sans_provenance_refuse, AV1_patch_ancien, AV1_post_ancien,
+// AV1_provenance_ignoree, AV1_provenance_tous, AV1_patch_ancien, AV1_post_ancien,
 // AV1_post_sans_provenance, AV1_ordre, AV1_illisible_absent, AV1_journal_creation_muet, AV1_journal_migration_muet,
-// AV1_genre_illisible, AV1_migration_absente.
+// AV1_genre_illisible, AV1_migration_absente ; puis (décision du 2026-11-03) BL2_RETRO. Le bras « droit ailleurs » que
+// visait AV1_ailleurs_ignore n'existe plus : tout ce qui n'a ni droit ici ni provenance d'ici est étranger.
 //
-// LIMITES ASSUMÉES : une identité née avant la provenance (ou par `grant_set` / création de tenant) et sans aucun droit
-// reste rattachable par tout tenant (rétrocompat : rien ne dit à qui elle appartient) et n'est pas revendiquée par un
-// `POST /Users` ; un `userName` pris hors du tenant se lit au `409` (oracle par nom accepté) ; une identité créée par un
+// LIMITES ASSUMÉES : un `userName` pris hors du tenant se lit au `409` (oracle par nom accepté) ; une identité créée par un
 // tenant puis sans droit le reste à lui seul, même si ce tenant disparaît. Le temps de réponse n'est pas mesuré.
 // =====================================================================================
 mod scim_rattachement_entre_tenants_refuse {
@@ -301,20 +301,24 @@ mod scim_rattachement_entre_tenants_refuse {
         assert_eq!(sret_droits_de(&st, &ids.anne), vec![(SRET_TENANT.to_string(), "admin".to_string())], "anne intacte");
     }
 
-    /// CE QU'IL TIENT (rétrocompat, limite assumée) : vieux, né avant la provenance et sans droit nulle part, s'ajoute
-    /// depuis le tenant 1 (`200`), et sur un état neuf le `POST /Users` de son nom depuis l'autre tenant le retrouve
-    /// (`201`, son id) ; aucune provenance n'est revendiquée pour lui.
-    /// LA MUTATION QUI LE FAIT ROUGIR : `AV1_sans_provenance_refuse` (`noTarget`, `409`).
+    /// CE QU'IL TIENT — INVERSÉ par la décision de l'exploitant du 2026-11-03 (`P10.34-h`) ; ce témoin était
+    /// `sret_compte_d_avant_la_provenance_admis` et affirmait la rétrocompat (`PATCH add` `200`, `POST /Users` de l'autre
+    /// tenant `201` avec son id). vieux, né avant la provenance et sans droit nulle part, est désormais ÉTRANGER à chaque
+    /// tenant : depuis le tenant 1 comme depuis l'autre, `PATCH add` rend la réponse d'un id inconnu à l'octet et
+    /// `POST /Users` de son nom le `409` EN ENTIER, sans son id ; aucun droit écrit, aucune provenance revendiquée.
+    /// LA MUTATION QUI LE FAIT ROUGIR : `BL2_RETRO` (la dernière branche de nouveau rattachable : `200`, `201`).
     #[tokio::test]
-    async fn sret_compte_d_avant_la_provenance_admis() {
+    async fn sret_compte_d_avant_la_provenance_etranger_a_chaque_tenant() {
         let (st, _tmp, ids) = sret_etat().await;
-        let (statut, corps) = sret_patch(&st, SRET_TENANT, "viewer", sret_ajout(&ids.vieux_sans_provenance)).await;
-        assert_eq!((statut, serde_json::from_str::<Value>(&corps).expect("JSON")), (StatusCode::OK, sret_groupe("viewer")), "{corps}");
-        assert_eq!(sret_droits_de(&st, &ids.vieux_sans_provenance), vec![(SRET_TENANT.to_string(), "viewer".to_string())]);
-        let (st, _tmp2, ids) = sret_etat().await;
-        let (statut, corps) = sret_post(&st, SRET_AUTRE_TENANT, json!({ "userName": "sret-vieux" })).await;
-        assert_eq!(statut, StatusCode::CREATED, "{corps}");
-        assert_eq!(sret_id_servi(&corps), ids.vieux_sans_provenance, "son id");
+        for tenant in [SRET_TENANT, SRET_AUTRE_TENANT] {
+            let inconnu = sret_patch(&st, tenant, "viewer", sret_ajout(SRET_INCONNU)).await;
+            assert_eq!(inconnu.0, StatusCode::BAD_REQUEST, "{tenant} : contrôle, l'inconnu : {inconnu:?}");
+            assert_eq!(sret_patch(&st, tenant, "viewer", sret_ajout(&ids.vieux_sans_provenance)).await, inconnu, "{tenant} : PATCH add de vieux");
+            let (statut, corps) = sret_post(&st, tenant, json!({ "userName": "sret-vieux" })).await;
+            assert_eq!((statut, serde_json::from_str::<Value>(&corps).expect("JSON")), (StatusCode::CONFLICT, sret_unicite()), "{tenant} : POST /Users de vieux");
+            assert!(!corps.contains(&ids.vieux_sans_provenance), "{tenant} : son id n'est pas servi : {corps}");
+        }
+        assert_eq!(sret_droits_de(&st, &ids.vieux_sans_provenance), Vec::<(String, String)>::new(), "aucun droit écrit");
         assert_eq!(sret_provenance(&st, &ids.vieux_sans_provenance), None, "aucune provenance revendiquée");
     }
 

@@ -36,19 +36,27 @@ import { ICONE_DE_REPRESENTATION, REPRESENTATIONS, poserLesRepresentations } fro
 /// LES DEUX BADGES PASSENT PAR LE MÊME GESTE, parce que l'oubli était le même : le démon publiait
 /// `provenance_non_derivee` + `rollup_note` et AUCUN module de la console ne les lisait — onze panneaux
 /// livrés affichaient un nombre PLAFONNÉ par le top-N d'un pré-agrégé comme un nombre entier.
-// `P10.32-o` — UNE CHARGE UTILE VALIDE SERVIE PÉRIMÉE DONT LE RECALCUL A ÉCHOUÉ LE DIT À L'ÉCRAN. Le démon pose
-// `stats.rafraichissement_en_echec = { cause, echoue_a }` (`CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC`,
-// daemon/src/handlers/dashboards.rs, `joindre_l_echec_a_la_charge_valide`) sur la charge VALIDE en cache quand le
-// recalcul a échoué : les lignes servies sont celles d'AVANT. Sans ce nœud, la carte les peignait comme le résultat
-// courant. Les lignes restent affichées ; l'aveu les précède. La phrase servie (`cause`, phrase de la classe, jamais le
-// texte du moteur) et l'instant (`echoue_a`, entier sûr positif seul) sont posés par `textContent` : une phrase balisée se
-// lit, elle ne s'exécute pas. Champ absent (ou nul) : rien. Cause non servie : dit comme telle, jamais inventée.
+// `P10.32-o` — UNE CHARGE UTILE VALIDE SERVIE PÉRIMÉE DONT LE DERNIER RAFRAÎCHISSEMENT N'A PAS ABOUTI LE DIT À L'ÉCRAN.
+// Le démon pose `stats.rafraichissement_en_echec = { cause, echoue_a }` (`CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC`,
+// daemon/src/handlers/dashboards.rs) sur la charge VALIDE en cache : les lignes servies sont celles d'AVANT. Sans ce nœud,
+// la carte les peignait comme le résultat courant. Les lignes restent affichées ; l'aveu les précède.
+// LA FACE EST NEUTRE (vague BJ) : le démon pose ce champ pour TROIS faits distincts — le recalcul a échoué
+// (`joindre_l_echec_a_la_charge_valide`, phrase de la classe), le calcul a RÉUSSI mais son résultat n'a pas pu être écrit
+// au cache (`CAUSE_ECRITURE_DU_CACHE_REFUSEE`, daemon/src/handlers/panneau_avoue.rs) ou l'échec n'a pas pu l'être
+// (`CAUSE_ECHEC_DU_CALCUL_NON_ECRIT_AU_CACHE`), et le panneau ne compile plus (refus du compilateur, instant du service).
+// L'ancienne face (« le recalcul de ce panneau a échoué », « échec le ») était FAUSSE pour une écriture refusée. La face
+// dit ce qui est vrai des trois — le dernier rafraîchissement n'a pas abouti — et laisse la cause servie dire lequel ;
+// l'instant est celui de la tentative. Aucun tri par la cause : elle commence en minuscules, sans ouverture ancrable.
+// La phrase servie (`cause`, jamais le texte du moteur) et l'instant (`echoue_a`, entier sûr positif seul) sont posés par
+// `textContent` : une phrase balisée se lit, elle ne s'exécute pas. Champ absent (ou nul) : rien. Cause non servie : dit
+// comme telle, jamais inventée.
 const MOTS_DU_RAFRAICHISSEMENT_EN_ECHEC = {
-  titre: { fr: "Lignes d'AVANT, servies périmées : le recalcul de ce panneau a échoué", en: 'PREVIOUS rows, served stale: recomputing this panel failed' },
+  titre: { fr: "Lignes d'AVANT, servies périmées : le dernier rafraîchissement de ce panneau n'a pas abouti (calcul en échec, résultat non écrit au cache ou requête refusée) — la cause qui suit dit lequel",
+    en: 'PREVIOUS rows, served stale: the last refresh of this panel did not complete (computation failed, result not written to the cache, or query refused) — the cause below says which' },
   sans_cause: { fr: 'cause non servie par le démon', en: 'cause not served by the daemon' },
-  instant: { fr: 'échec le {date}', en: 'failed on {date}' },
-  sans_ligne: { fr: "aucune ligne au dernier calcul réussi — le recalcul a échoué depuis, rien n'est établi sur la fenêtre courante",
-    en: 'no row in the last successful computation — recomputing has failed since, nothing is established on the current window' },
+  instant: { fr: 'tentative le {date}', en: 'attempted on {date}' },
+  sans_ligne: { fr: "aucune ligne dans la charge servie, celle d'avant — le dernier rafraîchissement n'a pas abouti, rien n'est établi sur la fenêtre courante",
+    en: 'no row in the served payload, the previous one — the last refresh did not complete, nothing is established on the current window' },
 };
 function noeudDuRafraichissementEnEchec(stats) {
   const r = stats ? stats.rafraichissement_en_echec : undefined;
@@ -88,16 +96,33 @@ function poserLesAveuxDuPanneau(hote, stats, avant) {
 ///     quelle que soit la portée, et le jeter laissait l'écran dire « l'horizon s'arrête ici » sur un
 ///     corps que le démon déclare NON ENCORE CALCULÉ, pendant que la carte re-sonde toutes les 3 s.
 /// Le défaut est asymétrique : retirer une phrase vraie et garder une phrase fausse sont la même faute.
-// `P10.32-o` — DEUX CORPS SANS LIGNE QUE LE DÉMON NE SERT PAS COMME UNE ABSENCE (`RAISON_PAYE_UTILE_ILLISIBLE`,
-// `RAISON_LIGNE_DE_CACHE_NON_LUE`, daemon/src/handlers/panneau_avoue.rs) : la ligne de cache a été lue mais ne se décode
-// pas (deux cents, sans `warming`) — reconnue ICI —, ou n'a pas pu être lue — cinq cent trois nommé avec `error`
-// (daemon/src/handlers/dashboards.rs, `LigneDeCacheRatee::NonLue`), que la carte envoie au refus d'une lecture avant tout
-// rendu (`if (!r.ok) nonServie()`) : cette raison n'atteint jamais ce chemin, elle n'y a donc pas d'entrée. « aucune
-// donnée sur la fenêtre » y était FAUX : la phrase de l'appelant qui affirme une absence est remplacée. Même chose sous un rafraîchissement en échec : l'absence
-// est celle du dernier calcul réussi, pas de la fenêtre courante.
+// `P10.32-o` — LES CORPS SYNTHÉTIQUES DU DÉMON NE SONT PAS UNE ABSENCE. Chaque raison que `coverage_synthetique`
+// (daemon/src/handlers/panneau_avoue.rs) pose sur un corps sans ligne a son entrée ICI. AUCUNE GARDE ne juge cet
+// ensemble (reste nommé sous `P10.32-o` : une jambe statique a été essayée puis retirée, ses faux verts restant
+// plausibles) ; les cinq raisons servies ont été relues à la main le 2026-11-03 et le témoin 164 rend chaque face.
+// « aucune donnée sur la fenêtre » y serait FAUX : la phrase de l'appelant qui affirme une absence
+// est remplacée. Ce que la carte en voit réellement :
+//   · `paye_utile_illisible` — deux cents sans `warming` : la ligne de cache a été lue mais ne se décode pas. Atteint ce
+//     chemin ;
+//   · `mesure_en_cours` — servie avec `warming:true` : la carte la traite en chauffe AVANT tout rendu, et passe alors
+//     `laPhraseAffirmeUneAbsence = false` ;
+//   · `cache_non_lu`, `cache_non_ecrit`, `calcul_echoue` — servies avec `error` (cinq cent trois nommé de `serve_swr`, ou
+//     corps d'échec `corps_d_echec`) : la carte les envoie au refus d'une lecture avant tout rendu (`if (!r.ok)` /
+//     `j.error != null` → `nonServie()`), qui dit la cause entière.
+// Les quatre dernières entrées ne sont donc PAS la face servie aujourd'hui : elles tiennent la ligne si un corps de ces
+// raisons arrivait un jour ici sans `error` ni `warming` — jamais une absence. Même chose sous un rafraîchissement en
+// échec : l'absence est celle de la charge d'avant, pas de la fenêtre courante.
 const MOTS_DU_CORPS_SANS_LIGNE_NON_ETABLI = {
   paye_utile_illisible: { fr: "charge utile en cache ILLISIBLE : rien n'est établi sur la fenêtre — ce n'est pas une absence de données",
     en: 'cached payload UNREADABLE: nothing is established on the window — this is not an absence of data' },
+  mesure_en_cours: { fr: "aucune ligne encore calculée pour cette fenêtre (mesure en cours) : rien n'est établi — ce n'est pas une absence de données",
+    en: 'no row computed yet for this window (measurement in progress): nothing is established — this is not an absence of data' },
+  calcul_echoue: { fr: "calcul de ce panneau en ÉCHEC : rien n'est établi sur la fenêtre — ce n'est pas une absence de données",
+    en: 'computation of this panel FAILED: nothing is established on the window — this is not an absence of data' },
+  cache_non_lu: { fr: "ligne de cache NON LUE : rien n'est établi sur la fenêtre — ce n'est pas une absence de données",
+    en: 'cache row NOT READ: nothing is established on the window — this is not an absence of data' },
+  cache_non_ecrit: { fr: "résultat NON ÉCRIT au cache : rien n'est établi sur la fenêtre — ce n'est pas une absence de données",
+    en: 'result NOT WRITTEN to the cache: nothing is established on the window — this is not an absence of data' },
 };
 function phraseDUnCorpsSansLigneNonEtabli(stats) {
   const raison = stats && stats.coverage ? stats.coverage.reason : undefined;

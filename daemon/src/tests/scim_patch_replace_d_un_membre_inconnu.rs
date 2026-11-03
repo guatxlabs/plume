@@ -19,7 +19,8 @@ mod scim_patch_replace_d_un_membre_inconnu {
     const PRMI_INCONNU: &str = "prmi-id-qui-n-existe-pas";
 
     fn prmi_etat() -> (AppState, crate::tmp_possede::TmpDb, String, String) {
-        // anne admin, bert editor ; carl connu de la plateforme, sans droit (cible du contrôle positif).
+        // anne admin, bert editor ; carl connu de la plateforme, sans droit, provisionné par le SCIM de ce tenant (cible du
+        // contrôle positif ; sans droit ni provenance, il serait étranger : décision de l'exploitant du 2026-11-03).
         let (cp, tmp) = mk_test_control();
         cp.conn
             .lock()
@@ -37,6 +38,10 @@ mod scim_patch_replace_d_un_membre_inconnu {
                 .execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3)", params![id, PRMI_TENANT, role])
                 .expect("fixture : droit posé");
         }
+        cp.conn
+            .lock()
+            .execute("INSERT INTO scim_provenance(user_id,tenant_id,created) VALUES(?1,?2,0)", params![carl, PRMI_TENANT])
+            .expect("fixture : carl provisionné par le SCIM de ce tenant");
         (tenant_test_state("admins", "editors", "supers", Some(cp)), tmp, carl, bert)
     }
 

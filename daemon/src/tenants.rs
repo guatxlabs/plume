@@ -269,11 +269,11 @@ pub(crate) const RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT: [(&str, &str); 4] = [
 /// l'effacement au journal (constante, jamais le texte d'une demande).
 ///
 /// LA PROVENANCE N'EST PAS EFFACÉE, ELLE EST SCELLÉE sur le tenant `(tenant détruit)`, qu'aucun tenant ne peut porter
-/// (`tenant_slug_ok` refuse l'espace et les parenthèses). Effacée, une identité créée par le SCIM du tenant détruit et
-/// sans droit ailleurs devenait « sans droit ni provenance », donc RATTACHABLE PAR TOUT TENANT SCIM
-/// (`rbac::lire_le_rattachement_scim`) : `POST /Users` de son nom servait son id, `PATCH add` lui posait un droit.
-/// Laissée telle quelle, un tenant recréé sous le même identifiant en héritait. Scellée, elle est étrangère à tous —
-/// au tenant recréé compris — tant qu'aucun droit ne lui est posé hors SCIM.
+/// (`tenant_slug_ok` refuse l'espace et les parenthèses). Laissée telle quelle, un tenant recréé sous le même
+/// identifiant en héritait. Scellée, elle est étrangère à tous — au tenant recréé compris — tant qu'aucun droit ne lui
+/// est posé hors SCIM. Depuis la décision du 2026-11-03, une identité sans droit ni provenance est AUSSI étrangère à
+/// tous (`rbac::lire_le_rattachement_scim`) : effacer la provenance ne la rendrait donc plus rattachable ; le sceau reste
+/// une défense en profondeur.
 ///
 /// LIMITE NOMMÉE (décision voisine de l'exploitant, `P10.34-h`) : une identité scellée garde sa ligne `platform_user` et
 /// son nom ; aucun tenant ne peut plus la rattacher, si bien que `POST /Users` de ce nom rend `409`, au tenant recréé
@@ -351,6 +351,10 @@ pub(crate) fn tenant_destroy(mgr: &TenantDbManager, id: &str) -> Result<(), Dest
         let (chemin, champ) = reference.vault_path_field();
         vault_key_cache_forget(&format!("{chemin}#{champ}"));
     }
+    // `P10.32-o` (vague BK) — les registres de processus des panneaux indexés par le chemin de la base (refus d'écriture
+    // du cache, lignes de péremption dites) oublient cette base : un tenant recréé au même chemin n'en hérite pas. AVANT la
+    // suppression du fichier : la forme résolue du chemin se lit sur un fichier présent.
+    crate::handlers::panneau_avoue::oublier_les_registres_d_une_base_detruite(&db_path);
     // Supprime le fichier chiffré + journaux (destruction crypto : sans la clé, le contenu est illisible).
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(format!("{db_path}-wal"));

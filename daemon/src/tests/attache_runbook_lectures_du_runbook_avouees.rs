@@ -270,6 +270,11 @@ async fn arl_scim_group_patch_dit_compte_et_nomme_un_begin_refuse() {
         .execute("INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES(?1,'ARL','','sans-base',?2,0)", params![T, now()])
         .expect("fixture : tenant");
     let membre = ensure_platform_user(&cp, "arl-membre").expect("fixture : utilisateur");
+    // (décision de l'exploitant du 2026-11-03 : sans droit ni provenance, elle serait étrangère à tout tenant SCIM)
+    cp.conn
+        .lock()
+        .execute("INSERT INTO scim_provenance(user_id,tenant_id,created) VALUES(?1,?2,0)", params![membre, T])
+        .expect("fixture : provisionné par le SCIM de ce tenant");
     let st = tenant_test_state("admins", "editors", "supers", Some(cp));
     let plan = || st.tenants.control.as_ref().expect("mode 1");
     let droits = || -> i64 { plan().conn.lock().query_row("SELECT COUNT(*) FROM \"grant\" WHERE tenant_id=?1", params![T], |r| r.get(0)).unwrap() };

@@ -495,11 +495,13 @@ mod cibles_de_configuration_fideles_a_la_ligne_qui_emet {
     // ------------------------------------------------------------------ (6) inventaire du démarrage, surcouches comprises
 
     const LEVIERS: &str = "PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet toute adresse privée";
+    // Inversée le 2026-11-03 (décision de l'exploitant) : les fournisseurs d'identité et d'IA passent des ADMISES aux
+    // REFUSÉES par défaut.
     const LIGNE_POLITIQUE_PAR_DEFAUT: &str = "[ssrf] adresses privées (10/8, 172.16/12, 192.168/16) : REFUSÉES pour un \
-canal, une destination ou un connecteur saisi par l'API ; ADMISES pour le canal semé par PLUME_NOTIFY_NTFY_URL (son URL \
-exacte), les objets écrits en surcouche config.d (leurs propres cibles) et les fournisseurs d'identité et d'IA (réservés \
-à l'administrateur) — PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les refuse partout, PLUME_SSRF_ALLOW exempte un \
-hôte ou un CIDR";
+canal, une destination, un connecteur ou un fournisseur d'identité OIDC ou d'IA saisi par l'API ; ADMISES pour le canal \
+semé par PLUME_NOTIFY_NTFY_URL (son URL exacte) et les objets écrits en surcouche config.d (leurs propres cibles) — \
+PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les refuse partout, PLUME_SSRF_ALLOW exempte un hôte ou un CIDR ; la \
+connexion d'un fournisseur d'identité LDAP à son annuaire n'est PAS jugée par cette garde";
 
     fn ligne_d_inventaire(genre: &str, id: i64, champ: &str, hote: &str) -> String {
         format!("[ssrf] cible privée refusée à l'envoi : {genre} #{id} ({champ}) vers l'hôte {hote:?} — {LEVIERS}")

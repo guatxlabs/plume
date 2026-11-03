@@ -15,9 +15,11 @@
 //    jeton, droit ni provenance de A ne reste, celle de `z` est scellée ; `z` est étrangère au A recréé ET à B
 //    (`POST /Users` : `409` en entier ; `PATCH add` : `400 noTarget`) ; les lignes de B ne bougent pas (clause `WHERE` de
 //    chaque effacement) ;
-//  * un droit écrit sous l'identifiant après la destruction (point de course de production de `POST /Users`) ne passe
-//    pas au A recréé ; une identité créée par le SCIM de l'ancien A n'est pas rattachée au A recréé par ce même point :
-//    `409` en entier, aucun droit ;
+//  * une demande en vol pendant la destruction (point de course de production de `POST /Users`) n'écrit plus aucun
+//    droit sous l'identifiant : le premier administrateur de l'ancien A, sans droit ni provenance après la destruction,
+//    est étranger au rejugement (`409` en entier, décision de l'exploitant du 2026-11-03) ; le A recréé n'a aucun droit ;
+//    une identité créée par le SCIM de l'ancien A n'est pas rattachée au A recréé par ce même point : `409` en entier,
+//    aucun droit ;
 //  * « existe déjà » : `409`, et rien n'est effacé (le jeton du tenant existant authentifie encore) ;
 //  * chaque refus de la transaction de la création SEUL (quatre effacements, écriture de la ligne, `BEGIN`, `COMMIT`) :
 //    `503` au corps EXACT, rien de créé (ni ligne, ni fichier, ni clé au registre), les restes intacts ; puis la même
@@ -38,8 +40,8 @@
 // AX3C_insertion_journal_muet, AX3C_vault_champ_fixe, AX3C_rattachement_non_rejuge.
 //
 // LIMITES : le nom d'une identité scellée reste pris pour toujours (`POST /Users` `409`, tenant recréé compris) —
-// décision voisine de l'exploitant ; une identité sans droit ni provenance reste rattachable par tout tenant
-// (rétrocompatibilité, décision de l'exploitant). L'effacement placé AVANT le contrôle « existe déjà » serait annulé par
+// décision voisine de l'exploitant ; une identité sans droit ni provenance est étrangère à tout tenant (décision de
+// l'exploitant du 2026-11-03). L'effacement placé AVANT le contrôle « existe déjà » serait annulé par
 // le `ROLLBACK` du refus (`jouer_le_geste_garde`, transaction_validee.rs) : aucune observation ne le distingue.
 // =====================================================================================
 mod tenant_recree_sans_restes_scim {
@@ -481,12 +483,17 @@ mod tenant_recree_sans_restes_scim {
 
     /// CE QU'IL TIENT : une demande SCIM de A admise AVANT la destruction de A (`POST /Users` du premier administrateur de
     /// A, sans provenance, groupe `admin`), dont la transaction des droits tombe APRÈS le `COMMIT` de la destruction
-    /// (point de course de production `scim-identite-avant-ses-droits`) : le droit écrit sous l'identifiant hors catalogue
-    /// (plancher : la course a bien écrit) ne passe pas au A recréé — aucun droit sous A, l'administrateur de l'ancien A
-    /// n'administre rien ; le droit de l'administrateur de B reste.
-    /// LA MUTATION QUI LE FAIT ROUGIR : `AX3C_creation_sans_droits` (le A recréé hérite du droit `admin`).
+    /// (point de course de production `scim-identite-avant-ses-droits`) : l'administrateur n'a plus ni droit ni
+    /// provenance, le rejugement le trouve étranger et rend le `409` EN ENTIER ; aucun droit n'est écrit sous
+    /// l'identifiant hors catalogue, le A recréé n'en a aucun, l'administrateur de l'ancien A n'administre rien ; le droit
+    /// de l'administrateur de B reste.
+    /// INVERSÉ NOMMÉMENT (décision de l'exploitant du 2026-11-03) : ce témoin était
+    /// `trsr_une_demande_en_vol_pendant_la_destruction_ne_donne_aucun_droit_au_tenant_recree` et exigeait en PLANCHER que
+    /// la course écrive le droit `admin` sous l'identifiant hors catalogue (l'administrateur, sans droit ni provenance,
+    /// était alors rattachable) ; le droit orphelin non hérité reste tenu par `trsr_un_tenant_recree_n_herite_ni_jeton_ni_provenance`.
+    /// LA MUTATION QUI LE FAIT ROUGIR : `BL2_RETRO` (`201`, droit `admin` écrit sous l'identifiant).
     #[tokio::test]
-    async fn trsr_une_demande_en_vol_pendant_la_destruction_ne_donne_aucun_droit_au_tenant_recree() {
+    async fn trsr_une_demande_en_vol_pendant_la_destruction_n_ecrit_aucun_droit_et_rend_409() {
         let _env = VERROU_ENV_PROCESSUS.read();
         let (st, _dir) = mk_mode1_state();
         let (statut, v) = trsr_creer(&st, json!({ "id": TRSR_A, "name": TRSR_A, "admin": TRSR_ADMIN_A })).await;
@@ -501,7 +508,7 @@ mod tenant_recree_sans_restes_scim {
         crate::handlers::transaction_validee::poser_un_crochet_de_course(&format!("scim-identite-avant-ses-droits:{}", trsr_plan(&st).db_path), move || {
             assert!(tenant_destroy(&mgr, TRSR_A).is_ok(), "fixture : A détruit pendant la demande en vol");
         });
-        let _ = trsr_corps(
+        let (statut, v) = trsr_corps(
             scim_user_create(
                 State(st.clone()),
                 Extension(ScimCtx { tenant: TRSR_A.into() }),
@@ -511,12 +518,13 @@ mod tenant_recree_sans_restes_scim {
         )
         .await;
         assert_eq!(trsr_compter(&st, "SELECT COUNT(*) FROM tenant WHERE id=?1", TRSR_A), 0, "fixture : A est détruit");
-        // PLANCHER : la course a bien écrit sous l'identifiant hors catalogue (sinon ce témoin ne prouve rien).
-        assert_eq!(trsr_droits(&st, TRSR_A), vec![format!("{adm_a}:admin")], "fixture : le droit écrit après la destruction");
+        let refus_409 = json!({ "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"], "scimType": "uniqueness", "detail": TRSR_DETAIL_409, "status": "409" });
+        assert_eq!((statut, &v), (409, &refus_409), "la demande en vol : le 409, EN ENTIER");
+        assert_eq!(trsr_droits(&st, TRSR_A), Vec::<String>::new(), "aucun droit écrit sous l'identifiant hors catalogue");
 
         let (statut, v) = trsr_creer(&st, json!({ "id": TRSR_A, "name": TRSR_A })).await;
         assert_eq!(statut, 201, "A recréé : {v}");
-        assert_eq!(trsr_droits(&st, TRSR_A), Vec::<String>::new(), "le A recréé n'hérite d'aucun droit de l'ancien A");
+        assert_eq!(trsr_droits(&st, TRSR_A), Vec::<String>::new(), "le A recréé n'a aucun droit");
         assert_eq!(trsr_compter(&st, "SELECT COUNT(*) FROM \"grant\" WHERE user_id=?1", &adm_a), 0, "l'administrateur de l'ancien A n'a de droit nulle part");
         assert_eq!(trsr_droits(&st, TRSR_B), vec![format!("{adm_b}:admin")], "le droit de B reste");
     }

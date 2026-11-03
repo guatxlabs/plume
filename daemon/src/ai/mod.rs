@@ -2,8 +2,8 @@
 //! porte : (1) la porte de feature `require_feature()` (miroir EXACT du stub LDAP/SAML « non compilé »
 //! -> 501) ; (2) la classification CLOUD/LOCAL de l'endpoint (réutilise la garde SSRF) ; (3) le budget
 //! d'appels ; (4) — DERRIÈRE `#[cfg(feature="ai")]` — l'impl HTTP OpenAI-compatible / Ollama-natif /
-//! Anthropic du trait `guatx_core::ai::AiProvider`, dont l'ÉGRESS passe par `ssrf_guard_d_un_fournisseur` +
-//! le client HTTP interne `http_call` (AUCUNE nouvelle crate réseau).
+//! Anthropic du trait `guatx_core::ai::AiProvider`, dont l'ÉGRESS passe par `ssrf_guard_d_un_fournisseur` (une adresse
+//! privée y est refusée par défaut, `P7.20-a`) + le client HTTP interne `http_call` (AUCUNE nouvelle crate réseau).
 //!
 //! INVARIANT CARDINAL (cf. core::ai) : l'IA propose du TEXTE GXQL, le compilo FERMÉ (`soql_to_sql_x`)
 //! dispose. Le daemon n'exécute JAMAIS le texte généré. RAM-neutre : inférence DISTANTE ; ce module ne
@@ -179,7 +179,7 @@ pub(crate) fn run_nl2soql(
 }
 
 /// Provider HTTP unique derrière `guatx_core::ai::AiProvider`, multi-`api_shape`. RAM-neutre : sérialise,
-/// appelle dehors (ssrf_guard_d_un_fournisseur + http_call), parse. La clé n'est JAMAIS loggée ni mise dans une erreur.
+/// appelle dehors (ssrf_guard_d_un_fournisseur + appel_reseau_apres_la_garde, soit http_call), parse. La clé n'est JAMAIS loggée ni mise dans une erreur.
 #[cfg(feature = "ai")]
 pub(crate) struct OpenAiCompatProvider {
     pub id: String,
@@ -250,13 +250,14 @@ impl guatx_core::ai::AiProvider for OpenAiCompatProvider {
         };
 
         // ÉGRESS : garde SSRF VERBATIM (même choke-point que connecteurs/idp/notifiers) PUIS client interne. `P7.20-a` :
-        // le fournisseur d'IA est réservé à l'administrateur ; son origine est celle du site unique
-        // `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` (de configuration à ce jour : une side-box d'inférence locale sur
-        // adresse privée y est admise sauf `PLUME_SSRF_BLOCK_PRIVATE` explicite à 1).
+        // l'origine est celle du site unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` — de l'API depuis la décision de
+        // l'exploitant du 2026-11-03 : une side-box d'inférence sur adresse privée est refusée par défaut, et le refus nomme
+        // `PLUME_SSRF_ALLOW` (hôte ou CIDR listé) et `PLUME_SSRF_BLOCK_PRIVATE=0`. L'appel jugé passe par
+        // `appel_reseau_apres_la_garde` (`http_call` en production ; interceptable par le témoin de l'égress en test).
         ssrf_guard_d_un_fournisseur(&url).map_err(AiError::Backend)?;
         let body_bytes = body.to_string().into_bytes();
         let headers: Vec<(&str, &str)> = headers_owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let resp = http_call("POST", &url, &headers, Some(&body_bytes)).map_err(AiError::Backend)?;
+        let resp = crate::ledger::appel_reseau_apres_la_garde("POST", &url, &headers, Some(&body_bytes)).map_err(AiError::Backend)?;
         if !(200..300).contains(&resp.status) {
             return Err(AiError::Backend(format!("HTTP {}", resp.status))); // JAMAIS le corps, JAMAIS la clé
         }

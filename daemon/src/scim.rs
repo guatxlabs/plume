@@ -560,9 +560,10 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
     }
     // `P10.34-h` — L'IDENTITÉ EST CELLE DU TENANT APPELANT. `ensure_platform_user` retrouvait par son nom (`UNIQUE` sur
     // toute la plateforme) le compte d'un AUTRE tenant, servait son id et lui posait le droit demandé ici.
-    // `poser_l_identite_scim_conn` sert l'existante seulement si elle est rattachable (droit ici, provisionnée par ce
-    // tenant, ou sans droit ni provenance nulle part), sinon crée une identité neuve dont la provenance est ce tenant
-    // (is_superadmin=0, jamais un compte existant modifié). Un nom pris par une identité ÉTRANGÈRE rend `409`
+    // `poser_l_identite_scim_conn` sert l'existante seulement si elle est rattachable (droit ici, ou provisionnée par ce
+    // tenant), sinon crée une identité neuve dont la provenance est ce tenant (is_superadmin=0, jamais un compte existant
+    // modifié). Un nom pris par une identité ÉTRANGÈRE — droit ailleurs, provenance d'un autre tenant, ou ni droit ni
+    // provenance nulle part (décision de l'exploitant du 2026-11-03, `rbac::lire_le_rattachement_scim`) — rend `409`
     // `uniqueness` (RFC 7644 §3.3), sans son id ni rien d'écrit : l'oracle par `userName` qui en découle est accepté
     // par l'exploitant (2026-10-26). Une lecture ratée est un `503` (ni présence ni absence affirmée), jamais une
     // création ni un rattachement.
@@ -617,9 +618,9 @@ pub(crate) async fn scim_user_create(State(st): State<AppState>, Extension(ctx):
                 // `P10.34-h` — le jeton de la demande est relu AVANT le rattachement et tout droit (voir plus haut).
                 scim_exiger_le_jeton_sur(conn, &ctx, "scim.user.provision")?;
                 // `P10.34-h` — LE RATTACHEMENT EST REJUGÉ ICI, sous le verrou et dans la transaction qui écrit les droits.
-                // `poser_l_identite_scim_conn` l'a jugé sous un AUTRE verrou, relâché depuis : entre les deux, un `PATCH add`
-                // d'un autre tenant peut avoir posé un droit chez lui à une identité sans droit ni provenance, et écrire
-                // ici sans rejuger laisserait des droits dans deux tenants, ce qu'aucun ordre en série n'autorise.
+                // `poser_l_identite_scim_conn` l'a jugé sous un AUTRE verrou, relâché depuis : entre les deux, le droit qui
+                // la rendait rattachable (membre d'ici sans provenance de ce tenant) peut avoir été retiré, ou l'identité
+                // supprimée, et écrire ici sans rejuger rattacherait une identité que plus rien ne lie à ce tenant.
                 // Étrangère désormais : le `409` d'un nom pris hors du tenant, rien d'écrit ; l'identité disparue : le
                 // `500` d'une identité non créée ; lecture ratée : le `503` nommé.
                 match rattachement_scim_conn(conn, &ctx.tenant, &id) {
@@ -1044,8 +1045,9 @@ pub(crate) async fn scim_group_patch(State(st): State<AppState>, Extension(ctx):
                 // plus un oracle par `userName` : `POST /Users` d'un nom pris hors du tenant rend `409 uniqueness` sans
                 // servir l'id étranger (cet oracle-là, par nom, est accepté par l'exploitant) ; un id étranger ne se lit
                 // qu'ailleurs, et il répond ici comme un id que la plateforme n'a jamais servi. Un membre du tenant (même
-                // porteur d'un droit ailleurs), une identité provisionnée par ce tenant, ou une identité sans droit ni
-                // provenance nulle part (née avant la provenance : rétrocompat) s'ajoute.
+                // porteur d'un droit ailleurs) ou une identité provisionnée par ce tenant s'ajoute ; une identité sans droit
+                // ni provenance nulle part (née avant la provenance, par `grant_set`, ou laissée par la destruction d'un
+                // tenant) est étrangère à tous et rend ce même `noTarget` (décision de l'exploitant du 2026-11-03).
                 let juge_dans_le_tenant = matches!(geste, GesteDeGroupeScim::Retirer(_));
                 let mut presents: Vec<&String> = Vec::with_capacity(membres.len());
                 for uid in membres {

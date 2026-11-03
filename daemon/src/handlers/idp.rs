@@ -231,11 +231,10 @@ fn deny_multitenant() -> Response {
 }
 
 /// GET JSON via le client HTTP interne (rustls/ring). Corps jamais mis dans une erreur. `P7.20-a` : la garde SSRF
-/// (anti 169.254/interne/rebind) juge l'URL selon l'ORIGINE que l'appelant a décidée — celle d'un fournisseur pour la
-/// découverte (`discovery_url`, dérivée de l'issuer écrit par l'administrateur), `origine_d_un_endpoint_oidc` pour les
-/// JWKS.
-fn fetch_json(url: &str, origine: crate::ledger::OrigineDeLaCible) -> Result<Value, String> {
-    crate::ledger::ssrf_guard_selon_l_origine(url, origine)?;
+/// (anti 169.254/interne/rebind) juge l'URL comme toute adresse d'un fournisseur (`ssrf_guard_d_un_fournisseur`, de
+/// l'API : une adresse privée y est refusée par défaut) — découverte et JWKS.
+fn fetch_json(url: &str) -> Result<Value, String> {
+    crate::ledger::ssrf_guard_d_un_fournisseur(url)?;
     let resp = crate::ledger::appel_reseau_apres_la_garde("GET", url, &[("Accept", "application/json")], None)?;
     if !(200..300).contains(&resp.status) {
         return Err(format!("HTTP {} (discovery/jwks)", resp.status));
@@ -243,32 +242,18 @@ fn fetch_json(url: &str, origine: crate::ledger::OrigineDeLaCible) -> Result<Val
     serde_json::from_slice(&resp.body).map_err(|_| "réponse non-JSON".to_string())
 }
 
-/// `P7.20-a` (revue de sécurité) — L'ORIGINE D'UN ENDPOINT OIDC QUE LE DÉMON APPELLE (JWKS, point de jeton). Seule
-/// l'adresse ÉCRITE par l'administrateur est de la configuration : l'endpoint posé dans la configuration du fournisseur
-/// (`ecrit`, non vide et identique à l'endpoint résolu). Un endpoint rendu par le DOCUMENT DE DÉCOUVERTE — une réponse
-/// réseau, pas une saisie — n'en relève que s'il partage l'hôte et le port de `discovery_url` ; ailleurs il est jugé
-/// comme une saisie de l'API (une adresse privée y est refusée par défaut). L'origine d'un fournisseur est celle du
-/// site unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` (daemon/src/ledger.rs).
-pub(crate) fn origine_d_un_endpoint_oidc(ecrit: &str, resolu: &str, discovery_url: &str) -> crate::ledger::OrigineDeLaCible {
-    use crate::ledger::{ssrf_hote_et_port_d_une_url, OrigineDeLaCible, ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA};
-    if !ecrit.trim().is_empty() && ecrit.trim() == resolu.trim() {
-        return ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA;
-    }
-    match (ssrf_hote_et_port_d_une_url(resolu), ssrf_hote_et_port_d_une_url(discovery_url)) {
-        (Ok(endpoint), Ok(decouverte)) if endpoint == decouverte => ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA,
-        _ => OrigineDeLaCible::Api,
-    }
+/// `P7.20-a` — les JWKS du fournisseur, jugés comme toute adresse d'un fournisseur (`fetch_json`). Décision de
+/// l'exploitant du 2026-11-03 : l'endpoint, qu'il soit écrit dans la configuration du fournisseur ou rendu par le
+/// document de découverte, est jugé de l'API ; la configuration n'entre donc plus dans le jugement (`_cfg`, gardé pour
+/// la forme de l'appel dans `oidc_callback`).
+pub(crate) fn jwks_du_fournisseur(_cfg: &OidcCfg, jwks_url: &str) -> Result<Value, String> {
+    fetch_json(jwks_url)
 }
 
-/// `P7.20-a` — les JWKS du fournisseur, jugés selon l'origine de leur endpoint (`origine_d_un_endpoint_oidc`).
-pub(crate) fn jwks_du_fournisseur(cfg: &OidcCfg, jwks_url: &str) -> Result<Value, String> {
-    fetch_json(jwks_url, origine_d_un_endpoint_oidc(&cfg.jwks_uri, jwks_url, &cfg.discovery_url()))
-}
-
-/// `P7.20-a` — l'échange du code au point de jeton (le secret ne transite QUE dans ce corps POST), jugé selon l'origine
-/// de l'endpoint (`origine_d_un_endpoint_oidc`).
-pub(crate) fn echange_au_point_de_jeton(cfg: &OidcCfg, token_url: &str, body: &str) -> Result<HttpResp, String> {
-    crate::ledger::ssrf_guard_selon_l_origine(token_url, origine_d_un_endpoint_oidc(&cfg.token_endpoint, token_url, &cfg.discovery_url()))?;
+/// `P7.20-a` — l'échange du code au point de jeton (le secret ne transite QUE dans ce corps POST), l'endpoint jugé comme
+/// toute adresse d'un fournisseur (`ssrf_guard_d_un_fournisseur`, de l'API), écrit ou rendu par la découverte.
+pub(crate) fn echange_au_point_de_jeton(_cfg: &OidcCfg, token_url: &str, body: &str) -> Result<HttpResp, String> {
+    crate::ledger::ssrf_guard_d_un_fournisseur(token_url)?;
     crate::ledger::appel_reseau_apres_la_garde(
         "POST", token_url, &[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json")], Some(body.as_bytes()),
     )
@@ -788,14 +773,22 @@ pub(crate) const PHRASE_AUTHNREQUEST_SAML_ECHOUEE: &str = "échec de l'AuthnRequ
 pub(crate) const PHRASE_METADONNEE_SP_ECHOUEE: &str = "génération métadonnée SP échouée: la configuration du fournisseur \
      ne permet pas de la construire ; la cause est au journal du serveur sous l'identifiant de cette réponse.";
 
+/// `P7.20-a` — la nature journalisée d'une adresse de fournisseur refusée parce que privée (refus par défaut depuis la
+/// décision de l'exploitant du 2026-11-03) : le libellé de la garde et les réglages qui lèvent le refus, sans l'adresse.
+pub(crate) const NATURE_DU_REFUS_D_ADRESSE_PRIVEE: &str = "SSRF: adresse privée refusée — PLUME_SSRF_ALLOW (hôte ou \
+     CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet toute adresse privée";
+
 /// La NATURE d'un échec de réseau, de jeton ou de construction SAML, sans sa partie variable : les erreurs de
 /// `ssrf_guard`, `http_call`, `fetch_json`, `oidc_resolve_endpoints`, `oidc_validate_id_token` et de la construction
 /// SAML portent un libellé fixe AVANT leur premier `:`, la partie variable (hôte, adresse, texte d'une bibliothèque,
-/// valeur d'une revendication) APRÈS. Seule exception : `http_request` commence par `connexion <hôte>:<port>`, d'où
-/// sa phrase propre.
+/// valeur d'une revendication) APRÈS. Deux exceptions : `http_request` commence par `connexion <hôte>:<port>`, d'où
+/// sa phrase propre ; un refus d'adresse privée rend `NATURE_DU_REFUS_D_ADRESSE_PRIVEE`, qui nomme ses leviers.
 pub(crate) fn nature_de_l_echec(detail: &str) -> &str {
     if detail.starts_with("connexion ") {
         return "connexion TCP impossible (refusée, injoignable ou délai dépassé)";
+    }
+    if detail.starts_with(crate::ledger::PREFIXE_DU_REFUS_D_ADRESSE_PRIVEE) {
+        return NATURE_DU_REFUS_D_ADRESSE_PRIVEE;
     }
     detail.split(':').next().unwrap_or("").trim()
 }
@@ -832,9 +825,9 @@ pub(crate) fn refus_de_l_echange_de_code(fournisseur_id: i64, statut_de_l_idp: u
 /// Résout les endpoints OIDC : discovery si nécessaire (endpoints non tous overridés). Blocking (rare).
 pub(crate) fn oidc_endpoints_for(cfg: &OidcCfg) -> Result<OidcEndpoints, String> {
     let need_discovery = cfg.authorization_endpoint.is_empty() || cfg.token_endpoint.is_empty() || cfg.jwks_uri.is_empty();
-    // `P7.20-a` — la découverte vise `discovery_url`, dérivée de l'issuer écrit par l'administrateur : l'origine d'un
-    // fournisseur (site unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`).
-    let discovery = if need_discovery { Some(fetch_json(&cfg.discovery_url(), crate::ledger::ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA)?) } else { None };
+    // `P7.20-a` — la découverte vise `discovery_url`, dérivée de l'issuer écrit par l'administrateur, jugée comme toute
+    // adresse d'un fournisseur (`fetch_json` : de l'API, une adresse privée refusée par défaut).
+    let discovery = if need_discovery { Some(fetch_json(&cfg.discovery_url())?) } else { None };
     oidc_resolve_endpoints(cfg, discovery.as_ref())
 }
 

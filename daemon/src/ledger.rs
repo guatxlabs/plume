@@ -1455,23 +1455,27 @@ pub(crate) enum PolitiqueDesAdressesPrivees {
 }
 /// D'où vient la cible d'un égress (`P7.20-a`). DE CONFIGURATION : une cible INSCRITE POUR L'OBJET QUI ÉMET — le canal
 /// semé par `PLUME_NOTIFY_NTFY_URL` (son URL exacte, `remplacer_le_canal_de_l_environnement`), un objet d'une surcouche
-/// `config.d` VALIDÉ puis écrit (ses propres cibles, `remplacer_les_cibles_de_surcouche`) — et les fournisseurs d'identité
-/// OIDC et d'IA selon `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`. DE L'API : tout le reste, et TOUJOURS un canal
-/// (`url`, `webhook_url` d'un slack), une destination ou un connecteur créés ou modifiés par l'API
-/// (`ssrf_guard_d_une_saisie_de_l_api`, `refusee_pour_sa_seule_adresse_privee`). Jamais décidé par l'hôte et le port, ni
+/// `config.d` VALIDÉ puis écrit (ses propres cibles, `remplacer_les_cibles_de_surcouche`). DE L'API : tout le reste, et
+/// TOUJOURS un canal (`url`, `webhook_url` d'un slack), une destination ou un connecteur créés ou modifiés par l'API
+/// (`ssrf_guard_d_une_saisie_de_l_api`, `refusee_pour_sa_seule_adresse_privee`), et chaque adresse qu'appelle un
+/// fournisseur d'identité OIDC ou d'IA (`ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`). Jamais décidé par l'hôte et le port, ni
 /// par une URL trouvée dans le registre d'un AUTRE objet : la recherche est bornée à la base, à la famille et à
 /// l'identifiant de l'objet qui émet, et rendue seulement si sa ligne porte encore les cibles inscrites
 /// (`ssrf_cibles_de_l_objet_inchange`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OrigineDeLaCible { Api, Configuration }
-/// `P7.20-a` — DÉCISION EN ATTENTE DE L'EXPLOITANT, ISOLÉE EN CE SEUL SITE : un fournisseur d'identité OIDC ou d'IA,
-/// même créé par l'API (réservé à l'administrateur), est jugé DE CONFIGURATION (limite `P5.8-a`) — une installation sur
-/// site dont l'IdP ou la side-box d'inférence est sur un réseau privé garde sa connexion. Le renversement tient en une
-/// ligne : `OrigineDeLaCible::Api` ici (une adresse privée y serait alors refusée par défaut). Seuls l'adresse écrite
-/// par l'administrateur (`discovery_url` dérivée de l'issuer, endpoints posés dans la configuration du fournisseur) et
-/// un endpoint de découverte qui partage son hôte et son port relèvent de cette origine
-/// (daemon/src/handlers/idp.rs, `origine_d_un_endpoint_oidc`) ; un endpoint de découverte ailleurs est jugé de l'API.
-pub(crate) const ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA: OrigineDeLaCible = OrigineDeLaCible::Configuration;
+/// `P7.20-a` — DÉCISION DE L'EXPLOITANT RENDUE LE 2026-11-03, ISOLÉE EN CE SEUL SITE : un fournisseur d'identité OIDC ou
+/// d'IA créé ou modifié par l'API est ALIGNÉ sur les autres objets de l'API — chaque adresse que le démon appelle pour
+/// lui (découverte, JWKS et point de jeton OIDC, `daemon/src/handlers/idp.rs` ; appel d'inférence,
+/// `daemon/src/ai/mod.rs`) est jugée DE L'API : une adresse privée y est refusée par défaut, et le refus nomme ce qui le
+/// lève, `PLUME_SSRF_ALLOW` (hôte ou CIDR listé) ou `PLUME_SSRF_BLOCK_PRIVATE=0` (admises partout). Une installation sur
+/// site dont l'IdP ou la side-box d'inférence est sur un réseau privé la liste dans `PLUME_SSRF_ALLOW`. La limite
+/// `P5.8-a` (fournisseur réservé à l'administrateur, donc de configuration) ne vaut plus. Avant cette décision, l'origine
+/// était la configuration, et un endpoint rendu par le document de découverte OIDC n'en relevait que s'il partageait
+/// l'hôte et le port de la découverte : cette règle est retirée, sans objet dès lors que toute adresse d'un fournisseur
+/// est jugée de l'API. Revenir à `Configuration` ici rouvrirait cette question : un document de découverte (une réponse
+/// réseau, pas une saisie) désignerait alors des cibles admises.
+pub(crate) const ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA: OrigineDeLaCible = OrigineDeLaCible::Api;
 /// Lecture PURE du réglage (testable sans environnement).
 pub(crate) fn politique_des_adresses_privees(valeur: &str) -> PolitiqueDesAdressesPrivees {
     let v = valeur.trim().to_ascii_lowercase();
@@ -1508,26 +1512,52 @@ pub(crate) fn politique_lue_de(conf: &std::collections::HashMap<String, String>)
     politique_des_adresses_privees(&valeur)
 }
 /// `P7.20-a` — LA LIGNE QUE LE DÉMARRAGE ÉCRIT SUR LA GARDE D'ÉGRESS (PUR), une par politique : ce qui est refusé, ce
-/// qui est admis — dont les fournisseurs d'identité et d'IA, jugés de configuration —, et le réglage qui change l'un
-/// ou l'autre. Écrite par `dire_l_egress_au_demarrage` (daemon/src/overlays_oac.rs).
+/// qui est admis, le réglage qui change l'un ou l'autre, et ce que la garde ne juge pas (la connexion à un annuaire
+/// LDAP : `daemon/src/idp/ldap.rs` ouvre l'URL du fournisseur sans elle). Écrite par `dire_l_egress_au_demarrage`
+/// (daemon/src/overlays_oac.rs). Les fournisseurs d'identité OIDC et d'IA y sont placés selon leur origine, lue du
+/// site unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` : la ligne suit la décision sans seconde édition.
 pub(crate) fn ligne_de_la_politique_des_adresses_privees(politique: PolitiqueDesAdressesPrivees) -> String {
-    // Les fournisseurs ne sont dits « admis » par défaut que si leur origine est la configuration (site unique,
-    // `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`) : la ligne suit la décision sans seconde édition.
-    let fournisseurs = if ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA == OrigineDeLaCible::Configuration {
-        " et les fournisseurs d'identité et d'IA (réservés à l'administrateur)"
+    ligne_de_la_politique_selon_l_origine_des_fournisseurs(politique, ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA)
+}
+/// `P7.20-a` — ce que la garde d'égress ne juge pas, dit à la fin de chaque ligne du démarrage.
+pub(crate) const RESTE_HORS_DE_LA_GARDE_D_EGRESS: &str =
+    "la connexion d'un fournisseur d'identité LDAP à son annuaire n'est PAS jugée par cette garde";
+/// La même ligne, l'origine des fournisseurs d'identité OIDC et d'IA injectée (PUR : testable pour chaque origine).
+pub(crate) fn ligne_de_la_politique_selon_l_origine_des_fournisseurs(
+    politique: PolitiqueDesAdressesPrivees,
+    fournisseurs: OrigineDeLaCible,
+) -> String {
+    let de_l_api = fournisseurs == OrigineDeLaCible::Api;
+    let objets_de_l_api = if de_l_api {
+        "un canal, une destination, un connecteur ou un fournisseur d'identité OIDC ou d'IA saisi par l'API"
     } else {
-        ""
+        "un canal, une destination ou un connecteur saisi par l'API"
     };
+    let reste = RESTE_HORS_DE_LA_GARDE_D_EGRESS;
     match politique {
-        PolitiqueDesAdressesPrivees::ParDefaut => format!("[ssrf] adresses privées (10/8, 172.16/12, 192.168/16) : REFUSÉES pour un canal, une \
-destination ou un connecteur saisi par l'API ; ADMISES pour le canal semé par PLUME_NOTIFY_NTFY_URL (son URL exacte), les objets \
-écrits en surcouche config.d (leurs propres cibles){fournisseurs} — PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les \
-refuse partout, PLUME_SSRF_ALLOW exempte un hôte ou un CIDR"),
-        PolitiqueDesAdressesPrivees::BloqueesPartout => "[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 1 : adresses privées (10/8, \
-172.16/12, 192.168/16) REFUSÉES pour toute cible, configuration, surcouches et fournisseurs d'identité et d'IA compris — \
-PLUME_SSRF_ALLOW exempte un hôte ou un CIDR".to_string(),
-        PolitiqueDesAdressesPrivees::AdmisesPartout => "[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 0 : adresses privées (10/8, \
-172.16/12, 192.168/16) ADMISES pour toute cible, y compris un canal, une destination ou un connecteur saisi par l'API".to_string(),
+        PolitiqueDesAdressesPrivees::ParDefaut => {
+            let admises = if de_l_api {
+                "le canal semé par PLUME_NOTIFY_NTFY_URL (son URL exacte) et les objets écrits en surcouche config.d (leurs \
+propres cibles)"
+            } else {
+                "le canal semé par PLUME_NOTIFY_NTFY_URL (son URL exacte), les objets écrits en surcouche config.d (leurs \
+propres cibles) et les fournisseurs d'identité OIDC et d'IA"
+            };
+            format!("[ssrf] adresses privées (10/8, 172.16/12, 192.168/16) : REFUSÉES pour {objets_de_l_api} ; ADMISES pour \
+{admises} — PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les refuse partout, PLUME_SSRF_ALLOW exempte un hôte ou un \
+CIDR ; {reste}")
+        }
+        PolitiqueDesAdressesPrivees::BloqueesPartout => {
+            let compris = if de_l_api {
+                "canal semé par PLUME_NOTIFY_NTFY_URL et surcouches config.d compris"
+            } else {
+                "canal semé par PLUME_NOTIFY_NTFY_URL, surcouches config.d et fournisseurs d'identité OIDC et d'IA compris"
+            };
+            format!("[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 1 : adresses privées (10/8, 172.16/12, 192.168/16) REFUSÉES pour \
+toute cible, {compris} — PLUME_SSRF_ALLOW exempte un hôte ou un CIDR ; {reste}")
+        }
+        PolitiqueDesAdressesPrivees::AdmisesPartout => format!("[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 0 : adresses privées \
+(10/8, 172.16/12, 192.168/16) ADMISES pour toute cible, y compris {objets_de_l_api} ; {reste}"),
     }
 }
 /// Politique SSRF EXPLICITE (testable sans env) : never-egress INCONDITIONNEL + RFC1918 SELON `block_private`.
@@ -1744,10 +1774,9 @@ pub(crate) fn ssrf_guard(url: &str) -> Result<(), String> {
 pub(crate) fn ssrf_guard_d_une_saisie_de_l_api(url: &str) -> Result<(), String> {
     ssrf_guard(url)
 }
-/// `P7.20-a` — la garde d'un fournisseur d'identité OIDC (daemon/src/handlers/idp.rs) ou d'IA (daemon/src/ai/mod.rs),
-/// pour l'adresse écrite par l'administrateur : l'origine est celle que fixe le site unique
-/// `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`.
-#[cfg_attr(not(feature = "ai"), allow(dead_code))] // seul appelant : l'égress d'IA, compilé avec la feature `ai`
+/// `P7.20-a` — la garde de chaque adresse qu'appelle un fournisseur d'identité OIDC (découverte, JWKS, point de jeton :
+/// daemon/src/handlers/idp.rs) ou d'IA (appel d'inférence : daemon/src/ai/mod.rs) : l'origine est celle que fixe le site
+/// unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` (de l'API).
 pub(crate) fn ssrf_guard_d_un_fournisseur(url: &str) -> Result<(), String> {
     ssrf_guard_selon_l_origine(url, ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA)
 }

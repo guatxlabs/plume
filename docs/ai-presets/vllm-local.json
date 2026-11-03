@@ -1,5 +1,5 @@
 {
-  "_comment": "vLLM en local, servant l'API OpenAI-compatible /v1/chat/completions (ex: http://vllm.internal:8000). Classe LOCAL par defaut (RFC1918/loopback) -> non soumis a PLUME_AI_ALLOW_CLOUD. La cle API (si votre passerelle en exige une) est saisie a l'instanciation, jamais ici.",
+  "_comment": "vLLM en local, servant l'API OpenAI-compatible /v1/chat/completions (ex: http://vllm.internal:8000). Classe LOCAL par defaut (RFC1918/loopback) -> non soumis a PLUME_AI_ALLOW_CLOUD. NOTE EGRESS : INUTILISABLE TEL QUEL PAR DEFAUT. La garde SSRF refuse le loopback (localhost) quel que soit PLUME_SSRF_BLOCK_PRIVATE, sauf PLUME_SSRF_ALLOW=localhost (le nom exact de l'endpoint) ; une adresse privee (RFC1918) est refusee par defaut : listez-la dans PLUME_SSRF_ALLOW (hote ou CIDR), ou posez PLUME_SSRF_BLOCK_PRIVATE=0. La cle API (si votre passerelle en exige une) est saisie a l'instanciation, jamais ici.",
   "vendor": "vLLM",
   "api_shape": "openai",
   "endpoint": "http://localhost:8000",

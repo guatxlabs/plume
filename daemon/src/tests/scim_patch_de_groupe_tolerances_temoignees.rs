@@ -48,6 +48,13 @@ mod scim_patch_de_groupe_tolerances_temoignees {
                     .lock()
                     .execute("INSERT INTO \"grant\"(user_id,tenant_id,role) VALUES(?1,?2,?3)", params![id, PGTT_TENANT, role])
                     .expect("fixture : droit posé");
+            } else {
+                // Sans droit ici : provisionnée par le SCIM de ce tenant, à AJOUTER (sans droit ni provenance, elle serait
+                // étrangère à tout tenant SCIM : décision de l'exploitant du 2026-11-03).
+                cp.conn
+                    .lock()
+                    .execute("INSERT INTO scim_provenance(user_id,tenant_id,created) VALUES(?1,?2,0)", params![id, PGTT_TENANT])
+                    .expect("fixture : provisionnée par le SCIM de ce tenant");
             }
             ids.push(id);
         }

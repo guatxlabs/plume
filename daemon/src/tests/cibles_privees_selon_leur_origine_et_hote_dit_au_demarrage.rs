@@ -6,12 +6,11 @@
 //     192.168/16) est REFUSÉE pour une cible de l'API et ADMISE pour une cible de configuration. DE CONFIGURATION : une
 //     cible INSCRITE POUR L'OBJET QUI ÉMET — le canal semé par `PLUME_NOTIFY_NTFY_URL` (son URL exacte, sous son
 //     identifiant), un objet d'une surcouche `config.d` validé puis écrit (ses propres cibles, sous l'identifiant de la
-//     ligne écrite, la famille REMPLACÉE à chaque chargement) — et les fournisseurs d'identité et d'IA selon le site
-//     unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` (décision en attente de l'exploitant, de configuration à ce
-//     jour). Le registre n'est JAMAIS consulté par URL globale : base, famille ET identifiant de l'objet (revue de
-//     sécurité de la vague AY) — un objet de l'API qui reprend l'URL exacte d'une surcouche d'un AUTRE objet reste de
-//     l'API. Un endpoint OIDC rendu par le document de découverte n'est de configuration que s'il partage l'hôte et le
-//     port de `discovery_url` (revue de sécurité). Chaque envoi est jugé par la VRAIE chaîne : canaux (essai, dispatch,
+//     ligne écrite, la famille REMPLACÉE à chaque chargement). Les fournisseurs d'identité et d'IA sont DE L'API depuis
+//     la décision de l'exploitant du 2026-11-03 (site unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` ; leurs
+//     témoins par la vraie chaîne : `fournisseurs_d_identite_et_d_ia_juges_de_l_api.rs`). Le registre n'est JAMAIS
+//     consulté par URL globale : base, famille ET identifiant de l'objet (revue de sécurité de la vague AY) — un objet de
+//     l'API qui reprend l'URL exacte d'une surcouche d'un AUTRE objet reste de l'API. Chaque envoi est jugé par la VRAIE chaîne : canaux (essai, dispatch,
 //     rapport planifié, escalade SLA, multi-niveau), destinations (`build_wire` puis transport, fond et envoi manuel),
 //     connecteurs (fond, essai, poll manuel ; pages suivantes TAXII `added_after`/`next`, `@odata.nextLink` Graph).
 // (2) Démarrage (daemon/src/overlays_oac.rs) : le canal semé est inscrit, puis une ligne dit la politique retenue, puis
@@ -25,7 +24,8 @@
 //
 // CE QU'IL NE TIENT PAS : le relais de ces réglages par `docker-compose.yml`, leurs lignes du README et de
 // `docs/CONNECTOR-PRESETS.md`, leur semis dans `deploy/k3s.yaml` (zone de la console, phrases remises à l'intégrateur) ;
-// l'égress d'IA lui-même (feature `ai`, hors de la suite par défaut) : seule sa garde est jouée ici.
+// l'égress des fournisseurs d'identité et d'IA lui-même (joué par `fournisseurs_d_identite_et_d_ia_juges_de_l_api.rs`) :
+// seule leur garde est jouée ici.
 //
 // MUTANTS JOUÉS (posés sous `cfg!(test)`, retirés avant le commit), chacun vu ROUGE : M_REG_ID, M_REG_FAMILLE,
 // M_REG_BASE, M_REG_SOURCE (registre) ; M_GARDE_OBJET_CONFIG ; M_FOURNISSEURS_API ; M_TAXII_PAGE (page entière inscrite) ;
@@ -35,7 +35,9 @@
 // (destinations) ; M_FOND_CONNECTEUR_SANS_CIBLES, M_ESSAI_CONNECTEUR_SANS_CIBLES, M_POLL_SANS_CIBLES, M_MAJ_TYPE_HTTP,
 // M_MAJ_TYPE_TAXII, M_MAJ_TYPE_DEFENDER (connecteurs) ; M_DISPATCH_SANS_CIBLES, M_ESSAI_CANAL_SANS_CIBLES,
 // M_CANAL_DROP_VIDE, M_RAPPORT_SANS_CIBLES, M_ESCALADE_SANS_CANAL, M_MULTI_SANS_CANAL (canaux) ; M_IDP_TOUT_CONFIG,
-// M_IDP_OVERRIDE_IGNORE, M_IDP_HOTE_SEUL, M_IDP_DECOUVERTE_API (fournisseur d'identité) ; et, par le texte,
+// M_IDP_OVERRIDE_IGNORE, M_IDP_HOTE_SEUL, M_IDP_DECOUVERTE_API (fournisseur d'identité, règle de l'hôte et du port
+// retirée le 2026-11-03 avec ses deux témoins, `p720a_origine_d_un_endpoint_oidc` et
+// `p720a_l_egress_du_fournisseur_d_identite_selon_l_origine_de_l_endpoint`) ; et, par le texte,
 // l'ordre du démarrage permuté, `.env.example` à `PLUME_SSRF_BLOCK_PRIVATE=0` puis à `PLUME_HOST_STRICT=0`.
 //
 // Les politiques sont figées au premier usage (OnceLock) : chaque chaîne réglage -> garde se joue dans un
@@ -105,16 +107,21 @@ privée ; un connecteur écrit en surcouche config.d est admis";
     const PHRASE_DESTINATION_PRIVEE: &str = "endpoint refusé : adresse privée (10/8, 172.16/12, 192.168/16) pour une \
 destination saisie par l'API — PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet toute adresse \
 privée ; une destination écrite en surcouche config.d est admise";
+    // Inversées le 2026-11-03 (décision de l'exploitant) : les fournisseurs d'identité OIDC et d'IA passent des ADMISES
+    // aux REFUSÉES par défaut ; chaque ligne nomme ce que la garde ne juge pas (la connexion LDAP).
     const LIGNE_POLITIQUE_PAR_DEFAUT: &str = "[ssrf] adresses privées (10/8, 172.16/12, 192.168/16) : REFUSÉES pour un \
-canal, une destination ou un connecteur saisi par l'API ; ADMISES pour le canal semé par PLUME_NOTIFY_NTFY_URL (son URL \
-exacte), les objets écrits en surcouche config.d (leurs propres cibles) et les fournisseurs d'identité et d'IA (réservés \
-à l'administrateur) — PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les refuse partout, PLUME_SSRF_ALLOW exempte un \
-hôte ou un CIDR";
+canal, une destination, un connecteur ou un fournisseur d'identité OIDC ou d'IA saisi par l'API ; ADMISES pour le canal \
+semé par PLUME_NOTIFY_NTFY_URL (son URL exacte) et les objets écrits en surcouche config.d (leurs propres cibles) — \
+PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les refuse partout, PLUME_SSRF_ALLOW exempte un hôte ou un CIDR ; la \
+connexion d'un fournisseur d'identité LDAP à son annuaire n'est PAS jugée par cette garde";
     const LIGNE_POLITIQUE_BLOQUEE: &str = "[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 1 : adresses privées (10/8, 172.16/12, \
-192.168/16) REFUSÉES pour toute cible, configuration, surcouches et fournisseurs d'identité et d'IA compris — \
-PLUME_SSRF_ALLOW exempte un hôte ou un CIDR";
+192.168/16) REFUSÉES pour toute cible, canal semé par PLUME_NOTIFY_NTFY_URL et surcouches config.d compris — \
+PLUME_SSRF_ALLOW exempte un hôte ou un CIDR ; la connexion d'un fournisseur d'identité LDAP à son annuaire n'est PAS \
+jugée par cette garde";
     const LIGNE_POLITIQUE_ADMISE: &str = "[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 0 : adresses privées (10/8, 172.16/12, \
-192.168/16) ADMISES pour toute cible, y compris un canal, une destination ou un connecteur saisi par l'API";
+192.168/16) ADMISES pour toute cible, y compris un canal, une destination, un connecteur ou un fournisseur d'identité \
+OIDC ou d'IA saisi par l'API ; la connexion d'un fournisseur d'identité LDAP à son annuaire n'est PAS jugée par cette \
+garde";
     const LIGNE_CANAL_NON_INSCRIT: &str = "[ssrf] canal semé par PLUME_NOTIFY_NTFY_URL NON inscrit : sa ligne n'a pas pu \
 être lue — ses envois vers une adresse privée seront refusés jusqu'au prochain démarrage (no such table: notifier)";
     const LIGNE_HOTE_INACTIVE_DECLARE: &str = "[host] allowlist Host stricte INACTIVE : FQDN de PLUME_HOST (soc.exemple.test) \
@@ -262,13 +269,14 @@ cette instance, ou ajoutez celle que vous employez à PLUME_HOST, puis redémarr
     }
 
 
-    /// (C) La décision en attente tient en UN site : la constante, que la ligne du démarrage suit.
+    /// (C) La décision rendue le 2026-11-03 tient en UN site : la constante. INVERSÉ ce jour-là (le test d'avant,
+    /// `p720a_fournisseurs_d_identite_et_d_ia_de_configuration_en_un_seul_site`, affirmait `Configuration`).
     #[test]
-    fn p720a_fournisseurs_d_identite_et_d_ia_de_configuration_en_un_seul_site() {
+    fn p720a_fournisseurs_d_identite_et_d_ia_de_l_api_en_un_seul_site() {
         assert_eq!(
             crate::ledger::ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA,
-            OrigineDeLaCible::Configuration,
-            "décision en attente de l'exploitant : les fournisseurs restent de configuration (limite P5.8-a)"
+            OrigineDeLaCible::Api,
+            "décision de l'exploitant du 2026-11-03 : les fournisseurs sont alignés sur les autres objets de l'API"
         );
     }
 
@@ -374,24 +382,6 @@ cette instance, ou ajoutez celle que vous employez à PLUME_HOST, puis redémarr
         assert!(stdout.contains(FIN), "contrôle : l'enfant a joué jusqu'au bout : {stdout}\n{stderr}");
         assert_eq!(lu(&stdout, "P720A-INSCRITES"), "0", "lecture refusée : l'inscription d'avant est retirée");
         assert_eq!(lignes_qui_commencent_par(&stderr, "[ssrf]"), vec![LIGNE_CANAL_NON_INSCRIT.to_string()], "la ligne du journal, entière");
-    }
-
-    /// (A) L'origine d'un endpoint OIDC : écrit par l'administrateur, ou rendu par la découverte sur l'hôte ET le port de
-    /// `discovery_url` -> celle d'un fournisseur ; tout autre -> de l'API.
-    #[test]
-    fn p720a_origine_d_un_endpoint_oidc() {
-        let fournisseur = crate::ledger::ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA;
-        let api = OrigineDeLaCible::Api;
-        let decouverte = "https://10.0.0.5/.well-known/openid-configuration";
-        assert_eq!(origine_d_un_endpoint_oidc("", "https://10.0.0.5/jwks", decouverte), fournisseur, "même hôte et port que la découverte");
-        assert_eq!(origine_d_un_endpoint_oidc("", "https://10.0.0.5:443/jwks", decouverte), fournisseur, "port par défaut écrit : même autorité");
-        assert_eq!(origine_d_un_endpoint_oidc("", "https://10.0.0.6/jwks", decouverte), api, "rendu par la découverte, autre hôte : de l'API");
-        assert_eq!(origine_d_un_endpoint_oidc("", "https://10.0.0.5:8443/jwks", decouverte), api, "même hôte, autre port : de l'API");
-        assert_eq!(origine_d_un_endpoint_oidc("https://10.0.0.6/jwks", "https://10.0.0.6/jwks", decouverte), fournisseur, "écrit par l'administrateur");
-        assert_eq!(origine_d_un_endpoint_oidc(" https://10.0.0.6/jwks ", "https://10.0.0.6/jwks", decouverte), fournisseur, "blancs de bord");
-        assert_eq!(origine_d_un_endpoint_oidc("https://10.0.0.6/autre", "https://10.0.0.6/jwks", decouverte), api, "écrit, mais un autre : rien d'hérité");
-        assert_eq!(origine_d_un_endpoint_oidc("", "ftp://10.0.0.5/jwks", decouverte), api, "endpoint illisible : de l'API");
-        assert_eq!(origine_d_un_endpoint_oidc("", "https://10.0.0.5/jwks", "pas une url"), api, "découverte illisible : de l'API");
     }
 
     // ------------------------------------------------------------------ (4) le fichier d'exemple ne désarme rien
@@ -893,9 +883,9 @@ cette instance, ou ajoutez celle que vous employez à PLUME_HOST, puis redémarr
         assert_eq!(lu(&a, "P720A-API-CONNECTEUR"), refus_prive("10.0.0.9"), "le fetch sans objet refuse PAR LA GARDE, leviers nommés");
         assert_eq!(lu(&a, "P720A-API-NOM"), "refuse", "défaut : un nom qui résout vers le RFC1918 est refusé");
         assert_eq!(lu(&a, "P720A-API-DESTINATION"), "refuse");
-        assert_eq!(lu(&a, "P720A-IDP-IA"), "admis", "fournisseurs d'identité et d'IA : de configuration, privée admise");
+        assert_eq!(lu(&a, "P720A-IDP-IA"), "refuse", "fournisseurs d'identité et d'IA : de l'API depuis le 2026-11-03 (inversé), privée refusée");
         assert_eq!(lu(&a, "P720A-IDP-IA-METADONNEES"), "refuse", "le never-egress reste refusé pour un fournisseur");
-        assert_eq!(lu(&a, "P720A-IA-PRESET-OLLAMA"), "admis", "preset ollama-local : une side-box RFC1918 reste admise par défaut");
+        assert_eq!(lu(&a, "P720A-IA-PRESET-OLLAMA"), "refuse", "preset ollama-local : une side-box RFC1918 est refusée par défaut depuis le 2026-11-03 (inversé)");
         assert_eq!(lu(&a, "P720A-CHARGES"), "4/3/4", "chargés : quatre canaux, trois destinations, quatre connecteurs (rejeté et refusés exclus)");
         assert_eq!(lu(&a, "P720A-POSES"), "4/3/4");
         let envois = [
@@ -994,7 +984,7 @@ cette instance, ou ajoutez celle que vous employez à PLUME_HOST, puis redémarr
         let (c, _) = jouer(&fichier_vide, &[]);
         assert_eq!(lu(&c, "P720A-CONF"), "absent", "sans réglage, aucun canal semé");
         assert_eq!(lu(&c, "P720A-CONF-API"), "refuse");
-        assert_eq!(lu(&c, "P720A-IDP-IA"), "admis", "sans déclaration, les fournisseurs restent de configuration");
+        assert_eq!(lu(&c, "P720A-IDP-IA"), "refuse", "sans déclaration, les fournisseurs sont de l'API (inversé le 2026-11-03)");
 
         // (d) VALEUR EXPLICITE 1 : refusé partout, canal semé, surcouches et fournisseurs compris.
         let (d, _) = jouer(&fichier_vide, &[("PLUME_NOTIFY_NTFY_URL", CIBLE_DE_CONFIGURATION), ("PLUME_SSRF_BLOCK_PRIVATE", "1")]);
@@ -1181,89 +1171,6 @@ cette instance, ou ajoutez celle que vous employez à PLUME_HOST, puis redémarr
             assert_eq!(cibles_du_canal_qui_emet(), un, "gardien lâché : le canal d'avant revient");
         }
         assert!(cibles_du_canal_qui_emet().is_empty(), "hors d'un envoi : aucune cible");
-    }
-
-    // ------------------------------------------------------------------ (2) le fournisseur d'identité
-
-    /// La découverte, les JWKS et le point de jeton d'un fournisseur OIDC sur adresse privée, joués par les fonctions
-    /// qu'appelle `oidc_callback`, le réseau remplacé par le témoin de l'égress : la découverte (issuer écrit par
-    /// l'administrateur) passe ; un endpoint rendu par la découverte sur un AUTRE hôte privé, ou un autre port, est
-    /// refusé avant le réseau ; écrit par l'administrateur, il passe.
-    #[test]
-    fn p720a_l_egress_du_fournisseur_d_identite_selon_l_origine_de_l_endpoint() {
-        const ENFANT: &str = "P720A_ENFANT_IDP";
-        const FIN: &str = "P720A-IDP-A-JOUE";
-        if std::env::var(ENFANT).is_ok() {
-            println!();
-            use crate::ledger::temoin_de_l_egress;
-            let document = json!({
-                "issuer": "https://10.0.0.5",
-                "authorization_endpoint": "https://10.0.0.5/auth",
-                "token_endpoint": "https://10.0.0.5/token",
-                "jwks_uri": "https://10.0.0.6/jwks",
-            });
-            let corps_du_document = document.to_string();
-            let _arme = temoin_de_l_egress::armer(move |_m, url| {
-                let corps = if url.ends_with("/.well-known/openid-configuration") { corps_du_document.clone() } else { r#"{"keys":[]}"#.to_string() };
-                Ok(temoin_de_l_egress::reponse(200, &[], &corps))
-            });
-            let issue = |r: Result<String, String>| match r {
-                Ok(_) => "admis".to_string(),
-                Err(e) => e,
-            };
-            let cfg = OidcCfg::from_json(&json!({ "issuer": "https://10.0.0.5", "client_id": "c", "redirect_uri": "https://soc.exemple.test/cb" }));
-            let ep = oidc_endpoints_for(&cfg);
-            println!("P720A-DECOUVERTE:{}", issue(ep.as_ref().map(|_| String::new()).map_err(|e| e.clone())));
-            let ep = ep.unwrap_or_default();
-            println!("P720A-JWKS-AUTRE-HOTE:{}", issue(jwks_du_fournisseur(&cfg, &ep.jwks_uri).map(|_| String::new())));
-            println!("P720A-JETON-MEME-HOTE:{}", issue(echange_au_point_de_jeton(&cfg, &ep.token_endpoint, "corps").map(|_| String::new())));
-            println!("P720A-JWKS-AUTRE-PORT:{}", issue(jwks_du_fournisseur(&cfg, "https://10.0.0.5:8443/jwks").map(|_| String::new())));
-            println!("P720A-JETON-AUTRE-HOTE:{}", issue(echange_au_point_de_jeton(&cfg, "https://10.0.0.6/token", "corps").map(|_| String::new())));
-            let ecrit = OidcCfg::from_json(&json!({ "issuer": "https://10.0.0.5", "client_id": "c", "redirect_uri": "https://soc.exemple.test/cb",
-                "jwks_uri": "https://10.0.0.6/jwks", "token_endpoint": "https://10.0.0.6/token", "authorization_endpoint": "https://10.0.0.5/auth" }));
-            println!("P720A-JWKS-ECRIT:{}", issue(jwks_du_fournisseur(&ecrit, "https://10.0.0.6/jwks").map(|_| String::new())));
-            println!("P720A-JETON-ECRIT:{}", issue(echange_au_point_de_jeton(&ecrit, "https://10.0.0.6/token", "corps").map(|_| String::new())));
-            let vus: Vec<String> = temoin_de_l_egress::vus().into_iter().map(|(m, u)| format!("{m} {u}")).collect();
-            println!("P720A-IDP-VUS:{}", vus.join(" | "));
-            println!("{FIN}");
-            return;
-        }
-        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
-        let jouer = |reglages: &[(&str, &str)]| -> String {
-            let mut commande = std::process::Command::new(std::env::current_exe().expect("binaire de test"));
-            commande.args(["--exact", "--nocapture", "--test-threads=1"]).arg(format!("{MODULE}p720a_l_egress_du_fournisseur_d_identite_selon_l_origine_de_l_endpoint"));
-            for (nom, _) in std::env::vars_os() {
-                if nom.to_string_lossy().starts_with("PLUME_") {
-                    commande.env_remove(&nom);
-                }
-            }
-            commande.env(ENFANT, "1").env("PLUME_CONFIG", "/nonexistent");
-            for (k, v) in reglages {
-                commande.env(k, v);
-            }
-            let sortie = commande.output().expect("ré-exécution du binaire de test");
-            let stdout = String::from_utf8_lossy(&sortie.stdout).into_owned();
-            let stderr = String::from_utf8_lossy(&sortie.stderr).into_owned();
-            assert!(stdout.contains(FIN), "contrôle : l'enfant a joué jusqu'au bout ({reglages:?}) : {stdout}\n{stderr}");
-            stdout
-        };
-        let defaut = jouer(&[]);
-        assert_eq!(lu(&defaut, "P720A-DECOUVERTE"), "admis", "la découverte d'un IdP sur site (issuer privé) passe");
-        assert_eq!(lu(&defaut, "P720A-JWKS-AUTRE-HOTE"), refus_prive("10.0.0.6"), "JWKS rendu par la découverte sur un autre hôte privé : refusé");
-        assert_eq!(lu(&defaut, "P720A-JETON-MEME-HOTE"), "admis", "point de jeton rendu par la découverte sur l'hôte de l'issuer : passe");
-        assert_eq!(lu(&defaut, "P720A-JWKS-AUTRE-PORT"), refus_prive("10.0.0.5"), "même hôte, autre port : refusé");
-        assert_eq!(lu(&defaut, "P720A-JETON-AUTRE-HOTE"), refus_prive("10.0.0.6"), "point de jeton hors de l'hôte de l'issuer : refusé");
-        assert_eq!(lu(&defaut, "P720A-JWKS-ECRIT"), "admis", "écrit par l'administrateur : passe");
-        assert_eq!(lu(&defaut, "P720A-JETON-ECRIT"), "admis");
-        assert_eq!(
-            lu(&defaut, "P720A-IDP-VUS"),
-            "GET https://10.0.0.5/.well-known/openid-configuration | POST https://10.0.0.5/token | GET https://10.0.0.6/jwks | POST https://10.0.0.6/token",
-            "seuls les appels admis atteignent le réseau, dans l'ordre"
-        );
-        let bloque = jouer(&[("PLUME_SSRF_BLOCK_PRIVATE", "1")]);
-        assert_eq!(lu(&bloque, "P720A-DECOUVERTE"), refus_prive("10.0.0.5"), "valeur 1 : la découverte privée est refusée");
-        assert_eq!(lu(&bloque, "P720A-JWKS-ECRIT"), refus_prive("10.0.0.6"), "valeur 1 : l'endpoint écrit aussi");
-        assert_eq!(lu(&bloque, "P720A-IDP-VUS"), "", "valeur 1 : rien ne part");
     }
 
     // ------------------------------------------------------------------ (2) ce que le démarrage dit

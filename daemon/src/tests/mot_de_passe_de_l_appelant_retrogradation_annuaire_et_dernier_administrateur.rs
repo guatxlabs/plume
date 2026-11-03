@@ -593,6 +593,12 @@ mod mot_de_passe_de_l_appelant_retrogradation_annuaire_et_dernier_administrateur
         assert_eq!(r.status().as_u16(), 204, "fixture : mpra-a seul administrateur");
         let ctx = || ScimCtx { tenant: MPRA_TENANT.into() };
         let id_c = ensure_platform_user(mpra_plan(&st), "mpra-c").expect("fixture");
+        // (décision de l'exploitant du 2026-11-03 : sans droit ni provenance, elle serait étrangère à tout tenant SCIM)
+        mpra_plan(&st)
+            .conn
+            .lock()
+            .execute("INSERT INTO scim_provenance(user_id,tenant_id,created) VALUES(?1,?2,0)", params![id_c, MPRA_TENANT])
+            .expect("fixture : provisionné par le SCIM de ce tenant");
         let id_a: String = mpra_plan(&st).conn.lock().query_row("SELECT id FROM platform_user WHERE name='mpra-a'", [], |r| r.get(0)).expect("fixture");
 
         let (statut, v) = mpra_corps(scim_user_create(State(st.clone()), Extension(ctx()), Json(json!({ "userName": "mpra-a", "groups": [{ "value": "viewer" }] }))).await).await;

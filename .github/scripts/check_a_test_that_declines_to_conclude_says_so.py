@@ -76,12 +76,137 @@ CE QU'ELLE NE TIENT PAS — DIT PLUTÔT QUE SOUS-ENTENDU
     canal, et cette garde ne le dira pas.
   · LE TEXTE, PAS L'EXÉCUTION. Elle établit que chaque chemin de refus APPELLE le canal ; que le
     canal ait vraiment écrit, seule l'exécution le montre — c'est le rôle du mode `--lire`.
-  · LE PROTOCOLE DE RÉ-EXÉCUTION. Un test qui relance SON PROPRE binaire (`current_exe()`) avec un
-    environnement modifié (`.env(`) définit un protocole à deux bras ; le bras de l'enfant sort tôt
-    et c'est sa fonction, pas un aveuglement. Ces tests sont hors population, et le critère est une
-    PROPRIÉTÉ de la source, pas une liste de noms. MESURÉ : un seul test y entre aujourd'hui
-    (`migrate.rs::reference_build_writes_nothing_to_stderr`). Un test qui écrirait `current_exe()`
-    et `.env(` sans s'en servir échapperait à la garde — la borne est dite.
+  · LE BRAS DE L'ENFANT, ET LUI SEUL. Voir la section suivante : un `if` qui lit une variable que
+    le test pose chez l'enfant est le bras de l'enfant par définition, quoi qu'il fasse ; et la
+    lecture par un auxiliaire n'est suivie que d'UN niveau, dans le même fichier, pour une fonction
+    écrite `fn nom(` (un auxiliaire générique `fn nom<T>(` n'est pas trouvé : le test est alors
+    accusé, jamais blanchi).
+
+LES TESTS EN SOUS-PROCESSUS (`P7.20-a`, vague BF)
+==================================================
+Un test qui relance SON PROPRE binaire (`current_exe()`) avec un environnement modifié (`.env(`)
+définit un protocole à deux bras ; le bras de l'ENFANT sort tôt et c'est sa fonction, pas un
+aveuglement. AVANT CETTE VAGUE, TOUT le test était hors population, parent compris : MESURÉ par le
+lot BE4 sur `liste_d_exemption_ssrf_lue_entree_par_entree.rs`, le parent qui refuse de conclure
+(`localhost` qui ne rend pas ses deux adresses) passait la garde en rc=0 son appel au canal retiré.
+
+CE QUI EST HORS POPULATION, DÉSORMAIS : les seuls BRAS DE L'ENFANT — chaque `if` du corps dont la
+condition lit (`env::var(` ou `env::var_os(`) une variable que ce test POSE par `.env(` (premier
+argument comparé tel qu'écrit), directement ou par un auxiliaire du même fichier
+(`if let Some(dir) = repertoire_de_l_enfant("…")`). Un test peut en porter plusieurs (un écrivain
+puis la sous-commande, `sous_commandes_ne_creent_ni_ne_delient_la_base.rs`). Tout le reste du test
+— le PARENT — est jugé comme un test ordinaire, par les deux familles. Un protocole sans bras
+reconnu voit chacun de ses `return` jugé, et la faute le dit.
+
+MESURÉ SUR L'ARBRE de la vague BF : 28 chemins jugés au lieu de 23 (cinq refus de PARENTS entrent
+dans la population : les deux témoins (d) de `liste_d_exemption_ssrf_lue_entree_par_entree.rs`,
+`porte_ne_lache_pas_les_verrous_du_wal.rs`, `puits_du_registre_garde_les_verrous_de_la_base.rs` et
+`sous_commandes_ne_creent_ni_ne_delient_la_base.rs`), tous conformes ; aucun faux positif. L'épreuve
+BE4 rejouée : le canal retiré du parent rend rc=1 sur ce fichier, rc=0 sous la garde d'avant.
+
+MUTANTS JOUÉS (chacun pose sa substitution dans cette garde ; chacun rend rc=2, le témoin nommé) :
+  G1 tout `return` d'un protocole hors population (l'ancien critère) → « le PARENT sort sans le
+     canal » ; G2 marqueur non comparé (`if lus` au lieu de `lus & poses`) → « la condition lit une
+     variable que le test ne POSE pas » ; G3 auxiliaire non suivi → « bras de l'enfant par un
+     auxiliaire » ; G4 auxiliaire admis sans comparer sa variable → « l'auxiliaire lit une AUTRE
+     variable » ; G5 premier bras seul (`break`) → « DEUX bras d'enfant » ; G6 `return` jugé hors
+     du bloc direct du bras → « `return` NICHÉ dans le bras » ; G7 famille des branches sautée pour
+     un protocole → « branche d'environnement du PARENT » ; G8 bras non exclu de la famille des
+     branches → « bras de l'enfant SANS `return` » ; G9 `env::var_os(` non lu → « lu par
+     `env::var_os` » ; G10 faute sans la phrase du protocole → « la condition lit une variable que
+     le test ne POSE pas » ; G11 dernier argument de `.env(` au lieu du premier → « le PARENT sort
+     sans le canal » ; G12 variables posées lues sur tout le fichier au lieu du corps du test
+     (`premiers_arguments(brut, net, 0, len(net), ".env(")`) → « la variable est posée par un AUTRE
+     test du même fichier ».
+
+LES BORNES DE LECTURE (vague BG) : la variable n'est lue que dans la CONDITION du `if` (de `if` à
+l'accolade qui ouvre sa branche) et dans le CORPS de l'auxiliaire appelé par cette condition (de son
+accolade à celle qui le ferme). Une borne repoussée ramasse une lecture voisine — le bras de l'enfant
+du même test, un test suivant du fichier — fait du `if` du PARENT un bras de l'enfant et blanchit son
+`return` muet. MESURÉ : sous chacun des cinq premiers mutants ci-dessous, la garde d'avant ces
+témoins rendait rc=0 sur l'arbre, et l'épreuve BE4 (appel au canal retiré du parent,
+`liste_d_exemption_ssrf_lue_entree_par_entree.rs`, refus de conclure du premier témoin (d)) rendait
+rc=0 sous PM_AUX_JUSQU_FIN, PM_AUX_DEPUIS_LE_DEBUT et PM_LUS_JUSQU_FIN ; elle rend rc=1 avec la garde,
+rc=2 sous chacun des six.
+Chaque témoin rougit SEUL sous son mutant (jugé hors de l'ordre des témoins) :
+  G13 (PM_AUX_JUSQU_FIN) corps de l'auxiliaire lu jusqu'à la fin du fichier
+     (`marqueurs_lus(brut, net, ouvre, len(net))`) → « l'auxiliaire du PARENT ne lit pas la
+     variable, lue PLUS LOIN dans le fichier » ; G14 (PM_AUX_DEPUIS_LE_DEBUT) corps de l'auxiliaire
+     lu depuis le début du fichier (`marqueurs_lus(brut, net, 0, ferme)`) → « … lue PLUS HAUT dans
+     le fichier » ; G15 (PM_LUS_JUSQU_FIN) condition lue jusqu'à la fin du fichier
+     (`marqueurs_lus(brut, net, pos + 2, len(net))`) → « le `if` du PARENT vient AVANT le bras de
+     l'enfant » et « la variable est lue APRÈS le test, hors de toute condition » ; G16
+     (PM_BRAS_COND_A_FIN_DU_TEST) condition lue jusqu'à la fin du test
+     (`marqueurs_lus(brut, net, pos + 2, fin)`) → « le `if` du PARENT vient AVANT le bras de
+     l'enfant » ; G17 (PM_APPELS_A_FIN_DU_TEST) auxiliaires cherchés jusqu'à la fin du test
+     (`re.finditer(r"\\w+", net[pos + 2:fin])`) → « l'auxiliaire qui lit la variable est appelé APRÈS
+     la condition du PARENT » ; G18 (PM_LUS_DEPUIS_LE_DEBUT_DU_TEST) condition lue depuis le début du
+     test (`marqueurs_lus(brut, net, acc, j)`) → « le PARENT sort sans le canal », rouge aussi
+     avant ces témoins.
+LES AUTRES BORNES (vague BG, correction après vérification) — sous chacun de ces mutants, la garde
+d'avant ces témoins rendait rc=0, témoins verts ; chacun rend rc=2 désormais, le témoin nommé rouge :
+  G19 (PM_APPELS_DEPUIS_LE_DEBUT_DU_TEST) auxiliaires cherchés depuis le début du test
+     (`re.finditer(r"\\w+", net[acc:j])`) → « bras de l'enfant par un auxiliaire, PUIS un `if` du
+     PARENT muet ». MESURÉ : sous ce mutant, l'arbre passait de 28 chemins jugés à 26 — les deux
+     parents (d) de `liste_d_exemption_ssrf_lue_entree_par_entree.rs` sortaient de la population,
+     l'auxiliaire `jouer_dans_l_enfant`, appelé dans le bras de l'enfant, lisant la variable posée ;
+  G20 (PM_POSES_JUSQU_FIN) variables posées lues jusqu'à la fin du fichier
+     (`premiers_arguments(brut, net, acc, len(net), ".env(")`) → « la variable du PARENT est posée
+     par un test SUIVANT du fichier » (G12 ne tient que le début de cette plage) ;
+  G21 (PM_DEF_PREFIXE) auxiliaire cherché sans sa parenthèse (`f"fn {nom}"`) → « le PARENT appelle
+     `repertoire()` » et « auxiliaire GÉNÉRIQUE `fn nom<T>(` non trouvé » ;
+  G22 (PM_PHRASE_MEME_AVEC_BRAS) phrase du protocole ajoutée même avec un bras reconnu
+     (`if protocole:`) → « bras de l'enfant par un auxiliaire, PUIS un `if` du PARENT muet »
+     (fragment exigé ABSENT) ;
+  G23 (PM_PHRASE_SANS_PROTOCOLE) phrase du protocole ajoutée à tout test sans bras (`if not bras:`)
+     → « test ORDINAIRE : sa faute ne parle pas d'un binaire relancé ».
+LES BORNES PROCHES ET LES DEUX MOITIÉS DU PROTOCOLE (vague BH) — G15 à G17 ne tenaient que les bornes
+lointaines (fin du test, fin du fichier). La borne la plus proche, l'accolade qui FERME la branche du
+`if` au lieu de celle qui l'ouvre, ramasse une lecture ou un appel écrit DANS la branche d'un `if` du
+PARENT : ce `if` devenait un bras de l'enfant et son `return` muet était blanchi. Et aucun témoin ne
+tenait l'une ou l'autre moitié de la conjonction `current_exe()` ET `.env(` : un test qui pose `.env(X)`
+sur un AUTRE binaire, et dont un `if` lit X, aurait eu son `return` blanchi. Sous chacun des mutants
+ci-dessous, la garde d'avant ces témoins rendait rc=0, témoins verts, arbre inchangé ; chacun rend rc=2
+désormais, son témoin rouge SEUL (jugé hors de l'ordre des témoins) :
+  G24 (V_LUS_JUSQU_FIN_DE_LA_BRANCHE) condition lue jusqu'à l'accolade qui ferme la branche
+     (`marqueurs_lus(brut, net, pos + 2, fin_de_bloc(net, j) or j)`) → « le `if` du PARENT lit la
+     variable DANS sa branche, pas dans sa condition » ;
+  G25 (V_APPELS_JUSQU_FIN_DE_LA_BRANCHE) auxiliaires cherchés jusqu'à l'accolade qui ferme la branche
+     (`re.finditer(r"\\w+", net[pos + 2:(fin_de_bloc(net, j) or j)])`) → « le `if` du PARENT appelle
+     l'auxiliaire qui lit la variable DANS sa branche » ;
+  G26 (V_BRAS_SANS_PROTOCOLE) bras calculés sans tester le protocole
+     (`bras = bras_de_l_enfant(net, brut, acc, fin)`) → « `.env(` sur un AUTRE binaire, sans
+     `current_exe()` » ;
+  G27 (V_PROTOCOLE_SANS_CURRENT_EXE) protocole reconnu par `.env(` seul → le même témoin ;
+  G28 (V_PROTOCOLE_SANS_ENV) protocole reconnu par `current_exe()` seul → « `current_exe()` sans
+     `.env(` : pas de protocole, la faute n'en parle pas » (la phrase du protocole s'y ajoutait) ;
+  G29 (PM_COND_YIELD_SANS_ACCOLADE) un `if` sans accolade à profondeur nulle rendu quand même, sa
+     condition coupée à la fin du test (`yield pos, min(j, fin - 1)`) → « garde de motif `if` dans
+     `matches!`, sans accolade, suivie d'une fonction ». Le mutant n'est PAS équivalent : la garde de
+     motif lit alors le bras de l'enfant écrit plus loin dans le test, et sa « branche », appariée
+     depuis la fin du test, se referme dans la fonction SUIVANTE du fichier — elle couvre le `if` muet
+     du PARENT. Sans fonction imbriquée après le test, l'appariement ne se referme pas et rien ne
+     change : c'est pourquoi le témoin porte une fonction suivante ;
+  G30 (V_COND_PROF_IGNOREE) accolade de la branche cherchée à toute profondeur de parenthèses
+     (`elif c == "{":`) → « condition du bras qui porte une accolade entre parenthèses (closure) ».
+     Avant ce témoin, ce mutant ne rougissait que par l'ARBRE (rc=1, un seul site d'un fichier de test
+     qu'un autre travail peut réécrire), témoins verts.
+MESURÉ SUR L'ARBRE (vague BH) : 28 chemins jugés, 258 hors population, aucun fautif, sous la garde
+d'avant ces témoins comme sous celle-ci, et sous chacun des six mutants G24 à G29 : l'arbre ne porte
+aujourd'hui aucune de ces formes, seuls les témoins fabriqués les tiennent.
+LA PORTÉE DU PROTOCOLE ET LE CROCHET (vague BH, correction après vérification) — les témoins de G27 et
+G28 n'avaient la moitié absente NULLE PART dans leur source : un protocole lu sur tout le fichier
+restait vert. Sous chacun de ces mutants, la garde d'avant ces témoins rendait rc=0, témoins verts,
+arbre inchangé ; chacun rend rc=2 désormais, son témoin rouge SEUL :
+  G31 (V_PROTOCOLE_SUR_LE_FICHIER) les deux moitiés lues sur le fichier (`in net`) → « `current_exe()`
+     dans un AUTRE test, `.env(` sur `sh` dans celui-ci » et « `current_exe()` dans une AIDE » : le
+     `return` muet d'un test qui lance `sh` était blanchi ;
+  G32 (V_CURRENT_EXE_SUR_LE_FICHIER) `current_exe()` seul lu sur le fichier → les deux mêmes témoins ;
+  G33 (V_ENV_SUR_LE_FICHIER) `.env(` seul lu sur le fichier → « `.env(` seulement dans un AUTRE test » :
+     la phrase du protocole s'ajoutait à la faute (pas de blanchiment) ;
+  G34 (V_COND_CROCHETS_IGNORES) le crochet ne compte plus dans la profondeur (`if c in "(":`) → « motif
+     de tranche `if let [S { .. }] = …` » : l'accolade du motif coupait la condition, le bras de
+     l'enfant était jugé comme une sortie du test.
 """
 
 import os
@@ -330,15 +455,12 @@ def appel_dans_le_bloc(net, ouvrante, borne):
     return trouve
 
 
-def branches_muettes(net, brut, acc, fin, zones, nom, chemin):
-    """LA SECONDE FAMILLE (`P11.23-e`) : une branche conditionnée par une lecture d'environnement,
-    qui porte l'assertion et ne sort pas, dont la JUMELLE ne porte aucun verdict."""
-    sites = []
+def conditions_des_if(net, acc, fin):
+    """Chaque `if` du corps, dans l'ordre : (position du mot `if`, position de l'accolade qui ouvre
+    sa branche). LA CONDITION va de `if` à cette accolade, à profondeur nulle de parenthèses. Une
+    seule lecture pour les deux usages (branches muettes, bras de l'enfant)."""
     for m in re.finditer(r"\bif\b", net[acc:fin]):
         pos = acc + m.start()
-        if any(a <= pos <= b for a, b in zones):
-            continue
-        # LA CONDITION : de `if` à l'accolade ouvrante, à profondeur nulle de parenthèses.
         j, prof = pos + 2, 0
         while j < fin:
             c = net[j]
@@ -349,7 +471,65 @@ def branches_muettes(net, brut, acc, fin, zones, nom, chemin):
             elif c == "{" and prof == 0:
                 break
             j += 1
-        if j >= fin:
+        if j < fin:
+            yield pos, j
+
+
+def premiers_arguments(brut, net, deb, fin, appel):
+    """Le premier argument, tel qu'écrit, de chaque appel `appel(` (texte exact, parenthèse
+    comprise) écrit entre `deb` et `fin` hors chaînes et commentaires."""
+    trouves = set()
+    j = net.find(appel, deb)
+    while j != -1 and j < fin:
+        args = arguments_de_l_appel(brut, j + len(appel) - 1)
+        if args:
+            trouves.add(args[0])
+        j = net.find(appel, j + 1)
+    return trouves
+
+
+def marqueurs_lus(brut, net, deb, fin):
+    """Les variables d'environnement LUES entre `deb` et `fin` : premier argument de `env::var(`
+    et de `env::var_os(`."""
+    return (premiers_arguments(brut, net, deb, fin, "env::var(")
+            | premiers_arguments(brut, net, deb, fin, "env::var_os("))
+
+
+def bras_de_l_enfant(net, brut, acc, fin):
+    """LES BRAS DE L'ENFANT d'un test qui relance son binaire : CHAQUE `if` du corps dont la
+    condition lit (`env::var(` ou `env::var_os(`) une variable que ce test POSE chez l'enfant par
+    `.env(` — directement, ou par un appel d'une fonction du MÊME fichier dont le corps la lit (un
+    niveau : `if let Some(dir) = repertoire_de_l_enfant("…")`). Un test peut en porter PLUSIEURS (un
+    écrivain, puis la sous-commande : `sous_commandes_ne_creent_ni_ne_delient_la_base.rs`). Rend la
+    liste des (position du `if`, accolade qui ferme sa branche), vide si aucun `if` ne la lit."""
+    poses = premiers_arguments(brut, net, acc, fin, ".env(")
+    bras = []
+    for pos, j in conditions_des_if(net, acc, fin):
+        lus = marqueurs_lus(brut, net, pos + 2, j)
+        for appel in re.finditer(r"\w+", net[pos + 2:j]):
+            dfn = net.find(f"fn {appel.group(0)}(")
+            ouvre = net.find("{", dfn) if dfn != -1 else -1
+            ferme = fin_de_bloc(net, ouvre) if ouvre != -1 else None
+            if ferme is not None:
+                lus |= marqueurs_lus(brut, net, ouvre, ferme)
+        ferme = fin_de_bloc(net, j) if lus & poses else None
+        if ferme is not None:
+            bras.append((pos, ferme))
+    return bras
+
+
+PROTOCOLE_SANS_BRAS = (" CE TEST RELANCE SON BINAIRE (`current_exe()` et `.env(`), mais aucun `if` "
+                       "ne lit par `env::var(`/`env::var_os(` une variable qu'il pose par `.env(` : "
+                       "le bras de l'enfant n'est pas reconnu, et chaque `return` est jugé comme une "
+                       "sortie du test.")
+
+
+def branches_muettes(net, brut, acc, fin, zones, nom, chemin):
+    """LA SECONDE FAMILLE (`P11.23-e`) : une branche conditionnée par une lecture d'environnement,
+    qui porte l'assertion et ne sort pas, dont la JUMELLE ne porte aucun verdict."""
+    sites = []
+    for pos, j in conditions_des_if(net, acc, fin):
+        if any(a <= pos <= b for a, b in zones):
             continue
         cond = net[pos + 2:j]
         if not any(lecture in cond for lecture in LECTURES_D_ENVIRONNEMENT):
@@ -419,9 +599,12 @@ def analyser(brut, chemin="<fabriqué>"):
             continue
         tests_vus += 1
         corps_net = net[acc:fin]
-        # HORS POPULATION — protocole de ré-exécution : le test relance SON PROPRE binaire avec un
-        # environnement modifié ; le bras de l'enfant sort tôt par construction.
+        # PROTOCOLE DE RÉ-EXÉCUTION : le test relance SON PROPRE binaire avec un environnement
+        # modifié. Le bras de l'ENFANT sort tôt par construction : HORS POPULATION, et lui seul. Le
+        # PARENT, qui peut refuser de conclure (localhost qui ne rend pas ses deux adresses), est
+        # jugé comme tout test.
         protocole = "current_exe()" in corps_net and ".env(" in corps_net
+        bras = bras_de_l_enfant(net, brut, acc, fin) if protocole else []
         zones = zones_a_ignorer(net, acc, fin)
         for r in re.finditer(r"\breturn\b", corps_net):
             pos = acc + r.start()
@@ -431,8 +614,9 @@ def analyser(brut, chemin="<fabriqué>"):
                 continue
             ligne = brut[:pos].count("\n") + 1
             site = {"fichier": chemin, "ligne": ligne, "test": nom,
-                    "hors_population": protocole, "famille": "sortie", "faute": None}
-            if protocole:
+                    "hors_population": False, "famille": "sortie", "faute": None}
+            if any(a <= pos <= b for a, b in bras):
+                site["hors_population"] = True
                 sites.append(site)
                 continue
             # ── LE CRITÈRE EST POSITIONNEL : l'appel doit être dans LE BLOC du `return`, au même
@@ -444,14 +628,15 @@ def analyser(brut, chemin="<fabriqué>"):
                                  "CE bloc et juste avant lui : "
                                  "`crate::tests::canal_de_refus::refuser_de_conclure(module_path!(), "
                                  f'"{nom}", "<pourquoi rien n\'a pu être mesuré ici>")`.')
+                if protocole and not bras:
+                    site["faute"] += PROTOCOLE_SANS_BRAS
                 sites.append(site)
                 continue
             site["faute"] = faute_des_arguments(brut, trouve, nom)
             sites.append(site)
-        # LA SECONDE FAMILLE — jugée sur les MÊMES zones à ignorer, et hors du protocole de
-        # ré-exécution (dont le bras de l'enfant n'est pas un aveuglement).
-        if not protocole:
-            sites.extend(branches_muettes(net, brut, acc, fin, zones, nom, chemin))
+        # LA SECONDE FAMILLE — jugée sur les MÊMES zones à ignorer, plus le bras de l'enfant d'un
+        # protocole de ré-exécution (qui n'est pas un aveuglement) ; le parent est jugé.
+        sites.extend(branches_muettes(net, brut, acc, fin, zones + bras, nom, chemin))
     return sites, tests_vus
 
 
@@ -716,6 +901,381 @@ def temoins():
         return (f"témoin de DÉCOUPE « cause portant une closure de lecture » : {[s['faute'] for s in sites]} "
                 "au lieu d'un site conforme")
 
+    # ── LES TESTS EN SOUS-PROCESSUS (`P7.20-a`, vague BF) : seul le bras de l'ENFANT est hors
+    #    population ; le PARENT qui refuse de conclure est jugé. (nom, source, sites jugés attendus,
+    #    sites hors population attendus, fragment exigé dans la faute ou None.)
+    E = "std::process::Command::new(std::env::current_exe().unwrap())"
+    cas_proto = [
+        ("POSITIF — protocole : le PARENT sort sans le canal (forme mesurée par BE4)", """
+        #[test]
+        fn t_parent_muet() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if !localhost_double() { return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+            juger(c);
+        }
+    """ % E, [("t_parent_muet", True)], 1, None),
+        ("NÉGATIF — protocole : le PARENT sort par le canal", """
+        #[test]
+        fn t_parent_avoue() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if let Err(cause) = localhost_double() {
+                %s(module_path!(), "t_parent_avoue", &cause);
+                return;
+            }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+            juger(c);
+        }
+    """ % (A, E), [("t_parent_avoue", False)], 1, None),
+        ("POSITIF — protocole : la condition lit une variable que le test ne POSE pas", """
+        #[test]
+        fn t_marqueur_etranger() {
+            if std::env::var(AUTRE).is_ok() { jouer(); return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % E, [("t_marqueur_etranger", True)], 0, "le bras de l'enfant n'est pas reconnu"),
+        ("NÉGATIF — protocole : bras de l'enfant par un auxiliaire du fichier", """
+        fn repertoire_de_l_enfant(cas: &str) -> Option<String> {
+            let v = std::env::var(ENFANT).ok()?;
+            (v == cas).then(|| v)
+        }
+        #[test]
+        fn t_auxiliaire() {
+            if let Some(dir) = repertoire_de_l_enfant("x") { jouer(&dir); return; }
+            let mut c = %s;
+            c.env(ENFANT, "x");
+        }
+    """ % E, [], 1, None),
+        ("POSITIF — protocole : l'auxiliaire lit une AUTRE variable", """
+        fn repertoire_de_l_enfant(cas: &str) -> Option<String> {
+            let v = std::env::var(AUTRE).ok()?;
+            (v == cas).then(|| v)
+        }
+        #[test]
+        fn t_auxiliaire_etranger() {
+            if let Some(dir) = repertoire_de_l_enfant("x") { jouer(&dir); return; }
+            let mut c = %s;
+            c.env(ENFANT, "x");
+        }
+    """ % E, [("t_auxiliaire_etranger", True)], 0, "le bras de l'enfant n'est pas reconnu"),
+        ("NÉGATIF — protocole : bras de l'enfant lu par `env::var_os`", """
+        #[test]
+        fn t_var_os() {
+            if std::env::var_os(ENFANT).is_some() { crate::main(); return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % E, [], 1, None),
+        ("NÉGATIF — protocole : DEUX bras d'enfant (un écrivain, puis la sous-commande)", """
+        #[test]
+        fn t_deux_bras() {
+            if let Ok(base) = std::env::var(ECRIVAIN) { ecrire(&base); return; }
+            if std::env::var_os(ENFANT).is_some() { crate::main(); return; }
+            %s.env(ECRIVAIN, "b").output().unwrap();
+            %s.env(ENFANT, "1").output().unwrap();
+        }
+    """ % (E, E), [], 2, None),
+        ("NÉGATIF — protocole : `return` NICHÉ dans le bras de l'enfant", """
+        #[test]
+        fn t_retour_niche() {
+            if std::env::var(ENFANT).is_ok() {
+                for x in cas() { if x.vide() { return; } }
+                jouer();
+                return;
+            }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % E, [], 2, None),
+        ("POSITIF — protocole : branche d'environnement du PARENT, sans jumelle", """
+        #[test]
+        fn t_branche_du_parent() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+            if std::env::var("PLUME_X").is_ok() {
+                assert!(juger(c));
+            }
+        }
+    """ % E, [("t_branche_du_parent", True)], 1, None),
+        ("NÉGATIF — protocole : bras de l'enfant SANS `return`, jumelle sans verdict", """
+        #[test]
+        fn t_bras_sans_retour() {
+            if std::env::var(ENFANT).is_ok() {
+                assert!(jouer());
+            } else {
+                let s = %s.env(ENFANT, "1").status().unwrap();
+                consigner(s);
+            }
+        }
+    """ % E, [], 0, None),
+        ("POSITIF — protocole : la variable est posée par un AUTRE test du même fichier", """
+        #[test]
+        fn t_autre() {
+            if std::env::var(AUTRE).is_ok() { jouer(); return; }
+            let mut c = %s;
+            c.env(AUTRE, "1");
+        }
+        #[test]
+        fn t_parent_garde_par_l_autre() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if std::env::var(AUTRE).is_ok() { return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % (E, E), [("t_parent_garde_par_l_autre", True)], 2, None),
+        # ── LES BORNES DE LECTURE (vague BG) : la variable n'est lue QUE dans la condition du `if`
+        #    (de `if` à son accolade) et dans le CORPS de l'auxiliaire appelé (de son accolade à celle
+        #    qui le ferme). Chaque témoin place une lecture de la variable posée JUSTE HORS d'une borne :
+        #    une borne repoussée la ramasse, fait du `if` du PARENT un bras de l'enfant et blanchit son
+        #    `return` muet. Forme mesurée par BE4 : l'auxiliaire est écrit avant les tests, et les tests
+        #    suivants du fichier lisent la variable.
+        ("POSITIF — protocole : l'auxiliaire du PARENT ne lit pas la variable, lue PLUS LOIN dans le fichier", """
+        fn localhost_double() -> bool { resoudre("localhost").len() == 2 }
+        #[test]
+        fn t_aux_avant() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if !localhost_double() { return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % E, [("t_aux_avant", True)], 1, None),
+        ("POSITIF — protocole : l'auxiliaire du PARENT ne lit pas la variable, lue PLUS HAUT dans le fichier", """
+        #[test]
+        fn t_aux_apres() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if !localhost_double() { return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+        fn localhost_double() -> bool { resoudre("localhost").len() == 2 }
+    """ % E, [("t_aux_apres", True)], 1, None),
+        ("POSITIF — protocole : le `if` du PARENT vient AVANT le bras de l'enfant", """
+        #[test]
+        fn t_parent_d_abord() {
+            if !localhost_double() { return; }
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % E, [("t_parent_d_abord", True)], 1, None),
+        ("POSITIF — protocole : la variable est lue APRÈS le test, hors de toute condition", """
+        #[test]
+        fn t_lu_apres_le_test() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if !localhost_double() { return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+        fn marqueur_de_l_enfant() -> bool { std::env::var(ENFANT).is_ok() }
+    """ % E, [("t_lu_apres_le_test", True)], 1, None),
+        ("POSITIF — protocole : l'auxiliaire qui lit la variable est appelé APRÈS la condition du PARENT", """
+        fn repertoire_de_l_enfant(cas: &str) -> Option<String> {
+            let v = std::env::var(ENFANT).ok()?;
+            (v == cas).then(|| v)
+        }
+        #[test]
+        fn t_appel_apres_la_condition() {
+            if !localhost_double() { return; }
+            if let Some(dir) = repertoire_de_l_enfant("x") { jouer(&dir); return; }
+            let mut c = %s;
+            c.env(ENFANT, "x");
+        }
+    """ % E, [("t_appel_apres_la_condition", True)], 1, None),
+        # ── LES AUTRES BORNES (vague BG, correction) : le DÉBUT de la recherche des auxiliaires, la
+        #    FIN de la lecture des variables posées, la parenthèse de `fn nom(`, et la phrase du
+        #    protocole. Un fragment préfixé `!` doit être ABSENT de toute faute.
+        ("POSITIF — protocole : bras de l'enfant par un auxiliaire, PUIS un `if` du PARENT muet", """
+        fn repertoire_de_l_enfant(cas: &str) -> Option<String> {
+            let v = std::env::var(ENFANT).ok()?;
+            (v == cas).then(|| v)
+        }
+        #[test]
+        fn t_aux_puis_parent() {
+            if let Some(dir) = repertoire_de_l_enfant("x") { jouer(&dir); return; }
+            if !localhost_double() { return; }
+            let mut c = %s;
+            c.env(ENFANT, "x");
+        }
+    """ % E, [("t_aux_puis_parent", True)], 1, "!le bras de l'enfant n'est pas reconnu"),
+        ("POSITIF — protocole : la variable du PARENT est posée par un test SUIVANT du fichier", """
+        #[test]
+        fn t_premier() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if std::env::var(AUTRE).is_ok() { return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+        #[test]
+        fn t_second() {
+            if std::env::var(AUTRE).is_ok() { jouer(); return; }
+            let mut c = %s;
+            c.env(AUTRE, "1");
+        }
+    """ % (E, E), [("t_premier", True)], 2, None),
+        ("POSITIF — protocole : le PARENT appelle `repertoire()`, seul `fn repertoire_de_l_enfant(` lit la variable", """
+        fn repertoire_de_l_enfant(cas: &str) -> Option<String> {
+            let v = std::env::var(ENFANT).ok()?;
+            (v == cas).then(|| v)
+        }
+        #[test]
+        fn t_prefixe() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if repertoire().is_none() { return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % E, [("t_prefixe", True)], 1, None),
+        ("POSITIF — protocole : auxiliaire GÉNÉRIQUE `fn nom<T>(` non trouvé, le test est accusé", """
+        fn repertoire_de_l_enfant<T: AsRef<str>>(cas: T) -> Option<String> {
+            let v = std::env::var(ENFANT).ok()?;
+            (v == cas.as_ref()).then(|| v)
+        }
+        #[test]
+        fn t_generique() {
+            if let Some(dir) = repertoire_de_l_enfant("x") { jouer(&dir); return; }
+            let mut c = %s;
+            c.env(ENFANT, "x");
+        }
+    """ % E, [("t_generique", True)], 0, "le bras de l'enfant n'est pas reconnu"),
+        ("POSITIF — test ORDINAIRE : sa faute ne parle pas d'un binaire relancé", """
+        #[test]
+        fn t_ordinaire() {
+            if !localhost_double() { return; }
+            assert!(juger());
+        }
+    """, [("t_ordinaire", True)], 0, "!CE TEST RELANCE SON BINAIRE"),
+        # ── LES BORNES PROCHES ET LE PROTOCOLE (vague BH) : la condition et ses appels s'arrêtent à
+        #    l'accolade qui OUVRE la branche, pas à celle qui la ferme ; une lecture ou un appel écrit
+        #    DANS la branche d'un `if` du PARENT n'en fait pas un bras de l'enfant. Et le protocole
+        #    exige ses DEUX moitiés : `.env(` sur un autre binaire, ou `current_exe()` sans `.env(`, ne
+        #    font pas de bras.
+        ("POSITIF — protocole : le `if` du PARENT lit la variable DANS sa branche, pas dans sa condition", """
+        #[test]
+        fn t_lu_dans_la_branche() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if !localhost_double() { eprintln!("{:?}", std::env::var(ENFANT)); return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % E, [("t_lu_dans_la_branche", True)], 1, None),
+        ("POSITIF — protocole : le `if` du PARENT appelle l'auxiliaire qui lit la variable DANS sa branche", """
+        fn repertoire_de_l_enfant(cas: &str) -> Option<String> {
+            let v = std::env::var(ENFANT).ok()?;
+            (v == cas).then(|| v)
+        }
+        #[test]
+        fn t_aux_dans_la_branche() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if !localhost_double() { let _ = repertoire_de_l_enfant("x"); return; }
+            let mut c = %s;
+            c.env(ENFANT, "x");
+        }
+    """ % E, [("t_aux_dans_la_branche", True)], 1, None),
+        ("POSITIF — `.env(` sur un AUTRE binaire, sans `current_exe()` : pas de protocole, pas de bras", """
+        #[test]
+        fn t_autre_binaire() {
+            if std::env::var(ENFANT).is_ok() { return; }
+            std::process::Command::new("sh").env(ENFANT, "1").status().unwrap();
+        }
+    """, [("t_autre_binaire", True)], 0, "!CE TEST RELANCE SON BINAIRE"),
+        ("POSITIF — `current_exe()` sans `.env(` : pas de protocole, la faute n'en parle pas", """
+        #[test]
+        fn t_sans_env() {
+            let exe = std::env::current_exe().unwrap();
+            if !localhost_double() { return; }
+            std::process::Command::new(exe).status().unwrap();
+        }
+    """, [("t_sans_env", True)], 0, "!CE TEST RELANCE SON BINAIRE"),
+        # La condition d'un `if` sans accolade à profondeur nulle (garde de motif dans `matches!`) n'est
+        # pas une condition : elle n'est pas rendue. Rendue jusqu'à la fin du test, elle lirait le bras de
+        # l'enfant écrit PLUS LOIN, et sa « branche » s'apparierait dans la fonction SUIVANTE du fichier,
+        # couvrant le `if` muet du PARENT.
+        ("POSITIF — protocole : garde de motif `if` dans `matches!`, sans accolade, suivie d'une fonction", """
+        #[test]
+        fn t_garde_de_motif() {
+            assert!(matches!(prealable(), Some(n) if n > 0));
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            if !localhost_double() { return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+        fn suivante() { if a { b(); } }
+    """ % E, [("t_garde_de_motif", True)], 1, None),
+        # L'accolade qui ouvre la branche est cherchée à profondeur NULLE de parenthèses : celle d'une
+        # closure écrite DANS la condition ne la coupe pas, sinon la lecture de la variable qui la suit
+        # n'est pas vue et le bras de l'enfant est jugé comme une sortie du test.
+        ("NÉGATIF — protocole : condition du bras qui porte une accolade entre parenthèses (closure)", """
+        #[test]
+        fn t_closure_dans_la_condition() {
+            if std::env::args().any(|a| { a.is_empty() }) && std::env::var(ENFANT).is_ok() { jouer(); return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % E, [], 1, None),
+        # Le crochet compte dans la profondeur comme la parenthèse : l'accolade d'un motif de struct écrit
+        # dans un motif de tranche (`if let [S { .. }] = …`) n'ouvre pas la branche.
+        ("NÉGATIF — protocole : condition du bras à motif de tranche `if let [S { .. }] = …`", """
+        #[test]
+        fn t_motif_de_tranche() {
+            if let [S { a, .. }] = lire(std::env::var(ENFANT)).as_slice() { jouer(a); return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+    """ % E, [], 1, None),
+        # LE PROTOCOLE SE LIT DANS LE CORPS DU TEST, jamais sur le fichier : `current_exe()` écrit dans un
+        # AUTRE test ou dans une aide, ou `.env(` écrit dans un autre test, ne font pas de ce test-ci un
+        # binaire relancé.
+        ("POSITIF — `current_exe()` dans un AUTRE test, `.env(` sur `sh` dans celui-ci : pas de bras", """
+        #[test]
+        fn t_relance_a_cote() {
+            if std::env::var(ENFANT).is_ok() { jouer(); return; }
+            let mut c = %s;
+            c.env(ENFANT, "1");
+        }
+        #[test]
+        fn t_sh_a_cote() {
+            if std::env::var(AUTRE).is_ok() { return; }
+            std::process::Command::new("sh").env(AUTRE, "1").status().unwrap();
+        }
+    """ % E, [("t_sh_a_cote", True)], 1, None),
+        ("POSITIF — `current_exe()` dans une AIDE du fichier, `.env(` dans le corps : pas de bras", """
+        fn binaire() -> std::path::PathBuf { std::env::current_exe().unwrap() }
+        #[test]
+        fn t_binaire_par_une_aide() {
+            if std::env::var(ENFANT).is_ok() { return; }
+            std::process::Command::new(binaire()).env(ENFANT, "1").status().unwrap();
+        }
+    """, [("t_binaire_par_une_aide", True)], 0, None),
+        ("POSITIF — `current_exe()` dans le corps, `.env(` seulement dans un AUTRE test : la faute n'en parle pas", """
+        #[test]
+        fn t_exe_sans_env_ici() {
+            let exe = std::env::current_exe().unwrap();
+            if !localhost_double() { return; }
+            std::process::Command::new(exe).status().unwrap();
+        }
+        #[test]
+        fn t_env_ailleurs() {
+            assert!(std::process::Command::new("sh").env(AUTRE, "1").status().unwrap().success());
+        }
+    """, [("t_exe_sans_env_ici", True)], 0, "!CE TEST RELANCE SON BINAIRE"),
+    ]
+    for nom, source, attendu, hp_attendu, fragment in cas_proto:
+        sites, _ = analyser(source, "<témoin>")
+        obtenu = [(s["test"], s["faute"] is not None) for s in sites if not s["hors_population"]]
+        hp = len([s for s in sites if s["hors_population"]])
+        if obtenu != attendu or hp != hp_attendu:
+            return (f"témoin « {nom} » : l'analyseur rend {obtenu} et {hp} site(s) hors population, "
+                    f"attendu {attendu} et {hp_attendu}")
+        if fragment and fragment.startswith("!"):
+            if any(fragment[1:] in (s["faute"] or "") for s in sites):
+                return f"témoin « {nom} » : la faute dit « {fragment[1:]} » à tort : {[s['faute'] for s in sites]}"
+        elif fragment and not all(fragment in (s["faute"] or "") for s in sites if s["faute"]):
+            return f"témoin « {nom} » : la faute ne dit pas « {fragment} » : {[s['faute'] for s in sites]}"
+
     for nom, source, attendu in cas:
         sites, _ = analyser(source, "<témoin>")
         obtenu = [(s["test"], s["faute"] is not None) for s in sites if not s["hors_population"]]
@@ -889,7 +1449,7 @@ def mode_garde():
           f"anticipée(s), {branches} branche(s) d'environnement à jumelle muette), sur {tests} "
           f"fonctions de test de `{os.path.relpath(caisse, RACINE)}`, empruntent tous le canal "
           f"(`{variable}`), nomment leur propre test et prennent `module_path!()`. "
-          f"{hors} site(s) hors population (protocole de ré-exécution).")
+          f"{hors} site(s) hors population (bras de l'enfant d'un protocole de ré-exécution ; le parent est jugé).")
     print("POURQUOI CETTE GARDE EXISTE : `libtest` détourne la sortie d'un test qui RÉUSSIT — un "
           "refus imprimé depuis un test vert part dans le vide, et le portail comme la CI ne lisent "
           "que le code de sortie. Le critère est POSITIONNEL (l'appel doit être dans LE BLOC du "
@@ -901,7 +1461,9 @@ def mode_garde():
           "et les boucles sur une collection dérivée de l'environnement (mesurés : zéro et trois, ces "
           "trois-là portant déjà leur plancher) ; une chaîne `else if` ; un corpus qui perd sa matière "
           "(c'est un plancher dans l'instrument qui tient cette forme) ; une seule caisse, celle qui "
-          "porte le canal ; le TEXTE, pas l'exécution (que le canal ait écrit, seul `--lire` le montre).")
+          "porte le canal ; le TEXTE, pas l'exécution (que le canal ait écrit, seul `--lire` le montre) ; "
+          "dans un protocole de ré-exécution, tout `if` qui lit une variable posée chez l'enfant est un "
+          "bras de l'enfant, et un auxiliaire n'est suivi que d'un niveau, dans le même fichier.")
     return CODE_TENU
 
 

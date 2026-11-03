@@ -6,6 +6,7 @@ import {
   avecLeSecretDesGestes, noeudDuRefusDUneLecture, phraseDuRefusDUneLecture, refusDUneLectureServie,
   aveuDUneTraceManquante, causeDeLaTraceManquante
 } from './core.js';
+import { coupeDeLaListeDeMachines } from './coupe_de_liste.js';
 import { ouvrirLaModaleDePlage } from './plage_de_dates.js';
 import { installI18nObserver } from './i18n_observer.js';
 import { S, ecrireDansLeStockageDuSite, ecrireSansDireLeRefus, lireLeStockageDuSite, RAISONS_DE_SILENCE } from './state.js';
@@ -307,18 +308,27 @@ const MOTS_DES_INSTANTANES_DU_PARC = {
   total_lu: {
     fr: ' · machines LUES (pas le parc) : {parc} manquant(s) sur {en_defaut}/{lues} machine(s) lue(s)',
     en: ' · machines READ (not the fleet): {parc} missing on {en_defaut}/{lues} machine(s) read' },
+  // `P10.20-b` — liste coupée à sa borne : `hosts[]` est la liste LISTÉE, pas le parc ; le total le dit.
+  total_liste: {
+    fr: ' · machines LISTÉES (pas le parc) : {parc} manquant(s) sur {en_defaut}/{lues} machine(s) listée(s)',
+    en: ' · machines LISTED (not the fleet): {parc} missing on {en_defaut}/{lues} machine(s) listed' },
   objet_firewall: { fr: 'Instantanés du pare-feu du parc', en: 'Fleet firewall snapshots' },
   objet_controls: { fr: 'Instantanés des contrôles du parc', en: 'Fleet control snapshots' },
 };
 const parcLuEnPartie = (r) => !!r && (r.hosts_etat != null || r.n_hosts === null);
+// `P10.20-b` — LA COUPE DE LA LISTE À SA BORNE SERVIE (`hosts_borne`), dite par `coupeDeLaListeDeMachines` (web/coupe_de_liste.js) :
+// texte brut, échappé ici avant `innerHTML`. Borne absente : '' (liste entière, face d'avant).
+const coupeDuPanneau = (r) => coupeDeLaListeDeMachines(r ? r.hosts_borne : undefined, r ? r.n_hosts : undefined);
 function snapScope(r) {
+  const coupe = coupeDuPanneau(r);
+  const suffixe = coupe ? ` · <b>${esc(coupe)}</b>` : '';
   if (parcLuEnPartie(r)) {
     const lues = Array.isArray(r.hosts) ? r.hosts.length : 0;
-    return faceDansLaLangue(MOTS_DES_INSTANTANES_DU_PARC.partiel, { hote: esc(r.host || '?'), lues });
+    return faceDansLaLangue(MOTS_DES_INSTANTANES_DU_PARC.partiel, { hote: esc(r.host || '?'), lues }) + suffixe;
   }
   const n = r.n_hosts || 0;
-  if (n <= 1) return r.host ? `hôte ${esc(r.host)}` : '';
-  return `hôte ${esc(r.host || '?')} — <b>1 machine sur ${n}</b>`;
+  if (n <= 1) return (r.host ? `hôte ${esc(r.host)}` : '') + suffixe;
+  return `hôte ${esc(r.host || '?')} — <b>1 machine sur ${n}</b>` + suffixe;
 }
 // Le corps d'un panneau d'instantané dont la lecture n'est pas servie (un cinq cent trois nommé, un refus) : la peinture
 // d'AVANT ne reste pas sous l'aveu du pied de page — elle se lirait comme l'état présent. L'erreur est relancée : c'est
@@ -374,6 +384,8 @@ async function renderControls() {
   // `P10.20-b` — sous une lecture PARTIELLE, `hs.length` est le compte des machines LUES, pas le parc : le total le dit.
   const total = parcLuEnPartie(r)
     ? faceDansLaLangue(MOTS_DES_INSTANTANES_DU_PARC.total_lu, { parc, en_defaut: enDefaut, lues: hs.length })
+    : coupeDuPanneau(r)
+    ? faceDansLaLangue(MOTS_DES_INSTANTANES_DU_PARC.total_liste, { parc, en_defaut: enDefaut, lues: hs.length })
     : hs.length > 1
     ? ` · parc : ${parc} manquant(s) sur ${enDefaut}/${hs.length} machine(s)`
     : '';

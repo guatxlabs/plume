@@ -1802,7 +1802,6 @@ pub(crate) const LEVIERS_DU_REFUS_D_ADRESSE_PRIVEE: &str =
 /// Le même jugement, RFC1918 refusé ou non selon `prive_bloque` (injecté : testable sans environnement). Le never-egress
 /// (loopback, link-local, unspecified, ULA) garde son refus d'avant ; une adresse privée refusée nomme ses leviers.
 pub(crate) fn ssrf_check_host_selon(host: &str, port: u16, prive_bloque: bool) -> Result<(), String> {
-    use std::net::ToSocketAddrs;
     let host = host.trim().to_ascii_lowercase();
     if host.is_empty() {
         return Err("SSRF: hôte d'URL vide".into());
@@ -1822,12 +1821,13 @@ pub(crate) fn ssrf_check_host_selon(host: &str, port: u16, prive_bloque: bool) -
     }
     // résolution DNS + re-check de CHAQUE IP ; échec de résolution -> deny (fail-closed)
     let mut resolved = 0usize;
-    let addrs = (host.as_str(), port).to_socket_addrs()
+    let addrs = ssrf_resoudre(&host, port)
         .map_err(|e| format!("SSRF: résolution de '{host}' impossible (deny): {e}"))?;
-    for a in addrs {
+    for ip in addrs {
         resolved += 1;
-        let ip = a.ip();
-        if ssrf_ip_allowed(ip) { continue; } // CIDR/IP opérateur : exempte cette IP résolue
+        // CIDR/IP opérateur : exempte CETTE IP résolue, et elle seule — les autres adresses du nom restent jugées,
+        // never-egress ET politique du privé (tests/exemption_ssrf_ne_leve_pas_la_politique_du_prive_des_autres.rs).
+        if ssrf_ip_allowed(ip) { continue; }
         if ip_never_egress(ip) {
             return Err(format!("SSRF: '{host}' résout vers une adresse interne ({ip}) — refus"));
         }
@@ -1839,6 +1839,19 @@ pub(crate) fn ssrf_check_host_selon(host: &str, port: u16, prive_bloque: bool) -
         return Err(format!("SSRF: aucune IP résolue pour '{host}' (deny)"));
     }
     Ok(())
+}
+/// La résolution que la garde juge : chaque adresse de `(host, port)`, dans l'ordre du résolveur. Sous `cfg(test)`, un
+/// témoin peut substituer une liste déjà résolue à un nom (`resolution_injectee`, en fin de fichier) : elle traverse
+/// alors la MÊME boucle de `ssrf_check_host_selon` que la production. Absent du binaire livré.
+fn ssrf_resoudre(host: &str, port: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
+    use std::net::ToSocketAddrs;
+    #[cfg(test)]
+    {
+        if let Some(adresses) = resolution_injectee::pour(host) {
+            return Ok(adresses);
+        }
+    }
+    Ok((host, port).to_socket_addrs()?.map(|a| a.ip()).collect())
 }
 
 /// `P7.20-a` — LE TÉMOIN DE L'ÉGRESS : intercepte l'appel réseau d'un égress DÉJÀ JUGÉ par la garde
@@ -1879,5 +1892,44 @@ pub(crate) mod temoin_de_l_egress {
             headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
             body: body.as_bytes().to_vec(),
         }
+    }
+}
+
+/// `P7.20-a` — LA RÉSOLUTION INJECTÉE : sous `cfg(test)`, substitue à un NOM une liste d'adresses déjà résolue, que
+/// `ssrf_resoudre` rend à la boucle de `ssrf_check_host_selon` au lieu d'interroger le résolveur. Aucun appelant de
+/// production ne reçoit une liste toute faite, et aucun nom de la machine ne rend sans réseau une adresse listée ET une
+/// adresse privée non listée : c'est le seul moyen de juger, par la vraie chaîne d'envoi, qu'une exemption de
+/// `PLUME_SSRF_ALLOW` ne lève pas la politique du privé pour les AUTRES adresses du même nom. Armée pour tout le
+/// processus : seuls les sous-processus d'un témoin l'arment ; désarmée, elle ne substitue rien. Absente du binaire livré.
+#[cfg(test)]
+pub(crate) mod resolution_injectee {
+    type Table = Vec<(String, Vec<std::net::IpAddr>)>;
+    static TABLE: std::sync::Mutex<Option<Table>> = std::sync::Mutex::new(None);
+    /// Tant que ce gardien vit, la table est armée ; lâché, elle est retirée.
+    #[must_use = "la résolution n'est injectée que tant que ce gardien vit"]
+    pub(crate) struct Injectee;
+    impl Drop for Injectee {
+        fn drop(&mut self) {
+            *TABLE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+    /// Arme la table : chaque nom rend ses adresses, DANS CET ORDRE. Le nom est comparé TEL QU'ÉCRIT : l'unique appelant
+    /// (`ssrf_resoudre`, depuis `ssrf_check_host_selon`) passe un hôte déjà en minuscules. Un nom de table en capitales
+    /// n'est pas trouvé, la résolution réelle de `.test` échoue et le témoin rougit : jamais blanchi.
+    pub(crate) fn injecter(table: &[(&str, &[&str])]) -> Injectee {
+        let t = table
+            .iter()
+            .map(|(nom, adresses)| {
+                let ips = adresses.iter().map(|a| a.parse().expect("adresse de la table injectée")).collect();
+                (nom.to_string(), ips)
+            })
+            .collect();
+        *TABLE.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
+        Injectee
+    }
+    /// Les adresses injectées pour ce nom, ou `None` (la résolution réelle a lieu).
+    pub(crate) fn pour(host: &str) -> Option<Vec<std::net::IpAddr>> {
+        let table = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        table.as_ref()?.iter().find(|(nom, _)| nom == host).map(|(_, ips)| ips.clone())
     }
 }

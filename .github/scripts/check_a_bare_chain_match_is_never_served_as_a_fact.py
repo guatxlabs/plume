@@ -126,6 +126,23 @@ CORRECTION DE LA VAGUE BF (vérification BF1, 2026-11-02)
   * les lectures à chaîne nue qu'aucune jambe ne lit sont COMPTÉES et classées dans `ce_qui_n_est_pas_tenu()`, sous
     `handlers/` et hors de lui ; un défaut lu hors `handlers/` (`rollups.rs` 811 puis 880) y est nommé et rattaché à
     `P10.20-b`.
+
+VAGUE BH (2026-11-02) — LA VIRGULE FINALE D'UN CHAMP UNIQUE
+-----------------------------------------------------------
+  * un appel à UN seul champ coupé par rustfmt garde sa virgule finale (`Refus::Refusee(\n    "x".to_string(),\n)`) :
+    il était accusé sous l'étiquette « plusieurs champs ». Le champ unique se lit désormais comme le texte entier
+    rogné, privé de sa virgule finale (`p92`, `variante(littéral)`), la virgule imbriquée du débordement de rustfmt
+    par la récursion (`p93`), une virgule finale aux deux niveaux par les deux (`p95`, la limite `n81` est levée) ;
+    un champ unique qui est lui-même une variante, virgule finale au niveau externe, est relu sur `seul` et non sur
+    `m.group(1)` (`p94`, mutant G8).
+
+CORRECTION DE LA VAGUE BI (vérification BH1, 2026-11-02)
+--------------------------------------------------------
+  * la coupe par `champs_de_tete` dans `variante_d_un_litteral` (branche « un seul morceau ») était devenue
+    ÉQUIVALENTE au texte entier privé de sa virgule finale : elle est RETIRÉE (preuve dans `variante_d_un_litteral`) ;
+  * le retrait de la virgule finale dans `champs_de_tete` n'est soumis à aucune longueur, et `len(out) > 2` (mutant
+    CT8) n'y est PAS tenu par une épreuve : il est équivalent, preuve écrite dans `champs_de_tete` (la vague BH le
+    disait tenu par `p92`, ce qui était faux).
 """
 import os
 import re
@@ -286,9 +303,35 @@ def corps_litteral(corps):
 
 def variante_d_un_litteral(corps):
     """Le corps n'est-il qu'un constructeur en `CamelCase` dont l'unique champ est un littéral (ou une telle variante) ?
-    `Refus::Refusee("étape introuvable".to_string())` : la phrase d'absence sous un type nommé."""
+    `Refus::Refusee("étape introuvable".to_string())` : la phrase d'absence sous un type nommé.
+
+    Vague BH — UN CHAMP UNIQUE SUIVI D'UNE VIRGULE FINALE EST UN CHAMP UNIQUE. La forme la plus écrite par rustfmt
+    (`Refus::Refusee(\n    "absent".to_string(),\n)`) gardait sa virgule dans le champ : `SUFFIXE_DE_CONVERSION` et
+    `LITTERAL_SEUL`, ancrés en fin, ne la reconnaissaient pas, et l'appel tombait sous l'étiquette « plusieurs champs »
+    (`p92`). Le champ unique est désormais le texte entier, rogné (`.strip()` : la virgule de rustfmt est suivie d'un
+    saut de ligne, mutant VL6 -> `p92`), privé de SA virgule finale (mutant VL5 -> `p92`, `p95`). La même écriture tient
+    la virgule IMBRIQUÉE du débordement de rustfmt (`Refus::Client(Motif::Absent(\n    "x".to_string(),\n))`) : le
+    texte entier ne finit pas par une virgule, et la récursion la retire à son tour (`p93`) ; et la virgule finale aux
+    DEUX niveaux (`A(\n    B(\n        "x",\n    ),\n)`) : l'externe ici, l'interne dans la récursion (`p95`, ancienne
+    limite `n81`, que `VARIANTE_D_UN_CHAMP`, ancrée en fin sur `)`, refusait). La récursion porte sur `seul`, jamais
+    sur `m.group(1)` : un champ unique qui est lui-même une variante, virgule finale au niveau externe
+    (`Refus::Client(\n    Motif::Absent("x"),\n)`), retomberait sinon sous « plusieurs champs » (`p94`, mutant G8).
+
+    Vague BI — LA COUPE PAR `champs_de_tete` EST RETIRÉE D'ICI, ÉQUIVALENTE depuis que le texte entier perd sa virgule
+    finale (mutant G8 de la vérification de BH1, la branche « un seul morceau » retirée, resté vert). Preuve : la coupe
+    rend UN morceau dans deux cas seulement. (a) Aucune virgule hors chaîne : le morceau est le texte entier rogné, qui
+    ne finit pas par une virgule (une chaîne finit par son guillemet) — c'est `seul`. (b) Une seule virgule hors chaîne,
+    suivie de blanc seul : le morceau est le texte qui la précède, rogné ; le texte entier rogné finit par cette
+    virgule, la retirer laisse ce même texte, au blanc d'avant la virgule près, que `depouiller` rogne au début de
+    `corps_litteral` comme de cette fonction. Dans tous les autres cas (zéro ou plusieurs morceaux) l'écriture de la
+    vague BH relisait déjà le texte entier privé de sa virgule finale. Le verdict est donc le même pour toute entrée."""
     m = VARIANTE_D_UN_CHAMP.fullmatch(depouiller(corps))
-    return bool(m) and (corps_litteral(m.group(1)) or variante_d_un_litteral(m.group(1)))
+    if not m:
+        return False
+    seul = m.group(1).strip()
+    if seul.endswith(","):
+        seul = seul[:-1]  # virgule finale au niveau externe (`p92`, `p95`) ; une virgule en fin de texte n'est jamais dans une chaîne
+    return corps_litteral(seul) or variante_d_un_litteral(seul)
 
 
 def champs_de_tete(texte):
@@ -304,7 +347,26 @@ def champs_de_tete(texte):
     coupés à toutes les virgules sont tous acceptés, aucune virgule n'était sous une parenthèse et la coupe est celle
     qu'aurait faite le compte de profondeur ; si une virgule était sous une parenthèse, le morceau qui la précède
     porte une ouvrante non fermée et il est refusé — le verdict est le même. Un texte non apparié laisse de même au
-    moins un champ refusé."""
+    moins un champ refusé.
+
+    Vague BG — LA CONDITION `len(out) > 1` DEVANT LE RETRAIT DE LA VIRGULE FINALE EST RETIRÉE, ÉQUIVALENTE (mutant
+    `> 0` vert à la vérification de BF3, M_CT6) : `out` n'a qu'un élément seulement quand le texte n'a aucune virgule
+    hors chaîne, et cet élément n'est blanc que si le texte entier l'est (`Tete()` ou `Tete(  )`, que
+    `VARIANTE_D_UN_CHAMP` admet). La coupe rend alors `[]` au lieu de `[""]` ; l'appelant n'accuse ni l'un ni l'autre :
+    `any([])` est faux, et `""` n'est ni un littéral (`LITTERAL_SEUL` exige un guillemet ou une majuscule) ni une
+    variante (`VARIANTE_D_UN_CHAMP` exige une tête), donc `any([False])` est faux aussi. Aucune autre entrée ne
+    distingue les deux écritures.
+
+    Vague BI — UNE CONDITION `len(out) > 2` DEVANT CE RETRAIT SERAIT ÉQUIVALENTE AUSSI (mutant CT8, vert à la
+    vérification de BH1 ; la vague BH le disait tenu par `p92`, c'était faux depuis que `variante_d_un_litteral` relit
+    le texte entier privé de sa virgule finale). Elle ne change que le cas d'UNE virgule hors chaîne suivie de blanc
+    seul : `[f, ""]` au lieu de `[f]`. Avec `[f, ""]`, l'appelant n'accuse jamais : `""` n'est ni littéral, ni variante,
+    ni valeur simple (`VALEUR_SIMPLE` exige une lettre), donc `all(..)` est faux. Avec `[f]`, il accuse si `f` est un
+    littéral ou une variante d'un littéral ; mais `jambe_map_err` juge `variante_d_un_litteral` AVANT, sur le même
+    corps, et celle-ci relit exactement `f` (texte entier rogné, virgule finale retirée) avec le même prédicat
+    (`corps_litteral(f) or variante_d_un_litteral(f)`) : ce cas est déjà rendu `variante(littéral)` et n'atteint pas
+    l'appelant. `variante_a_plusieurs_champs` n'a pas d'autre appelant. Le retrait reste nécessaire pour plusieurs
+    champs (`p91`, mutant CT7)."""
     chaines = spans_de_chaines_rust(texte)
     out, deb = [], 0
     for j, c in enumerate(texte):
@@ -312,8 +374,10 @@ def champs_de_tete(texte):
             out.append(texte[deb:j])
             deb = j + 1
     out.append(texte[deb:])
-    if len(out) > 1 and not out[-1].strip():
-        out.pop()  # virgule finale
+    # `.strip()` : la virgule finale de rustfmt est suivie d'un saut de ligne (p91). Aucune condition sur `len(out)` :
+    # `> 1` (M_CT6) et `> 2` (CT8) sont équivalentes, preuves ci-dessus.
+    if not out[-1].strip():
+        out.pop()  # virgule finale (ou texte blanc : `[]`, même verdict, voir plus haut)
     return [x.strip() for x in out]
 
 
@@ -340,8 +404,9 @@ def variante_a_plusieurs_champs(corps):
     m = VARIANTE_D_UN_CHAMP.fullmatch(depouiller(corps))
     if not m:
         return False
-    champs = champs_de_tete(m.group(1))  # jamais vide : au moins un champ, même sans virgule
-    # Un champ UNIQUE littéral est déjà pris par `variante_d_un_litteral`, jugée avant ; non littéral, `any` le rejette.
+    champs = champs_de_tete(m.group(1))  # vide seulement sur un texte blanc (`Tete()`) : `any` le rejette
+    # Un champ UNIQUE littéral, virgule finale comprise (`p92`, vague BH), est déjà pris par `variante_d_un_litteral`,
+    # jugée avant ; non littéral (`n36`, `n82`), `any` le rejette.
     litteraux = [corps_litteral(x) or variante_d_un_litteral(x) for x in champs]
     return any(litteraux) and all(lit or bool(VALEUR_SIMPLE.fullmatch(x)) for lit, x in zip(litteraux, champs))
 
@@ -1022,6 +1087,25 @@ EPREUVES += [
      {FORME_VARIANTE_A_PLUSIEURS_CHAMPS}, 0, 1),
     ("p32 trois champs, virgule DANS le littéral, champ `&nom` et `x.clone()`",
      _e('.map_err(|_| Refus::Refusee("absent, ou pas", &nom, x.clone(),))?'), {FORME_VARIANTE_A_PLUSIEURS_CHAMPS}, 0, 1),
+    ("p91 appel coupé par rustfmt : virgule finale SUIVIE D'UN SAUT DE LIGNE (le `.strip()` du retrait la tient)",
+     _e('.map_err(|_| Refus::Refusee(\n                "absent",\n                &nom,\n            ))?'),
+     {FORME_VARIANTE_A_PLUSIEURS_CHAMPS}, 0, 1),
+    # Vague BH : la forme la PLUS COURANTE de rustfmt, un appel à UN seul champ coupé sur plusieurs lignes avec sa
+    # virgule finale. Champ unique (étiquette `variante(littéral)`), pas « plusieurs champs ».
+    ("p92 appel à UN champ coupé par rustfmt, virgule finale : un champ unique (texte entier rogné, virgule retirée)",
+     _e('.map_err(|_| Refus::Refusee(\n                "absent introuvable".to_string(),\n            ))?'),
+     VARIANTE_ACCUSEE, 0, 1),
+    ("p93 débordement de rustfmt : virgule finale IMBRIQUÉE sous un champ unique (le texte entier est relu)",
+     _e('.map_err(|_| Refus::Client(Motif::Absent(\n                "absent introuvable".to_string(),\n'
+        '            )))?'), VARIANTE_ACCUSEE, 0, 1),
+    ("p94 champ unique qui est LUI-MÊME une variante, virgule finale au niveau externe (récursion sur le champ)",
+     _e('.map_err(|_| Refus::Client(\n                Motif::Absent("absent introuvable"),\n            ))?'),
+     VARIANTE_ACCUSEE, 0, 1),
+    ("p95 virgule finale aux DEUX niveaux (`A(\\n B(\\n \"x\",\\n ),\\n)`, ancienne limite n81 levée)",
+     _e('.map_err(|_| Refus::Client(\n                Motif::Absent(\n                    "x",\n'
+        '                ),\n            ))?'), VARIANTE_ACCUSEE, 0, 1),
+    ("n82 un seul champ NON littéral suivi d'une virgule finale (`Refus::Refusee(\\n id,\\n)`)",
+     _e('.map_err(|_| Refus::Refusee(\n                id,\n            ))?'), set(), 0, 1),
     ("p33 deux champs littéraux dont une variante d'un littéral",
      _e('.map_err(|_| Refus::Double(Motif::Absent("x"), ABSENT))?'), {FORME_VARIANTE_A_PLUSIEURS_CHAMPS}, 0, 1),
     ("p34 jambe liée : `match &r`, receveur coupé par rustfmt, instruction entre les deux, chaîne `.map(..)`",
@@ -1273,7 +1357,18 @@ def valider_instrument():
       champs — M_CT1 -> CT1, chaînes non sautées (p32) ; M_CT2 : le saut d'échappement est celui du lecteur importé
       (`p77` le fixe) ; M_CT3 -> CT3 (p32) ; M_CT4/M_CT5 : le compte de profondeur et les deux refus d'appariement sont
       RETIRÉS — ils étaient ÉQUIVALENTS (preuve dans `champs_de_tete` : un champ accepté n'a ni virgule hors chaîne ni
-      fermante sans ouvrante ; un texte non apparié laisse donc un champ refusé, verdict identique) ;
+      fermante sans ouvrante ; un texte non apparié laisse donc un champ refusé, verdict identique) ; M_CT6 (vague BG) :
+      la condition `len(out) > 1` du retrait de la virgule finale est RETIRÉE — ÉQUIVALENTE (preuve dans
+      `champs_de_tete` : seul un texte blanc la distinguait, `[]` contre `[""]`, et l'appelant n'accuse aucun des deux) ;
+      CT7 (vague BG) : le `.strip()` du test de virgule finale retiré -> p91 (virgule finale suivie d'un saut de ligne,
+      forme que rustfmt écrit sur tout appel coupé) ; CT8 (vague BH) : `len(out) > 2 and` devant ce test — ÉQUIVALENT
+      (vert à la vérification de BH1 ; preuve dans `champs_de_tete` : `[f, ""]` n'est jamais accusé, et `[f]` littéral
+      est déjà rendu `variante(littéral)` par `variante_d_un_litteral`, jugée avant sur le même `f`) ;
+      champ unique (vague BH, réécrit en vague BI) — VL1 à VL4 visaient la coupe par `champs_de_tete` dans
+      `variante_d_un_litteral` : elle est RETIRÉE, ÉQUIVALENTE (mutant G8 de la vérification de BH1, la branche « un
+      seul morceau » retirée, resté vert ; preuve dans `variante_d_un_litteral`) ; G8 (vague BH) la récursion portée sur
+      `m.group(1)` au lieu de `seul` -> p94 ; VL5 la virgule finale externe non retirée du texte entier -> p92 (et
+      p95) ; VL6 le `.strip()` du texte entier retiré -> p92 ; VL7 la récursion retirée -> p27, p93 ;
       plusieurs champs — M_MC1 -> MC1 (n36), M_MC2 -> MC2 (n35), M_MC3 -> MC3 (p33) ;
       tête — M_TETE1 -> TETE1 (p55), M_TETE2 -> TETE2 (p82) ; variante unitaire — M_VU1 -> VU1 (p51) ; M_VU2 : la
       minuscule exigée est RETIRÉE, l'ensemble sans minuscule étant pris AVANT par `corps_litteral` sous le même chemin

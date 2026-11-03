@@ -12,9 +12,12 @@
 //  * NON LUE -> 503 `{columns: [], rows: [], error: CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE, id, stats.coverage}` (raison
 //    `cache_non_lu` et sa notice, horizon mesuré), rafraîchissement armé si le panneau compile ; la console le peint en
 //    lecture refusée avec sa cause (`if (!r.ok) nonServie()`, web/dashboards.js ; `causeNommeeParLeDemon`, web/core.js) ;
-//  * ILLISIBLE -> 200 `{columns: [], rows: [], stats.coverage}` de raison `paye_utile_illisible` (le corps d'une charge
-//    qui n'est pas du JSON), sans `warming`, rafraîchissement armé si le panneau compile ;
-//  * les deux sont jugées AVANT le refus du compilateur, rendu seulement sur une vraie absence ;
+//  * ILLISIBLE, panneau qui compile -> 200 `{columns: [], rows: [], stats.coverage}` de raison `paye_utile_illisible` (le
+//    corps d'une charge qui n'est pas du JSON), sans `warming`, rafraîchissement armé ;
+//  * (vague BG) la NON LUE est jugée AVANT le refus du compilateur (elle peut cacher une charge valide, que le HIT
+//    sert même quand le panneau ne compile plus), l'ILLISIBLE APRÈS lui : une ligne illisible d'un panneau qui ne
+//    compile pas rend le refus du compilateur (400), comme une absence — la vague BF servait là un 200
+//    `paye_utile_illisible` qui ne changeait jamais et masquait le 400 servi sur b29051c4 ;
 //  * chaque ligne nomme le tenant de l'appelant, échappé (`{:?}`) ; la NON LUE porte l'identifiant de corrélation servi.
 //
 // CE QUE CE TÉMOIN JUGE, dans UN sous-processus (journal capturé, compte de production par processus), en MODE 1 avec
@@ -22,20 +25,31 @@
 // refusé par le compilateur, appelés par `panel_data` au rôle lecteur :
 //  (1) ILLISIBLE, panneau sain : 200, clés exactes, raison `paye_utile_illisible`, `horizon_ts` présent, aucun `warming` ;
 //      le rafraîchissement armé REMPLACE la ligne par une charge utile sans `error` ;
-//  (2) ILLISIBLE, panneau refusé par le compilateur : 200 (pas le 400 du compilateur), même forme, sans horizon, rien armé,
-//      la ligne reste illisible ;
+//  (2) ILLISIBLE, panneau refusé par le compilateur : 400, corps EXACT `{error: cause du compilateur}` (le même que le
+//      chemin live et qu'une absence), et la ligne reste illisible (rien ne l'écrit). INVERSÉ par la vague BG : la vague BF
+//      y affirmait un 200 `paye_utile_illisible` ;
 //  (3) NON LUE (autorisateur qui refuse `panel_cache.payload` sur la base du tenant), panneau sain, ligne absente : 503,
 //      clés exactes, `error` = phrase du témoin, raison `cache_non_lu`, notice du témoin, `horizon_ts` présent, `id` servi ;
 //      le rafraîchissement armé ÉCRIT la ligne ;
-//  (4) NON LUE, panneau refusé par le compilateur : 503 (pas le 400), sans horizon, rien armé ;
-//  journal : les huit lignes `[panel] WARN ligne de cache …` ENTIÈRES, dans l'ordre, tenant de l'appelant par ligne.
+//  (4) NON LUE, panneau refusé par le compilateur : 503 (pas le 400), clés exactes, phrase, raison et notice du témoin ;
+//  journal : les huit lignes `[panel] WARN ligne de cache …` ENTIÈRES, dans l'ordre, tenant de l'appelant par ligne ; la
+//  ligne ILLISIBLE d'un panneau refusé a sa phrase propre (refus du compilateur servi, rien d'armé, ligne laissée).
+// (Vague BG : les assertions « rien n'est armé » et « aucun horizon » des cas (2) et (4) sont RETIRÉES — sans panneau
+// compilé, aucune implémentation ne peut armer ni mesurer un horizon : elles étaient vraies par construction.)
 // MUTANTS JOUÉS (variable `VERIF_MUT` sous `cfg!(test)`, retirés avant le commit), chacun vu ROUGE : BF6_NONLUE_EN_CHAUFFE,
 // BF6_ILLISIBLE_EN_CHAUFFE, BF6_NONLUE_200, BF6_NONLUE_SANS_RAFRAICHIR, BF6_ILLISIBLE_SANS_RAFRAICHIR,
 // BF6_COMPILATION_D_ABORD, BF6_TENANT_ILLISIBLE_FIGE, BF6_TENANT_NONLUE_FIGE, BF6_TENANT_NON_ECHAPPE,
-// BF6_NONLUE_SANS_HORIZON, BF6_ILLISIBLE_SANS_HORIZON, BF6_NONLUE_SANS_NOTICE, BF6_NONLUE_ID_DIVERGENT.
-// CE QUE CE TÉMOIN NE TIENT PAS : les lignes `[cache]` du pré-chauffage (rollups.rs, `cache_refresh_all_panels`) ne
-// nomment toujours pas le tenant : la boucle qui l'appelle (server/boucles_de_fond.rs, `_tid`) ne le lui passe pas ;
-// la console ne lit pas `stats.rafraichissement_en_echec`.
+// BF6_NONLUE_SANS_HORIZON, BF6_ILLISIBLE_SANS_HORIZON, BF6_NONLUE_SANS_NOTICE, BF6_NONLUE_ID_DIVERGENT. Vague BG, chacun vu
+// ROUGE : BG4_ILLISIBLE_AVANT_LE_REFUS (l'ancien ordre : ILLISIBLE jugée avant le refus du compilateur),
+// BG4_REFUS_AVANT_NONLUE (le refus du compilateur jugé avant la NON LUE), BG4_PHRASE_ILLISIBLE_UNIQUE (la ligne ILLISIBLE
+// d'un panneau refusé garde la phrase « servie comme une charge utile illisible »), BG4_NOTICE_NON_LUE_REPLI (la notice de
+// `cache_non_lu` retombe sur celle de la charge illisible).
+// CE QUE CE TÉMOIN NE TIENT PAS : ce que la console peint. Elle lit désormais `stats.rafraichissement_en_echec`
+// (web/dashboards.js, `noeudDuRafraichissementEnEchec` et `poserLesAveuxDuPanneau` : les lignes restent
+// affichées, précédées de l'aveu « Lignes d'AVANT, servies périmées : le recalcul de ce panneau a échoué » avec la cause
+// servie, ou « cause non servie par le démon », et l'instant `echoue_a` ; tenu par le témoin 159 du harnais de la
+// console, pas ici). Les lignes `[cache]` du pré-chauffage nomment le tenant depuis la vague BG
+// (`prechauffage_nomme_le_tenant_et_plancher_des_retardataires_non_lu.rs`).
 // =====================================================================================
 mod ligne_de_cache_non_lue_jamais_servie_en_chauffe {
     use super::*;
@@ -88,6 +102,15 @@ mod ligne_de_cache_non_lue_jamais_servie_en_chauffe {
              (lecture de cache ratée n° {rang} depuis le démarrage) — servie comme une charge utile illisible (corps \
              synthétique `paye_utile_illisible`, sans `warming`), rafraîchissement armé si le panneau compile, qui la \
              remplacera"
+        )
+    }
+
+    /// Vague BG : la ligne ILLISIBLE d'un panneau que le compilateur refuse — son refus est servi, rien n'est armé.
+    fn bf6_ligne_illisible_refuse(id: i64, t: &str, rang: u64) -> String {
+        format!(
+            "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant \"{t}\" : {BF6_ILLISIBLE} \
+             (lecture de cache ratée n° {rang} depuis le démarrage) — le panneau ne compile pas : le refus du compilateur est \
+             servi (400), rien n'est armé, la ligne reste telle quelle"
         )
     }
 
@@ -161,16 +184,18 @@ mod ligne_de_cache_non_lue_jamais_servie_en_chauffe {
             .unwrap_or_else(|_| panic!("(1) {t} : charge JSON : {apres}"));
         assert!(charge.get("error").is_none() && charge["rows"].is_array(), "(1) {t} : le rafraîchissement a écrit un résultat : {charge}");
 
-        // (2) ILLISIBLE, panneau refusé par le compilateur : la ligne ratée l'emporte, rien n'est armé.
+        // (2) ILLISIBLE, panneau refusé par le compilateur : le refus du compilateur, comme sur une absence (INVERSÉ par la
+        // vague BG : la vague BF servait ici un 200 `paye_utile_illisible`).
+        let refus_du_compilateur = panneau_avoue::compile_panneau_avoue(BF6_GXQL_REFUSE, true, from, 0, None)
+            .err()
+            .unwrap_or_else(|| panic!("précondition (2) {t} : le GXQL est refusé"));
         poser_un_blob(refuse, &fp_refuse);
         let rang = panneau_avoue::lectures_de_cache_refusees() + 1;
         let (code, corps) = t3c_json(panel_data(State(st.clone()), Extension(au.clone()), Path(refuse), bf6_q(from)).await).await;
-        assert!(t3c_rien_en_vol(st), "(2) {t} : rien n'est armé");
-        assert_eq!(code, 200, "(2) {t} : pas le refus du compilateur : {corps}");
-        assert_eq!(bf6_cles(&corps), vec!["columns", "rows", "stats"], "(2) {t} : {corps}");
-        assert_eq!(corps["stats"]["coverage"]["reason"], json!("paye_utile_illisible"), "(2) {t} : {corps}");
-        assert!(corps["stats"]["coverage"].get("horizon_ts").is_none(), "(2) {t} : aucun horizon sans compilation : {corps}");
-        attendus.push(bf6_ligne_illisible(refuse, t, rang));
+        assert_eq!(code, 400, "(2) {t} : le refus du compilateur, pas un corps synthétique : {corps}");
+        assert_eq!(corps, json!({ "error": refus_du_compilateur }), "(2) {t} : corps exact, celui du chemin live : {corps}");
+        assert_eq!(bf6_issue(&handle.lock(), refuse, &rk, &fp_refuse), "Illisible", "(2) {t} : la ligne reste telle quelle");
+        attendus.push(bf6_ligne_illisible_refuse(refuse, t, rang));
 
         // (3) NON LUE, panneau sain, ligne absente : 503 nommé, le rafraîchissement armé écrit la ligne.
         // Le coût mesuré par le rafraîchissement de (1) classerait le panneau en LIVE (coût bas confirmé) : il est retiré,
@@ -194,17 +219,16 @@ mod ligne_de_cache_non_lue_jamais_servie_en_chauffe {
         let apres = bf6_issue(&handle.lock(), sain, &rk, &fp_sain);
         assert!(apres.starts_with("Lue:") && !apres.contains("\"error\""), "(3) {t} : le rafraîchissement armé a écrit la ligne : {apres}");
 
-        // (4) NON LUE, panneau refusé par le compilateur : 503, rien n'est armé.
+        // (4) NON LUE, panneau refusé par le compilateur : 503, la NON LUE est jugée AVANT le refus du compilateur.
         bf6_refuser(&handle);
         let rang = panneau_avoue::lectures_de_cache_refusees() + 1;
         let (code, corps) = t3c_json(panel_data(State(st.clone()), Extension(au.clone()), Path(refuse), bf6_q(from)).await).await;
-        let rien = t3c_rien_en_vol(st);
         bf6_permettre(&handle);
-        assert!(rien, "(4) {t} : rien n'est armé");
         assert_eq!(code, 503, "(4) {t} : pas le refus du compilateur : {corps}");
+        assert_eq!(bf6_cles(&corps), vec!["columns", "error", "id", "rows", "stats"], "(4) {t} : forme exacte, sans `warming` : {corps}");
         assert_eq!(corps["error"], json!(BF6_CAUSE), "(4) {t} : {corps}");
         assert_eq!(corps["stats"]["coverage"]["reason"], json!("cache_non_lu"), "(4) {t} : {corps}");
-        assert!(corps["stats"]["coverage"].get("horizon_ts").is_none(), "(4) {t} : aucun horizon sans compilation : {corps}");
+        assert_eq!(corps["stats"]["coverage"]["notice"], json!(BF6_NOTICE_NON_LUE), "(4) {t} : {corps}");
         let cid = corps["id"].as_str().unwrap_or_else(|| panic!("(4) {t} : identifiant servi : {corps}")).to_string();
         attendus.push(bf6_ligne_non_lue(&cid, refuse, t, rang));
         attendus

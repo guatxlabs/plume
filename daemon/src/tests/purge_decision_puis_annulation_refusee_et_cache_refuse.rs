@@ -45,7 +45,8 @@
 // `LIRE_COMPTE_ABSENCE` (l'absence comptée). Correction après vérification : `DEC_DEFAUT_409` (bras par défaut de
 // `statut_du_refus_de_purge` remis en 409), `DEC_LOI_COUNT` (`count_mismatch` sorti de `purge::est_une_decision`),
 // `DEC_ANNULER_SANS_DECISION` (`annuler_la_purge` pose `decision: false`), `LIRE_ILLISIBLE_NON_LUE`.
-// CE QUE CES TÉMOINS NE TIENNENT PAS : la console ne lit pas `stats.rafraichissement_en_echec` (web/, hors de ce lot) ;
+// CE QUE CES TÉMOINS NE TIENNENT PAS : la lecture de `stats.rafraichissement_en_echec` par la console (web/dashboards.js,
+// témoignée par le harnais web, pas ici) ;
 // `legal_hold` n'atteint pas l'annulation (rendu par le seul plan, hors transaction) : sa ligne n'est jugée que par la loi
 // des codes ; les lignes `[purge]` ne nomment pas le tenant (`purge_apply` ne le reçoit pas) ; le compte de
 // `cache_lire_dit` n'est pas servi sous `/api/system/metrics`.

@@ -357,7 +357,7 @@ mod aw1_politiques_non_lues_et_echec_anterieur {
             let calcule = now() + decalage;
             panneau_avoue::cache_ecrire(&st.db.lock(), id, &rk, &fp, calcule, &aw1_charge());
             demander(dbp.as_str(), PanneAuCoeur::ErreurDuSupport);
-            crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+            crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
             let servie = !encore_demandee(dbp.as_str());
             retirer(dbp.as_str());
             assert!(servie, "prémisse ({nom}) : la panne a servi au pré-chauffage");
@@ -446,7 +446,7 @@ mod aw1_politiques_non_lues_et_echec_anterieur {
                 eprintln!("AW1-ID-{nom}:{id}");
                 eprintln!("{PHASE}{nom}");
                 demander(dbp.as_str(), PanneAuCoeur::ErreurDuSupport);
-                crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+                crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
                 println!("AW1-SERVIE-{nom}:{}", !encore_demandee(dbp.as_str()));
                 retirer(dbp.as_str());
                 ff_rm(&dbp);
@@ -503,7 +503,7 @@ mod aw1_politiques_non_lues_et_echec_anterieur {
                 .collect()
         };
         let cache = |nom: &str, suite: &str| -> String {
-            format!("[cache] WARN pré-chauffage du panneau {} en échec ({nature}) — {suite}", lire(&format!("AW1-ID-{nom}:")))
+            format!("[cache] WARN pré-chauffage du panneau {} en échec ({nature}), tenant \"default\" — {suite}", lire(&format!("AW1-ID-{nom}:")))
         };
         let attendus: [(&str, String); 4] = [
             ("aucune", cache("aucune", "rien d'écrit, le chemin à la demande retentera")),

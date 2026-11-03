@@ -229,13 +229,32 @@ pub(crate) const RAISON_PAYE_UTILE_ILLISIBLE: &str = "paye_utile_illisible";
 /// Aucun payload n'existe encore pour cette plage : la mesure est en cours (chemin `warming`).
 pub(crate) const RAISON_MESURE_EN_COURS: &str = "mesure_en_cours";
 /// `P10.32-o` — LA LIGNE DE CACHE DE CETTE PLAGE N'A PAS PU ÊTRE LUE (lecture refusée par la base,
-/// `LectureDeCache::NonLue`) : le corps servi est un MISS, mais ce n'est PAS une mesure en cours — on ne sait pas ce que
-/// la ligne porte. Posée par [`dire_la_ligne_de_cache_non_lue`].
+/// `LectureDeCache::NonLue`) : le corps servi est un refus nommé en 503 (`error`, `id`, aucune ligne, sans `warming`) —
+/// ce n'est PAS une mesure en cours, et on ne sait pas ce que la ligne porte. Raison de la couverture de ce 503, posée
+/// par [`coverage_synthetique`] avec sa notice [`NOTICE_LIGNE_DE_CACHE_NON_LUE`].
 pub(crate) const RAISON_LIGNE_DE_CACHE_NON_LUE: &str = "cache_non_lu";
 /// La notice de [`RAISON_LIGNE_DE_CACHE_NON_LUE`] (texte du produit, jamais la cause du moteur, qui va au journal).
 pub(crate) const NOTICE_LIGNE_DE_CACHE_NON_LUE: &str = "la ligne de cache de ce panneau n'a pas pu être lue (lecture \
      refusée par la base) : aucune ligne n'est servie, et ce n'est pas une mesure en cours. Ce corps vide n'établit PAS \
      une absence ; le détail est au journal de l'exploitant.";
+/// `P10.32-o` (vague BH) — LA DERNIÈRE ÉCRITURE DE CETTE LIGNE DE CACHE A ÉTÉ REFUSÉE PAR LA BASE
+/// (`ecriture_de_cache_refusee`) et aucune charge n'y est : le corps servi est un refus nommé en 503 (`error`, `id`,
+/// aucune ligne, sans `warming`) — ce n'est PAS une mesure en cours. Raison de la couverture de ce 503, posée par
+/// [`coverage_synthetique`] avec sa notice [`NOTICE_CACHE_NON_ECRIT`].
+pub(crate) const RAISON_CACHE_NON_ECRIT: &str = "cache_non_ecrit";
+/// La notice de [`RAISON_CACHE_NON_ECRIT`] (texte du produit, jamais la cause du moteur, qui va au journal).
+pub(crate) const NOTICE_CACHE_NON_ECRIT: &str = "la base a refusé d'écrire dans le cache le résultat du dernier calcul de \
+     ce panneau : aucune ligne n'est servie, et ce n'est pas une mesure en cours. Ce corps vide n'établit PAS une absence ; \
+     un nouveau calcul est armé au plus une fois par durée du cache, le détail est au journal de l'exploitant.";
+/// `P10.32-o` (vague BH) — la cause posée sous `stats.rafraichissement_en_echec` d'une charge VALIDE servie depuis le cache
+/// quand la dernière écriture de sa ligne a été refusée : la charge servie n'est pas celle du dernier calcul.
+pub(crate) const CAUSE_ECRITURE_DU_CACHE_REFUSEE: &str = "le résultat du dernier calcul n'a pas pu être écrit dans le cache \
+     (écriture refusée par la base) : la charge servie est la précédente";
+/// `P10.32-o` (vague BH, correction) — la cause posée sous `stats.rafraichissement_en_echec` d'une charge VALIDE servie
+/// depuis le cache quand le dernier calcul a ÉCHOUÉ et que l'écriture de cet échec (l'aveu joint à la charge) a été
+/// refusée. Suivie de la phrase servie de la classe d'échec, jamais du texte du moteur.
+pub(crate) const CAUSE_ECHEC_DU_CALCUL_NON_ECRIT_AU_CACHE: &str = "le dernier calcul a échoué et cet échec n'a pas pu être \
+     écrit dans le cache (écriture refusée par la base) : la charge servie est la précédente. Cause du calcul : ";
 /// `P10.32-o` — LE CALCUL DU PANNEAU A ÉCHOUÉ (erreur du moteur, budget dépassé, panique du fil) : le
 /// corps servi porte la cause dans `error` et n'établit PAS une absence. Il est écrit dans le cache à la
 /// place du résultat, donc re-servi jusqu'à l'expiration du ttl, puis retenté — jamais une chauffe
@@ -999,18 +1018,115 @@ const SQL_EVICTION: &str = "DELETE FROM panel_cache WHERE panel_id=?1 AND range_
                             (SELECT range_key FROM panel_cache WHERE panel_id=?1 ORDER BY computed_at DESC LIMIT ?2)";
 const SQL_LIRE: &str = "SELECT payload, computed_at FROM panel_cache WHERE panel_id=?1 AND range_key=?2 AND query_fp=?3";
 
-/// Écrit un payload de panneau + évince les plages les plus vieilles (cap anti-explosion, identique
-/// aux trois sites d'écriture d'avant).
+/// Écrit un payload de panneau sans rien rendre : forme des TÉMOINS seuls, qui posent leurs fixtures. Les trois sites de
+/// production (rafraîchissement à la demande, chemin live, pré-chauffage) lisent `cache_ecrire_dit` et disent son refus.
+#[cfg(test)]
 pub(crate) fn cache_ecrire(conn: &Connection, id: i64, range_key: &str, q_fp: &str, now_s: i64, payload: &str) {
     let _ = cache_ecrire_dit(conn, id, range_key, q_fp, now_s, payload);
 }
 
-/// `P10.32-o` — la même écriture, qui DIT si la ligne a été écrite (cause du moteur sinon). L'éviction
-/// suit l'écriture dans les deux cas, comme avant ; seul le refus de l'écriture est rendu.
+/// `P10.32-o` — l'écriture d'une ligne de cache, qui DIT si la ligne a été écrite (cause du moteur sinon), puis l'éviction
+/// des plages les plus vieilles (cap anti-explosion). Chaque issue de l'écriture est NOTÉE pour cette base, ce panneau,
+/// cette plage et cette empreinte (`ECRITURES_DE_CACHE_REFUSEES`) : un refus y reste jusqu'à l'écriture suivante qui
+/// réussit, et `serve_swr` le lit (`ecriture_de_cache_refusee`) au lieu de servir une chauffe qui ne finira pas.
+/// L'ÉVICTION REFUSÉE N'EST PAS RENDUE, ET C'EST DÉLIBÉRÉ : la ligne est écrite (ou son refus est rendu), seul le plafond
+/// de plages de ce panneau n'est pas tenu à cet instant ; l'éviction est rejouée, entière (`NOT IN` des plus récentes), à
+/// chaque écriture suivante de ce panneau. Rien de ce qui est servi n'en devient faux.
 pub(crate) fn cache_ecrire_dit(conn: &Connection, id: i64, range_key: &str, q_fp: &str, now_s: i64, payload: &str) -> Result<(), String> {
-    let ecrit = conn.execute(SQL_ECRIRE, params![id, range_key, q_fp, now_s, payload]).map(|_| ()).map_err(|e| e.to_string());
+    cache_ecrire_et_noter(conn, id, range_key, q_fp, now_s, payload, RefusDEcritureDeCache { refusee_a: now_s, echec_du_calcul: None })
+}
+
+/// `P10.32-o` (vague BH, correction) — L'ÉCRITURE QUI PORTE L'ÉCHEC D'UN CALCUL : le corps d'échec, ou la charge
+/// précédente à laquelle l'aveu de l'échec est joint. `calcule_a` est le `computed_at` écrit (l'âge de la charge
+/// précédente, qui ne rajeunit pas ; l'instant de la tentative pour un corps d'échec) ; `tente_a` est l'instant de la
+/// tentative, et c'est LUI qui est noté si l'écriture est refusée, avec `echec_servi` (la phrase servie de la classe,
+/// jamais le texte du moteur). Avant, le refus était noté à `calcule_a` : un refus déjà plus vieux que la durée du cache,
+/// donc un calcul réarmé à chaque interrogation, et une charge servie qui annonçait « le résultat du dernier calcul »
+/// d'un calcul en échec.
+pub(crate) fn cache_ecrire_l_echec_dit(
+    conn: &Connection, id: i64, range_key: &str, q_fp: &str, calcule_a: i64, tente_a: i64, payload: &str, echec_servi: &str,
+) -> Result<(), String> {
+    let refus = RefusDEcritureDeCache { refusee_a: tente_a, echec_du_calcul: Some(echec_servi.to_string()) };
+    cache_ecrire_et_noter(conn, id, range_key, q_fp, calcule_a, payload, refus)
+}
+
+/// Écrit la ligne (`computed_at` = `calcule_a`), note son issue (`refus` si elle est refusée), puis évince.
+fn cache_ecrire_et_noter(
+    conn: &Connection, id: i64, range_key: &str, q_fp: &str, calcule_a: i64, payload: &str, refus: RefusDEcritureDeCache,
+) -> Result<(), String> {
+    let ecrit = conn.execute(SQL_ECRIRE, params![id, range_key, q_fp, calcule_a, payload]).map(|_| ()).map_err(|e| e.to_string());
+    noter_l_issue_de_l_ecriture(conn, id, range_key, q_fp, if ecrit.is_ok() { Ok(()) } else { Err(refus) });
     let _ = conn.execute(SQL_EVICTION, params![id, CACHE_MAX_RANGES_PER_PANEL]);
     ecrit
+}
+
+/// `P10.32-o` (vague BH) — un refus d'écriture noté : son instant (celui de la tentative refusée) et ce que l'écriture
+/// refusée portait. `echec_du_calcul` : `None` -> le RÉSULTAT d'un calcul réussi ; `Some(phrase servie)` -> l'ÉCHEC d'un
+/// calcul (corps d'échec, ou aveu joint à la charge précédente). `serve_swr` dit l'un ou l'autre, jamais l'un pour l'autre.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RefusDEcritureDeCache {
+    pub(crate) refusee_a: i64,
+    pub(crate) echec_du_calcul: Option<String>,
+}
+
+/// La clé d'une écriture de cache notée : (base de la connexion telle que SQLite la nomme, panneau, plage, empreinte).
+/// La base est dans la clé : en mode 1, deux tenants ont chacun leur panneau `#1`, et un refus noté sur l'une ne dit rien
+/// de l'autre.
+pub(crate) type CleDEcritureDeCache = (String, i64, String, String);
+
+/// `P10.32-o` (vague BH) — LES ÉCRITURES DE CACHE REFUSÉES PAR LA BASE (disque plein, base en lecture seule), depuis le
+/// démarrage : clé -> instant du dernier refus. Avant, `cache_ecrire` jetait le refus : un panneau jamais mis en cache
+/// servait `warming` / `mesure_en_cours` à chaque interrogation et réarmait un calcul qui réussissait, sans fin et sans un
+/// mot. État de PROCESSUS, jamais persisté (la base refuse justement d'écrire), borné par
+/// [`BORNE_DES_ECRITURES_DE_CACHE_REFUSEES`].
+static ECRITURES_DE_CACHE_REFUSEES: std::sync::OnceLock<parking_lot::Mutex<HashMap<CleDEcritureDeCache, RefusDEcritureDeCache>>> =
+    std::sync::OnceLock::new();
+
+/// Au-delà, le refus noté le plus ANCIEN est retiré avant d'en noter un neuf : un lecteur qui demande des plages
+/// toujours neuves pendant que la base refuse d'écrire ne fait pas enfler la mémoire. Le panneau dont le refus est
+/// retiré redevient une absence (`warming` puis un nouveau calcul), comme avant ce registre.
+pub(crate) const BORNE_DES_ECRITURES_DE_CACHE_REFUSEES: usize = 4096;
+
+/// Note l'issue d'une écriture : un refus est retenu (`Err` : son instant et ce qu'il portait), un succès efface le refus
+/// retenu.
+fn noter_l_issue_de_l_ecriture(conn: &Connection, id: i64, range_key: &str, q_fp: &str, issue: Result<(), RefusDEcritureDeCache>) {
+    let cle = (conn.path().unwrap_or("").to_string(), id, range_key.to_string(), q_fp.to_string());
+    let mut registre = ECRITURES_DE_CACHE_REFUSEES.get_or_init(Default::default).lock();
+    match issue {
+        Ok(()) => {
+            registre.remove(&cle);
+        }
+        Err(refus) => retenir_un_refus_d_ecriture(&mut registre, cle, refus),
+    }
+}
+
+/// Retient un refus sous la borne : une clé déjà connue est mise à jour sans rien retirer ; une clé neuve, registre plein,
+/// retire d'abord le refus le plus ancien (`refusee_a` le plus petit). Le type du registre est celui de la production :
+/// les témoins de la borne la jouent sur des `RefusDEcritureDeCache` (avant, une forme générique éprouvée sur des `i64`
+/// laissait le classement de la production sans témoin).
+pub(crate) fn retenir_un_refus_d_ecriture(
+    registre: &mut HashMap<CleDEcritureDeCache, RefusDEcritureDeCache>, cle: CleDEcritureDeCache, refus: RefusDEcritureDeCache,
+) {
+    if !registre.contains_key(&cle) && registre.len() >= BORNE_DES_ECRITURES_DE_CACHE_REFUSEES {
+        let plus_ancien = registre.iter().min_by_key(|(_, r)| r.refusee_a).map(|(c, _)| c.clone());
+        registre.retain(|c, _| Some(c) != plus_ancien.as_ref());
+    }
+    registre.insert(cle, refus);
+}
+
+/// `P10.32-o` (vague BH) — l'instant du dernier refus d'écriture de cette ligne de cache, si la dernière écriture tentée a
+/// été refusée (`None` : aucune tentative refusée depuis la dernière écriture réussie, ou depuis le démarrage).
+/// Lue par les témoins (l'instant seul) ; `serve_swr` lit [`refus_d_ecriture_de_cache`].
+#[cfg(test)]
+pub(crate) fn ecriture_de_cache_refusee(conn: &Connection, id: i64, range_key: &str, q_fp: &str) -> Option<i64> {
+    refus_d_ecriture_de_cache(conn, id, range_key, q_fp).map(|r| r.refusee_a)
+}
+
+/// `P10.32-o` (vague BH, correction) — le dernier refus d'écriture de cette ligne de cache, entier (instant et ce que
+/// l'écriture refusée portait), `None` comme [`ecriture_de_cache_refusee`].
+pub(crate) fn refus_d_ecriture_de_cache(conn: &Connection, id: i64, range_key: &str, q_fp: &str) -> Option<RefusDEcritureDeCache> {
+    let cle = (conn.path().unwrap_or("").to_string(), id, range_key.to_string(), q_fp.to_string());
+    ECRITURES_DE_CACHE_REFUSEES.get_or_init(Default::default).lock().get(&cle).cloned()
 }
 
 /// `P10.32-o` — LES LECTURES DE LIGNE DE CACHE REFUSÉES OU ILLISIBLES, depuis le démarrage (compte de processus, jamais
@@ -1173,7 +1289,10 @@ pub(crate) fn cache_reestamper(
 }
 
 /// L'AVEU D'UN CORPS SYNTHÉTIQUE — un corps que le démon fabrique sans exécuter la requête (repli de
-/// parsing, `warming`). Il n'a AUCUNE ligne : sans cet objet, la console le lirait comme une absence.
+/// parsing, `warming`, calcul en échec, ligne de cache non lue servie en 503, écriture du cache refusée servie en 503). Il
+/// n'a AUCUNE ligne : sans cet objet, la
+/// console le lirait comme une absence. La notice suit la raison ; toute raison non nommée ci-dessous prend celle de la
+/// charge utile illisible.
 ///
 /// `horizon_mesure` = l'horizon COURANT quand il a pu être dérivé (la portée se lit dans le SQL, que
 /// l'appelant a compilé de toute façon). L'horizon est une propriété de la REQUÊTE, pas des lignes : le
@@ -1187,6 +1306,10 @@ pub(crate) fn coverage_synthetique(raison: &str, from: i64, now_s: i64, horizon_
     } else if raison == RAISON_CALCUL_ECHOUE {
         "le calcul de ce panneau a échoué (cause dans `error`) : aucune ligne n'a été calculée. Ce corps \
          vide n'établit PAS une absence ; une nouvelle tentative suit l'expiration du cache."
+    } else if raison == RAISON_LIGNE_DE_CACHE_NON_LUE {
+        NOTICE_LIGNE_DE_CACHE_NON_LUE
+    } else if raison == RAISON_CACHE_NON_ECRIT {
+        NOTICE_CACHE_NON_ECRIT
     } else {
         "la charge utile mise en cache n'a pas pu être relue : le corps servi est synthétique. Ce corps \
          vide n'établit PAS une absence."
@@ -1202,13 +1325,6 @@ pub(crate) fn coverage_synthetique(raison: &str, from: i64, now_s: i64, horizon_
     cov["reason"] = json!(raison);
     cov["notice"] = json!(notice);
     cov
-}
-
-/// `P10.32-o` — sur une couverture synthétique `mesure_en_cours` (corps `warming`), dit que la ligne de cache n'a PAS été
-/// lue : raison et notice remplacées, horizon mesuré et instants gardés tels quels.
-pub(crate) fn dire_la_ligne_de_cache_non_lue(cov: &mut Value) {
-    cov["reason"] = json!(RAISON_LIGNE_DE_CACHE_NON_LUE);
-    cov["notice"] = json!(NOTICE_LIGNE_DE_CACHE_NON_LUE);
 }
 
 /// `P10.32-o` — LE CORPS D'UN RAFRAÎCHISSEMENT EN ÉCHEC : la cause du moteur dans `error` (la console

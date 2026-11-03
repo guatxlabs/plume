@@ -4,7 +4,7 @@
 // au point où ce bloc vivait (un module s'exécute à l'import, avant l'enveloppe `fetch` d'`app.js`). Les seams
 // (`viz.js`, `multitenant.js`) continuent de lire `loadDashboard` / `refreshPanels` via le ré-export d'`app.js`.
 // `renderDashboard` est exporté pour le harnais. N'importe pas `app.js`.
-import { $, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, makePager, noeudDUnePageServieVide, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, noeudDuRefusDUneLecture, refusDUneLectureServie, unRefusServiEnDeuxCents, cadreDUneReponseQuiNeVientPasDuDemon, phraseDUneReponseQuiNeVientPasDuDemon } from './core.js';
+import { $, fmtTs, ic, flashStopped, stopBtn, toast, modal, confirmModal, confirmWithConsequence, toCSV, downloadText, tsSlug, exportPDF, miniMenu, api, apiSend, phraseDuRefusDuDemon, makePager, noeudDUnePageServieVide, socIsAdmin, applyRoleClass, roleSansEcriturePartagee, LANG, puitsDuRefusDUnGeste, effacerLeRefusDUnGeste, peindreLeRefusDUnGeste, faceDansLaLangue, noeudDuRefusDUneLecture, refusDUneLectureServie, unRefusServiEnDeuxCents, cadreDUneReponseQuiNeVientPasDuDemon, phraseDUneReponseQuiNeVientPasDuDemon } from './core.js';
 import { S } from './state.js';
 import { coldShareBadge, coverageBadge, coverageHorizonNodes, provenanceBadge, currentFrom, currentTo, noeudsDeVizReglee, queryCount, runQuery, tableEl, vizElement } from './viz.js'; // `P10.5-q` : l'aveu de part froide que les panneaux reçoivent est LU
 // P11.4-h : LE geste de copie de la console (mécanisme partagé).
@@ -36,7 +36,38 @@ import { ICONE_DE_REPRESENTATION, REPRESENTATIONS, poserLesRepresentations } fro
 /// LES DEUX BADGES PASSENT PAR LE MÊME GESTE, parce que l'oubli était le même : le démon publiait
 /// `provenance_non_derivee` + `rollup_note` et AUCUN module de la console ne les lisait — onze panneaux
 /// livrés affichaient un nombre PLAFONNÉ par le top-N d'un pré-agrégé comme un nombre entier.
+// `P10.32-o` — UNE CHARGE UTILE VALIDE SERVIE PÉRIMÉE DONT LE RECALCUL A ÉCHOUÉ LE DIT À L'ÉCRAN. Le démon pose
+// `stats.rafraichissement_en_echec = { cause, echoue_a }` (`CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC`,
+// daemon/src/handlers/dashboards.rs, `joindre_l_echec_a_la_charge_valide`) sur la charge VALIDE en cache quand le
+// recalcul a échoué : les lignes servies sont celles d'AVANT. Sans ce nœud, la carte les peignait comme le résultat
+// courant. Les lignes restent affichées ; l'aveu les précède. La phrase servie (`cause`, phrase de la classe, jamais le
+// texte du moteur) et l'instant (`echoue_a`, entier sûr positif seul) sont posés par `textContent` : une phrase balisée se
+// lit, elle ne s'exécute pas. Champ absent (ou nul) : rien. Cause non servie : dit comme telle, jamais inventée.
+const MOTS_DU_RAFRAICHISSEMENT_EN_ECHEC = {
+  titre: { fr: "Lignes d'AVANT, servies périmées : le recalcul de ce panneau a échoué", en: 'PREVIOUS rows, served stale: recomputing this panel failed' },
+  sans_cause: { fr: 'cause non servie par le démon', en: 'cause not served by the daemon' },
+  instant: { fr: 'échec le {date}', en: 'failed on {date}' },
+  sans_ligne: { fr: "aucune ligne au dernier calcul réussi — le recalcul a échoué depuis, rien n'est établi sur la fenêtre courante",
+    en: 'no row in the last successful computation — recomputing has failed since, nothing is established on the current window' },
+};
+function noeudDuRafraichissementEnEchec(stats) {
+  const r = stats ? stats.rafraichissement_en_echec : undefined;
+  if (r === undefined || r === null) return null;
+  const n = document.createElement('div');
+  n.className = 'bad';
+  n.setAttribute('data-rafraichissement-en-echec', '1');
+  const dit = document.createElement('span');
+  dit.textContent = faceDansLaLangue(MOTS_DU_RAFRAICHISSEMENT_EN_ECHEC.titre);
+  const cause = r && typeof r.cause === 'string' && r.cause.trim() ? r.cause : '';
+  const quand = r && Number.isSafeInteger(r.echoue_a) && r.echoue_a > 0
+    ? ' · ' + faceDansLaLangue(MOTS_DU_RAFRAICHISSEMENT_EN_ECHEC.instant, { date: fmtTs(r.echoue_a) }) : '';
+  n.append(dit, document.createTextNode(cause ? ' « ' + cause + ' »' : ' — ' + faceDansLaLangue(MOTS_DU_RAFRAICHISSEMENT_EN_ECHEC.sans_cause)), document.createTextNode(quand));
+  return n;
+}
+
 function poserLesAveuxDuPanneau(hote, stats, avant) {
+  const echec = noeudDuRafraichissementEnEchec(stats);
+  if (echec) { if (avant) hote.insertBefore(echec, avant); else hote.appendChild(echec); }
   // `P10.5-q` — `stats.cold` arrivait jusqu'ici (panneaux tabulaires servis par /api/query, coffre des panneaux) et
   // personne ne le lisait : les quatre états du lot 65 et le cinquième (bande non lue) sont posés à côté des autres.
   for (const b of [coverageBadge(stats), provenanceBadge(stats), coldShareBadge(stats)]) {
@@ -57,10 +88,33 @@ function poserLesAveuxDuPanneau(hote, stats, avant) {
 ///     quelle que soit la portée, et le jeter laissait l'écran dire « l'horizon s'arrête ici » sur un
 ///     corps que le démon déclare NON ENCORE CALCULÉ, pendant que la carte re-sonde toutes les 3 s.
 /// Le défaut est asymétrique : retirer une phrase vraie et garder une phrase fausse sont la même faute.
+// `P10.32-o` — DEUX CORPS SANS LIGNE QUE LE DÉMON NE SERT PAS COMME UNE ABSENCE (`RAISON_PAYE_UTILE_ILLISIBLE`,
+// `RAISON_LIGNE_DE_CACHE_NON_LUE`, daemon/src/handlers/panneau_avoue.rs) : la ligne de cache a été lue mais ne se décode
+// pas (deux cents, sans `warming`) — reconnue ICI —, ou n'a pas pu être lue — cinq cent trois nommé avec `error`
+// (daemon/src/handlers/dashboards.rs, `LigneDeCacheRatee::NonLue`), que la carte envoie au refus d'une lecture avant tout
+// rendu (`if (!r.ok) nonServie()`) : cette raison n'atteint jamais ce chemin, elle n'y a donc pas d'entrée. « aucune
+// donnée sur la fenêtre » y était FAUX : la phrase de l'appelant qui affirme une absence est remplacée. Même chose sous un rafraîchissement en échec : l'absence
+// est celle du dernier calcul réussi, pas de la fenêtre courante.
+const MOTS_DU_CORPS_SANS_LIGNE_NON_ETABLI = {
+  paye_utile_illisible: { fr: "charge utile en cache ILLISIBLE : rien n'est établi sur la fenêtre — ce n'est pas une absence de données",
+    en: 'cached payload UNREADABLE: nothing is established on the window — this is not an absence of data' },
+};
+function phraseDUnCorpsSansLigneNonEtabli(stats) {
+  const raison = stats && stats.coverage ? stats.coverage.reason : undefined;
+  if (typeof raison === 'string' && Object.prototype.hasOwnProperty.call(MOTS_DU_CORPS_SANS_LIGNE_NON_ETABLI, raison)) return faceDansLaLangue(MOTS_DU_CORPS_SANS_LIGNE_NON_ETABLI[raison]);
+  if (stats && stats.rafraichissement_en_echec != null) return faceDansLaLangue(MOTS_DU_RAFRAICHISSEMENT_EN_ECHEC.sans_ligne);
+  return '';
+}
 function corpsSansLigne(stats, phrase, laPhraseAffirmeUneAbsence = true) {
   const d = document.createElement('div');
-  d.className = 'muted';
+  const nonEtabli = laPhraseAffirmeUneAbsence ? phraseDUnCorpsSansLigneNonEtabli(stats) : '';
+  d.className = nonEtabli ? 'bad' : 'muted';
   const h = coverageHorizonNodes(stats);
+  if (nonEtabli) {
+    d.setAttribute('data-corps-sans-ligne-non-etabli', '1');
+    phrase = document.createTextNode(nonEtabli);
+    laPhraseAffirmeUneAbsence = false;
+  }
   if (!h) { d.appendChild(phrase); return d; }
   const dehors = !!(stats && stats.coverage && stats.coverage.older_outside_window === true);
   if (!dehors || !laPhraseAffirmeUneAbsence) d.append(phrase, document.createElement('br'));
@@ -1585,4 +1639,5 @@ function initDashboards() {
 // `P10.23-q` — les phrases et l'aveu d'un refus d'écriture et d'un geste de vue, joués par le témoin 121 hors du démon.
 export { aveuDeRefusDEcriture, phraseDuRefusDEcriture, phraseDuRefusDuPartageDeVue, motDuRefusServeurDeVue, avouerLeRefusDuTableauDeBord };
 export { prochaineRelanceDeLaChauffe, noeudDeLaChauffeSansFin };   // `P10.32-m` : jugés par le témoin 146
+export { noeudDuRafraichissementEnEchec };   // `P10.32-o` : jugé par les témoins 159 et 160
 export { addDashboardFlow, corpsSansLigne, initDashboards, loadDashboard, loadDashboards, loadPanelsInto, loadViews, refreshPanels, renderDashboard, visibiliteCouranteNonLue };

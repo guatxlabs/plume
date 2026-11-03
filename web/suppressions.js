@@ -2,6 +2,7 @@
 // (déplacement pur du panneau), puis complété : les SILENCES d'alertes y reçoivent les trois gestes de
 // l'administrateur (créer, modifier, supprimer), chacun audité côté démon.
 import { $, muted, api, apiSend, effacerLeRefusDUnGeste, faceDansLaLangue, fetchInto, fmtTs, confirmWithConsequence, noeudDuRefusDUneLecture, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, modal, pagedList, ic, LANG, ilYA } from './core.js';
+import { coupeDeLaListeDeMachines } from './coupe_de_liste.js';
 import { uiIsAdmin } from './multitenant.js';
 
 // `P10.20-p` (2026-09-16) — LES MOTS DU RELEVÉ DES AUTO-REPORTS COLLECTEURS, FR et EN côte à côte : le
@@ -356,13 +357,16 @@ async function loadSuppressions() {
   const etatFw = !d ? '' : d.firewall_etat === 'non_commence' ? 'non_commence'
     : (d.firewall_etat != null || d.firewall_n_hosts === null) ? 'interrompu' : '';
   const fwServi = !!(d.firewall && d.firewall.data != null);
+  // `P10.20-b` — LA COUPE DE `firewall_hosts` À SA BORNE SERVIE (`firewall_hosts_borne`), texte brut posé par `textContent`
+  // (`suppSectionTitle`) ; borne absente = liste entière, rien de neuf.
+  const coupeFw = d ? coupeDeLaListeDeMachines(d.firewall_hosts_borne, d.firewall_n_hosts) : '';
   if (etatFw) {
     const lues = Array.isArray(d.firewall_hosts) ? d.firewall_hosts.length : 0;
     // Le compte des machines LUES décide « sans ligne », pas l'instantané affiché : une charge indécodable sert `data` nul
     // alors que la machine a bien été lue.
     const fin = etatFw === 'non_commence' ? 'non_commence' : (lues ? 'interrompu' : 'interrompu_sans_ligne');
     wrap.appendChild(suppSectionTitle('État firewall (hôte)', (fwServi ? 'snapshot' + (d.firewall.host ? ' · ' + d.firewall.host : '') + ' · ' : '')
-      + faceDansLaLangue(MOTS_DE_L_ETAT_DU_PARE_FEU['sous_titre_' + fin], { lues })));
+      + faceDansLaLangue(MOTS_DE_L_ETAT_DU_PARE_FEU['sous_titre_' + fin], { lues }) + (coupeFw ? ' · ' + coupeFw : '')));
     const { aveu, dit } = boiteDAveuDeSuppressions();
     aveu.dataset.finDeLEtatDuPareFeu = fin;
     dit.textContent = faceDansLaLangue(MOTS_DE_L_ETAT_DU_PARE_FEU[fin], { lues });
@@ -373,7 +377,7 @@ async function loadSuppressions() {
     // en avait (mesuré : 1 hôte rendu pour un parc de 50). `firewall_n_hosts` est le dénominateur.
     const nfw = d.firewall_n_hosts || 0;
     wrap.appendChild(suppSectionTitle('État firewall (hôte)', 'snapshot' + (d.firewall.host ? ' · ' + d.firewall.host : '')
-      + (nfw > 1 ? ` · 1 machine sur ${nfw} (voir Flotte pour les autres)` : '')));
+      + (nfw > 1 ? ` · 1 machine sur ${nfw} (voir Flotte pour les autres)` : '') + (coupeFw ? ' · ' + coupeFw : '')));
   }
   if (fwServi) {
     const fw = document.createElement('pre'); fw.style.cssText = 'font-family:var(--font-mono);font-size:11px;overflow:auto;max-height:220px;background:var(--card);border:1px solid var(--bd);padding:8px;border-radius:6px;margin:0'; // P11.4-c : variables de thème réelles (`--bg2`/`--mono` n'existaient pas)

@@ -807,13 +807,41 @@ pub(crate) fn rollup_events(conn: &Connection) {
     // monotone à l'insertion) n'a pas été agrégée : la bande redescend jusqu'à SON bucket, et tout ce qui est
     // au-dessus cesse d'être témoigné jusqu'à ce que la remontée l'ait reconstruit. `NOT INDEXED` force la
     // porte rowid (sinon le planificateur balaie `idx_event_ts` sur toute la bande).
+    // `P10.20-b` — LE PLANCHER DES RETARDATAIRES LU OU NON LU. Avant, `if let Ok(Some(t))` sans branche `Err` : une
+    // lecture ratée laissait `band_hi` en place, la bande `[band_lo, band_hi)` n'était pas ré-agrégée, et la publication
+    // plus bas (`publish(down_lo, up_hi, recent, dim_at_id)`, borne d'identifiant FRAÎCHE) déclarait couvertes des lignes
+    // tardives que le rollup ne porte pas — la route servait des comptes amputés comme exacts sur la bande. Non lu, le
+    // plancher est pris AU PIRE : la bande se rétracte à son plancher (`band_hi = band_lo`, comme une retardataire posée
+    // dans le premier bucket), la remontée la reconstruit tranche par tranche, et la couverture publiée ne témoigne que de
+    // ce qui vient d'être ré-agrégé sous `dim_at_id`. Dit au journal ; repris au prochain passage. `Ok(None)` (aucune
+    // retardataire) ne rétracte rien, comme avant.
     if let Some(at) = dim_cov.late_floor_id() {
-        if let Ok(Some(t)) = conn.query_row(
+        #[cfg(test)]
+        let panne = temoin_du_plancher_des_retardataires::panne_armee();
+        #[cfg(test)]
+        if panne {
+            conn.progress_handler(1, Some(|| true));
+        }
+        let plancher_des_retardataires = conn.query_row(
             "SELECT MIN(ts) FROM event NOT INDEXED WHERE id>?1 AND ts>=?2 AND ts<?3",
             params![at, band_lo, band_hi],
             |r| r.get::<_, Option<i64>>(0),
-        ) {
-            band_hi = (t / 3600) * 3600;
+        );
+        #[cfg(test)]
+        if panne {
+            conn.progress_handler(0, None::<fn() -> bool>);
+        }
+        match plancher_des_retardataires {
+            Ok(Some(t)) => band_hi = (t / 3600) * 3600,
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!(
+                    "[rollup] WARN plancher des lignes tardives du rollup par dimension NON lu ({e}) — bande rétractée à son \
+                     plancher, reconstruite par la remontée ; la couverture publiée ne témoigne que des tranches ré-agrégées \
+                     ce passage"
+                );
+                band_hi = band_lo;
+            }
         }
     }
     // Les deux fronts, chacun d'au plus `dim_backfill`. Le bas s'arrête à ce qu'`event` porte ENCORE (sous
@@ -1541,7 +1569,9 @@ fn ecrire_le_banni_pass<C: SqlExec>(conn: &C) -> Result<(), RefusSousLePoint> {
 /// interactif ; try_acquire non bloquant) -> le pré-chauffage respecte sa PROPRE borne de concurrence sans
 /// jamais voler de permis à /api/query ni /api/search. Idempotent (OR REPLACE) -> taille bornée (1 ligne /
 /// panel). TTL global PLUME_PANEL_CACHE_TTL=0 -> no-op.
-pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &str, refresh_sem: &Arc<tokio::sync::Semaphore>) {
+/// `P10.29-l` — `tenant` = l'identifiant du tenant dont `db` est la base (`for_each_active_tenant`) : chaque ligne
+/// `[cache]` le nomme, échappé (`{:?}`), comme les lignes `[panel]` de `serve_swr` ; jamais la requête.
+pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &str, refresh_sem: &Arc<tokio::sync::Semaphore>, tenant: &str) {
     let conf = load_config();
     let ttl_global: i64 = cfg(&conf, "PLUME_PANEL_CACHE_TTL", "60").parse().unwrap_or(60);
     if ttl_global <= 0 {
@@ -1554,20 +1584,23 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
     let range_key = cache_range_key(from_default, 0, now_s);
     // PHASE 3b — pré-chauffe TOUS les panneaux (plus de filtre is_soql=0) : les panneaux GXQL (Sécurité,
     // les plus coûteux) sont désormais aussi réchauffés en fond -> panel_data les sert du cache (SWR) sans
-    // jamais lancer de live. TTL effectif > 0. On capture id+query+is_soql pour exécuter SANS tenir le lock.
-    let panels: Vec<(i64, String, bool)> = {
+    // jamais lancer de live. TTL effectif > 0. On capture id+query+is_soql pour exécuter SANS tenir le lock, et le TTL
+    // effectif (`P10.32-o` : la borne du réessai après une écriture refusée, plus bas).
+    let panels: Vec<(i64, String, bool, i64)> = {
         let conn = db.lock();
         let mut stmt = match conn.prepare(
-            "SELECT id, query, is_soql FROM panel \
+            "SELECT id, query, is_soql, COALESCE(panel_cache_ttl_s, ?1) FROM panel \
              WHERE COALESCE(panel_cache_ttl_s, ?1) > 0",
         ) {
             Ok(s) => s,
             Err(_) => return,
         };
-        let rows = stmt.query_map(params![ttl_global], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)));
+        let rows = stmt.query_map(params![ttl_global], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0, r.get::<_, i64>(3)?))
+        });
         match rows { Ok(it) => it.flatten().collect(), Err(_) => return }
     };
-    for (id, query, is_soql) in panels {
+    for (id, query, is_soql, ttl) in panels {
         // fenêtre par défaut glissante (cohérent avec panel_data + ce que la PWA demande). GXQL compilé via
         // soql_to_sql ; SQL natif -> substitution __FROM__/__TO__. fingerprint sur le VRAI is_soql.
         // env=None (#2d) : le pré-chauffage remplit le slot cache TOUS-ENV (clé de plage sans préfixe env,
@@ -1578,9 +1611,25 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
         // n'ajoute pas une seule lecture disque ici.
         let pc = match panneau_avoue::compile_panneau_avoue(&query, is_soql, from_default, 0, None) {
             Ok(s) => s,
-            Err(_) => continue, // GXQL invalide -> on saute (à la demande, `panel_data` rend le refus du compilateur)
+            // GXQL refusé par le compilateur -> on saute, sans ligne de journal : ce tick revient à chaque intervalle de
+            // pré-chauffage, et une ligne par panneau refusé et par tick noierait le journal. Le refus est dit À LA DEMANDE
+            // (`dashboards::serve_swr`) : 400 du compilateur quand le cache ne porte rien de servable (absence, ligne
+            // illisible, texte qui n'est pas du JSON, corps d'échec périmé) ; joint sous `stats.rafraichissement_en_echec`,
+            // avec une ligne `[panel]` qui nomme le tenant, quand une charge servable périmée est servie (vague BH).
+            Err(_) => continue,
         };
         let q_fp = query_fingerprint(&query, is_soql);
+        // `P10.32-o` (vague BI, correction) — LE PRÉ-CHAUFFAGE LIT LE REGISTRE DES REFUS, COMME `serve_swr`. Avant, une base
+        // qui refusait d'écrire le cache faisait recalculer ce panneau à CHAQUE tick (`PLUME_PANEL_REFRESH_S`, 10 s par
+        // défaut), et chaque tick écrivait sa ligne `[cache] … NON ÉCRIT` : le 503 servi, qui annonce « un nouveau calcul
+        // est armé au plus une fois par durée du cache », n'était vrai que du chemin à la demande. Un refus noté depuis
+        // moins que la durée du cache du panneau (même prédicat que `reessai_permis`) -> panneau sauté, sans calcul ni
+        // ligne : le refus est déjà dit (ligne de la tentative refusée, 503 ou aveu à la demande). La durée écoulée, un
+        // calcul est tenté ; réussi et écrit, il efface le refus.
+        let refus_note = panneau_avoue::refus_d_ecriture_de_cache(&db.lock(), id, &range_key, &q_fp);
+        if refus_note.is_some_and(|refus| now_s - refus.refusee_a <= ttl) {
+            continue;
+        }
         // borne de concurrence sur le refresh_sem DÉDIÉ : si aucun permit libre, on saute ce
         // tick de pré-chauffage (jamais de permis pris à l'interactif ; le panneau reste servi du cache).
         let permit = match refresh_sem.try_acquire() { Ok(p) => p, Err(_) => break };
@@ -1597,22 +1646,22 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
             let issue = crate::handlers::dashboards::joindre_l_echec_a_la_charge_valide(&db.lock(), id, &range_key, &q_fp, now_s, &echec);
             match issue {
                 crate::handlers::dashboards::IssueDeLaChargeValide::Aucune => {
-                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — rien d'écrit, le chemin à la demande retentera")
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}), tenant {tenant:?} — rien d'écrit, le chemin à la demande retentera")
                 }
                 crate::handlers::dashboards::IssueDeLaChargeValide::Jointe => {
-                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — charge utile précédente conservée, échec joint au corps servi")
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}), tenant {tenant:?} — charge utile précédente conservée, échec joint au corps servi")
                 }
                 crate::handlers::dashboards::IssueDeLaChargeValide::NonJointe(e) => {
-                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — charge utile précédente conservée, échec NON joint au corps servi ({e})")
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}), tenant {tenant:?} — charge utile précédente conservée, échec NON joint au corps servi ({e})")
                 }
                 crate::handlers::dashboards::IssueDeLaChargeValide::PlusRecenteQueLaTentative => {
-                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — charge utile calculée après cette tentative conservée, rien d'écrit")
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}), tenant {tenant:?} — charge utile calculée après cette tentative conservée, rien d'écrit")
                 }
                 crate::handlers::dashboards::IssueDeLaChargeValide::NonLue(e) => {
-                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — ligne de cache NON LUE : {e} — rien d'écrit")
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}), tenant {tenant:?} — ligne de cache NON LUE : {e} — rien d'écrit")
                 }
                 crate::handlers::dashboards::IssueDeLaChargeValide::Illisible(e) => {
-                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — ligne de cache ILLISIBLE (lue, non décodable) : {e} — rien d'écrit, le chemin à la demande la remplacera")
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}), tenant {tenant:?} — ligne de cache ILLISIBLE (lue, non décodable) : {e} — rien d'écrit, le chemin à la demande la remplacera")
                 }
             }
         }
@@ -1632,7 +1681,11 @@ pub(crate) fn cache_refresh_all_panels(db: &Arc<Mutex<Connection>>, db_path: &st
                 // coexiste avec les plages zoom/preset (plus d'éviction mutuelle). computed_at = now_s
                 // (lu une fois, cohérent avec range_key).
                 // écriture + même cap anti-explosion que panel_data : le coffre POSSÈDE la table.
-                panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &payload);
+                // `P10.32-o` (vague BH) — le refus de l'écriture n'est plus jeté (avant, `cache_ecrire` et son `let _ =`) :
+                // noté par le coffre (lu par `serve_swr`) et dit ici, avec le tenant.
+                if let Err(e) = panneau_avoue::cache_ecrire_dit(&conn, id, &range_key, &q_fp, now_s, &payload) {
+                    eprintln!("[cache] WARN pré-chauffage du panneau {id} réussi, tenant {tenant:?} — résultat NON ÉCRIT au cache ({e})");
+                }
             }
         }
         drop(permit); // relâche le permit avant le panneau suivant (concurrence bornée, pas monopolisée)
@@ -2183,5 +2236,26 @@ pub(crate) fn retention_run_tenant(db: &Arc<Mutex<Connection>>, db_path: &str) {
             }
         }
         crate::db_open::checkpoint_wal_tronque(&conn, "rollups");
+    }
+}
+
+/// Instrument de témoin (`P10.20-b`) : arme une panne de la lecture du plancher des lignes tardives du rollup par
+/// dimension (`rollup_events`), sur le fil courant. Il pose SEULEMENT le rappel de progression qui fait interrompre la
+/// requête par le moteur (SQLITE_INTERRUPT) ; c'est la requête de PRODUCTION qui s'exécute et dont la lecture ratée est
+/// jugée. Hors `cfg(test)`, ce module n'existe pas.
+#[cfg(test)]
+pub(crate) mod temoin_du_plancher_des_retardataires {
+    use std::cell::Cell;
+    thread_local! {
+        static PANNE: Cell<bool> = const { Cell::new(false) };
+    }
+    pub(crate) fn armer() {
+        PANNE.with(|p| p.set(true));
+    }
+    pub(crate) fn desarmer() {
+        PANNE.with(|p| p.set(false));
+    }
+    pub(crate) fn panne_armee() -> bool {
+        PANNE.with(|p| p.get())
     }
 }

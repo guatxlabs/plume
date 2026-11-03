@@ -1243,7 +1243,15 @@ pub(crate) fn consigner_l_issue_du_rafraichissement(
             }
             if panel_cache_ttl(&conn, id, ttl_global) > 0 {
                 // écriture + cap anti-explosion : le coffre POSSÈDE la table (garde de build).
-                panneau_avoue::cache_ecrire(&conn, id, range_key, q_fp, now_s, &payload);
+                // `P10.32-o` (vague BH) — LE REFUS DE L'ÉCRITURE N'EST PLUS JETÉ (avant, `cache_ecrire` et son `let _ =`) :
+                // il est noté par le coffre (`serve_swr` le lit : refus nommé ou aveu, réessai borné) et dit ici.
+                if let Err(e) = panneau_avoue::cache_ecrire_dit(&conn, id, range_key, q_fp, now_s, &payload) {
+                    eprintln!(
+                        "[panel] WARN rafraîchissement du panneau {id} réussi, résultat NON ÉCRIT au cache ({e}) — \
+                         {ROUTE_DES_DONNEES_DE_PANNEAU}, tenant {tenant:?} — la charge précédente reste servie avec l'aveu, \
+                         sinon un refus nommé (503) ; nouveau calcul au plus une fois par durée du cache"
+                    );
+                }
             }
         }
         Ok(Err(echec)) => {
@@ -1346,7 +1354,8 @@ pub(crate) enum IssueDeLaChargeValide {
     /// La charge utile valide est réécrite telle quelle, `stats.rafraichissement_en_echec` en plus, instant de calcul
     /// INCHANGÉ (elle reste périmée : la tentative suivante revient à la prochaine interrogation).
     Jointe,
-    /// La charge utile valide est restée en cache, mais l'échec n'a pas pu y être joint (cause).
+    /// La charge utile valide est restée en cache, mais l'échec n'a pas pu y être joint (cause). Écriture refusée : le
+    /// refus est noté à la tentative (registre des refus) ; `stats` qui n'est pas un objet : rien n'est écrit ni noté.
     NonJointe(String),
     /// La charge utile valide en cache a été CALCULÉE APRÈS la tentative en échec (un succès concurrent l'a écrite
     /// pendant cette tentative : `calcule_a > echoue_a`). Elle n'est pas en échec : rien n'est écrit, ni aveu ni corps
@@ -1394,7 +1403,10 @@ pub(crate) fn joindre_l_echec_a_la_charge_valide(
     if !pose {
         return IssueDeLaChargeValide::NonJointe("`stats` de la charge utile n'est pas un objet".to_string());
     }
-    match panneau_avoue::cache_ecrire_dit(conn, id, range_key, q_fp, calcule_a, &v.to_string()) {
+    // `P10.32-o` (vague BH, correction) — la charge garde son âge (`calcule_a`), mais un refus est noté à l'instant de la
+    // TENTATIVE (`now_s`) et comme l'échec d'un calcul : noté à `calcule_a`, il était déjà plus vieux que la durée du cache
+    // (calcul réarmé à chaque interrogation) et la charge servie annonçait « le résultat du dernier calcul ».
+    match panneau_avoue::cache_ecrire_l_echec_dit(conn, id, range_key, q_fp, calcule_a, now_s, &v.to_string(), echec.servie()) {
         Ok(()) => IssueDeLaChargeValide::Jointe,
         Err(e) => IssueDeLaChargeValide::NonJointe(e),
     }
@@ -1408,7 +1420,9 @@ pub(crate) fn joindre_l_echec_a_la_charge_valide(
 /// UNE CHARGE UTILE VALIDE DÉJÀ EN CACHE N'EST PAS ÉCRASÉE (lisible, sans `error`), ni une ligne dont la lecture est
 /// REFUSÉE (`IssueDeLaChargeValide::NonLue` : elle peut porter une charge valide) : périmée, elle reste
 /// servie et la tentative suivante revient à la prochaine interrogation — comme au pré-chauffage, qui
-/// garde le périmé quand il échoue. Le corps d'échec ne remplace qu'une ABSENCE, un échec précédent, ou une ligne lue
+/// garde le périmé quand il échoue — sauf si l'écriture qui joignait l'échec a été REFUSÉE : ce refus, noté à la
+/// tentative, borne le calcul suivant à la durée du cache écoulée depuis lui (`serve_swr`), et la ligne de journal le dit.
+/// Le corps d'échec ne remplace qu'une ABSENCE, un échec précédent, ou une ligne lue
 /// mais non décodable (`IssueDeLaChargeValide::Illisible`, dite à sa ligne de journal : « ligne de cache ILLISIBLE »).
 /// Journal : l'identifiant, la cause, la route, le tenant de l'appelant et le geste RÉELLEMENT fait (écrit,
 /// conservé, refusé, cache coupé), jamais la requête.
@@ -1429,7 +1443,18 @@ fn memoriser_l_echec_du_rafraichissement(
             return;
         }
         IssueDeLaChargeValide::NonJointe(e) => {
-            eprintln!("{tete} — charge utile précédente conservée (périmée), échec NON joint au corps servi ({e}), nouvelle tentative à la prochaine interrogation");
+            // `P10.32-o` (vague BI) — LA SUITE SE LIT DANS LE REGISTRE, ELLE NE SE SUPPOSE PAS. Une jonction dont l'ÉCRITURE
+            // est refusée y est notée à cette tentative : `serve_swr` ne réarme alors aucun calcul avant la durée du cache
+            // écoulée depuis ce refus. Une jonction impossible sans écriture (`stats` qui n'est pas un objet) ne note rien :
+            // la tentative suivante revient à la prochaine interrogation. Avant, la ligne disait toujours la seconde.
+            let suite = match panneau_avoue::refus_d_ecriture_de_cache(&conn, id, range_key, q_fp) {
+                Some(refus) => format!(
+                    "refus d'écriture noté à {} : aucun nouveau calcul avant l'expiration du cache depuis ce refus",
+                    refus.refusee_a
+                ),
+                None => "aucun refus d'écriture noté : nouvelle tentative à la prochaine interrogation".to_string(),
+            };
+            eprintln!("{tete} — charge utile précédente conservée (périmée), échec NON joint au corps servi ({e}), {suite}");
             return;
         }
         IssueDeLaChargeValide::PlusRecenteQueLaTentative => {
@@ -1447,14 +1472,15 @@ fn memoriser_l_echec_du_rafraichissement(
     }
     let mut corps = panneau_avoue::corps_d_echec(&echec.servie, from, now_s);
     corps[MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC] = json!(echec.classe);
-    match panneau_avoue::cache_ecrire_dit(&conn, id, range_key, q_fp, now_s, &corps.to_string()) {
+    match panneau_avoue::cache_ecrire_l_echec_dit(&conn, id, range_key, q_fp, now_s, now_s, &corps.to_string(), &echec.servie) {
         Ok(()) => eprintln!("{tete} — corps d'échec servi, nouvelle tentative à l'expiration du cache"),
         Err(e) => eprintln!("{tete} — corps d'échec NON ÉCRIT ({e}), le panneau reste sans charge utile"),
     }
 }
 
-/// `P10.32-o` — ce que la lecture de la ligne de cache a rendu quand elle n'a rien à servir : jugé par `serve_swr` avant
-/// le refus du compilateur (une absence reste un MISS ; une ligne illisible ou non lue n'est jamais une chauffe).
+/// `P10.32-o` — ce que la lecture de la ligne de cache a rendu quand elle n'a rien à servir. Jugé par `serve_swr` : une
+/// ligne NON LUE avant le refus du compilateur (elle peut cacher une charge utile valide), une ligne ILLISIBLE après lui
+/// (elle ne porte rien : un panneau qui ne compile pas rend son refus) ; une absence reste un MISS. Jamais une chauffe.
 enum LigneDeCacheRatee {
     Aucune,
     Illisible,
@@ -1470,6 +1496,38 @@ pub(crate) const CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE: &str = "LIGNE DE CACHE
      n'est servi ; un rafraîchissement est armé si le panneau compile. Réessayez ; si le refus persiste, la table du cache \
      des panneaux est illisible.";
 
+/// `P10.32-o` (vague BH) — la dernière écriture de la ligne de cache de ce panneau a été refusée par la base (disque plein,
+/// base en lecture seule : `panneau_avoue::ecriture_de_cache_refusee`) et aucune charge valide n'y est : servie en 503 par
+/// `serve_swr`, jamais comme une chauffe. La console la peint comme toute lecture non servie en 503 nommé, avec sa cause
+/// (`refusDUneLectureServie`, appelé par la carte du panneau sur `!r.ok`, web/dashboards.js). Ne nomme ni `BEGIN` ni
+/// `COMMIT`, et ne recopie jamais la cause du moteur (elle va au journal).
+/// `P10.32-o` (vague BH, correction) — le DERNIER CALCUL A ÉCHOUÉ et la base a refusé d'écrire cet échec (corps d'échec)
+/// dans le cache, sans charge valide à servir : servi en 503 par `serve_swr`, suivi de la phrase servie de la classe
+/// d'échec (jamais du texte du moteur), sous la raison `calcul_echoue`. Avant, ce cas servait
+/// `CAUSE_RESULTAT_DU_PANNEAU_NON_ECRIT`, qui parle du « résultat » d'un calcul qui n'en a pas rendu, et la cause de
+/// l'échec n'était qu'au journal.
+pub(crate) const CAUSE_ECHEC_DU_PANNEAU_NON_ECRIT: &str = "CALCUL DU PANNEAU EN ÉCHEC, ÉCHEC NON ÉCRIT : le dernier calcul \
+     de ce panneau a échoué et la base a refusé d'écrire cet échec dans le cache — ce n'est PAS une mesure en cours. RIEN \
+     n'est servi ; un nouveau calcul est armé au plus une fois par durée du cache. Cause du calcul : ";
+
+pub(crate) const CAUSE_RESULTAT_DU_PANNEAU_NON_ECRIT: &str = "RÉSULTAT DU PANNEAU NON ÉCRIT : la base a refusé d'écrire \
+     dans le cache le résultat du dernier calcul de ce panneau — ce n'est PAS une mesure en cours. RIEN n'est servi ; un \
+     nouveau calcul est armé au plus une fois par durée du cache. Si le refus persiste, la base est pleine ou en lecture \
+     seule.";
+
+/// `P10.32-o` (vague BH) — une charge en cache SERVABLE comme résultat : un objet JSON sans `error` (un corps d'échec n'en
+/// est pas un) dont `stats`, s'il existe, est un objet (un aveu peut y être posé). Une ligne absente, illisible, un texte
+/// qui n'est pas du JSON ou un corps d'échec ne le sont pas.
+fn charge_utile_servable(v: &Value) -> bool {
+    v.is_object() && v.get("error").is_none() && v.get("stats").map_or(true, Value::is_object)
+}
+
+/// Pose `stats.rafraichissement_en_echec` (`{cause, echoue_a}`) sur une charge SERVABLE (`charge_utile_servable`), au
+/// service seulement : la ligne de cache n'est pas réécrite.
+fn poser_l_aveu_au_service(v: &mut Value, cause: &str, echoue_a: i64) {
+    v["stats"][CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC] = json!({ "cause": cause, "echoue_a": echoue_a });
+}
+
 /// PHASE 3d — sert un panneau en SWR (stale-while-revalidate), logique EXACTE de 3c : HIT cache (frais OU
 /// périmé) -> service IMMÉDIAT + refresh ASYNC borné (refresh_sem, JAMAIS query_sem) si périmé ; MISS ->
 /// enqueue refresh + JSON VALIDE « warming » non bloquant. Utilisé par (a) le chemin LOURD (coût >= seuil)
@@ -1481,37 +1539,85 @@ pub(crate) const CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE: &str = "LIGNE DE CACHE
 /// recalcule donc PAS `coverage.searched_from` sur le `from` courant — ce serait le seul champ frais
 /// d'une réponse périmée, et il se lit comme un certificat. Seul l'horizon est re-confronté, et il le
 /// DIT (`horizon_perime`). Les corps synthétiques (repli de parsing, ligne de cache illisible, ligne de cache non lue
-/// servie en 503, MISS `warming`) reçoivent eux aussi un `stats.coverage` : un corps sans lignes qui ne dit rien se
-/// relit comme une absence établie.
+/// servie en 503, écriture du cache refusée servie en 503, MISS `warming`) reçoivent eux aussi un `stats.coverage` : un
+/// corps sans lignes qui ne dit rien se relit comme une absence établie.
 pub(crate) fn serve_swr(
     st: &AppState, au: &AuthUser, conf: &HashMap<String, String>, id: i64, query: &str, is_soql: bool, from: i64, to: i64,
     range_key: &str, q_fp: &str, ttl: i64, ttl_global: i64, now_s: i64, env: Option<&str>,
 ) -> Response {
-    let cached = {
+    let (cached, refus_d_ecriture) = {
         // lecture cache SANS prédicat de fraîcheur : on récupère payload + computed_at quel que soit l'âge.
         let __rc = req_db(st, au);
         let conn = __rc.lock();
-        panneau_avoue::cache_lire_dit(&conn, id, range_key, q_fp)
+        // `P10.32-o` (vague BH) — et, sur la même base, l'instant du dernier refus d'écrire cette ligne (`None` si la
+        // dernière écriture tentée a réussi) : voir `reessai_permis` plus bas.
+        (panneau_avoue::cache_lire_dit(&conn, id, range_key, q_fp), panneau_avoue::refus_d_ecriture_de_cache(&conn, id, range_key, q_fp))
+    };
+    let ecriture_refusee_a = refus_d_ecriture.as_ref().map(|r| r.refusee_a);
+    // `P10.32-o` (vague BH, correction) — la phrase servie de l'échec du calcul quand l'écriture refusée portait un ÉCHEC
+    // (corps d'échec ou aveu joint), `None` quand elle portait un résultat : le 503 et l'aveu disent l'un ou l'autre.
+    let echec_non_ecrit = refus_d_ecriture.and_then(|r| r.echec_du_calcul);
+    // `P10.32-o` (vague BH) — LE RÉARMEMENT APRÈS UNE ÉCRITURE REFUSÉE EST BORNÉ. Avant, une base qui refusait d'écrire le
+    // cache (disque plein, lecture seule) laissait la ligne absente ou périmée : chaque interrogation réarmait un calcul qui
+    // réussissait, puis dont l'écriture était refusée, sans fin. Un nouveau calcul n'est armé qu'une fois la durée du cache
+    // écoulée depuis le dernier refus ; le succès de l'écriture efface le refus et rend le mécanisme ordinaire.
+    let reessai_permis = ecriture_refusee_a.map_or(true, |refusee_a| now_s - refusee_a > ttl);
+    // COMPILÉ UNE SEULE FOIS, POUR TOUTES LES BRANCHES, ET AVANT DE JUGER LA LIGNE LUE. La compilation est PURE (aucune
+    // lecture disque) ; elle sert (a) à re-confronter l'horizon du payload servi — la portée n'est écrite QUE dans le SQL
+    // — (b) à armer le rafraîchissement, et (c) à dire, sur une ligne ILLISIBLE, si le refus du compilateur doit être
+    // montré. Compilation en erreur -> `None` : on ne re-estampe rien (ce qui a été mesuré à l'écriture reste ce qui est
+    // dit) et on n'arme rien, exactement comme avant.
+    // `P10.32-o` — SUR UN MISS, LA COMPILATION REFUSÉE EST RENDUE, PLUS TUE : le `.ok()` d'origine en
+    // faisait un corps `warming` servi à chaque interrogation, sans rien armer, donc sans fin — alors que
+    // le chemin LIVE rend `bad_req` pour la même compilation. La cause est gardée pour la branche MISS.
+    let compile = panneau_avoue::compile_panneau_avoue(query, is_soql, from, to, env);
+    let (pc, refus_de_compilation) = match compile {
+        Ok(pc) => (Some(pc), None),
+        Err(e) => (None, Some(e)),
     };
     // `P10.32-o` — UNE LIGNE NON LUE OU ILLISIBLE N'EST JAMAIS SERVIE COMME UNE CHAUFFE. Avant, toutes deux partaient en MISS
     // (corps `warming`) : la console affichait « mesure en cours » sous une notice qui disait le contraire. Désormais :
-    //  * ILLISIBLE (lue, non décodable) : le corps synthétique d'une charge utile illisible (`paye_utile_illisible`, comme
-    //    la charge qui n'est pas du JSON), sans `warming`, et le rafraîchissement armé si le panneau compile la remplacera ;
     //  * NON LUE (lecture refusée) : un refus de lecture nommé en 503 (`CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE`, avec
     //    l'identifiant de corrélation, la raison `cache_non_lu` et sa notice), rafraîchissement armé si le panneau compile.
-    // Les deux sont jugées AVANT le refus du compilateur : celui-ci n'est rendu que sur une vraie absence (le MISS qui,
-    // sans lui, chaufferait sans fin). Chaque ligne de journal nomme le tenant de l'appelant (`{:?}`), jamais la requête.
+    //    Jugée AVANT le refus du compilateur : la ligne non lue peut porter une charge utile valide, que le HIT sert même
+    //    quand le panneau ne compile plus — on ne sait donc pas ce qui aurait été servi, et le 503 le dit ;
+    //  * ILLISIBLE (lue, non décodable) : la ligne ne porte rien de servable. Le panneau compile -> le corps synthétique
+    //    d'une charge utile illisible (`paye_utile_illisible`, comme la charge qui n'est pas du JSON), sans `warming`, et
+    //    le rafraîchissement armé la remplacera. Le panneau ne compile pas -> le refus du compilateur, comme sur une
+    //    absence : rien ne remplacera jamais la ligne, et un 200 synthétique servi à chaque interrogation masquait la
+    //    seule cause actionnable (vague BF : `paye_utile_illisible` sans fin, au lieu du 400 servi sur b29051c4).
+    // Chaque ligne de journal nomme le tenant de l'appelant (`{:?}`), jamais la requête.
     let mut ligne_ratee = LigneDeCacheRatee::Aucune;
     let cached = match cached {
         panneau_avoue::LectureDeCache::Lue(payload, calcule_a) => Some((payload, calcule_a)),
         panneau_avoue::LectureDeCache::Absente => None,
         panneau_avoue::LectureDeCache::Illisible(cause) => {
-            eprintln!(
-                "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — servie comme \
-                 une charge utile illisible (corps synthétique `paye_utile_illisible`, sans `warming`), rafraîchissement armé si \
-                 le panneau compile, qui la remplacera",
-                au.tenant
-            );
+            if refus_de_compilation.is_some() {
+                eprintln!(
+                    "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — le \
+                     panneau ne compile pas : le refus du compilateur est servi (400), rien n'est armé, la ligne reste telle \
+                     quelle",
+                    au.tenant
+                );
+            } else if ecriture_refusee_a.is_some() {
+                // `P10.32-o` (vague BJ, correction) — UNE ÉCRITURE REFUSÉE EST NOTÉE POUR CETTE LIGNE : le 503 nommé de
+                // l'écriture refusée est servi plus bas (la ligne illisible ne porte aucune charge servable), pas le corps
+                // `paye_utile_illisible`, et le réarmement suit `reessai_permis`. Avant, cette ligne annonçait le corps
+                // synthétique et un rafraîchissement armé, puis la ligne suivante disait le 503 et « aucun calcul armé ».
+                eprintln!(
+                    "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — une \
+                     écriture refusée est notée pour cette ligne : le refus nommé de l'écriture est servi (503, ligne \
+                     suivante), pas la charge illisible",
+                    au.tenant
+                );
+            } else {
+                eprintln!(
+                    "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — servie comme \
+                     une charge utile illisible (corps synthétique `paye_utile_illisible`, sans `warming`), rafraîchissement armé si \
+                     le panneau compile, qui la remplacera",
+                    au.tenant
+                );
+            }
             ligne_ratee = LigneDeCacheRatee::Illisible;
             None
         }
@@ -1530,36 +1636,112 @@ pub(crate) fn serve_swr(
     // texte du moteur, et le cache est rôle-agnostique. Il est traité comme une absence (MISS : `warming`, puis un
     // rafraîchissement qui écrit la phrase de sa classe).
     let cached = cached.filter(|(payload, _)| !corps_d_echec_d_une_version_anterieure(payload));
-    // COMPILÉ UNE SEULE FOIS, POUR LES DEUX BRANCHES. La compilation est PURE (aucune lecture disque) ;
-    // elle sert (a) à re-confronter l'horizon du payload servi — la portée n'est écrite QUE dans le SQL
-    // — et (b) à armer le rafraîchissement. Compilation en erreur -> `None` : on ne re-estampe rien (ce
-    // qui a été mesuré à l'écriture reste ce qui est dit) et on n'arme rien, exactement comme avant.
-    // `P10.32-o` — SUR UN MISS, LA COMPILATION REFUSÉE EST RENDUE, PLUS TUE : le `.ok()` d'origine en
-    // faisait un corps `warming` servi à chaque interrogation, sans rien armer, donc sans fin — alors que
-    // le chemin LIVE rend `bad_req` pour la même compilation. La cause est gardée pour la branche MISS.
-    let compile = panneau_avoue::compile_panneau_avoue(query, is_soql, from, to, env);
-    let (pc, refus_de_compilation) = match compile {
-        Ok(pc) => (Some(pc), None),
-        Err(e) => (None, Some(e)),
-    };
     let db_path = req_db_path(st, au);
     // L'HORIZON D'UN CORPS SYNTHÉTIQUE : mesuré quand la portée est dérivable, `None` sinon. Il n'est
     // calculé que sur les deux branches qui fabriquent un corps sans ligne — jamais sur un HIT lisible,
     // où c'est la re-estampe qui parle.
     let horizon_courant = |pc: Option<&PanneauCompile>| pc.map(|pc| panneau_avoue::horizon(&db_path, conf, pc, from));
+    // `P10.32-o` (vague BH) — AUCUNE CHARGE SERVABLE EN CACHE ET LA DERNIÈRE ÉCRITURE DE LA LIGNE REFUSÉE : un refus nommé
+    // en 503 (`CAUSE_RESULTAT_DU_PANNEAU_NON_ECRIT`, raison `cache_non_ecrit`), jamais `warming` / `mesure_en_cours`. Avant,
+    // une base qui refusait d'écrire laissait la ligne absente : le MISS servait une chauffe à chaque interrogation, et le
+    // calcul réarmé réussissait sans que rien ne soit jamais écrit. Jugé APRÈS la ligne NON LUE (on ne sait pas ce qu'elle
+    // porte) et APRÈS le refus du compilateur (la cause actionnable, servie plus bas en 400) ; couvre l'absence, la ligne
+    // illisible, le texte qui n'est pas du JSON et le corps d'échec. Le nouveau calcul n'est armé que si `reessai_permis`.
+    // `charge_servable` est une fermeture appelée en dernier dans la garde du bras `Some` : la charge n'est décodée ici
+    // que si un refus d'écriture est noté pour cette ligne (gain de coût seul, rien de servi ne change).
+    let charge_servable =
+        || cached.as_ref().is_some_and(|(payload, _)| serde_json::from_str::<Value>(payload).is_ok_and(|v| charge_utile_servable(&v)));
+    let non_lue = matches!(ligne_ratee, LigneDeCacheRatee::NonLue(_));
+    match ecriture_refusee_a {
+        Some(refusee_a) if !non_lue && refus_de_compilation.is_none() && !charge_servable() => {
+            let cid = crate::identifiant_de_correlation();
+            let geste = if reessai_permis { "nouveau calcul armé" } else { "aucun calcul armé avant l'expiration du cache" };
+            let quoi = if echec_non_ecrit.is_some() { "échec du dernier calcul" } else { "résultat du dernier calcul" };
+            eprintln!(
+                "[{cid}] [panel] WARN {quoi} NON ÉCRIT au cache (refus à {refusee_a}), panneau #{id}, tenant \
+                 {:?} — aucune charge servable en cache : refus nommé servi en 503 (sans `warming`), {geste}",
+                au.tenant
+            );
+            // L'échec non écrit est servi comme un échec (sa phrase, raison `calcul_echoue`), pas comme un résultat perdu.
+            let (cause, raison) = match &echec_non_ecrit {
+                Some(servie) => (format!("{CAUSE_ECHEC_DU_PANNEAU_NON_ECRIT}{servie}"), panneau_avoue::RAISON_CALCUL_ECHOUE),
+                None => (CAUSE_RESULTAT_DU_PANNEAU_NON_ECRIT.to_string(), panneau_avoue::RAISON_CACHE_NON_ECRIT),
+            };
+            let mut v = json!({ "columns": [], "rows": [], "error": cause, "id": cid });
+            v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(raison, from, now_s, horizon_courant(pc.as_ref()));
+            match pc {
+                Some(pc) if reessai_permis => {
+                    enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone())
+                }
+                _ => {}
+            }
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(v)).into_response();
+        }
+        _ => {}
+    }
     match cached {
         Some((payload, computed_at)) => {
             // HIT (frais OU périmé) -> service IMMÉDIAT. Si périmé : refresh async (hors query_sem).
+            let perimee = now_s - computed_at > ttl;
             let v = match serde_json::from_str::<Value>(&payload) {
                 Ok(mut v) => {
                     // La classe d'un corps d'échec sert au tri ci-dessus, pas au client : le corps servi garde sa forme.
                     if let Some(o) = v.as_object_mut() {
                         o.remove(MARQUEUR_INTERNE_DE_CLASSE_D_ECHEC);
                     }
+                    // `P10.32-o` (vague BH) — UNE CHARGE PÉRIMÉE D'UN PANNEAU QUI NE COMPILE PLUS (même requête, compilateur
+                    // ou macro durcis depuis l'écriture) n'est plus servie indéfiniment sans un mot : rien ne peut la
+                    // rafraîchir (`pc` est `None`, rien n'est armé). Une charge SERVABLE reste servie, le refus du
+                    // compilateur joint sous `stats.rafraichissement_en_echec` (instant du service) ; un corps d'échec,
+                    // qui ne porte rien de servable, cède la place au refus du compilateur (400), comme une absence.
+                    // Une charge FRAÎCHE est servie telle quelle jusqu'à son expiration.
+                    let servable = charge_utile_servable(&v);
+                    let refus_joint = match &refus_de_compilation {
+                        Some(e) if perimee && !servable => {
+                            eprintln!(
+                                "[panel] WARN panneau #{id}, tenant {:?} : corps d'échec périmé en cache, le panneau ne compile \
+                                 plus — le refus du compilateur est servi (400), la ligne reste telle quelle",
+                                au.tenant
+                            );
+                            return bad_req(e.clone());
+                        }
+                        Some(e) if perimee => {
+                            eprintln!(
+                                "[panel] WARN panneau #{id}, tenant {:?} : charge utile périmée servie, le panneau ne compile \
+                                 plus — refus du compilateur joint au corps (`stats.{CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC}`), aucun \
+                                 calcul armé",
+                                au.tenant
+                            );
+                            poser_l_aveu_au_service(&mut v, e, now_s);
+                            true
+                        }
+                        _ => false,
+                    };
+                    // `P10.32-o` (vague BH) — LA DERNIÈRE ÉCRITURE DE LA LIGNE A ÉTÉ REFUSÉE : la charge servie n'est pas
+                    // celle du dernier calcul ; elle le dit (`CAUSE_ECRITURE_DU_CACHE_REFUSEE`, instant du refus). Le refus
+                    // du compilateur, joint plus haut, l'emporte : c'est lui qui empêche tout calcul.
+                    match ecriture_refusee_a {
+                        Some(refusee_a) if servable && !refus_joint => match &echec_non_ecrit {
+                            // `P10.32-o` (correction) — l'écriture refusée portait l'échec du calcul : il est dit, avec sa
+                            // phrase, à l'instant de la tentative.
+                            Some(servie) => poser_l_aveu_au_service(
+                                &mut v, &format!("{}{servie}", panneau_avoue::CAUSE_ECHEC_DU_CALCUL_NON_ECRIT_AU_CACHE), refusee_a,
+                            ),
+                            None => poser_l_aveu_au_service(&mut v, panneau_avoue::CAUSE_ECRITURE_DU_CACHE_REFUSEE, refusee_a),
+                        },
+                        _ => {}
+                    }
                     panneau_avoue::cache_reestamper(&mut v, &db_path, conf, pc.as_ref(), computed_at, now_s);
                     v
                 }
                 Err(_) => {
+                    // `P10.32-o` (vague BG, correction) — UNE CHARGE TEXTE QUI N'EST PAS DU JSON NE PORTE RIEN DE SERVABLE,
+                    // comme la ligne ILLISIBLE plus haut : si le panneau ne compile pas, rien ne la remplacera jamais, et
+                    // un 200 `paye_utile_illisible` servi à chaque interrogation masquait le refus du compilateur. On rend
+                    // donc ce refus (le même que le chemin live et qu'une absence) ; la ligne reste telle quelle.
+                    if let Some(e) = refus_de_compilation {
+                        return bad_req(e);
+                    }
                     let mut v = json!({ "columns": [], "rows": [] });
                     v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
                         panneau_avoue::RAISON_PAYE_UTILE_ILLISIBLE, from, now_s, horizon_courant(pc.as_ref()),
@@ -1567,7 +1749,8 @@ pub(crate) fn serve_swr(
                     v
                 }
             };
-            if now_s - computed_at > ttl {
+            // `P10.32-o` (vague BH) — après une écriture refusée, au plus un calcul par durée du cache (`reessai_permis`).
+            if perimee && reessai_permis {
                 if let Some(pc) = pc {
                     enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
                 }
@@ -1575,33 +1758,33 @@ pub(crate) fn serve_swr(
             Json(v).into_response()
         }
         None => {
-            match ligne_ratee {
-                LigneDeCacheRatee::NonLue(cid) => {
-                    let mut v = json!({ "columns": [], "rows": [], "error": CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE, "id": cid });
-                    v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
-                        panneau_avoue::RAISON_LIGNE_DE_CACHE_NON_LUE, from, now_s, horizon_courant(pc.as_ref()),
-                    );
-                    panneau_avoue::dire_la_ligne_de_cache_non_lue(&mut v["stats"]["coverage"]);
-                    if let Some(pc) = pc {
-                        enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
-                    }
-                    return (StatusCode::SERVICE_UNAVAILABLE, Json(v)).into_response();
+            // L'ORDRE DES BRAS EST LA PROPRIÉTÉ (`P10.32-o`) : NON LUE, puis le refus du compilateur, puis ILLISIBLE, puis le
+            // MISS. Voir le commentaire de la lecture plus haut. L'écriture refusée (vague BH) a déjà été servie en 503 avant ce
+            // `match`, entre le refus du compilateur et ILLISIBLE : ici, aucun refus d'écriture n'est noté.
+            if let LigneDeCacheRatee::NonLue(cid) = ligne_ratee {
+                let mut v = json!({ "columns": [], "rows": [], "error": CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE, "id": cid });
+                v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
+                    panneau_avoue::RAISON_LIGNE_DE_CACHE_NON_LUE, from, now_s, horizon_courant(pc.as_ref()),
+                );
+                if let Some(pc) = pc {
+                    enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
                 }
-                LigneDeCacheRatee::Illisible => {
-                    let mut v = json!({ "columns": [], "rows": [] });
-                    v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
-                        panneau_avoue::RAISON_PAYE_UTILE_ILLISIBLE, from, now_s, horizon_courant(pc.as_ref()),
-                    );
-                    if let Some(pc) = pc {
-                        enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
-                    }
-                    return Json(v).into_response();
-                }
-                LigneDeCacheRatee::Aucune => {}
+                return (StatusCode::SERVICE_UNAVAILABLE, Json(v)).into_response();
             }
-            // `P10.32-o` : le MÊME refus que le chemin live, avec la cause du compilateur.
+            // `P10.32-o` : le MÊME refus que le chemin live, avec la cause du compilateur — sur une absence comme sur une
+            // ligne illisible.
             if let Some(e) = refus_de_compilation {
                 return bad_req(e);
+            }
+            if matches!(ligne_ratee, LigneDeCacheRatee::Illisible) {
+                let mut v = json!({ "columns": [], "rows": [] });
+                v["stats"]["coverage"] = panneau_avoue::coverage_synthetique(
+                    panneau_avoue::RAISON_PAYE_UTILE_ILLISIBLE, from, now_s, horizon_courant(pc.as_ref()),
+                );
+                if let Some(pc) = pc {
+                    enqueue_panel_refresh(st, au, id, range_key.to_string(), q_fp.to_string(), pc, from, ttl_global, conf.clone());
+                }
+                return Json(v).into_response();
             }
             // MISS total (jamais réchauffé) -> refresh async + JSON VALIDE non bloquant « warming ».
             // L'HORIZON EST MESURÉ AVANT L'ARMEMENT : la tâche de rafraîchissement CONSOMME le panneau
@@ -1734,8 +1917,15 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
                         }
                         // peuple aussi le cache rendu -> un futur fallback (lane saturée) sert du frais récent.
                         // `P10.32-o` — `Value::to_string`, infaillible, mêmes octets : le cache n'est plus sauté sans un mot.
+                        // `P10.32-o` (vague BH) — le refus de l'écriture est noté par le coffre et dit ici (la réponse, elle,
+                        // est servie fraîche) : un repli SWR ultérieur le lira au lieu de servir une chauffe.
                         if cacheable && ttl > 0 {
-                            panneau_avoue::cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &v.to_string());
+                            if let Err(e) = panneau_avoue::cache_ecrire_dit(&conn, id, &range_key, &q_fp, now_s, &v.to_string()) {
+                                eprintln!(
+                                    "[panel] WARN panneau #{id}, tenant {:?} : résultat servi en direct NON ÉCRIT au cache ({e})",
+                                    au.tenant
+                                );
+                            }
                         }
                     }
                     Json(v).into_response()

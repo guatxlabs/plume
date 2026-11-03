@@ -139,7 +139,7 @@ mod ax1_un_echec_neuf_remplace_l_aveu_precedent {
         assert_eq!(v, ax1_charge_avec_aveu(AX1_REJETEE, t1), "contrôle positif : le premier aveu est joint : {payload}");
         demander(dbp.as_str(), PanneAuCoeur::BaseOccupee);
         let avant = now();
-        crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+        crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
         let apres = now();
         let servie = !encore_demandee(dbp.as_str());
         retirer(dbp.as_str());

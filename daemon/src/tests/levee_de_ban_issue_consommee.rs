@@ -155,6 +155,13 @@ mod levee_de_ban_issue_consommee {
     /// changer ce littéral, donc à relire sa promesse. MUTATION : `C1`.
     const LBI_PHRASE_DU_503: &str = "LEVÉE IMPOSSIBLE : la ligne du blocage HTTP n'a pas pu être retirée, donc le ban est TOUJOURS actif. La levée se fait directement par DELETE /api/netban/{ip} (approuver de nouveau la riposte ne la rejoue pas une fois la riposte exécutée).";
 
+    /// `P10.29-l` (vague BG) — CE QUE PORTENT LES PARENTHÈSES DU 503 À LA PLACE DU TEXTE DU MOTEUR, recopié mot pour mot
+    /// (et non lu dans `CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL`). MUTATION : `BG3_LEVEE_TEXTE`.
+    const LBI_CAUSE_AU_JOURNAL: &str = "la cause rendue par la base est au journal du démon";
+
+    /// Le texte que le déclencheur fait rendre au moteur : il reste au journal et au registre, jamais au corps.
+    const LBI_TEXTE_DU_MOTEUR: &str = "levee refusee par le temoin";
+
     const LBI_LEVEE_REFUSEE: &str = "CREATE TRIGGER lbi_levee_refusee BEFORE DELETE ON net_ban \
         BEGIN SELECT RAISE(ABORT, 'levee refusee par le temoin'); END;";
 
@@ -169,7 +176,7 @@ mod levee_de_ban_issue_consommee {
     /// la ligne `net_ban` et le cache bloquent toujours, la riposte reste `approved`, l'échec est au
     /// registre ; la base réparée, la MÊME approbation rejouée rend 204 et lève le ban.
     /// MUTATIONS : `lbi_err_avale` (204 sur l'échec), `lbi_503_sur_ok` (503 au rejeu), `A8` (la cause
-/// `({erreur})` retirée de la phrase).
+    /// retirée de la phrase), `BG3_LEVEE_TEXTE` (la cause redevient le texte du moteur).
     #[tokio::test]
     async fn lbi_une_levee_refusee_rend_503_le_ban_reste_actif_et_le_geste_se_rejoue() {
         let _env = VERROU_ENV_PROCESSUS.write();
@@ -186,12 +193,17 @@ mod levee_de_ban_issue_consommee {
         assert_eq!(code, 503, "levée refusée : la route REFUSE au lieu du 204 de la réussite : {corps}");
         assert!(lbi_phrase(&corps).starts_with(LBI_PHRASE_DU_503), "le refus nomme sa cause, mot pour mot : {corps}");
         assert_eq!(CAUSE_LEVEE_NON_FAITE, LBI_PHRASE_DU_503, "la constante est la phrase relue (MUTATION `C1`)");
-        // La cause portée — l'erreur de la base — suit la phrase, et rien d'autre. MUTATIONS : `A8`, `C1`.
+        // La cause portée suit la phrase, et rien d'autre. MUTATIONS : `A8`, `C1`.
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague BG) : les parenthèses portaient l'erreur de la base (le message du
+        // déclencheur) ; elles portent la phrase fixe, et le texte du moteur n'est plus nulle part dans le corps (il est au
+        // journal `[actions]`, témoin `bg3_levee_refusee_texte_du_moteur_au_journal_par_tenant`, et au registre, ci-dessous).
+        // MUTATION : `BG3_LEVEE_TEXTE`.
         assert_eq!(
             lbi_phrase(&corps),
-            format!("{LBI_PHRASE_DU_503} (levee refusee par le temoin)"),
-            "le refus porte l'erreur de la base : {corps}"
+            format!("{LBI_PHRASE_DU_503} ({LBI_CAUSE_AU_JOURNAL})"),
+            "le refus porte la phrase fixe, pas l'erreur de la base : {corps}"
         );
+        assert!(!corps.to_string().contains(LBI_TEXTE_DU_MOTEUR), "aucune trace du texte du moteur dans le corps : {corps}");
         // Le geste annoncé est celui qui tient quel que soit le sort de la riposte : la levée
         // directe. Le rejeu par approbation n'est pas promis (il rend un 204 muet une fois la riposte
         // close, cf. `lbi_apres_cloture_seule_la_levee_directe_tient`). MUTATION : `lbi_phrase_ancienne`.
@@ -242,8 +254,9 @@ mod levee_de_ban_issue_consommee {
         let phrase = lbi_phrase(&corps);
         assert!(!phrase.contains("/approve"), "le 503 ne promet pas le rejeu par approbation : {corps}");
         assert!(phrase.contains("DELETE /api/netban/{ip}"), "le 503 nomme la levée directe : {corps}");
-        // La phrase servie est le littéral relu, mot pour mot. MUTATION : `C1`.
-        assert_eq!(phrase, format!("{LBI_PHRASE_DU_503} (levee refusee par le temoin)"), "{corps}");
+        // La phrase servie est le littéral relu, mot pour mot. MUTATION : `C1`. INVERSÉ NOMMÉMENT par `P10.29-l` (vague BG) :
+        // les parenthèses portent la phrase fixe, plus le message du déclencheur. MUTATION : `BG3_LEVEE_TEXTE`.
+        assert_eq!(phrase, format!("{LBI_PHRASE_DU_503} ({LBI_CAUSE_AU_JOURNAL})"), "{corps}");
 
         // La riposte close par un exécuteur, la base réparée : le rejeu par approbation ne lève rien.
         lbi_ecrire(&st, &format!("UPDATE action SET status='done' WHERE id={id}; DROP TRIGGER lbi_levee_refusee;"));
@@ -279,15 +292,17 @@ mod levee_de_ban_issue_consommee {
         assert_eq!(code, 503, "{corps}");
         assert!(lbi_phrase(&corps).starts_with(LBI_PHRASE_DU_503), "{corps}");
         assert!(lbi_phrase(&corps).contains("PAS au registre non plus"), "la trace manquante de l'échec est dite : {corps}");
-        // Les deux causes sont portées : l'erreur de la levée, puis celle du maillon. MUTATION : `A8`.
+        // Les deux causes sont portées : celle de la levée, puis celle du maillon. MUTATION : `A8`.
         // INVERSÉ NOMMÉMENT par `P10.29-l` (vague AM) : la cause du maillon est la phrase fixe, plus le texte du moteur.
+        // INVERSÉ NOMMÉMENT par `P10.29-l` (vague BG) : la cause de la levée aussi. MUTATION : `BG3_LEVEE_TEXTE`.
         assert_eq!(
             lbi_phrase(&corps),
             format!(
-                "{LBI_PHRASE_DU_503} (levee refusee par le temoin) ; cet échec n'est PAS au registre non plus ({CAUSE_MAILLON_NON_ECRIT})"
+                "{LBI_PHRASE_DU_503} ({LBI_CAUSE_AU_JOURNAL}) ; cet échec n'est PAS au registre non plus ({CAUSE_MAILLON_NON_ECRIT})"
             ),
             "{corps}"
         );
+        assert!(!corps.to_string().contains(LBI_TEXTE_DU_MOTEUR), "aucune trace du texte du moteur dans le corps : {corps}");
         assert_eq!(lbi_genre(&st, "netban.remove.echec"), 0, "fixture : le maillon d'échec a bien été refusé");
         assert!(net_ban_is_blocked(ip, now()), "le ban reste actif");
         netban_cache().write().clear();

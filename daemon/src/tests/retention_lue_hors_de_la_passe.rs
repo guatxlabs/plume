@@ -32,8 +32,8 @@
 // CE QUE CES TÉMOINS NE TIENNENT PAS : la frontière froide de `query.rs` (`/api/query`, `/api/export`) et du pivot
 // (`datamodels.rs`), tenue depuis la vague AS par `frontiere_froide_non_lue_et_ecritures_avouees.rs` ; une réponse
 // de panneau servie depuis le cache garde l'horizon mesuré à l'écriture quand le réglage devient illisible ensuite
-// (`horizon_perime` ne se pose pas) ; la console (`web/index_policies.js`) affiche `global_retention_days: null` comme
-// un nombre (zone d'une autre session).
+// (`horizon_perime` ne se pose pas) ; la lecture de `global_retention_days` par la console (`web/index_policies.js`,
+// « NON ÉTABLIE » sur un `null`), témoignée par le harnais web, pas ici.
 //
 // LES MUTATIONS QUI LES FONT ROUGIR (variable de mutation sous `cfg!(test)`, retirées du source avant le commit) : voir chaque
 // témoin (`AR1_*`).

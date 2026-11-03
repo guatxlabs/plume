@@ -546,7 +546,7 @@
         // LE CINQUIÈME POINT D'EXÉCUTION, par sa condition RÉELLE : un tick de pré-chauffage.
         let db = Arc::new(Mutex::new(open_db(path.as_str()).unwrap()));
         let sem = Arc::new(tokio::sync::Semaphore::new(4));
-        cache_refresh_all_panels(&db, path.as_str(), &sem);
+        cache_refresh_all_panels(&db, path.as_str(), &sem, "default");
 
         let conn = db.lock();
         let mut stmt = conn.prepare("SELECT panel_id, payload FROM panel_cache").unwrap();
@@ -748,7 +748,7 @@
         {
             let db = Arc::new(Mutex::new(open_db(&dbp).unwrap()));
             let sem = Arc::new(tokio::sync::Semaphore::new(4));
-            cache_refresh_all_panels(&db, &dbp, &sem);
+            cache_refresh_all_panels(&db, &dbp, &sem, "default");
         }
         // … PUIS LE PANNEAU SONDÉ EST POUSSÉ SUR LE CHEMIN **LIVE**, ET C'EST LA MOITIÉ QUI MANQUAIT.
         // La garde jumelle de la TABLE ne joue que le tick de fond : sa population réelle est « les lignes

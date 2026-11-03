@@ -14444,6 +14444,28 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       `(100f-négatif) un défaut du CORPS est peint dans le registre d'un aveu de lecture : les deux refus se confondraient dans l'autre sens — « ${noeud400Pivot100 && noeud400Pivot100.className} » / « ${texte400Pivot100.slice(0, 300)} »`);
     exiger(nu100(hotePivot100) !== texte503Pivot100,
       "(100f) les deux refus du Pivot rendent le MÊME texte : c'est exactement la confusion que ce lot ferme côté démon");
+    // `P10.20-l` — L'OUVERTURE EST ANCRÉE, EN TÊTE ET À UNE FRONTIÈRE UNICODE, SUR LES DEUX PHRASES DU DÉMON. La seconde
+    // (`CAUSE_OBJET_DU_PIVOT_NON_LU`, relue dans datamodels.rs) est servie sur le même cinq cent trois et ouvre par son nom
+    // propre ; une ouverture CITÉE au milieu d'une autre phrase, ou suivie d'une lettre, garde la face générique.
+    const CAUSE_OBJET100 = litteralRust100(srcModelesH100, "CAUSE_OBJET_DU_PIVOT_NON_LU");
+    instrument100(CAUSE_OBJET100.startsWith("OBJET DU PIVOT NON LU :") && /return Err\(\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_OBJET_DU_PIVOT_NON_LU\.to_string\(\)\)\)/.test(srcModelesH100)
+      && CAUSE_ALLOWLIST100.startsWith("champs déclarés de l'objet NON LUS :"),
+      "les deux phrases du cinq cent trois du Pivot (`NON_LUS`, `CAUSE_OBJET_DU_PIVOT_NON_LU`) n'ouvrent plus par leurs mots, ou la seconde n'est plus servie en 503 (daemon/src/handlers/datamodels.rs)");
+    const peindrePivot100 = (phrase) => { modModeles100.avouerLeRefusDuPivot(hotePivot100, "execution", { causeDuDemon: phrase, message: "503 " + JSON.stringify({ error: phrase }) }); const n = hotePivot100.children[0]; return { texte: nu100(hotePivot100), aveu: !!n && n.className === "bad" && !/refuse le corps reçu/.test(nu100(hotePivot100)) }; };
+    const objet100 = peindrePivot100(CAUSE_OBJET100);
+    exiger(objet100.aveu && objet100.texte.includes(CAUSE_OBJET100),
+      `(100g) la phrase « OBJET DU PIVOT NON LU » du démon ne se peint plus comme un aveu de lecture : « ${objet100.texte.slice(0, 300)} »`);
+    for (const [nom, phrase] of [
+      ["ouverture d'allowlist citée au milieu", "x " + CAUSE_ALLOWLIST100.split(" : ")[0] + " : x"],
+      ["ouverture d'objet citée au milieu", "x OBJET DU PIVOT NON LU : x"],
+      ["frontière de mot (lettre)", "champs déclarés de l'objet NON LUSX : x"],
+      ["frontière de mot (lettre accentuée)", "OBJET DU PIVOT NON LUÉ : x"],
+      ["frontière de mot (chiffre)", "OBJET DU PIVOT NON LU2 : x"],
+    ]) {
+      const r = peindrePivot100(phrase);
+      exiger(!r.aveu && /refuse le corps reçu/.test(r.texte) && r.texte.includes(phrase),
+        `(100g) ${nom} : « ${phrase} » est peint comme une allowlist NON LUE — l'ouverture n'est pas ancrée à son début et à une frontière : « ${r.texte.slice(0, 300)} »`);
+    }
   } finally {
     globalThis.fetch = fetchOrigine100;
     globalThis.setTimeout = minuterieOrigine100;
@@ -23731,7 +23753,13 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // `P10.20-b` (console) — la table que le témoin 152 pose aussi : l'état du pare-feu non lu de la section des suppressions.
       "suppressions.js › MOTS_DE_L_ETAT_DU_PARE_FEU",
       // `P10.31-i` (console) — la table que le témoin 155 pose : le geste de révocation globale des sessions, ses refus nommés.
-      "admin_users.js › MOTS_DE_LA_REVOCATION_GLOBALE"];
+      "admin_users.js › MOTS_DE_LA_REVOCATION_GLOBALE",
+      // `P10.20-b` (console) — les tables que les témoins 158 et 161 posent : la coupe d'une liste de machines à sa borne
+      // servie, et la rétention globale non établie des politiques d'index.
+      "coupe_de_liste.js › MOTS_DE_LA_LISTE_DE_MACHINES_COUPEE", "index_policies.js › MOTS_DE_LA_RETENTION_GLOBALE",
+      // `P10.32-o` (console) — les tables que les témoins 159 et 160 posent : le rafraîchissement en échec d'une charge
+      // valide, et le corps sans ligne d'une ligne de cache non lue ou illisible.
+      "dashboards.js › MOTS_DU_RAFRAICHISSEMENT_EN_ECHEC", "dashboards.js › MOTS_DU_CORPS_SANS_LIGNE_NON_ETABLI"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -30985,6 +31013,472 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   else console.log("(157) OK — `P10.30-d` (console) : sous `evenement_du_tenant_non_ecrit`, la perte d'écriture (rbac.rs) et la base non servie (tenants.rs) donnent la même face NEUTRE — le geste a eu lieu, l'événement n'est pas écrit dans la base du tenant, refusé ou base non servie, le démon dit laquelle — suivie de la phrase servie entière, fr et en. Ce qu'il NE tient PAS : quel geste sert quelle phrase.");
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// (158) `P10.20-b` (console) — UNE LISTE DE MACHINES COUPÉE À SA BORNE LE DIT, AVEC LA BORNE SERVIE.
+//
+// CE QUE LE DÉMON SERT (RELU dans son arbre) : `panel` (daemon/src/handlers/overview.rs) pose `hosts_borne`
+// (`BORNE_DES_MACHINES_DU_PANNEAU`) SEULEMENT quand la liste est coupée, `n_hosts` étant alors le nombre de machines du genre
+// (nul sur une lecture partielle) ; `suppressions_get` (daemon/src/handlers/admin_ui.rs) pose `firewall_hosts_borne` et
+// `firewall_n_hosts` de la même façon. AVANT CE LOT : aucune surface ne lisait la borne — une liste de 500 machines sur
+// 1200 se disait « 1 machine sur 1200 » et le total des contrôles « parc : … sur …/500 machine(s) », le parc pris pour la
+// liste coupée.
+// JUGÉ, DANS LES DEUX LANGUES, par les charges réelles (`CHARGES_POSEES`, `loadSuppressions`) : borne présente (la valeur
+// servie, deux valeurs distinctes : aucune constante de la console), absente ou nulle (rien de neuf), invalide (chaîne,
+// négative, zéro, fraction, au-delà des entiers sûrs, balisée : coupe dite SANS chiffre, aucun IMG), dénominateur nul
+// (lecture partielle) ou non entier (sans « sur N ») ; total des contrôles coupé = machines LISTÉES, jamais « parc : ».
+// CE QU'IL NE TIENT PAS : la route (témoins Rust de `P10.20-b`) ; la mise en page ; « 1 machine sur N » et « hôte » restent
+// français sous LANG='en' (face d'avant, hors de ce lot).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant158 = echecs.length;
+  const url158 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const FICHIERS158 = { noyau: "core.js", etat: "state.js", registres: "registres.js", supp: "suppressions.js", coupe: "coupe_de_liste.js" };
+  const importer158 = async (adresse) => { await import(adresse("app.js")); const L = {}; for (const [cle, f] of Object.entries(FICHIERS158)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr158 = await importer158(url158);
+  const langueOrigine158 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn158 = await importer158((f) => adresseSousLaLangue(f));
+  if (langueOrigine158 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine158);
+  const FR158 = { nom: "fr", ...modsFr158, COUPE: (b, n) => `liste coupée à ${b} machines sur ${n}`, SANS_PARC: (b) => `liste coupée à ${b} machines, nombre de machines du parc non établi`,
+    ILLISIBLE: "liste coupée, borne servie illisible : nombre de machines listées non établi", MOT: "liste coupée", LISTEES: "machines LISTÉES (pas le parc) : 3 manquant(s) sur 1/2 machine(s) listée(s)" };
+  const EN158 = { nom: "en", ...modsEn158, COUPE: (b, n) => `list cut at ${b} machines out of ${n}`, SANS_PARC: (b) => `list cut at ${b} machines, fleet size not established`,
+    ILLISIBLE: "list cut, served bound unreadable: number of listed machines not established", MOT: "list cut", LISTEES: "machines LISTED (not the fleet): 3 missing on 1/2 machine(s) listed" };
+  const instrument158 = (vrai, quoi) => exiger(vrai, `(158-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic158 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser158 = async (n = 30) => { for (let i = 0; i < n; i++) await tic158(); };
+  const nu158 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const cueillir158 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir158(c, pred, acc)); return acc; };
+  const lireLeDemon158 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const corpsDeFonction158 = (src, entete) => { const i = src.indexOf(entete); if (i < 0) return ""; const j = src.indexOf("\n}\n", i); return j < 0 ? "" : src.slice(i, j + 2); };
+
+  // ══ (0) CE QUE LE DÉMON SERT, RELU ══════════════════════════════════════════════════════════════
+  const OV158 = lireLeDemon158("handlers/overview.rs"), ADM158 = lireLeDemon158("handlers/admin_ui.rs");
+  const panel158 = corpsDeFonction158(OV158, "pub(crate) async fn panel(");
+  const supp158 = corpsDeFonction158(ADM158, "pub(crate) async fn suppressions_get(");
+  const borneP158 = Number(((OV158.match(/pub\(crate\) const BORNE_DES_MACHINES_DU_PANNEAU: usize = (\d+);/) || [])[1]) || NaN);
+  const borneF158 = Number(((ADM158.match(/pub\(crate\) const BORNE_DES_MACHINES_DU_PARE_FEU: usize = (\d+);/) || [])[1]) || NaN);
+  instrument158(/if par_hote\.coupee_a_la_borne\(\) \{\s*corps\["hosts_borne"\] = json!\(BORNE_DES_MACHINES_DU_PANNEAU\);\s*\}/.test(panel158)
+    && /let n_hosts = json!\(par_hote\.taille_du_parc\(\)\);/.test(panel158) && Number.isSafeInteger(borneP158) && borneP158 > 0,
+    "`panel` (daemon/src/handlers/overview.rs) ne pose plus `hosts_borne` sur une liste coupée seule, ou `n_hosts` n'est plus la taille du parc");
+  instrument158(/if fw_par_hote\.coupee_a_la_borne\(\) \{\s*corps\["firewall_n_hosts"\] = json!\(fw_par_hote\.taille_du_parc\(\)\);\s*corps\["firewall_hosts_borne"\] = json!\(BORNE_DES_MACHINES_DU_PARE_FEU\);\s*\}/.test(supp158)
+    && Number.isSafeInteger(borneF158) && borneF158 > 0,
+    "`suppressions_get` (daemon/src/handlers/admin_ui.rs) ne pose plus `firewall_hosts_borne` et `firewall_n_hosts` sur une liste coupée seule");
+  // La borne est SERVIE : aucune surface de la console ne l'écrit.
+  const srcConsole158 = ["coupe_de_liste.js", "app.js", "suppressions.js"].map((f) => readFileSync(path.join(WEB, f), "utf8")).join("\n");
+  exiger(!new RegExp("\\b(" + borneP158 + "|" + borneF158 + ")\\b").test(srcConsole158.replace(/\/\/[^\n]*/g, "")),
+    `(158-constante) la console écrit la borne du démon (${borneP158}/${borneF158}) au lieu de lire celle qui est servie`);
+  for (const L of [FR158, EN158]) instrument158(typeof L.coupe.coupeDeLaListeDeMachines === "function" && typeof L.registres.CHARGES_POSEES.get("firewall") === "function" && typeof L.supp.loadSuppressions === "function",
+    `${L.nom} : \`coupeDeLaListeDeMachines\`, la charge \`firewall\` ou \`loadSuppressions\` ne sont plus posées`);
+
+  const qsOrigine158 = document.querySelector, fetchOrigine158 = globalThis.fetch, minuterieOrigine158 = globalThis.setTimeout;
+  const etatOrigine158 = [FR158, EN158].map((L) => ({ S: L.etat.S, admin: L.etat.S.isAdmin }));
+  const hoteFw158 = new Element("div"), hoteCtl158 = new Element("div"), hoteSupp158 = new Element("div");
+  document.querySelector = (sel) => (sel === "#firewall .body" ? hoteFw158 : sel === "#controls .body" ? hoteCtl158 : sel === "#suppressions-body" ? hoteSupp158 : new Element("div"));
+  globalThis.setTimeout = (fn, ms, ...a) => minuterieOrigine158(fn, ms >= 400 ? 0 : ms, ...a);
+  let servi158 = {};
+  globalThis.fetch = async (u) => {
+    const c = String(u).split("?")[0];
+    const r = servi158[c] || { status: 200, corps: c === "/api/silences" ? { silences: [] } : {} };
+    return { ok: r.status >= 200 && r.status < 300, status: r.status, headers: { get: () => null }, text: async () => JSON.stringify(r.corps) };
+  };
+  const ecarts158 = [];
+  const faces158 = {};
+  try {
+    const peindre158 = async (L, cible, hote, corps) => {
+      servi158 = { [`/api/panel/${cible}`]: { status: 200, corps } };
+      hote.replaceChildren();
+      try { await L.registres.CHARGES_POSEES.get(cible)(); } catch (e) { /* jugé par le texte */ }
+      await laisser158();
+      return { texte: nu158(hote), hote };
+    };
+    const FWD = { ruleset_sha256: "abcdef0123456789" };
+    const hf = (h) => ({ host: h, ts: 1000, hash: "h", data: FWD });
+    const fw = (extra) => ({ kind: "firewall", ts: 1000, hash: "h", host: "fw-01", data: FWD, hosts: [hf("fw-01"), hf("fw-02"), hf("fw-03")], n_hosts: 3, ...extra });
+    const hc = (h, failed) => ({ host: h, ts: 1000, hash: "h", data: { failed } });
+    const ctl = (extra) => ({ kind: "controls", ts: 1000, hash: "h", host: "ctl-a", data: { controls: [{ id: "c1", ok: false }], failed: 1 }, hosts: [hc("ctl-a", 3), hc("ctl-b", 0)], n_hosts: 2, ...extra });
+    // Aucun chiffre de borne fabriqué : la face d'une coupe chiffrée (« à <n> » / « at <n> ») n'apparaît pas.
+    const sansChiffreApresLaCoupe = (t, L) => !t.includes(L.MOT + (L.nom === "fr" ? " à" : " at"));
+    const INVALIDES = [["chaîne", String(borneP158)], ["négative", -5], ["nulle (zéro)", 0], ["fractionnaire", 2.5], ["hors entiers sûrs", 2 ** 53], ["booléen", true], ["balisée", "<img src=x onerror=alert(158)>"]];
+    for (const L of [FR158, EN158]) {
+      // (a) panneau pare-feu : la borne servie, deux valeurs (la console n'en écrit aucune).
+      for (const b of [borneP158, 777]) {
+        const a = await peindre158(L, "firewall", hoteFw158, fw({ n_hosts: 1200, hosts_borne: b }));
+        if (!a.texte.includes(L.COUPE(b, 1200)) || !a.texte.includes("1 machine sur 1200")) ecarts158.push(`${L.nom}/pare-feu coupé à ${b} : « ${a.texte} »`);
+        if (b === 777) faces158[L.nom] = a.texte;
+      }
+      // (b) borne absente, ou nulle au sens JSON : liste entière, rien de neuf.
+      for (const [nom, extra] of [["absente", {}], ["nulle", { hosts_borne: null }]]) {
+        const a = await peindre158(L, "firewall", hoteFw158, fw(extra));
+        if (a.texte.includes(L.MOT) || !a.texte.includes("hôte fw-01 — 1 machine sur 3")) ecarts158.push(`${L.nom}/pare-feu borne ${nom} : « ${a.texte} »`);
+      }
+      // (c) lecture partielle : le dénominateur est nul, la coupe se dit SANS « sur N ».
+      const p = await peindre158(L, "firewall", hoteFw158, fw({ n_hosts: null, hosts_etat: "interrompu", hosts_borne: 500 }));
+      if (!p.texte.includes(L.SANS_PARC(500)) || p.texte.includes(L.COUPE(500, "")) || /sur null|out of null|sur 0\b|out of 0\b/.test(p.texte)) ecarts158.push(`${L.nom}/pare-feu coupé, lecture partielle : « ${p.texte} »`);
+      // (c') dénominateur servi non entier : sans « sur N », aucun chiffre fabriqué.
+      for (const n of ["1200", -3, 0, 12.5]) {
+        const a = await peindre158(L, "firewall", hoteFw158, fw({ n_hosts: n, hosts_borne: 500 }));
+        if (!a.texte.includes(L.SANS_PARC(500))) ecarts158.push(`${L.nom}/pare-feu coupé, n_hosts ${JSON.stringify(n)} : « ${a.texte} »`);
+      }
+      // (d) borne invalide : la coupe est dite, SANS chiffre ; une borne balisée ne crée aucun élément.
+      for (const [nom, b] of INVALIDES) {
+        const a = await peindre158(L, "firewall", hoteFw158, fw({ n_hosts: 1200, hosts_borne: b }));
+        if (!a.texte.includes(L.ILLISIBLE) || !sansChiffreApresLaCoupe(a.texte, L) || cueillir158(a.hote, (e) => e.tagName === "IMG").length) ecarts158.push(`${L.nom}/pare-feu borne ${nom} : « ${a.texte} »`);
+      }
+      // (e) contrôles coupés : le total dit les machines LISTÉES, jamais « parc : ».
+      const c1 = await peindre158(L, "controls", hoteCtl158, ctl({ n_hosts: 1200, hosts_borne: 500 }));
+      if (!c1.texte.includes(L.LISTEES) || / · parc : /.test(c1.texte) || !c1.texte.includes(L.COUPE(500, 1200))) ecarts158.push(`${L.nom}/contrôles coupés : « ${c1.texte} »`);
+      const c2 = await peindre158(L, "controls", hoteCtl158, ctl({}));
+      if (!c2.texte.includes("parc : 3 manquant(s) sur 1/2 machine(s)") || c2.texte.includes(L.LISTEES) || c2.texte.includes(L.MOT)) ecarts158.push(`${L.nom}/contrôles entiers : « ${c2.texte} »`);
+      // (f) section pare-feu des suppressions.
+      L.etat.S.isAdmin = true;
+      const rendreSupp = async (corps) => {
+        servi158 = { "/api/suppressions": { status: 200, corps } };
+        hoteSupp158.replaceChildren(); await L.supp.loadSuppressions(); await laisser158();
+        return { texte: nu158(hoteSupp158), hote: hoteSupp158 };
+      };
+      const fh = (h) => ({ ts: 1000, host: h, data: { ruleset: "rs-" + h } });
+      const base = { ok: true, generated: 1758000100, daemon: [], collectors: [], collectors_incomplets: false, collectors_cause: null, collectors_etat: null, firewall: fh("fw-01"), firewall_hosts: [fh("fw-01"), fh("fw-02")], firewall_incomplets: false, firewall_etat: null };
+      const s1 = await rendreSupp({ ...base, firewall_n_hosts: 1200, firewall_hosts_borne: 333 });
+      if (!s1.texte.includes("1 machine sur 1200") || !s1.texte.includes(L.COUPE(333, 1200))) ecarts158.push(`${L.nom}/suppressions coupé : « ${s1.texte.slice(-300)} »`);
+      const s2 = await rendreSupp({ ...base, firewall_n_hosts: 2 });
+      if (s2.texte.includes(L.MOT) || !s2.texte.includes("1 machine sur 2")) ecarts158.push(`${L.nom}/suppressions borne absente : « ${s2.texte.slice(-300)} »`);
+      const s3 = await rendreSupp({ ...base, firewall_n_hosts: null, firewall_incomplets: true, firewall_etat: "interrompu", firewall_hosts_borne: 500 });
+      if (!s3.texte.includes(L.SANS_PARC(500)) || /sur null|out of null/.test(s3.texte)) ecarts158.push(`${L.nom}/suppressions coupé, lecture partielle : « ${s3.texte.slice(-300)} »`);
+      for (const [nom, b] of INVALIDES) {
+        const s = await rendreSupp({ ...base, firewall_n_hosts: 1200, firewall_hosts_borne: b });
+        if (!s.texte.includes(L.ILLISIBLE) || !sansChiffreApresLaCoupe(s.texte, L) || cueillir158(s.hote, (e) => e.tagName === "IMG").length) ecarts158.push(`${L.nom}/suppressions borne ${nom} : « ${s.texte.slice(-300)} »`);
+      }
+    }
+    exiger(faces158.fr && faces158.en && faces158.fr !== faces158.en && !/liste coupée/.test(faces158.en), `(158-faces) les deux langues ne rendent pas chacune leur coupe : ${JSON.stringify(faces158)}`);
+  } finally {
+    document.querySelector = qsOrigine158; globalThis.fetch = fetchOrigine158; globalThis.setTimeout = minuterieOrigine158;
+    for (const o of etatOrigine158) o.S.isAdmin = o.admin;
+  }
+  exiger(ecarts158.length === 0, `(158) \`P10.20-b\` (console) — UNE LISTE DE MACHINES COUPÉE À SA BORNE NE LE DIT PAS, OU FABRIQUE UN CHIFFRE : ${JSON.stringify(ecarts158)}`);
+  if (echecs.length !== echecsAvant158) console.log(`(158) EN ÉCHEC — ${echecs.length - echecsAvant158} écart(s), dits ci-dessus`);
+  else console.log("(158) OK — `P10.20-b` (console) : dans les deux langues, les panneaux pare-feu et contrôles et la section pare-feu des suppressions disent « liste coupée à <borne servie> machines sur <n> » (deux bornes distinctes, aucune écrite dans la console), sans « sur N » quand le dénominateur est nul ou non entier, et sans aucun chiffre quand la borne servie n'est pas un entier sûr positif (chaîne, négative, zéro, fraction, booléen, balisée — aucun IMG) ; borne absente ou nulle = face d'avant ; le total des contrôles coupés dit les machines LISTÉES ; les poses relues dans overview.rs et admin_ui.rs. Ce qu'il NE tient PAS : la route (témoins Rust), la mise en page, « 1 machine sur N » reste français sous LANG='en'.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (159) `P10.32-o` (console, B1) — UNE CHARGE VALIDE DONT LE RECALCUL A ÉCHOUÉ DIT QUE SES LIGNES SONT CELLES D'AVANT.
+//
+// CE QUE LE DÉMON SERT (RELU) : `joindre_l_echec_a_la_charge_valide` (daemon/src/handlers/dashboards.rs) pose
+// `stats.rafraichissement_en_echec = { cause: <phrase de la classe>, echoue_a: <instant> }` sur la charge VALIDE en cache ;
+// les lignes restent servies. AVANT CE LOT : aucun module de la console ne lisait ce champ — la carte peignait les lignes
+// d'avant comme le résultat courant.
+// JUGÉ, DANS LES DEUX LANGUES, par la VRAIE carte (`renderDashboard`, rechargement de la carte, transport simulé) : lignes
+// affichées ET aveu à leur tête (face, phrase servie entière, instant) ; sans instant, sans cause (dit comme telle) ;
+// phrase balisée en texte (aucun IMG) ; charge valide sans ligne : ni « aucune donnée sur la fenêtre » ; champ absent ou
+// nul : aucun aveu (contrôle positif) ; jamais « à jour » / « up to date ».
+// CE QU'IL NE TIENT PAS : la route (témoins Rust de `P10.32-o`) ; la phrase servie reste française sous LANG='en'.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant159 = echecs.length;
+  const url159 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modTdb159 = await import(url159("dashboards.js"));
+  const { S: S159 } = await import(url159("state.js"));
+  const { fmtTs: fmtTs159 } = await import(url159("core.js"));
+  const langueOrigine159 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modTdbEn159 = await import(adresseSousLaLangue("dashboards.js"));
+  const { S: SEn159 } = await import(adresseSousLaLangue("state.js"));
+  const { fmtTs: fmtTsEn159 } = await import(adresseSousLaLangue("core.js"));
+  if (langueOrigine159 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine159);
+  const instrument159 = (vrai, quoi) => exiger(vrai, `(159-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu159 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const tic159 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser159 = async (n = 40) => { for (let i = 0; i < n; i++) await tic159(); };
+  const cueillir159 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir159(c, pred, acc)); return acc; };
+  const lire159 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const TDB159 = lire159("handlers/dashboards.rs"), QUERY159 = lire159("handlers/query.rs");
+  instrument159(/pub\(crate\) const CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC: &str = "rafraichissement_en_echec";/.test(TDB159)
+    && /let aveu = json!\(\{ "cause": echec\.servie\(\), "echoue_a": now_s \}\);/.test(TDB159)
+    && /stats\.insert\(CHAMP_DU_RAFRAICHISSEMENT_EN_ECHEC\.to_string\(\), aveu\);/.test(TDB159),
+    "le démon ne pose plus `stats.rafraichissement_en_echec = { cause, echoue_a }` (daemon/src/handlers/dashboards.rs)");
+  const mPhrase159 = QUERY159.match(/pub\(crate\) const REQUETE_REJETEE_PAR_LE_MOTEUR: &str = "((?:[^"\\]|\\[\s\S])*)";/);
+  const PHRASE159 = mPhrase159 ? mPhrase159[1].replace(/\\\n\s*/g, "") : "";
+  instrument159(PHRASE159.length > 60 && /Echec::Moteur \{ texte, \.\. \} => Self \{ classe: "moteur", servie: REQUETE_REJETEE_PAR_LE_MOTEUR\.to_string\(\)/.test(TDB159),
+    "la phrase servie de la classe « moteur » (`REQUETE_REJETEE_PAR_LE_MOTEUR`, query.rs) n'est plus lisible ou plus celle de `EchecMisEnCache`");
+  const T159 = 1767225600;
+  const PANNEAU159 = { id: 4159, title: "Rafraîchi en échec", query: "search source=sshd | stats count by host", is_soql: true, viz: "table", window_s: 0, cols: 1, visibility: "shared" };
+  const reponse159 = (o) => { const t = JSON.stringify(o); return { ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => t, json: async () => JSON.parse(t) }; };
+  const fetchOrigine159 = globalThis.fetch, minuterieOrigine159 = globalThis.setTimeout;
+  const cartesOrigine159 = [S159, SEn159].map((S) => ({ S, cartes: S.panelCards }));
+  let donnees159 = {};
+  const FACES159 = {
+    fr: { titre: "Lignes d'AVANT, servies périmées : le recalcul de ce panneau a échoué", sans_cause: "cause non servie par le démon", instant: (d) => "échec le " + d, a_jour: /à jour/i, vide: "aucune donnée sur la fenêtre", sans_ligne: "aucune ligne au dernier calcul réussi" },
+    en: { titre: "PREVIOUS rows, served stale: recomputing this panel failed", sans_cause: "cause not served by the daemon", instant: (d) => "failed on " + d, a_jour: /up to date|à jour/i, vide: "aucune donnée sur la fenêtre", sans_ligne: "no row in the last successful computation" },
+  };
+  const ecarts159 = [];
+  try {
+    globalThis.setTimeout = (fn, ms, ...a) => minuterieOrigine159(fn, ms >= 100 ? 0 : ms, ...a);
+    globalThis.fetch = async (u) => {
+      const url = String(u);
+      if (url.startsWith("/api/dashboard/")) return reponse159({ panels: [PANNEAU159], editable: true });
+      if (url.startsWith("/api/panels/4159/data")) return reponse159(donnees159);
+      if (url.startsWith("/api/dashboards")) return reponse159({ dashboards: [] });
+      return reponse159({});
+    };
+    for (const [l, mod, S, fmt] of [["fr", modTdb159, S159, fmtTs159], ["en", modTdbEn159, SEn159, fmtTsEn159]]) {
+      const F = FACES159[l];
+      S.panelCards = [];
+      const tuile = mod.renderDashboard({ id: 159, name: "Échec", panels: 1, cols: 1, editable: true, collapsed: false });
+      await laisser159();
+      const carte = cueillir159(tuile, (e) => e.classList && e.classList.contains("panel"))[0];
+      instrument159(!!carte && !!carte._panel && typeof carte._panel.reload === "function", `${l} : le tableau de bord n'a rendu aucune carte rechargeable`);
+      if (!carte || !carte._panel) continue;
+      const corps = () => cueillir159(carte, (e) => e.classList && e.classList.contains("panelbody"))[0];
+      const servir = async (d) => { donnees159 = d; await carte._panel.reload(); await laisser159(); const b = corps(); return { b, texte: nu159(b), aveux: cueillir159(b, (e) => e.getAttribute && e.getAttribute("data-rafraichissement-en-echec") === "1") }; };
+      const lignes = { columns: ["host", "count"], rows: [["h-159", 3], ["h-159b", 1]] };
+      // (a) lignes + aveu complet.
+      const a = await servir({ ...lignes, stats: { elapsed_ms: 1, rafraichissement_en_echec: { cause: PHRASE159, echoue_a: T159 } } });
+      const premier = a.b && a.b.children ? a.b.children[0] : null;
+      if (a.aveux.length !== 1 || premier !== a.aveux[0] || !a.texte.includes("h-159") || !a.texte.includes("h-159b")
+        || nu159(a.aveux[0].children[0]) !== F.titre || !nu159(a.aveux[0]).includes(" « " + PHRASE159 + " »") || !nu159(a.aveux[0]).includes(F.instant(fmt(T159)))
+        || F.a_jour.test(a.texte) || a.aveux[0].className !== "bad")
+        ecarts159.push(`${l}/lignes + échec : ${a.aveux.length} aveu(x), en tête ${premier === a.aveux[0]} — « ${a.texte.slice(0, 400)} »`);
+      // (b) sans instant : aucune date fabriquée ; instant invalide aussi.
+      for (const [nom, echoue] of [["sans instant", undefined], ["instant chaîne", "1767225600"], ["instant négatif", -1]]) {
+        const b = await servir({ ...lignes, stats: { rafraichissement_en_echec: { cause: PHRASE159, echoue_a: echoue } } });
+        if (b.aveux.length !== 1 || !nu159(b.aveux[0]).includes(PHRASE159) || nu159(b.aveux[0]).includes(F.instant("").trim())) ecarts159.push(`${l}/${nom} : « ${nu159(b.aveux[0])} »`);
+      }
+      // (c) sans cause : dit comme telle.
+      const c = await servir({ ...lignes, stats: { rafraichissement_en_echec: { echoue_a: T159 } } });
+      if (c.aveux.length !== 1 || !nu159(c.aveux[0]).includes(F.sans_cause) || nu159(c.aveux[0]).includes("«")) ecarts159.push(`${l}/sans cause : « ${nu159(c.aveux[0])} »`);
+      // (c2) cause BLANCHE : dite non servie, jamais « «    » ».
+      for (const blanche of ["", "   ", "\t\n "]) {
+        const cb = await servir({ ...lignes, stats: { rafraichissement_en_echec: { cause: blanche, echoue_a: T159 } } });
+        if (cb.aveux.length !== 1 || !nu159(cb.aveux[0]).includes(F.sans_cause) || nu159(cb.aveux[0]).includes("«")) ecarts159.push(`${l}/cause blanche ${JSON.stringify(blanche)} : « ${nu159(cb.aveux[0])} »`);
+      }
+      // (d) phrase balisée : texte, aucun IMG.
+      const XSS = "<img src=x onerror=alert(159)>";
+      const d = await servir({ ...lignes, stats: { rafraichissement_en_echec: { cause: XSS, echoue_a: T159 } } });
+      if (d.aveux.length !== 1 || !nu159(d.aveux[0]).includes(XSS) || cueillir159(d.b, (e) => e.tagName === "IMG").length) ecarts159.push(`${l}/phrase balisée : non rendue en texte`);
+      // (e) charge valide SANS ligne : ni « aucune donnée sur la fenêtre ».
+      const e = await servir({ columns: ["host", "count"], rows: [], stats: { rafraichissement_en_echec: { cause: PHRASE159, echoue_a: T159 } } });
+      if (e.aveux.length !== 1 || e.texte.includes(F.vide) || !e.texte.includes(F.sans_ligne)) ecarts159.push(`${l}/sans ligne + échec : « ${e.texte.slice(0, 300)} »`);
+      // (f) contrôle positif : champ absent ou nul, aucun aveu ; la face d'avant d'un corps vide reste.
+      for (const st of [{ elapsed_ms: 1 }, { rafraichissement_en_echec: null }]) {
+        const f = await servir({ ...lignes, stats: st });
+        if (f.aveux.length || f.texte.includes(F.titre) || !f.texte.includes("h-159")) ecarts159.push(`${l}/sans échec (${JSON.stringify(st)}) : un aveu est peint — « ${f.texte.slice(0, 200)} »`);
+      }
+      const g = await servir({ columns: ["host", "count"], rows: [], stats: { elapsed_ms: 1 } });
+      if (!g.texte.includes(F.vide)) ecarts159.push(`${l}/vide sans échec : la face d'avant a disparu — « ${g.texte} »`);
+      // (f2) champ NUL sur un corps SANS ligne : aucun aveu, la face d'avant reste, jamais « aucune ligne au dernier calcul réussi ».
+      const g2 = await servir({ columns: ["host", "count"], rows: [], stats: { rafraichissement_en_echec: null } });
+      if (g2.aveux.length || !g2.texte.includes(F.vide) || g2.texte.includes(F.sans_ligne) || g2.texte.includes(F.titre)) ecarts159.push(`${l}/vide + champ nul : « ${g2.texte.slice(0, 300)} »`);
+      // (g) la fabrique exportée : rien sur un champ absent.
+      if (typeof mod.noeudDuRafraichissementEnEchec !== "function" || mod.noeudDuRafraichissementEnEchec({}) !== null || mod.noeudDuRafraichissementEnEchec(undefined) !== null) ecarts159.push(`${l}/fabrique : absente, ou un aveu sans champ`);
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine159; globalThis.setTimeout = minuterieOrigine159;
+    for (const o of cartesOrigine159) o.S.panelCards = o.cartes;
+  }
+  exiger(ecarts159.length === 0, `(159) \`P10.32-o\` (console) — UNE CHARGE VALIDE DONT LE RECALCUL A ÉCHOUÉ EST PEINTE COMME LE RÉSULTAT COURANT : ${JSON.stringify(ecarts159)}`);
+  if (echecs.length !== echecsAvant159) console.log(`(159) EN ÉCHEC — ${echecs.length - echecsAvant159} écart(s), dits ci-dessus`);
+  else console.log("(159) OK — `P10.32-o` (console, B1) : dans les deux langues, sur la vraie carte, `stats.rafraichissement_en_echec` (relu dans dashboards.rs) garde les lignes affichées et pose EN TÊTE un aveu à deux nœuds — lignes d'avant, recalcul en échec — suivi de la phrase servie entière (classe « moteur » relue dans query.rs) et de l'instant (entier sûr positif seul) ; sans cause, dit comme telle ; balisée, en texte ; sans ligne, jamais « aucune donnée sur la fenêtre » ; jamais « à jour » ; champ absent ou nul, aucun aveu. Ce qu'il NE tient PAS : la route (témoins Rust), la phrase servie reste française sous LANG='en'.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (160) `P10.32-o` (console, B2) — UNE LIGNE DE CACHE NON LUE OU ILLISIBLE N'EST NI « EN CHAUFFE » NI « AUCUNE DONNÉE ».
+//
+// CE QUE LE DÉMON SERT (RELU) : `serve_swr` (daemon/src/handlers/dashboards.rs) sert sur une ligne NON LUE un cinq cent trois
+// (`CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE` dans `error`, `stats.coverage.reason` = `cache_non_lu` et sa notice) et sur une
+// ligne ILLISIBLE un deux cents sans `warming` (`columns`/`rows` vides, `reason` = `paye_utile_illisible`).
+// MESURÉ SUR LA BASE (3cddef81) : le cinq cent trois passait déjà par le refus d'une lecture (cause dite, aucune chauffe) ;
+// le deux cents ILLISIBLE partait dans `draw()` et la carte écrivait « aucune donnée sur la fenêtre » — une absence là où
+// le démon dit que rien n'est établi.
+// JUGÉ, DANS LES DEUX LANGUES, par la vraie carte : 503 `cache_non_lu` → refus nommé, cause entière, aucune relance de
+// chauffe, ni « mesure en cours » ni « aucune donnée » ; 200 `paye_utile_illisible` (avec et sans horizon, dedans et
+// dehors) → la phrase « rien n'est établi », la notice servie, ni « aucune donnée » ni chauffe ; contrôle positif : un
+// corps vide d'une autre raison garde « aucune donnée sur la fenêtre ».
+// CE QU'IL NE TIENT PAS : la route (témoins Rust) ; la notice et la cause restent françaises sous LANG='en'.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant160 = echecs.length;
+  const url160 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modTdb160 = await import(url160("dashboards.js"));
+  const { S: S160 } = await import(url160("state.js"));
+  const langueOrigine160 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modTdbEn160 = await import(adresseSousLaLangue("dashboards.js"));
+  const { S: SEn160 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine160 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine160);
+  const instrument160 = (vrai, quoi) => exiger(vrai, `(160-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu160 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const tic160 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser160 = async (n = 40) => { for (let i = 0; i < n; i++) await tic160(); };
+  const cueillir160 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir160(c, pred, acc)); return acc; };
+  const lire160 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const litteral160 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str =\\s*\"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const TDB160 = lire160("handlers/dashboards.rs"), AV160 = lire160("handlers/panneau_avoue.rs");
+  const CAUSE160 = litteral160(TDB160, "CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE");
+  const NOTICE_NON_LU160 = litteral160(AV160, "NOTICE_LIGNE_DE_CACHE_NON_LUE");
+  const RAISON_NON_LU160 = litteral160(AV160, "RAISON_LIGNE_DE_CACHE_NON_LUE"), RAISON_ILLISIBLE160 = litteral160(AV160, "RAISON_PAYE_UTILE_ILLISIBLE");
+  const NOTICE_ILLISIBLE160 = ((AV160.match(/\} else \{\s*"(la charge utile mise en cache n'a pas pu être relue[^"]*)"/) || [])[1] || "").replace(/\\\n\s*/g, "");
+  instrument160(CAUSE160.startsWith("LIGNE DE CACHE NON LUE") && NOTICE_NON_LU160.length > 60 && RAISON_NON_LU160 === "cache_non_lu" && RAISON_ILLISIBLE160 === "paye_utile_illisible" && NOTICE_ILLISIBLE160.length > 40,
+    "la cause, les raisons ou les notices de la ligne de cache non lue / illisible ne se relisent plus (dashboards.rs, panneau_avoue.rs)");
+  instrument160(/if let LigneDeCacheRatee::NonLue\(cid\) = ligne_ratee \{\s*let mut v = json!\(\{ "columns": \[\], "rows": \[\], "error": CAUSE_LIGNE_DE_CACHE_DU_PANNEAU_NON_LUE, "id": cid \}\);[\s\S]*?return \(StatusCode::SERVICE_UNAVAILABLE, Json\(v\)\)\.into_response\(\);/.test(TDB160)
+    && /if matches!\(ligne_ratee, LigneDeCacheRatee::Illisible\) \{\s*let mut v = json!\(\{ "columns": \[\], "rows": \[\] \}\);\s*v\["stats"\]\["coverage"\] = panneau_avoue::coverage_synthetique\(\s*panneau_avoue::RAISON_PAYE_UTILE_ILLISIBLE,[\s\S]*?return Json\(v\)\.into_response\(\);/.test(TDB160),
+    "`serve_swr` ne sert plus le 503 `cache_non_lu` (avec `error`) ni le 200 `paye_utile_illisible` sans `warming` (daemon/src/handlers/dashboards.rs)");
+  const PANNEAU160 = { id: 4160, title: "Cache", query: "search source=sshd | stats count by host", is_soql: true, viz: "table", window_s: 0, cols: 1, visibility: "shared" };
+  const reponse160 = (status, o) => { const t = JSON.stringify(o); return { ok: status >= 200 && status < 300, status, headers: { get: () => "application/json" }, text: async () => t, json: async () => JSON.parse(t) }; };
+  const fetchOrigine160 = globalThis.fetch, minuterieOrigine160 = globalThis.setTimeout;
+  const cartesOrigine160 = [S160, SEn160].map((S) => ({ S, cartes: S.panelCards }));
+  let servi160 = { status: 200, corps: {} };
+  let relances160 = 0;
+  const FACES160 = {
+    fr: { illisible: "charge utile en cache ILLISIBLE : rien n'est établi sur la fenêtre" },
+    en: { illisible: "cached payload UNREADABLE: nothing is established on the window" },
+  };
+  const ecarts160 = [];
+  try {
+    globalThis.setTimeout = (fn, ms, ...a) => { if (ms >= 1000) { relances160++; return 0; } return minuterieOrigine160(fn, ms >= 100 ? 0 : ms, ...a); };
+    globalThis.fetch = async (u) => {
+      const url = String(u);
+      if (url.startsWith("/api/dashboard/")) return reponse160(200, { panels: [PANNEAU160], editable: true });
+      if (url.startsWith("/api/panels/4160/data")) return reponse160(servi160.status, servi160.corps);
+      if (url.startsWith("/api/dashboards")) return reponse160(200, { dashboards: [] });
+      return reponse160(200, {});
+    };
+    const MAINTENANT = 1767225600;
+    for (const [l, mod, S] of [["fr", modTdb160, S160], ["en", modTdbEn160, SEn160]]) {
+      S.panelCards = [];
+      const tuile = mod.renderDashboard({ id: 160, name: "Cache", panels: 1, cols: 1, editable: true, collapsed: false });
+      await laisser160();
+      const carte = cueillir160(tuile, (e) => e.classList && e.classList.contains("panel"))[0];
+      instrument160(!!carte && !!carte._panel && typeof carte._panel.reload === "function", `${l} : le tableau de bord n'a rendu aucune carte rechargeable`);
+      if (!carte || !carte._panel) continue;
+      const corps = () => cueillir160(carte, (e) => e.classList && e.classList.contains("panelbody"))[0];
+      const servir = async (status, c) => { servi160 = { status, corps: c }; relances160 = 0; carte._chauffe = null; await carte._panel.reload(); await laisser160(); return { b: corps(), texte: nu160(corps()), relances: relances160 }; };
+      const interdits = (t) => /mesure en cours|measurement in progress|aucune donnée|no data|chargement/i.test(t);
+      // (a) 503 `cache_non_lu`.
+      const a = await servir(503, { columns: [], rows: [], error: CAUSE160, id: "plume-160", stats: { coverage: { searched_from: MAINTENANT - 3600, calcule_a: MAINTENANT, reason: RAISON_NON_LU160, notice: NOTICE_NON_LU160 } } });
+      const refus = cueillir160(a.b, (e) => e.getAttribute && e.getAttribute("data-refus-d-une-lecture") !== null);
+      // La cause servie dit elle-même « ce n'est PAS une mesure en cours » : elle est retirée avant de chercher les faces interdites.
+      if (refus.length !== 1 || !a.texte.includes(CAUSE160) || interdits(a.texte.split(CAUSE160).join(" ")) || a.relances || /[{}]/.test(a.texte)) ecarts160.push(`${l}/503 cache_non_lu : ${refus.length} refus, ${a.relances} relance(s) — « ${a.texte.slice(0, 300)} »`);
+      // (b) 200 `paye_utile_illisible`, avec et sans horizon, dedans et dehors.
+      for (const [nom, cov] of [
+        ["sans horizon", {}],
+        ["horizon dedans", { horizon_ts: MAINTENANT - 7200, older_outside_window: false }],
+        ["horizon dehors", { horizon_ts: MAINTENANT - 600, older_outside_window: true }],
+      ]) {
+        const b = await servir(200, { columns: [], rows: [], stats: { coverage: { searched_from: MAINTENANT - 3600, calcule_a: MAINTENANT, ...cov, reason: RAISON_ILLISIBLE160, notice: NOTICE_ILLISIBLE160 } } });
+        const marque = cueillir160(b.b, (e) => e.getAttribute && e.getAttribute("data-corps-sans-ligne-non-etabli") === "1");
+        // Le registre est celui d'un AVEU (classe `bad`), pas d'une note discrète (`muted`, celle de l'absence ordinaire).
+        const registre = marque.length === 1 ? String(marque[0].className || "").split(/\s+/) : [];
+        if (marque.length !== 1 || !registre.includes("bad") || registre.includes("muted") || !b.texte.includes(FACES160[l].illisible) || !b.texte.includes(NOTICE_ILLISIBLE160) || interdits(b.texte) || b.relances)
+          ecarts160.push(`${l}/200 paye_utile_illisible (${nom}) : ${marque.length} marque(s), classe « ${registre.join(" ")} », ${b.relances} relance(s) — « ${b.texte.slice(0, 300)} »`);
+      }
+      // (c) contrôle positif : un corps vide d'une autre raison garde « aucune donnée sur la fenêtre ».
+      const c = await servir(200, { columns: [], rows: [], stats: { coverage: { searched_from: MAINTENANT - 3600, calcule_a: MAINTENANT, horizon_ts: MAINTENANT - 7200, older_outside_window: false, reason: "retention_floor", notice: "n" } } });
+      if (!c.texte.includes("aucune donnée sur la fenêtre") || c.texte.includes(FACES160[l].illisible)) ecarts160.push(`${l}/vide ordinaire : « ${c.texte.slice(0, 200)} »`);
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine160; globalThis.setTimeout = minuterieOrigine160;
+    for (const o of cartesOrigine160) o.S.panelCards = o.cartes;
+  }
+  exiger(ecarts160.length === 0, `(160) \`P10.32-o\` (console) — UNE LIGNE DE CACHE NON LUE OU ILLISIBLE SE PEINT EN CHAUFFE OU EN ABSENCE : ${JSON.stringify(ecarts160)}`);
+  if (echecs.length !== echecsAvant160) console.log(`(160) EN ÉCHEC — ${echecs.length - echecsAvant160} écart(s), dits ci-dessus`);
+  else console.log("(160) OK — `P10.32-o` (console, B2) : dans les deux langues, sur la vraie carte, le cinq cent trois `cache_non_lu` (relu dans dashboards.rs) se peint en refus nommé avec la cause entière, sans relance ni « mesure en cours » ni « aucune donnée » ; le deux cents `paye_utile_illisible` (sans horizon, dedans, dehors) dit que rien n'est établi, au registre d'un aveu (classe « bad », jamais « muted »), avec la notice servie, sans chauffe ni absence ; un corps vide d'une autre raison garde « aucune donnée sur la fenêtre ». Ce qu'il NE tient PAS : la route (témoins Rust), la cause et la notice restent françaises sous LANG='en'.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (161) `P10.20-b` (console, reste nommé) — LA RÉTENTION GLOBALE NON LUE DES POLITIQUES D'INDEX N'EST PAS « 0 j ».
+//
+// CE QUE LE DÉMON SERT (RELU) : `index_policies_list` (daemon/src/handlers/index_policies.rs) sert
+// `global_retention_days: null` et `global_retention_non_lue` (la cause) quand `retention_effective_lue` échoue ; la rétention
+// d'une politique (`retention_days`) est un entier lu, jamais nul. AVANT CE LOT : `num(null)` = 0 — « Rétention globale : 0 j »,
+// « hérite (0 j) » sur chaque index sans politique, « héritée : 0 j » dans la conséquence de la bascule.
+// JUGÉ, DANS LES DEUX LANGUES : nul servi (avec et sans cause), chaîne, négatif, fraction → « NON ÉTABLIE », la cause servie
+// en texte (balisée : aucun IMG), aucun « 0 j » ni chiffre fabriqué ; contrôle positif : 90 → « 90 j », « hérite (90 j) ».
+// LA CONSÉQUENCE DE LA BASCULE EST JUGÉE RENDUE : `enabledSwitch` (web/producer_ui.js) l'écrit en texte VISIBLE dans
+// `.producer-consequence` ; une politique qui HÉRITE (`has_policy`, `retention_days` 0) y dit « héritée : NON ÉTABLIE »
+// sous une rétention globale nulle (jamais « (0 j) »), « héritée : 90 j » sous 90 ; une politique propre y dit « (30 j) ».
+// CE QU'IL NE TIENT PAS : la route (témoins Rust) ; la cause et la conséquence restent françaises sous LANG='en'.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant161 = echecs.length;
+  const url161 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modIdx161 = await import(url161("index_policies.js"));
+  const { S: S161 } = await import(url161("state.js"));
+  const langueOrigine161 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modIdxEn161 = await import(adresseSousLaLangue("index_policies.js"));
+  const { S: SEn161 } = await import(adresseSousLaLangue("state.js"));
+  if (langueOrigine161 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine161);
+  const instrument161 = (vrai, quoi) => exiger(vrai, `(161-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu161 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const tic161 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser161 = async (n = 20) => { for (let i = 0; i < n; i++) await tic161(); };
+  const cueillir161 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir161(c, pred, acc)); return acc; };
+  const IDX161 = (() => { try { return readFileSync(path.join(RACINE, "daemon", "src", "handlers", "index_policies.rs"), "utf8"); } catch (e) { return ""; } })();
+  const ADM161 = (() => { try { return readFileSync(path.join(RACINE, "daemon", "src", "handlers", "admin_ui.rs"), "utf8"); } catch (e) { return ""; } })();
+  instrument161(/Err\(_\) => \(Value::Null, Some\(crate::handlers::admin_ui::CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE\)\),/.test(IDX161)
+    && /corps\["global_retention_non_lue"\] = json!\(cause\);/.test(IDX161) && /"global_retention_days": global_days,/.test(IDX161)
+    && /o\.insert\("retention_days"\.into\(\), json!\(rdays\)\);/.test(IDX161) && /r\.get::<_, i64>\(2\)\?/.test(IDX161),
+    "`index_policies_list` ne sert plus `global_retention_days` nul avec `global_retention_non_lue`, ou la rétention d'une politique n'est plus un entier lu (daemon/src/handlers/index_policies.rs)");
+  const mCause161 = ADM161.match(/pub\(crate\) const CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE: &str = "((?:[^"\\]|\\[\s\S])*)";/);
+  const CAUSE161 = mCause161 ? mCause161[1].replace(/\\\n\s*/g, "") : "";
+  instrument161(CAUSE161.startsWith("valeur en vigueur NON LUE"), "la cause `CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE` ne se relit plus dans admin_ui.rs");
+  const src161 = readFileSync(path.join(WEB, "index_policies.js"), "utf8");
+  exiger(/'héritée : ' \+ joursHerites\(globalDays\)/.test(src161) && !/'héritée : ' \+ globalDays \+ ' j'/.test(src161),
+    "(161-source) la conséquence de la bascule écrit encore la rétention héritée par concaténation nue (« héritée : null j » / « 0 j »)");
+  const qsOrigine161 = document.querySelector, fetchOrigine161 = globalThis.fetch;
+  const etatOrigine161 = [S161, SEn161].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH }));
+  const liste161 = new Element("div"), form161 = new Element("div"), neuf161 = new Element("button");
+  const hotes161 = { "#index-policy-list": liste161, "#index-policy-form": form161, "#index-policy-new": neuf161 };
+  document.querySelector = (s) => (Object.prototype.hasOwnProperty.call(hotes161, s) ? hotes161[s] : new Element("div"));
+  let corps161 = {};
+  globalThis.fetch = async (u) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => JSON.stringify(corps161), json: async () => corps161 });
+  const FACES161 = { fr: { non_etablie: "NON ÉTABLIE", herite: "hérite (rétention globale NON ÉTABLIE)", sans_cause: "cause non servie par le démon", herite90: "hérite (90 j)" },
+    en: { non_etablie: "NOT ESTABLISHED", herite: "inherits (global retention NOT ESTABLISHED)", sans_cause: "cause not served by the daemon", herite90: "inherits (90 d)" } };
+  const ecarts161 = [];
+  try {
+    for (const S of [S161, SEn161]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin" }; }
+    const index161 = (nom, pol, jours = 30) => ({ name: nom, id: pol ? 1 : null, events: 10, oldest_ts: 1000, size_bytes_est: 4096, retention_days: pol ? jours : 0, max_rows: 0, max_bytes: 0, has_policy: !!pol, enabled: true, description: "", managed: 0 });
+    const BORNES = { retention_days: { min_when_set: 7, max: 3650, inherit: 0 } };
+    for (const [l, mod] of [["fr", modIdx161], ["en", modIdxEn161]]) {
+      const F = FACES161[l];
+      const rendre = async (extra) => { corps161 = { ok: true, bounds: BORNES, indexes: [index161("auth", true), index161("web", false), index161("dns", true, 0)], ...extra }; liste161.replaceChildren(); await mod.loadIndexPolicies(); await laisser161(); return { texte: nu161(liste161), hote: liste161, consequences: cueillir161(liste161, (e) => String((e && e.className) || "").split(/\s+/).includes("producer-consequence")).map(nu161) }; };
+      // La conséquence RENDUE à côté de la bascule : [auth (propre, 30 j), dns (hérite)] — dans l'ordre servi.
+      const consequenceJugee = (r, herite) => r.consequences.length === 2 && r.consequences[0].includes("rétention propre (30 j)")
+        && r.consequences[1].includes("(héritée : " + herite + ")") && !/\(0 j\)|\(0 d\)|null|NaN|undefined/.test(r.consequences.join(" | "));
+      const XSS = "<img src=x onerror=alert(161)>";
+      for (const [nom, extra, cause] of [
+        ["nul avec cause", { global_retention_days: null, global_retention_non_lue: CAUSE161 }, CAUSE161],
+        ["nul sans cause", { global_retention_days: null }, null],
+        ["absent", {}, null],
+        ["chaîne", { global_retention_days: "90", global_retention_non_lue: CAUSE161 }, CAUSE161],
+        ["négatif", { global_retention_days: -4 }, null],
+        ["fraction", { global_retention_days: 2.5 }, null],
+        ["cause balisée", { global_retention_days: null, global_retention_non_lue: XSS }, XSS],
+        ["cause blanche", { global_retention_days: null, global_retention_non_lue: "   " }, null],
+        ["cause vide", { global_retention_days: null, global_retention_non_lue: "" }, null],
+      ]) {
+        const r = await rendre(extra);
+        const marque = cueillir161(r.hote, (e) => e.getAttribute && e.getAttribute("data-retention-globale-non-etablie") === "1");
+        if (marque.length !== 1 || !r.texte.includes(F.non_etablie) || !r.texte.includes(F.herite) || /\b0 j\b|\(0 j\)|\(0 d\)|null|NaN|undefined|\b90 j\b|-4 j|2\.5 j/.test(r.texte)
+          || (cause ? !r.texte.includes("« " + cause + " »") : !r.texte.includes(F.sans_cause)) || cueillir161(r.hote, (e) => e.tagName === "IMG").length || !r.texte.includes("30 j")
+          || !consequenceJugee(r, F.non_etablie))
+          ecarts161.push(`${l}/${nom} : ${marque.length} marque(s) — « ${r.texte.slice(0, 420)} » — conséquences ${JSON.stringify(r.consequences)}`);
+      }
+      const ok = await rendre({ global_retention_days: 90 });
+      if (!ok.texte.includes("90 j") || !ok.texte.includes(F.herite90) || ok.texte.includes(F.non_etablie) || cueillir161(ok.hote, (e) => e.getAttribute && e.getAttribute("data-retention-globale-non-etablie") === "1").length
+        || !consequenceJugee(ok, "90 j"))
+        ecarts161.push(`${l}/lue (90) : « ${ok.texte.slice(0, 300)} » — conséquences ${JSON.stringify(ok.consequences)}`);
+      const zero = await rendre({ global_retention_days: 0 });
+      if (zero.texte.includes(F.non_etablie)) ecarts161.push(`${l}/lue (0, entier servi) : peinte non établie — « ${zero.texte.slice(0, 200)} »`);
+    }
+  } finally {
+    document.querySelector = qsOrigine161; globalThis.fetch = fetchOrigine161;
+    for (const o of etatOrigine161) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; }
+  }
+  exiger(ecarts161.length === 0, `(161) \`P10.20-b\` (console) — LA RÉTENTION GLOBALE NON LUE DES POLITIQUES D'INDEX SE PEINT COMME UN CHIFFRE : ${JSON.stringify(ecarts161)}`);
+  if (echecs.length !== echecsAvant161) console.log(`(161) EN ÉCHEC — ${echecs.length - echecsAvant161} écart(s), dits ci-dessus`);
+  else console.log("(161) OK — `P10.20-b` (console) : dans les deux langues, une rétention globale servie nulle (relue dans index_policies.rs, avec ou sans `global_retention_non_lue`), absente, chaîne, négative ou fractionnaire se dit NON ÉTABLIE — en tête et sur chaque index qui en hérite —, la cause servie en texte (balisée, aucun IMG) ou « non servie », jamais « 0 j » ni un chiffre fabriqué ; la rétention propre d'une politique reste dite ; 90 → « 90 j » et « hérite (90 j) » ; la conséquence RENDUE à côté de la bascule d'une politique qui hérite dit « héritée : NON ÉTABLIE » (jamais « (0 j) ») puis « héritée : 90 j ». Ce qu'il NE tient PAS : la route (témoins Rust), la cause et la conséquence restent françaises sous LANG='en'.");
+}
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;

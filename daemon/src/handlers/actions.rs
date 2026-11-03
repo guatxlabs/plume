@@ -961,6 +961,11 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
                     return Json(corps).into_response();
                 }
                 LeveeDuMiroirHttp::NonLevee { erreur, trace_manquante } => {
+                    // `P10.29-l` (vague BG) — le texte du moteur (`netban_remove`, auth.rs) reste au journal `[actions]`
+                    // (tenant de l'appelant) et au registre (`netban.remove.echec`, lu par l'administrateur seul) ; la
+                    // réponse sert la phrase fixe entre parenthèses. La trace manquante est la cause du registre (ledger.rs),
+                    // sans texte du moteur.
+                    let erreur = laisser_la_cause_au_journal("actions", &format!("levée du ban de la riposte #{id} NON faite, le ban reste actif"), &au.tenant, &erreur);
                     let trace = match trace_manquante {
                         None => String::new(),
                         Some(c) => format!(" ; cet échec n'est PAS au registre non plus ({c})"),
@@ -975,7 +980,8 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
 
 /// `P10.31-u` — la ligne du blocage HTTP n'a PAS pu être retirée : 503, et l'adresse reste bloquée.
 /// Le seul geste promis est celui qui tient quel que soit le sort de la riposte : une nouvelle
-/// approbation ne rejoue plus rien une fois la riposte close par l'agent ou le responder.
+/// approbation ne rejoue plus rien une fois la riposte close par l'agent ou le responder. `P10.29-l` (vague BG) : ses
+/// parenthèses portent `CAUSE_DU_MOTEUR_LAISSEE_AU_JOURNAL`, et non plus le texte du moteur.
 pub(crate) const CAUSE_LEVEE_NON_FAITE: &str =
     "LEVÉE IMPOSSIBLE : la ligne du blocage HTTP n'a pas pu être retirée, donc le ban est TOUJOURS \
      actif. La levée se fait directement par DELETE /api/netban/{ip} (approuver de nouveau la \

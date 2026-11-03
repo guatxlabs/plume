@@ -321,7 +321,13 @@ function rangeFromTo() { const w = Number($('#dm-pivot-range').value) || 0; cons
 // LE DISCRIMINANT EST ÉCRIT ICI ET CONFRONTÉ AU DÉMON PAR LE HARNAIS (témoin 100), DANS LES DEUX SENS :
 // il doit reconnaître la phrase de l'allowlist non lue et REFUSER celle du champ non déclaré.
 // =================================================================================================
-const OUVERTURE_DU_REFUS_D_ALLOWLIST_NON_LUE = /champs déclarés de l'objet NON LUS/;
+// `P10.20-l` — L'OUVERTURE EST ANCRÉE. Le motif nu reconnaissait la phrase n'importe où — y compris CITÉE dans le détail
+// d'un autre refus, ou suivie d'une lettre (« NON LUSX »). Le démon sert DEUX phrases sur ce cinq cent trois, relues dans
+// daemon/src/handlers/datamodels.rs : `NON_LUS` d'`object_field_allow` (« champs déclarés de l'objet NON LUS : … ») et
+// `CAUSE_OBJET_DU_PIVOT_NON_LU` (« OBJET DU PIVOT NON LU : … », objet ou parent non lu, allowlist non établie) ; la
+// seconde citait la première au milieu pour être reconnue par le motif nu. Les deux ouvertures sont nommées ici, en
+// tête de phrase, suivies d'une frontière Unicode (`\b` est ASCII et laisserait passer une lettre accentuée).
+const OUVERTURE_DU_REFUS_D_ALLOWLIST_NON_LUE = /^(?:champs déclarés de l'objet NON LUS|OBJET DU PIVOT NON LU)(?![\p{L}\p{N}])/u;
 const REFUS_DE_PIVOT_MOTS = {
   allowlist_non_lue: {
     fr: "Champs déclarés de l'objet NON LUS : le démon a refusé et en nomme la cause —",

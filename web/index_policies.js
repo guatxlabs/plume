@@ -68,13 +68,20 @@ export async function loadIndexPolicies() {
   const nouveau = $('#index-policy-new');
   if (nouveau) { nouveau.removeAttribute('aria-disabled'); nouveau.removeAttribute('title'); }
   const indexes = Array.isArray(data.indexes) ? data.indexes : [];
-  const globalDays = num(data.global_retention_days);
+  const globalDays = retentionGlobaleServie(data.global_retention_days);
 
   const frag = document.createDocumentFragment();
   const head = document.createElement('div');
   head.className = 'muted'; head.style.cssText = 'margin:0 0 10px;font-size:12px';
-  const gb = document.createElement('b'); gb.textContent = globalDays + ' j';
+  const gb = document.createElement('b'); gb.textContent = joursHerites(globalDays);
   head.append('Rétention globale (PLUME_RETENTION_DAYS) : ', gb, ' — un index sans politique hérite de cette valeur.');
+  if (globalDays === null) {
+    // `P10.20-b` — la cause servie (`global_retention_non_lue`), posée par `textContent` ; non servie : dit comme telle.
+    head.className = 'bad';
+    head.setAttribute('data-retention-globale-non-etablie', '1');
+    const cause = typeof data.global_retention_non_lue === 'string' && data.global_retention_non_lue.trim() ? data.global_retention_non_lue.trim() : '';
+    head.append(' ' + faceDansLaLangue(MOTS_DE_LA_RETENTION_GLOBALE.non_etablie) + (cause ? ' « ' + cause + ' »' : ' — ' + faceDansLaLangue(MOTS_DE_LA_RETENTION_GLOBALE.sans_cause)));
+  }
   frag.appendChild(head);
 
   const listBox = document.createElement('div');
@@ -87,6 +94,22 @@ export async function loadIndexPolicies() {
   wrap.replaceChildren(frag);
 }
 
+// `P10.20-b` — LA RÉTENTION GLOBALE NON LUE N'EST PAS « 0 j ». `index_policies_list` (daemon/src/handlers/index_policies.rs)
+// sert `global_retention_days: null` et `global_retention_non_lue` (la cause, `CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE`)
+// quand la ligne `setting` n'a pas été lue (`retention_effective_lue`) : `num()` lisait ce nul comme zéro, et le panneau
+// qui pilote une purge disait « Rétention globale : 0 j », « hérite (0 j) » sur chaque index sans politique, et « héritée :
+// 0 j » dans la conséquence de la bascule. Un entier sûr positif ou nul est servi tel quel ; tout autre valeur (nul,
+// chaîne, fraction, négatif) n'établit rien, et aucun chiffre n'est fabriqué.
+const MOTS_DE_LA_RETENTION_GLOBALE = {
+  non_etablie_courte: { fr: 'NON ÉTABLIE', en: 'NOT ESTABLISHED' },
+  non_etablie: { fr: "la rétention globale n'a PAS été lue : aucune durée n'est établie, ni pour elle ni pour ce qu'un index en hérite —",
+    en: 'the global retention was NOT read: no duration is established, neither for it nor for what an index inherits from it —' },
+  sans_cause: { fr: 'cause non servie par le démon', en: 'cause not served by the daemon' },
+  herite_non_etablie: { fr: 'hérite (rétention globale NON ÉTABLIE)', en: 'inherits (global retention NOT ESTABLISHED)' },
+};
+const retentionGlobaleServie = (v) => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null);
+const joursHerites = (globalDays) => (globalDays === null ? faceDansLaLangue(MOTS_DE_LA_RETENTION_GLOBALE.non_etablie_courte) : globalDays + ' j');
+
 function indexRow(r, globalDays) {
   const row = document.createElement('div'); row.className = 'rulerow';
   row.style.cssText = 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--bd,#2222)';
@@ -98,6 +121,7 @@ function indexRow(r, globalDays) {
   // Régime de rétention : politique propre OU héritage du global.
   const ret = document.createElement('code');
   if (r.has_policy && num(r.retention_days) > 0) ret.textContent = `${num(r.retention_days)} j`;
+  else if (globalDays === null) ret.textContent = faceDansLaLangue(MOTS_DE_LA_RETENTION_GLOBALE.herite_non_etablie);
   else ret.textContent = faceDansLaLangue({ fr: 'hérite ({j} j)', en: 'inherits ({j} d)' }, { j: globalDays });
   ret.title = 'rétention effective de cet index';
 
@@ -116,7 +140,7 @@ function indexRow(r, globalDays) {
     // case nue ne le disait pas. La conséquence est écrite à côté de l'interrupteur dans les deux états.
     const en = enabledSwitch({
       enabled: r.enabled !== false, name: r.name, allowed: true, confirmOnEnable: false,
-      consequence: 'la purge applique à cet index sa rétention propre (' + (num(r.retention_days) > 0 ? num(r.retention_days) + ' j' : 'héritée : ' + globalDays + ' j') + ') et ses plafonds ; OFF, l\'index retombe sur la rétention globale',
+      consequence: 'la purge applique à cet index sa rétention propre (' + (num(r.retention_days) > 0 ? num(r.retention_days) + ' j' : 'héritée : ' + joursHerites(globalDays)) + ') et ses plafonds ; OFF, l\'index retombe sur la rétention globale',
       onToggle: (next) => (effacerLeRefusDUnGeste(puitsDesPolitiquesDIndex()), apiSend('/index-policies/' + r.id, 'POST', { enabled: next })),
       onRefus: (e) => peindreLeRefusDUnGeste(puitsDesPolitiquesDIndex(), e),
     });

@@ -85,7 +85,7 @@ mod ligne_de_cache_illisible_remplacee_et_non_lue_dite {
             eprintln!("LCI-FIN-1");
             lci_poser_un_blob(&st, panne, &rk, &fp, calcule);
             eprintln!("LCI-DEBUT-3");
-            crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+            crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
             eprintln!("LCI-FIN-3");
             let apres3 = lci_issue(&st, panne, &rk, &fp);
             st.db.lock().authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
@@ -184,7 +184,7 @@ mod ligne_de_cache_illisible_remplacee_et_non_lue_dite {
         assert_eq!(pre.len(), 1, "(3) une ligne de pré-chauffage : {f3}");
         let pre_debut = format!("[cache] WARN pré-chauffage du panneau {id} en échec (");
         let pre_fin = format!(
-            ") — ligne de cache ILLISIBLE (lue, non décodable) : {LCI_ILLISIBLE} (lecture de cache ratée n° 4 depuis le \
+            "), tenant \"default\" — ligne de cache ILLISIBLE (lue, non décodable) : {LCI_ILLISIBLE} (lecture de cache ratée n° 4 depuis le \
              démarrage) — rien d'écrit, le chemin à la demande la remplacera"
         );
         assert!(pre[0].starts_with(&pre_debut) && pre[0].ends_with(&pre_fin), "(3) pré-chauffage : {}", pre[0]);

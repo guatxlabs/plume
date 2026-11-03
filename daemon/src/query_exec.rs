@@ -491,13 +491,17 @@ pub(crate) fn install_field_authorizer(conn: &Connection, db_path: &str) {
     }));
 }
 pub(crate) fn read_conn_get(db_path: &str) -> Result<Connection, String> {
-    #[cfg(test)]
-    panne_de_test_au_coeur::oublier_l_armement_de_ce_fil();
     let pool = READ_POOL.get_or_init(|| Mutex::new(ReadPool::new()));
     if let Some(c) = pool.lock().take(db_path) {
+        // Instrument de TEST (`P10.29-l`, vague BI) : une note d'armement périmée est effacée (voir le module).
+        #[cfg(test)]
+        panne_de_test_au_coeur::oublier_une_note_perimee(&c);
         return Ok(c); // MT-KEY : uniquement une connexion ouverte sur CE db_path (jamais d'une autre base)
     }
-    read_conn_open(db_path)
+    let c = read_conn_open(db_path)?;
+    #[cfg(test)]
+    panne_de_test_au_coeur::oublier_une_note_perimee(&c);
+    Ok(c)
 }
 /// Rend une connexion de lecture au pool de SON db_path.
 ///
@@ -1713,8 +1717,20 @@ pub(crate) fn run_on_conn(conn: &Connection, cancel_key: &str, sql: &str, budget
 /// démarrait après le retour de la page : il échouait à son tour, et la route écrivait une ligne `[query] WARN total
 /// non établi` que le témoin n'avait pas demandée (rouge intermittent des témoins `ar2_`, reproduit à coup sûr en
 /// retardant le comptage). La connexion armée est reconnue par sa poignée SQLite, notée sur le fil qui l'arme : la
-/// lecture du pool rend la connexion sur le fil qui l'a exécutée (`run_query_ex`, `read_with`). La note est effacée
-/// à la prise suivante d'une connexion sur ce fil (une connexion d'union du tier froid, armée, n'est jamais rendue).
+/// lecture du pool rend la connexion sur le fil qui l'a exécutée (`run_query_ex`, `read_with`). La note n'est effacée
+/// que par la remise de CETTE connexion (`armee_sur_ce_fil`), jamais par une prise : `P10.29-l` (vague BG) — l'effacement
+/// à chaque `read_conn_get` est retiré. Il laissait remettre au pool une connexion armée ENCORE VIVANTE dès qu'une autre
+/// connexion était prise sur le même fil avant sa remise, qu'elle soit ouverte ou servie par le pool (témoins
+/// `bg3_connexion_armee_vivante_fermee_malgre_une_prise` et `..._servie_par_le_pool`).
+/// `P10.29-l` (vague BI) — UNE NOTE PÉRIMÉE EST EFFACÉE QUAND SON ADRESSE REVIENT. Une note restée après une connexion
+/// armée jamais rendue (connexion d'union du tier froid, fermée par son `Drop`) pouvait désigner une connexion ouverte
+/// plus tard sur ce fil à la même adresse : `read_conn_put` la fermait au lieu de la garder au pool. `read_conn_get`
+/// efface désormais la note quand la connexion qu'il rend, prise au pool ou ouverte, porte la poignée notée
+/// (`oublier_une_note_perimee`) : la connexion armée notée est alors forcément fermée, deux connexions vivantes n'ayant
+/// jamais la même adresse. Une prise d'une AUTRE poignée laisse la note (témoins `bi1_note_perimee_*`).
+/// Reste hors du contrat du module, non témoigné : une connexion armée remise au pool depuis un AUTRE fil que celui
+/// qui l'a armée y entre (la note est par fil) ; reprise ensuite sur le fil qui l'a armée, elle porte la poignée notée
+/// et la note est effacée — le défaut est déjà fait à cette remise, l'effacement n'en ajoute pas.
 #[cfg(test)]
 pub(crate) mod panne_de_test_au_coeur {
     use super::*;
@@ -1759,7 +1775,7 @@ pub(crate) mod panne_de_test_au_coeur {
         static CONNEXION_ARMEE_SUR_CE_FIL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
-    fn poignee(conn: &Connection) -> usize {
+    pub(crate) fn poignee(conn: &Connection) -> usize {
         // SAFETY : la poignée n'est que lue et comparée, jamais déréférencée.
         unsafe { conn.handle() as usize }
     }
@@ -1776,9 +1792,26 @@ pub(crate) mod panne_de_test_au_coeur {
         })
     }
 
-    /// Efface la note de ce fil (prise d'une connexion du pool).
-    pub(crate) fn oublier_l_armement_de_ce_fil() {
-        CONNEXION_ARMEE_SUR_CE_FIL.with(|c| c.set(0));
+    /// Efface la note de ce fil si `conn` porte la poignée notée : la connexion armée notée est alors fermée (deux
+    /// connexions vivantes n'ont jamais la même adresse) et `conn` en a repris l'adresse. Appelée par `read_conn_get`
+    /// sur la connexion qu'il rend.
+    pub(crate) fn oublier_une_note_perimee(conn: &Connection) {
+        let p = poignee(conn);
+        CONNEXION_ARMEE_SUR_CE_FIL.with(|c| {
+            if p != 0 && c.get() == p {
+                c.set(0);
+            }
+        });
+    }
+
+    /// La note de ce fil (0 : aucune), pour un témoin.
+    pub(crate) fn note_de_ce_fil() -> usize {
+        CONNEXION_ARMEE_SUR_CE_FIL.with(|c| c.get())
+    }
+
+    /// Pose la note de ce fil, pour un témoin : simule une connexion armée fermée sans remise, dont l'adresse est `p`.
+    pub(crate) fn noter_pour_un_temoin(p: usize) {
+        CONNEXION_ARMEE_SUR_CE_FIL.with(|c| c.set(p));
     }
 
     pub(super) fn armer_si_demandee(conn: &Connection, db_path: &str, sql: &str) {

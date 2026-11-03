@@ -713,16 +713,31 @@ fn spawn_rollup_loop(tenants: TenantDbManager, rollup_interval: u64, disk_warn_p
         });
 }
 
-fn spawn_panel_refresh_loop(tenants: TenantDbManager, refresh_sem: Arc<tokio::sync::Semaphore>, refresh_s: u64) {
+/// Le délai avant le premier tour de pré-chauffage : après le bind et le premier rollup. NUL sous les témoins, et
+/// seulement là : `spawn_background_jobs` n'est appelé par aucun témoin (seul `server::run` le lance), et le témoin du
+/// tenant passé par la boucle (`tests/ecriture_du_cache_refusee_dite_et_reessai_borne.rs`) joue ainsi le site réel sans
+/// sommeil.
+const DELAI_AVANT_LE_PREMIER_PRECHAUFFAGE: Duration = if cfg!(test) { Duration::ZERO } else { Duration::from_secs(35) };
+
+/// LA BOUCLE DE PRÉ-CHAUFFAGE DES PANNEAUX : un tour (`prechauffer_les_panneaux_de_chaque_tenant`, qui passe à chaque
+/// tenant son identifiant) puis `refresh_s` secondes de sommeil, sans fin. `pub(crate)` pour son témoin.
+pub(crate) fn spawn_panel_refresh_loop(tenants: TenantDbManager, refresh_sem: Arc<tokio::sync::Semaphore>, refresh_s: u64) {
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(35)); // après le bind + le 1er rollup
+            std::thread::sleep(DELAI_AVANT_LE_PREMIER_PRECHAUFFAGE);
             loop {
-                for_each_active_tenant(&tenants, |_tid, handle, db_path| {
-                    cache_refresh_all_panels(handle, db_path, &refresh_sem);
-                });
+                prechauffer_les_panneaux_de_chaque_tenant(&tenants, &refresh_sem);
                 std::thread::sleep(Duration::from_secs(refresh_s));
             }
         });
+}
+
+/// UN TOUR DE PRÉ-CHAUFFAGE DES PANNEAUX, tenant par tenant : le corps de `spawn_panel_refresh_loop`, sorti pour qu'un
+/// témoin joue le site réel. `P10.29-l` — l'identifiant du tenant est passé à `cache_refresh_all_panels`, qui le nomme
+/// à chacune de ses lignes `[cache]` (avant, `_tid` était jeté et rien ne disait de quelle base venait l'échec).
+pub(crate) fn prechauffer_les_panneaux_de_chaque_tenant(tenants: &TenantDbManager, refresh_sem: &Arc<tokio::sync::Semaphore>) {
+    for_each_active_tenant(tenants, |tid, handle, db_path| {
+        cache_refresh_all_panels(handle, db_path, refresh_sem, tid);
+    });
 }
 
 // ==================================================================================================

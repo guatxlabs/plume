@@ -252,16 +252,19 @@ mod chaine_du_pivot_et_etape_de_recherche_en_trois_issues {
     }
 
     /// LA PHRASE DU PIVOT NON LU ET LA VUE QUI LA LIT : `web/datamodels.js` ne reconnaît une lecture non faite que par
-    /// `OUVERTURE_DU_REFUS_D_ALLOWLIST_NON_LUE` (sinon : « le démon refuse le corps reçu ») ; la phrase neuve en porte
-    /// les mots, et n'accuse pas la déclaration de l'exploitant.
+    /// `OUVERTURE_DU_REFUS_D_ALLOWLIST_NON_LUE` (sinon : « le démon refuse le corps reçu »). Depuis `P10.20-l` le motif
+    /// est ANCRÉ en tête de phrase sur deux ouvertures nommées : la phrase neuve est reconnue par SA PROPRE ouverture
+    /// (« OBJET DU PIVOT NON LU »), plus par la citation de l'autre au milieu, et n'accuse pas la déclaration de l'exploitant.
     #[test]
     fn ap2_la_phrase_du_pivot_non_lu_porte_les_mots_que_la_vue_reconnait() {
         let vue = include_str!("../../../web/datamodels.js");
         assert!(
-            vue.contains("const OUVERTURE_DU_REFUS_D_ALLOWLIST_NON_LUE = /champs déclarés de l'objet NON LUS/;"),
+            vue.contains(
+                "const OUVERTURE_DU_REFUS_D_ALLOWLIST_NON_LUE = /^(?:champs déclarés de l'objet NON LUS|OBJET DU PIVOT NON LU)(?![\\p{L}\\p{N}])/u;"
+            ),
             "la vue du Pivot a changé de discriminant : la phrase de `CAUSE_OBJET_DU_PIVOT_NON_LU` est à relire contre elle"
         );
-        assert!(CAUSE_OBJET_DU_PIVOT_NON_LU.contains("champs déclarés de l'objet NON LUS"), "{CAUSE_OBJET_DU_PIVOT_NON_LU}");
+        assert!(CAUSE_OBJET_DU_PIVOT_NON_LU.starts_with("OBJET DU PIVOT NON LU :"), "{CAUSE_OBJET_DU_PIVOT_NON_LU}");
         assert!(!CAUSE_OBJET_DU_PIVOT_NON_LU.contains("non déclaré dans l'objet"), "{CAUSE_OBJET_DU_PIVOT_NON_LU}");
     }
 

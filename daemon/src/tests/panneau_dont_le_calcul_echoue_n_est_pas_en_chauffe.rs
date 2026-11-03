@@ -376,7 +376,7 @@ async fn t3c_journaux_d_echec_disent_l_identifiant_la_cause_et_le_geste_jamais_l
         // pré-chauffage.
         let (st, dbp, _g, _panne, _s) = t3c_state("p1032o-j-prechauffe");
         eprintln!("{T3C_PHASE}prechauffe");
-        crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+        crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
         eprintln!("{T3C_PHASE}fin");
         ff_rm(&dbp);
         return;

@@ -684,7 +684,7 @@ mod av8_fenetre_chaude_watermarks_et_perime_avoue {
         let (st, dbp, _g, panne, _s) = t3c_state("av8-n");
         let from = t3c_from();
         let (rk, fp, vieux) = av8_perime(&st, panne, from);
-        crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+        crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
         let (payload, calcule_a) = panneau_avoue::cache_lire(&st.db.lock(), panne, &rk, &fp).expect("ligne de cache");
         assert_eq!(calcule_a, vieux, "instant de calcul inchangé : {payload}");
         let v: Value = serde_json::from_str(&payload).unwrap();
@@ -698,6 +698,11 @@ mod av8_fenetre_chaude_watermarks_et_perime_avoue {
     /// support journalisé par sa NATURE (jamais le texte du moteur, comme au rafraîchissement à la demande). Sous
     /// AV8_NON_JOINT_TU : la ligne d'une charge conservée sans rien dire ; sous AV8_PRECHAUFFE_MUET : « rien d'écrit » ;
     /// sous AV8_JOURNAL_TEXTE_BRUT : le texte du moteur dans la ligne du support.
+    /// INVERSÉ par la vague BI (`P10.32-o`) : la ligne « non joint » disait toujours « nouvelle tentative à la prochaine
+    /// interrogation ». Elle dit désormais ce que le registre des refus porte : écriture refusée -> « refus d'écriture noté
+    /// à <instant de la tentative> : aucun nouveau calcul avant l'expiration du cache depuis ce refus » (le réessai est
+    /// borné par `serve_swr`) ; `stats` non objet, rien d'écrit -> « aucun refus d'écriture noté : nouvelle tentative à la
+    /// prochaine interrogation ». Chaque cas a sa phrase ; l'instant est celui que l'enfant passe à la tentative.
     #[test]
     fn av8_lignes_de_journal_du_perime() {
         let _env = VERROU_ENV_PROCESSUS.read(); // panel_serve_cfg_de et cache_refresh_all_panels lisent load_config()
@@ -711,17 +716,21 @@ mod av8_fenetre_chaude_watermarks_et_perime_avoue {
                 let (st, dbp, _g, panne, _s) = t3c_state(&format!("av8-o-{nom}"));
                 let (rk, fp, _) = t3c_cle(&st, panne, from);
                 let charge = if nom == "stats" { json!({ "columns": ["a"], "rows": [[42]], "stats": 5 }) } else { json!({ "columns": ["a"], "rows": [[42]] }) };
-                panneau_avoue::cache_ecrire(&st.db.lock(), panne, &rk, &fp, now() - 5, &charge.to_string());
+                // Calculée AVANT la tentative antidatée (sinon : charge plus récente que la tentative, rien d'écrit).
+                panneau_avoue::cache_ecrire(&st.db.lock(), panne, &rk, &fp, now() - 50, &charge.to_string());
                 if nom == "ecriture" {
                     st.db
                         .lock()
                         .execute_batch(&format!("CREATE TRIGGER av8_refus BEFORE INSERT ON panel_cache BEGIN SELECT RAISE(ABORT,'{REFUS_DU_CACHE}'); END;"))
                         .unwrap();
                 }
+                // La tentative est ANTIDATÉE : un instant noté pris à l'horloge du service ne s'y confondrait pas.
+                let tente = now() - 7;
                 eprintln!("AV8-ID-{nom}:{panne}");
+                eprintln!("AV8-TENTE-{nom}:{tente}");
                 eprintln!("{PHASE}{nom}");
                 let echec = crate::query_exec::EchecDeRequete::Moteur { nature: "av8 nature".into(), texte: AV8_TEXTE_DU_GESTE.into() };
-                consigner_l_issue_du_rafraichissement(&st.db, "default", panne, &rk, &fp, now(), from, ttl_global, Ok(Err(echec)));
+                consigner_l_issue_du_rafraichissement(&st.db, "default", panne, &rk, &fp, tente, from, ttl_global, Ok(Err(echec)));
                 ff_rm(&dbp);
             }
             for nom in ["prechauffe-jointe", "prechauffe-refus"] {
@@ -737,7 +746,7 @@ mod av8_fenetre_chaude_watermarks_et_perime_avoue {
                 }
                 eprintln!("AV8-ID-{nom}:{panne}");
                 eprintln!("{PHASE}{nom}");
-                crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+                crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
                 ff_rm(&dbp);
             }
             {
@@ -754,7 +763,7 @@ mod av8_fenetre_chaude_watermarks_et_perime_avoue {
                 eprintln!("AV8-ID-{nom}:{id}");
                 eprintln!("{PHASE}{nom}");
                 demander(dbp.as_str(), PanneAuCoeur::ErreurDuSupport);
-                crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+                crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
                 retirer(dbp.as_str());
                 ff_rm(&dbp);
             }
@@ -783,26 +792,39 @@ mod av8_fenetre_chaude_watermarks_et_perime_avoue {
                 .map(str::to_string)
                 .collect()
         };
+        // `suite` porte la cause entre parenthèses puis ce que le registre des refus dit (vague BI).
         let panel = |nom: &str, suite: &str| -> String {
             let id = lire(&format!("AV8-ID-{nom}:"));
             format!(
-                "[panel] WARN rafraîchissement du panneau {id} en échec ({AV8_TEXTE_DU_GESTE}) — /api/panels/{{id}}/data, tenant 'default' — charge utile précédente conservée (périmée), échec NON joint au corps servi ({suite}), nouvelle tentative à la prochaine interrogation"
+                "[panel] WARN rafraîchissement du panneau {id} en échec ({AV8_TEXTE_DU_GESTE}) — /api/panels/{{id}}/data, tenant 'default' — charge utile précédente conservée (périmée), échec NON joint au corps servi ({suite}"
             )
         };
         let cache = |nom: &str, suite: &str| -> String {
             let id = lire(&format!("AV8-ID-{nom}:"));
-            format!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}) — {suite}")
+            format!("[cache] WARN pré-chauffage du panneau {id} en échec ({cause}), tenant \"default\" — {suite}")
         };
         let nature = lire("AV8-NATURE-SUPPORT:");
         let texte = lire("AV8-TEXTE-SUPPORT:");
         assert_ne!(nature, texte, "prémisse : pour le support, la nature n'est pas le texte du moteur");
         let support = format!(
-            "[cache] WARN pré-chauffage du panneau {} en échec ({nature}) — charge utile précédente conservée, échec joint au corps servi",
+            "[cache] WARN pré-chauffage du panneau {} en échec ({nature}), tenant \"default\" — charge utile précédente conservée, échec joint au corps servi",
             lire("AV8-ID-prechauffe-support:")
         );
         let attendus: [(&str, String); 5] = [
-            ("stats", panel("stats", "`stats` de la charge utile n'est pas un objet")),
-            ("ecriture", panel("ecriture", REFUS_DU_CACHE)),
+            (
+                "stats",
+                panel("stats", "`stats` de la charge utile n'est pas un objet), aucun refus d'écriture noté : nouvelle tentative à la prochaine interrogation"),
+            ),
+            (
+                "ecriture",
+                panel(
+                    "ecriture",
+                    &format!(
+                        "{REFUS_DU_CACHE}), refus d'écriture noté à {} : aucun nouveau calcul avant l'expiration du cache depuis ce refus",
+                        lire("AV8-TENTE-ecriture:")
+                    ),
+                ),
+            ),
             ("prechauffe-jointe", cache("prechauffe-jointe", "charge utile précédente conservée, échec joint au corps servi")),
             ("prechauffe-refus", cache("prechauffe-refus", &format!("charge utile précédente conservée, échec NON joint au corps servi ({REFUS_DU_CACHE})"))),
             ("prechauffe-support", support),
@@ -840,7 +862,7 @@ mod av8_fenetre_chaude_watermarks_et_perime_avoue {
             let (rk, fp, vieux) = av8_perime(&st, id, from);
             demander(dbp.as_str(), panne);
             let avant = now();
-            crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+            crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
             let apres = now();
             let servie = !encore_demandee(dbp.as_str());
             retirer(dbp.as_str());
@@ -904,7 +926,7 @@ mod av8_fenetre_chaude_watermarks_et_perime_avoue {
         assert_eq!(av8_serialisations_sautees(tdb), Vec::<String>::new(), "handlers/dashboards.rs");
         assert_eq!(av8_serialisations_sautees(rollups), Vec::<String>::new(), "rollups.rs");
         let ecritures = tdb.matches("let payload = v.to_string();").count()
-            + tdb.matches("cache_ecrire(&conn, id, &range_key, &q_fp, now_s, &v.to_string())").count()
+            + tdb.matches("cache_ecrire_dit(&conn, id, &range_key, &q_fp, now_s, &v.to_string())").count()
             + rollups.matches("let payload = v.to_string();").count();
         assert_eq!(ecritures, 3, "contrôle : les trois écritures du cache sérialisent par `Value::to_string`");
     }

@@ -28,9 +28,10 @@
 // `Illisible`), `CNL_MEMO_PHRASE` (phrase d'avant au site de l'échec), `CNL_SWR_MUET` (MISS servi sans ligne),
 // `CNL_PRECH_MUET` (pré-chauffage sans ligne).
 // CE QUE CES TÉMOINS NE TIENNENT PAS : une charge valide présente derrière une lecture refusée n'est pas servie (on ne
-// peut pas la lire) : la route sert son 503 nommé tant que la lecture est refusée ; le tenant n'est pas nommé par la
-// ligne `[cache]` (le pré-chauffage ne le reçoit pas). La ligne de la route le nomme : deux tenants réels dans
-// `ligne_de_cache_non_lue_jamais_servie_en_chauffe.rs`.
+// peut pas la lire) : la route sert son 503 nommé tant que la lecture est refusée. Le tenant nommé (ici `"default"`,
+// mode 0) se juge avec deux tenants réels ailleurs : la ligne de la route dans
+// `ligne_de_cache_non_lue_jamais_servie_en_chauffe.rs`, la ligne `[cache]` dans
+// `prechauffage_nomme_le_tenant_et_plancher_des_retardataires_non_lu.rs` (vague BG).
 // =====================================================================================
 mod cache_non_lu_ne_remplace_pas_la_charge_valide {
     use super::*;
@@ -83,7 +84,7 @@ mod cache_non_lu_ne_remplace_pas_la_charge_valide {
             t3c_attendre_la_tache(&st).await;
             comptes.push(panneau_avoue::lectures_de_cache_refusees());
             // (C) pré-chauffage
-            crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem);
+            crate::rollups::cache_refresh_all_panels(&st.db, dbp.as_str(), &st.refresh_sem, "default");
             comptes.push(panneau_avoue::lectures_de_cache_refusees());
             eprintln!("CNL-FIN");
             cnl_permettre_la_lecture(&st);
@@ -172,7 +173,7 @@ mod cache_non_lu_ne_remplace_pas_la_charge_valide {
         );
         assert!(lignes[2].starts_with(&b2_debut) && lignes[2].ends_with(&b2_fin), "(B) rafraîchissement armé : {}", lignes[2]);
         let c_debut = format!("[cache] WARN pré-chauffage du panneau {id} en échec (");
-        let c_fin = format!(") — ligne de cache NON LUE : {CNL_REFUS} (lecture de cache ratée n° 4 depuis le démarrage) — rien d'écrit");
+        let c_fin = format!("), tenant \"default\" — ligne de cache NON LUE : {CNL_REFUS} (lecture de cache ratée n° 4 depuis le démarrage) — rien d'écrit");
         assert!(lignes[3].starts_with(&c_debut) && lignes[3].ends_with(&c_fin), "(C) pré-chauffage : {}", lignes[3]);
         assert!(!fenetre.contains("corps d'échec servi"), "aucun corps d'échec écrit : {fenetre}");
     }

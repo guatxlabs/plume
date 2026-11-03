@@ -47,9 +47,11 @@
 // sans appartenance) -> (4) ; AS2_INST_TEXTE, AS2_INST_TENANT, AS2_INST_FILTRE, AS2_INST_TOUTE_CLASSE,
 // AS2_INST_CLASSE_SERVIE, AS2_INST_COMPILATION_SANS_CLASSE -> (5) ; `#[allow(dead_code)]` remis sur `ds_soql_exec` -> (6).
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : une voie froide (aucune ici) ; la ligne `[query] WARN` peut citer l'énoncé
-// (reste nommé par la vague AR) ; un instantané stocké n'est pas réécrit (le filtre est au service) ; une charge utile
-// illisible en cache (`Err(_) => false`) reste servie telle quelle, comme avant le lot.
+// La ligne `[query] WARN` (et `[datasource] WARN`) du refus du moteur ne porte plus le texte du moteur, qui pouvait
+// citer l'énoncé (reste nommé par la vague AR, levé par la vague BF) : classe, route, tenant et nature seuls, jugés
+// ligne entière par `as1_ligne_query` et `as1_ligne_prom` en (1) et (2).
+// CE QUE CES TÉMOINS NE TIENNENT PAS : une voie froide (aucune ici) ; un instantané stocké n'est pas réécrit (le
+// filtre est au service) ; une charge utile illisible en cache (`Err(_) => false`) reste servie telle quelle, comme avant le lot.
 // =====================================================================================
 mod as1_texte_du_moteur_hors_des_panneaux_et_des_sources {
     use super::*;

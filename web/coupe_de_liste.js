@@ -8,7 +8,7 @@
 //
 // Une seule lecture de « la coupe mord-elle ? » pour toutes ces surfaces : l'écrire à chaque site la
 // laisserait diverger, comme les vingt bornes ont divergé avant d'avoir un fabricant.
-import { LANG } from './core.js';
+import { LANG, faceDansLaLangue } from './core.js';
 
 const cle = (prefixe, nom) => (prefixe ? prefixe + '_' + nom : nom);
 const nombre = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -61,4 +61,24 @@ export function phraseDEchantillonCoupe(m) {
   return LANG === 'en'
     ? 'MTTA/MTTR computed on a sample cut at ' + (fenetre !== null ? fenetre : '?') + ' cases — not on the whole window'
     : 'MTTA/MTTR calculés sur un échantillon coupé à ' + (fenetre !== null ? fenetre : '?') + ' dossiers — pas sur la fenêtre entière';
+}
+
+// `P10.20-b` — UNE LISTE DE MACHINES COUPÉE À SA BORNE LE DIT, AVEC LA BORNE SERVIE. Le démon coupe la ventilation par
+// machine (`panel` : `hosts_borne`/`n_hosts`, daemon/src/handlers/overview.rs ; `suppressions_get` :
+// `firewall_hosts_borne`/`firewall_n_hosts`, daemon/src/handlers/admin_ui.rs) et ne pose la borne QUE sur une liste
+// coupée ; le dénominateur y est le nombre de machines du genre, NUL quand la lecture est partielle. Borne absente (ou
+// nulle au sens JSON) = liste entière : rien de neuf (''). Borne servie mais pas un entier sûr strictement positif (chaîne,
+// négative, zéro, fractionnaire) : la coupe est dite SANS chiffre. Dénominateur non entier sûr positif : sans « sur N ».
+// Aucune constante de borne n'est écrite ici. Texte BRUT : l'appelant l'échappe (`esc()`) ou le pose par `textContent`.
+const MOTS_DE_LA_LISTE_DE_MACHINES_COUPEE = {
+  avec_parc: { fr: 'liste coupée à {borne} machines sur {n}', en: 'list cut at {borne} machines out of {n}' },
+  sans_parc: { fr: 'liste coupée à {borne} machines, nombre de machines du parc non établi', en: 'list cut at {borne} machines, fleet size not established' },
+  borne_illisible: { fr: 'liste coupée, borne servie illisible : nombre de machines listées non établi', en: 'list cut, served bound unreadable: number of listed machines not established' },
+};
+const entierSurPositif = (v) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
+export function coupeDeLaListeDeMachines(borne, n) {
+  if (borne === undefined || borne === null) return '';
+  if (!entierSurPositif(borne)) return faceDansLaLangue(MOTS_DE_LA_LISTE_DE_MACHINES_COUPEE.borne_illisible);
+  if (!entierSurPositif(n)) return faceDansLaLangue(MOTS_DE_LA_LISTE_DE_MACHINES_COUPEE.sans_parc, { borne });
+  return faceDansLaLangue(MOTS_DE_LA_LISTE_DE_MACHINES_COUPEE.avec_parc, { borne, n });
 }

@@ -1242,6 +1242,19 @@ fn main() {
         verify_run();
         return;
     }
+    // `P10.7-r` (suite, décision de l'exploitant du 2026-11-03) — `verify-control` JUGE LA MÊME ANCRE QUE `verify`
+    // AVANT DE CONCLURE : une épingle posée mais illisible y valait « aucune clé publique n'est épinglée » (phrase
+    // fausse), et une entrée de clé antérieure refusée y passait inaperçue. Refus NOMMÉ, sortie 2, aucun verdict.
+    // Ce bloc précède le bras au lieu d'y entrer parce que le bras est épinglé à l'octet par son témoin de texte
+    // (`jcah_le_bras_de_main_delegue`). Les clés antérieures, elles, ne sont pas honorées par `verify-control` :
+    // leurs empreintes lient les checkpoints du REGISTRE, jamais les points du journal de contrôle, et
+    // `rbac::commande_verify_control` ne reçoit qu'une clé.
+    if args.get(1).is_some_and(|a| a == "verify-control") {
+        if let Err(refus) = crate::ledger::ancre_epinglee(&load_config()) {
+            println!("VERDICT IMPOSSIBLE : {refus} — aucun verdict d'ancrage n'est rendu");
+            std::process::exit(2);
+        }
+    }
 
     // `P10.7-p` — ARMEMENT DU VÉRIFICATEUR DU PLAN DE CONTRÔLE. Sans ces lignes, `control_ledger_verify_conn`
     // était un REMÈDE NON ARMÉ : un instrument correct, prouvé par mutation, que personne ne pouvait jouer.
@@ -2249,6 +2262,16 @@ deux compare une PARTIE a un TOUT (mecanisme detaille dans db_ventilation.rs)."
         }
         eprint!("plume-daemon: argument inconnu « {arg} » — AUCUN serveur n'a été lancé.\n\n{}", usage());
         std::process::exit(2);
+    }
+    // `P10.7-r` (suite, décision de l'exploitant du 2026-11-03) — LE SERVEUR NE DÉMARRE PAS SUR UNE ANCRE
+    // AMBIGUË : épingle illisible, clés antérieures sans épingle ou entrée refusée (`ledger::ancre_epinglee`).
+    // EX_CONFIG, comme tout réglage cassé (`cfg_secret`) : l'exploitant croirait sinon l'ancre armée.
+    // Ce qui demande la base n'est PAS jugé ici, c'est `verify` qui le juge : l'empreinte de chaque clé
+    // antérieure recalculée sur ses checkpoints et comparée sur ses 32 octets (discordante -> 1, nommée), et le
+    // dernier checkpoint admis sous la clé épinglée (sinon 2, `ANCRE SANS PRÉSENT`).
+    if let Err(refus) = ledger::ancre_epinglee(&load_config()) {
+        eprintln!("[FATAL] {refus} — refus de démarrer (fail-closed)");
+        std::process::exit(78);
     }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

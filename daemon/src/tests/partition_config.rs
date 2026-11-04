@@ -93,6 +93,9 @@ const SITES_LECTURE_ENV_NON_LITTERALE: &[(&str, usize)] = &[
 /// 2026-08-09 AVANT ce lot et n'a PAS été re-mesuré depuis : la part documentée du solde reste donc
 /// inconnue à cette date. Ce qui est sûr, c'est que ce sont les leviers qu'un opérateur d'hôte croit
 /// avoir, et qui n'agissent pas.
+///
+/// `PLUME_LEDGER_PUBKEY` N'Y EST PLUS (2026-11-03) : l'épingle du registre se lit par `cfg()`, à la même
+/// source que les clés antérieures qui l'accompagnent (`ledger::ledger_pinned_pubkey_brut`).
 const DETTE_LECTURE_ENV_SEULE: &[&str] = &[
     "PLUME_AI_ALLOW_CLOUD",
     "PLUME_AI_ENABLE",
@@ -122,7 +125,6 @@ const DETTE_LECTURE_ENV_SEULE: &[&str] = &[
     "PLUME_HTTP_PULL_MAX_PAGES",
     "PLUME_IOC_BLOOM",
     "PLUME_IOC_BLOOM_MIN",
-    "PLUME_LEDGER_PUBKEY",
     "PLUME_LOKI_QUERY",
     "PLUME_MAIL_BODY_CMD",
     "PLUME_MINIO_AUDIT_BUCKETS",

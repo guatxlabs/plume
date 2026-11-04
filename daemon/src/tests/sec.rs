@@ -108,7 +108,8 @@ fn sec4_rules_seeded_and_backfilled_idempotent() {
 
 // ------------------------------------------------------------------------------------------------
 // LEDGER — verify_ledger_conn ne PANIQUE JAMAIS : Ok sur base keyée lisible, Err sur clé incorrecte /
-// ledger illisible ; broken=Some sur falsification. verify_ledger (wrapper prod) OK sur base en clair.
+// ledger illisible ; broken=Some sur falsification. Le chemin de `verify` (`verify_ledger_selon`, par l'aide de
+// test `verify_ledger`) OK sur base en clair.
 // ------------------------------------------------------------------------------------------------
 #[test]
 fn sec_h1_verify_ledger_keyed_never_panics() {
@@ -146,8 +147,12 @@ fn sec_h1_verify_ledger_keyed_never_panics() {
         assert!(broken.is_some(), "falsification -> rupture de chaîne signalée");
     }
 
-    // (d) wrapper prod verify_ledger sur base EN CLAIR (apply_key no-op hors env) -> Ok. Ne teste que si
-    //     PLUME_DB_KEY n'est pas posé dans l'env (sinon apply_key tenterait un PRAGMA key sur du clair).
+    // (d) le chemin de `verify` (`verify_ledger_selon`, par l'aide `verify_ledger`) sur base EN CLAIR (apply_key
+    //     no-op hors env) -> Ok. Ne teste que si PLUME_DB_KEY n'est pas posé dans l'env (sinon apply_key tenterait
+    //     un PRAGMA key sur du clair). Il LIT l'environnement (PLUME_DB_KEY, PLUME_LEDGER_PUBKEY,
+    //     PLUME_LEDGER_PUBKEYS_ANTERIEURES) : verrou en lecture, sans quoi un test qui pose l'épingle sous le
+    //     verrou d'écriture (v134 ci-dessous) peut la changer entre deux lectures (la CI joue `cargo test`, fils).
+    let _env = VERROU_ENV_PROCESSUS.read();
     if std::env::var("PLUME_DB_KEY").map(|v| v.is_empty()).unwrap_or(true) {
         let p2 = mk_tmp_path("h1-plain.db");
         {
@@ -161,13 +166,13 @@ fn sec_h1_verify_ledger_keyed_never_panics() {
         let _ = std::fs::remove_file(&p2);
     } else {
         // `P11.23-e` — LEVIER DU PRODUIT, PAS ENVIRONNEMENT AVEUGLE : n'importe quel exploitant pose
-        // `PLUME_DB_KEY`, et ce bras (d) — le SEUL qui exerce le wrapper de PRODUCTION — disparaît
+        // `PLUME_DB_KEY`, et ce bras (d) — le SEUL qui exerce le chemin de PRODUCTION de `verify` — disparaît
         // sans un mot. Les bras (a)…(c) restent verts, et le test se présente comme complet.
         crate::tests::canal_de_refus::refuser_de_conclure(
             module_path!(),
             "sec_h1_verify_ledger_keyed_never_panics",
-            "`PLUME_DB_KEY` est posée dans l'environnement : le bras (d) — le wrapper de PRODUCTION \
-             `verify_ledger` sur une base en clair — n'a pas été exercé. Rejouer sans cette variable.",
+            "`PLUME_DB_KEY` est posée dans l'environnement : le bras (d) — le chemin de PRODUCTION de `verify` \
+             (`verify_ledger_selon`) sur une base en clair — n'a pas été exercé. Rejouer sans cette variable.",
         );
     }
     let _ = std::fs::remove_file(&p);
@@ -210,7 +215,8 @@ fn v134_ledger_pubkey_pin_rejects_resign() {
     assert_eq!(parse_ed25519_pubkey(&b64), Some(legit_pub), "base64 -> 32 octets");
     assert_eq!(parse_ed25519_pubkey("zz"), None, "invalide -> None");
 
-    // ledger_pinned_pubkey() lit PLUME_LEDGER_PUBKEY (var touchée par ce SEUL test -> race-safe).
+    // ledger_pinned_pubkey() lit PLUME_LEDGER_PUBKEY : ce test la POSE sous le verrou d'écriture pris en tête, et
+    // les tests qui la LISENT par la configuration (sec_h1, les témoins de l'ancre du registre) prennent le verrou en lecture.
     let save = std::env::var("PLUME_LEDGER_PUBKEY").ok();
     std::env::remove_var("PLUME_LEDGER_PUBKEY");
     assert_eq!(ledger_pinned_pubkey(), None, "non posé -> None (comportement historique)");

@@ -677,7 +677,9 @@ pub(crate) fn sign_checkpoint(conn: &Connection, key: &ed25519_dalek::SigningKey
 /// incorrecte, base absente, ledger illisible) remonte proprement en `exit(2)` — jamais de panic.
 ///
 /// `P10.7-q` — TROIS CODES DE SORTIE, ET LE TROISIÈME EXISTAIT DÉJÀ : `0` = chaîne LUE ENTIÈREMENT et
-/// intègre · `1` = rupture NOMMÉE (ou, PIN escrow posé, un checkpoint non signé par la clé épinglée) ·
+/// intègre · `1` = rupture NOMMÉE (ou, PIN escrow posé, un checkpoint non signé par la clé épinglée ni, depuis
+/// le 2026-11-03, par une clé antérieure dont l'empreinte concorde — chaque refus nommé, chaque empreinte
+/// discordante aussi) ·
 /// `2` = REFUS DE CONCLURE. Ce lot n'INVENTE aucun code : il ÉLARGIT ce qui atteint le `2` — une ligne
 /// que la lecture ne sait pas rendre y arrive maintenant, au lieu de quitter le scan en silence et de
 /// produire un `0`. `P10.7-u` ÉLARGIT LE MÊME `2`, ET POUR LA MÊME RAISON : un point de contrôle dont
@@ -698,7 +700,7 @@ pub(crate) fn sign_checkpoint(conn: &Connection, key: &ed25519_dalek::SigningKey
 /// effacé ». Le `1` lui est refusé (la chaîne est intacte : crier à la compromission serait faux) et le
 /// `0` l'est aussi : la cohérence interne d'une chaîne de hachage ne se démontre PAS sans ancre — qui
 /// écrit dans la base la réécrit d'un bout à l'autre — donc « intègre » y serait le verdict trop
-/// OPTIMISTE que cette feuille poursuit. Le contrôle vit dans `verify_ledger`, PAS dans le cœur : cf. sa
+/// OPTIMISTE que cette feuille poursuit. Le contrôle vit dans `verify_ledger_selon`, PAS dans le cœur : cf. sa
 /// note, `crypto::prouver_l_equivalence` pose au cœur une tout autre question.
 ///
 /// ET LE REFUS PARLE DÉSORMAIS SUR LA MÊME SORTIE QUE LES DEUX AUTRES VERDICTS (stdout) : il partait sur
@@ -711,65 +713,295 @@ pub(crate) fn sign_checkpoint(conn: &Connection, key: &ed25519_dalek::SigningKey
 pub(crate) fn verify_run() {
     let conf = load_config();
     let db_path = cfg(&conf, "PLUME_DB", "/var/lib/plume/db/plume.db");
-    match verify_ledger(&db_path) {
-        Ok((n, sig_ok, sig_bad, broken)) => match broken {
-            Some(id) => {
-                println!("INTÉGRITÉ COMPROMISE : rupture de chaîne à l'entrée #{id} ({n} entrées)");
-                std::process::exit(1);
-            }
-            // v134 (#11) — avec un PIN escrow (PLUME_LEDGER_PUBKEY) configuré, un checkpoint KO signifie un
-            // pubkey in-band NON de confiance (re-signature) ou une signature invalide -> ÉCHEC DUR (exit 1).
-            // SANS pin, KO>0 reste un simple signalement (dégradation de signature, ex. Vault re-scellé).
-            None if ledger_pinned_pubkey().is_some() && sig_bad > 0 => {
-                println!("INTÉGRITÉ COMPROMISE (PIN) : {sig_bad} checkpoint(s) NON signé(s) par la clé escrow épinglée (OK={sig_ok}, {n} entrées) — re-signature possible");
-                std::process::exit(1);
-            }
-            None => println!("ledger OK : {n} entrées chaînées intègres ; checkpoints signés OK={sig_ok} KO={sig_bad}"),
-        },
-        Err(e) => {
-            // AUCUN VERDICT — clé manquante/incorrecte, base illisible, maillon ou checkpoint qu'on ne sait
-            // pas lire, depuis `P10.7-u` une attestation qu'on ne sait pas RATTACHER à la chaîne, et depuis
-            // `P10.7-v` une chaîne que plus rien n'ancre depuis plus longtemps que la cadence ne l'admet.
-            // Jamais un panic, et jamais confondu avec « intègre » (0) ni avec « rompu » (1).
-            // LA QUEUE FIXE « … sur une chaîne partiellement lue » A ÉTÉ GÉNÉRALISÉE, ET C'EST UN CORRECTIF
-            // DE PHRASE FAUSSE : elle décrivait UNE des causes du refus comme si c'était la seule, et elle
-            // était déjà fausse pour l'ouverture impossible (rien n'a été lu du tout) autant que pour une
-            // attestation qu'on ne sait pas rattacher (tout a été lu). Elle n'est pas SUPPRIMÉE — un
-            // exploitant a besoin de la phrase qui dit « ceci n'est pas un verdict » — mais ramenée à ce
-            // qui est VRAI des quatre causes. Aucun manifeste, unité, sonde ni script ne lit ce flux
-            // (revérifié le 2026-08-31 : la seule ligne d'aide qui énonce des codes est celle de
-            // `verify-control`, et elle est inchangée ; `P10.7-r` l'a modifiée depuis, pour l'ancre du journal de
-            // contrôle, sans toucher à ce flux-ci).
-            println!("VERDICT IMPOSSIBLE : {e} — aucun verdict n'est rendu sur ce que la vérification n'a pas pu établir");
-            std::process::exit(2);
-        }
+    // `P10.7-r` (suite, décision de l'exploitant du 2026-11-03) — L'ANCRE EST LUE ET JUGÉE ICI, AVANT TOUT
+    // VERDICT : la clé épinglée et les clés ANTÉRIEURES liées à leur empreinte (`ancre_epinglee`). Une ancre
+    // ambiguë (entrée malformée, empreinte illisible, clé nommée deux fois, clé antérieure égale à l'épinglée,
+    // clés antérieures sans épingle, épingle illisible) ne produit ni « OK » ni « COMPROMISE » : elle sort en 2,
+    // nommée — une faute de frappe de l'exploitant n'est pas une preuve contre la chaîne (le 1 l'accuserait),
+    // et conclure en l'ignorant affaiblirait l'ancre en silence (le 0). La rupture NOMMÉE passe d'abord.
+    let (code, phrase) = match verify_ledger_selon(&db_path, ancre_epinglee(&conf)) {
+        Ok(verdict) => rendre_le_verdict_du_registre(&verdict),
+        // AUCUN VERDICT — clé manquante/incorrecte, base illisible, maillon ou checkpoint qu'on ne sait
+        // pas lire, depuis `P10.7-u` une attestation qu'on ne sait pas RATTACHER à la chaîne, depuis
+        // `P10.7-v` une chaîne que plus rien n'ancre depuis plus longtemps que la cadence ne l'admet, et
+        // depuis la décision du 2026-11-03 une ancre ambiguë. Jamais un panic, et jamais confondu avec
+        // « intègre » (0) ni avec « rompu » (1).
+        // LA QUEUE FIXE « … sur une chaîne partiellement lue » A ÉTÉ GÉNÉRALISÉE, ET C'EST UN CORRECTIF
+        // DE PHRASE FAUSSE : elle décrivait UNE des causes du refus comme si c'était la seule, et elle
+        // était déjà fausse pour l'ouverture impossible (rien n'a été lu du tout) autant que pour une
+        // attestation qu'on ne sait pas rattacher (tout a été lu). Elle n'est pas SUPPRIMÉE — un
+        // exploitant a besoin de la phrase qui dit « ceci n'est pas un verdict » — mais ramenée à ce
+        // qui est VRAI de toutes les causes.
+        Err(e) => (2, format!("VERDICT IMPOSSIBLE : {e} — aucun verdict n'est rendu sur ce que la vérification n'a pas pu établir")),
+    };
+    println!("{phrase}");
+    if code != 0 {
+        std::process::exit(code);
     }
 }
-/// Ouvre la base en READ-ONLY + applique la clé SQLCipher (apply_key = PRAGMA key si PLUME_DB_KEY, sinon
-/// no-op sur base en clair) puis délègue à `verify_ledger_conn`. FAIL-CLOSED : ouverture/lecture impossible
-/// (clé absente/incorrecte -> `SELECT ... FROM ledger` échoue) -> `Err` (jamais un panic).
-pub(crate) fn verify_ledger(db_path: &str) -> Result<(usize, i64, i64, Option<i64>), String> {
+
+/// Le levier des clés ANTÉRIEURES de l'ancre du registre (décision de l'exploitant du 2026-11-03).
+pub(crate) const LEVIER_CLES_ANTERIEURES: &str = "PLUME_LEDGER_PUBKEYS_ANTERIEURES";
+
+/// Au plus autant de checkpoints refusés NOMMÉS dans la phrase de `verify` ; au-delà, le reste est
+/// COMPTÉ (« et N autre(s) »), jamais tu : le compte total est toujours dans la phrase.
+pub(crate) const REFUSES_NOMMES_AU_PLUS: usize = 5;
+
+/// Une clé publique écrite comme l'exploitant la lit dans le constat : ses huit premiers caractères hex,
+/// puis « … ». Jamais une empreinte discordante : celle-là s'écrit en entier (`RelectureAnterieure::phrase`).
+pub(crate) fn huit_premiers_hex(octets: &[u8; 32]) -> String {
+    let h = hex_encode(octets);
+    format!("{}…", &h[..8])
+}
+
+/// LA LIGNE QU'UN CHECKPOINT APPORTE À L'EMPREINTE DE SA CLÉ : `{id}:{ledger_hash}:{sig}` puis un saut de
+/// ligne, une colonne NULL écrite vide (la lecture la rend vide, cf. `verify_ledger_conn_ancre`). C'est
+/// ce que l'outil `sqlite3` imprime, une ligne par checkpoint, pour
+/// `SELECT id || ':' || ifnull(ledger_hash, '') || ':' || ifnull(sig, '') FROM checkpoint WHERE lower(pubkey) = '<clé hex>' ORDER BY id;`
+/// — son flux passé à `sha256sum` rend l'empreinte à poser.
+pub(crate) fn ligne_d_empreinte(id: i64, ledger_hash: &str, sig: &str) -> String {
+    format!("{id}:{ledger_hash}:{sig}\n")
+}
+
+/// `P10.7-r` (suite) — UNE CLÉ ANTÉRIEURE DU REGISTRE, LIÉE À UNE VALEUR HORS BASE. Avant une rotation de
+/// la clé de signature, des checkpoints ont été signés par une autre clé que celle qu'on épingle
+/// aujourd'hui. On les NOMME (décision de l'exploitant du 2026-11-03), et la confiance ne repose pas sur
+/// l'`id` que la base attribue — qui écrit la base le réécrit — mais sur l'EMPREINTE de ce que cette clé a
+/// signé, relevée par l'exploitant et posée HORS de la base : le SHA-256 de la suite exacte des
+/// `ligne_d_empreinte` (`id`, attestation, signature) des checkpoints qui portent cette clé in-band, dans
+/// l'ordre des `id`. Un checkpoint ajouté, retiré, réordonné, re-signé ou renuméroté change l'empreinte
+/// relue : c'est une compromission NOMMÉE. Aucune plage d'`id` n'accompagne l'empreinte : elle fixe déjà
+/// chaque `id`, une plage la répéterait ou la contredirait.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CleAnterieure {
+    pub(crate) cle: [u8; 32],
+    /// L'empreinte ATTENDUE, telle que posée dans le réglage.
+    pub(crate) empreinte: [u8; 32],
+}
+
+/// L'ANCRE DU REGISTRE : la clé épinglée (`PLUME_LEDGER_PUBKEY`) et les clés antérieures liées à leur
+/// empreinte. La clé épinglée vaut pour TOUT checkpoint ; une clé antérieure ne vaut que pour la suite
+/// exacte qu'elle a signée ; toute autre signature, passée ou future, est une compromission nommée.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AncreEpinglee {
+    pub(crate) cle: [u8; 32],
+    pub(crate) anterieures: Vec<CleAnterieure>,
+}
+
+/// LIT ET VALIDE L'ANCRE, sans base. `Ok(None)` = ni épingle ni clé antérieure : comportement historique.
+/// Tout le reste est un refus NOMMÉ (`Err`) : épingle posée mais illisible (elle valait jusqu'ici « pas
+/// d'épingle », en silence), clés antérieures posées sans épingle (elles n'auraient aucun effet, et
+/// l'exploitant croirait l'ancre armée), ou une entrée de clé antérieure que `analyser_les_cles_anterieures`
+/// refuse. Appelée par `verify` (sortie 2), par `verify-control` (sortie 2, `main`) et au démarrage du
+/// serveur (`main`, refus de démarrer).
+pub(crate) fn ancre_epinglee(conf: &HashMap<String, String>) -> Result<Option<AncreEpinglee>, String> {
+    let anterieures = cfg(conf, "PLUME_LEDGER_PUBKEYS_ANTERIEURES", "");
+    let anterieures = anterieures.trim();
+    // LES DEUX RÉGLAGES D'UNE MÊME ANCRE SE LISENT À LA MÊME SOURCE (`cfg` : environnement, puis fichier
+    // de configuration) : lus à deux sources, des clés antérieures posées dans `soc.conf` avec leur
+    // épingle étaient refusées « sans clé épinglée », et le serveur en hôte natif sortait en 78.
+    let cle = match ledger_pinned_pubkey_brut(conf) {
+        None if anterieures.is_empty() => return Ok(None),
+        None => {
+            return Err(format!(
+                "ANCRE AMBIGUË : {LEVIER_CLES_ANTERIEURES} est posé sans clé épinglée (PLUME_LEDGER_PUBKEY) — \
+                 des clés antérieures ne nomment rien sans la clé qui vaut pour le reste"
+            ))
+        }
+        Some(brut) => parse_ed25519_pubkey(&brut).ok_or_else(|| {
+            "ANCRE AMBIGUË : PLUME_LEDGER_PUBKEY est posée mais illisible (ni hex de 64 caractères ni base64 \
+             de 32 octets) — elle ne vaut pas « aucune épingle »"
+                .to_string()
+        })?,
+    };
+    let anterieures = analyser_les_cles_anterieures(anterieures, &cle)
+        .map_err(|e| format!("ANCRE AMBIGUË ({LEVIER_CLES_ANTERIEURES}) : {e}"))?;
+    Ok(Some(AncreEpinglee { cle, anterieures }))
+}
+
+/// Une empreinte SHA-256 écrite : exactement 32 octets en hex, chiffres hex seuls (ni signe, ni blanc).
+fn empreinte_ecrite(texte: &str) -> Option<[u8; 32]> {
+    if !texte.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    hex_decode(texte)?.try_into().ok()
+}
+
+/// LE CŒUR PUR DE LA VALIDATION des clés antérieures. Forme : des entrées séparées par un blanc ou `;`,
+/// chacune `<clé publique hex64 ou base64>:<empreinte SHA-256 en hex de 64 caractères>`. REFUSÉ ET NOMMÉ :
+/// une entrée sans `:`, une clé illisible, une clé antérieure égale à la clé épinglée, une empreinte
+/// illisible (l'ancienne forme à plages `<clé>:1-273` en est une), et une clé nommée deux fois (deux
+/// empreintes pour une clé : laquelle croire ?).
+pub(crate) fn analyser_les_cles_anterieures(brut: &str, epinglee: &[u8; 32]) -> Result<Vec<CleAnterieure>, String> {
+    let mut cles: Vec<(usize, CleAnterieure)> = Vec::new();
+    let entrees = brut.split(|c: char| c == ';' || c.is_whitespace()).filter(|e| !e.is_empty());
+    for (rang, entree) in entrees.enumerate() {
+        let n = rang + 1;
+        let (cle_ecrite, empreinte) = entree.split_once(':').ok_or_else(|| {
+            format!("entrée n°{n} sans « : » (forme attendue : <clé publique>:<empreinte SHA-256 en hex>)")
+        })?;
+        let cle = parse_ed25519_pubkey(cle_ecrite).ok_or_else(|| {
+            format!("entrée n°{n} : clé publique illisible (ni hex de 64 caractères ni base64 de 32 octets)")
+        })?;
+        let nom = huit_premiers_hex(&cle);
+        if &cle == epinglee {
+            return Err(format!(
+                "entrée n°{n} : la clé antérieure {nom} EST la clé épinglée — elle vaut déjà pour tout le registre"
+            ));
+        }
+        let empreinte = empreinte_ecrite(empreinte).ok_or_else(|| {
+            format!("entrée n°{n} ({nom}) : empreinte illisible (SHA-256 en hex de 64 caractères attendue)")
+        })?;
+        if let Some((deja, _)) = cles.iter().find(|(_, c)| c.cle == cle) {
+            return Err(format!(
+                "entrée n°{n} : la clé antérieure {nom} est déjà nommée à l'entrée n°{deja} — une clé n'a qu'une empreinte"
+            ));
+        }
+        cles.push((n, CleAnterieure { cle, empreinte }));
+    }
+    Ok(cles.into_iter().map(|(_, c)| c).collect())
+}
+
+/// CE QUE LA VÉRIFICATION A RELU D'UNE CLÉ ANTÉRIEURE, sous ancre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RelectureAnterieure {
+    pub(crate) cle: [u8; 32],
+    pub(crate) attendue: [u8; 32],
+    /// L'empreinte recalculée sur ce que la base porte.
+    pub(crate) relue: [u8; 32],
+    /// Les checkpoints qui portent cette clé in-band.
+    pub(crate) relus: i64,
+    /// Dont ADMIS : empreinte concordante et signature valide sous cette clé.
+    pub(crate) admis: i64,
+    /// L'`id` du premier et du dernier relus — dits à l'exploitant, jamais une preuve : l'empreinte les fixe tous.
+    pub(crate) ids: Option<(i64, i64)>,
+}
+
+impl RelectureAnterieure {
+    /// L'empreinte relue est-elle l'attendue, sur ses 32 OCTETS ? Un préfixe ne suffit pas : qui écrit la base
+    /// pourrait renuméroter ou retirer des checkpoints anciens jusqu'à retrouver un préfixe court (les huit
+    /// caractères hex que dit la phrase, environ 2^32 essais hors ligne), et ses checkpoints passeraient.
+    /// PAS DE COMPARAISON EN TEMPS CONSTANT, ET C'EST DÉLIBÉRÉ : l'empreinte attendue n'est pas un secret —
+    /// elle se recalcule sur les lignes que la base porte (c'est la requête donnée à l'exploitant), et qui
+    /// écrit la base les lit ; `verify` est une commande locale de l'exploitant, pas un oracle interrogeable,
+    /// et ses deux empreintes sont de toute façon écrites en entier dans la phrase quand elles diffèrent.
+    pub(crate) fn concordante(&self) -> bool {
+        self.relue == self.attendue
+    }
+    fn phrase(&self) -> String {
+        let ids = match self.ids {
+            None => "aucun checkpoint".to_string(),
+            Some((a, b)) if a == b => format!("#{a}"),
+            Some((a, b)) => format!("du #{a} au #{b}"),
+        };
+        let nom = huit_premiers_hex(&self.cle);
+        // DISCORDANTES, LES DEUX EMPREINTES SONT ÉCRITES EN ENTIER : deux empreintes qui ne diffèrent qu'après
+        // leurs huit premiers caractères se liraient « attendue X…, relue X… », une discordance invisible.
+        let empreinte = if self.concordante() {
+            "empreinte concordante".to_string()
+        } else {
+            format!("empreinte DISCORDANTE (attendue {}, relue {})", hex_encode(&self.attendue), hex_encode(&self.relue))
+        };
+        format!("{nom} : {} admis sur {} relu(s) ({ids}), {empreinte}", self.admis, self.relus)
+    }
+}
+
+/// LE VERDICT DU REGISTRE, ce que `verify` rend. Les quatre premiers champs sont le contrat historique de
+/// `verify_ledger_conn` ; les deux derniers ne sont remplis que SOUS ANCRE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerdictDuRegistre {
+    pub(crate) entrees: usize,
+    pub(crate) sig_ok: i64,
+    pub(crate) sig_ko: i64,
+    pub(crate) rupture: Option<i64>,
+    /// `None` = aucune épingle. `Some` = l'ancre jugée, et pour chaque clé antérieure (dans l'ordre de
+    /// l'ancre) ce que la vérification en a relu.
+    pub(crate) anterieures_relues: Option<Vec<RelectureAnterieure>>,
+    /// Sous ancre : chaque checkpoint refusé, `(id, clé in-band tronquée, cause)`, dans l'ordre des id.
+    pub(crate) refuses: Vec<(i64, String, &'static str)>,
+}
+
+/// La phrase et le code de `verify` pour un verdict rendu (le refus de conclure est rendu par l'appelant).
+/// Sous ancre, la sortie est 1 dès qu'un checkpoint est refusé OU qu'une empreinte antérieure est
+/// discordante — même quand plus aucun checkpoint ne porte la clé (tous retirés : rien à nommer par `id`,
+/// la clé l'est).
+pub(crate) fn rendre_le_verdict_du_registre(v: &VerdictDuRegistre) -> (i32, String) {
+    let (n, sig_ok, sig_bad) = (v.entrees, v.sig_ok, v.sig_ko);
+    if let Some(id) = v.rupture {
+        return (1, format!("INTÉGRITÉ COMPROMISE : rupture de chaîne à l'entrée #{id} ({n} entrées)"));
+    }
+    let relues = v.anterieures_relues.as_deref().unwrap_or(&[]);
+    let clause = if relues.is_empty() {
+        String::new()
+    } else {
+        let parts: Vec<String> = relues.iter().map(RelectureAnterieure::phrase).collect();
+        format!(" ; clés antérieures : {}", parts.join(", "))
+    };
+    // v134 (#11) — avec un PIN escrow (PLUME_LEDGER_PUBKEY) configuré, un checkpoint KO signifie un
+    // pubkey in-band NON de confiance (re-signature) ou une signature invalide -> ÉCHEC DUR (exit 1).
+    // SANS pin, KO>0 reste un simple signalement (dégradation de signature, ex. Vault re-scellé).
+    // Depuis le 2026-11-03, une clé antérieure dont l'empreinte concorde est de confiance ; discordante, KO.
+    let discordante = relues.iter().any(|r| !r.concordante());
+    if v.anterieures_relues.is_some() && (sig_bad > 0 || discordante) {
+        let mut phrase = format!(
+            "INTÉGRITÉ COMPROMISE (PIN) : {sig_bad} checkpoint(s) NON signé(s) par la clé escrow épinglée (OK={sig_ok}, {n} entrées)"
+        );
+        if !v.refuses.is_empty() {
+            let nommes: Vec<String> = v
+                .refuses
+                .iter()
+                .take(REFUSES_NOMMES_AU_PLUS)
+                .map(|(id, cle, cause)| format!("#{id} ({cle}, {cause})"))
+                .collect();
+            let reste = v.refuses.len().saturating_sub(REFUSES_NOMMES_AU_PLUS);
+            let suite = if reste > 0 { format!(" et {reste} autre(s)") } else { String::new() };
+            phrase.push_str(&format!(" — re-signature possible : {}{suite}", nommes.join(", ")));
+        }
+        phrase.push_str(&clause);
+        return (1, phrase);
+    }
+    (0, format!("ledger OK : {n} entrées chaînées intègres ; checkpoints signés OK={sig_ok} KO={sig_bad}{clause}"))
+}
+
+/// LE CHEMIN DE `verify_run` : ouvre la base en READ-ONLY + applique la clé SQLCipher (apply_key = PRAGMA key
+/// si PLUME_DB_KEY, sinon no-op sur base en clair), juge la chaîne sous l'ancre déjà LUE par l'appelant
+/// (`verify_run` la lit sur la même configuration que la base), puis l'ancrage. FAIL-CLOSED :
+/// ouverture/lecture impossible (clé absente/incorrecte -> `SELECT ... FROM ledger` échoue) -> `Err` (jamais
+/// un panic). Une ancre REFUSÉE (`Err`) ne rend un verdict que s'il est une rupture NOMMÉE : la chaîne est
+/// alors jugée sans épingle (la rupture ne dépend d'aucune clé) et l'accusation passe d'abord ; sinon le
+/// refus de l'ancre est la réponse — aucun verdict.
+pub(crate) fn verify_ledger_selon(
+    db_path: &str,
+    ancre: Result<Option<AncreEpinglee>, String>,
+) -> Result<VerdictDuRegistre, String> {
     let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("ouverture {db_path}: {e}"))?;
     apply_key(&conn); // clé SQLCipher (PLUME_DB_KEY) — mirroir de open_db/ledger-export ; DOIT précéder toute requête
     let _ = sqlite_plafond::armer(&conn);
     // v134 (#11) — applique le PIN escrow (PLUME_LEDGER_PUBKEY) s'il est configuré (sinon None -> comportement
-    // historique : on fait confiance au pubkey IN-BAND de chaque checkpoint).
-    let pinned = ledger_pinned_pubkey();
-    let verdict = verify_ledger_conn(&conn, pinned.as_ref())?;
+    // historique : on fait confiance au pubkey IN-BAND de chaque checkpoint), et depuis le 2026-11-03 les
+    // clés antérieures, liées à leur empreinte, qui l'accompagnent.
+    let (ancre, ancre_refusee) = match ancre {
+        Ok(a) => (a, None),
+        Err(refus) => (None, Some(refus)),
+    };
+    let verdict = verify_ledger_conn_ancre(&conn, ancre.as_ref())?;
     // `P10.7-v` — L'ABSENCE D'ANCRAGE EST CONTRÔLÉE ICI, ET PAS DANS `verify_ledger_conn`, POUR UNE
     // RAISON MESURÉE : le cœur a un SECOND consommateur, `crypto::prouver_l_equivalence`, qui s'en sert
     // pour prouver qu'une CONVERSION de base au repos a recopié le journal fidèlement. Sa question est
     // « cette copie est-elle identique ? », jamais « cette chaîne est-elle ancrée ? » : y router ce
     // verdict aurait fait ABANDONNER la conversion d'une base parfaitement copiée, sous une phrase qui
     // aurait dit « journal ILLISIBLE dans la copie » alors qu'il se lit. Une fausse accusation, dans un
-    // geste destructif. Le contrat de `verify_ledger_conn` est donc INCHANGÉ, et ce wrapper — dont les
-    // seuls appelants sont `verify_run` et son témoin — porte seul la loi.
+    // geste destructif. Le contrat de `verify_ledger_conn` est donc INCHANGÉ, et ce wrapper — dont le
+    // seul appelant de production est `verify_run` — porte seul la loi.
     //
     // LA RUPTURE PASSE D'ABORD, comme pour la concordance de `P10.7-u` : `Ok(_, Some(id))` est le
     // verdict le plus fort que cet instrument sache rendre, et aucun contrôle d'ancrage ne peut le
-    // convertir en refus de conclure.
-    if verdict.3.is_none() {
+    // convertir en refus de conclure — ni l'âge de la dernière ancre, ni une ancre ambiguë.
+    if verdict.rupture.is_none() {
+        if let Some(refus) = ancre_refusee {
+            return Err(refus);
+        }
         if let Some(raison) = ancrage_en_retard_de_la_base(&conn)? {
             return Err(raison);
         }
@@ -804,13 +1036,21 @@ fn ancrage_en_retard_de_la_base(conn: &Connection) -> Result<Option<String>, Str
 /// = la clé PUBLIQUE ed25519 de confiance (escrow hors-bande). POSÉ -> la vérification REFUSE tout checkpoint
 /// dont le pubkey IN-BAND diffère (un attaquant DB-write-SANS-ledger.key aurait re-signé avec SA clé, pubkey
 /// in-band inclus -> auto-cohérent mais NON de confiance). NON POSÉ -> None -> comportement historique préservé.
+/// POSÉE MAIS ILLISIBLE, elle rend aussi `None` ICI (la conversion au repos n'a pas changé) ; `ancre_epinglee`,
+/// que lisent `verify` et, AVANT ce lecteur-ci, `verify-control` (`main`), la refuse au contraire et la NOMME.
 pub(crate) fn ledger_pinned_pubkey() -> Option<[u8; 32]> {
-    let raw = std::env::var("PLUME_LEDGER_PUBKEY").ok()?;
+    parse_ed25519_pubkey(&ledger_pinned_pubkey_brut(&load_config())?)
+}
+/// La valeur ÉCRITE de l'épingle, rognée ; `None` si absente ou vide. Lue par `cfg` (environnement, puis
+/// fichier de configuration), comme `PLUME_LEDGER_PUBKEYS_ANTERIEURES` : `verify`, `verify-control`, la
+/// conversion au repos et la garde du démarrage voient donc la MÊME épingle, posée dans l'un ou l'autre.
+fn ledger_pinned_pubkey_brut(conf: &HashMap<String, String>) -> Option<String> {
+    let raw = cfg(conf, "PLUME_LEDGER_PUBKEY", "");
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
     }
-    parse_ed25519_pubkey(raw)
+    Some(raw.to_string())
 }
 /// Parse une clé publique ed25519 (32 o) depuis hex (64 chars — format des checkpoints en base, prioritaire)
 /// ou base64 standard. `None` si non décodable / mauvaise longueur.
@@ -873,7 +1113,19 @@ pub(crate) fn parse_ed25519_pubkey(s: &str) -> Option<[u8; 32]> {
 /// ici on ne décide que de son ACHEMINEMENT — la troisième sortie, et seulement quand la chaîne est
 /// intègre, pour qu'une rupture NOMMÉE ne puisse jamais devenir un refus de conclure.
 pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -> Result<(usize, i64, i64, Option<i64>), String> {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let ancre = pinned.map(|cle| AncreEpinglee { cle: *cle, anterieures: Vec::new() });
+    let v = verify_ledger_conn_ancre(conn, ancre.as_ref())?;
+    Ok((v.entrees, v.sig_ok, v.sig_ko, v.rupture))
+}
+
+/// Le cœur de `verify_ledger_conn`, sous l'ANCRE ENTIÈRE (clé épinglée + clés antérieures liées à leur
+/// empreinte, décision de l'exploitant du 2026-11-03). Sous ancre, un checkpoint est OK s'il est signé par
+/// la clé épinglée, OU par une clé antérieure dont l'EMPREINTE relue concorde avec l'attendue ; tout autre
+/// cas est compté KO et NOMMÉ par son `id` réel (`refuses`), et une empreinte discordante nomme sa clé
+/// (`anterieures_relues`). Un refus de conclure s'ajoute, seulement sur une chaîne intègre où rien n'est
+/// accusé : des clés antérieures sont nommées et le DERNIER checkpoint n'est pas admis sous la clé épinglée
+/// (`ANCRE SANS PRÉSENT`, cf. son site).
+pub(crate) fn verify_ledger_conn_ancre(conn: &Connection, ancre: Option<&AncreEpinglee>) -> Result<VerdictDuRegistre, String> {
     let mut stmt = conn.prepare("SELECT id,ts,kind,detail,prev_hash,hash FROM ledger ORDER BY id")
         .map_err(|e| format!("lecture ledger (clé SQLCipher manquante/incorrecte ?): {e}"))?;
     let maillons = stmt
@@ -904,7 +1156,9 @@ pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -
     // NULL` au schéma et les deux seuls écrivains y passent un entier -> aucune valeur que le produit
     // puisse poser ne fait échouer cette conversion, et une valeur qui la ferait échouer est une ligne
     // ILLISIBLE au sens exact des deux ancrages voisins.
-    let mut cs = conn.prepare("SELECT ts,ledger_hash,sig,pubkey FROM checkpoint ORDER BY id")
+    // L'`id` rejoint la lecture le 2026-11-03 : il entre dans l'empreinte des clés antérieures et nomme les refus.
+    // `INTEGER PRIMARY KEY` au schéma : jamais NULL, toujours entier.
+    let mut cs = conn.prepare("SELECT ts,ledger_hash,sig,pubkey,id FROM checkpoint ORDER BY id")
         .map_err(|e| format!("lecture checkpoints: {e}"))?;
     let signatures = cs
         // Les TROIS colonnes de contenu sont nullables au schéma (`checkpoint(ledger_hash TEXT, sig TEXT,
@@ -916,12 +1170,13 @@ pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -
                 r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, i64>(4)?,
             ))
         })
         .map_err(|e| format!("scan checkpoints: {e}"))?;
     // `P10.7-q` — MÊME LOI QUE POUR LES MAILLONS, et ici elle vaut aussi comme correctif de SÉCURITÉ : un
     // checkpoint tombé du scan disparaissait des DEUX compteurs, donc de la condition de durcissement du PIN.
-    let mut cps: Vec<(i64, String, String, String)> = Vec::new();
+    let mut cps: Vec<(i64, String, String, String, i64)> = Vec::new();
     for (rang, signature) in signatures.enumerate() {
         let signature = signature.map_err(|e| {
             format!("checkpoint #{} ILLISIBLE ({e}) — les signatures n'ont pas pu être comptées entièrement : AUCUN verdict", rang + 1)
@@ -947,30 +1202,104 @@ pub(crate) fn verify_ledger_conn(conn: &Connection, pinned: Option<&[u8; 32]>) -
     // de MAILLON : y router un point de contrôle ferait accuser une entrée de journal intacte.
     if broken.is_none() {
         let ancrages: Vec<(i64, String)> = rows.iter().map(|(_, ts, _, _, _, h)| (*ts, h.clone())).collect();
-        let attestations: Vec<(i64, String)> = cps.iter().map(|(ts, lh, _, _)| (*ts, lh.clone())).collect();
+        let attestations: Vec<(i64, String)> = cps.iter().map(|(ts, lh, _, _, _)| (*ts, lh.clone())).collect();
         if let Some(raison) = attestation_discordante(&ancrages, &attestations) {
             return Err(raison);
         }
     }
-    let (mut sig_ok, mut sig_bad) = (0i64, 0i64);
-    for (_ts, lh, sig, pk) in &cps {
-        let ok = (|| {
-            let pkb: [u8; 32] = hex_decode(pk)?.try_into().ok()?;
-            // v134 (#11) — PIN escrow : si un pubkey est épinglé et que le pubkey IN-BAND diffère, ce
-            // checkpoint FAIL AVANT toute vérif de signature (re-signature attaquant : la signature serait
-            // valide vis-à-vis de SA clé, mais cette clé n'est pas la clé de confiance escrow).
-            if let Some(p) = pinned {
-                if &pkb != p {
-                    return Some(false);
-                }
-            }
-            let sgb: [u8; 64] = hex_decode(sig)?.try_into().ok()?;
-            let vk = VerifyingKey::from_bytes(&pkb).ok()?;
-            Some(vk.verify(lh.as_bytes(), &Signature::from_bytes(&sgb)).is_ok())
-        })().unwrap_or(false);
-        if ok { sig_ok += 1; } else { sig_bad += 1; }
+    // LA RELECTURE DES CLÉS ANTÉRIEURES : l'empreinte de chacune, recalculée sur ce que la base porte AVANT
+    // toute vérification de signature (un SHA-256 incrémental, une ligne par checkpoint qui porte la clé).
+    let anterieures: &[CleAnterieure] = ancre.map(|a| a.anterieures.as_slice()).unwrap_or(&[]);
+    let cles_in_band: Vec<Option<[u8; 32]>> =
+        cps.iter().map(|c| hex_decode(&c.3).and_then(|b| b.try_into().ok())).collect();
+    let mut relues: Vec<RelectureAnterieure> = anterieures
+        .iter()
+        .map(|a| RelectureAnterieure { cle: a.cle, attendue: a.empreinte, relue: [0; 32], relus: 0, admis: 0, ids: None })
+        .collect();
+    {
+        use sha2::{Digest, Sha256};
+        let mut hacheurs: Vec<Sha256> = anterieures.iter().map(|_| Sha256::new()).collect();
+        let portees = cps
+            .iter()
+            .zip(&cles_in_band)
+            .filter_map(|(c, k)| Some((anterieures.iter().position(|a| Some(a.cle) == *k)?, c)));
+        for (i, (_ts, lh, sig, _pk, id)) in portees {
+            hacheurs[i].update(ligne_d_empreinte(*id, lh, sig).as_bytes());
+            relues[i].relus += 1;
+            relues[i].ids = Some(relues[i].ids.map_or((*id, *id), |(premier, _)| (premier, *id)));
+        }
+        for (r, h) in relues.iter_mut().zip(hacheurs) {
+            r.relue.copy_from_slice(&h.finalize());
+        }
     }
-    Ok((rows.len(), sig_ok, sig_bad, broken))
+    let mut refuses: Vec<(i64, String, &'static str)> = Vec::new();
+    let (mut sig_ok, mut sig_bad) = (0i64, 0i64);
+    // Le DERNIER checkpoint (le plus grand `id`, l'ordre du scan) et la clé sous laquelle il a été ADMIS.
+    let mut dernier_admis: Option<(i64, [u8; 32])> = None;
+    for ((_ts, lh, sig, _pk, id), pkb) in cps.iter().zip(&cles_in_band) {
+        // LES TESTS BON MARCHÉ D'ABORD — clé in-band lisible, épinglée, antérieure à empreinte concordante —,
+        // puis UNE SEULE vérification Ed25519, sous la clé qu'ils ont retenue : `(clé, cause si KO, antérieure)`.
+        // v134 (#11) — PIN escrow : sous ancre, un pubkey in-band qui n'est ni l'épinglé ni une clé antérieure
+        // concordante FAIL AVANT toute vérif de signature (re-signature attaquant : la signature serait valide
+        // vis-à-vis de SA clé, mais cette clé n'est pas la clé de confiance escrow).
+        let (sous, cause, anterieure): (Option<[u8; 32]>, &'static str, Option<usize>) = match (pkb, ancre) {
+            (None, _) => (None, "clé in-band illisible", None),
+            (Some(k), None) => (Some(*k), "signature invalide", None),
+            (Some(k), Some(a)) if *k == a.cle => (Some(*k), "signature invalide", None),
+            (Some(k), Some(_)) => match anterieures.iter().position(|c| c.cle == *k) {
+                None => (None, "clé étrangère", None),
+                Some(i) if !relues[i].concordante() => (None, "empreinte de la clé antérieure discordante", Some(i)),
+                Some(i) => (Some(*k), "signature invalide", Some(i)),
+            },
+        };
+        let admise_sous = sous.filter(|k| signature_valide_sous(k, lh, sig));
+        dernier_admis = admise_sous.map(|k| (*id, k));
+        if admise_sous.is_some() {
+            sig_ok += 1;
+            relues.iter_mut().enumerate().filter(|(i, _)| Some(*i) == anterieure).for_each(|(_, r)| r.admis += 1);
+        } else {
+            sig_bad += 1;
+            if ancre.is_some() {
+                let nom = pkb.map(|k| huit_premiers_hex(&k)).unwrap_or_else(|| "clé illisible".to_string());
+                refuses.push((*id, nom, cause));
+            }
+        }
+    }
+    // LE PRÉSENT EST SIGNÉ PAR LA CLÉ ÉPINGLÉE, OU AUCUN VERDICT. Des clés antérieures sont nommées et rien
+    // n'est accusé (chaîne intègre, aucun refus, toutes les empreintes concordent) : il faut encore que le
+    // DERNIER checkpoint soit admis sous la clé épinglée. Sinon les ancres courantes ont été retirées — un
+    // `DELETE` de la queue ne réécrit rien de ce que les empreintes lient, il ne se voit qu'ici. Cela couvre
+    // aussi « aucun checkpoint de la clé épinglée d'`id` supérieur au dernier de chaque clé antérieure » :
+    // l'`id` est la clé primaire, le dernier checkpoint a le plus grand, donc admis sous l'épinglée il dépasse
+    // ceux de toutes les clés antérieures. La sortie est 2 (aucun verdict), pas 1, pour la raison de
+    // `P10.7-v` : une queue absente est un défaut de PREUVE, que la base partage avec un registre qu'on vient
+    // de faire tourner (la clé épinglée n'a encore rien signé) ; l'accuser serait une fausse accusation, et
+    // le taire (0) rendrait vérifié ce qui ne l'est pas.
+    if let Some(a) = ancre {
+        let present = dernier_admis.is_some_and(|(_, k)| k == a.cle);
+        let accuse = sig_bad > 0 || relues.iter().any(|r| !r.concordante());
+        if broken.is_none() && !relues.is_empty() && !accuse && !present {
+            let quoi = match dernier_admis {
+                Some((id, k)) => format!("le dernier checkpoint (#{id}) est signé par la clé antérieure {}", huit_premiers_hex(&k)),
+                None => "le registre ne porte aucun checkpoint".to_string(),
+            };
+            return Err(format!(
+                "ANCRE SANS PRÉSENT ({LEVIER_CLES_ANTERIEURES}) : {quoi} — aucun checkpoint de la clé épinglée ne vient \
+                 après ceux des clés antérieures (ancres courantes retirées, ou clé épinglée qui n'a encore rien \
+                 signé)"
+            ));
+        }
+    }
+    let anterieures_relues = ancre.map(|_| relues);
+    Ok(VerdictDuRegistre { entrees: rows.len(), sig_ok, sig_ko: sig_bad, rupture: broken, anterieures_relues, refuses })
+}
+
+/// La signature hex `sig` de l'attestation `atteste` est-elle valide sous `cle` ? Toute forme illisible : non.
+fn signature_valide_sous(cle: &[u8; 32], atteste: &str, sig: &str) -> bool {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let Some(sgb) = hex_decode(sig).and_then(|b| <[u8; 64]>::try_from(b).ok()) else { return false };
+    let Ok(vk) = VerifyingKey::from_bytes(cle) else { return false };
+    vk.verify(atteste.as_bytes(), &Signature::from_bytes(&sgb)).is_ok()
 }
 
 /// DENYLIST d'IP PROTÉGÉES qu'un ban ne doit JAMAIS toucher : loopback

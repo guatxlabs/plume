@@ -28,6 +28,7 @@ pub(crate) use backup::*;
 // vieillissement, et ce qu'un exploitant en lit. PAS de `use …::*` : les noms restent qualifiés, pour
 // qu'une lecture de `metrics.rs` ou de `main.rs` voie d'où sort chaque pièce du suivi.
 mod exercice_de_restauration;
+mod copie_hors_site; // la dernière copie hors site attestée par le poste qui la tire : âge, refus nommés, jauges plume_offsite_copy_*
 // SINK OBJET COMPATIBLE S3 DE L'ORDONNANCEUR DE SAUVEGARDE. GATE DE COMPILATION `s3_backup` : sans la
 // feature ce module n'existe PAS, et l'ordonnanceur refuse une destination `s3://` comme il le faisait
 // déjà -> mode 0 inchangé. La feature n'ajoute AUCUNE caisse au graphe (signature v4 = HMAC-SHA256 +

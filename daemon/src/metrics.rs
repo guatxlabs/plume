@@ -919,6 +919,11 @@ pub(crate) fn component_health_avec_pertes(
     // puisse pas passer pour un exercice du chemin d'escrow.
     out.push(crate::exercice_de_restauration::composant(conn, crate::backup_age_recipient().is_some(), now_ts));
 
+    // COPIE HORS SITE : depuis quand le poste qui TIRE les sauvegardes hors de ce disque n'a-t-il rien
+    // attesté ? Lecture d'un fichier d'une ligne, borné, jamais la base. Réglage absent -> « non
+    // déclarée » (jaune) ; fichier absent, illisible ou mal formé -> refus nommé, jamais « jamais copiée ».
+    out.push(crate::copie_hors_site::composant(now_ts));
+
     out
 }
 
@@ -1465,6 +1470,25 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
         if let Some(age) = c.get("age_s").and_then(Value::as_i64) {
             prom_line(&mut o, "plume_restore_drill_age_seconds", "gauge",
                 "Âge du dernier exercice de restauration réussi (s ; absent = jamais)", age.to_string());
+        }
+    }
+    // COPIE HORS SITE — DÉRIVÉE de l'entrée de composant, jamais recalculée. Les DEUX jauges sont
+    // ABSENTES tant que rien n'est établi (copie non déclarée, attestation refusée, suivi désactivé) :
+    // `overdue 0` dirait « à jour » et `age_seconds 0` « copié à l'instant » sur une copie dont plume ne
+    // sait rien. L'alerte se câble donc sur `overdue == 1` ET sur `plume_component_up{component=
+    // "copie_hors_site"} < 1`, qui vaut 0.5 pour une copie non déclarée, refusée ou périmée (le suivi
+    // désactivé est `idle`, donc 1, et le détail nomme le réglage).
+    if let Some(c) = j.get("components").and_then(|a| a.as_array()).and_then(|a| {
+        a.iter().find(|c| c.get("component").and_then(|s| s.as_str()) == Some(crate::copie_hors_site::COMPOSANT))
+    }) {
+        if let Some(en_retard) = c.get("overdue").and_then(Value::as_bool) {
+            prom_line(&mut o, "plume_offsite_copy_overdue", "gauge",
+                "1 si la dernière copie hors site attestée a dépassé son âge maximal (absent = rien d'établi)",
+                u8::from(en_retard).to_string());
+        }
+        if let Some(age) = c.get("age_s").and_then(Value::as_i64) {
+            prom_line(&mut o, "plume_offsite_copy_age_seconds", "gauge",
+                "Âge de la dernière copie hors site attestée (s ; absent = rien d'établi)", age.to_string());
         }
     }
     o

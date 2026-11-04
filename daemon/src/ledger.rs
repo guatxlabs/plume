@@ -1786,17 +1786,20 @@ pub(crate) enum PolitiqueDesAdressesPrivees {
 /// semé par `PLUME_NOTIFY_NTFY_URL` (son URL exacte, `remplacer_le_canal_de_l_environnement`), un objet d'une surcouche
 /// `config.d` VALIDÉ puis écrit (ses propres cibles, `remplacer_les_cibles_de_surcouche`). DE L'API : tout le reste, et
 /// TOUJOURS un canal (`url`, `webhook_url` d'un slack), une destination ou un connecteur créés ou modifiés par l'API
-/// (`ssrf_guard_d_une_saisie_de_l_api`, `refusee_pour_sa_seule_adresse_privee`), et chaque adresse qu'appelle un
-/// fournisseur d'identité OIDC ou d'IA (`ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`). Jamais décidé par l'hôte et le port, ni
+/// (`ssrf_guard_d_une_saisie_de_l_api`, `refusee_pour_sa_seule_adresse_privee`), et chaque adresse qu'appelle ou que
+/// reçoit à la saisie un fournisseur d'identité (OIDC ou LDAP) ou d'IA (`ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`).
+/// Jamais décidé par l'hôte et le port, ni
 /// par une URL trouvée dans le registre d'un AUTRE objet : la recherche est bornée à la base, à la famille et à
 /// l'identifiant de l'objet qui émet, et rendue seulement si sa ligne porte encore les cibles inscrites
 /// (`ssrf_cibles_de_l_objet_inchange`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OrigineDeLaCible { Api, Configuration }
-/// `P7.20-a` — DÉCISION DE L'EXPLOITANT RENDUE LE 2026-11-03, ISOLÉE EN CE SEUL SITE : un fournisseur d'identité OIDC ou
-/// d'IA créé ou modifié par l'API est ALIGNÉ sur les autres objets de l'API — chaque adresse que le démon appelle pour
-/// lui (découverte, JWKS et point de jeton OIDC, `daemon/src/handlers/idp.rs` ; appel d'inférence,
-/// `daemon/src/ai/mod.rs`) est jugée DE L'API : une adresse privée y est refusée par défaut, et le refus nomme ce qui le
+/// `P7.20-a` — DÉCISION DE L'EXPLOITANT RENDUE LE 2026-11-03, ISOLÉE EN CE SEUL SITE : un fournisseur d'identité (OIDC
+/// ou LDAP) ou d'IA créé ou modifié par l'API est ALIGNÉ sur les autres objets de l'API — chaque adresse que le démon
+/// appelle pour lui (découverte, JWKS et point de jeton OIDC, `daemon/src/handlers/idp.rs` ; connexion à l'annuaire
+/// LDAP, `ldap_garde_de_sortie` dans `daemon/src/idp/ldap.rs` ; appel d'inférence, `daemon/src/ai/mod.rs`) est jugée DE
+/// L'API, et la saisie qui la vise aussi (création et modification, `daemon/src/handlers/idp.rs` et
+/// `daemon/src/handlers/ai.rs`) : une adresse privée y est refusée par défaut, et le refus nomme ce qui le
 /// lève, `PLUME_SSRF_ALLOW` (hôte ou CIDR listé) ou `PLUME_SSRF_BLOCK_PRIVATE=0` (admises partout). Une installation sur
 /// site dont l'IdP ou la side-box d'inférence est sur un réseau privé la liste dans `PLUME_SSRF_ALLOW`. La limite
 /// `P5.8-a` (fournisseur réservé à l'administrateur, donc de configuration) ne vaut plus. Avant cette décision, l'origine
@@ -1841,16 +1844,14 @@ pub(crate) fn politique_lue_de(conf: &std::collections::HashMap<String, String>)
     politique_des_adresses_privees(&valeur)
 }
 /// `P7.20-a` — LA LIGNE QUE LE DÉMARRAGE ÉCRIT SUR LA GARDE D'ÉGRESS (PUR), une par politique : ce qui est refusé, ce
-/// qui est admis, le réglage qui change l'un ou l'autre, et ce que la garde ne juge pas (la connexion à un annuaire
-/// LDAP : `daemon/src/idp/ldap.rs` ouvre l'URL du fournisseur sans elle). Écrite par `dire_l_egress_au_demarrage`
-/// (daemon/src/overlays_oac.rs). Les fournisseurs d'identité OIDC et d'IA y sont placés selon leur origine, lue du
-/// site unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` : la ligne suit la décision sans seconde édition.
+/// qui est admis et le réglage qui change l'un ou l'autre. Écrite par `dire_l_egress_au_demarrage`
+/// (daemon/src/overlays_oac.rs). Les fournisseurs d'identité (OIDC ou LDAP) et d'IA y sont placés selon leur origine,
+/// lue du site unique `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA` : la ligne suit la décision sans seconde édition.
+/// La connexion d'un fournisseur LDAP à son annuaire est jugée par la même garde (`ldap_garde_de_sortie`,
+/// daemon/src/idp/ldap.rs) : la ligne ne la dit plus hors de la garde.
 pub(crate) fn ligne_de_la_politique_des_adresses_privees(politique: PolitiqueDesAdressesPrivees) -> String {
     ligne_de_la_politique_selon_l_origine_des_fournisseurs(politique, ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA)
 }
-/// `P7.20-a` — ce que la garde d'égress ne juge pas, dit à la fin de chaque ligne du démarrage.
-pub(crate) const RESTE_HORS_DE_LA_GARDE_D_EGRESS: &str =
-    "la connexion d'un fournisseur d'identité LDAP à son annuaire n'est PAS jugée par cette garde";
 /// La même ligne, l'origine des fournisseurs d'identité OIDC et d'IA injectée (PUR : testable pour chaque origine).
 pub(crate) fn ligne_de_la_politique_selon_l_origine_des_fournisseurs(
     politique: PolitiqueDesAdressesPrivees,
@@ -1858,11 +1859,10 @@ pub(crate) fn ligne_de_la_politique_selon_l_origine_des_fournisseurs(
 ) -> String {
     let de_l_api = fournisseurs == OrigineDeLaCible::Api;
     let objets_de_l_api = if de_l_api {
-        "un canal, une destination, un connecteur ou un fournisseur d'identité OIDC ou d'IA saisi par l'API"
+        "un canal, une destination, un connecteur ou un fournisseur d'identité (OIDC ou LDAP) ou d'IA saisi par l'API"
     } else {
         "un canal, une destination ou un connecteur saisi par l'API"
     };
-    let reste = RESTE_HORS_DE_LA_GARDE_D_EGRESS;
     match politique {
         PolitiqueDesAdressesPrivees::ParDefaut => {
             let admises = if de_l_api {
@@ -1870,23 +1870,23 @@ pub(crate) fn ligne_de_la_politique_selon_l_origine_des_fournisseurs(
 propres cibles)"
             } else {
                 "le canal semé par PLUME_NOTIFY_NTFY_URL (son URL exacte), les objets écrits en surcouche config.d (leurs \
-propres cibles) et les fournisseurs d'identité OIDC et d'IA"
+propres cibles) et les fournisseurs d'identité (OIDC et LDAP) et d'IA"
             };
             format!("[ssrf] adresses privées (10/8, 172.16/12, 192.168/16) : REFUSÉES pour {objets_de_l_api} ; ADMISES pour \
 {admises} — PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les refuse partout, PLUME_SSRF_ALLOW exempte un hôte ou un \
-CIDR ; {reste}")
+CIDR")
         }
         PolitiqueDesAdressesPrivees::BloqueesPartout => {
             let compris = if de_l_api {
                 "canal semé par PLUME_NOTIFY_NTFY_URL et surcouches config.d compris"
             } else {
-                "canal semé par PLUME_NOTIFY_NTFY_URL, surcouches config.d et fournisseurs d'identité OIDC et d'IA compris"
+                "canal semé par PLUME_NOTIFY_NTFY_URL, surcouches config.d et fournisseurs d'identité (OIDC et LDAP) et d'IA compris"
             };
             format!("[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 1 : adresses privées (10/8, 172.16/12, 192.168/16) REFUSÉES pour \
-toute cible, {compris} — PLUME_SSRF_ALLOW exempte un hôte ou un CIDR ; {reste}")
+toute cible, {compris} — PLUME_SSRF_ALLOW exempte un hôte ou un CIDR")
         }
         PolitiqueDesAdressesPrivees::AdmisesPartout => format!("[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 0 : adresses privées \
-(10/8, 172.16/12, 192.168/16) ADMISES pour toute cible, y compris {objets_de_l_api} ; {reste}"),
+(10/8, 172.16/12, 192.168/16) ADMISES pour toute cible, y compris {objets_de_l_api}"),
     }
 }
 /// Politique SSRF EXPLICITE (testable sans env) : never-egress INCONDITIONNEL + RFC1918 SELON `block_private`.
@@ -2060,7 +2060,9 @@ fn ssrf_ip_allowed(ip: std::net::IpAddr) -> bool {
 }
 /// Extrait `(host, port)` de l'autorité d'une URL (déjà privée de son schéma et de son chemin), en gérant
 /// l'`user:pass@` (userinfo) et le littéral IPv6 `[::1]:port`. `default_port` sert si aucun port explicite.
-fn ssrf_split_authority(authority: &str, default_port: u16) -> (String, u16) {
+/// Partagée avec la lecture d'une URL d'annuaire LDAP (`ldap_hote_et_port`, daemon/src/idp/ldap.rs) : le même découpage
+/// de l'autorité, pour que la garde juge l'hôte et le port que la connexion ouvrira.
+pub(crate) fn ssrf_split_authority(authority: &str, default_port: u16) -> (String, u16) {
     let authority = authority.rsplit('@').next().unwrap_or(authority); // retire un éventuel userinfo
     if let Some(rest) = authority.strip_prefix('[') {
         // IPv6 littéral : [host]:port

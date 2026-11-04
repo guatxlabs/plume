@@ -445,6 +445,11 @@ pub(crate) async fn idp_provider_create(
         }
         _ => {}
     }
+    // `P7.20-a` — une cible d'égress SAISIE PAR L'API sur une adresse privée est refusée dès la saisie (comme un
+    // connecteur, une destination, un canal), après la validation par type et avant le secret des gestes.
+    if fournisseur_saisi_refuse_pour_son_adresse_privee(kind, &config) {
+        return bad_req(PHRASE_ADRESSE_PRIVEE_D_UN_FOURNISSEUR_D_IDENTITE);
+    }
     let enabled = b.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
     let secret = b.get("secret").and_then(|x| x.as_str()).unwrap_or("").to_string();
     // `P10.24-m` — UN FOURNISSEUR D'IDENTITÉ AUTHENTIFIE QUI IL VEUT, AUSSI LONGTEMPS QU'IL VIT, et son annuaire décide des
@@ -504,6 +509,76 @@ fn violation_d_unicite_du_nom(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
 }
 
+/// `P7.20-a` — le refus d'un fournisseur d'identité SAISI PAR L'API (création, modification de `config`) dont une cible
+/// d'égress est une adresse privée : il nomme les réglages qui le lèvent (décision de l'exploitant du 2026-11-03 : un
+/// fournisseur d'identité est jugé comme les autres objets de l'API).
+pub(crate) const PHRASE_ADRESSE_PRIVEE_D_UN_FOURNISSEUR_D_IDENTITE: &str = "fournisseur d'identité refusé : adresse \
+privée (10/8, 172.16/12, 192.168/16) pour un fournisseur saisi par l'API — PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, \
+PLUME_SSRF_BLOCK_PRIVATE=0 admet toute adresse privée";
+
+/// `P7.20-a` — les adresses qu'appellera le démon pour un fournisseur OIDC de cette configuration, celles que
+/// `oidc_endpoints_for` et `oidc_callback` appellent : la découverte (dérivée de l'issuer) quand elle est exigée, le
+/// point de jeton et les JWKS écrits. Le point d'autorisation n'en est pas : c'est le NAVIGATEUR qui y est redirigé.
+/// Un endpoint rendu par la découverte n'est pas connu à la saisie : il reste jugé à l'appel.
+fn cibles_d_egress_d_un_fournisseur_oidc(cfg: &OidcCfg) -> Vec<String> {
+    let mut cibles = Vec::new();
+    if decouverte_oidc_exigee(cfg) {
+        cibles.push(cfg.discovery_url());
+    }
+    cibles.extend((!cfg.token_endpoint.is_empty()).then(|| cfg.token_endpoint.clone()));
+    cibles.extend((!cfg.jwks_uri.is_empty()).then(|| cfg.jwks_uri.clone()));
+    cibles
+}
+
+/// `P7.20-a` — un fournisseur d'identité saisi par l'API est-il refusé pour la seule adresse privée d'une de ses cibles
+/// (`refusee_pour_sa_seule_adresse_privee`, origine `ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`) ? OIDC : les cibles de
+/// `cibles_d_egress_d_un_fournisseur_oidc` ; LDAP : l'URL de l'annuaire (`ldap_url_refusee_pour_sa_seule_adresse_privee`) ;
+/// SAML : aucune (le démon n'appelle pas le fournisseur). Ce qui ne tient pas à la seule adresse privée (schéma,
+/// never-egress, nom non résolu) reste jugé à l'appel, comme pour un connecteur.
+/// Le point de course `idp-saisie-jugee:<genre>` précède le jugement (résolution comprise) : un témoin y lit si le
+/// verrou de la base est tenu.
+fn fournisseur_saisi_refuse_pour_son_adresse_privee(kind: &str, config: &Value) -> bool {
+    match kind {
+        "oidc" => {
+            crate::handlers::transaction_validee::point_de_course("idp-saisie-jugee:oidc");
+            cibles_d_egress_d_un_fournisseur_oidc(&OidcCfg::from_json(config))
+                .iter()
+                .any(|url| crate::ledger::refusee_pour_sa_seule_adresse_privee(url, crate::ledger::ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA))
+        }
+        "ldap" => {
+            crate::handlers::transaction_validee::point_de_course("idp-saisie-jugee:ldap");
+            ldap_url_refusee_pour_sa_seule_adresse_privee(&LdapCfg::from_json(config).url)
+        }
+        _ => false,
+    }
+}
+
+/// `P7.20-a` — le verdict d'une `config` modifiée pour chaque genre qui a des cibles d'égress, rendu AVANT le verrou de
+/// la base (`idp_provider_update`) : le genre du fournisseur n'est lu que sous le verrou, la résolution des noms ne doit
+/// pas s'y faire. SAML n'a aucune cible (le démon n'appelle pas le fournisseur).
+#[derive(Clone, Copy)]
+struct RefusDeSaisieParGenre {
+    oidc: bool,
+    ldap: bool,
+}
+
+impl RefusDeSaisieParGenre {
+    fn juger(config: &Value) -> Self {
+        RefusDeSaisieParGenre {
+            oidc: fournisseur_saisi_refuse_pour_son_adresse_privee("oidc", config),
+            ldap: fournisseur_saisi_refuse_pour_son_adresse_privee("ldap", config),
+        }
+    }
+
+    fn pour(self, kind: &str) -> bool {
+        match kind {
+            "oidc" => self.oidc,
+            "ldap" => self.ldap,
+            _ => false,
+        }
+    }
+}
+
 /// `P10.25-e` — le `COMMIT` d'une création, d'une modification ou d'une suppression de fournisseur d'identité refusé.
 pub(crate) const CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE: &str = "FOURNISSEUR D'IDENTITÉ INCHANGÉ : la base n'a pas \
      validé la transaction (COMMIT refusé) et l'a annulée — le fournisseur n'est ni créé, ni modifié, ni supprimé : \
@@ -560,17 +635,27 @@ pub(crate) async fn idp_provider_update(
             return refus;
         }
     }
+    // `P7.20-a` — une `config` modifiée est jugée ICI, AVANT de prendre le verrou de la base : le jugement résout des
+    // noms (résolution bloquante), et la base n'est pas tenue pendant ce temps. Le genre n'est connu que sous le verrou :
+    // le verdict est rendu pour chaque genre qui a des cibles d'égress, puis choisi par le genre lu.
+    let refus_de_la_config = b.get("config").map(RefusDeSaisieParGenre::juger);
     let conn = st.db.lock();
     // `P10.20-b` (rang quatre) — le fournisseur NON LU n'est pas « introuvable » (la forme d'avant, `.is_err()`, le
     // disait, y compris sur la DÉSACTIVATION d'urgence) : absence établie = le 404 d'avant, lecture ratée = 503 nommé,
     // la cause du moteur au journal seulement, rien d'écrit — le fournisseur actif l'est toujours.
-    match conn.query_row("SELECT 1 FROM idp_provider WHERE id=?1", params![id], |_| Ok(())).optional() {
-        Ok(Some(())) => {}
+    // `P7.20-a` — le genre lu choisit le verdict de la `config` modifiée (cibles d'égress du fournisseur).
+    let kind = match conn.query_row("SELECT kind FROM idp_provider WHERE id=?1", params![id], |r| r.get::<_, Option<String>>(0)).optional() {
+        Ok(Some(k)) => k.unwrap_or_default(),
         Ok(None) => return not_found("provider introuvable"),
         Err(e) => {
             eprintln!("[idp] WARN modification du fournisseur d'identité #{id} refusée : le fournisseur n'a pas pu être lu ({e})");
             return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_FOURNISSEUR_D_IDENTITE_NON_MODIFIE_NON_LU);
         }
+    };
+    // `P7.20-a` — une `config` modifiée dont une cible est une adresse privée est refusée dès la saisie, après la lecture
+    // du fournisseur (son absence garde le 404 d'avant) et avant la transaction : rien n'est écrit.
+    if refus_de_la_config.is_some_and(|refus| refus.pour(&kind)) {
+        return bad_req(PHRASE_ADRESSE_PRIVEE_D_UN_FOURNISSEUR_D_IDENTITE);
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "idp", &format!("modification du fournisseur d'identité #{id}"), CAUSE_FOURNISSEUR_D_IDENTITE_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;
@@ -822,9 +907,15 @@ pub(crate) fn refus_de_l_echange_de_code(fournisseur_id: i64, statut_de_l_idp: u
     )
 }
 
+/// La découverte est exigée dès qu'un des trois endpoints n'est pas écrit (lue par `oidc_endpoints_for` et par la
+/// saisie, `cibles_d_egress_d_un_fournisseur_oidc`).
+fn decouverte_oidc_exigee(cfg: &OidcCfg) -> bool {
+    cfg.authorization_endpoint.is_empty() || cfg.token_endpoint.is_empty() || cfg.jwks_uri.is_empty()
+}
+
 /// Résout les endpoints OIDC : discovery si nécessaire (endpoints non tous overridés). Blocking (rare).
 pub(crate) fn oidc_endpoints_for(cfg: &OidcCfg) -> Result<OidcEndpoints, String> {
-    let need_discovery = cfg.authorization_endpoint.is_empty() || cfg.token_endpoint.is_empty() || cfg.jwks_uri.is_empty();
+    let need_discovery = decouverte_oidc_exigee(cfg);
     // `P7.20-a` — la découverte vise `discovery_url`, dérivée de l'issuer écrit par l'administrateur, jugée comme toute
     // adresse d'un fournisseur (`fetch_json` : de l'API, une adresse privée refusée par défaut).
     let discovery = if need_discovery { Some(fetch_json(&cfg.discovery_url())?) } else { None };
@@ -1136,6 +1227,11 @@ pub(crate) async fn saml_metadata(State(st): State<AppState>, Path(name): Path<S
 // LDAP login (bind). Route PUBLIQUE. Le bind réseau est feature-gated (`ldap`) dans idp.rs.
 // ================================================================================================
 
+/// `P7.20-a` — la phrase servie quand la garde de sortie refuse l'adresse de l'annuaire d'un fournisseur LDAP.
+pub(crate) const PHRASE_ANNUAIRE_LDAP_REFUSE_PAR_LA_GARDE: &str = "connexion LDAP refusée : l'adresse de l'annuaire du \
+     fournisseur d'identité a été refusée par la garde de sortie, avant toute connexion ; aucune session n'est posée, la \
+     cause est au journal du serveur sous l'identifiant de cette réponse.";
+
 /// POST /api/auth/ldap {provider?, user, pass} — bind LDAP/AD, mappe l'appartenance aux groupes -> rôle,
 /// provisionne JIT, pose la session. PUBLIC. Anti-brute-force réutilisé (lockout (user,ip)). Fail-closed.
 pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, Json(b): Json<Value>) -> Response {
@@ -1164,9 +1260,20 @@ pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer
     let (fournisseur_id, bind_pw) = (fournisseur.id, fournisseur.secret);
     let cfg = LdapCfg::from_json(&fournisseur.config);
     // Bind bloquant (feature-gated) -> spawn_blocking : route publique pré-auth, ne bloque PAS l'exécuteur
-    // async (sinon famine du pool de workers = DoS). Erreur -> échec d'auth (lockout), jamais de détail sensible.
+    // async (sinon famine du pool de workers = DoS). Erreur -> échec d'auth (lockout), jamais de détail sensible ; un
+    // refus de la garde de sortie (avant toute connexion) n'éprouve aucun identifiant et n'est pas compté.
+    // `P7.20-a` — la garde de sortie est jouée ICI, avant le bind, quel que soit le profil (un build sans `ldap` sert le
+    // même 502 qu'un build avec) ; `ldap_authenticate` la rejoue au point de connexion. Une URL d'annuaire VIDE (absente,
+    // ou blanche : `LdapCfg::from_json` la rogne) n'est pas une cible refusée, c'est un fournisseur non configuré : la
+    // garde n'est pas jouée et la réponse reste celle d'avant (501 du stub sans `ldap`, « URL LDAP manquante » rendue en
+    // 401 avec), par la même condition que `ldap_authenticate`.
     let (cfg_b, bind_b, user_b, pass_b) = (cfg.clone(), bind_pw.clone(), user.clone(), pass.clone());
-    let auth_res = tokio::task::spawn_blocking(move || ldap_authenticate(&cfg_b, &bind_b, &user_b, &pass_b))
+    let auth_res = tokio::task::spawn_blocking(move || {
+        if !cfg_b.url.is_empty() {
+            crate::idp::ldap_garde_de_sortie(&cfg_b.url)?;
+        }
+        ldap_authenticate(&cfg_b, &bind_b, &user_b, &pass_b)
+    })
         .await
         .unwrap_or_else(|_| Err("échec interne LDAP".to_string()));
     match auth_res {
@@ -1193,6 +1300,13 @@ pub(crate) async fn ldap_login_post(State(st): State<AppState>, ConnectInfo(peer
             let mut resp = Json(json!({ "ok": true, "user": user, "role": role })).into_response();
             attach_session_cookies(&st, &mut resp, &jeton);
             resp
+        }
+        // `P7.20-a` — la garde de sortie a refusé l'adresse de l'annuaire, AVANT toute connexion (`ldap_garde_de_sortie`) :
+        // aucun identifiant n'a été éprouvé, donc aucun échec n'est compté au frein. Phrase fixe en 502 (comme la
+        // découverte OIDC refusée), jamais l'adresse ; la nature au journal nomme les réglages qui lèvent un refus
+        // d'adresse privée (`nature_de_l_echec`).
+        Err(e) if e.starts_with("SSRF:") => {
+            servir_l_echec_de_l_etape(StatusCode::BAD_GATEWAY, PHRASE_ANNUAIRE_LDAP_REFUSE_PAR_LA_GARDE, "connexion LDAP", fournisseur_id, "garde de sortie", &e)
         }
         Err(e) => {
             let _ = auth_record_failure(&st, &user, &ip);

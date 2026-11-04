@@ -108,20 +108,18 @@ privée ; un connecteur écrit en surcouche config.d est admis";
 destination saisie par l'API — PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet toute adresse \
 privée ; une destination écrite en surcouche config.d est admise";
     // Inversées le 2026-11-03 (décision de l'exploitant) : les fournisseurs d'identité OIDC et d'IA passent des ADMISES
-    // aux REFUSÉES par défaut ; chaque ligne nomme ce que la garde ne juge pas (la connexion LDAP).
+    // aux REFUSÉES par défaut. Inversées encore (fournisseurs_refuses_a_la_saisie_et_annuaire_ldap_garde.rs) : la
+    // connexion LDAP est jugée par la même garde, la ligne la range avec l'OIDC et ne dit plus de reste hors de la garde.
     const LIGNE_POLITIQUE_PAR_DEFAUT: &str = "[ssrf] adresses privées (10/8, 172.16/12, 192.168/16) : REFUSÉES pour un \
-canal, une destination, un connecteur ou un fournisseur d'identité OIDC ou d'IA saisi par l'API ; ADMISES pour le canal \
-semé par PLUME_NOTIFY_NTFY_URL (son URL exacte) et les objets écrits en surcouche config.d (leurs propres cibles) — \
-PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les refuse partout, PLUME_SSRF_ALLOW exempte un hôte ou un CIDR ; la \
-connexion d'un fournisseur d'identité LDAP à son annuaire n'est PAS jugée par cette garde";
+canal, une destination, un connecteur ou un fournisseur d'identité (OIDC ou LDAP) ou d'IA saisi par l'API ; ADMISES pour le \
+canal semé par PLUME_NOTIFY_NTFY_URL (son URL exacte) et les objets écrits en surcouche config.d (leurs propres cibles) — \
+PLUME_SSRF_BLOCK_PRIVATE=0 les admet partout, =1 les refuse partout, PLUME_SSRF_ALLOW exempte un hôte ou un CIDR";
     const LIGNE_POLITIQUE_BLOQUEE: &str = "[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 1 : adresses privées (10/8, 172.16/12, \
 192.168/16) REFUSÉES pour toute cible, canal semé par PLUME_NOTIFY_NTFY_URL et surcouches config.d compris — \
-PLUME_SSRF_ALLOW exempte un hôte ou un CIDR ; la connexion d'un fournisseur d'identité LDAP à son annuaire n'est PAS \
-jugée par cette garde";
+PLUME_SSRF_ALLOW exempte un hôte ou un CIDR";
     const LIGNE_POLITIQUE_ADMISE: &str = "[ssrf] PLUME_SSRF_BLOCK_PRIVATE posé à 0 : adresses privées (10/8, 172.16/12, \
 192.168/16) ADMISES pour toute cible, y compris un canal, une destination, un connecteur ou un fournisseur d'identité \
-OIDC ou d'IA saisi par l'API ; la connexion d'un fournisseur d'identité LDAP à son annuaire n'est PAS jugée par cette \
-garde";
+(OIDC ou LDAP) ou d'IA saisi par l'API";
     const LIGNE_CANAL_NON_INSCRIT: &str = "[ssrf] canal semé par PLUME_NOTIFY_NTFY_URL NON inscrit : sa ligne n'a pas pu \
 être lue — ses envois vers une adresse privée seront refusés jusqu'au prochain démarrage (no such table: notifier)";
     const LIGNE_HOTE_INACTIVE_DECLARE: &str = "[host] allowlist Host stricte INACTIVE : FQDN de PLUME_HOST (soc.exemple.test) \

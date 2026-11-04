@@ -44,6 +44,13 @@ pub(crate) const PHRASE_APPEL_DU_FOURNISSEUR_D_IA_ECHOUE: &str = "appel au fourn
 // la nature non reconnue, jamais sur une coupe de la chaîne.
 const NATURE_GARDE_SSRF: &str = "adresse du fournisseur refusée par la garde SSRF (cible interne, résolution \
      impossible ou schéma refusé), avant toute connexion";
+/// `P7.20-a` — la nature d'un refus de la garde qui tient à la seule adresse privée du fournisseur (préfixe
+/// `PREFIXE_DU_REFUS_D_ADRESSE_PRIVEE` de daemon/src/ledger.rs) : elle nomme les deux réglages qui le lèvent, jamais
+/// l'adresse. Les autres refus de la garde (never-egress, résolution impossible, schéma) gardent `NATURE_GARDE_SSRF` :
+/// `PLUME_SSRF_BLOCK_PRIVATE=0` ne les lève pas.
+const NATURE_GARDE_SSRF_ADRESSE_PRIVEE: &str = "adresse privée du fournisseur (10/8, 172.16/12, 192.168/16) refusée par la \
+     garde SSRF, avant toute connexion — PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet toute \
+     adresse privée";
 const NATURE_STATUT_HTTP: &str = "le fournisseur a répondu un statut d'échec, HTTP";
 const NATURE_REPONSE_INVALIDE: &str = "réponse du fournisseur non JSON ou complétion vide";
 const NATURE_APPEL_RESEAU: &str = "appel au fournisseur échoué (connexion, TLS, écriture ou lecture)";
@@ -51,6 +58,9 @@ const NATURE_NON_RECONNUE: &str = "échec d'une nature non reconnue";
 
 /// La nature journalisée d'un échec du worker : une constante de la liste blanche (le statut HTTP lu comme entier).
 fn nature_de_l_echec_du_fournisseur(e: &str) -> String {
+    if refus_de_la_seule_adresse_privee(e) {
+        return NATURE_GARDE_SSRF_ADRESSE_PRIVEE.to_string();
+    }
     if e.starts_with("backend IA : SSRF:") {
         return NATURE_GARDE_SSRF.to_string();
     }
@@ -66,6 +76,34 @@ fn nature_de_l_echec_du_fournisseur(e: &str) -> String {
     NATURE_NON_RECONNUE.to_string()
 }
 
+/// `P7.20-a` — l'échec du worker est-il le refus de la garde pour la seule adresse privée du fournisseur ? (le texte de
+/// `ssrf_check_host_selon` enveloppé par `AiError::Backend`, lu par son préfixe fixe, jamais par l'adresse qui suit.)
+fn refus_de_la_seule_adresse_privee(e: &str) -> bool {
+    e.strip_prefix("backend IA : ").is_some_and(|reste| reste.starts_with(crate::ledger::PREFIXE_DU_REFUS_D_ADRESSE_PRIVEE))
+}
+
+/// `P7.20-a` — la phrase servie (500, comme tout échec de l'appel) quand la garde a refusé l'adresse privée du
+/// fournisseur : elle nomme les réglages qui lèvent le refus, sans l'adresse visée ni le texte du worker.
+pub(crate) const PHRASE_APPEL_DU_FOURNISSEUR_D_IA_REFUSE_ADRESSE_PRIVEE: &str = "appel au fournisseur d'IA refusé : son \
+     adresse est privée (10/8, 172.16/12, 192.168/16) et la garde de sortie la refuse avant toute connexion — \
+     PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, PLUME_SSRF_BLOCK_PRIVATE=0 admet toute adresse privée ; aucune proposition \
+     servie (la nature de l'échec est au journal du démon, sous l'identifiant servi)";
+
+/// `P7.20-a` — le refus d'un fournisseur d'IA SAISI PAR L'API (création, modification de l'endpoint) dont l'endpoint est
+/// une adresse privée : il nomme les réglages qui le lèvent (décision de l'exploitant du 2026-11-03).
+pub(crate) const PHRASE_ADRESSE_PRIVEE_D_UN_FOURNISSEUR_D_IA: &str = "fournisseur d'IA refusé : adresse privée (10/8, \
+     172.16/12, 192.168/16) pour un fournisseur saisi par l'API — PLUME_SSRF_ALLOW (hôte ou CIDR) l'admet, \
+     PLUME_SSRF_BLOCK_PRIVATE=0 admet toute adresse privée";
+
+/// `P7.20-a` — l'endpoint saisi n'est-il refusé QUE pour son adresse privée (origine des fournisseurs, de l'API) ? Ce qui
+/// ne tient pas à la seule adresse privée (never-egress, nom non résolu) reste jugé à l'appel, comme pour un connecteur.
+/// Le point de course `ia-saisie-jugee` précède le jugement (résolution comprise) : un témoin y lit si le verrou de la
+/// base est tenu.
+fn endpoint_saisi_refuse_pour_son_adresse_privee(endpoint: &str) -> bool {
+    crate::handlers::transaction_validee::point_de_course("ia-saisie-jugee");
+    crate::ledger::refusee_pour_sa_seule_adresse_privee(endpoint, crate::ledger::ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA)
+}
+
 /// `P10.29-l` — la phrase du 501, celle du stub feature-off (`crate::ai::run_nl2soql` sans la feature `ai`). Le bras
 /// servait le texte du worker tel quel dès qu'il CONTENAIT « non compilé » : un échec du worker qui portait ces mots (un
 /// hôte de fournisseur irrésoluble nommé ainsi, cité par la garde SSRF) partait à tout lecteur de l'assistant, hôte
@@ -73,13 +111,20 @@ fn nature_de_l_echec_du_fournisseur(e: &str) -> String {
 pub(crate) const PHRASE_SUPPORT_IA_NON_COMPILE: &str = "support IA non compilé (recompiler avec --features ai)";
 
 /// Traduit une erreur worker en réponse : le texte exact du stub feature-off -> 501 à phrase fixe, sinon 500 à phrase
-/// fixe (`P10.29-l`), la nature de l'échec au journal avec le fournisseur visé et l'identifiant de corrélation servi.
+/// fixe (`P10.29-l`), la nature de l'échec au journal avec le fournisseur visé et l'identifiant de corrélation servi. Un
+/// refus de la garde pour la seule adresse privée du fournisseur prend sa propre phrase et sa propre nature, qui nomment
+/// `PLUME_SSRF_ALLOW` et `PLUME_SSRF_BLOCK_PRIVATE=0` (`P7.20-a`) ; ni l'une ni l'autre ne porte l'adresse.
 pub(crate) fn ai_worker_err(fournisseur: i64, e: String) -> Response {
     if e == PHRASE_SUPPORT_IA_NON_COMPILE {
         return err_json(StatusCode::NOT_IMPLEMENTED, PHRASE_SUPPORT_IA_NON_COMPILE);
     }
     let nature = nature_de_l_echec_du_fournisseur(&e);
-    let (id, r) = crate::err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, PHRASE_APPEL_DU_FOURNISSEUR_D_IA_ECHOUE);
+    let phrase = if refus_de_la_seule_adresse_privee(&e) {
+        PHRASE_APPEL_DU_FOURNISSEUR_D_IA_REFUSE_ADRESSE_PRIVEE
+    } else {
+        PHRASE_APPEL_DU_FOURNISSEUR_D_IA_ECHOUE
+    };
+    let (id, r) = crate::err_json_et_identifiant(StatusCode::INTERNAL_SERVER_ERROR, phrase);
     let id = id.unwrap_or_default();
     eprintln!("[{id}] [ia] WARN appel du fournisseur d'IA #{fournisseur} échoué, aucune proposition servie : {nature}");
     r
@@ -418,6 +463,11 @@ pub(crate) async fn ai_provider_create(State(st): State<AppState>, Extension(au)
     if let Err(e) = crate::ai::cloud_gate(&endpoint, requires_cloud) {
         return err_json(StatusCode::FORBIDDEN, e);
     }
+    // `P7.20-a` — un endpoint SAISI PAR L'API sur une adresse privée est refusé dès la saisie, après la garde cloud (son
+    // 403 garde sa cause) et avant toute écriture.
+    if endpoint_saisi_refuse_pour_son_adresse_privee(&endpoint) {
+        return bad_req(PHRASE_ADRESSE_PRIVEE_D_UN_FOURNISSEUR_D_IA);
+    }
     let enabled = b.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
     let secret = b.get("secret").and_then(|x| x.as_str()).unwrap_or("").to_string();
     let conn = st.db.lock();
@@ -473,6 +523,11 @@ pub(crate) async fn ai_provider_update(State(st): State<AppState>, Extension(au)
     if st.multi_tenant {
         return ai_deny_multitenant();
     }
+    // `P7.20-a` — l'endpoint neuf est jugé ICI, AVANT de prendre le verrou de la base : le jugement résout le nom
+    // (résolution bloquante), et la base n'est pas tenue pendant ce temps. Le verdict n'est servi qu'après les refus
+    // d'avant (lecture, schéma, garde cloud, forme d'API), plus bas.
+    let endpoint_refuse =
+        b.get("endpoint").and_then(|x| x.as_str()).map(str::trim).is_some_and(endpoint_saisi_refuse_pour_son_adresse_privee);
     let conn = st.db.lock();
     // `P10.20-b` (rang quatre) — le fournisseur NON LU n'est pas « introuvable » (la forme d'avant, `.ok()`, le disait,
     // y compris sur la DÉSACTIVATION d'urgence d'un fournisseur qui reçoit les questions posées à l'assistant) :
@@ -509,6 +564,11 @@ pub(crate) async fn ai_provider_update(State(st): State<AppState>, Extension(au)
     // transaction » qui citait le moteur pour une saisie refusée.
     if b.get("api_shape").and_then(|x| x.as_str()).is_some_and(|v| !ai_api_shape_ok(v)) {
         return bad_req("api_shape non supporté (openai | ollama-native | anthropic)");
+    }
+    // `P7.20-a` — un endpoint neuf sur une adresse privée (jugé avant le verrou) est refusé dès la saisie, après les refus
+    // d'avant (lecture, schéma, garde cloud, forme d'API) et avant la transaction : rien n'est écrit.
+    if endpoint_refuse {
+        return bad_req(PHRASE_ADRESSE_PRIVEE_D_UN_FOURNISSEUR_D_IA);
     }
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "ia", &format!("modification du fournisseur d'IA #{id}"), CAUSE_FOURNISSEUR_D_IA_INCHANGE_TRANSACTION_NON_OUVERTE) {
         return refus;

@@ -48,11 +48,20 @@ async fn ai_from_preset_cloud_gate_and_local_ok() {
     ).await).await;
     assert_eq!(code, StatusCode::FORBIDDEN, "preset cloud refusé sans PLUME_AI_ALLOW_CLOUD");
 
-    // preset LOCAL (générique, endpoint RFC1918 explicite) instancié, enabled:false FORCÉ.
+    // INVERSÉ (`P7.20-a`, fournisseurs_refuses_a_la_saisie_et_annuaire_ldap_garde.rs) : un endpoint RFC1918 est refusé
+    // dès la saisie sous la politique par défaut (le processus de test n'en pose aucune) ; rien n'est créé.
+    let (code, v) = tok_resp_json(ai_from_preset(
+        State(st.clone()), Extension(ergo_au("admin")),
+        Json(json!({ "preset_id": "openai-compatible-generic", "name": "local-rfc1918",
+            "values": { "endpoint": "http://10.0.0.5:8000", "model": "qwen2.5-coder" } })),
+    ).await).await;
+    assert_eq!(code, StatusCode::BAD_REQUEST, "preset RFC1918 refusé à la saisie : {v}");
+
+    // preset LOCAL (générique, endpoint de boucle locale, jugé à l'appel) instancié, enabled:false FORCÉ.
     let (code, v) = tok_resp_json(ai_from_preset(
         State(st.clone()), Extension(ergo_au("admin")),
         Json(json!({ "preset_id": "openai-compatible-generic", "name": "local-gw",
-            "values": { "endpoint": "http://10.0.0.5:8000", "model": "qwen2.5-coder" } })),
+            "values": { "endpoint": "http://127.0.0.1:8000", "model": "qwen2.5-coder" } })),
     ).await).await;
     assert_eq!(code, StatusCode::OK, "preset local instancié : {v}");
     assert_eq!(v["enabled"], json!(false), "enabled:false FORCÉ à l'instanciation");
@@ -63,7 +72,7 @@ async fn ai_from_preset_cloud_gate_and_local_ok() {
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["enabled"], json!(false));
     assert_eq!(arr[0]["has_secret"], json!(false));
-    assert_eq!(arr[0]["cloud"], json!(false), "endpoint RFC1918 -> local");
+    assert_eq!(arr[0]["cloud"], json!(false), "endpoint de boucle locale -> local");
 
     // viewer NE PEUT PAS instancier (admin-only).
     let (code, _v) = tok_resp_json(ai_from_preset(
@@ -81,7 +90,7 @@ async fn ai_provider_crud_redacts_secret() {
     let (code, v) = tok_resp_json(ai_provider_create(
         State(st.clone()), Extension(ergo_au("admin")),
         Json(json!({ "name": "p1", "vendor": "vLLM", "api_shape": "openai",
-            "endpoint": "http://10.0.0.5:8000", "secret": "env:SUPER_SECRET_AI_KEY",
+            "endpoint": "http://127.0.0.1:8000", "secret": "env:SUPER_SECRET_AI_KEY",
             "config": { "model": "m" } })),
     ).await).await;
     assert_eq!(code, StatusCode::OK, "create : {v}");

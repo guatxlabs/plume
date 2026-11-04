@@ -93,6 +93,22 @@ sont **jamais** lus.
 - **Injection-safe** : tout composant utilisateur d'un filtre est échappé **RFC 4515** (`\\ * ( ) NUL`) et
   tout composant de DN **RFC 4514** — un login `*)(uid=*` ne peut pas altérer la structure du filtre (testé).
   Bind avec mot de passe **vide refusé** (anti *unauthenticated-bind*).
+- **Garde de sortie** (`P7.20-a`) : avant toute connexion, l'URL de l'annuaire est jugée par la garde des sorties
+  (`ldap_garde_de_sortie`) — seuls `ldap://` (port 389 par défaut) et `ldaps://` (636) sont admis, `ldapi://` et un
+  hôte vide sont refusés ; le littéral et chaque adresse résolue passent la garde : boucle locale, link-local et ULA
+  refusés quelle que soit `PLUME_SSRF_BLOCK_PRIVATE` (seule une cible listée dans `PLUME_SSRF_ALLOW` y échappe),
+  adresse privée (`10/8`, `172.16/12`, `192.168/16`) refusée par défaut et admise par `PLUME_SSRF_ALLOW` (hôte ou
+  CIDR listé) ou `PLUME_SSRF_BLOCK_PRIVATE=0`. La route la joue avant le bind, avec ou sans la feature `ldap` : un
+  refus — quelle que soit sa cause — sert un 502 à phrase fixe sur `POST /api/auth/ldap` (jamais l'adresse ; un build
+  sans `ldap` le sert aussi, avant son 501), la cause au journal `[idp]`, et ne compte aucun échec au frein. Une URL
+  d'annuaire vide (absente ou blanche) n'est pas une cible refusée mais un fournisseur non configuré : la garde n'est
+  pas jouée, la réponse reste celle d'avant (501 sans `ldap`, 401 avec). L'autorité jugée s'arrête, comme celle que lit
+  `ldap3`, au premier `/`, `?` ou `#` (`ldap://10.0.0.5?@192.0.2.10` est jugée sur `10.0.0.5`) ; seule différence
+  connue, une tabulation ou un saut de ligne DANS l'autorité est gardé par la garde et retiré par `ldap3` : le nom
+  jugé ne se résout pas, l'URL est donc refusée. Une URL d'annuaire, un point de jeton ou des JWKS OIDC écrits sur
+  une adresse privée — et l'issuer quand la découverte est exigée, c'est-à-dire quand il est joint — sont refusés dès la saisie
+  (400, création et modification d'un fournisseur), avec la phrase qui nomme ces deux réglages ; la boucle locale, la
+  cible des métadonnées, `ldapi://` ou un nom non résolu ne le sont qu'à la connexion.
 - **Feature `ldap`** : les **fonctions pures** (échappement, mapping) sont compilées/testées **sans** la
   feature ; seul le bind réseau est derrière `#[cfg(feature = "ldap")]` (sans la feature : 501 explicite).
   **DEPUIS v107 : `--features ldap` est activé PAR DÉFAUT dans l'image stock** — il fait partie du jeu

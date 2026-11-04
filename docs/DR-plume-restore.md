@@ -336,6 +336,47 @@ l'**oubli**, pas contre une falsification délibérée — une ligne peut être 
 séquestre, lui, reste intact : aucune identité privée ne vit dans le dépôt, dans un test, ni dans
 l'intégration continue.
 
+## La copie hors site : ce que plume en sait, et ce qu'il avoue
+
+Le magasin des sauvegardes peut vivre sur le même disque que la base : perdre ce disque perd alors
+la base ET ses sauvegardes. La copie hors site est **tirée** par un poste extérieur (la production
+n'a aucun accès vers lui). Après chaque copie vérifiée, ce poste demande au nœud, par une commande
+forcée, d'écrire un fichier d'attestation d'**une ligne**, daté à l'horloge du nœud :
+
+```
+<horodatage unix> plume-AAAAMMJJTHHMMSSZ.db.age <sha256 hexadécimal, 64 caractères>
+```
+
+plume lit ce fichier à chaque calcul de santé (lecture bornée, aucune base ouverte) et en publie
+l'âge. Le chemin du fichier n'est jamais servi : le détail nomme le réglage, pas sa valeur.
+
+| Réglage | Défaut | Effet |
+|---|---|---|
+| `PLUME_COPIE_HORS_SITE_ATTESTATION` | vide | chemin du fichier d'attestation (montable en lecture seule) ; vide = copie **non déclarée** |
+| `PLUME_COPIE_HORS_SITE_MAX_AGE_HEURES` | `48` | âge au-delà duquel la copie est **périmée** ; `0` = suivi désactivé et dit ; une valeur qui n'est pas un entier positif ou nul est **refusée** et nommée, jamais remplacée par le défaut |
+
+| État (`copy_state`) | Couleur | Ce qu'il dit |
+|---|---|---|
+| `non_declaree` | jaune | aucun fichier déclaré : plume ne sait pas si les sauvegardes quittent le disque. Jaune et non `idle`, parce que `idle` compte comme un vert dans `plume_component_up` et dans la posture, alors que c'est exactement le risque que ce composant existe pour dire ; pas rouge, parce qu'aucun sous-système n'est en panne maintenant |
+| `non_suivi` | `idle` | `PLUME_COPIE_HORS_SITE_MAX_AGE_HEURES=0`, et le détail le nomme |
+| `refusee` | jaune | une attestation attendue n'a pas pu être établie ; la cause est dans `refusal` et le détail dit que ce n'est **pas** « jamais copiée » |
+| `fraiche` | vert | dernière copie dans l'âge maximal (bord compris) : âge, nom d'archive, empreinte |
+| `perimee` | jaune | dernière copie plus vieille que l'âge maximal |
+
+Causes d'un refus (`refusal`) : `reglage_age_illisible`, `attestation_absente`,
+`attestation_illisible` (errno), `attestation_pas_un_fichier`, `attestation_trop_grande` (taille au-delà de
+la borne de lecture, fichier non lu), `ligne_hors_forme` (pas exactement une ligne de trois champs séparés
+par une espace, `\n` final admis), `horodatage_hors_forme`, `nom_d_archive_hors_forme`,
+`empreinte_hors_forme`, `datee_dans_le_futur` (au-delà d'une heure d'avance).
+
+`/metrics` en dérive `plume_offsite_copy_overdue` (1 = périmée) et `plume_offsite_copy_age_seconds`,
+**absentes tant que rien n'est établi** (non déclarée, refusée, non suivie) : une alerte se câble sur
+`plume_offsite_copy_overdue == 1` **et** sur `plume_component_up{component="copie_hors_site"} < 1`.
+
+**Ce que cela ne prouve pas** : l'attestation dit qu'une copie a eu lieu, pas qu'elle se restaure
+(c'est l'objet de l'exercice ci-dessus), et elle défend contre l'**oubli** (une tâche qui ne tourne
+plus), pas contre une ligne écrite à la main.
+
 ## Rotation
 
 - **Clé SQLCipher** : rotation = re-chiffrer la DB live ; les backups en mode passphrase restent

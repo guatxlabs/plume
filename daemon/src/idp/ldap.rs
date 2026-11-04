@@ -89,6 +89,61 @@ impl LdapCfg {
     }
 }
 
+/// `P7.20-a` — LE SCHÉMA, L'HÔTE ET LE PORT QU'OUVRE LA CONNEXION À L'ANNUAIRE, lus comme `ldap3` les lit
+/// (`LdapConnAsync::new_tcp` : `ldap://` sur 389, `ldaps://` sur 636, un port explicite l'emporte). Seuls `ldap://` et
+/// `ldaps://` sont admis : `ldapi://` ouvre un socket local du système de fichiers, et un hôte vide vaut `localhost` pour
+/// `ldap3` 0.12.1 quand l'URL lue rend un hôte vide, ou le fait PANIQUER quand elle n'en rend aucun (`ldap:///dc=…` :
+/// `panic!("unexpected None from url.host_str()")`, src/conn.rs) — l'un et l'autre sont refusés ici, avant toute
+/// connexion. L'autorité s'arrête au premier `/`, `?` ou `#`, comme la lit la bibliothèque `url` dont `ldap3` prend
+/// l'hôte (url 2.5.8, `parse_userinfo` : les informations d'utilisateur ne passent ni un `?` ni un `#`) : sans cela,
+/// `ldap://10.0.0.5?@192.0.2.10` serait jugée sur 192.0.2.10 alors que `ldap3` joint 10.0.0.5. Elle est découpée par
+/// `ssrf_split_authority` (daemon/src/ledger.rs), celle que juge la garde des URL : informations d'utilisateur retirées,
+/// littéral IPv6 entre crochets. Chaque refus commence par « SSRF: », comme ceux de la garde.
+pub(crate) fn ldap_hote_et_port(url: &str) -> Result<(String, u16), String> {
+    let low = url.trim().to_ascii_lowercase();
+    let (reste, port_par_defaut) = if let Some(r) = low.strip_prefix("ldaps://") {
+        (r, 636u16)
+    } else if let Some(r) = low.strip_prefix("ldap://") {
+        (r, 389u16)
+    } else {
+        return Err(REFUS_DU_SCHEMA_D_UNE_URL_LDAP.into());
+    };
+    let autorite = reste.split(['/', '?', '#']).next().unwrap_or("");
+    // L'hôte suit les informations d'utilisateur (`svc@`) et précède le port (`:389`) : vide, ou réduit à un port.
+    let sans_utilisateur = autorite.rsplit('@').next().unwrap_or("");
+    if sans_utilisateur.trim().is_empty() || sans_utilisateur.starts_with(':') {
+        return Err(REFUS_DE_L_HOTE_VIDE_D_UNE_URL_LDAP.into());
+    }
+    Ok(crate::ledger::ssrf_split_authority(autorite, port_par_defaut))
+}
+/// `P7.20-a` — refus d'une URL d'annuaire dont le schéma n'est ni `ldap://` ni `ldaps://`.
+pub(crate) const REFUS_DU_SCHEMA_D_UNE_URL_LDAP: &str = "SSRF: schéma d'URL LDAP non autorisé (ldap:// ou ldaps:// attendu)";
+/// `P7.20-a` — refus d'une URL d'annuaire sans hôte (que `ldap3` lirait comme `localhost`).
+pub(crate) const REFUS_DE_L_HOTE_VIDE_D_UNE_URL_LDAP: &str = "SSRF: hôte d'URL LDAP vide";
+
+/// `P7.20-a` — LA GARDE DE SORTIE DE LA CONNEXION À L'ANNUAIRE, jouée par `ldap_authenticate` AVANT toute connexion.
+/// L'hôte et le port de l'URL (`ldap_hote_et_port`) passent par la garde des sorties elle-même (`ssrf_check_host`,
+/// daemon/src/ledger.rs) avec l'origine des fournisseurs (`ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA`, de l'API) : le
+/// littéral ET chaque adresse résolue sont jugés, never-egress compris ; une adresse privée est refusée par défaut et le
+/// refus nomme `PLUME_SSRF_ALLOW` et `PLUME_SSRF_BLOCK_PRIVATE=0`. Ce qu'elle ne ferme pas : `ldap3` résout le nom une
+/// seconde fois pour se connecter (fenêtre de re-résolution, la même que celle des URL jugées par `ssrf_guard`).
+/// Jouée aussi par la route (`ldap_login_post`, daemon/src/handlers/idp.rs) avant le bind, dans tout profil, sauf sur une
+/// URL vide (fournisseur non configuré : la réponse d'avant).
+pub(crate) fn ldap_garde_de_sortie(url: &str) -> Result<(), String> {
+    let (hote, port) = ldap_hote_et_port(url)?;
+    crate::ledger::ssrf_check_host(&hote, port, crate::ledger::ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA)
+}
+
+/// `P7.20-a` — l'URL d'annuaire SAISIE PAR L'API (création, modification d'un fournisseur LDAP) n'est-elle refusée QUE
+/// pour son adresse privée ? Elle l'est alors dès la saisie (`daemon/src/handlers/idp.rs`), comme un connecteur ; ce qui
+/// ne tient pas à la seule adresse privée (schéma, never-egress, nom non résolu) reste jugé à la connexion.
+pub(crate) fn ldap_url_refusee_pour_sa_seule_adresse_privee(url: &str) -> bool {
+    match ldap_hote_et_port(url) {
+        Ok((hote, port)) => crate::ledger::hote_refuse_pour_sa_seule_adresse_privee(&hote, port, crate::ledger::ORIGINE_DES_FOURNISSEURS_D_IDENTITE_ET_D_IA),
+        Err(_) => false,
+    }
+}
+
 /// Mapping appartenance-de-groupes -> rôle Plume (PUR & testé). `groups` = DNs/noms de groupes de l'user.
 /// Priorité admin > editor > viewer. None = aucun groupe mappé (DENY si require_group_match).
 #[allow(dead_code)] // utilisé sous `--features ldap` (bind réseau) + tests ; mort dans un build nu
@@ -108,7 +163,8 @@ pub(crate) fn ldap_role_from_groups(cfg: &LdapCfg, groups: &[String]) -> Option<
 }
 
 /// BIND LDAP réseau — feature-gated (`ldap`). Vérifie les identifiants contre l'annuaire (bind), récupère
-/// l'appartenance aux groupes, mappe -> rôle. FAIL-CLOSED : toute erreur (connexion, bind, TLS) -> Err.
+/// l'appartenance aux groupes, mappe -> rôle. FAIL-CLOSED : toute erreur (garde de sortie, connexion, bind, TLS) -> Err ;
+/// un refus de la garde de sortie (`ldap_garde_de_sortie`) commence par « SSRF: » et précède toute connexion.
 /// SANS la feature : 501 explicite (le code est présent, ldap3 non linké -> budget 2 Go préservé).
 #[cfg(not(feature = "ldap"))]
 pub(crate) fn ldap_authenticate(_cfg: &LdapCfg, _bind_pw: &str, _user: &str, _pass: &str) -> Result<String, String> {
@@ -125,6 +181,8 @@ pub(crate) fn ldap_authenticate(cfg: &LdapCfg, bind_pw: &str, user: &str, pass: 
         // un mot de passe vide provoquerait un "unauthenticated bind" (succès LDAP mais NON authentifié) -> DENY.
         return Err("mot de passe vide refusé (anti unauthenticated-bind)".into());
     }
+    // `P7.20-a` — la garde de sortie juge l'hôte, le port et chaque adresse résolue AVANT toute connexion.
+    ldap_garde_de_sortie(&cfg.url)?;
     let settings = LdapConnSettings::new().set_starttls(cfg.start_tls);
     let mut ldap = LdapConn::with_settings(settings, &cfg.url).map_err(|e| format!("connexion LDAP: {e}"))?;
 

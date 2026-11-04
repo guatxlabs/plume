@@ -1006,8 +1006,9 @@ mod retention; // RÉTENTION : classification des noms + GFS + plan de purge + h
 // d'origine `crate::backup::X`. `classify_backup_name` / `ParsedBackup` sont consommés par la PRODUCTION depuis le
 // 2026-09-08 (`server::premiere_attente_derivee`, P9.4-a) : les gater `#[cfg(test)]` faisait compiler la suite et
 // rougir le binaire (P8.5-d). Les primitives de calendrier ne sont consommées que par les tests -> elles restent gatées.
-pub(crate) use retention::{backup_classify_rendu, backup_keep_recent_plan, backup_prune_plan, classify_backup_name, fmt_backup_ts, GfsParams, ParsedBackup};
+// `parse_backup_ts` est consommé par la PRODUCTION depuis P10.33-y (`copie_hors_site`, âge de la dernière copie).
+pub(crate) use retention::{backup_classify_rendu, backup_keep_recent_plan, backup_prune_plan, classify_backup_name, fmt_backup_ts, parse_backup_ts, GfsParams, ParsedBackup};
 #[cfg(test)]
-pub(crate) use retention::{day_key, days_from_civil, parse_backup_ts, week_key, BACKUP_TS_LEN};
+pub(crate) use retention::{day_key, days_from_civil, week_key, BACKUP_TS_LEN};
 mod verification; // VÉRIFICATION : en-tête age sans déchiffrer, puis restauration jetable + inventaire du contenu
 pub(crate) use verification::{verify_backup, BackupKind};

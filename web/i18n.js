@@ -98,7 +98,12 @@ const I18N_EN = {
   ", il ne fait que proposer. Ce n'est pas un guide d'incident : pour une checklist attachée à un cas, voir les runbooks ci-dessous.": ", it only proposes. It is not an incident guide: for a checklist attached to a case, see the runbooks below.",
   "Un runbook est un guide d'incident : des étapes phasées, attachées à un cas élevé en incident. Aucune condition, aucun exécuteur : rien ne se déclenche seul. Les": "A runbook is an incident guide: phased steps, attached to a case raised to incident. No condition, no executor: nothing fires on its own. The",
   "livrés": "shipped ones", "sont immuables en place — activez/désactivez ou": "are immutable in place — enable/disable or",
-  "Ce que la règle déclenche sur chaque cible ; la durée du ban est celle que posent les exécuteurs": "What the rule triggers on each target; the ban duration is the one the executors set",
+  "Ce que la règle déclenche sur chaque cible ; la durée d'un ban_ip est celle du champ « Durée du ban », sinon le défaut du serveur": "What the rule triggers on each target; the duration of a ban_ip is the one of the “Ban duration” field, otherwise the server default",
+  // `P11.25-a` (console) — le champ de la durée du ban d'un playbook (valeur + unité, vide = défaut du serveur).
+  "Durée du ban (ban_ip seulement)": "Ban duration (ban_ip only)",
+  "Durée du ban posé par la riposte ban_ip de ce playbook côté central (CrowdSec ou blocage HTTP natif), en nombre entier de l'unité choisie (d'une seconde à 365 jours au total) ; vide = défaut du serveur. L'agent d'un hôte distant (respond.sh) garde sa propre durée (PLUME_BAN_DURATION). Sans effet sur les autres ripostes.": "Duration of the ban set by this playbook's ban_ip response on the central side (CrowdSec or native HTTP block), as a whole number of the chosen unit (from one second to 365 days in total); empty = server default. A remote host's agent (respond.sh) keeps its own duration (PLUME_BAN_DURATION). No effect on the other responses.",
+  "défaut du serveur": "server default", "Unité de la durée du ban": "Ban duration unit",
+  "secondes": "seconds", "heures": "hours", "jours": "days",
   "ON à l'enregistrement": "ON on save",
   "Coché : la règle est ON dès l'enregistrement (première évaluation à l'intervalle) ; décoché : elle est créée OFF et s'active dans la liste, avec confirmation": "Checked: the rule is ON as soon as it is saved (first evaluation at the interval); unchecked: it is created OFF and is enabled from the list, with confirmation",
   "Coché : le guide est proposé dans les cas dès l'enregistrement ; décoché : créé OFF, à activer dans la liste": "Checked: the guide is proposed in cases as soon as it is saved; unchecked: created OFF, to be enabled from the list",

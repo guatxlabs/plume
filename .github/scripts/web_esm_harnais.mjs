@@ -23721,7 +23721,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       "dashboards.js › MOTS_DE_LA_CHAUFFE_SANS_FIN", "viz.js › MOTS_DU_PLAFOND_DES_LIGNES_RENDUES",
       "alerts.js › MOTS_DES_LECTURES_D_ALERTES", "attack.js › MOTS_DES_RESUMES_ATTACK", "cases.js › MOTS_DES_LECTURES_DE_DOSSIER", "cases.js › MOTS_DES_TEXTES_DE_DOSSIER",
       "core.js › MOTS_DE_L_AGE", "core.js › MOTS_DU_REFUS_D_UNE_LECTURE", "dashboards.js › MOTS_DE_L_INSTANTANE_DE_DASHBOARD",
-      "detadv.js › MOTS_DES_NOTES_DE_DETECTION_AVANCEE", "detection_admin.js › MOTS_DES_NOTES_DE_DETECTION", "fleet.js › MOTS_DES_ATTENTES_D_HOTE", "fleet.js › MOTS_DE_L_INVENTAIRE_DE_FLOTTE", "knowledge.js › MOTS_DES_GESTES_DE_SAVOIR",
+      "detadv.js › MOTS_DES_NOTES_DE_DETECTION_AVANCEE", "detection_admin.js › MOTS_DES_NOTES_DE_DETECTION", "detection_admin.js › MOTS_DE_LA_DUREE_DE_BAN", "fleet.js › MOTS_DES_ATTENTES_D_HOTE", "fleet.js › MOTS_DE_L_INVENTAIRE_DE_FLOTTE", "knowledge.js › MOTS_DES_GESTES_DE_SAVOIR",
       "multitenant.js › MOTS_DES_LECTURES_DES_TENANTS", "navigation.js › MOTS_DU_STATUT_DES_CHARGES", "prefs.js › MOTS_DES_PREFERENCES_NON_LUES", "producer_ui.js › MOTS_DE_LA_NOTE_DE_DESTINATION",
       "producer_ui.js › MOTS_DU_COMMUTATEUR", "savedqueries.js › MOTS_DE_LA_LECTURE_DE_MES_MODELES", "sigmaimport.js › MOTS_DU_RESUME_D_IMPORT_SIGMA", "sources.js › MOTS_DE_L_INVENTAIRE_DES_SOURCES",
       "suppressions.js › MOTS_DES_SILENCES_NON_LUS", "system.js › MOTS_DU_PAQUET_DE_DIAGNOSTIC", "viz.js › MOTS_DE_LA_PART_FROIDE", "viz.js › MOTS_DU_BOUTON_DES_COLONNES", "viz.js › MOTS_DU_CORPS_D_UN_COURRIEL",
@@ -32194,6 +32194,202 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   if (echecs.length !== echecsAvant173) console.log(`(173-175) EN ÉCHEC — ${echecs.length - echecsAvant173} écart(s), dits ci-dessus`);
   else console.log("(173-175) OK — `P11.25-e` : « Éditer » (clic réel) et « + Runbook » amènent l'éditeur à l'écran (un défilement sur la boîte remplie) et posent le focus sur le nom sans second défilement (`preventScroll`) ; les trois refus (catalogue non lu, étapes non lues, chargement échoué) disent leur avis sans défiler ni prendre le focus. Non tenu : la position peinte.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (170) (171) (172) `P11.25-a` (console, vague WA) — LA DURÉE DU BAN D'UN PLAYBOOK, SAISIE DANS LE FORMULAIRE.
+//
+// CE QUE LE DÉMON ATTEND (RELU) : `duree_de_ban_demandee` (daemon/src/handlers/playbooks.rs) — `ban_ttl_s` entier de
+// 1 à 31536000 ou `null` (le défaut du serveur), refus 400 `CAUSE_DUREE_DE_BAN_REFUSEE` sinon.
+// (170) LE CORPS ENVOYÉ, par le vrai gestionnaire du formulaire (`enregistrerLePlaybookDuFormulaire`) : champ vide =
+//       `ban_ttl_s: null` PRÉSENT dans le corps ; 90 minutes = 5400 ; 2 jours = 172800 ; une valeur relue (5401, 7200,
+//       172800) s'affiche dans la plus grande unité qui la divise exactement, sinon en secondes, et repart IDENTIQUE ;
+//       la ligne de la liste montre la durée d'un ban_ip, ou « défaut du serveur ».
+// (171) LE REFUS 400 DU SERVEUR est peint tel quel : sa cause (relue dans playbooks.rs) se lit entière dans le
+//       formulaire, aucune phrase de refus de la console ne s'y substitue.
+// (172) LE REFUS CLIENT : décimal, zéro, négatif, texte, exposant, au-delà de 31536000 s — rien n'est envoyé, le
+//       formulaire le dit (valeur citée), dans les deux langues ; les deux bornes exactes (1 s, 365 j) partent.
+// (176) CE QUE LE FORMULAIRE DIT de la durée : défaut cité seulement s'il est servi, création vide après une édition,
+//       unités du balisage = unités du code, unité inconnue refusée, option « ban_ip » qui suit la saisie ET l'unité,
+//       espaces retirés, singulier, hôte distant nommé (note, infobulle, aide de la réponse).
+// CE QU'ILS NE TIENNENT PAS : que le démon applique la durée (témoins Rust) ; la durée du répondeur d'un hôte distant.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant170 = echecs.length;
+  const url170 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modDet170 = await import(url170("detection_admin.js"));
+  const langueOrigine170 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modDetEn170 = await import(adresseSousLaLangue("detection_admin.js"));
+  if (langueOrigine170 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine170);
+  const instrument170 = (vrai, quoi) => exiger(vrai, `(170-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu170 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const tic170 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser170 = async (n = 40) => { for (let i = 0; i < n; i++) await tic170(); };
+  let PB170 = "";
+  try { PB170 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "playbooks.rs"), "utf8"); } catch (e) { PB170 = ""; }
+  const causeBrute170 = (PB170.match(/const CAUSE_DUREE_DE_BAN_REFUSEE: &str = "((?:[^"\\]|\\[\s\S])*)";/) || [])[1] || "";
+  const CAUSE170 = causeBrute170.replace(/\\\n\s*/g, "").replace(/\s+/g, " ").trim();
+  instrument170(/^DURÉE DE BAN REFUSÉE/.test(CAUSE170) && /31536000/.test(CAUSE170), `la cause du refus ne se relit plus dans playbooks.rs (« ${CAUSE170.slice(0, 80)} »)`);
+  for (const [l, m] of [["fr", modDet170], ["en", modDetEn170]])
+    instrument170(["openPbForm", "enregistrerLePlaybookDuFormulaire", "dureeDeBanEnUnite", "lireLaDureeDeBan", "pbRow"].every((n) => typeof m[n] === "function"), `${l} : detection_admin.js n'exporte plus les fonctions jugées`);
+  const qs170 = (sel) => document.querySelector(sel);
+  const reponse170 = (statut, o) => { const t = JSON.stringify(o); return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => "application/json" }, text: async () => t, json: async () => JSON.parse(t), clone: () => reponse170(statut, o) }; };
+  const fetchOrigine170 = globalThis.fetch;
+  let envois170 = [], refus400 = false;
+  const ecarts170 = [], ecarts171 = [], ecarts172 = [], ecarts176 = [];
+  let servirLeDefaut176 = true;
+  try {
+    globalThis.fetch = async (u, init) => {
+      const methode = ((init && init.method) || "GET").toUpperCase(), route = String(u).split("?")[0];
+      if (methode === "POST" && /^\/api\/playbooks(\/\d+)?$/.test(route)) {
+        let corps = null; try { corps = JSON.parse(init.body); } catch (e) { corps = null; }
+        envois170.push({ route, corps });
+        return refus400 ? reponse170(400, { error: CAUSE170 }) : reponse170(200, { id: 9, managed: 2 });
+      }
+      if (route === "/api/playbooks") return reponse170(200, servirLeDefaut176 ? { playbooks: [], mode: "observe", ban_duration_s: 14400 } : { playbooks: [], mode: "observe" });
+      return reponse170(200, {});
+    };
+    const champ = () => qs170("#pb-ban-ttl"), unite = () => qs170("#pb-ban-unit");
+    instrument170(!!champ() && !!unite() && !!qs170("#pb-form"), "le formulaire de la page ne porte pas le champ de la durée du ban");
+    const PB = (o) => ({ id: 9, name: "pb-170", query: "search source=sshd | stats count by src_ip", is_soql: true, action_kind: "ban_ip", interval_s: 300, window_s: 3600, enabled: true, managed: 2, ...o });
+    const soumettre = async (m) => { envois170 = []; await m.enregistrerLePlaybookDuFormulaire({ preventDefault() {} }); await laisser170(); return envois170; };
+    const remplir = (valeur, u) => { qs170("#pb-query").value = "search source=sshd | stats count by src_ip"; champ().value = valeur; unite().value = String(u); };
+
+    // ── (170) le corps envoyé ──
+    const m = modDet170;
+    m.openPbForm(null);
+    if (champ().value !== "") ecarts170.push(`création : le champ s'ouvre sur « ${champ().value} » au lieu de vide`);
+    if (!/défaut du serveur/.test(nu170(qs170("#pb-ban-note"))) || !/ban_ip/.test(nu170(qs170("#pb-ban-note")))) ecarts170.push(`la note du champ ne dit pas « défaut du serveur » ni ban_ip : « ${nu170(qs170("#pb-ban-note"))} »`);
+    qs170("#pb-query").value = "search source=sshd | stats count by src_ip";
+    let e = await soumettre(m);
+    if (e.length !== 1 || !e[0].corps || !Object.prototype.hasOwnProperty.call(e[0].corps, "ban_ttl_s") || e[0].corps.ban_ttl_s !== null)
+      ecarts170.push(`vide : le corps n'envoie pas \`ban_ttl_s: null\` explicitement — ${JSON.stringify(e)}`);
+    for (const [valeur, u, attendu, dit] of [["90", 60, 5400, "90 minutes"], ["2", 86400, 172800, "2 jours"], ["5401", 1, 5401, "5401 secondes"]]) {
+      m.openPbForm(null); remplir(valeur, u);
+      e = await soumettre(m);
+      if (e.length !== 1 || !e[0].corps || e[0].corps.ban_ttl_s !== attendu) ecarts170.push(`${dit} : ${attendu} s attendues, corps ${JSON.stringify(e.map((x) => x.corps && x.corps.ban_ttl_s))}`);
+    }
+    for (const [ttl, valeur, u] of [[5401, "5401", 1], [7200, "2", 3600], [172800, "2", 86400], [5400, "90", 60], [null, "", 3600]]) {
+      m.openPbForm(PB({ ban_ttl_s: ttl }));
+      if (champ().value !== valeur || String(unite().value) !== String(u)) ecarts170.push(`édition de ${ttl} : relu « ${champ().value} » × ${unite().value} au lieu de « ${valeur} » × ${u}`);
+      e = await soumettre(m);
+      if (e.length !== 1 || e[0].route !== "/api/playbooks/9" || !e[0].corps || !Object.prototype.hasOwnProperty.call(e[0].corps, "ban_ttl_s") || e[0].corps.ban_ttl_s !== ttl)
+        ecarts170.push(`édition de ${ttl} : renvoyé ${JSON.stringify(e)} au lieu de ${ttl} inchangé`);
+    }
+    const ligne = (p) => nu170(m.pbRow(p, "observe"));
+    if (!/ban : 90 minutes/.test(ligne(PB({ ban_ttl_s: 5400 })))) ecarts170.push(`la ligne d'un ban_ip à 5400 s ne dit pas « ban : 90 minutes » : « ${ligne(PB({ ban_ttl_s: 5400 })).slice(0, 200)} »`);
+    if (!/ban : défaut du serveur/.test(ligne(PB({ ban_ttl_s: null })))) ecarts170.push(`la ligne d'un ban_ip sans durée ne dit pas « défaut du serveur » : « ${ligne(PB({ ban_ttl_s: null })).slice(0, 200)} »`);
+    if (/ban :/.test(ligne(PB({ action_kind: "kill_pid", ban_ttl_s: null })))) ecarts170.push("la ligne d'un kill_pid porte une durée de ban");
+
+    // ── (171) la cause 400 du serveur, telle quelle ──
+    refus400 = true;
+    m.openPbForm(null); remplir("90", 60);
+    e = await soumettre(m);
+    const texteForm = nu170(qs170("#pb-form"));
+    if (e.length !== 1) ecarts171.push(`la valeur valide côté client n'est pas partie (${e.length} envoi(s)) : le refus du serveur ne serait pas jugé`);
+    if (!texteForm.includes(CAUSE170)) ecarts171.push(`la cause du serveur ne se lit pas entière dans le formulaire : « ${texteForm.slice(0, 400)} »`);
+    if (/AVANT ENVOI|BEFORE SENDING/.test(texteForm)) ecarts171.push("le refus du serveur porte la phrase de refus de la console");
+    if (qs170("#pb-form").classList.contains("hidden")) ecarts171.push("le formulaire s'est fermé sur un refus");
+    refus400 = false;
+
+    // ── (172) le refus client, avant envoi ──
+    for (const [l, mm, motif] of [["fr", modDet170, /DURÉE DU BAN REFUSÉE AVANT ENVOI/], ["en", modDetEn170, /BAN DURATION REFUSED BEFORE SENDING/]]) {
+      for (const [valeur, u] of [["1.5", 3600], ["0", 60], ["-2", 3600], ["abc", 60], ["1e3", 1], ["366", 86400], ["31536001", 1], ["8761", 3600]]) {
+        mm.openPbForm(null); remplir(valeur, u);
+        e = await soumettre(mm);
+        const res = qs170("#pb-result"), dit = nu170(res);
+        if (e.length) ecarts172.push(`${l} « ${valeur} » × ${u} : envoyé ${JSON.stringify(e.map((x) => x.corps && x.corps.ban_ttl_s))} au lieu d'être refusé avant envoi`);
+        else if (!motif.test(dit) || !dit.includes(valeur) || res.className !== "bad") ecarts172.push(`${l} « ${valeur} » × ${u} : le refus ne se dit pas (classe « ${res.className} ») : « ${dit.slice(0, 200)} »`);
+      }
+      for (const [valeur, u, attendu] of [["1", 1, 1], ["365", 86400, 31536000], ["8760", 3600, 31536000]]) {
+        mm.openPbForm(null); remplir(valeur, u);
+        e = await soumettre(mm);
+        if (e.length !== 1 || !e[0].corps || e[0].corps.ban_ttl_s !== attendu) ecarts172.push(`${l} borne « ${valeur} » × ${u} : ${attendu} s attendues, ${JSON.stringify(e.map((x) => x.corps && x.corps.ban_ttl_s))}`);
+      }
+    }
+
+    // ── (176) ce que le formulaire DIT de la durée — défaut servi, remise à vide, unités, option « ban_ip », hôte distant ──
+    // a) Le défaut est cité SEULEMENT quand la liste l'a servi : 14400 servi -> « défaut du serveur (4 heures) » dans la
+    //    note ET la ligne ; rien de servi -> « défaut du serveur » sans aucun chiffre (jamais une durée inventée).
+    const note176 = () => nu170(qs170("#pb-ban-note"));
+    servirLeDefaut176 = true; await m.loadPlaybooks(); await laisser170();
+    m.openPbForm(null);
+    if (!note176().includes("défaut du serveur (4 heures)")) ecarts176.push(`défaut servi (14400) : la note ne le cite pas — « ${note176()} »`);
+    if (!/ban : défaut du serveur \(4 heures\)/.test(ligne(PB({ ban_ttl_s: null })))) ecarts176.push(`défaut servi (14400) : la ligne ne le cite pas — « ${ligne(PB({ ban_ttl_s: null })).slice(0, 200)} »`);
+    servirLeDefaut176 = false; await m.loadPlaybooks(); await laisser170();
+    m.openPbForm(null);
+    if (!note176().includes("défaut du serveur") || /\d/.test(note176())) ecarts176.push(`rien de servi : la note cite une durée devinée — « ${note176()} »`);
+    { const l = ligne(PB({ ban_ttl_s: null })); const apres = (l.split("ban :")[1] || ""); if (!/^ défaut du serveur/.test(apres) || /\d/.test(apres)) ecarts176.push(`rien de servi : la ligne cite une durée devinée — « ${l.slice(0, 200)} »`); }
+    servirLeDefaut176 = true; await m.loadPlaybooks(); await laisser170();
+    // b) Une création APRÈS une édition repart vide, unité heures : la durée du playbook précédent n'est pas reportée.
+    m.openPbForm(PB({ ban_ttl_s: 5400 })); m.openPbForm(null);
+    if (champ().value !== "" || String(unite().value) !== "3600") ecarts176.push(`création après l'édition d'un playbook à 5400 s : le champ s'ouvre sur « ${champ().value} » × ${unite().value} au lieu de vide × 3600`);
+    // c) Les options de `#pb-ban-unit` du BALISAGE sont exactement les unités du code, et une unité inconnue est refusée.
+    const htmlPage176 = readFileSync(path.join(WEB, "index.html"), "utf8");
+    const sel176 = (htmlPage176.match(/<select id="pb-ban-unit"[^>]*>([\s\S]*?)<\/select>/) || [])[1] || "";
+    const valeursHtml176 = [...sel176.matchAll(/<option value="([^"]*)"/g)].map((x) => x[1]).sort();
+    const valeursCode176 = (m.UNITES_DE_LA_DUREE_DE_BAN || []).map((u) => String(u.s)).sort();
+    instrument170(valeursCode176.length >= 4, "detection_admin.js n'exporte plus UNITES_DE_LA_DUREE_DE_BAN");
+    if (JSON.stringify(valeursHtml176) !== JSON.stringify(valeursCode176)) ecarts176.push(`les options de #pb-ban-unit (${JSON.stringify(valeursHtml176)}) ne sont pas les unités du code (${JSON.stringify(valeursCode176)})`);
+    for (const u of ["8640", "", "7"]) {
+      m.openPbForm(null); remplir("2", u);
+      e = await soumettre(m);
+      const dit = nu170(qs170("#pb-result"));
+      if (e.length) ecarts176.push(`unité inconnue « ${u} » : envoyé ${JSON.stringify(e.map((x) => x.corps && x.corps.ban_ttl_s))} au lieu d'être refusé`);
+      else if (!/DURÉE DU BAN REFUSÉE AVANT ENVOI/.test(dit)) ecarts176.push(`unité inconnue « ${u} » : le refus ne se dit pas — « ${dit.slice(0, 200)} »`);
+    }
+    // d) L'option « ban_ip » du sélecteur d'action dit la durée du FORMULAIRE, jamais une seconde durée contraire. Le
+    //    simulacre laisse `value` vide aux options analysées : on la pose depuis l'attribut, comme un navigateur.
+    const kind176 = qs170("#pb-kind");
+    instrument170(!!kind176 && (kind176.options || []).length >= 3, "le sélecteur #pb-kind n'a pas ses options analysées");
+    for (const o of kind176.options) o.value = o.getAttribute("value");
+    const optBan176 = () => nu170(kind176.options.find((o) => o.getAttribute("value") === "ban_ip"));
+    for (const [ttl, attendu] of [[5400, "90 min"], [null, "4 h"], [172800, "48 h"], [45, "45 s"]]) {
+      m.openPbForm(PB({ ban_ttl_s: ttl }));
+      const t = optBan176();
+      if (!t.includes(attendu) || (attendu !== "4 h" && /\b4 h\b/.test(t))) ecarts176.push(`édition de ${ttl} : l'option ban_ip dit « ${t} » au lieu de « ${attendu} » (champ « ${champ().value} » × ${unite().value})`);
+    }
+    m.openPbForm(null); champ().value = "3"; unite().value = "86400";
+    champ().dispatchEvent(new Evenement("input", { bubbles: true }));
+    if (!/\b72 h\b/.test(optBan176())) ecarts176.push(`saisie de 3 jours : l'option ban_ip ne suit pas le champ — « ${optBan176()} »`);
+    // Le changement d'UNITÉ seul (champ intact) relit la durée : 3 jours passés en heures = 3 h, jamais « 72 h » resté.
+    unite().value = "3600"; unite().dispatchEvent(new Evenement("change", { bubbles: true }));
+    if (!/\b3 h\b/.test(optBan176()) || /\b72 h\b/.test(optBan176())) ecarts176.push(`3 jours puis unité passée en heures : l'option ban_ip ne suit pas l'unité — « ${optBan176()} » au lieu de « 3 h »`);
+    champ().value = "abc"; champ().dispatchEvent(new Evenement("input", { bubbles: true }));
+    if (/\d/.test(optBan176())) ecarts176.push(`saisie refusée « abc » : l'option ban_ip cite encore une durée — « ${optBan176()} »`);
+    // Les espaces autour de la saisie sont retirés : « 90 » entouré d'espaces part en 5400 s, un champ d'espaces vaut
+    // le défaut (null envoyé), jamais un refus de ce que l'œil lit comme juste ou vide.
+    m.openPbForm(null); remplir("  90 ", "60"); e = await soumettre(m);
+    if (e.length !== 1 || !e[0].corps || e[0].corps.ban_ttl_s !== 5400) ecarts176.push(`« 90 » entouré d'espaces × minutes : ${JSON.stringify(e.map((x) => x.corps && x.corps.ban_ttl_s))} envoyé au lieu de 5400 — « ${nu170(qs170("#pb-result")).slice(0, 160)} »`);
+    m.openPbForm(null); remplir("   ", "3600"); e = await soumettre(m);
+    if (e.length !== 1 || !e[0].corps || !("ban_ttl_s" in e[0].corps) || e[0].corps.ban_ttl_s !== null) ecarts176.push(`champ d'espaces : ${JSON.stringify(e.map((x) => x.corps && x.corps.ban_ttl_s))} envoyé au lieu de null — « ${nu170(qs170("#pb-result")).slice(0, 160)} »`);
+    // e) Le rendu : singulier, refus sans « de heures ».
+    for (const [sec, fr, en] of [[3600, "1 heure", "1 hour"], [86400, "1 jour", "1 day"], [60, "1 minute", "1 minute"], [1, "1 seconde", "1 second"], [7200, "2 heures", "2 hours"]]) {
+      if (m.dureeDeBanLisible(sec) !== fr) ecarts176.push(`dureeDeBanLisible(${sec}) = « ${m.dureeDeBanLisible(sec)} » au lieu de « ${fr} »`);
+      if (modDetEn170.dureeDeBanLisible(sec) !== en) ecarts176.push(`en dureeDeBanLisible(${sec}) = « ${modDetEn170.dureeDeBanLisible(sec)} » au lieu de « ${en} »`);
+    }
+    { const r = m.lireLaDureeDeBan("1.5", "3600"); if (!r.refus || /\bde heures\b/.test(r.refus) || !r.refus.includes("(unité : heures)")) ecarts176.push(`le refus de « 1.5 » heures se dit mal : « ${r.refus} »`); }
+    // f) La note dit que l'agent d'un hôte distant garde sa propre durée (comme la conséquence servie par le démon),
+    //    dans les deux langues, et l'infobulle du champ aussi.
+    if (!/hôte distant/.test(note176()) || !/PLUME_BAN_DURATION/.test(note176())) ecarts176.push(`la note ne dit pas que l'hôte distant garde sa durée : « ${note176()} »`);
+    modDetEn170.openPbForm(null);
+    if (!/remote host/.test(note176()) || !/PLUME_BAN_DURATION/.test(note176())) ecarts176.push(`en : la note ne dit pas que l'hôte distant garde sa durée : « ${note176()} »`);
+    { const t = (htmlPage176.match(/<label title="([^"]*)">Durée du ban/) || [])[1] || ""; if (!/hôte distant/.test(t) || !/PLUME_BAN_DURATION/.test(t)) ecarts176.push(`l'infobulle du champ ne dit pas que l'hôte distant garde sa durée : « ${t} »`); }
+    // g) L'aide de la réponse ne dit plus la durée « jamais écrite dans l'interface » : elle nomme le champ, dans les deux langues.
+    { const aide = readFileSync(path.join(WEB, "help_registry.js"), "utf8");
+      if (/jamais écrite dans l'interface|never written in the interface/.test(aide)) ecarts176.push("l'aide de la réponse (help_registry.js) dit encore la durée du ban jamais écrite dans l'interface");
+      if (!/champ « Durée du ban » du playbook/.test(aide) || !/playbook's “Ban duration” field/.test(aide)) ecarts176.push("l'aide de la réponse (help_registry.js) ne nomme pas le champ « Durée du ban » dans les deux langues"); }
+  } finally {
+    globalThis.fetch = fetchOrigine170;
+    const f = qs170("#pb-form"); if (f) f.classList.add("hidden");
+  }
+  exiger(ecarts170.length === 0, `(170) \`P11.25-a\` (console) — LE CORPS DU FORMULAIRE NE PORTE PAS LA DURÉE DU BAN EXACTE : ${JSON.stringify(ecarts170)}`);
+  exiger(ecarts171.length === 0, `(171) \`P11.25-a\` (console) — LE REFUS 400 DU SERVEUR N'EST PAS PEINT TEL QUEL : ${JSON.stringify(ecarts171)}`);
+  exiger(ecarts172.length === 0, `(172) \`P11.25-a\` (console) — UNE DURÉE NON ENTIÈRE OU HORS BORNE N'EST PAS REFUSÉE AVANT ENVOI : ${JSON.stringify(ecarts172)}`);
+  exiger(ecarts176.length === 0, `(176) \`P11.25-a\` (console) — LE FORMULAIRE DIT MAL LA DURÉE DU BAN (défaut servi, remise à vide, unités, option ban_ip, hôte distant) : ${JSON.stringify(ecarts176)}`);
+  if (echecs.length !== echecsAvant170) console.log(`(170-172, 176) EN ÉCHEC — ${echecs.length - echecsAvant170} écart(s), dits ci-dessus`);
+  else console.log("(170-172, 176) OK — `P11.25-a` (console, vague WA) : le défaut servi (14400) est cité « 4 heures » dans la note et la ligne, rien de servi n'en cite aucun ; une création après une édition repart vide ; les options du balisage sont les unités du code et une unité inconnue est refusée ; l'option ban_ip du sélecteur dit la durée du formulaire (90 min, 48 h, 45 s, le défaut quand vide) et suit la saisie ; singulier et refus bien dits ; la note et l'infobulle disent que l'agent d'un hôte distant garde sa durée ; par le vrai gestionnaire du formulaire, un champ vide envoie `ban_ttl_s: null` explicitement et la note dit « défaut du serveur », 90 minutes partent en 5400 s et 2 jours en 172800 s, une durée relue s'affiche dans la plus grande unité qui la divise exactement (5401 reste en secondes) et repart identique, la ligne d'un ban_ip dit sa durée ou le défaut ; le refus 400 du serveur (cause relue dans playbooks.rs) se lit entier dans le formulaire resté ouvert ; décimal, zéro, négatif, texte, exposant et hors borne ne partent pas et le formulaire le dit dans les deux langues, les bornes exactes partent. Ce qu'ils NE tiennent PAS : que le démon applique la durée (témoins Rust).");
 }
 
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;

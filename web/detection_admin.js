@@ -1582,16 +1582,107 @@ async function basculerLeMode() {
 if ($('#mode-toggle')) $('#mode-toggle').onclick = basculerLeMode;
 
 // --- playbooks (détection -> réponse) ---
-const PB = { name: '#pb-name', query: '#pb-query', issoql: '#pb-issoql', kind: '#pb-kind', interval: '#pb-interval', window: '#pb-window', enabled: '#pb-enabled' };
+const PB = { name: '#pb-name', query: '#pb-query', issoql: '#pb-issoql', kind: '#pb-kind', interval: '#pb-interval', window: '#pb-window', enabled: '#pb-enabled', banTtl: '#pb-ban-ttl', banUnit: '#pb-ban-unit', banNote: '#pb-ban-note' };
+// `P11.25-a` (console) — LA DURÉE DU BAN D'UN PLAYBOOK. Le démon porte `ban_ttl_s` : un nombre ENTIER de secondes de 1 à
+// 31536000, ou `null` = le défaut du serveur (`duree_de_ban_demandee`, daemon/src/handlers/playbooks.rs), et seule la
+// riposte `ban_ip` le porte. La console le saisit en valeur + unité, le convertit en secondes EXACTES, envoie `null`
+// quand le champ est vide (jamais un nombre deviné), et refuse avant envoi une valeur non entière ou hors borne. Le
+// refus 400 du serveur reste le sien : `contentSubmit` le peint tel quel, aucune phrase de la console ne le remplace.
+const BAN_TTL_MAX_S = 31536000;
+// Les unités du sélecteur, de la plus grande à la plus petite : une durée relue s'affiche dans la plus grande unité
+// qui la divise EXACTEMENT ; sinon en secondes — jamais arrondie.
+// Ce sont AUSSI les valeurs des `<option>` de `#pb-ban-unit` (web/index.html) : une option absente d'ici serait refusée
+// à l'envoi, une unité d'ici sans option ne pourrait pas être relue (le témoin 170 confronte les deux ensembles).
+const UNITES_DE_LA_DUREE_DE_BAN = [
+  { s: 86400, un: { fr: 'jour', en: 'day' }, mots: { fr: 'jours', en: 'days' } },
+  { s: 3600, un: { fr: 'heure', en: 'hour' }, mots: { fr: 'heures', en: 'hours' } },
+  { s: 60, un: { fr: 'minute', en: 'minute' }, mots: { fr: 'minutes', en: 'minutes' } },
+  { s: 1, un: { fr: 'seconde', en: 'second' }, mots: { fr: 'secondes', en: 'seconds' } },
+];
+const MOTS_DE_LA_DUREE_DE_BAN = {
+  defaut: { fr: 'défaut du serveur', en: 'server default' },
+  defaut_servi: { fr: 'défaut du serveur ({duree})', en: 'server default ({duree})' },
+  // Comme la conséquence servie par le démon (`action_consequence_pour_la_duree`, daemon/src/handlers/playbooks.rs) :
+  // l'agent d'un hôte distant (collectors/respond.sh) applique SA durée (`PLUME_BAN_DURATION`), que la file ne lui
+  // transmet pas.
+  note_vide: { fr: 'vide = {defaut} ; ne s\'applique qu\'à la riposte ban_ip, côté central (l\'agent d\'un hôte distant garde sa propre durée, PLUME_BAN_DURATION)',
+    en: 'empty = {defaut}; applies to the ban_ip response only, on the central side (a remote host\'s agent keeps its own duration, PLUME_BAN_DURATION)' },
+  refus: { fr: 'DURÉE DU BAN REFUSÉE AVANT ENVOI : « {valeur} » (unité : {unite}) n\'est pas un nombre entier dont le total tient entre 1 seconde et 31536000 secondes (365 jours). Rien n\'est envoyé ; videz le champ pour le défaut du serveur.',
+    en: 'BAN DURATION REFUSED BEFORE SENDING: “{valeur}” (unit: {unite}) is not a whole number totalling between 1 second and 31536000 seconds (365 days). Nothing is sent; clear the field for the server default.' },
+  refus_unite: { fr: 'DURÉE DU BAN REFUSÉE AVANT ENVOI : l\'unité « {unite} » n\'est pas l\'une de la console (secondes, minutes, heures, jours). Rien n\'est envoyé.',
+    en: 'BAN DURATION REFUSED BEFORE SENDING: the unit “{unite}” is not one of the console\'s (seconds, minutes, hours, days). Nothing is sent.' },
+  ligne: { fr: 'ban : {duree}', en: 'ban: {duree}' },
+};
+// Une durée en secondes dite à un humain : la plus grande unité qui la divise exactement, au singulier pour une seule
+// (« 90 minutes », « 2 jours », « 1 heure »).
+function dureeDeBanLisible(s) {
+  const n = Number(s);
+  const u = UNITES_DE_LA_DUREE_DE_BAN.find(x => n % x.s === 0) || UNITES_DE_LA_DUREE_DE_BAN[3];
+  const combien = n / u.s;
+  return combien + ' ' + faceDansLaLangue(combien === 1 ? u.un : u.mots);
+}
+// `ban_ttl_s` relu -> { valeur, unite } du formulaire. `null`/absent = champ vide (le défaut du serveur), unité heures.
+// Une valeur qui ne tombe juste sur aucune unité plus grande reste en secondes, entière.
+function dureeDeBanEnUnite(banTtlS) {
+  if (banTtlS === null || banTtlS === undefined || banTtlS === '') return { valeur: '', unite: 3600 };
+  const n = Number(banTtlS);
+  if (!Number.isSafeInteger(n) || n <= 0) return { valeur: String(banTtlS), unite: 1 };
+  const u = UNITES_DE_LA_DUREE_DE_BAN.find(x => n % x.s === 0);
+  return { valeur: String(n / u.s), unite: u.s };
+}
+// Le champ saisi -> `{ ban_ttl_s }` à envoyer, ou `{ refus }` (phrase dite, rien envoyé). Vide = `null` EXPLICITE.
+// Seuls des chiffres décimaux sont admis (pas de « 1.5 », « 1e3 », « -2 ») ; le total en secondes est borné 1..31536000.
+function lireLaDureeDeBan(valeurSaisie, uniteS) {
+  const brut = String(valeurSaisie === null || valeurSaisie === undefined ? '' : valeurSaisie).trim();
+  if (brut === '') return { ban_ttl_s: null };
+  // Une unité inconnue (option du balisage qui aurait dérivé, sélecteur vide) est REFUSÉE : la ramener aux secondes
+  // enverrait « 2 » pour deux jours.
+  const unite = String(uniteS ?? '').trim() === '' ? null : UNITES_DE_LA_DUREE_DE_BAN.find(x => x.s === Number(uniteS));
+  if (!unite) return { refus: faceDansLaLangue(MOTS_DE_LA_DUREE_DE_BAN.refus_unite, { unite: String(uniteS ?? '') }) };
+  const total = /^[0-9]+$/.test(brut) ? Number(brut) * unite.s : NaN;
+  if (!Number.isSafeInteger(total) || total < 1 || total > BAN_TTL_MAX_S) {
+    return { refus: faceDansLaLangue(MOTS_DE_LA_DUREE_DE_BAN.refus, { valeur: brut, unite: faceDansLaLangue(unite.mots) }) };
+  }
+  return { ban_ttl_s: total };
+}
+// La durée par défaut servie avec la liste (`ban_duration_s` de tête) : citée quand le démon l'a servie, jamais devinée.
+let dureeDeBanParDefautServie = null;
+function direLeDefautDeLaDureeDeBan() {
+  return Number.isSafeInteger(dureeDeBanParDefautServie) && dureeDeBanParDefautServie > 0
+    ? faceDansLaLangue(MOTS_DE_LA_DUREE_DE_BAN.defaut_servi, { duree: dureeDeBanLisible(dureeDeBanParDefautServie) })
+    : faceDansLaLangue(MOTS_DE_LA_DUREE_DE_BAN.defaut);
+}
+function poserLesMotsDeLaDureeDeBan() {
+  const sel = $(PB.banUnit);
+  if (sel && sel.options) [...sel.options].forEach(o => { const u = UNITES_DE_LA_DUREE_DE_BAN.find(x => x.s === Number(o.value)); if (u) o.textContent = faceDansLaLangue(u.mots); });
+  const champ = $(PB.banTtl); if (champ) champ.placeholder = faceDansLaLangue(MOTS_DE_LA_DUREE_DE_BAN.defaut);
+  const note = $(PB.banNote); if (note) note.textContent = faceDansLaLangue(MOTS_DE_LA_DUREE_DE_BAN.note_vide, { defaut: direLeDefautDeLaDureeDeBan() });
+}
+// La durée que la riposte ban_ip de CE formulaire posera : celle du champ, le défaut servi quand il est vide, aucune
+// quand il est refusé (ou que le défaut n'a pas été servi). C'est elle, et non le défaut global, que l'option
+// « ban_ip » du sélecteur d'action dit — sans quoi le formulaire afficherait deux durées contraires.
+function dureeDeBanDuFormulaire() {
+  const champ = $(PB.banTtl), sel = $(PB.banUnit);
+  const lue = lireLaDureeDeBan(champ ? champ.value : '', sel ? sel.value : '');
+  if (lue.refus) return null;
+  return lue.ban_ttl_s === null ? dureeDeBanParDefautServie : lue.ban_ttl_s;
+}
+function etiqueterLesActionsSelonLeFormulaire() { labelActionKindOptions(dureeDeBanDuFormulaire()); }
 /* state: editingPb -> S (state.js) */
 // Libellé humain d'une option du `<select id="pb-kind">` : le nom technique (la valeur envoyée) suivi de ce que
-// l'action fait sur chaque cible. La durée du ban n'est JAMAIS écrite ici : elle est `ban_duration_s`, servie par
-// le démon avec la liste (la même que posent les exécuteurs). Sans valeur servie, le libellé ne dit pas de durée.
+// l'action fait sur chaque cible. La durée du ban n'est JAMAIS devinée ici : c'est celle du formulaire ouvert
+// (`dureeDeBanDuFormulaire` : le champ « Durée du ban », sinon `ban_duration_s` servi avec la liste). Sans durée
+// établie, le libellé n'en dit aucune. Forme courte du démon (`duree_de_ban_lisible`) : heures, sinon minutes, sinon
+// secondes — jamais arrondie.
+function dureeDeBanCourte(s) {
+  const n = Number(s);
+  return n % 3600 === 0 ? (n / 3600) + ' h' : n % 60 === 0 ? (n / 60) + ' min' : n + ' s';
+}
 function actionKindOptionLabel(kind, banDurationS) {
   const en = LANG === 'en';
-  const heures = Number(banDurationS) > 0 ? Math.round(Number(banDurationS) / 3600) : null;
+  const duree = Number.isSafeInteger(Number(banDurationS)) && Number(banDurationS) > 0 && banDurationS !== null ? dureeDeBanCourte(banDurationS) : null;
   const effet = {
-    ban_ip: heures == null ? (en ? 'bans the source IP' : "bannit l'IP source") : (en ? 'bans the source IP for ' + heures + ' h' : "bannit l'IP source " + heures + ' h'),
+    ban_ip: duree == null ? (en ? 'bans the source IP' : "bannit l'IP source") : (en ? 'bans the source IP for ' + duree : "bannit l'IP source " + duree),
     kill_pid: en ? 'terminates the target process' : 'termine le processus cible',
     stop_service: en ? 'stops the target service' : 'arrête le service cible',
   }[kind];
@@ -1621,7 +1712,10 @@ async function loadPlaybooks() {
     : (d.mode === null || d.mode === undefined)
       ? faceDansLaLangue({ fr: 'le démon n\'a pas servi le mode global', en: 'the daemon did not serve the global mode' })
       : faceDansLaLangue({ fr: 'le démon a servi un mode inconnu : {valeur}', en: 'the daemon served an unknown mode: {valeur}' }, { valeur: String(d.mode) }));
-  labelActionKindOptions(ban_duration_s);
+  // `P11.25-a` — le défaut servi est retenu, puis l'option « ban_ip » dit la durée du FORMULAIRE (le défaut quand le
+  // champ est vide) : la même que le champ, jamais une seconde durée contraire.
+  dureeDeBanParDefautServie = Number.isSafeInteger(ban_duration_s) && ban_duration_s > 0 ? ban_duration_s : null; poserLesMotsDeLaDureeDeBan();
+  etiqueterLesActionsSelonLeFormulaire();
   // `P10.7-f` — LA LISTE EST AVOUÉE, LE MODE RESTE PEINT. Le démon sert `{playbooks: [], mode,
   // ban_duration_s, error: <cause>}` : `mode` et la durée du ban NE DÉRIVENT PAS de la lecture qui a
   // échoué (le mode a sa propre lecture, la durée est une constante), d'où l'appel ci-dessus, conservé —
@@ -1671,7 +1765,9 @@ function playbookRowModel(p, mode) {
     onToggle: next => (effacerLeRefusDUnGeste(puitsDesPlaybooks()), apiSend('/playbooks/' + p.id + '/enabled', 'POST', { enabled: next })),
     onRefus: (e) => peindreLeRefusDUnGeste(puitsDesPlaybooks(), e),
     summary: '-> ' + p.action_kind, summaryTitle: p.query,
-    meta: 'toutes les ' + (p.interval_s || 0) + ' s sur ' + (p.window_s || 0) + ' s',
+    meta: 'toutes les ' + (p.interval_s || 0) + ' s sur ' + (p.window_s || 0) + ' s'
+      // `P11.25-a` — la durée du ban d'un `ban_ip` : la sienne (`ban_ttl_s`) ou le défaut du serveur, dit tel quel.
+      + (p.action_kind === 'ban_ip' ? ' · ' + faceDansLaLangue(MOTS_DE_LA_DUREE_DE_BAN.ligne, { duree: Number.isSafeInteger(p.ban_ttl_s) ? dureeDeBanLisible(p.ban_ttl_s) : direLeDefautDeLaDureeDeBan() }) : ''),
   };
 }
 function pbRow(p, mode) {
@@ -1704,23 +1800,37 @@ function openPbForm(p) {
   $(PB.interval).value = p ? p.interval_s : 300;
   $(PB.window).value = p ? p.window_s : 3600;
   $(PB.enabled).checked = p ? p.enabled : true;
+  // `P11.25-a` — la durée relue dans la plus grande unité qui la divise exactement, sinon en secondes ; vide = défaut.
+  const duree = dureeDeBanEnUnite(p ? p.ban_ttl_s : null);
+  $(PB.banTtl).value = duree.valeur; $(PB.banUnit).value = String(duree.unite);
+  poserLesMotsDeLaDureeDeBan(); etiqueterLesActionsSelonLeFormulaire();
   // P11.1-e : la destination est dite AVANT d'enregistrer (condition = requête, 1re colonne = cible ; action = enum).
   const res = $('#pb-result'); if (res) { res.className = 'muted'; res.replaceChildren(destinationNote('actions', '', '')); }
   $(PB.name).focus();
 }
 if ($('#pb-new')) $('#pb-new').onclick = () => openPbForm(null);
 if ($('#pb-cancel')) $('#pb-cancel').onclick = () => $('#pb-form').classList.add('hidden');
-if ($('#pb-form')) $('#pb-form').addEventListener('submit', async e => {
-  e.preventDefault();
+// `P11.25-a` — le gestionnaire nommé (et exporté) : les témoins le jouent sur l'instance de leur langue.
+async function enregistrerLePlaybookDuFormulaire(e) {
+  if (e && e.preventDefault) e.preventDefault();
   // SQL brut réservé admin (garde-fou #2) : un non-admin envoie toujours GXQL (le serveur 403 sinon).
   const body = { name: $(PB.name).value.trim() || 'Playbook', query: $(PB.query).value.trim(), is_soql: socIsAdmin() ? ($(PB.issoql).value === '1') : true, action_kind: $(PB.kind).value, interval_s: Number($(PB.interval).value) || 300, window_s: Number($(PB.window).value) || 3600, enabled: $(PB.enabled).checked };
   if (!body.query) { formMsg('#pb-result', 'requête requise', true); toast('requête requise', 'bad'); return; }
+  // `P11.25-a` — la durée du ban, toujours portée : `null` (défaut du serveur) ou des secondes entières ; refusée avant envoi.
+  const duree = lireLaDureeDeBan($(PB.banTtl).value, $(PB.banUnit).value);
+  if (duree.refus) { formMsg('#pb-result', duree.refus, true); return; }
+  body.ban_ttl_s = duree.ban_ttl_s;
   // garde-fous #1/#3 : le serveur valide (requête compile, action ∈ enum fermé). Erreur -> {error} affiché, formulaire OUVERT.
   if (!await contentSubmit(S.editingPb ? '/playbooks/' + S.editingPb : '/playbooks', body, '#pb-result')) return;
   $('#pb-form').classList.add('hidden');
   announceCreated('playbooks', 'actions', body.name, suiteDUnProducteurCree(body.enabled, body.interval_s, MOTS_DES_NOTES_DE_DETECTION.playbook_off)); // P11.1-e, `P10.29-c`
   loadPlaybooks();
-});
+}
+if ($('#pb-form')) $('#pb-form').addEventListener('submit', enregistrerLePlaybookDuFormulaire);
+// `P11.25-a` — l'option « ban_ip » suit la saisie : chaque frappe dans le champ, chaque changement d'unité.
+if ($(PB.banTtl)) $(PB.banTtl).addEventListener('input', etiqueterLesActionsSelonLeFormulaire);
+if ($(PB.banUnit)) $(PB.banUnit).addEventListener('change', etiqueterLesActionsSelonLeFormulaire);
+poserLesMotsDeLaDureeDeBan();
 loadPlaybooks();
 loadMode();
 
@@ -1742,4 +1852,6 @@ export { cleDuRefusDeRiposte, motDuRefusDeRiposte, OUVERTURE_DE_L_APPROBATION_SA
   OUVERTURE_DE_LA_RIPOSTE_NON_LUE, OUVERTURE_DE_L_APPROBATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_INTROUVABLE,
   // `P10.20-w` — et les deux de l'ANNULATION, nues elles aussi : chacune a une voisine dont elle ne
   // diffère que par un mot, et l'ordre des branches ne prouverait rien de cette différence-là.
-  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, reparserLesEvenements, MOTS_DU_REPARSE, loadPlaybooks, enregistrerLeCanalDuFormulaire, parserRow, notifRow, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel };
+  OUVERTURE_DE_L_ANNULATION_NON_ENREGISTREE, OUVERTURE_DE_LA_RIPOSTE_NON_ANNULABLE, renderCoverage, loadRules, renderRules, peindreLeMode, poserLaRechercheDesRegles, apresEnregistrementDUneRegle, ouvrirLesReglesDeLaTechnique, ouvrirLaCreationPourLaTechnique, loadNotifiers, loadParsers, loadActions, dessinerLesActions, poserLaRechercheDesActions, apresCreationDUneAction, texteCherchableDUneAction, laFenetreBorneLeRegistre, loadMode, basculerLeMode, reparserLesEvenements, MOTS_DU_REPARSE, loadPlaybooks, enregistrerLeCanalDuFormulaire, parserRow, notifRow, motDeLaBorneDesActions, ruleRowModel, ruleRow, texteCherchableDUneRegle, playbookRowModel, pbRow, actionKindOptionLabel,
+  // `P11.25-a` (console) — la durée du ban d'un playbook, jugée par les témoins 170-172.
+  dureeDeBanEnUnite, lireLaDureeDeBan, dureeDeBanLisible, openPbForm, enregistrerLePlaybookDuFormulaire, UNITES_DE_LA_DUREE_DE_BAN };

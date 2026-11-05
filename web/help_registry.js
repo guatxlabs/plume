@@ -518,7 +518,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • Deux familles sous l'onglet Playbooks, nommées dans leur en-tête : « Playbooks — règles de réponse » (une condition, une action, un interrupteur) et « Runbooks — guides d'incident » (des étapes, attachées à un cas). Un playbook se déclenche seul ; un runbook jamais.
 • Mode Observation (vert) = propositions seulement, rien n'est exécuté.
 • Mode ACTIF (rouge) = les playbooks exécutent la riposte automatiquement.
-• Playbook = une règle de réponse : condition (requête dont la 1re colonne = la cible) -> action (ban / kill / stop), évaluée à intervalle régulier. Pas besoin d'un runbook autour. Le choix d'action dit ce qu'il fait, et la durée du ban est celle que posent les exécuteurs (servie, jamais écrite dans l'interface).
+• Playbook = une règle de réponse : condition (requête dont la 1re colonne = la cible) -> action (ban / kill / stop), évaluée à intervalle régulier. Pas besoin d'un runbook autour. Le choix d'action dit ce qu'il fait, et la durée du ban d'une riposte ban_ip est celle du champ « Durée du ban » du playbook ; vide, c'est le défaut du serveur. L'agent d'un hôte distant garde sa propre durée (PLUME_BAN_DURATION).
 • L'interrupteur de chaque playbook dit ON ou OFF et, à côté, ce qu'il arme (ex. « bannit l'IP source pendant N h … ») ; l'activation demande confirmation, car elle touche le réseau ou un processus. Repasser sur OFF arrête les nouvelles actions.
 • Où ça arrive : les actions posées dans l'onglet Actions (en attente / dry-run en Observation ; exécutées en Actif).
 • Runbook = guide d'incident (checklist phasée, manuelle), proposé dans un Cas élevé en incident ; ses étapes « response » préparent une action soumise à approbation. Les livrés se lisent (« Étapes ») et se clonent ; seuls les custom s'éditent.
@@ -530,7 +530,7 @@ Time stored in UTC ; display follows the time-zone selector.` },
 • Two families under the Playbooks tab, named in their header: "Playbooks — response rules" (a condition, an action, a switch) and "Runbooks — incident guides" (steps, attached to a case). A playbook fires on its own; a runbook never does.
 • Observe mode (green) = proposals only, nothing is executed.
 • ACTIVE mode (red) = playbooks run the response automatically.
-• Playbook = a response rule: condition (a query whose 1st column = the target) -> action (ban / kill / stop), evaluated on an interval. No runbook needed around it. The action choice says what it does, and the ban duration is the one the executors set (served, never written in the interface).
+• Playbook = a response rule: condition (a query whose 1st column = the target) -> action (ban / kill / stop), evaluated on an interval. No runbook needed around it. The action choice says what it does, and the ban duration of a ban_ip response is the playbook's “Ban duration” field; empty, it is the server default. A remote host's agent keeps its own duration (PLUME_BAN_DURATION).
 • Each playbook's switch reads ON or OFF and, next to it, what it arms (e.g. "bans the source IP for N h …"); enabling asks for confirmation, since it touches the network or a process. Switching back to OFF stops new actions.
 • Where it lands: the actions it posts in the Actions tab (pending / dry-run in Observe; executed in Active).
 • Runbook = incident guide (phased manual checklist), proposed in a Case raised to incident; its "response" steps prepare an action subject to approval. Shipped ones can be read ("Steps") and cloned; only custom ones are edited.

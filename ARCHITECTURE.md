@@ -135,6 +135,9 @@ label de VOTRE ingress controller) — aucun autre pod ne peut atteindre le daem
   `bootstrap-agent.sh` sur une installation d'agent neuve, PAS le repli du script : celui-ci, employé quand la
   variable n'est pas posée, vaut `/etc/plume/responder.allow` et partage donc son chemin avec la liste de
   services du démon ; les deux valeurs sont vraies, de deux objets différents). Token **lié à l'hôte** (anti-IDOR).
+  Durée du ban (`P11.25-a`) : celle que sert le central (`ban_ttl_s`, forme JSON par ligne demandée si l'hôte
+  a `jq` ou `python3`), repli dit sur `PLUME_BAN_DURATION` sinon ; une file servie en non-200 n'est jamais
+  exécutée (sortie 3). Détail : `docs/AGENTS-PROTOCOLE.md` §6.
   ⚠️ **Deux politiques, deux fichiers, deux lecteurs — et ils ne se recouvrent pas** (`P4.7-a`/`P4.7-b`) :
   ce fichier-ci porte des **adresses à ne jamais bannir**, lues par `is_ip` (shell) ; le démon lit
   `PLUME_STOP_SERVICE_ALLOW` (même chemin historique `/etc/plume/responder.allow`) comme des **noms de

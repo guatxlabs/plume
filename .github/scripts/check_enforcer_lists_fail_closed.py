@@ -149,7 +149,14 @@ while [ $# -gt 0 ]; do
 done
 [ -n "${ENTREES_CURL:-}" ] && case "$entree" in *Authorization*) echo auth-par-stdin >> "$ENTREES_CURL" ;; *) echo auth-absente >> "$ENTREES_CURL" ;; esac
 case "$url" in
-  *"/api/actions/pending"*) printf '%s\n' "$PENDING_TSV" ;;
+  *"/api/actions/pending"*)
+    # `P11.25-a` : la file part dans `-o` et `-w` rend `<statut> <type>`, comme curl ; ici le TSV d'un central.
+    if [ -n "$sortie" ]; then
+      printf '%s\n' "$PENDING_TSV" > "$sortie"
+      [ -n "$format" ] && printf '200 text/plain; charset=utf-8'
+    else
+      printf '%s\n' "$PENDING_TSV"
+    fi ;;
   *"/api/actions/result"*)
     printf '%s\n' "$corps" >> "$RESULTATS"
     statut=200

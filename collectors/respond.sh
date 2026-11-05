@@ -9,6 +9,14 @@
 # cette liste n est pas lisible, aucun ban n est applique et le refus est NOMME au central (cause
 # dans l ensemble ferme source_absente / source_refusee / source_illisible). Un `unban_ip` n y est
 # PAS soumis : il ne baisse aucune defense, et le refuser verrouillerait l operateur.
+# `P11.25-a` — LA DUREE DU BAN EST CELLE QUE SERT LE CENTRAL. Si l hote sait lire du JSON (jq, sinon
+# python3 -I), la file est demandee en JSON par ligne (`Accept: application/x-ndjson`) et chaque `ban_ip`
+# porte `ban_ttl_s` (entier de secondes, 1..31536000) : CrowdSec la recoit en `-d <n>s`, nft en timeout
+# d element dans le set `inet plume blocklist_ttl`, fail2ban ne la porte pas (bantime de la jail) et le
+# resultat remis le DIT. Une valeur hors contrat sur un `ban_ip` => `failed` avec la cause, rien applique.
+# Repli sur PLUME_BAN_DURATION SEULEMENT si la duree n est pas servie (central en TSV, ou aucun lecteur
+# JSON sur l hote), et le resultat remis le dit avec sa cause. Une reponse non-200 (ou curl en echec)
+# n est JAMAIS lue comme une file : journal stderr nomme, code de sortie 3, rien execute. Detail plus bas.
 set -eu
 
 # P5.5-a — L'AUTH NE PASSE PAS PAR argv. Un argument de processus est public : mesure du 2026-08-02,
@@ -287,26 +295,59 @@ unban_all() {
   OUT=""
   if command -v fail2ban-client >/dev/null 2>&1; then OUT="$OUT [f2b]$(fail2ban-client unban "$1" 2>&1 || true)"; fi
   if [ "$CSCLI_OK" = 1 ]; then OUT="$OUT [cs]$(cscli_cmd decisions delete -i "$1" 2>&1 || true)"; fi
-  if nft list table inet plume >/dev/null 2>&1; then r=$(nft delete element inet plume blocklist "{ $1 }" 2>&1 || true); OUT="$OUT [nft]$r"; fi
+  if nft list table inet plume >/dev/null 2>&1; then
+    r=$(nft delete element inet plume blocklist "{ $1 }" 2>&1 || true); OUT="$OUT [nft]$r"
+    # `P11.25-a` : les bans a duree vivent dans le second set (cf. `ensure_nft`) ; best-effort aussi.
+    if nft list set inet plume blocklist_ttl >/dev/null 2>&1; then r=$(nft delete element inet plume blocklist_ttl "{ $1 }" 2>&1 || true); OUT="$OUT [nft-ttl]$r"; fi
+  fi
   [ -n "$OUT" ] || { OUT='aucun backend de ban disponible'; return 1; }
   return 0
 }
-ensure_nft() {           # cree (idempotent) la table/set nft dediee Plume (fallback uniquement)
-  nft list table inet plume >/dev/null 2>&1 && return 0
-  nft add table inet plume 2>/dev/null || true
-  nft add set inet plume blocklist '{ type ipv4_addr; flags interval; }' 2>/dev/null || true
-  nft add chain inet plume input '{ type filter hook input priority -150; policy accept; }' 2>/dev/null || true
-  nft add rule inet plume input ip saddr @blocklist drop 2>/dev/null || true
+# ================================================================================================
+# `P11.25-a` — NFT : UN BAN A DUREE VA DANS UN SET QUI PORTE LE TIMEOUT, L ANCIEN SET N EST PAS TOUCHE.
+# ------------------------------------------------------------------------------------------------
+# Le set historique `inet plume blocklist` est cree `flags interval` SANS `timeout` : un element y est
+# PERMANENT, et nft ne sait pas ajouter un drapeau a un set existant. Le migrer en place voudrait dire
+# le DETRUIRE (regle comprise) puis le recreer — c est-a-dire lever en silence tous les bans qu il porte.
+# DECISION : le set historique reste tel quel (ses elements deja poses restent, `unban_ip` les retire
+# toujours) ; un second set `inet plume blocklist_ttl` (`flags timeout`) recoit desormais chaque ban, avec
+# le timeout de la duree effective (servie, ou PLUME_BAN_DURATION en repli dit), et sa propre regle `drop`
+# dans la meme chaine. `ensure_nft` le cree aussi sur une table DEJA existante (hote deja equipe).
+# Plus aucun ban nft n est donc pose sans duree. Une duree de repli illisible pour nft (autre chose que
+# `<n>s/m/h/d`) OU NULLE (`0s`, `00h0m` : nft n emet pas de timeout nul, l element serait sans fin)
+# => le ban est `failed` avec la cause, jamais pose permanent.
+# CE QUI N EST PAS TENU : un noyau ou un nft qui refuse le timeout demande rend son erreur dans le
+# resultat (`failed`), il n est pas contourne.
+NFT_SET_TTL=blocklist_ttl
+ensure_nft() {           # cree (idempotent) la table/sets nft dedies Plume (fallback uniquement)
+  if ! nft list table inet plume >/dev/null 2>&1; then
+    nft add table inet plume 2>/dev/null || true
+    nft add set inet plume blocklist '{ type ipv4_addr; flags interval; }' 2>/dev/null || true
+    nft add chain inet plume input '{ type filter hook input priority -150; policy accept; }' 2>/dev/null || true
+    nft add rule inet plume input ip saddr @blocklist drop 2>/dev/null || true
+  fi
+  nft list set inet plume "$NFT_SET_TTL" >/dev/null 2>&1 && return 0
+  nft add set inet plume "$NFT_SET_TTL" '{ type ipv4_addr; flags timeout; }' 2>/dev/null || true
+  nft add rule inet plume input ip saddr "@$NFT_SET_TTL" drop 2>/dev/null || true
 }
+# Lisible ET non nulle : au moins un chiffre non nul (`0h30m` passe, `0s` non).
+duree_lisible_par_nft() { printf '%s' "$1" | grep -qE '^([0-9]+[dhms])+$' && printf '%s' "$1" | grep -q '[1-9]'; }
+# La duree EFFECTIVE du ban en cours et sa PROVENANCE, posees par `traiter_action` avant plan/enforce.
+EFF_DUR="$DUR"; DUR_PROV="PLUME_BAN_DURATION de l hote"
 plan() {                 # kind target -> imprime la commande qui SERAIT executee (pour dry-run + trace)
   [ "$1" = unban_ip ] && { printf 'unban %s (best-effort: fail2ban tous jails + cscli + nft plume)' "$2"; return; }
   case "$backend:$1" in
-    crowdsec:ban_ip)   printf 'cscli decisions add -i %s -d %s -t ban -R plume-playbook' "$2" "$DUR" ;;
+    crowdsec:ban_ip)   printf 'cscli decisions add -i %s -d %s -t ban -R plume-playbook [duree %s : %s]' "$2" "$EFF_DUR" "$EFF_DUR" "$DUR_PROV" ;;
     crowdsec:unban_ip) printf 'cscli decisions delete -i %s' "$2" ;;
-    fail2ban:ban_ip)   printf 'fail2ban-client set %s banip %s' "$JAIL" "$2" ;;
+    fail2ban:ban_ip)   printf 'fail2ban-client set %s banip %s [duree %s (%s) NON portee par fail2ban : le ban dure le bantime de la jail %s]' "$JAIL" "$2" "$EFF_DUR" "$DUR_PROV" "$JAIL" ;;
     fail2ban:unban_ip) printf 'fail2ban-client set %s unbanip %s' "$JAIL" "$2" ;;
-    nft:ban_ip)        printf 'nft add element inet plume blocklist { %s }' "$2" ;;
-    nft:unban_ip)      printf 'nft delete element inet plume blocklist { %s }' "$2" ;;
+    nft:ban_ip)
+      if duree_lisible_par_nft "$EFF_DUR"; then
+        printf 'nft add element inet plume %s { %s timeout %s } [duree %s : %s]' "$NFT_SET_TTL" "$2" "$EFF_DUR" "$EFF_DUR" "$DUR_PROV"
+      else
+        printf 'NON-APPLIQUE nft : duree %s (%s) illisible ou nulle comme timeout nft (attendu <n>s, m, h ou d, non nul) — aucun ban permanent pose a la place' "$EFF_DUR" "$DUR_PROV"
+      fi ;;
+    nft:unban_ip)      printf 'nft delete element inet plume blocklist { %s } puis blocklist_ttl' "$2" ;;  # inatteignable : unban_ip sort plus haut
     *)                 printf 'NON-SUPPORTE %s/%s' "$backend" "$1" ;;
   esac
 }
@@ -314,12 +355,14 @@ enforce() {              # kind target -> applique ; renvoie 0/!=0, sortie dans 
   k="$1"; t="$2"
   [ "$k" = unban_ip ] && { unban_all "$t"; return $?; }   # unban = tous backends (k3s-aware)
   case "$backend:$k" in
-    crowdsec:ban_ip)   OUT=$(cscli_cmd decisions add -i "$t" -d "$DUR" -t ban -R plume-playbook 2>&1) ;;
+    crowdsec:ban_ip)   OUT=$(cscli_cmd decisions add -i "$t" -d "$EFF_DUR" -t ban -R plume-playbook 2>&1) ;;
     crowdsec:unban_ip) OUT=$(cscli decisions delete -i "$t" 2>&1) ;;
     fail2ban:ban_ip)   OUT=$(fail2ban-client set "$JAIL" banip "$t" 2>&1) ;;
     fail2ban:unban_ip) OUT=$(fail2ban-client set "$JAIL" unbanip "$t" 2>&1) ;;
-    nft:ban_ip)        ensure_nft; OUT=$(nft add element inet plume blocklist "{ $t }" 2>&1) ;;
-    nft:unban_ip)      OUT=$(nft delete element inet plume blocklist "{ $t }" 2>&1) ;;
+    nft:ban_ip)
+      duree_lisible_par_nft "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle comme timeout nft, rien pose"; return 1; }
+      ensure_nft; OUT=$(nft add element inet plume "$NFT_SET_TTL" "{ $t timeout $EFF_DUR }" 2>&1) ;;
+    nft:unban_ip)      unban_all "$t"; return $? ;;  # inatteignable : unban_ip sort plus haut ; les deux sets
     *)                 OUT="backend/kind non supporte: $backend/$k"; return 1 ;;
   esac
 }
@@ -547,28 +590,174 @@ post_result() {          # id status result (auth par stdin, jamais en argv)
   done
 }
 
-# --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---
-rejouer_les_verdicts_retenus
+# ================================================================================================
+# `P11.25-a` — LA FILE EST DEMANDEE EN JSON PAR LIGNE SI CET HOTE SAIT LA LIRE, ET LE STATUT EST JUGE.
+# ------------------------------------------------------------------------------------------------
+# CONTRAT DU CENTRAL (docs/AGENTS-PROTOCOLE.md §6, `actions_pending` dans daemon/src/handlers/actions.rs) :
+# sans `Accept` (ou `*/*`), le TSV a quatre champs `id kind target dry_run`, inchange ; sous
+# `Accept: application/x-ndjson`, un objet JSON par ligne, servi avec ce type de contenu, ou `ban_ttl_s`
+# (entier, secondes, jamais nul) est present sur chaque `ban_ip` et absent des autres genres ; cent
+# actions au plus par tour ; 503 quand rien n a pu etre reclame.
+# CE QUI SE PASSAIT : `list=$(curl -sS ...) || exit 0`, sans `-f` ni lecture du statut. Le CORPS d un 503
+# (ou de tout non-200) etait parse comme une liste : une ligne qui y aurait commence par un chiffre
+# serait devenue une action. Et la duree du ban etait celle de l hote (`-d $PLUME_BAN_DURATION`),
+# jamais celle du playbook.
+# CE QUI EST FAIT :
+#   1. LECTEUR : `jq`, sinon `python3 -I` (isole : ni le repertoire courant ni l environnement Python ne
+#      chargent de code), sinon AUCUN — et sans lecteur, l en-tete `Accept` n est PAS envoye : le central
+#      sert le TSV, la duree n est pas servie, le repli est dit.
+#   2. STATUT : le corps va dans un fichier borne, le statut et le type de contenu sont lus par `-w`.
+#      curl en echec, ou tout statut autre que 200 => journal stderr nomme (statut, reponse bornee),
+#      CODE DE SORTIE 3 (l unite passe `failed`, visible), AUCUNE action executee ni verdict remis.
+#   3. FORME : JSON par ligne SEULEMENT si le type servi est `application/x-ndjson` ; tout autre type
+#      (un central anterieur qui ignore l en-tete) => chemin TSV inchange, duree non servie, repli dit.
+#   4. CHAQUE LIGNE JSON est jugee par le lecteur, qui ne rend que des enregistrements tabules a
+#      champs ASCII imprimables : une ligne illisible (JSON invalide, pas un objet, `id` illisible) est
+#      IGNOREE ET DITE sur stderr (numero de ligne, cause), les autres sont servies ; un `id` lisible
+#      dont `kind`/`target`/`dry_run` ne sont pas du contrat => `failed` avec la cause ; champs inconnus
+#      ignores. AUCUNE valeur servie n est evaluee par le shell (pas d eval) ; la cible passe toujours
+#      par `is_ip`, `protected` et la liste d epargne, comme en TSV.
+#   5. DUREE (ban_ip) : un entier de 1 a 31536000 => appliquee (`<n>s`) ; nulle, absente, non
+#      numerique, non entiere ou hors borne => `failed` avec la cause, RIEN applique. La valeur entiere
+#      est jugee sur sa VALEUR (`5400.0` est 5400 pour jq comme pour python3).
+#   6. REPLI : PLUME_BAN_DURATION seulement quand la duree n est pas servie (TSV), et le resultat remis
+#      (dry-run compris) porte la duree effective, sa provenance et la cause du repli.
+FILE_OCTETS_MAX=262144
+TYPE_FILE_JSON="application/x-ndjson"
+LECTEUR_JSON=""
+if command -v jq >/dev/null 2>&1; then LECTEUR_JSON=jq
+elif command -v python3 >/dev/null 2>&1; then LECTEUR_JSON=python3; fi
 
-# --- recupere la liste (TSV: id  kind  target  dry_run), 1 action/ligne ---
-# shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
-list=$(resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 "$CENTRAL/api/actions/pending?host=$HOSTN" 2>/dev/null) || exit 0
-[ -n "$list" ] || exit 0
+# Une ligne servie -> UN enregistrement tabule : `B` (ligne blanche), `X<TAB>cause` (illisible, sans id),
+# `F<TAB>id<TAB>cause` (id lisible, champ hors contrat), `A<TAB>id<TAB>kind<TAB>target<TAB>dry(0|1)<TAB>duree`
+# ou duree = chiffres (servie, dans la borne) | `-` (pas un ban_ip) | `!cause` (hors contrat). `kind` et
+# `target` sont non vides et en ASCII imprimable sans espace : aucun separateur ne peut y passer.
+# Un `id` -0 est rendu `0` par les deux lecteurs (jq l ecrirait `-0`, que la boucle ne lit pas comme un
+# id : la ligne serait perdue sans verdict ni journal).
+# Les deux lecteurs portent la MEME table de decision ; la garde
+# `check_responder_applies_the_ban_duration_served_by_the_central.py` les joue sur le meme corpus.
+JQ_FILE_JSON='
+def blanc: (explode | all(. == 32 or . == 9 or . == 13));
+def hors_ascii: (explode | any(. < 33 or . > 126));
+def entier: (type == "number" and . == floor);
+if blanc then "B"
+else ((try fromjson catch null) as $o
+  | if ($o | type) != "object" then "X\tjson_illisible"
+    elif ((($o.id | entier) and $o.id >= 0 and $o.id <= 9007199254740991) | not) then "X\tid_illisible"
+    else (($o.id | floor) + 0 | tostring) as $id
+      | if ($o.kind | type) != "string" or $o.kind == "" or ($o.kind | hors_ascii) then "F\t\($id)\tkind_illisible"
+        elif ($o.target | type) != "string" or $o.target == "" or ($o.target | hors_ascii) then "F\t\($id)\ttarget_illisible"
+        elif ($o.dry_run | type) != "boolean" then "F\t\($id)\tdry_run_illisible"
+        else
+          (if $o.kind != "ban_ip" then "-"
+           elif ($o | has("ban_ttl_s")) | not then "!absente"
+           elif $o.ban_ttl_s == null then "!nulle"
+           elif ($o.ban_ttl_s | type) != "number" then "!non_numerique"
+           elif ($o.ban_ttl_s | entier | not) then "!non_entiere"
+           elif $o.ban_ttl_s < 1 or $o.ban_ttl_s > 31536000 then "!hors_borne"
+           else ($o.ban_ttl_s | floor | tostring) end) as $duree
+          | "A\t\($id)\t\($o.kind)\t\($o.target)\t\(if $o.dry_run then 1 else 0 end)\t\($duree)"
+        end
+    end)
+end'
+PY_FILE_JSON='
+import json, sys
+BORNE_ID = 9007199254740991
+BORNE_DUREE = 31536000
+def hors_ascii(s):
+    return any(ord(c) < 33 or ord(c) > 126 for c in s)
+def nombre(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+def entier(v):
+    return nombre(v) and (isinstance(v, int) or v.is_integer())
+def refuser(nom):
+    raise ValueError(nom)
+def ligne(brut):
+    if brut.strip(" \t\r") == "":
+        return "B"
+    try:
+        o = json.loads(brut, parse_constant=refuser)
+    except Exception:
+        return "X\tjson_illisible"
+    if not isinstance(o, dict):
+        return "X\tjson_illisible"
+    i = o.get("id")
+    if not entier(i) or i < 0 or i > BORNE_ID:
+        return "X\tid_illisible"
+    i = str(int(i))
+    k, t, d = o.get("kind"), o.get("target"), o.get("dry_run")
+    if not isinstance(k, str) or k == "" or hors_ascii(k):
+        return "F\t" + i + "\tkind_illisible"
+    if not isinstance(t, str) or t == "" or hors_ascii(t):
+        return "F\t" + i + "\ttarget_illisible"
+    if not isinstance(d, bool):
+        return "F\t" + i + "\tdry_run_illisible"
+    if k != "ban_ip":
+        duree = "-"
+    elif "ban_ttl_s" not in o:
+        duree = "!absente"
+    elif o["ban_ttl_s"] is None:
+        duree = "!nulle"
+    elif not nombre(o["ban_ttl_s"]):
+        duree = "!non_numerique"
+    elif not entier(o["ban_ttl_s"]):
+        duree = "!non_entiere"
+    elif o["ban_ttl_s"] < 1 or o["ban_ttl_s"] > BORNE_DUREE:
+        duree = "!hors_borne"
+    else:
+        duree = str(int(o["ban_ttl_s"]))
+    return "\t".join(["A", i, k, t, "1" if d else "0", duree])
+morceaux = sys.stdin.buffer.read().decode("utf-8", "replace").split("\n")
+if morceaux and morceaux[-1] == "":
+    morceaux.pop()
+sys.stdout.write("".join(ligne(m) + "\n" for m in morceaux))
+'
+convertir_la_file_json() {   # <corps> <enregistrements> -> 0 si le lecteur a lu tout le corps
+  case "$LECTEUR_JSON" in
+    jq)      jq -R -r "$JQ_FILE_JSON" < "$1" > "$2" ;;
+    python3) python3 -I -c "$PY_FILE_JSON" < "$1" > "$2" ;;
+    *)       return 1 ;;
+  esac
+}
+# lire_la_file <fichier-corps> [en-tetes curl...] -> imprime `<statut> <type de contenu>` ; code = celui de curl.
+lire_la_file() {
+  _lf_corps=$1; shift
+  # shellcheck disable=SC2086  ($HH = 0 ou 2 tokens, expansion voulue)
+  resp_curl_auth_stdin | curl -K - $HH $TLS -sS --max-time 15 --max-filesize "$FILE_OCTETS_MAX" "$@" \
+    -o "$_lf_corps" -w '%{http_code} %{content_type}' "$CENTRAL/api/actions/pending?host=$HOSTN" 2>/dev/null
+}
 
-printf '%s\n' "$list" | while IFS='	' read -r id kind target dry; do
-  [ -n "${id:-}" ] || continue
-  case "$id" in *[!0-9]*) continue ;; esac          # id doit etre numerique
+# traiter_action <id> <kind> <target> <dry> <duree> — duree : chiffres (servie) | `?` (non servie, TSV)
+# | `!cause` (servie hors contrat) | `-` (pas un ban). Le corps est celui de l ancienne boucle TSV.
+traiter_action() {
+  id=$1; kind=$2; target=$3; dry=$4; _ta_duree=$5
+  [ -n "${id:-}" ] || return 0
+  case "$id" in *[!0-9]*) return 0 ;; esac          # id doit etre numerique
   # `P10.21-j` — l action a deja ete appliquee, seul son verdict manque au central : la reexecuter
   # poserait un second ban et remonterait un second verdict. Le rejeu la remettra.
   if verdict_en_attente_de_remise "$id"; then
     echo "respond: #$id NON reexecutee : son verdict attend deja sa remise ($REJEU_FICHIER)" >&2
-    continue
+    return 0
   fi
-  if ! is_ip "$target"; then post_result "$id" failed "cible non-IP: $target"; continue; fi
-  if protected "$target"; then post_result "$id" failed "IP protegee (reservee/centrale): $target"; continue; fi
+  if [ "$kind" = ban_ip ]; then
+    case "$_ta_duree" in
+      '?') EFF_DUR="$DUR"; DUR_PROV="PLUME_BAN_DURATION de l hote, duree NON servie : $DUREE_NON_SERVIE" ;;
+      !*)
+        post_result "$id" failed "duree du ban servie HORS CONTRAT (cause=${_ta_duree#!}) : RIEN n est applique (ban_ttl_s attendu : entier de secondes, 1 a 31536000)"
+        echo "respond: #$id duree du ban servie hors contrat (${_ta_duree#!}), rien applique" >&2
+        return 0 ;;
+      ''|*[!0-9]*)
+        post_result "$id" failed "duree du ban illisible : RIEN n est applique"
+        echo "respond: #$id duree du ban illisible, rien applique" >&2
+        return 0 ;;
+      *) EFF_DUR="${_ta_duree}s"; DUR_PROV="servie par le central" ;;
+    esac
+  fi
+  if ! is_ip "$target"; then post_result "$id" failed "cible non-IP: $target"; return 0; fi
+  if protected "$target"; then post_result "$id" failed "IP protegee (reservee/centrale): $target"; return 0; fi
   verdict=$(verdict_liste_epargne "$ALLOWFILE" "$ALLOW_CONFIGUREE" "$target")
   case "$verdict" in
-    epargnee) post_result "$id" failed "IP protegee (liste d epargne): $target"; continue ;;
+    epargnee) post_result "$id" failed "IP protegee (liste d epargne): $target"; return 0 ;;
     illisible:*)
       # FAIL-CLOSED, ET L ARBITRAGE EST ECRIT. Refuser coute une action de reponse non appliquee :
       # elle reste visible au central en `failed` avec sa cause, et se rejoue des la liste relue.
@@ -580,7 +769,7 @@ printf '%s\n' "$list" | while IFS='	' read -r id kind target dry; do
       if [ "$kind" != unban_ip ]; then
         post_result "$id" failed "REFUS (fail-closed): liste d epargne non lue (cause=${verdict#illisible:}) sur $ALLOWFILE — aucun ban applique tant que la liste des IP a NE JAMAIS bannir n est pas lisible"
         echo "respond: #$id REFUS fail-closed (liste d epargne ${verdict#illisible:}: $ALLOWFILE)" >&2
-        continue
+        return 0
       fi
       # `unban_ip` ne BAISSE aucune defense : il en leve une. Lui appliquer le refus transformerait
       # une panne de lecture en ban qu on ne peut plus lever, c est a dire en verrouillage.
@@ -591,7 +780,7 @@ printf '%s\n' "$list" | while IFS='	' read -r id kind target dry; do
   if [ "$APPLY" != "1" ] || [ "${dry:-1}" = "1" ]; then
     post_result "$id" dryrun "[dry-run] $cmd"
     echo "respond: [dry-run] #$id $cmd" >&2
-    continue
+    return 0
   fi
   if enforce "$kind" "$target"; then
     post_result "$id" done "$cmd | $OUT"
@@ -600,4 +789,65 @@ printf '%s\n' "$list" | while IFS='	' read -r id kind target dry; do
     post_result "$id" failed "$cmd | $OUT"
     echo "respond: #$id ECHEC ($cmd): $OUT" >&2
   fi
-done
+}
+
+# --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---
+rejouer_les_verdicts_retenus
+
+# --- recupere la file dans un fichier borne ; statut et type de contenu lus par `-w` ---
+_file_corps=$(mktemp 2>/dev/null) || { echo "respond: file d actions NON LUE : fichier temporaire refuse (mktemp) — aucune action recuperee ni executee" >&2; exit 3; }
+_file_enreg=$(mktemp 2>/dev/null) || { rm -f "$_file_corps"; echo "respond: file d actions NON LUE : fichier temporaire refuse (mktemp) — aucune action recuperee ni executee" >&2; exit 3; }
+trap 'rm -f "$_file_corps" "$_file_enreg"' EXIT
+if [ -n "$LECTEUR_JSON" ]; then
+  if _file_w=$(lire_la_file "$_file_corps" -H "Accept: $TYPE_FILE_JSON"); then _file_rc=0; else _file_rc=$?; fi
+else
+  if _file_w=$(lire_la_file "$_file_corps"); then _file_rc=0; else _file_rc=$?; fi
+fi
+_file_code=${_file_w%% *}
+case "$_file_w" in *" "*) _file_type=${_file_w#* } ;; *) _file_type="" ;; esac
+if [ "$_file_rc" != 0 ] || [ "$_file_code" != 200 ]; then
+  _file_lu=$(dd if="$_file_corps" bs="$RESULTAT_CORPS_LU" count=1 2>/dev/null | tr '\000-\037' ' ' | sans_caractere_entame) || _file_lu=""
+  echo "respond: file d actions NON LUE (HTTP ${_file_code:-illisible}, curl code $_file_rc) : AUCUNE action executee ni verdict remis ce tour-ci — ce n est pas une file vide : $(reponse_bornee "$_file_lu")" >&2
+  exit 3
+fi
+[ -s "$_file_corps" ] || exit 0                        # 200 et corps vide : rien a faire (silence honnete)
+
+_file_type_nu=$(printf '%s' "$_file_type" | tr 'A-Z' 'a-z' | sed -e 's/;.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ "$_file_type_nu" = "$TYPE_FILE_JSON" ]; then
+  if [ -z "$LECTEUR_JSON" ]; then
+    echo "respond: file d actions servie en $TYPE_FILE_JSON SANS avoir ete demandee, et aucun lecteur JSON sur cet hote : AUCUNE action executee" >&2
+    exit 3
+  fi
+  if ! convertir_la_file_json "$_file_corps" "$_file_enreg"; then
+    echo "respond: lecture de la file JSON par $LECTEUR_JSON en ECHEC : AUCUNE action executee ce tour-ci" >&2
+    exit 3
+  fi
+  _n=0
+  while IFS='	' read -r _r_typ _r_2 _r_3 _r_4 _r_5 _r_6 <&7 || [ -n "${_r_typ:-}" ]; do
+    _n=$((_n + 1))
+    case "$_r_typ" in
+      B) continue ;;
+      X) echo "respond: file JSON : ligne $_n ILLISIBLE (cause=${_r_2:-inconnue}), ignoree — les autres actions sont servies" >&2 ;;
+      F)
+        case "${_r_2:-}" in ''|*[!0-9]*) echo "respond: file JSON : ligne $_n ILLISIBLE, ignoree" >&2; continue ;; esac
+        if verdict_en_attente_de_remise "$_r_2"; then
+          echo "respond: #$_r_2 NON reexecutee : son verdict attend deja sa remise ($REJEU_FICHIER)" >&2; continue
+        fi
+        post_result "$_r_2" failed "action servie HORS CONTRAT (cause=${_r_3:-inconnue}) : rien n est applique"
+        echo "respond: #$_r_2 action servie hors contrat (${_r_3:-inconnue}), rien applique" >&2 ;;
+      A) traiter_action "${_r_2:-}" "${_r_3:-}" "${_r_4:-}" "${_r_5:-}" "${_r_6:-}" ;;
+      *) echo "respond: file JSON : ligne $_n non comprise du lecteur, ignoree" >&2 ;;
+    esac
+  done 7< "$_file_enreg"
+  exit 0
+fi
+
+# --- chemin TSV (id  kind  target  dry_run), 1 action/ligne : la duree n est pas servie ---
+if [ -n "$LECTEUR_JSON" ]; then
+  DUREE_NON_SERVIE="le central a servi du TSV malgre la demande de JSON par ligne (central anterieur a la duree servie)"
+else
+  DUREE_NON_SERVIE="aucun lecteur JSON sur cet hote (ni jq ni python3), file demandee en TSV"
+fi
+while IFS='	' read -r id kind target dry <&7 || [ -n "${id:-}" ]; do
+  traiter_action "${id:-}" "${kind:-}" "${target:-}" "${dry:-}" '?'
+done 7< "$_file_corps"

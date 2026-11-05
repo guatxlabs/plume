@@ -1364,7 +1364,7 @@ printf '%s\n' "$url" >> "$FAKE_DIR/curl.urls"
 [ "$k" = 1 ] && printf '%s\n' "$entree" >> "$FAKE_DIR/curl.k"
 ecrire() { if [ -n "$sortie" ]; then printf '%s' "$1" > "$sortie"; else printf '%s' "$1"; fi; }
 case "$url" in
-  */api/actions/pending*) printf '7\tban_ip\t203.0.113.7\t0\n' ;;
+  */api/actions/pending*) ecrire "$(printf '7\tban_ip\t203.0.113.7\t0')"; printf '200 text/plain' ;;
   */api/actions/result) ecrire '{"ok":true}'; printf 200 ;;
   */api/engagements/active) ecrire '[]'; printf 200 ;;
   */api/metrics/prom*) if [ -f "$FAKE_DIR/code-prom" ]; then cat "$FAKE_DIR/code-prom"; else printf 200; fi ;;
@@ -1485,7 +1485,8 @@ def juger_admis(scen, bac, nom, r, url, mot_attendu):
         faute(scen, f"l'opt-in passe sans {mot_attendu!r} : {r.stderr[:300]!r}")
     if url is not None and (url.rstrip("/") + chemin_central(nom)) not in urls:
         faute(scen, f"le central n'est pas appelé à {url + chemin_central(nom)!r} : {urls!r}")
-    if nom == "respond.sh" and "add element inet plume blocklist { 203.0.113.7 }" not in enforcement(bac):
+    # `P11.25-a` : le ban nft porte sa durée (timeout) dans le set `blocklist_ttl` ; le set historique n'en reçoit plus.
+    if nom == "respond.sh" and "add element inet plume blocklist_ttl { 203.0.113.7 timeout " not in enforcement(bac):
         faute(scen, f"l'action servie n'est pas exécutée (instrument muet ?) : {enforcement(bac)!r} {r.stderr[:300]!r}")
     if nom == "engagement-adapter.sh" and "mode=reconcile" not in r.stderr:
         faute(scen, f"le cycle ne réconcilie pas : {r.stderr[-300:]!r}")

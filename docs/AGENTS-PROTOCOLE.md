@@ -378,9 +378,24 @@ JSON par ligne (type de contenu `application/x-ndjson`), par exemple :
   le central applique aussi (approbation, blocage HTTP, commande CrowdSec du responder local) — la durée
   posée par le playbook, ou la durée par défaut si la riposte n'en porte pas. Il est présent sur **chaque**
   `ban_ip`, jamais nul, et **absent** de tout autre genre (`unban_ip`).
-- Contrat de l'agent : il ne se replie sur `PLUME_BAN_DURATION` que si le champ est **absent** d'un
-  `ban_ip` — le cas d'un démon antérieur, qui ignore l'en-tête et répond en TSV. (`collectors/respond.sh`
-  n'envoie pas encore l'en-tête.)
+- Contrat de l'agent : il ne se replie sur `PLUME_BAN_DURATION` que si la durée **n'est pas servie** —
+  réponse en TSV (un démon antérieur ignore l'en-tête), ou agent sans lecteur JSON qui n'a pas demandé
+  cette forme. Sous la forme JSON par ligne, un `ban_ip` dont `ban_ttl_s` est absent, nul, non entier ou
+  hors de 1 à 31 536 000 est **hors contrat** : l'action est rendue `failed` avec la cause, rien n'est
+  appliqué.
+- **Ce que fait `collectors/respond.sh`** : il envoie l'en-tête seulement s'il sait lire du JSON (`jq`,
+  sinon `python3 -I`), et ne prend le chemin JSON que si le type servi est `application/x-ndjson` (un
+  central qui sert du TSV malgré l'en-tête reprend le chemin TSV). Tout statut autre que `200`, ou un
+  `curl` en échec, n'est jamais lu comme une file : journal d'erreur nommé, code de sortie `3`, rien
+  d'exécuté. Une ligne JSON illisible est ignorée et dite au journal, les autres sont servies ; un champ
+  inconnu est ignoré ; aucune valeur servie n'est évaluée par le shell, la cible passe toujours par les
+  mêmes contrôles d'adresse, de plages réservées et de liste d'épargne. La durée part vers CrowdSec en
+  `-d <n>s` ; vers nft en timeout d'élément dans un set dédié `inet plume blocklist_ttl` (`flags timeout`),
+  le set historique `inet plume blocklist`, sans timeout, n'étant ni migré ni détruit (ses éléments déjà
+  posés restent ; un `unban_ip` retire l'adresse des deux sets) ; une durée de repli nulle ou illisible pour nft
+  n'est pas posée (`failed`, jamais un ban sans fin) ; fail2ban ne la porte pas (le ban dure le `bantime` de la
+  jail), et le résultat remis le dit. Chaque résultat remis, simulation comprise, porte la durée
+  effective et sa provenance (servie, ou `PLUME_BAN_DURATION` avec la cause du repli).
 - L'en-tête est lu type par type (casse ignorée). Un poids nul (`application/x-ndjson;q=0`) est un refus
   explicite de ce type : la réponse est alors le TSV.
 - Sans l'en-tête, la réponse reste le TSV à quatre champs, à l'octet. Un cinquième champ n'y est pas

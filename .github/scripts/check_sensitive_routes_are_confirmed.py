@@ -276,9 +276,17 @@ CONFIRMEES_PAR_APPELANT_ADMISES = frozenset((
     ("web/connectors.js", "testConnector"),
     ("web/dashboards.js", "addDashboardFlow"),
     ("web/dashboards.js", "captureSnapshot"),
+    # `P11.25-f` (console, 2026-11-05) — les trois gestes de vue sortis du corps d'`initDashboards` pour être joués par
+    # les témoins 177 à 182 : création d'une vue (POST /api/views), sa complétion après un 409 (POST
+    # /api/views/{id}/dashboards, qui n'ajoute que des rattachements) et son renommage (POST /api/views/{id}). Aucune
+    # de ces routes n'est sensible (rien n'est détruit, aucun droit élevé) ; ils étaient « contenus » par
+    # `initDashboards`, ils en sont désormais « nommés » — la portée n'a pas changé de geste, seulement de forme.
+    ("web/dashboards.js", "completerLaVueExistante"),
     ("web/dashboards.js", "createPanelModal"),
+    ("web/dashboards.js", "creerUneVue"),
     ("web/dashboards.js", "patchDash"),
     ("web/dashboards.js", "patchPanel"),
+    ("web/dashboards.js", "renommerLaVue"),
     ("web/datamodels.js", "runDataset"),
     ("web/destinations.js", "destinationRow"),
     ("web/detadv.js", "testBaseline"),

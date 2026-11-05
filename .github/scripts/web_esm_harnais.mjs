@@ -9848,8 +9848,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 //
 //     CE QUE CE TÉMOIN NE TIENT PAS : ni la mise en page ni l'encre peinte (section 0) ; il ne dit rien
 //     du DÉMON — ce que la route fait d'un `view_id` nul n'est pas mesuré ici ; il ne dit rien de la
-//     création d'un PANNEAU, qui a sa propre fenêtre ; et il ne rend pas « sans vue » filtrant, ce qui
-//     demanderait une écriture côté démon (la branche qui traiterait ce paramètre est morte).
+//     création d'un PANNEAU, qui a sa propre fenêtre. Le filtre « — Sans vue — » (`?view=none`), posé
+//     depuis par `P11.25-f`, est une AUTRE entrée du sélecteur : il est jugé par (178), pas ici.
 // ---------------------------------------------------------------------------------------------
 {
   const modDash69 = await import(pathToFileURL(path.join(WEB, "dashboards.js")).href);
@@ -9932,7 +9932,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     S69.viewsRole = etatOrigine69.role; S69.viewsMe = etatOrigine69.me; S69.viewList = etatOrigine69.liste; S69.dashList = etatOrigine69.dash;
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
   }
-  console.log(`[destination-dune-creation-nommee] LA FENÊTRE QUI CRÉE UN TABLEAU DE BORD DIT OÙ IL ARRIVE (\`P11.20-p\`). LE MÉCANISME QUE LA CLÉ ACCUSAIT EST RÉFUTÉ PAR MESURE, PAS PAR LECTURE : sans vue choisie, la charge part « ${urlSansVue69} » — AUCUN paramètre de vue —, donc il n'existe aucun « filtre sans vue » auquel une création serait ajoutée ; une vue choisie, elle, fait bien partir son filtre (« ${urlAvecVue69} »), sans quoi ce négatif serait vrai par vacuité. LE DÉFAUT RÉEL EST PLUS SIMPLE ET IL SUBSISTAIT : « — Sans filtre de vue — » n'est ni une vue ni le non-rangé, et créer pendant qu'il est actif range l'objet dans AUCUNE vue sans qu'une phrase le dise. La destination est désormais annoncée dans les deux directions — « ${avecVue69.phrase} » / « ${sansVue69.phrase} » — et elle est JUGÉE PAR L'ACCORD AVEC LE FIL, jamais par un mot écrit ici : le nom de la vue vient de la charge utile servie, les deux annonces diffèrent, et chacune s'accorde avec le \`view_id\` que l'écriture emporte (${JSON.stringify(avecVue69.ecriture && avecVue69.ecriture.body.view_id)} / ${JSON.stringify(sansVue69.ecriture && sansVue69.ecriture.body.view_id)}). CE QUE CE TÉMOIN NE TIENT PAS : le démon n'est pas là — ce qu'il fait d'un \`view_id\` nul n'est pas mesuré ; la création d'un PANNEAU a sa propre fenêtre et n'est pas couverte ; ni la mise en page ni l'encre peinte (section 0) ; et « sans vue » ne FILTRE toujours pas — le rendre filtrant demande une écriture côté démon, dont la branche est morte.`);
+  console.log(`[destination-dune-creation-nommee] LA FENÊTRE QUI CRÉE UN TABLEAU DE BORD DIT OÙ IL ARRIVE (\`P11.20-p\`). LE MÉCANISME QUE LA CLÉ ACCUSAIT EST RÉFUTÉ PAR MESURE, PAS PAR LECTURE : sans vue choisie, la charge part « ${urlSansVue69} » — AUCUN paramètre de vue —, donc il n'existe aucun « filtre sans vue » auquel une création serait ajoutée ; une vue choisie, elle, fait bien partir son filtre (« ${urlAvecVue69} »), sans quoi ce négatif serait vrai par vacuité. LE DÉFAUT RÉEL EST PLUS SIMPLE ET IL SUBSISTAIT : « — Sans filtre de vue — » n'est ni une vue ni le non-rangé, et créer pendant qu'il est actif range l'objet dans AUCUNE vue sans qu'une phrase le dise. La destination est désormais annoncée dans les deux directions — « ${avecVue69.phrase} » / « ${sansVue69.phrase} » — et elle est JUGÉE PAR L'ACCORD AVEC LE FIL, jamais par un mot écrit ici : le nom de la vue vient de la charge utile servie, les deux annonces diffèrent, et chacune s'accorde avec le \`view_id\` que l'écriture emporte (${JSON.stringify(avecVue69.ecriture && avecVue69.ecriture.body.view_id)} / ${JSON.stringify(sansVue69.ecriture && sansVue69.ecriture.body.view_id)}). CE QUE CE TÉMOIN NE TIENT PAS : le démon n'est pas là — ce qu'il fait d'un \`view_id\` nul n'est pas mesuré ; la création d'un PANNEAU a sa propre fenêtre et n'est pas couverte ; ni la mise en page ni l'encre peinte (section 0) ; et le filtre « — Sans vue — » (\`?view=none\`, \`P11.25-f\`) est une autre entrée du sélecteur, jugée par (178), pas ici.`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -25089,7 +25089,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
         geste: (L) => cliquer121(boutonParTitre121(grille121, "Supprimer le panneau"), "✕ du panneau") },
       { site: "création d'un tableau de bord", route: "POST /api/dashboards", puits: PUITS_DES_TABLEAUX121, valeurs: { name: "d121-neuf" }, lectures: { "GET /api/dashboards": { corps: { dashboards: [] } } },
         preparer: () => { if (vue121) vue121.value = ""; }, geste: (L) => L.tableaux.addDashboardFlow() },
-      { site: "rattachement d'un tableau de bord", route: "POST /api/dashboard/63", puits: PUITS_DES_TABLEAUX121, valeurs: { existing: "63" },
+      { site: "rattachement d'un tableau de bord", route: "POST /api/views/3/dashboards", puits: PUITS_DES_TABLEAUX121, valeurs: { existing: "63" },
         lectures: { "GET /api/dashboards": { corps: { dashboards: [{ id: 63, name: "d121-ailleurs", editable: true, view_id: null }] } } },
         preparer: () => { if (vue121) vue121.value = "3"; }, geste: (L) => L.tableaux.addDashboardFlow() },
       { site: "création d'une vue", route: "POST /api/views", puits: PUITS_DES_TABLEAUX121, valeurs: { name: "v121" }, preparer: (L) => { L.S.viewList = []; }, geste: (L) => creerUneVueParSonBouton121(L) },
@@ -32392,6 +32392,438 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   else console.log("(170-172, 176) OK — `P11.25-a` (console, vague WA) : le défaut servi (14400) est cité « 4 heures » dans la note et la ligne, rien de servi n'en cite aucun ; une création après une édition repart vide ; les options du balisage sont les unités du code et une unité inconnue est refusée ; l'option ban_ip du sélecteur dit la durée du formulaire (90 min, 48 h, 45 s, le défaut quand vide) et suit la saisie ; singulier et refus bien dits ; la note et l'infobulle disent que l'agent d'un hôte distant garde sa durée ; par le vrai gestionnaire du formulaire, un champ vide envoie `ban_ttl_s: null` explicitement et la note dit « défaut du serveur », 90 minutes partent en 5400 s et 2 jours en 172800 s, une durée relue s'affiche dans la plus grande unité qui la divise exactement (5401 reste en secondes) et repart identique, la ligne d'un ban_ip dit sa durée ou le défaut ; le refus 400 du serveur (cause relue dans playbooks.rs) se lit entier dans le formulaire resté ouvert ; décimal, zéro, négatif, texte, exposant et hors borne ne partent pas et le formulaire le dit dans les deux langues, les bornes exactes partent. Ce qu'ils NE tiennent PAS : que le démon applique la durée (témoins Rust).");
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// (177) (178) (179) (180) (181) (182) `P11.25-f` (console) — LES TABLEAUX DE BORD SE CHARGENT PAR MORCEAUX, « TOUTES
+// LES VUES » EST UN CHOIX, ET UNE VUE EXISTANTE SE COMPLÈTE AU LIEU D'ÊTRE DOUBLÉE.
+// Le démon (volet fait) sert `?view=<id>|none`, `limit`/`offset` avec `total`, `all_views`/`view_ids`, le 409 d'une vue
+// homonyme avec `view_id`, et les deux routes de rattachement. La console : JUGÉ par les VRAIS gestionnaires et un faux
+// `fetch` — (177) corps envoyés (`all_views` booléen, décoché par défaut à la création, valeur servie à l'édition) et
+// causes 400/404/503 peintes avec l'identifiant d'un 503 ; (178) paramètres d'URL (vue, sans vue, aucun filtre, `limit`
+// sous la borne RELUE dans dashboards.rs, page suivante par `offset`, « n sur total »), le sélecteur d'ajout lisant la
+// liste entière ; (179) `/api/dashboard/{id}` demandé à l'intersection seulement, le lazy-load des données intact, repli
+// sans IntersectionObserver ; (180) 409 → complétion des seuls manquants, `added`/`already_present` dits, 404 TABLEAU
+// DE BORD INCONNU qui nomme les identifiants, renommage 409 qui nomme la vue existante ; (181) retrait d'une vue :
+// confirmé, 204 relu, 404 dit tel quel ; (182) les vues de `view_ids` affichées, `view_id` nul jamais lu « sans vue ».
+// Les causes et la borne sont RELUES dans daemon/src/handlers/dashboards.rs, jamais recopiées.
+// Adresses : aucune. CE QU'ILS NE TIENNENT PAS : le rendu réel d'un navigateur (défilement, marge d'observation).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant177 = echecs.length;
+  const url177 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const m = await import(url177("dashboards.js"));
+  const mEn = await import(adresseSousLaLangue("dashboards.js"));
+  const { S: S177 } = await import(url177("state.js"));
+  const srcTdb177 = readFileSync(path.join(RACINE, "daemon", "src", "handlers", "dashboards.rs"), "utf8");
+  const cause177 = (nom) => { const r = srcTdb177.match(new RegExp(`const ${nom}: &str =\\s*"([\\s\\S]*?)";`)); return r ? r[1].replace(/\\\r?\n\s*/g, "") : ""; };
+  const LIMITE177 = Number((srcTdb177.match(/const LIMITE_DE_PAGE_DES_TABLEAUX_DE_BORD: i64 = (\d+);/) || [])[1]);
+  const C177 = Object.fromEntries(["CAUSE_TOUTES_LES_VUES_INVALIDE", "CAUSE_VUE_DU_TABLEAU_INCONNUE", "CAUSE_VUE_DU_TABLEAU_NON_LUE", "CAUSE_VUE_DEJA_EXISTANTE",
+    "CAUSE_VUE_RENOMMEE_VERS_UNE_EXISTANTE", "CAUSE_TABLEAUX_DE_BORD_INCONNUS", "CAUSE_RATTACHEMENT_ABSENT"].map((n) => [n, cause177(n)]));
+  const instrument177 = (vrai, quoi) => exiger(vrai, `(177-instrument) ${quoi} : ces témoins REFUSENT DE CONCLURE`);
+  instrument177(Object.values(C177).every((c) => c.length > 40) && Number.isInteger(LIMITE177) && LIMITE177 > 0,
+    `une cause ou la borne de page n'est plus lisible dans daemon/src/handlers/dashboards.rs — ${JSON.stringify(Object.fromEntries(Object.entries(C177).map(([k, v]) => [k, v.length])))}, limite ${LIMITE177}`);
+  instrument177(/"total": total, "limit": limite, "offset": decalage/.test(srcTdb177) && /"all_views": toutes, "view_ids": view_ids/.test(srcTdb177)
+    && /Json\(json!\(\{ "added": ajoutes, "already_present": deja \}\)\)/.test(srcTdb177) && /json!\(\{ "error": CAUSE_VUE_DEJA_EXISTANTE, "view_id": existante \}\)/.test(srcTdb177)
+    && /json!\(\{ "error": CAUSE_TABLEAUX_DE_BORD_INCONNUS, "dashboard_ids": inconnus \}\)/.test(srcTdb177),
+    "les corps servis par le démon (total/limit/offset, all_views/view_ids, added/already_present, view_id du 409, dashboard_ids du 404) ne se lisent plus dans dashboards.rs");
+  const tic177 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser177 = async (n = 40) => { for (let i = 0; i < n; i++) await tic177(); };
+  const cueillir177 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir177(c, pred, acc)); return acc; };
+  const nu177 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const qs177 = (s) => document.querySelector(s);
+  const sel177 = qs177("#view"), vue177 = qs177("#dashview"), pied177 = qs177("#dash-pager");
+  instrument177(!!sel177 && !!vue177 && !!pied177, "#view, #dashview ou #dash-pager absent du balisage chargé");
+  const puits177 = () => (vue177 && vue177.parentNode ? (vue177.parentNode.children || []).find((n) => n.getAttribute && n.getAttribute("data-puits-du-refus-d-un-geste") === "tableaux_de_bord") || null : null);
+  const viderPuits177 = () => { const p = puits177(); if (p) { p.hidden = true; p.replaceChildren(); } };
+  const avisNoeuds177 = () => document.querySelectorAll(".toast");
+  const avisDepuis177 = (avant) => avisNoeuds177().filter((t) => !avant.has(t)).map((t) => nu177(t));
+  const fenetre177 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).at(-1) || null;
+  const formulaire177 = () => { const ov = fenetre177(); return ov ? cueillir177(ov, (e) => e.tagName === "FORM")[0] || null : null; };
+  const fermer177 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  // Répond à la fenêtre ouverte comme un navigateur : la case reflète son attribut `checked` (valeur posée par le code),
+  // puis les valeurs demandées. Rend ce que la fenêtre portait (cases et leur état servi), ou null si aucune.
+  const repondre177 = async (valeurs = {}, annuler = false) => {
+    await laisser177();
+    const form = formulaire177(); if (!form) return null;
+    const vus = {};
+    for (const c of cueillir177(form, (e) => typeof e.getAttribute === "function" && e.getAttribute("data-n") !== null)) {
+      const n = c.getAttribute("data-n");
+      if (c.tagName === "INPUT" && c.getAttribute("type") === "checkbox") { vus[n] = { case: true, coche: c.getAttribute("checked") !== null }; c.checked = n in valeurs ? !!valeurs[n] : vus[n].coche; }
+      else if (c.tagName === "SELECT") { const o = cueillir177(c, (x) => x.tagName === "OPTION" && x.getAttribute("selected") !== null)[0] || cueillir177(c, (x) => x.tagName === "OPTION")[0]; vus[n] = { options: cueillir177(c, (x) => x.tagName === "OPTION").map((x) => ({ v: x.getAttribute("value"), t: nu177(x) })) }; c.value = n in valeurs ? valeurs[n] : (o ? (o.getAttribute("value") ?? "") : ""); }
+      else { vus[n] = {}; c.value = n in valeurs ? valeurs[n] : (c.getAttribute("value") ?? ""); }
+    }
+    const texte = nu177(form);
+    if (annuler) { const b = cueillir177(form, (e) => e.classList && e.classList.contains("m-cancel"))[0]; if (b) b.onclick(); }
+    else await Promise.resolve(form.onsubmit({ preventDefault() {} }));
+    await laisser177();
+    return { vus, texte };
+  };
+  const appels177 = [];
+  let servi177 = {};
+  const fetchOrigine177 = globalThis.fetch, minuterieOrigine177 = globalThis.setTimeout, ioOrigine177 = globalThis.IntersectionObserver;
+  const etatOrigine177 = { auth: S177.AUTH, admin: S177.isAdmin, vues: S177.viewList, liste: S177.dashList }, valeurOrigine177 = sel177 ? sel177.value : "";
+  const reponse177 = (r) => { const statut = r.statut || 200, texte = statut === 204 ? "" : JSON.stringify(r.corps ?? {}); return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => r.corps }; };
+  const servir177 = (methode, url) => { const chemin = url.split("?")[0]; return servi177[`${methode} ${url}`] || servi177[`${methode} ${chemin}`] || { statut: 200, corps: {} }; };
+  const lectures177 = (re) => appels177.filter((a) => a.methode === "GET" && re.test(a.url));
+  const ecritures177 = (methode, url) => appels177.filter((a) => a.methode === methode && a.url === url);
+  const VUES177 = [{ id: 5, name: "Production", owner: "hugo", visibility: "shared", dashboards: 2 }, { id: 6, name: "Réseau", owner: "hugo", visibility: "shared", dashboards: 1 }];
+  const TDB177 = (id, extra = {}) => ({ id, name: "T" + id, owner: "hugo", visibility: "shared", view_id: null, panels: 0, cols: 2, height: 0, collapsed: false, position: id, editable: true, all_views: false, view_ids: [], ...extra });
+  const ecarts = { 177: [], 178: [], 179: [], 180: [], 181: [], 182: [] };
+  try {
+    S177.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; S177.isAdmin = true;
+    globalThis.setTimeout = (fn, ms, ...a) => (ms >= 1000 ? 0 : minuterieOrigine177(fn, ms, ...a));
+    globalThis.fetch = async (u, o = {}) => {
+      const url = String(u), methode = String(o.method || "GET").toUpperCase();
+      let corps = null; try { corps = o.body ? JSON.parse(o.body) : null; } catch { corps = o.body; }
+      appels177.push({ methode, url, corps });
+      return reponse177(servir177(methode, url));
+    };
+    servi177 = { "GET /api/views": { corps: { views: VUES177, me: "hugo", role: "admin" } } };
+    await m.loadViews(); await laisser177();
+    instrument177(S177.viewList.length === 2, "les vues servies n'ont pas été chargées");
+    const choisir177 = (v) => { sel177.value = v; };
+
+    // ══ (177) CORPS ENVOYÉS ET CAUSES SERVIES ═══════════════════════════════════════════════════════════════
+    choisir177("5");
+    servi177["GET /api/dashboards"] = { corps: { dashboards: [], total: 0, me: "hugo", role: "admin" } };
+    servi177["POST /api/dashboards"] = { corps: { id: 900 } };
+    for (const [coche, attendu] of [[undefined, false], [true, true]]) {
+      appels177.length = 0; fermer177();
+      const g = m.addDashboardFlow();
+      const r = await repondre177(coche === undefined ? { name: "Neuf 177" } : { name: "Neuf 177", all_views: true });
+      await g; await laisser177();
+      const post = ecritures177("POST", "/api/dashboards");
+      if (!r || !r.vus.all_views || !r.vus.all_views.case || r.vus.all_views.coche !== false) ecarts[177].push(`création : la case « toutes les vues » n'est pas offerte décochée — ${JSON.stringify(r && r.vus.all_views)}`);
+      if (post.length !== 1 || !post[0].corps || typeof post[0].corps.all_views !== "boolean" || post[0].corps.all_views !== attendu || post[0].corps.view_id !== 5)
+        ecarts[177].push(`création (case ${coche ? "cochée" : "laissée"}) : corps ${JSON.stringify(post.map((p) => p.corps))} au lieu de all_views:${attendu} (booléen) et view_id:5`);
+    }
+    const refus177 = [
+      ["400", { statut: 400, corps: { error: C177.CAUSE_TOUTES_LES_VUES_INVALIDE } }, C177.CAUSE_TOUTES_LES_VUES_INVALIDE, null],
+      ["404", { statut: 404, corps: { error: C177.CAUSE_VUE_DU_TABLEAU_INCONNUE } }, C177.CAUSE_VUE_DU_TABLEAU_INCONNUE, null],
+      ["503", { statut: 503, corps: { error: C177.CAUSE_VUE_DU_TABLEAU_NON_LUE, id: "plume-e177-0" } }, C177.CAUSE_VUE_DU_TABLEAU_NON_LUE, "plume-e177-0"],
+    ];
+    for (const [quoi, rep, cause, id] of refus177) {
+      viderPuits177(); fermer177(); servi177["POST /api/dashboards"] = rep;
+      const g = m.addDashboardFlow(); await repondre177({ name: "Refusé 177" }); await g; await laisser177();
+      const p = puits177(), t = nu177(p);
+      if (!p || p.hidden || !t.includes(cause) || (id && !t.includes(id))) ecarts[177].push(`création refusée ${quoi} : le puits dit « ${t.slice(0, 200)} » sans la cause servie${id ? " ou son identifiant " + id : ""}`);
+    }
+    // L'édition : la case porte la valeur SERVIE et repart en booléen ; un refus 400 est peint dans la tuile.
+    for (const [servie, demande, attendu] of [[true, undefined, true], [false, undefined, false], [false, true, true]]) {
+      appels177.length = 0; fermer177();
+      servi177["POST /api/dashboard/77"] = { statut: 200, corps: {} };
+      const tuile = m.renderDashboard(TDB177(77, { all_views: servie, collapsed: true, view_ids: [5] }));
+      const ren = cueillir177(tuile, (e) => e.tagName === "BUTTON" && e.title === "Renommer le dashboard")[0];
+      if (!ren) { ecarts[177].push("édition : aucun bouton « Renommer le dashboard » sur la tuile"); break; }
+      const g = ren.onclick(); const r = await repondre177(demande === undefined ? {} : { all_views: demande }); await g; await laisser177();
+      const post = ecritures177("POST", "/api/dashboard/77");
+      if (!r || !r.vus.all_views || r.vus.all_views.coche !== servie) ecarts[177].push(`édition : servie ${servie}, la case est offerte ${JSON.stringify(r && r.vus.all_views)}`);
+      if (post.length !== 1 || typeof (post[0].corps || {}).all_views !== "boolean" || post[0].corps.all_views !== attendu) ecarts[177].push(`édition (servie ${servie}, demandée ${demande}) : corps ${JSON.stringify(post.map((p) => p.corps))} au lieu de all_views:${attendu}`);
+    }
+    {
+      fermer177(); servi177["POST /api/dashboard/78"] = { statut: 400, corps: { error: C177.CAUSE_TOUTES_LES_VUES_INVALIDE } };
+      const tuile = m.renderDashboard(TDB177(78, { collapsed: true }));
+      const ren = cueillir177(tuile, (e) => e.tagName === "BUTTON" && e.title === "Renommer le dashboard")[0];
+      const g = ren.onclick(); await repondre177({}); await g; await laisser177();
+      const aveu = cueillir177(tuile, (e) => e.getAttribute && e.getAttribute("data-refus-de-tableau-de-bord") === "1")[0];
+      if (!aveu || !nu177(aveu).includes(C177.CAUSE_TOUTES_LES_VUES_INVALIDE)) ecarts[177].push(`édition refusée 400 : la tuile dit « ${nu177(aveu)} » sans la cause servie`);
+      // Un 503 d'édition porte son identifiant de journal : la tuile le dit, comme la création.
+      fermer177(); servi177["POST /api/dashboard/78"] = { statut: 503, corps: { error: C177.CAUSE_VUE_DU_TABLEAU_NON_LUE, id: "plume-e177-1" } };
+      const g503 = ren.onclick(); await repondre177({}); await g503; await laisser177();
+      const aveu503 = cueillir177(tuile, (e) => e.getAttribute && e.getAttribute("data-refus-de-tableau-de-bord") === "1")[0];
+      if (!aveu503 || !nu177(aveu503).includes("plume-e177-1")) ecarts[177].push(`édition refusée 503 : la tuile dit « ${nu177(aveu503).slice(0, 220)} » sans l'identifiant servi plume-e177-1`);
+      delete servi177["POST /api/dashboard/78"];
+    }
+
+    // ══ (178) PARAMÈTRES D'URL ET PAGINATION ═════════════════════════════════════════════════════════════════
+    {
+      const options178 = cueillir177(sel177, (x) => x.tagName === "OPTION").map((o) => ({ v: String(o.value ?? o.getAttribute("value") ?? ""), t: nu177(o) }));
+      if (!options178.some((o) => o.v === "none" && /Sans vue/.test(o.t)) || !options178.some((o) => o.v === "")) ecarts[178].push(`le sélecteur des vues n'offre pas « — Sans vue — » (none) à côté de l'absence de filtre : ${JSON.stringify(options178)}`);
+    }
+    const pagine178 = (n, total, depart = 1) => ({ corps: { dashboards: Array.from({ length: n }, (_, i) => TDB177(depart + i, { collapsed: true, view_ids: [5] })), total, me: "hugo", role: "admin" } });
+    for (const [valeur, attenduVue] of [["5", "view=5"], ["none", "view=none"], ["", null]]) {
+      appels177.length = 0; choisir177(valeur);
+      servi177["GET /api/dashboards"] = pagine178(1, 1);
+      await m.loadDashboards(); await laisser177();
+      const l = lectures177(/^\/api\/dashboards(\?|$)/);
+      const q = l.length === 1 ? new URLSearchParams(l[0].url.split("?")[1] || "") : null;
+      const lim = q ? Number(q.get("limit")) : NaN;
+      if (!q || (attenduVue ? `view=${q.get("view")}` !== attenduVue : q.has("view")) || !(Number.isInteger(lim) && lim >= 1 && lim <= LIMITE177) || q.get("offset") !== "0")
+        ecarts[178].push(`filtre « ${valeur} » : ${JSON.stringify(l.map((a) => a.url))} au lieu de ${attenduVue || "aucun view"} avec limit de 1 à ${LIMITE177} et offset=0`);
+    }
+    for (const [valeur, attendu] of [["none", "Aucun dashboard sans vue."], ["5", "Aucun dashboard dans cette vue."], ["", "Aucun dashboard."]]) {
+      choisir177(valeur); servi177["GET /api/dashboards"] = { corps: { dashboards: [], total: 0 } };
+      await m.loadDashboards(); await laisser177();
+      const vide = nu177(cueillir177(vue177, (e) => e.classList && e.classList.contains("emptystate"))[0]);
+      if (!vide.startsWith(attendu)) ecarts[178].push(`état vide du filtre « ${valeur} » : « ${vide} » au lieu de « ${attendu} »`);
+    }
+    {
+      appels177.length = 0; choisir177("5");
+      servi177["GET /api/dashboards"] = { corps: { dashboards: [], total: 0 } };
+      await m.loadDashboards(); await laisser177();
+      const q0 = new URLSearchParams((lectures177(/^\/api\/dashboards\?/)[0] || { url: "?" }).url.split("?")[1]);
+      const taille = Number(q0.get("limit"));
+      const total = taille + 3;
+      servi177[`GET /api/dashboards?view=5&limit=${taille}&offset=0`] = pagine178(taille, total, 1);
+      servi177[`GET /api/dashboards?view=5&limit=${taille}&offset=${taille}`] = pagine178(4, total, taille);   // #taille resservi : dédoublonné
+      appels177.length = 0;
+      await m.loadDashboards(); await laisser177();
+      const tuiles = () => cueillir177(vue177, (e) => e.classList && e.classList.contains("dashtile")).length;
+      const t1 = nu177(pied177);
+      const suivants = cueillir177(pied177, (e) => e.tagName === "BUTTON")[0];
+      if (pied177.hidden || !t1.includes(`${taille} sur ${total}`) || !suivants || tuiles() !== taille) ecarts[178].push(`première page : pied « ${t1} » (caché ${pied177.hidden}), ${tuiles()} tuile(s), bouton ${!!suivants}`);
+      // Le refus de la page suivante se DIT dans le pied (jeté, puis servi en 200 avec `error`), sans rien ajouter.
+      const page2178 = `GET /api/dashboards?view=5&limit=${taille}&offset=${taille}`, bonne178 = servi177[page2178];
+      for (const [quoi, rep, cause] of [["jeté (503)", { statut: 503, corps: { error: "CAUSE-E178-JETEE" } }, "CAUSE-E178-JETEE"], ["servi en 200", { corps: { dashboards: [], error: "CAUSE-E178-SERVIE" } }, "CAUSE-E178-SERVIE"]]) {
+        servi177[page2178] = rep;
+        const b = cueillir177(pied177, (e) => e.tagName === "BUTTON")[0];
+        if (b) { await b.onclick(); await laisser177(); }
+        const tr = nu177(pied177);
+        if (!b || !tr.includes(cause) || tuiles() !== taille) ecarts[178].push(`page suivante refusée (${quoi}) : pied « ${tr.slice(0, 220)} » sans la cause ${cause}, ${tuiles()} tuile(s)`);
+      }
+      servi177[page2178] = bonne178;
+      appels177.length = 0;
+      const suivants2 = cueillir177(pied177, (e) => e.tagName === "BUTTON")[0];
+      if (suivants2) { await suivants2.onclick(); await laisser177(); }
+      const l2 = lectures177(/^\/api\/dashboards\?/).map((a) => a.url);
+      const t2 = nu177(pied177);
+      if (l2.length !== 1 || l2[0] !== `/api/dashboards?view=5&limit=${taille}&offset=${taille}` || tuiles() !== total || !t2.includes(`${total} sur ${total}`) || cueillir177(pied177, (e) => e.tagName === "BUTTON").length)
+        ecarts[178].push(`page suivante : lectures ${JSON.stringify(l2)}, ${tuiles()} tuile(s) sur ${total}, pied « ${t2} »`);
+      // Une liste relue puis REFUSÉE ne garde pas le compte d'avant : le pied se tait, l'aveu est dans la vue.
+      {
+        const garde = servi177["GET /api/dashboards"]; delete servi177[`GET /api/dashboards?view=5&limit=${taille}&offset=0`];
+        servi177["GET /api/dashboards"] = { corps: { dashboards: [], error: "CAUSE-E178-LISTE" } };
+        await m.loadDashboards(); await laisser177();
+        if (!pied177.hidden || nu177(pied177) || cueillir177(pied177, (e) => e.tagName === "BUTTON").length || !nu177(vue177).includes("CAUSE-E178-LISTE"))
+          ecarts[178].push(`liste refusée après une page lue : pied « ${nu177(pied177)} » (caché ${pied177.hidden}), vue « ${nu177(vue177).slice(0, 160)} »`);
+        servi177["GET /api/dashboards"] = garde;
+      }
+      // Le sélecteur d'ajout lit la liste ENTIÈRE : aucune borne demandée.
+      appels177.length = 0; fermer177();
+      const g = m.addDashboardFlow(); await repondre177({}, true); await g;
+      const l3 = lectures177(/^\/api\/dashboards(\?|$)/).map((a) => a.url);
+      if (l3.length !== 1 || l3[0] !== "/api/dashboards") ecarts[178].push(`le sélecteur d'ajout lit ${JSON.stringify(l3)} au lieu de la liste entière /api/dashboards`);
+      delete servi177[`GET /api/dashboards?view=5&limit=${taille}&offset=0`]; delete servi177[`GET /api/dashboards?view=5&limit=${taille}&offset=${taille}`];
+    }
+
+    // ══ (179) LA LISTE DES PANNEAUX D'UN TABLEAU, À L'APPROCHE DE L'ÉCRAN ═══════════════════════════════════
+    {
+      const ios = [];
+      class IOFaux179 { constructor(rappel, options) { this.rappel = rappel; this.options = options || {}; this.cibles = new Set(); ios.push(this); } observe(t) { this.cibles.add(t); } unobserve(t) { this.cibles.delete(t); } disconnect() { this.cibles.clear(); } }
+      globalThis.IntersectionObserver = IOFaux179;
+      S177.panelObserver = null; S177.tileObserver = null;
+      choisir177("5");
+      servi177["GET /api/dashboards"] = { corps: { dashboards: [TDB177(1, { view_ids: [5] }), TDB177(2, { view_ids: [5] }), TDB177(3, { view_ids: [5] })], total: 3 } };
+      servi177["GET /api/dashboard/2"] = { corps: { id: 2, name: "T2", editable: true, panels: [{ id: 4179, title: "P179", query: "search x | stats count", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "shared", cols: 1, height: 0, drill: "", library_panel_id: null }] } };
+      appels177.length = 0;
+      await m.loadDashboards(); await laisser177();
+      const listes = () => lectures177(/^\/api\/dashboard\/\d+$/).map((a) => a.url);
+      const avant = listes();
+      const ioTuiles = ios.find((io) => [...io.cibles].some((c) => c.classList && c.classList.contains("dashtile")));
+      const tuile2 = ioTuiles ? [...ioTuiles.cibles].find((c) => c.dataset && c.dataset.id === "2") : null;
+      if (avant.length) ecarts[179].push(`avant toute intersection, ${avant.length} liste(s) de panneaux demandée(s) : ${JSON.stringify(avant)}`);
+      if (!ioTuiles || ioTuiles.cibles.size !== 3 || !tuile2) ecarts[179].push(`les trois tuiles ne sont pas observées (${ioTuiles ? ioTuiles.cibles.size : 0})`);
+      else {
+        if (!ioTuiles.options.rootMargin || /^0(px)?$/.test(String(ioTuiles.options.rootMargin).trim())) ecarts[179].push(`l'observateur des tuiles n'a aucune marge d'approche (« ${ioTuiles.options.rootMargin} »)`);
+        // Le PREMIER rappel d'un navigateur arrive pour CHAQUE cible observée, loin de l'écran comprises (isIntersecting:false) :
+        // il ne charge rien.
+        ioTuiles.rappel([...ioTuiles.cibles].map((t) => ({ target: t, isIntersecting: false })), ioTuiles); await laisser177();
+        if (listes().length) ecarts[179].push(`le rappel initial (aucune tuile à l'approche) charge ${JSON.stringify(listes())}`);
+        ioTuiles.rappel([{ target: tuile2, isIntersecting: true }], ioTuiles); await laisser177();
+        ioTuiles.rappel([{ target: tuile2, isIntersecting: true }], ioTuiles); await laisser177();
+        const apres = listes();
+        if (apres.length !== 1 || apres[0] !== "/api/dashboard/2") ecarts[179].push(`à l'intersection de la tuile 2 : ${JSON.stringify(apres)} au lieu d'une seule demande /api/dashboard/2`);
+        // Le lazy-load des DONNÉES reste celui d'avant : la carte du panneau est observée, rien n'est lu avant son intersection.
+        const ioPanneaux = ios.find((io) => io !== ioTuiles && [...io.cibles].some((c) => c.classList && c.classList.contains("panel")));
+        if (!ioPanneaux || lectures177(/^\/api\/panels\/4179\/data/).length || appels177.some((a) => a.url.startsWith("/api/query")))
+          ecarts[179].push(`le panneau du tableau 2 n'est pas observé pour ses données, ou elles sont lues avant son intersection (observé ${!!ioPanneaux})`);
+        // Une tuile REPLIÉE entre son observation et son approche ne charge pas sa liste : un tableau replié ne
+        // demande même pas ses panneaux (promesse d'avant le lot, tenue sur le chemin de l'observateur des tuiles).
+        const tuile3 = [...ioTuiles.cibles].find((c) => c.dataset && c.dataset.id === "3");
+        if (!tuile3) ecarts[179].push("la tuile 3 n'est plus observée avant son approche");
+        else {
+          tuile3.classList.add("collapsed");
+          ioTuiles.rappel([{ target: tuile3, isIntersecting: true }], ioTuiles); await laisser177();
+          if (listes().includes("/api/dashboard/3")) ecarts[179].push(`la tuile 3, repliée avant d'approcher l'écran, demande sa liste de panneaux à l'approche : ${JSON.stringify(listes())}`);
+        }
+      }
+      // La page SUIVANTE est paresseuse comme la première : ses tuiles DÉPLIÉES ne demandent leur liste qu'à l'approche.
+      {
+        const listeServie179 = servi177["GET /api/dashboards"];
+        appels177.length = 0; servi177["GET /api/dashboards"] = { corps: { dashboards: [], total: 0 } };
+        await m.loadDashboards(); await laisser177();
+        const q0 = new URLSearchParams((lectures177(/^\/api\/dashboards\?/)[0] || { url: "?" }).url.split("?")[1]);
+        const taille = Number(q0.get("limit"));
+        const p1 = `GET /api/dashboards?view=5&limit=${taille}&offset=0`, p2 = `GET /api/dashboards?view=5&limit=${taille}&offset=${taille}`;
+        const page = (n, depart) => ({ corps: { dashboards: Array.from({ length: n }, (_, i) => TDB177(depart + i, { view_ids: [5] })), total: taille + 2 } });
+        servi177[p1] = page(taille, 1); servi177[p2] = page(2, taille + 1);
+        S177.tileObserver = null;
+        await m.loadDashboards(); await laisser177();
+        appels177.length = 0;
+        const b = cueillir177(pied177, (e) => e.tagName === "BUTTON")[0];
+        if (b) { await b.onclick(); await laisser177(); }
+        const l = listes();
+        const neuves = [taille + 1, taille + 2].map(String);
+        const observees = ios.some((io) => neuves.every((id) => [...io.cibles].some((c) => c.dataset && c.dataset.id === id)));
+        if (!b || l.length || !observees) ecarts[179].push(`page suivante : ${l.length} liste(s) de panneaux demandée(s) avant toute intersection ${JSON.stringify(l)}, tuiles neuves observées ${observees} (bouton ${!!b})`);
+        delete servi177[p1]; delete servi177[p2]; servi177["GET /api/dashboards"] = listeServie179; S177.tileObserver = null;
+      }
+      // Sans IntersectionObserver : tout est chargé tout de suite, jamais rien.
+      delete globalThis.IntersectionObserver;
+      appels177.length = 0;
+      await m.loadDashboards(); await laisser177();
+      const sans = listes().sort();
+      if (JSON.stringify(sans) !== JSON.stringify(["/api/dashboard/1", "/api/dashboard/2", "/api/dashboard/3"])) ecarts[179].push(`sans IntersectionObserver : ${JSON.stringify(sans)} au lieu des trois listes`);
+      globalThis.IntersectionObserver = ioOrigine177; S177.panelObserver = null; S177.tileObserver = null;
+      delete servi177["GET /api/dashboard/2"];
+    }
+
+    // ══ (180) 409 → COMPLÉTION ; 404 TABLEAU DE BORD INCONNU ; RENOMMAGE 409 ════════════════════════════════
+    {
+      const TOUS180 = [TDB177(1, { name: "A", view_ids: [5] }), TDB177(2, { name: "B" }), TDB177(3, { name: "C", view_ids: [6] }), TDB177(4, { name: "D", all_views: true })];
+      servi177["GET /api/dashboards"] = { corps: { dashboards: TOUS180, total: 4 } };
+      servi177["POST /api/views"] = { statut: 409, corps: { error: C177.CAUSE_VUE_DEJA_EXISTANTE, view_id: 5 } };
+      servi177["POST /api/views/5/dashboards"] = { corps: { added: [2], already_present: [3] } };
+      choisir177(""); viderPuits177(); fermer177(); appels177.length = 0;
+      const avant = new Set(avisNoeuds177());
+      const g = m.creerUneVue();
+      await repondre177({ name: "Production" });
+      const puits409 = nu177(puits177());   // lu pendant que la complétion est offerte
+      const completion = await repondre177({ "tdb-2": true, "tdb-3": true });
+      await g; await laisser177();
+      // Ce que la complétion a lu AVANT d'envoyer (la relecture paginée de l'écran vient après) : la liste entière.
+      const envoi180 = appels177.findIndex((a) => a.methode === "POST" && a.url === "/api/views/5/dashboards");
+      const lectures180 = appels177.slice(0, envoi180 < 0 ? appels177.length : envoi180).filter((a) => a.methode === "GET" && /^\/api\/dashboards(\?|$)/.test(a.url)).map((a) => a.url);
+      if (JSON.stringify(lectures180) !== JSON.stringify(["/api/dashboards"])) ecarts[180].push(`la complétion lit ${JSON.stringify(lectures180)} au lieu de la liste entière /api/dashboards`);
+      const offerts = completion ? Object.keys(completion.vus).sort() : [];
+      const post = ecritures177("POST", "/api/views/5/dashboards");
+      const avis = avisDepuis177(avant).join(" | ");
+      if (!puits409.includes(C177.CAUSE_VUE_DEJA_EXISTANTE)) ecarts[180].push(`le 409 n'est pas peint avec sa cause pendant que la complétion est offerte : « ${puits409.slice(0, 160)} »`);
+      if (JSON.stringify(offerts) !== JSON.stringify(["tdb-2", "tdb-3"])) ecarts[180].push(`la complétion offre ${JSON.stringify(offerts)} au lieu des seuls manquants (tdb-2, tdb-3)`);
+      if (post.length !== 1 || JSON.stringify(post[0].corps) !== JSON.stringify({ dashboard_ids: [2, 3] }) || ecritures177("POST", "/api/views").length !== 1)
+        ecarts[180].push(`la complétion envoie ${JSON.stringify(post.map((p) => p.corps))} (vues créées : ${ecritures177("POST", "/api/views").length})`);
+      if (!/« B »/.test(avis.split(/Déjà présents/)[0] || "") || !/Déjà présents : « C »/.test(avis)) ecarts[180].push(`added et already_present ne sont pas dits : « ${avis.slice(0, 200)} »`);
+      // 404 TABLEAU DE BORD INCONNU : la cause et les identifiants servis.
+      servi177["POST /api/views/5/dashboards"] = { statut: 404, corps: { error: C177.CAUSE_TABLEAUX_DE_BORD_INCONNUS, dashboard_ids: [3] } };
+      viderPuits177(); fermer177();
+      appels177.length = 0;
+      const g2 = m.creerUneVue(); await repondre177({ name: "Production" }); await repondre177({ "tdb-3": true }); await g2; await laisser177();
+      const t404 = nu177(puits177());
+      const post404 = ecritures177("POST", "/api/views/5/dashboards");
+      if (post404.length !== 1 || JSON.stringify(post404[0].corps) !== JSON.stringify({ dashboard_ids: [3] })) ecarts[180].push(`seul tdb-3 est coché parmi [2, 3], la complétion envoie ${JSON.stringify(post404.map((p) => p.corps))}`);
+      if (!t404.includes(C177.CAUSE_TABLEAUX_DE_BORD_INCONNUS) || !/#3\b/.test(t404)) ecarts[180].push(`404 TABLEAU DE BORD INCONNU : le puits dit « ${t404.slice(0, 260)} » sans la cause ou l'identifiant #3`);
+      // Une liste de tableaux NON LUE pendant la complétion ne se lit pas « rien ne manque » : refus servi en 200 et refus jeté.
+      for (const [quoi, rep, cause] of [["servi en 200", { corps: { dashboards: [], error: "CAUSE-E180-SERVIE" } }, "CAUSE-E180-SERVIE"], ["jeté (503)", { statut: 503, corps: { error: "CAUSE-E180-JETEE" } }, "CAUSE-E180-JETEE"]]) {
+        servi177["GET /api/dashboards"] = rep; viderPuits177(); fermer177(); appels177.length = 0;
+        const avantNL = new Set(avisNoeuds177());
+        const gNL = m.creerUneVue(); await repondre177({ name: "Production" });
+        const offerte = formulaire177(); fermer177(); await gNL; await laisser177();
+        const avisNL = avisDepuis177(avantNL).join(" | ");
+        if (offerte || !avisNL.includes(cause) || !/NE SONT PAS LUS/.test(avisNL) || /porte déjà tous/.test(avisNL) || ecritures177("POST", "/api/views/5/dashboards").length)
+          ecarts[180].push(`liste non lue pendant la complétion (${quoi}) : fenêtre ${!!offerte}, avis « ${avisNL.slice(0, 220)} »`);
+      }
+      servi177["GET /api/dashboards"] = { corps: { dashboards: TOUS180, total: 4 } };
+      // Renommage vers un nom pris : l'avis nomme la vue existante.
+      servi177["POST /api/views/6"] = { statut: 409, corps: { error: C177.CAUSE_VUE_RENOMMEE_VERS_UNE_EXISTANTE, view_id: 5 } };
+      choisir177("6"); fermer177();
+      const avantR = new Set(avisNoeuds177());
+      const g3 = m.renommerLaVue(); await repondre177({ name: "Production" }); await g3; await laisser177();
+      const avisR = avisDepuis177(avantR).join(" | ");
+      if (!avisR.includes(C177.CAUSE_VUE_RENOMMEE_VERS_UNE_EXISTANTE) || !avisR.includes("« Production » (#5)")) ecarts[180].push(`renommage 409 : l'avis dit « ${avisR.slice(0, 260)} » sans la cause ou la vue existante`);
+      delete servi177["POST /api/views"]; delete servi177["POST /api/views/5/dashboards"]; delete servi177["POST /api/views/6"];
+    }
+
+    // ══ (181) RETIRER UN TABLEAU D'UNE VUE : CONFIRMÉ, 204, 404 DIT TEL QUEL ═════════════════════════════════
+    {
+      choisir177("5"); fermer177(); viderPuits177();
+      servi177["GET /api/dashboards"] = { corps: { dashboards: [], total: 0 } };
+      const titre = "Retirer ce dashboard de la vue";
+      const ailleurs = m.renderDashboard(TDB177(3, { collapsed: true, view_ids: [6] }));
+      const partout = m.renderDashboard(TDB177(4, { collapsed: true, all_views: true, view_ids: [] }));
+      if (cueillir177(ailleurs, (e) => e.title === titre).length || cueillir177(partout, (e) => e.title === titre).length) ecarts[181].push("le retrait est offert sur un tableau qui n'est pas rangé dans la vue choisie");
+      const tuile = m.renderDashboard(TDB177(2, { collapsed: true, view_ids: [5, 6] }));
+      const ret = cueillir177(tuile, (e) => e.tagName === "BUTTON" && e.title === titre)[0];
+      if (!ret) ecarts[181].push("aucun bouton de retrait sur un tableau rangé dans la vue choisie");
+      else {
+        const route = "/api/views/5/dashboards/2";
+        appels177.length = 0;
+        let g = ret.onclick(); const conf = await repondre177({}, true); await g;
+        if (!conf || ecritures177("DELETE", route).length) ecarts[181].push(`retrait annulé : fenêtre ${!!conf}, ${ecritures177("DELETE", route).length} DELETE parti(s)`);
+        servi177[`DELETE ${route}`] = { statut: 204, corps: null };
+        appels177.length = 0;
+        g = ret.onclick(); await repondre177({}); await g; await laisser177();
+        if (ecritures177("DELETE", route).length !== 1 || !lectures177(/^\/api\/dashboards\?view=5&/).length) ecarts[181].push(`retrait confirmé (204) : ${ecritures177("DELETE", route).length} DELETE, liste relue ${lectures177(/^\/api\/dashboards\?view=5&/).length} fois`);
+        servi177[`DELETE ${route}`] = { statut: 404, corps: { error: C177.CAUSE_RATTACHEMENT_ABSENT } };
+        appels177.length = 0; viderPuits177();
+        g = ret.onclick(); await repondre177({}); await g; await laisser177();
+        const t = nu177(puits177());
+        if (!t.includes("« " + C177.CAUSE_RATTACHEMENT_ABSENT + " »") || lectures177(/^\/api\/dashboards\?/).length) ecarts[181].push(`retrait 404 : le puits dit « ${t.slice(0, 200)} » (cause attendue telle quelle), liste relue ${lectures177(/^\/api\/dashboards\?/).length} fois`);
+        delete servi177[`DELETE ${route}`];
+      }
+    }
+
+    // ══ (182) LES VUES D'UN TABLEAU : view_ids AFFICHÉES, view_id NUL JAMAIS « SANS VUE » ═══════════════════
+    {
+      const vues182 = (d) => nu177(cueillir177(m.renderDashboard({ ...d, collapsed: true }), (e) => e.getAttribute && e.getAttribute("data-vues-du-tableau") === "1")[0]);
+      const a = vues182(TDB177(11, { view_id: null, view_ids: [5] }));
+      if (!a.includes("Production") || /aucune vue|sans vue/i.test(a)) ecarts[182].push(`view_id nul, view_ids [5] : « ${a} »`);
+      const b = vues182(TDB177(12, { view_id: 5, view_ids: [5, 6] }));
+      if (!b.includes("Production") || !b.includes("Réseau")) ecarts[182].push(`view_ids [5, 6] : « ${b} »`);
+      const c = vues182(TDB177(13, { all_views: true }));
+      if (!/toutes les vues/.test(c)) ecarts[182].push(`all_views : « ${c} »`);
+      const d = vues182(TDB177(14, { view_ids: [] }));
+      if (!/aucune vue visible/.test(d)) ecarts[182].push(`aucun rattachement visible : « ${d} »`);
+      if (mEn.phraseDesVuesDuTableau({ all_views: true }) !== "all views") ecarts[182].push(`en : all_views se dit « ${mEn.phraseDesVuesDuTableau({ all_views: true })} »`);
+      // Le sélecteur d'ajout : un tableau déjà rangé dans la vue (view_id nul) n'est pas offert ; un tableau d'une autre vue
+      // l'est, sous le nom de ses vues, jamais « déplacé ».
+      choisir177("5"); fermer177(); appels177.length = 0;
+      servi177["GET /api/dashboards"] = { corps: { dashboards: [TDB177(21, { name: "Déjà", view_ids: [5] }), TDB177(22, { name: "Ailleurs", view_ids: [6] }), TDB177(23, { name: "Partout", all_views: true })] } };
+      const g = m.addDashboardFlow(); const r = await repondre177({}, true); await g;
+      const opts = r && r.vus.existing ? r.vus.existing.options : [];
+      const libelles = opts.map((o) => o.t).join(" | ");
+      if (opts.some((o) => o.v === "21" || o.v === "23") || !opts.some((o) => o.v === "22" && /Réseau/.test(o.t)) || /d[ée]plac/i.test(libelles)) ecarts[182].push(`sélecteur d'ajout : ${JSON.stringify(opts)}`);
+      // Le rattachement par le sélecteur : `added`/`already_present` dits par nom ; un 404 nomme les identifiants servis.
+      servi177["POST /api/views/5/dashboards"] = { corps: { added: [22], already_present: [] } };
+      fermer177(); viderPuits177(); appels177.length = 0;
+      const avantA = new Set(avisNoeuds177());
+      const gA = m.addDashboardFlow(); await repondre177({ existing: "22" }); await gA; await laisser177();
+      const avisA = avisDepuis177(avantA).join(" | ");
+      const postA = ecritures177("POST", "/api/views/5/dashboards");
+      if (postA.length !== 1 || JSON.stringify(postA[0].corps) !== JSON.stringify({ dashboard_ids: [22] }) || !/Ajoutés à la vue : « Ailleurs »/.test(avisA) || !/Déjà présents : aucun/.test(avisA))
+        ecarts[182].push(`rattachement par le sélecteur : corps ${JSON.stringify(postA.map((p) => p.corps))}, avis « ${avisA.slice(0, 200)} »`);
+      servi177["POST /api/views/5/dashboards"] = { statut: 404, corps: { error: C177.CAUSE_TABLEAUX_DE_BORD_INCONNUS, dashboard_ids: [22] } };
+      fermer177(); viderPuits177();
+      const gB = m.addDashboardFlow(); await repondre177({ existing: "22" }); await gB; await laisser177();
+      const tB = nu177(puits177());
+      if (!tB.includes(C177.CAUSE_TABLEAUX_DE_BORD_INCONNUS) || !/#22\b/.test(tB)) ecarts[182].push(`rattachement refusé 404 : le puits dit « ${tB.slice(0, 260)} » sans la cause ou l'identifiant #22`);
+      delete servi177["POST /api/views/5/dashboards"];
+      // Un geste de vue avec « — Sans vue — » choisi : le refus nomme CE choix, pas « — Sans filtre de vue — ».
+      for (const [valeur, dit, pas] of [["none", "« — Sans vue — » n'en est pas une", "Sans filtre de vue"], ["", "« — Sans filtre de vue — » n'en est pas une", "« — Sans vue — »"]]) {
+        choisir177(valeur); fermer177();
+        const avantV = new Set(avisNoeuds177());
+        await m.renommerLaVue(); await laisser177();
+        const avisV = avisDepuis177(avantV).join(" | ");
+        if (!avisV.includes(dit) || avisV.includes(pas)) ecarts[182].push(`renommer avec le filtre « ${valeur} » : « ${avisV.slice(0, 220)} »`);
+      }
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine177; globalThis.setTimeout = minuterieOrigine177; globalThis.IntersectionObserver = ioOrigine177;
+    S177.AUTH = etatOrigine177.auth; S177.isAdmin = etatOrigine177.admin; S177.viewList = etatOrigine177.vues; S177.dashList = etatOrigine177.liste;
+    S177.panelObserver = null; S177.tileObserver = null; S177.dashTotal = null;
+    if (sel177) sel177.value = valeurOrigine177;
+    if (vue177) vue177.replaceChildren();
+    if (pied177) { pied177.replaceChildren(); pied177.hidden = true; }
+    viderPuits177(); fermer177();
+  }
+  exiger(ecarts[177].length === 0, `(177) \`P11.25-f\` (console) — LE CORPS N'ENVOIE PAS « TOUTES LES VUES » EN BOOLÉEN OU LA CAUSE SERVIE N'EST PAS PEINTE : ${JSON.stringify(ecarts[177])}`);
+  exiger(ecarts[178].length === 0, `(178) \`P11.25-f\` (console) — LA LISTE NE SE DEMANDE PAS PAR VUE ET PAR PAGES (view, limit, offset, total) : ${JSON.stringify(ecarts[178])}`);
+  exiger(ecarts[179].length === 0, `(179) \`P11.25-f\` (console) — LA LISTE DES PANNEAUX D'UN TABLEAU N'EST PAS DEMANDÉE À L'APPROCHE DE L'ÉCRAN : ${JSON.stringify(ecarts[179])}`);
+  exiger(ecarts[180].length === 0, `(180) \`P11.25-f\` (console) — UNE VUE HOMONYME N'EST PAS COMPLÉTÉE (409, complétion, 404 nommé, renommage) : ${JSON.stringify(ecarts[180])}`);
+  exiger(ecarts[181].length === 0, `(181) \`P11.25-f\` (console) — LE RETRAIT D'UN TABLEAU D'UNE VUE N'EST PAS CONFIRMÉ, RELU OU DIT : ${JSON.stringify(ecarts[181])}`);
+  exiger(ecarts[182].length === 0, `(182) \`P11.25-f\` (console) — LES VUES D'UN TABLEAU SONT MAL DITES : ${JSON.stringify(ecarts[182])}`);
+  if (echecs.length !== echecsAvant177) console.log(`(177-182) EN ÉCHEC — ${echecs.length - echecsAvant177} écart(s), dits ci-dessus`);
+  else console.log("(177-182) OK — `P11.25-f` (console) : la création offre « toutes les vues » décochée et l'envoie en booléen, l'édition offre la valeur servie et la renvoie en booléen ; les refus 400/404/503 (causes relues dans dashboards.rs) sont peints avec l'identifiant du 503 ; la liste se demande par vue, sans vue ou sans filtre, bornée sous la limite relue, page suivante par offset et « n sur total » ; le sélecteur d'ajout lit la liste entière ; la liste des panneaux d'un tableau n'est demandée qu'à l'intersection de sa tuile, une seule fois, les données des panneaux restent observées, et tout se charge sans IntersectionObserver ; un 409 de création propose les seuls tableaux manquants et dit added et already_present, un 404 nomme les identifiants servis, un renommage 409 nomme la vue existante ; le retrait d'une vue se confirme, relit la liste sur 204 et dit le 404 tel quel ; les vues de view_ids sont affichées et un view_id nul n'est jamais « sans vue ». Ce qu'ils NE tiennent PAS : le rendu d'un vrai navigateur.");
+}
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

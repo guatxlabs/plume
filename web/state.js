@@ -200,6 +200,10 @@ export const S = {
   viewsRole: '',
   panelCards: [],
   panelObserver: null,
+  // `P11.25-f` (console) — l'observateur des TUILES (la liste des panneaux d'un tableau n'est demandée qu'à
+  // l'approche de l'écran) et le `total` servi par la liste paginée (null : le démon n'en a pas servi).
+  tileObserver: null,
+  dashTotal: null,
   // --- notifiers / parsers / playbooks ---
   editingNotif: null,
   editingParser: null,

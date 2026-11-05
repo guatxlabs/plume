@@ -333,12 +333,63 @@ function puitsDesTableauxDeBord() {
   const grille = $('#dashview');
   return grille && grille.parentNode ? puitsDuRefusDUnGeste(grille.parentNode, 'tableaux_de_bord', grille) : null;
 }
-// La VUE courante affiche TOUS ses dashboards ; chaque dashboard = une tuile (carte) avec sa grille de panneaux.
+// `P11.25-f` (console) — LA LISTE SE DEMANDE PAR PAGES, FILTRÉE PAR LE DÉMON. Avant : `GET /api/dashboards` entier
+// (ou `?view=<id>`), une tuile par tableau, et chaque tuile demandait AUSSITÔT la liste de ses panneaux. La page est
+// bornée côté démon par `LIMITE_DE_PAGE_DES_TABLEAUX_DE_BORD` (daemon/src/handlers/dashboards.rs, refus nommé au-delà) ;
+// la taille choisie ici reste sous cette borne, le harnais la confronte au source. Le filtre vaut l'identifiant d'une
+// vue, `none` (« — Sans vue — » : ni rattachement visible ni « toutes les vues »), ou rien (« — Sans filtre de vue — »).
+const TAILLE_DE_PAGE_DES_TABLEAUX_DE_BORD = 24;
+const FILTRE_SANS_VUE = 'none';
+// La valeur du sélecteur, telle quelle (`''`, `none` ou un identifiant de vue).
+function filtreDeVueChoisi() { return $('#view') ? String($('#view').value || '') : ''; }
+// L'identifiant de la VUE choisie, ou `''` quand le sélecteur ne désigne aucune vue (sans filtre, sans vue).
+function vueChoisie() { const f = filtreDeVueChoisi(); return f && f !== FILTRE_SANS_VUE ? f : ''; }
+function adresseDeLaPageDesTableaux(decalage) {
+  const f = filtreDeVueChoisi();
+  return '/dashboards?' + (f ? 'view=' + encodeURIComponent(f) + '&' : '') + 'limit=' + TAILLE_DE_PAGE_DES_TABLEAUX_DE_BORD + '&offset=' + decalage;
+}
+// Le pied de la liste : « n sur total », et la page suivante tant qu'il en reste. Sans `total` servi, rien n'est dit
+// (rien ne permettrait de dire combien il en manque). `aveu` = le refus de la page suivante, peint sous le compte.
+function peindreLaPaginationDesTableaux(aveu) {
+  const hote = $('#dash-pager'); if (!hote) return;
+  hote.replaceChildren();
+  const n = S.dashList.length, total = S.dashTotal;
+  if (typeof total !== 'number' || (total === 0 && !aveu)) { hote.hidden = true; return; }
+  hote.hidden = false;
+  const dit = document.createElement('span'); dit.className = 'muted';
+  dit.textContent = faceDansLaLangue({ fr: '{n} sur {total} tableau(x) de bord', en: '{n} of {total} dashboard(s)' }, { n, total });
+  hote.appendChild(dit);
+  if (n < total) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'btn';
+    b.textContent = faceDansLaLangue({ fr: 'Afficher les suivants', en: 'Show the next ones' });
+    b.onclick = chargerLaPageSuivanteDesTableaux;
+    hote.appendChild(b);
+  }
+  if (aveu) hote.appendChild(aveu);
+}
+async function chargerLaPageSuivanteDesTableaux() {
+  const wrap = $('#dashview'); if (!wrap) return;
+  let data;
+  try { data = await api(adresseDeLaPageDesTableaux(S.dashList.length)); }
+  catch (e) { peindreLaPaginationDesTableaux(noeudDuRefusDUneLecture(e, faceDansLaLangue({ fr: 'Page suivante des tableaux de bord', en: 'Next page of dashboards' }), 'bad')); return; }
+  if (data.error) {
+    const { aveu, dit } = boiteDAveu();
+    dit.textContent = 'Page suivante des tableaux de bord NON LUE : le démon a refusé et en nomme la cause —';
+    aveu.append(' « ' + String(data.error).trim() + ' »');
+    peindreLaPaginationDesTableaux(aveu); return;
+  }
+  const neufs = (data.dashboards || []).filter(d => !S.dashList.some(x => x.id === d.id));
+  if (!S.dashList.length && neufs.length) wrap.replaceChildren();   // l'état vide ne reste pas au-dessus des tuiles
+  S.dashList = S.dashList.concat(neufs);
+  if (typeof data.total === 'number') S.dashTotal = data.total;
+  neufs.forEach(d => wrap.appendChild(renderDashboard(d, { paresseux: true })));
+  peindreLaPaginationDesTableaux();
+}
+// La VUE courante affiche ses dashboards, page par page ; chaque dashboard = une tuile (carte) avec sa grille de panneaux.
 async function loadDashboards() {
   const wrap = $('#dashview'); if (!wrap) return;
   try {
-    const view = $('#view') ? $('#view').value : '';
-    const data = await api('/dashboards' + (view ? '?view=' + encodeURIComponent(view) : ''));
+    const data = await api(adresseDeLaPageDesTableaux(0));
     // `P10.20-a` — UNE LISTE DE TABLEAUX DE BORD NON LUE N'EST PAS UN ESPACE VIDE. Le démon sert, en 200,
     // `{dashboards: [], me, role, error: <cause>}` quand la lecture échoue — par le constructeur partagé
     // (`corps_de_liste_illisible`) comme par le défaut de `read_with` (daemon/src/handlers/dashboards.rs) —
@@ -352,11 +403,14 @@ async function loadDashboards() {
       dit.textContent = 'Tableaux de bord NON LUS : le démon a refusé et en nomme la cause —';
       aveu.append(' « ' + String(data.error).trim() + ' »');
       wrap.replaceChildren(aveu);
+      S.dashTotal = null; peindreLaPaginationDesTableaux();
       return;
     }
     S.dashList = data.dashboards || [];
+    S.dashTotal = typeof data.total === 'number' ? data.total : null;
     applyRoleClass(data.role); // reflète le rôle sur <body> -> le CSS masque les contrôles d'écriture
     renderView();
+    peindreLaPaginationDesTableaux();
   } catch (e) {}
 }
 // rafraichit seulement les DONNEES des panneaux (zoom / intervalle) sans rebatir le layout
@@ -390,11 +444,13 @@ function renderView() {
   const wrap = $('#dashview'); if (!wrap) return;
   wrap.classList.toggle('editing', S.editing);
   if (S.panelObserver) { S.panelObserver.disconnect(); S.panelObserver = null; } // repart propre (cartes recréées)
+  if (S.tileObserver) { S.tileObserver.disconnect(); S.tileObserver = null; }
   S.panelCards = [];
   wrap.replaceChildren();
   if (!S.dashList.length) {
     const es = document.createElement('div'); es.className = 'emptystate';
-    es.append(Object.assign(document.createElement('div'), { textContent: faceDansLaLangue({ fr: 'Aucun dashboard{vue}.', en: 'No dashboard{vue}.' }, { vue: $('#view') && $('#view').value ? faceDansLaLangue({ fr: ' dans cette vue', en: ' in this view' }) : '' }) }));
+    const f = filtreDeVueChoisi();
+    es.append(Object.assign(document.createElement('div'), { textContent: faceDansLaLangue({ fr: 'Aucun dashboard{vue}.', en: 'No dashboard{vue}.' }, { vue: f === FILTRE_SANS_VUE ? faceDansLaLangue({ fr: ' sans vue', en: ' without a view' }) : f ? faceDansLaLangue({ fr: ' dans cette vue', en: ' in this view' }) : '' }) }));
     const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = '+ Dashboard'; b.onclick = () => $('#dash-new').click(); es.appendChild(b); // P11.4-b : classe partagée
     wrap.replaceChildren(es); return;
   }
@@ -409,9 +465,38 @@ function renderView() {
       return a[1] - b[1];
     }).map(x => x[0]);
   }
-  list.forEach(d => wrap.appendChild(renderDashboard(d)));
+  list.forEach(d => wrap.appendChild(renderDashboard(d, { paresseux: true })));
 }
-function renderDashboard(d) {
+// `P11.25-f` (console) — CE QUE LA TUILE DIT DE SES VUES. `view_ids` porte les vues VISIBLES où le tableau est rangé
+// (le démon ne sert jamais l'identifiant d'une vue invisible), `all_views` la présence dans toutes ; `view_id` (vue
+// principale) vaut null quand cette vue est invisible — ce n'est donc PAS « sans vue », et la tuile ne le lit pas.
+// `''` quand le démon n'a servi ni l'un ni l'autre (rien n'est affirmé).
+function phraseDesVuesDuTableau(d) {
+  if (d.all_views === true) return faceDansLaLangue({ fr: 'toutes les vues', en: 'all views' });
+  if (!Array.isArray(d.view_ids)) return '';
+  if (!d.view_ids.length) return faceDansLaLangue({ fr: 'aucune vue visible', en: 'no visible view' });
+  const noms = d.view_ids.map(id => { const v = (S.viewList || []).find(x => String(x.id) === String(id)); return v ? v.name : '#' + id; });
+  return faceDansLaLangue({ fr: 'vues : {noms}', en: 'views: {noms}' }, { noms: noms.join(', ') });
+}
+// `P11.25-f` (console) — LA LISTE DES PANNEAUX D'UN TABLEAU (`/api/dashboard/{id}`) N'EST DEMANDÉE QU'À L'APPROCHE DE
+// L'ÉCRAN. Avant : chaque tuile la demandait à sa construction, donc tous les tableaux de la vue d'un coup. Frère de
+// `getPanelObserver` (qui, lui, diffère les DONNÉES des panneaux et reste tel quel) ; rootMargin plus large, parce que
+// la liste doit être là avant que les panneaux ne soient observés. Sans IntersectionObserver : rien n'est différé.
+function getTileObserver() {
+  if (S.tileObserver || !('IntersectionObserver' in window)) return S.tileObserver;
+  S.tileObserver = new IntersectionObserver((entries, obs) => {
+    for (const en of entries) {
+      if (!en.isIntersecting) continue;
+      const tile = en.target; obs.unobserve(tile);
+      const grid = tile._grilleEnAttente;
+      if (grid && grid._deferredLoad && !tile.classList.contains('collapsed')) grid._deferredLoad();
+    }
+  }, { rootMargin: '400px' });
+  return S.tileObserver;
+}
+// `opts.paresseux` : la liste des panneaux attend que la tuile approche de l'écran (posé par la liste ; une tuile
+// construite seule la charge tout de suite, comme avant).
+function renderDashboard(d, opts = {}) {
   const editable = d.editable !== false;
   const tile = document.createElement('section'); tile.className = 'dashtile card2'; tile.dataset.id = d.id;
   const cols = Math.max(1, Math.min(4, d.cols || 2));
@@ -423,6 +508,9 @@ function renderDashboard(d) {
   const grip = document.createElement('span'); grip.className = 'grip editonly'; grip.innerHTML = ic('grip'); grip.title = 'Glisser l\'en-tete pour reordonner';
   const h = document.createElement('h3'); h.textContent = d.name;
   const meta = document.createElement('span'); meta.className = 'dashmeta'; meta.textContent = faceDansLaLangue({ fr: '{n} panneau(x){prive}', en: '{n} panel(s){prive}' }, { n: d.panels, prive: d.visibility === 'private' ? faceDansLaLangue({ fr: ' - prive', en: ' - private' }) : '' });   // `P10.29-c`
+  const phraseDesVues = phraseDesVuesDuTableau(d);
+  const vuesDuTableau = document.createElement('span'); vuesDuTableau.className = 'dashmeta'; vuesDuTableau.dataset.vuesDuTableau = '1';
+  vuesDuTableau.textContent = phraseDesVues;
   const tools = document.createElement('div'); tools.className = 'paneltools';
   // #62 — étoile FAVORI (tous rôles : préférence perso, pas une mutation partagée). Toggle instantané : on
   // repeint l'étoile et, à l'ajout, on remonte la tuile en tête sans recharger les panneaux (le tri complet
@@ -468,7 +556,20 @@ function renderDashboard(d) {
   dsnap.onclick = () => captureSnapshot(d);
   tools.append(fav, dref, addp, dpdf);
   if (editable) tools.append(dsnap, ren, wsel, del);
-  head.append(chev, grip, h, meta, tools);
+  // `P11.25-f` (console) — RETIRER CE TABLEAU DE LA VUE CHOISIE (`DELETE /api/views/{id}/dashboards/{dashboard_id}`),
+  // offert seulement quand il y est RANGÉ (`view_ids`) : un tableau « toutes les vues » sans rattachement n'a rien à
+  // retirer ici. Le démon ne juge que la vue (visible) et le tableau (lisible, donc modifiable) : aucun refus de rôle
+  // d'administrateur n'est inventé ; `crud-btn` suit la seule borne de rôle de la route (editor+, rbac.rs).
+  const vueCourante = vueChoisie();
+  if (vueCourante && Array.isArray(d.view_ids) && d.view_ids.map(String).includes(String(vueCourante))) {
+    const ret = document.createElement('button'); ret.type = 'button'; ret.className = 'picon crud-btn'; ret.innerHTML = ic('folder');
+    ret.title = 'Retirer ce dashboard de la vue';
+    ret.onclick = () => retirerLeTableauDeLaVue(d, vueCourante);
+    tools.append(ret);
+  }
+  head.append(chev, grip, h, meta);
+  if (phraseDesVues) head.append(vuesDuTableau);
+  head.append(tools);
   tile.appendChild(head);
   // --- corps : grille de panneaux ---
   const body = document.createElement('div'); body.className = 'dashtile-body';
@@ -476,8 +577,12 @@ function renderDashboard(d) {
   tile.appendChild(body);
   if (d.height > 0) { body.style.height = d.height + 'px'; body.style.overflow = 'auto'; }
   // un dashboard REPLIÉ ne charge même pas sa liste de panneaux : différé jusqu'à la 1re expansion.
-  if (!d.collapsed) loadPanelsInto(grid, d);
-  else grid._deferredLoad = () => { grid._deferredLoad = null; loadPanelsInto(grid, d); };
+  // `P11.25-f` — dans la liste (`opts.paresseux`), un dashboard déplié la diffère aussi, jusqu'à l'approche de l'écran.
+  const chargerLaListe = () => { grid._deferredLoad = null; loadPanelsInto(grid, d); };
+  const observateurDesTuiles = !d.collapsed && opts.paresseux ? getTileObserver() : null;
+  if (d.collapsed) grid._deferredLoad = chargerLaListe;
+  else if (observateurDesTuiles) { grid._deferredLoad = chargerLaListe; tile._grilleEnAttente = grid; observateurDesTuiles.observe(tile); }
+  else loadPanelsInto(grid, d);
   // `P10.20-k` — LES CINQ PERSISTANCES DE CETTE TUILE PASSENT PAR UN SEUL ENVOI, ET IL EST ENTOURÉ.
   // Elles partaient toutes sans `catch` : un refus du démon repartait en rejet non traité — rien à
   // l'écran, et la tuile gardant l'état qu'il venait de refuser d'écrire. Rend `true` si l'écriture a eu
@@ -501,11 +606,12 @@ function renderDashboard(d) {
   };
   addp.onclick = () => createPanelModal(d.id, ($('#sql') && $('#sql').value.trim()) || '');
   ren.onclick = async () => {
-    const r = await modal({ title: 'Renommer le dashboard', okText: 'Enregistrer', fields: [{ name: 'name', label: 'Nom', required: true, value: d.name }], validate: v => S.dashList.some(x => x.id !== d.id && x.name === v.name.trim()) ? 'Un dashboard porte deja ce nom.' : null });
+    // `P11.25-f` (console) — la case « toutes les vues » porte la valeur SERVIE (`all_views`) et repart en booléen.
+    const r = await modal({ title: 'Renommer le dashboard', okText: 'Enregistrer', fields: [{ name: 'name', label: 'Nom', required: true, value: d.name }, { name: 'all_views', label: 'Ajouter à toutes les vues', type: 'checkbox', value: d.all_views === true }], validate: v => S.dashList.some(x => x.id !== d.id && x.name === v.name.trim()) ? 'Un dashboard porte deja ce nom.' : null });
     if (!r) return;
     // UN RECHARGEMENT APRÈS UN REFUS EFFACERAIT L'AVEU qu'on vient de peindre, et reposerait à l'écran
     // l'ancien nom sans un mot : la liste ne se relit que si l'écriture a eu lieu.
-    if (await persisterLeTableauDeBord({ name: r.name.trim() })) loadDashboards();
+    if (await persisterLeTableauDeBord({ name: r.name.trim(), all_views: r.all_views === true })) loadDashboards();
   };
   wsel.onchange = () => { const n = Number(wsel.value); d.cols = n; tile.style.flexBasis = tileBasis(n); persisterLeTableauDeBord({ cols: n }); };
   // `P10.23-t` — LE RETRAIT D'UN TABLEAU DE BORD N'AVAIT AUCUNE CAPTURE : un refus partait en promesse rejetée non traitée, rien
@@ -639,6 +745,25 @@ function aveuDeRefusDEcriture(cle, e) {
 // La même chose en une chaîne, pour un avis.
 const phraseDuRefusDEcriture = (cle, e) => phraseDUneReponseQuiNeVientPasDuDemon(e) || (motDuRefusDEcriture(cle) + ' « ' + phraseDuRefusDuDemon(e) + ' »');
 
+// `P11.25-f` (console) — CE QU'UN REFUS SERT À CÔTÉ DE SA CAUSE, DIT APRÈS ELLE : les identifiants de tableaux de bord
+// inconnus (`dashboard_ids`, 404 de `POST /api/views/{id}/dashboards`) et l'identifiant d'un 503 (`id`, celui que le
+// journal du démon porte). `''` quand le refus n'en sert aucun.
+function piecesDuRefusServi(e) {
+  const o = e && e.objetDuRefus; if (!o) return '';
+  const morceaux = [];
+  if (Array.isArray(o.dashboard_ids) && o.dashboard_ids.length) {
+    const noms = o.dashboard_ids.map(id => { const d = (S.dashList || []).find(x => String(x.id) === String(id)); return d ? '« ' + d.name + ' » (#' + id + ')' : '#' + id; });
+    morceaux.push(faceDansLaLangue({ fr: 'Tableau(x) de bord en cause : {ids}.', en: 'Dashboard(s) at fault: {ids}.' }, { ids: noms.join(', ') }));
+  }
+  if (typeof o.id === 'string' && o.id.trim()) morceaux.push(faceDansLaLangue({ fr: 'Identifiant du refus (journal du démon) : {id}.', en: 'Refusal identifier (daemon log): {id}.' }, { id: o.id.trim() }));
+  return morceaux.join(' ');
+}
+// Le refus d'un geste, peint par la forme partagée, puis ses pièces servies.
+function peindreLeRefusEtSesPieces(puits, e) {
+  peindreLeRefusDUnGeste(puits, e);
+  const pieces = piecesDuRefusServi(e);
+  if (puits && pieces) puits.append(document.createTextNode(' ' + pieces));
+}
 // LE REFUS D'UNE PERSISTANCE DE TABLEAU DE BORD, PEINT DANS LA TUILE QUI LE SUBIT. Un avis fugace ne
 // suffirait pas : le geste refusé (plier, renommer, largeur, hauteur, position) a laissé la tuile dans
 // l'état que le démon a précisément REFUSÉ d'écrire, et ce désaccord se relit tant que la page tient.
@@ -654,6 +779,7 @@ function avouerLeRefusDuTableauDeBord(tile, e) {
   const ancien = tile.querySelector('[data-refus-de-tableau-de-bord]');
   if (ancien) ancien.remove();
   const aveu = aveuDeRefusDEcriture(cle, e);
+  const pieces = piecesDuRefusServi(e); if (pieces) aveu.append(' ' + pieces);   // `P11.25-f` : l'identifiant d'un 503 servi
   aveu.dataset.refusDeTableauDeBord = '1';   // marque de POSE, pas de style : aucune règle CSS ne la vise
   aveu.style.cssText = 'margin:4px 0;font-size:12px';
   tile.insertBefore(aveu, tile.children[1] || null);
@@ -1191,18 +1317,25 @@ async function renderPanel(p, editable = true) {
   return card;
 }
 // Ajouter un dashboard a la vue : soit en RATTACHER un existant (select), soit en CREER un nouveau.
+// `P11.25-f` (console) — LE RATTACHEMENT COMPLÈTE LA VUE, IL NE DÉPLACE PLUS. Un tableau rejoint plusieurs vues
+// (jointure v125) : le rattacher passe par `POST /api/views/{id}/dashboards`, qui n'ajoute que ce qui manque et ne
+// touche pas sa vue principale ; l'écriture de `view_id` (qui DÉPLAÇAIT) n'est plus le geste. Le sélecteur garde la
+// liste ENTIÈRE (`GET /api/dashboards` sans `limit` : le démon la sert sans borne), jamais une page.
 async function addDashboardFlow() {
-  const view = $('#view') ? $('#view').value : '';
+  const filtre = filtreDeVueChoisi(), view = vueChoisie();
   // `P10.7-z` — une liste NON LUE n'est pas une liste vide : le choix « rattacher » le dit au lieu de disparaître.
   let all = [], listeNonLue = false;
   try { const rep = await api('/dashboards'); all = rep.dashboards || []; listeNonLue = !!rep.error; } catch (e) { listeNonLue = true; }
-  // dashboards editables pas deja dans cette vue (rattacher = deplacer ; le schema = 1 vue par dashboard)
-  const attachable = view ? all.filter(d => d.editable !== false && String(d.view_id || '') !== String(view)) : [];
+  // dashboards editables pas encore RANGÉS dans cette vue (ni « toutes les vues », déjà partout)
+  const attachable = view ? all.filter(d => d.editable !== false && d.all_views !== true && !dejaRangeDansLaVue(d, view)) : [];
   const fields = [];
-  if (attachable.length) fields.push({ name: 'existing', label: 'Rattacher un dashboard existant', type: 'select', value: '', options: [{ value: '', label: '+ Creer un nouveau dashboard' }, ...attachable.map(d => ({ value: String(d.id), label: d.name + (d.view_id ? faceDansLaLangue({ fr: ' (deplace depuis une autre vue)', en: ' (moved from another view)' }) : '') }))] });
+  if (attachable.length) fields.push({ name: 'existing', label: 'Rattacher un dashboard existant', type: 'select', value: '', options: [{ value: '', label: '+ Creer un nouveau dashboard' }, ...attachable.map(d => { const vues = phraseDesVuesDuTableau(d); return { value: String(d.id), label: d.name + (vues ? ' (' + vues + ')' : '') }; })] });
   else if (listeNonLue) fields.push({ name: 'existing', label: 'Rattacher un dashboard existant', type: 'select', value: '', options: [{ value: '', label: LANG === 'en' ? '— list NOT READ (the read failed): creation only —' : '— liste NON LUE (la lecture a échoué) : création seulement —' }] });
   fields.push({ name: 'name', label: attachable.length ? 'Nom (si nouveau)' : 'Nom', placeholder: 'ex: Plume vue d ensemble', value: '' });
   fields.push({ name: 'visibility', label: 'Visibilité (si nouveau)', type: 'select', value: 'private', options: [{ value: 'private', label: 'Privé (vous + admin)' }, { value: 'shared', label: 'Partagé (groupe)' }] });
+  // `P11.25-f` (console) — « toutes les vues » est un CHOIX, décoché par défaut : un tableau neuf n'apparaît partout que
+  // si on le demande (le démon pose 0 sans le champ ; la console l'envoie toujours, en booléen).
+  fields.push({ name: 'all_views', label: 'Ajouter à toutes les vues (si nouveau)', type: 'checkbox', value: false });
   // `P11.20-p` — OÙ ARRIVE CE QUI VIENT D'ÊTRE CRÉÉ, DIT PAR LA FENÊTRE QUI LE CRÉE. Le mécanisme que la clé
   // accusait est RÉFUTÉ : cette surface n'envoie AUCUN paramètre de vue quand aucune n'est choisie (voir
   // `loadDashboards`), donc rien n'est « ajouté à un filtre ». Le défaut réel est plus simple, et il subsiste :
@@ -1214,9 +1347,13 @@ async function addDashboardFlow() {
   const nomDeVue = view ? ((((S.viewList || []).find(v => String(v.id) === String(view)) || {}).name) || view) : '';
   const destination = view
     ? (LANG === 'en' ? 'Destination: the view “' + nomDeVue + '”.' : 'Destination : la vue « ' + nomDeVue + ' ».')
-    : (LANG === 'en'
-      ? 'Destination: NO view — this dashboard will not be filed anywhere. “— No view filter —” is not a destination: it is the ABSENCE of a filter, and the list it shows ALSO contains the dashboards filed in a view.'
-      : 'Destination : AUCUNE vue — ce tableau de bord ne sera rangé nulle part. « — Sans filtre de vue — » n\'est pas une destination : c\'est l\'ABSENCE de filtre, et la liste qu\'il montre contient AUSSI les tableaux de bord rangés dans une vue.');
+    : filtre === FILTRE_SANS_VUE
+      ? (LANG === 'en'
+        ? 'Destination: NO view — a new dashboard is filed nowhere, and appears under “— No view —” unless “Add to all views” is checked.'
+        : 'Destination : AUCUNE vue — un tableau de bord neuf n\'est rangé nulle part, et paraît sous « — Sans vue — » sauf si « Ajouter à toutes les vues » est cochée.')
+      : (LANG === 'en'
+        ? 'Destination: NO view — this dashboard will not be filed anywhere. “— No view filter —” is not a destination: it is the ABSENCE of a filter, and the list it shows ALSO contains the dashboards filed in a view.'
+        : 'Destination : AUCUNE vue — ce tableau de bord ne sera rangé nulle part. « — Sans filtre de vue — » n\'est pas une destination : c\'est l\'ABSENCE de filtre, et la liste qu\'il montre contient AUSSI les tableaux de bord rangés dans une vue.');
   const r = await modal({
     title: 'Ajouter un dashboard', okText: 'Ajouter', fields, consequence: destination,
     validate: v => {
@@ -1229,15 +1366,42 @@ async function addDashboardFlow() {
   if (!r) return;
   // `P10.23-t` — LE RATTACHEMENT ET LA CRÉATION N'AVAIENT AUCUNE CAPTURE : un refus partait en promesse rejetée non traitée,
   // la fenêtre refermée sans un mot. La forme partagée, dans le puits des tableaux de bord ; l'avis de succès ne part qu'après
-  // l'écriture.
+  // l'écriture. `P11.25-f` : la cause servie, puis ses pièces (identifiants en cause, identifiant d'un 503).
   const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
   if (r.existing) {
-    try { await patchDash(Number(r.existing), { view_id: view ? Number(view) : null }); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
-    toast('Dashboard rattaché à la vue', 'ok');
+    let rep;
+    try { rep = await apiSend('/views/' + view + '/dashboards', 'POST', { dashboard_ids: [Number(r.existing)] }); } catch (e) { peindreLeRefusEtSesPieces(puits, e); return; }
+    toast(phraseDuResultatDesRattachements(rep, all), 'ok', 9000);
   } else {
-    try { await apiSend('/dashboards', 'POST', { name: r.name.trim(), visibility: r.visibility, view_id: view ? Number(view) : null }); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
+    try { await apiSend('/dashboards', 'POST', { name: r.name.trim(), visibility: r.visibility, view_id: view ? Number(view) : null, all_views: r.all_views === true }); } catch (e) { peindreLeRefusEtSesPieces(puits, e); return; }
     toast('Dashboard créé', 'ok');
   }
+  await loadDashboards(); await loadViews();
+}
+// Le tableau est-il déjà RANGÉ dans la vue ? Par `view_ids` (servi depuis v125), sinon par la vue principale d'avant.
+function dejaRangeDansLaVue(d, view) {
+  return Array.isArray(d.view_ids) ? d.view_ids.map(String).includes(String(view)) : String(d.view_id || '') === String(view);
+}
+// `P11.25-f` (console) — CE QUE LA COMPLÉTION A FAIT, DIT PAR CE QUE LE DÉMON SERT : `added` (rattachés par ce geste)
+// et `already_present` (déjà rangés). Un corps qui ne les porte pas ne se lit pas comme un détail inventé.
+function phraseDuResultatDesRattachements(rep, tous) {
+  const ajoutes = rep && Array.isArray(rep.added) ? rep.added : null, deja = rep && Array.isArray(rep.already_present) ? rep.already_present : null;
+  if (!ajoutes || !deja) return faceDansLaLangue({ fr: 'Rattachement accepté ; le démon n\'a pas dit lesquels ont été ajoutés.', en: 'Attachment accepted; the daemon did not say which ones were added.' });
+  const nom = id => { const d = (tous || []).find(x => String(x.id) === String(id)); return d ? '« ' + d.name + ' »' : '#' + id; };
+  const aucun = faceDansLaLangue({ fr: 'aucun', en: 'none' });
+  return faceDansLaLangue({ fr: 'Ajoutés à la vue : {a}. Déjà présents : {p}.', en: 'Added to the view: {a}. Already present: {p}.' }, { a: ajoutes.length ? ajoutes.map(nom).join(', ') : aucun, p: deja.length ? deja.map(nom).join(', ') : aucun });
+}
+// `P11.25-f` (console) — RETIRER UN TABLEAU D'UNE VUE (`DELETE /api/views/{id}/dashboards/{dashboard_id}`). Le geste
+// se confirme (route destructrice du rattachement), le tableau n'est pas supprimé. 204 : la liste se relit ; 404
+// `RATTACHEMENT ABSENT` (ou vue inconnue) : la cause servie, telle quelle, dans le puits des tableaux de bord.
+async function retirerLeTableauDeLaVue(d, viewId) {
+  const nomDeVue = (((S.viewList || []).find(v => String(v.id) === String(viewId)) || {}).name) || ('#' + viewId);
+  const geste = faceDansLaLangue({ fr: 'Retirer « {nom} » de la vue « {vue} » ?', en: 'Remove “{nom}” from the view “{vue}”?' }, { nom: d.name, vue: nomDeVue });
+  const consequence = faceDansLaLangue({ fr: 'Le tableau de bord ne paraît plus dans cette vue (s\'il en était la vue principale, il n\'en a plus). Il n\'est PAS supprimé et reste dans ses autres vues.', en: 'The dashboard no longer shows in this view (if it was its main view, it has none any more). It is NOT deleted and stays in its other views.' });
+  if (!await confirmWithConsequence(geste, consequence)) return;
+  const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
+  try { await apiSend('/views/' + viewId + '/dashboards/' + d.id, 'DELETE'); } catch (e) { peindreLeRefusEtSesPieces(puits, e); return; }
+  toast(faceDansLaLangue({ fr: 'Dashboard retiré de la vue', en: 'Dashboard removed from the view' }), 'ok');
   await loadDashboards(); await loadViews();
 }
 
@@ -1371,6 +1535,9 @@ async function loadViews() {
     const cur = sel.value;
     sel.replaceChildren();
     const all = document.createElement('option'); all.value = ''; all.textContent = '— Sans filtre de vue —'; sel.appendChild(all);
+    // `P11.25-f` (console) — les tableaux qui ne sont rangés dans AUCUNE vue visible (ni « toutes les vues ») : `?view=none`.
+    // Pas sur une liste de vues NON LUE : « sans vue » se juge contre les vues, et le sélecteur n'offre alors que l'option neutre.
+    if (!reponse.error) { const sansVue = document.createElement('option'); sansVue.value = FILTRE_SANS_VUE; sansVue.textContent = '— Sans vue —'; sel.appendChild(sansVue); }
     // #17 team — le label distingue explicitement une vue PARTAGÉE (équipe) d'une vue privée -> l'équipe
     // voit d'un coup d'œil quels regroupements de dashboards sont communs.
     (views || []).forEach(v => { const o = document.createElement('option'); o.value = v.id; o.textContent = `${v.name}${v.visibility === 'shared' ? ' (équipe)' : ' (privé)'} (${v.dashboards})`; sel.appendChild(o); });
@@ -1425,6 +1592,9 @@ async function loadViews() {
 // que dire, avant le geste, ce qu'il répondra — et le dire est tout ce qui manquait.
 const REFUS_DE_VUE_MOTS = {
   aucune_vue: { fr: "Aucune vue choisie : ce geste porte sur UNE vue, et « — Sans filtre de vue — » n'en est pas une — choisissez-en une dans la liste.", en: 'No view selected: this gesture applies to ONE view, and “— No view filter —” is not one — pick one from the list.' },
+  // `P11.25-f` (console) — « — Sans vue — » est un FILTRE (les tableaux rangés dans aucune vue), pas une vue : le refus nomme
+  // le choix réellement fait, jamais l'autre option du sélecteur.
+  sans_vue_choisie: { fr: "Aucune vue choisie : ce geste porte sur UNE vue, et « — Sans vue — » n'en est pas une (c'est le filtre des tableaux de bord rangés dans aucune vue) — choisissez-en une dans la liste.", en: 'No view selected: this gesture applies to ONE view, and “— No view —” is not one (it filters the dashboards filed in no view) — pick one from the list.' },
   pas_proprietaire: { fr: "Vue d'un autre : seuls son propriétaire et un administrateur peuvent la partager, la renommer ou la supprimer (le serveur le refuse aussi).", en: 'Someone else’s view: only its owner and an administrator may share, rename or delete it (the server refuses it too).' },
 };
 const motDuRefusDeVue = (cause) => (LANG === 'en' ? REFUS_DE_VUE_MOTS[cause].en : REFUS_DE_VUE_MOTS[cause].fr);
@@ -1458,7 +1628,7 @@ function motDuRefusDeLaVue(v, geste) {
   if (VISIBILITE_DE_VUE_NON_LUE && GESTES_DE_VUE_QUI_LISENT_LA_VISIBILITE.has(geste || 'partage')) {
     return motDuRefusDEcriture('partage_non_juge') + ' « ' + VISIBILITE_DE_VUE_NON_LUE + ' »';
   }
-  if (!v) return motDuRefusDeVue('aucune_vue');
+  if (!v) return motDuRefusDeVue(filtreDeVueChoisi() === FILTRE_SANS_VUE ? 'sans_vue_choisie' : 'aucune_vue');
   if (!viewCanShare(v)) return motDuRefusDeVue('pas_proprietaire');
   return '';
 }
@@ -1534,6 +1704,99 @@ function refleterLesDroitsDeLaVue() {
   });
 }
 
+// `P11.25-f` (console) — CRÉER UNE VUE SOUS UN NOM DÉJÀ PRIS COMPLÈTE L'EXISTANTE. Le doublon se juge au démon (409
+// `VUE DÉJÀ EXISTANTE` + `view_id`, sous son verrou d'écriture) et plus dans la console, dont la liste peut être
+// périmée : le refus est peint, puis la console propose les tableaux de bord qui MANQUENT à la vue existante et les y
+// rattache par `POST /api/views/{id}/dashboards` (tout ou rien), en disant `added` et `already_present`.
+async function creerUneVue() {
+  // La MÊME phrase qu'au survol, jamais deux formulations du même refus.
+  if (VUES_NON_LUES) { toast("Les vues n'ont PAS été lues : en créer une ici, c'est peut-être en créer une homonyme de celle que cette lecture n'a pas pu rendre, et le filtre ci-contre ne porte sur rien.", 'bad', 9000); return; }
+  const r = await modal({
+    title: 'Nouvelle vue', okText: 'Créer', fields: [
+      { name: 'name', label: 'Nom', required: true, placeholder: 'ex: Production' },
+      { name: 'visibility', label: 'Visibilité', type: 'select', value: 'private', options: [{ value: 'private', label: 'Privé (vous + admin)' }, { value: 'shared', label: 'Partagé (groupe)' }] },
+    ],
+  });
+  if (!r) return;
+  // `P10.23-t` — la création d'une vue n'avait AUCUNE capture (promesse rejetée non traitée, rien de dit) ; un corps de succès
+  // vide (`apiSend` rend `null`) faisait jeter `cr.id`. La forme partagée, dans le puits des tableaux de bord.
+  const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
+  let cr;
+  try { cr = await apiSend('/views', 'POST', { name: r.name.trim(), visibility: r.visibility }); }
+  catch (e) {
+    peindreLeRefusEtSesPieces(puits, e);
+    const existante = vueExistanteServie(e);
+    if (existante !== null) await completerLaVueExistante(existante, puits);
+    return;
+  }
+  await loadViews(); if (cr && cr.id) $('#view').value = cr.id; loadDashboards(); toast('Vue créée', 'ok');
+}
+// L'identifiant de la vue existante qu'un 409 sert (`view_id`), ou null.
+function vueExistanteServie(e) {
+  const o = e && e.statutDuRefus === 409 ? e.objetDuRefus : null;
+  return o && Number.isInteger(o.view_id) ? o.view_id : null;
+}
+function nomDeLaVue(id) { const v = (S.viewList || []).find(x => String(x.id) === String(id)); return v ? v.name : ''; }
+// Propose les tableaux de bord qui manquent à la vue `viewId` (lus ENTIERS : `GET /api/dashboards` sans borne), puis
+// les y rattache. Une liste non lue ne se lit pas « rien ne manque » : elle se dit.
+async function completerLaVueExistante(viewId, puits) {
+  await loadViews();
+  const nom = nomDeLaVue(viewId) || ('#' + viewId);
+  let tous = [], nonLue = '';
+  try { const rep = await api('/dashboards'); tous = rep.dashboards || []; nonLue = rep.error ? String(rep.error).trim() : ''; } catch (e) { nonLue = phraseDUneReponseQuiNeVientPasDuDemon(e) || phraseDuRefusDuDemon(e); }
+  if (nonLue) {
+    toast(faceDansLaLangue({ fr: 'La vue « {vue} » existe déjà, mais les tableaux de bord NE SONT PAS LUS : rien ne peut être proposé pour la compléter — « {cause} »', en: 'The view “{vue}” already exists, but the dashboards are NOT READ: nothing can be offered to complete it — “{cause}”' }, { vue: nom, cause: nonLue }), 'bad', 9000);
+    return;
+  }
+  const manquants = tous.filter(d => d.editable !== false && d.all_views !== true && !dejaRangeDansLaVue(d, viewId));
+  if (!manquants.length) {
+    toast(faceDansLaLangue({ fr: 'La vue « {vue} » existe déjà et porte déjà tous les tableaux de bord que vous pouvez y ranger.', en: 'The view “{vue}” already exists and already carries every dashboard you can file in it.' }, { vue: nom }), 'ok', 9000);
+    return;
+  }
+  const r = await modal({
+    title: faceDansLaLangue({ fr: 'Compléter la vue existante « {vue} »', en: 'Complete the existing view “{vue}”' }, { vue: nom }),
+    message: faceDansLaLangue({ fr: 'Une vue de ce nom existe déjà : rien n\'a été créé. Cochez les tableaux de bord à y ajouter — seuls ceux qui y manquent sont proposés.', en: 'A view with that name already exists: nothing was created. Tick the dashboards to add to it — only the missing ones are offered.' }),
+    okText: faceDansLaLangue({ fr: 'Compléter', en: 'Complete' }),
+    fields: manquants.map(d => ({ name: 'tdb-' + d.id, label: d.name, type: 'checkbox', value: false })),
+  });
+  if (!r) return;
+  const choisis = manquants.filter(d => r['tdb-' + d.id] === true).map(d => d.id);
+  if (!choisis.length) return;
+  let rep;
+  try { rep = await apiSend('/views/' + viewId + '/dashboards', 'POST', { dashboard_ids: choisis }); }
+  catch (e) { peindreLeRefusEtSesPieces(puits, e); return; }
+  effacerLeRefusDUnGeste(puits);
+  const sel = $('#view'); if (sel) sel.value = String(viewId);
+  await loadViews(); if (sel) sel.value = String(viewId);
+  loadDashboards();
+  toast(phraseDuResultatDesRattachements(rep, tous), 'ok', 9000);
+}
+// Le renommage d'une vue. `P11.25-f` (console) : un nom déjà pris est jugé par le démon (409 + `view_id`), et l'avis
+// NOMME la vue existante au lieu de dire seulement le refus.
+async function renommerLaVue() {
+  const sel = $('#view'); const id = sel && sel.value;
+  const v = S.viewList.find(x => String(x.id) === String(id));
+  // `P11.20-o` — `view_update` sert le renommage ET le partage, et porte pour les deux la MÊME clause
+  // d'appartenance. Ce bouton ne miroitait que l'absence de choix, jamais le droit.
+  const motif = motDuRefusDeLaVue(v, 'renommage');
+  if (motif) { toast(motif, 'bad', 9000); if (refusDeVueRetenuParUneLectureManquante('renommage')) loadViews(); return; }
+  const r = await modal({ title: 'Renommer la vue', okText: 'Enregistrer', fields: [{ name: 'name', label: 'Nom', required: true, value: v ? v.name : '' }] });
+  if (!r) return;
+  // `P10.20-k` — MÊME HANDLER, MÊME LECTURE, MÊME MÉMOIRE : `view_update` lit la visibilité courante
+  // AVANT de juger quoi que ce soit, y compris un simple renommage. La phrase du démon est rendue
+  // entière (elle partait derrière `e.message`, donc en JSON brut quand le corps est moulé par
+  // `err_json`), et la cause est retenue pour retirer le geste.
+  try { await apiSend('/views/' + id, 'POST', { name: r.name.trim() }); }
+  catch (e) {
+    noterLIssueDUnViewUpdate(e);
+    const existante = vueExistanteServie(e);
+    const laquelle = existante === null ? '' : ' ' + faceDansLaLangue({ fr: 'Vue existante : « {vue} » (#{id}).', en: 'Existing view: “{vue}” (#{id}).' }, { vue: nomDeLaVue(existante) || r.name.trim(), id: existante });
+    toast(motDuRefusServeurDeVue('renommage', e) + laquelle, 'bad', 9000); return;
+  }
+  noterLIssueDUnViewUpdate(null);
+  await loadViews(); $('#view').value = id; toast('Vue renommée', 'ok');
+}
+
 function initDashboards() {
   if ($('#dash-new')) $('#dash-new').addEventListener('click', addDashboardFlow);
   if ($('#dash-refresh')) $('#dash-refresh').addEventListener('click', refreshDashboards);
@@ -1596,23 +1859,7 @@ function initDashboards() {
     await loadViews(); sel.value = id; refleterLesDroitsDeLaVue();
     toast(next === 'shared' ? 'Vue partagée avec l\'équipe' : 'Vue rendue privée', 'ok');
   });
-  if ($('#view-new')) $('#view-new').addEventListener('click', async () => {
-    // La MÊME phrase qu'au survol, jamais deux formulations du même refus.
-    if (VUES_NON_LUES) { toast("Les vues n'ont PAS été lues : en créer une ici, c'est peut-être en créer une homonyme de celle que cette lecture n'a pas pu rendre, et le filtre ci-contre ne porte sur rien.", 'bad', 9000); return; }
-    const r = await modal({
-      title: 'Nouvelle vue', okText: 'Créer', fields: [
-        { name: 'name', label: 'Nom', required: true, placeholder: 'ex: Production' },
-        { name: 'visibility', label: 'Visibilité', type: 'select', value: 'private', options: [{ value: 'private', label: 'Privé (vous + admin)' }, { value: 'shared', label: 'Partagé (groupe)' }] },
-      ], validate: v => S.viewList.some(x => x.name === v.name.trim()) ? 'Une vue porte déjà ce nom.' : null,
-    });
-    if (!r) return;
-    // `P10.23-t` — la création d'une vue n'avait AUCUNE capture (promesse rejetée non traitée, rien de dit) ; un corps de succès
-    // vide (`apiSend` rend `null`) faisait jeter `cr.id`. La forme partagée, dans le puits des tableaux de bord.
-    const puits = puitsDesTableauxDeBord(); effacerLeRefusDUnGeste(puits);
-    let cr;
-    try { cr = await apiSend('/views', 'POST', { name: r.name.trim(), visibility: r.visibility }); } catch (e) { peindreLeRefusDUnGeste(puits, e); return; }
-    await loadViews(); if (cr && cr.id) $('#view').value = cr.id; loadDashboards(); toast('Vue créée', 'ok');
-  });
+  if ($('#view-new')) $('#view-new').addEventListener('click', creerUneVue);
   if ($('#view-del')) $('#view-del').addEventListener('click', async () => {
     const sel = $('#view');
     // `P11.20-o` — MÊME PRÉDICAT, MÊME PHRASE que le partage : `view_delete` porte la MÊME clause
@@ -1628,24 +1875,7 @@ function initDashboards() {
   });
   if ($('#view-rename')) {
     $('#view-rename').innerHTML = ic('pencil');
-    $('#view-rename').addEventListener('click', async () => {
-      const sel = $('#view'); const id = sel && sel.value;
-      const v = S.viewList.find(x => String(x.id) === String(id));
-      // `P11.20-o` — `view_update` sert le renommage ET le partage, et porte pour les deux la MÊME clause
-      // d'appartenance. Ce bouton ne miroitait que l'absence de choix, jamais le droit.
-      const motif = motDuRefusDeLaVue(v, 'renommage');
-      if (motif) { toast(motif, 'bad', 9000); if (refusDeVueRetenuParUneLectureManquante('renommage')) loadViews(); return; }
-      const r = await modal({ title: 'Renommer la vue', okText: 'Enregistrer', fields: [{ name: 'name', label: 'Nom', required: true, value: v ? v.name : '' }], validate: x => S.viewList.some(y => String(y.id) !== String(id) && y.name === x.name.trim()) ? 'Une vue porte déjà ce nom.' : null });
-      if (!r) return;
-      // `P10.20-k` — MÊME HANDLER, MÊME LECTURE, MÊME MÉMOIRE : `view_update` lit la visibilité courante
-      // AVANT de juger quoi que ce soit, y compris un simple renommage. La phrase du démon est rendue
-      // entière (elle partait derrière `e.message`, donc en JSON brut quand le corps est moulé par
-      // `err_json`), et la cause est retenue pour retirer le geste.
-      try { await apiSend('/views/' + id, 'POST', { name: r.name.trim() }); }
-      catch (e) { noterLIssueDUnViewUpdate(e); toast(motDuRefusServeurDeVue('renommage', e), 'bad', 9000); return; }
-      noterLIssueDUnViewUpdate(null);
-      await loadViews(); $('#view').value = id; toast('Vue renommée', 'ok');
-    });
+    $('#view-rename').addEventListener('click', renommerLaVue);
   }
   loadViews();
   loadDashboards();
@@ -1666,3 +1896,4 @@ export { aveuDeRefusDEcriture, phraseDuRefusDEcriture, phraseDuRefusDuPartageDeV
 export { prochaineRelanceDeLaChauffe, noeudDeLaChauffeSansFin };   // `P10.32-m` : jugés par le témoin 146
 export { noeudDuRafraichissementEnEchec };   // `P10.32-o` : jugé par les témoins 159 et 160
 export { addDashboardFlow, corpsSansLigne, initDashboards, loadDashboard, loadDashboards, loadPanelsInto, loadViews, refreshPanels, renderDashboard, visibiliteCouranteNonLue };
+export { creerUneVue, renommerLaVue, retirerLeTableauDeLaVue, phraseDesVuesDuTableau };   // `P11.25-f` (console) : jouées par les témoins 177 à 182

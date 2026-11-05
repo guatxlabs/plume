@@ -29,7 +29,7 @@ use crate::handlers::alerts::phrase_de_la_fin;
 // Un capteur sans aucune observation n'a pas de silence à constater — il ne peut donc pas être
 // « muet », quel que soit l'état du pipeline. Le verdict est désormais UNE fonction ; les deux
 // surfaces l'appellent, et `StatutCapteur::alerte()` dit lequel des trois verdicts réveille
-// quelqu'un. Une 24ᵉ entrée de `COLLECTORS`, ou une 3ᵉ surface, hérite de la règle sans la réécrire.
+// quelqu'un. Une 26ᵉ entrée de `COLLECTORS`, ou une 3ᵉ surface, hérite de la règle sans la réécrire.
 //
 // L'ÉCART DE SEUIL EST GARDÉ, MAIS DÉCLARÉ. Le panneau montrait « muet » à 3 cycles manqués,
 // l'alerte à 5 — écart réel, jamais écrit nulle part, qu'on aurait effacé par mégarde en unifiant.
@@ -231,7 +231,7 @@ pub(crate) fn cadence_json(cadence: &CadenceDeclaree, n_24h: Option<i64>) -> Val
 }
 
 // SWR pour /api/integrations (#23) — même motif que /api/freshness ci-dessus. ROOT CAUSE du ~6 s À CHAUD :
-// le handler exécute les 23 requêtes de COLLECTORS, chacune `SELECT MAX(ts) FROM event WHERE source=?[ AND
+// le handler exécute les 25 requêtes de COLLECTORS, chacune `SELECT MAX(ts) FROM event WHERE source=?[ AND
 // category='health']`. `event` (~4,7 M lignes CHIFFRÉES) n'a qu'un idx_event_src MONOCOLONNE — AUCUN composite
 // (source,ts) ni (source,category,ts) — donc chaque MAX(ts) doit balayer TOUTES les lignes de la source (avec
 // lookup table pour lire `ts`, absent de l'index) => ~6 s CUMULÉS, à chaud comme à froid (contrairement à
@@ -372,7 +372,7 @@ pub(crate) fn compute_integrations(db_path: &str) -> Value {
         };
         let hosts_served = hosts.len();
         // P3.2-a — LE VERDICT DE FLOTTE, en COMPTE et non en série par hôte (cf. `sonde_de_flotte.rs`).
-        // C'est le seul chiffre de ce panneau qui parle des machines MUETTES ; les 21 sondes à portée
+        // C'est le seul chiffre de ce panneau qui parle des machines MUETTES ; les 23 sondes à portée
         // « tous hôtes confondus » ci-dessus ne peuvent pas le dire, par construction. Une lecture ratée
         // rend `null` ET sa cause — jamais un zéro rassurant fabriqué à la place d'une observation.
         let flotte = match flotte_muette(conn, now_ts) {
@@ -1284,9 +1284,9 @@ pub(crate) fn check_heartbeats(db: &Arc<Mutex<Connection>>) -> crate::bilan_de_t
 
 /// P3.2-a — LE DEAD-MAN'S-SWITCH DU PARC : un hôte qui se tait ENTIÈREMENT lève un signal.
 ///
-/// POURQUOI ICI ET PAS DANS LA BOUCLE CI-DESSUS. Les 23 entrées de `COLLECTORS` répondent « ce CAPTEUR
-/// parle-t-il ? » ; aucune ne peut répondre « ce PARC parle-t-il ? », parce que 21 d'entre elles ont une
-/// portée « tous hôtes confondus » et que les 2 autres ne voient que `snapshot`. Une 24ᵉ entrée aurait
+/// POURQUOI ICI ET PAS DANS LA BOUCLE CI-DESSUS. Les 25 entrées de `COLLECTORS` répondent « ce CAPTEUR
+/// parle-t-il ? » ; aucune ne peut répondre « ce PARC parle-t-il ? », parce que 23 d'entre elles ont une
+/// portée « tous hôtes confondus » et que les 2 autres ne voient que `snapshot`. Une 26ᵉ entrée aurait
 /// donc menti sur ce qu'elle est. C'est une sonde à part, de portée `ParHote`, et elle le DIT.
 ///
 /// UN ÉPISODE PAR ENSEMBLE MUET, ET UN SEUL OUVERT. La clé de déduplication porte l'EMPREINTE de

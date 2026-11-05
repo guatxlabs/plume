@@ -19,7 +19,7 @@
 //! Mais rien ne se LÈVE — il faut que quelqu'un ouvre le panneau et compte. Un angle mort qui n'est
 //! visible que pour qui le cherche déjà n'est pas couvert : il est documenté.
 //!
-//! LA CORRECTION ÉVIDENTE, ET POURQUOI ELLE EST REFUSÉE. Repasser les 21 sondes PAR HÔTE multiplie
+//! LA CORRECTION ÉVIDENTE, ET POURQUOI ELLE EST REFUSÉE. Repasser les 23 sondes PAR HÔTE multiplie
 //! tout par la taille de la flotte, sur deux axes :
 //!   - CARDINALITÉ : 21 séries deviennent 21 x H. Pour une flotte de mille machines — l'ordre de
 //!     grandeur que `host_rollup` annonce (« centaines/milliers ») — cela fait 21 000 séries à
@@ -30,7 +30,7 @@
 //!     P3.7-a — mais cette fois pour vingt sondes, sous le verrou d'écriture, toutes les 20 s. La
 //!     mesure (mutation du volume x4, compteur `SQLITE_STMTSTATUS_VM_STEP`) est dans
 //!     `daemon/src/tests/hotes_muets.rs` : la variante par hôte suit le volume, l'actuelle non.
-//! Une solution qui ignore ce point n'en est pas une. C'est pourquoi la portée des 21 sondes n'est pas
+//! Une solution qui ignore ce point n'en est pas une. C'est pourquoi la portée des 23 sondes n'est pas
 //! changée ici : elle est DÉCLARÉE (`Sonde::portee`) et rendue lisible, ce qui est un aveu, pas un
 //! correctif.
 //!

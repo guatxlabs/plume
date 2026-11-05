@@ -456,9 +456,12 @@
             instantanes, vec!["controls", "firewall"],
             "ANCRAGE : les `kind` d'instantané sondés PAR HÔTE. Un `kind` ajouté/retiré doit passer par ici."
         );
+        // MONTÉE NOMMÉE (cadence Cloudflare) : 20 -> 22. Les deux capteurs Cloudflare (`cloudflare`,
+        // `cloudflare-http`) reçoivent leur sonde `EventFlux` événementielle pour que leur cadence soit
+        // DÉCLARÉE ; ce sont deux sondes de plus à portée « flotte confondue », et c'est dit ici.
         assert_eq!(
-            (ev, me), (20, 1),
-            "ANCRAGE DE LA DETTE DÉCLARÉE : 20 sondes d'events + 1 de métriques gardent la portée « flotte \
+            (ev, me), (22, 1),
+            "ANCRAGE DE LA DETTE DÉCLARÉE : 22 sondes d'events + 1 de métriques gardent la portée « flotte \
              confondue » — MÊME défaut de famille, coût DIFFÉRENT (`event` compte plus d'un million de \
              lignes sur une base réelle, relevé du 2026-08-05 par `db-stats --par-objet`, sondé sous le \
              verrou d'écriture, contre une ligne vivante par (kind,hôte) pour `snapshot`). Ce compte doit \
@@ -480,15 +483,17 @@
         //
         // MÊME SENS QUE L'ANCRAGE CI-DESSUS : ce compte doit BAISSER, jamais monter en silence.
         assert_eq!(
-            (flux, ev - flux), (12, 8),
-            "ANCRAGE DE LA RÉPARTITION : parmi les sondes d'events à portée « flotte confondue », 12 \
+            (flux, ev - flux), (14, 8),
+            "ANCRAGE DE LA RÉPARTITION : parmi les sondes d'events à portée « flotte confondue », 14 \
              observent un FLUX réel (`EventFlux`) et 8 un BATTEMENT DE SANTÉ (`EventBattementSante`, \
              les dead-man's-switches de P3.7-a). Une sonde ajoutée AGGRAVE la dette : elle passe par ici."
         );
         // P3.2-a — L'AXE QUI DÉCIDE SI UNE SONDE PEUT MASQUER UNE PANNE DE PARC, ANCRÉ POUR LUI-MÊME.
         //
-        // CE QUI ÉTAIT FAUX, ET POURQUOI ÇA N'A PAS FAIT DE BRUIT. La répartition ci-dessus rend 12 et 8.
-        // Le drapeau `event_based`, lui, rend 12 et 9 sur les 21 sondes à portée confondue — et ce ne sont
+        // CE QUI ÉTAIT FAUX, ET POURQUOI ÇA N'A PAS FAIT DE BRUIT (comptes de la mesure d'origine, AVANT les
+        // deux sondes Cloudflare ; aujourd'hui 14 et 8, puis 12 et 11 sur 23, et 11 des 14 flux sont
+        // `event_based=true` — les deux ajoutées le sont). La répartition ci-dessus rendait 12 et 8.
+        // Le drapeau `event_based`, lui, rendait 12 et 9 sur les 21 sondes à portée confondue — et ce ne sont
         // PAS les mêmes 12. Les 8 battements sont TOUS `event_based=false` (c'est leur définition : un
         // dead-man's-switch juge son propre silence), et 9 des 12 flux sont `event_based=true`. Les 12
         // « tirées de la valeur » sont donc 8 battements + 3 flux (`audit`, `web`, `kube-audit`) + la
@@ -499,11 +504,12 @@
         // risque » — non : `pipeline_is_fresh` est un `MAX(ts)` sur event∪metric∪snapshot SANS filtre
         // d'hôte, donc une seule machine vivante le rend vrai. Les 21 masquent, les unes par leur propre
         // agrégat, les autres par celui du pipeline. La preuve par mutation est dans `hotes_muets.rs`
-        // (`hotes_muets_un_seul_hote_parle_et_les_21_sondes_restent_vertes`), qui exige les DEUX familles.
+        // (`hotes_muets_un_seul_hote_parle_et_les_23_sondes_restent_vertes`), qui exige les DEUX familles.
         assert_eq!(
-            (par_valeur, par_pipeline), (12, 9),
-            "ANCRAGE DE L'AXE : parmi les 21 sondes à portée « tous hôtes confondus », 12 tirent leur \
-             statut de la VALEUR (`event_based=false`) et 9 de `pipeline_is_fresh` (`event_based=true`). \
+            (par_valeur, par_pipeline), (12, 11),
+            "ANCRAGE DE L'AXE : parmi les 23 sondes à portée « tous hôtes confondus », 12 tirent leur \
+             statut de la VALEUR (`event_based=false`) et 11 de `pipeline_is_fresh` (`event_based=true`, \
+             dont les deux sondes Cloudflare). \
              AUCUNE des deux familles n'échappe au défaut de portée — `pipeline_is_fresh` est lui aussi \
              un agrégat sans hôte. Ce compte doit BAISSER, jamais monter en silence."
         );

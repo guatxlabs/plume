@@ -4,10 +4,13 @@
 use crate::*;
 use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendre_apres_validation};
 
-/// Durée du ban posé par un playbook `ban_ip`, telle que les exécuteurs la posent : `--duration` CrowdSec et
-/// TTL du blocage HTTP natif partagent `NETBAN_ACTION_TTL_S` (voir `action_command` et `netban_upsert`).
+/// Durée PAR DÉFAUT du ban posé par un playbook `ban_ip` (colonne `ban_ttl_s` NULL), telle que les exécuteurs la
+/// posent : `--duration` CrowdSec et TTL du blocage HTTP natif partagent `NETBAN_ACTION_TTL_S` (voir
+/// `action_command` et `netban_upsert`). `P11.25-a` : un playbook peut porter sa propre durée (`ban_ttl_s`).
 /// fail2ban applique la durée de son jail, nft ne pose pas d'expiration : ces deux cas sont NOMMÉS dans la
-/// phrase, pas chiffrés.
+/// phrase, pas chiffrés. `P11.25-a` : plus aucun appelant hors tests (la phrase passe par
+/// `action_consequence_pour_la_duree`) — la référence des témoins qui confrontent la phrase aux exécuteurs.
+#[cfg(test)]
 pub(crate) fn ban_duration_hours() -> i64 {
     NETBAN_ACTION_TTL_S / 3600
 }
@@ -15,11 +18,38 @@ pub(crate) fn ban_duration_hours() -> i64 {
 /// La CONSÉQUENCE d'un `action_kind`, en une phrase : ce que l'interrupteur « actif » d'un playbook ARME.
 /// `P11.2-b` : une case à cocher qui active un ban d'IP ne se lisait pas ; la phrase est servie avec la liste
 /// pour que la surface n'invente pas la durée. Vocabulaire fermé = celui d'`action_kind_valid`.
+/// La durée par défaut (`NETBAN_ACTION_TTL_S`) ; la phrase d'un playbook précis passe par
+/// `action_consequence_pour_la_duree` avec sa durée effective. `P11.25-a` : plus aucun appelant hors tests (la liste
+/// sert la phrase de la durée effective de chaque playbook).
+#[cfg(test)]
 pub(crate) fn action_consequence(kind: &str) -> String {
+    action_consequence_pour_la_duree(kind, NETBAN_ACTION_TTL_S)
+}
+
+/// `P11.25-a` — une durée de ban dite à l'exploitant : en heures quand elle en est un nombre entier (`4 h`, la
+/// forme d'avant), en minutes sinon quand elle en est un (`90 min`), en secondes autrement (`45 s`).
+pub(crate) fn duree_de_ban_lisible(duree_s: i64) -> String {
+    if duree_s % 3600 == 0 {
+        format!("{} h", duree_s / 3600)
+    } else if duree_s % 60 == 0 {
+        format!("{} min", duree_s / 60)
+    } else {
+        format!("{duree_s} s")
+    }
+}
+
+/// `P11.25-a` — la conséquence d'un `action_kind` pour la durée EFFECTIVE du playbook (`ban_ttl_s`, sinon le
+/// défaut). Une durée propre dit aussi ce qu'elle ne couvre pas : l'agent d'un hôte distant
+/// (`collectors/respond.sh`) applique encore sa propre durée (`PLUME_BAN_DURATION`), que la file ne lui transmet pas.
+pub(crate) fn action_consequence_pour_la_duree(kind: &str, duree_s: i64) -> String {
     match kind {
+        "ban_ip" if duree_s == NETBAN_ACTION_TTL_S => format!(
+            "bannit l'IP source pendant {} (CrowdSec ou blocage HTTP natif ; fail2ban : durée du jail ; nft : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre",
+            duree_de_ban_lisible(duree_s)
+        ),
         "ban_ip" => format!(
-            "bannit l'IP source pendant {} h (CrowdSec ou blocage HTTP natif ; fail2ban : durée du jail ; nft : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre",
-            ban_duration_hours()
+            "bannit l'IP source pendant {} (CrowdSec du central ou blocage HTTP natif ; agent d'un hôte distant : sa propre durée ; fail2ban : durée du jail ; nft : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre",
+            duree_de_ban_lisible(duree_s)
         ),
         "unban_ip" => "lève le ban de l'IP source sur chaque hôte qui l'a vue dans la fenêtre".to_string(),
         "kill_pid" => "termine le processus cible (SIGTERM) sur le central".to_string(),
@@ -199,6 +229,29 @@ pub(crate) const CAUSE_PLAYBOOK_NON_ESSAYE_NON_LU: &str = "ESSAI DU PLAYBOOK NON
      des playbooks est illisible.";
 
 
+/// `P11.25-a` — LA DURÉE DE BAN DEMANDÉE est refusée : ni entier, ni dans la borne. Phrase fixe (aucune valeur
+/// reçue n'y est recopiée), servie en 400 par la création et la modification, AVANT toute écriture.
+pub(crate) const CAUSE_DUREE_DE_BAN_REFUSEE: &str = "DURÉE DE BAN REFUSÉE : ban_ttl_s est un nombre ENTIER de \
+     secondes, d'une seconde à 31536000 (365 jours), ou null pour la durée par défaut (4 h). Une valeur \
+     décimale, textuelle, nulle, négative ou au-delà d'un an n'est ni arrondie ni remplacée : RIEN n'est écrit.";
+
+/// `P11.25-a` — LA DURÉE DE BAN D'UN CORPS DE CRÉATION OU DE MODIFICATION. Trois issues, jamais une valeur
+/// remplacée : champ ABSENT = `Ok(None)` (création : NULL, la durée par défaut ; modification : inchangée) ;
+/// `null` = `Ok(Some(None))` (retour explicite à la durée par défaut) ; entier dans `1..=BAN_TTL_MAX_S` =
+/// `Ok(Some(Some(n)))`. Tout le reste (décimal, même `3600.0`, texte, booléen, zéro, négatif, au-delà de la
+/// borne) = `Err(CAUSE_DUREE_DE_BAN_REFUSEE)`. Fonction PURE.
+pub(crate) fn duree_de_ban_demandee(b: &Value) -> Result<Option<Option<i64>>, &'static str> {
+    match b.get("ban_ttl_s") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        // `as_i64` ne rend un entier que d'un nombre JSON entier : `3600.0`, `"3600"` et `true` tombent dans `None`.
+        Some(v) => match v.as_i64().map(|n| (n, duree_de_ban_effective(Some(n)))) {
+            Some((n, Ok(_))) => Ok(Some(Some(n))),
+            _ => Err(CAUSE_DUREE_DE_BAN_REFUSEE),
+        },
+    }
+}
+
 pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
     // `P10.7-f` (rang 2) — LA LISTE DES PLAYBOOKS EST ENTIÈRE OU AVOUÉE. Avant : DEUX `unwrap()` (une panique
@@ -207,21 +260,26 @@ pub(crate) async fn playbooks_list(State(st): State<AppState>, Extension(au): Ex
     // (`observe` = propose / `active` = exécute). C'est la vue où l'on vérifie « qu'est-ce qui peut bannir
     // tout seul ici » : un playbook `ban_ip` avalé se lit « aucune réponse automatique n'est armée » pendant
     // qu'elle l'est. Soldé en bloc ; sur échec, l'aveu du dépôt (`corps_de_liste_illisible`) autour des deux
-    // champs qui ne DÉRIVENT PAS de cette lecture (`mode` a sa propre lecture, `ban_duration_s` est une
-    // constante) — les taire n'apprendrait rien et priverait la console de son bandeau de mode.
+    // champs qui ne DÉRIVENT PAS de cette lecture (`mode` a sa propre lecture, `ban_duration_s` de tête est la
+    // durée PAR DÉFAUT, une constante ; `P11.25-a` : chaque ligne porte la durée EFFECTIVE de son playbook) — les taire n'apprendrait rien et priverait la console de son bandeau de mode.
     let lues: rusqlite::Result<Vec<Value>> = conn
-        .prepare("SELECT id,name,enabled,query,is_soql,action_kind,interval_s,window_s,last_run,managed FROM playbook ORDER BY id")
+        .prepare("SELECT id,name,enabled,query,is_soql,action_kind,interval_s,window_s,last_run,managed,ban_ttl_s FROM playbook ORDER BY id")
         .and_then(|mut stmt| {
             stmt.query_map([], |r| {
                 let action_kind = r.get::<_, String>(5)?;
                 let (interval_s, window_s) = (r.get::<_, i64>(6)?, r.get::<_, i64>(7)?);
+                // `P11.25-a` — la durée PROPRE (`ban_ttl_s`, NULL = défaut) et la durée EFFECTIVE de CE playbook : une
+                // valeur hors borne posée hors des routes rend la ligne illisible (la liste l'avoue), jamais le défaut.
+                let ban_ttl_s = r.get::<_, Option<i64>>(10)?;
+                let ban_duration_s = duree_de_ban_effective(ban_ttl_s).map_err(|v| rusqlite::Error::IntegralValueOutOfRange(10, v))?;
                 // `P10.21-e` — une ligne déjà sous le plancher (posée avant lui) est SIGNALÉE, jamais
                 // modifiée : la cause est servie sur la ligne, la valeur enregistrée reste celle-là.
                 let sous_le_plancher = juger_le_plancher_de_fenetre_du_playbook(window_s, interval_s).err();
                 Ok(json!({
                     "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "enabled": r.get::<_, i64>(2)? != 0,
                     "query": r.get::<_, String>(3)?, "is_soql": r.get::<_, i64>(4)? != 0,
-                    "consequence": action_consequence(&action_kind), "action_kind": action_kind,
+                    "consequence": action_consequence_pour_la_duree(&action_kind, ban_duration_s), "action_kind": action_kind,
+                    "ban_ttl_s": ban_ttl_s, "ban_duration_s": ban_duration_s,
                     "interval_s": interval_s, "window_s": window_s, "last_run": r.get::<_, Option<i64>>(8)?,
                     "managed": r.get::<_, i64>(9)?,
                     "fenetre_sous_le_plancher": sous_le_plancher.is_some(), "cause_fenetre_sous_le_plancher": sous_le_plancher
@@ -271,6 +329,11 @@ pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): E
     if let Err(cause) = juger_le_plancher_de_fenetre_du_playbook(window_s, interval_s) {
         return err_json(StatusCode::BAD_REQUEST, cause);
     }
+    // `P11.25-a` — la durée de ban demandée : absente ou null = NULL (la durée par défaut) ; hors borne = 400.
+    let ban_ttl_s = match duree_de_ban_demandee(&b) {
+        Ok(d) => d.flatten(),
+        Err(cause) => return err_json(StatusCode::BAD_REQUEST, cause),
+    };
     crate::req_conn!(st, au, conn);
     // #1c garde-fous #4/#6 : INSERT managed=2 (ad-hoc UI) + audit #1b, transaction fail-closed.
     if let Err(refus) = ouvrir_la_transaction_du_geste(&conn, "playbooks", "création d'un playbook", CAUSE_PLAYBOOK_NON_CREE_TRANSACTION_NON_OUVERTE) {
@@ -282,8 +345,8 @@ pub(crate) async fn playbook_create(State(st): State<AppState>, Extension(au): E
             // (mode active) QUE les playbooks admin-authored. `validate_detection_content` garantit déjà que seul
             // un admin arrive ici pour un playbook à action destructive ; ce marquage DOUBLE la garde (défense
             // en profondeur : même un playbook editor résiduel resterait pending/dry_run en mode active).
-            "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s,managed,created_by_role) VALUES(?1,?2,?3,?4,?5,?6,?7,2,?8)",
-            params![name, enabled, query, is_soql as i64, action_kind, interval_s, window_s, au.role],
+            "INSERT INTO playbook(name,enabled,query,is_soql,action_kind,interval_s,window_s,managed,created_by_role,ban_ttl_s) VALUES(?1,?2,?3,?4,?5,?6,?7,2,?8,?9)",
+            params![name, enabled, query, is_soql as i64, action_kind, interval_s, window_s, au.role, ban_ttl_s],
         )?;
         let id = conn.last_insert_rowid();
         audit_config_change(
@@ -349,6 +412,11 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
             return err_json(StatusCode::BAD_REQUEST, cause);
         }
     }
+    // `P11.25-a` — la durée de ban demandée : absente = inchangée, null = retour au défaut, hors borne = 400.
+    let ban_ttl_demande = match duree_de_ban_demandee(&b) {
+        Ok(d) => d,
+        Err(cause) => return err_json(StatusCode::BAD_REQUEST, cause),
+    };
     // FIX HIGH-1b (bypass adopt-then-toggle) : modifier un playbook BASELINE (seed/builtin managed=0) = ADMIN
     // seul — sinon l'adoption managed=0->2 (plus bas) sert de tremplin à une désactivation editor + ferme le
     // neuter-via-query. Frontière : baseline(0)+overlay(1)=admin ; editor CRUD complet sur SON ad-hoc (managed=2).
@@ -377,6 +445,7 @@ pub(crate) async fn playbook_update(State(st): State<AppState>, Extension(au): E
         if let Some(v) = b.get("action_kind").and_then(|x| x.as_str()) { conn.execute("UPDATE playbook SET action_kind=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("interval_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE playbook SET interval_s=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("window_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE playbook SET window_s=?1 WHERE id=?2", params![v, id])?; }
+        if let Some(v) = ban_ttl_demande { conn.execute("UPDATE playbook SET ban_ttl_s=?1 WHERE id=?2", params![v, id])?; }
         // P11.5-d : la case « Activée » emprunte le MÊME point unique que l'interrupteur de la ligne.
         if let Some(v) = b.get("enabled").and_then(|x| x.as_bool()) {
             conn.execute("UPDATE playbook SET enabled=?1 WHERE id=?2", params![v as i64, id])?;
@@ -520,6 +589,72 @@ pub(crate) fn playbook_cell(c: &Value) -> String {
     }
 }
 
+/// `P11.25-a` — LA DURÉE PROPRE QU'UN PLAYBOOK FAIT PORTER À SA RIPOSTE, depuis sa colonne `ban_ttl_s` lue : pour un
+/// `ban_ip`, la colonne jugée par `duree_de_ban_effective` (NULL = `Ok(None)`, la durée par défaut ; dans la borne =
+/// `Ok(Some(n))` ; hors borne = `Err` avec la valeur lue, jamais remplacée) ; pour tout autre genre, `Ok(None)` quelle
+/// que soit la colonne — une riposte qui ne bannit pas n'a pas de durée de ban, et une colonne hors borne posée hors
+/// des routes ne la retient pas. Fonction PURE, appelée par la lecture de `run_playbooks`.
+pub(crate) fn duree_propre_d_un_ban_du_playbook(action_kind: &str, propre: Option<i64>) -> Result<Option<i64>, i64> {
+    if action_kind != "ban_ip" {
+        return Ok(None);
+    }
+    duree_de_ban_effective(propre)?;
+    Ok(propre)
+}
+
+/// `P11.25-a` — le point de reprise de `poser_la_riposte_du_playbook`.
+pub(crate) const POINT_DE_LA_RIPOSTE_ET_DE_SA_DUREE: &str = "riposte_du_playbook_et_sa_duree";
+
+/// `P11.25-a` — LA MISE EN FILE D'UNE RIPOSTE DE PLAYBOOK, AVEC SA DURÉE DE BAN PROPRE. Sans durée propre
+/// (`None` : playbook à `ban_ttl_s` NULL, ou action autre que `ban_ip`), c'est `mettre_une_riposte_en_file`, telle
+/// quelle. Avec une durée, la ligne et sa colonne `ban_ttl_s` sont écrites TOUT OU RIEN sous un `SAVEPOINT` (même
+/// forme que `write_alert_to_lookup`) : la durée doit écrire SA ligne (`Ok(1)`) ; un refus, un `Ok(0)` ou une
+/// libération refusée annulent la ligne entière et rendent `NonEcrite` — une riposte ne part jamais avec la durée
+/// par défaut à la place de celle de son playbook. Une annulation refusée elle-même laisse le point ouvert : la
+/// sonde des transactions orphelines du tour suivant le voit (`ecrivain_sonde_avant_les_ecritures`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn poser_la_riposte_du_playbook(
+    conn: &Connection,
+    ts: i64,
+    kind: &str,
+    cible: &str,
+    statut: &str,
+    simulation: i64,
+    motif: &str,
+    hote: Option<&str>,
+    duree_propre: Option<i64>,
+) -> crate::handlers::mise_en_file_de_riposte::RiposteMiseEnFile {
+    use crate::handlers::mise_en_file_de_riposte::{mettre_une_riposte_en_file, RiposteMiseEnFile};
+    let Some(duree) = duree_propre else {
+        return mettre_une_riposte_en_file(conn, ts, kind, cible, statut, simulation, None, motif, hote);
+    };
+    const POINT: &str = POINT_DE_LA_RIPOSTE_ET_DE_SA_DUREE;
+    if let Err(e) = conn.execute_batch(&format!("SAVEPOINT {POINT}")) {
+        return RiposteMiseEnFile::NonEcrite(format!("point de reprise de la riposte non ouvert : {e}"));
+    }
+    let ecrire = || -> Result<i64, String> {
+        let id = match mettre_une_riposte_en_file(conn, ts, kind, cible, statut, simulation, None, motif, hote) {
+            RiposteMiseEnFile::Posee(id) => id,
+            RiposteMiseEnFile::NonEcrite(cause) => return Err(cause),
+        };
+        match conn.execute("UPDATE action SET ban_ttl_s=?1 WHERE id=?2", params![duree, id]) {
+            Ok(1) => {}
+            Ok(n) => return Err(format!("durée du ban non écrite sur la riposte ({n} ligne(s) écrite(s))")),
+            Err(e) => return Err(format!("durée du ban non écrite sur la riposte : {e}")),
+        }
+        conn.execute_batch(&format!("RELEASE {POINT}")).map_err(|e| format!("point de reprise de la riposte non libéré : {e}"))?;
+        Ok(id)
+    };
+    match ecrire() {
+        Ok(id) => RiposteMiseEnFile::Posee(id),
+        Err(cause) => {
+            // Annule les SEULES écritures de ce point et le ferme ; la cause rendue reste celle du premier refus.
+            let _ = conn.execute_batch(&format!("ROLLBACK TO {POINT}; RELEASE {POINT}"));
+            RiposteMiseEnFile::NonEcrite(cause)
+        }
+    }
+}
+
 /// `P10.31-j` — LES DEUX REPRISES DE VERROU QUI ÉCRIVENT dans `run_playbooks`, nommées pour les témoins.
 pub(crate) const SITE_MARQUEUR_APRES_COMPILATION_REFUSEE: &str = "marqueur après compilation refusée";
 pub(crate) const SITE_MARQUEUR_ET_RIPOSTES: &str = "marqueur et ripostes";
@@ -571,14 +706,18 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     // jamais. Mode 0 / rôle de base -> byte-identique à `== "admin"` (builtin jamais custom-défini, jamais denied).
     // `P10.21-e` — `interval_s` et le `last_run` d'AVANT ce passage sont lus ici, avant que le marqueur
     // ne soit reposé : ils bornent le début de la déduplication (`debut_de_la_deduplication_du_playbook`).
-    type PlaybookDu = (i64, String, String, bool, String, i64, bool, i64, Option<i64>);
+    // `P11.25-a` — et la durée PROPRE du ban (`ban_ttl_s`, NULL = `NETBAN_ACTION_TTL_S`), jugée par
+    // `duree_propre_d_un_ban_du_playbook` : pour un `ban_ip`, une valeur hors borne posée hors des routes rend la ligne
+    // indécodable (`IntegralValueOutOfRange`), donc ce playbook non évalué ET compté ; pour tout autre genre la colonne
+    // n'est ni jugée ni portée (`None`), le playbook est évalué comme avant v124.
+    type PlaybookDu = (i64, String, String, bool, String, i64, bool, i64, Option<i64>, Option<i64>);
     let due: Vec<PlaybookDu> = {
         let conn = db.lock();
-        let mut stmt = match conn.prepare("SELECT id,name,query,is_soql,action_kind,window_s,COALESCE(created_by_role,'admin'),interval_s,last_run FROM playbook WHERE enabled=1 AND (last_run IS NULL OR ?1-last_run>=interval_s)") {
+        let mut stmt = match conn.prepare("SELECT id,name,query,is_soql,action_kind,window_s,COALESCE(created_by_role,'admin'),interval_s,last_run,ban_ttl_s FROM playbook WHERE enabled=1 AND (last_run IS NULL OR ?1-last_run>=interval_s)") {
             Ok(s) => s,
             Err(e) => return crate::bilan_de_tick::tick_aveugle("playbooks", &e),
         };
-        let it = match stmt.query_map(params![now_ts], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, { let cbr = r.get::<_, String>(6)?; effective_base_role(&cbr) == "admin" && !role_perm_denied(&cbr, "arm_response") }, r.get::<_, i64>(7)?, r.get::<_, Option<i64>>(8)?))) {
+        let it = match stmt.query_map(params![now_ts], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, { let cbr = r.get::<_, String>(6)?; effective_base_role(&cbr) == "admin" && !role_perm_denied(&cbr, "arm_response") }, r.get::<_, i64>(7)?, r.get::<_, Option<i64>>(8)?, { let propre = r.get::<_, Option<i64>>(9)?; duree_propre_d_un_ban_du_playbook(&r.get::<_, String>(4)?, propre).map_err(|v| rusqlite::Error::IntegralValueOutOfRange(9, v))? }))) {
             Ok(it) => it,
             Err(e) => return crate::bilan_de_tick::tick_aveugle("playbooks", &e),
         };
@@ -591,7 +730,9 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         }
         v
     };
-    for (id, name, query, is_soql, kind, window_s, admin_authored, interval_s, passage_precedent) in due {
+    for (id, name, query, is_soql, kind, window_s, admin_authored, interval_s, passage_precedent, ban_ttl_s) in due {
+        // `P11.25-a` — la durée EFFECTIVE de ce playbook (déjà jugée dans la borne à la lecture ci-dessus).
+        let duree_du_ban = ban_ttl_s.unwrap_or(NETBAN_ACTION_TTL_S);
         let debut_dedup = debut_de_la_deduplication_du_playbook(now_ts, window_s, interval_s, passage_precedent);
         let sql = match rule_sql(&query, is_soql, fenetre_de_requete_du_playbook(window_s, interval_s)) {
             Ok(s) => s,
@@ -748,9 +889,14 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 // « 0 abandon » sur une riposte évaporée. La perte entre désormais dans `abandonnes`,
                 // au même titre qu'un hôte illisible ou qu'une déduplication non lue (`P4.1-s`) : elle
                 // sera re-tentée au prochain tick, et le bilan la DIT.
+                // `P11.25-a` — la riposte d'un playbook à durée propre la porte dans la file (`action.ban_ttl_s`), dans la
+                // MÊME écriture tout-ou-rien que la ligne (`poser_la_riposte_du_playbook`) : le responder, l'approbation
+                // et la voie CrowdSec la relisent. Seul un `ban_ip` la porte : pour une autre riposte, `ban_ttl_s` vaut
+                // déjà `None` depuis la lecture (`duree_propre_d_un_ban_du_playbook`), sa ligne reste à NULL quelle que
+                // soit la colonne du playbook. Sans durée propre, la mise en file est celle d'avant.
                 if let crate::handlers::mise_en_file_de_riposte::RiposteMiseEnFile::NonEcrite(_) =
-                    crate::handlers::mise_en_file_de_riposte::mettre_une_riposte_en_file(
-                        &conn, now_ts, &kind, &target, status, dry, None, &format!("playbook:{name}"), host.as_deref(),
+                    poser_la_riposte_du_playbook(
+                        &conn, now_ts, &kind, &target, status, dry, &format!("playbook:{name}"), host.as_deref(), ban_ttl_s,
                     )
                 {
                     abandonnes += 1;
@@ -774,7 +920,8 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                         // miroir HTTP inexistant. L'écriture ratée porte son propre genre de registre, donc
                         // elle se filtre, et elle entre dans `abandonnes` — le compte du tick est la seule
                         // grandeur que la surface d'état lit de ce chemin.
-                        match netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: playbook ban_ip", "playbook", "prod") {
+                        // `P11.25-a` — la durée EFFECTIVE de ce playbook, la même que porte sa riposte en file.
+                        match netban_upsert(&conn, &canon, Some(now() + duree_du_ban), "auto: playbook ban_ip", "playbook", "prod") {
                             PoseDeBan::Arme => {}
                             PoseDeBan::RefuseParLePlafond => {
                                 let maillon = ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (playbook:{name})"));

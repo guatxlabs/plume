@@ -212,8 +212,28 @@ pub(crate) fn ip_du_pair(extensions: &axum::http::Extensions) -> String {
 
 /// TTL par défaut d'un `net_ban` POSÉ PAR UNE ACTION `ban_ip` (miroir de la durée CrowdSec `4h` de
 /// `action_command`) — réversible avant expiry via `unban_ip` / DELETE `/api/netban`. Une pose MANUELLE via
-/// l'API POST sans `ttl_s` est PERMANENTE (expires_ts NULL).
+/// l'API POST sans `ttl_s` est PERMANENTE (expires_ts NULL). `P11.25-a` : c'est la durée d'une riposte dont
+/// la colonne `ban_ttl_s` (playbook, puis action) vaut NULL — le cas de tout playbook posé avant v124.
 pub(crate) const NETBAN_ACTION_TTL_S: i64 = 4 * 3600;
+
+/// `P11.25-a` — LA BORNE HAUTE DE LA DURÉE PROPRE D'UN BAN DE PLAYBOOK (`playbook.ban_ttl_s`) : un an.
+/// Un ban posé SANS humain (playbook) n'est jamais permanent — le permanent reste un geste d'administrateur
+/// (`POST /api/netban` sans `ttl_s`) — et une adresse IP se réattribue : au-delà d'un an, un ban automatique
+/// bloquerait surtout le titulaire suivant. Un an tient sans débordement dans `now() + durée` et s'écrit
+/// tel quel pour CrowdSec (`8760h`).
+pub(crate) const BAN_TTL_MAX_S: i64 = 365 * 86400;
+
+/// `P11.25-a` — LA DURÉE EFFECTIVE D'UN BAN, depuis la colonne `ban_ttl_s` lue (playbook ou action) : NULL =
+/// le défaut `NETBAN_ACTION_TTL_S` ; un entier dans `1..=BAN_TTL_MAX_S` = lui-même ; toute autre valeur
+/// (nulle, négative, au-delà de la borne — posée hors des routes, qui la refusent) est ILLISIBLE et rendue en
+/// `Err` avec la valeur lue, jamais remplacée par le défaut. Fonction PURE.
+pub(crate) fn duree_de_ban_effective(propre: Option<i64>) -> Result<i64, i64> {
+    match propre {
+        None => Ok(NETBAN_ACTION_TTL_S),
+        Some(s) if (1..=BAN_TTL_MAX_S).contains(&s) => Ok(s),
+        Some(s) => Err(s),
+    }
+}
 
 /// Liste EXACTE des pairs TCP à qui faire confiance comme reverse-proxy (`PLUME_TRUSTED_PROXIES`, IPs
 /// séparées par des virgules). Vide (DÉFAUT) -> politique par défaut privé/loopback (cf `proxy_is_trusted`).

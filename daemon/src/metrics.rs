@@ -66,7 +66,8 @@ pub(crate) fn compter_un_champ_preempte(cle: &str) {
         *entree_sous_plafond(&mut m, cle, CHAMPS_PREEMPTES_PLAFOND) += 1;
     }
 }
-/// `P4.12-b` — UN ÉVÉNEMENT INDEXÉ SANS ADRESSE SOURCE, COMPTÉ PAR SOURCE. Six voies d'entrée n'ont aucun
+/// `P4.12-b` — UN ÉVÉNEMENT INDEXÉ SANS ADRESSE SOURCE, COMPTÉ PAR SOURCE (seulement s'il pouvait en porter une,
+/// cf. `EVENEMENTS_SANS_ADRESSE_PAR_NATURE`). Six voies d'entrée n'ont aucun
 /// renommage champ->champ hors du moteur des processeurs : un attribut d'adresse qui arrive sous un nom que
 /// la promotion ne lit pas laisse `src_ip` vide, et les règles par entité s'appliquent au vide en silence
 /// (`P4.12-a`). Ce compte est pris APRÈS les processeurs, sur la ligne telle qu'elle est écrite — donc une
@@ -76,11 +77,128 @@ pub(crate) fn compter_un_champ_preempte(cle: &str) {
 pub(crate) static INGEST_SANS_ADRESSE_SOURCE_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub(crate) static SOURCES_SANS_ADRESSE: std::sync::Mutex<std::collections::BTreeMap<String, u64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 pub(crate) const SOURCES_SANS_ADRESSE_PLAFOND: usize = 64;
-pub(crate) fn compter_un_evenement_sans_adresse_source(source: &str) {
+/// LES ÉVÉNEMENTS QUI NE PEUVENT PAS PORTER D'ADRESSE DISTANTE PAR NATURE, en UNE liste nommée,
+/// jugée au même endroit pour les deux voies d'ingestion (générique et journald) : `(source, catégorie)`,
+/// `"*"` = toute source. Les compter « sans adresse source » faisait dire à la page des sources qu'un
+/// processeur rename manquait là où aucune adresse n'existe à renommer (battements de santé, aveux de
+/// configuration, exécution locale, accès fichier). Le joker n'est posé QUE pour ce que le démon et ses
+/// capteurs émettent sur eux-mêmes ; tout le reste est une paire lue chez le capteur qui l'émet, pour
+/// qu'une source tierce (IdP, cloud) de même catégorie reste comptée (le doute compte). Preuve :
+/// - `health` : le battement partagé `heartbeat` (collectors/lib.sh:476-481) et celui
+///   d'engagement-adapter (collectors/engagement-adapter.sh:690) n'ont aucun champ d'adresse ;
+/// - `config` : l'auto-report et l'aveu d'indisponibilité (collectors/lib.sh:625,
+///   collectors/conntrack.sh:197, collectors/auditd.sh:48 et :380) décrivent le capteur, pas un pair ;
+/// - `exec` d'auditd, de windows-security et de `WinEventLog:Security` : un execve local
+///   (collectors/auditd.sh:243-249 : auid, uid, exe, comm, key) et l'événement 4688 de création de processus,
+///   qu'il vienne du collecteur PowerShell (collectors/windows/plume-collector.ps1:706) ou de l'agent Rust
+///   (agent/src/source/windows.rs:426, source `WinEventLog:<canal>` posée à :606) ;
+/// - `tamper` d'auditd : une écriture sur un fichier surveillé (collectors/auditd.sh:272-282 : key, path, syscall) ;
+/// - `account` d'auditd et de windows-security : une gestion de compte locale (collectors/auditd.sh:250-256,
+///   aucun `addr` retenu ; collectors/windows/plume-collector.ps1:709, 4720 et voisins) ;
+/// - `integrity` d'integrity : l'empreinte d'un fichier surveillé (collectors/integrity.sh:295, aucun pair) ;
+/// - `auth` de `sudo` et `su` : la voie journald (collectors/journal.sh:58, `_COMM` = source) pose `auth` en
+///   dur (daemon/src/ingest/mod.rs, `ingest_journal_lines`) ; une élévation locale n'a pas de pair. `sshd`
+///   et `sshd-session` restent comptés, SAUF leurs lignes d'ouverture et de fermeture de session (règle de
+///   contenu, `ADRESSE_ABSENTE_SELON_LE_CONTENU`) : une ligne d'authentification sshd porte l'adresse du
+///   client (« … from <ip> port … », lue par `extract_src_ip`), une ligne pam de session n'en porte aucune ;
+/// - `data` SEULEMENT pour les sources dont la donnée est locale : dataaccess (accès fichier,
+///   collectors/dataaccess.sh:194), dataacl (droits d'un chemin, collectors/dataacl.sh:83), kube-rbac
+///   (liaisons de rôles, collectors/kube-rbac.sh:90), minio (inventaire, collectors/minio.sh:96-113).
+///   `minio-audit` reste compté : c'est un accès S3 par un client distant (daemon/src/ingest/minio.rs:165).
+/// `auth`, `network`, `ban`, `web`, `firewall` et toute catégorie hors liste restent comptés, pour toute
+/// source hors des paires ci-dessus. Les cas jugés sur le CONTENU, pas sur la paire :
+/// `ADRESSE_ABSENTE_SELON_LE_CONTENU`.
+pub(crate) const EVENEMENTS_SANS_ADRESSE_PAR_NATURE: &[(&str, &str)] = &[
+    ("*", "health"),
+    ("*", "config"),
+    ("auditd", "exec"),
+    ("windows-security", "exec"),
+    ("WinEventLog:Security", "exec"),
+    ("auditd", "tamper"),
+    ("auditd", "account"),
+    ("windows-security", "account"),
+    ("integrity", "integrity"),
+    ("sudo", "auth"),
+    ("su", "auth"),
+    ("dataaccess", "data"),
+    ("dataacl", "data"),
+    ("kube-rbac", "data"),
+    ("minio", "data"),
+];
+/// LES LIGNES QUI DISENT ELLES-MÊMES N'AVOIR AUCUN PAIR, jugées sur le CONTENU du sac `fields` écrit :
+/// `(source, catégorie, champ, valeur)`. Les trois termes et la valeur décident ensemble ; le sac n'est relu
+/// que pour une paire (source, catégorie) nommée ici, et seulement sur une ligne déjà sans `src_ip`.
+/// - auditd, échec d'authentification (`USER_AUTH res=failed`, collectors/auditd.sh:258-263) : le champ
+///   `addr` est celui que le noyau écrit, et `addr=?` est son aveu qu'aucun pair n'existe (sudo, su,
+///   console). Une adresse IPv4 a déjà rempli `src_ip` (collectors/auditd.sh:297 ne promeut que chiffres et
+///   points) ; une adresse IPv6, un NOM d'hôte ou un champ absent reste compté (une adresse existe ou peut
+///   exister, non promue) ;
+/// - sshd et sshd-session, voie journald : `journal_action` (daemon/src/ingest/mod.rs) range « session
+///   opened » en `action=session_open` et « session closed » en `action=session_close` ; ces lignes pam
+///   (`pam_unix(sshd:session): session opened for user <u>(uid=…) by …`) ne portent aucune adresse, et
+///   seraient comptées sur tout hôte où l'on se connecte. Toute autre ligne sshd sans adresse reste comptée ;
+/// - `WinEventLog:Security` en `auth`, gestion de comptes de l'agent Rust : l'agent range 4720, 4722, 4724,
+///   4725, 4726, 4728, 4732, 4735, 4738 et 4740 en `auth` (agent/src/source/windows.rs:408-417, écart connu
+///   avec le collecteur PowerShell qui les range en `account`, docs/CIM.md §5.5) et écrit l'identifiant dans
+///   `event_id`, en NOMBRE (agent/src/source/windows.rs:571). Ces lignes décrivent un compte créé, modifié ou
+///   verrouillé, sans pair ; la même gestion sous `windows-security/account` est déjà exclue par nature. Les
+///   ouvertures de session (4624, 4625…) de la même paire restent comptées.
+/// Le champ est lu en chaîne, ou en nombre comparé à sa forme décimale (`event_id`).
+pub(crate) const ADRESSE_ABSENTE_SELON_LE_CONTENU: &[(&str, &str, &str, &str)] = &[
+    ("auditd", "auth", "addr", "?"),
+    ("sshd", "auth", "action", "session_open"),
+    ("sshd", "auth", "action", "session_close"),
+    ("sshd-session", "auth", "action", "session_open"),
+    ("sshd-session", "auth", "action", "session_close"),
+    ("WinEventLog:Security", "auth", "event_id", "4720"),
+    ("WinEventLog:Security", "auth", "event_id", "4722"),
+    ("WinEventLog:Security", "auth", "event_id", "4724"),
+    ("WinEventLog:Security", "auth", "event_id", "4725"),
+    ("WinEventLog:Security", "auth", "event_id", "4726"),
+    ("WinEventLog:Security", "auth", "event_id", "4728"),
+    ("WinEventLog:Security", "auth", "event_id", "4732"),
+    ("WinEventLog:Security", "auth", "event_id", "4735"),
+    ("WinEventLog:Security", "auth", "event_id", "4738"),
+    ("WinEventLog:Security", "auth", "event_id", "4740"),
+];
+/// La valeur d'un champ du sac égale-t-elle l'aveu ? Chaîne à l'identique, nombre par sa forme décimale.
+fn champ_vaut(x: &serde_json::Value, aveu: &str) -> bool {
+    match x {
+        serde_json::Value::String(s) => s == aveu,
+        serde_json::Value::Number(n) => n.to_string() == aveu,
+        _ => false,
+    }
+}
+/// Un événement de (source, catégorie, sac `fields` écrit) PEUT-il porter une adresse distante ? Faux pour
+/// ce que `EVENEMENTS_SANS_ADRESSE_PAR_NATURE` nomme et pour ce que `ADRESSE_ABSENTE_SELON_LE_CONTENU`
+/// reconnaît dans le sac, vrai sinon (le doute compte : une catégorie inconnue reste comptée).
+pub(crate) fn evenement_peut_porter_une_adresse(source: &str, category: &str, fields: Option<&str>) -> bool {
+    if EVENEMENTS_SANS_ADRESSE_PAR_NATURE.iter().any(|(s, c)| (*s == "*" || *s == source) && *c == category) {
+        return false;
+    }
+    let mut sac: Option<Option<serde_json::Value>> = None;
+    for (s, c, champ, aveu) in ADRESSE_ABSENTE_SELON_LE_CONTENU {
+        if source != *s || category != *c {
+            continue;
+        }
+        let v = sac.get_or_insert_with(|| fields.and_then(|f| serde_json::from_str::<serde_json::Value>(f).ok()));
+        let lu = v.as_ref().and_then(|v| v.get(*champ));
+        if lu.is_some_and(|x| champ_vaut(x, aveu)) {
+            return false;
+        }
+    }
+    true
+}
+/// Compte une ligne ÉCRITE sans adresse source, si sa nature lui permettait d'en porter une.
+pub(crate) fn compter_un_evenement_sans_adresse_source(source: &str, category: &str, fields: Option<&str>) {
+    if !evenement_peut_porter_une_adresse(source, category, fields) {
+        return;
+    }
     INGEST_SANS_ADRESSE_SOURCE_TOTAL.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut m) = SOURCES_SANS_ADRESSE.lock() {
         *entree_sous_plafond(&mut m, source, SOURCES_SANS_ADRESSE_PLAFOND) += 1;
     }
+    sans_adresse_de_ce_fil::noter(source);
 }
 /// Le compte d'une source, pour l'inventaire des sources (`None` = jamais comptée depuis le démarrage).
 pub(crate) fn sans_adresse_source_de(source: &str) -> Option<u64> {
@@ -1317,7 +1435,7 @@ pub(crate) fn gather_prom(conn: &Connection, spool: &str, db_path: &str, schema_
     lisible(&mut o, "plume_spool_queue_lisible", "la profondeur de la file d'ingest", "/ingest/queue_depth_verdict", "/ingest/queue_depth_cause");
     g(&mut o, "plume_push_zero_map_total", "counter", "Batches push acceptés mais mappés à 0 event (misconfig source push)", "/ingest/push_zero_map_total");
     g(&mut o, "plume_ingest_field_preempted_total", "counter", "Renommages de champ déclarés par un parseur client et TUS par une clé déjà posée par le producteur (P4.12-f ; ventilation par clé : /api/metrics ingest.fields_preempted)", "/ingest/field_preempted_total");
-    g(&mut o, "plume_ingest_events_without_src_ip_total", "counter", "Événements indexés sans adresse source, invisibles des règles par entité (P4.12-b ; ventilation par source dans /api/metrics ingest.sources_without_src_ip)", "/ingest/events_without_src_ip_total");
+    g(&mut o, "plume_ingest_events_without_src_ip_total", "counter", "Événements indexés sans adresse source alors que leur nature en admet une (santé, configuration, exécution locale exclues), invisibles des règles par entité (P4.12-b ; ventilation par source dans /api/metrics ingest.sources_without_src_ip)", "/ingest/events_without_src_ip_total");
     g(&mut o, "plume_ingest_csv_header_lines_total", "counter", "Lignes d'en-tête d'export CSV reconnues par une étape csv d'un parseur déclaratif, laissées sans capture (P3.10-a)", "/ingest/csv_header_lines_total");
     // `S31` — les barrières de durabilité du spool. Les DEUX premières montent ENSEMBLE (une publication
     // durable en prend une de chaque) ; un écart entre elles, ou `echec` qui grimpe, signale un 2xx qui
@@ -1521,5 +1639,35 @@ pub(crate) mod ticks_aveugles_de_ce_fil {
     /// Les ticks aveugles que CE fil a déclarés sous (balayage, cause) depuis son départ.
     pub(crate) fn compte(balayage: &'static str, cause: &str) -> u64 {
         COMPTE_DE_CE_FIL.with(|m| m.borrow().get(&(balayage, cause.to_string())).copied().unwrap_or(0))
+    }
+}
+
+/// LE COMPTE « ÉCRIT SANS ADRESSE SOURCE » DU FIL QUI INGÈRE, pour les témoins seuls (même patron que
+/// `ticks_aveugles_de_ce_fil`). Hors des témoins : une fonction vide, sans état ni branche. Sous les témoins,
+/// chaque ligne comptée par `compter_un_evenement_sans_adresse_source` est aussi notée PAR FIL :
+/// `SOURCES_SANS_ADRESSE` est un compte de processus que les témoins parallèles de `cargo test` font bouger
+/// ensemble sous les mêmes noms de capteurs (`sudo`, `sshd`, `auditd`…), si bien qu'un delta nul y était une
+/// course ; une ingestion jouée sur le fil du témoin s'y lit exactement.
+#[cfg(not(test))]
+mod sans_adresse_de_ce_fil {
+    #[inline(always)]
+    pub(super) fn noter(_source: &str) {}
+}
+
+/// Le compte par fil, sous les témoins : source -> lignes comptées sans adresse par CE fil.
+#[cfg(test)]
+pub(crate) mod sans_adresse_de_ce_fil {
+    thread_local! {
+        static COMPTE_DE_CE_FIL: std::cell::RefCell<std::collections::BTreeMap<String, u64>> =
+            const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    }
+
+    pub(crate) fn noter(source: &str) {
+        COMPTE_DE_CE_FIL.with(|m| *m.borrow_mut().entry(source.to_string()).or_insert(0) += 1);
+    }
+
+    /// Les lignes que CE fil a comptées sans adresse sous `source` depuis son départ.
+    pub(crate) fn compte(source: &str) -> u64 {
+        COMPTE_DE_CE_FIL.with(|m| m.borrow().get(source).copied().unwrap_or(0))
     }
 }

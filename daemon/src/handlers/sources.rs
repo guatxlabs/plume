@@ -808,7 +808,8 @@ pub(crate) async fn sources_inventory(State(st): State<AppState>, Extension(au):
                     "updated_by": m.and_then(|x| x.updated_by.clone()),
                     "updated": m.and_then(|x| x.updated),
                     // `P4.12-b` — depuis le démarrage du processus : les événements de cette source écrits SANS adresse
-                    // source, donc invisibles des règles par entité. `null` = aucun compté (pas un zéro établi).
+                    // source, donc invisibles des règles par entité. `null` = aucun compté (pas un zéro établi). Seuls
+                    // comptent les événements dont la nature admet une adresse (`metrics::EVENEMENTS_SANS_ADRESSE_PAR_NATURE`).
                     "without_src_ip_since_start": crate::metrics::sans_adresse_source_de(src),
                     "last_seen": if *last == 0 { Value::Null } else { json!(last) },
                     "age_s": if *last == 0 { Value::Null } else { json!(age) },

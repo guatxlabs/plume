@@ -433,9 +433,13 @@
         // instantanés et métriques.
         assert_eq!(cadence_declaree("snapshot", "firewall"), CadenceDeclaree::Continue { interval_s: 120, par: Decl::Sonde("firewall") });
         assert_eq!(cadence_declaree("metric", "métriques · 3 séries"), CadenceDeclaree::Continue { interval_s: 60, par: Decl::Sonde("resources") });
-        // les quatre sources du constat : aucune sonde ne déclare de cadence pour mail / portprobe /
-        // cloudflare ; `derive-deploiement` non plus. Elles ne peuvent donc pas être « en retard ».
-        for n in ["mail", "portprobe", "cloudflare", "derive-deploiement", "nft"] {
+        // INVERSÉ (cadence Cloudflare) : `cloudflare` figurait ici parmi les sources sans cadence déclarée ;
+        // ses deux capteurs (minuteur de 2 min, émission seulement sur événement) ont désormais leur sonde
+        // événementielle, cf. `les_deux_capteurs_cloudflare_declarent_une_cadence_evenementielle`.
+        assert_eq!(cadence_declaree("event", "cloudflare"), CadenceDeclaree::Evenementielle { par: Decl::Sonde("cloudflare") });
+        // les sources restantes du constat : aucune sonde ne déclare de cadence pour mail / portprobe ;
+        // `derive-deploiement` non plus. Elles ne peuvent donc pas être « en retard ».
+        for n in ["mail", "portprobe", "derive-deploiement", "nft"] {
             assert_eq!(cadence_declaree("event", n), CadenceDeclaree::NonDeclaree, "{n}");
         }
         // un kind d'instantané n'est pas une source d'event (et inversement).

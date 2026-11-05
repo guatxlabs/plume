@@ -92,7 +92,7 @@ use crate::*;
 // en O(N) EN SILENCE. La source, elle, est LIÉE (jamais interpolée). Ce n'est pas une préférence de
 // style : c'est la condition d'usage de l'index, et le test de coût la tient.
 //
-// CE QUE ÇA NE FERME PAS (écrit pour être opposable, pas pour rassurer) : les 20 sondes d'EVENTS et
+// CE QUE ÇA NE FERME PAS (écrit pour être opposable, pas pour rassurer) : les 22 sondes d'EVENTS et
 // celle des MÉTRIQUES gardent leur portée « tous hôtes confondus ». C'est le MÊME défaut de famille —
 // mesuré identique — mais il n'a PAS le même coût : `snapshot` ne garde qu'une ligne vivante par
 // (kind, hôte) (le heartbeat la TOUCHE au lieu d'en insérer une), donc son `GROUP BY host` porte sur
@@ -120,11 +120,11 @@ use crate::*;
 //     par lecture de `pipeline_is_fresh` : c'est `MAX(ts)` sur event∪metric∪snapshot SANS filtre
 //     d'hôte, c'est-à-dire un agrégat « tous hôtes confondus » de plus. Sur un parc dont une seule
 //     machine parle encore, il rend `true` — donc les sondes événementielles rendent « actif » elles
-//     aussi. Les 21 sondes à portée flotte confondue masquent, les unes par leur propre agrégat, les
+//     aussi. Les 23 sondes à portée flotte confondue masquent, les unes par leur propre agrégat, les
 //     autres par celui du pipeline. Il n'y avait pas de moitié saine.
 //
-// CE QUI A ÉTÉ CONSTRUIT, ET CE QUI NE L'A PAS ÉTÉ. Repasser ces 21 sondes PAR HÔTE multiplierait la
-// cardinalité par la taille de la flotte (des centaines à des milliers de machines) : 21 séries
+// CE QUI A ÉTÉ CONSTRUIT, ET CE QUI NE L'A PAS ÉTÉ. Repasser ces 23 sondes PAR HÔTE multiplierait la
+// cardinalité par la taille de la flotte (des centaines à des milliers de machines) : 23 séries
 // deviendraient des dizaines de milliers, et chaque sonde d'event perdrait son index — `GROUP BY host`
 // n'est servi par AUCUN index de `event`, donc le coût redeviendrait celui de P3.7-a, multiplié par le
 // nombre de sondes, sous le verrou d'écriture, toutes les 20 s. La mesure est dans
@@ -528,7 +528,7 @@ const SOURCES_JOURNAL: &[&str] = &["sshd", "sshd-session", "sudo", "su"];
 /// crowdsec/fail2ban/ufw/nft sont déjà de type « événement »). `false` = capteur CONTINU (timer/flux
 /// régulier) : un silence > 5x son intervalle est un vrai angle mort -> alerte MUET légitime (auditd
 /// inclus : sur un hôte vivant l'auditd exec/privesc remonte en continu, son silence = daemon mort).
-pub(crate) const COLLECTORS: [(&str, &str, i64, Sonde, bool); 23] = [
+pub(crate) const COLLECTORS: [(&str, &str, i64, Sonde, bool); 25] = [
     ("journal", "journald (auth)", 60, Sonde::EventFlux { sources: SOURCES_JOURNAL }, true),
     ("resources", "ressources/réseau", 60, Sonde::MetriqueFlotteConfondue, false),
     ("firewall", "firewall", 120, Sonde::Instantane { kind: "firewall" }, false),
@@ -579,6 +579,17 @@ pub(crate) const COLLECTORS: [(&str, &str, i64, Sonde, bool); 23] = [
     // crier s'ils se taisent. Intervalles généreux pour tolérer les accalmies normales sans faux positif.
     ("web", "web (accès / 4xx)", 1800, Sonde::EventFlux { sources: &["web"] }, false),
     ("kube-audit", "audit API k8s", 120, Sonde::EventFlux { sources: &["kube-audit"] }, false),
+    // CLOUDFLARE (edge) — deux capteurs OPT-IN tirés toutes les 2 min (systemd/plume-cloudflare.timer:6 et
+    // systemd/plume-cloudflare-http.timer:6, `OnUnitActiveSec=2min`), mais qui n'ÉMETTENT que sur événement :
+    // collectors/cloudflare.sh:105 n'écrit un lot que si l'API rend au moins un événement de pare-feu,
+    // collectors/cloudflare-http.sh:140-143 sort par `plume_exit_nodata` sans rien écrire quand aucune requête 4xx/5xx
+    // n'est vue, et aucun des deux n'a de battement de santé. Un site calme ne produit donc AUCUNE ligne :
+    // event_based=true (cadence `Evenementielle`, jamais « en retard » sur son propre silence, tenue par
+    // asn_les_deux_sources_cloudflare_servent_une_cadence_evenementielle_declaree) ; l'intervalle est celui du
+    // minuteur, servi en `interval_s` par le panneau des intégrations (tenu par
+    // asn_les_deux_sondes_cloudflare_servent_l_intervalle_du_minuteur).
+    ("cloudflare", "Cloudflare (pare-feu au edge)", 120, Sonde::EventFlux { sources: &["cloudflare"] }, true),
+    ("cloudflare-http", "Cloudflare HTTP 4xx/5xx (edge)", 120, Sonde::EventFlux { sources: &["cloudflare-http"] }, true),
     // ── DEAD-MAN'S-SWITCH des collecteurs ÉVÉNEMENTIELS SANS compagnon -health (calque EXACT de
     // crowdsec-health / k8s-log-health). Les feeds RÉELS ci-dessus (portscan/ufw/fail2ban/dataaccess/
     // integrity/journal) sont event_based=true -> ils NE crient JAMAIS « muet » sur leur propre silence

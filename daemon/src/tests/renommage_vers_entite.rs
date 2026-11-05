@@ -97,23 +97,29 @@
         // Avant ce lot, aucune règle ne s'appliquait à journald : MASK, DROP et RENAME y passaient à côté.
         add_ingest_rule(&conn, dbp, 0, "source", "eq", "sshd", "mask", "message");
         add_ingest_rule(&conn, dbp, 1, "source", "eq", "cron", "drop", "");
-        let sshd_avant = crate::metrics::sans_adresse_source_de("sshd").unwrap_or(0);
+        // Compte du FIL qui ingère (`sshd` est une source que d'autres témoins écrivent en parallèle).
+        let sshd_avant = crate::metrics::sans_adresse_de_ce_fil::compte("sshd");
         let lignes = [
             r#"{"__REALTIME_TIMESTAMP":"1700000000000000","_COMM":"sshd","MESSAGE":"Failed password for root from 203.0.113.5 port 22 ssh2","PRIORITY":"6","__CURSOR":"j1","_HOSTNAME":"h1"}"#,
             r#"{"__REALTIME_TIMESTAMP":"1700000001000000","_COMM":"sshd","MESSAGE":"session opened for user root","PRIORITY":"6","__CURSOR":"j2","_HOSTNAME":"h1"}"#,
             r#"{"__REALTIME_TIMESTAMP":"1700000002000000","_COMM":"cron","MESSAGE":"job ran","PRIORITY":"6","__CURSOR":"j3","_HOSTNAME":"h1"}"#,
+            r#"{"__REALTIME_TIMESTAMP":"1700000003000000","_COMM":"sshd","MESSAGE":"error: kex_exchange_identification: Connection closed by remote host","PRIORITY":"6","__CURSOR":"j4","_HOSTNAME":"h1"}"#,
         ].join("\n");
         let n = ingest_journal_lines(&conn, dbp, &lignes, None).unwrap();
-        assert_eq!(n, 3, "les trois lignes sont traitées (la droppée est comptée, pas écrite)");
+        assert_eq!(n, 4, "les quatre lignes sont traitées (la droppée est comptée, pas écrite)");
         let ecrites: i64 = conn.query_row("SELECT COUNT(*) FROM event WHERE source IN ('sshd','cron')", [], |r| r.get(0)).unwrap();
-        assert_eq!(ecrites, 2, "la ligne cron est DROPPÉE par le processeur — la voie journald y passe désormais");
+        assert_eq!(ecrites, 3, "la ligne cron est DROPPÉE par le processeur — la voie journald y passe désormais");
         let lignes_sshd: Vec<(Option<String>, String)> = conn
             .prepare("SELECT src_ip, message FROM event WHERE source='sshd' ORDER BY ts").unwrap()
             .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))).unwrap().flatten().collect();
-        assert_eq!(lignes_sshd.len(), 2);
+        assert_eq!(lignes_sshd.len(), 3);
         assert_eq!(lignes_sshd[0].1, "[redacted]", "MASK s'applique à journald");
         assert_eq!(lignes_sshd[0].0.as_deref(), Some("203.0.113.5"), "l'adresse extraite du message est conservée");
         assert_eq!(lignes_sshd[1].0, None, "la seconde ligne n'a pas d'adresse dans son message");
+        assert_eq!(lignes_sshd[2].0, None, "la ligne kex n'a pas d'adresse dans son message");
         assert_eq!(processors_counters_json(dbp)["totals"]["dropped"], 1);
-        assert_eq!(crate::metrics::sans_adresse_source_de("sshd").unwrap_or(0) - sshd_avant, 1, "la ligne sans adresse dans son message est comptée pour sa source (delta : `sshd` est une source que d'autres témoins écrivent)");
+        // P11.25-c : la ligne pam « session opened » n'a aucun pair, elle n'est plus comptée ; la ligne kex
+        // sans adresse l'est. Une seule ligne comptée sur ce fil.
+        assert_eq!(crate::metrics::sans_adresse_de_ce_fil::compte("sshd") - sshd_avant, 1,
+            "seule la ligne kex sans adresse est comptée pour sa source ; la ligne de session ne l'est pas");
     }

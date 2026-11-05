@@ -514,7 +514,7 @@ pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &s
             continue;
         }
         if row.src_ip.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
-            crate::metrics::compter_un_evenement_sans_adresse_source(&row.source);
+            crate::metrics::compter_un_evenement_sans_adresse_source(&row.source, &row.category, row.fields.as_deref());
         }
         if let Err(e) = store().insert_event(conn, &row) {
             eprintln!("[ingest] journal INSERT échoué -> ROLLBACK du batch ({db_path}) : {e}");
@@ -737,8 +737,10 @@ pub(crate) fn ingest_events_batch_env(
         }
         // `P4.12-b` — la ligne ÉCRITE sans adresse source est comptée par source, après les processeurs
         // (un RENAME qui vient de remplir la colonne ne compte pas) : c'est ce que les règles par entité verront.
+        // Ce qui ne peut pas porter d'adresse par nature (santé, configuration, exécution locale…) n'est pas
+        // compté : la liste est `metrics::EVENEMENTS_SANS_ADRESSE_PAR_NATURE`, la même pour la voie journald.
         if row.src_ip.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
-            crate::metrics::compter_un_evenement_sans_adresse_source(&row.source);
+            crate::metrics::compter_un_evenement_sans_adresse_source(&row.source, &row.category, row.fields.as_deref());
         }
         match store().insert_event(conn, &row) {
             // INSERT OR IGNORE : `c` = 1 si la ligne est écrite, 0 si dédupliquée -> `inserted` = lignes neuves.

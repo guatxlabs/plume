@@ -704,12 +704,14 @@ pub(crate) fn seed_egress_dashboard(conn: &Connection) {
 pub(crate) fn seed_web_dashboard(conn: &Connection) {
     // v63 : « Trafic web » est le dashboard PRIMAIRE (déplié) de la vue « Réseau & Web ».
     seed_dashboard_head_named(conn, "Trafic web", "Réseau & Web", false, |conn, did| {
+        // `P11.25-b` — tous les panneaux de dimension semés passent `non_empty = true` : la valeur vide (champ absent
+        // de l'événement) n'est pas une barre. v124 réécrit ceux des bases déjà semées (`PANNEAUX_DE_DIMENSION_SEMES_V124`).
         // Panneaux GROUP-BY PURS (vhost/status/path) -> lisent le pré-agrégé event_dim_rollup (is_soql=0,
         // <100 ms, pré-chauffables) ; les autres (timechart / filtre scope / table détail) restent GXQL live.
         let (q_vhost, q_status, q_path) = (
-            dim_panel_sql("web", "vhost", 0, false),
-            dim_panel_sql("web", "status", 0, false),
-            dim_panel_sql("web", "path", 20, false),
+            dim_panel_sql("web", "vhost", 0, true),
+            dim_panel_sql("web", "status", 0, true),
+            dim_panel_sql("web", "path", 20, true),
         );
         let panels: [(&str, &str, i64, &str); 7] = [
             ("Requêtes dans le temps", "search source=web | timechart count", 1, "line"),
@@ -769,9 +771,9 @@ pub(crate) fn seed_dataaccess_dashboard(conn: &Connection) {
     seed_dashboard_head_named(conn, "Accès données (Varonis)", "Accès données", false, |conn, did| {
         // GROUP-BY purs (user/action/path) -> pré-agrégé is_soql=0 ; creds/timechart/détail restent GXQL live.
         let (q_user, q_action, q_path) = (
-            dim_panel_sql("dataaccess", "user", 0, false),
-            dim_panel_sql("dataaccess", "action", 0, false),
-            dim_panel_sql("dataaccess", "path", 20, false),
+            dim_panel_sql("dataaccess", "user", 0, true),
+            dim_panel_sql("dataaccess", "action", 0, true),
+            dim_panel_sql("dataaccess", "path", 20, true),
         );
         let panels: [(&str, &str, i64, &str); 6] = [
             ("Accès aux secrets / creds", "search source=dataaccess key=plume_creds | sort -ts | table user,action,path,comm", 1, "table"),
@@ -799,8 +801,8 @@ pub(crate) fn seed_dataacl_dashboard(conn: &Connection) {
     seed_dashboard_head_named(conn, "Carte d'accès (Varonis)", "Accès données", true, |conn, did| {
         // GROUP-BY purs (owner/group) -> pré-agrégé is_soql=0 ; risques/carte/détail (filtre+table) GXQL live.
         let (q_owner, q_group) = (
-            dim_panel_sql("dataacl", "owner", 0, false),
-            dim_panel_sql("dataacl", "group", 0, false),
+            dim_panel_sql("dataacl", "owner", 0, true),
+            dim_panel_sql("dataacl", "group", 0, true),
         );
         let panels: [(&str, &str, i64, &str); 5] = [
             ("Risques (accès global / SUID)", "search source=dataacl | where severity>=3 | sort -ts | table path,owner,mode,risk", 1, "table"),
@@ -917,8 +919,8 @@ pub(crate) fn seed_kube_rbac_dashboard(conn: &Connection) {
     seed_dashboard_head_named(conn, "RBAC k8s (Varonis)", "Accès infra", false, |conn, did| {
         // GROUP-BY purs (role/subject) -> pré-agrégé is_soql=0 ; cluster-admin/accès sensible/map (filtre+table) GXQL live.
         let (q_role, q_subject) = (
-            dim_panel_sql("kube-rbac", "role", 20, false),
-            dim_panel_sql("kube-rbac", "subject", 20, false),
+            dim_panel_sql("kube-rbac", "role", 20, true),
+            dim_panel_sql("kube-rbac", "subject", 20, true),
         );
         let panels: [(&str, &str, i64, &str); 5] = [
             ("Cluster-admin (clés du royaume)", "search source=kube-rbac role=cluster-admin | table subject,kind,binding", 1, "table"),

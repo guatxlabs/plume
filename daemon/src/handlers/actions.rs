@@ -874,8 +874,8 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
     // BAN NATIF PLUME (chantier ② Phase 1) : l'approbation d'un `ban_ip` NON dry-run ARME AUSSI le blocage HTTP
     // in-process (`net_ban`) -> plume s'auto-enforce pour l'IP réelle, EN PLUS de la décision CrowdSec/nft de
     // l'hôte (exécutée ensuite par le responder/agent). `unban_ip` retire le blocage. Additif : n'altère NI le
-    // pipeline responder/agent existant NI le mode 0 (aucune action ban_ip -> aucun net_ban). TTL = mirror 4h
-    // CrowdSec ; réversible via unban / DELETE /api/netban. Garde protected-IP redondante (déjà refusée à la
+    // pipeline responder/agent existant NI le mode 0 (aucune action ban_ip -> aucun net_ban). TTL = celui de la
+    // riposte (`duree_de_ban_de_la_riposte` : sa durée de playbook, sinon 4 h), le même que CrowdSec ; réversible via unban / DELETE /api/netban. Garde protected-IP redondante (déjà refusée à la
     // création par action_valid) mais défensive.
     //
     // `P10.20-q` — LA CONDITION D'ARMEMENT EST CELLE D'AVANT, DÉRIVÉE DE CE QUI A ÉTÉ LU PLUTÔT QUE
@@ -920,7 +920,14 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
             // deux cent quatre reste juste. Une écriture ratée, elle, n'est décidée par personne — la
             // route la NOMME plutôt que de rendre « approuvée » sur un blocage inexistant, et le
             // geste est rejouable (le statut est déjà `approved`, une seconde approbation arme).
-            match netban_upsert(&conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: action ban_ip", &au.name, "prod") {
+            // `P11.25-a` — la durée est celle de la RIPOSTE (`action.ban_ttl_s`, posée par le playbook qui l'a mise en
+            // file ; NULL = `NETBAN_ACTION_TTL_S`, le cas d'une riposte créée à la main) : une durée non lue n'arme rien
+            // et prend la voie de l'écriture ratée (registre `netban.non-arme`, 503 nommé), jamais le défaut.
+            let pose = match duree_de_ban_de_la_riposte(&conn, id) {
+                Ok(duree) => netban_upsert(&conn, &canon, Some(now() + duree), "auto: action ban_ip", &au.name, "prod"),
+                Err(e) => PoseDeBan::NonEcrit(cause_duree_de_ban_non_lue(&e)),
+            };
+            match pose {
                 PoseDeBan::Arme => {}
                 PoseDeBan::RefuseParLePlafond => {
                     let maillon = ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (action {id})"));
@@ -1081,7 +1088,15 @@ pub(crate) fn miroir_http_du_responder(conn: &Connection, id: i64, kind: &str, t
             // `P10.20-v` — L'ÉCRITURE RATÉE A SON PROPRE GENRE, DONC ELLE SE FILTRE. Elle ne
             // rejoue PAS l'action : l'enforcement réseau a abouti, et ce responder ne repasse
             // pas sur une action close. Ce qui manque est le miroir HTTP, et c'est dit.
-            match netban_upsert(conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod") {
+            // `P11.25-a` — la durée est celle de la riposte exécutée (`duree_de_ban_de_la_riposte`), comme à l'approbation.
+            // Une riposte SANS LIGNE dans la file (supprimée après sa clôture, ou miroir appelé hors file) ne porte
+            // aucune durée propre : le défaut s'applique, comme avant v124. Une durée illisible, elle, n'arme rien.
+            let pose = match duree_de_ban_de_la_riposte(conn, id) {
+                Ok(duree) => netban_upsert(conn, &canon, Some(now() + duree), "auto: responder ban_ip", "responder", "prod"),
+                Err(rusqlite::Error::QueryReturnedNoRows) => netban_upsert(conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod"),
+                Err(e) => PoseDeBan::NonEcrit(cause_duree_de_ban_non_lue(&e)),
+            };
+            match pose {
                 PoseDeBan::Arme => {}
                 PoseDeBan::RefuseParLePlafond => {
                     let maillon = ledger_append(conn, "netban.plafond", &format!("{canon} refusé : store live plein (responder, action {id})"));
@@ -1105,6 +1120,29 @@ pub(crate) fn miroir_http_du_responder(conn: &Connection, id: i64, kind: &str, t
         }
     }
     None
+}
+
+/// `P11.25-a` — la cause portée quand la durée propre d'une riposte (`action.ban_ttl_s`) n'a pas été lue : ni le
+/// miroir HTTP ni la commande CrowdSec ne sont posés avec une durée devinée.
+pub(crate) const DUREE_DE_BAN_NON_LUE: &str = "durée du ban de cette riposte NON lue (colonne ban_ttl_s illisible ou hors borne) — rien n'est posé avec une durée devinée";
+
+/// `P11.25-a` — la cause ENTIÈRE d'une durée non lue, telle que l'approbation, le miroir du responder et la commande
+/// du responder l'écrivent : la phrase fixe `DUREE_DE_BAN_NON_LUE` suivie, entre parenthèses, du texte du moteur
+/// (registre `netban.non-arme` et journal du responder ; le corps servi par l'approbation ne le porte pas).
+pub(crate) fn cause_duree_de_ban_non_lue(e: &rusqlite::Error) -> String {
+    format!("{DUREE_DE_BAN_NON_LUE} ({e})")
+}
+
+/// `P11.25-a` — LA DURÉE D'UN BAN POUR UNE RIPOSTE DE LA FILE : `action.ban_ttl_s` relue par identifiant, rendue
+/// effective par `duree_de_ban_effective` (NULL = `NETBAN_ACTION_TTL_S`). Seul un playbook pose cette colonne
+/// (`playbooks::poser_la_riposte_du_playbook`) : une riposte créée à la main (`action_create`) garde la durée
+/// d'avant. Une lecture ratée ou une valeur hors borne rendent `Err` et l'appelant n'arme rien. Une ligne disparue rend
+/// `Err(QueryReturnedNoRows)` : le miroir du responder (`miroir_http_du_responder`) la lit comme une riposte sans
+/// durée propre et arme pour le défaut ; l'approbation (`action_approve`) et la commande du responder (`respond_run`,
+/// voie CrowdSec, `ban_ip` seulement) la lisent comme une durée non lue.
+pub(crate) fn duree_de_ban_de_la_riposte(conn: &Connection, id: i64) -> rusqlite::Result<i64> {
+    let propre: Option<i64> = conn.query_row("SELECT ban_ttl_s FROM action WHERE id=?1", params![id], |r| r.get(0))?;
+    duree_de_ban_effective(propre).map_err(|v| rusqlite::Error::IntegralValueOutOfRange(0, v))
 }
 
 /// AUTO-INTÉGRATION action->net_ban OPT-IN (anti blast-radius). DÉFAUT **OFF** :
@@ -1380,11 +1418,32 @@ pub(crate) fn which(cmd: &str) -> bool {
 
 /// Commande système pour une action validée -> (programme, args). Args directs (pas de shell).
 /// Principe : DÉLÉGUER le ban d'IP aux enforcers réseau existants (CrowdSec/fail2ban) ; nft = fallback.
+/// Durée CrowdSec = le défaut `NETBAN_ACTION_TTL_S` (`4h`) ; la durée d'une riposte précise passe par
+/// `action_command_pour_la_duree`. `P11.25-a` : plus aucun appelant hors tests (le responder passe par
+/// `platform_command_pour_la_duree`) — la forme à durée par défaut reste la référence des témoins.
+#[cfg(test)]
 pub(crate) fn action_command(kind: &str, target: &str, backend: &str, jail: &str) -> (String, Vec<String>) {
+    action_command_pour_la_duree(kind, target, backend, jail, NETBAN_ACTION_TTL_S)
+}
+
+/// `P11.25-a` — la durée d'un ban telle que `cscli decisions add --duration` la reçoit : en heures entières
+/// quand elle en est une (`4h` pour le défaut, la forme d'avant à l'octet), en secondes sinon (`5400s`).
+pub(crate) fn duree_pour_cscli(duree_s: i64) -> String {
+    if duree_s % 3600 == 0 {
+        format!("{}h", duree_s / 3600)
+    } else {
+        format!("{duree_s}s")
+    }
+}
+
+/// `P11.25-a` — `action_command` avec la durée du ban DE CETTE RIPOSTE (`duree_de_ban_de_la_riposte`) : seule la
+/// voie CrowdSec la porte (`--duration`, `duree_pour_cscli`). fail2ban applique la durée de son jail, nft ne pose
+/// pas d'expiration : ces deux voies l'ignorent, comme le dit la phrase de conséquence du playbook.
+pub(crate) fn action_command_pour_la_duree(kind: &str, target: &str, backend: &str, jail: &str, duree_s: i64) -> (String, Vec<String>) {
     let s = |v: &str| v.to_string();
     match kind {
         "ban_ip" => match backend {
-            "crowdsec" => (s("cscli"), vec![s("decisions"), s("add"), s("--ip"), s(target), s("--duration"), s("4h"), s("--reason"), s("plume")]),
+            "crowdsec" => (s("cscli"), vec![s("decisions"), s("add"), s("--ip"), s(target), s("--duration"), duree_pour_cscli(duree_s), s("--reason"), s("plume")]),
             "fail2ban" => (s("fail2ban-client"), vec![s("set"), s(jail), s("banip"), s(target)]),
             _ => (s("nft"), vec![s("add"), s("element"), s("inet"), s("plume"), s("blocklist"), format!("{{ {target} }}")]),
         },
@@ -1576,6 +1635,8 @@ fn render_generic(raw: &str, kind: &str, target: &str) -> Result<(String, Vec<St
 ///   * "windows"/"pfsense" -> gabarit VETTÉ compilé + substitution du slot typé.
 ///   * "generic-appliance" -> gabarit BRUT admin-configuré (`generic`) + substitution ; None -> Err.
 /// `kind`/`target` sont supposés DÉJÀ validés par `action_valid` ; les garde-fous sont RÉ-appliqués (def-in-depth).
+/// `P11.25-a` : plus aucun appelant hors tests (`respond_run` appelle `platform_command_pour_la_duree`).
+#[cfg(test)]
 pub(crate) fn platform_command(
     platform: &str,
     kind: &str,
@@ -1584,12 +1645,27 @@ pub(crate) fn platform_command(
     jail: &str,
     generic: Option<&str>,
 ) -> Result<(String, Vec<String>), String> {
+    platform_command_pour_la_duree(platform, kind, target, backend, jail, generic, NETBAN_ACTION_TTL_S)
+}
+
+/// `P11.25-a` — `platform_command` avec la durée du ban de la riposte : "linux" la passe à
+/// `action_command_pour_la_duree` (voie CrowdSec) ; les gabarits windows/pfsense/generic-appliance n'ont pas de
+/// créneau de durée (leur blocage reste jusqu'à la levée) et l'ignorent. Appelé par `respond_run`.
+pub(crate) fn platform_command_pour_la_duree(
+    platform: &str,
+    kind: &str,
+    target: &str,
+    backend: &str,
+    jail: &str,
+    generic: Option<&str>,
+    duree_s: i64,
+) -> Result<(String, Vec<String>), String> {
     // le vocab reste FERMÉ : une action hors enum n'a AUCUN gabarit (verrou redondant avec action_kind_valid).
     if Slot::for_kind(kind).is_none() {
         return Err(format!("action hors vocab fermé : {kind}"));
     }
     match platform {
-        "linux" => Ok(action_command(kind, target, backend, jail)), // chemin historique : intouché
+        "linux" => Ok(action_command_pour_la_duree(kind, target, backend, jail, duree_s)), // chemin historique : seule la durée CrowdSec suit la riposte
         "generic-appliance" => match generic {
             Some(raw) => render_generic(raw, kind, target),
             None => Err(format!("generic-appliance : gabarit admin manquant pour {kind} (PLUME_EXEC_GENERIC_{})", kind.to_uppercase())),
@@ -1875,7 +1951,24 @@ pub(crate) fn respond_run() {
         // (défaut) -> action_command intact (BYTE-IDENTIQUE). Un gabarit invalide/plateforme inconnue ->
         // action `blocked` (jamais d'exécution floue). generic-appliance : gabarit admin PLUME_EXEC_GENERIC_*.
         let generic = generic_template_for(&conf, &kind);
-        let (prog, args) = match platform_command(&platform, &kind, &target, &backend, &jail, generic.as_deref()) {
+        // `P11.25-a` — la durée du ban est celle de la riposte (`action.ban_ttl_s`, posée par son playbook ; NULL = le
+        // défaut), relue pour un `ban_ip` SEULEMENT (seule la voie CrowdSec d'un ban la porte) : une colonne illisible
+        // sur une autre riposte ne la retient pas. Non lue : le ban n'est PAS exécuté ce tour-ci, il reste `approved`
+        // et le tour suivant la relit — la colonne corrigée suffit à le libérer, sans reprendre son statut. Les
+        // ripostes suivantes du tour sont traitées.
+        let duree_s = if kind != "ban_ip" {
+            NETBAN_ACTION_TTL_S
+        } else {
+            match duree_de_ban_de_la_riposte(&conn, id) {
+                Ok(d) => d,
+                Err(e) => {
+                    // L'identifiant de la riposte (le seul moyen de savoir laquelle est retenue), jamais la cible.
+                    eprintln!("[responder] WARN action {id} NON exécutée ce tour-ci : {}", cause_duree_de_ban_non_lue(&e));
+                    continue;
+                }
+            }
+        };
+        let (prog, args) = match platform_command_pour_la_duree(&platform, &kind, &target, &backend, &jail, generic.as_deref(), duree_s) {
             Ok(pa) => pa,
             Err(e) => {
                 let _ = conn.execute("UPDATE action SET status='blocked', result=?2, done_ts=?3 WHERE id=?1 AND status='approved'", params![id, format!("gabarit plateforme refusé : {e}"), now()]);

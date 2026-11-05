@@ -329,7 +329,16 @@ par le producteur GAGNE (précédence collecteur > parseur) et la préemption es
 
 Ce qui le mesure : `ingest.events_without_src_ip_total` et `ingest.sources_without_src_ip{source}` dans
 `/api/metrics` (et `plume_ingest_events_without_src_ip_total` en Prometheus) comptent, depuis le démarrage,
-les événements ÉCRITS sans adresse source, par source ; l'inventaire des sources porte le même compte
+les événements ÉCRITS sans adresse source, par source, parmi ceux dont la nature admet une adresse : les
+battements de santé (`category=health`) et les aveux de configuration (`config`) de toute source, l'exécution
+locale (`exec`) d'auditd, de windows-security et de l'agent (`WinEventLog:Security`), la gestion de comptes
+(`account`) d'auditd et de windows-security, l'écriture sur un fichier surveillé (`tamper` d'auditd), les
+empreintes d'integrity, l'`auth` locale de `sudo` et `su`, et la catégorie `data` des sources locales
+(dataaccess, dataacl, kube-rbac, minio) n'y entrent pas (liste `EVENEMENTS_SANS_ADRESSE_PAR_NATURE` de
+`daemon/src/metrics.rs`), ni, jugés sur le contenu (liste `ADRESSE_ABSENTE_SELON_LE_CONTENU`), un échec
+d'authentification auditd dont le noyau écrit `addr=?` et les lignes d'ouverture et de fermeture de session de
+`sshd` et `sshd-session` (`action=session_open` / `session_close`), ni la gestion de comptes que l'agent Rust range en
+`auth` sous `WinEventLog:Security` (`event_id` 4720, 4722, 4724, 4725, 4726, 4728, 4732, 4735, 4738, 4740, cf. §5.5) ; l'inventaire des sources porte le même compte
 (`without_src_ip_since_start`). Une règle `rename` qui remplit la colonne fait descendre ce compte : c'est
 la preuve de son effet. Reste connu : le mode multi-tenant (control-plane) ne lie pas un jeton à un
 connecteur, et un renommage par JETON exigerait de transporter `connector_id` jusqu'au cœur (canal de

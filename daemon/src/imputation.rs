@@ -19,8 +19,8 @@ use crate::*;
 //     (`search category=firewall …`, `search category=config collect_status=unavailable …`) : celles que
 //     le principe vendor-agnostic du projet demande d'écrire GÉNÉRIQUES. Le mécanisme textuel punit donc
 //     précisément les règles que la conception réclame.
-//   - Les alertes de CAPTEUR MUET (`heartbeat.*`, 23 capteurs) ne portent JAMAIS de jeton `source=` : leur
-//     `detail` est une phrase (« aucune donnée depuis N min »). Les 23 étaient donc, elles aussi,
+//   - Les alertes de CAPTEUR MUET (`heartbeat.*`, 25 capteurs) ne portent JAMAIS de jeton `source=` : leur
+//     `detail` est une phrase (« aucune donnée depuis N min »). Les 25 étaient donc, elles aussi,
 //     structurellement non imputables — alors que le descripteur de leur sonde NOMME la source.
 //
 // LA FORME DÉRIVÉE. Une règle est de la PROSE ; l'événement qui la fait tirer, lui, porte l'identité de sa

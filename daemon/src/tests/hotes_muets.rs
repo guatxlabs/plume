@@ -1,13 +1,13 @@
     // ================================================================================================
     // P3.2-a — UN HÔTE QUI SE TAIT DOIT PRODUIRE UN SIGNAL, ET LA PORTÉE D'UNE SONDE DOIT SE LIRE.
     //
-    // LE DÉFAUT, EN UNE PHRASE. Vingt sondes d'events et une sonde de métriques rendent `MAX(ts)` SANS
+    // LE DÉFAUT, EN UNE PHRASE. Vingt-deux sondes d'events et une sonde de métriques rendent `MAX(ts)` SANS
     // filtre d'hôte : elles déclarent la source vivante tant qu'UNE machine du parc parle encore. Les
     // dix-neuf autres peuvent être mortes depuis des heures sans qu'aucun signal ne se lève.
     //
     // CE QUE CES TESTS ÉTABLISSENT, DANS CET ORDRE :
-    //   1. `hotes_muets_un_seul_hote_parle_et_les_21_sondes_restent_vertes` — LA MUTATION. Sur un parc
-    //      de 20 machines dont 19 se taisent depuis 2 h, les 21 sondes à portée « tous hôtes confondus »
+    //   1. `hotes_muets_un_seul_hote_parle_et_les_23_sondes_restent_vertes` — LA MUTATION. Sur un parc
+    //      de 20 machines dont 19 se taisent depuis 2 h, les 23 sondes à portée « tous hôtes confondus »
     //      rendent TOUTES un statut non-muet, y compris celles qui suivent `pipeline_is_fresh` (lui aussi
     //      un agrégat sans hôte). Les 2 sondes à portée par-hôte, elles, crient. La sonde de FLOTTE compte
     //      19 muets sur 20.
@@ -19,21 +19,21 @@
     //   5. `hotes_muets_portee_par_hote_suivrait_le_volume` — LE COÛT DE L'AUTRE VOIE, mesuré par le
     //      compteur de SQLite (déterministe) sous mutation du volume x4 : la variante par hôte d'une sonde
     //      d'event suit le volume, l'actuelle et celle de flotte non. C'est la raison chiffrée pour
-    //      laquelle la portée des 21 sondes n'est PAS repassée par hôte.
+    //      laquelle la portée des 23 sondes n'est PAS repassée par hôte.
     //   6. `hotes_muets_une_machine_de_plus_ouvre_un_episode_neuf` — le résidu (machine décommissionnée,
     //      jamais prunée de `host_rollup`) n'AVALE pas la mort de la suivante.
     //   7. `hotes_muets_lecture_impossible_ne_resout_rien` — une surface qui n'a pas pu observer ne se
     //      tait pas comme si elle avait observé le vide.
-    //   8. `hotes_muets_portee_declaree_et_lisible_dans_le_panneau` — la portée est RENDUE (21 confondues,
+    //   8. `hotes_muets_portee_declaree_et_lisible_dans_le_panneau` — la portée est RENDUE (23 confondues,
     //      2 par-hôte) au lieu d'être devinée en lisant le SQL dérivé.
     //   9. `hotes_muets_prefixe_de_dedup_ne_collisionne_avec_aucun_capteur` — la famille d'épisodes ne
-    //      peut pas marcher sur les clés `hb-<id>` des 23 capteurs.
+    //      peut pas marcher sur les clés `hb-<id>` des 25 capteurs.
     // ================================================================================================
 
     /// Peuple l'inventaire de flotte PAR LE VRAI CHEMIN : des lignes `metric` portant un hôte, puis le
     /// plancher de rattrapage noté à l'ingest, puis le tick de rollup. Passer par `host_rollup` en écriture
     /// directe aurait testé la sonde contre une table que la production ne remplit pas comme ça.
-    /// `metric` plutôt qu'`event` : ça n'anime QUE la sonde `resources`, donc les 20 sondes d'events
+    /// `metric` plutôt qu'`event` : ça n'anime QUE la sonde `resources`, donc les 22 sondes d'events
     /// restent au statut « inconnu » et ne polluent pas le décompte d'alertes.
     fn hm_parc_metrique(conn: &Connection, vivants: &[(&str, i64)]) {
         let mut plancher = i64::MAX;
@@ -80,7 +80,7 @@
     // (1) LA MUTATION — un parc dont une seule machine parle encore
     // ---------------------------------------------------------------------------------------------
 
-    /// LA PREUVE PAR MUTATION. Parc de 20 machines, 19 muettes depuis 2 h, 1 qui parle. Les 21 sondes à
+    /// LA PREUVE PAR MUTATION. Parc de 20 machines, 19 muettes depuis 2 h, 1 qui parle. Les 23 sondes à
     /// portée « tous hôtes confondus » restent NON-MUETTES — c'est le défaut, mesuré et non allégué. Les
     /// 2 sondes par-hôte crient. La sonde de flotte, elle, compte 19 muets sur 20 : le signal existe.
     ///
@@ -89,7 +89,7 @@
     /// sur event∪metric∪snapshot SANS filtre d'hôte : la machine encore vivante le rend vrai, donc ces
     /// sondes-là masquent AUSSI. Le test l'exige explicitement, sur les DEUX familles.
     #[test]
-    fn hotes_muets_un_seul_hote_parle_et_les_21_sondes_restent_vertes() {
+    fn hotes_muets_un_seul_hote_parle_et_les_23_sondes_restent_vertes() {
         let conn = test_db();
         let now_ts = now();
         // Chaque source d'event a une donnée FRAÎCHE venant de la SEULE machine encore vivante, et une
@@ -143,7 +143,9 @@
                 }
             }
         }
-        assert_eq!((confondues, par_hote_muettes), (21, 2), "décompte des portées, DÉRIVÉ du tableau et non recopié");
+        // MONTÉE NOMMÉE (cadence Cloudflare) : 21 -> 23 sondes confondues, les deux sondes `EventFlux`
+        // événementielles de `cloudflare` et `cloudflare-http` (cf. `snapshot_sonde_instantanee_ancrage_de_portee`).
+        assert_eq!((confondues, par_hote_muettes), (23, 2), "décompte des portées, DÉRIVÉ du tableau et non recopié");
 
         // LE SIGNAL QUI MANQUAIT : rendu comme un COMPTE, pas comme une série par hôte.
         let f = flotte_muette(&conn, now_ts).expect("l'inventaire est lisible");
@@ -226,7 +228,7 @@
     /// LA CARDINALITÉ NE SUIT PAS LE PARC. Le parc est MULTIPLIÉ PAR 25 (20 -> 500 machines) : le nombre
     /// d'alertes, de noms rendus et de séries reste le MÊME. C'est l'invariant qui distingue « rendre un
     /// COMPTE » de « rendre une série par hôte » — cette dernière aurait produit 500 séries ici, et
-    /// 21 x 500 = 10 500 si les 21 sondes confondues avaient été repassées par hôte.
+    /// 23 x 500 = 11 500 si les 23 sondes confondues avaient été repassées par hôte.
     #[test]
     fn hotes_muets_cardinalite_bornee_quelle_que_soit_la_taille_du_parc() {
         let mesure = |n: usize| -> (usize, usize, i64, i64) {
@@ -321,7 +323,7 @@
             hote4 >= hote1 * 7 / 2,
             "PORTÉE PAR HÔTE : volume x4 -> coût x{:.2} ({hote1} -> {hote4} pas de machine virtuelle). \
              Un `GROUP BY host` sur `event` n'a aucun index : le coût SUIT le volume. Multiplié par les \
-             20 sondes d'events, sous le verrou d'écriture, toutes les 20 s — c'est P3.7-a rouvert.",
+             22 sondes d'events, sous le verrou d'écriture, toutes les 20 s — c'est P3.7-a rouvert.",
             hote4 as f64 / hote1.max(1) as f64
         );
         assert_eq!(act1, act4, "TÉMOIN : la sonde ACTUELLE (tous hôtes confondus) ne bouge pas sous x4 volume");
@@ -439,10 +441,10 @@
         let par_hote = cs.iter().filter(|c| c["portee"] == "par-hôte").count();
         assert_eq!(
             (confondues, par_hote),
-            (21, 2),
-            "CHAQUE capteur déclare sa portée : 21 « tous hôtes confondus » (la dette) et 2 par-hôte"
+            (23, 2),
+            "CHAQUE capteur déclare sa portée : 23 « tous hôtes confondus » (la dette) et 2 par-hôte"
         );
-        assert_eq!(v["flotte"]["muets"], 19, "le panneau porte le COMPTE d'hôtes muets — ce qu'aucune des 21 sondes ne peut dire");
+        assert_eq!(v["flotte"]["muets"], 19, "le panneau porte le COMPTE d'hôtes muets — ce qu'aucune des 23 sondes ne peut dire");
         assert_eq!(v["flotte"]["attendus"], 20, "et son dénominateur");
         assert_eq!(v["flotte"]["seuil_s"], FLEET_STALE_S, "et le seuil, qui est celui du panneau Flotte — un seul auteur");
         let _ = std::fs::remove_file(&p);

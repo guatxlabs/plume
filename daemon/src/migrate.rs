@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 123;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 124;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 ///
@@ -990,6 +990,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 121 && !migrate_step(conn, 121, migrate_v121) { return false; }
     if v < 122 && !migrate_step(conn, 122, migrate_v122) { return false; }
     if v < 123 && !migrate_step(conn, 123, migrate_v123) { return false; }
+    if v < 124 && !migrate_step(conn, 124, migrate_v124) { return false; }
     true
 }
 
@@ -1642,6 +1643,61 @@ fn migrate_v123(conn: &MigTx) {
     let _ = conn.execute("UPDATE meta SET value='123' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v123 (P10.24-w : token.created_by / created_by_deleted_at — un jeton dit quel compte l'a frappé et si ce compte a été supprimé ; rétro-remplis depuis le registre quand l'appariement est unique, NULL sinon ; aucun jeton révoqué par la migration)");
 }
+
+/// v124 (P11.25-a, P11.25-b) — DEUX DÉFAUTS SIGNALÉS PAR L'EXPLOITANT, UNE MIGRATION.
+///
+/// (a) LA DURÉE D'UN BAN DE PLAYBOOK. Elle n'était réglable nulle part : `NETBAN_ACTION_TTL_S` (4 h) en dur pour le
+/// blocage HTTP natif, `--duration 4h` en littéral pour CrowdSec. Deux colonnes NULLABLES, NULL = la durée d'avant
+/// (4 h), donc aucun playbook ni aucune riposte existants ne changent de durée :
+///   * `playbook.ban_ttl_s` — la durée propre du playbook, posée par la création et la modification (bornée,
+///     `BAN_TTL_MAX_S`) ;
+///   * `action.ban_ttl_s` — la durée que la riposte mise en file par ce playbook PORTE jusqu'à son exécution :
+///     l'approbation, le responder et la voie CrowdSec la relisent par identifiant. Une riposte créée à la main la
+///     laisse NULL.
+///
+/// (b) LES PANNEAUX DE DIMENSION SEMÉS RENDAIENT UNE LIGNE À VALEUR VIDE EN TÊTE. `dim_panel_sql(…, false)` gardait
+/// la valeur `''` (champ absent de l'événement) : sur une vraie base, `''` était la première barre de « Top hôtes »,
+/// « Codes statut », « Top URLs », « Accès par utilisateur »… Le seed passe `non_empty = true` ; le seed ne
+/// s'applique qu'aux bases NEUVES, donc cette migration réécrit les panneaux DÉJÀ semés, MÊME GARDE que v113 : le
+/// `WHERE` exige la requête EXACTE d'origine (et `is_soql = 0`), si bien qu'un panneau édité par l'exploitant n'est
+/// JAMAIS écrasé. Les deux textes sont DÉRIVÉS de `dim_panel_sql` (aucune copie à la main), sur la liste
+/// `PANNEAUX_DE_DIMENSION_SEMES_V124`. Base neuve : déjà semée corrigée, 0 ligne touchée.
+///
+/// Idempotente (colonnes gardées par `col_exists`, réécriture gardée par la requête d'origine) ; gardée par
+/// `v < 124`. ROLLBACK — bumpe le schéma à 124 : un binaire max=123 REFUSE d'ouvrir une base v124 (`db_open`,
+/// `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate. Forward-only.
+fn migrate_v124(conn: &MigTx) {
+    if !conn.col_exists("playbook", "ban_ttl_s") {
+        let _ = conn.execute("ALTER TABLE playbook ADD COLUMN ban_ttl_s INTEGER", []);
+    }
+    if !conn.col_exists("action", "ban_ttl_s") {
+        let _ = conn.execute("ALTER TABLE action ADD COLUMN ban_ttl_s INTEGER", []);
+    }
+    for (source, dim, limit) in PANNEAUX_DE_DIMENSION_SEMES_V124 {
+        let _ = conn.execute(
+            "UPDATE panel SET query=?1 WHERE query=?2 AND is_soql=0",
+            params![dim_panel_sql(source, dim, limit, true), dim_panel_sql(source, dim, limit, false)],
+        );
+    }
+    let _ = conn.execute("UPDATE meta SET value='124' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v124 (P11.25-a : playbook.ban_ttl_s / action.ban_ttl_s — la durée du ban d'un playbook est réglable et portée par sa riposte jusqu'à CrowdSec, NULL = 4 h comme avant ; P11.25-b : les panneaux de dimension semés ne rendent plus la valeur vide, réécrits seulement si leur requête est encore celle d'origine)");
+}
+
+/// `P11.25-b` (v124) — les panneaux semés qui lisent `event_dim_rollup` avec `non_empty = false` jusqu'à la base
+/// v123 : (source, dimension, limite), les arguments EXACTS de leurs appels à `dim_panel_sql` dans `seeds.rs`
+/// (`mail`/`verdict` passait déjà `true`). Un témoin compare cette liste aux panneaux qu'une base neuve sème.
+pub(crate) const PANNEAUX_DE_DIMENSION_SEMES_V124: [(&str, &str, i64); 10] = [
+    ("web", "vhost", 0),
+    ("web", "status", 0),
+    ("web", "path", 20),
+    ("dataaccess", "user", 0),
+    ("dataaccess", "action", 0),
+    ("dataaccess", "path", 20),
+    ("dataacl", "owner", 0),
+    ("dataacl", "group", 0),
+    ("kube-rbac", "role", 20),
+    ("kube-rbac", "subject", 20),
+];
 
 /// `P10.24-w` (v123) — l'auteur d'un jeton frappé par la console, relu dans le registre. Le préfixe attendu est
 /// RECONSTRUIT depuis la ligne (genre, nom, hôte) exactement comme `token_create` l'écrit, puis comparé par

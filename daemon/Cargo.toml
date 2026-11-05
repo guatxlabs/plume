@@ -33,7 +33,7 @@ sha2 = "0.10"
 # (ring, DÉJÀ dans l'arbre via rustls ; + serde/simple_asn1/pem). AUCUNE dépendance native/OpenSSL
 # NOUVELLE (le sqlcipher vendoré tire déjà OpenSSL, mais jsonwebtoken n'y touche pas -> ring). Utilisé
 # UNIQUEMENT sur le chemin de login OIDC (inerte tant qu'aucun provider OIDC n'est configuré -> mode 0).
-jsonwebtoken = "9"
+jsonwebtoken = "11"
 # TOTP MFA (#44, RFC 6238) — HMAC-SHA1 (l'algo par défaut de Google Authenticator/Authy). `sha1` pur-Rust
 # (RustCrypto, même famille que `sha2` déjà présent). Pas de crate TOTP tierce (l'algo tient en ~30 lignes,
 # testées) ni de génération de QR côté serveur (on renvoie l'URI otpauth:// standard, QR rendu ailleurs).

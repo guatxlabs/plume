@@ -31786,6 +31786,320 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   else console.log("(164) OK — `P10.32-o` (console, vague BJ) : dans les deux langues, sur la vraie carte, un deux cents sans ligne ni `warming` ni `error` de chacune des quatre raisons dormantes (`mesure_en_cours`, `calcul_echoue`, `cache_non_lu`, `cache_non_ecrit`, relues dans panneau_avoue.rs), sans horizon et horizon dehors, porte la marque « non établi », la classe « bad », SA face propre et aucune autre, jamais « aucune donnée » / « no data » ni chauffe. Ce qu'il NE tient PAS : que la route serve un jour ces corps ainsi (témoins Rust).");
 }
 
+// ---------------------------------------------------------------------------------------------
+// (165) `P11.20-q` (prolongation) — LE COMPTE D'UNE RÈGLE SQL NE SE FORE PAS COMME UN CHAMP : LE CAS DE L'EXPLOITANT.
+//
+// CONSTAT : sur l'alerte « Attaquant actif NON banni », la règle v52 (`ATTACKER_UNMITIGATED_RULE_SQL`, relue ICI dans
+// daemon/src/seeds.rs, jamais recopiée) rend `[non_mitiges]` ; le pivot pose cette requête dans le champ, et le clic
+// sur « 3 » fabriquait `search non_mitiges=3` — zéro ligne, lue « aucun événement sur la fenêtre ». Ici le clic est
+// joué sur la table rendue avec cette requête ; le VRAI chemin d'Explore — `runQuery` → `evLoad` →
+// `renderTablePaged` → `tableEl(…, S.evState.q)`, puisqu'une saisie SQL n'est pas une agrégation pour `runQuery` —
+// est joué de bout en bout en (169b).
+// INSTRUMENT : la même table rendue SANS requête laisse partir le forage — la requête est bien ce qui décide, et la
+// table offre bien un geste (sans quoi « champ vide » ne prouverait qu'un instrument aveugle).
+// CE QU'IL NE TIENT PAS : le chemin `alertDrill` → champ lui-même (le pivot est joué ailleurs) ; « voir les lignes
+// de la règle », second volet, absent du démon ; l'infobulle de la ligne, qui promet toujours « les événements de la
+// valeur » AVANT le clic.
+// ---------------------------------------------------------------------------------------------
+// (166) LES QUATRE FIGURES QUI FORENT REFUSENT LA SORTIE D'UN AGRÉGAT GXQL, ET LA COLONNE DE GROUPEMENT PART.
+// Camembert, carte de chaleur, table, barres : `stats count by host` projeté pour que `count` soit en tête (ce qu'un
+// réglage de graphe fait) refuse, `stats count by host` dans l'ordre servi part sur `host`. Chaque figure est jouée :
+// un site qui ne transmet pas sa requête rougit seul.
+// ---------------------------------------------------------------------------------------------
+// (167) UN VRAI CHAMP D'ÉVÉNEMENT N'EST JAMAIS REFUSÉ, et chaque cas dépend d'une règle : un champ nommé `count` sans
+// étape d'agrégat (la requête, pas le nom, décide), la colonne de groupement d'un SQL, `MIN(src_ip) AS src_ip` et
+// `MAX(host) AS host` (leur valeur est une valeur du champ), `top src_ip` (R2 n'ajoute que `count`), une colonne
+// dont le nom COMMENCE par celui d'une fonction (`counter`), un vrai champ `total` relu sans alias depuis une
+// sous-requête (le lecteur SQL exige la parenthèse de l'appel). ET LE RÉGLAGE D'AXES : sur un panneau SQL
+// `COUNT(*) AS n, host`, un réglage `x = host` met `host` en tête par `projeter` sous la MÊME requête — le clic
+// part sur `host` (une règle positionnelle « première colonne du SELECT » le refusait sous un faux motif).
+// Et un `COUNT(*)` non aliasé est refusé, avec sa requête comme SANS requête (l'aperçu d'un instantané).
+// ---------------------------------------------------------------------------------------------
+// (168) LE REFUS A SA PHRASE, DISTINCTE, ET IL SE REND DANS LES DEUX LANGUES (instance anglaise vérifiée anglaise).
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant165 = echecs.length;
+  const viz165 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const { S: S165 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const instrument165 = (vrai, quoi) => exiger(vrai, `(165-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const cu165 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); for (const c of (el && el.children) || []) cu165(c, pred, acc); return acc; };
+  const champ165 = () => document.querySelector("#sql");
+  const avis165 = () => document.querySelectorAll(".toast").map((t) => t.textContent);
+  const jouer165 = (noeud) => {
+    if (!noeud) return { requete: "(aucun contrôle offert)", dits: [], offert: false };
+    if (champ165()) champ165().value = "";
+    S165.zoomRange = null; S165.exploreInflight = null;
+    const n = avis165().length;
+    noeud.onclick({});
+    S165.zoomRange = null; S165.exploreInflight = null;
+    return { requete: champ165() ? champ165().value : "(pas de champ de requête)", dits: avis165().slice(n), offert: true };
+  };
+  // LE PREMIER GESTE DE FORAGE de chaque figure, repéré par ce qui le porte : la ligne de corps d'une table, la barre,
+  // la part, la case.
+  const GESTE165 = {
+    table: (n) => n.tagName === "TR" && typeof n.onclick === "function",
+    bar: (n) => n.classList && n.classList.contains("barrow") && typeof n.onclick === "function",
+    pie: (n) => n.tagName === "PATH" && typeof n.onclick === "function",
+    heatmap: (n) => n.classList && n.classList.contains("heatcell") && typeof n.onclick === "function",
+  };
+  const geste165 = (mode, cols, rows, query, mod = viz165) => cu165(mod.vizSansPorte(mode, cols, rows, query, ""), GESTE165[mode])[0] || null;
+  const lireSeeds165 = (() => { try { return readFileSync(path.join(RACINE, "daemon", "src", "seeds.rs"), "utf8"); } catch (e) { return ""; } })();
+  const m165 = lireSeeds165.match(/const ATTACKER_UNMITIGATED_RULE_SQL: &str =\s*"((?:[^"\\]|\\[\s\S])*)";/);
+  const REGLE165 = m165 ? m165[1].replace(/\\\n\s*/g, " ").replace(/\\"/g, "\"") : "";
+  instrument165(/^\s*SELECT COUNT\(\*\) AS non_mitiges\b/i.test(REGLE165), `la règle v52 n'est pas relue dans seeds.rs (« ${REGLE165.slice(0, 60)} »)`);
+
+  // ---- (165) le cas de l'exploitant ----
+  const sansRequete165 = jouer165(geste165("table", ["non_mitiges"], [[3]], ""));
+  instrument165(sansRequete165.offert && sansRequete165.requete === "search non_mitiges=3",
+    `la table sans requête n'offre pas le forage d'avant (« ${sansRequete165.requete} ») : le refus mesuré ci-dessous ne serait pas celui qu'on croit`);
+  const regle165 = jouer165(geste165("table", ["non_mitiges"], [[3]], REGLE165));
+  exiger(regle165.offert && regle165.requete === "",
+    `(165) le clic sur le compte de la règle « Attaquant actif NON banni » fabrique encore une recherche : « ${regle165.requete} » — elle rend zéro ligne, lue « aucun événement », alors que 3 est un COMPTE`);
+  exiger(regle165.dits.length === 1 && /non_mitiges/.test(regle165.dits[0]) && /calcul/.test(regle165.dits[0]),
+    `(165) le refus du forage d'un compte ne dit pas POURQUOI ni QUELLE colonne (${JSON.stringify(regle165.dits)})`);
+
+  // ---- (166) les quatre figures ----
+  const BY166 = "search source=web | stats count by host";
+  for (const mode of ["table", "bar", "pie", "heatmap"]) {
+    const refuse = jouer165(geste165(mode, ["count", "v"], [[7, 1]], BY166));
+    exiger(refuse.offert && refuse.requete === "" && refuse.dits.length === 1 && /count/.test(refuse.dits[0]),
+      `(166) ${mode} : la sortie de \`stats count\` mise en tête part en recherche (« ${refuse.requete} », ${JSON.stringify(refuse.dits)})`);
+    const part = jouer165(geste165(mode, ["host", "count"], [["srv1", 7]], BY166));
+    exiger(part.requete === 'search host="srv1"' && part.dits.length === 0,
+      `(166) ${mode} : la colonne de groupement \`by host\` ne part plus (« ${part.requete} », ${JSON.stringify(part.dits)})`);
+  }
+  const renomme166 = jouer165(geste165("bar", ["vhosts", "src_ip"], [[4, "1.2.3.4"]], "search source=web | stats dc(vhost) by src_ip | rename dc as vhosts | table vhosts, src_ip"));
+  exiger(renomme166.requete === "" && renomme166.dits.length === 1,
+    `(166) un agrégat renommé (\`rename dc as vhosts\`) part en recherche : « ${renomme166.requete} »`);
+  const seul166 = jouer165(geste165("table", ["sum"], [[1200]], "search source=web | stats sum(bytes) as total"));
+  exiger(seul166.requete === "" && seul166.dits.length === 1,
+    `(166) \`stats sum(bytes) as total\` (sortie \`sum\`, le \`as\` est ignoré par le compilateur) part en recherche : « ${seul166.requete} »`);
+
+  // ---- (167) jamais un vrai champ ----
+  const PARTENT167 = [
+    ["un champ nommé count sans étape d'agrégat", "table", ["count", "host"], [[5, "a"]], "search source=web count=5", "search count=5"],
+    ["la colonne de groupement d'un SQL (agrégat hors tête)", "table", ["host", "n"], [["srv1", 9]], "SELECT host, COUNT(*) AS n FROM event GROUP BY host", 'search host="srv1"'],
+    ["MIN(src_ip) AS src_ip en tête", "bar", ["src_ip", "n"], [["1.2.3.4", 2]], "SELECT MIN(src_ip) AS src_ip, COUNT(*) AS n FROM event GROUP BY host", 'search src_ip="1.2.3.4"'],
+    ["MAX(host) AS host en tête", "table", ["host"], [["srv1"]], "SELECT MAX(host) AS host FROM event", 'search host="srv1"'],
+    ["top src_ip", "bar", ["src_ip", "count"], [["1.2.3.4", 2]], "search source=web | top src_ip", 'search src_ip="1.2.3.4"'],
+    ["une colonne dont le nom commence par celui d'une fonction", "table", ["counter", "n"], [[3, 1]], "SELECT counter, COUNT(*) AS n FROM event GROUP BY counter", "search counter=3"],
+    ["un vrai champ total relu sans alias d'une sous-requête", "table", ["total", "host"], [[7, "a"]], "SELECT total, host FROM (SELECT json_extract(fields,'$.total') AS total, host FROM event)", "search total=7"],
+  ];
+  for (const [nom, mode, cols, rows, q, attendu] of PARTENT167) {
+    const r = jouer165(geste165(mode, cols, rows, q));
+    exiger(r.requete === attendu && r.dits.length === 0, `(167) ${nom} : un vrai champ est refusé ou déformé (« ${r.requete} », ${JSON.stringify(r.dits)})`);
+  }
+  const nu167 = jouer165(geste165("table", ["COUNT(*)"], [[12]], "SELECT COUNT(*) FROM event"));
+  exiger(nu167.requete === "" && nu167.dits.length === 1, `(167) un \`COUNT(*)\` non aliasé part en recherche : « ${nu167.requete} »`);
+  // l'aperçu d'un instantané est rendu SANS requête (dashboards.js) : la forme du nom suffit à refuser
+  const apercu167 = jouer165(cu165(viz165.vizElement("table", ["COUNT(*)"], [[12]], "", ""), GESTE165.table)[0] || null);
+  exiger(apercu167.offert && apercu167.requete === "" && apercu167.dits.length === 1 && /COUNT\(\*\)/.test(apercu167.dits[0]),
+    `(167) un \`COUNT(*)\` rendu SANS requête (aperçu d'un instantané) part en recherche : « ${apercu167.requete} » (${JSON.stringify(apercu167.dits)})`);
+  // le réglage d'axes d'un panneau SQL : `projeter` met `host` en tête, la requête reste celle du panneau
+  const prefs167 = await import(pathToFileURL(path.join(WEB, "prefs.js")).href);
+  const PANNEAU167 = 16716;
+  const axes167 = (query) => {
+    prefs167.prefSet("viz_axes", { ["p" + PANNEAU167]: { x: "host" } });
+    try {
+      return jouer165(cu165({ children: viz165.noeudsDeVizReglee("bar", ["n", "host"], [[3, "srv1"]], query, "", PANNEAU167, () => {}) }, GESTE165.bar)[0] || null);
+    } finally { prefs167.prefSet("viz_axes", {}); }
+  };
+  // INSTRUMENT : sous le même réglage, une requête où `host` EST un agrégat refuse en nommant `host` — le réglage a
+  // bien mis `host` en tête du forage, et la requête du panneau lui parvient
+  const calcule167 = axes167("SELECT n, COUNT(*) AS host FROM event GROUP BY n");
+  instrument165(calcule167.offert && calcule167.requete === "" && calcule167.dits.length === 1 && /\(host\)/.test(calcule167.dits[0]),
+    `sous le réglage x = host, une requête où \`host\` est un agrégat ne refuse pas \`host\` (« ${calcule167.requete} », ${JSON.stringify(calcule167.dits)}) : le positif ci-dessous ne prouverait pas que le réglage fore \`host\``);
+  const reglee167 = axes167("SELECT COUNT(*) AS n, host FROM event GROUP BY host");
+  exiger(reglee167.requete === 'search host="srv1"' && reglee167.dits.length === 0,
+    `(167) un panneau SQL dont le réglage d'axes met \`host\` en tête refuse ce vrai champ ou le déforme (« ${reglee167.requete} », ${JSON.stringify(reglee167.dits)})`);
+
+  // ---- (168) phrase distincte, deux langues ----
+  const vide168 = jouer165(geste165("bar", ["src_ip", "n"], [["", 5]], ""));
+  instrument165(vide168.dits.length === 1, "le refus voisin (part sans valeur) ne se rend pas");
+  const phraseFr168 = String(regle165.dits[0] || "");
+  // la CAUSE se compare sans son détail : « (non_mitiges) » contre « (src_ip) » différerait même si les deux refus
+  // empruntaient la même phrase
+  const cause168 = (t) => String(t).replace(/\s*\([^()]*\)\s*$/, "");
+  instrument165(cause168(String(vide168.dits[0])) !== String(vide168.dits[0]), "le refus voisin ne porte pas son détail entre parenthèses : la comparaison sans détail ne retirerait rien");
+  exiger(phraseFr168 !== "" && cause168(phraseFr168) !== cause168(vide168.dits[0]) && !/colonne d'instants/.test(phraseFr168),
+    `(168) le refus d'une colonne d'agrégat emprunte la phrase d'une autre cause (« ${phraseFr168} »)`);
+  localStorage.setItem("soc_lang", "en");
+  const vizEN168 = await import(adresseSousLaLangue("viz.js"));
+  localStorage.removeItem("soc_lang");
+  const en168 = jouer165(geste165("table", ["non_mitiges"], [[3]], REGLE165, vizEN168));
+  const ditEN168 = String(en168.dits[0] || "");
+  instrument165(ditEN168 !== "" && ditEN168 !== phraseFr168, `\`viz.js${SUFFIXE_LANGUE}\` rend le même refus qu'en français (« ${ditEN168} »)`);
+  exiger(!/[éèêëàâçùûôîï]/.test(ditEN168) && /non_mitiges/.test(ditEN168) && /computation/.test(ditEN168),
+    `(168) le refus anglais d'une colonne d'agrégat n'est pas anglais ou ne nomme plus la colonne : « ${ditEN168} »`);
+
+  document.querySelectorAll(".toast").forEach((t) => t.remove());
+  if (echecs.length !== echecsAvant165) console.log(`(165-168) EN ÉCHEC — ${echecs.length - echecsAvant165} écart(s), dits ci-dessus`);
+  else console.log("(165-168) OK — `P11.20-q` (prolongation) : le compte de la règle « Attaquant actif NON banni », relue dans seeds.rs et rendue en table avec sa requête, ne fabrique plus `search non_mitiges=3` et le DIT en nommant la colonne ; table, barres, camembert et carte de chaleur refusent la sortie d'un agrégat GXQL et laissent partir la colonne de groupement, un agrégat renommé refuse ; sept vrais champs partent à l'octet près, chacun sous la règle qui le décide, et le vrai champ qu'un réglage d'axes met en tête d'un panneau SQL part ; un `COUNT(*)` refuse avec ou sans requête ; la phrase est distincte et rendue en anglais. CE QUE CES TÉMOINS NE TIENNENT PAS : une sortie dérivée (`eval`) reste offerte ; l'infobulle promet toujours les événements AVANT le clic ; « voir les lignes de la règle » n'existe pas côté démon.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// (169) `P11.20-q` (prolongation) — LES RÈGLES DU LECTEUR, CHACUNE TENUE PAR SES CAS, DANS LES DEUX SENS.
+//
+// Le lecteur (web/viz.js, `colonneDAgregat`) cherche le NOM foré dans les colonnes que la requête produit par
+// agrégat ; chaque élément a ici un cas qui rougit si on le retire, joué par le clic d'une table rendue avec sa requête :
+//   · R1 (`stats`/`eventstats`/`timechart`) : les huit fonctions de `soql_agg` (count nu et count(x) compris, et `count` suivi d'un
+//     second jeton, que le défaut masquerait), l'étape
+//     `eventstats`, l'étape `timechart` dont un jeton `span=` précède l'agrégat, le défaut `count` d'un `stats` nu, et
+//     la coupure à `by` (un champ de groupement nommé `count` PART), l'ancrage du jeton (`summary` n'est pas `sum`).
+//   · `rename` : la qualité d'agrégat suit le nouveau nom (`as` sans casse, paires à virgule) ; un groupement renommé PART.
+//   · R2 (`top`/`rare`) : la sortie `count` refuse.
+//   · Aiguillage et découpe : tête sans `search` (aiguillée GXQL par la barre, comme à l'envoi) ; une barre entre
+//     CROCHETS ne coupe pas d'étape (la découpe du compilateur) — un vrai champ `count` y PART ; une barre après un
+//     GUILLEMET non fermé coupe (le compilateur l'ignore) — la sortie `count` y REFUSE.
+//   · SQL : tout alias d'agrégat, où qu'il soit (réglage d'axes), en minuscules, blanc avant la parenthèse, alias
+//     implicite/guillemeté/de casse mixte, fenêtre OVER, parenthèses imbriquées, alias interne relu au-dessus ;
+//     l'exception MIN/MAX(x) AS x (préfixe de table compris) ; un agrégat sans alias (WHERE, ORDER BY) ou un
+//     littéral de chaîne ne nomme rien.
+// (169b) LE VRAI CHEMIN D'EXPLORE, DE BOUT EN BOUT, PAR `runQuery` ET UN TRANSPORT SIMULÉ : la règle v52 posée dans le
+// champ part par `evLoad` → `renderTablePaged` (vérifié : table paginée, requête du parcours = la règle) et son
+// compte refuse ; le même corps sous une requête non agrégée laisse partir (instrument). Et une agrégation GXQL part
+// par `renderViz` : sa sortie refuse, sa colonne de groupement part.
+// CE QU'IL NE TIENT PAS : les RESTES écrits dans viz.js sous « CE QUE CE LECTEUR NE SAIT PAS » (colonne dérivée,
+// macro, sous-recherche, SQL contenant `||`) — sur chacun le forage d'avant, jamais un vrai champ refusé.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant169 = echecs.length;
+  const viz169 = await import(pathToFileURL(path.join(WEB, "viz.js")).href);
+  const { S: S169 } = await import(pathToFileURL(path.join(WEB, "state.js")).href);
+  const cu169 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); for (const c of (el && el.children) || []) cu169(c, pred, acc); return acc; };
+  const ligne169 = (n) => n.tagName === "TR" && typeof n.onclick === "function";
+  const champ169 = () => document.querySelector("#sql");
+  const cliquer169 = (noeud) => {
+    if (!noeud) return { requete: "(aucun geste offert)", dits: [] };
+    if (champ169()) champ169().value = "";
+    S169.zoomRange = null; S169.exploreInflight = null;
+    const n = document.querySelectorAll(".toast").length;
+    noeud.onclick({});
+    S169.zoomRange = null; S169.exploreInflight = null;
+    return { requete: champ169() ? champ169().value : "(pas de champ de requête)", dits: document.querySelectorAll(".toast").map((t) => t.textContent).slice(n) };
+  };
+  const verdict169 = (r) => (r.requete === "" && r.dits.length === 1 ? "REFUS" : (r.requete.startsWith("search ") && r.dits.length === 0 ? "PART" : "AUTRE"));
+  const FONCTIONS169 = ["count", "count(src_ip)", "sum(bytes)", "avg(bytes)", "min(bytes)", "max(bytes)", "dc(src_ip)", "values(src_ip)", "list(src_ip)"];
+  const CAS169 = [
+    ...FONCTIONS169.map((f) => [`R1 stats ${f}`, [f.replace(/\(.*$/, "")], [[4]], `search source=web | stats ${f}`, "REFUS"]),
+    // `stats` ne lit que son PREMIER jeton (compile_stats, `toks.get(1)`) : la sortie est `count`, le `max(bytes)` qui suit
+    // est ignoré — ce cas tient `count` dans la liste, que le défaut `count` masquerait sinon
+    ["R1 stats count suivi d'un second jeton d'agrégat", ["count"], [[4]], "search source=web | stats count max(bytes)", "REFUS"],
+    ["R1 eventstats : la sortie mise en tête", ["count", "host"], [[4, "a"]], "search source=web | eventstats count by host | table count, host", "REFUS"],
+    ["R1 timechart : un jeton span= avant l'agrégat", ["max", "host"], [[4, "a"]], "search source=web | timechart span=1h max(bytes) by host | table max, host", "REFUS"],
+    ["R1 stats nu (défaut count du compilateur)", ["count"], [[4]], "search source=web | stats", "REFUS"],
+    // `timechart` retient le DERNIER jeton sans `=` (compile_timechart) : `max`, pas `count`
+    ["R1 timechart : le dernier jeton est la sortie", ["max"], [[4]], "search source=web | timechart count max(bytes) | table max", "REFUS"],
+    // ... et le jeton qu'il ignore n'est pas une sortie : un champ de groupement de ce nom PART
+    ["R1 timechart : un jeton ignoré ne refuse pas un groupement", ["count", "max"], [[2, 4]], "search source=web | timechart count max(bytes) by count", "PART"],
+    // `stats` ne lit que le PREMIER jeton : un champ de groupement nommé comme le second PART
+    ["R1 stats : un jeton ignoré ne refuse pas un groupement", ["count", "dc"], [[2, 4]], "search source=web | stats dc(src_ip) count by count", "PART"],
+    // à l'identique : un groupement `Count` n'est pas la sortie `count` (un vrai champ n'est jamais refusé)
+    ["casse : un groupement Count n'est pas la sortie count", ["Count", "count"], [["a", 4]], "search source=web | stats count by Count", "PART"],
+    // `rename` à l'identique : sous `eventstats` (sac JSON en portée) `Count` est un vrai champ, `n` aussi
+    ["casse : rename d'un vrai champ Count sous eventstats", ["n"], [["a"]], "search source=web | eventstats count | rename Count as n | table n", "PART"],
+    ["R1 coupure à by : un champ de groupement nommé count", ["count", "dc"], [[4, 2]], "search source=web | stats dc(src_ip) by count", "PART"],
+    // un jeton d'agrégat est la fonction NUE ou l'ouvre d'une parenthèse : `summary` n'est pas `sum`, et le champ de
+    // groupement `sum` PART
+    ["R1 jeton ancré : summary n'est pas sum", ["sum", "count"], [[3, 4]], "search source=web | stats count as summary by sum", "PART"],
+    ["rename : la qualité d'agrégat suit le nouveau nom", ["n", "host"], [[4, "a"]], "search source=web | stats count by host | rename count as n | table n, host", "REFUS"],
+    ["rename : `AS` sans casse, seconde paire", ["m", "host"], [[4, "a"]], "search source=web | stats max(bytes) by host | rename host as h, max AS m | table m, host", "REFUS"],
+    ["rename d'une colonne de groupement", ["h", "count"], [["a", 4]], "search source=web | stats count by host | rename host as h | table h, count", "PART"],
+    ["R2 top : la sortie count mise en tête", ["count", "src_ip"], [[4, "a"]], "search source=web | top src_ip | table count, src_ip", "REFUS"],
+    ["R2 rare : la sortie count mise en tête", ["count", "src_ip"], [[4, "a"]], "search source=web | rare src_ip | table count, src_ip", "REFUS"],
+    ["aiguillage : GXQL sans tête search", ["count"], [[4]], "source=web | stats count", "REFUS"],
+    ["découpe : une barre entre crochets ne coupe pas d'étape", ["count", "host"], [[4, "a"]], "search message=\"[x | top y]\" | table count, host", "PART"],
+    // la découpe du compilateur ignore les GUILLEMETS (un guillemet non fermé est toléré par soql_tokenize_marked) :
+    // l'étape `stats count` existe, et sa sortie `count` refuse — une règle des guillemets la laisserait partir
+    ["découpe : un guillemet ne protège pas la barre", ["count"], [[5]], "search message=\"x | stats count", "REFUS"],
+    ["SQL COUNT", ["non_mitiges"], [[4]], "SELECT COUNT(*) AS non_mitiges FROM event", "REFUS"],
+    ["SQL SUM", ["total", "host"], [[4, "a"]], "SELECT SUM(bytes) AS total, host FROM event GROUP BY host", "REFUS"],
+    ["SQL AVG", ["m", "host"], [[4, "a"]], "SELECT AVG(bytes) AS m, host FROM event GROUP BY host", "REFUS"],
+    ["SQL TOTAL", ["t", "host"], [[4, "a"]], "SELECT TOTAL(bytes) AS t, host FROM event GROUP BY host", "REFUS"],
+    ["SQL GROUP_CONCAT", ["l", "host"], [["x,y", "a"]], "SELECT GROUP_CONCAT(src_ip) AS l, host FROM event GROUP BY host", "REFUS"],
+    // un agrégat de sous-requête du WHERE n'a pas d'alias : la colonne extérieure reste un champ
+    ["SQL : agrégat d'une sous-requête du WHERE", ["host"], [["srv1"]], "SELECT host FROM event WHERE severity > (SELECT AVG(severity) FROM event)", "PART"],
+    ["SQL en minuscules", ["n"], [[4]], "select count(*) as n from event", "REFUS"],
+    ["SQL blanc avant la parenthèse", ["n"], [[4]], "SELECT COUNT (*) AS n FROM event", "REFUS"],
+    ["SQL précédé d'un saut de ligne", ["n"], [[4]], "\n  SELECT COUNT(*) AS n FROM event", "REFUS"],
+    ["SQL SUM(x) AS x (seuls MIN/MAX rendent une valeur de x)", ["bytes", "host"], [[4, "a"]], "SELECT SUM(bytes) AS bytes, host FROM event GROUP BY host", "REFUS"],
+    ["SQL COUNT(src_ip) AS src_ip", ["src_ip"], [[4]], "SELECT COUNT(src_ip) AS src_ip FROM event", "REFUS"],
+    ["SQL alias implicite", ["c", "host"], [[4, "a"]], "SELECT COUNT(*) c, host FROM event GROUP BY host", "REFUS"],
+    ["SQL alias entre guillemets", ["n", "host"], [[4, "a"]], "SELECT COUNT(*) AS \"n\", host FROM event GROUP BY host", "REFUS"],
+    ["SQL casse de l'alias", ["NonMitiges"], [[4]], "SELECT COUNT(*) AS NonMitiges FROM event", "REFUS"],
+    ["SQL agrégat hors tête (réglage d'axes)", ["n", "first"], [[4, 1]], "SELECT MIN(ts) AS first, COUNT(*) AS n FROM event", "REFUS"],
+    ["SQL fenêtre OVER (...)", ["c", "host"], [[4, "a"]], "SELECT COUNT(*) OVER (PARTITION BY host) AS c, host FROM event", "REFUS"],
+    ["SQL parenthèses imbriquées", ["total"], [[4]], "SELECT SUM(CAST(bytes AS INTEGER)) AS total FROM event", "REFUS"],
+    ["SQL alias interne relu au-dessus", ["c"], [[4]], "SELECT c FROM (SELECT COUNT(*) AS c FROM event)", "REFUS"],
+    ["SQL MIN(e.src_ip) AS src_ip (préfixe de table)", ["src_ip", "n"], [["1.2.3.4", 2]], "SELECT MIN(e.src_ip) AS src_ip, COUNT(*) AS n FROM event e GROUP BY host", "PART"],
+    ["SQL agrégat dans ORDER BY", ["host", "n"], [["a", 2]], "SELECT host, COUNT(*) AS n FROM event GROUP BY host ORDER BY MAX(ts) DESC", "PART"],
+    ["SQL littéral de chaîne", ["host"], [["a"]], "SELECT host FROM event WHERE message = 'sum(x) host'", "PART"],
+  ];
+  for (const [nom, cols, rows, q, attendu] of CAS169) {
+    const r = cliquer169(cu169(viz169.vizSansPorte("table", cols, rows, q, ""), ligne169)[0] || null);
+    const vu = verdict169(r);
+    exiger(vu === attendu, `(169) ${nom} : attendu ${attendu}, observé ${vu} (« ${r.requete} », ${JSON.stringify(r.dits)}) — requête « ${JSON.stringify(q)} »`);
+    if (vu === "REFUS") exiger(r.dits[0].includes(`(${cols[0]})`), `(169) ${nom} : le refus ne nomme pas la colonne « ${cols[0]} » (${JSON.stringify(r.dits)})`);
+  }
+
+  // ---- (169b) le vrai chemin d'Explore, de bout en bout ----
+  const qresult169 = document.querySelector("#qresult"), selViz169 = document.querySelector("#viz");
+  exiger(!!qresult169 && !!selViz169 && !!champ169(), "(169b-instrument) `#qresult`, `#viz` ou `#sql` absent d'index.html : le chemin d'Explore n'est pas exerçable, ce témoin REFUSE DE CONCLURE");
+  if (qresult169 && selViz169 && champ169()) {
+    const seeds169 = (() => { try { return readFileSync(path.join(RACINE, "daemon", "src", "seeds.rs"), "utf8"); } catch (e) { return ""; } })();
+    const m169 = seeds169.match(/const ATTACKER_UNMITIGATED_RULE_SQL: &str =\s*"((?:[^"\\]|\\[\s\S])*)";/);
+    const regle169 = m169 ? m169[1].replace(/\\\n\s*/g, " ").replace(/\\"/g, "\"") : "";
+    exiger(/^\s*SELECT COUNT\(\*\) AS non_mitiges\b/i.test(regle169), "(169b-instrument) la règle v52 n'est pas relue dans seeds.rs : ce témoin REFUSE DE CONCLURE");
+    const sauve169 = { auth: S169.AUTH, evState: S169.evState, dernier: S169.lastResult, hist: S169.qHist, histIdx: S169.qHistIdx, vol: S169.exploreInflight, viz: selViz169.value, champ: champ169().value, fetch: globalThis.fetch, hash: location.hash };
+    const tic169 = () => new Promise((r) => setTimeout(r, 0));
+    const laisser169 = async (n = 20) => { for (let i = 0; i < n; i++) await tic169(); };
+    let corps169 = {};
+    const reponse169 = (corps) => { const texte = JSON.stringify(corps); return { ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => texte, json: async () => JSON.parse(texte) }; };
+    globalThis.fetch = async (u, init) => {
+      let demande = {}; try { demande = init && init.body ? JSON.parse(init.body) : {}; } catch (e) { demande = {}; }
+      if (String(u).split("?")[0] !== "/api/query") return reponse169({});
+      return reponse169(demande.count_only ? { count_only: true, total: 1 } : corps169);
+    };
+    // runQuery avec la requête dans le champ, puis le clic sur la première ligne forable de `#qresult`
+    const explorer169 = async (requete, corps) => {
+      S169.AUTH = { role: "admin" }; S169.exploreInflight = null; S169.evState = {};
+      selViz169.value = "table"; qresult169.replaceChildren();
+      corps169 = { stats: { rows: corps.rows.length, elapsed_ms: 1 }, has_more: false, ...corps };
+      champ169().value = requete;
+      await viz169.runQuery(); await laisser169();
+      const parcours = { pagine: S169.evState && S169.evState.lastForceTable === true, q: S169.evState && S169.evState.q };
+      const r = cliquer169(cu169(qresult169, ligne169)[0] || null);
+      await laisser169(); S169.exploreInflight = null;
+      return { ...r, ...parcours };
+    };
+    try {
+      const NON_MITIGES169 = { columns: ["non_mitiges"], rows: [[3]] };
+      const instrument169 = await explorer169("SELECT src AS non_mitiges FROM event", NON_MITIGES169);
+      exiger(instrument169.pagine && instrument169.requete === "search non_mitiges=3" && instrument169.dits.length === 0,
+        `(169b-instrument) une requête SQL non agrégée ne part pas par la table paginée avec le forage d'avant (paginée : ${instrument169.pagine}, « ${instrument169.requete} », ${JSON.stringify(instrument169.dits)}) : le refus ci-dessous ne prouverait pas que la requête du parcours est lue — ce témoin REFUSE DE CONCLURE`);
+      const regle = await explorer169(regle169, NON_MITIGES169);
+      exiger(regle.pagine && regle.q === regle169,
+        `(169b-instrument) la règle v52 posée dans le champ ne part pas par \`evLoad\` → \`renderTablePaged\` (paginée : ${regle.pagine}, requête du parcours « ${String(regle.q).slice(0, 40)} ») : ce n'est plus le chemin de l'exploitant — ce témoin REFUSE DE CONCLURE`);
+      exiger(regle.requete === "" && regle.dits.length === 1 && regle.dits[0].includes("(non_mitiges)"),
+        `(169b) Explore rend par la table paginée le compte de la règle « Attaquant actif NON banni » et le clic fabrique encore « ${regle.requete} » (${JSON.stringify(regle.dits)}) : \`renderTablePaged\` ne transmet pas la requête du parcours à la table`);
+      const agregat = await explorer169("search source=web | stats count", { columns: ["count"], rows: [[5]] });
+      exiger(!agregat.pagine && agregat.requete === "" && agregat.dits.length === 1 && agregat.dits[0].includes("(count)"),
+        `(169b) une agrégation GXQL rendue par \`renderViz\` laisse forer sa sortie \`count\` (paginée : ${agregat.pagine}, « ${agregat.requete} », ${JSON.stringify(agregat.dits)})`);
+      const groupe = await explorer169("search source=web | stats count by host", { columns: ["host", "count"], rows: [["srv1", 5]] });
+      exiger(!groupe.pagine && groupe.requete === 'search host="srv1"' && groupe.dits.length === 0,
+        `(169b) la colonne de groupement d'une agrégation GXQL rendue par \`renderViz\` ne part plus (« ${groupe.requete} », ${JSON.stringify(groupe.dits)})`);
+    } finally {
+      globalThis.fetch = sauve169.fetch;
+      S169.AUTH = sauve169.auth; S169.evState = sauve169.evState; S169.lastResult = sauve169.dernier; S169.qHist = sauve169.hist; S169.qHistIdx = sauve169.histIdx; S169.exploreInflight = sauve169.vol;
+      selViz169.value = sauve169.viz; champ169().value = sauve169.champ; location.hash = sauve169.hash; qresult169.replaceChildren();
+    }
+  }
+
+  document.querySelectorAll(".toast").forEach((t) => t.remove());
+  if (echecs.length !== echecsAvant169) console.log(`(169) EN ÉCHEC — ${echecs.length - echecsAvant169} écart(s), dits ci-dessus`);
+  else console.log(`(169) OK — \`P11.20-q\` (prolongation) : ${CAS169.length} cas tiennent les règles du lecteur, chaque élément dans le sens qui rougit sans lui (R1 : huit fonctions, le seul jeton lu par le compilateur — premier de stats, dernier sans = de timechart, un jeton ignoré ne refusant pas un groupement —, eventstats, timechart après span=, stats nu, coupure à by, jeton ancré, noms à l'identique ; R2 : top/rare ; rename ; aiguillage sans search ; découpe aux crochets et non aux guillemets ; SQL : tout alias d'agrégat où qu'il soit, exception MIN/MAX, littéraux) ; et le VRAI chemin d'Explore, joué par runQuery : la règle v52 part par evLoad → renderTablePaged et son compte refuse en se nommant, une agrégation GXQL part par renderViz et refuse sa sortie, sa colonne de groupement part. CE QU'IL NE TIENT PAS : les restes écrits sous « CE QUE CE LECTEUR NE SAIT PAS » (colonne dérivée, macro, sous-recherche, SQL contenant ||) — forage d'avant, jamais un vrai champ refusé.`);
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

@@ -43,11 +43,127 @@ function resetDrill() {
 // --- drilldown : depuis une viz, retrouver les événements correspondants (avec tous les détails) ---
 const DIMENSIONLESS = new Set(['ts', 'bucket']); // 1re colonne temporelle -> pas un axe de filtrage
 
-function drilldown(field, value) {
+// `P11.20-q` (prolongation) — UNE COLONNE QUI SORT D'UN CALCUL DE LA REQUÊTE N'EST PAS UN CHAMP D'ÉVÉNEMENT.
+// MESURÉ sur l'alerte « Attaquant actif NON banni » : la règle v52 est du SQL brut (`is_soql=0`,
+// `ATTACKER_UNMITIGATED_RULE_SQL`, daemon/src/seeds.rs) qui rend `SELECT COUNT(*) AS non_mitiges …`. Le pivot
+// de l'alerte pose cette requête dans le champ ; une saisie non-GXQL n'est PAS une agrégation pour `runQuery`
+// (`hasAgg` exige du GXQL), elle part donc par `evLoad` → `renderTablePaged` → `tableEl(…, S.evState.q)`, et le
+// clic sur « 3 » fabriquait `search non_mitiges=3` — zéro ligne, lue « aucun événement sur la fenêtre » alors
+// que la valeur n'existe dans AUCUN événement : c'est un COMPTE.
+// D'OÙ LE SITE LE SAIT : de la REQUÊTE qu'il a rendue, et du NOM de la colonne forée — jamais de sa POSITION. Les
+// quatre figures qui forent (camembert, carte de chaleur, table, barres) forent leur première colonne, mais un
+// réglage d'axes (`noeudsDeVizReglee` → `projeter`) met N'IMPORTE QUELLE colonne en tête sous la même requête :
+// une règle « la première colonne du SELECT » refuserait alors un vrai champ. On lit donc l'ENSEMBLE des colonnes
+// que la requête produit par agrégat, et le nom foré y est cherché :
+//   · GXQL (même aiguillage que l'envoi, `runQuery` : `search`/`metric` en tête ou un tube), découpé comme le
+//     compilateur le découpe (`soql_split_pipes` : `|` hors CROCHETS, rien d'autre — un guillemet n'y compte pas,
+//     même non fermé) ; noms d'étape, `by` et fonctions comparés à la casse près, comme le compilateur.
+//     R1 `stats`/`eventstats`/`timechart` — le compilateur (`soql_agg`) nomme la sortie par le NOM DE SA FONCTION
+//        (`stats dc(vhost) by src_ip` rend `[src_ip, dc]`, `as X` est ignoré) ; on prend le nom du SEUL jeton que
+//        le compilateur lit : le premier pour `stats`/`eventstats` (`toks.get(1)`, `count` s'il manque), le dernier
+//        sans `=` avant `by` pour `timechart` (`count` s'il n'y en a aucun) ; un jeton d'agrégat est la fonction
+//        nue ou l'ouvre d'une parenthèse (`summary` n'est pas `sum`). Les colonnes de groupement ne sont jamais
+//        ajoutées : elles restent forables, même nommées comme une fonction ignorée par le compilateur.
+//     R2 `top`/`rare` — la sortie s'appelle `count`.
+//     `rename a as b[, c as d]` (`compile_rename`, ADDITIF, `as` sans casse) propage la qualité d'agrégat à `b`.
+//   · SQL brut — tout alias d'un appel d'agrégat (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`/`TOTAL`/`GROUP_CONCAT`), où
+//     qu'il soit, y compris dans une sous-requête (un alias interne relu tel quel au-dessus reste un calcul).
+//     UNE EXCEPTION, pour ne jamais refuser un vrai champ : `MIN(x) AS x` / `MAX(x) AS x` rend une valeur de `x`
+//     lui-même, qu'une recherche sur `x` retrouve — forable. Un littéral de chaîne est une valeur, pas du code.
+//   · Toute requête, et même SANS requête (l'aperçu d'un instantané, que le démon sert sans la sienne) — un nom de
+//     colonne qui EST un appel d'agrégat (`COUNT(*)` non aliasé) : un champ GXQL est un identifiant, aucun vrai
+//     champ n'a cette forme.
+// CE QUE CE LECTEUR NE SAIT PAS, écrit plutôt que tu — sur chacun le forage d'avant, jamais un vrai champ refusé :
+// une colonne DÉRIVÉE d'un agrégat sans en être l'alias (`eval x = count*2`, un alias SQL non agrégé, une colonne
+// extérieure relue sous un autre nom) ; un agrégat caché dans une MACRO (détendue par le compilateur avant la
+// découpe, pas par la console) ou dans une sous-recherche (`append [… | stats count]`, `join`) ; un SQL qui
+// contient `||`, aiguillé en GXQL comme à l'envoi ; un nom de colonne GXQL relu dans une AUTRE CASSE que la sortie
+// (`stats count | table COUNT`, `rename COUNT as n`) : hors de portée du sac JSON, SQLite le résout sans la casse,
+// alors que sous `eventstats` (sac en portée) le même nom est un vrai champ JSON — la console compare à l'identique
+// et laisse donc le forage d'avant, plutôt que de refuser un vrai champ `Count`.
+const APPEL_D_AGREGAT_SQL = /\b(count|sum|avg|min|max|total|group_concat)\s*\(/gi;
+const estUnAppelDAgregat = (nom) => /^\s*(count|sum|avg|min|max|total|group_concat|dc|values|list)\s*\(.*\)\s*$/i.test(String(nom));
+const requeteGxql = (q) => /^\s*(search|metric)\b/i.test(q) || q.includes('|');   // le même aiguillage que l'envoi (`runQuery`)
+const identifiantNu = (s) => String(s).trim().replace(/^[A-Za-z_][\w]*\./, '').replace(/^["`\[]|["`\]]$/g, '').toLowerCase();
+// la découpe de guatx-core `soql_split_pipes` (helpers.rs) : profondeur de crochets seule
+function etapesDuTube(q) {
+  const out = []; let cur = '', prof = 0;
+  for (const c of q) {
+    if (c === '[') prof++; else if (c === ']') prof--;
+    if (c === '|' && prof === 0) { out.push(cur); cur = ''; } else cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+const JETON_D_AGREGAT_GXQL = /^(count|sum|avg|min|max|dc|values|list)(?:\(|$)/;   // les fonctions de `soql_agg`
+function colonnesDAgregatGxql(q) {
+  const agr = new Set();
+  for (const etape of etapesDuTube(q).slice(1)) {
+    const toks = etape.trim().split(/\s+/);
+    if (toks[0] === 'top' || toks[0] === 'rare') { agr.add('count'); continue; }               // R2
+    if (toks[0] === 'rename') {                                                                 // compile_rename
+      for (const seg of toks.slice(1).join(' ').split(',')) {
+        const p = seg.trim().split(/\s+/);
+        if (p.length === 3 && p[1].toLowerCase() === 'as' && agr.has(p[0])) agr.add(p[2]);
+      }
+      continue;
+    }
+    if (toks[0] !== 'stats' && toks[0] !== 'eventstats' && toks[0] !== 'timechart') continue;  // R1
+    // le jeton que le compilateur lit, et lui seul : `stats`/`eventstats` le PREMIER (`toks.get(1)`, défaut `count`),
+    // `timechart` le DERNIER sans `=` avant `by` (défaut `count`) ; un jeton qui n'est pas une fonction ne compile pas
+    const by = toks.indexOf('by');
+    let jeton = toks.length > 1 ? toks[1] : 'count';
+    if (toks[0] === 'timechart') { jeton = 'count'; for (const t of toks.slice(1, by < 0 ? toks.length : by)) if (!t.includes('=')) jeton = t; }
+    const sortie = JETON_D_AGREGAT_GXQL.exec(jeton);
+    if (sortie) agr.add(sortie[1]);
+  }
+  return agr;
+}
+function colonnesDAgregatSql(texte) {
+  const agr = new Set();
+  // un littéral de chaîne est une VALEUR, pas du code : `WHERE message = 'sum(x) host'` ne nomme aucun alias
+  const q = String(texte).replace(/'(?:[^']|'')*'/g, "''");
+  APPEL_D_AGREGAT_SQL.lastIndex = 0;
+  let m;
+  while ((m = APPEL_D_AGREGAT_SQL.exec(q))) {
+    const fn = m[1].toLowerCase();
+    let i = m.index + m[0].length, prof = 1;
+    const debutArg = i;
+    while (i < q.length && prof > 0) { if (q[i] === '(') prof++; else if (q[i] === ')') prof--; i++; }
+    const arg = q.slice(debutArg, i - 1);
+    // une fenêtre ou un filtre d'agrégat se saute : l'alias vient après
+    let reste = q.slice(i);
+    for (;;) {
+      const f = /^\s*(over|filter)\s*\(/i.exec(reste);
+      if (!f) break;
+      let j = f[0].length, p = 1;
+      while (j < reste.length && p > 0) { if (reste[j] === '(') p++; else if (reste[j] === ')') p--; j++; }
+      reste = reste.slice(j);
+    }
+    const a = /^\s*(?:as\s+)?("[^"]+"|`[^`]+`|\[[^\]]+\]|[A-Za-z_]\w*)/i.exec(reste);
+    if (!a) continue;
+    const alias = identifiantNu(a[1]);
+    if (!/^\s*as\s/i.test(reste) && /^(from|where|group|order|having|limit|union|and|or|end|then|else|when|over|filter|as|is|not|in|like|between|asc|desc|on|join|inner|left|cross|except|intersect)$/.test(alias)) continue;
+    if ((fn === 'min' || fn === 'max') && identifiantNu(arg) === alias) continue;
+    agr.add(alias);
+  }
+  return agr;
+}
+function colonneDAgregat(champ, requete) {
+  if (estUnAppelDAgregat(champ)) return true;
+  const q = requete == null ? '' : String(requete).trim();
+  if (!q) return false;
+  if (requeteGxql(q)) return colonnesDAgregatGxql(q).has(String(champ));
+  return colonnesDAgregatSql(q).has(String(champ).toLowerCase());
+}
+
+function drilldown(field, value, query) {
   // `P11.20-q` — TROIS IMPASSES DISTINCTES SORTAIENT PAR LE MÊME `return` NU. Elles ne se corrigent pas
   // de la même façon et elles ne se lisent pas pareil : ce qui est refusé est nommé, une par une.
+  // La QUATRIÈME (prolongation) : une colonne d'agrégat, lue sur la requête rendue (`colonneDAgregat`).
   if (!field) return refuserLeForage('champ_absent');
   if (DIMENSIONLESS.has(field)) return refuserLeForage('colonne_sans_dimension', field);
+  if (colonneDAgregat(field, query)) return refuserLeForage('colonne_d_agregat', field);
   if (value == null || value === '') return refuserLeForage('valeur_absente', field);
   const lit = /^-?\d+(\.\d+)?$/.test(String(value)) ? String(value) : `"${String(value).replace(/"/g, '')}"`;
   const sqlBox = $('#sql');
@@ -151,6 +267,7 @@ const FORAGE_MOTS = {
   valeur_absente: { fr: "Rien à forer ici : cette part ne porte AUCUNE valeur dans la colonne servie, et une absence ne se cherche pas.", en: 'Nothing to drill here: this slice carries NO value in the served column, and an absence cannot be searched for.' },
   champ_absent: { fr: "Rien à forer ici : la réponse servie ne nomme aucune colonne de tête, il n'y a donc aucun champ sur lequel filtrer.", en: 'Nothing to drill here: the served answer names no leading column, so there is no field to filter on.' },
   colonne_sans_dimension: { fr: "Rien à forer sur cette colonne : c'est une colonne d'instants, un axe de temps et non un axe de filtrage.", en: 'Nothing to drill on this column: it is a column of instants, a time axis and not a filtering axis.' },
+  colonne_d_agregat: { fr: "Rien à forer sur cette colonne : sa valeur est le résultat d'un calcul de la requête (un compte, une somme, une moyenne…), pas un champ d'événement — aucune recherche ne peut la filtrer, elle rendrait un vide qui ne prouverait rien.", en: 'Nothing to drill on this column: its value is the result of a computation by the query (a count, a sum, an average…), not an event field — no search can filter on it, it would return an emptiness that proves nothing.' },
   marqueurs_nus: { fr: "Le forage ne part pas : ce clic ne sert pas de quoi remplacer les marqueurs que le gabarit du panneau nomme, et la console refuse de les envoyer tels quels.", en: 'The drill does not depart: this click does not serve what would replace the markers the panel template names, and the console refuses to send them as they are.' },
 };
 const motDuForage = (cause) => (LANG === 'en' ? FORAGE_MOTS[cause].en : FORAGE_MOTS[cause].fr);
@@ -2070,7 +2187,7 @@ function pieEl(cols, rows, query, drill, donut) {
     const tipTxt = `${d.label} : ${d.v} (${(frac * 100).toFixed(1)}%)`;
     seg.addEventListener('mousemove', e => tipShow(tipTxt, e)); seg.addEventListener('mouseleave', tipHide);
     if (drill) { seg.style.cursor = 'pointer'; seg.onclick = () => customDrill(drill, { value: d.label }); }
-    else if (!DIMENSIONLESS.has(cols[0])) { seg.style.cursor = 'pointer'; seg.onclick = () => drilldown(cols[0], d.label); }
+    else if (!DIMENSIONLESS.has(cols[0])) { seg.style.cursor = 'pointer'; seg.onclick = () => drilldown(cols[0], d.label, query); }
     svg.appendChild(seg); a0 = a1;
   });
   const legend = document.createElement('div'); legend.className = 'pielegend';
@@ -2194,7 +2311,7 @@ function heatmapEl(cols, rows, query, drill) {
       td.addEventListener('mousemove', e => tipShow(tipTxt, e)); td.addEventListener('mouseleave', tipHide);
       if (lu !== undefined) {   // une valeur LUE — un vrai zéro compris — est portée par une ligne servie, donc forable
         if (drill) { td.style.cursor = 'pointer'; td.onclick = () => customDrill(drill, { value: rk }); }
-        else if (!DIMENSIONLESS.has(cols[0])) { td.style.cursor = 'pointer'; td.onclick = () => drilldown(cols[0], rk); }
+        else if (!DIMENSIONLESS.has(cols[0])) { td.style.cursor = 'pointer'; td.onclick = () => drilldown(cols[0], rk, query); }
       }
       tr.appendChild(td);
     });
@@ -2421,7 +2538,7 @@ function tableEl(cols, rows, query, drill, opts) {
         // `P11.24-i` : la fenêtre est LUE sur la colonne servie ; là où elle ne porte aucun écart, elle
         // n'est pas armée et le forage de VALEUR part quand même — le retrait est dit sous la table.
         if (drill) { const c = { value: row[0] }; if (DIMENSIONLESS.has(cols[0])) { c.from = nombreLu(row[0]); c.largeur = largeurDeSeauLue(instantsLus, c.from); } return customDrill(drill, c); }
-        if (!DIMENSIONLESS.has(cols[0])) return drilldown(cols[0], row[0]);
+        if (!DIMENSIONLESS.has(cols[0])) return drilldown(cols[0], row[0], query);
         const nx = tr.nextSibling;
         if (nx && nx.classList && nx.classList.contains('rowdetail')) { nx.remove(); return; }
         const dtr = document.createElement('tr'); dtr.className = 'rowdetail';
@@ -2529,7 +2646,7 @@ function barEl(cols, rows, query, drill) {
     row.addEventListener('mousemove', e => tipShow(tipTxt, e));
     row.addEventListener('mouseleave', tipHide);
     if (drill) { row.style.cursor = 'pointer'; row.title = 'Cliquer pour exécuter le drill du panneau'; row.onclick = () => customDrill(drill, { value: r[0] }); }
-    else if (!DIMENSIONLESS.has(cols[0])) { row.style.cursor = 'pointer'; row.title = 'Cliquer pour voir les événements'; row.onclick = () => drilldown(cols[0], r[0]); }
+    else if (!DIMENSIONLESS.has(cols[0])) { row.style.cursor = 'pointer'; row.title = 'Cliquer pour voir les événements'; row.onclick = () => drilldown(cols[0], r[0], query); }
     row.append(lab, track, val); wrap.appendChild(row);
   });
   const bouts = boutsDeNonLues(cols[vi], rows, vi);

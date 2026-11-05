@@ -305,6 +305,17 @@ async function openEditor(id) {
     loadRunbooks();
   };
   box.appendChild(form);
+  amenerLEditeurALEcran(box, nameI);
+}
+
+// `P11.25-e` — L'ÉDITEUR OUVERT EST AMENÉ SOUS LES YEUX. `#rb-editor` vit AU-DESSUS de la liste (index.html) :
+// un « Éditer » cliqué plus bas remplissait et démasquait la boîte hors de l'écran, sans défilement ni focus —
+// le geste ne faisait rien de VISIBLE. Appelé en DERNIER, après les trois refus (catalogue non lu, étapes non
+// lues, chargement échoué), qui gardent leur avis et ne défilent jamais vers une boîte vide. Le focus va au
+// premier champ (le nom) sans second défilement (`preventScroll`), le défilement doux venant de la boîte.
+function amenerLEditeurALEcran(box, premierChamp) {
+  try { box.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) { /* navigateur sans options */ }
+  try { premierChamp.focus({ preventScroll: true }); } catch (e) { /* champ détaché */ }
 }
 
 // Une ligne d'éditeur d'étape : phase, titre, guidance, genre, et champ conditionnel (GXQL si search /

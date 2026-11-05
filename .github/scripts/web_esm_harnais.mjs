@@ -32100,6 +32100,102 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   else console.log(`(169) OK — \`P11.20-q\` (prolongation) : ${CAS169.length} cas tiennent les règles du lecteur, chaque élément dans le sens qui rougit sans lui (R1 : huit fonctions, le seul jeton lu par le compilateur — premier de stats, dernier sans = de timechart, un jeton ignoré ne refusant pas un groupement —, eventstats, timechart après span=, stats nu, coupure à by, jeton ancré, noms à l'identique ; R2 : top/rare ; rename ; aiguillage sans search ; découpe aux crochets et non aux guillemets ; SQL : tout alias d'agrégat où qu'il soit, exception MIN/MAX, littéraux) ; et le VRAI chemin d'Explore, joué par runQuery : la règle v52 part par evLoad → renderTablePaged et son compte refuse en se nommant, une agrégation GXQL part par renderViz et refuse sa sortie, sa colonne de groupement part. CE QU'IL NE TIENT PAS : les restes écrits sous « CE QUE CE LECTEUR NE SAIT PAS » (colonne dérivée, macro, sous-recherche, SQL contenant ||) — forage d'avant, jamais un vrai champ refusé.`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// (173) (174) (175) `P11.25-e` (console) — L'ÉDITEUR D'UN RUNBOOK OUVERT EST AMENÉ À L'ÉCRAN, LE FOCUS VA AU NOM ;
+// UN REFUS NE DÉFILE PAS.
+//
+// CE QUI A ÉTÉ VU (2026-11-05, ce harnais, sur `web/runbooks.js` d'avant) : le bouton « Éditer » d'un runbook
+// custom EST branché — un clic réel sur la ligne appelle `openEditor`, la boîte `#rb-editor` perd `hidden` et
+// porte le formulaire rempli (nom servi compris) — mais AUCUN `scrollIntoView` ni `focus` n'est appelé. Or
+// `#rb-editor` est posé AU-DESSUS de `#rb-list` (index.html) : sur une liste longue, l'éditeur s'ouvre hors de
+// l'écran. La cause lue dans la ligne de roadmap est donc CONFIRMÉE ; ni handler débranché, ni parent masqué
+// (le panneau est démasqué par la charge), ni erreur avalée. Le clonage ne passe PAS par l'éditeur (modale puis
+// rechargement) : il n'est pas concerné.
+// JUGÉ : (173) clic réel « Éditer » → un défilement SUR la boîte, puis le focus sur le champ « Nom du runbook »,
+// boîte remplie au moment du défilement ; (174) clic réel « + Runbook » → idem ; (175) les trois refus (catalogue
+// non lu, étapes non lues, chargement échoué) disent leur avis et n'appellent NI défilement NI focus.
+// CE QU'IL NE TIENT PAS : la position PEINTE (le shim ne met rien en page), ni le comportement doux du défilement.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant173 = echecs.length;
+  const url173 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const modRb173 = await import(url173("runbooks.js"));
+  const { S: S173 } = await import(url173("state.js"));
+  const instrument173 = (vrai, quoi) => exiger(vrai, `(173-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const tic173 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser173 = async (n = 30) => { for (let i = 0; i < n; i++) await tic173(); };
+  const cueillir173 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir173(c, pred, acc)); return acc; };
+  const avis173 = () => document.querySelectorAll(".toast").map((t) => String(t.textContent));
+  const fetchOrigine173 = globalThis.fetch, minuterieOrigine173 = globalThis.setTimeout;
+  const defilerOrigine173 = Element.prototype.scrollIntoView, focusOrigine173 = Element.prototype.focus;
+  const etatOrigine173 = { admin: S173.isAdmin, auth: S173.AUTH };
+  const gestes173 = [];
+  let servi173 = {};
+  const RB173 = { id: 9173, key: "rb-perso-173", name: "Procédure perso 173", match_kind: "tactic", match_key: "credential-access", description: "", managed: 0, active: true, created: 1, steps: 1 };
+  const DETAIL173 = { ...RB173, step_list: [{ id: 1, ordinal: 1, phase: "triage", title: "Isoler", guidance: "", step_kind: "manual", search_soql: "", action_kind: "" }] };
+  const boite173 = document.querySelector("#rb-editor"), liste173 = document.querySelector("#rb-list"), neuf173 = document.querySelector("#rb-new");
+  instrument173(!!boite173 && !!liste173 && !!neuf173, "#rb-editor, #rb-list ou #rb-new absent du balisage chargé");
+  const champNom173 = () => cueillir173(boite173, (e) => e.tagName === "INPUT" && e.getAttribute && e.getAttribute("aria-label") === "Nom du runbook")[0] || null;
+  const juger173 = (n, quoi, nomAttendu) => {
+    const defils = gestes173.filter((g) => g.geste === "defiler"), focus = gestes173.filter((g) => g.geste === "focus");
+    const nom = champNom173();
+    exiger(!boite173.classList.contains("hidden") && !!nom && nom.value === nomAttendu, `(${n}) ${quoi} : l'éditeur n'est pas ouvert et rempli (instrument) — nom « ${nom && nom.value} »`);
+    exiger(defils.length === 1 && defils[0].el === boite173 && defils[0].pleine,
+      `(${n}) \`P11.25-e\` — ${quoi} : l'éditeur, posé AU-DESSUS de la liste, n'est pas amené à l'écran (${defils.length} défilement(s), cible ${defils[0] ? defils[0].el.id || defils[0].el.tagName : "aucune"}, boîte remplie au défilement : ${defils[0] ? defils[0].pleine : "-"})`);
+    exiger(focus.length >= 1 && focus[focus.length - 1].el === nom,
+      `(${n}) \`P11.25-e\` — ${quoi} : le focus ne va pas au premier champ (le nom) — ${focus.length} focus, dernier sur ${focus.length ? (focus[focus.length - 1].el.getAttribute && focus[focus.length - 1].el.getAttribute("aria-label")) || focus[focus.length - 1].el.tagName : "rien"}`);
+    // Le focus ne défile pas une seconde fois : le défilement vient de la boîte seule (`preventScroll`).
+    exiger(focus.length >= 1 && !!focus[focus.length - 1].o && focus[focus.length - 1].o.preventScroll === true,
+      `(${n}) \`P11.25-e\` — ${quoi} : le focus du nom défile une seconde fois (options ${JSON.stringify(focus.length ? focus[focus.length - 1].o : null)}) au lieu de laisser la boîte seule amener l'éditeur`);
+  };
+  try {
+    S173.isAdmin = true; S173.AUTH = { user: "hugo", role: "admin" };
+    globalThis.setTimeout = (fn, ms, ...a) => (ms >= 1000 ? 0 : minuterieOrigine173(fn, ms, ...a));
+    Element.prototype.scrollIntoView = function (o) { gestes173.push({ geste: "defiler", el: this, o, pleine: this.children.length > 0 }); };
+    Element.prototype.focus = function (o) { gestes173.push({ geste: "focus", el: this, o }); };
+    globalThis.fetch = async (u) => {
+      const url = String(u), obj = Object.prototype.hasOwnProperty.call(servi173, url) ? servi173[url] : {};
+      if (obj === "jeter") throw new Error("réseau coupé (témoin 175)");
+      return { ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => JSON.stringify(obj), json: async () => obj };
+    };
+    // ── (173) ÉDITION, PAR LE CLIC RÉEL SUR LA LIGNE ────────────────────────────────────────────────
+    servi173 = { "/api/runbooks": { runbooks: [RB173] }, "/api/runbooks/9173": DETAIL173 };
+    await modRb173.loadRunbooks(); await laisser173();
+    const editer173 = cueillir173(liste173, (e) => e.tagName === "BUTTON" && String(e.textContent).trim() === "Éditer" && !e.disabled);
+    instrument173(editer173.length === 1, `${editer173.length} bouton(s) « Éditer » actif(s) sur la ligne du runbook custom servi`);
+    gestes173.length = 0;
+    if (editer173[0]) { editer173[0].click(); await laisser173(); juger173(173, "« Éditer » d'un runbook custom", RB173.name); }
+    // ── (174) CRÉATION, PAR LE CLIC RÉEL SUR « + Runbook » ──────────────────────────────────────────
+    boite173.classList.add("hidden"); boite173.replaceChildren(); gestes173.length = 0;
+    neuf173.click(); await laisser173();
+    juger173(174, "« + Runbook »", "");
+    // ── (175) LES TROIS REFUS NE DÉFILENT PAS ───────────────────────────────────────────────────────
+    const refus173 = [
+      ["catalogue non lu", { "/api/runbooks": { runbooks: [], error: "catalogue illisible (témoin 175)" } }, null],
+      ["étapes non lues", { "/api/runbooks": { runbooks: [RB173] }, "/api/runbooks/9173": { ...RB173, step_list: [], error: "étapes illisibles (témoin 175)" } }, 9173],
+      ["chargement échoué", { "/api/runbooks": { runbooks: [RB173] }, "/api/runbooks/9173": "jeter" }, 9173],
+    ];
+    for (const [quoi, corps, id] of refus173) {
+      servi173 = corps;
+      await modRb173.loadRunbooks(); await laisser173();
+      boite173.classList.add("hidden"); boite173.replaceChildren(); gestes173.length = 0;
+      const avant = avis173().length;
+      await modRb173.openEditor(id); await laisser173();
+      const dits = avis173().slice(avant);
+      instrument173(dits.length === 1, `(175) refus « ${quoi} » : ${dits.length} avis au lieu d'un — le refus n'est pas celui qu'on croit mesurer`);
+      exiger(gestes173.length === 0 && boite173.classList.contains("hidden"),
+        `(175) \`P11.25-e\` — refus « ${quoi} » : ${gestes173.map((g) => g.geste + "→" + (g.el.id || g.el.tagName)).join(", ") || "aucun geste"} ; boîte ${boite173.classList.contains("hidden") ? "masquée" : "DÉMASQUÉE"} — un refus ne doit ni défiler ni prendre le focus vers une boîte vide`);
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine173; globalThis.setTimeout = minuterieOrigine173;
+    Element.prototype.scrollIntoView = defilerOrigine173; Element.prototype.focus = focusOrigine173;
+    S173.isAdmin = etatOrigine173.admin; S173.AUTH = etatOrigine173.auth;
+    if (boite173) { boite173.classList.add("hidden"); boite173.replaceChildren(); }
+  }
+  if (echecs.length !== echecsAvant173) console.log(`(173-175) EN ÉCHEC — ${echecs.length - echecsAvant173} écart(s), dits ci-dessus`);
+  else console.log("(173-175) OK — `P11.25-e` : « Éditer » (clic réel) et « + Runbook » amènent l'éditeur à l'écran (un défilement sur la boîte remplie) et posent le focus sur le nom sans second défilement (`preventScroll`) ; les trois refus (catalogue non lu, étapes non lues, chargement échoué) disent leur avis sans défiler ni prendre le focus. Non tenu : la position peinte.");
+}
+
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

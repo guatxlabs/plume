@@ -94,7 +94,15 @@ d'outils (les vrais, liés, plus des FAUX exécutables — `date` à heure fixe,
      une ligne versée à un scénario interdit `tout_en_liste_blanche` ; sous le seuil, `lit` et la part dite ;
      le seuil est ATTEINT à 90 % exactement (89 % : `lit`) ; la forme de comptage disjointe (`reads` =
      `parsed` + `unparsed` + `whitelisted`) est départagée par `reads` : 100 analysées hors liste blanche non
-     versées ne sont pas un refus (50 %), 0 analysée hors liste blanche en est un.
+     versées ne sont pas un refus (50 %), 0 analysée hors liste blanche en est un. Prolongation (mesuré en
+     production le 2026-11-04) : la cause suit la RÉPARTITION par liste blanche — mandataire seulement si tout part
+     dans `crowdsecurity/whitelists`, « vraies adresses » quand une liste de session a écarté des lignes (sur
+     `tout_en_liste_blanche` comme sur `surtout_liste_blanche`), « répartition inconnue » sans section ; dix nœuds
+     nommés au plus (« +N autre(s) »), noms assainis, repli `metrics -o json` lu. DURÉES EXACTES (faux `date`) : 1 h
+     et 23 h 59 min sous le seuil de 24 h -> `en_liste_blanche_sous_le_seuil`, sévérité 1, aucun aveu, aucun état
+     avancé ; 24 h 00 min pile -> refus et aveu ASCII ; 25 h 47 min 12 s -> « 25 h 47 min » (minutes départagées) ; seuil réglé à 2 (2 h 00 refus, 1 h 59 sous) ; réglage 0 ->
+     refus immédiat ; réglages illisibles (`-3`, `024`, `1h`, `100000`) -> repli sur 24 avoué ; horodatage absent,
+     illisible ou à zéro de tête -> posé à HEURE, dit.
   E. minio : API qui échoue -> `unreachable` ; aucun pod en marche -> `subsystem-absent` ; en hôte natif
      (PLUME_MINIO_ALIAS), `mc` absent -> `missing-dependency` (pas de bascule muette vers kubectl), les trois
      lectures `mc` en échec -> `unreachable`, une seule -> lecture partielle avouée et le reste publié.
@@ -1762,11 +1770,20 @@ case "$*" in
   "alerts list --limit 0 -o json") printf '[]' ;;
   "hub list -o json") printf '{"scenarios":[{"name":"a"},{"name":"b"}]}' ;;
   "metrics show acquisition -o json") cat "$FAUX/metrics" ;;
+  "metrics show whitelists -o json") [ -f "$FAUX/wl" ] && cat "$FAUX/wl" || exit 1 ;;
   "metrics -o json") cat "$FAUX/metrics" ;;
   *) exit 1 ;;
 esac
 """
 SRC = "file:/var/log/containers/web-a.log"
+PRIVEE = "crowdsecurity/whitelists"
+SSO = "exemple/session-sso"
+IMMEDIAT = {"PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES": "0"}
+
+
+def listes(d):
+    """Forme de `cscli metrics show whitelists -o json` (sources CrowdSec v1.6.8/v1.7.0) : nœud -> raison -> compteurs."""
+    return json.dumps({"whitelists": {nom: {"raison": {"hits": n + 1, "whitelisted": n}} for nom, n in d.items()}})
 
 
 def acq(reads, parsed, unparsed, pour, wl):
@@ -1778,8 +1795,13 @@ SAIN = acq(1000, 900, 100, 7, 88)
 
 
 def banc_crowdsec(awk):
-    def passage(bac, metrics, env=None):
+    def passage(bac, metrics, env=None, lb=None):
         ecrire(os.path.join(bac.faux, "metrics"), metrics)
+        p_wl = os.path.join(bac.faux, "wl")
+        if lb is not None:
+            ecrire(p_wl, lb)
+        elif os.path.exists(p_wl):
+            os.remove(p_wl)
         res = bac.jouer("crowdsec.sh", dict({"PLUME_CSCLI": os.path.join(bac.bin, "cscli")}, **(env or {})))
         return res, evenements("crowdsec", res, "crowdsec.sh")
 
@@ -1830,18 +1852,18 @@ def banc_crowdsec(awk):
     # C1 — tout en liste blanche dès le premier passage (aucune ligne versée).
     bac = nouveau()
     try:
-        res, evs = passage(bac, acq(100, 100, 0, 0, 100))
+        res, evs = passage(bac, acq(100, 100, 0, 0, 100), IMMEDIAT, listes({PRIVEE: 100}))
         refus_lb("crowdsec/tout/premier", evs, None, bac)
     finally:
         bac.nettoyer()
     # C2 — sur l'intervalle, après un passage sain.
     bac = nouveau()
     try:
-        passage(bac, SAIN)
+        passage(bac, SAIN, IMMEDIAT, listes({PRIVEE: 88}))
         avant = etat(bac)
         if avant is None:
             refus("aucun état posé après un passage sain : la comparaison ne prouverait rien")
-        res, evs = passage(bac, acq(1100, 1000, 100, 7, 188))
+        res, evs = passage(bac, acq(1100, 1000, 100, 7, 188), IMMEDIAT, listes({PRIVEE: 188}))
         refus_lb("crowdsec/tout/intervalle", evs, avant, bac)
     finally:
         bac.nettoyer()
@@ -1849,9 +1871,9 @@ def banc_crowdsec(awk):
     # blanche, 100 en liste blanche -> refus aussi.
     bac = nouveau()
     try:
-        passage(bac, SAIN)
+        passage(bac, SAIN, IMMEDIAT, listes({PRIVEE: 88}))
         avant = etat(bac)
-        res, evs = passage(bac, acq(1100, 900, 100, 7, 188))
+        res, evs = passage(bac, acq(1100, 900, 100, 7, 188), IMMEDIAT, listes({PRIVEE: 188}))
         refus_lb("crowdsec/tout/disjointe", evs, avant, bac)
     finally:
         bac.nettoyer()
@@ -1877,9 +1899,9 @@ def banc_crowdsec(awk):
              ("liste blanche : 50 % des lignes analysées",), True)):
         bac = nouveau()
         try:
-            passage(bac, SAIN, env)
+            passage(bac, SAIN, env, listes({PRIVEE: 88}))
             avant = etat(bac)
-            res, evs = passage(bac, metrics2, env)
+            res, evs = passage(bac, metrics2, env, listes({PRIVEE: json.loads(metrics2)["acquisition"][SRC]["whitelisted"]}))
             sans_refus(q, evs, verdict, sev, *morceaux)
             if avance and etat(bac) == avant:
                 faute(q, "l'état d'acquisition n'a pas avancé alors que le moteur lit")
@@ -1895,6 +1917,180 @@ def banc_crowdsec(awk):
             faute("crowdsec/seuil_illisible", "seuil illisible non avoué (`fallback` / `unreadable-config`)")
     finally:
         bac.nettoyer()
+
+    # C8 — P10.32-k, prolongation (mesuré en production le 2026-11-04). LA CAUSE SUIT LA RÉPARTITION, la durée
+    # remplace le cri par passage. Le faux `date` rend HEURE : les durées sont EXACTES.
+    TS = "crowdsec-scenarios-atteints.ts"
+    MANDATAIRE = "l'adresse cliente que CrowdSec lit est privée"
+    VRAIES = "le moteur lit les vraies adresses"
+
+    def lire(bac, nom):
+        p = os.path.join(bac.racine, "etat", nom)
+        return open(p).read() if os.path.exists(p) else None
+
+    def poser(bac, nom, texte):
+        ecrire(os.path.join(bac.racine, "etat", nom), texte)
+
+    def sous_seuil(q, evs, *morceaux):
+        hb = un_battement(q, evs, "crowdsec")
+        if not hb:
+            return
+        f = hb.get("fields") or {}
+        if f.get("acq_verdict") != "en_liste_blanche_sous_le_seuil":
+            faute(q, f"acq_verdict={f.get('acq_verdict')!r}, attendu 'en_liste_blanche_sous_le_seuil'")
+        if hb.get("severity") != 1:
+            faute(q, f"sévérité {hb.get('severity')} sous le seuil de durée, attendu 1")
+        if acquisition(evs):
+            faute(q, "aveu d'acquisition émis sous le seuil de durée")
+        if "ACQUISITION" in (hb.get("message") or ""):
+            faute(q, f"refus annoncé sous le seuil : {hb.get('message')!r}")
+        contient(q, hb.get("message"), "acquisition en_liste_blanche_sous_le_seuil :", *morceaux)
+
+    def refus_duree(q, evs, *morceaux):
+        hb = un_battement(q, evs, "crowdsec")
+        if not hb:
+            return
+        f = hb.get("fields") or {}
+        if f.get("acq_verdict") != "tout_en_liste_blanche":
+            faute(q, f"acq_verdict={f.get('acq_verdict')!r}, attendu 'tout_en_liste_blanche'")
+        if hb.get("severity", 0) < 3:
+            faute(q, f"sévérité {hb.get('severity')} au seuil de durée, attendu 3")
+        contient(q, hb.get("message"), "ACQUISITION tout_en_liste_blanche :", *morceaux)
+        av = acquisition(evs)
+        if len(av) != 1:
+            faute(q, f"{len(av)} aveu(x) d'acquisition au seuil de durée, attendu 1")
+        else:
+            d = av[0]["fields"].get("detail") or ""
+            contient(q, d, "(forme_inconnue)", *[m for m in morceaux if m.isascii()])
+            if not d.isascii():
+                faute(q, f"détail d'aveu hors ASCII : {d!r}")
+
+    for q, ts_pose, env, juge, morceaux in (
+            ("crowdsec/duree/une_heure", HEURE - 3600, None, "sous", ("1 h 00 min", "seuil 24 h")),
+            ("crowdsec/duree/un_point_sous_le_seuil", HEURE - 86399, None, "sous", ("23 h 59 min", "seuil 24 h")),
+            ("crowdsec/duree/au_seuil", HEURE - 86400, None, "refus", ("24 h 00 min", "seuil 24 h")),
+            # 25 h 47 min 12 s : heures, minutes et secondes TOUTES distinctes — `(d % 3600) / 60` (47) n'y vaut ni
+            # `d % 60` (12) ni `d / 3600` (25), ce que les durées rondes ci-dessus ne départagent pas ; et les
+            # secondes (12) sont SOUS les minutes (47), donc un diviseur faux (`/ 61` : 2832 / 61 = 46) tombe à côté
+            # (avec 59 min 59 s, ou 17 min 42 s, 60 m + s >= 61 m et `/ 61` rendrait les mêmes minutes).
+            ("crowdsec/duree/minutes_distinctes", HEURE - (25 * 3600 + 47 * 60 + 12), None, "refus",
+             ("25 h 47 min", "seuil 24 h")),
+            ("crowdsec/duree/seuil_regle", HEURE - 7200, {"PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES": "2"}, "refus",
+             ("2 h 00 min", "seuil 2 h")),
+            ("crowdsec/duree/seuil_regle_sous", HEURE - 7199, {"PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES": "2"}, "sous",
+             ("1 h 59 min", "seuil 2 h")),
+            ("crowdsec/duree/reglage_zero", HEURE, IMMEDIAT, "refus", ("0 h 00 min", "seuil 0 h"))):
+        bac = nouveau()
+        try:
+            passage(bac, SAIN, env, listes({PRIVEE: 88}))
+            if lire(bac, TS) != str(HEURE):
+                faute(q, f"horodatage non posé avec l'état d'acquisition : {lire(bac, TS)!r}")
+            poser(bac, TS, str(ts_pose))
+            avant = (etat(bac), lire(bac, "crowdsec-whitelists.json"))
+            res, evs = passage(bac, acq(1100, 900, 100, 7, 188), env, listes({PRIVEE: 188}))
+            (sous_seuil if juge == "sous" else refus_duree)(q, evs, *morceaux, MANDATAIRE)
+            if (etat(bac), lire(bac, "crowdsec-whitelists.json"), lire(bac, TS)) != avant + (str(ts_pose),):
+                faute(q, "un état a avancé alors qu'aucune ligne n'atteint les scénarios")
+        finally:
+            bac.nettoyer()
+    # horodatage absent (mise à niveau) ou illisible : posé à CE passage, durée qui part d'ici, dite telle.
+    for q, contenu in (("crowdsec/duree/horodatage_absent", None), ("crowdsec/duree/horodatage_illisible", "demain"),
+                       ("crowdsec/duree/horodatage_zero_en_tete", "0123")):
+        bac = nouveau()
+        try:
+            passage(bac, SAIN, None, listes({PRIVEE: 88}))
+            p = os.path.join(bac.racine, "etat", TS)
+            os.remove(p)
+            if contenu is not None:
+                poser(bac, TS, contenu)
+            res, evs = passage(bac, acq(1100, 900, 100, 7, 188), None, listes({PRIVEE: 188}))
+            sous_seuil(q, evs, "horodatage absent", "seuil 24 h")
+            if lire(bac, TS) != str(HEURE):
+                faute(q, f"horodatage non posé au passage qui le constate : {lire(bac, TS)!r}")
+        finally:
+            bac.nettoyer()
+    # réglage illisible : repli sur 24, avoué `fallback`.
+    for valeur in ("-3", "024", "1h", "100000"):
+        q = f"crowdsec/duree/reglage_illisible/{valeur}"
+        bac = nouveau()
+        try:
+            env = {"PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES": valeur}
+            passage(bac, SAIN, env, listes({PRIVEE: 88}))
+            poser(bac, TS, str(HEURE - 3600))
+            res, evs = passage(bac, acq(1100, 900, 100, 7, 188), env, listes({PRIVEE: 188}))
+            sous_seuil(q, evs, "seuil 24 h")
+            if len([e for e in aveux(evs, "crowdsec", "fallback", "unreadable-config")
+                    if "PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES" in ((e.get("fields") or {}).get("detail") or "")]) != 1:
+                faute(q, "réglage de durée illisible non avoué (`fallback` / `unreadable-config`)")
+        finally:
+            bac.nettoyer()
+    # la cause, dans les deux sens : une liste de session -> « vraies adresses », jamais mandataire ; répartition
+    # illisible -> « répartition inconnue », ni l'une ni l'autre ; et sur `surtout_liste_blanche` aussi. « Rien
+    # d'anonyme n'a atteint l'origine » n'est dit QUE quand aucune ligne n'atteint les scénarios : sur `surtout`,
+    # des lignes hors liste blanche y sont parvenues, la phrase y serait fausse.
+    RIEN_D_ANONYME = "aucun trafic anonyme n'a atteint l'origine"
+    for q, lb2, metrics2, env, verdict, voulu, interdit in (
+            ("crowdsec/cause/vraies_adresses", listes({PRIVEE: 170, SSO: 18}), acq(1100, 900, 100, 7, 188), IMMEDIAT,
+             "tout_en_liste_blanche", (VRAIES, f"{PRIVEE} : 82", f"{SSO} : 18", "sur la fenêtre", RIEN_D_ANONYME),
+             (MANDATAIRE, "mandataire")),
+            ("crowdsec/cause/inconnue", None, acq(1100, 900, 100, 7, 188), IMMEDIAT,
+             "tout_en_liste_blanche", ("répartition inconnue",), (MANDATAIRE, VRAIES, "mandataire")),
+            ("crowdsec/cause/surtout_vraies_adresses", listes({PRIVEE: 165, SSO: 18}), acq(1100, 1000, 100, 8, 183), None,
+             "surtout_liste_blanche", (VRAIES, f"{SSO} : 18"), (MANDATAIRE, "mandataire", RIEN_D_ANONYME)),
+            ("crowdsec/cause/surtout_inconnue", None, acq(1100, 1000, 100, 8, 183), None,
+             "surtout_liste_blanche", ("répartition inconnue",), (MANDATAIRE, VRAIES))):
+        bac = nouveau()
+        try:
+            passage(bac, SAIN, env, listes({PRIVEE: 88}))
+            res, evs = passage(bac, metrics2, env, lb2)
+            hb = un_battement(q, evs, "crowdsec")
+            if not hb:
+                continue
+            msg = hb.get("message") or ""
+            if (hb.get("fields") or {}).get("acq_verdict") != verdict:
+                faute(q, f"acq_verdict={(hb.get('fields') or {}).get('acq_verdict')!r}, attendu {verdict!r}")
+            contient(q, msg, *voulu)
+            for m in interdit:
+                if m in msg:
+                    faute(q, f"{m!r} dit à tort : {msg!r}")
+            if verdict == "tout_en_liste_blanche":
+                av = acquisition(evs)
+                d = av[0]["fields"].get("detail") if len(av) == 1 else ""
+                if any(m in (d or "") for m in ("est privee", "mandataire")):
+                    faute(q, f"cause mandataire dans l'aveu : {d!r}")
+        finally:
+            bac.nettoyer()
+    # la répartition est BORNÉE (dix nœuds nommés, le reste compté), ses noms ramenés à un jeu sûr, et lue par le
+    # repli `cscli metrics -o json` quand `metrics show whitelists` manque.
+    douze = {f"exemple/liste-{i:02d}": 20 - i for i in range(12)}
+    bizarre = 'exemple/sso"é'
+    for q, lb2, metrics2, voulu, interdit in (
+            ("crowdsec/repartition/bornee", listes(dict(douze, **{PRIVEE: 88})), acq(1100, 900, 100, 7, 188),
+             ("exemple/liste-00 : 20", "exemple/liste-09 : 11", "+2 autre(s)"), ("exemple/liste-10", "exemple/liste-11")),
+            ("crowdsec/repartition/nom_assaini", listes({PRIVEE: 170, bizarre: 18}), acq(1100, 900, 100, 7, 188),
+             ("exemple/sso?? : 18", VRAIES), (bizarre, "répartition inconnue")),
+            ("crowdsec/repartition/repli_metrics", None,
+             json.dumps(dict(json.loads(acq(1100, 900, 100, 7, 188)), **json.loads(listes({PRIVEE: 170, SSO: 18})))),
+             (f"{SSO} : 18", VRAIES), ("répartition inconnue",))):
+        bac = nouveau()
+        try:
+            passage(bac, SAIN, IMMEDIAT, listes({PRIVEE: 88}))
+            res, evs = passage(bac, metrics2, IMMEDIAT, lb2)
+            hb = un_battement(q, evs, "crowdsec")
+            if not hb:
+                continue
+            msg = hb.get("message") or ""
+            contient(q, msg, *voulu)
+            for m in interdit:
+                if m in msg:
+                    faute(q, f"{m!r} dit à tort : {msg!r}")
+            av = acquisition(evs)
+            if len(av) != 1:
+                faute(q, f"{len(av)} aveu(x) d'acquisition, attendu 1")
+            elif not (av[0]["fields"].get("detail") or "").isascii():
+                faute(q, f"détail d'aveu hors ASCII : {av[0]['fields'].get('detail')!r}")
+        finally:
+            bac.nettoyer()
 
 
 # --- E. minio, F. dataaccess ----------------------------------------------------------------------

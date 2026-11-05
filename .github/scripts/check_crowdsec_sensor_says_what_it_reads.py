@@ -55,6 +55,32 @@ répertoire temporaire. Les scénarios, chacun en un ou deux passages qui partag
   · rien depuis le démarrage — premier passage dont toutes les sources sont à zéro : `aucune_lecture`,
                        aucun état posé ;
   · cscli ancien     — `metrics show` absent, `metrics -o json` présent : le repli lit les compteurs.
+  · liste blanche, prolongation de `P10.32-k` (mesuré en production le 2026-11-04) — RÉPARTITION par nœud de
+                       liste blanche (`metrics show whitelists -o json`, forme des sources CrowdSec v1.6.8/v1.7.0)
+                       nommée sur la fenêtre, contre un état séparé (`crowdsec-whitelists.json`) posé AVEC l'état
+                       d'acquisition ; une liste de session qui écarte des lignes donne la cause « vraies adresses »,
+                       jamais la cause mandataire, qui n'est dite que si tout part dans `crowdsecurity/whitelists` ;
+                       répartition vide, en échec, `null`, non numérique ou mal formée : « répartition inconnue »,
+                       aucune cause affirmée ; redémarrage (valeur courante) et nœud neuf (depuis zéro) ; un passage
+                       qui avance sans répartition lisible écrit `null`, le suivant repart des totaux et le dit.
+                       DURÉE : sous `PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` (défaut 24),
+                       `en_liste_blanche_sous_le_seuil`, sévérité 1, aucun aveu, durée et seuil dits, AUCUN des trois
+                       états n'avance ; horodatage vieilli de 25 h : refus, aveu, durée dite, clé de dédoublonnage
+                       identique à 25 h et à 30 h ; réglage 0 : refus immédiat ; réglage illisible : repli dit, défaut
+                       appliqué ; horodatage absent ou futur : posé au passage qui le constate, dit tel ; horodatage
+                       qui AVANCE sur tout passage qui lit (lit -> vieilli -> lit -> tout : sous le seuil, 0 h).
+                       Les témoins du CHOIX de la cause : nom EXACT de la liste privée (une liste du hub à adresses
+                       publiques n'est pas elle), nœud à différence nulle GARDÉ dans l'état, morceau mal formé posé
+                       à côté d'un nœud valide (l'avaler laisserait une répartition partielle affirmer la cause
+                       mandataire), dix plus GROS nœuds nommés et noms coupés à 80, état de listes blanches mal formé
+                       rejeté, repli `metrics -o json` quand `show whitelists` n'a pas de section, variante de cause
+                       dans la clé de dédoublonnage, compteur négatif mal formé, nom qui CONTIENT celui de la liste
+                       privée sans l'être. La BASE de la répartition est jugée sur son libellé, dans les deux sens
+                       (« sur la fenêtre » / « depuis le démarrage de l'agent »), au battement et à l'aveu ; « aucun
+                       trafic anonyme n'a atteint l'origine » est exigé sous le seuil comme au refus. ÉTAT NON
+                       INSCRIPTIBLE : l'horodatage ne pouvant se poser, refus sans attendre le seuil, dit, et
+                       `etat/horodatage` avoué ; un faux `mktemp` ciblé fait échouer l'horodatage ou l'état des
+                       listes blanches sur un passage qui lit : chacun avoué sous son nom.
 Dans tous les cas : sortie 0, un battement `category=health` présent (son silence lèverait MUET), et
 ses champs inclus dans l'en-tête `# plume-emits:` du capteur ; sur un refus, le message du battement
 dit `ACQUISITION <verdict>`, et ne le dit pas sur un moteur qui lit. Le faux `cscli` n'exige pas
@@ -110,7 +136,8 @@ case "$*" in
   "alerts list --limit 0 -o json") printf '[]' ;;
   "hub list -o json") printf '{"scenarios":[{"name":"a"},{"name":"b"}]}' ;;
   "metrics show acquisition -o json") [ -f "$d/sans_show" ] && exit 1; [ -f "$d/metrics_ko" ] && exit 1; cat "$d/metrics" ;;
-  "metrics -o json") [ -f "$d/metrics_ko" ] && exit 1; cat "$d/metrics" ;;
+  "metrics show whitelists -o json") [ -f "$d/wl_ko" ] && exit 1; if [ -f "$d/wl" ]; then cat "$d/wl"; else printf '{"whitelists":{}}'; fi ;;
+  "metrics -o json") [ -f "$d/metrics_ko" ] && exit 1; if [ -f "$d/metrics_tout" ]; then cat "$d/metrics_tout"; else cat "$d/metrics"; fi ;;
   "metrics show "*" -o json") printf '{"parsers":{}}' ;;
   metrics*) printf 'Acquisition Metrics:\n+--------+-------+\n| Source | Lines |\n+--------+-------+\n' ;;
   *) exit 1 ;;
@@ -217,23 +244,33 @@ class Bac:
         os.makedirs(os.path.join(d, "cs"))
         return d
 
-    def passage(self, d, metrics=None, ko=False, sans_show=False, etat=None):
+    def passage(self, d, metrics=None, ko=False, sans_show=False, etat=None, wl=None, wl_ko=False, env_sup=None,
+                metrics_tout=None):
         cs = os.path.join(d, "cs")
-        for nom in ("metrics", "metrics_ko", "sans_show"):
+        for nom in ("metrics", "metrics_ko", "sans_show", "wl", "wl_ko", "metrics_tout"):
             p = os.path.join(cs, nom)
             if os.path.exists(p):
                 os.remove(p)
         if metrics is not None:
             with open(os.path.join(cs, "metrics"), "w") as f:
                 f.write(metrics)
+        if wl is not None:
+            with open(os.path.join(cs, "wl"), "w") as f:
+                f.write(wl)
+        if metrics_tout is not None:
+            with open(os.path.join(cs, "metrics_tout"), "w") as f:
+                f.write(metrics_tout)
         if ko:
             open(os.path.join(cs, "metrics_ko"), "w").close()
+        if wl_ko:
+            open(os.path.join(cs, "wl_ko"), "w").close()
         if sans_show:
             open(os.path.join(cs, "sans_show"), "w").close()
         spool = tempfile.mkdtemp(dir=d, prefix="spool-")
         env = {"PATH": self.bin, "PLUME_CSCLI": self.fake, "FAKE_CS_DIR": cs,
                "PLUME_SPOOL": spool, "PLUME_STATE": etat or os.path.join(d, "etat"),
                "PLUME_LIB": LIB, "LC_ALL": "C.UTF-8", "HOME": d}
+        env.update(env_sup or {})
         r = subprocess.run([os.path.join(self.bin, "sh"), self.capteur], env=env,
                            capture_output=True, text=True, timeout=60)
         evs = []
@@ -246,12 +283,16 @@ class Bac:
                 evs.append({"_illisible": os.path.basename(fp), "_texte": txt[:300]})
         return r, evs
 
-    def etat(self, d):
-        p = os.path.join(d, "etat", "crowdsec-acquisition.json")
+    def etat(self, d, nom="crowdsec-acquisition.json"):
+        p = os.path.join(d, "etat", nom)
         if not os.path.exists(p):
             return None
         with open(p) as f:
             return f.read()
+
+    def poser(self, d, nom, texte):
+        with open(os.path.join(d, "etat", nom), "w") as f:
+            f.write(texte)
 
 
 def battement(scen, r, evs, declares):
@@ -330,6 +371,439 @@ def lus_dans_etat(texte, source):
         return None
     v = e.get(source) if isinstance(e, dict) else None
     return v.get("reads") if isinstance(v, dict) else None
+
+
+# --- P10.32-k, prolongation (mesuré en production le 2026-11-04) -------------------------------------------
+# Répartition par liste blanche (`cscli metrics show whitelists -o json`, forme lue dans les sources CrowdSec
+# v1.6.8/v1.7.0 : nœud -> raison -> {hits, whitelisted}) et durée sans aucune ligne aux scénarios.
+IMMEDIAT = {"PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES": "0"}
+PRIVEE = "crowdsecurity/whitelists"
+SSO = "exemple/session-sso"
+WL_ETAT = "crowdsec-whitelists.json"
+TS_ETAT = "crowdsec-scenarios-atteints.ts"
+PHRASE_MANDATAIRE = "l'adresse cliente que CrowdSec lit est privée"
+PHRASE_MANDATAIRE_A = "l'adresse cliente que CrowdSec lit est privee"
+PHRASE_VRAIES = "le moteur lit les vraies adresses"
+# Le LIBELLÉ de la répartition, pas un morceau qu'une autre phrase porterait (la cause « vraies adresses » finit par
+# « sur la fenêtre ») : la base est jugée dans les deux sens.
+REP_FENETRE = "répartition des lignes écartées sur la fenêtre :"
+REP_DEMARRAGE = "répartition des lignes écartées depuis le démarrage de l'agent :"
+REP_FENETRE_A = "repartition des lignes ecartees sur la fenetre :"
+REP_DEMARRAGE_A = "repartition des lignes ecartees depuis le demarrage de l'agent :"
+RIEN_D_ANONYME = "aucun trafic anonyme n'a atteint l'origine sur la fenêtre"
+RIEN_D_ANONYME_A = "aucun trafic anonyme n'a atteint l'origine sur la fenetre"
+
+
+def base(scen, msg, voulue):
+    """La répartition dit SA base : `voulue` présente, l'autre absente."""
+    oui, non = (REP_FENETRE, REP_DEMARRAGE) if voulue == "fenetre" else (REP_DEMARRAGE, REP_FENETRE)
+    if oui not in msg or non in msg:
+        faute(scen, f"base de la répartition : {oui!r} attendu, {non!r} interdit : {msg!r}")
+
+
+def wl(d):
+    return json.dumps({"whitelists": {nom: {"raison": {"hits": n + 3, "whitelisted": n}} for nom, n in d.items()}})
+
+
+# Un passage où des lignes atteignent les scénarios (l'état avance), puis un passage tout en liste blanche :
+# 100 lignes de plus, toutes écartées, aucune analysée hors liste blanche, aucune versée (forme disjointe).
+M_LB_AVANT = acq({S_A: {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 88}})
+M_LB_TOUT = acq({S_A: {"reads": 1100, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 188}})
+M_LB_TOUT_BIS = acq({S_A: {"reads": 1150, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 238}})
+M_LB_REDEMARRE = acq({S_A: {"reads": 50, "whitelisted": 50}})
+# Après M_LB_AVANT : un passage qui LIT (100 analysées, 2 en liste blanche, 2 versées), puis 100 lignes toutes
+# écartées.
+M_LB_LIT = acq({S_A: {"reads": 1100, "parsed": 1000, "unparsed": 100, "pour": 9, "whitelisted": 90}})
+M_LB_TOUT_APRES_LIT = acq({S_A: {"reads": 1200, "parsed": 1000, "unparsed": 100, "pour": 9, "whitelisted": 190}})
+
+
+def aveux_reglage(evs, cle):
+    return [e for e in evs if e.get("category") == "config"
+            and (e.get("fields") or {}).get("collect_status") == "fallback"
+            and cle in ((e.get("fields") or {}).get("detail") or "")]
+
+
+def cle_aveu(evs):
+    av = aveux_acquisition(evs)
+    return av[0].get("dedup", "").rsplit("-", 1)[0] if len(av) == 1 else None
+
+
+def sous_le_seuil(scen, hb, evs, *morceaux):
+    """Sous le seuil de durée : verdict nommé, sévérité 1, AUCUN aveu, la durée et le seuil dits."""
+    f = hb["fields"]
+    egal(scen, f, "acq_verdict", "en_liste_blanche_sous_le_seuil")
+    if hb.get("severity") != 1:
+        faute(scen, f"sévérité {hb.get('severity')} sous le seuil de durée, attendu 1")
+    if aveux_acquisition(evs):
+        faute(scen, "aveu d'acquisition émis sous le seuil de durée")
+    msg = hb.get("message") or ""
+    for m in ("acquisition en_liste_blanche_sous_le_seuil :", "seuil 24 h") + morceaux:
+        if m not in msg:
+            faute(scen, f"{m!r} absent du message : {msg!r}")
+    if "ACQUISITION" in msg:
+        faute(scen, f"le message annonce un refus sous le seuil : {msg!r}")
+
+
+def prolongation(bac, declares):
+    maintenant = int(__import__("time").time())
+
+    # P1 — répartition sur la fenêtre, une liste de session a écarté des lignes : la cause est « vraies adresses »,
+    # jamais la cause mandataire ; sous le seuil (horodatage posé au passage qui avance) : sévérité 1, pas d'aveu,
+    # aucun des trois états n'avance.
+    s = "prolongation/vraies_adresses/sous_le_seuil"
+    d = bac.scenario()
+    r, evs = bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80, SSO: 8}))
+    if json.loads(bac.etat(d, WL_ETAT) or "null") != {PRIVEE: 80, SSO: 8}:
+        faute(s, f"état des listes blanches non posé avec l'acquisition : {bac.etat(d, WL_ETAT)!r}")
+    t0 = bac.etat(d, TS_ETAT)
+    if not t0 or not t0.isdigit() or abs(int(t0) - maintenant) > 120:
+        faute(s, f"horodatage non posé avec l'état d'acquisition : {t0!r}")
+    avant = (bac.etat(d), bac.etat(d, WL_ETAT), bac.etat(d, TS_ETAT))
+    r, evs = bac.passage(d, M_LB_TOUT, wl=wl({PRIVEE: 170, SSO: 18}))
+    hb = battement(s, r, evs, declares)
+    if hb:
+        sous_le_seuil(s, hb, evs, f"{PRIVEE} : 90", f"{SSO} : 10", PHRASE_VRAIES, RIEN_D_ANONYME, "0 h 0")
+        base(s, hb.get("message") or "", "fenetre")
+        if PHRASE_MANDATAIRE in (hb.get("message") or ""):
+            faute(s, "cause mandataire dite alors qu'une liste de session a écarté des lignes")
+    if (bac.etat(d), bac.etat(d, WL_ETAT), bac.etat(d, TS_ETAT)) != avant:
+        faute(s, "un état a avancé sous le seuil de durée : la fenêtre ne courrait plus")
+
+    # P2 — au-delà du seuil (horodatage vieilli de 25 h) : refus, aveu, cause « vraies adresses », durée dite ;
+    # la clé de dédoublonnage ne porte pas la durée (25 h puis 30 h : même clé) ; état non avancé.
+    s = "prolongation/vraies_adresses/au_dela_du_seuil"
+    bac.poser(d, TS_ETAT, str(maintenant - 25 * 3600))
+    r, evs = bac.passage(d, M_LB_TOUT, wl=wl({PRIVEE: 170, SSO: 18}))
+    hb = battement(s, r, evs, declares)
+    cles = []
+    if hb:
+        attendre_refus(s, hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+        base(s, hb.get("message") or "", "fenetre")
+        for m in (f"{PRIVEE} : 90", f"{SSO} : 10", PHRASE_VRAIES, RIEN_D_ANONYME, "25 h", "seuil 24 h"):
+            if m not in (hb.get("message") or ""):
+                faute(s, f"{m!r} absent du message du refus : {hb.get('message')!r}")
+        av = aveux_acquisition(evs)
+        if len(av) == 1:
+            det = av[0]["fields"].get("detail") or ""
+            for m in (f"{PRIVEE} : 90", f"{SSO} : 10", PHRASE_VRAIES, RIEN_D_ANONYME_A, REP_FENETRE_A, "25 h"):
+                if m not in det:
+                    faute(s, f"{m!r} absent du détail de l'aveu : {det!r}")
+            if PHRASE_MANDATAIRE_A in det:
+                faute(s, f"cause mandataire dans l'aveu malgré une liste de session : {det!r}")
+            if not det.isascii():
+                faute(s, f"détail d'aveu hors ASCII : {det!r}")
+        cles.append(cle_aveu(evs))
+    bac.poser(d, TS_ETAT, str(maintenant - 30 * 3600))
+    r, evs = bac.passage(d, M_LB_TOUT_BIS, wl=wl({PRIVEE: 210, SSO: 28}))
+    cles.append(cle_aveu(evs))
+    if None in cles or cles[0] != cles[1]:
+        faute(s, f"clé de dédoublonnage qui suit la durée ou les comptes : {cles}")
+    if (bac.etat(d), bac.etat(d, WL_ETAT)) != avant[:2]:
+        faute(s, "état avancé sur un refus de liste blanche")
+
+    # P3 — toutes les lignes écartées par la liste PRIVÉE : la cause mandataire, et seulement elle.
+    for nom, env, refus_attendu in (("prolongation/mandataire/sous_le_seuil", None, False),
+                                    ("prolongation/mandataire/reglage_zero", IMMEDIAT, True)):
+        d = bac.scenario()
+        bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80, SSO: 8}), env_sup=env)
+        r, evs = bac.passage(d, M_LB_TOUT, wl=wl({PRIVEE: 180, SSO: 8}), env_sup=env)
+        hb = battement(nom, r, evs, declares)
+        if hb:
+            msg = hb.get("message") or ""
+            if refus_attendu:
+                attendre_refus(nom, hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+                det = (aveux_acquisition(evs) or [{}])[0].get("fields", {}).get("detail", "")
+                if PHRASE_MANDATAIRE_A not in det or f"{PRIVEE} : 100" not in det:
+                    faute(nom, f"cause mandataire ou répartition absente de l'aveu : {det!r}")
+            else:
+                sous_le_seuil(nom, hb, evs, f"{PRIVEE} : 100")
+            if PHRASE_MANDATAIRE not in msg or PHRASE_VRAIES in msg or SSO in msg:
+                faute(nom, f"tout part dans la liste privée : cause mandataire attendue, seule : {msg!r}")
+
+    # P4 — répartition illisible (section absente, en échec, compteur non numérique, nœud mal formé, raison mal
+    # formée) : « répartition inconnue », ni cause mandataire ni « vraies adresses ». Le morceau mal formé est
+    # posé À CÔTÉ d'un nœud valide (la liste privée) : une lecture qui l'avalerait (compteur ramené à 0, nœud ou
+    # raison sautés) garderait le seul nœud privé et affirmerait la cause mandataire sur une répartition partielle.
+    bon = {"r": {"hits": 183, "whitelisted": 180}}
+    for nom, kw in (("prolongation/inconnue/vide", {"wl": json.dumps({"whitelists": {}})}),
+                    ("prolongation/inconnue/echec", {"wl_ko": True}),
+                    ("prolongation/inconnue/null", {"wl": json.dumps({"whitelists": None})}),
+                    ("prolongation/inconnue/compteur",
+                     {"wl": json.dumps({"whitelists": {PRIVEE: bon, SSO: {"r": {"whitelisted": "x"}}}})}),
+                    # compteur NÉGATIF : il n'est pas « en dessous de l'état » (redémarrage), il est mal formé ; pris
+                    # pour tel, sa différence négative serait écartée et le seul nœud privé affirmerait la cause.
+                    ("prolongation/inconnue/negatif",
+                     {"wl": json.dumps({"whitelists": {PRIVEE: bon, SSO: {"r": {"hits": 1, "whitelisted": -5}}}})}),
+                    ("prolongation/inconnue/forme", {"wl": json.dumps({"whitelists": {PRIVEE: bon, SSO: 5}})}),
+                    ("prolongation/inconnue/raison", {"wl": json.dumps({"whitelists": {PRIVEE: bon, SSO: {"r": 5}}})})):
+        d = bac.scenario()
+        bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80, SSO: 8}))
+        r, evs = bac.passage(d, M_LB_TOUT, env_sup=IMMEDIAT, **kw)
+        hb = battement(nom, r, evs, declares)
+        if hb:
+            attendre_refus(nom, hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+            msg = hb.get("message") or ""
+            det = (aveux_acquisition(evs) or [{}])[0].get("fields", {}).get("detail", "")
+            if "répartition inconnue" not in msg or "repartition inconnue" not in det:
+                faute(nom, f"répartition illisible non dite : {msg!r}")
+            if PHRASE_MANDATAIRE in msg or PHRASE_MANDATAIRE_A in det or PHRASE_VRAIES in msg:
+                faute(nom, f"cause affirmée sur une répartition illisible : {msg!r}")
+
+    # P5 — mêmes règles que l'acquisition : compteur qui baisse = redémarrage (valeur courante), nœud neuf à zéro.
+    s = "prolongation/redemarrage_et_noeud_neuf"
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80, SSO: 8}))
+    r, evs = bac.passage(d, M_LB_REDEMARRE, wl=wl({PRIVEE: 30, SSO: 20, "exemple/neuve": 5}), env_sup=IMMEDIAT)
+    hb = battement(s, r, evs, declares)
+    if hb:
+        attendre_refus(s, hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+        for m in (f"{PRIVEE} : 30", f"{SSO} : 12", "exemple/neuve : 5"):
+            if m not in (hb.get("message") or ""):
+                faute(s, f"{m!r} absent : {hb.get('message')!r}")
+
+    # P6 — premier passage, aucun état ni horodatage : répartition depuis le démarrage de l'agent, horodatage
+    # POSÉ à ce passage (et dit), sous le seuil ; l'état d'acquisition reste absent.
+    s = "prolongation/horodatage_absent"
+    d = bac.scenario()
+    r, evs = bac.passage(d, M_WL1, wl=wl({PRIVEE: 100}))
+    hb = battement(s, r, evs, declares)
+    if hb:
+        sous_le_seuil(s, hb, evs, "horodatage absent", f"{PRIVEE} : 100")
+        base(s, hb.get("message") or "", "demarrage")
+    t = bac.etat(d, TS_ETAT)
+    if not t or not t.isdigit() or abs(int(t) - maintenant) > 120:
+        faute(s, f"horodatage absent non posé au passage qui le constate : {t!r}")
+    if bac.etat(d) is not None or bac.etat(d, WL_ETAT) is not None:
+        faute(s, "état d'acquisition ou de listes blanches posé sous le seuil")
+    # ... et un horodatage dans le futur (horloge revenue en arrière) est traité comme absent, re-posé.
+    s = "prolongation/horodatage_futur"
+    d = bac.scenario()
+    bac.poser(d, TS_ETAT, str(maintenant + 10 * 3600))
+    r, evs = bac.passage(d, M_WL1, wl=wl({PRIVEE: 100}))
+    hb = battement(s, r, evs, declares)
+    if hb:
+        sous_le_seuil(s, hb, evs, "horodatage absent")
+    t = bac.etat(d, TS_ETAT)
+    if not t or not t.isdigit() or int(t) > maintenant + 120:
+        faute(s, f"horodatage futur gardé : {t!r}")
+
+    # P7 — réglage illisible : repli sur 24 dit (`fallback`), et le défaut s'applique (sous le seuil).
+    s = "prolongation/reglage_illisible"
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80}))
+    r, evs = bac.passage(d, M_LB_TOUT, wl=wl({PRIVEE: 180}),
+                         env_sup={"PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES": "un jour"})
+    hb = battement(s, r, evs, declares)
+    if hb:
+        sous_le_seuil(s, hb, evs)
+    if len(aveux_reglage(evs, "PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES")) != 1:
+        faute(s, "réglage de durée illisible non avoué (`fallback`)")
+
+    # P8 — un passage qui avance avec une répartition illisible écrit `null` : le passage suivant repart des
+    # totaux depuis le démarrage, il n'attribue pas à la fenêtre des lignes d'avant elle.
+    s = "prolongation/avance_sans_repartition"
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl_ko=True)
+    if bac.etat(d) is None or (bac.etat(d, WL_ETAT) or "").strip() != "null":
+        faute(s, f"état des listes blanches attendu `null` après une répartition illisible : {bac.etat(d, WL_ETAT)!r}")
+    r, evs = bac.passage(d, M_LB_TOUT, wl=wl({PRIVEE: 180}))
+    hb = battement(s, r, evs, declares)
+    if hb:
+        sous_le_seuil(s, hb, evs, f"{PRIVEE} : 180")
+        base(s, hb.get("message") or "", "demarrage")
+
+    # P9 — l'horodatage AVANCE à chaque passage qui avance, même s'il existe déjà : lit -> horodatage vieilli de
+    # 25 h -> lit -> tout. La durée part du DERNIER passage qui a atteint les scénarios : sous le seuil, 0 h.
+    # (Un horodatage posé seulement s'il manque ferait partir la durée de l'installation : 24 h après, chaque
+    # `tout_en_liste_blanche` refuserait de nouveau à chaque passage.)
+    s = "prolongation/horodatage_avance_sur_un_passage_qui_lit"
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80, SSO: 8}))
+    bac.poser(d, TS_ETAT, str(maintenant - 25 * 3600))
+    bac.passage(d, M_LB_LIT, wl=wl({PRIVEE: 82, SSO: 8}))
+    t = bac.etat(d, TS_ETAT)
+    if not t or not t.isdigit() or abs(int(t) - maintenant) > 120:
+        faute(s, f"horodatage non avancé par un passage qui lit : {t!r} (maintenant {maintenant})")
+    r, evs = bac.passage(d, M_LB_TOUT_APRES_LIT, wl=wl({PRIVEE: 182, SSO: 8}))
+    hb = battement(s, r, evs, declares)
+    if hb:
+        sous_le_seuil(s, hb, evs, "0 h 0")
+
+    # P10 — le NOM EXACT de la liste privée, pas un préfixe : une liste du hub `crowdsecurity/` qui porte des
+    # adresses PUBLIQUES (`crowdsecurity/cdn-whitelist`) prouve que les vraies adresses sont lues.
+    # ... ni un nom qui CONTIENT celui de la liste privée sans l'être (égalité, pas inclusion), ni un nom qui
+    # COMMENCE ou FINIT par lui (`startswith` / `endswith` ne sont pas l'égalité non plus), ni un nom qui ne
+    # diffère que par la CASSE (les noms de parseurs CrowdSec sont sensibles à la casse : `ascii_downcase` non plus).
+    cle_vraies = None
+    for s, cdn in (("prolongation/liste_du_hub_publique", "crowdsecurity/cdn-whitelist"),
+                   ("prolongation/nom_qui_contient_la_liste_privee", "exemple/crowdsecurity/whitelists-publiques"),
+                   ("prolongation/nom_qui_commence_par_la_liste_privee", "crowdsecurity/whitelists-publiques"),
+                   ("prolongation/nom_qui_finit_par_la_liste_privee", "exemple/crowdsecurity/whitelists"),
+                   ("prolongation/nom_qui_differe_de_la_liste_privee_par_la_casse", "CrowdSecurity/Whitelists")):
+        d = bac.scenario()
+        bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80, cdn: 8}), env_sup=IMMEDIAT)
+        r, evs = bac.passage(d, M_LB_TOUT, wl=wl({PRIVEE: 170, cdn: 18}), env_sup=IMMEDIAT)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            attendre_refus(s, hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+            msg = hb.get("message") or ""
+            if f"{cdn} : 10" not in msg or PHRASE_VRAIES not in msg or PHRASE_MANDATAIRE in msg:
+                faute(s, f"liste autre que la liste privée prise pour elle : {msg!r}")
+            if cle_vraies is None:
+                cle_vraies = cle_aveu(evs)
+
+    # P11 — un nœud dont la différence est NULLE sur un passage qui avance reste dans l'état : au passage suivant,
+    # il ne compte que ce qu'il a écarté sur la fenêtre (rien), il n'est pas recompté en entier.
+    s = "prolongation/noeud_nul_garde_dans_l_etat"
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80, SSO: 8}), env_sup=IMMEDIAT)
+    bac.passage(d, M_LB_LIT, wl=wl({PRIVEE: 82, SSO: 8}), env_sup=IMMEDIAT)
+    if json.loads(bac.etat(d, WL_ETAT) or "null") != {PRIVEE: 82, SSO: 8}:
+        faute(s, f"état des listes blanches qui perd un nœud à différence nulle : {bac.etat(d, WL_ETAT)!r}")
+    r, evs = bac.passage(d, M_LB_TOUT_APRES_LIT, wl=wl({PRIVEE: 182, SSO: 8}), env_sup=IMMEDIAT)
+    hb = battement(s, r, evs, declares)
+    cle_mandataire = None
+    if hb:
+        attendre_refus(s, hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+        msg = hb.get("message") or ""
+        if f"{PRIVEE} : 100" not in msg or PHRASE_MANDATAIRE not in msg or SSO in msg or PHRASE_VRAIES in msg:
+            faute(s, f"nœud sans ligne écartée sur la fenêtre recompté : {msg!r}")
+        cle_mandataire = cle_aveu(evs)
+    # ... et la variante de cause est dans la clé de dédoublonnage : une cause qui change dans l'heure est un
+    # nouvel aveu (même verdict, même cause d'acquisition, variante différente).
+    if cle_vraies is None or cle_mandataire is None or cle_vraies == cle_mandataire:
+        faute(s, f"clé de dédoublonnage aveugle à la variante de cause : {cle_vraies!r} / {cle_mandataire!r}")
+
+    # P11 bis — un compteur `whitelisted` à ZÉRO est un compteur valide (la borne est `>= 0`, pas `> 0`) : un nœud
+    # qui n'a jamais rien écarté, à côté de la liste privée, ne rend pas la répartition inconnue.
+    s = "prolongation/noeud_a_zero_reste_lisible"
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80, "exemple/zero": 0}), env_sup=IMMEDIAT)
+    r, evs = bac.passage(d, M_LB_TOUT, wl=wl({PRIVEE: 180, "exemple/zero": 0}), env_sup=IMMEDIAT)
+    hb = battement(s, r, evs, declares)
+    if hb:
+        attendre_refus(s, hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+        msg = hb.get("message") or ""
+        if f"{PRIVEE} : 100" not in msg or PHRASE_MANDATAIRE not in msg or "répartition inconnue" in msg:
+            faute(s, f"compteur à zéro pris pour illisible : {msg!r}")
+
+    # P12 — les dix nœuds nommés sont ceux qui écartent LE PLUS (pas les premiers par le nom), un nom long est
+    # coupé à 80 caractères. Ici l'ordre des noms et celui des comptes sont INVERSES.
+    s = "prolongation/repartition_ordre_et_troncature"
+    long_nom = "exemple/" + "x" * 92 + "YZ"
+    treize = {f"exemple/n{i:02d}": i + 1 for i in range(12)}
+    treize[long_nom] = 50
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80}), env_sup=IMMEDIAT)
+    r, evs = bac.passage(d, M_LB_TOUT, wl=wl(dict(treize, **{PRIVEE: 80})), env_sup=IMMEDIAT)
+    hb = battement(s, r, evs, declares)
+    if hb:
+        msg = hb.get("message") or ""
+        for m in (long_nom[:80] + " : 50", "exemple/n11 : 12", "exemple/n03 : 4", "+3 autre(s)"):
+            if m not in msg:
+                faute(s, f"{m!r} absent de la répartition : {msg!r}")
+        for m in (long_nom[:81], "exemple/n02 :", "exemple/n01 :", "exemple/n00 :"):
+            if m in msg:
+                faute(s, f"{m!r} présent : nœud hors des dix plus gros, ou nom non coupé à 80 : {msg!r}")
+
+    # P13 — un état de listes blanches mal formé (compteur en texte) est rejeté : la répartition repart des
+    # totaux depuis le démarrage de l'agent, et le dit ; elle ne se dit pas « sur la fenêtre ».
+    s = "prolongation/etat_listes_blanches_mal_forme"
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80}), env_sup=IMMEDIAT)
+    bac.poser(d, WL_ETAT, json.dumps({PRIVEE: "80"}))
+    r, evs = bac.passage(d, M_LB_TOUT, wl=wl({PRIVEE: 180}), env_sup=IMMEDIAT)
+    hb = battement(s, r, evs, declares)
+    if hb:
+        msg = hb.get("message") or ""
+        base(s, msg, "demarrage")
+        if f"{PRIVEE} : 180" not in msg:
+            faute(s, f"état de listes blanches mal formé pris pour une fenêtre : {msg!r}")
+        det = (aveux_acquisition(evs) or [{}])[0].get("fields", {}).get("detail", "")
+        if REP_DEMARRAGE_A not in det or REP_FENETRE_A in det:
+            faute(s, f"base de la répartition fausse dans l'aveu : {det!r}")
+
+    # P14 — `metrics show whitelists` qui réussit SANS section `whitelists` (version qui ne la porte pas) : le
+    # repli `cscli metrics -o json` est lu, la répartition est nommée.
+    s = "prolongation/show_sans_section_repli"
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80, SSO: 8}), env_sup=IMMEDIAT)
+    tout = json.dumps(dict(json.loads(M_LB_TOUT), **json.loads(wl({PRIVEE: 170, SSO: 18}))))
+    r, evs = bac.passage(d, M_LB_TOUT, wl="{}", metrics_tout=tout, env_sup=IMMEDIAT)
+    hb = battement(s, r, evs, declares)
+    if hb:
+        msg = hb.get("message") or ""
+        if f"{PRIVEE} : 90" not in msg or f"{SSO} : 10" not in msg or "répartition inconnue" in msg:
+            faute(s, f"repli non lu quand `show whitelists` n'a pas de section : {msg!r}")
+
+    # P15 — ÉTAT NON INSCRIPTIBLE (même technique que `etat_non_inscriptible` : l'état sous un FICHIER). Tout part
+    # en liste blanche, l'horodatage ne peut pas se poser : la durée ne court jamais. Sous le seuil, le refus ne
+    # partirait JAMAIS ; le capteur refuse donc sans attendre (aussi sévère qu'avant le seuil), le dit, et avoue
+    # l'écriture ratée (`etat/horodatage`). Réglage par défaut (24 h) : c'est lui qui tairait le refus.
+    def aveu_etat(evs, morceau):
+        return [e for e in evs if e.get("category") == "config"
+                and morceau in ((e.get("fields") or {}).get("detail") or "")]
+
+    s = "prolongation/horodatage_non_inscriptible"
+    d = bac.scenario()
+    bouchon = os.path.join(d, "bouchon")
+    open(bouchon, "w").close()
+    r, evs = bac.passage(d, M_WL1, wl=wl({PRIVEE: 100}), etat=os.path.join(bouchon, "etat"))
+    hb = battement(s, r, evs, declares)
+    if hb:
+        attendre_refus(s, hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+        if "horodatage non inscriptible" not in (hb.get("message") or ""):
+            faute(s, f"durée qui ne peut pas courir non dite : {hb.get('message')!r}")
+        det = (aveux_acquisition(evs) or [{}])[0].get("fields", {}).get("detail", "")
+        if "horodatage non inscriptible" not in det:
+            faute(s, f"durée qui ne peut pas courir non dite dans l'aveu : {det!r}")
+        if len(aveu_etat(evs, "etat/horodatage")) != 1:
+            faute(s, "horodatage non posé sans aveu `etat/horodatage`")
+
+    # P16 — échecs d'écriture CIBLÉS par un faux `mktemp` placé devant le vrai dans le PATH du capteur : il échoue
+    # pour UN gabarit d'état, délègue le reste. (a) sur un passage qui LIT, l'horodatage ou l'état des listes
+    # blanches non posés sont avoués chacun sous son nom, l'état d'acquisition, lui, avance ; (b) sur un passage
+    # tout en liste blanche dont l'état d'acquisition est lisible mais l'horodatage absent et non inscriptible :
+    # refus sans attendre le seuil, comme en P15.
+    faux = os.path.join(bac.racine, "faux-mktemp")
+    if not os.path.isdir(faux):
+        os.mkdir(faux)
+        with open(os.path.join(faux, "mktemp"), "w") as f:
+            f.write(f"#!{os.path.realpath(shutil.which('sh'))}\n"
+                    f'case "$*" in *"$FAUX_MKTEMP_ECHEC"*) exit 1 ;; esac\n'
+                    f'exec {os.path.join(bac.bin, "mktemp")} "$@"\n')
+        os.chmod(os.path.join(faux, "mktemp"), stat.S_IRWXU)
+
+    def env_echec(gabarit):
+        return {"PATH": faux + ":" + bac.bin, "FAUX_MKTEMP_ECHEC": gabarit}
+
+    for s, gabarit, morceau, autre, nom_etat in (
+            ("prolongation/lit/horodatage_non_pose", ".crowdsec-scenarios.", "etat/horodatage",
+             "etat/listes-blanches", TS_ETAT),
+            ("prolongation/lit/listes_blanches_non_posees", ".crowdsec-whitelists.", "etat/listes-blanches",
+             "etat/horodatage", WL_ETAT)):
+        d = bac.scenario()
+        r, evs = bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80}), env_sup=env_echec(gabarit))
+        hb = battement(s, r, evs, declares)
+        if hb:
+            attendre_sans_refus(s, hb, evs, "premier_passage")
+        if len(aveu_etat(evs, morceau)) != 1 or aveu_etat(evs, autre):
+            faute(s, f"écriture ratée de {morceau} non avouée, ou {autre} avoué à tort : "
+                     f"{[(e.get('fields') or {}).get('detail') for e in evs if e.get('category') == 'config']}")
+        if bac.etat(d) is None or bac.etat(d, nom_etat) is not None:
+            faute(s, f"état d'acquisition non posé, ou {nom_etat} posé malgré l'échec")
+    s = "prolongation/tout/horodatage_absent_non_inscriptible"
+    d = bac.scenario()
+    bac.passage(d, M_LB_AVANT, wl=wl({PRIVEE: 80}))
+    os.remove(os.path.join(d, "etat", TS_ETAT))
+    r, evs = bac.passage(d, M_LB_TOUT, wl=wl({PRIVEE: 180}), env_sup=env_echec(".crowdsec-scenarios."))
+    hb = battement(s, r, evs, declares)
+    if hb:
+        attendre_refus(s, hb, evs, "tout_en_liste_blanche", "forme_inconnue")
+        if "horodatage non inscriptible" not in (hb.get("message") or ""):
+            faute(s, f"durée qui ne peut pas courir non dite : {hb.get('message')!r}")
+        if len(aveu_etat(evs, "etat/horodatage")) != 1:
+            faute(s, "horodatage non posé sans aveu `etat/horodatage`")
 
 
 def epreuve_du_bac(bac):
@@ -596,11 +1070,11 @@ def main():
         # non plus (`P10.32-k`) : `tout_en_liste_blanche`, un refus qui n'avance pas l'état — deux passages.
         s = "liste_blanche_sans_analyse"
         d = bac.scenario()
-        r, evs = bac.passage(d, M_WL1)
+        r, evs = bac.passage(d, M_WL1, env_sup=IMMEDIAT)
         hb = battement(s + "/1", r, evs, declares)
         if hb:
             attendre_refus(s + "/1", hb, evs, "tout_en_liste_blanche", "forme_inconnue")
-        r, evs = bac.passage(d, M_WL2)
+        r, evs = bac.passage(d, M_WL2, env_sup=IMMEDIAT)
         hb = battement(s + "/2", r, evs, declares)
         if hb:
             attendre_refus(s + "/2", hb, evs, "tout_en_liste_blanche", "forme_inconnue")
@@ -702,6 +1176,8 @@ def main():
             attendre_refus(s, hb, evs, "aucune_lecture", "source_absente")
         if bac.etat(d) is not None:
             faute(s, "état posé au premier passage d'un refus")
+
+        prolongation(bac, declares)
 
         # 7) cscli sans `metrics show`.
         s = "cscli_ancien"

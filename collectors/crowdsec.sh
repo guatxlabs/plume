@@ -71,6 +71,18 @@ case "$CS_WL_SEUIL" in
   [1-9]|[1-9][0-9]|100) ;;
   *) plume_reglage_illisible crowdsec PLUME_CROWDSEC_WHITELIST_SHARE_MAX "$CS_WL_SEUIL" 90 "l'environnement du capteur"; CS_WL_SEUIL=90 ;;
 esac
+# P10.32-k (prolongation, mesuré en production le 2026-11-04) — DURÉE SANS AUCUNE LIGNE AUX SCÉNARIOS, en
+# heures, avant que `tout_en_liste_blanche` refuse de conclure. Un site dont un CDN arrête les robots en amont
+# ne voit, la plupart des heures, aucune ligne à adresse publique : refuser à chaque passage (sévérité 3, aveu
+# horaire) criait un fait de quelques heures comme une panne. Sous ce seuil le verdict se nomme
+# `en_liste_blanche_sous_le_seuil` (sévérité 1, durée et seuil dits, aucun aveu) ; au seuil, le refus d'avant.
+# 0 = refus immédiat (le comportement d'avant). Défaut 24 : une journée entière sans une seule ligne aux
+# scénarios n'est plus un creux de trafic, c'est un ordre de grandeur de conception, pas une valeur relevée.
+CS_SANS_SCEN_H="${PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES:-24}"
+case "$CS_SANS_SCEN_H" in
+  0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) ;;
+  *) plume_reglage_illisible crowdsec PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES "$CS_SANS_SCEN_H" 24 "l'environnement du capteur"; CS_SANS_SCEN_H=24 ;;
+esac
 
 # ── 1) ALERTES (chemin existant) : ne SORT PLUS si vide -> le battement de santé ci-dessous part TOUJOURS.
 # S36 — `|| echo ''` REMPLACAIT LE STATUT DE LA LECTURE PAR CELUI D'UN `echo`, c'est-a-dire par un
@@ -158,8 +170,9 @@ fi
 #
 # VERDICT `acq_verdict` : `lit` · `premier_passage` (aucun état, et au moins une ligne lue depuis le
 # démarrage de l'agent) · `aucune_lecture` · `aucune_analyse` · `aucune_source` · `illisible`, et depuis
-# `P10.32-k` `tout_en_liste_blanche` · `surtout_liste_blanche` (plus bas). Les quatre de la première ligne
-# après `premier_passage`, et `tout_en_liste_blanche`, sont un REFUS DE CONCLURE : l'absence d'alerte ne prouve plus rien. Ils partent par le canal déjà livré
+# `P10.32-k` `tout_en_liste_blanche` · `surtout_liste_blanche` · `en_liste_blanche_sous_le_seuil` (plus bas). Les
+# quatre de la première ligne après `premier_passage`, et `tout_en_liste_blanche`, sont un REFUS DE CONCLURE :
+# l'absence d'alerte ne prouve plus rien. Ils partent par le canal déjà livré
 # (`plume_lecture_partielle`, donc `de-collector-unavailable`), relèvent la sévérité du battement à 3,
 # et n'avancent PAS l'état. Une source isolée figée alors que d'autres lisent — typiquement le fichier
 # d'un ancien pod, que l'agent garde jusqu'à son redémarrage — est NOMMÉE dans `acq_frozen_sources`,
@@ -172,7 +185,12 @@ fi
 # sur les totaux ; UNE source dont le parseur est cassé parmi d'autres qui analysent reste visible dans
 # son détail (`unparsed_delta` == `reads_delta`), sans refus.
 # LE COÛT EST NOMMÉ : une installation réellement sans trafic pendant un intervalle entier refusera de
-# conclure ; la dédup horaire du canal en borne le volume, et c'est exact — rien n'a été observé.
+# conclure ; la dédup horaire du canal en borne le volume, et c'est exact — rien n'a été observé. Pour
+# `tout_en_liste_blanche`, ce coût était payé à CHAQUE passage (mesuré le 2026-11-04 : sévérité 3, aveu horaire,
+# sur un site dont un CDN arrête les robots) ; il ne l'est plus qu'au-delà du seuil de durée. LE PRIX DE CE
+# SEUIL, DIT : pendant jusqu'à 24 h (par défaut), un moteur réellement aveuglé par un mandataire ne refuse pas —
+# il le dit en sévérité 1, avec la répartition qui nomme la liste privée. Une mise à niveau ou un horodatage
+# perdu repartent de zéro : la durée réelle peut être plus longue que celle dite.
 # P10.32-k — LIRE N'EST PAS DÉTECTER QUAND LA LISTE BLANCHE ABSORBE TOUT. Derrière un mandataire ou un
 # tunnel, l'adresse cliente que CrowdSec lit dans le journal est celle du RELAIS — une adresse privée — et
 # la liste blanche des adresses privées écarte la ligne avant les scénarios. Le moteur lit, analyse, et ne
@@ -187,8 +205,16 @@ fi
 # incluse) est borné par max(analysées, écartées), donc à 100 %.
 #   `tout_en_liste_blanche` — des lignes en liste blanche, AUCUNE analysée hors liste blanche, et aucune
 #     versée à un scénario (`pour` nul ; une ligne versée prouve que la détection reçoit quelque chose, même
-#     quand les compteurs se décalent d'un relevé à l'autre). REFUS DE CONCLURE, même canal, même sévérité
-#     que les quatre autres ; cause `forme_inconnue` (l'adresse portée par la ligne n'est pas celle du client).
+#     quand les compteurs se décalent d'un relevé à l'autre), DEPUIS AU MOINS `PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES`
+#     (défaut 24, 0 = dès le premier passage). REFUS DE CONCLURE, même canal, même sévérité que les quatre
+#     autres ; cause fermée `forme_inconnue`, et la cause DITE suit la répartition par liste blanche (2 ter) :
+#     mandataire seulement si tout part dans `crowdsecurity/whitelists`. La durée est dite.
+#   `en_liste_blanche_sous_le_seuil` — le même constat depuis MOINS que ce seuil : sévérité 1, durée, seuil,
+#     répartition et cause dans le message, AUCUN aveu, et l'état N'AVANCE PAS (la fenêtre continue de courir,
+#     le refus part au seuil sans attendre d'autre signal).
+#     SAUF horodatage absent ou illisible qui ne peut pas s'inscrire (état non inscriptible, 2 quater) : la
+#     durée ne courrait jamais, le verdict reste `tout_en_liste_blanche` (refus, sévérité 3, aveu) AVANT le
+#     seuil, et l'échec d'écriture est avoué (`etat/horodatage`).
 #   `surtout_liste_blanche` — la part en liste blanche (écartées / total analysé) ATTEINT le seuil
 #     `PLUME_CROWDSEC_WHITELIST_SHARE_MAX` : le moteur détecte encore sur le reste, ce n'est pas un refus ;
 #     la sévérité du battement monte à 2 et le message nomme la cause probable. L'état avance.
@@ -296,15 +322,150 @@ EOF
     acq_cause=forme_inconnue
   fi
 fi
+# ── 2 ter) QUELLE LISTE BLANCHE ÉCARTE (P10.32-k, prolongation). CONSTATÉ le 2026-11-04 : le verdict
+# `tout_en_liste_blanche` peut être VRAI avec une cause affichée FAUSSE. Les lignes arrivées par un relais
+# (adresse privée) partent bien dans `crowdsecurity/whitelists`, mais des sessions authentifiées arrivent avec
+# leur adresse PUBLIQUE et partent dans une AUTRE liste blanche : le moteur lit alors les vraies adresses, et
+# aucun trafic anonyme n'atteint l'origine (filtré en amont, par exemple par un CDN).
+# LA FORME, LUE DANS LES SOURCES DE CROWDSEC (v1.6.8 et v1.7.0, `cmd/crowdsec-cli/climetrics/statwhitelist.go`
+# et `store.go`), PAS DEVINÉE : `cscli metrics show whitelists -o json` rend `{"whitelists": {<nœud> : {<raison> :
+# {"hits": n, "whitelisted": n}}}}`, tiré des compteurs `cs_node_wl_hits_total` / `cs_node_wl_hits_ok_total`
+# (étiquettes `name` = nom du nœud de liste blanche, `reason`) ; `whitelisted` est le compteur même qui alimente
+# `whitelisted` de l'acquisition. Repli : la section `whitelists` de `cscli metrics -o json`. v1.6.0 n'a pas
+# cette section (`cmd/crowdsec-cli/metrics.go`) : la répartition y est INCONNUE, et dite telle.
+# CE QUI N'EST PAS ÉTABLI : aucun `cscli` réel n'est joué ici (la garde le simule à cette forme) ; une liste
+# d'autorisation centralisée (`cscli allowlists`, versions récentes) n'est pas comptée par ces compteurs, et on
+# ne sait pas, d'après ces seules sources, si elle écarte des lignes avant les scénarios.
+# MÊMES RÈGLES QUE L'ACQUISITION, contre `$STATE/crowdsec-whitelists.json` (nœud -> lignes écartées, toutes
+# raisons) : compteur qui baisse = redémarrage (différence = valeur courante), nœud neuf à zéro, mis en attente
+# avec l'état d'acquisition (donc même fenêtre), chaque morceau re-validé. Sans état lisible (premier passage,
+# mise à niveau), la répartition porte sur les totaux depuis le démarrage de l'agent, et le dit. Sur un passage
+# où l'acquisition avance mais où la répartition est illisible, l'état vaut `null` : le passage suivant repart
+# des totaux plutôt que d'attribuer à la fenêtre des lignes d'avant elle.
+# LA CAUSE MANDATAIRE n'est dite QUE si toutes les lignes écartées l'ont été par `crowdsecurity/whitelists` (la
+# liste des adresses privées) ; une autre liste qui écarte des lignes prouve que des adresses réelles sont lues.
+# Répartition illisible ou vide : « répartition inconnue », et la cause mandataire n'est pas affirmée.
+# Le nom d'un nœud est ramené à `[A-Za-z0-9/_.:@-]` (le reste en `?`) et à 80 caractères ; dix nœuds au plus
+# sont nommés, le reste compté. CE QUE CELA NE VOIT PAS : la répartition juge les totaux de toutes les sources,
+# comme les verdicts.
+WL_STATE="$STATE/crowdsec-whitelists.json"
+TS_STATE="$STATE/crowdsec-scenarios-atteints.ts"
+wl_total=-1; wl_prive=false; wl_base=''; wl_rep=''; wl_etat=null
+if [ -n "$acq_etat" ]; then
+  wl_raw=''
+  if _x=$(cscli_agent metrics show whitelists -o json 2>/dev/null) && printf '%s' "$_x" | jq -e '(.whitelists | type) == "object"' >/dev/null 2>&1; then
+    wl_raw=$_x
+  elif _x=$(cscli_agent metrics -o json 2>/dev/null); then
+    wl_raw=$_x
+  fi
+  wl_prev=null
+  if [ -r "$WL_STATE" ]; then
+    wl_prev=$(jq -c 'if type == "object" and all(.[]; type == "number") then . else null end' "$WL_STATE" 2>/dev/null) || wl_prev=null
+    [ -n "$wl_prev" ] || wl_prev=null
+  fi
+  # shellcheck disable=SC2016
+  if [ -n "$wl_raw" ] && wl_out=$(printf '%s' "$wl_raw" | jq -c --argjson prev "$wl_prev" '
+      def n: if . == null then 0 elif type == "number" and . >= 0 then floor else error("compteur") end;
+      if type != "object" or (.whitelists | type) != "object" then error("forme") else . end
+      | [ .whitelists | to_entries[]
+          | if (.value | type) != "object" then error("forme") else . end
+          | {nom: .key, c: ([ .value[] | if type != "object" then error("forme") else (.whitelisted | n) end ] | add // 0)} ] as $l
+      | ($prev | type == "object") as $has
+      | [ $l[] | (if $has then $prev[.nom] else null end) as $p
+          | . + {d: (if $p == null or .c < $p then .c else .c - $p end)} ] as $x
+      | ([ $x[] | select(.d > 0) ] | sort_by(-.d, .nom)) as $nz
+      | { total: ([ $nz[].d ] | add // 0),
+          prive: (($nz | length) > 0 and all($nz[]; .nom == "crowdsecurity/whitelists")),
+          base: (if $has then "fenetre" else "demarrage" end),
+          rep: ([ $nz[:10][] | "\(.nom | gsub("[^A-Za-z0-9/_.:@-]"; "?") | .[:80]) : \(.d)" ] | join(", ")
+                + (if ($nz | length) > 10 then ", +\(($nz | length) - 10) autre(s)" else "" end)),
+          etat: (reduce $l[] as $e ({}; .[$e.nom] = $e.c)) }' 2>/dev/null); then
+    _wt=$(printf '%s' "$wl_out" | jq -r '.total' 2>/dev/null) || _wt=''
+    _wp=$(printf '%s' "$wl_out" | jq -r '.prive' 2>/dev/null) || _wp=''
+    _wb=$(printf '%s' "$wl_out" | jq -r '.base' 2>/dev/null) || _wb=''
+    _wr=$(printf '%s' "$wl_out" | jq -r '.rep' 2>/dev/null) || _wr=''
+    _we=$(printf '%s' "$wl_out" | jq -c '.etat' 2>/dev/null) || _we=''
+    _ok=1
+    case "$_wt" in ''|*[!0-9]*) _ok=0 ;; esac
+    case "$_wp" in true|false) ;; *) _ok=0 ;; esac
+    case "$_wb" in fenetre|demarrage) ;; *) _ok=0 ;; esac
+    case "$_wr" in *[!A-Za-z0-9/_.:@?,\ +\(\)-]*) _ok=0 ;; esac
+    case "$_we" in \{*\}) ;; *) _ok=0 ;; esac
+    if [ "$_ok" -eq 1 ]; then
+      wl_total=$_wt; wl_prive=$_wp; wl_base=$_wb; wl_rep=$_wr; wl_etat=$_we
+    fi
+  fi
+fi
+# La cause, choisie sur la répartition : `mandataire`, `vraies_adresses` ou `repartition_inconnue`.
+if [ "$wl_total" -gt 0 ] 2>/dev/null; then
+  if [ "$wl_prive" = true ]; then cs_variante=mandataire; else cs_variante=vraies_adresses; fi
+  if [ "$wl_base" = fenetre ]; then cs_rep_txt="répartition des lignes écartées sur la fenêtre : $wl_rep"; cs_rep_a="repartition des lignes ecartees sur la fenetre : $wl_rep"
+  else cs_rep_txt="répartition des lignes écartées depuis le démarrage de l'agent : $wl_rep"; cs_rep_a="repartition des lignes ecartees depuis le demarrage de l'agent : $wl_rep"; fi
+else
+  cs_variante=repartition_inconnue; cs_rep_txt="répartition inconnue"; cs_rep_a="repartition inconnue"
+fi
+# ── 2 quater) DURÉE AU LIEU D'UN CRI PAR PASSAGE. `$TS_STATE` porte l'horodatage du dernier passage où l'état
+# d'acquisition a AVANCÉ — donc où des lignes ont atteint les scénarios : il est mis en attente AVEC cet état.
+# Un refus ne l'avance pas : la fenêtre court depuis ce passage-là. Absent ou illisible (mise à niveau, premier
+# passage, horloge revenue en arrière), il est posé au passage qui le constate et la durée part de là, dite comme
+# telle — elle peut être plus longue. Sous `PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` : verdict
+# `en_liste_blanche_sous_le_seuil`, NON refusant, l'état d'acquisition N'AVANCE PAS.
+# HORODATAGE QUI NE PEUT PAS SE POSER (état non inscriptible) : la durée ne court jamais — elle repartirait de
+# zéro à chaque passage et le refus ne partirait JAMAIS. Le verdict reste donc `tout_en_liste_blanche`
+# (refus, sévérité 3, aveu), aussi sévère qu'avant le seuil, et la cause est dite ; l'échec d'écriture est avoué
+# en plus (`etat/horodatage`).
+cs_duree=-1; cs_duree_posee=0; cs_ts_ko=0; cs_duree_m="durée inconnue"; cs_duree_a="duree inconnue"
+if [ "$acq_verdict" = tout_en_liste_blanche ]; then
+  _t=$(cat "$TS_STATE" 2>/dev/null) || _t=''
+  case "$_t" in ''|0?*|*[!0-9]*|?????????????*) _t='' ;; esac
+  if [ -n "$_t" ] && [ "$_t" -le "$ts" ]; then
+    cs_duree=$((ts - _t))
+  else
+    cs_duree=0; cs_duree_posee=1
+    if _tt=$(mktemp "$STATE/.crowdsec-scenarios.XXXXXX" 2>/dev/null) && printf '%s' "$ts" > "$_tt"; then
+      state_stage_file "$_tt" "$TS_STATE"
+    else
+      _cs_ko="$_cs_ko etat/horodatage"; cs_ts_ko=1
+    fi
+  fi
+  if [ "$cs_ts_ko" -eq 0 ] && [ "$CS_SANS_SCEN_H" -gt 0 ] && [ "$cs_duree" -lt $((CS_SANS_SCEN_H * 3600)) ]; then
+    acq_verdict=en_liste_blanche_sous_le_seuil
+  fi
+fi
+if [ "$cs_duree" -ge 0 ]; then
+  cs_duree_txt="$((cs_duree / 3600)) h $(printf '%02d' $(((cs_duree % 3600) / 60))) min"
+  if [ "$cs_ts_ko" -eq 1 ]; then
+    cs_duree_m="horodatage non inscriptible dans l'état du capteur : la durée sans ligne aux scénarios ne peut pas courir, refus sans attendre le seuil ($CS_SANS_SCEN_H h)"
+    cs_duree_a="horodatage non inscriptible dans l'etat du capteur : la duree sans ligne aux scenarios ne peut pas courir, refus sans attendre le seuil ($CS_SANS_SCEN_H h)"
+  elif [ "$cs_duree_posee" -eq 1 ]; then
+    cs_duree_m="aucune ligne n'atteint les scénarios depuis ce passage (horodatage absent — mise à niveau ou premier passage — posé maintenant : la durée part d'ici, la durée réelle peut être plus longue), seuil $CS_SANS_SCEN_H h"
+    cs_duree_a="aucune ligne aux scenarios depuis ce passage (horodatage absent, pose maintenant : la duree part d'ici et peut etre plus longue), seuil $CS_SANS_SCEN_H h"
+  else
+    cs_duree_m="aucune ligne n'atteint les scénarios depuis $cs_duree_txt, seuil $CS_SANS_SCEN_H h"
+    cs_duree_a="aucune ligne aux scenarios depuis $cs_duree_txt, seuil $CS_SANS_SCEN_H h"
+  fi
+fi
 case "$acq_verdict" in
   lit|premier_passage|surtout_liste_blanche)
     acq_refus=0
     # Un état qu'on ne peut pas poser ne coupe PAS le battement (son silence lèverait MUET) : il est avoué.
+    # L'horodatage et la répartition sont mis en attente AVEC lui : même fenêtre, même passage.
     if acq_tmp=$(mktemp "$STATE/.crowdsec-acquisition.XXXXXX" 2>/dev/null) && printf '%s' "$acq_etat" > "$acq_tmp"; then
       state_stage_file "$acq_tmp" "$ACQ_STATE"
+      if _tt=$(mktemp "$STATE/.crowdsec-scenarios.XXXXXX" 2>/dev/null) && printf '%s' "$ts" > "$_tt"; then
+        state_stage_file "$_tt" "$TS_STATE"
+      else
+        _cs_ko="$_cs_ko etat/horodatage"
+      fi
+      if _wt=$(mktemp "$STATE/.crowdsec-whitelists.XXXXXX" 2>/dev/null) && printf '%s' "$wl_etat" > "$_wt"; then
+        state_stage_file "$_wt" "$WL_STATE"
+      else
+        _cs_ko="$_cs_ko etat/listes-blanches"
+      fi
     else
       _cs_ko="$_cs_ko etat/acquisition"
     fi ;;
+  en_liste_blanche_sous_le_seuil) acq_refus=0 ;;
   *) acq_refus=1 ;;
 esac
 # âge de la dernière alerte (informatif, -1 si indéterminable / pas de `date -d`).
@@ -330,16 +491,38 @@ fi
 # P10.32-g — un moteur qui ne lit rien ne prouve rien par son silence : la sévérité monte à 3 au moins.
 # P10.32-k — les deux verdicts de liste blanche nomment la cause probable, que l'exploitant corrige à la
 # source (faire lire à CrowdSec l'adresse du client, pas celle du relais).
-cs_cause_lb="cause probable : l'adresse cliente que CrowdSec lit est privée (celle d'un mandataire ou d'un tunnel) et la liste blanche des adresses privées l'écarte"
+# P10.32-k (prolongation) — la cause suit la répartition (2 ter) : mandataire seulement si TOUT part dans la liste
+# des adresses privées.
+case "$cs_variante" in
+  mandataire)
+    cs_cause_lb="cause probable : l'adresse cliente que CrowdSec lit est privée (celle d'un mandataire ou d'un tunnel) et la liste blanche des adresses privées l'écarte"
+    cs_cause_a="cause probable : l'adresse cliente que CrowdSec lit est privee (celle d'un mandataire ou d'un tunnel) et la liste blanche des adresses privees l'ecarte" ;;
+  vraies_adresses)
+    cs_cause_lb="cause : le moteur lit les vraies adresses (une liste blanche autre que celle des adresses privées a écarté des lignes)"
+    cs_cause_a="cause : le moteur lit les vraies adresses (une liste blanche autre que celle des adresses privees a ecarte des lignes)"
+    # « rien d'anonyme n'a atteint l'origine » n'est vrai que si AUCUNE ligne n'a atteint les scénarios : sur
+    # `surtout_liste_blanche`, des lignes hors liste blanche y sont parvenues, la phrase y serait fausse.
+    case "$acq_verdict" in
+      tout_en_liste_blanche|en_liste_blanche_sous_le_seuil)
+        cs_cause_lb="$cs_cause_lb ; aucun trafic anonyme n'a atteint l'origine sur la fenêtre (filtré en amont, ou site injoignable)"
+        cs_cause_a="$cs_cause_a ; aucun trafic anonyme n'a atteint l'origine sur la fenetre (filtre en amont, ou site injoignable)" ;;
+    esac ;;
+  *)
+    cs_cause_lb="cause non établie : quelle liste blanche écarte les lignes n'a pas pu être lu"
+    cs_cause_a="cause non etablie : quelle liste blanche ecarte les lignes n'a pas pu etre lu" ;;
+esac
 if [ "$acq_verdict" = tout_en_liste_blanche ]; then
   [ "$hsev" -lt 3 ] && hsev=3
-  hmsg="$hmsg — ACQUISITION tout_en_liste_blanche : toutes les lignes analysées sont parties en liste blanche ($cs_cause_lb), aucune n'atteint les scénarios, l'absence d'alerte ne prouve rien"
+  hmsg="$hmsg — ACQUISITION tout_en_liste_blanche : toutes les lignes analysées sont parties en liste blanche ($cs_rep_txt ; $cs_cause_lb), $cs_duree_m, l'absence d'alerte ne prouve rien"
+elif [ "$acq_verdict" = en_liste_blanche_sous_le_seuil ]; then
+  [ "$hsev" -lt 1 ] && hsev=1
+  hmsg="$hmsg — acquisition en_liste_blanche_sous_le_seuil : toutes les lignes analysées sont parties en liste blanche ($cs_rep_txt ; $cs_cause_lb), $cs_duree_m ; refus de conclure au seuil"
 elif [ "$acq_refus" -eq 1 ]; then
   [ "$hsev" -lt 3 ] && hsev=3
   hmsg="$hmsg — ACQUISITION $acq_verdict : aucune ligne n'atteint les scénarios, l'absence d'alerte ne prouve rien"
 elif [ "$acq_verdict" = surtout_liste_blanche ]; then
   [ "$hsev" -lt 2 ] && hsev=2
-  hmsg="$hmsg — ACQUISITION surtout_liste_blanche : $acq_part % des lignes analysées sont parties en liste blanche (seuil $CS_WL_SEUIL %, $cs_cause_lb), la détection ne porte que sur le reste"
+  hmsg="$hmsg — ACQUISITION surtout_liste_blanche : $acq_part % des lignes analysées sont parties en liste blanche (seuil $CS_WL_SEUIL %, $cs_rep_txt ; $cs_cause_lb), la détection ne porte que sur le reste"
 elif [ "$acq_part" -ge 0 ] 2>/dev/null; then
   hmsg="$hmsg — liste blanche : $acq_part % des lignes analysées"
 fi
@@ -359,11 +542,14 @@ fi
 # LA CLÉ DE DÉDOUBLONNAGE NE PORTE PAS LES COMPTES. Le détail en porte (lignes lues, analysées) et,
 # l'état n'avançant pas sur un refus, `aucune_analyse` voit ses lignes lues GRANDIR à chaque passage :
 # une clé prise sur le détail changerait à chaque passage et la dédup horaire ne tiendrait plus (une
-# alerte de couverture par passage). La matière de la clé est donc le verdict et la cause seuls ; le
-# central garde le détail du PREMIER aveu de l'heure, le battement porte les comptes du passage.
+# alerte de couverture par passage). La matière de la clé est donc le verdict, la cause et, pour
+# `tout_en_liste_blanche`, la variante de cause (`mandataire`, `vraies_adresses`, `repartition_inconnue`,
+# P10.32-k) : une cause qui CHANGE dans l'heure est un fait neuf, un nouvel aveu ; ni la durée ni les
+# comptes n'y entrent. Le central garde le détail du PREMIER aveu de l'heure, le battement porte les
+# comptes du passage.
 if [ "$acq_verdict" = tout_en_liste_blanche ]; then
-  plume_lecture_partielle crowdsec "$acq_cause" "acquisition CrowdSec : tout_en_liste_blanche (sources : $acq_n, lignes analysees : $( [ "$acq_dp" -ge 0 ] && echo "$acq_dp" || echo "$acq_p"), en liste blanche : $( [ "$acq_dw" -ge 0 ] && echo "$acq_dw" || echo "$acq_w"), versees aux scenarios : 0). Toutes les lignes analysees sont ecartees par la liste blanche ; cause probable : l'adresse cliente que CrowdSec lit est privee (celle d'un mandataire ou d'un tunnel) et la liste blanche des adresses privees l'ecarte. Aucune ligne n'atteint les scenarios ; l'absence d'alerte ne peut PAS etre conclue." \
-    "crowdsec acquisition $acq_verdict $acq_cause"
+  plume_lecture_partielle crowdsec "$acq_cause" "acquisition CrowdSec : tout_en_liste_blanche (sources : $acq_n, lignes analysees : $( [ "$acq_dp" -ge 0 ] && echo "$acq_dp" || echo "$acq_p"), en liste blanche : $( [ "$acq_dw" -ge 0 ] && echo "$acq_dw" || echo "$acq_w"), versees aux scenarios : 0 ; $cs_rep_a). Toutes les lignes analysees sont ecartees par une liste blanche ; $cs_cause_a. $cs_duree_a ; l'absence d'alerte ne peut PAS etre conclue." \
+    "crowdsec acquisition $acq_verdict $acq_cause $cs_variante"
 elif [ "$acq_refus" -eq 1 ]; then
   plume_lecture_partielle crowdsec "$acq_cause" "acquisition CrowdSec : $acq_verdict (sources : $acq_n, lignes lues depuis le passage precedent : $acq_dr, analysees : $acq_dp). Aucune ligne n'atteint les scenarios ; l'absence d'alerte ne peut PAS etre conclue." \
     "crowdsec acquisition $acq_verdict $acq_cause"

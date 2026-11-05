@@ -491,7 +491,7 @@ fichier dans `/var/lib/plume/spool/`), comme le fait le
 | `origin-drop` | `journalctl -k`, préfixe `ORIGIN-DROP:` que vous posez | root | paquets rejetés à l'origine | — | `search source=origin-drop category=health \| table ts, message` ♥ |
 | `portscan` · `portprobe` | table `nft` `plume-portscan` · `nft`, `jq` | root | adresses qui balaient, ports | — | `search source=portscan category=health \| table ts, message` ♥ |
 | `bans` (`fail2ban`) | `cscli`, `fail2ban-client` (ou dans un pod) | root ; **kubeconfig** si les moteurs sont dans le cluster | bans actifs, `category=ban` | `kubectl exec` dans le pod du moteur (§6.1) | `search source=fail2ban category=health \| table ts, message` ♥ |
-| `crowdsec` | `cscli` (ou dans le pod LAPI) · `jq` | root ; **kubeconfig** en k3s | alertes, et un battement qui dit ce que le moteur **lit** | derrière un mandataire, la liste blanche des adresses privées aveugle le moteur (§6.5) | `search source=crowdsec category=health \| table ts, acq_verdict, message` ♥ |
+| `crowdsec` | `cscli` (ou dans le pod LAPI) · `jq` | root ; **kubeconfig** en k3s | alertes, et un battement qui dit ce que le moteur **lit** | derrière un mandataire, la liste blanche des adresses privées aveugle le moteur ; la cause suit la répartition par liste blanche, le refus attend `PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` (24) ; une poignée mTLS refusée n'est pas vue (§6.5) | `search source=crowdsec category=health \| table ts, acq_verdict, message` ♥ |
 | `falco` | sortie JSON de Falco | root, capacités bornées à `CAP_DAC_READ_SEARCH` | détections eBPF | — | `search source=falco \| stats count` |
 | `suricata` | `eve.json` | root | alertes IDS | — | `search source=suricata \| stats count` |
 | `clamav` | `clamscan` / `clamdscan` sur les fichiers nouveaux | root | fichier, signature | noms de fichiers échappés | `search source=clamav \| stats count` |
@@ -718,6 +718,33 @@ et ne peut rien détecter. Le battement le dit (`acq_verdict` à `tout_en_liste_
 `surtout_liste_blanche`, seuil `PLUME_CROWDSEC_WHITELIST_SHARE_MAX`, défaut 90). Le remède est de faire
 écrire au journal **la vraie adresse cliente** (en-tête d'adresse réelle du mandataire, journal d'accès
 qui la porte), pas de retirer la liste blanche.
+
+**Quelle liste blanche écarte.** Le capteur lit `cscli metrics show whitelists -o json` (repli : la section
+`whitelists` de `cscli metrics -o json` ; absente avant les versions 1.6.x qui la portent) et nomme, dans le
+battement et dans l'aveu, les lignes écartées par chaque liste sur la fenêtre (au premier passage, ou sans état
+lisible : depuis le démarrage de l'agent, et il le dit). La cause « adresse privée d'un mandataire » n'est dite
+que si **toutes** sont parties dans `crowdsecurity/whitelists`. Si une autre liste en a écarté (par exemple une
+liste des réponses servies à une session SSO), le moteur lit les vraies adresses ; et, quand **aucune** ligne n'a
+atteint les scénarios (`tout_en_liste_blanche` ou `en_liste_blanche_sous_le_seuil`), rien d'anonyme n'a atteint
+l'origine sur la fenêtre (filtré en amont, ou site injoignable) — sur `surtout_liste_blanche`, des lignes y sont
+parvenues et cette phrase n'est pas dite. Répartition illisible : « répartition inconnue », et aucune cause n'est affirmée.
+
+**Une durée, pas un cri par passage.** Tant qu'aucune ligne n'atteint les scénarios depuis moins de
+`PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` heures (défaut 24 ; `0` = refus immédiat, l'ancien comportement ;
+illisible = repli sur 24, dit), le verdict est `en_liste_blanche_sous_le_seuil` : sévérité 1, durée et seuil dans
+le message, aucun aveu. Au seuil, `tout_en_liste_blanche` refuse de conclure (sévérité 3, aveu), durée dite. La
+durée court depuis le dernier passage où des lignes ont atteint les scénarios (`crowdsec-scenarios-atteints.ts`
+dans l'état du capteur) ; après une mise à niveau, elle part du premier passage qui constate l'absence de cet
+horodatage, et le dit. Prix : pendant ce délai, un moteur vraiment aveuglé par un mandataire ne refuse pas — il
+le dit en sévérité 1, avec la répartition qui nomme la liste privée. Si cet horodatage est absent ou illisible
+et ne peut pas s'écrire (état du capteur non inscriptible), la durée ne peut pas courir : le capteur refuse sans
+attendre le seuil, le dit dans le message, et avoue l'échec d'écriture (`etat/horodatage`). Un horodatage valide
+déjà posé continue de compter la durée, même si l'état est devenu non inscriptible.
+
+**Limite : une route servie par un relais sans en-tête d'adresse, ou protégée par mTLS.** Dans un déploiement où
+un relais ou un tunnel n'ajoute aucun en-tête d'adresse réelle, les lignes de cette route portent l'adresse du
+relais, et la liste des adresses privées les écarte à bon droit. Une poignée mTLS refusée ne produit **aucune**
+ligne d'accès : CrowdSec ne voit donc pas ces tentatives. C'est le mTLS qui les refuse, pas CrowdSec qui les voit.
 
 ### 6.6 `pod-logs` : ses exclusions se posent dans un drop-in LOCAL
 

@@ -1603,10 +1603,10 @@ const MOTS_DE_LA_DUREE_DE_BAN = {
   defaut: { fr: 'défaut du serveur', en: 'server default' },
   defaut_servi: { fr: 'défaut du serveur ({duree})', en: 'server default ({duree})' },
   // Comme la conséquence servie par le démon (`action_consequence_pour_la_duree`, daemon/src/handlers/playbooks.rs) :
-  // l'agent d'un hôte distant (collectors/respond.sh) applique SA durée (`PLUME_BAN_DURATION`), que la file ne lui
-  // transmet pas.
-  note_vide: { fr: 'vide = {defaut} ; ne s\'applique qu\'à la riposte ban_ip, côté central (l\'agent d\'un hôte distant garde sa propre durée, PLUME_BAN_DURATION)',
-    en: 'empty = {defaut}; applies to the ban_ip response only, on the central side (a remote host\'s agent keeps its own duration, PLUME_BAN_DURATION)' },
+  // l'agent d'un hôte distant (collectors/respond.sh) applique la durée servie par la file s'il sait lire le JSON
+  // (jq ou python3) ; sans lecteur, ou s'il est antérieur, il garde SA durée (`PLUME_BAN_DURATION`).
+  note_vide: { fr: 'vide = {defaut} ; ne s\'applique qu\'à la riposte ban_ip ; l\'agent d\'un hôte distant applique cette durée s\'il lit le JSON (jq ou python3) ; sinon, ou s\'il est antérieur, il garde sa propre durée (PLUME_BAN_DURATION)',
+    en: 'empty = {defaut}; applies to the ban_ip response only; a remote host\'s agent applies this duration if it can read JSON (jq or python3); otherwise, or if it is older, it keeps its own (PLUME_BAN_DURATION)' },
   refus: { fr: 'DURÉE DU BAN REFUSÉE AVANT ENVOI : « {valeur} » (unité : {unite}) n\'est pas un nombre entier dont le total tient entre 1 seconde et 31536000 secondes (365 jours). Rien n\'est envoyé ; videz le champ pour le défaut du serveur.',
     en: 'BAN DURATION REFUSED BEFORE SENDING: “{valeur}” (unit: {unite}) is not a whole number totalling between 1 second and 31536000 seconds (365 days). Nothing is sent; clear the field for the server default.' },
   refus_unite: { fr: 'DURÉE DU BAN REFUSÉE AVANT ENVOI : l\'unité « {unite} » n\'est pas l\'une de la console (secondes, minutes, heures, jours). Rien n\'est envoyé.',

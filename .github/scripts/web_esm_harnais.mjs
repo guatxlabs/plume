@@ -32319,7 +32319,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     if (!/ban : défaut du serveur \(4 heures\)/.test(ligne(PB({ ban_ttl_s: null })))) ecarts176.push(`défaut servi (14400) : la ligne ne le cite pas — « ${ligne(PB({ ban_ttl_s: null })).slice(0, 200)} »`);
     servirLeDefaut176 = false; await m.loadPlaybooks(); await laisser170();
     m.openPbForm(null);
-    if (!note176().includes("défaut du serveur") || /\d/.test(note176())) ecarts176.push(`rien de servi : la note cite une durée devinée — « ${note176()} »`);
+    // « python3 » (le lecteur JSON de l'agent, nommé par la note) n'est pas une durée : il est retiré avant de chercher un chiffre.
+    if (!note176().includes("défaut du serveur") || /\d/.test(note176().replace(/\bpython3\b/g, ""))) ecarts176.push(`rien de servi : la note cite une durée devinée — « ${note176()} »`);
     { const l = ligne(PB({ ban_ttl_s: null })); const apres = (l.split("ban :")[1] || ""); if (!/^ défaut du serveur/.test(apres) || /\d/.test(apres)) ecarts176.push(`rien de servi : la ligne cite une durée devinée — « ${l.slice(0, 200)} »`); }
     servirLeDefaut176 = true; await m.loadPlaybooks(); await laisser170();
     // b) Une création APRÈS une édition repart vide, unité heures : la durée du playbook précédent n'est pas reportée.
@@ -32370,12 +32371,28 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       if (modDetEn170.dureeDeBanLisible(sec) !== en) ecarts176.push(`en dureeDeBanLisible(${sec}) = « ${modDetEn170.dureeDeBanLisible(sec)} » au lieu de « ${en} »`);
     }
     { const r = m.lireLaDureeDeBan("1.5", "3600"); if (!r.refus || /\bde heures\b/.test(r.refus) || !r.refus.includes("(unité : heures)")) ecarts176.push(`le refus de « 1.5 » heures se dit mal : « ${r.refus} »`); }
-    // f) La note dit que l'agent d'un hôte distant garde sa propre durée (comme la conséquence servie par le démon),
-    //    dans les deux langues, et l'infobulle du champ aussi.
-    if (!/hôte distant/.test(note176()) || !/PLUME_BAN_DURATION/.test(note176())) ecarts176.push(`la note ne dit pas que l'hôte distant garde sa durée : « ${note176()} »`);
+    // f) Après `P11.25-a` (volet hôte) : l'agent d'un hôte distant APPLIQUE la durée s'il lit le JSON ; sans lecteur,
+    //    ou antérieur, il garde la sienne. La note (fr, en), l'infobulle (fr dans index.html, en dans i18n.js) et l'aide
+    //    portent la MÊME phrase ; l'ancienne (« garde sa propre durée » sans condition, « côté central ») est refusée.
+    const PHRASE176 = { fr: /l'agent d'un hôte distant applique cette durée s'il lit le JSON \(jq ou python3\) ; sinon, ou s'il est antérieur, il garde sa propre durée \(PLUME_BAN_DURATION\)/i,
+      en: /a remote host's agent applies this duration if it can read JSON \(jq or python3\); otherwise, or if it is older, it keeps its own \(PLUME_BAN_DURATION\)/i };
+    const ANCIENNE176 = /hôte distant (?:\(respond\.sh\) )?garde sa propre durée|keeps its own duration|côté central|on the central side/;
+    const juger176 = (quoi, texte, langue) => {
+      if (!PHRASE176[langue].test(texte)) ecarts176.push(`${quoi} ne porte pas la phrase de l'hôte distant (${langue}) : « ${texte} »`);
+      if (ANCIENNE176.test(texte)) ecarts176.push(`${quoi} porte encore l'ancienne phrase de l'hôte distant : « ${texte} »`);
+    };
+    juger176("la note", note176(), "fr");
     modDetEn170.openPbForm(null);
-    if (!/remote host/.test(note176()) || !/PLUME_BAN_DURATION/.test(note176())) ecarts176.push(`en : la note ne dit pas que l'hôte distant garde sa durée : « ${note176()} »`);
-    { const t = (htmlPage176.match(/<label title="([^"]*)">Durée du ban/) || [])[1] || ""; if (!/hôte distant/.test(t) || !/PLUME_BAN_DURATION/.test(t)) ecarts176.push(`l'infobulle du champ ne dit pas que l'hôte distant garde sa durée : « ${t} »`); }
+    juger176("en : la note", note176(), "en");
+    const infobulle176 = (htmlPage176.match(/<label title="([^"]*)">Durée du ban/) || [])[1] || "";
+    juger176("l'infobulle du champ", infobulle176, "fr");
+    { const src = readFileSync(path.join(WEB, "i18n.js"), "utf8"); const i = src.indexOf(JSON.stringify(infobulle176) + ":");
+      const en = i < 0 ? "" : (src.slice(i + JSON.stringify(infobulle176).length + 1).match(/^\s*("(?:[^"\\]|\\.)*")/) || [, '""'])[1];
+      juger176("en : l'infobulle du champ (i18n.js)", i < 0 ? `(clé absente de i18n.js : « ${infobulle176} »)` : JSON.parse(en), "en"); }
+    { const aide = readFileSync(path.join(WEB, "help_registry.js"), "utf8");
+      juger176("l'aide de la riposte (help_registry.js)", aide, "fr"); juger176("en : l'aide de la riposte (help_registry.js)", aide, "en");
+      if (!/fail2ban, le ban dure le bantime du jail/.test(aide) || !/fail2ban the ban lasts the jail's bantime/.test(aide)) ecarts176.push("l'aide de la riposte ne dit pas que fail2ban garde le bantime du jail, dans les deux langues");
+      if (!/agent antérieur sur nft bannit jusqu'à unban/.test(aide) || !/older agent on nft bans until unban/.test(aide)) ecarts176.push("l'aide de la riposte ne dit pas qu'un agent antérieur sur nft bannit jusqu'à unban, dans les deux langues"); }
     // g) L'aide de la réponse ne dit plus la durée « jamais écrite dans l'interface » : elle nomme le champ, dans les deux langues.
     { const aide = readFileSync(path.join(WEB, "help_registry.js"), "utf8");
       if (/jamais écrite dans l'interface|never written in the interface/.test(aide)) ecarts176.push("l'aide de la réponse (help_registry.js) dit encore la durée du ban jamais écrite dans l'interface");
@@ -32389,7 +32406,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   exiger(ecarts172.length === 0, `(172) \`P11.25-a\` (console) — UNE DURÉE NON ENTIÈRE OU HORS BORNE N'EST PAS REFUSÉE AVANT ENVOI : ${JSON.stringify(ecarts172)}`);
   exiger(ecarts176.length === 0, `(176) \`P11.25-a\` (console) — LE FORMULAIRE DIT MAL LA DURÉE DU BAN (défaut servi, remise à vide, unités, option ban_ip, hôte distant) : ${JSON.stringify(ecarts176)}`);
   if (echecs.length !== echecsAvant170) console.log(`(170-172, 176) EN ÉCHEC — ${echecs.length - echecsAvant170} écart(s), dits ci-dessus`);
-  else console.log("(170-172, 176) OK — `P11.25-a` (console, vague WA) : le défaut servi (14400) est cité « 4 heures » dans la note et la ligne, rien de servi n'en cite aucun ; une création après une édition repart vide ; les options du balisage sont les unités du code et une unité inconnue est refusée ; l'option ban_ip du sélecteur dit la durée du formulaire (90 min, 48 h, 45 s, le défaut quand vide) et suit la saisie ; singulier et refus bien dits ; la note et l'infobulle disent que l'agent d'un hôte distant garde sa durée ; par le vrai gestionnaire du formulaire, un champ vide envoie `ban_ttl_s: null` explicitement et la note dit « défaut du serveur », 90 minutes partent en 5400 s et 2 jours en 172800 s, une durée relue s'affiche dans la plus grande unité qui la divise exactement (5401 reste en secondes) et repart identique, la ligne d'un ban_ip dit sa durée ou le défaut ; le refus 400 du serveur (cause relue dans playbooks.rs) se lit entier dans le formulaire resté ouvert ; décimal, zéro, négatif, texte, exposant et hors borne ne partent pas et le formulaire le dit dans les deux langues, les bornes exactes partent. Ce qu'ils NE tiennent PAS : que le démon applique la durée (témoins Rust).");
+  else console.log("(170-172, 176) OK — `P11.25-a` (console, vague WA) : le défaut servi (14400) est cité « 4 heures » dans la note et la ligne, rien de servi n'en cite aucun ; une création après une édition repart vide ; les options du balisage sont les unités du code et une unité inconnue est refusée ; l'option ban_ip du sélecteur dit la durée du formulaire (90 min, 48 h, 45 s, le défaut quand vide) et suit la saisie ; singulier et refus bien dits ; la note, l'infobulle et l'aide (fr, en) disent que l'agent d'un hôte distant applique la durée s'il lit le JSON et garde la sienne sinon ou s'il est antérieur, l'ancienne phrase refusée ; par le vrai gestionnaire du formulaire, un champ vide envoie `ban_ttl_s: null` explicitement et la note dit « défaut du serveur », 90 minutes partent en 5400 s et 2 jours en 172800 s, une durée relue s'affiche dans la plus grande unité qui la divise exactement (5401 reste en secondes) et repart identique, la ligne d'un ban_ip dit sa durée ou le défaut ; le refus 400 du serveur (cause relue dans playbooks.rs) se lit entier dans le formulaire resté ouvert ; décimal, zéro, négatif, texte, exposant et hors borne ne partent pas et le formulaire le dit dans les deux langues, les bornes exactes partent. Ce qu'ils NE tiennent PAS : que le démon applique la durée (témoins Rust).");
 }
 
 

@@ -503,10 +503,12 @@ pub(crate) async fn actions_list(State(st): State<AppState>, Extension(au): Exte
 
 /// Agent (token) : réclame les actions APPROUVÉES à appliquer sur SON hôte (ban/unban uniquement).
 /// Réponse = TSV `id<TAB>kind<TAB>target<TAB>dry_run` (1 par ligne) -> parse trivial en shell, sans jq.
+/// `P11.25-a` — un agent qui envoie `Accept: application/x-ndjson` reçoit à la place UN OBJET JSON PAR LIGNE,
+/// qui porte pour un `ban_ip` la durée effective du ban (`ban_ttl_s`, secondes) : voir `FormeDeLaFileDActions`.
 /// Marque chaque action `claimed_ts` (anti double-exécution) ; re-remise auto si pas de résultat sous 5 min.
 /// SÉCURITÉ : l'hôte est dérivé du TOKEN (lié à un hôte), pas d'un paramètre -> un agent ne voit/claim
 /// QUE les actions de son hôte (anti-IDOR cross-agent). Un token non lié à un hôte est refusé ici.
-pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Response {
+pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): Extension<AuthUser>, entetes: axum::http::HeaderMap) -> Response {
     if au.role != "agent" || au.name.is_empty() {
         return (StatusCode::FORBIDDEN, "token agent lié à un hôte requis").into_response();
     }
@@ -535,27 +537,121 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
     // la requête de l'agent.
     // `P10.21-n` — la condition est CELLE de l'UPDATE de réclamation (`CONDITION_DE_RECLAMATION_D_AGENT`),
     // pas une recopie : une seule écriture, la fenêtre comprise.
-    let enonce = format!("SELECT id,kind,target,dry_run FROM action WHERE {CONDITION_DE_RECLAMATION_D_AGENT} ORDER BY id LIMIT 100");
-    let lues: rusqlite::Result<Vec<(i64, String, String, bool)>> = conn
-        .prepare(&enonce)
-        .and_then(|mut s| {
-            s.query_map(params![host, now_ts, STALE], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))?
-                .collect::<rusqlite::Result<Vec<_>>>()
-        });
-    let rows: Vec<(i64, String, String, bool)> = match lues {
-        Ok(v) => v,
-        Err(_) => {
-            return err_json(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "file d'actions NON LUE : la lecture des actions approuvées de cet hôte a échoué. \
-                 AUCUNE action n'est remise ni réclamée ce tour-ci — ce n'est pas une file vide ; réessayer.",
-            )
+    //
+    // `P11.25-a` — LA LECTURE AVANCE PAR PAGES TANT QU'UNE PAGE PLEINE LAISSE LA REMISE INCOMPLÈTE. Une action
+    // retenue sans être réclamée (durée de ban illisible, ou plus réclamable) reste dans la condition : une page
+    // unique `ORDER BY id LIMIT 100` occupée par cent retenues masquerait à chaque tour toutes les actions
+    // suivantes de l'hôte, `unban_ip` compris. La page suivante est lue (`id` au-delà de la dernière lue) tant
+    // que la page lue était pleine et que moins de `PAGE_DE_LA_FILE_D_ACTIONS` actions ont été remises. UN TOUR
+    // REMET AU PLUS `PAGE_DE_LA_FILE_D_ACTIONS` ACTIONS, comme avant les pages : chaque page ne réclame que ce
+    // qui manque pour l'atteindre (`plafond` de `remettre_au_plus`), le reste attend le tour suivant.
+    // Une lecture ou une réclamation ratée APRÈS des actions déjà réclamées arrête la lecture et remet
+    // celles-ci : les rendre en 503 les perdrait (réclamées, jamais remises, re-servies seulement après la
+    // fenêtre de réclamation). La lecture ratée laisse le texte du moteur au journal ; la réclamation ratée y
+    // a déjà sa ligne par action (`remettre_au_plus`).
+    const PAGE_DE_LA_FILE_D_ACTIONS: usize = 100;
+    let enonce = format!("SELECT id,kind,target,dry_run FROM action WHERE {CONDITION_DE_RECLAMATION_D_AGENT} AND id>?4 ORDER BY id LIMIT {PAGE_DE_LA_FILE_D_ACTIONS}");
+    // `P10.21-n` : la réclamation (écrite ou retenue, condition rejouée) est décrite sur `remettre_au_plus`.
+    let forme = FormeDeLaFileDActions::demandee(&entetes);
+    let mut body = String::new();
+    let mut remises = 0usize;
+    let mut apres_l_id = i64::MIN;
+    loop {
+        let lues: rusqlite::Result<Vec<(i64, String, String, bool)>> = conn
+            .prepare(&enonce)
+            .and_then(|mut s| {
+                s.query_map(params![host, now_ts, STALE, apres_l_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            });
+        let rows: Vec<(i64, String, String, bool)> = match lues {
+            Ok(v) => v,
+            Err(_) if remises == 0 => {
+                return err_json(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "file d'actions NON LUE : la lecture des actions approuvées de cet hôte a échoué. \
+                     AUCUNE action n'est remise ni réclamée ce tour-ci — ce n'est pas une file vide ; réessayer.",
+                )
+            }
+            Err(e) => {
+                eprintln!("[actions] page suivante de la file NON LUE ce tour-ci, les actions déjà réclamées sont remises : {e}");
+                break;
+            }
+        };
+        let Some(derniere) = rows.last().map(|r| r.0) else { break };
+        match remettre_au_plus(&conn, &rows, &host, now_ts, forme, PAGE_DE_LA_FILE_D_ACTIONS - remises) {
+            Ok((page, reclamees)) => {
+                body.push_str(&page);
+                remises += reclamees;
+            }
+            Err(cause) if remises == 0 => return err_json(StatusCode::SERVICE_UNAVAILABLE, cause),
+            Err(_) => break,
         }
-    };
-    // `P10.21-n` : la réclamation (écrite ou retenue, condition rejouée) est décrite sur `remettre_les_actions_lues`.
-    match remettre_les_actions_lues(&conn, &rows, &host, now_ts) {
-        Ok(body) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response(),
-        Err(cause) => err_json(StatusCode::SERVICE_UNAVAILABLE, cause),
+        if rows.len() < PAGE_DE_LA_FILE_D_ACTIONS || remises >= PAGE_DE_LA_FILE_D_ACTIONS {
+            break;
+        }
+        apres_l_id = derniere;
+    }
+    ([(header::CONTENT_TYPE, forme.type_de_contenu())], body).into_response()
+}
+
+/// `P11.25-a` — LA FORME DE LA FILE REMISE À UN AGENT. Le TSV à quatre champs reste la forme par défaut, à
+/// l'octet : un `respond.sh` déjà déployé lit `id kind target dry` par `read`, et un cinquième champ tomberait
+/// dans `dry` (`1<TAB>3600` n'est plus le `1` que teste `[ "${dry:-1}" = "1" ]`) — une riposte SIMULÉE serait
+/// appliquée. La durée du ban ne part donc que vers l'agent qui la demande (`Accept: application/x-ndjson`) :
+/// un objet JSON par ligne,
+/// `{"ban_ttl_s":…,"dry_run":…,"id":…,"kind":…,"target":…}`, où `ban_ttl_s` (entier, secondes) est la durée
+/// EFFECTIVE (`duree_de_ban_de_la_riposte`, la même que l'approbation, le miroir et la commande CrowdSec du
+/// responder local), présente pour un `ban_ip` seulement. Un démon antérieur ignore l'en-tête et rend le TSV :
+/// c'est ce qui dit à l'agent de se replier sur sa propre durée.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FormeDeLaFileDActions {
+    Tsv,
+    JsonParLigne,
+}
+
+/// `P11.25-a` — le type de contenu qui demande la forme JSON par ligne.
+pub(crate) const TYPE_DE_LA_FILE_JSON_PAR_LIGNE: &str = "application/x-ndjson";
+
+impl FormeDeLaFileDActions {
+    /// La forme que demande l'en-tête `Accept` : JSON par ligne s'il nomme `application/x-ndjson` parmi ses types
+    /// (casse ignorée) sans le refuser, TSV sinon — en-tête absent compris. Un poids nul (`q=0`, `Q=0.000`) est un
+    /// REFUS explicite du type (RFC 9110, 12.4.2) : il ne demande pas cette forme. Les autres paramètres sont ignorés.
+    pub(crate) fn demandee(entetes: &axum::http::HeaderMap) -> Self {
+        let nomme = entetes.get_all(header::ACCEPT).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(',')).any(|t| {
+            let mut morceaux = t.split(';');
+            morceaux.next().unwrap_or("").trim().eq_ignore_ascii_case(TYPE_DE_LA_FILE_JSON_PAR_LIGNE)
+                && !morceaux.any(Self::poids_nul)
+        });
+        if nomme { Self::JsonParLigne } else { Self::Tsv }
+    }
+
+    /// Un paramètre `q` de valeur nulle (`0`, `0.`, `0.000`) : le type est refusé.
+    fn poids_nul(parametre: &str) -> bool {
+        let Some((nom, valeur)) = parametre.split_once('=') else { return false };
+        nom.trim().eq_ignore_ascii_case("q") && valeur.trim().parse::<f64>().is_ok_and(|q| q <= 0.0)
+    }
+
+    pub(crate) fn type_de_contenu(self) -> &'static str {
+        match self {
+            Self::Tsv => "text/plain; charset=utf-8",
+            Self::JsonParLigne => TYPE_DE_LA_FILE_JSON_PAR_LIGNE,
+        }
+    }
+
+    /// La ligne d'une action réclamée ; `ban_ttl_s` est `Some` pour un `ban_ip`, `None` pour tout autre genre.
+    fn ligne(self, id: i64, kind: &str, target: &str, dry: bool, ban_ttl_s: Option<i64>) -> String {
+        match self {
+            Self::Tsv => format!("{id}\t{kind}\t{target}\t{}\n", if dry { 1 } else { 0 }),
+            Self::JsonParLigne => {
+                let mut objet = serde_json::Map::new();
+                objet.insert("id".into(), json!(id));
+                objet.insert("kind".into(), json!(kind));
+                objet.insert("target".into(), json!(target));
+                objet.insert("dry_run".into(), json!(dry));
+                objet.extend(ban_ttl_s.map(|duree| ("ban_ttl_s".to_string(), json!(duree))));
+                format!("{}\n", Value::Object(objet))
+            }
+        }
     }
 }
 
@@ -580,8 +676,8 @@ pub(crate) const CONDITION_DE_RECLAMATION_D_AGENT: &str = concat!(
     reclamation_libre_ou_perimee!("?2", "?3")
 );
 
-/// Réclame, une à une, les actions LUES par `actions_pending` et rend le TSV de celles qui sont
-/// réclamées ; `Err` porte la cause du 503 quand des actions lues ont été retenues sur anomalie et
+/// Réclame, une à une, les actions LUES par `actions_pending` et rend le corps de celles qui sont
+/// réclamées, sous la `forme` demandée par l'agent (TSV, ou JSON par ligne) ; `Err` porte la cause du 503 quand des actions lues ont été retenues sur anomalie et
 /// qu'aucune n'a été réclamée. Pure sur `&Connection` : le témoin y entrelace une seconde connexion.
 ///
 /// `P10.21-n` (volet démon) — UNE ACTION N'EST REMISE QUE SI SA RÉCLAMATION EST ÉCRITE. Avant :
@@ -604,19 +700,50 @@ pub(crate) const CONDITION_DE_RECLAMATION_D_AGENT: &str = concat!(
 /// l'agent, aucun registre écrit). Pour séparer ce zéro d'une écriture SANS EFFET (déclencheur
 /// `RAISE(IGNORE)`), la condition est RELUE sur ce seul chemin : encore vraie, ou relecture ratée, c'est
 /// une anomalie qui compte pour le 503 — une erreur du moteur n'est jamais rendue comme « rien à réclamer ».
-pub(crate) fn remettre_les_actions_lues(
+///
+/// `P11.25-a` — LA DURÉE D'UN BAN EST LUE AVANT SA RÉCLAMATION. Lecture et réclamation ne sont pas une même
+/// écriture (deux énoncés, sans transaction) : la durée (`duree_de_ban_de_la_riposte`) est lue d'abord, et une
+/// durée illisible (colonne `ban_ttl_s` d'un autre type, ou hors borne) RETIENT l'action — ni
+/// réclamée, ni remise, laissée `approved` — avec une ligne de journal `[actions] action <id> NON REMISE ce
+/// tour-ci : ` suivie de la cause entière (`cause_duree_de_ban_non_lue`, la phrase du responder local), dans les
+/// deux formes : rien n'est appliqué avec une durée devinée, pas même par un agent qui ne lit pas la durée. Ce
+/// n'est pas une anomalie de réclamation (pas de 503) : les autres actions de la page sont remises, la page
+/// suivante est lue si celle-ci était pleine (`actions_pending`), et la colonne corrigée libère l'action au tour
+/// suivant. Une action réclamée part donc toujours avec la durée lue pour elle.
+///
+/// `P11.25-a` — `plafond` : au plus autant de réclamations ; les lignes suivantes ne sont ni lues pour leur
+/// durée, ni réclamées, ni remises (le tour suivant les relit). `Ok` porte le corps et le nombre d'actions
+/// réclamées.
+pub(crate) fn remettre_au_plus(
     conn: &Connection,
     rows: &[(i64, String, String, bool)],
     host: &str,
     now_ts: i64,
-) -> Result<String, &'static str> {
+    forme: FormeDeLaFileDActions,
+    plafond: usize,
+) -> Result<(String, usize), &'static str> {
     let reclamer = format!("UPDATE action SET claimed_ts=?2, host=?1 WHERE id=?4 AND {CONDITION_DE_RECLAMATION_D_AGENT}");
     let relire = format!("SELECT EXISTS(SELECT 1 FROM action WHERE id=?4 AND {CONDITION_DE_RECLAMATION_D_AGENT})");
     let mut body = String::new();
     let mut reclamees = 0usize;
     let mut retenues_sur_anomalie = 0usize;
     for (id, kind, target, dry) in rows {
-        let ligne = format!("{id}\t{kind}\t{target}\t{}\n", if *dry { 1 } else { 0 });
+        if reclamees >= plafond {
+            break;
+        }
+        let ban_ttl_s = if kind == "ban_ip" {
+            match duree_de_ban_de_la_riposte(conn, *id) {
+                Ok(duree) => Some(duree),
+                Err(e) => {
+                    // L'identifiant de l'action, jamais la cible.
+                    eprintln!("[actions] action {id} NON REMISE ce tour-ci : {}", cause_duree_de_ban_non_lue(&e));
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let ligne = forme.ligne(*id, kind, target, *dry, ban_ttl_s);
         // assigne l'action à l'hôte réclamant (no-op si déjà ciblée sur lui) -> action_result peut clôturer
         match conn.execute(&reclamer, params![host, now_ts, RECLAMATION_PERIMEE_S, id]) {
             Ok(1) => {
@@ -645,7 +772,19 @@ pub(crate) fn remettre_les_actions_lues(
     if reclamees == 0 && retenues_sur_anomalie > 0 {
         return Err(CAUSE_REMISE_D_ACTIONS_NON_RECLAMEE);
     }
-    Ok(body)
+    Ok((body, reclamees))
+}
+
+/// `remettre_au_plus` sans plafond, corps seul : la forme que les témoins de la réclamation appellent.
+#[cfg(test)]
+pub(crate) fn remettre_les_actions_lues(
+    conn: &Connection,
+    rows: &[(i64, String, String, bool)],
+    host: &str,
+    now_ts: i64,
+    forme: FormeDeLaFileDActions,
+) -> Result<String, &'static str> {
+    remettre_au_plus(conn, rows, host, now_ts, forme, usize::MAX).map(|(body, _)| body)
 }
 
 /// `P10.21-n` (volet démon) — des actions approuvées ont été LUES, mais aucune réclamation n'a pu être

@@ -52,7 +52,7 @@ mod reclamation_d_action_une_seule_ecriture {
     }
 
     async fn servir(st: &AppState) -> (u16, String) {
-        let r = actions_pending(State(st.clone()), Extension(agent())).await;
+        let r = actions_pending(State(st.clone()), Extension(agent()), axum::http::HeaderMap::new()).await;
         let statut = r.status().as_u16();
         let corps = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
         (statut, String::from_utf8(corps.to_vec()).unwrap())
@@ -85,11 +85,17 @@ mod reclamation_d_action_une_seule_ecriture {
         let debut = code.find("pub(crate) async fn actions_pending(").expect("actions_pending existe");
         let fin = debut + code[debut..].find("\n}\n").expect("fin d'actions_pending");
         let corps = &code[debut..fin];
+        // `P11.25-a` : le SELECT est paginé (`AND id>?4`, borne nommée) ; il dérive toujours de la condition de
+        // l'UPDATE, et c'est le SEUL énoncé de lecture du corps — une seconde lecture de la file y rougirait.
         assert_eq!(
-            corps.matches("SELECT id,kind,target,dry_run FROM action WHERE {CONDITION_DE_RECLAMATION_D_AGENT} ORDER BY id LIMIT 100").count(),
+            corps
+                .matches("SELECT id,kind,target,dry_run FROM action WHERE {CONDITION_DE_RECLAMATION_D_AGENT} AND id>?4 ORDER BY id LIMIT {PAGE_DE_LA_FILE_D_ACTIONS}")
+                .count(),
             1,
             "le SELECT d'actions_pending dérive de la condition de l'UPDATE :\n{corps}"
         );
+        assert_eq!(corps.matches("FROM action").count(), 1, "une seule lecture de la file dans actions_pending :\n{corps}");
+        assert_eq!(corps.matches("const PAGE_DE_LA_FILE_D_ACTIONS: usize = 100;").count(), 1, "la borne de la page :\n{corps}");
     }
 
     /// LA BORNE SUR L'UPDATE (`remettre_les_actions_lues`, maintenant explicite) : 299 et 300 s, la
@@ -104,7 +110,7 @@ mod reclamation_d_action_une_seule_ecriture {
             .iter()
             .map(|id| (*id, "unban_ip".to_string(), format!("198.51.100.{}", id - 290), false))
             .collect();
-        let rendu = remettre_les_actions_lues(&c, &lues, HOTE, maintenant);
+        let rendu = remettre_les_actions_lues(&c, &lues, HOTE, maintenant, crate::handlers::actions::FormeDeLaFileDActions::Tsv);
         assert_eq!(rendu, Ok("301\tunban_ip\t198.51.100.11\t0\n".to_string()), "seule la réclamation de PLUS de 300 s est périmée");
         assert_eq!(reclamation(&c, 299), Some(maintenant - 299), "299 s : la réclamation tient, intacte");
         assert_eq!(reclamation(&c, 300), Some(maintenant - 300), "300 s, borne exacte : la réclamation tient encore, intacte");
@@ -204,7 +210,7 @@ mod reclamation_d_action_une_seule_ecriture {
         assert_eq!(statut, 200);
         assert_eq!(servi, tsv_attendu, "le SELECT d'actions_pending suit la règle écrite, TSV à l'octet");
         let toutes: Vec<(i64, String, String, bool)> = etats.iter().map(|(id, _, g, _, _)| (*id, g.to_string(), format!("198.51.100.{id}"), true)).collect();
-        let tsv = remettre_les_actions_lues(&st_reclame.db.lock(), &toutes, HOTE, maintenant).expect("des réclamations écrites");
+        let tsv = remettre_les_actions_lues(&st_reclame.db.lock(), &toutes, HOTE, maintenant, crate::handlers::actions::FormeDeLaFileDActions::Tsv).expect("des réclamations écrites");
         let reclamees: BTreeSet<i64> = tsv.lines().map(|l| l.split('\t').next().unwrap().parse().unwrap()).collect();
         let attendus: BTreeSet<i64> = attendu.iter().map(|a| a.0).collect();
         assert_eq!(reclamees, attendus, "l'UPDATE de réclamation suit la MÊME règle que le SELECT");

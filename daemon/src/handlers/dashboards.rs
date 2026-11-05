@@ -127,25 +127,130 @@ pub(crate) const CAUSE_TABLEAU_DE_BORD_NON_LU: &str = "TABLEAU DE BORD NON LU : 
      le droit de le voir n'est pas jugé. RIEN n'est servi. Réessayez ; si le refus persiste, la table des tableaux de \
      bord est illisible.";
 
-pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> Json<Value> {
-    // filtre optionnel par vue : ?view=<id> ou ?view=none (dashboards sans vue)
-    let extra = match q.get("view").map(|s| s.as_str()) {
-        Some("none") => " AND d.view_id IS NULL".to_string(),
-        Some(v) => match v.parse::<i64>() {
-            Ok(n) => format!(" AND d.view_id={n}"),
-            Err(_) => String::new(),
-        },
-        None => String::new(),
-    };
-    let sql = format!(
-        "SELECT d.id,d.name,COALESCE(d.owner,''),COALESCE(d.visibility,'shared'),d.view_id,
-                (SELECT COUNT(*) FROM panel p WHERE p.dashboard_id=d.id),
-                COALESCE(d.cols,2),COALESCE(d.height,0),COALESCE(d.collapsed,0),COALESCE(d.position,d.id)
-         FROM dashboard d
-         WHERE (?1='admin' OR COALESCE(d.visibility,'shared')='shared' OR (?2<>'' AND d.owner=?2)){extra}
-         ORDER BY COALESCE(d.position,d.id), d.id"
-    );
+/// `P11.25-f` — LA BORNE D'UNE PAGE DE `GET /api/dashboards`. Ce qu'elle borne n'est pas la lecture de la liste (une
+/// ligne de tableau de bord est petite) : c'est ce que la console en fait, une tuile par tableau servi, et chaque tuile
+/// charge ses panneaux. Cent tuiles dépassent déjà de loin ce qu'un écran montre ; au-delà, la suite se demande par
+/// `offset`. Une limite hors de `1..=LIMITE_DE_PAGE_DES_TABLEAUX_DE_BORD` est REFUSÉE (400 nommé), jamais ramenée en
+/// silence à la borne. Sans `limit`, la liste entière est servie, comme avant (la console d'avant ne pagine pas) ; le
+/// `total` dit combien de tableaux le filtre retient, quelle que soit la page.
+pub(crate) const LIMITE_DE_PAGE_DES_TABLEAUX_DE_BORD: i64 = 100;
+
+/// `P11.25-f` — `?view=` vaut l'identifiant entier d'une vue ou `none` ; autre chose était lu comme « aucun filtre » et
+/// servait la liste entière sous le nom d'un filtre.
+pub(crate) const CAUSE_FILTRE_DE_VUE_INVALIDE: &str =
+    "FILTRE DE VUE INVALIDE : `view` vaut l'identifiant entier d'une vue ou `none` — rien n'est servi.";
+/// `P11.25-f` — `?offset=` n'est pas un entier positif ou nul.
+pub(crate) const CAUSE_DECALAGE_INVALIDE: &str =
+    "DÉCALAGE INVALIDE : `offset` vaut un entier positif ou nul — rien n'est servi.";
+
+/// `P11.25-f` — la phrase d'une limite hors borne : la borne y est écrite, et la page plus grande n'est pas tronquée.
+pub(crate) fn cause_limite_hors_borne() -> String {
+    format!(
+        "LIMITE HORS BORNE : `limit` vaut un entier de 1 à {LIMITE_DE_PAGE_DES_TABLEAUX_DE_BORD} — une page plus grande \
+         n'est pas servie tronquée, elle est refusée ; demandez la suite par `offset`."
+    )
+}
+
+/// `P11.25-f` — une limite de page admise : de 1 à la borne, bornes comprises.
+fn limite_admise(n: i64) -> bool {
+    (1..=LIMITE_DE_PAGE_DES_TABLEAUX_DE_BORD).contains(&n)
+}
+
+/// `P11.25-f` — ce que `dash_list` sert : un corps et son statut. Le corps reste le champ `.0` (les témoins de la forme
+/// d'avant lisent `dash_list(…).await.0`), le statut dit 200 ou le 400 d'un paramètre refusé.
+pub(crate) struct CorpsDeListe(pub(crate) Value, pub(crate) StatusCode);
+
+impl CorpsDeListe {
+    /// Un paramètre refusé : le statut s'écrit AVANT le corps, comme dans `(StatusCode, Json(…))`, pour que le refus se
+    /// lise comme un refus à son site (et non comme un 200 qui ne porterait que `error`).
+    fn refusee(statut: StatusCode, corps: Value) -> Self {
+        CorpsDeListe(corps, statut)
+    }
+}
+
+impl IntoResponse for CorpsDeListe {
+    fn into_response(self) -> Response {
+        (self.1, Json(self.0)).into_response()
+    }
+}
+
+/// `P11.25-f` — le filtre de vue de `dash_list`, lu une fois : `Vue(id)` rend les tableaux rattachés à la vue
+/// (`view_dashboard`) ou déclarés dans toutes les vues (`all_views = 1`) ; `Aucune` rend ceux qui n'ont aucun
+/// rattachement et ne sont pas dans toutes les vues ; `Tous`, sans paramètre, ne filtre pas.
+enum FiltreDeVue {
+    Tous,
+    Vue(i64),
+    Aucune,
+}
+
+/// La clause commune de la page et de son total : visibilité (`?1` autorité admin, `?2` nom), puis filtre de vue (`?3`
+/// mode, `?4` vue).
+///
+/// `P11.25-f` — UNE VUE QUE L'APPELANT NE VOIT PAS EST UNE VUE INCONNUE. Les deux filtres ne lisent que les
+/// rattachements aux vues du périmètre de `views_list` (et de `view_ids` ci-dessous : administrateur, vue commune, ou
+/// vue de l'appelant). `?view=<id>` d'une vue privée d'autrui rend donc ce que rend un identifiant qu'aucune vue ne
+/// porte — 200, les seuls tableaux de toutes les vues — et rien de son contenu ; un 404 l'aurait distinguée d'une vue
+/// absente, qui rend 200 depuis toujours. `?view=none` rend de même un tableau dont les seuls rattachements sont à des
+/// vues que l'appelant ne voit pas (ses `view_ids` sont vides).
+const FILTRE_DES_TABLEAUX_DE_BORD: &str = "(?1='admin' OR COALESCE(d.visibility,'shared')='shared' OR (?2<>'' AND d.owner=?2))
+           AND (?3='tous'
+                OR (?3='vue' AND (d.all_views=1 OR EXISTS(SELECT 1 FROM view_dashboard vd JOIN view vv ON vv.id=vd.view_id
+                       WHERE vd.view_id=?4 AND vd.dashboard_id=d.id AND (?1='admin' OR vv.visibility='shared' OR vv.owner=?2))))
+                OR (?3='aucune' AND d.all_views=0 AND NOT EXISTS(SELECT 1 FROM view_dashboard vd JOIN view vn ON vn.id=vd.view_id
+                       WHERE vd.dashboard_id=d.id AND (?1='admin' OR vn.visibility='shared' OR vn.owner=?2))))";
+
+pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Query(q): Query<HashMap<String, String>>) -> CorpsDeListe {
     let (me, role) = (au.name.clone(), au.role.clone());
+    let refus = |cause: String| CorpsDeListe::refusee(StatusCode::BAD_REQUEST, json!({ "error": cause }));
+    // `P11.25-f` — les trois paramètres sont jugés AVANT toute lecture ; un paramètre refusé ne sert aucune liste.
+    let filtre = match q.get("view").map(|s| s.as_str()) {
+        None => FiltreDeVue::Tous,
+        Some("none") => FiltreDeVue::Aucune,
+        Some(v) => match v.parse::<i64>() {
+            Ok(n) => FiltreDeVue::Vue(n),
+            Err(_) => return refus(CAUSE_FILTRE_DE_VUE_INVALIDE.to_string()),
+        },
+    };
+    let limite: Option<i64> = match q.get("limit") {
+        None => None,
+        Some(l) => match l.parse::<i64>() {
+            Ok(n) if limite_admise(n) => Some(n),
+            _ => return refus(cause_limite_hors_borne()),
+        },
+    };
+    let decalage: i64 = match q.get("offset") {
+        None => 0,
+        Some(o) => match o.parse::<i64>() {
+            Ok(n) if n >= 0 => n,
+            _ => return refus(CAUSE_DECALAGE_INVALIDE.to_string()),
+        },
+    };
+    let (mode, vue): (&str, Option<i64>) = match filtre {
+        FiltreDeVue::Tous => ("tous", None),
+        FiltreDeVue::Vue(n) => ("vue", Some(n)),
+        FiltreDeVue::Aucune => ("aucune", None),
+    };
+    // `P11.25-f` — LE TOTAL ET LA PAGE SONT LUS PAR UNE SEULE INSTRUCTION, donc sur la même image de la base : le compte
+    // du filtre (`t`, une ligne) joint à gauche à la page (`p`). Une page VIDE rend encore une ligne, colonnes de page
+    // nulles, qui porte le total sans porter de tableau.
+    let sql = format!(
+        "SELECT p.id,p.name,p.owner,p.visibility,p.view_id,p.panels,p.cols,p.height,p.collapsed,p.pos,p.all_views,p.view_ids,t.total
+         FROM (SELECT COUNT(*) AS total FROM dashboard d WHERE {FILTRE_DES_TABLEAUX_DE_BORD}) t
+         LEFT JOIN (
+             SELECT d.id AS id,d.name AS name,COALESCE(d.owner,'') AS owner,COALESCE(d.visibility,'shared') AS visibility,
+                    (SELECT vp.id FROM view vp WHERE vp.id=d.view_id AND (?1='admin' OR vp.visibility='shared' OR vp.owner=?2)) AS view_id,
+                    (SELECT COUNT(*) FROM panel pn WHERE pn.dashboard_id=d.id) AS panels,
+                    COALESCE(d.cols,2) AS cols,COALESCE(d.height,0) AS height,COALESCE(d.collapsed,0) AS collapsed,
+                    COALESCE(d.position,d.id) AS pos,d.all_views AS all_views,
+                    (SELECT json_group_array(r.view_id) FROM (SELECT vd.view_id AS view_id FROM view_dashboard vd JOIN view v ON v.id=vd.view_id
+                       WHERE vd.dashboard_id=d.id AND (?1='admin' OR v.visibility='shared' OR v.owner=?2) ORDER BY vd.view_id) r) AS view_ids
+             FROM dashboard d
+             WHERE {FILTRE_DES_TABLEAUX_DE_BORD}
+             ORDER BY COALESCE(d.position,d.id), d.id
+             LIMIT ?5 OFFSET ?6
+         ) p ON 1
+         ORDER BY p.pos, p.id"
+    );
     // #64 : AUTORITÉ ADMIN EFFECTIVE (rôle composable base=admin inclus) via `is_admin()` -> `adm` sert de bind
     // SQL `?1` (visibilité). Byte-identique en mode 0 (rôle de base admin -> "admin", sinon "").
     // `role` reste la valeur brute renvoyée pour l'affichage.
@@ -154,12 +259,20 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
     // `?2<>''` parce qu'une identité SANS NOM (relais non lié) s'apparierait sinon à une colonne vide.
     let adm = if au.is_admin() { "admin" } else { "" };
     let ident = au.clone();
-    read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "dashboards": [], "me": &me, "role": &role })), |conn| {
+    let illisible = || CorpsDeListe(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "dashboards"), StatusCode::OK);
+    let defaut = CorpsDeListe(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "dashboards": [], "me": &me, "role": &role }), StatusCode::OK);
+    read_with(req_db_path(&st, &au).as_str(), defaut, |conn| {
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
-            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "dashboards")),
+            Err(_) => return illisible(),
         };
-        let out: Vec<Value> = match stmt.query_map(params![adm, me], |r| {
+        let mut total: i64 = 0;
+        let out: Vec<Value> = match stmt.query_map(params![adm, me, mode, vue, limite.unwrap_or(-1), decalage], |r| {
+            let compte: i64 = r.get(12)?;
+            // La ligne d'une page vide : le total, aucun tableau.
+            if r.get::<_, Option<i64>>(0)?.is_none() {
+                return Ok((None, compte));
+            }
             let owner: String = r.get(2)?;
             let vis: String = r.get(3)?;
             // `P11.20-n` — LE DRAPEAU DIT CE QUE LA PORTE FERA, et rien d'autre. La porte d'écriture
@@ -168,23 +281,46 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
             // `editable:false` sur un dashboard COMMUN que le serveur laisse pourtant modifier —
             // un drapeau qui ment sur sa propre porte, exactement le défaut d'à côté.
             let owns = panneau_resolu::lisible_par(&owner, &vis, &ident);
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
-                "owner": owner, "visibility": vis,
-                "view_id": r.get::<_, Option<i64>>(4)?, "panels": r.get::<_, i64>(5)?,
-                "cols": r.get::<_, i64>(6)?, "height": r.get::<_, i64>(7)?,
-                "collapsed": r.get::<_, i64>(8)? != 0, "position": r.get::<_, i64>(9)?,
-                "editable": owns
-            }))
+            // `P11.25-f` — les vues de rattachement, rendues par SQLite en tableau JSON (`[]` sans rattachement), et
+            // seulement celles que l'appelant voit (le périmètre de `views_list`) : l'identifiant d'une vue privée
+            // d'autrui n'est pas servi. `view_id` (vue principale) suit le même périmètre : nul quand la vue principale
+            // est une vue que l'appelant ne voit pas (ou qu'aucune vue ne porte plus), comme si le tableau n'avait pas
+            // de vue principale pour lui ; servi tel quel sinon, comme avant v125.
+            let vues: String = r.get(11)?;
+            let view_ids: Value = serde_json::from_str(&vues)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(11, rusqlite::types::Type::Text, Box::new(e)))?;
+            let toutes: bool = r.get::<_, i64>(10)? != 0;
+            Ok((
+                Some(json!({
+                    "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
+                    "owner": owner, "visibility": vis,
+                    "view_id": r.get::<_, Option<i64>>(4)?, "panels": r.get::<_, i64>(5)?,
+                    "cols": r.get::<_, i64>(6)?, "height": r.get::<_, i64>(7)?,
+                    "collapsed": r.get::<_, i64>(8)? != 0, "position": r.get::<_, i64>(9)?,
+                    "editable": owns,
+                    "all_views": toutes, "view_ids": view_ids
+                })),
+                compte,
+            ))
         }) {
             // `P10.7-z` — une ligne en erreur (dont « no such table » rendu au premier pas) rend la liste NON ÉTABLIE.
-            Ok(r) => match r.collect::<Result<Vec<Value>, _>>() {
-                Ok(v) => v,
-                Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "dashboards")),
+            Ok(r) => match r.collect::<Result<Vec<(Option<Value>, i64)>, _>>() {
+                Ok(v) => {
+                    let mut lignes = Vec::with_capacity(v.len());
+                    for (ligne, compte) in v {
+                        total = compte;
+                        lignes.extend(ligne);
+                    }
+                    lignes
+                }
+                Err(_) => return illisible(),
             },
-            Err(_) => return Json(crate::handlers::liste_bornee::corps_de_liste_illisible(json!({ "me": &me, "role": &role }), "dashboards")),
+            Err(_) => return illisible(),
         };
-        Json(json!({ "dashboards": out, "me": &me, "role": &role }))
+        CorpsDeListe(
+            json!({ "dashboards": out, "me": &me, "role": &role, "total": total, "limit": limite, "offset": decalage }),
+            StatusCode::OK,
+        )
     })
 }
 
@@ -227,6 +363,54 @@ pub(crate) fn lignes_ecrites_au_lieu_d_une(n: usize) -> String {
     format!("{n} ligne(s) écrite(s) au lieu d'une")
 }
 
+/// `P11.25-f` — `all_views` vaut `true` ou `false` ; toute autre valeur (nombre, chaîne, `null`) est refusée par
+/// `dash_create` et `dash_update` avant toute écriture.
+pub(crate) const CAUSE_TOUTES_LES_VUES_INVALIDE: &str =
+    "« TOUTES LES VUES » INVALIDE : `all_views` vaut true ou false — rien n'est écrit.";
+
+/// `P11.25-f` — `all_views` lu dans un corps : absent `Ok(None)`, booléen `Ok(Some(_))`, toute autre valeur le 400 nommé.
+fn lire_toutes_les_vues(b: &Value) -> Result<Option<bool>, Response> {
+    match b.get("all_views") {
+        None => Ok(None),
+        Some(Value::Bool(x)) => Ok(Some(*x)),
+        Some(_) => Err(err_json(StatusCode::BAD_REQUEST, CAUSE_TOUTES_LES_VUES_INVALIDE)),
+    }
+}
+
+/// `P11.25-f` — le `view_id` d'une création ou d'une modification de tableau de bord ne désigne aucune vue que
+/// l'appelant voit (absente, ou privée d'un autre compte : même réponse, sans quoi elle dirait l'existence de la vue
+/// privée). Rien du corps n'est écrit.
+pub(crate) const CAUSE_VUE_DU_TABLEAU_INCONNUE: &str = "VUE INCONNUE : aucune vue que vous voyez ne porte l'identifiant \
+     `view_id` demandé — rien n'est écrit, rien du corps n'est appliqué.";
+/// `P11.25-f` — la vue nommée par `view_id` n'a pas été lue : elle n'est pas jugée, rien du corps n'est écrit. Ne nomme
+/// pas une transaction annulée : c'est une lecture qui manque.
+pub(crate) const CAUSE_VUE_DU_TABLEAU_NON_LUE: &str = "VUE NON LUE : la base n'a pas rendu la vue `view_id` demandée — ce \
+     n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et la vue n'est pas jugée. RIEN n'est écrit, rien du \
+     corps n'est appliqué. Réessayez ; si le refus persiste, la table des vues est illisible.";
+
+/// `P11.25-f` — LA VUE OÙ UN TABLEAU EST RANGÉ PAR `view_id` EST UNE VUE QUE L'APPELANT VOIT : le périmètre de
+/// `views_list` (administrateur, vue commune, ou vue de l'appelant). Sans ce jugement, `dash_create` et `dash_update`
+/// rangeaient un tableau dans la vue privée d'un autre compte (le déclencheur v125 l'y rattache), ou sous un identifiant
+/// qu'aucune vue ne porte. Absente ou invisible : 404 nommé ; lecture non faite : 503 nommé, la cause du moteur au
+/// journal seul.
+fn juger_la_vue_du_tableau(conn: &Connection, au: &AuthUser, view_id: i64) -> Result<(), Response> {
+    let adm = if au.is_admin() { "admin" } else { "" };
+    let sql = "SELECT EXISTS(SELECT 1 FROM view WHERE id=?1 AND (?2='admin' OR visibility='shared' OR owner=?3))";
+    match conn.query_row(sql, params![view_id, adm, au.name], |r| r.get::<_, i64>(0)) {
+        Ok(0) => Err(err_json(StatusCode::NOT_FOUND, CAUSE_VUE_DU_TABLEAU_INCONNUE)),
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_VUE_DU_TABLEAU_NON_LUE);
+            eprintln!("[dashboards] WARN vue #{view_id} NON lue pour y ranger un tableau de bord, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+            Err(refus)
+        }
+    }
+}
+
+/// `P11.25-f` — `view_id` reste écrit tel quel (vue principale) ; le déclencheur `view_dashboard_suit_l_insertion`
+/// (v125) pose le rattachement dans la jointure par la même instruction. `all_views` absent = 0 : un tableau créé
+/// n'apparaît dans toutes les vues que si on le demande. Un `view_id` qui ne désigne aucune vue que le créateur voit est
+/// refusé (`juger_la_vue_du_tableau`) avant l'insertion : aucune ligne n'est créée.
 pub(crate) async fn dash_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Sans titre").to_string();
     let vis = match b.get("visibility").and_then(|v| v.as_str()) {
@@ -234,10 +418,19 @@ pub(crate) async fn dash_create(State(st): State<AppState>, Extension(au): Exten
         _ => "private",
     };
     let view_id = b.get("view_id").and_then(|v| v.as_i64());
+    let toutes_les_vues = match lire_toutes_les_vues(&b) {
+        Ok(t) => t.unwrap_or(false),
+        Err(refus) => return refus,
+    };
     crate::req_conn!(st, au, conn);
+    if let Some(vue) = view_id {
+        if let Err(refus) = juger_la_vue_du_tableau(&conn, &au, vue) {
+            return refus;
+        }
+    }
     match conn.execute(
-        "INSERT INTO dashboard(name,created,owner,visibility,view_id) VALUES(?1,?2,?3,?4,?5)",
-        params![name, now(), au.name, vis, view_id],
+        "INSERT INTO dashboard(name,created,owner,visibility,view_id,all_views) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![name, now(), au.name, vis, view_id, toutes_les_vues as i64],
     ) {
         Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
         Ok(n) => refus_d_un_objet_non_cree("tableau de bord", n),
@@ -246,6 +439,11 @@ pub(crate) async fn dash_create(State(st): State<AppState>, Extension(au): Exten
 }
 
 pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
+    // `P11.25-f` — `all_views` jugé avant toute lecture et toute écriture : une valeur refusée n'applique rien du corps.
+    let toutes_les_vues = match lire_toutes_les_vues(&b) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
     crate::req_conn!(st, au, conn);
     // `P10.20-k` (2026-09-16) — L'EXISTENCE ET LA VISIBILITÉ COURANTE SE LISENT D'UN SEUL COUP, ET LES
     // TROIS ISSUES SONT DISTINCTES. Avant : un `is_ok()` sur `SELECT 1` (lecture ratée -> 404
@@ -289,6 +487,14 @@ pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Exten
         Ok(t) => t,
         Err(refus) => return refus,
     };
+    // `P11.25-f` — la vue où le tableau est rangé est jugée avant toute écriture : une vue que l'appelant ne voit pas
+    // (ou absente) n'applique rien du corps (`juger_la_vue_du_tableau`).
+    if let Some(vue) = b.get("view_id").and_then(|v| v.as_i64()) {
+        if let Err(refus) = juger_la_vue_du_tableau(&conn, &au, vue) {
+            drop(tx); // Drop -> ROLLBACK : rien n'a été écrit.
+            return refus;
+        }
+    }
     let ecrit: Result<(), String> = (|| {
         if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
             une_seule_ligne(conn.execute("UPDATE dashboard SET name=?1 WHERE id=?2", params![name, id]), "nom")?;
@@ -297,6 +503,15 @@ pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Exten
             let vis = if vis == "shared" { "shared" } else { "private" };
             une_seule_ligne(conn.execute("UPDATE dashboard SET visibility=?1 WHERE id=?2", params![vis, id]), "visibilité")?;
         }
+        // `P11.25-f` — « toutes les vues », jugé booléen à l'entrée.
+        if let Some(t) = toutes_les_vues {
+            une_seule_ligne(conn.execute("UPDATE dashboard SET all_views=?1 WHERE id=?2", params![t as i64, id]), "toutes les vues")?;
+        }
+        // `P11.25-f` — écrire `view_id` est un DÉPLACEMENT de la vue principale : le déclencheur
+        // `view_dashboard_suit_la_vue_principale` (v125) retire l'ancien rattachement et pose le nouveau dans la même
+        // instruction, donc dans cette transaction. Il ne retire que la ligne `explicite = 0` de l'ancienne vue : un
+        // rattachement posé (ou confirmé) par `POST /api/views/{id}/dashboards` reste, y compris vers une vue par
+        // laquelle la vue principale est passée (A -> B -> A, nulle -> B -> nulle).
         if let Some(vv) = b.get("view_id") {
             if vv.is_null() {
                 une_seule_ligne(conn.execute("UPDATE dashboard SET view_id=NULL WHERE id=?1", params![id]), "vue")?;
@@ -330,10 +545,17 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
     crate::req_conn!(st, au, conn);
     // `P10.20-l` (vague AJ) — TROIS ISSUES : lu, la porte suit ; absent, le 404 d'avant à l'octet ; lecture ratée, 503
     // nommé `CAUSE_TABLEAU_DE_BORD_NON_LU` — aucun 403 décidé, rien servi, la cause du moteur au journal seul.
+    // `P11.25-f` — `view_id` (vue principale) suit le périmètre de `dash_list` et de `views_list` (administrateur, vue
+    // commune, ou vue de l'appelant) : nul quand la vue principale est une vue que l'appelant ne voit pas, ou qu'aucune
+    // vue ne porte plus — l'identifiant d'une vue privée d'autrui n'est pas servi à qui lit le tableau. Lu par la même
+    // instruction que le tableau : aucune lecture de plus qui puisse manquer.
+    let adm = if au.is_admin() { "admin" } else { "" };
     let meta: Option<(String, String, String, Option<i64>)> = match conn
         .query_row(
-            "SELECT name,COALESCE(owner,''),COALESCE(visibility,'shared'),view_id FROM dashboard WHERE id=?1",
-            params![id],
+            "SELECT d.name,COALESCE(d.owner,''),COALESCE(d.visibility,'shared'),
+                    (SELECT vp.id FROM view vp WHERE vp.id=d.view_id AND (?2='admin' OR vp.visibility='shared' OR vp.owner=?3))
+             FROM dashboard d WHERE d.id=?1",
+            params![id, adm, au.name],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
@@ -2033,14 +2255,15 @@ pub(crate) async fn views_list(State(st): State<AppState>, Extension(au): Extens
     // la forme du dépôt (`corps_de_liste_illisible` : `views` présente et VIDE, `error` nomme la cause),
     // `me` et `role` restant servis parce qu'ils ne DÉRIVENT PAS de cette lecture (ils viennent de
     // l'identité de l'appelant, et les taire priverait la console de sa garde de partage).
+    // `P11.25-f` — `dashboards` compte les RATTACHEMENTS de la vue (`view_dashboard`, qui fait foi depuis v125), pas
+    // les tableaux déclarés dans toutes les vues (`all_views`), qui ne sont rattachés à aucune.
+    let sql_des_vues = "SELECT id,name,COALESCE(owner,''),visibility,
+                (SELECT COUNT(*) FROM view_dashboard vd WHERE vd.view_id=view.id)
+         FROM view
+         WHERE ?1='admin' OR visibility='shared' OR owner=?2
+         ORDER BY id";
     let lues: rusqlite::Result<Vec<Value>> = conn
-        .prepare(
-            "SELECT id,name,COALESCE(owner,''),visibility,
-                    (SELECT COUNT(*) FROM dashboard d WHERE d.view_id=view.id)
-             FROM view
-             WHERE ?1='admin' OR visibility='shared' OR owner=?2
-             ORDER BY id",
-        )
+        .prepare(sql_des_vues)
         .and_then(|mut stmt| {
             stmt.query_map(params![adm, au.name], |r| {
                 Ok(json!({
@@ -2060,14 +2283,79 @@ pub(crate) async fn views_list(State(st): State<AppState>, Extension(au): Extens
     }
 }
 
+/// `P11.25-f` — UNE VUE DE CE NOM EXISTE DÉJÀ PARMI CELLES QUE LE CRÉATEUR VOIT : rien n'est créé, et l'identifiant de
+/// l'existante est servi à côté (`view_id`) pour que la console la complète au lieu d'en fabriquer une homonyme.
+pub(crate) const CAUSE_VUE_DEJA_EXISTANTE: &str = "VUE DÉJÀ EXISTANTE : une vue de ce nom existe déjà parmi celles que \
+     vous voyez — rien n'est créé. Complétez-la (POST /api/views/{id}/dashboards) ou choisissez un autre nom.";
+/// `P11.25-f` — un renommage vers le nom d'une AUTRE vue que le renommeur voit : rien n'est renommé ni partagé, et
+/// l'identifiant de l'existante est servi à côté (`view_id`), comme pour la création.
+pub(crate) const CAUSE_VUE_RENOMMEE_VERS_UNE_EXISTANTE: &str = "VUE DÉJÀ EXISTANTE : une autre vue de ce nom existe déjà \
+     parmi celles que vous voyez — rien n'est renommé, rien du corps n'est appliqué. Complétez-la (POST \
+     /api/views/{id}/dashboards) ou choisissez un autre nom.";
+/// `P11.25-f` — la recherche d'une vue homonyme avant un renommage n'a pas eu lieu : rien n'est renommé.
+pub(crate) const CAUSE_VUE_INCHANGEE_HOMONYMES_NON_LUS: &str = "VUE INCHANGÉE : la base n'a pas rendu les vues de ce nom \
+     — ce n'est PAS « aucune vue de ce nom », c'est une lecture qui n'a pas eu lieu, et le doublon n'est pas jugé. RIEN \
+     n'est renommé ni partagé. Réessayez ; si le refus persiste, la table des vues est illisible.";
+/// `P11.25-f` — la recherche d'une vue homonyme n'a pas eu lieu : ni doublon ni absence ne sont établis, rien n'est
+/// créé. Ne nomme pas une transaction annulée : c'est une lecture qui manque.
+pub(crate) const CAUSE_VUE_NON_CREEE_HOMONYMES_NON_LUS: &str = "VUE NON CRÉÉE : la base n'a pas rendu les vues de ce \
+     nom — ce n'est PAS « aucune vue de ce nom », c'est une lecture qui n'a pas eu lieu, et le doublon n'est pas jugé. \
+     RIEN n'est créé. Réessayez ; si le refus persiste, la table des vues est illisible.";
+/// `P11.25-f` — le `COMMIT` de la création refusé (`OUVERTURE_DE_L_ECRITURE_NON_VALIDEE`, web/core.js) : l'identifiant lu
+/// au pied de l'insertion n'est pas servi.
+pub(crate) const CAUSE_VUE_NON_CREEE_NON_VALIDEE: &str = "VUE NON CRÉÉE : la base n'a pas validé la transaction (COMMIT \
+     refusé) et l'a annulée — la vue n'existe pas et AUCUN identifiant n'est rendu. Réessayez ; si le refus persiste, la \
+     base est en lecture seule, pleine ou verrouillée.";
+/// `P11.25-f` — le `BEGIN` de la création refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_VUE_NON_CREEE_TRANSACTION_NON_OUVERTE: &str = "VUE NON CRÉÉE : la base n'a pas pris la \
+     transaction de la création (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur l'écrivain) — \
+     RIEN n'est écrit. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+
+/// `P11.25-f` — LE DOUBLON SE JUGE SOUS LE VERROU D'ÉCRITURE, DANS LA TRANSACTION DE L'INSERTION. Le périmètre est
+/// celui que `views_list` montre au créateur (administrateur : toutes ; sinon les vues communes et les siennes) : une
+/// vue homonyme qu'il ne voit pas — la vue privée d'un autre compte — n'est pas un doublon pour lui, et la refuser
+/// servirait l'identifiant d'une vue privée d'autrui (un oracle). Comparaison du nom à l'identique. Le point de course
+/// est posé entre le jugement et l'insertion : un geste concurrent attend l'écrivain, puis voit la vue posée.
 pub(crate) async fn view_create(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("Vue").to_string();
     let vis = if b.get("visibility").and_then(|v| v.as_str()) == Some("shared") { "shared" } else { "private" };
+    let adm = if au.is_admin() { "admin" } else { "" };
+    let db_path = req_db_path(&st, &au);
     crate::req_conn!(st, au, conn);
+    let geste = "création d'une vue";
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", geste, CAUSE_VUE_NON_CREEE_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    let sql_homonyme = "SELECT id FROM view WHERE name=?1 AND (?2='admin' OR visibility='shared' OR owner=?3) ORDER BY id LIMIT 1";
+    let homonyme = conn.query_row(sql_homonyme, params![name, adm, au.name], |r| r.get::<_, i64>(0)).optional();
+    match homonyme {
+        Ok(None) => {}
+        Ok(Some(existante)) => {
+            drop(tx); // Drop -> ROLLBACK : rien n'a été écrit.
+            return (StatusCode::CONFLICT, Json(json!({ "error": CAUSE_VUE_DEJA_EXISTANTE, "view_id": existante }))).into_response();
+        }
+        Err(e) => {
+            drop(tx);
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_VUE_NON_CREEE_HOMONYMES_NON_LUS);
+            eprintln!("[dashboards] WARN vues homonymes NON lues, aucune vue créée ({}) : {e}", cid.unwrap_or_default());
+            return refus;
+        }
+    }
+    crate::handlers::transaction_validee::point_de_course(&format!("vue-jugee-avant-son-insertion:{db_path}"));
     match conn.execute("INSERT INTO view(name,owner,visibility) VALUES(?1,?2,?3)", params![name, au.name, vis]) {
-        Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
-        Ok(n) => refus_d_un_objet_non_cree("vue", n),
-        Err(e) => refus_d_un_objet_non_cree_par_le_moteur("vue", &e),
+        Ok(1) => {
+            let id = conn.last_insert_rowid();
+            rendre_apres_validation_du_garde(tx, &conn, "dashboards", geste, CAUSE_VUE_NON_CREEE_NON_VALIDEE, || Json(json!({ "id": id })).into_response())
+        }
+        Ok(n) => {
+            drop(tx);
+            refus_d_un_objet_non_cree("vue", n)
+        }
+        Err(e) => {
+            drop(tx);
+            refus_d_un_objet_non_cree_par_le_moteur("vue", &e)
+        }
     }
 }
 
@@ -2121,6 +2409,9 @@ pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Exten
     let ecrit: Result<(), String> = (|| {
         // on délie, on ne supprime pas les dashboards
         conn.execute("UPDATE dashboard SET view_id=NULL WHERE view_id=?1", params![id]).map_err(|e| format!("détachement des tableaux de bord : {e}"))?;
+        // `P11.25-f` — et les rattachements de la jointure (zéro est légitime) : laissés, une vue créée ensuite sous le
+        // même rowid hériterait des tableaux de l'effacée.
+        conn.execute("DELETE FROM view_dashboard WHERE view_id=?1", params![id]).map_err(|e| format!("retrait des rattachements : {e}"))?;
         une_seule_ligne(conn.execute("DELETE FROM view WHERE id=?1", params![id]), "effacement de la vue")
     })();
     if let Err(cause) = ecrit {
@@ -2158,7 +2449,7 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
     if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
         // `P10.20-b` — les éléments qui retiendraient le partage NON LUS ne valent pas « rien ne
         // retient » : 503 nommé, avant toute écriture.
-        match panneau_resolu::ElementMoinsVisible::d_une_vue(&conn, id) {
+        match element_moins_visible_d_une_vue(&conn, id) {
             Ok(None) => {}
             Ok(Some(element)) => return panneau_resolu::refus_de_partage(&element, "la vue"),
             Err(_) => return panneau_resolu::refus_d_elements_retenant_non_lus(),
@@ -2172,6 +2463,26 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
         Ok(t) => t,
         Err(refus) => return refus,
     };
+    // `P11.25-f` — UN RENOMMAGE NE FABRIQUE PAS LE DOUBLON QUE LA CRÉATION REFUSE. Même jugement que `view_create`, sous le
+    // même verrou d'écriture : une AUTRE vue de ce nom parmi celles que le renommeur voit -> 409 avec son identifiant,
+    // rien du corps n'est appliqué ; la recherche non faite -> 503 nommé. La vue renommée elle-même n'est pas un doublon.
+    if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
+        let adm = if au.is_admin() { "admin" } else { "" };
+        let sql_homonyme = "SELECT id FROM view WHERE name=?1 AND id<>?4 AND (?2='admin' OR visibility='shared' OR owner=?3) ORDER BY id LIMIT 1";
+        match conn.query_row(sql_homonyme, params![name, adm, au.name, id], |r| r.get::<_, i64>(0)).optional() {
+            Ok(None) => {}
+            Ok(Some(existante)) => {
+                drop(tx); // Drop -> ROLLBACK : rien n'a été écrit.
+                return (StatusCode::CONFLICT, Json(json!({ "error": CAUSE_VUE_RENOMMEE_VERS_UNE_EXISTANTE, "view_id": existante }))).into_response();
+            }
+            Err(e) => {
+                drop(tx);
+                let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_VUE_INCHANGEE_HOMONYMES_NON_LUS);
+                eprintln!("[dashboards] WARN vues homonymes NON lues, vue #{id} non renommée ({}) : {e}", cid.unwrap_or_default());
+                return refus;
+            }
+        }
+    }
     let ecrit: Result<(), String> = (|| {
         if let Some(name) = b.get("name").and_then(|v| v.as_str()) {
             une_seule_ligne(conn.execute("UPDATE view SET name=?1 WHERE id=?2", params![name, id]), "nom")?;
@@ -2187,4 +2498,284 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
         return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_VUE_INCHANGEE);
     }
     rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_VUE_INCHANGEE, || StatusCode::NO_CONTENT.into_response())
+}
+
+/// `P11.25-f` — LA PORTE DE PARTAGE D'UNE VUE LIT AUSSI LA JOINTURE. `ElementMoinsVisible::d_une_vue` ne lit que la vue
+/// PRINCIPALE (`dashboard.view_id`) ; un tableau privé rangé dans la vue par `POST /api/views/{id}/dashboards` (sans
+/// que ce soit sa vue principale) la retient de même. Les deux lectures se complètent sans se recouvrir
+/// (`d.view_id IS NOT ?1`), et le compte servi dans la phrase est leur somme. Un tableau déclaré dans toutes les vues
+/// (`all_views`) n'est rattaché à aucune et ne retient pas. Une lecture non faite rend `Err` (refus réessayable).
+fn element_moins_visible_d_une_vue(conn: &Connection, view_id: i64) -> rusqlite::Result<Option<panneau_resolu::ElementMoinsVisible>> {
+    let principal = panneau_resolu::ElementMoinsVisible::d_une_vue(conn, view_id)?;
+    let sql_compte = "SELECT COUNT(*) FROM dashboard d JOIN view_dashboard vd ON vd.dashboard_id=d.id \
+         WHERE vd.view_id=?1 AND d.view_id IS NOT ?1 AND COALESCE(d.visibility,'shared')<>'shared'";
+    let rattaches: i64 = conn.query_row(sql_compte, params![view_id], |r| r.get(0))?;
+    match principal {
+        Some(mut element) => {
+            element.retenus += rattaches;
+            Ok(Some(element))
+        }
+        None if rattaches == 0 => Ok(None),
+        None => conn
+            .query_row(
+                "SELECT d.id,d.name,COALESCE(d.owner,'') FROM dashboard d JOIN view_dashboard vd ON vd.dashboard_id=d.id \
+                 WHERE vd.view_id=?1 AND d.view_id IS NOT ?1 AND COALESCE(d.visibility,'shared')<>'shared' ORDER BY d.id LIMIT 1",
+                params![view_id],
+                |r| {
+                    Ok(panneau_resolu::ElementMoinsVisible {
+                        genre: "le tableau de bord",
+                        id: r.get(0)?,
+                        nom: r.get(1)?,
+                        proprietaire: r.get(2)?,
+                        retenus: rattaches,
+                    })
+                },
+            )
+            .map(Some),
+    }
+}
+
+// ---------- rattachements d'une vue (`P11.25-f`) ----------
+
+/// `P11.25-f` — la vue visée par un geste de rattachement n'existe pas, ou l'appelant ne la voit pas (même phrase : elle
+/// dirait sinon l'existence d'une vue privée d'autrui) : rien n'est rattaché ni retiré.
+pub(crate) const CAUSE_VUE_INCONNUE: &str = "VUE INCONNUE : aucune vue que vous voyez ne porte cet identifiant — rien n'est rattaché ni retiré.";
+/// `P11.25-f` — au moins un identifiant demandé ne désigne aucun tableau de bord que l'appelant voit (absent, ou privé
+/// d'un autre compte : les deux cas ont la même réponse, sans quoi elle dirait l'existence d'un tableau privé). Les
+/// identifiants en cause sont servis à côté (`dashboard_ids`). Tout ou rien : aucun des autres n'est rattaché.
+pub(crate) const CAUSE_TABLEAUX_DE_BORD_INCONNUS: &str = "TABLEAU DE BORD INCONNU : au moins un identifiant demandé ne \
+     désigne aucun tableau de bord que vous voyez — RIEN n'est rattaché, aucun des autres non plus (tout ou rien).";
+/// `P11.25-f` — le tableau de bord n'est pas rangé dans cette vue : rien n'est retiré.
+pub(crate) const CAUSE_RATTACHEMENT_ABSENT: &str =
+    "RATTACHEMENT ABSENT : ce tableau de bord n'est pas rangé dans cette vue — rien n'est retiré.";
+/// `P11.25-f` — le corps de `POST /api/views/{id}/dashboards` n'est pas `{"dashboard_ids": [<entiers>]}`.
+pub(crate) const CAUSE_CORPS_DES_RATTACHEMENTS_INVALIDE: &str = "CORPS INVALIDE : `dashboard_ids` vaut un tableau \
+     d'identifiants entiers de tableaux de bord — rien n'est rattaché.";
+/// `P11.25-f` — la vue, les tableaux demandés ou leurs rattachements n'ont pas été lus : ni le droit ni la présence ne
+/// sont jugés, rien n'est écrit. Ne nomme pas une transaction annulée : c'est une lecture qui manque.
+pub(crate) const CAUSE_RATTACHEMENTS_NON_LUS: &str = "RATTACHEMENTS INCHANGÉS : la base n'a pas rendu la vue, les \
+     tableaux de bord demandés ou leurs rattachements — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, \
+     et ni le droit ni la présence ne sont jugés. RIEN n'est rattaché ni retiré. Réessayez ; si le refus persiste, la \
+     table des vues ou des tableaux de bord est illisible.";
+/// `P11.25-f` — une écriture d'un geste de rattachement refusée ou sans effet : la transaction est annulée
+/// (`OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
+pub(crate) const CAUSE_RATTACHEMENTS_INCHANGES: &str = "RATTACHEMENTS INCHANGÉS : la base n'a pas pris l'écriture d'un \
+     rattachement ou son effacement, et la transaction est annulée — la vue garde exactement ses rattachements d'avant \
+     (tout ou rien). Réessayez ; si le refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+/// `P11.25-f` — le `BEGIN` d'un geste de rattachement refusé (`OUVERTURE_DE_LA_TRANSACTION_NON_PRISE`).
+pub(crate) const CAUSE_RATTACHEMENTS_INCHANGES_TRANSACTION_NON_OUVERTE: &str = "RATTACHEMENTS INCHANGÉS : la base n'a \
+     pas pris la transaction du geste (BEGIN refusé : verrou tenu, ou transaction d'un autre geste pendante sur \
+     l'écrivain) — RIEN n'est écrit. Réessayez ; s'il est refusé encore, l'écrivain est occupé ou bloqué.";
+/// `P11.25-f` — le `COMMIT` d'un geste de rattachement refusé (`OUVERTURE_DE_L_ECRITURE_NON_VALIDEE`).
+pub(crate) const CAUSE_RATTACHEMENTS_INCHANGES_NON_VALIDES: &str = "RATTACHEMENTS INCHANGÉS : la base n'a pas validé la \
+     transaction (COMMIT refusé) et l'a annulée — la vue garde exactement ses rattachements d'avant. Réessayez ; si le \
+     refus persiste, la base est en lecture seule, pleine ou verrouillée.";
+
+/// `P11.25-f` — la phrase d'une liste d'identifiants trop longue : la borne y est écrite.
+pub(crate) fn cause_trop_de_rattachements() -> String {
+    format!(
+        "TROP DE RATTACHEMENTS : au plus {LIMITE_DE_PAGE_DES_TABLEAUX_DE_BORD} identifiants par demande — rien n'est \
+         rattaché ; envoyez la suite dans une autre demande."
+    )
+}
+
+/// `P11.25-f` — une liste d'identifiants au-delà de la borne d'une page.
+fn trop_de_rattachements(n: usize) -> bool {
+    n as i64 > LIMITE_DE_PAGE_DES_TABLEAUX_DE_BORD
+}
+
+/// `P11.25-f` — LA PORTE DE LA VUE D'UN GESTE DE RATTACHEMENT : LA MÊME QUE CELLE DE `dash_update` QUAND IL ÉCRIT
+/// `view_id` (`juger_la_vue_du_tableau`). Ranger un tableau dans une vue, ou l'en sortir, CLASSE le tableau ; cela ne
+/// publie rien (`FILTRE_DES_TABLEAUX_DE_BORD` exige la visibilité du TABLEAU, `dash_get` et la porte des panneaux
+/// passent par `lisible_par`). La porte est donc la VISIBILITÉ de la vue, au périmètre de `views_list`
+/// (administrateur, vue commune — semée sans propriétaire comprise —, ou vue de l'appelant), et le droit sur CHAQUE
+/// tableau ajouté ou retiré se juge ensuite, tableau par tableau, par la règle de `dash_editable`. Une vue que
+/// l'appelant ne voit pas est une vue INCONNUE pour lui — même statut, même corps qu'une vue absente (404
+/// `CAUSE_VUE_INCONNUE`) ; un 403 dirait qu'elle existe. Lecture non faite : 503 nommé, la cause du moteur au journal
+/// seul. Le nom, la visibilité et la suppression d'une vue restent un geste de propriétaire (`view_update`,
+/// `view_delete`).
+fn porte_des_rattachements(conn: &Connection, au: &AuthUser, view_id: i64) -> Result<(), Response> {
+    let adm = if au.is_admin() { "admin" } else { "" };
+    let lu = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM view WHERE id=?1 AND (?2='admin' OR visibility='shared' OR owner=?3))",
+        params![view_id, adm, au.name],
+        |r| r.get::<_, i64>(0),
+    );
+    match lu {
+        Ok(0) => Err(err_json(StatusCode::NOT_FOUND, CAUSE_VUE_INCONNUE)),
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_RATTACHEMENTS_NON_LUS);
+            eprintln!("[dashboards] WARN vue #{view_id} NON lue pour ses rattachements, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+            Err(refus)
+        }
+    }
+}
+
+/// `P11.25-f` — le refus d'une lecture non faite DANS la transaction d'un geste de rattachement (le garde déjà annulé).
+fn refuser_les_rattachements_non_lus(view_id: i64, e: &rusqlite::Error) -> Response {
+    let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_RATTACHEMENTS_NON_LUS);
+    eprintln!("[dashboards] WARN rattachements de la vue #{view_id} NON lus, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
+    refus
+}
+
+/// `POST /api/views/{id}/dashboards {"dashboard_ids": [...]}` — COMPLÈTE une vue existante : n'ajoute que les
+/// rattachements manquants, idempotent, et répond 200 `{"added": [...], "already_present": [...]}` dans l'ordre de la
+/// demande, doublons de la demande retirés. Un identifiant inconnu (ou privé d'un autre compte), ou une vue inconnue (ou
+/// que l'appelant ne voit pas) : 404 nommé et RIEN n'est écrit. Droits : VOIR la vue (`porte_des_rattachements`) et
+/// pouvoir MODIFIER chaque tableau demandé (règle de `dash_editable`) — la porte de `dash_update` quand il écrit
+/// `view_id` ; un éditeur complète donc une vue commune d'un autre compte ou une vue semée. N'écrit pas `dashboard.view_id` (la vue principale ne
+/// change pas). Chaque rattachement de la demande est EXPLICITE (`view_dashboard.explicite = 1`) : posé à 1, ou relevé
+/// à 1 s'il n'existait que comme vue principale (servi alors sous `already_present`) — le déplacement ultérieur de la
+/// vue principale ne l'efface donc pas.
+pub(crate) async fn view_dashboards_add(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path(id): Path<i64>, Json(b): Json<Value>) -> Response {
+    let Some(demandes) = b.get("dashboard_ids").and_then(|v| v.as_array()) else {
+        return err_json(StatusCode::BAD_REQUEST, CAUSE_CORPS_DES_RATTACHEMENTS_INVALIDE);
+    };
+    if trop_de_rattachements(demandes.len()) {
+        return err_json(StatusCode::BAD_REQUEST, cause_trop_de_rattachements());
+    }
+    let mut ids: Vec<i64> = Vec::with_capacity(demandes.len());
+    for v in demandes {
+        let Some(n) = v.as_i64() else {
+            return err_json(StatusCode::BAD_REQUEST, CAUSE_CORPS_DES_RATTACHEMENTS_INVALIDE);
+        };
+        if !ids.contains(&n) {
+            ids.push(n);
+        }
+    }
+    crate::req_conn!(st, au, conn);
+    if let Err(refus) = porte_des_rattachements(&conn, &au, id) {
+        return refus;
+    }
+    let geste = format!("rattachement de tableaux de bord à la vue #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_RATTACHEMENTS_INCHANGES_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    // Tous les tableaux demandés sont lus AVANT toute écriture : un seul inconnu, et rien n'est écrit. Le rattachement
+    // présent est lu avec son origine (`explicite`) : `None` absent, `Some(0)` vue principale seule, `Some(1)` explicite.
+    // LE DROIT SUR CHAQUE TABLEAU EST CELUI DE `dash_editable` : sa règle, après le raccourci administrateur, EST
+    // `lisible_par`, qui admet l'administrateur (`autorite_de_proprietaire`, panneau_resolu.rs). Un tableau « lisible mais
+    // non modifiable » n'existe donc pas : un tableau que l'appelant ne peut pas modifier est un tableau qu'il ne lit
+    // pas, servi en INCONNU (404 `CAUSE_TABLEAUX_DE_BORD_INCONNUS`) — un 403 dirait l'existence d'un tableau privé
+    // d'autrui. L'équivalence des deux règles a son témoin (portes_des_rattachements_alignees_et_vue_masquee.rs).
+    let mut inconnus: Vec<i64> = Vec::new();
+    let mut deja: Vec<i64> = Vec::new();
+    let mut a_confirmer: Vec<i64> = Vec::new();
+    for did in &ids {
+        let lu = conn
+            .query_row(
+                "SELECT COALESCE(owner,''),COALESCE(visibility,'shared'),
+                        (SELECT explicite FROM view_dashboard WHERE view_id=?2 AND dashboard_id=?1)
+                 FROM dashboard WHERE id=?1",
+                params![did, id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?)),
+            )
+            .optional();
+        match lu {
+            Ok(Some((owner, vis, present))) if panneau_resolu::lisible_par(&owner, &vis, &au) => match present {
+                None => {}
+                Some(0) => {
+                    deja.push(*did);
+                    a_confirmer.push(*did);
+                }
+                Some(_) => deja.push(*did),
+            },
+            Ok(_) => inconnus.push(*did),
+            Err(e) => {
+                drop(tx);
+                return refuser_les_rattachements_non_lus(id, &e);
+            }
+        }
+    }
+    if !inconnus.is_empty() {
+        drop(tx); // Drop -> ROLLBACK : rien n'a été écrit.
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": CAUSE_TABLEAUX_DE_BORD_INCONNUS, "dashboard_ids": inconnus }))).into_response();
+    }
+    let ajoutes: Vec<i64> = ids.iter().copied().filter(|d| !deja.contains(d)).collect();
+    let ecrit: Result<(), String> = ajoutes
+        .iter()
+        .try_for_each(|did| {
+            une_seule_ligne(
+                conn.execute("INSERT INTO view_dashboard(view_id, dashboard_id, explicite) VALUES(?1,?2,1)", params![id, did]),
+                &format!("rattachement du tableau de bord #{did}"),
+            )
+        })
+        .and_then(|()| {
+            // Un rattachement qui n'existait que comme vue principale devient explicite : il survivra au déplacement.
+            a_confirmer.iter().try_for_each(|did| {
+                une_seule_ligne(
+                    conn.execute("UPDATE view_dashboard SET explicite=1 WHERE view_id=?1 AND dashboard_id=?2 AND explicite=0", params![id, did]),
+                    &format!("confirmation du rattachement du tableau de bord #{did}"),
+                )
+            })
+        });
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : aucun rattachement de cette demande ne reste.
+        return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_RATTACHEMENTS_INCHANGES);
+    }
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_RATTACHEMENTS_INCHANGES_NON_VALIDES, || {
+        Json(json!({ "added": ajoutes, "already_present": deja })).into_response()
+    })
+}
+
+/// `DELETE /api/views/{id}/dashboards/{dashboard_id}` — retire UN rattachement (204), QUELLE QUE SOIT SON ORIGINE :
+/// explicite, vue principale seule, ou les deux — le geste dit « ce tableau sort de cette vue ». Si la vue retirée était
+/// la vue principale du tableau (`dashboard.view_id`), celle-ci est vidée dans la même transaction : la colonne ne
+/// désigne jamais une vue dont le tableau n'est plus rangé. Non rangé : 404 nommé, rien n'est écrit. Une vue que
+/// l'appelant ne voit pas : la réponse d'une vue absente (`porte_des_rattachements`). Un tableau que l'appelant ne
+/// peut pas lire (privé d'un autre compte, rangé dans sa vue par son propriétaire) est traité comme non rangé — même
+/// réponse, même phrase, rien n'est écrit — comme `view_dashboards_add` le traite en inconnu : sinon le 204 face au 404
+/// dirait l'existence de ce tableau privé, et viderait sa vue principale.
+///
+/// Droits : ceux de `view_dashboards_add` — VOIR la vue, et pouvoir MODIFIER le tableau retiré (règle de
+/// `dash_editable`, qui EST `lisible_par`). Un éditeur retire donc son tableau, ou un tableau commun, d'une vue commune
+/// d'un autre compte ou d'une vue semée. Être propriétaire de la vue n'ouvre rien DE PLUS : l'administrateur modifie
+/// déjà tout tableau, et le seul tableau qu'un propriétaire de vue ne peut pas modifier est un tableau privé d'autrui,
+/// qu'il ne lit pas — le lui laisser retirer rouvrirait l'oracle décrit ci-dessus.
+pub(crate) async fn view_dashboard_remove(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Path((id, did)): Path<(i64, i64)>) -> Response {
+    crate::req_conn!(st, au, conn);
+    if let Err(refus) = porte_des_rattachements(&conn, &au, id) {
+        return refus;
+    }
+    let geste = format!("retrait du tableau de bord #{did} de la vue #{id}");
+    let tx = match ouvrir_le_garde_du_geste(&conn, "dashboards", &geste, CAUSE_RATTACHEMENTS_INCHANGES_TRANSACTION_NON_OUVERTE) {
+        Ok(t) => t,
+        Err(refus) => return refus,
+    };
+    // La présence est LUE avant l'effacement : un effacement qui n'ôte rien (déclencheur qui l'ignore) n'est pas une
+    // absence, et l'absence n'est dite que lue. Le propriétaire et la visibilité du tableau sont lus dans la même
+    // instruction : un tableau absent, ou que l'appelant ne lit pas, est un rattachement absent pour lui.
+    let lu = conn
+        .query_row(
+            "SELECT COALESCE(owner,''),COALESCE(visibility,'shared'),
+                    EXISTS(SELECT 1 FROM view_dashboard WHERE view_id=?1 AND dashboard_id=?2)
+             FROM dashboard WHERE id=?2",
+            params![id, did],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)),
+        )
+        .optional();
+    match lu {
+        Ok(Some((owner, vis, true))) if panneau_resolu::lisible_par(&owner, &vis, &au) => {}
+        Ok(_) => {
+            drop(tx);
+            return err_json(StatusCode::NOT_FOUND, CAUSE_RATTACHEMENT_ABSENT);
+        }
+        Err(e) => {
+            drop(tx);
+            return refuser_les_rattachements_non_lus(id, &e);
+        }
+    }
+    let ecrit: Result<(), String> = (|| {
+        une_seule_ligne(conn.execute("DELETE FROM view_dashboard WHERE view_id=?1 AND dashboard_id=?2", params![id, did]), "effacement du rattachement")?;
+        conn.execute("UPDATE dashboard SET view_id=NULL WHERE id=?1 AND view_id=?2", params![did, id])
+            .map_err(|e| format!("détachement de la vue principale : {e}"))?;
+        Ok(())
+    })();
+    if let Err(cause) = ecrit {
+        drop(tx); // Drop -> ROLLBACK : le rattachement et la vue principale sont ceux d'avant.
+        return refuser_le_retrait_non_pris(&geste, &cause, CAUSE_RATTACHEMENTS_INCHANGES);
+    }
+    rendre_apres_validation_du_garde(tx, &conn, "dashboards", &geste, CAUSE_RATTACHEMENTS_INCHANGES_NON_VALIDES, || StatusCode::NO_CONTENT.into_response())
 }

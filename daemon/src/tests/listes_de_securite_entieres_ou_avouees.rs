@@ -354,7 +354,7 @@ async fn p10_7f_listes_de_securite_la_remise_dactions_a_lagent_est_entiere_ou_re
     let (st, _au, _p) = lsa_etat("pending-ok");
     lsa_ecrire(&st, "INSERT INTO action(ts,kind,target,status,dry_run,host) VALUES(1,'ban_ip','203.0.113.1','approved',1,'hote-a');\
                      INSERT INTO action(ts,kind,target,status,dry_run,host) VALUES(2,'unban_ip','203.0.113.2','approved',0,'hote-a');");
-    let (statut, tsv) = lsa_texte(actions_pending(State(st.clone()), Extension(agent.clone())).await).await;
+    let (statut, tsv) = lsa_texte(actions_pending(State(st.clone()), Extension(agent.clone()), axum::http::HeaderMap::new()).await).await;
     assert_eq!(statut, 200);
     assert_eq!(tsv.lines().count(), 2, "contrôle positif : les deux actions sont remises : {tsv:?}");
     let reclamees: i64 = st.db.lock().query_row("SELECT COUNT(*) FROM action WHERE claimed_ts IS NOT NULL", [], |r| r.get(0)).unwrap();
@@ -365,7 +365,7 @@ async fn p10_7f_listes_de_securite_la_remise_dactions_a_lagent_est_entiere_ou_re
     lsa_ecrire(&st2, "INSERT INTO action(ts,kind,target,status,dry_run,host) VALUES(1,'ban_ip','203.0.113.1','approved',1,'hote-a');\
                       INSERT INTO action(ts,kind,target,status,dry_run,host) VALUES(2,'ban_ip','203.0.113.2','approved',1,'hote-a');\
                       INSERT INTO action(ts,kind,target,status,dry_run,host) VALUES(3,'ban_ip',x'FF','approved',1,'hote-a');");
-    let (statut, corps) = lsa_texte(actions_pending(State(st2.clone()), Extension(agent.clone())).await).await;
+    let (statut, corps) = lsa_texte(actions_pending(State(st2.clone()), Extension(agent.clone()), axum::http::HeaderMap::new()).await).await;
     assert_eq!(statut, 503, "une file d'actions NON LUE n'est pas une file vide : {corps:?}");
     assert!(corps.contains("NON LUE"), "le refus NOMME sa cause : {corps:?}");
     let reclamees: i64 = st2.db.lock().query_row("SELECT COUNT(*) FROM action WHERE claimed_ts IS NOT NULL", [], |r| r.get(0)).unwrap();
@@ -373,7 +373,7 @@ async fn p10_7f_listes_de_securite_la_remise_dactions_a_lagent_est_entiere_ou_re
 
     // LA TABLE RETIRÉE : avant, un TSV VIDE en 200 que l'agent lit « rien à faire » et abandonne.
     lsa_retirer_la_table(&st2, "action");
-    let (statut, corps) = lsa_texte(actions_pending(State(st2.clone()), Extension(agent.clone())).await).await;
+    let (statut, corps) = lsa_texte(actions_pending(State(st2.clone()), Extension(agent.clone()), axum::http::HeaderMap::new()).await).await;
     assert_eq!(statut, 503, "table retirée : refus nommé, jamais un TSV vide en 200 : {corps:?}");
 }
 

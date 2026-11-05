@@ -78,7 +78,7 @@ fn rrc_scene(tag: &str, id: i64, sql_b: &str) -> (Result<String, &'static str>, 
     let ecrit = if sql_b.contains("?1") { b.execute(sql_b, params![maintenant]) } else { b.execute(sql_b, []) };
     ecrit.unwrap_or_else(|e| panic!("contrôle {tag} : B écrit `{sql_b}` ({e})"));
     let avant = rrc_ligne(&b, id);
-    let rendu = crate::handlers::actions::remettre_les_actions_lues(&a, &lues.into_iter().filter(|l| l.0 == id).collect::<Vec<_>>(), RRC_HOTE, maintenant);
+    let rendu = crate::handlers::actions::remettre_les_actions_lues(&a, &lues.into_iter().filter(|l| l.0 == id).collect::<Vec<_>>(), RRC_HOTE, maintenant, crate::handlers::actions::FormeDeLaFileDActions::Tsv);
     let apres = rrc_ligne(&b, id);
     (rendu, avant, apres)
 }
@@ -129,7 +129,7 @@ fn p10_21n_course_perdue_sur_une_ligne_de_deux_seule_l_autre_part() {
     let lues = rrc_lire(&a, maintenant);
     assert_eq!(lues.len(), 2, "contrôle : les deux actions lues");
     open_db(&p).unwrap().execute("UPDATE action SET status='cancelled' WHERE id=1", []).unwrap();
-    let rendu = crate::handlers::actions::remettre_les_actions_lues(&a, &lues, RRC_HOTE, maintenant);
+    let rendu = crate::handlers::actions::remettre_les_actions_lues(&a, &lues, RRC_HOTE, maintenant, crate::handlers::actions::FormeDeLaFileDActions::Tsv);
     assert_eq!(rendu, Ok("2\tunban_ip\t203.0.113.2\t0\n".to_string()), "l'annulée ne part pas, l'autre est remise");
     assert_eq!(rrc_ligne(&a, 1), ("cancelled".into(), "ban_ip".into(), None, Some(RRC_HOTE.into())));
     assert_eq!(rrc_ligne(&a, 2), ("approved".into(), "unban_ip".into(), Some(maintenant), Some(RRC_HOTE.into())));
@@ -144,7 +144,7 @@ fn p10_21n_reclamation_sans_effet_condition_encore_vraie_reste_une_anomalie() {
     let a = st.db.lock();
     let lues = rrc_lire(&a, maintenant);
     a.execute_batch("CREATE TRIGGER rrc_sans_effet BEFORE UPDATE ON action BEGIN SELECT RAISE(IGNORE); END;").unwrap();
-    let rendu = crate::handlers::actions::remettre_les_actions_lues(&a, &lues, RRC_HOTE, maintenant);
+    let rendu = crate::handlers::actions::remettre_les_actions_lues(&a, &lues, RRC_HOTE, maintenant, crate::handlers::actions::FormeDeLaFileDActions::Tsv);
     assert_eq!(rendu, Err(crate::handlers::actions::CAUSE_REMISE_D_ACTIONS_NON_RECLAMEE));
 }
 
@@ -164,7 +164,7 @@ fn p10_21n_relecture_ratee_de_la_condition_reste_une_anomalie() {
         _ => Authorization::Allow,
     }));
     let controle = a.execute("UPDATE action SET claimed_ts=1 WHERE id=1", []);
-    let rendu = crate::handlers::actions::remettre_les_actions_lues(&a, &lues, RRC_HOTE, maintenant);
+    let rendu = crate::handlers::actions::remettre_les_actions_lues(&a, &lues, RRC_HOTE, maintenant, crate::handlers::actions::FormeDeLaFileDActions::Tsv);
     a.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
     assert_eq!(controle.ok(), Some(0), "instrument : sous le refus, l'UPDATE passe et reste sans effet");
     assert_eq!(rendu, Err(crate::handlers::actions::CAUSE_REMISE_D_ACTIONS_NON_RECLAMEE));
@@ -210,13 +210,13 @@ async fn p10_21n_condition_de_l_update_equivaut_a_celle_du_select() {
         name: RRC_HOTE.into(), role: "agent".into(), tenant: "default".into(), is_superadmin: false,
         method: "token".into(), csrf: String::new(), env: None,
     };
-    let r = actions_pending(State(st_servi.clone()), Extension(agent)).await;
+    let r = actions_pending(State(st_servi.clone()), Extension(agent), axum::http::HeaderMap::new()).await;
     assert_eq!(r.status().as_u16(), 200);
     let corps = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
     let servis: std::collections::BTreeSet<i64> =
         String::from_utf8_lossy(&corps).lines().map(|l| l.split('\t').next().unwrap().parse().unwrap()).collect();
     let toutes: Vec<RrcLigne> = etats.iter().map(|(id, _, g, _, _)| (*id, g.to_string(), format!("198.51.100.{id}"), true)).collect();
-    let tsv = crate::handlers::actions::remettre_les_actions_lues(&st_reclame.db.lock(), &toutes, RRC_HOTE, maintenant).expect("des réclamations écrites");
+    let tsv = crate::handlers::actions::remettre_les_actions_lues(&st_reclame.db.lock(), &toutes, RRC_HOTE, maintenant, crate::handlers::actions::FormeDeLaFileDActions::Tsv).expect("des réclamations écrites");
     let reclamees: std::collections::BTreeSet<i64> = tsv.lines().map(|l| l.split('\t').next().unwrap().parse().unwrap()).collect();
     let attendu: std::collections::BTreeSet<i64> = etats
         .iter()

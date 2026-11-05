@@ -135,7 +135,7 @@ fn un_objet_seme_declare_son_etat_commun() {
     // (c) ET AUCUN CHEMIN D'ÉCRITURE NE FABRIQUE UN ORPHELIN : les quatre créateurs posent `au.name`.
     // Prouvé par la SOURCE (une régression y serait invisible à toute fixture de base).
     let src = std::fs::read_to_string(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/handlers/dashboards.rs")).unwrap();
-    assert!(src.contains("INSERT INTO dashboard(name,created,owner,visibility,view_id)"), "dash_create pose un propriétaire");
+    assert!(src.contains("INSERT INTO dashboard(name,created,owner,visibility,view_id,all_views)"), "dash_create pose un propriétaire");
     assert!(src.contains("INSERT INTO view(name,owner,visibility)"), "view_create pose un propriétaire");
 }
 

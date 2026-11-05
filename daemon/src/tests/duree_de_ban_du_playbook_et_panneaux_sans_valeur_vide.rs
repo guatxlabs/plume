@@ -14,8 +14,8 @@
 // semés dont la requête est EXACTEMENT celle d'origine (et `is_soql = 0`), jamais un panneau édité.
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : l'agent d'un hôte distant (`collectors/respond.sh`) applique sa propre
-// durée (`PLUME_BAN_DURATION`, défaut 4 h) — la file qu'il lit (`actions_pending`, TSV à quatre champs) ne la lui
-// transmet pas ; un playbook posé par un fichier `config.d` n'a pas de champ de durée (`overlays.rs`) ; le
+// durée (`PLUME_BAN_DURATION`, défaut 4 h) — la file qu'il lit (`actions_pending`) ne la lui transmet que sous
+// `Accept: application/x-ndjson`, qu'il n'envoie pas encore (témoins : `duree_de_ban_servie_a_l_agent.rs`) ; un playbook posé par un fichier `config.d` n'a pas de champ de durée (`overlays.rs`) ; le
 // formulaire de la console n'envoie pas encore `ban_ttl_s`.
 // =====================================================================================
 mod duree_de_ban_du_playbook_et_panneaux_sans_valeur_vide {
@@ -801,7 +801,8 @@ mod duree_de_ban_du_playbook_et_panneaux_sans_valeur_vide {
             assert!(migrate(&conn), "la migration 123 -> 124 passe");
             let v: String = conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
             assert_eq!(v, CODE_SCHEMA_MAX.to_string());
-            assert_eq!(v, "124");
+            // `P11.25-f` (v125) : la chaîne va au-delà de 124 ; ce témoin tient « 124 est passée », pas « 124 est la dernière ».
+            assert!(v.parse::<i64>().is_ok_and(|n| n >= 124), "v124 est passée : {v}");
             for (source, dim, limite) in crate::migrate::PANNEAUX_DE_DIMENSION_SEMES_V124 {
                 let n: i64 = conn.query_row("SELECT COUNT(*) FROM panel WHERE query=?1 AND is_soql=0", params![dim_panel_sql(source, dim, limite, true)], |r| r.get(0)).unwrap();
                 assert_eq!(n, 1, "{source}/{dim} réécrit");

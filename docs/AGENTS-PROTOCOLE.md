@@ -352,6 +352,7 @@ Le central ne pousse rien vers un agent. C'est l'agent qui **tire**.
 
 ```
 GET  /api/actions/pending    -> réclame ; réponse en TSV : id \t kind \t target \t dry_run
+                                (sous « Accept: application/x-ndjson » : un objet JSON par ligne, voir plus bas)
 POST /api/actions/result     -> rend compte : {"id":…, "status":"done|dryrun|failed", "result":"…"}
 ```
 
@@ -362,7 +363,36 @@ POST /api/actions/result     -> rend compte : {"id":…, "status":"done|dryrun|f
 | **vocabulaire réclamable** | `ban_ip` et `unban_ip` **seuls** ; `kill_pid` et `stop_service` ne se réclament pas par ce canal |
 | **remise en jeu** | une action réclamée sans résultat est re-remise après quelques minutes |
 | **clôture** | ne porte que sur une action *approuvée* **et** assignée au même hôte ; idempotente |
-| **format** | TSV, pas JSON — pour que la boucle shell le lise sans dépendance |
+| **format** | TSV par défaut, pas JSON — pour que la boucle shell le lise sans dépendance ; JSON par ligne sur demande (ci-dessous) |
+| **durée du ban** | portée par la forme JSON par ligne seulement : `ban_ttl_s` (voir ci-dessous) |
+
+**La durée du ban d'une riposte.** Un agent qui envoie `Accept: application/x-ndjson` reçoit un objet
+JSON par ligne (type de contenu `application/x-ndjson`), par exemple :
+
+```
+{"ban_ttl_s":5400,"dry_run":false,"id":12,"kind":"ban_ip","target":"203.0.113.82"}
+{"dry_run":false,"id":14,"kind":"unban_ip","target":"203.0.113.84"}
+```
+
+- `ban_ttl_s` est un **entier, en secondes** : la durée **effective** du ban de cette riposte, celle que
+  le central applique aussi (approbation, blocage HTTP, commande CrowdSec du responder local) — la durée
+  posée par le playbook, ou la durée par défaut si la riposte n'en porte pas. Il est présent sur **chaque**
+  `ban_ip`, jamais nul, et **absent** de tout autre genre (`unban_ip`).
+- Contrat de l'agent : il ne se replie sur `PLUME_BAN_DURATION` que si le champ est **absent** d'un
+  `ban_ip` — le cas d'un démon antérieur, qui ignore l'en-tête et répond en TSV. (`collectors/respond.sh`
+  n'envoie pas encore l'en-tête.)
+- L'en-tête est lu type par type (casse ignorée). Un poids nul (`application/x-ndjson;q=0`) est un refus
+  explicite de ce type : la réponse est alors le TSV.
+- Sans l'en-tête, la réponse reste le TSV à quatre champs, à l'octet. Un cinquième champ n'y est pas
+  ajouté : la boucle d'un agent déjà déployé (`read -r id kind target dry`) le lirait dans `dry`.
+- Une riposte dont la durée ne se lit pas en base n'est **ni remise ni réclamée**, dans les deux formes :
+  elle reste approuvée, le journal du démon le dit (`[actions] action <id> NON REMISE ce tour-ci : durée
+  du ban de cette riposte NON lue …`), les autres actions sont remises — le démon lit la page suivante
+  tant qu'une page pleine n'a pas remis cent actions, si bien que des ripostes retenues en tête de file ne
+  masquent pas les suivantes —, et elle part au tour suivant une fois la colonne corrigée. Rien n'est appliqué avec une durée devinée.
+- Un tour remet **au plus cent** actions, quelle que soit la forme ; le reste part aux tours suivants. Si
+  la lecture d'une page suivante échoue après des actions déjà réclamées, celles-ci sont remises (et
+  l'échec est au journal du démon) plutôt que perdues dans un refus.
 
 En amont, la chaîne est : création → **approbation par un administrateur** → réclamation → résultat.
 Côté agent, le moteur est **coupé par défaut** (`PLUME_RESPONDER=0`) et, une fois allumé, il est en

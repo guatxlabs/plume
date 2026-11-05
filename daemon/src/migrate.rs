@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 124;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 125;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 ///
@@ -991,6 +991,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 122 && !migrate_step(conn, 122, migrate_v122) { return false; }
     if v < 123 && !migrate_step(conn, 123, migrate_v123) { return false; }
     if v < 124 && !migrate_step(conn, 124, migrate_v124) { return false; }
+    if v < 125 && !migrate_step(conn, 125, migrate_v125) { return false; }
     true
 }
 
@@ -1682,6 +1683,98 @@ fn migrate_v124(conn: &MigTx) {
     let _ = conn.execute("UPDATE meta SET value='124' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v124 (P11.25-a : playbook.ban_ttl_s / action.ban_ttl_s — la durée du ban d'un playbook est réglable et portée par sa riposte jusqu'à CrowdSec, NULL = 4 h comme avant ; P11.25-b : les panneaux de dimension semés ne rendent plus la valeur vide, réécrits seulement si leur requête est encore celle d'origine)");
 }
+
+/// v125 (P11.25-f) — UN TABLEAU DE BORD SE RANGE DANS PLUSIEURS VUES, ET « TOUTES LES VUES » EST UN CHOIX DÉCLARÉ.
+///
+/// AVANT : le rattachement d'un tableau à une vue était une colonne unique, `dashboard.view_id` ; un tableau ne pouvait
+/// être que dans une vue, et « compléter » une vue existante n'avait pas de geste (la console recréait une vue
+/// homonyme).
+///
+/// APRÈS :
+///   * `view_dashboard(view_id, dashboard_id)`, clé primaire sur le couple, FAIT FOI pour « quels tableaux sont dans
+///     quelle vue » (`dash_list ?view=`, décompte de `views_list`, porte de partage d'une vue). Remplie ici depuis
+///     `dashboard.view_id` non nul ;
+///   * `dashboard.all_views` (0 par défaut) : 1 = servi dans toutes les vues. v125 la laisse à 0 sur TOUS les tableaux
+///     existants, y compris ceux sans vue — MESURÉ sur la base v124 : `dash_list ?view=<id>` filtrait `view_id = <id>`,
+///     donc un tableau sans vue n'était servi dans AUCUNE vue (seulement sans filtre, et sous `?view=none`). Le poser à
+///     1 l'aurait fait apparaître dans chaque vue : l'affichage aurait changé en silence ;
+///   * `dashboard.view_id` RESTE (rétrocompat de lecture : `dash_get`, console) et désigne la vue « principale ». Trois
+///     déclencheurs tiennent la jointure à jour pour TOUT écrivain de la colonne, y compris les semis (`seeds.rs`) et la
+///     passe « Banni / Pass » (`rollups.rs`) qui l'écrivent directement : une insertion avec une vue ajoute le
+///     rattachement ; un changement de `view_id` est un DÉPLACEMENT (l'ancien rattachement part, le nouveau arrive) ;
+///     l'effacement d'un tableau emporte ses rattachements (sans lui, un tableau créé ensuite sous le même rowid
+///     hériterait des vues de l'effacé). Les rattachements posés par `POST /api/views/{id}/dashboards` n'écrivent pas
+///     `view_id` ;
+///   * `view_dashboard.explicite` DISTINGUE LES DEUX ORIGINES D'UN RATTACHEMENT : 0 = la ligne n'existe que parce que la
+///     vue est la vue principale du tableau (posée par les déclencheurs) ; 1 = posée, ou confirmée, par
+///     `POST /api/views/{id}/dashboards`. Le déplacement de la vue principale n'efface que les lignes à 0 : sans cette
+///     colonne, un rattachement posé par la route vers B disparaissait en silence dès que la vue principale passait
+///     par B puis en sortait (A -> B -> A, ou nulle -> B -> nulle). Une colonne plutôt que deux tables : la jointure
+///     reste la seule lecture de « quels tableaux sont dans quelle vue », et la ligne garde une seule identité (le
+///     couple) quelle que soit son origine. v125 remplit les lignes migrées depuis `dashboard.view_id` à 0 (ce sont
+///     des vues principales, aucune n'a été posée par la route, qui n'existait pas en v124).
+///
+/// AUCUN INDEX UNIQUE sur le nom des vues : deux comptes peuvent chacun tenir une vue PRIVÉE du même nom, et une
+/// contrainte globale refuserait la seconde ; le doublon se juge au gestionnaire (`view_create`), sur les vues que le
+/// créateur peut voir. Des vues homonymes déjà présentes ne gênent donc pas cette migration.
+///
+/// INDEX `view_dashboard_par_tableau` sur `dashboard_id` : la clé primaire `(view_id, dashboard_id)` ne sert pas les
+/// lectures par tableau (`?view=none`, `view_ids`, déclencheur d'effacement).
+///
+/// Idempotente (table, index et déclencheurs `IF NOT EXISTS`, colonnes gardées par `col_exists`, remplissage `INSERT OR IGNORE`
+/// qui ne retire rien : un rattachement posé après un premier passage survit à un second) ; gardée par `v < 125`.
+/// ROLLBACK — bumpe le schéma à 125 : un binaire max=124 REFUSE d'ouvrir une base v125 (`db_open`,
+/// `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate. Forward-only.
+fn migrate_v125(conn: &MigTx) {
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS view_dashboard(
+             view_id INTEGER NOT NULL,
+             dashboard_id INTEGER NOT NULL,
+             explicite INTEGER NOT NULL DEFAULT 0,
+             PRIMARY KEY(view_id, dashboard_id)
+         );",
+    );
+    // La table a pu naître d'un passage antérieur sans la colonne : elle s'ajoute alors, à 0 (vue principale).
+    if !conn.col_exists("view_dashboard", "explicite") {
+        let _ = conn.execute("ALTER TABLE view_dashboard ADD COLUMN explicite INTEGER NOT NULL DEFAULT 0", []);
+    }
+    // L'index par tableau : la clé primaire commence par `view_id`, donc « les vues de CE tableau » (`dash_list
+    // ?view=none`, `view_ids`, déclencheur d'effacement) parcourrait toute la jointure pour chaque tableau.
+    let _ = conn.execute_batch(SQL_V125_INDEX_DES_RATTACHEMENTS_PAR_TABLEAU);
+    if !conn.col_exists("dashboard", "all_views") {
+        let _ = conn.execute("ALTER TABLE dashboard ADD COLUMN all_views INTEGER NOT NULL DEFAULT 0", []);
+    }
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO view_dashboard(view_id, dashboard_id, explicite) SELECT view_id, id, 0 FROM dashboard WHERE view_id IS NOT NULL",
+        [],
+    );
+    let _ = conn.execute_batch(SQL_V125_DECLENCHEURS_DE_LA_VUE_PRINCIPALE);
+    let _ = conn.execute("UPDATE meta SET value='125' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v125 (P11.25-f : view_dashboard — un tableau de bord se range dans plusieurs vues, la jointure fait foi, remplie depuis dashboard.view_id ; dashboard.all_views = 0 partout, un tableau sans vue n'était servi dans aucune vue et ne l'est toujours pas ; view_id reste la vue principale, tenue dans la jointure par déclencheurs ; view_dashboard.explicite = 1 pour un rattachement posé par la route, que le déplacement de la vue principale n'efface pas)");
+}
+
+/// `P11.25-f` (v125) — l'index des rattachements par tableau de bord (`view_dashboard(dashboard_id)`), idempotent.
+pub(crate) const SQL_V125_INDEX_DES_RATTACHEMENTS_PAR_TABLEAU: &str =
+    "CREATE INDEX IF NOT EXISTS view_dashboard_par_tableau ON view_dashboard(dashboard_id);";
+
+/// `P11.25-f` (v125) — les trois déclencheurs qui tiennent `view_dashboard` à jour quand `dashboard.view_id` est écrit
+/// ou quand un tableau est effacé (voir `migrate_v125`). Ils ne posent que des lignes `explicite = 0` (vue principale), et
+/// le déplacement n'efface que celles-là : une ligne `explicite = 1` (posée par la route) survit au passage de la vue
+/// principale, et `INSERT OR IGNORE` ne la rabaisse pas à 0 quand la vue principale y arrive.
+pub(crate) const SQL_V125_DECLENCHEURS_DE_LA_VUE_PRINCIPALE: &str = "
+    CREATE TRIGGER IF NOT EXISTS view_dashboard_suit_l_insertion AFTER INSERT ON dashboard
+    WHEN NEW.view_id IS NOT NULL BEGIN
+        INSERT OR IGNORE INTO view_dashboard(view_id, dashboard_id, explicite) VALUES(NEW.view_id, NEW.id, 0);
+    END;
+    CREATE TRIGGER IF NOT EXISTS view_dashboard_suit_la_vue_principale AFTER UPDATE OF view_id ON dashboard
+    WHEN OLD.view_id IS NOT NEW.view_id BEGIN
+        DELETE FROM view_dashboard WHERE view_id = OLD.view_id AND dashboard_id = OLD.id AND explicite = 0;
+        INSERT OR IGNORE INTO view_dashboard(view_id, dashboard_id, explicite) SELECT NEW.view_id, NEW.id, 0 WHERE NEW.view_id IS NOT NULL;
+    END;
+    CREATE TRIGGER IF NOT EXISTS view_dashboard_suit_l_effacement AFTER DELETE ON dashboard BEGIN
+        DELETE FROM view_dashboard WHERE dashboard_id = OLD.id;
+    END;
+";
 
 /// `P11.25-b` (v124) — les panneaux semés qui lisent `event_dim_rollup` avec `non_empty = false` jusqu'à la base
 /// v123 : (source, dimension, limite), les arguments EXACTS de leurs appels à `dim_panel_sql` dans `seeds.rs`

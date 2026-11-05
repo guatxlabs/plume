@@ -58,7 +58,7 @@ fn rca_reclamation(st: &AppState, id: i64) -> (bool, Option<String>) {
 }
 
 async fn rca_appel(st: &AppState) -> (u16, String) {
-    rca_texte(actions_pending(State(st.clone()), Extension(rca_agent())).await).await
+    rca_texte(actions_pending(State(st.clone()), Extension(rca_agent()), axum::http::HeaderMap::new()).await).await
 }
 
 /// Le jugement d'un refus total : 503, cause nommée, aucune ligne lisible comme une action, rien réclamé.

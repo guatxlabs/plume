@@ -98,6 +98,11 @@ fn dashboards_panels_routes() -> Router<AppState> {
     Router::<AppState>::new()
         .route("/api/views", get(views_list).post(view_create))
         .route("/api/views/{id}", post(view_update).delete(view_delete))
+        // `P11.25-f` — compléter une vue (rattachements manquants seulement) et retirer un rattachement ; editor+ par le
+        // préfixe `/api/views` de `route_min_role` ; le gestionnaire exige de VOIR la vue et de pouvoir MODIFIER chaque
+        // tableau ajouté ou retiré (la porte de dash_update quand il écrit view_id), pas d'en être propriétaire.
+        .route("/api/views/{id}/dashboards", post(view_dashboards_add))
+        .route("/api/views/{id}/dashboards/{dashboard_id}", delete(view_dashboard_remove))
         .route("/api/dashboards", get(dash_list).post(dash_create))
         .route("/api/dashboard/{id}", get(dash_get).post(dash_update).delete(dash_delete))
         .route("/api/panels", post(panel_create))

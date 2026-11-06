@@ -356,13 +356,16 @@ mod panneau_prive_d_un_tableau_commun_repond_comme_un_absent {
     ///     par un panneau commun du même tableau, par un panneau commun de son tableau PRIVÉ et par un panneau commun
     ///     ORPHELIN (tableau sans ligne) : `used_by` vaut 1 pour bob et carol, 3 pour alice, 4 pour l'administrateur ;
     ///   * `POST /api/panels` sur le tableau commun d'alice (commun en position 0, privé en position 1) : le panneau de bob
-    ///     prend la position 1, celui d'alice puis celui de l'administrateur la position qui suit TOUS les panneaux ;
+    ///     prend la position 1, celui d'alice puis celui de l'administrateur la position qui suit TOUS les panneaux ; sur
+    ///     un tableau neuf de même forme où l'administrateur crée le PREMIER, son panneau prend la position 2 (seul ce
+    ///     cas sépare « tous les panneaux » de « les panneaux communs », que les créations de bob et d'alice confondent) ;
     ///   * `POST /api/dashboard-snapshots` par bob, sur un troisième tableau commun d'alice : la capture ne fige pas le
     ///     titre du panneau privé, fige celui du commun (non-régression).
     /// MUTATIONS : `CB3_DL_COMPTE` (le compte de tous les panneaux), `CB3_DL_SANS_CAST` (la visibilité non textuelle
     /// rend la liste illisible), `CB3_UB_COMPTE` (tous les référents), `CB3_UB_TABLEAU_IGNORE` (la lisibilité du tableau
     /// du référent n'est pas jugée), `CB3_UB_SANS_PRESENT` (l'orphelin compté comme commun), `CB3_UB_SANS_ADMIN`
-    /// (l'administrateur perd l'orphelin), `CB3_PC_POSITION` (la position sur tous les panneaux).
+    /// (l'administrateur perd l'orphelin), `CB3_PC_POSITION` (la position sur tous les panneaux), `CB3_PC_ADMIN`
+    /// (l'administrateur placé après les seuls panneaux communs).
     #[tokio::test]
     async fn cb3_les_gestes_en_masse_ne_comptent_ni_ne_placent_le_panneau_prive() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // les gestes lisent l'environnement
@@ -372,6 +375,7 @@ mod panneau_prive_d_un_tableau_commun_repond_comme_un_absent {
         cb3_ecrire(&st, &format!("UPDATE panel SET visibility=X'00' WHERE id={};", avec_blob.prive));
         let prive_d_alice = cb3_jeu(&st, "privé d'alice", Some("alice"), "private");
         let pour_la_capture = cb3_jeu(&st, "capturé", Some("alice"), "shared");
+        let l_admin_d_abord = cb3_jeu(&st, "commun d'alice, l'administrateur crée d'abord", Some("alice"), "shared");
         cb3_ecrire(
             &st,
             &format!(
@@ -408,6 +412,10 @@ mod panneau_prive_d_un_tableau_commun_repond_comme_un_absent {
             let id = cb3_json(&t)["id"].as_i64().expect("identifiant créé");
             assert_eq!(cb3_entier(&st, &format!("SELECT position FROM panel WHERE id={id}")), attendu, "({qui}) la position suit les panneaux que le créateur lit");
         }
+        let (code, t) = cb3_envoi(addr, "adm", "POST", "/api/panels", &format!(r#"{{"dashboard_id":{},"title":"neuf de l'administrateur","query":"search | stats count","is_soql":true}}"#, l_admin_d_abord.tableau)).await;
+        assert_eq!(code, 200, "(adm, premier) création : {t}");
+        let id = cb3_json(&t)["id"].as_i64().expect("identifiant créé");
+        assert_eq!(cb3_entier(&st, &format!("SELECT position FROM panel WHERE id={id}")), 2, "(adm, premier) l'administrateur se place après TOUS les panneaux, le privé compris");
 
         // `POST /api/dashboard-snapshots` par bob.
         let (code, t) = cb3_envoi(addr, "bob", "POST", "/api/dashboard-snapshots", &format!(r#"{{"dashboard_id":{},"from":0,"to":100}}"#, pour_la_capture.tableau)).await;

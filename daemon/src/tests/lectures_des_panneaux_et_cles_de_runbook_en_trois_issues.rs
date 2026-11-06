@@ -108,7 +108,8 @@ mod lectures_des_panneaux_et_cles_de_runbook_en_trois_issues {
     }
 
     /// CE QU'IL TIENT (`dash_get`) : absent, `404` « dashboard introuvable » exactement ; lu, `200` avec son nom, et le
-    /// tableau PRIVÉ d'alice reste `403` pour bob (le refus établi) ; nom illisible, `503` `CAUSE_TABLEAU_DE_BORD_NON_LU`
+    /// tableau PRIVÉ d'alice, refusé à bob, lui répond comme un tableau absent (INVERSÉ, `P11.25-f` vague CB : il
+    /// recevait `403`, ce qui disait qu'il existe) ; nom illisible, `503` `CAUSE_TABLEAU_DE_BORD_NON_LU`
     /// en entier pour la propriétaire, l'admin et bob — aucun `403` décidé sur une lecture ratée, même pour le privé.
     /// MUTATIONS : DASH_LECTURE_EN_404, DASH_ABSENT_EN_503, DASH_CAUSE_EXPOSEE.
     #[tokio::test]
@@ -124,7 +125,7 @@ mod lectures_des_panneaux_et_cles_de_runbook_en_trois_issues {
         let (statut, corps, v) = aj4_fiche(&st, &bob, partage).await;
         assert_eq!((statut, v["name"].clone()), (200, json!("d-aj4-partage")), "contrôle : lu, servi : {corps}");
         let (statut, corps, _) = aj4_fiche(&st, &bob, prive).await;
-        assert_eq!(statut, 403, "contrôle : le privé d'alice reste refusé à bob quand il est lu : {corps}");
+        assert_eq!((statut, corps.as_str()), (404, "dashboard introuvable"), "contrôle : le privé d'alice, lu, répond à bob comme un tableau absent");
 
         aj4_sql(&st, &format!("UPDATE dashboard SET name=X'00' WHERE id IN ({partage},{prive});"));
         let cas = [("propriétaire", &alice, partage), ("admin", &adm, partage), ("bob, partagé", &bob, partage), ("bob, privé", &bob, prive)];

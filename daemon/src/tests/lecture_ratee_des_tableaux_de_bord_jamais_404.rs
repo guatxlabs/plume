@@ -196,7 +196,8 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
 
     /// CE QU'IL TIENT (révocation d'un instantané) : absent, `404` sans corps ; auteur illisible, `503` nommé
     /// `CAUSE_INSTANTANE_NON_SUPPRIME_NON_LU` en entier pour l'auteur, l'admin ET un tiers — ni `403` ni révocation sur un
-    /// auteur non lu ; l'instantané reste. Contrôle : auteur relisible, le tiers reçoit `403`, l'auteur révoque (`204`).
+    /// auteur non lu ; l'instantané reste. Contrôle : auteur relisible, le tiers reçoit `404` (INVERSÉ, `P11.25-f` vague CB :
+    /// l'instantané d'alice, qu'il ne lit pas par son numéro, lui répond comme un numéro absent), l'auteur révoque (`204`).
     /// MUTATIONS : `AE4_REVOC_LECTURE_EN_404`, `AE4_REVOC_ABSENT_EN_503`, `AE4_REVOC_CAUSE_EXPOSEE`, `AE4_REVOC_LECTURE_FAIT_LE_GESTE`.
     #[tokio::test]
     async fn ae4_revocation_d_un_instantane_auteur_illisible_jamais_404_ni_403_rien_n_est_supprime() {
@@ -215,7 +216,8 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
         }
 
         ae4_sql(&st, &format!("UPDATE dashboard_snapshot SET created_by='alice' WHERE id={sid};"));
-        assert_eq!(ae4_revoquer(&st, &bob, sid).await.0, 403, "contrôle : auteur relisible, le tiers est refusé");
+        assert_eq!(ae4_revoquer(&st, &bob, sid).await.0, 404, "contrôle : auteur relisible, le tiers reçoit la réponse d'un numéro absent");
+        assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM dashboard_snapshot WHERE id={sid}")), 1, "contrôle : refusé au tiers, l'instantané reste");
         assert_eq!(ae4_revoquer(&st, &alice, sid).await.0, 204, "contrôle : l'auteur révoque");
         assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM dashboard_snapshot WHERE id={sid}")), 0);
     }
@@ -252,8 +254,9 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
 
     /// CE QU'IL TIENT (suppression d'un panneau) : absent, `404` sans corps ; tableau porteur illisible, `503` nommé
     /// `CAUSE_PANNEAU_NON_SUPPRIME_NON_LU` en entier pour la propriétaire et l'admin — ni `403` ni suppression ; le panneau
-    /// et son cache restent. Contrôle : porteur relisible, un editor tiers sur le tableau PRIVÉ d'alice reçoit `403` sans
-    /// corps et le panneau comme son cache restent (le bras de droit réécrit par le passage à `Response`) ; la propriétaire
+    /// et son cache restent. Contrôle : porteur relisible, un editor tiers sur le tableau PRIVÉ d'alice reçoit `404` sans
+    /// corps (INVERSÉ, `P11.25-f` vague CB : la réponse d'un panneau absent, plus le `403` qui disait qu'il existe) et le
+    /// panneau comme son cache restent (le bras de droit réécrit par le passage à `Response`) ; la propriétaire
     /// supprime (`204`), le cache est purgé.
     /// MUTATIONS : `AE4_PANEL_LECTURE_EN_404`, `AE4_PANEL_ABSENT_EN_503`, `AE4_PANEL_CAUSE_EXPOSEE`, `AE4_PANEL_LECTURE_FAIT_LE_GESTE`,
     /// `AE4_PANEL_DROIT_RETIRE` (le bras `Ok(Some(_)) => 403` laissé passer).
@@ -277,7 +280,7 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
 
         ae4_sql(&st, &format!("UPDATE panel SET dashboard_id={did} WHERE id={pid};"));
         let (statut, corps, _) = ae4_retirer_le_panneau(&st, &bob, pid).await;
-        assert_eq!((statut, corps.as_str()), (403, ""), "contrôle : porteur relisible et privé d'alice, l'editor tiers est refusé sans corps");
+        assert_eq!((statut, corps.as_str()), (404, ""), "contrôle : porteur relisible et privé d'alice, l'editor tiers reçoit le 404 vide d'un panneau absent");
         assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM panel WHERE id={pid}")), 1, "contrôle : refusé, le panneau reste");
         assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM panel_cache WHERE panel_id={pid}")), 1, "contrôle : refusé, son cache reste");
         let (statut, corps, _) = ae4_retirer_le_panneau(&st, &alice, pid).await;

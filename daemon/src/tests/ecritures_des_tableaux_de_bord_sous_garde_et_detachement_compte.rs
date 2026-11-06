@@ -259,13 +259,14 @@ mod ecritures_des_tableaux_de_bord_sous_garde_et_detachement_compte {
     /// CE QU'IL TIENT (`P10.20-l`, porte d'un tableau de bord sur les quatre gestes qui l'appellent) : propriétaire
     /// illisible — `503` `CAUSE_DROIT_D_EDITION_NON_LU` en entier pour `dash_update`, `panel_create`, `panel_update` et
     /// `panel_delete`, rien n'est écrit, créé ni supprimé ; refus de droit établi (tableau PRIVÉ d'alice, bob editor) —
-    /// chaque `403` à sa forme d'avant (vide, texte, JSON, vide) ; tableau absent — `404` (vide pour `dash_update` et
+    /// INVERSÉ (`P11.25-f`, vague CB) : la réponse de l'identifiant absent de chaque route (404 vide, texte
+    /// `dashboard introuvable`, JSON `panneau introuvable`, vide), plus le 403 qui disait que le tableau existe ; tableau absent — `404` (vide pour `dash_update` et
     /// `panel_delete`, texte `dashboard introuvable` pour `panel_create`, JSON pour `panel_update`) ; contrôle : alice,
     /// lecture rendue, réussit les quatre gestes.
     /// MUTATIONS : `AG3_PORTE_ERR_REFUSEE`, `AG3_PORTE_ABSENT_REFUSEE`, `AG3_PORTE_CAUSE_EXPOSEE`, et pour
     /// C ∈ {DU, PC, PU, PD} `AG3_<C>_REFUSEE_PASSE`, `AG3_<C>_ABSENT_403`, `AG3_<C>_NONLUE_403`.
     #[tokio::test]
-    async fn ag3_porte_du_tableau_lecture_refusee_503_refus_403_absence_404() {
+    async fn ag3_porte_du_tableau_lecture_refusee_503_refus_et_absence_404() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // les gestes lisent l'environnement
         let (st, _p) = sp_state("ag3-porte");
         let (alice, bob) = (sp_au("alice", "editor"), sp_au("bob", "editor"));
@@ -299,15 +300,16 @@ mod ecritures_des_tableaux_de_bord_sous_garde_et_detachement_compte {
         assert_eq!(ag3_cache(&st, pid), 1, "propriétaire illisible : le cache du panneau est intact");
         assert!(st.db.lock().is_autocommit(), "aucune transaction pendante");
 
-        // (2) refus de droit établi : chaque 403 à sa forme d'avant.
+        // (2) refus de droit établi. INVERSÉ (`P11.25-f`, vague CB) : le tableau privé d'alice, que bob ne lit pas,
+        //     reçoit la réponse de l'identifiant absent de chaque route — plus le 403 qui disait qu'il existe.
         let r = ag3_modifier_le_tableau(&st, &bob, did, json!({ "name": "écrit" })).await;
-        assert_eq!((r.0, r.1.as_str()), (403, ""), "dash_update : refus de droit, sans corps");
+        assert_eq!((r.0, r.1.as_str()), (404, ""), "dash_update : tableau privé d'autrui, le 404 vide d'un tableau absent");
         let r = ag3_creer_un_panneau(&st, &bob, did).await;
-        assert_eq!((r.0, r.1.as_str()), (403, "dashboard non modifiable"), "panel_create : refus de droit, texte d'avant");
+        assert_eq!((r.0, r.1.as_str()), (404, "dashboard introuvable"), "panel_create : tableau privé d'autrui, le 404 texte d'un tableau absent");
         let r = ag3_modifier_le_panneau(&st, &bob, pid, json!({ "title": "écrit" })).await;
-        assert_eq!((r.0, r.2.clone()), (403, json!({ "error": "dashboard non modifiable" })), "panel_update : refus de droit, JSON d'avant");
+        assert_eq!((r.0, r.2.clone()), (404, json!({ "error": "panneau introuvable" })), "panel_update : panneau d'un tableau privé d'autrui, le 404 JSON d'un panneau absent");
         let r = ag3_retirer_le_panneau(&st, &bob, pid).await;
-        assert_eq!((r.0, r.1.as_str()), (403, ""), "panel_delete : refus de droit, sans corps");
+        assert_eq!((r.0, r.1.as_str()), (404, ""), "panel_delete : panneau d'un tableau privé d'autrui, le 404 vide d'un panneau absent");
         assert_eq!(etat(&st), avant, "refus de droit : rien n'est écrit, créé ni supprimé");
 
         // (3) tableau absent. `dash_update` : la ligne lue par la lecture d'existence ne l'est plus à la porte (la seconde
@@ -345,7 +347,8 @@ mod ecritures_des_tableaux_de_bord_sous_garde_et_detachement_compte {
     /// CE QU'IL TIENT (`P10.20-l`, `dash_get`) : le drapeau `editable` se décide sur la lecture qui a décidé l'accès.
     /// Toute lecture de `dashboard.owner` après la première refusée : la fiche d'alice et celle d'un tableau partagé
     /// vue par bob disent `editable: true` (la porte les laisse modifier). Contrôle : sans refus, même verdict ; un
-    /// tableau privé d'alice reste refusé à bob (`403`).
+    /// tableau privé d'alice reste refusé à bob — INVERSÉ (`P11.25-f`, vague CB) : `404` « dashboard introuvable », la
+    /// réponse d'un tableau absent, plus le `403` qui disait qu'il existe.
     /// MUTATION : `AG3_GET_RELU` (le drapeau relu par une seconde lecture, échec = `false`).
     #[tokio::test]
     async fn ag3_le_drapeau_editable_ne_depend_pas_d_une_seconde_lecture() {
@@ -374,7 +377,7 @@ mod ecritures_des_tableaux_de_bord_sous_garde_et_detachement_compte {
             assert_eq!((statut, v["editable"].clone()), (200, json!(true)), "{nom} #{did} : contrôle sans refus");
         }
         let (statut, corps, _) = fiche(st.clone(), bob.clone(), prive).await;
-        assert_eq!((statut, corps.as_str()), (403, "dashboard privé"), "contrôle : le tableau privé d'alice reste refusé à bob");
+        assert_eq!((statut, corps.as_str()), (404, "dashboard introuvable"), "contrôle : le tableau privé d'alice répond à bob comme un tableau absent");
     }
 
     /// Les trois modifications : (route, table, ligne relue, corps complet, écritures nommées par leur colonne).

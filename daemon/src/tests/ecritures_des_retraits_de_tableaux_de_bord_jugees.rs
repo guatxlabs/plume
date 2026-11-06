@@ -326,7 +326,9 @@ mod ecritures_des_retraits_de_tableaux_de_bord_jugees {
     /// CE QU'IL TIENT (suppression d'un panneau de bibliothèque, lecture d'existence) : absente, `404` sans corps ; lecture
     /// refusée, `503` `CAUSE_PANNEAU_DE_BIBLIOTHEQUE_NON_SUPPRIME_NON_LU` en entier pour la propriétaire, l'admin ET un
     /// tiers (aucun `403` décidé) — la définition reste, le panneau qui la référence y reste rattaché, aucune transaction
-    /// pendante. Contrôle : lecture rendue, le tiers reçoit `403`, la propriétaire supprime (`204`), le référent est détaché.
+    /// pendante. Contrôle : lecture rendue, le tiers reçoit `404` sans corps — INVERSÉ (`P11.25-f`, vague CB) : la
+    /// définition privée d'alice, qu'il ne lit pas, lui répond comme une définition absente, plus le `403` qui disait
+    /// qu'elle existe —, la propriétaire supprime (`204`), le référent est détaché.
     /// MUTATIONS : `AF4_BIB_LECTURE_EN_404`, `AF4_BIB_ABSENT_EN_503`, `AF4_BIB_LECTURE_FAIT_LE_GESTE`, `AF4_BIB_CAUSE_EXPOSEE`.
     #[tokio::test]
     async fn af4_suppression_d_un_panneau_de_bibliotheque_lecture_refusee_jamais_404_ni_403() {
@@ -350,7 +352,8 @@ mod ecritures_des_retraits_de_tableaux_de_bord_jugees {
         }
 
         let (statut, corps, _) = af4_retirer_la_definition(&st, &bob, lib).await;
-        assert_eq!((statut, corps.as_str()), (403, ""), "contrôle : lecture rendue, la définition privée d'alice est refusée au tiers");
+        assert_eq!((statut, corps.as_str()), (404, ""), "contrôle : lecture rendue, la définition privée d'alice répond au tiers comme une définition absente");
+        assert_eq!(af4_compte(&st, &format!("SELECT COUNT(*) FROM library_panel WHERE id={lib}")), 1, "contrôle : refusée au tiers, la définition reste");
         let (statut, corps, _) = af4_retirer_la_definition(&st, &alice, lib).await;
         assert_eq!((statut, corps.as_str()), (204, ""), "contrôle : la propriétaire supprime");
         assert_eq!(af4_compte(&st, &format!("SELECT COUNT(*) FROM library_panel WHERE id={lib}")), 0);

@@ -457,7 +457,8 @@ async fn le_drapeau_editable_dit_ce_que_la_porte_fera() {
     let (_, v) = pb_json(dash_create(State(st.clone()), Extension(sp_au("alice", "editor")), Json(json!({ "name": "privé d'alice", "visibility": "private" }))).await.into_response()).await;
     let prive_alice = v["id"].as_i64().unwrap();
     let porte = dash_update(State(st.clone()), Extension(bob.clone()), Path(prive_alice), Json(json!({ "name": "x" }))).await.status();
-    assert_eq!(porte, StatusCode::FORBIDDEN, "la porte refuse");
+    // INVERSÉ (`P11.25-f`, vague CB) : le refus est la réponse d'un tableau absent (404), plus un 403 qui disait qu'il existe.
+    assert_eq!(porte, StatusCode::NOT_FOUND, "la porte refuse, comme devant un tableau absent");
     let v = dash_list(State(st.clone()), Extension(bob.clone()), Query(HashMap::new())).await.0;
     assert!(!v["dashboards"].as_array().unwrap().iter().any(|d| d["id"] == json!(prive_alice)), "…et l'objet n'est même pas listé");
     ff_rm(&dbp);
@@ -614,7 +615,8 @@ async fn les_drapeaux_editable_de_la_bibliotheque_et_des_playlists_disent_leur_p
             let servies = sp_liste_ergo(&st, au, quoi).await;
             assert!(!servies.is_empty(), "INSTRUMENT : {qui} ne se voit servir aucune ligne de {quoi} — la propriété serait vide");
             for (id, drapeau) in servies {
-                let porte = sp_porte_ergo(&st, au, quoi, id).await != StatusCode::FORBIDDEN;
+                // `P11.25-f` (vague CB) : un refus de la porte est servi 404 (objet que l'appelant ne lit pas), plus 403.
+                let porte = !matches!(sp_porte_ergo(&st, au, quoi, id).await, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND);
                 assert_eq!(drapeau, porte, "{quoi} #{id} vu par {qui} : le drapeau `editable` annonce {drapeau} et la porte décide {porte} — un drapeau qui ment sur sa propre porte");
             }
         }
@@ -633,21 +635,23 @@ async fn les_drapeaux_editable_de_la_bibliotheque_et_des_playlists_disent_leur_p
                     // `visibility='shared'` vaut « modifiable par le partage » (`lisible_par`). Un
                     // tiers voit et modifie. Elle est NOMMÉE au lieu de plier l'assertion.
                     assert!(vu(&lb) && vu(&la), "{quoi} « {etiquette} » : DÉCLARÉ commun -> servi à tous (décision antérieure à `P11.20-n`)");
-                    assert_ne!(sp_porte_ergo(&st, &bob, quoi, id).await, StatusCode::FORBIDDEN, "{quoi} « {etiquette} » : et modifiable par le partage — ce lot ne touche pas à ce geste");
+                    assert_eq!(sp_porte_ergo(&st, &bob, quoi, id).await, StatusCode::NO_CONTENT, "{quoi} « {etiquette} » : et modifiable par le partage — ce lot ne touche pas à ce geste");
                 }
                 "propriétaire nommé + privé" => {
                     assert!(vu(&la), "{quoi} « {etiquette} » : CONTRÔLE POSITIF — la propriétaire voit le sien");
                     assert!(!vu(&lb), "{quoi} « {etiquette} » : et le tiers ne le voit pas");
-                    assert_eq!(sp_porte_ergo(&st, &bob, quoi, id).await, StatusCode::FORBIDDEN, "{quoi} « {etiquette} » : ni ne le modifie");
+                    // INVERSÉ (`P11.25-f`, vague CB) : la réponse d'un objet absent, plus le 403 qui disait qu'il existe.
+                    assert_eq!(sp_porte_ergo(&st, &bob, quoi, id).await, StatusCode::NOT_FOUND, "{quoi} « {etiquette} » : ni ne le modifie, et il lui répond comme un objet absent");
                 }
                 _ => {
                     // LE CŒUR DE `P11.20-n` SUR CETTE SURFACE : sans propriétaire ET non déclaré
                     // commun -> personne, PAS MÊME UN EDITOR QUELCONQUE, n'en hérite.
                     assert!(!vu(&la) && !vu(&lb), "{quoi} « {etiquette} » : AVANT correctif, servi à TOUS et modifiable par TOUS. {SP_MOTIF_DU_RESSERREMENT}");
                     for (qui, au) in [("alice", &alice), ("bob", &bob)] {
-                        assert_eq!(sp_porte_ergo(&st, au, quoi, id).await, StatusCode::FORBIDDEN, "{quoi} « {etiquette} » : {qui} le modifie encore par son id");
+                        // INVERSÉ (`P11.25-f`, vague CB) : 404, la réponse d'un objet absent, plus 403.
+                        assert_eq!(sp_porte_ergo(&st, au, quoi, id).await, StatusCode::NOT_FOUND, "{quoi} « {etiquette} » : {qui} le modifie encore par son id");
                     }
-                    assert_ne!(sp_porte_ergo(&st, &admin, quoi, id).await, StatusCode::FORBIDDEN, "{quoi} « {etiquette} » : CONTRÔLE POSITIF — l'admin, lui, peut");
+                    assert_eq!(sp_porte_ergo(&st, &admin, quoi, id).await, StatusCode::NO_CONTENT, "{quoi} « {etiquette} » : CONTRÔLE POSITIF — l'admin, lui, peut");
                 }
             }
         }

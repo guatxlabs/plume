@@ -203,8 +203,9 @@ mod refus_de_modification_servi_avec_sa_cause {
     }
 
     /// La lecture du droit refusée n'est pas un refus de droit : 503 nommé, jamais 403, sur les quatre routes, rien
-    /// d'écrit ni d'effacé ; l'admin ne lit pas la porte et passe ; le refus de droit ÉTABLI reste 403. MUTATION QUI LE
-    /// FAIT ROUGIR : V5_ERGO_FALSE (403).
+    /// d'écrit ni d'effacé ; l'admin ne lit pas la porte et passe ; le refus de droit ÉTABLI reçoit le 404 d'un objet
+    /// absent (INVERSÉ, `P11.25-f` vague CB : il recevait 403, ce qui disait que l'objet privé d'autrui existe).
+    /// MUTATION QUI LE FAIT ROUGIR : V5_ERGO_FALSE (403).
     #[tokio::test]
     async fn rmc_une_lecture_du_droit_refusee_rend_503_nomme_et_non_403() {
         for objet in [Objet::Panneau, Objet::Liste] {
@@ -238,8 +239,8 @@ mod refus_de_modification_servi_avec_sa_cause {
 
             // LE REFUS DE DROIT ÉTABLI : la propriétaire passe en privé (sans autorisateur), bob reste dehors.
             assert_eq!(rmc_modifier(&st, objet, &alice, id, json!({ "visibility": "private" })).await.0, 204, "({t}) fixture : privé d'alice");
-            assert_eq!(rmc_modifier(&st, objet, &bob, id, json!({ "visibility": "shared" })).await.0, 403, "({t}) refus de droit établi (modification)");
-            assert_eq!(rmc_supprimer(&st, objet, &bob, id).await.0, 403, "({t}) refus de droit établi (suppression)");
+            assert_eq!(rmc_modifier(&st, objet, &bob, id, json!({ "visibility": "shared" })).await.0, 404, "({t}) refus de droit établi (modification) : la réponse d'un objet absent");
+            assert_eq!(rmc_supprimer(&st, objet, &bob, id).await.0, 404, "({t}) refus de droit établi (suppression) : la réponse d'un objet absent");
             assert_eq!(rmc_compte(&st, &format!("SELECT COUNT(*) FROM {t} WHERE id={id} AND visibility='private'")), 1, "({t}) toujours là, privé");
             // CONTRÔLE POSITIF : la propriétaire, sans autorisateur, supprime.
             assert_eq!(rmc_supprimer(&st, objet, &alice, id).await.0, 204, "({t}) nominal");

@@ -232,10 +232,11 @@ mod listes_de_lecture_ecrites_ou_refusees {
         assert_eq!(playlist_delete(State(st.clone()), Extension(alice.clone()), Path(999_999)).await.status().as_u16(), 404);
     }
 
-    /// Les contrôles d'accès passent AVANT toute écriture : un éditeur non propriétaire d'une liste privée garde son
-    /// 403, déclencheurs posés ou non.
+    /// Les contrôles d'accès passent AVANT toute écriture : un éditeur non propriétaire d'une liste privée reçoit le
+    /// 404 d'une liste absente, déclencheurs posés ou non. INVERSÉ (`P11.25-f`, vague CB) : le 403 d'avant disait que
+    /// la liste privée d'alice existe.
     #[tokio::test]
-    async fn ldl_un_editeur_non_proprietaire_garde_son_403() {
+    async fn ldl_un_editeur_non_proprietaire_recoit_le_404_d_une_liste_absente() {
         let (st, _tmp) = sp_state("ldl-acces");
         let alice = sp_au("alice", "editor");
         let bob = sp_au("bob", "editor");
@@ -246,8 +247,8 @@ mod listes_de_lecture_ecrites_ou_refusees {
             "CREATE TRIGGER ldl_a BEFORE DELETE ON playlist BEGIN SELECT RAISE(ABORT,'x'); END; \
              CREATE TRIGGER ldl_b BEFORE UPDATE ON playlist BEGIN SELECT RAISE(ABORT,'x'); END;",
         );
-        assert_eq!(ldl_modifier(&st, &bob, id, json!({ "visibility": "shared" })).await, 403);
-        assert_eq!(playlist_delete(State(st.clone()), Extension(bob.clone()), Path(id)).await.status().as_u16(), 403);
+        assert_eq!(ldl_modifier(&st, &bob, id, json!({ "visibility": "shared" })).await, 404);
+        assert_eq!(playlist_delete(State(st.clone()), Extension(bob.clone()), Path(id)).await.status().as_u16(), 404);
     }
 
     /// Les causes « transaction annulée » et « transaction non prise » s'ouvrent comme la console sait les lire (la

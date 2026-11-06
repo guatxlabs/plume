@@ -299,8 +299,9 @@ async fn p10_20k_une_vue_dont_la_visibilite_n_est_pas_lue_refuse_sans_accuser_un
 // -------------------------------------------------------------------------------------
 
 /// CE QU'IL TIENT : les QUATRE refus de `panel_update` portent désormais une phrase dans leur corps,
-/// comme ceux de `panel_create` — le 404 d'un panneau absent, les deux 403 (tableau non modifiable, SQL
-/// brut réservé à l'administrateur) et, le plus coûteux, le 503 de `DefinitionExecutee::projetee`, dont
+/// comme ceux de `panel_create` — le 404 d'un panneau absent, le refus sur le tableau (INVERSÉ par `P11.25-f`,
+/// vague CB : le panneau d'un tableau privé d'autrui reçoit le 404 du panneau absent, plus un 403 « dashboard non
+/// modifiable » qui disait qu'il existe), le 403 du SQL brut réservé à l'administrateur et, le plus coûteux, le 503 de `DefinitionExecutee::projetee`, dont
 /// le message était JETÉ par un `Err((code, _))` : c'est la cause de `P10.20-b` qui n'atteignait pas
 /// l'appelant. Contrôle positif compté dans le même corps : un update légitime rend 204.
 ///
@@ -326,10 +327,11 @@ async fn p10_20k_les_refus_de_panel_update_portent_leur_phrase() {
     assert_eq!(statut, 404);
     assert!(vca_phrase(&absent).contains("panneau introuvable"), "le 404 n'est plus muet : {absent}");
 
-    // (b) LE TABLEAU NON MODIFIABLE — 403 avec le motif, la MÊME phrase que `panel_create`.
+    // (b) LE TABLEAU PRIVÉ D'AUTRUI — INVERSÉ (`P11.25-f`, vague CB) : le panneau que bob ne lit pas reçoit le 404 du
+    //     panneau absent, corps égal, plus le 403 « dashboard non modifiable » qui disait qu'il existe.
     let (statut, interdit) = vca_corps(panel_update(State(st.clone()), Extension(bob.clone()), Path(pid), Json(json!({ "title": "x" }))).await).await;
-    assert_eq!(statut, 403);
-    assert!(vca_phrase(&interdit).contains("dashboard non modifiable"), "le 403 n'est plus muet : {interdit}");
+    assert_eq!(statut, 404);
+    assert_eq!(interdit, absent, "le panneau d'un tableau privé d'autrui répond comme un panneau absent : {interdit}");
 
     // (c) LE SQL BRUT RÉSERVÉ À L'ADMINISTRATEUR — 403 avec le geste de rechange (« utilisez GXQL »).
     let (statut, brut) = vca_corps(

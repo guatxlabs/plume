@@ -22,9 +22,14 @@ use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apre
 // `P10.20-l` (vague AG) — TROIS ISSUES, ET LA LECTURE RATÉE N'EST PAS UN REFUS DE DROIT. La forme d'avant
 // (`Err(_) => false`) rendait 403 sur un propriétaire illisible — un refus de droit inventé, pour un tableau que le
 // compte a peut-être le droit de modifier — et 403 aussi sur une ligne absente. Chaque appelant tranche désormais les
-// quatre cas : droit établi, refus établi (403 de sa forme d'avant), ligne absente (404), lecture refusée (503
+// quatre cas : droit établi, refus établi (la réponse d'absence de sa route, ci-dessous), ligne absente (404), lecture refusée (503
 // `CAUSE_DROIT_D_EDITION_NON_LU`, phrase fixe déjà servie par `dash_ergonomics` ; la cause du moteur au journal seul,
 // avec l'identifiant interne du tableau et l'identifiant de corrélation, jamais un nom de compte).
+//
+// `P11.25-f` (vague CB) — `Refusee` est rendu EXACTEMENT quand le tableau est privé à un autre compte : un tableau
+// commun est modifiable par tout lecteur et l'administrateur ne lit pas la porte (`lisible_par`, panneau_resolu.rs).
+// Un refus de droit établi est donc un tableau que l'appelant ne LIT pas, et chaque appelant le sert comme son
+// identifiant absent — même statut, même corps — et n'écrit rien : un 403 disait l'existence du tableau privé d'autrui.
 pub(crate) enum PorteDuTableau {
     Ouverte,
     Refusee,
@@ -470,10 +475,11 @@ pub(crate) async fn dash_update(State(st): State<AppState>, Extension(au): Exten
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return panneau_resolu::refus_de_visibilite_non_lue(),
     };
+    // `P11.25-f` (vague CB) — un tableau privé d'autrui (`Refusee`) reçoit le 404 nu d'un identifiant absent, rien
+    // n'est écrit ; le 403 d'avant disait qu'il existe.
     match dash_editable(&conn, &au, id) {
         PorteDuTableau::Ouverte => {}
-        PorteDuTableau::Refusee => return StatusCode::FORBIDDEN.into_response(),
-        PorteDuTableau::Absent => return StatusCode::NOT_FOUND.into_response(),
+        PorteDuTableau::Refusee | PorteDuTableau::Absent => return StatusCode::NOT_FOUND.into_response(),
         PorteDuTableau::NonLue(refus) => return refus,
     }
     // `P11.20-m` — LE GESTE DE PARTAGE EST JUGÉ AVANT TOUTE ÉCRITURE : refusé avec la raison tant
@@ -575,11 +581,14 @@ pub(crate) async fn dash_get(State(st): State<AppState>, Extension(au): Extensio
             return refus;
         }
     };
+    // `P11.25-f` (vague CB) — un tableau que l'appelant ne lit pas (privé d'un autre compte) reçoit la réponse d'un
+    // identifiant absent, à l'octet : le 403 « dashboard privé » d'avant disait qu'il existe. Décidé sur la lecture
+    // ci-dessus (existence, propriétaire, visibilité d'un seul énoncé).
     let Some((name, owner, vis, view_id)) = meta else {
         return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response();
     };
     if !panneau_resolu::lisible_par(&owner, &vis, &au) {
-        return (StatusCode::FORBIDDEN, "dashboard privé").into_response();
+        return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response();
     }
     // P7.13-a : portée de lecture DÉRIVÉE au coffre (même décision que `panel_access` et que la capture).
     let portee = PorteeLecture::du_dashboard(&au, &owner);
@@ -729,8 +738,20 @@ pub(crate) async fn dash_delete(State(st): State<AppState>, Extension(au): Exten
     // 503 — ni 403 ni suppression sur un propriétaire non lu. `P10.20-l` (vague AF) — la route rend une `Response` : le
     // 503 porte `CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU` en corps (la console lisait un 503 nu, « refus sans cause »),
     // la cause du moteur au journal seul. 403 et 404 restent sans corps.
-    match conn.query_row("SELECT COALESCE(owner,'') FROM dashboard WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
-        Ok(Some(owner)) => {
+    // `P11.25-f` (vague CB) — la visibilité se lit dans la MÊME lecture que le propriétaire : un tableau que l'appelant
+    // ne LIT pas (privé d'un autre compte) reçoit le 404 nu d'un identifiant absent et rien n'est supprimé ; le 403
+    // d'avant disait qu'il existe. Le 403 reste à qui lit le tableau sans en être propriétaire (tableau commun, semé
+    // compris) : il ne dit rien qu'il ne voie déjà.
+    let lecture = conn
+        .query_row("SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1", params![id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .optional();
+    match lecture {
+        Ok(Some((owner, vis))) => {
+            if !panneau_resolu::lisible_par(&owner, &vis, &au) {
+                return StatusCode::NOT_FOUND.into_response();
+            }
             // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
             // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
             if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
@@ -804,10 +825,11 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
     crate::req_conn!(st, au, conn);
     // `P10.20-l` (vague AG) — tableau absent : 404 en texte, à la forme du 403 voisin (la forme d'avant disait « non
     // modifiable » d'un tableau qui n'existe pas) ; droit non lu : 503 nommé, rien n'est créé.
+    // `P11.25-f` (vague CB) — tableau privé d'autrui : la réponse d'un tableau absent, à l'octet, rien n'est créé (le
+    // 403 « dashboard non modifiable » d'avant disait qu'il existe).
     match dash_editable(&conn, &au, did) {
         PorteDuTableau::Ouverte => {}
-        PorteDuTableau::Refusee => return (StatusCode::FORBIDDEN, "dashboard non modifiable").into_response(),
-        PorteDuTableau::Absent => return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response(),
+        PorteDuTableau::Refusee | PorteDuTableau::Absent => return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response(),
         PorteDuTableau::NonLue(refus) => return refus,
     }
     // SQL BRUT = ADMIN — un panneau en SQL BRUT (is_soql=false) exécute du SQL arbitraire read-only sur
@@ -871,9 +893,12 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     // « 403 » nu, et le message de `DefinitionExecutee::projetee` (dont le 503 « définition de
     // bibliothèque NON LUE ») était JETÉ sur le sol par un `Err((code, _))`.
     // `P10.20-l` (vague AG) — tableau porteur absent : 404 nommé ; droit non lu : 503 nommé ; rien n'est écrit.
+    // `P11.25-f` (vague CB) — le panneau d'un tableau privé d'autrui est un panneau que l'appelant ne lit pas : il
+    // reçoit la réponse d'un identifiant de panneau absent (`panneau introuvable`, ci-dessus), à l'octet, et rien n'est
+    // écrit. Le 403 « dashboard non modifiable » d'avant disait que le panneau et son tableau existent.
     match dash_editable(&conn, &au, did) {
         PorteDuTableau::Ouverte => {}
-        PorteDuTableau::Refusee => return forbidden("dashboard non modifiable"),
+        PorteDuTableau::Refusee => return not_found("panneau introuvable"),
         PorteDuTableau::Absent => return not_found("dashboard introuvable"),
         PorteDuTableau::NonLue(refus) => return refus,
     }
@@ -997,10 +1022,11 @@ pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Exte
     match conn.query_row("SELECT dashboard_id FROM panel WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional() {
         // `P10.20-l` (vague AG) — le droit sur le tableau porteur, en quatre issues : la forme d'avant rendait 403 sur
         // un droit illisible (`Err(_) => false`) et sur un porteur absent.
+        // `P11.25-f` (vague CB) — le panneau d'un tableau privé d'autrui reçoit le 404 nu d'un panneau absent, rien
+        // n'est supprimé (le 403 d'avant disait qu'il existe).
         Ok(Some(d)) => match dash_editable(&conn, &au, d) {
             PorteDuTableau::Ouverte => {}
-            PorteDuTableau::Refusee => return StatusCode::FORBIDDEN.into_response(),
-            PorteDuTableau::Absent => return StatusCode::NOT_FOUND.into_response(),
+            PorteDuTableau::Refusee | PorteDuTableau::Absent => return StatusCode::NOT_FOUND.into_response(),
             PorteDuTableau::NonLue(refus) => return refus,
         },
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),

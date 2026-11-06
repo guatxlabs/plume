@@ -275,10 +275,11 @@ mod gestes_de_dash_ergonomics_ecrits_ou_refuses {
         assert_eq!(library_panel_delete(State(st.clone()), Extension(alice.clone()), Path(lib)).await.status().as_u16(), 204);
     }
 
-    /// Les contrôles d'accès passent AVANT toute écriture : un éditeur non propriétaire garde son 403 et une
-    /// ligne absente son 404, déclencheurs posés ou non.
+    /// Les contrôles d'accès passent AVANT toute écriture : un éditeur non propriétaire et une ligne absente
+    /// reçoivent le même 404, déclencheurs posés ou non. INVERSÉ (`P11.25-f`, vague CB) : la définition privée
+    /// d'alice et son instantané, que bob ne lit pas, lui répondaient 403 — ce qui disait qu'ils existent.
     #[tokio::test]
-    async fn gde_un_editeur_non_proprietaire_garde_son_403_et_l_absent_son_404() {
+    async fn gde_un_editeur_non_proprietaire_et_l_absent_recoivent_le_meme_404() {
         let (st, _tmp) = sp_state("gde-acces");
         let alice = sp_au("alice", "editor");
         let bob = sp_au("bob", "editor");
@@ -291,9 +292,9 @@ mod gestes_de_dash_ergonomics_ecrits_ou_refuses {
              CREATE TRIGGER gde_b BEFORE UPDATE ON library_panel BEGIN SELECT RAISE(ABORT,'x'); END; \
              CREATE TRIGGER gde_c BEFORE DELETE ON dashboard_snapshot BEGIN SELECT RAISE(ABORT,'x'); END;",
         );
-        assert_eq!(gde_modifier(&st, &bob, lib, json!({ "visibility": "shared" })).await, 403);
-        assert_eq!(library_panel_delete(State(st.clone()), Extension(bob.clone()), Path(lib)).await.status().as_u16(), 403);
-        assert_eq!(snapshot_delete(State(st.clone()), Extension(bob.clone()), Path(sid)).await.status().as_u16(), 403);
+        assert_eq!(gde_modifier(&st, &bob, lib, json!({ "visibility": "shared" })).await, 404);
+        assert_eq!(library_panel_delete(State(st.clone()), Extension(bob.clone()), Path(lib)).await.status().as_u16(), 404);
+        assert_eq!(snapshot_delete(State(st.clone()), Extension(bob.clone()), Path(sid)).await.status().as_u16(), 404);
         assert_eq!(gde_modifier(&st, &alice, 999_999, json!({ "visibility": "shared" })).await, 404);
         assert_eq!(library_panel_delete(State(st.clone()), Extension(alice.clone()), Path(999_999)).await.status().as_u16(), 404);
         assert_eq!(snapshot_delete(State(st.clone()), Extension(alice.clone()), Path(999_999)).await.status().as_u16(), 404);

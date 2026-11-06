@@ -25,7 +25,7 @@ use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apre
 /// surfaces, une seule expression : elles ne peuvent plus diverger.
 ///
 /// `P10.33-l` — TROIS ISSUES : `Ok(true)` le droit est établi, `Ok(false)` le refus de droit est établi
-/// (403), `Err` la lecture du propriétaire et de la visibilité a été refusée — ni droit ni refus ne sont établis. La
+/// (servi comme l'objet absent, `P11.25-f` : ci-dessous), `Err` la lecture du propriétaire et de la visibilité a été refusée — ni droit ni refus ne sont établis. La
 /// forme d'avant (`Err(_) => false`) rendait 403 sur une lecture refusée : un refus de droit inventé, pour un objet que
 /// le compte a peut-être le droit de modifier.
 fn ergo_editable(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> rusqlite::Result<bool> {
@@ -41,15 +41,17 @@ fn ergo_editable(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> rusq
     Ok(panneau_resolu::lisible_par(&owner, &vis, au))
 }
 
-/// `P10.33-l` — LA PORTE D'ÉDITION D'UN GESTE, rendue en réponse : `None` le geste peut continuer ; `Some(403)` refus
-/// de droit établi ; `Some(404)` l'objet n'a plus de ligne (l'appelant vient d'en lire l'existence sous le même verrou
+/// `P10.33-l` — LA PORTE D'ÉDITION D'UN GESTE, rendue en réponse : `None` le geste peut continuer ; `Some(404)` refus
+/// de droit établi (`P11.25-f`, vague CB : la porte est `lisible_par`, donc un refus est un objet que l'appelant ne LIT
+/// pas — privé d'un autre compte — et il reçoit le 404 nu de l'identifiant absent que ses quatre routes servent avant
+/// la porte ; le 403 d'avant disait qu'il existe) ; `Some(404)` aussi quand l'objet n'a plus de ligne (l'appelant vient d'en lire l'existence sous le même verrou
 /// d'écrivain : seul un autorisateur à état l'atteint, dans le témoin) ; `Some(503 nommé)` la lecture du droit a été
 /// refusée. `P10.29-l` (reste des tableaux de bord) : le corps ne porte que la phrase fixe et l'identifiant de corrélation,
 /// la cause du moteur va au journal seul (la forme d'avant la servait au client, `({table} #{id} : {e})`).
 fn refus_de_la_porte_d_edition(conn: &Connection, au: &AuthUser, table: &str, id: i64) -> Option<Response> {
     match ergo_editable(conn, au, table, id) {
         Ok(true) => None,
-        Ok(false) => Some(StatusCode::FORBIDDEN.into_response()),
+        Ok(false) => Some(StatusCode::NOT_FOUND.into_response()),
         Err(rusqlite::Error::QueryReturnedNoRows) => Some(StatusCode::NOT_FOUND.into_response()),
         Err(e) => {
             let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROIT_D_EDITION_NON_LU);
@@ -705,8 +707,10 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
         }
     };
     // `P11.20-n` — MÊME phrase que `dash_get` : un dashboard SANS propriétaire n'est plus « à nous ».
+    // `P11.25-f` (vague CB) — un tableau que le créateur ne lit pas reçoit la réponse d'un tableau absent (ci-dessus), à
+    // l'octet, et rien n'est capturé : le 403 « dashboard privé » d'avant disait qu'il existe.
     if !panneau_resolu::lisible_par(&owner, &vis, &au) {
-        return forbidden("dashboard privé");
+        return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response();
     }
     let snap_name = b.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| name.clone());
     // 2) CAPTURE via le chemin MASQUÉ (jeu effectif du rôle du CRÉATEUR) — jamais de données hors de sa portée.
@@ -840,9 +844,12 @@ pub(crate) async fn snapshot_delete(State(st): State<AppState>, Extension(au): E
     // `P10.20-l` — trois issues : lu, le droit est jugé ; absent, le 404 d'avant ; lecture ratée, 503
     // `CAUSE_INSTANTANE_NON_SUPPRIME_NON_LU` — ni 403 ni révocation : le droit n'est pas jugé sur un auteur non lu.
     match conn.query_row("SELECT COALESCE(created_by,'') FROM dashboard_snapshot WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
+        // `P11.25-f` (vague CB) — un instantané ne se lit par son numéro que par son auteur ou l'administrateur (le
+        // périmètre de `snapshots_list`) : celui d'un autre compte reçoit le 404 nu d'un numéro absent, rien n'est
+        // révoqué. Le 403 d'avant disait qu'il existe.
         Ok(Some(by)) => {
             if !au.is_admin() && by != au.name {
-                return StatusCode::FORBIDDEN.into_response();
+                return StatusCode::NOT_FOUND.into_response();
             }
         }
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),

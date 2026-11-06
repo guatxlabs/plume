@@ -392,8 +392,9 @@ JSON par ligne (type de contenu `application/x-ndjson`), par exemple :
   mêmes contrôles d'adresse, de plages réservées et de liste d'épargne. La durée part vers CrowdSec en
   `-d <n>s` ; vers nft en timeout d'élément dans un set dédié `inet plume blocklist_ttl` (`flags timeout`),
   le set historique `inet plume blocklist`, sans timeout, n'étant ni migré ni détruit (ses éléments déjà
-  posés restent ; un `unban_ip` retire l'adresse des deux sets) ; une durée de repli nulle ou illisible pour nft
-  n'est pas posée (`failed`, jamais un ban sans fin) ; fail2ban ne la porte pas (le ban dure le `bantime` de la
+  posés restent ; un `unban_ip` retire l'adresse des deux sets) ; une durée de repli nulle ou illisible
+  (autre chose que des `<n>s`, `m`, `h` ou `d` sur une seule ligne) n'est posée ni par nft ni par cscli
+  (`failed`, jamais un ban sans fin ni une valeur passée telle quelle) ; fail2ban ne la porte pas (le ban dure le `bantime` de la
   jail), et le résultat remis le dit. Chaque résultat remis, simulation comprise, porte la durée
   effective et sa provenance (servie, ou `PLUME_BAN_DURATION` avec la cause du repli).
 - L'en-tête est lu type par type (casse ignorée). Un poids nul (`application/x-ndjson;q=0`) est un refus

@@ -320,15 +320,54 @@ def s_id_moins_zero(script, lecteur):
 
 
 def s_nft_repli_sans_ancre(script):
-    """Une durée de repli qui COMMENCE comme une durée nft (`4hours`) est refusée entière, jamais posée."""
-    c = Central("tsv", [ban(576, "203.0.113.64")])
+    """Une durée de repli qui COMMENCE comme une durée nft est refusée entière, jamais posée : `4hours` (lettres
+    hors de [0-9dhms]) comme `4hd` (seulement [0-9dhms], mais mal formée : c'est l'ancrage de l'ERE qui la refuse)."""
+    f = []
+    for i, valeur in ((576, "4hours"), (583, "4hd")):
+        c = Central("tsv", [ban(i, f"203.0.113.{i - 500}")])
+        try:
+            t = jouer(script, c, lecteurs=(), backend="nft", bouchons=("nft",), env_plus={"PLUME_BAN_DURATION": valeur})
+        finally:
+            c.fermer()
+        exiger(f, "add element" not in t.trace("nft"), f"`{valeur}` posé en nft : {t.trace('nft')!r}")
+        verdict_est(f, t, i, "failed", "illisible")
+    return f
+
+
+def s_repli_multiligne(script):
+    """Un PLUME_BAN_DURATION MULTILIGNE (`4h`, `}`, `add table ...`) est refusé ENTIER : rien ne part à nft, et
+    surtout pas ses lignes en trop comme commandes."""
+    c = Central("tsv", [ban(577, "203.0.113.65")])
     try:
-        t = jouer(script, c, lecteurs=(), backend="nft", bouchons=("nft",), env_plus={"PLUME_BAN_DURATION": "4hours"})
+        t = jouer(script, c, lecteurs=(), backend="nft", bouchons=("nft",),
+                  env_plus={"PLUME_BAN_DURATION": "4h\n}\nadd table inet pwned"})
     finally:
         c.fermer()
     f = []
-    exiger(f, "add element" not in t.trace("nft"), f"`4hours` posé en nft : {t.trace('nft')!r}")
-    verdict_est(f, t, 576, "failed", "illisible")
+    exiger(f, "pwned" not in t.trace("nft") and "add element" not in t.trace("nft"),
+           f"une durée de repli multiligne part à nft : {t.trace('nft')!r}")
+    verdict_est(f, t, 577, "failed", "illisible")
+    return f
+
+
+def s_crowdsec_repli_invalide(script):
+    """Sur crowdsec, une durée de repli illisible ou nulle n'est jamais passée à cscli : `failed` avec la cause ;
+    en simulation, NON-APPLIQUE."""
+    f = []
+    for i, valeur in ((578, "0s"), (579, "-1h"), (580, "abc"), (581, "4h\n-t captcha")):
+        c = Central("tsv", [ban(i, f"203.0.113.{i - 500}")])
+        try:
+            t = jouer(script, c, lecteurs=(), env_plus={"PLUME_BAN_DURATION": valeur})
+        finally:
+            c.fermer()
+        exiger(f, t.trace("cscli") == "", f"PLUME_BAN_DURATION={valeur!r} passé à cscli : {t.trace('cscli')!r}")
+        verdict_est(f, t, i, "failed", "illisible ou nulle pour cscli")
+    c = Central("tsv", [ban(582, "203.0.113.82")])
+    try:
+        t = jouer(script, c, lecteurs=(), env_plus={"PLUME_BAN_DURATION": "abc", "PLUME_RESPONDER_APPLY": "0"})
+    finally:
+        c.fermer()
+    verdict_est(f, t, 582, "dryrun", "NON-APPLIQUE crowdsec")
     return f
 
 # ----------------------------------------------------------------------------------------------------------
@@ -731,6 +770,8 @@ SCENARIOS = {
     "negative_zero_id_is_zero_jq": lambda s: s_id_moins_zero(s, "jq"),
     "negative_zero_id_is_zero_python3": lambda s: s_id_moins_zero(s, "python3"),
     "nft_fallback_unanchored_duration_refused": s_nft_repli_sans_ancre,
+    "multiline_fallback_duration_refused_whole": s_repli_multiligne,
+    "crowdsec_fallback_duration_validated": s_crowdsec_repli_invalide,
 }
 
 # (nom, motif exact dans respond.sh, remplacement, scénarios qui DOIVENT rougir)
@@ -772,7 +813,7 @@ MUTANTS = [
     ("nft_ban_without_timeout", 'OUT=$(nft add element inet plume "$NFT_SET_TTL" "{ $t timeout $EFF_DUR }" 2>&1)',
      'OUT=$(nft add element inet plume blocklist "{ $t }" 2>&1)', ["nft_ttl_set_beside_the_permanent_one"]),
     ("nft_illegible_duration_not_refused",
-     '      duree_lisible_par_nft "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle comme timeout nft, rien pose"; return 1; }\n', "",
+     '      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle comme timeout nft, rien pose"; return 1; }\n', "",
      ["nft_illegible_fallback_never_permanent"]),
     ("fail2ban_silent_on_duration", "[duree %s (%s) NON portee par fail2ban : le ban dure le bantime de la jail %s]", "[%.0s%.0s%.0s]",
      ["fail2ban_says_duration_not_carried"]),
@@ -831,6 +872,12 @@ MUTANTS = [
      ['tsv_last_line_without_newline_served']),
     ('jq_negative_zero_id_kept', '    else (($o.id | floor) + 0 | tostring) as $id\n', '    else ($o.id | floor | tostring) as $id\n',
      ['negative_zero_id_is_zero_jq']),
+    ('fallback_duration_judged_line_by_line', '  case "$1" in \'\'|*[!0-9dhms]*) return 1 ;; esac\n', '',
+     ['multiline_fallback_duration_refused_whole']),
+    ('crowdsec_fallback_duration_not_validated', '      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle pour cscli, rien pose"; return 1; }\n', '',
+     ['crowdsec_fallback_duration_validated']),
+    ('crowdsec_dry_run_plan_not_validated', '      if duree_de_ban_lisible "$EFF_DUR"; then\n        printf \'cscli decisions add', "      if :; then\n        printf 'cscli decisions add",
+     ['crowdsec_fallback_duration_validated']),
 ]
 
 

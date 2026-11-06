@@ -129,7 +129,7 @@ pub(crate) struct AppState {
     // (`PLUME_INGEST_FSYNC=0|false|off`), la suite d'appels redevient celle d'avant `S31` et le champ
     // `durable` retombe à faux : le levier ne peut pas rendre l'accusé menteur. Il existe parce que la
     // barrière COÛTE — mesuré 6,65 ms par publication à un seul émetteur séquentiel contre 0,04 ms sans
-    // elle, et 0,79 ms à 16 publications concurrentes (poste Hugo, btrfs, 2026-08-30).
+    // elle, et 0,79 ms à 16 publications concurrentes (poste de développement, btrfs, 2026-08-30).
     pub(crate) ingest_fsync: bool,        // PLUME_INGEST_FSYNC (0/false/off = barrière désarmée), défaut ARMÉE
     // MULTI-TENANT (#2, D2) — DÉFAUT false (mode 0 SMB inchangé). Cf. multi_tenant_enabled().
     // INERTE en #2a-2a : posé mais consommé par /api/me + le gating des handlers en #2a-2b.

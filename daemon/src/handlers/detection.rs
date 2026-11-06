@@ -296,7 +296,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         // `P10.27-g` — LA SONDE : ce tick tient le verrou de l'écrivain hors de tout geste, toutes les 20 s et pour chaque
         // tenant. Une transaction qu'il y trouve ouverte a été laissée par un geste qui a rendu la main ; elle est dite
         // et comptée. `P10.27-z` — et le tick se DÉCLARE AVEUGLE : ce qu'il écrirait partirait dans cette transaction,
-        // invisible de toute autre connexion ; il n'évalue ni n'écrit rien, et ne l'annule pas (décision d'Hugo).
+        // invisible de toute autre connexion ; il n'évalue ni n'écrit rien, et ne l'annule pas (décision de l'exploitant).
         if signaler_une_transaction_ouverte_hors_de_tout_geste(&conn, "tick de détection") {
             return crate::bilan_de_tick::tick_aveugle_par_transaction_orpheline(crate::bilan_de_tick::BOUCLE_REGLES, "règles");
         }

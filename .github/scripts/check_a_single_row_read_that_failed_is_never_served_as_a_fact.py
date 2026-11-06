@@ -112,7 +112,7 @@ recopiés — mais trois mesures séparent les deux verdicts, et c'est le verdic
 
   * SON NOM. `check_a_truncated_list_is_never_served_as_a_complete_one` dit ce qu'elle tient. Une
     lecture de LIGNE UNIQUE n'est pas une liste tronquée : y loger cette famille rendrait le nom faux
-    pour la moitié de son contenu, et ce dépôt juge les noms (`hugo-explicit-naming`) ;
+    pour la moitié de son contenu, et ce dépôt juge les noms (règle des noms explicites) ;
   * SON REFUS. `main()` de la garde de famille rend `2` — aucun verdict — dès que son lecteur avoue,
     que son plancher est franchi ou qu'une de ses épreuves tombe. Partagé, l'effondrement du plancher
     d'UNE famille ferait TAIRE l'autre, qui serait verte. Deux populations de tailles très

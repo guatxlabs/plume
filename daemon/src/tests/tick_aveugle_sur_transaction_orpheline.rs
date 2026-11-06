@@ -2,7 +2,7 @@
 // `P10.27-z` — UNE TRANSACTION ORPHELINE SUR L'ÉCRIVAIN REND LE TICK DE DÉTECTION AVEUGLE, DÉCLARÉ ET COMPTÉ, SANS
 // ROLLBACK. Mesuré le 2026-10-07 : `run_due_rules` voyait l'orpheline (sonde `P10.27-g`), la comptait, puis évaluait
 // et ÉCRIVAIT ses alertes et son `last_run` par `conn.execute` DANS cette transaction — visibles de l'écrivain seul,
-// invisibles de toute autre connexion, perdues au redémarrage. Décision d'Hugo (2026-09-29) : déclarer le tick
+// invisibles de toute autre connexion, perdues au redémarrage. Décision de l'exploitant (2026-09-29) : déclarer le tick
 // aveugle (bilan nommé + cause au compteur existant des ticks aveugles), ne rien annuler.
 // =====================================================================================
 mod tick_aveugle_sur_transaction_orpheline {

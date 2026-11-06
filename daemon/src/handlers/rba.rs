@@ -371,7 +371,7 @@ pub(crate) fn rollup_risk(conn: &Connection) -> crate::bilan_de_tick::BilanDeTic
     // `Lue(0)` vert — une panne d'écriture résolvait de vraies alertes. Ici les deux écritures vivent dans un SAVEPOINT :
     // il ouvre une transaction sur un écrivain libre, et sur un écrivain qui en porte déjà une (étrangère) il n'annule
     // QUE ses propres écritures (`ROLLBACK TO` + `RELEASE`, jamais un `ROLLBACK` de la transaction d'un autre :
-    // décision d'Hugo `P10.27-z`). Un refus rend le tick AVEUGLE et nommé, le rollup d'avant est CONSERVÉ, et
+    // décision de l'exploitant `P10.27-z`). Un refus rend le tick AVEUGLE et nommé, le rollup d'avant est CONSERVÉ, et
     // `risk_incidents_eval` n'est PAS joué : aucune alerte ouverte n'est résolue sur un rollup qu'on n'a pas su écrire.
     const PT: &str = "rollup_risk_reconstruction";
     if let Err(e) = conn.execute_batch(&format!("SAVEPOINT {PT}")) {

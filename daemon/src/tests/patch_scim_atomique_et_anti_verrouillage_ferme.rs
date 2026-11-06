@@ -396,7 +396,7 @@ mod patch_scim_atomique_et_anti_verrouillage_ferme {
     /// lecture de la liste ((b) : `200` amputé) ; remettre `if let Ok` sur sa préparation ((a) : `200` vide).
     #[tokio::test]
     async fn pafv_une_liste_ou_une_representation_non_lue_n_est_pas_servie_comme_un_fait() {
-        let (st, _tmp, ids) = pafv_etat(&[("pafv-gina", Some("editor")), ("pafv-hugo", Some("viewer"))]);
+        let (st, _tmp, ids) = pafv_etat(&[("pafv-gina", Some("editor")), ("pafv-hana", Some("viewer"))]);
         let gina = ids[0].clone();
 
         // (a) LA LISTE ELLE-MÊME NON LUE.
@@ -443,7 +443,7 @@ mod patch_scim_atomique_et_anti_verrouillage_ferme {
         assert!(v["detail"].as_str().unwrap_or("").starts_with(CAUSE_SCIM_REPRESENTATION_NON_RELUE), "(d) la cause dit ce qui a eu lieu : {v}");
         assert_eq!(
             pafv_droits(&st),
-            pafv_attendus(&[("pafv-gina", "editor"), ("pafv-hugo", "viewer"), ("pafv-ines", "viewer")]),
+            pafv_attendus(&[("pafv-gina", "editor"), ("pafv-hana", "viewer"), ("pafv-ines", "viewer")]),
             "(d) ÉTAT RELU : le droit demandé EST posé — la réponse ne le nie pas"
         );
         assert_eq!(pafv_maillons(&st, "scim.user.provision"), 1, "(d) JOURNAL : le geste fait est attesté");
@@ -460,7 +460,7 @@ mod patch_scim_atomique_et_anti_verrouillage_ferme {
             .collect();
         assert_eq!(
             lus,
-            vec![("pafv-gina".to_string(), true, "editor".to_string()), ("pafv-hugo".to_string(), true, "viewer".to_string()), ("pafv-ines".to_string(), true, "viewer".to_string())],
+            vec![("pafv-gina".to_string(), true, "editor".to_string()), ("pafv-hana".to_string(), true, "viewer".to_string()), ("pafv-ines".to_string(), true, "viewer".to_string())],
             "contrôle positif : chacun actif, avec son droit"
         );
     }

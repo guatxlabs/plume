@@ -1441,7 +1441,7 @@ pub(crate) async fn mfa_status(State(st): State<AppState>, Extension(au): Extens
     // de `login_post`, qui ne sert que les comptes à mot de passe local ; ni OIDC, ni SAML, ni LDAP, ni les en-têtes
     // SSO ne la lisent. Un compte sans mot de passe local ne peut donc pas enrôler (`mfa_enroll` le refuse déjà sous
     // `CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL`, la MÊME phrase est servie ici), et une graine posée sur lui (avant
-    // `P10.23-b`) est INERTE : jamais demandée. La console la peignait « ACTIVE ». Décision d'Hugo du 2026-09-29 :
+    // `P10.23-b`) est INERTE : jamais demandée. La console la peignait « ACTIVE ». Décision de l'exploitant du 2026-09-29 :
     // le DIRE, ne rien effacer — la graine reste en base, telle quelle.
     // Le prédicat est celui de l'enrôlement (`le_compte_a_un_mot_de_passe_local`) : jamais deux règles. Lecture du
     // compte ratée : `null` sur les deux champs et la cause nommée — ni « enrôlable », ni « inerte » ne sont affirmés.

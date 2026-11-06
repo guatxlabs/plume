@@ -106,31 +106,31 @@ fn iao_un_pas_interrompu_refuse_l_inventaire() {
 fn iao_le_corps_des_comptes_avoue_l_inventaire_non_lu_par_sa_cle() {
     use crate::acces_observe::{InventaireNonLu, CAUSE_INVENTAIRE_DES_ACCES_NON_LU, CLE_ACCES_NON_LU};
     use crate::handlers::users_lookups::corps_de_la_liste_des_comptes;
-    let u = json!({ "id": 1, "name": "hugo", "role": "admin", "created": 1 });
+    let u = json!({ "id": 1, "name": "analyste1", "role": "admin", "created": 1 });
     let a = json!({ "nom": "annuaire.iao", "provenance": "annuaire externe" });
     let rate = || InventaireNonLu::Preparation(rusqlite::Error::InvalidQuery);
-    let nominal = corps_de_la_liste_des_comptes("hugo", Ok(vec![u.clone()]), Ok(vec![a.clone()]));
+    let nominal = corps_de_la_liste_des_comptes("analyste1", Ok(vec![u.clone()]), Ok(vec![a.clone()]));
     assert_eq!(
         nominal.to_string(),
-        json!({ "users": [u.clone()], "me": "hugo", "acces": [a.clone()] }).to_string(),
+        json!({ "users": [u.clone()], "me": "analyste1", "acces": [a.clone()] }).to_string(),
         "nominal : octet pour octet la forme d'avant"
     );
     assert!(nominal.get(CLE_ACCES_NON_LU).is_none(), "nominal : aucune clé d'aveu");
-    let vide = corps_de_la_liste_des_comptes("hugo", Ok(vec![u.clone()]), Ok(vec![]));
+    let vide = corps_de_la_liste_des_comptes("analyste1", Ok(vec![u.clone()]), Ok(vec![]));
     assert!(vide.get(CLE_ACCES_NON_LU).is_none(), "inventaire LU et vide : aucune clé d'aveu ({vide})");
 
-    let sans_acces = corps_de_la_liste_des_comptes("hugo", Ok(vec![u.clone()]), Err(rate()));
+    let sans_acces = corps_de_la_liste_des_comptes("analyste1", Ok(vec![u.clone()]), Err(rate()));
     assert_eq!(sans_acces[CLE_ACCES_NON_LU], json!(CAUSE_INVENTAIRE_DES_ACCES_NON_LU), "{sans_acces}");
     assert_eq!(sans_acces["acces"], json!([]), "{sans_acces}");
     assert_eq!(sans_acces["users"], json!([u.clone()]), "les comptes lus restent servis : {sans_acces}");
     assert!(sans_acces.get("error").is_none(), "les comptes sont lus : aucun `error` global ({sans_acces})");
 
-    let sans_users = corps_de_la_liste_des_comptes("hugo", Err(rusqlite::Error::InvalidQuery), Ok(vec![a.clone()]));
+    let sans_users = corps_de_la_liste_des_comptes("analyste1", Err(rusqlite::Error::InvalidQuery), Ok(vec![a.clone()]));
     assert_eq!(sans_users["error"], json!(crate::handlers::liste_bornee::CAUSE_LISTE_ILLISIBLE), "{sans_users}");
     assert_eq!(sans_users["acces"], json!([a.clone()]), "l'inventaire lu reste servi : {sans_users}");
     assert!(sans_users.get(CLE_ACCES_NON_LU).is_none(), "{sans_users}");
 
-    let aucun = corps_de_la_liste_des_comptes("hugo", Err(rusqlite::Error::InvalidQuery), Err(rate()));
+    let aucun = corps_de_la_liste_des_comptes("analyste1", Err(rusqlite::Error::InvalidQuery), Err(rate()));
     assert_eq!(aucun["non_lus"], json!(["users", "acces"]), "{aucun}");
     assert_eq!(aucun[CLE_ACCES_NON_LU], json!(CAUSE_INVENTAIRE_DES_ACCES_NON_LU), "{aucun}");
     assert!(aucun["users"] == json!([]) && aucun["acces"] == json!([]), "{aucun}");

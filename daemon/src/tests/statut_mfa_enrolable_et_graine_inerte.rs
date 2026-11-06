@@ -10,7 +10,7 @@
 //
 // CE QUE CES TÉMOINS TIENNENT : les champs ADDITIFS `enrolable`, `cause_non_enrolable`, `graine_inerte`, jugés dans
 // les DEUX sens (compte local avec graine : enrôlable, graine non inerte ; compte fédéré avec graine : non
-// enrôlable, cause nommée, graine inerte), `enrolled`/`enabled` inchangés, la graine NON effacée (décision d'Hugo du
+// enrôlable, cause nommée, graine inerte), `enrolled`/`enabled` inchangés, la graine NON effacée (décision de l'exploitant du
 // 2026-09-29), et une lecture ratée du compte qui n'affirme ni l'un ni l'autre.
 //
 // CE QU'ILS NE TIENNENT PAS : ce que la console peint (`web/idp.js`), tenu ailleurs par le témoin de harnais (96d-bis)

@@ -73,7 +73,7 @@ pub(crate) fn tick_aveugle(famille: &str, e: &rusqlite::Error) -> BilanDeTick {
 /// `plume_scheduler_ticks_aveugles_total` et `scheduler.ticks_aveugles.<boucle>.derniere_cause`), pas dans un doublon.
 pub(crate) const CAUSE_TRANSACTION_ORPHELINE: &str = "transaction_orpheline_sur_l_ecrivain";
 
-/// `P10.27-z` — DÉCISION D'HUGO (2026-09-29) : UN TICK QUI TROUVE UNE TRANSACTION ORPHELINE SUR L'ÉCRIVAIN SE DÉCLARE
+/// `P10.27-z` — DÉCISION DE L'EXPLOITANT (2026-09-29) : UN TICK QUI TROUVE UNE TRANSACTION ORPHELINE SUR L'ÉCRIVAIN SE DÉCLARE
 /// AVEUGLE, SANS RIEN ANNULER. Ce qu'il aurait écrit (alertes, `last_run`, `last_fired`) serait parti DANS cette
 /// transaction : invisible de toute autre connexion, perdu au redémarrage ou à un `ROLLBACK`, et pourtant lu comme
 /// fait par l'écrivain lui-même. Il n'évalue donc rien, n'écrit rien, ne ferme pas la transaction (aucun `ROLLBACK` :

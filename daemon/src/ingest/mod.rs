@@ -807,7 +807,7 @@ pub(crate) fn ingest_events_batch_env(
 ///     `preserve_order` est absente du verrou (`serde_json` n'y tire pas `indexmap`), donc une `Map`
 ///     est un `BTreeMap` et l'ordre d'insertion ne se voit pas dans le rendu.
 ///
-/// CE QUE ÇA VAUT, MESURÉ (poste Hugo, 2026-08-30, allocateur comptant les octets VIFS, corps OTLP
+/// CE QUE ÇA VAUT, MESURÉ (poste de développement, 2026-08-30, allocateur comptant les octets VIFS, corps OTLP
 /// synthétique) : le gain du DÉPLACEMENT vaut EXACTEMENT la taille du lot, et sa PART de l'empreinte
 /// au point de publication dépend de la forme du corps — 8,2 % (40 spans × 40 attributs), 12,0 %
 /// (400 × 12), 25,3 % (400 × 1). La restitution du lot après sérialisation double ces parts (16,5 % /

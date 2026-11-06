@@ -24,12 +24,12 @@
 //!
 //! POURQUOI DÉPORTER PLUTÔT QUE SYNCHRONISER SUR PLACE. Les sept gestionnaires sont des `async fn` et
 //! écrivaient le spool DIRECTEMENT sur le fil de l'exécuteur. Une barrière y coûte des millisecondes
-//! (mesuré 3,0 à 3,6 ms sur btrfs, 3,2 à 7,8 ms à travers gocryptfs, poste Hugo, 2026-08-30) : la
+//! (mesuré 3,0 à 3,6 ms sur btrfs, 3,2 à 7,8 ms à travers gocryptfs, poste de développement, 2026-08-30) : la
 //! poser sur ce fil bloquerait un worker de l'exécuteur pour toute la durée de la barrière. La
 //! publication ENTIÈRE part donc sur le pool bloquant (`spawn_blocking`) et le gestionnaire l'ATTEND
 //! sans occuper son fil.
 //!
-//! CE QUI PAIE LE DÉPORT, MESURÉ LE 2026-08-30 (poste Hugo — Arch, btrfs `/var/tmp`, et gocryptfs sur
+//! CE QUI PAIE LE DÉPORT, MESURÉ LE 2026-08-30 (poste de développement — Arch, btrfs `/var/tmp`, et gocryptfs sur
 //! btrfs pour le dépôt) :
 //!   * Le coût d'une barrière est celui de la BARRIÈRE, pas de la taille : le surcoût de `fsync` est
 //!     de 3,03 ms à 1 octet, 2,98 ms à 4 Kio, 3,06 ms à 64 Kio, 3,26 ms à 512 Kio — soit 1,08× de

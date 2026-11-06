@@ -313,7 +313,7 @@ fn spawn_rule_scheduler(tenants: TenantDbManager) {
 /// TOUT LE TICK aveugle, pas une seule famille : règles, règles avancées, risque, corrélations, lignes de base,
 /// playbooks, battements, notifications, escalades, SLA et engagements écrivent tous par cette connexion, donc DANS
 /// l'orpheline — visibles de l'écrivain seul, invisibles de toute autre connexion, perdus au redémarrage. Décision
-/// d'Hugo (2026-09-29) : le tick se déclare aveugle (bilan nommé + compteur des ticks aveugles), n'évalue et n'écrit
+/// de l'exploitant (2026-09-29) : le tick se déclare aveugle (bilan nommé + compteur des ticks aveugles), n'évalue et n'écrit
 /// rien, et n'annule pas la transaction. Les éléments dus le restent, évalués au premier tick sain.
 pub(crate) fn tick_de_detection_d_un_tenant(handle: &Arc<Mutex<Connection>>, db_path: &str) -> crate::bilan_de_tick::BilanDuPlanificateur {
     {
@@ -386,7 +386,7 @@ pub(crate) fn tick_de_detection_d_un_tenant(handle: &Arc<Mutex<Connection>>, db_
 /// `P10.31-j` — LA SONDE AVANT UNE FAMILLE DU TICK : rend `true` (et verse au bilan le tick aveugle nommé, compté sous
 /// la boucle des règles avec la cause de la transaction orpheline) si l'écrivain porte une transaction ouverte hors de
 /// tout geste ; le tick s'arrête alors, la famille et toutes les suivantes ne sont ni évaluées ni écrites, et la
-/// transaction n'est pas annulée (décision d'Hugo, 2026-09-29). Le verrou est rendu AVANT que la famille ne tourne :
+/// transaction n'est pas annulée (décision de l'exploitant, 2026-09-29). Le verrou est rendu AVANT que la famille ne tourne :
 /// elle le reprend elle-même (le `Mutex` de `parking_lot` n'est pas réentrant).
 fn orpheline_avant_la_famille(handle: &Arc<Mutex<Connection>>, famille: &'static str, b: &mut crate::bilan_de_tick::BilanDuPlanificateur) -> bool {
     crochets_de_la_sonde_par_famille::avant_la_famille(handle, famille);
@@ -421,7 +421,7 @@ pub(crate) fn les_regles_ont_deja_declare_l_orpheline(b: &crate::bilan_de_tick::
 /// avant ses écritures, à chaque reprise de verrou qui écrit. `Ok` : le verrou, écrivain sans orpheline. `Err` : le tick
 /// aveugle nommé (`famille`) dit par la phrase de la REPRISE (`tick_aveugle_par_transaction_orpheline_aux_ecritures` :
 /// compilation ou évaluation faite, rien d'écrit à cette reprise), compté sous la boucle des règles avec la cause de
-/// l'orpheline ; l'appelant le RETOURNE sans rien écrire, la transaction n'est pas annulée (décision d'Hugo,
+/// l'orpheline ; l'appelant le RETOURNE sans rien écrire, la transaction n'est pas annulée (décision de l'exploitant,
 /// 2026-09-29) et le tick s'arrête derrière lui. Ce que la famille a écrit AVANT (un tour de boucle précédent, validé
 /// hors de toute orpheline) reste écrit. `site` nomme la reprise pour les témoins seuls (crochet appelé juste avant le
 /// verrou).

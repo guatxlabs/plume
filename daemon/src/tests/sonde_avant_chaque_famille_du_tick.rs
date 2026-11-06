@@ -4,7 +4,7 @@
 // risque, corrélations, lignes de base, playbooks, battements, notifications, escalades, SLA et engagements sans
 // jamais sonder de nouveau ; seule `run_due_rules` refaisait la sonde avant ses écritures. Chaque famille rend le
 // verrou en sortant : une orpheline laissée entre deux familles recevait les écritures de toutes les suivantes
-// (visibles de l'écrivain seul, perdues au redémarrage). Décision d'Hugo (2026-09-29) : le tick se déclare aveugle,
+// (visibles de l'écrivain seul, perdues au redémarrage). Décision de l'exploitant (2026-09-29) : le tick se déclare aveugle,
 // n'évalue et n'écrit plus rien, et n'annule pas la transaction.
 //
 // LE TÉMOIN : le crochet `AVANT_LA_FAMILLE_DU_TICK` note les changements de l'écrivain devant chaque famille et ouvre

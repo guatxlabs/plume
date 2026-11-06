@@ -33,8 +33,8 @@
 //   * la page suivante commence après la dernière lue : sur deux pages pleines de retenues, chacune a une ligne
 //     de journal par tour, pas une de plus ;
 //   * un poids nul (`q=0`) sur le type JSON par ligne est un refus : TSV ;
-//   * un joker (`*/*`, celui qu'envoie le `curl` de `respond.sh`, `application/*`) ne demande pas le JSON : TSV à
-//     quatre champs à l'octet par la route ;
+//   * un joker (`*/*`, celui qu'envoie le `curl` d'un agent sans lecteur JSON, `application/*`) ne demande pas
+//     le JSON : TSV à quatre champs à l'octet par la route ;
 //   * la colonne corrigée libère l'action au tour suivant, avec sa durée.
 //
 // MUTANTS JOUÉS (posés sous `cfg!(test)`, retirés avant le commit), chacun vu ROUGE : `BT1_TOUT_GENRE`, `BT1_OMIS`,
@@ -46,8 +46,11 @@
 // `BU1_Q_IGNORE`, `BU1_Q_CASSE` ; puis `BU1C_CURSEUR_PREMIER`, `BU1C_SQL_GE` ; puis `W1_JOKER` ; puis `A13`, `A14`,
 // `B12`, `B18`.
 //
-// CE QU'ILS NE TIENNENT PAS : l'agent lui-même (`collectors/respond.sh`, zone de la console) n'envoie pas encore
-// l'en-tête et ne lit pas le champ.
+// CE QU'ILS NE TIENNENT PAS : l'agent lui-même (`collectors/respond.sh`, zone de la console). Sa version qui
+// applique la durée servie demande cette forme par `Accept: application/x-ndjson` quand elle a de quoi la lire,
+// juge le statut HTTP, applique `ban_ttl_s` et ne retombe sur `PLUME_BAN_DURATION` qu'en le disant ; une version
+// antérieure n'envoie pas l'en-tête et garde sa propre durée. Il n'est pas joué ici : ces témoins tiennent le côté
+// démon, pour les deux versions (JSON demandé, joker ou absence d'en-tête).
 // =====================================================================================
 mod duree_de_ban_servie_a_l_agent {
     use super::*;
@@ -575,10 +578,12 @@ mod duree_de_ban_servie_a_l_agent {
         assert_eq!(corps, format!("{propre}\tban_ip\t203.0.113.71\t0\n{defaut}\tban_ip\t203.0.113.72\t1\n900\tunban_ip\t203.0.113.73\t0\n"), "TSV à l'octet");
     }
 
-    /// CE QU'IL TIENT : L'AGENT DÉPLOYÉ REÇOIT LE TSV. `collectors/respond.sh` appelle `curl` sans `-H Accept` :
-    /// curl envoie donc `Accept: */*`. Un joker (`*/*`, `application/*`, `text/plain, */*;q=0.8`) ne demande PAS
-    /// la forme JSON par ligne, pas plus que l'absence d'en-tête : sinon chaque `respond.sh` déployé sauterait toutes
-    /// les lignes (`case "$id" in *[!0-9]*) continue`) pourtant réclamées — ripostes perdues en silence. Par la route,
+    /// CE QU'IL TIENT : L'AGENT QUI NE DEMANDE PAS LE JSON REÇOIT LE TSV. `collectors/respond.sh`, dans sa version
+    /// qui applique la durée servie, n'envoie `Accept: application/x-ndjson` que s'il a de quoi lire le JSON ; sans
+    /// lecteur, comme toute version antérieure, il appelle `curl` sans `-H Accept`, et curl envoie `Accept: */*`. Un joker (`*/*`, `application/*`,
+    /// `text/plain, */*;q=0.8`) ne demande PAS la forme JSON par ligne, pas plus que l'absence d'en-tête : sinon un tel
+    /// agent sauterait toutes les lignes (son filtre TSV écarte un premier champ non numérique) pourtant réclamées —
+    /// ripostes perdues en silence. Par la route,
     /// `Accept: */*` (et les deux autres jokers) sert le TSV à quatre champs, corps comparé À L'OCTET à un littéral,
     /// type de contenu compris. MUTATIONS : `W1_JOKER`.
     #[tokio::test]

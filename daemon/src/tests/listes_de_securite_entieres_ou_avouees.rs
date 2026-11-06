@@ -335,10 +335,14 @@ async fn p10_7f_listes_de_securite_les_masques_de_champs_sont_entiers_ou_avoues(
 /// remis à moitié et le tour suivant relit tout.
 ///
 /// POURQUOI UN STATUT ET NON UNE LIGNE D'AVEU, MESURÉ SUR LE CONSOMMATEUR : le seul lecteur de cette
-/// route est `collectors/respond.sh:277-289`, qui appelle `curl -sS` SANS `--fail` puis ÉCARTE toute
-/// ligne dont le premier champ n'est pas numérique (`case "$id" in *[!0-9]*) continue`). Une ligne
-/// d'aveu y serait donc jetée en silence — un aveu que personne ne lit. Le corps du 503 subit le même
-/// filtre sans dégât (aucune action fantôme n'en sort), et le statut, lui, est visible.
+/// route est `collectors/respond.sh`, et la conclusion tient pour ses deux versions. Toutes deux ÉCARTENT
+/// une ligne TSV dont le premier champ n'est pas numérique. La version antérieure appelle `curl -sS` sans
+/// `--fail` : le corps du 503 passe par ce même filtre. La version qui applique la durée servie juge le
+/// statut HTTP (lu par `curl -w`) : un non-200 est dit sur sa sortie d'erreur, et rien n'est exécuté ni
+/// remis ce tour-ci ; elle ignore en le disant une ligne JSON illisible (forme qu'elle demande par
+/// `Accept: application/x-ndjson` quand elle sait la lire). Une ligne d'aveu dans un 200 n'y serait donc
+/// jamais lue comme un refus ; le corps du 503 n'est jamais pris pour une liste (aucune action fantôme
+/// n'en sort), et le statut, lui, est visible côté démon.
 ///
 /// CE QU'IL NE TIENT PAS : il ne joue pas `respond.sh` (le témoin assert la propriété du CÔTÉ DÉMON :
 /// statut, cause, et non-réclamation) ; il ne joue pas non plus l'anti-IDOR inter-agents, tenu ailleurs.

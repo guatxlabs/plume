@@ -13,10 +13,10 @@
 // `''` (champ absent) sortait comme une barre. APRÈS : le seed passe `true` ; v124 réécrit les panneaux déjà
 // semés dont la requête est EXACTEMENT celle d'origine (et `is_soql = 0`), jamais un panneau édité.
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : l'agent d'un hôte distant (`collectors/respond.sh`) applique sa propre
-// durée (`PLUME_BAN_DURATION`, défaut 4 h) — la file qu'il lit (`actions_pending`) ne la lui transmet que sous
-// `Accept: application/x-ndjson`, qu'il n'envoie pas encore (témoins : `duree_de_ban_servie_a_l_agent.rs`) ; un playbook posé par un fichier `config.d` n'a pas de champ de durée (`overlays.rs`) ; le
-// formulaire de la console n'envoie pas encore `ban_ttl_s`.
+// CE QUE CES TÉMOINS NE TIENNENT PAS : ce que fait l'agent d'un hôte distant (`collectors/respond.sh`) de la durée
+// servie (il ne la reçoit que sous `Accept: application/x-ndjson`, témoins côté démon :
+// `duree_de_ban_servie_a_l_agent.rs` ; côté agent : la garde `check_responder_applies_the_ban_duration_served_by_the_central.py`) ;
+// un playbook posé par un fichier `config.d` n'a pas de champ de durée (`overlays.rs`).
 // =====================================================================================
 mod duree_de_ban_du_playbook_et_panneaux_sans_valeur_vide {
     use super::*;
@@ -28,10 +28,11 @@ mod duree_de_ban_du_playbook_et_panneaux_sans_valeur_vide {
     use crate::mesure_environnement::Mesure;
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
 
-    /// La phrase EXACTE servie pour la durée par défaut — celle d'avant le lot, à l'octet.
-    const DBP_PHRASE_DEFAUT: &str = "bannit l'IP source pendant 4 h (CrowdSec ou blocage HTTP natif ; fail2ban : durée du jail ; nft : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre";
+    /// La phrase EXACTE servie pour la durée par défaut (même texte qu'une durée propre depuis que l'agent d'un hôte
+    /// distant applique la durée servie).
+    const DBP_PHRASE_DEFAUT: &str = "bannit l'IP source pendant 4 h (CrowdSec, blocage HTTP natif ou agent d'un hôte distant qui lit le JSON ; sinon l'agent garde sa propre durée, PLUME_BAN_DURATION, et un agent antérieur sur nft bannit jusqu'à unban ; fail2ban : durée du jail ; nft du central : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre";
     /// La phrase EXACTE servie pour une durée propre de 90 minutes.
-    const DBP_PHRASE_90_MIN: &str = "bannit l'IP source pendant 90 min (CrowdSec du central ou blocage HTTP natif ; agent d'un hôte distant : sa propre durée ; fail2ban : durée du jail ; nft : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre";
+    const DBP_PHRASE_90_MIN: &str = "bannit l'IP source pendant 90 min (CrowdSec, blocage HTTP natif ou agent d'un hôte distant qui lit le JSON ; sinon l'agent garde sa propre durée, PLUME_BAN_DURATION, et un agent antérieur sur nft bannit jusqu'à unban ; fail2ban : durée du jail ; nft du central : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre";
     /// La phrase de refus, recopiée ici : le témoin ne relit pas la constante du code pour la juger.
     const DBP_REFUS: &str = "DURÉE DE BAN REFUSÉE : ban_ttl_s est un nombre ENTIER de secondes, d'une seconde à 31536000 (365 jours), ou null pour la durée par défaut (4 h). Une valeur décimale, textuelle, nulle, négative ou au-delà d'un an n'est ni arrondie ni remplacée : RIEN n'est écrit.";
     /// La phrase d'une durée de riposte non lue, recopiée ici (leçon AS2) : aucun témoin ne relit la constante du

@@ -39,16 +39,19 @@ pub(crate) fn duree_de_ban_lisible(duree_s: i64) -> String {
 }
 
 /// `P11.25-a` — la conséquence d'un `action_kind` pour la durée EFFECTIVE du playbook (`ban_ttl_s`, sinon le
-/// défaut). Une durée propre dit aussi ce qu'elle ne couvre pas : l'agent d'un hôte distant
-/// (`collectors/respond.sh`) applique encore sa propre durée (`PLUME_BAN_DURATION`), que la file ne lui transmet pas.
+/// défaut). La phrase dit qui applique cette durée et qui ne l'applique pas : CrowdSec, le blocage HTTP natif et
+/// l'agent d'un hôte distant (`collectors/respond.sh`) qui sait lire le JSON (il demande alors la file sous
+/// `Accept: application/x-ndjson` et pose `ban_ttl_s`, en nft dans le set à expiration `blocklist_ttl`) ; un agent
+/// sans lecteur JSON, ou face à un central qui sert du TSV, garde sa propre durée (`PLUME_BAN_DURATION`) et le dit ;
+/// un agent antérieur pose en nft dans `blocklist` sans expiration ; fail2ban garde la durée de son jail ; le
+/// responder local du central pose en nft sans expiration. La même phrase vaut pour la durée par défaut. Tenue à
+/// l'octet par `DBP_PHRASE_DEFAUT` et `DBP_PHRASE_90_MIN` (`tests/duree_de_ban_du_playbook_et_panneaux_sans_valeur_vide.rs`) ;
+/// la console dit la même chose (`web/detection_admin.js` `note_vide`, `web/help_registry.js`, `web/i18n.js`,
+/// `web/index.html` `pb-ban-ttl`).
 pub(crate) fn action_consequence_pour_la_duree(kind: &str, duree_s: i64) -> String {
     match kind {
-        "ban_ip" if duree_s == NETBAN_ACTION_TTL_S => format!(
-            "bannit l'IP source pendant {} (CrowdSec ou blocage HTTP natif ; fail2ban : durée du jail ; nft : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre",
-            duree_de_ban_lisible(duree_s)
-        ),
         "ban_ip" => format!(
-            "bannit l'IP source pendant {} (CrowdSec du central ou blocage HTTP natif ; agent d'un hôte distant : sa propre durée ; fail2ban : durée du jail ; nft : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre",
+            "bannit l'IP source pendant {} (CrowdSec, blocage HTTP natif ou agent d'un hôte distant qui lit le JSON ; sinon l'agent garde sa propre durée, PLUME_BAN_DURATION, et un agent antérieur sur nft bannit jusqu'à unban ; fail2ban : durée du jail ; nft du central : jusqu'à unban) sur chaque hôte qui l'a vue dans la fenêtre",
             duree_de_ban_lisible(duree_s)
         ),
         "unban_ip" => "lève le ban de l'IP source sur chaque hôte qui l'a vue dans la fenêtre".to_string(),

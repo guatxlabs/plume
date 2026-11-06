@@ -521,16 +521,20 @@ pub(crate) async fn actions_pending(State(st): State<AppState>, Extension(au): E
     // réclamant (cf plus bas) pour que action_result (AND host=?) puisse les clôturer + anti double-claim.
     // Anti-IDOR préservé : un agent ne voit JAMAIS une action ciblant un AUTRE hôte (host=<autre> exclu).
     // `P10.7-f` (rang 1) — LA REMISE D'ACTIONS EST ENTIÈRE OU REFUSÉE. Avant : une préparation ratée
-    // rendait `Vec::new()` — donc un TSV VIDE en 200, que l'agent lit « rien à faire » et abandonne
-    // (`respond.sh:278` : `[ -n "$list" ] || exit 0`) — et `.map(|m| m.flatten().collect())` avalait une
+    // rendait `Vec::new()` — donc un TSV VIDE en 200, que l'agent d'alors lisait « rien à faire » avant
+    // d'abandonner le tour — et `.map(|m| m.flatten().collect())` avalait une
     // ligne illisible : l'action ne part pas dans ce TSV, et rien ne le dit. Soldé en bloc.
     //
     // POURQUOI UN STATUT NON-200 ET NON UNE LIGNE D'AVEU, MESURÉ SUR LE CONSOMMATEUR. Le seul lecteur de
-    // cette route est `collectors/respond.sh:277-289` : il appelle `curl -sS` SANS `--fail`, puis parse
-    // chaque ligne en TSV et SAUTE toute ligne dont le premier champ n'est pas numérique
-    // (`case "$id" in *[!0-9]*) continue`). Une « ligne d'aveu » y serait donc écartée EN SILENCE — un
-    // aveu qu'aucun lecteur ne lit. Le non-200, lui, porte la cause dans un corps que le même filtre
-    // écarte sans dégât (il ne commence pas par un chiffre : aucune action fantôme n'est fabriquée), il
+    // cette route est `collectors/respond.sh`, et la conclusion tient pour ses deux versions. Toutes deux
+    // SAUTENT en TSV toute ligne dont le premier champ n'est pas numérique. La version antérieure appelle
+    // `curl -sS` sans `--fail` : le corps d'un non-200 passe par ce même filtre et n'en sort aucune action.
+    // La version qui applique la durée servie juge le STATUT HTTP (lu par `curl -w`) : tout statut autre que
+    // 200 est dit sur sa sortie d'erreur avec sa réponse bornée, et AUCUNE action n'est exécutée ni aucun
+    // verdict remis ce tour-ci ; elle demande la forme JSON par ligne (`Accept: application/x-ndjson`) quand
+    // elle a de quoi la lire, et y ignore en le disant une ligne illisible. Une « ligne d'aveu » dans un 200
+    // n'y serait donc jamais lue comme un refus — au mieux une ligne écartée. Le non-200, lui, n'est jamais
+    // pris pour une liste ni exécuté, il
     // sort dans le journal du démon avec son identifiant (`err_json` trace tout 5xx sur stderr), et il
     // laisse l'agent REVENIR au tour suivant : aucune action n'est réclamée ni marquée `claimed_ts`, donc
     // rien n'est perdu ni exécuté à moitié. 503 nomme l'indisponibilité de la lecture, pas une faute de
@@ -1576,8 +1580,12 @@ pub(crate) fn duree_pour_cscli(duree_s: i64) -> String {
 }
 
 /// `P11.25-a` — `action_command` avec la durée du ban DE CETTE RIPOSTE (`duree_de_ban_de_la_riposte`) : seule la
-/// voie CrowdSec la porte (`--duration`, `duree_pour_cscli`). fail2ban applique la durée de son jail, nft ne pose
-/// pas d'expiration : ces deux voies l'ignorent, comme le dit la phrase de conséquence du playbook.
+/// voie CrowdSec la porte (`--duration`, `duree_pour_cscli`) ; fail2ban applique la durée de son jail. nft : le
+/// démon POSE dans `inet plume blocklist`, sans expiration (le ban tient jusqu'à sa levée), et ignore donc la
+/// durée ; l'agent de l'hôte (`collectors/respond.sh`), dans sa version qui applique la durée servie, pose dans
+/// `inet plume blocklist_ttl` avec la durée effective (une version antérieure ne pose que dans `blocklist`). La
+/// LEVÉE du démon couvre les deux sets : cette commande retire de `blocklist`, puis `respond_run` retire aussi de
+/// `blocklist_ttl` (`second_retrait_nft`, `levee_nft_a_deux_sets`), chaque retrait classé ; set absent = absence.
 pub(crate) fn action_command_pour_la_duree(kind: &str, target: &str, backend: &str, jail: &str, duree_s: i64) -> (String, Vec<String>) {
     let s = |v: &str| v.to_string();
     match kind {
@@ -1595,6 +1603,130 @@ pub(crate) fn action_command_pour_la_duree(kind: &str, target: &str, backend: &s
         "stop_service" => (s("systemctl"), vec![s("stop"), s(target)]),
         _ => (s("true"), vec![]),
     }
+}
+
+/// `P11.25-a` — le set À EXPIRATION où l'agent de l'hôte pose ses bans, dans sa version qui applique la durée
+/// servie (table `inet plume`, `flags timeout`, sa propre règle `drop`) ; une version antérieure ne le crée pas. Le
+/// démon n'y pose jamais : il n'y retire qu'à la levée (`second_retrait_nft`), où un set absent est une absence.
+pub(crate) const SET_NFT_DE_L_AGENT: &str = "blocklist_ttl";
+
+/// `P11.25-a` — LE SECOND RETRAIT D'UNE LEVÉE nft : `nft delete element inet plume blocklist_ttl { <ip> }`, argv
+/// FIXE (jamais `sh -c`), le seul point variable est la cible, au même slot typé `{ <ip> }` que la commande
+/// principale. `Some` EXACTEMENT quand la commande principale est `nft delete element inet plume blocklist` :
+/// plateforme `linux`, `unban_ip`, backend qui n'est ni `crowdsec` ni `fail2ban` (le bras `_` d'
+/// `action_command_pour_la_duree`). `None` partout ailleurs : la pose nft (`ban_ip`), CrowdSec, fail2ban,
+/// `kill_pid`, `stop_service` et les gabarits windows/pfsense/generic-appliance ne jouent qu'un argv.
+pub(crate) fn second_retrait_nft(platform: &str, kind: &str, target: &str, backend: &str) -> Option<(String, Vec<String>)> {
+    if platform != "linux" || kind != "unban_ip" || matches!(backend, "crowdsec" | "fail2ban") {
+        return None;
+    }
+    let s = |v: &str| v.to_string();
+    Some((s("nft"), vec![s("delete"), s("element"), s("inet"), s("plume"), s(SET_NFT_DE_L_AGENT), format!("{{ {target} }}")]))
+}
+
+/// Une commande du responder exécutée : réussie ou non, et ce qu'elle a rendu (sortie standard puis sortie
+/// d'erreur ; vides, la commande et son statut ; `exec: …` si elle n'a pas pu partir). Corps d'avant, extrait.
+fn executer_pour_le_responder(prog: &str, args: &[String]) -> (bool, String) {
+    match std::process::Command::new(prog).args(args).output() {
+        Ok(o) => {
+            let mut txt = String::from_utf8_lossy(&o.stdout).into_owned();
+            txt.push_str(&String::from_utf8_lossy(&o.stderr));
+            if txt.trim().is_empty() {
+                txt = format!("{prog} {} -> {}", args.join(" "), o.status);
+            }
+            (o.status.success(), txt)
+        }
+        Err(e) => (false, format!("exec: {e}")),
+    }
+}
+
+/// `P11.25-a` — le message du noyau (`strerror(ENOENT)`) que `nft` écrit sur sa sortie d'erreur quand l'élément, le
+/// set ou la table visés n'existent pas. Stable parce que le retrait est lancé sous `LC_ALL=C` : sous une autre
+/// locale, ce message est traduit, et un message traduit n'est PAS reconnu (il reste un refus).
+pub(crate) const MESSAGE_NFT_D_ABSENCE: &str = "No such file or directory";
+
+/// `P11.25-a` — L'ISSUE D'UN RETRAIT nft, en trois : `nft delete element` rend le même code de sortie (1) pour une
+/// adresse absente et pour tout autre refus ; seule sa sortie d'erreur les distingue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IssueDuRetraitNft {
+    /// Code de sortie 0 : l'adresse était dans le set et n'y est plus.
+    Retire,
+    /// Code non nul ET sortie d'erreur qui porte `MESSAGE_NFT_D_ABSENCE` : l'adresse (ou le set) n'y était pas.
+    Absent,
+    /// Tout le reste : autre message, code non nul sans le message, commande qui ne part pas, signal. L'adresse peut
+    /// rester bannie dans ce set.
+    Refus,
+}
+
+impl IssueDuRetraitNft {
+    fn nom(self) -> &'static str {
+        match self {
+            IssueDuRetraitNft::Retire => "retirée",
+            IssueDuRetraitNft::Absent => "absente",
+            IssueDuRetraitNft::Refus => "refus",
+        }
+    }
+}
+
+/// `P11.25-a` — classe un retrait nft QUI EST PARTI : `code` est le code de sortie (`None` = tué par un signal),
+/// `sortie_d_erreur` sa seule sortie d'erreur (jamais la sortie standard). Une commande qui n'a pas pu partir ne
+/// passe pas par ici : c'est un `Refus` (son texte `exec: …` porte lui aussi « No such file or directory »).
+pub(crate) fn classer_le_retrait_nft(code: Option<i32>, sortie_d_erreur: &str) -> IssueDuRetraitNft {
+    match code {
+        Some(0) => IssueDuRetraitNft::Retire,
+        Some(_) if sortie_d_erreur.contains(MESSAGE_NFT_D_ABSENCE) => IssueDuRetraitNft::Absent,
+        _ => IssueDuRetraitNft::Refus,
+    }
+}
+
+/// `P11.25-a` — LE VERDICT D'UNE LEVÉE nft À DEUX SETS : `done` SI ET SEULEMENT SI aucun des deux retraits n'est un
+/// `Refus` ET au moins un est `Retire`. Un refus laisse l'adresse peut-être bannie dans son set, quoi qu'ait rendu
+/// l'autre : `failed`. Deux absences : rien n'a été levé, `failed` (comme un retrait d'élément absent sur un argv).
+pub(crate) fn verdict_des_deux_retraits_nft(premier: IssueDuRetraitNft, second: IssueDuRetraitNft) -> &'static str {
+    let un_refus = premier == IssueDuRetraitNft::Refus || second == IssueDuRetraitNft::Refus;
+    let un_retrait = premier == IssueDuRetraitNft::Retire || second == IssueDuRetraitNft::Retire;
+    if !un_refus && un_retrait {
+        "done"
+    } else {
+        "failed"
+    }
+}
+
+/// `P11.25-a` — un retrait nft exécuté sous `LC_ALL=C` et `LANG=C` (posés dans l'environnement de la commande,
+/// argv inchangé), classé par `classer_le_retrait_nft`, avec ce qu'il a rendu (même texte qu'
+/// `executer_pour_le_responder`).
+fn executer_un_retrait_nft(prog: &str, args: &[String]) -> (IssueDuRetraitNft, String) {
+    match std::process::Command::new(prog).args(args).env("LC_ALL", "C").env("LANG", "C").output() {
+        Ok(o) => {
+            let sortie_d_erreur = String::from_utf8_lossy(&o.stderr).into_owned();
+            let mut txt = String::from_utf8_lossy(&o.stdout).into_owned();
+            txt.push_str(&sortie_d_erreur);
+            if txt.trim().is_empty() {
+                txt = format!("{prog} {} -> {}", args.join(" "), o.status);
+            }
+            (classer_le_retrait_nft(o.status.code(), &sortie_d_erreur), txt)
+        }
+        Err(e) => (IssueDuRetraitNft::Refus, format!("exec: {e}")),
+    }
+}
+
+/// Borne de chaque part du résultat d'une levée nft à deux sets : les deux parts et leurs étiquettes tiennent
+/// sous la borne de 500 caractères du résultat, si bien qu'une sortie longue du premier set ne masque pas le second.
+const PART_D_UN_RETRAIT_NFT: usize = 230;
+
+/// `P11.25-a` — UNE LEVÉE nft À DEUX SETS : retrait de `blocklist` (la commande principale), puis retrait de
+/// `blocklist_ttl` (`second_retrait_nft`), tous deux tentés, chacun classé ; verdict par
+/// `verdict_des_deux_retraits_nft`. Le texte nomme l'issue de chaque set suivie de ce que la commande a rendu,
+/// chaque part bornée, le tout sous 500 caractères comme le résultat d'un seul argv.
+fn levee_nft_a_deux_sets(premier: (&str, &[String]), second: &(String, Vec<String>)) -> (&'static str, String) {
+    let (issue_du_premier, texte_du_premier) = executer_un_retrait_nft(premier.0, premier.1);
+    let (issue_du_second, texte_du_second) = executer_un_retrait_nft(&second.0, &second.1);
+    let part = |issue: IssueDuRetraitNft, t: &str| format!("{} ({})", issue.nom(), t.trim()).chars().take(PART_D_UN_RETRAIT_NFT).collect::<String>();
+    // Sous 500 caractères par construction : deux parts de `PART_D_UN_RETRAIT_NFT` et les deux étiquettes fixes.
+    (
+        verdict_des_deux_retraits_nft(issue_du_premier, issue_du_second),
+        format!("blocklist : {} | {SET_NFT_DE_L_AGENT} : {}", part(issue_du_premier, &texte_du_premier), part(issue_du_second, &texte_du_second)),
+    )
 }
 
 // ===================================================================================================
@@ -2114,21 +2246,23 @@ pub(crate) fn respond_run() {
                 continue;
             }
         };
+        // `P11.25-a` — une levée nft (linux) retire AUSSI du set à expiration de l'agent de l'hôte
+        // (`blocklist_ttl`) : `None` sur toute autre voie, qui reste à un argv.
+        let second = second_retrait_nft(&platform, &kind, &target, &backend);
         if dry {
-            let _ = conn.execute("UPDATE action SET status='dryrun', result=?2, done_ts=?3 WHERE id=?1 AND status='approved'", params![id, format!("[dry-run] {prog} {}", args.join(" ")), now()]);
+            let simulee = match &second {
+                None => format!("[dry-run] {prog} {}", args.join(" ")),
+                Some((prog_2, args_2)) => format!("[dry-run] {prog} {} ; {prog_2} {}", args.join(" "), args_2.join(" ")),
+            };
+            let _ = conn.execute("UPDATE action SET status='dryrun', result=?2, done_ts=?3 WHERE id=?1 AND status='approved'", params![id, simulee, now()]);
             continue;
         }
-        let (status, result) = match std::process::Command::new(&prog).args(&args).output() {
-            Ok(o) => {
-                let s = if o.status.success() { "done" } else { "failed" };
-                let mut txt = String::from_utf8_lossy(&o.stdout).into_owned();
-                txt.push_str(&String::from_utf8_lossy(&o.stderr));
-                if txt.trim().is_empty() {
-                    txt = format!("{prog} {} -> {}", args.join(" "), o.status);
-                }
-                (s, txt.chars().take(500).collect::<String>())
+        let (status, result) = match &second {
+            None => {
+                let (reussi, texte) = executer_pour_le_responder(&prog, &args);
+                (if reussi { "done" } else { "failed" }, texte.chars().take(500).collect::<String>())
             }
-            Err(e) => ("failed", format!("exec: {e}")),
+            Some(s) => levee_nft_a_deux_sets((prog.as_str(), args.as_slice()), s),
         };
         // `P10.20-w` — L'ÉCRITURE DU VERDICT EST COMPTÉE, ET SON ÉCHEC NE SE DÉGUISE PLUS EN
         // « quelqu'un a tranché avant moi ». `unwrap_or(0)` rendait `0` sur une base qui n'avait RIEN

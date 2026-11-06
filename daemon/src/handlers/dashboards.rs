@@ -26,11 +26,13 @@ use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apre
 // `CAUSE_DROIT_D_EDITION_NON_LU`, phrase fixe déjà servie par `dash_ergonomics` ; la cause du moteur au journal seul,
 // avec l'identifiant interne du tableau et l'identifiant de corrélation, jamais un nom de compte).
 //
-// `P11.25-f` (vague CB) — `Refusee` est rendu EXACTEMENT quand l'appelant ne lit pas le tableau : privé à un autre
+// `P11.25-f` (vague CB) — `dash_editable` rend `Refusee` EXACTEMENT quand l'appelant ne lit pas le tableau : privé à un autre
 // compte, ou semé privé (sans propriétaire, que seul l'administrateur lit) ; un tableau commun est modifiable par tout
 // lecteur et l'administrateur ne lit pas la porte (`lisible_par`, panneau_resolu.rs).
 // Un refus de droit établi est donc un tableau que l'appelant ne LIT pas, et chaque appelant le sert comme son
 // identifiant absent — même statut, même corps — et n'écrit rien : un 403 disait l'existence du tableau privé d'autrui.
+// La porte d'un PANNEAU (`panneau_editable`, vague CB, panneau privé d'un tableau commun) rend aussi `Refusee` sur un
+// panneau que l'appelant ne lit pas dans un tableau qu'il lit (panneau `private` d'un tableau commun d'autrui).
 pub(crate) enum PorteDuTableau {
     Ouverte,
     Refusee,
@@ -39,10 +41,19 @@ pub(crate) enum PorteDuTableau {
 }
 
 pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> PorteDuTableau {
+    porte_et_portee_du_tableau(conn, au, dash_id).0
+}
+
+/// La porte d'un tableau ET la portée de lecture qui en dérive, d'UNE lecture (propriétaire et visibilité du même
+/// énoncé, celui de `dash_editable`) : la portée n'est `Proprietaire` que sur une porte `Ouverte` dont la lecture l'a
+/// établie (`PorteeLecture::du_dashboard`, la décision de `dash_get` et de `panel_access`) ; l'administrateur ne lit pas
+/// la ligne. Hors porte ouverte, la portée rendue est `LecteurDuPartage` et l'appelant ne s'en sert pas.
+pub(crate) fn porte_et_portee_du_tableau(conn: &Connection, au: &AuthUser, dash_id: i64) -> (PorteDuTableau, PorteeLecture) {
     if au.is_admin() {
-        return PorteDuTableau::Ouverte;
+        return (PorteDuTableau::Ouverte, PorteeLecture::du_dashboard(au, ""));
     }
-    match conn
+    let mut portee = PorteeLecture::LecteurDuPartage;
+    let porte = match conn
         .query_row(
             "SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1",
             params![dash_id],
@@ -50,7 +61,10 @@ pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> P
         )
         .optional()
     {
-        Ok(Some((owner, vis))) if panneau_resolu::lisible_par(&owner, &vis, au) => PorteDuTableau::Ouverte,
+        Ok(Some((owner, vis))) if panneau_resolu::lisible_par(&owner, &vis, au) => {
+            portee = PorteeLecture::du_dashboard(au, &owner);
+            PorteDuTableau::Ouverte
+        }
         Ok(Some(_)) => PorteDuTableau::Refusee,
         Ok(None) => PorteDuTableau::Absent,
         Err(e) => {
@@ -58,6 +72,21 @@ pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> P
             eprintln!("[dashboards] WARN droit d'édition du tableau de bord #{dash_id} NON lu, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
             PorteDuTableau::NonLue(refus)
         }
+    };
+    (porte, portee)
+}
+
+/// `P11.25-f` (vague CB, panneau privé d'un tableau commun) — LA PORTE D'UN PANNEAU. Un panneau est LU par l'appelant
+/// exactement quand `dash_get` le lui sert : le tableau se lit (porte ouverte) ET la portée de lecture qui en dérive voit
+/// la visibilité du panneau (`PorteeLecture::voit`, le filtre de `dash_get`). La porte du tableau seule laissait un
+/// éditeur modifier, publier ou supprimer le panneau `private` d'un tableau COMMUN d'autrui, qu'il ne voit pas : ce
+/// panneau rend désormais `Refusee`, que chaque appelant sert comme l'identifiant de panneau absent de sa route. La
+/// visibilité du panneau vient de la lecture du panneau que l'appelant a déjà faite (aucune lecture de plus) ; le
+/// propriétaire et l'administrateur voient tout, un panneau commun passe comme avant.
+pub(crate) fn panneau_editable(conn: &Connection, au: &AuthUser, dash_id: i64, visibilite_du_panneau: &str) -> PorteDuTableau {
+    match porte_et_portee_du_tableau(conn, au, dash_id) {
+        (PorteDuTableau::Ouverte, portee) if !portee.voit(visibilite_du_panneau) => PorteDuTableau::Refusee,
+        (porte, _) => porte,
     }
 }
 
@@ -245,7 +274,7 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
          LEFT JOIN (
              SELECT d.id AS id,d.name AS name,COALESCE(d.owner,'') AS owner,COALESCE(d.visibility,'shared') AS visibility,
                     (SELECT vp.id FROM view vp WHERE vp.id=d.view_id AND (?1='admin' OR vp.visibility='shared' OR vp.owner=?2)) AS view_id,
-                    (SELECT COUNT(*) FROM panel pn WHERE pn.dashboard_id=d.id) AS panels,
+                    (SELECT json_group_array(CAST(COALESCE(pn.visibility,'shared') AS TEXT)) FROM panel pn WHERE pn.dashboard_id=d.id) AS panels,
                     COALESCE(d.cols,2) AS cols,COALESCE(d.height,0) AS height,COALESCE(d.collapsed,0) AS collapsed,
                     COALESCE(d.position,d.id) AS pos,d.all_views AS all_views,
                     (SELECT json_group_array(r.view_id) FROM (SELECT vd.view_id AS view_id FROM view_dashboard vd JOIN view v ON v.id=vd.view_id
@@ -296,11 +325,21 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
             let view_ids: Value = serde_json::from_str(&vues)
                 .map_err(|e| rusqlite::Error::FromSqlConversionFailure(11, rusqlite::types::Type::Text, Box::new(e)))?;
             let toutes: bool = r.get::<_, i64>(10)? != 0;
+            // Vague CB (panneau privé d'un tableau commun) — LE COMPTE DES PANNEAUX EST CELUI QUE `dash_get` SERVIRA AU
+            // MÊME LECTEUR. Il comptait tous les panneaux du tableau : l'éditeur d'un tableau commun d'autrui y lisait un
+            // panneau `private` de plus que ceux qu'il voit. Les visibilités viennent de la même instruction (une
+            // valeur non textuelle est rendue en texte, donc jamais `shared`) et se jugent par la portée de lecture de
+            // `dash_get` (`PorteeLecture::du_dashboard`, puis `voit`) : propriétaire et administrateur comptent tout.
+            let visibilites: String = r.get(5)?;
+            let visibilites: Vec<String> = serde_json::from_str(&visibilites)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e)))?;
+            let portee = PorteeLecture::du_dashboard(&ident, &owner);
+            let panneaux_lus = visibilites.iter().filter(|v| portee.voit(v)).count() as i64;
             Ok((
                 Some(json!({
                     "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
                     "owner": owner, "visibility": vis,
-                    "view_id": r.get::<_, Option<i64>>(4)?, "panels": r.get::<_, i64>(5)?,
+                    "view_id": r.get::<_, Option<i64>>(4)?, "panels": panneaux_lus,
                     "cols": r.get::<_, i64>(6)?, "height": r.get::<_, i64>(7)?,
                     "collapsed": r.get::<_, i64>(8)? != 0, "position": r.get::<_, i64>(9)?,
                     "editable": owns,
@@ -828,7 +867,10 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
     // modifiable » d'un tableau qui n'existe pas) ; droit non lu : 503 nommé, rien n'est créé.
     // `P11.25-f` (vague CB) — tableau privé d'autrui : la réponse d'un tableau absent, à l'octet, rien n'est créé (le
     // 403 « dashboard non modifiable » d'avant disait qu'il existe).
-    match dash_editable(&conn, &au, did) {
+    // Vague CB (panneau privé d'un tableau commun) — la porte rend aussi la portée de lecture de l'appelant, de la MÊME
+    // lecture : la position du panneau créé se calcule sur les seuls panneaux qu'il lit (ci-dessous).
+    let (porte, portee) = porte_et_portee_du_tableau(&conn, &au, did);
+    match porte {
         PorteDuTableau::Ouverte => {}
         PorteDuTableau::Refusee | PorteDuTableau::Absent => return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response(),
         PorteDuTableau::NonLue(refus) => return refus,
@@ -848,10 +890,17 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
     if !def.permise_pour(&au.role) {
         return (StatusCode::FORBIDDEN, "SQL brut réservé à l'administrateur (utilisez GXQL)").into_response();
     }
+    // Vague CB (panneau privé d'un tableau commun) — LA POSITION DU PANNEAU CRÉÉ NE DIT RIEN DES PANNEAUX QUE LE CRÉATEUR NE
+    // LIT PAS. Calculée sur tous les panneaux du tableau, elle trahissait à l'éditeur d'un tableau commun d'autrui qu'un
+    // panneau `private` qu'il ne voit pas porte la plus haute position (son panneau, relu par `dash_get`, arrivait au-delà
+    // du dernier qu'il voit). Elle se calcule sur ceux que sa portée voit (`?13` : la portée est celle du propriétaire,
+    // sinon les seuls panneaux `shared`, la règle de `PorteeLecture::voit`) ; propriétaire et administrateur : tous,
+    // comme avant.
     match conn.execute(
         "INSERT INTO panel(dashboard_id,title,query,is_soql,viz,window_s,visibility,query_private,cols,height,drill,library_panel_id,position) \
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,(SELECT COALESCE(MAX(position),-1)+1 FROM panel WHERE dashboard_id=?1))",
-        params![did, title, query, is_soql, viz, window_s, visibility, query_private, cols, height, drill, library_panel_id],
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,(SELECT COALESCE(MAX(position),-1)+1 FROM panel WHERE dashboard_id=?1 \
+                AND (?13=1 OR COALESCE(visibility,'shared')='shared')))",
+        params![did, title, query, is_soql, viz, window_s, visibility, query_private, cols, height, drill, library_panel_id, portee.est_proprietaire() as i64],
     ) {
         Ok(1) => Json(json!({ "id": conn.last_insert_rowid() })).into_response(),
         Ok(n) => refus_d_un_objet_non_cree("panneau", n),
@@ -897,7 +946,11 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     // `P11.25-f` (vague CB) — le panneau d'un tableau privé d'autrui est un panneau que l'appelant ne lit pas : il
     // reçoit la réponse d'un identifiant de panneau absent (`panneau introuvable`, ci-dessus), à l'octet, et rien n'est
     // écrit. Le 403 « dashboard non modifiable » d'avant disait que le panneau et son tableau existent.
-    match dash_editable(&conn, &au, did) {
+    // Vague CB (panneau privé d'un tableau commun) — la porte est celle du PANNEAU (`panneau_editable`) : le panneau
+    // `private` d'un tableau commun d'autrui, que `dash_get` ne lui sert pas, reçoit la même réponse, avant tout
+    // jugement de partage, de définition de bibliothèque ou de SQL brut, et rien n'est écrit. La visibilité jugée est
+    // celle de la lecture ci-dessus.
+    match panneau_editable(&conn, &au, did, &visibilite) {
         PorteDuTableau::Ouverte => {}
         PorteDuTableau::Refusee => return not_found("panneau introuvable"),
         PorteDuTableau::Absent => return not_found("dashboard introuvable"),
@@ -998,7 +1051,7 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
 }
 
 /// `P10.20-l` (vague AE) — le tableau de bord qui porte le panneau n'a pas été lu : le droit n'est pas jugé, rien n'est
-/// supprimé. Ne nomme ni `BEGIN` ni `COMMIT` ni une transaction annulée : c'est la lecture qui manque (refus nommé).
+/// supprimé. Servie aussi quand la visibilité du panneau, lue par le même énoncé (vague CB), ne se lit pas. Ne nomme ni `BEGIN` ni `COMMIT` ni une transaction annulée : c'est la lecture qui manque (refus nommé).
 pub(crate) const CAUSE_PANNEAU_NON_SUPPRIME_NON_LU: &str = "PANNEAU NON SUPPRIMÉ : la base n'a pas rendu ce panneau (le \
      tableau de bord qui le porte) — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et le droit de le \
      supprimer n'est pas jugé. RIEN n'est supprimé : le panneau et son cache sont intacts. Réessayez ; si le refus \
@@ -1020,12 +1073,22 @@ pub(crate) async fn panel_delete(State(st): State<AppState>, Extension(au): Exte
     // `P10.20-l` (vague AE) — trois issues : lu, le droit est jugé ; absent, le 404 d'avant (sans corps) ; lecture ratée,
     // 503 `CAUSE_PANNEAU_NON_SUPPRIME_NON_LU` — ni 403 ni suppression. La route rend désormais une `Response` (son seul
     // appelant est le routeur) : la cause est servie en corps, celle du moteur au journal seul.
-    match conn.query_row("SELECT dashboard_id FROM panel WHERE id=?1", params![id], |r| r.get::<_, i64>(0)).optional() {
+    // Vague CB (panneau privé d'un tableau commun) — la visibilité du panneau se lit dans la MÊME lecture que son tableau
+    // porteur : aucune lecture de plus, et une visibilité illisible sert le 503 nommé de cette lecture, rien n'est
+    // supprimé.
+    let lecture = conn
+        .query_row("SELECT dashboard_id,COALESCE(visibility,'shared') FROM panel WHERE id=?1", params![id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
+        .optional();
+    match lecture {
         // `P10.20-l` (vague AG) — le droit sur le tableau porteur, en quatre issues : la forme d'avant rendait 403 sur
         // un droit illisible (`Err(_) => false`) et sur un porteur absent.
         // `P11.25-f` (vague CB) — le panneau d'un tableau privé d'autrui reçoit le 404 nu d'un panneau absent, rien
-        // n'est supprimé (le 403 d'avant disait qu'il existe).
-        Ok(Some(d)) => match dash_editable(&conn, &au, d) {
+        // n'est supprimé (le 403 d'avant disait qu'il existe). Vague CB (panneau privé d'un tableau commun) : la porte
+        // est celle du PANNEAU (`panneau_editable`), le panneau `private` d'un tableau commun d'autrui reçoit le même
+        // 404 nu.
+        Ok(Some((d, visibilite))) => match panneau_editable(&conn, &au, d, &visibilite) {
             PorteDuTableau::Ouverte => {}
             PorteDuTableau::Refusee | PorteDuTableau::Absent => return StatusCode::NOT_FOUND.into_response(),
             PorteDuTableau::NonLue(refus) => return refus,

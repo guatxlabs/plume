@@ -212,6 +212,26 @@ fn vis_of(b: &Value) -> &'static str {
 // =====================================================================================
 // LIBRARY PANELS
 // =====================================================================================
+/// Vague CB (panneau privé d'un tableau commun) — `used_by` COMPTE LES PANNEAUX RÉFÉRENTS QUE LE LECTEUR LIT, pas tous.
+/// Le compte de tous les référents disait à un éditeur qu'un panneau qu'il ne voit pas (panneau `private` d'un tableau
+/// commun d'autrui, ou panneau d'un tableau privé d'autrui) exécute cette définition. Un référent est compté quand
+/// `dash_get` le servirait au lecteur : son tableau existe et se lit (`lisible_par`), et la portée de lecture qui en
+/// dérive voit sa visibilité (`PorteeLecture::voit`) ; l'administrateur compte tous les référents, comme avant (un
+/// référent dont le tableau n'a plus de ligne compris). Chaque référent arrive de la même instruction en
+/// `[tableau présent, propriétaire, visibilité du tableau, visibilité du panneau]` (une valeur non textuelle rendue en
+/// texte, donc jamais `shared`) ; un tableau JSON illisible rend la liste illisible, jamais un compte deviné.
+fn referents_lus(referents: &str, au: &AuthUser) -> rusqlite::Result<i64> {
+    let referents: Vec<(i64, String, String, String)> =
+        serde_json::from_str(referents).map_err(|e| rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e)))?;
+    let lus = referents
+        .iter()
+        .filter(|(present, owner, vis, pvis)| {
+            au.is_admin() || (*present != 0 && panneau_resolu::lisible_par(owner, vis, au) && PorteeLecture::du_dashboard(au, owner).voit(pvis))
+        })
+        .count();
+    Ok(lus as i64)
+}
+
 pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     let (me, role) = (au.name.clone(), au.role.clone());
     // #64 : autorité admin EFFECTIVE (rôle composable base=admin inclus) — portée par `ident`, dont
@@ -222,7 +242,9 @@ pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au
     read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "library_panels": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(
             "SELECT id,name,title,query,is_soql,viz,COALESCE(drill,''),COALESCE(owner,''),COALESCE(visibility,'shared'),\
-                    (SELECT COUNT(*) FROM panel p WHERE p.library_panel_id=library_panel.id) \
+                    (SELECT json_group_array(json_array(d.id IS NOT NULL,CAST(COALESCE(d.owner,'') AS TEXT),\
+                            CAST(COALESCE(d.visibility,'shared') AS TEXT),CAST(COALESCE(p.visibility,'shared') AS TEXT))) \
+                       FROM panel p LEFT JOIN dashboard d ON d.id=p.dashboard_id WHERE p.library_panel_id=library_panel.id) \
              FROM library_panel ORDER BY name,id",
         ) {
             Ok(s) => s,
@@ -237,7 +259,7 @@ pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au
                 Ok((
                     r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?,
                     r.get::<_, i64>(4)? != 0, r.get::<_, String>(5)?, r.get::<_, String>(6)?, r.get::<_, String>(7)?,
-                    r.get::<_, String>(8)?, r.get::<_, i64>(9)?,
+                    r.get::<_, String>(8)?, referents_lus(&r.get::<_, String>(9)?, &au)?,
                 ))
             })
             .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())

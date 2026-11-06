@@ -30,8 +30,8 @@
 //
 // CE QU'ILS NE TIENNENT PAS : ce que la console peint (web/ ne distingue pas 403 et 404 sur ces routes : refus peint par
 // la forme partagée) ; le 403 de `POST`/`DELETE /api/views/{id}` sur une vue commune dont l'appelant n'est pas
-// propriétaire est tenu par `cb1_vue_commune_403_semee_privee_absente_sauf_admin_et_proprietaire_permis` ; un panneau
-// PRIVÉ posé sur un tableau COMMUN reste modifiable et supprimable par un éditeur qui ne le lit pas (hors de ce reste).
+// propriétaire est tenu par `cb1_vue_commune_403_semee_privee_absente_sauf_admin_et_proprietaire_permis` ; le panneau
+// PRIVÉ posé sur un tableau COMMUN est tenu par panneau_prive_d_un_tableau_commun_repond_comme_un_absent.rs.
 //
 // MUTATIONS (posées sous `cfg!(test)`, armées par la variable de mutation de l'exécuteur le temps de la vérification,
 // puis retirées) : chaque témoin nomme les siennes.

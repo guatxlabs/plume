@@ -20,8 +20,9 @@
 //     réponse d'un identifiant de panneau absent de la MÊME route, à l'octet (ligne de statut, en-têtes hors `date`,
 //     corps), et la base relue est inchangée (titre, requête, visibilité, tableau, position, cache) ; de même bob et
 //     alice sur le panneau privé d'un tableau SEMÉ commun (sans propriétaire), que seul l'administrateur lit ;
-//   * alice (propriétaire du tableau) et l'administrateur : le comportement d'avant, et le geste porte ; le panneau
-//     COMMUN du même tableau, bob : le comportement d'avant ;
+//   * alice (propriétaire du tableau) et l'administrateur, chaque geste sur un panneau ENCORE PRIVÉ (un jeu neuf par
+//     geste : publier rend le panneau commun, la suppression qui suivrait ne jugerait plus un panneau privé) : le
+//     comportement d'avant, et le geste porte ; le panneau COMMUN du même tableau, bob : le comportement d'avant ;
 //   * la chaîne de la sonde rejouée : bob publie puis lit, puis supprime -> chaque fois la réponse de l'absent, et
 //     `GET /api/dashboard/{id}` relu par bob ne sert ni le panneau, ni son titre, ni sa requête ;
 //   * les gestes en masse : `GET /api/dashboards` compte pour bob les seuls panneaux qu'il lit (une visibilité non
@@ -33,6 +34,10 @@
 //     le privé et l'absent), 403 du SQL brut (bob sur le panneau commun, alice sur son panneau privé), 409 du partage
 //     qui nomme la définition de bibliothèque privée qu'exécute le panneau (alice, qui lit l'un et l'autre) ; sur le
 //     panneau privé d'alice, bob reçoit la réponse de l'absent et rien n'est écrit ;
+//   * les valeurs HORS NORME (qu'aucune voie d'écriture ne produit, colonne sans contrainte au schéma) : une visibilité
+//     de panneau `equipe`, BLOB (`X'00'`, `X'FF'`, les octets de `shared`) ou texte en UTF-8 invalide ne rend ni
+//     `GET /api/dashboards` ni `GET /api/library-panels` illisible, ne compte que pour la propriétaire et
+//     l'administrateur, et ne pousse pas la position d'un panneau créé par bob ;
 //   * une lecture décide : avant le 404, `panel_update` et `panel_delete` préparent les DEUX mêmes `SELECT` qu'avant
 //     (le panneau, avec sa visibilité ; le tableau, propriétaire et visibilité) et pas un de plus ; une visibilité de
 //     panneau illisible sert le 503 nommé de la lecture du panneau (corps entier), rien n'est écrit ; un propriétaire
@@ -238,16 +243,15 @@ mod panneau_prive_d_un_tableau_commun_repond_comme_un_absent {
     ///   * bob sur le panneau COMMUN du tableau commun d'alice : le statut d'avant, et le geste porte.
     /// MUTATIONS : `CB3_PU_ROUVERT`, `CB3_PD_ROUVERT` (la porte du seul tableau rétablie, route par route),
     /// `CB3_COMMUN_ABSENT` (le panneau commun servi comme absent), `CB3_ADMIN_ABSENT` (l'administrateur perd la portée du
-    /// propriétaire), `CB3_PROPRIETAIRE_ABSENT` (la propriétaire du tableau perd la sienne).
+    /// propriétaire), `CB3_PROPRIETAIRE_ABSENT` (la propriétaire du tableau perd la sienne), `CB3C_PD_PRIVE_REFUSE` (la
+    /// suppression refuse tout panneau non commun, propriétaire et administrateur compris : rouge seulement si la
+    /// suppression part d'un panneau encore privé).
     #[tokio::test]
     async fn cb3_chaque_route_sert_l_absent_sur_le_panneau_prive_d_un_tableau_commun() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // les gestes lisent l'environnement
         let (st, _p) = cb3_etat("routes");
         let pour_bob = cb3_jeu(&st, "commun d'alice", Some("alice"), "shared");
-        let pour_alice = cb3_jeu(&st, "commun d'alice pour alice", Some("alice"), "shared");
-        let pour_l_admin = cb3_jeu(&st, "commun d'alice pour l'admin", Some("alice"), "shared");
         let seme = cb3_jeu(&st, "semé", None, "shared");
-        let seme_pour_l_admin = cb3_jeu(&st, "semé pour l'admin", None, "shared");
         let addr = router_serve(st.clone()).await;
         let routes = cb3_routes();
         let inventaire = cb3_gestionnaires_d_un_panneau_dans_la_source();
@@ -269,14 +273,21 @@ mod panneau_prive_d_un_tableau_commun_repond_comme_un_absent {
             }
         }
         // (b) la propriétaire du tableau, puis l'administrateur (tableau commun d'alice, puis tableau semé) : le
-        // comportement d'avant, et chaque geste porte.
-        for (qui, panneau) in [("alice", pour_alice.prive), ("adm", pour_l_admin.prive), ("adm", seme_pour_l_admin.prive)] {
+        // comportement d'avant, et chaque geste porte. CHAQUE GESTE PART D'UN PANNEAU ENCORE PRIVÉ, sur un jeu neuf :
+        // « publier » rend le panneau commun, et une suppression qui le suivrait ne jugerait plus qu'un panneau commun.
+        for (qui, proprietaire) in [("alice", Some("alice")), ("adm", Some("alice")), ("adm", None)] {
             for route in &routes {
+                let jeu = cb3_jeu(&st, &format!("{qui}, {}, {}", route.nom, proprietaire.unwrap_or("semé")), proprietaire, "shared");
+                let visibilite = cb3_texte(&st, &format!("SELECT visibility FROM panel WHERE id={}", jeu.prive));
+                assert_eq!(visibilite, "private", "{} ({qui}) : INSTRUMENT, le geste part d'un panneau privé", route.nom);
                 let avant = cb3_empreinte(&st);
-                let (code, t) = cb3_envoi(addr, qui, route.methode, &(route.chemin)(panneau), route.corps).await;
-                assert_eq!(code, route.attendu, "{} ({qui}) : le comportement d'avant : {t}", route.nom);
+                let (code, t) = cb3_envoi(addr, qui, route.methode, &(route.chemin)(jeu.prive), route.corps).await;
+                assert_eq!(code, route.attendu, "{} ({qui}, panneau privé) : le comportement d'avant : {t}", route.nom);
                 if route.methode != "GET" {
-                    assert_ne!(cb3_empreinte(&st), avant, "{} ({qui}) : le geste porte", route.nom);
+                    assert_ne!(cb3_empreinte(&st), avant, "{} ({qui}, panneau privé) : le geste porte", route.nom);
+                }
+                if route.methode == "DELETE" {
+                    assert_eq!(cb3_entier(&st, &format!("SELECT COUNT(*) FROM panel WHERE id={}", jeu.prive)), 0, "({qui}) le panneau privé est supprimé");
                 }
             }
         }
@@ -538,5 +549,71 @@ mod panneau_prive_d_un_tableau_commun_repond_comme_un_absent {
             assert_eq!((code, v["error"].as_str().map(|e| e.starts_with(CB3_DROIT_NON_LU))), (503, Some(true)), "(bob, {methode}) propriétaire illisible : 503 droit non lu, pas 404 : {t}");
         }
         assert_eq!(cb3_empreinte(&st), avant, "propriétaire illisible : rien n'est écrit");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // (6) les valeurs hors norme : rien d'illisible, rien de compté ni de placé pour le lecteur
+    // -------------------------------------------------------------------------------------
+
+    /// CE QU'IL TIENT, par la route, sur un tableau commun d'alice : panneau commun (position 0), panneau `private` (1),
+    /// puis cinq panneaux de visibilité HORS NORME — texte `equipe` (2), BLOB `X'00'` (3), BLOB `X'FF'` (4), texte en
+    /// UTF-8 invalide (5), BLOB des octets de `shared` (6) ; tous référencent une même définition commune d'alice :
+    ///   * `GET /api/dashboards` est lu (200, aucune clé `error`) par bob, carol, alice et l'administrateur ; `panels`
+    ///     vaut 1 pour bob et carol (le seul commun : `PorteeLecture::voit` n'ouvre que le TEXTE exact `shared`, et
+    ///     `dash_get` ne sert aucun de ces panneaux à un lecteur du partage), 7 pour alice et l'administrateur ;
+    ///   * `GET /api/library-panels` est lu par les mêmes, `used_by` vaut 1 pour bob et carol, 7 pour alice et
+    ///     l'administrateur ;
+    ///   * `POST /api/panels` par bob : la position 1 (après le seul panneau qu'il lit) ; par alice : la position 7.
+    /// MUTATIONS : `CB3C_DL_SANS_HEX` et `CB3C_UB_CAST_SANS_HEX` (le texte lu tel quel, la forme d'avant : l'UTF-8
+    /// invalide rend la liste illisible), `CB3C_DL_SANS_TYPE` et `CB3C_UB_SANS_TYPE` (le BLOB des octets de `shared` compté
+    /// pour bob), `CB3C_UB_SANS_HEX` (la visibilité du panneau passée brute aux fonctions JSON : un BLOB rend la liste
+    /// illisible), `CB3C_PC_BORD` (la position calculée sur `<> 'private'`).
+    #[tokio::test]
+    async fn cb3_une_valeur_hors_norme_ne_rend_rien_illisible_ni_ne_compte_pour_le_lecteur() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // les gestes lisent l'environnement
+        let (st, _p) = cb3_etat("hors-norme");
+        let jeu = cb3_jeu(&st, "commun d'alice, hors norme", Some("alice"), "shared");
+        let did = jeu.tableau;
+        cb3_ecrire(
+            &st,
+            &format!(
+                "INSERT INTO library_panel(name,title,query,is_soql,viz,drill,owner,visibility,created,updated) VALUES('Définition hors norme','T','search | stats count',1,'table','','alice','shared',1000,1000);
+                 UPDATE panel SET library_panel_id=(SELECT MAX(id) FROM library_panel) WHERE id IN ({},{});
+                 INSERT INTO panel(dashboard_id,title,query,is_soql,viz,visibility,position,library_panel_id) VALUES
+                    ({did},'Équipe','search | stats count',1,'table','private',2,(SELECT MAX(id) FROM library_panel)),
+                    ({did},'Nul','search | stats count',1,'table','private',3,(SELECT MAX(id) FROM library_panel)),
+                    ({did},'FF','search | stats count',1,'table','private',4,(SELECT MAX(id) FROM library_panel)),
+                    ({did},'UTF-8 invalide','search | stats count',1,'table','private',5,(SELECT MAX(id) FROM library_panel)),
+                    ({did},'Octets de shared','search | stats count',1,'table','private',6,(SELECT MAX(id) FROM library_panel));
+                 UPDATE panel SET visibility='equipe' WHERE dashboard_id={did} AND position=2;
+                 UPDATE panel SET visibility=X'00' WHERE dashboard_id={did} AND position=3;
+                 UPDATE panel SET visibility=X'FF' WHERE dashboard_id={did} AND position=4;
+                 UPDATE panel SET visibility=CAST(X'FF' AS TEXT) WHERE dashboard_id={did} AND position=5;
+                 UPDATE panel SET visibility=X'736861726564' WHERE dashboard_id={did} AND position=6;",
+                jeu.prive, jeu.commun
+            ),
+        );
+        let types = cb3_texte(&st, &format!("SELECT group_concat(typeof(visibility),',') FROM (SELECT visibility FROM panel WHERE dashboard_id={did} ORDER BY position)"));
+        assert_eq!(types, "text,text,text,blob,blob,text,blob", "INSTRUMENT : les valeurs hors norme sont posées");
+        let lib = cb3_entier(&st, "SELECT MAX(id) FROM library_panel");
+        let addr = router_serve(st.clone()).await;
+
+        for (qui, attendu) in [("bob", 1), ("carol", 1), ("alice", 7), ("adm", 7)] {
+            let (code, t) = cb3_envoi(addr, qui, "GET", "/api/dashboards", "").await;
+            let v = cb3_json(&t);
+            let panels = v["dashboards"].as_array().and_then(|a| a.iter().find(|d| d["id"].as_i64() == Some(did))).and_then(|d| d["panels"].as_i64());
+            assert_eq!((code, v.get("error").is_none(), panels), (200, true, Some(attendu)), "({qui}) GET /api/dashboards lu, panneaux comptés ceux que dash_get sert : {t}");
+            let (code, t) = cb3_envoi(addr, qui, "GET", "/api/library-panels", "").await;
+            let v = cb3_json(&t);
+            let used_by = v["library_panels"].as_array().and_then(|a| a.iter().find(|l| l["id"].as_i64() == Some(lib))).and_then(|l| l["used_by"].as_i64());
+            assert_eq!((code, v.get("error").is_none(), used_by), (200, true, Some(attendu)), "({qui}) GET /api/library-panels lu, référents comptés ceux que le lecteur lit : {t}");
+        }
+
+        for (qui, attendu) in [("bob", 1), ("alice", 7)] {
+            let (code, t) = cb3_envoi(addr, qui, "POST", "/api/panels", &format!(r#"{{"dashboard_id":{did},"title":"neuf de {qui}","query":"search | stats count","is_soql":true}}"#)).await;
+            assert_eq!(code, 200, "({qui}) création : {t}");
+            let id = cb3_json(&t)["id"].as_i64().expect("identifiant créé");
+            assert_eq!(cb3_entier(&st, &format!("SELECT position FROM panel WHERE id={id}")), attendu, "({qui}) la position suit les seuls panneaux que le créateur lit");
+        }
     }
 }

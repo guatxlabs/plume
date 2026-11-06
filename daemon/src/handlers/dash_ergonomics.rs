@@ -218,11 +218,21 @@ fn vis_of(b: &Value) -> &'static str {
 /// `dash_get` le servirait au lecteur : son tableau existe et se lit (`lisible_par`), et la portée de lecture qui en
 /// dérive voit sa visibilité (`PorteeLecture::voit`) ; l'administrateur compte tous les référents, comme avant (un
 /// référent dont le tableau n'a plus de ligne compris). Chaque référent arrive de la même instruction en
-/// `[tableau présent, propriétaire, visibilité du tableau, visibilité du panneau]` (une valeur non textuelle rendue en
-/// texte, donc jamais `shared`) ; un tableau JSON illisible rend la liste illisible, jamais un compte deviné.
+/// `[tableau présent, propriétaire, visibilité du tableau, visibilité du panneau]`, chaque texte en hexadécimal
+/// (`panneau_resolu::texte_rendu_en_hex` : une valeur hors norme, BLOB ou UTF-8 invalide, ne rend pas la liste
+/// illisible pour tous ; une visibilité de panneau non textuelle est rendue vide, donc jamais `shared`) ; un tableau
+/// JSON ou un hexadécimal illisible rend la liste illisible, jamais un compte deviné.
 fn referents_lus(referents: &str, au: &AuthUser) -> rusqlite::Result<i64> {
+    let illisible = || rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, "référent : hexadécimal illisible".into());
     let referents: Vec<(i64, String, String, String)> =
         serde_json::from_str(referents).map_err(|e| rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e)))?;
+    let referents = referents
+        .iter()
+        .map(|(present, owner, vis, pvis)| {
+            Some((*present, panneau_resolu::texte_rendu_en_hex(owner)?, panneau_resolu::texte_rendu_en_hex(vis)?, panneau_resolu::texte_rendu_en_hex(pvis)?))
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(illisible)?;
     let lus = referents
         .iter()
         .filter(|(present, owner, vis, pvis)| {
@@ -242,8 +252,8 @@ pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au
     read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "library_panels": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(
             "SELECT id,name,title,query,is_soql,viz,COALESCE(drill,''),COALESCE(owner,''),COALESCE(visibility,'shared'),\
-                    (SELECT json_group_array(json_array(d.id IS NOT NULL,CAST(COALESCE(d.owner,'') AS TEXT),\
-                            CAST(COALESCE(d.visibility,'shared') AS TEXT),CAST(COALESCE(p.visibility,'shared') AS TEXT))) \
+                    (SELECT json_group_array(json_array(d.id IS NOT NULL,hex(COALESCE(d.owner,'')),hex(COALESCE(d.visibility,'shared')),\
+                            hex(CASE WHEN typeof(p.visibility) IN ('text','null') THEN COALESCE(p.visibility,'shared') END))) \
                        FROM panel p LEFT JOIN dashboard d ON d.id=p.dashboard_id WHERE p.library_panel_id=library_panel.id) \
              FROM library_panel ORDER BY name,id",
         ) {

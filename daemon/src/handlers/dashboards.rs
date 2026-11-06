@@ -274,7 +274,7 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
          LEFT JOIN (
              SELECT d.id AS id,d.name AS name,COALESCE(d.owner,'') AS owner,COALESCE(d.visibility,'shared') AS visibility,
                     (SELECT vp.id FROM view vp WHERE vp.id=d.view_id AND (?1='admin' OR vp.visibility='shared' OR vp.owner=?2)) AS view_id,
-                    (SELECT json_group_array(CAST(COALESCE(pn.visibility,'shared') AS TEXT)) FROM panel pn WHERE pn.dashboard_id=d.id) AS panels,
+                    (SELECT json_group_array(hex(CASE WHEN typeof(pn.visibility) IN ('text','null') THEN COALESCE(pn.visibility,'shared') END)) FROM panel pn WHERE pn.dashboard_id=d.id) AS panels,
                     COALESCE(d.cols,2) AS cols,COALESCE(d.height,0) AS height,COALESCE(d.collapsed,0) AS collapsed,
                     COALESCE(d.position,d.id) AS pos,d.all_views AS all_views,
                     (SELECT json_group_array(r.view_id) FROM (SELECT vd.view_id AS view_id FROM view_dashboard vd JOIN view v ON v.id=vd.view_id
@@ -327,12 +327,19 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
             let toutes: bool = r.get::<_, i64>(10)? != 0;
             // Vague CB (panneau privé d'un tableau commun) — LE COMPTE DES PANNEAUX EST CELUI QUE `dash_get` SERVIRA AU
             // MÊME LECTEUR. Il comptait tous les panneaux du tableau : l'éditeur d'un tableau commun d'autrui y lisait un
-            // panneau `private` de plus que ceux qu'il voit. Les visibilités viennent de la même instruction (une
-            // valeur non textuelle est rendue en texte, donc jamais `shared`) et se jugent par la portée de lecture de
-            // `dash_get` (`PorteeLecture::du_dashboard`, puis `voit`) : propriétaire et administrateur comptent tout.
+            // panneau `private` de plus que ceux qu'il voit. Les visibilités viennent de la même instruction, en
+            // hexadécimal (`panneau_resolu::texte_rendu_en_hex` : une valeur hors norme ne rend pas la liste illisible ;
+            // une valeur non textuelle est rendue vide, donc jamais `shared`, comme `dash_get` ne la sert à aucun
+            // lecteur du partage) et se jugent par la portée de lecture de `dash_get` (`PorteeLecture::du_dashboard`,
+            // puis `voit`) : propriétaire et administrateur comptent tout.
             let visibilites: String = r.get(5)?;
             let visibilites: Vec<String> = serde_json::from_str(&visibilites)
                 .map_err(|e| rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e)))?;
+            let visibilites: Vec<String> = visibilites
+                .iter()
+                .map(|h| panneau_resolu::texte_rendu_en_hex(h))
+                .collect::<Option<Vec<String>>>()
+                .ok_or_else(|| rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, "visibilité de panneau : hexadécimal illisible".into()))?;
             let portee = PorteeLecture::du_dashboard(&ident, &owner);
             let panneaux_lus = visibilites.iter().filter(|v| portee.voit(v)).count() as i64;
             Ok((

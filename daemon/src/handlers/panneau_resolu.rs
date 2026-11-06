@@ -130,6 +130,21 @@ impl PorteeLecture {
     }
 }
 
+/// Vague CB (panneau privé d'un tableau commun) — LE TEXTE D'UNE COLONNE RENDU PAR LA BASE EN HEXADÉCIMAL (`hex(…)`),
+/// RELU ICI. Les listes qui jugent la visibilité de chaque panneau en Rust (`dash_list`, `library_panels_list`) la
+/// reçoivent agrégée en JSON par la base : une valeur hors norme (texte en UTF-8 invalide, BLOB) passée telle quelle
+/// rendait la liste ENTIÈRE illisible pour tous les comptes (BLOB refusé par les fonctions JSON, UTF-8 invalide refusé
+/// à la lecture), alors que le compte d'avant ne lisait pas la colonne. L'hexadécimal est toujours de l'ASCII ; les
+/// octets relus et non UTF-8 sont remplacés (U+FFFD), donc ne valent jamais `shared`. `None` : ce n'est pas de
+/// l'hexadécimal, la liste est déclarée illisible, jamais un compte deviné.
+pub(crate) fn texte_rendu_en_hex(hexa: &str) -> Option<String> {
+    if hexa.len() % 2 != 0 || !hexa.bytes().all(|o| o.is_ascii_hexdigit()) {
+        return None;
+    }
+    let octets = (0..hexa.len()).step_by(2).map(|i| u8::from_str_radix(&hexa[i..i + 2], 16).ok()).collect::<Option<Vec<u8>>>()?;
+    Some(String::from_utf8_lossy(&octets).into_owned())
+}
+
 /// LA RÉFÉRENCE DE BIBLIOTHÈQUE APRÈS ÉCRITURE. Énum FERMÉ, sans `Default` : un site qui écrit un
 /// panneau doit CHOISIR ce qu'il advient de la référence, et le passer à [`DefinitionExecutee::projetee`]
 /// — l'oublier ne compile pas (E0061). [`Self::du_corps`] est la SEULE lecture du champ

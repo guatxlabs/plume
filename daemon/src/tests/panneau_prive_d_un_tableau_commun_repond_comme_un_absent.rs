@@ -1,5 +1,5 @@
 // =====================================================================================
-// `P11.25-f` (vague CB, panneau privé d'un tableau commun) — UN PANNEAU QUE L'APPELANT NE LIT PAS RÉPOND EXACTEMENT
+// `P11.25-h` (vague CB) — UN PANNEAU QUE L'APPELANT NE LIT PAS RÉPOND EXACTEMENT
 // COMME UN PANNEAU ABSENT, ET AUCUN GESTE EN MASSE NE LE TOUCHE NI NE LE RÉVÈLE.
 //
 // LE DÉFAUT, MESURÉ PAR LA ROUTE SUR LA BASE 7c001610 : alice (éditrice) a un tableau COMMUN portant un panneau

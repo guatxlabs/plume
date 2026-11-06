@@ -76,7 +76,7 @@ pub(crate) fn porte_et_portee_du_tableau(conn: &Connection, au: &AuthUser, dash_
     (porte, portee)
 }
 
-/// `P11.25-f` (vague CB, panneau privé d'un tableau commun) — LA PORTE D'UN PANNEAU. Un panneau est LU par l'appelant
+/// `P11.25-h` (vague CB) — LA PORTE D'UN PANNEAU. Un panneau est LU par l'appelant
 /// exactement quand `dash_get` le lui sert : le tableau se lit (porte ouverte) ET la portée de lecture qui en dérive voit
 /// la visibilité du panneau (`PorteeLecture::voit`, le filtre de `dash_get`). La porte du tableau seule laissait un
 /// éditeur modifier, publier ou supprimer le panneau `private` d'un tableau COMMUN d'autrui, qu'il ne voit pas : ce

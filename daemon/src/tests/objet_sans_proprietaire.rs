@@ -530,7 +530,10 @@ async fn un_objet_sans_proprietaire_ne_se_supprime_plus_qu_en_admin() {
     // …et bob ne dispose pas de ce qui est à alice (le second bras des deux identités).
     let (_, v) = pb_json(view_create(State(st.clone()), Extension(alice.clone()), Json(json!({ "name": "encore à alice", "visibility": "private" }))).await.into_response()).await;
     let vue_alice2 = v["id"].as_i64().unwrap();
-    assert_eq!(view_delete(State(st.clone()), Extension(bob.clone()), Path(vue_alice2)).await.status(), StatusCode::FORBIDDEN, "bob ne supprime pas la vue d'alice");
+    // INVERSÉ (`P11.25-f`, vague CB) : la vue PRIVÉE d'alice, que bob ne voit pas, lui répond comme une vue absente (404
+    // nu) et non plus 403, qui disait qu'elle existe ; elle n'est pas supprimée.
+    assert_eq!(view_delete(State(st.clone()), Extension(bob.clone()), Path(vue_alice2)).await.status(), StatusCode::NOT_FOUND, "bob ne supprime pas la vue privée d'alice, qu'il ne voit pas");
+    assert_eq!(st.db.lock().query_row("SELECT COUNT(*) FROM view WHERE id=?1", params![vue_alice2], |r| r.get::<_, i64>(0)).unwrap(), 1, "la vue privée d'alice reste");
 
     // --- CONTRÔLE POSITIF 2 : l'ADMIN, lui, peut. La capacité est rendue à un rôle, pas détruite. ---
     assert_eq!(view_update(State(st.clone()), Extension(admin.clone()), Path(vue), Json(json!({ "name": "SOC (admin)" }))).await.status(), StatusCode::NO_CONTENT, "l'admin renomme la vue semée");

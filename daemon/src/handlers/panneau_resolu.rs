@@ -313,7 +313,9 @@ impl DefinitionExecutee {
 // dans un contenant commun n'est servi qu'à qui a l'autorité dessus (`dash_get`, `panel_access`, la
 // capture). Le refus rend la RÈGLE explicite au moment du geste, au lieu de laisser l'auteur croire
 // qu'il a partagé ce que les lecteurs ne verront pas — et il nomme qui doit agir quand l'élément
-// appartient à quelqu'un d'autre.
+// appartient à quelqu'un d'autre. Sauf pour une VUE (`P11.25-f`, vague CB) : un autre compte y range
+// son tableau privé sans la publier, et ce tableau ne retient plus le partage ni n'est nommé à qui ne
+// peut pas le lire (`d_une_vue`) ; seuls les tableaux de l'appelant (l'administrateur : tous) retiennent.
 // =====================================================================================
 
 /// L'élément qui retient un partage : son genre (pour la phrase), son identifiant, son nom, son
@@ -354,23 +356,37 @@ impl ElementMoinsVisible {
     /// d'une ligne absente (élément retiré entre les deux énoncés) est aussi un `Err` : l'élément ne
     /// peut pas être nommé, et le refus réessayable est la seule issue qui ne publie pas sur un doute.
     fn premier(conn: &Connection, sql_compte: &str, sql_premier: &str, id: i64, genre: &'static str) -> rusqlite::Result<Option<Self>> {
-        let retenus: i64 = conn.query_row(sql_compte, params![id], |r| r.get(0))?;
+        Self::premier_lie(conn, sql_compte, sql_premier, params![id], genre)
+    }
+
+    /// `premier` aux paramètres liés libres (les mêmes pour les deux énoncés) : la porte d'une vue lie aussi l'appelant.
+    fn premier_lie<P: rusqlite::Params + Copy>(conn: &Connection, sql_compte: &str, sql_premier: &str, p: P, genre: &'static str) -> rusqlite::Result<Option<Self>> {
+        let retenus: i64 = conn.query_row(sql_compte, p, |r| r.get(0))?;
         if retenus == 0 {
             return Ok(None);
         }
-        conn.query_row(sql_premier, params![id], |r| {
+        conn.query_row(sql_premier, p, |r| {
             Ok(Self { genre, id: r.get(0)?, nom: r.get(1)?, proprietaire: r.get(2)?, retenus })
         })
         .map(Some)
     }
 
-    /// Une VUE porte des tableaux de bord (`dashboard.view_id`) : le premier non commun retient.
-    pub(crate) fn d_une_vue(conn: &Connection, view_id: i64) -> rusqlite::Result<Option<Self>> {
-        Self::premier(
+    /// Une VUE porte des tableaux de bord (`dashboard.view_id`) : le premier non commun retient — parmi ceux que
+    /// l'APPELANT pourrait partager lui-même. `P11.25-f` (vague CB) : la vue CLASSE, elle ne publie pas ; un autre compte
+    /// peut donc ranger son tableau privé dans la vue de l'appelant. Avant, ce tableau retenait le partage de la vue
+    /// et le 409 le nommait (nom, numéro, propriétaire) à qui ne peut ni le lire ni le retirer : la vue restait bloquée.
+    /// Seuls les tableaux sur lesquels l'appelant a l'autorité de propriétaire (`autorite_de_proprietaire` : les siens,
+    /// nom non vide ; l'administrateur : tous) retiennent, sont nommés et entrent dans le compte ; un privé d'autrui
+    /// reste invisible aux lecteurs de la vue partagée, parce que chaque lecture d'une vue filtre par lecteur.
+    pub(crate) fn d_une_vue(conn: &Connection, view_id: i64, au: &AuthUser) -> rusqlite::Result<Option<Self>> {
+        let adm = if au.is_admin() { "admin" } else { "" };
+        Self::premier_lie(
             conn,
-            "SELECT COUNT(*) FROM dashboard WHERE view_id=?1 AND COALESCE(visibility,'shared')<>'shared'",
-            "SELECT id,name,COALESCE(owner,'') FROM dashboard WHERE view_id=?1 AND COALESCE(visibility,'shared')<>'shared' ORDER BY id LIMIT 1",
-            view_id,
+            "SELECT COUNT(*) FROM dashboard WHERE view_id=?1 AND COALESCE(visibility,'shared')<>'shared' \
+             AND (?2='admin' OR (?3<>'' AND owner=?3))",
+            "SELECT id,name,COALESCE(owner,'') FROM dashboard WHERE view_id=?1 AND COALESCE(visibility,'shared')<>'shared' \
+             AND (?2='admin' OR (?3<>'' AND owner=?3)) ORDER BY id LIMIT 1",
+            params![view_id, adm, au.name],
             "le tableau de bord",
         )
     }

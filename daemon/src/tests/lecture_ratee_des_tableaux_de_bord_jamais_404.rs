@@ -288,7 +288,7 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
 
     /// CE QU'IL TIENT (suppression d'une vue) : absent, `404` sans corps ; propriétaire illisible, `503` nommé
     /// `CAUSE_VUE_NON_SUPPRIMEE_NON_LUE` en entier (vague AF : il était NU) pour la propriétaire et l'admin — ni `403` ni suppression ; la vue reste, le tableau qui y est
-    /// rangé n'est pas délié. Contrôle : propriétaire relisible, un tiers reçoit `403`, la propriétaire supprime (`204`) et
+    /// rangé n'est pas délié. Contrôle : propriétaire relisible, un tiers reçoit `404` (vue privée qu'il ne voit pas, `P11.25-f` vague CB), la propriétaire supprime (`204`) et
     /// le tableau est délié.
     /// MUTATIONS : `AE4_VUE_LECTURE_EN_404`, `AE4_VUE_ABSENT_EN_503`, `AE4_VUE_LECTURE_FAIT_LE_GESTE`.
     #[tokio::test]
@@ -311,7 +311,10 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
 
         ae4_sql(&st, &format!("UPDATE view SET owner='alice' WHERE id={vue};"));
         let (statut, corps, _) = ae4_reponse(view_delete(State(st.clone()), Extension(bob.clone()), Path(vue)).await).await;
-        assert_eq!((statut, corps.as_str()), (403, ""), "contrôle : un tiers est refusé, sans corps");
+        // INVERSÉ (`P11.25-f`, vague CB) : la vue est PRIVÉE et à alice ; un tiers qui ne la voit pas reçoit la réponse
+        // d'une vue absente (404 sans corps), plus le 403 qui disait qu'elle existe.
+        assert_eq!((statut, corps.as_str()), (404, ""), "contrôle : un tiers est refusé comme devant une vue absente, sans corps");
+        assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM view WHERE id={vue}")), 1, "contrôle : la vue reste");
         assert_eq!(view_delete(State(st.clone()), Extension(alice.clone()), Path(vue)).await.status(), StatusCode::NO_CONTENT, "contrôle : la propriétaire supprime");
         assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM view WHERE id={vue}")), 0);
         assert_eq!(ae4_compte(&st, &format!("SELECT COALESCE(view_id,0) FROM dashboard WHERE id={did}")), 0, "contrôle : le tableau est délié");

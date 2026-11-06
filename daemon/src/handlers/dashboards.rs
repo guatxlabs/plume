@@ -388,6 +388,14 @@ pub(crate) const CAUSE_VUE_DU_TABLEAU_NON_LUE: &str = "VUE NON LUE : la base n'a
      n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et la vue n'est pas jugée. RIEN n'est écrit, rien du \
      corps n'est appliqué. Réessayez ; si le refus persiste, la table des vues est illisible.";
 
+/// `P11.25-f` — « L'APPELANT VOIT CETTE VUE », écrit UNE fois pour les gestes qui jugent une vue par son identifiant : le
+/// périmètre de `views_list` — administrateur (`?2` vaut `'admin'`, sinon `''`), vue commune (semée sans propriétaire
+/// comprise), ou vue de l'appelant (`?3`, son nom). Une vue privée sans propriétaire rend NULL pour un non-administrateur :
+/// « ne la voit pas » (`EXISTS … AND` le lit faux ; `COALESCE(…, 0)` là où la valeur est lue). Ses lecteurs : la vue où
+/// un tableau est rangé (`juger_la_vue_du_tableau`), les rattachements (`porte_des_rattachements`), la modification et la
+/// suppression d'une vue (`view_update`, `view_delete`, dans la MÊME lecture que le propriétaire et la visibilité).
+const LA_VUE_EST_VUE_PAR_L_APPELANT: &str = "(?2='admin' OR visibility='shared' OR owner=?3)";
+
 /// `P11.25-f` — LA VUE OÙ UN TABLEAU EST RANGÉ PAR `view_id` EST UNE VUE QUE L'APPELANT VOIT : le périmètre de
 /// `views_list` (administrateur, vue commune, ou vue de l'appelant). Sans ce jugement, `dash_create` et `dash_update`
 /// rangeaient un tableau dans la vue privée d'un autre compte (le déclencheur v125 l'y rattache), ou sous un identifiant
@@ -395,8 +403,8 @@ pub(crate) const CAUSE_VUE_DU_TABLEAU_NON_LUE: &str = "VUE NON LUE : la base n'a
 /// journal seul.
 fn juger_la_vue_du_tableau(conn: &Connection, au: &AuthUser, view_id: i64) -> Result<(), Response> {
     let adm = if au.is_admin() { "admin" } else { "" };
-    let sql = "SELECT EXISTS(SELECT 1 FROM view WHERE id=?1 AND (?2='admin' OR visibility='shared' OR owner=?3))";
-    match conn.query_row(sql, params![view_id, adm, au.name], |r| r.get::<_, i64>(0)) {
+    let sql = format!("SELECT EXISTS(SELECT 1 FROM view WHERE id=?1 AND {LA_VUE_EST_VUE_PAR_L_APPELANT})");
+    match conn.query_row(&sql, params![view_id, adm, au.name], |r| r.get::<_, i64>(0)) {
         Ok(0) => Err(err_json(StatusCode::NOT_FOUND, CAUSE_VUE_DU_TABLEAU_INCONNUE)),
         Ok(_) => Ok(()),
         Err(e) => {
@@ -2382,15 +2390,21 @@ pub(crate) async fn view_delete(State(st): State<AppState>, Extension(au): Exten
     // `P10.20-l` (vague AE) — même forme que `dash_delete` : lecture ratée, 503, rien n'est délié ni supprimé. `P10.20-l`
     // (vague AF) — la route rend une `Response` : le 503 porte `CAUSE_VUE_NON_SUPPRIMEE_NON_LUE` en corps, la cause du
     // moteur au journal seul. 403 et 404 restent sans corps.
-    match conn.query_row("SELECT COALESCE(owner,'') FROM view WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional() {
-        Ok(Some(owner)) => {
+    // `P11.25-f` (vague CB) — une vue que l'appelant ne VOIT pas (`LA_VUE_EST_VUE_PAR_L_APPELANT`, lu dans la même
+    // lecture que le propriétaire) est une vue ABSENTE pour lui : le 404 nu d'un identifiant qu'aucune vue ne porte, rien
+    // n'est écrit. Le 403 d'avant disait l'existence de la vue privée d'autrui ; il reste à qui voit la vue sans en être
+    // propriétaire (vue commune).
+    let adm = if au.is_admin() { "admin" } else { "" };
+    let sql = format!("SELECT COALESCE(owner,''),COALESCE({LA_VUE_EST_VUE_PAR_L_APPELANT},0) FROM view WHERE id=?1");
+    match conn.query_row(&sql, params![id, adm, au.name], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))).optional() {
+        Ok(Some((_, false))) | Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Some((owner, true))) => {
             // `P11.20-n` — SUPPRIMER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas
             // la propriété : l'objet SEMÉ (sans propriétaire) redevient admin-seul à la suppression.
             if !panneau_resolu::autorite_de_proprietaire(&owner, &au) {
                 return StatusCode::FORBIDDEN.into_response();
             }
         }
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, CAUSE_VUE_NON_SUPPRIMEE_NON_LUE);
             eprintln!("[dashboards] WARN vue #{id} NON lue pour la suppression, rien n'est délié ni supprimé ({}) : {e}", cid.unwrap_or_default());
@@ -2429,14 +2443,18 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
     // un élément moins visible — une cause FAUSSE pour une lecture qui n'a pas eu lieu, et une cause
     // fausse n'est pas un fait ; l'appelant en déduit qu'il doit partager un élément, alors qu'il doit
     // réessayer. Propriétaire et visibilité se lisent d'un coup, et la lecture non faite refuse.
+    // `P11.25-f` (vague CB) — et ce que l'appelant VOIT de la vue (`LA_VUE_EST_VUE_PAR_L_APPELANT`) dans la MÊME lecture :
+    // une vue qu'il ne voit pas est une vue ABSENTE pour lui — le 404 nu d'un identifiant qu'aucune vue ne porte, rien
+    // n'est écrit. Le 403 d'avant disait l'existence de la vue privée d'autrui ; il reste à qui voit la vue sans en être
+    // propriétaire (vue commune).
+    let adm = if au.is_admin() { "admin" } else { "" };
+    let sql = format!("SELECT COALESCE(owner,''),COALESCE(visibility,'private'),COALESCE({LA_VUE_EST_VUE_PAR_L_APPELANT},0) FROM view WHERE id=?1");
     let (owner, visibilite): (String, String) = match conn
-        .query_row("SELECT COALESCE(owner,''),COALESCE(visibility,'private') FROM view WHERE id=?1", params![id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
+        .query_row(&sql, params![id, adm, au.name], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)))
         .optional()
     {
-        Ok(Some(x)) => x,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Some((owner, visibilite, true))) => (owner, visibilite),
+        Ok(Some((_, _, false))) | Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return panneau_resolu::refus_de_visibilite_non_lue(),
     };
     // `P11.20-n` — MODIFIER EST UN GESTE DE PROPRIÉTAIRE, et une colonne vide n'octroie pas la
@@ -2449,7 +2467,7 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
     if panneau_resolu::est_un_geste_de_partage(&b, &visibilite) {
         // `P10.20-b` — les éléments qui retiendraient le partage NON LUS ne valent pas « rien ne
         // retient » : 503 nommé, avant toute écriture.
-        match element_moins_visible_d_une_vue(&conn, id) {
+        match element_moins_visible_d_une_vue(&conn, id, &au) {
             Ok(None) => {}
             Ok(Some(element)) => return panneau_resolu::refus_de_partage(&element, "la vue"),
             Err(_) => return panneau_resolu::refus_d_elements_retenant_non_lus(),
@@ -2505,11 +2523,17 @@ pub(crate) async fn view_update(State(st): State<AppState>, Extension(au): Exten
 /// que ce soit sa vue principale) la retient de même. Les deux lectures se complètent sans se recouvrir
 /// (`d.view_id IS NOT ?1`), et le compte servi dans la phrase est leur somme. Un tableau déclaré dans toutes les vues
 /// (`all_views`) n'est rattaché à aucune et ne retient pas. Une lecture non faite rend `Err` (refus réessayable).
-fn element_moins_visible_d_une_vue(conn: &Connection, view_id: i64) -> rusqlite::Result<Option<panneau_resolu::ElementMoinsVisible>> {
-    let principal = panneau_resolu::ElementMoinsVisible::d_une_vue(conn, view_id)?;
+/// `P11.25-f` (vague CB) — les deux lectures suivent la même règle : seul un tableau que l'APPELANT pourrait partager
+/// lui-même (le sien, nom non vide ; l'administrateur : tous) retient, est nommé et compté. Le privé qu'un autre compte a
+/// rangé dans la vue n'est ni nommé (le 409 servait son nom, son numéro et son propriétaire à qui ne peut pas le lire) ni
+/// compté, et ne bloque plus la vue : il reste invisible aux lecteurs de la vue partagée (`FILTRE_DES_TABLEAUX_DE_BORD`).
+fn element_moins_visible_d_une_vue(conn: &Connection, view_id: i64, au: &AuthUser) -> rusqlite::Result<Option<panneau_resolu::ElementMoinsVisible>> {
+    let principal = panneau_resolu::ElementMoinsVisible::d_une_vue(conn, view_id, au)?;
+    let adm = if au.is_admin() { "admin" } else { "" };
     let sql_compte = "SELECT COUNT(*) FROM dashboard d JOIN view_dashboard vd ON vd.dashboard_id=d.id \
-         WHERE vd.view_id=?1 AND d.view_id IS NOT ?1 AND COALESCE(d.visibility,'shared')<>'shared'";
-    let rattaches: i64 = conn.query_row(sql_compte, params![view_id], |r| r.get(0))?;
+         WHERE vd.view_id=?1 AND d.view_id IS NOT ?1 AND COALESCE(d.visibility,'shared')<>'shared' \
+         AND (?2='admin' OR (?3<>'' AND d.owner=?3))";
+    let rattaches: i64 = conn.query_row(sql_compte, params![view_id, adm, au.name], |r| r.get(0))?;
     match principal {
         Some(mut element) => {
             element.retenus += rattaches;
@@ -2519,8 +2543,9 @@ fn element_moins_visible_d_une_vue(conn: &Connection, view_id: i64) -> rusqlite:
         None => conn
             .query_row(
                 "SELECT d.id,d.name,COALESCE(d.owner,'') FROM dashboard d JOIN view_dashboard vd ON vd.dashboard_id=d.id \
-                 WHERE vd.view_id=?1 AND d.view_id IS NOT ?1 AND COALESCE(d.visibility,'shared')<>'shared' ORDER BY d.id LIMIT 1",
-                params![view_id],
+                 WHERE vd.view_id=?1 AND d.view_id IS NOT ?1 AND COALESCE(d.visibility,'shared')<>'shared' \
+                 AND (?2='admin' OR (?3<>'' AND d.owner=?3)) ORDER BY d.id LIMIT 1",
+                params![view_id, adm, au.name],
                 |r| {
                     Ok(panneau_resolu::ElementMoinsVisible {
                         genre: "le tableau de bord",
@@ -2597,7 +2622,7 @@ fn trop_de_rattachements(n: usize) -> bool {
 fn porte_des_rattachements(conn: &Connection, au: &AuthUser, view_id: i64) -> Result<(), Response> {
     let adm = if au.is_admin() { "admin" } else { "" };
     let lu = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM view WHERE id=?1 AND (?2='admin' OR visibility='shared' OR owner=?3))",
+        &format!("SELECT EXISTS(SELECT 1 FROM view WHERE id=?1 AND {LA_VUE_EST_VUE_PAR_L_APPELANT})"),
         params![view_id, adm, au.name],
         |r| r.get::<_, i64>(0),
     );

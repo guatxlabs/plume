@@ -5,8 +5,8 @@
 // LE DÉFAUT, MESURÉ PAR LA ROUTE SUR LA BASE 78c1c43c : `GET /api/dashboard/{id}` sur le tableau privé d'alice répondait
 // à bob `403 dashboard privé`, et `404 dashboard introuvable` sur un identifiant qu'aucun tableau ne porte : l'écart
 // disait l'existence du tableau privé d'autrui. Même écart sur chaque geste dont la porte est `dash_editable` (son
-// `Refusee` est rendu EXACTEMENT quand le tableau est privé à un autre compte : un tableau commun est modifiable par tout
-// lecteur) ou `lisible_par` : `POST`/`DELETE /api/dashboard/{id}`, `POST /api/panels` (par son `dashboard_id`),
+// `Refusee` est rendu EXACTEMENT quand l'appelant ne lit pas le tableau : privé à un autre compte, ou semé privé sans
+// propriétaire ; un tableau commun est modifiable par tout lecteur) ou `lisible_par` : `POST`/`DELETE /api/dashboard/{id}`, `POST /api/panels` (par son `dashboard_id`),
 // `POST`/`DELETE /api/panels/{id}`, `POST`/`DELETE /api/library-panels/{id}`, `POST`/`DELETE /api/playlists/{id}`,
 // `POST /api/dashboard-snapshots` (par son `dashboard_id`), et `DELETE /api/dashboard-snapshots/id/{id}` (un instantané
 // ne se lit par son numéro que par son auteur ou l'administrateur, le périmètre de `snapshots_list`).
@@ -14,7 +14,8 @@
 // CE QUE CES TÉMOINS TIENNENT, par le ROUTEUR réel (alice et bob éditeurs, carol lectrice, adm administrateur) :
 //   * pour CHAQUE site changé (table `cb2_sites`, plancher compté dans la SOURCE des deux gestionnaires, jamais écrit
 //     en littéral) : bob et carol sur l'objet privé d'alice reçoivent la réponse d'un identifiant absent de la MÊME
-//     route, à l'octet (ligne de statut, en-têtes hors `date`, corps), et la base relue est inchangée ;
+//     route, à l'octet (ligne de statut, en-têtes hors `date`, corps), et la base relue est inchangée ; de même sur un
+//     jeu SEMÉ PRIVÉ (tableau sans propriétaire rendu privé, instantané sans auteur), que seul l'administrateur lit ;
 //   * alice (propriétaire) et l'administrateur : le comportement d'avant (200 ou 204, et le geste porte) ;
 //   * objet COMMUN d'alice, bob : le comportement d'avant (le geste porte ; `DELETE /api/dashboard/{id}` garde son 403) ;
 //   * les 403 GARDÉS ne dépendent pas d'un objet illisible : rôle (carol, sur un objet privé comme sur un absent), SQL
@@ -242,16 +243,20 @@ mod objet_de_tableau_de_bord_illisible_repond_comme_un_absent {
     // -------------------------------------------------------------------------------------
 
     /// CE QU'IL TIENT, par la route, pour CHAQUE site de `cb2_sites` (plancher : `cb2_inventaire`, compté dans la source) :
-    ///   * bob (éditeur) et carol (lectrice) sur l'objet PRIVÉ d'alice : la réponse brute (statut, en-têtes hors `date`,
+    ///   * bob (éditeur) et carol (lectrice) sur l'objet PRIVÉ d'alice, puis sur le jeu SEMÉ PRIVÉ (tableau sans
+///     propriétaire rendu privé, ce que permet `dash_update` à l'administrateur ; instantané sans auteur) : la réponse brute (statut, en-têtes hors `date`,
     ///     corps) est celle de l'identifiant absent de la même route, envoyée par le même compte ; la base relue est
     ///     inchangée après chaque envoi ; carol reçoit le 403 de rôle sur chaque geste d'écriture, privé comme absent ;
-    ///   * alice sur son jeu privé, l'administrateur sur un autre jeu privé d'alice : le statut d'avant, et le geste porte ;
+    ///   * alice sur son jeu privé, l'administrateur sur un autre jeu privé d'alice puis sur un autre jeu semé privé : le
+///     statut d'avant, et le geste porte ;
     ///   * bob sur le jeu COMMUN d'alice : le statut d'avant (403 gardé sur la suppression du tableau).
     /// MUTATIONS : `CB2_DU_403`, `CB2_DG_403`, `CB2_DD_403`, `CB2_PC_403`, `CB2_PU_403`, `CB2_PD_403`, `CB2_ERGO_403`,
     /// `CB2_SC_403`, `CB2_SD_403` (le 403 rétabli, site par site), `CB2_PU_ABSENCE_DU_TABLEAU` (le panneau d'un tableau
     /// privé d'autrui servi sous la phrase du tableau absent), `CB2_DD_COMMUNE_404` (le tableau commun d'autrui servi
     /// 404 à la suppression), `CB2_DG_ADMIN_404`, `CB2_DG_PROPRIETAIRE_404`, `CB2_SD_SANS_ADMIN` (l'administrateur perd
-    /// l'instantané d'alice).
+    /// l'instantané d'alice), `CB2_DG_SEME` (le tableau semé privé servi à tout lecteur), `CB2_DD_SEME_403` (le tableau
+/// semé privé refusé 403 à la suppression), `CB2_SC_SEME` (le tableau semé privé capturé), `CB2_SD_SANS_AUTEUR`
+/// (l'instantané sans auteur révocable par tout éditeur).
     #[tokio::test]
     async fn cb2_chaque_site_sert_l_absent_sur_l_objet_prive_d_autrui_et_garde_le_reste() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // les gestes lisent l'environnement
@@ -259,28 +264,38 @@ mod objet_de_tableau_de_bord_illisible_repond_comme_un_absent {
         let prive = cb2_jeu(&st, "privé d'alice", Some("alice"), "private");
         let pour_l_admin = cb2_jeu(&st, "privé d'alice pour l'admin", Some("alice"), "private");
         let commun = cb2_jeu(&st, "commun d'alice", Some("alice"), "shared");
+        let seme_prive = cb2_jeu(&st, "semé privé", None, "private");
+        let seme_prive_pour_l_admin = cb2_jeu(&st, "semé privé pour l'admin", None, "private");
+        assert_eq!(
+            cb2_compte(&st, &format!("SELECT COUNT(*) FROM dashboard_snapshot WHERE id IN ({},{}) AND created_by IS NULL", seme_prive.instantane, seme_prive_pour_l_admin.instantane)),
+            2,
+            "fixture : les instantanés du jeu semé n'ont pas d'auteur"
+        );
         let addr = router_serve(st.clone()).await;
         let sites = cb2_sites();
         let inventaire = cb2_inventaire();
         assert!(inventaire >= 1, "INSTRUMENT : aucun site compté dans la source");
         assert!(sites.len() >= inventaire, "plancher : {} site(s) dans la table pour {inventaire} compté(s) dans la source", sites.len());
 
-        // (a) bob et carol sur le privé d'alice : la réponse de l'absent, rien n'est écrit.
-        for site in &sites {
-            for qui in ["bob", "carol"] {
-                let avant = cb2_empreinte(&st);
-                let (_, absent) = cb2_envoi(addr, qui, site.methode, &(site.chemin)(&CB2_JEU_ABSENT), &(site.corps)(&CB2_JEU_ABSENT)).await;
-                assert!(absent.starts_with("HTTP/1.1 4"), "{} ({qui}) : référence, l'identifiant absent est refusé : {absent}", site.nom);
-                let (_, sur_le_prive) = cb2_envoi(addr, qui, site.methode, &(site.chemin)(&prive), &(site.corps)(&prive)).await;
-                assert_eq!(cb2_sans_date(&sur_le_prive), cb2_sans_date(&absent), "{} ({qui}) : l'objet privé d'alice répond comme un identifiant absent", site.nom);
-                assert_eq!(cb2_empreinte(&st), avant, "{} ({qui}) : rien n'est écrit", site.nom);
-                if qui == "carol" && site.methode != "GET" {
-                    assert!(sur_le_prive.starts_with("HTTP/1.1 403"), "{} (carol) : le refus de rôle, privé comme absent : {sur_le_prive}", site.nom);
+        // (a) bob et carol sur le privé d'alice, puis sur le jeu semé privé : la réponse de l'absent, rien n'est écrit.
+        for (quel, jeu) in [("l'objet privé d'alice", prive), ("l'objet semé privé", seme_prive)] {
+            for site in &sites {
+                for qui in ["bob", "carol"] {
+                    let avant = cb2_empreinte(&st);
+                    let (_, absent) = cb2_envoi(addr, qui, site.methode, &(site.chemin)(&CB2_JEU_ABSENT), &(site.corps)(&CB2_JEU_ABSENT)).await;
+                    assert!(absent.starts_with("HTTP/1.1 4"), "{} ({qui}) : référence, l'identifiant absent est refusé : {absent}", site.nom);
+                    let (_, sur_le_cache) = cb2_envoi(addr, qui, site.methode, &(site.chemin)(&jeu), &(site.corps)(&jeu)).await;
+                    assert_eq!(cb2_sans_date(&sur_le_cache), cb2_sans_date(&absent), "{} ({qui}) : {quel} répond comme un identifiant absent", site.nom);
+                    assert_eq!(cb2_empreinte(&st), avant, "{} ({qui}, {quel}) : rien n'est écrit", site.nom);
+                    if qui == "carol" && site.methode != "GET" {
+                        assert!(sur_le_cache.starts_with("HTTP/1.1 403"), "{} (carol, {quel}) : le refus de rôle, caché comme absent : {sur_le_cache}", site.nom);
+                    }
                 }
             }
         }
-        // (b) la propriétaire, puis l'administrateur : le comportement d'avant, et chaque geste porte.
-        for (qui, jeu) in [("alice", prive), ("adm", pour_l_admin)] {
+        // (b) la propriétaire, puis l'administrateur (privé d'alice, puis semé privé) : le comportement d'avant, et chaque
+        // geste porte.
+        for (qui, jeu) in [("alice", prive), ("adm", pour_l_admin), ("adm", seme_prive_pour_l_admin)] {
             for site in &sites {
                 let avant = cb2_empreinte(&st);
                 let (code, t) = cb2_envoi(addr, qui, site.methode, &(site.chemin)(&jeu), &(site.corps)(&jeu)).await;

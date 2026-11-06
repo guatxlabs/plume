@@ -26,8 +26,9 @@ use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apre
 // `CAUSE_DROIT_D_EDITION_NON_LU`, phrase fixe déjà servie par `dash_ergonomics` ; la cause du moteur au journal seul,
 // avec l'identifiant interne du tableau et l'identifiant de corrélation, jamais un nom de compte).
 //
-// `P11.25-f` (vague CB) — `Refusee` est rendu EXACTEMENT quand le tableau est privé à un autre compte : un tableau
-// commun est modifiable par tout lecteur et l'administrateur ne lit pas la porte (`lisible_par`, panneau_resolu.rs).
+// `P11.25-f` (vague CB) — `Refusee` est rendu EXACTEMENT quand l'appelant ne lit pas le tableau : privé à un autre
+// compte, ou semé privé (sans propriétaire, que seul l'administrateur lit) ; un tableau commun est modifiable par tout
+// lecteur et l'administrateur ne lit pas la porte (`lisible_par`, panneau_resolu.rs).
 // Un refus de droit établi est donc un tableau que l'appelant ne LIT pas, et chaque appelant le sert comme son
 // identifiant absent — même statut, même corps — et n'écrit rien : un 403 disait l'existence du tableau privé d'autrui.
 pub(crate) enum PorteDuTableau {

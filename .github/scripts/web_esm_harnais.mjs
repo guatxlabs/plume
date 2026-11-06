@@ -14075,8 +14075,14 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   instrument100(corpsPanelUpdate100.length > 800, "`panel_update` n'est plus lisible dans daemon/src/handlers/dashboards.rs");
   const mIntrouvable100 = corpsPanelUpdate100.match(/return not_found\("([^"]+)"\)/);
   const refusInterdits100 = [...corpsPanelUpdate100.matchAll(/return forbidden\("([^"]+)"\)/g)].map((m) => m[1]);
-  instrument100(!!mIntrouvable100 && refusInterdits100.length === 2,
-    `les trois refus MOULÉS de \`panel_update\` ne sont plus là (daemon/src/handlers/dashboards.rs) : ${JSON.stringify([mIntrouvable100 && mIntrouvable100[1], refusInterdits100])}`);
+  // `P11.25-f` (vague CB) — la porte d'édition refusée (tableau privé d'un autre compte) ne sert plus de 403
+  // « dashboard non modifiable » : elle rend la réponse de l'identifiant de panneau ABSENT, phrase comprise. Il reste
+  // deux refus moulés par `err_json` dans `panel_update` : ce 404 et le 403 du SQL brut.
+  instrument100(!!mIntrouvable100 && refusInterdits100.length === 1,
+    `les deux refus MOULÉS de \`panel_update\` ne sont plus là (daemon/src/handlers/dashboards.rs) : ${JSON.stringify([mIntrouvable100 && mIntrouvable100[1], refusInterdits100])}`);
+  const mPorteRefusee100 = corpsPanelUpdate100.match(/PorteDuTableau::Refusee => return not_found\("([^"]+)"\)/);
+  instrument100(!!mPorteRefusee100 && !!mIntrouvable100 && mPorteRefusee100[1] === mIntrouvable100[1],
+    `la porte d'édition refusée de \`panel_update\` ne rend plus la phrase du panneau absent (daemon/src/handlers/dashboards.rs) : ${JSON.stringify(mPorteRefusee100 && mPorteRefusee100[1])} — une phrase à part dirait que le panneau existe`);
   instrument100(/Err\(\(code, msg\)\) => return \(code, msg\)\.into_response\(\)/.test(corpsPanelUpdate100),
     "le quatrième refus de `panel_update` ne reverse plus le couple (code, phrase) de `projetee` (daemon/src/handlers/dashboards.rs) : la cause de bibliothèque non lue serait de nouveau JETÉE sur le sol");
   // LE MOULE : `not_found`/`forbidden` passent par `err_json`, qui rend du JSON `{"error": …}` ; le couple
@@ -14087,8 +14093,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     && /\(code, Json\(json!\(\{ "error": msg \}\)\)\)\.into_response\(\)/.test(srcPrincipal100),
     "`forbidden`/`not_found` ne moulent plus le refus en JSON `{\"error\": …}` (daemon/src/main.rs) : la RÉFUTATION jugée ici — deux moules dans un même handler — n'aurait plus d'objet");
   const PHRASE_INTROUVABLE100 = mIntrouvable100[1];
-  const PHRASE_NON_MODIFIABLE100 = refusInterdits100[0];
-  const PHRASE_SQL_BRUT100 = refusInterdits100[1];
+  const PHRASE_SQL_BRUT100 = refusInterdits100[0];
   const mInaccessible100 = srcPanneau100.match(/const INACCESSIBLE: \(StatusCode, &str\) = \(StatusCode::FORBIDDEN, "([^"]+)"\)/);
   instrument100(!!mInaccessible100,
     "`projetee` ne rend plus « définition de bibliothèque inaccessible » (daemon/src/handlers/panneau_resolu.rs) : le refus en TEXTE BRUT jugé plus bas n'existe plus");
@@ -14134,11 +14139,11 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   // ── (0.f) LE LECTEUR DE PHRASE, JUGÉ SUR LES DEUX MOULES DU MÊME HANDLER ───────────────────────
   const phrase100 = modNoyau100.phraseDuRefusDuDemon;
   exiger(typeof phrase100 === "function", "(100-instrument) `phraseDuRefusDuDemon` n'est plus exporté par web/core.js : les deux moules de refus n'ont plus de lecteur unique");
-  exiger(phrase100({ message: '403 {"error":"' + PHRASE_NON_MODIFIABLE100 + '"}', causeDuDemon: PHRASE_NON_MODIFIABLE100 }) === PHRASE_NON_MODIFIABLE100,
+  exiger(phrase100({ message: '403 {"error":"' + PHRASE_SQL_BRUT100 + '"}', causeDuDemon: PHRASE_SQL_BRUT100 }) === PHRASE_SQL_BRUT100,
     "(100-0f) le moule JSON d'`err_json` ne rend pas la phrase seule : la console peindrait de la syntaxe");
   exiger(phrase100({ message: "403 " + PHRASE_INACCESSIBLE100 }) === PHRASE_INACCESSIBLE100,
     `(100-0f) le moule TEXTE BRUT du couple (code, msg) ne rend pas la phrase seule : « ${phrase100({ message: "403 " + PHRASE_INACCESSIBLE100 })} » — c'est le refus que la console peignait « 403 » nu`);
-  exiger(!/[{}]/.test(phrase100({ message: '403 {"error":"' + PHRASE_NON_MODIFIABLE100 + '"}', causeDuDemon: PHRASE_NON_MODIFIABLE100 })),
+  exiger(!/[{}]/.test(phrase100({ message: '403 {"error":"' + PHRASE_SQL_BRUT100 + '"}', causeDuDemon: PHRASE_SQL_BRUT100 })),
     "(100-0f) une accolade survit dans la phrase rendue : le corps JSON arriverait tel quel à l'écran");
   exiger(phrase100({ message: '500 {"nimporte":1}' }) === '500 {"nimporte":1}',
     "(100-0f-négatif) un corps JSON que le démon ne NOMME pas est décapité de son code : le lecteur inventerait une phrase là où il n'y en a pas");
@@ -14154,8 +14159,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     `(100-0g-négatif) le discriminant reconnaît AUSSI « définition de bibliothèque NON LUE » : deux lectures DIFFÉRENTES seraient peintes comme la même, et le geste de partage serait retenu par une panne qui ne le concerne pas`);
   exiger(!visNonLue100({ message: "409 " + PHRASE_PARTAGE_REFUSE100 }),
     "(100-0g-négatif) le discriminant reconnaît AUSSI le refus de partage de « P11.20-m » : un ÉTAT de l'objet serait peint comme une lecture manquée");
-  exiger(!visNonLue100({ causeDuDemon: PHRASE_NON_MODIFIABLE100 }) && !visNonLue100({ causeDuDemon: PHRASE_SQL_BRUT100 }) && !visNonLue100({ causeDuDemon: PHRASE_INTROUVABLE100 }),
-    "(100-0g-négatif) le discriminant reconnaît un des trois AUTRES refus de `panel_update` : le sélecteur de visibilité serait retenu par un droit manquant");
+  exiger(!visNonLue100({ causeDuDemon: PHRASE_SQL_BRUT100 }) && !visNonLue100({ causeDuDemon: PHRASE_INTROUVABLE100 }),
+    "(100-0g-négatif) le discriminant reconnaît un des deux AUTRES refus moulés de `panel_update` : le sélecteur de visibilité serait retenu par un droit manquant");
 
   // ── LE SIMULACRE DE TRANSPORT. L'appariement est EXACT sur « <MÉTHODE> <chemin> » : un 200 sur la
   //    LECTURE et un 503 sur l'ÉCRITURE de la même route sont deux cas distincts, et une correspondance
@@ -14248,9 +14253,9 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       `(100a2) le quatre cent quatre de « panel_update » n'arrive pas avec sa phrase, ou se peint comme une lecture manquée : « ${r2100.texte.slice(0, 300)} »`);
     exiger(formPanneau100.querySelector(".pe-vis").getAttribute("aria-disabled") === null,
       "(100a2-négatif) le sélecteur de visibilité reste inerte sous un refus qui ne dit RIEN de la lecture : une marque posée toujours ne mesure rien");
-    const r3100 = await envoyer100(formPanneau100, { statut: 403, corps: { error: PHRASE_NON_MODIFIABLE100 } });
-    exiger(r3100.texte.includes(PHRASE_NON_MODIFIABLE100) && !/[{}]/.test(r3100.texte),
-      `(100a2) le quatre cent trois « dashboard non modifiable » n'arrive pas entier : « ${r3100.texte.slice(0, 300)} »`);
+    const r3100 = await envoyer100(formPanneau100, { statut: 403, corps: { error: PHRASE_SQL_BRUT100 } });
+    exiger(r3100.texte.includes(PHRASE_SQL_BRUT100) && !/[{}]/.test(r3100.texte),
+      `(100a2) le quatre cent trois du SQL brut n'arrive pas entier : « ${r3100.texte.slice(0, 300)} »`);
     const r4100 = await envoyer100(formPanneau100, { statut: 403, corps: PHRASE_INACCESSIBLE100 });
     exiger(r4100.texte.includes(PHRASE_INACCESSIBLE100) && !/\b403\b/.test(r4100.texte),
       `(100a2) LE REFUS EN TEXTE BRUT — celui que la console peignait « 403 » nu — n'arrive toujours pas avec sa phrase : « ${r4100.texte.slice(0, 300)} »`);
@@ -23307,6 +23312,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 
   // ── (0) L'INSTRUMENT : CE QUE LE DÉMON SERT ───────────────────────────────────────────────────────────────────
   const AUTH_RS119 = lireLeDemon119("auth.rs"), CAS_RS119 = lireLeDemon119("handlers/cases.rs"), MODELES_RS119 = lireLeDemon119("handlers/saved_queries.rs");
+  const TABLEAUX_RS119 = lireLeDemon119("handlers/dashboards.rs");
   const CONNECTEURS_RS119 = lireLeDemon119("handlers/connectors/mod.rs"), DETECTION_RS119 = lireLeDemon119("handlers/detection.rs"), IDP_RS119 = lireLeDemon119("handlers/idp.rs");
   instrument119(/return \(StatusCode::UNAUTHORIZED, "auth requise"\)\.into_response\(\);/.test(AUTH_RS119) && /err_json\(StatusCode::UNAUTHORIZED, "code MFA invalide"\)/.test(IDP_RS119),
     "`auth_guard` ne sert plus son quatre cent un TEXTE « auth requise », ou `mfa_disable` plus son quatre cent un NOMMÉ : les deux refus joués ici ne seraient plus ceux du démon");
@@ -23339,6 +23345,10 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     "le bulletin ne sert plus ses COMMIT refusés nommés (`CAUSE_BULLETIN_NON_PUBLIE`, `CAUSE_BULLETIN_NON_EFFACE`) ou son quatre cents de forme");
   const LIMITE_DES_MODELES119 = "limite de requêtes sauvegardées atteinte (max 200)", MODELE_INTROUVABLE119 = "requête sauvegardée introuvable";
   instrument119(MODELES_RS119.includes(`"${LIMITE_DES_MODELES119}"`) && MODELES_RS119.includes(`"${MODELE_INTROUVABLE119}"`), "« mes modèles » ne sert plus les deux refus nommés joués ici");
+  // `P11.25-f` (vague CB) — `panel_create` ne sert plus de 403 « dashboard non modifiable » : un tableau que l'appelant
+  // ne lit pas reçoit le 404 en texte du tableau absent. Le site « panneau_creation » joue cette réponse-là.
+  instrument119(/PorteDuTableau::Refusee \| PorteDuTableau::Absent => return \(StatusCode::NOT_FOUND, "dashboard introuvable"\)\.into_response\(\)/.test(TABLEAUX_RS119)
+    && !/"dashboard non modifiable"/.test(TABLEAUX_RS119), "`panel_create` ne sert plus le 404 en texte « dashboard introuvable » à un tableau illisible, ou sert encore « dashboard non modifiable » (daemon/src/handlers/dashboards.rs)");
   instrument119(/return forbidden\("réservé admin"\);/.test(CONNECTEURS_RS119) && /return not_found\("connecteur introuvable"\)/.test(CONNECTEURS_RS119), "`connector_test` ne sert plus son refus du rôle ni son connecteur introuvable");
   const REGEX_INVALIDE119 = "regex invalide : erreur d'essai-119";
   // `P10.20-j` — ces deux refus étaient servis en deux cents `{error}` ; la regex invalide est un QUATRE CENTS nommé, le SQL
@@ -23474,7 +23484,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       geste: confirmerPuis119({}, (L) => L.modeles.editSaved({ id: 3, name: "m-119", soql: "search x" })),
       nettoyer: () => { const ov = qs119(".soql-tpl-ov"); if (ov) ov.remove(); } }),
     // ─ panneaux (deux) : les refus en TEXTE de `panel_create` ─
-    site119({ site: "panneau_creation", fichier: "dashboards.js", route: "POST /api/panels", reponse: refusTexte119(403, "dashboard non modifiable"), nature: "refus_nomme", cause: "dashboard non modifiable", puits: PUITS_TABLEAUX119,
+    site119({ site: "panneau_creation", fichier: "dashboards.js", route: "POST /api/panels", reponse: refusTexte119(404, "dashboard introuvable"), nature: "refus_nomme", cause: "dashboard introuvable", puits: PUITS_TABLEAUX119,
       geste: confirmerPuis119({ title: "P-119", query: "search x | stats count" }, (L) => { const tuile = L.tableaux.renderDashboard(TDB119); return cliquer119(tuile, parTitre119("Ajouter un panneau"), "Ajouter un panneau"); }) }),
     site119({ site: "panneau_creation_bibliotheque", fichier: "dashboards.js", route: "POST /api/panels", reponse: refusTexte119(403, "SQL brut réservé à l'administrateur (utilisez GXQL)"), nature: "refus_nomme", cause: "SQL brut réservé à l'administrateur (utilisez GXQL)", puits: PUITS_TABLEAUX119,
       lectures: { "GET /api/library-panels": { corps: { library_panels: [{ id: 3, name: "lib-119", viz: "table" }] } } },

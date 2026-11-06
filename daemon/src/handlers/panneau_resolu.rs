@@ -377,7 +377,8 @@ impl ElementMoinsVisible {
     /// et le 409 le nommait (nom, numéro, propriétaire) à qui ne peut ni le lire ni le retirer : la vue restait bloquée.
     /// Seuls les tableaux sur lesquels l'appelant a l'autorité de propriétaire (`autorite_de_proprietaire` : les siens,
     /// nom non vide ; l'administrateur : tous) retiennent, sont nommés et entrent dans le compte ; un privé d'autrui
-    /// reste invisible aux lecteurs de la vue partagée, parce que chaque lecture d'une vue filtre par lecteur.
+    /// reste invisible aux lecteurs de la vue partagée : la liste des tableaux d'une vue et le compte `dashboards`
+    /// de `GET /api/views` filtrent par lecteur (`FILTRE_DES_TABLEAUX_DE_BORD`).
     pub(crate) fn d_une_vue(conn: &Connection, view_id: i64, au: &AuthUser) -> rusqlite::Result<Option<Self>> {
         let adm = if au.is_admin() { "admin" } else { "" };
         Self::premier_lie(

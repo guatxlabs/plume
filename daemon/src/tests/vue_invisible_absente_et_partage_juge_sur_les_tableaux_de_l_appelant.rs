@@ -30,8 +30,8 @@
 //     gestionnaire avant le 403 et avant le 404 (autorisateur qui compte).
 //
 // CE QU'ILS NE TIENNENT PAS : ce que la console peint de ces réponses (aucune face console ici ; web/ ne distingue pas
-// 403 et 404 sur ces deux routes) ; le compte `dashboards` de `GET /api/views`, qui compte encore les rattachements
-// privés d'autrui (un nombre, jamais un nom ni un identifiant ; hors de ce lot).
+// 403 et 404 sur ces deux routes). Le compte `dashboards` de `GET /api/views` ne compte que les rattachements que le
+// lecteur lit : témoigné ci-dessous (carol 1, bob 2, sur la même vue).
 //
 // MUTATIONS (`VERIF_MUT=<nom>`, posées sous `cfg!(test)` le temps de la vérification puis retirées) : chaque témoin
 // nomme les siennes.
@@ -212,6 +212,14 @@ mod vue_invisible_absente_et_partage_juge_sur_les_tableaux_de_l_appelant {
         // bob voit toujours le sien
         let (code, t) = cb1_envoi(addr, "bob", "GET", &format!("/api/dashboards?view={va}"), "").await;
         assert_eq!((code, cb1_ids(&cb1_json(&t))), (200, vec![commun, secret]), "bob voit son privé dans la vue : {t}");
+        // le compte de la liste des vues suit le lecteur : carol 1 (le commun), bob 2 (le commun et le sien)
+        for (lecteur, attendu) in [("carol", 1), ("bob", 2)] {
+            let (code, t) = cb1_envoi(addr, lecteur, "GET", "/api/views", "").await;
+            assert_eq!(code, 200, "{t}");
+            let v = cb1_json(&t);
+            let compte = v["views"].as_array().and_then(|vs| vs.iter().find(|x| x["id"] == json!(va))).map(|x| x["dashboards"].clone());
+            assert_eq!(compte, Some(json!(attendu)), "{lecteur} : le compte de la vue ne dit que ce qu'il lit : {t}");
+        }
     }
 
     /// CE QU'IL TIENT : le privé de bob rangé comme VUE PRINCIPALE de la vue d'alice ne retient pas son partage (204), et

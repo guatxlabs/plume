@@ -2264,16 +2264,22 @@ pub(crate) async fn views_list(State(st): State<AppState>, Extension(au): Extens
     // `me` et `role` restant servis parce qu'ils ne DÉRIVENT PAS de cette lecture (ils viennent de
     // l'identité de l'appelant, et les taire priverait la console de sa garde de partage).
     // `P11.25-f` — `dashboards` compte les RATTACHEMENTS de la vue (`view_dashboard`, qui fait foi depuis v125), pas
-    // les tableaux déclarés dans toutes les vues (`all_views`), qui ne sont rattachés à aucune.
-    let sql_des_vues = "SELECT id,name,COALESCE(owner,''),visibility,
-                (SELECT COUNT(*) FROM view_dashboard vd WHERE vd.view_id=view.id)
+    // les tableaux déclarés dans toutes les vues (`all_views`), qui ne sont rattachés à aucune. Vague CB : seuls ceux
+    // que l'APPELANT lit (`FILTRE_DES_TABLEAUX_DE_BORD`, le filtre de la liste des tableaux) — un autre compte peut
+    // ranger son tableau privé dans une vue commune, et le compte en aurait dit l'existence à chaque lecteur. `?3` vaut
+    // `tous` : le filtre de vue de la constante ne joue pas, seule la visibilité du tableau compte.
+    let sql_des_vues = format!(
+        "SELECT id,name,COALESCE(owner,''),visibility,
+                (SELECT COUNT(*) FROM view_dashboard vd JOIN dashboard d ON d.id=vd.dashboard_id
+                  WHERE vd.view_id=view.id AND {FILTRE_DES_TABLEAUX_DE_BORD})
          FROM view
          WHERE ?1='admin' OR visibility='shared' OR owner=?2
-         ORDER BY id";
+         ORDER BY id"
+    );
     let lues: rusqlite::Result<Vec<Value>> = conn
-        .prepare(sql_des_vues)
+        .prepare(&sql_des_vues)
         .and_then(|mut stmt| {
-            stmt.query_map(params![adm, au.name], |r| {
+            stmt.query_map(params![adm, au.name, "tous", 0_i64], |r| {
                 Ok(json!({
                     "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
                     "owner": r.get::<_, String>(2)?, "visibility": r.get::<_, String>(3)?,

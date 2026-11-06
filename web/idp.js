@@ -259,7 +259,7 @@ export async function loadMfa() {
   // `P10.23-n` — UNE GRAINE QUE LA CONNEXION NE DEMANDE JAMAIS N'EST PAS PEINTE « ACTIVE ». Le démon dit, en champs
   // additifs de `/api/mfa/status`, si ce compte peut enrôler (`enrolable`, `cause_non_enrolable` : la MÊME phrase
   // que le refus de `mfa_enroll`) et si sa graine est INERTE (`graine_inerte` : compte sans mot de passe local,
-  // fédéré ou SSO par en-têtes, dont la connexion ne lit jamais `user_mfa`). Décision d'Hugo du 2026-09-29 : le
+  // fédéré ou SSO par en-têtes, dont la connexion ne lit jamais `user_mfa`). Décision de l'exploitant du 2026-09-29 : le
   // DIRE, ne rien effacer — aucun bouton n'est offert ici (ni désactivation, ni enrôlement promis puis refusé).
   if (st && st.graine_inerte === true) {
     status.textContent = "Graine TOTP posée mais INERTE : ce compte n'a pas de mot de passe local (fédéré ou SSO), sa connexion ne demande jamais ce code. Son second facteur est celui de son fournisseur d'identité. La graine est laissée en place.";

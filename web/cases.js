@@ -549,7 +549,7 @@ const MOTS_DES_SUCCES_DE_DOSSIER = {
 // affirmée sur une lecture qui n'a pas eu lieu — et, au rattachement, le seul choix offert était de CRÉER un dossier.
 // `P10.29-c` — LES LIGNES, INFOBULLES ET CONFIRMATIONS COMPOSÉES D'UN DOSSIER, DANS LES DEUX LANGUES. MESURÉ AVANT CE LOT
 // (témoin 120c) : vingt-six textes composés autour d'un numéro, d'un nom ou d'une date (« Marquer le case #4 comme
-// résolu ? », « 3 élément(s) · hugo · … », « Incident déclaré (tier 2) · pilote … », « fait par … ») restaient français
+// résolu ? », « 3 élément(s) · analyste1 · … », « Incident déclaré (tier 2) · pilote … », « fait par … ») restaient français
 // sous `LANG='en'`. Les faces françaises sont celles d'avant, au caractère près.
 const MOTS_DES_TEXTES_DE_DOSSIER = {
   priorite: { fr: 'priorité {p}', en: 'priority {p}' },

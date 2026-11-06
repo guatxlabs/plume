@@ -2429,8 +2429,8 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   exiger(!!suppr && suppr.classList.contains("crud-btn") && suppr.title === "Supprimer", `(17) le bouton de suppression : ${suppr ? "classe « " + suppr.className + " », titre « " + suppr.title + " »" : "absent"}`);
   const sansColonne = lookupRow({ name: "asn", key_field: "ip", cols: "", rows: 0 });
   exiger(sansColonne.children.some((c) => c.textContent === "0 ligne(s) - aucune colonne de sortie"), "(17) un lookup sans colonne de sortie ne le dit pas");
-  const lu = parseCsvRows('ip,label\n"1.2.3.4","a, b"\n5.6.7.8,"dit ""x"""\n');
-  exiger(JSON.stringify(lu) === JSON.stringify([{ ip: "1.2.3.4", label: "a, b" }, { ip: "5.6.7.8", label: 'dit "x"' }]), `(17) lecture CSV : ${JSON.stringify(lu)}`);
+  const lu = parseCsvRows('ip,label\n"192.0.2.4","a, b"\n198.51.100.8,"dit ""x"""\n');
+  exiger(JSON.stringify(lu) === JSON.stringify([{ ip: "192.0.2.4", label: "a, b" }, { ip: "198.51.100.8", label: 'dit "x"' }]), `(17) lecture CSV : ${JSON.stringify(lu)}`);
   let refus = null; try { parseCsvRows("ip,label\n"); } catch (e) { refus = e.message; }
   exiger(typeof refus === "string" && refus.startsWith("CSV : une ligne d'en-têtes"), `(17) un CSV sans données est accepté ou refusé sans message : ${refus}`);
   const hote = new Element("div");
@@ -5002,9 +5002,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       { source: "auditd", type: "collection-reducing", fields: { filters: { exclude: ["bruit"] } }, ts: 970, host: "db-01", attested: true },
     ] },
     silences: { silences: [
-      { id: 1, matchers: { rule: "web.brute" }, active: true, expires_at: 2000, reason: "maintenance planifiée", created_by: "hugo" },
-      { id: 2, matchers: { rule: "ssh.brute" }, active: true, expires_at: 2000, reason: "bruit connu", created_by: "hugo" },
-      { id: 3, matchers: { host: "db-01" }, active: false, expires_at: 500, reason: "migration", created_by: "hugo" },
+      { id: 1, matchers: { rule: "web.brute" }, active: true, expires_at: 2000, reason: "maintenance planifiée", created_by: "analyste1" },
+      { id: 2, matchers: { rule: "ssh.brute" }, active: true, expires_at: 2000, reason: "bruit connu", created_by: "analyste1" },
+      { id: 3, matchers: { host: "db-01" }, active: false, expires_at: 500, reason: "migration", created_by: "analyste1" },
     ] },
     tokens: { tokens: [
       { name: "agent-web-01", kind: "agent", host: "web-01", created: 100, last_used: 900 },
@@ -5039,7 +5039,7 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
     return { ok: true, status: 200, text: async () => JSON.stringify({}) };
   };
   try {
-    S.AUTH = { user: "hugo", role: "admin" }; S.isAdmin = true;
+    S.AUTH = { user: "analyste1", role: "admin" }; S.isAdmin = true;
 
     // (a) + (b) LES SEPT SURFACES, PAR LEUR PROPRE CHARGEUR DE VUE.
     const surfaces = [
@@ -5798,7 +5798,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const cueillir42 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir42(c, pred, acc)); return acc; };
   const parClasse = (racine, cl) => cueillir42(racine, (e) => e.classList && e.classList.contains(cl), [])[0] || null;
 
-  const etatVue = { views: [{ id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 }], me: "hugo", role: "admin" };
+  const etatVue = { views: [{ id: 7, name: "Production", owner: "analyste1", visibility: "private", dashboards: 2 }], me: "analyste1", role: "admin" };
   const ecritures = [];
   const boutonPartage = new Element("button"), selecteurVue = new Element("select");
   const hotes42 = { "#view-share": boutonPartage, "#view": selecteurVue };
@@ -5860,7 +5860,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     exiger(!!ov2 && !!ov2.children[0] && !!ov2.children[0].children[0], "(47c) instrument : la fenêtre posée n'a pas la forme attendue, le sens POSITIF ne peut pas être joué");
     // Ce que la route SERT change avec l'écriture : le geste rappelle `loadViews`, et la vue qui revient
     // est partagée. Sans cela, (d) rejouerait la même direction en croyant en jouer une autre.
-    etatVue.views = [{ id: 7, name: "Production", owner: "hugo", visibility: "shared", dashboards: 2 }];
+    etatVue.views = [{ id: 7, name: "Production", owner: "analyste1", visibility: "shared", dashboards: 2 }];
     if (ov2 && ov2.children[0] && ov2.children[0].children[0]) ov2.children[0].children[0].onsubmit({ preventDefault() {} });
     await laisserTourner();
     // `P11.22-a` — MÊME CORRECTION QU'EN (40c) : la tranche du geste, jamais la dernière ligne d'un
@@ -9860,7 +9860,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const parClasse69 = (racine, cl) => cueillir69(racine, (e) => e.classList && e.classList.contains(cl), [])[0] || null;
   const fenetre69 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
 
-  const VUE69 = { id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 };
+  const VUE69 = { id: 7, name: "Production", owner: "analyste1", visibility: "private", dashboards: 2 };
   const lectures69 = [], ecritures69 = [];
   const boutonNouveau69 = new Element("button"), selecteurVue69 = new Element("select"), hoteVue69 = new Element("div");
   const hotes69 = { "#dash-new": boutonNouveau69, "#view": selecteurVue69, "#dashview": hoteVue69 };
@@ -9871,7 +9871,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const url = String(u), methode = (o && o.method) || "GET";
     if (methode !== "GET") { ecritures69.push({ url, body: JSON.parse((o && o.body) || "{}") }); return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, id: 99 }) }; }
     lectures69.push(url);
-    if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify({ views: [VUE69], me: "hugo", role: "admin" }) };
+    if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify({ views: [VUE69], me: "analyste1", role: "admin" }) };
     if (url.includes("/api/dashboards")) return { ok: true, status: 200, text: async () => JSON.stringify({ dashboards: [], role: "admin" }) };
     return { ok: true, status: 200, text: async () => JSON.stringify({}) };
   };
@@ -10299,8 +10299,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     `(73a-instrument) le clic d'un panneau « chiffre » qui PORTE une requête n'écrit pas le champ de requête (« ${surChiffre73.requete} ») : un champ vide ne prouverait alors aucun refus, seulement un instrument aveugle`);
   exiger(surChiffre73.dits.length === 0,
     `(73a-instrument) un forage qui ABOUTIT rend tout de même un avis (${JSON.stringify(surChiffre73.dits)}) : l'avis ne mesurerait plus un refus`);
-  exiger(barres73([["1.2.3.4", 5]]).length === 1,
-    `(73a-instrument) ${barres73([["1.2.3.4", 5]]).length} barre(s) offrent un clic pour une ligne servie : le second chemin n'est pas exercé`);
+  exiger(barres73([["192.0.2.4", 5]]).length === 1,
+    `(73a-instrument) ${barres73([["192.0.2.4", 5]]).length} barre(s) offrent un clic pour une ligne servie : le second chemin n'est pas exercé`);
   exiger(chiffre73("", "") === null,
     "(73a-instrument) un panneau « chiffre » SANS requête ni gabarit offre tout de même un clic : le refus mesuré en (73c) ne serait pas celui qu'on croit");
 
@@ -10335,8 +10335,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   exiger(/src_ip/.test(phrases73[3]), `(73c) le refus d'une part sans valeur ne nomme pas la colonne lue : « ${phrases73[3]} »`);
 
   // ---- (73d) LE NOMINAL NE BOUGE PAS ----
-  const nominalBarre73 = jouer73(barres73([["1.2.3.4", 5]])[0]);
-  exiger(nominalBarre73.requete === 'search src_ip="1.2.3.4"' && nominalBarre73.dits.length === 0,
+  const nominalBarre73 = jouer73(barres73([["192.0.2.4", 5]])[0]);
+  exiger(nominalBarre73.requete === 'search src_ip="192.0.2.4"' && nominalBarre73.dits.length === 0,
     `(73d) le forage d'une part QUI PORTE une valeur a changé : « ${nominalBarre73.requete} » ${JSON.stringify(nominalBarre73.dits)}`);
   const nominalGabarit73 = jouer73(barres73([["srv1", 5]])[0]);
   exiger(nominalGabarit73.requete === 'search src_ip="srv1"',
@@ -10400,7 +10400,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const avis74 = () => document.querySelectorAll(".toast").map((t) => t.textContent);
 
   const CONTROLES74 = ["#view-share", "#view-rename", "#view-del"];
-  const etatVue74 = { views: [{ id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 }], me: "hugo", role: "admin" };
+  const etatVue74 = { views: [{ id: 7, name: "Production", owner: "analyste1", visibility: "private", dashboards: 2 }], me: "analyste1", role: "admin" };
   const ecritures74 = [];
   const qsOrigine74 = document.querySelector, fetchOrigine74 = globalThis.fetch;
   const etatOrigine74 = { role: S74.viewsRole, me: S74.viewsMe, liste: S74.viewList };
@@ -10456,7 +10456,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
     // ---- (74b) LA FORME DU REFUS, sur une vue d'un AUTRE ----
     etatVue74.views = [{ id: 7, name: "Production", owner: "alice", visibility: "private", dashboards: 2 }];
-    etatVue74.me = "hugo"; etatVue74.role = "viewer";
+    etatVue74.me = "analyste1"; etatVue74.role = "viewer";
     const hotesB74 = poserLesControles74();
     const refuses74 = await passe74(hotesB74, modDash74);
     for (const [c, e] of refuses74) {
@@ -10495,7 +10495,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     }
 
     // ---- (74e) LE MOTIF NE COLLE PAS ----
-    etatVue74.views = [{ id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 }];
+    etatVue74.views = [{ id: 7, name: "Production", owner: "analyste1", visibility: "private", dashboards: 2 }];
     etatVue74.role = "admin";
     const hotesE74 = poserLesControles74();
     const rendus74 = await passe74(hotesE74, modDash74);
@@ -11019,7 +11019,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     await jouer80("evLoad décalage, corps vide", async () => { corpsSuivant80 = {}; S.evState = etat({ keyset: false, total: 0 }); await V.evLoad(); });
     // Une ligne datée : la chronologie se dessine, les facettes se comptent, le bouton de courriel se pose.
     await jouer80("evLoad avec lignes datées", async () => {
-      corpsSuivant80 = { columns: ["ts", "source", "message", "severity", "src_ip", "host", "fields"], rows: [[1700000000, "sshd", "m", 2, "1.2.3.4", "h", "{\"k\":\"v\"}"], [1700003600, "mail", "m2", 1, "", "h", "{\"account\":\"a\",\"fileid\":\"f\"}"], [1700007200, "sshd", "m3", 1, "", "h", null]], stats: { elapsed_ms: 1 }, has_more: false };
+      corpsSuivant80 = { columns: ["ts", "source", "message", "severity", "src_ip", "host", "fields"], rows: [[1700000000, "sshd", "m", 2, "192.0.2.4", "h", "{\"k\":\"v\"}"], [1700003600, "mail", "m2", 1, "", "h", "{\"account\":\"a\",\"fileid\":\"f\"}"], [1700007200, "sshd", "m3", 1, "", "h", null]], stats: { elapsed_ms: 1 }, has_more: false };
       S.evState = etat({ keyset: false, total: 0 }); await V.evLoad();
       const btn = document.querySelector("#qresult") && document.querySelector("#qresult").querySelector(".mailbtn");
       if (btn) { if (typeof btn.click === "function") btn.click(); else if (btn.onclick) btn.onclick({ target: btn }); }
@@ -11257,7 +11257,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   globalThis.fetch = async (u, o) => {
     const url = String(u), methode = (o && o.method) || "GET";
     if (methode !== "GET") return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, id: 99 }) };
-    if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify({ views: [], me: "hugo", role: "admin" }) };
+    if (url.includes("/api/views")) return { ok: true, status: 200, text: async () => JSON.stringify({ views: [], me: "analyste1", role: "admin" }) };
     if (url.includes("/api/dashboards")) return { ok: true, status: 200, text: async () => JSON.stringify(corpsDashboards85) };
     return { ok: true, status: 200, text: async () => JSON.stringify({}) };
   };
@@ -11551,8 +11551,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       rassurant: ["aucun jeton", "+ Nouveau jeton"],
       compter: (h) => cueillir92(h, (e) => e.tagName === "TR", []).filter((tr) => cueillir92(tr, (e) => e.tagName === "TD", []).length > 0).length },
     { nom: "comptes", route: "/api/users", hote: "#user-list", charger: () => modAdmin92.loadUsers(),
-      aveu: { users: [], me: "hugo", acces: [], error: CAUSE92 },
-      nominal: { users: [{ id: 1, name: "hugo", role: "admin", created: 100 }, { id: 2, name: "ana", role: "viewer", created: 200 }], me: "hugo", acces: [] },
+      aveu: { users: [], me: "analyste1", acces: [], error: CAUSE92 },
+      nominal: { users: [{ id: 1, name: "analyste1", role: "admin", created: 100 }, { id: 2, name: "ana", role: "viewer", created: 200 }], me: "analyste1", acces: [] },
       rassurant: ["0 compte(s)", "compte(s) ·"],
       compter: (h) => cueillir92(h, (e) => e.classList && e.classList.contains("urow"), []).length },
     { nom: "règles de masquage", route: "/api/field-filters", hote: "#field-filter-list", charger: () => modFF92.loadFieldFilters(),
@@ -11570,7 +11570,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
         && cueillir92(e, (x) => x.tagName === "TABLE", []).length === 0).length },
   ];
   try {
-    S92.AUTH = { user: "hugo", role: "admin" }; S92.isAdmin = true;
+    S92.AUTH = { user: "analyste1", role: "admin" }; S92.isAdmin = true;
     for (const s92 of surfaces92) {
       const hote = hotes92[s92.hote];
       // (a) SOUS L'AVEU : la cause servie est écrite, et aucune phrase d'absence ne l'est.
@@ -11697,7 +11697,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       compter: (h) => lignesDeTable93(h).length },
   ];
   try {
-    S93.AUTH = { user: "hugo", role: "admin" };
+    S93.AUTH = { user: "analyste1", role: "admin" };
     S93.ruleSort = "id"; S93.parserSort = "default";
     modDet93.poserLaRechercheDesRegles("");
     // Les plis persistés d'une autre exécution replieraient un groupe, donc n'en bâtiraient PAS le corps :
@@ -11915,12 +11915,12 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S94.isAdmin = true;
-    S94.AUTH = { user: "hugo", role: "admin" };
+    S94.AUTH = { user: "analyste1", role: "admin" };
 
     // ── (a) LA PROGRESSION D'UN RUNBOOK : NI « 0/0 », NI BARRE VIDE, SOUS UN AVEU ──────────────────
     const RUNBOOK94 = { id: 7, key: "compte-compromis", name: "Compte compromis", match_kind: "tactic", match_key: "TA0006", description: "", managed: 1 };
-    const etape94 = (id, titre, statut) => ({ id, step_id: id, ordinal: id, phase: "triage", title: titre, guidance: "", step_kind: "manual", search_soql: "", action_kind: "", target: "", status: statut, actor: statut === "pending" ? "" : "hugo", ts: statut === "pending" ? null : 1000, note: "", host: "" });
-    const RUNBOOKS94 = { incident_tier: 2, incident_type: "compromission", commander: "hugo", dominant_tactic: "TA0006", dominant_technique: "T1110", prefill_target: null, prefill_src_ip: null, prefill_pid: null, prefill_host: null, recommended: null, attached_runbook_id: 7, available: [] };
+    const etape94 = (id, titre, statut) => ({ id, step_id: id, ordinal: id, phase: "triage", title: titre, guidance: "", step_kind: "manual", search_soql: "", action_kind: "", target: "", status: statut, actor: statut === "pending" ? "" : "analyste1", ts: statut === "pending" ? null : 1000, note: "", host: "" });
+    const RUNBOOKS94 = { incident_tier: 2, incident_type: "compromission", commander: "analyste1", dominant_tactic: "TA0006", dominant_technique: "T1110", prefill_target: null, prefill_src_ip: null, prefill_pid: null, prefill_host: null, recommended: null, attached_runbook_id: 7, available: [] };
     const rendreLeWizard94 = async (corpsDesEtapes) => {
       corpsServis94 = { "/api/cases/9/runbooks": RUNBOOKS94, "/api/cases/9/steps": corpsDesEtapes };
       const boite = new Element("div"), entete = new Element("span");
@@ -12169,7 +12169,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S95.isAdmin = true;
-    S95.AUTH = { user: "hugo", role: "admin" };
+    S95.AUTH = { user: "analyste1", role: "admin" };
 
     // ══ (a) LES SIX FAMILLES DE SAVOIR : L'AVEU NOMME LA FAMILLE, LES AUTRES RESTENT PEINTES ═══════
     const ALIAS95 = { id: 1, canonical: "client_ip", source: "src_ip", enabled: true, managed: 0, created: 1, updated: 1 };
@@ -12252,13 +12252,13 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     // ══ (g) LES PANNEAUX D'UN TABLEAU DE BORD ═════════════════════════════════════════════════════
     const PANNEAU95 = (id, titre) => ({ id, title: titre, query: "", is_soql: true, viz: "table", position: id, window_s: 3600, visibility: "shared", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null });
     const grille95 = new Element("div");
-    corpsServis95 = { "/api/dashboard/3": { id: 3, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [], error: CAUSE95 } };
+    corpsServis95 = { "/api/dashboard/3": { id: 3, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [], error: CAUSE95 } };
     await modTdb95.loadPanelsInto(grille95, { id: 3 }); await laisser95();
     const texteGrille95 = nu95(grille95);
     exiger(/NON LUS/.test(texteGrille95) && texteGrille95.includes(CAUSE95), `(95g) les panneaux d'un tableau de bord ne disent pas qu'ils n'ont pas été lus, avec leur cause : « ${texteGrille95} »`);
     exiger(!/Dashboard vide/.test(texteGrille95), `(95g) « Dashboard vide. » est peint sous un aveu : « ${texteGrille95} »`);
     exiger(boutons95(grille95).length === 0, `(95g) ${boutons95(grille95).length} bouton(s) — dont « + Ajouter un panneau » — sont offerts sur des panneaux NON LUS : créer ici doublerait ce que la lecture n'a pas rendu`);
-    corpsServis95 = { "/api/dashboard/3": { id: 3, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU95(11, "Connexions"), PANNEAU95(12, "Échecs")] } };
+    corpsServis95 = { "/api/dashboard/3": { id: 3, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU95(11, "Connexions"), PANNEAU95(12, "Échecs")] } };
     await modTdb95.loadPanelsInto(grille95, { id: 3 }); await laisser95();
     const sainGrille95 = nu95(grille95);
     exiger(sainGrille95.includes("Connexions") && sainGrille95.includes("Échecs"), `(95h) le chemin nominal ne peint pas les deux panneaux servis — le verdict (95g) ne porterait sur rien : « ${sainGrille95} »`);
@@ -12268,21 +12268,21 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const selecteurDeVue95 = $95("#view"), boutonVueNeuve95 = $95("#view-new");
     exiger(!!selecteurDeVue95 && !!selecteurDeVue95.parentNode && !!boutonVueNeuve95,
       "(95i-instrument) le sélecteur de vues, son parent ou « + Vue » n'existent plus dans web/index.html : le verdict ne porterait sur rien");
-    corpsServis95 = { "/api/views": { me: "hugo", role: "admin", views: [], error: CAUSE95 } };
+    corpsServis95 = { "/api/views": { me: "analyste1", role: "admin", views: [], error: CAUSE95 } };
     await modTdb95.loadViews(); await laisser95();
     const texteBarreDeVue95 = nu95(selecteurDeVue95.parentNode);
     exiger(/NON LUES/.test(texteBarreDeVue95) && texteBarreDeVue95.includes(CAUSE95), `(95i) le sélecteur de vues ne dit pas que la liste n'a pas été lue, avec sa cause : « ${texteBarreDeVue95} »`);
     exiger(selecteurDeVue95.children.length === 1, `(95i) le sélecteur porte ${selecteurDeVue95.children.length} entrée(s) sur une liste NON LUE : au-delà de l'option neutre, il offrirait des vues que personne n'a lues`);
     exiger(boutonVueNeuve95.getAttribute("aria-disabled") === "true", "(95i) « + Vue » ne porte pas la marque d'inertie sur une liste de vues NON LUE");
     exiger(String(boutonVueNeuve95.getAttribute("title") || "").includes("homonyme"), `(95i) la marque d'inertie de « + Vue » ne DIT pas pourquoi : « ${boutonVueNeuve95.getAttribute("title")}»`);
-    corpsServis95 = { "/api/views": { me: "hugo", role: "admin", views: [{ id: 7, name: "NOC", owner: "hugo", visibility: "shared", dashboards: 2 }] } };
+    corpsServis95 = { "/api/views": { me: "analyste1", role: "admin", views: [{ id: 7, name: "NOC", owner: "analyste1", visibility: "shared", dashboards: 2 }] } };
     await modTdb95.loadViews(); await laisser95();
     exiger(nu95(selecteurDeVue95).includes("NOC"), `(95j) le chemin nominal ne peint pas la vue servie — le verdict (95i) ne porterait sur rien : « ${nu95(selecteurDeVue95)} »`);
     exiger(!/NON LUES/.test(nu95(selecteurDeVue95.parentNode)), `(95j) l'aveu d'hier survit à une lecture RÉUSSIE : « ${nu95(selecteurDeVue95.parentNode)} »`);
     exiger(boutonVueNeuve95.getAttribute("aria-disabled") === null, "(95j) « + Vue » reste inerte après une lecture RÉUSSIE");
 
     // ══ (k) LES LIENS D'UN DOSSIER, ET SA FICHE DE RUNBOOKS (DEUX LECTURES, UN AVEU QUI NOMME) ═════
-    const DOSSIER95 = { id: 12, title: "Compte compromis", status: "open", priority: 2, ts: 1000, owner: "hugo", assignee: "", items: [], archived: false, merged_into: null, summary: "" };
+    const DOSSIER95 = { id: 12, title: "Compte compromis", status: "open", priority: 2, ts: 1000, owner: "analyste1", assignee: "", items: [], archived: false, merged_into: null, summary: "" };
     const RUNBOOK95 = { id: 7, key: "compte-compromis", name: "Compte compromis", match_kind: "tactic", match_key: "TA0006", description: "", managed: 1 };
     const hoteDuDossier95 = new Element("div");
     const rendreLeDossier95 = async (liens, fiche) => {
@@ -12339,7 +12339,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       "(95m) les deux boutons d'envoi ne portent pas la marque d'inertie sous l'aveu de LEUR liste");
     const ditRoute95 = await ditAuGeste95(async () => { formDuRoutage95.dispatchEvent(new Evenement("submit", { bubbles: true })); await laisser95(5); });
     exiger(ditRoute95.length === 1 && /vers quels canaux/.test(ditRoute95[0]), `(95m) l'envoi du formulaire de route sur un arbre NON LU ne dit pas son refus : ${JSON.stringify(ditRoute95)}`);
-    corpsServis95 = { "/api/notification-policies": { policies: [{ id: 1, matchers: { severity: "4" }, contact_points: [3], continue: false, enabled: true, created_by: "hugo" }] }, "/api/silences": { silences: [{ id: 2, matchers: { host: "web-01" }, expires_at: 9999999999, active: true, reason: "maintenance", created: 1, created_by: "hugo" }] } };
+    corpsServis95 = { "/api/notification-policies": { policies: [{ id: 1, matchers: { severity: "4" }, contact_points: [3], continue: false, enabled: true, created_by: "analyste1" }] }, "/api/silences": { silences: [{ id: 2, matchers: { host: "web-01" }, expires_at: 9999999999, active: true, reason: "maintenance", created: 1, created_by: "analyste1" }] } };
     await modRoutage95.loadRouting(); await laisser95();
     exiger(nu95(corpsDuRoutage95).includes("severity=4") && !/NON LUES/.test(nu95(corpsDuRoutage95)), `(95n) le chemin nominal du routage ne peint pas la route servie, ou peint un aveu : « ${nu95(corpsDuRoutage95)} »`);
     exiger(nu95(corpsDesSilences95).includes("host=web-01") && !/NON LUS/.test(nu95(corpsDesSilences95)), `(95n) le chemin nominal des silences ne peint pas le silence servi, ou peint un aveu : « ${nu95(corpsDesSilences95)} »`);
@@ -12592,7 +12592,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S96.isAdmin = true;
-    S96.AUTH = { user: "hugo", role: "admin" };
+    S96.AUTH = { user: "analyste1", role: "admin" };
     const statut96 = $96("#mfa-status"), actions96 = $96("#mfa-actions"), enrolement96 = $96("#mfa-enroll");
     exiger(!!statut96 && !!actions96 && !!enrolement96,
       "(96-instrument) les trois hôtes du bloc MFA d'`index.html` (#mfa-status, #mfa-actions, #mfa-enroll) ne sont pas montés : les verdicts ci-dessous ne porteraient sur rien");
@@ -12656,7 +12656,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     // ══ (d) CONTRÔLE POSITIF DE L'ENRÔLEMENT : UNE GRAINE SERVIE SE PEINT ═══════════════════════════
     reponsesServies96 = {
       "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } },
-      "POST /api/mfa/enroll": { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } },
+      "POST /api/mfa/enroll": { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:analyste1?secret=JBSWY3DPEHPK3PXP" } },
     };
     await modIdp96.loadMfa(); await laisser96();          // le statut REDEVIENT lisible : le drapeau retombe
     await enrolerAvecLeMotDePasse96(boutons96(actions96)[0]);
@@ -13038,7 +13038,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S97.isAdmin = true;
-    S97.AUTH = { user: "hugo", role: "admin" };
+    S97.AUTH = { user: "analyste1", role: "admin" };
 
     // ══ (a) LA SANTÉ DU PIPELINE N'A PAS ÉTÉ LUE : NI « EN PANNE », NI UN PARC CALME ════════════════
     const causeDuPipeline97 = OUVERTURE_PIPELINE97 + "disk I/O error";
@@ -13195,7 +13195,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     exiger(/Bulletin d'exploitation NON ÉTABLI/.test(texteBandeau97) && texteBandeau97.includes(causeBulletinServie97),
       `(97i) le bandeau ne dit pas que le bulletin n'est pas établi, avec la cause SERVIE : « ${texteBandeau97}  »`);
     // CONTRÔLES POSITIFS : un bulletin POSÉ se peint, une absence ÉTABLIE reste cachée.
-    reponsesServies97 = { "GET /api/bulletin": { corps: { bulletin: { message: "maintenance 22h-23h", level: "warn", updated_by: "hugo", updated: 1000 } } } };
+    reponsesServies97 = { "GET /api/bulletin": { corps: { bulletin: { message: "maintenance 22h-23h", level: "warn", updated_by: "analyste1", updated: 1000 } } } };
     await modSysteme97.loadBulletin(); await laisser97();
     exiger(bandeau97.hidden === false && nu97(bandeau97).includes("maintenance 22h-23h"),
       `(97j) un bulletin POSÉ ne se peint plus — le verdict (97i) ne porterait sur rien : « ${nu97(bandeau97)} »`);
@@ -13242,7 +13242,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       "(97-instrument) les hôtes de l'écran de connexion d'`index.html` (#login-form, #login-err, #login-user, #login-pass) ne sont pas montés : les verdicts ci-dessous ne porteraient sur rien");
     modConnexion97.bindLoginForm();
     const soumettre97 = async () => {
-      champUtilisateur97.value = "hugo"; champMotDePasse97.value = "motdepasse";
+      champUtilisateur97.value = "analyste1"; champMotDePasse97.value = "motdepasse";
       formulaire97.dispatchEvent(new Evenement("submit", { bubbles: true }));
       await laisser97(20);
     };
@@ -13381,11 +13381,11 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   };
   const surfaces98 = [
     { nom: "tableaux de bord", route: "/dashboards", hote: "#dashview", charger: () => modDash98.loadDashboards(),
-      aveu: { dashboards: [], me: "hugo", role: "admin", error: CAUSE98 },
+      aveu: { dashboards: [], me: "analyste1", role: "admin", error: CAUSE98 },
       cause: CAUSE98,
-      nominal: { me: "hugo", role: "admin", dashboards: [
-        { id: 1, name: "Vue SSH", owner: "hugo", visibility: "private", view_id: null, panels: 0, cols: 2, height: 220, collapsed: true, position: 0, editable: true },
-        { id: 2, name: "Vue Web", owner: "hugo", visibility: "shared", view_id: null, panels: 0, cols: 2, height: 220, collapsed: true, position: 1, editable: true }] },
+      nominal: { me: "analyste1", role: "admin", dashboards: [
+        { id: 1, name: "Vue SSH", owner: "analyste1", visibility: "private", view_id: null, panels: 0, cols: 2, height: 220, collapsed: true, position: 0, editable: true },
+        { id: 2, name: "Vue Web", owner: "analyste1", visibility: "shared", view_id: null, panels: 0, cols: 2, height: 220, collapsed: true, position: 1, editable: true }] },
       rassurant: ["Aucun dashboard", "+ Dashboard"],
       compter: (h) => (h.children || []).filter((e) => aLaClasse98(e, "dashtile")).length },
     { nom: "file d'actions", route: "/actions", hote: "#act-list", charger: () => modDet98.loadActions(),
@@ -13422,7 +13422,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       compter: (h) => cueillir98(h, (e) => e.tagName === "INPUT", []).length },
   ];
   try {
-    S98.AUTH = { user: "hugo", role: "admin" }; S98.isAdmin = true; S98.dashList = [];
+    S98.AUTH = { user: "analyste1", role: "admin" }; S98.isAdmin = true; S98.dashList = [];
     for (const s98 of surfaces98) {
       const hote = hotes98[s98.hote];
       // (a) SOUS L'AVEU : la cause servie est écrite, et aucune phrase d'absence ne l'est.
@@ -13525,7 +13525,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       `(98f-bis) « aucune entrée d'audit » est peint sur un journal que personne n'a lu : « ${texteAudit98} »`);
     exiger(lignesDeTable98(corpsAudit98).length === 0,
       `(98f-bis) ${lignesDeTable98(corpsAudit98).length} ligne(s) peinte(s) sous un aveu — elles se liraient comme le journal`);
-    corps98 = { entries: [{ id: 1, ts: 1000, kind: "config.retention", actor: "hugo", detail: "30 -> 60", severity: 2 },
+    corps98 = { entries: [{ id: 1, ts: 1000, kind: "config.retention", actor: "analyste1", detail: "30 -> 60", severity: 2 },
                            { id: 2, ts: 900, kind: "auth.login", actor: "ana", detail: "ok", severity: 1 }],
                 ok: true, has_more: false, limit: 50, total: 2, total_capped: false };
     corpsAudit98.replaceChildren();
@@ -13725,7 +13725,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S99.isAdmin = true;
-    S99.AUTH = { user: "hugo", role: "admin" };
+    S99.AUTH = { user: "analyste1", role: "admin" };
 
     // ══ (a) LA FAMILLE NON LUE EST UN GROUPE, ET ELLE N'EST PAS COMPTÉE COMME UNE SOURCE ═══════════
     const causeDeLaFamille99 = CAUSE_FAMILLE99 + "no such table: event_rollup";
@@ -14193,13 +14193,13 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S100.isAdmin = true;
-    S100.AUTH = { user: "hugo", role: "admin" };
+    S100.AUTH = { user: "analyste1", role: "admin" };
 
     // ══ (a) LE PANNEAU : LES QUATRE REFUS PEINTS ENTIERS, ET LE PARTAGE RETENU ══════════════════
     const PANNEAU100 = { id: 11, title: "Connexions", query: "search action=login", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
     const rendreLaGrille100 = async () => {
       const grille = new Element("div");
-      servis100["GET /api/dashboard/3"] = { corps: { id: 3, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU100] } };
+      servis100["GET /api/dashboard/3"] = { corps: { id: 3, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU100] } };
       await modTdb100.loadPanelsInto(grille, { id: 3 });
       await laisser100();
       const form = cueillir100(grille, (e) => e.tagName === "FORM", [])[0];
@@ -14293,7 +14293,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       "(100b-négatif) l'aveu survit à une écriture RÉUSSIE : il décrirait une panne qui n'a plus lieu");
 
     // ══ (c) LA VUE : LA BASCULE DE PARTAGE ET LE RENOMMAGE RETENUS, LA SUPPRESSION NON ══════════
-    const VUE100 = { id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 };
+    const VUE100 = { id: 7, name: "Production", owner: "analyste1", visibility: "private", dashboards: 2 };
     const selecteurVue100 = new Element("select"), barreVue100 = new Element("div");
     const boutonPartage100 = new Element("button"), boutonRenommer100 = new Element("button"), boutonSupprimer100 = new Element("button"), boutonVueNeuve100 = new Element("button");
     barreVue100.appendChild(selecteurVue100);
@@ -14307,7 +14307,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       await laisser100();
     };
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
-    servis100["GET /api/views"] = { corps: { views: [VUE100], me: "hugo", role: "admin" } };
+    servis100["GET /api/views"] = { corps: { views: [VUE100], me: "analyste1", role: "admin" } };
     servis100["GET /api/dashboards"] = { corps: { dashboards: [], role: "admin" } };
     modTdb100.initDashboards();
     await laisser100();
@@ -14391,7 +14391,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     document.querySelector = qsOrigine100;
 
     // ══ (e) LA CHRONOLOGIE D'UN DOSSIER : « CIBLE NON LUE », PAS « SUPPRIMÉE OU EXPIRÉE » ═══════
-    const elementNonLu100 = modDossiers100.caseItemEl(4, { id: 1, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true }, false);
+    const elementNonLu100 = modDossiers100.caseItemEl(4, { id: 1, ts: 1758000000, kind: "alert", author: "analyste1", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true }, false);
     const texteNonLu100 = nu100(elementNonLu100);
     const titresNonLu100 = cueillir100(elementNonLu100, () => true, []).map((e) => String(e.getAttribute && e.getAttribute("title") || "")).join(" | ");
     exiger(/cible NON LUE/.test(texteNonLu100),
@@ -14403,11 +14403,11 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     exiger(texteNonLu100.includes("alert:42"),
       `(100e) la référence elle-même disparaît sous l'aveu : elle est le seul moyen de rouvrir la cible à la main — « ${texteNonLu100} »`);
     // CONTRÔLE POSITIF — LES DEUX AUTRES ISSUES, SUR LA MÊME RÉFÉRENCE, RESTENT CE QU'ELLES ÉTAIENT.
-    const elementAbsent100 = modDossiers100.caseItemEl(4, { id: 2, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null }, false);
+    const elementAbsent100 = modDossiers100.caseItemEl(4, { id: 2, ts: 1758000000, kind: "alert", author: "analyste1", body: "", ref: "alert:42", ref_title: null, ref_severity: null }, false);
     const titresAbsent100 = cueillir100(elementAbsent100, () => true, []).map((e) => String(e.getAttribute && e.getAttribute("title") || "")).join(" | ");
     exiger(/introuvable/.test(titresAbsent100) && !/NON LUE/.test(nu100(elementAbsent100)),
       `(100e-négatif) une cible réellement ABSENTE se dit désormais « NON LUE », ou a perdu sa phrase : texte « ${nu100(elementAbsent100)} », infobulles « ${titresAbsent100} »`);
-    const elementLu100 = modDossiers100.caseItemEl(4, { id: 3, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: "Force brute SSH", ref_severity: 2 }, false);
+    const elementLu100 = modDossiers100.caseItemEl(4, { id: 3, ts: 1758000000, kind: "alert", author: "analyste1", body: "", ref: "alert:42", ref_title: "Force brute SSH", ref_severity: 2 }, false);
     exiger(nu100(elementLu100).includes("Force brute SSH") && !/NON LUE|introuvable/.test(nu100(elementLu100)),
       `(100e-négatif) le chemin nominal porte un aveu — un instrument qui le dit toujours ne mesure rien : « ${nu100(elementLu100)} »`);
 
@@ -14778,7 +14778,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S101.isAdmin = true;
-    S101.AUTH = { user: "hugo", role: "admin" };
+    S101.AUTH = { user: "analyste1", role: "admin" };
     document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes101, sel) ? hotes101[sel] : new Element("div"));
 
     // ══ (a) LA FILE DE RIPOSTE : LES TROIS REFUS PEINTS, LE GESTE RETENU, LA FILE RECHARGÉE ══════
@@ -15335,7 +15335,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S102.isAdmin = true;
-    S102.AUTH = { user: "hugo", role: "admin" };
+    S102.AUTH = { user: "analyste1", role: "admin" };
     S102.caseSelectedId = 7;
     document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes102, sel) ? hotes102[sel] : new Element("div"));
 
@@ -15426,7 +15426,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const registreDe102 = (entrees) => { servis102["GET /api/ledger"] = { corps: { entries: entrees, ok: true, has_more: false, limit: 50, total: entrees.length, total_capped: false } }; };
     const ACQUITTEMENT102 = { id: 91, ts: 1758001100, kind: "alert.ack", detail: "alerte #12 acquittée", hash: "aaaa1111bbbb2222" };
     const VERDICT_NON_RELU102 = { id: 90, ts: 1758001000, kind: GENRE_NON_RELU102, detail: "ban_ip 203.0.113.7 : verdict conservé NON RELU", hash: "cccc3333dddd4444" };
-    const CHANGEMENT_DE_RETENTION102 = { id: 12, ts: 1758000100, kind: PREFIXE_RETENTION102 + "retention_days", detail: "30->7 par hugo", hash: "eeee5555ffff6666" };
+    const CHANGEMENT_DE_RETENTION102 = { id: 12, ts: 1758000100, kind: PREFIXE_RETENTION102 + "retention_days", detail: "30->7 par analyste1", hash: "eeee5555ffff6666" };
     const PURGE102 = { id: 89, ts: 1758000900, kind: GENRE_PURGE102, detail: "purge horaire : 1200 événements", hash: "7777aaaa8888bbbb" };
     const peindreLeDernierChangement102 = async () => { dernierChangement102.replaceChildren(); await modRetention102.loadRetentionLast(); await laisser102(40); };
 
@@ -15553,7 +15553,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     hotes102["#ledger-body"] = corpsDuRegistre102;
     servis102["GET /api/ledger"] = { corps: { entries: [
       { id: 21, ts: 1758002100, kind: GENRE_BAN_NON_ARME102, detail: "203.0.113.9 NON armé (action 42) : disk I/O error", hash: "1111aaaa2222bbbb" },
-      { id: 20, ts: 1758002000, kind: GENRE_BAN_POSE102, detail: "203.0.113.8 ttl=14400 by=hugo", hash: "3333cccc4444dddd" },
+      { id: 20, ts: 1758002000, kind: GENRE_BAN_POSE102, detail: "203.0.113.8 ttl=14400 by=analyste1", hash: "3333cccc4444dddd" },
     ], ok: true, has_more: false, limit: 50, total: 2, total_capped: false } };
     corpsDuRegistre102.replaceChildren();
     await modAudit102.loadLedger();
@@ -15963,7 +15963,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S103.isAdmin = true;
-    S103.AUTH = { user: "hugo", role: "admin" };
+    S103.AUTH = { user: "analyste1", role: "admin" };
     // La file est relue après chaque création : elle est servie VIDE pour que ce rechargement ne peigne
     // ni avis ni ligne qui brouillerait les avis comptés plus bas.
     servis103["GET /api/actions"] = { corps: { actions: [], served: 0, window: 200, total: 0, total_capped: false } };
@@ -16078,7 +16078,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const PREFIXE_RETENTION103 = (HANDLERS103.match(/audit_config_change\(\s*&conn,\s*&format!\("(config\.retention\.)\{skey\}"\),/) || [])[1] || "";
     instrument103(PREFIXE_RETENTION103 === "config.retention.",
       "`retention_settings_put` n'écrit plus le genre `config.retention.<clé>` au registre : le cas « un changement TROUVÉ » ci-dessous ne porterait sur rien");
-    const CHANGEMENT103 = { id: 12, ts: 1758000100, kind: PREFIXE_RETENTION103 + "retention_days", detail: "30->7 par hugo", hash: "eeee5555ffff6666" };
+    const CHANGEMENT103 = { id: 12, ts: 1758000100, kind: PREFIXE_RETENTION103 + "retention_days", detail: "30->7 par analyste1", hash: "eeee5555ffff6666" };
     const registreDe103 = (entrees, suite) => {
       const corps = { entries: entrees, ok: true, limit: 50, total: entrees.length, total_capped: false };
       if (suite !== undefined) corps.has_more = suite;
@@ -16453,7 +16453,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
 
   try {
     S104.isAdmin = true;
-    S104.AUTH = { user: "hugo", role: "admin" };
+    S104.AUTH = { user: "analyste1", role: "admin" };
     const motAcq104 = modAlertes104.motDeLAcquittement;
     const motDossier104 = modDossiers104.motDuRefusDeDossier;
     exiger(typeof modAlertes104.acquitter === "function" && typeof motAcq104 === "function" && typeof motDossier104 === "function",
@@ -16801,7 +16801,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     instrument105(!!panneau105() && !!document.querySelector("#tenant-list") && !!document.querySelector("#tenant-form"),
       "`#tenants-panel`, `#tenant-list` ou `#tenant-form` est absent d'index.html : le puits jugé ci-dessous n'existe pas");
     S105.isAdmin = true;
-    S105.AUTH = { user: "hugo", role: "admin", is_superadmin: true, tenant: "default" };
+    S105.AUTH = { user: "analyste1", role: "admin", is_superadmin: true, tenant: "default" };
     S105.MY_TENANTS = [{ id: "default" }, { id: "acme", name: "Acme" }];
     const liste105 = (suspendu) => { servis105["GET /api/tenants"] = { corps: { tenants: [{ id: "acme", name: "Acme", suspended: suspendu, created: 1, nb_users: 1 }] } }; };
     const charger105 = async (suspendu) => { liste105(suspendu); await modTenants105.loadTenantsView(); await laisser105(); return document.querySelector("#tenant-list"); };
@@ -18005,8 +18005,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const EXCES108 = (t) => /[{}]/.test(t) || /\b50[34]\b|\b40[01]\b/.test(t) || /plume-e\d/.test(t);
 
   try {
-    S108.isAdmin = true; S108.AUTH = { user: "hugo", role: "admin" };
-    SEn108.isAdmin = true; SEn108.AUTH = { user: "hugo", role: "admin" };
+    S108.isAdmin = true; S108.AUTH = { user: "analyste1", role: "admin" };
+    SEn108.isAdmin = true; SEn108.AUTH = { user: "analyste1", role: "admin" };
 
     // ══ (b) L'ÉTAPE « RÉPONSE » D'UN RUNBOOK (`P10.22-a`), PAR LE GESTE RÉEL ═════════════════════════
     const DOSSIER108 = { id: 8108 };
@@ -18246,7 +18246,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     // ══ (e2) L'ACTIVATION DE LA MFA (`P10.22-n` sur les refus de `P10.22-l` et `-m`), PAR LE GESTE RÉEL ══
     const ouvrirLaCarte108 = async (mod) => {
       servis108["GET /api/mfa/status"] = { corps: { enrolled: false, enabled: false } };
-      servis108["POST /api/mfa/enroll"] = { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } };
+      servis108["POST /api/mfa/enroll"] = { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:analyste1?secret=JBSWY3DPEHPK3PXP" } };
       await mod.loadMfa(); await laisser108();
       // `P10.23-b` (démon) — l'enrôlement demande d'abord le mot de passe du compte (modale partagée).
       const pEnrolement = mod.startEnroll(); await laisser108();
@@ -18358,7 +18358,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const etapeDuCode108 = () => blocDuCode108.style.display === "" && utilisateur108.disabled === true && motDePasse108.disabled === true;
     const etapeDuMotDePasse108 = () => blocDuCode108.style.display === "none" && !utilisateur108.disabled && !motDePasse108.disabled;
     const ouvrirLEtapeDuCode108 = async () => {
-      utilisateur108.value = "hugo"; motDePasse108.value = "motdepasse";
+      utilisateur108.value = "analyste1"; motDePasse108.value = "motdepasse";
       servis108["POST /api/login"] = { statut: 200, corps: { mfa_required: true, ticket: "ticket-108" } };
       await soumettreConnexion108();
     };
@@ -18420,7 +18420,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       exiger(/Code REFUSÉ/.test(texteDu401108) && !/PAS en cause/.test(texteDu401108) && /PAS en cause/.test(texteDu503108) && !/Code REFUSÉ/.test(texteDu503108),
         `(108f4) UN 401 « CODE INVALIDE » ET UN 503 « NON CONSOMMÉ » NE SE DISTINGUENT PAS À L'ÉCRAN : le second accuserait l'utilisateur — « ${texteDu401108} » / « ${texteDu503108} »`);
       // (f5) APRÈS LE REFUS, LE GESTE SUIVANT REPART DU MOT DE PASSE.
-      utilisateur108.value = "hugo"; motDePasse108.value = "motdepasse";
+      utilisateur108.value = "analyste1"; motDePasse108.value = "motdepasse";
       servis108["POST /api/login"] = { statut: 401, corps: { error: "identifiants invalides" } };
       const appelsAvantF5108 = appels108.length;
       await soumettreConnexion108();
@@ -18444,7 +18444,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       // (f7) LE SUCCÈS RECHARGE — ET LUI SEUL.
       await ouvrirLEtapeDuCode108();
       champDuCode108.value = "123456";
-      servis108["POST /api/login/mfa"] = { statut: 200, corps: { ok: true, user: "hugo", role: "admin" } };
+      servis108["POST /api/login/mfa"] = { statut: 200, corps: { ok: true, user: "analyste1", role: "admin" } };
       const rechargementsAvantF7108 = rechargements108;
       await soumettreConnexion108();
       exiger(rechargements108 === rechargementsAvantF7108 + 1,
@@ -18452,8 +18452,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       // (f8) LE PREMIER FACTEUR SANS MFA : le rechargement d'avant, inchangé.
       cabler108(modConnexion108);
       utilisateur108.disabled = false; motDePasse108.disabled = false; blocDuCode108.style.display = "none";
-      utilisateur108.value = "hugo"; motDePasse108.value = "motdepasse";
-      servis108["POST /api/login"] = { statut: 200, corps: { ok: true, user: "hugo", role: "admin" } };
+      utilisateur108.value = "analyste1"; motDePasse108.value = "motdepasse";
+      servis108["POST /api/login"] = { statut: 200, corps: { ok: true, user: "analyste1", role: "admin" } };
       const rechargementsAvantF8108 = rechargements108;
       await soumettreConnexion108();
       exiger(rechargements108 === rechargementsAvantF8108 + 1 && etapeDuMotDePasse108(),
@@ -18713,7 +18713,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       const statut = r.statut || 200;
       return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: (h) => (/retry-after/i.test(h) ? (r.reessai || null) : null) }, text: async () => texte };
     };
-    S109.isAdmin = true; S109.AUTH = { user: "hugo", role: "admin" };
+    S109.isAdmin = true; S109.AUTH = { user: "analyste1", role: "admin" };
 
     // ══ (a) `apiSend` : LE CONTRAT, CAS PAR CAS, SUR LES DEUX INSTANCES DE LANGUE ════════════════════
     const jouerApiSend109 = async (mod, statut, corps) => {
@@ -18833,7 +18833,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       `(109b) SUR UNE PAGE DE PASSERELLE EN DEUX CENTS, LA DÉSACTIVATION N'EST PLUS DITE « NON ÉTABLIE » — elle se dit refusée, ou le geste jette (${jeteB4109 && jeteB4109.message}) : « ${nu109(enrolement109).slice(0, 200)} »`);
     document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
     servis109["GET /api/mfa/status"] = { corps: { enrolled: false, enabled: false } };
-    servis109["POST /api/mfa/enroll"] = { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } };
+    servis109["POST /api/mfa/enroll"] = { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:analyste1?secret=JBSWY3DPEHPK3PXP" } };
     await modIdp109.loadMfa(); await laisser109();
     // L'enrôlement demande d'abord le mot de passe du compte (modale partagée) — voir (e).
     const pCarte109 = modIdp109.startEnroll(); await laisser109();
@@ -18935,7 +18935,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     exiger(!eAnnule.appels.includes("POST /api/mfa/enroll") && !eAnnule.aveu && eAnnule.champ && eAnnule.champ.value === "",
       `(109e) une modale ANNULÉE poste l'enrôlement, peint un refus, ou garde le mot de passe dans son champ`);
     // LE SUCCÈS OUVRE LA CARTE ; UN DEUX CENTS SANS GRAINE NE L'OUVRE PAS.
-    const eSucces = await enroler109(modIdp109, { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } });
+    const eSucces = await enroler109(modIdp109, { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:analyste1?secret=JBSWY3DPEHPK3PXP" } });
     exiger(!eSucces.aveu && eSucces.texte.includes("JBSWY3DPEHPK3PXP") && !!document.querySelector("#mfa-code") && String(eSucces.envoi && eSucces.envoi[1]) === JSON.stringify({ password: MOT_DE_PASSE109 }),
       `(109e-négatif) l'enrôlement ACCEPTÉ n'ouvre plus la carte, ou avoue un refus — un instrument qui avoue toujours ne mesure rien : « ${eSucces.texte.slice(0, 160)} »`);
     for (const corps of [{}, HTML109]) {
@@ -18977,7 +18977,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const etapeDuMotDePasse109 = () => blocDuCode109.style.display === "none" && !utilisateur109.disabled && !motDePasse109.disabled && retour109.hidden === true && echeance109.hidden === true;
     const ouvrirLEtape109 = async (latence = 0) => {
       utilisateur109.disabled = false; motDePasse109.disabled = false;
-      utilisateur109.value = "hugo"; motDePasse109.value = "motdepasse";
+      utilisateur109.value = "analyste1"; motDePasse109.value = "motdepasse";
       servis109["POST /api/login"] = { statut: 200, corps: { mfa_required: true, ticket: "ticket-109" }, latence };
       await soumettre109();
     };
@@ -18992,7 +18992,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
         const vus = [];
         const jouer = async (quoi, prep) => { erreur109.hidden = true; erreur109.replaceChildren(); utilisateur109.disabled = false; motDePasse109.disabled = false; prep(); const r0 = rechargements109; await soumettre109(); vus.push([quoi, nu109(erreur109), rechargements109 - r0, erreur109.hidden]); };
         await jouer("vide", () => { utilisateur109.value = ""; motDePasse109.value = ""; });
-        await jouer("401", () => { utilisateur109.value = "hugo"; motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 401, corps: { error: "identifiants invalides" } }; });
+        await jouer("401", () => { utilisateur109.value = "analyste1"; motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 401, corps: { error: "identifiants invalides" } }; });
         await jouer("429+7", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 429, reessai: "7", corps: { error: "trop d'échecs d'authentification — réessayez plus tard" } }; });
         await jouer("429", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 429, corps: { error: "trop" } }; });
         await jouer("400 texte", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 400, corps: "requête mal formée" }; });
@@ -19001,7 +19001,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
         await jouer("502 HTML", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 502, corps: HTML109 }; });
         await jouer("200 HTML", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 200, corps: HTML109 }; });
         await jouer("200 {}", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 200, corps: {} }; });
-        await jouer("200 ok", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 200, corps: { ok: true, user: "hugo", role: "admin" } }; });
+        await jouer("200 ok", () => { motDePasse109.value = "x"; servis109["POST /api/login"] = { statut: 200, corps: { ok: true, user: "analyste1", role: "admin" } }; });
         const attendus = {
           "vide": [mot("identifiants_manquants"), 0], "401": [mot("identifiants_invalides"), 0], "429+7": [mot("trop_de_tentatives", { delai: 7 }), 0],
           "429": [mot("trop_de_tentatives_sans_delai"), 0], "400 texte": [mot("echec_de_connexion_detaille", { detail: "requête mal formée" }) + " (400)", 0],
@@ -19052,7 +19052,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       exiger(etapeDuCode109() && nu109(echeance109) === modConnexion109.motDeLaConnexion("echeance_du_ticket", { reste: "1 s" }),
         `(109d2) une milliseconde avant l'échéance, l'étape est fermée ou ne dit pas « 1 s » : « ${nu109(echeance109)} »`);
       maintenant109 = envoi109 + TENUE109; battre109(); await laisser109(3);
-      exiger(etapeDuMotDePasse109() && nu109(erreur109) === modConnexion109.motDeLaConnexion("ticket_expire") && erreur109.hidden === false && motDePasse109.value === "" && champDuCode109.value === "" && utilisateur109.value === "hugo",
+      exiger(etapeDuMotDePasse109() && nu109(erreur109) === modConnexion109.motDeLaConnexion("ticket_expire") && erreur109.hidden === false && motDePasse109.value === "" && champDuCode109.value === "" && utilisateur109.value === "analyste1",
         `(109d2) À L'ÉCHÉANCE, L'ÉTAPE DU CODE NE SE REFERME PAS D'ELLE-MÊME, ou ne le dit pas : « ${nu109(erreur109)} » — étape du mot de passe ${etapeDuMotDePasse109()}`);
       exiger(minuteries109.size === 0, `(109d2) ${minuteries109.size} minuterie(s) SURVIVENT à l'échéance`);
       // (d3) UNE ÉCHÉANCE PASSÉE SANS BATTEMENT (onglet endormi) NE PART PAS AU DÉMON.
@@ -19070,7 +19070,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       await ouvrirLEtape109();
       champDuCode109.value = "12";
       retour109.click(); await laisser109(3);
-      exiger(etapeDuMotDePasse109() && erreur109.hidden === true && motDePasse109.value === "" && champDuCode109.value === "" && utilisateur109.value === "hugo" && minuteries109.size === 0,
+      exiger(etapeDuMotDePasse109() && erreur109.hidden === true && motDePasse109.value === "" && champDuCode109.value === "" && utilisateur109.value === "analyste1" && minuteries109.size === 0,
         `(109d4) LE BOUTON DE RETOUR NE RAMÈNE PAS AU MOT DE PASSE, laisse un champ ou une minuterie derrière lui — étape du mot de passe ${etapeDuMotDePasse109()}, ${minuteries109.size} minuterie(s)`);
       motDePasse109.value = "motdepasse";
       servis109["POST /api/login"] = { statut: 401, corps: { error: "identifiants invalides" } };
@@ -19091,7 +19091,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
           `(109d6) LE SECOND FACTEUR SERVI ${statut} ${typeof corps === "string" ? "HTML" : JSON.stringify(corps)} RECHARGE (${rechargements109 - r0}), quitte l'étape, colle son corps ou n'est pas nommé : « ${nu109(erreur109).slice(0, 200)} »`);
       }
       // (d7) LE SUCCÈS RECHARGE, ET ARRÊTE LE DÉCOMPTE AVANT.
-      servis109["POST /api/login/mfa"] = { statut: 200, corps: { ok: true, user: "hugo", role: "admin" } };
+      servis109["POST /api/login/mfa"] = { statut: 200, corps: { ok: true, user: "analyste1", role: "admin" } };
       const r7109 = rechargements109;
       await soumettre109();
       exiger(rechargements109 === r7109 + 1 && minuteries109.size === 0,
@@ -19228,7 +19228,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const hotes110 = { "#users": new Element("section"), "#user-list": new Element("div"), "#acces-list": new Element("div") };
   const servis110 = {}, appels110 = [], corpsEnvoyes110 = [];
   let rechargements110 = 0;
-  const LISTE110 = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 2, name: "bob", role: "editor", created: 2 }], me: "hugo", acces: [] };
+  const LISTE110 = { users: [{ id: 1, name: "analyste1", role: "admin", created: 1 }, { id: 2, name: "bob", role: "editor", created: 2 }], me: "analyste1", acces: [] };
   const ACTUEL110 = "actuel-110-" + "s".repeat(12), NEUF110 = "neuf-110-" + "n".repeat(12);
   const HTML110 = "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>";
   // Les refus que `user_update` sert par le jugement partagé : [statut, nom de la constante, phrase relue dans le démon].
@@ -19247,7 +19247,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       const statut = r.statut || 200;
       return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: (h) => (/retry-after/i.test(h) ? (r.reessai || null) : null) }, text: async () => texte, json: async () => JSON.parse(texte) };
     };
-    S110.isAdmin = true; S110.AUTH = { user: "hugo", role: "admin" };
+    S110.isAdmin = true; S110.AUTH = { user: "analyste1", role: "admin" };
     servis110["GET /api/users"] = { corps: LISTE110 };
 
     const fenetre110 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
@@ -19296,7 +19296,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     // ══ (a) LA LIGNE DE L'APPELANT PORTE LE CHAMP DU MOT DE PASSE ACTUEL ; AUCUNE AUTRE ══════════════
     hotes110["#user-list"].replaceChildren();
     await modComptes110.loadUsers(); await laisser110();
-    const soi110 = ligneDe110("hugo"), autre110 = ligneDe110("bob");
+    const soi110 = ligneDe110("analyste1"), autre110 = ligneDe110("bob");
     instrument110(!!soi110 && !!autre110 && !!soi110.neuf && !!autre110.neuf && !!soi110.enregistrer && !!soi110.puits,
       "l'éditeur des comptes n'est plus peint sous la forme lue ici (ligne `.urow`, éditeur `.ueditor` : liste, champ du nouveau mot de passe, bouton, puits)");
     exiger(!!soi110.actuel && soi110.actuel.getAttribute("type") === "password" && soi110.actuel.autocomplete === "current-password"
@@ -19304,17 +19304,17 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       "(110a) LA LIGNE DE L'APPELANT N'A PAS DE CHAMP DE MOT DE PASSE ACTUEL (type « password », `current-password`, libellé de la table), ou une AUTRE ligne en porte un, ou le puits est peint au repos");
 
     // ══ (b) UN MOT DE PASSE ACTUEL ABSENT NE PART PAS ; UNE CONFIRMATION ANNULÉE NON PLUS ══════════════
-    const bVide110 = await modifier110(modComptes110, "hugo", { actuel: "" });
+    const bVide110 = await modifier110(modComptes110, "analyste1", { actuel: "" });
     exiger(!bVide110.envoi && !bVide110.confirmation && bVide110.cle === "mot_de_passe_actuel_manquant" && nu110(bVide110.puits) === mot110("mot_de_passe_actuel_manquant") && bVide110.puits.hidden === false,
       `(110b) SON PROPRE MOT DE PASSE PART SANS LE MOT DE PASSE ACTUEL, ou le manque n'est pas dit dans le puits : ${JSON.stringify({ envoi: bVide110.envoi, cle: bVide110.cle, texte: nu110(bVide110.puits) })}`);
-    const bAnnule110 = await modifier110(modComptes110, "hugo", { actuel: ACTUEL110, confirmer: false });
+    const bAnnule110 = await modifier110(modComptes110, "analyste1", { actuel: ACTUEL110, confirmer: false });
     exiger(bAnnule110.confirmation && !bAnnule110.envoi && bAnnule110.ligne.actuel.value === "" && bAnnule110.puits.hidden === true,
       `(110b) une confirmation ANNULÉE poste le geste, peint un refus, ou garde le mot de passe actuel dans son champ : ${JSON.stringify({ envoi: bAnnule110.envoi, champ: bAnnule110.ligne.actuel.value === "" ? "" : "(plein)" })}`);
 
     // ══ (c) CHACUN DES REFUS QUE LE DÉMON SERT A SA FACE ; LE CHAMP EST VIDÉ, LE CORPS PORTE `current` ══════
     const ecartsC110 = [];
     for (const [statut, nom, cause] of refus110) {
-      const r = await modifier110(modComptes110, "hugo", { actuel: ACTUEL110, reponse: { statut, corps: { error: cause }, reessai: statut === 429 ? "42" : undefined } });
+      const r = await modifier110(modComptes110, "analyste1", { actuel: ACTUEL110, reponse: { statut, corps: { error: cause }, reessai: statut === 429 ? "42" : undefined } });
       const cle = statut === 429 ? "refus_nomme_avec_delai" : "refus_nomme";
       const attendu = mot110(cle, 42) + " « " + cause.trim() + " »";
       if (!r.envoi || r.envoi.current !== ACTUEL110 || r.envoi.password !== NEUF110 || r.envoi.role !== "admin" || Object.keys(r.envoi).length !== 3) ecartsC110.push(`${statut} ${nom} : corps envoyé ${JSON.stringify(r.envoi && Object.keys(r.envoi))}`);
@@ -19327,13 +19327,13 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     exiger(refus110.length === 5 && ecartsC110.length === 0,
       `(110c) L'ÉDITEUR N'ENVOIE PAS \`current\`, NE LE VIDE PAS, OU NE PEINT PAS UN REFUS NOMMÉ PAR LE DÉMON DANS LE PUITS DE LA LIGNE : ${JSON.stringify(ecartsC110)}`);
     // Une page de passerelle n'est pas un refus du démon : sa propre phrase, sans son HTML.
-    const cPasserelle110 = await modifier110(modComptes110, "hugo", { actuel: ACTUEL110, reponse: { statut: 502, corps: HTML110 } });
+    const cPasserelle110 = await modifier110(modComptes110, "analyste1", { actuel: ACTUEL110, reponse: { statut: 502, corps: HTML110 } });
     exiger(cPasserelle110.cle === "reponse_hors_demon" && nu110(cPasserelle110.puits) === modNoyau110.motDeLaReponseHorsDemon("page_de_passerelle") && !/<|nginx/.test(nu110(cPasserelle110.puits)) && cPasserelle110.ligne.actuel.value === "",
       `(110c) une page de passerelle est peinte comme un refus du démon, ou colle son HTML : « ${nu110(cPasserelle110.puits).slice(0, 200)} »`);
     exiger(fuite110().length === 0, `(110c) LE MOT DE PASSE ACTUEL SURVIT AU GESTE — dans le stockage du site ou le texte du document : ${JSON.stringify(fuite110())}`);
 
     // ══ (d) LE SUCCÈS DE SON PROPRE CHANGEMENT RECHARGE (SES SESSIONS SONT RÉVOQUÉES) ; UN AUTRE COMPTE, NON ═══
-    const dSoi110 = await modifier110(modComptes110, "hugo", { actuel: ACTUEL110, reponse: { statut: 204, corps: "" } });
+    const dSoi110 = await modifier110(modComptes110, "analyste1", { actuel: ACTUEL110, reponse: { statut: 204, corps: "" } });
     exiger(!!dSoi110.envoi && dSoi110.envoi.current === ACTUEL110 && dSoi110.recharges === 1 && dSoi110.ligne.actuel.value === "" && dSoi110.puits.hidden === true,
       `(110d-négatif) le changement ACCEPTÉ de son propre mot de passe ne recharge pas (ses sessions viennent d'être révoquées), ou avoue un refus — un instrument qui avoue toujours ne mesure rien : ${JSON.stringify({ recharges: dSoi110.recharges, cle: dSoi110.cle })}`);
     const dAutre110 = await modifier110(modComptes110, "bob", { reponse: { statut: 204, corps: "" } });
@@ -19351,7 +19351,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       && clesComptes110.every((k) => modComptesEn110.motDeLaModificationDeCompte(k, { delai: 42 }) !== modComptes110.motDeLaModificationDeCompte(k, { delai: 42 })
         && !/[éèêàçù]/.test(modComptesEn110.motDeLaModificationDeCompte(k, { delai: 42 }))),
       `(110e) la table des faces de l'éditeur des comptes n'a pas ses DEUX faces sur chacune de ses entrées, ou une face anglaise reste française : ${JSON.stringify(clesComptes110)}`);
-    const eEn110 = await modifier110(modComptesEn110, "hugo", { actuel: "" });
+    const eEn110 = await modifier110(modComptesEn110, "analyste1", { actuel: "" });
     exiger(nu110(eEn110.puits) === modComptesEn110.motDeLaModificationDeCompte("mot_de_passe_actuel_manquant") && /current password is required/.test(nu110(eEn110.puits)),
       `(110e) SOUS \`LANG='en'\`, le mot de passe actuel manquant n'est pas dit en anglais : « ${nu110(eEn110.puits)} »`);
 
@@ -19364,7 +19364,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       formulaire110._ecouteurs = []; formulaire110._bound = false; modConnexion110.bindLoginForm();
       const soumettre110 = async (reponse) => {
         erreur110.hidden = true; erreur110.replaceChildren(); utilisateur110.disabled = false; motDePasse110.disabled = false;
-        utilisateur110.value = "hugo"; motDePasse110.value = "x";
+        utilisateur110.value = "analyste1"; motDePasse110.value = "x";
         servis110["POST /api/login"] = reponse;
         const r0 = rechargements110;
         formulaire110.dispatchEvent(new Evenement("submit", { bubbles: true })); await laisser110(30);
@@ -19905,10 +19905,10 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const dernier112 = (k) => { const a = appels112.filter((x) => x.k === k); return a.length ? a[a.length - 1] : null; };
 
   try {
-    for (const S of [S112, SEn112]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin" }; }
+    for (const S of [S112, SEn112]) { S.isAdmin = true; S.AUTH = { user: "analyste1", role: "admin" }; }
 
     // ══ (v) `P10.24-v` — LA SUPPRESSION D'UN COMPTE ════════════════════════════════════════════════
-    const LISTE112 = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 2, name: "wiz", role: "admin", created: 2 }, { id: 3, name: "bob", role: "editor", created: 3 }], me: "hugo", acces: [] };
+    const LISTE112 = { users: [{ id: 1, name: "analyste1", role: "admin", created: 1 }, { id: 2, name: "wiz", role: "admin", created: 2 }, { id: 3, name: "bob", role: "editor", created: 3 }], me: "analyste1", acces: [] };
     servis112["GET /api/users"] = { corps: LISTE112 };
     const HTML112 = "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>";
     const fenetre112 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
@@ -20139,7 +20139,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     // (z9) Un panneau de tableau de bord (table paginée par décalage), page 2 atteinte puis vidée.
     const grille112 = new Element("div");
     const PANNEAU112 = { id: 11, title: "T", query: "search action=login | table a", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
-    servis112["GET /api/dashboard/3"] = { corps: { id: 3, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU112] } };
+    servis112["GET /api/dashboard/3"] = { corps: { id: 3, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU112] } };
     let pageDuPanneau112 = { columns: ["a"], rows: Array.from({ length: 50 }, (_, i) => [i]), total: 60, stats: {} };
     servis112["POST /api/query"] = () => ({ corps: pageDuPanneau112 });
     S112.panelCards = [];
@@ -20434,8 +20434,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
   const HTML113 = "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body><center>nginx</center></body></html>";
 
   try {
-    for (const S of [S113, SEn113]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin" }; }
-    const LISTE113 = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 3, name: "bob", role: "editor", created: 3 }], me: "hugo", acces: [] };
+    for (const S of [S113, SEn113]) { S.isAdmin = true; S.AUTH = { user: "analyste1", role: "admin" }; }
+    const LISTE113 = { users: [{ id: 1, name: "analyste1", role: "admin", created: 1 }, { id: 3, name: "bob", role: "editor", created: 3 }], me: "analyste1", acces: [] };
     servis113["GET /api/users"] = { corps: LISTE113 };
 
     // ══ (i) `P10.25-i` — LE GESTE RÉEL DE CRÉATION : les champs posés, le formulaire soumis, la confirmation jouée ═══
@@ -20668,7 +20668,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     const panneau113 = async (pages) => {
       const grille = new Element("div");
       const PANNEAU = { id: 13, title: "T", query: "search action=login | table a", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
-      servis113["GET /api/dashboard/5"] = { corps: { id: 5, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU] } };
+      servis113["GET /api/dashboard/5"] = { corps: { id: 5, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU] } };
       servis113["POST /api/query"] = (d) => ({ corps: pages[Math.round((d.offset || 0) / 50)] || { columns: ["a"], rows: [], total: 0, stats: {} } });
       S113.panelCards = [];
       await modTdb113.loadPanelsInto(grille, { id: 5 }); await laisser113(10);
@@ -20738,7 +20738,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     exiger(raisons113.every((r) => clesDesFacesDuCompteRendu113.includes("raison_" + r)),
       `(113p0) une raison de révocation servie par le démon n'a pas de face (${JSON.stringify(raisons113)} / ${JSON.stringify(clesDesFacesDuCompteRendu113)})`);
     const DECISION113 = constante113(JETONS113, "DECISION_SUR_LES_JETONS_DU_COMPTE_SUPPRIME");
-    const COMPTE_RENDU113 = { action: "config.user.delete", kind: "user", target: "bob", role: "editor", actor: "hugo", second_facteur_retire: true, objets_reattribues_a: "hugo",
+    const COMPTE_RENDU113 = { action: "config.user.delete", kind: "user", target: "bob", role: "editor", actor: "analyste1", second_facteur_retire: true, objets_reattribues_a: "analyste1",
       objets_reattribues: { dashboard: [4, 5], view: [7], library_panel: [], playlist: [] }, objets_purges: { saved_query: [9], dashboard_snapshot: [] },
       jetons: { revoques: [{ name: "graf-113", kind: "datasource", host: null, raison: "lecture_des_donnees" }, { name: "neuf-113", kind: "agent", host: "web01", raison: "jamais_servi" }],
         conserves_secret_connu: [{ name: "hec-113", kind: "hec", host: null, last_used: 1758000000 }], auteur_non_etabli: { agent: 3, hec: 1 }, decision: DECISION113 } };
@@ -20759,13 +20759,13 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     };
     const ATTENDU_P1113 = {
       fr: ["Compte « bob » supprimé — ce que le démon en a fait :", [
-        ["objets_reattribues", "objets réattribués à hugo : 2 tableau(x) de bord, 1 vue(s)", ""], ["objets_purges", "objets supprimés : 1 requête(s) enregistrée(s)", ""],
+        ["objets_reattribues", "objets réattribués à analyste1 : 2 tableau(x) de bord, 1 vue(s)", ""], ["objets_purges", "objets supprimés : 1 requête(s) enregistrée(s)", ""],
         ["second_facteur_retire", "second facteur retiré", ""], ["jeton_revoque", "jeton RÉVOQUÉ : graf-113 (source de données) — il donnait la lecture des données", ""],
         ["jeton_revoque", "jeton RÉVOQUÉ : neuf-113 (agent · web01) — jamais servi, aucun capteur n'en dépendait", ""],
         ["jeton_conserve", "jeton CONSERVÉ, secret connu d'un compte supprimé : hec-113 (HEC) — le révoquer et en refrapper un pour son capteur", "bad"],
         ["auteur_non_etabli", "jetons d'auteur non établi, non touchés : 3 agent, 1 HEC", ""]]],
       en: ["Account “bob” deleted — what the daemon did with it:", [
-        ["objets_reattribues", "objects reassigned to hugo: 2 dashboard(s), 1 view(s)", ""], ["objets_purges", "objects deleted: 1 saved query(ies)", ""],
+        ["objets_reattribues", "objects reassigned to analyste1: 2 dashboard(s), 1 view(s)", ""], ["objets_purges", "objects deleted: 1 saved query(ies)", ""],
         ["second_facteur_retire", "second factor removed", ""], ["jeton_revoque", "token REVOKED: graf-113 (data source) — it granted reading the data", ""],
         ["jeton_revoque", "token REVOKED: neuf-113 (agent · web01) — never used, no sensor depended on it", ""],
         ["jeton_conserve", "token KEPT, secret known to a deleted account: hec-113 (HEC) — revoke it and mint a new one for its sensor", "bad"],
@@ -21012,7 +21012,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       let grille = null;
       if (panneau) {
         grille = new Element("div");
-        servis114 = { "GET /api/dashboard/5": { corps: { id: 5, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU114] } }, "*": { corps: {} } };
+        servis114 = { "GET /api/dashboard/5": { corps: { id: 5, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU114] } }, "*": { corps: {} } };
         S.panelCards = [];
         await modTdb114.loadPanelsInto(grille, { id: 5 }); await laisser114(10);
       }
@@ -21084,8 +21084,8 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
     globalThis.fetch = simulacre114;
 
     // ══ (x) `P10.25-x` — UNE DEMANDE QUI N'ABOUTIT PAS N'EST PAS UN REFUS, POUR LA SUPPRESSION ET LA MODIFICATION ══
-    for (const S of [S114, SEn114]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin" }; }
-    const LISTE114 = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 3, name: "bob", role: "editor", created: 3 }, { id: 4, name: "alice", role: "admin", created: 4 }], me: "hugo", acces: [] };
+    for (const S of [S114, SEn114]) { S.isAdmin = true; S.AUTH = { user: "analyste1", role: "admin" }; }
+    const LISTE114 = { users: [{ id: 1, name: "analyste1", role: "admin", created: 1 }, { id: 3, name: "bob", role: "editor", created: 3 }, { id: 4, name: "alice", role: "admin", created: 4 }], me: "analyste1", acces: [] };
     servis114 = { "GET /api/users": { corps: LISTE114 } };
     const lignesDeLaListe114 = async (mod) => { hotes114["#user-list"].replaceChildren(); await mod.loadUsers(); await laisser114(); return hotes114["#user-list"].children; };
     const indexDe114 = (enfants, nom) => enfants.findIndex((e) => e.classList && e.classList.contains("urow") && nu114(e.children[0]).startsWith(nom + " "));
@@ -21206,7 +21206,7 @@ function ecrituresDuGesteHorsPreferences(journal, depuis) {
       const PANNEAU = { id: 15, title: "T", query: "search action=login | table a", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
       const CINQUANTE = Array.from({ length: 50 }, (_, i) => [i]);
       const pages = [{ columns: ["a"], rows: CINQUANTE, total: 120, stats: {} }, { columns: ["a"], rows: [], total: 120, stats: {} }];
-      servis114 = { "GET /api/dashboard/6": { corps: { id: 6, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU] } },
+      servis114 = { "GET /api/dashboard/6": { corps: { id: 6, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU] } },
         "POST /api/query": (d) => ({ corps: pages[Math.round((d.offset || 0) / 50)] || { columns: ["a"], rows: [], total: 120, stats: {} } }) };
       S114.panelCards = [];
       await modTdb114.loadPanelsInto(grille, { id: 6 }); await laisser114(10);
@@ -21502,7 +21502,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 
   globalThis.fetch = simulacre115;
   globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine115(fn, ms >= 100 ? 0 : ms));
-  for (const L of [FR115, EN115]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  for (const L of [FR115, EN115]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; }
   try {
     // ══ (q) `P10.26-q` — CHAQUE SITE, LE CINQ CENT TROIS DU COMMIT REFUSÉ, DANS LES DEUX LANGUES ════════════════
     const ecartsQ115 = [];
@@ -21671,7 +21671,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     // (o4) Le quatre cent un garde son chemin d'avant (`P10.26-n`) ; (o5) une lecture servie établit le rôle.
     const nonConnecte115 = await lireLesComptes115(FR115, { statut: 401, corps: "authentification requise" }, true);
     if (nonConnecte115.admin !== false || nonConnecte115.cle !== null) ecartsO115.push(`401 : admin ${nonConnecte115.admin}, « ${nonConnecte115.cle} »`);
-    const servie115 = await lireLesComptes115(FR115, { corps: { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }], me: "hugo", acces: [] } }, false);
+    const servie115 = await lireLesComptes115(FR115, { corps: { users: [{ id: 1, name: "analyste1", role: "admin", created: 1 }], me: "analyste1", acces: [] } }, false);
     if (servie115.admin !== true || servie115.cle !== null) ecartsO115.push(`lecture servie : admin ${servie115.admin}, « ${servie115.cle} »`);
     // (o6) Sous `LANG='en'` : la face anglaise, sans accent ; les deux faces ont leurs deux langues.
     const anglais115 = await lireLesComptes115(EN115, { statut: 500, corps: { error: "LECTURE DES COMPTES-115 : la table n'a pas été lue.", id: "plume-e1-13" } }, true);
@@ -21874,7 +21874,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 
   globalThis.fetch = simulacre116;
   globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine116(fn, ms >= 100 ? 0 : ms));
-  for (const L of [FR116, EN116]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  for (const L of [FR116, EN116]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; }
   try {
     // ══ (b) `P10.27-b` / `P10.26-w` — CHAQUE GESTE, LE CINQ CENT TROIS DU COMMIT REFUSÉ, DANS LES DEUX LANGUES ═════
     const ecartsB116 = [];
@@ -22216,7 +22216,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 
   globalThis.fetch = simulacre117;
   globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine117(fn, ms >= 100 ? 0 : ms));
-  for (const L of [FR117, EN117]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  for (const L of [FR117, EN117]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; }
   try {
     // ══ (q) `P10.27-q` — LA FAMILLE « RIEN N'A CHANGÉ » PAR SES DEUX OUVERTURES ; LES CAUSES À EFFET PARTIEL, NOMMÉES ══
     const FAMILLE_RIEN_N_A_CHANGE117 = ["ecriture_non_validee", "transaction_non_prise", "ecriture_non_prise"];   // `P10.29-v` : la troisième ouverture
@@ -22771,7 +22771,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const DATASET118 = { id: 4, name: "ds118", kind: "pivot", soql: "search x", managed: 2, enabled: true };
   const CORRELATION118 = { id: 12, name: "c118", key_field: "src_ip", entity_type: "ip", steps: "[]", window_s: 3600, interval_s: 300, severity: 3, mitre: "", risk_score: 0, enabled: true, managed: 2 };
   const LIGNE_DE_BASE118 = { id: 15, name: "b118", query: "search x | stats count by host", entity_field: "host", value_field: "", entity_type: "host", bucket_s: 3600, min_samples: 5, z_threshold: 3, window_s: 604800, interval_s: 3600, severity: 2, mitre: "", risk_score: 0, enabled: true };
-  const SILENCE118 = { id: 13, matchers: { host: "web-118" }, expires_at: 4102444800, reason: "", active: true, created_by: "hugo" };
+  const SILENCE118 = { id: 13, matchers: { host: "web-118" }, expires_at: 4102444800, reason: "", active: true, created_by: "analyste1" };
   const POLITIQUE118 = { id: 14, matchers: { host: "web-118" }, contact_points: [1], continue: false, enabled: true };
   const LOOKUP118 = { name: "geo118", key_field: "ip", cols: "pays", rows: 1, updated: 1, managed: 2 };
   const LECTURES118 = {
@@ -23004,7 +23004,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 
   globalThis.fetch = simulacre118;
   globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine118(fn, ms >= 100 ? 0 : ms));
-  for (const L of [FR118, EN118]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  for (const L of [FR118, EN118]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; }
   process.on("unhandledRejection", surRejetNonTraite118);
   try {
     // ══ (e) + (d) — CHAQUE SITE, LA RÉPONSE DE SON GESTIONNAIRE, DANS LES DEUX LANGUES ═══════════════════════════
@@ -23408,9 +23408,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const faceEssai119 = (L, nature) => appeler119(L.noyau, "motDuRefusDUnEssai", nature);
 
   // ── LES DONNÉES SERVIES ───────────────────────────────────────────────────────────────────────────────────────
-  const CAS119 = { id: 4, title: "cas-119", status: "triage", priority: 3, severity: 2, ts: 1, updated: 1, owner: "hugo", assignee: "", summary: "", items: [{ id: 7, ts: 1, kind: "note", author: "hugo", body: "note-119" }] };
+  const CAS119 = { id: 4, title: "cas-119", status: "triage", priority: 3, severity: 2, ts: 1, updated: 1, owner: "analyste1", assignee: "", summary: "", items: [{ id: 7, ts: 1, kind: "note", author: "analyste1", body: "note-119" }] };
   const CONNECTEUR119 = { id: 5, name: "http-119", type: "http_pull", env_id: "prod", interval_s: 300, enabled: true, has_secret: true, config: {} };
-  const TDB119 = { id: 6, name: "SOC-119", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [], cols: 2 };
+  const TDB119 = { id: 6, name: "SOC-119", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [], cols: 2 };
   const METRIQUES119 = { ts: 1000, version: "1.4.2", uptime_s: 3600, process: {}, ingest: {}, search: {}, scheduler: {}, db: {}, host: {}, alerts_open: 0, http: {} };
   const LECTURES119 = {
     "GET /api/cases/4": { corps: CAS119 }, "GET /api/cases/4/links": { corps: { links: [], served: 0 } },
@@ -23528,7 +23528,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 
   globalThis.fetch = simulacre119;
   globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine119(fn, ms >= 100 ? 0 : ms));
-  for (const L of [FR119, EN119]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  for (const L of [FR119, EN119]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; }
   process.on("unhandledRejection", surRejetNonTraite119);
   try {
     // ══ (d) `P10.27-d` — CHAQUE SITE, LA RÉPONSE DE SON GESTIONNAIRE, DANS LES DEUX LANGUES ═════════════════════════
@@ -23885,7 +23885,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     parDonnee119(formulaireDeConnexion119, "data-refus-de-l-ouverture").forEach((n) => n.remove());
     if (recouvrement119) recouvrement119.hidden = recouvrementCache119;
     document.body.classList.toggle("login-locked", verrouille119);
-    for (const L of [FR119, EN119]) L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" };   // la session close par (n) est rouverte
+    for (const L of [FR119, EN119]) L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" };   // la session close par (n) est rouverte
 
     // ══ (m) `P10.26-m` — LA PREMIÈRE PAGE VIDE DANS UN TOTAL COMPTÉ DIT L'ÉCART, SUR CHAQUE SURFACE ═════════════════════
     const ecartsM119 = [];
@@ -23911,7 +23911,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     {
       const grille = new Element("div");
       const PANNEAU = { id: 16, title: "T", query: "search action=login | table a", is_soql: true, viz: "table", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
-      servis119 = { "GET /api/dashboard/6": { corps: { id: 6, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU] } }, "POST /api/query": () => ({ corps: { columns: ["a"], rows: [], total: 120, stats: {} } }) };
+      servis119 = { "GET /api/dashboard/6": { corps: { id: 6, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU] } }, "POST /api/query": () => ({ corps: { columns: ["a"], rows: [], total: 120, stats: {} } }) };
       FR119.S.panelCards = [];
       await FR119.tableaux.loadPanelsInto(grille, { id: 6 }); await laisser119(10);
       cueillir119(grille, (e) => e.classList && e.classList.contains("panel")).forEach((c) => { if (c._panel && !c._panel.loaded) { c._panel.loaded = true; c._panel.reload(); } });
@@ -24182,7 +24182,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   globalThis.fetch = simulacre120;
   globalThis.setTimeout = (fn, ms) => { if (ms >= 1000) { longues120.push({ fn, ms }); return 100000 + longues120.length; } return minuterieOrigine120(fn, ms >= 100 ? 0 : ms); };
   document.querySelector = (sel) => (sel === "#alerts .body" ? corpsDesAlertes120 : qs120(sel));
-  for (const L of [FR120, EN120]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  for (const L of [FR120, EN120]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; }
   try {
     // ══ (g) `P10.29-g` — LES CAPTURES D'UNE LECTURE : RECENSÉES, NOMMÉES, JOUÉES ═══════════════════════════════════
     const ecartsG120 = [];
@@ -24286,7 +24286,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       { nom: "mes modèles (avis)", route: "GET /api/saved-queries", geste: (L) => L.modeles.fetchSaved(), avis: true },
       { nom: "liste des cases (rattachement)", route: "GET /api/cases", geste: (L) => L.dossiers.addToCase("alert", "a-120", "alert:1"), avis: true, apres: () => (fenetre120() ? "une fenêtre de rattachement s'ouvre sur une liste NON LUE" : "") },
       { nom: "liste des cases (lien)", route: "GET /api/cases", geste: (L) => L.dossiers.linkCasePrompt(4), avis: true, apres: () => (fenetre120() ? "une fenêtre de lien s'ouvre sur une liste NON LUE" : "") },
-      { nom: "liste des cases (fusion)", route: "GET /api/cases", preparer: async (L) => { L.S.caseSelectedId = 4; const h = qs120("#case-detail"); if (h) { h.replaceChildren(); L.dossiers.renderCaseDetail(h, { id: 4, title: "cas-120", status: "triage", priority: 3, severity: 2, ts: 1, updated: 1, owner: "hugo", assignee: "", summary: "", items: [] }); } await laisser120(20); },
+      { nom: "liste des cases (fusion)", route: "GET /api/cases", preparer: async (L) => { L.S.caseSelectedId = 4; const h = qs120("#case-detail"); if (h) { h.replaceChildren(); L.dossiers.renderCaseDetail(h, { id: 4, title: "cas-120", status: "triage", priority: 3, severity: 2, ts: 1, updated: 1, owner: "analyste1", assignee: "", summary: "", items: [] }); } await laisser120(20); },
         geste: async () => { const b = cueillir120(qs120("#case-detail"), (e) => e.tagName === "BUTTON" && nu120(e) === "Fusionner…")[0]; if (!b || typeof b.onclick !== "function") throw new Error("(bouton « Fusionner… » absent)"); await b.onclick({ stopPropagation() {}, preventDefault() {} }); },
         avis: true, apres: () => (fenetre120() ? "une fenêtre de fusion s'ouvre sur une liste NON LUE" : "") },
       { nom: "panneau Système", route: "GET /api/system/metrics", geste: (L) => L.systeme.loadSystemView(), lire: () => nu120(qs120("#system-body")), noeud: () => parDonnee120(qs120("#system-body"), "data-refus-d-une-lecture")[0] },
@@ -24572,7 +24572,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       const grille = new Element("div");
       const CINQUANTE = Array.from({ length: 50 }, (_, i) => [i]);
       const pages = [{ columns: ["a"], rows: CINQUANTE, total: 120, stats: {} }, { columns: ["a"], rows: [], total: 120, stats: {} }];
-      servis120 = { "GET /api/dashboard/6": { corps: { id: 6, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU_DE_TABLE120] } },
+      servis120 = { "GET /api/dashboard/6": { corps: { id: 6, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU_DE_TABLE120] } },
         "POST /api/query": (d) => ({ corps: pages[Math.round(((d && d.offset) || 0) / 50)] || { columns: ["a"], rows: [], total: 120, stats: {} } }) };
       FR120.S.panelCards = [];
       await FR120.tableaux.loadPanelsInto(grille, { id: 6 }); await laisser120(10);
@@ -25042,7 +25042,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   globalThis.fetch = simulacre121;
   globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine121(fn, ms >= 100 ? 0 : ms));
   document.querySelector = (sel) => (sel === "#integrations .body" ? corpsDesIntegrations121 : qs121(sel));
-  for (const L of [FR121, EN121]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; L.S.viewList = []; }
+  for (const L of [FR121, EN121]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; L.S.viewList = []; }
   process.on("unhandledRejection", surRejetNonTraite121);
   try {
 
@@ -25084,7 +25084,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     const PANNEAU121 = { id: 71, title: "P121", query: "search x | stats count by a", is_soql: true, viz: "bar", position: 0, window_s: 0, visibility: "private", query_private: false, cols: 1, height: 0, drill: "", library_panel_id: null };
     const GESTES_T121 = [
       { site: "retrait d'un tableau de bord", route: "DELETE /api/dashboard/61", puits: PUITS_DES_TABLEAUX121, geste: (L) => cliquer121(boutonParTitre121(tuile121(L), "Supprimer le dashboard"), "✕ du tableau de bord") },
-      { site: "retrait d'un panneau", route: "DELETE /api/panels/71", puits: PUITS_DES_TABLEAUX121, lectures: { "GET /api/dashboard/62": { corps: { id: 62, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU121] } } },
+      { site: "retrait d'un panneau", route: "DELETE /api/panels/71", puits: PUITS_DES_TABLEAUX121, lectures: { "GET /api/dashboard/62": { corps: { id: 62, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU121] } } },
         preparer: async (L) => { grille121.replaceChildren(); L.S.panelCards = []; await L.tableaux.loadPanelsInto(grille121, { id: 62 }); await laisser121(10); },
         geste: (L) => cliquer121(boutonParTitre121(grille121, "Supprimer le panneau"), "✕ du panneau") },
       { site: "création d'un tableau de bord", route: "POST /api/dashboards", puits: PUITS_DES_TABLEAUX121, valeurs: { name: "d121-neuf" }, lectures: { "GET /api/dashboards": { corps: { dashboards: [] } } },
@@ -25244,7 +25244,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     instrument121(!!enrolement121, "l'hôte du bloc MFA (`#mfa-enroll`) n'est pas dans `index.html`");
     const aveuMfa121 = (attr) => (enrolement121 ? [enrolement121, ...cueillir121(enrolement121, () => true)].find((n) => n && n.getAttribute && n.getAttribute(attr)) || null : null);
     const ouvrirLaCarte121 = async (L) => {
-      servis121 = { "*": { corps: {} }, "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } }, "POST /api/mfa/enroll": { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:hugo?secret=JBSWY3DPEHPK3PXP" } } };
+      servis121 = { "*": { corps: {} }, "GET /api/mfa/status": { corps: { enrolled: false, enabled: false } }, "POST /api/mfa/enroll": { corps: { secret: "JBSWY3DPEHPK3PXP", otpauth_uri: "otpauth://totp/plume:analyste1?secret=JBSWY3DPEHPK3PXP" } } };
       await L.idp.loadMfa(); await laisser121();
       const p = L.idp.startEnroll(); await accepterLesFenetres121({}); await p; await laisser121();
       return cueillir121(enrolement121, (e) => e.tagName === "BUTTON" && nu121(e) === "Vérifier & activer")[0] || null;
@@ -25432,15 +25432,15 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     const resultatR121 = qs121("#qresult"), ligneR121 = qs121("#qstats"), auditR121 = qs121("#opaccess-body");
     instrument121(!!resultatR121 && !!ligneR121 && !!auditR121, "`#qresult`, `#qstats` ou `#opaccess-body` n'est plus dans `index.html`");
     const LECTURES_R121 = [
-      { site: "panneau d'un tableau de bord", lectures: (panneau) => ({ "GET /api/dashboard/64": { corps: { id: 64, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU_NON_PAGINE121] } } }),
+      { site: "panneau d'un tableau de bord", lectures: (panneau) => ({ "GET /api/dashboard/64": { corps: { id: 64, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU_NON_PAGINE121] } } }),
         route: "GET /api/panels/81/data", geste: (L) => chargerLePanneau121(L), hote: () => grilleR121 },
-      { site: "panneau paginé par le démon", lectures: () => ({ "GET /api/dashboard/64": { corps: { id: 64, name: "SOC", owner: "hugo", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU_PAGINE121] } } }),
+      { site: "panneau paginé par le démon", lectures: () => ({ "GET /api/dashboard/64": { corps: { id: 64, name: "SOC", owner: "analyste1", visibility: "shared", view_id: null, editable: true, panels: [PANNEAU_PAGINE121] } } }),
         route: "POST /api/query", geste: (L) => chargerLePanneau121(L), hote: () => grilleR121 },
       { site: "résultat de l'Explore", route: "POST /api/query", deuxCentsSeulement: true,
         geste: async (L) => { L.S.exploreInflight = null; L.S.evState = { q: "search sshd | table a b", isSoql: true, keyset: false, cursors: [null], page: 0, pageSize: 3, total: -1, shown: 0, totalCapped: false, countFired: true, realTotal: false, totalError: null, win: { from: 1000, to: 2000 } }; resultatR121.replaceChildren(); ligneR121.replaceChildren(); await L.viz.evLoad(); await laisser121(20); },
         hote: () => resultatR121 },
       { site: "audit des accès opérateur", route: "POST /api/query", deuxCentsSeulement: true,
-        geste: async (L) => { L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie", is_superadmin: true }; await L.tenants.loadOperatorAudit(); await laisser121(); }, hote: () => auditR121 },
+        geste: async (L) => { L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie", is_superadmin: true }; await L.tenants.loadOperatorAudit(); await laisser121(); }, hote: () => auditR121 },
     ];
     const mesureR121 = [];
     for (const L of [FR121, EN121]) {
@@ -25646,7 +25646,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     const soumettre122 = async () => { formulaire122.dispatchEvent(new Evenement("submit", { bubbles: true })); await laisser122(30); };
     const etapeDuMotDePasse122 = () => blocDuCode122.style.display === "none" && !utilisateur122.disabled && !motDePasse122.disabled && retour122.hidden === true && echeance122.hidden === true;
     const ouvrirLEtape122 = async () => {
-      utilisateur122.disabled = false; motDePasse122.disabled = false; utilisateur122.value = "hugo"; motDePasse122.value = "motdepasse";
+      utilisateur122.disabled = false; motDePasse122.disabled = false; utilisateur122.value = "analyste1"; motDePasse122.value = "motdepasse";
       servis122["POST /api/login"] = { statut: 200, corps: { mfa_required: true, ticket: "ticket-122" } };
       await soumettre122();
     };
@@ -26155,8 +26155,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     {
       const hotes = { "#users": new Element("section"), "#user-list": new Element("div"), "#acces-list": new Element("div") };
       document.querySelector = (sel) => (Object.prototype.hasOwnProperty.call(hotes, sel) ? hotes[sel] : qsOrigine123.call(document, sel));
-      FR123.S.isAdmin = true; FR123.S.AUTH = { user: "hugo", role: "admin" };
-      const LISTE = { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }, { id: 2, name: "bob", role: "editor", created: 2 }], me: "hugo", acces: [] };
+      FR123.S.isAdmin = true; FR123.S.AUTH = { user: "analyste1", role: "admin" };
+      const LISTE = { users: [{ id: 1, name: "analyste1", role: "admin", created: 1 }, { id: 2, name: "bob", role: "editor", created: 2 }], me: "analyste1", acces: [] };
       const promouvoir = async (reponses, saisie) => {
         servis123 = [{ statut: 200, corps: LISTE }]; envois123.length = 0; fermer123();
         hotes["#user-list"].replaceChildren(); await FR123.comptes.loadUsers(); await laisser123();
@@ -26213,14 +26213,14 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     const clesCible123 = [...srcDossiers123.matchAll(/pub\(crate\) const REF_NON_LUE_\w+: &str = "([a-z_]+)";/g)].map((m) => m[1]);
     console.log(`[123u0] clés de la cible non lue servies par le démon : ${JSON.stringify(clesCible123)}`);
     for (const L of [FR123, EN123]) for (const cle of clesCible123) {
-      const el = L.dossiers.caseItemEl(4, { id: 9, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true, ref_non_lu_cause: cle }, false);
+      const el = L.dossiers.caseItemEl(4, { id: 9, ts: 1758000000, kind: "alert", author: "analyste1", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true, ref_non_lu_cause: cle }, false);
       const n = (function t(e) { if (e.getAttribute && e.getAttribute("data-cause-de-la-cible-non-lue") === "1") return e; for (const c of (e.children || [])) { const r = t(c); if (r) return r; } return null; })(el);
       const texte = nu123(n);
       if (!n || !texte.includes("(" + cle + ")") || texte === "« " + cle + " »" || (L === EN123 && ACCENTS123.test(texte))) ecartsU123.push(`${L.nom}/clé servie « ${cle} » sans face : « ${texte} »`);
     }
     for (const L of [FR123, EN123]) {
-      const avec = L.dossiers.caseItemEl(4, { id: 1, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true, ref_non_lu_cause: CAUSE_U123 }, false);
-      const sans = L.dossiers.caseItemEl(4, { id: 2, ts: 1758000000, kind: "alert", author: "hugo", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true }, false);
+      const avec = L.dossiers.caseItemEl(4, { id: 1, ts: 1758000000, kind: "alert", author: "analyste1", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true, ref_non_lu_cause: CAUSE_U123 }, false);
+      const sans = L.dossiers.caseItemEl(4, { id: 2, ts: 1758000000, kind: "alert", author: "analyste1", body: "", ref: "alert:42", ref_title: null, ref_severity: null, ref_non_lu: true }, false);
       const titres = (el) => { const acc = []; const w = (e) => { if (e.getAttribute && e.getAttribute("title")) acc.push(e.getAttribute("title")); (e.children || []).forEach(w); }; w(el); return acc.join(" | "); };
       const corpsAvec = avec.children.find((c) => c.className === "body");
       const noeudCause = corpsAvec && corpsAvec.children.find((c) => c.getAttribute && c.getAttribute("data-cause-de-la-cible-non-lue") === "1");
@@ -26402,7 +26402,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     return { ok: statut >= 200 && statut < 300, status: statut, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
   };
   globalThis.setTimeout = (fn, ms) => (ms >= 1000 ? 0 : minuterieOrigine124(fn, ms >= 100 ? 0 : ms));
-  for (const L of [FR124, EN124]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+  for (const L of [FR124, EN124]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; }
   const ecarts124 = [], mesure124 = [];
   try {
     for (const L of [FR124, EN124]) {
@@ -26608,7 +26608,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   document.querySelector = (sel) => (sel === "#token-list" ? hote125 : qsOrigine125.call(document, sel));
   try {
     for (const L of [FR125, EN125]) {
-      L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" };
+      L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" };
       hote125.replaceChildren(); await L.comptes.loadTokens(); await laisser125();
       for (const [nom, [badge, hote]] of Object.entries(ATTENDU125[L.nom])) {
         const ligne = cueillir125(hote125, (e) => e.tagName === "TR" && cueillir125(e, (x) => x.tagName === "B" && nu125(x) === nom).length > 0)[0];
@@ -26626,7 +26626,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // Le compte rendu JOUÉ par son rendu réel : chaque clé de livraison conservée reçoit la face du renouvellement, le
       // HEC garde « le révoquer et en refrapper un », et les trois restent des lignes d'alarme.
       const G = ATTENDU125[L.nom];
-      const compteRendu = { action: "config.user.delete", kind: "user", target: "bob", role: "editor", actor: "hugo",
+      const compteRendu = { action: "config.user.delete", kind: "user", target: "bob", role: "editor", actor: "analyste1",
         jetons: { revoques: [], conserves_secret_connu: [{ name: "firehose-8", kind: "firehose", host: null }, { name: "gcp_pubsub-7", kind: "gcp_pubsub", host: null }, { name: "hec-125", kind: "hec", host: null }],
           auteur_non_etabli: {}, decision: "(décision du démon)" } };
       const noeud = L.comptes.noeudDuCompteRenduDeSuppression("bob", compteRendu);
@@ -26844,7 +26844,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     return r;
   };
   try {
-    for (const L of [FR127, EN127]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+    for (const L of [FR127, EN127]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; }
     const ecarts127 = [];
     const joues127 = [];
     for (const L of [FR127, EN127]) {
@@ -26959,7 +26959,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     return reponse128((r && r.statut) || 200, texte);
   };
   globalThis.setTimeout = (fn, ms) => { if (ms === 400 || ms === 800) reessais128++; return ms >= 1000 ? 0 : minuterieOrigine128(fn, ms >= 100 ? 0 : ms); };
-  const FILES128 = { corps: { queues: [{ assignee: "hugo", open: 2, overdue: 1 }] } };
+  const FILES128 = { corps: { queues: [{ assignee: "analyste1", open: 2, overdue: 1 }] } };
   const METRIQUES_LUES128 = { corps: { overall: { open_now: 2, overdue_now: 1, resolved: 3, mtta_mean: 60, mttr_mean: 3600, ack_breaches: 0, resolve_breaches: 0 }, by_assignee: [], by_severity: [] } };
   const COUPE128 = () => { throw new TypeError("Failed to fetch"); };
   const jouer128 = async (mod, files, metriques) => {
@@ -27429,9 +27429,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   globalThis.setTimeout = (f, ms, ...a) => minuterieOrigine133(f, 0, ...a);
   try {
     S133.isAdmin = true;
-    S133.AUTH = { user: "hugo", role: "admin" };
+    S133.AUTH = { user: "analyste1", role: "admin" };
     const RUNBOOK133 = { id: 7, name: "Compte compromis-133" };
-    const RB133 = { incident_tier: 2, incident_type: "compromission-133", commander: "hugo", dominant_tactic: "TA0006", dominant_technique: "T1110", recommended: null, attached_runbook_id: 7, available: [{ id: 7, name: "Compte compromis-133", managed: 1 }] };
+    const RB133 = { incident_tier: 2, incident_type: "compromission-133", commander: "analyste1", dominant_tactic: "TA0006", dominant_technique: "T1110", recommended: null, attached_runbook_id: 7, available: [{ id: 7, name: "Compte compromis-133", managed: 1 }] };
     const CAUSE_ETAPES133 = "CAUSE-133 étapes : lecture de case_step refusée par la base, réessayez";
     const CAUSE_RB133 = "CAUSE-133 fiche : lecture de la fiche d'incident refusée par la base, réessayez";
     const rendre133 = async (servis) => {
@@ -27569,7 +27569,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   // L'envoi manuel relit la liste des destinations, que la console ne demande qu'à un administrateur.
   const etatsOrigine134 = [FR134, EN134].map((L) => ({ S: L.etat.S, admin: L.etat.S.isAdmin, auth: L.etat.S.AUTH }));
   try {
-    for (const o of etatsOrigine134) { o.S.isAdmin = true; o.S.AUTH = { user: "hugo", role: "admin" }; }
+    for (const o of etatsOrigine134) { o.S.isAdmin = true; o.S.AUTH = { user: "analyste1", role: "admin" }; }
     for (const L of [FR134, EN134]) {
       const en = L.nom === "en";
       // ── (a/b) RÉTENTION : l'aperçu du champ, puis la confirmation de baisse ──────────────────────────────
@@ -27756,7 +27756,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const ecarts135 = [];
   const etatsOrigine135 = [FR135, EN135].map((L) => ({ S: L.etat.S, admin: L.etat.S.isAdmin, auth: L.etat.S.AUTH }));
   try {
-    for (const o of etatsOrigine135) { o.S.isAdmin = true; o.S.AUTH = { user: "hugo", role: "admin" }; }
+    for (const o of etatsOrigine135) { o.S.isAdmin = true; o.S.AUTH = { user: "analyste1", role: "admin" }; }
     if (instrument135) for (const L of [FR135, EN135]) {
       const en = L.nom === "en";
       // ── RÉTENTION : l'aperçu du champ, puis la confirmation de baisse ──────────────────────────────────────
@@ -27844,7 +27844,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const fenetre136 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
   const cueillir136 = (el, pred, acc) => { if (pred(el)) acc.push(el); (el.children || []).forEach((c) => cueillir136(c, pred, acc)); return acc; };
   const parClasse136 = (racine, cl) => cueillir136(racine, (e) => e.classList && e.classList.contains(cl), [])[0] || null;
-  const etatVue136 = { views: [{ id: 7, name: "Production", owner: "hugo", visibility: "private", dashboards: 2 }], me: "hugo", role: "admin" };
+  const etatVue136 = { views: [{ id: 7, name: "Production", owner: "analyste1", visibility: "private", dashboards: 2 }], me: "analyste1", role: "admin" };
   const ecritures136 = [];
   const bouton136 = new Element("button"), selecteur136 = new Element("select");
   const hotes136 = { "#view-share": bouton136, "#view": selecteur136 };
@@ -28019,11 +28019,11 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       montre: !!pu && pu.hidden === false, lignes: pu ? [...pu.children] : [], marque: pu && pu.getAttribute("data-refus-d-un-geste") };
   };
   const LECTURES137 = { "GET /api/cases": { corps: { cases: [{ id: 4, title: "cas-137", status: "triage" }], total: 1 } } };
-  const CAS137 = { id: 4, title: "cas-137", status: "triage", priority: 3, severity: 2, ts: 1, updated: 1, owner: "hugo", assignee: "", summary: "", items: [] };
+  const CAS137 = { id: 4, title: "cas-137", status: "triage", priority: 3, severity: 2, ts: 1, updated: 1, owner: "analyste1", assignee: "", summary: "", items: [] };
 
   try {
     instrument137(!!detail137() && !!detail137().parentNode, "`#case-detail` (index.html) est absent ou détaché : le puits des dossiers n'a pas d'hôte");
-    for (const L of [FR137, EN137]) { L.S.isAdmin = true; L.S.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; }
+    for (const L of [FR137, EN137]) { L.S.isAdmin = true; L.S.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; }
     const faces137 = {};
     for (const L of [FR137, EN137]) {
       // ══ (a)(b) CHAQUE CLÉ SERVIE ══════════════════════════════════════════════════════════════
@@ -28685,7 +28685,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   let corpsServi141 = {};
   const AUCUN141 = "aucun accès observé pour le moment";
   const ENTREE141 = { nom: "annuaire-141", provenance: "annuaire externe", role_effectif: "admin", origine_du_role: "groupes de l'annuaire", methode: "sso", premiere_vue: 1, derniere_vue: 2 };
-  const USERS141 = [{ id: 1, name: "hugo-141", role: "admin", created: 1 }];
+  const USERS141 = [{ id: 1, name: "analyste1-141", role: "admin", created: 1 }];
   const rendre141 = async (L, corps) => {
     corpsServi141 = corps;
     hotes141["#user-list"].replaceChildren(); hotes141["#acces-list"].replaceChildren();
@@ -28703,23 +28703,23 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       return { ok: true, status: 200, headers: { get: () => null }, text: async () => texte, json: async () => JSON.parse(texte) };
     };
     for (const L of [FR141, EN141]) {
-      L.S.isAdmin = true; L.S.AUTH = { user: "hugo-141", role: "admin", auth_method: "cookie" };
+      L.S.isAdmin = true; L.S.AUTH = { user: "analyste1-141", role: "admin", auth_method: "cookie" };
       const phrase = L.comptes.motDeLInventaireDesAcces("non_lu");
       faces141[L.nom] = phrase;
       // (a) lecture ratée, comptes lus : un avis À LA PLACE de « aucun accès », les comptes rendus.
-      const rate = await rendre141(L, { users: USERS141, me: "hugo-141", acces: [], [CLE141]: "INVENTAIRE DES ACCÈS NON LU : phrase du démon" });
-      exiger(rate.avis.length === 1 && nu141(rate.avis[0]) === phrase && !rate.texte.includes(AUCUN141) && rate.comptes.includes("hugo-141"),
+      const rate = await rendre141(L, { users: USERS141, me: "analyste1-141", acces: [], [CLE141]: "INVENTAIRE DES ACCÈS NON LU : phrase du démon" });
+      exiger(rate.avis.length === 1 && nu141(rate.avis[0]) === phrase && !rate.texte.includes(AUCUN141) && rate.comptes.includes("analyste1-141"),
         `(141a) ${L.nom} : un inventaire NON LU (\`${CLE141}\` posé, \`acces: []\`) ne rend pas UN avis à la place de « aucun accès observé », ou les comptes lus ne sont plus rendus : ${rate.avis.length} avis, « ${rate.texte.slice(0, 300)} »`);
       // (b) nominal : la liste lue, aucun avis.
-      const lu = await rendre141(L, { users: USERS141, me: "hugo-141", acces: [ENTREE141] });
+      const lu = await rendre141(L, { users: USERS141, me: "analyste1-141", acces: [ENTREE141] });
       exiger(lu.avis.length === 0 && lu.texte.includes("annuaire-141") && !lu.texte.includes(AUCUN141),
         `(141b) ${L.nom} : un inventaire LU ne rend pas sa liste, ou porte un avis de lecture ratée : ${lu.avis.length} avis, « ${lu.texte.slice(0, 300)} »`);
       // (c) lu et vide, clé absente : la phrase d'avant, aucun avis.
-      const vide = await rendre141(L, { users: USERS141, me: "hugo-141", acces: [] });
+      const vide = await rendre141(L, { users: USERS141, me: "analyste1-141", acces: [] });
       exiger(vide.avis.length === 0 && vide.texte === AUCUN141,
         `(141c) ${L.nom} : un inventaire LU et VIDE (clé absente) ne rend pas « ${AUCUN141} » seul : ${vide.avis.length} avis, « ${vide.texte.slice(0, 300)} »`);
       // (d) comptes ET inventaire non lus : l'aveu des comptes ET l'avis.
-      const aucun = await rendre141(L, { users: [], me: "hugo-141", acces: [], non_lus: ["users", "acces"], error: "liste NON LUE : cause-141", [CLE141]: "phrase du démon" });
+      const aucun = await rendre141(L, { users: [], me: "analyste1-141", acces: [], non_lus: ["users", "acces"], error: "liste NON LUE : cause-141", [CLE141]: "phrase du démon" });
       exiger(aucun.avis.length === 1 && nu141(aucun.avis[0]) === phrase && aucun.comptes.includes("cause-141") && !aucun.texte.includes(AUCUN141),
         `(141d) ${L.nom} : comptes ET inventaire non lus ne rendent pas l'aveu des comptes ET l'avis de l'inventaire : ${aucun.avis.length} avis, comptes « ${aucun.comptes.slice(0, 200)} », accès « ${aucun.texte.slice(0, 200)} »`);
     }
@@ -30024,7 +30024,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   try {
     instrumentW(!!panneauW() && !!document.querySelector("#tenant-list") && !!document.querySelector("#tenant-form"), "`#tenants-panel`, `#tenant-list` ou `#tenant-form` est absent d'index.html");
     SW.isAdmin = true;
-    SW.AUTH = { user: "hugo", role: "admin", is_superadmin: true, tenant: "default" };
+    SW.AUTH = { user: "analyste1", role: "admin", is_superadmin: true, tenant: "default" };
     SW.MY_TENANTS = [{ id: "default" }, { id: "acme", name: "Acme" }];
     SEnW.isAdmin = SW.isAdmin; SEnW.AUTH = SW.AUTH; SEnW.MY_TENANTS = SW.MY_TENANTS;
     // `modT` : l'instance du module jouée (française par défaut, anglaise au (i)) ; ses chargeurs peignent le même document.
@@ -30394,7 +30394,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 
   try {
     instrument153(!!panneau153() && !!document.querySelector("#tenant-list") && !!document.querySelector("#tenant-form"), "`#tenants-panel`, `#tenant-list` ou `#tenant-form` est absent d'index.html");
-    for (const S of [SFr153]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin", is_superadmin: true, tenant: "default" }; S.MY_TENANTS = [{ id: "default" }, { id: "acme", name: "Acme" }]; }
+    for (const S of [SFr153]) { S.isAdmin = true; S.AUTH = { user: "analyste1", role: "admin", is_superadmin: true, tenant: "default" }; S.MY_TENANTS = [{ id: "default" }, { id: "acme", name: "Acme" }]; }
     const form153 = document.querySelector("#tenant-form");
     const ecouteurs153 = ((form153 && form153._ecouteurs) || []).filter((e) => e.type === "submit");
     instrument153(ecouteurs153.length >= 1, "`#tenant-form` ne porte aucun écouteur de soumission");
@@ -30678,7 +30678,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const bouton155 = () => (sec155 ? sec155.querySelector("#sessions-revocation-globale") : null);
   const puits155 = () => (liste155 && liste155.parentNode ? [...liste155.parentNode.children].find((n) => n.getAttribute && n.getAttribute("data-puits-du-refus-d-un-geste") === "revocation_globale") || null : null);
   const fenetre155 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop();
-  const MODE0_ADMIN155 = { auth: { user: "hugo", role: "admin", tenant: "default", is_superadmin: false, auth_method: "sso" }, mes: [{ id: "default", role: "admin" }] };
+  const MODE0_ADMIN155 = { auth: { user: "analyste1", role: "admin", tenant: "default", is_superadmin: false, auth_method: "sso" }, mes: [{ id: "default", role: "admin" }] };
   const jouer155 = async (mod, S, reponse, { accepter = true } = {}) => {
     S.AUTH = Object.assign({}, MODE0_ADMIN155.auth); S.MY_TENANTS = MODE0_ADMIN155.mes.slice();
     reponse155 = reponse; const appelsAvant = appels155, rechAvant = rechargements155;
@@ -30709,7 +30709,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 
     // ── (a) LA VISIBILITÉ DU BOUTON ─────────────────────────────────────────────────────────────────
     const VISIBILITES155 = [
-      ["mode 0 admin", { user: "hugo", role: "admin", tenant: "default", is_superadmin: false }, [{ id: "default", role: "admin" }], true],
+      ["mode 0 admin", { user: "analyste1", role: "admin", tenant: "default", is_superadmin: false }, [{ id: "default", role: "admin" }], true],
       ["mode 0 editor", { user: "ed", role: "editor", tenant: "default", is_superadmin: false }, [{ id: "default", role: "editor" }], false],
       ["mode 0 viewer", { user: "vi", role: "viewer", tenant: "default", is_superadmin: false }, [{ id: "default", role: "viewer" }], false],
       ["mode 1 administrateur de tenant, non super-administrateur", { user: "ta", role: "admin", tenant: "acme", is_superadmin: false }, [{ id: "acme", name: "Acme", role: "admin", suspended: false }], false],
@@ -30763,7 +30763,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       // Les quatre refus nommés.
       for (const [cle, [statut, phrase]] of Object.entries(CAUSES155)) {
         const r = await jouer155(mod, S, { statut, corps: { error: phrase } });
-        exiger(r.appels === 1 && r.rechargements === 0 && !!r.auth && r.auth.user === "hugo" && r.cle === cle && r.tete === face(cle)
+        exiger(r.appels === 1 && r.rechargements === 0 && !!r.auth && r.auth.user === "analyste1" && r.cle === cle && r.tete === face(cle)
           && face(cle).includes(FRAGMENTS155[cle][l]) && face(cle).includes(RIEN155[l]) && face(cle).includes(RESTE155[l]) && r.texte.includes("« " + phrase + " »"),
           `(155b) ${statut} ${cle} (${l}) : clé « ${r.cle} », rechargements ${r.rechargements}, session ${r.auth ? "gardée" : "VIDÉE"} — « ${r.texte.slice(0, 240)} »`);
         // Aucune face nommée ne porte le fragment d'une autre.
@@ -30828,7 +30828,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
         };
         try {
           for (const [nom, auth, statut, corps, visible] of [
-            ["admin, `/api/users` servi", { user: "hugo", role: "admin", tenant: "default", is_superadmin: false }, 200, { users: [{ id: 1, name: "hugo", role: "admin", created: 1 }], me: "hugo", acces: [] }, true],
+            ["admin, `/api/users` servi", { user: "analyste1", role: "admin", tenant: "default", is_superadmin: false }, 200, { users: [{ id: 1, name: "analyste1", role: "admin", created: 1 }], me: "analyste1", acces: [] }, true],
             ["rôle composable bâti sur admin, `/api/users` servi", { user: "gov", role: "gov-admin", tenant: "default", is_superadmin: false }, 200, { users: [{ id: 1, name: "gov", role: "gov-admin", created: 1 }], me: "gov", acces: [] }, true],
             ["éditeur, `/api/users` refusé au rôle", { user: "ed", role: "editor", tenant: "default", is_superadmin: false }, 403, "réservé à l'administrateur", false],
           ]) {
@@ -31437,7 +31437,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     en: { non_etablie: "NOT ESTABLISHED", herite: "inherits (global retention NOT ESTABLISHED)", sans_cause: "cause not served by the daemon", herite90: "inherits (90 d)" } };
   const ecarts161 = [];
   try {
-    for (const S of [S161, SEn161]) { S.isAdmin = true; S.AUTH = { user: "hugo", role: "admin" }; }
+    for (const S of [S161, SEn161]) { S.isAdmin = true; S.AUTH = { user: "analyste1", role: "admin" }; }
     const index161 = (nom, pol, jours = 30) => ({ name: nom, id: pol ? 1 : null, events: 10, oldest_ts: 1000, size_bytes_est: 4096, retention_days: pol ? jours : 0, max_rows: 0, max_bytes: 0, has_policy: !!pol, enabled: true, description: "", managed: 0 });
     const BORNES = { retention_days: { min_when_set: 7, max: 3650, inherit: 0 } };
     for (const [l, mod] of [["fr", modIdx161], ["en", modIdxEn161]]) {
@@ -31868,7 +31868,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     exiger(part.requete === 'search host="srv1"' && part.dits.length === 0,
       `(166) ${mode} : la colonne de groupement \`by host\` ne part plus (« ${part.requete} », ${JSON.stringify(part.dits)})`);
   }
-  const renomme166 = jouer165(geste165("bar", ["vhosts", "src_ip"], [[4, "1.2.3.4"]], "search source=web | stats dc(vhost) by src_ip | rename dc as vhosts | table vhosts, src_ip"));
+  const renomme166 = jouer165(geste165("bar", ["vhosts", "src_ip"], [[4, "192.0.2.4"]], "search source=web | stats dc(vhost) by src_ip | rename dc as vhosts | table vhosts, src_ip"));
   exiger(renomme166.requete === "" && renomme166.dits.length === 1,
     `(166) un agrégat renommé (\`rename dc as vhosts\`) part en recherche : « ${renomme166.requete} »`);
   const seul166 = jouer165(geste165("table", ["sum"], [[1200]], "search source=web | stats sum(bytes) as total"));
@@ -31879,9 +31879,9 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const PARTENT167 = [
     ["un champ nommé count sans étape d'agrégat", "table", ["count", "host"], [[5, "a"]], "search source=web count=5", "search count=5"],
     ["la colonne de groupement d'un SQL (agrégat hors tête)", "table", ["host", "n"], [["srv1", 9]], "SELECT host, COUNT(*) AS n FROM event GROUP BY host", 'search host="srv1"'],
-    ["MIN(src_ip) AS src_ip en tête", "bar", ["src_ip", "n"], [["1.2.3.4", 2]], "SELECT MIN(src_ip) AS src_ip, COUNT(*) AS n FROM event GROUP BY host", 'search src_ip="1.2.3.4"'],
+    ["MIN(src_ip) AS src_ip en tête", "bar", ["src_ip", "n"], [["192.0.2.4", 2]], "SELECT MIN(src_ip) AS src_ip, COUNT(*) AS n FROM event GROUP BY host", 'search src_ip="192.0.2.4"'],
     ["MAX(host) AS host en tête", "table", ["host"], [["srv1"]], "SELECT MAX(host) AS host FROM event", 'search host="srv1"'],
-    ["top src_ip", "bar", ["src_ip", "count"], [["1.2.3.4", 2]], "search source=web | top src_ip", 'search src_ip="1.2.3.4"'],
+    ["top src_ip", "bar", ["src_ip", "count"], [["192.0.2.4", 2]], "search source=web | top src_ip", 'search src_ip="192.0.2.4"'],
     ["une colonne dont le nom commence par celui d'une fonction", "table", ["counter", "n"], [[3, 1]], "SELECT counter, COUNT(*) AS n FROM event GROUP BY counter", "search counter=3"],
     ["un vrai champ total relu sans alias d'une sous-requête", "table", ["total", "host"], [[7, "a"]], "SELECT total, host FROM (SELECT json_extract(fields,'$.total') AS total, host FROM event)", "search total=7"],
   ];
@@ -32031,7 +32031,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     ["SQL fenêtre OVER (...)", ["c", "host"], [[4, "a"]], "SELECT COUNT(*) OVER (PARTITION BY host) AS c, host FROM event", "REFUS"],
     ["SQL parenthèses imbriquées", ["total"], [[4]], "SELECT SUM(CAST(bytes AS INTEGER)) AS total FROM event", "REFUS"],
     ["SQL alias interne relu au-dessus", ["c"], [[4]], "SELECT c FROM (SELECT COUNT(*) AS c FROM event)", "REFUS"],
-    ["SQL MIN(e.src_ip) AS src_ip (préfixe de table)", ["src_ip", "n"], [["1.2.3.4", 2]], "SELECT MIN(e.src_ip) AS src_ip, COUNT(*) AS n FROM event e GROUP BY host", "PART"],
+    ["SQL MIN(e.src_ip) AS src_ip (préfixe de table)", ["src_ip", "n"], [["192.0.2.4", 2]], "SELECT MIN(e.src_ip) AS src_ip, COUNT(*) AS n FROM event e GROUP BY host", "PART"],
     ["SQL agrégat dans ORDER BY", ["host", "n"], [["a", 2]], "SELECT host, COUNT(*) AS n FROM event GROUP BY host ORDER BY MAX(ts) DESC", "PART"],
     ["SQL littéral de chaîne", ["host"], [["a"]], "SELECT host FROM event WHERE message = 'sum(x) host'", "PART"],
   ];
@@ -32149,7 +32149,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       `(${n}) \`P11.25-e\` — ${quoi} : le focus du nom défile une seconde fois (options ${JSON.stringify(focus.length ? focus[focus.length - 1].o : null)}) au lieu de laisser la boîte seule amener l'éditeur`);
   };
   try {
-    S173.isAdmin = true; S173.AUTH = { user: "hugo", role: "admin" };
+    S173.isAdmin = true; S173.AUTH = { user: "analyste1", role: "admin" };
     globalThis.setTimeout = (fn, ms, ...a) => (ms >= 1000 ? 0 : minuterieOrigine173(fn, ms, ...a));
     Element.prototype.scrollIntoView = function (o) { gestes173.push({ geste: "defiler", el: this, o, pleine: this.children.length > 0 }); };
     Element.prototype.focus = function (o) { gestes173.push({ geste: "focus", el: this, o }); };
@@ -32483,11 +32483,11 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const servir177 = (methode, url) => { const chemin = url.split("?")[0]; return servi177[`${methode} ${url}`] || servi177[`${methode} ${chemin}`] || { statut: 200, corps: {} }; };
   const lectures177 = (re) => appels177.filter((a) => a.methode === "GET" && re.test(a.url));
   const ecritures177 = (methode, url) => appels177.filter((a) => a.methode === methode && a.url === url);
-  const VUES177 = [{ id: 5, name: "Production", owner: "hugo", visibility: "shared", dashboards: 2 }, { id: 6, name: "Réseau", owner: "hugo", visibility: "shared", dashboards: 1 }];
-  const TDB177 = (id, extra = {}) => ({ id, name: "T" + id, owner: "hugo", visibility: "shared", view_id: null, panels: 0, cols: 2, height: 0, collapsed: false, position: id, editable: true, all_views: false, view_ids: [], ...extra });
+  const VUES177 = [{ id: 5, name: "Production", owner: "analyste1", visibility: "shared", dashboards: 2 }, { id: 6, name: "Réseau", owner: "analyste1", visibility: "shared", dashboards: 1 }];
+  const TDB177 = (id, extra = {}) => ({ id, name: "T" + id, owner: "analyste1", visibility: "shared", view_id: null, panels: 0, cols: 2, height: 0, collapsed: false, position: id, editable: true, all_views: false, view_ids: [], ...extra });
   const ecarts = { 177: [], 178: [], 179: [], 180: [], 181: [], 182: [] };
   try {
-    S177.AUTH = { user: "hugo", role: "admin", auth_method: "cookie" }; S177.isAdmin = true;
+    S177.AUTH = { user: "analyste1", role: "admin", auth_method: "cookie" }; S177.isAdmin = true;
     globalThis.setTimeout = (fn, ms, ...a) => (ms >= 1000 ? 0 : minuterieOrigine177(fn, ms, ...a));
     globalThis.fetch = async (u, o = {}) => {
       const url = String(u), methode = String(o.method || "GET").toUpperCase();
@@ -32495,14 +32495,14 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       appels177.push({ methode, url, corps });
       return reponse177(servir177(methode, url));
     };
-    servi177 = { "GET /api/views": { corps: { views: VUES177, me: "hugo", role: "admin" } } };
+    servi177 = { "GET /api/views": { corps: { views: VUES177, me: "analyste1", role: "admin" } } };
     await m.loadViews(); await laisser177();
     instrument177(S177.viewList.length === 2, "les vues servies n'ont pas été chargées");
     const choisir177 = (v) => { sel177.value = v; };
 
     // ══ (177) CORPS ENVOYÉS ET CAUSES SERVIES ═══════════════════════════════════════════════════════════════
     choisir177("5");
-    servi177["GET /api/dashboards"] = { corps: { dashboards: [], total: 0, me: "hugo", role: "admin" } };
+    servi177["GET /api/dashboards"] = { corps: { dashboards: [], total: 0, me: "analyste1", role: "admin" } };
     servi177["POST /api/dashboards"] = { corps: { id: 900 } };
     for (const [coche, attendu] of [[undefined, false], [true, true]]) {
       appels177.length = 0; fermer177();
@@ -32557,7 +32557,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       const options178 = cueillir177(sel177, (x) => x.tagName === "OPTION").map((o) => ({ v: String(o.value ?? o.getAttribute("value") ?? ""), t: nu177(o) }));
       if (!options178.some((o) => o.v === "none" && /Sans vue/.test(o.t)) || !options178.some((o) => o.v === "")) ecarts[178].push(`le sélecteur des vues n'offre pas « — Sans vue — » (none) à côté de l'absence de filtre : ${JSON.stringify(options178)}`);
     }
-    const pagine178 = (n, total, depart = 1) => ({ corps: { dashboards: Array.from({ length: n }, (_, i) => TDB177(depart + i, { collapsed: true, view_ids: [5] })), total, me: "hugo", role: "admin" } });
+    const pagine178 = (n, total, depart = 1) => ({ corps: { dashboards: Array.from({ length: n }, (_, i) => TDB177(depart + i, { collapsed: true, view_ids: [5] })), total, me: "analyste1", role: "admin" } });
     for (const [valeur, attenduVue] of [["5", "view=5"], ["none", "view=none"], ["", null]]) {
       appels177.length = 0; choisir177(valeur);
       servi177["GET /api/dashboards"] = pagine178(1, 1);

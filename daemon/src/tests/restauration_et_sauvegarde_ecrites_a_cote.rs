@@ -207,7 +207,10 @@ mod restauration_et_sauvegarde_ecrites_a_cote {
         assert_intacte(&dest, &avant, "sentinelle fausse");
     }
 
-    /// Le post-DDL valide la transaction lui-même : le `COMMIT` final de `restore_stream` est refusé par le moteur.
+    /// Le post-DDL tente de valider la transaction lui-même. Avant la liste fermée, le moteur l'acceptait et le `COMMIT`
+    /// final de `restore_stream` était refusé ; désormais une instruction de transaction lue dans l'archive est hors de
+    /// la liste du post-DDL (`backup/restauration_liste_fermee.rs`) et refusée avant d'être jouée. La destination reste
+    /// intacte dans les deux cas.
     #[test]
     fn ar3_commit_refuse_laisse_la_destination_intacte() {
         let _reglages = VERROU_ENV_PROCESSUS.read();
@@ -218,7 +221,8 @@ mod restauration_et_sauvegarde_ecrites_a_cote {
         let dest = chemin(&racine, "plume.db");
         let avant = destination_saine(&dest);
         let err = restore_compressed(&archive, &dest, Some(CLE), true, None).expect_err("COMMIT refusé");
-        assert!(err.starts_with("commit restore : "), "le refus vient du COMMIT final : {err}");
+        assert!(err.starts_with("restore : phase post-DDL : instruction hors liste (classe d'instruction hors de la liste de la phase)"),
+            "le COMMIT lu dans l'archive est refusé par la liste du post-DDL : {err}");
         assert!(err.ends_with(&suffixe_intacte(&dest)), "le refus dit que la destination est intacte : {err}");
         assert_intacte(&dest, &avant, "COMMIT refusé");
     }

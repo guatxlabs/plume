@@ -285,6 +285,11 @@ fn build_table_dump(conn: &Connection, name: &str, create_sql: &str) -> Result<T
     Ok(TableDump { name: name.to_string(), select_sql, insert_sql, ncols })
 }
 
+/// Les suffixes des tables fantômes d'une table virtuelle FTS (`<vt>_<suffixe>`) : l'écrivain ne les emporte pas (le
+/// `rebuild` les repeuple), et la restauration n'admet que ces noms-là comme écritures internes d'un module
+/// (`restauration_liste_fermee`).
+pub(super) const SUFFIXES_DES_TABLES_FANTOMES: [&str; 9] = ["data", "idx", "docsize", "config", "content", "row", "segments", "segdir", "stat"];
+
 /// Collecte le PLAN de dump depuis sqlite_master. Renvoie `Unsupported` (AVANT toute écriture) si le
 /// schéma contient une table virtuelle non représentable en dump typé -> repli legacy propre.
 fn collect_dump_plan(conn: &Connection) -> Result<DumpPlan, PlanErr> {
@@ -307,9 +312,8 @@ fn collect_dump_plan(conn: &Connection) -> Result<DumpPlan, PlanErr> {
     // Un durcissement exact (n'exclure que les shadow tables réellement rattachées) exige une détection
     // fiable non triviale (pas de flag propre en sqlite_master) -> laissé en l'état, risque documenté.
     let vtables: Vec<&String> = master.iter().filter(|(ty, _, sql)| ty == "table" && is_virtual_table(sql)).map(|(_, n, _)| n).collect();
-    let shadow_suffixes = ["data", "idx", "docsize", "config", "content", "row", "segments", "segdir", "stat"];
     let mut shadow: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for vt in &vtables { for s in shadow_suffixes { shadow.insert(format!("{vt}_{s}")); } }
+    for vt in &vtables { for s in SUFFIXES_DES_TABLES_FANTOMES { shadow.insert(format!("{vt}_{s}")); } }
 
     let ordinary_names: std::collections::HashSet<String> = master.iter()
         .filter(|(ty, name, sql)| ty == "table" && !is_virtual_table(sql) && !name.starts_with("sqlite_") && !shadow.contains(name.as_str()))
@@ -611,17 +615,29 @@ fn ecrire_l_archive(db_path: &str, dest: &str, key: Option<&str>, recipient: Opt
 /// l'appelant) dans une DB SQLCipher NEUVE `dest_db`. ZÉRO clair sur disque. Tout dans UNE transaction
 /// (atomique). Ordre : pre-DDL (tables) -> données (INSERT bindés, types EXACTS) -> sqlite_sequence ->
 /// post-DDL (vtables + rebuild FTS + index + triggers + vues).
+///
+/// LA RESTAURATION N'ACCEPTE QUE LES FORMES D'INSTRUCTION QUE L'ÉCRIVAIN ÉMET (`restauration_liste_fermee`) :
+/// autoriseur à refus par défaut réglé par phase, une instruction et une tête par chaîne ; l'insertion d'une table ne
+/// vise que la table annoncée, créée par la section 1, et lie toutes les valeurs de la ligne par des paramètres
+/// anonymes ; une reconstruction FTS ne vise qu'une table virtuelle créée par cette restauration. Un refus rend une
+/// erreur au vocabulaire fermé et la transaction n'est jamais validée.
 fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Result<(), String> {
+    use super::restauration_liste_fermee::{refus, Cause, ListeFermee, Phase};
     let re = |x: std::io::Result<u32>| x.map_err(|e| format!("restore : lecture flux : {e}"));
     let conn = open_db_keyed_without_schema_contract(dest_db, Some(pass)).map_err(|e| format!("ouverture dest SQLCipher : {e}"))?;
-    let _ = conn.execute_batch("PRAGMA foreign_keys=OFF;"); // ordre d'insertion libre pendant le chargement
+    let liste = ListeFermee::armer(&conn);
+    liste.entrer(Phase::Ouverture, "");
+    // Ordre d'insertion libre pendant le chargement. Le refus se lit : sous la liste, un réglage refusé serait une liste
+    // fausse, pas un détail à taire.
+    conn.execute_batch("PRAGMA foreign_keys=OFF;").map_err(|e| format!("foreign_keys restore : {e}"))?;
     conn.execute_batch("BEGIN").map_err(|e| format!("begin restore : {e}"))?;
 
     // section 1 : pre-DDL (CREATE TABLE) — crée AUSSI sqlite_sequence si tables AUTOINCREMENT.
     let n_pre = re(rd_u32(r))?;
     for _ in 0..n_pre {
         let sql = rd_str(r).map_err(|e| format!("restore : lecture pre-DDL : {e}"))?;
-        conn.execute_batch(&sql).map_err(|e| format!("CREATE TABLE (restore) : {e}"))?;
+        let stmt = liste.preparer_une_chaine_de_l_archive(&conn, Phase::Tables, "", &sql, |e| format!("CREATE TABLE (restore) : {e}"))?;
+        executer_une_chaine(stmt, &liste, Phase::Tables, |e| format!("CREATE TABLE (restore) : {e}"))?;
     }
     // section 2 : données.
     let n_tables = re(rd_u32(r))?;
@@ -629,7 +645,15 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
         let name = rd_str(r).map_err(|e| format!("restore : nom table : {e}"))?;
         let ncols = rd_u16(r).map_err(|e| format!("restore : ncols {name} : {e}"))? as usize;
         let insert_sql = rd_str(r).map_err(|e| format!("restore : insert_sql {name} : {e}"))?;
-        let mut stmt = conn.prepare(&insert_sql).map_err(|e| format!("prepare INSERT {name} : {e}"))?;
+        if !liste.table_creee(&name) {
+            return Err(refus(Phase::Insertion, Cause::TableNonCreee));
+        }
+        let mut stmt = liste.preparer_une_chaine_de_l_archive(&conn, Phase::Insertion, &name, &insert_sql, |e| format!("prepare INSERT {name} : {e}"))?;
+        // Les valeurs d'une ligne sont toutes LIÉES, et rien d'autre ne l'est : autant de paramètres anonymes (`?`, la
+        // seule forme que l'écrivain émet) que de valeurs lues par ligne.
+        if stmt.parameter_count() != ncols || (1..=ncols).any(|i| stmt.parameter_name(i).is_some()) {
+            return Err(refus(Phase::Insertion, Cause::InsertionHorsForme));
+        }
         loop {
             let tag = rd_u8(r).map_err(|e| format!("restore : tag ligne {name} : {e}"))?;
             if tag == 0 { break; }
@@ -642,6 +666,7 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
     // section 3 : sqlite_sequence (reproduit EXACTEMENT les compteurs — DELETE puis INSERT, comme SQLite .dump).
     let n_seq = re(rd_u32(r))?;
     if n_seq > 0 {
+        liste.entrer(Phase::Compteurs, "");
         let _ = conn.execute_batch("DELETE FROM sqlite_sequence;");
         let mut s = conn.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)").map_err(|e| format!("prepare seq : {e}"))?;
         for _ in 0..n_seq {
@@ -655,11 +680,20 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
     for _ in 0..n_post {
         let tag = rd_u8(r).map_err(|e| format!("restore : tag post-DDL : {e}"))?;
         match tag {
-            1 => { let sql = rd_str(r).map_err(|e| format!("restore : post-DDL sql : {e}"))?; conn.execute_batch(&sql).map_err(|e| format!("post-DDL (restore) : {e}"))?; }
+            1 => {
+                let sql = rd_str(r).map_err(|e| format!("restore : post-DDL sql : {e}"))?;
+                let stmt = liste.preparer_une_chaine_de_l_archive(&conn, Phase::PostDdl, "", &sql, |e| format!("post-DDL (restore) : {e}"))?;
+                executer_une_chaine(stmt, &liste, Phase::PostDdl, |e| format!("post-DDL (restore) : {e}"))?;
+            }
             2 => {
                 let name = rd_str(r).map_err(|e| format!("restore : nom rebuild : {e}"))?;
+                if !liste.table_virtuelle_creee(&name) {
+                    return Err(refus(Phase::ReconstructionFts, Cause::TableNonCreee));
+                }
+                liste.entrer(Phase::ReconstructionFts, &name);
                 let rebuild = format!("INSERT INTO {0}({0}) VALUES('rebuild');", quote_ident(&name));
-                conn.execute_batch(&rebuild).map_err(|e| format!("rebuild FTS {name} : {e}"))?;
+                let stmt = conn.prepare(&rebuild).map_err(|e| format!("rebuild FTS {name} : {e}"))?;
+                executer_une_chaine(stmt, &liste, Phase::ReconstructionFts, |e| format!("rebuild FTS {name} : {e}"))?;
             }
             other => return Err(format!("restore : tag post-DDL inconnu {other}")),
         }
@@ -667,8 +701,29 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
     // sentinelle de fin.
     let tr = rd_u8(r).map_err(|e| format!("restore : lecture sentinelle : {e}"))?;
     if tr != 0xFF { return Err(format!("restore : sentinelle de fin absente (0x{tr:02X}) — dump tronqué/corrompu")); }
-    conn.execute_batch("COMMIT").map_err(|e| format!("commit restore : {e}"))?;
+    liste.entrer(Phase::Validation, "");
+    // Un module FTS vide au `COMMIT` ses données en attente : une action hors liste à ce moment rend le refus nommé.
+    conn.execute_batch("COMMIT").map_err(|e| {
+        if liste.a_refuse() { refus(Phase::Validation, Cause::ClasseHorsListe) } else { format!("commit restore : {e}") }
+    })?;
     Ok(())
+}
+
+/// Exécute une chaîne préparée sous la liste. Un refus de l'autoriseur PENDANT l'exécution (écriture interne d'un module
+/// hors de ses tables fantômes) rend le refus nommé de la phase ; toute autre erreur du moteur est rendue à l'appelant,
+/// qui la met en forme comme avant.
+fn executer_une_chaine(
+    mut stmt: rusqlite::Statement<'_>,
+    liste: &super::restauration_liste_fermee::ListeFermee,
+    phase: super::restauration_liste_fermee::Phase,
+    si_le_moteur_refuse: impl FnOnce(rusqlite::Error) -> String,
+) -> Result<(), String> {
+    use super::restauration_liste_fermee::{refus, Cause};
+    match stmt.execute([]) {
+        Ok(_) => Ok(()),
+        Err(_) if liste.a_refuse() => Err(refus(phase, Cause::ClasseHorsListe)),
+        Err(e) => Err(si_le_moteur_refuse(e)),
+    }
 }
 
 /// Le suffixe du fichier où une restauration s'écrit avant de prendre la place de la destination. Même

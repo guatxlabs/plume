@@ -996,6 +996,7 @@ fn clore_le_fichier_de_l_archive(out: std::io::BufWriter<std::fs::File>) -> Resu
 }
 
 mod dump_restauration; // LA CHARGE : dump typé B1 streaming, dispatch `backup_compressed` (repli legacy), restauration
+mod restauration_liste_fermee; // la restauration n'accepte que les formes d'instruction que l'écrivain du dump émet
 pub(crate) use dump_restauration::{backup_compressed, restore_compressed};
 #[cfg(test)]
 pub(crate) use dump_restauration::{crochet_du_clair_de_restauration, SUFFIXE_RESTAURATION_EN_COURS, SUFFIXE_SAUVEGARDE_EN_COURS};

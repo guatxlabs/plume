@@ -179,6 +179,12 @@ mod restauration_liste_fermee_des_instructions {
     /// refus nommé (donc sans le texte du dump ni celui du moteur), la destination et ses compagnons sont identiques à
     /// l'octet, et aucun temporaire ne reste.
     fn refusee(cas: &str, dump: &Dump, phase: &str, cause: &str) {
+        echoue_destination_intacte(cas, dump, |dest| refus_attendu(phase, cause, dest));
+    }
+
+    /// Le dump est restauré sur une destination saine : la restauration échoue avec EXACTEMENT `attendue(dest)`, la
+    /// destination et ses compagnons sont identiques à l'octet, et aucun temporaire ne reste.
+    fn echoue_destination_intacte(cas: &str, dump: &Dump, attendue: impl FnOnce(&str) -> String) {
         let _reglages = VERROU_ENV_PROCESSUS.read();
         let _tmp = crate::tmp_possede::TmpPossede::neuf(cas);
         let racine = _tmp.racine().chemin().to_path_buf();
@@ -187,7 +193,7 @@ mod restauration_liste_fermee_des_instructions {
         let dest = chemin(&racine, "plume.db");
         let avant = destination_saine(&dest);
         let err = restore_compressed(&archive, &dest, Some(CLE), true, None).expect_err(cas);
-        assert_eq!(err, refus_attendu(phase, cause, &dest), "{cas}");
+        assert_eq!(err, attendue(&dest), "{cas}");
         assert!(std::fs::read(&dest).unwrap() == avant.base, "{cas} : la base de destination a changé");
         assert!(std::fs::read(format!("{dest}-wal")).unwrap() == avant.wal, "{cas} : le compagnon -wal a changé");
         assert!(std::fs::read(format!("{dest}-shm")).unwrap() == avant.shm, "{cas} : le compagnon -shm a changé");
@@ -291,6 +297,17 @@ mod restauration_liste_fermee_des_instructions {
         refusee("cc6b-t-vide", &tables_plus("  -- rien"), "tables", CLASSE);
     }
 
+    /// UNE CHAÎNE QUE LA LISTE ADMET MAIS QUE LE MOTEUR REFUSE garde le message d'avant la liste (préfixe de la famille
+    /// puis l'erreur du moteur), et non le refus nommé : la liste ne juge que la forme, pas la validité. Ici une création
+    /// de table admise (une tête, aucune action hors liste) d'une table que la section 1 a déjà créée.
+    #[test]
+    fn tables_une_chaine_admise_que_le_moteur_refuse_garde_le_message_d_avant() {
+        let d = tables_plus("CREATE TABLE t(v TEXT)");
+        echoue_destination_intacte("cc6b-t-moteur", &d, |dest| {
+            format!("CREATE TABLE (restore) : table t already exists in CREATE TABLE t(v TEXT) at offset 13{}", suffixe_intacte(dest))
+        });
+    }
+
     #[test]
     fn tables_deux_instructions_dans_une_chaine_sont_refusees() {
         let mut d = Dump::conforme();
@@ -345,6 +362,25 @@ mod restauration_liste_fermee_des_instructions {
     #[test]
     fn insertion_par_parametre_numerote_est_refusee() {
         refusee("cc6b-i-numerote", &Dump::avec_insertion("INSERT INTO t (v) VALUES (?1)"), "insertion", HORS_FORME);
+    }
+
+    /// PLUS DE PARAMÈTRES QUE DE VALEURS PAR LIGNE : la section annonce une valeur par ligne, le texte en lie deux. Refus
+    /// nommé avant toute ligne, et non l'erreur du moteur au premier `execute`.
+    #[test]
+    fn insertion_qui_porte_plus_de_parametres_que_de_valeurs_est_refusee() {
+        let mut d = Dump::avec_insertion("INSERT INTO t (v, w) VALUES (?, ?)");
+        d.tables[0] = "CREATE TABLE t(v TEXT, w TEXT)";
+        refusee("cc6b-i-trop-de-parametres", &d, "insertion", HORS_FORME);
+    }
+
+    /// Le même texte sur une table SANS ligne : aucun `execute` ne le jugerait, le compte des paramètres seul le refuse.
+    #[test]
+    fn insertion_qui_porte_plus_de_parametres_que_de_valeurs_est_refusee_meme_sans_ligne() {
+        let mut d = Dump::avec_insertion("INSERT INTO t (v, w) VALUES (?, ?)");
+        d.tables[0] = "CREATE TABLE t(v TEXT, w TEXT)";
+        d.donnees[0].lignes.clear();
+        refusee("cc6b-i-trop-de-parametres-sans-ligne", &d, "insertion", HORS_FORME);
+        refusee_sans_destination("cc6b-i-trop-de-parametres-sans-ligne-sans-dest", &d, "insertion", HORS_FORME);
     }
 
     /// La section annonce `sqlite_sequence`, que la section 1 ne crée pas (le moteur la crée pour la table
@@ -509,6 +545,21 @@ mod restauration_liste_fermee_des_instructions {
             Post::Reconstruire("f"),
         ]);
         refusee("cc6b-r-contenu-etranger", &d, "reconstruction FTS", CLASSE);
+    }
+
+    /// LES FONCTIONS QU'UN MODULE APPELLE SONT CELLES DE LA LISTE, MÊME QUAND L'ARCHIVE CHOISIT SES OPTIONS. L'écrivain
+    /// n'émet que des tables FTS à contenu externe ; une FTS4 créée par l'archive avec `compress=`/`uncompress=` fait
+    /// appeler au module, pendant la reconstruction, la fonction que l'archive a nommée (`hex`), hors de celles que les
+    /// modules appellent d'eux-mêmes (`max`, `coalesce`). L'option n'est pas jugée par lecture du texte : c'est
+    /// l'autoriseur qui refuse l'appel.
+    #[test]
+    fn reconstruction_d_une_fts4_qui_fait_appeler_une_fonction_hors_liste_au_module_est_refusee() {
+        let d = post(vec![
+            Post::Sql("CREATE VIRTUAL TABLE f USING fts4(v, compress=hex, uncompress=hex)"),
+            Post::Reconstruire("f"),
+        ]);
+        refusee_sans_destination("cc6b-r-fonction-du-module-sans-dest", &d, "reconstruction FTS", CLASSE);
+        refusee("cc6b-r-fonction-du-module", &d, "reconstruction FTS", CLASSE);
     }
 
     // ── DUMPS RÉELS ─────────────────────────────────────────────────────────────────────────────────

@@ -13,10 +13,12 @@
 // à côté des autres (non mesuré ici) ; l'agent d'un hôte distant a sa propre garde
 // (`check_responder_applies_the_ban_duration_served_by_the_central.py`).
 //
-// MUTANTS JOUÉS (VERIF_MUT, retirés avant le commit), chacun vu ROUGE : `sql_remplace` (la primitive reprend l'upsert
+// MUTANTS JOUÉS (interrupteurs temporaires, retirés avant le commit), chacun vu ROUGE : `sql_remplace` (la primitive reprend l'upsert
 // qui remplace), `raison_remplacee` (la raison du ban qui tient est écrasée), `permanent_raccourci` (un permanent lu
 // comme une échéance zéro), `approbation_remplace`, `responder_remplace`, `responder_sans_ligne_remplace`,
-// `playbook_remplace` (un appelant reprend `netban_upsert`).
+// `playbook_remplace` (un appelant reprend `netban_upsert`), `permanent_neuf_ignore` (le CASE de l'échéance perd
+// `excluded.expires_ts IS NULL OR` : un ban automatique sans échéance ne l'emporte plus sur une échéance finie),
+// `permanent_neuf_sans_sa_raison` (le CASE de la raison perd la même clause).
 // =====================================================================================
 mod ban_automatique_ne_raccourcit_pas_le_miroir_http {
     use super::*;
@@ -98,6 +100,33 @@ mod ban_automatique_ne_raccourcit_pas_le_miroir_http {
         assert!(matches!(netban_upsert(&c, "203.0.113.197", Some(long), "long", "admin", "prod"), PoseDeBan::Arme));
         assert!(matches!(netban_upsert(&c, "203.0.113.197", Some(court), "court", "admin", "prod"), PoseDeBan::Arme));
         assert_eq!(banr_ligne(&c, "203.0.113.197", "prod").0, Some(court), "contrôle : la pose manuelle remplace");
+        netban_cache().write().clear();
+    }
+
+    /// (1b) PERMANENT L'EMPORTE, par la primitive seule (aucun appelant n'y passe `None` aujourd'hui : le contrat est
+    /// tenu avant qu'un appelant le fasse). CE QU'IL TIENT : une échéance finie puis un ban automatique SANS échéance ->
+    /// la ligne devient permanente, avec la raison et l'auteur du ban neuf, et le cache rechargé bloque au-delà de
+    /// l'échéance finie ; un ban automatique sans échéance puis une échéance finie -> reste permanent, ENTIER.
+    /// MUTATIONS : `permanent_neuf_ignore`, `permanent_neuf_sans_sa_raison`.
+    #[test]
+    fn banr_permanent_l_emporte_dans_la_primitive() {
+        let _g = NETBAN_TEST_LOCK.lock();
+        netban_cache().write().clear();
+        let c = test_db();
+        let t = now();
+        let fini = t + 7200;
+
+        assert!(matches!(netban_upsert_sans_raccourcir(&c, "203.0.113.201", Some(fini), "fini", "op", "prod"), PoseDeBan::Arme));
+        assert!(matches!(netban_upsert_sans_raccourcir(&c, "203.0.113.201", None, "sans-fin", "auto", "prod"), PoseDeBan::Arme));
+        assert_eq!(banr_ligne(&c, "203.0.113.201", "prod"), (None, "sans-fin".into(), "auto".into()),
+                   "échéance finie puis permanent automatique : permanent, raison et auteur du ban neuf");
+        assert!(net_ban_is_blocked("203.0.113.201", fini + BANR_TRENTE_JOURS), "le cache rechargé bloque au-delà de l'échéance finie");
+
+        assert!(matches!(netban_upsert_sans_raccourcir(&c, "203.0.113.202", None, "sans-fin", "op", "prod"), PoseDeBan::Arme));
+        assert!(matches!(netban_upsert_sans_raccourcir(&c, "203.0.113.202", Some(fini), "fini", "auto", "prod"), PoseDeBan::Arme));
+        assert_eq!(banr_ligne(&c, "203.0.113.202", "prod"), (None, "sans-fin".into(), "op".into()),
+                   "permanent automatique puis échéance finie : reste permanent, ENTIER");
+        assert!(net_ban_is_blocked("203.0.113.202", fini + BANR_TRENTE_JOURS), "le permanent bloque toujours");
         netban_cache().write().clear();
     }
 

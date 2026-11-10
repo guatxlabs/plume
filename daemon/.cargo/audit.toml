@@ -36,4 +36,14 @@ ignore = [
   # suite par défaut ; son compte vivant est `EXPECTED_TESTS` dans ci.yml, pas recopié ici).
   # Lever dès migration vers yaml-rust2.
   "RUSTSEC-2024-0320",
+  # libsqlite3-sys 0.28 — RUSTSEC-2026-0459 (CVE-2026-119375 : SQLite < 3.54.0 peut rendre de la mémoire de cache
+  # non initialisée quand un fichier de base est ouvert avec un `-wal` voisin d'une autre taille de page ; avis du
+  # 2026-10-30, entrée posée le 2026-11-10). Ce build lie la variante `bundled-sqlcipher` : le moteur est le SQLite
+  # que SQLCipher embarque, pas celui de la variante `bundled`. Corrigé en >= 0.39.0 pour `bundled` SEULEMENT : la
+  # dernière version publiée (0.39.1, rusqlite 0.41) épingle pour `bundled-sqlcipher` une source SQLCipher dont le
+  # SQLite est encore antérieur à 3.54.0 — aucune montée publiée ne corrige le moteur lié. Le témoin
+  # `moteur_lie_et_compagnons_d_un_clair_d_archive.rs` relit la version du moteur et du codec liés avec cette entrée.
+  # Lever quand une libsqlite3-sys publiée embarque, pour sa variante SQLCipher, un SQLite >= 3.54.0, ET que la
+  # montée de rusqlite qui la tire (0.31 -> 0.41 ou au-delà, ruptures d'API comprises) est jouée.
+  "RUSTSEC-2026-0459",
 ]

@@ -158,7 +158,7 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
                 COALESCE(alert.acked_at,0),COALESCE(alert.acked_by,''),\
                 COALESCE(alert.sources,''),COALESCE(r.is_soql,1),\
                 alert.host,COALESCE(alert.opened_at,alert.ts),alert.current_value,\
-                COALESCE(alert.basis,''),COALESCE(alert.basis_ref,'') \
+                COALESCE(alert.basis,''),COALESCE(alert.basis_ref,''),alert.evidence \
                 FROM alert LEFT JOIN rule r ON ('rule.'||r.id)=alert.rule";
     // limit/offset = i64 déjà validés (clamp) -> injection impossible ; interpolés (pas de bind supplémentaire).
     let sql = format!("{base}{where_clause} ORDER BY alert.ts DESC LIMIT {limit} OFFSET {offset}");
@@ -176,7 +176,8 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
         let window_s: Option<i64> = r.get(9)?;
         let is_soql: bool = r.get::<_, i64>(13)? != 0;
         let search_link = window_s.map(|w| lien_de_recherche_de_regle(&detail, is_soql, w, ts).to_json()).unwrap_or(Value::Null);
-        Ok(json!({
+        let evidence: Option<String> = r.get(19)?;
+        let mut ligne = json!({
             "id": r.get::<_, i64>(0)?, "ts": ts,
             "rule": r.get::<_, String>(2)?, "severity": r.get::<_, i64>(3)?,
             "title": r.get::<_, String>(4)?, "status": r.get::<_, String>(5)?,
@@ -212,7 +213,12 @@ pub(crate) fn alerts_query_page(conn: &Connection, f: &FiltreAlertes, group_col:
             // famille de défaut que ce dépôt poursuit, et la raison pour laquelle `sur_la_machine`
             // (contrôles de défense) refuse déjà d'escamoter un hôte absent.
             "host": r.get::<_, Option<String>>(14)?
-        }))
+        });
+        // `P11.25-g` — LES PREUVES DE L'ALERTE, écrites à sa levée (`preuves_d_alerte`), sous la clé `evidence`. La clé
+        // n'est posée QUE pour une alerte qui en porte : la ligne d'une alerte sans preuves (toute autre règle, toute
+        // alerte d'avant v126) reste celle d'avant, à l'octet.
+        evidence.into_iter().for_each(|e| ligne["evidence"] = crate::preuves_d_alerte::preuves_servies(&e));
+        Ok(ligne)
     }) {
         // `P10.7-f` — l'itérateur est vidé EXACTEMENT comme le faisait `.flatten()` (mêmes lignes,
         // même ordre) ; ce qui s'ajoute est le compte des `Err` qu'il jetait sans un mot.
@@ -422,11 +428,18 @@ pub(crate) async fn alerts(State(st): State<AppState>, Extension(au): Extension<
         Err(_) => return Json(crate::handlers::portillon::corps_de_refus(json!({ "alerts": [] }))).into_response(),
     };
     let db_path = req_db_path(&st, &au);
+    // `P11.25-g` — LES PREUVES SONT LUES SANS MASQUE par l'ordonnanceur (chemin système) et une requête de preuves SQL
+    // est opaque : sous un filtre de champs actif pour l'appelant, elles sont RETENUES (dit sous `evidence`), comme le
+    // dry-run d'une requête SQL brute est refusé sous un masque (`rule_sql_for_caller`). Mode 0 : aucun masque, servies.
+    let preuves_retenues = !effective_masks(&db_path, &au.role, &au.tenant, au.env_filter()).is_empty();
     let gval = gval.to_string();
     let tenant = au.tenant.clone();
     let res = tokio::task::spawn_blocking(move || {
         read_with_watchdog(&db_path, json!({ "alerts": [], "error": crate::query_exec::LECTURE_NON_FAITE_SANS_CONNEXION }), move |conn| {
-            let (out, total, fin) = alerts_query_page(conn, &filtre, group_col, &gval, limit, offset, paged);
+            let (mut out, total, fin) = alerts_query_page(conn, &filtre, group_col, &gval, limit, offset, paged);
+            if preuves_retenues {
+                out.iter_mut().filter(|a| a.get("evidence").is_some()).for_each(|a| a["evidence"] = crate::preuves_d_alerte::preuves_retenues());
+            }
             total.journaliser(&tenant);
             journaliser_la_fin_de_parcours("de la liste d'alertes", &tenant, &fin);
             corps_de_liste_d_alertes(out, total, &fin)

@@ -90,7 +90,7 @@ impl Drop for MigrationLogSilencer {
 /// rien (toutes ses gardes `v < N` sont fausses) et OPÈRE À L'AVEUGLE sur un schéma qu'il ne connaît pas
 /// -> risque de corruption (survivable AUJOURD'HUI car migrations additives, mais non gardé). On REFUSE
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
-pub(crate) const CODE_SCHEMA_MAX: i64 = 125;
+pub(crate) const CODE_SCHEMA_MAX: i64 = 126;
 
 /// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
 ///
@@ -992,6 +992,7 @@ fn migrate_chain(conn: &Connection) -> bool {
     if v < 123 && !migrate_step(conn, 123, migrate_v123) { return false; }
     if v < 124 && !migrate_step(conn, 124, migrate_v124) { return false; }
     if v < 125 && !migrate_step(conn, 125, migrate_v125) { return false; }
+    if v < 126 && !migrate_step(conn, 126, migrate_v126) { return false; }
     true
 }
 
@@ -1751,6 +1752,33 @@ fn migrate_v125(conn: &MigTx) {
     let _ = conn.execute_batch(SQL_V125_DECLENCHEURS_DE_LA_VUE_PRINCIPALE);
     let _ = conn.execute("UPDATE meta SET value='125' WHERE key='schema_version'", []);
     mig_log!("[migration] schéma -> v125 (P11.25-f : view_dashboard — un tableau de bord se range dans plusieurs vues, la jointure fait foi, remplie depuis dashboard.view_id ; dashboard.all_views = 0 partout, un tableau sans vue n'était servi dans aucune vue et ne l'est toujours pas ; view_id reste la vue principale, tenue dans la jointure par déclencheurs ; view_dashboard.explicite = 1 pour un rattachement posé par la route, que le déplacement de la vue principale n'efface pas)");
+}
+
+/// v126 (P11.25-g) — UNE ALERTE DE RÈGLE PORTE SES PREUVES.
+///
+/// AVANT : l'alerte de la règle « attaquant actif non banni » (v52, SQL natif d'agrégat) ne portait qu'un nombre et le
+/// texte de sa requête ; l'exploitant ne pouvait pas remonter aux adresses comptées. Deux colonnes NULLABLES :
+///   * `rule.evidence_query` — la requête de preuves que la règle déclare (même nature que sa requête), jouée à la levée
+///     par le chemin de la règle (`preuves_d_alerte`) ; NULL = aucune, l'alerte reste celle d'avant ;
+///   * `alert.evidence` — le verdict écrit à la levée (objet JSON daté, trois issues), servi sous `evidence` par
+///     `/api/alerts` ; NULL = aucune preuve déclarée, ou alerte d'avant v126.
+/// La requête de preuves de la règle v52 n'est posée que sur la ligne LIVRÉE (`poser_la_requete_de_preuves_livree` :
+/// nom, `is_soql=0`, requête exacte, aucune requête de preuves déjà posée), jamais sur une règle que l'exploitant a
+/// modifiée. Base neuve : la ligne n'existe pas encore (le semis suit la migration), 0 ligne touchée, le semis la pose.
+///
+/// Idempotente (colonnes gardées par `col_exists`, pose gardée par `evidence_query IS NULL`) ; gardée par `v < 126`.
+/// ROLLBACK — bumpe le schéma à 126 : un binaire max=125 REFUSE d'ouvrir une base v126 (`db_open`,
+/// `v > CODE_SCHEMA_MAX` -> Err). Rollback = RESTAURER le SNAPSHOT pré-migrate. Forward-only.
+fn migrate_v126(conn: &MigTx) {
+    if !conn.col_exists("rule", "evidence_query") {
+        let _ = conn.execute("ALTER TABLE rule ADD COLUMN evidence_query TEXT", []);
+    }
+    if !conn.col_exists("alert", "evidence") {
+        let _ = conn.execute("ALTER TABLE alert ADD COLUMN evidence TEXT", []);
+    }
+    let _ = poser_la_requete_de_preuves_livree(conn);
+    let _ = conn.execute("UPDATE meta SET value='126' WHERE key='schema_version'", []);
+    mig_log!("[migration] schéma -> v126 (P11.25-g : rule.evidence_query / alert.evidence — une règle peut déclarer une requête de preuves, jouée à la levée par le chemin de la règle et écrite sur l'alerte, NULL = aucune ; posée sur la règle « attaquant actif non banni » livrée seulement, jamais sur une règle modifiée)");
 }
 
 /// `P11.25-f` (v125) — l'index des rattachements par tableau de bord (`view_dashboard(dashboard_id)`), idempotent.

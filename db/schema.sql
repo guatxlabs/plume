@@ -138,7 +138,11 @@ CREATE TABLE IF NOT EXISTS alert(
   -- de la prose. `(source indéterminée)` = l'inconnu NOMMÉ (cf. daemon/src/imputation.rs). DEFAULT ''
   -- = alerte ANTÉRIEURE à la migration : le lecteur retombe alors sur l'extraction textuelle historique.
   -- MIROIR de la migration v115.
-  sources TEXT NOT NULL DEFAULT ''
+  sources TEXT NOT NULL DEFAULT '',
+  -- v126 (P11.25-g) — LES PREUVES de l'alerte : objet JSON daté écrit à la levée par la boucle de règles quand la règle
+  -- déclare une requête de preuves (`rule.evidence_query`), cf. daemon/src/preuves_d_alerte.rs. NULL = aucune preuve
+  -- déclarée, ou alerte antérieure. Jamais réécrit après la levée. MIROIR de la migration v126.
+  evidence TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_alert_status ON alert(status,ts);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_dedup ON alert(dedup) WHERE dedup IS NOT NULL;
@@ -190,7 +194,10 @@ CREATE TABLE IF NOT EXISTS rule(
   -- échec, budget dépassé, cellule non numérique, fil en panique) ; remis à 0 à la première évaluation
   -- réussie. Au seuil dérivé de `interval_s` (une heure d'horizon, plancher 2), une alerte « détection
   -- aveugle » est posée, résolue au retour. MIROIR de la migration v116.
-  abandons_consecutifs INTEGER NOT NULL DEFAULT 0
+  abandons_consecutifs INTEGER NOT NULL DEFAULT 0,
+  -- v126 (P11.25-g) — la requête de PREUVES que la règle déclare (même nature que `query`) : les lignes que son nombre
+  -- compte, jouées à la levée de l'alerte par le chemin de la règle. NULL = aucune. MIROIR de la migration v126.
+  evidence_query TEXT
 );
 
 -- Tables d'enrichissement (lookup, v61) : l'opérateur SOQL `lookup <name> <keyfield> [OUTPUT cols]`

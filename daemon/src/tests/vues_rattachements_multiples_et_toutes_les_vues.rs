@@ -205,7 +205,8 @@ mod vues_rattachements_multiples_et_toutes_les_vues {
         let d2 = bt2_tableau(&st, "D2 sans vue", "", "shared", None);
         let d3 = bt2_tableau(&st, "D3", "", "shared", Some(v3));
         assert!(migrate(&st.db.lock()), "v125 passe malgré deux vues homonymes");
-        assert_eq!(read_schema_version(&st.db.lock()), 125);
+        // `P11.25-g` (v126) : la chaîne va au-delà de 125 ; ce témoin tient « 125 est passée », pas « 125 est la dernière ».
+        assert!(read_schema_version(&st.db.lock()) >= 125, "v125 est passée");
         assert_eq!(bt2_rattachements(&st), vec![(v1, d1), (v3, d3)], "la jointure porte les rattachements de view_id, et eux seuls");
         assert_eq!((bt2_toutes(&st, d1), bt2_toutes(&st, d2), bt2_toutes(&st, d3)), (0, 0, 0), "all_views vaut 0 partout");
         assert_eq!(bt2_declencheurs(&st), 3, "les trois déclencheurs sont posés");
@@ -232,7 +233,8 @@ mod vues_rattachements_multiples_et_toutes_les_vues {
         bt2_rattacher(&st, v2, d2);
         bt2_ecrire(&st, &format!("UPDATE dashboard SET all_views=1 WHERE id={d1}; UPDATE meta SET value='124' WHERE key='schema_version';"));
         assert!(migrate(&st.db.lock()), "le second passage aboutit");
-        assert_eq!(read_schema_version(&st.db.lock()), 125);
+        // `P11.25-g` (v126) : la chaîne va au-delà de 125 ; ce témoin tient « 125 est passée », pas « 125 est la dernière ».
+        assert!(read_schema_version(&st.db.lock()) >= 125, "v125 est passée");
         assert_eq!(bt2_rattachements(&st), vec![(v1, d1), (v2, d2)], "le rattachement posé entre les deux passages reste");
         assert_eq!(bt2_toutes(&st, d1), 1, "all_views posé entre les deux passages reste");
         assert_eq!(bt2_declencheurs(&st), 3);

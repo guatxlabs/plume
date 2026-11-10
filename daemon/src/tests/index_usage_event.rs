@@ -172,7 +172,9 @@ fn base_au_schema_reel(etiquette: &str) -> (crate::tmp_possede::TmpDb, Arc<Mutex
 
 /// Les noms de colonne qui PORTENT une requête produit. Ce n'est pas une liste d'objets, c'est le
 /// vocabulaire du schéma : la recherche des colonnes, elle, est faite sur TOUTES les tables.
-const COLONNES_PORTEUSES_DE_REQUETE: &[&str] = &["query", "search_soql", "soql"];
+/// `P11.25-g` (v126) : `evidence_query` — la requête de preuves d'une règle, livrée sur la règle « attaquant actif non
+/// banni » et jouée par l'ordonnanceur à chaque tir (même porte `rule_sql`, même `is_soql`, même `window_s`).
+const COLONNES_PORTEUSES_DE_REQUETE: &[&str] = &["query", "search_soql", "soql", "evidence_query"];
 
 #[derive(Debug, Clone)]
 struct ObjetCorpus {

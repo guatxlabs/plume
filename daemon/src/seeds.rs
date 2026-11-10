@@ -1241,6 +1241,42 @@ pub(crate) const DETECTION_RULES_V52: [(&str, &str, i64, &str, f64, i64, i64, i6
      0, ">", 2.0, 3, 300, 3600, "T1595"),
 ];
 
+/// `P11.25-g` — LA REQUÊTE DE PREUVES DE LA RÈGLE v52 : les adresses que son nombre compte, et rien d'autre. MÊME
+/// population que `ATTACKER_UNMITIGATED_RULE_SQL` (mêmes deux branches, même plancher par adresse, même anti-jointure
+/// sur `banned_ip`, aucune exclusion : ni trafic interne, ni adresse privée, ni adresse de l'exploitant), une ligne par
+/// adresse : son activité sur la fenêtre (le nombre que la règle compare à son plancher) et sa part par source (`web` :
+/// réponses 4xx/5xx, `cloudflare` : défis du pare-feu applicatif). Triée par activité décroissante (l'adresse en second
+/// critère, pour un ordre total) ; la borne est appliquée par `preuves_d_alerte`. is_soql=0, comme la règle.
+pub(crate) const ATTACKER_UNMITIGATED_EVIDENCE_SQL: &str =
+    "SELECT a.src_ip AS src_ip, a.activite AS activite, a.web AS web, a.cloudflare AS cloudflare FROM ( \
+       SELECT src_ip, SUM(c) AS activite, \
+              SUM(CASE WHEN s='web' THEN c ELSE 0 END) AS web, \
+              SUM(CASE WHEN s='cloudflare' THEN c ELSE 0 END) AS cloudflare FROM ( \
+         SELECT src_ip, 'cloudflare' AS s, COUNT(*) AS c FROM event \
+           WHERE source='cloudflare' AND ts>=__FROM__ AND json_extract(fields,'$.action')='challenged' \
+             AND src_ip IS NOT NULL AND src_ip<>'' GROUP BY src_ip \
+         UNION ALL \
+         SELECT src_ip, 'web' AS s, COUNT(*) AS c FROM event \
+           WHERE source='web' AND ts>=__FROM__ AND CAST(json_extract(fields,'$.status') AS INTEGER)>=400 \
+             AND src_ip IS NOT NULL AND src_ip<>'' GROUP BY src_ip \
+       ) GROUP BY src_ip HAVING activite > 20 \
+     ) a \
+     LEFT JOIN banned_ip b ON b.src_ip=a.src_ip \
+     WHERE b.src_ip IS NULL \
+     ORDER BY a.activite DESC, a.src_ip";
+
+/// `P11.25-g` — POSE LA REQUÊTE DE PREUVES SUR LA RÈGLE v52 LIVRÉE, et sur elle seule : reconnue comme v54/v55
+/// reconnaissent la leur — son nom, `is_soql=0` et sa requête EXACTE (`ATTACKER_UNMITIGATED_RULE_SQL`) — et seulement si
+/// elle n'en porte pas déjà une. Une règle que l'exploitant a modifiée (requête, nature, nom) ou dont il a posé la requête
+/// de preuves n'est jamais réécrite. Partagée par le semis (base neuve) et la migration v126 (base existante) ;
+/// rend le nombre de lignes touchées (0 ou 1).
+pub(crate) fn poser_la_requete_de_preuves_livree<C: SqlExec>(conn: &C) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE rule SET evidence_query=?1 WHERE name=?2 AND is_soql=0 AND query=?3 AND evidence_query IS NULL",
+        params![ATTACKER_UNMITIGATED_EVIDENCE_SQL, DETECTION_RULES_V52[0].0, ATTACKER_UNMITIGATED_RULE_SQL],
+    )
+}
+
 /// RÈGLE v53 — YARA : match d'une règle YARA = malware/IOC détecté sur l'hôte. Le collecteur host
 /// `yara.sh` (OFF par défaut : inerte tant que le binaire `yara` est absent OU qu'aucune règle n'est
 /// déposée dans /etc/plume/yara.d) émet, quand activé, des events `source=yara category=malware`
@@ -1438,6 +1474,8 @@ pub(crate) fn seed_detection_rules(conn: &Connection) {
         for r in DETECTION_RULES_V52 {
             semer_une_regle_de_detection(conn, r, 1)?;
         }
+        // `P11.25-g` — sa requête de preuves, par la MÊME fonction que la migration v126 (base existante).
+        poser_la_requete_de_preuves_livree(conn)?;
         // + règle v53 (YARA : match malware/IOC) — même mécanique : seed sur PVC neuf, migration v53 sur
         // l'instance déjà déployée. event-driven : inerte tant qu'aucun event source=yara. Source unique :
         // DETECTION_RULES_V53. DARK-BY-DEFAULT (Wave 3, git-durability) : enabled=0 -> une règle qui ne peut

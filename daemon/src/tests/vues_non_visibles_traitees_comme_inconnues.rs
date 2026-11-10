@@ -335,7 +335,8 @@ mod vues_non_visibles_traitees_comme_inconnues {
         );
         assert_eq!(bu2_entier(&st, "SELECT COUNT(*) FROM sqlite_master WHERE name='view_dashboard_par_tableau'"), 0, "fixture : base v124 sans index");
         assert!(migrate(&st.db.lock()), "v125 passe");
-        assert_eq!(read_schema_version(&st.db.lock()), 125);
+        // `P11.25-g` (v126) : la chaîne va au-delà de 125 ; ce témoin tient « 125 est passée », pas « 125 est la dernière ».
+        assert!(read_schema_version(&st.db.lock()) >= 125, "v125 est passée");
         assert_eq!(bu2_index_par_tableau(&st), 1, "v125 pose l'index");
         bu2_ecrire(&st, "UPDATE meta SET value='124' WHERE key='schema_version';");
         assert!(migrate(&st.db.lock()), "le second passage aboutit");

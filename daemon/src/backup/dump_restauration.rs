@@ -801,8 +801,14 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
         }
         // Le re-chiffrement vise le temporaire de restauration ; la connexion (et la base attachée) est
         // fermée en sortie de la fermeture, AVANT la publication ou le retrait du temporaire.
+        // Le fichier en clair vient de l'ARCHIVE et n'a aucune clé pour authentifier ses pages : il est ouvert
+        // sans ses compagnons. Un `-wal` trouvé à côté n'a pas été produit avec lui (il vient d'être écrit) ; il
+        // n'est pas rejoué.
         restaurer_a_cote_puis_publier(dest_db, |en_cours| {
-            let conn = open_db_keyed_without_schema_contract(&tmp_plain, None).map_err(|e| format!("ouverture plaintext : {e}"))?;
+            #[cfg(test)]
+            crochet_du_clair_de_restauration::passer(dest_db, &tmp_plain);
+            let conn = crate::db_open::open_plain_db_ignoring_companions_without_schema_contract(&tmp_plain)
+                .map_err(|e| format!("ouverture plaintext : {e}"))?;
             conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
                 .map_err(|e| format!("plaintext illisible (passphrase invalide ?) : {e}"))?;
             let sql = format!(
@@ -812,5 +818,37 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
         })
     } else {
         Err(format!("restore : format de charge inconnu (ni dump B1 ni fichier SQLite) — backup corrompu ? tête={magic:?}"))
+    }
+}
+
+/// Crochet de test : passé dans la restauration legacy juste après l'écriture du fichier en clair et avant son
+/// ouverture, avec la destination et le chemin du clair, que la restauration choisit elle-même : un témoin y pose
+/// un compagnon à côté du clair. Plusieurs témoins concurrents : un crochet par destination.
+#[cfg(test)]
+pub(crate) mod crochet_du_clair_de_restauration {
+    type Crochet = Box<dyn FnOnce(&str) + Send>;
+
+    static ARMES: std::sync::Mutex<Vec<(String, Crochet)>> = std::sync::Mutex::new(Vec::new());
+
+    pub(crate) fn armer(dest_db: &str, f: Crochet) {
+        ARMES.lock().unwrap_or_else(|e| e.into_inner()).push((dest_db.to_string(), f));
+    }
+
+    /// Rend vrai si un crochet armé pour `dest_db` n'a pas été passé (le témoin le retire ainsi à la sortie).
+    pub(crate) fn desarmer(dest_db: &str) -> bool {
+        let mut armes = ARMES.lock().unwrap_or_else(|e| e.into_inner());
+        let avant = armes.len();
+        armes.retain(|(d, _)| d != dest_db);
+        armes.len() != avant
+    }
+
+    pub(crate) fn passer(dest_db: &str, clair: &str) {
+        let pris = {
+            let mut armes = ARMES.lock().unwrap_or_else(|e| e.into_inner());
+            armes.iter().position(|(d, _)| d == dest_db).map(|i| armes.remove(i))
+        };
+        if let Some((_, f)) = pris {
+            f(clair);
+        }
     }
 }

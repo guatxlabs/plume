@@ -27,7 +27,9 @@
 //!   - `open_db_without_schema_contract` / `open_db_keyed_without_schema_contract` — le nom est long et
 //!     laid EXPRÈS. Un chemin qui doit légitimement ouvrir hors contrat (sauvegarde d'une base ABÎMÉE,
 //!     export de diagnostic, base qui n'est PAS une base plume, chiffrement at-rest qui tourne AVANT
-//!     qu'un schéma existe) doit l'ÉCRIRE, et ça se voit en revue.
+//!     qu'un schéma existe) doit l'ÉCRIRE, et ça se voit en revue. Sa variante
+//!     `open_plain_db_ignoring_companions_without_schema_contract` ouvre un fichier EN CLAIR que le démon n'a pas
+//!     produit (contenu d'une archive) sans rejouer le `-wal` posé à côté.
 //! Aucune liste d'appelants n'est tenue ici : c'est précisément ce qui a échoué trois tours de suite.
 //!
 //! CE QUE LA PORTE APPLIQUE, DANS CET ORDRE (et l'ordre est load-bearing) :
@@ -443,6 +445,32 @@ pub(crate) fn open_db_without_schema_contract(path: &str) -> rusqlite::Result<Co
 /// Idem avec une clé EXPLICITE (backup/restore, control-plane, sondes de chiffrement at-rest).
 pub(crate) fn open_db_keyed_without_schema_contract(path: &str, key: Option<&str>) -> rusqlite::Result<Connection> {
     raw_keyed(path, key)
+}
+
+/// OUVERTURE **SANS** LE CONTRAT ET **SANS LES COMPAGNONS** d'un fichier SQLite EN CLAIR que le démon n'a pas
+/// produit lui-même (le contenu d'une archive). Le fichier est ouvert en URI `immutable=1` : le moteur le traite
+/// comme un fichier temporaire : il ne rejoue pas le `-wal` posé à côté, ne le modifie ni ne le retire, et seules
+/// les pages du fichier lui-même sont lues. Un voisin que personne n'a produit avec ce fichier ne peut donc pas être
+/// rejoué dessus. Aucune clé : une base chiffrée authentifie ses pages, un fichier en clair n'a que cette barrière-ci.
+/// L'appelant garantit que rien ne modifie le fichier tant que la connexion vit (c'est le contrat d'`immutable`) :
+/// à réserver à un fichier que personne d'autre n'écrit, JAMAIS à une base vivante, dont le WAL porte des
+/// écritures validées. Le chemin est passé en URI : `%`, `?` et `#` y sont échappés.
+pub(crate) fn open_plain_db_ignoring_companions_without_schema_contract(path: &str) -> rusqlite::Result<Connection> {
+    raw_keyed(&uri_sans_compagnons(path), None)
+}
+
+/// Le chemin en URI SQLite `file:` (`%`, `?`, `#` échappés), lu sans compagnons (`immutable=1`).
+fn uri_sans_compagnons(path: &str) -> String {
+    let mut echappe = String::with_capacity(path.len() + 24);
+    for c in path.chars() {
+        match c {
+            '%' => echappe.push_str("%25"),
+            '?' => echappe.push_str("%3f"),
+            '#' => echappe.push_str("%23"),
+            _ => echappe.push(c),
+        }
+    }
+    format!("file:{echappe}?immutable=1")
 }
 
 /// VISIBILITÉ — ces deux noms n'existent QU'EN BUILD DE TEST, exactement comme `migrate` : les tests

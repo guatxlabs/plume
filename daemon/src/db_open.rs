@@ -454,15 +454,20 @@ pub(crate) fn open_db_keyed_without_schema_contract(path: &str, key: Option<&str
 /// rejoué dessus. Aucune clé : une base chiffrée authentifie ses pages, un fichier en clair n'a que cette barrière-ci.
 /// L'appelant garantit que rien ne modifie le fichier tant que la connexion vit (c'est le contrat d'`immutable`) :
 /// à réserver à un fichier que personne d'autre n'écrit, JAMAIS à une base vivante, dont le WAL porte des
-/// écritures validées. Le chemin est passé en URI : `%`, `?` et `#` y sont échappés.
+/// écritures validées. Le chemin est passé en URI par `uri_sqlite_immuable_d_un_chemin`.
 pub(crate) fn open_plain_db_ignoring_companions_without_schema_contract(path: &str) -> rusqlite::Result<Connection> {
-    raw_keyed(&uri_sans_compagnons(path), None)
+    raw_keyed(&uri_sqlite_immuable_d_un_chemin(path), None)
 }
 
-/// Le chemin en URI SQLite `file:` (`%`, `?`, `#` échappés), lu sans compagnons (`immutable=1`).
-fn uri_sans_compagnons(path: &str) -> String {
-    let mut echappe = String::with_capacity(path.len() + 24);
-    for c in path.chars() {
+/// Le chemin d'un fichier en URI SQLite lue sans compagnons (`immutable=1`), partagée par l'ouverture du clair d'une
+/// archive ci-dessus et par l'ouverture immuable d'`integrity_check`. `%`, `?` et `#` sont échappés : sans cela `%41`
+/// se décoderait, `?` ouvrirait la requête et `#` le fragment. Un chemin ABSOLU prend une autorité vide (`file://`
+/// puis le chemin) : derrière `file:` seul, un chemin qui commence par deux barres (`//var/lib/…`) serait lu comme une
+/// autorité d'URI et l'ouverture refusée. Un chemin RELATIF reste derrière `file:` (une autorité vide suivie d'un
+/// chemin relatif n'existe pas en URI), résolu depuis le répertoire courant.
+pub(crate) fn uri_sqlite_immuable_d_un_chemin(chemin: &str) -> String {
+    let mut echappe = String::with_capacity(chemin.len() + 24);
+    for c in chemin.chars() {
         match c {
             '%' => echappe.push_str("%25"),
             '?' => echappe.push_str("%3f"),
@@ -470,7 +475,11 @@ fn uri_sans_compagnons(path: &str) -> String {
             _ => echappe.push(c),
         }
     }
-    format!("file:{echappe}?immutable=1")
+    if echappe.starts_with('/') {
+        format!("file://{echappe}?immutable=1")
+    } else {
+        format!("file:{echappe}?immutable=1")
+    }
 }
 
 /// VISIBILITÉ — ces deux noms n'existent QU'EN BUILD DE TEST, exactement comme `migrate` : les tests

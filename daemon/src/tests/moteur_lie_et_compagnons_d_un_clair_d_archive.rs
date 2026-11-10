@@ -15,13 +15,21 @@
 // d'entrée `restore_compressed` : un `-wal` VALIDE posé à côté du clair juste avant son ouverture (crochet
 // `crochet_du_clair_de_restauration`), qui ajouterait une ligne s'il était rejoué, n'apparaît pas dans la base
 // restaurée ; une restauration légitime rend exactement les lignes de la source, sous un nom qui porte `%`, `?` et `#`
-// (l'URI les échappe) ; et l'ouverture, même posée sur une base dont le WAL porte des écritures validées, ne lit, ne
-// modifie ni ne retire ce WAL, et ces écritures restent lisibles par leur connexion.
+// (l'URI les échappe), vers un chemin absolu qui commence par deux barres et vers un chemin relatif ; et l'ouverture,
+// même posée sur une base dont le WAL porte des écritures validées, ne lit, ne modifie ni ne retire ce WAL, et ces
+// écritures restent lisibles par leur connexion.
+//
+// L'URI. Un seul assistant l'écrit (`db_open::uri_sqlite_immuable_d_un_chemin`), pour le clair d'archive et pour
+// l'ouverture immuable d'`integrity_check` : témoin unitaire forme par forme, et `integrity_check` jugé sous un chemin
+// à deux barres.
 //
 // MUTANTS ÉPROUVÉS ROUGES : le clair ouvert comme avant, ou l'URI sans `immutable=1`, rougissent le voisin rejoué et la
 // base vivante ; les compagnons retirés avant l'ouverture rougissent la base vivante ; chacun des trois échappements
-// (`%`, `?`, `#`) retiré rougit la restauration légitime ; une version lue corrigée, une autre version touchée ou un
-// autre codec rougissent l'épingle ; l'entrée retirée de `audit.toml` rougit `cargo audit --deny warnings`.
+// (`%`, `?`, `#`) retiré rougit la restauration légitime et le témoin unitaire ; un chemin absolu sans autorité vide
+// rougit les deux témoins à deux barres et le témoin unitaire ; un chemin relatif avec autorité rougit la restauration
+// relative et le témoin unitaire ; `integrity_check` qui écrit son URI sans l'assistant rougit son témoin à deux
+// barres ; une version lue corrigée, une autre version touchée ou un autre codec rougissent l'épingle ; l'entrée
+// retirée de `audit.toml` rougit `cargo audit --deny warnings`.
 //
 // NE TIENT PAS : la variante SQLCipher n'a pas de version corrigée publiée, donc le moteur lié reste celui que l'avis
 // décrit ; seul le clair d'une archive au format ancien est ouvert sans ses compagnons.
@@ -206,5 +214,96 @@ mod moteur_lie_et_compagnons_d_un_clair_d_archive {
             "le WAL de la base vivante est intact, octet pour octet");
         assert_eq!(lignes(&vivante), vec!["dans-le-fichier".to_string(), "valide-dans-le-wal".to_string()],
             "les écritures validées dans le WAL restent lisibles par leur connexion");
+    }
+
+    /// Le chemin du clair que la restauration choisit pour `dest`, relevé par le crochet juste avant son ouverture.
+    fn armer_le_releve_du_clair(dest: &str) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+        let releve = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let pour_le_crochet = std::sync::Arc::clone(&releve);
+        crate::backup::crochet_du_clair_de_restauration::armer(
+            dest,
+            Box::new(move |clair: &str| *pour_le_crochet.lock().unwrap() = Some(clair.to_string())),
+        );
+        releve
+    }
+
+    /// Restaure une archive au format ancien portant `valeurs` vers `dest` et rend le chemin du clair ouvert.
+    fn restaurer_le_format_ancien(racine: &std::path::Path, dest: &str, valeurs: &[&str]) -> String {
+        let source = clair_replie(&chemin(racine, "clair.db"), valeurs);
+        let archive = chemin(racine, "legacy.age");
+        archive_de(&source, &archive);
+        let releve = armer_le_releve_du_clair(dest);
+        let r = restore_compressed(&archive, dest, Some(CLE), false, None);
+        let non_passe = crate::backup::crochet_du_clair_de_restauration::desarmer(dest);
+        r.expect("restauration legacy");
+        assert!(!non_passe, "le crochet doit avoir été passé : le clair a été ouvert");
+        let clair = releve.lock().unwrap().clone().expect("chemin du clair relevé");
+        clair
+    }
+
+    /// Un chemin ABSOLU qui commence par deux barres (`PLUME_DB` ou le dossier de préparation valant `//var/lib/…`) :
+    /// derrière `file:` seul, SQLite y lirait une autorité d'URI et refuserait l'ouverture du clair.
+    #[test]
+    fn une_restauration_au_format_ancien_vers_un_chemin_a_deux_barres_rend_les_lignes_de_la_source() {
+        let _reglages = VERROU_ENV_PROCESSUS.read();
+        let _tmp = crate::tmp_possede::TmpPossede::neuf("cc4-deux-barres");
+        let racine = _tmp.racine().chemin().to_path_buf();
+        let dest = format!("/{}", chemin(&racine, "plume.db"));
+        assert!(dest.starts_with("//") && !dest.starts_with("///"), "fixture : deux barres en tête ({dest})");
+        let valeurs = ["alpha", "beta", "gamma"];
+        let clair = restaurer_le_format_ancien(&racine, &dest, &valeurs);
+        assert!(clair.starts_with("//") && !clair.starts_with("///"),
+            "fixture : le clair ouvert porte lui aussi deux barres en tête ({clair})");
+        assert_eq!(lignes_restaurees(&dest), valeurs.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+            "la base restaurée porte exactement les lignes de l'archive");
+    }
+
+    /// Un chemin RELATIF (`restore <archive> <destination>` ou `PLUME_DB` relatif, main.rs : la destination est prise
+    /// telle quelle) : le clair est posé dans le dossier de la destination, relatif lui aussi, et s'ouvre depuis le
+    /// répertoire courant. Le chemin relatif est dérivé du répertoire courant du processus de test (aucun témoin ne le
+    /// change) en remontant jusqu'à la racine puis en redescendant vers le dossier temporaire.
+    #[test]
+    fn une_restauration_au_format_ancien_vers_un_chemin_relatif_rend_les_lignes_de_la_source() {
+        let _reglages = VERROU_ENV_PROCESSUS.read();
+        let _tmp = crate::tmp_possede::TmpPossede::neuf("cc4-relatif");
+        let racine = _tmp.racine().chemin().to_path_buf();
+        let ici = std::env::current_dir().expect("répertoire courant");
+        let remontees = ici.components().filter(|c| matches!(c, std::path::Component::Normal(_))).count();
+        let absolu = chemin(&racine, "plume.db");
+        let dest = format!("{}{}", "../".repeat(remontees), absolu.trim_start_matches('/'));
+        assert!(std::path::Path::new(&dest).is_relative(), "fixture : destination relative ({dest})");
+        let valeurs = ["delta", "epsilon"];
+        let clair = restaurer_le_format_ancien(&racine, &dest, &valeurs);
+        assert!(std::path::Path::new(&clair).is_relative(), "fixture : le clair ouvert est relatif ({clair})");
+        assert_eq!(lignes_restaurees(&absolu), valeurs.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+            "la base restaurée, relue par son chemin absolu, porte exactement les lignes de l'archive");
+    }
+
+    /// `integrity_check` ouvre une base sans compagnons par le MÊME assistant : un chemin à deux barres y est le
+    /// fichier jugé (ouverture immuable, verdict sain), pas une autorité d'URI refusée.
+    #[test]
+    fn integrity_check_juge_une_base_sans_compagnons_sous_un_chemin_a_deux_barres() {
+        let _reglages = VERROU_ENV_PROCESSUS.read();
+        let _tmp = crate::tmp_possede::TmpPossede::neuf("cc4-ic-deux-barres");
+        let base = chemin(_tmp.racine().chemin(), "ic.db");
+        clair_replie(&base, &["ic-1", "ic-2"]);
+        let deux_barres = format!("/{base}");
+        let v = crate::integrity_check::verifier(&deux_barres, crate::integrity_check::Mode::Rapide, None);
+        assert_eq!(v.rapport["ouverture"], "immuable", "la voie de l'URI : {}", v.rapport);
+        assert_eq!(v.code, crate::integrity_check::CODE_SAIN, "la base nommée est ouverte et jugée saine : {}", v.rapport);
+    }
+
+    /// L'assistant partagé, forme par forme, écrite à la main.
+    #[test]
+    fn l_uri_immuable_d_un_chemin_absolu_a_deux_barres_ou_relatif_echappe_pourcent_question_et_diese() {
+        let uri = crate::db_open::uri_sqlite_immuable_d_un_chemin;
+        assert_eq!(uri("/var/lib/plume/plume.db"), "file:///var/lib/plume/plume.db?immutable=1");
+        assert_eq!(uri("//var/lib/plume/plume.db"), "file:////var/lib/plume/plume.db?immutable=1");
+        assert_eq!(uri("db/plume.db"), "file:db/plume.db?immutable=1");
+        assert_eq!(uri("../db/plume.db"), "file:../db/plume.db?immutable=1");
+        assert_eq!(uri("a%41b.db"), "file:a%2541b.db?immutable=1");
+        assert_eq!(uri("a?b.db"), "file:a%3fb.db?immutable=1");
+        assert_eq!(uri("a#b.db"), "file:a%23b.db?immutable=1");
+        assert_eq!(uri("/r/p%41?x#y.db"), "file:///r/p%2541%3fx%23y.db?immutable=1");
     }
 }

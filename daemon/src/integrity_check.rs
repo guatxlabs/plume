@@ -188,25 +188,6 @@ fn taille(chemin: &str) -> Result<Option<u64>, std::io::Error> {
     }
 }
 
-/// Le nom de fichier en URI SQLite (`file:` + chemin, `%`, `?` et `#` échappés).
-fn uri_immuable(chemin: &str) -> String {
-    let mut echappe = String::with_capacity(chemin.len());
-    for c in chemin.chars() {
-        match c {
-            '%' => echappe.push_str("%25"),
-            '?' => echappe.push_str("%3f"),
-            '#' => echappe.push_str("%23"),
-            _ => echappe.push(c),
-        }
-    }
-    if echappe.starts_with('/') {
-        format!("file://{echappe}?immutable=1")
-    } else {
-        format!("file:{echappe}?immutable=1")
-    }
-}
-
-
 /// Le contrôle entier. `cle` : la clé SQLCipher à appliquer (`None` ou vide : base en clair).
 pub(crate) fn verifier(chemin: &str, mode: Mode, cle: Option<&str>) -> Verdict {
     verifier_avec_attente(chemin, mode, cle, ATTENTE_D_UN_VERROU)
@@ -282,7 +263,7 @@ fn verifier_dans(
 
     // ── 2. L'OUVERTURE EN LECTURE SEULE, SANS CREATE ────────────────────────────────────────────
     let ouverte = if immuable {
-        Connection::open_with_flags(uri_immuable(chemin), OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)
+        Connection::open_with_flags(crate::db_open::uri_sqlite_immuable_d_un_chemin(chemin), OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)
     } else {
         Connection::open_with_flags(chemin, OpenFlags::SQLITE_OPEN_READ_ONLY)
     };

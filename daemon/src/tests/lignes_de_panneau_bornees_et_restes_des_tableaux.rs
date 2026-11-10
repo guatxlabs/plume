@@ -18,6 +18,8 @@
 //      durée propre -> aucune ; au-delà de la durée propre -> une de plus ; un second panneau -> sa ligne ; chaque ligne
 //      ENTIÈRE (égalité), aucune autre de sa nature ; le statut et le corps servis sont les mêmes, ligne dite ou tue ;
 //  (A') un même panneau dans trois natures (trois plages) -> trois lignes : une nature n'en tait pas une autre ;
+//  (A'') appel direct : chaque nature notée pour deux panneaux de deux bases, l'une oubliée comme à la destruction de
+//      son tenant -> la première ligne de CHAQUE nature ressort sur la base oubliée, l'autre base garde les siennes tues ;
 //  (B1) par le routeur, `GET /api/library-panels` : un BLOB fabriqué en propriétaire du tableau, en visibilité du
 //      tableau, en visibilité du panneau -> la liste répond pour chaque lecteur, le référent n'est compté que par qui le
 //      lit (propriétaire textuel, administrateur), jamais par les octets du BLOB ; un entier ne se fabrique pas dans
@@ -30,11 +32,14 @@
 // MUTANTS JOUÉS (posés sous `cfg!(test)`, armés par la variable de mutation de l'exécuteur, retirés avant le commit), chacun vu ROUGE :
 //  CC3_SANS_BORNE_ILLISIBLE_NC, CC3_SANS_BORNE_ECHEC_NC, CC3_SANS_BORNE_ILLISIBLE_REFUS, CC3_SANS_BORNE_DIRECT,
 //  CC3_CLE_SANS_TENANT, CC3_PREMIERE_TUE (A) ; CC3_CLE_PARTAGEE (A') ; CC3_UB_OWNER_SANS_TYPEOF, CC3_UB_VIS_SANS_TYPEOF,
-//  CC3_UB_PVIS_SANS_TYPEOF (B1) ; CC3_ORPHELIN_DIT (B2) ; CC3_HEX_SANS_CONTROLE, CC3_REFERENT_ILLISIBLE_SAUTE (B3).
+//  CC3_UB_PVIS_SANS_TYPEOF (B1) ; CC3_ORPHELIN_DIT (B2) ; CC3_HEX_SANS_CONTROLE, CC3_REFERENT_ILLISIBLE_SAUTE (B3) ;
+//  CC3V_OUBLI_UNE_NATURE (l'oubli ne retire que la nature de BK), CC3V_OUBLI_AUCUNE, CC3V_OUBLI_TOUTES_BASES (A'').
 // CE QU'ILS NE TIENNENT PAS : la ligne ILLISIBLE d'un panneau qui compile (un rafraîchissement armé la remplace, non
 // bornée) ; les deux lignes qui portent l'identifiant servi dans le corps (NON LUE, résultat NON ÉCRIT en 503) : les
 // taire laisserait un identifiant servi sans sa ligne ; la création d'un orphelin par l'administrateur (`POST
-// /api/panels` sur un tableau absent rend 200) ; les registres sont perdus au redémarrage.
+// /api/panels` sur un tableau absent rend 200) ; les registres sont perdus au redémarrage ; la borne est posée par
+// NATURE, pas par cause : dans une même nature, une cause qui change (le refus du moteur `{e}` du résultat direct non
+// écrit qui passe de « not authorized » à « disk full ») est tue jusqu'à une durée du cache du panneau.
 // =====================================================================================
 mod lignes_de_panneau_bornees_et_restes_des_tableaux {
     use super::*;
@@ -566,6 +571,68 @@ mod lignes_de_panneau_bornees_et_restes_des_tableaux {
         for qui in [&bob, &adm] {
             for illisible in [r#"[[1,"+1","",""]]"#, r#"[[1,"616C696365","736861726564","73686172656"]]"#] {
                 assert!(referents_lus(illisible, qui).is_err(), "({}) {illisible} : la liste est illisible, jamais un compte", qui.name);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // (A'') LA DESTRUCTION D'UN TENANT OUBLIE LES LIGNES DITES DE TOUTES LES NATURES.
+    // ---------------------------------------------------------------------------------
+    /// Toutes les natures, la correspondance exhaustive refuse de compiler si une nature neuve n'est pas ajoutée ici.
+    fn cc3_toutes_les_natures() -> Vec<NatureDeLigneDite> {
+        let toutes = vec![
+            NatureDeLigneDite::ChargePerimeeNonCompilable,
+            NatureDeLigneDite::CorpsDEchecPerimeNonCompilable,
+            NatureDeLigneDite::LigneIllisibleNonCompilable,
+            NatureDeLigneDite::LigneIllisibleSousEcritureRefusee,
+            NatureDeLigneDite::ResultatDirectNonEcrit,
+        ];
+        for n in &toutes {
+            match n {
+                NatureDeLigneDite::ChargePerimeeNonCompilable
+                | NatureDeLigneDite::CorpsDEchecPerimeNonCompilable
+                | NatureDeLigneDite::LigneIllisibleNonCompilable
+                | NatureDeLigneDite::LigneIllisibleSousEcritureRefusee
+                | NatureDeLigneDite::ResultatDirectNonEcrit => {}
+            }
+        }
+        toutes
+    }
+
+    #[test]
+    fn cc3_base_detruite_oublie_les_lignes_dites_de_chaque_nature() {
+        use crate::handlers::panneau_avoue::{dire_une_ligne_de_panneau, oublier_les_registres_d_une_base_detruite};
+        let dir = crate::tmp_possede::TmpPossede::neuf("cc3-oubli-natures");
+        let racine = std::fs::canonicalize(dir.racine().chemin()).expect("fixture : répertoire résolu");
+        let chemin = |nom: &str| racine.join(nom).to_string_lossy().into_owned();
+        let (detruite, gardee) = (chemin("detruite.db"), chemin("gardee.db"));
+        let c_detruite = Connection::open(&detruite).expect("fixture : base détruite");
+        let c_gardee = Connection::open(&gardee).expect("fixture : base gardée");
+        assert_eq!(c_detruite.path().unwrap_or(""), detruite, "contrôle : SQLite nomme la base par ce chemin");
+        let t = now();
+        let natures = cc3_toutes_les_natures();
+        assert_eq!(natures.len(), 5, "contrôle : cinq natures jouées");
+        for conn in [&c_detruite, &c_gardee] {
+            for id in [1, 2] {
+                for &n in &natures {
+                    assert!(dire_une_ligne_de_panneau(conn, id, n, t, CC3_TTL_PROPRE), "contrôle : première ligne {n:?} #{id} dite");
+                    assert!(!dire_une_ligne_de_panneau(conn, id, n, t + 1, CC3_TTL_PROPRE), "contrôle : seconde ligne {n:?} #{id} tue");
+                }
+            }
+        }
+
+        oublier_les_registres_d_une_base_detruite(&detruite);
+
+        for id in [1, 2] {
+            for &n in &natures {
+                assert!(
+                    dire_une_ligne_de_panneau(&c_detruite, id, n, t + 2, CC3_TTL_PROPRE),
+                    "base détruite puis recréée au même chemin : la première ligne {n:?} du panneau #{id} ressort"
+                );
+                assert!(
+                    !dire_une_ligne_de_panneau(&c_gardee, id, n, t + 2, CC3_TTL_PROPRE),
+                    "l'autre base garde sa ligne {n:?} du panneau #{id} : elle reste tue"
+                );
             }
         }
     }

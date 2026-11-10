@@ -1121,8 +1121,9 @@ pub(crate) fn retenir_un_refus_d_ecriture(
 /// BORNÉES : au plus une par panneau, par NATURE de ligne ([`NatureDeLigneDite`]) et par durée du cache du panneau (clé :
 /// base de la connexion telle que SQLite la nomme, panneau, nature). La vague BK a borné la charge périmée d'un panneau qui
 /// ne compile plus ; les autres natures suivent la même borne, dans ce MÊME registre, sous une clé distincte : une ligne
-/// d'une nature n'en tait jamais une d'une autre nature. Valeur : l'instant de la dernière ligne ÉCRITE (une ligne tue ne
-/// le repousse pas, sinon un panneau interrogé plus souvent que sa durée du cache ne serait plus jamais dit). État de
+/// d'une nature n'en tait jamais une d'une autre nature. La clé ne porte pas la CAUSE : dans une même nature, une cause
+/// qui change (le refus du moteur cité par la ligne) est tue jusqu'à une durée du cache du panneau. Valeur : l'instant de
+/// la dernière ligne ÉCRITE (une ligne tue ne le repousse pas, sinon un panneau interrogé plus souvent que sa durée du cache ne serait plus jamais dit). État de
 /// PROCESSUS, borné par [`BORNE_DES_PEREMPTIONS_NON_COMPILABLES_DITES`], effacé pour une base à la destruction de son
 /// tenant. Le corps servi ne dépend jamais de ce registre : il ne décide que du journal.
 static PEREMPTIONS_NON_COMPILABLES_DITES: std::sync::OnceLock<parking_lot::Mutex<HashMap<CleDeLigneDiteParNature, i64>>> =

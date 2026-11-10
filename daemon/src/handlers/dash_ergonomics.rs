@@ -215,9 +215,12 @@ fn vis_of(b: &Value) -> &'static str {
 /// Vague CB (panneau privé d'un tableau commun) — `used_by` COMPTE LES PANNEAUX RÉFÉRENTS QUE LE LECTEUR LIT, pas tous.
 /// Le compte de tous les référents disait à un éditeur qu'un panneau qu'il ne voit pas (panneau `private` d'un tableau
 /// commun d'autrui, ou panneau d'un tableau privé d'autrui) exécute cette définition. Un référent est compté quand
-/// `dash_get` le servirait au lecteur : son tableau existe et se lit (`lisible_par`), et la portée de lecture qui en
-/// dérive voit sa visibilité (`PorteeLecture::voit`) ; l'administrateur compte tous les référents, comme avant (un
-/// référent dont le tableau n'a plus de ligne compris). Chaque référent arrive de la même instruction en
+/// son tableau existe et se lit (`lisible_par`), et que la portée de lecture qui en dérive voit sa visibilité
+/// (`PorteeLecture::voit`) — en règle générale, quand `dash_get` le servirait au lecteur ; l'administrateur compte tous
+/// les référents, comme avant (un référent dont le tableau n'a plus de ligne compris). EXCEPTION : un tableau dont la
+/// visibilité n'est pas un texte (un BLOB) est compté pour son propriétaire (visibilité rendue vide, l'autorité de
+/// propriétaire suffit) et pour l'administrateur, alors que `dash_get`, qui refuse de lire une colonne non textuelle,
+/// ne sert ce tableau à personne ; le compte ne révèle rien au-delà de ce que ce lecteur possède. Chaque référent arrive de la même instruction en
 /// `[tableau présent, propriétaire, visibilité du tableau, visibilité du panneau]`, chaque texte en hexadécimal
 /// (`panneau_resolu::texte_rendu_en_hex` : une valeur hors norme, BLOB ou UTF-8 invalide, ne rend pas la liste
 /// illisible pour tous). Vague CC : les TROIS colonnes portent la même garde `typeof` — une valeur non textuelle (un

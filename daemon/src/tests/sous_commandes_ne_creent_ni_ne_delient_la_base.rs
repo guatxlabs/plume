@@ -607,7 +607,7 @@ mod integrity_check_sur_base_vivante_ou_hors_ligne {
         juger_le_refus_d_arguments(&sortie, "en trop");
     }
 
-    /// `uri_immuable` échappe `#`, `?` et `%`. Sans l'échappement, `x#y.db` ouvrirait `x` (le reste est
+    /// `crate::db_open::uri_sqlite_immuable_d_un_chemin` échappe `#`, `?` et `%`. Sans l'échappement, `x#y.db` ouvrirait `x` (le reste est
     /// un fragment d'URI), `p?q.db` ouvrirait `p` (le reste est la requête), `m%41.db` ouvrirait `mA.db`
     /// (décodage). Chaque leurre est une base SAINE ; le fichier nommé a une page écrasée : seul le bon
     /// fichier rend 1.

@@ -763,6 +763,37 @@ pub(crate) enum PoseDeBan {
 /// pas est pire que pas de ban.
 #[must_use = "une pose de ban REFUSÉE (store plein) ou NON ÉCRITE doit être rapportée à l'appelant, jamais avalée"]
 pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) -> PoseDeBan {
+    netban_ecrire(conn, ip, expires, reason, by, env, SQL_NETBAN_POSE_QUI_REMPLACE)
+}
+
+/// La pose d'un geste d'ADMINISTRATEUR (`POST /api/netban`) : la ligne du même `env_id` prend l'échéance demandée,
+/// plus courte comprise — un administrateur qui raccourcit le fait exprès, et la levée reste la valve.
+const SQL_NETBAN_POSE_QUI_REMPLACE: &str = "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
+     ON CONFLICT(ip,env_id) DO UPDATE SET reason=?2, expires_ts=?4, created_by=?5";
+
+/// `P11.25-a` — UN BAN AUTOMATIQUE PLUS COURT NE RACCOURCIT JAMAIS LE BAN EN COURS (miroir HTTP `net_ban`).
+/// AVANT : les trois poses automatiques (approbation d'une riposte, miroir du responder, passage d'un playbook)
+/// passaient par l'upsert qui REMPLACE l'échéance : un playbook de bruit à 10 min, sur une adresse bannie 30 jours
+/// ou à vie par un administrateur, ramenait le blocage HTTP à 10 min, et la riposte se disait armée.
+/// ICI : sur une ligne existante du même `env_id`, la nouvelle échéance n'est prise que si elle ALLONGE —
+/// permanent (NULL) l'emporte toujours, sinon la plus lointaine. Sinon la ligne reste ENTIÈRE (échéance, raison,
+/// auteur : ceux du ban qui tient). Une ligne échue encore en base est allongée par toute pose (l'échéance neuve est
+/// plus lointaine). Le compte d'écriture reste une ligne, que la ligne change ou non : `Arme` dit « l'adresse est
+/// bannie au moins jusqu'à l'échéance demandée », ce qui est vrai dans les deux cas. Même règle que la fusion du
+/// cache (`netban_fusionner_echeance`) et que l'agent d'un hôte distant (`collectors/respond.sh`, voie nft).
+/// Dans `SET`, `net_ban.*` est la ligne d'AVANT la mise à jour (SQLite évalue toutes les expressions sur elle).
+#[must_use = "une pose de ban REFUSÉE (store plein) ou NON ÉCRITE doit être rapportée à l'appelant, jamais avalée"]
+pub(crate) fn netban_upsert_sans_raccourcir(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) -> PoseDeBan {
+    netban_ecrire(conn, ip, expires, reason, by, env, SQL_NETBAN_POSE_SANS_RACCOURCIR)
+}
+
+const SQL_NETBAN_POSE_SANS_RACCOURCIR: &str = "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
+     ON CONFLICT(ip,env_id) DO UPDATE SET \
+       reason     = CASE WHEN net_ban.expires_ts IS NOT NULL AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.reason ELSE net_ban.reason END, \
+       created_by = CASE WHEN net_ban.expires_ts IS NOT NULL AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.created_by ELSE net_ban.created_by END, \
+       expires_ts = CASE WHEN net_ban.expires_ts IS NOT NULL AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.expires_ts ELSE net_ban.expires_ts END";
+
+fn netban_ecrire(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str, sql: &str) -> PoseDeBan {
     {
         let c = netban_cache().read();
         if c.len() >= NETBAN_CACHE_CAP && !c.contains_key(ip) {
@@ -773,11 +804,7 @@ pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, r
     // L'upsert pose ou rafraîchit EXACTEMENT une ligne ; tout autre compte, comme toute erreur, est
     // une pose qui n'a PAS eu lieu. Recharger sur une écriture absente ferait passer pour une
     // convergence ce qui n'est qu'une relecture de l'état d'avant.
-    match conn.execute(
-        "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
-         ON CONFLICT(ip,env_id) DO UPDATE SET reason=?2, expires_ts=?4, created_by=?5",
-        params![ip, reason, now(), expires, by, env],
-    ) {
+    match conn.execute(sql, params![ip, reason, now(), expires, by, env]) {
         Ok(1) => {
             if !netban_reload(conn) {
                 // `P10.20-b` — RECHARGEMENT REFUSÉ APRÈS UNE ÉCRITURE RÉUSSIE : le cache, fail-static, n'aurait

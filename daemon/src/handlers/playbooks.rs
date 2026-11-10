@@ -924,7 +924,7 @@ pub(crate) fn run_playbooks(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                         // elle se filtre, et elle entre dans `abandonnes` — le compte du tick est la seule
                         // grandeur que la surface d'état lit de ce chemin.
                         // `P11.25-a` — la durée EFFECTIVE de ce playbook, la même que porte sa riposte en file.
-                        match netban_upsert(&conn, &canon, Some(now() + duree_du_ban), "auto: playbook ban_ip", "playbook", "prod") {
+                        match netban_upsert_sans_raccourcir(&conn, &canon, Some(now() + duree_du_ban), "auto: playbook ban_ip", "playbook", "prod") {
                             PoseDeBan::Arme => {}
                             PoseDeBan::RefuseParLePlafond => {
                                 let maillon = ledger_append(&conn, "netban.plafond", &format!("{canon} refusé : store live plein (playbook:{name})"));

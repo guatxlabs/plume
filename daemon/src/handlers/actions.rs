@@ -1067,7 +1067,7 @@ pub(crate) async fn action_approve(State(st): State<AppState>, Extension(au): Ex
             // file ; NULL = `NETBAN_ACTION_TTL_S`, le cas d'une riposte créée à la main) : une durée non lue n'arme rien
             // et prend la voie de l'écriture ratée (registre `netban.non-arme`, 503 nommé), jamais le défaut.
             let pose = match duree_de_ban_de_la_riposte(&conn, id) {
-                Ok(duree) => netban_upsert(&conn, &canon, Some(now() + duree), "auto: action ban_ip", &au.name, "prod"),
+                Ok(duree) => netban_upsert_sans_raccourcir(&conn, &canon, Some(now() + duree), "auto: action ban_ip", &au.name, "prod"),
                 Err(e) => PoseDeBan::NonEcrit(cause_duree_de_ban_non_lue(&e)),
             };
             match pose {
@@ -1235,8 +1235,8 @@ pub(crate) fn miroir_http_du_responder(conn: &Connection, id: i64, kind: &str, t
             // Une riposte SANS LIGNE dans la file (supprimée après sa clôture, ou miroir appelé hors file) ne porte
             // aucune durée propre : le défaut s'applique, comme avant v124. Une durée illisible, elle, n'arme rien.
             let pose = match duree_de_ban_de_la_riposte(conn, id) {
-                Ok(duree) => netban_upsert(conn, &canon, Some(now() + duree), "auto: responder ban_ip", "responder", "prod"),
-                Err(rusqlite::Error::QueryReturnedNoRows) => netban_upsert(conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod"),
+                Ok(duree) => netban_upsert_sans_raccourcir(conn, &canon, Some(now() + duree), "auto: responder ban_ip", "responder", "prod"),
+                Err(rusqlite::Error::QueryReturnedNoRows) => netban_upsert_sans_raccourcir(conn, &canon, Some(now() + NETBAN_ACTION_TTL_S), "auto: responder ban_ip", "responder", "prod"),
                 Err(e) => PoseDeBan::NonEcrit(cause_duree_de_ban_non_lue(&e)),
             };
             match pose {

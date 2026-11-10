@@ -366,6 +366,10 @@ FAITS_QUI_AFFIRMENT = (
     ("audit_config_change", re.compile(r"\baudit_config_change\s*\(")),
     ("audit_source_change", re.compile(r"\baudit_source_change\s*\(")),
     ("netban_upsert", re.compile(r"\bnetban_upsert\s*\(")),
+    # `P11.25-a` — la pose automatique qui ne raccourcit jamais un ban en cours arme le MÊME blocage réseau ; ses
+    # appelants (approbation, miroir du responder, passage d'un playbook) quittaient `\bnetban_upsert\s*\(` en
+    # changeant de nom (`_sans_raccourcir` n'est pas une parenthèse) : la garde ne les aurait plus vus.
+    ("netban_upsert_sans_raccourcir", re.compile(r"\bnetban_upsert_sans_raccourcir\s*\(")),
     ("netban_remove", re.compile(r"\bnetban_remove\s*\(")),
     ("last_insert_rowid", re.compile(r"\blast_insert_rowid\s*\(")),
     # `P10.21-g` — LA LIGNE DU JOURNAL DU PLAN DE CONTRÔLE est une trace tamper-evident au même titre que
@@ -1081,6 +1085,11 @@ EPREUVES = [
      '    conn.execute("INSERT INTO action(target) VALUES(?1)", params![ip]).ok();\n'
      '    netban_upsert(conn, ip, None, "auto", "playbook", "prod")\n}\n',
      {"ok -> netban_upsert"}),
+    ("(5b) `.ok()` puis l'armement qui ne raccourcit pas (`P11.25-a`) — le même blocage réseau sous un autre nom",
+     'fn e5b(conn: &Connection, ip: &str) -> PoseDeBan {\n'
+     '    conn.execute("INSERT INTO action(target) VALUES(?1)", params![ip]).ok();\n'
+     '    netban_upsert_sans_raccourcir(conn, ip, Some(60), "auto", "playbook", "prod")\n}\n',
+     {"ok -> netban_upsert_sans_raccourcir"}),
     ("(6) l'audit de configuration est un fait au même titre que le registre",
      'fn e6(conn: &Connection, v: &str) -> rusqlite::Result<()> {\n'
      '    let _ = conn.execute("DELETE FROM bulletin", []);\n'

@@ -1486,7 +1486,8 @@ def juger_admis(scen, bac, nom, r, url, mot_attendu):
     if url is not None and (url.rstrip("/") + chemin_central(nom)) not in urls:
         faute(scen, f"le central n'est pas appelé à {url + chemin_central(nom)!r} : {urls!r}")
     # `P11.25-a` : le ban nft porte sa durée (timeout) dans le set `blocklist_ttl` ; le set historique n'en reçoit plus.
-    if nom == "respond.sh" and "add element inet plume blocklist_ttl { 203.0.113.7 timeout " not in enforcement(bac):
+    # La pose est EXCLUSIVE (`create element`) : `add element` remplaçait le délai d'un ban en cours.
+    if nom == "respond.sh" and "create element inet plume blocklist_ttl { 203.0.113.7 timeout " not in enforcement(bac):
         faute(scen, f"l'action servie n'est pas exécutée (instrument muet ?) : {enforcement(bac)!r} {r.stderr[:300]!r}")
     if nom == "engagement-adapter.sh" and "mode=reconcile" not in r.stderr:
         faute(scen, f"le cycle ne réconcilie pas : {r.stderr[-300:]!r}")

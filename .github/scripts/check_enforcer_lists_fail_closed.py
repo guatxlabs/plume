@@ -191,6 +191,10 @@ BOUCHON_NFT = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$NFT_TRACE"
 exit 0
 """
+# `P11.25-a` : le responder pose désormais par `nft create element` (pose exclusive, qui ne remplace jamais le délai
+# d'un ban en cours). Toute pose d'élément compte, quelle que soit sa forme : une garde qui ne chercherait que
+# `add element` ne verrait plus un ban posé malgré une liste d'épargne illisible.
+POSE_D_ELEMENT = re.compile(r"\b(add|create) element\b")
 
 
 def scenario_respond(nom, prepare_liste, attendu, cible="203.0.113.7"):
@@ -246,7 +250,7 @@ def scenario_respond(nom, prepare_liste, attendu, cible="203.0.113.7"):
                 echec(f"respond/{nom}: refus NON NOMMÉ (aucune cause de {sorted(attendu[1])} dans "
                       f"le résultat) — un refus muet ne se distingue pas d'une panne. "
                       f"Remonté : {sortie.strip()[:300]}")
-            if "add element" in appels_nft:
+            if POSE_D_ELEMENT.search(appels_nft):
                 echec(f"respond/{nom}: un ban a QUAND MÊME été posé ({appels_nft.strip()[:200]}) "
                       f"alors que la liste d'épargne est illisible.")
         elif genre == "applique":
@@ -254,14 +258,14 @@ def scenario_respond(nom, prepare_liste, attendu, cible="203.0.113.7"):
                 echec(f"respond/{nom}: liste LISIBLE et réellement vide, et pourtant le ban n'a pas "
                       f"été appliqué — un enforcer qui refuse TOUJOURS ne protège rien non plus. "
                       f"Remonté : {sortie.strip()[:300]}")
-            if "add element" not in appels_nft:
+            if not POSE_D_ELEMENT.search(appels_nft):
                 echec(f"respond/{nom}: le chemin d'enforcement n'a jamais été atteint (aucun appel "
                       f"au bouchon) — l'instrument est aveugle, la garde refuse de conclure.")
         elif genre == "epargnee":
             if '"status":"failed"' not in sortie or "liste d epargne" not in sortie:
                 echec(f"respond/{nom}: l'IP figure DANS la liste et n'a pas été épargnée. "
                       f"Remonté : {sortie.strip()[:300]}")
-            if "add element" in appels_nft:
+            if POSE_D_ELEMENT.search(appels_nft):
                 echec(f"respond/{nom}: ban posé sur une IP présente dans la liste d'épargne.")
 
 

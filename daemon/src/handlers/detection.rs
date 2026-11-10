@@ -1263,11 +1263,6 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
     // Anti-contournement : un editor ne peut ni basculer en SQL brut ni éditer une règle SQL brut ; la
     // requête effective (GXQL ou SQL brut) DOIT compiler.
     let eff_soql = b.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(cur_soql);
-    // `P11.25-g` — la requête de preuves d'une règle liste CE QUE SA REQUÊTE COMPTE : elle ne vaut que pour cette requête
-    // et cette nature. Une modification qui change l'une ou l'autre RETIRE la requête de preuves (NULL, plus aucune preuve
-    // écrite) plutôt que de laisser servir des lignes que la règle ne compte plus. Le seuil, l'opérateur et la fenêtre ne
-    // la retirent pas : ils ne changent pas la population, et la fenêtre est lue sur la règle à chaque lecture des preuves.
-    let preuves_perimees = eff_soql != cur_soql || b.get("query").and_then(|x| x.as_str()).is_some_and(|q| q != cur_query);
     let eff_query = b.get("query").and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or(cur_query);
     let eff_window = b.get("window_s").and_then(|x| x.as_i64()).unwrap_or(cur_window);
     if let Err((code, msg)) = validate_detection_content("rule", eff_soql, &eff_query, "", eff_window, &au.role) {
@@ -1308,6 +1303,16 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
         return refus;
     }
     let outcome: rusqlite::Result<()> = (|| {
+        // `P11.25-g` — la requête de preuves d'une règle liste CE QUE SA REQUÊTE COMPTE : elle ne vaut que pour cette
+        // requête et cette nature. Une modification qui change l'une ou l'autre la RETIRE (NULL, plus aucune preuve
+        // écrite) plutôt que de laisser servir des lignes que la règle ne compte plus ; une requête renvoyée à l'identique
+        // la garde. Le seuil, l'opérateur et la fenêtre ne la retirent pas : ils ne changent pas la population, et la
+        // fenêtre est lue sur la règle à chaque lecture des preuves. Le prédicat est celui des réimpositions d'overlay
+        // (`preuves_d_alerte`), joué AVANT les écritures de `query` et `is_soql` : il compare la ligne d'avant au corps.
+        conn.execute(
+            &format!("UPDATE rule SET {} WHERE id=?3", crate::preuves_d_alerte::sql_preuves_gardees_si_requete_et_nature_inchangees("?1", "?2")),
+            params![eff_soql as i64, eff_query, id],
+        )?;
         if let Some(v) = b.get("name").and_then(|x| x.as_str()) { conn.execute("UPDATE rule SET name=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("query").and_then(|x| x.as_str()) { conn.execute("UPDATE rule SET query=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("is_soql").and_then(|x| x.as_bool()) { conn.execute("UPDATE rule SET is_soql=?1 WHERE id=?2", params![v as i64, id])?; }
@@ -1316,9 +1321,6 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
         if let Some(v) = b.get("severity").and_then(|x| x.as_i64()) { conn.execute("UPDATE rule SET severity=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("interval_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE rule SET interval_s=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("window_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE rule SET window_s=?1 WHERE id=?2", params![v, id])?; }
-        if preuves_perimees {
-            conn.execute("UPDATE rule SET evidence_query=NULL WHERE id=?1", params![id])?;
-        }
         // P11.5-d : la case « Activée » du formulaire emprunte le MÊME point unique que l'interrupteur de
         // la ligne -> sur un overlay (managed=1) la dérogation est écrite DANS CETTE TRANSACTION, et
         // `apply_content_overrides` la rétablit au démarrage suivant. `cur_name` est le nom d'AVANT le

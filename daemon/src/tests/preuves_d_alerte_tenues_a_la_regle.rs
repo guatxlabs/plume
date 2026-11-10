@@ -14,14 +14,27 @@
 //   (d) une règle sans fenêtre (`window_s` = 0) dit `from` = 0, quelle que soit l'issue ;
 //   (e) une règle livrée renommée par l'exploitant (requête exacte) ne reçoit pas la requête de preuves en v126 ;
 //   (f) les preuves sont lues une fois par LEVÉE : un épisode déjà ouvert ne les relit pas ; un épisode résolu entre
-//       la sélection et l'écriture lève quand même son alerte (sans preuves) ; une nouvelle levée les relit.
+//       la sélection et l'écriture lève quand même son alerte (sans preuves) ; une nouvelle levée les relit ;
+//   (g) le bord de statut de la branche web : des réponses 302 et 399 ne sont ni comptées ni prouvées, une réponse
+//       400 l'est ; lignes exactes, nombre de la règle == nombre de preuves ;
+//   (h) des événements à adresse vide (web et cloudflare) ne sont ni comptés ni prouvés ;
+//   (i) une règle qui déclare des preuves et ne tire pas ne les lit pas (compteur de lectures inchangé sur un tick où
+//       elle est évaluée) ; la même, quand elle tire, les lit une fois ;
+//   (j) la ligne de journal de (f), écrite quand une alerte part sans preuves parce que son épisode était ouvert à la
+//       sélection, capturée ENTIÈRE dans un sous-processus (crochet `AVANT_LES_ECRITURES_DU_TICK`) ; aucune ligne à la
+//       levée ordinaire ni sur l'épisode ouvert qui suit ;
+//   (k) un overlay `config.d` (`rules/*.json`, `sigma/*.json`) qui réimpose la règle livrée sous son nom change sa
+//       requête et sa nature : la requête de preuves est retirée au chargement réel, l'alerte suivante ne porte aucune
+//       preuve et son tick n'écrit aucune ligne WARN ; une réimposition à requête et nature identiques la garde, une
+//       requête changée la retire. Le prédicat est celui de (a) (`preuves_d_alerte`, partagé par les trois gestes).
 //
 // MUTANTS JOUÉS (variable d environnement de mutation, retirés avant le commit) : CC1R_PREUVES_GARDEES (a) ;
 // CC1R_FENETRE0, CC1R_PLANCHER20, CC1R_ACTION (b) ; CC1R_MASQUE_SRCIP (c) ; CC1R_FROM0 (d) ; CC1R_NOM (e) ;
-// CC1R_RELIT_OUVERT (f).
-//
-// CE QUE CES TÉMOINS NE TIENNENT PAS : la ligne de journal de (f), écrite quand une alerte part sans preuves parce que
-// son épisode était ouvert à la sélection, n'est pas capturée (seule l'alerte levée, sans preuves, est jugée).
+// CC1R_RELIT_OUVERT (f) ; CC1C_POP_300 (statut >=300 dans la requête de preuves jouée) (g) ; CC1C_IP_VIDE_WEB,
+// CC1C_IP_VIDE_CF (condition d'adresse non vide retirée d'une branche) (h) ; CC1C_LIT_SANS_TIR (filtre de tir retiré
+// de la phase 2 ter) (i) ; CC1C_LOG_OUVERT (ligne retirée) (j) ; CC1C_JSON_SANS, CC1C_SIGMA_SANS (prédicat retiré
+// d'une réimposition), CC1C_JSON_TOUJOURS_NULL, CC1C_SIGMA_TOUJOURS_NULL (preuves retirées même à l'identique) (k) ;
+// CC1C_RU_SANS (prédicat retiré de `rule_update`) (a).
 // =====================================================================================
 mod preuves_d_alerte_tenues_a_la_regle {
     use super::*;
@@ -43,17 +56,20 @@ mod preuves_d_alerte_tenues_a_la_regle {
         p
     }
 
-    /// `n` événements par (adresse, genre, âge en secondes) : `web` = réponse 404, `cloudflare` = défi `challenged`,
-    /// `cloudflare_block` = action `block` (non comptée par la règle).
+    /// `n` événements par (adresse, genre, âge en secondes) : `web` = réponse 404, `web_<statut>` = réponse de ce statut,
+    /// `cloudflare` = défi `challenged`, `cloudflare_block` = action `block` (non comptée par la règle).
     fn cc1r_evenements(p: &str, lots: &[(&str, &str, usize, i64)]) {
         let w = open_db(p).unwrap();
         let maintenant = now();
         for (ip, genre, n, age) in lots {
             let (source, fields) = match *genre {
-                "web" => ("web", "{\"status\":\"404\"}"),
-                "cloudflare" => ("cloudflare", "{\"action\":\"challenged\"}"),
-                "cloudflare_block" => ("cloudflare", "{\"action\":\"block\"}"),
-                autre => panic!("genre de fixture inconnu : {autre}"),
+                "web" => ("web", "{\"status\":\"404\"}".to_string()),
+                "cloudflare" => ("cloudflare", "{\"action\":\"challenged\"}".to_string()),
+                "cloudflare_block" => ("cloudflare", "{\"action\":\"block\"}".to_string()),
+                autre => match autre.strip_prefix("web_") {
+                    Some(statut) => ("web", format!("{{\"status\":\"{statut}\"}}")),
+                    None => panic!("genre de fixture inconnu : {autre}"),
+                },
             };
             for i in 0..*n {
                 w.execute(
@@ -304,5 +320,288 @@ mod preuves_d_alerte_tenues_a_la_regle {
         assert_eq!(cc1r_lectures() - depart, 2, "levée neuve : relues");
         let (_, neuves) = cc1r_alerte_ouverte(p.as_str(), id);
         assert_eq!(cc1r_json(&neuves.expect("levée neuve : preuves écrites"))["total"], json!(3));
+    }
+
+    // ------------------------------------------------------------------------------------------------------- (g)
+
+    /// Les bords de statut de la branche web : une réponse 400 est comptée, des 302 et des 399 ne le sont pas, ni par la
+    /// règle ni par ses preuves.
+    #[test]
+    fn cc1r_bord_de_statut_300_et_399_ni_comptes_ni_prouves_400_compte() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+        let p = cc1r_base("statut");
+        cc1r_evenements(
+            p.as_str(),
+            &[
+                ("203.0.113.10", "web", 30, 60),
+                ("198.51.100.40", "web_400", 25, 60),
+                ("192.0.2.30", "web", 22, 60),
+                // Non comptées : redirections (3xx) et le dernier statut sous 400.
+                ("198.51.100.99", "web_302", 30, 60),
+                ("198.51.100.98", "web_399", 30, 60),
+            ],
+        );
+        let id = cc1r_id(p.as_str());
+        assert_eq!(cc1r_tick(p.as_str()), Mesure::Lue(0));
+        let (valeur, preuves) = cc1r_alerte_ouverte(p.as_str(), id);
+        assert_eq!(valeur, Some(3.0), "la règle compte 203.0.113.10, 198.51.100.40 et 192.0.2.30");
+        let preuves = cc1r_json(&preuves.expect("l'alerte porte ses preuves"));
+        assert_eq!(
+            preuves["rows"],
+            json!([["203.0.113.10", 30, 30, 0], ["198.51.100.40", 25, 25, 0], ["192.0.2.30", 22, 22, 0]]),
+            "les adresses comptées, et elles seules : {preuves}"
+        );
+        assert_eq!(preuves["total"].as_f64(), valeur, "nombre de la règle == nombre de preuves");
+    }
+
+    // ------------------------------------------------------------------------------------------------------- (h)
+
+    /// Des événements à adresse vide, web comme cloudflare, au-dessus du plancher : ni comptés ni prouvés.
+    #[test]
+    fn cc1r_adresse_vide_ni_comptee_ni_prouvee() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+        let p = cc1r_base("adresse-vide");
+        cc1r_trois_comptees(p.as_str());
+        cc1r_evenements(p.as_str(), &[("", "web", 30, 60), ("", "cloudflare", 30, 60)]);
+        let id = cc1r_id(p.as_str());
+        assert_eq!(cc1r_tick(p.as_str()), Mesure::Lue(0));
+        let (valeur, preuves) = cc1r_alerte_ouverte(p.as_str(), id);
+        assert_eq!(valeur, Some(3.0), "l'adresse vide n'est pas comptée par la règle");
+        let preuves = cc1r_json(&preuves.expect("l'alerte porte ses preuves"));
+        assert_eq!(
+            preuves["rows"],
+            json!([["198.51.100.20", 40, 0, 40], ["203.0.113.10", 30, 30, 0], ["192.0.2.30", 25, 25, 0]]),
+            "aucune ligne pour l'adresse vide : {preuves}"
+        );
+        assert_eq!(preuves["total"].as_f64(), valeur, "nombre de la règle == nombre de preuves");
+    }
+
+    // ------------------------------------------------------------------------------------------------------- (i)
+
+    /// Une règle qui déclare des preuves et ne tire pas ne les lit pas ; la même, quand elle tire, les lit une fois.
+    #[test]
+    fn cc1r_regle_qui_ne_tire_pas_ne_lit_pas_ses_preuves() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+        let p = cc1r_base("sans-tir");
+        cc1r_evenements(p.as_str(), &[("198.51.100.20", "web", 30, 60)]);
+        let id = cc1r_id(p.as_str());
+        assert!(cc1r_requete_de_preuves(p.as_str(), id).is_some(), "fixture : la règle déclare des preuves");
+        let depart = cc1r_lectures();
+        assert_eq!(cc1r_tick(p.as_str()), Mesure::Lue(0));
+        let derniere: Option<f64> = open_db(p.as_str()).unwrap().query_row("SELECT last_value FROM rule WHERE id=?1", params![id], |r| r.get(0)).unwrap();
+        assert_eq!(derniere, Some(1.0), "fixture : la règle est évaluée à ce tick (une adresse, sous son seuil)");
+        let alertes: i64 = open_db(p.as_str()).unwrap().query_row("SELECT COUNT(*) FROM alert WHERE rule=?1", params![format!("rule.{id}")], |r| r.get(0)).unwrap();
+        assert_eq!(alertes, 0, "fixture : la règle ne tire pas");
+        assert_eq!(cc1r_lectures() - depart, 0, "aucune lecture de preuves sans tir");
+        // Contre-épreuve : deux adresses de plus, la règle tire et lit.
+        cc1r_evenements(p.as_str(), &[("203.0.113.10", "web", 30, 60), ("192.0.2.30", "web", 25, 60)]);
+        open_db(p.as_str()).unwrap().execute_batch("UPDATE rule SET last_run=NULL;").unwrap();
+        assert_eq!(cc1r_tick(p.as_str()), Mesure::Lue(0));
+        assert_eq!(cc1r_lectures() - depart, 1, "la levée lit les preuves");
+        assert_eq!(cc1r_alerte_ouverte(p.as_str(), id).0, Some(3.0));
+    }
+
+    // ------------------------------------------------------------------------------------------------------- (j)
+
+    const CC1R_SEPARATEUR_LEVEE: &str = "CC1R-ENFANT-LEVEE-FAITE";
+    const CC1R_SEPARATEUR_COURSE: &str = "CC1R-ENFANT-COURSE-FAITE";
+    const CC1R_SEPARATEUR_FIN: &str = "CC1R-ENFANT-FIN";
+
+    /// LA LIGNE DE JOURNAL d'une alerte levée sans preuves parce que son épisode était ouvert à la sélection, ENTIÈRE,
+    /// lue sur le stderr d'un sous-processus : une à cette levée, aucune à la levée ordinaire qui précède (preuves
+    /// lues), aucune sur l'épisode ouvert qui suit (aucune alerte levée).
+    #[test]
+    fn cc1r_alerte_levee_sans_preuves_episode_ouvert_ecrit_sa_ligne_entiere() {
+        const ENFANT: &str = "CC1R_ENFANT_JOURNAL_EPISODE";
+        if std::env::var(ENFANT).is_ok() {
+            struct Remise;
+            impl Drop for Remise {
+                fn drop(&mut self) {
+                    crate::handlers::detection::AVANT_LES_ECRITURES_DU_TICK.with(|h| h.set(crate::handlers::detection::sans_crochet));
+                }
+            }
+            let _remise = Remise;
+            let p = cc1r_base("journal-episode-enfant");
+            cc1r_trois_comptees(p.as_str());
+            let id = cc1r_id(p.as_str());
+            println!("CC1R-ENFANT-REGLE={id}");
+            let redue = || open_db(p.as_str()).unwrap().execute_batch("UPDATE rule SET last_run=NULL;").unwrap();
+            assert_eq!(cc1r_tick(p.as_str()), Mesure::Lue(0));
+            assert!(cc1r_alerte_ouverte(p.as_str(), id).1.is_some(), "levée ordinaire : preuves écrites");
+            eprintln!("{CC1R_SEPARATEUR_LEVEE}");
+            crate::handlers::detection::AVANT_LES_ECRITURES_DU_TICK.with(|h| h.set(cc1r_resoudre_avant_les_ecritures));
+            redue();
+            assert_eq!(cc1r_tick(p.as_str()), Mesure::Lue(0));
+            crate::handlers::detection::AVANT_LES_ECRITURES_DU_TICK.with(|h| h.set(crate::handlers::detection::sans_crochet));
+            assert_eq!(cc1r_alerte_ouverte(p.as_str(), id), (Some(3.0), None), "levée après la course : sans preuves");
+            eprintln!("{CC1R_SEPARATEUR_COURSE}");
+            redue();
+            assert_eq!(cc1r_tick(p.as_str()), Mesure::Lue(0));
+            eprintln!("{CC1R_SEPARATEUR_FIN}");
+            println!("CC1R-ENFANT-A-JOUE");
+            return;
+        }
+        let sortie = std::process::Command::new(std::env::current_exe().expect("binaire de test"))
+            .args([
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+                "tests::preuves_d_alerte_tenues_a_la_regle::cc1r_alerte_levee_sans_preuves_episode_ouvert_ecrit_sa_ligne_entiere",
+            ])
+            .env(ENFANT, "1")
+            .output()
+            .expect("ré-exécution du binaire de test");
+        let stdout = String::from_utf8_lossy(&sortie.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&sortie.stderr).into_owned();
+        assert!(stdout.contains("CC1R-ENFANT-A-JOUE"), "contrôle : l'enfant a joué jusqu'au bout : {stdout}\n{stderr}");
+        assert_eq!(sortie.status.code(), Some(0), "contrôle : l'enfant sort en 0 : {stdout}\n{stderr}");
+        let id: i64 = stdout
+            .lines()
+            .find_map(|l| l.split("CC1R-ENFANT-REGLE=").nth(1))
+            .expect("l'enfant nomme sa règle")
+            .trim()
+            .parse()
+            .unwrap();
+        let (levee, reste) = stderr.split_once(CC1R_SEPARATEUR_LEVEE).expect("premier séparateur");
+        let (course, reste) = reste.split_once(CC1R_SEPARATEUR_COURSE).expect("deuxième séparateur");
+        let (episode, _) = reste.split_once(CC1R_SEPARATEUR_FIN).expect("troisième séparateur");
+        let aveux = |bloc: &str| -> Vec<String> { bloc.lines().filter(|l| l.contains("sans ses preuves")).map(str::to_string).collect() };
+        assert_eq!(aveux(levee), Vec::<String>::new(), "levée ordinaire, preuves lues : aucune ligne : {stderr}");
+        assert_eq!(
+            aveux(course),
+            vec![format!("[detection] WARN règle #{id} : l'alerte de son tir est levée sans ses preuves — son épisode était ouvert quand le tick a choisi de ne pas les lire")],
+            "une ligne entière à la levée sans preuves : {stderr}"
+        );
+        assert_eq!(aveux(episode), Vec::<String>::new(), "épisode ouvert, aucune alerte levée : aucune ligne : {stderr}");
+    }
+
+    // ------------------------------------------------------------------------------------------------------- (k)
+
+    /// Un fichier d'overlay qui réimpose la règle livrée sous son nom : `rules/*.json` (requête GXQL) ou `sigma/*.json`.
+    fn cc1r_overlay_de_la_regle_livree(genre: &str, dossier: &std::path::Path) {
+        let contenu = match genre {
+            "json" => json!({ "name": CC1R_NOM_V52, "query": "search source=web | stats count", "is_soql": true, "op": ">", "threshold": 0.0,
+                              "severity": 3, "interval_s": 300, "window_s": 3600, "mitre": "T1595" }),
+            "sigma" => json!({ "title": CC1R_NOM_V52, "logsource": { "category": "firewall" },
+                               "detection": { "selection": { "action": "deny" }, "condition": "selection" }, "level": "medium" }),
+            autre => panic!("genre d'overlay inconnu : {autre}"),
+        };
+        std::fs::write(dossier.join("cc1r-regle-livree.json"), contenu.to_string()).unwrap();
+    }
+
+    fn cc1r_charger(genre: &str, conn: &Connection, dossier: &std::path::Path) -> u32 {
+        match genre {
+            "json" => crate::overlays::load_overlay_rules(conn, dossier).charges,
+            "sigma" => crate::overlays::load_overlay_sigma(conn, dossier).charges,
+            autre => panic!("genre d'overlay inconnu : {autre}"),
+        }
+    }
+
+    const CC1R_SEPARATEUR_TICK: &str = "CC1R-ENFANT-TICK-OVERLAY";
+    const CC1R_SEPARATEUR_TICK_FIN: &str = "CC1R-ENFANT-TICK-OVERLAY-FIN";
+
+    /// Un overlay (JSON, puis Sigma) qui réimpose la règle livrée sous son nom change sa requête et sa nature : la requête
+    /// de preuves est retirée au chargement, l'alerte suivante ne porte aucune preuve, et aucune ligne de journal ne dit
+    /// des preuves ratées. Jugé dans un sous-processus pour lire le journal du tick, ligne par ligne.
+    #[test]
+    fn cc1r_overlay_qui_reimpose_la_regle_livree_retire_ses_preuves_sans_journal() {
+        const ENFANT: &str = "CC1R_ENFANT_OVERLAY";
+        if std::env::var(ENFANT).is_ok() {
+            for genre in ["json", "sigma"] {
+                let p = cc1r_base(&format!("overlay-{genre}-enfant"));
+                cc1r_trois_comptees(p.as_str());
+                let id = cc1r_id(p.as_str());
+                assert!(cc1r_requete_de_preuves(p.as_str(), id).is_some(), "fixture : la règle livrée déclare ses preuves");
+                let dossier = crate::tmp_possede::TmpPossede::neuf(&format!("cc1r-overlay-{genre}"));
+                cc1r_overlay_de_la_regle_livree(genre, &dossier);
+                let charges = cc1r_charger(genre, &open_db(p.as_str()).unwrap(), &dossier);
+                let (is_soql, managed): (i64, i64) =
+                    open_db(p.as_str()).unwrap().query_row("SELECT is_soql,managed FROM rule WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+                let posee = cc1r_requete_de_preuves(p.as_str(), id).is_some();
+                // Seuil sous zéro : la règle réimposée tire quelle que soit sa valeur.
+                open_db(p.as_str()).unwrap().execute("UPDATE rule SET enabled=1, threshold=-1.0 WHERE id=?1", params![id]).unwrap();
+                eprintln!("{CC1R_SEPARATEUR_TICK}-{genre}");
+                let bilan = cc1r_tick(p.as_str());
+                eprintln!("{CC1R_SEPARATEUR_TICK_FIN}-{genre}");
+                let (valeur, preuves) = cc1r_alerte_ouverte(p.as_str(), id);
+                println!(
+                    "CC1R-ENFANT-{genre}=charges:{charges} is_soql:{is_soql} managed:{managed} requete_de_preuves:{posee} bilan:{bilan:?} alerte:{} preuves:{}",
+                    valeur.is_some(),
+                    preuves.is_some()
+                );
+            }
+            println!("CC1R-ENFANT-A-JOUE");
+            return;
+        }
+        let sortie = std::process::Command::new(std::env::current_exe().expect("binaire de test"))
+            .args([
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+                "tests::preuves_d_alerte_tenues_a_la_regle::cc1r_overlay_qui_reimpose_la_regle_livree_retire_ses_preuves_sans_journal",
+            ])
+            .env(ENFANT, "1")
+            .output()
+            .expect("ré-exécution du binaire de test");
+        let stdout = String::from_utf8_lossy(&sortie.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&sortie.stderr).into_owned();
+        assert!(stdout.contains("CC1R-ENFANT-A-JOUE"), "contrôle : l'enfant a joué jusqu'au bout : {stdout}\n{stderr}");
+        assert_eq!(sortie.status.code(), Some(0), "contrôle : l'enfant sort en 0 : {stdout}\n{stderr}");
+        // Le journal d'abord (chaque cas), puis l'état : une requête de preuves gardée se voit au journal du tick.
+        for genre in ["json", "sigma"] {
+            let debut = format!("{CC1R_SEPARATEUR_TICK}-{genre}\n");
+            let fin = format!("{CC1R_SEPARATEUR_TICK_FIN}-{genre}");
+            let (_, reste) = stderr.split_once(&debut).unwrap_or_else(|| panic!("séparateur {genre} : {stderr}"));
+            let (tick, _) = reste.split_once(&fin).unwrap_or_else(|| panic!("séparateur de fin {genre} : {stderr}"));
+            let alertes: Vec<&str> = tick.lines().filter(|l| l.contains("WARN")).collect();
+            assert_eq!(alertes, Vec::<&str>::new(), "overlay {genre} : aucune ligne WARN au tick qui lève l'alerte : {stderr}");
+        }
+        for genre in ["json", "sigma"] {
+            let lu = stdout
+                .lines()
+                .find_map(|l| l.split(&format!("CC1R-ENFANT-{genre}=")).nth(1))
+                .unwrap_or_else(|| panic!("l'enfant rend le cas {genre} : {stdout}"));
+            assert_eq!(
+                lu.trim(),
+                format!("charges:1 is_soql:1 managed:1 requete_de_preuves:false bilan:{:?} alerte:true preuves:false", Mesure::Lue(0)),
+                "overlay {genre} : réimposé, requête de preuves retirée, alerte levée sans preuves"
+            );
+        }
+    }
+
+    /// La réimposition À L'IDENTIQUE (même requête GXQL, même nature) d'une règle d'overlay garde sa requête de preuves ;
+    /// le même fichier dont la requête change la retire. Pour `rules/*.json` et pour `sigma/*.json`.
+    #[test]
+    fn cc1r_overlay_reimpose_a_l_identique_garde_les_preuves_requete_changee_les_retire() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+        const NOM: &str = "cc1r règle d'overlay";
+        const PREUVES_POSEES: &str = "search source=web | stats count by src_ip";
+        for genre in ["json", "sigma"] {
+            let p = cc1r_base(&format!("overlay-identique-{genre}"));
+            let dossier = crate::tmp_possede::TmpPossede::neuf(&format!("cc1r-identique-{genre}"));
+            let ecrire = |selection: &str, requete: &str| {
+                let contenu = match genre {
+                    "json" => json!({ "name": NOM, "query": requete, "is_soql": true, "op": ">", "threshold": 0.0, "severity": 3,
+                                      "interval_s": 300, "window_s": 3600, "mitre": "T1595" }),
+                    _ => json!({ "title": NOM, "logsource": { "category": "firewall" },
+                                 "detection": { "selection": { "action": selection }, "condition": "selection" }, "level": "medium" }),
+                };
+                std::fs::write(dossier.join("cc1r-overlay.json"), contenu.to_string()).unwrap();
+            };
+            ecrire("deny", "search source=web | stats count");
+            assert_eq!(cc1r_charger(genre, &open_db(p.as_str()).unwrap(), &dossier), 1, "{genre} : première pose");
+            let id: i64 = open_db(p.as_str()).unwrap().query_row("SELECT id FROM rule WHERE name=?1", params![NOM], |r| r.get(0)).unwrap();
+            open_db(p.as_str()).unwrap().execute("UPDATE rule SET evidence_query=?1 WHERE id=?2", params![PREUVES_POSEES, id]).unwrap();
+            let requete_avant: String = open_db(p.as_str()).unwrap().query_row("SELECT query FROM rule WHERE id=?1", params![id], |r| r.get(0)).unwrap();
+            assert_eq!(cc1r_charger(genre, &open_db(p.as_str()).unwrap(), &dossier), 1, "{genre} : réimposition identique chargée");
+            let requete_apres: String = open_db(p.as_str()).unwrap().query_row("SELECT query FROM rule WHERE id=?1", params![id], |r| r.get(0)).unwrap();
+            assert_eq!(requete_apres, requete_avant, "fixture {genre} : même requête réimposée");
+            assert_eq!(cc1r_requete_de_preuves(p.as_str(), id).as_deref(), Some(PREUVES_POSEES), "{genre} : réimposition identique, preuves gardées");
+            ecrire("block", "search source=web status>=500 | stats count");
+            assert_eq!(cc1r_charger(genre, &open_db(p.as_str()).unwrap(), &dossier), 1, "{genre} : réimposition changée chargée");
+            let requete_changee: String = open_db(p.as_str()).unwrap().query_row("SELECT query FROM rule WHERE id=?1", params![id], |r| r.get(0)).unwrap();
+            assert_ne!(requete_changee, requete_avant, "fixture {genre} : la requête change");
+            assert_eq!(cc1r_requete_de_preuves(p.as_str(), id), None, "{genre} : requête changée, preuves retirées");
+        }
     }
 }

@@ -79,13 +79,22 @@ pub(crate) const COLONNES_REIMPOSEES_RULE: [&str; 10] = [
 /// dans l'ordre du tableau ; `?N+1` = l'`id` de la ligne possédée, rendu par `plan_upsert_lu`).
 /// `managed=1` est posé à part : ce n'est pas un champ réimposé mais la REQUALIFICATION de la ligne en
 /// contenu adossé à un fichier.
+/// `P11.25-g` — `evidence_query` n'est pas réimposée (aucun fichier ne la porte) : elle est GARDÉE quand le fichier
+/// réimpose la requête et la nature que la ligne porte déjà, et passe à NULL sinon — le prédicat de
+/// `preuves_d_alerte`, partagé avec `rule_update` et la réimposition Sigma, lié aux paramètres de `query` et
+/// `is_soql` du tableau.
 pub(crate) fn sql_reimposition_rule() -> String {
     let sets: Vec<String> = COLONNES_REIMPOSEES_RULE
         .iter()
         .enumerate()
         .map(|(i, c)| format!("{c}=?{}", i + 1))
         .collect();
-    format!("UPDATE rule SET {}, managed=1 WHERE id=?{}", sets.join(", "), COLONNES_REIMPOSEES_RULE.len() + 1)
+    let parametre_de = |colonne: &str| {
+        let rang = COLONNES_REIMPOSEES_RULE.iter().position(|c| *c == colonne).expect("colonne réimposée") + 1;
+        format!("?{rang}")
+    };
+    let preuves = crate::preuves_d_alerte::sql_preuves_gardees_si_requete_et_nature_inchangees(&parametre_de("is_soql"), &parametre_de("query"));
+    format!("UPDATE rule SET {}, {preuves}, managed=1 WHERE id=?{}", sets.join(", "), COLONNES_REIMPOSEES_RULE.len() + 1)
 }
 
 /// `P10.20-b` — le plan d'upsert d'un overlay de détection (`parser`, `dparser`, `playbook`, `rule` JSON et Sigma), ou l'AVEU : une
@@ -503,8 +512,11 @@ pub(crate) fn load_overlay_sigma(conn: &Connection, dir: &std::path::Path) -> cr
                             continue;
                         }
                         UpsertPlan::Update(rid) => {
+                            // `P11.25-g` — même prédicat que la réimposition JSON : la requête de preuves est gardée si la
+                            // ligne est déjà GXQL sous cette requête, retirée sinon (`preuves_d_alerte`).
+                            let preuves = crate::preuves_d_alerte::sql_preuves_gardees_si_requete_et_nature_inchangees("1", "?1");
                             conn.execute(
-                                "UPDATE rule SET enabled=1, query=?1, is_soql=1, op=?2, threshold=?3, severity=?4, interval_s=?5, window_s=?6, mitre=?7, managed=1 WHERE id=?8",
+                                &format!("UPDATE rule SET enabled=1, query=?1, is_soql=1, op=?2, threshold=?3, severity=?4, interval_s=?5, window_s=?6, mitre=?7, {preuves}, managed=1 WHERE id=?8"),
                                 params![t.query, t.op, t.threshold, t.severity, t.interval_s, t.window_s, t.mitre, rid],
                             )
                         }

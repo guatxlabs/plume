@@ -114,6 +114,18 @@ impl PreuvesDatees {
     }
 }
 
+/// LA REQUÊTE DE PREUVES SUIT LA REQUÊTE DE LA RÈGLE — le prédicat, écrit UNE fois et partagé par chaque geste qui
+/// récrit la requête ou la nature d'une règle : la modification par l'API (`rule_update`) et les deux réimpositions
+/// d'overlay `config.d` (`overlays::sql_reimposition_rule` pour `rules/*.json`, `load_overlay_sigma` pour
+/// `sigma/*.yml`). Rend le membre `SET` qui garde `evidence_query` quand la ligne porte DÉJÀ la nature `nature` et la
+/// requête `requete` (expressions SQL : un paramètre lié ou un littéral), et la passe à NULL sinon : une requête de
+/// preuves ne vaut que pour la requête et la nature dont elle liste la population. Placé dans le même `UPDATE` que la
+/// récriture (ou avant elle dans la même transaction) : SQLite évalue les membres droits sur la ligne d'AVANT la mise à
+/// jour, la comparaison voit donc l'ancienne requête.
+pub(crate) fn sql_preuves_gardees_si_requete_et_nature_inchangees(nature: &str, requete: &str) -> String {
+    format!("evidence_query=CASE WHEN is_soql={nature} AND query={requete} THEN evidence_query END")
+}
+
 #[cfg(test)]
 thread_local! {
     /// Le nombre de lectures de preuves faites sur ce fil (l'ordonnanceur les fait sur le sien, en séquence).

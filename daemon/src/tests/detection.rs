@@ -3686,8 +3686,8 @@ title: Bulk A\nlogsource:\n  category: firewall\ndetection:\n  selection:\n    a
     fn p11_5_d_l_avertissement_derive_les_champs_epargnes_du_sql_de_reimposition() {
         assert_eq!(
             crate::overlays::sql_reimposition_rule(),
-            "UPDATE rule SET enabled=?1, query=?2, is_soql=?3, op=?4, threshold=?5, severity=?6, interval_s=?7, window_s=?8, mitre=?9, compliance=?10, managed=1 WHERE id=?11",
-            "empreinte du SQL de réimposition : le tableau doit régénérer EXACTEMENT le SET historique"
+            "UPDATE rule SET enabled=?1, query=?2, is_soql=?3, op=?4, threshold=?5, severity=?6, interval_s=?7, window_s=?8, mitre=?9, compliance=?10, evidence_query=CASE WHEN is_soql=?3 AND query=?2 THEN evidence_query END, managed=1 WHERE id=?11",
+            "empreinte du SQL de réimposition : le tableau doit régénérer EXACTEMENT le SET historique, plus (P11.25-g) la requête de preuves gardée seulement sous la même requête et la même nature"
         );
         // (b) relecture de la source de `rule_update` : les `UPDATE rule SET <col>=?1 WHERE id=?2` de son
         // corps SONT les champs patchables (l'adoption `managed=2 WHERE id=?1` n'en est pas un : elle ne

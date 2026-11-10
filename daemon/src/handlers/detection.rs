@@ -239,8 +239,10 @@ pub(crate) fn detect_concurrency() -> usize {
 /// Un worker EMPOISONNÉ est simplement ABSENT de la carte -> l'appelant pose l'inconnu NOMMÉ, jamais un
 /// silence. `due` est la liste telle que la phase 1 l'a lue : c'est elle qui porte `is_soql` et
 /// `window_s`, que la phase 2 ne recopie pas.
-/// `P11.25-g` — le onzième membre est la requête de preuves de la règle (`rule.evidence_query`, '' = aucune).
-type RegleDue = (i64, String, String, bool, String, f64, i64, i64, String, String, String);
+/// `P11.25-g` — le onzième membre est la requête de preuves de la règle (`rule.evidence_query`, '' = aucune) ; le
+/// douzième dit si un épisode de la règle est déjà ouvert (une alerte porte sa clé `rule-{id}`) : ses preuves ne sont
+/// alors pas relues, l'`INSERT OR IGNORE` de la phase 3 n'en écrirait rien.
+type RegleDue = (i64, String, String, bool, String, f64, i64, i64, String, String, String, bool);
 fn imputations_des_regles_qui_tirent(
     db_path: &str,
     due: &[RegleDue],
@@ -256,7 +258,7 @@ fn imputations_des_regles_qui_tirent(
         let part: Vec<(i64, String)> = std::thread::scope(|s| {
             chunk
                 .iter()
-                .map(|(id, _name, query, is_soql, _op, _th, _sev, window_s, _mitre, _population, _preuves)| {
+                .map(|(id, _name, query, is_soql, _op, _th, _sev, window_s, _mitre, _population, _preuves, _ouvert)| {
                     s.spawn(move || (*id, imputer_alerte_de_regle(db_path, query, *is_soql, *window_s)))
                 })
                 .collect::<Vec<_>>()
@@ -320,7 +322,8 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
         // mode 0 ces colonnes valent 0/'' -> le prédicat est TOUJOURS vrai -> sélection STRICTEMENT identique
         // à l'historique (aucune règle avancée -> byte-identique).
         let mut stmt = match conn.prepare(
-            "SELECT id,name,query,is_soql,op,threshold,severity,window_s,COALESCE(mitre,''),COALESCE(population,''),COALESCE(evidence_query,'') FROM rule \
+            "SELECT id,name,query,is_soql,op,threshold,severity,window_s,COALESCE(mitre,''),COALESCE(population,''),COALESCE(evidence_query,''), \
+                    EXISTS(SELECT 1 FROM alert WHERE alert.dedup = 'rule-' || rule.id) FROM rule \
              WHERE enabled=1 AND COALESCE(risk_score,0)=0 \
                AND COALESCE(suppress_window_s,0)=0 AND COALESCE(throttle_field,'')='' AND COALESCE(per_result,0)=0 \
                AND (last_run IS NULL OR ?1 - last_run >= interval_s)",
@@ -332,7 +335,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             Ok((
                 r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0,
                 r.get::<_, String>(4)?, r.get::<_, f64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, String>(8)?,
-                r.get::<_, String>(9)?, r.get::<_, String>(10)?,
+                r.get::<_, String>(9)?, r.get::<_, String>(10)?, r.get::<_, i64>(11)? != 0,
             ))
         }) {
             Ok(r) => r,
@@ -365,7 +368,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     for chunk in due.chunks(cc) {
         let chunk_res: Vec<_> = std::thread::scope(|s| {
             let fils: Vec<_> = chunk.iter()
-                .map(|(id, name, query, is_soql, op, threshold, severity, window_s, mitre, _population, _preuves)| {
+                .map(|(id, name, query, is_soql, op, threshold, severity, window_s, mitre, _population, _preuves, _ouvert)| {
                     s.spawn(move || match rule_sql(query, *is_soql, *window_s) {
                         // BUDGET INTERACTIF (pas le budget auto 5 s) : la détection est un balayage de FOND,
                         // hors lock d'écriture, sur sa propre connexion read-only -> tolère un scan brut de
@@ -389,7 +392,7 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
                 // relue dans `chunk`, pas dans le fil qui a paniqué) : aucune alerte fabriquée, aucun
                 // last_value=0.0 « tout clair », la règle re-tentée au prochain tick et son abandon consigné
                 // avec sa cause. Même garantie fail-closed que les branches Err ci-dessus.
-                .map(|(h, (id, name, query, _is_soql, op, threshold, severity, window_s, mitre, _population, _preuves))| {
+                .map(|(h, (id, name, query, _is_soql, op, threshold, severity, window_s, mitre, _population, _preuves, _ouvert))| {
                     h.join().unwrap_or_else(|_| {
                         (*id, name.clone(), op.clone(), *threshold, *severity, *window_s, query.clone(), mitre.clone(),
                          Err(AbandonDEvaluation::evaluateur_en_panne()))
@@ -412,14 +415,15 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     // Phase 2 ter (`P11.25-g`) — LES PREUVES DES RÈGLES QUI TIRENT ET QUI EN DÉCLARENT : même prédicat de tir que la
     // phase 3 (`qui_tire`), hors du verrou d'écriture, par le chemin de la règle (`preuves_d_alerte::lire_les_preuves`),
     // ancrées à `now_ts` — l'instant que l'`INSERT` de la phase 3 écrit dans `alert.ts`. Une règle sans requête de
-    // preuves ('') ne lit rien et son alerte garde `evidence` NULL. Une lecture par tir, comme l'imputation : sur un
-    // épisode déjà ouvert, le verdict n'est pas écrit (l'`INSERT OR IGNORE` est sans effet et le rafraîchissement ne
-    // touche pas `evidence`).
+    // preuves ('') ne lit rien et son alerte garde `evidence` NULL. UNE LECTURE PAR LEVÉE, pas par tir : sur un épisode
+    // déjà ouvert à la phase 1 (`d.11`), le verdict ne serait pas écrit (l'`INSERT OR IGNORE` est sans effet et le
+    // rafraîchissement ne touche pas `evidence`) — la lecture, aussi lourde que la règle, n'est pas faite.
     let preuves_des_tirs: HashMap<i64, crate::preuves_d_alerte::PreuvesDatees> = due
         .iter()
-        .filter(|d| qui_tire.contains(&d.0) && !d.10.trim().is_empty())
+        .filter(|d| qui_tire.contains(&d.0) && !d.10.trim().is_empty() && !d.11)
         .map(|d| (d.0, crate::preuves_d_alerte::lire_les_preuves(db_path, &d.10, d.3, d.7, now_ts)))
         .collect();
+    let preuves_declarees: std::collections::HashSet<i64> = due.iter().filter(|d| !d.10.trim().is_empty()).map(|d| d.0).collect();
     // Phase 3 : ecritures groupees sous un seul verrou
     #[cfg(test)]
     AVANT_LES_ECRITURES_DU_TICK.with(|h| (h.get())(db));
@@ -499,6 +503,12 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
             // `P11.25-g` — une alerte LEVÉE à ce tir sans ses preuves le dit au journal : la règle et la cause fermée, ni
             // texte du moteur, ni requête, ni valeur. Rien pour un épisode déjà ouvert (aucune alerte levée à ce tir).
             let cause_des_preuves = if alerte_ecrite_a_ce_tir { preuves.and_then(|p| p.cause_non_etablie()) } else { None };
+            // Une règle qui déclare des preuves, dont l'épisode était ouvert à la phase 1 (preuves non lues) et dont
+            // l'alerte est pourtant levée à ce tir (l'épisode a été résolu entre la sélection et l'écriture) : l'alerte
+            // part SANS preuves, et c'est dit au journal plutôt que tu.
+            if alerte_ecrite_a_ce_tir && preuves.is_none() && preuves_declarees.contains(&id) {
+                eprintln!("[detection] WARN règle #{id} : l'alerte de son tir est levée sans ses preuves — son épisode était ouvert quand le tick a choisi de ne pas les lire");
+            }
             cause_des_preuves.into_iter().for_each(|cause| {
                 eprintln!("[detection] WARN règle #{id} : l'alerte de son tir est levée sans ses preuves — leur lecture a échoué (cause {cause}) ; elles sont dites non établies sur l'alerte");
             });
@@ -1253,6 +1263,11 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
     // Anti-contournement : un editor ne peut ni basculer en SQL brut ni éditer une règle SQL brut ; la
     // requête effective (GXQL ou SQL brut) DOIT compiler.
     let eff_soql = b.get("is_soql").and_then(|x| x.as_bool()).unwrap_or(cur_soql);
+    // `P11.25-g` — la requête de preuves d'une règle liste CE QUE SA REQUÊTE COMPTE : elle ne vaut que pour cette requête
+    // et cette nature. Une modification qui change l'une ou l'autre RETIRE la requête de preuves (NULL, plus aucune preuve
+    // écrite) plutôt que de laisser servir des lignes que la règle ne compte plus. Le seuil, l'opérateur et la fenêtre ne
+    // la retirent pas : ils ne changent pas la population, et la fenêtre est lue sur la règle à chaque lecture des preuves.
+    let preuves_perimees = eff_soql != cur_soql || b.get("query").and_then(|x| x.as_str()).is_some_and(|q| q != cur_query);
     let eff_query = b.get("query").and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or(cur_query);
     let eff_window = b.get("window_s").and_then(|x| x.as_i64()).unwrap_or(cur_window);
     if let Err((code, msg)) = validate_detection_content("rule", eff_soql, &eff_query, "", eff_window, &au.role) {
@@ -1301,6 +1316,9 @@ pub(crate) async fn rule_update(State(st): State<AppState>, Extension(au): Exten
         if let Some(v) = b.get("severity").and_then(|x| x.as_i64()) { conn.execute("UPDATE rule SET severity=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("interval_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE rule SET interval_s=?1 WHERE id=?2", params![v, id])?; }
         if let Some(v) = b.get("window_s").and_then(|x| x.as_i64()) { conn.execute("UPDATE rule SET window_s=?1 WHERE id=?2", params![v, id])?; }
+        if preuves_perimees {
+            conn.execute("UPDATE rule SET evidence_query=NULL WHERE id=?1", params![id])?;
+        }
         // P11.5-d : la case « Activée » du formulaire emprunte le MÊME point unique que l'interrupteur de
         // la ligne -> sur un overlay (managed=1) la dérogation est écrite DANS CETTE TRANSACTION, et
         // `apply_content_overrides` la rétablit au démarrage suivant. `cur_name` est le nom d'AVANT le

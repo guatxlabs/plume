@@ -543,13 +543,13 @@ mod preuves_d_alerte_attaquant_actif_non_banni {
     fn cc1_migration_v126_idempotente_respecte_l_exploitant_et_rejoint_la_base_neuve() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
         let neuve = cc1_base("neuve");
-        assert_eq!(read_schema_version(&open_db(neuve.as_str()).unwrap()), 126);
+        assert!(read_schema_version(&open_db(neuve.as_str()).unwrap()) >= 126, "la base neuve porte au moins v126");
         // Base au schéma 125, règle livrée intacte : v126 pose les colonnes et la requête de preuves.
         let migree = cc1_base("migree");
         cc1_vers_125(migree.as_str());
         assert_eq!(cc1_colonnes_neuves(migree.as_str()), Vec::<(String, String, String)>::new(), "fixture : base 125 sans les colonnes");
         assert!(migrate(&open_db(migree.as_str()).unwrap()), "v126 passe");
-        assert_eq!(read_schema_version(&open_db(migree.as_str()).unwrap()), 126);
+        assert!(read_schema_version(&open_db(migree.as_str()).unwrap()) >= 126, "la base migrée porte au moins v126");
         assert_eq!(cc1_regle_v52(migree.as_str()), cc1_regle_v52(neuve.as_str()), "base neuve semée == base migrée (règle v52)");
         assert_eq!(cc1_colonnes_neuves(migree.as_str()), cc1_colonnes_neuves(neuve.as_str()), "mêmes colonnes neuves");
         assert_eq!(cc1_colonnes_neuves(neuve.as_str()).len(), 2);

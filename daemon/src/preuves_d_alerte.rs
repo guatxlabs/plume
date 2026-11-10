@@ -114,10 +114,18 @@ impl PreuvesDatees {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Le nombre de lectures de preuves faites sur ce fil (l'ordonnanceur les fait sur le sien, en séquence).
+    pub(crate) static LECTURES_DE_PREUVES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// LIT LES PREUVES d'une règle qui tire, à l'instant `instant` (celui de la levée), par le chemin de la règle : même
 /// compilation (`rule_sql_a_l_instant`), même porte de lecture et même budget que son évaluation (`run_query_ex`,
 /// budget interactif). Ne rend jamais d'erreur : un échec est une issue (`NonEtablies`, cause fermée).
 pub(crate) fn lire_les_preuves(db_path: &str, requete: &str, is_soql: bool, window_s: i64, instant: i64) -> PreuvesDatees {
+    #[cfg(test)]
+    LECTURES_DE_PREUVES.with(|n| n.set(n.get() + 1));
     let preuves = match crate::handlers::detection::rule_sql_a_l_instant(requete, is_soql, window_s, instant) {
         Err(_) => Preuves::NonEtablies { cause: crate::detection_aveugle::CAUSE_COMPILATION_REFUSEE },
         Ok(sql) => match crate::run_query_ex(db_path, &sql, crate::query_budget_interactive_ms(), None) {

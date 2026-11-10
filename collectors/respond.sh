@@ -371,8 +371,10 @@ duree_de_ban_lisible() {   # <duree> <outil : nft | cscli>
 #      ou pas du tout, l adresse ne passe par aucun etat non banni -> BAN ALLONGE ;
 #   3. l element expire entre la pose refusee et la lecture (ou avant la transaction) : UNE nouvelle
 #      pose exclusive, une seule ;
-#   4. reste ILLISIBLE (sortie inconnue, `expires` absent ou de forme inconnue, lecture refusee) : rien
-#      n est recrit, l adresse reste bannie telle quelle, et le verdict est `failed` avec DUREE NON
+#   4. element SANS FIN (ni `timeout` ni `expires` : pose sans delai, a la main) : son reste est infini, donc
+#      au moins egal a toute duree demandee -> rien n est recrit, DEJA BANNI SANS FIN, DUREE CONSERVEE (`done`) ;
+#   5. reste ILLISIBLE (sortie inconnue, `timeout` sans `expires`, `expires` sans valeur ou de forme inconnue,
+#      lecture refusee) : rien n est recrit, l adresse reste bannie telle quelle, et le verdict est `failed` avec DUREE NON
 #      APPLIQUEE — la duree demandee n est pas appliquee, un `done` le laisserait croire. Le central ecrit ce
 #      verdict tel quel (riposte close, texte au registre) : rien n est re-servi ni reexecute.
 # Les valeurs passees a nft (adresse, duree) ont deja passe `is_ip` et `duree_de_ban_lisible` : chiffres,
@@ -384,8 +386,10 @@ duree_de_ban_lisible() {   # <duree> <outil : nft | cscli>
 PHRASE_BAN_POSE="BAN POSE"
 PHRASE_BAN_ALLONGE="BAN ALLONGE"
 PHRASE_BAN_CONSERVE="DEJA BANNI POUR PLUS LONGTEMPS, DUREE CONSERVEE"
+PHRASE_BAN_CONSERVE_SANS_FIN="DEJA BANNI SANS FIN, DUREE CONSERVEE"
 PHRASE_DUREE_NON_APPLIQUEE="DUREE NON APPLIQUEE, ban en cours conserve tel quel"
-# <sortie de nft get element> <adresse> <duree demandee> -> `conserver <reste>` | `allonger <reste>` | `illisible <cause>`
+# <sortie de nft get element> <adresse> <duree demandee>
+#   -> `conserver <reste>` | `conserver_sans_fin` | `allonger <reste>` | `illisible <cause>`
 nft_juger_le_reste() {
   printf '%s\n' "$1" | awk -v ip="$2" -v dem="$3" '
     function en_ms(s,   tot, prec, num, u, r, f) {
@@ -417,6 +421,7 @@ nft_juger_le_reste() {
         for (j = i + 1; j <= NF; j++) {
           g = $j
           if (g == "}") break
+          if (g == "timeout" || g == "timeout," || g == "expires" || g == "expires,") nattr++
           if (g == "expires" && j < NF) {
             e = $(j + 1); ve = (e ~ /,$/); sub(/,$/, "", e); reste = e; nexp++
             if (ve) break
@@ -429,6 +434,8 @@ nft_juger_le_reste() {
     END {
       if (trouve == 0) { print "illisible adresse_absente_de_la_sortie"; exit }
       if (trouve > 1) { print "illisible adresse_en_double"; exit }
+      # Ni `timeout` ni `expires` sur l element : pose sans delai, il ne finit jamais (forme mesuree sur nft 1.1.7).
+      if (nattr == 0) { print "conserver_sans_fin"; exit }
       if (nexp != 1) { print "illisible expires_absent"; exit }
       r = en_ms(reste); d = en_ms(dem)
       if (r < 0) { print "illisible expires_de_forme_inconnue"; exit }
@@ -458,6 +465,8 @@ nft_poser_sans_raccourcir() {
     case "$_np_verdict" in
       "conserver "*)
         OUT="$PHRASE_BAN_CONSERVE (reste ${_np_verdict#conserver } >= $_np_dur demandes), rien n est recrit"; return 0 ;;
+      conserver_sans_fin)
+        OUT="$PHRASE_BAN_CONSERVE_SANS_FIN (element sans expiration dans $NFT_SET_TTL, $_np_dur demandes), rien n est recrit"; return 0 ;;
       "allonger "*)
         if _np_tx=$(printf 'delete element inet plume %s { %s }\nadd element inet plume %s { %s timeout %s }\n' \
             "$NFT_SET_TTL" "$_np_ip" "$NFT_SET_TTL" "$_np_ip" "$_np_dur" | LC_ALL=C nft -f - 2>&1); then

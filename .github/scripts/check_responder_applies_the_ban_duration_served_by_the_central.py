@@ -29,9 +29,12 @@ mutant absent du script est une garde périmée, et c'est un échec.
 UN BAN PLUS COURT NE RACCOURCIT JAMAIS UN BAN EN COURS (voie nft) : le bouchon `nft` rend les sorties MESURÉES sur
 un nft réel (pose exclusive refusée, `get element` présent ou absent, `expires` sous ses formes) ; sont tenus la
 conservation (aucune commande qui récrit), l'allongement en UNE transaction `nft -f -`, la pose simple d'une adresse
-absente, le reste illisible qui ne récrit rien et rend `failed` avec sa phrase, chaque forme d'`expires` jugée à son
-bord, la reprise unique après une expiration, le dry-run qui ne promet qu'un allongement, et la garde de durée qui
-refuse une unité répétée ou désordonnée avec sa cause sans refuser une forme mesurée acceptée par nft.
+absente, l'élément SANS FIN (ni `timeout` ni `expires`) conservé avec sa propre phrase, le reste illisible qui ne
+récrit rien et rend `failed` avec sa phrase, chaque forme d'`expires` jugée à son bord, la reprise unique après une
+expiration, le dry-run qui ne promet qu'un allongement, la lecture des erreurs de nft sous une locale traduite
+(`LC_ALL=C` posé sur chaque appel), et la garde de durée qui refuse une unité répétée ou désordonnée avec sa cause
+— à l'exécution comme au plan nft — sans refuser une forme mesurée acceptée par nft ; le plan cscli nomme la
+commande que cscli joue réellement, jamais un refus que seule la règle de nft prononcerait.
 
 CE QUE CETTE GARDE NE TIENT PAS : un vrai CrowdSec, un vrai nft (noyau, borne du timeout) ou un vrai fail2ban
 ne sont pas exercés (l'absence d'instant sans ban pendant un allongement se prouve sur un vrai nft, hors CI) — en particulier, qu'un `timeout 0s` donne un élément sans fin n'est pas mesuré sur un
@@ -71,7 +74,8 @@ exit 0
 # absente rend « Error: Could not process rule: No such file or directory » (code 1) ; sur une adresse présente,
 # la table avec `elements = { <ip> timeout <t> expires <reste> }`. Modes :
 #   reste:<forme>           `get` rend cette liste, `expires <forme>` ;
-#   sans_expires            `get` rend l'élément sans `timeout` ni `expires` (élément posé sans délai) ;
+#   sans_fin                `get` rend l'élément sans `timeout` ni `expires` (élément posé sans délai : forme mesurée) ;
+#   timeout_sans_expires    `get` rend l'élément avec `timeout` mais sans `expires` (champ d'expiration illisible) ;
 #   sortie_inconnue         `get` réussit mais ne nomme pas l'adresse ;
 #   en_double               `get` nomme l'adresse deux fois ;
 #   expire_a_la_lecture     `get` rend l'absence ET l'élément expire (la pose exclusive suivante réussit) ;
@@ -80,6 +84,9 @@ exit 0
 # NFT_CREATE_REFUS="<ip> ..." : `create element` sur ces adresses est refusé pour une AUTRE cause que leur présence
 # (« Operation not permitted », code 1 — droit refusé ; même forme que l'ensemble absent ou un délai refusé).
 # `nft -f -` (transaction) écrit chaque ligne lue sur l'entrée standard dans la trace, préfixée `TX| `.
+# LOCALE : nft cite le texte de `strerror`, que la glibc TRADUIT selon la locale. Hors locale C (LC_ALL, sinon
+# LC_MESSAGES, sinon LANG), le bouchon rend « File exists » et « No such file or directory » traduits, comme un hôte
+# en français : le répondeur ne les reconnaît que parce qu'il pose `LC_ALL=C` sur chaque appel qui les lit.
 # NFT_TX : `ok` (défaut) ; `expiree:<ip>` (l'élément expire avant la transaction : absence, code 1) ;
 # `refus` (« Device or resource busy », code 1).
 BOUCHON_NFT = r"""#!/bin/sh
@@ -94,8 +101,12 @@ mode_de() {
   done
   return 1
 }
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}" in
+  C|POSIX|C.*) ENOENT='No such file or directory'; EEXIST='File exists' ;;
+  *) ENOENT='Aucun fichier ou dossier de ce type'; EEXIST='Le fichier existe' ;;
+esac
 cible() { x=${1#"{ "}; printf '%s' "${x%% *}"; }
-absence() { printf 'Error: Could not process rule: No such file or directory\n%s\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n' "$1" >&2; exit 1; }
+absence() { printf 'Error: Could not process rule: %s\n%s\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n' "$ENOENT" "$1" >&2; exit 1; }
 case "$1 $2" in
   "create element")
     ip=$(cible "$6")
@@ -103,7 +114,7 @@ case "$1 $2" in
       *" $ip "*) printf 'Error: Could not process rule: Operation not permitted\n%s\n' "$*" >&2; exit 1 ;;
     esac
     if mode_de "$ip" >/dev/null; then
-      printf 'Error: Could not process rule: File exists\n%s\n                                          ^^^^^^^^^^^\n' "$*" >&2
+      printf 'Error: Could not process rule: %s\n%s\n                                          ^^^^^^^^^^^\n' "$EEXIST" "$*" >&2
       exit 1
     fi
     exit 0 ;;
@@ -113,7 +124,8 @@ case "$1 $2" in
     entete='table inet plume {\n\tset blocklist_ttl {\n\t\ttype ipv4_addr\n\t\tflags timeout\n'
     case "$m" in
       reste:*) printf "$entete"'\t\telements = { %s timeout 10m expires %s }\n\t}\n}\n' "$ip" "${m#reste:}" ;;
-      sans_expires) printf "$entete"'\t\telements = { %s }\n\t}\n}\n' "$ip" ;;
+      sans_fin) printf "$entete"'\t\telements = { %s }\n\t}\n}\n' "$ip" ;;
+      timeout_sans_expires) printf "$entete"'\t\telements = { %s timeout 10m }\n\t}\n}\n' "$ip" ;;
       sortie_inconnue) printf "$entete"'\t}\n}\n' ;;
       en_double) printf "$entete"'\t\telements = { %s timeout 10m expires 9m59s990ms, %s timeout 10m expires 9m59s990ms }\n\t}\n}\n' "$ip" "$ip" ;;
       expire_a_la_lecture) : > "$TRACE_ENFORCEMENT.nft.expiree.$ip"; absence "$*" ;;
@@ -125,7 +137,7 @@ case "$1 $2" in
     while IFS= read -r l; do printf 'TX| %s\n' "$l" >> "$TRACE_ENFORCEMENT.nft"; done
     case "${NFT_TX:-ok}" in
       expiree:*) : > "$TRACE_ENFORCEMENT.nft.expiree.${NFT_TX#expiree:}"
-                 printf '/dev/stdin:1:43-53: Error: Could not process rule: No such file or directory\n' >&2; exit 1 ;;
+                 printf '/dev/stdin:1:43-53: Error: Could not process rule: %s\n' "$ENOENT" >&2; exit 1 ;;
       refus) printf '/dev/stdin:2:40-50: Error: Could not process rule: Device or resource busy\n' >&2; exit 1 ;;
     esac
     exit 0 ;;
@@ -842,6 +854,7 @@ def s_f_en_attente(script):
 PHRASE_POSE = "BAN POSE"
 PHRASE_ALLONGE = "BAN ALLONGE"
 PHRASE_CONSERVE = "DEJA BANNI POUR PLUS LONGTEMPS, DUREE CONSERVEE"
+PHRASE_CONSERVE_SANS_FIN = "DEJA BANNI SANS FIN, DUREE CONSERVEE"
 PHRASE_NON_APPLIQUEE = "DUREE NON APPLIQUEE, ban en cours conserve tel quel"
 PHRASE_TX_REFUSEE = "DUREE NON APPLIQUEE : allongement refuse par nft, transaction annulee entiere"
 CAUSE_DESORDRE = "unite repetee ou desordonnee"
@@ -906,7 +919,7 @@ def s_nft_absente_pose_simple(script):
 
 
 RESTES_ILLISIBLES = [  # (id, ip, mode, cause écrite dans le verdict)
-    (911, "203.0.113.31", "sans_expires", "expires_absent"),
+    (911, "203.0.113.31", "timeout_sans_expires", "expires_absent"),
     (912, "203.0.113.32", "sortie_inconnue", "adresse_absente_de_la_sortie"),
     (913, "203.0.113.33", "en_double", "adresse_en_double"),
     (914, "203.0.113.34", "reste:9x", "expires_de_forme_inconnue"),
@@ -1047,7 +1060,7 @@ def s_nft_simulation_ne_promet_pas(script):
     return f
 
 
-DUREES_DESORDONNEES = ["1h1h", "30s1d", "1d1d", "30m1h", "1m1h", "5s5s"]
+DUREES_DESORDONNEES = ["1h1h", "30s1d", "1d1d", "30m1h", "1m1h", "5s5s", "1m1m"]
 DUREES_MESUREES = ["0h30m", "1d2h", "1d0s", "365d", "31536000s"]
 
 
@@ -1110,6 +1123,89 @@ def s_duree_mesuree_admise(script):
     return f
 
 
+def s_nft_element_sans_fin_conserve(script):
+    """Un élément SANS FIN déjà dans le set à durée (ni `timeout` ni `expires`, forme mesurée d'une pose sans délai) :
+    son reste est infini, donc au moins égal à toute durée demandée, la plus longue servie comprise. Rien n'est récrit,
+    verdict `done` avec la phrase PROPRE à ce cas — ni la phrase d'un reste fini, ni l'échec d'un reste illisible."""
+    cas = [(985, "203.0.113.51", 10), (986, "203.0.113.52", BORNE)]
+    t = jouer_nft(script, [ban(i, ip, d) for i, ip, d in cas], presents=[(ip, "sans_fin") for _, ip, _ in cas])
+    f = []
+    attendu = []
+    for _, ip, d in cas:
+        attendu += ["list table inet plume", "list set inet plume blocklist_ttl",
+                    f"create element inet plume blocklist_ttl {{ {ip} timeout {d}s }}",
+                    f"get element inet plume blocklist_ttl {{ {ip} }}"]
+    exiger(f, lignes_nft(t) == attendu, f"élément sans fin : commandes nft {lignes_nft(t)!r}, attendu {attendu!r}")
+    for i, _, d in cas:
+        verdict_est(f, t, i, "done", PHRASE_CONSERVE_SANS_FIN, f"element sans expiration dans blocklist_ttl, {d}s demandes")
+        execution_dit(f, t, i, PHRASE_CONSERVE_SANS_FIN)
+        r = t.verdicts.get(i, {}).get("result", "")
+        exiger(f, PHRASE_CONSERVE not in r and PHRASE_NON_APPLIQUEE not in r,
+               f"#{i} : l'élément sans fin est dit comme un reste fini ou illisible : {r[:300]!r}")
+    return f
+
+
+def s_nft_simulation_refuse_l_unite_repetee(script):
+    """Le dry-run nft juge la durée avec la règle de NFT : `1h1h` (que nft refuse) rend NON-APPLIQUE avec la cause de
+    désordre, jamais la promesse d'une commande que le passage réel refuserait ; rien ne touche nft."""
+    c = Central("tsv", [ban(987, "203.0.113.53")])
+    try:
+        t = jouer(script, c, lecteurs=(), backend="nft", bouchons=("nft",),
+                  env_plus={"PLUME_BAN_DURATION": "1h1h", "PLUME_RESPONDER_APPLY": "0", "NFT_ETAT": "equipe"})
+    finally:
+        c.fermer()
+    f = []
+    exiger(f, t.trace("nft") == "", f"une simulation a touché nft : {t.trace('nft')!r}")
+    verdict_est(f, t, 987, "dryrun", "[dry-run] NON-APPLIQUE nft", CAUSE_DESORDRE)
+    exiger(f, "create element" not in t.verdicts.get(987, {}).get("result", ""),
+           f"le plan simulé promet une pose refusée par nft : {t.verdicts.get(987, {}).get('result', '')[:300]!r}")
+    return f
+
+
+def s_plan_cscli_nomme_la_commande_jouee(script):
+    """Sur crowdsec, `1h1h` part à cscli telle quelle (règle d'avant) : le résultat remis COMMENCE par la commande
+    réellement jouée, à l'exécution comme en simulation — jamais « NON-APPLIQUE … aucun ban pose » quand cscli pose."""
+    f = []
+    for i, appliquer in ((988, "1"), (989, "0")):
+        ip = f"203.0.113.{i - 910}"
+        c = Central("tsv", [ban(i, ip)])
+        try:
+            t = jouer(script, c, lecteurs=(), backend="crowdsec", bouchons=("cscli",),
+                      env_plus={"PLUME_BAN_DURATION": "1h1h", "PLUME_RESPONDER_APPLY": appliquer})
+        finally:
+            c.fermer()
+        commande = f"cscli decisions add -i {ip} -d 1h1h -t ban -R plume-playbook"
+        r = t.verdicts.get(i, {}).get("result", "")
+        if appliquer == "1":
+            verdict_est(f, t, i, "done")
+            exiger(f, r.startswith(commande), f"#{i} : le résultat ne commence pas par la commande jouée : {r[:300]!r}")
+            exiger(f, t.trace("cscli") == f"decisions add -i {ip} -d 1h1h -t ban -R plume-playbook\n",
+                   f"#{i} : cscli n'a pas reçu la commande : {t.trace('cscli')!r}")
+        else:
+            verdict_est(f, t, i, "dryrun")
+            exiger(f, r.startswith(f"[dry-run] {commande}"), f"#{i} : le plan simulé ne nomme pas la commande : {r[:300]!r}")
+            exiger(f, t.trace("cscli") == "", f"#{i} : une simulation a appliqué un ban : {t.trace('cscli')!r}")
+        exiger(f, "NON-APPLIQUE" not in r, f"#{i} : le résultat dit NON-APPLIQUE alors que cscli pose : {r[:300]!r}")
+    return f
+
+
+def s_nft_locale_traduite(script):
+    """Hôte en locale française (`LANG=fr_FR.UTF-8`) : nft cite `strerror` traduit. Le répondeur pose `LC_ALL=C` sur
+    ses appels : la présence (« File exists ») et l'absence à la lecture (« No such file or directory ») restent
+    reconnues — un ban conservé est dit conservé, une expiration avant la lecture repose le ban, une fois."""
+    t = jouer_nft(script, [ban(990, "203.0.113.56", 10), ban(991, "203.0.113.57", 600)],
+                  presents=[("203.0.113.56", "reste:9m59s990ms"), ("203.0.113.57", "expire_a_la_lecture")],
+                  env_plus={"LANG": "fr_FR.UTF-8"})
+    f = []
+    verdict_est(f, t, 990, "done", PHRASE_CONSERVE, "reste 9m59s990ms >= 10s")
+    verdict_est(f, t, 991, "done", PHRASE_POSE)
+    creates = [l for l in lignes_nft(t) if l.startswith("create element") and " 203.0.113.57 " in l]
+    exiger(f, len(creates) == 2, f"locale traduite : {len(creates)} poses exclusives pour 203.0.113.57, attendu 2")
+    exiger(f, not [l for l in lignes_nft(t) if l == "-f -" or l.startswith(("add element", "delete element"))],
+           f"locale traduite : une commande récrit un ban : {lignes_nft(t)!r}")
+    return f
+
+
 SCENARIOS = {
     "json_served_python3": lambda s: s_json_servi(s, "python3"),
     "json_served_jq": lambda s: s_json_servi(s, "jq"),
@@ -1164,6 +1260,10 @@ SCENARIOS = {
     "cscli_keeps_its_own_duration_rule": s_cscli_garde_sa_regle_de_duree,
     "nft_exclusive_pose_refused_otherwise_said": s_nft_pose_exclusive_refusee_autrement,
     "measured_duration_forms_still_admitted": s_duree_mesuree_admise,
+    "nft_endless_element_kept_with_its_own_phrase": s_nft_element_sans_fin_conserve,
+    "nft_dry_run_refuses_a_repeated_unit_with_its_cause": s_nft_simulation_refuse_l_unite_repetee,
+    "crowdsec_plan_names_the_command_cscli_plays": s_plan_cscli_nomme_la_commande_jouee,
+    "nft_errors_read_under_a_translated_locale": s_nft_locale_traduite,
 }
 
 # (nom, motif exact dans respond.sh, remplacement, scénarios qui DOIVENT rougir)
@@ -1349,6 +1449,25 @@ MUTANTS = [
     ("nft_dry_run_promises_the_requested_duration",
      " ; deja banni : duree appliquee seulement si elle allonge, jamais raccourci'", "'",
      ["nft_dry_run_promises_only_a_lengthening"]),
+    ("nft_gate_repeated_minutes_admitted", "([0-9]+m)?([0-9]+s)?$'", "([0-9]+m)*([0-9]+s)?$'",
+     ["repeated_or_disordered_duration_refused_with_cause"]),
+    ("nft_plan_judged_with_the_cscli_rule", '      if duree_de_ban_lisible "$EFF_DUR" nft; then',
+     '      if duree_de_ban_lisible "$EFF_DUR" cscli; then', ["nft_dry_run_refuses_a_repeated_unit_with_its_cause"]),
+    ("cscli_plan_judged_with_the_nft_rule", '      if duree_de_ban_lisible "$EFF_DUR" cscli; then',
+     '      if duree_de_ban_lisible "$EFF_DUR" nft; then', ["crowdsec_plan_names_the_command_cscli_plays"]),
+    ("endless_element_read_as_unreadable", '      if (nattr == 0) { print "conserver_sans_fin"; exit }\n', "",
+     ["nft_endless_element_kept_with_its_own_phrase"]),
+    ("endless_judged_without_its_attributes", '      if (nattr == 0) { print "conserver_sans_fin"; exit }',
+     '      if (nexp == 0) { print "conserver_sans_fin"; exit }', ["nft_unreadable_remainder_rewrites_nothing"]),
+    ("timeout_attribute_not_counted",
+     '          if (g == "timeout" || g == "timeout," || g == "expires" || g == "expires,") nattr++\n',
+     '          if (g == "expires" || g == "expires,") nattr++\n', ["nft_unreadable_remainder_rewrites_nothing"]),
+    ("endless_said_as_a_finite_remainder", 'OUT="$PHRASE_BAN_CONSERVE_SANS_FIN (', 'OUT="$PHRASE_BAN_CONSERVE (',
+     ["nft_endless_element_kept_with_its_own_phrase"]),
+    ("endless_kept_said_failed", '$_np_dur demandes), rien n est recrit"; return 0 ;;\n      "allonger "*)',
+     '$_np_dur demandes), rien n est recrit"; return 1 ;;\n      "allonger "*)', ["nft_endless_element_kept_with_its_own_phrase"]),
+    ("read_without_lc_all", 'if _np_lu=$(LC_ALL=C nft get element', 'if _np_lu=$(nft get element',
+     ["nft_errors_read_under_a_translated_locale"]),
 ]
 
 

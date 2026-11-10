@@ -620,7 +620,9 @@ fn ecrire_l_archive(db_path: &str, dest: &str, key: Option<&str>, recipient: Opt
 /// autoriseur à refus par défaut réglé par phase, une instruction et une tête par chaîne ; l'insertion d'une table ne
 /// vise que la table annoncée, créée par la section 1, et lie toutes les valeurs de la ligne par des paramètres
 /// anonymes ; une reconstruction FTS ne vise qu'une table virtuelle créée par cette restauration. Un refus rend une
-/// erreur au vocabulaire fermé et la transaction n'est jamais validée.
+/// erreur au vocabulaire fermé et la transaction n'est jamais validée. Une chaîne admise ou une valeur de l'archive que
+/// le moteur refuse rend la phase et le code d'erreur SQLite, jamais le texte du moteur, l'écriture d'un compteur
+/// comprise ; seules les erreurs de lecture du flux gardent leur message.
 fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Result<(), String> {
     use super::restauration_liste_fermee::{refus, Cause, ListeFermee, Phase};
     let re = |x: std::io::Result<u32>| x.map_err(|e| format!("restore : lecture flux : {e}"));
@@ -636,8 +638,8 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
     let n_pre = re(rd_u32(r))?;
     for _ in 0..n_pre {
         let sql = rd_str(r).map_err(|e| format!("restore : lecture pre-DDL : {e}"))?;
-        let stmt = liste.preparer_une_chaine_de_l_archive(&conn, Phase::Tables, "", &sql, |e| format!("CREATE TABLE (restore) : {e}"))?;
-        executer_une_chaine(stmt, &liste, Phase::Tables, |e| format!("CREATE TABLE (restore) : {e}"))?;
+        let stmt = liste.preparer_une_chaine_de_l_archive(&conn, Phase::Tables, "", &sql)?;
+        liste.executer_une_chaine(stmt, Phase::Tables)?;
     }
     // section 2 : données.
     let n_tables = re(rd_u32(r))?;
@@ -648,7 +650,7 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
         if !liste.table_creee(&name) {
             return Err(refus(Phase::Insertion, Cause::TableNonCreee));
         }
-        let mut stmt = liste.preparer_une_chaine_de_l_archive(&conn, Phase::Insertion, &name, &insert_sql, |e| format!("prepare INSERT {name} : {e}"))?;
+        let mut stmt = liste.preparer_une_chaine_de_l_archive(&conn, Phase::Insertion, &name, &insert_sql)?;
         // Les valeurs d'une ligne sont toutes LIÉES, et rien d'autre ne l'est : autant de paramètres anonymes (`?`, la
         // seule forme que l'écrivain émet) que de valeurs lues par ligne.
         if stmt.parameter_count() != ncols || (1..=ncols).any(|i| stmt.parameter_name(i).is_some()) {
@@ -660,7 +662,7 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
             if tag != 1 { return Err(format!("restore : tag de ligne inconnu {tag} (table {name})")); }
             let mut vals: Vec<rusqlite::types::Value> = Vec::with_capacity(ncols);
             for _ in 0..ncols { vals.push(read_value(r)?); }
-            stmt.execute(rusqlite::params_from_iter(vals.iter())).map_err(|e| format!("INSERT {name} : {e}"))?;
+            stmt.execute(rusqlite::params_from_iter(vals.iter())).map_err(|e| liste.refusee_par_le_moteur(Phase::Insertion, &e))?;
         }
     }
     // section 3 : sqlite_sequence (reproduit EXACTEMENT les compteurs — DELETE puis INSERT, comme SQLite .dump).
@@ -669,15 +671,18 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
         liste.entrer(Phase::Compteurs, "");
         // Le refus se lit, comme celui du réglage d'ouverture : avalé, il laisserait chaque compteur EN DOUBLE (celui que
         // le moteur a posé pendant la section 2, puis celui de l'archive).
-        let refus_des_compteurs = |e: rusqlite::Error, quoi: &str| {
-            if liste.a_refuse() { refus(Phase::Compteurs, Cause::ClasseHorsListe) } else { format!("{quoi} : {e}") }
+        // Le moteur refuse le retrait quand l'archive annonce des compteurs sans avoir créé de table AUTOINCREMENT (pas de
+        // `sqlite_sequence`) : refus du moteur, sans son texte. La préparation de l'insertion vise la même table, que le
+        // retrait vient de trouver.
+        let refus_des_compteurs = |e: rusqlite::Error| {
+            if liste.a_refuse() { refus(Phase::Compteurs, Cause::ClasseHorsListe) } else { liste.refusee_par_le_moteur(Phase::Compteurs, &e) }
         };
-        conn.execute_batch("DELETE FROM sqlite_sequence;").map_err(|e| refus_des_compteurs(e, "compteurs restore"))?;
-        let mut s = conn.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)").map_err(|e| refus_des_compteurs(e, "prepare seq"))?;
+        conn.execute_batch("DELETE FROM sqlite_sequence;").map_err(refus_des_compteurs)?;
+        let mut s = conn.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)").map_err(refus_des_compteurs)?;
         for _ in 0..n_seq {
             let name = rd_str(r).map_err(|e| format!("restore : nom seq : {e}"))?;
             let seq = rd_i64(r).map_err(|e| format!("restore : valeur seq : {e}"))?;
-            s.execute(rusqlite::params![name, seq]).map_err(|e| format!("insert seq {name} : {e}"))?;
+            s.execute(rusqlite::params![name, seq]).map_err(|e| liste.refusee_par_le_moteur(Phase::Compteurs, &e))?;
         }
     }
     // section 4 : post-DDL (vtables, rebuild FTS, index, triggers, vues).
@@ -687,8 +692,8 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
         match tag {
             1 => {
                 let sql = rd_str(r).map_err(|e| format!("restore : post-DDL sql : {e}"))?;
-                let stmt = liste.preparer_une_chaine_de_l_archive(&conn, Phase::PostDdl, "", &sql, |e| format!("post-DDL (restore) : {e}"))?;
-                executer_une_chaine(stmt, &liste, Phase::PostDdl, |e| format!("post-DDL (restore) : {e}"))?;
+                let stmt = liste.preparer_une_chaine_de_l_archive(&conn, Phase::PostDdl, "", &sql)?;
+                liste.executer_une_chaine(stmt, Phase::PostDdl)?;
             }
             2 => {
                 let name = rd_str(r).map_err(|e| format!("restore : nom rebuild : {e}"))?;
@@ -697,8 +702,10 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
                 }
                 liste.entrer(Phase::ReconstructionFts, &name);
                 let rebuild = format!("INSERT INTO {0}({0}) VALUES('rebuild');", quote_ident(&name));
-                let stmt = conn.prepare(&rebuild).map_err(|e| format!("rebuild FTS {name} : {e}"))?;
-                executer_une_chaine(stmt, &liste, Phase::ReconstructionFts, |e| format!("rebuild FTS {name} : {e}"))?;
+                // Préparation et exécution rendent la même forme de refus : celui de l'autoriseur, sinon celui du moteur.
+                conn.prepare(&rebuild).and_then(|mut stmt| stmt.execute([])).map_err(|e| {
+                    if liste.a_refuse() { refus(Phase::ReconstructionFts, Cause::ClasseHorsListe) } else { liste.refusee_par_le_moteur(Phase::ReconstructionFts, &e) }
+                })?;
             }
             other => return Err(format!("restore : tag post-DDL inconnu {other}")),
         }
@@ -709,26 +716,9 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
     liste.entrer(Phase::Validation, "");
     // Un module FTS vide au `COMMIT` ses données en attente : une action hors liste à ce moment rend le refus nommé.
     conn.execute_batch("COMMIT").map_err(|e| {
-        if liste.a_refuse() { refus(Phase::Validation, Cause::ClasseHorsListe) } else { format!("commit restore : {e}") }
+        if liste.a_refuse() { refus(Phase::Validation, Cause::ClasseHorsListe) } else { liste.refusee_par_le_moteur(Phase::Validation, &e) }
     })?;
     Ok(())
-}
-
-/// Exécute une chaîne préparée sous la liste. Un refus de l'autoriseur PENDANT l'exécution (écriture interne d'un module
-/// hors de ses tables fantômes) rend le refus nommé de la phase ; toute autre erreur du moteur est rendue à l'appelant,
-/// qui la met en forme comme avant.
-fn executer_une_chaine(
-    mut stmt: rusqlite::Statement<'_>,
-    liste: &super::restauration_liste_fermee::ListeFermee,
-    phase: super::restauration_liste_fermee::Phase,
-    si_le_moteur_refuse: impl FnOnce(rusqlite::Error) -> String,
-) -> Result<(), String> {
-    use super::restauration_liste_fermee::{refus, Cause};
-    match stmt.execute([]) {
-        Ok(_) => Ok(()),
-        Err(_) if liste.a_refuse() => Err(refus(phase, Cause::ClasseHorsListe)),
-        Err(e) => Err(si_le_moteur_refuse(e)),
-    }
 }
 
 /// Le suffixe du fichier où une restauration s'écrit avant de prendre la place de la destination. Même
@@ -796,8 +786,9 @@ fn restaurer_a_cote_puis_publier(dest_db: &str, restaurer: impl FnOnce(&str) -> 
 /// RESTAURATION (rejouabilité) — gère les DEUX formats via le MARQUEUR de tête de la charge décompressée :
 ///  - B1 (`DUMP_MAGIC`)     : rejoue le dump typé dans une DB SQLCipher NEUVE en STREAMING. ZÉRO clair
 ///    sur disque (`restore_stream`).
-///  - LEGACY (`SQLite ...`) : age décrypte -> zstd décode -> DB SQLite EN CLAIR temporaire, puis
-///    `sqlcipher_export` -> base chiffrée (garde RAII efface le temporaire en clair).
+///  - LEGACY (`SQLite ...`) : age décrypte -> zstd décode -> DB SQLite EN CLAIR temporaire, schéma jugé par la
+///    liste fermée du format courant, puis `sqlcipher_export` -> base chiffrée (garde RAII efface le temporaire en
+///    clair).
 /// Dans les deux cas : age auto-détecte le stanza (scrypt/passphrase = anciens backups symétriques ;
 /// x25519 = identité PRIVÉE escrow si fournie). REFUSE d'écraser `<dest_db>` sauf `overwrite=true`. La
 /// base s'écrit À CÔTÉ de `<dest_db>` et ne prend sa place qu'une fois complète
@@ -864,17 +855,24 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
         // Le fichier en clair vient de l'ARCHIVE et n'a aucune clé pour authentifier ses pages : il est ouvert
         // sans ses compagnons. Un `-wal` trouvé à côté n'a pas été produit avec lui (il vient d'être écrit) ; il
         // n'est pas rejoué.
+        // LE SCHÉMA DU FICHIER SUIT LA LISTE DU FORMAT COURANT : il est jugé AVANT l'export
+        // (`restauration_liste_fermee::juger_le_schema_du_format_ancien`) ; un refus arrête la restauration avant l'export
+        // et avant toute publication. Une erreur du moteur née du fichier (lecture de son schéma, export) rend son code,
+        // jamais son texte, qui peut citer un nom ou un morceau du schéma lu.
         restaurer_a_cote_puis_publier(dest_db, |en_cours| {
+            use super::restauration_liste_fermee::{juger_le_schema_du_format_ancien, refusee_par_le_moteur_sous, PHASE_DU_FORMAT_ANCIEN};
             #[cfg(test)]
             crochet_du_clair_de_restauration::passer(dest_db, &tmp_plain);
             let conn = crate::db_open::open_plain_db_ignoring_companions_without_schema_contract(&tmp_plain)
                 .map_err(|e| format!("ouverture plaintext : {e}"))?;
             conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
-                .map_err(|e| format!("plaintext illisible (passphrase invalide ?) : {e}"))?;
+                .map_err(|e| format!("plaintext illisible (passphrase invalide ?) : {}", refusee_par_le_moteur_sous(PHASE_DU_FORMAT_ANCIEN, &e)))?;
+            juger_le_schema_du_format_ancien(&conn)?;
             let sql = format!(
                 "ATTACH DATABASE '{}' AS enc KEY '{}'; SELECT sqlcipher_export('enc'); DETACH DATABASE enc;",
                 en_cours.replace('\'', "''"), pass.replace('\'', "''"));
-            conn.execute_batch(&sql).map_err(|e| format!("re-chiffrement (sqlcipher_export) : {e}"))
+            conn.execute_batch(&sql)
+                .map_err(|e| format!("re-chiffrement (sqlcipher_export) : {}", refusee_par_le_moteur_sous(PHASE_DU_FORMAT_ANCIEN, &e)))
         })
     } else {
         Err(format!("restore : format de charge inconnu (ni dump B1 ni fichier SQLite) — backup corrompu ? tête={magic:?}"))

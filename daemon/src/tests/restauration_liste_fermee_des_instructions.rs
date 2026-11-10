@@ -297,14 +297,17 @@ mod restauration_liste_fermee_des_instructions {
         refusee("cc6b-t-vide", &tables_plus("  -- rien"), "tables", CLASSE);
     }
 
-    /// UNE CHAÎNE QUE LA LISTE ADMET MAIS QUE LE MOTEUR REFUSE garde le message d'avant la liste (préfixe de la famille
-    /// puis l'erreur du moteur), et non le refus nommé : la liste ne juge que la forme, pas la validité. Ici une création
-    /// de table admise (une tête, aucune action hors liste) d'une table que la section 1 a déjà créée.
+    /// UNE CHAÎNE QUE LA LISTE ADMET MAIS QUE LE MOTEUR REFUSE rend le refus du moteur : la phase, « refusée par le
+    /// moteur » et le code d'erreur SQLite, et non le refus nommé (la liste ne juge que la forme, pas la validité) ni le
+    /// texte du moteur, qui citait la chaîne lue (« table t already exists in CREATE TABLE t(v TEXT) at offset 13 »).
+    /// Ici une création de table admise (une tête, aucune action hors liste) d'une table que la section 1 a déjà créée,
+    /// refusée à la préparation. INVERSÉ (vague CD) : ce témoin s'appelait
+    /// `tables_une_chaine_admise_que_le_moteur_refuse_garde_le_message_d_avant` et affirmait le message d'avant.
     #[test]
-    fn tables_une_chaine_admise_que_le_moteur_refuse_garde_le_message_d_avant() {
+    fn tables_une_chaine_admise_que_le_moteur_refuse_rend_son_code_sans_son_texte() {
         let d = tables_plus("CREATE TABLE t(v TEXT)");
         echoue_destination_intacte("cc6b-t-moteur", &d, |dest| {
-            format!("CREATE TABLE (restore) : table t already exists in CREATE TABLE t(v TEXT) at offset 13{}", suffixe_intacte(dest))
+            format!("restore : phase tables : refusée par le moteur (code 1){}", suffixe_intacte(dest))
         });
     }
 

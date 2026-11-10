@@ -1,5 +1,6 @@
 //! backup::restauration_liste_fermee — LA RESTAURATION N'ACCEPTE QUE LES FORMES D'INSTRUCTION QUE L'ÉCRIVAIN DU DUMP
-//! ÉMET. Sous-module de `backup` ; seul `dump_restauration::restore_stream` s'en sert.
+//! ÉMET. Sous-module de `backup` ; `dump_restauration::restore_stream` (format courant) et
+//! `dump_restauration::restore_compressed` (format ancien, `juger_le_schema_du_format_ancien`) s'en servent.
 //!
 //! Un dump B1 porte trois familles de chaînes SQL que la restauration fait jouer au moteur. L'écrivain
 //! (`dump_restauration::collect_dump_plan`, `build_table_dump`, `dump_stream`) n'en émet que ces formes :
@@ -48,6 +49,24 @@
 //! REFUS : la restauration échoue entière (la transaction n'est jamais validée, l'appelant retire le temporaire et la
 //! destination n'est pas touchée) ; l'erreur nomme la phase et la cause dans un vocabulaire fermé, sans recopier ni
 //! le texte lu dans l'archive ni celui du moteur.
+//!
+//! REFUS DU MOTEUR : une chaîne que la liste admet et que le moteur refuse (préparation ou exécution), ou une valeur de
+//! l'archive que le moteur refuse d'écrire, rend la phase, « refusée par le moteur » et le CODE d'erreur SQLite étendu
+//! (`refusee_par_le_moteur`), jamais le texte du moteur, qui peut citer un morceau de la chaîne lue ; l'écriture d'un
+//! compteur, dont le nom est lu dans l'archive, suit la même règle.
+//!
+//! LE FORMAT ANCIEN (un fichier SQLite en clair, recopié par `sqlcipher_export`) SUIT LA MÊME LISTE
+//! (`juger_le_schema_du_format_ancien`). L'export rejoue le `sql` de chaque table et de chaque index du fichier, et
+//! recopie TELLES QUELLES les lignes de schéma des vues, des déclencheurs et des tables virtuelles, que le moteur
+//! relira à la première ouverture : un autoriseur posé sur la connexion de l'export ne verrait jamais ces trois
+//! classes (relevé : il n'y voit ni `CreateView`, ni `CreateTrigger`, ni `CreateVtable`, seulement l'écriture brute de
+//! `sqlite_master`). Chaque ligne de schéma du fichier est donc jugée AVANT l'export, sur une base de brouillon en
+//! mémoire armée de la même liste : une table que l'export rejoue sous la phase `Tables`, toute autre ligne sous la
+//! phase `PostDdl`. Seules exceptions, les tables que le moteur crée lui-même (`TABLES_DU_MOTEUR`), à leur texte exact.
+//! Un refus nomme la phase « format ancien ».
+//! PORTÉE POUR UNE TABLE VIRTUELLE : sa ligne est jugée à la PRÉPARATION seulement (module et classe d'instruction) ;
+//! ce que le format courant juge de plus en l'exécutant, c'est-à-dire ce que le module fait à sa création, n'est pas
+//! rejoué ici. Ce reste est porté par la feuille de route.
 use super::*;
 use super::dump_restauration::SUFFIXES_DES_TABLES_FANTOMES;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
@@ -142,9 +161,35 @@ impl Cause {
     }
 }
 
+/// Le nom de phase que sert le jugement du schéma d'un fichier de l'ancien format : il emprunte les phases `Tables` et
+/// `PostDdl`, mais son refus nomme le format.
+pub(super) const PHASE_DU_FORMAT_ANCIEN: &str = "format ancien";
+
 /// Le refus servi : phase et cause, rien d'autre (ni le texte lu dans l'archive, ni celui du moteur).
 pub(super) fn refus(phase: Phase, cause: Cause) -> String {
-    format!("restore : phase {} : instruction hors liste ({})", phase.nom(), cause.phrase())
+    refus_sous(phase.nom(), cause)
+}
+
+fn refus_sous(nom_de_phase: &str, cause: Cause) -> String {
+    format!("restore : phase {nom_de_phase} : instruction hors liste ({})", cause.phrase())
+}
+
+/// LE REFUS DU MOTEUR SERVI, sans préfixe, sous le nom de phase `nom_de_phase` : la phase, « refusée par le moteur » et
+/// le code d'erreur SQLite étendu ; jamais le texte du moteur. Une erreur qui ne vient pas du moteur (la bibliothèque
+/// refuse un résultat qu'elle n'attendait pas, ou un texte qui n'est pas de l'UTF-8) n'a pas de code : elle le dit, sans
+/// en inventer un. Le format courant le sert derrière `restore :` (`ListeFermee::refusee_par_le_moteur`) ; le format
+/// ancien, derrière l'étape qui a échoué (`dump_restauration::restore_compressed`).
+pub(super) fn refusee_par_le_moteur_sous(nom_de_phase: &str, e: &rusqlite::Error) -> String {
+    // Une préparation refusée arrive en `SqlInputError` (le moteur y joint la chaîne et la position) ; le reste en
+    // `SqliteFailure`. Les deux portent le code ; aucun texte n'est repris.
+    let code = match e {
+        rusqlite::Error::SqliteFailure(erreur, _) | rusqlite::Error::SqlInputError { error: erreur, .. } => Some(erreur.extended_code),
+        _ => None,
+    };
+    match code {
+        Some(code) => format!("phase {nom_de_phase} : refusée par le moteur (code {code})"),
+        None => format!("phase {nom_de_phase} : refusée sans code d'erreur SQLite"),
+    }
 }
 
 /// L'état que l'autoriseur lit et tient. Partagé entre la fermeture posée sur la connexion et `ListeFermee`.
@@ -291,12 +336,25 @@ fn admettre(e: &mut Etat, ctx: &AuthContext<'_>) -> bool {
 /// L'autoriseur posé sur la connexion de restauration et l'état qu'il tient.
 pub(super) struct ListeFermee {
     etat: std::sync::Arc<std::sync::Mutex<Etat>>,
+    /// Le nom de phase servi par chaque refus de `preparer_une_chaine_de_l_archive` et `executer_une_chaine` : `None`,
+    /// celui de la phase (format courant) ; `Some`, celui du format ancien.
+    nom_servi: Option<&'static str>,
 }
 
 impl ListeFermee {
     /// POSE L'AUTORISEUR. À appeler juste après l'ouverture (clé et réglages mémoire posés), avant toute instruction de
     /// la restauration.
     pub(super) fn armer(conn: &Connection) -> ListeFermee {
+        ListeFermee::armer_sous(conn, None)
+    }
+
+    /// POSE L'AUTORISEUR sur la base de brouillon où se juge le schéma d'un fichier de l'ancien format : même liste, et
+    /// chaque refus nomme la phase « format ancien ».
+    fn armer_pour_le_format_ancien(conn: &Connection) -> ListeFermee {
+        ListeFermee::armer_sous(conn, Some(PHASE_DU_FORMAT_ANCIEN))
+    }
+
+    fn armer_sous(conn: &Connection, nom_servi: Option<&'static str>) -> ListeFermee {
         let etat = std::sync::Arc::new(std::sync::Mutex::new(Etat {
             phase: Phase::Ouverture,
             cible: String::new(),
@@ -317,7 +375,17 @@ impl ListeFermee {
                 Authorization::Deny
             }
         }));
-        ListeFermee { etat }
+        ListeFermee { etat, nom_servi }
+    }
+
+    /// Le refus nommé de `phase`, sous le nom que cette liste sert.
+    fn refus(&self, phase: Phase, cause: Cause) -> String {
+        refus_sous(self.nom_servi.unwrap_or(phase.nom()), cause)
+    }
+
+    /// Le refus du moteur dans `phase`, sous le nom que cette liste sert (`refusee_par_le_moteur_sous`).
+    pub(super) fn refusee_par_le_moteur(&self, phase: Phase, e: &rusqlite::Error) -> String {
+        format!("restore : {}", refusee_par_le_moteur_sous(self.nom_servi.unwrap_or(phase.nom()), e))
     }
 
     fn etat(&self) -> std::sync::MutexGuard<'_, Etat> {
@@ -351,15 +419,14 @@ impl ListeFermee {
     }
 
     /// PRÉPARE UNE CHAÎNE LUE DANS L'ARCHIVE dans `phase` : l'autoriseur juge chaque action, la chaîne doit porter
-    /// exactement une tête et aucune seconde instruction. `si_le_moteur_refuse` met en forme l'erreur d'une chaîne
-    /// de la famille que le moteur refuse de lui-même (message d'avant ce module, inchangé).
+    /// exactement une tête et aucune seconde instruction. Une chaîne de la famille que le moteur refuse de lui-même
+    /// rend le refus du moteur (code, sans texte).
     pub(super) fn preparer_une_chaine_de_l_archive<'c>(
         &self,
         conn: &'c Connection,
         phase: Phase,
         cible: &str,
         chaine: &str,
-        si_le_moteur_refuse: impl FnOnce(rusqlite::Error) -> String,
     ) -> Result<rusqlite::Statement<'c>, String> {
         self.entrer(phase, cible);
         let mut lot = rusqlite::Batch::new(conn, chaine);
@@ -371,18 +438,127 @@ impl ListeFermee {
             e.refus || e.tetes != 1
         };
         let premiere = match premiere {
-            _ if hors_liste => return Err(refus(phase, Cause::ClasseHorsListe)),
-            Err(e) => return Err(si_le_moteur_refuse(e)),
+            _ if hors_liste => return Err(self.refus(phase, Cause::ClasseHorsListe)),
+            Err(e) => return Err(self.refusee_par_le_moteur(phase, &e)),
             // Inatteignable : une chaîne sans instruction n'a pas de tête, le premier bras la refuse.
-            Ok(None) => return Err(refus(phase, Cause::ClasseHorsListe)),
+            Ok(None) => return Err(self.refus(phase, Cause::ClasseHorsListe)),
             Ok(Some(s)) => s,
         };
         self.etat().preparation_de_l_archive = true;
         let seconde = lot.next();
         self.etat().preparation_de_l_archive = false;
         if !matches!(seconde, Ok(None)) {
-            return Err(refus(phase, Cause::PlusieursInstructions));
+            return Err(self.refus(phase, Cause::PlusieursInstructions));
         }
         Ok(premiere)
     }
+
+    /// EXÉCUTE UNE CHAÎNE PRÉPARÉE sous la liste. Un refus de l'autoriseur PENDANT l'exécution (écriture interne d'un
+    /// module hors de ses tables fantômes) rend le refus nommé de la phase ; toute autre erreur, le refus du moteur.
+    pub(super) fn executer_une_chaine(&self, mut stmt: rusqlite::Statement<'_>, phase: Phase) -> Result<(), String> {
+        match stmt.execute([]) {
+            Ok(_) => Ok(()),
+            Err(_) if self.a_refuse() => Err(self.refus(phase, Cause::ClasseHorsListe)),
+            Err(e) => Err(self.refusee_par_le_moteur(phase, &e)),
+        }
+    }
+}
+
+/// LES TABLES QUE LE MOTEUR CRÉE LUI-MÊME, au texte exact qu'il écrit dans `sqlite_master` : compteurs AUTOINCREMENT, et
+/// statistiques d'`ANALYZE` (que la migration et l'entretien jouent). Relevé sur l'export ancien d'une base au schéma
+/// complet de la tête : ces trois lignes, et le moteur refuse leur création par une chaîne (nom réservé, avant toute
+/// action de l'autoriseur). L'export recrée les deux tables de statistiques par ce texte et remplit les compteurs dans
+/// la table que crée la première table AUTOINCREMENT ; aucun autre texte n'est exempté, même sous l'un de ces noms.
+const TABLES_DU_MOTEUR: [&str; 3] = [
+    "CREATE TABLE sqlite_sequence(name,seq)",
+    "CREATE TABLE sqlite_stat1(tbl,idx,stat)",
+    "CREATE TABLE sqlite_stat4(tbl,idx,neq,nlt,ndlt,sample)",
+];
+
+/// Une ligne de schéma d'un fichier de l'ancien format, telle que l'export la traite.
+struct LigneDuFormatAncien {
+    /// `type = 'table' AND rootpage > 0` : l'export rejoue son `sql` comme une création de table.
+    table_rejouee: bool,
+    /// `type = 'view'` : l'export la recopie telle quelle ; un déclencheur `INSTEAD OF` s'y appuie.
+    vue: bool,
+    sql: String,
+}
+
+/// LE SCHÉMA DU FICHIER EN CLAIR, dans l'ordre où il a été créé : toute ligne qui porte un `sql`. Une ligne sans `sql`
+/// (index automatique d'une contrainte) n'est ni rejouée ni relue comme une instruction. Un `sql` qui n'est pas un texte
+/// UTF-8 est refusé comme une valeur que la bibliothèque ne lit pas.
+fn lire_le_schema_du_format_ancien(clair: &Connection) -> Result<Vec<LigneDuFormatAncien>, String> {
+    let refusee = |e: rusqlite::Error| format!("restore : {}", refusee_par_le_moteur_sous(PHASE_DU_FORMAT_ANCIEN, &e));
+    let mut s = clair
+        .prepare(
+            "SELECT COALESCE(type = 'table' AND rootpage > 0, 0), COALESCE(type = 'view', 0), sql \
+             FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid",
+        )
+        .map_err(refusee)?;
+    let lignes = s
+        .query_map([], |r| Ok(LigneDuFormatAncien { table_rejouee: r.get(0)?, vue: r.get(1)?, sql: r.get(2)? }))
+        .map_err(refusee)?;
+    lignes.collect::<rusqlite::Result<Vec<_>>>().map_err(refusee)
+}
+
+/// UNE COLLATION INCONNUE N'ARRÊTE PAS LE JUGEMENT. Ce n'est pas une classe d'instruction : le moteur la cherche en lisant
+/// la colonne qui la nomme, et sans elle la préparation s'arrêterait là, le reste de la chaîne (une contrainte qui
+/// appelle une fonction, par exemple) n'étant jamais montré à l'autoriseur. Le brouillon reçoit donc, pour tout nom
+/// inconnu, une collation qui compare les octets ; elle n'existe que sur lui. L'export, qui joue ensuite la même chaîne
+/// sur la connexion du fichier où ce nom reste inconnu, la refuse comme avant. Si l'inscription échouait, la collation
+/// resterait absente et la préparation rendrait le refus du moteur : le jugement reste fermé.
+fn accepter_toute_collation_sur_le_brouillon(brouillon: &Connection) {
+    use rusqlite::ffi;
+    use std::os::raw::{c_char, c_int, c_void};
+    unsafe fn octets<'a>(p: *const c_void, n: c_int) -> &'a [u8] {
+        if p.is_null() || n <= 0 { &[] } else { std::slice::from_raw_parts(p as *const u8, n as usize) }
+    }
+    unsafe extern "C" fn comparer_les_octets(_: *mut c_void, n1: c_int, p1: *const c_void, n2: c_int, p2: *const c_void) -> c_int {
+        match octets(p1, n1).cmp(octets(p2, n2)) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        }
+    }
+    unsafe extern "C" fn inscrire_la_collation_demandee(_: *mut c_void, db: *mut ffi::sqlite3, _: c_int, nom: *const c_char) {
+        ffi::sqlite3_create_collation_v2(db, nom, ffi::SQLITE_UTF8, std::ptr::null_mut(), Some(comparer_les_octets), None);
+    }
+    // SAFETY : la poignée vit autant que `brouillon` ; le rappel n'emploie que les arguments que SQLite lui passe.
+    unsafe {
+        ffi::sqlite3_collation_needed(brouillon.handle(), std::ptr::null_mut(), Some(inscrire_la_collation_demandee));
+    }
+}
+
+/// JUGE LE SCHÉMA D'UN FICHIER DE L'ANCIEN FORMAT, AVANT L'EXPORT (cf. en-tête du module). Sur un brouillon en mémoire
+/// armé de la liste : chaque table que l'export rejoue est jugée sous `Tables` puis créée (index et déclencheurs
+/// s'appuient sur elle) ; chaque vue est jugée sous `PostDdl` puis créée (un déclencheur `INSTEAD OF` s'appuie sur
+/// elle) ; toute autre ligne (index, déclencheur, table virtuelle, et tout autre type) est jugée sous `PostDdl` sans être
+/// jouée — l'autoriseur juge une instruction pendant sa préparation, et aucune table virtuelle n'est créée, donc aucun
+/// module ne travaille sur le brouillon. Le premier refus arrête le jugement et nomme la phase « format ancien ».
+///
+/// Un refus du MOTEUR pendant le jugement (une ligne que le brouillon ne sait pas préparer ou créer) reste servi, fermé,
+/// sous « format ancien » et son code, quelle que soit la phase sous laquelle la ligne était jugée. Un fichier que le
+/// moteur a relu y mène : le moteur relit un schéma sans résoudre les noms qu'il cite, et la préparation sur le
+/// brouillon refuse alors une contrainte qui cite une colonne absente (une table) ou un index qui appelle une fonction
+/// inconnue (code 1). Une collation inconnue, elle, est absorbée (`accepter_toute_collation_sur_le_brouillon`), et les
+/// vues sont créées avant les déclencheurs qui s'y appuient.
+pub(super) fn juger_le_schema_du_format_ancien(clair: &Connection) -> Result<(), String> {
+    let lignes = lire_le_schema_du_format_ancien(clair)?;
+    let brouillon = Connection::open_in_memory()
+        .map_err(|e| format!("restore : {}", refusee_par_le_moteur_sous(PHASE_DU_FORMAT_ANCIEN, &e)))?;
+    accepter_toute_collation_sur_le_brouillon(&brouillon);
+    let liste = ListeFermee::armer_pour_le_format_ancien(&brouillon);
+    let jugees: Vec<&LigneDuFormatAncien> = lignes.iter().filter(|l| !TABLES_DU_MOTEUR.contains(&l.sql.as_str())).collect();
+    for l in jugees.iter().filter(|l| l.table_rejouee) {
+        let stmt = liste.preparer_une_chaine_de_l_archive(&brouillon, Phase::Tables, "", &l.sql)?;
+        liste.executer_une_chaine(stmt, Phase::Tables)?;
+    }
+    for l in jugees.iter().filter(|l| !l.table_rejouee && l.vue) {
+        let stmt = liste.preparer_une_chaine_de_l_archive(&brouillon, Phase::PostDdl, "", &l.sql)?;
+        liste.executer_une_chaine(stmt, Phase::PostDdl)?;
+    }
+    for l in jugees.iter().filter(|l| !l.table_rejouee && !l.vue) {
+        liste.preparer_une_chaine_de_l_archive(&brouillon, Phase::PostDdl, "", &l.sql)?;
+    }
+    Ok(())
 }

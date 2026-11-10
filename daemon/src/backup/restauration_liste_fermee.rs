@@ -21,13 +21,19 @@
 //!  - une contrainte `UNIQUE`/`PRIMARY KEY` d'un `CREATE TABLE` crée son index `sqlite_autoindex_*` et lit les colonnes
 //!    qu'il couvre ; un `CREATE INDEX` lit les colonnes qu'il couvre (clause `WHERE` comprise) et remplit l'index
 //!    (action `REINDEX` sur ce seul index) ;
+//!  - un `CREATE INDEX` d'expression ou partiel appelle `json_extract` : c'est la forme des index de champ chaud que la
+//!    production crée en tâche de fond (`maintenance::reconcile_expr_indexes_background`, `idx_ev_f_*`, et avant elle
+//!    `idx_ev_auto_*`), seule fonction qu'un index du démon ait jamais appelée ; admise pendant la création d'un index
+//!    seulement ;
 //!  - un module FTS crée, remplit et lit SES tables fantômes (`<vt>_<suffixe>`, suffixes de l'écrivain), y compris leurs
 //!    index automatiques, lit les réglages `data_version` (FTS5) et `page_size` (FTS3/FTS4), appelle `max` et `coalesce`
 //!    (FTS3/FTS4) et, pour la reconstruction, lit la table de contenu. Il le fait pendant le `CREATE VIRTUAL TABLE`,
 //!    pendant le `rebuild`, et quand il vide ses données en attente : au début de l'instruction d'écriture suivante (une
 //!    autre chaîne de post-DDL) ou au `COMMIT`. Ces actions ne sont admises qu'une fois une table virtuelle créée par
-//!    CETTE restauration, et les écritures et lectures sur ses seules tables fantômes.
-//! Aucune autre fonction n'est appelée par une restauration réelle.
+//!    CETTE restauration, les écritures et lectures sur ses seules tables fantômes, et JAMAIS pendant la préparation
+//!    d'une chaîne de l'archive : le module ne prépare ses propres instructions qu'à l'exécution, et une chaîne de
+//!    l'archive ne peut donc pas emprunter ces actions (un index qui appellerait `coalesce` reste hors liste).
+//! Aucune autre fonction n'est appelée par une restauration réelle (index de champ chaud de la production compris).
 //!
 //! UNE INSTRUCTION PAR CHAÎNE : la chaîne est découpée par le moteur (`rusqlite::Batch`, qui suit la fin
 //! d'instruction que rend `sqlite3_prepare`) ; une seconde instruction, valide ou non, refuse la chaîne. Aucun
@@ -69,6 +75,11 @@ const PRAGMAS_LUS_PAR_LES_MODULES: [&str; 2] = ["data_version", "page_size"];
 /// fantômes (prochain niveau et prochain bloc libres) ; relevées sur une restauration réelle. Aucune autre fonction
 /// n'est appelée par une restauration conforme, et celles-ci ne le sont qu'une fois une table virtuelle créée.
 const FONCTIONS_APPELEES_PAR_LES_MODULES: [&str; 2] = ["max", "coalesce"];
+
+/// LES FONCTIONS QU'UN INDEX DU DÉMON APPELLE, dans son expression ou sa clause `WHERE` : `json_extract`, celle des index
+/// de champ chaud (`maintenance::reconcile_expr_indexes_background`, créés par défaut en production). Admises pendant la
+/// création d'un index de la section 4 seulement.
+const FONCTIONS_DES_INDEX_EMIS: [&str; 1] = ["json_extract"];
 
 /// Les phases de la restauration, dans l'ordre où `restore_stream` les traverse. Les phases « archive » exécutent du
 /// texte lu dans le dump ; les phases « démon » n'exécutent que des instructions écrites dans `restore_stream`.
@@ -150,6 +161,8 @@ struct Etat {
     tables_virtuelles_creees: std::collections::HashSet<String>,
     /// Actions « tête » vues depuis l'entrée dans la phase (cf. en-tête du module).
     tetes: u32,
+    /// Une chaîne lue dans l'archive est en cours de préparation : aucune action interne d'un module n'y est admise.
+    preparation_de_l_archive: bool,
     /// L'autoriseur a refusé au moins une action depuis l'entrée dans la phase.
     refus: bool,
 }
@@ -168,10 +181,11 @@ impl Etat {
 }
 
 /// Les actions qu'un module FTS fait lui-même sur SES tables fantômes (cf. en-tête du module), dans toute phase où une
-/// table virtuelle créée par cette restauration existe et peut travailler. Aucune avant la première création.
+/// table virtuelle créée par cette restauration existe et peut travailler. Aucune avant la première création, aucune
+/// pendant la préparation d'une chaîne de l'archive (le module ne prépare ses instructions qu'à l'exécution).
 fn action_interne_d_un_module(e: &Etat, action: &AuthAction<'_>) -> bool {
     use AuthAction as A;
-    if e.tables_virtuelles_creees.is_empty() {
+    if e.tables_virtuelles_creees.is_empty() || e.preparation_de_l_archive {
         return false;
     }
     match *action {
@@ -247,6 +261,12 @@ fn admettre(e: &mut Etat, ctx: &AuthContext<'_>) -> bool {
         // Lecture des colonnes que l'index en création couvre, et son remplissage.
         (Phase::PostDdl, A::Read { table_name, .. }) if !e.index_en_creation.is_empty() && table_name == e.cible => true,
         (Phase::PostDdl, A::Reindex { index_name }) => !e.index_en_creation.is_empty() && index_name == e.index_en_creation,
+        // Expression ou clause `WHERE` de l'index en création : les fonctions des index du démon.
+        (Phase::PostDdl, A::Function { function_name })
+            if !e.index_en_creation.is_empty() && FONCTIONS_DES_INDEX_EMIS.iter().any(|f| f.eq_ignore_ascii_case(function_name)) =>
+        {
+            true
+        }
         (Phase::PostDdl, A::CreateTrigger { .. }) | (Phase::PostDdl, A::CreateView { .. }) => {
             e.tetes += 1;
             true
@@ -284,6 +304,7 @@ impl ListeFermee {
             tables_creees: Default::default(),
             tables_virtuelles_creees: Default::default(),
             tetes: 0,
+            preparation_de_l_archive: false,
             refus: false,
         }));
         let pour_le_moteur = etat.clone();
@@ -342,9 +363,11 @@ impl ListeFermee {
     ) -> Result<rusqlite::Statement<'c>, String> {
         self.entrer(phase, cible);
         let mut lot = rusqlite::Batch::new(conn, chaine);
+        self.etat().preparation_de_l_archive = true;
         let premiere = lot.next();
         let hors_liste = {
-            let e = self.etat();
+            let mut e = self.etat();
+            e.preparation_de_l_archive = false;
             e.refus || e.tetes != 1
         };
         let premiere = match premiere {
@@ -354,7 +377,10 @@ impl ListeFermee {
             Ok(None) => return Err(refus(phase, Cause::ClasseHorsListe)),
             Ok(Some(s)) => s,
         };
-        if !matches!(lot.next(), Ok(None)) {
+        self.etat().preparation_de_l_archive = true;
+        let seconde = lot.next();
+        self.etat().preparation_de_l_archive = false;
+        if !matches!(seconde, Ok(None)) {
             return Err(refus(phase, Cause::PlusieursInstructions));
         }
         Ok(premiere)

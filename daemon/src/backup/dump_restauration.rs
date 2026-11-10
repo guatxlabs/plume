@@ -667,8 +667,13 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
     let n_seq = re(rd_u32(r))?;
     if n_seq > 0 {
         liste.entrer(Phase::Compteurs, "");
-        let _ = conn.execute_batch("DELETE FROM sqlite_sequence;");
-        let mut s = conn.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)").map_err(|e| format!("prepare seq : {e}"))?;
+        // Le refus se lit, comme celui du réglage d'ouverture : avalé, il laisserait chaque compteur EN DOUBLE (celui que
+        // le moteur a posé pendant la section 2, puis celui de l'archive).
+        let refus_des_compteurs = |e: rusqlite::Error, quoi: &str| {
+            if liste.a_refuse() { refus(Phase::Compteurs, Cause::ClasseHorsListe) } else { format!("{quoi} : {e}") }
+        };
+        conn.execute_batch("DELETE FROM sqlite_sequence;").map_err(|e| refus_des_compteurs(e, "compteurs restore"))?;
+        let mut s = conn.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)").map_err(|e| refus_des_compteurs(e, "prepare seq"))?;
         for _ in 0..n_seq {
             let name = rd_str(r).map_err(|e| format!("restore : nom seq : {e}"))?;
             let seq = rd_i64(r).map_err(|e| format!("restore : valeur seq : {e}"))?;

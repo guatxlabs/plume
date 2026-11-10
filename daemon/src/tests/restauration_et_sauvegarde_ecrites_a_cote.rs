@@ -21,8 +21,8 @@
 // répertoire canonique, sans ouvrir aucun fichier de la base.
 //
 // LES VOIES D'ÉCHEC FABRIQUÉES : archive `.age` coupée en son milieu (vraie sauvegarde B1) ; dump B1 forgé sans
-// sentinelle, avec une sentinelle fausse, ou dont le post-DDL valide déjà la transaction (le `COMMIT` final est alors
-// refusé par le moteur) ; fichier SQLite en clair dont une table porte une collation inconnue (l'export la refuse
+// sentinelle, avec une sentinelle fausse, ou dont le post-DDL porte un `COMMIT` (refusé par la liste fermée du
+// post-DDL, `backup/restauration_liste_fermee.rs`, avant que le moteur ne le joue) ; fichier SQLite en clair dont une table porte une collation inconnue (l'export la refuse
 // après avoir créé la table précédente dans la base attachée) ; destination qui est un répertoire non vide (le
 // `rename` final est refusé) ; destinataire age invalide (la sauvegarde échoue après la création de son fichier) ;
 // journal CHAUD d'une ancienne base en mode rollback posé à côté de la destination ; limite de taille de fichier

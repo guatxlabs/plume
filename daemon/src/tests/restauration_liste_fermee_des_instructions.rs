@@ -15,7 +15,9 @@
 // intacte à l'octet (ou absente si elle l'était).
 //
 // LES DUMPS DE REFUS sont forgés dans le test (même format que l'écrivain) ; les dumps ADMIS sont de vraies sauvegardes
-// (`backup_compressed`) : schéma complet de la tête plus une vue (la tête n'en a pas), et les trois modules FTS.
+// (`backup_compressed`) : schéma complet de la tête plus une vue (la tête n'en a pas), les index de champ chaud que la
+// production crée en tâche de fond (`json_extract`, expression et clause `WHERE`), un compteur AUTOINCREMENT, et les
+// trois modules FTS.
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : une valeur écrite en dur dans le texte d'insertion à côté des paramètres
 // (`VALUES (?, 5)` avec une colonne de plus) ou une opération sur des paramètres (`?+?`) n'est vue ni par l'autoriseur
@@ -410,6 +412,49 @@ mod restauration_liste_fermee_des_instructions {
         refusee("cc6b-p-coalesce", &post(vec![Post::Sql("CREATE INDEX i ON t(coalesce(v, ''))")]), "post-DDL", CLASSE);
     }
 
+    /// UNE TABLE VIRTUELLE CRÉÉE N'OUVRE PAS LA LISTE DES FONCTIONS À L'ARCHIVE. L'écrivain émet les tables virtuelles
+    /// AVANT les index : c'est l'état où un vrai dump de la tête crée ses index. Une fonction hors de celles des index du
+    /// démon y reste hors liste.
+    #[test]
+    fn post_ddl_un_index_qui_appelle_une_fonction_apres_une_table_virtuelle_est_hors_liste() {
+        let d = post(vec![
+            Post::Sql("CREATE VIRTUAL TABLE f USING fts5(v, content='t')"),
+            Post::Sql("CREATE INDEX i ON t(upper(v))"),
+        ]);
+        refusee("cc6b-p-fts5-index-fonction", &d, "post-DDL", CLASSE);
+    }
+
+    /// `coalesce` est appelée par un module FTS4 quand il prépare SES instructions, à l'exécution ; une chaîne de l'archive
+    /// qui l'appelle, même une fois la table FTS4 créée, reste hors liste.
+    #[test]
+    fn post_ddl_une_fonction_des_modules_dans_un_index_apres_une_table_virtuelle_est_hors_liste() {
+        let d = post(vec![
+            Post::Sql("CREATE VIRTUAL TABLE f USING fts4(v, content='t')"),
+            Post::Sql("CREATE INDEX i ON t(coalesce(v, ''))"),
+        ]);
+        refusee("cc6b-p-fts4-coalesce", &d, "post-DDL", CLASSE);
+    }
+
+    /// `json_extract` n'est admise que dans un index de la section 4 : dans le texte d'insertion, elle est hors liste.
+    #[test]
+    fn insertion_qui_appelle_la_fonction_des_index_est_hors_liste() {
+        refusee("cc6b-i-json", &Dump::avec_insertion("INSERT INTO t (v) VALUES (json_extract(?, '$.a'))"), "insertion", CLASSE);
+    }
+
+    /// La forme des index de champ chaud (`json_extract` dans l'expression, et dans la clause `WHERE` d'un index partiel)
+    /// est admise, après une table virtuelle comme sans elle.
+    #[test]
+    fn post_ddl_les_index_qui_appellent_json_extract_sont_admis() {
+        let json = "{\"a\":\"restauree\"}";
+        let mut d = post(vec![
+            Post::Sql("CREATE INDEX i ON t(json_extract(v, '$.a'))"),
+            Post::Sql("CREATE VIRTUAL TABLE f USING fts5(v, content='t')"),
+            Post::Sql("CREATE INDEX j ON t(json_extract(v, '$.a')) WHERE json_extract(v, '$.a') IS NOT NULL"),
+        ]);
+        d.donnees[0].lignes = vec![vec![json]];
+        admise("cc6b-p-json", &d, &[json]);
+    }
+
     /// `fts5vocab` existe dans le moteur, mais l'écrivain n'émet que FTS3, FTS4 et FTS5.
     #[test]
     fn post_ddl_une_table_virtuelle_d_un_module_que_l_ecrivain_n_emet_pas_est_refusee() {
@@ -499,17 +544,101 @@ mod restauration_liste_fermee_des_instructions {
         let trouves = |c: &rusqlite::Connection, vt: &str| -> i64 {
             c.query_row(&format!("SELECT count(*) FROM {vt} WHERE {vt} MATCH 'beta'"), [], |r| r.get(0)).unwrap()
         };
-        for vt in ["f3", "f4", "f5"] {
+        for vt in ["f4", "f5"] {
             assert_eq!(trouves(&dst_c, vt), trouves(&src_c, vt), "{vt} reconstruite répond comme la source");
         }
-        // FTS3 ne connaît pas l'option `content` (elle y devient une colonne) : son contenu est interne et vide ici. FTS4
-        // et FTS5 lisent `t` : la reconstruction retrouve la ligne.
+        // FTS4 et FTS5 lisent `t` : la reconstruction retrouve la ligne.
         assert_eq!((trouves(&dst_c, "f4"), trouves(&dst_c, "f5")), (1, 1), "FTS4 et FTS5 reconstruites depuis t");
+        // FTS3 ne connaît pas l'option `content` (elle y devient une colonne) : son contenu est interne et vide, une
+        // recherche n'y prouverait rien. Ce qui se prouve : sa table et ses tables fantômes, créées par le module pendant
+        // la restauration, sont celles de la source.
+        let f3 = "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name = 'f3' OR name LIKE 'f3\\_%' ESCAPE '\\'";
+        assert!(lignes_de(&src_c, f3).len() >= 4, "contrôle : FTS3 et ses tables fantômes au catalogue de la source");
+        assert_eq!(lignes_de(&dst_c, f3), lignes_de(&src_c, f3), "FTS3 et ses tables fantômes recréées comme la source");
         let blocs = "SELECT blockid, hex(block) FROM f4_segments";
         assert!(lignes_de(&src_c, blocs).len() >= 2, "contrôle : les termes de FTS4 couvrent plusieurs blocs");
         assert_eq!(lignes_de(&dst_c, blocs), lignes_de(&src_c, blocs), "blocs de FTS4 identiques à ceux de la source");
         let segments = "SELECT level, idx, start_block, leaves_end_block, end_block, hex(root) FROM f4_segdir";
         assert_eq!(lignes_de(&dst_c, segments), lignes_de(&src_c, segments), "segments de FTS4 identiques à ceux de la source");
+    }
+
+    /// LES INDEX DE CHAMP CHAUD QUE LA PRODUCTION CRÉE PAR DÉFAUT (`PLUME_EXPRINDEX=1`) : une base de la tête, passée par
+    /// la vraie passe de fond (`maintenance::reconcile_expr_indexes_background`), se sauvegarde et se restaure ; le schéma
+    /// relu est le même, et une requête sur un champ chaud rend les mêmes lignes. Sous levier éteint (régime de CI), la
+    /// passe ne crée rien : le témoin pose alors la même forme lui-même, pour ne jamais conclure sur une base sans eux.
+    #[test]
+    fn les_index_de_champ_chaud_de_la_production_se_restaurent() {
+        let _reglages = VERROU_ENV_PROCESSUS.read();
+        let _tmp = crate::tmp_possede::TmpPossede::neuf("cc6b-champ-chaud");
+        let racine = _tmp.racine().chemin().to_path_buf();
+        let src = chemin(&racine, "src.db");
+        {
+            let c = open_db_keyed(&src, Some(CLE)).unwrap();
+            c.execute_batch(include_str!("../../../db/schema.sql")).unwrap();
+            let _ = migrate(&c);
+            for i in 0..30i64 {
+                let fields = if i % 3 == 0 { "{}".to_string() } else { format!("{{\"user\":\"alice{}\",\"action\":\"login\"}}", i % 2) };
+                c.execute(
+                    "INSERT INTO event(ts,source,category,severity,host,message,fields) VALUES(?1,'sshd','auth',3,'hote',?2,?3)",
+                    params![1_700_000_000i64 + i, format!("connexion {i}"), fields],
+                ).unwrap();
+            }
+            let db = std::sync::Arc::new(parking_lot::Mutex::new(c));
+            let _ = crate::maintenance::reconcile_expr_indexes_background(&db);
+            let c = db.lock();
+            for champ in crate::soql_glue::HOT_FIELDS {
+                c.execute(
+                    &format!(
+                        "CREATE INDEX IF NOT EXISTS idx_ev_f_{champ} ON event(json_extract(fields,'$.{champ}')) \
+                         WHERE json_extract(fields,'$.{champ}') IS NOT NULL"
+                    ),
+                    [],
+                ).unwrap();
+            }
+        }
+        let src_c = open_db_keyed(&src, Some(CLE)).unwrap();
+        let index_json = "SELECT name, sql FROM sqlite_master WHERE type='index' AND sql LIKE '%json_extract%WHERE%json_extract%'";
+        assert_eq!(lignes_de(&src_c, index_json).len(), crate::soql_glue::HOT_FIELDS.len(), "contrôle : un index partiel par champ chaud");
+
+        let archive = chemin(&racine, "archive.age");
+        backup_compressed(&src, &archive, Some(CLE), None).expect("sauvegarde");
+        assert!(backup_payload_head(&archive, CLE).starts_with(b"PLUMEDUMP1\n"), "la fixture doit emprunter le chemin B1");
+        let dest = chemin(&racine, "plume.db");
+        restore_compressed(&archive, &dest, Some(CLE), false, None).expect("les index de champ chaud se restaurent sous la liste");
+        let dst_c = open_db_keyed(&dest, Some(CLE)).unwrap();
+        let schema = "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_stat%'";
+        assert_eq!(lignes_de(&dst_c, schema), lignes_de(&src_c, schema), "le schéma restauré est celui de la source");
+        let requete = "SELECT id FROM event WHERE json_extract(fields,'$.user') = 'alice1'";
+        assert!(!lignes_de(&src_c, requete).is_empty(), "contrôle : le champ chaud est porté par des événements");
+        assert_eq!(lignes_de(&dst_c, requete), lignes_de(&src_c, requete), "une requête sur un champ chaud rend les mêmes lignes");
+    }
+
+    /// LES COMPTEURS AUTOINCREMENT, UNE LIGNE PAR TABLE : le moteur pose un compteur pendant la section 2, la section 3 le
+    /// remplace par celui de l'archive (supérieur ici au plus grand identifiant restant). Un retrait refusé laisserait les
+    /// deux.
+    #[test]
+    fn les_compteurs_autoincrement_sont_ceux_de_la_source_une_ligne_par_table() {
+        let _reglages = VERROU_ENV_PROCESSUS.read();
+        let _tmp = crate::tmp_possede::TmpPossede::neuf("cc6b-compteurs");
+        let racine = _tmp.racine().chemin().to_path_buf();
+        let src = chemin(&racine, "src.db");
+        {
+            let c = open_db_keyed(&src, Some(CLE)).unwrap();
+            c.execute_batch(
+                "CREATE TABLE s(id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT);
+                 INSERT INTO s(v) VALUES('a'); INSERT INTO s(v) VALUES('b'); INSERT INTO s(v) VALUES('c');
+                 DELETE FROM s WHERE id > 1;").unwrap();
+        }
+        let src_c = open_db_keyed(&src, Some(CLE)).unwrap();
+        let compteurs = "SELECT name, seq FROM sqlite_sequence";
+        assert_eq!(lignes_de(&src_c, compteurs), vec!["Text(\"s\")|Integer(3)".to_string()], "contrôle : compteur de la source");
+        let archive = chemin(&racine, "archive.age");
+        backup_compressed(&src, &archive, Some(CLE), None).expect("sauvegarde");
+        assert!(backup_payload_head(&archive, CLE).starts_with(b"PLUMEDUMP1\n"), "la fixture doit emprunter le chemin B1");
+        let dest = chemin(&racine, "plume.db");
+        restore_compressed(&archive, &dest, Some(CLE), false, None).expect("le compteur se restaure");
+        let dst_c = open_db_keyed(&dest, Some(CLE)).unwrap();
+        assert_eq!(lignes_de(&dst_c, compteurs), lignes_de(&src_c, compteurs), "un compteur par table, celui de la source");
     }
 
     /// Une ligne relue, valeurs typées, rendue comparable.

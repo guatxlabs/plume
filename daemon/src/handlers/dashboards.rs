@@ -339,6 +339,9 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
                 .iter()
                 .map(|h| panneau_resolu::texte_rendu_en_hex(h))
                 .collect::<Option<Vec<String>>>()
+                // HORS D'ATTEINTE PAR LA ROUTE : la colonne vient de `hex(…)` de SQLite dans l'énoncé ci-dessus (`panels`),
+                // qui rend toujours un nombre pair de chiffres hexadécimaux ; le refus de `texte_rendu_en_hex` est tenu par
+                // un appel direct (lignes_de_panneau_bornees_et_restes_des_tableaux.rs).
                 .ok_or_else(|| rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, "visibilité de panneau : hexadécimal illisible".into()))?;
             let portee = PorteeLecture::du_dashboard(&ident, &owner);
             let panneaux_lus = visibilites.iter().filter(|v| portee.voit(v)).count() as i64;
@@ -957,10 +960,14 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     // `private` d'un tableau commun d'autrui, que `dash_get` ne lui sert pas, reçoit la même réponse, avant tout
     // jugement de partage, de définition de bibliothèque ou de SQL brut, et rien n'est écrit. La visibilité jugée est
     // celle de la lecture ci-dessus.
+    // Un panneau ORPHELIN (son tableau n'a plus de ligne ; aucune clé étrangère au schéma, et l'administrateur crée un
+    // panneau sans lire son tableau) reçoit lui aussi la réponse d'un identifiant de panneau absent, à l'octet, rien
+    // n'est écrit : « dashboard introuvable » disait à qui ne le lit pas que ce panneau existe. L'administrateur, dont la
+    // porte ne lit pas le tableau, modifie encore un orphelin (204).
     match panneau_editable(&conn, &au, did, &visibilite) {
         PorteDuTableau::Ouverte => {}
         PorteDuTableau::Refusee => return not_found("panneau introuvable"),
-        PorteDuTableau::Absent => return not_found("dashboard introuvable"),
+        PorteDuTableau::Absent => return not_found("panneau introuvable"),
         PorteDuTableau::NonLue(refus) => return refus,
     }
     // `P11.20-m` — le geste de partage d'un panneau est jugé AVANT toute écriture : la définition de
@@ -1919,24 +1926,38 @@ pub(crate) fn serve_swr(
         panneau_avoue::LectureDeCache::Lue(payload, calcule_a) => Some((payload, calcule_a)),
         panneau_avoue::LectureDeCache::Absente => None,
         panneau_avoue::LectureDeCache::Illisible(cause) => {
+            // `P10.32-o` — LES DEUX PREMIÈRES LIGNES SONT BORNÉES (`dire_une_ligne_de_panneau`, au plus une par panneau de
+            // cette base, par nature et par durée du cache) : un panneau qui ne compile pas, ou une base qui refuse
+            // d'écrire, laisse la ligne illisible telle quelle, et la ligne revenait à chaque interrogation. La troisième
+            // annonce un rafraîchissement armé qui remplace la ligne : elle n'est pas durable, elle n'est pas bornée.
             if refus_de_compilation.is_some() {
-                eprintln!(
-                    "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — le \
-                     panneau ne compile pas : le refus du compilateur est servi (400), rien n'est armé, la ligne reste telle \
-                     quelle",
-                    au.tenant
-                );
+                if panneau_avoue::dire_une_ligne_de_panneau(
+                    &req_db(st, au).lock(), id, panneau_avoue::NatureDeLigneDite::LigneIllisibleNonCompilable, now_s, ttl,
+                )
+                {
+                    eprintln!(
+                        "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — le \
+                         panneau ne compile pas : le refus du compilateur est servi (400), rien n'est armé, la ligne reste telle \
+                         quelle",
+                        au.tenant
+                    );
+                }
             } else if ecriture_refusee_a.is_some() {
                 // `P10.32-o` (vague BJ, correction) — UNE ÉCRITURE REFUSÉE EST NOTÉE POUR CETTE LIGNE : le 503 nommé de
                 // l'écriture refusée est servi plus bas (la ligne illisible ne porte aucune charge servable), pas le corps
                 // `paye_utile_illisible`, et le réarmement suit `reessai_permis`. Avant, cette ligne annonçait le corps
                 // synthétique et un rafraîchissement armé, puis la ligne suivante disait le 503 et « aucun calcul armé ».
-                eprintln!(
-                    "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — une \
-                     écriture refusée est notée pour cette ligne : le refus nommé de l'écriture est servi (503, ligne \
-                     suivante), pas la charge illisible",
-                    au.tenant
-                );
+                if panneau_avoue::dire_une_ligne_de_panneau(
+                    &req_db(st, au).lock(), id, panneau_avoue::NatureDeLigneDite::LigneIllisibleSousEcritureRefusee, now_s, ttl,
+                )
+                {
+                    eprintln!(
+                        "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — une \
+                         écriture refusée est notée pour cette ligne : le refus nommé de l'écriture est servi (503, ligne \
+                         suivante), pas la charge illisible",
+                        au.tenant
+                    );
+                }
             } else {
                 eprintln!(
                     "[panel] WARN ligne de cache ILLISIBLE (lue, non décodable), panneau #{id}, tenant {:?} : {cause} — servie comme \
@@ -2025,11 +2046,18 @@ pub(crate) fn serve_swr(
                     let servable = charge_utile_servable(&v);
                     let refus_joint = match &refus_de_compilation {
                         Some(e) if perimee && !servable => {
-                            eprintln!(
-                                "[panel] WARN panneau #{id}, tenant {:?} : corps d'échec périmé en cache, le panneau ne compile \
-                                 plus — le refus du compilateur est servi (400), la ligne reste telle quelle",
-                                au.tenant
-                            );
+                            // `P10.32-o` — BORNÉE comme la ligne de la charge périmée ci-dessous, sous sa propre nature :
+                            // rien ne remplacera cette ligne de cache, et la ligne revenait à chaque interrogation.
+                            if panneau_avoue::dire_une_ligne_de_panneau(
+                                &req_db(st, au).lock(), id, panneau_avoue::NatureDeLigneDite::CorpsDEchecPerimeNonCompilable, now_s, ttl,
+                            )
+                            {
+                                eprintln!(
+                                    "[panel] WARN panneau #{id}, tenant {:?} : corps d'échec périmé en cache, le panneau ne compile \
+                                     plus — le refus du compilateur est servi (400), la ligne reste telle quelle",
+                                    au.tenant
+                                );
+                            }
                             return bad_req(e.clone());
                         }
                         Some(e) if perimee => {
@@ -2252,11 +2280,18 @@ pub(crate) async fn panel_data(State(st): State<AppState>, Extension(au): Extens
                         // `P10.32-o` (vague BH) — le refus de l'écriture est noté par le coffre et dit ici (la réponse, elle,
                         // est servie fraîche) : un repli SWR ultérieur le lira au lieu de servir une chauffe.
                         if cacheable && ttl > 0 {
+                            // `P10.32-o` — la ligne est BORNÉE (au plus une par panneau de cette base et par durée du
+                            // cache) : une base qui refuse d'écrire la faisait revenir à chaque interrogation en direct.
                             if let Err(e) = panneau_avoue::cache_ecrire_dit(&conn, id, &range_key, &q_fp, now_s, &v.to_string()) {
-                                eprintln!(
-                                    "[panel] WARN panneau #{id}, tenant {:?} : résultat servi en direct NON ÉCRIT au cache ({e})",
-                                    au.tenant
-                                );
+                                if panneau_avoue::dire_une_ligne_de_panneau(
+                                    &conn, id, panneau_avoue::NatureDeLigneDite::ResultatDirectNonEcrit, now_s, ttl,
+                                )
+                                {
+                                    eprintln!(
+                                        "[panel] WARN panneau #{id}, tenant {:?} : résultat servi en direct NON ÉCRIT au cache ({e})",
+                                        au.tenant
+                                    );
+                                }
                             }
                         }
                     }

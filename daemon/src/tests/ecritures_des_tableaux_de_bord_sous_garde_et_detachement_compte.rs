@@ -329,7 +329,9 @@ mod ecritures_des_tableaux_de_bord_sous_garde_et_detachement_compte {
         assert_eq!((r.0, r.1.as_str()), (404, "dashboard introuvable"), "panel_create : tableau absent, 404 texte");
         let orphelin = ag3_panneau(&st, AG3_ABSENT, None);
         let r = ag3_modifier_le_panneau(&st, &alice, orphelin, json!({ "title": "écrit" })).await;
-        assert_eq!((r.0, r.2.clone()), (404, json!({ "error": "dashboard introuvable" })), "panel_update : tableau porteur absent, 404 JSON");
+        // INVERSÉ (`P11.25-f`, vague CC) : le panneau orphelin reçoit la réponse d'un panneau absent, plus « dashboard
+        // introuvable », qui disait que ce panneau existe.
+        assert_eq!((r.0, r.2.clone()), (404, json!({ "error": "panneau introuvable" })), "panel_update : tableau porteur absent, le 404 JSON d'un panneau absent");
         let r = ag3_retirer_le_panneau(&st, &alice, orphelin).await;
         assert_eq!((r.0, r.1.as_str()), (404, ""), "panel_delete : tableau porteur absent, 404 sans corps");
         assert_eq!(ag3_compte(&st, &format!("SELECT COUNT(*) FROM panel WHERE id={orphelin} AND title='p'")), 1, "absence : rien n'est écrit ni supprimé");

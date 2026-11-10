@@ -220,9 +220,14 @@ fn vis_of(b: &Value) -> &'static str {
 /// référent dont le tableau n'a plus de ligne compris). Chaque référent arrive de la même instruction en
 /// `[tableau présent, propriétaire, visibilité du tableau, visibilité du panneau]`, chaque texte en hexadécimal
 /// (`panneau_resolu::texte_rendu_en_hex` : une valeur hors norme, BLOB ou UTF-8 invalide, ne rend pas la liste
-/// illisible pour tous ; une visibilité de panneau non textuelle est rendue vide, donc jamais `shared`) ; un tableau
-/// JSON ou un hexadécimal illisible rend la liste illisible, jamais un compte deviné.
-fn referents_lus(referents: &str, au: &AuthUser) -> rusqlite::Result<i64> {
+/// illisible pour tous). Vague CC : les TROIS colonnes portent la même garde `typeof` — une valeur non textuelle (un
+/// BLOB ; un entier écrit dans ces colonnes d'affinité TEXT est relu en texte) est rendue vide : un propriétaire vide
+/// n'octroie rien (`autorite_de_proprietaire`), une visibilité vide n'est jamais `shared`. Avant, seule la visibilité du
+/// panneau la portait : les octets d'un BLOB `shared` en visibilité de tableau, ou d'un nom de compte en propriétaire,
+/// faisaient compter à ce lecteur un référent dont `dash_get` ne lui sert pas le tableau (il refuse de lire une colonne
+/// non textuelle). Un tableau JSON ou un hexadécimal illisible rend la liste illisible, jamais un compte deviné
+/// (branche hors d'atteinte par la route, voir au site).
+pub(crate) fn referents_lus(referents: &str, au: &AuthUser) -> rusqlite::Result<i64> {
     let illisible = || rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, "référent : hexadécimal illisible".into());
     let referents: Vec<(i64, String, String, String)> =
         serde_json::from_str(referents).map_err(|e| rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(e)))?;
@@ -232,6 +237,9 @@ fn referents_lus(referents: &str, au: &AuthUser) -> rusqlite::Result<i64> {
             Some((*present, panneau_resolu::texte_rendu_en_hex(owner)?, panneau_resolu::texte_rendu_en_hex(vis)?, panneau_resolu::texte_rendu_en_hex(pvis)?))
         })
         .collect::<Option<Vec<_>>>()
+        // HORS D'ATTEINTE PAR LA ROUTE : chaque texte vient de `hex(…)` de SQLite (`library_panels_list` ci-dessous), qui
+        // rend toujours un nombre pair de chiffres hexadécimaux ; la branche est tenue par un appel direct de cette
+        // fonction avec une entrée fabriquée (lignes_de_panneau_bornees_et_restes_des_tableaux.rs).
         .ok_or_else(illisible)?;
     let lus = referents
         .iter()
@@ -252,7 +260,9 @@ pub(crate) async fn library_panels_list(State(st): State<AppState>, Extension(au
     read_with(req_db_path(&st, &au).as_str(), Json(json!({ "error": "lecture NON FAITE : aucune connexion de lecture disponible", "library_panels": [], "me": &me, "role": &role })), |conn| {
         let mut stmt = match conn.prepare(
             "SELECT id,name,title,query,is_soql,viz,COALESCE(drill,''),COALESCE(owner,''),COALESCE(visibility,'shared'),\
-                    (SELECT json_group_array(json_array(d.id IS NOT NULL,hex(COALESCE(d.owner,'')),hex(COALESCE(d.visibility,'shared')),\
+                    (SELECT json_group_array(json_array(d.id IS NOT NULL,\
+                            hex(CASE WHEN typeof(d.owner) IN ('text','null') THEN COALESCE(d.owner,'') END),\
+                            hex(CASE WHEN typeof(d.visibility) IN ('text','null') THEN COALESCE(d.visibility,'shared') END),\
                             hex(CASE WHEN typeof(p.visibility) IN ('text','null') THEN COALESCE(p.visibility,'shared') END))) \
                        FROM panel p LEFT JOIN dashboard d ON d.id=p.dashboard_id WHERE p.library_panel_id=library_panel.id) \
              FROM library_panel ORDER BY name,id",

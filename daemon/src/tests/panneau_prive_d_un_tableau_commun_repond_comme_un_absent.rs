@@ -46,8 +46,8 @@
 // CE QU'ILS NE TIENNENT PAS : ce que la console peint (web/ ne distingue pas 403 et 404 sur ces routes) ; une définition
 // de bibliothèque COMMUNE modifiée ou supprimée par un autre éditeur change ce qu'exécute un panneau privé qui la
 // référence (détaché à la suppression) : c'est le contrat de la bibliothèque, et la réponse ne dit rien des référents ;
-// un panneau dont le tableau n'a plus de ligne (orphelin) garde la réponse « dashboard introuvable » de
-// `POST /api/panels/{id}` ; l'identifiant d'un panneau reste tiré d'une séquence commune à tous les tableaux.
+// le panneau dont le tableau n'a plus de ligne (orphelin) répond comme un panneau absent sur `POST /api/panels/{id}`
+// depuis la vague CC (tenu par lignes_de_panneau_bornees_et_restes_des_tableaux.rs) ; l'identifiant d'un panneau reste tiré d'une séquence commune à tous les tableaux.
 //
 // MUTATIONS (posées sous `cfg!(test)`, armées par la variable de mutation de l'exécuteur le temps de la vérification,
 // puis retirées) : chaque témoin nomme les siennes.

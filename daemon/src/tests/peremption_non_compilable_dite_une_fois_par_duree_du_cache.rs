@@ -33,8 +33,9 @@
 // BK1_TTL_GLOBAL, BK1_CLE_SANS_BASE (A) ; BK1_BORD, BK1_SILENCE_REPOUSSE, BK1_SANS_EVICTION, BK1_EVINCE_RECENTE,
 // BK1_CLE_CONNUE_EVINCE (B) ; BK1_OUBLI_ABSENT, BK1_OUBLI_TOUT, BK1_OUBLI_SANS_ECRITURES, BK1_OUBLI_SANS_PEREMPTIONS,
 // BK1_OUBLI_SANS_CANON, BK1_OUBLI_APRES_SUPPRESSION (C) ; BK1_OUBLI_SANS_TEL_QUEL (D).
-// CE QU'ILS NE TIENNENT PAS : les deux autres lignes `[panel]` d'un panneau qui ne compile pas (corps d'échec périmé servi
-// en 400, ligne ILLISIBLE servie en 400) restent écrites à chaque interrogation ; les registres sont des états de
+// CE QU'ILS NE TIENNENT PAS : les autres lignes `[panel]` bornées par le même registre depuis la vague CC (corps d'échec
+// périmé et ligne ILLISIBLE d'un panneau qui ne compile pas, ligne ILLISIBLE sous une écriture refusée, résultat direct
+// non écrit) sont tenues par lignes_de_panneau_bornees_et_restes_des_tableaux.rs ; les registres sont des états de
 // processus, perdus au redémarrage (une ligne de plus, un refus re-noté au calcul suivant).
 // =====================================================================================
 mod peremption_non_compilable_dite_une_fois_par_duree_du_cache {

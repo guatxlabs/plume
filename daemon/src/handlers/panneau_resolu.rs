@@ -136,7 +136,10 @@ impl PorteeLecture {
 /// rendait la liste ENTIÈRE illisible pour tous les comptes (BLOB refusé par les fonctions JSON, UTF-8 invalide refusé
 /// à la lecture), alors que le compte d'avant ne lisait pas la colonne. L'hexadécimal est toujours de l'ASCII ; les
 /// octets relus et non UTF-8 sont remplacés (U+FFFD), donc ne valent jamais `shared`. `None` : ce n'est pas de
-/// l'hexadécimal, la liste est déclarée illisible, jamais un compte deviné.
+/// l'hexadécimal, la liste est déclarée illisible, jamais un compte deviné. Ce `None` est HORS D'ATTEINTE PAR LES
+/// ROUTES (ses deux appelants ne lui passent que la sortie de `hex(…)` de SQLite, toujours un nombre pair de chiffres
+/// hexadécimaux) ; il est tenu par un appel direct avec une entrée fabriquée (longueur impaire, signe `+` que
+/// `u8::from_str_radix` accepterait), dans lignes_de_panneau_bornees_et_restes_des_tableaux.rs.
 pub(crate) fn texte_rendu_en_hex(hexa: &str) -> Option<String> {
     if hexa.len() % 2 != 0 || !hexa.bytes().all(|o| o.is_ascii_hexdigit()) {
         return None;

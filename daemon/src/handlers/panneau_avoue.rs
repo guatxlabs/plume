@@ -1117,34 +1117,63 @@ pub(crate) fn retenir_un_refus_d_ecriture(
     registre.insert(cle, refus);
 }
 
-/// `P10.32-o` (vague BK) — LA LIGNE `[panel]` D'UNE CHARGE PÉRIMÉE SERVIE POUR UN PANNEAU QUI NE COMPILE PLUS EST BORNÉE :
-/// au plus une par panneau (clé : base de la connexion telle que SQLite la nomme, panneau) et par durée du cache du
-/// panneau. Avant, `serve_swr` l'écrivait à CHAQUE interrogation, sans borne, alors que le pré-chauffage se tait exprès
-/// pour ce panneau. Valeur : l'instant de la dernière ligne ÉCRITE (une ligne tue ne le repousse pas, sinon un panneau
-/// interrogé plus souvent que sa durée du cache ne serait plus jamais dit). État de PROCESSUS, borné par
-/// [`BORNE_DES_PEREMPTIONS_NON_COMPILABLES_DITES`], effacé pour une base à la destruction de son tenant.
-static PEREMPTIONS_NON_COMPILABLES_DITES: std::sync::OnceLock<parking_lot::Mutex<HashMap<CleDeLigneDite, i64>>> =
+/// `P10.32-o` (vague BK) — LES LIGNES `[panel]` QU'UN PANNEAU DANS UN ÉTAT DURABLE ÉCRIRAIT À CHAQUE INTERROGATION SONT
+/// BORNÉES : au plus une par panneau, par NATURE de ligne ([`NatureDeLigneDite`]) et par durée du cache du panneau (clé :
+/// base de la connexion telle que SQLite la nomme, panneau, nature). La vague BK a borné la charge périmée d'un panneau qui
+/// ne compile plus ; les autres natures suivent la même borne, dans ce MÊME registre, sous une clé distincte : une ligne
+/// d'une nature n'en tait jamais une d'une autre nature. Valeur : l'instant de la dernière ligne ÉCRITE (une ligne tue ne
+/// le repousse pas, sinon un panneau interrogé plus souvent que sa durée du cache ne serait plus jamais dit). État de
+/// PROCESSUS, borné par [`BORNE_DES_PEREMPTIONS_NON_COMPILABLES_DITES`], effacé pour une base à la destruction de son
+/// tenant. Le corps servi ne dépend jamais de ce registre : il ne décide que du journal.
+static PEREMPTIONS_NON_COMPILABLES_DITES: std::sync::OnceLock<parking_lot::Mutex<HashMap<CleDeLigneDiteParNature, i64>>> =
     std::sync::OnceLock::new();
 
-/// La clé d'une ligne dite : (base de la connexion telle que SQLite la nomme, panneau). Deux tenants ont chacun leur `#1`.
+/// La clé d'une ligne dite, sans sa nature : (base de la connexion telle que SQLite la nomme, panneau). Deux tenants ont
+/// chacun leur `#1`.
 pub(crate) type CleDeLigneDite = (String, i64);
+
+/// La clé du registre de production : la clé d'une ligne dite ET sa nature.
+pub(crate) type CleDeLigneDiteParNature = (CleDeLigneDite, NatureDeLigneDite);
+
+/// `P10.32-o` — LA NATURE D'UNE LIGNE `[panel]` BORNÉE, un bras par ligne de `serve_swr` ou de `panel_data` qu'un état
+/// durable du panneau (il ne compile plus) ou de la base (elle refuse d'écrire le cache) écrirait à chaque interrogation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum NatureDeLigneDite {
+    /// Charge utile périmée servie, le panneau ne compile plus (vague BK).
+    ChargePerimeeNonCompilable,
+    /// Corps d'échec périmé en cache, le panneau ne compile plus : le refus du compilateur est servi (400).
+    CorpsDEchecPerimeNonCompilable,
+    /// Ligne de cache illisible, le panneau ne compile pas : le refus du compilateur est servi (400).
+    LigneIllisibleNonCompilable,
+    /// Ligne de cache illisible sous une écriture refusée notée : le refus nommé de l'écriture est servi (503).
+    LigneIllisibleSousEcritureRefusee,
+    /// Résultat servi en direct, son écriture au cache refusée.
+    ResultatDirectNonEcrit,
+}
 
 /// Au-delà, l'entrée la plus ANCIENNE (instant le plus petit) est retirée avant d'en noter une neuve : la mémoire ne
 /// suit pas le nombre de panneaux interrogés. Un panneau dont l'entrée est retirée sera dit une fois de plus.
 pub(crate) const BORNE_DES_PEREMPTIONS_NON_COMPILABLES_DITES: usize = 4096;
 
-/// Rend `true` si la ligne de journal de ce panneau doit être écrite maintenant (aucune ligne dite, ou la dernière dite
-/// il y a PLUS d'une durée du cache), et note alors `now_s`. `false` : la ligne est tue, l'instant noté ne bouge pas.
+/// La ligne de la charge périmée d'un panneau qui ne compile plus (vague BK) : [`dire_une_ligne_de_panneau`] sous la
+/// nature [`NatureDeLigneDite::ChargePerimeeNonCompilable`].
 pub(crate) fn dire_la_peremption_non_compilable(conn: &Connection, id: i64, now_s: i64, ttl: i64) -> bool {
-    let cle = (conn.path().unwrap_or("").to_string(), id);
+    dire_une_ligne_de_panneau(conn, id, NatureDeLigneDite::ChargePerimeeNonCompilable, now_s, ttl)
+}
+
+/// Rend `true` si la ligne de cette nature doit être écrite maintenant pour ce panneau (aucune ligne de cette nature
+/// dite, ou la dernière dite il y a PLUS d'une durée du cache), et note alors `now_s`. `false` : la ligne est tue,
+/// l'instant noté ne bouge pas.
+pub(crate) fn dire_une_ligne_de_panneau(conn: &Connection, id: i64, nature: NatureDeLigneDite, now_s: i64, ttl: i64) -> bool {
+    let cle = ((conn.path().unwrap_or("").to_string(), id), nature);
     let mut registre = PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock();
     noter_une_ligne_dite(&mut registre, cle, now_s, ttl)
 }
 
-/// La décision et la borne de [`dire_la_peremption_non_compilable`], sur le type du registre de production (les témoins
-/// la jouent sur un registre local). Clé connue : écrite seulement si `now_s - dite_a > ttl`, mise à jour sans rien
+/// La décision et la borne de [`dire_une_ligne_de_panneau`] (les témoins la jouent sur un registre local, du type de
+/// production ou de la clé sans nature). Clé connue : écrite seulement si `now_s - dite_a > ttl`, mise à jour sans rien
 /// retirer. Clé neuve, registre plein : l'entrée la plus ancienne est retirée d'abord.
-pub(crate) fn noter_une_ligne_dite(registre: &mut HashMap<CleDeLigneDite, i64>, cle: CleDeLigneDite, now_s: i64, ttl: i64) -> bool {
+pub(crate) fn noter_une_ligne_dite<K: Clone + Eq + std::hash::Hash>(registre: &mut HashMap<K, i64>, cle: K, now_s: i64, ttl: i64) -> bool {
     match registre.get(&cle) {
         Some(&dite_a) if now_s - dite_a <= ttl => false,
         Some(_) => {
@@ -1165,19 +1194,25 @@ pub(crate) fn noter_une_ligne_dite(registre: &mut HashMap<CleDeLigneDite, i64>, 
 /// Antidate la dernière ligne dite d'un panneau (témoins seuls : la durée du cache ne s'attend pas, elle se simule).
 #[cfg(test)]
 pub(crate) fn antidater_la_peremption_dite(conn: &Connection, id: i64, dite_a: i64) {
-    let cle = (conn.path().unwrap_or("").to_string(), id);
+    antidater_la_ligne_dite(conn, id, NatureDeLigneDite::ChargePerimeeNonCompilable, dite_a);
+}
+
+/// Antidate la dernière ligne dite d'une nature pour un panneau (témoins seuls).
+#[cfg(test)]
+pub(crate) fn antidater_la_ligne_dite(conn: &Connection, id: i64, nature: NatureDeLigneDite, dite_a: i64) {
+    let cle = ((conn.path().unwrap_or("").to_string(), id), nature);
     PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().insert(cle, dite_a);
 }
 
 /// L'instant de la dernière ligne dite d'un panneau, `None` si aucune (témoins seuls).
 #[cfg(test)]
 pub(crate) fn peremption_dite_a(conn: &Connection, id: i64) -> Option<i64> {
-    let cle = (conn.path().unwrap_or("").to_string(), id);
+    let cle = ((conn.path().unwrap_or("").to_string(), id), NatureDeLigneDite::ChargePerimeeNonCompilable);
     PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().get(&cle).copied()
 }
 
 /// `P10.32-o` (vague BK) — À LA DESTRUCTION D'UN TENANT, les entrées de sa base sont effacées des deux registres de
-/// processus indexés par le chemin de la base (refus d'écriture du cache, lignes de péremption dites) : un tenant DÉTRUIT
+/// processus indexés par le chemin de la base (refus d'écriture du cache, lignes `[panel]` dites, toutes natures) : un tenant DÉTRUIT
 /// puis recréé au même chemin n'hérite ni d'un refus (503 `cache_non_ecrit` sans calcul armé jusqu'à une durée du cache)
 /// ni d'une ligne tue. La clé est le chemin tel que SQLite le nomme (`conn.path()`, absolu, liens résolus selon la version)
 /// alors que `tenant_destroy` lit le chemin écrit dans le plan de contrôle : les formes comparées sont ce chemin tel quel
@@ -1188,7 +1223,7 @@ pub(crate) fn oublier_les_registres_d_une_base_detruite(db_path: &str) {
     let mut formes: Vec<String> = vec![db_path.to_string()];
     formes.extend(std::fs::canonicalize(db_path).ok().map(|c| c.to_string_lossy().into_owned()));
     ECRITURES_DE_CACHE_REFUSEES.get_or_init(Default::default).lock().retain(|(base, ..), _| !formes.contains(base));
-    PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().retain(|(base, _), _| !formes.contains(base));
+    PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().retain(|((base, _), _), _| !formes.contains(base));
 }
 
 /// `P10.32-o` (vague BH) — l'instant du dernier refus d'écriture de cette ligne de cache, si la dernière écriture tentée a

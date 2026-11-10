@@ -13,7 +13,9 @@
 # python3 -I), la file est demandee en JSON par ligne (`Accept: application/x-ndjson`) et chaque `ban_ip`
 # porte `ban_ttl_s` (entier de secondes, 1..31536000) : CrowdSec la recoit en `-d <n>s`, nft en timeout
 # d element dans le set `inet plume blocklist_ttl`, fail2ban ne la porte pas (bantime de la jail) et le
-# resultat remis le DIT. Une valeur hors contrat sur un `ban_ip` => `failed` avec la cause, rien applique.
+# resultat remis le DIT. Sur nft, un ban plus court ne raccourcit JAMAIS un ban en cours : il est conserve,
+# ou allonge, et le resultat remis dit lequel (`nft_poser_sans_raccourcir`). Une valeur hors contrat sur un
+# `ban_ip` => `failed` avec la cause, rien applique.
 # Repli sur PLUME_BAN_DURATION SEULEMENT si la duree n est pas servie (central en TSV, ou aucun lecteur
 # JSON sur l hote), et le resultat remis le dit avec sa cause. Une reponse non-200 (ou curl en echec)
 # n est JAMAIS lue comme une file : journal stderr nomme, code de sortie 3, rien execute. Detail plus bas.
@@ -334,11 +336,143 @@ ensure_nft() {           # cree (idempotent) la table/sets nft dedies Plume (fal
 }
 # Une duree de ban posee par nft OU par cscli : lisible ET non nulle. D abord RIEN d autre que [0-9dhms] dans
 # la valeur ENTIERE : grep juge ligne par ligne, et un PLUME_BAN_DURATION multiligne (`4h`, `}`, `add table ...`)
-# passait l ERE sur sa premiere ligne puis partait a nft comme commandes. Ensuite `<n>s/m/h/d` repetes, et au
-# moins un chiffre non nul (`0h30m` passe, `0s` non). Une duree servie (`<n>s`, 1 a 31536000) passe toujours.
+# passait l ERE sur sa premiere ligne puis partait a nft comme commandes. Ensuite `<n>d`, `<n>h`, `<n>m`, `<n>s`
+# DANS CET ORDRE, chacun une fois au plus — la forme exacte que l analyseur de nft accepte : une unite repetee
+# (`1h1h`) ou desordonnee (`30s1d`) passait ce controle puis echouait chez nft en erreur de syntaxe ; elle est
+# refusee ICI, avec sa cause. Enfin au moins un chiffre non nul (`0h30m` passe, `0s` non). Une duree servie
+# (`<n>s`, 1 a 31536000) passe toujours. La cause du refus est posee dans DUREE_CAUSE, citee par l appelant.
 duree_de_ban_lisible() {
-  case "$1" in ''|*[!0-9dhms]*) return 1 ;; esac
-  printf '%s' "$1" | grep -qE '^([0-9]+[dhms])+$' && printf '%s' "$1" | grep -q '[1-9]'
+  DUREE_CAUSE=""
+  case "$1" in ''|*[!0-9dhms]*) DUREE_CAUSE="illisible (attendu <n>s, m, h ou d)"; return 1 ;; esac
+  if ! printf '%s' "$1" | grep -qE '^([0-9]+d)?([0-9]+h)?([0-9]+m)?([0-9]+s)?$'; then
+    if printf '%s' "$1" | grep -qE '^([0-9]+[dhms])+$'; then
+      DUREE_CAUSE="unite repetee ou desordonnee (nft n admet d, h, m, s que dans cet ordre, chacune une fois au plus)"
+    else
+      DUREE_CAUSE="illisible (attendu <n>s, m, h ou d)"
+    fi
+    return 1
+  fi
+  printf '%s' "$1" | grep -q '[1-9]' || { DUREE_CAUSE="nulle"; return 1; }
+}
+
+# ================================================================================================
+# `P11.25-a` — UN BAN PLUS COURT NE RACCOURCIT JAMAIS UN BAN EN COURS (voie nft).
+# ------------------------------------------------------------------------------------------------
+# MESURE (nft 1.1.7, noyau 7.2, espace de noms reseau sans privilege) : `nft add element` sur une adresse
+# DEJA presente dans `blocklist_ttl` REMPLACE son delai (60 s, puis 600 s, puis 10 s : le dernier gagne,
+# code 0), et le resultat remis disait `done` : un ban court pose apres un ban long le raccourcissait.
+# CE QUI EST FAIT, sans dependre de ce remplacement (un autre noyau peut garder l ancien delai) :
+#   1. pose EXCLUSIVE (`nft create element`) : elle ne reussit que si l adresse est absente -> BAN POSE ;
+#   2. adresse presente (« File exists ») : son reste est LU (`nft get element`, champ `expires` sous
+#      toutes ses formes, jours a millisecondes) et compare a la duree demandee :
+#      reste >= demandee -> rien n est recrit, DEJA BANNI POUR PLUS LONGTEMPS, DUREE CONSERVEE ;
+#      reste <  demandee -> retrait PUIS pose dans UNE transaction (`nft -f -`) : nft l applique entiere
+#      ou pas du tout, l adresse ne passe par aucun etat non banni -> BAN ALLONGE ;
+#   3. l element expire entre la pose refusee et la lecture (ou avant la transaction) : UNE nouvelle
+#      pose exclusive, une seule ;
+#   4. reste ILLISIBLE (sortie inconnue, `expires` absent ou de forme inconnue, lecture refusee) : rien
+#      n est recrit, l adresse reste bannie telle quelle, et le verdict est `failed` avec DUREE NON
+#      APPLIQUEE — la duree demandee n est pas appliquee, un `done` le laisserait croire. Le central ecrit ce
+#      verdict tel quel (riposte close, texte au registre) : rien n est re-servi ni reexecute.
+# Les valeurs passees a nft (adresse, duree) ont deja passe `is_ip` et `duree_de_ban_lisible` : chiffres,
+# points, deux-points, hexadecimal, unites d/h/m/s — ni espace, ni accolade, ni point-virgule, ni saut de
+# ligne ne peuvent entrer dans la transaction. Le set historique permanent `blocklist` n est ni lu ni
+# touche : une adresse qui y figure recoit son element a duree comme avant.
+# `awk` (POSIX, mawk compris : aucune intervalle `{n}`, aucune extension gawk) lit le reste et compare en
+# millisecondes, en virgule flottante : aucun depassement d entier sur un hote 32 bits.
+PHRASE_BAN_POSE="BAN POSE"
+PHRASE_BAN_ALLONGE="BAN ALLONGE"
+PHRASE_BAN_CONSERVE="DEJA BANNI POUR PLUS LONGTEMPS, DUREE CONSERVEE"
+PHRASE_DUREE_NON_APPLIQUEE="DUREE NON APPLIQUEE, ban en cours conserve tel quel"
+# <sortie de nft get element> <adresse> <duree demandee> -> `conserver <reste>` | `allonger <reste>` | `illisible <cause>`
+nft_juger_le_reste() {
+  printf '%s\n' "$1" | awk -v ip="$2" -v dem="$3" '
+    function en_ms(s,   tot, prec, num, u, r, f) {
+      if (s == "") return -1
+      tot = 0; prec = 0
+      while (s != "") {
+        num = ""
+        while (s != "" && index("0123456789", substr(s, 1, 1)) > 0) { num = num substr(s, 1, 1); s = substr(s, 2) }
+        if (num == "") return -1
+        if (substr(s, 1, 2) == "ms") { u = "ms"; s = substr(s, 3) } else { u = substr(s, 1, 1); s = substr(s, 2) }
+        if (u == "d") { r = 1; f = 86400000 }
+        else if (u == "h") { r = 2; f = 3600000 }
+        else if (u == "m") { r = 3; f = 60000 }
+        else if (u == "s") { r = 4; f = 1000 }
+        else if (u == "ms") { r = 5; f = 1 }
+        else return -1
+        if (r <= prec) return -1
+        prec = r
+        tot = tot + num * f
+      }
+      return tot
+    }
+    {
+      for (i = 1; i <= NF; i++) {
+        c = $i; v = (c ~ /,$/); sub(/,$/, "", c)
+        if (c != ip) continue
+        trouve++
+        if (v) continue
+        for (j = i + 1; j <= NF; j++) {
+          g = $j
+          if (g == "}") break
+          if (g == "expires" && j < NF) {
+            e = $(j + 1); ve = (e ~ /,$/); sub(/,$/, "", e); reste = e; nexp++
+            if (ve) break
+            j++; continue
+          }
+          if (g ~ /,$/) break
+        }
+      }
+    }
+    END {
+      if (trouve == 0) { print "illisible adresse_absente_de_la_sortie"; exit }
+      if (trouve > 1) { print "illisible adresse_en_double"; exit }
+      if (nexp != 1) { print "illisible expires_absent"; exit }
+      r = en_ms(reste); d = en_ms(dem)
+      if (r < 0) { print "illisible expires_de_forme_inconnue"; exit }
+      # `dem` a passe `duree_de_ban_lisible` dans `enforce`, avant tout appel : d > 0.
+      if (r >= d) print "conserver " reste; else print "allonger " reste
+    }'
+}
+# <adresse> <duree> -> OUT ; 0 = applique (pose, allonge ou conserve), 1 = duree non appliquee
+nft_poser_sans_raccourcir() {
+  _np_ip=$1; _np_dur=$2; _np_reprise=0
+  while :; do
+    if _np_sortie=$(LC_ALL=C nft create element inet plume "$NFT_SET_TTL" "{ $_np_ip timeout $_np_dur }" 2>&1); then
+      OUT="$PHRASE_BAN_POSE (absente de $NFT_SET_TTL, timeout $_np_dur)${_np_sortie:+ $_np_sortie}"; return 0
+    fi
+    case "$_np_sortie" in *'File exists'*) ;; *) OUT="$_np_sortie"; return 1 ;; esac
+    _np_detail=""
+    if _np_lu=$(LC_ALL=C nft get element inet plume "$NFT_SET_TTL" "{ $_np_ip }" 2>&1); then
+      _np_verdict=$(nft_juger_le_reste "$_np_lu" "$_np_ip" "$_np_dur") || _np_verdict="illisible lecteur_en_echec"
+    else
+      case "$_np_lu" in
+        *'No such file or directory'*)
+          if [ "$_np_reprise" = 0 ]; then _np_reprise=1; continue; fi   # expire avant la lecture
+          _np_verdict="illisible element_disparu_apres_la_reprise" ;;
+        *) _np_verdict="illisible lecture_refusee"; _np_detail=" : $_np_lu" ;;
+      esac
+    fi
+    case "$_np_verdict" in
+      "conserver "*)
+        OUT="$PHRASE_BAN_CONSERVE (reste ${_np_verdict#conserver } >= $_np_dur demandes), rien n est recrit"; return 0 ;;
+      "allonger "*)
+        if _np_tx=$(printf 'delete element inet plume %s { %s }\nadd element inet plume %s { %s timeout %s }\n' \
+            "$NFT_SET_TTL" "$_np_ip" "$NFT_SET_TTL" "$_np_ip" "$_np_dur" | LC_ALL=C nft -f - 2>&1); then
+          OUT="$PHRASE_BAN_ALLONGE (reste ${_np_verdict#allonger } < $_np_dur demandes), remplace en une seule transaction nft"; return 0
+        fi
+        case "$_np_tx" in
+          *'No such file or directory'*)
+            if [ "$_np_reprise" = 0 ]; then _np_reprise=1; continue; fi ;;   # expire avant la transaction
+        esac
+        OUT="DUREE NON APPLIQUEE : allongement refuse par nft, transaction annulee entiere (le ban en cours, s il n a pas expire, reste tel quel) : $_np_tx"
+        return 1 ;;
+      *)
+        OUT="$PHRASE_DUREE_NON_APPLIQUEE : son reste n a pas pu etre lu (cause=${_np_verdict#illisible }), rien n est recrit$_np_detail"
+        return 1 ;;
+    esac
+  done
 }
 # La duree EFFECTIVE du ban en cours et sa PROVENANCE, posees par `traiter_action` avant plan/enforce.
 EFF_DUR="$DUR"; DUR_PROV="PLUME_BAN_DURATION de l hote"
@@ -349,16 +483,16 @@ plan() {                 # kind target -> imprime la commande qui SERAIT execute
       if duree_de_ban_lisible "$EFF_DUR"; then
         printf 'cscli decisions add -i %s -d %s -t ban -R plume-playbook [duree %s : %s]' "$2" "$EFF_DUR" "$EFF_DUR" "$DUR_PROV"
       else
-        printf 'NON-APPLIQUE crowdsec : duree %s (%s) illisible ou nulle (attendu <n>s, m, h ou d, non nul) — aucun ban pose' "$EFF_DUR" "$DUR_PROV"
+        printf 'NON-APPLIQUE crowdsec : duree %s (%s) illisible ou nulle (cause : %s) — aucun ban pose' "$EFF_DUR" "$DUR_PROV" "$DUREE_CAUSE"
       fi ;;
     crowdsec:unban_ip) printf 'cscli decisions delete -i %s' "$2" ;;
     fail2ban:ban_ip)   printf 'fail2ban-client set %s banip %s [duree %s (%s) NON portee par fail2ban : le ban dure le bantime de la jail %s]' "$JAIL" "$2" "$EFF_DUR" "$DUR_PROV" "$JAIL" ;;
     fail2ban:unban_ip) printf 'fail2ban-client set %s unbanip %s' "$JAIL" "$2" ;;
     nft:ban_ip)
       if duree_de_ban_lisible "$EFF_DUR"; then
-        printf 'nft add element inet plume %s { %s timeout %s } [duree %s : %s]' "$NFT_SET_TTL" "$2" "$EFF_DUR" "$EFF_DUR" "$DUR_PROV"
+        printf 'nft create element inet plume %s { %s timeout %s } [duree %s : %s] ; deja banni : duree appliquee seulement si elle allonge, jamais raccourci' "$NFT_SET_TTL" "$2" "$EFF_DUR" "$EFF_DUR" "$DUR_PROV"
       else
-        printf 'NON-APPLIQUE nft : duree %s (%s) illisible ou nulle comme timeout nft (attendu <n>s, m, h ou d, non nul) — aucun ban permanent pose a la place' "$EFF_DUR" "$DUR_PROV"
+        printf 'NON-APPLIQUE nft : duree %s (%s) illisible ou nulle comme timeout nft (cause : %s) — aucun ban permanent pose a la place' "$EFF_DUR" "$DUR_PROV" "$DUREE_CAUSE"
       fi ;;
     nft:unban_ip)      printf 'nft delete element inet plume blocklist { %s } puis blocklist_ttl' "$2" ;;  # inatteignable : unban_ip sort plus haut
     *)                 printf 'NON-SUPPORTE %s/%s' "$backend" "$1" ;;
@@ -369,14 +503,14 @@ enforce() {              # kind target -> applique ; renvoie 0/!=0, sortie dans 
   [ "$k" = unban_ip ] && { unban_all "$t"; return $?; }   # unban = tous backends (k3s-aware)
   case "$backend:$k" in
     crowdsec:ban_ip)
-      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle pour cscli, rien pose"; return 1; }
+      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle pour cscli, rien pose (cause : $DUREE_CAUSE)"; return 1; }
       OUT=$(cscli_cmd decisions add -i "$t" -d "$EFF_DUR" -t ban -R plume-playbook 2>&1) ;;
     crowdsec:unban_ip) OUT=$(cscli decisions delete -i "$t" 2>&1) ;;
     fail2ban:ban_ip)   OUT=$(fail2ban-client set "$JAIL" banip "$t" 2>&1) ;;
     fail2ban:unban_ip) OUT=$(fail2ban-client set "$JAIL" unbanip "$t" 2>&1) ;;
     nft:ban_ip)
-      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle comme timeout nft, rien pose"; return 1; }
-      ensure_nft; OUT=$(nft add element inet plume "$NFT_SET_TTL" "{ $t timeout $EFF_DUR }" 2>&1) ;;
+      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle comme timeout nft, rien pose (cause : $DUREE_CAUSE)"; return 1; }
+      ensure_nft; nft_poser_sans_raccourcir "$t" "$EFF_DUR"; return $? ;;
     nft:unban_ip)      unban_all "$t"; return $? ;;  # inatteignable : unban_ip sort plus haut ; les deux sets
     *)                 OUT="backend/kind non supporte: $backend/$k"; return 1 ;;
   esac

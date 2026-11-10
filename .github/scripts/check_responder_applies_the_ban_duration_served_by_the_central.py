@@ -26,8 +26,15 @@ demande), ou comme un central antérieur (TSV toujours), ou rend un statut d'éc
 script (l'arbre n'est jamais touché) et doit faire rougir AU MOINS les scénarios qu'il nomme ; un motif de
 mutant absent du script est une garde périmée, et c'est un échec.
 
+UN BAN PLUS COURT NE RACCOURCIT JAMAIS UN BAN EN COURS (voie nft) : le bouchon `nft` rend les sorties MESURÉES sur
+un nft réel (pose exclusive refusée, `get element` présent ou absent, `expires` sous ses formes) ; sont tenus la
+conservation (aucune commande qui récrit), l'allongement en UNE transaction `nft -f -`, la pose simple d'une adresse
+absente, le reste illisible qui ne récrit rien et rend `failed` avec sa phrase, chaque forme d'`expires` jugée à son
+bord, la reprise unique après une expiration, le dry-run qui ne promet qu'un allongement, et la garde de durée qui
+refuse une unité répétée ou désordonnée avec sa cause sans refuser une forme mesurée acceptée par nft.
+
 CE QUE CETTE GARDE NE TIENT PAS : un vrai CrowdSec, un vrai nft (noyau, borne du timeout) ou un vrai fail2ban
-ne sont pas exercés — en particulier, qu'un `timeout 0s` donne un élément sans fin n'est pas mesuré sur un
+ne sont pas exercés (l'absence d'instant sans ban pendant un allongement se prouve sur un vrai nft, hors CI) — en particulier, qu'un `timeout 0s` donne un élément sans fin n'est pas mesuré sur un
 nft réel : le répondeur refuse la durée nulle, et c'est ce refus qui est tenu ici ; le rejeu des verdicts et la liste d'épargne ont leurs propres gardes
 (`check_enforcer_lists_fail_closed.py`), qui jouent le chemin TSV.
 """
@@ -44,8 +51,11 @@ import threading
 RACINE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SCRIPT = os.path.join(RACINE, "collectors", "respond.sh")
 
+# Un tour normal finit en quelques secondes ; au-delà, le script boucle (mutant `retry_unbounded`).
+DELAI_D_UN_TOUR_S = 60
+
 OUTILS = ["cat", "sed", "tr", "grep", "date", "mkdir", "touch", "mktemp", "chmod", "mv", "rm", "dd", "cut",
-          "wc", "sleep", "curl"]
+          "wc", "sleep", "curl", "awk"]
 
 BOUCHON = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$TRACE_ENFORCEMENT.NOM"
@@ -55,14 +65,72 @@ exit 0
 #   `ancien` (défaut) : la table `inet plume` existe (version antérieure), le set à durée NON ;
 #   `neuf`            : ni table ni set (hôte jamais équipé) ;
 #   `equipe`          : table ET set à durée déjà là (hôte équipé par cette version).
+# `P11.25-a` — LES ADRESSES DÉJÀ BANNIES dans `blocklist_ttl` : NFT_PRESENTS="<ip>=<mode> ...". Les sorties sont
+# celles MESURÉES sur nft 1.1.7 (noyau 7.2, espace de noms réseau sans privilège) : `create element` sur une
+# adresse présente rend « Error: Could not process rule: File exists » (code 1) ; `get element` sur une adresse
+# absente rend « Error: Could not process rule: No such file or directory » (code 1) ; sur une adresse présente,
+# la table avec `elements = { <ip> timeout <t> expires <reste> }`. Modes :
+#   reste:<forme>           `get` rend cette liste, `expires <forme>` ;
+#   sans_expires            `get` rend l'élément sans `timeout` ni `expires` (élément posé sans délai) ;
+#   sortie_inconnue         `get` réussit mais ne nomme pas l'adresse ;
+#   en_double               `get` nomme l'adresse deux fois ;
+#   expire_a_la_lecture     `get` rend l'absence ET l'élément expire (la pose exclusive suivante réussit) ;
+#   absent_a_chaque_lecture `get` rend l'absence, la pose exclusive échoue toujours (course répétée) ;
+#   lecture_refusee         `get` échoue autrement (nft sans `get element` : erreur de syntaxe).
+# `nft -f -` (transaction) écrit chaque ligne lue sur l'entrée standard dans la trace, préfixée `TX| `.
+# NFT_TX : `ok` (défaut) ; `expiree:<ip>` (l'élément expire avant la transaction : absence, code 1) ;
+# `refus` (« Device or resource busy », code 1).
 BOUCHON_NFT = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$TRACE_ENFORCEMENT.nft"
 case "${NFT_ETAT:-ancien}:$*" in
   "ancien:list set inet plume blocklist_ttl") exit 1 ;;
   "neuf:list table inet plume"|"neuf:list set inet plume blocklist_ttl") exit 1 ;;
 esac
+mode_de() {
+  for e in ${NFT_PRESENTS:-}; do
+    case "$e" in "$1="*) [ -e "$TRACE_ENFORCEMENT.nft.expiree.$1" ] && return 1; printf '%s' "${e#*=}"; return 0 ;; esac
+  done
+  return 1
+}
+cible() { x=${1#"{ "}; printf '%s' "${x%% *}"; }
+absence() { printf 'Error: Could not process rule: No such file or directory\n%s\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n' "$1" >&2; exit 1; }
+case "$1 $2" in
+  "create element")
+    ip=$(cible "$6")
+    if mode_de "$ip" >/dev/null; then
+      printf 'Error: Could not process rule: File exists\n%s\n                                          ^^^^^^^^^^^\n' "$*" >&2
+      exit 1
+    fi
+    exit 0 ;;
+  "get element")
+    ip=$(cible "$6")
+    m=$(mode_de "$ip") || absence "$*"
+    entete='table inet plume {\n\tset blocklist_ttl {\n\t\ttype ipv4_addr\n\t\tflags timeout\n'
+    case "$m" in
+      reste:*) printf "$entete"'\t\telements = { %s timeout 10m expires %s }\n\t}\n}\n' "$ip" "${m#reste:}" ;;
+      sans_expires) printf "$entete"'\t\telements = { %s }\n\t}\n}\n' "$ip" ;;
+      sortie_inconnue) printf "$entete"'\t}\n}\n' ;;
+      en_double) printf "$entete"'\t\telements = { %s timeout 10m expires 9m59s990ms, %s timeout 10m expires 9m59s990ms }\n\t}\n}\n' "$ip" "$ip" ;;
+      expire_a_la_lecture) : > "$TRACE_ENFORCEMENT.nft.expiree.$ip"; absence "$*" ;;
+      absent_a_chaque_lecture) absence "$*" ;;
+      lecture_refusee) printf 'Error: syntax error, unexpected get\n%s\n^^^\n' "$*" >&2; exit 1 ;;
+    esac
+    exit 0 ;;
+  "-f -")
+    while IFS= read -r l; do printf 'TX| %s\n' "$l" >> "$TRACE_ENFORCEMENT.nft"; done
+    case "${NFT_TX:-ok}" in
+      expiree:*) : > "$TRACE_ENFORCEMENT.nft.expiree.${NFT_TX#expiree:}"
+                 printf '/dev/stdin:1:43-53: Error: Could not process rule: No such file or directory\n' >&2; exit 1 ;;
+      refus) printf '/dev/stdin:2:40-50: Error: Could not process rule: Device or resource busy\n' >&2; exit 1 ;;
+    esac
+    exit 0 ;;
+esac
 exit 0
 """
+
+
+# Toute commande nft qui pose ou retire un élément, transaction comprise (`-f -`, lignes `TX| `).
+POSE_NFT = re.compile(r"^(TX\| )?(add|create|delete) element|^-f -$", re.M)
 
 
 def refuser_de_conclure(msg):
@@ -216,8 +284,13 @@ def jouer(script, central, lecteurs=(), backend="auto", bouchons=("cscli",), env
             os.makedirs(rep, mode=0o700)
             with open(os.path.join(rep, "verdicts-a-remettre"), "w") as f:
                 f.write("".join(l + "\n" for l in rejeu_initial))
-        p = subprocess.run([shutil.which("sh"), script], env=env, capture_output=True, text=True, timeout=120,
-                           cwd=cwd)
+        try:
+            p = subprocess.run([shutil.which("sh"), script], env=env, capture_output=True, text=True,
+                               timeout=DELAI_D_UN_TOUR_S, cwd=cwd)
+        except subprocess.TimeoutExpired:
+            # Un tour qui ne finit pas (boucle sans borne) est une propriété violée, jamais un tour conclu : code
+            # -1, stderr qui le dit, aucun verdict compté (ceux déjà remis restent, le scénario les juge).
+            p = subprocess.CompletedProcess([], -1, "", f"TOUR SANS FIN : le script n'a pas fini en {DELAI_D_UN_TOUR_S} s")
         traces = {}
         for nom in ("cscli", "nft", "fail2ban-client"):
             chemin = f"{trace}.{nom}"
@@ -329,7 +402,7 @@ def s_nft_repli_sans_ancre(script):
             t = jouer(script, c, lecteurs=(), backend="nft", bouchons=("nft",), env_plus={"PLUME_BAN_DURATION": valeur})
         finally:
             c.fermer()
-        exiger(f, "add element" not in t.trace("nft"), f"`{valeur}` posé en nft : {t.trace('nft')!r}")
+        exiger(f, not POSE_NFT.search(t.trace("nft")), f"`{valeur}` posé en nft : {t.trace('nft')!r}")
         verdict_est(f, t, i, "failed", "illisible")
     return f
 
@@ -344,7 +417,7 @@ def s_repli_multiligne(script):
     finally:
         c.fermer()
     f = []
-    exiger(f, "pwned" not in t.trace("nft") and "add element" not in t.trace("nft"),
+    exiger(f, "pwned" not in t.trace("nft") and not POSE_NFT.search(t.trace("nft")),
            f"une durée de repli multiligne part à nft : {t.trace('nft')!r}")
     verdict_est(f, t, 577, "failed", "illisible")
     return f
@@ -527,8 +600,10 @@ def s_nft_set_a_duree(script):
     n = t.trace("nft")
     exiger(f, "add set inet plume blocklist_ttl { type ipv4_addr; flags timeout; }" in n, f"set à durée non créé : {n!r}")
     exiger(f, "add rule inet plume input ip saddr @blocklist_ttl drop" in n, f"règle du set à durée absente : {n!r}")
-    exiger(f, "add element inet plume blocklist_ttl { 203.0.113.71 timeout 5400s }" in n, f"élément sans timeout servi : {n!r}")
-    exiger(f, "add element inet plume blocklist {" not in n, f"ban PERMANENT posé dans l'ancien set : {n!r}")
+    # `P11.25-a` : la pose est EXCLUSIVE (`create element`) — `add element` remplaçait le délai d'une adresse déjà
+    # bannie, donc pouvait le raccourcir. Ce témoin exigeait `add element` : il exige désormais `create element`.
+    exiger(f, "create element inet plume blocklist_ttl { 203.0.113.71 timeout 5400s }" in n, f"élément sans timeout servi : {n!r}")
+    exiger(f, not re.search(r"(add|create) element inet plume blocklist \{", n), f"ban PERMANENT posé dans l'ancien set : {n!r}")
     exiger(f, not re.search(r"(delete|flush) (set|table)", n), f"l'ancien set/table est détruit : {n!r}")
     verdict_est(f, t, 501, "done", "timeout 5400s", "servie par le central")
     return f
@@ -541,7 +616,7 @@ def s_nft_repli_illisible(script):
     finally:
         c.fermer()
     f = []
-    exiger(f, "add element" not in t.trace("nft"), f"un ban nft est posé avec une durée illisible : {t.trace('nft')!r}")
+    exiger(f, not POSE_NFT.search(t.trace("nft")), f"un ban nft est posé avec une durée illisible : {t.trace('nft')!r}")
     verdict_est(f, t, 511, "failed", "illisible")
     return f
 
@@ -649,7 +724,7 @@ def s_nft_hote_neuf(script):
                     "add rule inet plume input ip saddr @blocklist drop",
                     "add set inet plume blocklist_ttl { type ipv4_addr; flags timeout; }",
                     "add rule inet plume input ip saddr @blocklist_ttl drop",
-                    "add element inet plume blocklist_ttl { 203.0.113.32 timeout 600s }"):
+                    "create element inet plume blocklist_ttl { 203.0.113.32 timeout 600s }"):
         exiger(f, attendu in n, f"hôte neuf : `{attendu}` absent : {n!r}")
     verdict_est(f, t, 531, "done", "timeout 600s")
     return f
@@ -663,7 +738,7 @@ def s_nft_repli_nul(script):
             t = jouer(script, c, lecteurs=(), backend="nft", bouchons=("nft",), env_plus={"PLUME_BAN_DURATION": valeur})
         finally:
             c.fermer()
-        exiger(f, "add element" not in t.trace("nft"), f"PLUME_BAN_DURATION={valeur} : élément nft posé (timeout nul) : {t.trace('nft')!r}")
+        exiger(f, not POSE_NFT.search(t.trace("nft")), f"PLUME_BAN_DURATION={valeur} : élément nft posé (timeout nul) : {t.trace('nft')!r}")
         verdict_est(f, t, i, "failed", "nulle")
     return f
 
@@ -732,6 +807,243 @@ def s_f_en_attente(script):
     return f
 
 
+# ----------------------------------------------------------------------------------------------------------
+# `P11.25-a` — UN BAN PLUS COURT NE RACCOURCIT JAMAIS UN BAN EN COURS (voie nft). Phrases fixes du résultat remis,
+# écrites ICI en littéral (jamais relues du script) : un script qui les change fait rougir ces témoins.
+# ----------------------------------------------------------------------------------------------------------
+PHRASE_POSE = "BAN POSE"
+PHRASE_ALLONGE = "BAN ALLONGE"
+PHRASE_CONSERVE = "DEJA BANNI POUR PLUS LONGTEMPS, DUREE CONSERVEE"
+PHRASE_NON_APPLIQUEE = "DUREE NON APPLIQUEE, ban en cours conserve tel quel"
+PHRASE_TX_REFUSEE = "DUREE NON APPLIQUEE : allongement refuse par nft, transaction annulee entiere"
+CAUSE_DESORDRE = "unite repetee ou desordonnee"
+
+
+def jouer_nft(script, actions, presents=(), env_plus=None, **plus):
+    """Un tour nft sur un hôte DÉJÀ équipé (table et set à durée là), file JSON servie (lecteur python3)."""
+    env = {"NFT_ETAT": "equipe", "NFT_PRESENTS": " ".join(f"{ip}={m}" for ip, m in presents)}
+    env.update(env_plus or {})
+    c = Central("demon", actions)
+    try:
+        return jouer(script, c, lecteurs=("python3",), backend="nft", bouchons=("nft",), env_plus=env, **plus)
+    finally:
+        c.fermer()
+
+
+def lignes_nft(t):
+    return [l for l in t.trace("nft").splitlines() if l]
+
+
+def s_nft_ban_court_conserve_le_long(script):
+    """Long puis court : l'adresse a 9m59s990ms de reste, le central demande 10 s. Pose exclusive refusée, reste
+    lu, AUCUNE commande qui récrit (ni transaction, ni retrait, ni `add`), verdict `done` qui DIT la conservation."""
+    t = jouer_nft(script, [ban(901, "203.0.113.21", 10)], presents=[("203.0.113.21", "reste:9m59s990ms")])
+    f = []
+    attendu = ["list table inet plume", "list set inet plume blocklist_ttl",
+               "create element inet plume blocklist_ttl { 203.0.113.21 timeout 10s }",
+               "get element inet plume blocklist_ttl { 203.0.113.21 }"]
+    exiger(f, lignes_nft(t) == attendu, f"long puis court : commandes nft {lignes_nft(t)!r}, attendu {attendu!r}")
+    verdict_est(f, t, 901, "done", PHRASE_CONSERVE, "reste 9m59s990ms >= 10s")
+    return f
+
+
+def s_nft_ban_long_allonge_en_une_transaction(script):
+    """Court puis long : reste 9s998ms, 600 s demandées. Retrait PUIS pose dans UNE transaction `nft -f -`, rien
+    d'autre ne récrit ; verdict `done` qui dit l'allongement."""
+    t = jouer_nft(script, [ban(902, "203.0.113.22", 600)], presents=[("203.0.113.22", "reste:9s998ms")])
+    f = []
+    attendu = ["list table inet plume", "list set inet plume blocklist_ttl",
+               "create element inet plume blocklist_ttl { 203.0.113.22 timeout 600s }",
+               "get element inet plume blocklist_ttl { 203.0.113.22 }", "-f -",
+               "TX| delete element inet plume blocklist_ttl { 203.0.113.22 }",
+               "TX| add element inet plume blocklist_ttl { 203.0.113.22 timeout 600s }"]
+    exiger(f, lignes_nft(t) == attendu, f"court puis long : commandes nft {lignes_nft(t)!r}, attendu {attendu!r}")
+    verdict_est(f, t, 902, "done", PHRASE_ALLONGE, "reste 9s998ms < 600s")
+    return f
+
+
+def s_nft_absente_pose_simple(script):
+    """Adresse absente du set à durée — qu'elle figure ou non dans le set PERMANENT `blocklist`, que le script ne lit
+    ni ne touche (comportement d'avant) : les commandes d'avant, la pose étant exclusive ; ni lecture, ni
+    transaction ; verdict `done` qui dit la pose."""
+    t = jouer_nft(script, [ban(903, "203.0.113.23", 600)])
+    f = []
+    attendu = ["list table inet plume", "list set inet plume blocklist_ttl",
+               "create element inet plume blocklist_ttl { 203.0.113.23 timeout 600s }"]
+    exiger(f, lignes_nft(t) == attendu, f"adresse absente : commandes nft {lignes_nft(t)!r}, attendu {attendu!r}")
+    verdict_est(f, t, 903, "done", PHRASE_POSE, "timeout 600s")
+    return f
+
+
+RESTES_ILLISIBLES = [  # (id, ip, mode, cause écrite dans le verdict)
+    (911, "203.0.113.31", "sans_expires", "expires_absent"),
+    (912, "203.0.113.32", "sortie_inconnue", "adresse_absente_de_la_sortie"),
+    (913, "203.0.113.33", "en_double", "adresse_en_double"),
+    (914, "203.0.113.34", "reste:9x", "expires_de_forme_inconnue"),
+    (915, "203.0.113.35", "reste:59s1d", "expires_de_forme_inconnue"),
+    (916, "203.0.113.36", "reste:5m5m", "expires_de_forme_inconnue"),
+    (917, "203.0.113.37", "lecture_refusee", "lecture_refusee"),
+    (918, "203.0.113.38", "absent_a_chaque_lecture", "element_disparu_apres_la_reprise"),
+]
+
+
+def s_nft_reste_illisible_rien_recrit(script):
+    """Reste illisible, chaque cause : l'adresse reste bannie TELLE QUELLE (aucune transaction, aucun retrait,
+    aucun `add`), verdict `failed` avec la phrase DUREE NON APPLIQUEE et sa cause — jamais un `done`."""
+    t = jouer_nft(script, [ban(i, ip, 10) for i, ip, _, _ in RESTES_ILLISIBLES],
+                  presents=[(ip, m) for _, ip, m, _ in RESTES_ILLISIBLES])
+    f = []
+    recrit = [l for l in lignes_nft(t) if l == "-f -" or l.startswith(("TX|", "add element", "delete element"))]
+    exiger(f, recrit == [], f"reste illisible : une commande RÉCRIT le ban : {recrit!r}")
+    for i, ip, _, cause in RESTES_ILLISIBLES:
+        verdict_est(f, t, i, "failed", PHRASE_NON_APPLIQUEE, "n a pas pu etre lu", f"cause={cause})")
+    creates_918 = [l for l in lignes_nft(t) if l.startswith("create element") and "203.0.113.38 " in l]
+    exiger(f, len(creates_918) == 2, f"course répétée : {len(creates_918)} poses exclusives, attendu 2 (une reprise, une seule)")
+    exiger(f, "syntax error" in t.verdicts.get(917, {}).get("result", ""), "la lecture refusée ne cite pas l'erreur de nft")
+    return f
+
+
+def s_nft_sans_awk_rien_recrit(script):
+    """Hôte sans `awk` : le reste n'est pas jugé ; rien n'est récrit, `failed`, cause `lecteur_en_echec`."""
+    global OUTILS
+    sauve = OUTILS
+    OUTILS = [o for o in OUTILS if o != "awk"]
+    try:
+        t = jouer_nft(script, [ban(919, "203.0.113.39", 10)], presents=[("203.0.113.39", "reste:9m59s990ms")])
+    finally:
+        OUTILS = sauve
+    f = []
+    exiger(f, not [l for l in lignes_nft(t) if l == "-f -" or l.startswith(("add element", "delete element"))],
+           f"sans awk : une commande récrit le ban : {lignes_nft(t)!r}")
+    verdict_est(f, t, 919, "failed", PHRASE_NON_APPLIQUEE, "cause=lecteur_en_echec)")
+    return f
+
+
+FORMES_D_EXPIRES = [  # (id, ip, reste, durée servie en s, issue) — chaque unité, chaque bord
+    (921, "198.51.100.21", "1d1h59m59s971ms", 93600, "allonger"),
+    (922, "198.51.100.22", "1d1h59m59s971ms", 93599, "conserver"),
+    (923, "198.51.100.23", "364d23h59m59s995ms", 31536000, "allonger"),
+    (924, "198.51.100.24", "364d23h59m59s995ms", 31535999, "conserver"),
+    (925, "198.51.100.25", "23h59m59s998ms", 86400, "allonger"),
+    (926, "198.51.100.26", "23h59m59s998ms", 86399, "conserver"),
+    (927, "198.51.100.27", "58m59s997ms", 3540, "allonger"),
+    (928, "198.51.100.28", "58m59s997ms", 3539, "conserver"),
+    (929, "198.51.100.29", "1s996ms", 2, "allonger"),
+    (930, "198.51.100.30", "1s996ms", 1, "conserver"),
+    (931, "198.51.100.31", "490ms", 1, "allonger"),
+    (932, "198.51.100.32", "10s", 10, "conserver"),
+    (933, "198.51.100.33", "10s", 11, "allonger"),
+    (934, "198.51.100.34", "2h", 7200, "conserver"),
+    (935, "198.51.100.35", "1m30s", 91, "allonger"),
+]
+
+
+def s_nft_chaque_forme_d_expires(script):
+    """Chaque forme d'`expires` (jours à millisecondes, unité seule, reste ÉGAL à la demande) jugée au bord."""
+    t = jouer_nft(script, [ban(i, ip, d) for i, ip, _, d, _ in FORMES_D_EXPIRES],
+                  presents=[(ip, f"reste:{r}") for _, ip, r, _, _ in FORMES_D_EXPIRES])
+    f = []
+    for i, ip, r, d, issue in FORMES_D_EXPIRES:
+        tx = f"TX| add element inet plume blocklist_ttl {{ {ip} timeout {d}s }}"
+        if issue == "allonger":
+            verdict_est(f, t, i, "done", PHRASE_ALLONGE, f"reste {r} < {d}s")
+            exiger(f, tx in lignes_nft(t), f"#{i} ({r} contre {d}s) : pas de transaction d'allongement")
+        else:
+            verdict_est(f, t, i, "done", PHRASE_CONSERVE, f"reste {r} >= {d}s")
+            exiger(f, tx not in lignes_nft(t), f"#{i} ({r} contre {d}s) : ban RACCOURCI ou récrit")
+    return f
+
+
+def s_nft_expire_avant_la_lecture(script):
+    """L'élément expire entre la pose exclusive refusée et la lecture : UNE nouvelle pose exclusive, qui réussit."""
+    t = jouer_nft(script, [ban(941, "203.0.113.41", 600)], presents=[("203.0.113.41", "expire_a_la_lecture")])
+    f = []
+    creates = [l for l in lignes_nft(t) if l.startswith("create element")]
+    exiger(f, len(creates) == 2, f"course avant la lecture : {len(creates)} poses exclusives, attendu 2")
+    exiger(f, "-f -" not in lignes_nft(t), "course avant la lecture : une transaction est partie")
+    verdict_est(f, t, 941, "done", PHRASE_POSE)
+    return f
+
+
+def s_nft_expire_avant_la_transaction(script):
+    """L'élément expire entre la lecture et la transaction (annulée entière) : UNE nouvelle pose exclusive."""
+    t = jouer_nft(script, [ban(942, "203.0.113.42", 600)], presents=[("203.0.113.42", "reste:1s")],
+                  env_plus={"NFT_TX": "expiree:203.0.113.42"})
+    f = []
+    creates = [l for l in lignes_nft(t) if l.startswith("create element")]
+    exiger(f, len(creates) == 2, f"course avant la transaction : {len(creates)} poses exclusives, attendu 2")
+    exiger(f, lignes_nft(t).count("-f -") == 1, "course avant la transaction : transaction rejouée")
+    verdict_est(f, t, 942, "done", PHRASE_POSE)
+    return f
+
+
+def s_nft_transaction_refusee_dite(script):
+    """La transaction d'allongement refusée pour une autre cause : `failed`, dit, aucune reprise."""
+    t = jouer_nft(script, [ban(943, "203.0.113.43", 600)], presents=[("203.0.113.43", "reste:1s")],
+                  env_plus={"NFT_TX": "refus"})
+    f = []
+    exiger(f, len([l for l in lignes_nft(t) if l.startswith("create element")]) == 1, "transaction refusée : reprise de la pose")
+    verdict_est(f, t, 943, "failed", PHRASE_TX_REFUSEE, "Device or resource busy")
+    return f
+
+
+def s_nft_simulation_ne_promet_pas(script):
+    """Le dry-run nft ne lit pas l'état : il dit que la durée ne s'applique que si elle allonge, et ne pose rien."""
+    t = jouer_nft(script, [ban(944, "203.0.113.44", 10)], presents=[("203.0.113.44", "reste:9m59s990ms")],
+                  env_plus={"PLUME_RESPONDER_APPLY": "0"})
+    f = []
+    exiger(f, not POSE_NFT.search(t.trace("nft")) and "get element" not in t.trace("nft"),
+           f"une simulation a touché nft : {t.trace('nft')!r}")
+    verdict_est(f, t, 944, "dryrun", "timeout 10s", "deja banni : duree appliquee seulement si elle allonge, jamais raccourci")
+    return f
+
+
+DUREES_DESORDONNEES = ["1h1h", "30s1d", "1d1d", "30m1h", "1m1h", "5s5s"]
+DUREES_MESUREES = ["0h30m", "1d2h", "1d0s", "365d", "31536000s"]
+
+
+def s_duree_desordonnee_refusee(script):
+    """Une unité répétée ou désordonnée (que nft refuse en erreur de syntaxe) est refusée par le répondeur avec SA
+    cause, sur nft comme sur CrowdSec : rien ne part."""
+    f = []
+    for n, valeur in enumerate(DUREES_DESORDONNEES):
+        for backend, bouchon in (("nft", "nft"), ("crowdsec", "cscli")):
+            i = 950 + 2 * n + (backend == "crowdsec")
+            c = Central("tsv", [ban(i, f"198.51.100.{60 + n}")])
+            try:
+                t = jouer(script, c, lecteurs=(), backend=backend, bouchons=(bouchon,),
+                          env_plus={"PLUME_BAN_DURATION": valeur, "NFT_ETAT": "equipe"})
+            finally:
+                c.fermer()
+            exiger(f, not POSE_NFT.search(t.trace("nft")) and "decisions add" not in t.trace("cscli"),
+                   f"{backend} `{valeur}` : passé à l'outil : {t.trace(bouchon)!r}")
+            verdict_est(f, t, i, "failed", CAUSE_DESORDRE)
+    return f
+
+
+def s_duree_mesuree_admise(script):
+    """Les formes admises AVANT et acceptées par nft (mesuré) restent admises, sur nft comme sur CrowdSec."""
+    f = []
+    for n, valeur in enumerate(DUREES_MESUREES):
+        ip = f"198.51.100.{80 + n}"
+        for backend, bouchon in (("nft", "nft"), ("crowdsec", "cscli")):
+            i = 970 + 2 * n + (backend == "crowdsec")
+            c = Central("tsv", [ban(i, ip)])
+            try:
+                t = jouer(script, c, lecteurs=(), backend=backend, bouchons=(bouchon,),
+                          env_plus={"PLUME_BAN_DURATION": valeur, "NFT_ETAT": "equipe"})
+            finally:
+                c.fermer()
+            if backend == "nft":
+                exiger(f, f"create element inet plume blocklist_ttl {{ {ip} timeout {valeur} }}" in t.trace("nft"),
+                       f"nft `{valeur}` refusé : {t.trace('nft')!r}")
+            else:
+                exiger(f, t.trace("cscli") == f"decisions add -i {ip} -d {valeur} -t ban -R plume-playbook\n",
+                       f"cscli `{valeur}` : commande changée : {t.trace('cscli')!r}")
+            verdict_est(f, t, i, "done")
+    return f
+
+
 SCENARIOS = {
     "json_served_python3": lambda s: s_json_servi(s, "python3"),
     "json_served_jq": lambda s: s_json_servi(s, "jq"),
@@ -772,6 +1084,18 @@ SCENARIOS = {
     "nft_fallback_unanchored_duration_refused": s_nft_repli_sans_ancre,
     "multiline_fallback_duration_refused_whole": s_repli_multiligne,
     "crowdsec_fallback_duration_validated": s_crowdsec_repli_invalide,
+    "nft_shorter_ban_keeps_the_longer_one": s_nft_ban_court_conserve_le_long,
+    "nft_longer_ban_extends_in_one_transaction": s_nft_ban_long_allonge_en_une_transaction,
+    "nft_absent_address_single_exclusive_pose": s_nft_absente_pose_simple,
+    "nft_unreadable_remainder_rewrites_nothing": s_nft_reste_illisible_rien_recrit,
+    "nft_without_awk_rewrites_nothing": s_nft_sans_awk_rien_recrit,
+    "nft_every_expires_form_judged_at_its_edge": s_nft_chaque_forme_d_expires,
+    "nft_expired_before_read_poses_again_once": s_nft_expire_avant_la_lecture,
+    "nft_expired_before_transaction_poses_again_once": s_nft_expire_avant_la_transaction,
+    "nft_refused_transaction_said": s_nft_transaction_refusee_dite,
+    "nft_dry_run_promises_only_a_lengthening": s_nft_simulation_ne_promet_pas,
+    "repeated_or_disordered_duration_refused_with_cause": s_duree_desordonnee_refusee,
+    "measured_duration_forms_still_admitted": s_duree_mesuree_admise,
 }
 
 # (nom, motif exact dans respond.sh, remplacement, scénarios qui DOIVENT rougir)
@@ -810,10 +1134,10 @@ MUTANTS = [
      ["out_of_contract_ttl_failed_python3", "out_of_contract_ttl_failed_jq"]),
     ("nft_ttl_set_not_created_on_existing_table", '  nft list set inet plume "$NFT_SET_TTL" >/dev/null 2>&1 && return 0',
      "  return 0", ["nft_ttl_set_beside_the_permanent_one"]),
-    ("nft_ban_without_timeout", 'OUT=$(nft add element inet plume "$NFT_SET_TTL" "{ $t timeout $EFF_DUR }" 2>&1)',
-     'OUT=$(nft add element inet plume blocklist "{ $t }" 2>&1)', ["nft_ttl_set_beside_the_permanent_one"]),
+    ("nft_ban_without_timeout", 'nft create element inet plume "$NFT_SET_TTL" "{ $_np_ip timeout $_np_dur }"',
+     'nft create element inet plume blocklist "{ $_np_ip }"', ["nft_ttl_set_beside_the_permanent_one"]),
     ("nft_illegible_duration_not_refused",
-     '      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle comme timeout nft, rien pose"; return 1; }\n', "",
+     '      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle comme timeout nft, rien pose (cause : $DUREE_CAUSE)"; return 1; }\n', "",
      ["nft_illegible_fallback_never_permanent"]),
     ("fail2ban_silent_on_duration", "[duree %s (%s) NON portee par fail2ban : le ban dure le bantime de la jail %s]", "[%.0s%.0s%.0s]",
      ["fail2ban_says_duration_not_carried"]),
@@ -844,7 +1168,7 @@ MUTANTS = [
      "", ["nft_unban_clears_the_ttl_set"]),
     ("nft_fresh_host_table_skipped", "  if ! nft list table inet plume >/dev/null 2>&1; then\n    nft add table",
      "  if false; then\n    nft add table", ["nft_fresh_host_table_created"]),
-    ("nft_zero_duration_accepted", " && printf '%s' \"$1\" | grep -q '[1-9]'", "",
+    ("nft_zero_duration_accepted", "  printf '%s' \"$1\" | grep -q '[1-9]' || { DUREE_CAUSE=\"nulle\"; return 1; }", "  :",
      ["nft_zero_fallback_never_permanent"]),
     ("queue_curl_failure_not_judged", 'if [ "$_file_rc" != 0 ] || [ "$_file_code" != 200 ]; then',
      'if [ "$_file_code" != 200 ]; then',
@@ -852,8 +1176,8 @@ MUTANTS = [
     ("queue_body_unbounded", '--max-filesize "$FILE_OCTETS_MAX" "$@"', '"$@"', ["queue_200_oversized_never_parsed"]),
     ("out_of_contract_line_reposted_while_pending", '        if verdict_en_attente_de_remise "$_r_2"; then\n',
      "        if false; then\n", ["out_of_contract_line_not_reposted_while_pending"]),
-    ('nft_fallback_regex_unanchored', "grep -qE '^([0-9]+[dhms])+$'", "grep -qE '([0-9]+[dhms])+'",
-     ['nft_fallback_unanchored_duration_refused']),
+    ('nft_fallback_regex_unanchored', "grep -qE '^([0-9]+d)?([0-9]+h)?([0-9]+m)?([0-9]+s)?$'",
+     "grep -qE '([0-9]+d)?([0-9]+h)?([0-9]+m)?([0-9]+s)?'", ['nft_fallback_unanchored_duration_refused']),
     ('jq_id_upper_bound_dropped', ' and $o.id <= 9007199254740991) | not)', ') | not)',
      ['big_id_refused_jq']),
     ('python_id_upper_bound_dropped', '    if not entier(i) or i < 0 or i > BORNE_ID:', '    if not entier(i) or i < 0:',
@@ -872,12 +1196,64 @@ MUTANTS = [
      ['tsv_last_line_without_newline_served']),
     ('jq_negative_zero_id_kept', '    else (($o.id | floor) + 0 | tostring) as $id\n', '    else ($o.id | floor | tostring) as $id\n',
      ['negative_zero_id_is_zero_jq']),
-    ('fallback_duration_judged_line_by_line', '  case "$1" in \'\'|*[!0-9dhms]*) return 1 ;; esac\n', '',
+    ('fallback_duration_judged_line_by_line', '  case "$1" in \'\'|*[!0-9dhms]*) DUREE_CAUSE="illisible (attendu <n>s, m, h ou d)"; return 1 ;; esac\n', '',
      ['multiline_fallback_duration_refused_whole']),
-    ('crowdsec_fallback_duration_not_validated', '      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle pour cscli, rien pose"; return 1; }\n', '',
+    ('crowdsec_fallback_duration_not_validated', '      duree_de_ban_lisible "$EFF_DUR" || { OUT="duree $EFF_DUR illisible ou nulle pour cscli, rien pose (cause : $DUREE_CAUSE)"; return 1; }\n', '',
      ['crowdsec_fallback_duration_validated']),
     ('crowdsec_dry_run_plan_not_validated', '      if duree_de_ban_lisible "$EFF_DUR"; then\n        printf \'cscli decisions add', "      if :; then\n        printf 'cscli decisions add",
      ['crowdsec_fallback_duration_validated']),
+    # `P11.25-a` — un ban plus court ne raccourcit jamais un ban en cours.
+    ("remainder_comparison_inverted", 'if (r >= d) print "conserver " reste; else print "allonger " reste',
+     'if (r < d) print "conserver " reste; else print "allonger " reste',
+     ["nft_shorter_ban_keeps_the_longer_one", "nft_longer_ban_extends_in_one_transaction",
+      "nft_every_expires_form_judged_at_its_edge"]),
+    ("remainder_equal_to_request_rewritten", 'if (r >= d) print "conserver " reste', 'if (r > d) print "conserver " reste',
+     ["nft_every_expires_form_judged_at_its_edge"]),
+    ("lengthening_not_atomic",
+     """if _np_tx=$(printf 'delete element inet plume %s { %s }\\nadd element inet plume %s { %s timeout %s }\\n' \\\n            "$NFT_SET_TTL" "$_np_ip" "$NFT_SET_TTL" "$_np_ip" "$_np_dur" | LC_ALL=C nft -f - 2>&1); then""",
+     """if _np_tx=$(LC_ALL=C nft delete element inet plume "$NFT_SET_TTL" "{ $_np_ip }" 2>&1 && LC_ALL=C nft add element inet plume "$NFT_SET_TTL" "{ $_np_ip timeout $_np_dur }" 2>&1); then""",
+     ["nft_longer_ban_extends_in_one_transaction"]),
+    ("unreadable_remainder_treated_as_absent",
+     '      *)\n        OUT="$PHRASE_DUREE_NON_APPLIQUEE : son reste',
+     '      *)\n        OUT=$(LC_ALL=C nft add element inet plume "$NFT_SET_TTL" "{ $_np_ip timeout $_np_dur }" 2>&1); return 0 ;;\n      __jamais__)\n        OUT="$PHRASE_DUREE_NON_APPLIQUEE : son reste',
+     ["nft_unreadable_remainder_rewrites_nothing", "nft_without_awk_rewrites_nothing"]),
+    ("failed_read_taken_for_an_absence", "        *'No such file or directory'*)\n          if [ \"$_np_reprise\" = 0 ]",
+     "        *)\n          if [ \"$_np_reprise\" = 0 ]", ["nft_unreadable_remainder_rewrites_nothing"]),
+    ("kept_ban_said_as_a_bare_done",
+     'OUT="$PHRASE_BAN_CONSERVE (reste ${_np_verdict#conserver } >= $_np_dur demandes), rien n est recrit"; return 0 ;;',
+     'OUT=""; return 0 ;;', ["nft_shorter_ban_keeps_the_longer_one"]),
+    ("unreadable_remainder_said_as_done",
+     'OUT="$PHRASE_DUREE_NON_APPLIQUEE : son reste n a pas pu etre lu (cause=${_np_verdict#illisible }), rien n est recrit$_np_detail"\n        return 1 ;;',
+     'OUT=""\n        return 0 ;;', ["nft_unreadable_remainder_rewrites_nothing"]),
+    ("duration_gate_relaxed", "  if ! printf '%s' \"$1\" | grep -qE '^([0-9]+d)?([0-9]+h)?([0-9]+m)?([0-9]+s)?$'; then",
+     "  if false; then", ["repeated_or_disordered_duration_refused_with_cause"]),
+    ("disorder_cause_not_said", "    if printf '%s' \"$1\" | grep -qE '^([0-9]+[dhms])+$'; then", "    if false; then",
+     ["repeated_or_disordered_duration_refused_with_cause"]),
+    ("pose_not_exclusive", 'LC_ALL=C nft create element inet plume "$NFT_SET_TTL"', 'LC_ALL=C nft add element inet plume "$NFT_SET_TTL"',
+     ["nft_shorter_ban_keeps_the_longer_one", "nft_absent_address_single_exclusive_pose"]),
+    ("retry_before_read_dropped", 'then _np_reprise=1; continue; fi   # expire avant la lecture', 'then :; fi   # expire avant la lecture',
+     ["nft_expired_before_read_poses_again_once"]),
+    ("retry_before_transaction_dropped", 'then _np_reprise=1; continue; fi ;;   # expire avant la transaction',
+     'then :; fi ;;   # expire avant la transaction', ["nft_expired_before_transaction_poses_again_once"]),
+    ("retry_unbounded", '_np_verdict="illisible element_disparu_apres_la_reprise" ;;', 'continue ;;',
+     ["nft_unreadable_remainder_rewrites_nothing"]),
+    ("days_factor_wrong", 'if (u == "d") { r = 1; f = 86400000 }', 'if (u == "d") { r = 1; f = 3600000 }',
+     ["nft_every_expires_form_judged_at_its_edge"]),
+    ("milliseconds_read_as_minutes", 'if (substr(s, 1, 2) == "ms") { u = "ms"; s = substr(s, 3) } else', 'if (0) { } else',
+     ["nft_every_expires_form_judged_at_its_edge"]),
+    ("expires_unit_order_not_judged", "        if (r <= prec) return -1\n", "",
+     ["nft_unreadable_remainder_rewrites_nothing"]),
+    ("expires_absence_not_judged", '      if (nexp != 1) { print "illisible expires_absent"; exit }\n', "",
+     ["nft_unreadable_remainder_rewrites_nothing"]),
+    ("duplicate_address_not_judged", '      if (trouve > 1) { print "illisible adresse_en_double"; exit }\n', "",
+     ["nft_unreadable_remainder_rewrites_nothing"]),
+    ("awk_failure_not_judged", '|| _np_verdict="illisible lecteur_en_echec"', '|| :',
+     ["nft_without_awk_rewrites_nothing"]),
+    ("refused_transaction_retried", "        case \"$_np_tx\" in\n          *'No such file or directory'*)", "        case \"$_np_tx\" in\n          *)",
+     ["nft_refused_transaction_said"]),
+    ("nft_dry_run_promises_the_requested_duration",
+     " ; deja banni : duree appliquee seulement si elle allonge, jamais raccourci'", "'",
+     ["nft_dry_run_promises_only_a_lengthening"]),
 ]
 
 

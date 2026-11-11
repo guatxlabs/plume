@@ -233,8 +233,12 @@ mod ce2_sante_erreurs_du_support {
             assert_eq!(r[2], 200, "{issue} : la santé se lit avec le jeton du lecteur : {r}");
             r[3].clone()
         };
+        // `fts_levels*` : le composant sert aussi, depuis la compaction aux niveaux bornés, le nombre de niveaux de la
+        // structure plein-texte et son verdict de lecture (`compaction_fts_niveaux_bornes.rs`, T4) ; la base de
+        // l'enfant est sous l'alerte, ces clés ne changent ni l'état ni le détail jugés ici.
         let cles_disque = ["component", "db_size_bytes", "db_size_bytes_cause", "db_size_bytes_verdict", "detail",
-            "disk_used_pct", "disk_used_pct_cause", "disk_used_pct_verdict", "state"];
+            "disk_used_pct", "disk_used_pct_cause", "disk_used_pct_verdict", "fts_levels", "fts_levels_by_index",
+            "fts_levels_cause", "fts_levels_verdict", "state"];
         let cles = |extra: &[&str]| {
             let mut v: Vec<String> = cles_disque.iter().chain(extra.iter()).map(|s| s.to_string()).collect();
             v.sort();

@@ -20,9 +20,8 @@
 //! ─────────────────────────────────────────────────────────────────────────────────────────────────
 //! POURQUOI `merge` BORNÉ ET NON `optimize` — L'ARBITRAGE, MESURÉ, PAS SUPPOSÉ
 //!
-//! Les deux commandes atteignent LE MÊME PLANCHER. Ce qui les sépare, c'est ce qu'elles coûtent au
-//! reste du système pendant qu'elles y vont. Mesuré sur la base ci-dessus (499 200 documents restants,
-//! index gonflé à 185,69 Mio), chaque bras partant d'une COPIE OCTET-À-OCTET du même état :
+//! Mesuré sur la base ci-dessus (499 200 documents restants, index gonflé à 185,69 Mio), chaque bras
+//! partant d'une COPIE OCTET-À-OCTET du même état :
 //!
 //! ```text
 //!   bras                        passes  total     verrou writer   rafale WAL   plancher   segments
@@ -35,24 +34,34 @@
 //!   merge=-500                      25  16,29 s    1,04 s max     13,4 Mio    56,53 Mio         1
 //! ```
 //!
-//! 1. **`merge` avec un N POSITIF ne rend RIEN sur cet index, et le fait instantanément.** FTS5 ne
-//!    fusionne alors qu'un niveau portant au moins `usermerge` segments (défaut 4) ; ici les 15 segments
-//!    sont répartis sur 9 niveaux, aucun n'atteint le quota, et FTS5 répond « rien à faire » en 0,00 s.
-//!    Un opérateur qui aurait câblé `merge=N` positif aurait une compaction qui S'ANNONCE et rend
-//!    EXACTEMENT ZÉRO — précisément la famille de défaut que ce dépôt ferme. C'est pourquoi le budget
-//!    est passé **NÉGATIF** : `nMerge<0` fait prendre à FTS5 le chemin de l'`optimize` (toutes les
-//!    segments promus, `nMin=1`) mais BORNÉ à |N| pages écrites (cf. `fts5IndexMerge`/
-//!    `fts5IndexOptimizeStruct` dans l'amalgamation vendorée). C'est un `optimize` INCRÉMENTAL, et
-//!    c'est le seul incrémental qui atteint le plancher.
+//! ET SUR UN INDEX DÉJÀ CONVERGÉ PUIS PURGÉ — le régime de la rétention, qui compacte à chaque tick —
+//! le budget positif, même à `usermerge=2`, N'ATTEINT PAS le plancher. Mesuré sur la fixture des
+//! témoins (20 000 événements, `optimize`, deux lots, purge de 12 000) :
+//!
+//! ```text
+//!   bras                        octets de event_fts_data   segments
+//!   avant compaction                       5 656 576              5
+//!   merge=+200 + usermerge=2               5 586 944              2   (500 passes)
+//!   merge=-200 (et retrait)                1 568 768              1
+//!   optimize                               1 564 672              1
+//! ```
+//!
+//! 1. **Seul le budget NÉGATIF fusionne des niveaux DIFFÉRENTS.** Avec N positif, `fts5IndexMerge`
+//!    ne fusionne qu'un niveau portant au moins `usermerge` segments (sqlite3.c:237002) ; le plus
+//!    ancien segment, qui porte les postings des événements purgés, est SEUL à son niveau et n'est
+//!    jamais repris tant que la cascade des petits segments ne l'a pas rattrapé en taille. Sur
+//!    l'index gonflé du banc (15 segments sur 9 niveaux, aucun au quota de 4), N positif rend zéro
+//!    octet en 0,00 s ; le `usermerge=2` du tableau n'atteint le plancher que sur un index frais dont
+//!    les promotions de niveau ramènent tout au même niveau. Avec `-N`, FTS5 prend le chemin de
+//!    l'`optimize` (`fts5IndexOptimizeStruct`, tous les segments sur un seul niveau, `nMin=2`) borné
+//!    à N pages écrites : un `optimize` INCRÉMENTAL.
 //! 2. **Le plancher est le MÊME** : 56,53 Mio en incrémental contre 56,56 Mio d'un coup (écart 0,05 %).
-//!    Un incrémental qui n'atteindrait jamais le plancher ne vaudrait pas mieux qu'une rafale ; celui-ci
-//!    l'atteint.
 //! 3. **Le verrou d'écriture et la rafale WAL sont fixés par N, PAS par la taille de l'index.** Vérifié
-//!    au DOUBLE du volume (2 400 000 événements ingérés, 998 400 restants, index gonflé à 370,7 Mio —
-//!    plus gros que la production) : à `merge=-500`, la pire passe vaut **0,907 s** et le pic WAL
-//!    **15,4 Mio**, contre 1,037 s et 13,4 Mio à la moitié du volume. Seul le NOMBRE de passes suit la
-//!    taille (48 contre 25). C'est la propriété qui rend la chose déployable sur un nœud à 2 Gio : la
-//!    dépense par prise de verrou ne grandit pas avec la base.
+//!    au DOUBLE du volume (2 400 000 événements ingérés, 998 400 restants, index gonflé à 370,7 Mio) :
+//!    à `merge=-500`, la pire passe vaut **0,907 s** et le pic WAL **15,4 Mio**, contre 1,037 s et
+//!    13,4 Mio à la moitié du volume. Seul le NOMBRE de passes suit la taille (48 contre 25). C'est la
+//!    propriété qui rend la chose déployable sur un nœud à 2 Gio : la dépense par prise de verrou ne
+//!    grandit pas avec la base.
 //! 4. **Une interruption ne coûte pas la même chose.** `_exit(9)` à 8 s dans un `optimize` de 17 s :
 //!    117 Mio de WAL jetés, index rendu à l'octet près à son état d'AVANT (185,69 Mio, 15 segments),
 //!    `integrity-check` OK — mais **8 s de travail PERDUES, et un nœud qui redémarre plus souvent que
@@ -64,8 +73,36 @@
 //!    LES DEUX bras, à froid comme à chaud, à 499 k comme à 998 k documents : c'est le `cache_size`
 //!    (`-65536`, 64 Mio) de `sqlite_plafond`, et rien d'autre. La fusion ne construit AUCUNE structure
 //!    proportionnelle à l'index — elle streame segment par segment. Ce qui coûte, c'est la rafale WAL
-//!    sur DISQUE : 192,6 Mio d'un coup pour l'`optimize`, 13,4 Mio pour `merge=-500`. Le budget 2 Gio
-//!    de RAM n'est menacé par aucun des deux ; l'espace disque du volume l'est par le premier.
+//!    sur DISQUE : 192,6 Mio d'un coup pour l'`optimize`, 13,4 Mio pour `merge=-500`.
+//!
+//! ─────────────────────────────────────────────────────────────────────────────────────────────────
+//! LE DÉFAUT DU BUDGET NÉGATIF : LES NIVEAUX, SANS BORNE — ET CE QUI LES BORNE
+//!
+//! Lu dans l'amalgamation vendorée (SQLite 3.39.4). `fts5IndexOptimizeStruct` place les segments
+//! d'une structure ÉTALÉE sur plusieurs niveaux dans un niveau NEUF : `pNew->nLevel =
+//! pStruct->nLevel+1` (sqlite3.c:237298) ; la fusion de ce dernier niveau écrit sa sortie dans un
+//! AUTRE niveau neuf (`fts5StructureAddLevel` quand `iLvl==pStruct->nLevel-1`, sqlite3.c:236853). Deux
+//! niveaux de plus, donc, chaque fois que l'ingestion a déposé un segment depuis la passe précédente.
+//! Aucun code du moteur ne retire un niveau vide : seuls `rebuild` et `delete-all` réécrivent une
+//! structure à zéro niveau. Et `fts5StructureDecode` refuse une structure de plus de `FTS5_MAX_SEGMENT`
+//! niveaux (`#define FTS5_MAX_SEGMENT 2000`, sqlite3.c:224532 ; le refus, sqlite3.c:233443) : l'index
+//! devient illisible et toute insertion dans la table qui le porte échoue. `integrity_check` ne juge
+//! pas FTS5 et ne le voit pas.
+//!
+//! Mesuré sur la fixture des témoins, 60 cycles « tick de huit passes, lot de 500 insertions, purge
+//! tous les cinq cycles » : budget négatif seul, 26, 46, 66, 86, 106 puis 126 niveaux (deux par
+//! cycle, sans fin) ; budget négatif suivi du retrait, 16 niveaux à chaque relevé, et les MÊMES
+//! octets. Le budget positif à `usermerge=2` garde peu de niveaux (de 7 à 10 sur cent cycles) mais son
+//! index grossit (11 935 744 octets contre 10 039 296 au centième cycle) : il ne rend pas le poids mort.
+//!
+//! LE CORRECTIF : APRÈS CHAQUE PASSE, LES NIVEAUX VIDES EXCÉDENTAIRES SONT RETIRÉS de
+//! l'enregistrement de structure (`retirer_les_niveaux_vides`), jusqu'à `NIVEAUX_CONSERVES`. C'est une
+//! réécriture de `%_data` rowid 10 qui recopie chaque segment à l'octet, validée par le décodeur de
+//! FTS5 lui-même avant d'être commitée ; la preuve qu'elle ne change pas le contenu est sur
+//! `retrait_des_niveaux_vides`. La borne : après une passe, la structure porte au plus
+//! `max(NIVEAUX_CONSERVES, niveaux peuplés)` niveaux, et une passe en ajoute au plus deux.
+//! Et une GARDE (`SEUIL_NIVEAUX`) refuse toute passe au-delà : un index arrivé là par une autre voie
+//! ne s'aggrave plus, et la santé le montre (`niveaux_des_index`).
 //!
 //! CE QUE LA COMPACTION NE FAIT PAS, ET QUI DOIT ÊTRE DIT : elle ne RÉTRÉCIT PAS LE FICHIER. Les pages
 //! libérées vont à la FREELIST (mesuré : 33 753 -> 66 884 pages, +129 Mio réutilisables), `page_count`
@@ -147,6 +184,9 @@ pub(crate) enum Issue {
         octets_apres: i64,
         segments_avant: i64,
         segments_apres: i64,
+        /// Les niveaux de la structure à l'entrée, et après la dernière passe et son retrait.
+        niveaux_avant: i64,
+        niveaux_apres: i64,
         docs: Option<i64>,
         passes: i64,
         duree_ms: u128,
@@ -154,6 +194,9 @@ pub(crate) enum Issue {
     },
     /// SQLite a refusé AVANT la première passe. AUCUN octet n'est annoncé — on ne sait rien.
     Echec { nom: String, message: String },
+    /// LA GARDE, À L'ENTRÉE : la structure porte plus de `SEUIL_NIVEAUX` niveaux. AUCUNE passe n'est
+    /// lancée et rien n'est écrit — l'index ne s'aggrave plus du fait de la compaction.
+    NiveauxAuSeuil { nom: String, niveaux: i64 },
 }
 
 /// POURQUOI LA SÉQUENCE S'EST ARRÊTÉE. Ce n'est pas un booléen, et la différence n'est pas
@@ -171,6 +214,12 @@ pub(crate) enum Arret {
     /// L'enregistrement de structure FTS5 est devenu illisible en cours de route : on ne sait plus
     /// combien de segments restent, donc on s'arrête au lieu de fusionner à l'aveugle.
     StructureIllisible,
+    /// LA GARDE, AVANT UNE PASSE DE LA SÉQUENCE : la structure relue porte plus de `SEUIL_NIVEAUX`
+    /// niveaux, la passe n'est pas lancée. Les passes précédentes ont committé.
+    NiveauxAuSeuil { niveaux: i64 },
+    /// La dernière passe a committé, mais le retrait de ses niveaux vides a été refusé (cause portée,
+    /// structure d'avant le retrait conservée) : la suite n'est pas tentée.
+    NiveauxNonRetires(String),
 }
 
 impl Issue {
@@ -184,12 +233,13 @@ impl Issue {
                 "[fts-compact] {nom} DÉJÀ COMPACT (< 2 segments — FTS5 n'a rien à fusionner) : {:.2} Mio, RIEN N'A ÉTÉ FAIT",
                 mio(*octets)
             ),
-            Issue::Rendue { nom, octets_avant, octets_apres, segments_avant, segments_apres, docs, passes, duree_ms, arret } => {
+            Issue::Rendue { nom, octets_avant, octets_apres, segments_avant, segments_apres, niveaux_avant, niveaux_apres, docs, passes, duree_ms, arret } => {
                 let rendus = octets_avant - octets_apres;
                 let pct = if *octets_avant > 0 { rendus as f64 * 100.0 / *octets_avant as f64 } else { 0.0 };
                 format!(
                     "[fts-compact] {nom} : {:.2} -> {:.2} Mio ({} octets rendus à la freelist, {pct:.1} %) | \
-                     segments {segments_avant} -> {segments_apres} | docs {} | {passes} passe(s) en {duree_ms} ms | {}",
+                     segments {segments_avant} -> {segments_apres} | niveaux {niveaux_avant} -> {niveaux_apres} | docs {} | \
+                     {passes} passe(s) en {duree_ms} ms | {}",
                     mio(*octets_avant),
                     mio(*octets_apres),
                     rendus,
@@ -205,11 +255,27 @@ impl Issue {
                         ),
                         Arret::StructureIllisible => "ARRÊTÉ : structure FTS5 devenue ILLISIBLE en cours de fusion — \
                              on ne sait plus combien de segments restent, la suite n'est pas tentée".to_string(),
+                        Arret::NiveauxAuSeuil { niveaux } => format!(
+                            "ARRÊTÉ : {niveaux} niveaux dans la structure, au-delà du seuil de {SEUIL_NIVEAUX} — la passe suivante \
+                             n'est PAS lancée (le moteur refuse de lire une structure de plus de {LIMITE_DU_MOTEUR} niveaux) ; \
+                             {}",
+                            remede(nom)
+                        ),
+                        Arret::NiveauxNonRetires(cause) => format!(
+                            "ARRÊTÉ : la dernière passe a committé mais ses niveaux vides n'ont PAS été retirés ({cause}) — \
+                             la suite n'est pas tentée"
+                        ),
                     }
                 )
             }
             Issue::Echec { nom, message } => format!(
                 "[fts-compact] {nom} ÉCHEC ({message}) — AUCUN octet annoncé, l'état de l'index n'est pas connu ; nouvel essai au prochain tick"
+            ),
+            Issue::NiveauxAuSeuil { nom, niveaux } => format!(
+                "[fts-compact] {nom} : {niveaux} NIVEAUX dans la structure FTS5, au-delà du seuil de {SEUIL_NIVEAUX} — AUCUNE \
+                 fusion lancée, rien n'est écrit : le moteur refuse de lire une structure de plus de {LIMITE_DU_MOTEUR} niveaux, \
+                 l'index devient alors illisible et toute insertion échoue ; {}",
+                remede(nom)
             ),
         }
     }
@@ -282,15 +348,239 @@ fn varint(b: &[u8], mut i: usize) -> Option<(u64, usize)> {
 /// `None` = on n'a pas pu lire. Un index dont on ne connaît pas la structure n'est PAS compacté (on ne
 /// lance pas une fusion à l'aveugle sous le verrou d'écriture).
 pub(crate) fn segments(conn: &Connection, nom: &str) -> Option<i64> {
-    let bloc: Vec<u8> = conn
-        .query_row(&format!("SELECT block FROM {nom}_data WHERE id=10"), [], |r| r.get(0))
-        .ok()?;
+    structure(conn, nom).map(|s| s.segments)
+}
+
+/// LES DEUX NOMBRES DE L'EN-TÊTE DE STRUCTURE : niveaux et segments, tels que FTS5 les décode
+/// (`fts5StructureDecode`). Le nombre de niveaux est celui que le moteur borne : au-delà de
+/// `LIMITE_DU_MOTEUR`, il refuse de décoder et l'index devient illisible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Structure {
+    pub niveaux: i64,
+    pub segments: i64,
+}
+
+/// L'en-tête d'un enregistrement de structure, PUR. `None` = enregistrement trop court ou varint
+/// tronqué : une forme qu'on ne sait pas lire, jamais « zéro niveau ».
+fn entete_de_structure(bloc: &[u8]) -> Option<Structure> {
     if bloc.len() < 6 {
         return None;
     }
-    let (_niveaux, i) = varint(&bloc, 4)?;
-    let (nb, _) = varint(&bloc, i)?;
-    i64::try_from(nb).ok()
+    let (niveaux, i) = varint(bloc, 4)?;
+    let (segments, _) = varint(bloc, i)?;
+    Some(Structure { niveaux: i64::try_from(niveaux).ok()?, segments: i64::try_from(segments).ok()? })
+}
+
+/// La structure d'un index, lue en UNE ligne (`%_data` rowid 10). `None` = lecture ratée ou forme
+/// inconnue.
+pub(crate) fn structure(conn: &Connection, nom: &str) -> Option<Structure> {
+    let bloc: Vec<u8> = conn
+        .query_row(&format!("SELECT block FROM {nom}_data WHERE id=10"), [], |r| r.get(0))
+        .ok()?;
+    entete_de_structure(&bloc)
+}
+
+// =================================================================================================
+// LES NIVEAUX — bornés par le moteur, jamais retirés par lui
+// =================================================================================================
+
+/// LA LIMITE DU MOTEUR : `FTS5_MAX_SEGMENT` (sqlite3.c:224532). `fts5StructureDecode` rend
+/// `FTS5_CORRUPT` dès que `nLevel` la dépasse (sqlite3.c:233443) : l'index ne se lit plus, et toute
+/// insertion dans la table qui le porte échoue.
+pub(crate) const LIMITE_DU_MOTEUR: i64 = 2000;
+
+/// LA GARDE : au-delà de ce nombre de niveaux, la compaction ne lance AUCUNE passe. Une passe ajoute
+/// au plus deux niveaux (cf. l'en-tête du module) : le seuil laisse au moteur une marge de mille
+/// niveaux, très au-delà de la marge d'une passe.
+pub(crate) const SEUIL_NIVEAUX: i64 = 1000;
+
+/// L'ALERTE DE SANTÉ : au-delà, le composant `store` quitte le vert. Le retrait des niveaux vides tient
+/// la structure sous `NIVEAUX_CONSERVES` plus les deux niveaux d'une passe ; un index qui dépasse
+/// cette alerte est un index dont le retrait ne tient plus, bien avant la garde.
+pub(crate) const NIVEAUX_D_ALERTE: i64 = 64;
+
+/// LE NOMBRE DE NIVEAUX QUE LE RETRAIT CONSERVE. Les niveaux de FTS5 sont des CLASSES DE TAILLE : la
+/// fusion automatique de l'ingestion (`automerge`, quatre segments par niveau) fait monter les petits
+/// segments d'un niveau à l'autre, en partant du niveau 0 où chaque lot dépose le sien
+/// (`fts5FlushOneHash`). Garder des niveaux vides sous le plus ancien segment l'ÉLOIGNE de cette
+/// cascade ; les retirer TOUS le placerait au niveau 0, à côté de chaque segment déposé.
+pub(crate) const NIVEAUX_CONSERVES: i64 = 16;
+
+/// LE REMÈDE, une seule phrase pour le journal et pour la santé. Il est le seul qui retire des niveaux
+/// sans passer par la compaction : `rebuild` vide l'index (`sqlite3Fts5IndexReinit` réécrit une
+/// structure à zéro niveau, sqlite3.c:237920) puis le rebâtit depuis sa table source. Un redémarrage
+/// ne le joue PAS tant que l'index se lit : la porte d'ouverture ne rebâtit qu'une table virtuelle dont
+/// le constructeur échoue (`db_open::nom_de_vtable_en_echec`), et le constructeur ne lit la structure
+/// qu'au travers du décodage, qui n'échoue qu'au-delà de `LIMITE_DU_MOTEUR`.
+pub(crate) fn remede(nom: &str) -> String {
+    format!("remède : reconstruire l'index depuis sa source, démon arrêté : INSERT INTO {nom}({nom}) VALUES('rebuild')")
+}
+
+/// LE REMÈDE AU-DELÀ DE LA LIMITE DU MOTEUR, où `rebuild` n'est plus jouable : la table virtuelle ne se
+/// construit plus (son constructeur décode la structure, `sqlite3Fts5IndexLoadConfig`,
+/// sqlite3.c:239752), donc aucune commande ne l'atteint. C'est alors la porte d'ouverture qui la
+/// rebâtit depuis sa source, au démarrage (`db_open::reconstruire_index_derive`).
+pub(crate) fn remede_au_dela_de_la_limite() -> &'static str {
+    "remède : redémarrer le démon — la porte d'ouverture rebâtit depuis sa source un index dont la table virtuelle ne se construit plus"
+}
+
+/// La phrase d'une structure qu'on ne sait pas réécrire. Le retrait ne la touche pas.
+pub(crate) const STRUCTURE_DE_FORME_INCONNUE: &str =
+    "enregistrement de structure FTS5 de forme inconnue (tronqué, incohérent, ou format d'une autre version du moteur) : rien n'est réécrit";
+
+/// Un varint SQLite ÉCRIT (forme à sept bits par octet, big-endian) — l'inverse de `varint` pour les
+/// valeurs sous 2^56, les seules qu'un nombre de niveaux puisse prendre ici.
+fn ecrire_varint(v: u64, sortie: &mut Vec<u8>) {
+    let mut groupes = vec![(v & 0x7f) as u8];
+    let mut reste = v >> 7;
+    while reste > 0 {
+        groupes.push((reste & 0x7f) as u8 | 0x80);
+        reste >>= 7;
+    }
+    sortie.extend(groupes.iter().rev());
+}
+
+/// LE RETRAIT DES NIVEAUX VIDES, PUR : rend l'enregistrement réécrit et (niveaux avant, niveaux après),
+/// ou `None` s'il n'y a rien à retirer.
+///
+/// L'ENREGISTREMENT est celui qu'écrit `fts5StructureWrite` (sqlite3.c:233704) : quatre octets de
+/// cookie, puis en varints `nLevel`, `nSegment`, `nWriteCounter`, puis par niveau `nMerge`, `nSeg` et
+/// trois varints par segment. Il est découpé EN ENTIER ; toute incohérence (varint tronqué, octets en
+/// trop, somme des segments différente de `nSegment`, `nMerge > nSeg`) le fait refuser.
+///
+/// POURQUOI RETIRER UN NIVEAU VIDE NE CHANGE RIEN AU CONTENU. Un niveau vide ne porte aucun segment ;
+/// les segments, leurs pages et leur ordre sont recopiés à l'octet. `fts5StructureDecode`
+/// (sqlite3.c:233493-233494) exige seulement qu'un niveau en cours de fusion (`nMerge>0`) soit suivi
+/// d'un niveau NON vide et que le dernier niveau ne soit pas en fusion : un niveau vide n'est donc
+/// jamais le successeur d'un niveau en fusion, et le retirer laisse chaque niveau en fusion devant le
+/// même successeur ; le dernier niveau retiré vide laisse au sommet un niveau qui ne pouvait pas être
+/// en fusion. Les niveaux retirés sont les PLUS HAUTS vides d'abord (ceux que la fusion du budget
+/// négatif vient de créer sous le plus ancien segment), jamais le niveau 0, où l'ingestion dépose.
+pub(crate) fn retrait_des_niveaux_vides(bloc: &[u8], conserves: i64) -> Result<Option<(Vec<u8>, i64, i64)>, &'static str> {
+    let forme = STRUCTURE_DE_FORME_INCONNUE;
+    if bloc.len() < 6 {
+        return Err(forme);
+    }
+    let (n_niveaux, apres_niveaux) = varint(bloc, 4).ok_or(forme)?;
+    let (n_segments, i) = varint(bloc, apres_niveaux).ok_or(forme)?;
+    let (_compteur, fin_entete) = varint(bloc, i).ok_or(forme)?;
+    // Aucune allocation ni multiplication sur les nombres lus : un nombre faux (énorme) épuise
+    // l'enregistrement au premier varint manquant, et la lecture s'arrête là.
+    let mut niveaux: Vec<(usize, usize, u64)> = Vec::new();
+    let mut total = 0u64;
+    let mut i = fin_entete;
+    for _ in 0..n_niveaux {
+        let debut = i;
+        let (en_fusion, j) = varint(bloc, i).ok_or(forme)?;
+        let (n_seg, mut j) = varint(bloc, j).ok_or(forme)?;
+        if en_fusion > n_seg {
+            return Err(forme);
+        }
+        for _ in 0..n_seg {
+            for _ in 0..3 {
+                j = varint(bloc, j).ok_or(forme)?.1;
+            }
+        }
+        niveaux.push((debut, j, n_seg));
+        total = total.saturating_add(n_seg);
+        i = j;
+    }
+    if i != bloc.len() || total != n_segments {
+        return Err(forme);
+    }
+    let avant = niveaux.len() as i64;
+    let mut garde = vec![true; niveaux.len()];
+    let mut restants = avant;
+    for k in (1..niveaux.len()).rev() {
+        if restants <= conserves {
+            break;
+        }
+        if niveaux[k].2 == 0 {
+            garde[k] = false;
+            restants -= 1;
+        }
+    }
+    if restants == avant {
+        return Ok(None);
+    }
+    let mut neuf = Vec::with_capacity(bloc.len());
+    neuf.extend_from_slice(&bloc[..4]);
+    ecrire_varint(restants as u64, &mut neuf);
+    neuf.extend_from_slice(&bloc[apres_niveaux..fin_entete]);
+    for (k, &(debut, fin, _)) in niveaux.iter().enumerate() {
+        if garde[k] {
+            neuf.extend_from_slice(&bloc[debut..fin]);
+        }
+    }
+    Ok(Some((neuf, avant, restants)))
+}
+
+/// LE RETRAIT, ÉCRIT : relit l'enregistrement, le réécrit sans ses niveaux vides excédentaires, puis
+/// FAIT DÉCODER le résultat par FTS5 lui-même avant de valider. Rend (niveaux avant, niveaux après),
+/// `None` s'il n'y avait rien à retirer, ou la cause du refus — et dans ce cas l'enregistrement est
+/// celui d'avant (transaction annulée).
+///
+/// LA SONDE. `INSERT INTO <nom>(<nom>, rank) VALUES('merge', 0)` passe par `sqlite3Fts5IndexMerge`
+/// (sqlite3.c:237359) : il LIT et DÉCODE la structure, VIDE le cache de structure de la connexion
+/// (`fts5StructureInvalidate`, sqlite3.c:237363), puis `fts5IndexMerge` sort aussitôt d'un budget nul
+/// (sqlite3.c:236973, `while( nRem>0 …`) sans rien écrire. Un enregistrement que le moteur refuse fait
+/// échouer la sonde, et la transaction est annulée.
+///
+/// ELLE EST JOUÉE DEUX FOIS, ET LA PREMIÈRE N'EST PAS UNE REDITE. FTS5 garde la structure décodée par
+/// connexion (`p->pStruct`) et ne la relit du disque que si `PRAGMA data_version` a bougé
+/// (sqlite3.c:239344) — ce qui n'arrive pas pour une écriture de la MÊME connexion. Une sonde jouée
+/// sur un cache plein validerait donc l'ancienne structure, pas celle qu'on vient d'écrire. La
+/// première sonde, AVANT la réécriture, vide ce cache ; la seconde, après, décode ce qui est sur le
+/// disque. Les autres connexions voient `data_version` changer et relisent.
+pub(crate) fn retirer_les_niveaux_vides(conn: &Connection, nom: &str) -> Result<Option<(i64, i64)>, String> {
+    // LA LECTURE EST FAITE SOUS LE VERROU D'ÉCRITURE, jamais avant : un autre écrivain (la sous-commande
+    // `fts-compact` à côté du démon, par exemple) qui déposerait un segment entre une lecture libre et la
+    // réécriture verrait ce segment effacé de la structure, ses pages orphelines.
+    // La forme commune d'ouverture (`BEGIN IMMEDIATE`) : un refus est dit au journal `[fts-compact]` avec sa cause
+    // (verrou tenu ailleurs, transaction étrangère, refus hors verrou) et compté.
+    crate::handlers::transaction_validee::ouvrir_sa_transaction(conn, "fts-compact", "retrait des niveaux vides")
+        .map_err(|e| format!("transaction du retrait non ouverte ({e})"))?;
+    match retirer_dans_la_transaction(conn, nom) {
+        Ok(None) => match conn.execute_batch("ROLLBACK") {
+            Ok(()) => Ok(None),
+            Err(e) => Err(annuler_le_retrait(conn, format!("rien à retirer, transaction non refermée ({e})"))),
+        },
+        Ok(Some(niveaux)) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(Some(niveaux)),
+            Err(e) => Err(annuler_le_retrait(conn, format!("retrait non validé ({e})"))),
+        },
+        Err(cause) => Err(annuler_le_retrait(conn, cause)),
+    }
+}
+
+/// Le corps du retrait, DANS la transaction ouverte par `retirer_les_niveaux_vides` : lecture, découpage,
+/// première sonde, réécriture, seconde sonde. Rien n'y est validé ni annulé.
+fn retirer_dans_la_transaction(conn: &Connection, nom: &str) -> Result<Option<(i64, i64)>, String> {
+    let bloc: Vec<u8> = conn
+        .query_row(&format!("SELECT block FROM {nom}_data WHERE id=10"), [], |r| r.get(0))
+        .map_err(|e| format!("structure non relue ({e})"))?;
+    point_de_test(PointDeTest::ApresLaLectureDuRetrait, conn);
+    let Some((neuf, avant, apres)) = retrait_des_niveaux_vides(&bloc, NIVEAUX_CONSERVES).map_err(str::to_string)? else {
+        return Ok(None);
+    };
+    let sonde = format!("INSERT INTO {nom}({nom}, rank) VALUES('merge', 0)");
+    conn.execute(&sonde, []).map_err(|e| format!("cache de structure de FTS5 non vidé ({e})"))?;
+    conn.execute(&format!("UPDATE {nom}_data SET block=?1 WHERE id=10"), params![neuf])
+        .map_err(|e| format!("structure non réécrite ({e})"))?;
+    conn.execute(&sonde, []).map_err(|e| format!("structure réécrite REFUSÉE par FTS5 ({e})"))?;
+    Ok(Some((avant, apres)))
+}
+
+/// L'ANNULATION, dite avec l'état RELU : une annulation refusée laisse la connexion en transaction, et
+/// la phrase le dit au lieu de le supposer.
+fn annuler_le_retrait(conn: &Connection, cause: String) -> String {
+    match conn.execute_batch("ROLLBACK") {
+        Ok(()) => format!("{cause} ; transaction annulée, structure d'avant conservée"),
+        Err(e) => format!(
+            "{cause} ; ANNULATION REFUSÉE ({e}) — connexion encore en transaction : {}",
+            if conn.is_autocommit() { "non" } else { "OUI" }
+        ),
+    }
 }
 
 /// Les OCTETS DE PAGES du shadow `<nom>_data` — la grandeur dont parle le constat. `dbstat` contraint
@@ -318,10 +608,16 @@ pub(crate) fn documents(conn: &Connection, nom: &str) -> Option<i64> {
 
 /// Compacte UN index, par passes BORNÉES, en RELÂCHANT le verrou d'écriture entre chacune.
 ///
-/// LE BUDGET EST NÉGATIF, ET C'EST TOUT LE CORRECTIF. `merge` avec un N positif ne fusionne qu'un
-/// niveau portant au moins `usermerge` segments — mesuré : sur l'index gonflé du constat, il rend
-/// EXACTEMENT ZÉRO octet en 0,00 s. Avec `-N`, FTS5 prend son chemin d'`optimize` (tous les segments
-/// promus, `nMin=1`) borné à N pages écrites : même plancher que `optimize`, par tranches.
+/// LE BUDGET EST NÉGATIF : c'est le seul chemin du moteur qui fusionne des segments de niveaux
+/// DIFFÉRENTS, donc le seul qui atteigne le plancher (cf. l'en-tête du module). Avec `-N`, FTS5 prend
+/// son chemin d'`optimize` borné à N pages écrites.
+///
+/// ET CHAQUE PASSE EST SUIVIE DU RETRAIT DES NIVEAUX VIDES : le chemin d'`optimize` ajoute des niveaux
+/// que le moteur ne retire jamais (cf. l'en-tête), et c'est ce retrait qui borne leur nombre.
+///
+/// LA GARDE, AVANT CHAQUE PASSE : la structure est relue sous le verrou de la passe ; au-delà de
+/// `SEUIL_NIVEAUX`, la passe n'est pas lancée. À l'entrée, cela rend `NiveauxAuSeuil` sans rien
+/// écrire ; en cours de séquence, l'arrêt `NiveauxAuSeuil`.
 ///
 /// Le verrou est pris et rendu PAR PASSE (modèle `chunked_purge` / `reconcile_expr_indexes_background`),
 /// jamais tenu sur la séquence : mesuré, une passe à 500 pages tient le writer ~1 s, quelle que soit la
@@ -331,26 +627,29 @@ pub(crate) fn compacter_index(db: &Arc<Mutex<Connection>>, nom: &str, r: &Reglag
     let debut = Instant::now();
     // Sonde d'entrée : structure + tailles, sous un verrou COURT. Si FTS5 lui-même n'a rien à
     // fusionner, on ne lance AUCUNE passe et on le DIT.
-    let (seg0, oct0, docs) = {
+    let (st0, oct0, docs) = {
         let conn = db.lock();
-        (segments(&conn, nom), octets_index(&conn, nom), documents(&conn, nom))
+        (structure(&conn, nom), octets_index(&conn, nom), documents(&conn, nom))
     };
-    let (Some(seg0), Some(oct0)) = (seg0, oct0) else {
+    let (Some(st0), Some(oct0)) = (st0, oct0) else {
         return Issue::Echec {
             nom: nom.into(),
             message: "structure FTS5 ou dbstat illisible — aucune fusion tentée".into(),
         };
     };
-    if seg0 < 2 {
+    if st0.niveaux > SEUIL_NIVEAUX {
+        return Issue::NiveauxAuSeuil { nom: nom.into(), niveaux: st0.niveaux };
+    }
+    if st0.segments < 2 {
         return Issue::DejaCompact { nom: nom.into(), octets: oct0 };
     }
 
     let sql = format!("INSERT INTO {nom}({nom}, rank) VALUES('merge', ?1)");
     let budget = -r.pages; // NÉGATIF : cf. supra. Le seul incrémental qui atteigne le plancher.
     let mut passes = 0i64;
-    let mut seg = seg0;
+    let mut courante = st0;
     let arret = loop {
-        if seg < 2 {
+        if courante.segments < 2 {
             break Arret::Convergee;
         }
         if passes >= r.passes {
@@ -358,29 +657,43 @@ pub(crate) fn compacter_index(db: &Arc<Mutex<Connection>>, nom: &str, r: &Reglag
         }
         let sortie = {
             let conn = db.lock();
-            match conn.execute(&sql, params![budget]) {
-                // Une passe qui échoue n'invalide PAS les précédentes : chacune a committé, leurs
-                // octets sont RÉELS. Mais l'erreur est PORTÉE — elle ne se déguise pas en budget épuisé.
-                Err(e) => Some(Arret::Erreur(e.to_string())),
-                Ok(_) => {
-                    passes += 1;
-                    // La structure est relue SOUS LE MÊME verrou que la passe : c'est la seule lecture
-                    // qui décrive à coup sûr l'état que cette passe vient de committer.
-                    match segments(&conn, nom) {
-                        Some(s) => {
-                            seg = s;
-                            None
+            let sortie = match structure(&conn, nom) {
+                None => Some(Arret::StructureIllisible),
+                Some(s) if s.niveaux > SEUIL_NIVEAUX => Some(Arret::NiveauxAuSeuil { niveaux: s.niveaux }),
+                Some(_) => match conn.execute(&sql, params![budget]) {
+                    // Une passe qui échoue n'invalide PAS les précédentes : chacune a committé, leurs
+                    // octets sont RÉELS. Mais l'erreur est PORTÉE — elle ne se déguise pas en budget épuisé.
+                    Err(e) => Some(Arret::Erreur(e.to_string())),
+                    Ok(_) => {
+                        passes += 1;
+                        // La structure est relue SOUS LE MÊME verrou que la passe : c'est la seule lecture
+                        // qui décrive à coup sûr l'état que cette passe vient de committer. Le retrait suit,
+                        // toujours sous ce verrou, quand le cache de structure de FTS5 vient d'être vidé.
+                        match structure(&conn, nom) {
+                            None => Some(Arret::StructureIllisible),
+                            Some(s) => {
+                                courante = s;
+                                match retirer_les_niveaux_vides(&conn, nom) {
+                                    Err(cause) => Some(Arret::NiveauxNonRetires(cause)),
+                                    Ok(Some((_, apres))) => {
+                                        courante.niveaux = apres;
+                                        None
+                                    }
+                                    Ok(None) => None,
+                                }
+                            }
                         }
-                        None => Some(Arret::StructureIllisible),
                     }
-                }
-            }
+                },
+            };
+            point_de_test(PointDeTest::EntreLesPasses, &conn);
+            sortie
         };
         if let Some(a) = sortie {
             break a;
         }
         // RESPIRATION : verrou relâché, l'ingestion et les lectures passent (anti-famine writer).
-        if seg >= 2 && passes < r.passes && r.repos_ms > 0 {
+        if courante.segments >= 2 && passes < r.passes && r.repos_ms > 0 {
             std::thread::sleep(Duration::from_millis(r.repos_ms));
         }
     };
@@ -390,8 +703,10 @@ pub(crate) fn compacter_index(db: &Arc<Mutex<Connection>>, nom: &str, r: &Reglag
         nom: nom.into(),
         octets_avant: oct0,
         octets_apres: oct1,
-        segments_avant: seg0,
-        segments_apres: seg,
+        segments_avant: st0.segments,
+        segments_apres: courante.segments,
+        niveaux_avant: st0.niveaux,
+        niveaux_apres: courante.niveaux,
         docs,
         passes,
         duree_ms: debut.elapsed().as_millis(),
@@ -422,4 +737,162 @@ pub(crate) fn compacter_et_journaliser(db: &Arc<Mutex<Connection>>, conf: &HashM
         eprintln!("{}", i.phrase());
     }
     issues
+}
+
+// =================================================================================================
+// LA SANTÉ — les niveaux de chaque index, lus en une ligne par index
+// =================================================================================================
+
+/// LES NIVEAUX DE CHAQUE INDEX PLEIN-TEXTE, pour la surface d'état. Une ligne par index (`%_data`
+/// rowid 10), aucun verrou tenu au-delà de ces lectures. Le nombre servi est celui de l'en-tête, SANS
+/// la borne du moteur : un index déjà au-delà de `LIMITE_DU_MOTEUR` se lit ici avec son vrai nombre.
+/// Le catalogue non lu, une structure non lue ou de forme inconnue rendent la mesure ILLISIBLE, avec la
+/// cause et l'index nommés — jamais zéro niveau.
+pub(crate) fn niveaux_des_index(conn: &Connection) -> crate::mesure_environnement::Mesure<Vec<(String, i64)>> {
+    use crate::mesure_environnement::{Mesure, CAUSE_FORME_INCONNUE, CAUSE_SOURCE_ILLISIBLE};
+    let illisible = |cause: &'static str, detail: String| Mesure::Illisible { cause, detail };
+    let noms: Result<Vec<String>, rusqlite::Error> = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' \
+               AND lower(sql) LIKE 'create virtual table%' AND lower(sql) LIKE '%using fts5%' ORDER BY name",
+        )
+        .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0))?.collect());
+    let noms = match noms {
+        Ok(n) => n,
+        Err(e) => return illisible(CAUSE_SOURCE_ILLISIBLE, format!("catalogue des index plein-texte non lu ({e})")),
+    };
+    let mut lus = Vec::with_capacity(noms.len());
+    for nom in noms.into_iter().filter(|n| soql_ident_ok(n)) {
+        let bloc: Vec<u8> = match conn.query_row(&format!("SELECT block FROM {nom}_data WHERE id=10"), [], |r| r.get(0)) {
+            Ok(b) => b,
+            Err(e) => return illisible(CAUSE_SOURCE_ILLISIBLE, format!("structure de `{nom}` non lue ({e})")),
+        };
+        match entete_de_structure(&bloc) {
+            Some(s) => lus.push((nom, s.niveaux)),
+            None => return illisible(CAUSE_FORME_INCONNUE, format!("structure de `{nom}` de forme inconnue")),
+        }
+    }
+    Mesure::Lue(lus)
+}
+
+/// L'ÉTAT DU COMPOSANT `store` APRÈS LES NIVEAUX : il ne peut que DESCENDRE (`metrics::pire_des_deux`).
+/// Au-delà de `LIMITE_DU_MOTEUR` : rouge, l'index ne se lit plus. Au-delà de `NIVEAUX_D_ALERTE` :
+/// jaune. Une mesure illisible : jaune. Chaque index en cause ajoute sa phrase au détail ; sinon l'état
+/// et le détail reviennent tels quels.
+pub(crate) fn etat_de_surface_niveaux(
+    etat: &'static str,
+    detail: String,
+    mesure: &crate::mesure_environnement::Mesure<Vec<(String, i64)>>,
+) -> (&'static str, String) {
+    use crate::mesure_environnement::Mesure;
+    match mesure {
+        Mesure::Illisible { detail: d, .. } => (
+            crate::metrics::pire_des_deux(etat, "yellow"),
+            format!(
+                "{detail} ; niveaux de l'index plein-texte NON LUS ({d}) : impossible de dire si une structure approche la \
+                 limite du moteur ({LIMITE_DU_MOTEUR} niveaux)"
+            ),
+        ),
+        Mesure::Lue(lus) => {
+            let mut etat = etat;
+            let mut detail = detail;
+            for (nom, niveaux) in lus {
+                if *niveaux > LIMITE_DU_MOTEUR {
+                    etat = crate::metrics::pire_des_deux(etat, "red");
+                    detail = format!(
+                        "{detail} ; `{nom}` : {niveaux} niveaux, AU-DELÀ de la limite du moteur ({LIMITE_DU_MOTEUR}) : l'index \
+                         ne se lit plus et toute insertion échoue ; {}",
+                        remede_au_dela_de_la_limite()
+                    );
+                } else if *niveaux > NIVEAUX_D_ALERTE {
+                    etat = crate::metrics::pire_des_deux(etat, "yellow");
+                    detail = format!(
+                        "{detail} ; `{nom}` : {niveaux} niveaux dans la structure de l'index plein-texte (alerte au-delà de \
+                         {NIVEAUX_D_ALERTE}, compaction suspendue au-delà de {SEUIL_NIVEAUX}, illisible au-delà de \
+                         {LIMITE_DU_MOTEUR}) ; {}",
+                        remede(nom)
+                    );
+                }
+            }
+            (etat, detail)
+        }
+    }
+}
+
+/// LE CHAMP `fts_levels` : le PLUS GRAND nombre de niveaux des index, avec le verdict de la lecture
+/// (posé par `Mesure::poser_dans`, comme ses voisins). Sans aucun index, un vrai zéro.
+pub(crate) fn plus_grand_nombre_de_niveaux(
+    mesure: &crate::mesure_environnement::Mesure<Vec<(String, i64)>>,
+) -> crate::mesure_environnement::Mesure<i64> {
+    use crate::mesure_environnement::Mesure;
+    match mesure {
+        Mesure::Lue(lus) => Mesure::Lue(lus.iter().map(|(_, n)| *n).max().unwrap_or(0)),
+        Mesure::Illisible { cause, detail } => Mesure::Illisible { cause, detail: detail.clone() },
+    }
+}
+
+/// LE CHAMP `fts_levels_by_index` : chaque index et son nombre de niveaux, posé SEULEMENT quand la
+/// mesure a été lue (illisible, il est absent et `fts_levels_verdict` dit pourquoi).
+pub(crate) fn poser_les_niveaux_par_index(
+    objet: &mut serde_json::Map<String, Value>,
+    mesure: &crate::mesure_environnement::Mesure<Vec<(String, i64)>>,
+) {
+    if let crate::mesure_environnement::Mesure::Lue(lus) = mesure {
+        let par_index: serde_json::Map<String, Value> = lus.iter().map(|(n, v)| (n.clone(), json!(v))).collect();
+        objet.insert("fts_levels_by_index".into(), Value::Object(par_index));
+    }
+}
+
+// =================================================================================================
+// LES POINTS DE TEST — vides en production, crochets sous test (module en fin de fichier)
+// =================================================================================================
+
+/// Où un témoin peut agir : sous le verrou de chaque passe, après elle et son retrait ; dans la
+/// transaction du retrait, juste après la lecture de la structure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PointDeTest {
+    EntreLesPasses,
+    ApresLaLectureDuRetrait,
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn point_de_test(_point: PointDeTest, _conn: &Connection) {}
+
+#[cfg(test)]
+fn point_de_test(point: PointDeTest, conn: &Connection) {
+    crochet_de_compaction::passer(point, conn);
+}
+
+/// Instrument de TEST seulement. PAR FIL (la compaction tourne sur le fil du témoin) : il permet à un
+/// témoin d'agir EXACTEMENT à l'un des `PointDeTest`.
+#[cfg(test)]
+pub(crate) mod crochet_de_compaction {
+    use super::PointDeTest;
+    use rusqlite::Connection;
+    use std::cell::RefCell;
+
+    type Crochet = Box<dyn FnMut(&Connection)>;
+
+    thread_local! {
+        static ARME: RefCell<Option<(PointDeTest, Crochet)>> = RefCell::new(None);
+    }
+
+    pub(crate) fn armer(point: PointDeTest, f: Crochet) {
+        ARME.with(|a| *a.borrow_mut() = Some((point, f)));
+    }
+
+    pub(crate) fn desarmer() {
+        ARME.with(|a| *a.borrow_mut() = None);
+    }
+
+    pub(crate) fn passer(point: PointDeTest, conn: &Connection) {
+        ARME.with(|a| {
+            if let Some((p, f)) = a.borrow_mut().as_mut() {
+                if *p == point {
+                    f(conn);
+                }
+            }
+        });
+    }
 }

@@ -1048,6 +1048,11 @@ pub(crate) fn component_health_avec_pertes(
     // composant tant que la dernière est récente.
     let erreurs_du_support = crate::sqlite_plafond::ErreursDuSupport::du_processus();
     let (sstate, sdetail) = etat_de_surface_erreurs_du_support(sstate, sdetail, &erreurs_du_support, now_ts);
+    // ET SA STRUCTURE PLEIN-TEXTE SE LIT-ELLE ENCORE ? Le moteur refuse de décoder une structure FTS5 de plus de
+    // `LIMITE_DU_MOTEUR` niveaux, et toute insertion échoue alors : le composant le voit à l'approche, une ligne
+    // lue par index (`compactage_fts::niveaux_des_index`).
+    let niveaux_fts = crate::compactage_fts::niveaux_des_index(conn);
+    let (sstate, sdetail) = crate::compactage_fts::etat_de_surface_niveaux(sstate, sdetail, &niveaux_fts);
     let mut store = serde_json::Map::new();
     store.insert("component".into(), json!("store"));
     store.insert("state".into(), json!(sstate));
@@ -1063,6 +1068,8 @@ pub(crate) fn component_health_avec_pertes(
     };
     pourcentage.poser_dans(&mut store, "disk_used_pct");
     db_size_bytes(db_path).poser_dans(&mut store, "db_size_bytes");
+    crate::compactage_fts::plus_grand_nombre_de_niveaux(&niveaux_fts).poser_dans(&mut store, "fts_levels");
+    crate::compactage_fts::poser_les_niveaux_par_index(&mut store, &niveaux_fts);
     out.push(Value::Object(store));
 
     // FORWARDER (#50 outputs/destinations) : table vide -> idle (mode 0). Une destination ACTIVE en erreur

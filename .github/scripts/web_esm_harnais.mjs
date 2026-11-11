@@ -32851,6 +32851,270 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   if (echecs.length !== echecsAvant177) console.log(`(177-182) EN ÉCHEC — ${echecs.length - echecsAvant177} écart(s), dits ci-dessus`);
   else console.log("(177-182) OK — `P11.25-f` (console) : la création offre « toutes les vues » décochée et l'envoie en booléen, l'édition offre la valeur servie et la renvoie en booléen ; les refus 400/404/503 (causes relues dans dashboards.rs) sont peints avec l'identifiant du 503 ; la liste se demande par vue, sans vue ou sans filtre, bornée sous la limite relue, page suivante par offset et « n sur total » ; le sélecteur d'ajout lit la liste entière ; la liste des panneaux d'un tableau n'est demandée qu'à l'intersection de sa tuile, une seule fois, les données des panneaux restent observées, et tout se charge sans IntersectionObserver ; un 409 de création propose les seuls tableaux manquants et dit added et already_present, un 404 nomme les identifiants servis, un renommage 409 nomme la vue existante ; le retrait d'une vue se confirme, relit la liste sur 204 et dit le 404 tel quel ; les vues de view_ids sont affichées et un view_id nul n'est jamais « sans vue ». Ce qu'ils NE tiennent PAS : le rendu d'un vrai navigateur.");
 }
+// ---------------------------------------------------------------------------------------------
+// (176g) (177g) (178g) (179g) (180g) (181g) `P11.25-g` (console) — UNE ALERTE AFFICHE LES PREUVES QU'ELLE PORTE.
+//
+// CE QUI A ÉTÉ VU (2026-11-10, sur `web/alerts.js` d'avant) : `/api/alerts` sert depuis la vague CC une clé `evidence`
+// sur la ligne d'une alerte dont la règle déclare une requête de preuves (daemon/src/handlers/alerts.rs, formes de
+// daemon/src/preuves_d_alerte.rs) ; AUCUN module web ne la lisait — la ligne rendue ne portait ni adresse ni activité.
+// Numérotés « g » : les numéros 176 à 182 étaient déjà pris sur la base (176 `P11.25-a`, 177-182 `P11.25-f`).
+// LES ÉTATS SONT LUS DANS L'ARBRE DU DÉMON (`ETAT_PREUVES_*`), jamais recopiés : si l'un disparaît, le témoin REFUSE
+// DE CONCLURE. Chaque face est jugée sur le DOM rendu par le point d'entrée réel (`dessinerLaListePlate`, qui passe
+// par la fabrique de ligne partagée) :
+//   (176g) preuves établies : colonnes et lignes servies dans l'ordre, adresse en texte (aucun lien), date de la levée
+//          « relevées à la levée » et « pas rafraîchies », coupe dite (« au moins » quand total_exact est faux) et ABSENTE
+//          sur une lecture entière ; aucune requête ne part au rendu ;
+//   (177g) aucune ligne ; NON ÉTABLIES avec la cause, sans table ni phrase d'absence ; retenues ; illisibles ; état
+//          inconnu dit ;
+//   (178g) clé absente : aucun bloc, même à côté d'une alerte qui en porte ;
+//   (179g) un texte servi qui porte du balisage ressort ÉCHAPPÉ (colonne, cellule, cause, état), et la face rend en
+//          anglais sous LANG='en' ;
+//   (180g) un bloc ouvert par l'exploitant reste ouvert au rafraîchissement de la liste plate (charge vive, 30 s,
+//          qui réécrit tout le corps), un bloc refermé reste fermé, un bloc jamais ouvert ne s'ouvre pas ;
+//   (181g) même mémoire dans la vue GROUPÉE : groupe déplié, bloc ouvert sur une occurrence, page 2 des occurrences
+//          puis retour, reconstruction des groupes (charge vive) -> le bloc ouvert reste ouvert, un bloc jamais ouvert
+//          ou refermé reste fermé.
+// Le cas 176g joue aussi la coupe à total EXACT (« sur N », ni « au moins » ni « plafond ») et les cellules nulle/objet.
+// LA DATE DES PREUVES EST CELLE DE LA LEVÉE (`evidence.at`), jamais le `ts` de l'alerte, que le démon avance à chaque
+// nouveau tir : les alertes du témoin portent un `ts` PLUS RÉCENT que `at`, et la date de `ts` est refusée dans le bloc.
+// LE RÉSUMÉ DU BLOC REPLIÉ (`<summary>`, tout ce que l'exploitant voit avant d'ouvrir) est jugé à l'égalité, SÉPARÉMENT
+// du corps, pour chaque état. `evidence: null` (forme qui ne se lit pas) rend la face « forme inconnue », jamais rien.
+// La face anglaise (179g) pose `soc_lang` autour de son import, comme les autres sites du harnais (`P11.24-j`) : elle
+// ne dépend pas d'un `core.js?…` mis en cache plus haut avec cette langue.
+// MUTANTS ÉPROUVÉS : face « lecture ratée » rendue comme liste vide -> 177g ; `esc` retiré d'une cellule -> 179g ;
+// bloc affiché sans clé -> 178g ; « au moins » ou « plafond » toujours dits -> 176g ; String(null)/String(objet) en
+// cellule -> 176g ; relevé ou réouverture des dépliés retiré -> 180g ; date prise sur le `ts` de l'alerte -> 176g ;
+// résumé réduit à son premier mot -> 176g, 177g, 179g ; `evidence: null` rendu comme une clé absente -> 177g ; relevé retiré
+// de la reconstruction des groupes, relevé ou réouverture retiré du chargement des occurrences -> 181g.
+// CE QU'IL NE TIENT PAS : la mise en page peinte (le shim ne met rien en page), l'ouverture du dépli par un vrai clic.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant176g = echecs.length;
+  const url176g = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const mod176g = await import(url176g("alerts.js"));
+  // Convention des sites qui importent un module sous une langue (`P11.24-j`) : `soc_lang` posé autour de l'import,
+  // pour que la face anglaise ne dépende pas d'un `core.js?…` mis en cache plus haut avec cette langue.
+  localStorage.setItem("soc_lang", "en");
+  const modEn176g = await import(adresseSousLaLangue("alerts.js"));
+  localStorage.removeItem("soc_lang");
+  const { S: S176g } = await import(url176g("state.js"));
+  const { fmtTs: fmtTs176g } = await import(url176g("core.js"));
+  const instrument176g = (vrai, quoi) => exiger(vrai, `(176g-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const srcPreuves176g = readFileSync(path.join(RACINE, "daemon", "src", "preuves_d_alerte.rs"), "utf8");
+  const ETATS176g = Object.fromEntries([...srcPreuves176g.matchAll(/pub\(crate\) const ETAT_PREUVES_(\w+): &str = "([^"]+)";/g)].map((m) => [m[1], m[2]]));
+  instrument176g(["ETABLIES", "SANS_LIGNE", "NON_ETABLIES", "RETENUES", "ILLISIBLES"].every((k) => typeof ETATS176g[k] === "string"),
+    `les cinq états servis ne se lisent plus dans preuves_d_alerte.rs (${JSON.stringify(ETATS176g)})`);
+  const srcCauses176g = readFileSync(path.join(RACINE, "daemon", "src", "detection_aveugle.rs"), "utf8");
+  const CAUSE176g = (srcCauses176g.match(/pub\(crate\) const CAUSE_BUDGET_DEPASSE: &str = "([^"]+)";/) || [])[1];
+  instrument176g(typeof CAUSE176g === "string", "la cause CAUSE_BUDGET_DEPASSE ne se lit plus dans detection_aveugle.rs");
+  const cueillir176g = (el, pred, acc = []) => { ((el && el.children) || []).forEach((c) => { if (pred(c)) acc.push(c); cueillir176g(c, pred, acc); }); return acc; };
+  const nu176g = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const AT176g = 1767225600, FROM176g = AT176g - 3600, TS176g = AT176g + 3 * 86400;
+  const alerte176g = (id, evidence) => ({ id, ts: TS176g, rule: "rule-52", severity: 3, title: `Attaquant actif NON banni ${id}`, status: "new", detail: "", mitre: "T1595", sources: "web", case_id: null, acked_at: 0, acked_by: "", ...(evidence === undefined ? {} : { evidence }) });
+  const ETABLIES176g = (extra) => ({ state: ETATS176g.ETABLIES, phrase: "x", at: AT176g, from: FROM176g, window_s: 3600, columns: ["src_ip", "activite", "web", "cloudflare"],
+    rows: [["192.0.2.10", 40, 30, 10], ["198.51.100.7", 25, 25, 0]], total: 2, total_exact: true, served: 2, truncated: false, ...extra });
+  const liste176g = new Element("div");
+  const fetchOrigine176g = globalThis.fetch, qsOrigine176g = document.querySelector;
+  const etatOrigine176g = { g: S176g.alertGroupBy, a: S176g.alertGroupAll, u: S176g.alertUncased, auth: S176g.AUTH };
+  let requetes176g = 0;
+  const rendre176g = (m, lot) => { requetes176g = 0; liste176g.replaceChildren(); m.dessinerLaListePlate(liste176g, m.alertListModel(), lot, undefined); };
+  const blocs176g = () => cueillir176g(liste176g, (e) => e.classList && e.classList.contains("alertpreuves"));
+  // Le résumé du bloc replié, SEUL : le texte de son `<summary>`, jamais celui du corps.
+  const resume176g = (b) => { const s = b ? cueillir176g(b, (e) => e.tagName === "SUMMARY") : []; return s.length === 1 ? nu176g(s[0]) : `(${s.length} résumé(s))`; };
+  const blocDe176g = (id) => { const ligne = cueillir176g(liste176g, (e) => e.classList && e.classList.contains("alert")).find((l) => nu176g(l).includes(`NON banni ${id}`)); return ligne ? cueillir176g(ligne, (e) => e.classList && e.classList.contains("alertpreuves"))[0] || null : null; };
+  const ecarts176g = { "176g": [], "177g": [], "178g": [], "179g": [], "180g": [] };
+  try {
+    S176g.AUTH = { user: "operateur", role: "admin" }; S176g.alertGroupBy = ""; S176g.alertGroupAll = false; S176g.alertUncased = false;
+    document.querySelector = (sel) => (sel === "#alerts .body" ? liste176g : qsOrigine176g.call(document, sel));
+    globalThis.fetch = async () => { requetes176g++; return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) }; };
+    mod176g.poserLaRechercheDesAlertes("");
+    // ── (176g) PREUVES ÉTABLIES ─────────────────────────────────────────────────────────────────────────────
+    rendre176g(mod176g, [alerte176g(1, ETABLIES176g()), alerte176g(2, ETABLIES176g({ rows: [["192.0.2.10", 40, 30, 10], ["198.51.100.7", 25, 25, 0]], total: 3, served: 2, truncated: true, total_exact: false }))]);
+    {
+      const b = blocDe176g(1);
+      if (!b || b.getAttribute("data-preuves") !== "etablies") ecarts176g["176g"].push(`bloc de l'alerte établie : ${b ? b.getAttribute("data-preuves") : "ABSENT"}`);
+      const ths = b ? cueillir176g(b, (e) => e.tagName === "TH").map(nu176g) : [];
+      if (JSON.stringify(ths) !== JSON.stringify(["src_ip", "activite", "web", "cloudflare"])) ecarts176g["176g"].push(`colonnes rendues ${JSON.stringify(ths)}`);
+      const trs = b ? cueillir176g(b, (e) => e.tagName === "TR").filter((tr) => cueillir176g(tr, (e) => e.tagName === "TD").length).map((tr) => cueillir176g(tr, (e) => e.tagName === "TD").map(nu176g)) : [];
+      if (JSON.stringify(trs) !== JSON.stringify([["192.0.2.10", "40", "30", "10"], ["198.51.100.7", "25", "25", "0"]])) ecarts176g["176g"].push(`lignes rendues ${JSON.stringify(trs)} (ordre servi, activité et part par source attendus)`);
+      if (b && cueillir176g(b, (e) => e.tagName === "A").length) ecarts176g["176g"].push("une adresse est rendue en lien");
+      const t = nu176g(b);
+      if (!t.includes(`Preuves relevées à la levée, le ${fmtTs176g(AT176g)}`) || !t.includes(fmtTs176g(FROM176g)) || !/ne sont pas rafraîchies/.test(t)) ecarts176g["176g"].push(`la levée n'est pas datée ou le non-rafraîchissement pas dit : « ${t.slice(0, 300)} »`);
+      if (fmtTs176g(TS176g) === fmtTs176g(AT176g)) instrument176g(false, "le ts de l'alerte et la date de la levée se rendent pareil : la date des preuves ne serait pas jugée");
+      if (t.includes(fmtTs176g(TS176g))) ecarts176g["176g"].push(`les preuves sont datées du ts de l'alerte (${fmtTs176g(TS176g)}, dernier tir) et non de la levée (${fmtTs176g(AT176g)}) : « ${t.slice(0, 300)} »`);
+      if (resume176g(b) !== "Preuves · 2 ligne(s)") ecarts176g["176g"].push(`résumé du bloc replié des preuves établies : « ${resume176g(b)} » au lieu de « Preuves · 2 ligne(s) »`);
+      if (/Coupe/.test(t)) ecarts176g["176g"].push("une lecture entière dit une coupe");
+      const c = blocDe176g(2), tc = nu176g(c);
+      if (!/Coupe : lignes servies 2 sur au moins 3 lues/.test(tc) || !/plafond de lecture/.test(tc)) ecarts176g["176g"].push(`la coupe servie n'est pas dite (au moins, plafond) : « ${tc.slice(0, 400)} »`);
+      if (resume176g(c) !== "Preuves · 2 ligne(s)") ecarts176g["176g"].push(`résumé du bloc replié d'une lecture coupée : « ${resume176g(c)} » au lieu de « Preuves · 2 ligne(s) »`);
+      if (requetes176g !== 0) ecarts176g["176g"].push(`${requetes176g} requête(s) au serveur pendant le rendu des preuves`);
+    }
+    // Coupe à total EXACT (le démon la sert dès 51 lignes sous le plafond de lecture) : « sur N », sans « au moins »
+    // ni « plafond » ; et une cellule nulle rend vide, une cellule objet son JSON.
+    rendre176g(mod176g, [alerte176g(15, ETABLIES176g({ total: 120, served: 2, truncated: true, total_exact: true })),
+      alerte176g(16, ETABLIES176g({ columns: ["src_ip", "activite"], rows: [[null, { web: 3, cf: [1, 2] }]], total: 1, served: 1 }))]);
+    {
+      const te = nu176g(blocDe176g(15));
+      if (!/Coupe : lignes servies 2 sur 120 lues/.test(te) || /au moins/.test(te) || /plafond/.test(te)) ecarts176g["176g"].push(`coupe à total exact : « sur 120 » attendu sans « au moins » ni « plafond » : « ${te.slice(0, 400)} »`);
+      const tds = cueillir176g(blocDe176g(16), (e) => e.tagName === "TD").map(nu176g);
+      if (JSON.stringify(tds) !== JSON.stringify(["", '{"web":3,"cf":[1,2]}'])) ecarts176g["176g"].push(`cellule nulle (vide) et objet (JSON) attendues, rendues ${JSON.stringify(tds)}`);
+    }
+    // ── (177g) LES AUTRES ÉTATS SERVIS ──────────────────────────────────────────────────────────────────────
+    rendre176g(mod176g, [
+      alerte176g(3, { state: ETATS176g.SANS_LIGNE, phrase: "x", at: AT176g, from: FROM176g, window_s: 3600, columns: ["src_ip"], rows: [], total: 0, total_exact: true, served: 0, truncated: false }),
+      alerte176g(4, { state: ETATS176g.NON_ETABLIES, phrase: "x", at: AT176g, from: FROM176g, window_s: 3600, cause: CAUSE176g }),
+      alerte176g(5, { state: ETATS176g.RETENUES, phrase: "x" }),
+      alerte176g(6, { state: ETATS176g.ILLISIBLES, phrase: "x" }),
+      alerte176g(7, { state: "etat_neuf_177g", phrase: "x" }),
+      alerte176g(17, null),
+    ]);
+    {
+      const s = blocDe176g(3), ts = nu176g(s);
+      if (!s || s.getAttribute("data-preuves") !== "sans_ligne" || !/la lecture a réussi et n'a rien rendu/.test(ts) || !ts.includes(fmtTs176g(AT176g))) ecarts176g["177g"].push(`aucune ligne : « ${ts.slice(0, 300)} »`);
+      const n = blocDe176g(4), tn = nu176g(n);
+      if (!n || n.getAttribute("data-preuves") !== "non_etablies" || !/NON ÉTABLIES/.test(tn) || !tn.includes(`Cause : ${CAUSE176g}`) || !tn.includes(fmtTs176g(AT176g))) ecarts176g["177g"].push(`lecture ratée : l'état ou la cause n'est pas dit : « ${tn.slice(0, 300)} »`);
+      if (n && (cueillir176g(n, (e) => e.tagName === "TABLE").length || /aucune ligne|n'a rien rendu/i.test(tn))) ecarts176g["177g"].push(`lecture ratée rendue comme une absence de preuve : « ${tn.slice(0, 300)} »`);
+      const r = blocDe176g(5), tr = nu176g(r);
+      if (!r || r.getAttribute("data-preuves") !== "retenues" || !/Preuves retenues : un filtre de champs est actif pour votre rôle/.test(tr) || cueillir176g(r, (e) => e.tagName === "TABLE").length) ecarts176g["177g"].push(`retenues : « ${tr.slice(0, 300)} »`);
+      const i = blocDe176g(6), ti = nu176g(i);
+      if (!i || i.getAttribute("data-preuves") !== "illisibles" || !/illisibles en base : rien n'en est servi/.test(ti)) ecarts176g["177g"].push(`illisibles : « ${ti.slice(0, 300)} »`);
+      const u = blocDe176g(7), tu = nu176g(u);
+      if (!u || u.getAttribute("data-preuves") !== "inconnu" || !tu.includes("« etat_neuf_177g »")) ecarts176g["177g"].push(`état inconnu : « ${tu.slice(0, 300)} »`);
+      for (const [b, quoi] of [[s, "aucune ligne"], [n, "lecture ratée"]]) {
+        if (nu176g(b).includes(fmtTs176g(TS176g))) ecarts176g["177g"].push(`${quoi} : datée du ts de l'alerte (dernier tir), pas de la levée : « ${nu176g(b).slice(0, 300)} »`);
+      }
+      // `evidence: null` — une forme qui ne se lit pas : SIGNALÉE (face « forme inconnue »), jamais tue comme une clé absente.
+      const z = blocDe176g(17), tz = nu176g(z);
+      if (!z || z.getAttribute("data-preuves") !== "inconnu" || !/Preuves servies sous une forme que cette console ne sait pas lire/.test(tz)) ecarts176g["177g"].push(`evidence: null n'est pas signalé (bloc ${z ? z.getAttribute("data-preuves") : "ABSENT"}) : « ${tz.slice(0, 300)} »`);
+      // Le résumé replié, état par état, jugé à l'égalité et séparément du corps.
+      for (const [b, attendu] of [[s, "Preuves · aucune ligne"], [n, "Preuves · NON ÉTABLIES"], [r, "Preuves · retenues"], [i, "Preuves · illisibles"], [u, "Preuves · forme inconnue"], [z, "Preuves · forme inconnue"]]) {
+        if (resume176g(b) !== attendu) ecarts176g["177g"].push(`résumé du bloc replié : « ${resume176g(b)} » au lieu de « ${attendu} »`);
+      }
+    }
+    // ── (178g) CLÉ ABSENTE : RIEN ───────────────────────────────────────────────────────────────────────────
+    rendre176g(mod176g, [alerte176g(8, undefined), alerte176g(9, ETABLIES176g())]);
+    {
+      if (blocDe176g(8) || blocs176g().length !== 1) ecarts176g["178g"].push(`alerte sans clé evidence : ${blocDe176g(8) ? "un bloc est rendu" : "pas de bloc"} ; ${blocs176g().length} bloc(s) sur la liste au lieu d'un`);
+      if (cueillir176g(liste176g, (e) => e.getAttribute && e.getAttribute("data-preuves") !== null).length !== 1) ecarts176g["178g"].push("un élément de preuves est rendu pour une alerte qui n'en porte pas");
+    }
+    // ── (179g) ÉCHAPPEMENT ET LANGUE ────────────────────────────────────────────────────────────────────────
+    const HOSTILE176g = '<img src=x onerror="alert(1)">';
+    rendre176g(mod176g, [
+      alerte176g(10, ETABLIES176g({ columns: ["<b>col</b>", "activite"], rows: [[HOSTILE176g, "<i>9</i>"]], total: 1, served: 1 })),
+      alerte176g(11, { state: ETATS176g.NON_ETABLIES, at: AT176g, from: FROM176g, window_s: 3600, cause: "<script>x</script>" }),
+      alerte176g(12, { state: "<u>neuf</u>" }),
+    ]);
+    {
+      for (const id of [10, 11, 12]) {
+        const b = blocDe176g(id);
+        const balises = b ? cueillir176g(b, (e) => ["IMG", "B", "I", "SCRIPT", "U"].includes(e.tagName)).map((e) => e.tagName) : ["BLOC ABSENT"];
+        if (balises.length) ecarts176g["179g"].push(`alerte ${id} : du balisage servi devient des éléments (${balises.join(", ")})`);
+      }
+      const t10 = nu176g(blocDe176g(10)), t11 = nu176g(blocDe176g(11)), t12 = nu176g(blocDe176g(12));
+      if (!t10.includes(HOSTILE176g) || !t10.includes("<b>col</b>") || !t10.includes("<i>9</i>")) ecarts176g["179g"].push(`le texte servi n'est pas rendu tel quel : « ${t10.slice(0, 300)} »`);
+      if (!t11.includes("<script>x</script>")) ecarts176g["179g"].push(`la cause servie n'est pas rendue telle quelle : « ${t11.slice(0, 300)} »`);
+      if (!t12.includes("<u>neuf</u>")) ecarts176g["179g"].push(`l'état inconnu servi n'est pas rendu tel quel : « ${t12.slice(0, 300)} »`);
+    }
+    // ── (180g) UN DÉPLI OUVERT SURVIT AU RAFRAÎCHISSEMENT DE LA LISTE PLATE ─────────────────────────────────
+    {
+      const lot180g = [alerte176g(20, ETABLIES176g()), alerte176g(21, ETABLIES176g())];
+      rendre176g(mod176g, lot180g);
+      const ouvert180g = (id) => { const b = blocDe176g(id); return b ? b.hasAttribute("open") : null; };
+      if (ouvert180g(20) !== false || ouvert180g(21) !== false) ecarts176g["180g"].push(`au premier rendu un bloc est déjà ouvert ou absent (${ouvert180g(20)}, ${ouvert180g(21)})`);
+      const b20 = blocDe176g(20); if (b20) b20.setAttribute("open", "");
+      mod176g.dessinerLaListePlate(liste176g, mod176g.alertListModel(), lot180g, undefined);
+      if (ouvert180g(20) !== true) ecarts176g["180g"].push(`le bloc ouvert par l'exploitant s'est refermé au rafraîchissement (${ouvert180g(20)})`);
+      if (ouvert180g(21) !== false) ecarts176g["180g"].push(`un bloc jamais ouvert s'ouvre au rafraîchissement (${ouvert180g(21)})`);
+      const b20b = blocDe176g(20); if (b20b) b20b.removeAttribute("open");
+      mod176g.dessinerLaListePlate(liste176g, mod176g.alertListModel(), lot180g, undefined);
+      if (ouvert180g(20) !== false) ecarts176g["180g"].push(`le bloc refermé par l'exploitant se rouvre au rafraîchissement (${ouvert180g(20)})`);
+    }
+    rendre176g(modEn176g, [alerte176g(13, ETABLIES176g()), alerte176g(14, { state: ETATS176g.NON_ETABLIES, at: AT176g, from: FROM176g, window_s: 3600, cause: CAUSE176g })]);
+    {
+      const te = nu176g(blocDe176g(13)), tn = nu176g(blocDe176g(14));
+      if (!/Evidence taken when the alert was raised/.test(te) || /Preuves|relevées/.test(te) || !/NOT ESTABLISHED/.test(tn) || /NON ÉTABLIES/.test(tn)) ecarts176g["179g"].push(`sous LANG='en' : « ${te.slice(0, 200)} » / « ${tn.slice(0, 200)} »`);
+      if (resume176g(blocDe176g(13)) !== "Evidence · 2 row(s)" || resume176g(blocDe176g(14)) !== "Evidence · NOT ESTABLISHED") ecarts176g["179g"].push(`résumés repliés sous LANG='en' : « ${resume176g(blocDe176g(13))} » / « ${resume176g(blocDe176g(14))} »`);
+    }
+  } finally {
+    globalThis.fetch = fetchOrigine176g; document.querySelector = qsOrigine176g;
+    S176g.alertGroupBy = etatOrigine176g.g; S176g.alertGroupAll = etatOrigine176g.a; S176g.alertUncased = etatOrigine176g.u; S176g.AUTH = etatOrigine176g.auth;
+    liste176g.replaceChildren();
+  }
+  exiger(ecarts176g["176g"].length === 0, `(176g) \`P11.25-g\` (console) — LES PREUVES ÉTABLIES NE SONT PAS RENDUES (lignes, levée datée, coupe) : ${JSON.stringify(ecarts176g["176g"])}`);
+  exiger(ecarts176g["177g"].length === 0, `(177g) \`P11.25-g\` (console) — UN ÉTAT SERVI DES PREUVES N'A PAS SA FACE (aucune ligne, non établies, retenues, illisibles, inconnu) : ${JSON.stringify(ecarts176g["177g"])}`);
+  exiger(ecarts176g["178g"].length === 0, `(178g) \`P11.25-g\` (console) — UN BLOC DE PREUVES EST RENDU SANS CLÉ evidence : ${JSON.stringify(ecarts176g["178g"])}`);
+  exiger(ecarts176g["179g"].length === 0, `(179g) \`P11.25-g\` (console) — UN TEXTE SERVI DES PREUVES N'EST PAS ÉCHAPPÉ OU LA FACE NE SE TRADUIT PAS : ${JSON.stringify(ecarts176g["179g"])}`);
+  exiger(ecarts176g["180g"].length === 0, `(180g) \`P11.25-g\` (console) — UN BLOC DE PREUVES OUVERT NE SURVIT PAS AU RAFRAÎCHISSEMENT DE LA LISTE : ${JSON.stringify(ecarts176g["180g"])}`);
+  if (echecs.length !== echecsAvant176g) console.log(`(176g-179g) EN ÉCHEC — ${echecs.length - echecsAvant176g} écart(s), dits ci-dessus`);
+  else console.log("(176g-179g) OK — `P11.25-g` (console) : la ligne d'une alerte rend ses preuves établies (colonnes et lignes servies dans l'ordre, adresse en texte, levée datée et non rafraîchie, coupe dite, « au moins » sous le plafond et « sur N » sans plafond à total exact, cellule nulle vide et objet en JSON, aucune requête au rendu), chaque autre état servi a sa face — aucune ligne, NON ÉTABLIES avec sa cause et sans phrase d'absence, retenues, illisibles, inconnu —, une alerte sans clé ne rend rien, et tout texte servi ressort échappé, la face rendant en anglais sous LANG='en' ; (180g) un bloc ouvert reste ouvert, et un bloc refermé reste fermé, au rafraîchissement de la liste plate ; les preuves sont datées de la levée et non du dernier tir, le résumé replié est juste pour chaque état, et evidence: null est signalé. États lus dans preuves_d_alerte.rs. Ce qu'ils NE tiennent PAS : la mise en page peinte, le dépli par un vrai clic.");
+}
+// (181g) `P11.25-g` (console) — LA MÉMOIRE DES BLOCS DE PREUVES OUVERTS TIENT DANS LA VUE GROUPÉE (modèle : 112z7).
+// Point d'entrée réel : `renderAlerts` en vue « rule », dépli par l'en-tête du groupe, pager numéroté des occurrences.
+// Trois sites : le relevé dans la reconstruction des groupes (renderAlertGroups), le relevé ET la réouverture dans le
+// chargement des occurrences (loadGroupOccurrences). Chacun retiré seul rougit ce témoin.
+{
+  const echecsAvant181g = echecs.length;
+  const url181g = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const mod181g = await import(url181g("alerts.js"));
+  const { S: S181g } = await import(url181g("state.js"));
+  const cueillir181g = (el, pred, acc = []) => { ((el && el.children) || []).forEach((c) => { if (pred(c)) acc.push(c); cueillir181g(c, pred, acc); }); return acc; };
+  const liste181g = new Element("div");
+  const qsOrigine181g = document.querySelector, fetchOrigine181g = globalThis.fetch;
+  const etatOrigine181g = { g: S181g.alertGroupBy, a: S181g.alertGroupAll, u: S181g.alertUncased, auth: S181g.AUTH, p: S181g.alertGroupPage };
+  const ev181g = { state: "established", phrase: "x", at: 1767225600, from: 1767222000, window_s: 3600, columns: ["src_ip"], rows: [["192.0.2.10"]], total: 1, total_exact: true, served: 1, truncated: false };
+  const occ181g = (id) => ({ id, ts: 1767225600, rule: "rule.52", severity: 3, title: "occ " + id, status: "new", detail: "", mitre: "", sources: "", case_id: null, acked_at: 0, acked_by: "", evidence: ev181g });
+  const groupe181g = { gkey: "rule.52", n: 30, severity: 3, sample_title: "t", open_n: 30, last_ts: 1767225600, mitre: "" };
+  const laisser181g = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setTimeout(r, 0)); };
+  const bloc181g = (id) => cueillir181g(liste181g, (e) => e.classList && e.classList.contains("alertpreuves") && e.getAttribute("data-aid") === String(id))[0] || null;
+  const ouvert181g = (id) => { const b = bloc181g(id); return b ? b.hasAttribute("open") : null; };
+  const num181g = (n) => cueillir181g(liste181g, (e) => e.classList && e.classList.contains("evnum") && String(e.textContent).trim() === String(n))[0] || null;
+  const instrument181g = (vrai, quoi) => exiger(vrai, `(181g-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const ecarts181g = [];
+  try {
+    S181g.AUTH = { user: "operateur", role: "admin" }; S181g.alertGroupBy = "rule"; S181g.alertGroupAll = false; S181g.alertUncased = false; S181g.alertGroupPage = 0;
+    document.querySelector = (sel) => (sel === "#alerts .body" ? liste181g : qsOrigine181g.call(document, sel));
+    globalThis.fetch = async (u) => {
+      const s = String(u);
+      const corps = s.includes("/api/alerts/groups") ? { groups: [groupe181g], total: 1 } : (/[?&]offset=0\b/.test(s) ? { alerts: [occ181g(501), occ181g(502)], total: 30 } : { alerts: [occ181g(601)], total: 30 });
+      return { ok: true, status: 200, text: async () => JSON.stringify(corps), json: async () => corps };
+    };
+    mod181g.poserLaRechercheDesAlertes("");
+    await mod181g.renderAlerts(false); await laisser181g();
+    const g181g = cueillir181g(liste181g, (e) => e.classList && e.classList.contains("agroup"))[0];
+    const entete181g = g181g ? cueillir181g(g181g, (e) => e.classList && e.classList.contains("agsum"))[0] : null;
+    instrument181g(!!entete181g, "aucun groupe déplié n'est rendu");
+    if (entete181g) { entete181g.onclick(); await laisser181g(); }
+    instrument181g(ouvert181g(501) === false && ouvert181g(502) === false, `occurrences dépliées sans blocs fermés 501/502 (${ouvert181g(501)}, ${ouvert181g(502)})`);
+    // Page 2 des occurrences puis retour : le bloc ouvert de 501 se rouvre (relevé + réouverture de loadGroupOccurrences).
+    const b501 = bloc181g(501); if (b501) b501.setAttribute("open", "");
+    const deux181g = num181g(2); instrument181g(!!deux181g, "pas de page 2 dans les occurrences");
+    if (deux181g) { deux181g.onclick(); await laisser181g(); }
+    instrument181g(bloc181g(501) === null && ouvert181g(601) === false, `page 2 des occurrences non rendue (${ouvert181g(501)}, ${ouvert181g(601)})`);
+    const un181g = num181g(1); instrument181g(!!un181g, "pas de retour à la page 1 des occurrences");
+    if (un181g) { un181g.onclick(); await laisser181g(); }
+    if (ouvert181g(501) !== true) ecarts181g.push(`le bloc ouvert sur une occurrence s'est refermé au changement de page des occurrences (${ouvert181g(501)})`);
+    if (ouvert181g(502) !== false) ecarts181g.push(`un bloc jamais ouvert s'ouvre au changement de page des occurrences (${ouvert181g(502)})`);
+    // Reconstruction des groupes (charge vive) : 502, ouvert APRÈS le dernier relevé, doit survivre ; 501 aussi.
+    const b502 = bloc181g(502); if (b502) b502.setAttribute("open", "");
+    await mod181g.renderAlerts(false); await laisser181g();
+    if (ouvert181g(502) !== true) ecarts181g.push(`le bloc ouvert après le dernier chargement des occurrences s'est refermé à la reconstruction des groupes (${ouvert181g(502)})`);
+    if (ouvert181g(501) !== true) ecarts181g.push(`le bloc ouvert s'est refermé à la reconstruction des groupes (${ouvert181g(501)})`);
+    // Refermé par l'exploitant : il reste fermé à la reconstruction suivante.
+    const b501b = bloc181g(501); if (b501b) b501b.removeAttribute("open");
+    await mod181g.renderAlerts(false); await laisser181g();
+    if (ouvert181g(501) !== false) ecarts181g.push(`le bloc refermé se rouvre à la reconstruction des groupes (${ouvert181g(501)})`);
+    if (ouvert181g(502) !== true) ecarts181g.push(`le bloc resté ouvert s'est refermé à la seconde reconstruction (${ouvert181g(502)})`);
+  } catch (e) {
+    instrument181g(false, `exception : ${e && e.stack}`);
+  } finally {
+    globalThis.fetch = fetchOrigine181g; document.querySelector = qsOrigine181g;
+    S181g.alertGroupBy = etatOrigine181g.g; S181g.alertGroupAll = etatOrigine181g.a; S181g.alertUncased = etatOrigine181g.u; S181g.AUTH = etatOrigine181g.auth; S181g.alertGroupPage = etatOrigine181g.p;
+    liste181g.replaceChildren();
+  }
+  exiger(ecarts181g.length === 0, `(181g) \`P11.25-g\` (console) — UN BLOC DE PREUVES OUVERT NE SURVIT PAS DANS LA VUE GROUPÉE (page d'occurrences, reconstruction des groupes) : ${JSON.stringify(ecarts181g)}`);
+  if (echecs.length !== echecsAvant181g) console.log(`(181g) EN ÉCHEC — ${echecs.length - echecsAvant181g} écart(s), dits ci-dessus`);
+  else console.log("(181g) OK — `P11.25-g` (console) : dans la vue groupée, un bloc de preuves ouvert sur une occurrence reste ouvert au changement de page des occurrences et à la reconstruction des groupes, un bloc jamais ouvert ou refermé reste fermé. Ce qu'il NE tient PAS : la mise en page peinte, le dépli par un vrai clic.");
+}
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;
 if (echecs.length) {

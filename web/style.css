@@ -216,6 +216,7 @@ b.ok,.ok{color:var(--ok)} b.bad,.bad{color:var(--bad)} b.mut{color:var(--mut)}
 .alert{display:grid;grid-template-columns:78px 1fr auto auto;gap:12px;align-items:center;padding:9px 12px;border-radius:10px;background:var(--card2);border:1px solid var(--bd);border-left:3px solid var(--bd);margin-bottom:7px}
 .alert .sev{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;padding:2px 8px;border-radius:var(--pill);text-align:center;background:var(--acc-bg);color:var(--mut)}
 .alert .title{color:var(--fg)}
+.alert>.alertpreuves{grid-column:1/-1;font-size:12px} .alertpreuves summary{cursor:pointer;color:var(--mut)} .alertpreuves .qtable{width:auto;margin-top:6px}   /* `P11.25-g` : les preuves de la levée, sous la ligne, sur toute sa largeur */
 .alertdrill{cursor:pointer} .alertdrill:hover{color:var(--acc);text-decoration:underline}
 .alert.sev-1{border-left-color:var(--sev1)} .alert.sev-1 .sev{color:var(--sev1);background:color-mix(in srgb,var(--sev1) 16%,transparent)}
 .alert.sev-2{border-left-color:var(--sev2)} .alert.sev-2 .sev{color:var(--sev2);background:color-mix(in srgb,var(--sev2) 16%,transparent)}

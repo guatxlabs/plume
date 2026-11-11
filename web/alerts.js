@@ -306,6 +306,111 @@ function machineChipHtml(a) {
   const m = machineDUneAlerte(a);
   return m ? ` <span class="hostchip" data-machine="${m.etat}" title="${esc(m.survol)}">${esc(m.texte)}</span>` : '';
 }
+// `P11.25-g` (console) — LES PREUVES QU'UNE ALERTE PORTE. Depuis la vague CC, `/api/alerts` sert sur la ligne
+// d'une alerte dont la règle déclare une requête de preuves une clé `evidence` (daemon/src/handlers/alerts.rs,
+// formes de daemon/src/preuves_d_alerte.rs) ; la console ne la montrait pas, et l'exploitant qui ouvrait
+// « attaquant actif non banni » ne voyait pas les adresses comptées. CHAQUE FORME SERVIE A SA FACE :
+//   * `established` — les lignes (colonnes servies, dans l'ordre servi), la date de la levée, la coupe dite
+//     quand elle est servie (`truncated`, `served` sur `total`, « au moins » quand `total_exact` est faux) ;
+//   * `no_rows` — la lecture a réussi et n'a rien rendu : dit comme tel, daté ;
+//   * `not_established` — la lecture a ÉCHOUÉ : l'état et sa cause, JAMAIS une liste vide qui se lirait
+//     « aucune preuve » ;
+//   * `withheld` — un filtre de champs est actif pour l'appelant : retenues, dit ;
+//   * `unreadable` — écrites mais illisibles en base : dit ;
+//   * tout autre état, ou une forme qui ne se lit pas : la console le DIT au lieu de se taire ;
+//   * clé ABSENTE (règle sans requête de preuves) : rien, pas de bloc vide.
+// DÉCISION DE L'EXPLOITANT (2026-11-10) : les preuves restent celles de la LEVÉE, datées ; la console le dit et ne
+// les rafraîchit pas — aucune requête n'est faite ici, le bloc lit la ligne déjà servie. Tout texte servi (colonnes,
+// cellules, cause, état inconnu) passe par `esc` ; une adresse est du texte, jamais un lien.
+const MOTS_DES_PREUVES = {
+  titre: { fr: 'Preuves', en: 'Evidence' },
+  levee: { fr: 'Preuves relevées à la levée, le', en: 'Evidence taken when the alert was raised, on' },
+  fenetre: { fr: 'fenêtre de la règle depuis le', en: 'rule window since' },
+  datees: { fr: "Elles ne sont pas rafraîchies : un épisode qui dure garde les preuves de sa levée.", en: 'They are not refreshed: an episode that lasts keeps the evidence of when it was raised.' },
+  lignes: { fr: 'ligne(s)', en: 'row(s)' },
+  coupe: { fr: 'Coupe : lignes servies', en: 'Cut: rows served' },
+  sur: { fr: 'sur', en: 'out of' },
+  sur_au_moins: { fr: 'sur au moins', en: 'out of at least' },
+  lues: { fr: 'lues', en: 'read' },
+  coupe_plafond: { fr: '(le plafond de lecture a coupé avant la fin)', en: '(the read cap cut before the end)' },
+  sans_ligne_court: { fr: 'aucune ligne', en: 'no rows' },
+  sans_ligne: { fr: "Aucune ligne de preuve à la levée : la lecture a réussi et n'a rien rendu, l'activité comptée avait cessé entre l'évaluation de la règle et cette lecture.", en: 'No evidence row when the alert was raised: the read succeeded and returned nothing, the counted activity had stopped between the rule evaluation and this read.' },
+  non_etablies_court: { fr: 'NON ÉTABLIES', en: 'NOT ESTABLISHED' },
+  non_etablies: { fr: "Preuves NON ÉTABLIES : leur lecture a échoué à la levée ; l'alerte a été levée quand même. Cause :", en: 'Evidence NOT ESTABLISHED: reading it failed when the alert was raised; the alert was raised anyway. Cause:' },
+  cause_non_servie: { fr: 'non servie', en: 'not served' },
+  retenues_court: { fr: 'retenues', en: 'withheld' },
+  retenues: { fr: 'Preuves retenues : un filtre de champs est actif pour votre rôle, et les preuves, lues sans masque, ne peuvent pas être masquées après coup.', en: 'Evidence withheld: a field filter is active for your role, and the evidence, read unmasked, cannot be masked afterwards.' },
+  illisibles_court: { fr: 'illisibles', en: 'unreadable' },
+  illisibles: { fr: "Preuves écrites sur l'alerte mais illisibles en base : rien n'en est servi.", en: 'Evidence written on the alert but unreadable in the database: none of it is served.' },
+  inconnu_court: { fr: 'forme inconnue', en: 'unknown form' },
+  inconnu: { fr: 'Preuves servies sous une forme que cette console ne sait pas lire ; rien n\'en est montré. État servi :', en: 'Evidence served in a form this console cannot read; none of it is shown. Served state:' },
+};
+const motDesPreuves = (cle) => (LANG === 'en' ? MOTS_DES_PREUVES[cle].en : MOTS_DES_PREUVES[cle].fr);
+// Une cellule servie, en TEXTE : nul -> vide, objet -> son JSON. Échappée par l'appelant.
+const texteDUneCellule = (v) => (v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+function ligneDeLaLevee(ev) {
+  const fenetre = typeof ev.from === 'number' && ev.from > 0 ? ` · ${motDesPreuves('fenetre')} ${fmtTs(ev.from)}` : '';
+  return `<p class="muted" data-preuves-levee="1">${esc(`${motDesPreuves('levee')} ${fmtTs(ev.at)}${fenetre}. ${motDesPreuves('datees')}`)}</p>`;
+}
+function tableDesPreuves(ev) {
+  const colonnes = Array.isArray(ev.columns) ? ev.columns : [];
+  const tete = colonnes.length ? `<thead><tr>${colonnes.map(c => `<th>${esc(texteDUneCellule(c))}</th>`).join('')}</tr></thead>` : '';
+  const corps = ev.rows.map(r => {
+    const cellules = Array.isArray(r) ? r : (r && typeof r === 'object' ? colonnes.map(c => r[c]) : [r]);
+    return `<tr>${cellules.map(v => `<td>${esc(texteDUneCellule(v))}</td>`).join('')}</tr>`;
+  }).join('');
+  return `<table class="qtable" data-preuves-table="1">${tete}<tbody>${corps}</tbody></table>`;
+}
+function coupeDesPreuves(ev) {
+  if (ev.truncated !== true) return '';
+  const servies = typeof ev.served === 'number' ? ev.served : ev.rows.length;
+  const sur = ev.total_exact === false ? motDesPreuves('sur_au_moins') : motDesPreuves('sur');
+  const plafond = ev.total_exact === false ? ` ${motDesPreuves('coupe_plafond')}` : '';
+  return `<p data-preuves-coupe="1">${esc(`${motDesPreuves('coupe')} ${servies} ${sur} ${texteDUneCellule(ev.total)} ${motDesPreuves('lues')}${plafond}`)}</p>`;
+}
+// Rend `{ etat, resume, corps }` — ou `null` quand la clé n'est pas servie, seul cas où la console se tait.
+function facesDesPreuves(a) {
+  if (!a || !('evidence' in a) || a.evidence === undefined) return null;
+  const ev = a.evidence && typeof a.evidence === 'object' && !Array.isArray(a.evidence) ? a.evidence : null;
+  const etat = ev ? ev.state : undefined;
+  if (etat === 'established' && Array.isArray(ev.rows)) {
+    return { etat: 'etablies', resume: `${ev.rows.length} ${motDesPreuves('lignes')}`, corps: ligneDeLaLevee(ev) + tableDesPreuves(ev) + coupeDesPreuves(ev) };
+  }
+  if (etat === 'no_rows') return { etat: 'sans_ligne', resume: motDesPreuves('sans_ligne_court'), corps: ligneDeLaLevee(ev) + `<p data-preuves-sans-ligne="1">${esc(motDesPreuves('sans_ligne'))}</p>` };
+  if (etat === 'not_established') {
+    const cause = typeof ev.cause === 'string' && ev.cause ? ev.cause : motDesPreuves('cause_non_servie');
+    return { etat: 'non_etablies', resume: motDesPreuves('non_etablies_court'), corps: ligneDeLaLevee(ev) + `<p class="bad" data-preuves-non-etablies="1">${esc(`${motDesPreuves('non_etablies')} ${cause}`)}</p>` };
+  }
+  if (etat === 'withheld') return { etat: 'retenues', resume: motDesPreuves('retenues_court'), corps: `<p class="muted" data-preuves-retenues="1">${esc(motDesPreuves('retenues'))}</p>` };
+  if (etat === 'unreadable') return { etat: 'illisibles', resume: motDesPreuves('illisibles_court'), corps: `<p class="bad" data-preuves-illisibles="1">${esc(motDesPreuves('illisibles'))}</p>` };
+  return { etat: 'inconnu', resume: motDesPreuves('inconnu_court'), corps: `<p class="bad" data-preuves-inconnu="1">${esc(`${motDesPreuves('inconnu')} « ${texteDUneCellule(etat === undefined ? '' : etat)} »`)}</p>` };
+}
+// UN DÉPLI OUVERT SURVIT AU RAFRAÎCHISSEMENT. La liste plate est une charge vive (30 s) qui réécrit tout son corps,
+// et les occurrences d'un groupe se rechargent au rebuild : sans mémoire, un bloc que l'exploitant lisait se
+// refermait au tir suivant. Avant chaque réécriture, `retenirLesPreuvesOuvertes` relève dans le conteneur les
+// blocs ouverts (ajoutés) et fermés (retirés) par id d'alerte ; après la réécriture, `rouvrirLesPreuves` rouvre
+// ceux qui y sont (par le DOM, pas par une interpolation posée dans la balise, que l'analyseur de la garde i18n refuse).
+const PREUVES_OUVERTES = new Set();
+function retenirLesPreuvesOuvertes(conteneur) {
+  if (!conteneur || typeof conteneur.querySelectorAll !== 'function') return;
+  Array.from(conteneur.querySelectorAll('.alertpreuves')).forEach(d => {
+    const id = d.getAttribute('data-aid');
+    if (id === null || id === '') return;
+    if (d.hasAttribute('open')) PREUVES_OUVERTES.add(id); else PREUVES_OUVERTES.delete(id);
+  });
+}
+function rouvrirLesPreuves(conteneur) {
+  if (!PREUVES_OUVERTES.size || !conteneur || typeof conteneur.querySelectorAll !== 'function') return;
+  Array.from(conteneur.querySelectorAll('.alertpreuves')).forEach(d => {
+    if (PREUVES_OUVERTES.has(d.getAttribute('data-aid') || '')) d.setAttribute('open', '');
+  });
+}
+function blocDesPreuvesHtml(a) {
+  const f = facesDesPreuves(a);
+  if (!f) return '';
+  const aid = a.id === undefined || a.id === null ? '' : String(a.id);
+  return `<details class="alertpreuves" data-preuves="${f.etat}" data-aid="${esc(aid)}"><summary>${esc(`${motDesPreuves('titre')} · ${f.resume}`)}</summary>${f.corps}</details>`;
+}
 // TEMPLATE d'une ligne d'alerte — PARTAGÉ entre la vue plate et les occurrences d'un groupe déplié. `i` =
 // index dans le tableau passé à wireAlertRows (drill). Reprend TEL QUEL les conventions existantes
 // (.alert/.sev/.mitrechip.mitrepivot/.casechip/.casebtn/.banbtn/.ackdone) -> zéro divergence de rendu.
@@ -327,7 +432,7 @@ function alertRowHtml(a, i) {
       <span class="sev">${sev(a.severity)}</span>
       <span class="title"><span class="alertdrill" data-idx="${i}" data-pivot="${pivot.mode}"${pivot.mode === 'aucun' ? ' aria-disabled="true"' : ''} title="${esc(pivot.survol)}">${esc(a.title)}</span>${mt}${machineChipHtml(a)}</span>
       <time>${fmtTs(a.ts)}</time>${depuisQuand(a)}
-      <span class="alertact">${cas}${ban}${a.status === 'new' ? `<button data-ack="${a.id}" title="Acquitter : marquer comme vue (retire de la file active, sans la supprimer)">Acquitter</button>` : `<span class="ackdone" title="Acquittée${a.acked_at ? ' · ' + fmtTs(a.acked_at) : ''}${a.acked_by ? ' par ' + esc(a.acked_by) : ''}">${ic('check')} Acquittée</span>`}</span>
+      <span class="alertact">${cas}${ban}${a.status === 'new' ? `<button data-ack="${a.id}" title="Acquitter : marquer comme vue (retire de la file active, sans la supprimer)">Acquitter</button>` : `<span class="ackdone" title="Acquittée${a.acked_at ? ' · ' + fmtTs(a.acked_at) : ''}${a.acked_by ? ' par ' + esc(a.acked_by) : ''}">${ic('check')} Acquittée</span>`}</span>${blocDesPreuvesHtml(a)}
     </div>`;
 }
 // ======================================================================================================
@@ -1072,7 +1177,9 @@ function dessinerLaListePlate(b, m, alerts, alertTotal, etat) {
     wireAlertActionBar(b, loaded, m);
     return;
   }
+  retenirLesPreuvesOuvertes(b);
   b.innerHTML = bar + affichees.map((a, i) => alertRowHtml(a, i)).join('');
+  rouvrirLesPreuves(b);
   if (requete) {
     // Une liste qui cache des lignes le DIT, et quand elle ne trouve rien elle nomme ce qu'elle a cherché.
     const k = clefDeCouverture(m);
@@ -1161,6 +1268,7 @@ async function renderAlertGroups(loading) {
     const body = el.querySelector('.agbody');
     prevOpen[el.dataset.gkey || ''] = (body && body.dataset.opage) ? Number(body.dataset.opage) : 0;
   });
+  retenirLesPreuvesOuvertes(b);
   b.innerHTML = bar + groups.map(g => alertGroupHtml(g)).join('');
   wireAlertActionBar(b, loaded, m);
   { const slot = b.querySelector('.alertbar-export'); if (slot) slot.appendChild(alertGroupsExportBar(groups, total)); }
@@ -1226,6 +1334,7 @@ async function loadGroupOccurrences(body, g, opage) {
             + alertFacetParams(m).map(p => '&' + p).join('')
             + '&gkey=' + encodeURIComponent(m.view)
             + '&gval=' + encodeURIComponent(g.gkey || '') + '&limit=' + ALERT_OCC_PS + '&offset=' + (opage * ALERT_OCC_PS);
+  retenirLesPreuvesOuvertes(body);
   body.innerHTML = '<div class="tableprog"></div>';
   let occ, total;
   let etat = { cause: '', refus: false, incomplet: false };
@@ -1245,6 +1354,7 @@ async function loadGroupOccurrences(body, g, opage) {
   const videAuDela = !occ.length && laPageEstAuDelaDuTotal(opage, total, ALERT_OCC_PS);
   body.innerHTML = bandeauDePageIncomplete(LANG === 'en' ? 'Occurrences' : 'Occurrences', etat)
     + (occ.map((a, i) => alertRowHtml(a, i)).join('') || (videAuDela ? '' : '<div class="muted">aucune occurrence</div>'));
+  rouvrirLesPreuves(body);
   if (videAuDela) body.appendChild(noeudDeLaPageVideAuDelaDuTotal());
   if (typeof total === 'number') {
     const pgState = { page: opage, pageSize: ALERT_OCC_PS, total, shown: occ.length };
@@ -1283,7 +1393,7 @@ function redessinerLesAlertes() {
 
 export { renderAlerts, setAlertMitreFilter, setAlertSourceFilter, alertActionBarHtml, alertListModel,
   dessinerLaListePlate, redessinerLesAlertes, poserLaRechercheDesAlertes, texteCherchableDUneAlerte,
-  pivotDUneAlerte, alertDrill, machineDUneAlerte, porteeDeLAcquittement, questionDuGesteGlobal,
+  pivotDUneAlerte, alertDrill, machineDUneAlerte, blocDesPreuvesHtml, porteeDeLAcquittement, questionDuGesteGlobal,
   // `P10.21-d` — le seul expéditeur d'un acquittement, et son ouverture NUE : le harnais les juge sur
   // la phrase lue dans l'arbre du démon, dans les deux sens, sans passer par une barre redessinée.
   acquitter, OUVERTURE_DE_L_ACQUITTEMENT_NON_ENREGISTRE, motDeLAcquittement,

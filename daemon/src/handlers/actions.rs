@@ -1387,6 +1387,14 @@ pub(crate) async fn netban_list(State(st): State<AppState>, Extension(au): Exten
 }
 
 /// POST /api/netban `{ip, ttl_s?, reason?}` — pose/rafraîchit un ban HTTP. `ttl_s` absent/≤0 = PERMANENT.
+///
+/// `P11.25-a` — UN BAN NE RACCOURCIT JAMAIS UN BAN EN COURS, POSE D'UN ADMINISTRATEUR COMPRISE (décision de
+/// l'exploitant du 2026-11-10). Sur une ligne en cours du même `env_id`, l'échéance demandée n'est prise que si elle
+/// allonge (permanent l'emporte toujours) ; sinon la ligne reste entière. Qui veut raccourcir lève le ban
+/// (`DELETE /api/netban/{ip}`) puis le repose : deux gestes tracés. La réponse dit ce qui TIENT : `expires_ts` est
+/// l'échéance relue en base par l'écriture, et `issue_du_ban` vaut `pose`, `allonge` ou `conserve`
+/// (`auth::IssueDuBanManuel`). La ligne `netban.add` porte la durée demandée et l'issue ; un ban conservé y ajoute
+/// l'échéance et l'auteur du ban qui tient.
 pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extension<AuthUser>, Json(b): Json<Value>) -> Response {
     if let Err(r) = require_admin(&au) { return r; } // défense en profondeur (route déjà admin-only)
     // Valide + CANONICALISE (IPv4/IPv6) : format + IP protégée refusée + engagement -> 400 explicite (anti
@@ -1407,11 +1415,11 @@ pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extens
     // « fait » et posait `netban.add` au registre tamper-evident — un blocage inexistant ATTESTÉ dans
     // une trace non purgeable, sur la route même par laquelle un exploitant croit se protéger. Le
     // cinq cent trois nomme la cause et la distingue du plafond, qui lui reste un cinq cent sept.
-    match netban_upsert(&conn, &ip, expires, reason, &au.name, "prod") {
-        PoseDeBan::Arme => {}
+    let tient = match netban_poser_sans_raccourcir_et_relire(&conn, &ip, expires, reason, &au.name, "prod") {
+        PoseManuelleDeBan::Tient(t) => t,
         // `P10.31-u` — le maillon du refus est lu : manquant, il se dit au journal (ni l'adresse ni le
         // compte, que le `detail` porte) ; le refus servi ne change pas.
-        PoseDeBan::RefuseParLePlafond => {
+        PoseManuelleDeBan::RefuseParLePlafond => {
             let maillon = ledger_append(&conn, "netban.plafond", &format!("{ip} refusé : store live plein by={}", au.name));
             if let Some(cause) = maillon.cause_de_non_inscription() {
                 eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("netban", "ban manuel refusé par le plafond", "netban.plafond", cause));
@@ -1421,7 +1429,16 @@ pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extens
                 format!("store de bans plein ({NETBAN_CACHE_CAP} IP) — libérer par DELETE /api/netban/{{ip}}, ou bloquer en amont (pare-feu/CDN)"),
             );
         }
-        PoseDeBan::NonEcrit(moteur) => {
+        // Le `BEGIN` refusé : la forme commune a déjà dit le refus au journal `[netban]` et construit le 503 de ce geste
+        // (son identifiant de corrélation est sur sa ligne `HTTP 503`) ; il est servi tel quel, aucune seconde réponse.
+        PoseManuelleDeBan::NonOuverte(reponse) => {
+            let maillon = ledger_append(&conn, "netban.non-arme", &format!("{ip} NON armé by={} : BEGIN refusé (dit au journal [netban])", au.name));
+            if let Some(manque) = maillon.cause_de_non_inscription() {
+                eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("netban", "ban manuel NON armé", "netban.non-arme", manque));
+            }
+            return reponse;
+        }
+        PoseManuelleDeBan::NonEcrit(moteur) => {
             let maillon = ledger_append(&conn, "netban.non-arme", &format!("{ip} NON armé by={} : {moteur}", au.name));
             if let Some(manque) = maillon.cause_de_non_inscription() {
                 eprintln!("{}", ligne_d_un_maillon_de_riposte_manquant("netban", "ban manuel NON armé", "netban.non-arme", manque));
@@ -1431,10 +1448,19 @@ pub(crate) async fn netban_add(State(st): State<AppState>, Extension(au): Extens
             let cause = laisser_la_cause_au_journal("netban", "ban manuel NON armé", &au.tenant, &moteur);
             return err_json(StatusCode::SERVICE_UNAVAILABLE, format!("{CAUSE_BAN_NON_ARME} ({cause})"));
         }
-    }
+    };
     // Le ban EST armé : l'aveu d'une trace manquante voyage à côté du succès, jamais à sa place.
-    let maillon = ledger_append(&conn, "netban.add", &format!("{ip} ttl={} by={}", ttl.map(|t| t.to_string()).unwrap_or_else(|| "permanent".into()), au.name));
-    let mut corps = json!({ "ok": true, "ip": ip, "expires_ts": expires });
+    // La durée DEMANDÉE et l'issue ; un ban conservé dit en plus ce qui tient (échéance et auteur relus en base,
+    // jamais la raison, texte libre d'une requête antérieure).
+    let echeance = |e: Option<i64>| e.map(|t| t.to_string()).unwrap_or_else(|| "permanent".into());
+    let mut detail = format!("{ip} ttl={} by={} issue={}", ttl.map(|t| t.to_string()).unwrap_or_else(|| "permanent".into()), au.name, tient.issue.mot());
+    if tient.issue == IssueDuBanManuel::Conserve {
+        // Une cellule illisible conservée se dit `illisible` : le ban tenu permanent n'est pas une échéance lue.
+        let tient_jusqu_a = if tient.echeance_illisible { "illisible".to_string() } else { echeance(tient.expires_ts) };
+        detail.push_str(&format!(" tient_jusqu_a={tient_jusqu_a} tient_par={}", tient.created_by.as_deref().unwrap_or("(vide)")));
+    }
+    let maillon = ledger_append(&conn, "netban.add", &detail);
+    let mut corps = json!({ "ok": true, "ip": ip, "expires_ts": tient.expires_ts, "issue_du_ban": tient.issue.mot() });
     if let Some(cause) = maillon.cause_de_non_inscription() {
         corps[CLE_REGISTRE_SANS_MAILLON] = json!(format!("{CAUSE_GESTE_SANS_TRACE} ({cause})"));
     }

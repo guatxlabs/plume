@@ -8,8 +8,10 @@
 // APRÈS : ces trois poses passent par `netban_upsert_sans_raccourcir` — la nouvelle échéance n'est prise que si elle
 // allonge (permanent l'emporte, sinon la plus lointaine) ; sinon la ligne reste entière (échéance, raison, auteur).
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : la pose MANUELLE (`POST /api/netban`) REMPLACE toujours, plus courte comprise
-// (geste d'administrateur, épinglé par le contrôle du témoin (1)) ; la voie CrowdSec du démon ajoute une décision
+// La pose MANUELLE (`POST /api/netban`) suit la même règle depuis la décision de l'exploitant du 2026-11-10 : le
+// contrôle du témoin (1), qui épinglait qu'elle remplaçait, est INVERSÉ (`netban_poser_sans_raccourcir_et_relire`) ; ses
+// témoins par la route sont dans `ban_manuel_ne_raccourcit_pas_un_ban_en_cours.rs`.
+// CE QUE CES TÉMOINS NE TIENNENT PAS : la voie CrowdSec du démon ajoute une décision
 // à côté des autres (non mesuré ici) ; l'agent d'un hôte distant a sa propre garde
 // (`check_responder_applies_the_ban_duration_served_by_the_central.py`).
 //
@@ -18,7 +20,12 @@
 // comme une échéance zéro), `approbation_remplace`, `responder_remplace`, `responder_sans_ligne_remplace`,
 // `playbook_remplace` (un appelant reprend `netban_upsert`), `permanent_neuf_ignore` (le CASE de l'échéance perd
 // `excluded.expires_ts IS NULL OR` : un ban automatique sans échéance ne l'emporte plus sur une échéance finie),
-// `permanent_neuf_sans_sa_raison` (le CASE de la raison perd la même clause).
+// `permanent_neuf_sans_sa_raison` (le CASE de la raison perd la même clause), `AUTO_SANS_TYPEOF` (la pose automatique
+// perd la clause `typeof(net_ban.expires_ts) = 'integer'` et compare de nouveau une échéance réelle en nombre).
+//
+// ÉCHÉANCE ILLISIBLE (texte, réel) : le chargement la tient sans fin, c'est un ban en cours, et la pose automatique la
+// CONSERVE entière comme celle de l'administrateur (un seul texte SQL, `SQL_NETBAN_POSE_SANS_RACCOURCIR`) ; la pose
+// rend `Arme`. Témoins (5) par la primitive et (6) par le miroir du responder.
 // =====================================================================================
 mod ban_automatique_ne_raccourcit_pas_le_miroir_http {
     use super::*;
@@ -54,7 +61,9 @@ mod ban_automatique_ne_raccourcit_pas_le_miroir_http {
     /// court puis long -> allongé (raison et auteur du ban neuf) ; permanent puis court -> reste permanent ; échéance
     /// échue puis court -> la neuve ; échéance ÉGALE -> rien ne change ; un autre `env_id` n'est pas touché ; chaque
     /// pose rend `Arme`, une seule ligne par (ip, env), et le cache rechargé bloque encore au-delà de la courte.
-    /// CONTRÔLE : la pose manuelle (`netban_upsert`) remplace toujours (geste d'administrateur).
+    /// INVERSÉ (décision du 2026-11-10) : le contrôle épinglait que la pose de l'administrateur remplaçait ; elle
+    /// (`netban_poser_sans_raccourcir_et_relire`) ne raccourcit plus. `netban_upsert`, ci-dessus en fixture, est la pose
+    /// qui remplace, réservée aux témoins.
     /// MUTATIONS : `sql_remplace`, `raison_remplacee`, `permanent_raccourci`.
     #[test]
     fn banr_la_primitive_garde_le_ban_le_plus_long() {
@@ -96,10 +105,11 @@ mod ban_automatique_ne_raccourcit_pas_le_miroir_http {
         let lignes: i64 = c.query_row("SELECT COUNT(*) FROM net_ban", [], |r| r.get(0)).unwrap();
         assert_eq!(lignes, 7, "une ligne par (ip, env), jamais une seconde");
 
-        // CONTRÔLE : la pose manuelle remplace, plus courte comprise.
-        assert!(matches!(netban_upsert(&c, "203.0.113.197", Some(long), "long", "admin", "prod"), PoseDeBan::Arme));
-        assert!(matches!(netban_upsert(&c, "203.0.113.197", Some(court), "court", "admin", "prod"), PoseDeBan::Arme));
-        assert_eq!(banr_ligne(&c, "203.0.113.197", "prod").0, Some(court), "contrôle : la pose manuelle remplace");
+        // INVERSÉ (décision du 2026-11-10) : la pose de l'administrateur ne raccourcit plus, le ban long tient entier.
+        assert!(matches!(netban_poser_sans_raccourcir_et_relire(&c, "203.0.113.197", Some(long), "long", "admin", "prod"), PoseManuelleDeBan::Tient(_)));
+        assert!(matches!(netban_poser_sans_raccourcir_et_relire(&c, "203.0.113.197", Some(court), "court", "admin2", "prod"), PoseManuelleDeBan::Tient(_)));
+        assert_eq!(banr_ligne(&c, "203.0.113.197", "prod"), (Some(long), "long".into(), "admin".into()),
+                   "la pose de l'administrateur ne raccourcit plus");
         netban_cache().write().clear();
     }
 
@@ -248,6 +258,84 @@ mod ban_automatique_ne_raccourcit_pas_le_miroir_http {
         let arme = banr_ligne(&c, "203.0.113.162", "prod").0.expect("contrôle : armé à échéance");
         assert!((t + 600..=apres + 600).contains(&arme), "contrôle : adresse non bannie armée à + 600 ({arme})");
         drop(c);
+        netban_cache().write().clear();
+    }
+
+    /// `typeof`, valeur brute, raison et auteur de la ligne `net_ban` d'une adresse (`env_id` `prod`).
+    fn banr_cellule(c: &Connection, ip: &str) -> (String, String, String, String) {
+        c.query_row(
+            "SELECT typeof(expires_ts), CAST(expires_ts AS TEXT), reason, created_by FROM net_ban WHERE ip=?1 AND env_id='prod'",
+            params![ip],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap_or_else(|e| panic!("ligne net_ban de {ip} : {e}"))
+    }
+
+    /// Une échéance RÉELLE dans le passé comme nombre (`t - 99.5`) sur `reelle`, une échéance TEXTE sur `texte` : deux
+    /// cellules que le chargement tient sans fin. La réelle est celle qu'une comparaison numérique remplaçait.
+    fn banr_semer_illisibles(c: &Connection, reelle: &str, texte: &str, t: i64) {
+        for (ip, exp) in [(reelle, t - 100), (texte, t + 7200)] {
+            c.execute(
+                "INSERT INTO net_ban(ip, reason, created_ts, expires_ts, created_by, env_id) VALUES (?1, 'vieux', 0, ?2, 'bob', 'prod')",
+                params![ip, exp],
+            )
+            .unwrap();
+        }
+        c.execute("UPDATE net_ban SET expires_ts = expires_ts + 0.5 WHERE ip = ?1", params![reelle]).unwrap();
+        c.execute("UPDATE net_ban SET expires_ts = 'jamais' WHERE ip = ?1", params![texte]).unwrap();
+        assert_eq!(banr_cellule(c, reelle).0, "real", "fixture : cellule réelle");
+        assert_eq!(banr_cellule(c, texte).0, "text", "fixture : cellule texte");
+    }
+
+    /// (5) LA PRIMITIVE SUR UNE ÉCHÉANCE ILLISIBLE. CE QU'IL TIENT : sur une cellule réelle puis sur une cellule texte, une
+    /// pose automatique courte rend `Arme`, laisse la cellule ENTIÈRE (type, valeur, raison, auteur), et l'adresse reste
+    /// bloquée trente jours après l'échéance demandée (le chargement la tient sans fin).
+    /// MUTATION : `AUTO_SANS_TYPEOF` (rouge sur la cellule réelle).
+    #[test]
+    fn banr_la_primitive_conserve_une_echeance_illisible() {
+        let _g = NETBAN_TEST_LOCK.lock();
+        netban_cache().write().clear();
+        let c = test_db();
+        let t = now();
+        let court = t + 60;
+        banr_semer_illisibles(&c, "203.0.113.151", "203.0.113.152", t);
+        for ip in ["203.0.113.151", "203.0.113.152"] {
+            let avant = banr_cellule(&c, ip);
+            assert!(matches!(netban_upsert_sans_raccourcir(&c, ip, Some(court), "court", "auto", "prod"), PoseDeBan::Arme),
+                    "{ip} : une ligne conservée reste une pose réussie");
+            assert_eq!(banr_cellule(&c, ip), avant, "{ip} : la cellule illisible reste ENTIÈRE (type, valeur, raison, auteur)");
+            assert!(net_ban_is_blocked(ip, court + BANR_TRENTE_JOURS), "{ip} : bloquée loin après l'échéance demandée");
+        }
+        netban_cache().write().clear();
+    }
+
+    /// (6) LE MIROIR DU RESPONDER SUR UNE ÉCHÉANCE ILLISIBLE (voie réelle de pose automatique). CE QU'IL TIENT : une
+    /// riposte exécutée à 600 s sur une adresse à échéance réelle, puis sur une adresse à échéance texte, n'avoue rien et
+    /// laisse chaque cellule ENTIÈRE ; l'adresse reste bloquée trente jours après l'échéance de la riposte.
+    /// MUTATION : `AUTO_SANS_TYPEOF` (rouge sur la cellule réelle).
+    #[test]
+    fn banr_le_miroir_du_responder_conserve_une_echeance_illisible() {
+        let _env = VERROU_ENV_PROCESSUS.write();
+        let _pose = ReglageBackupPose::neuf("PLUME_NETBAN_FROM_ACTIONS", "1");
+        let _g = NETBAN_TEST_LOCK.lock();
+        netban_cache().write().clear();
+        let chemin = crate::tmp_possede::TmpDb::neuf("banr-miroir-illisible");
+        banr_base(&chemin);
+        let st = ds_file_state(&chemin);
+        let t = now();
+        banr_semer_illisibles(&st.db.lock(), "203.0.113.153", "203.0.113.154", t);
+        for cible in ["203.0.113.153", "203.0.113.154"] {
+            let avant = banr_cellule(&st.db.lock(), cible);
+            let id = {
+                let c = st.db.lock();
+                c.execute("INSERT INTO action(ts,kind,target,status,dry_run,reason,ban_ttl_s) VALUES(1000,'ban_ip',?1,'done',0,'banr',600)", params![cible]).unwrap();
+                c.last_insert_rowid()
+            };
+            let aveu = crate::handlers::actions::miroir_http_du_responder(&st.db.lock(), id, "ban_ip", cible, "done", false);
+            assert_eq!(aveu, None, "{cible} : rien à avouer");
+            assert_eq!(banr_cellule(&st.db.lock(), cible), avant, "{cible} : la cellule illisible reste ENTIÈRE");
+            assert!(net_ban_is_blocked(cible, now() + 600 + BANR_TRENTE_JOURS), "{cible} : bloquée loin après l'échéance de la riposte");
+        }
         netban_cache().write().clear();
     }
 }

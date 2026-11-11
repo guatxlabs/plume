@@ -6,7 +6,7 @@ use crate::handlers::transaction_validee::{ouvrir_la_transaction_du_geste, rendr
 
 /// Durée PAR DÉFAUT du ban posé par un playbook `ban_ip` (colonne `ban_ttl_s` NULL), telle que les exécuteurs la
 /// posent : `--duration` CrowdSec et TTL du blocage HTTP natif partagent `NETBAN_ACTION_TTL_S` (voir
-/// `action_command` et `netban_upsert`). `P11.25-a` : un playbook peut porter sa propre durée (`ban_ttl_s`).
+/// `action_command` et `netban_upsert_sans_raccourcir`). `P11.25-a` : un playbook peut porter sa propre durée (`ban_ttl_s`).
 /// fail2ban applique la durée de son jail, nft ne pose pas d'expiration : ces deux cas sont NOMMÉS dans la
 /// phrase, pas chiffrés. `P11.25-a` : plus aucun appelant hors tests (la phrase passe par
 /// `action_consequence_pour_la_duree`) — la référence des témoins qui confrontent la phrase aux exécuteurs.

@@ -507,7 +507,7 @@ pub(crate) struct ChargementDuStore {
     /// la valve `DELETE /api/netban/{ip}` (paramètre TEXTE) ne pourrait jamais les lever.
     pub(crate) ip_illisibles: usize,
     /// Lignes dont l'IP se lit mais pas l'échéance (texte, réel non entier, blob) : l'IP reste BLOQUÉE,
-    /// comme un ban permanent, jusqu'à sa levée par la valve ou sa réparation par une nouvelle pose.
+    /// comme un ban permanent, jusqu'à sa levée par la valve (la pose d'un administrateur la CONSERVE, `P11.25-a`).
     pub(crate) echeances_illisibles: usize,
 }
 
@@ -545,7 +545,8 @@ pub(crate) fn netban_charger_cap(conn: &Connection, cap: usize) -> Result<Charge
             Ok(v) => v,
             Err(_) => {
                 // Fail-closed sur CETTE ligne : `None` = bloquée sans échéance. La purge du tick ne la
-                // retire pas (`expires_ts <= ?` est faux pour un texte) ; la valve la lève, une pose la répare.
+                // retire pas (`expires_ts <= ?` est faux pour un texte) ; la valve la lève. La pose d'un administrateur
+                // la CONSERVE comme le ban permanent qu'elle est ici (`netban_poser_sans_raccourcir_et_relire`).
                 echeances_illisibles += 1;
                 None
             }
@@ -755,22 +756,13 @@ pub(crate) enum PoseDeBan {
 /// 'prod'. Ne JAMAIS bannir une IP protégée : les appelants valident en amont (`action_valid`/`ip_is_protected`).
 ///
 /// Rend `RefuseParLePlafond` quand le ban est REFUSÉ parce que le store live est plein
-/// (`NETBAN_CACHE_CAP`) : la borne mémoire est tenue À L'ÉCRITURE, sur l'UNIQUE voie de pose, et pas
+/// (`NETBAN_CACHE_CAP`) : la borne mémoire est tenue À L'ÉCRITURE, sur chaque voie de pose (`netban_plafond_refuse`), et pas
 /// seulement au chargement — sinon la base grossirait indéfiniment pendant que le cache, lui,
 /// plafonnerait, et l'écart (des bans posés qui ne bloquent rien) ne se verrait nulle part.
 /// RAFRAÎCHIR un ban DÉJÀ posé reste toujours permis : cela ne fait pas croître la map. L'appelant
 /// DOIT rendre le refus visible (réponse HTTP, ledger) — un ban qu'on croit posé et qui ne bloque
 /// pas est pire que pas de ban.
-#[must_use = "une pose de ban REFUSÉE (store plein) ou NON ÉCRITE doit être rapportée à l'appelant, jamais avalée"]
-pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) -> PoseDeBan {
-    netban_ecrire(conn, ip, expires, reason, by, env, SQL_NETBAN_POSE_QUI_REMPLACE)
-}
-
-/// La pose d'un geste d'ADMINISTRATEUR (`POST /api/netban`) : la ligne du même `env_id` prend l'échéance demandée,
-/// plus courte comprise — un administrateur qui raccourcit le fait exprès, et la levée reste la valve.
-const SQL_NETBAN_POSE_QUI_REMPLACE: &str = "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
-     ON CONFLICT(ip,env_id) DO UPDATE SET reason=?2, expires_ts=?4, created_by=?5";
-
+///
 /// `P11.25-a` — UN BAN AUTOMATIQUE PLUS COURT NE RACCOURCIT JAMAIS LE BAN EN COURS (miroir HTTP `net_ban`).
 /// AVANT : les trois poses automatiques (approbation d'une riposte, miroir du responder, passage d'un playbook)
 /// passaient par l'upsert qui REMPLACE l'échéance : un playbook de bruit à 10 min, sur une adresse bannie 30 jours
@@ -782,23 +774,39 @@ const SQL_NETBAN_POSE_QUI_REMPLACE: &str = "INSERT INTO net_ban(ip,reason,create
 /// bannie au moins jusqu'à l'échéance demandée », ce qui est vrai dans les deux cas. Même règle que la fusion du
 /// cache (`netban_fusionner_echeance`) et que l'agent d'un hôte distant (`collectors/respond.sh`, voie nft).
 /// Dans `SET`, `net_ban.*` est la ligne d'AVANT la mise à jour (SQLite évalue toutes les expressions sur elle).
+/// La pose d'un administrateur suit la même règle depuis la décision de l'exploitant du 2026-11-10
+/// (`netban_poser_sans_raccourcir_et_relire`), par le MÊME texte SQL ; la pose qui REMPLAÇAIT n'a plus d'appelant de
+/// production (`netban_upsert`, réservée aux témoins en fin de fichier).
+///
+/// ÉCHÉANCE ILLISIBLE (texte, réel) : la ligne est un ban permanent en cours, celui que le chargement enforce, et la
+/// pose la CONSERVE entière (échéance, raison, auteur). La pose rend alors `Arme`, et c'est vrai : l'upsert a touché
+/// exactement une ligne (un `DO UPDATE` compte sa ligne même quand il réécrit les mêmes valeurs), et l'adresse est
+/// bannie au moins jusqu'à l'échéance demandée — sans fin d'après la base (`netban_charger_cap` la charge `None`), et,
+/// rechargement refusé, au moins jusqu'à l'échéance demandée d'après le cache (`netban_armer_la_ligne_ecrite`).
 #[must_use = "une pose de ban REFUSÉE (store plein) ou NON ÉCRITE doit être rapportée à l'appelant, jamais avalée"]
 pub(crate) fn netban_upsert_sans_raccourcir(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) -> PoseDeBan {
     netban_ecrire(conn, ip, expires, reason, by, env, SQL_NETBAN_POSE_SANS_RACCOURCIR)
 }
 
+/// LA RÈGLE DES DEUX POSES DE PRODUCTION, écrite UNE fois : les poses automatiques (`netban_upsert_sans_raccourcir`) et
+/// la pose d'un ADMINISTRATEUR (`netban_poser_sans_raccourcir_et_relire`, qui y ajoute son `RETURNING`). Deux textes
+/// voisins avaient divergé : seule la pose de l'administrateur jugeait le type de la cellule, et une pose automatique
+/// courte changeait une échéance réelle (tenue permanente par le chargement) en ban de quelques secondes.
+/// La ligne est jugée sur l'échéance telle que le CHARGEMENT l'enforce. Seule une échéance ENTIÈRE est une durée ; vide
+/// (permanent) comme ILLISIBLE (texte, réel), le chargement tient l'adresse bloquée sans fin (`netban_charger_cap`) : la
+/// ligne est alors un ban permanent en cours, et la pose la CONSERVE entière. Réparer une cellule illisible = la lever
+/// (`DELETE /api/netban/{ip}`) puis reposer, deux gestes tracés (décision de l'exploitant du 2026-11-10). La clause
+/// `typeof(...) = 'integer'` écarte aussi la comparaison NUMÉRIQUE qu'SQLite ferait avec un réel (`excluded > 1.5e9`),
+/// qui changerait un ban tenu permanent en ban fini.
 const SQL_NETBAN_POSE_SANS_RACCOURCIR: &str = "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
      ON CONFLICT(ip,env_id) DO UPDATE SET \
-       reason     = CASE WHEN net_ban.expires_ts IS NOT NULL AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.reason ELSE net_ban.reason END, \
-       created_by = CASE WHEN net_ban.expires_ts IS NOT NULL AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.created_by ELSE net_ban.created_by END, \
-       expires_ts = CASE WHEN net_ban.expires_ts IS NOT NULL AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.expires_ts ELSE net_ban.expires_ts END";
+       reason     = CASE WHEN typeof(net_ban.expires_ts) = 'integer' AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.reason ELSE net_ban.reason END, \
+       created_by = CASE WHEN typeof(net_ban.expires_ts) = 'integer' AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.created_by ELSE net_ban.created_by END, \
+       expires_ts = CASE WHEN typeof(net_ban.expires_ts) = 'integer' AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.expires_ts ELSE net_ban.expires_ts END";
 
 fn netban_ecrire(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str, sql: &str) -> PoseDeBan {
-    {
-        let c = netban_cache().read();
-        if c.len() >= NETBAN_CACHE_CAP && !c.contains_key(ip) {
-            return PoseDeBan::RefuseParLePlafond;
-        }
+    if netban_plafond_refuse(ip) {
+        return PoseDeBan::RefuseParLePlafond;
     }
     // `P10.20-v` — L'ÉCRITURE EST COMPTÉE, ET LE CACHE N'EST RECHARGÉ QUE SI ELLE A EU LIEU.
     // L'upsert pose ou rafraîchit EXACTEMENT une ligne ; tout autre compte, comme toute erreur, est
@@ -806,26 +814,149 @@ fn netban_ecrire(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str
     // convergence ce qui n'est qu'une relecture de l'état d'avant.
     match conn.execute(sql, params![ip, reason, now(), expires, by, env]) {
         Ok(1) => {
-            if !netban_reload(conn) {
-                // `P10.20-b` — RECHARGEMENT REFUSÉ APRÈS UNE ÉCRITURE RÉUSSIE : le cache, fail-static, n'aurait
-                // pas porté la ligne écrite, et `Arme` aurait annoncé un ban non enforcé jusqu'au prochain
-                // chargement réussi. La ligne écrite est armée dans le cache, fusionnée avec la valeur que le
-                // cache tient déjà (permanent l'emporte, sinon l'échéance la plus lointaine) : une PROLONGATION
-                // est donc enforcée tout de suite. Ce n'est PAS « comme au chargement » quand l'upsert REMPLACE
-                // la ligne du même `env_id` : un ban RACCOURCI (permanent ramené à une échéance, échéance
-                // avancée) reste tenu à l'ancienne valeur, plus longue, par le cache tant que les chargements
-                // sont refusés. Sens fail-closed assumé : la levée (`netban_remove`) corrige le cache, et le
-                // prochain chargement réussi remplace l'instantané par la base. Le plafond a été jugé plus haut.
-                let mut c = netban_cache().write();
-                c.entry(netban_cle_du_store(ip))
-                    .and_modify(|cur| netban_fusionner_echeance(cur, expires))
-                    .or_insert(expires);
-            }
+            netban_armer_la_ligne_ecrite(conn, ip, expires);
             PoseDeBan::Arme
         }
         Ok(n) => PoseDeBan::NonEcrit(format!("{n} ligne(s) écrite(s) au lieu d'une")),
         Err(e) => PoseDeBan::NonEcrit(e.to_string()),
     }
+}
+
+/// Le store live est PLEIN (`NETBAN_CACHE_CAP`) et l'adresse n'y est pas déjà : la pose est refusée avant toute
+/// écriture. Rafraîchir une adresse déjà présente ne fait pas croître la map, donc reste permis.
+fn netban_plafond_refuse(ip: &str) -> bool {
+    let c = netban_cache().read();
+    c.len() >= NETBAN_CACHE_CAP && !c.contains_key(ip)
+}
+
+/// Après une écriture RÉUSSIE (et validée) : recharge le cache depuis la base.
+///
+/// `P10.20-b` — RECHARGEMENT REFUSÉ APRÈS UNE ÉCRITURE RÉUSSIE : le cache, fail-static, n'aurait pas porté la ligne
+/// écrite, et `Arme` aurait annoncé un ban non enforcé jusqu'au prochain chargement réussi. La ligne écrite est armée
+/// dans le cache, fusionnée avec la valeur que le cache tient déjà (permanent l'emporte, sinon l'échéance la plus
+/// lointaine) : une PROLONGATION est donc enforcée tout de suite. Aucune pose de production ne raccourcit plus la ligne
+/// du même `env_id` (`P11.25-a`), quelle que soit sa cellule : les deux poses passent par `SQL_NETBAN_POSE_SANS_RACCOURCIR`,
+/// qui ne prend l'échéance demandée que sur une échéance ENTIÈRE plus proche, et conserve entière une ligne permanente
+/// comme une ligne à échéance illisible (texte, réel), que le chargement tient sans fin. La valeur armée est donc celle
+/// de la base (telle que le chargement la lit) ou plus courte, et la fusion garde la plus longue. Les poses automatiques
+/// passent ici l'échéance DEMANDÉE ; la pose d'un administrateur, l'échéance QUI TIENT (relue par `RETURNING`).
+/// Le plafond a été jugé avant l'écriture.
+fn netban_armer_la_ligne_ecrite(conn: &Connection, ip: &str, expires: Option<i64>) {
+    if !netban_reload(conn) {
+        let mut c = netban_cache().write();
+        c.entry(netban_cle_du_store(ip))
+            .and_modify(|cur| netban_fusionner_echeance(cur, expires))
+            .or_insert(expires);
+    }
+}
+
+/// `P11.25-a` — CE QUE LA POSE D'UN ADMINISTRATEUR A FAIT DE LA LIGNE, servi par `POST /api/netban` sous la clé
+/// `issue_du_ban` (vocabulaire FERMÉ, `IssueDuBanManuel::mot`) :
+///   * `pose`     — aucune ligne du même `env_id`, ou une ligne ÉCHUE (`expires_ts <= maintenant`, la seconde même
+///     comprise : la garde ne bloque que tant que `exp > now`) : la pose demandée tient ;
+///   * `allonge`  — une ligne en cours dont l'échéance a été REPOUSSÉE (ou rendue permanente) par la pose ;
+///   * `conserve` — une ligne en cours au moins aussi longue (égalité comprise, permanent compris, échéance ILLISIBLE
+///     comprise, que le chargement tient permanente) : elle reste ENTIÈRE (cellule, raison, auteur).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IssueDuBanManuel {
+    Pose,
+    Allonge,
+    Conserve,
+}
+
+impl IssueDuBanManuel {
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            IssueDuBanManuel::Pose => "pose",
+            IssueDuBanManuel::Allonge => "allonge",
+            IssueDuBanManuel::Conserve => "conserve",
+        }
+    }
+}
+
+/// La ligne `net_ban` qui TIENT après la pose, relue par l'écriture même (`RETURNING`), dans la transaction qui l'a
+/// posée : jamais l'échéance demandée quand elle n'a pas été prise.
+pub(crate) struct BanQuiTient {
+    pub(crate) issue: IssueDuBanManuel,
+    /// Échéance EFFECTIVE (`None` = permanent).
+    pub(crate) expires_ts: Option<i64>,
+    /// Auteur du ban qui tient (celui d'avant quand le ban est conservé) ; `None` = colonne vide en base.
+    pub(crate) created_by: Option<String>,
+    /// La cellule conservée est ILLISIBLE (texte, réel) : `expires_ts` vaut alors `None`, l'enforcement du chargement.
+    pub(crate) echeance_illisible: bool,
+}
+
+/// Trois issues nommées, comme `PoseDeBan` : `Tient` porte ce qui tient, les deux refus sont ceux de `PoseDeBan`.
+#[must_use = "une pose de ban REFUSÉE (store plein) ou NON ÉCRITE doit être rapportée à l'appelant, jamais avalée"]
+pub(crate) enum PoseManuelleDeBan {
+    Tient(BanQuiTient),
+    RefuseParLePlafond,
+    /// Le `BEGIN` refusé : la forme commune (`ouvrir_le_garde_du_geste`) l'a dit au journal `[netban]`, l'a compté, et a
+    /// construit LE 503 de ce geste (cause `CAUSE_BAN_NON_ARME`, identifiant de corrélation journalisé). L'appelant le
+    /// sert tel quel : une requête, une réponse 5xx, une ligne `HTTP 503` au journal, l'identifiant que le client reçoit.
+    NonOuverte(Response),
+    NonEcrit(String),
+}
+
+/// `P11.25-a` — LA POSE D'UN ADMINISTRATEUR (`POST /api/netban`) NE RACCOURCIT JAMAIS UN BAN EN COURS, ET DIT CE QUI
+/// TIENT. Même règle, même texte SQL que les poses automatiques (`SQL_NETBAN_POSE_SANS_RACCOURCIR`) ; qui veut
+/// raccourcir lève le ban puis le repose. Dans UNE transaction `IMMEDIATE` (`Txn`) : lecture de l'échéance d'avant du
+/// même `env_id`, puis l'upsert qui rend la ligne écrite (`RETURNING`), puis la validation ; le cache n'est armé qu'après
+/// la validation. Un `BEGIN` refusé rend `NonOuverte` (le 503 de la forme commune) ; toute étape refusée ensuite rend
+/// `NonEcrit` et la transaction est annulée par le `Drop` de `Txn` : rien d'écrit, rien d'armé — un `COMMIT` refusé
+/// compris (le `Drop` annule l'écriture, la réponse est le 503 de `NonEcrit`).
+pub(crate) fn netban_poser_sans_raccourcir_et_relire(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) -> PoseManuelleDeBan {
+    if netban_plafond_refuse(ip) {
+        return PoseManuelleDeBan::RefuseParLePlafond;
+    }
+    // La forme commune d'ouverture : un `BEGIN` refusé est dit au journal `[netban]` (verrou passager, refus du moteur
+    // ou transaction d'un autre geste) et compté, et la réponse qu'elle construit (503 `CAUSE_BAN_NON_ARME`) EST celle
+    // de ce geste : elle remonte à l'appelant, qui n'en construit pas de seconde.
+    let tx = match crate::handlers::transaction_validee::ouvrir_le_garde_du_geste(conn, "netban", "ban manuel", CAUSE_BAN_NON_ARME) {
+        Ok(t) => t,
+        Err(reponse) => return PoseManuelleDeBan::NonOuverte(reponse),
+    };
+    let maintenant = now();
+    // L'échéance d'avant, LISIBLE ou non : une cellule ni entière ni vide (texte, réel) se dit `(false, None)` au lieu
+    // de faire échouer la lecture ; aucune ligne se dit `None`. Même jugement que le SQL : seul `integer` est une durée.
+    let avant: Option<(bool, Option<i64>)> = match conn
+        .query_row(
+            "SELECT typeof(expires_ts) IN ('integer','null'), CASE WHEN typeof(expires_ts) = 'integer' THEN expires_ts END \
+             FROM net_ban WHERE ip = ?1 AND env_id = ?2",
+            params![ip, env],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+    {
+        Ok(v) => v,
+        Err(e) => return PoseManuelleDeBan::NonEcrit(e.to_string()),
+    };
+    // Une cellule illisible conservée se relit `None` (permanent, ce que le chargement enforce) au lieu de faire échouer
+    // la relecture d'une écriture réussie.
+    let sql = format!(
+        "{SQL_NETBAN_POSE_SANS_RACCOURCIR} RETURNING CASE WHEN typeof(expires_ts) = 'integer' THEN expires_ts END, created_by"
+    );
+    let (tient_jusqu_a, tient_par): (Option<i64>, Option<String>) =
+        match conn.query_row(&sql, params![ip, reason, maintenant, expires, by, env], |r| Ok((r.get(0)?, r.get(1)?))) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return PoseManuelleDeBan::NonEcrit("0 ligne écrite au lieu d'une".into()),
+            Err(e) => return PoseManuelleDeBan::NonEcrit(e.to_string()),
+        };
+    if let Err(e) = tx.commit() {
+        return PoseManuelleDeBan::NonEcrit(e.to_string());
+    }
+    netban_armer_la_ligne_ecrite(conn, ip, tient_jusqu_a);
+    // L'échéance d'avant INCHANGÉE se dit `conserve` avant le bras de la ligne échue : une ligne échue que la pose
+    // n'aurait pas dépassée n'est pas « posée ».
+    let echeance_illisible = matches!(avant, Some((false, _)));
+    let issue = match avant {
+        None => IssueDuBanManuel::Pose,
+        Some((false, _)) => IssueDuBanManuel::Conserve,
+        Some((true, d)) if d == tient_jusqu_a => IssueDuBanManuel::Conserve,
+        Some((true, Some(t))) if t <= maintenant => IssueDuBanManuel::Pose,
+        Some((true, _)) => IssueDuBanManuel::Allonge,
+    };
+    PoseManuelleDeBan::Tient(BanQuiTient { issue, expires_ts: tient_jusqu_a, created_by: tient_par, echeance_illisible })
 }
 
 /// Retire un ban live (TOUS les env_id de l'IP -> l'unban est GLOBAL en Phase 1) + refresh du cache.
@@ -2302,4 +2433,18 @@ pub(crate) fn authenticate(st: &AppState, authz: &str) -> Option<(String, String
         }
     }
     ident
+}
+
+/// `P11.25-a` — LA POSE QUI REMPLACE, RÉSERVÉE AUX TÉMOINS. Depuis la décision de l'exploitant du 2026-11-10, aucune
+/// pose de production ne raccourcit un ban en cours, et celle-ci n'a plus d'appelant de production. Elle reste pour les
+/// témoins qui en ont besoin comme fixture : ceux du repli de pose sous rechargement refusé (`P10.20-b`, fichiers
+/// `netban_repli_de_pose_prolongation_meme_env.rs` et `netban_restes_comptes_et_levee_sans_flatten.rs`) fabriquent le
+/// refus par un autorisateur sur `net_ban.expires_ts`, que les deux poses de production LISENT dans leur `CASE` ; et
+/// `netban_chargement_pose_armee_est_enforcee_et_repare` réécrit une cellule illisible par une pose qui remplace.
+#[cfg(test)]
+#[must_use = "une pose de ban REFUSÉE (store plein) ou NON ÉCRITE doit être rapportée à l'appelant, jamais avalée"]
+pub(crate) fn netban_upsert(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str) -> PoseDeBan {
+    const SQL_NETBAN_POSE_QUI_REMPLACE_DES_TEMOINS: &str = "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
+         ON CONFLICT(ip,env_id) DO UPDATE SET reason=?2, expires_ts=?4, created_by=?5";
+    netban_ecrire(conn, ip, expires, reason, by, env, SQL_NETBAN_POSE_QUI_REMPLACE_DES_TEMOINS)
 }

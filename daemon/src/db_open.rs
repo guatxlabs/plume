@@ -747,7 +747,10 @@ pub(crate) mod door_tests {
         // `cold_seal`, puis des copies de fichiers) — la même ouverture, pour la même raison, que
         // `cold-backup-plan` : refuser une base au schéma inattendu ferait sauter la mise à l'abri au
         // moment exact où la base va mal, soit le trou de sauvegarde qu'on veut le moins.
-        const SANS_CONTRAT_ATTENDUS: usize = 18;
+        // 18 -> 19 : la sous-commande `reindex` (`reindexation::ouvrir_l_ecrivain`) écrit sur une base qu'un contrôle
+        // complet vient de juger ABÎMÉE (index désaccordés de leur table) ; le contrat la migrerait et rejouerait
+        // `db/schema.sql`, des écritures hors du seul `REINDEX` que ce geste s'autorise. URI `mode=rw` : jamais de création.
+        const SANS_CONTRAT_ATTENDUS: usize = 19;
         assert_eq!(
             sans_contrat.len(),
             SANS_CONTRAT_ATTENDUS,

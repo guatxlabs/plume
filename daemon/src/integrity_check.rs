@@ -8,7 +8,8 @@
 //! CE QUE FAIT `plume-daemon integrity-check [--full] [<chemin>]` :
 //!   - `PRAGMA quick_check` par défaut, `PRAGMA integrity_check` avec `--full` ;
 //!   - `PRAGMA cipher_integrity_check` en plus quand une clé est appliquée (vérifie le HMAC de chaque
-//!     page chiffrée ; ne lit pas le `-wal`, c'est la limite du moteur) ;
+//!     page chiffrée ; ne lit pas le `-wal`, c'est la limite du moteur) ; une erreur du moteur pendant
+//!     cette étape est rendue dans `cipher_integrity_check_erreur`, même quand la structure l'emporte ;
 //!   - UNE ligne JSON sur stdout ; code de sortie `0` sain, `1` corrompu, `2` REFUS DE CONCLURE.
 //!
 //! UNE QUATRIÈME SORTIE, AVANT TOUT VERDICT : `78`. `main` lit la clé du démon (`db_key()`) avant
@@ -154,8 +155,9 @@ pub(crate) struct Verdict {
 }
 
 /// Ce qu'une étape a établi. `Corrompu` est un FAIT ; `Refus` dit pourquoi aucun verdict n'est rendu.
+/// Exposée pour `reindexation`, qui ouvre sa relecture du schéma par `ouvrir_en_lecture_seule`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Issue {
+pub(crate) enum Issue {
     Corrompu(String),
     Refus(String),
 }
@@ -226,59 +228,10 @@ fn verifier_dans(
     attente: std::time::Duration,
     rapport: &mut Value,
 ) -> Option<Issue> {
-    // ── 1. LE FICHIER, PAR `stat` SEUL ──────────────────────────────────────────────────────────
-    let principal = match std::fs::metadata(chemin) {
-        Ok(m) if !m.is_file() => return Some(Issue::Refus("le chemin n'est pas un fichier ordinaire".into())),
-        Ok(m) => m.len(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Some(Issue::Refus("base absente : rien à vérifier, et rien n'a été créé".into()))
-        }
-        Err(e) => return Some(Issue::Refus(format!("état du fichier illisible ({:?})", e.kind()))),
-    };
-    if principal == 0 {
-        return Some(Issue::Refus(
-            "fichier vide : quick_check y rendrait « ok » sur zéro page, ce serait un faux vert".into(),
-        ));
-    }
-    let compagnon = |suffixe: &str| taille(&format!("{chemin}{suffixe}"));
-    let (wal, shm, journal) = match (compagnon("-wal"), compagnon("-shm"), compagnon("-journal")) {
-        (Ok(w), Ok(s), Ok(j)) => (w, s, j),
-        _ => return Some(Issue::Refus("état des compagnons (-wal, -shm, -journal) illisible".into())),
-    };
-    rapport["compagnons"] = json!({ "wal": wal.is_some(), "shm": shm.is_some(), "journal": journal.is_some() });
-    if journal.is_some_and(|n| n > 0) {
-        return Some(Issue::Refus(
-            "-journal non vide (journal chaud) : une ouverture en lecture seule ne le rejoue pas, une ouverture \
-             immuable l'ignorerait — aucun verdict sur un état qui n'est pas celui de la base"
-                .into(),
-        ));
-    }
-    let immuable = match (wal.is_some(), shm.is_some()) {
-        (true, true) => false,
-        (false, false) => true,
-        (true, false) => return Some(Issue::Refus("-wal présent sans -shm : l'ouverture créerait -shm".into())),
-        (false, true) => return Some(Issue::Refus("-shm présent sans -wal : l'ouverture créerait -wal".into())),
-    };
-    rapport["ouverture"] = json!(if immuable { "immuable" } else { "vivante" });
-
-    // ── 2. L'OUVERTURE EN LECTURE SEULE, SANS CREATE ────────────────────────────────────────────
-    let ouverte = if immuable {
-        Connection::open_with_flags(crate::db_open::uri_sqlite_immuable_d_un_chemin(chemin), OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)
-    } else {
-        Connection::open_with_flags(chemin, OpenFlags::SQLITE_OPEN_READ_ONLY)
-    };
-    let conn = match ouverte {
+    let conn = match ouvrir_en_lecture_seule(chemin, cle, cle_appliquee, attente, rapport) {
         Ok(c) => c,
-        Err(e) => return Some(classer(&e, cle_appliquee)),
+        Err(issue) => return Some(issue),
     };
-    let _ = conn.busy_timeout(attente);
-    if let Err(e) = crate::db_open::appliquer_une_cle_explicite(&conn, cle) {
-        return Some(Issue::Refus(format!("la clé n'a pas pu être appliquée : {e}")));
-    }
-    let _ = crate::sqlite_plafond::armer(&conn);
-    if let Err(e) = conn.execute_batch("PRAGMA query_only=ON;") {
-        return Some(Issue::Refus(format!("connexion non bornée à la lecture seule : {e}")));
-    }
 
     // ── 3. LA BASE EST-ELLE LISIBLE ? (clé, en-tête, schéma) ────────────────────────────────────
     if let Err(e) = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)) {
@@ -315,7 +268,12 @@ fn verifier_dans(
                 rapport["cipher_integrity_check"] = json!("indisponible : moteur sans SQLCipher");
                 chiffrement = Some(Issue::Refus("une clé est appliquée mais le moteur n'est pas SQLCipher".into()));
             }
-            Err(e) => chiffrement = Some(classer(&e, cle_appliquee)),
+            Err(e) => {
+                // La trace de l'erreur reste dans le rapport même quand la structure, corrompue, l'emporte sur ce refus :
+                // sans elle, une clé appliquée et un `cipher_integrity_check` absent ne disaient pas pourquoi.
+                rapport["cipher_integrity_check_erreur"] = json!(e.to_string());
+                chiffrement = Some(classer(&e, cle_appliquee));
+            }
             Ok(_) => match lire_les_lignes(&conn, "PRAGMA cipher_integrity_check") {
                 Ok(l) => {
                     if !l.is_empty() {
@@ -324,7 +282,10 @@ fn verifier_dans(
                     rapport["cipher_integrity_check"] = json!(l);
                 }
                 Err((lues, e)) => {
+                    // Interrompu avant sa première ligne, `lues` vaut `[]` : la même valeur qu'un HMAC sain. L'erreur
+                    // est donc rendue à part, pour qu'un lecteur du rapport ne prenne pas l'un pour l'autre.
                     rapport["cipher_integrity_check"] = json!(lues);
+                    rapport["cipher_integrity_check_erreur"] = json!(e.to_string());
                     chiffrement = Some(classer(&e, cle_appliquee));
                 }
             },
@@ -337,6 +298,74 @@ fn verifier_dans(
         return Some(Issue::Corrompu(format!("{pragma} rend des défauts")));
     }
     chiffrement
+}
+
+/// LES ÉTAPES 1 ET 2 DU CONTRÔLE : l'état des fichiers par `stat` seul, le choix d'ouverture sur les compagnons, puis
+/// l'ouverture en LECTURE SEULE sans `CREATE`, la clé appliquée et la connexion bornée à la lecture (`query_only`).
+/// Remplit `rapport` (`compagnons`, `ouverture`) au fil des étapes. Exposée pour `reindexation`, qui relit le schéma
+/// par cette même ouverture : un refus de compagnon (un seul de `-wal`/`-shm`, `-journal` non vide), une base absente
+/// ou vide y rendent le même `Issue::Refus` qu'ici, et rien n'est créé.
+pub(crate) fn ouvrir_en_lecture_seule(
+    chemin: &str,
+    cle: Option<&str>,
+    cle_appliquee: bool,
+    attente: std::time::Duration,
+    rapport: &mut Value,
+) -> Result<Connection, Issue> {
+    // ── 1. LE FICHIER, PAR `stat` SEUL ──────────────────────────────────────────────────────────
+    let principal = match std::fs::metadata(chemin) {
+        Ok(m) if !m.is_file() => return Err(Issue::Refus("le chemin n'est pas un fichier ordinaire".into())),
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Issue::Refus("base absente : rien à vérifier, et rien n'a été créé".into()))
+        }
+        Err(e) => return Err(Issue::Refus(format!("état du fichier illisible ({:?})", e.kind()))),
+    };
+    if principal == 0 {
+        return Err(Issue::Refus(
+            "fichier vide : quick_check y rendrait « ok » sur zéro page, ce serait un faux vert".into(),
+        ));
+    }
+    let compagnon = |suffixe: &str| taille(&format!("{chemin}{suffixe}"));
+    let (wal, shm, journal) = match (compagnon("-wal"), compagnon("-shm"), compagnon("-journal")) {
+        (Ok(w), Ok(s), Ok(j)) => (w, s, j),
+        _ => return Err(Issue::Refus("état des compagnons (-wal, -shm, -journal) illisible".into())),
+    };
+    rapport["compagnons"] = json!({ "wal": wal.is_some(), "shm": shm.is_some(), "journal": journal.is_some() });
+    if journal.is_some_and(|n| n > 0) {
+        return Err(Issue::Refus(
+            "-journal non vide (journal chaud) : une ouverture en lecture seule ne le rejoue pas, une ouverture \
+             immuable l'ignorerait — aucun verdict sur un état qui n'est pas celui de la base"
+                .into(),
+        ));
+    }
+    let immuable = match (wal.is_some(), shm.is_some()) {
+        (true, true) => false,
+        (false, false) => true,
+        (true, false) => return Err(Issue::Refus("-wal présent sans -shm : l'ouverture créerait -shm".into())),
+        (false, true) => return Err(Issue::Refus("-shm présent sans -wal : l'ouverture créerait -wal".into())),
+    };
+    rapport["ouverture"] = json!(if immuable { "immuable" } else { "vivante" });
+
+    // ── 2. L'OUVERTURE EN LECTURE SEULE, SANS CREATE ────────────────────────────────────────────
+    let ouverte = if immuable {
+        Connection::open_with_flags(crate::db_open::uri_sqlite_immuable_d_un_chemin(chemin), OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)
+    } else {
+        Connection::open_with_flags(chemin, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    };
+    let conn = match ouverte {
+        Ok(c) => c,
+        Err(e) => return Err(classer(&e, cle_appliquee)),
+    };
+    let _ = conn.busy_timeout(attente);
+    if let Err(e) = crate::db_open::appliquer_une_cle_explicite(&conn, cle) {
+        return Err(Issue::Refus(format!("la clé n'a pas pu être appliquée : {e}")));
+    }
+    let _ = crate::sqlite_plafond::armer(&conn);
+    if let Err(e) = conn.execute_batch("PRAGMA query_only=ON;") {
+        return Err(Issue::Refus(format!("connexion non bornée à la lecture seule : {e}")));
+    }
+    Ok(conn)
 }
 
 /// Toutes les lignes (première colonne, texte) d'un `PRAGMA`. En cas d'erreur en cours de lecture :

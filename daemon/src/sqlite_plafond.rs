@@ -448,9 +448,81 @@ fn est_erreur_du_support(e: &rusqlite::Error) -> bool {
 /// `P10.33-r` — LA LIGNE « [sqlite] erreur du support de la base », ÉCRITE EN UN SEUL LIEU pour tous ceux qui la
 /// doivent : `message_erreur`, le refus de `/api/search` (`search_engine_error`) et l'échec d'ouverture d'une
 /// connexion de lecture (`journaliser_l_echec_d_ouverture`). Rien pour une erreur de la requête.
+///
+/// LA LIGNE EST AUSSI COMPTÉE, ICI ET SOUS LA MÊME CONDITION : le compte de processus (`ERREURS_DU_SUPPORT`) que lit
+/// le composant `store` de la santé (`metrics::etat_de_surface_erreurs_du_support`). Avant, seule cette ligne le
+/// disait : le composant restait vert pendant que le journal répétait la même corruption à chaque lecture.
 pub(crate) fn journaliser_si_erreur_du_support(e: &rusqlite::Error) {
     if est_erreur_du_support(e) {
+        if let rusqlite::Error::SqliteFailure(f, _) = e {
+            ERREURS_DU_SUPPORT.noter(f.extended_code, maintenant_unix());
+        }
         eprintln!("[sqlite] erreur du support de la base : {}", decrire_l_erreur(e));
+    }
+}
+
+/// L'horloge du compte : secondes unix, sans allocation ni verrou (`SystemTime` lit l'horloge du noyau). Une horloge
+/// antérieure à l'époque rend zéro, que la surface d'état tient hors de sa fenêtre (âge = l'horloge entière).
+fn maintenant_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// LE COMPTE DES ERREURS DU SUPPORT DE LA BASE, tenu par le processus depuis son démarrage : trois atomiques, rien
+/// d'autre — le chemin d'erreur n'alloue ni ne verrouille. Toutes bases de tenant confondues (le site unique ne sait
+/// pas de quelle base vient l'erreur).
+pub(crate) struct CompteDesErreursDuSupport {
+    total: std::sync::atomic::AtomicU64,
+    derniere_ts: std::sync::atomic::AtomicI64,
+    dernier_code: std::sync::atomic::AtomicI32,
+}
+
+/// CE QUE LE COMPTE VALAIT À UNE LECTURE. `derniere_ts` et `dernier_code` n'ont de sens que si `total > 0`. Deux
+/// erreurs concurrentes peuvent laisser l'instant de l'une et le code de l'autre ; le total, incrément atomique, n'en
+/// perd aucune.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ErreursDuSupport {
+    pub(crate) total: u64,
+    pub(crate) derniere_ts: i64,
+    pub(crate) dernier_code: i32,
+}
+
+impl CompteDesErreursDuSupport {
+    pub(crate) const fn neuf() -> Self {
+        Self {
+            total: std::sync::atomic::AtomicU64::new(0),
+            derniere_ts: std::sync::atomic::AtomicI64::new(0),
+            dernier_code: std::sync::atomic::AtomicI32::new(0),
+        }
+    }
+
+    /// Une erreur de plus : le code et l'instant sont posés AVANT l'incrément (`Release`), pour qu'un lecteur qui voit
+    /// un total non nul (`Acquire`) voie aussi un instant posé.
+    pub(crate) fn noter(&self, code_etendu: i32, ts: i64) {
+        self.dernier_code.store(code_etendu, std::sync::atomic::Ordering::Relaxed);
+        self.derniere_ts.store(ts, std::sync::atomic::Ordering::Relaxed);
+        self.total.fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn instantane(&self) -> ErreursDuSupport {
+        let total = self.total.load(std::sync::atomic::Ordering::Acquire);
+        ErreursDuSupport {
+            total,
+            derniere_ts: self.derniere_ts.load(std::sync::atomic::Ordering::Relaxed),
+            dernier_code: self.dernier_code.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+/// LE compte du processus, écrit par le seul `journaliser_si_erreur_du_support`.
+pub(crate) static ERREURS_DU_SUPPORT: CompteDesErreursDuSupport = CompteDesErreursDuSupport::neuf();
+
+impl ErreursDuSupport {
+    /// CE QUE LE PROCESSUS A COMPTÉ — le SEUL site qui lit le compte pour la surface d'état.
+    pub(crate) fn du_processus() -> Self {
+        ERREURS_DU_SUPPORT.instantane()
     }
 }
 
@@ -507,7 +579,7 @@ const NOMS_DES_CODES_IOERR: [&str; 35] = [
 
 /// Le nom lisible d'un code étendu de la famille `SQLITE_IOERR`, `None` hors de cette famille ou pour
 /// un rang inconnu de cette table (le nombre seul est alors dit).
-fn nom_du_code_etendu(code: i32) -> Option<&'static str> {
+pub(crate) fn nom_du_code_etendu(code: i32) -> Option<&'static str> {
     if code & 0xff != rusqlite::ffi::SQLITE_IOERR {
         return None;
     }

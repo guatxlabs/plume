@@ -769,6 +769,69 @@ pub(crate) fn etat_de_surface_pertes_d_acces(
     (etat, detail)
 }
 
+/// LA DURÉE PENDANT LAQUELLE UNE ERREUR DU SUPPORT DE LA BASE TIENT LE COMPOSANT `store` HORS DU VERT : quinze minutes
+/// après la DERNIÈRE. Assez longue pour qu'une erreur reproduite par un tick espacé — le pré-chauffage des panneaux
+/// (son intervalle est réglable par l'exploitant, jusqu'à plusieurs minutes), la boucle de rollup — tienne
+/// le voyant allumé sans clignoter entre deux tours ; assez courte pour qu'une réparation (restauration, base
+/// reconstruite) se voie revenir au vert sans redémarrer le démon. Passé ce délai sans nouvelle erreur, l'état
+/// revient à ce que le disque dit ; le compte depuis le démarrage, l'instant et le code de la dernière restent servis.
+pub(crate) const FENETRE_D_AVEU_DES_ERREURS_DU_SUPPORT_S: i64 = 900;
+
+/// CE QUE LE COMPOSANT `store` DIT DES ERREURS DU SUPPORT DE LA BASE (compte de `sqlite_plafond::ERREURS_DU_SUPPORT`).
+/// Une erreur vue depuis moins de `FENETRE_D_AVEU_DES_ERREURS_DU_SUPPORT_S` : l'état ne peut que DESCENDRE (vert ->
+/// jaune, un rouge du disque reste rouge) et la phrase S'AJOUTE au détail du disque, en nommant le geste de
+/// l'exploitant. Aucune erreur, ou la dernière hors de la fenêtre : (état, détail) rendus TELS QUELS.
+///
+/// POURQUOI JAUNE ET PAS ROUGE : le vocabulaire des composants réserve le rouge à « en panne » (disque saturé,
+/// tick bloqué) ; une erreur du support dit qu'une lecture a été refusée par le moteur, pas que la base ne sert
+/// plus — c'est l'état « à regarder ». `posture` suit par la règle commune (`worst_state`), sans cas particulier.
+pub(crate) fn etat_de_surface_erreurs_du_support(
+    etat: &'static str,
+    detail: String,
+    erreurs: &crate::sqlite_plafond::ErreursDuSupport,
+    now_ts: i64,
+) -> (&'static str, String) {
+    // Un total nul avec un instant posé est la course entre la pose de l'instant et l'incrément (`noter`) : rien à dire.
+    if erreurs.total == 0 {
+        return (etat, detail);
+    }
+    // Un instant jamais posé (zéro) tombe ici hors de la fenêtre : l'âge vaut alors l'horloge entière.
+    let age = (now_ts - erreurs.derniere_ts).max(0);
+    if age >= FENETRE_D_AVEU_DES_ERREURS_DU_SUPPORT_S {
+        return (etat, detail);
+    }
+    let code = match crate::sqlite_plafond::nom_du_code_etendu(erreurs.dernier_code) {
+        Some(nom) => format!("{nom}, code étendu {}", erreurs.dernier_code),
+        None => format!("code étendu {}", erreurs.dernier_code),
+    };
+    (
+        pire_des_deux(etat, "yellow"),
+        format!(
+            "{detail} ; {} erreur(s) du SUPPORT de la base depuis le démarrage {PORTEE_DES_PERTES_D_ACCES} — des \
+             lectures ont été refusées par le moteur (entrée-sortie, disque ou fichier corrompu), dernière il y a \
+             {age}s ({code}) : vérifier la base par `plume-daemon integrity-check --full` ; aveu tenu {} min après \
+             la dernière erreur",
+            erreurs.total,
+            FENETRE_D_AVEU_DES_ERREURS_DU_SUPPORT_S / 60
+        ),
+    )
+}
+
+/// LES CHAMPS DU COMPOSANT `store` SUR LES ERREURS DU SUPPORT, servis dans et hors de la fenêtre (un fait passé ne
+/// s'efface pas) : `support_errors` (compte depuis le démarrage, un vrai zéro quand aucune n'a été vue — le compte
+/// est lu sur le processus, il ne peut pas être illisible, d'où l'absence de `_verdict`), et, seulement quand il y
+/// en a eu une, `support_errors_last_ts` (instant unix de la dernière) et `support_errors_last_code` (son code étendu).
+pub(crate) fn poser_les_erreurs_du_support(
+    store: &mut serde_json::Map<String, Value>,
+    erreurs: &crate::sqlite_plafond::ErreursDuSupport,
+) {
+    store.insert("support_errors".into(), json!(erreurs.total));
+    if erreurs.total > 0 {
+        store.insert("support_errors_last_ts".into(), json!(erreurs.derniere_ts));
+        store.insert("support_errors_last_code".into(), json!(erreurs.dernier_code));
+    }
+}
+
 /// LE CORPS DE `component_health`, avec la fraîcheur des ticks EN ENTRÉE plutôt qu'en ambiant, et
 /// AUCUNE perte d'accès (`P10.21-n` : les témoins qui l'appellent jugent autre chose).
 pub(crate) fn component_health_avec(
@@ -980,10 +1043,16 @@ pub(crate) fn component_health_avec_pertes(
             ),
         ),
     };
+    // ET LA BASE SE LIT-ELLE ? Un disque à moitié vide ne dit rien d'une base qui rend des erreurs du support
+    // (corruption, entrée-sortie) : le compte du processus, tenu au site unique de la ligne `[sqlite]`, jaunit le
+    // composant tant que la dernière est récente.
+    let erreurs_du_support = crate::sqlite_plafond::ErreursDuSupport::du_processus();
+    let (sstate, sdetail) = etat_de_surface_erreurs_du_support(sstate, sdetail, &erreurs_du_support, now_ts);
     let mut store = serde_json::Map::new();
     store.insert("component".into(), json!("store"));
     store.insert("state".into(), json!(sstate));
     store.insert("detail".into(), json!(sdetail));
+    poser_les_erreurs_du_support(&mut store, &erreurs_du_support);
     // Le pourcentage SEUL (pas le triplet) part dans le JSON : c'est lui que le panneau lit. Le
     // verdict et la cause voyagent avec, donc « 0 % » et « pas mesuré » ne se ressemblent plus.
     let pourcentage = match mesure_disque {

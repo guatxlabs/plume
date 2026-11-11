@@ -262,6 +262,9 @@ const COMPOSANT_LBL = {
   // lorsqu'il n'a PAS lu `rule` (la clé `enabled_rules` est alors absente) : la pastille le dit, avec la
   // cause, au lieu d'une clé brute ou d'un silence.
   enabled_rules: LANG === 'en' ? 'active rules' : 'règles actives',
+  // LE PLUS GRAND NOMBRE DE NIVEAUX DES INDEX PLEIN-TEXTE, servi par le composant `store`. Le verdict est
+  // découvert par son suffixe ; sans ce libellé, la pastille rendrait la clé brute `fts_levels` à un humain.
+  fts_levels: LANG === 'en' ? 'full-text index levels' : 'niveaux de l\u2019index plein-texte',
 };
 function verdictsDuComposant(c) {
   const out = [];

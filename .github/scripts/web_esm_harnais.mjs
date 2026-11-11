@@ -1377,6 +1377,29 @@ exiger(bilansB && /regles0$/.test(texte(bilansB).replace(/^.*boucle de fond/s, "
 const storeB = ligneComp(wrapB, "store");
 exiger(storeB && !/NON LISIBLE|non publié/.test(texte(storeB)), `(b) composant store lu : porte tout de même un état d'erreur (texte : « ${storeB && texte(storeB)} »)`);
 
+// (b-niveaux) LE NOMBRE DE NIVEAUX DES INDEX PLEIN-TEXTE, posé par le démon sur le composant `store`
+// (`plus_grand_nombre_de_niveaux(…).poser_dans(&mut store, "fts_levels")`, daemon/src/metrics.rs, relu ici). Non lu, la
+// pastille le dit sous son LIBELLÉ avec le mot du verdict et la cause, jamais sous la clé brute `fts_levels` ; lu, elle
+// ne rend rien de plus qu'un composant `store` qui ne le sert pas. La face anglaise est jugée en (142-niveaux).
+{
+  const metriquesNiveaux = (() => { try { return readFileSync(path.join(RACINE, "daemon", "src", "metrics.rs"), "utf8"); } catch (e) { return ""; } })();
+  exiger(/\.poser_dans\(&mut store, "fts_levels"\)/.test(metriquesNiveaux),
+    "(b-niveaux-instrument) daemon/src/metrics.rs ne pose plus `fts_levels` sur le composant `store` par `poser_dans` : la forme que ce témoin fabrique n'est plus celle du démon — ce témoin REFUSE DE CONCLURE");
+  const storeNiveaux = (m) => {
+    const w = new Element("div");
+    rendreSysteme(w, mB, { posture: "green", components: [m] });
+    const r = ligneComp(w, "store");
+    return r ? texte(r) : "";
+  };
+  const sans = storeNiveaux({ component: "store", state: "green", detail: "ok" });
+  const nonLu = storeNiveaux(poser({ component: "store", state: "green", detail: "ok" }, "fts_levels", illisible("source_illisible", "structure de `event_fts` non lue (fabriqué)")));
+  const luNiveaux = storeNiveaux(poser({ component: "store", state: "green", detail: "ok" }, "fts_levels", lu(16)));
+  exiger(sans !== "", "(b-niveaux) le composant `store` n'est pas rendu : ce témoin REFUSE DE CONCLURE");
+  exiger(nonLu.includes("niveaux de l’index plein-texte : NON LISIBLE (source illisible)") && !nonLu.includes("fts_levels"),
+    `(b-niveaux) \`fts_levels_verdict\` non lu n'est pas dit sous « niveaux de l’index plein-texte » avec le mot du verdict et sa cause, ou la clé brute paraît (texte : « ${nonLu} »)`);
+  exiger(luNiveaux === sans, `(b-niveaux) \`fts_levels\` lu rend quelque chose de plus qu'un store qui ne le sert pas : « ${luNiveaux} » contre « ${sans} »`);
+}
+
 // (c) RIEN DE PUBLIÉ — troisième état, distinct des deux autres (pas encore de tick, clé absente).
 const mC = { ...mB, scheduler: { rule_ticks_total: 0 }, host: {}, db: {} };
 const wrapC = new Element("div");
@@ -28841,6 +28864,34 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     `(142-faces) les deux langues ne rendent pas chacune leur mot : ${JSON.stringify(faces142)}`);
   if (echecs.length !== echecsAvant142) console.log(`(142) EN ÉCHEC — ${echecs.length - echecsAvant142} écart(s), dits ci-dessus`);
   else console.log("(142) OK — `P10.20-b` (console) : « Ingest / h » et « Alertes ouvertes » passent par le lecteur de verdict — non lus, « NON LISIBLE » / « NOT READABLE » avec la cause, jamais « 0 » ; lus, la valeur, vrai zéro compris ; un compte aveuglé seul laisse l'autre à sa valeur ; la pastille de `detection` dit un nombre de règles non lu sous son libellé ; une cause que `esc()` réécrirait est rendue telle quelle ; les trois sites d'aveu sont relus dans daemon/src/metrics.rs.");
+}
+
+// (142-niveaux) LA FACE ANGLAISE DU LIBELLÉ `fts_levels` (la face française est jugée en (b-niveaux), près du composant
+// `store` de la section 2). Instance `?plume-lang=en` de system.js : `fts_levels_verdict` non lu se dit sous
+// « full-text index levels » avec le mot du verdict et la cause, jamais sous la clé brute ni sous le libellé français ;
+// lu, rien de plus qu'un composant `store` qui ne le sert pas.
+{
+  const langueOrigineNiv = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const coreEnNiv = await import(adresseSousLaLangue("core.js"));
+  const systemeEnNiv = await import(adresseSousLaLangue("system.js"));
+  if (langueOrigineNiv === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigineNiv);
+  exiger(coreEnNiv.LANG === "en", "(142-niveaux-instrument) l'instance `?plume-lang=en` du point commun ne porte pas l'anglais : ce témoin REFUSE DE CONCLURE");
+  const pastilleNiv = (m) => {
+    const w = new Element("div");
+    systemeEnNiv.rendreSysteme(w, { ts: 1000, version: "x", schema_version: 1, uptime_s: 10, process: {}, search: {}, scheduler: {}, db: {}, host: {}, http: {}, ingest: {} }, { posture: "green", components: [m] });
+    const comps = w.children.find((c) => c.classList.contains("sys-comps"));
+    const r = comps && comps.children.find((x) => x.children.some((y) => y.textContent === "store"));
+    return r ? String(r.textContent || "") : "";
+  };
+  const storeNiv = { component: "store", state: "green", detail: "ok" };
+  const sansNiv = pastilleNiv(storeNiv);
+  const nonLuNiv = pastilleNiv({ ...storeNiv, fts_levels_verdict: "illisible", fts_levels_cause: "source_illisible", fts_levels_detail: "structure de `event_fts` non lue (fabriqué)" });
+  const luNiv = pastilleNiv({ ...storeNiv, fts_levels: 16, fts_levels_verdict: "lu", fts_levels_cause: "aucune" });
+  exiger(sansNiv !== "", "(142-niveaux) le composant `store` n'est pas rendu : ce témoin REFUSE DE CONCLURE");
+  exiger(nonLuNiv.includes("full-text index levels : NON LISIBLE (source illisible)") && !nonLuNiv.includes("fts_levels") && !nonLuNiv.includes("plein-texte"),
+    `(142-niveaux) en : \`fts_levels_verdict\` non lu n'est pas dit sous « full-text index levels » avec le mot du verdict et sa cause, ou la clé brute / le libellé français paraît (texte : « ${nonLuNiv} »)`);
+  exiger(luNiv === sansNiv, `(142-niveaux) en : \`fts_levels\` lu rend quelque chose de plus qu'un store qui ne le sert pas : « ${luNiv} » contre « ${sansNiv} »`);
 }
 
 // (143) à (148) `P10.32-m` (console) — CE QUI EST PLAFONNÉ ET CE QUI NE L'EST PAS ; UNE CHAUFFE QUI A UNE FIN ; L'AIDE

@@ -17,8 +17,9 @@
 //   T3  la garde : au-delà du seuil, aucune passe et rien d'écrit, phrase entière, y compris pour un index d'un
 //       seul segment ; au seuil, la passe est jouée ; la garde de chaque passe en cours de séquence, et l'arrêt sur
 //       une structure illisible avant une passe ; la limite du moteur et le remède, mesurés ;
-//   le retrait : chaque forme refusée, chaque issue de l'écriture (succès, rien à faire, refus à chaque pas,
-//       annulation refusée avec et sans transaction restante) ;
+//   le retrait : joué après CHAQUE passe d'un tick, même quand une ingestion s'intercale entre deux passes ; chaque
+//       forme refusée, chaque issue de l'écriture (succès, rien à faire, refus à chaque pas, annulation refusée avec
+//       et sans transaction restante) ;
 //   T4  la santé, par la ROUTE `/api/system/health`, dans un sous-processus ; le plus grand nombre servi quelle que
 //       soit la place de son index.
 //
@@ -558,9 +559,10 @@ mod cf1_niveaux_bornes {
     }
 
     /// AVANT CHAQUE PASSE, UNE STRUCTURE QUE PLUME NE SAIT PAS LIRE ARRÊTE LA SÉQUENCE : le crochet remplace
-    /// l'enregistrement par un en-tête tronqué (`x'00000001'`, quatre octets de cookie et un seul varint) juste après
-    /// la première passe, par une connexion à part. FTS5 décoderait cet enregistrement comme une structure vide et
-    /// jouerait la passe ; la compaction ne la lance pas : UNE passe, arrêt `StructureIllisible`, phrase de l'arrêt, et
+    /// l'enregistrement par un en-tête tronqué (`x'00000001'`, quatre octets : le cookie SEUL, sans aucun varint)
+    /// juste après la première passe, par une connexion à part. FTS5 lirait le nombre de niveaux et de segments dans
+    /// le remplissage à zéro qui suit l'enregistrement (sqlite3.c:233574 pose ce remplissage, sqlite3.c:233441-233442
+    /// y lisent les deux varints), décoderait donc une structure vide et jouerait la passe ; la compaction ne la lance pas : UNE passe, arrêt `StructureIllisible`, phrase de l'arrêt, et
     /// l'enregistrement laissé tel quel.
     ///
     /// MUTATION : `CF1_ILLISIBLE_IGNOREE` (une structure illisible avant la passe lue comme vide) -> deux passes :
@@ -596,6 +598,111 @@ mod cf1_niveaux_bornes {
             issue.phrase()
         );
         assert_eq!(lire_bloc(&db.lock()), vec![0u8, 0, 0, 1], "l'enregistrement illisible n'est pas réécrit");
+    }
+
+    /// Les niveaux relevés après chaque passe du témoin suivant, fabriqués : le premier relevé (la fixture), puis
+    /// deux niveaux de plus par passe (le chemin d'`optimize` repris à chaque segment déposé entre deux passes),
+    /// jusqu'à `CF1_CONSERVES` où le retrait les arrête.
+    const CF1_PREMIER_RELEVE: i64 = 8;
+    const CF1_PASSES_DU_TICK: i64 = 8;
+
+    /// APRÈS CHAQUE PASSE, ET PAS SEULEMENT LA PREMIÈRE DU TICK, LE RETRAIT : le crochet `EntreLesPasses` relève le
+    /// nombre de niveaux (après la passe et son retrait) puis dépose un lot de 200 insertions par une SECONDE
+    /// connexion, comme l'ingestion que la respiration laisse passer. Chaque passe suivante reprend alors le chemin
+    /// d'`optimize` et ajoute deux niveaux : sans retrait, le tick franchirait `CF1_BORNE_NIVEAUX`. Relevés exacts :
+    /// `CF1_PREMIER_RELEVE`, puis deux de plus par passe, plafonnés à `CF1_CONSERVES` ; aucun au-delà de
+    /// `CF1_BORNE_NIVEAUX` ; le budget entier joué (huit passes, huit relevés, arrêt `BudgetEpuise`) ; l'issue annonce
+    /// le dernier relevé.
+    ///
+    /// CONTRÔLE (sans lui la borne ne prouverait rien), tenu par l'égalité exacte des relevés : ils montent de deux
+    /// par passe (l'ingestion intercalée rouvre bien le chemin d'`optimize`) et trois passes suivent celle qui atteint
+    /// `CF1_CONSERVES` — sans le retrait à ces passes, elles porteraient la structure au-delà de la borne.
+    ///
+    /// MUTATION : le retrait joué à la seule première passe du tick -> relevés au-delà de `CF1_BORNE_NIVEAUX` : ROUGE.
+    #[test]
+    fn le_retrait_suit_chaque_passe_quand_l_ingestion_s_intercale() {
+        let (t, db, r) = base("cf1-ingestion-entre-les-passes", 20_000);
+        db.lock().execute("DELETE FROM event WHERE id <= 12000", []).expect("fixture : purge");
+        let chemin = t.as_str().to_string();
+        let releves: std::rc::Rc<std::cell::RefCell<Vec<i64>>> = Default::default();
+        let note = releves.clone();
+        let mut r = r;
+        crochet_de_compaction::armer(PointDeTest::EntreLesPasses, Box::new(move |c: &Connection| {
+            note.borrow_mut().push(niveaux_lus(c));
+            let autre = Connection::open(&chemin).expect("seconde connexion");
+            inserer(&autre, &mut r, 200);
+        }));
+        let issue = compacter_index(&db, "event_fts", &Reglage::depuis(&tick("60", &CF1_PASSES_DU_TICK.to_string())));
+        crochet_de_compaction::desarmer();
+        let releves = releves.borrow().clone();
+        let attendus: Vec<i64> =
+            (0..CF1_PASSES_DU_TICK).map(|k| (CF1_PREMIER_RELEVE + 2 * k).min(CF1_CONSERVES)).collect();
+        println!("CF1-INGESTION-ENTRE-LES-PASSES releves={releves:?} attendus={attendus:?} — {}", issue.phrase());
+        assert!(
+            releves.iter().all(|&n| n <= CF1_BORNE_NIVEAUX),
+            "après CHAQUE passe, le retrait : aucun relevé au-delà de {CF1_BORNE_NIVEAUX} — relevés {releves:?} — {}",
+            issue.phrase()
+        );
+        assert_eq!(releves, attendus, "les niveaux relevés après chaque passe — {}", issue.phrase());
+        match &issue {
+            Issue::Rendue { passes, niveaux_apres, arret: Arret::BudgetEpuise, .. } => {
+                assert_eq!(*passes, CF1_PASSES_DU_TICK, "le budget entier est joué — {}", issue.phrase());
+                assert_eq!(*niveaux_apres, CF1_CONSERVES, "l'issue annonce le dernier relevé — {}", issue.phrase());
+            }
+            autre => panic!("ingestion entre les passes : issue inattendue : {}", autre.phrase()),
+        }
+    }
+
+    /// JUSTE APRÈS UNE PASSE, UNE STRUCTURE QUI NE SE RELIT PAS ARRÊTE LA SÉQUENCE : un autorisateur refuse la SEULE
+    /// lecture de `event_fts_data.block` qui suit la première passe (la relecture sous le verrou de la passe ; FTS5
+    /// lit ses pages par des poignées de blob, que l'autorisateur ne voit pas). UNE passe, arrêt `StructureIllisible`,
+    /// phrase de l'arrêt ; l'enregistrement, lui, est intact et se relit une fois l'autorisateur retiré.
+    /// Contrôle : la lecture a été refusée UNE fois, et c'était bien la relecture d'après la passe (la passe a été
+    /// préparée avant elle).
+    ///
+    /// MUTATION : la relecture d'après la passe, illisible, prise pour « rien à dire » (la séquence continue) ->
+    /// plusieurs passes : ROUGE.
+    #[test]
+    fn une_structure_illisible_juste_apres_la_passe_arrete_la_sequence() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc as ArcStd;
+        let (_t, db) = base_a_fusionner("cf1-illisible-apres-la-passe");
+        // 0 : avant la passe ; 1 : la passe est préparée ; 2 : la relecture qui la suit a été refusée.
+        let etape = ArcStd::new(AtomicU8::new(0));
+        let refus = ArcStd::new(AtomicU8::new(0));
+        let (e, n) = (etape.clone(), refus.clone());
+        db.lock().authorizer(Some(move |ctx: AuthContext<'_>| match ctx.action {
+            AuthAction::Insert { table_name } if table_name == "event_fts" && e.load(Ordering::SeqCst) == 0 => {
+                e.store(1, Ordering::SeqCst);
+                Authorization::Allow
+            }
+            AuthAction::Read { table_name, column_name }
+                if table_name == "event_fts_data" && column_name == "block" && e.load(Ordering::SeqCst) == 1 =>
+            {
+                e.store(2, Ordering::SeqCst);
+                n.fetch_add(1, Ordering::SeqCst);
+                Authorization::Deny
+            }
+            _ => Authorization::Allow,
+        }));
+        let issue = compacter_index(&db, "event_fts", &Reglage::depuis(&tick("60", "8")));
+        sans_autorisateur(&db.lock());
+        assert_eq!(refus.load(Ordering::SeqCst), 1, "contrôle : la relecture d'après la passe a été refusée une fois");
+        assert!(
+            matches!(issue, Issue::Rendue { passes: 1, arret: Arret::StructureIllisible, .. }),
+            "une passe, puis l'arrêt sur la relecture refusée : {}",
+            issue.phrase()
+        );
+        assert!(issue.phrase().contains(" | 1 passe(s) en "), "une passe dite : {}", issue.phrase());
+        assert!(
+            issue.phrase().ends_with(
+                "| ARRÊTÉ : structure FTS5 devenue ILLISIBLE en cours de fusion — on ne sait plus combien de segments \
+                 restent, la suite n'est pas tentée"
+            ),
+            "la phrase de l'arrêt : {}",
+            issue.phrase()
+        );
+        assert!(structure(&db.lock(), "event_fts").is_some(), "l'enregistrement est intact : il se relit sans autorisateur");
     }
 
     /// CONTRÔLE DU MOTEUR (aucun mutant possible : c'est le moteur qu'on mesure) : à 2 000 niveaux une insertion

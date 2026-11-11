@@ -517,7 +517,11 @@ pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &s
             crate::metrics::compter_un_evenement_sans_adresse_source(&row.source, &row.category, row.fields.as_deref());
         }
         if let Err(e) = store().insert_event(conn, &row) {
-            eprintln!("[ingest] journal INSERT échoué -> ROLLBACK du batch ({db_path}) : {e}");
+            // Une erreur du SUPPORT (entrée-sortie, corruption — dont l'index plein-texte illisible, rendu en
+            // `SQLITE_CORRUPT_VTAB` —, disque plein) est comptée au compte du composant `store` de la santé, par la
+            // classification existante ; une base occupée ou une contrainte ne l'est pas. La ligne porte le code étendu.
+            crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+            eprintln!("[ingest] journal INSERT échoué -> ROLLBACK du batch ({db_path}) : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
             return Err(LotNonEcrit::Annule(n)); // `P10.34-g` : le `Drop` du garde annule la transaction du lot
         }
         // Rien en production ; sous `cfg(test)`, le crochet d'un témoin (un panic après une écriture du lot, `P10.34-g`).
@@ -748,7 +752,10 @@ pub(crate) fn ingest_events_batch_env(
             Err(e) => {
                 // FAIL-SAFE : erreur mid-batch -> ROLLBACK ATOMIQUE du fichier + log ; le daemon NE tombe
                 // PAS. L'appelant met le fichier en quarantaine (rejouable, aucune perte silencieuse).
-                eprintln!("[ingest] events INSERT échoué -> ROLLBACK du batch ({db_path}) : {e}");
+                // Erreur du support comptée au composant `store` de la santé (même règle que la voie journald) ;
+                // la ligne porte le code étendu.
+                crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                eprintln!("[ingest] events INSERT échoué -> ROLLBACK du batch ({db_path}) : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
                 return Err(LotNonEcrit::Annule(n)); // `P10.34-g` : le `Drop` du garde annule la transaction du lot
             }
         }

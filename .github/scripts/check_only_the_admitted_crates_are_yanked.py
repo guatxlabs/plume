@@ -25,7 +25,9 @@ REFUSE DE CONCLURE (rc 2) — jamais un vert : `cargo-audit` absent, sortie illi
 ou un `.cargo/audit.toml` à la RACINE (il pourrait éteindre le contrôle que cette garde rejoue).
 
 CE QU'ELLE NE TIENT PAS : elle a besoin de l'index de crates.io et de la base d'avis (réseau) ; elle ne lit que
-`daemon/Cargo.lock` (les verrous des crates collector-* ont leur propre audit) ; elle ne dit pas POURQUOI un
+`daemon/Cargo.lock` (les autres verrous — agent, collector-* et tout crate découvert — sont audités, versions
+retirées comprises, par le pas `cargo_audit_autres` du job `security`, chacun depuis son répertoire donc avec
+son propre relevé s'il figure dans RELEVES_ADMIS) ; elle ne dit pas POURQUOI un
 crate a été retiré — l'amont ne le publie pas toujours.
 """
 import json

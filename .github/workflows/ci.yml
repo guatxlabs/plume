@@ -3084,10 +3084,11 @@ jobs:
   # ---------------------------------------------------------------------------
   # security — supply-chain + secret hygiene. Independent gate: runs in parallel with
   # the test job and never gates its logic. Two checks:
-  #   1) cargo-audit — RustSec advisory scan of the daemon crate's locked dep tree
-  #      (--deny warnings => unmaintained/yanked/vuln advisories FAIL the job). Reads
-  #      daemon/Cargo.lock only (the patched path dep guatx-core is skipped — no build,
-  #      no core checkout needed).
+  #   1) cargo-audit — RustSec advisory scan of EVERY crate's locked dep tree
+  #      (--deny warnings => unmaintained/yanked/vuln advisories FAIL the job): daemon/Cargo.lock
+  #      from daemon/ with its daemon/.cargo/audit.toml (the patched path dep guatx-core is
+  #      skipped — no build, no core checkout needed), then every other lock DISCOVERED like the
+  #      cargo-deny manifests, each audited and named on failure.
   #   2) gitleaks   — secret scan of the tree + history. An ephemeral config (written
   #      below, NOT committed) extends the default RULES of the pinned release — without their
   #      global path allowlist (`P10.31-o`) — and ALLOWLISTS the two
@@ -3211,6 +3212,51 @@ jobs:
         continue-on-error: true
         working-directory: daemon
         run: cargo audit --deny warnings
+
+      # CHAQUE AUTRE VERROU DU DÉPÔT, même sévérité. Ce dépôt n'a pas de workspace : le pas ci-dessus ne lit que
+      # `daemon/Cargo.lock`, et `agent/Cargo.lock` (le crate qu'on INSTALLE sur les postes clients) a porté six avis
+      # RustSec sans qu'aucun contrôle ne rougisse. Les verrous sont DÉCOUVERTS comme les manifestes du pas cargo-deny
+      # (un crate = un Cargo.toml de premier niveau) : un crate ajouté demain est audité sans geste. Le démon reste au
+      # pas précédent, lu depuis `daemon/` avec son relevé `daemon/.cargo/audit.toml`. Chaque crate est audité DEPUIS son
+      # répertoire, donc avec son propre relevé s'il en a un : seuls ceux de RELEVES_ADMIS en ont (collector-mail, avis
+      # justifiés et datés dans `collector-mail/.cargo/audit.toml`) ; un `.cargo/audit.toml` apparu chez un autre crate
+      # rougit (il y taillerait une exception que personne n'a relue).
+      # Rougissent aussi : un manifeste sans Cargo.lock (rien d'audité), un verrou ATTENDU absent de la découverte
+      # (jamais « zéro verrou trouvé = vert »). Tous les verrous sont audités avant de conclure, et le journal nomme
+      # CHAQUE verrou en échec — un avis sur un crate ne cache pas celui d'un autre.
+      - name: cargo audit (tous les autres verrous, découverts — deny warnings)
+        id: cargo_audit_autres
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          ATTENDUS="agent collector-mail collector-syslog"
+          RELEVES_ADMIS="collector-mail"
+          mapfile -t MANIFESTES < <(find . -mindepth 2 -maxdepth 2 -name Cargo.toml -not -path './target/*' | sort)
+          rc=0; vus=""; echoues=""
+          for m in "${MANIFESTES[@]}"; do
+            d="$(dirname "$m")"; d="${d#./}"
+            [ "$d" = daemon ] && continue
+            vus="$vus $d"
+            if [ ! -f "$d/Cargo.lock" ]; then
+              echo "::error::$d/Cargo.toml sans Cargo.lock : rien à auditer"; echoues="$echoues $d"; rc=1; continue
+            fi
+            if [ -e "$d/.cargo/audit.toml" ] && case " $RELEVES_ADMIS " in *" $d "*) false ;; *) true ;; esac; then
+              echo "::error::$d/.cargo/audit.toml : relevé d'avis hors de RELEVES_ADMIS ($RELEVES_ADMIS)"; echoues="$echoues $d"; rc=1; continue
+            fi
+            echo "::group::cargo audit $d/Cargo.lock"
+            if (cd "$d" && cargo audit --deny warnings); then
+              echo "$d/Cargo.lock : success"
+            else
+              echo "::error::cargo audit a échoué sur $d/Cargo.lock"; echoues="$echoues $d"; rc=1
+            fi
+            echo "::endgroup::"
+          done
+          for a in $ATTENDUS; do
+            case " $vus " in *" $a "*) ;; *) echo "::error::verrou attendu absent de la découverte : $a/Cargo.lock"; echoues="$echoues $a"; rc=1 ;; esac
+          done
+          echo "verrous audités :${vus:- aucun}"
+          echo "verrous en échec :${echoues:- aucun}"
+          exit "$rc"
 
       # VERSIONS RETIRÉES, REJOUÉES SANS LA CONFIGURATION DU DÉMON (posée le 2026-10-16, `P10.33-q`). Le contrôle des
       # versions retirées est RALLUMÉ dans `daemon/.cargo/audit.toml` (`zip` 6.0.0, coupé le matin, a été rétabli par
@@ -4155,7 +4201,7 @@ jobs:
       # CE QUE ÇA A TROUVÉ, mesuré le 2026-08-03 en étendant la couverture : `agent` ÉCHOUAIT
       # (code 4) sur `webpki-roots@1.0.8` en `CDLA-Permissive-2.0`. La licence est désormais
       # autorisée NOMMÉMENT et justifiée dans `deny.toml` — pas ajoutée en silence.
-      # LE PAS QUI REND LE VERDICT DES DEUX SCANS. Sans lui, `continue-on-error` rendrait le travail vert
+      # LE PAS QUI REND LE VERDICT DES SCANS (audits de chaque verrou, versions retirées, secrets). Sans lui, `continue-on-error` rendrait le travail vert
       # sur un secret trouvé — exactement le défaut inverse de celui qu'on ferme. Il nomme CHAQUE issue,
       # de sorte qu'un lecteur voit d'un coup ce qui a échoué et ce qui a passé, jamais l'un à la place
       # de l'autre.
@@ -4164,11 +4210,13 @@ jobs:
         run: |
           set -u
           echo "cargo-audit : ${{ steps.cargo_audit.outcome }}"
+          echo "audit autres: ${{ steps.cargo_audit_autres.outcome }}"
           echo "retirées    : ${{ steps.crates_retires.outcome }}"
           echo "gitleaks    : ${{ steps.gitleaks.outcome }}"
           echo "témoin      : ${{ steps.gitleaks_temoin.outcome }}"
           rc=0
-          [ "${{ steps.cargo_audit.outcome }}" = success ] || { echo "::error::cargo audit a échoué (avis de dépendance ou version retirée)."; rc=1; }
+          [ "${{ steps.cargo_audit.outcome }}" = success ] || { echo "::error::cargo audit a échoué sur daemon/Cargo.lock (avis de dépendance ou version retirée)."; rc=1; }
+          [ "${{ steps.cargo_audit_autres.outcome }}" = success ] || { echo "::error::cargo audit a échoué sur un autre verrou (agent, collector-* ou crate découvert) ; le pas cargo_audit_autres nomme chaque verrou en échec."; rc=1; }
           [ "${{ steps.crates_retires.outcome }}" = success ] || { echo "::error::une version retirée hors de l'ensemble admis, ou la garde des versions retirées n'a pas pu conclure."; rc=1; }
           [ "${{ steps.gitleaks.outcome }}" = success ] || { echo "::error::le scan de secrets a échoué."; rc=1; }
           [ "${{ steps.gitleaks_temoin.outcome }}" = success ] || { echo "::error::le témoin du scan de secrets a échoué (la configuration tait un secret posé, ou n'admet plus le PEM de test exact)."; rc=1; }

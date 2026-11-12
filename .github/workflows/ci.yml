@@ -2453,16 +2453,6 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_a_bare_chain_match_is_never_served_as_a_fact.py
 
-      # `P11.25-a` — LE RÉPONDEUR DE L'HÔTE APPLIQUE LA DURÉE DE BAN SERVIE PAR LE CENTRAL. Le script livré joue
-      # contre un faux central local (TSV, JSON par ligne, 503, ligne illisible, durée hors contrat) avec le vrai
-      # curl, jq ou python3, et des bouchons cscli/nft/fail2ban-client : file demandée en JSON seulement si l'hôte
-      # sait la lire, statut non-200 jamais lu comme une file (sortie 3), durée hors contrat refusée, repli dit.
-      # Contrat (type, borne) relu dans le démon ; mutants nommés joués à chaque exécution.
-      - name: Le repondeur de l hote applique la duree de ban servie par le central (P11.25-a)
-        id: garde_83
-        continue-on-error: true
-        run: python3 .github/scripts/check_responder_applies_the_ban_duration_served_by_the_central.py
-
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2954,9 +2944,35 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_80.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_masks_every_local_part_it_emits.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_81.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_ledger_link_is_never_dropped_bare.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_82.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_bare_chain_match_is_never_served_as_a_fact.py : $o"; }
-          total=$((total+1)); o="${{ steps.garde_83.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_responder_applies_the_ban_duration_served_by_the_central.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
+
+  # ---------------------------------------------------------------------------
+  # responder — LE RÉPONDEUR DE L'HÔTE, JOUÉ CONTRE UN FAUX CENTRAL (`P11.25-a`, `P10.21-n`).
+  #
+  # POURQUOI UN TRAVAIL À LUI : sa garde était un pas du travail `shell`. MESURÉ sur l'intégration de
+  # 0bf7de5c (2026-11-12) : `shell` a duré 1227 s pour un plafond de 1500 s, dont 316 s pour cette
+  # garde seule ; `P10.21-n` lui ajoute des scénarios à plusieurs tours et leurs mutants (335 s -> 549 s
+  # mesurés l'un après l'autre sur la même machine), ce qui portait `shell` au bord de son annulation.
+  # Le commentaire du budget de `shell` dit de découper plutôt que d'élargir : c'est ce découpage.
+  #
+  # CE QUI EST JOUÉ : le script livré, sous `sh`, avec le vrai curl, jq ou python3 et des bouchons
+  # cscli/nft/fail2ban-client ; file demandée en JSON seulement si l'hôte sait la lire, statut non-200
+  # jamais lu comme une file (sortie 3), durée hors contrat refusée, repli dit ; une riposte re-servie
+  # jamais exécutée une seconde fois à l'aveugle (registre d'exécution), une seule exécution à la fois
+  # (verrou). Contrat (type, borne) relu dans le démon ; mutants nommés joués à chaque exécution.
+  # ---------------------------------------------------------------------------
+  responder:
+    name: responder (host responder script against a fake central)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout plume
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Le repondeur de l hote applique la duree de ban servie par le central et ne reexecute jamais une riposte a l aveugle (P11.25-a, P10.21-n)
+        run: python3 .github/scripts/check_responder_applies_the_ban_duration_served_by_the_central.py
+
   features:
     name: features (cargo check per off-by-default feature)
     runs-on: ubuntu-24.04
@@ -4386,7 +4402,7 @@ jobs:
   ci-ok:
     name: CI
     if: always() # otherwise a failed upstream job SKIPS this one instead of failing it
-    needs: [test, cold-tier, ai, shell, features, security, lint, collectors]
+    needs: [test, cold-tier, ai, shell, responder, features, security, lint, collectors]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

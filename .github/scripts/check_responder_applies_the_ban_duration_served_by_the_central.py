@@ -21,6 +21,10 @@ selon le scénario (le lecteur JSON est un choix du script, pas du banc), et des
 `fail2ban-client` qui enregistrent leurs arguments sans rien appliquer. En face, un faux central local
 (`http.server`, 127.0.0.1) qui se comporte comme le démon (JSON par ligne si et seulement si l'en-tête le
 demande), ou comme un central antérieur (TSV toujours), ou rend un statut d'échec. Adresses RFC 5737 seules.
+Le corps d'une remise y est lu comme le démon le lit (`corps_lu_comme_le_demon` : UTF-8 valide, JSON strict) ; un
+corps que le démon refuserait reçoit le même 400, et le scénario rougit (`REMISES_REFUSEES`) — aucun scénario n'a
+besoin d'un corps invalide. Chaque refus de ce lecteur a son épreuve (`CORPS_D_EPREUVE`), jouée à chaque exécution ;
+le jugement de `REMISES_REFUSEES` a la sienne (mutant `remit_body_keeps_raw_line_breaks`).
 
 ÉPREUVE DES MUTANTS, JOUÉE À CHAQUE EXÉCUTION (`--sans-mutants` la saute, pour itérer) : chaque mutant nommé de `MUTANTS` est posé sur une COPIE temporaire du
 script (l'arbre n'est jamais touché) et doit faire rougir AU MOINS les scénarios qu'il nomme ; un motif de
@@ -57,6 +61,29 @@ le retrait d'une levée ne reste pas acquis à la suivante) ; le séparateur d'u
 de contrôle, devient une espace comme les autres. Mutants `unban_*` et
 `nft_unban_leaves_the_ttl_set` de `MUTANTS`, chacun rouge sur ses scénarios.
 
+`P10.21-n` — UNE RIPOSTE RE-SERVIE N'EST JAMAIS EXÉCUTÉE UNE SECONDE FOIS À L'AVEUGLE : plusieurs tours sur un même
+répertoire d'état, le nombre d'appels au faux nft (ou cscli) compté EXACTEMENT à chaque tour, le verdict remis comparé à
+l'octet. Arrêt brutal simulé par un bouchon qui tue le groupe du script (`NFT_TUER_SUR`, ou un curl qui tue à la remise),
+le script tournant dans sa propre session. Sont tenus : les cinq chemins qui réexécutaient (2a arrêt entre l'exécution et
+le verdict, ban et levée, avant la remise -> re-remise sans appel, pendant l'exécution -> reprise dite, levée constatée
+absente rendue `done`, refus de retrait resté `failed` ; 2b état non inscriptible -> exécutée quand même et avouée,
+file de rejeu pleine, écriture du rejeu refusée ; 2c refus définitif, rejeu abandonné), la fin de chaque aveu de verdict
+non retenu (réexécutée ou non, lue dans le registre), la borne du registre aux trois bords, l'éviction de la plus
+ancienne `faite` jamais d'une `commencee` (tout ou rien), les lignes illisibles écartées et dites, une queue d'octets
+nuls, le simulacre et chaque refus d'avant exécution qui n'écrivent rien, le verdict enregistré re-remis tel quel avant
+tout contrôle, l'entrée retirée sur 2xx, sur `"ok":false` et au rejeu remis, gardée sur 503 et sur refus définitif,
+l'identifiant réutilisé pour une autre riposte, l'identifiant trop long, la ligne bornée (cible, résultat coupé sur un
+caractère entier, sans caractère de contrôle), chaque écriture refusée et le registre illisible ; le verrou : deux
+exécutions simultanées (une seule traite, `flock` et repli `mkdir`), porteur vivant respecté, écrit en retard relu,
+verrou orphelin repris (mort, pid recyclé, jamais écrit) puis TENU pendant le tour, une seconde exécution qui ne
+rejoue pas la file de rejeu, `flock` libre après un arrêt brutal, verrou impossible -> le tour continue et le dit ;
+et le bord de l'identifiant (13 et 130 au registre : retrait et lecture de l'id exact), le mode 0600 du registre
+après l'ajout et après la republication, l'entrée gardée quand le REJEU est refusé, le ban repris refusé après une
+levée vaine du même tour resté `failed`, l'aveu qui ignore une ligne illisible restée au registre, la sortie sur mktemp refusé qui rend le verrou du repli,
+une exécution sortie au verrou qui ne touche pas au registre, la forme du registre ancrée en fin de ligne. Mutants listés après la marque `P10.21-n` de `MUTANTS`, chacun rouge sur ses scénarios.
+Deux scénarios (ajout refusé, lecture refusée, repli bloqué) exigent un utilisateur non privilégié : sous root, la garde
+refuse de conclure (code 2). `--scenarios=a,b` et `--mutants=x,y` jouent une partie, et le disent.
+
 CE QUE CETTE GARDE NE TIENT PAS : un vrai CrowdSec, un vrai nft (noyau, borne du timeout) ou un vrai fail2ban
 ne sont pas exercés (l'absence d'instant sans ban pendant un allongement se prouve sur un vrai nft, hors CI) — en particulier, qu'un `timeout 0s` donne un élément sans fin n'est pas mesuré sur un
 nft réel : le répondeur refuse la durée nulle, et c'est ce refus qui est tenu ici ; le rejeu des verdicts et la liste d'épargne ont leurs propres gardes
@@ -71,6 +98,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 RACINE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SCRIPT = os.path.join(RACINE, "collectors", "respond.sh")
@@ -128,8 +156,16 @@ exit 0
 #   stdout         écrit l'absence sur la sortie STANDARD seule et « Device or resource busy » sur la sortie d'erreur, code 1 ;
 #   signal         écrit l'absence sur la sortie d'erreur, PUIS se tue par SIGKILL (code 137 vu du script) ;
 #   code126        écrit l'absence sur la sortie d'erreur et sort en code 126 (commande qui ne part pas).
+# `P10.21-n` — NFT_TUER_SUR=<motif> : la commande qui correspond est TRACÉE (son effet est tenu pour acquis), puis le
+# bouchon tue tout le groupe du script (`kill -9 0`) : l'agent s'arrête brutalement au milieu de l'exécution, avant que
+# rien d'autre ne soit écrit. NFT_ATTENDRE_SUR=<motif> : la commande qui correspond pose `$NFT_ATTENDRE.arrive`, puis
+# attend que `$NFT_ATTENDRE` existe — l'exécution reste en cours, verrou tenu, le temps qu'une seconde exécution joue.
 BOUCHON_NFT = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$TRACE_ENFORCEMENT.nft"
+case "$*" in ${NFT_TUER_SUR:-__jamais__}) kill -9 0 ;; esac
+case "$*" in ${NFT_ATTENDRE_SUR:-__jamais__})
+  : > "$NFT_ATTENDRE.arrive"; while [ ! -e "$NFT_ATTENDRE" ]; do sleep 0.1; done ;;
+esac
 case "${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}" in
   C|POSIX|C.*) ENOENT='No such file or directory'; EEXIST='File exists' ;;
   *) ENOENT='Aucun fichier ou dossier de ce type'; EEXIST='Le fichier existe' ;;
@@ -240,18 +276,78 @@ def contrat_du_demon():
 
 TYPE_JSON, BORNE = contrat_du_demon()
 
+# Remises que le faux central a refusées pendant le scénario en cours (vidée et jugée par `jouer_tout`).
+REMISES_REFUSEES = []
+
+
+def corps_lu_comme_le_demon(octets):
+    """Le corps d'une remise lu comme le démon le lit (`Json<Value>` d'axum 0.8, `serde_json::from_slice`) : UTF-8
+    valide, JSON strict — aucun caractère de contrôle brut dans une chaîne, rien après la valeur, ni `NaN` ni
+    `Infinity`, aucune moitié de paire de substitution échappée seule. Rend la valeur, ou lève ValueError là où le
+    démon rendrait un 400. Chaque refus a son épreuve dans `epreuve_du_lecteur_du_faux_central`."""
+    texte = octets.decode("utf-8")  # UnicodeDecodeError est un ValueError
+
+    def constante_refusee(nom):
+        raise ValueError(f"constante {nom} hors JSON")
+
+    valeur = json.loads(texte, parse_constant=constante_refusee)
+    pile = [valeur]
+    while pile:
+        x = pile.pop()
+        if isinstance(x, str):
+            x.encode("utf-8")  # UnicodeEncodeError (un ValueError) sur une moitié de paire seule
+        elif isinstance(x, dict):
+            pile.extend(x.keys())
+            pile.extend(x.values())
+        elif isinstance(x, list):
+            pile.extend(x)
+    return valeur
+
+
+# (corps, admis) — chaque refus de `corps_lu_comme_le_demon` a le sien, et le corps admis prouve qu'il n'en refuse pas
+# trop : un lecteur relâché (`strict=False`, `errors="replace"`, sans `parse_constant`, sans le contrôle des moitiés de
+# paire) laisse passer au moins une ligne `False`.
+CORPS_D_EPREUVE = [
+    ('{"id":1,"status":"done","result":"été | ok"}'.encode("utf-8"), True),
+    (b'{"id":1,"status":"done","result":"a\nb"}', False),
+    (b'{"id":1,"status":"done","result":"a\tb"}', False),
+    (b'{"id":1,"status":"done","result":"a\x01b"}', False),
+    (b'{"id":1,"status":"done","result":"coupe \xc3"}', False),
+    (b'{"id":1,"status":"done","result":"\xff"}', False),
+    (b'{"id":1,"status":"done","result":"ok"} x', False),
+    (b'{"id":NaN,"status":"done","result":"ok"}', False),
+    (b'{"id":1,"status":"done","result":"\\ud800"}', False),
+    (b'{"id":1,"status":"done","\\udc00":"ok"}', False),
+    (b'{"id":1,"status":"done","result":"ok","l":[["\\udbff"]]}', False),
+]
+
+
+def epreuve_du_lecteur_du_faux_central():
+    fautes = []
+    for corps, admis in CORPS_D_EPREUVE:
+        try:
+            corps_lu_comme_le_demon(corps)
+            lu = True
+        except ValueError:
+            lu = False
+        exiger(fautes, lu == admis, f"faux central : {corps!r} {'refusé' if admis else 'ADMIS'}, le démon "
+                                    f"{'le lit' if admis else 'le refuse (400)'}")
+    return fautes
+
 
 class Central:
     """Faux central. mode : 'demon' (JSON par ligne ssi Accept le nomme), 'tsv' (central antérieur),
     'statut' (statut, type, corps fixés). Journalise les en-têtes Accept et les verdicts remis."""
 
     def __init__(self, mode, actions=(), lignes_json=None, statut=None, type_contenu=None, corps=None,
-                 longueur_annoncee=None, statut_remise=200):
+                 longueur_annoncee=None, statut_remise=200, statuts_remise=(), corps_remise='{"ok":true}'):
         self.mode, self.actions, self.lignes_json = mode, list(actions), lignes_json
         self.statut, self.type_contenu, self.corps = statut, type_contenu, corps
         # longueur_annoncee : Content-Length MENTI (plus grand que le corps) => transfert tronqué côté curl.
         self.longueur_annoncee, self.statut_remise = longueur_annoncee, statut_remise
-        self.accepts, self.verdicts = [], []
+        # `P10.21-n` : statuts des remises dans l'ordre (puis `statut_remise`), et corps rendu à chaque remise.
+        self.statuts_remise, self.corps_remise = list(statuts_remise), corps_remise
+        self.accepts, self.verdicts, self.corps_remis = [], [], []
         central = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -269,9 +365,24 @@ class Central:
 
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
-                central.verdicts.append(json.loads(self.rfile.read(n).decode("utf-8")))
-                co = b'{"ok":true}'
-                self.send_response(central.statut_remise)
+                octets = self.rfile.read(n)
+                try:
+                    verdict = corps_lu_comme_le_demon(octets)
+                except ValueError as e:
+                    # Le démon refuserait ce corps (400 d'axum) : refusé ici de même, et compté pour le scénario.
+                    REMISES_REFUSEES.append(f"{e} : {octets[:160]!r}")
+                    co = b"Failed to parse the request body as JSON"
+                    self.send_response(400)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(co)))
+                    self.end_headers()
+                    self.wfile.write(co)
+                    return
+                central.corps_remis.append(octets.decode("utf-8"))
+                central.verdicts.append(verdict)
+                co = central.corps_remise.encode()
+                st = central.statuts_remise.pop(0) if central.statuts_remise else central.statut_remise
+                self.send_response(st)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(co)))
                 self.end_headers()
@@ -327,7 +438,11 @@ class Tour:
 
 
 def jouer(script, central, lecteurs=(), backend="auto", bouchons=("cscli",), env_plus=None, url=None,
-          piege_python=False, rejeu_initial=None, faux_binaires=None):
+          piege_python=False, rejeu_initial=None, faux_binaires=None, etat=None, fond=None):
+    """`etat` : répertoire d'état PARTAGÉ entre plusieurs tours (`PLUME_STATE`), au lieu du bac du tour.
+    `fond` : une fonction appelée avec le processus lancé EN FOND (Popen), pendant qu'il tourne — pour jouer une
+    seconde exécution simultanée ; le script tourne alors dans sa propre session, si bien qu'un bouchon qui tue
+    son groupe (`kill -9 0`, arrêt brutal simulé) ne tue jamais l'instrument."""
     with tempfile.TemporaryDirectory() as tmp:
         binaire = os.path.join(tmp, "bin")
         os.makedirs(binaire)
@@ -355,7 +470,7 @@ def jouer(script, central, lecteurs=(), backend="auto", bouchons=("cscli",), env
         env = {"PATH": binaire, "PLUME_RESPONDER": "1", "PLUME_RESPONDER_APPLY": "1",
                "PLUME_CENTRAL": url or central.url, "PLUME_HOST_LABEL": "hote-de-garde",
                "PLUME_TOKEN": "jeton-de-garde", "PLUME_BAN_BACKEND": backend, "PLUME_BAN_DURATION": "7h",
-               "PLUME_RESPONDER_ALLOW": epargne, "PLUME_STATE": tmp, "TRACE_ENFORCEMENT": trace,
+               "PLUME_RESPONDER_ALLOW": epargne, "PLUME_STATE": etat or tmp, "TRACE_ENFORCEMENT": trace,
                "CANARI": os.path.join(tmp, "canari")}
         env.update(env_plus or {})
         cwd = None
@@ -372,15 +487,28 @@ def jouer(script, central, lecteurs=(), backend="auto", bouchons=("cscli",), env
             os.makedirs(rep, mode=0o700)
             with open(os.path.join(rep, "verdicts-a-remettre"), "w") as f:
                 f.write("".join(l + "\n" for l in rejeu_initial))
-        try:
-            # Sorties décodées avec remplacement : un script (ou un mutant) qui coupe au milieu d'un caractère écrit un
-            # journal invalide ; c'est le verdict remis qui est jugé, l'instrument ne doit pas tomber dessus.
-            p = subprocess.run([shutil.which("sh"), script], env=env, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=DELAI_D_UN_TOUR_S, cwd=cwd)
-        except subprocess.TimeoutExpired:
-            # Un tour qui ne finit pas (boucle sans borne) est une propriété violée, jamais un tour conclu : code
-            # -1, stderr qui le dit, aucun verdict compté (ceux déjà remis restent, le scénario les juge).
-            p = subprocess.CompletedProcess([], -1, "", f"TOUR SANS FIN : le script n'a pas fini en {DELAI_D_UN_TOUR_S} s")
+        if fond is not None:
+            pr = subprocess.Popen([shutil.which("sh"), script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, encoding="utf-8", errors="replace", cwd=cwd, start_new_session=True)
+            try:
+                fond(pr, env)
+                sortie, err = pr.communicate(timeout=DELAI_D_UN_TOUR_S)
+                p = subprocess.CompletedProcess([], pr.returncode, sortie, err)
+            except subprocess.TimeoutExpired:
+                os.killpg(pr.pid, 9)
+                pr.communicate()
+                p = subprocess.CompletedProcess([], -1, "", f"TOUR SANS FIN : le script n'a pas fini en {DELAI_D_UN_TOUR_S} s")
+        else:
+            try:
+                # Sorties décodées avec remplacement : un script (ou un mutant) qui coupe au milieu d'un caractère écrit un
+                # journal invalide ; c'est le verdict remis qui est jugé, l'instrument ne doit pas tomber dessus.
+                p = subprocess.run([shutil.which("sh"), script], env=env, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", timeout=DELAI_D_UN_TOUR_S, cwd=cwd,
+                                   start_new_session=True)
+            except subprocess.TimeoutExpired:
+                # Un tour qui ne finit pas (boucle sans borne) est une propriété violée, jamais un tour conclu : code
+                # -1, stderr qui le dit, aucun verdict compté (ceux déjà remis restent, le scénario les juge).
+                p = subprocess.CompletedProcess([], -1, "", f"TOUR SANS FIN : le script n'a pas fini en {DELAI_D_UN_TOUR_S} s")
         traces = {}
         for nom in ("cscli", "nft", "fail2ban-client"):
             chemin = f"{trace}.{nom}"
@@ -389,6 +517,7 @@ def jouer(script, central, lecteurs=(), backend="auto", bouchons=("cscli",), env
         t = Tour(p.returncode, p.stderr, central.verdicts if central else [], central.accepts if central else [],
                  traces, tmp)
         t.canari = canari
+        t.corps_remis = list(central.corps_remis) if central else []
         return t
 
 
@@ -1661,6 +1790,1169 @@ def s_levee_refus_au_separateur_d_unite(script):
     return f
 
 
+# ----------------------------------------------------------------------------------------------------------
+# `P10.21-n` — UNE RIPOSTE RE-SERVIE N'EST JAMAIS EXÉCUTÉE UNE SECONDE FOIS À L'AVEUGLE.
+# Le central re-sert une riposte réclamée sans verdict au-delà de sa fenêtre de réclamation. Avant le registre
+# d'exécution, l'agent la RÉEXÉCUTAIT sur cinq chemins, chacun mesuré ici par le nombre EXACT d'appels au faux nft :
+# 2a arrêt brutal entre l'exécution et la retenue du verdict (ban et levée) ; 2b la retenue renonce (état non
+# inscriptible, file de rejeu pleine, écriture refusée) ; 2c refus définitif du central, rejeu abandonné. Sont tenus
+# aussi : la borne du registre (borne −1, borne, borne +1), l'éviction de la plus ancienne `faite`, jamais d'une
+# `commencee`, la ligne illisible écartée et dite, le simulacre et les refus d'avant exécution qui n'écrivent rien,
+# l'entrée retirée sur 2xx et sur `"ok":false`, gardée sur 503, l'identifiant réutilisé pour une autre riposte, chaque
+# écriture refusée, et le verrou (deux exécutions simultanées, verrou orphelin repris, `flock` et repli `mkdir`).
+# Phrases écrites ICI en littéral, jamais relues du script.
+# ----------------------------------------------------------------------------------------------------------
+REGISTRE = "ripostes-executees"
+REGISTRE_BORNE = 264
+REJEU_BORNE = 64
+REJEU_TOURS_MAX = 5
+PHRASE_REPRISE = "REPRISE d une execution interrompue (issue de la premiere inconnue)"
+PHRASE_ABSENTE_APRES_INTERRUPTION = ("ADRESSE CONSTATEE ABSENTE apres une execution interrompue : retrait non observe "
+                                     "(la premiere execution a pu la lever)")
+CONSEQUENCE_PAS_REEXECUTEE = ("elle ne sera PAS reexecutee : le registre d execution la porte faite, son verdict "
+                              "enregistre sera remis de nouveau")
+CONSEQUENCE_REEXECUTEE = "elle sera REEXECUTEE (le registre d execution ne la porte pas faite)"
+VERROU_DEJA_PRIS = ("respond: une autre execution de l agent tient deja le verrou : ce tour-ci ne traite RIEN "
+                    "(ni rejeu, ni liste, ni remise)")
+CAUSE_ID_LONG = "identifiant de plus de 19 chiffres"
+SOMMEIL_INSTANTANE = {"sleep": "#!/bin/sh\nexit 0\n"}
+ENSURE = ["list table inet plume", "list set inet plume blocklist_ttl"]
+
+
+def j_re_remise(i, statut):
+    return f"respond: #{i} NON reexecutee : deja FAITE (registre d execution), verdict enregistre RE-REMIS ({statut})"
+
+
+def j_reprise(i):
+    return (f"respond: #{i} REPRISE : une execution precedente a ete interrompue avant son issue (registre d "
+            f"execution), la riposte est rejouee")
+
+
+def j_protection_absente(i, cause):
+    return (f"respond: #{i} protection contre la REEXECUTION ABSENTE pour cette riposte ({cause}) : elle est executee "
+            f"quand meme (un ban est une defense, il ne se suspend pas pour un etat local)")
+
+
+def j_perimee(i):
+    return (f"respond: #{i} identifiant deja inscrit au registre d execution pour une AUTRE riposte (genre ou cible "
+            f"differents) : entree perimee remplacee")
+
+
+def j_eviction(i):
+    return (f"respond: registre d execution PLEIN ({REGISTRE_BORNE} lignes) : #{i} (faite, verdict jamais pris par le "
+            f"central) EVINCEE : si le central la re-sert, elle sera REEXECUTEE")
+
+
+def j_illisibles(n, chemin):
+    return f"respond: registre d execution : {n} ligne(s) illisible(s) ecartee(s) de {chemin}"
+
+
+def j_illisibles_non_retirees(n, chemin):
+    return (f"respond: registre d execution : {n} ligne(s) illisible(s) dans {chemin}, NON retiree(s) (ecriture "
+            f"refusee) : elles sont ignorees a la lecture")
+
+
+def j_registre_non_ordinaire(chemin):
+    return f"respond: registre d execution {chemin} illisible (pas un fichier ordinaire) : ni lu ni repare ce tour-ci"
+
+
+def j_faite_non_enregistree(i):
+    return (f"respond: #{i} issue NON enregistree au registre d execution (ecriture refusee) : la riposte y reste "
+            f"commencee ; si le central la re-sert, elle sera REPRISE")
+
+
+def j_retrait_refuse(i):
+    return (f"respond: #{i} verdict pris par le central, mais son entree du registre d execution n est PAS retiree "
+            f"(ecriture refusee) : si le central la re-servait, son verdict enregistre serait remis de nouveau")
+
+
+def j_verrou_non_pris(cause):
+    return (f"respond: VERROU NON PRIS ({cause}) : ce tour-ci continue sans verrou, une execution simultanee de l agent "
+            f"n est pas empechee")
+
+
+def j_verrou_orphelin(chemin, porteur):
+    return (f"respond: verrou ORPHELIN repris ({chemin}, porteur {porteur} disparu) : une execution precedente s est "
+            f"arretee sans le rendre")
+
+
+def cause_illisible(chemin):
+    return f"registre d execution illisible ({chemin})"
+
+
+def cause_non_inscriptible(rep):
+    return f"etat local {rep} non inscriptible"
+
+
+def cause_ecriture(chemin):
+    return f"ecriture refusee dans {chemin}"
+
+
+def cause_plein(n):
+    return f"registre plein de ripostes commencees ({n} lignes pour {REGISTRE_BORNE}, une commencee ne sort jamais par eviction)"
+
+
+def plan_nft_ban(ip, d):
+    return (f"nft create element inet plume blocklist_ttl {{ {ip} timeout {d}s }} [duree {d}s : servie par le central] ; "
+            f"deja banni : duree appliquee seulement si elle allonge, jamais raccourci")
+
+
+def res_pose(ip, d):
+    return f"{plan_nft_ban(ip, d)} | {PHRASE_POSE} (absente de blocklist_ttl, timeout {d}s)"
+
+
+def res_conserve(ip, d, reste):
+    return f"{plan_nft_ban(ip, d)} | {PHRASE_CONSERVE} (reste {reste} >= {d}s demandes), rien n est recrit"
+
+
+def nft_pose(ip, d):
+    return f"create element inet plume blocklist_ttl {{ {ip} timeout {d}s }}"
+
+
+def nft_lecture(ip):
+    return f"get element inet plume blocklist_ttl {{ {ip} }}"
+
+
+def nft_levee(ip):
+    return ["list table inet plume", f"delete element inet plume blocklist {{ {ip} }}",
+            "list set inet plume blocklist_ttl", f"delete element inet plume blocklist_ttl {{ {ip} }}"]
+
+
+def corps_attendu(i, statut, res):
+    return '{"id":%s,"status":"%s","result":"%s"}' % (i, statut, res)
+
+
+def remis(t, i):
+    return [c for c in t.corps_remis if c.startswith('{"id":%s,' % i)]
+
+
+def rep_etat(etat):
+    return os.path.join(etat, "responder")
+
+
+def chemin_registre(etat):
+    return os.path.join(etat, "responder", REGISTRE)
+
+
+def lire_registre(etat):
+    p = chemin_registre(etat)
+    if not os.path.isfile(p):
+        return None
+    with open(p, encoding="utf-8", errors="replace") as h:
+        return h.read().splitlines()
+
+
+def poser_registre(etat, lignes, mode=0o600):
+    os.makedirs(rep_etat(etat), mode=0o700, exist_ok=True)
+    with open(chemin_registre(etat), "w", encoding="utf-8") as h:
+        h.write("".join(l + "\n" for l in lignes))
+    os.chmod(chemin_registre(etat), mode)
+
+
+def faite(i, ip, res, genre="ban_ip", statut="done"):
+    return f"{i}\tfaite\t{genre}\t{ip}\t{statut}\t{res}"
+
+
+def commencee(i, ip, genre="ban_ip"):
+    return f"{i}\tcommencee\t{genre}\t{ip}"
+
+
+def dit(fautes, t, ligne, quoi):
+    exiger(fautes, ligne in t.stderr.splitlines(), f"{quoi} : ligne absente du journal : {ligne!r} ; journal={t.stderr[-700:]!r}")
+
+
+def tait(fautes, t, debut, quoi):
+    trouvees = [l for l in t.stderr.splitlines() if l.startswith(debut)]
+    exiger(fautes, not trouvees, f"{quoi} : {trouvees[:3]!r}")
+
+
+def curl_tue_a_la_remise():
+    """Un curl qui tue tout le groupe du script quand il s'apprête à REMETTRE un verdict : arrêt brutal après
+    l'exécution, avant que le central n'ait rien reçu."""
+    vrai = shutil.which("curl")
+    return {"curl": "#!/bin/sh\ncase \"$*\" in *'/api/actions/result'*) kill -9 0 ;; esac\nexec %s \"$@\"\n" % vrai}
+
+
+def tour_n(script, etat, actions, presents=(), retraits=(), statuts=(), statut=200, corps='{"ok":true}', env_plus=None,
+           faux=None, fond=None, lecteurs=("python3",)):
+    """Un tour nft (hôte équipé) sur l'état PARTAGÉ `etat` ; l'état de l'hôte (adresses présentes, issue des retraits)
+    est posé par le scénario à chaque tour."""
+    env = {"NFT_ETAT": "equipe", "NFT_PRESENTS": " ".join(f"{ip}={m}" for ip, m in presents),
+           "NFT_RETRAITS": " ".join(f"{e}:{ip}={m}" for e, ip, m in retraits)}
+    env.update(env_plus or {})
+    c = Central("demon", actions, statuts_remise=statuts, statut_remise=statut, corps_remise=corps)
+    try:
+        return jouer(script, c, lecteurs=lecteurs, backend="nft", bouchons=("nft",), env_plus=env, etat=etat,
+                     faux_binaires=faux, fond=fond)
+    finally:
+        c.fermer()
+
+
+def tue_net(fautes, t, attendu_nft, quoi):
+    """Validité de l'épreuve : le tour a bien été arrêté brutalement, sans aucune remise, après ces commandes nft."""
+    exiger(fautes, t.rc == -9 and t.nb_verdicts == 0 and lignes_nft(t) == attendu_nft,
+           f"instrument ({quoi}) : le tour devait s'arrêter brutalement après {attendu_nft!r}, sans remise : "
+           f"rc={t.rc} nft={lignes_nft(t)!r} verdicts={t.nb_verdicts} {t.stderr[-300:]!r}")
+
+
+def s_arret_avant_la_remise_ban(script):
+    """2a, ban_ip : arrêt brutal APRÈS l'exécution, au moment de la remise. Re-servie, la riposte n'appelle PLUS nft :
+    le verdict enregistré est remis à l'octet, la re-remise est dite, l'entrée part quand le central la prend."""
+    i, ip = 1301, "203.0.113.131"
+    with tempfile.TemporaryDirectory() as etat:
+        t1 = tour_n(script, etat, [ban(i, ip, 600)], faux=curl_tue_a_la_remise())
+        t2 = tour_n(script, etat, [ban(i, ip, 600)], presents=[(ip, "reste:59m59s990ms")])
+        reg = lire_registre(etat)
+    f = []
+    tue_net(f, t1, ENSURE + [nft_pose(ip, 600)], "2a ban")
+    exiger(f, lignes_nft(t2) == [], f"2a ban : riposte REEXECUTEE au second tour : nft={lignes_nft(t2)!r}")
+    exiger(f, remis(t2, i) == [corps_attendu(i, "done", res_pose(ip, 600))], f"2a ban : verdict re-remis {remis(t2, i)!r}")
+    dit(f, t2, j_re_remise(i, "done"), "2a ban, re-remise")
+    exiger(f, reg == [], f"2a ban : le central a pris le verdict, l'entrée doit quitter le registre : {reg!r}")
+    return f
+
+
+def s_arret_avant_la_remise_levee(script):
+    """2a, unban_ip : arrêt brutal après la levée, au moment de la remise. Re-servie, la levée n'est PAS rejouée
+    (elle rendrait LEVEE NON FAITE et contredirait le premier verdict) : le verdict enregistré est re-remis."""
+    i, ip = 1302, "198.51.100.132"
+    with tempfile.TemporaryDirectory() as etat:
+        t1 = tour_n(script, etat, [unban(i, ip)], faux=curl_tue_a_la_remise())
+        reg1 = lire_registre(etat)
+        t2 = tour_n(script, etat, [unban(i, ip)], retraits=[("blocklist", ip, "absent"), ("blocklist_ttl", ip, "absent")])
+    f = []
+    tue_net(f, t1, nft_levee(ip), "2a levée")
+    attendu = f"{plan_de_levee(ip)} |  [nft] [nft-ttl]"
+    exiger(f, reg1 == [faite(i, ip, attendu, genre="unban_ip")], f"2a levée : registre après l'exécution {reg1!r}")
+    exiger(f, lignes_nft(t2) == [], f"2a levée : levée REEXECUTEE au second tour : nft={lignes_nft(t2)!r}")
+    exiger(f, remis(t2, i) == [corps_attendu(i, "done", attendu)], f"2a levée : verdict re-remis {remis(t2, i)!r}")
+    dit(f, t2, j_re_remise(i, "done"), "2a levée, re-remise")
+    return f
+
+
+def s_arret_pendant_la_levee(script):
+    """2a, unban_ip : arrêt brutal PENDANT la levée (registre `commencee`). Re-servie, elle est REPRISE par les mêmes
+    commandes, une fois chacune ; l'adresse constatée absente partout est rendue `done` avec le texte de reprise, et le
+    verrou laissé par l'arrêt brutal est repris (il n'empêche pas le tour)."""
+    i, ip = 1303, "198.51.100.133"
+    with tempfile.TemporaryDirectory() as etat:
+        t1 = tour_n(script, etat, [unban(i, ip)], env_plus={"NFT_TUER_SUR": "delete element inet plume blocklist_ttl*"})
+        reg1 = lire_registre(etat)
+        porteur_lu = os.path.join(rep_etat(etat), "verrou.d", "porteur")
+        porteur = open(porteur_lu).read().split()[0] if os.path.exists(porteur_lu) else None
+        t2 = tour_n(script, etat, [unban(i, ip)], retraits=[("blocklist", ip, "absent"), ("blocklist_ttl", ip, "absent")])
+        reg2 = lire_registre(etat)
+        verrou_apres = os.path.exists(os.path.join(rep_etat(etat), "verrou.d"))
+    f = []
+    tue_net(f, t1, nft_levee(ip), "2a levée interrompue")
+    exiger(f, reg1 == [commencee(i, ip, genre="unban_ip")], f"2a levée interrompue : registre {reg1!r}")
+    exiger(f, lignes_nft(t2) == nft_levee(ip), f"2a levée interrompue : reprise {lignes_nft(t2)!r}")
+    resultat_entier(f, t2, i, "done", f"{PHRASE_REPRISE} : {plan_de_levee(ip)} |  [nft]{absence_ecrite('blocklist', ip)} "
+                    f"[nft-ttl]{absence_ecrite('blocklist_ttl', ip)} ; {PHRASE_ABSENTE_APRES_INTERRUPTION}")
+    dit(f, t2, j_reprise(i), "2a levée interrompue, reprise")
+    dit(f, t2, j_verrou_orphelin(os.path.join(rep_etat(etat), "verrou.d"), f"pid {porteur}"), "verrou laissé par l'arrêt brutal")
+    exiger(f, reg2 == [] and not verrou_apres, f"2a levée interrompue : registre {reg2!r}, verrou rendu={not verrou_apres}")
+    return f
+
+
+def s_arret_pendant_la_pose(script):
+    """2a, ban_ip : arrêt brutal PENDANT la pose (registre `commencee`). Reprise par le même `enforce` : la pose
+    exclusive est refusée (l'adresse est là), le reste est lu, rien n'est recrit ; le résultat dit la reprise."""
+    i, ip = 1304, "203.0.113.134"
+    with tempfile.TemporaryDirectory() as etat:
+        t1 = tour_n(script, etat, [ban(i, ip, 600)], env_plus={"NFT_TUER_SUR": "create element*"})
+        reg1 = lire_registre(etat)
+        t2 = tour_n(script, etat, [ban(i, ip, 600)], presents=[(ip, "reste:59m59s990ms")])
+    f = []
+    tue_net(f, t1, ENSURE + [nft_pose(ip, 600)], "2a pose interrompue")
+    exiger(f, reg1 == [commencee(i, ip)], f"2a pose interrompue : registre {reg1!r}")
+    exiger(f, lignes_nft(t2) == ENSURE + [nft_pose(ip, 600), nft_lecture(ip)], f"2a pose interrompue : {lignes_nft(t2)!r}")
+    resultat_entier(f, t2, i, "done", f"{PHRASE_REPRISE} : {res_conserve(ip, 600, '59m59s990ms')}")
+    dit(f, t2, j_reprise(i), "2a pose interrompue, reprise")
+    return f
+
+
+def s_levee_refusee_a_la_reprise(script):
+    """Reprise d'une levée interrompue : un REFUS de retrait reste `failed`, texte de reprise compris. Une levée
+    PRÉCÈDE la reprise dans le même tour et ne retire rien (nft seul) : le constat « rien retiré » de la première
+    ne déteint pas sur la reprise refusée."""
+    i, ip = 1305, "198.51.100.135"
+    i0, ip0 = 1306, "198.51.100.136"
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [commencee(i, ip, genre="unban_ip")])
+        t = tour_n(script, etat, [unban(i0, ip0), unban(i, ip)],
+                   retraits=[("blocklist", ip0, "absent"), ("blocklist_ttl", ip0, "absent"),
+                             ("blocklist", ip, "refus"), ("blocklist_ttl", ip, "absent")])
+    f = []
+    verdict_est(f, t, i0, "failed", "LEVEE NON FAITE")
+    resultat_entier(f, t, i, "failed", f"{PHRASE_REPRISE} : {plan_de_levee(ip)} |  [nft]"
+                    + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist {{ {ip} }}")
+                    + f" [nft-ttl]{absence_ecrite('blocklist_ttl', ip)}")
+    return f
+
+
+def s_etat_non_inscriptible(script):
+    """2b, état local non inscriptible (ni rejeu, ni registre, ni verrou possibles) : la riposte est EXÉCUTÉE quand
+    même à chaque tour — la défense ne se suspend pas — et chaque tour avoue que la protection est absente et
+    qu'elle sera réexécutée."""
+    i, ip = 1311, "203.0.113.141"
+    with tempfile.TemporaryDirectory() as racine:
+        open(os.path.join(racine, "fichier"), "w").close()
+        etat = os.path.join(racine, "fichier", "sous")
+        rep = os.path.join(etat, "responder")
+        t1 = tour_n(script, etat, [ban(i, ip, 600)], statut=503, faux=SOMMEIL_INSTANTANE)
+        t2 = tour_n(script, etat, [ban(i, ip, 600)], presents=[(ip, "reste:59m59s990ms")], statut=503, faux=SOMMEIL_INSTANTANE)
+    f = []
+    exiger(f, lignes_nft(t1) == ENSURE + [nft_pose(ip, 600)], f"2b non inscriptible : tour 1 {lignes_nft(t1)!r}")
+    exiger(f, lignes_nft(t2) == ENSURE + [nft_pose(ip, 600), nft_lecture(ip)], f"2b non inscriptible : tour 2 {lignes_nft(t2)!r}")
+    exiger(f, remis(t1, i) == [corps_attendu(i, "done", res_pose(ip, 600))] * 3, f"2b non inscriptible : {remis(t1, i)!r}")
+    exiger(f, remis(t2, i) == [corps_attendu(i, "done", res_conserve(ip, 600, "59m59s990ms"))] * 3,
+           f"2b non inscriptible : {remis(t2, i)!r}")
+    for n, t in (("1", t1), ("2", t2)):
+        dit(f, t, j_verrou_non_pris(cause_non_inscriptible(rep)), f"tour {n}, verrou")
+        dit(f, t, j_protection_absente(i, cause_non_inscriptible(rep)), f"tour {n}, protection")
+        dit(f, t, f"respond: #{i} verdict NON RETENU pour rejeu : etat local {rep} non inscriptible — le central "
+                  f"re-servira la riposte apres sa fenetre de reclamation, et {CONSEQUENCE_REEXECUTEE}", f"tour {n}, rejeu")
+    return f
+
+
+def jouer_deux_tours_rejeu_hostile(script, etat, i, ip):
+    t1 = tour_n(script, etat, [ban(i, ip, 600)], statut=503, faux=SOMMEIL_INSTANTANE)
+    t2 = tour_n(script, etat, [ban(i, ip, 600)], presents=[(ip, "reste:59m59s990ms")], statut=503, faux=SOMMEIL_INSTANTANE)
+    return t1, t2
+
+
+def s_file_de_rejeu_pleine(script):
+    """2b, file de rejeu PLEINE : le verdict n'est pas retenu, mais le registre porte la riposte `faite` : re-servie,
+    elle n'appelle plus nft, son verdict enregistré est re-remis à l'octet, et l'aveu le dit."""
+    i, ip = 1312, "203.0.113.142"
+    with tempfile.TemporaryDirectory() as etat:
+        os.makedirs(rep_etat(etat), mode=0o700)
+        rejeu = os.path.join(rep_etat(etat), "verdicts-a-remettre")
+        with open(rejeu, "w") as h:
+            h.write("".join('%d\t0\t{"id":%d,"status":"done","result":"deja applique"}\n' % (2000 + k, 2000 + k)
+                            for k in range(REJEU_BORNE)))
+        t1, t2 = jouer_deux_tours_rejeu_hostile(script, etat, i, ip)
+    f = []
+    exiger(f, lignes_nft(t1) == ENSURE + [nft_pose(ip, 600)], f"2b file pleine : tour 1 {lignes_nft(t1)!r}")
+    exiger(f, lignes_nft(t2) == [], f"2b file pleine : riposte REEXECUTEE au tour 2 : {lignes_nft(t2)!r}")
+    corps = corps_attendu(i, "done", res_pose(ip, 600))
+    exiger(f, remis(t1, i) == [corps] * 3 and remis(t2, i) == [corps] * 3,
+           f"2b file pleine : remises {remis(t1, i)!r} / {remis(t2, i)!r}")
+    for n, t in (("1", t1), ("2", t2)):
+        dit(f, t, f"respond: #{i} verdict NON RETENU pour rejeu : la file de rejeu est PLEINE ({REJEU_BORNE} verdicts en "
+                  f"attente dans {rejeu}) — le central re-servira la riposte, et {CONSEQUENCE_PAS_REEXECUTEE}", f"tour {n}")
+    dit(f, t2, j_re_remise(i, "done"), "2b file pleine, re-remise")
+    return f
+
+
+def s_ecriture_du_rejeu_refusee(script):
+    """2b, écriture du rejeu REFUSÉE (disque plein : `/dev/full`) : le registre porte la riposte `faite`, re-servie
+    elle n'appelle plus nft, son verdict est re-remis à l'octet, l'aveu dit qu'elle ne sera pas réexécutée."""
+    if not os.path.exists("/dev/full"):
+        refuser_de_conclure("/dev/full absent : l'écriture refusée du rejeu ne peut pas être jouée")
+    i, ip = 1313, "203.0.113.143"
+    with tempfile.TemporaryDirectory() as etat:
+        os.makedirs(rep_etat(etat), mode=0o700)
+        rejeu = os.path.join(rep_etat(etat), "verdicts-a-remettre")
+        os.symlink("/dev/full", rejeu)
+        t1, t2 = jouer_deux_tours_rejeu_hostile(script, etat, i, ip)
+    f = []
+    exiger(f, lignes_nft(t1) == ENSURE + [nft_pose(ip, 600)], f"2b écriture refusée : tour 1 {lignes_nft(t1)!r}")
+    exiger(f, lignes_nft(t2) == [], f"2b écriture refusée : riposte REEXECUTEE au tour 2 : {lignes_nft(t2)!r}")
+    corps = corps_attendu(i, "done", res_pose(ip, 600))
+    exiger(f, remis(t1, i) == [corps] * 3 and remis(t2, i) == [corps] * 3,
+           f"2b écriture refusée : remises {remis(t1, i)!r} / {remis(t2, i)!r}")
+    for n, t in (("1", t1), ("2", t2)):
+        dit(f, t, f"respond: #{i} verdict NON RETENU pour rejeu : ecriture refusee dans {rejeu} — le central re-servira "
+                  f"la riposte, et {CONSEQUENCE_PAS_REEXECUTEE}", f"tour {n}")
+    return f
+
+
+def s_refus_definitif_du_central(script):
+    """2c, refus DÉFINITIF de la remise (400) : le verdict n'est ni retenu ni réessayé, l'entrée `faite` reste ;
+    re-servie, la riposte n'appelle plus nft et son verdict est re-remis à l'octet."""
+    i, ip = 1321, "203.0.113.151"
+    with tempfile.TemporaryDirectory() as etat:
+        t1 = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
+        t2 = tour_n(script, etat, [ban(i, ip, 600)], presents=[(ip, "reste:59m59s990ms")], statut=400)
+        reg = lire_registre(etat)
+    f = []
+    exiger(f, lignes_nft(t1) == ENSURE + [nft_pose(ip, 600)], f"2c refus : tour 1 {lignes_nft(t1)!r}")
+    exiger(f, lignes_nft(t2) == [], f"2c refus : riposte REEXECUTEE au tour 2 : {lignes_nft(t2)!r}")
+    corps = corps_attendu(i, "done", res_pose(ip, 600))
+    exiger(f, remis(t1, i) == [corps] and remis(t2, i) == [corps], f"2c refus : {remis(t1, i)!r} / {remis(t2, i)!r}")
+    dit(f, t2, j_re_remise(i, "done"), "2c refus, re-remise")
+    exiger(f, reg == [faite(i, ip, res_pose(ip, 600))], f"2c refus : l'entrée non prise doit rester : {reg!r}")
+    return f
+
+
+def s_rejeu_abandonne(script):
+    """2c, rejeu ABANDONNÉ au cinquième tour : l'aveu dit qu'elle ne sera pas réexécutée ; re-servie ensuite, la
+    riposte n'appelle plus nft, son verdict est re-remis à l'octet, et l'entrée part quand le central la prend."""
+    i, ip = 1322, "203.0.113.152"
+    with tempfile.TemporaryDirectory() as etat:
+        t1 = tour_n(script, etat, [ban(i, ip, 600)], statut=503, faux=SOMMEIL_INSTANTANE)
+        vides = [tour_n(script, etat, [], statut=503, faux=SOMMEIL_INSTANTANE) for _ in range(REJEU_TOURS_MAX)]
+        t7 = tour_n(script, etat, [ban(i, ip, 600)], presents=[(ip, "reste:59m59s990ms")])
+        reg = lire_registre(etat)
+    f = []
+    corps = corps_attendu(i, "done", res_pose(ip, 600))
+    exiger(f, lignes_nft(t1) == ENSURE + [nft_pose(ip, 600)], f"2c abandon : tour 1 {lignes_nft(t1)!r}")
+    exiger(f, all(lignes_nft(v) == [] and remis(v, i) == [corps] for v in vides),
+           f"2c abandon : tours de rejeu {[(lignes_nft(v), remis(v, i)) for v in vides]!r}")
+    dit(f, vides[-1], f"respond: #{i} verdict ABANDONNE apres {REJEU_TOURS_MAX} tours de rejeu (dernier HTTP 503) : la "
+                      f"riposte reste OUVERTE au central, qui la re-servira, et {CONSEQUENCE_PAS_REEXECUTEE} : "
+                      '{"ok":true}', "2c abandon, aveu")
+    exiger(f, lignes_nft(t7) == [], f"2c abandon : riposte REEXECUTEE après l'abandon : {lignes_nft(t7)!r}")
+    exiger(f, remis(t7, i) == [corps], f"2c abandon : verdict re-remis {remis(t7, i)!r}")
+    dit(f, t7, j_re_remise(i, "done"), "2c abandon, re-remise")
+    exiger(f, reg == [], f"2c abandon : verdict pris, l'entrée doit partir : {reg!r}")
+    return f
+
+
+def prefill_faites(n, base=5000):
+    return [faite(base + k, f"203.0.113.{k % 200 + 1}", f"deja faite {k}") for k in range(n)]
+
+
+def s_registre_borne(script):
+    """Borne du registre, aux trois bords : borne −1 (rien n'est évincé), borne (la plus ancienne `faite` sort),
+    borne +1 (les deux plus anciennes sortent) ; chaque éviction est dite, la riposte neuve est inscrite."""
+    i, ip = 1331, "203.0.113.161"
+    plein = prefill_faites(REGISTRE_BORNE + 1)
+    f = []
+    for n, evincees in ((REGISTRE_BORNE - 1, 0), (REGISTRE_BORNE, 1), (REGISTRE_BORNE + 1, 2)):
+        with tempfile.TemporaryDirectory() as etat:
+            poser_registre(etat, plein[:n])
+            t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
+            reg = lire_registre(etat) or []
+        exiger(f, reg == plein[evincees:n] + [faite(i, ip, res_pose(ip, 600))],
+               f"borne, {n} lignes posées : registre de {len(reg)} lignes, tête {reg[:1]!r}, queue {reg[-1:]!r}")
+        evs = [l for l in t.stderr.splitlines() if l.startswith("respond: registre d execution PLEIN")]
+        exiger(f, evs == [j_eviction(5000 + k) for k in range(evincees)], f"borne, {n} lignes : évictions dites {evs!r}")
+        exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"borne, {n} lignes : {lignes_nft(t)!r}")
+    return f
+
+
+def s_registre_commencees_jamais_evincees(script):
+    """Une `commencee` ne sort jamais par éviction : (a) des `commencee` en tête, la plus ancienne `faite` sort ;
+    (b) registre plein de `commencee` : rien ne sort, la riposte est exécutée quand même et la protection absente
+    avouée ; (c) une seule `faite` pour deux places à faire : rien ne sort (tout ou rien)."""
+    i, ip = 1332, "203.0.113.162"
+    f = []
+    tete = [commencee(6000 + k, f"198.51.100.{k + 1}") for k in range(3)]
+    faites = prefill_faites(REGISTRE_BORNE - 3)
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, tete + faites)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
+        reg = lire_registre(etat) or []
+    exiger(f, reg == tete + faites[1:] + [faite(i, ip, res_pose(ip, 600))], f"(a) registre : tête {reg[:4]!r}")
+    dit(f, t, j_eviction(5000), "(a) éviction de la plus ancienne faite")
+    toutes = [commencee(6100 + k, f"198.51.100.{k % 200 + 1}") for k in range(REGISTRE_BORNE)]
+    for nom, lignes in (("b", toutes), ("c", toutes + [faite(6999, "203.0.113.9", "seule faite")])):
+        with tempfile.TemporaryDirectory() as etat:
+            poser_registre(etat, lignes)
+            t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
+            reg = lire_registre(etat)
+        exiger(f, reg == lignes, f"({nom}) le registre a changé : {len(reg or [])} lignes")
+        dit(f, t, j_protection_absente(i, cause_plein(len(lignes))), f"({nom}) protection absente")
+        tait(f, t, "respond: registre d execution PLEIN", f"({nom}) éviction")
+        exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"({nom}) la riposte n'est pas exécutée : {lignes_nft(t)!r}")
+        verdict_est(f, t, i, "done")
+    return f
+
+
+def s_registre_lignes_illisibles(script):
+    """Lignes illisibles EN TÊTE et AU MILIEU, lisibles derrière : elles sont écartées et dites (compte exact), les
+    lignes lisibles qui suivent restent lues (la riposte `faite` placée après n'est pas réexécutée)."""
+    i, ip = 1333, "203.0.113.163"
+    garde = [faite(7000, "203.0.113.70", "ok 7000"), commencee(7001, "203.0.113.71")]
+    lignes = ["pas une ligne du registre", garde[0], "7002\tfaite\tban_ip\t203.0.113.72\tpeut-etre\tx", garde[1],
+              faite(i, ip, "verdict enregistre de 1333")]
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, lignes)
+        t = tour_n(script, etat, [ban(i, ip, 600)])
+        reg = lire_registre(etat)
+    f = []
+    dit(f, t, j_illisibles(2, chemin_registre(etat)), "lignes illisibles")
+    exiger(f, lignes_nft(t) == [], f"riposte faite derrière des lignes illisibles REEXECUTEE : {lignes_nft(t)!r}")
+    exiger(f, remis(t, i) == [corps_attendu(i, "done", "verdict enregistre de 1333")], f"re-remise {remis(t, i)!r}")
+    exiger(f, reg == garde, f"registre après le tour : {reg!r}")
+    return f
+
+
+def s_simulacre_et_refus_n_ecrivent_rien(script):
+    """Le simulacre et chaque refus d'avant exécution (adresse protégée, liste d'épargne, durée hors contrat, cible
+    non IP) n'écrivent RIEN au registre ; seule la riposte exécutée y est inscrite."""
+    ip_e = "203.0.113.166"
+    actions = [ban(1341, "203.0.113.164", 600, dry=True), ban(1342, "10.0.0.5", 600), ban(1343, "203.0.113.99", 600),
+               ban(1344, "203.0.113.165", 0), ban(1345, "pas-une-ip", 600), ban(1346, ip_e, 600)]
+    with tempfile.TemporaryDirectory() as etat:
+        t = tour_n(script, etat, actions, statut=400)
+        reg = lire_registre(etat)
+    f = []
+    exiger(f, reg == [faite(1346, ip_e, res_pose(ip_e, 600))], f"registre : {reg!r}")
+    for i, st in ((1341, "dryrun"), (1342, "failed"), (1343, "failed"), (1344, "failed"), (1345, "failed"), (1346, "done")):
+        verdict_est(f, t, i, st)
+    return f
+
+
+def s_registre_retire_ou_garde(script):
+    """L'entrée part quand le central prend le verdict (2xx) ou dit la riposte close (`"ok":false`) ; elle reste sur
+    503 (et le verdict est retenu) ; le rejeu qui la remet ensuite en 2xx la retire aussi."""
+    i, ip = 1351, "203.0.113.171"
+    f = []
+    for nom, corps in (("2xx", '{"ok":true}'), ("ok:false", '{"ok":false}')):
+        with tempfile.TemporaryDirectory() as etat:
+            tour_n(script, etat, [ban(i, ip, 600)], corps=corps)
+            reg = lire_registre(etat)
+        exiger(f, reg == [], f"{nom} : l'entrée reste au registre : {reg!r}")
+    with tempfile.TemporaryDirectory() as etat:
+        tour_n(script, etat, [ban(i, ip, 600)], statut=503, faux=SOMMEIL_INSTANTANE)
+        reg1 = lire_registre(etat)
+        t2 = tour_n(script, etat, [])
+        reg2 = lire_registre(etat)
+    exiger(f, reg1 == [faite(i, ip, res_pose(ip, 600))], f"503 : l'entrée doit rester : {reg1!r}")
+    dit(f, t2, f"respond: #{i} verdict REJOUE et remis au tour 1", "rejeu remis")
+    exiger(f, reg2 == [], f"rejeu remis en 2xx : l'entrée doit partir : {reg2!r}")
+    return f
+
+
+def s_identifiant_reutilise(script):
+    """Un identifiant inscrit pour une AUTRE riposte (cible différente, puis genre différent) n'est pas une
+    re-présentation : la riposte est exécutée, l'entrée périmée remplacée (sans doublon), et c'est dit."""
+    f = []
+    for i, ip, vieille in ((1352, "203.0.113.172", faite(1352, "203.0.113.1", "vieux verdict")),
+                           (1353, "203.0.113.173", faite(1353, "203.0.113.173", "vieille levee", genre="unban_ip"))):
+        with tempfile.TemporaryDirectory() as etat:
+            poser_registre(etat, [vieille])
+            t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
+            reg = lire_registre(etat)
+        exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"#{i} : la riposte n'est pas exécutée : {lignes_nft(t)!r}")
+        dit(f, t, j_perimee(i), f"#{i} entrée périmée")
+        exiger(f, reg == [faite(i, ip, res_pose(ip, 600))], f"#{i} : registre {reg!r}")
+    # Arrêt brutal après l'inscription d'un id réutilisé : la périmée PRÉCÈDE la `commencee` ; seule la DERNIÈRE ligne
+    # de l'id compte -> reprise, et la `faite` finale remplace les deux.
+    i, ip = 1354, "203.0.113.176"
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [faite(i, "203.0.113.2", "vieux verdict"), commencee(i, ip)])
+        t = tour_n(script, etat, [ban(i, ip, 600)], presents=[(ip, "reste:59m59s990ms")], statut=400)
+        reg = lire_registre(etat)
+    resultat_entier(f, t, i, "done", f"{PHRASE_REPRISE} : {res_conserve(ip, 600, '59m59s990ms')}")
+    exiger(f, reg == [faite(i, ip, f"{PHRASE_REPRISE} : {res_conserve(ip, 600, '59m59s990ms')}")], f"#{i} : registre {reg!r}")
+    return f
+
+
+def s_verdict_enregistre_avant_tout_controle(script):
+    """Le verdict ENREGISTRÉ est re-remis tel quel — un `failed` reste `failed` — et AVANT les contrôles d'avant
+    exécution : une adresse passée depuis dans la liste d'épargne ne change pas le verdict d'une riposte faite."""
+    i1, ip1, i2, ip2 = 1355, "203.0.113.177", 1356, "203.0.113.99"
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [faite(i1, ip1, "verdict en echec", statut="failed"), faite(i2, ip2, "pose avant l epargne")])
+        t = tour_n(script, etat, [ban(i1, ip1, 600), ban(i2, ip2, 600)], statut=400)
+    f = []
+    exiger(f, remis(t, i1) == [corps_attendu(i1, "failed", "verdict en echec")], f"#{i1} : {remis(t, i1)!r}")
+    exiger(f, remis(t, i2) == [corps_attendu(i2, "done", "pose avant l epargne")], f"#{i2} : {remis(t, i2)!r}")
+    exiger(f, lignes_nft(t) == [], f"riposte faite réexécutée : {lignes_nft(t)!r}")
+    dit(f, t, j_re_remise(i1, "failed"), "re-remise d'un échec")
+    return f
+
+
+def cible_et_resultat_longs():
+    """Une cible IPv6 de forme acceptée (plus longue que la borne du registre) et une sortie de cscli multi-octets,
+    calée pour que la coupe du résultat tombe AU MILIEU d'un caractère de deux octets."""
+    sortie = "ligne1 ligne2 " + "é" * 300
+    for k in range(40, 60):
+        cible = "2001:db8:" + ":".join(["0"] * k) + "a"
+        plan = f"cscli decisions add -i {cible} -d 600s -t ban -R plume-playbook [duree 600s : servie par le central]"
+        brut = f"{plan} | {sortie}"
+        if len(cible) > 64 and len(brut.encode()) > 400 and (400 - len(f"{plan} | ligne1 ligne2 ".encode())) % 2 == 1:
+            return cible, brut
+    refuser_de_conclure("instrument : aucune cible ne cale la coupe du résultat au milieu d'un caractère")
+
+
+FAUX_CSCLI_BAVARD = r"""#!/bin/sh
+printf '%s
+' "$*" >> "$TRACE_ENFORCEMENT.cscli"
+printf 'ligne1
+ligne2 '
+i=0; while [ $i -lt 300 ]; do printf '\303\251'; i=$((i+1)); done
+"""
+
+
+def s_ligne_du_registre_bornee(script):
+    """Une ligne du registre est bornée : la cible coupée à sa borne, le résultat privé de ses caractères de contrôle
+    (saut de ligne compris) et coupé à sa borne sur un caractère ENTIER ; re-servie, la riposte n'appelle plus cscli et
+    son verdict re-remis est exactement ce résultat borné."""
+    i = 1357
+    cible, brut = cible_et_resultat_longs()
+    borne = brut.encode()[:400].decode("utf-8", errors="ignore")
+    tours = []
+    with tempfile.TemporaryDirectory() as etat:
+        for _ in range(2):
+            c = Central("demon", [ban(i, cible, 600)], statut_remise=400)
+            try:
+                tours.append(jouer(script, c, lecteurs=("python3",), backend="crowdsec", bouchons=(),
+                                   faux_binaires={"cscli": FAUX_CSCLI_BAVARD}, etat=etat))
+            finally:
+                c.fermer()
+        reg = lire_registre(etat)
+    t1, t2 = tours
+    f = []
+    exiger(f, t1.trace("cscli").count("decisions add") == 1, f"instrument : cscli n'a pas posé le ban : {t1.trace('cscli')!r}")
+    exiger(f, reg == [f"{i}\tfaite\tban_ip\t{cible[:64]}\tdone\t{borne}"], f"ligne du registre {reg!r}")
+    exiger(f, t2.trace("cscli") == "", f"riposte REEXECUTEE : {t2.trace('cscli')!r}")
+    exiger(f, remis(t2, i) == [corps_attendu(i, "done", borne)], f"re-remise {[r[-40:] for r in remis(t2, i)]!r}")
+    return f
+
+
+def s_queue_de_zeros_lue(script):
+    """Une coupure de courant laisse la fin du registre remplie d'octets NULS : la ligne `faite` qui les précède reste
+    lue (re-remise, pas d'exécution), aucune ligne n'est dite illisible, et l'aveu d'une remise non retenue dit encore
+    qu'elle ne sera pas réexécutée."""
+    i, ip = 1358, "203.0.113.178"
+    with tempfile.TemporaryDirectory() as etat:
+        os.makedirs(rep_etat(etat), mode=0o700)
+        with open(chemin_registre(etat), "wb") as h:
+            h.write((faite(i, ip, "pose avant la coupure") + "\n").encode() + b"\0" * 64)
+        os.chmod(chemin_registre(etat), 0o600)
+        rejeu = os.path.join(rep_etat(etat), "verdicts-a-remettre")
+        with open(rejeu, "w") as h:
+            h.write("".join('%d\t0\t{"id":%d,"status":"done","result":"deja applique"}\n' % (2000 + k, 2000 + k)
+                            for k in range(REJEU_BORNE)))
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=503, faux=SOMMEIL_INSTANTANE)
+    f = []
+    exiger(f, lignes_nft(t) == [], f"riposte REEXECUTEE : {lignes_nft(t)!r}")
+    exiger(f, remis(t, i) == [corps_attendu(i, "done", "pose avant la coupure")] * 3, f"re-remises {remis(t, i)!r}")
+    tait(f, t, "respond: registre d execution :", "lignes dites illisibles")
+    dit(f, t, f"respond: #{i} verdict NON RETENU pour rejeu : la file de rejeu est PLEINE ({REJEU_BORNE} verdicts en "
+              f"attente dans {rejeu}) — le central re-servira la riposte, et {CONSEQUENCE_PAS_REEXECUTEE}", "aveu")
+    return f
+
+
+def s_aveu_lit_la_derniere_ligne(script):
+    """Id réutilisé, puis issue NON enregistrée : la périmée (`faite`, autre riposte) PRÉCÈDE la `commencee` de la
+    riposte servie. L'aveu de la remise non retenue lit la DERNIÈRE ligne de l'id : la riposte sera réexécutée (reprise),
+    il ne promet pas une re-remise que la lecture ne ferait pas."""
+    i, ip = 1360, "203.0.113.180"
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [faite(i, "203.0.113.3", "vieux verdict")])
+        os.makedirs(chemin_registre(etat) + ".nouveau")
+        rejeu = os.path.join(rep_etat(etat), "verdicts-a-remettre")
+        with open(rejeu, "w") as h:
+            h.write("".join('%d\t0\t{"id":%d,"status":"done","result":"deja applique"}\n' % (2000 + k, 2000 + k)
+                            for k in range(REJEU_BORNE)))
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=503, faux=SOMMEIL_INSTANTANE)
+        reg = lire_registre(etat)
+    f = []
+    exiger(f, reg == [faite(i, "203.0.113.3", "vieux verdict"), commencee(i, ip)], f"registre {reg!r}")
+    dit(f, t, j_faite_non_enregistree(i), "issue non enregistrée")
+    dit(f, t, f"respond: #{i} verdict NON RETENU pour rejeu : la file de rejeu est PLEINE ({REJEU_BORNE} verdicts en "
+              f"attente dans {rejeu}) — le central re-servira la riposte, et {CONSEQUENCE_REEXECUTEE}", "aveu")
+    return f
+
+
+def s_identifiant_trop_long(script):
+    """Un identifiant de plus de 19 chiffres (file TSV) n'est pas inscrit : exécuté quand même, protection absente
+    avouée ; à 19 chiffres (le bord), il est inscrit."""
+    long_, bord = "12345678901234567890", "1234567890123456789"
+    a, b = "203.0.113.174", "203.0.113.175"
+    actions = [{"id": long_, "kind": "ban_ip", "target": a, "dry_run": False},
+               {"id": bord, "kind": "ban_ip", "target": b, "dry_run": False},
+               {"id": 1359, "kind": "ban ip", "target": "203.0.113.179", "dry_run": False}]
+    with tempfile.TemporaryDirectory() as etat:
+        t = tour_n(script, etat, actions, statut=400, lecteurs=())
+        reg = lire_registre(etat) or []
+        t2 = tour_n(script, etat, actions[2:], statut=400, lecteurs=())
+    f = []
+    dit(f, t, j_protection_absente(long_, CAUSE_ID_LONG), "identifiant trop long")
+    exiger(f, [l.split("\t")[:4] for l in reg] == [[bord, "faite", "ban_ip", b], ["1359", "faite", "ban_ip", "203.0.113.179"]],
+           f"registre : {reg!r}")
+    # Un genre servi en TSV avec une espace est ramené à l'ASCII sans espace : la ligne reste lisible et relue.
+    dit(f, t2, j_re_remise(1359, "failed"), "genre ramené à l'ASCII sans espace")
+    poses = [l for l in lignes_nft(t) if l.startswith("create element")]
+    exiger(f, poses == [f"create element inet plume blocklist_ttl {{ {a} timeout 7h }}",
+                        f"create element inet plume blocklist_ttl {{ {b} timeout 7h }}"], f"poses : {poses!r}")
+    return f
+
+
+def s_ecritures_du_registre_refusees(script):
+    """Chaque écriture refusée du registre : éviction (réécriture refusée) -> exécutée quand même, protection absente
+    avouée, registre inchangé ; issue non enregistrée (la riposte reste `commencee`) ; retrait refusé après la prise
+    du verdict ; lignes illisibles non retirées, mais ignorées à la lecture (la riposte `faite` lisible est re-remise,
+    pas réexécutée)."""
+    f = []
+    nouveau = lambda etat: os.makedirs(chemin_registre(etat) + ".nouveau")  # noqa: E731
+    i, ip = 1361, "203.0.113.181"
+    with tempfile.TemporaryDirectory() as etat:
+        plein = prefill_faites(REGISTRE_BORNE)
+        poser_registre(etat, plein); nouveau(etat)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
+        reg = lire_registre(etat)
+    dit(f, t, j_protection_absente(i, cause_ecriture(chemin_registre(etat))), "éviction refusée")
+    tait(f, t, "respond: registre d execution PLEIN", "éviction refusée mais dite faite")
+    exiger(f, reg == plein and lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"éviction refusée : {len(reg or [])} lignes")
+    with tempfile.TemporaryDirectory() as etat:
+        os.makedirs(rep_etat(etat), mode=0o700); nouveau(etat)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
+        reg = lire_registre(etat)
+    dit(f, t, j_faite_non_enregistree(i), "issue non enregistrée")
+    exiger(f, reg == [commencee(i, ip)], f"issue non enregistrée : {reg!r}")
+    verdict_est(f, t, i, "done")
+    with tempfile.TemporaryDirectory() as etat:
+        enregistree = faite(i, ip, "verdict enregistre")
+        poser_registre(etat, [enregistree]); nouveau(etat)
+        t = tour_n(script, etat, [ban(i, ip, 600)])
+        reg = lire_registre(etat)
+    dit(f, t, j_retrait_refuse(i), "retrait refusé")
+    exiger(f, reg == [enregistree] and lignes_nft(t) == [], f"retrait refusé : {reg!r} {lignes_nft(t)!r}")
+    with tempfile.TemporaryDirectory() as etat:
+        lignes = ["pas une ligne du registre", faite(i, ip, "verdict lisible"), f"{i}\tfaite\tban_ip"]
+        poser_registre(etat, lignes); nouveau(etat)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
+        reg = lire_registre(etat)
+    dit(f, t, j_illisibles_non_retirees(2, chemin_registre(etat)), "illisibles non retirées")
+    exiger(f, lignes_nft(t) == [] and remis(t, i) == [corps_attendu(i, "done", "verdict lisible")],
+           f"illisibles non retirées : la ligne lisible n'est pas lue : {lignes_nft(t)!r} {remis(t, i)!r}")
+    exiger(f, reg == lignes, f"illisibles non retirées : registre {reg!r}")
+    return f
+
+
+def s_ajout_au_registre_refuse(script):
+    """L'AJOUT d'une ligne `commencee` refusé (fichier non inscriptible, utilisateur non privilégié) : exécutée quand
+    même, protection absente avouée, registre inchangé."""
+    if os.geteuid() == 0:
+        refuser_de_conclure("sous root, un fichier en lecture seule reste inscriptible : l'ajout refusé ne se joue pas")
+    i, ip = 1362, "203.0.113.182"
+    with tempfile.TemporaryDirectory() as etat:
+        autre = faite(7100, "203.0.113.100", "autre")
+        poser_registre(etat, [autre], mode=0o400)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
+        reg = lire_registre(etat)
+    f = []
+    dit(f, t, j_protection_absente(i, cause_ecriture(chemin_registre(etat))), "ajout refusé")
+    exiger(f, reg == [autre] and lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"ajout refusé : {reg!r} {lignes_nft(t)!r}")
+    return f
+
+
+def s_registre_illisible(script):
+    """Registre illisible — pas un fichier ordinaire (dit au début du tour), ou lecture refusée (utilisateur non
+    privilégié) : la riposte est exécutée quand même, la protection absente avouée."""
+    i, ip = 1363, "203.0.113.183"
+    f = []
+    with tempfile.TemporaryDirectory() as etat:
+        os.makedirs(chemin_registre(etat))
+        t = tour_n(script, etat, [ban(i, ip, 600)])
+    dit(f, t, j_registre_non_ordinaire(chemin_registre(etat)), "pas un fichier ordinaire")
+    dit(f, t, j_protection_absente(i, cause_illisible(chemin_registre(etat))), "pas un fichier ordinaire, protection")
+    exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"pas un fichier ordinaire : {lignes_nft(t)!r}")
+    if os.geteuid() == 0:
+        refuser_de_conclure("sous root, un fichier de mode 000 reste lisible : la lecture refusée ne se joue pas")
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [faite(i, ip, "x")], mode=0o000)
+        t = tour_n(script, etat, [ban(i, ip, 600)])
+        os.chmod(chemin_registre(etat), 0o600)
+    dit(f, t, j_protection_absente(i, cause_illisible(chemin_registre(etat))), "lecture refusée, protection")
+    exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"lecture refusée : {lignes_nft(t)!r}")
+    return f
+
+
+def identite_de(pid):
+    with open(f"/proc/{pid}/stat") as h:
+        return f"{pid} {h.read().rsplit(') ', 1)[1].split()[19]}"
+
+
+def attendre_le_fichier(chemin, s=30):
+    for _ in range(s * 10):
+        if os.path.exists(chemin):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def jouer_deux_executions(script, etat, lecteurs):
+    """A tient le verrou, bloquée dans sa pose ; B joue pendant ce temps ; puis A est libérée."""
+    vu = {}
+    liberer = os.path.join(etat, "liberer")
+
+    def pendant(pr, env):
+        vu["arrivee"] = attendre_le_fichier(liberer + ".arrive")
+        vu["pid"] = pr.pid
+        vu["repertoire"] = os.path.exists(os.path.join(rep_etat(etat), "verrou.d"))
+        vu["fichier"] = os.path.exists(os.path.join(rep_etat(etat), "verrou"))
+        p = os.path.join(rep_etat(etat), "verrou.d", "porteur")
+        vu["porteur"] = open(p).read().strip() if os.path.exists(p) else None
+        vu["identite"] = identite_de(pr.pid) if os.path.exists(f"/proc/{pr.pid}/stat") else None
+        vu["b"] = tour_n(script, etat, [ban(1372, "203.0.113.192", 600)], lecteurs=lecteurs)
+        open(liberer, "w").close()
+
+    a = tour_n(script, etat, [ban(1371, "203.0.113.191", 600)], lecteurs=lecteurs, fond=pendant,
+               env_plus={"NFT_ATTENDRE_SUR": "create element*", "NFT_ATTENDRE": liberer})
+    return a, vu
+
+
+def juger_la_seconde_execution(f, b, ligne, quoi):
+    exiger(f, b is not None and b.rc == 0 and b.accepts == [] and b.nb_verdicts == 0 and lignes_nft(b) == [],
+           f"{quoi} : la seconde exécution a traité quelque chose : rc={getattr(b, 'rc', None)} "
+           f"accepts={getattr(b, 'accepts', None)} nft={lignes_nft(b) if b else None}")
+    if b is not None:
+        dit(f, b, ligne, quoi)
+
+
+def s_deux_executions_simultanees_repertoire(script):
+    """Repli `mkdir` (pas de `flock`) : pendant qu'une exécution tient le verrou, une seconde sort en code 0 SANS
+    RIEN TRAITER (ni liste, ni remise, ni nft) et le dit ; le porteur inscrit est le processus qui tient le verrou."""
+    with tempfile.TemporaryDirectory() as etat:
+        a, vu = jouer_deux_executions(script, etat, ("python3",))
+        rendu = not os.path.exists(os.path.join(rep_etat(etat), "verrou.d"))
+    f = []
+    exiger(f, vu.get("arrivee"), "instrument : la première exécution n'a jamais atteint sa pose")
+    juger_la_seconde_execution(f, vu.get("b"), f"{VERROU_DEJA_PRIS} ({os.path.join(rep_etat(etat), 'verrou.d')})", "mkdir")
+    exiger(f, vu.get("identite") is not None and vu.get("porteur") == vu.get("identite"),
+           f"porteur inscrit {vu.get('porteur')!r}, processus qui tient le verrou {vu.get('identite')!r}")
+    verdict_est(f, a, 1371, "done")
+    exiger(f, rendu, "le verrou n'est pas rendu à la fin du tour")
+    return f
+
+
+def s_deux_executions_simultanees_flock(script):
+    """`flock` présent : il tient le verrou (le répertoire du repli n'est pas créé) ; une seconde exécution sort en
+    code 0 sans rien traiter et le dit."""
+    if not shutil.which("flock"):
+        refuser_de_conclure("`flock` introuvable sur cette machine : la voie flock du verrou ne se joue pas")
+    with tempfile.TemporaryDirectory() as etat:
+        a, vu = jouer_deux_executions(script, etat, ("python3", "flock"))
+    f = []
+    exiger(f, vu.get("arrivee"), "instrument : la première exécution n'a jamais atteint sa pose")
+    exiger(f, vu.get("fichier") and not vu.get("repertoire"), f"flock : fichier de verrou={vu.get('fichier')} répertoire du repli={vu.get('repertoire')}")
+    juger_la_seconde_execution(f, vu.get("b"), f"{VERROU_DEJA_PRIS} ({os.path.join(rep_etat(etat), 'verrou')})", "flock")
+    verdict_est(f, a, 1371, "done")
+    return f
+
+
+def poser_porteur(etat, contenu):
+    os.makedirs(os.path.join(rep_etat(etat), "verrou.d"), mode=0o700)
+    if contenu is not None:
+        with open(os.path.join(rep_etat(etat), "verrou.d", "porteur"), "w") as h:
+            h.write(contenu)
+
+
+def s_verrou_orphelin_repris(script):
+    """Repli `mkdir` : un verrou dont le porteur est mort (pid sans instant), dont le pid est recyclé (instant
+    différent), ou jamais écrit, est ORPHELIN : repris, dit, le tour traite sa riposte, et le verrou est rendu."""
+    if not os.path.exists("/proc/self/stat"):
+        refuser_de_conclure("/proc absent : l'identité du porteur ne se lit pas")
+    p = subprocess.Popen([shutil.which("true")])
+    p.wait()
+    f = []
+    for nom, contenu, porteur in (("mort", f"{p.pid} -\n", f"pid {p.pid}"),
+                                  ("recycle", f"{os.getpid()} 1\n", f"pid {os.getpid()}"),
+                                  ("jamais ecrit", "", "jamais ecrit")):
+        with tempfile.TemporaryDirectory() as etat:
+            poser_porteur(etat, contenu)
+            t = tour_n(script, etat, [ban(1373, "203.0.113.193", 600)])
+            rendu = not os.path.exists(os.path.join(rep_etat(etat), "verrou.d"))
+        dit(f, t, j_verrou_orphelin(os.path.join(rep_etat(etat), "verrou.d"), porteur), f"verrou {nom}")
+        verdict_est(f, t, 1373, "done")
+        exiger(f, rendu, f"verrou {nom} : non rendu à la fin du tour")
+    return f
+
+
+def s_verrou_vivant_respecte(script):
+    """Repli `mkdir` : un porteur VIVANT (pid et instant de démarrage du processus de la garde) tient le verrou ; et un
+    porteur écrit EN RETARD (après la création du répertoire) est relu : la seconde exécution ne traite rien."""
+    if not os.path.exists("/proc/self/stat"):
+        refuser_de_conclure("/proc absent : l'identité du porteur ne se lit pas")
+    f = []
+    moi = identite_de(os.getpid())
+    with tempfile.TemporaryDirectory() as etat:
+        poser_porteur(etat, moi + "\n")
+        t = tour_n(script, etat, [ban(1374, "203.0.113.194", 600)])
+    juger_la_seconde_execution(f, t, f"{VERROU_DEJA_PRIS} ({os.path.join(rep_etat(etat), 'verrou.d')})", "porteur vivant")
+    with tempfile.TemporaryDirectory() as etat:
+        poser_porteur(etat, None)
+        ecrit = threading.Timer(0.3, lambda: open(os.path.join(rep_etat(etat), "verrou.d", "porteur"), "w").write(moi + "\n"))
+        ecrit.start()
+        t = tour_n(script, etat, [ban(1374, "203.0.113.194", 600)])
+        ecrit.join()
+    juger_la_seconde_execution(f, t, f"{VERROU_DEJA_PRIS} ({os.path.join(rep_etat(etat), 'verrou.d')})", "porteur écrit en retard")
+    return f
+
+
+def s_verrou_flock_apres_arret_brutal(script):
+    """`flock` : un arrêt brutal ne laisse aucun verrou (le noyau le rend) — le tour suivant traite la riposte."""
+    if not shutil.which("flock"):
+        refuser_de_conclure("`flock` introuvable sur cette machine : la voie flock du verrou ne se joue pas")
+    i, ip = 1375, "203.0.113.195"
+    with tempfile.TemporaryDirectory() as etat:
+        t1 = tour_n(script, etat, [ban(i, ip, 600)], lecteurs=("python3", "flock"), env_plus={"NFT_TUER_SUR": "create element*"})
+        t2 = tour_n(script, etat, [ban(i, ip, 600)], lecteurs=("python3", "flock"), presents=[(ip, "reste:59m59s990ms")])
+    f = []
+    tue_net(f, t1, ENSURE + [nft_pose(ip, 600)], "flock, arrêt brutal")
+    tait(f, t2, VERROU_DEJA_PRIS, "flock : le verrou survit à l'arrêt brutal")
+    resultat_entier(f, t2, i, "done", f"{PHRASE_REPRISE} : {res_conserve(ip, 600, '59m59s990ms')}")
+    return f
+
+
+def s_verrou_non_pris(script):
+    """Le verrou ne peut pas être pris — `flock` en échec (code autre que « déjà tenu »), fichier de verrou non
+    inscriptible, répertoire du repli ni créé ni repris : le tour CONTINUE sans verrou, et c'est dit."""
+    f = []
+    faux_flock = {"flock": "#!/bin/sh\nexit 64\n"}
+    with tempfile.TemporaryDirectory() as etat:
+        t = tour_n(script, etat, [ban(1376, "203.0.113.196", 600)], faux=faux_flock)
+    dit(f, t, j_verrou_non_pris(f"flock en echec (code 64) sur {os.path.join(rep_etat(etat), 'verrou')}"), "flock en échec")
+    verdict_est(f, t, 1376, "done")
+    with tempfile.TemporaryDirectory() as etat:
+        os.makedirs(os.path.join(rep_etat(etat), "verrou"))
+        t = tour_n(script, etat, [ban(1376, "203.0.113.196", 600)], faux={"flock": "#!/bin/sh\nexit 0\n"})
+    dit(f, t, j_verrou_non_pris(f"{os.path.join(rep_etat(etat), 'verrou')} non inscriptible"), "fichier de verrou")
+    verdict_est(f, t, 1376, "done")
+    if os.geteuid() == 0:
+        refuser_de_conclure("sous root, un répertoire de mode 500 se vide quand même : le repli bloqué ne se joue pas")
+    with tempfile.TemporaryDirectory() as etat:
+        poser_porteur(etat, "")
+        bloque = os.path.join(rep_etat(etat), "verrou.d", "bloque")
+        os.makedirs(bloque)
+        open(os.path.join(bloque, "f"), "w").close()
+        os.chmod(bloque, 0o500)
+        try:
+            t = tour_n(script, etat, [ban(1376, "203.0.113.196", 600)])
+        finally:
+            os.chmod(bloque, 0o700)
+    dit(f, t, j_verrou_non_pris(f"{os.path.join(rep_etat(etat), 'verrou.d')} ni cree ni repris"), "repli bloqué")
+    verdict_est(f, t, 1376, "done")
+    return f
+
+
+def s_verrou_orphelin_tenu_apres_reprise(script):
+    """Repli `mkdir` : un verrou orphelin dit « repris » est TENU ensuite — pendant la pose, le porteur inscrit est le
+    processus du tour, et aucune ligne ne dit le verrou non pris. Retirer l'orphelin sans recréer le verrou ferait
+    tourner le tour sans verrou sous une phrase qui dit le contraire."""
+    if not os.path.exists("/proc/self/stat"):
+        refuser_de_conclure("/proc absent : l'identité du porteur ne se lit pas")
+    p = subprocess.Popen([shutil.which("true")])
+    p.wait()
+    vu = {}
+    with tempfile.TemporaryDirectory() as etat:
+        poser_porteur(etat, f"{p.pid} -\n")
+        liberer = os.path.join(etat, "liberer")
+
+        def pendant(pr, env):
+            vu["arrivee"] = attendre_le_fichier(liberer + ".arrive")
+            q = os.path.join(rep_etat(etat), "verrou.d", "porteur")
+            vu["porteur"] = open(q).read().strip() if os.path.exists(q) else None
+            vu["identite"] = identite_de(pr.pid) if os.path.exists(f"/proc/{pr.pid}/stat") else None
+            open(liberer, "w").close()
+
+        t = tour_n(script, etat, [ban(1377, "203.0.113.197", 600)], fond=pendant,
+                   env_plus={"NFT_ATTENDRE_SUR": "create element*", "NFT_ATTENDRE": liberer})
+    f = []
+    exiger(f, vu.get("arrivee"), "instrument : la pose n'a jamais été atteinte")
+    dit(f, t, j_verrou_orphelin(os.path.join(rep_etat(etat), "verrou.d"), f"pid {p.pid}"), "orphelin repris")
+    exiger(f, vu.get("identite") is not None and vu.get("porteur") == vu.get("identite"),
+           f"verrou dit repris mais non tenu pendant la pose : porteur={vu.get('porteur')!r}, tour={vu.get('identite')!r}")
+    tait(f, t, "respond: VERROU NON PRIS", "verrou dit repris puis non pris")
+    verdict_est(f, t, 1377, "done")
+    return f
+
+
+def s_seconde_execution_ne_rejoue_rien(script):
+    """Une seconde exécution pendant que la première tient le verrou ne REJOUE rien : un verdict posé dans la file de
+    rejeu pendant que la première tourne n'est pas remis par la seconde, et reste en file (`flock` et repli `mkdir`).
+    Prendre le verrou après le rejeu ferait remettre la file en parallèle de la première."""
+    f = []
+    for voie, lecteurs in (("mkdir", ("python3",)), ("flock", ("python3", "flock"))):
+        if voie == "flock" and not shutil.which("flock"):
+            refuser_de_conclure("`flock` introuvable sur cette machine : la voie flock du verrou ne se joue pas")
+        vu = {}
+        with tempfile.TemporaryDirectory() as etat:
+            liberer = os.path.join(etat, "liberer")
+            file_ = os.path.join(rep_etat(etat), "verdicts-a-remettre")
+
+            def pendant(pr, env):
+                vu["arrivee"] = attendre_le_fichier(liberer + ".arrive")
+                with open(file_, "a") as h:
+                    h.write('2999\t0\t{"id":2999,"status":"done","result":"retenu"}\n')
+                vu["b"] = tour_n(script, etat, [], lecteurs=lecteurs)
+                vu["file"] = open(file_).read()
+                open(liberer, "w").close()
+
+            a = tour_n(script, etat, [ban(1378, "203.0.113.198", 600)], lecteurs=lecteurs, fond=pendant,
+                       env_plus={"NFT_ATTENDRE_SUR": "create element*", "NFT_ATTENDRE": liberer})
+        b = vu.get("b")
+        exiger(f, vu.get("arrivee"), f"{voie} : instrument, la première exécution n'a jamais atteint sa pose")
+        exiger(f, b is not None and b.nb_verdicts == 0 and b.corps_remis == [],
+               f"{voie} : la seconde exécution a rejoué : {getattr(b, 'corps_remis', None)!r}")
+        exiger(f, "2999\t0\t" in (vu.get("file") or ""), f"{voie} : file de rejeu vidée par la seconde : {vu.get('file')!r}")
+        verdict_est(f, a, 1378, "done")
+    return f
+
+
+def s_reprise_d_un_ban_refusee_apres_une_levee_vaine(script):
+    """Même tour : une levée nft seule qui ne retire rien (`failed`, LEVEE NON FAITE), puis la REPRISE d'un ban dont
+    la pose est refusée : le ban reste `failed`. Le constat « absente » ne vaut que pour une levée — sans juger le
+    genre, l'état laissé par la levée précédente ferait passer le ban repris refusé pour `done`."""
+    i0, ip0, i, ip = 1379, "198.51.100.179", 1380, "203.0.113.180"
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [commencee(i, ip)])
+        t = tour_n(script, etat, [unban(i0, ip0), ban(i, ip, 600)],
+                   retraits=[("blocklist", ip0, "absent"), ("blocklist_ttl", ip0, "absent")],
+                   env_plus={"NFT_CREATE_REFUS": ip}, statut=400)
+        reg = lire_registre(etat) or []
+    f = []
+    verdict_est(f, t, i0, "failed", LEVEE_NON_FAITE.strip(" ;"))
+    verdict_est(f, t, i, "failed", PHRASE_REPRISE)
+    exiger(f, not any(PHRASE_ABSENTE_APRES_INTERRUPTION in c for c in remis(t, i)),
+           f"ban repris dit « absente » : {remis(t, i)!r}")
+    exiger(f, [l.split("\t")[4] for l in reg if l.startswith(f"{i}\tfaite\t")] == ["failed"],
+           f"registre du ban repris : {reg!r}")
+    return f
+
+
+def s_rejeu_refuse_garde_l_entree(script):
+    """Verdict retenu (503), puis son REJEU refusé définitivement (400) : l'entrée `faite` reste au registre ; re-servie
+    ensuite, la riposte n'appelle plus nft et son verdict enregistré est re-remis à l'octet."""
+    i, ip = 1381, "203.0.113.171"
+    with tempfile.TemporaryDirectory() as etat:
+        tour_n(script, etat, [ban(i, ip, 600)], statut=503, faux=SOMMEIL_INSTANTANE)
+        t2 = tour_n(script, etat, [], statut=400)
+        reg2 = lire_registre(etat)
+        t3 = tour_n(script, etat, [ban(i, ip, 600)], presents=[(ip, "reste:59m59s990ms")], statut=400)
+    f = []
+    corps = corps_attendu(i, "done", res_pose(ip, 600))
+    exiger(f, remis(t2, i) == [corps], f"instrument : le rejeu n'a pas eu lieu : {remis(t2, i)!r}")
+    exiger(f, reg2 == [faite(i, ip, res_pose(ip, 600))], f"rejeu refusé : l'entrée doit rester : {reg2!r}")
+    exiger(f, lignes_nft(t3) == [], f"rejeu refusé : riposte REEXECUTEE ensuite : {lignes_nft(t3)!r}")
+    exiger(f, remis(t3, i) == [corps], f"rejeu refusé : verdict re-remis {remis(t3, i)!r}")
+    return f
+
+
+def s_identifiant_prefixe_d_un_autre(script):
+    """Bord de l'identifiant (la tabulation qui le termine) : le registre porte 13 et 130. (a) 13 re-servie et prise :
+    seule l'entrée 13 part, 130 reste. (b) seule 130 est inscrite, 13 est servie pour la même cible : 13 est
+    EXÉCUTÉE et son propre verdict remis — la ligne de 130 n'est pas lue pour 13."""
+    f = []
+    ip13, ip130 = "203.0.113.13", "203.0.113.130"
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [faite(13, ip13, "verdict 13"), faite(130, ip130, "verdict 130")])
+        t = tour_n(script, etat, [ban(13, ip13, 600)])
+        reg = lire_registre(etat)
+    exiger(f, lignes_nft(t) == [] and remis(t, 13) == [corps_attendu(13, "done", "verdict 13")],
+           f"(a) 13 : {lignes_nft(t)!r} {remis(t, 13)!r}")
+    exiger(f, reg == [faite(130, ip130, "verdict 130")], f"(a) registre après retrait de 13 : {reg!r}")
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [faite(130, ip13, "verdict de 130")])
+        t = tour_n(script, etat, [ban(13, ip13, 600)], statut=400)
+    exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip13, 600)], f"(b) 13 non exécutée : {lignes_nft(t)!r}")
+    exiger(f, remis(t, 13) == [corps_attendu(13, "done", res_pose(ip13, 600))], f"(b) verdict remis pour 13 : {remis(t, 13)!r}")
+    return f
+
+
+def mode_du_registre(etat):
+    try:
+        return oct(os.stat(chemin_registre(etat)).st_mode & 0o777)
+    except OSError as e:
+        return f"illisible ({e})"
+
+
+def s_registre_reserve_au_proprietaire(script):
+    """Le registre est en mode 0600 après chaque écriture : (a) après l'AJOUT de la ligne `commencee` sur un registre
+    trouvé en 0644 (le tour arrêté brutalement pendant la pose, rien d'autre n'a écrit) ; (b) après sa republication
+    (issue enregistrée à la reprise)."""
+    i, ip = 1382, "203.0.113.172"
+    f = []
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [faite(9001, "203.0.113.101", "autre")], mode=0o644)
+        t1 = tour_n(script, etat, [ban(i, ip, 600)], env_plus={"NFT_TUER_SUR": "create element*"})
+        m1, reg1 = mode_du_registre(etat), lire_registre(etat)
+        t2 = tour_n(script, etat, [ban(i, ip, 600)], presents=[(ip, "reste:59m59s990ms")], statut=400)
+        m2, reg2 = mode_du_registre(etat), lire_registre(etat) or []
+    tue_net(f, t1, ENSURE + [nft_pose(ip, 600)], "mode, arrêt pendant la pose")
+    exiger(f, reg1 == [faite(9001, "203.0.113.101", "autre"), commencee(i, ip)], f"instrument (a) : registre {reg1!r}")
+    exiger(f, m1 == "0o600", f"(a) registre en mode {m1} après l'ajout, attendu 0o600")
+    verdict_est(f, t2, i, "done", PHRASE_REPRISE)
+    exiger(f, any(l.startswith(f"{i}\tfaite\t") for l in reg2), f"instrument (b) : registre {reg2!r}")
+    exiger(f, m2 == "0o600", f"(b) registre en mode {m2} après sa republication, attendu 0o600")
+    return f
+
+
+def s_aveu_ignore_une_ligne_illisible_non_retiree(script):
+    """L'aveu d'un verdict non retenu lit la forme comme la lecture du registre : une ligne ILLISIBLE `faite` de l'id
+    (statut inconnu), restée faute de pouvoir réécrire le registre, ne fait pas promettre « PAS réexécutée » — la
+    lecture l'ignore, la riposte est encore `commencee` et sera REPRISE si elle est re-servie."""
+    if not os.path.exists("/dev/full"):
+        refuser_de_conclure("/dev/full absent : l'écriture refusée du rejeu ne peut pas être jouée")
+    i, ip = 1383, "203.0.113.173"
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [commencee(i, ip), f"{i}\tfaite\tban_ip\t{ip}\tinconnu\tverdict illisible"])
+        os.makedirs(chemin_registre(etat) + ".nouveau")
+        rejeu = os.path.join(rep_etat(etat), "verdicts-a-remettre")
+        os.symlink("/dev/full", rejeu)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=503, faux=SOMMEIL_INSTANTANE)
+    f = []
+    dit(f, t, j_illisibles_non_retirees(1, chemin_registre(etat)), "instrument : ligne illisible non retirée")
+    verdict_est(f, t, i, "done", PHRASE_REPRISE)
+    dit(f, t, f"respond: #{i} verdict NON RETENU pour rejeu : ecriture refusee dans {rejeu} — le central re-servira "
+              f"la riposte, et {CONSEQUENCE_REEXECUTEE}", "aveu")
+    return f
+
+
+def s_sortie_sur_mktemp_refuse_rend_le_verrou(script):
+    """Repli `mkdir` : le verrou pris, la sortie 3 sur un fichier temporaire refusé (avant que la file ne soit lue) le
+    REND — le répertoire du repli n'existe plus après le tour, qui n'a rien exécuté ni dit le verrou non pris."""
+    i, ip = 1390, "203.0.113.184"
+    with tempfile.TemporaryDirectory() as etat:
+        t = tour_n(script, etat, [ban(i, ip, 600)], env_plus={"TMPDIR": "/nonexistent-plume-guard"})
+        reste = os.path.exists(os.path.join(rep_etat(etat), "verrou.d"))
+    f = []
+    exiger(f, t.rc == 3 and "fichier temporaire refuse" in t.stderr,
+           f"instrument : la sortie sur mktemp refusé n'a pas eu lieu : rc={t.rc} {t.stderr[-300:]!r}")
+    tait(f, t, "respond: VERROU NON PRIS", "instrument : le verrou n'a pas été pris")
+    exiger(f, lignes_nft(t) == [] and t.nb_verdicts == 0, f"mktemp refusé : action traitée {lignes_nft(t)!r}")
+    exiger(f, not reste, "la sortie 3 sur mktemp refusé laisse le verrou du repli (verrou.d) derrière elle")
+    return f
+
+
+def s_verrou_tenu_laisse_le_registre_intact(script):
+    """Une exécution qui sort au verrou (porteur vivant) ne touche pas au registre : la ligne illisible qu'elle y trouve
+    reste à l'octet, et rien n'est dit écarté — l'assainissement se joue sous le verrou, par le tour qui le tient."""
+    if not os.path.exists("/proc/self/stat"):
+        refuser_de_conclure("/proc absent : l'identité du porteur ne se lit pas")
+    lignes = ["pas une ligne du registre", faite(7030, "203.0.113.185", "ok 7030")]
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, lignes)
+        with open(chemin_registre(etat), "rb") as h:
+            avant = h.read()
+        poser_porteur(etat, identite_de(os.getpid()) + "\n")
+        t = tour_n(script, etat, [ban(1391, "203.0.113.186", 600)])
+        with open(chemin_registre(etat), "rb") as h:
+            apres = h.read()
+    f = []
+    juger_la_seconde_execution(f, t, f"{VERROU_DEJA_PRIS} ({os.path.join(rep_etat(etat), 'verrou.d')})", "verrou tenu")
+    exiger(f, apres == avant, f"registre récrit par une exécution sortie au verrou : {avant!r} -> {apres!r}")
+    tait(f, t, "respond: registre d execution :", "une exécution sortie au verrou dit avoir assaini le registre")
+    return f
+
+
+def s_ligne_a_champ_en_trop_illisible(script):
+    """La forme du registre est ancrée en FIN de ligne : une `commencee` ou une `faite` suivie d'un champ de trop est
+    illisible — écartée, dite (compte exact), et la riposte re-servie dont la ligne `commencee` portait ce champ de trop
+    est exécutée comme neuve, sans la phrase de reprise."""
+    i, ip = 1392, "203.0.113.187"
+    garde = [faite(7031, "203.0.113.188", "ok 7031")]
+    lignes = [commencee(i, ip) + "\tchamp-de-trop", garde[0], faite(7032, "203.0.113.189", "ok 7032") + "\tchamp-de-trop"]
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, lignes)
+        t = tour_n(script, etat, [ban(i, ip, 600)])
+        reg = lire_registre(etat)
+    f = []
+    dit(f, t, j_illisibles(2, chemin_registre(etat)), "lignes à champ de trop")
+    resultat_entier(f, t, i, "done", res_pose(ip, 600))
+    exiger(f, reg == garde, f"registre après le tour (verdict pris, entrée retirée) : {reg!r}")
+    return f
+
+
 SCENARIOS = {
     "json_served_python3": lambda s: s_json_servi(s, "python3"),
     "json_served_jq": lambda s: s_json_servi(s, "jq"),
@@ -1742,6 +3034,47 @@ SCENARIOS = {
     "nft_unban_refusal_does_not_carry_to_the_next_unban": s_levee_refus_ne_colle_pas_a_la_levee_suivante,
     "nft_unban_removal_does_not_carry_to_the_next_unban": s_levee_retrait_ne_colle_pas_a_la_levee_suivante,
     "nft_unban_unit_separator_in_a_refusal_becomes_a_space": s_levee_refus_au_separateur_d_unite,
+    # `P10.21-n` — une riposte re-servie n'est jamais exécutée une seconde fois à l'aveugle.
+    "reserved_ban_stopped_before_its_verdict_is_not_reexecuted": s_arret_avant_la_remise_ban,
+    "reserved_unban_stopped_before_its_verdict_is_not_reexecuted": s_arret_avant_la_remise_levee,
+    "reserved_unban_interrupted_is_resumed_and_said": s_arret_pendant_la_levee,
+    "reserved_ban_interrupted_is_resumed_and_said": s_arret_pendant_la_pose,
+    "resumed_unban_refusal_stays_failed": s_levee_refusee_a_la_reprise,
+    "unwritable_state_executes_and_says_no_protection": s_etat_non_inscriptible,
+    "full_replay_queue_reserved_riposte_not_reexecuted": s_file_de_rejeu_pleine,
+    "refused_replay_write_reserved_riposte_not_reexecuted": s_ecriture_du_rejeu_refusee,
+    "definitive_refusal_reserved_riposte_not_reexecuted": s_refus_definitif_du_central,
+    "abandoned_replay_reserved_riposte_not_reexecuted": s_rejeu_abandonne,
+    "execution_register_bound_at_each_edge": s_registre_borne,
+    "execution_register_never_evicts_a_started_riposte": s_registre_commencees_jamais_evincees,
+    "execution_register_illegible_lines_dropped_and_said": s_registre_lignes_illisibles,
+    "dry_run_and_refusals_write_nothing_to_the_register": s_simulacre_et_refus_n_ecrivent_rien,
+    "register_entry_removed_on_2xx_and_ok_false_kept_on_503": s_registre_retire_ou_garde,
+    "reused_id_for_another_riposte_is_executed": s_identifiant_reutilise,
+    "recorded_verdict_re_remitted_as_is_before_any_precheck": s_verdict_enregistre_avant_tout_controle,
+    "register_line_bounded_target_and_result": s_ligne_du_registre_bornee,
+    "register_zero_filled_tail_still_read": s_queue_de_zeros_lue,
+    "reused_id_avowal_reads_the_last_line": s_aveu_lit_la_derniere_ligne,
+    "overlong_id_executed_without_protection_said": s_identifiant_trop_long,
+    "refused_register_rewrites_said_and_harmless": s_ecritures_du_registre_refusees,
+    "refused_register_append_executes_and_says": s_ajout_au_registre_refuse,
+    "illegible_register_executes_and_says": s_registre_illisible,
+    "concurrent_runs_mkdir_lock_one_processes": s_deux_executions_simultanees_repertoire,
+    "concurrent_runs_flock_one_processes": s_deux_executions_simultanees_flock,
+    "orphan_mkdir_lock_taken_back": s_verrou_orphelin_repris,
+    "live_mkdir_lock_respected": s_verrou_vivant_respecte,
+    "flock_lock_does_not_survive_a_brutal_stop": s_verrou_flock_apres_arret_brutal,
+    "lock_not_taken_run_continues_and_says": s_verrou_non_pris,
+    "orphan_mkdir_lock_held_after_its_takeover": s_verrou_orphelin_tenu_apres_reprise,
+    "second_run_replays_nothing_while_the_lock_is_held": s_seconde_execution_ne_rejoue_rien,
+    "resumed_ban_refused_after_a_vain_unban_stays_failed": s_reprise_d_un_ban_refusee_apres_une_levee_vaine,
+    "refused_replay_keeps_the_register_entry": s_rejeu_refuse_garde_l_entree,
+    "register_id_never_matches_an_id_it_prefixes": s_identifiant_prefixe_d_un_autre,
+    "register_kept_owner_only_after_each_write": s_registre_reserve_au_proprietaire,
+    "avowal_ignores_an_illegible_line_left_in_the_register": s_aveu_ignore_une_ligne_illisible_non_retiree,
+    "mktemp_refused_exit_gives_back_the_mkdir_lock": s_sortie_sur_mktemp_refuse_rend_le_verrou,
+    "held_lock_leaves_the_register_untouched": s_verrou_tenu_laisse_le_registre_intact,
+    "register_line_with_a_trailing_field_is_illegible": s_ligne_a_champ_en_trop_illisible,
 }
 
 # (nom, motif exact dans respond.sh, remplacement, scénarios qui DOIVENT rougir)
@@ -2137,6 +3470,403 @@ MUTANTS = [
      "_cr_entier=$(printf '%s' \"$2\" | tr '\\000-\\037' ' ')",
      "_cr_entier=$(printf '%s' \"$2\" | tr '\\000-\\036' ' ')",
      ['nft_unban_unit_separator_in_a_refusal_becomes_a_space']),
+    # `P10.21-n` — registre d'exécution : une riposte re-servie n'est jamais exécutée une seconde fois à l'aveugle.
+    ('reserved_faite_riposte_executed_again',
+     '  if [ "$REG_ETAT" = faite ]; then\n    echo "respond: #$id NON reexecutee : deja FAITE',
+     '  if false; then\n    echo "respond: #$id NON reexecutee : deja FAITE',
+     ['reserved_ban_stopped_before_its_verdict_is_not_reexecuted', 'reserved_unban_stopped_before_its_verdict_is_not_reexecuted',
+      'full_replay_queue_reserved_riposte_not_reexecuted', 'refused_replay_write_reserved_riposte_not_reexecuted',
+      'definitive_refusal_reserved_riposte_not_reexecuted', 'abandoned_replay_reserved_riposte_not_reexecuted',
+      'execution_register_illegible_lines_dropped_and_said', 'register_zero_filled_tail_still_read']),
+    ('re_remission_not_said',
+     '    echo "respond: #$id NON reexecutee : deja FAITE (registre d execution), verdict enregistre RE-REMIS ($REG_STATUT)" >&2\n',
+     '',
+     ['reserved_ban_stopped_before_its_verdict_is_not_reexecuted']),
+    ('re_remission_status_forced_done',
+     'post_result "$id" "$REG_STATUT" "$REG_RESULTAT"',
+     'post_result "$id" done "$REG_RESULTAT"',
+     ['recorded_verdict_re_remitted_as_is_before_any_precheck']),
+    ('faite_check_yields_to_the_allowlist',
+     '  if [ "$REG_ETAT" = faite ]; then\n',
+     '  if [ "$REG_ETAT" = faite ] && [ "$(verdict_liste_epargne "$ALLOWFILE" "$ALLOW_CONFIGUREE" "$target")" != epargnee ]; then\n',
+     ['recorded_verdict_re_remitted_as_is_before_any_precheck']),
+    ('nothing_written_before_enforce',
+     '    *) registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || _ta_protege=0 ;;',
+     '    *) : ;;',
+     ['reserved_unban_interrupted_is_resumed_and_said', 'reserved_ban_interrupted_is_resumed_and_said']),
+    ('reused_id_not_inscribed_before_enforce',
+     '      registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || _ta_protege=0 ;;\n    *)',
+     '      : ;;\n    *)',
+     ['reused_id_avowal_reads_the_last_line']),
+    ('reused_id_not_said',
+     '      echo "respond: #$id identifiant deja inscrit au registre d execution pour une AUTRE riposte',
+     '      : "respond: #$id identifiant deja inscrit au registre d execution pour une AUTRE riposte',
+     ['reused_id_for_another_riposte_is_executed']),
+    ('resumption_not_said_in_the_result',
+     '  if [ "$_ta_reprise" = 1 ]; then _ta_resultat="$PHRASE_REPRISE : $_ta_resultat"; fi\n',
+     '',
+     ['reserved_unban_interrupted_is_resumed_and_said', 'reserved_ban_interrupted_is_resumed_and_said',
+      'resumed_unban_refusal_stays_failed']),
+    ('resumption_not_said_in_the_journal',
+     '      echo "respond: #$id REPRISE : une execution',
+     '      : "respond: #$id REPRISE : une execution',
+     ['reserved_ban_interrupted_is_resumed_and_said']),
+    ('resumed_unban_found_absent_stays_failed',
+     '[ "$kind" = unban_ip ] && [ "$UA_RIEN_RETIRE" = 1 ]; then',
+     '[ "$kind" = unban_ip ] && [ "$UA_RIEN_RETIRE" = 9 ]; then',
+     ['reserved_unban_interrupted_is_resumed_and_said']),
+    ('resumed_unban_refusal_said_done',
+     '[ "$kind" = unban_ip ] && [ "$UA_RIEN_RETIRE" = 1 ]; then',
+     '[ "$kind" = unban_ip ]; then',
+     ['resumed_unban_refusal_stays_failed']),
+    ('unresumed_unban_found_absent_said_done',
+     'if [ "$_ta_reprise" = 1 ] && [ "$_ta_statut" = failed ]',
+     'if [ "$_ta_statut" = failed ]',
+     ['nft_unban_nothing_removed_nft_alone_is_failed']),
+    ('nothing_removed_flag_carried_to_the_next_unban',
+     '  UA_RIEN_RETIRE=0; UA_OUT_AVANT_VERDICT=""\n  if command',
+     '  UA_OUT_AVANT_VERDICT=""\n  if command',
+     ['resumed_unban_refusal_stays_failed']),
+    ('outcome_never_recorded',
+     'if [ "$_ta_protege" = 1 ] && ! registre_marquer_faite',
+     'if false && ! registre_marquer_faite',
+     ['reserved_ban_stopped_before_its_verdict_is_not_reexecuted', 'definitive_refusal_reserved_riposte_not_reexecuted']),
+    ('outcome_not_recorded_silently',
+     '    echo "respond: #$id issue NON enregistree au registre d execution',
+     '    : "respond: #$id issue NON enregistree au registre d execution',
+     ['refused_register_rewrites_said_and_harmless']),
+    ('register_result_keeps_its_control_characters',
+     '''_mf_res=$(printf '%s' "$5" | tr '\\000-\\037' ' ' | coupe_sur_caractere''',
+     '''_mf_res=$(printf '%s' "$5" | coupe_sur_caractere''',
+     ['register_line_bounded_target_and_result']),
+    ('register_result_cut_mid_character',
+     '''| coupe_sur_caractere "$REGISTRE_RESULTAT_OCTETS")''',
+     '''| LC_ALL=C cut -b "1-$REGISTRE_RESULTAT_OCTETS")''',
+     ['register_line_bounded_target_and_result']),
+    ('register_result_bound_raised',
+     'REGISTRE_RESULTAT_OCTETS=400',
+     'REGISTRE_RESULTAT_OCTETS=401',
+     ['register_line_bounded_target_and_result']),
+    ('register_token_unbounded',
+     '''LC_ALL=C tr -c '!-~' '_' | LC_ALL=C cut -b "1-$1")''',
+     '''LC_ALL=C tr -c '!-~' '_')''',
+     ['register_line_bounded_target_and_result']),
+    ('register_token_keeps_spaces',
+     '''LC_ALL=C tr -c '!-~' '_' |''',
+     '''LC_ALL=C tr -c ' -~' '_' |''',
+     ['overlong_id_executed_without_protection_said']),
+    ('overlong_id_bound_off_by_one',
+     'if [ "${#1}" -gt "$REGISTRE_ID_CHIFFRES" ]; then',
+     'if [ "${#1}" -ge "$REGISTRE_ID_CHIFFRES" ]; then',
+     ['overlong_id_executed_without_protection_said']),
+    ('overlong_id_bound_raised',
+     'REGISTRE_ID_CHIFFRES=19',
+     'REGISTRE_ID_CHIFFRES=20',
+     ['overlong_id_executed_without_protection_said']),
+    ('register_bound_raised',
+     'REGISTRE_LIGNES=264',
+     'REGISTRE_LIGNES=265',
+     ['execution_register_bound_at_each_edge']),
+    ('register_bound_lowered',
+     'REGISTRE_LIGNES=264',
+     'REGISTRE_LIGNES=263',
+     ['execution_register_bound_at_each_edge']),
+    ('register_eviction_starts_one_line_late',
+     '[ "$_fp_n" -ge "$REGISTRE_LIGNES" ] || return 0',
+     '[ "$_fp_n" -gt "$REGISTRE_LIGNES" ] || return 0',
+     ['execution_register_bound_at_each_edge']),
+    ('register_eviction_one_short',
+     '_fp_trop=$((_fp_n - REGISTRE_LIGNES + 1))',
+     '_fp_trop=$((_fp_n - REGISTRE_LIGNES))',
+     ['execution_register_bound_at_each_edge']),
+    ('register_eviction_takes_started_ripostes',
+     'grep -n "^[0-9]*\tfaite\t"',
+     'grep -n "^[0-9]*\t"',
+     ['execution_register_never_evicts_a_started_riposte']),
+    ('register_eviction_partial',
+     'if [ "$_fp_k" -lt "$_fp_trop" ]; then',
+     'if [ "$_fp_k" -lt 1 ]; then',
+     ['execution_register_never_evicts_a_started_riposte']),
+    ('register_eviction_silent',
+     '    echo "respond: registre d execution PLEIN',
+     '    : "respond: registre d execution PLEIN',
+     ['execution_register_bound_at_each_edge']),
+    ('unavailable_register_suspends_the_ban',
+     '    *) registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || _ta_protege=0 ;;',
+     '    *) registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || return 0 ;;',
+     ['execution_register_never_evicts_a_started_riposte', 'unwritable_state_executes_and_says_no_protection',
+      'refused_register_append_executes_and_says']),
+    ('absent_protection_not_said',
+     '    echo "respond: #$id protection contre la REEXECUTION ABSENTE',
+     '    : "respond: #$id protection contre la REEXECUTION ABSENTE',
+     ['unwritable_state_executes_and_says_no_protection', 'execution_register_never_evicts_a_started_riposte',
+      'illegible_register_executes_and_says', 'overlong_id_executed_without_protection_said',
+      'refused_register_append_executes_and_says']),
+    ('illegible_register_read_as_absent',
+     '    illisible) _ta_protege=0; REG_CAUSE="registre d execution illisible ($REGISTRE_FICHIER)" ;;',
+     '    illisible) : ;;',
+     ['illegible_register_executes_and_says']),
+    ('register_read_error_read_as_absent',
+     '  if _rl=$(registre_texte 2>/dev/null); then :; else REG_ETAT=illisible; return 0; fi',
+     '  _rl=$(registre_texte 2>/dev/null) || :',
+     ['illegible_register_executes_and_says']),
+    ('non_regular_register_read_as_absent',
+     '  [ -f "$REGISTRE_FICHIER" ] || { REG_ETAT=illisible; return 0; }',
+     '  [ -f "$REGISTRE_FICHIER" ] || return 0',
+     ['illegible_register_executes_and_says']),
+    ('lookup_ignores_the_target',
+     'if [ "$_rl_genre" != "$2" ] || [ "$_rl_cible" != "$3" ]; then',
+     'if [ "$_rl_genre" != "$2" ]; then',
+     ['reused_id_for_another_riposte_is_executed']),
+    ('lookup_ignores_the_kind',
+     'if [ "$_rl_genre" != "$2" ] || [ "$_rl_cible" != "$3" ]; then',
+     'if [ "$_rl_cible" != "$3" ]; then',
+     ['reused_id_for_another_riposte_is_executed']),
+    ('lookup_reads_an_illegible_line',
+     '''  _rl=$(printf '%s\\n' "$_rl" | LC_ALL=C grep "^$1\t" | LC_ALL=C grep -E "$REGISTRE_FORME" | sed -n '$p')''',
+     '''  _rl=$(printf '%s\\n' "$_rl" | LC_ALL=C grep "^$1\t" | sed -n '$p')''',
+     ['refused_register_rewrites_said_and_harmless']),
+    ('lookup_reads_the_first_line',
+     '''LC_ALL=C grep "^$1\t" | LC_ALL=C grep -E "$REGISTRE_FORME" | sed -n '$p')''',
+     '''LC_ALL=C grep "^$1\t" | LC_ALL=C grep -E "$REGISTRE_FORME" | sed -n '1p')''',
+     ['reused_id_for_another_riposte_is_executed']),
+    ('zero_bytes_reach_grep',
+     '''registre_texte() { tr -d '\\000' < "$REGISTRE_FICHIER"; }''',
+     '''registre_texte() { cat "$REGISTRE_FICHIER"; }''',
+     ['register_zero_filled_tail_still_read']),
+    ('illegible_lines_not_dropped',
+     'prendre_le_verrou\nregistre_assainir\n',
+     'prendre_le_verrou\n',
+     ['execution_register_illegible_lines_dropped_and_said']),
+    ('illegible_lines_dropped_silently',
+     '    echo "respond: registre d execution : $_ra_ecartees ligne(s) illisible(s) ecartee(s)',
+     '    : "respond: registre d execution : $_ra_ecartees ligne(s) illisible(s) ecartee(s)',
+     ['execution_register_illegible_lines_dropped_and_said']),
+    ('illegible_lines_miscounted',
+     '_ra_ecartees=$((_ra_total - _ra_bonnes))',
+     '_ra_ecartees=$((_ra_total - _ra_bonnes - 1))',
+     ['execution_register_illegible_lines_dropped_and_said']),
+    ('illegible_lines_kept_silently',
+     '  echo "respond: registre d execution : $_ra_ecartees ligne(s) illisible(s) dans',
+     '  : "respond: registre d execution : $_ra_ecartees ligne(s) illisible(s) dans',
+     ['refused_register_rewrites_said_and_harmless']),
+    ('non_regular_register_not_said',
+     '    echo "respond: registre d execution $REGISTRE_FICHIER illisible (pas un fichier ordinaire)',
+     '    : "respond: registre d execution $REGISTRE_FICHIER illisible (pas un fichier ordinaire)',
+     ['illegible_register_executes_and_says']),
+    ('dry_run_writes_the_register',
+     '  if [ "$APPLY" != "1" ] || [ "${dry:-1}" = "1" ]; then\n',
+     '  if [ "$APPLY" != "1" ] || [ "${dry:-1}" = "1" ]; then\n    registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || :\n',
+     ['dry_run_and_refusals_write_nothing_to_the_register']),
+    ('protected_refusal_writes_the_register',
+     'if protected "$target"; then post_result',
+     'if protected "$target"; then registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || :; post_result',
+     ['dry_run_and_refusals_write_nothing_to_the_register']),
+    ('spared_refusal_writes_the_register',
+     '    epargnee) post_result',
+     '    epargnee) registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || :; post_result',
+     ['dry_run_and_refusals_write_nothing_to_the_register']),
+    ('out_of_contract_ttl_refusal_writes_the_register',
+     '      !*)\n        post_result',
+     '      !*)\n        registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || :\n        post_result',
+     ['dry_run_and_refusals_write_nothing_to_the_register']),
+    ('non_ip_refusal_writes_the_register',
+     'if ! is_ip "$target"; then post_result',
+     'if ! is_ip "$target"; then registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || :; post_result',
+     ['dry_run_and_refusals_write_nothing_to_the_register']),
+    ('entry_kept_after_2xx',
+     '        registre_retirer "$1"\n        return 0 ;;',
+     '        return 0 ;;',
+     ['reserved_ban_stopped_before_its_verdict_is_not_reexecuted', 'register_entry_removed_on_2xx_and_ok_false_kept_on_503']),
+    ('entry_kept_after_ok_false',
+     '        registre_retirer "$1"\n        return 0 ;;',
+     '''        case "$_rv_corps" in *'"ok":false'*) ;; *) registre_retirer "$1" ;; esac\n        return 0 ;;''',
+     ['register_entry_removed_on_2xx_and_ok_false_kept_on_503']),
+    ('entry_removed_on_503',
+     '      503|502|504|000) ;;',
+     '      503|502|504|000) registre_retirer "$1" ;;',
+     ['register_entry_removed_on_2xx_and_ok_false_kept_on_503', 'full_replay_queue_reserved_riposte_not_reexecuted']),
+    ('entry_removed_on_definitive_refusal',
+     '''      *) echo "respond: #$1 verdict REFUSE par le central (HTTP $_rv_code), non reessaye : $(reponse_bornee "$_rv_corps")" >&2; return 0 ;;''',
+     '''      *) echo "respond: #$1 verdict REFUSE par le central (HTTP $_rv_code), non reessaye : $(reponse_bornee "$_rv_corps")" >&2; registre_retirer "$1"; return 0 ;;''',
+     ['definitive_refusal_reserved_riposte_not_reexecuted']),
+    ('replay_2xx_keeps_the_entry',
+     '        esac\n        registre_retirer "$_rj_id" ;;',
+     '        esac ;;',
+     ['register_entry_removed_on_2xx_and_ok_false_kept_on_503']),
+    ('refused_entry_removal_silent',
+     '  echo "respond: #$1 verdict pris par le central, mais son entree du registre d execution n est PAS retiree',
+     '  : "respond: #$1 verdict pris par le central, mais son entree du registre d execution n est PAS retiree',
+     ['refused_register_rewrites_said_and_harmless']),
+    ('avowal_always_promises_reexecution',
+     '  if [ -f "$REGISTRE_FICHIER" ] && registre_texte 2>/dev/null',
+     '  if false && registre_texte 2>/dev/null',
+     ['full_replay_queue_reserved_riposte_not_reexecuted', 'refused_replay_write_reserved_riposte_not_reexecuted',
+      'abandoned_replay_reserved_riposte_not_reexecuted']),
+    ('avowal_never_promises_reexecution',
+     '  if [ -f "$REGISTRE_FICHIER" ] && registre_texte 2>/dev/null',
+     '  if : || registre_texte 2>/dev/null',
+     ['unwritable_state_executes_and_says_no_protection']),
+    ('avowal_reads_a_superseded_faite_line',
+     '''LC_ALL=C grep "^$1\t" | sed -n '$p' | LC_ALL=C grep -q "^$1\tfaite\t"''',
+     '''LC_ALL=C grep -q "^$1\tfaite\t"''',
+     ['reused_id_avowal_reads_the_last_line']),
+    # `P10.21-n` — verrou : une seule exécution de l'agent à la fois.
+    ('lock_never_taken',
+     'prendre_le_verrou\nregistre_assainir\n',
+     'registre_assainir\n',
+     ['concurrent_runs_mkdir_lock_one_processes', 'concurrent_runs_flock_one_processes', 'live_mkdir_lock_respected']),
+    ('mkdir_second_run_processes_anyway',
+     '($VERROU_REPERTOIRE)" >&2; exit 0; fi',
+     '($VERROU_REPERTOIRE)" >&2; return 0; fi',
+     ['concurrent_runs_mkdir_lock_one_processes', 'live_mkdir_lock_respected']),
+    ('mkdir_second_run_exits_non_zero',
+     '($VERROU_REPERTOIRE)" >&2; exit 0; fi',
+     '($VERROU_REPERTOIRE)" >&2; exit 1; fi',
+     ['concurrent_runs_mkdir_lock_one_processes']),
+    ('mkdir_second_run_silent',
+     'if porteur_vivant "$_pl_lu"; then echo "respond: $PHRASE_VERROU_DEJA_PRIS ($VERROU_REPERTOIRE)" >&2;',
+     'if porteur_vivant "$_pl_lu"; then :;',
+     ['concurrent_runs_mkdir_lock_one_processes']),
+    ('flock_second_run_exits_non_zero',
+     '($VERROU_FICHIER)" >&2; exit 0; fi',
+     '($VERROU_FICHIER)" >&2; exit 1; fi',
+     ['concurrent_runs_flock_one_processes']),
+    ('flock_second_run_silent',
+     'if [ "$_pl_rc" = 1 ]; then echo "respond: $PHRASE_VERROU_DEJA_PRIS ($VERROU_FICHIER)" >&2;',
+     'if [ "$_pl_rc" = 1 ]; then :;',
+     ['concurrent_runs_flock_one_processes']),
+    ('flock_not_preferred',
+     '  if command -v flock >/dev/null 2>&1; then\n',
+     '  if false; then\n',
+     ['concurrent_runs_flock_one_processes']),
+    ('flock_held_read_as_a_failure',
+     'if [ "$_pl_rc" = 1 ]; then',
+     'if [ "$_pl_rc" = 99 ]; then',
+     ['concurrent_runs_flock_one_processes']),
+    ('flock_failure_read_as_held',
+     'if [ "$_pl_rc" = 1 ]; then',
+     'if [ "$_pl_rc" != 0 ]; then',
+     ['lock_not_taken_run_continues_and_says']),
+    ('flock_failure_silent',
+     '    echo "respond: VERROU NON PRIS (flock en echec',
+     '    : "respond: VERROU NON PRIS (flock en echec',
+     ['lock_not_taken_run_continues_and_says']),
+    ('flock_file_not_tested_before_exec',
+     '    if ! (umask 077 && : >> "$VERROU_FICHIER") 2>/dev/null; then\n',
+     '    if false; then\n',
+     ['lock_not_taken_run_continues_and_says']),
+    ('flock_file_unwritable_silent',
+     '      echo "respond: VERROU NON PRIS ($VERROU_FICHIER non inscriptible)',
+     '      : "respond: VERROU NON PRIS ($VERROU_FICHIER non inscriptible)',
+     ['lock_not_taken_run_continues_and_says']),
+    ('unwritable_state_lock_silent',
+     '    echo "respond: VERROU NON PRIS (etat local $REJEU_DIR non inscriptible)',
+     '    : "respond: VERROU NON PRIS (etat local $REJEU_DIR non inscriptible)',
+     ['unwritable_state_executes_and_says_no_protection']),
+    ('holder_start_time_ignored',
+     '  [ "$_pv_debut" = - ] && return 0\n',
+     '  return 0\n',
+     ['orphan_mkdir_lock_taken_back']),
+    ('holder_liveness_not_checked',
+     '  kill -0 "$_pv_pid" 2>/dev/null || return 1\n',
+     '',
+     ['orphan_mkdir_lock_taken_back']),
+    ('holder_start_time_wrong_field',
+     "| cut -d' ' -f20)",
+     "| cut -d' ' -f21)",
+     ['live_mkdir_lock_respected', 'concurrent_runs_mkdir_lock_one_processes']),
+    ('holder_not_reread_after_the_wait',
+     '    if [ -z "$_pl_lu" ]; then\n      sleep 1',
+     '    if false; then\n      sleep 1',
+     ['live_mkdir_lock_respected']),
+    ('holder_not_written',
+     '''(umask 077 && printf '%s\\n' "$_pl_moi" > "$VERROU_REPERTOIRE/porteur")''',
+     '''(umask 077 && : > "$VERROU_REPERTOIRE/porteur")''',
+     ['concurrent_runs_mkdir_lock_one_processes']),
+    ('orphan_lock_not_said',
+     '    echo "respond: verrou ORPHELIN repris',
+     '    : "respond: verrou ORPHELIN repris',
+     ['orphan_mkdir_lock_taken_back', 'reserved_unban_interrupted_is_resumed_and_said']),
+    ('orphan_lock_not_removed',
+     '    rm -rf "$VERROU_REPERTOIRE" 2>/dev/null || :\n  done',
+     '    :\n  done',
+     ['orphan_mkdir_lock_taken_back']),
+    ('lock_fallback_failure_silent',
+     '  echo "respond: VERROU NON PRIS ($VERROU_REPERTOIRE ni cree ni repris)',
+     '  : "respond: VERROU NON PRIS ($VERROU_REPERTOIRE ni cree ni repris)',
+     ['lock_not_taken_run_continues_and_says']),
+    ('mkdir_lock_never_released',
+     '  if [ "$VERROU_REPERTOIRE_PRIS" = 1 ]; then rm -rf "$VERROU_REPERTOIRE"',
+     '  if false; then rm -rf "$VERROU_REPERTOIRE"',
+     ['orphan_mkdir_lock_taken_back', 'concurrent_runs_mkdir_lock_one_processes']),
+    ('queue_trap_drops_the_lock_release',
+     '''trap 'rm -f "$_file_corps" "$_file_enreg"; rendre_le_verrou' EXIT''',
+     '''trap 'rm -f "$_file_corps" "$_file_enreg"' EXIT''',
+     ['orphan_mkdir_lock_taken_back', 'concurrent_runs_mkdir_lock_one_processes']),
+    ('register_state_check_skipped',
+     '  etat_de_rejeu_pret || { REG_CAUSE="etat local $REJEU_DIR non inscriptible"; return 1; }\n',
+     '',
+     ['unwritable_state_executes_and_says_no_protection']),
+    # `P10.21-n` — sites relevés sans témoin par la vérification indépendante, chacun rouge sur son scénario.
+    ('register_rewrite_drops_ids_sharing_a_prefix',
+     'LC_ALL=C grep -v "^$1\t" || [ $? = 1 ]',
+     'LC_ALL=C grep -v "^$1" || [ $? = 1 ]',
+     ['register_id_never_matches_an_id_it_prefixes']),
+    ('register_lookup_reads_an_id_sharing_its_prefix',
+     '''  _rl=$(printf '%s\\n' "$_rl" | LC_ALL=C grep "^$1\t" |''',
+     '''  _rl=$(printf '%s\\n' "$_rl" | LC_ALL=C grep "^$1" |''',
+     ['register_id_never_matches_an_id_it_prefixes']),
+    ('register_published_world_readable',
+     'if chmod 600 "$REGISTRE_FICHIER.nouveau"',
+     'if chmod 644 "$REGISTRE_FICHIER.nouveau"',
+     ['register_kept_owner_only_after_each_write']),
+    ('register_append_world_readable',
+     '  chmod 600 "$REGISTRE_FICHIER" 2>/dev/null || :\n',
+     '  chmod 644 "$REGISTRE_FICHIER" 2>/dev/null || :\n',
+     ['register_kept_owner_only_after_each_write']),
+    ('register_append_keeps_the_mode_found',
+     '  chmod 600 "$REGISTRE_FICHIER" 2>/dev/null || :\n',
+     '',
+     ['register_kept_owner_only_after_each_write']),
+    ('orphan_lock_removed_but_not_taken_back',
+     '  for _pl_essai in 1 2; do\n',
+     '  for _pl_essai in 1; do\n',
+     ['orphan_mkdir_lock_held_after_its_takeover']),
+    ('lock_taken_after_the_replay',
+     'prendre_le_verrou\nregistre_assainir\n\n# --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---\nrejouer_les_verdicts_retenus\n',
+     'registre_assainir\n\n# --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---\nrejouer_les_verdicts_retenus\nprendre_le_verrou\n',
+     ['second_run_replays_nothing_while_the_lock_is_held']),
+    ('resumed_failure_said_done_whatever_the_kind',
+     '[ "$kind" = unban_ip ] && [ "$UA_RIEN_RETIRE" = 1 ]; then',
+     '[ "$UA_RIEN_RETIRE" = 1 ]; then',
+     ['resumed_ban_refused_after_a_vain_unban_stays_failed']),
+    ('replay_refusal_removes_the_entry',
+     '''abandonne : $(reponse_bornee "$_rv_corps")" >&2 ;;''',
+     '''abandonne : $(reponse_bornee "$_rv_corps")" >&2; registre_retirer "$_rj_id" ;;''',
+     ['refused_replay_keeps_the_register_entry']),
+    ('avowal_reads_an_illegible_line',
+     '''registre_texte 2>/dev/null | LC_ALL=C grep -E "$REGISTRE_FORME" | LC_ALL=C grep "^$1\t" |''',
+     '''registre_texte 2>/dev/null | LC_ALL=C grep "^$1\t" |''',
+     ['avowal_ignores_an_illegible_line_left_in_the_register']),
+    ('mkdir_lock_release_not_trapped_when_taken',
+     "      trap 'rendre_le_verrou' EXIT\n",
+     "      :\n",
+     ['mktemp_refused_exit_gives_back_the_mkdir_lock']),
+    ('register_cleaned_before_the_lock',
+     'prendre_le_verrou\nregistre_assainir\n',
+     'registre_assainir\nprendre_le_verrou\n',
+     ['held_lock_leaves_the_register_untouched']),
+    ('register_form_without_its_final_anchor',
+     "[^\\t]*)$'",
+     "[^\\t]*)'",
+     ['register_line_with_a_trailing_field_is_illegible']),
+    # Le corps remis garde ses sauts de ligne bruts : le démon le refuse (400). Rouge sur le premier scénario par le
+    # verdict qui manque, sur le second par le seul jugement de `REMISES_REFUSEES` (sans lui, ce scénario reste vert).
+    ('remit_body_keeps_raw_line_breaks',
+     "esc() { printf '%s' \"$1\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g' | tr '\\n\\r\\t' '   '; }",
+     "esc() { printf '%s' \"$1\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'; }",
+     ['crowdsec_fallback_duration_validated', 'register_line_bounded_target_and_result']),
 ]
 
 
@@ -2145,7 +3875,11 @@ def jouer_tout(script, noms=None):
     for nom, s in SCENARIOS.items():
         if noms is not None and nom not in noms:
             continue
-        fautes = s(script)
+        REMISES_REFUSEES.clear()
+        fautes = list(s(script))
+        if REMISES_REFUSEES:
+            fautes.append(f"le faux central a refusé {len(REMISES_REFUSEES)} remise(s), comme le démon (JSON strict, UTF-8 "
+                          f"valide) : {REMISES_REFUSEES[:2]!r}")
         if fautes:
             rouges[nom] = fautes
     return rouges
@@ -2159,15 +3893,32 @@ def coherence_du_contrat(src):
     return f
 
 
+def selection(prefixe):
+    """`--scenarios=a,b` / `--mutants=x,y` : pour itérer sur une partie. Sans l'option : None (tout)."""
+    for a in sys.argv[1:]:
+        if a.startswith(prefixe):
+            return set(n for n in a[len(prefixe):].split(",") if n)
+    return None
+
+
 def main():
     src = open(SCRIPT, encoding="utf-8").read()
-    erreurs = coherence_du_contrat(src)
-    rouges = jouer_tout(SCRIPT)
+    erreurs = coherence_du_contrat(src) + epreuve_du_lecteur_du_faux_central()
+    noms_s, noms_m = selection("--scenarios="), selection("--mutants=")
+    inconnus = sorted((noms_s or set()) - set(SCENARIOS)) + sorted((noms_m or set()) - {m[0] for m in MUTANTS})
+    if inconnus:
+        refuser_de_conclure(f"sélection inconnue : {inconnus}")
+    if noms_s is not None or noms_m is not None:
+        print("::warning::SÉLECTION PARTIELLE : ce verdict ne vaut pas celui de la garde entière.")
+    rouges = jouer_tout(SCRIPT, noms_s)
     for nom, fautes in rouges.items():
         for faute in fautes:
             erreurs.append(f"{nom}: {faute}")
-    if "--sans-mutants" not in sys.argv:
+    joue_m = "--sans-mutants" not in sys.argv and not (noms_s is not None and noms_m is None)
+    if joue_m:
         for nom, motif, remplacement, attendus in MUTANTS:
+            if noms_m is not None and nom not in noms_m:
+                continue
             if src.count(motif) != 1:
                 erreurs.append(f"mutant {nom} : motif présent {src.count(motif)} fois (1 attendu) — garde périmée")
                 continue
@@ -2186,8 +3937,9 @@ def main():
             print(f"::error::{e}")
         print(f"\n{len(erreurs)} défaut(s) : le répondeur n'applique pas la durée servie, ou lit un refus comme une file.")
         return 1
-    print(f"{len(SCENARIOS)} scénarios verts sur respond.sh"
-          + (f" ; {len(MUTANTS)} mutants nommés tous rouges." if "--sans-mutants" not in sys.argv else " (mutants non joués)."))
+    print(f"{len(SCENARIOS) if noms_s is None else len(noms_s)} scénarios verts sur respond.sh"
+          + (f" ; {len(MUTANTS) if noms_m is None else len(noms_m)} mutants nommés tous rouges." if joue_m
+             else " (mutants non joués)."))
     return 0
 
 

@@ -365,6 +365,8 @@ nft_sonder() {
 # Le texte d un retrait `retiree` ou `absente` est celui d avant, a l octet.
 unban_all() {
   OUT=""; _ua_autres=0; _ua_refus=0; _ua_retrait=0
+  # `P10.21-n` : « rien retire, rien refuse, nft seul » est lu par la REPRISE d une levee interrompue (traiter_action).
+  UA_RIEN_RETIRE=0; UA_OUT_AVANT_VERDICT=""
   if command -v fail2ban-client >/dev/null 2>&1; then _ua_autres=1; OUT="$OUT [f2b]$(fail2ban-client unban "$1" 2>&1 || true)"; fi
   if [ "$CSCLI_OK" = 1 ]; then _ua_autres=1; OUT="$OUT [cs]$(cscli_cmd decisions delete -i "$1" 2>&1 || true)"; fi
   if command -v nft >/dev/null 2>&1; then nft_sonder "la table inet plume" table inet plume; else NFT_SONDE=absent; fi
@@ -382,6 +384,7 @@ unban_all() {
   if [ "$_ua_refus" = 1 ]; then return 1; fi
   # Ici OUT n est pas vide : sans fail2ban ni CrowdSec, c est que nft a ete tente.
   if [ "$_ua_retrait" = 0 ] && [ "$_ua_autres" = 0 ]; then
+    UA_RIEN_RETIRE=1; UA_OUT_AVANT_VERDICT="$OUT"
     OUT="$OUT ; LEVEE NON FAITE : adresse absente de chaque set nft tente, rien n a ete retire"; return 1
   fi
   return 0
@@ -567,6 +570,7 @@ nft_poser_sans_raccourcir() {
 }
 # La duree EFFECTIVE du ban en cours et sa PROVENANCE, posees par `traiter_action` avant plan/enforce.
 EFF_DUR="$DUR"; DUR_PROV="PLUME_BAN_DURATION de l hote"
+UA_RIEN_RETIRE=0; UA_OUT_AVANT_VERDICT=""
 plan() {                 # kind target -> imprime la commande qui SERAIT executee (pour dry-run + trace)
   [ "$1" = unban_ip ] && { printf 'unban %s (best-effort: fail2ban tous jails + cscli + nft plume)' "$2"; return; }
   case "$backend:$1" in
@@ -716,11 +720,15 @@ remettre_une_fois() {
 # Au debut de CHAQUE tour, avant la liste, chaque verdict retenu est remis UNE fois :
 #   2xx                 remis (ou absence dite), la ligne part ;
 #   passager / illisible  garde avec un tour de plus ; au REJEU_TOURS-ieme, ABANDONNE et avoue — la
-#                       riposte sera alors re-servie par le central, et reexecutee ;
+#                       riposte sera alors re-servie par le central ; l aveu dit si le registre
+#                       d execution (`P10.21-n`, plus bas) la porte `faite` (verdict re-remis, pas
+#                       d execution) ou non (elle sera reexecutee) ;
 #   tout autre code     refus definitif, avoue, la ligne part.
 # Le premier echec passager ARRETE le rejeu de ce tour (le central ne repond pas : essayer les
 # suivants coute quinze secondes chacun pour rien) ; les lignes non tentees gardent leur compte.
 # Une riposte dont le verdict attend sa remise n est PAS reexecutee si le central la re-sert.
+# Chaque aveu de verdict non retenu (etat non inscriptible, file pleine, ecriture refusee) finit de meme
+# par ce que deviendra la riposte re-servie, lu dans le registre d execution.
 # BORNES : REJEU_LIGNES lignes au plus (au-dela, le verdict n est PAS retenu, et c est avoue), un
 # resultat de REJEU_RESULTAT_OCTETS octets au plus par ligne (coupe sur un caractere).
 # Le repertoire suit le levier d etat DEJA documente des collecteurs (`PLUME_STATE`, README) : un
@@ -738,6 +746,310 @@ etat_de_rejeu_pret() {
   return 0
 }
 
+# ================================================================================================
+# `P10.21-n` — UNE RIPOSTE RE-SERVIE N EST JAMAIS EXECUTEE UNE SECONDE FOIS A L AVEUGLE.
+# ------------------------------------------------------------------------------------------------
+# Par CET agent. Sur un hote a la fois central et agent, le responder local du demon n est pas tenu par ce
+# registre : voir le reste nomme sous "UN TOUR PLUS LONG QUE LA FENETRE DE RECLAMATION", plus bas.
+# CE QUI SE PASSAIT. `enforce` partait sans qu aucune trace ne soit ecrite AVANT ; le seul souvenir etait
+# `verdicts-a-remettre`, ecrit APRES, et seulement sur un echec passager de la remise. Le central re-sert une
+# riposte reclamee sans verdict apres sa fenetre de reclamation (`RECLAMATION_PERIMEE_S`, cote demon) : elle
+# etait REEXECUTEE quand l agent s etait arrete entre l execution et la retenue du verdict, quand la retenue
+# renoncait (etat non inscriptible, file pleine, ecriture refusee), apres un refus definitif de la remise et
+# apres un rejeu abandonne. Une levee reexecutee sur nft seul rendait alors `failed` LEVEE NON FAITE : le
+# second verdict contredisait le premier.
+# CE QUI EST FAIT : un REGISTRE D EXECUTION (`REGISTRE_FICHIER`, dans le repertoire 0700 du rejeu, fichier
+# 0600), une ligne par riposte, champs separes par une tabulation :
+#   <id> commencee <genre> <cible>                     ecrite AVANT `enforce` ;
+#   <id> faite <genre> <cible> <statut> <resultat>     ecrite APRES, a la place de la precedente.
+# Genre et cible sont ramenes a l ASCII imprimable sans espace et bornes ; le resultat est prive de ses
+# caracteres de controle et coupe sur un caractere entier a REGISTRE_RESULTAT_OCTETS octets, comme le rejeu ;
+# un identifiant de plus de REGISTRE_ID_CHIFFRES chiffres n est pas inscrit. Toute ligne est donc bornee en
+# octets. Ni jeton, ni en-tete, ni hote n y entrent. Le simulacre et les refus d avant execution (duree hors
+# contrat, cible non IP ou protegee, liste d epargne) n y ecrivent rien.
+# A LA RE-PRESENTATION d un identifiant inscrit pour la MEME riposte (meme genre, meme cible) :
+#   faite      -> AUCUNE execution : le verdict ENREGISTRE est remis de nouveau (sa forme bornee : celle
+#                 que porte le registre), et le journal dit la re-remise ;
+#   commencee  -> l issue de la premiere execution est inconnue : la riposte est REPRISE par le meme
+#                 `enforce`, et son resultat le DIT (`PHRASE_REPRISE`). Un ban repris ne raccourcit rien
+#                 (`nft_poser_sans_raccourcir`). Une levee reprise qui ne trouve l adresse nulle part (nft
+#                 seul, rien retire, rien refuse) est rendue `done` : constatee absente, retrait non observe ;
+#                 un REFUS de retrait reste `failed`.
+# Un identifiant inscrit pour une AUTRE riposte (base du central recreee, identifiants repartis de zero) n est
+# pas une re-presentation : l entree perimee est remplacee, c est dit, et la riposte suit son cours.
+# UNE ENTREE PART quand le central a pris son verdict (2xx sans `"ok":false`) ou a repondu que la riposte est
+# close (`"ok":false`), a la remise, au rejeu ou a la re-remise. Sinon elle reste.
+# BORNE : REGISTRE_LIGNES lignes. Au-dela, la plus ancienne `faite` sort, et c est AVOUE (re-servie ensuite,
+# elle serait reexecutee) ; une `commencee` ne sort JAMAIS par eviction : son issue est inconnue, l oublier
+# rendrait une reprise aveugle en execution aveugle. La borne couvre les ripostes que le central peut encore
+# re-servir pendant qu il ne prend aucun verdict : le tour en cours et le precedent (cent actions au plus
+# chacun, re-servies passee la fenetre de reclamation) plus la file de rejeu entiere (REJEU_LIGNES).
+# CE QUI N EST PAS TENU : une `commencee` ne part que lorsque le central re-sert sa riposte (elle devient `faite`) ou
+# prend son verdict. Celle d une riposte que le central ne re-servira JAMAIS (annulee ou close au central apres un
+# arret brutal de l agent) reste donc a vie. Apres REGISTRE_LIGNES arrets de ce genre, le registre est plein de
+# `commencee` : chaque riposte suivante est executee SANS protection contre la reexecution, avouee a chaque fois
+# (« registre plein de ripostes commencees »), et rien ne le repare seul — retirer le fichier rend la protection.
+# REGISTRE INDISPONIBLE (etat non inscriptible, illisible, plein de `commencee`, ecriture refusee, identifiant
+# trop long) : la
+# riposte est EXECUTEE quand meme — un ban est une defense, il ne se suspend pas pour un etat local — et
+# l aveu dit que la protection contre la reexecution est ABSENTE pour cette riposte.
+# Les lectures du registre se font sous `LC_ALL=C` (la forme est jugee octet par octet), et toujours a travers
+# `registre_texte`, qui retire les octets nuls : une coupure de courant peut laisser la fin d un fichier remplie de
+# zeros, et `grep` tient alors le fichier entier pour binaire et n en rend plus aucune ligne.
+REGISTRE_FICHIER="$REJEU_DIR/ripostes-executees"
+REGISTRE_LIGNES=264
+REGISTRE_ID_CHIFFRES=19
+REGISTRE_GENRE_OCTETS=32
+REGISTRE_CIBLE_OCTETS=64
+REGISTRE_RESULTAT_OCTETS=400
+PHRASE_REPRISE="REPRISE d une execution interrompue (issue de la premiere inconnue)"
+PHRASE_ABSENTE_APRES_INTERRUPTION="ADRESSE CONSTATEE ABSENTE apres une execution interrompue : retrait non observe (la premiere execution a pu la lever)"
+# Forme d une ligne lisible (ERE) ; toute autre ligne est ecartee au debut du tour, et ignoree a la lecture. Le
+# resultat n a pas d intervalle dans l ERE (certains moteurs refusent un intervalle au-dela de 255) : sa borne est
+# tenue a l ecriture.
+REGISTRE_FORME=$(printf '^[0-9]{1,%s}\t(commencee\t[!-~]{1,%s}\t[!-~]{1,%s}|faite\t[!-~]{1,%s}\t[!-~]{1,%s}\t(done|failed)\t[^\t]*)$' \
+  "$REGISTRE_ID_CHIFFRES" "$REGISTRE_GENRE_OCTETS" "$REGISTRE_CIBLE_OCTETS" "$REGISTRE_GENRE_OCTETS" "$REGISTRE_CIBLE_OCTETS")
+
+registre_texte() { tr -d '\000' < "$REGISTRE_FICHIER"; }
+
+# <octets> <valeur> -> la valeur en ASCII imprimable sans espace (tout autre octet devient `_`), bornee ; `-` si vide.
+registre_jeton() {
+  _rt=$(printf '%s' "$2" | LC_ALL=C tr -c '!-~' '_' | LC_ALL=C cut -b "1-$1")
+  printf '%s' "${_rt:--}"
+}
+
+# registre_publier — le fichier voisin `.nouveau`, deja ecrit et ferme, remplace le registre (renommage : jamais
+# un registre a moitie ecrit). 1 si refuse.
+registre_publier() {
+  if chmod 600 "$REGISTRE_FICHIER.nouveau" 2>/dev/null && mv -f "$REGISTRE_FICHIER.nouveau" "$REGISTRE_FICHIER" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$REGISTRE_FICHIER.nouveau" 2>/dev/null || :
+  return 1
+}
+
+# registre_reecrire <id> [ligne] — republie le registre sans les lignes de <id>, puis avec [ligne] si elle est
+# donnee. 1 si l ecriture est refusee (le registre reste tel quel).
+registre_reecrire() {
+  _rw_texte=""
+  if [ -e "$REGISTRE_FICHIER" ]; then
+    [ -f "$REGISTRE_FICHIER" ] || return 1
+    _rw_texte=$(registre_texte 2>/dev/null) || return 1
+  fi
+  if ! (umask 077 && {
+      { [ -z "$_rw_texte" ] || printf '%s\n' "$_rw_texte" | LC_ALL=C grep -v "^$1	" || [ $? = 1 ]; } &&
+      { [ -z "${2:-}" ] || printf '%s\n' "$2"; }
+    } > "$REGISTRE_FICHIER.nouveau") 2>/dev/null; then
+    rm -f "$REGISTRE_FICHIER.nouveau" 2>/dev/null || :
+    return 1
+  fi
+  registre_publier
+}
+
+# Au debut du tour : les lignes illisibles (forme inconnue, ligne coupee par un arret brutal) sont ecartees et
+# dites. Un registre qui ne se lit pas du tout n est pas repare ici : chaque riposte l avoue a sa lecture.
+registre_assainir() {
+  [ -e "$REGISTRE_FICHIER" ] || return 0
+  if [ ! -f "$REGISTRE_FICHIER" ]; then
+    echo "respond: registre d execution $REGISTRE_FICHIER illisible (pas un fichier ordinaire) : ni lu ni repare ce tour-ci" >&2
+    return 0
+  fi
+  _ra_texte=$(registre_texte 2>/dev/null) || return 0
+  [ -n "$_ra_texte" ] || return 0
+  _ra_total=$(printf '%s\n' "$_ra_texte" | LC_ALL=C grep -c '') || :
+  _ra_bonnes=$(printf '%s\n' "$_ra_texte" | LC_ALL=C grep -cE "$REGISTRE_FORME") || :
+  [ "$_ra_total" -gt "$_ra_bonnes" ] || return 0
+  _ra_ecartees=$((_ra_total - _ra_bonnes))
+  if (umask 077 && { printf '%s\n' "$_ra_texte" | LC_ALL=C grep -E "$REGISTRE_FORME" || [ $? = 1 ]; } > "$REGISTRE_FICHIER.nouveau") 2>/dev/null \
+      && registre_publier; then
+    echo "respond: registre d execution : $_ra_ecartees ligne(s) illisible(s) ecartee(s) de $REGISTRE_FICHIER" >&2
+    return 0
+  fi
+  rm -f "$REGISTRE_FICHIER.nouveau" 2>/dev/null || :
+  echo "respond: registre d execution : $_ra_ecartees ligne(s) illisible(s) dans $REGISTRE_FICHIER, NON retiree(s) (ecriture refusee) : elles sont ignorees a la lecture" >&2
+}
+
+# registre_lire <id> <genre> <cible> -> REG_ETAT : absente | commencee | faite | autre (meme id, autre riposte)
+# | illisible ; pour `faite`, REG_STATUT et REG_RESULTAT. Seule la DERNIERE ligne LISIBLE de <id> compte.
+registre_lire() {
+  REG_ETAT=absente; REG_STATUT=""; REG_RESULTAT=""
+  [ -e "$REGISTRE_FICHIER" ] || return 0
+  [ -f "$REGISTRE_FICHIER" ] || { REG_ETAT=illisible; return 0; }
+  if _rl=$(registre_texte 2>/dev/null); then :; else REG_ETAT=illisible; return 0; fi
+  _rl=$(printf '%s\n' "$_rl" | LC_ALL=C grep "^$1	" | LC_ALL=C grep -E "$REGISTRE_FORME" | sed -n '$p')
+  [ -n "$_rl" ] || return 0
+  _rl=${_rl#*	}; _rl_etat=${_rl%%	*}; _rl=${_rl#*	}; _rl_genre=${_rl%%	*}; _rl=${_rl#*	}; _rl_cible=${_rl%%	*}
+  if [ "$_rl_genre" != "$2" ] || [ "$_rl_cible" != "$3" ]; then REG_ETAT=autre; return 0; fi
+  if [ "$_rl_etat" = faite ]; then
+    _rl=${_rl#*	}; REG_STATUT=${_rl%%	*}; REG_RESULTAT=${_rl#*	}; REG_ETAT=faite
+  else
+    REG_ETAT=commencee
+  fi
+}
+
+# Fait de la place pour une ligne : a partir de REGISTRE_LIGNES lignes, les plus anciennes `faite` sortent, chacune
+# dite. Tout ou rien : s il n y a pas assez de `faite`, rien ne sort et REG_CAUSE le dit.
+registre_faire_place() {
+  [ -f "$REGISTRE_FICHIER" ] || return 0
+  # HORS D ATTEINTE depuis `traiter_action` sauf course : `registre_lire` vient de lire ce fichier, et un registre
+  # illisible n y est jamais inscrit (`_ta_protege=0`). Garde par principe : ne jamais republier un texte non lu. Sa
+  # cause est DISTINCTE de celle de `registre_lire` : un registre illisible lu comme absent se verrait au journal.
+  _fp_texte=$(registre_texte 2>/dev/null) || { REG_CAUSE="registre d execution illisible au moment d y faire de la place ($REGISTRE_FICHIER)"; return 1; }
+  [ -n "$_fp_texte" ] || return 0
+  _fp_n=$(printf '%s\n' "$_fp_texte" | LC_ALL=C grep -c '') || :
+  [ "$_fp_n" -ge "$REGISTRE_LIGNES" ] || return 0
+  _fp_trop=$((_fp_n - REGISTRE_LIGNES + 1))
+  _fp_faites=$(printf '%s\n' "$_fp_texte" | LC_ALL=C grep -n "^[0-9]*	faite	" | sed -n "1,${_fp_trop}p") || :
+  _fp_k=0; _fp_sed=""; _fp_ids=""
+  while IFS= read -r _fp_l; do
+    [ -n "$_fp_l" ] || continue
+    _fp_k=$((_fp_k + 1)); _fp_e=${_fp_l#*:}; _fp_ids="$_fp_ids ${_fp_e%%	*}"
+    _fp_sed="$_fp_sed${_fp_l%%:*}d
+"
+  done <<EOF
+$_fp_faites
+EOF
+  if [ "$_fp_k" -lt "$_fp_trop" ]; then
+    REG_CAUSE="registre plein de ripostes commencees ($_fp_n lignes pour $REGISTRE_LIGNES, une commencee ne sort jamais par eviction)"
+    return 1
+  fi
+  if ! (umask 077 && printf '%s\n' "$_fp_texte" | LC_ALL=C sed "$_fp_sed" > "$REGISTRE_FICHIER.nouveau") 2>/dev/null || ! registre_publier; then
+    rm -f "$REGISTRE_FICHIER.nouveau" 2>/dev/null || :
+    REG_CAUSE="ecriture refusee dans $REGISTRE_FICHIER"; return 1
+  fi
+  for _fp_id in $_fp_ids; do
+    echo "respond: registre d execution PLEIN ($REGISTRE_LIGNES lignes) : #$_fp_id (faite, verdict jamais pris par le central) EVINCEE : si le central la re-sert, elle sera REEXECUTEE" >&2
+  done
+}
+
+# registre_inscrire <id> <genre> <cible> -> 0 si la ligne `commencee` est ecrite ; sinon 1 et REG_CAUSE. Elle est
+# AJOUTEE : une entree perimee du meme id (autre riposte) la precede, et `registre_lire` ne lit que la derniere
+# ligne de l id ; `registre_marquer_faite` les remplace toutes par la ligne `faite`.
+registre_inscrire() {
+  if [ "${#1}" -gt "$REGISTRE_ID_CHIFFRES" ]; then REG_CAUSE="identifiant de plus de $REGISTRE_ID_CHIFFRES chiffres"; return 1; fi
+  etat_de_rejeu_pret || { REG_CAUSE="etat local $REJEU_DIR non inscriptible"; return 1; }
+  registre_faire_place || return 1
+  if ! (umask 077 && printf '%s\tcommencee\t%s\t%s\n' "$1" "$2" "$3" >> "$REGISTRE_FICHIER") 2>/dev/null; then
+    REG_CAUSE="ecriture refusee dans $REGISTRE_FICHIER"; return 1
+  fi
+  chmod 600 "$REGISTRE_FICHIER" 2>/dev/null || :
+}
+
+# registre_marquer_faite <id> <genre> <cible> <statut> <resultat> — la ligne `commencee` devient `faite`.
+registre_marquer_faite() {
+  _mf_res=$(printf '%s' "$5" | tr '\000-\037' ' ' | coupe_sur_caractere "$REGISTRE_RESULTAT_OCTETS")
+  registre_reecrire "$1" "$(printf '%s\tfaite\t%s\t%s\t%s\t%s' "$1" "$2" "$3" "$4" "$_mf_res")"
+}
+
+# Le central a pris le verdict de <id>, ou l a dite close : son entree part.
+registre_retirer() {
+  [ -f "$REGISTRE_FICHIER" ] || return 0
+  registre_texte 2>/dev/null | LC_ALL=C grep -q "^$1	" || return 0
+  registre_reecrire "$1" && return 0
+  echo "respond: #$1 verdict pris par le central, mais son entree du registre d execution n est PAS retiree (ecriture refusee) : si le central la re-servait, son verdict enregistre serait remis de nouveau" >&2
+}
+
+# Ce que deviendra la riposte <id> si le central la re-sert : la fin de chaque aveu de verdict non remis.
+consequence_de_la_re_presentation() {
+  if [ -f "$REGISTRE_FICHIER" ] && registre_texte 2>/dev/null | LC_ALL=C grep -E "$REGISTRE_FORME" | LC_ALL=C grep "^$1	" | sed -n '$p' | LC_ALL=C grep -q "^$1	faite	"; then
+    printf 'elle ne sera PAS reexecutee : le registre d execution la porte faite, son verdict enregistre sera remis de nouveau'
+  else
+    printf 'elle sera REEXECUTEE (le registre d execution ne la porte pas faite)'
+  fi
+}
+
+# ================================================================================================
+# `P10.21-n` — UNE SEULE EXECUTION DE L AGENT A LA FOIS PAR REPERTOIRE D ETAT.
+# ------------------------------------------------------------------------------------------------
+# Un lancement a la main pendant le tour du minuteur traitait la meme file : deux `enforce` de la meme riposte,
+# deux verdicts. Le verrou est pris avant le rejeu et la liste, et tenu jusqu a la sortie :
+#   - `flock` present : verrou du noyau sur VERROU_FICHIER, rendu par le noyau quand le processus meurt, quelle
+#     qu en soit la cause — un arret brutal ne laisse rien derriere lui (un enfant encore vivant, curl par
+#     exemple, le tient jusqu a sa propre fin, bornee par son delai) ;
+#   - sinon : un repertoire VERROU_REPERTOIRE cree par `mkdir` (atomique), qui porte l identite du porteur : pid
+#     et instant de demarrage lu dans /proc quand il existe (un pid recycle n est pas le porteur). Un porteur
+#     mort, recycle, ou jamais ecrit (relu apres une seconde) rend le verrou ORPHELIN : repris, et dit ; le
+#     verrou est rendu a la sortie.
+# Une seconde execution sort SANS RIEN TRAITER (ni rejeu, ni liste, ni remise), le dit, code 0 : le tour en cours
+# fait le travail. Etat local non inscriptible, ou verrou impossible a poser : le tour continue SANS verrou, et
+# c est dit — un ban est une defense, il ne se suspend pas pour un etat local.
+# CE QUI N EST PAS TENU (repli `mkdir` seulement) : deux executions qui reprennent le MEME verrou orphelin au meme
+# instant peuvent tourner ensemble, la reprise n etant pas atomique ; un porteur qui ne peut pas etre ecrit
+# (disque plein) laisse le verrou reprenable par la suivante. `flock` n a aucun de ces deux trous.
+# UN TOUR PLUS LONG QUE LA FENETRE DE RECLAMATION (`RECLAMATION_PERIMEE_S`, trois cents secondes, cote demon ; rien ne
+# borne la duree d un tour en dessous : cent actions, chacune avec ses remises et leurs delais) : ses dernieres
+# ripostes redeviennent reclamables avant d etre closes. Ce qui en suit depend de l hote :
+#   - hote SEULEMENT agent : la re-presentation est sans effet. Seul cet hote peut les reclamer de nouveau (la
+#     condition de reclamation d un agent lit `host`, qu une reclamation pose), et jamais pendant le tour : systemd
+#     ne lance pas une seconde instance de l unite `oneshot` encore en cours (le minuteur, `OnUnitActiveSec=60s`,
+#     n y change rien) et un lancement a la main sort au verrou. Re-servies au tour suivant, elles sont lues au
+#     registre ci-dessus.
+#   - hote a la fois CENTRAL et agent, sous la meme identite : le responder local du demon (`plume-daemon respond`,
+#     sur son propre minuteur) prend aussi une action approuvee dont la reclamation d agent a passe la fenetre et dont
+#     `host` est sa propre identite (`ACTIONS_A_RECLAMER_ICI`, daemon/src/handlers/actions.rs), et il l EXECUTE sans
+#     lire ni ce verrou ni ce registre. Une riposte que l agent tient encore, ou dont le verdict n est pas encore pris
+#     par le central, peut donc etre executee une seconde fois par le demon. RESTE NOMME, NON FERME : ni ce script,
+#     ni sa garde ne le tiennent.
+# Aucune garde ne lie la fenetre au rythme du minuteur.
+VERROU_FICHIER="$REJEU_DIR/verrou"
+VERROU_REPERTOIRE="$REJEU_DIR/verrou.d"
+VERROU_REPERTOIRE_PRIS=0
+PHRASE_VERROU_DEJA_PRIS="une autre execution de l agent tient deja le verrou : ce tour-ci ne traite RIEN (ni rejeu, ni liste, ni remise)"
+# <pid> -> « pid instant » (instant de demarrage, champ 22 de /proc/<pid>/stat, lu apres le nom entre
+# parentheses qui peut porter des espaces ; `-` sans /proc).
+identite_du_processus() {
+  _ip_debut=""
+  if [ -r "/proc/$1/stat" ]; then _ip_debut=$(sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20) || _ip_debut=""; fi
+  printf '%s %s' "$1" "${_ip_debut:--}"
+}
+# <identite lue> -> 0 si ce processus vit encore et n a pas ete remplace par un autre sous le meme pid.
+porteur_vivant() {
+  _pv_pid=${1%% *}; _pv_debut=${1#* }
+  case "$_pv_pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$_pv_pid" 2>/dev/null || return 1
+  [ "$_pv_debut" = - ] && return 0
+  [ "$(identite_du_processus "$_pv_pid")" = "$1" ]
+}
+rendre_le_verrou() {
+  if [ "$VERROU_REPERTOIRE_PRIS" = 1 ]; then rm -rf "$VERROU_REPERTOIRE" 2>/dev/null || :; fi
+}
+prendre_le_verrou() {
+  if ! etat_de_rejeu_pret; then
+    echo "respond: VERROU NON PRIS (etat local $REJEU_DIR non inscriptible) : ce tour-ci continue sans verrou, une execution simultanee de l agent n est pas empechee" >&2
+    return 0
+  fi
+  if command -v flock >/dev/null 2>&1; then
+    if ! (umask 077 && : >> "$VERROU_FICHIER") 2>/dev/null; then
+      echo "respond: VERROU NON PRIS ($VERROU_FICHIER non inscriptible) : ce tour-ci continue sans verrou, une execution simultanee de l agent n est pas empechee" >&2
+      return 0
+    fi
+    exec 9>>"$VERROU_FICHIER"
+    if flock -n 9; then return 0; else _pl_rc=$?; fi
+    if [ "$_pl_rc" = 1 ]; then echo "respond: $PHRASE_VERROU_DEJA_PRIS ($VERROU_FICHIER)" >&2; exit 0; fi
+    echo "respond: VERROU NON PRIS (flock en echec (code $_pl_rc) sur $VERROU_FICHIER) : ce tour-ci continue sans verrou, une execution simultanee de l agent n est pas empechee" >&2
+    return 0
+  fi
+  _pl_moi=$(identite_du_processus $$)
+  for _pl_essai in 1 2; do
+    if (umask 077 && mkdir "$VERROU_REPERTOIRE") 2>/dev/null; then
+      VERROU_REPERTOIRE_PRIS=1
+      trap 'rendre_le_verrou' EXIT
+      (umask 077 && printf '%s\n' "$_pl_moi" > "$VERROU_REPERTOIRE/porteur") 2>/dev/null || :
+      return 0
+    fi
+    _pl_lu=$(cat "$VERROU_REPERTOIRE/porteur" 2>/dev/null) || _pl_lu=""
+    if [ -z "$_pl_lu" ]; then
+      sleep 1 2>/dev/null || :
+      _pl_lu=$(cat "$VERROU_REPERTOIRE/porteur" 2>/dev/null) || _pl_lu=""
+    fi
+    if porteur_vivant "$_pl_lu"; then echo "respond: $PHRASE_VERROU_DEJA_PRIS ($VERROU_REPERTOIRE)" >&2; exit 0; fi
+    if [ -n "$_pl_lu" ]; then _pl_qui="pid ${_pl_lu%% *}"; else _pl_qui="jamais ecrit"; fi
+    echo "respond: verrou ORPHELIN repris ($VERROU_REPERTOIRE, porteur $_pl_qui disparu) : une execution precedente s est arretee sans le rendre" >&2
+    rm -rf "$VERROU_REPERTOIRE" 2>/dev/null || :
+  done
+  echo "respond: VERROU NON PRIS ($VERROU_REPERTOIRE ni cree ni repris) : ce tour-ci continue sans verrou, une execution simultanee de l agent n est pas empechee" >&2
+}
+
 verdict_en_attente_de_remise() {   # <id> -> 0 si un verdict de cette riposte attend sa remise
   [ -f "$REJEU_FICHIER" ] || return 1
   grep -q "^$1	" "$REJEU_FICHIER" 2>/dev/null
@@ -745,18 +1057,18 @@ verdict_en_attente_de_remise() {   # <id> -> 0 si un verdict de cette riposte at
 
 retenir_pour_rejeu() {   # <id> <status> <result>
   if ! etat_de_rejeu_pret; then
-    echo "respond: #$1 verdict NON RETENU pour rejeu : etat local $REJEU_DIR non inscriptible — le central re-servira la riposte apres sa fenetre de reclamation, et elle sera REEXECUTEE" >&2
+    echo "respond: #$1 verdict NON RETENU pour rejeu : etat local $REJEU_DIR non inscriptible — le central re-servira la riposte apres sa fenetre de reclamation, et $(consequence_de_la_re_presentation "$1")" >&2
     return 0
   fi
   verdict_en_attente_de_remise "$1" && return 0
   _rr_n=0; [ -f "$REJEU_FICHIER" ] && _rr_n=$(grep -c '' "$REJEU_FICHIER" 2>/dev/null || :)
   if [ "${_rr_n:-0}" -ge "$REJEU_LIGNES" ]; then
-    echo "respond: #$1 verdict NON RETENU pour rejeu : la file de rejeu est PLEINE ($REJEU_LIGNES verdicts en attente dans $REJEU_FICHIER) — le central re-servira la riposte, et elle sera REEXECUTEE" >&2
+    echo "respond: #$1 verdict NON RETENU pour rejeu : la file de rejeu est PLEINE ($REJEU_LIGNES verdicts en attente dans $REJEU_FICHIER) — le central re-servira la riposte, et $(consequence_de_la_re_presentation "$1")" >&2
     return 0
   fi
   _rr_resultat=$(printf '%s' "$3" | tr '\000-\037' ' ' | coupe_sur_caractere "$REJEU_RESULTAT_OCTETS")
   if ! (umask 077 && printf '%s\t0\t{"id":%s,"status":"%s","result":"%s"}\n' "$1" "$1" "$2" "$(esc "$_rr_resultat")" >> "$REJEU_FICHIER") 2>/dev/null; then
-    echo "respond: #$1 verdict NON RETENU pour rejeu : ecriture refusee dans $REJEU_FICHIER" >&2
+    echo "respond: #$1 verdict NON RETENU pour rejeu : ecriture refusee dans $REJEU_FICHIER — le central re-servira la riposte, et $(consequence_de_la_re_presentation "$1")" >&2
     return 0
   fi
   chmod 600 "$REJEU_FICHIER" 2>/dev/null || :
@@ -787,11 +1099,12 @@ rejouer_les_verdicts_retenus() {
         case "$_rv_corps" in
           *'"ok":false'*) echo "respond: #$_rj_id verdict REJOUE mais NON RETENU par le central (riposte deja close, ou d un autre hote) : $(reponse_bornee "$_rv_corps")" >&2 ;;
           *) echo "respond: #$_rj_id verdict REJOUE et remis au tour $_rj_tours" >&2 ;;
-        esac ;;
+        esac
+        registre_retirer "$_rj_id" ;;
       503|502|504|000|'')
         _rj_muet=1
         if [ "$_rj_tours" -ge "$REJEU_TOURS" ]; then
-          echo "respond: #$_rj_id verdict ABANDONNE apres $_rj_tours tours de rejeu (dernier HTTP ${_rv_code:-illisible}) : la riposte reste OUVERTE au central, qui la re-servira et elle sera REEXECUTEE : $(reponse_bornee "$_rv_corps")" >&2
+          echo "respond: #$_rj_id verdict ABANDONNE apres $_rj_tours tours de rejeu (dernier HTTP ${_rv_code:-illisible}) : la riposte reste OUVERTE au central, qui la re-servira, et $(consequence_de_la_re_presentation "$_rj_id") : $(reponse_bornee "$_rv_corps")" >&2
         else
           printf '%s\t%s\t%s\n' "$_rj_id" "$_rj_tours" "$_rj_corps" >> "$_rj_nouveau"
           echo "respond: #$_rj_id verdict toujours NON REMIS au tour $_rj_tours/$REJEU_TOURS (HTTP ${_rv_code:-illisible}), garde pour le tour suivant" >&2
@@ -813,6 +1126,7 @@ post_result() {          # id status result (auth par stdin, jamais en argv)
         case "$_rv_corps" in
           *'"ok":false'*) echo "respond: #$1 verdict NON RETENU par le central (riposte deja close, ou d un autre hote) : $(reponse_bornee "$_rv_corps")" >&2 ;;
         esac
+        registre_retirer "$1"
         return 0 ;;
       503|502|504|000) ;;
       '') echo "respond: #$1 remise du verdict ILLISIBLE : aucun statut HTTP lu, la riposte peut rester ouverte au central" >&2
@@ -979,6 +1293,15 @@ traiter_action() {
     echo "respond: #$id NON reexecutee : son verdict attend deja sa remise ($REJEU_FICHIER)" >&2
     return 0
   fi
+  # `P10.21-n` — deja FAITE (registre d execution) : son verdict est un fait, il est remis de nouveau AVANT tout
+  # controle d avant execution (une liste d epargne changee depuis ne le contredit pas) ; rien n est execute.
+  _ta_genre=$(registre_jeton "$REGISTRE_GENRE_OCTETS" "$kind"); _ta_cible=$(registre_jeton "$REGISTRE_CIBLE_OCTETS" "$target")
+  registre_lire "$id" "$_ta_genre" "$_ta_cible"
+  if [ "$REG_ETAT" = faite ]; then
+    echo "respond: #$id NON reexecutee : deja FAITE (registre d execution), verdict enregistre RE-REMIS ($REG_STATUT)" >&2
+    post_result "$id" "$REG_STATUT" "$REG_RESULTAT"
+    return 0
+  fi
   if [ "$kind" = ban_ip ]; then
     case "$_ta_duree" in
       '?') EFF_DUR="$DUR"; DUR_PROV="PLUME_BAN_DURATION de l hote, duree NON servie : $DUREE_NON_SERVIE" ;;
@@ -1022,14 +1345,43 @@ traiter_action() {
     echo "respond: [dry-run] #$id $cmd" >&2
     return 0
   fi
-  if enforce "$kind" "$target"; then
-    post_result "$id" done "$cmd | $OUT"
+  # `P10.21-n` — la trace est ecrite AVANT `enforce` ; sans elle (registre indisponible), la riposte part quand meme.
+  _ta_reprise=0; _ta_protege=1
+  case "$REG_ETAT" in
+    commencee)
+      _ta_reprise=1
+      echo "respond: #$id REPRISE : une execution precedente a ete interrompue avant son issue (registre d execution), la riposte est rejouee" >&2 ;;
+    illisible) _ta_protege=0; REG_CAUSE="registre d execution illisible ($REGISTRE_FICHIER)" ;;
+    autre)
+      echo "respond: #$id identifiant deja inscrit au registre d execution pour une AUTRE riposte (genre ou cible differents) : entree perimee remplacee" >&2
+      registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || _ta_protege=0 ;;
+    *) registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || _ta_protege=0 ;;
+  esac
+  if [ "$_ta_protege" = 0 ]; then
+    echo "respond: #$id protection contre la REEXECUTION ABSENTE pour cette riposte ($REG_CAUSE) : elle est executee quand meme (un ban est une defense, il ne se suspend pas pour un etat local)" >&2
+  fi
+  if enforce "$kind" "$target"; then _ta_statut=done; else _ta_statut=failed; fi
+  # Levee reprise qui ne trouve l adresse nulle part (nft seul, rien retire, AUCUN refus) : la premiere execution a
+  # pu la lever, l issue n est pas un echec — elle est dite telle quelle. Un refus de retrait reste `failed`.
+  if [ "$_ta_reprise" = 1 ] && [ "$_ta_statut" = failed ] && [ "$kind" = unban_ip ] && [ "$UA_RIEN_RETIRE" = 1 ]; then
+    _ta_statut=done; OUT="$UA_OUT_AVANT_VERDICT ; $PHRASE_ABSENTE_APRES_INTERRUPTION"
+  fi
+  _ta_resultat="$cmd | $OUT"
+  if [ "$_ta_reprise" = 1 ]; then _ta_resultat="$PHRASE_REPRISE : $_ta_resultat"; fi
+  if [ "$_ta_protege" = 1 ] && ! registre_marquer_faite "$id" "$_ta_genre" "$_ta_cible" "$_ta_statut" "$_ta_resultat"; then
+    echo "respond: #$id issue NON enregistree au registre d execution (ecriture refusee) : la riposte y reste commencee ; si le central la re-sert, elle sera REPRISE" >&2
+  fi
+  post_result "$id" "$_ta_statut" "$_ta_resultat"
+  if [ "$_ta_statut" = done ]; then
     echo "respond: #$id applique ($cmd)" >&2
   else
-    post_result "$id" failed "$cmd | $OUT"
     echo "respond: #$id ECHEC ($cmd): $OUT" >&2
   fi
 }
+
+# --- `P10.21-n` : une seule execution a la fois ; les lignes illisibles du registre sont ecartees et dites ---
+prendre_le_verrou
+registre_assainir
 
 # --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---
 rejouer_les_verdicts_retenus
@@ -1037,7 +1389,7 @@ rejouer_les_verdicts_retenus
 # --- recupere la file dans un fichier borne ; statut et type de contenu lus par `-w` ---
 _file_corps=$(mktemp 2>/dev/null) || { echo "respond: file d actions NON LUE : fichier temporaire refuse (mktemp) — aucune action recuperee ni executee" >&2; exit 3; }
 _file_enreg=$(mktemp 2>/dev/null) || { rm -f "$_file_corps"; echo "respond: file d actions NON LUE : fichier temporaire refuse (mktemp) — aucune action recuperee ni executee" >&2; exit 3; }
-trap 'rm -f "$_file_corps" "$_file_enreg"' EXIT
+trap 'rm -f "$_file_corps" "$_file_enreg"; rendre_le_verrou' EXIT
 if [ -n "$LECTEUR_JSON" ]; then
   if _file_w=$(lire_la_file "$_file_corps" -H "Accept: $TYPE_FILE_JSON"); then _file_rc=0; else _file_rc=$?; fi
 else

@@ -292,17 +292,98 @@ elif command -v cscli >/dev/null 2>&1; then cscli_cmd() { cscli "$@"; }; CSCLI_O
 elif command -v k3s >/dev/null 2>&1 && k3s kubectl -n "$NS" get deploy "$LAPI" >/dev/null 2>&1; then cscli_cmd() { k3s kubectl -n "$NS" exec "deploy/$LAPI" -- cscli "$@"; }; CSCLI_OK=1
 elif command -v kubectl >/dev/null 2>&1 && kubectl -n "$NS" get deploy "$LAPI" >/dev/null 2>&1; then cscli_cmd() { kubectl -n "$NS" exec "deploy/$LAPI" -- cscli "$@"; }; CSCLI_OK=1
 else cscli_cmd() { return 1; }; CSCLI_OK=0; fi
+# `P11.25-a` — UN RETRAIT nft EST CLASSE COMME LE DEMON LE CLASSE (daemon/src/handlers/actions.rs,
+# `MESSAGE_NFT_D_ABSENCE`, `classer_le_retrait_nft`). `nft delete element` rend le meme code (1) pour une adresse
+# absente et pour tout autre refus : seule sa SORTIE D ERREUR les distingue, lue sous `LC_ALL=C LANG=C` (le texte de
+# `strerror` est traduit hors locale C, et un message traduit n est PAS reconnu : il reste un refus).
+#   code 0                                              -> `retiree`  (l adresse etait dans le set, elle n y est plus) ;
+#   code 1 a 125 ET la sortie d erreur porte le message  -> `absente`  (l adresse, ou le set, n y etait pas) ;
+#   tout le reste                                       -> `refus`    (autre message, message sur la sortie STANDARD
+#     seulement, code 126/127 d une commande qui ne part pas, code > 128 d un nft tue par un signal meme apres avoir
+#     ecrit le message) : l adresse peut rester bannie dans ce set.
+# La sortie standard de nft (vide pour `delete element` sans `--echo`) part au journal de l unite, jamais dans la
+# decision ni dans le resultat. Un refus est remis avec le set, le code et ce que nft a ecrit, borne a
+# NFT_PART_DE_RETRAIT_OCTETS octets par set (coupe sur un caractere, `[...]` dit la coupe) : quand nft est le seul
+# backend, le plan, la part du premier set et l etiquette du second (set et code) tiennent sous la borne de 500
+# caracteres que le central applique au resultat, si bien qu un premier set bavard ne masque pas le second. Les
+# sorties de fail2ban et de CrowdSec, qui les precedent, ne sont pas bornees ici.
+NFT_MESSAGE_D_ABSENCE="No such file or directory"
+NFT_PART_DE_RETRAIT_OCTETS=120
+# Tout caractere de controle (pas seulement le saut de ligne) devient une espace : le resultat part en JSON, et `esc`
+# n echappe que le saut de ligne, le retour chariot et la tabulation ; un autre caractere de controle brut (sequence
+# de couleur, cloche) ferait refuser le corps par le central, et le verdict ne serait jamais remis.
+# <code> <sortie d erreur de nft> -> 0 si c est l absence, sinon 1 et NFT_REFUS_TEXTE = « (cause) : ecrit borne »
+nft_lire_l_echec() {
+  _cr_code=$1
+  case "$2" in
+    *"$NFT_MESSAGE_D_ABSENCE"*) if [ "$_cr_code" -lt 126 ]; then return 0; fi ;;
+  esac
+  _cr_cause="code $_cr_code"
+  if [ "$_cr_code" -gt 128 ]; then _cr_cause="$_cr_cause, nft interrompu par le signal $((_cr_code - 128))"; fi
+  _cr_entier=$(printf '%s' "$2" | tr '\000-\037' ' ')
+  _cr_coupe=$(printf '%s\n' "$_cr_entier" | coupe_sur_caractere "$NFT_PART_DE_RETRAIT_OCTETS")
+  if [ "$_cr_coupe" != "$_cr_entier" ]; then _cr_coupe="$_cr_coupe [...]"; fi
+  NFT_REFUS_TEXTE="($_cr_cause) : $_cr_coupe"
+  return 1
+}
+# <set> <adresse> -> NFT_RETRAIT (`retiree` | `absente` | `refus`) et NFT_RETRAIT_TEXTE (texte remis pour ce set)
+nft_classer_le_retrait() {
+  if NFT_RETRAIT_TEXTE=$(LC_ALL=C LANG=C nft delete element inet plume "$1" "{ $2 }" 3>&2 2>&1 1>&3 3>&-); then
+    NFT_RETRAIT=retiree; return 0
+  else
+    _cr_retour=$?
+  fi
+  if nft_lire_l_echec "$_cr_retour" "$NFT_RETRAIT_TEXTE"; then NFT_RETRAIT=absente; return 0; fi
+  NFT_RETRAIT=refus
+  NFT_RETRAIT_TEXTE="REFUS du retrait dans $1 $NFT_REFUS_TEXTE"
+}
+# `P11.25-a` — UNE SONDE (`nft list table|set ...`) EST LUE COMME UN RETRAIT : seule l absence MESUREE (code 1 a 125 et
+# le message, sous `LC_ALL=C LANG=C`) dit que l objet n existe pas, et seulement alors le retrait n est pas tente. Une
+# sonde REFUSEE (autre message, signal, commande qui ne part pas) ne dit rien de l objet : le retrait est TENTE et son
+# classement tranche, comme le demon qui ne sonde pas ; la sonde refusee est dite au journal de l unite. Sa sortie
+# standard (la table listee) est jetee.
+# <libelle de l objet> <arguments de `nft list`> -> NFT_SONDE (`present` | `absent` | `refus`)
+nft_sonder() {
+  _so_objet=$1; shift
+  if _so_ecrit=$(LC_ALL=C LANG=C nft list "$@" 2>&1 >/dev/null); then NFT_SONDE=present; return 0; else _so_retour=$?; fi
+  if nft_lire_l_echec "$_so_retour" "$_so_ecrit"; then NFT_SONDE=absent; return 0; fi
+  NFT_SONDE=refus
+  echo "respond: SONDE nft REFUSEE sur $_so_objet $NFT_REFUS_TEXTE ; le retrait est tente, son classement tranche" >&2
+}
 # UNBAN = best-effort sur TOUS les backends (une IP peut être bannie n'importe où : fail2ban/crowdsec/nft).
+# `P11.25-a` — LE VERDICT, backends dans l ordre d avant, chacun tente :
+#   - un retrait nft `refus` (sur `blocklist` ou sur `blocklist_ttl`) -> `failed`, QUOI QU AIENT RENDU les autres
+#     backends : l adresse peut rester bannie sur cet hote, un `done` dirait le contraire au central ;
+#   - nft seul backend present, aucun retrait `retiree` (deux absences, ou une absence et le set a duree inexistant)
+#     -> `failed`, `LEVEE NON FAITE` : rien n a ete leve (regle du demon, `verdict_des_deux_retraits_nft`) ;
+#   - DECISION : nft n a rien retire MAIS fail2ban ou CrowdSec etaient presents -> `done`, comme avant. Leurs
+#     retraits gardent leur `|| true` : leur code de sortie n est pas mesure, ils ont pu lever l adresse, et un
+#     `failed` affirmerait un echec que rien n a lu. Ce `done` dit « tente partout, aucun refus lu », pas « leve » ;
+#   - nft absent de l hote : rien n est sonde ni tente ; table `inet plume` absente : nft n est pas tente ; set a duree
+#     absent : son retrait n est pas tente (rien n existe a retirer, ce n est pas un refus) ; une sonde REFUSEE n est
+#     pas une absence, le retrait est tente et classe (cf. `nft_sonder`) ; aucun backend du tout -> `failed`, comme avant.
+# Le texte d un retrait `retiree` ou `absente` est celui d avant, a l octet.
 unban_all() {
-  OUT=""
-  if command -v fail2ban-client >/dev/null 2>&1; then OUT="$OUT [f2b]$(fail2ban-client unban "$1" 2>&1 || true)"; fi
-  if [ "$CSCLI_OK" = 1 ]; then OUT="$OUT [cs]$(cscli_cmd decisions delete -i "$1" 2>&1 || true)"; fi
-  if nft list table inet plume >/dev/null 2>&1; then
-    r=$(nft delete element inet plume blocklist "{ $1 }" 2>&1 || true); OUT="$OUT [nft]$r"
-    # `P11.25-a` : les bans a duree vivent dans le second set (cf. `ensure_nft`) ; best-effort aussi.
-    if nft list set inet plume blocklist_ttl >/dev/null 2>&1; then r=$(nft delete element inet plume blocklist_ttl "{ $1 }" 2>&1 || true); OUT="$OUT [nft-ttl]$r"; fi
+  OUT=""; _ua_autres=0; _ua_refus=0; _ua_retrait=0
+  if command -v fail2ban-client >/dev/null 2>&1; then _ua_autres=1; OUT="$OUT [f2b]$(fail2ban-client unban "$1" 2>&1 || true)"; fi
+  if [ "$CSCLI_OK" = 1 ]; then _ua_autres=1; OUT="$OUT [cs]$(cscli_cmd decisions delete -i "$1" 2>&1 || true)"; fi
+  if command -v nft >/dev/null 2>&1; then nft_sonder "la table inet plume" table inet plume; else NFT_SONDE=absent; fi
+  if [ "$NFT_SONDE" != absent ]; then
+    nft_classer_le_retrait blocklist "$1"; OUT="$OUT [nft]$NFT_RETRAIT_TEXTE"
+    case "$NFT_RETRAIT" in refus) _ua_refus=1 ;; retiree) _ua_retrait=1 ;; esac
+    # Les bans a duree vivent dans le second set (cf. `ensure_nft`) : son retrait est classe de meme.
+    nft_sonder "le set blocklist_ttl" set inet plume blocklist_ttl
+    if [ "$NFT_SONDE" != absent ]; then
+      nft_classer_le_retrait blocklist_ttl "$1"; OUT="$OUT [nft-ttl]$NFT_RETRAIT_TEXTE"
+      case "$NFT_RETRAIT" in refus) _ua_refus=1 ;; retiree) _ua_retrait=1 ;; esac
+    fi
   fi
   [ -n "$OUT" ] || { OUT='aucun backend de ban disponible'; return 1; }
+  if [ "$_ua_refus" = 1 ]; then return 1; fi
+  # Ici OUT n est pas vide : sans fail2ban ni CrowdSec, c est que nft a ete tente.
+  if [ "$_ua_retrait" = 0 ] && [ "$_ua_autres" = 0 ]; then
+    OUT="$OUT ; LEVEE NON FAITE : adresse absente de chaque set nft tente, rien n a ete retire"; return 1
+  fi
   return 0
 }
 # ================================================================================================

@@ -180,7 +180,14 @@ mod lectures_des_panneaux_et_cles_de_runbook_en_trois_issues {
         for (quoi, p) in cas {
             for (qui, au) in [("bob", &bob), ("admin", &adm)] {
                 let r = aj4_donnees(&st, au, p).await;
-                aj4_juger_503(&format!("{quoi} ({qui})"), &r, CAUSE_PANNEAU_NON_LU);
+                // INVERSÉ (`P11.25-f`, vague CH) : un propriétaire de tableau BLOB est une ligne LUE dont le droit ne
+                // s'établit pas — pour bob, la réponse d'un panneau absent (403 « panneau inaccessible », corps compris),
+                // plus le 503 d'une lecture ratée ; l'administrateur garde le 503 d'avant (aucune exécution ajoutée pour lui).
+                if quoi == "tableau illisible" && qui == "bob" {
+                    assert_eq!((r.0, &r.2), (403, &json!({ "error": "panneau inaccessible" })), "{quoi} ({qui}) : la réponse d'un panneau absent : {}", r.1);
+                } else {
+                    aj4_juger_503(&format!("{quoi} ({qui})"), &r, CAUSE_PANNEAU_NON_LU);
+                }
                 assert!(st.panel_refresh_inflight.lock().is_empty(), "{quoi} ({qui}) : aucun rafraîchissement armé");
                 assert_eq!(aj4_compte(&st, &format!("SELECT COUNT(*) FROM panel_cache WHERE panel_id={p}")), 0, "{quoi} ({qui}) : rien n'est mis en cache");
             }

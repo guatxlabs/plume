@@ -44,6 +44,8 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
 
     /// Ce que rusqlite écrit quand une colonne n'a pas le type demandé : la cause du moteur d'une lecture ratée.
     const AE4_MOTEUR: &str = "Invalid column type";
+    /// `P11.25-f` (vague CH) — la cause d'une lecture refusée par l'autorisateur, telle que SQLite l'écrit.
+    const AE4_LECTURE_REFUSEE: &str = "access to dashboard.owner is prohibited";
     const AE4_ABSENT: i64 = 987_654;
     const AE4_JETON: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
@@ -222,7 +224,7 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
         assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM dashboard_snapshot WHERE id={sid}")), 0);
     }
 
-    /// CE QU'IL TIENT (suppression d'un tableau de bord) : absent, `404` sans corps ; propriétaire illisible, `503` nommé
+    /// CE QU'IL TIENT (suppression d'un tableau de bord) : absent, `404` sans corps ; propriétaire NON LU (lecture refusée par l'autorisateur ; INVERSÉ vague CH, un propriétaire BLOB n'est plus une lecture ratée), `503` nommé
     /// `CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU` en entier (vague AF : il était NU) pour la propriétaire et l'admin — ni `403` ni suppression ; le tableau et son panneau
     /// restent. Contrôle : propriétaire relisible, un tiers reçoit `403`, la propriétaire supprime (`204`).
     /// MUTATIONS : `AE4_DASH_LECTURE_EN_404`, `AE4_DASH_ABSENT_EN_503`, `AE4_DASH_LECTURE_FAIT_LE_GESTE`.
@@ -236,16 +238,23 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
 
         let did = ae4_tableau(&st, "d-ae4-dash", "shared");
         let pid = ae4_panneau(&st, did, None);
-        ae4_sql(&st, &format!("UPDATE dashboard SET owner=X'00' WHERE id={did};"));
+        // INVERSÉ (`P11.25-f`, vague CH) : un propriétaire BLOB n'est plus une lecture ratée — la ligne est lue, le droit ne
+        // s'établit pas, la propriétaire en texte d'avant reçoit le 404 d'un absent et l'administrateur supprime
+        // (routes_du_tableau_au_droit_non_etabli_repondent_comme_un_absent.rs). La lecture ratée jouée ici est VRAIE : la
+        // lecture de `dashboard.owner` refusée par l'autorisateur.
+        st.db.lock().authorizer(Some(|ctx: rusqlite::hooks::AuthContext<'_>| match ctx.action {
+            rusqlite::hooks::AuthAction::Read { table_name: "dashboard", column_name: "owner" } => rusqlite::hooks::Authorization::Deny,
+            _ => rusqlite::hooks::Authorization::Allow,
+        }));
         for (qui, au) in [("propriétaire", &alice), ("admin", &adm)] {
             // INVERSÉ (vague AF) : le 503 était nu, il porte sa cause nommée.
             let r = ae4_reponse(dash_delete(State(st.clone()), Extension(au.clone()), Path(did)).await).await;
-            ae4_juger_503(&format!("propriétaire illisible ({qui})"), &r, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU);
+            ae4_juger_503(&format!("propriétaire non lu ({qui})"), &r, CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU);
             assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM dashboard WHERE id={did}")), 1, "{qui} : le tableau reste");
             assert_eq!(ae4_compte(&st, &format!("SELECT COUNT(*) FROM panel WHERE id={pid}")), 1, "{qui} : son panneau reste");
         }
+        st.db.lock().authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>);
 
-        ae4_sql(&st, &format!("UPDATE dashboard SET owner='alice' WHERE id={did};"));
         let (statut, corps, _) = ae4_reponse(dash_delete(State(st.clone()), Extension(bob.clone()), Path(did)).await).await;
         assert_eq!((statut, corps.as_str()), (403, ""), "contrôle : un tiers est refusé, sans corps");
         assert_eq!(dash_delete(State(st.clone()), Extension(alice.clone()), Path(did)).await.status(), StatusCode::NO_CONTENT, "contrôle : la propriétaire supprime");
@@ -359,8 +368,14 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
             println!("AE4-STATUT-PANEL:{}:{pid}:{}", r.0, r.2["id"].as_str().unwrap_or(""));
             eprintln!("{PHASE}dash");
             let ddid = ae4_tableau(&st, "d-ae4-journal-dash", "shared");
-            ae4_sql(&st, &format!("UPDATE dashboard SET owner=X'00' WHERE id={ddid};"));
+            // INVERSÉ (`P11.25-f`, vague CH) : un propriétaire BLOB n'est plus une lecture ratée (l'administrateur
+            // supprime) ; la lecture ratée est VRAIE, refusée par l'autorisateur.
+            st.db.lock().authorizer(Some(|ctx: rusqlite::hooks::AuthContext<'_>| match ctx.action {
+                rusqlite::hooks::AuthAction::Read { table_name: "dashboard", column_name: "owner" } => rusqlite::hooks::Authorization::Deny,
+                _ => rusqlite::hooks::Authorization::Allow,
+            }));
             let r = ae4_reponse(dash_delete(State(st.clone()), Extension(adm.clone()), Path(ddid)).await).await;
+            st.db.lock().authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>);
             println!("AE4-STATUT-DASH:{}:{ddid}:{}", r.0, r.2["id"].as_str().unwrap_or(""));
             eprintln!("{PHASE}vue");
             let (vue, _) = ae4_vue(&st);
@@ -413,7 +428,8 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
             ("revoc", "AE4-STATUT-REVOC:", "[dashboards] WARN instantané #{} NON lu pour la révocation, rien n'est supprimé (", "COALESCE(created_by,'')"),
             ("panel", "AE4-STATUT-PANEL:", "[dashboards] WARN panneau #{} NON lu pour la suppression, rien n'est supprimé (", "dashboard_id"),
             // INVERSÉ (vague AF) : ces deux lectures avaient un 503 NU et une ligne sans identifiant de corrélation.
-            ("dash", "AE4-STATUT-DASH:", "[dashboards] WARN tableau de bord #{} NON lu pour la suppression, rien n'est supprimé (", "COALESCE(owner,'')"),
+            // INVERSÉ (`P11.25-f`, vague CH) : la cause est celle d'une lecture refusée par l'autorisateur (colonne vide).
+            ("dash", "AE4-STATUT-DASH:", "[dashboards] WARN tableau de bord #{} NON lu pour la suppression, rien n'est supprimé (", ""),
             ("vue", "AE4-STATUT-VUE:", "[dashboards] WARN vue #{} NON lue pour la suppression, rien n'est délié ni supprimé (", "COALESCE(owner,'')"),
         ];
         assert!(nommees.len() >= 6, "plancher : les six lectures à corps nommé");
@@ -421,7 +437,8 @@ mod lecture_ratee_des_tableaux_de_bord_jamais_404 {
             let st = marque(m);
             assert_eq!(st[0], "503", "contrôle : phase {nom}, lecture ratée servie 503 : {st:?}");
             assert!(st[2].starts_with("plume-e"), "contrôle : phase {nom}, identifiant servi : {st:?}");
-            let attendue = format!("{}{}) : {}", tete.replace("{}", &st[1]), st[2], moteur(colonne));
+            let cause = if colonne.is_empty() { AE4_LECTURE_REFUSEE.to_string() } else { moteur(colonne) };
+            let attendue = format!("{}{}) : {}", tete.replace("{}", &st[1]), st[2], cause);
             let lignes = phase(nom);
             assert_eq!(lignes, [attendue], "phase {nom} : une ligne et une seule, en entier (sujet, corrélation servie, cause du moteur)");
         }

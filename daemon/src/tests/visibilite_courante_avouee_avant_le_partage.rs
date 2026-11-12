@@ -98,9 +98,9 @@ async fn vca_partager(st: &AppState, au: &AuthUser, did: i64, corps: Value) -> (
 
 /// CE QU'IL TIENT : sur un tableau de bord dont la visibilité courante a été LUE, la porte de
 /// `P11.20-m` joue (409 qui nomme le panneau privé) et le geste passe une fois le panneau partagé
-/// (contrôle positif compté deux fois dans le corps) ; sur une ligne illisible et sur une table
-/// retirée, `dash_update` REFUSE par un 503 nommé — et rien du corps n'est appliqué, pas même le
-/// renommage envoyé dans la même requête.
+/// (contrôle positif compté deux fois dans le corps) ; sur une visibilité BLOB, l'administrateur voit
+/// le geste JUGÉ (409, `P11.25-f`) et une table retirée rend le 503 nommé — et rien du corps n'est
+/// appliqué, pas même le renommage envoyé dans la même requête.
 ///
 /// CE QU'IL NE TIENT PAS : il ne juge pas ce que la console peint de ce 503, et il ne dit rien de
 /// `dash_editable`, dont le `Err(_) => false` rend un 403 sur la même panne (famille `P10.20-l`).
@@ -135,10 +135,18 @@ async fn p10_20k_un_tableau_de_bord_dont_la_visibilite_n_est_pas_lue_n_est_pas_p
     let (c, _) = sp_panneau(&st, &alice, did2, "second secret", "private").await;
     assert_eq!(c, 200);
     vca_ecrire(&st, &format!("UPDATE dashboard SET visibility=x'FF' WHERE id={did2};"));
+    // INVERSÉ (`P11.25-f`, vague CH) : pour alice, propriétaire en texte, une visibilité BLOB est un droit qui ne s'établit
+    // pas — la réponse d'un tableau absent (404 nu), rien n'est écrit. L'administrateur passe la porte ; la visibilité BLOB
+    // a été LUE et n'est pas `shared` : elle vaut « pas encore commune », le geste de partage est JUGÉ par la porte de
+    // `P11.20-m` (409 qui nomme le panneau privé) au lieu du 503 d'avant. Le repli sur `shared` reste rouge ici : il
+    // ferait disparaître le geste et la route rendrait 204.
+    let (statut, absent) = vca_partager(&st, &alice, did2, json!({ "name": "renommé au passage", "visibility": "shared" })).await;
+    assert_eq!((statut, absent), (404, json!({ "_texte": "" })), "alice : la réponse d'un tableau absent");
+    let adm = sp_au("adm", "admin");
     let (statut, avoue) =
-        vca_partager(&st, &alice, did2, json!({ "name": "renommé au passage", "visibility": "shared" })).await;
-    assert_eq!(statut, 503, "lecture non faite : la route REFUSE au lieu de conclure « déjà partagé » : {avoue}");
-    assert_eq!(avoue["error"], json!(panneau_resolu::CAUSE_VISIBILITE_NON_LUE), "le refus NOMME sa cause : {avoue}");
+        vca_partager(&st, &adm, did2, json!({ "name": "renommé au passage", "visibility": "shared" })).await;
+    assert_eq!(statut, 409, "visibilité BLOB : la route JUGE le partage au lieu de conclure « déjà partagé » : {avoue}");
+    assert!(vca_phrase(&avoue).contains("le panneau « second secret »"), "et la porte nomme l'élément qui retient : {avoue}");
     assert_eq!(
         vca_type_de_visibilite(&st, "dashboard", did2),
         "blob",

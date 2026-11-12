@@ -44,8 +44,6 @@ mod objet_de_tableau_de_bord_illisible_repond_comme_un_absent {
     const CB2_MDP: &str = "cb2pw1234567";
     /// Un identifiant qu'aucun objet ne porte.
     const CB2_ABSENT: i64 = 999_999;
-    /// Le 503 de `dash_delete` sur une lecture non faite (`CAUSE_TABLEAU_DE_BORD_NON_SUPPRIME_NON_LU`), écrit en littéral.
-    const CB2_TABLEAU_NON_SUPPRIME_NON_LU: &str = "TABLEAU DE BORD NON SUPPRIMÉ : la base n'a pas rendu ce tableau de bord (son propriétaire) — ce n'est PAS une absence, c'est une lecture qui n'a pas eu lieu, et le droit de le supprimer n'est pas jugé. RIEN n'est supprimé : le tableau de bord et ses panneaux sont intacts. Réessayez ; si le refus persiste, la table des tableaux de bord est illisible.";
     /// Les deux refus du SQL brut, écrits en littéral.
     const CB2_SQL_BRUT: &str = "SQL brut réservé à l'administrateur (utilisez GXQL)";
 
@@ -423,8 +421,8 @@ mod objet_de_tableau_de_bord_illisible_repond_comme_un_absent {
 
     /// CE QU'IL TIENT : avant le 404 (tableau privé d'alice) et avant le 403 (tableau commun d'alice), `dash_delete`
     /// prépare UN SEUL `SELECT` : propriétaire et visibilité viennent du même énoncé (autorisateur qui compte, mode 0 :
-    /// `st.db`). Puis, par la route : une visibilité illisible sert à alice, à bob et à l'administrateur le 503 nommé
-    /// d'avant (clés exactes `error` et `id`, phrase entière), et le tableau reste.
+    /// `st.db`). Puis, par la route (INVERSÉ, vague CH) : une visibilité BLOB rend à alice et à bob le 404 nu d'un
+    /// identifiant absent, le tableau reste ; l'administrateur le supprime.
     /// MUTATION : `CB2_DD_SECONDE_LECTURE` (la visibilité relue par un second énoncé).
     #[tokio::test]
     async fn cb2_la_suppression_d_un_tableau_decide_en_une_lecture() {
@@ -455,12 +453,19 @@ mod objet_de_tableau_de_bord_illisible_repond_comme_un_absent {
 
         cb2_ecrire(&st, &format!("UPDATE dashboard SET visibility=X'00' WHERE id={};", prive.tableau));
         let addr = router_serve(st.clone()).await;
-        for qui in ["alice", "bob", "adm"] {
+        // INVERSÉ (`P11.25-f`, vague CH) : une visibilité BLOB est une ligne LUE dont le droit ne s'établit pas, plus une
+        // lecture ratée — alice (propriétaire en texte) et bob reçoivent le 404 nu d'un identifiant absent et le tableau
+        // reste ; l'administrateur le supprime (la réparation). La vraie lecture ratée garde son 503 nommé (témoins AE4 et
+        // routes_du_tableau_au_droit_non_etabli_repondent_comme_un_absent.rs).
+        let (code_absent, absent) = cb2_envoi(addr, "alice", "DELETE", &format!("/api/dashboard/{CB2_ABSENT}"), "").await;
+        for qui in ["alice", "bob"] {
             let (code, t) = cb2_envoi(addr, qui, "DELETE", &format!("/api/dashboard/{}", prive.tableau), "").await;
-            let v: Value = serde_json::from_str(&cb2_corps_brut(&t)).unwrap_or_else(|_| panic!("({qui}) corps JSON attendu : {t}"));
-            let cles: Vec<&str> = v.as_object().map(|o| o.keys().map(|k| k.as_str()).collect()).unwrap_or_default();
-            assert_eq!((code, cles, v["error"].as_str()), (503, vec!["error", "id"], Some(CB2_TABLEAU_NON_SUPPRIME_NON_LU)), "({qui}) visibilité illisible : le 503 nommé d'avant : {t}");
+            assert_eq!((code, cb2_sans_date(&t)), (code_absent, cb2_sans_date(&absent)), "({qui}) visibilité illisible : la réponse d'un absent : {t}");
+            assert_eq!((code, cb2_corps_brut(&t).as_str()), (404, ""), "({qui}) visibilité illisible : 404 nu : {t}");
             assert_eq!(cb2_compte(&st, &format!("SELECT COUNT(*) FROM dashboard WHERE id={}", prive.tableau)), 1, "({qui}) le tableau reste");
         }
+        let (code, t) = cb2_envoi(addr, "adm", "DELETE", &format!("/api/dashboard/{}", prive.tableau), "").await;
+        assert_eq!((code, cb2_corps_brut(&t).as_str()), (204, ""), "(adm) visibilité illisible : supprimé : {t}");
+        assert_eq!(cb2_compte(&st, &format!("SELECT COUNT(*) FROM dashboard WHERE id={}", prive.tableau)), 0, "(adm) le tableau est retiré");
     }
 }

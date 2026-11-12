@@ -60,16 +60,20 @@ mod rollups_borne_d_identifiant_non_lue {
 
     /// Fixture : un event à `recent - 7200` agrégé par un passage nominal, puis le watermark ramené à `recent - 7200`
     /// (dernier passage il y a deux heures) : le passage suivant rattrape la bande `[recent - 7200, recent)`, qui porte un
-    /// bucket n=1. Un event chaud (`now - 10`) pour la fenêtre chaude. Rend l'identifiant couvert.
-    fn rbil_bande_a_rattraper(conn: &rusqlite::Connection, recent: i64) -> i64 {
+    /// bucket n=1. Un event chaud (`now - 10`) pour la fenêtre chaude. Rend l'identifiant couvert et le bucket de l'event
+    /// chaud, découpé de l'instant MÊME où il est écrit (une seconde lecture de `now()` peut tomber dans l'heure suivante :
+    /// à hh:00:01, l'heure où `rbil_recent()` réveille un témoin, `now() - 10` relu neuf secondes plus tard ne tombe plus
+    /// dans le même bucket).
+    fn rbil_bande_a_rattraper(conn: &rusqlite::Connection, recent: i64) -> (i64, i64) {
         conn.execute("INSERT INTO event(ts,host,source,severity,message) VALUES(?1,'rbil','sshd',1,'m')", params![recent - 7200]).unwrap();
         let id = conn.last_insert_rowid();
         rollup_events(conn);
         assert_eq!(rbil_n_du_bucket(conn, recent - 7200), 1, "prémisse : bucket agrégé par le passage nominal");
         assert_eq!(rbil_meta(conn, META_ROLLUP_COV_ID), Some(id.to_string()), "prémisse : couverture publiée");
         conn.execute("UPDATE meta SET value=?1 WHERE key=?2", params![(recent - 7200).to_string(), META_ROLLUP_WM]).unwrap();
-        conn.execute("INSERT INTO event(ts,host,source,severity,message) VALUES(?1,'rbil','sshd',1,'chaud')", params![now() - 10]).unwrap();
-        id
+        let ts_chaud = now() - 10;
+        conn.execute("INSERT INTO event(ts,host,source,severity,message) VALUES(?1,'rbil','sshd',1,'chaud')", params![ts_chaud]).unwrap();
+        (id, ts_chaud / 3600 * 3600)
     }
 
     /// Pose l'autorisateur qui refuse les lectures d'`event.id` faites avant `event.ts`. Rend le nombre de refus survenus
@@ -109,7 +113,6 @@ mod rollups_borne_d_identifiant_non_lue {
     #[test]
     fn rbil_une_borne_d_identifiant_non_lue_ne_retracte_ni_ne_publie() {
         let recent = rbil_recent();
-        let bucket_chaud = (now() - 10) / 3600 * 3600;
         // Contrôle : borne lue.
         {
             let (st, _p) = sp_state("rbil-lue");
@@ -123,7 +126,7 @@ mod rollups_borne_d_identifiant_non_lue {
         }
         let (st, _p) = sp_state("rbil-non-lue");
         let conn = st.db.lock();
-        let id = rbil_bande_a_rattraper(&conn, recent);
+        let (id, bucket_chaud) = rbil_bande_a_rattraper(&conn, recent);
         let refus = rbil_refuser_la_borne(&conn);
         rollup_events(&conn);
         conn.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);

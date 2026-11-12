@@ -133,15 +133,19 @@ mod rollups_buckets_resservis_et_retention_illisible {
     /// Les instants de la fixture d'`event_rollup`. `vieux` : UNE ligne isolée, quarante jours en arrière (le plancher),
     /// posée PILE au début de son heure (`ts == lo`, le bord bas de la bande : une sous-requête en `ts > ?1` ne la
     /// retrouverait pas) ; `hist` : un bucket à trente jours, n = 42, SANS aucune ligne d'`event` ; `vivant` : deux lignes
-    /// à `recent - 7200`, `ts` NON alignés sur l'heure (une sous-requête sans découpe horaire ne les retrouverait pas).
+    /// à `recent - 7200`, `ts` NON alignés sur l'heure (une sous-requête sans découpe horaire ne les retrouverait pas) ;
+    /// `chaud` : le bucket de la ligne de la fenêtre chaude, découpé de l'instant MÊME où elle est écrite (une seconde
+    /// lecture de `now()` peut tomber dans l'heure suivante : à hh:00:01, l'heure où `rbr_recent()` réveille un témoin,
+    /// `now() - 10` relu neuf secondes plus tard ne tombe plus dans le même bucket).
     struct Rbr {
         b_vieux: i64,
         b_hist: i64,
         b_vivant: i64,
+        b_chaud: i64,
     }
 
-    fn rbr_instants(recent: i64) -> Rbr {
-        Rbr { b_vieux: recent - 40 * JOUR, b_hist: recent - 30 * JOUR, b_vivant: recent - 7200 }
+    fn rbr_instants(recent: i64, ts_chaud: i64) -> Rbr {
+        Rbr { b_vieux: recent - 40 * JOUR, b_hist: recent - 30 * JOUR, b_vivant: recent - 7200, b_chaud: ts_chaud / 3600 * 3600 }
     }
 
     /// Les buckets du rollup d'avant le passage : l'histoire (42, bucket sans ligne d'`event`) ; dans les buckets
@@ -159,7 +163,8 @@ mod rollups_buckets_resservis_et_retention_illisible {
     /// Les trois déclencheurs de la reconstruction : watermark et couverture absents ; watermark présent et couverture
     /// absente ; bande sale (la vieille ligne arrivée APRÈS la couverture, sous le watermark).
     fn rbr_fixture(conn: &rusqlite::Connection, cas: &str, recent: i64) -> Rbr {
-        let i = rbr_instants(recent);
+        let ts_chaud = now() - 10; // UNE lecture d'horloge : la ligne chaude ET son bucket (`i.b_chaud`)
+        let i = rbr_instants(recent, ts_chaud);
         conn.execute("DELETE FROM meta WHERE key IN (?1, ?2)", params![META_ROLLUP_WM, META_ROLLUP_COV_ID]).unwrap();
         rbr_rollup_d_avant(conn, &i);
         match cas {
@@ -183,7 +188,7 @@ mod rollups_buckets_resservis_et_retention_illisible {
             }
             autre => panic!("cas inconnu {autre}"),
         }
-        rbr_event(conn, now() - 10); // fenêtre chaude
+        rbr_event(conn, ts_chaud); // fenêtre chaude
         i
     }
 
@@ -359,18 +364,20 @@ mod rollups_buckets_resservis_et_retention_illisible {
 
     /// Fixture de (e) : un passage nominal établit watermark et couverture, puis le watermark est ramené à `recent - 7200`
     /// (rattrapage `[recent - 7200, recent)` demandé) et une ligne périmée est posée dans ce bucket ; `avec_couverture` =
-    /// false retire la couverture. Rend (couverture d'avant, bucket du rattrapage).
-    fn rbr_rattrapage(conn: &rusqlite::Connection, recent: i64, avec_couverture: bool) -> (Option<String>, i64) {
+    /// false retire la couverture. Rend (couverture d'avant, bucket du rattrapage, bucket de la ligne chaude — découpé de
+    /// l'instant même où elle est écrite, pas d'une autre lecture de `now()`).
+    fn rbr_rattrapage(conn: &rusqlite::Connection, recent: i64, avec_couverture: bool) -> (Option<String>, i64, i64) {
         let b = recent - 7200;
         rbr_event(conn, b + 60);
         rollup_events(conn);
-        rbr_event(conn, now() - 10);
+        let ts_chaud = now() - 10;
+        rbr_event(conn, ts_chaud);
         conn.execute("UPDATE meta SET value=?1 WHERE key=?2", params![b.to_string(), META_ROLLUP_WM]).unwrap();
         conn.execute("UPDATE event_rollup SET host='rbr-perime' WHERE bucket=?1 AND source='sshd'", params![b]).unwrap();
         if !avec_couverture {
             conn.execute("DELETE FROM meta WHERE key=?1", params![META_ROLLUP_COV_ID]).unwrap();
         }
-        (rbr_meta(conn, META_ROLLUP_COV_ID), b)
+        (rbr_meta(conn, META_ROLLUP_COV_ID), b, ts_chaud / 3600 * 3600)
     }
 
     /// (e) Rétractation REFUSÉE : ni la bande (ligne périmée intacte), ni le watermark (`recent - 7200`), ni la couverture
@@ -381,11 +388,10 @@ mod rollups_buckets_resservis_et_retention_illisible {
     fn rbr_une_retractation_refusee_ne_touche_ni_la_bande_ni_le_watermark_ni_la_couverture() {
         let _env = VERROU_ENV_PROCESSUS.read(); // rollup_events lit cfg()
         let recent = rbr_recent();
-        let bucket_chaud = (now() - 10) / 3600 * 3600;
         {
             let (st, _p) = sp_state("rbr-e-controle");
             let conn = st.db.lock();
-            let (_, b) = rbr_rattrapage(&conn, recent, true);
+            let (_, b, _) = rbr_rattrapage(&conn, recent, true);
             rollup_events(&conn);
             assert_eq!(rbr_n_perime(&conn, b), 0, "contrôle : la bande est recomposée");
             assert_eq!(rbr_meta(&conn, META_ROLLUP_WM), Some(recent.to_string()), "contrôle : watermark à recent");
@@ -396,7 +402,7 @@ mod rollups_buckets_resservis_et_retention_illisible {
         for avec_couverture in [true, false] {
             let (st, _p) = sp_state(&format!("rbr-e-refus-{avec_couverture}"));
             let conn = st.db.lock();
-            let (cov_avant, b) = rbr_rattrapage(&conn, recent, avec_couverture);
+            let (cov_avant, b, bucket_chaud) = rbr_rattrapage(&conn, recent, avec_couverture);
             assert_eq!(cov_avant.is_some(), avec_couverture, "prémisse : couverture présente ou absente");
             let refus = rbr_refuser_la_retractation(&conn);
             rollup_events(&conn);
@@ -1019,7 +1025,6 @@ mod rollups_buckets_resservis_et_retention_illisible {
     fn rbr_une_purge_de_reconstruction_refusee_ne_publie_pas_la_couverture() {
         let _env = VERROU_ENV_PROCESSUS.read(); // rollup_events lit cfg()
         let recent = rbr_recent();
-        let bucket_chaud = (now() - 10) / 3600 * 3600;
         for refuse in [false, true] {
             let (st, _p) = sp_state(&format!("rbr-o-{refuse}"));
             let conn = st.db.lock();
@@ -1027,7 +1032,7 @@ mod rollups_buckets_resservis_et_retention_illisible {
             let refus = refuse.then(|| rbr_refuser_la_purge_d_event_rollup(&conn));
             rollup_events(&conn);
             conn.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
-            assert!(rbr_n(&conn, bucket_chaud) >= 1, "({refuse}) la fenêtre chaude reste servie");
+            assert!(rbr_n(&conn, i.b_chaud) >= 1, "({refuse}) la fenêtre chaude reste servie");
             if let Some(refus) = refus {
                 assert_eq!(refus.load(Ordering::Relaxed), 1, "prémisse : la purge de reconstruction est refusée une fois");
                 assert_eq!(rbr_meta(&conn, META_ROLLUP_COV_ID), None, "purge refusée : aucune couverture publiée");

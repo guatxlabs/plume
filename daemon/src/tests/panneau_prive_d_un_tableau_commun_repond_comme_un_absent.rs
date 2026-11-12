@@ -507,8 +507,9 @@ mod panneau_prive_d_un_tableau_commun_repond_comme_un_absent {
     ///   * une visibilité de panneau illisible (BLOB) : `panel_update` sert à bob, à alice et à l'administrateur le 503
     ///     `VISIBILITÉ COURANTE NON LUE` (clés exactes `error` et `id`, phrase entière), `panel_delete` le 503
     ///     `PANNEAU NON SUPPRIMÉ … NON LU` (clés exactes, phrase entière) ; le panneau reste, rien n'est écrit ;
-    ///   * un propriétaire de tableau illisible : bob sur le panneau privé reçoit le 503 `DROIT D'ÉDITION NON LU` des deux
-    ///     routes, pas le 404 (la lecture qui manque n'est pas une absence).
+    ///   * un propriétaire de tableau de type inattendu (BLOB) — INVERSÉ (`P11.25-f`, vague CG) : bob sur le panneau privé
+    ///     reçoit des deux routes la réponse d'un panneau absent, à l'octet, plus le 503 `DROIT D'ÉDITION NON LU` (la ligne
+    ///     est lue ; c'est le droit qui ne s'établit pas, `DroitDuTableau`).
     /// MUTATIONS : `CB3_SECONDE_LECTURE` (la visibilité du panneau relue par un second énoncé), `CB3_PD_VISIBILITE_REPLI`
     /// (une visibilité illisible lue comme `shared` à la suppression).
     #[tokio::test]
@@ -548,15 +549,19 @@ mod panneau_prive_d_un_tableau_commun_repond_comme_un_absent {
             assert_eq!(cb3_empreinte(&st), avant, "({qui}) visibilité illisible : rien n'est écrit");
         }
 
-        // Propriétaire du tableau illisible : la lecture qui manque n'est pas une absence.
+        // Propriétaire du tableau de TYPE INATTENDU (BLOB). INVERSÉ (`P11.25-f`, vague CG) : la ligne est lue, rien n'a
+        // manqué, mais le droit ne peut pas être établi — pour bob c'est un panneau absent, à l'octet, plus le 503
+        // `DROIT D'ÉDITION NON LU` d'une lecture qui n'a pas échoué. La vraie lecture ratée garde son 503 (témoins AG3).
         cb3_ecrire(&st, &format!("UPDATE panel SET visibility='private' WHERE id={}; UPDATE dashboard SET owner=X'00' WHERE id={};", jeu.prive, jeu.tableau));
         let avant = cb3_empreinte(&st);
         for (methode, corps) in [("POST", r#"{"title":"écrit"}"#), ("DELETE", "")] {
             let (code, t) = cb3_envoi(addr, "bob", methode, &format!("/api/panels/{}", jeu.prive), corps).await;
-            let v = cb3_json(&t);
-            assert_eq!((code, v["error"].as_str().map(|e| e.starts_with(CB3_DROIT_NON_LU))), (503, Some(true)), "(bob, {methode}) propriétaire illisible : 503 droit non lu, pas 404 : {t}");
+            let (code_absent, absent) = cb3_envoi(addr, "bob", methode, &format!("/api/panels/{CB3_ABSENT}"), corps).await;
+            assert_eq!((code, cb3_sans_date(&t)), (code_absent, cb3_sans_date(&absent)), "(bob, {methode}) propriétaire BLOB : la réponse d'un panneau absent, à l'octet");
+            assert_eq!(code, 404, "(bob, {methode}) propriétaire BLOB : 404, pas 503 : {t}");
+            assert!(!t.contains(CB3_DROIT_NON_LU), "(bob, {methode}) le 503 d'une lecture ratée n'est plus servi : {t}");
         }
-        assert_eq!(cb3_empreinte(&st), avant, "propriétaire illisible : rien n'est écrit");
+        assert_eq!(cb3_empreinte(&st), avant, "propriétaire BLOB : rien n'est écrit");
     }
 
     // -------------------------------------------------------------------------------------

@@ -24,8 +24,8 @@
 //      tableau, en visibilité du panneau -> la liste répond pour chaque lecteur, le référent n'est compté que par qui le
 //      lit (propriétaire textuel, administrateur), jamais par les octets du BLOB ; un entier ne se fabrique pas dans
 //      ces colonnes (affinité TEXT : relu `text`), contrôle écrit ;
-//  (B2) par le routeur : un panneau orphelin, créé par la route (l'administrateur ne lit pas le tableau à la création),
-//      répond à un éditeur et à une lectrice exactement comme un panneau absent sur chaque route de panneau (statut,
+//  (B2) par le routeur : un panneau orphelin (posé en base : depuis la vague CG l'administrateur ne le crée plus par la
+//      route, 404), répond à un éditeur et à une lectrice exactement comme un panneau absent sur chaque route de panneau (statut,
 //      en-têtes hors date, corps), rien n'est écrit ; l'administrateur garde la main (modification) ;
 //  (B3) appel direct : `texte_rendu_en_hex` refuse une longueur impaire, un non-hexadécimal et le signe `+` que
 //      `u8::from_str_radix` accepterait ; `referents_lus` rend une erreur sur un hexadécimal illisible, jamais un compte.
@@ -36,8 +36,7 @@
 //  CC3V_OUBLI_UNE_NATURE (l'oubli ne retire que la nature de BK), CC3V_OUBLI_AUCUNE, CC3V_OUBLI_TOUTES_BASES (A'').
 // CE QU'ILS NE TIENNENT PAS : la ligne ILLISIBLE d'un panneau qui compile (un rafraîchissement armé la remplace, non
 // bornée) ; les deux lignes qui portent l'identifiant servi dans le corps (NON LUE, résultat NON ÉCRIT en 503) : les
-// taire laisserait un identifiant servi sans sa ligne ; la création d'un orphelin par l'administrateur (`POST
-// /api/panels` sur un tableau absent rend 200) ; les registres sont perdus au redémarrage ; la borne est posée par
+// taire laisserait un identifiant servi sans sa ligne ; les registres sont perdus au redémarrage ; la borne est posée par
 // NATURE, pas par cause : dans une même nature, une cause qui change (le refus du moteur `{e}` du résultat direct non
 // écrit qui passe de « not authorized » à « disk full ») est tue jusqu'à une durée du cache du panneau.
 // =====================================================================================
@@ -517,8 +516,9 @@ mod lignes_de_panneau_bornees_et_restes_des_tableaux {
     // ---------------------------------------------------------------------------------
     // (B2) LE PANNEAU ORPHELIN.
     // ---------------------------------------------------------------------------------
-    /// CE QU'IL TIENT, par la route : l'administrateur crée un panneau sur un tableau absent (`POST /api/panels`, 200 :
-    /// l'orphelin est atteignable sans écriture directe en base) ; bob (éditeur) puis carol (lectrice) reçoivent sur
+    /// CE QU'IL TIENT, par la route : INVERSÉ (`P11.25-f`, vague CG) l'administrateur ne crée plus de panneau sur un
+    /// tableau absent (`POST /api/panels`, 404 « dashboard introuvable », aucune ligne), l'orphelin d'une base ancienne
+    /// est posé par écriture directe ; bob (éditeur) puis carol (lectrice) reçoivent sur
     /// l'orphelin, pour `POST /api/panels/{id}`, `DELETE /api/panels/{id}` et `GET /api/panels/{id}/data`, la réponse
     /// d'un identifiant de panneau absent de la même route, à l'octet (statut, en-têtes hors date, corps) ; le panneau
     /// relu est inchangé ; l'administrateur le modifie (204), décision écrite au site.
@@ -527,9 +527,13 @@ mod lignes_de_panneau_bornees_et_restes_des_tableaux {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
         let (st, _p) = cc3_etat("orphelin");
         let addr = router_serve(st.clone()).await;
+        // INVERSÉ (`P11.25-f`, vague CG) : l'administrateur ne crée plus de panneau sur un tableau absent (404 « dashboard
+        // introuvable », aucune ligne) ; l'orphelin d'une base ancienne se pose donc par écriture directe.
         let (code, t) = cc3_envoi(addr, "adm", "POST", "/api/panels", &format!(r#"{{"dashboard_id":{},"title":"orphelin","query":"search | stats count","is_soql":true}}"#, CC3_ABSENT - 1)).await;
-        assert_eq!(code, 200, "contrôle : l'administrateur crée un panneau sur un tableau absent : {t}");
-        let orphelin = cc3_corps(&t)["id"].as_i64().expect("contrôle : identifiant créé");
+        assert_eq!((code, t.contains("\r\n\r\n15\r\ndashboard introuvable\r\n0\r\n\r\n")), (404, true), "contrôle : l'administrateur ne crée plus de panneau sur un tableau absent : {t}");
+        assert_eq!(cc3_texte(&st, &format!("SELECT CAST(COUNT(*) AS TEXT) FROM panel WHERE dashboard_id={}", CC3_ABSENT - 1)), "0", "contrôle : aucun panneau écrit");
+        cc3_ecrire(&st, &format!("INSERT INTO panel(dashboard_id,title,query,is_soql) VALUES({},'orphelin','search | stats count',1);", CC3_ABSENT - 1));
+        let orphelin: i64 = cc3_texte(&st, &format!("SELECT CAST(id AS TEXT) FROM panel WHERE dashboard_id={}", CC3_ABSENT - 1)).parse().expect("contrôle : identifiant posé");
         assert_eq!(cc3_texte(&st, &format!("SELECT CAST(COUNT(*) AS TEXT) FROM dashboard WHERE id={}", CC3_ABSENT - 1)), "0", "contrôle : le tableau n'existe pas");
         let lire = |st: &AppState| cc3_texte(st, &format!("SELECT title||'|'||query||'|'||COALESCE(visibility,'') FROM panel WHERE id={orphelin}"));
         let avant = lire(&st);

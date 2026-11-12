@@ -730,15 +730,17 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
     // La capture lit la BASE COURANTE du tenant ET le registre de masques -> même db_path partout.
     let db_path = req_db_path(&st, &au);
     // 1) Le créateur peut-il VOIR ce dashboard ? (mêmes règles que dash_get : admin / partagé / propriétaire.)
-    let (name, owner, vis): (String, String, String) = {
+    // `P11.25-f` (vague CG) — le propriétaire et la visibilité se lisent en `DroitDuTableau` (dashboards.rs) : une valeur de
+    // type inattendu n'est plus une lecture ratée (503) ; le nom reste lu en texte, son échec garde le 503.
+    let (name, droit): (String, crate::handlers::dashboards::DroitDuTableau) = {
         crate::req_conn!(st, au, conn);
         // `P10.20-l` — trois issues : lu, la capture suit ; absent, le 404 d'avant (corps compris) ; lecture ratée, 503
         // `CAUSE_INSTANTANE_NON_CREE_TABLEAU_DE_BORD_NON_LU`, rien n'est capturé ni partagé.
         match conn
             .query_row(
-                "SELECT name,COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1",
+                "SELECT name,owner,visibility FROM dashboard WHERE id=?1",
                 params![dashboard_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, crate::handlers::dashboards::DroitDuTableau::de_la_ligne(r, 1, 2)?)),
             )
             .optional()
         {
@@ -753,10 +755,11 @@ pub(crate) async fn snapshot_create(State(st): State<AppState>, Extension(au): E
     };
     // `P11.20-n` — MÊME phrase que `dash_get` : un dashboard SANS propriétaire n'est plus « à nous ».
     // `P11.25-f` (vague CB) — un tableau que le créateur ne lit pas reçoit la réponse d'un tableau absent (ci-dessus), à
-    // l'octet, et rien n'est capturé : le 403 « dashboard privé » d'avant disait qu'il existe.
-    if !panneau_resolu::lisible_par(&owner, &vis, &au) {
+    // l'octet, et rien n'est capturé : le 403 « dashboard privé » d'avant disait qu'il existe. Vague CG : un droit de type
+    // inattendu aussi, sauf pour l'administrateur, qui capture sous un propriétaire vide (sa portée vient de son rôle).
+    let Some(owner) = droit.proprietaire_lu_par(&au).map(str::to_string) else {
         return (StatusCode::NOT_FOUND, "dashboard introuvable").into_response();
-    }
+    };
     let snap_name = b.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| name.clone());
     // 2) CAPTURE via le chemin MASQUÉ (jeu effectif du rôle du CRÉATEUR) — jamais de données hors de sa portée.
     let masks = effective_masks(&db_path, &au.role, &au.tenant, env);

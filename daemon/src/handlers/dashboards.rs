@@ -28,7 +28,8 @@ use crate::handlers::transaction_validee::{ouvrir_le_garde_du_geste, rendre_apre
 //
 // `P11.25-f` (vague CB) — `dash_editable` rend `Refusee` EXACTEMENT quand l'appelant ne lit pas le tableau : privé à un autre
 // compte, ou semé privé (sans propriétaire, que seul l'administrateur lit) ; un tableau commun est modifiable par tout
-// lecteur et l'administrateur ne lit pas la porte (`lisible_par`, panneau_resolu.rs).
+// lecteur, et l'administrateur lit tout tableau PRÉSENT (`lisible_par`, panneau_resolu.rs ; vague CG : un tableau absent
+// est `Absent` pour lui aussi, un droit de type inattendu est `Refusee` pour tout autre compte, `DroitDuTableau`).
 // Un refus de droit établi est donc un tableau que l'appelant ne LIT pas, et chaque appelant le sert comme son
 // identifiant absent — même statut, même corps — et n'écrit rien : un 403 disait l'existence du tableau privé d'autrui.
 // La porte d'un PANNEAU (`panneau_editable`, vague CB, panneau privé d'un tableau commun) rend aussi `Refusee` sur un
@@ -44,29 +45,83 @@ pub(crate) fn dash_editable(conn: &Connection, au: &AuthUser, dash_id: i64) -> P
     porte_et_portee_du_tableau(conn, au, dash_id).0
 }
 
+/// `P11.25-f` (vague CG) — LE DROIT D'UN TABLEAU TEL QUE LA BASE LE REND, en trois issues de ligne (la lecture ratée
+/// reste l'`Err` de [`lire_le_droit_du_tableau`]). `Etabli` : le propriétaire et la visibilité sont du TEXTE (ou NULL, lu
+/// `''` et `'shared'` comme le `COALESCE` d'avant). `NonEtabli` : l'une des deux colonnes porte une valeur d'un autre TYPE
+/// (BLOB, ou texte qui n'est pas de l'UTF-8) — la ligne est LUE, rien n'a échoué, mais le droit ne peut pas être jugé.
+/// La forme d'avant lisait les deux colonnes en `String` : une telle valeur faisait échouer la lecture typée et servait
+/// le 503 `CAUSE_DROIT_D_EDITION_NON_LU`, comme si la base n'avait pas répondu. Le type se décide sur la `ValueRef` que
+/// rend la base, jamais sur le texte d'une erreur. Une colonne `TEXT` convertit en texte l'entier ou le réel qu'on y
+/// écrit (affinité TEXT, sqlite3.c:89124-89133 de l'amalgamation vendorée) : seuls le BLOB et le texte qui n'est pas
+/// de l'UTF-8 y rendent le droit non établi.
+pub(crate) enum DroitDuTableau {
+    Absent,
+    Etabli { owner: String, visibility: String },
+    NonEtabli,
+}
+
+/// Le texte d'une colonne de droit : NULL -> `defaut`, texte UTF-8 -> lui-même, tout autre type -> `None` (non établi).
+/// Le NULL du propriétaire est le tableau semé (lu `''`). Le défaut `'shared'` d'une visibilité NULL est HORS D'ATTEINTE
+/// sur ce schéma — la colonne est `NOT NULL DEFAULT 'shared'` (migrate.rs:3113) — et ne fait que reprendre le `COALESCE`
+/// d'avant.
+fn texte_d_une_colonne_de_droit(valeur: rusqlite::types::ValueRef<'_>, defaut: &str) -> Option<String> {
+    match valeur {
+        rusqlite::types::ValueRef::Null => Some(defaut.to_string()),
+        rusqlite::types::ValueRef::Text(octets) => std::str::from_utf8(octets).ok().map(str::to_string),
+        _ => None,
+    }
+}
+
+impl DroitDuTableau {
+    /// Le droit lu dans les colonnes `i_owner` et `i_vis` d'une ligne de `dashboard` (valeurs BRUTES, sans `COALESCE`).
+    pub(crate) fn de_la_ligne(r: &rusqlite::Row<'_>, i_owner: usize, i_vis: usize) -> rusqlite::Result<Self> {
+        Ok(match (texte_d_une_colonne_de_droit(r.get_ref(i_owner)?, ""), texte_d_une_colonne_de_droit(r.get_ref(i_vis)?, "shared")) {
+            (Some(owner), Some(visibility)) => Self::Etabli { owner, visibility },
+            _ => Self::NonEtabli,
+        })
+    }
+
+    /// Le propriétaire qui fonde la portée de lecture si l'appelant LIT ce tableau, `None` s'il ne le lit pas. Un droit
+    /// établi suit `lisible_par` ; un droit NON établi n'est lu que par l'administrateur (il lit tout, c'est lui qui
+    /// répare la ligne), sous un propriétaire vide (`PorteeLecture::du_dashboard` le fait `Proprietaire` par son rôle) ;
+    /// pour tout autre compte il est un tableau absent. Absent : `None`, l'appelant tranche avant.
+    pub(crate) fn proprietaire_lu_par(&self, au: &AuthUser) -> Option<&str> {
+        match self {
+            Self::Etabli { owner, visibility } if panneau_resolu::lisible_par(owner, visibility, au) => Some(owner.as_str()),
+            Self::NonEtabli if au.is_admin() => Some(""),
+            _ => None,
+        }
+    }
+}
+
+/// La ligne de droit d'un tableau : `Ok(Absent)` aucune ligne, `Ok(Etabli | NonEtabli)` ligne lue, `Err` lecture ratée.
+pub(crate) fn lire_le_droit_du_tableau(conn: &Connection, dash_id: i64) -> rusqlite::Result<DroitDuTableau> {
+    conn.query_row("SELECT owner,visibility FROM dashboard WHERE id=?1", params![dash_id], |r| DroitDuTableau::de_la_ligne(r, 0, 1))
+        .optional()
+        .map(|d| d.unwrap_or(DroitDuTableau::Absent))
+}
+
 /// La porte d'un tableau ET la portée de lecture qui en dérive, d'UNE lecture (propriétaire et visibilité du même
 /// énoncé, celui de `dash_editable`) : la portée n'est `Proprietaire` que sur une porte `Ouverte` dont la lecture l'a
-/// établie (`PorteeLecture::du_dashboard`, la décision de `dash_get` et de `panel_access`) ; l'administrateur ne lit pas
-/// la ligne. Hors porte ouverte, la portée rendue est `LecteurDuPartage` et l'appelant ne s'en sert pas.
+/// établie (`PorteeLecture::du_dashboard`, la décision de `dash_get` et de `panel_access`). Hors porte ouverte, la portée
+/// rendue est `LecteurDuPartage` et l'appelant ne s'en sert pas.
+/// `P11.25-f` (vague CG) — L'ADMINISTRATEUR LIT LA LIGNE. Il ne la lisait pas (`Ouverte` d'office) : un `dashboard_id`
+/// absent, ou 0 (la valeur par défaut du champ de `panel_create`), passait, et un panneau ORPHELIN était écrit, là où
+/// les autres rôles recevaient « dashboard introuvable ». Désormais un tableau absent est `Absent` pour lui aussi ; sur
+/// un tableau présent il passe comme avant, droit non établi compris (`DroitDuTableau::proprietaire_lu_par`) ; une
+/// lecture ratée lui sert le 503 nommé. Un droit non établi est `Refusee` pour tout autre compte : la réponse d'un
+/// tableau absent, jamais le 503 d'une lecture qui n'a pas manqué.
 pub(crate) fn porte_et_portee_du_tableau(conn: &Connection, au: &AuthUser, dash_id: i64) -> (PorteDuTableau, PorteeLecture) {
-    if au.is_admin() {
-        return (PorteDuTableau::Ouverte, PorteeLecture::du_dashboard(au, ""));
-    }
     let mut portee = PorteeLecture::LecteurDuPartage;
-    let porte = match conn
-        .query_row(
-            "SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1",
-            params![dash_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .optional()
-    {
-        Ok(Some((owner, vis))) if panneau_resolu::lisible_par(&owner, &vis, au) => {
-            portee = PorteeLecture::du_dashboard(au, &owner);
-            PorteDuTableau::Ouverte
-        }
-        Ok(Some(_)) => PorteDuTableau::Refusee,
-        Ok(None) => PorteDuTableau::Absent,
+    let porte = match lire_le_droit_du_tableau(conn, dash_id) {
+        Ok(DroitDuTableau::Absent) => PorteDuTableau::Absent,
+        Ok(droit) => match droit.proprietaire_lu_par(au) {
+            Some(owner) => {
+                portee = PorteeLecture::du_dashboard(au, owner);
+                PorteDuTableau::Ouverte
+            }
+            None => PorteDuTableau::Refusee,
+        },
         Err(e) => {
             let (cid, refus) = crate::err_json_et_identifiant(StatusCode::SERVICE_UNAVAILABLE, crate::handlers::dash_ergonomics::CAUSE_DROIT_D_EDITION_NON_LU);
             eprintln!("[dashboards] WARN droit d'édition du tableau de bord #{dash_id} NON lu, rien n'est écrit ({}) : {e}", cid.unwrap_or_default());
@@ -83,9 +138,14 @@ pub(crate) fn porte_et_portee_du_tableau(conn: &Connection, au: &AuthUser, dash_
 /// panneau rend désormais `Refusee`, que chaque appelant sert comme l'identifiant de panneau absent de sa route. La
 /// visibilité du panneau vient de la lecture du panneau que l'appelant a déjà faite (aucune lecture de plus) ; le
 /// propriétaire et l'administrateur voient tout, un panneau commun passe comme avant.
+/// `P11.25-f` (vague CG) — LE PANNEAU ORPHELIN RESTE À L'ADMINISTRATEUR. La porte du tableau lit désormais la ligne pour
+/// lui et rend `Absent` sur un tableau absent ; un panneau dont le tableau n'a plus de ligne (écrit avant que
+/// `panel_create` ne le refuse, ou laissé par une base ancienne) doit pourtant rester modifiable et supprimable par
+/// lui, sinon plus personne ne peut le retirer. Pour tout autre compte il reste un panneau absent.
 pub(crate) fn panneau_editable(conn: &Connection, au: &AuthUser, dash_id: i64, visibilite_du_panneau: &str) -> PorteDuTableau {
     match porte_et_portee_du_tableau(conn, au, dash_id) {
         (PorteDuTableau::Ouverte, portee) if !portee.voit(visibilite_du_panneau) => PorteDuTableau::Refusee,
+        (PorteDuTableau::Absent, _) if au.is_admin() => PorteDuTableau::Ouverte,
         (porte, _) => porte,
     }
 }
@@ -879,6 +939,9 @@ pub(crate) async fn panel_create(State(st): State<AppState>, Extension(au): Exte
     // 403 « dashboard non modifiable » d'avant disait qu'il existe).
     // Vague CB (panneau privé d'un tableau commun) — la porte rend aussi la portée de lecture de l'appelant, de la MÊME
     // lecture : la position du panneau créé se calcule sur les seuls panneaux qu'il lit (ci-dessous).
+    // `P11.25-f` (vague CG) — l'administrateur aussi : un `dashboard_id` absent, ou 0 (le défaut du champ), reçoit ce même
+    // 404 et aucun panneau orphelin n'est écrit ; un tableau dont le droit est de type inattendu est un tableau absent pour
+    // tout autre compte (`porte_et_portee_du_tableau`).
     let (porte, portee) = porte_et_portee_du_tableau(&conn, &au, did);
     match porte {
         PorteDuTableau::Ouverte => {}
@@ -960,10 +1023,10 @@ pub(crate) async fn panel_update(State(st): State<AppState>, Extension(au): Exte
     // `private` d'un tableau commun d'autrui, que `dash_get` ne lui sert pas, reçoit la même réponse, avant tout
     // jugement de partage, de définition de bibliothèque ou de SQL brut, et rien n'est écrit. La visibilité jugée est
     // celle de la lecture ci-dessus.
-    // Un panneau ORPHELIN (son tableau n'a plus de ligne ; aucune clé étrangère au schéma, et l'administrateur crée un
-    // panneau sans lire son tableau) reçoit lui aussi la réponse d'un identifiant de panneau absent, à l'octet, rien
-    // n'est écrit : « dashboard introuvable » disait à qui ne le lit pas que ce panneau existe. L'administrateur, dont la
-    // porte ne lit pas le tableau, modifie encore un orphelin (204).
+    // Un panneau ORPHELIN (son tableau n'a plus de ligne ; aucune clé étrangère au schéma, et avant la vague CG
+    // l'administrateur créait un panneau sans lire son tableau) reçoit lui aussi la réponse d'un identifiant de panneau absent, à l'octet, rien
+    // n'est écrit : « dashboard introuvable » disait à qui ne le lit pas que ce panneau existe. L'administrateur
+    // modifie encore un orphelin (204, `panneau_editable` : c'est lui qui le répare ou le retire).
     match panneau_editable(&conn, &au, did, &visibilite) {
         PorteDuTableau::Ouverte => {}
         PorteDuTableau::Refusee => return not_found("panneau introuvable"),
@@ -2826,18 +2889,21 @@ pub(crate) async fn view_dashboards_add(State(st): State<AppState>, Extension(au
     let mut inconnus: Vec<i64> = Vec::new();
     let mut deja: Vec<i64> = Vec::new();
     let mut a_confirmer: Vec<i64> = Vec::new();
+    // `P11.25-f` (vague CG) — le droit se lit en `DroitDuTableau` : un propriétaire ou une visibilité de type inattendu
+    // fait du tableau un INCONNU pour tout compte sauf l'administrateur (qui le rattache comme avant), au lieu du 503
+    // d'une lecture ratée.
     for did in &ids {
         let lu = conn
             .query_row(
-                "SELECT COALESCE(owner,''),COALESCE(visibility,'shared'),
+                "SELECT owner,visibility,
                         (SELECT explicite FROM view_dashboard WHERE view_id=?2 AND dashboard_id=?1)
                  FROM dashboard WHERE id=?1",
                 params![did, id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?)),
+                |r| Ok((DroitDuTableau::de_la_ligne(r, 0, 1)?, r.get::<_, Option<i64>>(2)?)),
             )
             .optional();
         match lu {
-            Ok(Some((owner, vis, present))) if panneau_resolu::lisible_par(&owner, &vis, &au) => match present {
+            Ok(Some((droit, present))) if droit.proprietaire_lu_par(&au).is_some() => match present {
                 None => {}
                 Some(0) => {
                     deja.push(*did);
@@ -2910,17 +2976,18 @@ pub(crate) async fn view_dashboard_remove(State(st): State<AppState>, Extension(
     // La présence est LUE avant l'effacement : un effacement qui n'ôte rien (déclencheur qui l'ignore) n'est pas une
     // absence, et l'absence n'est dite que lue. Le propriétaire et la visibilité du tableau sont lus dans la même
     // instruction : un tableau absent, ou que l'appelant ne lit pas, est un rattachement absent pour lui.
+    // `P11.25-f` (vague CG) — un droit de type inattendu aussi, sauf pour l'administrateur (`DroitDuTableau`) : plus de 503.
     let lu = conn
         .query_row(
-            "SELECT COALESCE(owner,''),COALESCE(visibility,'shared'),
+            "SELECT owner,visibility,
                     EXISTS(SELECT 1 FROM view_dashboard WHERE view_id=?1 AND dashboard_id=?2)
              FROM dashboard WHERE id=?2",
             params![id, did],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)),
+            |r| Ok((DroitDuTableau::de_la_ligne(r, 0, 1)?, r.get::<_, i64>(2)? != 0)),
         )
         .optional();
     match lu {
-        Ok(Some((owner, vis, true))) if panneau_resolu::lisible_par(&owner, &vis, &au) => {}
+        Ok(Some((droit, true))) if droit.proprietaire_lu_par(&au).is_some() => {}
         Ok(_) => {
             drop(tx);
             return err_json(StatusCode::NOT_FOUND, CAUSE_RATTACHEMENT_ABSENT);

@@ -493,6 +493,7 @@ pub(crate) fn netban_prechauffer_au_demarrage(db: &Mutex<Connection>, pause: imp
 ///
 /// Le préchauffage du démarrage passe par `netban_prechauffer_au_demarrage`, que son témoin (`P10.20-b`) joue
 /// sans horloge, pause observée ; le même témoin lit que ce site l'appelle, seule instruction avant la boucle.
+/// Chaque tick passe par `netban_tick_de_maintenance` (`P11.25-a`) : purge, issue dite, puis rechargement.
 fn spawn_netban_maintenance(db: Arc<Mutex<Connection>>) {
     std::thread::spawn(move || {
         // warm-up : bans persistés effectifs dès le bind
@@ -500,10 +501,99 @@ fn spawn_netban_maintenance(db: Arc<Mutex<Connection>>) {
         loop {
             std::thread::sleep(Duration::from_secs(15));
             let c = db.lock();
-            let _ = c.execute("DELETE FROM net_ban WHERE expires_ts IS NOT NULL AND expires_ts <= ?1", params![now()]);
-            netban_reload(&c);
+            netban_tick_de_maintenance(&c, now());
         }
     });
+}
+
+/// `P11.25-a` — UN TICK DE MAINTENANCE du store `net_ban`, verrou de la base tenu par l'appelant : purge des bans
+/// échus à `now_ts` (`auth::netban_purger_les_echus`, qui ne juge qu'une échéance ENTIÈRE, comme les poses et le
+/// chargement), issue LUE et dite au journal au changement d'état, un refus du support reclassé au rappel tant
+/// qu'il persiste (`netban_dire_l_issue_de_la_purge`), PUIS
+/// rechargement du cache, joué que la purge ait eu lieu ou non (comportement d'avant). AVANT : `let _ =` sur la
+/// purge, un refus du moteur (base verrouillée, E/S) était tu.
+pub(crate) fn netban_tick_de_maintenance(c: &Connection, now_ts: i64) {
+    let issue = crate::auth::netban_purger_les_echus(c, now_ts);
+    netban_dire_l_issue_de_la_purge(&issue, now_ts);
+    netban_reload(c);
+}
+
+/// Ce que la dernière purge des bans échus a rendu, pour ne dire au journal que les CHANGEMENTS : le tick repasse
+/// toutes les 15 s, un refus qui persiste s'écrit une fois.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EtatDeLaPurgeDesBans {
+    Faite,
+    /// Refusée, avec le code ÉTENDU du moteur (`None` : erreur sans code SQLite). Un code neuf est un état neuf.
+    Refusee(Option<i32>),
+}
+
+/// Ce que le tick de maintenance retient d'un tick à l'autre : l'état de la dernière purge et l'instant du dernier
+/// classement d'un refus (`netban_reclasser_le_refus`).
+struct SuiviDeLaPurgeDesBans {
+    etat: EtatDeLaPurgeDesBans,
+    classe_ts: i64,
+}
+
+/// État du processus, lu et posé par le seul tick de maintenance. Départ : `Faite` (une première purge réussie ne
+/// s'écrit pas, un premier refus s'écrit).
+static NETBAN_DERNIERE_PURGE: std::sync::Mutex<SuiviDeLaPurgeDesBans> =
+    std::sync::Mutex::new(SuiviDeLaPurgeDesBans { etat: EtatDeLaPurgeDesBans::Faite, classe_ts: 0 });
+
+/// L'INTERVALLE DE RAPPEL du classement d'un refus qui PERSISTE : le tiers de la fenêtre d'aveu de la santé
+/// (`metrics::FENETRE_D_AVEU_DES_ERREURS_DU_SUPPORT_S`, 900 s), soit 300 s. Un refus classé au seul changement d'état
+/// laissait l'aveu expirer au bout de 900 s alors que la purge échouait encore toutes les 15 s. Le rappel le tient
+/// allumé (et « dernière il y a Ns » reste sous 300 s) pour une ligne `[sqlite]` par rappel, pas une par tick.
+pub(crate) const NETBAN_RAPPEL_DU_CLASSEMENT_S: i64 = crate::metrics::FENETRE_D_AVEU_DES_ERREURS_DU_SUPPORT_S / 3;
+
+/// PURE : le refus de ce tick est-il classé (`journaliser_si_erreur_du_support`) ? Oui quand l'état vient de changer,
+/// ou quand le dernier classement date d'au moins `NETBAN_RAPPEL_DU_CLASSEMENT_S` ; une horloge revenue en arrière
+/// (`now_ts` antérieur au dernier classement) reclasse aussi, plutôt que de taire le refus jusqu'à la rattraper.
+/// L'instant du classement est posé quand la réponse est oui.
+pub(crate) fn netban_reclasser_le_refus(classe_ts: &mut i64, etat_change: bool, now_ts: i64) -> bool {
+    let rappel_du = now_ts < *classe_ts || now_ts - *classe_ts >= NETBAN_RAPPEL_DU_CLASSEMENT_S;
+    if !(etat_change || rappel_du) {
+        return false;
+    }
+    *classe_ts = now_ts;
+    true
+}
+
+/// PURE : la ligne `[netban]` que l'issue `issue` doit écrire après l'état `dernier`, et l'état posé. `None` quand
+/// l'état ne change pas (même issue, même code). Un refus dit sa cause (`sqlite_plafond::decrire_l_erreur` : texte
+/// du moteur et code étendu) et ce qui en suit en base ; le retour à une purge réussie se dit aussi.
+pub(crate) fn netban_ligne_de_la_purge(dernier: &mut EtatDeLaPurgeDesBans, issue: &rusqlite::Result<usize>) -> Option<String> {
+    let etat = match issue {
+        Ok(_) => EtatDeLaPurgeDesBans::Faite,
+        Err(e) => EtatDeLaPurgeDesBans::Refusee(e.sqlite_error().map(|f| f.extended_code)),
+    };
+    if etat == *dernier {
+        return None;
+    }
+    *dernier = etat;
+    Some(match issue {
+        Ok(_) => "[netban] purge des bans échus rétablie".to_string(),
+        Err(e) => format!(
+            "[netban] WARN purge des bans échus refusée : {} ; les lignes échues restent en base jusqu'à une purge réussie",
+            crate::sqlite_plafond::decrire_l_erreur(e)
+        ),
+    })
+}
+
+/// Écrit la ligne de `netban_ligne_de_la_purge` quand l'état change et, pour un refus, le classe par
+/// `sqlite_plafond::journaliser_si_erreur_du_support` (ligne `[sqlite]` et compte de la santé si l'erreur accuse le
+/// support de la base) au même changement d'état, puis au rappel (`netban_reclasser_le_refus`) tant qu'il persiste :
+/// le journal ne reçoit pas une ligne toutes les 15 s, et l'aveu de la santé n'expire pas sous un refus continu.
+fn netban_dire_l_issue_de_la_purge(issue: &rusqlite::Result<usize>, now_ts: i64) {
+    let mut suivi = NETBAN_DERNIERE_PURGE.lock().unwrap_or_else(|e| e.into_inner());
+    let ligne = netban_ligne_de_la_purge(&mut suivi.etat, issue);
+    if let Some(ligne) = &ligne {
+        eprintln!("{ligne}");
+    }
+    if let Err(e) = issue {
+        if netban_reclasser_le_refus(&mut suivi.classe_ts, ligne.is_some(), now_ts) {
+            crate::sqlite_plafond::journaliser_si_erreur_du_support(e);
+        }
+    }
 }
 
 fn spawn_connector_tick(tenants: TenantDbManager) {

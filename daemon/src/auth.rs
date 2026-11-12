@@ -545,8 +545,8 @@ pub(crate) fn netban_charger_cap(conn: &Connection, cap: usize) -> Result<Charge
             Ok(v) => v,
             Err(_) => {
                 // Fail-closed sur CETTE ligne : `None` = bloquée sans échéance. La purge du tick ne la
-                // retire pas (`expires_ts <= ?` est faux pour un texte) ; la valve la lève. La pose d'un administrateur
-                // la CONSERVE comme le ban permanent qu'elle est ici (`netban_poser_sans_raccourcir_et_relire`).
+                // retire pas (elle ne juge qu'une échéance entière, `netban_purger_les_echus`) ; la valve la
+                // lève. La pose d'un administrateur la CONSERVE comme le ban permanent qu'elle est ici (`netban_poser_sans_raccourcir_et_relire`).
                 echeances_illisibles += 1;
                 None
             }
@@ -797,12 +797,31 @@ pub(crate) fn netban_upsert_sans_raccourcir(conn: &Connection, ip: &str, expires
 /// ligne est alors un ban permanent en cours, et la pose la CONSERVE entière. Réparer une cellule illisible = la lever
 /// (`DELETE /api/netban/{ip}`) puis reposer, deux gestes tracés (décision de l'exploitant du 2026-11-10). La clause
 /// `typeof(...) = 'integer'` écarte aussi la comparaison NUMÉRIQUE qu'SQLite ferait avec un réel (`excluded > 1.5e9`),
-/// qui changerait un ban tenu permanent en ban fini.
-const SQL_NETBAN_POSE_SANS_RACCOURCIR: &str = "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
+/// qui changerait un ban tenu permanent en ban fini. La purge des bans échus porte le même prédicat de type, à la
+/// lettre (`SQL_NETBAN_PURGE_DES_ECHUS`).
+pub(crate) const SQL_NETBAN_POSE_SANS_RACCOURCIR: &str = "INSERT INTO net_ban(ip,reason,created_ts,expires_ts,created_by,env_id) VALUES(?1,?2,?3,?4,?5,?6) \
      ON CONFLICT(ip,env_id) DO UPDATE SET \
        reason     = CASE WHEN typeof(net_ban.expires_ts) = 'integer' AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.reason ELSE net_ban.reason END, \
        created_by = CASE WHEN typeof(net_ban.expires_ts) = 'integer' AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.created_by ELSE net_ban.created_by END, \
        expires_ts = CASE WHEN typeof(net_ban.expires_ts) = 'integer' AND (excluded.expires_ts IS NULL OR excluded.expires_ts > net_ban.expires_ts) THEN excluded.expires_ts ELSE net_ban.expires_ts END";
+
+/// `P11.25-a` — LA PURGE DES BANS ÉCHUS juge l'échéance comme les poses (`SQL_NETBAN_POSE_SANS_RACCOURCIR`) et le
+/// chargement (`netban_charger_cap`) : seule une échéance ENTIÈRE est une durée, et seule une durée échue (`<=`, la
+/// seconde même comprise) se purge. AVANT : `expires_ts IS NOT NULL AND expires_ts <= ?1` comparait selon l'ordre des
+/// types d'SQLite. La colonne est `INTEGER` sans `STRICT` : un réel à partie fractionnaire, ou un texte qui s'y
+/// convertit, y reste réel, se comparait comme un nombre, et sa ligne était SUPPRIMÉE une fois l'instant passé, alors
+/// que le chargement la tient pour un ban sans fin : le ban disparaissait sans geste ni trace. Un texte non numérique
+/// et un blob ne se purgeaient déjà pas. Une ligne vide (permanente) ne se purge pas : `typeof` y rend `null`. Une
+/// échéance illisible reste donc un ban sans fin jusqu'à sa levée par la valve (`DELETE /api/netban/{ip}`).
+pub(crate) const SQL_NETBAN_PURGE_DES_ECHUS: &str =
+    "DELETE FROM net_ban WHERE typeof(net_ban.expires_ts) = 'integer' AND net_ban.expires_ts <= ?1";
+
+/// Purge les bans échus à l'instant `now_ts` (`SQL_NETBAN_PURGE_DES_ECHUS`) et REND l'issue du moteur : le nombre de
+/// lignes purgées, ou l'erreur qui a refusé la purge — l'instruction est alors annulée et aucune ligne n'est retirée.
+/// L'appelant de production (`server::boucles_de_fond::netban_tick_de_maintenance`) la dit au journal.
+pub(crate) fn netban_purger_les_echus(conn: &Connection, now_ts: i64) -> rusqlite::Result<usize> {
+    conn.execute(SQL_NETBAN_PURGE_DES_ECHUS, params![now_ts])
+}
 
 fn netban_ecrire(conn: &Connection, ip: &str, expires: Option<i64>, reason: &str, by: &str, env: &str, sql: &str) -> PoseDeBan {
     if netban_plafond_refuse(ip) {

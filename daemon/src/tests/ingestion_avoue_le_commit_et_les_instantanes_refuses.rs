@@ -38,7 +38,10 @@
 // CE QUE CES TÉMOINS NE TIENNENT PAS : aucun disque réellement plein (`ENOSPC` rendrait `SQLITE_FULL`, compté par la même
 // classification, non joué ici) ; aux sites des métriques et des instantanés la corruption est celle d'un index, posée par
 // une écriture SQL ; les COMMIT des lots de métriques et d'instantanés et les insertions d'alertes de la
-// voie des instantanés ne sont pas classés par ce changement.
+// voie des instantanés ne sont pas classés par ce changement ; les récepteurs HTTP de métriques (`ingest/obs.rs`,
+// `metrics_prom` et `metrics_write`) ne le sont pas non plus : une ligne refusée y passe par
+// `annuler_le_lot_a_la_ligne_refusee`, un COMMIT refusé par `refuser_le_geste_non_valide`, et aucun des deux n'appelle
+// `sqlite_plafond::journaliser_si_erreur_du_support`.
 
 #[cfg(test)]
 mod cg1_ingestion_commit_metriques_instantanes {

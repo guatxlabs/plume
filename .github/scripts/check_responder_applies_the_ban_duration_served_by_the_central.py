@@ -49,7 +49,12 @@ locale traduite (`LC_ALL=C` posé sur le retrait) ; une sortie de refus longue e
 ligne, chaque caractère de contrôle en espace, coupée sur un caractère à la borne, la coupe dite ; table absente ou set
 à durée absent (absence mesurée, lue sous `LC_ALL=C` même sous une locale traduite) : rien n'est tenté sur ce qui
 n'existe pas ; une SONDE refusée n'est pas une absence : le retrait est tenté et son classement tranche, la sonde
-refusée dite au journal ; nft absent de l'hôte : ni sondé ni tenté. Mutants `unban_*` et
+refusée dite au journal ; nft absent de l'hôte : ni sondé ni tenté ; un échec MUET (code non nul, sortie d'erreur
+vide) est un refus, au retrait (`failed`) comme à la sonde (le retrait tranche) ; une sonde tuée par un signal APRÈS avoir
+écrit l'absence, sortie en code 126, ou qui n'écrit l'absence que sur sa sortie STANDARD est une sonde refusée (son
+code est lu, sa sortie standard jetée) ; l'état du verdict est remis à zéro à chaque levée d'un même tour (le refus ou
+le retrait d'une levée ne reste pas acquis à la suivante) ; le séparateur d'unité \x1f, haut de la plage des caractères
+de contrôle, devient une espace comme les autres. Mutants `unban_*` et
 `nft_unban_leaves_the_ttl_set` de `MUTANTS`, chacun rouge sur ses scénarios.
 
 CE QUE CETTE GARDE NE TIENT PAS : un vrai CrowdSec, un vrai nft (noyau, borne du timeout) ou un vrai fail2ban
@@ -112,11 +117,17 @@ exit 0
 #   signal         écrit l'absence sur la sortie d'erreur, PUIS se tue par SIGKILL (code 137 vu du script) ;
 #   stdout_absent  écrit l'absence sur la sortie STANDARD et « Device or resource busy » sur la sortie d'erreur, code 1 ;
 #   bavard         refus dont la sortie d'erreur porte NFT_BAVARD après le message, code 1 ;
-#   absent_code:<n> écrit l'absence sur la sortie d'erreur et sort avec le code <n> (bords 125 à 129).
+#   absent_code:<n> écrit l'absence sur la sortie d'erreur et sort avec le code <n> (bords 125 à 129) ;
+#   muet           sort en code 1 SANS RIEN ÉCRIRE (échec muet).
 # Les SONDES `list table inet plume` et `list set inet plume blocklist_ttl` : un objet absent (NFT_ETAT `neuf`, ou
 # `ancien` pour le set à durée) écrit l'absence MESURÉE (« No such file or directory », traduite hors locale C) et sort
 # en code 1 ; NFT_SONDES_REFUSEES="table set" (l'un, l'autre ou les deux) rend la sonde REFUSÉE (« Operation not
-# permitted », code 1), que l'objet existe ou non.
+# permitted », code 1), que l'objet existe ou non. NFT_SONDE_TABLE=<mode> et NFT_SONDE_SET=<mode> fixent l'issue de la
+# sonde de table, de set à durée, quel que soit l'état de l'hôte (défaut : aucun mode, l'état décide) :
+#   muet           sort en code 1 SANS RIEN ÉCRIRE ;
+#   stdout         écrit l'absence sur la sortie STANDARD seule et « Device or resource busy » sur la sortie d'erreur, code 1 ;
+#   signal         écrit l'absence sur la sortie d'erreur, PUIS se tue par SIGKILL (code 137 vu du script) ;
+#   code126        écrit l'absence sur la sortie d'erreur et sort en code 126 (commande qui ne part pas).
 BOUCHON_NFT = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$TRACE_ENFORCEMENT.nft"
 case "${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}" in
@@ -127,6 +138,18 @@ refus_de_sonde() { printf 'Error: Could not process rule: Operation not permitte
 case "$*" in
   "list table inet plume") case " ${NFT_SONDES_REFUSEES:-} " in *" table "*) refus_de_sonde "$*" ;; esac ;;
   "list set inet plume blocklist_ttl") case " ${NFT_SONDES_REFUSEES:-} " in *" set "*) refus_de_sonde "$*" ;; esac ;;
+esac
+sonde_selon() {
+  case "$1" in
+    muet) exit 1 ;;
+    stdout) printf 'Error: %s\n%s\n' "$ENOENT" "$2"; printf 'Error: Could not process rule: Device or resource busy\n' >&2; exit 1 ;;
+    signal) printf 'Error: %s\n%s\n' "$ENOENT" "$2" >&2; kill -9 $$ ;;
+    code126) printf 'Error: %s\n%s\n' "$ENOENT" "$2" >&2; exit 126 ;;
+  esac
+}
+case "$*" in
+  "list table inet plume") sonde_selon "${NFT_SONDE_TABLE:-}" "$*" ;;
+  "list set inet plume blocklist_ttl") sonde_selon "${NFT_SONDE_SET:-}" "$*" ;;
 esac
 absence_d_objet() { printf 'Error: %s\n%s\n' "$ENOENT" "$1" >&2; exit 1; }
 case "${NFT_ETAT:-ancien}:$*" in
@@ -178,6 +201,7 @@ case "$1 $2" in
                      printf 'Error: Could not process rule: Device or resource busy\n' >&2; exit 1 ;;
       bavard) printf 'Error: Could not process rule: Operation not permitted %s\n' "$NFT_BAVARD" >&2; exit 1 ;;
       absent_code:*) printf 'Error: Could not process rule: %s\n' "$ENOENT" >&2; exit "${m#absent_code:}" ;;
+      muet) exit 1 ;;
     esac
     exit 0 ;;
   "-f -")
@@ -1542,6 +1566,101 @@ def s_levee_sans_nft(script):
     return f
 
 
+def s_levee_retrait_muet(script):
+    """`blocklist` : `delete element` sort en code 1 SANS RIEN ÉCRIRE — un refus (code non nul sans le message, règle du
+    démon), jamais une absence ni un retrait : `failed`, le refus nomme le set, le code et une sortie vide ; de même avec
+    fail2ban présent."""
+    a, b = "198.51.100.101", "198.51.100.102"
+    f = []
+    t = jouer_la_levee(script, [unban(1141, a)], [("blocklist", a, "muet")])
+    resultat_entier(f, t, 1141, "failed", f"{plan_de_levee(a)} |  [nft]" + refus_remis("blocklist", "code 1", "") + " [nft-ttl]")
+    t = jouer_la_levee(script, [unban(1142, b)], [("blocklist", b, "muet")], bouchons=("nft", "fail2ban-client"))
+    resultat_entier(f, t, 1142, "failed", f"{plan_de_levee(b)} |  [f2b] [nft]" + refus_remis("blocklist", "code 1", "") + " [nft-ttl]")
+    return f
+
+
+def s_levee_sonde_muette(script):
+    """Sonde de table en code 1 SANS RIEN ÉCRIRE : une sonde refusée, pas une absence — les deux retraits sont tentés,
+    retirés -> `done`, la sonde refusée dite au journal ; sonde du set à durée muette, retrait à durée refusé -> `failed`."""
+    a, b = "198.51.100.103", "198.51.100.104"
+    f = []
+    t = jouer_la_levee(script, [unban(1143, a)], [], env_plus={"NFT_SONDE_TABLE": "muet"})
+    resultat_entier(f, t, 1143, "done", f"{plan_de_levee(a)} |  [nft] [nft-ttl]")
+    exiger(f, "SONDE nft REFUSEE sur la table inet plume (code 1) :  ; le retrait est tente" in t.stderr,
+           f"#1143 : sonde muette non dite au journal : {t.stderr[-600:]!r}")
+    t = jouer_la_levee(script, [unban(1144, b)], [("blocklist_ttl", b, "refus")], env_plus={"NFT_SONDE_SET": "muet"})
+    resultat_entier(f, t, 1144, "failed", f"{plan_de_levee(b)} |  [nft] [nft-ttl]"
+                    + refus_remis("blocklist_ttl", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist_ttl {{ {b} }}"))
+    return f
+
+
+def s_levee_sonde_tuee_ou_qui_ne_part_pas(script):
+    """Sonde qui écrit l'absence PUIS est tuée par SIGKILL (code 137), ou qui l'écrit et sort en code 126 : le code de la
+    sonde est lu, ce n'est pas une absence — le retrait est tenté et tranche. Table tuée -> `done`, signal dit au
+    journal ; table en code 126 -> `done` ; set à durée tué -> son retrait est tenté, `done`."""
+    a, b, c = "198.51.100.105", "198.51.100.106", "198.51.100.107"
+    f = []
+    t = jouer_la_levee(script, [unban(1145, a)], [], env_plus={"NFT_SONDE_TABLE": "signal"})
+    resultat_entier(f, t, 1145, "done", f"{plan_de_levee(a)} |  [nft] [nft-ttl]")
+    exiger(f, "SONDE nft REFUSEE sur la table inet plume (code 137, nft interrompu par le signal 9)" in t.stderr,
+           f"#1145 : sonde tuée non dite au journal : {t.stderr[-600:]!r}")
+    t = jouer_la_levee(script, [unban(1146, b)], [], env_plus={"NFT_SONDE_TABLE": "code126"})
+    resultat_entier(f, t, 1146, "done", f"{plan_de_levee(b)} |  [nft] [nft-ttl]")
+    t = jouer_la_levee(script, [unban(1147, c)], [], env_plus={"NFT_SONDE_SET": "signal"})
+    resultat_entier(f, t, 1147, "done", f"{plan_de_levee(c)} |  [nft] [nft-ttl]")
+    exiger(f, f"delete element inet plume blocklist_ttl {{ {c} }}" in t.trace("nft"),
+           f"#1147 : sonde du set tuée, retrait à durée non tenté : {t.trace('nft')!r}")
+    return f
+
+
+def s_levee_sonde_absence_sur_la_sortie_standard(script):
+    """Sonde de table : l'absence écrite sur la sortie STANDARD seule, « Device or resource busy » sur la sortie
+    d'erreur : la sortie standard de la sonde est jetée, ce n'est pas une absence -> les retraits sont tentés, `done`."""
+    ip = "198.51.100.108"
+    f = []
+    t = jouer_la_levee(script, [unban(1148, ip)], [], env_plus={"NFT_SONDE_TABLE": "stdout"})
+    resultat_entier(f, t, 1148, "done", f"{plan_de_levee(ip)} |  [nft] [nft-ttl]")
+    exiger(f, "SONDE nft REFUSEE sur la table inet plume (code 1) : Error: Could not process rule: Device or resource busy" in t.stderr,
+           f"#1148 : la sonde refusée ne dit pas sa sortie d'erreur : {t.stderr[-600:]!r}")
+    return f
+
+
+def s_levee_refus_ne_colle_pas_a_la_levee_suivante(script):
+    """Deux levées dans UN tour : la première refusée sur `blocklist`, la seconde retirée -> `failed` puis `done` ; le
+    refus de la première ne reste pas acquis à la seconde."""
+    a, b = "198.51.100.109", "198.51.100.110"
+    t = jouer_la_levee(script, [unban(1149, a), unban(1150, b)], [("blocklist", a, "refus")])
+    f = []
+    resultat_entier(f, t, 1149, "failed", f"{plan_de_levee(a)} |  [nft]"
+                    + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist {{ {a} }}")
+                    + " [nft-ttl]")
+    resultat_entier(f, t, 1150, "done", f"{plan_de_levee(b)} |  [nft] [nft-ttl]")
+    return f
+
+
+def s_levee_retrait_ne_colle_pas_a_la_levee_suivante(script):
+    """Deux levées dans UN tour, nft seul : la première retirée, la seconde absente des deux sets -> `done` puis
+    `failed`, LEVÉE NON FAITE ; le retrait de la première ne reste pas acquis à la seconde."""
+    a, b = "198.51.100.111", "198.51.100.112"
+    t = jouer_la_levee(script, [unban(1151, a), unban(1152, b)], [("blocklist", b, "absent"), ("blocklist_ttl", b, "absent")])
+    f = []
+    resultat_entier(f, t, 1151, "done", f"{plan_de_levee(a)} |  [nft] [nft-ttl]")
+    resultat_entier(f, t, 1152, "failed", f"{plan_de_levee(b)} |  [nft]{absence_ecrite('blocklist', b)} "
+                    f"[nft-ttl]{absence_ecrite('blocklist_ttl', b)}{LEVEE_NON_FAITE}")
+    return f
+
+
+def s_levee_refus_au_separateur_d_unite(script):
+    """Refus dont la sortie porte \\x1f (séparateur d'unité, le HAUT de la plage des caractères de contrôle) : il devient
+    une espace ; brut, il ferait refuser le corps JSON par le central et le verdict ne serait jamais remis."""
+    ip = "198.51.100.113"
+    t = jouer_la_levee(script, [unban(1153, ip)], [("blocklist", ip, "bavard")], env_plus={"NFT_BAVARD": "a\x1fb"})
+    f = []
+    resultat_entier(f, t, 1153, "failed", f"{plan_de_levee(ip)} |  [nft]" + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} a b")
+                    + " [nft-ttl]")
+    return f
+
+
 SCENARIOS = {
     "json_served_python3": lambda s: s_json_servi(s, "python3"),
     "json_served_jq": lambda s: s_json_servi(s, "jq"),
@@ -1616,6 +1735,13 @@ SCENARIOS = {
     "nft_unban_refused_probe_lets_the_removal_decide": s_levee_sonde_refusee,
     "nft_unban_probe_absence_read_under_a_translated_locale": s_levee_sonde_absente_sous_une_locale_traduite,
     "nft_unban_without_nft_unchanged": s_levee_sans_nft,
+    "nft_unban_silent_removal_failure_is_a_refusal": s_levee_retrait_muet,
+    "nft_unban_silent_probe_failure_lets_the_removal_decide": s_levee_sonde_muette,
+    "nft_unban_probe_killed_or_unstarted_lets_the_removal_decide": s_levee_sonde_tuee_ou_qui_ne_part_pas,
+    "nft_unban_probe_absence_on_stdout_lets_the_removal_decide": s_levee_sonde_absence_sur_la_sortie_standard,
+    "nft_unban_refusal_does_not_carry_to_the_next_unban": s_levee_refus_ne_colle_pas_a_la_levee_suivante,
+    "nft_unban_removal_does_not_carry_to_the_next_unban": s_levee_retrait_ne_colle_pas_a_la_levee_suivante,
+    "nft_unban_unit_separator_in_a_refusal_becomes_a_space": s_levee_refus_au_separateur_d_unite,
 }
 
 # (nom, motif exact dans respond.sh, remplacement, scénarios qui DOIVENT rougir)
@@ -1968,6 +2094,49 @@ MUTANTS = [
      'NFT_PART_DE_RETRAIT_OCTETS=120',
      'NFT_PART_DE_RETRAIT_OCTETS=240',
      ['nft_unban_long_refusal_bounded_per_set']),
+    # `P11.25-a` — échec muet, code et sortie standard de la sonde, verdict remis à zéro à chaque levée, borne haute de la
+    # plage des caractères de contrôle.
+    ('unban_silent_removal_read_as_an_absence',
+     'if nft_lire_l_echec "$_cr_retour" "$NFT_RETRAIT_TEXTE"; then NFT_RETRAIT=absente',
+     'if [ -z "$NFT_RETRAIT_TEXTE" ] || nft_lire_l_echec "$_cr_retour" "$NFT_RETRAIT_TEXTE"; then NFT_RETRAIT=absente',
+     ['nft_unban_silent_removal_failure_is_a_refusal']),
+    ('unban_silent_removal_read_as_removed',
+     '3>&2 2>&1 1>&3 3>&-); then\n    NFT_RETRAIT=retiree; return 0\n  else\n    _cr_retour=$?\n  fi\n',
+     '3>&2 2>&1 1>&3 3>&-); then\n    NFT_RETRAIT=retiree; return 0\n  else\n    _cr_retour=$?\n  fi\n'
+     '  [ -n "$NFT_RETRAIT_TEXTE" ] || { NFT_RETRAIT=retiree; return 0; }\n',
+     ['nft_unban_silent_removal_failure_is_a_refusal']),
+    ('unban_silent_probe_read_as_an_absence',
+     'if nft_lire_l_echec "$_so_retour" "$_so_ecrit"; then NFT_SONDE=absent',
+     'if [ -z "$_so_ecrit" ] || nft_lire_l_echec "$_so_retour" "$_so_ecrit"; then NFT_SONDE=absent',
+     ['nft_unban_silent_probe_failure_lets_the_removal_decide']),
+    ('unban_silent_failure_read_as_an_absence',
+     'nft_lire_l_echec() {\n  _cr_code=$1\n',
+     'nft_lire_l_echec() {\n  _cr_code=$1\n  [ -n "$2" ] || return 0\n',
+     ['nft_unban_silent_removal_failure_is_a_refusal', 'nft_unban_silent_probe_failure_lets_the_removal_decide']),
+    ('unban_probe_code_ignored',
+     'if nft_lire_l_echec "$_so_retour" "$_so_ecrit"',
+     'if nft_lire_l_echec 1 "$_so_ecrit"',
+     ['nft_unban_probe_killed_or_unstarted_lets_the_removal_decide']),
+    ('unban_probe_code_lost',
+     'else _so_retour=$?; fi',
+     'else _so_retour=1; fi',
+     ['nft_unban_probe_killed_or_unstarted_lets_the_removal_decide']),
+    ('unban_probe_stdout_read',
+     'nft list "$@" 2>&1 >/dev/null)',
+     'nft list "$@" 2>&1)',
+     ['nft_unban_probe_absence_on_stdout_lets_the_removal_decide']),
+    ('unban_removal_carried_to_the_next_unban',
+     '_ua_refus=0; _ua_retrait=0\n',
+     '_ua_refus=0; _ua_retrait=${_ua_retrait:-0}\n',
+     ['nft_unban_removal_does_not_carry_to_the_next_unban']),
+    ('unban_refusal_carried_to_the_next_unban',
+     '_ua_autres=0; _ua_refus=0;',
+     '_ua_autres=0; _ua_refus=${_ua_refus:-0};',
+     ['nft_unban_refusal_does_not_carry_to_the_next_unban']),
+    ('unban_refusal_unit_separator_kept',
+     "_cr_entier=$(printf '%s' \"$2\" | tr '\\000-\\037' ' ')",
+     "_cr_entier=$(printf '%s' \"$2\" | tr '\\000-\\036' ' ')",
+     ['nft_unban_unit_separator_in_a_refusal_becomes_a_space']),
 ]
 
 

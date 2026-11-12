@@ -82,9 +82,17 @@ impl DroitDuTableau {
     }
 
     /// Le propriétaire qui fonde la portée de lecture si l'appelant LIT ce tableau, `None` s'il ne le lit pas. Un droit
-    /// établi suit `lisible_par` ; un droit NON établi n'est lu que par l'administrateur (il lit tout, c'est lui qui
-    /// répare la ligne), sous un propriétaire vide (`PorteeLecture::du_dashboard` le fait `Proprietaire` par son rôle) ;
-    /// pour tout autre compte il est un tableau absent. Absent : `None`, l'appelant tranche avant.
+    /// établi suit `lisible_par` ; un droit NON établi n'est lu que par l'administrateur, sous un propriétaire vide
+    /// (`PorteeLecture::du_dashboard` le fait `Proprietaire` par son rôle) ; pour tout autre compte il est un tableau
+    /// absent. Absent : `None`, l'appelant tranche avant.
+    /// Ce que l'administrateur en fait : il passe les portes qui appellent ce droit — créer, modifier et supprimer un
+    /// panneau du tableau (`porte_et_portee_du_tableau`, `panneau_editable`), le rattacher à une vue ou l'en retirer
+    /// (`view_dashboards_add`, `view_dashboard_remove`), en capturer un instantané (`snapshot_create`). Ce qu'il n'en fait
+    /// pas : il ne RÉPARE pas la ligne. Les routes du tableau lui-même relisent ces colonnes en texte, hors de ce droit, et
+    /// servent le 503 d'une lecture ratée sur une valeur de type inattendu, à lui aussi : `dash_get` (propriétaire et
+    /// visibilité), `dash_delete` (idem), `dash_update` (la visibilité, lue avant la porte), comme `panel_access` pour les
+    /// données d'un panneau. Aucune route n'écrit `owner`, et `dash_update` est la seule qui écrive `visibility` : une
+    /// visibilité de type inattendu n'est réparable par aucune route, un propriétaire de type inattendu non plus.
     pub(crate) fn proprietaire_lu_par(&self, au: &AuthUser) -> Option<&str> {
         match self {
             Self::Etabli { owner, visibility } if panneau_resolu::lisible_par(owner, visibility, au) => Some(owner.as_str()),

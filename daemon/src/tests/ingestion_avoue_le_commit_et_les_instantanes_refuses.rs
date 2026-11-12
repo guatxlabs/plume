@@ -10,8 +10,10 @@
 //
 // CE QUI CHANGE : chacun des cinq sites passe SON erreur à la classification existante, une fois. Le COMMIT journald gagne
 // la ligne `[ingest] journal COMMIT refusé -> lot annulé (<base>) : <texte> [code étendu N]`. La ligne du COMMIT des
-// événements reste celle d'avant, à l'octet. Les métriques et les instantanés n'ont pas de ligne neuve : la ligne du lot
-// refusé est celle de sa mise en quarantaine, déjà écrite par l'appelant, une par lot.
+// événements reste celle d'avant, à l'octet. Les métriques et les instantanés n'avaient pas de ligne neuve dans ce
+// changement ; le changement suivant (`ingestion_avoue_les_metriques_les_instantanes_et_les_recepteurs.rs`) leur donne la
+// leur, à code étendu, avant celle de la quarantaine : les témoins (5) à (10) l'attendent désormais (INVERSÉS
+// nommément, `cg1_ligne_du_commit`), le reste de leur jugement est inchangé.
 //
 // FABRICATION (sqlite3.c vendoré 3.39.4) :
 // - COMMIT refusé par le SUPPORT : une E/S RÉELLEMENT refusée à l'écriture du COMMIT. Le crochet de course que le lot
@@ -37,11 +39,9 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : aucun disque réellement plein (`ENOSPC` rendrait `SQLITE_FULL`, compté par la même
 // classification, non joué ici) ; aux sites des métriques et des instantanés la corruption est celle d'un index, posée par
-// une écriture SQL ; les COMMIT des lots de métriques et d'instantanés et les insertions d'alertes de la
-// voie des instantanés ne sont pas classés par ce changement ; les récepteurs HTTP de métriques (`ingest/obs.rs`,
-// `metrics_prom` et `metrics_write`) ne le sont pas non plus : une ligne refusée y passe par
-// `annuler_le_lot_a_la_ligne_refusee`, un COMMIT refusé par `refuser_le_geste_non_valide`, et aucun des deux n'appelle
-// `sqlite_plafond::journaliser_si_erreur_du_support`.
+// une écriture SQL ; les COMMIT des lots de métriques et d'instantanés, les insertions d'alertes de la voie des
+// instantanés et les récepteurs HTTP de métriques (`ingest/obs.rs`) ne sont pas classés par ce changement : ils le sont
+// par le suivant, témoigné dans `ingestion_avoue_les_metriques_les_instantanes_et_les_recepteurs.rs`.
 
 #[cfg(test)]
 mod cg1_ingestion_commit_metriques_instantanes {
@@ -297,10 +297,15 @@ mod cg1_ingestion_commit_metriques_instantanes {
         }
     }
 
-    /// La ligne du COMMIT refusé attendue de la voie, ENTIÈRE ; aucune pour les métriques et les instantanés.
+    /// La ligne du refus attendue de la voie, ENTIÈRE : celle du COMMIT pour les voies d'événements ; pour les métriques
+    /// et les instantanés, la ligne à code étendu que leur site écrit depuis le changement suivant (INVERSÉ : avant, aucune).
     fn cg1_ligne_du_commit(voie: &str, r: &Value, support: bool) -> Vec<String> {
         let chemin = r["chemin"].as_str().expect("chemin");
+        let refus = if support { cg1_support_attendu(voie).1 } else { format!("cg1-contrainte [code étendu {CONSTRAINT_TRIGGER}]") };
         match (voie, support) {
+            ("metriques", _) => vec![format!("[ingest] metrics INSERT refusé -> lot annulé : {refus}")],
+            ("instantane_neuf", _) => vec![format!("[ingest] snapshot INSERT refusé -> lot annulé : {refus}")],
+            ("battement", _) => vec![format!("[ingest] snapshot battement refusé -> lot annulé : {refus}")],
             // Ligne neuve : texte du moteur et code étendu.
             ("journald", true) => vec![format!("[ingest] journal COMMIT refusé -> lot annulé ({chemin}) : {}", cg1_support_attendu(voie).1)],
             ("journald", false) => vec![format!("[ingest] journal COMMIT refusé -> lot annulé ({chemin}) : {TEXTE_CLE_ETRANGERE} [code étendu {CONSTRAINT_FOREIGNKEY}]")],

@@ -418,7 +418,10 @@ impl Drop for TransactionDuLot<'_> {
 /// NE PERDE PLUS silencieusement des events auth (sshd/sudo/su) sur une écriture DB en échec (disque plein,
 /// base verrouillée). Succès : sémantique/lignes stockées INCHANGÉES (parité mode 0).
 pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &str, forced_host: Option<&str>) -> Result<usize, LotNonEcrit> {
-    if ouvrir_sa_transaction(conn, "ingest", "lot journald").is_err() {
+    // Un `BEGIN` refusé par le support est compté au composant `store` (un verrou ne l'est pas) ; la ligne reste celle
+    // d'`ouvrir_sa_transaction`, qui ne classe rien.
+    if let Err(refus) = ouvrir_sa_transaction(conn, "ingest", "lot journald") {
+        crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
         return Err(LotNonEcrit::NonPris);
     }
     // `P10.34-g` — à partir d'ici, tout abandon (refus, `return`, panic) annule la transaction du lot.
@@ -594,7 +597,9 @@ pub(crate) fn ingest_events_batch_env(
     forced_host: Option<&str>,
     env_id: Option<&str>,
 ) -> Result<(usize, usize), LotNonEcrit> {
-    if ouvrir_sa_transaction(conn, "ingest", "lot d'événements").is_err() {
+    // Même règle que le `BEGIN` du lot journald. Ce site sert aussi le lot Loki (`loki_push`, ingest/obs.rs).
+    if let Err(refus) = ouvrir_sa_transaction(conn, "ingest", "lot d'événements") {
+        crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
         return Err(LotNonEcrit::NonPris);
     }
     // `P10.34-g` — à partir d'ici, tout abandon (refus, `return`, panic) annule la transaction du lot.
@@ -1099,6 +1104,9 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
             // — conservé, mais sorti du flux, et rien ne le rejoue sans geste de l'exploitant.
             let committed = match Txn::begin(&conn) {
                 Err(refus) => {
+                    // Un `BEGIN` refusé par le support est compté au composant `store` ; un verrou ne l'est pas. La ligne
+                    // reste celle de `dire_la_transaction_non_ouverte`, qui ne classe rien.
+                    crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
                     dire_la_transaction_non_ouverte(&conn, "ingest", "lot de métriques du spool", &refus);
                     None
                 }
@@ -1110,16 +1118,31 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                         if !name.is_empty() {
                             // COUTURE STORE (data-plane) : `labels=None` == littéral NULL du legacy -> ligne identique.
                             // Erreur du support comptée au composant `store` (une seule par lot : la boucle s'arrête) ;
-                            // la ligne du lot est celle de sa mise en quarantaine, plus bas.
+                            // la ligne dit le refus avec le code étendu, sans le nom de la métrique (lu dans le lot) ;
+                            // celle de la mise en quarantaine suit, plus bas.
                             if let Err(e) = store().insert_metric(&conn, &MetricRow { ts, name: name.to_string(), labels: None, value: val, host: host.map(|s| s.to_string()) }) {
                                 crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                                eprintln!("[ingest] metrics INSERT refusé -> lot annulé : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
                                 ok = false;
                                 break;
                             }
                         }
                     }
-                    // ok -> COMMIT (Txn::commit) ; !ok OU COMMIT en échec -> Drop(tx) = ROLLBACK (identique au manuel).
-                    Some(ok && tx.commit().is_ok())
+                    // ok -> COMMIT (Txn::commit) ; !ok -> Drop(tx) = ROLLBACK, COMMIT non tenté. Un COMMIT refusé est
+                    // déjà annulé quand son `Err` arrive ici (le garde, consommé par `Txn::commit`, tombe dans son `Drop`
+                    // = ROLLBACK, comme avant) ; il est classé et dit ici, `Txn::commit` ne classant rien.
+                    if !ok {
+                        Some(false)
+                    } else {
+                        match tx.commit() {
+                            Ok(()) => Some(true),
+                            Err(e) => {
+                                crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                                eprintln!("[ingest] metrics COMMIT refusé -> lot annulé : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
+                                Some(false)
+                            }
+                        }
+                    }
                 }
             };
             drop(conn);
@@ -1147,6 +1170,8 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
             // `P10.26-s` — `None` = transaction NON PRISE : lot laissé au spool (même règle que les métriques).
             let done = match Txn::begin(&conn) {
                 Err(refus) => {
+                    // Même règle que le `BEGIN` du lot de métriques : compté s'il accuse le support, ligne inchangée.
+                    crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
                     dire_la_transaction_non_ouverte(&conn, "ingest", "lot d'instantané du spool", &refus);
                     None
                 }
@@ -1185,9 +1210,11 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                     };
                     if hash.is_empty() || last.as_deref() != Some(hash.as_str()) {
                         // COUTURE STORE (data-plane). kind/hash CLONÉS (réutilisés dans la branche else = heartbeat).
-                        // Erreur du support comptée au composant `store` ; la ligne du lot est celle de sa quarantaine.
+                        // Erreur du support comptée au composant `store` ; la ligne dit le refus avec le code étendu,
+                        // sans le genre ni la machine (lus dans le lot) ; celle de la quarantaine suit.
                         if let Err(e) = store().insert_snapshot(&conn, &SnapshotRow { ts, kind: kind.clone(), hash: hash.clone(), data: data.to_string(), host: host.map(|s| s.to_string()) }) {
                             crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                            eprintln!("[ingest] snapshot INSERT refusé -> lot annulé : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
                             ok = false;
                         }
                     } else {
@@ -1197,6 +1224,7 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                         // Même règle que l'inscription d'un instantané neuf.
                         if let Err(e) = serie.toucher_le_dernier(&conn, ts) {
                             crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                            eprintln!("[ingest] snapshot battement refusé -> lot annulé : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
                             ok = false;
                         }
                     }
@@ -1210,11 +1238,17 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                             // 1 alerte par JOUR et PAR MACHINE : le constat décrit l'état d'UNE machine (l'INSERT
                             // lie d'ailleurs `host`). MESURÉ sans l'hôte : 5 machines sans lockdown -> 1 alerte.
                             let dedup = serie.cle_alerte(&format!("fw-lockdown-{}", ts / 86400));
-                            if conn.execute(
+                            // Une alerte refusée annule le lot (comme avant) ; elle est classée et dite, la règle nommée
+                            // par son littéral (jamais un texte du lot).
+                            if let Err(e) = conn.execute(
                                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
                                  VALUES(?1,'firewall.lockdown',3,?2,?3,?4,?5,?6,?7)",
                                 params![ts, "Contrôle firewall docker-lan-lockdown ABSENT", data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
-                            ).is_err() { ok = false; }
+                            ) {
+                                crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                                eprintln!("[ingest] snapshot alerte firewall.lockdown refusée -> lot annulé : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
+                                ok = false;
+                            }
                         }
                     }
                     if ok && kind == "controls" {
@@ -1234,11 +1268,15 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                             let depuis = crate::controles_de_defense::dernier_etat_different(&conn, host, &hash)
                                 .and_then(|t| crate::controles_de_defense::jour_utc(&conn, t));
                             let titre = crate::controles_de_defense::enonce_des_manquants(&etat, failed, host, depuis.as_deref());
-                            if conn.execute(
+                            if let Err(e) = conn.execute(
                                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
                                  VALUES(?1,'control.catalog',3,?2,?3,?4,?5,?6,?7)",
                                 params![ts, titre, data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
-                            ).is_err() { ok = false; }
+                            ) {
+                                crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                                eprintln!("[ingest] snapshot alerte control.catalog refusée -> lot annulé : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
+                                ok = false;
+                            }
                         }
                         // UN CATALOGUE VIDE SE DIT. `failed=0` sur un catalogue vide est la valeur la PLUS
                         // rassurante de la série et ne mesure rien : la posture serait verte parce que personne
@@ -1248,15 +1286,31 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                         // capteur), pas une défense connue tombée. Dédup (hôte, jour) : un seul état possible.
                         if ok && etat.declare_vide() {
                             let dedup = serie.cle_alerte(&format!("controls-vides-{}", ts / 86400));
-                            if conn.execute(
+                            if let Err(e) = conn.execute(
                                 "INSERT OR IGNORE INTO alert(ts,rule,severity,title,detail,dedup,host,basis,basis_ref) \
                                  VALUES(?1,'control.catalog.vide',2,?2,?3,?4,?5,?6,?7)",
                                 params![ts, crate::controles_de_defense::enonce_du_catalogue_vide(host), data.to_string(), dedup, host, crate::fondement::Fondement::Instantane.mot(), kind],
-                            ).is_err() { ok = false; }
+                            ) {
+                                crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                                eprintln!("[ingest] snapshot alerte control.catalog.vide refusée -> lot annulé : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
+                                ok = false;
+                            }
                         }
                     }
-                    // ok -> COMMIT (Txn::commit) ; !ok OU COMMIT en échec -> Drop(tx) = ROLLBACK (identique au manuel).
-                    Some(ok && tx.commit().is_ok())
+                    // ok -> COMMIT (Txn::commit) ; !ok -> Drop(tx) = ROLLBACK, COMMIT non tenté. Un COMMIT refusé, déjà
+                    // annulé par le `Drop` du garde, est classé et dit ici (même règle que les métriques).
+                    if !ok {
+                        Some(false)
+                    } else {
+                        match tx.commit() {
+                            Ok(()) => Some(true),
+                            Err(e) => {
+                                crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                                eprintln!("[ingest] snapshot COMMIT refusé -> lot annulé : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
+                                Some(false)
+                            }
+                        }
+                    }
                 }
             };
             done

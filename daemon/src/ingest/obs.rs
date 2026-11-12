@@ -109,8 +109,11 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
     // relais (Basic / jeton non lié) -> inchangé, la collecte multi-hôtes reste intacte.
     let hote = HoteIngere::resoudre(&au, q.get("host").map(|s| s.as_str()));
     with_write(&st, &au, |conn| {
-    // `P10.26-s` — sa transaction ou rien (cf. `CAUSE_LOT_D_INGESTION_NON_ECRIT`).
-    if ouvrir_sa_transaction(conn, "ingest", "lot de métriques Prometheus").is_err() {
+    // `P10.26-s` — sa transaction ou rien (cf. `CAUSE_LOT_D_INGESTION_NON_ECRIT`). Un refus qui accuse le support est
+    // compté au composant `store` (`P10.34-x`) ; ni `ouvrir_sa_transaction`, ni `annuler_le_lot_a_la_ligne_refusee`, ni
+    // `refuser_le_geste_non_valide` ne classent : chaque refus de ce lot est classé ici, une fois, et sa ligne est celle d'avant.
+    if let Err(refus) = ouvrir_sa_transaction(conn, "ingest", "lot de métriques Prometheus") {
+        crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
         return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LOT_D_INGESTION_NON_ECRIT);
     }
     // `P10.34-g` — à partir d'ici, tout abandon (refus, `return`, panic) annule la transaction du lot (`TransactionDuLot`,
@@ -124,13 +127,17 @@ pub(crate) async fn metrics_prom(State(st): State<AppState>, Extension(au): Exte
         // une chaîne d'hôte brute. `insert_metric` prépare-en-cache le MÊME SQL que la boucle d'avant.
         match store().insert_metric(conn, &metric_ingeree(ts, name, labels, *value, &hote)) {
             Ok(k) => ecrites += k,
-            Err(refus) => return annuler_le_lot_a_la_ligne_refusee(conn, "lot de métriques Prometheus", &refus),
+            Err(refus) => {
+                crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
+                return annuler_le_lot_a_la_ligne_refusee(conn, "lot de métriques Prometheus", &refus);
+            }
         }
         // Rien en production ; sous `cfg(test)`, le crochet d'un témoin (un panic après une écriture du lot, `P10.34-g`).
         #[cfg(test)]
         crate::handlers::transaction_validee::point_de_course(&format!("lot-de-metriques-prometheus:{name}"));
     }
     if let Err(refus) = lot.valider() {
+        crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
         return refuser_le_geste_non_valide("ingest", "lot de métriques Prometheus", &refus, CAUSE_LOT_D_INGESTION_NON_ECRIT);
     }
     // `S31` (temps 1) — `ingested` est VRAI (les lignes sont insérées et la transaction est validée) et
@@ -244,8 +251,10 @@ pub(crate) async fn metrics_write(State(st): State<AppState>, Extension(au): Ext
         return StatusCode::NO_CONTENT.into_response();
     }
     with_write(&st, &au, |conn| {
-    // `P10.26-s` — sa transaction ou rien (cf. `CAUSE_LOT_D_INGESTION_NON_ECRIT`).
-    if ouvrir_sa_transaction(conn, "ingest", "lot remote_write").is_err() {
+    // `P10.26-s` — sa transaction ou rien (cf. `CAUSE_LOT_D_INGESTION_NON_ECRIT`). Chaque refus de ce lot est classé ici,
+    // une fois, comme pour le lot Prometheus ci-dessus.
+    if let Err(refus) = ouvrir_sa_transaction(conn, "ingest", "lot remote_write") {
+        crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
         return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_LOT_D_INGESTION_NON_ECRIT);
     }
     // `P10.34-g` — même garde que le lot Prometheus ci-dessus : tout abandon, panic compris, annule la transaction du lot.
@@ -256,13 +265,17 @@ pub(crate) async fn metrics_write(State(st): State<AppState>, Extension(au): Ext
         // `P10.27-i` — le 204 n'est rendu que si aucune ligne n'est refusée (cf. `CAUSE_LIGNE_DU_LOT_REFUSEE`).
         match store().insert_metric(conn, &metric_ingeree(*ts, name.as_ref(), labels.as_ref(), *value, &hote)) {
             Ok(_) => {}
-            Err(refus) => return annuler_le_lot_a_la_ligne_refusee(conn, "lot remote_write", &refus),
+            Err(refus) => {
+                crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
+                return annuler_le_lot_a_la_ligne_refusee(conn, "lot remote_write", &refus);
+            }
         }
         // Rien en production ; sous `cfg(test)`, le crochet d'un témoin (un panic après une écriture du lot, `P10.34-g`).
         #[cfg(test)]
         crate::handlers::transaction_validee::point_de_course(&format!("lot-remote-write:{name}"));
     }
     if let Err(refus) = lot.valider() {
+        crate::sqlite_plafond::journaliser_si_erreur_du_support(&refus);
         return refuser_le_geste_non_valide("ingest", "lot remote_write", &refus, CAUSE_LOT_D_INGESTION_NON_ECRIT);
     }
     // `S31` (temps 1) — ce 204 fait avancer le WAL de l'émetteur (Alloy/Prometheus) et disparaître sa

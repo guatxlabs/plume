@@ -537,7 +537,12 @@ pub(crate) fn ingest_journal_lines(conn: &Connection, db_path: &str, content: &s
     // ING-1 : le COMMIT peut échouer (I/O au flush WAL sous disque plein) -> ROLLBACK + `Err` (quarantaine)
     // au lieu d'avaler l'erreur et de supprimer un fichier dont les events n'ont PAS été durcis.
     // `P10.34-g` : jugé par `valider_la_transaction`, qui annule sur un refus (et le dit si l'écrivain reste bloqué).
-    if lot.valider().is_err() {
+    // Le refus est classé ici (`valider_la_transaction` ne classe rien) : une erreur du support (dont une E/S refusée à
+    // l'écriture du COMMIT) est comptée au composant `store`, une contrainte différée ne l'est pas. La ligne a la forme
+    // de celle de la voie des événements, avec le code étendu.
+    if let Err(e) = lot.valider() {
+        crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+        eprintln!("[ingest] journal COMMIT refusé -> lot annulé ({db_path}) : {}", crate::sqlite_plafond::decrire_l_erreur(&e));
         return Err(LotNonEcrit::Annule(n));
     }
     // #51 DAY-2 OPS : compteur monotone d'events ingérés (voie journald NDJSON), cf. plume_ingest_events_total.
@@ -774,7 +779,10 @@ pub(crate) fn ingest_events_batch_env(
     if batch_min != i64::MAX { note_host_backfill_floor(conn, batch_min); }
     // `P10.26-s` — le `COMMIT` du lot est JUGÉ : refusé, la transaction est annulée (c'est la sienne) et le lot l'est
     // avec, rien n'est compté comme ingéré. Il était ignoré, et `Ok` partait quoi que la base ait fait.
+    // Le refus est classé ici, comme un `INSERT` refusé (`valider_la_transaction` ne classe rien) ; la ligne d'après
+    // reste celle d'avant, à l'octet.
     if let Err(e) = lot.valider() {
+        crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
         eprintln!("[ingest] events COMMIT refusé -> lot annulé ({db_path}) : {e}");
         return Err(LotNonEcrit::Annule(n));
     }
@@ -1101,7 +1109,10 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                         let val = m.get("value").and_then(|x| x.as_f64()).unwrap_or(0.0);
                         if !name.is_empty() {
                             // COUTURE STORE (data-plane) : `labels=None` == littéral NULL du legacy -> ligne identique.
-                            if store().insert_metric(&conn, &MetricRow { ts, name: name.to_string(), labels: None, value: val, host: host.map(|s| s.to_string()) }).is_err() {
+                            // Erreur du support comptée au composant `store` (une seule par lot : la boucle s'arrête) ;
+                            // la ligne du lot est celle de sa mise en quarantaine, plus bas.
+                            if let Err(e) = store().insert_metric(&conn, &MetricRow { ts, name: name.to_string(), labels: None, value: val, host: host.map(|s| s.to_string()) }) {
+                                crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
                                 ok = false;
                                 break;
                             }
@@ -1174,12 +1185,20 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
                     };
                     if hash.is_empty() || last.as_deref() != Some(hash.as_str()) {
                         // COUTURE STORE (data-plane). kind/hash CLONÉS (réutilisés dans la branche else = heartbeat).
-                        if store().insert_snapshot(&conn, &SnapshotRow { ts, kind: kind.clone(), hash: hash.clone(), data: data.to_string(), host: host.map(|s| s.to_string()) }).is_err() { ok = false; }
+                        // Erreur du support comptée au composant `store` ; la ligne du lot est celle de sa quarantaine.
+                        if let Err(e) = store().insert_snapshot(&conn, &SnapshotRow { ts, kind: kind.clone(), hash: hash.clone(), data: data.to_string(), host: host.map(|s| s.to_string()) }) {
+                            crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                            ok = false;
+                        }
                     } else {
                         // même état (hash inchangé) -> on TOUCHE le ts du dernier snapshot DE CETTE SÉRIE = heartbeat.
                         // Sinon un capteur stable (ex Control Catalog 3-manquants constants) est marqué "muet" à tort
                         // (dédup) — et, sans le filtre d'hôte, on rajeunissait la ligne de la machine d'à côté.
-                        if serie.toucher_le_dernier(&conn, ts).is_err() { ok = false; }
+                        // Même règle que l'inscription d'un instantané neuf.
+                        if let Err(e) = serie.toucher_le_dernier(&conn, ts) {
+                            crate::sqlite_plafond::journaliser_si_erreur_du_support(&e);
+                            ok = false;
+                        }
                     }
                     if ok && kind == "firewall" {
                         let fw_ok = data

@@ -265,15 +265,30 @@ ETIQUETTE_DE_CHAMP = re.compile(r"(?:^|[,;])[A-Za-z_-]+=")
 # P10.32-l — et seulement un mot du vocabulaire FERMÉ (`ETIQUETTES_DE_CHAMP` de `collectors/mail.sh`) : un autre
 # `nom=` hors chevrons est une partie locale, masquée entière.
 ETIQUETTES_DE_CHAMP = frozenset(("sasl_username=", "sasl_sender=", "envelope-from="))
+# Ce qui précède un CHAMP dans les lignes que ces démons écrivent (`SEPARATEURS_DE_CHAMP` de
+# `check_mail_sensor_masks_every_local_part_it_emits.py`, `masquer_adresses` de `collectors/mail.sh`).
+SEPARATEURS_DE_CHAMP = (", ", "; ")
+# P10.32-l — en TÊTE du morceau, un mot du vocabulaire n'est une étiquette que derrière un séparateur de champ
+# (`, ` ou `; `, `SEPARATEURS_DE_CHAMP`) ; derrière une simple espace, `: ` ou rien, il part avec la partie locale.
+SONDES_DU_SEPARATEUR = (
+    (", sasl_username=jean@example.org", ", sasl_username=*@example.org"),
+    ("; envelope-from=jean@example.org", "; envelope-from=*@example.org"),
+    ("said: 550 sasl_sender=jean@example.org", "said: 550 *@example.org"),
+    ("x: envelope-from=jean@example.org", "x: *@example.org"),
+    ("sasl_username=jean@example.org", "*@example.org"),
+)
 
 
 def _etiquette(m):
-    """L'étiquette de champ gardée devant le morceau `m` (motif `[^ <@]+@`), ou `""`."""
+    """L'étiquette de champ gardée devant le morceau `m` (motif `[^ <@]+@`), ou `""` ; en TÊTE du morceau,
+    seulement derrière un séparateur de champ (`SEPARATEURS_DE_CHAMP`)."""
     avant = m.string[m.start() - 1] if m.start() else ""
     if avant in ("<", "@"):
         return ""
     e = ETIQUETTE_DE_CHAMP.search(m.group(0)[:-1])
     if not e or e.group(0).lstrip(",;") not in ETIQUETTES_DE_CHAMP:
+        return ""
+    if e.start() == 0 and m.string[max(m.start() - 2, 0):m.start()] not in SEPARATEURS_DE_CHAMP:
         return ""
     return m.group(0)[:e.end()]
 
@@ -522,9 +537,12 @@ def epreuve_du_juge():
                          ('to=<jean[1]@example.org>', 'to=<*@example.org>'),
                          # P10.32-l : un `nom=` DANS les chevrons est la partie locale, pas une étiquette.
                          ('to=<jean_dupont=x@example.org>', 'to=<*@example.org>'),
-                         ('sasl_username=jean@example.org', 'sasl_username=*@example.org')):
+                         (', sasl_username=jean@example.org', ', sasl_username=*@example.org')):
         if masquer(brut) != masque or partie_locale_restante(masquer(brut)):
             return f"le masquage écrit ici laisse fuir une partie locale : `{brut}` -> `{masquer(brut)}`"
+    for brut, masque in SONDES_DU_SEPARATEUR:
+        if masquer(brut) != masque:
+            return f"le masquage écrit ici ne suit pas la règle du séparateur de champ : `{brut}` -> `{masquer(brut)}` au lieu de `{masque}`"
     if (partie_locale_restante("to=<jean:*@example.org>") != "jean:*" or partie_locale_restante('to=<"*@example.org>') != '"*'
             or partie_locale_restante("to=<jean_dupont=*@example.org>") != "jean_dupont=*"):
         return "le juge ne voit pas une partie locale masquée à moitié"

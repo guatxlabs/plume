@@ -384,9 +384,9 @@ function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
 # `<a\ b@d>` rend `<a\ *@d>` — aucune borne lisible ne sépare alors la partie locale du texte qui la précède.
 # CE QUE LE MASQUAGE MANGE EN TROP, DIT : la ponctuation collée devant une partie locale (`(a@d` rend
 # `*@d`), et le domaine d’une adresse collée à la suivante sans espace (`a@x,b@y` rend `*@*@y`).
-# P10.32-l — UNE ÉTIQUETTE DE CHAMP `clé=` COLLÉE À LA PARTIE LOCALE N’EST PAS MANGÉE : `sasl_username=jean@d`
-# rend `sasl_username=*@d`, `envelope-from=jean@d;` rend `envelope-from=*@d;`. Une ÉTIQUETTE, et rien d’autre :
-# le préfixe `nom=` (`[A-Za-z_-]+=`, jusqu’au PREMIER `=`) au DÉBUT du morceau ou juste après un `,` ou un `;`
+# P10.32-l — UNE ÉTIQUETTE DE CHAMP `clé=` COLLÉE À LA PARTIE LOCALE N’EST PAS MANGÉE : `, sasl_username=jean@d`
+# rend `, sasl_username=*@d`, `; envelope-from=jean@d;` rend `; envelope-from=*@d;`. Une ÉTIQUETTE, et rien d’autre :
+# le préfixe `nom=` (`[A-Za-z_-]+=`, jusqu’au PREMIER `=`) au DÉBUT du morceau (derrière `, ` ou `; `, voir plus bas) ou juste après un `,` ou un `;`
 # du morceau, et SEULEMENT si le morceau ne suit ni un `<` ni un autre `@`. Après un `<`, tout jusqu’au `@` est
 # la partie locale, masquée ENTIÈRE : `to=<jean_dupont=x@d>` rend `to=<*@d>` (l’ancienne règle gardait tout
 # préfixe `nom=` du morceau, chevron compris, et rendait `to=<jean_dupont=*@d>` : la partie locale fuyait).
@@ -399,8 +399,15 @@ function lire_amavis(m,   reste, apres, avant, p, s, detail, unique, complete){
 # étiquette devant (` jean_dupont=x@d`), rendait ` jean_dupont=*@d` — la partie locale sortait. Un `nom=` hors du
 # vocabulaire est désormais masqué avec la partie locale (` *@d`) ; BATV sans étiquette de champ devant
 # (` prvs=0123abcd=jean@d`) rend ` *@d`. Le mot se compare ENTIER, borné d’espaces : ` rom=jean@d`, sous-chaîne
-# de `from=`, rend ` *@d`. Ce que le vocabulaire laisse, dit : un mot du vocabulaire qui serait le DÉBUT d’une
-# partie locale (` sasl_sender=jean@d` rend ` sasl_sender=*@d`) — un nom de champ, jamais un nom de personne.
+# de `from=`, rend ` *@d`. P10.32-l — ET LE MOT N’EST UNE ÉTIQUETTE QUE S’IL EST UN CHAMP : en tête du morceau,
+# seulement derrière le séparateur de champ du format, `, ` (Postfix, `smtpd.c` : `…, sasl_username=…,
+# sasl_sender=…`) ou `; ` (policyd-spf : `…; helo=…; envelope-from=…`). Derrière une simple espace ou une autre
+# ponctuation, il est la TÊTE d’une partie locale et part avec elle : ` sasl_sender=jean@d` rend ` *@d` (le
+# capteur d’avant rendait ` sasl_sender=*@d`), `x: envelope-from=jean@d` rend `x: *@d`. Ce qui reste, dit : une
+# partie locale écrite par un tiers DERRIÈRE `, ` ou `; ` et qui commence par un mot du vocabulaire
+# (`, sasl_sender=jean@d`) ne se distingue pas du champ que le démon écrit ; et après un `,` ou un `;` COLLÉ dans
+# le morceau (`rcpt;sasl_sender=jean@d`, forme qu’aucun de ces démons n’écrit), la règle d’avant tient encore :
+# `rcpt;sasl_sender=` reste lisible.
 function masquer_adresses(s,   r, t, e, p, q, c){
   gsub(/"([^"\\]|\\.)*"@/, "*@", s)
   r = ""
@@ -409,7 +416,12 @@ function masquer_adresses(s,   r, t, e, p, q, c){
     # Le caractère qui précède le morceau : celui de la ligne, ou le `@` du morceau précédent.
     if (p > 1) c = substr(s, p - 1, 1); else if (r != "") c = "@"; else c = ""
     if (c != "<" && c != "@") {
-      if (match(t, /^[A-Za-z_-]+=/)) { e = substr(t, 1, RLENGTH); if (index(ETIQUETTES_DE_CHAMP, " " e " ") == 0) e = "" }
+      if (match(t, /^[A-Za-z_-]+=/)) {
+        e = substr(t, 1, RLENGTH); if (index(ETIQUETTES_DE_CHAMP, " " e " ") == 0) e = ""
+        # En TÊTE du morceau, un CHAMP seulement : `,` ou `;` juste avant l’espace qui précède le morceau
+        # (`c`, ni `<` ni `@` ici, est cette espace ; en tête de ligne il n’y a rien, et rien ne correspond).
+        if (substr(s, p - 2, 1) !~ /[,;]/) e = ""
+      }
       else if (match(t, /[,;][A-Za-z_-]+=/)) {
         e = substr(t, 1, RSTART + RLENGTH - 1)
         if (index(ETIQUETTES_DE_CHAMP, " " substr(t, RSTART + 1, RLENGTH - 1) " ") == 0) e = ""
@@ -670,7 +682,7 @@ BEGIN{ n=0; buf=""; maxts=last+0; sans_adresse=0
   # `orig_to=`, `helo=` entre chevrons, Dovecot `user=<…>` (après un `<`, l’étiquette n’est jamais lue) ;
   # policyd-spf écrit `identity=` (`mailfrom`, `helo`), `client-ip=` (une adresse IP), `receiver=` (le nom de
   # l’hôte) et `helo=` (le HELO du client) — jamais une adresse de messagerie. Un mot de trop ne masquerait
-  # pas moins, mais un `<mot>…@d` écrit par un tiers garderait `<mot>` (la limite de `masquer_adresses`).
+  # pas moins, mais un `, <mot>…@d` écrit par un tiers garderait `<mot>` (la limite de `masquer_adresses`).
   ETIQUETTES_DE_CHAMP = " sasl_username= sasl_sender= envelope-from= "
   # `Hits: <score>, size: <taille>` : les deux champs qu’amavis écrit TOUJOURS, côte à côte, dans ses deux
   # gabarits ; score `-`, `-1.1`, `3` ou `2.1..5.3` (`macro_score`).

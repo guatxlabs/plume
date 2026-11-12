@@ -26,7 +26,10 @@ sous CHAQUE awk présent parmi `gawk` et `mawk`, sur deux journaux :
     signature BATV (`envelope-from=prvs=…=x@…`) ou un `nom=` hors du vocabulaire écrit HORS chevrons
     (` marqx_dupont=y@…`, ` prvs=…=x@…`, un nom de champ que Postfix n'écrit qu'entre chevrons ` from=x@…`, ou
     une SOUS-CHAÎNE d'un mot du vocabulaire, ` rom=x@…`, `;sender=x@…`) est masqué avec la partie locale, un mot
-    du vocabulaire après un `,` ou un `;` collé reste lisible (`rcpt;sasl_sender=*@…`) ;
+    du vocabulaire après un `,` ou un `;` collé reste lisible (`rcpt;sasl_sender=*@…`) ; en TÊTE du morceau, un
+    mot du vocabulaire n'est une étiquette que derrière un séparateur de champ du format (`, ` ou `; `) :
+    derrière une simple espace, `: `, `. ` ou `,` suivi de deux espaces, il part avec la partie locale
+    (lignes 25 et 26) ;
   * toutes les lignes des corpus mail livrés (`collectors/mail-*.corpus`, hors ClamAV) : dans chaque
     événement émis, aucune partie locale autre que `*` devant un `@` du message, et `user`, `sender`,
     `rcpt` vides, `*` ou `*@<domaine>`.
@@ -39,12 +42,25 @@ avec tous les envois du domaine. La garde LIT la règle : si elle ne groupe plus
 CODES : 0 tout est tenu ; 1 un défaut mesuré ; 2 la garde refuse de conclure (juge non discriminant, aucun
 awk, capteur en échec, corpus ou règle illisibles) — rien n'a été mesuré.
 
+ÉPREUVES DU SÉPARATEUR DE CHAMP (mutants vus rouges le 2026-11-12, puis retirés) : dans `masquer_adresses`,
+l'étiquette reconnue n'importe où en tête du morceau (ligne du séparateur retirée) -> 1 (lignes 25, 26) ; `,`
+seul admis -> 1 (lignes 11, 16) ; `;` seul admis -> 1 (lignes 4, 5) ; toute ponctuation `[,;:.]` admise -> 1
+(ligne 26) ; le caractère lu à `p - 1` au lieu de `p - 2` -> 1 (lignes 4, 5, 11, 16). Dans le juge, `_etiquette`
+sans le séparateur -> 2, le séparateur exigé aussi après un `,`/`;` collé -> 2, `; ` retiré de
+`SEPARATEURS_DE_CHAMP` -> 2.
+
 CE QU'ELLE NE TIENT PAS, DIT
 ----------------------------
 Une partie locale à espace que le capteur ne LIT pas (texte libre d'un serveur distant, `<jean dupont@d>`
 hors de la valeur lue) sort encore `<jean *@d>` : aucune borne lisible ne la sépare du texte. Une partie
-locale qui COMMENCE par un mot du vocabulaire (` sasl_sender=jean@d`) garde ce mot (` sasl_sender=*@d`) : un nom de champ,
-pas un nom de personne. (Jusqu'au 2026-10-27, tout `nom=` hors chevrons était gardé : ` jean_dupont=x@d`
+locale qui COMMENCE par un mot du vocabulaire garde ce mot SEULEMENT derrière un séparateur de champ
+(`, sasl_sender=jean@d` rend `, sasl_sender=*@d`) : le format ne la distingue pas du champ que le démon écrit ;
+derrière une simple espace (` sasl_sender=jean@d`), elle est masquée entière (` *@d`) depuis le 2026-11-12. Après
+un `,` ou un `;` COLLÉ dans le morceau (`rcpt;sasl_sender=jean@d`), ce qui précède le mot reste lisible
+(`rcpt;sasl_sender=*@d`) : forme qu'aucun de ces démons n'écrit, gardée telle quelle parce que deux gardes voisines
+(`check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py`,
+`check_mail_sensor_classifies_dovecot_logins_of_both_versions.py`) en réécrivent la règle et la rejouent sur le
+corpus livré. (Jusqu'au 2026-10-27, tout `nom=` hors chevrons était gardé : ` jean_dupont=x@d`
 rendait ` jean_dupont=*@d`, la partie locale sortait.) Le domaine est gardé à dessein. Le compte d'une entrée `LOCAL` est l'adresse que le client authentifié a donnée
 (une banque de politique nommée `LOCAL` sans le drapeau `%l` serait lue comme originaire). Les lignes
 fabriquées ne sont pas relevées dans un journal réel ; leurs formes sont celles des corpus livrés.
@@ -97,6 +113,9 @@ ETIQUETTE_DE_CHAMP = re.compile(r"(?:^|[,;])[A-Za-z_-]+=")
 # `collectors/mail.sh`) : les seuls mots que Postfix et policyd-spf écrivent HORS chevrons juste devant une
 # adresse. Un autre `nom=` est une partie locale, `from=` compris (Postfix l'écrit entre chevrons).
 ETIQUETTES_DE_CHAMP = frozenset(("sasl_username=", "sasl_sender=", "envelope-from="))
+# Ce qui précède un CHAMP dans les lignes que ces démons écrivent : `, ` (Postfix, `smtpd.c` : `…, sasl_method=…,
+# sasl_username=…, sasl_sender=…`) et `; ` (policyd-spf : `…; helo=…; envelope-from=…; receiver=…`).
+SEPARATEURS_DE_CHAMP = (", ", "; ")
 FORME_MASQUEE = re.compile(r"^(|\*|\*@[^@ ]*)$")
 AMAVIS_ORIGINAIRE = re.compile(r"[{][A-Za-z,]*[}], (?:[A-Za-z0-9_./-]+ )?LOCAL \[[0-9A-Fa-f:.]+\]:[0-9]+ ")
 COMPTE_LOCAL = "comptelocal@example.test"
@@ -218,6 +237,23 @@ FABRIQUEES = [
               "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
               "550 5.1.1 marqb_dupont=a;sasl_sender=marqgh@example.org unknown user (in reply to RCPT TO command))",
      {"user": "", "rcpt_domain": "example.org"}, ["to=<*@example.org>", "550 5.1.1 *@example.org unknown user"]),
+    # Un mot du vocabulaire n'est une étiquette que s'il est un CHAMP : précédé d'un séparateur de champ du
+    # format (`, ` de Postfix, `; ` de policyd-spf). Après une simple espace, il est la TÊTE d'une partie
+    # locale et se masque avec elle (le capteur d'avant rendait ` sasl_sender=*@…`).
+    (_h(25) + "postfix/smtp[3019]: 4A1B2C3D4F5: to=<marqq@example.org>, relay=mx.example.org[198.51.100.6]:25, "
+              "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
+              "550 5.1.1 sasl_sender=marqha@example.org envelope-from=marqhb@example.org "
+              "sasl_username=marqhc@example.org unknown user (in reply to RCPT TO command))",
+     {"user": "", "rcpt_domain": "example.org"},
+     ["to=<*@example.org>", "550 5.1.1 *@example.org *@example.org *@example.org unknown user"]),
+    # Une autre ponctuation devant l'espace (`:`, `.`), ou un séparateur suivi de DEUX espaces, n'est pas un
+    # séparateur de champ : le mot du vocabulaire part avec la partie locale.
+    (_h(26) + "postfix/smtp[3020]: 4A1B2C3D4F6: to=<marqq@example.org>, relay=mx.example.org[198.51.100.6]:25, "
+              "delay=1, delays=0.1/0/0.5/0.4, dsn=5.1.1, status=bounced (host mx.example.org[198.51.100.6] said: "
+              "550 5.1.1 x: sasl_sender=marqhd@example.org x. envelope-from=marqhe@example.org "
+              "x,  sasl_username=marqhf@example.org unknown user (in reply to RCPT TO command))",
+     {"user": "", "rcpt_domain": "example.org"},
+     ["to=<*@example.org>", "550 5.1.1 x: *@example.org x. *@example.org x,  *@example.org unknown user"]),
 ]
 MARQUEUR = re.compile(r"marq[a-z]")
 
@@ -367,12 +403,16 @@ def partie_locale_restante(message):
 
 
 def _etiquette(m):
-    """L'étiquette de champ que le masquage garde devant le morceau `m` (motif `[^ <@]+@`), ou `""`."""
+    """L'étiquette de champ que le masquage garde devant le morceau `m` (motif `[^ <@]+@`), ou `""`. En TÊTE
+    du morceau, un mot du vocabulaire n'est une étiquette que derrière un séparateur de champ (`, ` ou `; `,
+    `SEPARATEURS_DE_CHAMP`) ; après un `,` ou un `;` collé DANS le morceau, la règle d'avant (reste dit)."""
     avant = m.string[m.start() - 1] if m.start() else ""
     if avant in ("<", "@"):
         return ""
     e = ETIQUETTE_DE_CHAMP.search(m.group(0)[:-1])
     if not e or e.group(0).lstrip(",;") not in ETIQUETTES_DE_CHAMP:
+        return ""
+    if e.start() == 0 and m.string[max(m.start() - 2, 0):m.start()] not in SEPARATEURS_DE_CHAMP:
         return ""
     return m.group(0)[:e.end()]
 
@@ -456,7 +496,8 @@ def epreuve_du_juge():
     for nom, evs in ecarts.items():
         if not juger_fabriquees(evs):
             return f"le juge des lignes fabriquées ne voit pas « {nom} »"
-    if juger_corpus([{"message": "a <*@example.org> sasl_username=*@d x;envelope-from=*@d", "fields": {"user": "*@d", "sender": "", "rcpt": "*"}}]):
+    if juger_corpus([{"message": "a <*@example.org>, sasl_username=*@d; envelope-from=*@d x;envelope-from=*@d",
+                      "fields": {"user": "*@d", "sender": "", "rcpt": "*"}}]):
         return "le juge des corpus accuse un événement masqué"
     for nom, e in {
         "une partie locale restante": {"message": "to=<jean:*@example.org>", "fields": {}},
@@ -464,6 +505,10 @@ def epreuve_du_juge():
         "un `nom=` après `(` pris pour une étiquette": {"message": "imap(a_b=*@example.org)", "fields": {}},
         "un `nom=` hors vocabulaire pris pour une étiquette": {"message": "said: 550 jean_dupont=*@example.org", "fields": {}},
         "un `nom=` hors vocabulaire après `;` pris pour une étiquette": {"message": "x;jean_dupont=*@example.org", "fields": {}},
+        "un mot du vocabulaire sans séparateur de champ pris pour une étiquette":
+            {"message": "said: 550 sasl_sender=*@example.org", "fields": {}},
+        "un mot du vocabulaire derrière `: ` pris pour une étiquette": {"message": "x: sasl_sender=*@example.org", "fields": {}},
+        "un mot du vocabulaire en tête de message pris pour une étiquette": {"message": "sasl_sender=*@example.org", "fields": {}},
         "un `user` en clair": {"message": "x", "fields": {"user": "jean@example.org"}},
         "un `sender` en clair hors entrée originaire": {"message": "x", "fields": {"sender": "jean@example.org", "service": "amavis"}},
         "un `rcpt` sans arobase en clair": {"message": "x", "fields": {"rcpt": "jean"}},

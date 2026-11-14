@@ -182,9 +182,21 @@ mod lectures_des_panneaux_et_cles_de_runbook_en_trois_issues {
                 let r = aj4_donnees(&st, au, p).await;
                 // INVERSÉ (`P11.25-f`, vague CH) : un propriétaire de tableau BLOB est une ligne LUE dont le droit ne
                 // s'établit pas — pour bob, la réponse d'un panneau absent (403 « panneau inaccessible », corps compris),
-                // plus le 503 d'une lecture ratée ; l'administrateur garde le 503 d'avant (aucune exécution ajoutée pour lui).
+                // plus le 503 d'une lecture ratée.
+                // INVERSÉ (`P11.25-f`, vague CI) : l'administrateur ne reçoit plus le 503 sur ce tableau illisible ; il lit le
+                // panneau comme celui d'un tableau sain (jamais calculé ici : la chauffe, un calcul armé, attendu puis
+                // retiré de ce compte), témoins droit_illisible_lu_par_l_administrateur_et_echec_du_panneau_apres_redemarrage.rs.
                 if quoi == "tableau illisible" && qui == "bob" {
                     assert_eq!((r.0, &r.2), (403, &json!({ "error": "panneau inaccessible" })), "{quoi} ({qui}) : la réponse d'un panneau absent : {}", r.1);
+                } else if quoi == "tableau illisible" {
+                    assert_eq!((r.0, r.2.get("error"), r.2["warming"].clone()), (200, None, json!(true)), "{quoi} ({qui}) : servi comme un tableau sain : {}", r.1);
+                    for _ in 0..20_000 {
+                        if st.panel_refresh_inflight.lock().is_empty() {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    }
+                    aj4_sql(&st, &format!("DELETE FROM panel_cache WHERE panel_id={p}; DELETE FROM panel_cost WHERE panel_id={p};"));
                 } else {
                     aj4_juger_503(&format!("{quoi} ({qui})"), &r, CAUSE_PANNEAU_NON_LU);
                 }

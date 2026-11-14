@@ -73,11 +73,15 @@ fn texte_d_une_colonne_de_droit(valeur: rusqlite::types::ValueRef<'_>, defaut: &
 }
 
 /// `P11.25-f` (vague CH) — le texte SERVI d'une colonne de droit à qui lit le tableau malgré un droit non établi (seul
-/// l'administrateur, `DroitDuTableau::proprietaire_lu_par`) : la valeur de la base quand elle est du texte UTF-8, sinon
-/// le texte que la route sert déjà pour une colonne NULL (`''` pour le propriétaire, `'shared'` pour la visibilité, les
-/// `COALESCE` de `dash_list` et `dash_get`). Aucun champ neuf n'est servi : la console lit ces deux champs tels quels.
+/// l'administrateur, `DroitDuTableau::proprietaire_lu_par`) : la valeur de la base quand elle est du texte UTF-8, le
+/// défaut de la colonne NULL (`''` pour le propriétaire, `'shared'` pour la visibilité, les `COALESCE` de `dash_list` et
+/// `dash_get`), et le texte VIDE pour une valeur d'un autre type (BLOB, texte qui n'est pas de l'UTF-8). Aucun champ neuf
+/// n'est servi : la console lit ces deux champs tels quels.
+/// Vague CI : une visibilité illisible était servie `'shared'`, une valeur de repli qui se lit comme vraie alors qu'aucune
+/// porte ne l'applique (le tableau n'est lu que par l'administrateur) ; elle est servie vide, comme un propriétaire
+/// illisible (le défaut de sa colonne est déjà vide).
 fn texte_servi_d_une_colonne_de_droit(valeur: rusqlite::types::ValueRef<'_>, defaut: &str) -> String {
-    texte_d_une_colonne_de_droit(valeur, defaut).unwrap_or_else(|| defaut.to_string())
+    texte_d_une_colonne_de_droit(valeur, defaut).unwrap_or_default()
 }
 
 /// `P11.25-f` (vague CH) — LA FONCTION SQL DU DROIT ÉTABLI : 1 quand le propriétaire et la visibilité passés sont du
@@ -126,15 +130,15 @@ impl DroitDuTableau {
     /// Ce que l'administrateur en fait : il passe les portes qui appellent ce droit — créer, modifier et supprimer un
     /// panneau du tableau (`porte_et_portee_du_tableau`, `panneau_editable`), le rattacher à une vue ou l'en retirer
     /// (`view_dashboards_add`, `view_dashboard_remove`), en capturer un instantané (`snapshot_create`). Vague CH : il le
-    /// TROUVE dans la liste (`dash_list`) et le lit (`dash_get`), les champs illisibles servis comme une colonne NULL
+    /// TROUVE dans la liste (`dash_list`) et le lit (`dash_get`), les champs illisibles servis vides
     /// (`texte_servi_d_une_colonne_de_droit`), et il le RETIRE (`dash_delete`, avec ses panneaux) : c'est la réparation,
     /// aucune route n'écrit `owner`. `dash_update` d'un tableau dont la visibilité est de type inattendu la juge « pas
     /// encore commune » : un corps qui publie rend le 409 de la porte de partage et n'écrit rien, tout autre corps
     /// s'applique (poser `private` répare la colonne) ; un tableau dont seul le propriétaire est de type inattendu se
-    /// modifie comme avant. Ce qu'il n'en fait pas : `panel_access` lui sert encore le 503 « panneau non lu » pour les
-    /// données d'un panneau du tableau, et la liste comme la lecture lui servent `shared` pour une visibilité illisible
-    /// alors qu'aucune porte ne l'applique. Pour tout autre compte, chacune de ces routes rend la réponse d'un tableau
-    /// absent (d'un panneau absent pour `panel_access`) et n'écrit rien.
+    /// modifie comme avant. Vague CI : il lit les données d'un panneau du tableau (`panel_access`), comme celles d'un
+    /// tableau sain dont il n'est pas propriétaire, et la liste comme la lecture lui servent vide une visibilité illisible
+    /// (plus `shared`, qu'aucune porte n'applique). Pour tout autre compte, chacune de ces routes rend la réponse d'un
+    /// tableau absent (d'un panneau absent pour `panel_access`) et n'écrit rien.
     pub(crate) fn proprietaire_lu_par(&self, au: &AuthUser) -> Option<&str> {
         match self {
             Self::Etabli { owner, visibility } if panneau_resolu::lisible_par(owner, visibility, au) => Some(owner.as_str()),
@@ -232,17 +236,14 @@ pub(crate) fn panel_access(conn: &Connection, au: &AuthUser, panel_id: i64) -> r
     };
     // `P11.25-f` (vague CH) — le droit du tableau se lit en `DroitDuTableau` : un propriétaire ou une visibilité de type
     // inattendu est, pour tout compte sauf l'administrateur, un panneau absent (`Ok(None)`, le 403 « panneau inaccessible »
-    // de `panel_data` pour un identifiant absent), plus la lecture ratée d'une ligne lue. L'administrateur garde la lecture
-    // typée d'avant, dont l'échec est le 503 `CAUSE_PANNEAU_NON_LU` qu'il recevait : exécuter le panneau pour lui est un
-    // geste que ce lot n'ajoute pas.
+    // de `panel_data` pour un identifiant absent), plus la lecture ratée d'une ligne lue.
+    // Vague CI : l'administrateur lit ce panneau comme celui d'un tableau sain dont il n'est pas propriétaire
+    // (`proprietaire_lu_par` le lui ouvre sous un propriétaire vide, `PorteeLecture::du_dashboard` le fait `Proprietaire`
+    // par son rôle). Il recevait le 503 `CAUSE_PANNEAU_NON_LU` d'une relecture en `String` qui ne pouvait qu'échouer sur
+    // cette ligne : une lecture qui n'avait pas manqué. Le type se décide sur la valeur lue (`DroitDuTableau::de_la_ligne`) ;
+    // une vraie lecture ratée reste l'`Err` de cette instruction, donc le 503 nommé, pour lui comme pour tout compte.
     let Some(droit) = conn
-        .query_row("SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1", params![did], |r| {
-            let droit = DroitDuTableau::de_la_ligne(r, 0, 1)?;
-            match droit {
-                DroitDuTableau::NonEtabli if au.is_admin() => r.get::<_, String>(0).and_then(|_| r.get::<_, String>(1)).map(|_| droit),
-                _ => Ok(droit),
-            }
-        })
+        .query_row("SELECT COALESCE(owner,''),COALESCE(visibility,'shared') FROM dashboard WHERE id=?1", params![did], |r| DroitDuTableau::de_la_ligne(r, 0, 1))
         .optional()?
     else {
         return Ok(None);
@@ -435,8 +436,9 @@ pub(crate) async fn dash_list(State(st): State<AppState>, Extension(au): Extensi
                 return Ok((None, compte));
             }
             // `P11.25-f` (vague CH) — un propriétaire ou une visibilité de type inattendu n'arrive ici que pour
-            // l'administrateur (le filtre l'écarte pour tout autre compte) : servi comme une colonne NULL, la liste reste
-            // lisible et il y trouve la ligne. La lecture en `String` d'avant rendait la liste entière illisible.
+            // l'administrateur (le filtre l'écarte pour tout autre compte) : servi vide (`texte_servi_d_une_colonne_de_droit`,
+            // vague CI : plus le `shared` d'une colonne NULL pour la visibilité), la liste reste lisible et il y trouve la
+            // ligne. La lecture en `String` d'avant rendait la liste entière illisible.
             let owner = texte_servi_d_une_colonne_de_droit(r.get_ref(2)?, "");
             let vis = texte_servi_d_une_colonne_de_droit(r.get_ref(3)?, "shared");
             // `P11.20-n` — LE DRAPEAU DIT CE QUE LA PORTE FERA, et rien d'autre. La porte d'écriture

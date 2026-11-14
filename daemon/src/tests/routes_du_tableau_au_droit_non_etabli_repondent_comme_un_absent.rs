@@ -19,11 +19,12 @@
 //   (1) bob et carol, chaque route : statut et réponse brute (hors `date`) de l'identifiant absent de la même route, pas
 //       de 503, tableaux et panneaux inchangés (valeurs écrites relues) ; la liste et le compte de la vue sont ceux d'une
 //       base où la ligne n'existe pas ;
-//   (2) l'administrateur : la liste le sert, le total le compte, `dash_get` le sert, les champs illisibles rendus comme une
-//       colonne NULL (`''`, `'shared'`), tout autre champ à l'octet de ce que la route servait avant l'altération ;
+//   (2) l'administrateur : la liste le sert, le total le compte, `dash_get` le sert, un propriétaire illisible rendu `''`
+//       et une visibilité illisible rendue `''` (INVERSÉ en vague CI : elle était rendue `'shared'`, la valeur d'une colonne
+//       NULL), tout autre champ à l'octet de ce que la route servait avant l'altération ;
 //       `dash_update` aboutit sur chaque forme ; sur une visibilité BLOB, tenue pour « pas encore commune », un corps qui
 //       publie est jugé par la porte `P11.20-m` (409 qui nomme le panneau privé, rien d'écrit) et `private` la répare
-//       en texte ; `panel_data` garde le 503 « panneau non lu » ; `dash_delete` aboutit : la ligne et ses panneaux
+//       en texte ; `panel_data` le sert (INVERSÉ en vague CI : il gardait le 503 « panneau non lu ») ; `dash_delete` aboutit : la ligne et ses panneaux
 //       partent, les tableaux voisins et leurs panneaux restent ;
 //   (3) une vraie lecture ratée (lecture de `dashboard.owner` refusée) garde le 503 nommé de chaque route ;
 //   (4) un tableau sain : réponses entières de la liste et de la lecture, statuts et corps des écritures, accès aux données
@@ -36,15 +37,16 @@
 // compte) -> (1) ; `CH2_UPD_TYPEE` (visibilité lue en `String`) -> (1) ; `CH2_UPD_ADMIN_SHARED` (visibilité illisible lue
 // `shared` pour l'administrateur) -> (2) ; `CH2_UPD_ADMIN_503` (le 503 « visibilité non lue » d'avant rendu à
 // l'administrateur sur une visibilité BLOB) -> (2) ; `CH2_PA_TYPEE` (panel_access : lecture en `String` pour tous) -> (1) ;
-// `CH2_PA_ADMIN_OUVERT` (l'administrateur exécute) -> (2) ; `CH2_FILTRE_SANS_DROIT` (le filtre sans la fonction) -> (1)
+// `CH2_PA_ADMIN_OUVERT` (l'administrateur exécute) -> (2), devenu le comportement en vague CI (mutant inverse
+// `CI2_PA_ADMIN_503`, droit_illisible_lu_par_l_administrateur_et_echec_du_panneau_apres_redemarrage.rs) ; `CH2_FILTRE_SANS_DROIT` (le filtre sans la fonction) -> (1)
 // liste et vue ; `CH2_LISTE_SANS_POSE` (dash_list) -> (1), (2), (4) ; `CH2_VUES_SANS_POSE` (views_list) -> (1), (2) ;
 // `CH2_LISTE_TYPEE` (dash_list : lecture en `String`) -> (2) ; `CH2_SERVI_PRIVE` (une visibilité illisible servie
-// `private`) -> (2) ; `CH2_UDF_LOSSY`, `CH2_UDF_BLOB` (la fonction relit l'UTF-8 invalide avec remplacement, le BLOB
+// `private`) -> (2), et `CI2_SERVI_DEFAUT` (servie `shared`, la forme d'avant la vague CI) -> (2) ; `CH2_UDF_LOSSY`, `CH2_UDF_BLOB` (la fonction relit l'UTF-8 invalide avec remplacement, le BLOB
 // comme du texte) -> (1), (5) ; `CH2_POSE_TOUJOURS` (la fonction redéfinie à chaque appel) -> (5).
 // (3) et (4) passent aussi sur 0bf7de5c : ils tiennent ce qui ne change pas.
 //
-// CE QU'ILS NE TIENNENT PAS : l'administrateur ne lit pas les données d'un panneau d'un tel tableau (503 d'avant,
-// gardé) ; la porte d'une vue qu'on partage
+// CE QU'ILS NE TIENNENT PAS : le contenu des données d'un panneau servies à l'administrateur (jugé à l'octet par les
+// témoins de la vague CI) ; la porte d'une vue qu'on partage
 // (`element_moins_visible_d_une_vue`, dashboards.rs, et `ElementMoinsVisible::d_une_vue`, panneau_resolu.rs) lit encore le
 // propriétaire d'un tableau rangé en texte.
 // =====================================================================================
@@ -71,7 +73,7 @@ mod routes_du_tableau_au_droit_non_etabli_repondent_comme_un_absent {
 
     const CH2_FORMES: [Forme; 3] = [
         Forme { tag: "owner-blob", alteration: "UPDATE dashboard SET owner=X'626f62', visibility='shared' WHERE id={d};", controle: ("typeof(owner)||'/'||typeof(visibility)", "blob/text"), servis: ("", "shared") },
-        Forme { tag: "vis-blob", alteration: "UPDATE dashboard SET owner='bob', visibility=X'736861726564' WHERE id={d};", controle: ("typeof(owner)||'/'||typeof(visibility)", "text/blob"), servis: ("bob", "shared") },
+        Forme { tag: "vis-blob", alteration: "UPDATE dashboard SET owner='bob', visibility=X'736861726564' WHERE id={d};", controle: ("typeof(owner)||'/'||typeof(visibility)", "text/blob"), servis: ("bob", "") },
         Forme { tag: "owner-utf8", alteration: "UPDATE dashboard SET owner=CAST(X'FF62' AS TEXT), visibility='shared' WHERE id={d};", controle: ("typeof(owner)||'/'||hex(owner)", "text/FF62"), servis: ("", "shared") },
     ];
 
@@ -304,7 +306,7 @@ mod routes_du_tableau_au_droit_non_etabli_repondent_comme_un_absent {
     // -------------------------------------------------------------------------------------
 
     /// MUTATIONS : `CH2_LISTE_TYPEE`, `CH2_LISTE_SANS_POSE`, `CH2_SERVI_PRIVE`, `CH2_GET_TYPEE`, `CH2_DEL_TYPEE`,
-    /// `CH2_UPD_ADMIN_SHARED`, `CH2_UPD_ADMIN_503`, `CH2_PA_ADMIN_OUVERT`, `CH2_VUES_SANS_POSE`.
+    /// `CH2_UPD_ADMIN_SHARED`, `CH2_UPD_ADMIN_503`, `CI2_PA_ADMIN_503`, `CI2_SERVI_DEFAUT`, `CH2_VUES_SANS_POSE` (vague CI : `CH2_PA_ADMIN_OUVERT` est devenu le comportement).
     #[tokio::test]
     async fn ch2_administrateur_trouve_lit_et_retire_le_tableau_au_droit_non_etabli() {
         let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
@@ -337,9 +339,17 @@ mod routes_du_tableau_au_droit_non_etabli_repondent_comme_un_absent {
             let (code, t) = ch2_envoi(addr, "adm", "GET", &format!("/api/dashboard/{}", jeu.d), "").await;
             assert_eq!((code, ch2_json(&t)), (200, attendre(lecture_saine.clone())), "({}) adm : dash_get la sert, champs illisibles servis comme NULL", f.tag);
 
-            // Données d'un panneau : le 503 d'avant, rien d'exécuté.
+            // Données d'un panneau : INVERSÉ (vague CI) — plus le 503 d'avant ; servies comme celles d'un tableau sain (jamais
+            // calculé ici : la chauffe et un calcul armé, attendu avant les gestes suivants).
             let (code, t) = ch2_envoi(addr, "adm", "GET", &format!("/api/panels/{}/data", jeu.p), "").await;
-            ch2_juger_503(&format!("({}) adm panel_data", f.tag), code, &t, CH2_PANNEAU_NON_LU);
+            let v = ch2_json(&t);
+            assert_eq!((code, v.get("error"), v["warming"].clone()), (200, None, json!(true)), "({}) adm panel_data : servi : {t}", f.tag);
+            for _ in 0..20_000 {
+                if st.panel_refresh_inflight.lock().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
 
             // Modification : aboutit sur chaque forme, un renommage n'est pas un geste de partage.
             let (code, t) = ch2_envoi(addr, "adm", "POST", &format!("/api/dashboard/{}", jeu.d), r#"{"name":"réparé"}"#).await;

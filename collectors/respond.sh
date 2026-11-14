@@ -287,11 +287,42 @@ if [ "$backend" = auto ]; then
 fi
 # cscli mode-aware (host OU k3s exec pod LAPI) pour l'UNBAN CrowdSec en k3s. # shellcheck disable=SC2086
 NS="${PLUME_CROWDSEC_NS:-crowdsec}"; LAPI="${PLUME_CROWDSEC_LAPI:-crowdsec-lapi}"
+# `P11.25-a` — LA SONDE DU POD LAPI (`<k3s> kubectl -n <ns> get deploy <lapi>`) EST LUE, PAS SUPPOSEE. FORME
+# PRECEDENTE : sonde jetee (`>/dev/null 2>&1`), tout echec lu « CrowdSec absent de l hote » ; une API injoignable ou un
+# droit refuse faisaient alors rendre `done` une levee ou nft retirait l adresse, la decision CrowdSec jamais cherchee.
+# Trois issues, sous `LC_ALL=C LANG=C` : code 0 -> `present` ; code 1 a 125 ET la sortie d erreur porte `(NotFound)`
+# (« Error from server (NotFound): deployments.apps "<lapi>" not found » : l API a repondu, le deploiement n existe pas)
+# -> `absente` ; tout le reste -> `refus` (sonde NON CONCLUE : la levee le dit en REFUS nomme, `CSCLI_OK=sonde_refusee`).
+# k3s puis kubectl : le premier present sert ; aucun present et au moins une sonde refusee -> refus (la premiere est
+# nommee) ; seules des absences -> mecanisme absent de l hote.
+# <outil...> -> CS_SONDE (`present` | `absente` | `refus`), CS_SONDE_CODE, CS_SONDE_ECRIT (sortie d erreur)
+cs_sonder_le_pod() {
+  if CS_SONDE_ECRIT=$(LC_ALL=C LANG=C "$@" -n "$NS" get deploy "$LAPI" 2>&1 >/dev/null); then CS_SONDE=present; return 0; else CS_SONDE_CODE=$?; fi
+  case "$CS_SONDE_ECRIT" in
+    *"(NotFound)"*) if [ "$CS_SONDE_CODE" -lt 126 ]; then CS_SONDE=absente; return 0; fi ;;
+  esac
+  CS_SONDE=refus
+}
+cscli_cmd() { return 1; }; CSCLI_OK=0; CSCLI_SONDE_REFUSEE=""; CSCLI_SONDE_ECRIT=""
 if [ -n "${PLUME_CSCLI:-}" ]; then cscli_cmd() { $PLUME_CSCLI "$@"; }; CSCLI_OK=1
 elif command -v cscli >/dev/null 2>&1; then cscli_cmd() { cscli "$@"; }; CSCLI_OK=1
-elif command -v k3s >/dev/null 2>&1 && k3s kubectl -n "$NS" get deploy "$LAPI" >/dev/null 2>&1; then cscli_cmd() { k3s kubectl -n "$NS" exec "deploy/$LAPI" -- cscli "$@"; }; CSCLI_OK=1
-elif command -v kubectl >/dev/null 2>&1 && kubectl -n "$NS" get deploy "$LAPI" >/dev/null 2>&1; then cscli_cmd() { kubectl -n "$NS" exec "deploy/$LAPI" -- cscli "$@"; }; CSCLI_OK=1
-else cscli_cmd() { return 1; }; CSCLI_OK=0; fi
+else
+  if command -v k3s >/dev/null 2>&1; then
+    cs_sonder_le_pod k3s kubectl
+    case "$CS_SONDE" in
+      present) cscli_cmd() { k3s kubectl -n "$NS" exec "deploy/$LAPI" -- cscli "$@"; }; CSCLI_OK=1 ;;
+      refus) CSCLI_SONDE_REFUSEE="k3s kubectl get deploy $LAPI, code $CS_SONDE_CODE"; CSCLI_SONDE_ECRIT=$CS_SONDE_ECRIT ;;
+    esac
+  fi
+  if [ "$CSCLI_OK" = 0 ] && command -v kubectl >/dev/null 2>&1; then
+    cs_sonder_le_pod kubectl
+    case "$CS_SONDE" in
+      present) cscli_cmd() { kubectl -n "$NS" exec "deploy/$LAPI" -- cscli "$@"; }; CSCLI_OK=1 ;;
+      refus) if [ -z "$CSCLI_SONDE_REFUSEE" ]; then CSCLI_SONDE_REFUSEE="kubectl get deploy $LAPI, code $CS_SONDE_CODE"; CSCLI_SONDE_ECRIT=$CS_SONDE_ECRIT; fi ;;
+    esac
+  fi
+  if [ "$CSCLI_OK" = 0 ] && [ -n "$CSCLI_SONDE_REFUSEE" ]; then CSCLI_OK=sonde_refusee; fi
+fi
 # `P11.25-a` — UN RETRAIT nft EST CLASSE COMME LE DEMON LE CLASSE (daemon/src/handlers/actions.rs,
 # `MESSAGE_NFT_D_ABSENCE`, `classer_le_retrait_nft`). `nft delete element` rend le meme code (1) pour une adresse
 # absente et pour tout autre refus : seule sa SORTIE D ERREUR les distingue, lue sous `LC_ALL=C LANG=C` (le texte de
@@ -302,17 +333,20 @@ else cscli_cmd() { return 1; }; CSCLI_OK=0; fi
 #     seulement, code 126/127 d une commande qui ne part pas, code > 128 d un nft tue par un signal meme apres avoir
 #     ecrit le message) : l adresse peut rester bannie dans ce set.
 # La sortie standard de nft (vide pour `delete element` sans `--echo`) part au journal de l unite, jamais dans la
-# decision ni dans le resultat. Un refus est remis avec le set, le code et ce que nft a ecrit, borne a
-# NFT_PART_DE_RETRAIT_OCTETS octets par set (coupe sur un caractere, `[...]` dit la coupe) : quand nft est le seul
-# backend, le plan, la part du premier set et l etiquette du second (set et code) tiennent sous la borne de 500
-# caracteres que le central applique au resultat, si bien qu un premier set bavard ne masque pas le second. Les
-# sorties de fail2ban et de CrowdSec, qui les precedent, ne sont pas bornees ici.
+# decision ni dans le resultat. Le texte remis pour un set NOMME son issue : ` retiree` (suivi de ce que nft a ecrit
+# sur sa sortie d erreur, s il a ecrit), ` absente : ` suivi du message d absence, ou ` REFUS du retrait dans <set>
+# (<code>) : ` suivi de ce que nft a ecrit ; dans les trois cas, ce que nft a ecrit est borne a
+# NFT_PART_DE_RETRAIT_OCTETS octets par set (une ligne, chaque caractere de controle en espace, coupe sur un caractere,
+# `[...]` dit la coupe : `retrait_ecrit_borne`, et `nft_lire_l_echec` pour un refus). Les sorties de fail2ban et de CrowdSec, qui les precedent, sont
+# bornees de meme. Chacun de ces ecrits est MARQUE dans le texte (`LEVEE_DEBUT_DETAIL`) : c est la seule part qui cede
+# quand le texte entier depasserait la borne de 500 caracteres que le central applique au resultat
+# (`levee_dans_la_borne`), si bien qu un mecanisme bavard ne masque jamais le nom ni l issue d un autre.
 NFT_MESSAGE_D_ABSENCE="No such file or directory"
 NFT_PART_DE_RETRAIT_OCTETS=120
 # Tout caractere de controle (pas seulement le saut de ligne) devient une espace : le resultat part en JSON, et `esc`
 # n echappe que le saut de ligne, le retour chariot et la tabulation ; un autre caractere de controle brut (sequence
 # de couleur, cloche) ferait refuser le corps par le central, et le verdict ne serait jamais remis.
-# <code> <sortie d erreur de nft> -> 0 si c est l absence, sinon 1 et NFT_REFUS_TEXTE = « (cause) : ecrit borne »
+# <code> <sortie d erreur de nft> -> 0 si c est l absence, sinon 1 et NFT_REFUS_TETE = « (cause) : », NFT_REFUS_ECRIT = ecrit borne, NFT_REFUS_TEXTE = les deux
 nft_lire_l_echec() {
   _cr_code=$1
   case "$2" in
@@ -323,19 +357,22 @@ nft_lire_l_echec() {
   _cr_entier=$(printf '%s' "$2" | tr '\000-\037' ' ')
   _cr_coupe=$(printf '%s\n' "$_cr_entier" | coupe_sur_caractere "$NFT_PART_DE_RETRAIT_OCTETS")
   if [ "$_cr_coupe" != "$_cr_entier" ]; then _cr_coupe="$_cr_coupe [...]"; fi
-  NFT_REFUS_TEXTE="($_cr_cause) : $_cr_coupe"
+  NFT_REFUS_TETE="($_cr_cause) : "; NFT_REFUS_ECRIT=$_cr_coupe
+  NFT_REFUS_TEXTE="$NFT_REFUS_TETE$NFT_REFUS_ECRIT"
   return 1
 }
 # <set> <adresse> -> NFT_RETRAIT (`retiree` | `absente` | `refus`) et NFT_RETRAIT_TEXTE (texte remis pour ce set)
 nft_classer_le_retrait() {
   if NFT_RETRAIT_TEXTE=$(LC_ALL=C LANG=C nft delete element inet plume "$1" "{ $2 }" 3>&2 2>&1 1>&3 3>&-); then
-    NFT_RETRAIT=retiree; return 0
+    NFT_RETRAIT=retiree
+    if [ -n "$NFT_RETRAIT_TEXTE" ]; then NFT_RETRAIT_TEXTE=" retiree : $(levee_detail "$NFT_RETRAIT_TEXTE")"; else NFT_RETRAIT_TEXTE=" retiree"; fi
+    return 0
   else
     _cr_retour=$?
   fi
-  if nft_lire_l_echec "$_cr_retour" "$NFT_RETRAIT_TEXTE"; then NFT_RETRAIT=absente; return 0; fi
+  if nft_lire_l_echec "$_cr_retour" "$NFT_RETRAIT_TEXTE"; then NFT_RETRAIT=absente; NFT_RETRAIT_TEXTE=" absente : $(levee_detail "$NFT_RETRAIT_TEXTE")"; return 0; fi
   NFT_RETRAIT=refus
-  NFT_RETRAIT_TEXTE="REFUS du retrait dans $1 $NFT_REFUS_TEXTE"
+  NFT_RETRAIT_TEXTE=" REFUS du retrait dans $1 $NFT_REFUS_TETE$LEVEE_DEBUT_DETAIL$NFT_REFUS_ECRIT$LEVEE_FIN_DETAIL"
 }
 # `P11.25-a` — UNE SONDE (`nft list table|set ...`) EST LUE COMME UN RETRAIT : seule l absence MESUREE (code 1 a 125 et
 # le message, sous `LC_ALL=C LANG=C`) dit que l objet n existe pas, et seulement alors le retrait n est pas tente. Une
@@ -350,26 +387,178 @@ nft_sonder() {
   NFT_SONDE=refus
   echo "respond: SONDE nft REFUSEE sur $_so_objet $NFT_REFUS_TEXTE ; le retrait est tente, son classement tranche" >&2
 }
-# UNBAN = best-effort sur TOUS les backends (une IP peut être bannie n'importe où : fail2ban/crowdsec/nft).
-# `P11.25-a` — LE VERDICT, backends dans l ordre d avant, chacun tente :
-#   - un retrait nft `refus` (sur `blocklist` ou sur `blocklist_ttl`) -> `failed`, QUOI QU AIENT RENDU les autres
-#     backends : l adresse peut rester bannie sur cet hote, un `done` dirait le contraire au central ;
-#   - nft seul backend present, aucun retrait `retiree` (deux absences, ou une absence et le set a duree inexistant)
-#     -> `failed`, `LEVEE NON FAITE` : rien n a ete leve (regle du demon, `verdict_des_deux_retraits_nft`) ;
-#   - DECISION : nft n a rien retire MAIS fail2ban ou CrowdSec etaient presents -> `done`, comme avant. Leurs
-#     retraits gardent leur `|| true` : leur code de sortie n est pas mesure, ils ont pu lever l adresse, et un
-#     `failed` affirmerait un echec que rien n a lu. Ce `done` dit « tente partout, aucun refus lu », pas « leve » ;
-#   - nft absent de l hote : rien n est sonde ni tente ; table `inet plume` absente : nft n est pas tente ; set a duree
-#     absent : son retrait n est pas tente (rien n existe a retirer, ce n est pas un refus) ; une sonde REFUSEE n est
-#     pas une absence, le retrait est tente et classe (cf. `nft_sonder`) ; aucun backend du tout -> `failed`, comme avant.
-# Le texte d un retrait `retiree` ou `absente` est celui d avant, a l octet.
+# ================================================================================================
+# `P11.25-a` — LES RETRAITS fail2ban ET CrowdSec SONT LUS, PAS SUPPOSES.
+# ------------------------------------------------------------------------------------------------
+# FORME PRECEDENTE : `OUT="$OUT [f2b]$(fail2ban-client unban "$1" 2>&1 || true)"`, de meme pour `cscli decisions
+# delete`. Le code de retour etait avale et la sortie recollee telle quelle : un serveur fail2ban arrete, une LAPI
+# CrowdSec injoignable ou un droit refuse laissaient l adresse bannie, et la levee etait dite faite des que nft avait
+# retire quelque chose ou qu un de ces deux mecanismes etait simplement present.
+# CE QUI EST FAIT : chaque retrait a TROIS issues, lues sur son code de retour ET sur ce qu il a ecrit :
+#   fail2ban (>= 0.10, `unban <ip>` leve l adresse dans TOUTES les jails) : code 0 et sa sortie ENTIERE, sur une
+#     ligne et blancs autour retires, est le nombre de jails ou elle etait bannie ;
+#   CrowdSec (`cscli decisions delete -i`, hote ou pod LAPI) : code 0 et UNE seule ligne de sa sortie porte
+#     « <n> decision(s) deleted » (le message que cscli journalise), le nombre etant en tete de ligne ou apres un
+#     caractere qui n est pas un chiffre ;
+#   -> nombre non nul `retiree`, nombre nul `absente` ; tout le reste est un REFUS : code non nul (serveur fail2ban
+#     arrete : ses bans reviennent de sa base a son redemarrage ; LAPI injoignable : la decision reste en base), ou
+#     code 0 sans nombre lisible (sortie inconnue, deux lignes de compte, avertissement mele a la sortie) — rien n a
+#     ete lu, rien n est suppose.
+# Un binaire ABSENT n est pas un refus : le mecanisme est dit absent de l hote (`RETRAIT_MECANISME_ABSENT`) ; une sonde
+# du pod LAPI NON CONCLUE en est un (`cs_sonder_le_pod`), le retrait CrowdSec n est alors pas tente. Le texte
+# remis nomme chaque mecanisme et son issue, ce qu il a ecrit borne comme un refus nft (une ligne, chaque caractere
+# de controle en espace, coupe sur un caractere a NFT_PART_DE_RETRAIT_OCTETS octets, coupe dite).
+RETRAIT_MECANISME_ABSENT="mecanisme absent de l hote"
+# <ecrit> -> une ligne, sans caractere de controle, bornee a NFT_PART_DE_RETRAIT_OCTETS octets, `[...]` si coupee.
+retrait_ecrit_borne() {
+  _eb_entier=$(printf '%s' "$1" | tr '\000-\037' ' ')
+  _eb_coupe=$(printf '%s\n' "$_eb_entier" | coupe_sur_caractere "$NFT_PART_DE_RETRAIT_OCTETS")
+  if [ "$_eb_coupe" != "$_eb_entier" ]; then _eb_coupe="$_eb_coupe [...]"; fi
+  printf '%s' "$_eb_coupe"
+}
+# ================================================================================================
+# `P11.25-a` — LE TEXTE D UNE LEVEE TIENT SOUS LA BORNE DU CENTRAL, CHAQUE MECANISME ET SON ISSUE NOMMES.
+# ------------------------------------------------------------------------------------------------
+# `action_result` (daemon/src/handlers/actions.rs) ne garde que les RESULTAT_BORNE_DU_CENTRAL premiers caracteres du
+# resultat remis. Avec deux refus, ou en reprise, le texte d une levee depassait la borne (plus de sept cents
+# caracteres) et le nom du dernier mecanisme refuse etait coupe au central. Les NOMS d abord, le DETAIL ensuite :
+# ce que chaque mecanisme a ecrit (deja borne a NFT_PART_DE_RETRAIT_OCTETS par `retrait_ecrit_borne`) est encadre de
+# LEVEE_DEBUT_DETAIL et LEVEE_FIN_DETAIL (deux caracteres de controle, qu un ecrit borne ne peut plus porter), et
+# `levee_dans_la_borne` ne coupe QUE ces parts : la phrase de reprise, le plan, chaque mecanisme et son issue, le verdict
+# et la phrase d absence apres interruption ne sont jamais coupes. Le texte entier, compte en octets (qui majorent
+# les caracteres), tient sous la borne -> rendu tel quel, marques retirees. Sinon la place qui reste apres les noms est
+# PARTAGEE entre les ecrits (borne par mecanisme) : un ecrit plus court que sa part est garde entier et ce qu il laisse
+# revient aux autres ; chaque ecrit plus long est coupe sur un caractere a sa part, ` [...]` compris (sous six octets
+# de part, l ecrit tombe entier). CE QUI NE TIENT PAS : des noms qui depassent seuls la borne (en reprise, deux issues
+# illisibles et deux sets interrompus par un signal) laissent tous les ecrits tomber, et le central coupe encore la fin.
+RESULTAT_BORNE_DU_CENTRAL=500
+LEVEE_DEBUT_DETAIL=$(printf '\037')
+LEVEE_FIN_DETAIL=$(printf '\036')
+LEVEE_COUPE=" [...]"
+# <ecrit> -> l ecrit borne (`retrait_ecrit_borne`), encadre des deux marques
+levee_detail() { printf '%s%s%s' "$LEVEE_DEBUT_DETAIL" "$(retrait_ecrit_borne "$1")" "$LEVEE_FIN_DETAIL"; }
+levee_sans_marques() { printf '%s' "$1" | tr -d "$LEVEE_DEBUT_DETAIL$LEVEE_FIN_DETAIL"; }
+octets_de() { printf '%s' "$1" | LC_ALL=C wc -c; }
+# <k> <liste...> -> le k-ieme element de la liste
+levee_nieme() { _ln_k=$1; shift; shift $((_ln_k - 1)); printf '%s' "$1"; }
+# <ecrit> <part en octets> -> l ecrit coupe sur un caractere, ` [...]` compris ; rien sous la longueur de la marque
+levee_ecrit_coupe() {
+  if [ "$2" -lt "${#LEVEE_COUPE}" ]; then return 0; fi
+  _le_coupe=""
+  if [ "$2" -gt "${#LEVEE_COUPE}" ]; then
+    _le_coupe=$(printf '%s\n' "$1" | coupe_sur_caractere $(($2 - ${#LEVEE_COUPE})))
+  fi
+  printf '%s%s' "$_le_coupe" "$LEVEE_COUPE"
+}
+# <texte marque> -> le texte, marques retirees, tenu sous RESULTAT_BORNE_DU_CENTRAL octets par la coupe des seuls ecrits
+levee_dans_la_borne() {
+  _lb_reste=$1; _lb_fixe=0; _lb_somme=0; _lb_longueurs=""
+  while :; do
+    case "$_lb_reste" in *"$LEVEE_DEBUT_DETAIL"*) ;; *) break ;; esac
+    _lb_fixe=$((_lb_fixe + $(octets_de "${_lb_reste%%"$LEVEE_DEBUT_DETAIL"*}")))
+    _lb_reste=${_lb_reste#*"$LEVEE_DEBUT_DETAIL"}
+    _lb_l=$(($(octets_de "${_lb_reste%%"$LEVEE_FIN_DETAIL"*}")))
+    _lb_reste=${_lb_reste#*"$LEVEE_FIN_DETAIL"}
+    _lb_longueurs="$_lb_longueurs $_lb_l"; _lb_somme=$((_lb_somme + _lb_l))
+  done
+  _lb_fixe=$((_lb_fixe + $(octets_de "$_lb_reste")))
+  if [ $((_lb_fixe + _lb_somme)) -le "$RESULTAT_BORNE_DU_CENTRAL" ]; then levee_sans_marques "$1"; return 0; fi
+  # Partage : tant qu un ecrit tient dans sa part, il est garde entier et sa longueur sort de la place a partager.
+  _lb_place=$((RESULTAT_BORNE_DU_CENTRAL - _lb_fixe)); _lb_restants=""; _lb_k=0
+  for _lb_l in $_lb_longueurs; do
+    _lb_k=$((_lb_k + 1))
+    if [ "$_lb_l" -gt 0 ]; then _lb_restants="$_lb_restants $_lb_k"; fi
+  done
+  _lb_part=0
+  while [ -n "$_lb_restants" ]; do
+    _lb_n=0
+    for _lb_k in $_lb_restants; do _lb_n=$((_lb_n + 1)); done
+    _lb_part=$((_lb_place / _lb_n)); _lb_gardes=0; _lb_suivants=""
+    for _lb_k in $_lb_restants; do
+      # shellcheck disable=SC2086
+      _lb_l=$(levee_nieme "$_lb_k" $_lb_longueurs)
+      if [ "$_lb_l" -le "$_lb_part" ]; then _lb_place=$((_lb_place - _lb_l)); _lb_gardes=1; else _lb_suivants="$_lb_suivants $_lb_k"; fi
+    done
+    _lb_restants=$_lb_suivants
+    if [ "$_lb_gardes" = 0 ]; then break; fi
+  done
+  _lb_reste=$1; _lb_sortie=""; _lb_k=0
+  while :; do
+    case "$_lb_reste" in *"$LEVEE_DEBUT_DETAIL"*) ;; *) break ;; esac
+    _lb_sortie="$_lb_sortie${_lb_reste%%"$LEVEE_DEBUT_DETAIL"*}"
+    _lb_reste=${_lb_reste#*"$LEVEE_DEBUT_DETAIL"}
+    _lb_d=${_lb_reste%%"$LEVEE_FIN_DETAIL"*}; _lb_reste=${_lb_reste#*"$LEVEE_FIN_DETAIL"}
+    _lb_k=$((_lb_k + 1))
+    case " $_lb_restants " in *" $_lb_k "*) _lb_d=$(levee_ecrit_coupe "$_lb_d" "$_lb_part") ;; esac
+    _lb_sortie="$_lb_sortie$_lb_d"
+  done
+  printf '%s%s' "$_lb_sortie" "$_lb_reste"
+}
+# <mecanisme> <code> <ecrit> <nombre lu, ou vide> -> RETRAIT (`retiree` | `absente` | `refus`) et RETRAIT_TEXTE
+retrait_juger() {
+  _jr_ecrit=$(levee_detail "$3")
+  if [ "$2" != 0 ]; then
+    RETRAIT=refus; RETRAIT_TEXTE=" REFUS du retrait $1 (code $2) : $_jr_ecrit"; return 0
+  fi
+  case "$4" in
+    ''|*[!0-9]*) RETRAIT=refus; RETRAIT_TEXTE=" REFUS du retrait $1 (code 0, issue illisible : aucun nombre de retraits lu) : $_jr_ecrit" ;;
+    *[!0]*) RETRAIT=retiree; RETRAIT_TEXTE=" retiree : $_jr_ecrit" ;;
+    *) RETRAIT=absente; RETRAIT_TEXTE=" absente : $_jr_ecrit" ;;
+  esac
+}
+# <adresse> -> RETRAIT, RETRAIT_TEXTE
+f2b_classer_le_retrait() {
+  if _f2_ecrit=$(fail2ban-client unban "$1" 2>&1); then _f2_code=0; else _f2_code=$?; fi
+  # Blancs retires en tete et en fin de CHAQUE ligne : une sortie sur deux lignes garde son saut de ligne, qui n est pas
+  # un chiffre, et `retrait_juger` la lit illisible.
+  _f2_nombre=$(printf '%s\n' "$_f2_ecrit" | LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  retrait_juger fail2ban "$_f2_code" "$_f2_ecrit" "$_f2_nombre"
+}
+# <adresse> -> RETRAIT, RETRAIT_TEXTE
+cs_classer_le_retrait() {
+  if _cs_ecrit=$(cscli_cmd decisions delete -i "$1" 2>&1); then _cs_code=0; else _cs_code=$?; fi
+  _cs_nombre=$(printf '%s\n' "$_cs_ecrit" | LC_ALL=C sed -n 's/^\(.*[^0-9]\)\{0,1\}\([0-9][0-9]*\) decision(s) deleted.*$/\2/p')
+  retrait_juger CrowdSec "$_cs_code" "$_cs_ecrit" "$_cs_nombre"
+}
+# UNBAN = sur TOUS les mecanismes presents (une IP peut etre bannie n importe ou : fail2ban/crowdsec/nft), chacun tente.
+# `P11.25-a` — LE VERDICT :
+#   - un REFUS de l un quelconque (fail2ban, CrowdSec, retrait nft sur `blocklist` ou sur `blocklist_ttl`) -> `failed`,
+#     QUOI QU AIENT RENDU les autres : l adresse peut rester bannie sur cet hote, un `done` dirait le contraire ;
+#   - aucun refus et AU MOINS UN retrait -> `done` ;
+#   - aucun refus et rien retire nulle part (chaque mecanisme present rend l absence) -> `failed`, `LEVEE NON FAITE` :
+#     rien n a ete leve (regle du demon, `verdict_des_deux_retraits_nft`) ;
+#   - aucun mecanisme present -> `failed`, chacun dit absent, puis `aucun backend de ban disponible`.
+# Une sonde du pod LAPI non conclue (`CSCLI_OK=sonde_refusee`) est un REFUS CrowdSec, jamais une absence.
+# nft absent de l hote : rien n est sonde ni tente ; table `inet plume` absente : nft n est pas tente, dit `absente` ;
+# set a duree absent : son retrait n est pas tente (rien n existe a retirer, ce n est pas un refus), dit `absente` ;
+# une sonde REFUSEE n est pas une absence, le retrait est tente et classe (cf. `nft_sonder`).
 unban_all() {
-  OUT=""; _ua_autres=0; _ua_refus=0; _ua_retrait=0
-  # `P10.21-n` : « rien retire, rien refuse, nft seul » est lu par la REPRISE d une levee interrompue (traiter_action).
+  OUT=""; _ua_presents=0; _ua_refus=0; _ua_retrait=0
+  # `P10.21-n` : « rien retire, rien refuse, au moins un mecanisme » est lu par la REPRISE d une levee interrompue
+  # (traiter_action).
   UA_RIEN_RETIRE=0; UA_OUT_AVANT_VERDICT=""
-  if command -v fail2ban-client >/dev/null 2>&1; then _ua_autres=1; OUT="$OUT [f2b]$(fail2ban-client unban "$1" 2>&1 || true)"; fi
-  if [ "$CSCLI_OK" = 1 ]; then _ua_autres=1; OUT="$OUT [cs]$(cscli_cmd decisions delete -i "$1" 2>&1 || true)"; fi
-  if command -v nft >/dev/null 2>&1; then nft_sonder "la table inet plume" table inet plume; else NFT_SONDE=absent; fi
+  if command -v fail2ban-client >/dev/null 2>&1; then
+    _ua_presents=1; f2b_classer_le_retrait "$1"; OUT="$OUT [f2b]$RETRAIT_TEXTE"
+    case "$RETRAIT" in refus) _ua_refus=1 ;; retiree) _ua_retrait=1 ;; esac
+  else
+    OUT="$OUT [f2b] $RETRAIT_MECANISME_ABSENT"
+  fi
+  if [ "$CSCLI_OK" = 1 ]; then
+    _ua_presents=1; cs_classer_le_retrait "$1"; OUT="$OUT [cs]$RETRAIT_TEXTE"
+    case "$RETRAIT" in refus) _ua_refus=1 ;; retiree) _ua_retrait=1 ;; esac
+  elif [ "$CSCLI_OK" = sonde_refusee ]; then
+    # Le pod LAPI n a pas pu etre cherche : la decision peut rester en base, ce n est pas une absence.
+    _ua_presents=1; _ua_refus=1
+    OUT="$OUT [cs] REFUS du retrait CrowdSec (sonde non conclue : $CSCLI_SONDE_REFUSEE ; retrait non tente) : $(levee_detail "$CSCLI_SONDE_ECRIT")"
+  else
+    OUT="$OUT [cs] $RETRAIT_MECANISME_ABSENT"
+  fi
+  if command -v nft >/dev/null 2>&1; then
+    _ua_presents=1; nft_sonder "la table inet plume" table inet plume
+    if [ "$NFT_SONDE" = absent ]; then OUT="$OUT [nft] absente (table inet plume inexistante, rien a retirer)"; fi
+  else
+    NFT_SONDE=absent; OUT="$OUT [nft] $RETRAIT_MECANISME_ABSENT"
+  fi
   if [ "$NFT_SONDE" != absent ]; then
     nft_classer_le_retrait blocklist "$1"; OUT="$OUT [nft]$NFT_RETRAIT_TEXTE"
     case "$NFT_RETRAIT" in refus) _ua_refus=1 ;; retiree) _ua_retrait=1 ;; esac
@@ -378,14 +567,15 @@ unban_all() {
     if [ "$NFT_SONDE" != absent ]; then
       nft_classer_le_retrait blocklist_ttl "$1"; OUT="$OUT [nft-ttl]$NFT_RETRAIT_TEXTE"
       case "$NFT_RETRAIT" in refus) _ua_refus=1 ;; retiree) _ua_retrait=1 ;; esac
+    else
+      OUT="$OUT [nft-ttl] absente (set blocklist_ttl inexistant, rien a retirer)"
     fi
   fi
-  [ -n "$OUT" ] || { OUT='aucun backend de ban disponible'; return 1; }
+  if [ "$_ua_presents" = 0 ]; then OUT="$OUT ; aucun backend de ban disponible"; return 1; fi
   if [ "$_ua_refus" = 1 ]; then return 1; fi
-  # Ici OUT n est pas vide : sans fail2ban ni CrowdSec, c est que nft a ete tente.
-  if [ "$_ua_retrait" = 0 ] && [ "$_ua_autres" = 0 ]; then
+  if [ "$_ua_retrait" = 0 ]; then
     UA_RIEN_RETIRE=1; UA_OUT_AVANT_VERDICT="$OUT"
-    OUT="$OUT ; LEVEE NON FAITE : adresse absente de chaque set nft tente, rien n a ete retire"; return 1
+    OUT="$OUT ; LEVEE NON FAITE : adresse absente de chaque mecanisme present, rien n a ete retire"; return 1
   fi
   return 0
 }
@@ -580,9 +770,9 @@ plan() {                 # kind target -> imprime la commande qui SERAIT execute
       else
         printf 'NON-APPLIQUE crowdsec : duree %s (%s) illisible ou nulle (cause : %s) — aucun ban pose' "$EFF_DUR" "$DUR_PROV" "$DUREE_CAUSE"
       fi ;;
-    crowdsec:unban_ip) printf 'cscli decisions delete -i %s' "$2" ;;
+    crowdsec:unban_ip) printf 'cscli decisions delete -i %s' "$2" ;;  # HORS D ATTEINTE : unban_ip sort plus haut
     fail2ban:ban_ip)   printf 'fail2ban-client set %s banip %s [duree %s (%s) NON portee par fail2ban : le ban dure le bantime de la jail %s]' "$JAIL" "$2" "$EFF_DUR" "$DUR_PROV" "$JAIL" ;;
-    fail2ban:unban_ip) printf 'fail2ban-client set %s unbanip %s' "$JAIL" "$2" ;;
+    fail2ban:unban_ip) printf 'fail2ban-client set %s unbanip %s' "$JAIL" "$2" ;;  # HORS D ATTEINTE : unban_ip sort plus haut
     nft:ban_ip)
       if duree_de_ban_lisible "$EFF_DUR" nft; then
         printf 'nft create element inet plume %s { %s timeout %s } [duree %s : %s] ; deja banni : duree appliquee seulement si elle allonge, jamais raccourci' "$NFT_SET_TTL" "$2" "$EFF_DUR" "$EFF_DUR" "$DUR_PROV"
@@ -600,9 +790,11 @@ enforce() {              # kind target -> applique ; renvoie 0/!=0, sortie dans 
     crowdsec:ban_ip)
       duree_de_ban_lisible "$EFF_DUR" cscli || { OUT="duree $EFF_DUR illisible ou nulle pour cscli, rien pose (cause : $DUREE_CAUSE)"; return 1; }
       OUT=$(cscli_cmd decisions add -i "$t" -d "$EFF_DUR" -t ban -R plume-playbook 2>&1) ;;
-    crowdsec:unban_ip) OUT=$(cscli decisions delete -i "$t" 2>&1) ;;
+    # HORS D ATTEINTE : `unban_ip` sort au debut de `enforce` vers `unban_all` ; si ce renvoi tombait, la levee
+    # serait encore classee sur tous les mecanismes, jamais lue sur la seule sortie d une commande.
+    crowdsec:unban_ip) unban_all "$t"; return $? ;;
     fail2ban:ban_ip)   OUT=$(fail2ban-client set "$JAIL" banip "$t" 2>&1) ;;
-    fail2ban:unban_ip) OUT=$(fail2ban-client set "$JAIL" unbanip "$t" 2>&1) ;;
+    fail2ban:unban_ip) unban_all "$t"; return $? ;;  # HORS D ATTEINTE, meme raison
     nft:ban_ip)
       duree_de_ban_lisible "$EFF_DUR" nft || { OUT="duree $EFF_DUR illisible ou nulle comme timeout nft, rien pose (cause : $DUREE_CAUSE)"; return 1; }
       ensure_nft; nft_poser_sans_raccourcir "$t" "$EFF_DUR"; return $? ;;
@@ -750,13 +942,13 @@ etat_de_rejeu_pret() {
 # `P10.21-n` — UNE RIPOSTE RE-SERVIE N EST JAMAIS EXECUTEE UNE SECONDE FOIS A L AVEUGLE.
 # ------------------------------------------------------------------------------------------------
 # Par CET agent. Sur un hote a la fois central et agent, le responder local du demon n est pas tenu par ce
-# registre : voir le reste nomme sous "UN TOUR PLUS LONG QUE LA FENETRE DE RECLAMATION", plus bas.
+# registre : voir « HOTE A LA FOIS CENTRAL ET AGENT », plus bas.
 # CE QUI SE PASSAIT. `enforce` partait sans qu aucune trace ne soit ecrite AVANT ; le seul souvenir etait
 # `verdicts-a-remettre`, ecrit APRES, et seulement sur un echec passager de la remise. Le central re-sert une
 # riposte reclamee sans verdict apres sa fenetre de reclamation (`RECLAMATION_PERIMEE_S`, cote demon) : elle
 # etait REEXECUTEE quand l agent s etait arrete entre l execution et la retenue du verdict, quand la retenue
 # renoncait (etat non inscriptible, file pleine, ecriture refusee), apres un refus definitif de la remise et
-# apres un rejeu abandonne. Une levee reexecutee sur nft seul rendait alors `failed` LEVEE NON FAITE : le
+# apres un rejeu abandonne. Une levee reexecutee ou rien n etait plus a retirer rendait alors `failed` LEVEE NON FAITE : le
 # second verdict contredisait le premier.
 # CE QUI EST FAIT : un REGISTRE D EXECUTION (`REGISTRE_FICHIER`, dans le repertoire 0700 du rejeu, fichier
 # 0600), une ligne par riposte, champs separes par une tabulation :
@@ -772,26 +964,30 @@ etat_de_rejeu_pret() {
 #                 que porte le registre), et le journal dit la re-remise ;
 #   commencee  -> l issue de la premiere execution est inconnue : la riposte est REPRISE par le meme
 #                 `enforce`, et son resultat le DIT (`PHRASE_REPRISE`). Un ban repris ne raccourcit rien
-#                 (`nft_poser_sans_raccourcir`). Une levee reprise qui ne trouve l adresse nulle part (nft
-#                 seul, rien retire, rien refuse) est rendue `done` : constatee absente, retrait non observe ;
-#                 un REFUS de retrait reste `failed`.
+#                 (`nft_poser_sans_raccourcir`). Une levee reprise qui ne trouve l adresse nulle part (aucun
+#                 mecanisme present n a rien retire, aucun n a refuse) est rendue `done` : constatee absente,
+#                 retrait non observe ; un REFUS de retrait reste `failed`, un hote sans aucun mecanisme aussi.
 # Un identifiant inscrit pour une AUTRE riposte (base du central recreee, identifiants repartis de zero) n est
 # pas une re-presentation : l entree perimee est remplacee, c est dit, et la riposte suit son cours.
 # UNE ENTREE PART quand le central a pris son verdict (2xx sans `"ok":false`) ou a repondu que la riposte est
 # close (`"ok":false`), a la remise, au rejeu ou a la re-remise. Sinon elle reste.
-# BORNE : REGISTRE_LIGNES lignes. Au-dela, la plus ancienne `faite` sort, et c est AVOUE (re-servie ensuite,
-# elle serait reexecutee) ; une `commencee` ne sort JAMAIS par eviction : son issue est inconnue, l oublier
-# rendrait une reprise aveugle en execution aveugle. La borne couvre les ripostes que le central peut encore
-# re-servir pendant qu il ne prend aucun verdict : le tour en cours et le precedent (cent actions au plus
-# chacun, re-servies passee la fenetre de reclamation) plus la file de rejeu entiere (REJEU_LIGNES).
-# CE QUI N EST PAS TENU : une `commencee` ne part que lorsque le central re-sert sa riposte (elle devient `faite`) ou
-# prend son verdict. Celle d une riposte que le central ne re-servira JAMAIS (annulee ou close au central apres un
-# arret brutal de l agent) reste donc a vie. Apres REGISTRE_LIGNES arrets de ce genre, le registre est plein de
-# `commencee` : chaque riposte suivante est executee SANS protection contre la reexecution, avouee a chaque fois
-# (« registre plein de ripostes commencees »), et rien ne le repare seul — retirer le fichier rend la protection.
-# REGISTRE INDISPONIBLE (etat non inscriptible, illisible, plein de `commencee`, ecriture refusee, identifiant
-# trop long) : la
-# riposte est EXECUTEE quand meme — un ban est une defense, il ne se suspend pas pour un etat local — et
+# BORNE : REGISTRE_LIGNES lignes. Au-dela, les plus anciennes `faite` sortent d abord, chacune AVOUEE (re-servie
+# ensuite, elle serait reexecutee). S il n y a pas assez de `faite`, les plus anciennes `commencee` sortent ensuite,
+# chacune AVOUEE elle aussi par son identifiant et son genre — jamais sa cible, qu aucune ligne du journal n a peut-etre
+# portee (l execution a ete interrompue) : re-servie ensuite, elle serait executee de nouveau sans etre dite reprise.
+# Une `commencee` ne part donc jamais en silence, et un registre plein de `commencee` ne retire plus la protection a
+# toutes les ripostes suivantes. POURQUOI LES `faite` D ABORD : leur verdict est connu et leur reexecution est un
+# second effet ; une `commencee` re-servie aurait de toute facon ete REPRISE, c est-a-dire executee — l evincer ne
+# perd que la mention de la reprise. Une `commencee` jamais re-servie (riposte annulee ou close au central apres un
+# arret brutal de l agent) ne reste donc plus a vie : la borne la fait sortir, avouee.
+# CE QUE LA BORNE NE COUVRE PAS : elle a ete posee pour le tour en cours et le precedent (cent actions au plus chacun)
+# plus la file de rejeu entiere (REJEU_LIGNES). Avec le rythme livre de l unite (`OnUnitActiveSec=60s`) et la fenetre
+# de reclamation (`RECLAMATION_PERIMEE_S`, trois cents secondes), CINQ tours tiennent dans une fenetre : pendant une
+# panne de remise prolongee a files pleines, des ripostes encore re-servables sortent par la borne — avouees.
+# Seules les lignes LISIBLES sont evincees ; si les lignes illisibles restees au registre (ecriture refusee au debut du
+# tour) empechent de faire assez de place, rien ne sort et la cause le dit.
+# REGISTRE INDISPONIBLE (etat non inscriptible, illisible, plein de lignes illisibles, ecriture refusee, identifiant
+# trop long) : la riposte est EXECUTEE quand meme — un ban est une defense, il ne se suspend pas pour un etat local — et
 # l aveu dit que la protection contre la reexecution est ABSENTE pour cette riposte.
 # Les lectures du registre se font sous `LC_ALL=C` (la forme est jugee octet par octet), et toujours a travers
 # `registre_texte`, qui retire les octets nuls : une coupure de courant peut laisser la fin d un fichier remplie de
@@ -887,8 +1083,9 @@ registre_lire() {
   fi
 }
 
-# Fait de la place pour une ligne : a partir de REGISTRE_LIGNES lignes, les plus anciennes `faite` sortent, chacune
-# dite. Tout ou rien : s il n y a pas assez de `faite`, rien ne sort et REG_CAUSE le dit.
+# Fait de la place pour une ligne : a partir de REGISTRE_LIGNES lignes, les plus anciennes `faite` sortent, puis, s il
+# n y en a pas assez, les plus anciennes `commencee` ; chacune dite. Tout ou rien : si les lignes lisibles ne suffisent
+# pas (lignes illisibles restees au registre), rien ne sort et REG_CAUSE le dit.
 registre_faire_place() {
   [ -f "$REGISTRE_FICHIER" ] || return 0
   # HORS D ATTEINTE depuis `traiter_action` sauf course : `registre_lire` vient de lire ce fichier, et un registre
@@ -899,7 +1096,8 @@ registre_faire_place() {
   _fp_n=$(printf '%s\n' "$_fp_texte" | LC_ALL=C grep -c '') || :
   [ "$_fp_n" -ge "$REGISTRE_LIGNES" ] || return 0
   _fp_trop=$((_fp_n - REGISTRE_LIGNES + 1))
-  _fp_faites=$(printf '%s\n' "$_fp_texte" | LC_ALL=C grep -n "^[0-9]*	faite	" | sed -n "1,${_fp_trop}p") || :
+  _fp_lisibles=$(printf '%s\n' "$_fp_texte" | LC_ALL=C grep -nE "$REGISTRE_FORME") || :
+  _fp_faites=$(printf '%s\n' "$_fp_lisibles" | LC_ALL=C grep "^[0-9]*:[0-9]*	faite	" | sed -n "1,${_fp_trop}p") || :
   _fp_k=0; _fp_sed=""; _fp_ids=""
   while IFS= read -r _fp_l; do
     [ -n "$_fp_l" ] || continue
@@ -909,8 +1107,24 @@ registre_faire_place() {
   done <<EOF
 $_fp_faites
 EOF
+  # Pas assez de `faite` : les plus anciennes `commencee` font le reste de la place, chacune avouee (identifiant et
+  # genre, jamais la cible).
+  _fp_c=0; _fp_aveux=""
   if [ "$_fp_k" -lt "$_fp_trop" ]; then
-    REG_CAUSE="registre plein de ripostes commencees ($_fp_n lignes pour $REGISTRE_LIGNES, une commencee ne sort jamais par eviction)"
+    _fp_commencees=$(printf '%s\n' "$_fp_lisibles" | LC_ALL=C grep "^[0-9]*:[0-9]*	commencee	" | sed -n "1,$((_fp_trop - _fp_k))p") || :
+    while IFS= read -r _fp_l; do
+      [ -n "$_fp_l" ] || continue
+      _fp_c=$((_fp_c + 1)); _fp_e=${_fp_l#*:}; _fp_g=${_fp_e#*	commencee	}
+      _fp_aveux="${_fp_aveux}respond: registre d execution PLEIN ($REGISTRE_LIGNES lignes) : #${_fp_e%%	*} (commencee, genre ${_fp_g%%	*}, issue de son execution inconnue) EVINCEE : si le central la re-sert, elle sera executee de nouveau sans etre dite reprise
+"
+      _fp_sed="$_fp_sed${_fp_l%%:*}d
+"
+    done <<EOF
+$_fp_commencees
+EOF
+  fi
+  if [ $((_fp_k + _fp_c)) -lt "$_fp_trop" ]; then
+    REG_CAUSE="registre plein de lignes illisibles non retirees ($_fp_n lignes pour $REGISTRE_LIGNES, $((_fp_k + _fp_c)) lisible(s) a evincer pour $_fp_trop place(s) a faire)"
     return 1
   fi
   if ! (umask 077 && printf '%s\n' "$_fp_texte" | LC_ALL=C sed "$_fp_sed" > "$REGISTRE_FICHIER.nouveau") 2>/dev/null || ! registre_publier; then
@@ -920,6 +1134,7 @@ EOF
   for _fp_id in $_fp_ids; do
     echo "respond: registre d execution PLEIN ($REGISTRE_LIGNES lignes) : #$_fp_id (faite, verdict jamais pris par le central) EVINCEE : si le central la re-sert, elle sera REEXECUTEE" >&2
   done
+  printf '%s' "$_fp_aveux" >&2
 }
 
 # registre_inscrire <id> <genre> <cible> -> 0 si la ligne `commencee` est ecrite ; sinon 1 et REG_CAUSE. Elle est
@@ -988,9 +1203,11 @@ consequence_de_la_re_presentation() {
 #     sur son propre minuteur) prend aussi une action approuvee dont la reclamation d agent a passe la fenetre et dont
 #     `host` est sa propre identite (`ACTIONS_A_RECLAMER_ICI`, daemon/src/handlers/actions.rs), et il l EXECUTE sans
 #     lire ni ce verrou ni ce registre. Une riposte que l agent tient encore, ou dont le verdict n est pas encore pris
-#     par le central, peut donc etre executee une seconde fois par le demon. RESTE NOMME, NON FERME : ni ce script,
-#     ni sa garde ne le tiennent.
-# Aucune garde ne lie la fenetre au rythme du minuteur.
+#     par le central, peut donc etre executee une seconde fois par le demon. Voir « HOTE A LA FOIS CENTRAL ET AGENT »,
+#     plus bas : le partage est impossible depuis ce script, et c est dit au journal a chaque tour ou
+#     `plume-respond.timer` est actif.
+# Le lien entre la fenetre et le rythme des unites est tenu par un temoin du demon
+# (daemon/src/tests/fenetre_de_reclamation_et_rythme_des_repondeurs.rs).
 VERROU_FICHIER="$REJEU_DIR/verrou"
 VERROU_REPERTOIRE="$REJEU_DIR/verrou.d"
 VERROU_REPERTOIRE_PRIS=0
@@ -1048,6 +1265,29 @@ prendre_le_verrou() {
     rm -rf "$VERROU_REPERTOIRE" 2>/dev/null || :
   done
   echo "respond: VERROU NON PRIS ($VERROU_REPERTOIRE ni cree ni repris) : ce tour-ci continue sans verrou, une execution simultanee de l agent n est pas empechee" >&2
+}
+
+# ================================================================================================
+# `P10.21-n` — HOTE A LA FOIS CENTRAL ET AGENT : LE RESPONDER LOCAL DU DEMON N EST TENU NI PAR CE VERROU NI PAR CE
+# REGISTRE, ET C EST DIT.
+# ------------------------------------------------------------------------------------------------
+# MESURE dans l arbre : les deux unites d un tel hote ne lancent PAS le meme programme. `plume-respond-agent.timer` lance
+# ce script ; `plume-respond.timer` lance `plume-daemon respond` (systemd/plume-respond.service), le responder du demon
+# ecrit en Rust (`respond_run`, daemon/src/handlers/actions.rs), qui lit ses actions dans la base et n ouvre ni
+# VERROU_FICHIER ni REGISTRE_FICHIER. Son unite (`ProtectSystem=strict`, seul `/var/lib/plume/db` inscriptible) ne
+# pourrait d ailleurs pas y ecrire. Ce script ne peut donc pas lui faire partager son verrou ni son registre.
+# CE QUI EST FAIT : a chaque tour, juste apres la prise du verrou, si `systemctl` dit `plume-respond.timer` ACTIF,
+# l aveu `PHRASE_RESPONDER_LOCAL_HORS_VERROU` part au journal. Sans `systemctl`, ou minuteur du demon inactif ou
+# inconnu (hote seulement agent) : rien n est dit. Dans tous les cas l execution des ripostes est la meme : l aveu ne
+# suspend rien.
+# CE QUI N EST PAS TENU : un responder du demon lance autrement que par ce minuteur (cron, a la main) n est pas vu ; et
+# la double execution elle-meme reste possible (reste nomme : elle se ferme cote demon, pas ici).
+PHRASE_RESPONDER_LOCAL_HORS_VERROU="HOTE A LA FOIS CENTRAL ET AGENT (plume-respond.timer actif) : le responder local du demon (plume-daemon respond) ne prend ni ce verrou ni ce registre d execution ; s il porte la meme identite que cet agent, il execute aussi une riposte de cet hote dont la reclamation d agent a passe la fenetre, et elle peut alors etre executee deux fois"
+dire_le_responder_local_hors_verrou() {
+  # `systemctl` absent : la condition echoue (commande introuvable), rien n est dit.
+  if systemctl is-active --quiet plume-respond.timer >/dev/null 2>&1; then
+    echo "respond: $PHRASE_RESPONDER_LOCAL_HORS_VERROU" >&2
+  fi
 }
 
 verdict_en_attente_de_remise() {   # <id> -> 0 si un verdict de cette riposte attend sa remise
@@ -1361,13 +1601,16 @@ traiter_action() {
     echo "respond: #$id protection contre la REEXECUTION ABSENTE pour cette riposte ($REG_CAUSE) : elle est executee quand meme (un ban est une defense, il ne se suspend pas pour un etat local)" >&2
   fi
   if enforce "$kind" "$target"; then _ta_statut=done; else _ta_statut=failed; fi
-  # Levee reprise qui ne trouve l adresse nulle part (nft seul, rien retire, AUCUN refus) : la premiere execution a
-  # pu la lever, l issue n est pas un echec — elle est dite telle quelle. Un refus de retrait reste `failed`.
+  # Levee reprise qui ne trouve l adresse nulle part (rien retire par aucun mecanisme present, AUCUN refus) : la
+  # premiere execution a pu la lever, l issue n est pas un echec — elle est dite telle quelle. Un refus de retrait reste
+  # `failed`, et un hote sans aucun mecanisme aussi (`UA_RIEN_RETIRE` n y est pas pose).
   if [ "$_ta_reprise" = 1 ] && [ "$_ta_statut" = failed ] && [ "$kind" = unban_ip ] && [ "$UA_RIEN_RETIRE" = 1 ]; then
     _ta_statut=done; OUT="$UA_OUT_AVANT_VERDICT ; $PHRASE_ABSENTE_APRES_INTERRUPTION"
   fi
   _ta_resultat="$cmd | $OUT"
   if [ "$_ta_reprise" = 1 ]; then _ta_resultat="$PHRASE_REPRISE : $_ta_resultat"; fi
+  # `P11.25-a` : le texte d une levee porte ses ecrits marques ; seuls eux cedent sous la borne du central.
+  if [ "$kind" = unban_ip ]; then _ta_resultat=$(levee_dans_la_borne "$_ta_resultat"); OUT=$(levee_sans_marques "$OUT"); fi
   if [ "$_ta_protege" = 1 ] && ! registre_marquer_faite "$id" "$_ta_genre" "$_ta_cible" "$_ta_statut" "$_ta_resultat"; then
     echo "respond: #$id issue NON enregistree au registre d execution (ecriture refusee) : la riposte y reste commencee ; si le central la re-sert, elle sera REPRISE" >&2
   fi
@@ -1381,6 +1624,7 @@ traiter_action() {
 
 # --- `P10.21-n` : une seule execution a la fois ; les lignes illisibles du registre sont ecartees et dites ---
 prendre_le_verrou
+dire_le_responder_local_hors_verrou
 registre_assainir
 
 # --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---

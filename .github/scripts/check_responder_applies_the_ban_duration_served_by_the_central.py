@@ -46,8 +46,8 @@ résultat remis comparé ENTIER : un refus sur le premier set, sur le second, su
 le code et ce que nft a écrit ; absent d'un set et retiré de l'autre, dans les deux ordres -> `done`, texte d'avant ;
 nft seul sans aucun retrait (deux absences, ou une absence sans set à durée) -> `failed`, LEVEE NON FAITE ; un nft tué
 par un signal après avoir écrit l'absence -> refus dit avec le signal ; les bords de code 125 (absente), 126, 127, 128
-et 129 (refus, le dernier dit interrompu par le signal 1) ; un refus avec fail2ban présent -> `failed` ; DÉCISION :
-nft sans retrait avec fail2ban ou CrowdSec présent -> `done` comme avant (leurs codes ne sont pas mesurés) ; l'absence
+et 129 (refus, le dernier dit interrompu par le signal 1) ; un refus avec fail2ban présent -> `failed` ; nft sans
+retrait avec fail2ban ou CrowdSec présent -> tranché par LEUR issue, lue (vague CI, plus bas) ; l'absence
 écrite sur la sortie STANDARD n'est pas une absence, et cette sortie atteint le journal ; l'absence reconnue sous une
 locale traduite (`LC_ALL=C` posé sur le retrait) ; une sortie de refus longue et sur plusieurs lignes mise sur une
 ligne, chaque caractère de contrôle en espace, coupée sur un caractère à la borne, la coupe dite ; table absente ou set
@@ -69,7 +69,7 @@ le verdict, ban et levée, avant la remise -> re-remise sans appel, pendant l'ex
 absente rendue `done`, refus de retrait resté `failed` ; 2b état non inscriptible -> exécutée quand même et avouée,
 file de rejeu pleine, écriture du rejeu refusée ; 2c refus définitif, rejeu abandonné), la fin de chaque aveu de verdict
 non retenu (réexécutée ou non, lue dans le registre), la borne du registre aux trois bords, l'éviction de la plus
-ancienne `faite` jamais d'une `commencee` (tout ou rien), les lignes illisibles écartées et dites, une queue d'octets
+ancienne `faite` d'abord, puis (vague CI) de la plus ancienne `commencee`, avouée sans sa cible, les lignes illisibles écartées et dites, une queue d'octets
 nuls, le simulacre et chaque refus d'avant exécution qui n'écrivent rien, le verdict enregistré re-remis tel quel avant
 tout contrôle, l'entrée retirée sur 2xx, sur `"ok":false` et au rejeu remis, gardée sur 503 et sur refus définitif,
 l'identifiant réutilisé pour une autre riposte, l'identifiant trop long, la ligne bornée (cible, résultat coupé sur un
@@ -81,6 +81,30 @@ et le bord de l'identifiant (13 et 130 au registre : retrait et lecture de l'id 
 après l'ajout et après la republication, l'entrée gardée quand le REJEU est refusé, le ban repris refusé après une
 levée vaine du même tour resté `failed`, l'aveu qui ignore une ligne illisible restée au registre, la sortie sur mktemp refusé qui rend le verrou du repli,
 une exécution sortie au verrou qui ne touche pas au registre, la forme du registre ancrée en fin de ligne. Mutants listés après la marque `P10.21-n` de `MUTANTS`, chacun rouge sur ses scénarios.
+`P11.25-a` ET `P10.21-n`, VAGUE CI — joués sous CHAQUE awk présent (gawk, mawk ; aucun -> refus de conclure) : la MATRICE
+de la levée, {nft : retirée, absente, refus} x {fail2ban : retirée, absente, refus, binaire absent} x {CrowdSec : retirée,
+absente, refus, binaire absent}, quarante-huit levées au statut et au résultat ENTIERS — `done` seulement sans aucun
+refus et avec au moins un retrait, un refus nommé avec son mécanisme et son code, un binaire absent dit « mecanisme absent
+de l hote », rien retiré nulle part -> LEVEE NON FAITE ; les formes de sortie lues (blancs et CR autour du nombre de
+fail2ban, avertissement mêlé, phrase sans nombre, `00`, compte CrowdSec au format du terminal à deux chiffres, en tête de
+ligne, deux lignes de compte, rien d'écrit, ligne horodatée SANS la phrase de compte -> refus, avertissement de kubectl
+à côté du compte toléré ; avertissement d'un retrait nft réussi gardé) ; la sortie d'un refus bornée
+sur un caractère, sans caractère de contrôle ; aucun mécanisme -> `failed`, même repris ; la reprise d'une levée tranchée
+par fail2ban ou CrowdSec, jamais par une sortie CrowdSec sans compte ; l'hôte à la fois central et agent qui DIT, à chaque tour où `systemctl` voit
+`plume-respond.timer` actif, que le responder local du démon échappe au verrou et au registre, sans rien changer à
+l'exécution, et qui ne le dit pas quand il sort au verrou ; l'éviction d'une `commencee` par la borne, avouée par son
+identifiant et son genre, aux trois bords, après les `faite`, jamais avouée quand la réécriture du registre est refusée,
+une ligne illisible jamais évincée à la place d'une lisible, et le registre plein de lignes illisibles non retirées qui
+refuse de faire de la place en le disant.
+Correction de la vague CI : le faux central GARDE chaque résultat comme le démon (`action_result` : contrôles retirés,
+borne de caractères relue dans actions.rs, épreuve à chaque exécution) et `resultat_entier` exige qu'il y tienne
+ENTIER ; la matrice est rejouée en REPRISE, chaque mécanisme et son issue nommés dans le texte gardé — seuls les écrits
+des mécanismes cèdent sous la borne, partagés (`levee_dans_la_borne`), et sans place pour eux ils tombent entiers ; le
+code de retour décide même sous un compte lisible (fail2ban `1` en code 255, CrowdSec un compte en code 1) ; `1` suivi
+d'une autre ligne est un refus ; ce qu'écrit un retrait nft réussi, ou une absence, est borné et sans caractère de
+contrôle ; la sonde du pod LAPI (k3s, kubectl) non conclue est un REFUS nommé, l'absence seulement sur `(NotFound)` ;
+une `commencee` illisible n'est jamais évincée à la place d'une lisible ; une place partielle est refusée entière.
+Mutants listés après la marque « vague CI » de `MUTANTS`, chacun rouge sur ses scénarios.
 Deux scénarios (ajout refusé, lecture refusée, repli bloqué) exigent un utilisateur non privilégié : sous root, la garde
 refuse de conclure (code 2). `--scenarios=a,b` et `--mutants=x,y` jouent une partie, et le disent.
 
@@ -99,6 +123,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 
 RACINE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SCRIPT = os.path.join(RACINE, "collectors", "respond.sh")
@@ -113,6 +138,63 @@ BOUCHON = r"""#!/bin/sh
 printf '%s\n' "$*" >> "$TRACE_ENFORCEMENT.NOM"
 exit 0
 """
+# `P11.25-a` (vague CI) — LES RETRAITS fail2ban ET CrowdSec : `fail2ban-client unban <ip>` et `cscli decisions delete -i
+# <ip>` rendent l'issue fixée par adresse dans F2B_RETRAITS / CS_RETRAITS (« <ip>=<mode> ... » ; défaut `retiree`). Les
+# sorties sont celles des outils réels : fail2ban (>= 0.10) imprime le NOMBRE de jails où l'adresse était bannie (code 0),
+# et rend « ERROR  Failed to access socket path ... Is fail2ban running? » en code 255 quand son serveur ne répond pas ;
+# cscli journalise « <n> decision(s) deleted » sur sa sortie d'erreur (format logrus hors terminal), et une erreur de la
+# LAPI en `level=fatal`, code 1. Modes fail2ban : retiree (`1`), absente (`0`), refus (code 255), illisible (code 0, pas
+# de nombre), blancs (` 2 ` puis CR LF), deux_lignes (un avertissement puis `1`), zeros (`00`), bavard (refus dont la
+# sortie porte F2B_BAVARD). Modes CrowdSec : retiree, absente, refus, illisible (code 0, rien d'écrit), terminal
+# (`INFO[0000] 10 decision(s) deleted`), en_tete (`3 decision(s) deleted` en tête de ligne, sur la sortie standard),
+# deux_comptes (deux lignes de compte), inconnue (code 0, une ligne logrus horodatée SANS la phrase de compte : ses
+# chiffres ne sont pas un compte), avertissement (la ligne que kubectl pose sur sa sortie d'erreur quand le pod LAPI a
+# plusieurs conteneurs, PUIS la ligne de compte `1`).
+# Vague CI, correction : fail2ban compte_code_255 (`1` imprimé, PUIS code 255) et puis_ligne (`1` PUIS une ligne que
+# Python écrit à la sortie) ; CrowdSec compte_code_1 (la ligne de compte `1`, PUIS code 1 : kubectl exec coupé après
+# le compte). Le code de retour décide : un compte lisible sous un code non nul est un refus.
+# Toute autre commande (pose d'un ban) : tracée, code 0, rien d'écrit — comme le bouchon générique.
+CS_ECRIT = 'time="2026-11-14T10:00:00Z" level=info msg="%d decision(s) deleted"'
+F2B_REFUS = "ERROR  Failed to access socket path: /var/run/fail2ban/fail2ban.sock. Is fail2ban running?"
+CS_REFUS = 'time="2026-11-14T10:00:00Z" level=fatal msg="unable to delete decisions: connection refused"'
+CS_INCONNUE = 'time="2026-11-14T10:00:00Z" level=info msg="unexpected answer from the local API"'
+KUBECTL_AVERTISSEMENT = 'Defaulted container "crowdsec-lapi" out of: crowdsec-lapi, sidecar (init)'
+BOUCHON_RETRAITS = r"""#!/bin/sh
+printf '%s\n' "$*" >> "$TRACE_ENFORCEMENT.__NOM__"
+case "__NOM__:${1:-}:${2:-}" in
+  fail2ban-client:unban:*) ip=$2; modes=${F2B_RETRAITS:-} ;;
+  cscli:decisions:delete) ip=${4:-}; modes=${CS_RETRAITS:-} ;;
+  *) exit 0 ;;
+esac
+m=retiree
+for e in $modes; do case "$e" in "$ip="*) m=${e#*=} ;; esac; done
+case "__NOM__:$m" in
+  fail2ban-client:retiree) printf '1\n' ;;
+  fail2ban-client:absente) printf '0\n' ;;
+  fail2ban-client:refus) printf '%s\n' '__F2B_REFUS__' >&2; exit 255 ;;
+  fail2ban-client:illisible) printf 'Sorry but the command is invalid\n' ;;
+  fail2ban-client:blancs) printf ' 2 \r\n' ;;
+  fail2ban-client:deux_lignes) printf 'WARNING deprecated option\n1\n' ;;
+  fail2ban-client:zeros) printf '00\n' ;;
+  fail2ban-client:bavard) printf 'ERROR %s\n' "$F2B_BAVARD" >&2; exit 255 ;;
+  fail2ban-client:compte_code_255) printf '1\n'; exit 255 ;;
+  fail2ban-client:puis_ligne) printf '1\nException ignored in: <function _after_fork at 0x7f3a2c1d0e50>\n' ;;
+  cscli:retiree) printf '%s\n' '__CS_1__' >&2 ;;
+  cscli:absente) printf '%s\n' '__CS_0__' >&2 ;;
+  cscli:refus) printf '%s\n' '__CS_REFUS__' >&2; exit 1 ;;
+  cscli:illisible) : ;;
+  cscli:terminal) printf 'INFO[0000] 10 decision(s) deleted\n' >&2 ;;
+  cscli:en_tete) printf '3 decision(s) deleted\n' ;;
+  cscli:deux_comptes) printf '1 decision(s) deleted\n1 decision(s) deleted\n' >&2 ;;
+  cscli:inconnue) printf '%s\n' '__CS_INCONNUE__' >&2 ;;
+  cscli:avertissement) printf '%s\n' '__KUBECTL__' '__CS_1__' >&2 ;;
+  cscli:compte_code_1) printf '%s\n' '__CS_1__' >&2; exit 1 ;;
+  *) printf 'mode de bouchon inconnu : %s\n' "$m" >&2; exit 99 ;;
+esac
+exit 0
+""".replace("__F2B_REFUS__", F2B_REFUS).replace("__CS_1__", CS_ECRIT % 1).replace("__CS_0__", CS_ECRIT % 0) \
+   .replace("__CS_REFUS__", CS_REFUS).replace("__CS_INCONNUE__", CS_INCONNUE) \
+   .replace("__KUBECTL__", KUBECTL_AVERTISSEMENT)
 # nft : l'état de l'hôte est fixé par NFT_ETAT —
 #   `ancien` (défaut) : la table `inet plume` existe (version antérieure), le set à durée NON ;
 #   `neuf`            : ni table ni set (hôte jamais équipé) ;
@@ -146,7 +228,10 @@ exit 0
 #   stdout_absent  écrit l'absence sur la sortie STANDARD et « Device or resource busy » sur la sortie d'erreur, code 1 ;
 #   bavard         refus dont la sortie d'erreur porte NFT_BAVARD après le message, code 1 ;
 #   absent_code:<n> écrit l'absence sur la sortie d'erreur et sort avec le code <n> (bords 125 à 129) ;
-#   muet           sort en code 1 SANS RIEN ÉCRIRE (échec muet).
+#   muet           sort en code 1 SANS RIEN ÉCRIRE (échec muet) ;
+#   retiree_bavard retirée (code 0) en écrivant « Warning: deprecated syntax » sur la sortie d'erreur ;
+#   retiree_ecrit  retirée (code 0) en écrivant NFT_ECRIT sur la sortie d'erreur (vague CI : ligne longue, contrôles) ;
+#   absent_ecrit   l'absence MESURÉE PUIS NFT_ECRIT sur la sortie d'erreur, code 1.
 # Les SONDES `list table inet plume` et `list set inet plume blocklist_ttl` : un objet absent (NFT_ETAT `neuf`, ou
 # `ancien` pour le set à durée) écrit l'absence MESURÉE (« No such file or directory », traduite hors locale C) et sort
 # en code 1 ; NFT_SONDES_REFUSEES="table set" (l'un, l'autre ou les deux) rend la sonde REFUSÉE (« Operation not
@@ -238,6 +323,9 @@ case "$1 $2" in
       bavard) printf 'Error: Could not process rule: Operation not permitted %s\n' "$NFT_BAVARD" >&2; exit 1 ;;
       absent_code:*) printf 'Error: Could not process rule: %s\n' "$ENOENT" >&2; exit "${m#absent_code:}" ;;
       muet) exit 1 ;;
+      retiree_bavard) printf 'Warning: deprecated syntax\n' >&2; exit 0 ;;
+      retiree_ecrit) printf '%s\n' "$NFT_ECRIT" >&2; exit 0 ;;
+      absent_ecrit) printf 'Error: Could not process rule: %s\n%s\n' "$ENOENT" "$NFT_ECRIT" >&2; exit 1 ;;
     esac
     exit 0 ;;
   "-f -")
@@ -268,13 +356,21 @@ def contrat_du_demon():
     auth = open(os.path.join(RACINE, "daemon/src/auth.rs"), encoding="utf-8").read()
     m = re.search(r'const TYPE_DE_LA_FILE_JSON_PAR_LIGNE: &str = "([^"]+)";', actions)
     b = re.search(r"const BAN_TTL_MAX_S: i64 = (\d+) \* (\d+);", auth)
-    if not m or not b:
-        refuser_de_conclure("contrat du démon introuvable (TYPE_DE_LA_FILE_JSON_PAR_LIGNE / BAN_TTL_MAX_S) : "
-                         "la garde refuse de conclure")
-    return m.group(1), int(b.group(1)) * int(b.group(2))
+    # `action_result` : le résultat remis est gardé filtré de ses caractères de contrôle, puis coupé à N caractères.
+    r = re.findall(r"\.filter\(\|c\| !c\.is_control\(\)\)\s*\.take\((\d+)\)", actions)
+    if not m or not b or len(r) != 1:
+        refuser_de_conclure("contrat du démon introuvable (TYPE_DE_LA_FILE_JSON_PAR_LIGNE / BAN_TTL_MAX_S / borne du "
+                         f"résultat dans action_result, {len(r)} fois) : la garde refuse de conclure")
+    return m.group(1), int(b.group(1)) * int(b.group(2)), int(r[0])
 
 
-TYPE_JSON, BORNE = contrat_du_demon()
+TYPE_JSON, BORNE, BORNE_RESULTAT = contrat_du_demon()
+
+
+def resultat_garde_par_le_demon(texte):
+    """Le résultat tel que `action_result` le GARDE (daemon/src/handlers/actions.rs) : chaque caractère de contrôle
+    retiré (`char::is_control`, catégorie Unicode Cc), puis les BORNE_RESULTAT premiers caractères."""
+    return "".join(c for c in texte if unicodedata.category(c) != "Cc")[:BORNE_RESULTAT]
 
 # Remises que le faux central a refusées pendant le scénario en cours (vidée et jugée par `jouer_tout`).
 REMISES_REFUSEES = []
@@ -324,6 +420,11 @@ CORPS_D_EPREUVE = [
 
 def epreuve_du_lecteur_du_faux_central():
     fautes = []
+    # La borne du faux central : coupée au caractère (pas à l'octet), après le filtre des contrôles (C0, DEL, C1).
+    for texte, garde in (("é" * (BORNE_RESULTAT + 1), "é" * BORNE_RESULTAT), ("a\x07b\x7fc\x85d", "abcd"),
+                         ("\x01" * 3 + "x" * BORNE_RESULTAT, "x" * BORNE_RESULTAT)):
+        exiger(fautes, resultat_garde_par_le_demon(texte) == garde,
+               f"faux central : {texte[:12]!r}… gardé {resultat_garde_par_le_demon(texte)[:12]!r}…, pas comme le démon")
     for corps, admis in CORPS_D_EPREUVE:
         try:
             corps_lu_comme_le_demon(corps)
@@ -348,6 +449,8 @@ class Central:
         # `P10.21-n` : statuts des remises dans l'ordre (puis `statut_remise`), et corps rendu à chaque remise.
         self.statuts_remise, self.corps_remise = list(statuts_remise), corps_remise
         self.accepts, self.verdicts, self.corps_remis = [], [], []
+        # Vague CI : le résultat de chaque remise tel que le démon le garde (borne et filtre d'`action_result`).
+        self.resultats_gardes = {}
         central = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -380,6 +483,8 @@ class Central:
                     return
                 central.corps_remis.append(octets.decode("utf-8"))
                 central.verdicts.append(verdict)
+                if isinstance(verdict, dict) and isinstance(verdict.get("result"), str):
+                    central.resultats_gardes[verdict.get("id")] = resultat_garde_par_le_demon(verdict["result"])
                 co = central.corps_remise.encode()
                 st = central.statuts_remise.pop(0) if central.statuts_remise else central.statut_remise
                 self.send_response(st)
@@ -438,7 +543,7 @@ class Tour:
 
 
 def jouer(script, central, lecteurs=(), backend="auto", bouchons=("cscli",), env_plus=None, url=None,
-          piege_python=False, rejeu_initial=None, faux_binaires=None, etat=None, fond=None):
+          piege_python=False, rejeu_initial=None, faux_binaires=None, etat=None, fond=None, awk=None):
     """`etat` : répertoire d'état PARTAGÉ entre plusieurs tours (`PLUME_STATE`), au lieu du bac du tour.
     `fond` : une fonction appelée avec le processus lancé EN FOND (Popen), pendant qu'il tourne — pour jouer une
     seconde exécution simultanée ; le script tourne alors dans sa propre session, si bien qu'un bouchon qui tue
@@ -447,13 +552,19 @@ def jouer(script, central, lecteurs=(), backend="auto", bouchons=("cscli",), env
         binaire = os.path.join(tmp, "bin")
         os.makedirs(binaire)
         for outil in OUTILS + list(lecteurs):
-            vrai = shutil.which(outil)
+            # `awk` : celui que le scénario désigne (chaque awk présent, vague CI), sinon celui du poste.
+            vrai = awk if (outil == "awk" and awk) else shutil.which(outil)
             if not vrai:
                 refuser_de_conclure(f"`{outil}` introuvable sur cette machine : la garde refuse de conclure")
             os.symlink(vrai, os.path.join(binaire, outil))
         for nom in bouchons:
             with open(os.path.join(binaire, nom), "w") as f:
-                f.write(BOUCHON_NFT if nom == "nft" else BOUCHON.replace(".NOM", "." + nom))
+                if nom == "nft":
+                    f.write(BOUCHON_NFT)
+                elif nom in ("fail2ban-client", "cscli"):
+                    f.write(BOUCHON_RETRAITS.replace("__NOM__", nom))
+                else:
+                    f.write(BOUCHON.replace(".NOM", "." + nom))
             os.chmod(os.path.join(binaire, nom), 0o755)
         for nom, contenu in (faux_binaires or {}).items():
             # Un faux outil (un lecteur JSON qui échoue, par exemple), posé SUR PATH à la place du vrai. Un lien
@@ -510,7 +621,7 @@ def jouer(script, central, lecteurs=(), backend="auto", bouchons=("cscli",), env
                 # -1, stderr qui le dit, aucun verdict compté (ceux déjà remis restent, le scénario les juge).
                 p = subprocess.CompletedProcess([], -1, "", f"TOUR SANS FIN : le script n'a pas fini en {DELAI_D_UN_TOUR_S} s")
         traces = {}
-        for nom in ("cscli", "nft", "fail2ban-client"):
+        for nom in ("cscli", "nft", "fail2ban-client", "systemctl", "kube"):
             chemin = f"{trace}.{nom}"
             traces[nom] = open(chemin).read() if os.path.exists(chemin) else ""
         canari = os.path.exists(env["CANARI"])
@@ -518,6 +629,7 @@ def jouer(script, central, lecteurs=(), backend="auto", bouchons=("cscli",), env
                  traces, tmp)
         t.canari = canari
         t.corps_remis = list(central.corps_remis) if central else []
+        t.gardes = dict(central.resultats_gardes) if central else {}
         return t
 
 
@@ -939,7 +1051,7 @@ def s_nft_unban_set_a_duree(script):
     exiger(f, "delete element inet plume blocklist_ttl { 203.0.113.31 }" in n,
            f"l'unban laisse le ban à durée en place (jusqu'à la borne) : {n!r}")
     exiger(f, "delete element inet plume blocklist { 203.0.113.31 }" in n, f"l'unban oublie l'ancien set : {n!r}")
-    verdict_est(f, t, 521, "done", "[nft-ttl]")
+    verdict_est(f, t, 521, "done", "[nft-ttl] retiree")
     return f
 
 
@@ -1412,13 +1524,63 @@ def s_nft_locale_traduite(script):
 # `P11.25-a` — LA LEVÉE nft SUIT LA RÈGLE DU DÉMON (`classer_le_retrait_nft`, `verdict_des_deux_retraits_nft`) : chaque
 # retrait est classé retiré / absent / refusé sur sa SEULE sortie d'erreur, lue sous `LC_ALL=C` ; un refus rend la
 # levée `failed` quoi qu'aient rendu les autres backends ; nft seul sans aucun retrait -> `failed` ; nft sans retrait
-# mais fail2ban présent -> `done` (leurs codes ne sont pas mesurés). Chaque résultat est comparé ENTIER.
+# mais fail2ban ou CrowdSec présent -> tranché par leur issue, lue (vague CI). Chaque résultat est comparé ENTIER, et
+# nomme chaque mécanisme (fail2ban et CrowdSec absents de ces bacs : « mecanisme absent de l hote »).
 # ----------------------------------------------------------------------------------------------------------
 CARETS_D_ABSENCE = re.search(r"absence\(\) \{ printf 'Error: Could not process rule: %s\\n%s\\n(\^+)\\n'", BOUCHON_NFT).group(1)
 # La borne d'une part de refus, recopiée de respond.sh (`NFT_PART_DE_RETRAIT_OCTETS`) : la changer là-bas rougit ici.
 PART_DE_RETRAIT_OCTETS = 120
+
+
+def ecrit_borne(ecrit):
+    """Ce qu'un retrait a écrit, tel que le texte remis le porte : chaque caractère de contrôle en espace, coupé sur un
+    caractère à la part de retrait, `[...]` si coupé."""
+    plat = re.sub(r"[\x00-\x1f]", " ", ecrit)
+    brut = plat.encode("utf-8")
+    if len(brut) <= PART_DE_RETRAIT_OCTETS:
+        return plat
+    return brut[:PART_DE_RETRAIT_OCTETS].decode("utf-8", "ignore") + " [...]"
+
+
+# `P11.25-a` (vague CI, correction) — LE TEXTE D'UNE LEVÉE TIENT SOUS LA BORNE DU CENTRAL : ce que chaque mécanisme a
+# écrit (déjà borné par `ecrit_borne`) est la SEULE part qui cède ; phrase de reprise, plan, chaque mécanisme et son
+# issue, verdict ne sont jamais coupés. Écrit ICI, indépendamment du script : compté en octets ; sous la borne, rien ne
+# change ; sinon la place qui reste est partagée entre les écrits non vides, un écrit qui tient dans sa part est gardé
+# entier et sa part restante revient aux autres, chaque écrit plus long est coupé sur un caractère à sa part, ` [...]`
+# compris (part sous six octets : l'écrit tombe).
+COUPE_D_ECRIT = " [...]"
+
+
+def levee_dans_la_borne(avant, segments, apres=""):
+    """`avant` + chaque (nom et issue, écrit) de `segments` + `apres`, les écrits partagés sous BORNE_RESULTAT octets."""
+    ecrits = [d.encode("utf-8") for _, d in segments]
+    fixe = len(avant.encode("utf-8")) + sum(len(t.encode("utf-8")) for t, _ in segments) + len(apres.encode("utf-8"))
+    if fixe + sum(len(d) for d in ecrits) <= BORNE_RESULTAT:
+        return avant + "".join(t + d for t, d in segments) + apres
+    place, restants, part = BORNE_RESULTAT - fixe, [k for k, d in enumerate(ecrits) if d], 0
+    while restants:
+        part = int(place / len(restants))
+        gardes = [k for k in restants if len(ecrits[k]) <= part]
+        if not gardes:
+            break
+        place -= sum(len(ecrits[k]) for k in gardes)
+        restants = [k for k in restants if k not in gardes]
+
+    def coupe(d):
+        if part < len(COUPE_D_ECRIT):
+            return ""
+        return d[:part - len(COUPE_D_ECRIT)].decode("utf-8", "ignore") + COUPE_D_ECRIT
+    return avant + "".join(t + (coupe(ecrits[k]) if k in restants else d) for k, (t, d) in enumerate(segments)) + apres
 REFUS_ECRIT = "Error: Could not process rule: Operation not permitted"
-LEVEE_NON_FAITE = " ; LEVEE NON FAITE : adresse absente de chaque set nft tente, rien n a ete retire"
+LEVEE_NON_FAITE = " ; LEVEE NON FAITE : adresse absente de chaque mecanisme present, rien n a ete retire"
+# `P11.25-a` (vague CI) — le texte remis NOMME chaque mécanisme et son issue, absents de l'hôte compris. Phrases écrites
+# ICI en littéral, jamais relues du script.
+MECANISME_ABSENT = "mecanisme absent de l hote"
+F2B_CS_ABSENTS = f"[f2b] {MECANISME_ABSENT} [cs] {MECANISME_ABSENT}"
+F2B_RETIREE_CS_ABSENT = f"[f2b] retiree : 1 [cs] {MECANISME_ABSENT}"
+NFT_ABSENT = f"[nft] {MECANISME_ABSENT}"
+TABLE_INEXISTANTE = "[nft] absente (table inet plume inexistante, rien a retirer)"
+TTL_INEXISTANT = "[nft-ttl] absente (set blocklist_ttl inexistant, rien a retirer)"
 
 
 def plan_de_levee(ip):
@@ -1426,12 +1588,20 @@ def plan_de_levee(ip):
 
 
 def absence_ecrite(ensemble, ip):
-    """Ce que le bouchon écrit pour une adresse absente, tel que le résultat le porte (sauts de ligne en espaces)."""
-    return f"Error: Could not process rule: No such file or directory delete element inet plume {ensemble} {{ {ip} }} {CARETS_D_ABSENCE}"
+    """Ce que le bouchon écrit pour une adresse absente, tel que le résultat le porte : sauts de ligne en espaces, borné
+    comme toute part de retrait (vague CI : l'écrit d'une absence était remis brut, sans borne ni filtre)."""
+    return ecrit_borne(f"Error: Could not process rule: No such file or directory\ndelete element inet plume {ensemble} "
+                       f"{{ {ip} }}\n{CARETS_D_ABSENCE}")
 
 
 def refus_remis(ensemble, cause, ecrit):
-    return f"REFUS du retrait dans {ensemble} ({cause}) : {ecrit}"
+    return f" REFUS du retrait dans {ensemble} ({cause}) : {ecrit}"
+
+
+def nft_deux_absences(ip):
+    """Les deux segments nft d'une adresse absente des deux sets (vague CI : texte passé par `levee_attendue`, dont les
+    écrits cèdent sous la borne du central)."""
+    return [(" [nft] absente : ", absence_ecrite("blocklist", ip)), (" [nft-ttl] absente : ", absence_ecrite("blocklist_ttl", ip))]
 
 
 def jouer_la_levee(script, actions, retraits, etat="equipe", bouchons=("nft",), env_plus=None):
@@ -1451,6 +1621,10 @@ def resultat_entier(fautes, t, i, statut, attendu):
         return
     exiger(fautes, v["status"] == statut, f"#{i} : statut {v['status']!r}, attendu {statut!r} ({v['result'][:500]!r})")
     exiger(fautes, v["result"] == attendu, f"#{i} : résultat {v['result']!r}, attendu {attendu!r}")
+    # Vague CI : le central GARDE ce texte entier (borne d'`action_result`), rien n'est coupé à la remise.
+    garde = t.gardes.get(i)
+    exiger(fautes, garde == v["result"], f"#{i} : le central (comme le démon) ne garde que {len(garde or '')} des "
+                                          f"{len(v['result'])} caractères, perdu : {v['result'][len(garde or ''):]!r}")
 
 
 def s_levee_refusee_sur_le_set_permanent(script):
@@ -1458,9 +1632,9 @@ def s_levee_refusee_sur_le_set_permanent(script):
     ip = "198.51.100.61"
     t = jouer_la_levee(script, [unban(1101, ip)], [("blocklist", ip, "refus")])
     f = []
-    resultat_entier(f, t, 1101, "failed", f"{plan_de_levee(ip)} |  [nft]"
+    resultat_entier(f, t, 1101, "failed", f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft]"
                     + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist {{ {ip} }}")
-                    + " [nft-ttl]")
+                    + " [nft-ttl] retiree")
     return f
 
 
@@ -1469,7 +1643,7 @@ def s_levee_refusee_sur_le_set_a_duree(script):
     ip = "198.51.100.62"
     t = jouer_la_levee(script, [unban(1102, ip)], [("blocklist_ttl", ip, "refus")])
     f = []
-    resultat_entier(f, t, 1102, "failed", f"{plan_de_levee(ip)} |  [nft] [nft-ttl]"
+    resultat_entier(f, t, 1102, "failed", f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl]"
                     + refus_remis("blocklist_ttl", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist_ttl {{ {ip} }}"))
     return f
 
@@ -1478,7 +1652,7 @@ def s_levee_refusee_sur_les_deux_sets(script):
     ip = "198.51.100.63"
     t = jouer_la_levee(script, [unban(1103, ip)], [("blocklist", ip, "refus"), ("blocklist_ttl", ip, "refus")])
     f = []
-    resultat_entier(f, t, 1103, "failed", f"{plan_de_levee(ip)} |  [nft]"
+    resultat_entier(f, t, 1103, "failed", f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft]"
                     + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist {{ {ip} }}")
                     + " [nft-ttl]"
                     + refus_remis("blocklist_ttl", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist_ttl {{ {ip} }}"))
@@ -1490,8 +1664,8 @@ def s_levee_absente_et_retiree(script):
     a, b = "198.51.100.64", "198.51.100.65"
     t = jouer_la_levee(script, [unban(1104, a), unban(1105, b)], [("blocklist", a, "absent"), ("blocklist_ttl", b, "absent")])
     f = []
-    resultat_entier(f, t, 1104, "done", f"{plan_de_levee(a)} |  [nft]{absence_ecrite('blocklist', a)} [nft-ttl]")
-    resultat_entier(f, t, 1105, "done", f"{plan_de_levee(b)} |  [nft] [nft-ttl]{absence_ecrite('blocklist_ttl', b)}")
+    resultat_entier(f, t, 1104, "done", f"{plan_de_levee(a)} |  {F2B_CS_ABSENTS} [nft] absente : {absence_ecrite('blocklist', a)} [nft-ttl] retiree")
+    resultat_entier(f, t, 1105, "done", f"{plan_de_levee(b)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] absente : {absence_ecrite('blocklist_ttl', b)}")
     return f
 
 
@@ -1501,10 +1675,10 @@ def s_levee_deux_absences_nft_seul(script):
     a, b = "198.51.100.66", "198.51.100.76"
     t = jouer_la_levee(script, [unban(1106, a)], [("blocklist", a, "absent"), ("blocklist_ttl", a, "absent")])
     f = []
-    resultat_entier(f, t, 1106, "failed", f"{plan_de_levee(a)} |  [nft]{absence_ecrite('blocklist', a)} "
-                    f"[nft-ttl]{absence_ecrite('blocklist_ttl', a)}{LEVEE_NON_FAITE}")
+    resultat_entier(f, t, 1106, "failed", levee_attendue(a, ("absente",), [f" {F2B_CS_ABSENTS}"] + nft_deux_absences(a))[1])
     t = jouer_la_levee(script, [unban(1116, b)], [("blocklist", b, "absent")], etat="ancien")
-    resultat_entier(f, t, 1116, "failed", f"{plan_de_levee(b)} |  [nft]{absence_ecrite('blocklist', b)}{LEVEE_NON_FAITE}")
+    resultat_entier(f, t, 1116, "failed", f"{plan_de_levee(b)} |  {F2B_CS_ABSENTS} [nft] absente : {absence_ecrite('blocklist', b)} {TTL_INEXISTANT}"
+                    f"{LEVEE_NON_FAITE}")
     exiger(f, "delete element inet plume blocklist_ttl" not in t.trace("nft"),
            f"set à durée inexistant : son retrait est tenté : {t.trace('nft')!r}")
     return f
@@ -1516,7 +1690,7 @@ def s_levee_nft_tue_par_un_signal(script):
     ip = "198.51.100.67"
     t = jouer_la_levee(script, [unban(1107, ip)], [("blocklist_ttl", ip, "signal")])
     f = []
-    resultat_entier(f, t, 1107, "failed", f"{plan_de_levee(ip)} |  [nft] [nft-ttl]"
+    resultat_entier(f, t, 1107, "failed", f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl]"
                     + refus_remis("blocklist_ttl", "code 137, nft interrompu par le signal 9",
                                   "Error: Could not process rule: No such file or directory"))
     return f
@@ -1528,23 +1702,30 @@ def s_levee_refusee_avec_fail2ban(script):
     t = jouer_la_levee(script, [unban(1108, ip)], [("blocklist", ip, "refus")], bouchons=("nft", "fail2ban-client"))
     f = []
     exiger(f, f"unban {ip}" in t.trace("fail2ban-client"), f"fail2ban non tenté : {t.trace('fail2ban-client')!r}")
-    resultat_entier(f, t, 1108, "failed", f"{plan_de_levee(ip)} |  [f2b] [nft]"
+    resultat_entier(f, t, 1108, "failed", f"{plan_de_levee(ip)} |  {F2B_RETIREE_CS_ABSENT} [nft]"
                     + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist {{ {ip} }}")
-                    + " [nft-ttl]")
+                    + " [nft-ttl] retiree")
     return f
 
 
-def s_levee_deux_absences_avec_fail2ban_ou_crowdsec(script):
-    """DÉCISION (point B) : nft n'a rien retiré mais fail2ban, puis CrowdSec, était présent ; leur code n'est pas mesuré
-    -> `done` comme avant, texte d'avant à l'octet."""
+def s_levee_deux_absences_tranchee_par_fail2ban_ou_crowdsec(script):
+    """nft n'a rien retiré (absente des deux sets) ; fail2ban, puis CrowdSec, est présent et son issue est LUE :
+    retirée -> `done` (un mécanisme a levé l'adresse) ; absente -> `failed`, LEVÉE NON FAITE (rien n'a été retiré
+    nulle part). L'ancienne DÉCISION (`done` dès qu'un de ces deux mécanismes était présent, leur code n'étant pas
+    mesuré) est RENVERSÉE : leur issue est mesurée depuis la vague CI. Résultats comparés ENTIERS."""
     ip = "198.51.100.69"
     f = []
-    for i, bouchon, etiquette in ((1109, "fail2ban-client", "[f2b]"), (1120, "cscli", "[cs]")):
+    for i, bouchon, env, issue, statut in (
+            (1109, "fail2ban-client", "F2B_RETRAITS", [(" [f2b] retiree : ", "1"), f" [cs] {MECANISME_ABSENT}"], "done"),
+            (1120, "cscli", "CS_RETRAITS", [f" [f2b] {MECANISME_ABSENT}", (" [cs] retiree : ", CS_ECRIT % 1)], "done"),
+            (1118, "fail2ban-client", "F2B_RETRAITS", [(" [f2b] absente : ", "0"), f" [cs] {MECANISME_ABSENT}"], "failed"),
+            (1119, "cscli", "CS_RETRAITS", [f" [f2b] {MECANISME_ABSENT}", (" [cs] absente : ", CS_ECRIT % 0)], "failed")):
+        mode = "retiree" if statut == "done" else "absente"
         t = jouer_la_levee(script, [unban(i, ip)], [("blocklist", ip, "absent"), ("blocklist_ttl", ip, "absent")],
-                           bouchons=("nft", bouchon))
+                           bouchons=("nft", bouchon), env_plus={env: f"{ip}={mode}"})
         exiger(f, ip in t.trace(bouchon), f"#{i} : {bouchon} non tenté : {t.trace(bouchon)!r}")
-        resultat_entier(f, t, i, "done", f"{plan_de_levee(ip)} |  {etiquette} [nft]{absence_ecrite('blocklist', ip)} "
-                        f"[nft-ttl]{absence_ecrite('blocklist_ttl', ip)}")
+        resultat_entier(f, t, i, statut, levee_attendue(ip, ("retiree" if statut == "done" else "absente",),
+                                                         issue + nft_deux_absences(ip))[1])
     return f
 
 
@@ -1560,10 +1741,10 @@ def s_levee_bord_des_codes(script):
         retraits.append(("blocklist", ip, f"absent_code:{code}"))
     t = jouer_la_levee(script, actions, retraits)
     ecrit = "Error: Could not process rule: No such file or directory"
-    resultat_entier(f, t, 1121, "done", f"{plan_de_levee('198.51.100.77')} |  [nft]{ecrit} [nft-ttl]")
+    resultat_entier(f, t, 1121, "done", f"{plan_de_levee('198.51.100.77')} |  {F2B_CS_ABSENTS} [nft] absente : {ecrit} [nft-ttl] retiree")
     for k, cause in ((1, "code 126"), (2, "code 127"), (3, "code 128"), (4, "code 129, nft interrompu par le signal 1")):
-        resultat_entier(f, t, 1121 + k, "failed", f"{plan_de_levee(f'198.51.100.{77 + k}')} |  [nft]"
-                        + refus_remis("blocklist", cause, ecrit) + " [nft-ttl]")
+        resultat_entier(f, t, 1121 + k, "failed", f"{plan_de_levee(f'198.51.100.{77 + k}')} |  {F2B_CS_ABSENTS} [nft]"
+                        + refus_remis("blocklist", cause, ecrit) + " [nft-ttl] retiree")
     return f
 
 
@@ -1573,8 +1754,8 @@ def s_levee_absence_sur_la_sortie_standard(script):
     ip = "198.51.100.70"
     t = jouer_la_levee(script, [unban(1110, ip)], [("blocklist", ip, "stdout_absent")])
     f = []
-    resultat_entier(f, t, 1110, "failed", f"{plan_de_levee(ip)} |  [nft]"
-                    + refus_remis("blocklist", "code 1", "Error: Could not process rule: Device or resource busy") + " [nft-ttl]")
+    resultat_entier(f, t, 1110, "failed", f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft]"
+                    + refus_remis("blocklist", "code 1", "Error: Could not process rule: Device or resource busy") + " [nft-ttl] retiree")
     exiger(f, "Error: Could not process rule: No such file or directory" in t.stderr,
            f"la sortie standard de nft n'atteint pas le journal : {t.stderr[-400:]!r}")
     return f
@@ -1585,7 +1766,7 @@ def s_levee_sous_une_locale_traduite(script):
     ip = "198.51.100.71"
     t = jouer_la_levee(script, [unban(1111, ip)], [("blocklist", ip, "absent")], env_plus={"LC_ALL": "fr_FR.UTF-8"})
     f = []
-    resultat_entier(f, t, 1111, "done", f"{plan_de_levee(ip)} |  [nft]{absence_ecrite('blocklist', ip)} [nft-ttl]")
+    resultat_entier(f, t, 1111, "done", f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft] absente : {absence_ecrite('blocklist', ip)} [nft-ttl] retiree")
     return f
 
 
@@ -1595,7 +1776,8 @@ def s_levee_refus_bavard_borne(script):
     ligne, coupée sur un caractère, `[...]` dit la coupe, le second set reste nommé, et le résultat entier tient sous
     la borne de 500 caractères du central. La sortie porte aussi des caractères de contrôle autres que le saut de
     ligne (échappement de couleur, cloche) : chacun devient une espace — le résultat part en JSON, où un caractère de
-    contrôle brut fait refuser le corps par le central, et le verdict ne serait jamais remis."""
+    contrôle brut fait refuser le corps par le central, et le verdict ne serait jamais remis. Et un refus bavard SEUL
+(l'autre set retiré), loin de la borne du central : borné par la seule part de retrait."""
     ip = "198.51.100.72"
     bavard = "\x1b[31m\x07" + ("é" * 40 + "\n") * 5
     ecrit = re.sub(r"[\x00-\x1f]", " ", f"{REFUS_ECRIT} {bavard}".rstrip("\n"))
@@ -1609,23 +1791,33 @@ def s_levee_refus_bavard_borne(script):
     coupe = brut.decode("utf-8", "ignore") + " [...]"
     t = jouer_la_levee(script, [unban(1112, ip)], [("blocklist", ip, "bavard"), ("blocklist_ttl", ip, "bavard")],
                        env_plus={"NFT_BAVARD": bavard})
-    attendu = (f"{plan_de_levee(ip)} |  [nft]" + refus_remis("blocklist", "code 1", coupe)
+    attendu = (f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft]" + refus_remis("blocklist", "code 1", coupe)
                + " [nft-ttl]" + refus_remis("blocklist_ttl", "code 1", coupe))
     resultat_entier(f, t, 1112, "failed", attendu)
     exiger(f, len(attendu) <= 500, f"fixture : le résultat attendu dépasse la borne du central ({len(attendu)})")
+    # Vague CI : ces deux refus remplissent la borne du central à l'octet près, si bien que la part qu'elle leur laisse
+    # vaut la part de retrait. UN seul refus bavard (l'autre set retiré) laisse la place libre : seule la part de retrait
+    # le borne (une part plus large, une sortie entière ou une coupe au milieu d'un caractère s'y voient).
+    ip1 = "198.51.100.82"
+    t = jouer_la_levee(script, [unban(1117, ip1)], [("blocklist", ip1, "bavard")], env_plus={"NFT_BAVARD": bavard})
+    seul = f"{plan_de_levee(ip1)} |  {F2B_CS_ABSENTS} [nft]" + refus_remis("blocklist", "code 1", coupe) + " [nft-ttl] retiree"
+    resultat_entier(f, t, 1117, "failed", seul)
+    exiger(f, len(seul.encode("utf-8")) + PART_DE_RETRAIT_OCTETS < BORNE_RESULTAT,
+           f"fixture : le refus seul ne laisse pas la place d'une part doublée ({len(seul.encode('utf-8'))})")
     return f
 
 
 def s_levee_sans_table_ni_set(script):
-    """Table `inet plume` absente, nft seul : rien n'est tenté (aucun retrait), `aucun backend de ban disponible`
-    comme avant ; table présente sans set à durée : seul `blocklist` est tenté, retiré -> `done`."""
+    """Table `inet plume` absente, nft seul : rien n'est tenté (aucun retrait), nft dit absente faute de table et la
+    levée est `failed`, LEVEE NON FAITE (vague CI : l'ancien `aucun backend de ban disponible` taisait que nft était
+    là) ; table présente sans set à durée : seul `blocklist` est tenté, retiré -> `done`, le set à durée dit absent."""
     a, b = "198.51.100.73", "198.51.100.74"
     f = []
     t = jouer_la_levee(script, [unban(1113, a)], [], etat="neuf")
-    resultat_entier(f, t, 1113, "failed", f"{plan_de_levee(a)} | aucun backend de ban disponible")
+    resultat_entier(f, t, 1113, "failed", f"{plan_de_levee(a)} |  {F2B_CS_ABSENTS} {TABLE_INEXISTANTE}{LEVEE_NON_FAITE}")
     exiger(f, "delete element" not in t.trace("nft"), f"table absente : un retrait est tenté : {t.trace('nft')!r}")
     t = jouer_la_levee(script, [unban(1114, b)], [], etat="ancien")
-    resultat_entier(f, t, 1114, "done", f"{plan_de_levee(b)} |  [nft]")
+    resultat_entier(f, t, 1114, "done", f"{plan_de_levee(b)} |  {F2B_CS_ABSENTS} [nft] retiree {TTL_INEXISTANT}")
     exiger(f, "delete element inet plume blocklist_ttl" not in t.trace("nft"),
            f"set à durée absent : son retrait est tenté : {t.trace('nft')!r}")
     return f
@@ -1644,7 +1836,7 @@ def s_levee_sonde_refusee(script):
     f = []
     a, b, c, d = "198.51.100.91", "198.51.100.92", "198.51.100.93", "198.51.100.94"
     t = jouer_la_levee(script, [unban(1131, a)], [], env_plus={"NFT_SONDES_REFUSEES": "table set"})
-    resultat_entier(f, t, 1131, "done", f"{plan_de_levee(a)} |  [nft] [nft-ttl]")
+    resultat_entier(f, t, 1131, "done", f"{plan_de_levee(a)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] retiree")
     for ensemble in ("blocklist", "blocklist_ttl"):
         exiger(f, f"delete element inet plume {ensemble} {{ {a} }}" in t.trace("nft"),
                f"#1131 : sonde refusée, retrait de {ensemble} non tenté : {t.trace('nft')!r}")
@@ -1652,46 +1844,46 @@ def s_levee_sonde_refusee(script):
         exiger(f, dite in t.stderr, f"#1131 : sonde refusée non dite au journal ({dite!r}) : {t.stderr[-600:]!r}")
     t = jouer_la_levee(script, [unban(1132, b)], [("blocklist", b, "refus"), ("blocklist_ttl", b, "refus")],
                        bouchons=("nft", "fail2ban-client"), env_plus={"NFT_SONDES_REFUSEES": "table set"})
-    resultat_entier(f, t, 1132, "failed", f"{plan_de_levee(b)} |  [f2b] [nft]"
+    resultat_entier(f, t, 1132, "failed", f"{plan_de_levee(b)} |  {F2B_RETIREE_CS_ABSENT} [nft]"
                     + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist {{ {b} }}")
                     + " [nft-ttl]"
                     + refus_remis("blocklist_ttl", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist_ttl {{ {b} }}"))
     t = jouer_la_levee(script, [unban(1133, c)], [("blocklist", c, "absent"), ("blocklist_ttl", c, "refus")],
                        bouchons=("nft", "fail2ban-client"), env_plus={"NFT_SONDES_REFUSEES": "set"})
-    resultat_entier(f, t, 1133, "failed", f"{plan_de_levee(c)} |  [f2b] [nft]{absence_ecrite('blocklist', c)} [nft-ttl]"
+    resultat_entier(f, t, 1133, "failed", f"{plan_de_levee(c)} |  {F2B_RETIREE_CS_ABSENT} [nft] absente : {absence_ecrite('blocklist', c)} [nft-ttl]"
                     + refus_remis("blocklist_ttl", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist_ttl {{ {c} }}"))
     exiger(f, SONDE_DE_SET_REFUSEE in t.stderr and SONDE_DE_TABLE_REFUSEE not in t.stderr,
            f"#1133 : seule la sonde du set est refusée, le journal dit autre chose : {t.stderr[-600:]!r}")
     t = jouer_la_levee(script, [unban(1134, d)], [("blocklist_ttl", d, "refus")], env_plus={"NFT_SONDES_REFUSEES": "set"})
-    resultat_entier(f, t, 1134, "failed", f"{plan_de_levee(d)} |  [nft] [nft-ttl]"
+    resultat_entier(f, t, 1134, "failed", f"{plan_de_levee(d)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl]"
                     + refus_remis("blocklist_ttl", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist_ttl {{ {d} }}"))
     return f
 
 
 def s_levee_sonde_absente_sous_une_locale_traduite(script):
     """Hôte sous `LC_ALL=fr_FR.UTF-8`, table absente, nft seul : l'absence de la table est reconnue parce que la sonde
-    est lancée sous `LC_ALL=C` -> rien n'est tenté, `aucun backend de ban disponible` comme avant ; table présente sans
-    set à durée : seul `blocklist` est tenté."""
+    est lancée sous `LC_ALL=C` -> rien n'est tenté, LEVEE NON FAITE comme ci-dessus ; table présente sans set à durée :
+    seul `blocklist` est tenté."""
     a, b = "198.51.100.95", "198.51.100.96"
     f = []
     fr = {"LC_ALL": "fr_FR.UTF-8"}
     t = jouer_la_levee(script, [unban(1135, a)], [], etat="neuf", env_plus=fr)
-    resultat_entier(f, t, 1135, "failed", f"{plan_de_levee(a)} | aucun backend de ban disponible")
+    resultat_entier(f, t, 1135, "failed", f"{plan_de_levee(a)} |  {F2B_CS_ABSENTS} {TABLE_INEXISTANTE}{LEVEE_NON_FAITE}")
     exiger(f, "delete element" not in t.trace("nft"), f"table absente : un retrait est tenté : {t.trace('nft')!r}")
     t = jouer_la_levee(script, [unban(1136, b)], [], etat="ancien", env_plus=fr)
-    resultat_entier(f, t, 1136, "done", f"{plan_de_levee(b)} |  [nft]")
+    resultat_entier(f, t, 1136, "done", f"{plan_de_levee(b)} |  {F2B_CS_ABSENTS} [nft] retiree {TTL_INEXISTANT}")
     exiger(f, "delete element inet plume blocklist_ttl" not in t.trace("nft"),
            f"set à durée absent : son retrait est tenté : {t.trace('nft')!r}")
     return f
 
 
 def s_levee_sans_nft(script):
-    """nft absent de l'hôte, fail2ban seul : nft n'est ni sondé ni tenté, la levée reste `done` comme avant — une
-    commande introuvable (code 127) n'est pas un refus de retrait."""
+    """nft absent de l'hôte, fail2ban seul (qui retire) : nft n'est ni sondé ni tenté, il est dit absent de l'hôte, la
+    levée est `done` — une commande introuvable (code 127) n'est pas un refus de retrait."""
     ip = "198.51.100.97"
     f = []
     t = jouer_la_levee(script, [unban(1137, ip)], [], bouchons=("fail2ban-client",))
-    resultat_entier(f, t, 1137, "done", f"{plan_de_levee(ip)} |  [f2b]")
+    resultat_entier(f, t, 1137, "done", f"{plan_de_levee(ip)} |  {F2B_RETIREE_CS_ABSENT} {NFT_ABSENT}")
     return f
 
 
@@ -1702,9 +1894,9 @@ def s_levee_retrait_muet(script):
     a, b = "198.51.100.101", "198.51.100.102"
     f = []
     t = jouer_la_levee(script, [unban(1141, a)], [("blocklist", a, "muet")])
-    resultat_entier(f, t, 1141, "failed", f"{plan_de_levee(a)} |  [nft]" + refus_remis("blocklist", "code 1", "") + " [nft-ttl]")
+    resultat_entier(f, t, 1141, "failed", f"{plan_de_levee(a)} |  {F2B_CS_ABSENTS} [nft]" + refus_remis("blocklist", "code 1", "") + " [nft-ttl] retiree")
     t = jouer_la_levee(script, [unban(1142, b)], [("blocklist", b, "muet")], bouchons=("nft", "fail2ban-client"))
-    resultat_entier(f, t, 1142, "failed", f"{plan_de_levee(b)} |  [f2b] [nft]" + refus_remis("blocklist", "code 1", "") + " [nft-ttl]")
+    resultat_entier(f, t, 1142, "failed", f"{plan_de_levee(b)} |  {F2B_RETIREE_CS_ABSENT} [nft]" + refus_remis("blocklist", "code 1", "") + " [nft-ttl] retiree")
     return f
 
 
@@ -1714,11 +1906,11 @@ def s_levee_sonde_muette(script):
     a, b = "198.51.100.103", "198.51.100.104"
     f = []
     t = jouer_la_levee(script, [unban(1143, a)], [], env_plus={"NFT_SONDE_TABLE": "muet"})
-    resultat_entier(f, t, 1143, "done", f"{plan_de_levee(a)} |  [nft] [nft-ttl]")
+    resultat_entier(f, t, 1143, "done", f"{plan_de_levee(a)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] retiree")
     exiger(f, "SONDE nft REFUSEE sur la table inet plume (code 1) :  ; le retrait est tente" in t.stderr,
            f"#1143 : sonde muette non dite au journal : {t.stderr[-600:]!r}")
     t = jouer_la_levee(script, [unban(1144, b)], [("blocklist_ttl", b, "refus")], env_plus={"NFT_SONDE_SET": "muet"})
-    resultat_entier(f, t, 1144, "failed", f"{plan_de_levee(b)} |  [nft] [nft-ttl]"
+    resultat_entier(f, t, 1144, "failed", f"{plan_de_levee(b)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl]"
                     + refus_remis("blocklist_ttl", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist_ttl {{ {b} }}"))
     return f
 
@@ -1730,13 +1922,13 @@ def s_levee_sonde_tuee_ou_qui_ne_part_pas(script):
     a, b, c = "198.51.100.105", "198.51.100.106", "198.51.100.107"
     f = []
     t = jouer_la_levee(script, [unban(1145, a)], [], env_plus={"NFT_SONDE_TABLE": "signal"})
-    resultat_entier(f, t, 1145, "done", f"{plan_de_levee(a)} |  [nft] [nft-ttl]")
+    resultat_entier(f, t, 1145, "done", f"{plan_de_levee(a)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] retiree")
     exiger(f, "SONDE nft REFUSEE sur la table inet plume (code 137, nft interrompu par le signal 9)" in t.stderr,
            f"#1145 : sonde tuée non dite au journal : {t.stderr[-600:]!r}")
     t = jouer_la_levee(script, [unban(1146, b)], [], env_plus={"NFT_SONDE_TABLE": "code126"})
-    resultat_entier(f, t, 1146, "done", f"{plan_de_levee(b)} |  [nft] [nft-ttl]")
+    resultat_entier(f, t, 1146, "done", f"{plan_de_levee(b)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] retiree")
     t = jouer_la_levee(script, [unban(1147, c)], [], env_plus={"NFT_SONDE_SET": "signal"})
-    resultat_entier(f, t, 1147, "done", f"{plan_de_levee(c)} |  [nft] [nft-ttl]")
+    resultat_entier(f, t, 1147, "done", f"{plan_de_levee(c)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] retiree")
     exiger(f, f"delete element inet plume blocklist_ttl {{ {c} }}" in t.trace("nft"),
            f"#1147 : sonde du set tuée, retrait à durée non tenté : {t.trace('nft')!r}")
     return f
@@ -1748,7 +1940,7 @@ def s_levee_sonde_absence_sur_la_sortie_standard(script):
     ip = "198.51.100.108"
     f = []
     t = jouer_la_levee(script, [unban(1148, ip)], [], env_plus={"NFT_SONDE_TABLE": "stdout"})
-    resultat_entier(f, t, 1148, "done", f"{plan_de_levee(ip)} |  [nft] [nft-ttl]")
+    resultat_entier(f, t, 1148, "done", f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] retiree")
     exiger(f, "SONDE nft REFUSEE sur la table inet plume (code 1) : Error: Could not process rule: Device or resource busy" in t.stderr,
            f"#1148 : la sonde refusée ne dit pas sa sortie d'erreur : {t.stderr[-600:]!r}")
     return f
@@ -1760,10 +1952,10 @@ def s_levee_refus_ne_colle_pas_a_la_levee_suivante(script):
     a, b = "198.51.100.109", "198.51.100.110"
     t = jouer_la_levee(script, [unban(1149, a), unban(1150, b)], [("blocklist", a, "refus")])
     f = []
-    resultat_entier(f, t, 1149, "failed", f"{plan_de_levee(a)} |  [nft]"
+    resultat_entier(f, t, 1149, "failed", f"{plan_de_levee(a)} |  {F2B_CS_ABSENTS} [nft]"
                     + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist {{ {a} }}")
-                    + " [nft-ttl]")
-    resultat_entier(f, t, 1150, "done", f"{plan_de_levee(b)} |  [nft] [nft-ttl]")
+                    + " [nft-ttl] retiree")
+    resultat_entier(f, t, 1150, "done", f"{plan_de_levee(b)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] retiree")
     return f
 
 
@@ -1773,9 +1965,8 @@ def s_levee_retrait_ne_colle_pas_a_la_levee_suivante(script):
     a, b = "198.51.100.111", "198.51.100.112"
     t = jouer_la_levee(script, [unban(1151, a), unban(1152, b)], [("blocklist", b, "absent"), ("blocklist_ttl", b, "absent")])
     f = []
-    resultat_entier(f, t, 1151, "done", f"{plan_de_levee(a)} |  [nft] [nft-ttl]")
-    resultat_entier(f, t, 1152, "failed", f"{plan_de_levee(b)} |  [nft]{absence_ecrite('blocklist', b)} "
-                    f"[nft-ttl]{absence_ecrite('blocklist_ttl', b)}{LEVEE_NON_FAITE}")
+    resultat_entier(f, t, 1151, "done", f"{plan_de_levee(a)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] retiree")
+    resultat_entier(f, t, 1152, "failed", levee_attendue(b, ("absente",), [f" {F2B_CS_ABSENTS}"] + nft_deux_absences(b))[1])
     return f
 
 
@@ -1785,8 +1976,8 @@ def s_levee_refus_au_separateur_d_unite(script):
     ip = "198.51.100.113"
     t = jouer_la_levee(script, [unban(1153, ip)], [("blocklist", ip, "bavard")], env_plus={"NFT_BAVARD": "a\x1fb"})
     f = []
-    resultat_entier(f, t, 1153, "failed", f"{plan_de_levee(ip)} |  [nft]" + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} a b")
-                    + " [nft-ttl]")
+    resultat_entier(f, t, 1153, "failed", f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft]" + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} a b")
+                    + " [nft-ttl] retiree")
     return f
 
 
@@ -1888,10 +2079,6 @@ def cause_ecriture(chemin):
     return f"ecriture refusee dans {chemin}"
 
 
-def cause_plein(n):
-    return f"registre plein de ripostes commencees ({n} lignes pour {REGISTRE_BORNE}, une commencee ne sort jamais par eviction)"
-
-
 def plan_nft_ban(ip, d):
     return (f"nft create element inet plume blocklist_ttl {{ {ip} timeout {d}s }} [duree {d}s : servie par le central] ; "
             f"deja banni : duree appliquee seulement si elle allonge, jamais raccourci")
@@ -1974,7 +2161,7 @@ def curl_tue_a_la_remise():
 
 
 def tour_n(script, etat, actions, presents=(), retraits=(), statuts=(), statut=200, corps='{"ok":true}', env_plus=None,
-           faux=None, fond=None, lecteurs=("python3",)):
+           faux=None, fond=None, lecteurs=("python3",), awk=None):
     """Un tour nft (hôte équipé) sur l'état PARTAGÉ `etat` ; l'état de l'hôte (adresses présentes, issue des retraits)
     est posé par le scénario à chaque tour."""
     env = {"NFT_ETAT": "equipe", "NFT_PRESENTS": " ".join(f"{ip}={m}" for ip, m in presents),
@@ -1983,7 +2170,7 @@ def tour_n(script, etat, actions, presents=(), retraits=(), statuts=(), statut=2
     c = Central("demon", actions, statuts_remise=statuts, statut_remise=statut, corps_remise=corps)
     try:
         return jouer(script, c, lecteurs=lecteurs, backend="nft", bouchons=("nft",), env_plus=env, etat=etat,
-                     faux_binaires=faux, fond=fond)
+                     faux_binaires=faux, fond=fond, awk=awk)
     finally:
         c.fermer()
 
@@ -2022,7 +2209,7 @@ def s_arret_avant_la_remise_levee(script):
         t2 = tour_n(script, etat, [unban(i, ip)], retraits=[("blocklist", ip, "absent"), ("blocklist_ttl", ip, "absent")])
     f = []
     tue_net(f, t1, nft_levee(ip), "2a levée")
-    attendu = f"{plan_de_levee(ip)} |  [nft] [nft-ttl]"
+    attendu = f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft] retiree [nft-ttl] retiree"
     exiger(f, reg1 == [faite(i, ip, attendu, genre="unban_ip")], f"2a levée : registre après l'exécution {reg1!r}")
     exiger(f, lignes_nft(t2) == [], f"2a levée : levée REEXECUTEE au second tour : nft={lignes_nft(t2)!r}")
     exiger(f, remis(t2, i) == [corps_attendu(i, "done", attendu)], f"2a levée : verdict re-remis {remis(t2, i)!r}")
@@ -2047,8 +2234,8 @@ def s_arret_pendant_la_levee(script):
     tue_net(f, t1, nft_levee(ip), "2a levée interrompue")
     exiger(f, reg1 == [commencee(i, ip, genre="unban_ip")], f"2a levée interrompue : registre {reg1!r}")
     exiger(f, lignes_nft(t2) == nft_levee(ip), f"2a levée interrompue : reprise {lignes_nft(t2)!r}")
-    resultat_entier(f, t2, i, "done", f"{PHRASE_REPRISE} : {plan_de_levee(ip)} |  [nft]{absence_ecrite('blocklist', ip)} "
-                    f"[nft-ttl]{absence_ecrite('blocklist_ttl', ip)} ; {PHRASE_ABSENTE_APRES_INTERRUPTION}")
+    resultat_entier(f, t2, i, "done", levee_attendue(ip, ("absente",), [f" {F2B_CS_ABSENTS}"] + nft_deux_absences(ip),
+                                                     reprise=True)[1])
     dit(f, t2, j_reprise(i), "2a levée interrompue, reprise")
     dit(f, t2, j_verrou_orphelin(os.path.join(rep_etat(etat), "verrou.d"), f"pid {porteur}"), "verrou laissé par l'arrêt brutal")
     exiger(f, reg2 == [] and not verrou_apres, f"2a levée interrompue : registre {reg2!r}, verrou rendu={not verrou_apres}")
@@ -2085,9 +2272,10 @@ def s_levee_refusee_a_la_reprise(script):
                              ("blocklist", ip, "refus"), ("blocklist_ttl", ip, "absent")])
     f = []
     verdict_est(f, t, i0, "failed", "LEVEE NON FAITE")
-    resultat_entier(f, t, i, "failed", f"{PHRASE_REPRISE} : {plan_de_levee(ip)} |  [nft]"
-                    + refus_remis("blocklist", "code 1", f"{REFUS_ECRIT} delete element inet plume blocklist {{ {ip} }}")
-                    + f" [nft-ttl]{absence_ecrite('blocklist_ttl', ip)}")
+    resultat_entier(f, t, i, "failed", levee_attendue(ip, ("refus",), [
+        f" {F2B_CS_ABSENTS}", (" [nft] REFUS du retrait dans blocklist (code 1) : ",
+                               ecrit_borne(f"{REFUS_ECRIT} delete element inet plume blocklist {{ {ip} }}")),
+        (" [nft-ttl] absente : ", absence_ecrite("blocklist_ttl", ip))], reprise=True)[1])
     return f
 
 
@@ -2231,34 +2419,6 @@ def s_registre_borne(script):
         evs = [l for l in t.stderr.splitlines() if l.startswith("respond: registre d execution PLEIN")]
         exiger(f, evs == [j_eviction(5000 + k) for k in range(evincees)], f"borne, {n} lignes : évictions dites {evs!r}")
         exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"borne, {n} lignes : {lignes_nft(t)!r}")
-    return f
-
-
-def s_registre_commencees_jamais_evincees(script):
-    """Une `commencee` ne sort jamais par éviction : (a) des `commencee` en tête, la plus ancienne `faite` sort ;
-    (b) registre plein de `commencee` : rien ne sort, la riposte est exécutée quand même et la protection absente
-    avouée ; (c) une seule `faite` pour deux places à faire : rien ne sort (tout ou rien)."""
-    i, ip = 1332, "203.0.113.162"
-    f = []
-    tete = [commencee(6000 + k, f"198.51.100.{k + 1}") for k in range(3)]
-    faites = prefill_faites(REGISTRE_BORNE - 3)
-    with tempfile.TemporaryDirectory() as etat:
-        poser_registre(etat, tete + faites)
-        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
-        reg = lire_registre(etat) or []
-    exiger(f, reg == tete + faites[1:] + [faite(i, ip, res_pose(ip, 600))], f"(a) registre : tête {reg[:4]!r}")
-    dit(f, t, j_eviction(5000), "(a) éviction de la plus ancienne faite")
-    toutes = [commencee(6100 + k, f"198.51.100.{k % 200 + 1}") for k in range(REGISTRE_BORNE)]
-    for nom, lignes in (("b", toutes), ("c", toutes + [faite(6999, "203.0.113.9", "seule faite")])):
-        with tempfile.TemporaryDirectory() as etat:
-            poser_registre(etat, lignes)
-            t = tour_n(script, etat, [ban(i, ip, 600)], statut=400)
-            reg = lire_registre(etat)
-        exiger(f, reg == lignes, f"({nom}) le registre a changé : {len(reg or [])} lignes")
-        dit(f, t, j_protection_absente(i, cause_plein(len(lignes))), f"({nom}) protection absente")
-        tait(f, t, "respond: registre d execution PLEIN", f"({nom}) éviction")
-        exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"({nom}) la riposte n'est pas exécutée : {lignes_nft(t)!r}")
-        verdict_est(f, t, i, "done")
     return f
 
 
@@ -2953,6 +3113,648 @@ def s_ligne_a_champ_en_trop_illisible(script):
     return f
 
 
+# ----------------------------------------------------------------------------------------------------------
+# `P11.25-a` (vague CI) — LES RETRAITS fail2ban ET CrowdSec SONT LUS : chaque retrait a trois issues (retirée,
+# absente, refus), un binaire absent est « mécanisme absent de l'hôte ». Une levée n'est `done` que sans AUCUN refus et
+# avec au moins un retrait ; un refus de l'un quelconque rend `failed` en le nommant ; rien retiré nulle part rend
+# `failed`, LEVÉE NON FAITE. Chaque scénario est joué sous CHAQUE awk présent (gawk, mawk) : `AWK_EXERCES`.
+# Phrases et sorties écrites ICI en littéral, jamais relues du script.
+# ----------------------------------------------------------------------------------------------------------
+AWK_EXERCES = ("gawk", "mawk")
+
+
+def awks_presents():
+    """Chaque awk présent parmi `AWK_EXERCES`, une fois par binaire réel ; aucun -> la garde refuse de conclure."""
+    vus, rendus = set(), []
+    for nom in AWK_EXERCES:
+        chemin = shutil.which(nom)
+        if chemin and os.path.realpath(chemin) not in vus:
+            vus.add(os.path.realpath(chemin))
+            rendus.append((nom, chemin))
+    if not rendus:
+        refuser_de_conclure(f"aucun awk parmi {AWK_EXERCES} : les scénarios de la vague CI ne se jouent pas")
+    return rendus
+
+
+def sous_chaque_awk(scenario):
+    """Le scénario joué sous chaque awk présent ; chaque faute préfixée du nom de l'awk."""
+    def joue(script):
+        f = []
+        for nom, chemin in awks_presents():
+            f.extend(f"[{nom}] {faute}" for faute in scenario(script, chemin))
+        return f
+    return joue
+
+
+# Chaque segment : (mécanisme et issue, jamais coupés ; ce que le mécanisme a écrit, la part qui cède à la borne).
+SEGMENT_F2B = {
+    "retiree": (" [f2b] retiree : ", "1"),
+    "absente": (" [f2b] absente : ", "0"),
+    "refus": (" [f2b] REFUS du retrait fail2ban (code 255) : ", ecrit_borne(F2B_REFUS)),
+    "binaire_absent": (f" [f2b] {MECANISME_ABSENT}", ""),
+}
+SEGMENT_CS = {
+    "retiree": (" [cs] retiree : ", ecrit_borne(CS_ECRIT % 1)),
+    "absente": (" [cs] absente : ", ecrit_borne(CS_ECRIT % 0)),
+    "refus": (" [cs] REFUS du retrait CrowdSec (code 1) : ", ecrit_borne(CS_REFUS)),
+    "binaire_absent": (f" [cs] {MECANISME_ABSENT}", ""),
+}
+# nft, hôte équipé : `retiree` = absente de `blocklist`, retirée de `blocklist_ttl` ; `absente` = absente des deux ;
+# `refus` = absente de `blocklist`, retrait refusé sur `blocklist_ttl`.
+RETRAITS_NFT = {
+    "retiree": (("blocklist", "absent"),),
+    "absente": (("blocklist", "absent"), ("blocklist_ttl", "absent")),
+    "refus": (("blocklist", "absent"), ("blocklist_ttl", "refus")),
+}
+
+
+def segment_nft(issue, ip):
+    """Les deux segments nft (liste de (nom et issue, écrit))."""
+    tete = [(" [nft] absente : ", absence_ecrite('blocklist', ip))]
+    if issue == "retiree":
+        return tete + [(" [nft-ttl] retiree", "")]
+    if issue == "absente":
+        return tete + [(" [nft-ttl] absente : ", absence_ecrite('blocklist_ttl', ip))]
+    return tete + [(" [nft-ttl] REFUS du retrait dans blocklist_ttl (code 1) : ",
+                    ecrit_borne(f"{REFUS_ECRIT} delete element inet plume blocklist_ttl {{ {ip} }}"))]
+
+
+def levee_attendue(ip, issues, segments, reprise=False):
+    """(statut, résultat entier) d'une levée : refus -> failed ; sinon un retrait -> done ; sinon LEVÉE NON FAITE, ou,
+    en REPRISE, `done` constatée absente. `segments` : (nom et issue, écrit), ou une chaîne sans écrit qui cède ; une
+    liste de segments s'aplatit. Le texte passe par `levee_dans_la_borne`."""
+    plats = []
+    for seg in segments:
+        if isinstance(seg, list):
+            plats.extend(seg)
+        else:
+            plats.append((seg, "") if isinstance(seg, str) else seg)
+    avant = (f"{PHRASE_REPRISE} : " if reprise else "") + f"{plan_de_levee(ip)} | "
+    if "refus" in issues:
+        statut, apres = "failed", ""
+    elif "retiree" in issues:
+        statut, apres = "done", ""
+    elif reprise:
+        statut, apres = "done", f" ; {PHRASE_ABSENTE_APRES_INTERRUPTION}"
+    else:
+        statut, apres = "failed", LEVEE_NON_FAITE
+    return statut, levee_dans_la_borne(avant, plats, apres)
+
+
+def s_levee_matrice_des_trois_mecanismes(script, awk):
+    """La MATRICE : {nft : retirée, absente, refus} x {fail2ban : retirée, absente, refus, binaire absent} x {CrowdSec :
+    retirée, absente, refus, binaire absent} — quarante-huit levées, statut et résultat ENTIERS, jouées deux fois : en
+    première exécution, puis en REPRISE (registre `commencee` pour chacune). Quatre tours par passe (présence des binaires
+    fail2ban et cscli), l'issue de chaque retrait fixée par adresse ; chaque mécanisme présent est tenté sur chaque
+    adresse, un absent ne l'est jamais. Le faux central GARDE chaque résultat comme le démon (borne d'`action_result`) :
+    chaque texte y tient entier, chaque mécanisme et son issue y sont nommés, et au moins une combinaison dépasserait la
+    borne sans la coupe des écrits (sans elle, le nom du dernier refus était perdu)."""
+    f = []
+    k = 0
+    cas = []
+    depasseraient = 0
+    for reprise in (False, True):
+        for f2b_present in (True, False):
+            for cs_present in (True, False):
+                actions, retraits, f2b_modes, cs_modes, attendus = [], [], [], [], []
+                for nft in ("retiree", "absente", "refus"):
+                    for f2b in (("retiree", "absente", "refus") if f2b_present else ("binaire_absent",)):
+                        for cs in (("retiree", "absente", "refus") if cs_present else ("binaire_absent",)):
+                            ip = f"192.0.2.{10 + k}"
+                            i = 1601 + k
+                            k += 1
+                            actions.append(unban(i, ip))
+                            retraits.extend((e, ip, m) for e, m in RETRAITS_NFT[nft])
+                            if f2b_present:
+                                f2b_modes.append(f"{ip}={f2b}")
+                            if cs_present:
+                                cs_modes.append(f"{ip}={cs}")
+                            segs = [SEGMENT_F2B[f2b], SEGMENT_CS[cs]] + segment_nft(nft, ip)
+                            statut, texte = levee_attendue(ip, (nft, f2b, cs), segs, reprise=reprise)
+                            brut = levee_attendue(ip, (nft, f2b, cs), [t + d for t, d in segs], reprise=reprise)[1]
+                            depasseraient += len(brut) > BORNE_RESULTAT
+                            attendus.append((i, ip, statut, texte, [t for t, _ in segs], f2b_present, cs_present))
+                bouchons = ("nft",) + (("fail2ban-client",) if f2b_present else ()) + (("cscli",) if cs_present else ())
+                env = {"NFT_ETAT": "equipe", "NFT_RETRAITS": " ".join(f"{e}:{ip}={m}" for e, ip, m in retraits),
+                       "F2B_RETRAITS": " ".join(f2b_modes), "CS_RETRAITS": " ".join(cs_modes)}
+                c = Central("demon", actions)
+                try:
+                    with tempfile.TemporaryDirectory() as etat:
+                        if reprise:
+                            poser_registre(etat, [commencee(a["id"], a["target"], genre="unban_ip") for a in actions])
+                        t = jouer(script, c, lecteurs=("python3",), backend="nft", bouchons=bouchons, env_plus=env,
+                                  awk=awk, etat=etat)
+                finally:
+                    c.fermer()
+                for i, ip, statut, texte, noms, fp, cp in attendus:
+                    resultat_entier(f, t, i, statut, texte)
+                    garde = t.gardes.get(i) or ""
+                    perdus = [n for n in noms if n not in garde]
+                    exiger(f, not perdus, f"#{i} : mécanisme ou issue absent du résultat gardé par le central : {perdus!r}")
+                    if reprise:
+                        dit(f, t, j_reprise(i), f"#{i} reprise dite")
+                    cas.append(statut)
+                    exiger(f, (f"unban {ip}\n" in t.trace("fail2ban-client")) == fp, f"#{i} : fail2ban tenté devait valoir {fp}")
+                    exiger(f, (f"decisions delete -i {ip}\n" in t.trace("cscli")) == cp, f"#{i} : CrowdSec tenté devait valoir {cp}")
+    exiger(f, k == 96 and cas.count("done") > 0 and cas.count("failed") > 0 and depasseraient > 0,
+           f"instrument : {k} levées jouées, {cas.count('done')} done, {cas.count('failed')} failed, {depasseraient} "
+           f"au-delà de la borne sans la coupe des écrits")
+    return f
+
+
+def jouer_les_retraits(script, awk, actions, bouchons, f2b=(), cs=(), retraits=(), env_plus=None, etat=None, faux=None):
+    env = {"NFT_ETAT": "equipe", "NFT_RETRAITS": " ".join(f"{e}:{ip}={m}" for e, ip, m in retraits),
+           "F2B_RETRAITS": " ".join(f"{ip}={m}" for ip, m in f2b), "CS_RETRAITS": " ".join(f"{ip}={m}" for ip, m in cs)}
+    env.update(env_plus or {})
+    c = Central("demon", actions)
+    try:
+        return jouer(script, c, lecteurs=("python3",), backend="nft", bouchons=bouchons, env_plus=env, awk=awk, etat=etat,
+                     faux_binaires=faux)
+    finally:
+        c.fermer()
+
+
+ILLISIBLE = "(code 0, issue illisible : aucun nombre de retraits lu)"
+
+
+NFT_AVERTISSEMENT = "Warning: deprecated syntax"
+
+
+def s_retraits_formes_lues(script, awk):
+    """Chaque forme de sortie, nft absent de l'hôte (fail2ban et CrowdSec seuls) : fail2ban ` 2 ` + CR LF -> retirée
+    (blancs autour retirés, le CR devenu espace dans le texte) ; un avertissement PUIS le nombre (deux lignes) -> refus,
+    issue illisible ; une phrase sans nombre en code 0 -> refus, issue illisible ; `00` -> absente. CrowdSec au format
+    du terminal (`INFO[0000] 10 decision(s) deleted`) -> retirée (10, pas 0 : le nombre entier est lu) ; le compte en tête
+    de ligne sur la sortie standard -> retirée ; deux lignes de compte -> refus, issue illisible ; rien d'écrit en code
+    0 -> refus, issue illisible ; une ligne horodatée SANS la phrase de compte en code 0 -> refus, issue illisible (le
+    compte est lu dans la phrase seule, jamais dans un chiffre quelconque de la ligne) ; l'avertissement de kubectl
+    PUIS la ligne de compte -> retirée (une ligne sans compte à côté du compte est tolérée). nft : un retrait réussi qui écrit un avertissement le garde après `retiree`. Résultats
+    ENTIERS."""
+    f = []
+    absents_nft = f" [nft] {MECANISME_ABSENT}"
+    cas_f2b = [(1701, "192.0.2.101", "blancs", " [f2b] retiree :  2  ", "retiree"),
+               (1702, "192.0.2.102", "deux_lignes", f" [f2b] REFUS du retrait fail2ban {ILLISIBLE} : WARNING deprecated option 1", "refus"),
+               (1703, "192.0.2.103", "illisible", f" [f2b] REFUS du retrait fail2ban {ILLISIBLE} : Sorry but the command is invalid", "refus"),
+               (1704, "192.0.2.104", "zeros", " [f2b] absente : 00", "absente")]
+    t = jouer_les_retraits(script, awk, [unban(i, ip) for i, ip, *_ in cas_f2b], ("fail2ban-client",),
+                           f2b=[(ip, m) for _, ip, m, *_ in cas_f2b])
+    for i, ip, _, seg, issue in cas_f2b:
+        statut, texte = levee_attendue(ip, (issue,), [seg, f" [cs] {MECANISME_ABSENT}", absents_nft])
+        resultat_entier(f, t, i, statut, texte)
+    cas_cs = [(1711, "192.0.2.111", "terminal", " [cs] retiree : INFO[0000] 10 decision(s) deleted", "retiree"),
+              (1712, "192.0.2.112", "en_tete", " [cs] retiree : 3 decision(s) deleted", "retiree"),
+              (1713, "192.0.2.113", "deux_comptes", f" [cs] REFUS du retrait CrowdSec {ILLISIBLE} : 1 decision(s) deleted 1 decision(s) deleted", "refus"),
+              (1714, "192.0.2.114", "illisible", f" [cs] REFUS du retrait CrowdSec {ILLISIBLE} : ", "refus"),
+              (1716, "192.0.2.116", "inconnue", f" [cs] REFUS du retrait CrowdSec {ILLISIBLE} : {CS_INCONNUE}", "refus"),
+              (1717, "192.0.2.117", "avertissement",
+               f" [cs] retiree : {ecrit_borne(KUBECTL_AVERTISSEMENT + chr(10) + CS_ECRIT % 1)}", "retiree")]
+    t = jouer_les_retraits(script, awk, [unban(i, ip) for i, ip, *_ in cas_cs], ("cscli",),
+                           cs=[(ip, m) for _, ip, m, *_ in cas_cs])
+    for i, ip, _, seg, issue in cas_cs:
+        statut, texte = levee_attendue(ip, (issue,), [f" [f2b] {MECANISME_ABSENT}", seg, absents_nft])
+        resultat_entier(f, t, i, statut, texte)
+    # nft seul : un retrait RÉUSSI qui écrit sur sa sortie d'erreur garde ce qu'il a écrit, après son issue.
+    ip = "192.0.2.115"
+    t = jouer_les_retraits(script, awk, [unban(1715, ip)], ("nft",), retraits=[("blocklist", ip, "absent"),
+                                                                             ("blocklist_ttl", ip, "retiree_bavard")])
+    resultat_entier(f, t, 1715, "done", f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft] absente : "
+                    f"{absence_ecrite('blocklist', ip)} [nft-ttl] retiree : {NFT_AVERTISSEMENT}")
+    return f
+
+
+def s_retrait_refuse_borne_et_sans_controle(script, awk):
+    """Refus fail2ban dont la sortie est longue, sur plusieurs lignes, porte des caractères de contrôle (couleur, cloche,
+    séparateur d'unité) et des caractères de deux octets, la borne tombant AU MILIEU d'un caractère : une ligne, chaque
+    caractère de contrôle en espace, coupée sur un caractère à la part de retrait, `[...]` dit la coupe ; le corps remis
+    reste lisible par le central (aucune remise refusée)."""
+    ip = "192.0.2.121"
+    bavard = "\x1b[31m\x07\x1f" + "é" * 70 + "\n" + "é" * 40
+    ecrit = re.sub(r"[\x00-\x1f]", " ", f"ERROR {bavard}")
+    brut = ecrit.encode("utf-8")[:PART_DE_RETRAIT_OCTETS]
+    f = []
+    try:
+        brut.decode("utf-8")
+        f.append("fixture : la borne ne tombe pas au milieu d'un caractère, la coupe sur caractère n'est pas éprouvée")
+    except UnicodeDecodeError:
+        pass
+    coupe = brut.decode("utf-8", "ignore") + " [...]"
+    t = jouer_les_retraits(script, awk, [unban(1721, ip)], ("fail2ban-client",), f2b=[(ip, "bavard")],
+                           env_plus={"F2B_BAVARD": bavard})
+    resultat_entier(f, t, 1721, "failed", f"{plan_de_levee(ip)} |  [f2b] REFUS du retrait fail2ban (code 255) : {coupe}"
+                    f" [cs] {MECANISME_ABSENT} [nft] {MECANISME_ABSENT}")
+    return f
+
+
+def s_levee_sans_aucun_mecanisme(script, awk):
+    """Aucun des trois binaires : chacun dit absent, puis `aucun backend de ban disponible`, `failed` ; et la REPRISE d'une
+    levée interrompue sur un tel hôte reste `failed` (rien n'a été constaté absent : rien n'a été regardé)."""
+    ip = "192.0.2.131"
+    f = []
+    attendu = f"{plan_de_levee(ip)} |  {F2B_CS_ABSENTS} [nft] {MECANISME_ABSENT} ; aucun backend de ban disponible"
+    t = jouer_les_retraits(script, awk, [unban(1731, ip)], ())
+    resultat_entier(f, t, 1731, "failed", attendu)
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [commencee(1732, ip, genre="unban_ip")])
+        t = jouer_les_retraits(script, awk, [unban(1732, ip)], (), etat=etat)
+    resultat_entier(f, t, 1732, "failed", f"{PHRASE_REPRISE} : {attendu}")
+    return f
+
+
+def s_levee_reprise_tranchee_par_les_autres_mecanismes(script, awk):
+    """REPRISE d'une levée interrompue (registre `commencee`), nft absent de l'hôte : fail2ban rend l'absence ->
+    constatée absente, `done` avec la phrase de reprise ; CrowdSec rend l'absence -> de même ; fail2ban REFUSE -> `failed`
+    (un refus reste un refus, même à la reprise) ; CrowdSec rend une ligne horodatée SANS la phrase de compte -> `failed`
+    (rien n'a été lu : l'adresse n'est pas constatée absente)."""
+    f = []
+    for i, ip, bouchon, mode, seg, statut in (
+            (1741, "192.0.2.141", "fail2ban-client", "absente", f" [f2b] absente : 0 [cs] {MECANISME_ABSENT}", "done"),
+            (1742, "192.0.2.142", "cscli", "absente", f" [f2b] {MECANISME_ABSENT} [cs] absente : {CS_ECRIT % 0}", "done"),
+            (1743, "192.0.2.143", "fail2ban-client", "refus", f" [f2b] REFUS du retrait fail2ban (code 255) : {F2B_REFUS} [cs] {MECANISME_ABSENT}", "failed"),
+            (1744, "192.0.2.144", "cscli", "inconnue", f" [f2b] {MECANISME_ABSENT} [cs] REFUS du retrait CrowdSec {ILLISIBLE} : {CS_INCONNUE}", "failed")):
+        with tempfile.TemporaryDirectory() as etat:
+            poser_registre(etat, [commencee(i, ip, genre="unban_ip")])
+            t = jouer_les_retraits(script, awk, [unban(i, ip)], (bouchon,), etat=etat,
+                                   f2b=[(ip, mode)] if bouchon == "fail2ban-client" else (),
+                                   cs=[(ip, mode)] if bouchon == "cscli" else ())
+        base = f"{PHRASE_REPRISE} : {plan_de_levee(ip)} | {seg} [nft] {MECANISME_ABSENT}"
+        resultat_entier(f, t, i, statut, base + (f" ; {PHRASE_ABSENTE_APRES_INTERRUPTION}" if statut == "done" else ""))
+        dit(f, t, j_reprise(i), f"#{i} reprise dite")
+    return f
+
+
+# ----------------------------------------------------------------------------------------------------------
+# `P11.25-a` (vague CI, correction) — sites relevés sans témoin par la vérification indépendante : le code de retour
+# décide même quand la sortie porte un compte lisible ; la sortie ENTIÈRE de fail2ban est lue ; ce qu'écrit un retrait
+# nft RÉUSSI (et une absence) est borné et sans caractère de contrôle ; les noms tiennent même sans place pour les
+# écrits ; la sonde du pod LAPI est lue (non conclue = refus nommé, absence seulement sur `(NotFound)`).
+# ----------------------------------------------------------------------------------------------------------
+def s_retrait_code_non_nul_avec_un_compte_lisible(script, awk):
+    """Le CODE DE RETOUR décide : fail2ban imprime `1` PUIS sort en code 255 ; CrowdSec écrit sa ligne de compte `1`
+    PUIS sort en code 1 (kubectl exec coupé après le compte). Chaque fois un REFUS nommé avec son code, jamais
+    `retiree` ; l'autre mécanisme rend l'absence, nft est absent de l'hôte : chaque levée est `failed`."""
+    f = []
+    a, b = "192.0.2.181", "192.0.2.182"
+    t = jouer_les_retraits(script, awk, [unban(1781, a), unban(1782, b)], ("fail2ban-client", "cscli"),
+                           f2b=[(a, "compte_code_255"), (b, "absente")], cs=[(a, "absente"), (b, "compte_code_1")])
+    for i, ip, seg_f2b, seg_cs in (
+            (1781, a, (" [f2b] REFUS du retrait fail2ban (code 255) : ", "1"), SEGMENT_CS["absente"]),
+            (1782, b, SEGMENT_F2B["absente"], (" [cs] REFUS du retrait CrowdSec (code 1) : ", ecrit_borne(CS_ECRIT % 1)))):
+        statut, texte = levee_attendue(ip, ("refus",), [seg_f2b, seg_cs, f" [nft] {MECANISME_ABSENT}"])
+        resultat_entier(f, t, i, statut, texte)
+    return f
+
+
+def s_fail2ban_compte_suivi_d_une_ligne(script, awk):
+    """fail2ban imprime `1` PUIS une autre ligne (« Exception ignored in: … », que Python écrit à la sortie) en code 0 :
+    la sortie ENTIÈRE n'est pas un nombre -> refus, issue illisible, jamais `retiree` lu sur la première ligne."""
+    f = []
+    ip = "192.0.2.183"
+    t = jouer_les_retraits(script, awk, [unban(1783, ip)], ("fail2ban-client",), f2b=[(ip, "puis_ligne")])
+    seg = (f" [f2b] REFUS du retrait fail2ban {ILLISIBLE} : ",
+           ecrit_borne("1\nException ignored in: <function _after_fork at 0x7f3a2c1d0e50>"))
+    statut, texte = levee_attendue(ip, ("refus",), [seg, f" [cs] {MECANISME_ABSENT}", f" [nft] {MECANISME_ABSENT}"])
+    resultat_entier(f, t, 1783, statut, texte)
+    return f
+
+
+def s_retrait_nft_reussi_ecrit_borne_et_sans_controle(script, awk):
+    """nft seul : `blocklist` RETIRÉE en écrivant sur sa sortie d'erreur (code 0), `blocklist_ttl` ABSENTE suivie du même
+    écrit. (1) Une ligne longue de caractères de deux octets, la borne tombant au milieu d'un caractère -> chaque écrit
+    coupé sur un caractère à la part de retrait, `[...]` dit la coupe ; (2) des caractères de contrôle que `esc`
+    n'échappe pas (échappement de couleur, cloche, tabulation verticale, séparateur d'unité) -> chacun en espace : le
+    corps reste lisible par le central (aucune remise refusée) et le verdict `done` est remis. Résultats ENTIERS."""
+    f = []
+    longue = "Warning: " + "é" * 70
+    controle = "\x1b[33mWarning:\x07 deprecated\x0b syntax\x1f"
+    try:
+        longue.encode("utf-8")[:PART_DE_RETRAIT_OCTETS].decode("utf-8")
+        f.append("fixture : la borne ne tombe pas au milieu d'un caractère, la coupe sur caractère n'est pas éprouvée")
+    except UnicodeDecodeError:
+        pass
+    for i, ip, ecrit in ((1784, "192.0.2.184", longue), (1785, "192.0.2.185", controle)):
+        t = jouer_les_retraits(script, awk, [unban(i, ip)], ("nft",), env_plus={"NFT_ECRIT": ecrit},
+                               retraits=[("blocklist", ip, "retiree_ecrit"), ("blocklist_ttl", ip, "absent_ecrit")])
+        segs = [f" [f2b] {MECANISME_ABSENT}", f" [cs] {MECANISME_ABSENT}", (" [nft] retiree : ", ecrit_borne(ecrit)),
+                (" [nft-ttl] absente : ", ecrit_borne(f"Error: Could not process rule: No such file or directory\n{ecrit}"))]
+        statut, texte = levee_attendue(ip, ("retiree", "absente"), segs)
+        exiger(f, ("[...]" in texte) == (ecrit is longue) and not re.search(r"[\x00-\x1f]", texte),
+               f"#{i} fixture : coupe ou contrôle mal posés dans l'attendu {texte!r}")
+        resultat_entier(f, t, i, statut, texte)
+    return f
+
+
+def s_levee_noms_entiers_sans_place_pour_les_ecrits(script, awk):
+    """REPRISE d'une levée sur une adresse IPv6 longue, deux issues illisibles (fail2ban, CrowdSec), un refus sur
+    `blocklist` et un nft tué par un signal sur `blocklist_ttl` : les NOMS seuls (phrase de reprise, plan, chaque
+    mécanisme et son issue) prennent presque toute la borne, la part de chaque écrit tombe sous la marque de coupe :
+    chaque écrit tombe ENTIER, les noms restent entiers et le texte tient sous la borne du central."""
+    f = []
+    ip, i = "2001:db8:aaaa:bbbb:cccc:dddd:eeee:ffff", 1786
+    segs = [(f" [f2b] REFUS du retrait fail2ban {ILLISIBLE} : ", "WARNING deprecated option 1"),
+            (f" [cs] REFUS du retrait CrowdSec {ILLISIBLE} : ", "1 decision(s) deleted 1 decision(s) deleted"),
+            (" [nft] REFUS du retrait dans blocklist (code 1) : ",
+             ecrit_borne(f"{REFUS_ECRIT} delete element inet plume blocklist {{ {ip} }}")),
+            (" [nft-ttl] REFUS du retrait dans blocklist_ttl (code 137, nft interrompu par le signal 9) : ",
+             "Error: Could not process rule: No such file or directory")]
+    statut, texte = levee_attendue(ip, ("refus",), segs, reprise=True)
+    exiger(f, texte == levee_attendue(ip, ("refus",), [t for t, _ in segs], reprise=True)[1],
+           f"fixture : un écrit n'est pas tombé entier, la branche « aucune place » n'est pas éprouvée : {texte!r}")
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, [commencee(i, ip, genre="unban_ip")])
+        t = jouer_les_retraits(script, awk, [unban(i, ip)], ("nft", "fail2ban-client", "cscli"), etat=etat,
+                               f2b=[(ip, "deux_lignes")], cs=[(ip, "deux_comptes")],
+                               retraits=[("blocklist", ip, "refus"), ("blocklist_ttl", ip, "signal")])
+    resultat_entier(f, t, i, statut, texte)
+    return f
+
+
+# Faux `k3s` et faux `kubectl` (un seul corps) : trace `<nom> <arguments>` ; `get deploy` rend l'issue fixée par
+# KUBE_SONDE (present, absente : « (NotFound) » code 1, absente_tuee : le même message PUIS code 137, injoignable : API
+# refusée code 1, interdite : « (Forbidden) » code 1) ; `exec deploy/... -- cscli ...` rend la ligne de compte `1`.
+KUBE_INJOIGNABLE = "The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?"
+KUBE_INTERDITE = ('Error from server (Forbidden): deployments.apps "crowdsec-lapi" is forbidden: User '
+                  '"system:serviceaccount:plume:respond" cannot get resource "deployments" in API group "apps" in the '
+                  'namespace "crowdsec"')
+KUBE_ABSENTE = 'Error from server (NotFound): deployments.apps "crowdsec-lapi" not found'
+FAUX_KUBE = r"""#!/bin/sh
+printf '%s\n' "${0##*/} $*" >> "$TRACE_ENFORCEMENT.kube"
+if [ "${0##*/}" = k3s ]; then [ "$1" = kubectl ] || exit 64; shift; fi
+case "$3" in
+  get)
+    case "${KUBE_SONDE:-present}" in
+      present) printf 'NAME            READY   UP-TO-DATE   AVAILABLE   AGE\n%s   1/1     1            1           9d\n' "$5"; exit 0 ;;
+      absente) printf '%s\n' '__ABSENTE__' >&2; exit 1 ;;
+      absente_tuee) printf '%s\n' '__ABSENTE__' >&2; kill -9 $$ ;;
+      injoignable) printf '%s\n' '__INJOIGNABLE__' >&2; exit 1 ;;
+      interdite) printf '%s\n' '__INTERDITE__' >&2; exit 1 ;;
+    esac ;;
+  exec) printf '%s\n' '__CS_1__' >&2; exit 0 ;;
+esac
+exit 64
+""".replace("__ABSENTE__", KUBE_ABSENTE).replace("__INJOIGNABLE__", KUBE_INJOIGNABLE) \
+   .replace("__INTERDITE__", KUBE_INTERDITE).replace("__CS_1__", CS_ECRIT % 1)
+
+
+def s_sonde_du_pod_lapi(script, awk):
+    """`cscli` absent de l'hôte, `k3s` et/ou `kubectl` présents : la SONDE du pod LAPI décide ; nft retire l'adresse
+    (`blocklist_ttl`) dans chaque cas. Sonde NON CONCLUE -> `failed`, REFUS CrowdSec nommé (outil, code, ce qu'elle a
+    écrit borné), aucun `exec` : (a) k3s, API injoignable ; (b) kubectl seul, droit refusé ; (c) k3s, message
+    d'absence PUIS tué par un signal. Absence MESURÉE (`(NotFound)`, code 1) -> « mecanisme absent de l hote », `done` :
+    (d) k3s ; (e) kubectl seul. Présent -> retrait par `exec`, lu, `done` : (f) k3s ; (g) kubectl seul."""
+    f = []
+    for i, ip, outils, sonde, seg_cs, statut in (
+            (1791, "192.0.2.191", ("k3s",), "injoignable",
+             (" [cs] REFUS du retrait CrowdSec (sonde non conclue : k3s kubectl get deploy crowdsec-lapi, code 1 ; retrait "
+              "non tente) : ", ecrit_borne(KUBE_INJOIGNABLE)), "failed"),
+            (1792, "192.0.2.192", ("kubectl",), "interdite",
+             (" [cs] REFUS du retrait CrowdSec (sonde non conclue : kubectl get deploy crowdsec-lapi, code 1 ; retrait non "
+              "tente) : ", ecrit_borne(KUBE_INTERDITE)), "failed"),
+            (1793, "192.0.2.193", ("k3s",), "absente_tuee",
+             (" [cs] REFUS du retrait CrowdSec (sonde non conclue : k3s kubectl get deploy crowdsec-lapi, code 137 ; "
+              "retrait non tente) : ", ecrit_borne(KUBE_ABSENTE)), "failed"),
+            (1794, "192.0.2.194", ("k3s",), "absente", (f" [cs] {MECANISME_ABSENT}", ""), "done"),
+            (1795, "192.0.2.195", ("kubectl",), "absente", (f" [cs] {MECANISME_ABSENT}", ""), "done"),
+            (1796, "192.0.2.196", ("k3s",), "present", SEGMENT_CS["retiree"], "done"),
+            (1797, "192.0.2.197", ("kubectl",), "present", SEGMENT_CS["retiree"], "done")):
+        t = jouer_les_retraits(script, awk, [unban(i, ip)], ("nft",), retraits=[("blocklist", ip, "absent")],
+                               env_plus={"KUBE_SONDE": sonde}, faux={o: FAUX_KUBE for o in outils})
+        segs = [f" [f2b] {MECANISME_ABSENT}", seg_cs, (" [nft] absente : ", absence_ecrite("blocklist", ip)),
+                " [nft-ttl] retiree"]
+        attendu_statut, texte = levee_attendue(ip, ("refus" if statut == "failed" else "retiree",), segs)
+        resultat_entier(f, t, i, attendu_statut, texte)
+        prefixe = "k3s kubectl" if outils == ("k3s",) else "kubectl"
+        appels = [f"{prefixe} -n crowdsec get deploy crowdsec-lapi"]
+        if sonde == "present":
+            appels.append(f"{prefixe} -n crowdsec exec deploy/crowdsec-lapi -- cscli decisions delete -i {ip}")
+        exiger(f, t.trace("kube").splitlines() == appels, f"#{i} ({sonde}) : appels {t.trace('kube')!r}, attendus {appels!r}")
+    return f
+
+
+def s_registre_commencee_illisible_jamais_evincee(script, awk):
+    """(g) le symétrique de (f) pour les `commencee` : registre de `commencee` lisibles à la borne moins un ; une ligne
+    illisible EN FORME de `commencee` (un champ en trop) arrive EN TÊTE après l'assainissement (posée pendant la lecture
+    de la file) : seule la plus ancienne `commencee` LISIBLE sort, avouée par son identifiant ; la ligne illisible reste
+    et n'est pas dite."""
+    i, ip = 1798, "203.0.113.202"
+    f = []
+    lisibles = [commencee(6400 + k, f"198.51.100.{k % 200 + 1}") for k in range(REGISTRE_BORNE - 1)]
+    sale = "7002\tcommencee\tban_ip\t198.51.100.251\tchamp en trop"
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, lisibles)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400, awk=awk, faux=curl_salit_le_registre_a_la_lecture(),
+                   env_plus={"REGISTRE_A_SALIR": chemin_registre(etat), "LIGNE_ILLISIBLE_A_POSER": sale})
+        reg = lire_registre(etat) or []
+    exiger(f, reg == [sale] + lisibles[1:] + [faite(i, ip, res_pose(ip, 600))],
+           f"(g) registre de {len(reg)} lignes, tête {reg[:2]!r}")
+    evs = [l for l in t.stderr.splitlines() if l.startswith("respond: registre d execution PLEIN")]
+    exiger(f, evs == [j_eviction_commencee(6400)], f"(g) évictions dites {evs!r}")
+    verdict_est(f, t, i, "done")
+    return f
+
+
+def s_registre_place_partielle_refusee_entiere(script, awk):
+    """(h) le bord du « tout ou rien » : des lignes illisibles qu'une écriture refusée a laissées, PLUS une `faite`
+    lisible au milieu, une ligne au-delà de la borne : deux places à faire, une seule ligne lisible à évincer. Rien ne
+    sort (aucune éviction partielle), la cause le dit avec ses comptes, la riposte est exécutée."""
+    i, ip = 1799, "203.0.113.203"
+    f = []
+    illisibles = [f"ligne illisible {k}" for k in range(REGISTRE_BORNE)]
+    lignes = illisibles[:100] + [faite(7003, "203.0.113.9", "seule lisible")] + illisibles[100:]
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, lignes)
+        os.makedirs(chemin_registre(etat) + ".nouveau")
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400, awk=awk)
+        reg = lire_registre(etat)
+    exiger(f, reg == lignes, f"(h) le registre a changé : {len(reg or [])} lignes")
+    dit(f, t, j_protection_absente(i, cause_lignes_illisibles(REGISTRE_BORNE + 1, 1, 2)), "(h) protection absente")
+    tait(f, t, "respond: registre d execution PLEIN", "(h) éviction dite")
+    exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"(h) la riposte n'est pas exécutée : {lignes_nft(t)!r}")
+    verdict_est(f, t, i, "done")
+    return f
+
+
+# ----------------------------------------------------------------------------------------------------------
+# `P10.21-n` (vague CI) — HÔTE À LA FOIS CENTRAL ET AGENT : le responder local du démon (`plume-daemon respond`, lancé
+# par `plume-respond.timer`) ne prend ni le verrou ni le registre de l'agent ; l'agent le DIT à chaque tour quand
+# `systemctl` dit ce minuteur actif, et rien d'autre ne change.
+# ----------------------------------------------------------------------------------------------------------
+LIGNE_CENTRAL_ET_AGENT = (
+    "respond: HOTE A LA FOIS CENTRAL ET AGENT (plume-respond.timer actif) : le responder local du demon (plume-daemon "
+    "respond) ne prend ni ce verrou ni ce registre d execution ; s il porte la meme identite que cet agent, il execute "
+    "aussi une riposte de cet hote dont la reclamation d agent a passe la fenetre, et elle peut alors etre executee deux "
+    "fois")
+# Faux `systemctl` : trace ses arguments ; `is-active --quiet <unité>` rend le code fixé pour CETTE unité par
+# SYSTEMCTL_ACTIFS (« <unité>=<code> ... »), 4 (unité inconnue) sinon.
+FAUX_SYSTEMCTL = r"""#!/bin/sh
+printf '%s\n' "$*" >> "$TRACE_ENFORCEMENT.systemctl"
+case "$1 $2" in
+  "is-active --quiet")
+    for e in ${SYSTEMCTL_ACTIFS:-}; do case "$e" in "$3="*) exit "${e#*=}" ;; esac; done
+    exit 4 ;;
+esac
+exit 1
+"""
+
+
+def s_hote_central_et_agent_dit(script, awk):
+    """`plume-respond.timer` actif (code 0) : la ligne d'aveu est dite UNE fois, entière ; minuteur du démon inactif
+    (code 3), inconnu (seul le minuteur de l'AGENT est actif), ou `systemctl` absent : rien n'est dit. Dans les quatre
+    cas la riposte (un ban, puis une levée) rend le MÊME verdict et les mêmes commandes nft : l'aveu ne change rien. Et
+    l'aveu est dit APRÈS la prise du verrou : une exécution qui sort au verrou (porteur vivant), minuteur du démon actif,
+    ne le dit pas et n'interroge pas `systemctl`."""
+    f = []
+    ip_b, ip_u = "192.0.2.151", "192.0.2.152"
+    actions = [ban(1751, ip_b, 600), unban(1752, ip_u)]
+    rendus = {}
+    for nom, faux, actifs, dite in (
+            ("actif", {"systemctl": FAUX_SYSTEMCTL}, "plume-respond.timer=0", True),
+            ("inactif", {"systemctl": FAUX_SYSTEMCTL}, "plume-respond.timer=3", False),
+            ("seul l agent", {"systemctl": FAUX_SYSTEMCTL}, "plume-respond-agent.timer=0", False),
+            ("sans systemctl", None, "", False)):
+        c = Central("demon", actions)
+        try:
+            t = jouer(script, c, lecteurs=("python3",), backend="nft", bouchons=("nft",), awk=awk, faux_binaires=faux,
+                      env_plus={"NFT_ETAT": "equipe", "SYSTEMCTL_ACTIFS": actifs})
+        finally:
+            c.fermer()
+        lignes = [l for l in t.stderr.splitlines() if "CENTRAL ET AGENT" in l]
+        exiger(f, lignes == ([LIGNE_CENTRAL_ET_AGENT] if dite else []), f"{nom} : lignes d'aveu {lignes!r}")
+        if faux:
+            exiger(f, t.trace("systemctl") == "is-active --quiet plume-respond.timer\n",
+                   f"{nom} : systemctl appelé {t.trace('systemctl')!r}")
+        rendus[nom] = ([(v["status"], v["result"]) for v in (t.verdicts.get(1751), t.verdicts.get(1752)) if v], lignes_nft(t))
+    reference = rendus["sans systemctl"]
+    exiger(f, len(reference[0]) == 2, f"instrument : verdicts sans systemctl {reference!r}")
+    for nom, r in rendus.items():
+        exiger(f, r == reference, f"{nom} : l'aveu a changé l'exécution : {r!r} contre {reference!r}")
+    if not os.path.exists("/proc/self/stat"):
+        refuser_de_conclure("/proc absent : l'identité du porteur ne se lit pas")
+    with tempfile.TemporaryDirectory() as etat:
+        poser_porteur(etat, identite_de(os.getpid()) + "\n")
+        t = tour_n(script, etat, actions, awk=awk, faux={"systemctl": FAUX_SYSTEMCTL},
+                   env_plus={"SYSTEMCTL_ACTIFS": "plume-respond.timer=0"})
+    juger_la_seconde_execution(f, t, f"{VERROU_DEJA_PRIS} ({os.path.join(rep_etat(etat), 'verrou.d')})",
+                               "verrou tenu, minuteur du démon actif")
+    lignes = [l for l in t.stderr.splitlines() if "CENTRAL ET AGENT" in l]
+    exiger(f, lignes == [], f"verrou tenu : l'exécution sortie au verrou dit l'aveu : {lignes!r}")
+    exiger(f, t.trace("systemctl") == "", f"verrou tenu : systemctl appelé {t.trace('systemctl')!r}")
+    return f
+
+
+# ----------------------------------------------------------------------------------------------------------
+# `P10.21-n` (vague CI) — UNE `commencee` N'EST JAMAIS ÉVINCÉE EN SILENCE : la borne évince les plus anciennes `faite`,
+# puis les plus anciennes `commencee`, chacune avouée par son identifiant et son genre, jamais sa cible.
+# ----------------------------------------------------------------------------------------------------------
+def j_eviction_commencee(i, genre="ban_ip"):
+    return (f"respond: registre d execution PLEIN ({REGISTRE_BORNE} lignes) : #{i} (commencee, genre {genre}, issue de "
+            f"son execution inconnue) EVINCEE : si le central la re-sert, elle sera executee de nouveau sans etre dite "
+            f"reprise")
+
+
+def cause_lignes_illisibles(n, lisibles, trop):
+    return (f"registre plein de lignes illisibles non retirees ({n} lignes pour {REGISTRE_BORNE}, {lisibles} lisible(s) a "
+            f"evincer pour {trop} place(s) a faire)")
+
+
+def s_registre_commencees_evincees_avouees(script, awk):
+    """(a) des `commencee` en tête, la plus ancienne `faite` sort (inchangé) ; (b) registre de `commencee` seules, aux
+    trois bords (borne -1 : rien ne sort ; borne : la plus ancienne sort ; borne +1 : les deux plus anciennes) : chacune
+    avouée par une ligne ENTIÈRE (identifiant et genre), sa cible jamais écrite au journal, la riposte neuve inscrite et
+    PROTÉGÉE (aucun aveu de protection absente) ; (c) une `faite` ET des `commencee` pour deux places : la `faite` sort
+    d'abord, puis la plus ancienne `commencee` — aveux dans cet ordre ; (d) registre plein de lignes illisibles qu'une
+    écriture refusée a laissées : rien ne sort, la cause le dit, la riposte est exécutée quand même ; (e) registre de
+    `commencee` à la borne, la réécriture du registre REFUSÉE : rien ne sort, AUCUNE `commencee` n'est dite évincée (elle
+    est restée), la cause dit l'écriture refusée, la riposte est exécutée ; (f) une ligne illisible en forme de `faite`
+    arrive EN TÊTE du registre après l'assainissement du début de tour (posée pendant la lecture de la file) : seules les
+    lignes LISIBLES sont évincées — la plus ancienne `faite` lisible sort, la ligne illisible reste et n'est pas dite."""
+    i, ip = 1761, "203.0.113.201"
+    f = []
+    tete = [commencee(6000 + k, f"198.51.100.{k + 1}") for k in range(3)]
+    faites = prefill_faites(REGISTRE_BORNE - 3)
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, tete + faites)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400, awk=awk)
+        reg = lire_registre(etat) or []
+    exiger(f, reg == tete + faites[1:] + [faite(i, ip, res_pose(ip, 600))], f"(a) registre : tête {reg[:4]!r}")
+    dit(f, t, j_eviction(5000), "(a) éviction de la plus ancienne faite")
+    tait(f, t, "respond: registre d execution PLEIN (264 lignes) : #6", "(a) une commencee évincée")
+    toutes = [commencee(6100 + k, f"198.51.100.{k % 200 + 1}", genre=("unban_ip" if k == 1 else "ban_ip"))
+              for k in range(REGISTRE_BORNE + 1)]
+    for n, sorties in ((REGISTRE_BORNE - 1, 0), (REGISTRE_BORNE, 1), (REGISTRE_BORNE + 1, 2)):
+        with tempfile.TemporaryDirectory() as etat:
+            poser_registre(etat, toutes[:n])
+            t = tour_n(script, etat, [ban(i, ip, 600)], statut=400, awk=awk)
+            reg = lire_registre(etat) or []
+        exiger(f, reg == toutes[sorties:n] + [faite(i, ip, res_pose(ip, 600))],
+               f"(b) {n} lignes : registre de {len(reg)} lignes, tête {reg[:2]!r}, queue {reg[-1:]!r}")
+        evs = [l for l in t.stderr.splitlines() if l.startswith("respond: registre d execution PLEIN")]
+        exiger(f, evs == [j_eviction_commencee(6100 + k, "unban_ip" if k == 1 else "ban_ip") for k in range(sorties)],
+               f"(b) {n} lignes : évictions dites {evs!r}")
+        for k in range(sorties):
+            cible = f"198.51.100.{k % 200 + 1}"
+            exiger(f, not re.search(rf"(?<![0-9.]){re.escape(cible)}(?![0-9])", t.stderr),
+                   f"(b) {n} lignes : la cible {cible} est journalisée")
+        tait(f, t, f"respond: #{i} protection contre la REEXECUTION ABSENTE", f"(b) {n} lignes : protection absente")
+        exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"(b) {n} lignes : {lignes_nft(t)!r}")
+        verdict_est(f, t, i, "done")
+    melange = toutes[:REGISTRE_BORNE] + [faite(6999, "203.0.113.9", "seule faite")]
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, melange)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400, awk=awk)
+        reg = lire_registre(etat) or []
+    exiger(f, reg == toutes[1:REGISTRE_BORNE] + [faite(i, ip, res_pose(ip, 600))], f"(c) registre : tête {reg[:2]!r}")
+    evs = [l for l in t.stderr.splitlines() if l.startswith("respond: registre d execution PLEIN")]
+    exiger(f, evs == [j_eviction(6999), j_eviction_commencee(6100)], f"(c) évictions dites {evs!r}")
+    illisibles = [f"ligne illisible {k}" for k in range(REGISTRE_BORNE)]
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, illisibles)
+        os.makedirs(chemin_registre(etat) + ".nouveau")
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400, awk=awk)
+        reg = lire_registre(etat)
+    exiger(f, reg == illisibles, f"(d) le registre a changé : {len(reg or [])} lignes")
+    dit(f, t, j_protection_absente(i, cause_lignes_illisibles(REGISTRE_BORNE, 0, 1)), "(d) protection absente")
+    exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"(d) la riposte n'est pas exécutée : {lignes_nft(t)!r}")
+    verdict_est(f, t, i, "done")
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, toutes[:REGISTRE_BORNE])
+        os.makedirs(chemin_registre(etat) + ".nouveau")
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400, awk=awk)
+        reg = lire_registre(etat)
+    exiger(f, reg == toutes[:REGISTRE_BORNE], f"(e) le registre a changé : {len(reg or [])} lignes")
+    tait(f, t, "respond: registre d execution PLEIN", "(e) éviction dite alors que la réécriture est refusée")
+    dit(f, t, j_protection_absente(i, cause_ecriture(chemin_registre(etat))), "(e) protection absente")
+    exiger(f, lignes_nft(t) == ENSURE + [nft_pose(ip, 600)], f"(e) la riposte n'est pas exécutée : {lignes_nft(t)!r}")
+    verdict_est(f, t, i, "done")
+    faites = prefill_faites(REGISTRE_BORNE - 1)
+    sale = "7001\tfaite\tban_ip\t198.51.100.250\tdone\tposee\tchamp en trop"
+    with tempfile.TemporaryDirectory() as etat:
+        poser_registre(etat, faites)
+        t = tour_n(script, etat, [ban(i, ip, 600)], statut=400, awk=awk, faux=curl_salit_le_registre_a_la_lecture(),
+                   env_plus={"REGISTRE_A_SALIR": chemin_registre(etat), "LIGNE_ILLISIBLE_A_POSER": sale})
+        reg = lire_registre(etat) or []
+    exiger(f, reg == [sale] + faites[1:] + [faite(i, ip, res_pose(ip, 600))],
+           f"(f) registre de {len(reg)} lignes, tête {reg[:2]!r}")
+    evs = [l for l in t.stderr.splitlines() if l.startswith("respond: registre d execution PLEIN")]
+    exiger(f, evs == [j_eviction(5000)], f"(f) évictions dites {evs!r}")
+    verdict_est(f, t, i, "done")
+    return f
+
+
+def curl_salit_le_registre_a_la_lecture():
+    """Un curl qui, à la PREMIÈRE requête qui n'est pas une remise (la lecture de la file, après l'assainissement du
+    registre), pose LIGNE_ILLISIBLE_A_POSER en tête de REGISTRE_A_SALIR, puis joue le vrai curl."""
+    vrai = shutil.which("curl")
+    return {"curl": "#!/bin/sh\n"
+                    "case \"$*\" in *'/api/actions/result'*) ;; *)\n"
+                    "  if [ ! -e \"$TRACE_ENFORCEMENT.sali\" ]; then\n"
+                    "    : > \"$TRACE_ENFORCEMENT.sali\"\n"
+                    "    { printf '%%s\\n' \"$LIGNE_ILLISIBLE_A_POSER\"; cat \"$REGISTRE_A_SALIR\"; } > \"$REGISTRE_A_SALIR.sale\" &&\n"
+                    "      chmod 600 \"$REGISTRE_A_SALIR.sale\" && mv -f \"$REGISTRE_A_SALIR.sale\" \"$REGISTRE_A_SALIR\"\n"
+                    "  fi ;;\n"
+                    "esac\n"
+                    "exec %s \"$@\"\n" % vrai}
+
+
 SCENARIOS = {
     "json_served_python3": lambda s: s_json_servi(s, "python3"),
     "json_served_jq": lambda s: s_json_servi(s, "jq"),
@@ -3018,7 +3820,7 @@ SCENARIOS = {
     "nft_unban_nothing_removed_nft_alone_is_failed": s_levee_deux_absences_nft_seul,
     "nft_unban_killed_by_a_signal_is_a_refusal": s_levee_nft_tue_par_un_signal,
     "nft_unban_refused_with_fail2ban_is_failed": s_levee_refusee_avec_fail2ban,
-    "nft_unban_nothing_removed_with_fail2ban_or_crowdsec_is_done": s_levee_deux_absences_avec_fail2ban_ou_crowdsec,
+    "nft_unban_nothing_removed_decided_by_fail2ban_or_crowdsec": s_levee_deux_absences_tranchee_par_fail2ban_ou_crowdsec,
     "nft_unban_exit_code_edges": s_levee_bord_des_codes,
     "nft_unban_absence_on_stdout_is_a_refusal": s_levee_absence_sur_la_sortie_standard,
     "nft_unban_read_under_a_translated_locale": s_levee_sous_une_locale_traduite,
@@ -3046,7 +3848,7 @@ SCENARIOS = {
     "definitive_refusal_reserved_riposte_not_reexecuted": s_refus_definitif_du_central,
     "abandoned_replay_reserved_riposte_not_reexecuted": s_rejeu_abandonne,
     "execution_register_bound_at_each_edge": s_registre_borne,
-    "execution_register_never_evicts_a_started_riposte": s_registre_commencees_jamais_evincees,
+    "execution_register_evicts_a_started_riposte_only_with_an_avowal": sous_chaque_awk(s_registre_commencees_evincees_avouees),
     "execution_register_illegible_lines_dropped_and_said": s_registre_lignes_illisibles,
     "dry_run_and_refusals_write_nothing_to_the_register": s_simulacre_et_refus_n_ecrivent_rien,
     "register_entry_removed_on_2xx_and_ok_false_kept_on_503": s_registre_retire_ou_garde,
@@ -3075,6 +3877,21 @@ SCENARIOS = {
     "mktemp_refused_exit_gives_back_the_mkdir_lock": s_sortie_sur_mktemp_refuse_rend_le_verrou,
     "held_lock_leaves_the_register_untouched": s_verrou_tenu_laisse_le_registre_intact,
     "register_line_with_a_trailing_field_is_illegible": s_ligne_a_champ_en_trop_illisible,
+    # `P11.25-a` et `P10.21-n` (vague CI) — sous chaque awk présent.
+    "unban_matrix_of_the_three_mechanisms": sous_chaque_awk(s_levee_matrice_des_trois_mecanismes),
+    "unban_fail2ban_and_crowdsec_output_forms_read": sous_chaque_awk(s_retraits_formes_lues),
+    "unban_refused_output_bounded_without_control_characters": sous_chaque_awk(s_retrait_refuse_borne_et_sans_controle),
+    "unban_without_any_mechanism_stays_failed_even_resumed": sous_chaque_awk(s_levee_sans_aucun_mecanisme),
+    "resumed_unban_decided_by_fail2ban_or_crowdsec": sous_chaque_awk(s_levee_reprise_tranchee_par_les_autres_mecanismes),
+    "central_and_agent_host_says_the_local_responder_escapes_the_lock": sous_chaque_awk(s_hote_central_et_agent_dit),
+    # `P11.25-a` et `P10.21-n` (vague CI, correction) — sites relevés sans témoin par la vérification indépendante.
+    "unban_nonzero_exit_with_a_readable_count_is_a_refusal": sous_chaque_awk(s_retrait_code_non_nul_avec_un_compte_lisible),
+    "unban_fail2ban_count_followed_by_another_line_is_a_refusal": sous_chaque_awk(s_fail2ban_compte_suivi_d_une_ligne),
+    "unban_nft_removal_output_bounded_without_control_characters": sous_chaque_awk(s_retrait_nft_reussi_ecrit_borne_et_sans_controle),
+    "unban_names_kept_whole_when_no_room_is_left_for_details": sous_chaque_awk(s_levee_noms_entiers_sans_place_pour_les_ecrits),
+    "unban_crowdsec_pod_probe_not_concluded_is_a_refusal": sous_chaque_awk(s_sonde_du_pod_lapi),
+    "execution_register_never_evicts_an_illegible_started_line": sous_chaque_awk(s_registre_commencee_illisible_jamais_evincee),
+    "execution_register_partial_room_is_refused_whole": sous_chaque_awk(s_registre_place_partielle_refusee_entiere),
 }
 
 # (nom, motif exact dans respond.sh, remplacement, scénarios qui DOIVENT rougir)
@@ -3292,7 +4109,7 @@ MUTANTS = [
     ('unban_absence_taken_for_a_refusal',
      '    *"$NFT_MESSAGE_D_ABSENCE"*) if [ "$_cr_code" -lt 126 ]; then return 0; fi ;;',
      '    *"$NFT_MESSAGE_D_ABSENCE"*) ;;',
-     ['nft_unban_absent_and_removed_is_done', 'nft_unban_nothing_removed_with_fail2ban_or_crowdsec_is_done', 'nft_unban_read_under_a_translated_locale', 'nft_unban_exit_code_edges']),
+     ['nft_unban_absent_and_removed_is_done', 'nft_unban_nothing_removed_decided_by_fail2ban_or_crowdsec', 'nft_unban_read_under_a_translated_locale', 'nft_unban_exit_code_edges']),
     ('unban_refusal_taken_for_an_absence',
      '  NFT_RETRAIT=refus\n',
      '  NFT_RETRAIT=absente\n',
@@ -3350,36 +4167,32 @@ MUTANTS = [
      '  if [ "$_ua_refus" = 1 ] && [ "$_ua_autres" = 0 ]; then return 1; fi',
      ['nft_unban_refused_with_fail2ban_is_failed']),
     ('unban_nothing_removed_said_done',
-     '    OUT="$OUT ; LEVEE NON FAITE : adresse absente de chaque set nft tente, rien n a ete retire"; return 1\n',
+     '    OUT="$OUT ; LEVEE NON FAITE : adresse absente de chaque mecanisme present, rien n a ete retire"; return 1\n',
      '    return 0\n',
-     ['nft_unban_nothing_removed_nft_alone_is_failed']),
-    ('unban_nothing_removed_failed_despite_other_backends',
-     '[ "$_ua_retrait" = 0 ] && [ "$_ua_autres" = 0 ]; then',
-     '[ "$_ua_retrait" = 0 ]; then',
-     ['nft_unban_nothing_removed_with_fail2ban_or_crowdsec_is_done']),
-    ('unban_fail2ban_not_counted_as_another_backend',
-     'then _ua_autres=1; OUT="$OUT [f2b]',
-     'then OUT="$OUT [f2b]',
-     ['nft_unban_nothing_removed_with_fail2ban_or_crowdsec_is_done']),
-    ('unban_crowdsec_not_counted_as_another_backend',
-     'then _ua_autres=1; OUT="$OUT [cs]',
-     'then OUT="$OUT [cs]',
-     ['nft_unban_nothing_removed_with_fail2ban_or_crowdsec_is_done']),
+     ['nft_unban_nothing_removed_nft_alone_is_failed', 'unban_matrix_of_the_three_mechanisms', 'nft_unban_nothing_removed_decided_by_fail2ban_or_crowdsec']),
+    ('unban_fail2ban_issue_not_counted',
+     'OUT="$OUT [f2b]$RETRAIT_TEXTE"\n    case "$RETRAIT" in refus) _ua_refus=1 ;; retiree) _ua_retrait=1 ;; esac\n',
+     'OUT="$OUT [f2b]$RETRAIT_TEXTE"\n',
+     ['nft_unban_nothing_removed_decided_by_fail2ban_or_crowdsec', 'unban_matrix_of_the_three_mechanisms']),
+    ('unban_crowdsec_issue_not_counted',
+     'OUT="$OUT [cs]$RETRAIT_TEXTE"\n    case "$RETRAIT" in refus) _ua_refus=1 ;; retiree) _ua_retrait=1 ;; esac\n',
+     'OUT="$OUT [cs]$RETRAIT_TEXTE"\n',
+     ['nft_unban_nothing_removed_decided_by_fail2ban_or_crowdsec', 'unban_matrix_of_the_three_mechanisms']),
     ('unban_refusal_text_without_its_set',
-     'NFT_RETRAIT_TEXTE="REFUS du retrait dans $1 $NFT_REFUS_TEXTE"',
-     'NFT_RETRAIT_TEXTE="REFUS du retrait $NFT_REFUS_TEXTE"',
+     'NFT_RETRAIT_TEXTE=" REFUS du retrait dans $1 $NFT_REFUS_TETE',
+     'NFT_RETRAIT_TEXTE=" REFUS du retrait $NFT_REFUS_TETE',
      ['nft_unban_refused_on_the_permanent_set_is_failed', 'nft_unban_refused_on_the_ttl_set_is_failed']),
     ('unban_refusal_text_without_what_nft_wrote',
-     'NFT_REFUS_TEXTE="($_cr_cause) : $_cr_coupe"',
-     'NFT_REFUS_TEXTE="($_cr_cause)"',
+     'NFT_REFUS_TETE="($_cr_cause) : "; NFT_REFUS_ECRIT=$_cr_coupe',
+     'NFT_REFUS_TETE="($_cr_cause)"; NFT_REFUS_ECRIT=""',
      ['nft_unban_refused_on_the_permanent_set_is_failed', 'nft_unban_refused_on_the_ttl_set_is_failed']),
     ('unban_refusal_text_unbounded',
-     '| coupe_sur_caractere "$NFT_PART_DE_RETRAIT_OCTETS")',
-     '| cat)',
+     '"$_cr_entier" | coupe_sur_caractere "$NFT_PART_DE_RETRAIT_OCTETS")',
+     '"$_cr_entier" | cat)',
      ['nft_unban_long_refusal_bounded_per_set']),
     ('unban_refusal_cut_mid_character',
-     '| coupe_sur_caractere "$NFT_PART_DE_RETRAIT_OCTETS")',
-     '| LC_ALL=C cut -b "1-$NFT_PART_DE_RETRAIT_OCTETS")',
+     '"$_cr_entier" | coupe_sur_caractere "$NFT_PART_DE_RETRAIT_OCTETS")',
+     '"$_cr_entier" | LC_ALL=C cut -b "1-$NFT_PART_DE_RETRAIT_OCTETS")',
      ['nft_unban_long_refusal_bounded_per_set']),
     ('unban_refusal_cut_not_said',
      'then _cr_coupe="$_cr_coupe [...]"; fi',
@@ -3420,8 +4233,8 @@ MUTANTS = [
      'nft list "$@"',
      ['nft_unban_probe_absence_read_under_a_translated_locale']),
     ('unban_nft_presence_not_checked',
-     'if command -v nft >/dev/null 2>&1; then nft_sonder',
-     'if :; then nft_sonder',
+     'if command -v nft >/dev/null 2>&1; then\n    _ua_presents=1; nft_sonder',
+     'if :; then\n    _ua_presents=1; nft_sonder',
      ['nft_unban_without_nft_unchanged']),
     ('unban_part_bound_raised',
      'NFT_PART_DE_RETRAIT_OCTETS=120',
@@ -3434,9 +4247,9 @@ MUTANTS = [
      'if [ -z "$NFT_RETRAIT_TEXTE" ] || nft_lire_l_echec "$_cr_retour" "$NFT_RETRAIT_TEXTE"; then NFT_RETRAIT=absente',
      ['nft_unban_silent_removal_failure_is_a_refusal']),
     ('unban_silent_removal_read_as_removed',
-     '3>&2 2>&1 1>&3 3>&-); then\n    NFT_RETRAIT=retiree; return 0\n  else\n    _cr_retour=$?\n  fi\n',
-     '3>&2 2>&1 1>&3 3>&-); then\n    NFT_RETRAIT=retiree; return 0\n  else\n    _cr_retour=$?\n  fi\n'
-     '  [ -n "$NFT_RETRAIT_TEXTE" ] || { NFT_RETRAIT=retiree; return 0; }\n',
+     '    _cr_retour=$?\n  fi\n',
+     '    _cr_retour=$?\n  fi\n'
+     '  [ -n "$NFT_RETRAIT_TEXTE" ] || { NFT_RETRAIT=retiree; NFT_RETRAIT_TEXTE=" retiree"; return 0; }\n',
      ['nft_unban_silent_removal_failure_is_a_refusal']),
     ('unban_silent_probe_read_as_an_absence',
      'if nft_lire_l_echec "$_so_retour" "$_so_ecrit"; then NFT_SONDE=absent',
@@ -3463,8 +4276,8 @@ MUTANTS = [
      '_ua_refus=0; _ua_retrait=${_ua_retrait:-0}\n',
      ['nft_unban_removal_does_not_carry_to_the_next_unban']),
     ('unban_refusal_carried_to_the_next_unban',
-     '_ua_autres=0; _ua_refus=0;',
-     '_ua_autres=0; _ua_refus=${_ua_refus:-0};',
+     '_ua_presents=0; _ua_refus=0;',
+     '_ua_presents=0; _ua_refus=${_ua_refus:-0};',
      ['nft_unban_refusal_does_not_carry_to_the_next_unban']),
     ('unban_refusal_unit_separator_kept',
      "_cr_entier=$(printf '%s' \"$2\" | tr '\\000-\\037' ' ')",
@@ -3579,14 +4392,14 @@ MUTANTS = [
      '_fp_trop=$((_fp_n - REGISTRE_LIGNES + 1))',
      '_fp_trop=$((_fp_n - REGISTRE_LIGNES))',
      ['execution_register_bound_at_each_edge']),
-    ('register_eviction_takes_started_ripostes',
-     'grep -n "^[0-9]*\tfaite\t"',
-     'grep -n "^[0-9]*\t"',
-     ['execution_register_never_evicts_a_started_riposte']),
+    ('register_done_not_evicted_first',
+     'grep "^[0-9]*:[0-9]*\tfaite\t"',
+     'grep "^[0-9]*:[0-9]*\tjamais\t"',
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal', 'execution_register_bound_at_each_edge']),
     ('register_eviction_partial',
      'if [ "$_fp_k" -lt "$_fp_trop" ]; then',
      'if [ "$_fp_k" -lt 1 ]; then',
-     ['execution_register_never_evicts_a_started_riposte']),
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal']),
     ('register_eviction_silent',
      '    echo "respond: registre d execution PLEIN',
      '    : "respond: registre d execution PLEIN',
@@ -3594,12 +4407,12 @@ MUTANTS = [
     ('unavailable_register_suspends_the_ban',
      '    *) registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || _ta_protege=0 ;;',
      '    *) registre_inscrire "$id" "$_ta_genre" "$_ta_cible" || return 0 ;;',
-     ['execution_register_never_evicts_a_started_riposte', 'unwritable_state_executes_and_says_no_protection',
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal', 'unwritable_state_executes_and_says_no_protection',
       'refused_register_append_executes_and_says']),
     ('absent_protection_not_said',
      '    echo "respond: #$id protection contre la REEXECUTION ABSENTE',
      '    : "respond: #$id protection contre la REEXECUTION ABSENTE',
-     ['unwritable_state_executes_and_says_no_protection', 'execution_register_never_evicts_a_started_riposte',
+     ['unwritable_state_executes_and_says_no_protection', 'execution_register_evicts_a_started_riposte_only_with_an_avowal',
       'illegible_register_executes_and_says', 'overlong_id_executed_without_protection_said',
       'refused_register_append_executes_and_says']),
     ('illegible_register_read_as_absent',
@@ -3635,8 +4448,8 @@ MUTANTS = [
      '''registre_texte() { cat "$REGISTRE_FICHIER"; }''',
      ['register_zero_filled_tail_still_read']),
     ('illegible_lines_not_dropped',
-     'prendre_le_verrou\nregistre_assainir\n',
-     'prendre_le_verrou\n',
+     'dire_le_responder_local_hors_verrou\nregistre_assainir\n',
+     'dire_le_responder_local_hors_verrou\n',
      ['execution_register_illegible_lines_dropped_and_said']),
     ('illegible_lines_dropped_silently',
      '    echo "respond: registre d execution : $_ra_ecartees ligne(s) illisible(s) ecartee(s)',
@@ -3713,8 +4526,8 @@ MUTANTS = [
      ['reused_id_avowal_reads_the_last_line']),
     # `P10.21-n` — verrou : une seule exécution de l'agent à la fois.
     ('lock_never_taken',
-     'prendre_le_verrou\nregistre_assainir\n',
-     'registre_assainir\n',
+     'prendre_le_verrou\ndire_le_responder_local_hors_verrou\n',
+     'dire_le_responder_local_hors_verrou\n',
      ['concurrent_runs_mkdir_lock_one_processes', 'concurrent_runs_flock_one_processes', 'live_mkdir_lock_respected']),
     ('mkdir_second_run_processes_anyway',
      '($VERROU_REPERTOIRE)" >&2; exit 0; fi',
@@ -3834,8 +4647,8 @@ MUTANTS = [
      '  for _pl_essai in 1; do\n',
      ['orphan_mkdir_lock_held_after_its_takeover']),
     ('lock_taken_after_the_replay',
-     'prendre_le_verrou\nregistre_assainir\n\n# --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---\nrejouer_les_verdicts_retenus\n',
-     'registre_assainir\n\n# --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---\nrejouer_les_verdicts_retenus\nprendre_le_verrou\n',
+     'prendre_le_verrou\ndire_le_responder_local_hors_verrou\nregistre_assainir\n\n# --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---\nrejouer_les_verdicts_retenus\n',
+     'dire_le_responder_local_hors_verrou\nregistre_assainir\n\n# --- le rejeu passe AVANT la liste : une liste vide ou injoignable n empeche pas de remettre ---\nrejouer_les_verdicts_retenus\nprendre_le_verrou\n',
      ['second_run_replays_nothing_while_the_lock_is_held']),
     ('resumed_failure_said_done_whatever_the_kind',
      '[ "$kind" = unban_ip ] && [ "$UA_RIEN_RETIRE" = 1 ]; then',
@@ -3854,19 +4667,287 @@ MUTANTS = [
      "      :\n",
      ['mktemp_refused_exit_gives_back_the_mkdir_lock']),
     ('register_cleaned_before_the_lock',
-     'prendre_le_verrou\nregistre_assainir\n',
-     'registre_assainir\nprendre_le_verrou\n',
+     'prendre_le_verrou\ndire_le_responder_local_hors_verrou\nregistre_assainir\n',
+     'registre_assainir\nprendre_le_verrou\ndire_le_responder_local_hors_verrou\n',
      ['held_lock_leaves_the_register_untouched']),
+    # `P11.25-a` (vague CI) — les retraits fail2ban et CrowdSec lus, chaque mécanisme et son issue nommés.
+    ('removal_exit_code_not_judged',
+     '  if [ "$2" != 0 ]; then\n    RETRAIT=refus;',
+     '  if false; then\n    RETRAIT=refus;',
+     ['unban_matrix_of_the_three_mechanisms']),
+    ('removal_unreadable_read_as_absent',
+     "''|*[!0-9]*) RETRAIT=refus;",
+     "''|*[!0-9]*) RETRAIT=absente;",
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('removal_unreadable_read_as_removed',
+     "''|*[!0-9]*) RETRAIT=refus;",
+     "''|*[!0-9]*) RETRAIT=retiree;",
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('removal_zero_count_read_as_removed',
+     '    *[!0]*) RETRAIT=retiree;',
+     '    *) RETRAIT=retiree;',
+     ['unban_matrix_of_the_three_mechanisms', 'unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('removal_issue_word_dropped',
+     'RETRAIT_TEXTE=" retiree : $_jr_ecrit"',
+     'RETRAIT_TEXTE=" $_jr_ecrit"',
+     ['unban_matrix_of_the_three_mechanisms']),
+    ('removal_refusal_without_its_mechanism',
+     'RETRAIT_TEXTE=" REFUS du retrait $1 (code $2) : $_jr_ecrit"',
+     'RETRAIT_TEXTE=" REFUS du retrait (code $2) : $_jr_ecrit"',
+     ['unban_matrix_of_the_three_mechanisms']),
+    ('fail2ban_absent_not_said',
+     '    OUT="$OUT [f2b] $RETRAIT_MECANISME_ABSENT"\n',
+     '    :\n',
+     ['unban_matrix_of_the_three_mechanisms']),
+    ('crowdsec_absent_not_said',
+     '    OUT="$OUT [cs] $RETRAIT_MECANISME_ABSENT"\n',
+     '    :\n',
+     ['unban_matrix_of_the_three_mechanisms']),
+    ('nft_absent_not_said',
+     'NFT_SONDE=absent; OUT="$OUT [nft] $RETRAIT_MECANISME_ABSENT"',
+     'NFT_SONDE=absent',
+     ['unban_fail2ban_and_crowdsec_output_forms_read', 'nft_unban_without_nft_unchanged']),
+    ('fail2ban_not_counted_present',
+     '    _ua_presents=1; f2b_classer_le_retrait',
+     '    f2b_classer_le_retrait',
+     ['unban_fail2ban_and_crowdsec_output_forms_read', 'nft_unban_without_nft_unchanged']),
+    ('crowdsec_not_counted_present',
+     '    _ua_presents=1; cs_classer_le_retrait',
+     '    cs_classer_le_retrait',
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('nft_not_counted_present',
+     '    _ua_presents=1; nft_sonder',
+     '    nft_sonder',
+     ['unban_matrix_of_the_three_mechanisms']),
+    ('no_mechanism_not_said',
+     '  if [ "$_ua_presents" = 0 ]; then OUT=',
+     '  if false; then OUT=',
+     ['unban_without_any_mechanism_stays_failed_even_resumed']),
+    ('fail2ban_leading_blanks_kept',
+     "sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')",
+     "sed -e 's/[[:space:]]*$//')",
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('fail2ban_trailing_blanks_kept',
+     "sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')",
+     "sed -e 's/^[[:space:]]*//')",
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('crowdsec_count_read_greedily',
+     "'s/^\\(.*[^0-9]\\)\\{0,1\\}\\([0-9][0-9]*\\) decision(s) deleted.*$/\\2/p'",
+     "'s/^.*\\([0-9][0-9]*\\) decision(s) deleted.*$/\\1/p'",
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('crowdsec_count_never_at_line_start',
+     "'s/^\\(.*[^0-9]\\)\\{0,1\\}\\([0-9]",
+     "'s/^\\(.*[^0-9]\\)\\([0-9]",
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('crowdsec_first_count_line_only',
+     "\\2/p')\n  retrait_juger CrowdSec",
+     "\\2/p' | sed -n 1p)\n  retrait_juger CrowdSec",
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('removal_output_unbounded',
+     '"$_eb_entier" | coupe_sur_caractere "$NFT_PART_DE_RETRAIT_OCTETS")',
+     '"$_eb_entier" | cat)',
+     ['unban_refused_output_bounded_without_control_characters']),
+    ('removal_output_cut_mid_character',
+     '"$_eb_entier" | coupe_sur_caractere "$NFT_PART_DE_RETRAIT_OCTETS")',
+     '"$_eb_entier" | LC_ALL=C cut -b "1-$NFT_PART_DE_RETRAIT_OCTETS")',
+     ['unban_refused_output_bounded_without_control_characters']),
+    ('removal_output_cut_not_said',
+     'if [ "$_eb_coupe" != "$_eb_entier" ]; then _eb_coupe="$_eb_coupe [...]"; fi\n',
+     '',
+     ['unban_refused_output_bounded_without_control_characters']),
+    ('removal_output_control_characters_kept',
+     "_eb_entier=$(printf '%s' \"$1\" | tr '\\000-\\037' ' ')",
+     "_eb_entier=$(printf '%s' \"$1\")",
+     ['unban_refused_output_bounded_without_control_characters']),
+    ('removal_output_unit_separator_kept',
+     "_eb_entier=$(printf '%s' \"$1\" | tr '\\000-\\037' ' ')",
+     "_eb_entier=$(printf '%s' \"$1\" | tr '\\000-\\036' ' ')",
+     ['unban_refused_output_bounded_without_control_characters']),
+    ('nft_removed_issue_not_named',
+     'else NFT_RETRAIT_TEXTE=" retiree"; fi',
+     'else NFT_RETRAIT_TEXTE=""; fi',
+     ['unban_matrix_of_the_three_mechanisms']),
+    ('nft_removed_output_dropped',
+     'then NFT_RETRAIT_TEXTE=" retiree : $(levee_detail "$NFT_RETRAIT_TEXTE")"; else',
+     'then NFT_RETRAIT_TEXTE=" retiree"; else',
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    ('nft_absent_issue_not_named',
+     'NFT_RETRAIT=absente; NFT_RETRAIT_TEXTE=" absente : $(levee_detail "$NFT_RETRAIT_TEXTE")"; return 0',
+     'NFT_RETRAIT=absente; return 0',
+     ['unban_matrix_of_the_three_mechanisms']),
+    ('nft_missing_table_not_said',
+     'then OUT="$OUT [nft] absente (table inet plume inexistante, rien a retirer)"; fi',
+     'then :; fi',
+     ['nft_unban_no_table_or_no_ttl_set_unchanged']),
+    ('nft_missing_ttl_set_not_said',
+     '      OUT="$OUT [nft-ttl] absente (set blocklist_ttl inexistant, rien a retirer)"\n',
+     '      :\n',
+     ['nft_unban_no_table_or_no_ttl_set_unchanged']),
+    ('resumed_unban_never_constated_absent',
+     '    UA_RIEN_RETIRE=1; UA_OUT_AVANT_VERDICT="$OUT"\n',
+     '    UA_OUT_AVANT_VERDICT="$OUT"\n',
+     ['resumed_unban_decided_by_fail2ban_or_crowdsec']),
+    # `P10.21-n` (vague CI) — hôte à la fois central et agent : l'aveu, sa condition, son unité.
+    ('central_and_agent_never_said',
+     '    echo "respond: $PHRASE_RESPONDER_LOCAL_HORS_VERROU" >&2\n',
+     '',
+     ['central_and_agent_host_says_the_local_responder_escapes_the_lock']),
+    ('central_and_agent_always_said',
+     '  if systemctl is-active --quiet plume-respond.timer >/dev/null 2>&1; then',
+     '  if :; then',
+     ['central_and_agent_host_says_the_local_responder_escapes_the_lock']),
+    ('central_and_agent_reads_the_agent_timer',
+     'is-active --quiet plume-respond.timer >/dev/null',
+     'is-active --quiet plume-respond-agent.timer >/dev/null',
+     ['central_and_agent_host_says_the_local_responder_escapes_the_lock']),
+    ('central_and_agent_reads_enabled_not_active',
+     'systemctl is-active --quiet plume-respond.timer',
+     'systemctl is-enabled --quiet plume-respond.timer',
+     ['central_and_agent_host_says_the_local_responder_escapes_the_lock']),
+    # `P10.21-n` (vague CI) — une `commencee` sort par la borne, avouée, jamais en silence ni avec sa cible.
+    ('register_started_never_evicted',
+     '  if [ "$_fp_k" -lt "$_fp_trop" ]; then\n    _fp_commencees',
+     '  if false; then\n    _fp_commencees',
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal']),
+    ('register_started_eviction_silent',
+     "  printf '%s' \"$_fp_aveux\" >&2\n",
+     '',
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal']),
+    ('register_started_eviction_names_the_target',
+     '(commencee, genre ${_fp_g%%\t*}, issue',
+     '(commencee, genre ${_fp_g}, issue',
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal']),
+    ('register_started_eviction_genre_fixed',
+     '(commencee, genre ${_fp_g%%\t*}, issue',
+     '(commencee, genre ban_ip, issue',
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal']),
+    ('register_unreadable_room_not_refused',
+     'if [ $((_fp_k + _fp_c)) -lt "$_fp_trop" ]; then',
+     'if false; then',
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal']),
     ('register_form_without_its_final_anchor',
      "[^\\t]*)$'",
      "[^\\t]*)'",
      ['register_line_with_a_trailing_field_is_illegible']),
+    # `P11.25-a` et `P10.21-n` (vague CI, sites relevés sans témoin par la vérification indépendante). Le lecteur
+    # CrowdSec sans la phrase : un chiffre quelconque d'une ligne cscli (l'horodatage logrus) devient le compte, une
+    # sortie inconnue est lue `absente` au lieu d'un refus.
+    ('crowdsec_count_read_without_its_phrase',
+     r"sed -n 's/^\(.*[^0-9]\)\{0,1\}\([0-9][0-9]*\) decision(s) deleted.*$/\2/p'",
+     r"sed -n 's/^\(.*[^0-9]\)\{0,1\}\([0-9][0-9]*\).*$/\2/p'",
+     ['unban_fail2ban_and_crowdsec_output_forms_read', 'resumed_unban_decided_by_fail2ban_or_crowdsec']),
+    # Une ligne sans compte posée à côté de la ligne de compte (kubectl : « Defaulted container… ») fait refuser.
+    ('crowdsec_line_without_count_refused',
+     r"sed -n 's/^\(.*[^0-9]\)\{0,1\}\([0-9][0-9]*\) decision(s) deleted.*$/\2/p')",
+     r"sed 's/^\(.*[^0-9]\)\{0,1\}\([0-9][0-9]*\) decision(s) deleted.*$/\2/')",
+     ['unban_fail2ban_and_crowdsec_output_forms_read']),
+    # Une `commencee` dite EVINCEE alors que la réécriture du registre a été refusée (elle y est restée).
+    ('register_started_avowed_on_refused_rewrite',
+     '    REG_CAUSE="ecriture refusee dans $REGISTRE_FICHIER"; return 1\n  fi\n  for _fp_id in $_fp_ids; do',
+     '    printf \'%s\' "$_fp_aveux" >&2\n    REG_CAUSE="ecriture refusee dans $REGISTRE_FICHIER"; return 1\n  fi\n'
+     '  for _fp_id in $_fp_ids; do',
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal']),
+    # L'aveu central et agent dit AVANT la prise du verrou : une exécution sortie au verrou le dit aussi.
+    ('central_and_agent_said_before_the_lock',
+     'prendre_le_verrou\ndire_le_responder_local_hors_verrou\n',
+     'dire_le_responder_local_hors_verrou\nprendre_le_verrou\n',
+     ['central_and_agent_host_says_the_local_responder_escapes_the_lock']),
+    # La place se fait aussi sur une ligne ILLISIBLE restée au registre (lue comme une `faite`).
+    ('register_room_made_on_illegible_lines',
+     'LC_ALL=C grep -nE "$REGISTRE_FORME")',
+     "LC_ALL=C grep -n '')",
+     ['execution_register_evicts_a_started_riposte_only_with_an_avowal']),
     # Le corps remis garde ses sauts de ligne bruts : le démon le refuse (400). Rouge sur le premier scénario par le
     # verdict qui manque, sur le second par le seul jugement de `REMISES_REFUSEES` (sans lui, ce scénario reste vert).
     ('remit_body_keeps_raw_line_breaks',
      "esc() { printf '%s' \"$1\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g' | tr '\\n\\r\\t' '   '; }",
      "esc() { printf '%s' \"$1\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'; }",
      ['crowdsec_fallback_duration_validated', 'register_line_bounded_target_and_result']),
+    # `P11.25-a` (vague CI, correction) — le code de retour décide, même quand la sortie porte un compte lisible
+    # (repli permissif : un code non nul n'est un refus que si aucun nombre n'est lu).
+    ('removal_exit_code_ignored_when_a_count_is_read',
+     '  if [ "$2" != 0 ]; then\n    RETRAIT=refus;',
+     '  if [ "$2" != 0 ] && case "$4" in \'\'|*[!0-9]*) true ;; *) false ;; esac; then\n    RETRAIT=refus;',
+     ['unban_nonzero_exit_with_a_readable_count_is_a_refusal']),
+    # La sortie de fail2ban lue sur sa PREMIÈRE ligne seulement : `1` suivi d'une autre ligne devient `retiree`.
+    ('fail2ban_first_line_only',
+     "LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')",
+     "LC_ALL=C sed -n -e '1{s/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 'p;}')",
+     ['unban_fail2ban_count_followed_by_another_line_is_a_refusal']),
+    # Ce qu'écrit un retrait nft RÉUSSI, ou une absence, remis brut : sans borne ni filtre des contrôles (le corps
+    # porte alors un caractère de contrôle brut, refusé par le central : le verdict n'est pas remis).
+    ('nft_removed_output_unbounded',
+     '" retiree : $(levee_detail "$NFT_RETRAIT_TEXTE")"',
+     '" retiree : $LEVEE_DEBUT_DETAIL$NFT_RETRAIT_TEXTE$LEVEE_FIN_DETAIL"',
+     ['unban_nft_removal_output_bounded_without_control_characters']),
+    ('nft_absent_output_unbounded',
+     '" absente : $(levee_detail "$NFT_RETRAIT_TEXTE")"',
+     '" absente : $LEVEE_DEBUT_DETAIL$NFT_RETRAIT_TEXTE$LEVEE_FIN_DETAIL"',
+     ['unban_nft_removal_output_bounded_without_control_characters']),
+    # Le texte d'une levée n'est jamais tenu sous la borne du central : le nom du dernier refus y est coupé.
+    ('unban_text_never_bounded',
+     '  if [ $((_lb_fixe + _lb_somme)) -le "$RESULTAT_BORNE_DU_CENTRAL" ]; then levee_sans_marques "$1"; return 0; fi',
+     '  levee_sans_marques "$1"; return 0',
+     ['unban_matrix_of_the_three_mechanisms']),
+    # Borne prise au-dessus de celle d'`action_result`.
+    ('unban_text_bound_above_the_central',
+     '\nRESULTAT_BORNE_DU_CENTRAL=500\n',
+     '\nRESULTAT_BORNE_DU_CENTRAL=600\n',
+     ['unban_matrix_of_the_three_mechanisms']),
+    # Part égale pour chaque écrit, sans rendre aux autres ce qu'un écrit court laisse.
+    ('unban_text_shared_without_redistribution',
+     '      if [ "$_lb_l" -le "$_lb_part" ]; then',
+     '      if false; then',
+     ['unban_matrix_of_the_three_mechanisms']),
+    # Sans place pour un écrit (part sous la marque), la marque seule reste : les noms débordent la borne.
+    ('unban_detail_marker_kept_without_room',
+     '  if [ "$2" -lt "${#LEVEE_COUPE}" ]; then return 0; fi\n',
+     '',
+     ['unban_names_kept_whole_when_no_room_is_left_for_details']),
+    # La sonde du pod LAPI : une sonde NON CONCLUE lue comme une absence (la forme d'avant la correction).
+    ('crowdsec_refused_probe_read_as_absent',
+     '  if [ "$CSCLI_OK" = 0 ] && [ -n "$CSCLI_SONDE_REFUSEE" ]; then CSCLI_OK=sonde_refusee; fi',
+     '  :',
+     ['unban_crowdsec_pod_probe_not_concluded_is_a_refusal']),
+    ('crowdsec_probe_notfound_read_as_refusal',
+     '*"(NotFound)"*)',
+     '*"(NeverFound)"*)',
+     ['unban_crowdsec_pod_probe_not_concluded_is_a_refusal']),
+    ('crowdsec_probe_killed_after_notfound_read_as_absent',
+     'if [ "$CS_SONDE_CODE" -lt 126 ]; then CS_SONDE=absente; return 0; fi',
+     'CS_SONDE=absente; return 0',
+     ['unban_crowdsec_pod_probe_not_concluded_is_a_refusal']),
+    ('crowdsec_k3s_refused_probe_not_kept',
+     '      refus) CSCLI_SONDE_REFUSEE="k3s kubectl',
+     '      refus) : CSCLI_SONDE_REFUSEE="k3s kubectl',
+     ['unban_crowdsec_pod_probe_not_concluded_is_a_refusal']),
+    ('crowdsec_kubectl_refused_probe_not_kept',
+     '      refus) if [ -z "$CSCLI_SONDE_REFUSEE" ]; then',
+     '      refus) if false; then',
+     ['unban_crowdsec_pod_probe_not_concluded_is_a_refusal']),
+    ('crowdsec_k3s_present_pod_not_used',
+     'CSCLI_OK=1 ;;\n      refus) CSCLI_SONDE_REFUSEE="k3s',
+     'CSCLI_OK=0 ;;\n      refus) CSCLI_SONDE_REFUSEE="k3s',
+     ['unban_crowdsec_pod_probe_not_concluded_is_a_refusal']),
+    ('crowdsec_kubectl_present_pod_not_used',
+     'CSCLI_OK=1 ;;\n      refus) if [ -z',
+     'CSCLI_OK=0 ;;\n      refus) if [ -z',
+     ['unban_crowdsec_pod_probe_not_concluded_is_a_refusal']),
+    ('crowdsec_probe_refusal_not_counted_refused',
+     '    _ua_presents=1; _ua_refus=1\n',
+     '    _ua_presents=1\n',
+     ['unban_crowdsec_pod_probe_not_concluded_is_a_refusal']),
+    # `P10.21-n` (vague CI, correction) — les `commencee` évincées prises dans le texte NON filtré : une ligne
+    # illisible en forme de `commencee` sort à la place d'une lisible.
+    ('register_started_room_made_on_illegible_lines',
+     '_fp_commencees=$(printf \'%s\\n\' "$_fp_lisibles" | LC_ALL=C grep "^[0-9]*:[0-9]*\tcommencee\t"',
+     '_fp_commencees=$(printf \'%s\\n\' "$_fp_texte" | LC_ALL=C grep -n \'\' | LC_ALL=C grep "^[0-9]*:[0-9]*\tcommencee\t"',
+     ['execution_register_never_evicts_an_illegible_started_line']),
+    # « Tout ou rien » assoupli : la place n'est refusée que sans AUCUNE ligne lisible.
+    ('register_partial_room_refused_only_without_readable_lines',
+     'if [ $((_fp_k + _fp_c)) -lt "$_fp_trop" ]; then',
+     'if [ $((_fp_k + _fp_c)) -eq 0 ]; then',
+     ['execution_register_partial_room_is_refused_whole']),
 ]
 
 
@@ -3890,6 +4971,8 @@ def coherence_du_contrat(src):
     exiger(f, f'TYPE_FILE_JSON="{TYPE_JSON}"' in src, f"respond.sh ne demande pas le type du démon ({TYPE_JSON})")
     for lecteur, motif in (("jq", f"$o.ban_ttl_s > {BORNE}"), ("python3", f"BORNE_DUREE = {BORNE}")):
         exiger(f, motif in src, f"la borne du lecteur {lecteur} n'est pas celle du démon ({BORNE}) : `{motif}` absent")
+    exiger(f, f"\nRESULTAT_BORNE_DU_CENTRAL={BORNE_RESULTAT}\n" in src,
+           f"la borne du texte d'une levée n'est pas celle d'action_result ({BORNE_RESULTAT})")
     return f
 
 

@@ -539,30 +539,31 @@ mod restauration_liste_fermee_des_instructions {
         refusee("cc6b-r-non-creee", &post(vec![Post::Reconstruire("t")]), "reconstruction FTS", NON_CREEE);
     }
 
-    /// Une FTS créée par la section 4 dont le contenu serait une table que la section 1 n'a pas créée : la lecture du
-    /// module pendant la reconstruction est hors liste.
+    /// Une FTS dont le contenu serait une table que la section 1 n'a pas créée. INVERSÉ (P10.34-t, arguments des tables
+    /// virtuelles) : refusée dès sa création, en post-DDL, sur son argument `content=` ; elle n'atteint plus la
+    /// reconstruction, où la lecture de cette table restait hors liste.
     #[test]
-    fn reconstruction_qui_lit_une_table_hors_de_la_restauration_est_hors_liste() {
+    fn une_fts_dont_le_contenu_n_a_pas_ete_restaure_est_refusee_des_sa_creation() {
         let d = post(vec![
             Post::Sql("CREATE VIRTUAL TABLE f USING fts5(name, content='sqlite_master')"),
             Post::Reconstruire("f"),
         ]);
-        refusee("cc6b-r-contenu-etranger", &d, "reconstruction FTS", CLASSE);
+        refusee("cc6b-r-contenu-etranger", &d, "post-DDL", "argument de table virtuelle hors de ce que l'écrivain émet");
     }
 
-    /// LES FONCTIONS QU'UN MODULE APPELLE SONT CELLES DE LA LISTE, MÊME QUAND L'ARCHIVE CHOISIT SES OPTIONS. L'écrivain
-    /// n'émet que des tables FTS à contenu externe ; une FTS4 créée par l'archive avec `compress=`/`uncompress=` fait
-    /// appeler au module, pendant la reconstruction, la fonction que l'archive a nommée (`hex`), hors de celles que les
-    /// modules appellent d'eux-mêmes (`max`, `coalesce`). L'option n'est pas jugée par lecture du texte : c'est
-    /// l'autoriseur qui refuse l'appel.
+    /// LES FONCTIONS QU'UNE ARCHIVE FERAIT APPELER À UN MODULE. Une FTS4 créée avec `compress=`/`uncompress=` fait
+    /// appeler au module la fonction que l'archive a nommée (`hex`). INVERSÉ (P10.34-t, arguments des tables virtuelles) :
+    /// l'option est jugée sur le texte de l'argument, et la création est refusée en post-DDL, avant la reconstruction où
+    /// l'autoriseur refusait l'appel (et sans reconstruction, où rien ne le refusait).
     #[test]
-    fn reconstruction_d_une_fts4_qui_fait_appeler_une_fonction_hors_liste_au_module_est_refusee() {
+    fn une_fts4_qui_ferait_appeler_une_fonction_nommee_par_l_archive_est_refusee_des_sa_creation() {
         let d = post(vec![
             Post::Sql("CREATE VIRTUAL TABLE f USING fts4(v, compress=hex, uncompress=hex)"),
             Post::Reconstruire("f"),
         ]);
-        refusee_sans_destination("cc6b-r-fonction-du-module-sans-dest", &d, "reconstruction FTS", CLASSE);
-        refusee("cc6b-r-fonction-du-module", &d, "reconstruction FTS", CLASSE);
+        let option = "argument de table virtuelle hors de ce que l'écrivain émet";
+        refusee_sans_destination("cc6b-r-fonction-du-module-sans-dest", &d, "post-DDL", option);
+        refusee("cc6b-r-fonction-du-module", &d, "post-DDL", option);
     }
 
     // ── DUMPS RÉELS ─────────────────────────────────────────────────────────────────────────────────

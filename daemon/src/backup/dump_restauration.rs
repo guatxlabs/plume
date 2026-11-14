@@ -619,7 +619,9 @@ fn ecrire_l_archive(db_path: &str, dest: &str, key: Option<&str>, recipient: Opt
 /// LA RESTAURATION N'ACCEPTE QUE LES FORMES D'INSTRUCTION QUE L'ÉCRIVAIN ÉMET (`restauration_liste_fermee`) :
 /// autoriseur à refus par défaut réglé par phase, une instruction et une tête par chaîne ; l'insertion d'une table ne
 /// vise que la table annoncée, créée par la section 1, et lie toutes les valeurs de la ligne par des paramètres
-/// anonymes ; une reconstruction FTS ne vise qu'une table virtuelle créée par cette restauration. Un refus rend une
+/// anonymes ; une table virtuelle n'est créée que si chacun de ses arguments, tel que le moteur le découpe, est une forme
+/// que l'écrivain émet (jugé avant son exécution) ; une reconstruction FTS ne vise qu'une table virtuelle créée par cette
+/// restauration. Un refus rend une
 /// erreur au vocabulaire fermé et la transaction n'est jamais validée. Une chaîne admise ou une valeur de l'archive que
 /// le moteur refuse rend la phase et le code d'erreur SQLite, jamais le texte du moteur, l'écriture d'un compteur
 /// comprise ; seules les erreurs de lecture du flux gardent leur message.
@@ -856,8 +858,8 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
         // sans ses compagnons. Un `-wal` trouvé à côté n'a pas été produit avec lui (il vient d'être écrit) ; il
         // n'est pas rejoué.
         // LE SCHÉMA DU FICHIER SUIT LA LISTE DU FORMAT COURANT : il est jugé AVANT l'export
-        // (`restauration_liste_fermee::juger_le_schema_du_format_ancien`) ; un refus arrête la restauration avant l'export
-        // et avant toute publication. Une erreur du moteur née du fichier (lecture de son schéma, export) rend son code,
+        // (`restauration_liste_fermee::juger_le_schema_du_format_ancien`), arguments des tables virtuelles compris ; un
+        // refus arrête la restauration avant l'export et avant toute publication. Une erreur du moteur née du fichier (lecture de son schéma, export) rend son code,
         // jamais son texte, qui peut citer un nom ou un morceau du schéma lu.
         restaurer_a_cote_puis_publier(dest_db, |en_cours| {
             use super::restauration_liste_fermee::{juger_le_schema_du_format_ancien, refusee_par_le_moteur_sous, PHASE_DU_FORMAT_ANCIEN};

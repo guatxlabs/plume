@@ -64,9 +64,16 @@
 //! mémoire armée de la même liste : une table que l'export rejoue sous la phase `Tables`, toute autre ligne sous la
 //! phase `PostDdl`. Seules exceptions, les tables que le moteur crée lui-même (`TABLES_DU_MOTEUR`), à leur texte exact.
 //! Un refus nomme la phase « format ancien ».
-//! PORTÉE POUR UNE TABLE VIRTUELLE : sa ligne est jugée à la PRÉPARATION seulement (module et classe d'instruction) ;
-//! ce que le format courant juge de plus en l'exécutant, c'est-à-dire ce que le module fait à sa création, n'est pas
-//! rejoué ici. Ce reste est porté par la feuille de route.
+//! PORTÉE POUR UNE TABLE VIRTUELLE : sa ligne est préparée sur le brouillon (module et classe d'instruction), puis ses
+//! ARGUMENTS sont jugés comme au format courant (ci-dessous) ; ce que le format courant juge de plus en l'exécutant,
+//! c'est-à-dire ce que le module fait à sa création, n'est pas rejoué ici.
+//!
+//! LES ARGUMENTS D'UNE TABLE VIRTUELLE, DANS LES DEUX FORMATS. L'autoriseur ne voit d'une création de table virtuelle que
+//! son nom et son module (`SQLITE_CREATE_VTABLE`) : les arguments ne lui passent jamais. Une fois la chaîne préparée sous
+//! la liste (une instruction, une tête, un module émis), `preparer_une_chaine_de_l_archive` relève donc les arguments
+//! tels que le MOTEUR les découpe (`arguments_decoupes_par_le_moteur`, aucun découpage écrit ici) et juge chacun ENTIER,
+//! au texte exact, casse et espaces compris, contre ce que l'écrivain émet (`argument_admis`) ; un seul argument hors de
+//! cette liste refuse la chaîne, AVANT son exécution au format courant et avant l'export au format ancien.
 use super::*;
 use super::dump_restauration::SUFFIXES_DES_TABLES_FANTOMES;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
@@ -74,6 +81,17 @@ use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperati
 /// Les modules de table virtuelle que l'écrivain émet : `fts_external_content` n'accepte que `USING FTS5`, `FTS4` ou
 /// `FTS3` (comparaison sans casse), le reste part au repli legacy et n'entre jamais dans un dump B1.
 const MODULES_DE_TABLE_VIRTUELLE_EMIS: [&str; 3] = ["fts3", "fts4", "fts5"];
+
+/// LES OPTIONS FIXES QUE L'ÉCRIVAIN ÉMET POUR FTS5, au texte exact : celles de la table du filtre de champs plein texte
+/// (`maintenance::FTS_FIELDS_VTABLE_DDL`, `event_fields_fts`), la seule table virtuelle du démon qui en porte. Avec les
+/// colonnes nues, `content='<table créée>'` (les trois modules, `event_fts` de `db/schema.sql` et la forme à contenu
+/// externe qu'exige `fts_external_content`) et `content_rowid='<colonne nue>'` (FTS5, `event_fts`), c'est tout ce que
+/// l'écrivain émet comme arguments ; relevé sur de vraies sauvegardes du schéma complet de la tête, dans les deux formats.
+const OPTIONS_FIXES_DE_FTS5: [&str; 3] = [
+    "content=''",
+    "tokenize=\"unicode61 remove_diacritics 2 tokenchars '_-.:/@'\"",
+    "prefix='2 3'",
+];
 
 /// La table de schéma que le moteur écrit lui-même pour toute création.
 const TABLE_DE_SCHEMA: &str = "sqlite_master";
@@ -148,6 +166,8 @@ pub(super) enum Cause {
     /// La table visée n'a pas été créée par cette restauration (insertion hors des tables de la section 1,
     /// reconstruction d'une table virtuelle que la section 4 n'a pas créée).
     TableNonCreee,
+    /// Une création de table virtuelle porte un argument que l'écrivain n'émet pas (`argument_admis`).
+    ArgumentDeTableVirtuelleHorsListe,
 }
 
 impl Cause {
@@ -157,6 +177,7 @@ impl Cause {
             Cause::PlusieursInstructions => "plus d'une instruction dans la chaîne",
             Cause::InsertionHorsForme => "insertion qui ne lie pas exactement les valeurs de la ligne",
             Cause::TableNonCreee => "table non créée par cette restauration",
+            Cause::ArgumentDeTableVirtuelleHorsListe => "argument de table virtuelle hors de ce que l'écrivain émet",
         }
     }
 }
@@ -200,6 +221,8 @@ struct Etat {
     cible: String,
     /// Index créé par la chaîne de post-DDL en cours (son remplissage est une action `REINDEX` sur lui seul).
     index_en_creation: String,
+    /// Module de la table virtuelle que crée la chaîne en cours (posé par sa tête) : ses arguments restent à juger.
+    module_en_creation: Option<String>,
     /// Tables ordinaires créées par la section 1 de CETTE restauration.
     tables_creees: std::collections::HashSet<String>,
     /// Tables virtuelles créées par la section 4 de CETTE restauration.
@@ -321,6 +344,7 @@ fn admettre(e: &mut Etat, ctx: &AuthContext<'_>) -> bool {
         {
             e.tetes += 1;
             e.tables_virtuelles_creees.insert(table_name.to_string());
+            e.module_en_creation = Some(module_name.to_string());
             true
         }
         (Phase::PostDdl, action) if action_interne_d_une_creation(&action) || action_interne_d_un_module(e, &action) => true,
@@ -359,6 +383,7 @@ impl ListeFermee {
             phase: Phase::Ouverture,
             cible: String::new(),
             index_en_creation: String::new(),
+            module_en_creation: None,
             tables_creees: Default::default(),
             tables_virtuelles_creees: Default::default(),
             tetes: 0,
@@ -399,6 +424,7 @@ impl ListeFermee {
         e.phase = phase;
         e.cible = cible.to_string();
         e.index_en_creation.clear();
+        e.module_en_creation = None;
         e.tetes = 0;
         e.refus = false;
     }
@@ -420,7 +446,8 @@ impl ListeFermee {
 
     /// PRÉPARE UNE CHAÎNE LUE DANS L'ARCHIVE dans `phase` : l'autoriseur juge chaque action, la chaîne doit porter
     /// exactement une tête et aucune seconde instruction. Une chaîne de la famille que le moteur refuse de lui-même
-    /// rend le refus du moteur (code, sans texte).
+    /// rend le refus du moteur (code, sans texte). Une création de table virtuelle est jugée en dernier sur ses arguments
+    /// (`juger_les_arguments_de_la_table_virtuelle`) : aucune des causes précédentes n'est masquée.
     pub(super) fn preparer_une_chaine_de_l_archive<'c>(
         &self,
         conn: &'c Connection,
@@ -450,7 +477,25 @@ impl ListeFermee {
         if !matches!(seconde, Ok(None)) {
             return Err(self.refus(phase, Cause::PlusieursInstructions));
         }
+        self.juger_les_arguments_de_la_table_virtuelle(phase, chaine)?;
         Ok(premiere)
+    }
+
+    /// LES ARGUMENTS DE LA TABLE VIRTUELLE que crée `chaine` (tête vue par l'autoriseur pendant sa préparation), chacun
+    /// jugé par `argument_admis` contre les tables ordinaires créées jusqu'ici par cette restauration. Une chaîne qui ne
+    /// crée pas de table virtuelle n'est pas concernée.
+    fn juger_les_arguments_de_la_table_virtuelle(&self, phase: Phase, chaine: &str) -> Result<(), String> {
+        let (module, tables_creees) = {
+            let e = self.etat();
+            (e.module_en_creation.clone(), e.tables_creees.clone())
+        };
+        let admis = match module {
+            None => true,
+            // `None` des arguments : aucun relevé (cf. `arguments_decoupes_par_le_moteur`), le jugement reste fermé.
+            Some(module) => arguments_decoupes_par_le_moteur(chaine)
+                .map_or(false, |arguments| arguments.iter().all(|a| argument_admis(&module, a, &tables_creees))),
+        };
+        if admis { Ok(()) } else { Err(self.refus(phase, Cause::ArgumentDeTableVirtuelleHorsListe)) }
     }
 
     /// EXÉCUTE UNE CHAÎNE PRÉPARÉE sous la liste. Un refus de l'autoriseur PENDANT l'exécution (écriture interne d'un
@@ -462,6 +507,124 @@ impl ListeFermee {
             Err(e) => Err(self.refusee_par_le_moteur(phase, &e)),
         }
     }
+}
+
+/// LES ARGUMENTS D'UNE CRÉATION DE TABLE VIRTUELLE, TELS QUE LE MOTEUR LES DÉCOUPE (`argv[3..]` du constructeur du module :
+/// le texte de chaque argument, de son premier à son dernier jeton, celui que le module lira). Aucun découpage n'est écrit
+/// ici : `chaine` est jouée sur une base jetable en mémoire où les modules émis sont remplacés par un module ESPION qui
+/// relève ses arguments puis refuse la création ; rien n'est créé, ni là ni sur la connexion de la restauration.
+///
+/// À n'appeler que sur une chaîne que la liste a déjà admise : une instruction, une tête `CreateVtable`, un module émis,
+/// aucune fonction (l'autoriseur n'admet aucune action d'un module pendant la préparation d'une chaîne de l'archive).
+/// Remplacer `fts5` sur la base jetable libère le contexte global du module FTS5 de CETTE connexion ; ce qui le cite
+/// encore (le module `fts5vocab`, les fonctions `fts5()` et `fts5_*`) n'y est plus appelé : la seule instruction jouée
+/// est la création admise, et la fermeture ne détruit ni l'un ni les autres par ce contexte (`fts5vocab` n'est pas
+/// éponyme, ces fonctions n'ont pas de destructeur ; `sqlite3.c`, `fts5Init`).
+///
+/// `None` (refus) si rien n'a été relevé. C'est le cas d'une chaîne admise qui ne joue pas la création :
+/// `EXPLAIN CREATE VIRTUAL TABLE …` a la même tête `CreateVtable`, mais son exécution rend le programme (une erreur, pour
+/// `execute`) sans appeler l'espion ; une exécution réussie veut dire, elle aussi, qu'il ne l'a pas été. Un argument est
+/// une tranche d'une chaîne UTF-8, donc de l'UTF-8.
+fn arguments_decoupes_par_le_moteur(chaine: &str) -> Option<Vec<String>> {
+    use rusqlite::ffi;
+    use std::os::raw::{c_char, c_int, c_void};
+    type Releve = std::sync::Mutex<Option<Option<Vec<String>>>>;
+    unsafe extern "C" fn relever_puis_refuser(
+        _: *mut ffi::sqlite3,
+        aux: *mut c_void,
+        argc: c_int,
+        argv: *const *const c_char,
+        _: *mut *mut ffi::sqlite3_vtab,
+        _: *mut *mut c_char,
+    ) -> c_int {
+        // SAFETY : `aux` est le `Releve` que `arguments_decoupes_par_le_moteur` garde vivant tant que la base jetable est
+        // ouverte ; `argv` porte `argc` chaînes C que SQLite garde vivantes pendant l'appel.
+        let releve = &*(aux as *const Releve);
+        let arguments = (3..argc.max(3))
+            .map(|i| {
+                let p = *argv.add(i as usize);
+                if p.is_null() { None } else { std::ffi::CStr::from_ptr(p).to_str().ok().map(str::to_string) }
+            })
+            .collect::<Option<Vec<String>>>();
+        *releve.lock().unwrap_or_else(|p| p.into_inner()) = Some(arguments);
+        ffi::SQLITE_ERROR
+    }
+    // Le moteur ne joue le constructeur d'un module que s'il a aussi un destructeur (`sqlite3VtabCallCreate`, « no such
+    // module » sinon). Celui-ci n'est jamais appelé : le constructeur refuse toujours, aucune table n'existe à détruire.
+    unsafe extern "C" fn aucune_table_a_detruire(_: *mut ffi::sqlite3_vtab) -> c_int {
+        ffi::SQLITE_OK
+    }
+    let releve: Box<Releve> = Box::new(std::sync::Mutex::new(None));
+    // SAFETY : une structure C de pointeurs de fonction facultatifs et d'un entier, tous valides à zéro (aucun).
+    let mut espion: Box<ffi::sqlite3_module> = Box::new(unsafe { std::mem::zeroed() });
+    espion.xCreate = Some(relever_puis_refuser);
+    espion.xDestroy = Some(aucune_table_a_detruire);
+    {
+        // Fermée à la fin de ce bloc, avant que `espion` et `releve`, qu'elle cite, ne soient libérés.
+        let jetable = Connection::open_in_memory().ok()?;
+        for module in MODULES_DE_TABLE_VIRTUELLE_EMIS {
+            let nom = std::ffi::CString::new(module).ok()?;
+            // SAFETY : la poignée vit autant que `jetable` ; le moteur recopie le nom ; `espion` et `releve` survivent à
+            // `jetable`.
+            let rc = unsafe {
+                ffi::sqlite3_create_module_v2(jetable.handle(), nom.as_ptr(), &*espion, &*releve as *const Releve as *mut c_void, None)
+            };
+            if rc != ffi::SQLITE_OK {
+                return None;
+            }
+        }
+        let mut lot = rusqlite::Batch::new(&jetable, chaine);
+        let premiere = lot.next();
+        let creation_en_echec = match premiere {
+            Ok(Some(mut creation)) => creation.execute([]).is_err(),
+            Ok(None) | Err(_) => false,
+        };
+        if !creation_en_echec {
+            return None;
+        }
+    }
+    let releve: Releve = *releve;
+    releve.into_inner().unwrap_or_else(|p| p.into_inner()).flatten()
+}
+
+/// Un nom nu : `[A-Za-z_][A-Za-z0-9_]*`, rien d'autre.
+fn est_un_nom_nu(s: &str) -> bool {
+    let mut octets = s.bytes();
+    matches!(octets.next(), Some(b) if b.is_ascii_alphabetic() || b == b'_') && octets.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// `argument` est exactement `<cle>'<valeur>'`, la valeur sans apostrophe : rend la valeur.
+fn valeur_entre_apostrophes<'a>(argument: &'a str, cle: &str) -> Option<&'a str> {
+    let reste = argument.strip_prefix(cle)?;
+    let valeur = reste.strip_prefix('\'')?.strip_suffix('\'')?;
+    if valeur.contains('\'') { None } else { Some(valeur) }
+}
+
+/// UN ARGUMENT DE TABLE VIRTUELLE QUE L'ÉCRIVAIN ÉMET, jugé ENTIER, au texte exact (casse et espaces compris : une autre
+/// écriture, même lue de la même façon par le module, n'est pas ce que l'écrivain émet) :
+///  - un nom de colonne nu (`est_un_nom_nu`) ;
+///  - `content='<table>'`, `<table>` étant une table ordinaire créée par CETTE restauration (`tables_creees`) : la table
+///    de contenu que le module lira est une table que l'archive a restaurée ;
+///  - pour FTS5 seulement : `content_rowid='<colonne nue>'` et les options de `OPTIONS_FIXES_DE_FTS5`.
+/// Tout le reste est refusé : un autre découpeur, une autre option (dont les fonctions que FTS4 appellerait à chaque
+/// écriture, `compress=`/`uncompress=`), une colonne typée, une valeur entre guillemets.
+fn argument_admis(module: &str, argument: &str, tables_creees: &std::collections::HashSet<String>) -> bool {
+    if est_un_nom_nu(argument) {
+        return true;
+    }
+    match valeur_entre_apostrophes(argument, "content=") {
+        Some(table) if !table.is_empty() => {
+            return tables_creees.contains(table);
+        }
+        _ => {}
+    }
+    if !module.eq_ignore_ascii_case("fts5") {
+        return false;
+    }
+    if OPTIONS_FIXES_DE_FTS5.contains(&argument) {
+        return true;
+    }
+    valeur_entre_apostrophes(argument, "content_rowid=").map_or(false, est_un_nom_nu)
 }
 
 /// LES TABLES QUE LE MOTEUR CRÉE LUI-MÊME, au texte exact qu'il écrit dans `sqlite_master` : compteurs AUTOINCREMENT, et
@@ -534,7 +697,9 @@ fn accepter_toute_collation_sur_le_brouillon(brouillon: &Connection) {
 /// s'appuient sur elle) ; chaque vue est jugée sous `PostDdl` puis créée (un déclencheur `INSTEAD OF` s'appuie sur
 /// elle) ; toute autre ligne (index, déclencheur, table virtuelle, et tout autre type) est jugée sous `PostDdl` sans être
 /// jouée — l'autoriseur juge une instruction pendant sa préparation, et aucune table virtuelle n'est créée, donc aucun
-/// module ne travaille sur le brouillon. Le premier refus arrête le jugement et nomme la phase « format ancien ».
+/// module ne travaille sur le brouillon. Les arguments d'une table virtuelle, que l'autoriseur ne voit pas et que l'export
+/// recopierait tels quels, sont jugés par `preparer_une_chaine_de_l_archive` contre les tables créées sur le brouillon.
+/// Le premier refus arrête le jugement et nomme la phase « format ancien ».
 ///
 /// Un refus du MOTEUR pendant le jugement (une ligne que le brouillon ne sait pas préparer ou créer) reste servi, fermé,
 /// sous « format ancien » et son code, quelle que soit la phase sous laquelle la ligne était jugée. Un fichier que le

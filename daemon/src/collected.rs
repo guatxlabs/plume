@@ -144,6 +144,9 @@ use guatx_core::cim::CIM_CORE_FIELDS;
 /// (312), chacun tenu par un oracle qui relit le texte livré sans l'extracteur.
 /// `P10.32-g` : le battement de santé de crowdsec.sh porte ce que le moteur LIT (compteurs d'acquisition,
 /// leurs différences, le verdict de lecture) — 15 couples (327), écrits en clés littérales de `hfields`.
+/// Puis trois de plus : `acq_unparsed_sources` (source qui lit sans rien analyser) et `acq_agent_pods` /
+/// `acq_agent_pods_read` (pods de l'agent kube existants et lus), écrits en clés littérales d'objets `hfields_*`
+/// ajoutés en fin de `hfields` seulement quand ils ont lieu d'être.
 ///
 /// La citation est un SUFFIXE de chemin qui doit désigner UN SEUL fichier de la
 /// surface balayée (`mod.rs`/`windows.rs`/`linux.rs` existent en double -> `fim/mod.rs`, `source/windows.rs`).
@@ -156,6 +159,8 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("access", "minio.sh"),
     ("accessKey", "minio-audit-relay.py"),
     ("acct", "auditd.sh"),
+    ("acq_agent_pods", "crowdsec.sh"),
+    ("acq_agent_pods_read", "crowdsec.sh"),
     ("acq_counters_reset", "crowdsec.sh"),
     ("acq_frozen_sources", "crowdsec.sh"),
     ("acq_parsed", "crowdsec.sh"),
@@ -167,6 +172,7 @@ pub(crate) const COLLECTED_EXTENDED_FIELDS: &[(&str, &str)] = &[
     ("acq_sources", "crowdsec.sh"),
     ("acq_unparsed", "crowdsec.sh"),
     ("acq_unparsed_delta", "crowdsec.sh"),
+    ("acq_unparsed_sources", "crowdsec.sh"),
     ("acq_verdict", "crowdsec.sh"),
     ("acq_whitelisted", "crowdsec.sh"),
     ("acq_whitelisted_delta", "crowdsec.sh"),

@@ -1,6 +1,6 @@
 #!/bin/sh
 # plume-source: crowdsec
-# plume-emits: fields=acq_counters_reset,acq_frozen_sources,acq_parsed,acq_parsed_delta,acq_pour,acq_pour_delta,acq_reads,acq_reads_delta,acq_sources,acq_unparsed,acq_unparsed_delta,acq_verdict,acq_whitelisted,acq_whitelisted_delta,acquisition,action,agent_ready,lapi_ok,last_alert_age_s,scenarios_broken,scenarios_loaded
+# plume-emits: fields=acq_agent_pods,acq_agent_pods_read,acq_counters_reset,acq_frozen_sources,acq_parsed,acq_parsed_delta,acq_pour,acq_pour_delta,acq_reads,acq_reads_delta,acq_sources,acq_unparsed,acq_unparsed_delta,acq_unparsed_sources,acq_verdict,acq_whitelisted,acq_whitelisted_delta,acquisition,action,agent_ready,lapi_ok,last_alert_age_s,scenarios_broken,scenarios_loaded
 # Capteur Plume : INGÈRE les alertes CrowdSec (cscli) -> events source=crowdsec.
 # On NE refait PAS la détection/le ban : CrowdSec reste l'IPS, le SOC corrèle/notifie/investigue.
 # Requiert cscli + jq. ROOT. Optionnel (skip si absents). Dédup par id d'alerte (idempotent).
@@ -27,6 +27,7 @@ KUBE=""
 if command -v k3s >/dev/null 2>&1; then KUBE="k3s kubectl"
 elif command -v kubectl >/dev/null 2>&1; then KUBE="kubectl"; fi
 AGENT_REF=""
+CS_AGENT_PAR_KUBE=0   # 1 = l'agent est lu par `exec` dans la ressource kube (un seul pod), pas par un cscli local
 _cs_ko=""    # lectures PRESENTES mais en echec ce passage, avouees en une fois a la fin
 # S36 — « JE N'AI PAS TROUVE L'AGENT » ET « JE N'AI PAS PU LE CHERCHER » RENDAIENT LE MEME MOT.
 # Quand aucun outil kube n'est la, `KUBE` est vide et il n'y a rien a chercher : c'est le mode hote,
@@ -46,7 +47,7 @@ fi
 ALOG_C="${PLUME_CROWDSEC_AGENT_CONTAINER:-crowdsec-agent}"   # conteneur agent (exec/logs ciblés)
 if [ -n "${PLUME_CSCLI:-}" ]; then cscli_agent() { $PLUME_CSCLI "$@"; }
 elif command -v cscli >/dev/null 2>&1; then cscli_agent() { cscli "$@"; }
-elif [ -n "$AGENT_REF" ]; then cscli_agent() { $KUBE -n "$NS" exec "$AGENT_REF" -c "$ALOG_C" -- cscli "$@"; }
+elif [ -n "$AGENT_REF" ]; then cscli_agent() { $KUBE -n "$NS" exec "$AGENT_REF" -c "$ALOG_C" -- cscli "$@"; }; CS_AGENT_PAR_KUBE=1
 else cscli_agent() { cscli_cmd "$@"; }   # repli : pas d'agent kube distinct -> la LAPI porte le hub
 fi
 # Logs de l'AGENT pour DÉTECTER le deadlock moteur. DÉCISIF (validé crowdsec v1.7.8) : un scénario qui ÉCHOUE
@@ -159,8 +160,16 @@ fi
 # dans le même ordre (PLUME_CSCLI > cscli local > exec dans l'agent kube). En hôte natif (systemd) et
 # en Docker, agent et LAPI sont le MÊME processus : `cscli` local, ou `PLUME_CSCLI` (par exemple
 # `docker exec <conteneur> cscli` — le nom du conteneur est celui de l'installation, pas du dépôt).
-# LIMITE DITE : `exec ds/<agent>` vise UN pod du DaemonSet ; sur un parc multi-nœuds, les autres agents
-# ne sont pas lus par ce passage.
+# LIMITE DITE : `exec ds/<agent>` vise UN pod du DaemonSet, choisi par kubectl et non nommé ici ; sur un parc
+# multi-nœuds, les autres agents ne sont pas lus par ce passage. Le battement le DIT quand l'agent est lu par
+# `exec` dans la ressource kube : `acq_agent_pods` (pods de la ressource, `status.currentNumberScheduled` d'un
+# DaemonSet, `status.replicas` d'un Deployment ; -1 si illisible) et `acq_agent_pods_read` (1 si les compteurs
+# de ce passage ont été lus, sinon 0) ; quand il en existe plus que de lus, ou que leur nombre n'a pas pu être
+# lu, le message dit que les compteurs ne sont pas ceux du cluster. Ces deux champs sont absents hors de ce
+# mode : en hôte natif, en Docker et sous `PLUME_CSCLI`, un seul processus porte l'acquisition ; et dans le
+# REPLI k3s où aucune ressource d'agent n'est trouvée (les compteurs sont alors lus par `exec` dans le
+# Deployment de la LAPI), UN pod est lu là aussi et RIEN n'en est dit — limite nommée. Lire TOUS les pods n'est
+# pas fait (une exécution par pod et par passage, droits `pods/exec` sur chacun) : reste nommé.
 #
 # LA DIFFÉRENCE SE CALCULE CONTRE L'ÉTAT LOCAL DU CAPTEUR (`$STATE/crowdsec-acquisition.json`), mis en
 # attente et écrit APRÈS la publication, comme les filigranes des autres capteurs. Les compteurs
@@ -181,9 +190,20 @@ fi
 # est la même acquisition à zéro ligne — elle était tue jusqu'au passage suivant (`P10.32-g`), elle est nommée.
 # `aucune_analyse` : des lignes lues, mais AUCUNE analysée ni écartée par liste blanche sur l'intervalle
 # (au premier passage : depuis le démarrage) — parseur cassé, format de journal changé. Rien n'atteint
-# les scénarios : c'est le même aveuglement que l'absence de lecture. LIMITE DITE : le jugement porte
-# sur les totaux ; UNE source dont le parseur est cassé parmi d'autres qui analysent reste visible dans
-# son détail (`unparsed_delta` == `reads_delta`), sans refus.
+# les scénarios : c'est le même aveuglement que l'absence de lecture. Le jugement porte sur les totaux ;
+# UNE source dont le parseur est cassé parmi d'autres qui analysent n'est pas un refus (le moteur détecte
+# sur les autres), mais elle n'est plus tue : une source qui a LU des lignes et n'en a analysé ni écarté
+# par liste blanche AUCUNE sur la même base (l'intervalle, ou depuis le démarrage au premier passage ; la
+# valeur courante après une remise à zéro), pendant que le total analysé n'est pas nul, est NOMMÉE dans
+# `acq_unparsed_sources` (bornée à 100, comme `acq_frozen_sources`). Le verdict reste celui des totaux
+# (`lit`, `premier_passage`, ou un verdict de liste blanche) : il dit que des lignes atteignent les
+# scénarios, ce qui reste vrai. La RÉSERVE est portée à côté : la sévérité du battement monte à 1 au moins
+# et le message dit qu'une source lit sans rien analyser — sans aveu par le canal de couverture et sans
+# retenir l'état, comme une source figée (nommée, sans refus), mais une sévérité de plus qu'elle : les
+# lignes d'une source figée sont lues ailleurs (le fichier du nouveau pod), celles d'une source non
+# analysée ne le sont nulle part. Une source qui ne lit rien n'est pas ce cas (c'est `acq_frozen_sources`).
+# Le champ est ABSENT quand la liste est vide : le battement d'un hôte dont toutes les sources analysent
+# reste celui d'avant, à l'octet — hors du mode `exec` kube, où les deux champs de pods s'ajoutent toujours.
 # LE COÛT EST NOMMÉ : une installation réellement sans trafic pendant un intervalle entier refusera de
 # conclure ; la dédup horaire du canal en borne le volume, et c'est exact — rien n'a été observé. Pour
 # `tout_en_liste_blanche`, ce coût était payé à CHAQUE passage (mesuré le 2026-11-04 : sévérité 3, aveu horaire,
@@ -220,7 +240,7 @@ fi
 #     la sévérité du battement monte à 2 et le message nomme la cause probable. L'état avance.
 # CE QUE CES VERDICTS NE VOIENT PAS : ils jugent les TOTAUX de toutes les sources. Une source entièrement en
 # liste blanche au milieu d'autres qui détectent laisse le verdict à `lit` ; seul son détail (`acquisition`,
-# `whitelisted` et `parsed` de la source) le montre.
+# `whitelisted` et `parsed` de la source) le montre (elle a été analysée : `acq_unparsed_sources` ne la nomme pas).
 # La part est dite dans le MESSAGE du battement, à chaque passage où elle se calcule : un champ neuf doit
 # entrer dans l'inventaire de collecte du démon (`daemon/src/collected.rs`), que ce changement ne touche
 # pas ; `acq_whitelisted(_delta)` et `acq_parsed(_delta)`, déjà émis, la portent en chiffres.
@@ -237,7 +257,7 @@ ACQ_STATE="$STATE/crowdsec-acquisition.json"
 acq_verdict=illisible; acq_cause=source_illisible
 acq_n=-1; acq_r=-1; acq_p=-1; acq_u=-1; acq_po=-1; acq_w=-1
 acq_dr=-1; acq_dp=-1; acq_du=-1; acq_dpo=-1; acq_dw=-1
-acq_reset=false; acq_frozen='[]'; acq_detail='[]'; acq_etat=''; acq_part=-1
+acq_reset=false; acq_frozen='[]'; acq_unparsed='[]'; acq_detail='[]'; acq_etat=''; acq_part=-1
 if acq_raw=$(cscli_agent metrics show acquisition -o json 2>/dev/null) || acq_raw=$(cscli_agent metrics -o json 2>/dev/null); then
   acq_prev=null
   if [ -r "$ACQ_STATE" ]; then
@@ -283,6 +303,10 @@ if acq_raw=$(cscli_agent metrics show acquisition -o json 2>/dev/null) || acq_ra
           frozen: (if $has and $dtot.reads > 0 then [ $src[] | select(.d.reads == 0) | .source ][:100]
                    elif ($has | not) and $tot.reads > 0 then [ $src[] | select(.c.reads == 0) | .source ][:100]
                    else [] end),
+          unparsed: (if $b.parsed + $b.whitelisted > 0
+                     then [ $src[] | (if $has then .d else .c end) as $x
+                            | select($x.reads > 0 and $x.parsed == 0 and $x.whitelisted == 0) | .source ][:100]
+                     else [] end),
           detail: [ $src[:100][] | {source} + .c + (.d | with_entries(.key += "_delta")) ],
           etat: (reduce $src[] as $x ({}; .[$x.source] = $x.c)) }' 2>/dev/null); then
     # Chaque morceau est RE-VALIDÉ avant d'entrer dans le battement : un `jq` qui rend 0 sans rien
@@ -291,11 +315,13 @@ if acq_raw=$(cscli_agent metrics show acquisition -o json 2>/dev/null) || acq_ra
     _v=$(printf '%s' "$acq_out" | jq -r '.verdict' 2>/dev/null) || _v=''
     _s=$(printf '%s' "$acq_out" | jq -r '[.n, .tot.reads, .tot.parsed, .tot.unparsed, .tot.pour, .tot.whitelisted, .dtot.reads, .dtot.parsed, .dtot.unparsed, .dtot.pour, .dtot.whitelisted, .part, .reset] | map(tostring) | join(" ")' 2>/dev/null) || _s=''
     _fz=$(printf '%s' "$acq_out" | jq -c '.frozen' 2>/dev/null) || _fz=''
+    _un=$(printf '%s' "$acq_out" | jq -c '.unparsed' 2>/dev/null) || _un=''
     _dt=$(printf '%s' "$acq_out" | jq -c '.detail' 2>/dev/null) || _dt=''
     _et=$(printf '%s' "$acq_out" | jq -c '.etat' 2>/dev/null) || _et=''
     _ok=1
     case "$_v" in lit|premier_passage|aucune_lecture|aucune_analyse|aucune_source|tout_en_liste_blanche|surtout_liste_blanche) ;; *) _ok=0 ;; esac
     case "$_fz" in \[*\]) ;; *) _ok=0 ;; esac
+    case "$_un" in \[*\]) ;; *) _ok=0 ;; esac
     case "$_dt" in \[*\]) ;; *) _ok=0 ;; esac
     case "$_et" in \{*\}) ;; *) _ok=0 ;; esac
     read -r _n _r _p _u _po _w _dr _dp _du _dpo _dw _pt _rs _reste <<EOF
@@ -310,7 +336,7 @@ EOF
       acq_verdict=$_v
       acq_n=$_n; acq_r=$_r; acq_p=$_p; acq_u=$_u; acq_po=$_po; acq_w=$_w
       acq_dr=$_dr; acq_dp=$_dp; acq_du=$_du; acq_dpo=$_dpo; acq_dw=$_dw; acq_reset=$_rs; acq_part=$_pt
-      acq_frozen=$_fz; acq_detail=$_dt; acq_etat=$_et
+      acq_frozen=$_fz; acq_unparsed=$_un; acq_detail=$_dt; acq_etat=$_et
       case "$acq_verdict" in
         aucune_source|aucune_lecture) acq_cause=source_absente ;;
         aucune_analyse|tout_en_liste_blanche) acq_cause=forme_inconnue ;;
@@ -526,7 +552,37 @@ elif [ "$acq_verdict" = surtout_liste_blanche ]; then
 elif [ "$acq_part" -ge 0 ] 2>/dev/null; then
   hmsg="$hmsg — liste blanche : $acq_part % des lignes analysées"
 fi
+# P10.32-g — une source qui lit sans rien analyser parmi d'autres qui analysent (2 bis) : nommée, sévérité 1
+# au moins, réserve dite, sans aveu. Le champ n'existe que lorsque la liste n'est pas vide.
+hfields_lisent_sans_analyser=''
+if [ "$acq_unparsed" != '[]' ]; then
+  [ "$hsev" -lt 1 ] && hsev=1
+  hmsg="$hmsg — acquisition : une source au moins lit sans rien analyser (parseur cassé ou format de journal changé), ses lignes n'atteignent pas les scénarios (acq_unparsed_sources)"
+  hfields_lisent_sans_analyser="{\"acq_unparsed_sources\":$acq_unparsed}"
+fi
+# P10.32-g — combien de pods de l'agent existent, combien ont été lus (2 bis, LIMITE DITE) : seulement quand
+# l'agent est lu par `exec` dans la ressource kube.
+hfields_pods_de_l_agent=''
+if [ "$CS_AGENT_PAR_KUBE" -eq 1 ]; then
+  case "$AGENT_REF" in
+    ds/*) _q='{.status.currentNumberScheduled}' ;;
+    *) _q='{.status.replicas}' ;;
+  esac
+  cs_pods=-1
+  _x=$($KUBE -n "$NS" get "$AGENT_REF" -o "jsonpath=$_q" 2>/dev/null) || _x=''
+  case "$_x" in ''|*[!0-9]*) ;; *) cs_pods=$_x ;; esac
+  cs_pods_lus=0; [ "$acq_n" -ge 0 ] && cs_pods_lus=1
+  if [ "$cs_pods" -lt 0 ]; then
+    hmsg="$hmsg — acquisition : $cs_pods_lus pod de l'agent lu, nombre de pods de l'agent non lu : les compteurs ne sont pas ceux du cluster"
+  elif [ "$cs_pods" -gt "$cs_pods_lus" ]; then
+    hmsg="$hmsg — acquisition : $cs_pods_lus pod de l'agent lu sur $cs_pods : les compteurs ne sont pas ceux du cluster"
+  fi
+  hfields_pods_de_l_agent="{\"acq_agent_pods\":$cs_pods,\"acq_agent_pods_read\":$cs_pods_lus}"
+fi
 hfields="{\"scenarios_loaded\":$scen_loaded,\"scenarios_broken\":$scen_broken,\"agent_ready\":$ar,\"lapi_ok\":$lo,\"last_alert_age_s\":$last_age,\"acq_verdict\":\"$acq_verdict\",\"acq_sources\":$acq_n,\"acq_reads\":$acq_r,\"acq_parsed\":$acq_p,\"acq_unparsed\":$acq_u,\"acq_pour\":$acq_po,\"acq_whitelisted\":$acq_w,\"acq_reads_delta\":$acq_dr,\"acq_parsed_delta\":$acq_dp,\"acq_unparsed_delta\":$acq_du,\"acq_pour_delta\":$acq_dpo,\"acq_whitelisted_delta\":$acq_dw,\"acq_counters_reset\":$acq_reset,\"acq_frozen_sources\":$acq_frozen,\"acquisition\":$acq_detail}"
+# Les morceaux facultatifs s'ajoutent EN FIN d'objet : absents, l'objet reste celui d'avant à l'octet.
+[ -z "$hfields_lisent_sans_analyser" ] || hfields="${hfields%\}},${hfields_lisent_sans_analyser#\{}"
+[ -z "$hfields_pods_de_l_agent" ] || hfields="${hfields%\}},${hfields_pods_de_l_agent#\{}"
 # PAS de dedup (event.dedup est UNIQUE) -> chaque battement S'INSÈRE -> MAX(ts) avance -> heartbeat vivant.
 events="$events${events:+,}$(heartbeat crowdsec "$hmsg" "$hfields" "$hsev")"
 

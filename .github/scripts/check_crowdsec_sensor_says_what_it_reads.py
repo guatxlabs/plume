@@ -36,8 +36,28 @@ répertoire temporaire. Les scénarios, chacun en un ou deux passages qui partag
   · cent cinquante sources — `acq_sources` et les totaux couvrent les 150, le détail et
                        `acq_frozen_sources` sont bornés à 100 ; et quand SEULE la 150e lit (hors du
                        détail), les différences totales la comptent : `lit`, pas `aucune_lecture` ;
-  · une source lit sans analyser parmi d'autres qui analysent — `lit`, et elle n'est PAS nommée
-                       figée (elle lit) ; sur tout refus, `acq_frozen_sources` reste vide ;
+  · une source lit sans analyser parmi d'autres qui analysent — joué sous CHAQUE awk présent (gawk, mawk) :
+                       le verdict des totaux est gardé (`lit`, `premier_passage`, `surtout_liste_blanche`), la
+                       source est NOMMÉE dans `acq_unparsed_sources` (liste exacte, en fin d'objet), la sévérité
+                       monte à 1 (2 reste 2), la réserve est dite, aucun aveu, l'état avance ; sur l'intervalle,
+                       au premier passage (bord : UNE ligne lue), après une remise à zéro, sur la DIFFÉRENCE (une
+                       source qui analysait avant), bornée à 100 ; une source toute en liste blanche ou qui a
+                       analysé UNE ligne n'est pas nommée, ni une source figée. Sur les refus que la
+                       garde joue par `attendre_refus` (`aucune_source`, `aucune_lecture`, `aucune_analyse`,
+                       `illisible`, et `tout_en_liste_blanche` sans source qui lit sans analyser),
+                       `acq_frozen_sources` reste vide et `acq_unparsed_sources` est absent. CE N'EST PAS VRAI DE
+                       TOUT REFUS : `tout_en_liste_blanche` (seuil atteint ou réglé à 0) garde la liste des sources
+                       qui lisent sans analyser, puisque d'autres lignes ont été analysées (la liste blanche les
+                       compte) ; ce refus de sévérité 3 porte alors `acq_unparsed_sources`, et la garde ne le
+                       réfute pas ;
+  · toutes les sources analysent — battement (champs dans leur ordre, message, sévérité) IDENTIQUE à celui
+                       du capteur d'avant ce changement, relevé sur lui, sous chaque awk ;
+  · mode k3s         — faux `kubectl`, ni `PLUME_CSCLI` ni `cscli` local : compteurs lus par `exec` dans
+                       `ds/crowdsec-agent` (journal du faux kubectl), `acq_agent_pods` et `acq_agent_pods_read`
+                       en fin d'objet : 3 pods (dit « 1 lu sur 3 »), 1 pod (rien dit), nombre illisible ou mal
+                       formé (-1, dit), Deployment à 2 réplicas (`status.replicas`), lecture ratée (0 lu, dit
+                       même sur 1 pod), compteurs LUS mais zéro source (`aucune_source`, 1 pod lu sur 1, rien dit des
+                       pods : le bord `acq_sources = 0`) ; kubectl présent AVEC un cscli local : aucun champ de pods ;
   · liste blanche    — lignes lues, aucune analysée mais toutes en liste blanche : jamais
                        `aucune_analyse`, et depuis `P10.32-k` jamais `lit` non plus — c'est
                        `tout_en_liste_blanche`, un refus (cause `forme_inconnue`), sur deux passages ;
@@ -49,7 +69,8 @@ répertoire temporaire. Les scénarios, chacun en un ou deux passages qui partag
                        empreinte de clé de dédoublonnage d'un passage à l'autre ;
   · illisible        — `cscli metrics` en échec (cause `source_illisible`), une sortie qui n'est pas
                        du JSON, une sortie VIDE rendue avec le code 0, un compteur non numérique
-                       (cause `forme_inconnue`) : `illisible`, compteurs -1, aveu, état non avancé ;
+                       (cause `forme_inconnue`), un faux `jq` qui rend VIDE (code 0) le seul morceau `.unparsed` ou
+                       `.frozen` : `illisible`, compteurs -1, aveu, état non avancé, jamais un JSON cassé ;
   · redémarrage      — compteurs qui DIMINUENT et source neuve : `lit`, `acq_counters_reset` vrai,
                        différence = valeur courante, JAMAIS un négatif ;
   · rien depuis le démarrage — premier passage dont toutes les sources sont à zéro : `aucune_lecture`,
@@ -96,9 +117,20 @@ bouchon qui ne répond pas ferait passer tout capteur pour aveugle.
 
 CE QU'ELLE NE TIENT PAS
 -----------------------
-· Les modes k3s (exec dans le DaemonSet agent) et Docker (`PLUME_CSCLI=docker exec …`) ne sont pas
-  joués : seul le choix `PLUME_CSCLI` l'est. Le reste de la résolution est inchangé et partagé avec
-  le `hub list` déjà livré.
+· Le mode k3s n'est joué que contre un faux `kubectl` qui rend la forme attendue ; aucun cluster réel,
+  et le pod que `kubectl exec ds/…` choisit n'est ni connu ni nommé : UN seul pod est lu, c'est dit au
+  battement, pas corrigé. Le mode Docker (`PLUME_CSCLI=docker exec …`) n'est pas joué au-delà du choix
+  `PLUME_CSCLI`. Ce n'est donc pas une preuve « dans les trois modes ».
+· « Sous chaque awk » : la sélection des sources qui lisent sans analyser passe par `jq`, pas par `awk` ; la
+  boucle sur les awk ne mord donc que sur le reste du capteur. Le VPS d'exécution n'a que mawk.
+
+MUTANTS DU CAPTEUR VUS ROUGES (chacun posé puis retiré) : champ `acq_unparsed_sources` toujours émis ; condition
+« le total analysé n'est pas nul » retirée ; `.whitelisted == 0` retiré ; `reads > 0` changé en `reads > 1` ;
+`parsed == 0` changé en `parsed <= 1` ; `.d` toujours (ou `.c` toujours) ; borne `[:100]` retirée ; sévérité
+forcée à 1 (sans `-lt 1`) ; réserve retirée du message ; `CS_AGENT_PAR_KUBE` remplacé par `AGENT_REF` non vide ;
+requête `status.replicas` pour un DaemonSet ; validation du nombre de pods retirée ; `-gt` changé en `-ge` ;
+`acq_agent_pods_read` toujours 1 ; `acq_n -ge 0` changé en `-gt 0` (pod lu, zéro source) ; re-validation du
+morceau `_un` retirée ; re-validation du morceau `_fz` retirée.
 · La forme réelle de `cscli metrics` est celle de l'échantillon relevé (v1.8) ; une forme future
   différente rend `illisible`, ce qui est un refus, jamais un vert.
 · Elle ne juge pas la règle du démon qui consommerait `acq_verdict` : aucune n'est livrée ; l'alerte
@@ -140,6 +172,28 @@ case "$*" in
   "metrics -o json") [ -f "$d/metrics_ko" ] && exit 1; if [ -f "$d/metrics_tout" ]; then cat "$d/metrics_tout"; else cat "$d/metrics"; fi ;;
   "metrics show "*" -o json") printf '{"parsers":{}}' ;;
   metrics*) printf 'Acquisition Metrics:\n+--------+-------+\n| Source | Lines |\n+--------+-------+\n' ;;
+  *) exit 1 ;;
+esac
+"""
+
+# Faux `kubectl` du mode k3s : il ne répond qu'aux commandes EXACTES que le capteur doit poser, journalise chacune
+# (`kubectl.log`), et relaie `exec … -- cscli …` au faux `cscli`. Le nombre de pods n'est rendu qu'à la requête
+# jsonpath de la ressource résolue (`currentNumberScheduled` d'un DaemonSet, `replicas` d'un Deployment) ; sans
+# fichier `pods`, la requête échoue.
+FAUX_KUBECTL = r"""#!/bin/sh
+d="$FAKE_CS_DIR"
+printf '%s\n' "$*" >> "$d/kubectl.log"
+case "$*" in
+  "-n crowdsec get deploy crowdsec-lapi") exit 0 ;;
+  "-n crowdsec get ds crowdsec-agent") [ -f "$d/agent_deploy" ] && exit 1; exit 0 ;;
+  "-n crowdsec get deploy crowdsec-agent") [ -f "$d/agent_deploy" ] && exit 0; exit 1 ;;
+  "-n crowdsec get ds/crowdsec-agent -o jsonpath={.status.currentNumberScheduled}")
+    [ -f "$d/agent_deploy" ] && exit 1; [ -f "$d/pods" ] && { cat "$d/pods"; exit 0; }; exit 1 ;;
+  "-n crowdsec get deploy/crowdsec-agent -o jsonpath={.status.replicas}")
+    [ -f "$d/agent_deploy" ] && [ -f "$d/pods" ] && { cat "$d/pods"; exit 0; }; exit 1 ;;
+  "-n crowdsec logs "*) exit 0 ;;
+  "-n crowdsec exec deploy/crowdsec-lapi -- cscli "*|"-n crowdsec exec ds/crowdsec-agent -c crowdsec-agent -- cscli "*|"-n crowdsec exec deploy/crowdsec-agent -c crowdsec-agent -- cscli "*)
+    while [ "$1" != "--" ]; do shift; done; shift; shift; exec "$FAKE_CSCLI" "$@" ;;
   *) exit 1 ;;
 esac
 """
@@ -219,18 +273,23 @@ def champs_declares(capteur):
 
 
 class Bac:
-    def __init__(self, capteur):
+    def __init__(self, capteur, awk=None):
         self.racine = tempfile.mkdtemp(prefix="plume-cs-acq-")
         self.bin = os.path.join(self.racine, "bin")
         os.mkdir(self.bin)
         for o in OUTILS:
-            p = shutil.which(o)
+            p = awk if (o == "awk" and awk) else shutil.which(o)
             if p:
                 os.symlink(p, os.path.join(self.bin, o))
+        self.kube = os.path.join(self.racine, "kube")
+        os.mkdir(self.kube)
         self.fake = os.path.join(self.racine, "fake-cscli")
         with open(self.fake, "w") as f:
             f.write(FAUX_CSCLI)
         os.chmod(self.fake, stat.S_IRWXU)
+        with open(os.path.join(self.kube, "kubectl"), "w") as f:
+            f.write(FAUX_KUBECTL)
+        os.chmod(os.path.join(self.kube, "kubectl"), stat.S_IRWXU)
         self.capteur = capteur
         self.n = 0
 
@@ -245,9 +304,9 @@ class Bac:
         return d
 
     def passage(self, d, metrics=None, ko=False, sans_show=False, etat=None, wl=None, wl_ko=False, env_sup=None,
-                metrics_tout=None):
+                metrics_tout=None, kube=None, pods=None, agent_deploy=False, kube_et_cscli=False):
         cs = os.path.join(d, "cs")
-        for nom in ("metrics", "metrics_ko", "sans_show", "wl", "wl_ko", "metrics_tout"):
+        for nom in ("metrics", "metrics_ko", "sans_show", "wl", "wl_ko", "metrics_tout", "pods", "agent_deploy"):
             p = os.path.join(cs, nom)
             if os.path.exists(p):
                 os.remove(p)
@@ -266,10 +325,23 @@ class Bac:
             open(os.path.join(cs, "wl_ko"), "w").close()
         if sans_show:
             open(os.path.join(cs, "sans_show"), "w").close()
+        if pods is not None:
+            with open(os.path.join(cs, "pods"), "w") as f:
+                f.write(pods)
+        if agent_deploy:
+            open(os.path.join(cs, "agent_deploy"), "w").close()
         spool = tempfile.mkdtemp(dir=d, prefix="spool-")
         env = {"PATH": self.bin, "PLUME_CSCLI": self.fake, "FAKE_CS_DIR": cs,
                "PLUME_SPOOL": spool, "PLUME_STATE": etat or os.path.join(d, "etat"),
                "PLUME_LIB": LIB, "LC_ALL": "C.UTF-8", "HOME": d}
+        # Mode k3s : un faux `kubectl` dans le PATH ; sans `PLUME_CSCLI` (et sans `cscli` dans le PATH), le
+        # capteur passe par `exec` dans la ressource de l'agent. `kube_et_cscli` garde `PLUME_CSCLI` : un hôte qui
+        # porte kubectl ET un cscli local lit l'agent localement, pas dans un pod.
+        if kube or kube_et_cscli:
+            env["PATH"] = self.kube + ":" + self.bin
+            env["FAKE_CSCLI"] = self.fake
+            if not kube_et_cscli:
+                del env["PLUME_CSCLI"]
         env.update(env_sup or {})
         r = subprocess.run([os.path.join(self.bin, "sh"), self.capteur], env=env,
                            capture_output=True, text=True, timeout=60)
@@ -326,8 +398,11 @@ def attendre_refus(scen, hb, evs, verdict, cause):
         faute(scen, f"sévérité du battement {hb.get('severity')} : un refus de conclure la relève à 3 au moins")
     if f"ACQUISITION {verdict} :" not in (hb.get("message") or ""):
         faute(scen, f"le message du battement ne dit pas le refus d'acquisition : {hb.get('message')!r}")
-    # Sur un refus, aucune source n'est « figée parmi d'autres qui lisent » : la liste reste vide.
+    # Sur les refus joués ici, aucune source n'est « figée parmi d'autres qui lisent » : la liste reste vide. Ni « lit sans
+    # analyser parmi d'autres qui analysent » : le champ est absent.
     egal(scen, f, "acq_frozen_sources", [])
+    if "acq_unparsed_sources" in f:
+        faute(scen, f"acq_unparsed_sources présent sur un refus : {f.get('acq_unparsed_sources')!r}")
     av = aveux_acquisition(evs)
     if len(av) != 1:
         faute(scen, f"{len(av)} aveu(x) d'acquisition par le canal de couverture, attendu 1")
@@ -806,6 +881,245 @@ def prolongation(bac, declares):
             faute(s, "horodatage non posé sans aveu `etat/horodatage`")
 
 
+# --- P10.32-g, restes : une source qui lit sans rien analyser parmi d'autres, et les pods de l'agent kube --------
+AWK_EXERCES = ("gawk", "mawk")
+PHRASE_NON_ANALYSEE = ("— acquisition : une source au moins lit sans rien analyser (parseur cassé ou format de journal "
+                       "changé), ses lignes n'atteignent pas les scénarios (acq_unparsed_sources)")
+S_B = "file:/var/log/containers/web-c.log"
+S_UN_NON = "file:/var/log/containers/web-une-ligne-non-analysee.log"
+A_M1 = {"reads": 1000, "parsed": 900, "unparsed": 100, "pour": 7, "whitelisted": 88}
+A_M2 = {"reads": 1300, "parsed": 1150, "unparsed": 150, "pour": 9, "whitelisted": 112}
+# Premier passage : une source à 60 lignes lues et une à UNE seule ligne lue (le bord `reads > 0`), aucune analysée.
+M_PREMIER_NON = acq({S_A: A_M1, S_NEW: {"reads": 60, "unparsed": 60}, S_UN_NON: {"reads": 1, "unparsed": 1}})
+# Une source qui n'a reçu QUE des lignes en liste blanche a été analysée : jamais nommée.
+M_LB_SEULE = acq({S_A: A_M1, S_B: {"reads": 40, "whitelisted": 40}})
+# S_B analysait avant (50 analysées depuis le démarrage) et n'analyse plus rien sur l'intervalle : la base est la
+# DIFFÉRENCE, pas le total.
+M_B1 = acq({S_A: A_M1, S_B: {"reads": 100, "parsed": 50, "unparsed": 50}})
+M_B2 = acq({S_A: A_M2, S_B: {"reads": 130, "parsed": 50, "unparsed": 80}})
+# Part en liste blanche au seuil (95 %, forme incluse) ET une source non analysée : la sévérité 2 reste 2.
+M_SURTOUT_NON = acq({S_A: {"reads": 100, "parsed": 100, "pour": 1, "whitelisted": 95}, S_NEW: {"reads": 50, "unparsed": 50}})
+
+# D — le battement EXACT (champs dans leur ordre, message, sévérité) d'un hôte dont toutes les sources analysent,
+# M1 puis M2, tel que le rendait le capteur d'avant ce changement (relevé sur lui) : il doit rester le même à l'octet.
+SAIN2_MESSAGE = ("CrowdSec santé: 2 scénarios (chargement inconnu — log agent inaccessible) — liste blanche : 9 % des "
+                 "lignes analysées")
+SAIN2_CHAMPS = [
+    ("scenarios_loaded", 2), ("scenarios_broken", -1), ("agent_ready", True), ("lapi_ok", True),
+    ("last_alert_age_s", -1), ("acq_verdict", "lit"), ("acq_sources", 2), ("acq_reads", 1350), ("acq_parsed", 1190),
+    ("acq_unparsed", 160), ("acq_pour", 9), ("acq_whitelisted", 116), ("acq_reads_delta", 300),
+    ("acq_parsed_delta", 250), ("acq_unparsed_delta", 50), ("acq_pour_delta", 2), ("acq_whitelisted_delta", 24),
+    ("acq_counters_reset", False), ("acq_frozen_sources", [S_OLD]),
+    ("acquisition", [
+        {"source": S_A, "reads": 1300, "parsed": 1150, "unparsed": 150, "pour": 9, "whitelisted": 112,
+         "reads_delta": 300, "parsed_delta": 250, "unparsed_delta": 50, "pour_delta": 2, "whitelisted_delta": 24},
+        {"source": S_OLD, "reads": 50, "parsed": 40, "unparsed": 10, "pour": 0, "whitelisted": 4,
+         "reads_delta": 0, "parsed_delta": 0, "unparsed_delta": 0, "pour_delta": 0, "whitelisted_delta": 0}]),
+]
+PODS_LUS_SUR = "— acquisition : {lus} pod de l'agent lu sur {n} : les compteurs ne sont pas ceux du cluster"
+PODS_NON_LUS = ("— acquisition : {lus} pod de l'agent lu, nombre de pods de l'agent non lu : les compteurs ne sont pas "
+                "ceux du cluster")
+
+
+def sans_config(scen, evs):
+    cfg = [(e.get("fields") or {}).get("detail") for e in evs if e.get("category") == "config"]
+    if cfg:
+        faute(scen, f"aveu(x) émis alors qu'aucun n'est attendu : {cfg}")
+
+
+def reserve_non_analysee(scen, hb, evs, verdict, nommees, severite):
+    """Une source lit sans rien analyser parmi d'autres qui analysent : verdict des totaux gardé, sources nommées
+    (liste exacte, dans l'ordre), sévérité, réserve dite, aucun aveu, aucune source figée nommée à tort."""
+    f = hb["fields"]
+    egal(scen, f, "acq_verdict", verdict)
+    egal(scen, f, "acq_unparsed_sources", nommees)
+    if hb.get("severity") != severite:
+        faute(scen, f"sévérité {hb.get('severity')}, attendu {severite}")
+    if PHRASE_NON_ANALYSEE not in (hb.get("message") or ""):
+        faute(scen, f"réserve absente du message : {hb.get('message')!r}")
+    if list(f)[-1] != "acq_unparsed_sources":
+        faute(scen, f"acq_unparsed_sources n'est pas en fin d'objet : {list(f)}")
+    sans_config(scen, evs)
+
+
+def sans_reserve(scen, hb):
+    f = hb["fields"]
+    if "acq_unparsed_sources" in f:
+        faute(scen, f"acq_unparsed_sources présent alors que chaque source qui lit analyse : {f['acq_unparsed_sources']!r}")
+    if PHRASE_NON_ANALYSEE in (hb.get("message") or ""):
+        faute(scen, f"réserve dite sans source non analysée : {hb.get('message')!r}")
+
+
+def sources_non_analysees(capteur, nom_awk, awk, declares):
+    bac = Bac(capteur, awk)
+    t = lambda x: f"{nom_awk}/{x}"  # noqa: E731
+    try:
+        # D — toutes les sources analysent (une figée à côté) : battement identique à l'octet.
+        s = t("toutes_analysent/octet")
+        d = bac.scenario()
+        bac.passage(d, M1)
+        r, evs = bac.passage(d, M2)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            if list(hb["fields"].items()) != SAIN2_CHAMPS:
+                faute(s, f"champs du battement changés : {list(hb['fields'].items())}")
+            egal(s, hb, "message", SAIN2_MESSAGE)
+            egal(s, hb, "severity", 0)
+            sans_config(s, evs)
+
+        # U1 — sur l'intervalle : S_NEW lit 30 lignes, n'en analyse aucune ; S_A analyse. `lit`, S_NEW nommée,
+        # sévérité 1, et l'état AVANCE (comme pour une source figée : pas de refus).
+        s = t("non_analysee/intervalle")
+        d = bac.scenario()
+        bac.passage(d, M_DEUX_SOURCES1)
+        r, evs = bac.passage(d, M_DEUX_SOURCES2)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            reserve_non_analysee(s, hb, evs, "lit", [S_NEW], 1)
+            egal(s, hb["fields"], "acq_frozen_sources", [])
+            n = detail_de(hb["fields"], S_NEW) or {}
+            if (n.get("reads_delta"), n.get("unparsed_delta"), n.get("parsed_delta")) != (30, 30, 0):
+                faute(s, f"détail de la source non analysée faux : {n}")
+        if lus_dans_etat(bac.etat(d), S_NEW) != 90:
+            faute(s, f"état non avancé sur un passage qui lit avec une source non analysée : {bac.etat(d)!r}")
+
+        # U2 — premier passage : base = depuis le démarrage ; la source à UNE ligne lue est nommée (bord `reads > 0`).
+        s = t("non_analysee/premier_passage")
+        d = bac.scenario()
+        r, evs = bac.passage(d, M_PREMIER_NON)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            reserve_non_analysee(s, hb, evs, "premier_passage", [S_NEW, S_UN_NON], 1)
+        if lus_dans_etat(bac.etat(d), S_NEW) != 60:
+            faute(s, f"état non posé au premier passage : {bac.etat(d)!r}")
+
+        # U3 — remise à zéro des compteurs : la différence d'une source qui redémarre vaut sa valeur courante.
+        s = t("non_analysee/remise_a_zero")
+        d = bac.scenario()
+        bac.passage(d, M_DEUX_SOURCES2)
+        r, evs = bac.passage(d, M_DEUX_SOURCES1)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            egal(s, hb["fields"], "acq_counters_reset", True)
+            reserve_non_analysee(s, hb, evs, "lit", [S_NEW], 1)
+
+        # U4 — une source dont toutes les lignes sont parties en liste blanche a été analysée : pas nommée.
+        s = t("liste_blanche_seule/pas_nommee")
+        d = bac.scenario()
+        r, evs = bac.passage(d, M_LB_SEULE)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            attendre_sans_refus(s, hb, evs, "premier_passage")
+            sans_reserve(s, hb)
+
+        # U5 — une source qui a analysé UNE ligne n'est pas nommée (bord `parsed == 0`) ; la source qui ne lit rien
+        # est figée, pas « non analysée ».
+        s = t("une_ligne_analysee/pas_nommee")
+        d = bac.scenario()
+        r, evs = bac.passage(d, M1_NEUVE_VIDE_ET_UNE_LIGNE)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            attendre_sans_refus(s, hb, evs, "premier_passage")
+            egal(s, hb["fields"], "acq_frozen_sources", [S_NEW])
+            sans_reserve(s, hb)
+
+        # U6 — avec un état : la base est la DIFFÉRENCE. S_B a 50 lignes analysées depuis le démarrage, aucune sur
+        # l'intervalle : nommée.
+        s = t("non_analysee/sur_la_difference")
+        d = bac.scenario()
+        bac.passage(d, M_B1)
+        r, evs = bac.passage(d, M_B2)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            reserve_non_analysee(s, hb, evs, "lit", [S_B], 1)
+
+        # U7 — cent cinquante sources non analysées à côté d'une qui analyse : la liste est bornée à 100.
+        s = t("non_analysee/borne")
+        d = bac.scenario()
+        cent50 = {S_A: A_M1}
+        cent50.update({source_p(i): {"reads": 10, "unparsed": 10} for i in range(150)})
+        r, evs = bac.passage(d, acq(cent50))
+        hb = battement(s, r, evs, declares)
+        if hb:
+            reserve_non_analysee(s, hb, evs, "premier_passage", [source_p(i) for i in range(100)], 1)
+
+        # U8 — part en liste blanche au seuil ET source non analysée : la sévérité 2 de `surtout_liste_blanche` reste
+        # 2 (la réserve ne l'abaisse pas), les deux phrases sont dites.
+        s = t("non_analysee/surtout_liste_blanche")
+        d = bac.scenario()
+        r, evs = bac.passage(d, M_SURTOUT_NON)
+        hb = battement(s, r, evs, declares)
+        if hb:
+            reserve_non_analysee(s, hb, evs, "surtout_liste_blanche", [S_NEW], 2)
+            if "ACQUISITION surtout_liste_blanche :" not in (hb.get("message") or ""):
+                faute(s, f"verdict de liste blanche non dit : {hb.get('message')!r}")
+
+        # K — mode k3s (faux kubectl, ni PLUME_CSCLI ni cscli local) : l'agent est lu par `exec` dans le DaemonSet.
+        def pods(s, hb, n, lus, phrase):
+            f = hb["fields"]
+            if list(f)[-2:] != ["acq_agent_pods", "acq_agent_pods_read"]:
+                faute(s, f"champs de pods absents ou hors fin d'objet : {list(f)[-3:]}")
+            egal(s, f, "acq_agent_pods", n)
+            egal(s, f, "acq_agent_pods_read", lus)
+            msg = hb.get("message") or ""
+            if phrase is None:
+                if "pod de l'agent" in msg:
+                    faute(s, f"le message parle des pods alors que tous sont lus : {msg!r}")
+            elif phrase not in msg:
+                faute(s, f"{phrase!r} absent du message : {msg!r}")
+
+        for nom, kw, n, lus, phrase in (
+                ("ds/trois_pods", {"pods": "3"}, 3, 1, PODS_LUS_SUR.format(lus=1, n=3)),
+                ("ds/un_pod", {"pods": "1"}, 1, 1, None),
+                ("ds/nombre_illisible", {}, -1, 1, PODS_NON_LUS.format(lus=1)),
+                ("ds/nombre_mal_forme", {"pods": "2x"}, -1, 1, PODS_NON_LUS.format(lus=1)),
+                ("deploy/deux_replicas", {"pods": "2", "agent_deploy": True}, 2, 1, PODS_LUS_SUR.format(lus=1, n=2))):
+            s = t("k3s/" + nom)
+            d = bac.scenario()
+            r, evs = bac.passage(d, M1, kube=True, **kw)
+            hb = battement(s, r, evs, declares)
+            if hb:
+                attendre_sans_refus(s, hb, evs, "premier_passage")
+                egal(s, hb["fields"], "acq_reads", 1050)
+                pods(s, hb, n, lus, phrase)
+            ref = "deploy/crowdsec-agent" if kw.get("agent_deploy") else "ds/crowdsec-agent"
+            with open(os.path.join(d, "cs", "kubectl.log")) as fh:
+                journal = fh.read()
+            if f"-n crowdsec exec {ref} -c crowdsec-agent -- cscli metrics show acquisition -o json" not in journal:
+                faute(s, f"compteurs non lus par exec dans {ref} : {journal!r}")
+        # Compteurs non lus (cscli metrics en échec) : 0 pod lu, dit même quand la ressource n'en a qu'un.
+        for nom, nb in (("ds/trois_pods_lecture_ratee", "3"), ("ds/un_pod_lecture_ratee", "1")):
+            s = t("k3s/" + nom)
+            d = bac.scenario()
+            r, evs = bac.passage(d, M1, ko=True, kube=True, pods=nb)
+            hb = battement(s, r, evs, declares)
+            if hb:
+                attendre_refus(s, hb, evs, "illisible", "source_illisible")
+                pods(s, hb, int(nb), 0, PODS_LUS_SUR.format(lus=0, n=int(nb)))
+        # Compteurs LUS mais zéro source d'acquisition (`{"acquisition":{}}`) : le pod a bien été lu (1 lu), le refus
+        # `aucune_source` vient de ce qu'il dit, pas d'une lecture ratée — « 0 pod lu » serait faux.
+        s = t("k3s/ds/un_pod_zero_source")
+        d = bac.scenario()
+        r, evs = bac.passage(d, acq({}), kube=True, pods="1")
+        hb = battement(s, r, evs, declares)
+        if hb:
+            attendre_refus(s, hb, evs, "aucune_source", "source_absente")
+            egal(s, hb["fields"], "acq_sources", 0)
+            pods(s, hb, 1, 1, None)
+        # kubectl présent ET cscli local (PLUME_CSCLI) : l'agent est lu localement, aucun champ de pods.
+        s = t("kubectl_et_cscli_local/sans_pods")
+        d = bac.scenario()
+        r, evs = bac.passage(d, M1, kube_et_cscli=True, pods="3")
+        hb = battement(s, r, evs, declares)
+        if hb:
+            attendre_sans_refus(s, hb, evs, "premier_passage")
+            if {"acq_agent_pods", "acq_agent_pods_read"} & set(hb["fields"]) or "pod de l'agent" in (hb.get("message") or ""):
+                faute(s, f"pods dits alors que l'agent est lu par le cscli local : {hb['fields']} {hb.get('message')!r}")
+    finally:
+        bac.nettoyer()
+    return bac.n
+
+
 def epreuve_du_bac(bac):
     d = bac.scenario()
     with open(os.path.join(d, "cs", "metrics"), "w") as f:
@@ -1052,18 +1366,9 @@ def main():
             attendre_sans_refus(s, hb, evs, "premier_passage")
             egal(s, hb["fields"], "acq_frozen_sources", [S_NEW])
 
-        s = "une_source_lit_sans_analyse"
-        d = bac.scenario()
-        bac.passage(d, M_DEUX_SOURCES1)
-        r, evs = bac.passage(d, M_DEUX_SOURCES2)
-        hb = battement(s, r, evs, declares)
-        if hb:
-            f = hb["fields"]
-            attendre_sans_refus(s, hb, evs, "lit")
-            egal(s, f, "acq_frozen_sources", [])
-            n = detail_de(f, S_NEW) or {}
-            if (n.get("reads_delta"), n.get("unparsed_delta"), n.get("parsed_delta")) != (30, 30, 0):
-                faute(s, f"détail de la source non analysée faux : {n}")
+        # 3 sexies b) une source lit sans rien analyser parmi d'autres qui analysent : voir
+        # `sources_non_analysees` (jouée sous chaque awk présent), qui remplace le témoin d'avant (« `lit`,
+        # sévérité 0, rien de nommé »), INVERSÉ : la source est désormais nommée et la réserve dite.
 
         # 3 septies) lignes lues, aucune analysée MAIS écartées par liste blanche : elles ont atteint
         # l'analyse, ce n'est pas `aucune_analyse` ; et rien n'atteint les scénarios, ce n'est pas `lit`
@@ -1149,6 +1454,33 @@ def main():
             if bac.etat(d) != avant:
                 faute(nom, "l'état local a avancé sur une lecture illisible")
 
+        # 4 bis) un morceau extrait VIDE alors que le verdict est valide : un faux `jq` ne rend rien sur le seul
+        # filtre `.unparsed` (puis `.frozen`), une fois en sortant 0, une fois en ÉCHOUANT (code 1). Le premier
+        # jeu prouve la re-validation du morceau, le second le repli de l'extraction : un repli qui poserait une
+        # liste vide à la place d'un morceau illisible rendrait `lit` et tairait la liste. Dans les deux cas :
+        # `illisible`, `forme_inconnue`, jamais un battement qui porterait `"acq_unparsed_sources":}` (JSON cassé)
+        # ni un état avancé.
+        vrai_jq = shutil.which("jq")
+        for filtre, code in ((".unparsed", 0), (".frozen", 0), (".unparsed", 1), (".frozen", 1)):
+            nom = f"illisible/morceau_vide{filtre}" if code == 0 else f"illisible/extraction_en_echec{filtre}"
+            d = bac.scenario()
+            faux = os.path.join(d, "jq-faux")
+            os.mkdir(faux)
+            with open(os.path.join(faux, "jq"), "w") as fh:
+                fh.write("#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = '%s' ] && exit %d; done\nexec '%s' \"$@\"\n"
+                         % (filtre, code, vrai_jq))
+            os.chmod(os.path.join(faux, "jq"), stat.S_IRWXU)
+            bac.passage(d, M1)
+            avant = bac.etat(d)
+            r, evs = bac.passage(d, M2,
+                                 env_sup={"PATH": faux + ":" + bac.bin})
+            hb = battement(nom, r, evs, declares)
+            if hb:
+                attendre_refus(nom, hb, evs, "illisible", "forme_inconnue")
+                egal(nom, hb["fields"], "acq_reads", -1)
+            if bac.etat(d) != avant:
+                faute(nom, "l'état local a avancé sur un morceau illisible")
+
         # 5) redémarrage de l'agent : compteurs qui diminuent + source neuve.
         s = "redemarrage"
         d = bac.scenario()
@@ -1190,12 +1522,26 @@ def main():
     finally:
         bac.nettoyer()
 
+    # Restes de P10.32-g, sous CHAQUE awk présent (gawk, mawk ; un même binaire n'est joué qu'une fois).
+    awks, vus = [], set()
+    for nom in AWK_EXERCES:
+        p = shutil.which(nom)
+        if p and os.path.realpath(p) not in vus:
+            vus.add(os.path.realpath(p))
+            awks.append((nom, p))
+    if not awks:
+        refus(f"aucun awk parmi {AWK_EXERCES}")
+    joues = bac.n - 1
+    for nom, p in awks:
+        joues += sources_non_analysees(capteur, nom, p, declares)
+    print(f"check_crowdsec_sensor_says_what_it_reads : awk joués {[n for n, _ in awks]}")
+
     if fautes:
         for x in fautes:
             print(f"::error::{x}")
         print(f"check_crowdsec_sensor_says_what_it_reads : {len(fautes)} faute(s), capteur {os.path.relpath(capteur, RACINE)}")
         return 1
-    print(f"check_crowdsec_sensor_says_what_it_reads : tenu — {bac.n - 1} scénarios joués sur {os.path.relpath(capteur, RACINE)}")
+    print(f"check_crowdsec_sensor_says_what_it_reads : tenu — {joues} scénarios joués sur {os.path.relpath(capteur, RACINE)}")
     return 0
 
 

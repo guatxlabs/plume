@@ -289,13 +289,14 @@ pub(crate) fn notify_send_pour_l_objet(
                 return false;
             }
             let tmpl = config.str_field("template");
+            let ctype = config.str_field("content_type");
+            let ctype = if ctype.is_empty() { "application/json" } else { ctype };
+            // `P11.25-g` — un gabarit qui part sous un type JSON (le type par défaut) reçoit ses valeurs échappées.
             let body = if tmpl.is_empty() {
                 json!({ "ts": ts, "severity": sev, "title": title, "detail": detail, "host": host }).to_string()
             } else {
-                render_template(tmpl, sev, title, detail, host, ts)
+                render_template_pour_le_type(tmpl, ctype, sev, title, detail, host, ts)
             };
-            let ctype = config.str_field("content_type");
-            let ctype = if ctype.is_empty() { "application/json" } else { ctype };
             let mut args: Vec<String> = vec![
                 "-fsS".into(), "--max-time".into(), "10".into(), "-X".into(), "POST".into(),
                 "-H".into(), format!("Content-Type: {}", oneline(ctype)),
@@ -416,11 +417,12 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
     // NotifierRef complet (id inclus) pour le filtrage par politique.
     struct NotifierRef { id: i64, kind: String, url: String, min_severity: i64, config: String }
     #[allow(clippy::type_complexity)]
-    let (alerts, notifiers, policies, silences): (
+    let (alerts, notifiers, policies, silences, masquage): (
         Vec<(i64, i64, i64, String, String, String, String, String)>,
         Vec<NotifierRef>,
         Vec<Policy>,
         Vec<Vec<(String, String)>>,
+        crate::preuves_d_alerte::MasquageALEnvoi,
     ) = {
         let conn = db.lock();
         // labels de routage : mitre / host / source(=rule) / env_id, en plus de ts/severity/title/detail.
@@ -477,7 +479,10 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
             Ok(v) => v,
             Err(e) => { crate::metrics::compter_un_tick_aveugle("dispatch_silences", &e.to_string()); return; }
         };
-        (alerts, notifiers, policies, silences)
+        // `P11.25-g` — les filtres de champs de la base, lus une fois par tour : ils décident si les preuves d'une
+        // alerte sortent (`preuves_d_alerte::masquage_a_l_envoi`). Une lecture ratée les retient, le tour continue.
+        let masquage = crate::preuves_d_alerte::masquage_a_l_envoi(&conn);
+        (alerts, notifiers, policies, silences, masquage)
     };
     let enabled_ids: Vec<i64> = notifiers.iter().map(|n| n.id).collect();
     // `P7.20-a` — la base, pour chercher les cibles inscrites de chaque canal (verrou relâché avant tout envoi).
@@ -521,6 +526,16 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
         let mut canaux_vises = 0usize;
         let mut envois_pris = 0usize;
         if !plan.silenced {
+            // `P11.25-g` — LES PREUVES FIGÉES PARTENT AVEC L'ALERTE, APRÈS son détail (le texte d'avant reste à l'octet ;
+            // rien n'est ajouté pour une alerte dont la règle ne déclare pas de preuves et qui n'en porte pas, sauf une ligne
+            // d'alerte qui ne se relit pas, dite), bornées et
+            // jamais plus que ce que `/api/alerts` sert au lecteur (`preuves_d_alerte::texte_des_preuves_a_l_envoi`). Le
+            // canal `lookup` ne reçoit ni le détail ni les preuves.
+            let preuves = {
+                let conn = db.lock();
+                crate::preuves_d_alerte::texte_des_preuves_a_l_envoi(&crate::preuves_d_alerte::lire_les_preuves_a_l_envoi(&conn, *id), masquage)
+            };
+            let detail_envoye = format!("{detail}{preuves}");
             for n in &notifiers {
                 if !plan.target_ids.contains(&n.id) {
                     continue;
@@ -545,7 +560,7 @@ pub(crate) fn dispatch_notifications(db: &Arc<Mutex<Connection>>) {
                     }
                 } else if notify_send_pour_l_objet(
                     &crate::overlays_oac::cibles_de_configuration_d_un_canal(&base, n.id, &n.kind, &n.url, &config),
-                    &n.kind, &n.url, &config, *sev, title, detail, host, *ts,
+                    &n.kind, &n.url, &config, *sev, title, &detail_envoye, host, *ts,
                 ) {
                     envois_pris += 1;
                 } else {

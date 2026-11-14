@@ -385,6 +385,26 @@ pub(crate) fn field_filters_forget(db_path: &str) {
     salt_cell().write().remove(db_path);
 }
 
+/// `P11.25-g` — VRAI si le registre en mémoire porte au moins une règle pour la base `db_path`, QUELS QUE SOIENT son
+/// tenant, son environnement et son rôle : toute règle masque le lecteur (`role_threshold` ≥ 1 = rang du lecteur), pour
+/// le tenant et l'environnement qu'elle vise. Le registre est rangé sous le db_path CONFIGURÉ, qui peut être relatif ou
+/// passer par un lien, alors que l'appelant tient souvent le chemin que rend SQLite (absolu, liens résolus) : une clé
+/// est reconnue par égalité de texte, ou par égalité des chemins canoniques. Une entrée VIDE n'est pas une règle : le
+/// démarrage (`field_filters_reload`, server/mod.rs) en range une sous le db_path d'une base sans filtre de champs.
+pub(crate) fn registre_porte_une_regle(db_path: &str) -> bool {
+    let armees: Vec<String> = filters_cell()
+        .read()
+        .iter()
+        .filter(|(_, regles)| !regles.is_empty())
+        .map(|(cle, _)| cle.clone())
+        .collect();
+    if armees.iter().any(|cle| cle == db_path) {
+        return true;
+    }
+    let Ok(cible) = std::fs::canonicalize(db_path) else { return false };
+    armees.iter().any(|cle| std::fs::canonicalize(cle).is_ok_and(|c| c == cible))
+}
+
 /// Jeu de masques EFFECTIF pour l'appelant (role/tenant/env). VIDE si aucune règle applicable -> compilation
 /// GXQL byte-identique (mode 0). FAIL-CLOSED : `role` inconnu -> rank 0 -> masqué par toute règle.
 pub(crate) fn effective_masks(db_path: &str, role: &str, tenant: &str, env: Option<&str>) -> FieldMaskSet {

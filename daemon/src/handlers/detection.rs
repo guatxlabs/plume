@@ -583,6 +583,11 @@ pub(crate) fn run_due_rules(db: &Arc<Mutex<Connection>>, db_path: &str) -> crate
     crate::mesure_environnement::Mesure::Lue(abandonnees)
 }
 
+/// `P11.25-g` — la cause servie sous `evidence_query_non_lu` par `rules_list` pour une règle dont la requête de preuves
+/// écrite n'est pas un texte UTF-8 (`evidence_query` vaut alors `null`).
+pub(crate) const CAUSE_REQUETE_DE_PREUVES_ILLISIBLE: &str = "REQUÊTE DE PREUVES ILLISIBLE : la valeur écrite pour cette \
+     règle n'est pas un texte UTF-8, elle n'est pas servie ; ce n'est pas une absence de requête de preuves.";
+
 pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extension<AuthUser>) -> Json<Value> {
     crate::req_conn!(st, au, conn);
     // `P10.7-f` (rang 2) — LE CATALOGUE DES RÈGLES EST ENTIER OU AVOUÉ. Avant : `Err(_) => Json({"rules": []})`
@@ -596,11 +601,11 @@ pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extens
     // — le même geste que le rang un a posé sur `tokens_list` et `roles_list`. `avertissement_overlay` reste
     // servi à côté : il est DÉRIVÉ du code, pas de la lecture, et le taire n'apprendrait rien de plus.
     let lues: rusqlite::Result<Vec<Value>> = conn
-        .prepare("SELECT id,name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,last_run,last_value,last_fired,COALESCE(mitre,''),managed,COALESCE(compliance,''),COALESCE(suppress_window_s,0),COALESCE(throttle_field,''),COALESCE(per_result,0),COALESCE(population,''),COALESCE(population_vue,'') FROM rule ORDER BY id")
+        .prepare("SELECT id,name,enabled,query,is_soql,op,threshold,severity,interval_s,window_s,last_run,last_value,last_fired,COALESCE(mitre,''),managed,COALESCE(compliance,''),COALESCE(suppress_window_s,0),COALESCE(throttle_field,''),COALESCE(per_result,0),COALESCE(population,''),COALESCE(population_vue,''),evidence_query FROM rule ORDER BY id")
         .and_then(|mut stmt| {
         stmt
         .query_map([], |r| {
-            Ok(json!({
+            let mut regle = json!({
                 "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "enabled": r.get::<_, i64>(2)? != 0,
                 "query": r.get::<_, String>(3)?, "is_soql": r.get::<_, i64>(4)? != 0, "op": r.get::<_, String>(5)?,
                 "threshold": r.get::<_, f64>(6)?, "severity": r.get::<_, i64>(7)?, "interval_s": r.get::<_, i64>(8)?,
@@ -616,7 +621,28 @@ pub(crate) async fn rules_list(State(st): State<AppState>, Extension(au): Extens
                 // retiré en GXQL, brut intact avec ses marqueurs de fenêtre). Dérivée par le démon pour
                 // que la console n'ait rien à réécrire — et rendue à côté de `query`, jamais à sa place.
                 "query_reutilisable": requete_reutilisable_de_regle(&r.get::<_, String>(3)?, r.get::<_, i64>(4)? != 0)
-            }))
+            });
+            // `P11.25-g` — LA REQUÊTE DE PREUVES de la règle (`rule.evidence_query`), servie à côté de `query` et aux mêmes
+            // lecteurs, sous le nom de sa colonne. La clé n'est posée QUE pour une règle qui en déclare une (NULL et '' =
+            // aucune, comme à la levée) : la ligne d'une règle sans requête de preuves reste celle d'avant, à l'octet.
+            // Une cellule qui n'est pas un texte UTF-8 (BLOB, texte mal encodé) est lue comme à l'envoi
+            // (`preuves_d_alerte::lire_les_preuves_a_l_envoi`, `Some(None)`) : la règle reste servie, `evidence_query` vaut
+            // `null` et `evidence_query_non_lu` nomme la cause ; ni son contenu, ni une absence. La liste entière n'échoue
+            // plus sur cette seule colonne.
+            let requete_de_preuves: Option<Option<&str>> = match r.get_ref(21)? {
+                rusqlite::types::ValueRef::Null => None,
+                rusqlite::types::ValueRef::Text(t) => Some(std::str::from_utf8(t).ok()),
+                _ => Some(None),
+            };
+            match requete_de_preuves {
+                None | Some(Some("")) => {}
+                Some(Some(q)) => regle["evidence_query"] = json!(q),
+                Some(None) => {
+                    regle["evidence_query"] = Value::Null;
+                    regle["evidence_query_non_lu"] = json!(CAUSE_REQUETE_DE_PREUVES_ILLISIBLE);
+                }
+            }
+            Ok(regle)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
         });

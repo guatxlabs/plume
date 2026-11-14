@@ -69,11 +69,45 @@ pub(crate) fn sev_name(sev: i64) -> &'static str {
 /// `{{severity}} {{sev_name}} {{title}} {{detail}} {{host}} {{ts}}`. Aucune évaluation, aucune commande,
 /// aucun accès hors de ces champs. Un placeholder inconnu est laissé tel quel (pas d'erreur silencieuse).
 pub(crate) fn render_template(tmpl: &str, sev: i64, title: &str, detail: &str, host: &str, ts: i64) -> String {
+    rendre_le_gabarit(tmpl, sev, title, detail, host, ts, false)
+}
+
+/// `P11.25-g` — VRAI pour un type de contenu JSON : `application/json` ou un sous-type `…+json`, casse et paramètres
+/// (`; charset=…`) ignorés. `application/jsonl` (une valeur par ligne) n'en est pas un.
+pub(crate) fn type_de_contenu_json(content_type: &str) -> bool {
+    let media = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    media == "application/json" || media.ends_with("+json")
+}
+
+/// `P11.25-g` — LE GABARIT RENDU POUR LE TYPE DE CONTENU QUI PART AVEC LUI. Pour un type JSON, chaque valeur texte
+/// substituée (`title`, `detail`, `host`) est échappée comme le CONTENU d'une chaîne JSON (guillemets, barres obliques
+/// inverses, caractères de contrôle) : un gabarit `{"text":"{{detail}}"}` reste du JSON valide quel que soit le détail.
+/// Les preuves figées jointes au détail sont un objet JSON, donc pleines de guillemets ; une requête de règle peut en
+/// porter aussi. Une valeur sans aucun de ces caractères est rendue à l'identique. Tout autre type de contenu : rendu
+/// littéral (`render_template`).
+pub(crate) fn render_template_pour_le_type(tmpl: &str, content_type: &str, sev: i64, title: &str, detail: &str, host: &str, ts: i64) -> String {
+    if type_de_contenu_json(content_type) {
+        rendre_le_gabarit(tmpl, sev, title, detail, host, ts, true)
+    } else {
+        render_template(tmpl, sev, title, detail, host, ts)
+    }
+}
+
+fn rendre_le_gabarit(tmpl: &str, sev: i64, title: &str, detail: &str, host: &str, ts: i64, json: bool) -> String {
+    let valeur = |s: &str| {
+        let ligne = oneline(s);
+        if json {
+            let chaine = Value::String(ligne).to_string();
+            chaine[1..chaine.len() - 1].to_string()
+        } else {
+            ligne
+        }
+    };
     tmpl.replace("{{severity}}", &sev.to_string())
         .replace("{{sev_name}}", sev_name(sev))
-        .replace("{{title}}", &oneline(title))
-        .replace("{{detail}}", &oneline(detail))
-        .replace("{{host}}", &oneline(host))
+        .replace("{{title}}", &valeur(title))
+        .replace("{{detail}}", &valeur(detail))
+        .replace("{{host}}", &valeur(host))
         .replace("{{ts}}", &ts.to_string())
 }
 

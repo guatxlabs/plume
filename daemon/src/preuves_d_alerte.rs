@@ -171,3 +171,177 @@ pub(crate) fn preuves_servies(ecrites: &str) -> Value {
 pub(crate) fn preuves_retenues() -> Value {
     json!({ "state": ETAT_PREUVES_RETENUES, "phrase": PHRASE_PREUVES_RETENUES })
 }
+
+// =====================================================================================================================
+// LES PREUVES DANS UNE NOTIFICATION SORTANTE (`dispatch_notifications`, handlers/notifiers.rs).
+//
+// Une alerte levée emporte ses preuves FIGÉES (l'objet écrit à la levée, jamais une lecture rejouée), ajoutées APRÈS le
+// détail de la notification : le texte d'avant n'est pas touché, et une alerte dont la règle ne déclare pas de requête
+// de preuves et qui n'en porte pas part à l'identique (seule une ligne d'alerte qui ne se relit pas à l'envoi le dit,
+// quelle que soit sa règle). Une notification n'a pas de destinataire authentifié : elle n'emporte JAMAIS plus que
+// ce que `/api/alerts` sert au rôle le plus faible admis à voir l'alerte (le lecteur). Un lecteur est masqué par TOUTE
+// règle de filtre de champs active qui le vise (`field_filter::role_threshold` : le seuil le plus bas est celui du
+// lecteur) et `/api/alerts` lui sert alors les preuves RETENUES ; l'envoi les retient donc dès qu'une règle active
+// existe dans la base, quels que soient son tenant et son environnement (au plus large), et quand ce registre ne se
+// relit pas. L'objet joint est celui que la route sert, champ pour champ ; il est BORNÉ par la borne de lignes de la
+// route (`BORNE_DES_PREUVES_D_ALERTE`) et, en octets, par `BORNE_D_OCTETS_DES_PREUVES_NOTIFIEES` : la coupe retire des
+// lignes par la fin, et elle est dite (`served`, `truncated`, la phrase de la coupe et la mention).
+// =====================================================================================================================
+
+/// Taille maximale, en octets, de l'objet de preuves (JSON compact) joint à une notification sortante.
+pub(crate) const BORNE_D_OCTETS_DES_PREUVES_NOTIFIEES: usize = 2048;
+
+pub(crate) const MENTION_PREUVES_JOINTES: &str = "Preuves figées à la levée de l'alerte, telles que /api/alerts les sert :";
+pub(crate) const MENTION_PREUVES_COUPEES_A_L_ENVOI: &str = "Preuves figées à la levée de l'alerte, COUPÉES pour tenir dans \
+la notification (served lignes jointes) ; /api/alerts sert toutes les lignes écrites :";
+pub(crate) const MENTION_PREUVES_TROP_GRANDES: &str = "Preuves figées à la levée de l'alerte : trop grandes pour la \
+notification même sans aucune ligne, rien n'en est joint ; /api/alerts les sert.";
+pub(crate) const MENTION_PREUVES_SANS_LIGNE: &str = "Preuves : aucune ligne à la levée de l'alerte (la lecture a réussi et \
+n'a rien rendu).";
+pub(crate) const MENTION_PREUVES_NON_ETABLIES: &str = "Preuves : non établies, leur lecture a échoué à la levée de l'alerte, \
+cause :";
+pub(crate) const CAUSE_DES_PREUVES_HORS_ENSEMBLE: &str = "inconnue";
+pub(crate) const MENTION_PREUVES_NON_FIGEES: &str = "Preuves : non figées pour cette alerte, aucune lecture n'a été faite à \
+sa levée.";
+pub(crate) const MENTION_PREUVES_RETENUES_A_L_ENVOI: &str = "Preuves : retenues, un filtre de champs est actif ; elles ne \
+sortent par aucune notification.";
+pub(crate) const MENTION_PREUVES_MASQUAGE_NON_LU: &str = "Preuves : retenues, le registre des filtres de champs n'a pas pu \
+être lu.";
+pub(crate) const MENTION_PREUVES_ILLISIBLES_A_L_ENVOI: &str = "Preuves : écrites sur l'alerte mais illisibles en base, rien \
+n'en est joint.";
+pub(crate) const MENTION_PREUVES_NON_RELUES: &str = "Preuves : non relues, la ligne de l'alerte n'a pas pu être lue à \
+l'envoi.";
+pub(crate) const MENTION_PREUVES_FORME_INCONNUE: &str = "Preuves : forme inconnue, rien n'en est joint.";
+
+/// Ce que l'envoi sait des filtres de champs de la base qui émet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MasquageALEnvoi {
+    /// Aucune règle active : `/api/alerts` sert les preuves au lecteur telles qu'écrites.
+    Aucun,
+    /// Au moins une règle active (en base, ou armée dans le registre en mémoire) : retenues.
+    Actif,
+    /// La table des règles ne se relit pas : retenues.
+    NonLu,
+}
+
+/// LE MASQUAGE VU PAR L'ENVOI. La table est lue avec la règle d'activité du registre (`read_field_filter_table` : seul
+/// l'entier 0 éteint une règle, toute autre valeur la laisse active ; la colonne est d'affinité entière, un texte ou un
+/// réel qui vaut 0 y est rangé en entier 0, et `enabled<>0` est vrai pour tout le reste) ; le registre en mémoire de cette base est aussi
+/// consulté, pour une règle encore armée après un rechargement raté : au plus large comme la table, toute règle du
+/// registre de cette base compte, quels que soient son tenant et son environnement, et la base est reconnue par son
+/// chemin canonique (`field_filter::registre_porte_une_regle`).
+pub(crate) fn masquage_a_l_envoi(conn: &rusqlite::Connection) -> MasquageALEnvoi {
+    let registre_arme = conn.path().is_some_and(crate::field_filter::registre_porte_une_regle);
+    match conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM field_filter WHERE enabled<>0)",
+        [],
+        |r| r.get::<_, i64>(0),
+    ) {
+        Err(_) => MasquageALEnvoi::NonLu,
+        Ok(n) if n != 0 || registre_arme => MasquageALEnvoi::Actif,
+        Ok(_) => MasquageALEnvoi::Aucun,
+    }
+}
+
+/// La ligne d'une alerte relue à l'envoi.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PreuvesLuesALEnvoi {
+    /// `ecrites` : la colonne `alert.evidence` (`None` = NULL, `Some(None)` = cellule qui n'est pas un texte UTF-8) ;
+    /// `declarees` : la règle qui a levé l'alerte déclare une requête de preuves non vide.
+    Lues { ecrites: Option<Option<String>>, declarees: bool },
+    /// La ligne n'a pas été lue (lecture refusée, ou ligne absente).
+    NonLues,
+}
+
+/// RELIT, pour l'envoi, les preuves écrites sur l'alerte `alerte` et la déclaration de sa règle.
+pub(crate) fn lire_les_preuves_a_l_envoi(conn: &rusqlite::Connection, alerte: i64) -> PreuvesLuesALEnvoi {
+    let lue = conn.query_row(
+        "SELECT alert.evidence, EXISTS(SELECT 1 FROM rule r WHERE ('rule.'||r.id)=alert.rule AND COALESCE(r.evidence_query,'')<>'') \
+         FROM alert WHERE alert.id=?1",
+        [alerte],
+        |r| {
+            let ecrites = match r.get_ref(0)? {
+                rusqlite::types::ValueRef::Null => None,
+                rusqlite::types::ValueRef::Text(t) => Some(std::str::from_utf8(t).ok().map(str::to_string)),
+                _ => Some(None),
+            };
+            Ok(PreuvesLuesALEnvoi::Lues { ecrites, declarees: r.get::<_, i64>(1)? != 0 })
+        },
+    );
+    match lue {
+        Ok(l) => l,
+        Err(_) => PreuvesLuesALEnvoi::NonLues,
+    }
+}
+
+/// LE TEXTE AJOUTÉ AU DÉTAIL D'UNE NOTIFICATION : vide pour une alerte dont la règle ne déclare pas de preuves et qui
+/// n'en porte pas ; sinon deux sauts de ligne, puis la mention, puis (preuves établies et servies) l'objet borné.
+pub(crate) fn texte_des_preuves_a_l_envoi(lues: &PreuvesLuesALEnvoi, masquage: MasquageALEnvoi) -> String {
+    let texte: Option<String> = match lues {
+        PreuvesLuesALEnvoi::NonLues => Some(MENTION_PREUVES_NON_RELUES.to_string()),
+        PreuvesLuesALEnvoi::Lues { ecrites: None, declarees: false } => None,
+        PreuvesLuesALEnvoi::Lues { ecrites: None, declarees: true } => Some(MENTION_PREUVES_NON_FIGEES.to_string()),
+        PreuvesLuesALEnvoi::Lues { ecrites: Some(ecrites), .. } => Some(match (masquage, ecrites) {
+            (MasquageALEnvoi::Actif, _) => MENTION_PREUVES_RETENUES_A_L_ENVOI.to_string(),
+            (MasquageALEnvoi::NonLu, _) => MENTION_PREUVES_MASQUAGE_NON_LU.to_string(),
+            (MasquageALEnvoi::Aucun, None) => MENTION_PREUVES_ILLISIBLES_A_L_ENVOI.to_string(),
+            (MasquageALEnvoi::Aucun, Some(texte)) => preuves_servies_a_l_envoi(&preuves_servies(texte)),
+        }),
+    };
+    texte.map(|t| format!("\n\n{t}")).unwrap_or_default()
+}
+
+/// L'objet que `/api/alerts` sert sans masque, mis en texte de notification selon son état.
+fn preuves_servies_a_l_envoi(servies: &Value) -> String {
+    match servies.get("state").and_then(Value::as_str) {
+        Some(ETAT_PREUVES_ETABLIES) => preuves_etablies_bornees(servies),
+        Some(ETAT_PREUVES_SANS_LIGNE) => MENTION_PREUVES_SANS_LIGNE.to_string(),
+        Some(ETAT_PREUVES_NON_ETABLIES) => {
+            let cause = servies
+                .get("cause")
+                .and_then(Value::as_str)
+                .filter(|c| crate::detection_aveugle::CAUSES_D_ABANDON.contains(c))
+                .unwrap_or(CAUSE_DES_PREUVES_HORS_ENSEMBLE);
+            format!("{MENTION_PREUVES_NON_ETABLIES} {cause}.")
+        }
+        Some(ETAT_PREUVES_ILLISIBLES) => MENTION_PREUVES_ILLISIBLES_A_L_ENVOI.to_string(),
+        _ => MENTION_PREUVES_FORME_INCONNUE.to_string(),
+    }
+}
+
+/// Des preuves établies, bornées : au plus `BORNE_DES_PREUVES_D_ALERTE` lignes et `BORNE_D_OCTETS_DES_PREUVES_NOTIFIEES`
+/// octets d'objet. Les lignes sont retirées par la fin ; une coupe pose `served`, `truncated` et la phrase de la coupe
+/// sur l'objet, et prend la mention de la coupe. Sans coupe, l'objet est celui que la route sert, à l'identique.
+fn preuves_etablies_bornees(servies: &Value) -> String {
+    let lignes: Vec<Value> = servies.get("rows").and_then(Value::as_array).cloned().unwrap_or_default();
+    // Première estimation, par la taille des lignes seules ; la taille réelle de l'objet est jugée ensuite.
+    let mut cumul = 0usize;
+    let mut n = 0usize;
+    for ligne in lignes.iter().take(BORNE_DES_PREUVES_D_ALERTE) {
+        let taille = ligne.to_string().len() + 1;
+        if cumul + taille > BORNE_D_OCTETS_DES_PREUVES_NOTIFIEES {
+            break;
+        }
+        cumul += taille;
+        n += 1;
+    }
+    loop {
+        let mut objet = servies.clone();
+        let coupe = n < lignes.len();
+        if coupe {
+            objet["rows"] = Value::Array(lignes[..n].to_vec());
+            objet["served"] = json!(n);
+            objet["truncated"] = json!(true);
+            objet["phrase"] = json!(PHRASE_PREUVES_COUPEES);
+        }
+        let texte = objet.to_string();
+        if texte.len() <= BORNE_D_OCTETS_DES_PREUVES_NOTIFIEES {
+            let mention = if coupe { MENTION_PREUVES_COUPEES_A_L_ENVOI } else { MENTION_PREUVES_JOINTES };
+            return format!("{mention}\n{texte}");
+        }
+        if n == 0 {
+            return MENTION_PREUVES_TROP_GRANDES.to_string();
+        }
+        n -= 1;
+    }
+}

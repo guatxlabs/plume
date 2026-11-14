@@ -7,7 +7,7 @@
 //   POST /api/index-policies         -> create ; POST /api/index-policies/{id} -> update ; DELETE …/{id}
 // SÉCU UI : rendu textContent (anti-XSS) ; la VRAIE garde reste serveur (403 hors admin). Défense en
 // profondeur : on court-circuite le fetch hors admin.
-import { $, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, faceDansLaLangue } from './core.js';
+import { $, api, apiSend, confirmWithConsequence, effacerLeRefusDUnGeste, fetchInto, muted, pagedList, peindreLeRefusDUnGeste, puitsDuRefusDUnGeste, toast, faceDansLaLangue, citationDUneCauseDuDemon } from './core.js';
 import { enabledSwitch } from './producer_ui.js';
 import { uiIsAdmin } from './multitenant.js';
 
@@ -80,7 +80,9 @@ export async function loadIndexPolicies() {
     head.className = 'bad';
     head.setAttribute('data-retention-globale-non-etablie', '1');
     const cause = typeof data.global_retention_non_lue === 'string' && data.global_retention_non_lue.trim() ? data.global_retention_non_lue.trim() : '';
-    head.append(' ' + faceDansLaLangue(MOTS_DE_LA_RETENTION_GLOBALE.non_etablie) + (cause ? ' « ' + cause + ' »' : ' — ' + faceDansLaLangue(MOTS_DE_LA_RETENTION_GLOBALE.sans_cause)));
+    // Sous `LANG='en'`, la cause reconnue par son ouverture (`citationDUneCauseDuDemon`, core.js) est peinte par sa face
+    // anglaise ; une cause inconnue reste citée entière.
+    head.append(' ' + faceDansLaLangue(MOTS_DE_LA_RETENTION_GLOBALE.non_etablie) + (cause ? citationDUneCauseDuDemon(cause) : ' — ' + faceDansLaLangue(MOTS_DE_LA_RETENTION_GLOBALE.sans_cause)));
   }
   frag.appendChild(head);
 
@@ -109,6 +111,22 @@ const MOTS_DE_LA_RETENTION_GLOBALE = {
 };
 const retentionGlobaleServie = (v) => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null);
 const joursHerites = (globalDays) => (globalDays === null ? faceDansLaLangue(MOTS_DE_LA_RETENTION_GLOBALE.non_etablie_courte) : globalDays + ' j');
+
+// `P10.20-b` — LA CONSÉQUENCE DE LA BASCULE D'UNE POLITIQUE, DANS LA LANGUE DE L'ÉCRAN, valeurs comprises : la rétention
+// propre, l'héritée en jours, ou l'héritée NON ÉTABLIE (`joursHerites`). Sous le français, la phrase d'avant à l'octet.
+const MOTS_DE_LA_CONSEQUENCE_DE_LA_BASCULE = {
+  phrase: { fr: "la purge applique à cet index sa rétention propre ({retention}) et ses plafonds ; OFF, l'index retombe sur la rétention globale",
+    en: 'the purge applies to this index its own retention ({retention}) and its caps; OFF, the index falls back to the global retention' },
+  propre: { fr: '{j} j', en: '{j} d' },
+  heritee: { fr: 'héritée : {j} j', en: 'inherited: {j} d' },
+  heritee_non_etablie: { fr: 'héritée : {etat}', en: 'inherited: {etat}' },
+};
+function consequenceDeLaBascule(r, globalDays) {
+  const retention = num(r.retention_days) > 0 ? faceDansLaLangue(MOTS_DE_LA_CONSEQUENCE_DE_LA_BASCULE.propre, { j: num(r.retention_days) })
+    : globalDays === null ? faceDansLaLangue(MOTS_DE_LA_CONSEQUENCE_DE_LA_BASCULE.heritee_non_etablie, { etat: joursHerites(globalDays) })
+      : faceDansLaLangue(MOTS_DE_LA_CONSEQUENCE_DE_LA_BASCULE.heritee, { j: globalDays });
+  return faceDansLaLangue(MOTS_DE_LA_CONSEQUENCE_DE_LA_BASCULE.phrase, { retention });
+}
 
 function indexRow(r, globalDays) {
   const row = document.createElement('div'); row.className = 'rulerow';
@@ -140,7 +158,7 @@ function indexRow(r, globalDays) {
     // case nue ne le disait pas. La conséquence est écrite à côté de l'interrupteur dans les deux états.
     const en = enabledSwitch({
       enabled: r.enabled !== false, name: r.name, allowed: true, confirmOnEnable: false,
-      consequence: 'la purge applique à cet index sa rétention propre (' + (num(r.retention_days) > 0 ? num(r.retention_days) + ' j' : 'héritée : ' + joursHerites(globalDays)) + ') et ses plafonds ; OFF, l\'index retombe sur la rétention globale',
+      consequence: consequenceDeLaBascule(r, globalDays),
       onToggle: (next) => (effacerLeRefusDUnGeste(puitsDesPolitiquesDIndex()), apiSend('/index-policies/' + r.id, 'POST', { enabled: next })),
       onRefus: (e) => peindreLeRefusDUnGeste(puitsDesPolitiquesDIndex(), e),
     });

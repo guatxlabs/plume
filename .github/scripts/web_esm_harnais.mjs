@@ -23792,7 +23792,10 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       "coupe_de_liste.js › MOTS_DE_LA_LISTE_DE_MACHINES_COUPEE", "index_policies.js › MOTS_DE_LA_RETENTION_GLOBALE",
       // `P10.32-o` (console) — les tables que les témoins 159 et 160 posent : le rafraîchissement en échec d'une charge
       // valide, et le corps sans ligne d'une ligne de cache non lue ou illisible.
-      "dashboards.js › MOTS_DU_RAFRAICHISSEMENT_EN_ECHEC", "dashboards.js › MOTS_DU_CORPS_SANS_LIGNE_NON_ETABLI"];
+      "dashboards.js › MOTS_DU_RAFRAICHISSEMENT_EN_ECHEC", "dashboards.js › MOTS_DU_CORPS_SANS_LIGNE_NON_ETABLI",
+      // `P10.20-b` (console) — les tables que le témoin 183 pose : trois causes du démon reconnues par leur ouverture et
+      // peintes en anglais, et la conséquence de la bascule d'une politique d'index.
+      "core.js › MOTS_DES_CAUSES_DU_DEMON_RECONNUES", "index_policies.js › MOTS_DE_LA_CONSEQUENCE_DE_LA_BASCULE"];
     const tablesLues119 = [], pairesFautives119 = [];
     const placeholders119 = (t) => [...String(t).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
     const jugerLesPaires119 = (ou, texte) => {
@@ -29712,7 +29715,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 // pas sa peinture d'avant, il dit le refus et sa cause, et l'erreur est relancée ; (d) section pare-feu : complet, interrompu
 // avec et sans machine, non commencé (aveu à deux nœuds), démon ancien avec et sans instantané ; (faces) fr ≠ en.
 // CE QUE CE TÉMOIN NE TIENT PAS : le transport est un simulacre ; la lecture juste du démon est tenue par ses témoins Rust ;
-// la cause du cinq cent trois reste française sous LANG='en' (le démon ne la sert que dans cette langue) ; la mise en page.
+// la mise en page. La cause du cinq cent trois est citée sous le français et peinte par sa face anglaise sous LANG='en'
+// (le démon ne la sert qu'en français ; `citationDUneCauseDuDemon`, core.js) : jugée ici par son ouverture, à l'octet par 183.
 // ---------------------------------------------------------------------------------------------
 {
   const echecsAvant152 = echecs.length;
@@ -29829,7 +29833,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
         const refus = parAttribut152(c.hote, "data-refus-d-une-lecture");
         const refusDit = refus.length === 1 && refus[0].children && refus[0].children[0] ? nu152(refus[0].children[0]) : "";
         if (!c.jete || c.jete.statutDuRefus !== 503 || c.jete.causeDuDemon !== CAUSE152 || !refusDit.startsWith(L.OBJET[cible] + " — ") || cueillir152(c.hote, (e) => e.classList && e.classList.contains("peinture-d-avant-152")).length || c.texte.includes("PEINTURE-D-AVANT-152")
-          || refus.length !== 1 || refus[0].getAttribute("data-refus-d-une-lecture") !== "lecture_refusee" || !c.texte.includes("INSTANTANÉS DU PARC NON LUS"))
+          || refus.length !== 1 || refus[0].getAttribute("data-refus-d-une-lecture") !== "lecture_refusee" || !c.texte.includes(L === EN152 ? "FLEET SNAPSHOTS NOT READ:" : "« INSTANTANÉS DU PARC NON LUS"))
           ecarts152.push(`${L.nom}/${cible} en 503 : jeté=${!!c.jete} (statut ${c.jete && c.jete.statutDuRefus}, cause « ${c.jete && c.jete.causeDuDemon} »), dit « ${refusDit} », refus=${refus.map((r) => r.getAttribute("data-refus-d-une-lecture"))} — « ${c.texte.slice(0, 260)} »`);
       }
       // (d) section pare-feu de `loadSuppressions`.
@@ -29881,7 +29885,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   exiger(ecarts152.length === 0, `(152) \`P10.20-b\` (console) — UN PARC LU EN PARTIE OU NON LU SE PEINT COMME UN PARC ENTIER, OU UN PANNEAU EN 503 GARDE SA PEINTURE D'AVANT : ${JSON.stringify(ecarts152)}`);
   if (echecs.length !== echecsAvant152) console.log(`(152) EN ÉCHEC — ${echecs.length - echecsAvant152} écart(s), dits ci-dessus`);
-  else console.log("(152) OK — `P10.20-b` (console) : dans les deux langues, les panneaux pare-feu et contrôles disent « parc non lu entièrement » sur `hosts_etat` ou `n_hosts` nul (machines lues comptées, on ignore combien il en manque), le total des contrôles dit les machines LUES et non le parc, une lecture interrompue sans machine n'est pas « aucune donnée » ; un cinq cent trois nommé remplace la peinture d'avant par le refus et sa cause, et l'erreur est relancée ; la section pare-feu des suppressions suit `firewall_etat` (interrompu avec et sans machine, non commencé en aveu à deux nœuds) ; complet et démon ancien gardent la face d'avant ; les champs sont relus dans overview.rs, admin_ui.rs et query_exec.rs. Ce qu'il NE tient PAS : la route (témoins Rust), la cause du cinq cent trois reste française sous LANG='en', la mise en page.");
+  else console.log("(152) OK — `P10.20-b` (console) : dans les deux langues, les panneaux pare-feu et contrôles disent « parc non lu entièrement » sur `hosts_etat` ou `n_hosts` nul (machines lues comptées, on ignore combien il en manque), le total des contrôles dit les machines LUES et non le parc, une lecture interrompue sans machine n'est pas « aucune donnée » ; un cinq cent trois nommé remplace la peinture d'avant par le refus et sa cause, et l'erreur est relancée ; la section pare-feu des suppressions suit `firewall_etat` (interrompu avec et sans machine, non commencé en aveu à deux nœuds) ; complet et démon ancien gardent la face d'avant ; les champs sont relus dans overview.rs, admin_ui.rs et query_exec.rs. Ce qu'il NE tient PAS : la route (témoins Rust), la mise en page ; la cause du cinq cent trois dans chaque langue est jugée à l'octet par 183.");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -31458,7 +31462,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 // LA CONSÉQUENCE DE LA BASCULE EST JUGÉE RENDUE : `enabledSwitch` (web/producer_ui.js) l'écrit en texte VISIBLE dans
 // `.producer-consequence` ; une politique qui HÉRITE (`has_policy`, `retention_days` 0) y dit « héritée : NON ÉTABLIE »
 // sous une rétention globale nulle (jamais « (0 j) »), « héritée : 90 j » sous 90 ; une politique propre y dit « (30 j) ».
-// CE QU'IL NE TIENT PAS : la route (témoins Rust) ; la cause et la conséquence restent françaises sous LANG='en'.
+// CE QU'IL NE TIENT PAS : la route (témoins Rust) ; la cause et la conséquence sous LANG='en' sont jugées à l'octet par 183.
 // ---------------------------------------------------------------------------------------------
 {
   const echecsAvant161 = echecs.length;
@@ -31485,7 +31489,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const CAUSE161 = mCause161 ? mCause161[1].replace(/\\\n\s*/g, "") : "";
   instrument161(CAUSE161.startsWith("valeur en vigueur NON LUE"), "la cause `CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE` ne se relit plus dans admin_ui.rs");
   const src161 = readFileSync(path.join(WEB, "index_policies.js"), "utf8");
-  exiger(/'héritée : ' \+ joursHerites\(globalDays\)/.test(src161) && !/'héritée : ' \+ globalDays \+ ' j'/.test(src161),
+  exiger(/heritee_non_etablie, \{ etat: joursHerites\(globalDays\) \}/.test(src161) && !/'héritée : ' \+ globalDays \+ ' j'/.test(src161),
     "(161-source) la conséquence de la bascule écrit encore la rétention héritée par concaténation nue (« héritée : null j » / « 0 j »)");
   const qsOrigine161 = document.querySelector, fetchOrigine161 = globalThis.fetch;
   const etatOrigine161 = [S161, SEn161].map((S) => ({ S, admin: S.isAdmin, auth: S.AUTH }));
@@ -31494,8 +31498,12 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   document.querySelector = (s) => (Object.prototype.hasOwnProperty.call(hotes161, s) ? hotes161[s] : new Element("div"));
   let corps161 = {};
   globalThis.fetch = async (u) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, text: async () => JSON.stringify(corps161), json: async () => corps161 });
-  const FACES161 = { fr: { non_etablie: "NON ÉTABLIE", herite: "hérite (rétention globale NON ÉTABLIE)", sans_cause: "cause non servie par le démon", herite90: "hérite (90 j)" },
-    en: { non_etablie: "NOT ESTABLISHED", herite: "inherits (global retention NOT ESTABLISHED)", sans_cause: "cause not served by the daemon", herite90: "inherits (90 d)" } };
+  // `P10.20-b` — sous LANG='en', la cause reconnue est peinte par sa face anglaise (jugée à l'octet par 183), et la conséquence
+  // de la bascule est anglaise : `cite` dit ce que chaque langue écrit d'une cause servie.
+  const FACES161 = { fr: { non_etablie: "NON ÉTABLIE", herite: "hérite (rétention globale NON ÉTABLIE)", sans_cause: "cause non servie par le démon", herite90: "hérite (90 j)",
+      propre30: "rétention propre (30 j)", herite_entre: (h) => "(héritée : " + h + ")", jours90: "90 j", cite: (c) => "« " + c + " »" },
+    en: { non_etablie: "NOT ESTABLISHED", herite: "inherits (global retention NOT ESTABLISHED)", sans_cause: "cause not served by the daemon", herite90: "inherits (90 d)",
+      propre30: "own retention (30 d)", herite_entre: (h) => "(inherited: " + h + ")", jours90: "90 d", cite: (c) => (c === CAUSE161 ? "value in force NOT READ:" : "« " + c + " »") } };
   const ecarts161 = [];
   try {
     for (const S of [S161, SEn161]) { S.isAdmin = true; S.AUTH = { user: "analyste1", role: "admin" }; }
@@ -31505,8 +31513,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       const F = FACES161[l];
       const rendre = async (extra) => { corps161 = { ok: true, bounds: BORNES, indexes: [index161("auth", true), index161("web", false), index161("dns", true, 0)], ...extra }; liste161.replaceChildren(); await mod.loadIndexPolicies(); await laisser161(); return { texte: nu161(liste161), hote: liste161, consequences: cueillir161(liste161, (e) => String((e && e.className) || "").split(/\s+/).includes("producer-consequence")).map(nu161) }; };
       // La conséquence RENDUE à côté de la bascule : [auth (propre, 30 j), dns (hérite)] — dans l'ordre servi.
-      const consequenceJugee = (r, herite) => r.consequences.length === 2 && r.consequences[0].includes("rétention propre (30 j)")
-        && r.consequences[1].includes("(héritée : " + herite + ")") && !/\(0 j\)|\(0 d\)|null|NaN|undefined/.test(r.consequences.join(" | "));
+      const consequenceJugee = (r, herite) => r.consequences.length === 2 && r.consequences[0].includes(F.propre30)
+        && r.consequences[1].includes(F.herite_entre(herite)) && !/\(0 j\)|\(0 d\)|null|NaN|undefined/.test(r.consequences.join(" | "));
       const XSS = "<img src=x onerror=alert(161)>";
       for (const [nom, extra, cause] of [
         ["nul avec cause", { global_retention_days: null, global_retention_non_lue: CAUSE161 }, CAUSE161],
@@ -31522,13 +31530,13 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
         const r = await rendre(extra);
         const marque = cueillir161(r.hote, (e) => e.getAttribute && e.getAttribute("data-retention-globale-non-etablie") === "1");
         if (marque.length !== 1 || !r.texte.includes(F.non_etablie) || !r.texte.includes(F.herite) || /\b0 j\b|\(0 j\)|\(0 d\)|null|NaN|undefined|\b90 j\b|-4 j|2\.5 j/.test(r.texte)
-          || (cause ? !r.texte.includes("« " + cause + " »") : !r.texte.includes(F.sans_cause)) || cueillir161(r.hote, (e) => e.tagName === "IMG").length || !r.texte.includes("30 j")
+          || (cause ? !r.texte.includes(F.cite(cause)) : !r.texte.includes(F.sans_cause)) || cueillir161(r.hote, (e) => e.tagName === "IMG").length || !r.texte.includes("30 j")
           || !consequenceJugee(r, F.non_etablie))
           ecarts161.push(`${l}/${nom} : ${marque.length} marque(s) — « ${r.texte.slice(0, 420)} » — conséquences ${JSON.stringify(r.consequences)}`);
       }
       const ok = await rendre({ global_retention_days: 90 });
       if (!ok.texte.includes("90 j") || !ok.texte.includes(F.herite90) || ok.texte.includes(F.non_etablie) || cueillir161(ok.hote, (e) => e.getAttribute && e.getAttribute("data-retention-globale-non-etablie") === "1").length
-        || !consequenceJugee(ok, "90 j"))
+        || !consequenceJugee(ok, F.jours90))
         ecarts161.push(`${l}/lue (90) : « ${ok.texte.slice(0, 300)} » — conséquences ${JSON.stringify(ok.consequences)}`);
       const zero = await rendre({ global_retention_days: 0 });
       if (zero.texte.includes(F.non_etablie)) ecarts161.push(`${l}/lue (0, entier servi) : peinte non établie — « ${zero.texte.slice(0, 200)} »`);
@@ -31539,7 +31547,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   }
   exiger(ecarts161.length === 0, `(161) \`P10.20-b\` (console) — LA RÉTENTION GLOBALE NON LUE DES POLITIQUES D'INDEX SE PEINT COMME UN CHIFFRE : ${JSON.stringify(ecarts161)}`);
   if (echecs.length !== echecsAvant161) console.log(`(161) EN ÉCHEC — ${echecs.length - echecsAvant161} écart(s), dits ci-dessus`);
-  else console.log("(161) OK — `P10.20-b` (console) : dans les deux langues, une rétention globale servie nulle (relue dans index_policies.rs, avec ou sans `global_retention_non_lue`), absente, chaîne, négative ou fractionnaire se dit NON ÉTABLIE — en tête et sur chaque index qui en hérite —, la cause servie en texte (balisée, aucun IMG) ou « non servie », jamais « 0 j » ni un chiffre fabriqué ; la rétention propre d'une politique reste dite ; 90 → « 90 j » et « hérite (90 j) » ; la conséquence RENDUE à côté de la bascule d'une politique qui hérite dit « héritée : NON ÉTABLIE » (jamais « (0 j) ») puis « héritée : 90 j ». Ce qu'il NE tient PAS : la route (témoins Rust), la cause et la conséquence restent françaises sous LANG='en'.");
+  else console.log("(161) OK — `P10.20-b` (console) : dans les deux langues, une rétention globale servie nulle (relue dans index_policies.rs, avec ou sans `global_retention_non_lue`), absente, chaîne, négative ou fractionnaire se dit NON ÉTABLIE — en tête et sur chaque index qui en hérite —, la cause servie en texte (balisée, aucun IMG) ou « non servie », jamais « 0 j » ni un chiffre fabriqué ; la rétention propre d'une politique reste dite ; 90 → « 90 j » et « hérite (90 j) » ; la conséquence RENDUE à côté de la bascule d'une politique qui hérite dit « héritée : NON ÉTABLIE » (jamais « (0 j) ») puis « héritée : 90 j ». Ce qu'il NE tient PAS : la route (témoins Rust) ; la cause et la conséquence sous LANG='en' sont jugées à l'octet par 183.");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -33165,6 +33173,210 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   exiger(ecarts181g.length === 0, `(181g) \`P11.25-g\` (console) — UN BLOC DE PREUVES OUVERT NE SURVIT PAS DANS LA VUE GROUPÉE (page d'occurrences, reconstruction des groupes) : ${JSON.stringify(ecarts181g)}`);
   if (echecs.length !== echecsAvant181g) console.log(`(181g) EN ÉCHEC — ${echecs.length - echecsAvant181g} écart(s), dits ci-dessus`);
   else console.log("(181g) OK — `P11.25-g` (console) : dans la vue groupée, un bloc de preuves ouvert sur une occurrence reste ouvert au changement de page des occurrences et à la reconstruction des groupes, un bloc jamais ouvert ou refermé reste fermé. Ce qu'il NE tient PAS : la mise en page peinte, le dépli par un vrai clic.");
+}
+// ---------------------------------------------------------------------------------------------
+// (183) `P10.20-b` (console) — TROIS PHRASES RESTÉES EN FRANÇAIS SOUS LANG='en' SONT LUES EN ANGLAIS.
+//
+// LE DÉMON N'A PAS DE LANGUE : la langue est un réglage de la console (`soc_lang`), jamais envoyé. MESURÉ AVANT CE LOT
+// (e8395471), sous LANG='en' : (1) la conséquence écrite à côté de la bascule d'une politique d'index était un littéral
+// français de la console (web/index_policies.js, `enabledSwitch`) ; (2) la cause de la rétention globale non lue
+// (`global_retention_non_lue`, `CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE` de admin_ui.rs) était citée telle quelle ;
+// (3) la cause du cinq cent trois des instantanés (`CAUSE_INSTANTANES_DU_PARC_NON_LUS`, panneaux pare-feu et contrôles,
+// web/app.js, ET la ligne d'état des charges de la même vue, web/navigation.js ; `CAUSE_INSTANTANE_DE_LA_MACHINE_NON_LU`,
+// fenêtre d'un instantané, web/alerts.js), de même.
+// JUGÉ, À L'OCTET, DANS LES DEUX LANGUES, par les surfaces réelles : la conséquence (rétention propre, héritée en jours,
+// héritée NON ÉTABLIE) ; la tête des politiques sous la cause servie, une cause inconnue, une cause qui porte un détail ;
+// les deux panneaux, la ligne d'état des charges, la phrase d'un avis et la fenêtre d'un instantané en cinq cent trois
+// sous la cause servie et sous une cause inconnue ; la même ouverture servie sous un autre statut n'est pas reconnue ;
+// chacune des trois ouvertures coupée avant sa fin de mot n'est pas reconnue ; une cause balisée reste du texte. Les causes sont RELUES
+// dans l'arbre du démon (une face anglaise rendue SANS citation prouve que la console connaît le texte entier servi).
+// Sous le français, la phrase d'avant à l'octet ; une cause inconnue reste citée entière dans les deux langues.
+// MUTANTS (posés dans web/, vus rouges, remis) : la face anglaise retirée (`citationDUneCauseDuDemon` rend la citation
+// sous l'anglais) ; l'ouverture élargie à toute cause (`find` sans ouverture) ; la citation de la cause servie retirée
+// (`citee` vide) ; la citation d'un détail retirée ; le statut ignoré ; la conséquence anglaise retirée ; la garde de fin
+// de mot retirée de l'ouverture de la machine, puis de la rétention ; la ligne d'état revenue à la phrase servie ;
+// `phraseDuRefusDUneLecture` revenue à la citation brute.
+// CE QU'IL NE TIENT PAS : la route (témoins Rust) ; les phrases voisines du même panneau, encore françaises sous
+// LANG='en' (tête « Rétention globale (PLUME_RETENTION_DAYS) : … », « N j », « lignes », Éditer, Supprimer, « hôte X —
+// 1 machine sur N ») ; la mise en page.
+// ---------------------------------------------------------------------------------------------
+{
+  const echecsAvant183 = echecs.length;
+  const url183 = (f) => pathToFileURL(path.join(WEB, f)).href;
+  const FICHIERS183 = { noyau: "core.js", etat: "state.js", registres: "registres.js", alertes: "alerts.js", idx: "index_policies.js", navigation: "navigation.js" };
+  const importer183 = async (adresse) => { await import(adresse("app.js")); const L = {}; for (const [cle, f] of Object.entries(FICHIERS183)) L[cle] = await import(adresse(f)); return L; };
+  const modsFr183 = await importer183(url183);
+  const langueOrigine183 = localStorage.getItem("soc_lang");
+  localStorage.setItem("soc_lang", "en");
+  const modsEn183 = await importer183((f) => adresseSousLaLangue(f));
+  if (langueOrigine183 === null) localStorage.removeItem("soc_lang"); else localStorage.setItem("soc_lang", langueOrigine183);
+  const instrument183 = (vrai, quoi) => exiger(vrai, `(183-instrument) ${quoi} : ce témoin REFUSE DE CONCLURE`);
+  const nu183 = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+  const tic183 = () => new Promise((r) => setTimeout(r, 0));
+  const laisser183 = async (n = 30) => { for (let i = 0; i < n; i++) await tic183(); };
+  const cueillir183 = (el, pred, acc = []) => { if (el && pred(el)) acc.push(el); ((el && el.children) || []).forEach((c) => cueillir183(c, pred, acc)); return acc; };
+  const parAttribut183 = (hote, a) => cueillir183(hote, (e) => typeof e.getAttribute === "function" && e.getAttribute(a) !== null);
+  const lireLeDemon183 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
+  const constante183 = (src, nom) => { const m = src.match(new RegExp("const " + nom + ": &str = \"((?:[^\"\\\\]|\\\\[\\s\\S])*)\";")); return m ? m[1].replace(/\\\n\s*/g, "").replace(/\\"/g, "\"") : ""; };
+  const OV183 = lireLeDemon183("handlers/overview.rs"), ADM183 = lireLeDemon183("handlers/admin_ui.rs");
+  const PARC183 = constante183(OV183, "CAUSE_INSTANTANES_DU_PARC_NON_LUS"), MACHINE183 = constante183(OV183, "CAUSE_INSTANTANE_DE_LA_MACHINE_NON_LU");
+  const RET183 = constante183(ADM183, "CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE");
+  instrument183(PARC183.startsWith("INSTANTANÉS DU PARC NON LUS : ") && MACHINE183.startsWith("INSTANTANÉ NON LU : ") && RET183.startsWith("valeur en vigueur NON LUE : "),
+    `les trois causes ne se relisent plus dans overview.rs / admin_ui.rs (« ${PARC183.slice(0, 40)} », « ${MACHINE183.slice(0, 40)} », « ${RET183.slice(0, 40)} »)`);
+  instrument183(modsFr183.noyau.LANG !== "en" && modsEn183.noyau.LANG === "en", "les deux instances du point commun ne portent pas deux langues");
+  // Les faces anglaises attendues : des LITTÉRAUX, jamais relus dans la console.
+  const EN183 = {
+    parc: "FLEET SNAPSHOTS NOT READ: the database did not return the latest snapshot of the machines of this kind — nothing is established about the fleet, and this is not the absence of a snapshot",
+    machine: "SNAPSHOT NOT READ: the database did not return the latest snapshot of this machine — nothing is established about its state, and this is not the absence of a snapshot",
+    ret: "value in force NOT READ: the written value of this retention setting could not be read (non-integer value, or read refused) — nothing is served in its place, neither the environment, nor the configuration, nor the default, and a decrease cannot be judged. The purge skips this family until the setting is rewritten (PUT /api/retention repairs the row).",
+  };
+  const CONSEQUENCE183 = {
+    fr: (r) => `· la purge applique à cet index sa rétention propre (${r}) et ses plafonds ; OFF, l'index retombe sur la rétention globale`,
+    en: (r) => `· the purge applies to this index its own retention (${r}) and its caps; OFF, the index falls back to the global retention`,
+    propre: { fr: "30 j", en: "30 d" }, heritee: { fr: "héritée : 90 j", en: "inherited: 90 d" }, non_etablie: { fr: "héritée : NON ÉTABLIE", en: "inherited: NOT ESTABLISHED" },
+  };
+  const TETE183 = { fr: "la rétention globale n'a PAS été lue : aucune durée n'est établie, ni pour elle ni pour ce qu'un index en hérite —",
+    en: "the global retention was NOT read: no duration is established, neither for it nor for what an index inherits from it —" };
+  const INCONNUE183 = "PANNE NON RECENSÉE : la base a refusé pour une raison que la console ne connaît pas";
+  const cite183 = (c) => " « " + c + " »";
+  const ecarts183 = [];
+  // (a) la fonction partagée : chaque bras, statut compris.
+  for (const [l, L] of [["fr", modsFr183], ["en", modsEn183]]) {
+    const f = L.noyau.citationDUneCauseDuDemon;
+    instrument183(typeof f === "function", `${l} : \`citationDUneCauseDuDemon\` n'est plus exposée par core.js`);
+    if (typeof f !== "function") continue;
+    const cas = [
+      ["parc 503", f(PARC183, 503), l === "en" ? " " + EN183.parc : cite183(PARC183)],
+      ["machine 503", f(MACHINE183, 503), l === "en" ? " " + EN183.machine : cite183(MACHINE183)],
+      ["rétention (corps de succès)", f(RET183), l === "en" ? " " + EN183.ret : cite183(RET183)],
+      ["parc sous un autre statut (500)", f(PARC183, 500), cite183(PARC183)],
+      ["parc hors refus (statut nul)", f(PARC183, null), cite183(PARC183)],
+      ["machine sous un autre statut (500)", f(MACHINE183, 500), cite183(MACHINE183)],
+      ["machine hors refus (statut nul)", f(MACHINE183, null), cite183(MACHINE183)],
+      ["rétention en 503", f(RET183, 503), cite183(RET183)],
+      ["inconnue 503", f(INCONNUE183, 503), cite183(INCONNUE183)],
+      ["inconnue hors refus", f(INCONNUE183), cite183(INCONNUE183)],
+      ["parc avec détail", f(PARC183 + " (détail servi)", 503), l === "en" ? " " + EN183.parc + cite183(PARC183 + " (détail servi)") : cite183(PARC183 + " (détail servi)")],
+      ["ouverture coupée avant sa fin de mot", f("INSTANTANÉS DU PARC NON LUS : la base n'a pas rendu le dernier instantané des machines de ce genres", 503), cite183("INSTANTANÉS DU PARC NON LUS : la base n'a pas rendu le dernier instantané des machines de ce genres")],
+      ["ouverture de la machine coupée avant sa fin de mot", f("INSTANTANÉ NON LU : la base n'a pas rendu le dernier instantané de cette machines", 503), cite183("INSTANTANÉ NON LU : la base n'a pas rendu le dernier instantané de cette machines")],
+      ["ouverture de la rétention coupée avant sa fin de mot", f("valeur en vigueur NON LUE : la valeur écrite de ce réglage de rétention n'a pas pu être lues"), cite183("valeur en vigueur NON LUE : la valeur écrite de ce réglage de rétention n'a pas pu être lues")],
+    ];
+    for (const [nom, obtenu, attendu] of cas) if (obtenu !== attendu) ecarts183.push(`${l}/fonction, ${nom} : « ${obtenu} » au lieu de « ${attendu} »`);
+    // La même cause sans guillemets (ligne d'état des charges) : la phrase servie à l'octet sous le français.
+    const g = L.noyau.causeDuDemonDansLaLangue;
+    instrument183(typeof g === "function", `${l} : \`causeDuDemonDansLaLangue\` n'est plus exposée par core.js`);
+    if (typeof g === "function") for (const [nom, obtenu, attendu] of [
+      ["parc 503", g(PARC183, 503), l === "en" ? EN183.parc : PARC183],
+      ["parc 503 avec détail", g(PARC183 + " (détail servi)", 503), l === "en" ? EN183.parc + cite183(PARC183 + " (détail servi)") : PARC183 + " (détail servi)"],
+      ["parc 500", g(PARC183, 500), PARC183],
+      ["inconnue 503", g(INCONNUE183, 503), INCONNUE183],
+    ]) if (obtenu !== attendu) ecarts183.push(`${l}/cause sans guillemets, ${nom} : « ${obtenu} » au lieu de « ${attendu} »`);
+  }
+  // (b) les surfaces réelles.
+  const qsOrigine183 = document.querySelector, fetchOrigine183 = globalThis.fetch, minuterieOrigine183 = globalThis.setTimeout;
+  const etatOrigine183 = [modsFr183, modsEn183].map((L) => ({ S: L.etat.S, admin: L.etat.S.isAdmin, auth: L.etat.S.AUTH }));
+  const statut183 = new Element("span"), hoteFw183 = new Element("div"), hoteCtl183 = new Element("div"), liste183 = new Element("div"), form183 = new Element("div"), neuf183 = new Element("button");
+  const hotes183 = { "#status": statut183, "#firewall .body": hoteFw183, "#controls .body": hoteCtl183, "#index-policy-list": liste183, "#index-policy-form": form183, "#index-policy-new": neuf183 };
+  document.querySelector = (s) => (Object.prototype.hasOwnProperty.call(hotes183, s) ? hotes183[s] : new Element("div"));
+  globalThis.setTimeout = (fn, ms, ...a) => minuterieOrigine183(fn, ms >= 400 ? 0 : ms, ...a);
+  let servi183 = {};
+  globalThis.fetch = async (u) => {
+    const c = String(u).split("?")[0];
+    const r = servi183[c] || { status: 200, corps: {} };
+    return { ok: r.status >= 200 && r.status < 300, status: r.status, headers: { get: () => "application/json" }, text: async () => JSON.stringify(r.corps), json: async () => r.corps };
+  };
+  const fenetre183 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov") && !c.classList.contains("out")).pop() || null;
+  const fermer183 = () => document.body.children.filter((c) => c.classList && c.classList.contains("modal-ov")).forEach((c) => c.remove());
+  // Le nœud de refus : la face (premier enfant) puis la suite, qui doit être EXACTEMENT ce qu'on attend.
+  const suiteDuRefus183 = (hote) => {
+    const refus = parAttribut183(hote, "data-refus-d-une-lecture");
+    if (refus.length !== 1 || !refus[0].children || !refus[0].children[0]) return { suite: `(${refus.length} nœud(s) de refus)`, nature: "" };
+    const tout = String(refus[0].textContent || ""), face = String(refus[0].children[0].textContent || "");
+    return { suite: tout.startsWith(face) ? tout.slice(face.length) : `(face hors tête : « ${tout.slice(0, 80)} »)`, nature: refus[0].getAttribute("data-refus-d-une-lecture") };
+  };
+  try {
+    for (const [l, L] of [["fr", modsFr183], ["en", modsEn183]]) {
+      instrument183(typeof L.registres.CHARGES_POSEES.get("firewall") === "function" && typeof L.registres.CHARGES_POSEES.get("controls") === "function"
+        && typeof L.alertes.ouvrirLInstantane === "function" && typeof L.idx.loadIndexPolicies === "function", `${l} : une surface jugée n'est plus exposée`);
+      // (3) les panneaux d'instantanés en cinq cent trois (et une fois en cinq cents : l'ouverture n'y est pas reconnue).
+      for (const [cible, hote] of [["firewall", hoteFw183], ["controls", hoteCtl183]]) {
+        for (const [nom, statut, cause, attendu] of [
+          ["cause servie", 503, PARC183, l === "en" ? " " + EN183.parc : cite183(PARC183)],
+          ["cause inconnue", 503, INCONNUE183, cite183(INCONNUE183)],
+          ["cause servie en 500", 500, PARC183, cite183(PARC183)],
+          ["cause balisée", 503, "<img src=x onerror=alert(183)>", cite183("<img src=x onerror=alert(183)>")],
+        ]) {
+          servi183 = { [`/api/panel/${cible}`]: { status: statut, corps: { error: cause } } };
+          hote.replaceChildren();
+          try { await L.registres.CHARGES_POSEES.get(cible)(); } catch (e) { /* relancée : attendu */ }
+          await laisser183();
+          const { suite, nature } = suiteDuRefus183(hote);
+          if (suite !== attendu || nature !== "lecture_refusee" || cueillir183(hote, (e) => e.tagName === "IMG").length)
+            ecarts183.push(`${l}/${cible}, ${nom} : suite « ${suite} » (nature ${nature}) au lieu de « ${attendu} »`);
+        }
+      }
+      // (3) la ligne d'état des charges (web/navigation.js, `#status`) et la phrase d'un avis (`phraseDuRefusDUneLecture`)
+      // sous le même refus : la cause entre parenthèses, sans guillemets, dans la langue de l'écran.
+      for (const [nom, statut, cause, attendue] of [
+        ["cause servie", 503, PARC183, l === "en" ? EN183.parc : PARC183],
+        ["cause inconnue", 503, INCONNUE183, INCONNUE183],
+        ["cause servie en 500", 500, PARC183, PARC183],
+      ]) {
+        servi183 = { "/api/panel/firewall": { status: statut, corps: { error: cause } } };
+        let refus = null; try { await L.noyau.api("/panel/firewall"); } catch (e) { refus = e; }
+        statut183.textContent = "";
+        await L.navigation.lancerLesCharges([{ cible: "x-183", charger: async () => { throw refus; } }]); await laisser183();
+        const ligne = nu183(statut183), attendueLigne = (l === "en" ? "read not served (" : "lecture non servie (") + attendue + ")";
+        if (ligne !== attendueLigne) ecarts183.push(`${l}/ligne d'état des charges, ${nom} : « ${ligne} » au lieu de « ${attendueLigne} »`);
+        const avis = refus ? L.noyau.phraseDuRefusDUneLecture(refus) : "(aucun refus)";
+        const finAvis = l === "en" && attendue === EN183.parc ? " " + EN183.parc : cite183(cause);
+        if (!avis.endsWith(finAvis) || (finAvis === " " + EN183.parc && avis.includes(PARC183))) ecarts183.push(`${l}/phrase d'un avis, ${nom} : « ${avis} » ne finit pas par « ${finAvis} »`);
+      }
+      // (3) la fenêtre d'un instantané (web/alerts.js) en cinq cent trois.
+      for (const [nom, cause, attendu] of [["cause servie", MACHINE183, l === "en" ? " " + EN183.machine : cite183(MACHINE183)], ["cause inconnue", INCONNUE183, cite183(INCONNUE183)]]) {
+        fermer183();
+        servi183 = { "/api/snapshot/controls/web-183": { status: 503, corps: { error: cause } } };
+        L.alertes.ouvrirLInstantane("controls", "web-183");
+        await laisser183();
+        const f = fenetre183();
+        const { suite, nature } = f ? suiteDuRefus183(f) : { suite: "(aucune fenêtre)", nature: "" };
+        if (suite !== attendu || nature !== "lecture_refusee") ecarts183.push(`${l}/fenêtre d'un instantané, ${nom} : suite « ${suite} » (nature ${nature}) au lieu de « ${attendu} »`);
+        fermer183();
+      }
+      // (1) et (2) le panneau des politiques d'index.
+      L.etat.S.isAdmin = true; L.etat.S.AUTH = { user: "analyste1", role: "admin" };
+      const index183 = (nom, pol, jours) => ({ name: nom, id: pol ? 1 : null, events: 10, oldest_ts: 1000, size_bytes_est: 4096, retention_days: pol ? jours : 0, max_rows: 0, max_bytes: 0, has_policy: !!pol, enabled: true, description: "", managed: 0 });
+      const rendre183 = async (extra) => {
+        servi183 = { "/api/index-policies": { status: 200, corps: { ok: true, bounds: { retention_days: { min_when_set: 7, max: 3650, inherit: 0 } }, indexes: [index183("auth", true, 30), index183("dns", true, 0)], ...extra } } };
+        liste183.replaceChildren(); await L.idx.loadIndexPolicies(); await laisser183();
+        const tete = parAttribut183(liste183, "data-retention-globale-non-etablie")[0];
+        return { tete: tete ? String(tete.textContent || "") : "", consequences: cueillir183(liste183, (e) => String((e && e.className) || "").split(/\s+/).includes("producer-consequence")).map(nu183) };
+      };
+      for (const [nom, cause, fin] of [
+        ["cause servie", RET183, l === "en" ? " " + EN183.ret : cite183(RET183)],
+        ["cause inconnue", INCONNUE183, cite183(INCONNUE183)],
+        ["cause servie avec un détail", RET183 + " (détail servi)", l === "en" ? " " + EN183.ret + cite183(RET183 + " (détail servi)") : cite183(RET183 + " (détail servi)")],
+        ["cause balisée", "<img src=x onerror=alert(183)>", cite183("<img src=x onerror=alert(183)>")],
+      ]) {
+        const r = await rendre183({ global_retention_days: null, global_retention_non_lue: cause });
+        if (!r.tete.endsWith(" " + TETE183[l] + fin) || cueillir183(liste183, (e) => e.tagName === "IMG").length) ecarts183.push(`${l}/tête des politiques, ${nom} : « ${r.tete.slice(-420)} » ne finit pas par « ${TETE183[l] + fin} »`);
+        const attendues = [CONSEQUENCE183[l](CONSEQUENCE183.propre[l]), CONSEQUENCE183[l](CONSEQUENCE183.non_etablie[l])];
+        if (JSON.stringify(r.consequences) !== JSON.stringify(attendues)) ecarts183.push(`${l}/conséquence sous une rétention globale non établie (${nom}) : ${JSON.stringify(r.consequences)} au lieu de ${JSON.stringify(attendues)}`);
+      }
+      const lue = await rendre183({ global_retention_days: 90 });
+      const attenduesLue = [CONSEQUENCE183[l](CONSEQUENCE183.propre[l]), CONSEQUENCE183[l](CONSEQUENCE183.heritee[l])];
+      if (JSON.stringify(lue.consequences) !== JSON.stringify(attenduesLue) || lue.tete) ecarts183.push(`${l}/conséquence sous une rétention globale de 90 : ${JSON.stringify(lue.consequences)} au lieu de ${JSON.stringify(attenduesLue)}`);
+    }
+  } catch (e) {
+    instrument183(false, `exception : ${e && e.stack}`);
+  } finally {
+    document.querySelector = qsOrigine183; globalThis.fetch = fetchOrigine183; globalThis.setTimeout = minuterieOrigine183;
+    for (const o of etatOrigine183) { o.S.isAdmin = o.admin; o.S.AUTH = o.auth; }
+    fermer183();
+  }
+  exiger(ecarts183.length === 0, `(183) \`P10.20-b\` (console) — UNE DES TROIS PHRASES N'EST PAS LUE DANS LA LANGUE DE L'ÉCRAN, OU LE FRANÇAIS A BOUGÉ, OU UNE CAUSE INCONNUE N'EST PLUS CITÉE ENTIÈRE : ${JSON.stringify(ecarts183)}`);
+  if (echecs.length !== echecsAvant183) console.log(`(183) EN ÉCHEC — ${echecs.length - echecsAvant183} écart(s), dits ci-dessus`);
+  else console.log("(183) OK — `P10.20-b` (console) : sous LANG='en', la conséquence de la bascule d'une politique d'index (propre, héritée en jours, héritée NON ÉTABLIE), la cause de la rétention globale non lue et la cause du cinq cent trois des instantanés (deux panneaux, la ligne d'état des charges, la phrase d'un avis et la fenêtre d'un instantané) sont lues en anglais, à l'octet, les causes relues dans l'arbre du démon ; sous le français, la phrase d'avant à l'octet ; une cause inconnue, chacune des trois ouvertures coupée avant sa fin de mot ou servie sous un autre statut restent citées entières, une cause qui porte un détail est citée à côté de sa face, une cause balisée reste du texte. Ce qu'il NE tient PAS : la route (témoins Rust), les phrases voisines du panneau encore françaises, la mise en page.");
 }
 const CE_QUE_CE_VERDICT_NE_DIT_PAS = `\n\nCE QUE CE VERDICT NE DIT PAS — dérivé du simulacre par ${CAPACITES.length} sondes validées dans les deux sens, jamais recopié :\n  · ${AVEU}`;
 verdictRendu = true;

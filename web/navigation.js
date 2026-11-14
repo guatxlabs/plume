@@ -38,7 +38,7 @@
 // Ce module porte aussi LE NOM D'UNE DESTINATION (`P11.18-o`) : il ne l'écrit pas, il le DÉRIVE de la
 // page — titre du panneau, ou lien de barre latérale quand l'espace n'a qu'un onglet — et le pose là
 // où il manque. Voir le bloc de nommage sous `SPACES`.
-import { $, LANG, faceDansLaLangue, natureDuRefusDUneLecture, phraseDuRefusDuDemon } from './core.js';
+import { $, LANG, causeDuDemonDansLaLangue, faceDansLaLangue, natureDuRefusDUneLecture, phraseDuRefusDuDemon } from './core.js';
 import { S } from './state.js';
 import { AMORCE_DE_LA_NAVIGATION, CHARGES_POSEES } from './registres.js'; // `P11.21-f` : l'attache des peintres vit dans un module feuille
 import { loadDashboards, refreshPanels } from './dashboards.js';
@@ -447,7 +447,9 @@ function lancerLesCharges(liste, depuis) {
     // `P10.29-g` — « hors-ligne » ne se dit que d'une demande qui n'a pas abouti ; un refus du démon est une lecture non
     // servie, et sa cause est la phrase du démon (plus le message composé, JSON du refus compris). Mesuré avant ce lot
     // (témoin 120g) : un 403 du rôle se lisait « hors-ligne (403 {"error":…}) », en français sous `LANG='en'`.
-    if (st && partantes.length) st.textContent = rate ? faceDansLaLangue(natureDuRefusDUneLecture(rate.reason) === 'lecture_non_aboutie' ? MOTS_DU_STATUT_DES_CHARGES.hors_ligne : MOTS_DU_STATUT_DES_CHARGES.lecture_non_servie, { cause: phraseDuRefusDuDemon(rate.reason) }) : 'connecté';
+    // `P10.20-b` — une cause du démon que la console reconnaît (`causeDuDemonDansLaLangue`, core.js) est dite par sa face
+    // anglaise sous `LANG='en'` ; sous le français, ou non reconnue, la phrase servie à l'octet.
+    if (st && partantes.length) st.textContent = rate ? faceDansLaLangue(natureDuRefusDUneLecture(rate.reason) === 'lecture_non_aboutie' ? MOTS_DU_STATUT_DES_CHARGES.hors_ligne : MOTS_DU_STATUT_DES_CHARGES.lecture_non_servie, { cause: causeDuDemonDansLaLangue(phraseDuRefusDuDemon(rate.reason), rate.reason && rate.reason.statutDuRefus != null ? rate.reason.statutDuRefus : null) }) : 'connecté';
     return partantes.length;
   });
 }

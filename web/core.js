@@ -1257,6 +1257,60 @@ const MOTS_DU_REFUS_D_UNE_LECTURE = {
     en: 'READ NOT SERVED: the answer does not come readably from the daemon — nothing is established about what it holds. The console says this —' },
 };
 const motDuRefusDUneLecture = (nature) => faceDansLaLangue(MOTS_DU_REFUS_D_UNE_LECTURE[nature]);
+// `P10.20-b` — TROIS CAUSES DU DÉMON LUES DANS LA LANGUE DE L'ÉCRAN. Le démon n'a pas de langue : il sert ses causes en
+// français, et la console les citait telles quelles sous `LANG='en'`. Ces trois-là sont reconnues par leur OUVERTURE (le
+// démon les garde à l'octet : `CAUSE_INSTANTANES_DU_PARC_NON_LUS` et `CAUSE_INSTANTANE_DE_LA_MACHINE_NON_LU` de
+// daemon/src/handlers/overview.rs, servies en cinq cent trois ; `CAUSE_VALEUR_DE_RETENTION_EN_VIGUEUR_NON_LUE` de
+// daemon/src/handlers/admin_ui.rs, servie dans un corps de succès) et peintes par une face anglaise qui dit la même chose.
+// La face française de la table est le texte ENTIER que le démon sert : une cause reconnue qui en diffère porte un
+// détail que la face ne redit pas, et reste citée à côté, entre guillemets. Une cause non reconnue est citée entière,
+// comme avant ; sous le français, rien ne change à l'octet.
+const OUVERTURE_DES_INSTANTANES_DU_PARC_NON_LUS = /^INSTANTANÉS DU PARC NON LUS : la base n'a pas rendu le dernier instantané des machines de ce genre(?![\p{L}\p{N}])/u;
+const OUVERTURE_DE_L_INSTANTANE_DE_LA_MACHINE_NON_LU = /^INSTANTANÉ NON LU : la base n'a pas rendu le dernier instantané de cette machine(?![\p{L}\p{N}])/u;
+const OUVERTURE_DE_LA_VALEUR_DE_RETENTION_NON_LUE = /^valeur en vigueur NON LUE : la valeur écrite de ce réglage de rétention n'a pas pu être lue(?![\p{L}\p{N}])/u;
+const MOTS_DES_CAUSES_DU_DEMON_RECONNUES = {
+  instantanes_du_parc_non_lus: {
+    fr: "INSTANTANÉS DU PARC NON LUS : la base n'a pas rendu le dernier instantané des machines de ce genre — rien n'est établi sur le parc, et ce n'est pas l'absence d'instantané",
+    en: 'FLEET SNAPSHOTS NOT READ: the database did not return the latest snapshot of the machines of this kind — nothing is established about the fleet, and this is not the absence of a snapshot' },
+  instantane_de_la_machine_non_lu: {
+    fr: "INSTANTANÉ NON LU : la base n'a pas rendu le dernier instantané de cette machine — rien n'est établi sur son état, et ce n'est pas l'absence d'un instantané",
+    en: 'SNAPSHOT NOT READ: the database did not return the latest snapshot of this machine — nothing is established about its state, and this is not the absence of a snapshot' },
+  valeur_de_retention_non_lue: {
+    fr: "valeur en vigueur NON LUE : la valeur écrite de ce réglage de rétention n'a pas pu être lue (valeur non entière, ou lecture refusée) — rien n'est servi à sa place, ni l'environnement, ni la configuration, ni le défaut, et une baisse ne peut pas être jugée. La purge saute cette famille tant que le réglage n'est pas réécrit (PUT /api/retention répare la ligne).",
+    en: 'value in force NOT READ: the written value of this retention setting could not be read (non-integer value, or read refused) — nothing is served in its place, neither the environment, nor the configuration, nor the default, and a decrease cannot be judged. The purge skips this family until the setting is rewritten (PUT /api/retention repairs the row).' },
+};
+// Le statut qui sert chaque cause : un cinq cent trois pour les instantanés, aucun (un champ d'un corps de succès) pour la
+// rétention. Une phrase de même ouverture servie sous un autre statut n'est pas reconnue.
+const CAUSES_DU_DEMON_RECONNUES = [
+  { cle: 'instantanes_du_parc_non_lus', ouverture: OUVERTURE_DES_INSTANTANES_DU_PARC_NON_LUS, statut: 503 },
+  { cle: 'instantane_de_la_machine_non_lu', ouverture: OUVERTURE_DE_L_INSTANTANE_DE_LA_MACHINE_NON_LU, statut: 503 },
+  { cle: 'valeur_de_retention_non_lue', ouverture: OUVERTURE_DE_LA_VALEUR_DE_RETENTION_NON_LUE, statut: null },
+];
+// Ce qui suit la face qui annonce la cause : la cause citée entre guillemets (français, ou cause non reconnue), ou sa face
+// anglaise, suivie de la citation quand la cause servie n'est pas le texte entier connu. Le résultat est du TEXTE : posé
+// par `textContent` ou un nœud texte, jamais par `innerHTML`.
+function faceDUneCauseDuDemonReconnue(servie, statut) {
+  if (LANG !== 'en') return '';
+  const reconnue = CAUSES_DU_DEMON_RECONNUES.find((c) => c.statut === statut && c.ouverture.test(servie));
+  if (!reconnue) return '';
+  return faceDansLaLangue(MOTS_DES_CAUSES_DU_DEMON_RECONNUES[reconnue.cle]) + (servie === MOTS_DES_CAUSES_DU_DEMON_RECONNUES[reconnue.cle].fr ? '' : ' « ' + servie + ' »');
+}
+function citationDUneCauseDuDemon(cause, statut = null) {
+  const servie = String(cause == null ? '' : cause).trim();
+  const face = faceDUneCauseDuDemonReconnue(servie, statut);
+  return face ? ' ' + face : ' « ' + servie + ' »';
+}
+// La même cause SANS guillemets, pour une ligne qui la pose déjà entre parenthèses (la ligne d'état des charges,
+// web/navigation.js) : la cause servie telle quelle sous le français ou quand elle n'est pas reconnue — à l'octet
+// d'avant —, sa face anglaise (et la citation d'un détail) sous l'anglais.
+function causeDuDemonDansLaLangue(cause, statut = null) {
+  const servie = String(cause == null ? '' : cause);
+  return faceDUneCauseDuDemonReconnue(servie.trim(), statut) || servie;
+}
+// La cause d'un refus de lecture, dans la langue de l'écran : seul un refus nommé par le démon peut être reconnu.
+const citationDuRefusDUneLecture = (e, nature) => (nature === 'lecture_refusee'
+  ? citationDUneCauseDuDemon(causeDuRefusDUneLecture(e, nature), e && e.statutDuRefus != null ? e.statutDuRefus : null)
+  : ' « ' + causeDuRefusDUneLecture(e, nature).trim() + ' »');
 function causeDuRefusDUneLecture(e, nature) {
   if (nature === 'lecture_refusee_sans_cause') return String(e.statutDuRefus);
   if (nature === 'lecture_refusee') return phraseDuRefusDuDemon(e);
@@ -1268,7 +1322,7 @@ const faceDuRefusDUneLecture = (nature, objet) => (objet ? objet + ' — ' : '')
 // La phrase entière, pour un avis ou une ligne écrite par `textContent`.
 function phraseDuRefusDUneLecture(e, objet) {
   const nature = natureDuRefusDUneLecture(e);
-  return faceDuRefusDUneLecture(nature, objet) + ' « ' + causeDuRefusDUneLecture(e, nature).trim() + ' »';
+  return faceDuRefusDUneLecture(nature, objet) + citationDuRefusDUneLecture(e, nature);
 }
 // Le refus d'une lecture faite par `fetch` DIRECT (l'export de l'Explore, le corps d'un courriel), bâti par les règles
 // d'`api()` : la cause nommée, le texte brut entier, la phrase d'une passerelle ; un deux cents dont le corps est vide,
@@ -1295,7 +1349,7 @@ function noeudDuRefusDUneLecture(e, objet, classe = 'muted') {
   const nature = natureDuRefusDUneLecture(e);
   const noeud = document.createElement('div'); noeud.className = classe;
   const dit = document.createElement('span'); dit.textContent = faceDuRefusDUneLecture(nature, objet);
-  noeud.append(dit, document.createTextNode(' « ' + causeDuRefusDUneLecture(e, nature).trim() + ' »'));
+  noeud.append(dit, document.createTextNode(citationDuRefusDUneLecture(e, nature)));
   noeud.dataset.refusDUneLecture = nature;
   return noeud;
 }
@@ -2922,7 +2976,11 @@ export {
   // route `/api/login` est publique, exemptée de CSRF, et son 429 se lit dans un EN-TÊTE que ces deux
   // fabriques ne rendent pas), et il tient sa propre requête. Lui faire réécrire l'extraction ferait
   // deux lecteurs d'un même contrat de refus, qui dériveraient l'un de l'autre.
-  causeNommeeParLeDemon, laRiposteNAPasEteMiseEnFile, motDuRefusDeCreationDeRiposte, aveuDeLaCreationDeRiposte, phraseDeLaCreationDeRiposteRefusee,
+  causeNommeeParLeDemon,
+  // `P10.20-b` — une cause du démon citée, ou peinte par sa face anglaise quand elle est reconnue (panneau des politiques d'index).
+  causeDuDemonDansLaLangue,
+  citationDUneCauseDuDemon,
+  laRiposteNAPasEteMiseEnFile, motDuRefusDeCreationDeRiposte, aveuDeLaCreationDeRiposte, phraseDeLaCreationDeRiposteRefusee,
   // `P10.21-a` — ET LE LECTEUR DE L'AVEU QUE LE SUCCÈS DE LA MÊME ROUTE PORTE : les trois surfaces de
   // mise en file le partagent, faute de quoi chacune écrirait le nom de la clé et sa propre phrase, et
   // l'une d'elles finirait par avouer autre chose que les deux autres sur le même fait.

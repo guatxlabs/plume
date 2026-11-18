@@ -858,7 +858,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
@@ -1014,7 +1014,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
@@ -1417,7 +1417,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
@@ -1506,7 +1506,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # `P8.9-f` — la garde « l'index concorde avec ce qu'un commit déclare fermé » compare
           # l'HISTOIRE à l'index. MESURÉ le 2026-08-25 : sur un clone `--depth 1` elle sort en 2,
@@ -2968,7 +2968,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Le repondeur de l hote applique la duree de ban servie par le central et ne reexecute jamais une riposte a l aveugle (P11.25-a, P10.21-n)
         run: python3 .github/scripts/check_responder_applies_the_ban_duration_served_by_the_central.py
@@ -2979,7 +2979,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
@@ -3123,7 +3123,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # full history so gitleaks can scan past commits, not just the tip.
 
@@ -4281,7 +4281,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned) + rustfmt/clippy
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)
@@ -4322,7 +4322,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout plume
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust toolchain (pinned)
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # @stable (no semver tags; pinned to stable branch commit)

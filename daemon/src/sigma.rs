@@ -91,7 +91,8 @@ pub(crate) fn sigma_push_literal_char(out: &mut String, c: char) {
     if c.is_ascii_alphanumeric() || c == '_' {
         out.push(c);
     } else if c.is_whitespace() || matches!(c, '"' | '|' | '(' | ')' | '[' | ']' | ',' | '\'' | '`') {
-        // STRUCTUREL : DOIT être hex-échappé (un `\|` porterait encore le char `|` que soql_split_pipes voit).
+        // STRUCTUREL : DOIT être hex-échappé (un `\|` porterait encore le char `|`, que soql_split_pipes voit hors
+        // guillemets doubles, et un `\"` porterait un guillemet qui ouvre ou ferme un texte pour le découpeur).
         if u < 0x100 { out.push_str(&format!("\\x{u:02x}")); } else { out.push_str(&format!("\\x{{{u:x}}}")); }
     } else if (0x20..0x7f).contains(&u) {
         out.push('\\');

@@ -5475,8 +5475,21 @@ fn phaseb_extractor_matches_core_compile_parity() {
         "search source = apache",             // ESPACES autour de `=` : le cœur colle -> source='apache' (RESTAURÉ)
         "search source=\"a b\"",              // valeur quotée : cœur strippe -> source='a b' (RESTAURÉ)
         "search host=web1 source in (a,b)",   // host=web1 EXTRAIT (IN non-élaguable) — RESTAURÉ
-        "search source=a (b)",                // `(b)` freetext -> source='a' extrait
+        "search source=a f(b)",               // `f(b)` freetext (paire équilibrée, pas en tête) -> source='a' extrait
     ];
+
+    // GROUPEMENT REFUSÉ PAR LE CŒUR (guatx-core 0.2.6) : `(b)` en TÊTE de jeton est une parenthèse de groupement
+    // que `search` ne lit pas ; jusqu'à v0.2.5 elle partait en terme libre `message LIKE '%(b)%'`. Elle n'atteint
+    // donc plus le cold : rien n'est compilé, rien n'est extrait. L'assertion porte sur la phrase du refus ET le
+    // jeton cité, pour qu'un refus d'une autre cause ne la satisfasse pas.
+    const CORE_GROUPING_MARKER: &str = "search : parenthèse de groupement non lue : « (b) »";
+    let grouped = guatx_core::soql::to_sql("search source=a (b)", 0, 0, &Schema::events());
+    let grouped_err = grouped.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        grouped_err.contains(CORE_GROUPING_MARKER),
+        "`search source=a (b)` doit être refusé par le cœur comme groupement non lu (`{CORE_GROUPING_MARKER}`) ; \
+         rendu = {grouped:?}"
+    );
 
     // SECONDE BATTERIE — LES ENTRÉES QUE LE CŒUR REFUSE DE COMPILER (donc qui n'atteignent JAMAIS le cold).
     //
@@ -5541,6 +5554,9 @@ fn phaseb_extractor_matches_core_compile_parity() {
     // cas SÛRS toujours émis :
     assert!(xpreds("source=a=b").iter().any(|p| p.dim == ColdDim::Source && p.value == "a=b"));
     assert!(xpreds("host=x!").iter().any(|p| p.dim == ColdDim::Host && p.value == "x!"));
+    // Un terme libre à parenthèses (non groupant) n'empêche pas l'égalité qui l'accompagne d'être extraite :
+    assert!(xpreds("search source=a f(b)").iter().any(|p| p.dim == ColdDim::Source && p.value == "a"),
+        "`source=a f(b)` : le terme libre `f(b)` laisse source='a' extrait");
 }
 
 // `in (...)` / PARENTHÈSES — l'ÉGALITÉ QUI ACCOMPAGNE un `IN` est RESTAURÉE. AVANT (ré-parse GXQL) : toute base

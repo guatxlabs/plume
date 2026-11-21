@@ -498,7 +498,8 @@ pub(crate) fn fts_bar_mirrors(conn: &Connection, fields: bool) -> Vec<FtsMirror>
 // Colonnes RÉELLES de la table event (le reste vit dans le JSON `fields`).
 pub(crate) const EVENT_COLS: &[&str] = &["ts", "host", "source", "category", "severity", "src_ip", "dst_ip", "url", "xff", "message", "fields", "dedup", "id"];
 
-// Découpe sur les pipes de PREMIER niveau (ignore les `|` à l'intérieur des crochets [ ... ]).
+// Découpe sur les pipes de PREMIER niveau (ignore les `|` à l'intérieur des crochets [ ... ] et, depuis
+// guatx-core 0.2.6, entre guillemets doubles).
 // soql_split_pipes : SUPPRIMÉ (P1-H3) — copie locale byte-identique de
 // guatx_core::soql::soql_split_pipes. Sites d'appel fully-qualifiés.
 

@@ -290,6 +290,45 @@
         assert!(resolve_step_search(&conn, id, resp_step, None).is_err(), "step response n'est pas une recherche");
     }
 
+    /// TEMPS-RÉSOLUTION — une valeur de `$target$` qui porte `OR`, `)` ou un guillemet. `)` et `"` sont refusés AVANT
+    /// toute compilation par `value_scalar_ok` (phrase « valeur non substituable ») ; `OR` passe ce filtre (lettres
+    /// seules) : en TERME LIBRE (`search $target$`) il devient un `OR` nu, que le compilateur 0.2.6 refuse — la
+    /// résolution rend alors « GXQL de navigation invalide », au lieu du `message LIKE '%OR%'` qu'elle rendait en
+    /// 0.2.5 ; en VALEUR DE CHAMP (`search host=$target$`) il reste une valeur, servie. `or` minuscule reste un terme.
+    #[test]
+    fn step_search_resolve_operateur_parenthese_guillemet_dans_la_valeur() {
+        let conn = test_db();
+        let etapes: Vec<NewStep> = vec![
+            ("triage".into(), "Terme libre".into(), "".into(), "search".into(), Some("search $target$".into()), None),
+            ("triage".into(), "Valeur de champ".into(), "".into(), "search".into(), Some("search host=$target$".into()), None),
+        ];
+        let rb = create_custom_runbook(&conn, "k4-resolution", "*", "", "", &etapes, true).expect("gabarits valides au temps auteur");
+        let id = dossier_seme(&conn, "a", "k4", 3, "", None, 3);
+        attach_runbook(&conn, id, rb, "bob", &PrefillTargets::default()).expect("attache");
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM case_step WHERE incident_id=?1 AND step_kind='search' ORDER BY ordinal")
+            .unwrap()
+            .query_map(params![id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2, "deux étapes de recherche attachées");
+        let (libre, champ) = (ids[0], ids[1]);
+        let refus = |r: Result<String, RefusDeLaRechercheDEtape>| match r {
+            Err(RefusDeLaRechercheDEtape::Refusee(p)) => p,
+            autre => panic!("refus 400 attendu, rendu : {autre:?}"),
+        };
+        assert_eq!(refus(resolve_step_search(&conn, id, libre, Some("OR"))), "GXQL de navigation invalide (fournir une cible concrète)");
+        assert_eq!(resolve_step_search(&conn, id, champ, Some("OR")).expect("valeur de champ"), "search host=OR");
+        assert_eq!(resolve_step_search(&conn, id, libre, Some("or")).expect("minuscule : un terme"), "search or");
+        assert_eq!(resolve_step_search(&conn, id, libre, Some("x1")).expect("contrôle positif"), "search x1");
+        for valeur in ["a)b", ")", "a\"b", "\""] {
+            for etape in [libre, champ] {
+                assert_eq!(refus(resolve_step_search(&conn, id, etape, Some(valeur))), "valeur non substituable (caractère interdit)", "`{valeur}`");
+            }
+        }
+    }
+
     /// PARITÉ MODE 0 : un case ORDINAIRE (jamais élevé, aucun runbook) se comporte EXACTEMENT comme aujourd'hui —
     /// aucune ligne case_step, tier NULL, case_get_json inchangé (n'expose PAS de champ incident), et la
     /// projection CLIENT-READ ne fuit NI incident_tier NI steps.
@@ -675,10 +714,13 @@
 
     /// AUTHOR-TIME — CLÔTURE du gabarit GXQL de step 'search'. Le compilateur FERMÉ (validate_search_template) est
     /// la garantie : (a) un gabarit valide compile ; (b) tout gabarit ACCEPTÉ compile en UN SEUL `SELECT ... FROM
-    /// event` sûr — un texte ressemblant à du SQL brut (`; DROP`, `'; DELETE`, `UNION SELECT token_hash`) DÉGRADE
-    /// en termes de recherche plein-texte ÉCHAPPÉS (`message LIKE '%...%'`), jamais une 2e instruction ni un accès
-    /// hors-vue `event` -> AUCUNE injection possible ; (c) une commande GXQL inconnue / un pipe malformé est REJETÉ.
-    /// (Le temps-résolution est couvert par step_search_resolve_reuses_closed_compiler : value_scalar_ok + recompile.)
+    /// event` sûr — un texte ressemblant à du SQL brut (`; DROP`, `'; DELETE`) DÉGRADE en termes de recherche
+    /// plein-texte ÉCHAPPÉS (`message LIKE '%...%'`), jamais une 2e instruction ni un accès hors-vue `event` ->
+    /// AUCUNE injection possible ; (b') `$target$ ) UNION SELECT token_hash FROM token` est REFUSÉ (compilateur
+    /// 0.2.6 : une `)` qui ne ferme aucune `(` est une parenthèse de groupement, que `search` ne lit pas) au lieu de
+    /// dégrader en texte libre ; (c) une commande GXQL inconnue / un pipe malformé est REJETÉ.
+    /// (Le temps-résolution est couvert par step_search_resolve_reuses_closed_compiler : value_scalar_ok + recompile,
+    /// et par step_search_resolve_operateur_parenthese_guillemet_dans_la_valeur.)
     #[test]
     fn author_time_search_template_closure() {
         // (a) gabarits valides -> Ok (standalone ou préfixé search).
@@ -694,7 +736,6 @@
         for inj in [
             "host=$target$; DROP TABLE alert",
             "'; DELETE FROM incident; --",
-            "$target$ ) UNION SELECT token_hash FROM token",
         ] {
             let dummy = inj.replace("$target$", "x1");
             assert!(validate_search_template(inj).is_ok(), "gabarit dégradable rejeté : {inj}");
@@ -706,6 +747,20 @@
             assert!(!sql.contains("; DROP") && !sql.contains("; DELETE") && !sql.contains(") UNION"), "instruction injectée : {sql}");
             assert!(!sql.contains("token_hash FROM token"), "accès hors-event : {sql}");
         }
+        // (b') GROUPEMENT REFUSÉ au temps auteur, phrase entière (celle de la compilation préfixée `search`, la
+        //      seconde tentée) ; aucune des deux compilations ne rend de SQL, donc rien n'est persisté ni exécuté.
+        let groupement = "$target$ ) UNION SELECT token_hash FROM token";
+        assert_eq!(
+            validate_search_template(groupement),
+            Err("gabarit search non compilable : search : parenthèse de groupement non lue : « ) » (les termes de `search` sont \
+                 toujours reliés par ET, sans groupement : retirez les parenthèses ; pour une alternative : `champ in (a, b)` \
+                 ou `champ=~\"a|b\"` ; pour chercher ce texte tel quel, mettez-le entre guillemets : \")\")"
+                .to_string()),
+            "parenthèse de groupement refusée au temps auteur"
+        );
+        let dummy = groupement.replace("$target$", "x1");
+        assert!(guatx_core::soql::to_sql(&dummy, 0, 0, &guatx_core::soql::Schema::events()).is_err(), "aucun SQL, seul");
+        assert!(guatx_core::soql::to_sql(&format!("search {dummy}"), 0, 0, &guatx_core::soql::Schema::events()).is_err(), "aucun SQL, préfixé");
         // (c) commande GXQL inconnue / pipe malformé -> REJET.
         for bad in [
             "search host=$target$ | delete",

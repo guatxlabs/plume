@@ -90,9 +90,12 @@ pub(crate) fn validate_dm_constraint(constraint: &str) -> Result<(), String> {
 }
 
 /// Une valeur de FILTRE de Pivot est-elle sûre à insérer dans le texte GXQL généré ? Le découpage de pipeline
-/// du cœur (`soql_split_pipes`) opère AVANT la tokenisation et NE respecte PAS les guillemets -> un `|`/`[`/`]`
-/// dans une valeur runtime pourrait INJECTER une étape. On REJETTE donc ces caractères structurels + les
-/// guillemets (qui basculent l'état du tokenizer) + les caractères de contrôle. C'est le point de sûreté du
+/// du cœur (`soql_split_pipes`) opère AVANT la tokenisation : une valeur nue (sans guillemets) qui porte un
+/// `|`/`[`/`]` y serait une frontière d'étape ou de sous-recherche et pourrait INJECTER une étape. Depuis
+/// guatx-core 0.2.6 le découpeur respecte les guillemets doubles, mais un guillemet dans la valeur fermerait
+/// celui qui l'entoure (et un guillemet non fermé fait refuser la requête). On REJETTE donc ces caractères
+/// structurels + les guillemets (qui basculent l'état du tokenizer et du découpeur) + les caractères de contrôle.
+/// C'est le point de sûreté du
 /// passage « sélection utilisateur -> texte GXQL » (les valeurs sont ENSUITE ré-échappées `soql_esc` par le
 /// compilateur pour le littéral SQL final).
 fn pivot_value_ok(v: &str) -> bool {

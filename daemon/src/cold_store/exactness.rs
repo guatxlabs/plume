@@ -117,11 +117,12 @@ pub(crate) struct AnswerShape(Shape);
 impl AnswerShape {
     /// DÉRIVE la forme d'une requête GXQL. DÉFAUT = REFUS : un seul étage hors de
     /// `PER_EVENT_STAGES` — inconnu compris — suffit à rendre la réponse `SetDerived`.
-    /// Un `|` à l'intérieur d'une valeur citée peut produire un FAUX `SetDerived` : c'est le
-    /// côté SÛR (au pire un refus de trop, jamais un nombre faux de trop).
     /// `P10.32-u` — la forme est dérivée du texte DÉTENDU des macros (`soql_detendu_pour_juger`), celui que
     /// le compilateur découpera : une macro qui cache `| stats count` rend la réponse dérivée, et une
     /// détente en échec vaut l'aveu (`undecidable`), jamais le texte brut jugé à la place.
+    /// `P10.32-v` — les étages jugés sont ceux du DÉCOUPEUR DU COMPILATEUR (`guatx_core::soql::soql_split_pipes`) :
+    /// une barre entre guillemets doubles n'y est pas une frontière, une barre en tête ou un étage vide n'y
+    /// fabrique rien. La forme est donc dérivée des étages que le compilateur compile, ni plus ni moins.
     pub(crate) fn of_gxql(soql: &str) -> Self {
         Self::of_gxql_selon(soql, crate::active_knowledge)
     }
@@ -131,11 +132,9 @@ impl AnswerShape {
         let Some(soql) = crate::soql_detendu_pour_juger(soql, savoir) else {
             return Self::undecidable();
         };
-        for stage in soql.split('|').skip(1) {
-            let cmd = stage.trim().split_whitespace().next().unwrap_or("").to_ascii_lowercase();
-            if cmd.is_empty() {
-                continue; // pipe terminal / étage vide
-            }
+        // Le découpeur rend des étages ROGNÉS et NON VIDES : aucun étage vide à sauter ici.
+        for stage in guatx_core::soql::soql_split_pipes(&soql).iter().skip(1) {
+            let cmd = stage.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
             if !PER_EVENT_STAGES.contains(&cmd.as_str()) {
                 return Self(Shape::SetDerived(Some(cmd)));
             }

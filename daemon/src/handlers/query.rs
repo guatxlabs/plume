@@ -487,9 +487,14 @@ fn keyset_sort_tenable(keys: &[String]) -> bool {
 /// `sort` est admis pour les seuls PRÉFIXES de l'ordre du wrap (`keyset_sort_tenable`, dérivé de
 /// `KEYSET_ORDRE`) : ce sont exactement les ordres que `page_sql` RAFFINE, donc qu'il ne peut pas
 /// contredire. `| sort -id` n'en est PAS un et retombe sur l'OFFSET (`P10.5-f`).
-/// Un `|` dans une valeur citée peut produire un FAUX NÉGATIF -> sûr (OFFSET).
 /// `P10.32-u` — le jugement porte sur le texte DÉTENDU des macros (`soql_detendu_pour_juger`), celui que
 /// le compilateur découpera : une macro qui cache `| stats count` n'est plus un filtre aux yeux du curseur.
+/// `P10.32-v` — les étages jugés sont ceux du DÉCOUPEUR DU COMPILATEUR (`guatx_core::soql::soql_split_pipes`) :
+/// une barre ou un crochet entre guillemets doubles n'y est pas une frontière, et une barre en tête ou un étage
+/// vide n'y fabrique rien (la première étape non vide est la base). Le démon juge donc EXACTEMENT les étages
+/// que le compilateur compile, ni plus ni moins (témoin `etages_du_demon_alignes_sur_le_decoupeur_du_coeur.rs`).
+/// Une requête que le compilateur refuse (guillemet non fermé compris) n'est jamais servie, curseur compris :
+/// sa compilation échoue avant toute page.
 pub(crate) fn keyset_applicable(soql: &str) -> bool {
     keyset_applicable_selon(soql, crate::active_knowledge)
 }
@@ -499,12 +504,10 @@ pub(crate) fn keyset_applicable_selon(soql: &str, savoir: impl FnOnce() -> guatx
     let Some(soql) = crate::soql_detendu_pour_juger(soql, savoir) else {
         return false; // détente refusée : le compilateur refusera aussi -> jamais de curseur
     };
-    soql.split('|').skip(1).all(|stage| {
-        let stage = stage.trim();
+    // Le découpeur rend des étages ROGNÉS et NON VIDES : aucun étage vide à sauter ici.
+    guatx_core::soql::soql_split_pipes(&soql).iter().skip(1).all(|stage| {
+        let stage = stage.as_str();
         let cmd = stage.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
-        if cmd.is_empty() {
-            return true; // pipe terminal / vide : aucun étage
-        }
         if cmd == "sort" {
             // (P2) — les seuls tris que le wrap TIENT sont les préfixes de son propre ordre.
             let keys: Vec<String> = stage[4..]
@@ -543,6 +546,11 @@ pub(crate) fn keyset_applicable_selon(soql: &str, savoir: impl FnOnce() -> guatx
 /// a jugé : une projection cachée dans une macro reçoit elle aussi `ts`/`id`. Ce chemin compile donc le texte
 /// détendu (la détente du cœur ne laisse aucun backtick) ; une différence avec le chemin OFFSET, qui compile le
 /// texte brut : l'alias CIM de lecture s'y applique aussi au corps d'une macro. Sans backtick, rien ne change.
+/// `P10.32-v` — les étages sont ceux du DÉCOUPEUR DU COMPILATEUR (`soql_split_pipes`), les mêmes que
+/// `keyset_applicable` a jugés : une barre entre guillemets n'est pas une frontière, donc l'augmentation n'écrit
+/// jamais à l'intérieur d'un littéral (`where a="p|table b"` reste une seule étape `where`, intacte). Rien à
+/// ajouter : texte rendu À L'OCTET. Sinon les étages sont rejoints sur ` | ` : le découpeur rogne et jette les
+/// étages vides, et le compilateur re-découpe avec la MÊME fonction, il revoit donc exactement ces étages.
 pub(crate) fn keyset_projection_augment(soql: &str) -> (String, usize) {
     keyset_projection_augment_selon(soql, crate::active_knowledge)
 }
@@ -555,20 +563,21 @@ pub(crate) fn keyset_projection_augment_selon(soql: &str, savoir: impl FnOnce() 
     };
     let mut out: Vec<String> = Vec::new();
     let mut added_last = 0usize;
-    for (i, stage) in detendu.split('|').enumerate() {
+    let mut reecrit = false;
+    for (i, stage) in guatx_core::soql::soql_split_pipes(&detendu).into_iter().enumerate() {
         if i == 0 {
-            out.push(stage.to_string());
+            out.push(stage);
             continue;
         }
-        let trimmed = stage.trim();
+        let trimmed = stage.as_str();
         let cmd = trimmed.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
         if cmd != "table" && cmd != "fields" {
-            out.push(stage.to_string());
+            out.push(stage);
             continue;
         }
         let list = trimmed[cmd.len()..].trim();
         if list.is_empty() || list == "*" {
-            out.push(stage.to_string()); // passe-plat : la clé de tri survit déjà
+            out.push(stage); // passe-plat : la clé de tri survit déjà
             continue;
         }
         // `table` sépare par virgules OU blancs, `fields` par virgules seules -> on lit les deux et on
@@ -586,16 +595,21 @@ pub(crate) fn keyset_projection_augment_selon(soql: &str, savoir: impl FnOnce() 
         }
         added_last = add.len();
         if add.is_empty() {
-            out.push(stage.to_string());
+            out.push(stage);
         } else {
             // On ré-émet la commande TELLE QU'ÉCRITE (pas sa forme minuscule) : le compilateur GXQL
             // dispatche sur le token EXACT, donc normaliser la casse ici ferait COMPILER un `| TABLE a`
             // qui échoue aujourd'hui — un changement de résultat, gratuit et non demandé.
             let cmd_txt = &trimmed[..cmd.len()];
-            out.push(format!(" {cmd_txt} {list},{}", add.join(",")));
+            let reemis = format!("{cmd_txt} {list},{}", add.join(","));
+            out.push(reemis);
+            reecrit = true;
         }
     }
-    (out.join("|"), added_last)
+    if !reecrit {
+        return (detendu.into_owned(), added_last);
+    }
+    (out.join(" | "), added_last)
 }
 
 /// KEYSET (#28) — retire les `n` DERNIÈRES colonnes de la réponse : celles que l'augmentation a
@@ -1267,8 +1281,9 @@ pub(crate) async fn query(State(st): State<AppState>, Extension(au): Extension<A
         && body.get("soql").and_then(|v| v.as_str()).map(keyset_applicable).unwrap_or(true);
     // Colonnes AJOUTÉES par l'augmentation de projection, à retirer de la réponse (0 = rien ajouté).
     let mut keyset_trim = 0usize;
-    // REPLI : la forme augmentée ne compile pas (p. ex. un `|` dans une valeur citée a fait mal découper les
-    // étages) -> on sert EXACTEMENT comme avant (offset + COUNT borné) au lieu de rendre une erreur.
+    // REPLI : la forme augmentée ne compile pas -> on sert EXACTEMENT comme avant (offset + COUNT borné) au
+    // lieu de rendre une erreur. (L'augmentation découpe par le découpeur du compilateur, `P10.32-v` : une barre
+    // entre guillemets ne la fait plus écrire dans un littéral.)
     let mut keyset_compile_failed = false;
     // rollup_meta = Some((approx, ampleur du plafond, note)) si la requête a été ROUTÉE vers un rollup
     // (sinon raw). Le deuxième membre n'est PAS un booléen : c'est une `CapMesure`, qui n'existe qu'après

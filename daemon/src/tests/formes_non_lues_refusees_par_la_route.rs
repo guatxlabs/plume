@@ -303,13 +303,16 @@ mod k4_formes_non_lues_refusees_par_la_route {
             if colonnes.len() != 3 {
                 ecarts.push(format!("`{soql}` : trois pages (2, 2, 1) attendues, rendu {}", colonnes.len()));
             }
-            let mut attendues = sans.colonnes();
-            if ajoute_id {
-                attendues.push("id".to_string());
-            }
+            // La PLACE de `id` n'est pas jugée : le savoir du processus (champs calculés, lookups automatiques posés par
+            // un autre test quand la suite tourne en un seul processus) ajoute ses colonnes après celles de l'événement,
+            // donc après `id` au curseur. Ce qui est jugé : `id` présent une fois ou absent, et les autres colonnes
+            // celles de la réponse sans curseur, dans le même ordre.
+            let attendues = sans.colonnes();
             for (p, c) in colonnes.iter().enumerate() {
-                if *c != attendues {
-                    ecarts.push(format!("`{soql}` page {p} : colonnes {c:?}, attendues {attendues:?}"));
+                let cles = c.iter().filter(|x| *x == "id").count();
+                let hors_cle: Vec<String> = c.iter().filter(|x| *x != "id").cloned().collect();
+                if cles != usize::from(ajoute_id) || hors_cle != attendues {
+                    ecarts.push(format!("`{soql}` page {p} : colonnes {c:?}, attendues {attendues:?} et `id` {} fois", usize::from(ajoute_id)));
                 }
             }
             if !sql.contains("= 'p|table b'") || sql.contains("ts,id'") {

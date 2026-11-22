@@ -46,4 +46,14 @@ ignore = [
   # Lever quand une libsqlite3-sys publiée embarque, pour sa variante SQLCipher, un SQLite >= 3.54.0, ET que la
   # montée de rusqlite qui la tire (0.31 -> 0.41 ou au-delà, ruptures d'API comprises) est jouée.
   "RUSTSEC-2026-0459",
+  # chrono 0.4 — RUSTSEC-2026-0543 (unmaintained, NON vulnérable ; avis daté du 2026-09-14, entrée posée le
+  # 2026-11-22). L'avis vise toutes les versions, aucune version corrigée n'existe. Plume n'appelle chrono nulle
+  # part : il est tiré, requis et non optionnel, par parquet (feature `cold_tier`, compilée dans l'image stock
+  # `ldap,cold_tier`), par arrow sous duckdb (feature `duckdb`, OFF par défaut) et par tsp-ltv sous bergshamra
+  # (feature `saml`, OFF par défaut) ; il est absent du build par défaut. Les dernières versions publiées au
+  # 2026-11-22 (parquet 60.2.0, arrow-array 60.2.0, tsp-ltv 0.6.1) l'exigent encore : aucune montée ne le retire.
+  # Un avis de VULNÉRABILITÉ sur chrono porterait un autre identifiant et rougirait toujours l'audit.
+  # Lever dès que parquet, arrow et tsp-ltv publient des versions qui s'en passent (puis les monter), ou si
+  # l'avis est retiré.
+  "RUSTSEC-2026-0543",
 ]

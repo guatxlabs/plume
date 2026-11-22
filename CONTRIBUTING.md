@@ -333,3 +333,23 @@ sur mille trente-quatre lignes portant un nombre et une unité physique, six nom
 une garde qui l'exigerait aujourd'hui accuserait presque tout le corpus, donc elle n'existe pas —
 c'est la convention qui doit d'abord faire sa population, ligne neuve après ligne neuve. Un chiffre
 sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien ne le dise.
+
+## Parité des traductions
+
+Un document traduit garde les faits de son original : mêmes titres (nombre et niveaux), mêmes blocs
+de code et mêmes commandes hors commentaires, mêmes tableaux, mêmes cibles de liens — un lien vers
+`Y.md` vise `Y.en.md` côté anglais quand ce fichier existe —, mêmes nombres et mêmes identifiants
+entre accents graves. `.github/scripts/parite_des_langues.py` le compare et nomme chaque écart par
+`fichier:ligne` :
+
+```sh
+python3 .github/scripts/parite_des_langues.py                      # toutes les paires suivies
+python3 .github/scripts/parite_des_langues.py --paire X.md X.en.md # une seule paire
+python3 .github/scripts/parite_des_langues.py --inventaire         # documents sans traduction
+python3 .github/scripts/test_parite_des_langues.py                 # épreuves de l'outil
+```
+
+La convention de suffixe est un paramètre (`--suffixe-original`, `--suffixe-traduction`, par défaut
+`X.md` / `X.en.md`), pour basculer plus tard en `X.fr.md` / `X.md`. L'inventaire rend vert tant que
+`--strict` n'est pas passé. L'outil n'est pas encore une porte de l'intégration continue : il se joue
+à la main, avant de proposer une traduction.

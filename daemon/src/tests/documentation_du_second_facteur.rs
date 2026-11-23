@@ -201,7 +201,7 @@ mod documentation_du_second_facteur_tests {
     fn dsf_chaque_controle_exige_est_cite_par_le_symbole_qui_le_porte() {
         let src = racine_du_crate().join("src");
         let mut manquants = Vec::new();
-        for (doc, _) in LANGUES {
+        for (doc, _) in table_declaree!(LANGUES) {
             let section = section_du_second_facteur(doc);
             assert!(!section.is_empty(), "section `## 4. TOTP MFA` introuvable dans {doc}");
             let cites = identifiants_cites(&section);
@@ -239,7 +239,7 @@ mod documentation_du_second_facteur_tests {
     #[test]
     fn dsf_chaque_phrase_exigee_a_sa_puce_dans_sa_sous_section() {
         let mut manquantes = Vec::new();
-        for (doc, phrases) in LANGUES {
+        for (doc, phrases) in table_declaree!(LANGUES) {
             let section = section_du_second_facteur(doc);
             for (titre, objet, fragments) in *phrases {
                 let puces = puces_de_la_sous_section(&section, titre);
@@ -287,7 +287,7 @@ mod documentation_du_second_facteur_tests {
     fn dsf_chaque_identifiant_cite_existe_dans_le_code() {
         let mut code = String::new();
         sources_hors_tests(&racine_du_crate().join("src"), &mut code);
-        for (doc, _) in LANGUES {
+        for (doc, _) in table_declaree!(LANGUES) {
             let section = section_du_second_facteur(doc);
             let cites = identifiants_cites(&section);
             assert!(

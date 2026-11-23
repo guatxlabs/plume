@@ -2,6 +2,8 @@
 
 # 🪶 Plume
 
+[Français](README.md) | [English](README.en.md)
+
 **Le SOC / XDR souverain, léger comme une plume** — des opérations de sécurité sans la pile lourde.
 *Rust · SQLite · un seul petit binaire · tourne dans 2 Go · on‑premise, respectueux du RGPD, zéro dépendance externe.*
 

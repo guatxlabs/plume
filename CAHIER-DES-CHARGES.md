@@ -1,5 +1,7 @@
 # SOC — Cahier des charges (vision complète, modulaire, multi-hôte)
 
+[Français](CAHIER-DES-CHARGES.md) | [English](CAHIER-DES-CHARGES.en.md)
+
 > Étend `ARCHITECTURE.md` (design v1).
 > Ici = la **liste de souhaits / spec cible** : tout ce qui peut être **construit si nécessaire**
 > pour faire du SOC un outil **modulaire, scalable, offensif+défensif, multi-plateforme**, sans

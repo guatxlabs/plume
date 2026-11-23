@@ -1,5 +1,7 @@
 # Plume — Modules avancés (tous ouverts, séparables, désactivés par défaut)
 
+[Français](ADVANCED_MODULES.md) | [English](ADVANCED_MODULES.en.md)
+
 Plume est **entièrement open source** sous **[AGPL-3.0-or-later](LICENSE)** — le **produit entier**,
 sans édition payante, sans fonction bridée et sans autre licence proposée à côté. Le SOC complet est ouvert, et
 chaque capacité avancée décrite ci-dessous l'est aussi : elle vit dans ce dépôt, sous la même licence.

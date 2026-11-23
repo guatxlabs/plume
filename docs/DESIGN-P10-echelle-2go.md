@@ -1,5 +1,7 @@
 # P10 — Tenir sous 2 Go à l'échelle : chaud / froid / bloom / compression
 
+[Français](DESIGN-P10-echelle-2go.md) | [English](DESIGN-P10-echelle-2go.en.md)
+
 > Brainstorm de conception, **ancré sur mesure** (2026-08-06). Ce document n'est PAS une décision
 > figée : c'est la carte du terrain mesuré et l'ordre des leviers qui en découle. Chaque affirmation
 > chiffrée porte sa source. Rien n'est construit sur la foi d'une intuition.

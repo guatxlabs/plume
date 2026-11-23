@@ -1,5 +1,7 @@
 # Les agents et leur protocole
 
+[Français](AGENTS-PROTOCOLE.md) | [English](AGENTS-PROTOCOLE.en.md)
+
 Ce que fait un agent tient en une phrase : **il lit une source, il tamponne sur disque, il POSTe au
 central, et il n'oublie ce qu'il a lu qu'une fois la publication acquittée.** Tout le reste de cette
 page est le détail de cette phrase, et surtout **ce qu'elle ne promet pas**.

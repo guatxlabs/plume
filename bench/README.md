@@ -1,5 +1,7 @@
 # `bench/` — l'instrument de mesure
 
+[Français](README.md) | [English](README.en.md)
+
 Ce répertoire n'optimise rien. Il rend les optimisations **prouvables**. « Mesurer d'abord,
 optimiser ensuite » : sans instrument publié, une amélioration annoncée n'est pas vérifiable et un
 chiffre annoncé n'est pas contestable.

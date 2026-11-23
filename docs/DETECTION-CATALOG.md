@@ -1,5 +1,7 @@
 # Plume — Catalogue de détection curé (starter pack)
 
+[Français](DETECTION-CATALOG.md) | [English](DETECTION-CATALOG.en.md)
+
 > **Statut : contenu additif, vendor-agnostic, inerte par défaut.** Ce catalogue livre une
 > BIBLIOTHÈQUE de règles de détection haute-valeur, mappées CIM + ATT&CK, sous
 > [`config.d/rules/catalog/*.json`](../config.d/rules/catalog). Chargées au boot par le loader

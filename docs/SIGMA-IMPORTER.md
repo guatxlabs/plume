@@ -1,5 +1,7 @@
 # Plume — Importeur Sigma (Slice #7, pièce 3)
 
+[Français](SIGMA-IMPORTER.md) | [English](SIGMA-IMPORTER.en.md)
+
 > **Statut : contrat opérateur.** Absorbe la bibliothèque de détection **open-source** :
 > [Sigma](https://github.com/SigmaHQ/sigma) est le standard YAML des règles de détection (logsource +
 > `detection{selection/condition}` + tags MITRE). Cet importeur **traduit une règle Sigma en une règle

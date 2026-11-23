@@ -1,5 +1,7 @@
 # Conformité — POSTURE & COUVERTURE (pas certification) — #38
 
+[Français](COMPLIANCE.md) | [English](COMPLIANCE.en.md)
+
 > **Honnêteté (invariant dur).** Plume expose une **posture / couverture de conformité** : quels
 > contrôles réglementaires sont **couverts** (pass/fail SCA ingérés) et quelles **détections** sont
 > mappées à un cadre — le tout adossé au **ledger d'intégrité** (Ed25519, tamper-evident). Plume **ne

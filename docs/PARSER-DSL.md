@@ -1,5 +1,7 @@
 # Plume — Parseur déclaratif (DSL CIM) — Slice #7, pièce 2
 
+[Français](PARSER-DSL.md) | [English](PARSER-DSL.en.md)
+
 > **Statut : contrat opérateur.** Ce document décrit le format d'un **parseur déclaratif** : un fichier
 > JSON posé sous `config.d/parsers/` qui **mappe une source vers le CIM** (`docs/CIM.md`) **sans recompiler
 > Rust**. Il répond au blocage « est-ce que mes 40 sources vont parser ? » : ajouter une source = ajouter

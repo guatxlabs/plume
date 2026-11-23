@@ -1,5 +1,7 @@
 # Plume SDK — le modèle *bring-your-own-vendor*
 
+[Français](SDK.md) | [English](SDK.en.md)
+
 > **Statut : document ombrelle.** Il ne définit PAS un nouveau mécanisme : il rend **cohérents et
 > découvrables** les *seams* d'extension qui existent déjà. Chaque seam a sa page de référence détaillée
 > (liens ci-dessous) ; ici on donne **l'unique modèle mental**, la règle de décision, et un exemple concret

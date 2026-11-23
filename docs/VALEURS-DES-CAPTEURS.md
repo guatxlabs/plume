@@ -1,5 +1,7 @@
 # Ce qu'un capteur émet — les valeurs, et ce qu'elles veulent dire
 
+[Français](VALEURS-DES-CAPTEURS.md) | [English](VALEURS-DES-CAPTEURS.en.md)
+
 **État : 📐 conception.** Le contrat décrit ici est **partiellement présent dans les producteurs
 livrés** et **n'est câblé nulle part** : aucune de ces déclarations n'atteint le fil ni l'écran. Ce
 document dit ce qui existe, ce qui manque, et pourquoi l'écart ne se comble pas à la main. Clés de

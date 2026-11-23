@@ -20,12 +20,24 @@ CE QUI EST COMPARÉ, PAIRE PAR PAIRE
   existe, et rester tel quel sinon ; l'ancre (`#…`) est retirée avant comparaison, car elle dérive
   d'un titre, et un titre traduit change d'ancre. La cible se résout depuis le dossier du document,
   ou depuis la racine quand elle commence par `/`. Un lien vers le document lui-même ou vers sa
-  traduction est le SÉLECTEUR DE LANGUE (`[Français](X.md) | [English](X.en.md)` en tête des deux
-  côtés) : il ne bascule pas, il est attendu identique des deux côtés ;
+  traduction ne bascule pas : c'est celui du sélecteur de langue ;
+- le SÉLECTEUR DE LANGUE : la première ligne non vide sous le premier titre de niveau 1, la même des
+  deux côtés, faite d'un lien vers l'original puis d'un lien vers la traduction et de séparateurs
+  seulement (`[Français](X.md) | [English](X.en.md)`, ou `[English](X.md) | [Français](X.fr.md)`
+  pour un original anglais). Absent d'un côté ou des deux, inversé, visant un autre fichier, ou
+  différent d'un côté à l'autre : écart nommé ;
+- les ANCRES DE LA TRADUCTION : un lien interne de la traduction dont l'ancre vise un document
+  Markdown de l'arbre (elle-même comprise, pour `#…` seul) doit désigner un titre de ce fichier,
+  par son slug GitHub — texte affiché en minuscules, ponctuation retirée, espaces en tirets, accents
+  conservés, `-1`, `-2`… pour un titre en double — ou un `id`/`name` HTML. Une ancre restée sur le
+  titre de l'original est nommée comme telle. Les ancres de l'original ne sont pas jugées : elles
+  ne relèvent pas de la parité ;
 - l'ENSEMBLE DES NOMBRES du texte courant, lus comme des suites de chiffres : `2,7` et `2.7`, ou
   `4 812 337` et `4,812,337`, donnent les mêmes suites, si bien que la typographie de chaque langue
   n'accuse rien ;
-- l'ENSEMBLE DES IDENTIFIANTS ENTRE ACCENTS GRAVES.
+- l'ENSEMBLE DES IDENTIFIANTS ENTRE ACCENTS GRAVES. Comme en CommonMark, un segment peut passer à
+  la ligne dans un paragraphe, la fin de ligne y valant une espace : il est lu comme UN segment, où
+  qu'il soit replié de chaque côté.
 
 Chaque écart est nommé par `fichier:ligne`, côté original quand il manque quelque chose à la
 traduction, côté traduction quand elle porte quelque chose en trop.
@@ -45,7 +57,9 @@ DEUX MODES
   Code 1 dès qu'un écart est nommé, même si une autre paire n'a pas pu être lue : une violation
   trouvée ne se lit pas comme « rien mesuré ». Code 2 quand il n'y a aucun écart et que quelque
   chose n'a pas été lu (aucune paire, dépôt illisible, paire illisible) : un vert sur ce qui n'a pas
-  été lu ne prouverait rien. Code 0 sinon.
+  été lu ne prouverait rien. Code 0 sinon. Un fichier visé par une ancre de la traduction et qui
+  n'est pas de l'UTF-8 rend la paire illisible : une ancre qu'on n'a pas pu chercher n'est ni juste
+  ni fausse.
 - `--inventaire` : liste les documents suivis sans traduction, et les traductions sans original. Il
   rend 0 tant que `--strict` n'est pas passé ; avec `--strict`, un document sans traduction rend 1.
   Sur zéro document suivi, ou sur un dépôt illisible, il rend 2 dans les deux cas.
@@ -55,7 +69,14 @@ c'est délibéré tant que le corpus n'a pas de paires.
 
 CE QU'IL NE VOIT PAS
 --------------------
-Les titres soulignés (`===` / `---` sous une ligne) ne sont pas lus, seulement les titres `#`. Un
+Les titres soulignés (`===` / `---` sous une ligne) ne sont pas comptés parmi les titres, seulement
+les titres `#` ; leur ancre est tout de même admise. Ce que porte un segment de code replié (et le
+reste des lignes qu'il emporte) est rapporté à la ligne où il s'ouvre ; un accent grave que rien ne
+ferme avant la fin du paragraphe (ligne vide, titre, clôture, ligne de tableau, puce de liste) est
+du texte. Le slug suit le texte affiché d'un titre au plus près sans le rendre vraiment : segments
+de code, liens, emphase et balises HTML sont ôtés, pas les entités HTML (`&amp;`). Une ancre dont
+seule la casse diffère d'un slug n'est pas accusée : ce que la page fait d'une majuscule n'a pas été
+mesuré. Une ancre vers un fichier absent, ou hors de l'arbre, n'est pas jugée. Un
 bloc de code indenté de quatre espaces n'est pas un bloc pour lui, seulement les blocs clôturés
 (trois accents graves ou trois tildes). Les commentaires HTML ne sont pas rendus, donc pas comparés.
 Les autoliens (`<https://…>`), les URL nues et les liens HTML (`<a href>`) ne sont pas comparés comme
@@ -75,12 +96,16 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
+from urllib.parse import unquote
 
 CLOTURE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 CITATION = re.compile(r"^\s{0,3}(?:>\s?)+")
 TITRE = re.compile(r"^\s{0,3}(#{1,6})(?:\s+(.*))?$")
 LIGNE_DE_TABLEAU = re.compile(r"^\s*\|")
 SEGMENT_DE_CODE = re.compile(r"(`+)(.+?)\1")
+SUITE_D_ACCENTS = re.compile(r"`+")
+# Ligne qui ne prolonge pas un paragraphe : vide, titre, clôture, ligne de tableau, puce de liste.
+COUPE_LE_PARAGRAPHE = re.compile(r"^\s*$|^\s{0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|\||[-*+]\s|\d{1,9}[.)]\s)")
 LIEN_EN_LIGNE = re.compile(
     r"!?\[((?:[^\[\]\\]|\\.|\[[^\]]*\])*)\]\(\s*<?([^)\s>]*)>?(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)"
 )
@@ -89,6 +114,8 @@ DEFINITION_DE_LIEN = re.compile(r"^\s{0,3}\[(?!\^)[^\]]+\]:\s*<?(\S+?)>?(?:\s+.*
 URL_NUE = re.compile(r"<?\b[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
 NOMBRE = re.compile(r"\d+")
 SCHEMA = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+SOULIGNEMENT = re.compile(r"^\s{0,3}(?:=+|-+)\s*$")
+ANCRE_HTML = re.compile(r"<[a-zA-Z][^>]*\s(?:id|name)\s*=\s*[\"']([^\"']+)[\"']")
 COMMENTAIRE_FINAL = re.compile(r"\s+(?:#|//)(?:\s.*)?$")
 # Lignes qui commencent par `#` sans être des commentaires : attribut Rust, shebang, préprocesseur C.
 DIESE_DE_CODE = re.compile(
@@ -104,6 +131,9 @@ class Document:
     liens: list = field(default_factory=list)        # (ligne, cible brute)
     nombres: dict = field(default_factory=dict)      # nombre -> première ligne
     identifiants: dict = field(default_factory=dict)  # contenu entre accents graves -> première ligne
+    titre_1: int = 0                                  # ligne du premier titre de niveau 1, 0 sans
+    selecteur: tuple = None                           # (ligne, texte, [cibles]) sous ce titre
+    ancres: set = field(default_factory=set)          # slugs des titres et `id`/`name` HTML
 
 
 @dataclass(frozen=True)
@@ -147,6 +177,74 @@ def retirer_commentaires_html(ligne, dans_commentaire):
     return "".join(visible), dans_commentaire
 
 
+def texte_rendu(titre):
+    """Le texte qu'un titre affiche : séquence de clôture `#`, balisage en ligne et balises HTML ôtés,
+    contenu des segments de code gardé tel quel."""
+    titre = re.sub(r"(?:^|\s+)#+\s*$", "", titre.strip())
+    morceaux = []
+    for i, part in enumerate(re.split(r"(`+)(.+?)\1", titre)):
+        if i % 3 == 1:
+            continue
+        if i % 3 == 2:
+            morceaux.append(part)
+            continue
+        part = re.sub(r"!?\[((?:[^\[\]\\]|\\.)*)\](?:\([^)]*\)|\[[^\]]*\])", r"\1", part)
+        part = re.sub(r"<[^>]*>", "", part)
+        part = re.sub(r"\*+|~~|(?<!\w)_+|_+(?!\w)", "", part)
+        morceaux.append(re.sub(r"\\(.)", r"\1", part))
+    return "".join(morceaux)
+
+
+def slug(titre):
+    """L'ancre que GitHub donne à un titre : texte affiché en minuscules, tout ce qui n'est ni lettre,
+    ni chiffre, ni `_`, ni `-`, ni espace retiré, chaque espace changée en tiret. Les accents restent.
+    Le suffixe `-1`, `-2`… des titres en double est ajouté par l'appelant."""
+    return re.sub(r"[^\w\- ]", "", texte_rendu(titre).lower()).replace(" ", "-")
+
+
+def segment_ouvert(texte, debut=0):
+    """Position de la première suite d'accents graves, à partir de `debut`, que rien ne ferme dans
+    `texte` (même suite plus loin) ; None quand chaque segment ouvert se ferme."""
+    i = debut
+    while True:
+        m = SUITE_D_ACCENTS.search(texte, i)
+        if not m:
+            return None
+        fin = texte.find(m.group(), m.end())
+        if fin < 0:
+            return m.start()
+        i = fin + len(m.group())
+
+
+def rejoindre_les_segments(visible, suivantes, dans_commentaire):
+    """La ligne `visible` prolongée des lignes de `suivantes` qu'un segment de code y ouvert sans s'y
+    fermer emporte : (texte rejoint, lignes absorbées, état de commentaire HTML après elles).
+
+    CommonMark : un segment de code peut passer à la ligne dans un paragraphe, et la fin de ligne y
+    vaut une espace. Un segment qu'aucune ligne du paragraphe ne ferme n'en est pas un : ses accents
+    graves sont du texte, et la ligne reste seule."""
+    debut, absorbees = 0, 0
+    while True:
+        p = segment_ouvert(visible, debut)
+        if p is None or dans_commentaire:
+            return visible, absorbees, dans_commentaire
+        essai, etat, k, ferme = visible, dans_commentaire, absorbees, False
+        while k < len(suivantes) and not etat:
+            ligne = CITATION.sub("", suivantes[k], count=1)
+            if COUPE_LE_PARAGRAPHE.match(ligne):
+                break
+            vue, etat = retirer_commentaires_html(ligne, etat)
+            essai = essai.rstrip() + " " + vue.strip()
+            k += 1
+            if segment_ouvert(essai, debut) != p:
+                ferme = True
+                break
+        if ferme:
+            visible, absorbees, dans_commentaire = essai, k, etat
+        else:
+            debut = p + len(SUITE_D_ACCENTS.match(visible, p).group())
+
+
 def analyser(texte, chemin):
     doc = Document(chemin)
     # Une marque d'ordre d'octets en tête collerait au premier `#` et masquerait le premier titre.
@@ -161,7 +259,14 @@ def analyser(texte, chemin):
             doc.tableaux.append(tuple(tableau))
         tableau = None
 
-    for n, brute in enumerate(texte.splitlines(), 1):
+    lignes = texte.splitlines()
+    slugs = Counter()
+    paragraphe = None  # ligne de texte précédente, que `===` ou `---` dessous ferait titre souligné
+    attend_selecteur = False  # vrai entre le premier titre de niveau 1 et la ligne non vide suivante
+    n = 0
+    while n < len(lignes):
+        brute = lignes[n]
+        n += 1
         ligne = CITATION.sub("", brute, count=1)
         if cloture:
             m = CLOTURE.match(ligne)
@@ -178,9 +283,12 @@ def analyser(texte, chemin):
         if m and not dans_commentaire and not (m.group(1)[0] == "`" and "`" in m.group(2)):
             fermer_tableau()
             cloture = (m.group(1)[0], len(m.group(1)), n, [])
+            attend_selecteur, paragraphe = False, None
             continue
 
         visible, dans_commentaire = retirer_commentaires_html(ligne, dans_commentaire)
+        for a in ANCRE_HTML.finditer(visible):
+            doc.ancres.add(a.group(1))
         if LIGNE_DE_TABLEAU.match(visible):
             if tableau is None:
                 tableau = [n, 0]
@@ -188,24 +296,53 @@ def analyser(texte, chemin):
         else:
             fermer_tableau()
 
+        def ancrer(titre):
+            base = slug(titre)
+            doc.ancres.add(f"{base}-{slugs[base]}" if slugs[base] else base)
+            slugs[base] += 1
+
+        ici = n  # ce qu'une ligne rejointe porte est rapporté à sa première ligne
         t = TITRE.match(visible)
+        premier_titre_1 = False
         if t:
             doc.titres.append((n, len(t.group(1))))
+            ancrer(t.group(2) or "")
+            premier_titre_1 = len(t.group(1)) == 1 and not doc.titre_1
+        elif paragraphe and SOULIGNEMENT.match(visible):
+            # Un titre souligné n'est pas compté parmi les titres, mais son ancre existe : la taire
+            # accuserait à tort un lien qui la vise.
+            ancrer(paragraphe)
+        elif LIGNE_DE_TABLEAU.match(visible) is None and DEFINITION_DE_LIEN.match(visible) is None:
+            visible, absorbees, dans_commentaire = rejoindre_les_segments(
+                visible, lignes[n:], dans_commentaire)
+            n += absorbees
+        paragraphe = (visible if visible.strip() and not t and not LIGNE_DE_TABLEAU.match(visible)
+                      and not SOULIGNEMENT.match(visible) else None)
+
+        if attend_selecteur and visible.strip():
+            attend_selecteur = False
+            hors_code = SEGMENT_DE_CODE.sub(" ", visible)
+            # Une ligne faite de liens et de séparateurs seulement ; toute autre ligne n'en est pas un.
+            seule = not LIEN_EN_LIGNE.sub("", hors_code).strip(" \t|·/")
+            doc.selecteur = (ici, visible.strip(),
+                             [x.group(2) for x in LIEN_EN_LIGNE.finditer(hors_code)] if seule else [])
+        if premier_titre_1:
+            doc.titre_1, attend_selecteur = ici, True
 
         d = DEFINITION_DE_LIEN.match(visible)
         if d:
-            doc.liens.append((n, d.group(1)))
+            doc.liens.append((ici, d.group(1)))
             continue
 
         for s in SEGMENT_DE_CODE.finditer(visible):
-            doc.identifiants.setdefault(s.group(2).strip(), n)
+            doc.identifiants.setdefault(s.group(2).strip(), ici)
         sans_code = SEGMENT_DE_CODE.sub(" ", visible)
         for lien in LIEN_EN_LIGNE.finditer(sans_code):
-            doc.liens.append((n, lien.group(2)))
+            doc.liens.append((ici, lien.group(2)))
         texte_courant = LIEN_EN_LIGNE.sub(lambda x: f" {x.group(1)} ", sans_code)
         texte_courant = URL_NUE.sub(" ", texte_courant)
         for nombre in NOMBRE.findall(texte_courant):
-            doc.nombres.setdefault(str(int(nombre)), n)
+            doc.nombres.setdefault(str(int(nombre)), ici)
 
     fermer_tableau()
     if cloture:
@@ -391,8 +528,73 @@ def comparer_identifiants(o, t):
     return comparer_ensembles(o.identifiants, t.identifiants, o, t, "identifiants", "identifiant")
 
 
-def comparer(original, traduction, convention, existe):
-    """Tous les écarts entre deux documents déjà analysés, famille par famille."""
+def comparer_selecteur(o, t):
+    """Sous le premier titre de niveau 1 de chaque côté, la même ligne de sélecteur : un lien vers
+    l'original, puis un lien vers la traduction, et rien d'autre que des séparateurs."""
+    dossier = os.path.dirname(o.chemin)
+    attendu = [os.path.normpath(o.chemin), os.path.normpath(t.chemin)]
+    noms = " puis ".join(f"« {os.path.relpath(c, dossier or '.')} »" for c in attendu)
+    ecarts, justes = [], []
+    for doc in (o, t):
+        if not doc.titre_1:
+            ecarts.append(Ecart(doc.chemin, 1, "sélecteur",
+                                "aucun titre de niveau 1 : le sélecteur de langue n'a pas de place"))
+            continue
+        ligne, texte, cibles = doc.selecteur or (doc.titre_1, "", [])
+        vises = [resoudre(cible_sans_ancre(c), dossier) for c in cibles]
+        if not cibles:
+            ecarts.append(Ecart(doc.chemin, ligne, "sélecteur",
+                                f"sélecteur de langue absent sous le titre de niveau 1 (ligne "
+                                f"{doc.titre_1}) : attendu un lien vers {noms}"))
+        elif vises == attendu[::-1]:
+            ecarts.append(Ecart(doc.chemin, ligne, "sélecteur",
+                                f"sélecteur inversé : il nomme la traduction avant l'original, attendu {noms}"))
+        elif vises != attendu:
+            ecarts.append(Ecart(doc.chemin, ligne, "sélecteur",
+                                f"sélecteur qui vise {', '.join(cibles)} : attendu {noms}"))
+        else:
+            justes.append((ligne, texte))
+    if len(justes) == 2 and justes[0][1] != justes[1][1]:
+        ecarts.append(Ecart(t.chemin, justes[1][0], "sélecteur",
+                            f"sélecteur différent de celui de l'original ({o.chemin}:{justes[0][0]}), "
+                            f"attendu la même ligne des deux côtés"))
+    return ecarts
+
+
+def comparer_ancres(o, t, convention, ancres_de):
+    """Dans la traduction, chaque ancre d'un lien interne vers un document Markdown de l'arbre désigne
+    un titre (ou un `id` HTML) du fichier visé. Les ancres de l'original ne sont pas jugées."""
+    dossier = os.path.dirname(t.chemin)
+    ecarts = []
+    for ligne, cible in t.liens:
+        if "#" not in cible:
+            continue
+        chemin, ancre = cible.split("#", 1)
+        chemin, ancre = cible_sans_ancre(chemin), unquote(ancre)
+        if not ancre or est_externe(chemin):
+            continue
+        vise = resoudre(chemin, dossier) if chemin else os.path.normpath(t.chemin)
+        if not vise.endswith(".md") or vise.startswith(".."):
+            continue
+        ancres = ancres_de(vise)
+        # La casse d'une ancre n'est pas tranchée (le slug est en minuscules ; ce que le navigateur
+        # de la page fait d'une majuscule n'a pas été mesuré) : dans le doute, pas d'accusation.
+        if ancres is None or ancre in ancres or ancre.lower() in ancres:
+            continue
+        message = f"ancre « #{ancre} » : aucun titre de {vise} n'a ce slug"
+        if convention.est_traduction(vise):
+            source = convention.original_de(vise)
+            if ancre in (ancres_de(source) or ()):
+                message += f" ; c'est celui d'un titre de l'original {source} : viser le titre traduit"
+        ecarts.append(Ecart(t.chemin, ligne, "ancres", message))
+    return ecarts
+
+
+def comparer(original, traduction, convention, existe, ancres_de=None):
+    """Tous les écarts entre deux documents déjà analysés, famille par famille.
+
+    `ancres_de(chemin)` rend les ancres d'un document de l'arbre, ou None s'il n'existe pas ; sans
+    elle, les ancres ne sont pas jugées."""
     ecarts = []
     ecarts += comparer_titres(original, traduction)
     ecarts += comparer_blocs(original, traduction)
@@ -400,6 +602,9 @@ def comparer(original, traduction, convention, existe):
     ecarts += comparer_liens(original, traduction, convention, existe)
     ecarts += comparer_nombres(original, traduction)
     ecarts += comparer_identifiants(original, traduction)
+    ecarts += comparer_selecteur(original, traduction)
+    if ancres_de:
+        ecarts += comparer_ancres(original, traduction, convention, ancres_de)
     return ecarts
 
 
@@ -415,7 +620,17 @@ def comparer_fichiers(racine, original, traduction, convention):
     def existe(rel):
         return os.path.isfile(os.path.join(racine, rel))
 
-    return comparer(lire(original), lire(traduction), convention, existe)
+    lus = {}
+
+    def ancres_de(rel):
+        # Un fichier visé illisible n'est pas une ancre fausse : la paire entière est illisible.
+        if rel not in lus:
+            lus[rel] = lire(rel).ancres if existe(rel) else None
+        return lus[rel]
+
+    o, t = lire(original), lire(traduction)
+    lus[os.path.normpath(original)], lus[os.path.normpath(traduction)] = o.ancres, t.ancres
+    return comparer(o, t, convention, existe, ancres_de)
 
 
 class Illisible(Exception):

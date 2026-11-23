@@ -1,5 +1,7 @@
 # Composants tiers embarqués
 
+[Français](THIRD-PARTY-NOTICES.md) | [English](THIRD-PARTY-NOTICES.en.md)
+
 Plume embarque les composants ci-dessous. Ils sont distribués **sous leur propre
 licence**, pas sous l'AGPL v3 de Plume. L'AGPL v3 s'applique au code propre au
 projet ; rien ici ne la leur substitue.

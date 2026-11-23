@@ -39,6 +39,17 @@ et le fichier de règles d'agent est lu par nom. Les lier serait un artifice pou
 garde. La liste est donc courte, elle vient de conventions EXTÉRIEURES au dépôt, et elle est
 elle-même vérifiée : une exemption qui ne désigne plus un fichier suivi de la racine est une
 erreur, pour qu'elle ne puisse pas devenir une trappe où l'on range ce qu'on ne veut pas indexer.
+
+LA TRADUCTION D'UN EXEMPTÉ PASSE PAR SON SÉLECTEUR, ET RIEN D'AUTRE
+-------------------------------------------------------------------
+Rien ne mène à un exempté depuis `README.md` : c'est sa définition. Sa traduction (`X.en.md` ou
+`X.fr.md`, à côté de `X.md`) serait donc inatteignable par construction, alors que le lecteur
+qui ouvre `X.md` y arrive par la ligne de sélecteur de langue posée sous le titre. La règle est
+ÉTROITE : la traduction de `X.md` exempté est tenue pour atteinte SI ET SEULEMENT SI `X.md` la
+lie depuis une ligne de sélecteur (`[Français](…) | [English](…)`, dans un ordre ou l'autre).
+Un lien ordinaire dans le corps de `X.md` ne suffit pas, un sélecteur qui vise un autre fichier
+ne rend rien atteignable, et ni l'exempté ni sa traduction ne propagent leurs liens : un autre
+document lié seulement depuis eux reste inatteignable.
 """
 import os
 import re
@@ -69,6 +80,11 @@ EXEMPTES = {
 LIEN = re.compile(r'\]\(\s*<?([^)>\s]+?)>?(?:\s+"[^"]*")?\s*\)')
 # `[id]: cible`, définition de lien en style référence.
 REFDEF = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?\s*$', re.M)
+# Ligne de sélecteur de langue : `[Français](X.md) | [English](X.en.md)`, ou l'ordre inverse.
+SELECTEUR = re.compile(r'^\[(?:Français|English)\]\([^)\s]+\) \| \[(?:Français|English)\]\([^)\s]+\)\s*$',
+                       re.M)
+# Suffixes d'une traduction posée à côté de son original.
+SUFFIXES_TRADUCTION = (".en.md", ".fr.md")
 
 
 def cibles(texte, depuis, suivis):
@@ -83,6 +99,70 @@ def cibles(texte, depuis, suivis):
         if cible in suivis and cible != depuis:
             out.add(cible)
     return out
+
+
+def traductions_par_selecteur(texte, depuis, suivis):
+    """Les traductions de `depuis` (`X.en.md`, `X.fr.md`) qu'une LIGNE DE SÉLECTEUR de `texte` lie.
+
+    Seule la paire de langue sort d'ici : un sélecteur qui viserait un autre document ne rend
+    rien."""
+    souche = depuis[:-len(".md")]
+    paires = {souche + s for s in SUFFIXES_TRADUCTION}
+    out = set()
+    for m in SELECTEUR.finditer(texte):
+        out |= cibles(m.group(0), depuis, suivis) & paires
+    return out
+
+
+def atteignables(liens, textes, suivis, racine, exemptes):
+    """Fermeture transitive depuis `racine`, plus la traduction de chaque exempté que l'exempté
+    lie par son sélecteur. Cette traduction est atteinte mais ne propage pas ses liens."""
+    atteints = {racine}
+    pile = [racine]
+    while pile:
+        cur = pile.pop()
+        for t in liens[cur]:
+            if t not in atteints:
+                atteints.add(t)
+                pile.append(t)
+    for nom in exemptes:
+        if nom in textes:
+            atteints |= traductions_par_selecteur(textes[nom], nom, suivis)
+    return atteints
+
+
+def valider_fermeture():
+    """TÉMOINS de la règle des traductions d'exemptés, sur un arbre de contrôle."""
+    textes = {
+        "README.md": "[i](docs/I.md)\n",
+        "docs/I.md": "rien\n",
+        # Exempté AVEC sélecteur, plus un lien ordinaire vers un autre document.
+        "AGENTS.md": "# A\n\n[Français](AGENTS.md) | [English](AGENTS.en.md)\n\n[o](docs/O.md)\n",
+        # Sa traduction lie un document que rien d'autre ne lie.
+        "AGENTS.en.md": "# A\n\n[Français](AGENTS.md) | [English](AGENTS.en.md)\n\n[p](docs/P.md)\n",
+        "docs/O.md": "lié seulement depuis un exempté\n",
+        "docs/P.md": "lié seulement depuis la traduction d'un exempté\n",
+        # Exempté SANS sélecteur : un lien ordinaire vers sa traduction ne suffit pas.
+        "NOTICES.md": "# N\n\nvoir [la version anglaise](NOTICES.en.md)\n",
+        "NOTICES.en.md": "# N\n",
+        # Exempté dont le sélecteur vise un autre document que sa paire.
+        "COC.md": "# C\n\n[English](COC.md) | [Français](docs/Q.md)\n",
+        "docs/Q.md": "visé par un sélecteur qui n'est pas une paire\n",
+        # Traduction d'un document NON exempté que rien ne lie, et dont l'original a un sélecteur.
+        "docs/Y.md": "# Y\n\n[Français](Y.md) | [English](Y.en.md)\n",
+        "docs/Y.en.md": "# Y\n",
+        # Traduction d'un exempté sans aucun lien vers elle.
+        "COC.fr.md": "# C\n",
+    }
+    suivis = set(textes)
+    exemptes = {"AGENTS.md", "NOTICES.md", "COC.md"}
+    liens = {d: cibles(t, d, suivis) for d, t in textes.items()}
+    atteints = atteignables(liens, textes, suivis, "README.md", exemptes)
+    attendu = {"README.md", "docs/I.md", "AGENTS.en.md"}
+    if atteints != attendu:
+        return [f"témoin de FERMETURE en échec : attendu {sorted(attendu)}, obtenu {sorted(atteints)} "
+                "— seule la traduction qu'un exempté lie par son sélecteur peut passer par lui."]
+    return []
 
 
 def valider_instrument():
@@ -112,7 +192,7 @@ def valider_instrument():
     if trouve:
         return [f"témoin NÉGATIF en échec : {sorted(trouve)} compté(s) comme lien alors qu'une "
                 "MENTION n'est pas un lien — c'est exactement le défaut que cette garde attrape."]
-    return []
+    return valider_fermeture()
 
 
 def main():
@@ -143,10 +223,12 @@ def main():
         return 2
 
     liens = {}
+    textes = {}
     total = 0
     for d in docs:
         with open(os.path.join(racine_depot, d), encoding="utf-8", errors="replace") as fh:
-            liens[d] = cibles(fh.read(), d, suivis)
+            textes[d] = fh.read()
+        liens[d] = cibles(textes[d], d, suivis)
         total += len(liens[d])
 
     if total < MIN_LIENS:
@@ -156,15 +238,8 @@ def main():
               f"votre propre compte.")
         return 2
 
-    # Fermeture transitive depuis la page d'accueil.
-    atteints = {RACINE}
-    pile = [RACINE]
-    while pile:
-        cur = pile.pop()
-        for t in liens[cur]:
-            if t not in atteints:
-                atteints.add(t)
-                pile.append(t)
+    # Fermeture transitive depuis la page d'accueil, plus la paire de langue de chaque exempté.
+    atteints = atteignables(liens, textes, suivis, RACINE, EXEMPTES)
 
     for nom, raison in sorted(EXEMPTES.items()):
         if nom not in suivis:

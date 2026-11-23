@@ -1,5 +1,7 @@
 # Règles pour tout agent ou contributeur travaillant sur ce dépôt
 
+[Français](AGENTS.md) | [English](AGENTS.en.md)
+
 Ce dépôt est **public**. Ce fichier existe parce que les règles ci-dessous ont déjà été
 enfreintes, et que la mémoire d'une session ne survit ni à un changement d'agent, ni à une
 perte de contexte. Ce qui suit est donc **appliqué par des gardes**, pas seulement écrit.

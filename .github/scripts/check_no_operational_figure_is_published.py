@@ -50,11 +50,11 @@ cette garde tient : « tout chiffre daté dit d'où il vient ». BANC : banc, be
 harnais, fixture, témoin, VM, jeu de test, profil de banc, `cargo test`, poste de développement,
 une assertion de test. ARBRE : sur l'arbre, dans le dépôt, fichiers suivis, capteurs livrés, la
 suite, en release/debug (en anglais « in release » suivi d'une ponctuation), sur le binaire, en
-CI, une extrapolation, un pire cas. Un fichier de test ou de banc (chemin `tests/`, `tests.rs`, `bench/`, `BENCHMARK`) est un contexte de banc par
-construction. Un faux positif se corrige en DISANT le contexte (« au banc », « sur l'arbre »), ce
-qui rend le texte plus exact — jamais en retirant un mot à la garde. Le paragraphe est la fenêtre :
-quelques lignes de part et d'autre, sans franchir une ligne vide, et une ligne de tableau Markdown
-est un paragraphe à elle seule.
+CI, une extrapolation, un pire cas. Un fichier de test ou de banc (chemin `tests/`, `tests.rs`,
+`bench/`, `BENCHMARK`) est un contexte de banc par construction. Un faux positif se corrige en
+DISANT le contexte (« au banc », « sur l'arbre »), ce qui rend le texte plus exact — jamais en
+retirant un mot à la garde. Le paragraphe est la fenêtre : quelques lignes de part et d'autre,
+sans franchir une ligne vide, et une ligne de tableau Markdown est un paragraphe à elle seule.
 
 Le mot « production » désigne une installation réelle. Pour le mode d'exécution d'un binaire on
 écrit « à l'exécution » ou « hors tests » : c'est l'emploi du même mot pour deux choses qui rendait
@@ -341,6 +341,19 @@ def valider_instrument(inst):
             ["// measured on 2026-08-09 in production: the database holds 1 554 295 events"],
         "« release » précédé d'un mot qui finit par « in »":
             ["// measured on 2026-08-09: since the plugin release, 512 MiB of RAM per backup"],
+        # Chaque élargissement de l'indice qui acquitterait « release » au sens de VERSION a son
+        # témoin : un article admis devant le mot, un suffixe admis derrière, une autre préposition,
+        # une parenthèse admise comme ponctuation.
+        "« in the release » : un article entre « in » et « release » nomme une version":
+            ["// measured on 2026-08-09: in the release, the table held 1 554 295 rows"],
+        "« in releases » : le pluriel nomme des versions, pas un mode de construction":
+            ["// measured on 2026-08-09: in releases, the table held 1 554 295 rows"],
+        "« on release » : une autre préposition que « in » date une sortie de version":
+            ["// measured on 2026-08-09: on release, the table held 1 554 295 rows"],
+        "« since release » : une autre préposition que « in » date depuis une version":
+            ["// measured on 2026-08-09: since release, the table held 1 554 295 rows"],
+        "« in release » suivi d'une version entre parenthèses, ponctuée ensuite":
+            ["// measured on 2026-08-09: in release (v0.3), the table held 1 554 295 rows"],
     }
     for nom, lignes in positifs.items():
         acc, _ = inst.accuser(lignes, "daemon/src/x.rs")

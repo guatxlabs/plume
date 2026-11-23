@@ -158,15 +158,15 @@ precisely the corpus a guard needs. Delete your mirrors when you are done.
 
 **Corollary for guards with a tracked corpus.** A guard whose corpus comes from `git ls-files` is
 blind to a new file until it is added. Its green is then an artifact: run
-`git add -N` on your new files *before* playing the battery, otherwise you validate a tree that
+`git add -N` on your new files *before* running the battery, otherwise you validate a tree that
 integration will not see the way you do.
 
 ## 7. The machine is never yours alone either
 
-**Play the battery with `.github/scripts/jouer-la-batterie-de-gardes.sh`, never with a loop of
+**Run the battery with `.github/scripts/jouer-la-batterie-de-gardes.sh`, never with a loop of
 your own.** The launcher asks a question before taking the machine — is a cargo build or a
 test suite in progress? — and REFUSES, saying what it is waiting for, with `--attendre` to
-wait instead. It then plays the guards **in series**, one at a time, and asks the question again
+wait instead. It then runs the guards **in series**, one at a time, and asks the question again
 before each one.
 
 This is not a style preference, it is `P8.27-h`: some forty scripts launched at the same

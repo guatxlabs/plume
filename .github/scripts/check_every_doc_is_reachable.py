@@ -153,9 +153,27 @@ def valider_fermeture():
         "docs/Y.en.md": "# Y\n",
         # Traduction d'un exempté sans aucun lien vers elle.
         "COC.fr.md": "# C\n",
+        # Exempté dont le sélecteur vise un autre fichier, et dont le CORPS lie sa traduction :
+        # la ligne de sélecteur ne rend pas atteignable un lien ordinaire du corps.
+        "SEL.md": "# S\n\n[English](SEL.md) | [Français](docs/R.md)\n\n[fr](SEL.fr.md)\n",
+        "SEL.fr.md": "# S\n",
+        "docs/R.md": "visé par un sélecteur qui n'est pas une paire\n",
+        # Exempté dont le sélecteur vise la traduction d'un AUTRE document.
+        "AUTRE.md": "# X\n\n[Français](AUTRE.md) | [English](docs/Z.fr.md)\n",
+        "docs/Z.fr.md": "traduction d'un autre document\n",
+        # Paire liée au milieu d'une ligne : ce n'est pas une ligne de sélecteur.
+        "MILIEU.md": "# M\n\nLangues : [Français](MILIEU.md) | [English](MILIEU.en.md)\n",
+        "MILIEU.en.md": "# M\n",
+        # Libellés qui ne sont pas Français/English.
+        "LIBELLE.md": "# L\n\n[FR](LIBELLE.md) | [EN](LIBELLE.en.md)\n",
+        "LIBELLE.en.md": "# L\n",
+        # Texte après la paire : ce n'est pas une ligne de sélecteur.
+        "SUITE.md": "# T\n\n[Français](SUITE.md) | [English](SUITE.en.md) (version anglaise)\n",
+        "SUITE.en.md": "# T\n",
     }
     suivis = set(textes)
-    exemptes = {"AGENTS.md", "NOTICES.md", "COC.md"}
+    exemptes = {"AGENTS.md", "NOTICES.md", "COC.md", "SEL.md", "AUTRE.md", "MILIEU.md", "LIBELLE.md",
+                "SUITE.md"}
     liens = {d: cibles(t, d, suivis) for d, t in textes.items()}
     atteints = atteignables(liens, textes, suivis, "README.md", exemptes)
     attendu = {"README.md", "docs/I.md", "AGENTS.en.md"}

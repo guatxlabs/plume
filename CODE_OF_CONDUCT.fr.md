@@ -19,7 +19,7 @@ Exemples de comportements qui contribuent à un environnement positif pour notre
 
 - Faire preuve d'empathie et de bienveillance envers les autres
 - Respecter les opinions, les points de vue et les expériences qui diffèrent des siens
-- Donner et recevoir avec élégance des critiques constructives
+- Donner des critiques constructives et les recevoir avec élégance
 - Assumer ses responsabilités et présenter ses excuses aux personnes touchées par nos erreurs, et
   tirer les leçons de l'expérience
 - Se concentrer sur ce qui est le mieux non seulement pour nous en tant qu'individus, mais pour

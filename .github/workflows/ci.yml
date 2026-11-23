@@ -2480,6 +2480,16 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_an_advanced_module_is_engaged_by_what_the_tree_reads.py
 
+      # CHAQUE DOCUMENT EXISTE DANS SES DEUX LANGUES, ET SA TRADUCTION GARDE LES FAITS DE L'ORIGINAL. Les
+      # documents sont en anglais d'abord (`X.md`) et en français (`X.fr.md`) ; rien ne liait les deux
+      # fichiers. La garde joue l'inventaire en strict (tout document suivi a sa paire, sauf l'ensemble
+      # nommé `UNE_SEULE_LANGUE`, chaque entrée avec sa raison et jamais périmée) puis la parité de chaque
+      # paire : titres, commandes, tableaux, cibles de liens, sélecteur, ancres, nombres, identifiants.
+      - name: Chaque document existe dans ses deux langues, en parite
+        id: garde_86
+        continue-on-error: true
+        run: python3 .github/scripts/check_every_document_is_paired_and_in_parity.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2974,6 +2984,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_83.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_paid_edition_vocabulary_returns.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_84.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_published_rule_count_is_the_count_shipped.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_85.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_advanced_module_is_engaged_by_what_the_tree_reads.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_86.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_document_is_paired_and_in_parity.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
 

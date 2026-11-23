@@ -338,6 +338,14 @@ sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien
 
 ## Translation parity
 
+**English first.** Every document exists in two languages: the original `X.md`, in English, and
+its French translation `X.fr.md`, next to it. A change to a document touches both languages in the
+same commit. `.github/scripts/check_every_document_is_paired_and_in_parity.py` holds the tree to it,
+in CI and in the guard battery: a tracked document without its pair, or any parity gap described
+below, fails it. Two documents are kept in a single language, and both are named: `docs/ROADMAP.md`
+(the work log, kept in French) and `docs/BENCHMARK.md` (rendered by `bench/report.py`; its
+bilingual version is under way).
+
 A translation keeps the facts of its original: same headings (count and levels), same code blocks
 and same commands outside comments, same tables, same link targets — a link to `Y.md` points to
 `Y.fr.md` on the French side when that file exists —, same numbers and same identifiers between
@@ -356,6 +364,7 @@ python3 .github/scripts/parite_des_langues.py                      # every track
 python3 .github/scripts/parite_des_langues.py --paire X.md X.fr.md # a single pair
 python3 .github/scripts/parite_des_langues.py --inventaire         # documents without their pair
 python3 .github/scripts/test_parite_des_langues.py                 # the tool's own tests
+python3 .github/scripts/check_every_document_is_paired_and_in_parity.py # the guard
 ```
 
 The suffix convention is a parameter (`--suffixe-original`, `--suffixe-traduction`, by default

@@ -354,6 +354,14 @@ sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien
 
 ## Parité des traductions
 
+**L'anglais d'abord.** Chaque document existe en deux langues : l'original `X.md`, en anglais, et
+sa traduction française `X.fr.md`, à côté. Une modification d'un document touche ses deux langues
+dans le même commit. `.github/scripts/check_every_document_is_paired_and_in_parity.py` y tient
+l'arbre, dans l'intégration continue et dans la batterie de gardes : un document suivi sans sa
+paire, ou tout écart de parité décrit ci-dessous, la fait échouer. Deux documents restent en une
+seule langue, et tous deux sont nommés : `docs/ROADMAP.md` (le journal de travail, tenu en
+français) et `docs/BENCHMARK.md` (rendu par `bench/report.py` ; sa version bilingue est en cours).
+
 Un document traduit garde les faits de son original : mêmes titres (nombre et niveaux), mêmes blocs
 de code et mêmes commandes hors commentaires, mêmes tableaux, mêmes cibles de liens — un lien vers
 `Y.md` vise `Y.fr.md` côté français quand ce fichier existe —, mêmes nombres et mêmes identifiants
@@ -372,6 +380,7 @@ python3 .github/scripts/parite_des_langues.py                      # toutes les 
 python3 .github/scripts/parite_des_langues.py --paire X.md X.fr.md # une seule paire
 python3 .github/scripts/parite_des_langues.py --inventaire         # documents sans leur paire
 python3 .github/scripts/test_parite_des_langues.py                 # épreuves de l'outil
+python3 .github/scripts/check_every_document_is_paired_and_in_parity.py # la garde
 ```
 
 La convention de suffixe est un paramètre (`--suffixe-original`, `--suffixe-traduction`, par défaut

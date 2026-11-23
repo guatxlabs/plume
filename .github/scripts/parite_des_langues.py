@@ -71,7 +71,8 @@ DEUX MODES
   rend 0 tant que `--strict` n'est pas passé ; avec `--strict`, un écart quelconque rend 1. Sur zéro
   document suivi, ou sur un dépôt illisible, il rend 2 dans les deux cas.
 
-L'outil n'est câblé dans aucun flux d'intégration : son nom ne porte pas le préfixe des gardes.
+L'outil n'est pas lui-même une garde : `check_every_document_is_paired_and_in_parity.py` l'appelle
+(inventaire strict, puis comparaison de toutes les paires), et c'est elle qui est câblée.
 
 CE QU'IL NE VOIT PAS
 --------------------

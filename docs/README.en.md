@@ -3,8 +3,8 @@
 [Français](README.md) | [English](README.en.md)
 
 Entry point of `docs/`. The *what* and *why* of the architecture are in
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md); installation and the three deployment modes in
-[`../README.md`](../README.md); the contribution rules in [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+[`../ARCHITECTURE.md`](../ARCHITECTURE.en.md); installation and the three deployment modes in
+[`../README.md`](../README.en.md); the contribution rules in [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 **Status** — every document carries one of these states. Read it before following a procedure: several
 documents describe a **design** whose runtime wiring does not exist yet, and this is said
@@ -28,9 +28,9 @@ refuses an addition that goes in without being written down (`P9.7-b`).
 | Document | State | What for |
 |---|---|---|
 | [INSTALLER-SANS-OUVRIR-DE-BRECHE.md](INSTALLER-SANS-OUVRIR-DE-BRECHE.md) | ✅ | **Installing it yourself without opening a breach, step by step** — what is open by default in each mode, TLS and authentication, where each token lives and what it allows, **a sensor-by-sensor table** (what it reads, its privileges, what it brings into the SIEM, its risk, the query that proves it reports), the transport, the accepted risks, and the sensor that feeds each seeded dashboard. |
-| [TROIS-MODES.md](TROIS-MODES.md) | ✅ | **The same gesture in all three modes** — native host, Docker, k3s. Where things live, how to change a setting, add a source, create a token, back up, update — and **the gestures that do NOT exist** in a mode, named instead of smoothed over. |
+| [TROIS-MODES.md](TROIS-MODES.en.md) | ✅ | **The same operation in all three modes** — native host, Docker, k3s. Where things live, how to change a setting, add a source, create a token, back up, update — and **the operations that do NOT exist** in a mode, named instead of smoothed over. |
 | [CONSOLE.md](CONSOLE.md) | ✅ | **The console, space by space and tab by tab** — what each one does, which role sees it, what it does not do. Derived from the navigation structure, not copied. |
-| [GXQL.md](GXQL.md) | ✅ | **The search language** — the twenty commands, the functions, the bounds, the read-only layers, and above all **what the grammar does not accept** (no `OR`, no grouping, no multi-field sort). |
+| [GXQL.md](GXQL.en.md) | ✅ | **The search language** — the twenty commands, the functions, the bounds, the read-only layers, and above all **what the grammar does not accept** (no `OR`, no grouping, no multi-field sort). |
 | [AGENTS-PROTOCOLE.md](AGENTS-PROTOCOLE.md) | ✅ | **The agents and their protocol** — the wire contract, the tokens and what "bound to the host" really means, the disk buffer and **its lack of a bound on the shell side**, the watermarks, the return channel, TLS. |
 | [CHIFFREMENT-COMPRESSION.md](CHIFFREMENT-COMPRESSION.md) | ✅ | **Encryption and compression, as they are** — what is encrypted, what is not, the `age(zstd(…))` order, and the measured defect: **without a database key, the backup scheduler produces nothing**. |
 
@@ -51,7 +51,7 @@ refuses an addition that goes in without being written down (`P9.7-b`).
 | Document | State | What for |
 |---|---|---|
 | [SDK.md](SDK.md) | ✅ | The **bring-your-own-vendor** model: where to plug in a source. |
-| [CIM.md](CIM.md) | ✅ | The common information model — the event taxonomy rules are composed on. |
+| [CIM.md](CIM.en.md) | ✅ | The common information model — the event taxonomy rules are composed on. |
 | [VALEURS-DES-CAPTEURS.md](VALEURS-DES-CAPTEURS.md) | 📐 | **What a sensor emits, and what its values mean.** The common model above declares **one** vocabulary per field; a sensor, however, writes only a subset, and two sensors write the same field name with unrelated meanings — so the key is the pair **(source, field)**. Says what the shipped producers already declare, what reaches neither the wire nor the screen, and why the gap is not closed by a hand-written table (`P11.19-a`). |
 | [PARSER-DSL.md](PARSER-DSL.md) | ✅ | Declarative parser (CIM DSL): add a log format **without a rebuild**. |
 | [CONNECTOR-PRESETS.md](CONNECTOR-PRESETS.md) | ✅ | Ready-to-use `http_pull` presets (AWS, M365/Entra, Okta, CrowdStrike, SentinelOne, GCP, Cloudflare, Google Workspace). Files in [`connector-presets/`](connector-presets/). |
@@ -111,4 +111,4 @@ which is what makes it possible to add one without touching the central server.
 - [`soql-templates/`](soql-templates/) — GXQL query library. **Historical directory name
   kept on purpose**: the file is embedded by `include_str!` from the daemon and copied by the
   `Dockerfile`; it is a build identifier, not a user-facing label (see the GXQL/`soql` naming
-  boundary described in [`../README.md`](../README.md)).
+  boundary described in [`../README.md`](../README.en.md)).

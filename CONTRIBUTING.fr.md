@@ -53,7 +53,7 @@ Une demande de fusion qui affaiblit l'un d'eux sera **refusée**, si utile que s
   `soql_field`/`soql_filter_field` (dans guatx-core) **avant** l'agrégation ou le renommage. N'ajoutez
   pas de chemin de lecture qui hydrate des lignes brutes dans une requête utilisateur, et ne
   réimplémentez le masquage nulle part ailleurs. Les règles DENY arment aussi l'autorisateur SQLite, si
-  bien que le refus tient même pour le SQL brut d'un admin. Échouer **fermé** : rôle inconnu → masqué ;
+  bien que le refus tient même pour le SQL brut d'un admin. Comportement **fail-closed** : rôle inconnu → masqué ;
   règle illisible au rechargement → traitée comme DENY.
 - **Un collecteur qui ne peut pas collecter doit le DIRE — un `exit 0` silencieux est un mensonge.** Un
   capteur dont un prérequis manque (binaire, fichier source, identifiant, sous-système) sortait **avec
@@ -196,9 +196,9 @@ Tous les backends optionnels sont **OFF par défaut**. La liste complète des fe
 
 | feature | couverture CI |
 |---|---|
-| `cold_tier` | **compilée et testée** (job `cold-tier`, compte asserté propre) |
-| `ai` | **compilée et testée** (job `ai`, compte asserté propre) — toute la suite tourne avec la feature active |
-| `s3_backup` | **compilée et testée, filtrée** (job `features` : `cargo check`, puis seulement les tests `sink_s3_`, compte asserté propre `EXPECTED_S3_TESTS`) — jamais contre un stockage objet réel |
+| `cold_tier` | **compilée et testée** (job `cold-tier`, son propre compte asserté) |
+| `ai` | **compilée et testée** (job `ai`, son propre compte asserté) — toute la suite tourne avec la feature active |
+| `s3_backup` | **compilée et testée, filtrée** (job `features` : `cargo check`, puis seulement les tests `sink_s3_`, son propre compte asserté `EXPECTED_S3_TESTS`) — jamais contre un stockage objet réel |
 | `duckdb`, `clickhouse`, `clickhouse-ha`, `ldap`, `saml` | **`cargo check` seulement** — vérifiées par le typage, jamais exécutées |
 
 Une régression de comportement dans la validation des assertions SAML, le bind LDAP ou le backend
@@ -282,7 +282,7 @@ les réglages de ce dépôt et sur une fusion par écrasement réelle réglée �
 d'écrasement porte trois choses que les gardes refusent, et aucun réglage du dépôt n'en retire une
 seule : les **trailers de signature des commits écrasés sont reportés** (ce qui ramène une adresse hors
 projet), une **ligne `Co-authored-by:` par auteur distinct** est ajoutée, et le commit d'écrasement est
-**committé par le compte de la plateforme**, pas par l'identité canonique. Prouvé par mutation : le même
+**commité par le compte de la plateforme**, pas par l'identité canonique. Prouvé par mutation : le même
 corps, privé de ces seules lignes, passe.
 
 Une demande de fusion n'est donc **pas** un chemin d'entrée ici — pas même une écrite par le mainteneur.

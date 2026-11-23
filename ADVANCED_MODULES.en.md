@@ -51,7 +51,7 @@ If Plume fits on one node, the core is the whole product.
 
 These capabilities target **scale**, **work across several organizations** or particular
 **identity and storage** requirements. They are built on top of the core, the core does not depend
-on them, and each one is only engaged by an explicit gesture. For almost all of them, that gesture is a
+on them, and each one is only engaged by an explicit operation. For almost all of them, that operation is a
 **Cargo feature** (absent from the binary if it is not compiled), often paired with a **runtime
 switch** that defaults to "off"; the default build compiles **none** of these features,
 and the shipped container image compiles `ldap` and `cold_tier` (`ARG PLUME_FEATURES` of the

@@ -11,8 +11,8 @@ The **same** binary deploys on **k3s/k8s** (behind a reverse proxy + SSO forward
 hardcoded — everything goes through `PLUME_*` variables (see [`deploy/PROFILE.md`](deploy/PROFILE.md)).
 The search compiler is **shared** with the public `guatx-core` crate.
 
-> Reference documents (kept up to date): [`README.md`](README.md) · [`deploy/PROFILE.md`](deploy/PROFILE.md)
-> (deploy on any infrastructure) · [`deploy/K8S.md`](deploy/K8S.md) · [`CAHIER-DES-CHARGES.md`](CAHIER-DES-CHARGES.md).
+> Reference documents (kept up to date): [`README.md`](README.en.md) · [`deploy/PROFILE.md`](deploy/PROFILE.md)
+> (deploy on any infrastructure) · [`deploy/K8S.md`](deploy/K8S.md) · [`CAHIER-DES-CHARGES.md`](CAHIER-DES-CHARGES.en.md).
 
 ---
 
@@ -133,7 +133,7 @@ label of YOUR ingress controller) — no other pod can reach the daemon directly
 - **`respond.sh`** (responder, opt-in `PLUME_WITH_RESPONDER=1`): **pull** model (no inbound
   network on the agent) — `plume-respond-agent.timer` pulls `/api/actions/pending`, applies
   bans/unbans by **delegating** to CrowdSec → fail2ban → nft, **dry-run by default** (`PLUME_RESPONDER_APPLY=0`)
-  + **exemption list** `PLUME_RESPONDER_ALLOW` (`/etc/plume/responder-ban-exempt.allow` — the value SET by
+  + **ban-exempt list** `PLUME_RESPONDER_ALLOW` (`/etc/plume/responder-ban-exempt.allow` — the value SET by
   `bootstrap-agent.sh` on a new agent installation, NOT the script's fallback: that fallback, used when the
   variable is not set, is `/etc/plume/responder.allow` and therefore shares its path with the daemon's list of
   services; both values are true, for two different objects). Token **bound to the host** (anti-IDOR).
@@ -147,7 +147,7 @@ label of YOUR ingress controller) — no other pod can reach the daemon directly
   and is measured on both readers, is that the daemon recognises **strictly more** forms as an address
   than the agent does — so no line is silently accepted by both. See the box in the
   README and `collectors/predicat-adresse.corpus`.
-  ⚠️ `P4.7-c`, **open**: the **central's** responder reads **no** exemption list.
+  ⚠️ `P4.7-c`, **open**: the **central's** responder reads **no** ban-exempt list.
 - **`minio-audit-relay.py`** (opt-in): MinIO webhook receiver (object audit) → spool → `ship.sh`.
 - **Installation**: `bootstrap.sh` (central host) / `bootstrap-agent.sh` (agent). Host layout:
   binary `/usr/local/bin/plume-daemon`, collectors `/usr/local/lib/plume/collectors/`, config
@@ -229,11 +229,11 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   **`event_dim_rollup`** (caps **each dimension** to the top-N per bucket, `PLUME_ROLLUP_DIM_TOPN`).
   Refreshed periodically (`PLUME_ROLLUP_INTERVAL_S`) + incremental backfill.
   **Each one PUBLISHES what it covers**, and no route reads beyond that: `event_rollup` publishes its bound
-  (`RollupCoverage`) and REbuilds the bands where a line arrived late; `event_dim_rollup`
+  (`RollupCoverage`) and REbuilds the bands where a row arrived late; `event_dim_rollup`
   maintains a **band** that rises, extends downward (`PLUME_ROLLUP_DIM_BACKFILL` per tick, down to the oldest
   `ts` of `event`) and shrinks on a backdated write. Coverage not published → the route
   **declines** and the raw scan serves. See `daemon/src/rollup_coverage.rs` for the measurement that motivated
-  both (a ×6,6 undercount served as exact; a coverage `0` served as a data `0`).
+  both (a ×6.6 undercount served as exact; a coverage `0` served as a data `0`).
 - **Retention**: `PLUME_RETENTION_DAYS` (events, default 30), `PLUME_METRIC_DAYS`, `PLUME_SNAPSHOT_DAYS`,
   `PLUME_ALERT_DAYS`, metric downsampling (`PLUME_METRIC_RAW_HOURS`), purge + `VACUUM`.
 
@@ -251,21 +251,21 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   count by <dim>`, `count by source,severity`) is rewritten onto the **pre-aggregated** counters
   of `event_rollup`/`event_dim_rollup` → an answer in a few milliseconds **because it does not read the
   raw events**: the 92 seeded panels answer in **a few milliseconds** by reading **a few tens of
-  thousands of pre-aggregated rollup lines**, not the **million or more events** of a real database (reading of
+  thousands of pre-aggregated rollup rows**, not the **million or more events** of a real database (reading of
   2026-08-05 by `plume-daemon db-stats --par-objet`). Each answer carries
   `served_from: rollup|raw` + `approx` +
   `truncated` — the analyst **always** sees whether the figure is exact or aggregated.
-  **And when it is truncated, it carries BY HOW MUCH**: the per-dimension top-N cap discards from x1,0 to
-  **x16,4** depending on the dimension (measured 2026-08-01, bench of 1 436 026 events, `daemon/src/topn_cap.rs`), which
+  **And when it is truncated, it carries BY HOW MUCH**: the per-dimension top-N cap discards from x1.0 to
+  **x16.4** depending on the dimension (measured 2026-08-01, bench of 1 436 026 events, `daemon/src/topn_cap.rs`), which
   a simple flag did not say. The rollup job writes, in the same statement that truncates, one
-  **remainder line** per (bucket, source, dim, env) — written **even at zero**, otherwise its absence
+  **remainder row** per (bucket, source, dim, env) — written **even at zero**, otherwise its absence
   would be indistinguishable from a zero remainder. The route reads it and publishes `topn_ecartes`/`topn_servis`/`topn_total`.
-  Buckets without a remainder line (aggregated by an earlier binary) → the extent is **admitted as unknown**,
+  Buckets without a remainder row (aggregated by an earlier binary) → the extent is **admitted as unknown**,
   never replaced by 0. **What is NOT routed
   is not routed on purpose**: a `count by source,severity,action` (or `host`, or `src_ip`) falls back to the
   **raw scan**, measured at **about thirty seconds** on a real database **no later than 2026-07-23** (date of commit
   `c784f75`, which records the measurement; the date of the measurement itself is not recorded) — on a topology
-  that retention has since purged; **the number of lines the database held at that moment was never
+  that retention has since purged; **the number of rows the database held at that moment was never
   recorded**, and the latency has **not** been re-measured since (reading of the current volume: 2026-08-05). This is
   therefore not a current cost, it is a dated measurement. The refusal to route is about
   correctness, not latency: the rollup merges `NULL` and `''` on these
@@ -447,7 +447,7 @@ is not ordered by an index makes SQLite **sort**. Under `temp_store=MEMORY`, thi
 spill mechanism** — not an overly generous setting, an absence of mechanism: in SQLite,
 `sqlite3VdbeSorterInit` only sets `mxPmaSize` if `temp_store=FILE`, and `sqlite3VdbeSorterWrite`
 encloses the whole spill computation in `if( mxPmaSize )`. The sorter therefore materialised one
-record **per scanned line**. Switching to `temp_store=FILE` makes a ceiling exist. Measured on
+record **per scanned row**. Switching to `temp_store=FILE` makes a ceiling exist. Measured on
 3 648 003 events, process RSS peak (fresh daemon per cell, `interactive:true`, average of
 2 runs):
 
@@ -469,7 +469,7 @@ makes it explicitly, for a deployment whose threat model excludes theft of the v
 `0` = no bound) caps the bytes that the **process** holds open under the spill
 directory; beyond that, the current statement is stopped and no result is returned — the refusal
 NAMES the lever, and [`deploy/PROFILE.md`](deploy/PROFILE.md) as well as the
-[README](README.md#configuration--les-variables-plume_) describe what it bounds and what it does not
+[README](README.en.md#configuration-the-plume_-variables) describe what it bounds and what it does not
 bound. It bounds neither RAM nor the offending query: the bound applies to what the process
 holds, not to what a query writes.
 
@@ -499,7 +499,7 @@ now divides the cache on its own, instead of silently exceeding the budget.
 
 **If you enable spilling, three operational points.** (1) A query that fits under the budget
 pays **nothing** (no byte written); one that exceeds it pays in **time**, and that time is a
-property of the **storage medium** — `dc(message)` measured at ×1,7 on tmpfs, ×3,4 on btrfs, ×8,6 on a
+property of the **storage medium** — `dc(message)` measured at ×1.7 on tmpfs, ×3.4 on btrfs, ×8.6 on a
 `fuse.gocryptfs` mount. **The answers are identical** in every configuration measured
 (`dc(message)` = 2 234 123 everywhere). (2) The files live in `<répertoire de la base>/sqltmp` with
 `0700` and SQLite **unlinks them as soon as they are opened** (so they have no name, and are deleted even if the process dies),

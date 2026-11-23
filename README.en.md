@@ -50,23 +50,23 @@ on **Docker**, a **bare host (systemd)** or **Kubernetes/k3s**, in **2 GB of RAM
 **Architecture** — *Central*: a single Rust binary that ingests, stores and serves the API + the PWA on `:7000`.
 *Agents*: dependency‑free `sh` + `systemd` collectors (plugins, disabled by default) that push to the central
 (`POST /api/ingest`, bearer token); a multi‑OS endpoint agent (Linux today, Windows/macOS in progress).
-The central is also its own agent. In‑depth documentation: [`ARCHITECTURE.md`](ARCHITECTURE.md) ·
-**[documentation index](docs/README.md)** (each document carries its state there: shipped / opt-in /
-design) — including [SDK](docs/SDK.md) · [CIM](docs/CIM.md) · [parsing DSL](docs/PARSER-DSL.md) ·
+The central is also its own agent. In‑depth documentation: [`ARCHITECTURE.md`](ARCHITECTURE.en.md) ·
+**[documentation index](docs/README.en.md)** (each document carries its state there: shipped / opt-in /
+design) — including [SDK](docs/SDK.md) · [CIM](docs/CIM.en.md) · [parsing DSL](docs/PARSER-DSL.md) ·
 [Sigma importer](docs/SIGMA-IMPORTER.md) · [disaster recovery](docs/DR-plume-restore.md).
 
 **To use it**, pages written for the operator rather than for the contributor:
 **[install without opening a breach, step by step](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md)** ·
-[the same gesture in all three modes](docs/TROIS-MODES.md) ·
+[the same operation in all three modes](docs/TROIS-MODES.en.md) ·
 [the console, tab by tab](docs/CONSOLE.md) ·
-[the GXQL search language](docs/GXQL.md) ·
+[the GXQL search language](docs/GXQL.en.md) ·
 [the agents and their protocol](docs/AGENTS-PROTOCOLE.md) ·
 [encryption and compression, as they are](docs/CHIFFREMENT-COMPRESSION.md).
 
 ## What's included
 | Domain | Capability |
 |---|---|
-| **Search** | GXQL (*GuatX Query Language*, **formerly "SOQL"** — same language, same syntax, only the name changes) — an SPL‑style pipe language compiled to **read‑only, injection‑proof** SQL: allowlisted columns, shape‑constrained identifiers, **escaped literals** (the GXQL path does not use bound parameters — those are on `/api/search`), a single prepared statement, a time budget. Full grammar, bounds and **what the language does not accept**: **[`docs/GXQL.md`](docs/GXQL.md)**. No query, panel or rule needs rewriting; the technical identifiers (route `/api/soql/*`, JSON key `soql`, column `is_soql`, Rust module `guatx_core::soql`) stay `soql`. |
+| **Search** | GXQL (*GuatX Query Language*, **formerly "SOQL"** — same language, same syntax, only the name changes) — an SPL‑style pipe language compiled to **read‑only, injection‑proof** SQL: allowlisted columns, shape‑constrained identifiers, **escaped literals** (the GXQL path does not use bound parameters — those are on `/api/search`), a single prepared statement, a time budget. Full grammar, bounds and **what the language does not accept**: **[`docs/GXQL.md`](docs/GXQL.en.md)**. No query, panel or rule needs rewriting; the technical identifiers (route `/api/soql/*`, JSON key `soql`, column `is_soql`, Rust module `guatx_core::soql`) stay `soql`. |
 | **Detection** | Rules + SOAR‑lite playbooks · **Sigma import** (single and bulk, with ATT&CK coverage delta) · **ATT&CK coverage matrix** (**14 tactics × 183 techniques** curated — the `guatx_core::attack::CATALOG` catalog, blind spots highlighted). |
 | **Threat‑intel** | IOC store · **STIX 2.1** import · **matching at ingestion** (`ti_match`, enrich without deleting) · **TAXII 2.1** feed connector · Bloom‑filter‑based membership for scale. |
 | **Risk (RBA)** | Per‑entity risk scoring (Splunk‑ES model) · alerting on risk incidents (cumulative / distinct tactics / velocity) · a single deduplicated alert per entity. |
@@ -234,7 +234,7 @@ cd daemon && cargo build --release && cd ..          # single binary (stable Rus
 sudo bash bootstrap.sh                               # central: daemon + units, :7000 (idempotent)
 ```
 
-> **In a container or a cluster, this gesture does not take this form** (the central is an image, rebuilt then replaced): see [docs/TROIS-MODES.md §1](docs/TROIS-MODES.md) and [docs/TROIS-MODES.md §3.9](docs/TROIS-MODES.md).
+> **In a container or a cluster, this operation does not take this form** (the central is an image, rebuilt then replaced): see [docs/TROIS-MODES.md §1](docs/TROIS-MODES.en.md) and [docs/TROIS-MODES.md §3.9](docs/TROIS-MODES.en.md).
 **What this compile line does not include.** `cargo build --release` **without `--features`** is the
 assumed default of host mode, and it leaves out the **two** optional capabilities that the container
 image does compile (`ARG PLUME_FEATURES=ldap,cold_tier`, see [`Dockerfile`](Dockerfile)):
@@ -273,7 +273,7 @@ sudo chmod 0600 /etc/plume/plume.conf   # root only: no `soc` process reads this
 sudo bash bootstrap-agent.sh          # conf already present -> kept as is
 ```
 
-> **In a container or a cluster, this gesture does not take this form** (the token and the settings are set in the deployment's `env:`, not by an installer): see [docs/TROIS-MODES.md §3.5](docs/TROIS-MODES.md) and [docs/TROIS-MODES.md §3.2](docs/TROIS-MODES.md).
+> **In a container or a cluster, this operation does not take this form** (the token and the settings are set in the deployment's `env:`, not by an installer): see [docs/TROIS-MODES.md §3.5](docs/TROIS-MODES.en.md) and [docs/TROIS-MODES.md §3.2](docs/TROIS-MODES.en.md).
 
 > ### ⚠️ NEVER pass the token on the command line
 > The form `sudo env PLUME_TOKEN='<token>' bash bootstrap-agent.sh` **leaks the token into the SOC
@@ -312,14 +312,14 @@ machine**, then set `PLUME_DB_KEY_ESCROWED=1`. To bring your own key, set it **b
 first start**: `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` (preferred — a file mounted read‑only,
 **fail‑closed** if it is missing) or `PLUME_DB_KEY=<passphrase>` (readable via `/proc/<pid>/environ`).
 **An EXISTING database is never converted by a start**: a key set on a plaintext database makes the start
-**refuse**, naming the explicit and irreversible gesture `plume-daemon chiffrer-au-repos`
+**refuse**, naming the explicit and irreversible operation `plume-daemon chiffrer-au-repos`
 ([`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md)).
 Both can be set either **in the environment or in the configuration file**
 (`/etc/plume/soc.conf` on a host, 0640 — it is even the most discreet place: the file is not
 readable via `/proc/<pid>/environ`); the environment wins if it carries the same key. *Before 2026‑08‑09
 (P8.7‑b) a key written in the file only encrypted the cold tier and left the hot database in
 plaintext, without saying so; if you are in that case, the daemon announces it at start, then **refuses to
-start** on that plaintext database until the `chiffrer-au-repos` gesture — or until the key is removed, which
+start** on that plaintext database until the `chiffrer-au-repos` operation — or until the key is removed, which
 restores the previous state.*
 **Loss of the key = loss of the database**: keep it off the machine.
 
@@ -342,7 +342,7 @@ bash uninstall.sh --mode k3s --apply --purge      # + PVC + Namespace (destructi
 
 **Three properties, and what they cost.**
 
-- **The default gesture destroys nothing irreversible.** It removes the software and leaves the
+- **The default operation destroys nothing irreversible.** It removes the software and leaves the
   data. `--purge` **lists what it is going to destroy before doing it** — each path with its
   size, the volume, the PVC, the system user — then asks for confirmation.
 - **It reports what it could not remove**, and the **exit code becomes 3**. What
@@ -381,7 +381,7 @@ output into a `source=<SOURCE>` event.
 
 #### End to end, assuming nothing is known
 
-Five gestures. None is optional, and the fifth is the one people forget: **proving that the
+Five operations. None is optional, and the fifth is the one people forget: **proving that the
 events arrive**.
 
 **① Install the generic collector.** It is **not** installed by default: `bootstrap-agent.sh`
@@ -396,7 +396,7 @@ The token and the central do **not** go through this line: `sudo` logs it in ful
 sensor would bring it into the SIEM (see the warning above). On a first installation,
 first write `/etc/plume/plume.conf` with `tee`, as in [B](#b-bare-host-systemd--a-first-class-mode-without-docker).
 
-> **In a container or a cluster, this gesture does not take this form** (a collection source is added some other way, or does not exist in that mode): see [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.md).
+> **In a container or a cluster, this operation does not take this form** (a collection source is added some other way, or does not exist in that mode): see [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.en.md).
 
 **② Create the inputs directory.** **No script creates it** — neither `bootstrap.sh`, nor
 `bootstrap-agent.sh`, nor the collector itself. Without it, `custom.sh` collects nothing: it emits a
@@ -531,7 +531,7 @@ search category=config collect_status=unavailable | table host, source, reason, 
 
 Anything that produces text can be collected this way: a Linux log, a REST API, a database —
 the collector runs on a Linux host, but the **target** can be any system.
-> **Linux** (server or workstation, any distribution) is covered natively by the collectors
+> **Linux** (server or desktop, any distribution) is covered natively by the collectors
 > (`collectors/*.sh`, POSIX-sh). A collector whose tool is absent **disables itself — and SAYS SO**:
 > it emits a `category=config` event with `collect_status=unavailable` and a `reason`
 > (`missing-dependency`, `missing-source`, `missing-config`, `subsystem-absent`, `unreachable`). The
@@ -569,7 +569,7 @@ the collector runs on a Linux host, but the **target** can be any system.
 > sudo env PLUME_EXTRA_COLLECTORS="journal auditd" bash bootstrap-agent.sh   # installs, DOES NOT ENABLE
 > sudo systemctl enable --now plume-journal.timer plume-auditd.timer         # the operator enables
 > ```
-> **In a container or a cluster, this gesture does not take this form** (the shell collectors are a host artifact): see [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.md).
+> **In a container or a cluster, this operation does not take this form** (the shell collectors are a host artifact): see [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.en.md).
 > `journal` (→ `category=auth`, sources `sshd`/`sudo`/`su`) is **immediately** productive. `auditd`
 > (→ `category=exec`) needs, in addition, the **kernel** to log `execve` calls — it is an audit
 > policy, not a collector setting. Two commands:
@@ -595,7 +595,7 @@ the collector runs on a Linux host, but the **target** can be any system.
 > `EXECVE` records; both traps fixed → 9 rules and `category=exec` fed.*
 >
 > **Windows** (desktop, enterprise, Windows Server) has a **turnkey native PowerShell collector** — events · firewall · network · Defender — in **[`collectors/windows/`](collectors/windows/)**: copy it, schedule it (a task every 5 min), it POSTs directly to the central. **macOS**: via a scripted input (`log show`).
-> **In a container or a cluster, this gesture does not take this form** (the shell collectors are a host artifact): see [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.md).
+> **In a container or a cluster, this operation does not take this form** (the shell collectors are a host artifact): see [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.en.md).
 
 #### The shipped collectors — forty exist, three get installed
 
@@ -645,7 +645,7 @@ FIM); `ship` ships. **No security event** arrives as long as nothing else is ena
 | `kube-rbac` | Kubernetes RBAC (who can do what) | `kubectl` |
 | `pod-logs` | pod logs, security‑filtered | access to `/var/log/pods` |
 | `dataaccess` | data access (Varonis‑style) | auditd rules |
-| `dataacl` | map of data access rights | — |
+| `dataacl` | map of data access permissions | — |
 | `minio` | MinIO / S3 access governance | `mc` |
 | `minio-audit-relay.py` | MinIO object access telemetry (relay, long‑running) | MinIO configured |
 | `mail` | mailserver logs (postfix / dovecot) | access to the logs |
@@ -714,10 +714,10 @@ The files in `config.d/` are loaded at startup **idempotently** (an overlay wins
 
 ## `plume-daemon` subcommands
 
-Next to the daemon, the binary carries the command-line operating gestures. **This table is
+Next to the daemon, the binary carries the operator's command-line operations. **This table is
 DERIVED from the table that `plume-daemon --help` renders** (`SUBCOMMANDS`, `daemon/src/main.rs`), and the guard
 [`check_operator_surface_is_documented.py`](.github/scripts/check_operator_surface_is_documented.py)
-refuses a subcommand declared by the code that has no line here — measured on 2026-09-09: twenty-one
+refuses a subcommand declared by the code that has no row here — measured on 2026-09-09: twenty-one
 out of twenty-two had none, including `backup-classify`, the "product‑side" fix of `P4.4-n` that
 nobody named (`P4.1-u`). The right-hand column is the binary's help text, as is.
 
@@ -845,7 +845,7 @@ the most expensive:
 
 **What these instruments do when they do not know.** The breakdown checks that its accounting
 CLOSES — that the sum of the items does give the size of the file. When it does not close, it
-writes **no** line: the series then carries a GAP, visible in the graph, and a second series
+writes **no** row: the series then carries a GAP, visible in the graph, and a second series
 `plume_db_ventilation_ok` goes to `0`. A dip in the curve is therefore never "the database got smaller" —
 it is "that day, the survey refused to conclude". The two can be told apart by eye, and that is
 deliberate: an invented figure would be worse than an absence.
@@ -864,7 +864,7 @@ come from a constant — command `c` above gives it.
 |---|---|---|
 | `PLUME_ADDR` | listening interface and port | `127.0.0.1:7000` |
 | `PLUME_HOST` | expected host — **anti‑DNS‑rebinding guard**, a mismatch returns `421` | `plume.localhost` |
-| `PLUME_HOST_STRICT` | `1` = no longer accepts *loopback* out of hand, only the FQDNs of `PLUME_HOST`; empty or `0` = non‑strict (FQDNs of `PLUME_HOST` and *loopback* accepted), any other value too, and the start says so. Non‑strict by default because a local loopback client (`curl http://127.0.0.1:7000`, an agent pushed to `127.0.0.1:7000` in Docker) would receive `421` | `0` |
+| `PLUME_HOST_STRICT` | `1` = no longer accepts *loopback* out of the box, only the FQDNs of `PLUME_HOST`; empty or `0` = non‑strict (FQDNs of `PLUME_HOST` and *loopback* accepted), any other value too, and the start says so. Non‑strict by default because a local loopback client (`curl http://127.0.0.1:7000`, an agent pushed to `127.0.0.1:7000` in Docker) would receive `421` | `0` |
 | `PLUME_SSRF_BLOCK_PRIVATE` | egress guard (connectors, destinations, channels, OIDC and LDAP identity providers, AI providers) towards the private addresses `10/8`, `172.16/12`, `192.168/16`. **Empty (default)**: refused for a target entered through the API (channel, destination, connector, OIDC or LDAP identity provider, AI provider — from entry, then on call or on connection to the directory), allowed for a configuration target (channel seeded by `PLUME_NOTIFY_NTFY_URL`, objects of a `config.d` overlay); `0`/`false`/`no`/`off` = allowed everywhere; `1`/`true`/`yes`/`on` = refused everywhere, configuration included; an unrecognised value is worth the default and is reported. Loopback, link-local (including `169.254.169.254`) and IPv6 ULA stay refused whatever this value; only a target listed in `PLUME_SSRF_ALLOW` escapes it. An LDAP identity provider's connection to its directory is judged by this guard before any connection (`ldap://` and `ldaps://` only, `ldapi://` and an empty host refused; an empty directory URL is not judged: provider not configured). The `[ssrf]` line at start says which policy was retained (details: [docs/CONNECTOR-PRESETS.md](docs/CONNECTOR-PRESETS.md)) | empty |
 | `PLUME_SSRF_ALLOW` | exemptions from the egress guard: **exact** hosts and/or IPs or CIDRs separated by commas (e.g. `10.20.0.0/16,192.0.2.10`). The **whole** guard is lifted for these targets, not just the private part: only put there a network you control | empty |
 | `PLUME_USER` / `PLUME_PASS_HASH` | admin account; the hash comes from `plume-daemon hashpw`. Empty hash → **SETUP mode** | `admin` / empty |
@@ -1074,7 +1074,7 @@ come from a constant — command `c` above gives it.
 > `PLUME_RESPONDER_ALLOW` to a **distinctly named** file (`responder-ban-exempt.allow`), which it
 > creates and documents — a central reader whose default was that name would never open the list
 > of service stops, and on an earlier installation it would read an absent file, hence no
-> protection: exactly the historical behaviour. **The missing gesture therefore exists, in the wrong place.**
+> protection: exactly the historical behaviour. **The missing operation therefore exists, in the wrong place.**
 > What actually blocks is elsewhere and harder: `PLUME_RESPONDER_ALLOW` is only set in
 > the environment of the **agent** unit, while the **central** responder unit loads
 > another configuration, which carries this lever in no installer and no manifest.
@@ -1148,7 +1148,7 @@ follows the same model. "Open" does not mean "without rules": the AGPL is a **st
   under AGPL; license and copyright notices are preserved.
 
 **Principle**: the whole SOC stays open and auditable — that is where a security product's credibility lies.
-What GuatX sells around Plume is **professional services** (deployment
+GuatX's commercial offer around Plume is **professional services** (deployment
 assistance, support, managed hosting), never a license to the code.
 Details: [`ADVANCED_MODULES.md`](ADVANCED_MODULES.en.md).
 

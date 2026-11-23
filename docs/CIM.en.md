@@ -13,7 +13,7 @@
   adds **retroactive canonical homes** for categories ALREADY emitted by live collectors —
   `exec` (auditd execve), `secrets` (vault-audit), `account` (auditd), `recon` and the sub-stages of the
   mail collector (`postscreen`/`reject`/`mailflow`/`mail-phishing`/`mail-url`) — **plus a per-event version
-  stamp** (`fields.cim`, §4f). Everything additive (no line rewritten, zero migrations).
+  stamp** (`fields.cim`, §4f). Everything additive (no row rewritten, zero migrations).
 - **Machine mirror**: [`config.d/cim/cim.v1.json`](../config.d/cim/cim.v1.json).
 - **Code anchor**: `CIM_VERSION` / `CIM_CATEGORIES` / `CIM_CORE_FIELDS` / `CIM_ACTION_VOCAB`
   + the `cim_category_ok()` validator in `guatx_core::cim` (crate `guatx-core`, `src/cim.rs`).
@@ -40,10 +40,10 @@ This is the anti-blind-spot guarantee: the CIM enriches the data, it does not ce
 
 ---
 
-## 1. The canonical line — `EventRow`
+## 1. The canonical row — `EventRow`
 
 Every ingest path (syslog, journal, shell collectors, native MinIO, agents) **converges**
-on a single line, `EventRow` (`guatx_core::store`, crate `guatx-core`, `src/store.rs`), inserted by a single fixed SQL statement
+on a single row, `EventRow` (`guatx_core::store`, crate `guatx-core`, `src/store.rs`), inserted by a single fixed SQL statement
 (`EVENT_INSERT_SQL`, `INSERT OR IGNORE` on `dedup`). The columns below form the
 **CORE field set** (first class: indexed / directly filterable).
 
@@ -58,7 +58,7 @@ on a single line, `EventRow` (`guatx_core::store`, crate `guatx-core`, `src/stor
 | `src_ip`        | string  | Source IP — column **promoted** from `fields.src_ip` \| `fields.rhost` (§4). |
 | `dst_ip`        | string  | Destination IP — column **promoted** from `fields.dst_ip`. |
 | `url`           | string  | URL / host+path — column **promoted** from `fields.url`. |
-| `dedup`         | string  | Anti-duplicate key (`INSERT OR IGNORE`). **PARTITIONED BY HOST AT WRITE TIME**: the STORED value is `dedup_scoped_by_host(host, dedup)` (`daemon/src/ingest/store.rs`), so the uniqueness scope is the line's HOST, not the database. A sender does **not** have to include the host in its key — and **cannot** produce one that collides across machines, whatever its language. It must, however, produce a **stable and deterministic** key for the same event; that key is what absorbs re-sends from the spool (at-least-once). *Before this partitioning, two machines silently stole each other's events: measured 45 Sysmon events lost on Windows (see `collectors/windows/README.md`) and 26 out of 78 on the Linux side (see the header of `ingest/store.rs`).* |
+| `dedup`         | string  | Anti-duplicate key (`INSERT OR IGNORE`). **PARTITIONED BY HOST AT WRITE TIME**: the STORED value is `dedup_scoped_by_host(host, dedup)` (`daemon/src/ingest/store.rs`), so the uniqueness scope is the row's HOST, not the database. A sender does **not** have to include the host in its key — and **cannot** produce one that collides across machines, whatever its language. It must, however, produce a **stable and deterministic** key for the same event; that key is what absorbs re-sends from the spool (at-least-once). *Before this partitioning, two machines silently stole each other's events: measured 45 Sysmon events lost on Windows (see `collectors/windows/README.md`) and 26 out of 78 on the Linux side (see the header of `ingest/store.rs`).* |
 | `fields`        | object  | JSON bag of **EXTENDED** fields (vendor/parser-specific). |
 | `engagement_id` | string  | Purple-team engagement correlation. |
 | `origin`        | string  | Ingestion origin marker. |
@@ -214,9 +214,9 @@ This paragraph listed a vocabulary without ever saying **where** `action` applie
 absence means. Two readings from 2026‑08‑02 show that the question is not cosmetic:
 
 - **Real database** (read-only extraction `bench/prod-profile.sql`, on the order of a million events):
-  `fields.action` is present on **68,7 %** of lines, cardinality 18.
+  `fields.action` is present on **68.7 %** of rows, cardinality 18.
 - **Linux host with the shipped collectors** (lab database populated by `collectors/*.sh` + real
-  journald): absent on **12,6 %** of lines — and those lines are **exactly** the categories
+  journald): absent on **12.6 %** of rows — and those rows are **exactly** the categories
   `health`, `config` and the `network` flows, that is, those that **have no outcome**.
 
 The rule is therefore: **a category that describes an ACT carries its outcome; a category that describes a
@@ -258,7 +258,7 @@ What remains **required**:
 
 ### 4d. HIGH-cardinality fields — do not expect them to be indexed
 
-Mapping guidance, not a setting. These fields cost ~73 MB of expression index over 2,6 M lines,
+Mapping guidance, not a setting. These fields cost ~73 MB of expression index over 2.6 M rows,
 outside the RAM budget (2 GiB): **their aggregation goes through the rollups**, never through an index.
 
 ```
@@ -298,10 +298,10 @@ families: a central forwarder relays several hosts, so the `host` column may be 
 Each event is stamped **at ingest** with `fields.cim = CIM_VERSION` (helper `cim_stamp`, applied on
 BOTH insertion paths: generic events `ingest_events_batch_env` — which absorbs /api/ingest, spool,
 HEC, MinIO, OTLP, Loki, connectors — and journald `ingest_journal_lines`). Goal: make **contract
-drift detectable on frozen data**, without which nothing distinguishes a line written under an old convention
-from a recent line.
+drift detectable on frozen data**, without which nothing distinguishes a row written under an old convention
+from a recent row.
 
-- **Reading at rest**: a line **without** a `fields.cim` key was written **before** the stamp ("pre-stamp",
+- **Reading at rest**: a row **without** a `fields.cim` key was written **before** the stamp ("pre-stamp",
   unknown convention); an **old** value (`< CIM_VERSION`) signals an outdated contract. GXQL example:
   `search category=exec | where json_extract(fields,'$.cim')!="1.3"`.
 - **Additive / idempotent / fail-safe**: `cim_stamp` never overwrites a `cim` key that is already set; an empty bag
@@ -310,7 +310,7 @@ from a recent line.
   preserved.
 - **Minimal blast radius**: a field of the already-serialised `fields` bag — **not** a column, so **no
   schema migration**, no change to `EventRow`/`EVENT_INSERT_SQL` (no store parity to
-  re-prove). **Pre-stamp** lines are not rewritten — they remain readable as such.
+  re-prove). **Pre-stamp** rows are not rewritten — they remain readable as such.
 
 ---
 
@@ -332,7 +332,7 @@ by the producer WINS (precedence collector > parser) and the pre-emption is coun
 What measures it: `ingest.events_without_src_ip_total` and `ingest.sources_without_src_ip{source}` in
 `/api/metrics` (and `plume_ingest_events_without_src_ip_total` in Prometheus) count, since startup,
 the events WRITTEN without a source address, per source, among those whose nature admits an address: the
-health beats (`category=health`) and configuration self-reports (`config`) of any source, local
+health beats (`category=health`) and configuration admissions (`config`) of any source, local
 execution (`exec`) from auditd, windows-security and the agent (`WinEventLog:Security`), account management
 (`account`) from auditd and windows-security, writes to a monitored file (`tamper` from auditd), the
 integrity hashes, the local `auth` of `sudo` and `su`, and the `data` category of local sources
@@ -358,7 +358,7 @@ Firehose `env_id`) — not built, the predicate on `source` covers the measured 
   without the others **breaks `cargo test`** — that is intended: a single source of truth. A **COMPILE-time
   safeguard** (`daemon/build.rs`) goes further: it extracts the `version` of the embedded schema and
   const-asserts that it equals `CIM_VERSION` of the LINKED core — a build linked against a STALE core **fails to compile**.
-- **BACKWARD COMPATIBILITY**: adding a name to the `CIM_CATEGORIES` allow-list rewrites **no** line. The
+- **BACKWARD COMPATIBILITY**: adding a name to the `CIM_CATEGORIES` allow-list rewrites **no** row. The
   events already stored under a newly canonised category (e.g. the whole `exec` history) become
   in-contract **immediately, without data migration** — `cim_category_ok()` is pure membership.
 
@@ -373,14 +373,14 @@ What changed (2026-07-28): the value was checked against the taxonomy **nowhere*
 path — not even a `warn` (the existing safeguards were upstream: loading of an overlay
 parser, creation of a data model, HEC mapping). Now the **first** occurrence of each
 out-of-taxonomy (`source`, `category`) pair is logged, naming the collector; **a single line per
-pair and per process lifetime** (a warning that floods the log warns nobody). The stored line is
+pair and per process lifetime** (a warning that floods the log warns nobody). The stored row is
 unchanged.
 
 ### 5.1bis **MISSING** category at ingestion — accepted, but never silent again
 
 §5.1 only covered one case out of two. There are **three** possible states, not two:
 
-| state | stored line | reported | seen by a `category=…` rule |
+| state | stored row | reported | seen by a `category=…` rule |
 |---|---|---|---|
 | **canonical** (in `CIM_CATEGORIES`) | as is | no | yes |
 | **out of taxonomy** (non-empty, unknown) | as is | `warn`, once per (source, category) pair | no |
@@ -400,7 +400,7 @@ category for every benign line.
 
 **No value is invented.** Setting an `unknown` by default would be worse than emptiness: it would be a
 **fabricated** classification, and `search category=unknown` would look like a class when nothing
-was recognised. The line therefore stays empty — which is honest. What is closed is the **silence**:
+was recognised. The row therefore stays empty — which is honest. What is closed is the **silence**:
 
 - resolution is a **type with a private field and a single constructor** (`CategorieIngeree::resoudre`,
   `daemon/src/ingest/store.rs`), and its sum is **exhaustive**: the value cannot be built outside
@@ -461,7 +461,7 @@ collectors and requires the table to agree with them
 from 2 to 1.
 
 **Remaining blind spot, measured.** `classer` (`agent/src/source/windows.rs`) files **Sysmon ID 1**
-(process creation) under `endpoint`, not `exec` — it is the default branch "Sysmon hors 3/22".
+(process creation) under `endpoint`, not `exec` — it is the default branch "Sysmon other than 3/22".
 Process creation is therefore **split between two emitted categories**: `exec` (4688 + auditd
 `execve`) and `endpoint` (Sysmon ID 1). A `process_creation` rule cannot see both; the importer
 **reports** it (warning) and a test **pins** it. Closing it means changing the category
@@ -496,17 +496,17 @@ taxonomy — **the rest is not measured, so it is not asserted**.
 
 ---
 
-## 5.4 The other canonical line — the SNAPSHOT (`snapshot`), and its uniqueness scope
+## 5.4 The other canonical row — the SNAPSHOT (`snapshot`), and its uniqueness scope
 
 A sender does not produce only events: it can publish a **state snapshot**
 (spool envelope `{"ts","host","kind","hash","data"}` — `collectors/firewall.sh`,
 `collectors/controls.sh`, or `POST /api/ingest` with any `kind`). The daemon only
-rewrites `data` if `hash` has **changed**; otherwise it advances the `ts` of the existing line
+rewrites `data` if `hash` has **changed**; otherwise it advances the `ts` of the existing row
 (*heartbeat*: a stable sensor must not be declared silent).
 
 **THE SERIES IS `(kind, host)`, NEVER `kind` ALONE.** A snapshot captures what the sender
 can OBSERVE, and a sender only observes its own machine. The whole snapshot path is therefore
-partitioned by the line's host (`SnapshotSeries`, `daemon/src/ingest/store.rs`):
+partitioned by the row's host (`SnapshotSeries`, `daemon/src/ingest/store.rs`):
 state comparison, heartbeat, state alert keys (`firewall.lockdown`, `control.catalog`,
 `control.catalog.vide`), freshness probes and read surfaces.
 
@@ -521,8 +521,8 @@ Consequences for anyone writing a sender:
 
 - **`host` is what identifies you.** Two machines that publish the same `kind` with the same
   `hash` are **two series**; neither can erase the other. *Before this partitioning, a homogeneous
-  fleet of 3 machines yielded **only 1 line** — two thirds of the fleet silently discarded — and the
-  heartbeat of one machine refreshed the line of another (measured: +3540 s on the line of a
+  fleet of 3 machines yielded **only 1 row** — two thirds of the fleet silently discarded — and the
+  heartbeat of one machine refreshed the row of another (measured: +3540 s on the row of a
   host dead for 3600 s).*
 - **Omitting `host` is not a tolerated oversight, it is a DECLARATION**: the snapshot joins the
   `(kind, NULL)` series, the one for what describes **the deployment** and not a machine. That is how —

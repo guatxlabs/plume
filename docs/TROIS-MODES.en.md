@@ -7,8 +7,8 @@ without saying which mode it applies to only covers one — and leaves the reade
 they have misunderstood. This document exists for that reason: **every operational task here carries its form
 in all three modes, and where it does not exist in a mode, that is WRITTEN DOWN.**
 
-It complements, without repeating them, installation ([`../README.md`](../README.md#installation)) and
-uninstallation ([`../README.md`](../README.md#désinstallation--les-trois-modes)).
+It complements, without repeating them, installation ([`../README.md`](../README.en.md#installation)) and
+uninstallation ([`../README.md`](../README.en.md#uninstallation--all-three-modes)).
 
 > **What this document is not.** It is not a sizing guide, nor a disaster
 > recovery procedure — that one is in [`DR-plume-restore.md`](DR-plume-restore.md) — nor a
@@ -140,7 +140,7 @@ This is where the modes diverge the most, and the document must say so instead o
 
 | | operation | reality |
 |---|---|---|
-| `host` | `PLUME_EXTRA_COLLECTORS="…"` then `bootstrap-agent.sh`, then `systemctl enable --now plume-<x>.timer` | the NATIVE operation; it is the procedure in the [`README`](../README.md#ajouter-vos-sources-et-collecteurs) |
+| `host` | `PLUME_EXTRA_COLLECTORS="…"` then `bootstrap-agent.sh`, then `systemctl enable --now plume-<x>.timer` | the NATIVE operation; it is the procedure in the [`README`](../README.en.md#adding-your-sources-and-collectors) |
 | `docker` | **this operation does not exist** | *(see below)* |
 | `k3s` | **this operation does not exist** | *(see below)* |
 
@@ -170,7 +170,7 @@ central's machine — that only exists in host mode.
 
 | | through a file | through the console |
 |---|---|---|
-| `host` | drop it under `PLUME_CONFIG_DIR` (`/usr/local/share/plume/config.d`) then restart | yes, admin role; the line is marked "custom" |
+| `host` | drop it under `PLUME_CONFIG_DIR` (`/usr/local/share/plume/config.d`) then restart | yes, admin role; the row is marked "custom" |
 | `docker` | **impossible without rebuilding the image or mounting a volume** — the container's root is read-only | yes, same operation |
 | `k3s` | through a `ConfigMap` mounted on `PLUME_CONFIG_DIR`, otherwise impossible | yes, same operation |
 
@@ -192,7 +192,7 @@ The same subcommand, reached in three ways.
 | `k3s` | `kubectl -n soc exec deploy/soc -- plume-daemon token <nom> <hôte-lié>` |
 
 *Not run on a real installation in this batch* — the two-argument form and the
-`--relais` flag are those described in the [`README`](../README.md#b-hôte-nu-systemd--mode-de-première-classe-sans-docker).
+`--relais` flag are those described in the [`README`](../README.en.md#b-bare-host-systemd--a-first-class-mode-without-docker).
 The token is displayed once; it cannot be read again.
 On a new central, the daemon starts **before** the first subcommand: in `docker` and `k3s`,
 `exec` enforces this (the daemon's container must be running); in `host`, a subcommand run before the
@@ -201,7 +201,7 @@ first start causes the database to be born in plaintext
 
 > ⚠️ **The token NEVER goes through the command line on the agent side**, in any mode: `sudo`
 > logs its full command line and the `journal` collector sends it back to the SOC, which stores it in plaintext.
-> The safe form — writing through `tee` — is in the [`README`](../README.md#-ne-passez-jamais-le-token-sur-la-ligne-de-commande).
+> The safe form — writing through `tee` — is in the [`README`](../README.en.md#-never-pass-the-token-on-the-command-line).
 
 ### 3.6 Reading the daemon's logs
 
@@ -300,10 +300,10 @@ readable through `/proc/<pid>/environ`. **Losing the key = losing the database.*
 | `docker` | `docker compose up -d --build` |
 | `k3s` | rebuild the image, reimport it into `k3s ctr`, then `kubectl -n soc rollout restart deploy/soc` |
 
-**These three lines do not rebuild the same binary, and the table alone does not show it.** The two
-lines that go through the image inherit a feature set declared once and for
+**These three rows do not rebuild the same binary, and the table alone does not show it.** The two
+rows that go through the image inherit a feature set declared once and for
 all — `ARG PLUME_FEATURES=ldap,cold_tier` in the [`Dockerfile`](../Dockerfile), since `971de7a`
-(2026‑08‑08). The `host` line is **bare** and takes **none**. A host binary built this way has **neither the
+(2026‑08‑08). The `host` row is **bare** and takes **none**. A host binary built this way has **neither the
 columnar cold tier** — `PLUME_COLD_TIER` has no effect on it, and Parquet day files written by
 another binary are invisible to it — **nor native LDAP/AD bind**: `POST /api/auth/ldap` answers **501**.
 To get them: `cargo build --release --features cold_tier,ldap`. The bare default is **intended, not
@@ -315,7 +315,7 @@ automatic check only covers the cold tier; for the directory, the proof is the *
 login route.
 
 **No image and no binary are published to date**: all three paths compile from
-source. It is an acknowledged gap, written in the [`README`](../README.md#installation).
+source. It is an acknowledged gap, written in the [`README`](../README.en.md#installation).
 
 An update that changes the database schema is a **one-way door**: it requires a
 verified backup beforehand, and an explicit acknowledgement. See [`DR-plume-restore.md`](DR-plume-restore.md).
@@ -337,7 +337,7 @@ nothing" — it files k3s under *impossible probes* and says so. The other three
 **were not run in this batch**.
 
 The complete semantics — what `--purge` destroys, the exit codes, what resists and why —
-are in the [`README`](../README.md#désinstallation--les-trois-modes). The `k3s` mode **prints** its
+are in the [`README`](../README.en.md#uninstallation--all-three-modes). The `k3s` mode **prints** its
 plan and only executes with `--apply`, because it touches a shared cluster.
 
 ### 3.11 Setting the gesture secret
@@ -349,7 +349,7 @@ and whitebox mint an account, blackbox suspends auto-ban on its scope), and — 
 first administrator of a tenant require, **on top of the permission**, the gesture secret in the
 `x-plume-secret-des-gestes` header. This holds for every administrator, whatever their
 authentication mode (local session, header SSO, federation, Basic). **Without a secret set, these
-gestures are refused** (403, `cause: secret_des_gestes_non_configure`), and the refusal says how to set it.
+operations are refused** (403, `cause: secret_des_gestes_non_configure`), and the refusal says how to set it.
 
 The daemon only knows the **hash** of the secret (argon2id, PHC format), read from the file named by
 `PLUME_GESTURE_SECRET_FILE`. Never the plaintext secret, neither in the database nor in the environment. The same
@@ -368,17 +368,17 @@ plume-daemon secret-des-gestes < fichier-qui-porte-le-secret > secret-des-gestes
 | `docker` | a compose secret mounted as a file (`secrets:` → `/run/secrets/secret-des-gestes`); the hash is generated with `docker compose run --rm -T soc secret-des-gestes --generer > secret-des-gestes.phc` | `PLUME_GESTURE_SECRET_FILE=/run/secrets/secret-des-gestes` in the `environment:` block of the `soc` service (lines shipped commented out in `docker-compose.yml`), then `docker compose up -d` |
 | `k3s` | a key of the `Secret` `soc-auth`, mounted read-only (volume `secret`, **without** `subPath`) | the variable in the `env:` block of the `Deployment` (lines shipped commented out in `deploy/k3s.yaml`), then `kubectl -n soc rollout restart deploy/soc` |
 
-**The variable is read at startup; the file, at every gesture.** Rotation is therefore a
+**The variable is read at startup; the file, at every operation.** Rotation is therefore a
 replacement of the file, without a restart — a Kubernetes secret mounted without `subPath` is updated
 under the pod; on Docker, a file rewritten in place (same inode) is seen, a file replaced by an
 editor that changes the inode is only seen at the next `docker compose up -d`. A file that is removed, empty,
-unreadable or that carries anything other than an `$argon2id$…` hash closes the gestures at the next gesture.
+unreadable or that carries anything other than an `$argon2id$…` hash closes the operations at the next operation.
 
 A **wrong** secret counts towards the same throttle as login failures (account, address pair;
 backoff; `429` beyond the `PLUME_AUTH_LOCK_THRESHOLD` threshold) and is recorded in the register with the author
 — never the secret. A missing header is not an attempt.
 
-*Not run on a real installation in this batch*: the three lines of the table. The subcommand
+*Not run on a real installation in this batch*: the three rows of the table. The subcommand
 and the judgement of the file (rotation, removal, plaintext refused) are exercised by the `sdg_` witnesses
 (`daemon/src/tests/secret_des_gestes_demonstration_freinee_et_pose_de_l_administrateur.rs`).
 

@@ -131,16 +131,16 @@ import (`|re`) validates its patterns with the same one. It bounds three things:
   engine, without a message.
 
 Each read connection keeps four compiled patterns per function (`=~` on one side, `rex` on the
-other): a query that combines a few of them does not recompile them for every line. On the cold tier, a
+other): a query that combines a few of them does not recompile them for every row. On the cold tier, a
 refused pattern is not evaluated: the query falls back to the hot path, which returns the same refusal. At
 Sigma import, a rule whose generated pattern exceeds 512 bytes, or that the builder refuses, is
 reported and **not imported**.
 
-**The cost of a regular expression grows with the window.** It is evaluated line by line by a
+**The cost of a regular expression grows with the window.** It is evaluated row by row by a
 SQL function (Rust's `regex` engine, linear time) and no index serves it: over a large
-window, it reads every line that the rest of the filter lets through. Narrow the window, and
+window, it reads every row that the rest of the filter lets through. Narrow the window, and
 filter first on a real column (`source`, `host`, `category`) or a hot field (§5.2):
-`search source=sshd category=auth message=~"Invalid user"` only runs the pattern on the lines of
+`search source=sshd category=auth message=~"Invalid user"` only runs the pattern on the rows of
 that source. **What the bounds do not hold**: an accepted pattern remains expensive over a large window,
 and interactive queries share a semaphore (`PLUME_QUERY_CONCURRENCY`, default 3). A few
 heavy queries launched together can therefore make every other search in the
@@ -156,19 +156,19 @@ console wait, until they finish or are interrupted by their time budget.
 | `timechart` | time series: one measure per interval (`span=`) |
 | `where` | filters **after** a pipe — see the restriction below |
 | `sort` | sorts — see the restriction below |
-| `head` / `limit` | keeps only the first N lines; a negative N is **refused** (SQLite would read it as "unlimited") |
+| `head` / `limit` | keeps only the first N rows; a negative N is **refused** (SQLite would read it as "unlimited") |
 | `rex` | extracts fields from a text with a regular expression with named groups |
 | `fields` | restricts the columns returned |
 | `table` | presents the listed columns |
 | `rename` | renames a field (`champ as alias`) |
 | `dedup` | keeps the first event per field |
 | `top` / `rare` | most / least frequent values |
-| `eventstats` | like `stats`, but attaches the aggregate to each line without reducing them |
+| `eventstats` | like `stats`, but attaches the aggregate to each row without reducing them |
 | `rate` | rate per unit of time |
 | `eval` | creates a field from an expression |
 | `append` | appends the results of a `[search …]` subsearch |
 | `join` | joins the stream to a subsearch on a common field |
-| `mvexpand` | expands a multivalued field into one line per value |
+| `mvexpand` | expands a multivalued field into one row per value |
 | `lookup` | enriches through a lookup table (`… OUTPUT …`) |
 
 Two **bases** exist: `search` (the default, on events) and `metric` (on observability
@@ -213,7 +213,7 @@ does. **Four served labels** carried the promise, not two.
 The table below is not prose: a build witness READS it, and requires every
 surface that describes the command to carry the phrase in its column. A surface that went back to
 "one or more fields" would no longer carry "one field" and would turn continuous integration red.
-Adding a line here arms the witness on one more command, without touching it.
+Adding a row here arms the witness on one more command, without touching it.
 
 | Command | What the language holds (measured on 2026-08-27) | Required phrase (fr) | Required phrase (en) |
 |---|---|---|---|
@@ -231,7 +231,7 @@ corpus, the daemon's declaration and the rendered help. The measurement itself r
 
 | Function | Form | Note |
 |---|---|---|
-| `count` | **bare**, without parentheses | counts lines; the output alias is `count` |
+| `count` | **bare**, without parentheses | counts rows; the output alias is `count` |
 | `count(champ)` `sum` `avg` `min` `max` | `f(champ)` | the output alias is the function name |
 | `dc(champ)` | | cardinality — counts distinct values |
 | `values(champ)` | | **distinct** values, concatenated, **bounded in length** |
@@ -310,12 +310,12 @@ readable refusal is better.
 |---|---|---|
 | time budget of an "automatic" query (panels, rules, pagination) | `PLUME_QUERY_BUDGET_MS` | `5000` ms |
 | budget of an **interactive** query | `PLUME_QUERY_BUDGET_INTERACTIVE_MS` | `60000` ms |
-| ceiling on returned lines | `PLUME_QUERY_MAX` | `5000`; a value outside `1`–`100000` falls back to `5000` (§6.4) |
+| ceiling on returned rows | `PLUME_QUERY_MAX` | `5000`; a value outside `1`–`100000` falls back to `5000` (§6.4) |
 | default and ceiling of `/api/search` | `PLUME_SEARCH_LIMIT` / `PLUME_SEARCH_MAX` | `100` / `5000` |
 | simultaneous queries | `PLUME_QUERY_CONCURRENCY` | `3`, **shared** between `/api/query` and `/api/search` |
 | permits reserved for light queries | `PLUME_QUERY_RESERVE_LIGHT` | `1`: heavy ones (`interactive:true`, export, Pivot) hold at most N − 1 permits |
 
-Exceeding the budget **interrupts** the running query; exceeding the line ceiling
+Exceeding the budget **interrupts** the running query; exceeding the row ceiling
 **truncates** it and reports it in the response statistics rather than returning a partial result
 that would look complete. A query can also be **cancelled** by the client, by identifier.
 
@@ -348,7 +348,7 @@ preparation only compiles the first statement anyway.
 ### 6.4 What the ceiling cuts, and how to read everything
 
 **`5000` is not a limit on what plume queries nor on what it counts.** It is the number of
-**lines returned** in a table — and, under the cold tier only, the number of cold lines
+**rows returned** in a table — and, under the cold tier only, the number of cold rows
 copied by one read path (below).
 
 `PLUME_QUERY_MAX` is `5000` by default and only accepts an integer from `1` to `100000`. **Any other
@@ -358,31 +358,31 @@ no line at startup. Writing `PLUME_QUERY_MAX=200000` therefore raises nothing at
 The ceiling applies once the SQL has run: beyond it, reading stops, `truncated` is set in
 the response statistics, and the console says so. Without the cold tier, it does not affect the computation:
 
-- **an aggregate counts everything.** `search source=sshd | stats count` returns a single line, and that count
+- **an aggregate counts everything.** `search source=sshd | stats count` returns a single row, and that count
   covers all the events in the window, however many there are;
-- **but groups are lines.** `stats count by src_ip` over more than `PLUME_QUERY_MAX` addresses
+- **but groups are rows.** `stats count by src_ip` over more than `PLUME_QUERY_MAX` addresses
   returns the first groups and reports the truncation; each count returned remains complete. A
   `| sort -count | head 100` after the `stats` chooses which ones;
-- **the table of raw lines is what gets cut.** To go through it entirely, **cursor**
+- **the table of raw rows is what gets cut.** To go through it entirely, **cursor**
   pagination on `/api/query` reads page by page without a counting ceiling (example below). It only
-  applies to a query that **keeps its lines** (filter, `table`, `fields`, sort by date); for any
+  applies to a query that **keeps its rows** (filter, `table`, `fields`, sort by date); for any
   other form, the response falls back to offset pagination, which is capped;
 - **narrowing the window** (`from`, `to`) remains the safest way to read less.
 
 **With the cold tier active** (binary built with `cold_tier`, `PLUME_COLD_TIER=1`) and a window
 that reaches into the cold tier, the first bullet no longer always holds. One of the read paths copies
-the window's cold lines into a temporary table, **at most `PLUME_QUERY_MAX` lines** (for
-the full export, `/api/export`: at most `PLUME_QUERY_MAX` or its bound plus one line, whichever is larger,
+the window's cold rows into a temporary table, **at most `PLUME_QUERY_MAX` rows** (for
+the full export, `/api/export`: at most `PLUME_QUERY_MAX` or its bound plus one row, whichever is larger,
 see the end of this section), then runs the query on that copy. When the copy has reached that ceiling:
 
 - a query whose **every stage is per event** — `where`, `head`, `limit`, `eval`, `rex`,
-  `rename`, `table`, `fields`, and nothing else — returns true lines, in incomplete number, with
+  `rename`, `table`, `fields`, and nothing else — returns true rows, in incomplete number, with
   `truncated`;
 - any other query — an aggregate (`stats`, `timechart`, `top`, `rare`), but also `eventstats`,
   `rate`, `dedup`, `sort`, `join`, `append`, `lookup`, `mvexpand` — **computes or chooses over
   the whole set**, and it is **refused**: the response is a `422` whose body carries
   `"reason": "cold_truncated_aggregate"`, `"truncated": true`, `cold_rows_hydrated` and `cold_row_cap`
-  (the lines copied and the ceiling), and an `error` message that names the stage at fault and the paths
+  (the rows copied and the ceiling), and an `error` message that names the stage at fault and the paths
   that escape the ceiling. **Never a number computed on a
   sample.**
 
@@ -392,12 +392,12 @@ first; the refusal message details them. To get an answer where the refusal fall
 
 - **narrow the window** until the copy fits under the ceiling — the set read becomes
   complete again;
-- **raise `PLUME_QUERY_MAX`**, up to `100000` and no further (above): the copied lines
+- **raise `PLUME_QUERY_MAX`**, up to `100000` and no further (above): the copied rows
   are held in memory, so it is the daemon's memory that pays. An export copies at least as many
-  lines, and more when its bound (`PLUME_EXPORT_MAX`, or the request's `limit`) plus one
-  line exceeds `PLUME_QUERY_MAX`; the refusal message names the ceiling that applied.
+  rows, and more when its bound (`PLUME_EXPORT_MAX`, or the request's `limit`) plus one
+  row exceeds `PLUME_QUERY_MAX`; the refusal message names the ceiling that applied.
 
-**Going through all lines by cursor.** The first call carries `"keyset": true`; the response returns
+**Going through all rows by cursor.** The first call carries `"keyset": true`; the response returns
 `next_cursor` (and `has_more`); the next call sends that `next_cursor` back **as is** in the
 `"cursor"` field of the body, including the `espace` field when it is present. A `next_cursor` of `null` marks the last
 page; `limit` (at most `10000`, default `100`) sets the size of a page.
@@ -423,7 +423,7 @@ if it is smaller, cold tier included. When the export stops at that bound, the r
 says so: `x-plume-truncated: 1`, a file name that carries `-TRONQUE-`, and `x-plume-export-borne`, which
 is the bound applied. Without `x-plume-export-borne`, a cut reported by `x-plume-truncated` comes
 from elsewhere: the pre-aggregate's ceiling; a cold copy stopped at its ceiling when a filter or a `head`
-applied after the copy leaves fewer lines than the bound; cold data not read, which
+applied after the copy leaves fewer rows than the bound; cold data not read, which
 `x-plume-cold-coverage: cold_coverage_unread` also reports.
 
 ---
@@ -467,7 +467,7 @@ Two points not to confuse:
   `/api/rule-test` (testing a rule) serves the same phrases, but keeps its `200` `{error, sql}`.
 
 **Raw SQL** (`{"sql": …}` on `/api/query`) is reserved for administrators, and it remains subject
-to the authorizer: see the note in the [`README`](../README.md#sécurité-intégrée).
+to the authorizer: see the note in the [`README`](../README.en.md#security-built-in).
 
 Technical identifiers remain `soql` — route `/api/soql/*`, JSON key `soql`, column
 `is_soql`, module `guatx_core::soql`, folder `docs/soql-templates/`. It is a build identifier,

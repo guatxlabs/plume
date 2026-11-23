@@ -7,7 +7,7 @@
 
 **·  open source  ·  par [GuatX](https://github.com/guatxlabs)  ·**
 
-**Licence : [AGPL‑3.0](LICENSE)**  ·  Modules Enterprise → [`COMMUNITY_VS_ENTERPRISE.md`](COMMUNITY_VS_ENTERPRISE.md)
+**Licence : [AGPL‑3.0](LICENSE) — 100 % open source**  ·  Modules avancés (ouverts, désactivés par défaut) → [`ADVANCED_MODULES.md`](ADVANCED_MODULES.md)
 
 </div>
 
@@ -680,11 +680,27 @@ avec une `reason`) : voir l'encadré plus haut et la requête qui les liste.
 Un DSL déclaratif plus riche est documenté dans [`docs/PARSER-DSL.md`](docs/PARSER-DSL.md).
 
 **Sigma.** Un **importeur** [Sigma](https://github.com/SigmaHQ/sigma) est livré (`plume-daemon sigma-import`, unitaire
-ou en masse, avec `--dry-run`) ; **3 règles d'exemple** sont dans `config.d/sigma/`. Ce n'est **pas un moteur Sigma
+ou en masse, avec `--dry-run`) ; **4 règles Sigma d'exemple** sont dans `config.d/sigma/`. Ce n'est **pas un moteur Sigma
 complet** : il traduit le **sous-ensemble exprimable en GXQL**, et ce qu'il ne sait pas traduire fidèlement est
 **flaggé**, jamais deviné — la matrice exacte des constructions supportées et refusées est dans
 [`docs/SIGMA-IMPORTER.md`](docs/SIGMA-IMPORTER.md) §4 et §6. Le **taux d'acceptation sur le dépôt SigmaHQ complet
 n'est pas mesuré** à ce jour : nous ne publierons ce chiffre qu'une fois le banc passé.
+
+**Le contenu de détection livré ne se limite pas à ces exemples Sigma.** À côté d'eux, le dépôt livre
+**37 règles de catalogue** dans `config.d/rules/catalog/` — une bibliothèque mappée CIM + ATT&CK, désactivée
+par défaut et activée règle par règle selon la télémétrie branchée, décrite dans
+[`docs/DETECTION-CATALOG.md`](docs/DETECTION-CATALOG.md) — et **10 règles overlay** à la racine de
+`config.d/rules/`, **dont 7 actives** au démarrage ; le binaire sème en plus ses propres règles de base
+(`daemon/src/seeds.rs`). Ces comptes sont comparés à l'arbre par
+[`check_a_published_rule_count_is_the_count_shipped.py`](.github/scripts/check_a_published_rule_count_is_the_count_shipped.py) ;
+pour les redériver :
+
+```sh
+git ls-files 'config.d/sigma/*' | wc -l                        # règles Sigma d'exemple
+git ls-files 'config.d/rules/catalog/*.json' | wc -l           # règles de catalogue
+git ls-files 'config.d/rules/*.json' | grep -vc /catalog/      # règles overlay à la racine
+grep -l '"enabled": *true' config.d/rules/*.json | wc -l       # dont actives
+```
 
 **3. Détecter et agir.** Ajoutez une **règle** (`config.d/rules/*.json` : requête GXQL + seuil) ou un **playbook** (`config.d/playbooks/*.json` : requête → action). Parsers, règles et playbooks sont aussi **créables/éditables dans l'interface** (rôle admin) ; le fichier reste la source durable, versionnée en git.
 
@@ -1108,24 +1124,27 @@ c'est un manque connu, nommé, et pas un oubli.
 - **Au repos** : chiffrement **SQLCipher par tenant**, actif d'office sur une base neuve (clé engendrée, à mettre à l'abri). **Conteneur** : non‑root, rootfs en lecture seule, `no‑new‑privileges`, capabilities supprimées, NetworkPolicy d'egress.
 
 ## Licence et modèle
-Le cœur de Plume est **ouvert et copyleft** sous **[AGPL‑3.0](LICENSE)** — auto‑hébergez‑le, étudiez‑le, modifiez‑le.
-Sous l'AGPL, si vous distribuez une version modifiée *ou* l'exploitez comme service réseau, vous devez offrir aux
-utilisateurs le **code source complet correspondant** de votre version sous l'AGPL. Son pendant offensif
-**[Forge](https://github.com/guatxlabs/forge)** est lui aussi en **AGPL‑3.0** — le copyleft convient à un moteur de sécurité.
+Plume est **100 % open source** sous **[AGPL‑3.0](LICENSE)** — **tout le produit**, sans édition payante, sans
+fonction bridée et sans autre licence proposée à côté. Son pendant offensif **[Forge](https://github.com/guatxlabs/forge)**
+suit le même modèle. « Ouvert » ne veut pas dire « sans règles » : l'AGPL est un **copyleft fort**, avec des
+**obligations** à respecter (voir [`LICENSE`](LICENSE), qui seul fait foi).
 
-- **Open core — AGPL‑3.0** : le **SOC complet** — ingestion, GXQL, détection (règles · Sigma · couverture
-  ATT&CK), threat‑intel, RBA, cases, réponse, connecteurs bring‑your‑own‑vendor, la boucle purple et le
-  Mode Engagement. Tout le nécessaire pour exploiter Plume en solo, en équipe, ou dans vos propres opérations.
-- **Licence commerciale (disponible séparément)** : pour les organisations qui ne peuvent pas satisfaire les
-  obligations de copyleft réseau de l'AGPL — usage propriétaire ou embarqué sans divulgation du code source. À ses côtés,
-  des modules Enterprise séparables pour l'**échelle / l'équipe / la conformité** (multi‑tenant/MSSP à l'échelle, SSO/SCIM,
-  stockage distribué, packs de conformité, connecteurs premium), une offre **managée/hébergée** et du
-  **support / SLA**.
+- **Le cœur** — toujours présent : le **SOC complet** — ingestion, GXQL, détection (règles · Sigma · couverture
+  ATT&CK), threat‑intel, RBA, cases, réponse, gouvernance du ledger, connecteurs bring‑your‑own‑vendor, la boucle
+  purple et le Mode Engagement. Tout le nécessaire pour exploiter Plume en solo, en équipe, ou dans vos propres
+  opérations.
+- **Les modules avancés** — **ouverts eux aussi**, séparables et **désactivés par défaut** : la couche
+  **échelle / équipe / stockage** — multi‑tenant/MSSP (une base et une clé par tenant, provisioning SCIM), tier
+  froid colonnaire, magasins ClickHouse et DuckDB, annuaire LDAP, SAML, avis IA. Laissés éteints, le build par
+  défaut est **identique octet pour octet** au cœur.
+- **Les obligations de l'AGPL** : si vous exploitez une version modifiée comme **service réseau**, vous devez
+  offrir à ses utilisateurs le **code source complet correspondant** (§13) ; toute œuvre dérivée distribuée reste
+  sous AGPL ; les mentions de licence et de copyright sont préservées.
 
-**Principe** : l'ensemble du SOC reste ouvert et auditable sous l'AGPL — c'est là la crédibilité. Le
-business, ce sont la **licence commerciale, les modules Enterprise, le service hébergé et le support** — pas une
-restriction sur l'open core.
-Détail : [`COMMUNITY_VS_ENTERPRISE.md`](COMMUNITY_VS_ENTERPRISE.md).
+**Principe** : l'ensemble du SOC reste ouvert et auditable — c'est là la crédibilité d'un produit de sécurité.
+L'offre commerciale de GuatX autour de Plume porte sur des **prestations de service** (accompagnement au
+déploiement, support, hébergement managé), jamais sur une licence du code.
+Détail : [`ADVANCED_MODULES.md`](ADVANCED_MODULES.md).
 
 ## Statut
 Projet open‑source actif — **par [GuatX](https://github.com/guatxlabs)**. Détection, threat‑intel, RBA,

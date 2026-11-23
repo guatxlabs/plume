@@ -2453,6 +2453,25 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_a_bare_chain_match_is_never_served_as_a_fact.py
 
+      # PLUME EST ENTIÈREMENT AGPL, SANS ÉDITION VENDUE. La page d'accueil renvoyait vers des modules
+      # réservés, décrivait un cœur ouvert flanqué d'une licence vendue à côté, et un document opposait une
+      # édition gratuite à des modules vendus. La garde lit tous les fichiers suivis et refuse ce vocabulaire
+      # (il est écrit dans la garde, pas ici, sans quoi ce commentaire rougirait) ; ses emplois légitimes —
+      # édition Windows d'un banc, matrice MITRE, nom de produit tiers — forment une liste blanche NOMMÉE,
+      # jugée dans les deux sens (une entrée morte rougit).
+      - name: Le vocabulaire d'une edition payante ne revient dans aucun fichier suivi
+        id: garde_83
+        continue-on-error: true
+        run: python3 .github/scripts/check_no_paid_edition_vocabulary_returns.py
+
+      # UN COMPTE DE RÈGLES PUBLIÉ EST LE COMPTE LIVRÉ. La page d'accueil annonçait 3 règles Sigma d'exemple
+      # pour 4 suivies, et le catalogue de détection 35 règles pour 37 : rien ne reliait ces nombres à l'arbre.
+      # La garde relit chaque nombre publié et le compare au compte dérivé de `git ls-files`.
+      - name: Un compte de regles publie est le compte des regles livrees
+        id: garde_84
+        continue-on-error: true
+        run: python3 .github/scripts/check_a_published_rule_count_is_the_count_shipped.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2944,6 +2963,8 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_80.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_mail_sensor_masks_every_local_part_it_emits.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_81.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_ledger_link_is_never_dropped_bare.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_82.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_bare_chain_match_is_never_served_as_a_fact.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_83.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_paid_edition_vocabulary_returns.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_84.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_published_rule_count_is_the_count_shipped.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
 

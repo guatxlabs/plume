@@ -9,12 +9,17 @@
 
 ## Principe & politique enabled/disabled
 
-- **35 règles LIVRÉES** (`ls config.d/rules/catalog/ | wc -l` = 35), dont **34 décrites** dans les tables
-  ci-dessous (noms tous distincts). La règle livrée non décrite ici est `de-auditd-silent.json`
-  (« Hôte : auditd muet — dead-man's-switch anti-forensics », T1562.001). Elles citent
+- **37 règles LIVRÉES** (`git ls-files 'config.d/rules/catalog/*.json' | wc -l`, compte comparé à l'arbre
+  par `.github/scripts/check_a_published_rule_count_is_the_count_shipped.py`), dont **34 décrites** dans
+  les tables ci-dessous (noms tous distincts). Les trois règles livrées non décrites ici, toutes en
+  T1562.001, sont `de-auditd-silent.json` (« Hôte : auditd muet — dead-man's-switch anti-forensics »),
+  `de-auditd-no-exec-rule.json` (auditd tourne sans règle execve 64 bits) et
+  `de-collector-unavailable.json` (un capteur déclare ne pas pouvoir collecter). Elles citent
   **26 techniques** ATT&CK distinctes qui retombent sur **13 tactiques** (mappées via
   `guatx_core::attack::CATALOG` ; aucune technique non mappée).
-- **TOUTES `enabled=false` par défaut.** C'est une BIBLIOTHÈQUE : l'admin ACTIVE chaque règle
+- **TOUTES `enabled=false` par défaut, sauf une** : `de-detection-content-mutated.json`, l'auto-détection
+  d'une modification du contenu de détection, est active (exception tenue par
+  `catalog_rules_all_compile_and_are_disabled_by_default`). C'est une BIBLIOTHÈQUE : l'admin ACTIVE chaque règle
   selon la télémétrie réellement branchée, via le toggle UI (aucune règle ne se met à alerter
   sur une install fraîche ⇒ zéro bruit day-0). Le socle « universellement présent + faible FP »
   est DÉJÀ activé par la couche seed ; le catalogue est l'étendue opt-in.

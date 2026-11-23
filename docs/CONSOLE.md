@@ -1,5 +1,7 @@
 # La console, espace par espace et onglet par onglet
 
+[Français](CONSOLE.md) | [English](CONSOLE.en.md)
+
 La console de plume est une application web servie par le démon lui-même — du JavaScript à modules,
 sans étape de construction, sans dépendance à installer. Elle se navigue à **deux niveaux** : des
 **espaces** dans la barre latérale, et des **onglets** à l'intérieur d'un espace.

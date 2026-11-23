@@ -1,5 +1,7 @@
 # collector-mail — detection mail host-native
 
+[Français](MAIL.md) | [English](MAIL.en.md)
+
 Le SOC traite le mail comme **un collecteur de plus** (agent collecte -> SOC ingere), au lieu d'un
 service a part. `collector-mail` lit le **maildir sur le FS de l'hote**, applique des **patterns
 curates** (IOC / phishing / URL), et emet des **events MINIMAUX** (compte, dossier, domaine de

@@ -1,5 +1,7 @@
 # Purger des événements — ce que la purge fait, et ce qu'elle refuse de faire
 
+[Français](PURGE.md) | [English](PURGE.en.md)
+
 **État : ✅ livré (sous-commande) · 🧪 opt-in (surface HTTP, fermée par défaut)**
 
 La rétention de Plume est *temporelle* : elle efface ce qui est vieux, rien d'autre. Il manquait un moyen

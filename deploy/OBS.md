@@ -1,5 +1,7 @@
 # Remplacer Prometheus / Loki / Grafana par le SOC (OBS)
 
+[Français](OBS.md) | [English](OBS.en.md)
+
 Methode : **parallel-run** (le SOC recoit EN PLUS de l'existant) -> valider la **parite** ->
 **decommissionner** Prom/Loki/Grafana (gain RAM). On garde **Alloy** comme collecteur, et
 **CrowdSec** comme IPS (le SOC ingere, ne remplace pas).

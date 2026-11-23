@@ -1,5 +1,7 @@
 # collector-syslog — recepteur syslog + parsers vendeur (1er = FortiGate)
 
+[Français](SYSLOG.md) | [English](SYSLOG.en.md)
+
 Le SOC traite un appareil reseau (**FortiGate**, switch, routeur, tout equipement syslog) comme **un
 collecteur de plus** : l'appareil emet du syslog vers ce recepteur, qui **decadre** (RFC5424 + RFC3164
 legacy, UDP+TCP), **dispatche** vers un **parser vendeur pluggable**, **normalise** en events Plume et

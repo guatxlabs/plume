@@ -34,6 +34,9 @@ suivantes est présente :
       Toute grandeur absolue compte ici : une taille, une durée, un compteur. Pas un pourcentage —
       un rapport est la forme que prend la connaissance une fois la valeur absolue retirée — ni
       une BORNE (« budget de 2 Gio », « plafond 512 Mio ») : un budget n'est pas une mesure.
+      Ces formes se lisent aussi en anglais, chacune par son équivalent strict (« in production »,
+      « on a real installation », « memory ceiling 2 GiB ») : un relevé ne change pas de nature
+      en changeant de langue.
 
   (D) une DATE dans le paragraphe et un VOLUME À L'ÉCHELLE D'UNE INSTALLATION sur la ligne — des
       méga-octets ou plus, des milliers de lignes ou d'événements, un horodatage à la seconde —
@@ -140,7 +143,11 @@ _VOLUME = re.compile(rf"(?<![\w.-])({NOMBRE})(\s?[kKM])?\s?(?:d'|de\s+)?({UNITE_
 
 
 # Une BORNE n'est pas un relevé : « budget de 2 Gio », « plafond 512 Mio », « tenir sous 2 Go ».
-BORNE = re.compile(r"(budget|plafond|limite|borne|contrainte|quota|cgroup|tenir\s+sous|sous\s+(les|un|le)|"
+# « ceiling » est la traduction arrêtée de « plafond », à la même place : la documentation anglaise
+# écrit « memory ceiling 2 GiB » là où la française écrit « plafond mémoire 2 Gio ». Les autres
+# mots français n'ont pas d'équivalent ajouté ; « budget », « quota », « cgroup », « max », « cap »
+# s'écrivent déjà de même dans les deux langues.
+BORNE = re.compile(r"(budget|plafond|ceiling|limite|borne|contrainte|quota|cgroup|tenir\s+sous|sous\s+(les|un|le)|"
                    r"au\s+plus|jusqu'[àa]|max\w*|cap\w*)(\s+\w+)?\s*(de\s+|des\s+|d')?\s*$", re.I)
 BORNE_APRES = re.compile(r"^\s*(de\s+(budget|RAM|plafond)|[-–]safe|max)", re.I)
 
@@ -184,14 +191,29 @@ DATE = re.compile(r"\b20\d\d-[01]\d-[0-3]\d(?!\d)")
 # production », « la production a mesuré »). L'adjectif seul (« la base de prod », « le profil de
 # production ») désigne un RÔLE, pas un relevé, et n'atteste rien ; un « incident » n'atteste que s'il
 # est celui d'une installation.
+# Chaque forme française est suivie de son équivalent ANGLAIS STRICT, et de lui seul : la
+# documentation existe dans les deux langues, et un relevé attribué à la production ne doit pas
+# passer parce qu'il est écrit en anglais. L'ordre des mots suit l'anglais (« la base de production »
+# devient « production database »), le sens ne s'élargit pas : « côté central » (« on the central
+# side ») n'est pas « sur le central », pas plus en anglais qu'en français.
 ATTESTATION = re.compile(
-    r"\ben\s+(production|prod)\b|\b(sur|dans)\s+(la|une|cette)\s+(production|prod)\b|"
+    r"\ben\s+(production|prod)\b|"
+    r"\bin\s+(production|prod)\b|"
+    r"\b(sur|dans)\s+(la|une|cette)\s+(production|prod)\b|"
+    r"\b(on|in)\s+(the|a|this)\s+(production|prod)\b|"
     r"\b(de\s+)?la\s+production\s*[(,]?\s*(a\b|la\b|le\b|les\b|l'|mesur|relev|observ|contredi|planifi|actuelle)|"
+    r"\b(of\s+)?the\s+production\s*[(,]?\s*(has\b|had\b|measur|record|observ|contradict|schedul)|"
+    r"\bcurrent\s+production\b|"
     r"\b(base|fichier|table|instance|d[ée]ploiement|pod|n[oœ]ud)\s+de\s+(production|prod)\b|"
+    r"\b(production|prod)\s+(database|file|table|instance|deployment|pod|node)\b|"
     r"\bproduction\s*[(,]?\s*(mesur|relev|observ|actuelle)|\bprod,?\s+(mesur|relev)|"
+    r"\bproduction\s*[(,]?\s*(measur|record|observ)|\bprod,?\s+(measur|record)|"
     r"\ben\s+exploitation\b|\bsur\s+le\s+central\b|"
+    r"\bin\s+operation\b|\bon\s+the\s+central\b(?!['’]s\b|\s+side\b)|"
     r"\bl'instance\s+de\s+(production|r[ée]f[ée]rence)\b|\bincident\s+(vps|r[ée]el|de\s+prod)|"
-    r"\b(base|installation|d[ée]ploiement|instance|pod|n[oœ]ud|machine|h[ôo]te)\s+r[ée]el(le)?s?\b", re.I)
+    r"\bthe\s+(production|reference)\s+instance\b|\b(vps|real|prod|production)\s+incident|"
+    r"\b(base|installation|d[ée]ploiement|instance|pod|n[oœ]ud|machine|h[ôo]te)\s+r[ée]el(le)?s?\b|"
+    r"\breal\s+(database|installation|deployment|instance|pod|node|machine|host)s?\b", re.I)
 # Un OBJET Kubernetes NOMMÉ : un service `<svc>.<ns>.svc` à deux étiquettes DNS concrètes (hors gabarit
 # `<svc>.<ns>`), ou un pod portant le hash de son ReplicaSet (`<deploy>-<hash hex>-<5 car.>`).
 SERVICE_K8S = re.compile(r"(?<![\w<.-])[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*\.svc\b|"
@@ -354,6 +376,39 @@ def valider_instrument(inst):
             ["// measured on 2026-08-09: since release, the table held 1 554 295 rows"],
         "« in release » suivi d'une version entre parenthèses, ponctuée ensuite":
             ["// measured on 2026-08-09: in release (v0.3), the table held 1 554 295 rows"],
+        # L'attestation écrite en ANGLAIS accuse comme la française : un témoin par forme ajoutée,
+        # sans date, pour que seule la règle (R) puisse l'accuser.
+        "attribution à la production écrite en anglais, indice de construction voisin":
+            ["// measured on 2026-08-09 on the production database, 1 554 295 events.",
+             "// The same build in release, without the bench."],
+        "« in production » (« en production »)":
+            ["// a full scan of the database takes 35.4 s in production"],
+        "« on the production » (« sur la production »)":
+            ["// on the production, a full scan takes 35.4 s"],
+        "« the production schedules » (« la production la planifie »)":
+            ["/// the production schedules it in 10.1 ms"],
+        "« current production » (« production actuelle »)":
+            ["// the current production holds 1 554 295 events"],
+        "« production database » (« base de production »)":
+            ["// the production database weighs 1 586.8 MiB"],
+        "« production measured » (« production mesurée »)":
+            ["// production measured 35.4 s for a full scan"],
+        "« prod, measured » (« prod, mesuré »)":
+            ["// prod, measured: 35.4 s for a full scan"],
+        "« in operation » (« en exploitation »)":
+            ["// a full scan takes 35.4 s in operation"],
+        "« on the central » (« sur le central »)":
+            ["// on the central, a full scan takes 35.4 s"],
+        "« the reference instance » (« l'instance de référence »)":
+            ["// the reference instance holds 1 554 295 events"],
+        "« real incident » (« incident réel »)":
+            ["// real incident: the collector dropped 9 364 events"],
+        "« real database » (« base réelle »)":
+            ["// on a real database a full scan takes 35.4 s"],
+        # « ceiling » ne couvre que la grandeur qu'il borne : la mesure voisine reste accusée, comme
+        # avec « plafond » dans la même construction française.
+        "« ceiling » n'acquitte pas une mesure voisine sous attestation":
+            ["// on a real installation: memory ceiling 2 GiB, measured RSS 1 586.8 MiB"],
     }
     for nom, lignes in positifs.items():
         acc, _ = inst.accuser(lignes, "daemon/src/x.rs")
@@ -396,6 +451,17 @@ def valider_instrument(inst):
             ["// measured on 2026-08-09 in `release`: 512 MiB of RAM per backup"],
         "mesure du binaire déclarée en anglais, suivie d'un point-virgule":
             ["// measured on 2026-08-09 in release; 512 MiB of RAM per backup"],
+        # Les formes anglaises de (R) n'élargissent pas le sens : un banc dit en anglais reste un banc,
+        # et « côté central » n'est pas « sur le central ».
+        "chiffre de banc déclaré en anglais":
+            ["// MEASURED on 2026-08-01 on the bench database (1 440 007 events): 10.2 s, in release."],
+        "« on the central side » (« côté central », pas « sur le central »)":
+            ["// dedup runs on the central side: 35.4 s for a full pass"],
+        "« on the central's side » (« côté central », pas « sur le central »)":
+            ["// dedup runs on the central's side: 35.4 s for a full pass"],
+        "borne anglaise « ceiling » sous attestation (« plafond mémoire 2 Gio » en français)":
+            ["The reference profile is measured at a few hundred MiB of RSS on a real installation",
+             "(nearly ten million events in the database, 2 vCPU, memory ceiling 2 GiB, field masking"],
     }
     for nom, spec in negatifs.items():
         lignes, chemin = (spec if isinstance(spec, tuple) else (spec, "daemon/src/x.rs"))

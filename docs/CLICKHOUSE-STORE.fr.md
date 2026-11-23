@@ -76,7 +76,7 @@ cargo build --release --features clickhouse
 Pointer vers un serveur ClickHouse et sélectionner le store à l'exécution :
 
 ```bash
-export PLUME_STORE=clickhouse            # DESIGN ONLY — cette variable n'est lue par AUCUN chemin runtime
+export PLUME_STORE=clickhouse            # CONCEPTION SEULE — cette variable n'est lue par AUCUN chemin runtime
                                          # (cf. docs/CLICKHOUSE-HA.md) : la poser n'a AUCUN effet aujourd'hui.
 export PLUME_CLICKHOUSE_URL=http://ch-host:8123
 export PLUME_CLICKHOUSE_USER=plume       # optionnel

@@ -16,7 +16,7 @@
   les tables ci-dessous (noms tous distincts). Ensemble, les règles livrées citent **26 techniques**
   ATT&CK distinctes qui retombent sur **13 tactiques** (mappées via `guatx_core::attack::CATALOG` ;
   aucune technique non mappée). Les trois règles livrées non décrites ici, toutes en T1562.001, sont
-  `de-auditd-silent.json` (« Hôte : auditd muet — dead-man's-switch anti-forensics »),
+  `de-auditd-silent.json` (« Hôte: auditd muet (dead-man's-switch anti-forensics) »),
   `de-auditd-no-exec-rule.json` (auditd tourne sans règle execve 64 bits) et
   `de-collector-unavailable.json` (un capteur déclare ne pas pouvoir collecter).
 - **TOUTES `enabled=false` par défaut, sauf une** : `de-detection-content-mutated.json`, l'auto-détection
@@ -100,13 +100,13 @@
 | Règle | ATT&CK | Sév | Télémétrie requise | Activée |
 |-------|--------|:---:|--------------------|:-------:|
 | Hôte: tentative de désactivation de l'audit (auditctl) | `T1562.001` | 4 | auditd (records category=exec : exe) | non |
-| SOC: modification du contenu de détection (règle créée/éditée/désactivée) | `T1562.001` | 2 | plume self (auto-audit : source=plume-config, action=config.rule.*) | non |
+| SOC: modification du contenu de détection (règle créée/éditée/désactivée) | `T1562.001` | 2 | plume self (auto-audit : source=plume-config, action=config.rule.*) | oui |
 
 ### Execution (TA0002)
 
 | Règle | ATT&CK | Sév | Télémétrie requise | Activée |
 |-------|--------|:---:|--------------------|:-------:|
-| Hôte: exécution depuis un répertoire monde-inscriptible (/tmp) | `T1059.004` | 3 | auditd (records category=exec : exe) | non |
+| Hôte: exécution depuis un répertoire monde-inscriptible (/tmp, /dev/shm, /var/tmp, /run) | `T1059.004` | 3 | auditd (records category=exec : exe) | non |
 | IDS: signature Suricata déclenchée (haute sévérité) | `T1190` | 3 | suricata (IDS : category=alert, severity) | non |
 | Runtime: activité suspecte Falco (eBPF, sév≥3) | `T1059` | 3 | falco (eBPF : category=ebpf, severity) | non |
 | Webshell probable (POST -> script .php renvoyant 200) | `T1505.003` | 3 | web (method, status, path) | non |
@@ -187,7 +187,7 @@ déclaration ; le code en est la source de vérité.
 | Pic d'échecs d'authentification (1h) | `category=auth action=failure \| stats count` | > 100 échecs toutes sources, 1 h | le pic **global** d'un hôte exposé (SSH + mail) — c'est lui qui voit un password-spray réparti sur beaucoup d'adresses, que la règle par IP ne voit pas | un parc entier compte ses échecs au même endroit : le seuil est atteint par le seul bruit de fond d'un grand nombre de postes |
 | Port-scan détecté (nft PORTSCAN, 10 min) | `source=portscan dir=inbound \| stats count` | > 0 événement, 10 min | la chaîne `PORTSCAN` de nftables : un événement n'existe que si le pare-feu l'a déjà classé | aucune : la population est celle que le pare-feu produit |
 | RBA : reconnaissance / port-scan (risque par hôte ciblé) | `source=portscan dir=inbound \| stats count by host \| where count > 0` | > 0 par hôte, 1 h, 20 points, entité `host` | la même chaîne `PORTSCAN` | aucune |
-| CPU > 90 % (10 min) | `SELECT value FROM metric WHERE name='cpu_pct' … LIMIT 1` | dernière valeur > 90, 10 min | aucune population : un seuil de capacité, pas de comportement | un hôte chargé par construction (bâtisseur, traitement par lots) lève l'alerte à chaque fenêtre |
+| CPU > 90% (10 min) | `SELECT value FROM metric WHERE name='cpu_pct' … LIMIT 1` | dernière valeur > 90, 10 min | aucune population : un seuil de capacité, pas de comportement | un hôte chargé par construction (bâtisseur, traitement par lots) lève l'alerte à chaque fenêtre |
 | CF : scan/bot absorbé au edge (> 20 challenges managés/IP) · exploit WAF managé (> 3 blocages) · L7 flood (> 100 req/IP) · recon multi-vhost (> 3 vhosts/IP) · volume de challenges (> 20 IP distinctes) | `source=cloudflare …` | voir `seeds.rs` | **non calibrées** : le code le dit lui-même (« seuils à calibrer »), elles décrivent la forme des événements qu'un plan Cloudflare sans WAF managé émet | un plan avec WAF managé, ou un site à fort trafic, change le sens de chaque seuil : à recalibrer par l'exploitant |
 
 **Ce qu'une couverture accidentelle cachait.** Avant que les échecs Windows ne portent `src_ip`

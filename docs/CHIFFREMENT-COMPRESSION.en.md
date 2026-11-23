@@ -162,10 +162,11 @@ Then, in this order — and **the order is unusual for a measured reason**:
 3. **proven equivalence**, four reads all derived from the schema: `PRAGMA integrity_check` on
    the copy; the `sqlite_master` fingerprint object by object, in both directions; the count of **every**
    data table (not a total — two errors that offset each other would pass a total); and the
-   **chain of the tamper-proof log**, re-verified on the copy;
+   **hash chain of the tamper-evident log** (a partial alteration breaks it), re-verified on the
+   copy;
 4. **backup produced AND verified** — see below;
 5. **switchover**: a hard link on the original, then **a single `rename`**, atomic;
-6. the conversion **is recorded in the tamper-proof log** (`at_rest.converted`) with what was verified;
+6. the conversion **is recorded in the tamper-evident log** (`at_rest.converted`) with what was verified;
 7. the plaintext copy is erased (overwrite + `unlink`).
 
 **Why the backup is taken from the COPY and not from the original.** *The obvious sequence —

@@ -120,8 +120,8 @@ au cycle suivant (`P7.20-m`).
    en a, son verdict est `SUCCES PARTIEL — PORTEE : base CHAUDE seule`. La vérification des deux étages
    reste un **drill DR hors-cluster** avec l'identité age d'escrow.
    Depuis le 2026-09-09 (`P8.10-l`), `restore`, `backup-verify` et `restore-drill status` le **disent en
-   situation** : « cette sauvegarde ne peut pas être restaurée ici … détenteur : … » — le détenteur est
-   le texte de `PLUME_BACKUP_ESCROW_HOLDER` (équipe, coffre, procédure) ; vide, il est dit « non déclaré »,
+   situation** : « CETTE SAUVEGARDE NE PEUT PAS ÊTRE RESTAURÉE ICI … détenteur : … » — le détenteur est
+   le texte de `PLUME_BACKUP_ESCROW_HOLDER` (équipe, coffre, procédure) ; vide, il est dit « NON DÉCLARÉ »,
    jamais inventé. Mesuré en production le 2026-09-09 : `restore-drill status` rend « jamais » (code 3) —
    aucun exercice de restauration n'a encore été enregistré, donc aucune archive de séquestre n'a été
    prouvée restaurable ; c'est un geste de l'exploitant, avec l'identité qu'il détient.
@@ -174,7 +174,7 @@ Ce que ça change pour un DR :
   du **fichier**, plus de la machine.
 - `PLUME_BACKUP_SCRYPT_LOG_N` (borné `[10, 20]`) permet de remonter ce facteur. **Ce n'est utile que
   si vous savez que votre `PLUME_DB_KEY` est une phrase tapée par un humain** : le même secret protège
-  déjà le tier froid à `log_n = 12` (et ses jours-files partent à l'escrow **en copie verbatim**),
+  déjà le tier froid à `log_n = 12` (et ses fichiers-jour partent à l'escrow **en copie verbatim**),
   donc monter le seul backup ne relève aucun plancher d'attaque.
 - Le **mode destinataire age n'a aucun terme KDF** : c'est aussi pour ça qu'il reste le mode recommandé.
 

@@ -56,7 +56,7 @@ export PLUME_CLICKHOUSE_SHARDS="h1:9000,h2:9000;h3:9000,h4:9000"
 
 `ClusterTopology::from_env()` / `::parse(cluster, database, shards_spec)` valident durement : ≥1 shard,
 chaque shard ≥1 réplica, chaque hôte de réplica dans la liste d'autorisation des hôtes (`[A-Za-z0-9._-]`) et
-port ≠ 0. Les noms de cluster et de base sont des `SafeIdent` (voir §4) — **une charge d'injection en guise
+port ≠ 0. Les noms de cluster et de base sont des `SafeIdent` (voir §3.1) — **une charge d'injection en guise
 de nom de cluster/de base est refusée à la construction de la topologie, avant de pouvoir atteindre le
 moindre DDL.**
 

@@ -2,8 +2,9 @@
 
 [English](DUCKDB-STORE.md) | [Français](DUCKDB-STORE.fr.md)
 
-Statut : **OPT-IN, INERTE PAR DÉFAUT, EXPÉRIMENTAL.** Cloisonné par feature (`--features duckdb`),
-sélectionné à l'exécution par `PLUME_STORE=duckdb`. Absent du build PME/prod et du déploiement de prod.
+Statut : **OPT-IN, INERTE PAR DÉFAUT, EXPÉRIMENTAL.** Cloisonné par feature (`--features duckdb`) ; la
+sélection à l'exécution par `PLUME_STORE=duckdb` est conçue mais pas encore câblée (§1). Absent du build
+PME/prod et du déploiement de prod.
 **Le défaut reste `SqlcipherStore` (SQLite/SQLCipher), byte-identique à aujourd'hui.**
 
 DuckDB est un moteur analytique **embarqué, colonnaire, sans serveur externe**. Il occupe une niche

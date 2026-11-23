@@ -182,7 +182,7 @@ The ML must **never mask a real finding** nor **perturb correct operation by hid
 
 1. `disposition` additive column OK? — **[shipped v106]**
 2. Batch-C score (zero hot-path, ≤1 cycle stale) vs inline-A (fresh, +µs)? (reco: batch first).
-3. Confirm "never auto-act" (re-range + annotate + propose-suppress only) + default threshold + default per-source enable.
+3. Confirm "never auto-act" (re-rank + annotate + propose-suppress only) + default threshold + default per-source enable.
 4. Minimum labels before displaying (cold-start)?
 5. Poisoning tolerance: SMB single-analyst (operator alone) vs ESN multi — cap per-user influence now or defer?
 6. Hand-roll the logistic (reco, 0 dep) vs `smartcore` feature-gated-OFF reserved for future trees/forest?

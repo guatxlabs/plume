@@ -137,8 +137,9 @@ Measured by reading the shipped emitters (`collectors/`, `collectors/windows/`, 
 `collector-syslog/`, `collector-mail/`, `config.d/parsers/`, the daemon's ingest presets).
 
 > **Essential framing, measured in `bootstrap.sh`: plume installs NO package.** It deploys the
-> collectors + their systemd timers, and *arms* the auditd rules **if `augenrules` is already present**
-> (otherwise it says so: "auditd absent … otherwise auditd.sh stays inert"). Each row below therefore names
+> collectors + their systemd timers, and *arms* the auditd rules **if `augenrules` and `auditctl` are
+> already present** (otherwise it says so: « auditd ABSENT (augenrules ou auditctl introuvable) : règles
+> NON chargées », auditd absent, rules not loaded). Each row below therefore names
 > what **the operator** must have on the host. Without it the category stays **empty** and the Sigma rules
 > that target it are **inert** — this is flagged at import, never silent.
 

@@ -54,7 +54,7 @@ export PLUME_CLICKHOUSE_SHARDS="h1:9000,h2:9000;h3:9000,h4:9000"
 
 `ClusterTopology::from_env()` / `::parse(cluster, database, shards_spec)` validate hard: ≥1 shard, each
 shard ≥1 replica, each replica host on the host allowlist (`[A-Za-z0-9._-]`) and port ≠ 0. Cluster and
-database names are `SafeIdent` (see §4) — **an injection payload as a cluster/db name is rejected at
+database names are `SafeIdent` (see §3.1) — **an injection payload as a cluster/db name is rejected at
 topology construction, before it can reach any DDL.**
 
 `Replica{host,port}` feeds only the ClickHouse `remote_servers` config (declared by the operator in

@@ -16,7 +16,7 @@
   the tables below (all names distinct). Together, the shipped rules cite **26 distinct ATT&CK
   techniques** that fall under **13 tactics** (mapped via `guatx_core::attack::CATALOG`;
   no unmapped technique). The three shipped rules not described here, all in T1562.001, are
-  `de-auditd-silent.json` ("Hôte : auditd muet — dead-man's-switch anti-forensics"),
+  `de-auditd-silent.json` ("Hôte: auditd muet (dead-man's-switch anti-forensics)"),
   `de-auditd-no-exec-rule.json` (auditd runs with no 64-bit execve rule) and
   `de-collector-unavailable.json` (a sensor declares that it cannot collect).
 - **ALL `enabled=false` by default, except one**: `de-detection-content-mutated.json`, the self-detection
@@ -100,13 +100,13 @@
 | Rule | ATT&CK | Sev | Required telemetry | Enabled |
 |------|--------|:---:|--------------------|:-------:|
 | Hôte: tentative de désactivation de l'audit (auditctl) | `T1562.001` | 4 | auditd (records category=exec: exe) | no |
-| SOC: modification du contenu de détection (règle créée/éditée/désactivée) | `T1562.001` | 2 | plume self (self-audit: source=plume-config, action=config.rule.*) | no |
+| SOC: modification du contenu de détection (règle créée/éditée/désactivée) | `T1562.001` | 2 | plume self (self-audit: source=plume-config, action=config.rule.*) | yes |
 
 ### Execution (TA0002)
 
 | Rule | ATT&CK | Sev | Required telemetry | Enabled |
 |------|--------|:---:|--------------------|:-------:|
-| Hôte: exécution depuis un répertoire monde-inscriptible (/tmp) | `T1059.004` | 3 | auditd (records category=exec: exe) | no |
+| Hôte: exécution depuis un répertoire monde-inscriptible (/tmp, /dev/shm, /var/tmp, /run) | `T1059.004` | 3 | auditd (records category=exec: exe) | no |
 | IDS: signature Suricata déclenchée (haute sévérité) | `T1190` | 3 | suricata (IDS: category=alert, severity) | no |
 | Runtime: activité suspecte Falco (eBPF, sév≥3) | `T1059` | 3 | falco (eBPF: category=ebpf, severity) | no |
 | Webshell probable (POST -> script .php renvoyant 200) | `T1505.003` | 3 | web (method, status, path) | no |
@@ -187,7 +187,7 @@ declaration; the code is its source of truth.
 | Pic d'échecs d'authentification (1h) | `category=auth action=failure \| stats count` | > 100 failures across all sources, 1 h | the **global** spike of an exposed host (SSH + mail) — it is what sees a password spray spread over many addresses, which the per-IP rule does not see | an entire fleet counts its failures in the same place: the threshold is reached by the mere background noise of a large number of desktops |
 | Port-scan détecté (nft PORTSCAN, 10 min) | `source=portscan dir=inbound \| stats count` | > 0 events, 10 min | the nftables `PORTSCAN` chain: an event only exists if the firewall has already classified it | none: the population is the one the firewall produces |
 | RBA : reconnaissance / port-scan (risque par hôte ciblé) | `source=portscan dir=inbound \| stats count by host \| where count > 0` | > 0 per host, 1 h, 20 points, entity `host` | the same `PORTSCAN` chain | none |
-| CPU > 90 % (10 min) | `SELECT value FROM metric WHERE name='cpu_pct' … LIMIT 1` | last value > 90, 10 min | no population: a capacity threshold, not a behavior | a host loaded by design (builder, batch processing) raises the alert in every window |
+| CPU > 90% (10 min) | `SELECT value FROM metric WHERE name='cpu_pct' … LIMIT 1` | last value > 90, 10 min | no population: a capacity threshold, not a behavior | a host loaded by design (builder, batch processing) raises the alert in every window |
 | CF : scan/bot absorbé au edge (> 20 challenges managés/IP) · exploit WAF managé (> 3 blocages) · L7 flood (> 100 req/IP) · recon multi-vhost (> 3 vhosts/IP) · volume de challenges (> 20 IP distinctes) | `source=cloudflare …` | see `seeds.rs` | **not calibrated**: the code says so itself ("thresholds to be calibrated"), they describe the shape of the events that a Cloudflare plan without managed WAF emits | a plan with managed WAF, or a high-traffic site, changes the meaning of each threshold: to be recalibrated by the operator |
 
 **What accidental coverage was hiding.** Before Windows failures carried `src_ip`

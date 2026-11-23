@@ -2,8 +2,9 @@
 
 [English](DUCKDB-STORE.md) | [Français](DUCKDB-STORE.fr.md)
 
-Status: **OPT-IN, INERT BY DEFAULT, EXPERIMENTAL.** Feature-gated (`--features duckdb`), selected at
-runtime by `PLUME_STORE=duckdb`. Absent from the SMB/prod build and prod deployment. **The default
+Status: **OPT-IN, INERT BY DEFAULT, EXPERIMENTAL.** Feature-gated (`--features duckdb`); runtime
+selection by `PLUME_STORE=duckdb` is designed but not wired yet (§1). Absent from the SMB/prod build and
+prod deployment. **The default
 remains `SqlcipherStore` (SQLite/SQLCipher), byte-identical to today.**
 
 DuckDB is an **embedded, columnar, no-external-server** analytical engine. It fills a distinct niche

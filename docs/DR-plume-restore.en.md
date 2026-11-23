@@ -120,8 +120,8 @@ on the next cycle (`P7.20-m`).
    are some, its verdict is `SUCCES PARTIEL — PORTEE : base CHAUDE seule`. Checking both tiers
    remains an **out-of-cluster DR drill** with the escrow age identity.
    Since 2026-09-09 (`P8.10-l`), `restore`, `backup-verify` and `restore-drill status` **say so in
-   context**: « cette sauvegarde ne peut pas être restaurée ici … détenteur : … » — the holder is
-   the text of `PLUME_BACKUP_ESCROW_HOLDER` (team, vault, procedure); when empty, it is reported as « non déclaré »,
+   context**: « CETTE SAUVEGARDE NE PEUT PAS ÊTRE RESTAURÉE ICI … détenteur : … » — the holder is
+   the text of `PLUME_BACKUP_ESCROW_HOLDER` (team, vault, procedure); when empty, it is reported as « NON DÉCLARÉ »,
    never invented. Measured in production on 2026-09-09: `restore-drill status` returns « jamais » (code 3) —
    no restore exercise has been recorded yet, so no escrow archive has been
    proven restorable; that is an operation for the operator, with the identity they hold.

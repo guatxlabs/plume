@@ -137,8 +137,9 @@ Mesuré en lisant les émetteurs livrés (`collectors/`, `collectors/windows/`, 
 `collector-syslog/`, `collector-mail/`, `config.d/parsers/`, presets d'ingest du daemon).
 
 > **Cadrage indispensable, mesuré dans `bootstrap.sh` : plume n'installe AUCUN paquet.** Il déploie les
-> collecteurs + leurs timers systemd, et *arme* les règles auditd **si `augenrules` est déjà présent**
-> (sinon il le dit : « auditd absent … sinon auditd.sh reste inerte »). Chaque ligne ci-dessous nomme donc
+> collecteurs + leurs timers systemd, et *arme* les règles auditd **si `augenrules` et `auditctl` sont
+> déjà présents** (sinon il le dit : « auditd ABSENT (augenrules ou auditctl introuvable) : règles NON
+> chargées »). Chaque ligne ci-dessous nomme donc
 > ce que **l'exploitant** doit avoir sur l'hôte. Sans lui la catégorie reste **vide** et les règles Sigma
 > qui la visent sont **inertes** — c'est signalé à l'import, jamais silencieux.
 

@@ -162,10 +162,11 @@ Puis, dans cet ordre — et **l'ordre est inhabituel pour une raison mesurée** 
 3. **équivalence prouvée**, quatre lectures toutes dérivées du schéma : `PRAGMA integrity_check` sur
    la copie ; l'empreinte `sqlite_master` objet par objet, dans les deux sens ; le compte de **chaque**
    table de données (pas un total — deux erreurs qui se compensent passeraient un total) ; et la
-   **chaîne du journal inaltérable**, revérifiée sur la copie ;
+   **chaîne de hash du journal** (tamper-evident : une altération partielle la casse), revérifiée sur
+   la copie ;
 4. **sauvegarde produite ET vérifiée** — voir ci-dessous ;
 5. **bascule** : un lien dur sur l'original, puis **un seul `rename`**, atomique ;
-6. la conversion **s'inscrit au journal inaltérable** (`at_rest.converted`) avec ce qui a été vérifié ;
+6. la conversion **s'inscrit au journal à chaîne de hash** (`at_rest.converted`) avec ce qui a été vérifié ;
 7. la copie en clair est effacée (écrasement + `unlink`).
 
 **Pourquoi la sauvegarde est prise depuis la COPIE et non depuis l'original.** *La séquence évidente —

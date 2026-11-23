@@ -55,7 +55,7 @@ classification rule, applicable to **any** stack in place:
 | **DECOMMISSIONED (only after proven parity)** | a server whose function Plume now covers | parity go/no-go, see §1.3 — never before |
 
 Method: **additive first** → run in parallel → parity check → removal. See
-[`deploy/OBS.md`](deploy/OBS.md) for the concrete procedure on the metrics/logs side.
+[`deploy/OBS.md`](deploy/OBS.en.md) for the concrete procedure on the metrics/logs side.
 
 ---
 

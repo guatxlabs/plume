@@ -21,7 +21,7 @@ are documentation. Adding a new vendor = writing a JSON file like these, without
    pagination, watermark.
 3. Put the **credential** (OAuth client_secret, API token…) in the connector's **`secret`**
    field — **NEVER in `config`**. The `secret` is never returned nor logged.
-4. Use the **Tester** button (`POST /api/connectors/{id}/test`): it fetches 1 page, **ingests
+4. Use the **Test** button (`POST /api/connectors/{id}/test`): it fetches 1 page, **ingests
    nothing**, and returns a SAMPLE of the mapped events so you can check that the `field_map` produces what
    you expect.
 5. Enable the connector once the preview is correct (created **disabled** by default).

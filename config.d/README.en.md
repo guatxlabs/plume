@@ -38,11 +38,11 @@ handy for documenting each file (JSON has no comments).
 > `|base64`/`|cidr`…) is **reported + skipped** (never a silently wrong rule). See the coverage
 > matrix in **`docs/SIGMA-IMPORTER.md`**. One-off/out-of-git import: `POST /api/sigma/import` (admin),
 > or the subcommand on the central — `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon
-> sigma-import <path> [--dry-run]` on a bare host, `docker compose exec soc plume-daemon sigma-import <path>`
+> sigma-import <path> [--dry-run]` on a native host, `docker compose exec soc plume-daemon sigma-import <path>`
 > under Docker, `kubectl -n soc exec deploy/soc -- plume-daemon sigma-import <path>` under k3s (`<path>` is
 > then a path inside the container). Without `--dry-run`, it writes to the database: start the daemon once
 > beforehand, otherwise it creates the database unencrypted
-> ([`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)). `--dry-run`
+> ([`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)). `--dry-run`
 > opens no database.
 
 ## Semantics of `managed`

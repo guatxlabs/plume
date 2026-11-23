@@ -27,9 +27,9 @@ refuses an addition that goes in without being written down (`P9.7-b`).
 
 | Document | State | What for |
 |---|---|---|
-| [INSTALLER-SANS-OUVRIR-DE-BRECHE.md](INSTALLER-SANS-OUVRIR-DE-BRECHE.md) | ✅ | **Installing it yourself without opening a breach, step by step** — what is open by default in each mode, TLS and authentication, where each token lives and what it allows, **a sensor-by-sensor table** (what it reads, its privileges, what it brings into the SIEM, its risk, the query that proves it reports), the transport, the accepted risks, and the sensor that feeds each seeded dashboard. |
+| [INSTALLER-SANS-OUVRIR-DE-BRECHE.md](INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md) | ✅ | **Installing it yourself without opening a breach, step by step** — what is open by default in each mode, TLS and authentication, where each token lives and what it allows, **a sensor-by-sensor table** (what it reads, its privileges, what it brings into the SIEM, its risk, the query that proves it reports), the transport, the accepted risks, and the sensor that feeds each seeded dashboard. |
 | [TROIS-MODES.md](TROIS-MODES.en.md) | ✅ | **The same operation in all three modes** — native host, Docker, k3s. Where things live, how to change a setting, add a source, create a token, back up, update — and **the operations that do NOT exist** in a mode, named instead of smoothed over. |
-| [CONSOLE.md](CONSOLE.md) | ✅ | **The console, space by space and tab by tab** — what each one does, which role sees it, what it does not do. Derived from the navigation structure, not copied. |
+| [CONSOLE.md](CONSOLE.en.md) | ✅ | **The console, space by space and tab by tab** — what each one does, which role sees it, what it does not do. Derived from the navigation structure, not copied. |
 | [GXQL.md](GXQL.en.md) | ✅ | **The search language** — the twenty commands, the functions, the bounds, the read-only layers, and above all **what the grammar does not accept** (no `OR`, no grouping, no multi-field sort). |
 | [AGENTS-PROTOCOLE.md](AGENTS-PROTOCOLE.md) | ✅ | **The agents and their protocol** — the wire contract, the tokens and what "bound to the host" really means, the disk buffer and **its lack of a bound on the shell side**, the watermarks, the return channel, TLS. |
 | [CHIFFREMENT-COMPRESSION.md](CHIFFREMENT-COMPRESSION.md) | ✅ | **Encryption and compression, as they are** — what is encrypted, what is not, the `age(zstd(…))` order, and the measured defect: **without a database key, the backup scheduler produces nothing**. |
@@ -40,11 +40,11 @@ refuses an addition that goes in without being written down (`P9.7-b`).
 |---|---|---|
 | [DR-plume-restore.md](DR-plume-restore.md) | ✅ | **Disaster recovery** — the two backup formats the product produces, and how to restore each. Read it *before* you need it. |
 | [COMPLIANCE.md](COMPLIANCE.md) | ✅ | Compliance posture and coverage (≠ certification). |
-| [PURGE.md](PURGE.md) | ✅ CLI · 🧪 HTTP | **Purging named events** (beyond time-based retention): two phases with a token, reasoned refusals (legal hold, cold tier, chain of evidence), inscription in the ledger — and the explicit list of what is **not** covered, starting with backups. |
+| [PURGE.md](PURGE.en.md) | ✅ CLI · 🧪 HTTP | **Purging named events** (beyond time-based retention): two phases with a token, reasoned refusals (legal hold, cold tier, chain of evidence), inscription in the ledger — and the explicit list of what is **not** covered, starting with backups. |
 | [DETECTION-CATALOG.md](DETECTION-CATALOG.md) | ✅ | Curated detection catalogue shipped as a starting point. |
-| [../deploy/CONFIDENTIALITE.md](../deploy/CONFIDENTIALITE.md) | ✅ | TLS, real scope of agent tokens, at-rest encryption, caveat on the plaintext export of the backup. |
-| [../deploy/PROFILE.md](../deploy/PROFILE.md) | ✅ | Deploying on any infrastructure (`PLUME_*` variables, scripted inputs). |
-| [../deploy/K8S.md](../deploy/K8S.md) | ✅ | Detailed Kubernetes deployment. |
+| [../deploy/CONFIDENTIALITE.md](../deploy/CONFIDENTIALITE.en.md) | ✅ | TLS, real scope of agent tokens, at-rest encryption, caveat on the plaintext export of the backup. |
+| [../deploy/PROFILE.md](../deploy/PROFILE.en.md) | ✅ | Deploying on any infrastructure (`PLUME_*` variables, scripted inputs). |
+| [../deploy/K8S.md](../deploy/K8S.en.md) | ✅ | Detailed Kubernetes deployment. |
 
 ## Ingesting and normalising
 
@@ -54,7 +54,7 @@ refuses an addition that goes in without being written down (`P9.7-b`).
 | [CIM.md](CIM.en.md) | ✅ | The common information model — the event taxonomy rules are composed on. |
 | [VALEURS-DES-CAPTEURS.md](VALEURS-DES-CAPTEURS.md) | 📐 | **What a sensor emits, and what its values mean.** The common model above declares **one** vocabulary per field; a sensor, however, writes only a subset, and two sensors write the same field name with unrelated meanings — so the key is the pair **(source, field)**. Says what the shipped producers already declare, what reaches neither the wire nor the screen, and why the gap is not closed by a hand-written table (`P11.19-a`). |
 | [PARSER-DSL.md](PARSER-DSL.md) | ✅ | Declarative parser (CIM DSL): add a log format **without a rebuild**. |
-| [CONNECTOR-PRESETS.md](CONNECTOR-PRESETS.md) | ✅ | Ready-to-use `http_pull` presets (AWS, M365/Entra, Okta, CrowdStrike, SentinelOne, GCP, Cloudflare, Google Workspace). Files in [`connector-presets/`](connector-presets/). |
+| [CONNECTOR-PRESETS.md](CONNECTOR-PRESETS.en.md) | ✅ | Ready-to-use `http_pull` presets (AWS, M365/Entra, Okta, CrowdStrike, SentinelOne, GCP, Cloudflare, Google Workspace). Files in [`connector-presets/`](connector-presets/). |
 | [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) | ✅ | Sigma rule import (single and bulk) + ATT&CK coverage delta. |
 | [ENDPOINT-SECURITY.md](ENDPOINT-SECURITY.md) | ✅ | Endpoint security with a BYO agent. |
 | [OTLP-TRACES.md](OTLP-TRACES.md) | ✅ | OpenTelemetry receiver (traces). |
@@ -66,12 +66,12 @@ which is what makes it possible to add one without touching the central server.
 
 | Document | State | What for |
 |---|---|---|
-| [../agent/README.md](../agent/README.md) | ✅ | **Cross-OS endpoint agent**: reads the OS's native sources, buffers on disk (bounded spool, *at least once*), POSTs to the ingest. |
-| [../agent/CI.md](../agent/CI.md) | ✅ | How this agent is **validated**: what CI actually executes per platform, and what it only compiles. |
-| [../collectors/windows/README.md](../collectors/windows/README.md) | ✅ | **Windows collector** in PowerShell, a single file, with no agent and no spool: direct POST to `/api/ingest`. |
-| [../deploy/SYSLOG.md](../deploy/SYSLOG.md) | ✅ | **Syslog receiver** (RFC 5424 + RFC 3164, UDP and TCP) and pluggable vendor parsers: a network device becomes one more collector. |
-| [../deploy/MAIL.md](../deploy/MAIL.md) | ✅ | **Mail detection** read from the host's maildir: curated patterns (IOC, phishing, URL), minimal events. |
-| [../deploy/EBPF-SIGMA.md](../deploy/EBPF-SIGMA.md) | ✅ | Plugging **eBPF** runtime detection (Falco JSON output) and **Sigma** rules into the ingest. |
+| [../agent/README.md](../agent/README.en.md) | ✅ | **Cross-OS endpoint agent**: reads the OS's native sources, buffers on disk (bounded spool, *at least once*), POSTs to the ingest. |
+| [../agent/CI.md](../agent/CI.en.md) | ✅ | How this agent is **validated**: what CI actually executes per platform, and what it only compiles. |
+| [../collectors/windows/README.md](../collectors/windows/README.en.md) | ✅ | **Windows collector** in PowerShell, a single file, with no agent and no spool: direct POST to `/api/ingest`. |
+| [../deploy/SYSLOG.md](../deploy/SYSLOG.en.md) | ✅ | **Syslog receiver** (RFC 5424 + RFC 3164, UDP and TCP) and pluggable vendor parsers: a network device becomes one more collector. |
+| [../deploy/MAIL.md](../deploy/MAIL.en.md) | ✅ | **Mail detection** read from the host's maildir: curated patterns (IOC, phishing, URL), minimal events. |
+| [../deploy/EBPF-SIGMA.md](../deploy/EBPF-SIGMA.en.md) | ✅ | Plugging **eBPF** runtime detection (Falco JSON output) and **Sigma** rules into the ingest. |
 
 ## Interoperating
 
@@ -93,7 +93,7 @@ which is what makes it possible to add one without touching the central server.
 
 | Document | State | What for |
 |---|---|---|
-| [BENCHMARK.md](BENCHMARK.md) | ✅ | **The figures of reference, and the instrument to contradict them.** The matrix (query classes × windows × masking × FTS × cold tier × fleet size) on a synthetic database with a production profile, daemon under a cgroup `MemoryMax=2G` that is **enforced** — not observed. States what is **slow** as frankly as what is fast, publishes the remaining levers by measured gain, and NAMES the cells it has not measured. The harness (`../bench/`) replays the matrix with a single command and publishes its raw data, so that a third party can redo — or contradict — the measurement. **Read its qualifiers before quoting one of its figures**: no count is copied here (it would rot), the reference volume is not 10 M — the real ingest throughput and the MEASURED CAUSE of its degradation are published instead — and the database fit in the page cache, so the latencies are a CPU-bound **best case**. |
+| [BENCHMARK.md](BENCHMARK.md) | ✅ | **The figures of reference, and the instrument to contradict them.** The matrix (query classes × windows × masking × FTS × cold tier × fleet size) on a synthetic database with a production profile, daemon under a cgroup `MemoryMax=2G` that is **enforced** — not observed. States what is **slow** as frankly as what is fast, publishes the remaining levers by measured gain, and NAMES the cells it has not measured. The harness (`../bench/`) re-runs the matrix with a single command and publishes its raw data, so that a third party can redo — or contradict — the measurement. **Read its qualifiers before quoting one of its figures**: no count is copied here (it would rot), the reference volume is not 10 M — the real ingest throughput and the MEASURED CAUSE of its degradation are published instead — and the database fit in the page cache, so the latencies are a CPU-bound **best case**. |
 | [../bench/README.md](../bench/README.md) | ✅ | **THE INSTRUMENT** that produces the document above: what each pass measures, what each results file contains, and the reading traps named one by one. Read it before contradicting a figure — or quoting one. |
 
 ## Direction and internals

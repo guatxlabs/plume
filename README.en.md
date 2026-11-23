@@ -56,9 +56,9 @@ design) — including [SDK](docs/SDK.md) · [CIM](docs/CIM.en.md) · [parsing DS
 [Sigma importer](docs/SIGMA-IMPORTER.md) · [disaster recovery](docs/DR-plume-restore.md).
 
 **To use it**, pages written for the operator rather than for the contributor:
-**[install without opening a breach, step by step](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md)** ·
+**[install without opening a breach, step by step](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md)** ·
 [the same operation in all three modes](docs/TROIS-MODES.en.md) ·
-[the console, tab by tab](docs/CONSOLE.md) ·
+[the console, tab by tab](docs/CONSOLE.en.md) ·
 [the GXQL search language](docs/GXQL.en.md) ·
 [the agents and their protocol](docs/AGENTS-PROTOCOLE.md) ·
 [encryption and compression, as they are](docs/CHIFFREMENT-COMPRESSION.md).
@@ -116,7 +116,7 @@ The admin password is **never** stored in plaintext: you supply its **argon2id h
 
 > **Install at home without exposing anything**: what is open by default in each mode, TLS,
 > authentication, where each token lives, what each sensor brings into the SIEM and how to
-> prove it reports — [`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md`](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md).
+> prove it reports — [`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md`](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md).
 
 > ### ⚠️ Read before choosing a mode: nothing is pre‑built yet
 > **No container image and no binary are published so far** (no `ghcr.io/...`, no
@@ -865,7 +865,7 @@ come from a constant — command `c` above gives it.
 | `PLUME_ADDR` | listening interface and port | `127.0.0.1:7000` |
 | `PLUME_HOST` | expected host — **anti‑DNS‑rebinding guard**, a mismatch returns `421` | `plume.localhost` |
 | `PLUME_HOST_STRICT` | `1` = no longer accepts *loopback* out of the box, only the FQDNs of `PLUME_HOST`; empty or `0` = non‑strict (FQDNs of `PLUME_HOST` and *loopback* accepted), any other value too, and the start says so. Non‑strict by default because a local loopback client (`curl http://127.0.0.1:7000`, an agent pushed to `127.0.0.1:7000` in Docker) would receive `421` | `0` |
-| `PLUME_SSRF_BLOCK_PRIVATE` | egress guard (connectors, destinations, channels, OIDC and LDAP identity providers, AI providers) towards the private addresses `10/8`, `172.16/12`, `192.168/16`. **Empty (default)**: refused for a target entered through the API (channel, destination, connector, OIDC or LDAP identity provider, AI provider — from entry, then on call or on connection to the directory), allowed for a configuration target (channel seeded by `PLUME_NOTIFY_NTFY_URL`, objects of a `config.d` overlay); `0`/`false`/`no`/`off` = allowed everywhere; `1`/`true`/`yes`/`on` = refused everywhere, configuration included; an unrecognised value is worth the default and is reported. Loopback, link-local (including `169.254.169.254`) and IPv6 ULA stay refused whatever this value; only a target listed in `PLUME_SSRF_ALLOW` escapes it. An LDAP identity provider's connection to its directory is judged by this guard before any connection (`ldap://` and `ldaps://` only, `ldapi://` and an empty host refused; an empty directory URL is not judged: provider not configured). The `[ssrf]` line at start says which policy was retained (details: [docs/CONNECTOR-PRESETS.md](docs/CONNECTOR-PRESETS.md)) | empty |
+| `PLUME_SSRF_BLOCK_PRIVATE` | egress guard (connectors, destinations, channels, OIDC and LDAP identity providers, AI providers) towards the private addresses `10/8`, `172.16/12`, `192.168/16`. **Empty (default)**: refused for a target entered through the API (channel, destination, connector, OIDC or LDAP identity provider, AI provider — from entry, then on call or on connection to the directory), allowed for a configuration target (channel seeded by `PLUME_NOTIFY_NTFY_URL`, objects of a `config.d` overlay); `0`/`false`/`no`/`off` = allowed everywhere; `1`/`true`/`yes`/`on` = refused everywhere, configuration included; an unrecognised value is worth the default and is reported. Loopback, link-local (including `169.254.169.254`) and IPv6 ULA stay refused whatever this value; only a target listed in `PLUME_SSRF_ALLOW` escapes it. An LDAP identity provider's connection to its directory is judged by this guard before any connection (`ldap://` and `ldaps://` only, `ldapi://` and an empty host refused; an empty directory URL is not judged: provider not configured). The `[ssrf]` line at start says which policy was retained (details: [docs/CONNECTOR-PRESETS.md](docs/CONNECTOR-PRESETS.en.md)) | empty |
 | `PLUME_SSRF_ALLOW` | exemptions from the egress guard: **exact** hosts and/or IPs or CIDRs separated by commas (e.g. `10.20.0.0/16,192.0.2.10`). The **whole** guard is lifted for these targets, not just the private part: only put there a network you control | empty |
 | `PLUME_USER` / `PLUME_PASS_HASH` | admin account; the hash comes from `plume-daemon hashpw`. Empty hash → **SETUP mode** | `admin` / empty |
 | `PLUME_TRUSTED_PROXIES` | reverse proxies whose real IP is accepted. Non‑empty explicit list: a peer in the list that sends `X-Forwarded-Proto: https` (every value of every line set to `https`) also gets `Secure` and HSTS set, as a fallback for `PLUME_TLS_TERMINATED_UPSTREAM` (which takes priority); empty list: the header is never read for that | empty |
@@ -1028,7 +1028,7 @@ come from a constant — command `c` above gives it.
 > does not exempt `2001:db8::1`, and neither does `2001:DB8::1`. Copy the string as the alert
 > displays it.
 > **The promise is no longer kept by a sentence, it is measured**: `collectors/predicat-adresse.corpus`
-> is replayed line by line **on both readers** — the shell column by
+> is run line by line **on both readers** — the shell column by
 > `.github/scripts/check_enforcer_lists_fail_closed.py`, which **extracts `is_ip` from the shipped script and
 > runs it**, the Rust column by `daemon/src/tests/allowlist_du_responder.rs`. Neither of them
 > proves it alone: it is the shared file that links them, and both refuse to conclude if it is missing.
@@ -1086,8 +1086,8 @@ come from a constant — command `c` above gives it.
 > refuses the list — which is also what it does with a `%eth0` zone.
 
 **Confidentiality of the mail and syslog sensors** — set on the agent (`/etc/plume/mail.conf`,
-`/etc/plume/syslog.conf`); details in [`deploy/MAIL.md`](deploy/MAIL.md) and
-[`deploy/SYSLOG.md`](deploy/SYSLOG.md).
+`/etc/plume/syslog.conf`); details in [`deploy/MAIL.md`](deploy/MAIL.en.md) and
+[`deploy/SYSLOG.md`](deploy/SYSLOG.en.md).
 
 | Variable | Effect | Default |
 |---|---|---|

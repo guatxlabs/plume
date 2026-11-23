@@ -8,11 +8,11 @@ engine** on port **`:7000`**. Hosts/agents push their telemetry through `POST /a
 
 The **same** binary deploys on **k3s/k8s** (behind a reverse proxy + SSO forward-auth), on
 **Docker**, or on a **bare host** (systemd). The engine is **generic**: nothing infrastructure-specific is
-hardcoded — everything goes through `PLUME_*` variables (see [`deploy/PROFILE.md`](deploy/PROFILE.md)).
+hardcoded — everything goes through `PLUME_*` variables (see [`deploy/PROFILE.md`](deploy/PROFILE.en.md)).
 The search compiler is **shared** with the public `guatx-core` crate.
 
-> Reference documents (kept up to date): [`README.md`](README.en.md) · [`deploy/PROFILE.md`](deploy/PROFILE.md)
-> (deploy on any infrastructure) · [`deploy/K8S.md`](deploy/K8S.md) · [`CAHIER-DES-CHARGES.md`](CAHIER-DES-CHARGES.en.md).
+> Reference documents (kept up to date): [`README.md`](README.en.md) · [`deploy/PROFILE.md`](deploy/PROFILE.en.md)
+> (deploy on any infrastructure) · [`deploy/K8S.md`](deploy/K8S.en.md) · [`CAHIER-DES-CHARGES.md`](CAHIER-DES-CHARGES.en.md).
 
 ---
 
@@ -78,7 +78,7 @@ label of YOUR ingress controller) — no other pod can reach the daemon directly
   key the daemon generates on its first start (`0600`, next to the database). An **existing** plaintext
   database stays plaintext until the `plume-daemon chiffrer-au-repos` operation — including a database that a
   subcommand created before that first start
-  ([`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+  ([`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)).
   WAL + FTS5.
 - **Serves three things on the same port `:7000`**: the **API** (`/api/*`), the **web UI** (static assets
   via `tower_http::ServeDir` from `PLUME_WEB=/usr/local/share/plume/web`), and **ingestion**
@@ -331,7 +331,7 @@ Three targets, **same binary** (mode-aware):
     `PLUME_HOST=plume.example.com,ingest.example.com` (multi-host: browser + mTLS SNI),
     `PLUME_DB=/data/plume.db`, `PLUME_SPOOL=/data/spool`, `PLUME_LEDGER_KEY=/data/ledger.key`,
     `PLUME_SOQL_CORE=on`, `PLUME_WATCH_STS="<ns>/<sts> <ns>/<sts>"` (your critical apps; default
-    **empty**, see [`deploy/PROFILE.md`](deploy/PROFILE.md)), + RAM tuning (see §11).
+    **empty**, see [`deploy/PROFILE.md`](deploy/PROFILE.en.md)), + RAM tuning (see §11).
   - **Secrets** (ideally through a secrets manager → ExternalSecrets, `optional:true`),
     one per role: `<secret-auth>` (`PLUME_USER`/`PLUME_PASS_HASH` — absent ⇒ **SETUP mode**, install
     token in the logs), `<secret-db-key>` (`PLUME_DB_KEY`, SQLCipher encryption),
@@ -468,7 +468,7 @@ makes it explicitly, for a deployment whose threat model excludes theft of the v
 **And once the trade is made, it is BOUNDED.** `PLUME_SQLITE_DEVERSEMENT_QUOTA_MO` (default `1024`,
 `0` = no bound) caps the bytes that the **process** holds open under the spill
 directory; beyond that, the current statement is stopped and no result is returned — the refusal
-NAMES the lever, and [`deploy/PROFILE.md`](deploy/PROFILE.md) as well as the
+NAMES the lever, and [`deploy/PROFILE.md`](deploy/PROFILE.en.md) as well as the
 [README](README.en.md#configuration-the-plume_-variables) describe what it bounds and what it does not
 bound. It bounds neither RAM nor the offending query: the bound applies to what the process
 holds, not to what a query writes.
@@ -511,7 +511,7 @@ systemd hosts): that would be RAM charged to the same cgroup, and the ceiling wo
 
 All infrastructure specifics go through `PLUME_*` variables (the old `SOC_*` prefix has been **removed**).
 The complete list and the "deploy on any infrastructure" procedure are in
-[`deploy/PROFILE.md`](deploy/PROFILE.md); k8s coverage in [`deploy/K8S.md`](deploy/K8S.md).
+[`deploy/PROFILE.md`](deploy/PROFILE.en.md); k8s coverage in [`deploy/K8S.md`](deploy/K8S.en.md).
 Essentials: `PLUME_ADDR`, `PLUME_HOST`, `PLUME_USER`/`PLUME_PASS_HASH`, `PLUME_DB`/`PLUME_SPOOL`,
 `PLUME_DB_KEY`, `PLUME_CENTRAL`/`PLUME_TOKEN` (agent), `PLUME_SOQL_CORE`, `PLUME_WATCH_STS`,
 `PLUME_TLS_CERT`/`PLUME_TLS_KEY`, `PLUME_SSO_HEADER_SECRET`, `PLUME_DEMO`/`PLUME_PUBLIC_DEMO`.

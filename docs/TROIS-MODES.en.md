@@ -156,12 +156,12 @@ In other words: **the containerised central is not its own agent.** The shell co
 a host artefact. What you do instead, in a container and in a cluster:
 
 1. **An agent on a neighbouring machine** that pushes to the central (`POST /api/ingest`, *Bearer*
-   token) — a Linux host with `bootstrap-agent.sh`, the endpoint agent from [`../agent/`](../agent/README.md),
-   or the Windows collector from [`../collectors/windows/`](../collectors/windows/README.md);
+   token) — a Linux host with `bootstrap-agent.sh`, the endpoint agent from [`../agent/`](../agent/README.en.md),
+   or the Windows collector from [`../collectors/windows/`](../collectors/windows/README.en.md);
 2. **a PULL source** declared in the console (*Données* space → *Connecteurs de sources* tab, admin) — the daemon
    fetches, nothing is installed anywhere;
 3. **a receiver** that the central already exposes: Splunk HEC, OTLP, syslog
-   ([`../deploy/SYSLOG.md`](../deploy/SYSLOG.md)).
+   ([`../deploy/SYSLOG.md`](../deploy/SYSLOG.en.md)).
 
 These three paths exist in all three modes. It is the **fourth** — installing a script on the
 central's machine — that only exists in host mode.

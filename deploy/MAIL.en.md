@@ -38,7 +38,7 @@ PLUME_MAIL_MAX_EVENTS=1000          # alert cap per run (anti-flood)
 A hosted mailbox that must not be analyzed is named here; the collector NEVER opens it: no
 `stat` in its directory, no `read_dir`, no message read, no line in the incremental state, and
 the `body` subcommand refuses to read it (see further down what it reads to know this). The "no
-`stat`" holds by the order of the code (the decision on the name comes before any probe); the witnesses
+`stat`" rests on the order of the code (the decision on the name comes before any probe); the witnesses
 (`collector-mail/tests/compte_exclu_jamais_ouvert.rs`, mailboxes with permissions 000) see a `read_dir` or
 a read, not an isolated `stat`.
 - **Form**: entries separated by commas and/or whitespace. With an `@` (`alice@example.test`):
@@ -111,7 +111,7 @@ PLUME_MAIL_ROOT=... PLUME_ACTOR=<qui> plume-collector-mail body <account> <id> [
 # rereads /etc/plume/mail.conf (or PLUME_MAIL_CONF) like the scan (list AND domain, same rule):
 # an account removed from the scan is refused here too, before any search for the message
 ```
-- **Gate**: invocation is reserved to the central (agent/SSH access through the agent role); the central
+- **Gate**: invocation is reserved for the central (agent/SSH access through the agent role); the central
   checks `role=admin` BEFORE calling, and passes `PLUME_ACTOR` (who triggers it).
 - **Audit**: each read writes a `source=mail-audit` event ("body read: acct/folder/id by actor")
   into the spool -> SOC (searchable + integrity chain on the central side).

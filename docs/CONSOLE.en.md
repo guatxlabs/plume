@@ -75,7 +75,7 @@ that says the destination is not named, never a silence.
 This column, though, was still copied by hand — and it stopped being kept up the very same day, without
 anything saying so. **Measured on 2026-08-30: 24 of the 37 rows named a tab differently from
 the screen.** They are now derived, and the property is **held by an instrument** rather
-than by proofreading: `check_a_documented_tab_label_is_the_name_the_console_serves.py` replays the
+than by proofreading: `check_a_documented_tab_label_is_the_name_the_console_serves.py` re-runs the
 derivation at each integration, compares, and **refuses to conclude** — instead of guessing — on
 any destination it cannot decide. A modified panel title therefore turns this
 document red.
@@ -166,7 +166,7 @@ The largest space: thirteen tabs, from the raw source up to the semantic layer.
 | `freshness-view` | Fraîcheur des sources | viewer+ | collection health, feed by feed, in detail |
 | `system` | Système — opérabilité | viewer+ read · administration tools reserved | daemon self-metrics, per-component health, bulletin and diagnostics |
 | `fleet` | Flotte — par hôte | viewer+ | the inventory of hosts and endpoints: last contact, status, enrollment |
-| `connectors` | Connecteurs de sources | **admin** | external sources in **PULL** — the path for adding a source that exists in all three modes |
+| `connectors` | Connecteurs de sources | **admin** | external sources in **PULL** — the source-adding path that exists in all three modes |
 | `destinations` | Destinations de sortie | **admin** | forwarding events to an external sink (syslog, HEC, webhook) — an exfiltration surface, hence the restriction |
 | `processors` | Processeur d'ingest | **admin** | filter, mask, route, sample **at ingestion** |
 | `indexes` | Indexes & rétention | **admin** | named logical indexes, with their own retention and caps |
@@ -239,7 +239,7 @@ router** by a CI guard rather than enumerated.
 **Content carries its origin.** A rule, a parser or a dashboard shows whether it comes from the
 product, from a versioned file overlay, or from something created in the console. Without this
 mark, an operator would not know what a restart can rewrite — and a personal homonym
-makes the file overlay **ignored**, with a warning, rather than silently overwriting
+causes the file overlay to be **ignored**, with a warning, rather than silently overwriting
 the operator's work.
 
 **Each panel shows its query.** A chart whose question cannot be read is a

@@ -27,7 +27,7 @@ plume-daemon purge --source flux-de-test --since -2d --until -1h \
 ```
 
 Both steps open the database to write to it if needed, and **create** it if it is missing: never before the
-daemon's first start ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+daemon's first start ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)).
 
 The token is not a session identifier: it is **the fingerprint of the simulation's result** (canonical
 scope, cardinality, `id` and `ts` bounds, breakdown by source). Execution **re-simulates** and

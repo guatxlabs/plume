@@ -41,7 +41,7 @@ Then: `sudo systemctl enable --now plume-prom-scrape.timer`
 
 The tokens on this page are minted **on the central**, with the daemon already started once: on a missing
 database, the subcommand creates it, and without a key, hence in plaintext
-([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)).
 Form per mode (same for `token alloy --relais`):
 ```
 sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token prom --relais   # native host

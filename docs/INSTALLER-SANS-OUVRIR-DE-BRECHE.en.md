@@ -11,13 +11,13 @@ It does not repeat the pages that exist: the same operation in all three modes i
 [`TROIS-MODES.md`](TROIS-MODES.en.md), the agents' wire contract in
 [`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md), at-rest encryption in
 [`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md), the syslog receiver in
-[`../deploy/SYSLOG.md`](../deploy/SYSLOG.md), the mailbox sensor in
-[`../deploy/MAIL.md`](../deploy/MAIL.md), the search language in [`GXQL.md`](GXQL.en.md).
+[`../deploy/SYSLOG.md`](../deploy/SYSLOG.en.md), the mailbox sensor in
+[`../deploy/MAIL.md`](../deploy/MAIL.en.md), the search language in [`GXQL.md`](GXQL.en.md).
 
 > **What has not been executed.** The commands on this page are taken from the shipped installers and
 > manifests (`bootstrap.sh`, `bootstrap-agent.sh`, `docker-compose.yml`, `deploy/k3s.yaml`) and
 > every announced behaviour has been reread in the code that holds it. No installation sequence has
-> been played on a machine to write this page. An operation that fails on your side is a defect to
+> been run on a machine to write this page. An operation that fails on your side is a defect to
 > report.
 
 The host names in the examples are `soc.example.org` (the central) and `agent.example.org` (an agent).
@@ -154,7 +154,7 @@ collects nothing (and says so).
    [`README`](../README.en.md#a-docker-the-simplest). If `docker` is called through `sudo`, the line `hashpw
    '<mot de passe>'` goes to the `sudo` log as in §2.1: run `docker` without `sudo`, or pass the
    password through standard input (`hashpw` without an argument reads it; this pipe through `docker compose run`
-   has not been played here).
+   has not been tested here).
 2. **Start**: `docker compose up -d` — before any subcommand (§1.1). The port is only published
    on the host's `127.0.0.1:7000`, over HTTP.
 3. **Choose the exposure.** In both ways, set `PLUME_HOST` in `.env` to the served name
@@ -226,12 +226,12 @@ central installed by one of the three modes above. The collector is a single fil
 [`../collectors/windows/plume-collector.ps1`](../collectors/windows/plume-collector.ps1), launched by a
 scheduled task; it reads the Windows logs and **posts directly** to `/api/ingest`, without a disk
 spool. Its detailed instructions, its measurements and its limits are in
-[`../collectors/windows/README.md`](../collectors/windows/README.md). What follows is the order of operations.
+[`../collectors/windows/README.md`](../collectors/windows/README.en.md). What follows is the order of operations.
 
-> **What has been played, and what has not.** The README records the real execution of
+> **What has been tested, and what has not.** The README records the real execution of
 > `auditpol /set` (English subcategory names, on an English-language Windows), of `Import-Certificate`
 > and of `schtasks /Create` on Windows test machines. Everything else on this page is made of
-> standard Windows commands **not played** to write it: `auditpol /set` by GUID, `auditpol /backup`
+> standard Windows commands **not run** to write it: `auditpol /set` by GUID, `auditpol /backup`
 > and `/restore`, `icacls`, `Get-Acl`, `schtasks /Run`, `Get-ScheduledTaskInfo` and uninstallation. The script's transport gate is executed in
 > continuous integration under `pwsh` 7 only: **Windows PowerShell 5.1, the one the task launches,
 > is executed nowhere there** (`.github/scripts/check_windows_collector_is_honest.py`).
@@ -241,12 +241,12 @@ spool. Its detailed instructions, its measurements and its limits are in
 - **Windows PowerShell 5.1** (`powershell.exe`, present on every supported Windows). It is the one
   the task launches, and the script carries `#Requires -Version 5.1`. `pwsh` 7 runs it too, but two
   of the script's settings have no effect there, because they go through `ServicePointManager`, which
-  PowerShell 7's web commands do not use (reading, not played): `PLUME_TLS_INSECURE` (step 5)
+  PowerShell 7's web commands do not use (read from the code, not run): `PLUME_TLS_INSECURE` (step 5)
   and enforcing TLS 1.2 (below).
 - An **elevated** console (administrator) for the installation; the task runs as **SYSTEM**: reading
   the *Security* log requires it.
 - The audit policies: without them, `category=exec` is misleading and the firewall reports no
-  block ([README, Prérequis](../collectors/windows/README.md#prérequis)). Record the prior state to
+  block ([README, Prerequisites](../collectors/windows/README.en.md#prerequisites)). Record the prior state to
   be able to restore it at uninstallation. Subcategory names are **localized** (a French-language
   Windows refuses `"Process Creation"`); their GUIDs are not:
   ```powershell
@@ -256,7 +256,7 @@ spool. Its detailed instructions, its measurements and its limits are in
   auditpol /set /subcategory:"{0CCE9215-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable  # Logon
   ```
   `auditpol /get /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}"` reads the state back; the GUIDs are
-  the ones Microsoft publishes for these subcategories (GUID form not played here).
+  the ones Microsoft publishes for these subcategories (GUID form not tested here).
 - The central reachable over `https://`, under a name its `PLUME_HOST` lists (otherwise `421` to everything), and which
   accepts **TLS 1.2**: the script forces `Tls12` on .NET's security protocol, which, under 5.1,
   rules out TLS 1.3 (reading of the script). Under `pwsh` 7, this enforcement has no effect: the version is
@@ -310,12 +310,12 @@ spool. Its detailed instructions, its measurements and its limits are in
    reasons. Passed as an argument to a process (the script's `-Token` parameter no longer exists, but
    `powershell -Command "…"` or `cmd /c echo … >` create one), it is written into the `4688` as soon as
    the `Process Creation` audit includes the command line — and this collector itself ships that `4688`
-   to the SIEM ([README](../collectors/windows/README.md#configuration)); Sysmon, if it runs, also writes it
+   to the SIEM ([README](../collectors/windows/README.en.md#configuration)); Sysmon, if it runs, also writes it
    into its own channel. Typed into a PowerShell console, a `Set-Content … PLUME_TOKEN=…` creates
    no process, but the line stays in the PSReadLine history
    (`%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`) and, if
    script block logging is active, in event `4104` of the
-   *Microsoft-Windows-PowerShell/Operational* log (reading, not played). The editor has neither.
+   *Microsoft-Windows-PowerShell/Operational* log (read from the code, not run). The editor has neither.
    `plume.conf` only carries three keys: `PLUME_CENTRAL`, `PLUME_TOKEN` and
    `PLUME_SHIP_ALLOW_PLAINTEXT`. An environment variable wins over the file, and under SYSTEM only
    **machine** variables are seen; but **`PLUME_TOKEN` is never set as a machine variable**:
@@ -344,7 +344,7 @@ spool. Its detailed instructions, its measurements and its limits are in
    events, and answers in place of the central. Reserved for a test central with a self-signed certificate;
    remove it with `[Environment]::SetEnvironmentVariable('PLUME_TLS_INSECURE',$null,'Machine')`.
    Under `pwsh` 7, this setting goes through `ServicePointManager`, which PowerShell 7's web commands
-   do not use: verification stays active there (reading, not played).
+   do not use: verification stays active there (read from the code, not run).
 6. **Scheduled task, every 5 minutes, as SYSTEM.** Typed into an elevated **Windows PowerShell 5.1** —
    `$PSHOME` is the folder of the console where the command is typed, and that of `pwsh` 7 does not contain
    a `powershell.exe`:
@@ -358,7 +358,7 @@ spool. Its detailed instructions, its measurements and its limits are in
    the requirement that only SYSTEM and the Administrators can write it (step 2). The script accepts
    `-MaxAgeMinutes` (default `60`, the catch-up depth of the **first** run, without a watermark) and
    `-BatchSize` (default `400` events per send); neither is necessary. **Only the
-   SYSTEM account has been played.** A dedicated service account has been played nowhere: it would need
+   SYSTEM account has been tested.** A dedicated service account has been tested nowhere: it would need
    read access to `plume.conf`, write access under `state` (two more entries in the `icacls` above), and
    whatever it cannot read, the collector will admit (`collect_status=unavailable`) rather than stay
    silent.
@@ -404,7 +404,7 @@ spool. Its detailed instructions, its measurements and its limits are in
   no file content.
 - **It masks nothing.** The `CommandLine` field of the `4688` goes out as is: a secret typed on a command
   line of the desktop arrives in the SIEM.
-- **It does not read Sysmon** (the Rust agent does, [`../agent/README.md`](../agent/README.md)). It does, on the other hand,
+- **It does not read Sysmon** (the Rust agent does, [`../agent/README.md`](../agent/README.en.md)). It does, on the other hand,
   set the CIM field `action` (`failure`, `success`, `session_open`, `blocked`…) on
   authentication, execution, accounts, system, Defender and the firewall, from the outcome
   table of each log: a rule `category=auth action=failure` sees the `4625` (reading of the
@@ -501,7 +501,7 @@ a file in `/var/lib/plume/spool/`), as the
 | `vuln` | `trivy`, `crictl` | root | CVEs of the deployed images (`category=vuln`) | — | `search source=vuln \| stats count by severity` |
 | `imgdrift` (`update`) | `skopeo`, `crictl` | root | new digest on the same tag | — | `search source=update \| stats count` |
 | `containerd` | `crictl`, `jq` | root | images pulled, containers started | — | `search source=containerd \| stats count` |
-| `kube-state` (`k8s`) | `kubectl` | root; the unit sets `KUBECONFIG` to k3s's **administration** file | cluster state → `metric` + events | cluster admin rights (§6.1) | `metric kube_pods_running \| timechart avg(value)` |
+| `kube-state` (`k8s`) | `kubectl` | root; the unit sets `KUBECONFIG` to k3s's **administration** file | cluster state → `metric` + events | cluster admin permissions (§6.1) | `metric kube_pods_running \| timechart avg(value)` |
 | `kube-audit` | API audit file | root | verb, resource, user, decision | — | `search source=kube-audit \| stats count by verb` |
 | `kube-rbac` | `kubectl` | root; **kubeconfig** | who can do what (bindings, roles) | — | `search source=kube-rbac \| stats count` |
 | `pod-logs` (`k8s-log`) | `/var/log/pods` | root, capabilities bounded to `CAP_DAC_READ_SEARCH` | pod log lines **filtered** (threshold `PLUME_POD_LOG_MIN_SEV`, default 3) | an application log line can carry personal data or a secret; exclusions through a local drop-in (§6.6) | `search source=k8s-log category=health \| table ts, message` ♥ |
@@ -517,7 +517,7 @@ a file in `/var/lib/plume/spool/`), as the
 | `prom-scrape` | your `/metrics` targets | root, reads `/etc/plume/prom.conf` | series → `metric` | a target authenticated by URL parameter exposes that parameter; refuses remote plaintext towards the central (§5) | `metric <une de vos séries> \| timechart avg(value)` |
 | `custom` | your `CMD`, as root | root | one output line = one event | `/etc/plume/inputs.d` **must** be `0700 root`: writing there means executing as root | `search source=<SOURCE> \| stats count` |
 | `respond`, `engagement-adapter`, `backup` | *(not sensors: they act or back up)* | central `respond` (`plume-daemon respond`): root, capabilities bounded to `CAP_NET_ADMIN CAP_KILL`; agent `respond` (`respond.sh`) and `engagement-adapter`: root; `backup`: `soc` | action results | the agent responder acts as root with no bound: dry-run by default; `respond.sh` and `engagement-adapter` refuse remote plaintext towards the central (§5) | — |
-| `windows/` | Windows logs, firewall, Defender | scheduled task | §2.5, and [`../collectors/windows/README.md`](../collectors/windows/README.md) | refuses remote plaintext towards the central (code 2, nothing read or shipped) unless `PLUME_SHIP_ALLOW_PLAINTEXT=1`, which leaves the token readable on the network (§5); writes, as judged in CI, only commands, parameters, types and methods from a closed list, sends only through `Invoke-RestMethod`, and no literal UNC path (a name or path built at run time escapes this check); source in UTF-8 with BOM, without which Windows PowerShell 5.1 would read it in the ANSI code page; Windows PowerShell 5.1 compatibility judged by static analysis, not executed | `search source=windows-security \| stats count` |
+| `windows/` | Windows logs, firewall, Defender | scheduled task | §2.5, and [`../collectors/windows/README.md`](../collectors/windows/README.en.md) | refuses remote plaintext towards the central (code 2, nothing read or shipped) unless `PLUME_SHIP_ALLOW_PLAINTEXT=1`, which leaves the token readable on the network (§5); writes, as judged in CI, only commands, parameters, types and methods from a closed list, sends only through `Invoke-RestMethod`, and no literal UNC path (a name or path built at run time escapes this check); source in UTF-8 with BOM, without which Windows PowerShell 5.1 would read it in the ANSI code page; Windows PowerShell 5.1 compatibility judged by static analysis, not executed | `search source=windows-security \| stats count` |
 
 **A sensor that cannot collect says so**, instead of staying silent: a `category=config` event,
 `collect_status=unavailable` and a `reason` (`missing-dependency`, `missing-source`, `missing-config`,
@@ -569,7 +569,7 @@ search category=config reason=collection-capped | table ts, host, source, detail
   set **empty** cuts off its transport; an **absent** listener means `0.0.0.0:514` — and then falls under
   the same refusal without a list. To open it to your devices: the list, then a default-deny
   firewall, then only the listener. In a container, the loopback is the container's: the procedure
-  to follow is in [`../deploy/SYSLOG.md`](../deploy/SYSLOG.md#conteneur-docker-et-le-receiver-du-deploiement-b--limage-demarre-refusee).
+  to follow is in [`../deploy/SYSLOG.md`](../deploy/SYSLOG.en.md#container-docker-and-the-receiver-of-deployment-b--the-image-starts-refused).
 
 ---
 
@@ -581,7 +581,7 @@ The Kubernetes sensors (`kube-state`, `kube-rbac`, `web` in k3s mode, `mail`, `b
 `minio`, and the agent responder) call `kubectl` or `k3s kubectl` **as root** on the node. The `kube-state` unit sets
 `KUBECONFIG` to k3s's administration file; the others take whatever `kubectl` resolves, and
 `k3s kubectl` run as root uses that same file. **A flaw in one of these scripts is therefore worth the
-cluster's administration rights.** To reduce this:
+cluster's administration permissions.** To reduce this:
 
 - give each unit a dedicated kubeconfig, through a **local** drop-in
   (`sudo systemctl edit plume-kube-state.service`, then `[Service]` and
@@ -591,7 +591,7 @@ cluster's administration rights.** To reduce this:
   a log or running `mc`/`cscli` **inside** the pod — on the targeted namespace only for `mail`, `minio`,
   `bans`, `crowdsec` and the responder. `pods/exec` amounts to executing code in that pod: grant it
   nowhere else;
-- only enable the sensors whose output you read. *This split has not been played here: check
+- only enable the sensors whose output you read. *This split has not been tested here: check
   each sensor with its proof query after the change.*
 
 The **daemon**'s pod, for its part, has neither a Kubernetes client nor a mounted service account token.
@@ -618,7 +618,7 @@ may also serve the plaintext entrypoint (§2.4). Behind any proxy, three facts:
   if that proxy announces `https`. `deploy/k3s.yaml` sets `PLUME_TLS_TERMINATED_UPSTREAM` to `1`, its `Ingress`
   serving only `websecure`; on a native host, it is set in `/etc/plume/soc.conf`; in Docker, in `.env`
   (the service passes it on). Once set, a **direct** HTTP access to the daemon (tunnel, `port-forward`) loses its
-  session cookie, and the daemon recalls this in its log at startup. Without this setting or a
+  session cookie, and the daemon mentions it again in its log at startup. Without this setting or a
   listed proxy announcing `https`, the cookie goes out without `Secure` and without HSTS: do not then serve the
   same name in plaintext.
 

@@ -26,7 +26,7 @@ metadata.
 
 1. **Windows PowerShell 5.1** (`powershell.exe`, built into Windows): it is the one the scheduled task
    below launches, and the script requires `#Requires -Version 5.1`. PowerShell 7 (`pwsh`) runs it too,
-   but it is **the only one** continuous integration plays: under 5.1, nothing is executed in CI. 5.1
+   but it is **the only one** continuous integration runs: under 5.1, nothing is executed in CI. 5.1
    compatibility is **judged there without being executed** (`.github/scripts/check_windows_collector_is_honest.py`):
    PSScriptAnalyzer, at a pinned version, checks the script against the Windows PowerShell 5.1 profiles it
    ships (Windows 10 1809, Windows Server 2016 and 2019: syntax, commands, parameters, types), and
@@ -34,7 +34,7 @@ metadata.
    `` `u{…} ``, `` `e ``, `-replace` with a written script block, `$IsWindows` and its kin, any type
    missing from even one of those profiles and any static member missing there. This judgement does not prove the
    **behaviour** of .NET Framework: the parsing of an address by `[System.Uri]` and by
-   `Invoke-RestMethod` 5.1 (proxy, TLS) is only played under PowerShell 7. Redirects are
+   `Invoke-RestMethod` 5.1 (proxy, TLS) is only tested under PowerShell 7. Redirects are
    followed under neither version: the send carries `-MaximumRedirection 0` (see below).
    **The file is UTF-8 with a BOM, and must stay so**: without a BOM, Windows PowerShell 5.1 reads a
    script in the ANSI code page, and the collector no longer parsed (a "—" becomes a closing
@@ -82,7 +82,7 @@ metadata.
    auditpol /set /subcategory:"Logon" /success:enable /failure:enable                             # 4624/4625
    ```
    These names are **localized**: measured on an English-language Windows, they fail on a French-language
-   Windows. The GUIDs do not depend on the language (form not played here) — `Filtering Platform
+   Windows. The GUIDs do not depend on the language (form not tested here) — `Filtering Platform
    Connection` = `{0CCE9226-69AE-11D9-BED3-505054503030}`, `Process Creation` =
    `{0CCE922B-69AE-11D9-BED3-505054503030}`, `Logon` = `{0CCE9215-69AE-11D9-BED3-505054503030}`, to be passed
    as is: `auditpol /set /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}" /success:enable`.
@@ -125,7 +125,7 @@ PLUME_TOKEN=<le-jeton>
 read from it** (it only comes from the environment): set in this file, it has no effect, and
 TLS verification stays active. The file carries the token: its permissions (SYSTEM and Administrators only,
 inheritance disabled) and how to write it without the token going through a command line are in
-[`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §2.5](../../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#25-windows--le-collecteur-plume-collectorps1).
+[`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §2.5](../../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md#25-windows--the-collector-plume-collectorps1).
 An environment variable wins over the file; under the scheduled task running as SYSTEM, only
 **machine** variables are seen. **`PLUME_TOKEN` is never set as a machine variable**: it is
 readable by any local user (key `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`,
@@ -144,7 +144,7 @@ and environment inherited by every process), which defeats the file's permission
 > `Invoke-RestMethod` reads it as relative, differently from the gate (measured: `http:\\central.example.org` and
 > `1http://central.example.org` went out in clear text to a remote host). With `schéma://` at the start, the host is the one
 > that `[System.Uri]` extracts, which is the one `Invoke-RestMethod` calls (measured under PowerShell 7;
-> Windows PowerShell 5.1 is not played): `http://127.0.0.1.example.org`, `http://localhost.example.org`
+> Windows PowerShell 5.1 is not tested): `http://127.0.0.1.example.org`, `http://localhost.example.org`
 > or `http://127.0.0.1@example.org` target a remote host and are refused. Any other scheme is refused,
 > opt-in or not.
 >
@@ -158,7 +158,7 @@ and environment inherited by every process), which defeats the file's permission
 > scheduled task launches, only throws on `301`/`302` and returns a `303`, `307` or `308` as a normal response
 > with an empty body. The collector therefore only treats a batch as delivered if the response carries
 > `"queued":true`, the central's acknowledgement (`202`); an empty response, a proxy's HTML page or the JSON
-> of another service are send failures. Played under PowerShell 7 (including the empty-body response
+> of another service are send failures. Tested under PowerShell 7 (including the empty-body response
 > that 5.1 returns); Windows PowerShell 5.1 itself is not executed. **Effect on an already installed desktop**: if `PLUME_CENTRAL`
 > names an address that redirects (an `http://` that a front end sends on to `https://`, a path that the
 > front end rewrites, a login page of an authentication proxy), the scheduled task goes
@@ -222,7 +222,7 @@ schtasks /Create /TN "Plume Collector" /SC MINUTE /MO 5 /RU SYSTEM /RL HIGHEST `
 
 `$PSHOME` is the folder of the console **where the command is typed**: typed in Windows PowerShell 5.1,
 it targets `powershell.exe` 5.1; typed in `pwsh` 7, it targets a `powershell.exe` that does not exist
-in the `pwsh` folder, and the task fails on every trigger (code reading, not played). Type it
+in the `pwsh` folder, and the task fails on every trigger (read from the code, not run). Type it
 in Windows PowerShell 5.1, or write the full path
 (`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`).
 

@@ -688,7 +688,8 @@ n'est pas mesuré** à ce jour : nous ne publierons ce chiffre qu'une fois le ba
 
 **Le contenu de détection livré ne se limite pas à ces exemples Sigma.** À côté d'eux, le dépôt livre
 **37 règles de catalogue** dans `config.d/rules/catalog/` — une bibliothèque mappée CIM + ATT&CK, désactivée
-par défaut et activée règle par règle selon la télémétrie branchée, décrite dans
+par défaut **sauf 1 règle active** (`de-detection-content-mutated.json`, qui signale une modification du contenu
+de détection) et activée règle par règle selon la télémétrie branchée, décrite dans
 [`docs/DETECTION-CATALOG.md`](docs/DETECTION-CATALOG.md) — et **10 règles overlay** à la racine de
 `config.d/rules/`, **dont 7 actives** au démarrage ; le binaire sème en plus ses propres règles de base
 (`daemon/src/seeds.rs`). Ces comptes sont comparés à l'arbre par
@@ -698,9 +699,12 @@ pour les redériver :
 ```sh
 git ls-files 'config.d/sigma/*' | wc -l                        # règles Sigma d'exemple
 git ls-files 'config.d/rules/catalog/*.json' | wc -l           # règles de catalogue
+grep -L '"enabled": *false' config.d/rules/catalog/*.json | wc -l  # sauf N actives
 git ls-files 'config.d/rules/*.json' | grep -vc /catalog/      # règles overlay à la racine
-grep -l '"enabled": *true' config.d/rules/*.json | wc -l       # dont actives
+grep -L '"enabled": *false' config.d/rules/*.json | wc -l      # dont actives
 ```
+
+Une règle **sans** champ `enabled` démarre active : le chargeur lui donne `true` par défaut.
 
 **3. Détecter et agir.** Ajoutez une **règle** (`config.d/rules/*.json` : requête GXQL + seuil) ou un **playbook** (`config.d/playbooks/*.json` : requête → action). Parsers, règles et playbooks sont aussi **créables/éditables dans l'interface** (rôle admin) ; le fichier reste la source durable, versionnée en git.
 

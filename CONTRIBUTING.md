@@ -176,7 +176,7 @@ TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features col
    ```
 
 All optional backends are **OFF by default**. The full feature list, from `[features]` in
-`daemon/Cargo.toml`: `cold_tier`, `clickhouse`, `clickhouse-ha`, `ldap`, `saml`, `duckdb`, `ai`.
+`daemon/Cargo.toml`: `cold_tier`, `clickhouse`, `clickhouse-ha`, `ldap`, `saml`, `duckdb`, `s3_backup`, `ai`.
 The default binary carries none of them.
 
 **What CI actually verifies about them** — do not over-read a green tick:
@@ -185,6 +185,7 @@ The default binary carries none of them.
 |---|---|
 | `cold_tier` | **compiled and tested** (`cold-tier` job, own asserted count) |
 | `ai` | **compiled and tested** (`ai` job, own asserted count) — the whole suite runs with the feature on |
+| `s3_backup` | **compiled and tested, filtered** (`features` job: `cargo check`, then only the `sink_s3_` tests, own asserted count `EXPECTED_S3_TESTS`) — never against a live object store |
 | `duckdb`, `clickhouse`, `clickhouse-ha`, `ldap`, `saml` | **`cargo check` only** — type-checked, never executed |
 
 A behaviour regression in SAML assertion validation, the LDAP bind or the ClickHouse backend

@@ -51,12 +51,22 @@ CE_FICHIER = ".github/scripts/" + os.path.basename(__file__)
 # garde ne voyait que l'espace et le tiret ASCII, et laissait passer « open‑core » tel que l'ancien document
 # l'écrivait. `\s` couvre les espaces Unicode (U+00A0, U+202F…), la classe ajoute les tirets U+2010–U+2015
 # et le signe moins U+2212.
-SEP = r"[\s_\-\u2010-\u2015\u2212]?"
+# LE SÉPARATEUR EST UNE SUITE, PAS UN CARACTÈRE. Une version antérieure n'en admettait qu'un : « open  core »
+# (deux espaces, ou espace + tiret) passait. `*` couvre zéro (« opencore »), un ou plusieurs séparateurs ;
+# les lignes sont jugées une à une, donc la suite ne traverse jamais un saut de ligne.
+SEP = r"[\s_\-\u2010-\u2015\u2212]*"
 VOCABULAIRE = re.compile(
     r"enterprise|entreprise"
     rf"|\bopen{SEP}core\b"
     rf"|\bcommunity{SEP}(?:edition|vs)\b|[ée]ditions?{SEP}communautaires?"
-    rf"|\bcommercial{SEP}(?:licen[cs]e|edition)|\blicences?{SEP}commerciales?|[ée]ditions?{SEP}commerciales?"
+    # « commercial licen » couvre license, licence, licensing, licensed ; l'ordre inverse aussi
+    # (« licensed commercially », « commercially licensed »). Une version antérieure n'exigeait que
+    # `licen[cs]e` et laissait passer « commercial licensing ».
+    rf"|\bcommercial(?:ly)?{SEP}(?:licen|edition)|\blicen[cs](?:ed|ing){SEP}commercially\b"
+    rf"|\bcommercial{SEP}(?:layer|tier|plan|version|module|feature|add{SEP}on|offering)s?\b"
+    rf"|\blicences?{SEP}commerciales?|[ée]ditions?{SEP}commerciales?|\bcouches?{SEP}commerciales?"
+    rf"|\b(?:pro|business|plus|professional){SEP}(?:edition|tier|plan|version)s?\b"
+    rf"|[ée]ditions?{SEP}(?:pro|professionnelle|business)\b"
     rf"|\bpremium{SEP}(?:connector|module|feature|edition|tier)s?|\b(?:connecteurs?|modules?){SEP}premium"
     rf"|\bpaid{SEP}(?:edition|tier|plan|version|module|feature|add{SEP}on|licen)"
     rf"|[ée]ditions?{SEP}payantes?|\bversions?{SEP}payantes?|\blicences?{SEP}payantes?"
@@ -201,6 +211,16 @@ def epreuves() -> list[str]:
         ("open core, espace insécable", {"README.md": "an open\u00a0core model"}, 1, 0),
         ("community edition, tiret insécable", {"README.md": "the community\u2011edition"}, 1, 0),
         ("commercial license, tiret insécable", {"README.md": "a commercial\u2011license"}, 1, 0),
+        ("commercial licensing", {"README.md": "can obtain commercial licensing."}, 1, 0),
+        ("licensed commercially", {"README.md": "The advanced modules are licensed commercially."}, 1, 0),
+        ("commercially licensed", {"README.md": "a commercially licensed module"}, 1, 0),
+        ("commercial layer", {"README.md": "the commercial layer adds SSO"}, 1, 0),
+        ("couche commerciale", {"README.md": "la couche commerciale ajoute le SSO"}, 1, 0),
+        ("Pro edition", {"README.md": "A Pro edition adds SSO."}, 1, 0),
+        ("édition Pro", {"README.md": "l'édition Pro ajoute le SSO"}, 1, 0),
+        ("open core, deux espaces", {"README.md": "an open  core model"}, 1, 0),
+        ("open core, espace et tiret", {"README.md": "an open -core model"}, 1, 0),
+        ("open core, soudé", {"README.md": "an opencore model"}, 1, 0),
         ("licence commerciale", {"README.md": "Licence commerciale disponible"}, 1, 0),
         ("version payante", {"README.md": "La version payante ajoute le SSO"}, 1, 0),
         ("double licence", {"README.md": "double licence AGPL ou autre"}, 1, 0),
@@ -213,6 +233,9 @@ def epreuves() -> list[str]:
         ("entrée morte", {"a.rs": "rien"}, 0, 1),
         ("bon chemin, terme refusé hors du motif", {"a.rs": "ATT&CK (Enterprise) mais open core"}, 1, 0),
         ("mot sans rapport", {"c.md": "communauté, commercialement neutre, propriétaire du fichier"}, 0, 0),
+        # « offre commerciale » n'est pas refusé : c'est le nom de la prestation de service, seul commercial réel.
+        ("mots voisins sans rapport",
+         {"c.md": "a production version, a provisioning plan, licensed under AGPL, l'offre commerciale de service"}, 0, 0),
     ]
     echecs = []
     for nom, ajout, att_r, att_m in cas:

@@ -49,11 +49,13 @@ Si Plume tient sur un nœud, le cœur est le produit entier.
 
 Ces capacités visent l'**échelle**, le **travail à plusieurs organisations** ou des exigences
 d'**identité et de stockage** particulières. Elles sont construites par-dessus le cœur, le cœur n'en dépend
-pas, et chacune ne s'engage que par un geste explicite : une **fonctionnalité Cargo** (absente du binaire si
-elle n'est pas compilée) et, le plus souvent, un **interrupteur d'exécution** qui vaut « éteint » par défaut.
-Le build par défaut n'en porte **aucune** ; l'image de conteneur livrée compile `ldap` et `cold_tier`
-(`ARG PLUME_FEATURES` du [`Dockerfile`](Dockerfile)), dont les interrupteurs restent éteints tant que
-l'exploitant ne les pose pas.
+pas, et chacune ne s'engage que par un geste explicite. Pour presque toutes, ce geste est une
+**fonctionnalité Cargo** (absente du binaire si elle n'est pas compilée), souvent doublée d'un **interrupteur
+d'exécution** qui vaut « éteint » par défaut ; le build par défaut ne compile **aucune** de ces fonctionnalités,
+et l'image de conteneur livrée compile `ldap` et `cold_tier` (`ARG PLUME_FEATURES` du
+[`Dockerfile`](Dockerfile)), dont les interrupteurs restent éteints tant que l'exploitant ne les pose pas.
+**Le multi-tenant fait exception** : il n'a pas de fonctionnalité Cargo, son code est compilé dans le build
+par défaut, et seul l'interrupteur d'exécution `PLUME_MULTI_TENANT` (qui vaut `0` par défaut) l'engage.
 
 | Module | Comment l'engager | Documentation |
 |---|---|---|
@@ -65,16 +67,17 @@ l'exploitant ne les pose pas.
 | **SAML 2.0** (fournisseur de service) | fonctionnalité `saml` ; sans elle, le login SAML répond 501 | [`docs/NATIVE-IDP.md`](docs/NATIVE-IDP.md) §5 |
 | **Dépôt de sauvegarde sur objet S3** | fonctionnalité `s3_backup` + destination `s3://` | [`docs/DR-plume-restore.md`](docs/DR-plume-restore.md) |
 | **Avis IA** (inférence distante, sans réseau en CI) | fonctionnalité `ai` + `PLUME_AI_*` | [`docs/AI-ML-DIRECTION.md`](docs/AI-ML-DIRECTION.md) |
-| **Multi-tenant / MSSP** (une base et une clé SQLCipher par tenant, provisioning SCIM 2.0) | `PLUME_MULTI_TENANT=1` | [`README.md`](README.md) |
+| **Multi-tenant / MSSP** (une base et une clé SQLCipher par tenant, provisioning SCIM 2.0) | compilé par défaut, sans fonctionnalité Cargo ; `PLUME_MULTI_TENANT=1` | [`README.md`](README.md) |
 
 La liste des fonctionnalités Cargo fait foi dans `[features]` de [`daemon/Cargo.toml`](daemon/Cargo.toml).
 Ce que l'intégration continue vérifie réellement pour chacune — compilée et testée, ou seulement
 type-vérifiée — est dit dans [`CONTRIBUTING.md`](CONTRIBUTING.md) : un module avancé n'est pas mieux
 défendu que ce que ce tableau annonce.
 
-**Invariant de construction.** Laissés éteints, ces modules rendent un build par défaut **identique octet
-pour octet** au cœur — prouvé par un compte de tests constant (`EXPECTED_TESTS` dans
-`.github/workflows/ci.yml`).
+**Invariant de construction.** Non compilées, les fonctionnalités Cargo de ces modules laissent le build par
+défaut **identique octet pour octet** au cœur — prouvé par un compte de tests constant (`EXPECTED_TESTS` dans
+`.github/workflows/ci.yml`). Le multi-tenant, lui, est dans ce build : ce qui le tient éteint est
+`PLUME_MULTI_TENANT` laissé à `0`, pas l'absence de son code.
 
 ---
 

@@ -57,12 +57,26 @@ def overlays_racine_compte(fichiers, lire):
     return len(overlays_racine(fichiers, lire))
 
 
+def active_au_demarrage(texte: str) -> bool:
+    """La valeur que le chargeur du démon donne à `enabled`, et non une lecture à soi.
+
+    `load_overlay_rules` (`daemon/src/overlays.rs`) lit `v.get("enabled").and_then(as_bool).unwrap_or(true)` :
+    une règle SANS champ `enabled`, ou dont le champ n'est pas un booléen, démarre ACTIVE. Une version
+    antérieure de cette garde ne comptait que `enabled` égal à `true` ; une règle livrée sans le champ
+    démarrait active sans être comptée. Le catalogue (`rules/catalog/`) passe par le MÊME chargeur, donc
+    par la même valeur par défaut. Un fichier qui n'est pas un objet JSON lève : la garde refuse de conclure.
+    """
+    valeur = json.loads(texte).get("enabled")
+    return valeur if isinstance(valeur, bool) else True
+
+
 def overlays_racine_actives(fichiers, lire):
-    n = 0
-    for f in overlays_racine(fichiers, lire):
-        if json.loads(lire(f)).get("enabled") is True:
-            n += 1
-    return n
+    return sum(1 for f in overlays_racine(fichiers, lire) if active_au_demarrage(lire(f)))
+
+
+def catalogue_actives(fichiers, lire):
+    return sum(1 for f in fichiers
+               if f.startswith("config.d/rules/catalog/") and f.endswith(".json") and active_au_demarrage(lire(f)))
 
 
 # (fichier publié, motif à UN groupe qui capture le nombre, compte dérivé de l'arbre, ce que c'est)
@@ -70,7 +84,10 @@ ANNONCES = [
     ("README.md", r"\*\*(\d+) règles Sigma d'exemple\*\*", sigma_exemples, "règles Sigma d'exemple (config.d/sigma/)"),
     ("README.md", r"\*\*(\d+) règles de catalogue\*\*", catalogue, "règles de catalogue (config.d/rules/catalog/)"),
     ("README.md", r"\*\*(\d+) règles overlay\*\*", overlays_racine_compte, "règles overlay à la racine de config.d/rules/"),
-    ("README.md", r"\*\*dont (\d+) actives\*\*", overlays_racine_actives, "règles overlay racine à enabled=true"),
+    ("README.md", r"\*\*dont (\d+) actives\*\*", overlays_racine_actives,
+     "règles overlay racine actives au démarrage (enabled absent ou vrai)"),
+    ("README.md", r"\*\*sauf (\d+) règles? actives?\*\*", catalogue_actives,
+     "règles de catalogue actives au démarrage (enabled absent ou vrai)"),
     ("docs/DETECTION-CATALOG.md", r"\*\*(\d+) règles LIVRÉES\*\*", catalogue, "règles de catalogue (config.d/rules/catalog/)"),
     # Le test qui charge le catalogue lit TOUT `config.d/rules/catalog/` (`read_dir`, sans filtre) : le
     # nombre de règles qu'il « exige » de compiler est donc le compte du catalogue, pas celui des tables.
@@ -99,6 +116,16 @@ def epreuves() -> list[str]:
                 "config.d/rules/x.json", "config.d/rules/y.json", "config.d/rules/catalog/c.json"]
     contenus = {"config.d/rules/x.json": '{"enabled": true}', "config.d/rules/y.json": '{"enabled": false}',
                 "config.d/rules/catalog/c.json": '{"enabled": true}'}
+    # La valeur par défaut du chargeur : champ absent ou non booléen -> active.
+    for texte, attendu in [('{"enabled": true}', True), ('{"enabled": false}', False), ('{"name": "r"}', True),
+                           ('{"enabled": "false"}', True), ('{"enabled": null}', True)]:
+        if active_au_demarrage(texte) is not attendu:
+            return [f"épreuve « défaut du chargeur » : {texte} -> {not attendu}, attendu {attendu}"]
+    sans_champ = dict(contenus, **{"config.d/rules/y.json": '{"name": "y"}'})
+    d, _ = juger([("README.md", r"\*\*dont (\d+) actives\*\*", overlays_racine_actives, "a")], fichiers,
+                 lambda f: "**dont 1 actives**" if f == "README.md" else sans_champ[f])
+    if len(d) != 1:
+        return [f"épreuve « règle sans champ enabled » : {len(d)} désaccord(s), attendu 1"]
     annonces = [("README.md", r"\*\*(\d+) règles Sigma d'exemple\*\*", sigma_exemples, "s"),
                 ("README.md", r"\*\*(\d+) règles overlay\*\*", overlays_racine_compte, "o"),
                 ("README.md", r"\*\*dont (\d+) actives\*\*", overlays_racine_actives, "a")]

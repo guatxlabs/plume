@@ -32,14 +32,14 @@ disabled:
 |---|---|
 | **Ingestion** | agents (sh/systemd), HEC‑compatible endpoint, generic `http_pull` connector, syslog, declarative parser DSL |
 | **Search and dashboards** | GXQL (read‑only, injection‑free), FTS5, saved panels and dashboards |
-| **Detection** | rules · SOAR-lite playbooks · **Sigma import** (single and bulk) · **ATT&CK coverage matrix** · curated catalog ([`docs/DETECTION-CATALOG.md`](docs/DETECTION-CATALOG.md)) |
+| **Detection** | rules · SOAR-lite playbooks · **Sigma import** (single and bulk) · **ATT&CK coverage matrix** · curated catalog ([`docs/DETECTION-CATALOG.md`](docs/DETECTION-CATALOG.en.md)) |
 | **Threat-intel** | IOC store · STIX 2.1 import · matching at ingestion · TAXII 2.1 connector |
 | **Risk (RBA)** | per‑entity score · alert on risk incident |
 | **Cases and response** | incident cases · closed‑vocabulary response, per‑platform enforcers · **hash‑chained ledger** |
-| **Governance** | legal-hold (locked retention, fail-closed), chain‑preserving ledger export, composable roles — see [`docs/COMPLIANCE.md`](docs/COMPLIANCE.md) |
-| **Identity** | argon2id + RBAC, OIDC (Authorization-Code + PKCE), TOTP — see [`docs/NATIVE-IDP.md`](docs/NATIVE-IDP.md) |
-| **Encryption** | SQLCipher active out of the box, host‑bound tokens, read‑only queries — see [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md) |
-| **Bring-your-own-vendor** | CIM contract · parser DSL · connector descriptors · extension SDK ([`docs/SDK.md`](docs/SDK.md)) |
+| **Governance** | legal-hold (locked retention, fail-closed), chain‑preserving ledger export, composable roles — see [`docs/COMPLIANCE.md`](docs/COMPLIANCE.en.md) |
+| **Identity** | argon2id + RBAC, OIDC (Authorization-Code + PKCE), TOTP — see [`docs/NATIVE-IDP.md`](docs/NATIVE-IDP.en.md) |
+| **Encryption** | SQLCipher active out of the box, host‑bound tokens, read‑only queries — see [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.en.md) |
+| **Bring-your-own-vendor** | CIM contract · parser DSL · connector descriptors · extension SDK ([`docs/SDK.md`](docs/SDK.en.md)) |
 | **Purple** | **Engagement Mode** (`PLUME_ENGAGEMENT_MODE` switch, off by default) and junction with [Forge](https://github.com/guatxlabs/forge), correlated by ATT&CK technique |
 | **Interface** | bilingual FR/EN PWA, every IANA time zone |
 
@@ -61,13 +61,13 @@ build, and only the runtime switch `PLUME_MULTI_TENANT` (which defaults to `0`) 
 
 | Module | How to engage it | Documentation |
 |---|---|---|
-| **Columnar cold tier** (encrypted Parquet) | `cold_tier` feature + `PLUME_COLD_TIER=1` | [`docs/DESIGN-P10-echelle-2go.md`](docs/DESIGN-P10-echelle-2go.md) |
+| **Columnar cold tier** (encrypted Parquet) | `cold_tier` feature + `PLUME_COLD_TIER=1` | [`docs/DESIGN-P10-echelle-2go.md`](docs/DESIGN-P10-echelle-2go.en.md) |
 | **ClickHouse store** (one node; adapter compiled and tested, no runtime selection wired) | `clickhouse` feature; the daemon always serves SQLCipher, no switch moves to this store yet | [`docs/CLICKHOUSE-STORE.md`](docs/CLICKHOUSE-STORE.md) |
 | **Distributed ClickHouse** (foundations, no execution path wired) | `clickhouse-ha` feature | [`docs/CLICKHOUSE-HA.md`](docs/CLICKHOUSE-HA.md) |
 | **DuckDB store** (experimental; adapter compiled, no runtime selection wired) | `duckdb` feature; as with ClickHouse, the daemon always serves SQLCipher | [`docs/DUCKDB-STORE.md`](docs/DUCKDB-STORE.md) |
-| **LDAP / AD directory** | `ldap` feature + directory configuration | [`docs/NATIVE-IDP.md`](docs/NATIVE-IDP.md) |
-| **SAML 2.0** (service provider) | `saml` feature; without it, SAML login answers 501 | [`docs/NATIVE-IDP.md`](docs/NATIVE-IDP.md) §5 |
-| **Backup repository on S3 object storage** | `s3_backup` feature + `s3://` destination | [`docs/DR-plume-restore.md`](docs/DR-plume-restore.md) |
+| **LDAP / AD directory** | `ldap` feature + directory configuration | [`docs/NATIVE-IDP.md`](docs/NATIVE-IDP.en.md) |
+| **SAML 2.0** (service provider) | `saml` feature; without it, SAML login answers 501 | [`docs/NATIVE-IDP.md`](docs/NATIVE-IDP.en.md) §5 |
+| **Backup repository on S3 object storage** | `s3_backup` feature + `s3://` destination | [`docs/DR-plume-restore.md`](docs/DR-plume-restore.en.md) |
 | **AI advice** (remote inference, no network in CI) | `ai` feature + `PLUME_AI_*` | [`docs/AI-ML-DIRECTION.md`](docs/AI-ML-DIRECTION.md) |
 | **Multi-tenant / MSSP** (one SQLCipher database and key per tenant, SCIM 2.0 provisioning) | compiled by default, no Cargo feature; `PLUME_MULTI_TENANT=1` | [`README.md`](README.en.md) |
 

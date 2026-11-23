@@ -79,10 +79,12 @@ Plume **has no new agent**: the existing ingest paths are reused. The key point 
 Two seeded dashboards (idempotent), view **"Endpoint (BYO-agent)"**, **empty** as long as no telemetry
 arrives:
 
-- **Configuration posture (SCA/CIS)** — pass/fail controls, failures per host, per benchmark, impacted
-  compliance frameworks, detail of the failed controls. Composed on `category=posture`.
-- **Vulnerabilities (endpoint CVE)** — CVE by severity, most vulnerable hosts, top CVE, most affected
-  packages, critical/high in detail. Composed on `category=vuln`.
+- **Posture de configuration (SCA/CIS)** (configuration posture, the name the console serves) —
+  pass/fail controls, failures per host, per benchmark, impacted compliance frameworks, detail of the
+  failed controls. Composed on `category=posture`.
+- **Vulnérabilités (CVE endpoint)** (endpoint vulnerabilities, the name the console serves) — CVE by
+  severity, most vulnerable hosts, top CVE, most affected packages, critical/high in detail. Composed
+  on `category=vuln`.
 
 The panels are **GXQL** (masked path: automatically respects the field-filters #45 + RBAC). FIM
 already feeds the `integrity` category (existing integrity views); the inventory (`category=inventory`)
@@ -214,9 +216,9 @@ file in `/etc/audit/rules.d`).
 
 **Kernel state now, and at boot — it is not the same.** The catch-up loads into the
 CURRENT kernel the rules that the assembly skipped; auditd, at startup, only replays
-`augenrules --load`, which stops at the same place. Everything the loader announces as "loaded by the
-catch-up" will therefore be lost at the next boot as long as the offending line remains — with code `2`
-as with code `1`, where it says so with their number.
+`augenrules --load`, which stops at the same place. Everything the loader announces as « chargée par le
+rattrapage » (loaded by the catch-up) will therefore be lost at the next boot as long as the offending
+line remains — with code `2` as with code `1`, where it says so with their number.
 
 **A plume rule already declared by another file** in `/etc/audit/rules.d` (observed: a third-party file
 already carried the b64 `execve` rule). `augenrules` concatenates the files in name order then

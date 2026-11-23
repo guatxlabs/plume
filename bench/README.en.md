@@ -150,7 +150,7 @@ no longer only their percentiles: a dispersion cannot be recomputed from a p50.
 A dataset frozen once and for all ends up leaving the daemon's retention: the clock moves forward, the
 retention edge catches up with the tail of the dataset, and the purge DELETES events **during** the
 campaign. This is not theoretical — measured on 2026-08-01: 1 440 007 -> 1 436 516 events in half
-an hour, with as a result a FALSE correctness verdict blamed on concurrency when it came from
+an hour, producing a FALSE correctness verdict blamed on concurrency when it came from
 the clock. And the purge does not wait: `spawn_retention_loop` (`daemon/src/server/boucles_de_fond.rs`) runs a
 first time **60 s after startup**, then every hour.
 
@@ -303,7 +303,7 @@ sqlcipher :memory: "SELECT 1 FROM pragma_compile_options WHERE compile_options='
 This prerequisite is DECLARED here instead of being discovered at the moment it is needed: the tool lives on
 the host, no manifest sets it up, and a package cleanup would remove it without anything turning red.
 No guard holds it — a repository guard cannot judge a host it does not run on, and
-turning CI red for an operator tool would be a ransom.
+turning CI red over an operator tool would make every contributor pay for it.
 
 ```sh
 DB=/chemin/plume.db

@@ -42,7 +42,7 @@ La conception s'appuie entièrement sur des surfaces que plume livre déjà — 
 
 1. **2Go de RAM, non négociable** → pas de gros modèle local dans le pod ; inférence LLM 100% distante.
 2. **Souveraineté** → IA strictement optionnelle, cloisonnée par feature, désactivée, inerte sans config.
-3. **Indépendance vis-à-vis des fournisseurs** → apportez votre propre point d'entrée (Ollama / vLLM / llama.cpp sur une autre machine pour l'isolé du réseau, Azure OpenAI, Anthropic, tout compatible OpenAI) ; zéro valeur en dur.
+3. **Indépendance vis-à-vis des fournisseurs** → apportez votre propre point d'entrée (Ollama / vLLM / llama.cpp sur une autre machine pour une installation isolée du réseau, Azure OpenAI, Anthropic, tout compatible OpenAI) ; zéro valeur en dur.
 4. **L'humain dans la boucle** → l'IA n'exécute jamais ; tout passe par `/api/actions` sans changement.
 5. **Sûr face à l'injection par construction** → tout GXQL généré par l'IA passe par le compilateur fermé, qui le valide ou le refuse (une requête hallucinée ou malveillante est refusée comme le serait un mauvais GXQL humain).
 6. **Données personnelles / secrets** → caviardage des prompts sur l'infrastructure `field_filter` existante, jamais de hash ni de jeton ; sorties via `ssrf_guard` ; chaque appel d'IA audité au ledger.

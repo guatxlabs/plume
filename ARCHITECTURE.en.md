@@ -440,7 +440,7 @@ that the typed backup plan refuses (`collect_dump_plan` → `PlanErr::Unsupporte
 compressed path then falls back to the historical export, which **rewrites the whole database IN PLAINTEXT** into the
 staging directory for the duration of each cycle (`sqlcipher_export`). That — not RAM — is what
 justifies the default of `0`, and it is the same explicit trade-off as that of
-`PLUME_SQLITE_DEVERSEMENT`. Details: [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md).
+`PLUME_SQLITE_DEVERSEMENT`. Details: [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.en.md).
 
 **Memory ceiling of a read — and why it is OPT-IN.** A `stats … by` or a `dc()` whose key
 is not ordered by an index makes SQLite **sort**. Under `temp_store=MEMORY`, this sort has **no

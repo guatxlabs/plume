@@ -48,7 +48,7 @@ an option.**
 
 | Marker at the head of the payload | What it is | Where it comes from |
 |---|---|---|
-| `PLUMEDUMP1\n` | **streaming typed dump** (DDL + rows) — the **default** | a backup that writes **no clear-text file to disk** |
+| `PLUMEDUMP1\n` | **streaming typed dump** (DDL + rows) — the **default** | a backup that writes **no plaintext file to disk** |
 | `SQLite format 3\0` | **full plaintext SQLite copy** | **legacy** path: backups older than streaming, schemas outside its scope (FTS5 *contentless*), or `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT=1` |
 
 To read the marker by hand, if you want to know before restoring:
@@ -84,7 +84,7 @@ Since Phase 2 aging (`daemon/src/cold_store/aging.rs`), a day sealed into Parque
 by `plume-backup.timer` in host mode (`plume-daemon cold-escrow <destination>`), as an incremental verbatim
 copy under `<destination de sauvegarde>/cold/<tenant>/<env>/<AAAA-MM-JJ>-<NNNN>.parquet` — whatever
 ships the destination also ships the cold days. `cold-backup-plan` remains the read-only form for
-an external executor. They are already zstd+age-encrypted and immutable: no re-wrap, no clear text. With an
+an external executor. They are already zstd+age-encrypted and immutable: no re-wrap, no plaintext. With an
 OBJECT destination (`s3://`, `s3_backup` feature), each copy is then uploaded under its key and
 confirmed by reading it back; a copy without a confirmed upload is removed from the staging area and retried
 on the next cycle (`P7.20-m`).

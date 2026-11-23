@@ -7,9 +7,9 @@ sélectionné à l'exécution par `PLUME_STORE=duckdb`. Absent du build PME/prod
 **Le défaut reste `SqlcipherStore` (SQLite/SQLCipher), byte-identique à aujourd'hui.**
 
 DuckDB est un moteur analytique **embarqué, colonnaire, sans serveur externe**. Il occupe une niche
-distincte dans le principe de sur-ensemble (analytique sur une seule machine « apportez-votre-absence-
-d'infra », isolée du réseau). Mais ce n'est **pas la voie de montée en charge supportée** — **c'est
-ClickHouse** (voir [`CLICKHOUSE-STORE.md`](./CLICKHOUSE-STORE.fr.md)). DuckDB reste un tier
+distincte dans le principe de sur-ensemble (analytique sur une seule machine
+« apportez-votre-absence-d'infra », isolée du réseau). Mais ce n'est **pas la voie de montée en
+charge supportée** — **c'est ClickHouse** (voir [`CLICKHOUSE-STORE.md`](./CLICKHOUSE-STORE.fr.md)). DuckDB reste un tier
 expérimental/de montée en charge : garder la capacité, **ne pas** le livrer comme backend que le client
 pourrait sélectionner sur le nœud de 2 Go.
 

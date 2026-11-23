@@ -9,7 +9,7 @@ this page is the detail of that sentence, and above all **what it does not promi
 Every claim is established by reading the sources and carries the command that reproduces it.
 This document describes the **protocol**; the endpoint agent itself is documented in
 [`../agent/README.md`](../agent/README.en.md), its validation in [`../agent/CI.md`](../agent/CI.en.md), and
-the extension points in [`SDK.md`](SDK.md).
+the extension points in [`SDK.md`](SDK.en.md).
 
 ---
 
@@ -364,7 +364,7 @@ POST /api/actions/result     -> rend compte : {"id":…, "status":"done|dryrun|f
 | **the host comes from the token** | never from a query parameter; the `?host=` parameter that the shell collector sends is **ignored** by the daemon — that is what closes the door to claiming someone else's action |
 | **claimable vocabulary** | `ban_ip` and `unban_ip` **only**; `kill_pid` and `stop_service` are not claimed through this channel |
 | **reissue** | an action claimed without a result is handed out again after a few minutes |
-| **closing** | applies only to an *approved* action **and** one assigned to the same host; idempotent |
+| **closing** | applies only to an action that is *approved* **and** assigned to the same host; idempotent |
 | **format** | TSV by default, not JSON — so that the shell loop reads it without a dependency; JSON per line on request (below) |
 | **ban duration** | carried by the JSON-per-line form only: `ban_ttl_s` (see below) |
 

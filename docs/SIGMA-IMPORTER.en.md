@@ -48,7 +48,7 @@
 - **CLI** — `plume-daemon sigma-import ./rules/ --dry-run` prints a **JSON report**
   (`imported[]` / `skipped[{title,reason}]` / `summary`) **without writing**; without `--dry-run`, UPSERT by
   name into `PLUME_DB` (`managed=2`). That write **creates** the database if it is missing: on a fresh
-  central, start the daemon first, otherwise the database is born in cleartext ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md`
+  central, start the daemon first, otherwise the database is born in plaintext ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md`
   §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)). `--dry-run` opens no database.
 - **API** — body `{"content":"<yaml|json>","dry_run":false}` (Sigma text, multi-doc `---` OK) **or**
   `{"rules":[<sigma json>…]}`. Response `{imported:[…], skipped:[…]}`. RBAC gate: the `/api/sigma/*` route
@@ -217,7 +217,7 @@ they import and stay **inert**.
 
    The auditd `execve` path emits exactly `action · auid · cim · comm · exe · key · success ·
    syscall · uid`. `CommandLine` is not among them and **no option will make it appear**:
-   on Windows a GPO is enough, on Linux there is nothing to enable. The two inertias therefore have
+   on Windows a GPO is enough, on Linux there is nothing to enable. The two kinds of inertness therefore have
    different remedies, and confusing them would suggest that a setting is enough.
    The **Linux twin that fires** ships alongside:
    `config.d/sigma/process-whoami-discovery-linux.yml` (`exe|contains`). The pair is deliberate — it

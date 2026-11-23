@@ -6,7 +6,7 @@
 > code: it is a JSON file in [`docs/connector-presets/`](connector-presets/) to **copy
 > into the `config` field** of an `http_pull` connector (no rebuild). The generic
 > `http_pull` connector (#20/#22) turns any REST/JSON API into an event source *by
-> configuration alone* — see [`docs/SDK.md`](SDK.md) and
+> configuration alone* — see [`docs/SDK.md`](SDK.en.md) and
 > [`connector-presets/README.md`](connector-presets/README.en.md). This document describes, **per vendor**:
 > the pulled API, the auth + scopes, the `field_map` → CIM, and the **secret-ref** to set.
 

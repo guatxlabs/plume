@@ -40,7 +40,7 @@ The vocabulary is **DATA**, not a closed set hard-coded in. The base (`COMPLIANC
 is **UNIONED** with an additional list from config:
 
 ```
-PLUME_COMPLIANCE_FRAMEWORKS="soc2,dora"   # CSV, lowercase/_ ; added to the base, no rebuild
+PLUME_COMPLIANCE_FRAMEWORKS="soc2,dora"   # CSV, lowercase/_; added to the base, no rebuild
 ```
 
 The IDs are **aligned with Wazuh** (`data.sca.check.compliance.{pci_dss,hipaa,nist_800_53,gdpr,tsc,cis}`,

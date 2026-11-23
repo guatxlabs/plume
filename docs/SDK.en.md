@@ -38,7 +38,7 @@ chain composes. Two fields carry the entire weight of vendor agnosticism:
 Only three **idioms**, in order of preference:
 
 1. **Declarative overlay** (config, *no rebuild*) — the nominal case. A JSON/YAML file placed in
-   `config.d/`, or a connector `config`. It is the default path for 90 % of vendors.
+   `config.d/`, or a connector `config`. It is the default path for 90% of vendors.
 2. **Out-of-process adapter** (config + third-party process) — to *act* on external systems
    (network enforcers, IdP) without coupling their code to the daemon.
 3. **Compiled Rust trait** (*rebuild*) — reserved for formats the declarative layer cannot express

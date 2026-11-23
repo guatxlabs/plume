@@ -111,7 +111,7 @@ fail-closed behavior works, and it reveals that the CLI path does not have the `
 **THE READING TRAP, not to be fallen into again.** Between two readings on the same day six hours apart,
 `page_count` is **identical** while tens of thousands of events came in: the
 growth is paid for out of the **freelist**
-(7.3% → 4.8%), not out of the file. Related to **live** bytes, the composition is **flat**
+(7.3% → 4.8%), not out of the file. Relative to **live** bytes, the composition is **flat**
 (60.1/28.4/11.5 → 60.2/28.3/11.5). Anyone comparing the **raw** percentages would "discover" that
 data and indexes are growing: that would be an **artifact of freelist consumption**, not a
 structural movement. Margin left at this rate: less than a day.
@@ -126,7 +126,7 @@ of the three items equals, to a tenth of a percent, the freelist consumed): **~5
 | lever | targeted item, **re-measured** | what changes |
 |---|---|---|
 | **A** — enable the cold tier | 60.2 + 28.3 + 11.5% of what it takes out of the hot tier | **stays #1**, but its arithmetic must be rewritten (51/33 → 57.3/27.0). Its task remains a **measurement** |
-| **D** — b-tree indexes | **27.0%** | **THE REAL CHANGE.** Second deposit, 27% of the stock **and** 27% of the marginal |
+| **D** — b-tree indexes | **27.0%** | **THE REAL CHANGE.** Second largest source, 27% of the stock **and** 27% of the marginal |
 | **B** — hot-tier compression | **57.3%**, not 51% | targets **more** than the map says |
 | **C** — bounded aggregation | orthogonal to size | unchanged: its priority comes from the OOM, not the bytes |
 | **E** — FTS compaction | 10.9% | delivered (`4ca6339`); keeps the item at its floor |
@@ -318,7 +318,7 @@ the FTS item contains OUTSIDE `_data`:
 * production reading of 2026-08-09 — the only one that publishes both: **FTS 10.7%** of the file, of which
   **`event_fts_data` 9.3%** ⇒ everything-but-`_data` = **1.4% of the file**, and that is the UPPER BOUND
   of the gain;
-* related to `_data`, this bound is `1,4 / 9,3` = **15.1%** — that is exactly the "at most 15%",
+* relative to `_data`, this bound is `1,4 / 9,3` = **15.1%** — that is exactly the "at most 15%",
   and it is its only source. The bench, for its part, measures `3 612 672 / 17 412 096` = **20.7%**: the
   synthetic corpus carries proportionally more `docsize` than production;
 * `15 % × 9,3 %` = **1.4% of the file**, the last column.

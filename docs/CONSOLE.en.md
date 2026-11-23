@@ -154,7 +154,7 @@ Seven tabs: from the rule that detects to the action that responds.
 
 An action is **never** applied without going through this chain: proposal, **approval by an
 administrator**, claim by the agent, result in the audit log. The detail of the return channel is
-in [`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md#6-le-canal-retour--réclamer-une-action).
+in [`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.en.md#6-the-return-channel-claiming-an-action).
 
 ### 2.6 `data` — Data and its plumbing
 
@@ -191,7 +191,7 @@ The largest space: thirteen tabs, from the raw source up to the semantic layer.
 | `settings` | Réglages | your own account | password, preferences, and enrolling a TOTP second factor |
 | `users` | Comptes & accès | admin | accounts and their roles |
 | `tokens` | Jetons (agent & HEC) | **admin** | provision an agent or HEC token — the secret is displayed **only once** |
-| `idp` | Identité fédérée (SSO) | **admin** | OIDC and LDAP providers — see [`NATIVE-IDP.md`](NATIVE-IDP.md) |
+| `idp` | Identité fédérée (SSO) | **admin** | OIDC and LDAP providers — see [`NATIVE-IDP.md`](NATIVE-IDP.en.md) |
 | `fieldfilters` | Field filters (masquage PII) | **admin** | per-field masking; it is a configuration that **constrains** the other roles |
 | `tenants` | Tenants | **multi-tenant only** | tenants and entitlements; invisible in single-tenant |
 | `notifiers` | Canaux de notification | admin | where notifications go |

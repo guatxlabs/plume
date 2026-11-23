@@ -31,17 +31,17 @@ refuses an addition that goes in without being written down (`P9.7-b`).
 | [TROIS-MODES.md](TROIS-MODES.en.md) | ✅ | **The same operation in all three modes** — native host, Docker, k3s. Where things live, how to change a setting, add a source, create a token, back up, update — and **the operations that do NOT exist** in a mode, named instead of smoothed over. |
 | [CONSOLE.md](CONSOLE.en.md) | ✅ | **The console, space by space and tab by tab** — what each one does, which role sees it, what it does not do. Derived from the navigation structure, not copied. |
 | [GXQL.md](GXQL.en.md) | ✅ | **The search language** — the twenty commands, the functions, the bounds, the read-only layers, and above all **what the grammar does not accept** (no `OR`, no grouping, no multi-field sort). |
-| [AGENTS-PROTOCOLE.md](AGENTS-PROTOCOLE.md) | ✅ | **The agents and their protocol** — the wire contract, the tokens and what "bound to the host" really means, the disk buffer and **its lack of a bound on the shell side**, the watermarks, the return channel, TLS. |
-| [CHIFFREMENT-COMPRESSION.md](CHIFFREMENT-COMPRESSION.md) | ✅ | **Encryption and compression, as they are** — what is encrypted, what is not, the `age(zstd(…))` order, and the measured defect: **without a database key, the backup scheduler produces nothing**. |
+| [AGENTS-PROTOCOLE.md](AGENTS-PROTOCOLE.en.md) | ✅ | **The agents and their protocol** — the wire contract, the tokens and what "bound to the host" really means, the disk buffer and **its lack of a bound on the shell side**, the watermarks, the return channel, TLS. |
+| [CHIFFREMENT-COMPRESSION.md](CHIFFREMENT-COMPRESSION.en.md) | ✅ | **Encryption and compression, as they are** — what is encrypted, what is not, the `age(zstd(…))` order, and the measured defect: **without a database key, the backup scheduler produces nothing**. |
 
 ## Operating (operator)
 
 | Document | State | What for |
 |---|---|---|
-| [DR-plume-restore.md](DR-plume-restore.md) | ✅ | **Disaster recovery** — the two backup formats the product produces, and how to restore each. Read it *before* you need it. |
-| [COMPLIANCE.md](COMPLIANCE.md) | ✅ | Compliance posture and coverage (≠ certification). |
+| [DR-plume-restore.md](DR-plume-restore.en.md) | ✅ | **Disaster recovery** — the two backup formats the product produces, and how to restore each. Read it *before* you need it. |
+| [COMPLIANCE.md](COMPLIANCE.en.md) | ✅ | Compliance posture and coverage (≠ certification). |
 | [PURGE.md](PURGE.en.md) | ✅ CLI · 🧪 HTTP | **Purging named events** (beyond time-based retention): two phases with a token, reasoned refusals (legal hold, cold tier, chain of evidence), inscription in the ledger — and the explicit list of what is **not** covered, starting with backups. |
-| [DETECTION-CATALOG.md](DETECTION-CATALOG.md) | ✅ | Curated detection catalogue shipped as a starting point. |
+| [DETECTION-CATALOG.md](DETECTION-CATALOG.en.md) | ✅ | Curated detection catalogue shipped as a starting point. |
 | [../deploy/CONFIDENTIALITE.md](../deploy/CONFIDENTIALITE.en.md) | ✅ | TLS, real scope of agent tokens, at-rest encryption, caveat on the plaintext export of the backup. |
 | [../deploy/PROFILE.md](../deploy/PROFILE.en.md) | ✅ | Deploying on any infrastructure (`PLUME_*` variables, scripted inputs). |
 | [../deploy/K8S.md](../deploy/K8S.en.md) | ✅ | Detailed Kubernetes deployment. |
@@ -50,14 +50,14 @@ refuses an addition that goes in without being written down (`P9.7-b`).
 
 | Document | State | What for |
 |---|---|---|
-| [SDK.md](SDK.md) | ✅ | The **bring-your-own-vendor** model: where to plug in a source. |
+| [SDK.md](SDK.en.md) | ✅ | The **bring-your-own-vendor** model: where to plug in a source. |
 | [CIM.md](CIM.en.md) | ✅ | The common information model — the event taxonomy rules are composed on. |
-| [VALEURS-DES-CAPTEURS.md](VALEURS-DES-CAPTEURS.md) | 📐 | **What a sensor emits, and what its values mean.** The common model above declares **one** vocabulary per field; a sensor, however, writes only a subset, and two sensors write the same field name with unrelated meanings — so the key is the pair **(source, field)**. Says what the shipped producers already declare, what reaches neither the wire nor the screen, and why the gap is not closed by a hand-written table (`P11.19-a`). |
-| [PARSER-DSL.md](PARSER-DSL.md) | ✅ | Declarative parser (CIM DSL): add a log format **without a rebuild**. |
+| [VALEURS-DES-CAPTEURS.md](VALEURS-DES-CAPTEURS.en.md) | 📐 | **What a sensor emits, and what its values mean.** The common model above declares **one** vocabulary per field; a sensor, however, writes only a subset, and two sensors write the same field name with unrelated meanings — so the key is the pair **(source, field)**. Says what the shipped producers already declare, what reaches neither the wire nor the screen, and why the gap is not closed by a hand-written table (`P11.19-a`). |
+| [PARSER-DSL.md](PARSER-DSL.en.md) | ✅ | Declarative parser (CIM DSL): add a log format **without a rebuild**. |
 | [CONNECTOR-PRESETS.md](CONNECTOR-PRESETS.en.md) | ✅ | Ready-to-use `http_pull` presets (AWS, M365/Entra, Okta, CrowdStrike, SentinelOne, GCP, Cloudflare, Google Workspace). Files in [`connector-presets/`](connector-presets/). |
-| [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) | ✅ | Sigma rule import (single and bulk) + ATT&CK coverage delta. |
-| [ENDPOINT-SECURITY.md](ENDPOINT-SECURITY.md) | ✅ | Endpoint security with a BYO agent. |
-| [OTLP-TRACES.md](OTLP-TRACES.md) | ✅ | OpenTelemetry receiver (traces). |
+| [SIGMA-IMPORTER.md](SIGMA-IMPORTER.en.md) | ✅ | Sigma rule import (single and bulk) + ATT&CK coverage delta. |
+| [ENDPOINT-SECURITY.md](ENDPOINT-SECURITY.en.md) | ✅ | Endpoint security with a BYO agent. |
+| [OTLP-TRACES.md](OTLP-TRACES.en.md) | ✅ | OpenTelemetry receiver (traces). |
 
 ## Collecting at the edges (workstations, devices, mailboxes)
 
@@ -79,7 +79,7 @@ which is what makes it possible to add one without touching the central server.
 |---|---|---|
 | [DATASOURCE.md](DATASOURCE.md) | ✅ | Serving queries **to** Grafana/Prometheus (Plume as a data source). |
 | [OBSERVABILITY-AS-CODE.md](OBSERVABILITY-AS-CODE.md) | ✅ | Versioned dashboards and rules. |
-| [NATIVE-IDP.md](NATIVE-IDP.md) | ✅ OIDC/LDAP/MFA · 🧪 SAML | Native IdP. **SAML requires `--features saml`** — absent from the shipped image (→ 501). |
+| [NATIVE-IDP.md](NATIVE-IDP.en.md) | ✅ OIDC/LDAP/MFA · 🧪 SAML | Native IdP. **SAML requires `--features saml`** — absent from the shipped image (→ 501). |
 
 ## Storage — analytical tiers
 
@@ -94,7 +94,7 @@ which is what makes it possible to add one without touching the central server.
 | Document | State | What for |
 |---|---|---|
 | [BENCHMARK.md](BENCHMARK.md) | ✅ | **The figures of reference, and the instrument to contradict them.** The matrix (query classes × windows × masking × FTS × cold tier × fleet size) on a synthetic database with a production profile, daemon under a cgroup `MemoryMax=2G` that is **enforced** — not observed. States what is **slow** as frankly as what is fast, publishes the remaining levers by measured gain, and NAMES the cells it has not measured. The harness (`../bench/`) re-runs the matrix with a single command and publishes its raw data, so that a third party can redo — or contradict — the measurement. **Read its qualifiers before quoting one of its figures**: no count is copied here (it would rot), the reference volume is not 10 M — the real ingest throughput and the MEASURED CAUSE of its degradation are published instead — and the database fit in the page cache, so the latencies are a CPU-bound **best case**. |
-| [../bench/README.md](../bench/README.md) | ✅ | **THE INSTRUMENT** that produces the document above: what each pass measures, what each results file contains, and the reading traps named one by one. Read it before contradicting a figure — or quoting one. |
+| [../bench/README.md](../bench/README.en.md) | ✅ | **THE INSTRUMENT** that produces the document above: what each pass measures, what each results file contains, and the reading traps named one by one. Read it before contradicting a figure — or quoting one. |
 
 ## Direction and internals
 
@@ -102,7 +102,7 @@ which is what makes it possible to add one without touching the central server.
 |---|---|---|
 | [MODULE-MAP.md](MODULE-MAP.md) | ✅ | **Map of the subsystems + security invariants.** The document to read before a first contribution. |
 | [AI-ML-DIRECTION.md](AI-ML-DIRECTION.md) | 📐 | AI/ML direction: optional, vendor-neutral, RAM-neutral, OFF by default. |
-| [DESIGN-P10-echelle-2go.md](DESIGN-P10-echelle-2go.md) | 📐 | **Staying under 2 GiB at scale** — the map of the MEASURED ground (where the bytes go, where the sort RAM goes) and the order of levers that follows from it: hot/cold, columnar, bloom, compression. This is the document that carries the freshest state of this work; the `P10.*` keys of [ROADMAP.md](ROADMAP.md) point to it. A brainstorm anchored in measurement, **not** a frozen decision. |
+| [DESIGN-P10-echelle-2go.md](DESIGN-P10-echelle-2go.en.md) | 📐 | **Staying under 2 GiB at scale** — the map of the MEASURED ground (where the bytes go, where the sort RAM goes) and the order of levers that follows from it: hot/cold, columnar, bloom, compression. This is the document that carries the freshest state of this work; the `P10.*` keys of [ROADMAP.md](ROADMAP.md) point to it. A brainstorm anchored in measurement, **not** a frozen decision. |
 
 ## Non-narrative resources
 

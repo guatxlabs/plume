@@ -504,7 +504,7 @@ pass through a closed compiler before reaching the engine.
 the filter, no grouping, no multi-field sort, no `transaction`, no percentile. A
 specification document in the repository promises some of them: these are wishes, not capabilities.
 What the Sigma importer cannot translate faithfully is **reported, never guessed** —
-[`SIGMA-IMPORTER.md`](SIGMA-IMPORTER.md) gives the exact matrix.
+[`SIGMA-IMPORTER.md`](SIGMA-IMPORTER.en.md) gives the exact matrix.
 
 **The compiler lives in a shared crate** because two halves of the same suite must
 speak the same language. The contribution rule that follows from this is written in

@@ -35,7 +35,7 @@ rejected. Any reduction of collection (drop/suppress) is a **filter**, which bel
 This is the anti-blind-spot guarantee: the CIM enriches the data, it does not censor it.
 
 > **Overview of extensions.** The CIM is the **pivot** of the *bring-your-own-vendor* model: see
-> [`docs/SDK.md`](SDK.md) for the map of seams (parser, connector, detection, threat intel, enforcer) and
+> [`docs/SDK.md`](SDK.en.md) for the map of seams (parser, connector, detection, threat intel, enforcer) and
 > the "describe, don't code" rule.
 
 ---

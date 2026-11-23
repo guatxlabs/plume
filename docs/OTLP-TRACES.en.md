@@ -172,9 +172,9 @@ The OTLP decompression cap (**16 MiB**) is deliberately SMALLER than the cap sha
 (`INGEST_MAX_DECOMPRESS = 64 Mio`): OTLP/JSON does not amortize the cost through a structured protobuf decode —
 `serde_json::from_slice` materializes the **entire** `Value` tree (several times the text size) before the
 span/attr caps apply. Defense in layers: (1) 16 MiB cap, (2) pre-parse shape check, (3)
-concurrency bound. Accepted residue: at most `PLUME_OTLP_INGEST_CONCURRENCY` `Value` trees materialized simultaneously.
+concurrency bound. Accepted residual cost: at most `PLUME_OTLP_INGEST_CONCURRENCY` `Value` trees materialized simultaneously.
 **THIS FIGURE WAS UNDERESTIMATED AND IT IS CORRECTED (2026-08-30).** This sentence named the size of the SOURCE
-TEXT, which reads as a residue of the same order. Measured on the bench, with a counting allocator, on spans
+TEXT, which reads as a residual cost of the same order. Measured on the bench, with a counting allocator, on spans
 dense in attributes: the LIVE footprint at the point of publication is about TWENTY-FOUR TIMES the text
 received — the decoded trees carry nearly nine tenths of it, the written buffer less than a tenth. The concurrency
 bound therefore holds a much heavier residue than its wording suggested. THE RATIO
@@ -205,13 +205,13 @@ The response body still does not say so, and will not: a strict protobuf-JSON de
 refuses unknown fields in an `ExportTraceServiceResponse`. The witness is therefore in `/metrics` —
 `plume_spool_barriere_fichier_total` and `plume_spool_barriere_repertoire_total` go up together on
 every accepted export, `plume_spool_barriere_echec_total` says that a barrier was refused. An
-operator can disarm the barrier (`PLUME_INGEST_FSYNC=0`); the regime from before `S31` then comes back
+operator can disarm the barrier (`PLUME_INGEST_FSYNC=0`); the behaviour from before `S31` then comes back
 as it was, and the counters stop going up.
 
 **What is not proven:** survival of a real power cut. What is demonstrated is
-that both barriers are requested from the kernel, returned without error, and in that order. The regime of
+that both barriers are requested from the kernel, returned without error, and in that order. The behaviour of
 the **database** (`/api/metrics/prom`, `/api/metrics/write`, `/loki/api/v1/push`) remains **open** —
-see [`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md) (§2.5) and key `S31` of
+see [`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.en.md) (§2.5) and key `S31` of
 [`ROADMAP.md`](ROADMAP.md).
 
 ---

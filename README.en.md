@@ -44,7 +44,7 @@ on **Docker**, a **bare host (systemd)** or **Kubernetes/k3s**, in **2 GB of RAM
 - 🧩 **Bring‑your‑own‑vendor** — *nothing vendor‑specific is hard‑coded.* Plug in **any** source: a declarative **parsing DSL** (config.d, no rebuild), a **Splunk‑HEC‑compatible** endpoint (point your existing forwarders at Plume), a **generic `http_pull` connector** (any REST API — CrowdStrike/SentinelOne/Defender by plain configuration), or **TAXII 2.1** feeds. *Design goal: not to make you lose capability by migrating. This is not a measured guarantee — no comparison matrix exists in `docs/`; if a capability is missing for you, [open an issue](https://github.com/guatxlabs/plume/issues).*
 - 🛡️ **Detection that grows with you** — **Sigma import** (single and bulk) projects the community rule set onto the **ATT&CK coverage matrix**; **threat‑intel** enriches at ingestion; **risk‑based alerting** scores entities to reduce alert fatigue. CIM‑normalized, so that rules compose by *category*, never by vendor.
 - 🔐 **Secure and auditable by default** — argon2id + **fail‑closed** RBAC (an unlisted route is refused, not allowed), host‑bound agent tokens, validated read‑only queries, a verifiable **hash‑chained ledger** (`plume-daemon verify`), a hardened container (non‑root, read‑only rootfs, capabilities dropped) and a **default‑deny egress NetworkPolicy** shipped in [`deploy/k3s.yaml`](deploy/k3s.yaml). **No secret in the repository** — open code is a *feature*, not a risk.
-  *Two explicit caveats, because an announced flaw is better than a discovered one:* **SQLCipher at‑rest encryption** (per tenant in MSSP mode) is **active on a NEW database** — with no key supplied, the daemon generates one (`0600`, next to the database) on first start: it protects against theft of the disk, not against a compromised machine, and losing it loses the database; a database put into service **before** this rule and left in plaintext **is never converted** by a start ([`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md)); and the NetworkPolicy only has an effect if your CNI enforces them (flannel alone does not — [check it](deploy/k3s.yaml), do not assume it).
+  *Two explicit caveats, because an announced flaw is better than a discovered one:* **SQLCipher at‑rest encryption** (per tenant in MSSP mode) is **active on a NEW database** — with no key supplied, the daemon generates one (`0600`, next to the database) on first start: it protects against theft of the disk, not against a compromised machine, and losing it loses the database; a database put into service **before** this rule and left in plaintext **is never converted** by a start ([`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.en.md)); and the NetworkPolicy only has an effect if your CNI enforces them (flannel alone does not — [check it](deploy/k3s.yaml), do not assume it).
 - 🌍 **Bilingual interface** (FR / EN) + every IANA time zone.
 
 **Architecture** — *Central*: a single Rust binary that ingests, stores and serves the API + the PWA on `:7000`.
@@ -52,16 +52,16 @@ on **Docker**, a **bare host (systemd)** or **Kubernetes/k3s**, in **2 GB of RAM
 (`POST /api/ingest`, bearer token); a multi‑OS endpoint agent (Linux today, Windows/macOS in progress).
 The central is also its own agent. In‑depth documentation: [`ARCHITECTURE.md`](ARCHITECTURE.en.md) ·
 **[documentation index](docs/README.en.md)** (each document carries its state there: shipped / opt-in /
-design) — including [SDK](docs/SDK.md) · [CIM](docs/CIM.en.md) · [parsing DSL](docs/PARSER-DSL.md) ·
-[Sigma importer](docs/SIGMA-IMPORTER.md) · [disaster recovery](docs/DR-plume-restore.md).
+design) — including [SDK](docs/SDK.en.md) · [CIM](docs/CIM.en.md) · [parsing DSL](docs/PARSER-DSL.en.md) ·
+[Sigma importer](docs/SIGMA-IMPORTER.en.md) · [disaster recovery](docs/DR-plume-restore.en.md).
 
 **To use it**, pages written for the operator rather than for the contributor:
 **[install without opening a breach, step by step](docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md)** ·
 [the same operation in all three modes](docs/TROIS-MODES.en.md) ·
 [the console, tab by tab](docs/CONSOLE.en.md) ·
 [the GXQL search language](docs/GXQL.en.md) ·
-[the agents and their protocol](docs/AGENTS-PROTOCOLE.md) ·
-[encryption and compression, as they are](docs/CHIFFREMENT-COMPRESSION.md).
+[the agents and their protocol](docs/AGENTS-PROTOCOLE.en.md) ·
+[encryption and compression, as they are](docs/CHIFFREMENT-COMPRESSION.en.md).
 
 ## What's included
 | Domain | Capability |
@@ -224,7 +224,7 @@ sidecar and no host cron. Tune them — or switch them off with `PLUME_BACKUP_IN
 > `VACUUM INTO`, which requires no key — it produces a `.db` copy, not an archive. In every
 > case, **prove it** with `plume-daemon backup-verify`: an empty destination directory is a
 > failure, not a silence. The three cases, and the verification commands:
-> [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md#34-la-précondition-du-chemin-compressé--une-clé-de-base-et-doù-elle-vient).
+> [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.en.md#34-the-precondition-of-the-compressed-path-a-database-key-and-where-it-comes-from).
 
 > 🪶 **Demo (populated, no agents)** — add `PLUME_DEMO=1`: sample events/metrics/alerts over 24 h to see Plume *alive* right away. *(Disabled outside the demo.)*
 
@@ -250,7 +250,7 @@ capability it has not proven.
 It installs the daemon, the collectors and their units/timers — including **`plume-backup.timer` (daily,
 04:00)**, which calls `plume-daemon backup` (compact `VACUUM INTO` copy, rotation at 7). *This host path
 differs from the Docker/k3s mode one*: the timer produces an uncompressed `.db` copy, the
-in‑daemon scheduler produces an `age(zstd(...))` archive — see [`docs/DR-plume-restore.md`](docs/DR-plume-restore.md).
+in‑daemon scheduler produces an `age(zstd(...))` archive — see [`docs/DR-plume-restore.md`](docs/DR-plume-restore.en.md).
 To align the host with the native scheduler, set `PLUME_BACKUP_INTERVAL` in `/etc/plume/soc.conf` and
 disable the timer (`systemctl disable --now plume-backup.timer`). **All** the `PLUME_BACKUP_*` settings
 — including the escrow recipient `PLUME_BACKUP_AGE_RECIPIENT` and the fail-closed
@@ -313,7 +313,7 @@ first start**: `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` (preferred — a file mou
 **fail‑closed** if it is missing) or `PLUME_DB_KEY=<passphrase>` (readable via `/proc/<pid>/environ`).
 **An EXISTING database is never converted by a start**: a key set on a plaintext database makes the start
 **refuse**, naming the explicit and irreversible operation `plume-daemon chiffrer-au-repos`
-([`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md)).
+([`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.en.md)).
 Both can be set either **in the environment or in the configuration file**
 (`/etc/plume/soc.conf` on a host, 0640 — it is even the most discreet place: the file is not
 readable via `/proc/<pid>/environ`); the environment wins if it carries the same key. *Before 2026‑08‑09
@@ -589,7 +589,7 @@ the collector runs on a Linux host, but the **target** can be any system.
 > amd64. *Measured on 2026‑08‑01, same VM, same load (build of 100 compilation units):
 > previous template (`arch=b32` alone) → **0** `category=exec` events; current template → **533**.* It has a
 > **volume cost, quantified** in
-> [`docs/ENDPOINT-SECURITY.md`](docs/ENDPOINT-SECURITY.md#4bis-coût-de-la-règle-execve-mesuré) — read it
+> [`docs/ENDPOINT-SECURITY.md`](docs/ENDPOINT-SECURITY.en.md#4bis-cost-of-the-execve-rule-measured) — read it
 > before deploying on a fleet, with the two levers to reduce it without going blind again.
 > *Measured on 2026‑08‑01, Ubuntu 24.04.4 amd64: template as is → 6 rules loaded out of 12 and **0**
 > `EXECVE` records; both traps fixed → 9 rules and `category=exec` fed.*
@@ -679,20 +679,20 @@ with a `reason`): see the box above and the query that lists them.
   "pattern": "^(?P<ts>\\S+) (?P<level>\\w+) (?P<msg>.+)$", "enabled": true }
 ```
 
-A richer declarative DSL is documented in [`docs/PARSER-DSL.md`](docs/PARSER-DSL.md).
+A richer declarative DSL is documented in [`docs/PARSER-DSL.md`](docs/PARSER-DSL.en.md).
 
 **Sigma.** A [Sigma](https://github.com/SigmaHQ/sigma) **importer** is shipped (`plume-daemon sigma-import`, single
 or bulk, with `--dry-run`); **4 sample Sigma rules** are in `config.d/sigma/`. It is **not a complete Sigma
 engine**: it translates the **subset expressible in GXQL**, and what it cannot translate faithfully is
 **flagged**, never guessed — the exact matrix of supported and refused constructs is in
-[`docs/SIGMA-IMPORTER.md`](docs/SIGMA-IMPORTER.md) §4 and §6. The **acceptance rate over the complete SigmaHQ repository
+[`docs/SIGMA-IMPORTER.md`](docs/SIGMA-IMPORTER.en.md) §4 and §6. The **acceptance rate over the complete SigmaHQ repository
 is not measured** so far: we will only publish that figure once the bench has been run.
 
 **The shipped detection content is not limited to these Sigma examples.** Alongside them, the repository ships
 **37 catalog rules** in `config.d/rules/catalog/` — a CIM + ATT&CK‑mapped library, disabled
 by default **except 1 active rule** (`de-detection-content-mutated.json`, which reports a modification of the detection
 content) and enabled rule by rule according to the telemetry plugged in, described in
-[`docs/DETECTION-CATALOG.md`](docs/DETECTION-CATALOG.md) — and **10 overlay rules** at the root of
+[`docs/DETECTION-CATALOG.md`](docs/DETECTION-CATALOG.en.md) — and **10 overlay rules** at the root of
 `config.d/rules/`, **of which 7 are active** at startup; the binary also seeds its own base rules
 (`daemon/src/seeds.rs`). These counts are compared with the tree by
 [`check_a_published_rule_count_is_the_count_shipped.py`](.github/scripts/check_a_published_rule_count_is_the_count_shipped.py);
@@ -710,7 +710,7 @@ A rule **without** an `enabled` field starts active: the loader gives it `true` 
 
 **3. Detect and act.** Add a **rule** (`config.d/rules/*.json`: GXQL query + threshold) or a **playbook** (`config.d/playbooks/*.json`: query → action). Parsers, rules and playbooks can also be **created/edited in the interface** (admin role); the file remains the durable source, versioned in git.
 
-The files in `config.d/` are loaded at startup **idempotently** (an overlay wins over the builtin of the same name); an invalid file is **ignored with a warning**, never a crash. Overview of the extension points (parser · connector · detection · threat-intel · enforcer) and the *bring-your-own-vendor* model: **[`docs/SDK.md`](docs/SDK.md)**.
+The files in `config.d/` are loaded at startup **idempotently** (an overlay wins over the builtin of the same name); an invalid file is **ignored with a warning**, never a crash. Overview of the extension points (parser · connector · detection · threat-intel · enforcer) and the *bring-your-own-vendor* model: **[`docs/SDK.md`](docs/SDK.en.md)**.
 
 ## `plume-daemon` subcommands
 
@@ -907,7 +907,7 @@ come from a constant — command 5 above gives it.
 | `PLUME_DB_KEY` | SQLCipher passphrase — readable via `/proc/<pid>/environ` | empty |
 | `PLUME_DB_EN_CLAIR_ASSUME` | `1`/`true`/`yes`/`on` declares a plaintext database INTENDED (no key, neither explicit nor automatic): silences the non‑purgeable health warning set at start as long as the database is readable by bare `sqlite3` (remedy: `chiffrer-au-repos`). Never a refusal: plaintext remains the backward‑compatible mode | empty |
 
-**Backup and recovery** — all detailed in [`docs/DR-plume-restore.md`](docs/DR-plume-restore.md).
+**Backup and recovery** — all detailed in [`docs/DR-plume-restore.md`](docs/DR-plume-restore.en.md).
 
 | Variable | Effect | Default |
 |---|---|---|
@@ -946,7 +946,7 @@ come from a constant — command 5 above gives it.
 | `PLUME_QUERY_BUDGET_MS` | budget of a query before abandonment | `5000` |
 | `PLUME_QUERY_MAX` | ceiling of rows returned by `/api/query` (hard‑bounded to `100000`) | `5000` |
 | `PLUME_SEARCH_LIMIT` / `PLUME_SEARCH_MAX` | default and ceiling of `/api/search` | `100` / `5000` |
-| `PLUME_FTS_FIELDS` | `1` = also indexes the JSON fields in full text (vtable `event_fields_fts`, read by `/api/search` only — the GXQL path never consults it). **This is NOT a lever of this memory budget**: the bench measures no RAM overhead for this capability — its only comparable pair even shows a lower peak with it active, without attributing that to the flag (`docs/BENCHMARK.md`, lever L6). Its default at `0` comes from two REAL costs, one quantified on the bench and the other read from the sources: about **a tenth more database**, and above all a **confidentiality trade‑off on backup** — this vtable is *contentless*, a form the typed backup plan cannot represent, so that every `--compress` cycle switches to the legacy export that **materializes the whole database IN PLAINTEXT** in the staging area for the duration of the cycle (see [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.md)) | `0` |
+| `PLUME_FTS_FIELDS` | `1` = also indexes the JSON fields in full text (vtable `event_fields_fts`, read by `/api/search` only — the GXQL path never consults it). **This is NOT a lever of this memory budget**: the bench measures no RAM overhead for this capability — its only comparable pair even shows a lower peak with it active, without attributing that to the flag (`docs/BENCHMARK.md`, lever L6). Its default at `0` comes from two REAL costs, one quantified on the bench and the other read from the sources: about **a tenth more database**, and above all a **confidentiality trade‑off on backup** — this vtable is *contentless*, a form the typed backup plan cannot represent, so that every `--compress` cycle switches to the legacy export that **materializes the whole database IN PLAINTEXT** in the staging area for the duration of the cycle (see [`docs/CHIFFREMENT-COMPRESSION.md`](docs/CHIFFREMENT-COMPRESSION.en.md)) | `0` |
 | `PLUME_SQLITE_DEVERSEMENT` | `1` = allows sorts to spill to disk. **Confidentiality trade‑off**: SQLite temporaries are **not** encrypted by SQLCipher | `0` |
 | `PLUME_SQLITE_DEVERSEMENT_QUOTA_MO` | **bounds the volume written in plaintext** when `PLUME_SQLITE_DEVERSEMENT=1`: beyond it, the current statement is STOPPED without returning a result. What it bounds exactly: **the bytes the PROCESS holds open** under the spill directory, surveyed periodically. What it does **not** bound: the offending query (the statement stopped is the one that reaches the measuring point, not necessarily the one that wrote the most), RAM, or anything at all when spilling is at `0` (no measurement is armed). `0` = **no bound**. No effect if the measurement becomes unreadable: the refusal can no longer be enforced and the cause is logged | `1024` |
 | `PLUME_SQLITE_BUDGET_MB` | engine memory budget | *(derived)* |

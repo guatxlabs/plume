@@ -7,7 +7,7 @@ of the Plume SOC. Any `*.json` file dropped here is loaded when the daemon start
 (`load_overlays`, right after the migrations and the seeds) and stored in the database with `managed = 1`.
 
 > This overlay is one of Plume's extension *seams*. Overview (parser / connector / detection /
-> threat-intel / enforcer) and *bring-your-own-vendor* model: **[`docs/SDK.md`](../docs/SDK.md)**.
+> threat-intel / enforcer) and *bring-your-own-vendor* model: **[`docs/SDK.md`](../docs/SDK.en.md)**.
 
 ## Why a baked overlay and not `/etc/plume`?
 

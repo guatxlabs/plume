@@ -10,7 +10,7 @@ declarations are only HELD outside the shipped artifact).
 
 ---
 
-## The problem, as it measures
+## The problem, as it is measured
 
 An operator reads abbreviated values in the console — `collection-reducing`, `subsystem-absent`,
 `illisible`, `@status` — that no surface explains. The explanation cannot be written by
@@ -33,7 +33,7 @@ will never arrive.
 `config.d/cim/cim.v1.json` declares a neutral `action_vocab` of eleven words; the agent's Windows
 producer, for its part, writes `fields.action` for only four outcomes (the other cases are either resolved from
 the record, or **declared without an outcome**). The common vocabulary is a **superset**: it
-says what a field can be worth in the product, never what **this** sensor can write.
+says what values a field can take in the product, never what **this** sensor can write.
 
 ---
 
@@ -94,8 +94,8 @@ closed set is therefore not enough; one must declare **the one that is emitted**
    names** (`category`, `action`, `severity`, `source`), not pairs. Extended fields do not
    appear there at all, for lack of an upstream that declares them.
 3. **The inventory of collected fields does not talk about values.** It associates an extended field with **one**
-   shipped file that emits it — its question is "does plume collect this field?", not "what can it
-   be worth?". Of the eleven producers of `fields.type`, it cites only one: that is correct for its
+   shipped file that emits it — its question is "does plume collect this field?", not "what values
+   can it take?". Of the eleven producers of `fields.type`, it cites only one: that is correct for its
    purpose, and unusable for this one.
 4. **The console cannot tell what a sensor saw from what ingestion stamped.**
    The daemon itself sets a contract version key in the bag of **every** event, and the

@@ -9,8 +9,8 @@ into the SIEM, the transport, the risks the product accepts, and the proof that 
 
 It does not repeat the pages that exist: the same operation in all three modes is in
 [`TROIS-MODES.md`](TROIS-MODES.en.md), the agents' wire contract in
-[`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md), at-rest encryption in
-[`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md), the syslog receiver in
+[`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.en.md), at-rest encryption in
+[`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.en.md), the syslog receiver in
 [`../deploy/SYSLOG.md`](../deploy/SYSLOG.en.md), the mailbox sensor in
 [`../deploy/MAIL.md`](../deploy/MAIL.en.md), the search language in [`GXQL.md`](GXQL.en.md).
 
@@ -38,7 +38,7 @@ The host names in the examples are `soc.example.org` (the central) and `agent.ex
 A database **already in service and left in plaintext** is never converted by a start: setting a key
 on it makes the start **refuse**, with the name of the explicit operation (`plume-daemon chiffrer-au-repos`).
 The details, and how to store the generated key safely, are in
-[`CHIFFREMENT-COMPRESSION.md` §1](CHIFFREMENT-COMPRESSION.md#1-la-base-au-repos--neuve--chiffrée--existante--jamais-touchée-par-un-démarrage).
+[`CHIFFREMENT-COMPRESSION.md` §1](CHIFFREMENT-COMPRESSION.en.md#1-the-database-at-rest-new--encrypted-existing--never-touched-by-a-startup).
 **Losing the key means losing the database and all its backups**: copy it off the machine from the
 first start, then set `PLUME_DB_KEY_ESCROWED=1`.
 
@@ -272,7 +272,7 @@ spool. Its detailed instructions, its measurements and its limits are in
    The token is displayed **once**. A bound token **rewrites** the host of each row to its own: the
    events are stored under the name given here, whatever `host` the envelope declares. A
    `--relais` token would let the desktop write under any name: it is not meant for a
-   machine ([`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-lauthentification-et-ce-que--lié-à-lhôte--veut-dire)).
+   machine ([`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.en.md#3-authentication-and-what-bound-to-the-host-means)).
 2. **Create the directory, and cut down its permissions BEFORE writing the token into it.** The script reads
    `C:\ProgramData\plume\plume.conf` and writes its watermarks under `C:\ProgramData\plume\state`:
    ```powershell
@@ -424,7 +424,7 @@ spool. Its detailed instructions, its measurements and its limits are in
 | Windows collector token | `C:\ProgramData\plume\plume.conf` | SYSTEM and Administrators only, inheritance cut (§2.5, step 2); never as a machine variable | the same machine paths as the agent token, under the host it is bound to; whoever can **write** to the directory also gets their code executed as SYSTEM (replaced script) |
 | MinIO relay token | `/etc/plume/minio-audit.token` | `0640 root:soc` (the relay runs as `soc`) | dropping object audit events into the host's spool |
 | Cloudflare tokens | `/etc/plume/cloudflare.conf` | `0600` | reading the zone's analytics (set a read-only token) |
-| Prometheus scrape token (or username and password) | `/etc/plume/prom.conf` (central, native mode) | `0600 root:root`, tightened at every run of `bootstrap.sh`; sole reader `plume-prom-scrape`, which runs as root | pushing series to the central; a `--relais` token has no bound host, the declared host goes through as is: it **impersonates any host** on the machine paths ([`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-lauthentification-et-ce-que--lié-à-lhôte--veut-dire)); with username and password, those of a console account |
+| Prometheus scrape token (or username and password) | `/etc/plume/prom.conf` (central, native mode) | `0600 root:root`, tightened at every run of `bootstrap.sh`; sole reader `plume-prom-scrape`, which runs as root | pushing series to the central; a `--relais` token has no bound host, the declared host goes through as is: it **impersonates any host** on the machine paths ([`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.en.md#3-authentication-and-what-bound-to-the-host-means)); with username and password, those of a console account |
 | URL parameters of the scraped targets | `/etc/plume/prom-targets` (central, native mode) | `0600 root:root`, tightened at every run | reading the `/metrics` of a target that authenticates by URL parameter |
 | admin hash, explicit database key | `/etc/plume/soc.conf` (host) · `.env` (Docker) · `Secret` `soc-auth` (k3s) | `0640 root:soc` on the host | opening the console as admin (hash to be attacked offline); opening the database |
 | generated database key | `<PLUME_DB>.key` (host) · `/data/plume-at-rest.key` (Docker, k3s) | `0600`, reread after creation | **decrypting the database and all its archives** |
@@ -432,7 +432,7 @@ spool. Its detailed instructions, its measurements and its limits are in
 
 A file is better than a variable for a secret: a process's environment can be read in
 `/proc/<pid>/environ`. The details of an agent token's permissions, and why "host-bound" is a
-rewrite and not a refusal, are in [`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-lauthentification-et-ce-que--lié-à-lhôte--veut-dire).
+rewrite and not a refusal, are in [`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.en.md#3-authentication-and-what-bound-to-the-host-means).
 
 ---
 
@@ -559,7 +559,7 @@ search category=config reason=collection-capped | table ts, host, source, detail
 - **Agent-side TLS**: `PLUME_TLS_CACERT` for a central with a private authority; `PLUME_TLS_CERT` and
   `PLUME_TLS_KEY` for a client certificate, if the central's proxy requires it. The daemon, for its part,
   verifies no client certificate: mandatory mTLS is set up on the proxy. Same variable name,
-  opposite role on the daemon side ([`AGENTS-PROTOCOLE.md` §7](AGENTS-PROTOCOLE.md#7-tls-et-mtls)).
+  opposite role on the daemon side ([`AGENTS-PROTOCOLE.md` §7](AGENTS-PROTOCOLE.en.md#7-tls-and-mtls)).
 - **MinIO relay**: it **refuses to start** without a token (file `PLUME_MINIO_AUDIT_TOKEN_FILE` absent,
   empty or unreadable: code 2), answers `401` to a request without the right token (constant-time
   comparison) and `503` if the token becomes unreadable while running. Its default listener is the address of the
@@ -681,7 +681,7 @@ It comments out, in the installed copy, each line of the template already declar
 specific to each case ("RÈGLES D'AUDIT INCOMPLÈTES MAINTENANT" for `1`, "RÈGLES D'AUDIT COMPLÈTES
 MAINTENANT, MAIS PAS AU PROCHAIN DÉMARRAGE" for `2`). A duplicate written differently (order of the fields)
 is not recognized as identical: it ends with code `2`. The details are in
-[`ENDPOINT-SECURITY.md` §4ter](ENDPOINT-SECURITY.md#4ter-charger-les-règles-et-vérifier-ce-qui-tourne).
+[`ENDPOINT-SECURITY.md` §4ter](ENDPOINT-SECURITY.en.md#4ter-loading-the-rules-and-checking-what-is-running).
 
 **Check, read-only** — modifies nothing:
 

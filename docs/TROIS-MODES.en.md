@@ -11,7 +11,7 @@ It complements, without repeating them, installation ([`../README.md`](../README
 uninstallation ([`../README.md`](../README.en.md#uninstallation--all-three-modes)).
 
 > **What this document is not.** It is not a sizing guide, nor a disaster
-> recovery procedure — that one is in [`DR-plume-restore.md`](DR-plume-restore.md) — nor a
+> recovery procedure — that one is in [`DR-plume-restore.md`](DR-plume-restore.en.md) — nor a
 > Kubernetes tutorial. It answers a single question: *"I have read about an operation; what does it look like
 > on my setup?"*
 
@@ -219,8 +219,8 @@ set. In host mode it is also written next to the database
 
 **The two backup orchestrators do not have the same output**, and that is the trap of this
 chapter. The details — envelope, order of operations, what is encrypted and what is not —
-are in [`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md); restoration is in
-[`DR-plume-restore.md`](DR-plume-restore.md).
+are in [`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.en.md); restoration is in
+[`DR-plume-restore.md`](DR-plume-restore.en.md).
 
 | | what triggers it | what comes out |
 |---|---|---|
@@ -280,7 +280,7 @@ In all three modes, **a NEW database is born encrypted**: without a provided key
 on first start (`0600`, at `PLUME_DB_KEY_AUTO_PATH`, otherwise `<PLUME_DB>.key`) — to be copied off the
 machine, then `PLUME_DB_KEY_ESCROWED=1`. **An EXISTING database that is still in plaintext is never converted by
 a start**: a key set on it makes the start refuse, naming the explicit operation
-`plume-daemon chiffrer-au-repos` ([`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md)). Bringing
+`plume-daemon chiffrer-au-repos` ([`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.en.md)). Bringing
 **your own** key is therefore done **before the first start**, and the medium differs by mode:
 
 | | how |
@@ -318,7 +318,7 @@ login route.
 source. It is an acknowledged gap, written in the [`README`](../README.en.md#installation).
 
 An update that changes the database schema is a **one-way door**: it requires a
-verified backup beforehand, and an explicit acknowledgement. See [`DR-plume-restore.md`](DR-plume-restore.md).
+verified backup beforehand, and an explicit acknowledgement. See [`DR-plume-restore.md`](DR-plume-restore.en.md).
 
 ### 3.10 Uninstalling
 

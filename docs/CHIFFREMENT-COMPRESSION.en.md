@@ -7,7 +7,7 @@ sources, and the command that reproduces it is written next to it. Where the cod
 "**not established**" rather than filling the gap with something plausible: a security property announced and
 not held is worse than an absent property.
 
-It replaces neither [`DR-plume-restore.md`](DR-plume-restore.md) — the restore runbook, which
+It replaces neither [`DR-plume-restore.md`](DR-plume-restore.en.md) — the restore runbook, which
 remains the reference for *restoring* — nor [`../deploy/CONFIDENTIALITE.md`](../deploy/CONFIDENTIALITE.en.md),
 which gives the posture. It answers: **what is encrypted, by what, in which order, and
 what is not.**
@@ -29,7 +29,7 @@ grep -n 'PRAGMA key' daemon/src/crypto/mod.rs daemon/src/db_open.rs
 **"New → encrypted" assumes the daemon opens the database first.** The key is only generated at its
 startup. A subcommand that writes to the database (`token`, `sigma-import` without `--dry-run`, `retention`,
 `fts-compact`, `purge`, `restore-drill record`, `backup` after its backup) **creates** it if it is
-missing, under whatever key is already set: with none, the database is born in clear, and the next startup
+missing, under whatever key is already set: with none, the database is born in plaintext, and the next startup
 finds it existing and does not touch it. The safe order in all three modes is in
 [`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database).
 
@@ -47,8 +47,8 @@ rule (`daemon/src/crypto/mod.rs`):
 
 ### The property that decides "new database", and why it cannot be wrong in the dangerous direction
 
-Being wrong by calling a new database *existing* leaves it in clear: that is the previous default, with no
-aggravation. Being wrong in the other direction would generate a key for a database that has none — and the
+Being wrong by calling a new database *existing* leaves it in plaintext: that is the previous default, made no
+worse. Being wrong in the other direction would generate a key for a database that has none — and the
 next startup would apply to it a `PRAGMA key` it does not understand. The
 `etat_du_fichier_de_base` function is therefore written so that the second error does not exist:
 
@@ -77,7 +77,7 @@ The product says so **twice**, and never through a mere log line:
    that an operator **cannot erase** — same mechanism as "symmetric backup" and
    "cycle without archive". It stops when `PLUME_DB_KEY_ESCROWED=1` is set.
 
-**What this acknowledgment is worth, written without indulgence:** a *declaration*. The product cannot
+**What this acknowledgment is worth, stated without complacency:** a *declaration*. The product cannot
 verify that a copy of the key exists elsewhere, and it does not claim to — the signal's message says so
 itself.
 
@@ -91,7 +91,7 @@ Each one is read through `cfg()`, hence with the precedence common to the produc
 file > default — which means that **on a host, the key can live in
 `/etc/plume/soc.conf`** with mode `0640`, outside the process environment. *This was not true before
 the `P8.7-b` fix: the hot database only read the environment while the cold tier also read
-the file — one half encrypted, the other in clear, with nothing saying so.*
+the file — one half encrypted, the other in plaintext, with nothing saying so.*
 
 The file's content is read **verbatim**: the trailing `\n` is not stripped, deliberately, so that
 `fichier` and `environnement` carrying the same secret give the same bytes.
@@ -108,7 +108,7 @@ the race between two simultaneous startups — and the mode is requested **at cr
 after-the-fact `chmod` that would leave a window. If the filesystem does not honor POSIX
 permissions (a `fat`, `9p`… mount), **the key is removed** and the daemon refuses to start rather than
 leave it readable. The write is **fail-closed**: any write, sync or permission error
-gives a `[FATAL]` and an `exit 78`, never a database silently created in clear.
+gives a `[FATAL]` and an `exit 78`, never a database silently created in plaintext.
 
 ```sh
 grep -rn '0o600' daemon/src --include='*.rs' --exclude-dir=tests
@@ -125,7 +125,7 @@ SQLCipher version vendored** by `libsqlite3-sys`, not choices made by plume.
 grep -rn 'cipher_page_size\|kdf_iter\|cipher_hmac\|cipher_kdf' daemon/src   # nothing
 ```
 
-A consequence not to leave in the shadows: **SQLCipher's KDF is not *memory-hard***. The code
+A consequence not to gloss over: **SQLCipher's KDF is not *memory-hard***. The code
 says so itself, at the top of the backup module. A weak passphrase therefore protects a stolen database poorly,
 however strong the encryption itself.
 
@@ -137,7 +137,7 @@ depend on SQLCipher's behavior and **are not established** by reading this repos
 ### Converting an existing database: an explicit, irreversible operation, and what it requires before starting
 
 **No startup converts an existing database.** Neither setting a key, nor changing it, nor upgrading
-the image rewrites a database already in service. If a key is configured and the database is **in clear**,
+the image rewrites a database already in service. If a key is configured and the database is **in plaintext**,
 the daemon **refuses to start** (`[FATAL]`, `exit 78`), touches nothing, and names the operation.
 
 *This is a change of behavior compared with the previous state, and it is deliberate: the
@@ -152,7 +152,7 @@ The operation is `plume-daemon chiffrer-au-repos` (engine: `convertir_la_base_au
 |---|---|
 | an **explicit** key (`PLUME_DB_KEY_FILE` or `PLUME_DB_KEY`) | the key comes from you; the product never converts to a key it would have given itself |
 | `PLUME_DB_KEY_ESCROWED=1` | you **declare** that the key is copied off the machine |
-| the database is indeed **in clear** | `OpensWithKey` → nothing to do (the operation is idempotent); locked → refusal, stop the daemon first |
+| the database is indeed **in plaintext** | `OpensWithKey` → nothing to do (the operation is idempotent); locked → refusal, stop the daemon first |
 | **space**: `2,4 ×` the size of the database | the encrypted copy, the safety archive, and the throwaway database of its verification. An **unavailable** measurement counts as a refusal, not fail-open |
 
 Then, in this order — and **the order is unusual for a measured reason**:
@@ -166,12 +166,12 @@ Then, in this order — and **the order is unusual for a measured reason**:
 4. **backup produced AND verified** — see below;
 5. **switchover**: a hard link on the original, then **a single `rename`**, atomic;
 6. the conversion **is recorded in the tamper-proof log** (`at_rest.converted`) with what was verified;
-7. the clear copy is erased (overwrite + `unlink`).
+7. the plaintext copy is erased (overwrite + `unlink`).
 
 **Why the backup is taken from the COPY and not from the original.** *The obvious sequence —
 back up, then convert — is refuted by measurement*: `backup_compressed` opens its source **with
-the key** (`PRAGMA key`), and a database in clear then becomes unreadable (`SQLITE_NOTADB`); without a key, it
-refuses from its first statement. **The product cannot back up a database in clear** — this is
+the key** (`PRAGMA key`), and a database in plaintext then becomes unreadable (`SQLITE_NOTADB`); without a key, it
+refuses from its first statement. **The product cannot back up a database in plaintext** — this is
 exactly the dead end named by `P9.4-b`. The workable sequence is therefore: export → prove
 equivalence → back up and verify **from the copy** → switch over.
 
@@ -220,16 +220,16 @@ This is the most useful part of this document, and the easiest to forget.
 | What touches the disk | Encrypted? | Established by |
 |---|---|---|
 | hot database | **yes, if and only if a key is set** | `daemon/src/crypto/mod.rs` |
-| SQLite sort temporaries | **nothing is written by default** (`temp_store=MEMORY`); with `PLUME_SQLITE_DEVERSEMENT=1` → `temp_store=FILE`, and **the values go out in clear, outside the SQLCipher database** | `daemon/src/sqlite_plafond.rs` |
+| SQLite sort temporaries | **nothing is written by default** (`temp_store=MEMORY`); with `PLUME_SQLITE_DEVERSEMENT=1` → `temp_store=FILE`, and **the values go out in plaintext, outside the SQLCipher database** | `daemon/src/sqlite_plafond.rs` |
 | WAL of the main database | **not established** — nothing in this repository sets or checks it; it is a property of SQLCipher | — |
 | daemon ingestion spool | **no** — the HTTP body is written as is, then set to `0600` | `daemon/src/ingest/mod.rs` |
 | agent spool | **no** — no file-encryption crate in `agent/Cargo.toml`, only transport TLS | `agent/Cargo.toml` |
 | Parquet cold tier | **yes**, and **fail-closed**: without a key, no file is written | `daemon/src/cold_store/` |
 | backup by the scheduler / `backup --compress` | **yes** (age) — see §3 | `daemon/src/backup/` |
 | backup by `plume-daemon backup` without `--compress` | **inherits the state of the source**: the code applies no key to the destination, it runs `VACUUM INTO`. *That the copy is encrypted is a property of `VACUUM INTO` under SQLCipher — **not established** by this repository, no test checks it.* | `daemon/src/main.rs` |
-| staging of a compressed backup | **nothing is written by default** (typed dump streamed); on the fallback path — triggered by `PLUME_FTS_FIELDS=1`, or forced by `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` — **the ENTIRE database is rewritten in clear** for the duration of the cycle, then erased by overwriting. See §3.2 | `daemon/src/backup/mod.rs` |
-| audit log export | **no** — JSONL served in clear | `daemon/src/handlers/governance.rs` |
-| API responses | in clear, except TLS (`PLUME_TLS_CERT`/`PLUME_TLS_KEY`) | — |
+| staging of a compressed backup | **nothing is written by default** (typed dump streamed); on the fallback path — triggered by `PLUME_FTS_FIELDS=1`, or forced by `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` — **the ENTIRE database is rewritten in plaintext** for the duration of the cycle, then erased by overwriting. See §3.2 | `daemon/src/backup/mod.rs` |
+| audit log export | **no** — JSONL served in plaintext | `daemon/src/handlers/governance.rs` |
+| API responses | in plaintext, except TLS (`PLUME_TLS_CERT`/`PLUME_TLS_KEY`) | — |
 
 **Sort spilling** deserves one more sentence, because it is a trade-off and not a defect:
 `temp_store=FILE` lets SQLite sort on disk instead of failing under the memory budget, but
@@ -268,7 +268,7 @@ This is the useful order: compressing after encrypting would gain nothing, ciphe
 incompressible. Reading is symmetric — age decryption, then zstd decompression.
 
 The **payload** itself has two forms, distinguished **by a marker at the head, never by the file
-name**: a streamed typed dump (the default, which writes no transient clear text) or a full SQLite
+name**: a streamed typed dump (the default, which writes no transient plaintext) or a full SQLite
 copy (historical path, reached by automatic fallback when a schema cannot be represented
 as a typed dump).
 
@@ -278,7 +278,7 @@ without a content table**. `collect_dump_plan` can only recreate an FTS vtable w
 by an ordinary table — which is the case of `event_fts` (`content='event'`) — and returns
 `PlanErr::Unsupported` for any other form. Now `PLUME_FTS_FIELDS=1` creates precisely a
 `content=''` vtable (`event_fields_fts`). The fallback then runs `sqlcipher_export`, which **rewrites the
-ENTIRE database IN CLEAR** into the staging directory for the duration of the cycle, before compressing and
+ENTIRE database IN PLAINTEXT** into the staging directory for the duration of the cycle, before compressing and
 encrypting it. The file is erased by overwriting (`Drop` guard) and a sweep reaps the orphans of a
 killed process, but **the window exists and it comes back on every cycle**. Three consequences:
 
@@ -287,7 +287,7 @@ killed process, but **the window exists and it comes back on every cycle**. Thre
   default, and the same kind of explicit trade-off as `PLUME_SQLITE_DEVERSEMENT` (§2);
 - the log line of each cycle **says which path ran** (`clair-sur-disque=OUI/non`):
   it is the only way to know which of the two forms your installation produces;
-- `PLUME_BACKUP_STAGING_DIR` moves this transient clear text — onto an ephemeral volume, for example —
+- `PLUME_BACKUP_STAGING_DIR` moves this transient plaintext — onto an ephemeral volume, for example —
   and `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT` forces the historical path without recompiling.
 
 ```sh
@@ -352,7 +352,7 @@ daemon gives itself on a new database. The table of the three cases:
 | State of the database at first startup | Key resolved by `db_key()` | Compressed cycle |
 |---|---|---|
 | **NEW** (blank volume, PVC or `/var/lib/plume/db`), no key provided | the key **auto-generated** at startup — `0600`, at `PLUME_DB_KEY_AUTO_PATH` otherwise `<PLUME_DB>.key` | **SUCCEEDS**: an archive is written on every cycle |
-| **OLDER than `P9.6-a`** and left IN CLEAR, no key provided | **none**: a startup NEVER generates a key for a database that already exists (§1, this is the invariant of the batch) | **REFUSES on every pass**, with the message above |
+| **OLDER than `P9.6-a`** and left IN PLAINTEXT, no key provided | **none**: a startup NEVER generates a key for a database that already exists (§1, this is the invariant of the batch) | **REFUSES on every pass**, with the message above |
 | any, with `PLUME_DB_KEY_FILE` or `PLUME_DB_KEY` set | the **explicit** key (it wins over the auto one) | SUCCEEDS |
 
 **On an installation done today, in Docker as in k3s, the compressed backup therefore succeeds
@@ -362,7 +362,7 @@ is born at first startup, and the cycles publish. It is the CI guard
 that would arm the scheduler without shipping any of the three key provenances turns the CI red.
 
 **The hole has not disappeared for everyone, and that is the middle row of the table.** A database
-put into service BEFORE `P9.6-a` and left in clear has no key and will not receive one: its
+put into service BEFORE `P9.6-a` and left in plaintext has no key and will not receive one: its
 scheduler starts every 6 h, fails, and the log is the only immediate witness of it
 (`[backup-sched] backup B1 échoué : … (best-effort -> on continue)`). Since `P9.4-b`, a cycle without an
 archive also emits a **non-purgeable posture signal**, so the absence is visible elsewhere than
@@ -406,7 +406,7 @@ in [`ROADMAP.md`](ROADMAP.md).*
   asymmetric, then, if the necessary identity is available, restores to a throwaway database and
   **inventories its content**: **an empty restore is a FAILURE**, not a silent success.
 
-The complete procedure is in [`DR-plume-restore.md`](DR-plume-restore.md).
+The complete procedure is in [`DR-plume-restore.md`](DR-plume-restore.en.md).
 
 ---
 
@@ -432,7 +432,7 @@ grep -n 'tower-http' daemon/Cargo.toml            # the list of compiled HTTP co
 (`PLUME_RETENTION_DAYS`), **moving to the cold tier**
 (`PLUME_COLD_HOT_WINDOW_DAYS`, which removes the rows from the hot database after sealing) and
 **aggregates** (`event_rollup`, with cardinality bounded by a top-N ceiling). No quantified gain is
-established here for these three: see [`DESIGN-P10-echelle-2go.md`](DESIGN-P10-echelle-2go.md), which
+established here for these three: see [`DESIGN-P10-echelle-2go.md`](DESIGN-P10-echelle-2go.en.md), which
 carries the freshest state of this work.
 
 ---
@@ -443,7 +443,7 @@ carries the freshest state of this work.
 This choice avoids a second secret to distribute, rotate and lose — at the cost, said plainly,
 that a compromised node can read its own archives. The asymmetric age recipient exists
 precisely to break this link when an escrow is wanted, and the public key is not a secret:
-it can live in clear in a versioned manifest.
+it can live in plaintext in a versioned manifest.
 
 **Database encryption is opt-in because enabling it is a one-way door.** An encrypted
 database can no longer be read without its key; a default that would have converted existing installations

@@ -1,5 +1,7 @@
 # Plume — Architecture
 
+[Français](ARCHITECTURE.md) | [English](ARCHITECTURE.en.md)
+
 Plume est un **SOC / XDR feather-light** : **un seul binaire Rust** (`plume-daemon`) qui ingère
 logs & métriques, les stocke (SQLite/SQLCipher), et sert l'**API + l'UI web (PWA)** + le **moteur de
 détection** sur le port **`:7000`**. Les hôtes/agents poussent leur télémétrie via `POST /api/ingest`.

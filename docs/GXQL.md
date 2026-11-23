@@ -1,5 +1,7 @@
 # GXQL — le langage de recherche
 
+[Français](GXQL.md) | [English](GXQL.en.md)
+
 GXQL (*GuatX Query Language*, **anciennement « SOQL »** : même langage, même syntaxe, seul le nom a
 changé) est un langage à tubes, d'inspiration SPL, **compilé en SQL de lecture seule**. On écrit un
 filtre, on enchaîne des étapes séparées par `|`, et chaque étape enveloppe la précédente dans une

@@ -1,5 +1,7 @@
 # Plume CIM — Common Information Model (v1.0)
 
+[Français](CIM.md) | [English](CIM.en.md)
+
 > **Statut : contrat NORMATIF, versionné.** Ce document formalise le modèle d'information
 > canonique de Plume — le vocabulaire NEUTRE de `category` et le jeu de champs cœur — sur
 > lequel *toute* détection compose déjà, de façon **vendor-agnostique**. Il rend EXPLICITE

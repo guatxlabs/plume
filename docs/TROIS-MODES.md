@@ -1,5 +1,7 @@
 # Le même geste dans les trois modes — hôte natif · Docker · k3s
 
+[Français](TROIS-MODES.md) | [English](TROIS-MODES.en.md)
+
 Plume revendique **trois** modes de déploiement de première classe. Un document qui écrit un geste
 sans dire à quel mode il s'applique n'en couvre qu'un — et laisse le lecteur des deux autres croire
 qu'il a mal compris. Ce document existe pour cela : **chaque geste d'exploitation y porte sa forme

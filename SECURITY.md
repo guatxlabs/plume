@@ -1,5 +1,7 @@
 # Security Policy
 
+[English](SECURITY.md) | [Français](SECURITY.fr.md)
+
 Plume is a **feather-light SOC/SIEM**: it ingests security telemetry, stores it encrypted,
 and serves an API + UI + detection engine over a **closed GXQL read grammar** with
 **field masking as a single choke-point**. Its value depends on that read path staying

@@ -1,5 +1,7 @@
 # Documentation Plume — index
 
+[Français](README.md) | [English](README.en.md)
+
 Point d'entrée de `docs/`. Le *quoi* et le *pourquoi* de l'architecture sont dans
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md) ; l'installation et les trois modes de déploiement dans
 [`../README.md`](../README.md) ; les règles de contribution dans [`../CONTRIBUTING.md`](../CONTRIBUTING.md).

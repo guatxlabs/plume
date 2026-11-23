@@ -1,5 +1,7 @@
 # Contributing to Plume
 
+[English](CONTRIBUTING.md) | [Français](CONTRIBUTING.fr.md)
+
 Thanks for your interest in Plume — the feather-light SOC/XDR. Plume is a single Rust binary
 (`plume-daemon`) that ingests telemetry, stores it encrypted in SQLite/SQLCipher, and serves
 the API + web UI + detection engine. Contributions are welcome, under a few rules that exist

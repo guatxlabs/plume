@@ -1,5 +1,7 @@
 # Module map — a contributor's guide to the subsystems
 
+[English](MODULE-MAP.md) | [Français](MODULE-MAP.fr.md)
+
 This is the "which box do I open, and what can I safely touch" map for `plume-daemon`. It
 complements — does not repeat — [`../ARCHITECTURE.md`](../ARCHITECTURE.md) (system design)
 and [`CIM.md`](CIM.md) (event taxonomy). Read those for the *what/why*; read this for the

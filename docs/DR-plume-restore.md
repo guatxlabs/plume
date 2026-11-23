@@ -1,5 +1,7 @@
 # DR — Restauration des backups Plume (SQLCipher)
 
+[Français](DR-plume-restore.md) | [English](DR-plume-restore.en.md)
+
 Ce runbook couvre la restauration d'un backup Plume `plume-<TS>.db.age` (enveloppe
 `age(zstd(…))`) depuis votre stockage objet (`<votre-bucket>/plume/`), et les **deux
 modes** de chiffrement de backup proposés par le produit.

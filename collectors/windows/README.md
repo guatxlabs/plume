@@ -1,5 +1,7 @@
 # Collecteur Windows
 
+[Français](README.md) | [English](README.en.md)
+
 Surveille un poste **ou serveur Windows** (perso comme entreprise) et expédie les
 événements au central Plume — équivalent natif PowerShell des collecteurs Linux
 (`collectors/*.sh`). Un seul fichier : [`plume-collector.ps1`](plume-collector.ps1).

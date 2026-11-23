@@ -1,5 +1,7 @@
 # plume-agent (#16) — CI & validation runtime cross-OS
 
+[Français](CI.md) | [English](CI.en.md)
+
 L'agent d'endpoint est un binaire **autonome** qui tourne SUR le poste
 (Linux / Windows / macOS), pas dans le pod SOC. Il lit les sources d'événements
 **natives** de l'OS via du code spécifique à chaque plateforme :

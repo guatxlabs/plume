@@ -1,5 +1,7 @@
 # Presets de connecteurs `http_pull` (exemples de config, PAS du code vendeur)
 
+[Français](README.md) | [English](README.en.md)
+
 Ces fichiers sont des **exemples de configuration documentés** — des points de départ à
 **copier/adapter**, pas des intégrations embarquées ni maintenues dans le daemon.
 

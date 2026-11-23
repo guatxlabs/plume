@@ -1,5 +1,7 @@
 # Presets de connecteurs cloud (`http_pull`)
 
+[Français](CONNECTOR-PRESETS.md) | [English](CONNECTOR-PRESETS.en.md)
+
 > **Statut : documentation + descriptors déclaratifs.** Un « preset » n'est **pas** du code
 > vendeur : c'est un fichier JSON dans [`docs/connector-presets/`](connector-presets/) à **copier
 > dans le champ `config`** d'un connecteur `http_pull` (aucun rebuild). Le connecteur générique

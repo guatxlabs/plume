@@ -1,5 +1,7 @@
 # config.d — overlays versionnés (Personnalisation Phase 1)
 
+[Français](README.md) | [English](README.en.md)
+
 Source de vérité **git-versionnée** pour les **parsers**, **règles de détection** et **playbooks**
 personnalisés du SOC Plume. Tout fichier `*.json` déposé ici est chargé au démarrage du daemon
 (`load_overlays`, juste après les migrations et les seeds) et posé en base avec `managed = 1`.

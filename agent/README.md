@@ -1,5 +1,7 @@
 # plume-agent — cross-OS endpoint agent (#16)
 
+[Français](README.md) | [English](README.en.md)
+
 Binaire **autonome** installé **sur le poste** (endpoint), pas dans le pod SOC. Il lit les sources
 d'événements **natives** de l'OS, les tamponne sur disque (spool borné, *at-least-once*), et les POST
 vers le endpoint d'ingest Plume — le même contrat de fil que les collecteurs `.sh` et l'émetteur HEC.

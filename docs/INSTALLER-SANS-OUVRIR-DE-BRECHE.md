@@ -1,5 +1,7 @@
 # Installer plume sans ouvrir de brèche — pas à pas, dans les trois modes
 
+[Français](INSTALLER-SANS-OUVRIR-DE-BRECHE.md) | [English](INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md)
+
 Cette page s'adresse à la personne qui installe plume chez elle, sur une machine qu'elle administre, et
 qui ne veut **rien exposer de plus que ce qu'elle a choisi**. Elle suit l'ordre des gestes : ce qui est
 ouvert par défaut, l'installation de chaque mode, où vivent les secrets, ce que chaque capteur fait

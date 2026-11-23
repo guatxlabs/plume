@@ -1,5 +1,7 @@
 # Couverture k8s/k3s — produire la télémétrie cluster, pas seulement l'ingérer
 
+[Français](K8S.md) | [English](K8S.en.md)
+
 But : couvrir l'angle mort cluster **par production directe** (pas seulement ingérer), pour pouvoir un jour
 retirer une pile métriques/logs dédiée. Règle : **additif d'abord, run en parallèle + vérif de parité, puis
 suppression**. Ne jamais casser un dépendant (un IPS ou un outil d'astreinte peut lire dans la pile que

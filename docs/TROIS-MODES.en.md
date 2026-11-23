@@ -197,7 +197,7 @@ The token is displayed once; it cannot be read again.
 On a new central, the daemon starts **before** the first subcommand: in `docker` and `k3s`,
 `exec` enforces this (the daemon's container must be running); in `host`, a subcommand run before the
 first start causes the database to be born in plaintext
-([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)).
 
 > ⚠️ **The token NEVER goes through the command line on the agent side**, in any mode: `sudo`
 > logs its full command line and the `journal` collector sends it back to the SOC, which stores it in plaintext.

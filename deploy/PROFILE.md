@@ -1,5 +1,7 @@
 # Profil d'infra — déployer le SOC sur N'IMPORTE QUELLE infra (sans toucher au code)
 
+[Français](PROFILE.md) | [English](PROFILE.en.md)
+
 Le SOC est **générique** : le moteur (daemon), la recherche (GXQL), les parsers et l'architecture
 des collecteurs ne contiennent **rien de spécifique à une infra**. Tout ce qui dépend de TON
 environnement passe par des **variables** (env / `EnvironmentFile` des units systemd, ou env du

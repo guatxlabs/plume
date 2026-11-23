@@ -1,5 +1,7 @@
 # Confidentialité (P4)
 
+[Français](CONFIDENTIALITE.md) | [English](CONFIDENTIALITE.en.md)
+
 ## Transport — TLS
 Le daemon sert en HTTP sur la boucle locale par défaut (bind configurable par `PLUME_ADDR`). Pour le réseau, deux voies :
 - **TLS natif** : `PLUME_TLS_CERT` + `PLUME_TLS_KEY` (chemins PEM lisibles par l'utilisateur du démon). Un PEM illisible

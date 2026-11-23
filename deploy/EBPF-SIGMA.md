@@ -1,5 +1,7 @@
 # eBPF (Falco / Tetragon) + Sigma (P5)
 
+[Français](EBPF-SIGMA.md) | [English](EBPF-SIGMA.en.md)
+
 ## Falco — détection runtime eBPF (exec, fichiers, réseau, conteneurs)
 1. Installer Falco (https://falco.org) avec le driver moderne : `falco --modern-bpf`.
 2. Activer la sortie JSON fichier dans `/etc/falco/falco.yaml` :

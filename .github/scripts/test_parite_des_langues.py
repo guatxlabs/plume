@@ -81,13 +81,18 @@ class Paire(unittest.TestCase):
         with open(chemin, "w", encoding="utf-8") as f:
             f.write(texte)
 
-    def ecarts(self, traduction, original=ORIGINAL, convention=None):
+    def ecarts(self, traduction, original=ORIGINAL, convention=None, dossier=""):
         convention = convention or pdl.Convention()
-        o = "guide" + convention.original + ".md"
-        t = "guide" + convention.traduction + ".md"
+        o = os.path.join(dossier, "guide" + convention.original + ".md")
+        t = os.path.join(dossier, "guide" + convention.traduction + ".md")
         self.ecrire(o, original)
         self.ecrire(t, traduction)
         return pdl.comparer_fichiers(self.racine, o, t, convention)
+
+    def peupler_docs(self):
+        """Sous docs/, les cibles relatives de la paire de base : carte bascule, schema non."""
+        for nom in ("docs/carte.md", "docs/carte.en.md", "docs/schema.md"):
+            self.ecrire(nom, "# x\n")
 
     def familles(self, ecarts):
         return sorted({e.famille for e in ecarts})
@@ -134,8 +139,93 @@ class Paire(unittest.TestCase):
         self.assertIn("non basculé", ecarts[0].message)
 
     def test_lien_bascule_sans_traduction_existante_rouge(self):
+        # Les deux sens sont nommés : la cible attendue manque, la cible portée est en trop.
         ecarts = self.ecarts(TRADUCTION.replace("schema.md", "schema.en.md"))
         self.assertEqual(self.familles(ecarts), ["liens"])
+        lus = sorted((e.fichier, e.ligne, e.message) for e in ecarts)
+        self.assertEqual(lus, [
+            ("guide.en.md", 12, "lien vers « schema.en.md » absent de l'original"),
+            ("guide.md", 12, "lien vers « schema.md » absent de la traduction"),
+        ])
+
+    def test_lien_en_trop_dans_la_traduction_rouge(self):
+        ecarts = self.ecarts(TRADUCTION + "\nSee [the annex](annexe.md).\n")
+        self.assertEqual([(e.fichier, e.ligne, e.message) for e in ecarts],
+                         [("guide.en.md", 22, "lien vers « annexe.md » absent de l'original")])
+
+    def test_bloc_en_trop_dans_la_traduction_rouge(self):
+        ecarts = self.ecarts(TRADUCTION + "\n```sh\nmake extra\n```\n")
+        self.assertEqual(self.familles(ecarts), ["blocs"])
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.en.md", 22))
+        self.assertIn("2 blocs de code contre 1 dans guide.md", ecarts[0].message)
+
+    def test_tableau_en_trop_dans_la_traduction_rouge(self):
+        ecarts = self.ecarts(TRADUCTION + "\n| a | b |\n|---|---|\n")
+        self.assertEqual(self.familles(ecarts), ["tableaux"])
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.en.md", 22))
+        self.assertIn("2 tableaux contre 1 dans guide.md", ecarts[0].message)
+
+    def test_lien_relatif_resolu_depuis_le_dossier_du_document(self):
+        # docs/plan.md a sa traduction ; à la racine, plan.en.md n'existe pas. Résolu depuis la
+        # racine, le lien ne basculerait pas, et la traduction juste serait accusée.
+        self.peupler_docs()
+        for nom in ("docs/plan.md", "docs/plan.en.md"):
+            self.ecrire(nom, "# x\n")
+        original = ORIGINAL + "\nVoir [le plan](plan.md).\n"
+        juste = TRADUCTION + "\nSee [the plan](plan.en.md).\n"
+        self.assertEqual(self.ecarts(juste, original, dossier="docs"), [])
+        ecarts = self.ecarts(juste.replace("plan.en.md", "plan.md"), original, dossier="docs")
+        self.assertEqual(self.familles(ecarts), ["liens"])
+        self.assertIn("non basculé", ecarts[0].message)
+        self.assertEqual(ecarts[0].fichier, os.path.join("docs", "guide.en.md"))
+
+    def test_lien_absolu_resolu_depuis_la_racine(self):
+        # annexe.en.md existe à la racine, pas sous docs/ : `/annexe.md` bascule depuis docs/.
+        self.peupler_docs()
+        for nom in ("annexe.md", "annexe.en.md", "docs/annexe.md"):
+            self.ecrire(nom, "# x\n")
+        original = ORIGINAL + "\nVoir [l'annexe](/annexe.md).\n"
+        juste = TRADUCTION + "\nSee [the annex](/annexe.en.md).\n"
+        self.assertEqual(self.ecarts(juste, original, dossier="docs"), [])
+        ecarts = self.ecarts(juste.replace("/annexe.en.md", "/annexe.md"), original, dossier="docs")
+        self.assertEqual(self.familles(ecarts), ["liens"])
+        self.assertIn("non basculé", ecarts[0].message)
+
+    def test_selecteur_de_langue_identique_des_deux_cotes(self):
+        # Le sélecteur vise le document lui-même et sa traduction : il est le même des deux côtés.
+        selecteur = "[Francais](guide.md) | [English](guide.en.md)\n\n"
+        original, juste = selecteur + ORIGINAL, selecteur + TRADUCTION
+        self.assertEqual(self.ecarts(juste, original), [])
+        # Depuis un sous-dossier, la cible relative désigne la même paire.
+        self.peupler_docs()
+        self.assertEqual(self.ecarts(juste, original, dossier="docs"), [])
+        # Un lien vers un AUTRE document non basculé reste accusé, sélecteur présent.
+        ecarts = self.ecarts(juste.replace("carte.en.md#", "carte.md#"), original)
+        self.assertEqual(self.familles(ecarts), ["liens"])
+        self.assertIn("non basculé", ecarts[0].message)
+
+    def test_selecteur_de_langue_convention_basculee(self):
+        convention = pdl.Convention(".fr", "")
+        for nom in ("carte.fr.md", "annexe.fr.md"):
+            self.ecrire(nom, "# x\n")
+        selecteur = "[Francais](guide.fr.md) | [English](guide.md)\n\n"
+        original = selecteur + ORIGINAL.replace("carte.md", "carte.fr.md").replace(
+            "schema.md", "annexe.fr.md")
+        juste = selecteur + TRADUCTION.replace("carte.en.md", "carte.md").replace(
+            "schema.md", "annexe.fr.md")
+        self.assertEqual(self.ecarts(juste, original, convention), [])
+
+    def test_note_de_bas_de_page_n_est_pas_une_definition_de_lien(self):
+        original = ORIGINAL + "\nVoir la note[^1].\n\n[^1]: Voir le manuel, page 12.\n"
+        juste = TRADUCTION + "\nSee the note[^1].\n\n[^1]: See the manual, page 12.\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        ecarts = self.ecarts(juste.replace("page 12", "page 13"), original)
+        self.assertEqual(self.familles(ecarts), ["nombres"])
+
+    def test_bom_ne_masque_pas_le_premier_titre(self):
+        self.assertEqual(self.ecarts(TRADUCTION, "\ufeff" + ORIGINAL), [])
+        ecarts = self.ecarts(TRADUCTION.replace("# Guide\n", "Guide\n", 1), "\ufeff" + ORIGINAL)
+        self.assertEqual(self.familles(ecarts), ["titres"])
 
     def test_ligne_de_tableau_retiree_rouge(self):
         ecarts = self.ecarts(TRADUCTION.replace("| `EXPECTED_TESTS` | ci.yml |\n", ""))
@@ -149,7 +239,7 @@ class Paire(unittest.TestCase):
     def test_commentaire_html_et_url_ne_comptent_pas(self):
         # Les nombres 42, 83 et 91 n'existent nulle part ailleurs : seule leur exclusion les tait.
         # L'URL diffère d'un côté à l'autre (page localisée) sans que ce soit un écart de nombre ;
-        # le lien porte la même cible des deux côtés, donc aucun écart de lien non plus.
+        # une URL nue n'est pas comparée comme cible de lien, donc aucun écart de lien non plus.
         original = ORIGINAL + "\n<!-- note 42 -->\nSource : https://example.org/fr/v83\n"
         traduction = TRADUCTION + "\nSource: https://example.org/en/v91\n"
         self.assertEqual(self.ecarts(traduction, original), [])
@@ -272,7 +362,7 @@ def muet(fonction, *args):
 
 
 class CodeDeSortie(unittest.TestCase):
-    """main() : 0 sans écart, 1 au premier écart nommé, 2 quand rien n'a pu être comparé."""
+    """main() : 0 sans écart, 1 dès qu'un écart est nommé, 2 sans écart quand quelque chose n'a pas été lu."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -304,10 +394,38 @@ class CodeDeSortie(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("rien comparé", sortie)
 
-    def test_fichier_absent_apres_une_paire_juste_rend_2(self):
-        # La première paire est juste : un fichier sauté rendrait 0, l'arrêt rend 2.
-        rc, _ = self.main("--paire", "absent.md", "guide.en.md")
+    def suivre(self, *fichiers):
+        subprocess.run(["git", "init", "-q", self.racine], check=True)
+        subprocess.run(["git", "-C", self.racine, "add", "--", *fichiers], check=True)
+
+    def ecrire(self, nom, contenu):
+        mode = "wb" if isinstance(contenu, bytes) else "w"
+        with open(os.path.join(self.racine, nom), mode,
+                  **({} if isinstance(contenu, bytes) else {"encoding": "utf-8"})) as f:
+            f.write(contenu)
+
+    def test_illisible_puis_ecart_rend_1_et_nomme_les_deux(self):
+        # `autre` se lit avant `guide` : la paire illisible n'arrête pas la comparaison, et l'écart
+        # trouvé ensuite est imprimé ; une violation ne se lit pas comme « rien mesuré ».
+        self.ecrire("autre.md", "# Autre\n")
+        self.ecrire("autre.en.md", "# Autre évalué\n".encode("latin-1"))
+        self.ecrire("guide.en.md", TRADUCTION.replace("### Detail\n", ""))
+        self.suivre("autre.md", "autre.en.md", "guide.md", "guide.en.md")
+        rc, sortie = self.main()
+        self.assertEqual(rc, 1)
+        self.assertIn("guide.md:18: [titres]", sortie)
+        self.assertIn("autre.en.md", sortie)
+        self.assertIn("illisible", sortie)
+
+    def test_illisible_sans_ecart_rend_2_et_le_nomme(self):
+        self.ecrire("autre.md", "# Autre\n")
+        self.ecrire("autre.en.md", "# Autre évalué\n".encode("latin-1"))
+        self.suivre("autre.md", "autre.en.md", "guide.md", "guide.en.md")
+        rc, sortie = self.main()
         self.assertEqual(rc, 2)
+        self.assertIn("autre.en.md", sortie)
+        self.assertIn("illisible", sortie)
+        self.assertIn("1 paire(s) comparée(s), 0 écart(s)", sortie)
 
     def test_fichier_hors_utf8_rend_2(self):
         with open(os.path.join(self.racine, "guide.en.md"), "wb") as f:
@@ -352,14 +470,16 @@ class Inventaire(unittest.TestCase):
         sans, orphelines = pdl.inventaire(documents, pdl.Convention())
         self.assertEqual(sans, ["B.md", "docs/C.md"])
         self.assertEqual(orphelines, ["D.en.md"])
-        with open(os.devnull, "w") as nul:
-            sortie, sys.stdout = sys.stdout, nul
-            try:
-                self.assertEqual(pdl.main(["--racine", self.racine, "--inventaire"]), 0)
-                self.assertEqual(pdl.main(["--racine", self.racine, "--inventaire", "--strict"]), 1)
-                self.assertEqual(pdl.main(["--racine", self.racine]), 0)
-            finally:
-                sys.stdout = sortie
+        attendu = ("B.md: sans traduction (attendue : B.en.md)\n"
+                   "docs/C.md: sans traduction (attendue : docs/C.en.md)\n"
+                   "D.en.md: traduction sans original (attendu : D.md)\n"
+                   "2 document(s) sans traduction, 1 traduction(s) sans original, "
+                   "sur 5 documents suivis\n")
+        rc, sortie = muet(pdl.main, ["--racine", self.racine, "--inventaire"])
+        self.assertEqual((rc, sortie), (0, attendu))
+        rc, sortie = muet(pdl.main, ["--racine", self.racine, "--inventaire", "--strict"])
+        self.assertEqual((rc, sortie), (1, attendu))
+        self.assertEqual(muet(pdl.main, ["--racine", self.racine])[0], 0)
 
     def test_aucune_paire_ne_rend_pas_vert(self):
         os.remove(os.path.join(self.racine, "A.en.md"))

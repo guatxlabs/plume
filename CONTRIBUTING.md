@@ -338,7 +338,8 @@ sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien
 
 Un document traduit garde les faits de son original : mêmes titres (nombre et niveaux), mêmes blocs
 de code et mêmes commandes hors commentaires, mêmes tableaux, mêmes cibles de liens — un lien vers
-`Y.md` vise `Y.en.md` côté anglais quand ce fichier existe —, mêmes nombres et mêmes identifiants
+`Y.md` vise `Y.en.md` côté anglais quand ce fichier existe, sauf le sélecteur de langue
+`[Français](X.md) | [English](X.en.md)`, identique des deux côtés —, mêmes nombres et mêmes identifiants
 entre accents graves. `.github/scripts/parite_des_langues.py` le compare et nomme chaque écart par
 `fichier:ligne` :
 
@@ -351,6 +352,7 @@ python3 .github/scripts/test_parite_des_langues.py                 # épreuves d
 
 La convention de suffixe est un paramètre (`--suffixe-original`, `--suffixe-traduction`, par défaut
 `X.md` / `X.en.md`), pour basculer plus tard en `X.fr.md` / `X.md`. L'inventaire rend vert tant que
-`--strict` n'est pas passé ; sur zéro document suivi, ou sur un fichier illisible, l'outil rend 2 :
-rien n'a été comparé. L'outil n'est pas encore une porte de l'intégration continue : il se joue
+`--strict` n'est pas passé. En comparaison, l'outil rend 1 dès qu'un écart est nommé, même si une
+autre paire n'a pas pu être lue (elle est nommée) ; il rend 2 quand il n'y a aucun écart et que
+quelque chose n'a pas été lu (zéro document suivi, zéro paire, fichier illisible). L'outil n'est pas encore une porte de l'intégration continue : il se joue
 à la main, avant de proposer une traduction.

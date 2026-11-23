@@ -18,7 +18,10 @@ CE QUI EST COMPARÉ, PAIRE PAR PAIRE
 - les TABLEAUX : leur nombre et le nombre de lignes de chacun ;
 - les CIBLES DE LIENS : un lien vers `Y.md` doit viser `Y.en.md` côté traduction quand ce fichier
   existe, et rester tel quel sinon ; l'ancre (`#…`) est retirée avant comparaison, car elle dérive
-  d'un titre, et un titre traduit change d'ancre ;
+  d'un titre, et un titre traduit change d'ancre. La cible se résout depuis le dossier du document,
+  ou depuis la racine quand elle commence par `/`. Un lien vers le document lui-même ou vers sa
+  traduction est le SÉLECTEUR DE LANGUE (`[Français](X.md) | [English](X.en.md)` en tête des deux
+  côtés) : il ne bascule pas, il est attendu identique des deux côtés ;
 - l'ENSEMBLE DES NOMBRES du texte courant, lus comme des suites de chiffres : `2,7` et `2.7`, ou
   `4 812 337` et `4,812,337`, donnent les mêmes suites, si bien que la typographie de chaque langue
   n'accuse rien ;
@@ -37,9 +40,12 @@ bascule.
 DEUX MODES
 ----------
 - comparaison (défaut) : toutes les paires suivies par git, ou une seule avec `--paire ORIGINAL
-  TRADUCTION`. Code 1 au premier écart nommé, 0 sinon, 2 quand rien n'a été comparé (aucune paire,
-  dépôt illisible, fichier absent ou qui n'est pas de l'UTF-8) : un vert sur zéro paire ne
-  prouverait rien.
+  TRADUCTION`. Toutes les paires lisibles sont comparées et tous les écarts imprimés ; une paire
+  illisible (fichier absent ou qui n'est pas de l'UTF-8) est nommée et n'arrête pas les autres.
+  Code 1 dès qu'un écart est nommé, même si une autre paire n'a pas pu être lue : une violation
+  trouvée ne se lit pas comme « rien mesuré ». Code 2 quand il n'y a aucun écart et que quelque
+  chose n'a pas été lu (aucune paire, dépôt illisible, paire illisible) : un vert sur ce qui n'a pas
+  été lu ne prouverait rien. Code 0 sinon.
 - `--inventaire` : liste les documents suivis sans traduction, et les traductions sans original. Il
   rend 0 tant que `--strict` n'est pas passé ; avec `--strict`, un document sans traduction rend 1.
   Sur zéro document suivi, ou sur un dépôt illisible, il rend 2 dans les deux cas.
@@ -52,8 +58,10 @@ CE QU'IL NE VOIT PAS
 Les titres soulignés (`===` / `---` sous une ligne) ne sont pas lus, seulement les titres `#`. Un
 bloc de code indenté de quatre espaces n'est pas un bloc pour lui, seulement les blocs clôturés
 (trois accents graves ou trois tildes). Les commentaires HTML ne sont pas rendus, donc pas comparés.
-Un nombre écrit en toutes lettres échappe à la comparaison des nombres. L'ensemble est un ENSEMBLE :
-un nombre cité deux fois d'un côté et une fois de l'autre ne fait pas d'écart.
+Les autoliens (`<https://…>`), les URL nues et les liens HTML (`<a href>`) ne sont pas comparés comme
+cibles, et les nombres d'une URL nue ne sont pas lus : une traduction a le droit de pointer la page
+d'une autre langue. Un nombre écrit en toutes lettres échappe à la comparaison des nombres.
+L'ensemble est un ENSEMBLE : un nombre cité deux fois d'un côté et une fois de l'autre ne fait pas d'écart.
 Un tableau n'est vu que si ses lignes commencent par une barre verticale : `a | b` suivi de `---|---`
 n'est pas un tableau pour lui. Dans un bloc, ` # ` ou ` // ` coupe la ligne même entre guillemets :
 `grep ' # a'` et `grep ' # b'` donnent la même commande. Une ligne de bloc qui commence par `#` est un
@@ -76,7 +84,8 @@ SEGMENT_DE_CODE = re.compile(r"(`+)(.+?)\1")
 LIEN_EN_LIGNE = re.compile(
     r"!?\[((?:[^\[\]\\]|\\.|\[[^\]]*\])*)\]\(\s*<?([^)\s>]*)>?(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)"
 )
-DEFINITION_DE_LIEN = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+.*)?$")
+# `[^1]: …` est une note de bas de page, pas une définition de lien : son texte est du texte courant.
+DEFINITION_DE_LIEN = re.compile(r"^\s{0,3}\[(?!\^)[^\]]+\]:\s*<?(\S+?)>?(?:\s+.*)?$")
 URL_NUE = re.compile(r"<?\b[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
 NOMBRE = re.compile(r"\d+")
 SCHEMA = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
@@ -140,6 +149,8 @@ def retirer_commentaires_html(ligne, dans_commentaire):
 
 def analyser(texte, chemin):
     doc = Document(chemin)
+    # Une marque d'ordre d'octets en tête collerait au premier `#` et masquerait le premier titre.
+    texte = texte.removeprefix("\ufeff")
     cloture = None  # (caractère, longueur, ligne d'ouverture, commandes)
     dans_commentaire = False
     tableau = None  # [première ligne, nombre]
@@ -244,16 +255,31 @@ def cible_sans_ancre(cible):
     return chemin
 
 
-def basculer(cible, dossier, convention, existe):
-    """La cible qu'un lien de l'original doit porter dans la traduction."""
+def est_externe(chemin):
+    return bool(SCHEMA.match(chemin)) or chemin.startswith("//")
+
+
+def resoudre(chemin, dossier):
+    """Le fichier qu'une cible désigne, relatif à la racine : `/Y.md` part de la racine, `Y.md` du
+    dossier du document."""
+    base = "" if chemin.startswith("/") else dossier
+    return os.path.normpath(os.path.join(base, chemin.lstrip("/")))
+
+
+def basculer(cible, dossier, convention, existe, paire=()):
+    """La cible qu'un lien de l'original doit porter dans la traduction.
+
+    Un lien vers l'un des deux documents de la `paire` est le sélecteur de langue : il est le même
+    des deux côtés, donc ne bascule pas."""
     chemin = cible_sans_ancre(cible)
-    if not chemin or SCHEMA.match(chemin) or chemin.startswith("//"):
+    if not chemin or est_externe(chemin):
+        return chemin
+    if resoudre(chemin, dossier) in paire:
         return chemin
     if not convention.est_original(chemin):
         return chemin
     traduit = convention.traduction_de(chemin)
-    base = "" if traduit.startswith("/") else dossier
-    if existe(os.path.normpath(os.path.join(base, traduit.lstrip("/")))):
+    if existe(resoudre(traduit, dossier)):
         return traduit
     return chemin
 
@@ -315,9 +341,10 @@ def comparer_tableaux(o, t):
 
 def comparer_liens(o, t, convention, existe):
     dossier = os.path.dirname(o.chemin)
+    paire = {os.path.normpath(o.chemin), os.path.normpath(t.chemin)}
     attendus, origine, forme_brute = Counter(), {}, {}
     for ligne, cible in o.liens:
-        b = basculer(cible, dossier, convention, existe)
+        b = basculer(cible, dossier, convention, existe, paire)
         if not b:
             continue
         attendus[b] += 1
@@ -466,17 +493,27 @@ def main(argv=None):
             print("aucune paire de documents suivis : rien comparé (voir --inventaire)", file=sys.stderr)
             return 2
 
-    total = []
+    # Une paire illisible n'arrête pas les autres : un écart trouvé ailleurs reste une violation, et
+    # il serait faux de le taire derrière un « rien comparé ».
+    total, illisibles = [], []
     for original, traduction in a_comparer:
         try:
             total += comparer_fichiers(a.racine, original, traduction, convention)
         except Illisible as e:
-            print(f"{original} / {traduction} illisible, rien comparé : {e}", file=sys.stderr)
-            return 2
+            illisibles.append((original, traduction, e))
     for e in total:
         print(e)
-    print(f"{len(a_comparer)} paire(s) comparée(s), {len(total)} écart(s)")
-    return 1 if total else 0
+    for original, traduction, e in illisibles:
+        print(f"{original} / {traduction} illisible, rien comparé pour cette paire : {e}", file=sys.stderr)
+    print(f"{len(a_comparer) - len(illisibles)} paire(s) comparée(s), {len(total)} écart(s)"
+          + (f", {len(illisibles)} paire(s) illisible(s)" if illisibles else ""))
+    if total:
+        return 1
+    if illisibles:
+        print("aucun écart, mais une paire au moins n'a pas été lue : rien ne prouve la parité",
+              file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

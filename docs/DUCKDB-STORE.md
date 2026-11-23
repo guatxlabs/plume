@@ -1,5 +1,7 @@
 # DuckDB store — WARM analytical tier (#15) — **EXPERIMENTAL**
 
+[English](DUCKDB-STORE.md) | [Français](DUCKDB-STORE.fr.md)
+
 Status: **OPT-IN, INERT BY DEFAULT, EXPERIMENTAL.** Feature-gated (`--features duckdb`), selected at
 runtime by `PLUME_STORE=duckdb`. Absent from the SMB/prod build and prod deployment. **The default
 remains `SqlcipherStore` (SQLite/SQLCipher), byte-identical to today.**

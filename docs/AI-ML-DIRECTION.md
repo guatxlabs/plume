@@ -1,5 +1,7 @@
 # Plume — AI / ML Direction
 
+[English](AI-ML-DIRECTION.md) | [Français](AI-ML-DIRECTION.fr.md)
+
 **Date:** 2026-07-18
 **Status:** design reflection (roadmap, not shipped). The only piece landed is the `disposition` column prerequisite (v106). Everything else here is scoped, gated, and awaiting a go.
 

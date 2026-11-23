@@ -1,5 +1,7 @@
 # ClickHouse store — single-node adapter (#18, Phase 2)
 
+[English](CLICKHOUSE-STORE.md) | [Français](CLICKHOUSE-STORE.fr.md)
+
 Status: **OPT-IN, INERT BY DEFAULT.** Feature-gated (`--features clickhouse`). Runtime selection
 (`PLUME_STORE=clickhouse`) is designed but **not wired**: the variable is read nowhere in the daemon, which
 always serves `SqlcipherStore` (see the note at the end of §2.1 and `docs/CLICKHOUSE-HA.md`). Absent from the SMB/prod build and prod deployment. **The default remains

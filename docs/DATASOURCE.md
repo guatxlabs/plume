@@ -1,5 +1,7 @@
 # plume AS A DATASOURCE (#52) — serve queries back to Grafana/Prometheus
 
+[English](DATASOURCE.md) | [Français](DATASOURCE.fr.md)
+
 Until now plume only **received** telemetry (`POST /api/ingest`, Prometheus `remote_write`, Loki push, Splunk
 HEC). It exposed **no read API** a Grafana/Prometheus/Loki datasource could point a panel *at*. This is the
 #1 Grafana adoption lever — "meet them where they are": an existing Grafana points a panel at plume instead of

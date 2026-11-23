@@ -1,5 +1,7 @@
 # Observability-as-code (#55)
 
+[English](OBSERVABILITY-AS-CODE.md) | [Français](OBSERVABILITY-AS-CODE.fr.md)
+
 Declare your whole SOC configuration — not just detection content — as versioned files under
 `config.d/`, GitOps it alongside the ArgoCD deploy model, and let plume converge to it at boot.
 

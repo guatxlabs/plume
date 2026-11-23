@@ -1,5 +1,7 @@
 # ClickHouse HA — distributed multi-node scaffold (#70)
 
+[English](CLICKHOUSE-HA.md) | [Français](CLICKHOUSE-HA.fr.md)
+
 Status: **SCAFFOLD / FOUNDATIONS ONLY — INERT, NOT ACTIVATED.** Feature-gated behind a dedicated
 `clickhouse-ha` sub-feature (which enables `clickhouse`). Absent from the default build **and** from the
 `--features clickhouse` build (#18 single-node). It carries **no runtime path** — nothing in the

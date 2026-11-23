@@ -58,8 +58,9 @@ DEUX MODES
   trouvée ne se lit pas comme « rien mesuré ». Code 2 quand il n'y a aucun écart et que quelque
   chose n'a pas été lu (aucune paire, dépôt illisible, paire illisible) : un vert sur ce qui n'a pas
   été lu ne prouverait rien. Code 0 sinon. Un fichier visé par une ancre de la traduction et qui
-  n'est pas de l'UTF-8 rend la paire illisible : une ancre qu'on n'a pas pu chercher n'est ni juste
-  ni fausse.
+  n'est pas de l'UTF-8 laisse la paire lue en partie : une ancre qu'on n'a pas pu chercher n'est ni
+  juste ni fausse, elle n'est pas jugée, la paire est nommée, et ses autres écarts sont imprimés (code
+  1 s'il y en a, 2 sinon).
 - `--inventaire` : liste les documents suivis sans traduction, et les traductions sans original. Il
   rend 0 tant que `--strict` n'est pas passé ; avec `--strict`, un document sans traduction rend 1.
   Sur zéro document suivi, ou sur un dépôt illisible, il rend 2 dans les deux cas.
@@ -72,8 +73,8 @@ CE QU'IL NE VOIT PAS
 Les titres soulignés (`===` / `---` sous une ligne) ne sont pas comptés parmi les titres, seulement
 les titres `#` ; leur ancre est tout de même admise. Ce que porte un segment de code replié (et le
 reste des lignes qu'il emporte) est rapporté à la ligne où il s'ouvre ; un accent grave que rien ne
-ferme avant la fin du paragraphe (ligne vide, titre, clôture, ligne de tableau, puce de liste) est
-du texte. Le slug suit le texte affiché d'un titre au plus près sans le rendre vraiment : segments
+ferme avant la fin du paragraphe (ligne vide, titre, clôture, ligne de tableau, puce de liste ; la
+clôture et la puce à toute indentation, comme dans une liste imbriquée) est du texte. Le slug suit le texte affiché d'un titre au plus près sans le rendre vraiment : segments
 de code, liens, emphase et balises HTML sont ôtés, pas les entités HTML (`&amp;`). Une ancre dont
 seule la casse diffère d'un slug n'est pas accusée : ce que la page fait d'une majuscule n'a pas été
 mesuré. Une ancre vers un fichier absent, ou hors de l'arbre, n'est pas jugée. Un
@@ -104,8 +105,9 @@ TITRE = re.compile(r"^\s{0,3}(#{1,6})(?:\s+(.*))?$")
 LIGNE_DE_TABLEAU = re.compile(r"^\s*\|")
 SEGMENT_DE_CODE = re.compile(r"(`+)(.+?)\1")
 SUITE_D_ACCENTS = re.compile(r"`+")
-# Ligne qui ne prolonge pas un paragraphe : vide, titre, clôture, ligne de tableau, puce de liste.
-COUPE_LE_PARAGRAPHE = re.compile(r"^\s*$|^\s{0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|\||[-*+]\s|\d{1,9}[.)]\s)")
+# Ligne qui ne prolonge pas un paragraphe : vide, titre, ligne de tableau, puce de liste (à toute
+# indentation : une sous-liste en est une). Une clôture le coupe aussi : voir `ouvre_un_bloc`.
+COUPE_LE_PARAGRAPHE = re.compile(r"^\s*$|^\s{0,3}#{1,6}(?:\s|$)|^\s*(?:\||[-*+]\s|\d{1,9}[.)]\s)")
 LIEN_EN_LIGNE = re.compile(
     r"!?\[((?:[^\[\]\\]|\\.|\[[^\]]*\])*)\]\(\s*<?([^)\s>]*)>?(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)"
 )
@@ -202,6 +204,16 @@ def slug(titre):
     return re.sub(r"[^\w\- ]", "", texte_rendu(titre).lower()).replace(" ", "-")
 
 
+def ouvre_un_bloc(ligne):
+    """La clôture qui ouvre un bloc de code, ou None : trois accents graves ou tildes au moins, à toute
+    indentation (un bloc peut vivre dans une puce), sans accent grave dans l'info d'une clôture à
+    accents graves (CommonMark : ce serait un segment de code)."""
+    m = CLOTURE.match(ligne)
+    if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+        return m
+    return None
+
+
 def segment_ouvert(texte, debut=0):
     """Position de la première suite d'accents graves, à partir de `debut`, que rien ne ferme dans
     `texte` (même suite plus loin) ; None quand chaque segment ouvert se ferme."""
@@ -231,7 +243,7 @@ def rejoindre_les_segments(visible, suivantes, dans_commentaire):
         essai, etat, k, ferme = visible, dans_commentaire, absorbees, False
         while k < len(suivantes) and not etat:
             ligne = CITATION.sub("", suivantes[k], count=1)
-            if COUPE_LE_PARAGRAPHE.match(ligne):
+            if COUPE_LE_PARAGRAPHE.match(ligne) or ouvre_un_bloc(ligne):
                 break
             vue, etat = retirer_commentaires_html(ligne, etat)
             essai = essai.rstrip() + " " + vue.strip()
@@ -279,16 +291,14 @@ def analyser(texte, chemin):
                 if c:
                     cloture[3].append((n, c))
             continue
-        m = CLOTURE.match(ligne)
-        if m and not dans_commentaire and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+        m = ouvre_un_bloc(ligne)
+        if m and not dans_commentaire:
             fermer_tableau()
             cloture = (m.group(1)[0], len(m.group(1)), n, [])
             attend_selecteur, paragraphe = False, None
             continue
 
         visible, dans_commentaire = retirer_commentaires_html(ligne, dans_commentaire)
-        for a in ANCRE_HTML.finditer(visible):
-            doc.ancres.add(a.group(1))
         if LIGNE_DE_TABLEAU.match(visible):
             if tableau is None:
                 tableau = [n, 0]
@@ -316,6 +326,9 @@ def analyser(texte, chemin):
             visible, absorbees, dans_commentaire = rejoindre_les_segments(
                 visible, lignes[n:], dans_commentaire)
             n += absorbees
+        # Lues après la jointure : un `id` posé sur une ligne absorbée existe tout autant.
+        for a in ANCRE_HTML.finditer(visible):
+            doc.ancres.add(a.group(1))
         paragraphe = (visible if visible.strip() and not t and not LIGNE_DE_TABLEAU.match(visible)
                       and not SOULIGNEMENT.match(visible) else None)
 
@@ -620,21 +633,36 @@ def comparer_fichiers(racine, original, traduction, convention):
     def existe(rel):
         return os.path.isfile(os.path.join(racine, rel))
 
-    lus = {}
+    lus, non_lus = {}, []
 
     def ancres_de(rel):
-        # Un fichier visé illisible n'est pas une ancre fausse : la paire entière est illisible.
+        # Un fichier visé illisible n'est pas une ancre fausse : ses ancres ne sont pas jugées, et la
+        # paire est lue en partie. Le reste de la comparaison continue.
         if rel not in lus:
-            lus[rel] = lire(rel).ancres if existe(rel) else None
+            try:
+                lus[rel] = lire(rel).ancres if existe(rel) else None
+            except Illisible as e:
+                lus[rel] = None
+                non_lus.append(str(e))
         return lus[rel]
 
     o, t = lire(original), lire(traduction)
     lus[os.path.normpath(original)], lus[os.path.normpath(traduction)] = o.ancres, t.ancres
-    return comparer(o, t, convention, existe, ancres_de)
+    ecarts = comparer(o, t, convention, existe, ancres_de)
+    if non_lus:
+        raise Illisible("ancre(s) non jugée(s), fichier visé illisible : " + " ; ".join(non_lus),
+                        ecarts)
+    return ecarts
 
 
 class Illisible(Exception):
-    """Un fichier de la paire n'a pas pu être lu : rien n'a été comparé."""
+    """Un fichier n'a pas pu être lu. `ecarts` vaut None quand c'est un fichier de la paire (rien n'a
+    été comparé), et la liste des écarts trouvés quand c'est un fichier visé par une ancre (la paire
+    a été lue en partie)."""
+
+    def __init__(self, message, ecarts=None):
+        super().__init__(message)
+        self.ecarts = ecarts
 
 
 def documents_suivis(racine):
@@ -710,22 +738,30 @@ def main(argv=None):
 
     # Une paire illisible n'arrête pas les autres : un écart trouvé ailleurs reste une violation, et
     # il serait faux de le taire derrière un « rien comparé ».
-    total, illisibles = [], []
+    total, illisibles, partielles = [], [], []
     for original, traduction in a_comparer:
         try:
             total += comparer_fichiers(a.racine, original, traduction, convention)
         except Illisible as e:
-            illisibles.append((original, traduction, e))
+            if e.ecarts is None:
+                illisibles.append((original, traduction, e))
+            else:
+                total += e.ecarts
+                partielles.append((original, traduction, e))
     for e in total:
         print(e)
     for original, traduction, e in illisibles:
         print(f"{original} / {traduction} illisible, rien comparé pour cette paire : {e}", file=sys.stderr)
-    print(f"{len(a_comparer) - len(illisibles)} paire(s) comparée(s), {len(total)} écart(s)"
+    for original, traduction, e in partielles:
+        print(f"{original} / {traduction} lue en partie : {e}", file=sys.stderr)
+    print(f"{len(a_comparer) - len(illisibles) - len(partielles)} paire(s) comparée(s), "
+          f"{len(total)} écart(s)"
+          + (f", {len(partielles)} paire(s) lue(s) en partie" if partielles else "")
           + (f", {len(illisibles)} paire(s) illisible(s)" if illisibles else ""))
     if total:
         return 1
-    if illisibles:
-        print("aucun écart, mais une paire au moins n'a pas été lue : rien ne prouve la parité",
+    if illisibles or partielles:
+        print("aucun écart, mais une paire au moins n'a pas été lue en entier : rien ne prouve la parité",
               file=sys.stderr)
         return 2
     return 0

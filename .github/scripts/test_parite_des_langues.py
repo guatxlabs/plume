@@ -215,7 +215,7 @@ class Paire(unittest.TestCase):
         self.assertEqual(self.ecarts(TRADUCTION, dossier="docs"), [])
         # Un lien vers un AUTRE document non basculé reste accusé, sélecteur présent.
         ecarts = self.ecarts(TRADUCTION.replace("carte.en.md#", "carte.md#"))
-        self.assertIn("liens", self.familles(ecarts))
+        self.assertEqual(self.familles(ecarts), ["ancres", "liens"])
         self.assertIn("non basculé", next(e for e in ecarts if e.famille == "liens").message)
 
     def test_selecteur_de_langue_convention_basculee(self):
@@ -339,6 +339,37 @@ class Paire(unittest.TestCase):
             ecarts = self.ecarts(juste.replace("`x`", "`z`"), original)
             self.assertEqual(self.familles(ecarts), ["identifiants"], coupure)
 
+    def test_accent_grave_seul_n_emporte_pas_la_suite_du_paragraphe(self):
+        # Sans fermeture, la ligne reste seule même quand le paragraphe continue : ce que portent
+        # les lignes suivantes leur reste rapporté. (Un accent grave sur la suite fermerait le
+        # segment, comme en CommonMark : `seul et` serait alors un segment.)
+        original = ORIGINAL + "\nUn accent ` seul\net puis 42 ici.\n"
+        juste = TRADUCTION + "\nA lone ` accent\nand then 42 here.\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        ecarts = self.ecarts(juste.replace("42", "43"), original)
+        self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
+                         [("guide.md", 25, "nombres"), ("guide.en.md", 25, "nombres")])
+
+    def test_cloture_ou_puce_indentee_coupe_le_paragraphe(self):
+        # Une clôture est une clôture à toute indentation pour l'outil (bloc dans une puce) ; une
+        # puce indentée ouvre une sous-liste. Ni l'une ni l'autre n'est avalée par un accent ouvert.
+        doc = pdl.analyser("- Lancer ` ceci\n    ```sh\n    make a `x`\n    ```\n"
+                           "- a ` b\n    - sous `c` d\n", "a.md")
+        self.assertEqual(doc.blocs, [(2, [(3, "make a `x`")])])
+        self.assertEqual(doc.identifiants, {"c": 6})
+        original = ORIGINAL + "\n- Lancer ` ceci\n    ```sh\n    make a `x`\n    ```\n"
+        juste = TRADUCTION + "\n- Run ` this\n    ```sh\n    make a `x`\n    ```\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        ecarts = self.ecarts(juste.replace("make a", "make b"), original)
+        self.assertEqual(self.familles(ecarts), ["blocs"])
+
+    def test_ancre_html_sur_une_ligne_rejointe(self):
+        original = ORIGINAL + "\nLancer `cargo\ntest` ici <a id=\"pin\"></a>.\n\nVoir [p](#pin).\n"
+        juste = TRADUCTION + "\nRun `cargo\ntest` here <a id=\"pin\"></a>.\n\nSee [p](#pin).\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        ecarts = self.ecarts(juste.replace("[p](#pin)", "[p](#pine)"), original)
+        self.assertEqual(self.familles(ecarts), ["ancres"])
+
     def test_ancre_vers_un_titre_traduit_verte(self):
         # La paire de base vise `carte.en.md#subsystems`, titre réel de carte.en.md.
         self.assertIn("carte.en.md#subsystems", TRADUCTION)
@@ -405,6 +436,23 @@ class Paire(unittest.TestCase):
         juste = TRADUCTION.replace("#subsystems", "#Subsystems") + (
             "\nSee [s](script.sh#L3), [a](absent.md#x) and [e](https://example.org/a.md#z).\n")
         self.assertEqual(self.ecarts(juste, original), [])
+
+    def test_ancre_vers_un_fichier_hors_de_l_arbre_non_jugee(self):
+        # La racine est un sous-dossier ; `../dehors.md` existe à côté, hors de l'arbre, et n'a pas
+        # le titre visé : il n'est ni lu ni jugé.
+        self.racine = os.path.join(self._tmp.name, "depot")
+        for nom, texte in (("carte.md", CARTE), ("carte.en.md", CARTE_EN), ("schema.md", "# x\n")):
+            self.ecrire(nom, texte)
+        with open(os.path.join(self._tmp.name, "dehors.md"), "w", encoding="utf-8") as f:
+            f.write("# Dehors\n")
+        original = ORIGINAL + "\nVoir [d](../dehors.md#rien).\n"
+        juste = TRADUCTION + "\nSee [d](../dehors.md#rien).\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        # Dans l'arbre, la même ancre est accusée : c'est bien la sortie de l'arbre qui la tait.
+        self.ecrire("dedans.md", "# Dedans\n")
+        ecarts = self.ecarts(juste.replace("../dehors.md", "dedans.md"),
+                             original.replace("../dehors.md", "dedans.md"))
+        self.assertEqual(self.familles(ecarts), ["ancres"])
 
     def test_ancre_dans_une_definition_de_lien(self):
         original = ORIGINAL + "\nVoir [la carte][r].\n\n[r]: carte.md#sous-systemes\n"
@@ -659,6 +707,19 @@ class CodeDeSortie(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("latin.md", sortie)
         self.assertIn("illisible", sortie)
+
+    def test_fichier_vise_illisible_ne_tait_pas_les_ecarts_de_la_paire(self):
+        # Les écarts déjà trouvés dans la paire restent imprimés et rendent 1 ; la paire est nommée
+        # comme lue en partie, pas comme « aucun écart ».
+        self.ecrire("latin.md", "# Évalué\n".encode("latin-1"))
+        self.ecrire("guide.md", ORIGINAL + "\nVoir [l](latin.md#x).\n")
+        self.ecrire("guide.en.md", TRADUCTION.replace("### Detail\n", "") + "\nSee [l](latin.md#x).\n")
+        rc, sortie = self.main("--paire", "guide.md", "guide.en.md")
+        self.assertEqual(rc, 1)
+        self.assertIn("guide.md:20: [titres]", sortie)
+        self.assertIn("latin.md", sortie)
+        self.assertIn("lue en partie", sortie)
+        self.assertNotIn("aucun écart", sortie)
 
     def test_depot_illisible_rend_2_meme_en_inventaire(self):
         # `racine` n'est pas un dépôt git : ls-files échoue, ce n'est pas une liste vide.

@@ -21,6 +21,7 @@ répertoire temporaire.
 import ast
 import collections
 import json
+import re
 import os
 import string
 import subprocess
@@ -60,8 +61,10 @@ def lire(chemin):
 
 
 def champs(gabarit):
-    return sorted((nom, spec, conv) for _, nom, spec, conv in string.Formatter().parse(gabarit)
-                  if nom is not None)
+    """Les champs de format DANS L'ORDRE : deux champs permutés dans une traduction rendraient une
+    valeur à la place de l'autre, et un tri le cacherait."""
+    return [(nom, spec, conv) for _, nom, spec, conv in string.Formatter().parse(gabarit)
+            if nom is not None]
 
 
 def comptes(texte):
@@ -85,8 +88,76 @@ def comptes(texte):
     return nombres, identifiants
 
 
+SEPARATEUR_DE_CELLULES = re.compile(r"(?<!\\)\|")
+
+
+def faits(cellule):
+    """Ce qu'une langue ne change pas dans un fragment : ses nombres et ses identifiants, DANS
+    L'ORDRE."""
+    return ([str(int(n)) for n in pdl.NOMBRE.findall(pdl.SEGMENT_DE_CODE.sub(" ", cellule))],
+            [m.group(2).strip() for m in pdl.SEGMENT_DE_CODE.finditer(cellule)])
+
+
+def tableaux(texte):
+    """Chaque tableau : la liste de ses lignes, chaque ligne la liste de ses cellules."""
+    tous, courant, dans_bloc = [], None, False
+    for ligne in texte.split("\n"):
+        if pdl.ouvre_un_bloc(ligne):
+            dans_bloc = not dans_bloc
+        if not dans_bloc and pdl.LIGNE_DE_TABLEAU.match(ligne):
+            if courant is None:
+                courant = []
+                tous.append(courant)
+            courant.append(SEPARATEUR_DE_CELLULES.split(ligne.strip().strip("|")))
+        else:
+            courant = None
+    return tous
+
+
+def ecarts_ligne_a_ligne(fr, en):
+    """Les deux rendus ont la MÊME suite de lignes (une clé = une ligne ou un fragment de ligne) :
+    chaque ligne doit porter les mêmes nombres et les mêmes identifiants (comptés), et chaque ligne
+    de commande d'un bloc doit être identique. Rend la liste des lignes en écart."""
+    lf, le = fr.split("\n"), en.split("\n")
+    if len(lf) != len(le):
+        return [("nombre de lignes", len(lf), len(le))]
+    ecarts, dans_bloc, com_f, com_e = [], False, False, False
+    for i, (a, b) in enumerate(zip(lf, le), 1):
+        if pdl.ouvre_un_bloc(a) or pdl.ouvre_un_bloc(b):
+            dans_bloc = not dans_bloc
+            if a != b:
+                ecarts.append((i, a, b))
+            continue
+        if dans_bloc:
+            if pdl.commande(a) != pdl.commande(b):
+                ecarts.append((i, a, b))
+            continue
+        va, com_f = pdl.retirer_commentaires_html(a, com_f)
+        vb, com_e = pdl.retirer_commentaires_html(b, com_e)
+        fa, fb = faits(va), faits(vb)
+        if collections.Counter(fa[0]) != collections.Counter(fb[0]) or \
+                collections.Counter(fa[1]) != collections.Counter(fb[1]):
+            ecarts.append((i, a[:120], b[:120]))
+    return ecarts
+
+
+def ecarts_de_tableaux(fr, en):
+    """Forme (nombre de tableaux, de lignes, de cellules par ligne) puis contenu cellule par
+    cellule, position comprise : nombres et identifiants dans l'ordre."""
+    tf, te = tableaux(fr), tableaux(en)
+    if [[len(r) for r in t] for t in tf] != [[len(r) for r in t] for t in te]:
+        return ["forme des tableaux différente"] + [
+            (k, i, ra, rb) for k, (a, b) in enumerate(zip(tf, te)) for i, (ra, rb) in enumerate(zip(a, b))
+            if len(ra) != len(rb)][:5]
+    return [(k, i, j, ca, cb) for k, (a, b) in enumerate(zip(tf, te))
+            for i, (ra, rb) in enumerate(zip(a, b))
+            for j, (ca, cb) in enumerate(zip(ra, rb)) if faits(ca) != faits(cb)]
+
+
 def mesures_inventees():
     lignes = []
+    # Valeurs INVENTÉES et choisies pour n'exister nulle part ailleurs : `grep -rF` de chacune des
+    # valeurs à quatre chiffres ou plus ne trouve rien dans `bench/results/` ni dans les documents.
     for cfg, ev, db in (("alpha@0.3M", 314159, 271828183), ("beta@0.9M", 926535, 897932384)):
         for cid, label in (("C0-plancher", "PLANCHER : seek sur une source inexistante (0 ligne)"),
                            ("C2-free-term", "terme libre sur message (compile en LIKE '%…%')")):
@@ -95,9 +166,10 @@ def mesures_inventees():
                     config_id=cfg, class_id=cid, label=label, kind="gxql", window=w, window_label=wl,
                     config=dict(events=ev, db_bytes=db, version="bin:0123456789abcdef", mask="vide",
                                 fts_fields=0, cold="off", hosts=7, profile="profile-prod.json"),
-                    reps=5, reps_ok=5, wall_p50_ms=12.5 if cid == "C0-plancher" else 4321.0,
-                    wall_p95_ms=17.25, sql_p50_ms=3.5, peak_rss_bytes=123456789, read_bytes_first=0,
-                    rows=42, served_from="raw", loadavg=[1.25, 1.5, 1.75], swap_delta_bytes=0,
+                    reps=5, reps_ok=5, wall_p50_ms=24680.0 if cid == "C0-plancher" else 86420.0,
+                    wall_p95_ms=97531.0, sql_p50_ms=11223.0, peak_rss_bytes=123456789,
+                    read_bytes_first=0, rows=35791, served_from="raw", loadavg=[1, 2, 3],
+                    swap_delta_bytes=0,
                     measured_at="2026-01-02T03:04:05+0000"))
     return lignes
 
@@ -130,55 +202,133 @@ class LesClesExistentDansLesDeuxLangues(unittest.TestCase):
         self.assertIn("une clé inventée pour l'épreuve", cles - set(report.TEXTES_EN))
 
 
-class LesDeuxRendusPortentLesMemesFaits(unittest.TestCase):
+def rendre(entree, sortie, langue, *options):
+    return subprocess.run([sys.executable, GENERATEUR, entree, "--rendu-le", "2026-01-02 03:04:05+0000",
+                           "--materiel", MATERIEL_INVENTE, "--langue", langue, "-o", sortie, *options],
+                          cwd=RACINE, capture_output=True, text=True)
+
+
+def ecrire_mesures(chemin, lignes):
+    with open(chemin, "w", encoding="utf-8") as fh:
+        for ligne in lignes:
+            fh.write(json.dumps(ligne, ensure_ascii=False) + "\n")
+
+
+class ComparaisonDesDeuxLangues:
+    """Les comparaisons, jouées sur une paire (français, anglais) fournie par la sous-classe."""
+
+    def paire(self):
+        raise NotImplementedError
+
+    def test_memes_nombres_et_identifiants_ligne_a_ligne(self):
+        fr, en = self.paire()
+        self.assertGreater(sum(len(faits(x)[0]) for x in fr.split("\n")), 20,
+                           "rendu dégénéré : presque aucun nombre lu")
+        self.assertEqual(ecarts_ligne_a_ligne(fr, en), [])
+
+    def test_memes_tableaux_cellule_par_cellule(self):
+        fr, en = self.paire()
+        self.assertTrue(tableaux(fr), "aucun tableau lu : l'extraction est cassée")
+        self.assertEqual(ecarts_de_tableaux(fr, en), [])
+
+    def test_memes_ensembles_pour_l_outil_de_parite(self):
+        fr, en = self.paire()
+        a, b = pdl.analyser(fr, "fr.md"), pdl.analyser(en, "en.md")
+        self.assertEqual(sorted(a.nombres), sorted(b.nombres))
+        self.assertEqual(sorted(a.identifiants), sorted(b.identifiants))
+        self.assertEqual([n for _, n in a.titres], [n for _, n in b.titres])
+
+
+class LeJeuInventeRenduDansLesDeuxLangues(ComparaisonDesDeuxLangues, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
         cls.dossier = tempfile.TemporaryDirectory()
         d = cls.dossier.name
         entree = os.path.join(d, "mesures-inventees.jsonl")
-        with open(entree, "w", encoding="utf-8") as fh:
-            for ligne in mesures_inventees():
-                fh.write(json.dumps(ligne, ensure_ascii=False) + "\n")
+        ecrire_mesures(entree, mesures_inventees())
         cls.rendus = {}
         for langue in ("fr", "en"):
             sortie = os.path.join(d, f"rendu.{langue}.md")
-            subprocess.run([sys.executable, GENERATEUR, entree, "--rendu-le", "2026-01-02 03:04:05+0000",
-                            "--materiel", MATERIEL_INVENTE, "--langue", langue, "-o", sortie],
-                           cwd=RACINE, check=True, capture_output=True, text=True)
-            cls.rendus[langue] = (sortie, lire(sortie))
+            r = rendre(entree, sortie, langue)
+            assert r.returncode == 0, r.stderr
+            cls.rendus[langue] = lire(sortie)
 
     @classmethod
     def tearDownClass(cls):
         cls.dossier.cleanup()
 
-    def doc(self, langue):
-        chemin, texte = self.rendus[langue]
-        return pdl.analyser(texte, chemin)
+    def paire(self):
+        return self.rendus["fr"], self.rendus["en"]
 
     def test_les_deux_rendus_different_par_la_langue(self):
-        self.assertNotEqual(self.rendus["fr"][1], self.rendus["en"][1])
-        self.assertIn("Rendered on 2026-01-02", self.rendus["en"][1])
-        self.assertIn("Rendu le 2026-01-02", self.rendus["fr"][1])
+        self.assertNotEqual(self.rendus["fr"], self.rendus["en"])
+        self.assertIn("Rendered on 2026-01-02", self.rendus["en"])
+        self.assertIn("Rendu le 2026-01-02", self.rendus["fr"])
 
-    def test_memes_nombres(self):
-        fr, en = self.doc("fr"), self.doc("en")
-        self.assertGreater(len(fr.nombres), 20, "rendu dégénéré : presque aucun nombre lu")
-        self.assertEqual(sorted(en.nombres), sorted(fr.nombres))
-        n_fr, n_en = comptes(self.rendus["fr"][1])[0], comptes(self.rendus["en"][1])[0]
-        self.assertEqual((n_fr - n_en, n_en - n_fr), (collections.Counter(), collections.Counter()))
 
-    def test_memes_identifiants(self):
-        fr, en = self.doc("fr"), self.doc("en")
-        self.assertIn("C2-free-term", fr.identifiants)
-        self.assertEqual(sorted(en.identifiants), sorted(fr.identifiants))
-        i_fr, i_en = comptes(self.rendus["fr"][1])[1], comptes(self.rendus["en"][1])[1]
-        self.assertEqual((i_fr - i_en, i_en - i_fr), (collections.Counter(), collections.Counter()))
+class LesDeuxDocumentsSuivis(ComparaisonDesDeuxLangues, unittest.TestCase):
+    """Les documents publiés : toutes les clés réellement rendues y passent, y compris celles que
+    le jeu inventé n'exerce pas."""
 
-    def test_memes_titres_et_tableaux(self):
-        fr, en = self.doc("fr"), self.doc("en")
-        self.assertEqual([n for _, n in en.titres], [n for _, n in fr.titres])
-        self.assertEqual([n for _, n in en.tableaux], [n for _, n in fr.tableaux])
+    def paire(self):
+        return (lire(os.path.join(RACINE, "docs", "BENCHMARK.fr.md")),
+                lire(os.path.join(RACINE, "docs", "BENCHMARK.md")))
+
+
+class UnLibelleDeDonneesInconnu(unittest.TestCase):
+
+    def test_le_rendu_anglais_refuse_en_nommant_le_libelle(self):
+        lignes = mesures_inventees()
+        for ligne in lignes:
+            ligne["label"] = "un libellé inventé que personne n'a traduit"
+        with tempfile.TemporaryDirectory() as d:
+            entree = os.path.join(d, "m.jsonl")
+            ecrire_mesures(entree, lignes)
+            en = rendre(entree, os.path.join(d, "en.md"), "en")
+            fr = rendre(entree, os.path.join(d, "fr.md"), "fr")
+        self.assertNotEqual(en.returncode, 0)
+        self.assertIn("un libellé inventé que personne n'a traduit", en.stderr)
+        self.assertNotIn("Traceback", en.stderr)
+        self.assertEqual(fr.returncode, 0, fr.stderr)
+
+    def test_un_libelle_qui_porte_une_valeur_se_traduit_par_gabarit(self):
+        report.LANGUE = "en"
+        try:
+            self.assertEqual(
+                report.tr_donnee("le plus coûteux de la famille 9 ne fait que 3.7 x le plancher (seuil 10)"),
+                "the most expensive of family 9 is only 3.7 x the floor (threshold 10)")
+            self.assertEqual(report.tr_donnee("fenêtre chaude du produit (13 j)"),
+                             "the product's hot window (13 d)")
+        finally:
+            report.LANGUE = "en"
+
+
+class DesOptionsMalFormeesSontRefusees(unittest.TestCase):
+
+    CAS = {
+        "JSON illisible": ["--materiel", "{cpu"],
+        "pas un objet": ["--materiel", "[1, 2]"],
+        "clé manquante": ["--materiel", '{"cpu": "c", "cores": 3, "mem_gib": 6.5}'],
+        "clé inconnue": ["--materiel", '{"cpu": "c", "cores": 3, "mem_gib": 6.5, "kernel": "k", "gpu": 1}'],
+        "mauvais type": ["--materiel", '{"cpu": "c", "cores": "trois", "mem_gib": 6.5, "kernel": "k"}'],
+        "booléen pour un nombre": ["--materiel", '{"cpu": "c", "cores": true, "mem_gib": 6.5, "kernel": "k"}'],
+        "valeur nulle": ["--materiel", '{"cpu": "c", "cores": 0, "mem_gib": 6.5, "kernel": "k"}'],
+        "horodatage sans fuseau": ["--rendu-le", "2026-01-02 03:04:05"],
+        "horodatage au format ISO": ["--rendu-le", "2026-01-02T03:04:05+0000"],
+    }
+
+    def test_chaque_cas_est_refuse_par_un_message_clair(self):
+        with tempfile.TemporaryDirectory() as d:
+            entree = os.path.join(d, "m.jsonl")
+            ecrire_mesures(entree, mesures_inventees())
+            for nom, options in self.CAS.items():
+                with self.subTest(cas=nom):
+                    r = rendre(entree, os.path.join(d, "x.md"), "en", *options)
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertIn(options[0], r.stderr)
+                    self.assertNotIn("Traceback", r.stderr)
+                    self.assertFalse(os.path.exists(os.path.join(d, "x.md")))
 
 
 if __name__ == "__main__":

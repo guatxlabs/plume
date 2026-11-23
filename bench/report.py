@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import subprocess
 import time
 
@@ -31,6 +32,35 @@ SORTIE_PUBLIEE = {"en": "docs/BENCHMARK.md", "fr": "docs/BENCHMARK.fr.md"}
 SELECTEUR_DE_LANGUE = "[English](BENCHMARK.md) | [Français](BENCHMARK.fr.md)"
 
 
+HORODATAGE_DE_RENDU = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{4}")
+CLES_DU_MATERIEL = {"cpu": str, "cores": int, "mem_gib": (int, float), "kernel": str}
+
+
+def lire_materiel(texte):
+    """`--materiel` : un objet JSON aux quatre clés exactes de `CLES_DU_MATERIEL`, chacune de son
+    type ; toute autre forme est REFUSÉE (ValueError au message lisible), jamais devinée."""
+    try:
+        m = json.loads(texte)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"JSON illisible ({e.msg}, colonne {e.colno})")
+    if not isinstance(m, dict):
+        raise ValueError("attendu un objet JSON {\"cpu\": …, \"cores\": …, \"mem_gib\": …, \"kernel\": …}")
+    manquantes = sorted(set(CLES_DU_MATERIEL) - set(m))
+    inconnues = sorted(set(m) - set(CLES_DU_MATERIEL))
+    if manquantes or inconnues:
+        raise ValueError(f"clés manquantes {manquantes}, clés inconnues {inconnues}")
+    for cle, types in CLES_DU_MATERIEL.items():
+        v = m[cle]
+        if isinstance(v, bool) or not isinstance(v, types):
+            raise ValueError(f"« {cle} » a le type {type(v).__name__}, ce n'est pas le type attendu")
+        if types is str and not v.strip():
+            raise ValueError(f"« {cle} » est vide")
+        if types is not str and v <= 0:
+            raise ValueError(f"« {cle} » doit être strictement positif")
+    return {"cpu": m["cpu"], "cores": m["cores"], "mem_total_bytes": m["mem_gib"] * 2**30,
+            "kernel": m["kernel"]}
+
+
 def tr(fr):
     """Le texte `fr` dans la langue du rendu."""
     if LANGUE == "fr":
@@ -43,11 +73,32 @@ def tr(fr):
 
 
 def tr_donnee(fr):
-    """Une chaîne VENUE DES DONNÉES (libellé de classe, de fenêtre, motif…) : traduite quand le
-    générateur la connaît, rendue telle quelle sinon — une donnée inconnue reste une mesure."""
-    if LANGUE == "fr" or not isinstance(fr, str):
+    """Une chaîne VENUE DES DONNÉES (libellé de classe, de fenêtre, motif…) dans la langue du rendu.
+
+    En anglais : par chaîne exacte (`DONNEES_EN`), ou par gabarit quand le libellé porte une valeur
+    (`DONNEES_GABARITS`, une fenêtre en jours, un rapport au plancher) — sinon le rendu est REFUSÉ
+    en nommant le libellé, comme pour `tr()`. Une chaîne sans lettre (« — », « ? ») n'a pas de
+    langue et passe telle quelle. En français, la donnée est rendue telle qu'enregistrée, sauf les
+    retouches de `DONNEES_FR_RETOUCHES` (un segment de code qui n'en était pas un)."""
+    if not isinstance(fr, str) or not re.search(r"[^\W\d_]", fr):
         return fr
-    return DONNEES_EN.get(fr, fr)
+    if LANGUE == "fr":
+        for motif, _en, retouche in DONNEES_GABARITS:
+            m = motif.fullmatch(fr)
+            if m and retouche:
+                return retouche.format(*m.groups())
+        for avant, apres in DONNEES_FR_RETOUCHES:
+            fr = fr.replace(avant, apres)
+        return fr
+    if fr in DONNEES_EN:
+        return DONNEES_EN[fr]
+    for motif, en, _retouche in DONNEES_GABARITS:
+        m = motif.fullmatch(fr)
+        if m:
+            return en.format(*m.groups())
+    raise SystemExit(f"report.py : aucune traduction anglaise pour le libellé de données {fr!r} — "
+                     "l'ajouter à DONNEES_EN (ou DONNEES_GABARITS) ; rendu refusé plutôt que rendu "
+                     "avec un libellé français dans le document anglais.")
 
 # --------------------------------------------------------------------------------------------
 # LA LISTE DES CHAMPS INDEXÉS EST LUE DANS LE CODE, JAMAIS RECOPIÉE ICI.
@@ -202,6 +253,15 @@ def ingest_intervals(path):
     return out
 
 
+def notes_de_comparaison(args, langue):
+    """Les notes `--compare-note` (anglais) ou `--compare-note-fr` (français) ; à défaut de notes
+    françaises, le rendu français reprend `--compare-note`, comme le générateur d'avant les deux
+    langues."""
+    if langue == "fr" and args.compare_note_fr:
+        return args.compare_note_fr
+    return args.compare_note or []
+
+
 def repro_cmd(args):
     """Reconstruit la commande de rendu À PARTIR DES ARGUMENTS REÇUS, en repointant tout chemin hors
     dépôt vers son homologue VERSIONNÉ dans `bench/results/`. Deux raisons, toutes deux dures :
@@ -236,12 +296,14 @@ def repro_cmd(args):
         line.append(f"    --ref {_sh.quote(args.ref)} \\")
     for i, c in enumerate(args.compare or []):
         line.append(f"    --compare {_sh.quote(c)} \\")
-        note = (args.compare_note or [])[i] if i < len(args.compare_note or []) else None
-        if note:
-            # QUOTAGE SHELL, pas JSON : ces notes contiennent des accents graves. Entre guillemets
-            # doubles, un lecteur qui copie-colle la commande déclencherait une substitution de
-            # commande — la commande publiée doit être collable telle quelle, sans surprise.
-            line.append(f"    --compare-note {_sh.quote(note)} \\")
+        # QUOTAGE SHELL, pas JSON : ces notes contiennent des accents graves. Entre guillemets
+        # doubles, un lecteur qui copie-colle la commande déclencherait une substitution de
+        # commande — la commande publiée doit être collable telle quelle, sans surprise.
+        for option, notes in (("--compare-note", args.compare_note),
+                              ("--compare-note-fr", args.compare_note_fr)):
+            note = (notes or [])[i] if i < len(notes or []) else None
+            if note:
+                line.append(f"    {option} {_sh.quote(note)} \\")
     if args.fill_log:
         v, ok = vers(args.fill_log)
         line.append(f"    --fill-log {v} \\")
@@ -253,10 +315,16 @@ def repro_cmd(args):
         line.append(f"    --rendu-le {_sh.quote(args.rendu_le)} \\")
     if args.materiel:
         line.append(f"    --materiel {_sh.quote(args.materiel)} \\")
-    line.append(f"    --langue {LANGUE} -o {SORTIE_PUBLIEE[LANGUE]}")
+    # LES DEUX RENDUS, dans un bloc identique des deux côtés : la commande ne diffère que par sa
+    # dernière ligne, et chacune, rejouée seule, redonne son propre fichier.
+    commun, line = line, []
+    for i, langue in enumerate(LANGUES):
+        if i:
+            line.append(tr("#    la même commande, pour le rendu français :"))
+        line += commun + [f"    --langue {langue} -o {SORTIE_PUBLIEE[langue]}"]
     if missing:
         line.append(tr("# ATTENTION : {0} n'est pas (encore) versionné —").format(", ".join(missing)))
-        line.append(tr("# la commande ci-dessus ne tournera qu'une fois ce fichier ajouté à bench/results/."))
+        line.append(tr("# les commandes ci-dessus ne tourneront qu'une fois ce fichier ajouté à bench/results/."))
     return line
 
 
@@ -291,8 +359,7 @@ def render_concurrency(W, conc):
     W(tr("**Un niveau** = *N* analystes indépendants (chacun sa connexion HTTP, chacun son compte"))
     W(tr("`viewer`), chacun parcourant le mélange plusieurs fois, en décalant son point de départ "
          "— deux"))
-    W(tr("voisins ne tirent donc pas la même requête au même instant. Le niveau se termine quand "
-         "tous ont"))
+    W(tr("voisins ne tirent donc pas la même requête au même instant. Le niveau se termine quand tous ont"))
     W(tr("fini leur travail : le débit agrégé est du travail RÉELLEMENT servi, pas une "
          "extrapolation."))
     W("")
@@ -355,7 +422,7 @@ def render_concurrency(W, conc):
         W(tr("### La courbe — `{c}` (`PLUME_QUERY_CONCURRENCY={sem}`)").format(c=c, sem=sem))
         W("")
         W(tr("Sémaphore **{sem}**, {0}. Fenêtre `{1}` (sans borne : le cas le plus coûteux). {2} "
-             "passages par analyste sur {3} classes.").format(tr_donnee(h.get('query_sem_source', tr('source inconnue'))), rows[0].get('window'), rows[0].get('rounds'), len(rows[0].get('mix') or []), sem=sem))
+             "passages par analyste sur {3} classes.").format(tr_donnee(h['query_sem_source']) if h.get('query_sem_source') else tr('source inconnue'), rows[0].get('window'), rows[0].get('rounds'), len(rows[0].get('mix') or []), sem=sem))
         W("")
         _d = h.get("derivation") or {}
         if _d.get("imposed"):
@@ -1177,6 +1244,8 @@ def main():
     ap.add_argument("--compare-note", action="append",
                     help="ce qui a changé entre les deux configurations comparées (une phrase). "
                          "Rendu tel quel : sans lui, le tableau d'écart ne dit pas ce qu'il mesure.")
+    ap.add_argument("--compare-note-fr", action="append",
+                    help="la même note, en français, pour le rendu `--langue fr` (une par --compare)")
     ap.add_argument("--ingest-curve", action="append",
                     help="CSV t_unix,events,db_bytes,rss_bytes,loadavg1 échantillonné pendant "
                          "l'ingest : rend la COURBE de débit en fonction du volume déjà en base")
@@ -1192,6 +1261,15 @@ def main():
     args = ap.parse_args()
     global LANGUE
     LANGUE = args.langue
+    if args.rendu_le is not None and not HORODATAGE_DE_RENDU.fullmatch(args.rendu_le):
+        ap.error(f"--rendu-le {args.rendu_le!r} : attendu le format que le générateur écrit, "
+                 "AAAA-MM-JJ HH:MM:SS+HHMM (par exemple 2026-01-02 03:04:05+0100)")
+    materiel = None
+    if args.materiel is not None:
+        try:
+            materiel = lire_materiel(args.materiel)
+        except ValueError as e:
+            ap.error(f"--materiel : {e}")
 
     rows, ingest, deaths, unmeasured_win, conc = [], [], [], [], []
     for path in args.results:
@@ -1225,10 +1303,8 @@ def main():
     # Le matériel est celui de la machine QUI REND, sauf s'il est fourni : une régénération (une
     # traduction, par exemple) n'est pas une nouvelle mesure, et ne doit pas réécrire le matériel
     # publié avec celui du poste du jour.
-    if args.materiel:
-        _m = json.loads(args.materiel)
-        hw = {"cpu": _m["cpu"], "cores": _m["cores"], "mem_total_bytes": _m["mem_gib"] * 2**30,
-              "kernel": _m["kernel"]}
+    if materiel:
+        hw = materiel
     else:
         hw = hw_block()
     configs, cfgmeta = [], {}
@@ -1484,6 +1560,13 @@ def main():
         W(tr("| Passes de CONCURRENCE | {0} analystes simultanés, sémaphore {1} (section dédiée) |").format(', '.join(str(n) for n in _cn), tr(" et ").join(str(s) for s in _cs)))
     W(tr("| Budget par requête | interactif, 60 s (`interactive:true`) |"))
     W("")
+    # D'OÙ VIENNENT CES TROIS LIGNES : les JSONL n'enregistrent pas le matériel, donc le tableau ne
+    # peut décrire que la machine du rendu (ou ce que `--materiel` en a repris). Le dire évite de
+    # lire un noyau de rendu comme celui de la mesure.
+    W(tr("*Provenance du processeur, de la RAM et du noyau* : repris de la ligne de commande (`--materiel`), et non relevés au moment de ce rendu.") if args.materiel else
+      tr("*Provenance du processeur, de la RAM et du noyau* : relevés sur la machine qui a rendu ce document, au moment du rendu."))
+    W(tr("Les fichiers de résultats n'enregistrent ni le matériel ni le noyau : ces trois lignes décrivent une machine de RENDU, pas nécessairement la machine qui a mesuré — le noyau affiché, en particulier, peut différer de celui de la mesure."))
+    W("")
     _bins = sorted({(r.get("config") or {}).get("version", "").split(" ")[0]
                     for r in eff if (r.get("config") or {}).get("version")}
                    | {(d.get("version") or "").split(" ")[0]
@@ -1679,16 +1762,10 @@ def main():
                     c0 = sum(d.get("daemon_cores") or 0 for d in iv[:k]) / k
                     c1 = sum(d.get("daemon_cores") or 0 for d in iv[-k:]) / k
                     if cpu_growth >= 1.15 and fall >= 1.15:
-                        W(tr("Cette chute se FACTORISE, sans reste, en deux facteurs mesurés — le débit est "
-                             "exactement `cœurs occupés / CPU par événement` :"))
+                        W(tr("Cette chute se FACTORISE, sans reste, en deux facteurs mesurés — le débit est exactement **cœurs occupés / CPU par événement** :"))
                         W("")
                         _prod = cpu_growth * (c0 / max(c1, 1e-9))
-                        W(tr("> **÷{fall:.2f}** (débit mesuré) = **×{cpu_growth:.2f}** (CPU par événement : le "
-                             "travail par ligne grandit avec les b-trees) × **÷{0:.2f}** (cœurs occupés par le daemon "
-                             ": {c0:.2f} au début contre {c1:.2f} à la fin — il ATTEND davantage). Le produit vaut "
-                             "÷{prod:.2f}, soit {1:.0f} % d'écart avec la chute mesurée : l'écart est celui de la "
-                             "moyenne par quartile, l'identité `débit = cœurs / CPU par événement` étant exacte "
-                             "intervalle par intervalle.").format(c0/max(c1,1e-9), abs(_prod-fall)/fall*100, fall=fall, cpu_growth=cpu_growth, c0=c0, c1=c1, prod=_prod))
+                        W(tr("> **÷{fall:.2f}** (débit mesuré) = **×{cpu_growth:.2f}** (CPU par événement : le travail par ligne grandit avec les b-trees) × **÷{0:.2f}** (cœurs occupés par le daemon : {c0:.2f} au début contre {c1:.2f} à la fin — il ATTEND davantage). Le produit vaut ÷{prod:.2f}, soit {1:.0f} % d'écart avec la chute mesurée : l'écart est celui de la moyenne par quartile, l'identité **débit = cœurs / CPU par événement** étant exacte intervalle par intervalle.").format(c0/max(c1,1e-9), abs(_prod-fall)/fall*100, fall=fall, cpu_growth=cpu_growth, c0=c0, c1=c1, prod=_prod))
                         W("")
                         W(tr("Le travail par ligne grandit donc RÉELLEMENT avec le volume déjà en base : c'est le "
                              "VOLUME, pas la machine. Et le daemon n'occupe jamais plus de {0:.2f} cœur sur les 12 "
@@ -1859,7 +1936,8 @@ def main():
         missing = [c for c in (c_av, c_ap) if c not in configs]
         if missing:
             raise SystemExit("--compare : configuration(s) absente(s) des résultats : " + ", ".join(missing))
-        _note = (args.compare_note or [])[_i] if _i < len(args.compare_note or []) else None
+        _notes = notes_de_comparaison(args, LANGUE)
+        _note = _notes[_i] if _i < len(_notes) else None
         W(tr("## Écart mesuré entre deux passes — `{c_av}` vs `{c_ap}`").format(c_av=c_av, c_ap=c_ap))
         W("")
         W(tr("Comparaison `{c_av}` -> `{c_ap}`, MÊME base, MÊME instrument, MÊME machine, passes "
@@ -1939,8 +2017,7 @@ def main():
             W(f"- `{w}` ({tr_donnee(d.get('label'))}) — {tr_donnee(d.get('why'))}")
         W("")
         W(tr("Une fenêtre plus large que le jeu ne mesure pas ce que dit son étiquette : elle mesure"))
-        W(tr("`tout` sous un autre nom. Le harnais refuse de la tirer plutôt que de publier une "
-             "cellule"))
+        W(tr("`all` (« tout ») sous un autre nom. Le harnais refuse de la tirer plutôt que de publier une cellule"))
         W(tr("dont le titre serait faux. Pour l'obtenir, il faut un jeu qui la couvre — c'est-à-dire"))
         W(tr("remplir sur une étendue plus longue (`BENCH_SPAN_DAYS`), pas rendre la garde plus "
              "permissive."))
@@ -2783,16 +2860,15 @@ def main():
         W(tr("# 2 bis. la CONCURRENCE, sur une base déjà remplie (redémarre le daemon par valeur de"))
         W(tr("#        sémaphore et lui REDEMANDE ce qu'il applique avant de mesurer) :"))
         W(f"BENCH_PHASES=concurrency BENCH_SEM_SWEEP={_cs} BENCH_CONC_LEVELS={_cl} bench/run.sh")
-    W(tr("# 3. le rendu — LA COMMANDE EXACTE qui a produit CE document, reconstruite depuis ses "
-         "propres"))
-    W(tr("#    arguments et pointée sur les données VERSIONNÉES (donc rejouable par un tiers) :"))
+    W(tr("# 3. le rendu — LES COMMANDES EXACTES qui ont produit ce document et sa traduction,"))
+    W(tr("#    reconstruites depuis leurs propres arguments et pointées sur les données VERSIONNÉES"))
+    W(tr("#    (donc rejouables par un tiers). Rendu anglais :"))
     for _l in repro_cmd(args):
         W(_l)
     W("```")
     W("")
-    W(tr("Cette commande est **régénérée à chaque rendu** : elle ne peut pas se désynchroniser du"))
-    W(tr("document. C'est délibéré — la version précédente publiait une commande incomplète qui, "
-         "rejouée"))
+    W(tr("Ces commandes sont **régénérées à chaque rendu** : elles ne peuvent pas se désynchroniser du"))
+    W(tr("document. C'est délibéré — la version précédente publiait une commande incomplète qui, rejouée"))
     W(tr("telle quelle, AMPUTAIT le document de ses sections d'écart et de ses tableaux "
          "d'attribution."))
     W(tr("Une commande de reproduction fausse est pire qu'absente : elle fait croire à une"))
@@ -2816,18 +2892,18 @@ def main():
 # réécrit pas pour traduire leurs libellés. Le rendu anglais traduit ceux qu'il connaît ; un libellé
 # neuf sort tel quel jusqu'à ce qu'on l'ajoute ici.
 DONNEES_EN = {
+    "off":
+        "off",
     "2597 s = intervalle MESURÉ entre l'horodatage du premier et du dernier fichier Parquet écrit (22 fichiers, un par jour). La passe a ensuite été INTERROMPUE par un kill EXTÉRIEUR au produit pendant la phase de suppression du chaud, puis REPRISE par un second `plume-daemon retention` qui a terminé en ~90 s et rendu « rétention OK » : l'aging est repartite sans perte, ce qui est son contrat (deux phases, idempotent). La durée totale n'est donc PAS un débit de columnarisation propre, et n'est pas publiée comme tel.":
         "2597 s = MEASURED interval between the timestamps of the first and the last Parquet file written (22 files, one per day). The run was then INTERRUPTED by a kill EXTERNAL to the product during the hot deletion phase, then RESUMED by a second `plume-daemon retention` which finished in ~90 s and returned \"rétention OK\": the aging restarted without loss, which is its contract (two phases, idempotent). The total duration is therefore NOT a clean columnarisation throughput, and is not published as such.",
     "Verdicts et compte de NOMBRES FAUX RE-DÉRIVÉS avec le classifieur courant à partir des réponses `hot`/`cold` STOCKÉES, qui sont la mesure. Sans ce re-dérivage, les deux passes seraient comptées par deux règles différentes et leur comparaison ne voudrait rien dire. Aucune réponse n'a été re-mesurée.":
         "Verdicts and WRONG NUMBER count RE-DERIVED with the current classifier from the STORED `hot`/`cold` answers, which are the measurement. Without this re-derivation, the two runs would be counted by two different rules and their comparison would mean nothing. No answer was re-measured.",
     "LA DIVERGENCE ×6,6 DE LA PASSE PRÉCÉDENTE EST CORRIGÉE, ET C'EST CETTE PASSE QUI LE MESURE. La réserve de `parity-apres-2026-07-31` décrivait le binaire d'AVANT le correctif de couverture des rollups ; elle ne décrit plus le dépôt. Mesuré ici, sur la MÊME base et au MÊME instant que la matrice (le compte BRUT étant `search | stats count` sur le MÊME daemon) : côté SANS tier froid, `search | stats count by source,severity` rend 1 080 321 sur la fenêtre `au-dela-7d`, 359 679 sur `7d` et 1 440 007 sur `all` — soit EXACTEMENT le compte brut des trois fenêtres, là où la passe précédente rendait 164 165 sous `approx:false` pour 1 080 321 réels. Le nombre de groupes coïncide désormais des deux côtés (68/68, 63/63, 70/70 ; c'était 59 contre 68). CE QUI RESTE, ET DANS L'AUTRE SENS : 2 contrôles divergent encore, tous deux `C3b-groupby-routable`, et c'est le côté AVEC tier froid qui SUR-compte — 1 082 346 contre 1 080 321 (+2 025, soit +0,19 %) sur `au-dela-7d`, 360 020 contre 359 679 (+341, soit +0,09 %) sur `7d`. Ce côté-là se déclare `approx:true` et porte sa note ; le côté sans tier froid est `approx:false` et exact. La cause est le résidu DOCUMENTÉ de `plan_merge` : sous la frontière chaud/froid, `event` est agé en Parquet, donc un partiel de TÊTE sous-horaire ne peut pas être scanné en brut et est REPLIÉ dans le corps rollup, qui couvre l'heure entière — la fenêtre `au-dela-7d` du banc commence à 1782990828, non aligné à l'heure, et le repli ajoute la tranche [1782990000, 1782990828). Ce n'est donc pas un reste du défaut corrigé : c'est le grain horaire, borné à une sliver sub-horaire, et annoncé. POURQUOI CES 2 SONT QUAND MÊME COMPTÉS COMME NOMBRES FAUX : le classifieur ne rachète JAMAIS un agrégat qui diverge parce qu'il est déclaré (`declared n'acquitte rien`). La règle est conservée telle quelle — l'assouplir pour faire tomber le compte à zéro serait changer la règle après avoir vu le résultat.":
-        "THE ×6.6 DIVERGENCE OF THE PREVIOUS RUN IS FIXED, AND IT IS THIS RUN THAT MEASURES IT. The caveat of `parity-apres-2026-07-31` described the binary from BEFORE the rollup coverage fix; it no longer describes the repository. Measured here, on the SAME database and at the SAME moment as the matrix (the RAW count being `search | stats count` on the SAME daemon): on the side WITHOUT the cold tier, `search | stats count by source,severity` returns 1,080,321 over the `au-dela-7d` window, 359,679 over `7d` and 1,440,007 over `all` — i.e. EXACTLY the raw count of the three windows, where the previous run returned 164,165 under `approx:false` for 1,080,321 real ones. The number of groups now matches on both sides (68/68, 63/63, 70/70; it was 59 against 68). WHAT REMAINS, AND IN THE OTHER DIRECTION: 2 checks still diverge, both `C3b-groupby-routable`, and it is the side WITH the cold tier that OVER-counts — 1,082,346 against 1,080,321 (+2,025, i.e. +0.19 %) over `au-dela-7d`, 360,020 against 359,679 (+341, i.e. +0.09 %) over `7d`. That side declares itself `approx:true` and carries its note; the side without the cold tier is `approx:false` and exact. The cause is the DOCUMENTED residue of `plan_merge`: below the hot/cold boundary, `event` is aged into Parquet, so a sub-hour HEAD partial cannot be scanned raw and is FOLDED into the rollup body, which covers the whole hour — the bench's `au-dela-7d` window starts at 1782990828, not aligned to the hour, and the fold adds the slice [1782990000, 1782990828). It is therefore not a leftover of the fixed defect: it is the hourly grain, bounded to a sub-hour sliver, and announced. WHY THESE 2 ARE STILL COUNTED AS WRONG NUMBERS: the classifier NEVER redeems a diverging aggregate because it is declared (`declared n'acquitte rien`). The rule is kept as is — loosening it to bring the count down to zero would be changing the rule after seeing the result.",
+        "THE ×6.6 DIVERGENCE OF THE PREVIOUS RUN IS FIXED, AND IT IS THIS RUN THAT MEASURES IT. The caveat of `parity-apres-2026-07-31` described the binary from BEFORE the rollup coverage fix; it no longer describes the repository. Measured here, on the SAME database and at the SAME moment as the matrix (the RAW count being `search | stats count` on the SAME daemon): on the side WITHOUT the cold tier, `search | stats count by source,severity` returns 1,080,321 over the `au-dela-7d` window, 359,679 over `7d` and 1,440,007 over `all` — i.e. EXACTLY the raw count of the three windows, where the previous run returned 164,165 under `approx:false` for 1,080,321 real ones. The number of groups now matches on both sides (68/68, 63/63, 70/70; it was 59 against 68). WHAT REMAINS, AND IN THE OTHER DIRECTION: 2 checks still diverge, both `C3b-groupby-routable`, and it is the side WITH the cold tier that OVER-counts — 1,082,346 against 1,080,321 (+2,025, i.e. +0.19 %) over `au-dela-7d`, 360,020 against 359,679 (+341, i.e. +0.09 %) over `7d`. That side declares itself `approx:true` and carries its note; the side without the cold tier is `approx:false` and exact. The cause is the DOCUMENTED residue of `plan_merge`: below the hot/cold boundary, `event` is aged into Parquet, so a sub-hour HEAD partial cannot be scanned raw and is FOLDED into the rollup body, which covers the whole hour — the bench's `au-dela-7d` window starts at 1782990828, not aligned to the hour, and the fold adds the slice [1782990000, 1782990828). It is therefore not a leftover of the fixed defect: it is the hourly grain, bounded to a sub-hour sliver, and announced. WHY THESE 2 ARE STILL COUNTED AS WRONG NUMBERS: the classifier NEVER redeems a diverging aggregate because it is declared (`declared` acquits nothing). The rule is kept as is — loosening it to bring the count down to zero would be changing the rule after seeing the result.",
     "LES 3 NOMBRES FAUX QUI RESTENT NE SONT PAS CEUX DU TIER FROID. Ils sont tous portés par la MÊME classe, `C3b-groupby-routable` (`search | stats count by source,severity`), et les deux côtés la servent par la ROUTE DE ROLLUPS, pas par le chemin froid. Mesuré sur la fenêtre `au-dela-7d`, sur la MÊME donnée : la somme des counts vaut 164 165 côté SANS tier froid (`approx:false`, `truncated:false` — donc présentée comme EXACTE) et 1 082 346 côté AVEC (`approx:true`, avec sa note). Le compte BRUT de la même fenêtre, mesuré des deux côtés par `search | stats count`, vaut 1 080 321. C'est donc la route de rollups du côté SANS tier froid qui SOUS-COMPTE d'un facteur 6,6, en se déclarant exacte — un second défaut de la même famille (un nombre faux sans avertissement), DISTINCT de la troncature froide, NON corrigé ici, et reproductible : une base restaurée dont `event_rollup` ne couvre pas le passé profond sert des tableaux de bord sous-comptés. La réserve de la passe du 31/07 laissait ce mécanisme « non expliqué » ; il l'est maintenant, et il reste ouvert.":
         "THE 3 WRONG NUMBERS THAT REMAIN ARE NOT THOSE OF THE COLD TIER. They are all carried by the SAME class, `C3b-groupby-routable` (`search | stats count by source,severity`), and both sides serve it through the ROLLUP ROUTE, not through the cold path. Measured over the `au-dela-7d` window, on the SAME data: the sum of the counts is 164,165 on the side WITHOUT the cold tier (`approx:false`, `truncated:false` — hence presented as EXACT) and 1,082,346 on the side WITH it (`approx:true`, with its note). The RAW count of the same window, measured on both sides by `search | stats count`, is 1,080,321. It is therefore the rollup route on the side WITHOUT the cold tier that UNDER-counts by a factor of 6.6, while declaring itself exact — a second defect of the same family (a wrong number without warning), DISTINCT from the cold truncation, NOT fixed here, and reproducible: a restored database whose `event_rollup` does not cover the deep past serves under-counted dashboards. The caveat of the 07/31 run left this mechanism \"unexplained\"; it now is explained, and it remains open.",
     "Une TROISIÈME requête a été tirée (`search | stats count by source,severity`, fenêtre au-dela-7d) : les deux côtés l'ont servie par la ROUTE DE ROLLUPS, sans troncature, mais leurs valeurs divergent d'un facteur ~6,6 (la copie intacte rend ~160 k événements au total, la columnarisée ~1,05 M — cette dernière étant cohérente avec le volume attendu de la fenêtre). Cette divergence N'EST PAS EXPLIQUÉE par cette mesure. Mécanisme candidat, à départager par une expérience dédiée : la fraîcheur d'`event_rollup`, que la boucle de rollups (120 s) et `retention_run` alimentent — le daemon de la copie intacte venait de démarrer, celui de la copie columnarisée tournait depuis 20 minutes ET avait vu passer un `retention_run` complet. Tant que ce n'est pas tranché, aucune conclusion n'est tirée de cette troisième requête.":
         "A THIRD query was fired (`search | stats count by source,severity`, window au-dela-7d): both sides served it through the ROLLUP ROUTE, without truncation, but their values diverge by a factor of ~6.6 (the intact copy returns ~160 k events in total, the columnarised one ~1.05 M — the latter being consistent with the expected volume of the window). This divergence IS NOT EXPLAINED by this measurement. Candidate mechanism, to be settled by a dedicated experiment: the freshness of `event_rollup`, which the rollup loop (120 s) and `retention_run` feed — the daemon of the intact copy had just started, that of the columnarised copy had been running for 20 minutes AND had seen a full `retention_run` go by. Until this is settled, no conclusion is drawn from this third query.",
-    "actif (hot=7j)":
-        "active (hot=7d)",
     "MÊME aiguille en GXQL rendant des LIGNES (comparable à /api/search)":
         "SAME needle in GXQL returning ROWS (comparable to /api/search)",
     "MÊME aiguille via /api/search (FTS5 event_fts)":
@@ -2870,8 +2946,6 @@ DONNEES_EN = {
         "free term with LOW selectivity (1 row in 10) as LIKE",
     "terme libre sur message (compile en LIKE '%…%')":
         "free term on message (compiles to LIKE '%…%')",
-    "toute la rétention (30 j)":
-        "the whole retention (30 d)",
     "égalité sur champ ÉTENDU INDEXÉ (fields.user, idx_ev_f_user)":
         "equality on INDEXED EXTENDED field (fields.user, idx_ev_f_user)",
     "non-vide (src_ip=mask, fields.user=partial)":
@@ -2890,27 +2964,58 @@ DONNEES_EN = {
         "the daemon no longer exists after this level: under MemoryMax without swap, this means a BUDGET OVERRUN (kernel kill). The following levels are NOT measured.",
     "déclaré par le daemon (/api/system/diag)":
         "declared by the daemon (/api/system/diag)",
-    "le jeu ne fait que 28 j : cette fenêtre serait `tout` sous une étiquette de 30 j":
-        "the dataset only spans 28 d: this window would be `all` under a 30 d label",
-    "le plus coûteux de la famille 0 ne fait que 1.0 x le plancher (seuil 10)":
-        "the most expensive of family 0 is only 1.0 x the floor (threshold 10)",
-    "au-delà de la fenêtre chaude (de -28 j à -7 j)":
-        "beyond the hot window (from -28 d to -7 d)",
     "dernier jour":
         "last day",
     "dernière heure":
         "last hour",
-    "fenêtre chaude du produit (7 j)":
-        "the product's hot window (7 d)",
     "tout":
         "all",
 }
 
+# Libellés qui PORTENT une valeur (une fenêtre en jours, un rapport au plancher) : écrits par
+# `bench/measure.py`, `bench/concurrency.py` et `bench/run.sh` avec la valeur du jour, ils se
+# traduisent par gabarit. Troisième terme : la forme française RENDUE quand l'enregistrée cite un
+# libellé de fenêtre comme un identifiant (`tout` n'est pas un identifiant, `all` en est un).
+DONNEES_GABARITS = [
+    (re.compile(r"le plus coûteux de la famille (\S+) ne fait que (\S+) x le plancher \(seuil (\S+)\)"),
+     "the most expensive of family {0} is only {1} x the floor (threshold {2})", None),
+    (re.compile(r"fenêtre chaude du produit \((\d+) j\)"), "the product's hot window ({0} d)", None),
+    (re.compile(r"au-delà de la fenêtre chaude \(de -(\d+) j à -(\d+) j\)"),
+     "beyond the hot window (from -{0} d to -{1} d)", None),
+    (re.compile(r"toute la rétention \((\d+) j\)"), "the whole retention ({0} d)", None),
+    (re.compile(r"actif \(hot=(\d+)j\)"), "active (hot={0}d)", None),
+    (re.compile(r"portée nulle \(span=(\S+) j, chaud=(\S+) j\)"), "zero span (span={0} d, hot={1} d)",
+     None),
+    (re.compile(r"le jeu ne fait que (\S+) j : cette fenêtre serait `tout` sous une étiquette de (\d+) j"),
+     "the dataset only spans {0} d: this window would be `all` under a {1} d label",
+     "le jeu ne fait que {0} j : cette fenêtre serait `all` (« tout ») sous une étiquette de {1} j"),
+]
+
+# Retouches du RENDU français d'une donnée (jamais du fichier) : une phrase entière entre accents
+# graves n'est pas un identifiant ; seul le nom du verdict en est un.
+DONNEES_FR_RETOUCHES = [
+    ("(`declared n'acquitte rien`)", "(`declared` n'acquitte rien)"),
+]
+
 TEXTES_EN = {
+    "# 3. le rendu — LES COMMANDES EXACTES qui ont produit ce document et sa traduction,":
+        "# 3. the rendering — THE EXACT COMMANDS that produced this document and its translation,",
+    "#    reconstruites depuis leurs propres arguments et pointées sur les données VERSIONNÉES":
+        "#    rebuilt from their own arguments and pointed at the VERSIONED data",
+    "#    (donc rejouables par un tiers). Rendu anglais :":
+        "#    (hence replayable by a third party). English rendering:",
+    "#    la même commande, pour le rendu français :":
+        "#    the same command, for the French rendering:",
+    "# les commandes ci-dessus ne tourneront qu'une fois ce fichier ajouté à bench/results/.":
+        "# the commands above will only run once this file has been added to bench/results/.",
+    "*Provenance du processeur, de la RAM et du noyau* : repris de la ligne de commande (`--materiel`), et non relevés au moment de ce rendu.":
+        "*Provenance of the processor, RAM and kernel*: taken from the command line (`--materiel`), not read at the time of this rendering.",
+    "*Provenance du processeur, de la RAM et du noyau* : relevés sur la machine qui a rendu ce document, au moment du rendu.":
+        "*Provenance of the processor, RAM and kernel*: read on the machine that rendered this document, at the time of rendering.",
+    "Les fichiers de résultats n'enregistrent ni le matériel ni le noyau : ces trois lignes décrivent une machine de RENDU, pas nécessairement la machine qui a mesuré — le noyau affiché, en particulier, peut différer de celui de la mesure.":
+        "The result files record neither the hardware nor the kernel: these three rows describe a RENDERING machine, not necessarily the machine that measured — the kernel shown, in particular, may differ from the one of the measurement.",
     "# ATTENTION : {0} n'est pas (encore) versionné —":
         "# WARNING: {0} is not versioned (yet) —",
-    "# la commande ci-dessus ne tournera qu'une fois ce fichier ajouté à bench/results/.":
-        "# the command above will only run once this file has been added to bench/results/.",
     "## La concurrence — ce que le nœud fait quand l'équipe travaille en même temps":
         "## Concurrency — what the node does when the team works at the same time",
     "Tout le reste de ce document est pris **une requête à la fois** : aucune requête n'y attend":
@@ -2926,7 +3031,7 @@ TEXTES_EN = {
     "`viewer`), chacun parcourant le mélange plusieurs fois, en décalant son point de départ — deux":
         "`viewer` account), each going through the mix several times, offsetting its starting point — two",
     "voisins ne tirent donc pas la même requête au même instant. Le niveau se termine quand tous ont":
-        "neighbours therefore never fire the same query at the same instant. The level ends when all have",
+        "neighbours therefore do not fire the same query at the same instant. The level ends when all have",
     "fini leur travail : le débit agrégé est du travail RÉELLEMENT servi, pas une extrapolation.":
         "finished their work: the aggregate throughput is work ACTUALLY served, not an extrapolation.",
     "**L'ordre des questions est délibéré : la justesse d'abord.** Trois défauts de correction":
@@ -3615,10 +3720,10 @@ TEXTES_EN = {
         "\"Probe share\" = what the sampler's ROW COUNT consumes of the interval: **{0:.1f} % median**, **{1:.1f} % worst**. This count is a scan served by the daemon: its cost is IN the CPU and throughput columns above. The net degradation of the product is therefore slightly smaller than the one shown — never larger.",
     "Entre {0} et {1} lignes en base, le débit passe de **{2} à {3} ev/s** (**÷{fall:.2f}**) et le coût CPU du daemon par événement de **{cpu0:.3f} à {cpu1:.3f} ms** (**×{cpu_growth:.2f}**).":
         "Between {0} and {1} rows in the database, the throughput goes from **{2} to {3} ev/s** (**÷{fall:.2f}**) and the daemon CPU cost per event from **{cpu0:.3f} to {cpu1:.3f} ms** (**×{cpu_growth:.2f}**).",
-    "Cette chute se FACTORISE, sans reste, en deux facteurs mesurés — le débit est exactement `cœurs occupés / CPU par événement` :":
-        "This drop FACTORISES, without remainder, into two measured factors — the throughput is exactly `busy cores / CPU per event`:",
-    "> **÷{fall:.2f}** (débit mesuré) = **×{cpu_growth:.2f}** (CPU par événement : le travail par ligne grandit avec les b-trees) × **÷{0:.2f}** (cœurs occupés par le daemon : {c0:.2f} au début contre {c1:.2f} à la fin — il ATTEND davantage). Le produit vaut ÷{prod:.2f}, soit {1:.0f} % d'écart avec la chute mesurée : l'écart est celui de la moyenne par quartile, l'identité `débit = cœurs / CPU par événement` étant exacte intervalle par intervalle.":
-        "> **÷{fall:.2f}** (measured throughput) = **×{cpu_growth:.2f}** (CPU per event: the work per row grows with the b-trees) × **÷{0:.2f}** (cores busy with the daemon: {c0:.2f} at the start against {c1:.2f} at the end — it WAITS more). The product is ÷{prod:.2f}, i.e. a {1:.0f} % gap with the measured drop: the gap is that of the per-quartile average, the identity `throughput = cores / CPU per event` being exact interval by interval.",
+    "Cette chute se FACTORISE, sans reste, en deux facteurs mesurés — le débit est exactement **cœurs occupés / CPU par événement** :":
+        "This drop FACTORISES, without remainder, into two measured factors — the throughput is exactly **busy cores / CPU per event**:",
+    "> **÷{fall:.2f}** (débit mesuré) = **×{cpu_growth:.2f}** (CPU par événement : le travail par ligne grandit avec les b-trees) × **÷{0:.2f}** (cœurs occupés par le daemon : {c0:.2f} au début contre {c1:.2f} à la fin — il ATTEND davantage). Le produit vaut ÷{prod:.2f}, soit {1:.0f} % d'écart avec la chute mesurée : l'écart est celui de la moyenne par quartile, l'identité **débit = cœurs / CPU par événement** étant exacte intervalle par intervalle.":
+        "> **÷{fall:.2f}** (measured throughput) = **×{cpu_growth:.2f}** (CPU per event: the work per row grows with the b-trees) × **÷{0:.2f}** (cores busy with the daemon: {c0:.2f} at the start against {c1:.2f} at the end — it WAITS more). The product is ÷{prod:.2f}, i.e. a {1:.0f} % gap with the measured drop: the gap is that of the per-quartile average, the identity **throughput = cores / CPU per event** being exact interval by interval.",
     "Le travail par ligne grandit donc RÉELLEMENT avec le volume déjà en base : c'est le VOLUME, pas la machine. Et le daemon n'occupe jamais plus de {0:.2f} cœur sur les 12 disponibles : le chemin d'écriture est SÉQUENTIEL, ajouter des cœurs n'y changerait rien.":
         "The work per row therefore REALLY grows with the volume already in the database: it is the VOLUME, not the machine. And the daemon never occupies more than {0:.2f} core out of the 12 available: the write path is SEQUENTIAL, adding cores would change nothing.",
     "Le coût CPU par événement ne bouge PAS pendant que le débit tombe : le daemon n'a pas plus de travail par ligne, il ATTEND. La cause n'est donc pas le volume en base.":
@@ -3741,7 +3846,7 @@ TEXTES_EN = {
         "**Windows excluded by the coverage guard — hence NOT MEASURED**:",
     "Une fenêtre plus large que le jeu ne mesure pas ce que dit son étiquette : elle mesure":
         "A window wider than the dataset does not measure what its label says: it measures",
-    "`tout` sous un autre nom. Le harnais refuse de la tirer plutôt que de publier une cellule":
+    "`all` (« tout ») sous un autre nom. Le harnais refuse de la tirer plutôt que de publier une cellule":
         "`all` under another name. The harness refuses to fire it rather than publish a cell",
     "dont le titre serait faux. Pour l'obtenir, il faut un jeu qui la couvre — c'est-à-dire":
         "whose title would be wrong. To get it, a dataset that covers it is needed — that is,",
@@ -4193,12 +4298,8 @@ TEXTES_EN = {
         "# 2 bis. CONCURRENCY, on an already filled database (restarts the daemon for each",
     "#        sémaphore et lui REDEMANDE ce qu'il applique avant de mesurer) :":
         "#        semaphore value and ASKS it again what it applies before measuring):",
-    "# 3. le rendu — LA COMMANDE EXACTE qui a produit CE document, reconstruite depuis ses propres":
-        "# 3. the rendering — THE EXACT COMMAND that produced THIS document, rebuilt from its own",
-    "#    arguments et pointée sur les données VERSIONNÉES (donc rejouable par un tiers) :":
-        "#    arguments and pointed at the VERSIONED data (hence replayable by a third party):",
-    "Cette commande est **régénérée à chaque rendu** : elle ne peut pas se désynchroniser du":
-        "This command is **regenerated at each rendering**: it cannot drift out of sync with the",
+    "Ces commandes sont **régénérées à chaque rendu** : elles ne peuvent pas se désynchroniser du":
+        "These commands are **regenerated at each rendering**: they cannot drift out of sync with the",
     "document. C'est délibéré — la version précédente publiait une commande incomplète qui, rejouée":
         "document. This is deliberate — the previous version published an incomplete command which, replayed",
     "telle quelle, AMPUTAIT le document de ses sections d'écart et de ses tableaux d'attribution.":

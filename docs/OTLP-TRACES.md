@@ -1,5 +1,7 @@
 # OTLP Traces — récepteur OpenTelemetry (#41)
 
+[Français](OTLP-TRACES.md) | [English](OTLP-TRACES.en.md)
+
 > **Statut : additif, INERTE par défaut.** Plume peut ingérer des **traces distribuées**
 > OpenTelemetry via le protocole **standard OTLP/HTTP**. Chaque `span` devient une ligne CIM
 > (`category=trace`), requêtable en GXQL et **corrélable aux logs par `trace_id`**. Le récepteur

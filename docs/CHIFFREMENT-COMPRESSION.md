@@ -1,5 +1,7 @@
 # Chiffrement et compression, tels qu'ils sont
 
+[Français](CHIFFREMENT-COMPRESSION.md) | [English](CHIFFREMENT-COMPRESSION.en.md)
+
 Ce document décrit **l'état du code**, pas une intention. Chaque affirmation vient d'une lecture des
 sources, et la commande qui la redonne est écrite à côté. Là où le code ne prouve rien, c'est écrit
 « **non établi** » plutôt que comblé par une vraisemblance : une propriété de sécurité annoncée et

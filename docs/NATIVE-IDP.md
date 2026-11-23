@@ -1,5 +1,7 @@
 # IdP natif (#44) — OIDC / LDAP / MFA, et la conception SAML 2.0
 
+[Français](NATIVE-IDP.md) | [English](NATIVE-IDP.en.md)
+
 > **Statut.** OIDC (Authorization-Code + PKCE), LDAP/AD (bind), et TOTP MFA sont **implémentés et testés**.
 > SAML 2.0 SP est **implémenté et testé**, mais **derrière la feature de compilation `saml`** (cf. §5) :
 > compilé **sans** cette feature, le login SAML renvoie **501**. ⚠️ **L'image Docker livrée est bâtie

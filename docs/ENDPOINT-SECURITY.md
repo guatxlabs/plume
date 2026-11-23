@@ -1,5 +1,7 @@
 # Plume — Sécurité endpoint (BYO-agent) — #57
 
+[Français](ENDPOINT-SECURITY.md) | [English](ENDPOINT-SECURITY.en.md)
+
 > **Statut : contrat opérateur + positionnement produit.** Ce document décrit comment Plume ingère et
 > normalise la télémétrie **endpoint-sécurité** (SCA/conformité, vulnérabilités, FIM, inventaire) produite
 > par l'agent que le client fait **déjà** tourner (Wazuh, osquery, EDR), et la surface en **vues natives**.

@@ -49,8 +49,8 @@ Le CONTEXTE DÉCLARÉ qui lève l'accusation est de deux familles, et c'est la R
 cette garde tient : « tout chiffre daté dit d'où il vient ». BANC : banc, bench, synthétique,
 harnais, fixture, témoin, VM, jeu de test, profil de banc, `cargo test`, poste de développement,
 une assertion de test. ARBRE : sur l'arbre, dans le dépôt, fichiers suivis, capteurs livrés, la
-suite, en release/debug, sur le binaire, en CI, une extrapolation, un pire cas. Un fichier de test
-ou de banc (chemin `tests/`, `tests.rs`, `bench/`, `BENCHMARK`) est un contexte de banc par
+suite, en release/debug (en anglais « in release » suivi d'une ponctuation), sur le binaire, en
+CI, une extrapolation, un pire cas. Un fichier de test ou de banc (chemin `tests/`, `tests.rs`, `bench/`, `BENCHMARK`) est un contexte de banc par
 construction. Un faux positif se corrige en DISANT le contexte (« au banc », « sur l'arbre »), ce
 qui rend le texte plus exact — jamais en retirant un mot à la garde. Le paragraphe est la fenêtre :
 quelques lignes de part et d'autre, sans franchir une ligne vide, et une ligne de tableau Markdown
@@ -208,7 +208,14 @@ CONTEXTE_ARBRE = re.compile(
     r"sur\s+(l'|cet\s+)arbre|dans\s+le\s+d[ée]p[oô]t|fichiers?\s+suivis|capteurs?\s+livr|\bla\s+suite\b|"
     r"scripts?\s+suivis|tracked|sur\s+les\s+\w+\s+manifestes|\ben\s+[*_`]*release\b|\ben\s+[*_`]*debug\b|"
     r"\bbinaire\s+release\b|sur\s+le\s+binaire|\ben\s+CI\b|\bla\s+CI\b|"
-    r"\bextrapol|\barithm[ée]tique|\bpire\s+cas\b", re.I)
+    r"\bextrapol|\barithm[ée]tique|\bpire\s+cas\b|"
+    # L'équivalent anglais STRICT de « en *release* » : le mode de construction, à la même place devant
+    # le mot, et suivi d'une PONCTUATION (« in *release* — », « in release, »). La forme est positive :
+    # un mot ou un nombre collé derrière garde l'accusation, quelle que soit son écriture (« in release
+    # 0.3 », « in release `0.3` », « in release-0.3 », « in release candidate 2 », « in release
+    # notes »). « release » seul ne suffit pas (« since the last release » date une version, pas un mode
+    # de construction).
+    r"\bin\s+[*_`]*release[*_`]*(?=\s*[—,.;:])", re.I)
 
 
 def domaine_editeur(racine):
@@ -317,6 +324,23 @@ def valider_instrument(inst):
             ["# cible : plume-ingest.soc-prod.svc:7000"],
         "durée attribuée à une installation":
             ["/// la production la planifie en 10,1 ms"],
+        # L'indice anglais de construction ne lève que ce que lève son équivalent français.
+        "volume daté écrit en anglais, sans contexte déclaré":
+            ["// measured on 2026-08-09: the production database holds 1 554 295 events"],
+        "« release » hors de la forme de construction (une version, pas un mode)":
+            ["// measured on 2026-08-09: since the last release, 512 MiB of RAM per backup"],
+        "« in release » suivi d'un numéro de version":
+            ["// measured on 2026-08-09: in release 0.3 the table held 1 554 295 rows"],
+        "« in *release* » suivi d'une version en code, même ponctuée ensuite":
+            ["// measured on 2026-08-09: in *release* `v0.3`, the table held 1 554 295 rows"],
+        "« in release » collé à une version par un tiret":
+            ["// measured on 2026-08-09: in release-0.3, the table held 1 554 295 rows"],
+        "« in release » suivi d'un mot (« notes », « candidate »)":
+            ["// measured on 2026-08-09, as written in release notes: the table held 1 554 295 rows"],
+        "« in » suivi d'un autre mot que « release »":
+            ["// measured on 2026-08-09 in production: the database holds 1 554 295 events"],
+        "« release » précédé d'un mot qui finit par « in »":
+            ["// measured on 2026-08-09: since the plugin release, 512 MiB of RAM per backup"],
     }
     for nom, lignes in positifs.items():
         acc, _ = inst.accuser(lignes, "daemon/src/x.rs")
@@ -347,6 +371,18 @@ def valider_instrument(inst):
             [f"# identité : noreply@{inst.domaine}"],
         "ordre de grandeur de conception, attribué à aucune installation":
             ["// une table de plusieurs millions de lignes se parcourt en dizaines de secondes"],
+        "mesure du binaire déclarée en anglais (« in *release* », comme « en *release* »)":
+            ["backup.** Measured on 2026-08-09 on a 12-core machine, three calls in a row: `13, 14, 14` in a",
+             "*debug* binary but **`19, 19, 20` in *release*** — that is **512 MiB to 1 GiB** of RAM claimed by the"],
+        # Chaque ponctuation admise derrière « in release » a son témoin : en retirer une rougit.
+        "mesure du binaire déclarée en anglais, suivie d'une virgule":
+            ["// measured on 2026-08-09 in release, 512 MiB of RAM per backup"],
+        "mesure du binaire déclarée en anglais, suivie d'un point":
+            ["// measured on 2026-08-09: 512 MiB of RAM per backup in release. Debug claims less."],
+        "mesure du binaire déclarée en anglais, suivie d'un deux-points":
+            ["// measured on 2026-08-09 in `release`: 512 MiB of RAM per backup"],
+        "mesure du binaire déclarée en anglais, suivie d'un point-virgule":
+            ["// measured on 2026-08-09 in release; 512 MiB of RAM per backup"],
     }
     for nom, spec in negatifs.items():
         lignes, chemin = (spec if isinstance(spec, tuple) else (spec, "daemon/src/x.rs"))

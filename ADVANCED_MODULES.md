@@ -58,9 +58,9 @@ l'exploitant ne les pose pas.
 | Module | Comment l'engager | Documentation |
 |---|---|---|
 | **Tier froid colonnaire** (Parquet chiffré) | fonctionnalité `cold_tier` + `PLUME_COLD_TIER=1` | [`docs/DESIGN-P10-echelle-2go.md`](docs/DESIGN-P10-echelle-2go.md) |
-| **Magasin ClickHouse** (un nœud) | fonctionnalité `clickhouse` + `PLUME_STORE=clickhouse` | [`docs/CLICKHOUSE-STORE.md`](docs/CLICKHOUSE-STORE.md) |
+| **Magasin ClickHouse** (un nœud ; adaptateur compilé et testé, aucune sélection à l'exécution câblée) | fonctionnalité `clickhouse` ; le démon sert toujours SQLCipher, aucun interrupteur ne bascule encore vers ce magasin | [`docs/CLICKHOUSE-STORE.md`](docs/CLICKHOUSE-STORE.md) |
 | **ClickHouse distribué** (fondations, aucun chemin d'exécution câblé) | fonctionnalité `clickhouse-ha` | [`docs/CLICKHOUSE-HA.md`](docs/CLICKHOUSE-HA.md) |
-| **Magasin DuckDB** (expérimental) | fonctionnalité `duckdb` + `PLUME_STORE=duckdb` | [`docs/DUCKDB-STORE.md`](docs/DUCKDB-STORE.md) |
+| **Magasin DuckDB** (expérimental ; adaptateur compilé, aucune sélection à l'exécution câblée) | fonctionnalité `duckdb` ; comme pour ClickHouse, le démon sert toujours SQLCipher | [`docs/DUCKDB-STORE.md`](docs/DUCKDB-STORE.md) |
 | **Annuaire LDAP / AD** | fonctionnalité `ldap` + configuration de l'annuaire | [`docs/NATIVE-IDP.md`](docs/NATIVE-IDP.md) |
 | **SAML 2.0** (fournisseur de service) | fonctionnalité `saml` ; sans elle, le login SAML répond 501 | [`docs/NATIVE-IDP.md`](docs/NATIVE-IDP.md) §5 |
 | **Dépôt de sauvegarde sur objet S3** | fonctionnalité `s3_backup` + destination `s3://` | [`docs/DR-plume-restore.md`](docs/DR-plume-restore.md) |

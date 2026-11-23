@@ -18,7 +18,9 @@ ajouté demain est couvert par construction. Les binaires (octet NUL) sont écar
 LA LISTE BLANCHE EST NOMMÉE ET JUGÉE DANS LES DEUX SENS. Le mot « enterprise » / « entreprise » a des
 emplois légitimes — l'édition Windows d'un banc de mesure, la matrice MITRE ATT&CK Enterprise, un nom de
 produit tiers, le nom d'un domaine fonctionnel livré dans le cœur. Chacun est une entrée de `ADMIS`, avec
-un nom stable, le chemin où il vit, le motif de la ligne et sa raison :
+un nom stable, le chemin où il vit, le motif de la portion admise et sa raison. Une entrée admet sa
+PORTION, jamais la ligne entière : la portion est retirée, puis le vocabulaire est recherché à nouveau
+dans le reste de la ligne.
   - une occurrence qu'aucune entrée ne couvre fait rougir (code 1) ;
   - une entrée qui ne couvre plus aucune occurrence fait rougir aussi (code 1) : une entrée morte
     élargit la liste sans rien admettre, et finirait par admettre ce qu'elle n'a jamais visé.
@@ -44,19 +46,29 @@ CE_FICHIER = ".github/scripts/" + os.path.basename(__file__)
 
 # Le vocabulaire d'un modèle à édition payante. Pas de borne de mot sur « enterprise » / « entreprise » :
 # `COMMUNITY_VS_ENTERPRISE` ou `FOO_ENTERPRISE_BAR` doivent être vus, et `_` est un caractère de mot.
+# LE SÉPARATEUR ENTRE DEUX MOTS N'EST PAS SEULEMENT L'ESPACE ET LE TIRET ASCII : ce dépôt écrit avec le
+# tiret insécable U+2011 (« AGPL‑3.0 », « add‑ons ») et l'espace insécable. Une version antérieure de cette
+# garde ne voyait que l'espace et le tiret ASCII, et laissait passer « open‑core » tel que l'ancien document
+# l'écrivait. `\s` couvre les espaces Unicode (U+00A0, U+202F…), la classe ajoute les tirets U+2010–U+2015
+# et le signe moins U+2212.
+SEP = r"[\s_\-\u2010-\u2015\u2212]?"
 VOCABULAIRE = re.compile(
     r"enterprise|entreprise"
-    r"|\bopen[ -]?core\b"
-    r"|\bcommunity[ _-]?(?:edition|vs)\b|édition communautaire"
-    r"|\bcommercial[ -]licen[cs]e|\blicences? commerciales?"
-    r"|\bpremium connectors?|\bconnecteurs? premium"
-    r"|\bpaid edition|\bédition payante\b",
+    rf"|\bopen{SEP}core\b"
+    rf"|\bcommunity{SEP}(?:edition|vs)\b|[ée]ditions?{SEP}communautaires?"
+    rf"|\bcommercial{SEP}(?:licen[cs]e|edition)|\blicences?{SEP}commerciales?|[ée]ditions?{SEP}commerciales?"
+    rf"|\bpremium{SEP}(?:connector|module|feature|edition|tier)s?|\b(?:connecteurs?|modules?){SEP}premium"
+    rf"|\bpaid{SEP}(?:edition|tier|plan|version|module|feature|add{SEP}on|licen)"
+    rf"|[ée]ditions?{SEP}payantes?|\bversions?{SEP}payantes?|\blicences?{SEP}payantes?"
+    rf"|\bmodules?{SEP}payants?|\bfonction(?:nalité)?s?{SEP}payantes?|\boffres?{SEP}payantes?"
+    rf"|\badd{SEP}ons?{SEP}payants?|\bfreemium"
+    rf"|\b(?:double|dual){SEP}licen|\blicences?{SEP}propriétaires?|\bproprietary{SEP}licen",
     re.IGNORECASE,
 )
 
 # (nom stable, chemin (regex pleine), motif de la ligne, raison)
 ADMIS = [
-    ("la-garde-elle-meme", re.escape(CE_FICHIER), r".",
+    ("la-garde-elle-meme", re.escape(CE_FICHIER), r".+",
      "cette garde doit écrire le vocabulaire qu'elle refuse"),
     ("negation-de-l-edition-payante", r"README\.md|ADVANCED_MODULES\.md", r"sans édition payante",
      "la phrase qui dit que ce modèle n'existe pas"),
@@ -117,7 +129,13 @@ def lire_texte(racine: str, chemin: str) -> str | None:
 
 
 def juger(textes: dict[str, str], admis) -> tuple[list[str], list[str], int]:
-    """Rend (emplois non admis, entrées mortes, emplois admis). Pur."""
+    """Rend (emplois non admis, entrées mortes, emplois admis). Pur.
+
+    UNE ENTRÉE ADMET SA PORTION, PAS LA LIGNE. La portion que son motif couvre est retirée de la ligne,
+    puis le vocabulaire est recherché À NOUVEAU dans ce qui reste : un terme refusé posé sur une ligne qui
+    porte aussi un emploi admis (« sans édition payante, … licence commerciale … ») reste refusé. Une
+    entrée n'est comptée servie que si son retrait a fait disparaître au moins un emploi.
+    """
     compilees = [(nom, re.compile(chemin), re.compile(ligne)) for nom, chemin, ligne, _ in admis]
     servies = {nom: 0 for nom, _, _ in compilees}
     refuses, n_admis = [], 0
@@ -125,14 +143,49 @@ def juger(textes: dict[str, str], admis) -> tuple[list[str], list[str], int]:
         for numero, ligne in enumerate(texte.splitlines(), 1):
             if not VOCABULAIRE.search(ligne):
                 continue
-            couvrante = next((nom for nom, rc, rl in compilees if rc.fullmatch(chemin) and rl.search(ligne)), None)
-            if couvrante is None:
+            reste = ligne
+            for nom, rc, rl in compilees:
+                if not rc.fullmatch(chemin):
+                    continue
+                avant = len(VOCABULAIRE.findall(reste))
+                apres_retrait = rl.sub(lambda m: "\x00" * len(m.group(0)), reste)
+                if len(VOCABULAIRE.findall(apres_retrait)) < avant:
+                    servies[nom] += 1
+                    n_admis += 1
+                    reste = apres_retrait
+            if VOCABULAIRE.search(reste):
                 refuses.append(f"{chemin}:{numero}: {ligne.strip()[:160]}")
-            else:
-                servies[couvrante] += 1
-                n_admis += 1
     mortes = [nom for nom, n in servies.items() if n == 0]
     return refuses, mortes, n_admis
+
+
+def trancher(fichiers, lire, admis, plancher: int) -> tuple[int, list[str]]:
+    """Le code de sortie et les lignes à imprimer, à partir du corpus. Pur : le disque n'est lu qu'à
+    travers `lire` ; c'est cette fonction, et non `main`, qui décide, pour que ses décisions soient
+    éprouvées comme le reste."""
+    if fichiers is None or len(fichiers) < plancher:
+        return 2, [f"[edition-payante] REFUSE DE CONCLURE — corpus suivi illisible ou sous le plancher "
+                   f"({0 if fichiers is None else len(fichiers)} < {plancher})."]
+    textes = {}
+    for f in fichiers:
+        t = lire(f)
+        if t is not None:
+            textes[f] = t
+    refuses, mortes, n_admis = juger(textes, admis)
+    lignes = [f"[edition-payante] {len(textes)} fichiers texte suivis lus, {n_admis} emploi(s) admis par "
+              f"{len(admis)} entrée(s) nommée(s)"]
+    if refuses:
+        lignes.append("[edition-payante] ÉCHEC — vocabulaire d'édition payante dans un fichier suivi. Plume est "
+                      "entièrement AGPL, sans édition payante : reformuler (voir ADVANCED_MODULES.md), ou, pour un "
+                      "emploi qui n'a rien de commercial, ajouter une entrée NOMMÉE à ADMIS avec sa raison :")
+        lignes += [f"    - {r}" for r in refuses]
+    if mortes:
+        lignes.append("[edition-payante] ÉCHEC — entrée(s) de la liste blanche qui ne couvrent plus rien ; les retirer :")
+        lignes += [f"    - {m}" for m in mortes]
+    if refuses or mortes:
+        return 1, lignes
+    lignes.append("[edition-payante] OK — aucun emploi non admis, aucune entrée morte")
+    return 0, lignes
 
 
 def epreuves() -> list[str]:
@@ -144,10 +197,22 @@ def epreuves() -> list[str]:
         ("modules enterprise", {"README.md": "Modules Enterprise → doc"}, 1, 0),
         ("identifiant en majuscules", {"README.md": "[`COMMUNITY_VS_ENTERPRISE.md`]"}, 1, 0),
         ("open core", {"README.md": "Le modèle open-core"}, 1, 0),
+        ("open core, tiret insécable U+2011", {"README.md": "a copyleft open\u2011core model"}, 1, 0),
+        ("open core, espace insécable", {"README.md": "an open\u00a0core model"}, 1, 0),
+        ("community edition, tiret insécable", {"README.md": "the community\u2011edition"}, 1, 0),
+        ("commercial license, tiret insécable", {"README.md": "a commercial\u2011license"}, 1, 0),
         ("licence commerciale", {"README.md": "Licence commerciale disponible"}, 1, 0),
+        ("version payante", {"README.md": "La version payante ajoute le SSO"}, 1, 0),
+        ("double licence", {"README.md": "double licence AGPL ou autre"}, 1, 0),
+        ("dual licensing", {"README.md": "offered under dual licensing"}, 1, 0),
+        ("licence propriétaire", {"README.md": "sous licence propriétaire"}, 1, 0),
+        ("modules payants", {"README.md": "des modules payants"}, 1, 0),
+        ("terme refusé sur une ligne admise", {"x.md": "Windows 11 Enterprise 24H2, modules Enterprise sous licence"}, 1, 0),
+        ("deux termes refusés sur une ligne admise", {"x.md": "Enterprise 24H2 ; licence commerciale"}, 1, 0),
         ("bon motif, mauvais chemin", {"b.rs": "MITRE ATT&CK (Enterprise)"}, 1, 0),
         ("entrée morte", {"a.rs": "rien"}, 0, 1),
-        ("mot sans rapport", {"c.md": "communauté, commercialement neutre"}, 0, 0),
+        ("bon chemin, terme refusé hors du motif", {"a.rs": "ATT&CK (Enterprise) mais open core"}, 1, 0),
+        ("mot sans rapport", {"c.md": "communauté, commercialement neutre, propriétaire du fichier"}, 0, 0),
     ]
     echecs = []
     for nom, ajout, att_r, att_m in cas:
@@ -155,6 +220,22 @@ def epreuves() -> list[str]:
         r, m, _ = juger(textes, admis)
         if (len(r), len(m)) != (att_r, att_m):
             echecs.append(f"épreuve « {nom} » : {len(r)} refusé(s), {len(m)} morte(s) ; attendu {att_r}, {att_m}")
+    # Les décisions de sortie, éprouvées par `trancher` : sans elles, un `main` qui oublierait les entrées
+    # mortes ou le plancher rendrait vert un arbre cassé.
+    corpus = dict(base)
+    lire = lambda f: corpus.get(f)
+    sorties = [
+        ("arbre propre", list(base), 1, 0),
+        ("emploi refusé", list(base) + ["r.md"], 1, 1),
+        ("entrée morte seule", ["x.md"], 1, 1),
+        ("corpus sous le plancher", list(base), 3, 2),
+        ("corpus illisible", None, 1, 2),
+    ]
+    corpus["r.md"] = "open core"
+    for nom, fichiers, plancher, attendu in sorties:
+        code, _ = trancher(fichiers, lire, admis, plancher)
+        if code != attendu:
+            echecs.append(f"épreuve de sortie « {nom} » : code {code}, attendu {attendu}")
     return echecs
 
 
@@ -165,33 +246,10 @@ def main() -> int:
         for e in echecs:
             print(f"    - {e}")
         return 2
-    fichiers = suivis(RACINE)
-    if fichiers is None or len(fichiers) < PLANCHER_FICHIERS:
-        print(f"[edition-payante] REFUSE DE CONCLURE — corpus suivi illisible ou sous le plancher "
-              f"({0 if fichiers is None else len(fichiers)} < {PLANCHER_FICHIERS}).")
-        return 2
-    textes = {}
-    for f in fichiers:
-        t = lire_texte(RACINE, f)
-        if t is not None:
-            textes[f] = t
-    refuses, mortes, n_admis = juger(textes, ADMIS)
-    print(f"[edition-payante] {len(textes)} fichiers texte suivis lus, {n_admis} emploi(s) admis par "
-          f"{len(ADMIS)} entrée(s) nommée(s)")
-    if refuses:
-        print("[edition-payante] ÉCHEC — vocabulaire d'édition payante dans un fichier suivi. Plume est "
-              "entièrement AGPL, sans édition payante : reformuler (voir ADVANCED_MODULES.md), ou, pour un "
-              "emploi qui n'a rien de commercial, ajouter une entrée NOMMÉE à ADMIS avec sa raison :")
-        for r in refuses:
-            print(f"    - {r}")
-    if mortes:
-        print("[edition-payante] ÉCHEC — entrée(s) de la liste blanche qui ne couvrent plus rien ; les retirer :")
-        for m in mortes:
-            print(f"    - {m}")
-    if refuses or mortes:
-        return 1
-    print("[edition-payante] OK — aucun emploi non admis, aucune entrée morte")
-    return 0
+    code, lignes = trancher(suivis(RACINE), lambda f: lire_texte(RACINE, f), ADMIS, PLANCHER_FICHIERS)
+    for ligne in lignes:
+        print(ligne)
+    return code
 
 
 if __name__ == "__main__":

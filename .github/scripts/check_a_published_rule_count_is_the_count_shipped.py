@@ -72,6 +72,10 @@ ANNONCES = [
     ("README.md", r"\*\*(\d+) règles overlay\*\*", overlays_racine_compte, "règles overlay à la racine de config.d/rules/"),
     ("README.md", r"\*\*dont (\d+) actives\*\*", overlays_racine_actives, "règles overlay racine à enabled=true"),
     ("docs/DETECTION-CATALOG.md", r"\*\*(\d+) règles LIVRÉES\*\*", catalogue, "règles de catalogue (config.d/rules/catalog/)"),
+    # Le test qui charge le catalogue lit TOUT `config.d/rules/catalog/` (`read_dir`, sans filtre) : le
+    # nombre de règles qu'il « exige » de compiler est donc le compte du catalogue, pas celui des tables.
+    ("docs/DETECTION-CATALOG.md", r"exige que les (\d+) compilent", catalogue,
+     "règles de catalogue que le test de chargement exige de compiler"),
 ]
 
 
@@ -111,7 +115,49 @@ def epreuves() -> list[str]:
         d, i = juger(annonces, fichiers, lire)
         if (len(d), len(i)) != (att_d, att_i):
             echecs.append(f"épreuve « {nom} » : {len(d)} désaccord(s), {len(i)} introuvable(s) ; attendu {att_d}, {att_i}")
+    # Les décisions de sortie, éprouvées par `trancher` : sans elles, un `main` qui rendrait 0 sur une
+    # phrase introuvable ou sur une lecture impossible rendrait vert un arbre cassé.
+    def lire_ok(f, r="**2 règles Sigma d'exemple** **2 règles overlay** **dont 1 actives**"):
+        return r if f == "README.md" else contenus[f]
+
+    def lire_oserror(f):
+        raise OSError("absent")
+
+    def lire_json_casse(f):
+        return "{" if f.endswith(".json") else lire_ok(f)
+
+    sorties = [
+        ("concordant", fichiers, lire_ok, 0),
+        ("compte périmé", fichiers, lambda f: lire_ok(f, "**3 règles Sigma d'exemple** **2 règles overlay** **dont 1 actives**"), 1),
+        ("phrase introuvable", fichiers, lambda f: lire_ok(f, "**2 règles Sigma d'exemple**"), 2),
+        ("fichier publié illisible", fichiers, lire_oserror, 2),
+        ("règle JSON illisible", fichiers, lire_json_casse, 2),
+        ("aucun fichier suivi", [], lire_ok, 2),
+        ("git ls-files illisible", None, lire_ok, 2),
+    ]
+    for nom, fich, lire, attendu in sorties:
+        code, _ = trancher(annonces, fich, lire)
+        if code != attendu:
+            echecs.append(f"épreuve de sortie « {nom} » : code {code}, attendu {attendu}")
     return echecs
+
+
+def trancher(annonces, fichiers, lire) -> tuple[int, list[str]]:
+    """Le code de sortie et les lignes à imprimer. Pur : c'est cette fonction, et non `main`, qui décide,
+    pour que ses décisions soient éprouvées comme le reste."""
+    if not fichiers:
+        return 2, ["[comptes-de-regles] REFUSE DE CONCLURE — `git ls-files` n'a rien rendu."]
+    try:
+        desaccords, introuvables = juger(annonces, fichiers, lire)
+    except (OSError, ValueError) as e:
+        return 2, [f"[comptes-de-regles] REFUSE DE CONCLURE — lecture impossible : {e}"]
+    if introuvables:
+        return 2, ["[comptes-de-regles] REFUSE DE CONCLURE — phrase publiée introuvable ; mettre son motif à jour ici :"] \
+            + [f"    - {e}" for e in introuvables]
+    if desaccords:
+        return 1, ["[comptes-de-regles] ÉCHEC — un compte publié n'est plus celui de l'arbre :"] \
+            + [f"    - {e}" for e in desaccords]
+    return 0, [f"[comptes-de-regles] OK — {len(annonces)} comptes publiés, tous égaux au compte de l'arbre suivi"]
 
 
 def main() -> int:
@@ -121,32 +167,15 @@ def main() -> int:
         for e in echecs:
             print(f"    - {e}")
         return 2
-    fichiers = suivis(RACINE)
-    if not fichiers:
-        print("[comptes-de-regles] REFUSE DE CONCLURE — `git ls-files` n'a rien rendu.")
-        return 2
 
     def lire(chemin):
         with open(os.path.join(RACINE, chemin), encoding="utf-8") as fh:
             return fh.read()
 
-    try:
-        desaccords, introuvables = juger(ANNONCES, fichiers, lire)
-    except (OSError, ValueError) as e:
-        print(f"[comptes-de-regles] REFUSE DE CONCLURE — lecture impossible : {e}")
-        return 2
-    if introuvables:
-        print("[comptes-de-regles] REFUSE DE CONCLURE — phrase publiée introuvable ; mettre son motif à jour ici :")
-        for e in introuvables:
-            print(f"    - {e}")
-        return 2
-    if desaccords:
-        print("[comptes-de-regles] ÉCHEC — un compte publié n'est plus celui de l'arbre :")
-        for e in desaccords:
-            print(f"    - {e}")
-        return 1
-    print(f"[comptes-de-regles] OK — {len(ANNONCES)} comptes publiés, tous égaux au compte de l'arbre suivi")
-    return 0
+    code, lignes = trancher(ANNONCES, suivis(RACINE), lire)
+    for ligne in lignes:
+        print(ligne)
+    return code
 
 
 if __name__ == "__main__":

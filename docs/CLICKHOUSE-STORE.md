@@ -1,7 +1,8 @@
 # ClickHouse store — single-node adapter (#18, Phase 2)
 
-Status: **OPT-IN, INERT BY DEFAULT.** Feature-gated (`--features clickhouse`), selected at runtime by
-`PLUME_STORE=clickhouse`. Absent from the SMB/prod build and prod deployment. **The default remains
+Status: **OPT-IN, INERT BY DEFAULT.** Feature-gated (`--features clickhouse`). Runtime selection
+(`PLUME_STORE=clickhouse`) is designed but **not wired**: the variable is read nowhere in the daemon, which
+always serves `SqlcipherStore` (see the note at the end of §2.1 and `docs/CLICKHOUSE-HA.md`). Absent from the SMB/prod build and prod deployment. **The default remains
 `SqlcipherStore` (SQLite/SQLCipher), byte-identical to today.**
 
 This document covers the **single-node** ClickHouse adapter that ships behind the seam: one ClickHouse

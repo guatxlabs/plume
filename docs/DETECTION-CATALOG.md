@@ -11,12 +11,12 @@
 
 - **37 règles LIVRÉES** (`git ls-files 'config.d/rules/catalog/*.json' | wc -l`, compte comparé à l'arbre
   par `.github/scripts/check_a_published_rule_count_is_the_count_shipped.py`), dont **34 décrites** dans
-  les tables ci-dessous (noms tous distincts). Les trois règles livrées non décrites ici, toutes en
-  T1562.001, sont `de-auditd-silent.json` (« Hôte : auditd muet — dead-man's-switch anti-forensics »),
+  les tables ci-dessous (noms tous distincts). Ensemble, les règles livrées citent **26 techniques**
+  ATT&CK distinctes qui retombent sur **13 tactiques** (mappées via `guatx_core::attack::CATALOG` ;
+  aucune technique non mappée). Les trois règles livrées non décrites ici, toutes en T1562.001, sont
+  `de-auditd-silent.json` (« Hôte : auditd muet — dead-man's-switch anti-forensics »),
   `de-auditd-no-exec-rule.json` (auditd tourne sans règle execve 64 bits) et
-  `de-collector-unavailable.json` (un capteur déclare ne pas pouvoir collecter). Elles citent
-  **26 techniques** ATT&CK distinctes qui retombent sur **13 tactiques** (mappées via
-  `guatx_core::attack::CATALOG` ; aucune technique non mappée).
+  `de-collector-unavailable.json` (un capteur déclare ne pas pouvoir collecter).
 - **TOUTES `enabled=false` par défaut, sauf une** : `de-detection-content-mutated.json`, l'auto-détection
   d'une modification du contenu de détection, est active (exception tenue par
   `catalog_rules_all_compile_and_are_disabled_by_default`). C'est une BIBLIOTHÈQUE : l'admin ACTIVE chaque règle
@@ -25,7 +25,7 @@
   est DÉJÀ activé par la couche seed ; le catalogue est l'étendue opt-in.
 - **Toutes en GXQL** (`is_soql=true`) ⇒ compilées par le compilateur FERMÉ (injection-safe par
   construction ; jamais de SQL brut). Une règle qui ne compile pas est DROPPÉE au boot ⇒ un test
-  (`catalog_rules_all_compile_and_are_disabled_by_default`) exige que les 34 compilent et chargent.
+  (`catalog_rules_all_compile_and_are_disabled_by_default`) exige que les 37 compilent et chargent.
 - **CIM-exact** : chaque règle ne référence que des `source`/`category`/`fields.*` réellement
   émis par les collecteurs (voir [`docs/CIM.md`](CIM.md)). NB le port de destination des
   collecteurs natifs (conntrack/ufw/portscan) est `dport` (chaîne), pas `dst_port`.

@@ -2459,7 +2459,7 @@ jobs:
       # (il est écrit dans la garde, pas ici, sans quoi ce commentaire rougirait) ; ses emplois légitimes —
       # édition Windows d'un banc, matrice MITRE, nom de produit tiers — forment une liste blanche NOMMÉE,
       # jugée dans les deux sens (une entrée morte rougit).
-      - name: Le vocabulaire d'une edition payante ne revient dans aucun fichier suivi
+      - name: Le vocabulaire d'un modele payant ne revient dans aucun fichier suivi
         id: garde_83
         continue-on-error: true
         run: python3 .github/scripts/check_no_paid_edition_vocabulary_returns.py
@@ -2471,6 +2471,14 @@ jobs:
         id: garde_84
         continue-on-error: true
         run: python3 .github/scripts/check_a_published_rule_count_is_the_count_shipped.py
+
+      # UN MODULE AVANCÉ S'ENGAGE PAR CE QUE L'ARBRE LIT. La page des modules avancés disait d'engager les
+      # magasins ClickHouse et DuckDB par une variable qu'aucun code du démon ne lit. La garde relit chaque
+      # levier et chaque fonctionnalité Cargo que cette page cite, et les cherche dans l'arbre.
+      - name: Un module avance s'engage par ce que l'arbre lit
+        id: garde_85
+        continue-on-error: true
+        run: python3 .github/scripts/check_an_advanced_module_is_engaged_by_what_the_tree_reads.py
 
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
@@ -2965,6 +2973,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_82.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_bare_chain_match_is_never_served_as_a_fact.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_83.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_no_paid_edition_vocabulary_returns.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_84.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_a_published_rule_count_is_the_count_shipped.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_85.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_advanced_module_is_engaged_by_what_the_tree_reads.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
 

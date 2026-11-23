@@ -245,13 +245,20 @@ exit 0
 # bouchon tue tout le groupe du script (`kill -9 0`) : l'agent s'arrête brutalement au milieu de l'exécution, avant que
 # rien d'autre ne soit écrit. NFT_ATTENDRE_SUR=<motif> : la commande qui correspond pose `$NFT_ATTENDRE.arrive`, puis
 # attend que `$NFT_ATTENDRE` existe — l'exécution reste en cours, verrou tenu, le temps qu'une seconde exécution joue.
-BOUCHON_NFT = r"""#!/bin/sh
+#
+# Le shell du bouchon ne reçoit JAMAIS `LC_ALL` : `env -S` en recopie la valeur dans `NFT_LC_ALL`, puis le retire.
+# Là où `/bin/sh` est bash, une `LC_ALL` dont la locale n'est pas installée sur le poste fait écrire au shell, à son
+# démarrage et sur la sortie d'erreur du bouchon, « warning: setlocale: LC_ALL: cannot change locale (...): No such
+# file or directory » — une phrase anglaise que le répondeur lirait comme l'absence MESURÉE, si bien qu'un répondeur
+# qui oublie `LC_ALL=C` passerait pour juste. dash n'écrit rien. Le verdict dépendrait du shell de l'hôte et des
+# locales installées ; ainsi il ne dépend que de la variable (bash n'avertit pas pour LANG ni LC_MESSAGES).
+BOUCHON_NFT = r"""#!/usr/bin/env -S -u LC_ALL NFT_LC_ALL=${LC_ALL} /bin/sh
 printf '%s\n' "$*" >> "$TRACE_ENFORCEMENT.nft"
 case "$*" in ${NFT_TUER_SUR:-__jamais__}) kill -9 0 ;; esac
 case "$*" in ${NFT_ATTENDRE_SUR:-__jamais__})
   : > "$NFT_ATTENDRE.arrive"; while [ ! -e "$NFT_ATTENDRE" ]; do sleep 0.1; done ;;
 esac
-case "${LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}" in
+case "${NFT_LC_ALL:-${LC_MESSAGES:-${LANG:-C}}}" in
   C|POSIX|C.*) ENOENT='No such file or directory'; EEXIST='File exists' ;;
   *) ENOENT='Aucun fichier ou dossier de ce type'; EEXIST='Le fichier existe' ;;
 esac

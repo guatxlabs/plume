@@ -38,9 +38,11 @@ DEUX MODES
 ----------
 - comparaison (défaut) : toutes les paires suivies par git, ou une seule avec `--paire ORIGINAL
   TRADUCTION`. Code 1 au premier écart nommé, 0 sinon, 2 quand rien n'a été comparé (aucune paire,
-  dépôt illisible) : un vert sur zéro paire ne prouverait rien.
+  dépôt illisible, fichier absent ou qui n'est pas de l'UTF-8) : un vert sur zéro paire ne
+  prouverait rien.
 - `--inventaire` : liste les documents suivis sans traduction, et les traductions sans original. Il
   rend 0 tant que `--strict` n'est pas passé ; avec `--strict`, un document sans traduction rend 1.
+  Sur zéro document suivi, ou sur un dépôt illisible, il rend 2 dans les deux cas.
 
 L'outil n'est câblé dans aucun flux d'intégration : son nom ne porte pas le préfixe des gardes, et
 c'est délibéré tant que le corpus n'a pas de paires.
@@ -52,6 +54,11 @@ bloc de code indenté de quatre espaces n'est pas un bloc pour lui, seulement le
 (trois accents graves ou trois tildes). Les commentaires HTML ne sont pas rendus, donc pas comparés.
 Un nombre écrit en toutes lettres échappe à la comparaison des nombres. L'ensemble est un ENSEMBLE :
 un nombre cité deux fois d'un côté et une fois de l'autre ne fait pas d'écart.
+Un tableau n'est vu que si ses lignes commencent par une barre verticale : `a | b` suivi de `---|---`
+n'est pas un tableau pour lui. Dans un bloc, ` # ` ou ` // ` coupe la ligne même entre guillemets :
+`grep ' # a'` et `grep ' # b'` donnent la même commande. Une ligne de bloc qui commence par `#` est un
+commentaire, sauf `#[`, `#!` et les directives du préprocesseur C (`#include`, `#define`…), qui sont
+du code.
 """
 import argparse
 import os
@@ -74,6 +81,9 @@ URL_NUE = re.compile(r"<?\b[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
 NOMBRE = re.compile(r"\d+")
 SCHEMA = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 COMMENTAIRE_FINAL = re.compile(r"\s+(?:#|//)(?:\s.*)?$")
+# Lignes qui commencent par `#` sans être des commentaires : attribut Rust, shebang, préprocesseur C.
+DIESE_DE_CODE = re.compile(
+    r"^#(?:\[|!|(?:include|define|undef|if|ifdef|ifndef|elif|else|endif|pragma|error)\b)")
 
 
 @dataclass
@@ -101,7 +111,7 @@ class Ecart:
 def commande(ligne):
     """La part d'une ligne de bloc qu'une traduction ne doit pas toucher ; None pour un commentaire."""
     s = ligne.strip()
-    if not s or s.startswith("#") or s.startswith("//"):
+    if not s or s.startswith("//") or (s.startswith("#") and not DIESE_DE_CODE.match(s)):
         return None
     s = COMMENTAIRE_FINAL.sub("", s)
     return " ".join(s.split()) or None
@@ -227,7 +237,11 @@ class Convention:
 
 
 def cible_sans_ancre(cible):
-    return cible.split("#", 1)[0]
+    """La cible sans ancre ; `./y.md` et `y.md` désignent le même fichier, donc la même cible."""
+    chemin = cible.split("#", 1)[0]
+    while chemin.startswith("./"):
+        chemin = chemin[2:]
+    return chemin
 
 
 def basculer(cible, dossier, convention, existe):
@@ -364,13 +378,21 @@ def comparer(original, traduction, convention, existe):
 
 def comparer_fichiers(racine, original, traduction, convention):
     def lire(rel):
-        with open(os.path.join(racine, rel), encoding="utf-8") as f:
-            return analyser(f.read(), rel)
+        try:
+            with open(os.path.join(racine, rel), encoding="utf-8") as f:
+                texte = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            raise Illisible(f"{rel} : {e}") from e
+        return analyser(texte, rel)
 
     def existe(rel):
         return os.path.isfile(os.path.join(racine, rel))
 
     return comparer(lire(original), lire(traduction), convention, existe)
+
+
+class Illisible(Exception):
+    """Un fichier de la paire n'a pas pu être lu : rien n'a été comparé."""
 
 
 def documents_suivis(racine):
@@ -435,6 +457,9 @@ def main(argv=None):
                 print(f"{d}: traduction sans original (attendu : {convention.original_de(d)})")
             print(f"{len(sans_traduction)} document(s) sans traduction, {len(orphelines)} traduction(s) "
                   f"sans original, sur {len(documents)} documents suivis")
+            if not documents:
+                print("aucun document suivi : rien inventorié", file=sys.stderr)
+                return 2
             return 1 if a.strict and sans_traduction else 0
         a_comparer = paires(documents, convention)
         if not a_comparer:
@@ -445,8 +470,8 @@ def main(argv=None):
     for original, traduction in a_comparer:
         try:
             total += comparer_fichiers(a.racine, original, traduction, convention)
-        except OSError as e:
-            print(f"{original} / {traduction} illisible : {e}", file=sys.stderr)
+        except Illisible as e:
+            print(f"{original} / {traduction} illisible, rien comparé : {e}", file=sys.stderr)
             return 2
     for e in total:
         print(e)

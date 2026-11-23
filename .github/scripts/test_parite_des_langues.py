@@ -147,9 +147,80 @@ class Paire(unittest.TestCase):
         self.assertEqual(self.familles(ecarts), ["identifiants"])
 
     def test_commentaire_html_et_url_ne_comptent_pas(self):
-        original = ORIGINAL + "\n<!-- note 42 -->\nSource : https://example.org/v7\n"
-        traduction = TRADUCTION + "\nSource: https://example.org/v7\n"
+        # Les nombres 42, 83 et 91 n'existent nulle part ailleurs : seule leur exclusion les tait.
+        # L'URL diffère d'un côté à l'autre (page localisée) sans que ce soit un écart de nombre ;
+        # le lien porte la même cible des deux côtés, donc aucun écart de lien non plus.
+        original = ORIGINAL + "\n<!-- note 42 -->\nSource : https://example.org/fr/v83\n"
+        traduction = TRADUCTION + "\nSource: https://example.org/en/v91\n"
         self.assertEqual(self.ecarts(traduction, original), [])
+
+    def test_titre_en_trop_rouge(self):
+        ecarts = self.ecarts(TRADUCTION + "\n## Extra\n")
+        self.assertEqual(self.familles(ecarts), ["titres"])
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.en.md", 22))
+
+    def test_commande_retiree_d_un_bloc_rouge(self):
+        ecarts = self.ecarts(TRADUCTION.replace("cargo test --locked   # default suite\n", ""))
+        self.assertEqual(self.familles(ecarts), ["blocs"])
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.md", 9))
+        self.assertIn("absente", ecarts[0].message)
+
+    def test_tableau_retire_entier_rouge(self):
+        ecarts = self.ecarts(TRADUCTION.replace("| key | value |\n|---|---|\n"
+                                                "| `EXPECTED_TESTS` | ci.yml |\n", ""))
+        self.assertIn("tableaux", self.familles(ecarts))
+        tableaux = [e for e in ecarts if e.famille == "tableaux"]
+        self.assertEqual((tableaux[0].fichier, tableaux[0].ligne), ("guide.md", 14))
+
+    def test_lien_retire_de_la_traduction_rouge(self):
+        ecarts = self.ecarts(TRADUCTION.replace("[the schema](schema.md)", "the schema"))
+        self.assertEqual(self.familles(ecarts), ["liens"])
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.md", 12))
+        self.assertIn("absent de la traduction", ecarts[0].message)
+
+    def test_definition_de_lien_comparee(self):
+        original = ORIGINAL + "\nVoir [la carte][r].\n\n[r]: carte.md\n"
+        juste = TRADUCTION + "\nSee [the map][r].\n\n[r]: carte.en.md\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        ecarts = self.ecarts(juste.replace("[r]: carte.en.md", "[r]: carte.md"), original)
+        self.assertEqual(self.familles(ecarts), ["liens"])
+        self.assertIn("non basculé", ecarts[0].message)
+
+    def test_lien_dans_un_segment_de_code_n_est_pas_un_lien(self):
+        # Un exemple de syntaxe cité entre accents graves ne se bascule pas : il reste identique.
+        original = ORIGINAL + "\nÉcrire `[x](carte.md)` tel quel.\n"
+        traduction = TRADUCTION + "\nWrite `[x](carte.md)` as is.\n"
+        self.assertEqual(self.ecarts(traduction, original), [])
+
+    def test_citation_lue_comme_le_texte(self):
+        original = ORIGINAL + "\n> ## Note\n>\n> ```sh\n> make check\n> ```\n"
+        juste = TRADUCTION + "\n> ## Note\n>\n> ```sh\n> make check\n> ```\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        ecarts = self.ecarts(juste.replace("> make check", "> make"), original)
+        self.assertEqual(self.familles(ecarts), ["blocs"])
+        ecarts = self.ecarts(juste.replace("> ## Note", "> ### Note"), original)
+        self.assertEqual(self.familles(ecarts), ["titres"])
+
+    def test_cloture_plus_courte_ne_ferme_pas_le_bloc(self):
+        # Un bloc ouvert par quatre accents graves cite un bloc de trois sans se fermer.
+        bloc = "\n````md\n```sh\nmake a\n```\nmake b\n````\n"
+        original = ORIGINAL + bloc
+        self.assertEqual(self.ecarts(TRADUCTION + bloc, original), [])
+        ecarts = self.ecarts(TRADUCTION + bloc.replace("make b", "make c"), original)
+        self.assertEqual(self.familles(ecarts), ["blocs"])
+        self.assertIn("make b", ecarts[0].message)
+
+    def test_diese_de_code_n_est_pas_un_commentaire(self):
+        bloc = "\n```rust\n#[derive(Debug)]\nstruct S;\n```\n"
+        original = ORIGINAL + bloc
+        self.assertEqual(self.ecarts(TRADUCTION + bloc, original), [])
+        ecarts = self.ecarts(TRADUCTION + bloc.replace("Debug", "Clone"), original)
+        self.assertEqual(self.familles(ecarts), ["blocs"])
+
+    def test_point_barre_ne_change_pas_la_cible(self):
+        juste = TRADUCTION.replace("(carte.en.md#", "(./carte.en.md#").replace("(schema.md)",
+                                                                              "(./schema.md)")
+        self.assertEqual(self.ecarts(juste), [])
 
     def test_convention_basculee(self):
         convention = pdl.Convention(".fr", "")
@@ -180,6 +251,84 @@ class Convention(unittest.TestCase):
     def test_suffixes_identiques_refuses(self):
         with self.assertRaises(ValueError):
             pdl.Convention(".en", ".en")
+
+    def test_suffixe_mal_forme_refuse(self):
+        for mauvais in ("en", ".", ".e n", "../x", ".en.md"):
+            with self.assertRaises(ValueError, msg=mauvais):
+                pdl.Convention("", mauvais)
+        self.assertEqual(muet(pdl.main, ["--suffixe-traduction", "en"])[0], 2)
+
+
+def muet(fonction, *args):
+    """Appelle `fonction` sorties standard et d'erreur détournées ; rend (résultat, sortie)."""
+    import io
+    sortie, erreur = io.StringIO(), io.StringIO()
+    anciens = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = sortie, erreur
+    try:
+        return fonction(*args), sortie.getvalue() + erreur.getvalue()
+    finally:
+        sys.stdout, sys.stderr = anciens
+
+
+class CodeDeSortie(unittest.TestCase):
+    """main() : 0 sans écart, 1 au premier écart nommé, 2 quand rien n'a pu être comparé."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.racine = self._tmp.name
+        for nom, texte in (("carte.md", "# x\n"), ("carte.en.md", "# x\n"), ("schema.md", "# x\n"),
+                           ("guide.md", ORIGINAL), ("guide.en.md", TRADUCTION)):
+            with open(os.path.join(self.racine, nom), "w", encoding="utf-8") as f:
+                f.write(texte)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def main(self, *args):
+        return muet(pdl.main, ["--racine", self.racine, *args])
+
+    def test_paire_juste_rend_0(self):
+        rc, _ = self.main("--paire", "guide.md", "guide.en.md")
+        self.assertEqual(rc, 0)
+
+    def test_paire_avec_ecart_rend_1_et_le_nomme(self):
+        with open(os.path.join(self.racine, "guide.en.md"), "w", encoding="utf-8") as f:
+            f.write(TRADUCTION.replace("### Detail\n", ""))
+        rc, sortie = self.main("--paire", "guide.md", "guide.en.md")
+        self.assertEqual(rc, 1)
+        self.assertIn("guide.md:18: [titres]", sortie)
+
+    def test_fichier_absent_rend_2(self):
+        rc, sortie = self.main("--paire", "guide.md", "absent.en.md")
+        self.assertEqual(rc, 2)
+        self.assertIn("rien comparé", sortie)
+
+    def test_fichier_absent_apres_une_paire_juste_rend_2(self):
+        # La première paire est juste : un fichier sauté rendrait 0, l'arrêt rend 2.
+        rc, _ = self.main("--paire", "absent.md", "guide.en.md")
+        self.assertEqual(rc, 2)
+
+    def test_fichier_hors_utf8_rend_2(self):
+        with open(os.path.join(self.racine, "guide.en.md"), "wb") as f:
+            f.write("# Guide évalué\n".encode("latin-1"))
+        rc, sortie = self.main("--paire", "guide.md", "guide.en.md")
+        self.assertEqual(rc, 2)
+        self.assertIn("rien comparé", sortie)
+
+    def test_depot_illisible_rend_2_meme_en_inventaire(self):
+        # `racine` n'est pas un dépôt git : ls-files échoue, ce n'est pas une liste vide.
+        self.assertIsNone(pdl.documents_suivis(self.racine))
+        for args in ((), ("--inventaire",), ("--inventaire", "--strict")):
+            rc, _ = self.main(*args)
+            self.assertEqual(rc, 2, args)
+
+    def test_inventaire_sur_zero_document_rend_2(self):
+        subprocess.run(["git", "init", "-q", self.racine], check=True)
+        for args in (("--inventaire",), ("--inventaire", "--strict")):
+            rc, sortie = self.main(*args)
+            self.assertEqual(rc, 2, args)
+            self.assertIn("aucun document suivi", sortie)
 
 
 class Inventaire(unittest.TestCase):

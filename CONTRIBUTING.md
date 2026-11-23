@@ -351,5 +351,6 @@ python3 .github/scripts/test_parite_des_langues.py                 # épreuves d
 
 La convention de suffixe est un paramètre (`--suffixe-original`, `--suffixe-traduction`, par défaut
 `X.md` / `X.en.md`), pour basculer plus tard en `X.fr.md` / `X.md`. L'inventaire rend vert tant que
-`--strict` n'est pas passé. L'outil n'est pas encore une porte de l'intégration continue : il se joue
+`--strict` n'est pas passé ; sur zéro document suivi, ou sur un fichier illisible, l'outil rend 2 :
+rien n'a été comparé. L'outil n'est pas encore une porte de l'intégration continue : il se joue
 à la main, avant de proposer une traduction.
